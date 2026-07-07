@@ -94,7 +94,11 @@ case "$KIND" in
   # FLY-913: restart_guard_bypass — the flywheel-restart-guard PreToolUse hook's
   # mandatory bypass alert (every bypass MUST ring; the hook fail-closes on
   # anything but sent/queued_transient). Same TS-union parity convention.
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass) ;;
+  # FLY-927 (D4): bridge_wrapper_fail — the Bridge launchd wrapper's fail-loud
+  # Discord leg routes through this script (unified channel + sender gating +
+  # claims dedup); direct-curl core-channel kept as its fallback. Same TS-union
+  # parity convention (LeadAlertNotifier.ts ALERT_EVENT_TYPES).
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bridge_wrapper_fail) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"
@@ -138,7 +142,25 @@ fire_meta_alert() {
 # embedded single quote to avoid breaking the claim transaction / local DB.
 sql_quote() { printf '%s' "$1" | sed "s/'/''/g"; }
 
+# ── FLY-927 (D3): unified-channel + single-sender-identity overrides ─────────
+# lead-alert.sh is the Bridge-independent alert channel (FLY-954 alignment) —
+# the unified alert channel + the D2 single sender identity must be first-class
+# here too. When BOTH are set, projects.json is not needed at all (system-level
+# callers like the bridge wrapper pass the conventional identity
+# `--project flywheel --lead bridge`, which has no projects.json entry).
+# All env unset ⇒ the per-lead projects.json path below, byte-for-byte.
+UNIFIED_CHANNEL="${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}"
+SENDER_TOKEN_ENV="${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}"
+
 # ── Config resolution (projects.json SSOT) ──────────────────
+ALERT_CHANNEL=""
+FALLBACK_TO_CORE=""
+GENERAL_CHANNEL=""
+ALERT_BOT_TOKEN_ENV=""
+LEAD_BOT_TOKEN_ENV=""
+if [ -n "$UNIFIED_CHANNEL" ] && [ -n "$SENDER_TOKEN_ENV" ]; then
+  : # channel + identity fully env-driven — skip projects.json entirely
+else
 PROJECTS_JSON="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
 if [ ! -f "$PROJECTS_JSON" ]; then
   log "ERROR: projects.json not found at $PROJECTS_JSON"
@@ -194,25 +216,40 @@ FALLBACK_TO_CORE=$(printf '%s' "$LEAD_CFG" | jq -r '.alertFallbackToCore')
 GENERAL_CHANNEL=$(printf '%s' "$LEAD_CFG" | jq -r '.generalChannel // ""')
 ALERT_BOT_TOKEN_ENV=$(printf '%s' "$LEAD_CFG" | jq -r '.alertBotTokenEnv // ""')
 LEAD_BOT_TOKEN_ENV=$(printf '%s' "$LEAD_CFG" | jq -r '.botTokenEnv // ""')
+fi # end projects.json resolution (skipped when unified channel + sender env set)
 
-# Resolve channel: alertChannel → generalChannel (if alertFallbackToCore).
+# Resolve channel: FLY-927 unified channel env wins; else
+# alertChannel → generalChannel (if alertFallbackToCore) — the legacy path.
 CHANNEL_ID=""
-if [ -n "$ALERT_CHANNEL" ]; then
+if [ -n "$UNIFIED_CHANNEL" ]; then
+  CHANNEL_ID="$UNIFIED_CHANNEL"
+elif [ -n "$ALERT_CHANNEL" ]; then
   CHANNEL_ID="$ALERT_CHANNEL"
 elif [ "$FALLBACK_TO_CORE" = "true" ] && [ -n "$GENERAL_CHANNEL" ]; then
   CHANNEL_ID="$GENERAL_CHANNEL"
   log "WARNING: no alertChannel configured, falling back to generalChannel ($CHANNEL_ID)"
 fi
 
-# Resolve token: alertBotTokenEnv → botTokenEnv. Fallback warned once.
+# Resolve token: FLY-927 (D2) sender identity env wins — and when it is set but
+# UNRESOLVABLE the script fail-closes into the no-token dead-letter below,
+# deliberately NOT falling back to the per-lead token (gating semantics: better
+# a dead-letter than an unauthorized sender). Else the legacy per-lead chain:
+# alertBotTokenEnv → botTokenEnv (fallback warned once).
 TOKEN=""
-if [ -n "$ALERT_BOT_TOKEN_ENV" ]; then
-  TOKEN="${!ALERT_BOT_TOKEN_ENV:-}"
-fi
-if [ -z "$TOKEN" ] && [ -n "$LEAD_BOT_TOKEN_ENV" ]; then
-  TOKEN="${!LEAD_BOT_TOKEN_ENV:-}"
-  if [ -n "$TOKEN" ]; then
-    log "WARNING: alert token env '$ALERT_BOT_TOKEN_ENV' empty, using '$LEAD_BOT_TOKEN_ENV'"
+if [ -n "$SENDER_TOKEN_ENV" ]; then
+  TOKEN="${!SENDER_TOKEN_ENV:-}"
+  if [ -z "$TOKEN" ]; then
+    log "ERROR: FLYWHEEL_ALERT_SENDER_TOKEN_ENV='$SENDER_TOKEN_ENV' does not resolve — refusing per-lead fallback"
+  fi
+else
+  if [ -n "$ALERT_BOT_TOKEN_ENV" ]; then
+    TOKEN="${!ALERT_BOT_TOKEN_ENV:-}"
+  fi
+  if [ -z "$TOKEN" ] && [ -n "$LEAD_BOT_TOKEN_ENV" ]; then
+    TOKEN="${!LEAD_BOT_TOKEN_ENV:-}"
+    if [ -n "$TOKEN" ]; then
+      log "WARNING: alert token env '$ALERT_BOT_TOKEN_ENV' empty, using '$LEAD_BOT_TOKEN_ENV'"
+    fi
   fi
 fi
 
@@ -286,6 +323,13 @@ case "$SEVERITY" in
 esac
 
 CONTENT=$(printf '%s **%s** (%s / %s)\n%s' "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" "$BODY")
+# FLY-927 (Task 1.7): 🎫 ticket header, SAME shape as the TS formatContent —
+# only in unified-channel mode with tickets on. Shell side always renders
+# `owner — · 状态 NEW` (owner @ is the Bridge's job; drain does not rewrite).
+if [ -n "$UNIFIED_CHANNEL" ] && [ "${FLYWHEEL_ALERT_TICKETS:-}" = "1" ]; then
+  CONTENT=$(printf '%s **%s** (%s / %s)\n🎫 %s · 首见 %s · owner — · 状态 NEW\n%s' \
+    "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" "$PROJECT_NAME" "$(date '+%H:%M')" "$BODY")
+fi
 
 # Spill to queue for later drain. Keep fields aligned with LeadAlertNotifier.
 # FLY-529: FLYWHEEL_ALERT_QUEUE_DIR isolates the QA Testing Room's shell-side
@@ -346,14 +390,44 @@ if [ -z "$TOKEN" ]; then
   exit 2
 fi
 
+# ── FLY-927 (T1): per-minute rate approximation ─────────────
+# When FLYWHEEL_ALERT_RATE_PER_MIN is set and this minute's shell-side counter
+# is at the cap, skip the direct POST and queue the record — the Bridge drain
+# delivers it under its own token bucket (dedup already done by claims.db).
+# Unset ⇒ no counting, byte-compat.
+RATE_LIMIT="${FLYWHEEL_ALERT_RATE_PER_MIN:-}"
+if [ -n "$RATE_LIMIT" ]; then
+  RATE_STAMP=$(date -u +%Y%m%d%H%M)
+  RATE_FILE="${QUEUE_DIR}/.rate-${RATE_STAMP}"
+  # Opportunistic cleanup of stale minute counters (queue drain ignores non-.json).
+  find "$QUEUE_DIR" -maxdepth 1 -name '.rate-*' ! -name ".rate-${RATE_STAMP}" -delete 2>/dev/null || true
+  RATE_COUNT=$(cat "$RATE_FILE" 2>/dev/null || echo 0)
+  case "$RATE_COUNT" in (*[!0-9]*|'') RATE_COUNT=0 ;; esac
+  if [ "$RATE_COUNT" -ge "$RATE_LIMIT" ] 2>/dev/null; then
+    enqueue "rate-limited"
+    emit_result "queued_transient"
+    exit 2
+  fi
+  echo $((RATE_COUNT + 1)) > "$RATE_FILE"
+fi
+
 # ── POST to Discord ────────────────────────────────────────
-BODY_JSON=$(jq -n --arg c "$CONTENT" '{content: $c}')
-HTTP_CODE=$(curl -s -o /tmp/lead-alert-$$.out -w '%{http_code}' \
-  --max-time 15 \
-  -X POST "https://discord.com/api/v10/channels/${CHANNEL_ID}/messages" \
-  -H "Authorization: Bot ${TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d "$BODY_JSON" 2>/dev/null || echo "000")
+# FLY-927 (Codex R1 #7): mentions ALWAYS fully suppressed on the shell path
+# (content can carry ids/titles that Discord would otherwise resolve), and the
+# bot token rides a curl stdin config (`-K -`) so it never appears in argv
+# (FLY-510 notion.sh precedent).
+BODY_JSON=$(jq -n --arg c "$CONTENT" '{content: $c, allowed_mentions: {parse: []}}')
+post_discord() {
+  curl -s -o "/tmp/lead-alert-$$.out" -w '%{http_code}' \
+    --max-time 15 \
+    -X POST "https://discord.com/api/v10/channels/${CHANNEL_ID}/messages" \
+    -H "Content-Type: application/json" \
+    -d "$BODY_JSON" \
+    -K - <<CURLCFG
+header = "Authorization: Bot ${TOKEN}"
+CURLCFG
+}
+HTTP_CODE=$(post_discord 2>/dev/null || echo "000")
 
 if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] 2>/dev/null; then
   rm -f /tmp/lead-alert-$$.out

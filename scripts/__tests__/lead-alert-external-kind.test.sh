@@ -32,6 +32,11 @@ mkdir -p "$TMP/bin"
 cat > "$TMP/bin/curl" <<'FAKE'
 #!/bin/bash
 printf '%s\n' "$*" >> "$CURL_ARGS_FILE"
+# FLY-927: lead-alert.sh now feeds the Authorization header via `-K -` (stdin
+# curl config) so the token never rides argv — capture stdin for assertions.
+for a in "$@"; do
+  if [ "$a" = "-" ]; then cat >> "${CURL_ARGS_FILE}.stdin"; break; fi
+done
 printf '200'
 exit 0
 FAKE
@@ -80,11 +85,18 @@ run_alert external_config_error > "$TMP/ok.out" 2>&1; rc=$?
 [ "$rc" -eq 0 ] && ok "external_config_error accepted (exit 0)" || { bad "external_config_error rejected (exit $rc)"; sed 's/^/      /' "$TMP/ok.out"; }
 grep -qi "unknown --kind" "$TMP/ok.out" && bad "external_config_error hit the unknown-kind branch" || ok "external_config_error NOT flagged unknown"
 grep -q "sent" "$TMP/ok.out" && ok "alert POST attempted (sent)" || bad "alert POST not reached"
-# Token resolved via alertBotTokenEnv → present in the Authorization header argv.
-if [ -f "$TMP/curl-args" ] && grep -qF "Authorization: Bot ${CANARY_TOKEN}" "$TMP/curl-args"; then
+# Token resolved via alertBotTokenEnv → present in the Authorization header.
+# FLY-927: the header now rides the curl STDIN config (`-K -`), never argv —
+# assert it in the recorded stdin AND that argv stays token-free.
+if [ -f "$TMP/curl-args.stdin" ] && grep -qF "Authorization: Bot ${CANARY_TOKEN}" "$TMP/curl-args.stdin"; then
   ok "alert token resolved via alertBotTokenEnv (ANNA_BOT_TOKEN)"
 else
   bad "alert token NOT resolved from alertBotTokenEnv"
+fi
+if [ -f "$TMP/curl-args" ] && grep -qF "$CANARY_TOKEN" "$TMP/curl-args"; then
+  bad "token leaked into curl argv (must ride stdin config only)"
+else
+  ok "token never appears in curl argv (FLY-927 hygiene)"
 fi
 
 # ── 2. control: an unknown kind is REJECTED ──
