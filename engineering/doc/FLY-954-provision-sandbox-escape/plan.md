@@ -804,6 +804,12 @@ darwin `_iso_prov` 与 linux 套件的对应 helper(`:69` 的 env -i 调用封�
 - **QA 红线(memory 已录)**:provisioner/converge 的任何测试一律走沙箱/容器,绝不在 host 上裸跑 `--apply`;本 plan 的所有新测试已 hermetic(P8 的「污染 env」也指向 SANDBOX 内的 fakeprod)。
 - **Lead 收尾义务**:建 follow-up issue(fleet 第二台机器时统一 plist 指向 bin 拷贝,挂 provisioning 系列)——gate 已拍,Annie 早报知会。
 
+## Implementation Addendum(实现期变更记录,2026-07-07)
+
+1. **research.md §1.5「env 指错也无害」论断被实测推翻**(反例:既有 `update-flywheel-queue.test.sh` 沙箱 HOME 但继承生产 `FLYWHEEL_STATE_DIR`,经挂点 b 把分支版 restart-services.sh 写进真 `~/.flywheel/bin`;已止血恢复 main 版)。这是防线 ①「writer 不得信任继承 env」的又一实证——修复落测试侧:该套件 defense 块补 `FLYWHEEL_STATE_DIR` 沙箱(Task 8 同族;全仓审计确认执行 `update_main` 的仅此一个,`do_restart_all_leads` 无测试直接执行,claude-lead 系测试全走 DRY_RUN)。research.md 已同步修正。
+2. **converge 告警加演习标记**(lead-instruction 4d224848,founder 被冒烟真告警吓到一次):`STATE_DIR != $HOME/.flywheel` 且未设 `FLYWHEEL_CONVERGE_PROD_STATE=1` 时,告警标题带 `🧪[sandbox test] ` 前缀(fail-safe 方向:宁误标演习,不吓 founder;未来 fleet 自定义 stateDir 生产机用该 env 关闭)。新增 C6/C7 用例钉住两种形态。
+3. **converge size 读取小修**:缺失文件时 `wc -c < missing` 的 shell 重定向错误先于 `2>/dev/null` 生效,会在 fail-loud 挂点的 stderr 落噪音——改为 `[ -f ]` 先判。
+
 ## Self-Review(已跑)
 
 - Spec 覆盖:issue 四条要求——①找真凶(exploration §1 取证完成,env -i 已由 #477 落地,本 plan ① 补结构性根治)✓;②测试硬隔离(Task 2 P8/P9 + Task 8 硬断言)✓;③provisioner 防御(Task 1/2/4:sanity+原子+555+fail-loud)✓;④收敛校验升必做(Task 5/6/7 三挂点)✓;founder 追问的三层防线(写保护/持续校验/根治写入源)分别对应 Task 1-2/6-7/2-3 ✓;架构拍板按 gate 结论落「不动 plist + follow-up」✓。

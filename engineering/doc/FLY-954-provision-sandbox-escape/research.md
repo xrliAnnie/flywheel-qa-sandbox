@@ -37,7 +37,8 @@ Issue: FLY-954 (https://linear.app/geoforge3d/issue/FLY-954/infraprovisioning-pr
 - 单一真相脚本,幂等:对三件套逐个 `shasum -a 256` 对比 `<repo>/scripts/<f>` ↔ `<state>/bin/<f>`。
   - 一致 → 静默 no-op;
   - 不一致/缺失 → **先 assert_sane_script_source 验 repo 源**(repo mid-pull/被污染时**只告警不修复**——绝不把坏源收敛进生产 bin,fail-safe)→ 源健康则 tmp+mv+555 修复 + 告警一条(修复成功也要响:漂移本身就是异常信号)。
-- repo root:`SCRIPT_DIR/..` 自推(脚本总是从 repo checkout 被调);state dir:`FLYWHEEL_STATE_DIR` env > `~/.flywheel`(converge 是读取者+修复者,env 语义与 wrapper 运行时一致;即使被污染指错,也只是把「那个」bin 修成 repo 源,无害。QA slot 带自己的 STATE_DIR/CLAIMS_DB → 天然隔离,529 Room 兼容)。
+- repo root:`SCRIPT_DIR/..` 自推(脚本总是从 repo checkout 被调);state dir:`FLYWHEEL_STATE_DIR` env > `~/.flywheel`(converge 是读取者+修复者,env 语义与 wrapper 运行时一致;QA slot 带自己的 STATE_DIR/CLAIMS_DB → 天然隔离,529 Room 兼容)。
+- **⚠️ 实测修正(2026-07-07,实现期反例,推翻本节初稿的「即使被污染指错也无害」论断)**:「无害」隐含假设 repo 源 = main。实测反例——既有 `update-flywheel-queue.test.sh` 沙箱了 HOME 但继承了 runner 自带的生产 `FLYWHEEL_STATE_DIR`,跑 `update_main` 命中挂点 b,converge 以**分支 worktree** 为 repo 源把分支版 `restart-services.sh` 写进了真 `~/.flywheel/bin`(555、内容 sane,该拷贝无 launchd 消费者,未影响生产;已按 runbook 恢复 main 版)。结论:converge 的 env seam 对**生产挂点**与 QA slot 是正确语义,但对「带生产 env 的测试进程」不设防——这是「writer 不得信任继承 env」原则(防线 ①)的又一实证,修复落在测试侧:执行 `update_main` 的套件必须沙箱 `FLYWHEEL_STATE_DIR`(与 Task 8 硬断言同族)。
 - 告警:`scripts/lead-alert.sh --kind bin_integrity_drift --severity severe`。**kind 是硬 enum(lead-alert.sh:90-103),需加词**;注释明确的 parity convention:TS 侧 `LeadAlertNotifier.ts` 的 AlertEventType union 同步加(纯类型面,Bridge 无行为分支)。signature 用「文件名|repo checksum 前 12」→ 同一漂移事件每日至多一响(claims.db 既有去重)。
 
 ### 1.6 三个收敛挂载点(防线 ④)

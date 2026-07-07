@@ -86,5 +86,32 @@ if [ "$RC" -ne 0 ] && grep -q 'drifted' "$ST/bin/flywheel-bridge-wrapper.sh" \
   pass "C4: insane repo source → alert only, bin untouched, non-zero exit"
 else fail "C4: fail-safe (rc=$RC)"; cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null; fi
 
+# C6 (lead-instruction 4d224848): a NON-default state root (sandbox/QA-slot
+# exercise) must prefix alert titles loudly — a founder glancing at Discord
+# cannot be expected to recognize /var/folders paths in the body.
+# (C4 left the fake repo's bridge-wrapper source insane — restore it first so
+# this run exercises a clean repair only.)
+{ echo '#!/bin/bash'; i=1; while [ "$i" -le 80 ]; do echo "echo repo-flywheel-bridge-wrapper.sh-$i >/dev/null"; i=$((i+1)); done; } > "$FR/scripts/flywheel-bridge-wrapper.sh"
+: > "$SB/alerts.log"
+rm -f "$ST/bin/restart-services.sh"        # force a repair (drift) alert
+run_converge; RC=$?
+if [ "$RC" -eq 0 ] && grep -q '🧪\[sandbox test\]' "$SB/alerts.log"; then
+  pass "C6: non-default state root → alert title carries the 🧪[sandbox test] prefix"
+else fail "C6: drill prefix missing (rc=$RC)"; cat "$SB/alerts.log" 2>/dev/null; fi
+
+# C7: the PRODUCTION shape (STATE_DIR == $HOME/.flywheel) must NOT be prefixed
+# — simulated with a fake HOME inside the sandbox (never the real one).
+FH="$SB/fakehome"; mkdir -p "$FH/.flywheel/bin"
+: > "$SB/alerts.log"
+echo '#!/bin/bash' > "$FH/.flywheel/bin/flywheel-lead-wrapper.sh"   # drift
+ALERT_LOG="$SB/alerts.log" HOME="$FH" FLYWHEEL_STATE_DIR="$FH/.flywheel" \
+FLYWHEEL_CONVERGE_ALERT_BIN="$ALERT" \
+  bash "$CONVERGE" >"$SB/out7.log" 2>&1
+RC=$?
+if [ "$RC" -eq 0 ] && grep -q '^ALERT' "$SB/alerts.log" \
+   && ! grep -q '🧪' "$SB/alerts.log"; then
+  pass "C7: production shape (STATE_DIR == \$HOME/.flywheel) → no drill prefix"
+else fail "C7: prefix leaked into production shape (rc=$RC)"; cat "$SB/alerts.log" 2>/dev/null; fi
+
 echo ""; echo "Results: ${PASSED} passed, ${FAILED} failed"
 [ "$FAILED" -eq 0 ] || exit 1

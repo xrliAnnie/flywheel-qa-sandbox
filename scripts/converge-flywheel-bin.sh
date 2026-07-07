@@ -45,6 +45,19 @@ ALERT_PROJECT="${FLYWHEEL_CONVERGE_ALERT_PROJECT:-flywheel}"
 # shellcheck source=lib/script-sanity.sh
 source "$SCRIPT_DIR/lib/script-sanity.sh"
 
+# FLY-954 (lead-instruction 4d224848): a NON-default state root means this run
+# is a sandbox / QA-slot exercise, not this host's production bin — and a
+# founder glancing at Discord cannot be expected to recognize /var/folders
+# paths in the body (the smoke-test alerts read as a real incident). Prefix
+# drill alert titles loudly so an exercise is never mistaken for production.
+# A future fleet host running a custom host.json stateDir as PRODUCTION can
+# suppress via FLYWHEEL_CONVERGE_PROD_STATE=1 (fail-safe default: mislabeling
+# a drill beats scaring the founder).
+ALERT_TITLE_PREFIX=""
+if [ "$STATE_DIR" != "$HOME/.flywheel" ] && [ "${FLYWHEEL_CONVERGE_PROD_STATE:-0}" != "1" ]; then
+  ALERT_TITLE_PREFIX="🧪[sandbox test] "
+fi
+
 FILES="flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh"
 
 log() { echo "[converge-bin] $*"; }
@@ -54,7 +67,7 @@ alert() {  # <title> <body> <signature> — best-effort (claims.db dedup inside)
   bash "$ALERT_BIN" \
     --lead "$ALERT_LEAD" --project "$ALERT_PROJECT" \
     --kind bin_integrity_drift --severity severe \
-    --title "$1" --body "$2" --signature "$3" || true
+    --title "${ALERT_TITLE_PREFIX}$1" --body "$2" --signature "$3" || true
 }
 
 rc=0
