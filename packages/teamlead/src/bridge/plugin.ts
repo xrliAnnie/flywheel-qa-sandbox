@@ -4891,8 +4891,20 @@ export async function startBridge(
 	// creation + ack/repair/resolve. Resolve it at boot for the enable gate; the
 	// Hub re-resolves per call (env may change). Tokens never logged.
 	const repairChainEnvs = buildRepairChain(projects, repairBotTokenEnvName);
-	const repairChainResolves = !!resolveFirstAvailableBotToken(repairChainEnvs);
-	const firstRepairBot = resolveFirstAvailableBotToken(repairChainEnvs);
+	// FLY-927 (Codex R1 MEDIUM): with the D2 single sender identity configured,
+	// IT is the authoritative send chain — Hub enablement keys on the SENDER
+	// token resolving (an empty repair chain must not disable the Hub, and a
+	// misspelled sender env must fail loud at boot, not at the first dead-letter).
+	// The Cass degraded-attribution warning is repair-chain-specific — skipped
+	// under the override (there is no chain to degrade to).
+	const alertSenderEnvName =
+		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV?.trim();
+	const repairChainResolves = alertSenderEnvName
+		? !!process.env[alertSenderEnvName]
+		: !!resolveFirstAvailableBotToken(repairChainEnvs);
+	const firstRepairBot = alertSenderEnvName
+		? null
+		: resolveFirstAvailableBotToken(repairChainEnvs);
 	if (
 		unifiedAlertChannelId &&
 		firstRepairBot &&
@@ -5326,6 +5338,9 @@ export async function startBridge(
 	const unreachableAlertLeads = findUnreachableAlertLeads(projects, {
 		channelId: unifiedAlertChannelId,
 		repairBotTokenEnv: repairBotTokenEnvName,
+		// FLY-927 (Codex R1 MEDIUM): D2 sender identity is the authoritative
+		// chain — a misspelled/unset sender env fails LOUD at boot.
+		senderTokenEnv: alertSenderEnvName,
 	});
 	if (unreachableAlertLeads.length > 0) {
 		for (const u of unreachableAlertLeads) {
@@ -5655,11 +5670,29 @@ export async function startBridge(
 		leadAlertDraining = true;
 		leadAlertNotifier
 			.drainQueue()
-			.then(async ({ sent, remaining, deadLettered }) => {
+			.then(async ({ sent, remaining, deadLettered, delivered }) => {
 				if (sent > 0 || remaining > 0 || deadLettered > 0) {
 					console.log(
 						`[Bridge] LeadAlert drain sent=${sent} remaining=${remaining} deadLettered=${deadLettered}`,
 					);
+				}
+				// FLY-927 (Codex R1 HIGH): a drained root must still get its per-error
+				// thread + ticket lifecycle — otherwise every over-cap (rate-limited /
+				// transient-retry) alert silently bypasses the Hub. Best-effort each.
+				if (alertHub) {
+					for (const d of delivered) {
+						try {
+							await alertHub.attachThreadForDelivered(
+								d.payload,
+								d.channelId,
+								d.messageId,
+							);
+						} catch (err) {
+							console.warn(
+								`[Bridge] drained-thread attach failed: ${(err as Error).message}`,
+							);
+						}
+					}
 				}
 				// Dead-letters happened → surface (Discord-independent).
 				if (deadLettered > 0) {

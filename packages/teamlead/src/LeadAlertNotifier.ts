@@ -671,12 +671,30 @@ export class LeadAlertNotifier {
 		sent: number;
 		remaining: number;
 		deadLettered: number;
+		/**
+		 * FLY-927 (Codex R1 HIGH): unified-mode drains that actually POSTed, with
+		 * the root channel+message id — the Bridge drain loop feeds these through
+		 * the Hub so a rate-limited (or transiently-failed) alert still gets its
+		 * per-error thread + ticket lifecycle instead of silently bypassing them.
+		 * Entries without a parsed messageId are omitted (root-only degrade —
+		 * same contract as the live path). Empty on the legacy path.
+		 */
+		delivered: Array<{
+			payload: AlertPayload;
+			channelId: string;
+			messageId: string;
+		}>;
 	}> {
 		let entries = readdirSync(this.queueDir)
 			.filter((f) => f.endsWith(".json"))
 			.sort(); // names start with an ISO-ish stamp → lexical ≈ chronological
 		let sent = 0;
 		let deadLettered = 0;
+		const delivered: Array<{
+			payload: AlertPayload;
+			channelId: string;
+			messageId: string;
+		}> = [];
 
 		// FLY-927 (T1): pending overflow → ONE aggregate summary per window, posted
 		// before the per-entry drain. The summary consumes a token; when even that
@@ -764,6 +782,16 @@ export class LeadAlertNotifier {
 				if (sentResult.ok) {
 					unlinkSync(path);
 					sent++;
+					// FLY-927 (Codex R1 HIGH): hand the delivered root to the Hub so a
+					// drained alert still gets its thread + ticket lifecycle.
+					if (sentResult.messageId) {
+						const { queueReason: _qr, queuedAt: _qa, ...payload } = parsed;
+						delivered.push({
+							payload: payload as AlertPayload,
+							channelId: channel,
+							messageId: sentResult.messageId,
+						});
+					}
 				} else if (!sentResult.transient) {
 					// Every candidate permanently failed → dead-letter.
 					this.moveQueueFileToDeadLetter(
@@ -800,7 +828,7 @@ export class LeadAlertNotifier {
 		const remaining = readdirSync(this.queueDir).filter((f) =>
 			f.endsWith(".json"),
 		).length;
-		return { sent, remaining, deadLettered };
+		return { sent, remaining, deadLettered, delivered };
 	}
 
 	/**
@@ -1062,7 +1090,14 @@ export interface UnreachableAlertLead {
  */
 export function findUnreachableAlertLeads(
 	projects: ProjectEntry[],
-	unified?: { channelId?: string; repairBotTokenEnv?: string },
+	unified?: {
+		channelId?: string;
+		repairBotTokenEnv?: string;
+		/** FLY-927 (D2): the single-sender env NAME — when set it is the
+		 * authoritative chain, so startup validation checks IT (a misspelled
+		 * sender env fails loud at boot instead of dead-lettering at runtime). */
+		senderTokenEnv?: string;
+	},
 ): UnreachableAlertLead[] {
 	const out: UnreachableAlertLead[] = [];
 	// FLY-368 rework: in unified mode every alert resolves a token via the
@@ -1071,6 +1106,19 @@ export function findUnreachableAlertLeads(
 	// — a single fleet-wide failure, not per-lead noise. (The per-thread
 	// repair-bot fail-loud lives in plugin.ts.)
 	if (unified?.channelId) {
+		// FLY-927 (Codex R1 MEDIUM): D2 override — the sender identity IS the
+		// chain; there is deliberately NO own-bot/repair fallback behind it.
+		const senderEnv = unified.senderTokenEnv?.trim();
+		if (senderEnv) {
+			if (!process.env[senderEnv]) {
+				out.push({
+					projectName: "*",
+					leadId: "*",
+					reason: `FLYWHEEL_ALERT_SENDER_TOKEN_ENV "${senderEnv}" is not set / empty — single-sender mode has no fallback, alerts cannot be sent`,
+				});
+			}
+			return out;
+		}
 		const repairEnv = unified.repairBotTokenEnv ?? "";
 		const anyBot = resolveFirstAvailableBotToken(
 			buildRepairChain(projects, repairEnv),

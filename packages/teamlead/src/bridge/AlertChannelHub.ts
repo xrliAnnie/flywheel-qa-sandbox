@@ -480,6 +480,27 @@ export class AlertChannelHub {
 		return id && /^\d{17,20}$/.test(id) ? id : undefined;
 	}
 
+	/**
+	 * FLY-927 (Codex R1 HIGH): attach the per-error thread + ticket lifecycle to
+	 * an alert the DRAIN loop delivered (a rate-limited / transiently-failed root
+	 * that bypassed `handle()`'s live path). Same threading semantics as
+	 * `handle()` — a threading failure degrades to root-only, never throws.
+	 */
+	async attachThreadForDelivered(
+		payload: AlertPayload,
+		channelId: string,
+		messageId: string,
+	): Promise<void> {
+		const ck = correlationKeyFor(payload);
+		try {
+			await this.openOrReplaceThread(ck, payload, channelId, messageId);
+		} catch (err) {
+			this.logger(
+				`drained-thread handling failed for ${ck}: ${(err as Error).message}`,
+			);
+		}
+	}
+
 	/** Real-time recovery hook fed by LeadWatchdog.onRecovery (an optimization). */
 	async onLeadRecovery(
 		projectName: string,

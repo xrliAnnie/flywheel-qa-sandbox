@@ -1230,3 +1230,126 @@ describe("LeadAlertNotifier — FLY-927 Task 1.4: unified-channel rate cap (T1)"
 		expect(fetchFn).toHaveBeenCalledTimes(1);
 	});
 });
+
+describe("LeadAlertNotifier — FLY-927 Codex R1 fixes", () => {
+	let store: StateStore;
+	let queueDir: string;
+	const saved: Record<string, string | undefined> = {};
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		queueDir = mkdtempSync(join(tmpdir(), "fly927-r1-"));
+		for (const k of [
+			"SIMBA_BOT_TOKEN",
+			"CASS_BOT_TOKEN",
+			"INFRA_SENDER_TOKEN",
+			"FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
+		]) {
+			saved[k] = process.env[k];
+		}
+		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.CASS_BOT_TOKEN = "cass-tok";
+		delete process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;
+	});
+	afterEach(() => {
+		rmSync(queueDir, { recursive: true, force: true });
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	});
+
+	const unified = {
+		channelId: "OPS-CHAN",
+		repairBotTokenEnv: "CASS_BOT_TOKEN",
+	};
+
+	it("HIGH fix: unified drain returns the delivered roots (payload + channel + messageId) for Hub attach", async () => {
+		// Seed a queued alert (transient 503 on first send).
+		const seed = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: vi.fn().mockResolvedValue({
+				ok: false,
+				status: 503,
+				statusText: "x",
+				text: async () => "",
+			}),
+			queueDir,
+			unifiedAlert: unified,
+		});
+		await seed.alert(buildPayload({ leadId: "cos-lead" }));
+
+		const fetchOk = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+			json: async () => ({ id: "drained-root-1" }),
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: fetchOk,
+			queueDir,
+			unifiedAlert: unified,
+		});
+		const result = await notifier.drainQueue();
+		expect(result.sent).toBe(1);
+		expect(result.delivered).toHaveLength(1);
+		expect(result.delivered[0]).toMatchObject({
+			channelId: "OPS-CHAN",
+			messageId: "drained-root-1",
+		});
+		expect(result.delivered[0]!.payload.eventType).toBe("pane_hash_stuck");
+		// queue-bookkeeping fields stripped from the Hub-bound payload
+		expect(
+			(result.delivered[0]!.payload as Record<string, unknown>).queueReason,
+		).toBeUndefined();
+	});
+
+	it("HIGH fix: legacy (non-unified) drain returns an empty delivered list", async () => {
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: vi.fn(),
+			queueDir,
+		});
+		const result = await notifier.drainQueue();
+		expect(result.delivered).toEqual([]);
+	});
+
+	it("MEDIUM fix: sender env set + resolvable → startup check passes even with an EMPTY repair chain", () => {
+		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV = "INFRA_SENDER_TOKEN";
+		process.env.INFRA_SENDER_TOKEN = "infra-tok";
+		delete process.env.CASS_BOT_TOKEN;
+		delete process.env.SIMBA_BOT_TOKEN;
+		expect(
+			findUnreachableAlertLeads([], {
+				channelId: "OPS-CHAN",
+				repairBotTokenEnv: "CASS_BOT_TOKEN",
+				senderTokenEnv: "INFRA_SENDER_TOKEN",
+			}),
+		).toEqual([]);
+	});
+
+	it("MEDIUM fix: sender env set but UNRESOLVABLE → loud boot-time unreachable (even though the repair chain resolves)", () => {
+		delete process.env.INFRA_SENDER_TOKEN;
+		const out = findUnreachableAlertLeads(testProjects, {
+			channelId: "OPS-CHAN",
+			repairBotTokenEnv: "CASS_BOT_TOKEN",
+			senderTokenEnv: "INFRA_SENDER_TOKEN",
+		});
+		expect(out).toHaveLength(1);
+		expect(out[0]!.reason).toContain("INFRA_SENDER_TOKEN");
+		expect(out[0]!.reason).toContain("single-sender");
+	});
+
+	it("SENTINEL: no sender env → the existing repair-chain check unchanged", () => {
+		const out = findUnreachableAlertLeads(testProjects, {
+			channelId: "OPS-CHAN",
+			repairBotTokenEnv: "CASS_BOT_TOKEN",
+		});
+		expect(out).toEqual([]); // CASS_BOT_TOKEN resolves in beforeEach
+	});
+});

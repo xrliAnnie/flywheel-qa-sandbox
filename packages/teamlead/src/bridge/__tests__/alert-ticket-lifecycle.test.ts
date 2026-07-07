@@ -314,3 +314,33 @@ describe("FLY-927 Hub T2 escalation (reconcile pass)", () => {
 		expect(discord.edits).toHaveLength(0);
 	});
 });
+
+describe("FLY-927 Codex R1 HIGH: drained root attaches thread + lifecycle", () => {
+	it("attachThreadForDelivered opens the thread + seeds the ticket like the live path", async () => {
+		const store = await StateStore.create(":memory:");
+		const discord = makeDiscord();
+		const hub = new AlertChannelHub({
+			store,
+			notifier: { alert: async () => ({ ...SENT }) },
+			discord,
+		});
+		await hub.attachThreadForDelivered(payload(), "UNI", "drained-root-1");
+		const row = store.getActiveAlertThread(CK);
+		expect(row?.thread_id).toBe("thread-1");
+		expect(row?.root_message_id).toBe("drained-root-1");
+		expect(row?.ticket_status).toBe("NEW");
+	});
+
+	it("threading failure degrades silently (root-only), never throws", async () => {
+		const store = await StateStore.create(":memory:");
+		const discord = makeDiscord();
+		discord.createThreadFromMessage = async () => null;
+		const hub = new AlertChannelHub({
+			store,
+			notifier: { alert: async () => ({ ...SENT }) },
+			discord,
+		});
+		await hub.attachThreadForDelivered(payload(), "UNI", "drained-root-1");
+		expect(store.getActiveAlertThread(CK)).toBeUndefined();
+	});
+});
