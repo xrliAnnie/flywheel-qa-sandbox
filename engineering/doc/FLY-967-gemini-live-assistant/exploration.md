@@ -22,6 +22,12 @@ Annie 2026-07-07 在 545 thread 拍板:voice 会议形态 A/B 之争不纸上谈
 545 的 exploration §D1 其实已经把这两条路摆上过桌面(A=音频直出被列为 documented 降级位);
 Annie 的决定 = 别把 A 只当降级位,当一等公民做出来真比。
 
+> **校准(2026-07-07,545 S1 坐实后)**:Gemini Live 当前**全系模型不支持 TEXT 响应模态**
+> (服务端拒绝;545 分支 evidence/s1-gemini-text-modality.md),B 已激活 audio 直出降级
+> (545 plan 附录 A / D1-A:Gemini AUDIO 直出、主持 bot 单嘴播)。A/B 差异主轴因此从
+> 「延迟链路」改为**「脑子」**——B = Claude 人格 + 会议流程,A = 纯 Gemini + 简报注入;
+> 两边播放链路同源,「卡不卡」不再是主要区分维度(见 §7 权重调整)。
+
 ## 2. 现状审计(A 能站在什么肩膀上)
 
 ### 2.1 voice-core(FLY-543 产物,FLY-959 修完已知 bug)
@@ -181,6 +187,9 @@ Annie 原话:「相当于把 Claude Code 做的事情在 Gemini 那边再做一�
 - `/assist` 偏「客服」;`/quick` 语义悬空(quick 什么?)。
 - 命令名可配置(545 的 `commandName` 同款),定稿权在 Annie+Honey Lemon,design 只给建议。
 
+> **落定注记(2026-07-07)**:Annie 拍板 = **/live**(取代本节建议的 /talk);命令名仍可配置
+> (config `commandName`,默认 "live")。代码模块相应叫 LiveCommand。
+
 ### D8. 交付切法与时序
 
 - **design 即刻并行(本档);implement 的 VC 接线等 545 PR-1 落地**(issue 硬约束)。
@@ -221,10 +230,15 @@ Annie 原话:「相当于把 Claude Code 做的事情在 Gemini 那边再做一�
 Annie 分别用 `/meet`(B)和 `/talk`(A)各开一轮真会,按体感拍板。design 建议给她一张
 两列小卡(TIV 里贴),提示对比维度(不打分,凭感觉):
 
-1. **懂不懂我们** — 问同一个项目问题,谁答得准/不用她科普;
-2. **卡不卡** — 首音体感、打断跟手不跟手;
+1. **懂不懂我们**(**首位**)— 问同一个项目问题,谁答得准/不用她科普;A/B 主轴 = 脑子
+   (B = Claude 人格+会议流程 vs A = 纯 Gemini+简报注入);
+2. **会后产物** — summary 谁更能直接用;
 3. **声音** — 自然度 vs「像我们团队的人」;
-4. **会后产物** — summary 谁更能直接用。
+4. **卡不卡**(**降权**:545 S1 后两边同为 Gemini AUDIO 直出,播放链路同源,预期差异小)
+   — 首音体感、打断跟手不跟手。
+
+> 权重调整依据:545 S1 坐实 TEXT 模态全系不支持 → B 降级 audio 直出,原「A 低延迟 vs B 链路
+> 长」的对比前提消失;「懂不懂我们」升首位,「卡不卡」降权(2026-07-07)。
 
 每边真机验收各自记 evidence(首音实测数字 + transcript 样例),给她体感之外的硬数参考。
 

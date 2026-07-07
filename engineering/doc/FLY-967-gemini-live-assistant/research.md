@@ -58,10 +58,15 @@ Issue: FLY-967 (https://linear.app/geoforge3d/issue/FLY-967/voicea-会议模式-
 | ask_lead tool + BrainAdapter | ✅(FLY-959 修好 schema) | `GeminiLiveBackend.ts:45` |
 | 会话续接(goAway→resume) | ✅ | `TalkSessionRotator.ts` |
 | transcript JSONL(双向,input/output transcription) | ✅ | `transcript.ts` |
-| `extraTools: LiveToolSpec[]` 分发 | ⏳ 545 PR-1 交付(plan §5.1) | 545 plan.md |
+| `extraTools: LiveToolSpec[]` 分发 | ✅ 545 分支已实现(P1 commit 35becd9b,含 extra-tools.test.ts);**依赖不变**,545 PR-1 落地后 rebase 消费 | 545 分支 |
 | `systemInstruction` 外部注入 | 需核实:`ConversationOptions.systemHint` 现有;简报是否走 systemHint 拼接或新字段,implement 时按 545 PR-1 落地后的实际签名对齐(倾向:新增可选 `systemPreamble?: string`,缺省不设 = 字节兼容) | `types.ts:ConversationOptions` |
 
 **voice-core 需要的增量 ≈ 0-1 个可选字段**(systemPreamble),其余全是 545 PR-1 已计划的扩展。
+
+> **补记(2026-07-07,545 S1 坐实)**:Gemini Live 当前**全系模型不支持 TEXT 响应模态**
+> (服务端拒绝;545 分支 evidence/s1-gemini-text-modality.md)。对 A **无影响**——A 本就
+> AUDIO 模态(现行为);extraTools 依赖不变(545 P1 已实现)。影响的是对比框架:B 降级
+> audio 直出,A/B 延迟同源(见 exploration §1/§7 校准)。
 
 ## 3. 545 PR-1 依赖面(精确清单,盯排期用)
 
@@ -150,6 +155,13 @@ response-audio(24k mono s16le,流式 chunk)
 - S-A1 spike(implement P0)口径:她(或 QA 真人)停话时间戳 → orchestrator bot 出声时间戳,
   真机 ≥10 轮取分布;同场记打断延迟(开口→停播)。这两个数字就是 A 的存在证明。
 - 若 S-A1 全链首音 >2s(与 B 无差异)→ 停,报 Tadashi(A 的价值主张不成立,对比实验白做)。
+
+> **545 S1 实测基线(2026-07-07,同一 Gemini AUDIO 管线;引 545 分支
+> evidence/s1-gemini-text-modality.md)**:首个 response-audio chunk **797-1017ms**(高于上表
+> 300-700ms 估算);B 全链首音实测 **0.9-1.3s**。对 A 的含义:①上表「对比 B 的 1.3-2.0s
+> (worst)」已过时——TEXT 模态全系不支持、B 降级为同款 audio 直出,两边首音链路同源,延迟
+> 不再是 A 的主要差异点(对比主轴改为「脑子」,见 exploration §1/§7);②A 的 ≤1.2s 达标线
+> 仍成立但偏紧,S-A1 以 0.9-1.3s 为预期带校准。
 
 ## 9. 风险回填(exploration §6 更新)
 
