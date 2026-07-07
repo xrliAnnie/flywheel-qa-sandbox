@@ -1,13 +1,13 @@
 ---
 issue: FLY-978
 phase: design
-phaseCursor: 2/8
-updated: 2026-07-07T23:39:56.117Z
-nextStep: await codebase maps -> write exploration.md -> Round-1 brainstorm gate
+phaseCursor: 4/8
+updated: 2026-07-07T23:47:42.766Z
+nextStep: Round-1 brainstorm gate fired; await Annie on block-1 (decouple cascade)
 chunks: []
 pointers: {}
 ---
 
 # FLY-978 progress
-**phase**: design (2/8)
-**next**: await codebase maps -> write exploration.md -> Round-1 brainstorm gate
+**phase**: design (4/8)
+**next**: Round-1 brainstorm gate fired; await Annie on block-1 (decouple cascade)
