@@ -774,6 +774,29 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "notify_digest_expect",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_NOTIFY_DIGEST_EXPECT",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"通知自我健康检查（FLY-929 P-expect）：token report 投递写回执 + Bridge 到点无回执发 notify_digest_failed 告警 + token-usage-daily.sh 失败就地 fail-loud；未设 = 零新文件/零新告警",
+		readSites: [
+			// Read at CALL time on every poll tick / delivery / script run (no
+			// boot-time capture), but the enable window still batches it with a
+			// Bridge restart by convention → conversational.
+			envSite(
+				"packages/teamlead/src/bridge/notify-receipts.ts",
+				"isDigestExpectEnabled (receipt write + expect tick gate)",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "xhs_review",
 		category: "feature",
 		source: "env",
