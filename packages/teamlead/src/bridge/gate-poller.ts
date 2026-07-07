@@ -31,6 +31,8 @@ import {
 	phaseMessageTag,
 	SUPPORTED_MILESTONE_KINDS_V1,
 } from "flywheel-config";
+// FLY-927 (Task 3.3): truthful park wording for the lead-pending nudge.
+import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
 import {
 	encodeReactionEmoji,
 	type ReactionFetcher,
@@ -1274,6 +1276,21 @@ export class GatePoller {
 			return true;
 		const issue = session.issue_identifier ?? session.issue_id;
 		const ageMin = Math.round((now - createdMs) / 60_000);
+		// FLY-927 (Task 3.3, FLY-912 wording collapse): the nudge leads with the
+		// TRUTHFUL park line (authoritative session_stage, ball with the LEAD, the
+		// gate's real age) instead of hand-built prose; underivable → an explicit
+		// stage未上报 prefix, never a guessed stage name.
+		const parkTuple = deriveParkTuple({
+			session,
+			pendingGates: [{ checkpoint: "question", createdAtMs: createdMs }],
+			autoQaActive: false,
+			notifiedEvidence: false,
+			ownerLeadId: lead.agentId,
+			nowMs: now,
+		});
+		const truthfulLine = parkTuple
+			? formatParkAlert(parkTuple, now)
+			: `[stage未上报] Runner ${issue} is blocked at a question gate`;
 		const payload: HookPayload = {
 			event_type: "runner_lead_pending_escalation",
 			execution_id: session.execution_id,
@@ -1282,8 +1299,8 @@ export class GatePoller {
 			project_name: session.project_name,
 			status: session.status,
 			summary:
-				`Runner ${issue} is blocked at a question gate (stage=${session.session_stage ?? "?"}) waiting for YOU to answer — ` +
-				`${ageMin} min, no progress (reminder #${nudgeCount}). Answer it via flywheel-comm respond so the runner can continue.`,
+				`${truthfulLine} — waiting for YOU to answer, ${ageMin} min, no progress (reminder #${nudgeCount}). ` +
+				"Answer it via flywheel-comm respond so the runner can continue.",
 			question_id: question.id,
 			session_role: session.session_role ?? "main",
 		};

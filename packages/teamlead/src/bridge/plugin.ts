@@ -114,6 +114,8 @@ import {
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 // FLY-927 (Task 2.4): T2 escalation page reuses the FLY-818 stuck notification.
 import { emitFounderStuckNotification } from "./founder-thread-notifier.js";
+// FLY-927 (Task 3.3): truthful stage wording for the three-stage stuck alert.
+import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
@@ -4498,6 +4500,23 @@ export async function startBridge(
 							);
 							return;
 						}
+						// FLY-927 (Task 3.3, FLY-912 wording collapse): the body leads with
+						// the TRUTHFUL park line derived from the session's REPORTED stage
+						// (never guessed); underivable → an explicit stage未上报 prefix.
+						const fullSession = store.getSession(session.execution_id);
+						const parkTuple = fullSession
+							? deriveParkTuple({
+									session: fullSession,
+									pendingGates: [],
+									autoQaActive: false,
+									notifiedEvidence: false,
+									ownerLeadId: leadId,
+									nowMs: Date.now(),
+								})
+							: null;
+						const truthfulBody = parkTuple
+							? `${formatParkAlert(parkTuple, Date.now())}\n${reason}`
+							: `[stage未上报] ${reason}`;
 						// FLY-927 (W1): through the ROUTED sink — an issue-progress kind
 						// with a bound [FLY-XX] thread lands there (D1); unset routing env
 						// / boot window = the raw notifier exactly as before. sessionKey
@@ -4510,7 +4529,7 @@ export async function startBridge(
 							title: `Three-stage pipeline stuck — ${
 								session.issue_identifier ?? session.issue_id
 							}`,
-							body: reason,
+							body: truthfulBody,
 							severity: "warning",
 							sessionKey: session.execution_id,
 						});
