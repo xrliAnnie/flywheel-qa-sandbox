@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="light only">
+<title>FLY-915 组件产品行为规格 — 逐块 review</title>
+<style>
+  :root{color-scheme:light;--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--navy:#1a365d;
+    --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;
+    --line:#e5e5ea;--shadow:0 1px 3px rgba(0,0,0,.06);--tbd:#fff3cd;--tbdln:#ffe08a}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.6;-webkit-text-size-adjust:100%}
+  .wrap{max-width:840px;margin:0 auto;padding:20px 16px 40px}
+  h1{font-size:22px;margin:.2em 0}h2{font-size:18px;margin:.2em 0}
+  .sub{color:var(--dim);font-size:14px}
+  .pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:20px;background:#eef;color:var(--navy);margin-right:6px}
+  .pill.g{background:#e8f7ee;color:#1a7f37}
+  .banner{background:#fff8ec;border:1px solid #ffe1b0;border-radius:12px;padding:12px 14px;margin:14px 0;font-size:14px}
+  .hero{background:#0b2545;color:#eaf1fb;border-radius:14px;padding:16px;margin:16px 0;font-size:14px}
+  .hero b{color:#fff}
+  .card{background:var(--card);border-radius:12px;box-shadow:var(--shadow);padding:14px 16px;margin:14px 0;border-left:4px solid var(--blue)}
+  .card.ch{border-left-color:var(--amber)}.card.bot{border-left-color:var(--purple)}
+  .card.sw{border-left-color:var(--green)}.card.q{border-left-color:var(--navy)}
+  .code{font-family:"SF Mono",ui-monospace,monospace;font-size:12px;background:#f2f2f5;border-radius:4px;padding:0 5px}
+  .dim{color:var(--dim)}
+  .row{margin:5px 0}
+  .n{display:inline-block;font-weight:700;color:#fff;background:var(--navy);border-radius:5px;padding:0 6px;font-size:12px;margin-right:6px}
+  .tbd{background:var(--tbd);border:1px solid var(--tbdln);border-radius:8px;padding:8px 10px;margin:7px 0;font-size:13px}
+  .tbd b{color:#8a6d00}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin:8px 0;display:block;overflow-x:auto}
+  th,td{border:1px solid var(--line);padding:5px 7px;text-align:left;vertical-align:top}
+  th{background:#fafafa}
+  .tmpl{background:#1d1d1f;color:#e8e8ea;border-radius:12px;padding:14px 12px;
+    font-family:"SF Mono",ui-monospace,monospace;font-size:12.5px;line-height:1.7;
+    white-space:pre-wrap;overflow-x:auto;-webkit-user-select:all;user-select:all}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div><span class="pill">FLY-915</span><span class="pill g">A-E + 3 default 已定</span></div>
+<h1>组件产品行为规格 — 逐块 review</h1>
+<div class="sub">Honey Lemon 团队 · 2026-07-06 · 细到「Tadashi 照着直接建、不回来问」</div>
+<div class="banner"><b>你要的:</b>每个 bot / 每个频道 / profile 切换都写死 —— ①住哪 channel ②监看/触发 ③action+落哪频道 ④部署时做什么 ⑤铁律。<b>黄框 = 还没定死的具体点(我给了建议),你敲一下。</b>看完复制最底下模板回我。</div>
+
+<div class="hero"><b>核心架构(已定):</b>告警频道 = bot 工单队列(不是你 inbox)。有 thread 的错误进 thread;没 thread 的进告警频道 → bot ACK+修 → 修得掉安静、修不掉才 @你。通知频道 = 非紧急 digest 不 @。</div>
+
+<div class="card ch"><h2>CH-1 · #flywheel-alerts 告警频道(= bot 工单队列)</h2>
+  <div class="row"><span class="n">①@ 谁</span><b>一条 alert 只 @ 一个该处理的 bot(owner),不让两 bot 一起扑</b>(你 refinement,已锁)。默认 @ <b>Claude Infra Bot(主力)</b>;账号/授权救援按「谁都不救自己」交叉。沿用现有告警频道。</div>
+  <div class="row"><span class="n">②进什么</span>只有<b>没有专属 thread</b> 的 infra 真问题(白名单见下表)。有 thread 的错误 → 进 thread,不进这。</div>
+  <div class="row"><span class="n">③谁能发</span>只有 infra bot(发送方门禁,别的进程拒)。每条工单带 项目/lead/kind/时间/owner/状态。</div>
+  <div class="row"><span class="n">④行为</span>工单进 → @ 唯一 owner → 它 ACK → 自动修 → 修掉=安静 resolve(不 @你)/ 修不掉=@你升级。</div>
+  <div class="row"><span class="n">⑤铁律</span>默认不 @你、修不掉才 @;<b>一条工单只有一个 owner、无双 bot 竞争</b>;谁都不救自己。</div>
+  <table><tr><th>工单</th><th>@ 谁(唯一 owner)</th><th>自动修尝试</th><th>修不掉</th></tr>
+    <tr><td>Lead session 真冻结</td><td>Claude bot(默认)</td><td>单 Enter/nudge/respawn</td><td>@你</td></tr>
+    <tr><td>Claude 账号问题</td><td>Codex bot(交叉)</td><td>切下一个账号</td><td>@你</td></tr>
+    <tr><td>Codex 账号问题</td><td>Claude bot(交叉)</td><td>按 provider 处理</td><td>@你</td></tr>
+    <tr><td>login/授权过期</td><td>对侧 bot(交叉)</td><td>rescue re-login</td><td>@你</td></tr>
+    <tr><td>runner 卡死/超时</td><td>Claude bot(默认)</td><td>continue/respawn</td><td>@你</td></tr>
+    <tr><td>529 runner 真停</td><td>Claude bot(默认)</td><td>等/重试/切</td><td>@你</td></tr></table>
+  <div class="row" style="font-size:13px;color:var(--dim);margin-top:6px">规则(你已锁):默认 @ Claude bot;runner 卡死/超时/529 @ Claude bot;账号/授权交叉 —— <b>Claude 账号问题 @ Codex bot、Codex 账号问题 @ Claude bot</b>。</div>
+  <div class="tbd"><b>【待定 T1】</b>告警频道级速率兜底:建议上限 <b>20 条/分钟</b>,超了攒批(防任何新刷屏)。行吗?</div>
+  <div class="tbd"><b>【待定 T2】</b>bot 自动修的重试:建议 <b>2 次 / 或 5 分钟超时</b>后还没好就 @你。这个「多久算修不掉、才该打断你」的阈值你有偏好吗?</div>
+</div>
+
+<div class="card ch"><h2>CH-2 · #flywheel-notify 通知频道</h2>
+  <div class="row"><span class="n">①在哪</span>复用现有 token 报告频道(<span class="code">…758472</span>)定位成 #flywheel-notify(A2 你已定复用);唯一发送方 = Claude Infra Bot。</div>
+  <div class="row"><span class="n">②进什么</span>非紧急 digest:token 报告 / 系统重启 / 账号轮转成功 / profile 切换成功 / 例行状态。</div>
+  <div class="row"><span class="n">③节奏</span>每日 1 次 digest(B3 你已定)。</div>
+  <div class="row"><span class="n">④初始化</span>迁 3 处发送方到 Claude Infra Bot(见 CMP-4)。</div>
+  <div class="row"><span class="n">⑤铁律</span>绝不 @你;绝不放要人立即处理的东西。</div>
+</div>
+
+<div class="card ch"><h2>CH-3 · 每条 [FLY-XX] issue thread</h2>
+  <div class="row"><span class="n">①在哪</span>每条 issue 自己的 thread。</div>
+  <div class="row"><span class="n">②进什么</span>有专属 thread 的错误 + founder 通知(里程碑/可上线/卡住求助)。</div>
+  <div class="row"><span class="n">③谁发</span>对应 Lead / founder-thread 通知器。</div>
+  <div class="row"><span class="n">④行为</span>就地 @(你在上下文看到)。</div>
+  <div class="row"><span class="n">⑤铁律</span>有 thread 的错误绝不埋进全局告警频道。</div>
+</div>
+
+<div class="card bot"><h2>CMP-1 · Codex Infra Bot(已建、待部署)</h2>
+  <div class="row"><span class="n">①在哪</span>在告警频道里,<b>只处理 @ 到自己的工单</b>(不抢修、不跟 Claude bot 竞争)。owner = <b>Claude 侧</b>账号/授权问题(Claude 问题 @ 它)。身份 = 已占的 pool-03 bot。</div>
+  <div class="row"><span class="n">②owner 范围</span><b>Claude 侧</b> Lead/Runner —— 额度封顶 + 登录过期(被 @ 时才处理)。</div>
+  <div class="row"><span class="n">③触发→做什么→落哪</span>Claude 账号封顶 → 切 Claude 账号 →<b>成功</b>=通知频道 digest 不 @ /<b>失败</b>=告警频道 @你。Claude 登录过期 → rescue re-login → 成功安静 / 失败 @你。</div>
+  <div class="row"><span class="n">④被部署时</span>装 launchd → 验证窗口在 → 开自动切换开关 → 重启 Bridge → 注入演练 → 你 GO。启动后注册进告警频道、认领 Claude-侧工单。</div>
+  <div class="row"><span class="n">⑤铁律</span>谁都不救自己 —— 绝不碰 Codex 侧(系统强制)。</div>
+</div>
+
+<div class="card bot"><h2>CMP-2 · Claude Infra Bot(待新建)· 常驻主力</h2>
+  <div class="row"><span class="n">①在哪</span>在告警频道里处理 <b>@ 到自己的工单</b>(不跟 Codex bot 抢)+ <b>唯一发通知频道</b>的 bot(pool-04/05/06 开一个)。owner = 默认主力 + Codex 侧账号/授权 + provider 无关问题。</div>
+  <div class="row"><span class="n">②owner 范围</span><b>默认主力</b>;Codex 侧额度+登录(Codex 问题 @ 它);<b>provider 无关问题</b>(runner 卡死/超时/529);全局通知源。</div>
+  <div class="row"><span class="n">③触发→做什么→落哪</span>Codex 登录过期 → rescue。runner 卡死/超时/529 真停 → 自动修(nudge/respawn/等-重试-切)→ 成功安静 / 解不了 @你。token报告/重启/轮转 → 发通知频道 digest 不 @。</div>
+  <div class="row"><span class="n">④被部署时</span>pool 领一个 → 改名 → 邀请进 server(你邀)→ 装 launchd → 验证 → 接线(监听告警频道 + 发通知频道 + 接管 token报告/重启/轮转)→ 演练 → 你 GO。</div>
+  <div class="row"><span class="n">⑤铁律</span>谁都不救自己(不碰 Claude 账号切换 = CMP-1 的活);通知频道绝不 @你。</div>
+  <div class="tbd"><b>【待定 T3】</b>这个 bot 的名字/人设你想怎么叫?(Codex bot 已叫「Codex Infra Bot」)</div>
+</div>
+
+<div class="card sw"><h2>CMP-3 · profile 自动切换(Claude 额度)</h2>
+  <div class="row"><span class="n">①作用在</span>机器级换账号;通知落 通知频道(成功)/ 告警频道(失败)。</div>
+  <div class="row"><span class="n">②触发</span>某 Claude 账号额度 100% 封顶(5h 或 weekly;529 瞬时不算)。</div>
+  <div class="row"><span class="n">③做什么→落哪</span>有可用账号 → 按顺序切(5h→任一已恢复;weekly→reset 最近的)→ 安全切(验证过才生效、失败回滚)→<b>成功</b>=通知频道 digest 不 @ + 新 session 用新账号 /<b>失败/全封顶</b>=告警频道工单 → bot 先试 → 解不了 @你。</div>
+  <div class="row"><span class="n">④被 enable 时</span>开开关 + 走真机验收(含「绝不弄坏 claude 登录」红线)→ 你 GO。</div>
+  <div class="row"><span class="n">⑤铁律</span>只有真封顶才切(529 不切);验证失败绝不生效;卡住的 session v1 不自动搬(D2 你已定)。</div>
+</div>
+
+<div class="card bot"><h2>CMP-4 · token 报告 / 重启 / 轮转(发送方迁走)</h2>
+  <div class="row"><span class="n">①在哪</span>发进 通知频道,由 Claude Infra Bot 发。</div>
+  <div class="row"><span class="n">②触发</span>token报告=每日 00:30;重启=更新脚本触发;轮转=账号切换成功。</div>
+  <div class="row"><span class="n">③做什么</span>照现有格式(14天/周对比)发 digest 不 @;<b>自我健康检查</b>:该发没发成功 → 自己报一条(治「静默失败」)。</div>
+  <div class="row"><span class="n">④迁移</span>3 处发送方换成 Claude Infra Bot;补那个环境变量(quick-fix);Simba 退出。</div>
+  <div class="row"><span class="n">⑤铁律</span>Simba 绝不再发 Flywheel 全局通知。</div>
+</div>
+
+<div class="card q"><h2>📋 回复模板(长按选中复制 → 填 → 发 Honey Lemon)</h2>
+  <div class="sub" style="margin-bottom:8px">大部分已定,你只需敲 3 个黄框 + 整体 OK。没意见的写「OK」。</div>
+  <div class="tmpl">FLY-915 组件规格 review:
+T1 告警频道速率上限 20条/分钟(OK / 改成…):
+T2 多久算「修不掉」才打断我(2次或5分钟 OK / 改成…):
+T3 Claude Infra Bot 叫什么名字/人设:
+各组件行为(CH-1~3 / CMP-1~4)有没有哪块要改:
+整体这个细度够 Tadashi 直接建了吗(够→拆活儿 / 还要补…):
+其它:</div>
+</div>
+</div>
+</body>
+</html>
