@@ -61,6 +61,7 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> = new Set([
   "runner_login_expired", "runner_throttle_stalled", // PR-3 加入 union
   "tui_window_lost", "restart_guard_bypass", "bridge_boot_stale_checkout",
   "auto_qa_stuck", "codex_gate_blocked",
+  "bridge_wrapper_fail", // Task 1.7/1.8 新增(shell allowlist + TS union 同步)
 ]);
 export const ISSUE_PROGRESS_KINDS: ReadonlySet<AlertEventType> = new Set([
   "three_stage_stuck", "founder_milestone_undelivered",
@@ -78,7 +79,7 @@ export function classifyInfraEvent(i: RouteInput): AlertRouteClass {
 }
 ```
 
-**接线**(plugin.ts alertSink 前,`FLYWHEEL_ALERT_ROUTING=1` 才启用):`issue_thread` 类改投 `founder-thread-notifier` 通道(§2 Task 1.5);`ticket` 照走 notifier/Hub;`notify` v1 无 kind 落入(hook 留好 + 单测断言)。env 未设 → 直通现状。
+**接线(Codex R1 #1:必须收全旁路,否则「单漏斗」不成立)**:新增 late-bound **`InfraAlertSink`** holder(plugin.ts 构造一次,所有发射源引用它,`FLYWHEEL_ALERT_ROUTING=1` 时内部走 Router,未设时透传 raw notifier)。**逐个改接的现存旁路发射点(全枚举)**:`three_stage_stuck`(plugin.ts:4470)、`bridge_boot_stale_checkout`(plugin.ts:4818)、`AutoQaEffects` 构造注入的 raw notifier(plugin.ts:4047 → auto-qa-effects.ts:384/458 的 `auto_qa_stuck`/`codex_gate_blocked`)、runner scans(runner-auth-scan/runner-quota-scan 经 alertSink 已收)、lead-pending 页 Annie 路径。集成测试:遍历 `AlertEventType` 全 union,断言 env=1 时每个发射源都过 Router、env 未设时 raw 行为逐字不变。
 
 > **对 PRD 的一处明示偏差(D1 裁定背书)**:PRD CH-1 白名单把 `three_stage_stuck` / founder 通知投递失败列为队列工单;按 gate 裁定 D1(响应者划分),它们**绑得到 issue thread 时进 thread @ 责任方**(这正是 FLY-912 想要的落点与措辞),绑不到时 fail-safe 进队列 —— PRD 那两行覆盖的就是 fail-safe 情形。此偏差列进 Annie 早报确认项(§5)。
 
@@ -103,9 +104,10 @@ ${body}
 ```
 
 - 仅统一频道模式 + `FLYWHEEL_ALERT_TICKETS=1` 渲染 🎫 行;legacy 路径字节不动(旧测 `result === { sent: true }` 哨兵保留)。
-- `ALERT_ECHO_START` 增加 `|^\s*🎫\s` 分支:🎫 行被 `ownStateRegion` 逐行剥掉 → 回声进 pane 不会触发 classify(FLY-220 红线)。
-- 新 fixture:含 🎫 行回声的 idle pane → must-suppress;真冻结 pane + 🎫 残留 → must-alert(防遮蔽,FLY-218 判例)。
+- **echo-immunity 全 kind 覆盖(Codex R1 #2)**:现 `ALERT_ECHO_START` 只枚举 7 个旧 kind —— `runner_login_expired`/`three_stage_stuck`/`codex_gate_blocked`/`bridge_boot_stale_checkout`/新增 kind 的首行回声今天就漏。改法:kind 交替组从**共享 kind 表派生**(从 `AlertEventType` union 生成或共享常量数组,LeadAlertNotifier 与 LeadWatchdog 同源,单测断言两者一致),即匹配泛化 `(<leadId> / <任一 kind>)` 形态;并增 `|^\s*🎫\s` 分支剥工单头行。
+- fixture:**每个现存+新增 kind** 的首行回声 + 🎫 行 + 多行 body 回声 → must-suppress;真冻结证据与回声同屏 → must-alert(防遮蔽,FLY-218 判例)。
 - `firstSeen` 取 claims/episode 首次时间(PR-2 落库前先用 payload 时刻,PR-2 切到 `alert_threads.first_seen_at`)。
+- **owner/工单上下文在第一次 POST 原子生成(Codex R1 #4)**:root 消息由 notifier 发出、Hub 拿到 messageId 已在其后,不能事后补 @。故 `alert()` 增可选 `ticket?: { ownerUserId: string | null; ownerLabel: string; status: string; firstSeenMs: number }` 入参(本 Task 落 API 缝,值由 PR-2 的 owner map 填;PR-1 内传 `undefined` = 渲染 `owner —`);`formatContent` 接收该上下文渲染 🎫 行;`postMessage` 的 `allowed_mentions` 按 `ticket.ownerUserId` 切 `{ users: [id] }` / `{ parse: [] }`,id 过 snowflake 形态校验(复用 `AlertChannelHub.founderId`/`infraBotId` 判例)。测试同时断言 content 的 `<@id>` 与 HTTP body 的 `allowed_mentions.users`。
 
 - [ ] RED:formatContent 新旧两态断言 + echo fixture 先挂
 - [ ] GREEN:模板 + 正则 + 行过滤
@@ -147,7 +149,10 @@ export function createAlertRateLimiter(perMinute: number): AlertRateLimiter;
 
 - env `FLYWHEEL_ALERT_RATE_PER_MIN`(未设 = 不限流 = 现状;生产配 20)。
 - 计数对象 = **发进统一告警频道的 root 消息**(工单上限语义);Hub thread 内叙事、issue-thread 路由、meta-alert 不占额度。
-- 超限:alert 走现有 `enqueue()`(queue 文件已有 schema,零新格式);`drainQueue()` 出队同样过桶。每窗口若有溢出,发**一条**聚合摘要:`⚠️ 速率攒批:N 条告警已入队(kind×m …)`(摘要自身占 1 令牌;摘要文案含 🎫 不含 `(leadId / kind)` 锚 → 不会被误当告警回声,补 fixture)。
+- **确定性算法(Codex R1 #9,消灭 summary/queue 不确定行为)**:
+  - `alert()` 超限 → 该条**只 enqueue 一次**(现有 `enqueue()`,零新格式)+ limiter 内部 `overflowCount[kind]++`,**不发**任何消息。
+  - `drainQueue()`(既有 plugin 60s timer 驱动,plugin.ts:5493,不加新 timer)每轮开头:若 `overflowCount` 非空且 `tryAcquire` 成功 → 先发一条聚合摘要 `⚠️ 速率攒批:N 条告警已入队(kind×m …)` 并清计数(摘要占 1 令牌;摘要被限流 → 保留计数下轮再试,**绝不递归攒摘要的摘要**);随后逐条出队,每条过 `tryAcquire`,失败 → **本轮 drain 立即停**,队列文件原样保留(不重写、不重复 enqueue)。
+  - 测试:持续超限场景断言不丢、不重、摘要每窗口至多一条;摘要文案含 🎫 不含 `(leadId / kind)` 锚(不会被误当告警回声,补 fixture)。
 - 令牌桶状态进程内存即可(重启清零可接受 —— queue 是持久层,不丢告警只可能多发)。
 
 - [ ] RED:桶语义(20 内直发/21 起入队/窗口翻转摘要一条/drain 同桶)先挂
@@ -161,7 +166,7 @@ export function createAlertRateLimiter(perMinute: number): AlertRateLimiter;
 - Modify: `packages/teamlead/src/bridge/plugin.ts`(Router 接线)
 - Test: founder-thread-notifier 测试扩展
 
-新导出 `emitIssueThreadInfraNotification({ store, session, lead, kind, content, mentionUserId? })`:与既有三入口同骨架(POST thread、`allowed_mentions.users` 白名单、`session_events` 审计 `issue_thread_infra_notified`、transient 重试预算、失败升级 `escalateFounderThreadUndelivered` 落告警频道**永不静默**)。`three_stage_stuck`/`founder_milestone_undelivered` 经 Router 改投此腿(绑不到 thread → fail-safe 回队列,Task 1.1)。
+新导出 `emitIssueThreadInfraNotification({ store, session, lead, kind, content, mentionUserId?, onUndeliverable })`:与既有三入口同骨架(POST thread、`allowed_mentions.users` 白名单、`session_events` 审计 `issue_thread_infra_notified`、transient 重试预算)。**失败升级缝(Codex R1 #8)**:`escalateFounderThreadUndelivered` 是 GatePoller 的 private 方法(gate-poller.ts:1589),不可直接复用 —— 通过注入的 `onUndeliverable(payload)` 回调收口(plugin.ts 把它接到告警队列 sink,即预算烧完/永久失败 → 一条队列工单,**永不静默**;该工单 kind 用现存 `founder_milestone_undelivered` 语义或等价,绝不递归回本腿)。测试三路径:transient 重试耗尽 / 永久失败 / 无 thread 绑定(Router fail-safe 已回队列,本腿不该被调到,防御断言)。`three_stage_stuck`/`founder_milestone_undelivered` 经 Router 改投此腿。
 
 - [ ] RED:投递/审计/降级三态测试
 - [ ] GREEN + Commit
@@ -172,7 +177,7 @@ export function createAlertRateLimiter(perMinute: number): AlertRateLimiter;
 - Modify: `packages/teamlead/src/bridge/tools.ts`(`/send`、`/chat-threads/create` 入口)
 - Test: tools 路由测试扩展
 
-目标 channel/thread == `FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID` → `403 { error: "alert_channel_gated", hint: "告警走 LeadAlertNotifier/lead-alert.sh 管道" }`。挂 `FLYWHEEL_ALERT_ROUTING=1`(同 Router 开关,不另设 flag);未设 = 现状不拒。
+实际入口为 `/api/chat-threads/send` 与 `/api/chat-threads/create`(tools.ts 注册名以代码为准):目标 channel/thread == `FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID` → `403 { error: "alert_channel_gated", hint: "告警走 LeadAlertNotifier/lead-alert.sh 管道" }`。挂 `FLYWHEEL_ALERT_ROUTING=1`(同 Router 开关,不另设 flag);未设 = 现状不拒。
 
 - [ ] RED:拒/放行/env 未设三态
 - [ ] GREEN + Commit
@@ -184,10 +189,12 @@ export function createAlertRateLimiter(perMinute: number): AlertRateLimiter;
 - Test: `scripts/__tests__/lead-alert-*.test.sh` 扩展
 
 1. 频道解析:`FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID` 设了 → 优先用它(projects.json 路径保留为未设时现状)。
-2. 发送身份:`FLYWHEEL_ALERT_SENDER_TOKEN_ENV` 设了 → 用 `${!SENDER_ENV}`(bash 间接引用;bash 3.2 兼容用 eval 形态,照 FLY-694 判例);未设 → 现状 per-lead token。
-3. 速率近似:`${QUEUE_DIR}/.rate-YYYYmmddHHMM` 计数文件,`FLYWHEEL_ALERT_RATE_PER_MIN` 设了且当前分钟计数 ≥ 上限 → 跳过直发、直接 `write_record` 入 queue(Bridge 代发;去重已由 claims.db 保证)。
-4. schema 头:统一频道模式下 `CONTENT` 第二行加同款 🎫 行(project 已有变量;owner/状态 shell 侧固定 `owner — · 状态 NEW`,Bridge drain 不重写 —— 简单一致优先)。
-5. eventId 构造**一字节不动**(claims 合同)。
+2. 发送身份:`FLYWHEEL_ALERT_SENDER_TOKEN_ENV` 设了 → 用其指向的 env(bash 3.2 兼容 eval 形态,照 FLY-694 判例);未设 → 现状 per-lead token。**token 不进 argv(Codex R1 #7)**:curl 改用 stdin config(`curl -K -` 喂 `header = "Authorization: Bot …"`,照 FLY-510 notion.sh 判例);fake-curl 测试断言进程参数里无 token。
+3. **mention 白名单(Codex R1 #7)**:shell POST 的 JSON 一律带 `allowed_mentions: {"parse": []}`(现状没带 = content 里出现 mention 会被 Discord 默认解析);shell 侧永不发 owner ping(owner @ 是 Bridge 的事)。断言 JSON body。
+4. 速率近似:`${QUEUE_DIR}/.rate-YYYYmmddHHMM` 计数文件,`FLYWHEEL_ALERT_RATE_PER_MIN` 设了且当前分钟计数 ≥ 上限 → 跳过直发、直接 `write_record` 入 queue(Bridge 代发;去重已由 claims.db 保证)。
+5. **system/global alert 一等输入(Codex R1 #3)**:`lead-alert.sh` 现强制 `--lead`/`--project`(:84)。系统级告警(非某个 Lead 的事)约定恒等身份:`--project flywheel --lead bridge`(wrapper 等调用方显式传,脚本不改必填约束 —— 保持 eventId 合同简单);allowlist(:90/:97)加 `bridge_wrapper_fail`。
+6. schema 头:统一频道模式下 `CONTENT` 第二行加同款 🎫 行(project 已有变量;owner/状态 shell 侧固定 `owner — · 状态 NEW`,Bridge drain 不重写 —— 简单一致优先)。
+7. eventId 构造**一字节不动**(claims 合同)。
 
 - [ ] RED:shell 测试四态(env 设/未设 × 限流内/外)先挂
 - [ ] GREEN + sentinel(全 env 未设 = 现状逐字)
@@ -199,7 +206,16 @@ export function createAlertRateLimiter(perMinute: number): AlertRateLimiter;
 - Modify: `scripts/flywheel-bridge-wrapper.sh:80-95`(`bp_fail_loud`)
 - Test: `scripts/__tests__/` 对应 shell 测试
 
-`bp_fail_loud` Discord 腿:改为先尝试 `"${FLYWHEEL_DIR}/scripts/lead-alert.sh" --kind bridge_wrapper_fail --severity severe ...`(lead-alert.sh 白名单 `:97` 加 `bridge_wrapper_fail`);调用失败/脚本缺失 → **保留现有直 curl core-channel 作 fallback**(Bridge 死时绝不能丢投递);meta-alert.sh 桌面/文件腿不动。`restart-services.sh`/`update-flywheel.sh` 的 notify_discord **不碰**(FLY-929)。
+`bp_fail_loud` Discord 腿:改为先尝试完整合法调用(Codex R1 #3 —— 现 lead-alert.sh 强制 `--lead`/`--project`,漏了会在参数校验就死):
+
+```bash
+"${FLYWHEEL_DIR}/scripts/lead-alert.sh" \
+  --project flywheel --lead bridge \
+  --kind bridge_wrapper_fail --severity severe \
+  --title "$title" --body "$body"
+```
+
+前置:Task 1.7 已把 `bridge_wrapper_fail` 加进 shell allowlist;同时 TS `AlertEventType` union(LeadAlertNotifier.ts:52)加 `bridge_wrapper_fail`(Bridge drain 该 queue record 时 kind 合法)。调用非零/脚本缺失 → **保留现有直 curl core-channel 作 fallback**(Bridge 死时绝不能丢投递);meta-alert.sh 桌面/文件腿不动。测试三态:lead-alert 成功 / lead-alert 失败走 fallback curl / 脚本缺失走 fallback curl。`restart-services.sh`/`update-flywheel.sh` 的 notify_discord **不碰**(FLY-929)。
 
 - [ ] RED:lead-alert 可用/不可用两态
 - [ ] GREEN + Commit
@@ -272,9 +288,9 @@ env:`FLYWHEEL_INFRA_BOT_USER_ID`(已有 = Codex bot,沿用)+ 新 `FLYWHEEL_CLAUD
 - Modify: `packages/teamlead/src/LeadAlertNotifier.ts`(root POST 返回 messageId 已有;allowed_mentions 按 owner)
 - Test: Hub 测试扩展
 
-- root 消息:`FLYWHEEL_ALERT_TICKETS=1` 且 owner.userId 非 null → 🎫 行 owner 段渲染 `<@userId>`,POST `allowed_mentions: { users: [userId] }`(泛化 :302-327 的 account_switch 先例);否则 `parse: []` 现状。
+- root 消息 @(接 Task 1.2 的 API 缝,Codex R1 #4):plugin 接线层在调 `alert()` **之前**用 owner map 算好 `ticket` 上下文传入 —— `FLYWHEEL_ALERT_TICKETS=1` 且 owner.userId 非 null(snowflake 校验过)→ 🎫 行 owner 段渲染 `<@userId>` + POST `allowed_mentions: { users: [userId] }`(第一次 POST 原子生成,泛化 :302-327 的 account_switch 先例);否则 `parse: []` 现状。Hub 不做 root 后补 @。
 - DiscordOps 增 `editMessage(channelId, messageId, content)`(包 `discord-utils.ts:192` `editDiscordMessageInChannel`);状态变迁(NEW→ACK→REPAIRING→RESOLVED/ESCALATED)= 重渲染 🎫 行 edit root;edit 404/失败 → best-effort 降级(thread 叙事已是真相流,现状)。
-- ACK 写入点:① Hub 启动 ARC(Cass attempt)时 → ACK+REPAIRING;② owner bot 调 `/api/account-switch`(`claimPending` 成功处)/ `/api/rescue`(受理处)→ 顺手 `setTicketStatus(ACK)`(route 已持有 execution/incident 上下文;查 `alert_threads` active 行按 correlation)。
+- **ACK correlation 缝(Codex R1 #5)**:action 路由的输入(account-switch-route.ts:101 = sourceAlertId/pending-switch;rescue-route.ts:63 = route/project/lead/execution)都不含 correlation key,不能瞎猜。两侧补:① root 工单 @-owner 的 assignment 文案里带**工单 ref = event_id 短形**(bot 回调时可回传);② StateStore 新查询 `getActiveAlertThreadByEventId(eventId)` + 按 `(lead_id, event_type)` 的 active 行精确查;③ account-switch 路由用其已有 `sourceAlertId`→event_id 映射、rescue 路由用 `(leadId|executionId, kind)` 查 active 行,查到才 `setTicketStatus(ACK)`,查不到 = no-op(绝不 ACK 错 episode)。测试:stale episode 不被 ACK;同 lead 多 active kind 不串;owner 未配置不触发无人认领升级。
 - resolve/升级:reconcile `resolve()` → RESOLVED;needs_human/T2 → ESCALATED。
 
 - [ ] RED:@ 渲染/寂静两态、每状态 edit 一次、edit 失败降级
@@ -365,7 +381,9 @@ party 派生:checkpoint `brainstorm|approve_to_ship` 或 status `awaiting_review
 - Modify: `packages/teamlead/src/bridge/stuck-candidate.ts`(识别)+ `stuck-escalation.ts`(kind 改写)
 - Test: fixture + candidate 测试
 
-`evaluateStuckCandidate` 增识别:pane 停滞(既有判定)**且** pane 含 529/overloaded 限流残留 **且** 无行级 retry 活动(复用 FLY-218 的行级 retry 证据闸思路,Lead 侧函数不搬、runner 侧独立实现避免耦合)→ stagnation 细分为 `runner_throttle_stalled`(否则维持 `runner_stuck_unhandled`)。白名单/owner 表已含(PR-2)。健康 529(在 retry/在烧)→ 不算停滞,现状不报。fixture:合成「真停+529 残留」must-alert、「在 retry」must-not,真样本抓到后替换(follow-up,FLY-218 判例)。
+`evaluateStuckCandidate` 增识别:pane 停滞(既有判定)**且** pane 含 529/overloaded 限流残留 **且** 无行级 retry 活动(复用 FLY-218 的行级 retry 证据闸思路,Lead 侧函数不搬、runner 侧独立实现避免耦合)→ stagnation 细分为 `runner_throttle_stalled`(否则维持 `runner_stuck_unhandled`)。健康 529(在 retry/在烧)→ 不算停滞,现状不报。
+
+**AutoRepairBot 路径同步(Codex R1 #6,否则新 kind 掉进 needs_human 与 PRD「bot 先修」相悖)**:`runner_throttle_stalled` 作为 runner-stuck **subtype** —— payload 携带同款 `metadata.runnerStuck`(escalation 侧填,字段一致),`AUTO_ATTEMPT_EVENT_TYPES`(AutoRepairBot.ts:80)加入该 kind,attempt 分支复用 `repairRunner` 的 audited continue-nudge(全部 5 道闸不变)。单测:`canAttempt("runner_throttle_stalled")===true`;无 `metadata.runnerStuck` → 拒修 needs_human;白名单/owner 表已含(PR-2)。fixture:合成「真停+529 残留」must-alert、「在 retry」must-not,真样本抓到后替换(follow-up,FLY-218 判例)。
 
 - [ ] RED:三 fixture 先挂 → GREEN → Commit
 
@@ -396,7 +414,7 @@ bot 建/部署(FLY-928);notify sender 迁移 + self-heal 启用(FLY-929);`FLYWHE
 
 | 风险 | 缓解 |
 |---|---|
-| 新模板回声重燃 FLY-220 风暴 | append-only 首行不动 + `ALERT_ECHO_START` 扩 🎫 分支 + 双向 fixture(Task 1.2) |
+| 新模板回声重燃 FLY-220 风暴 | append-only 首行不动 + echo kind 表与 `AlertEventType` 同源派生(全 kind 覆盖)+ 🎫 行分支 + 每 kind 双向 fixture(Task 1.2) |
 | 门禁把告警锁死(sender token 失效) | fail 路径 = 既有 dead-letter + meta-alert(Discord-independent),绝不静默;lead-alert.sh/bp_fail_loud 保 fallback |
 | owner bot 未部署期工单没人修 | owner 未配置 → 不 @ 不兜底,Cass 现状全保;纯配置翻转 |
 | T2 改晚 founder page 错过真急事 | 仅 `FLYWHEEL_ALERT_TICKETS=1` 生效;5min 上限本身很短;Annie 早报明示可否 |
