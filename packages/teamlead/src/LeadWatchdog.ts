@@ -990,6 +990,15 @@ function titleFor(kind: AlertEventType): string {
 		// own title); case exists for switch exhaustiveness.
 		case "bridge_boot_stale_checkout":
 			return "Bridge running a STALE checkout";
+		// FLY-927 (D4): never emitted by LeadWatchdog (the bridge wrapper fires it
+		// via scripts/lead-alert.sh with its own title); case exists for switch
+		// exhaustiveness.
+		case "bridge_wrapper_fail":
+			return "Bridge wrapper fail-loud";
+		// FLY-927 W-B: never emitted by LeadWatchdog (the stuck-runner escalation
+		// builds its own title); case exists for switch exhaustiveness.
+		case "runner_throttle_stalled":
+			return "Runner stalled after throttle";
 	}
 }
 
@@ -1055,5 +1064,11 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-939 (G-D): never emitted by LeadWatchdog (boot-sha-check builds its own body).
 		case "bridge_boot_stale_checkout":
 			return "The Bridge booted on a checkout whose HEAD is behind origin/main — merged work is NOT live. Pull + restart the Bridge to deploy.";
+		// FLY-927 (D4): never emitted by LeadWatchdog (the bridge wrapper builds its own body via lead-alert.sh).
+		case "bridge_wrapper_fail":
+			return "The Bridge launchd wrapper hit a fail-loud condition (port stuck / preflight failure) while the Bridge is down. Check ~/.flywheel/logs and the wrapper output.";
+		// FLY-927 W-B: never emitted by LeadWatchdog (the stuck-runner escalation builds its own body).
+		case "runner_throttle_stalled":
+			return "A Runner is genuinely stalled after a 529/overloaded throttle (stagnant pane, throttle residue, no live retry). The auto-repair bot attempts the audited continue-nudge first.";
 	}
 }

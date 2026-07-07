@@ -49,71 +49,93 @@ export interface MetaAlertSink {
 	}): Promise<unknown>;
 }
 
-export type AlertEventType =
-	| "rate_limit"
-	| "usage_limit"
-	| "login_expired"
-	| "permission_blocked"
-	| "crash_loop"
-	| "pane_hash_stuck"
+/**
+ * FLY-927: the SINGLE source of truth for the alert-kind face. `AlertEventType`
+ * is derived from this array, and the LeadWatchdog echo-immunity regex
+ * (`ALERT_ECHO_START`) derives its kind alternation from it too — so a new kind
+ * can never silently miss echo stripping (the FLY-220 storm family).
+ */
+export const ALERT_EVENT_TYPES = [
+	"rate_limit",
+	"usage_limit",
+	"login_expired",
+	"permission_blocked",
+	"crash_loop",
+	"pane_hash_stuck",
 	// FLY-195 (plan §3.6 Q7): a stuck-runner episode the owning Lead did not
 	// dispose of within the grace window — Bridge pages Annie directly.
 	// eventId format (FLY-253: escalatedAt = generation salt so a post-re-arm
 	// / post-TTL second fallback is not swallowed by the persistent dedup):
 	// `runner-stuck-unhandled:${execution_id}:${fingerprint}:${escalatedAt}`.
-	| "runner_stuck_unhandled"
+	"runner_stuck_unhandled",
 	// FLY-579: the auto-QA pipeline could not proceed (spawn failed, QA ended
 	// without a verdict, or a fail-closed pr_head_sha). A Lead-only alert — the
 	// founder is intentionally never surfaced for a non-green QA. NOT a
 	// founder-facing notification (those go to the issue thread).
-	| "auto_qa_stuck"
+	"auto_qa_stuck",
 	// FLY-827: a session reached awaiting_review but Codex code review is NOT
 	// APPROVED for the current PR head → the hard gate blocked auto-QA + merge and
 	// held the founder. A Lead-only alert (founder never surfaced pre-Codex).
 	// eventId `codex-gate:${execution_id}:${sha}` (no timestamp → fires ONCE per head).
-	| "codex_gate_blocked"
+	"codex_gate_blocked",
 	// FLY-793: a three-stage pipeline phase handoff (Design→Implement→QA) could
 	// not proceed — head-SHA capture failed, the previous phase runner would not
 	// close, or the next phase dispatch threw. Fail-closed: the next phase is NOT
 	// started and this Lead-only alert fires so a completed phase is never
 	// silently stranded. Not a founder-facing notification.
-	| "three_stage_stuck"
+	"three_stage_stuck",
 	// FLY-637-ext: the owning Lead did not answer a runner's BLOCKING question
 	// gate after the configured number of backoff nudges → page Annie ONCE
 	// (final fallback). DISTINCT from runner_stuck_unhandled: the runner is fine,
 	// the Lead is unresponsive — so this is deliberately NOT in
 	// AUTO_ATTEMPT_EVENT_TYPES and carries no runnerStuck metadata, so the
 	// AutoRepairBot never sends the runner a `continue` nudge (Codex design R1 #3).
-	| "runner_lead_pending_unhandled"
+	"runner_lead_pending_unhandled",
 	// FLY-725 (Annie 2026-07-01: "never silently drop"): the Bridge could not
 	// deliver a failed/blocked milestone @founder ping to its issue thread
 	// (permanent 4xx / missing thread|token|owner / transient retry budget
 	// elapsed). Surfaced so the founder is not left in the dark. Not a runner-
 	// stuck event — the runner is fine; the notification channel failed.
-	| "founder_milestone_undelivered"
+	"founder_milestone_undelivered",
 	// FLY-871 R2/C8: a runner sitting at a login prompt (auth/session expired) —
 	// DISTINCT from the lead `login_expired` so AlertChannelHub.reconcile resolves
 	// it by the RUNNER pane, and the R3 rescue keys on this event's still-pending row.
-	| "runner_login_expired"
+	"runner_login_expired",
 	// FLY-871 §12 W2: a windowed (cmux TUI) Codex Lead's founder-facing pane could
 	// not be (re)created after K consecutive liveness checks — "silent no-pane". NOT
 	// emitted by the TS LeadWatchdog / notifier: it is fired ONLY by the runtime's
 	// guard via scripts/lead-alert.sh (Discord-independent). Present in the union so
 	// the shared kind face (lead-alert.sh allowlist ↔ TS) has no drift.
-	| "tui_window_lost"
+	"tui_window_lost",
 	// FLY-913: the flywheel-restart-guard PreToolUse hook's mandatory bypass
 	// alert — fired ONLY via scripts/lead-alert.sh --strict-delivery (Discord-
 	// independent path; the hook fail-closes unless the strict result is
 	// sent/queued_transient). NOT emitted by the TS LeadWatchdog / notifier;
 	// present in the union so a queued bypass alert drains with a known
 	// eventType and the shared kind face (lead-alert.sh ↔ TS) has no drift.
-	| "restart_guard_bypass"
+	"restart_guard_bypass",
 	// FLY-939 (G-D): the Bridge booted on a STALE checkout — its running HEAD is
 	// strictly behind origin/main, so merged work is NOT live (the FLY-887
 	// silent-non-deploy incident shape). A Lead-only alert; the durable
 	// `bridge_boot_stale_checkout` StateStore event + the boot console.warn are the
 	// primary signals. Fired from TS (boot-sha-check via the notifier), never shell.
-	| "bridge_boot_stale_checkout";
+	"bridge_boot_stale_checkout",
+	// FLY-927 (D4): the Bridge launchd wrapper's fail-loud path (port stuck /
+	// preflight failure while the Bridge is DOWN) — fired ONLY via
+	// scripts/lead-alert.sh from flywheel-bridge-wrapper.sh `bp_fail_loud`
+	// (Discord-independent; direct-curl core-channel kept as fallback). Present in
+	// the union so a queued wrapper alert drains with a known eventType and the
+	// shared kind face (lead-alert.sh allowlist ↔ TS) has no drift.
+	"bridge_wrapper_fail",
+	// FLY-927 W-B: a RUNNER that is genuinely STALLED after a 529/overloaded
+	// throttle — pane stagnant + throttle residue + NO live retry activity. A
+	// subtype of runner_stuck_unhandled (same runnerStuck metadata contract) so
+	// the AutoRepairBot can attempt the audited continue-nudge; a HEALTHY 529
+	// (still retrying) never emits this (FLY-218 suppression stays).
+	"runner_throttle_stalled",
+] as const;
+
+export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];
 
 export type AlertSeverity = "info" | "warning" | "severe";
 
