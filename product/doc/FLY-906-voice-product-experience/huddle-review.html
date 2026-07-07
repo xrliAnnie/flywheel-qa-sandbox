@@ -1,0 +1,133 @@
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice · Huddle 产品体验 — review (FLY-906)</title>
+<style>
+  :root{ --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+    --blue:#007aff; --green:#34c759; --amber:#ff9500; --red:#ff3b30; --navy:#1a365d; }
+  *{box-sizing:border-box}
+  html,body{background:#f5f5f7}
+  body{margin:0;color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+    -webkit-text-size-adjust:100%;line-height:1.62}
+  .wrap{max-width:820px;margin:0 auto;padding:22px 16px 60px}
+  header.top{padding:8px 2px 4px}
+  h1{font-size:26px;margin:0 0 5px;letter-spacing:-.02em}
+  .sub{color:#3a3a3c;font-size:14.5px;margin:0 0 8px}
+  .meta{color:var(--dim);font-size:12.5px;margin:0 0 8px}
+  .legend{display:flex;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:8px 0 4px}
+  .pill{background:#ececf2;border-radius:20px;padding:3px 11px}
+  .card{background:var(--card);border-radius:14px;padding:16px 18px;margin:14px 0;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--blue)}
+  .card.locked{border-left-color:var(--green)}
+  .card.risk{border-left-color:var(--red)}
+  .card.pending{border-left-color:var(--amber)}
+  .card h2{font-size:18px;margin:0 0 8px;letter-spacing:-.01em}
+  .tag{font-size:11px;font-weight:600;border-radius:6px;padding:2px 8px;margin-left:8px;vertical-align:middle}
+  .tag.lock{background:#e3f9ea;color:#1a7f37}
+  .tag.pend{background:#fff3e0;color:#b45309}
+  .tag.risk{background:#ffe5e3;color:#c0271c}
+  .card p{margin:6px 0}
+  .card ul{margin:6px 0 6px 2px;padding-left:18px}
+  .card li{margin:3px 0}
+  code{background:#f0f0f4;border-radius:5px;padding:1px 6px;font-family:"SF Mono",ui-monospace,monospace;font-size:.9em}
+  .flow{background:#fafafd;border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:8px 0;font-size:14.5px}
+  .flow b{color:var(--navy)}
+  .note{font-size:13px;color:var(--dim);margin-top:6px}
+  .opts{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 2px}
+  .opt{background:#eef4ff;border:1px solid #d3e3ff;color:#0a5bd6;border-radius:9px;
+    padding:6px 13px;font-family:"SF Mono",ui-monospace,monospace;font-size:14px;font-weight:600}
+  .ask{background:#fff7ea;border:1px solid #ffe0ab;border-radius:10px;padding:10px 12px;margin-top:10px;font-size:14px}
+  footer{color:var(--dim);font-size:13px;text-align:center;margin-top:26px}
+</style>
+
+<div class="wrap">
+<header class="top">
+  <h1>Voice · Huddle 产品体验</h1>
+  <p class="sub">FLY-906 <b>最终 review</b> — Huddle 机制已全部定好(含命令名 /meet)。看完有想改/想加/其实不用做的,在 Discord 告诉 Honey Lemon 就行。</p>
+  <p class="meta">v1 = Huddle-only · PRD v0.17 · 2026-07-06</p>
+  <div class="legend">
+    <span class="pill">🟢 已锁 = 你之前拍过</span>
+    <span class="pill">🟠 待你定</span>
+    <span class="pill">🔴 待 Tadashi 技术验证</span>
+  </div>
+</header>
+
+<div class="card locked">
+  <h2>1 · v1 就做 Huddle<span class="tag lock">已锁</span></h2>
+  <p>砍掉:每个 Lead 一个常驻语音频道(太多)、早会/晚会(先不做)。</p>
+  <p>就做一件事:<b>你随时发起一个 Huddle,把要的 Lead 拉进来语音聊,聊完落成事项。</b>一个共享语音频道,谁进谁出是动态的。</p>
+</div>
+
+<div class="card locked">
+  <h2>2 · 频道长什么样<span class="tag lock">已锁</span></h2>
+  <p>你问过「Discord 能不能语音+文字混一起」——<b>能,原生就有</b>:每个语音频道自带一块文字聊天区。</p>
+  <ul>
+    <li>语音里一来一回地聊;</li>
+    <li>字幕、聊完的总结卡片、落下的事项链接,都贴在<b>这个语音频道自带的文字区</b>——聊天和记录在同一个地方。</li>
+    <li>谁在说话,头像会亮一圈(Discord 原生);Lead「在听/在想」用提示音 + 一行小字告诉你(因为你常不看屏)。</li>
+  </ul>
+</div>
+
+<div class="card locked">
+  <h2>3 · 怎么发起 + 把 Lead 拉进来<span class="tag lock">命令 = /meet</span></h2>
+  <p>在<b>任何文字频道、随时随地</b>打 <code>/meet</code> + @ 你要的 Lead(1 个或 2-3 个):</p>
+  <div class="flow"><b>你打：</b> <code>/meet @Peter @Hiro</code> → 被 @ 的 Lead 一秒内自动进语音频道 → 给你一个 <b>「进 Huddle」按钮</b>,你点一下就进去(手机上点一下+确认)→ 你一进来 Lead 就语音招呼你,像被接住。</div>
+  <p class="note">命令名 <b>/meet</b> 是你选定的(其余 /call /huddle /sync /talk 进 backlog;命令名做成可改的,以后想换也行)。</p>
+  <p class="note">一个诚实的约束:Discord <b>没法像 Slack 那样"打电话"硬把你拽进语音</b>——所以你要自己点一下 Join。好消息:①Slack 其实也是响铃+点一下,差别很小;②你要是已经在别的语音频道里,系统能直接零点击把你挪进来。</p>
+</div>
+
+<div class="card locked">
+  <h2>4 · 聊完怎么落地<span class="tag lock">已锁</span></h2>
+  <p>你定的流程:</p>
+  <div class="flow">
+    <b>①</b> 一发起 Huddle,自动建一条 issue 立项(标题像「2026-03-06 15:00 · 参与者 huddle」)。<br>
+    <b>②</b> 语音讨论就在频道里聊(原生消息)。<br>
+    <b>③</b> 聊完 → <b>@ 的第一个 Lead(主持/记录)</b> 从这条 issue 建 worktree、把<b>总结 + 要做的事(action items)</b>写进去 → 存档 + 关掉这条 issue。
+  </div>
+  <p class="note">谁做总结 = <b>你 @ 的第一个 Lead</b>(单人聊就那人)——已锁。</p>
+</div>
+
+<div class="card locked">
+  <h2>5 · 语音里能触发动作吗<span class="tag lock">已锁</span></h2>
+  <p>能——<b>语音能做的和你打字能做的完全一样</b>,不多不少。按后果分三档:</p>
+  <ul>
+    <li><b>小事</b>(建 issue、查状态):直接做 + 口头告诉你「建好了」。</li>
+    <li><b>有后果</b>(改优先级):先问你一句「这样对吗」。</li>
+    <li><b>不可逆</b>(上线 ship、关掉一个在跑的活):念一遍 + 文字留个收据,照旧走你现在的最终确认——语音不新增闸,只是媒介变声音。</li>
+  </ul>
+  <p class="note">还有一条:Lead 把结论写下来之前,先口头念一遍「所以我要记:一…二…对吗」,你确认了才写(防记错、记的是你原话)。</p>
+</div>
+
+<div class="card locked">
+  <h2>6 · 快到什么程度<span class="tag lock">已锁</span></h2>
+  <ul>
+    <li>你说完,Lead 争取 <b>0.8 秒内</b>开口(最多 1.5 秒);</li>
+    <li>要查得久,先说一句「让我看一下」不闷着;<b>绝不闷不吭声超过 3 秒</b>;</li>
+    <li>你随时能<b>插话打断</b>它。</li>
+  </ul>
+  <p class="note">(这些是给工程的业务目标;具体怎么做到归 Tadashi。)</p>
+</div>
+
+<div class="card locked">
+  <h2>7 · 离屏 / 耳机模式(多个 Lead 找你)<span class="tag lock">已锁</span></h2>
+  <p>你做家务时进「耳机模式」——多个 Lead 有事都<b>主动推给你</b>(不用你问「谁需要我」):</p>
+  <ul>
+    <li>进:在 #flywheel-core 说/打 <b>「芝麻开门」</b>(全局,所有 Lead 消息转语音);</li>
+    <li>消息<b>一条一条</b>来,先来先到(不排优先级);每条走完整一回合:读给你 → 问「要回吗」→ 你 skip 或口述 → 发出 → 才下一条;</li>
+    <li>每个 Lead <b>不同声线</b>,开口先报「我是谁 + 哪个 issue + 一句进度」(你可能忘了那 issue 是啥);</li>
+    <li>出:说 <b>「芝麻关门」</b> → 系统问「确认结束耳机模式?」→ 你说「对」→ 退出。</li>
+  </ul>
+</div>
+
+<div class="card risk">
+  <h2>8 · 一个要你知道的技术前提<span class="tag risk">待 Tadashi 验证</span></h2>
+  <p>整个 Voice 愿景<b>依赖"机器人能在 Discord 里听清你说话(收音转文字)"</b>。这一条现在是<b>最大的技术不确定点</b>:Discord 官方不支持机器人收音,加上现在语音强制加密,现成方案是坏的。</p>
+  <p>机器人<b>说话（TTS）是稳的</b>;<b>听（STT）待验证</b>。已归 Tadashi(FLY-544)让他先验证——<b>如果验证不通,Huddle/离屏语音的可行性要重新评估。</b>把它当"前提假设",不当已确认。</p>
+</div>
+
+<div class="card">
+  <h2>9 · 整体感觉 / 还缺什么</h2>
+  <p>这套 Huddle 体验整体对味吗?哪块不对、哪块想加、哪块其实不用做?<b>在 Discord 告诉 Honey Lemon 就行。</b></p>
+</div>
+
+<footer>FLY-906 · Voice 产品体验设计 · 看完在 Discord 反馈</footer>
+</div>
