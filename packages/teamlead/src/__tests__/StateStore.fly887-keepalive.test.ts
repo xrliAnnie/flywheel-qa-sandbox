@@ -103,6 +103,24 @@ describe("getPhaseSessionsForIssue (FLY-887)", () => {
 			store.getPhaseSessionsForIssue("FLY-1").map((r) => r.status),
 		).toEqual(["completed"]);
 	});
+
+	// FLY-939 (Codex design R1 #2): rows sharing an identical last_activity_at
+	// (rapid-fire inserts within the same tick — the exact shape the G-C ghost
+	// guard probes) must still resolve to a deterministic newest-first order via
+	// the added `rowid DESC` tiebreak, not DB-implementation-defined order.
+	it("FLY-939: rowid DESC tiebreak orders same-timestamp rows newest-inserted-first", async () => {
+		const store = await freshStore();
+		for (const id of ["r1", "r2", "r3", "r4"]) {
+			seedSession(store, {
+				execution_id: id,
+				issue_id: "FLY-1",
+				chat_thread_role: "qa",
+				status: "completed",
+			});
+		}
+		const rows = store.getPhaseSessionsForIssue("FLY-1");
+		expect(rows.map((r) => r.execution_id)).toEqual(["r4", "r3", "r2", "r1"]);
+	});
 });
 
 describe("countEventsByIssueAndType (FLY-887 fix-round ledger)", () => {

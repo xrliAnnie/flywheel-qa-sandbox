@@ -34,6 +34,8 @@ function makeQaVerdicts() {
 		getLatestQaResultEvent: vi.fn(() => undefined),
 		listStrandedPassCandidates: vi.fn((): PhaseSession[] => []),
 		postIssueThread: vi.fn(async () => {}),
+		// FLY-939 (G-B): default no gate response (not a kickback).
+		hasGateResponse: vi.fn((): boolean => false),
 	};
 	return {
 		qaVerdicts,
@@ -50,11 +52,16 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	const closePhaseRunner = vi.fn(async () => {});
 	const alertLeadPipelineError = vi.fn(async () => {});
 	const probePhaseAlive = vi.fn(async (): Promise<PhaseLiveness> => "alive");
+	// FLY-939 (G-C): default ghost probe = absent (no live ghost → spawn allowed).
+	const probeGhostTmux = vi.fn(async (): Promise<PhaseLiveness> => "absent");
 	const parkPhaseRunner = vi.fn(async () => {});
 	const wakePhaseRunner = vi.fn(async () => ({ ok: true }));
 	const assertPhaseWorktreeReady = vi.fn(async () => ({ ok: true }));
 	const getAlivePhaseSession = vi.fn((): PhaseSession | undefined => undefined);
 	const hasShipFinalizationClaim = vi.fn((): boolean => false);
+	// FLY-939 (G-A2 / G-C): default empty stranded list + empty phase rows.
+	const listStrandedImplementPhases = vi.fn((): PhaseSession[] => []);
+	const listPhaseSessionRows = vi.fn((): PhaseSession[] => []);
 	const refreshPhaseStatusLine = vi.fn(async (): Promise<void> => {});
 	const grantTurn = vi.fn(() => {});
 	// FLY-921 Fix C: turn-belt reconcile deps (defaults = empty belt).
@@ -73,12 +80,15 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 			closePhaseRunner,
 			alertLeadPipelineError,
 			probePhaseAlive,
+			probeGhostTmux,
 			parkPhaseRunner,
 			wakePhaseRunner,
 			assertPhaseWorktreeReady,
 		},
 		resolveThreeStage: () => ({ enabled: true }),
 		listStrandedDesignPhases: () => [],
+		listStrandedImplementPhases,
+		listPhaseSessionRows,
 		resolveLeadId: () => "eng-lead",
 		keepAliveEnabled: () => true,
 		getAlivePhaseSession,
@@ -96,11 +106,14 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		closePhaseRunner,
 		alertLeadPipelineError,
 		probePhaseAlive,
+		probeGhostTmux,
 		parkPhaseRunner,
 		wakePhaseRunner,
 		assertPhaseWorktreeReady,
 		getAlivePhaseSession,
 		hasShipFinalizationClaim,
+		listStrandedImplementPhases,
+		listPhaseSessionRows,
 		refreshPhaseStatusLine,
 		grantTurn,
 		turnBelt,
@@ -247,7 +260,12 @@ describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 		expect(h.deps.effects.wakePhaseRunner).not.toHaveBeenCalled();
 	});
 
-	it("wake failure → warns but leaves TURN set (held for reconcile), never throws", async () => {
+	// FLY-939 (G-A / Step 2): a failed handoff wake now FAILS LOUD — the TURN is
+	// still set (points at the parked target, so the reconcile re-drive re-wakes
+	// idempotently) but the Lead is alerted instead of a silent warn. A silent
+	// warn hid the stall until a human noticed a dead pipeline (today's dup-runner
+	// class of symptom). Never throws; never spawns a duplicate.
+	it("wake failure → fail-loud (alerts Lead) but leaves TURN set, never throws, never spawns", async () => {
 		const qa = session({ execution_id: "qa-exec", session_role: "qa" });
 		const h = makeDeps({
 			getAlivePhaseSession: vi.fn((_i, phase) =>
@@ -258,6 +276,7 @@ describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 				closePhaseRunner: vi.fn(async () => {}),
 				alertLeadPipelineError: vi.fn(async () => {}),
 				probePhaseAlive: vi.fn(async (): Promise<PhaseLiveness> => "alive"),
+				probeGhostTmux: vi.fn(async (): Promise<PhaseLiveness> => "absent"),
 				parkPhaseRunner: vi.fn(async () => {}),
 				wakePhaseRunner: vi.fn(async () => ({
 					ok: false,
@@ -275,7 +294,8 @@ describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 			}),
 		);
 		expect(h.grantTurn).toHaveBeenCalledOnce(); // TURN set before wake
-		expect(h.deps.effects.alertLeadPipelineError).not.toHaveBeenCalled(); // not fail-closed
+		expect(h.deps.effects.alertLeadPipelineError).toHaveBeenCalledOnce(); // fail-loud
+		expect(h.start).not.toHaveBeenCalled(); // never spawns a duplicate
 	});
 });
 

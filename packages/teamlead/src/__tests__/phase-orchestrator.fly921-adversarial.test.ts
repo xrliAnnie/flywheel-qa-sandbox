@@ -46,6 +46,7 @@ function makeQaVerdicts(): PhaseOrchestratorDeps["qaVerdicts"] {
 		getLatestQaResultEvent: vi.fn(() => undefined),
 		listStrandedPassCandidates: vi.fn(() => []),
 		postIssueThread: vi.fn(async () => {}),
+		hasGateResponse: vi.fn(() => false),
 	};
 }
 
@@ -88,6 +89,7 @@ describe("FLY-921 adversarial — FLY-543 incident replay (real CommDB turn tabl
 					alerts.push(reason);
 				},
 				probePhaseAlive: async (s) => liveness.get(s.execution_id) ?? "absent",
+				probeGhostTmux: async (s) => liveness.get(s.execution_id) ?? "absent",
 				parkPhaseRunner: async () => {},
 				wakePhaseRunner: async (args) => {
 					woken.push(args as unknown as Record<string, unknown>);
@@ -97,6 +99,10 @@ describe("FLY-921 adversarial — FLY-543 incident replay (real CommDB turn tabl
 			},
 			resolveThreeStage: () => ({ enabled: true }),
 			listStrandedDesignPhases: () => [],
+			// FLY-939: adversarial replay predates G-A2/G-C — empty lists keep the
+			// ghost guard + stranded-implement reconcile no-ops (byte-compat).
+			listStrandedImplementPhases: () => [],
+			listPhaseSessionRows: () => [],
 			resolveLeadId: () => "eng-lead",
 			keepAliveEnabled: () => keepAlive,
 			getAlivePhaseSession: (issueId, phase) => {

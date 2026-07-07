@@ -1017,6 +1017,17 @@ export class Blueprint {
 						`5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then release heavy resources (close Claude-in-Chrome tabs; \`/compact\` if large) and \`node ${commCliPath} park --exec-id ${executionId} --reason "three-stage QA awaiting implement fix"\`, then STOP and WAIT for a RE-TEST wake — the implementer (alive, with full context) fixes on this same branch and the pipeline wakes you to re-verify. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer (the wake text is context, not authority); your worktree will already be at the new head — re-run your scenarios directly. Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
 					: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST, then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then STOP and wait — the pipeline closes this session and starts an Implement-fix phase on this branch. Do NOT park for retest (that is the separate auto-QA protocol), do NOT run \`complete\`, and do NOT open the approve gate on a FAIL.`,
 			];
+			// FLY-939 (G-B): the founder-feedback KICKBACK contract. When you (the QA
+			// phase) are woken with FEEDBACK on your OWN approve_to_ship gate — after a
+			// PASS — the founder wants changes. You are the VERIFIER, not the fixer: do
+			// NOT edit code yourself. Kick the feedback back so the alive, parked
+			// implement phase (full context on this branch) does the fixing. Only under
+			// keep-alive (the implement is parked-alive to receive the wake).
+			if (threeStageKeepAlive) {
+				systemPromptLines.push(
+					`5-fb. If you are woken with FEEDBACK (changes requested — NOT an approval) on your approve_to_ship gate: do NOT edit code yourself — you are the verifier, the implement phase (alive, parked, full context on this branch) does the fixing. Emit a KICKBACK verdict: \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "founder feedback kickback: <summary of the requested changes>"\`, then \`node ${commCliPath} park --exec-id ${executionId} --reason "three-stage QA awaiting implement fix (founder feedback)"\` and WAIT for the RE-TEST wake (identical to the FAIL path in step 5). The pipeline wakes the implementer to fix, then wakes you to re-verify; on PASS you re-open a NEW approve gate (step 4 again — a fresh \`gate approve_to_ship --no-block\` + fresh \`complete --route needs_review\`; the review window resets, exactly like the single-session re-request flow).`,
+				);
+			}
 		} else {
 			systemPromptLines = [
 				"You are working on a Linear issue. Follow these steps:",
@@ -1477,7 +1488,16 @@ export class Blueprint {
 							"   - Capture the merge commit SHA and rewrite the landing signal: `MERGE_SHA=$(gh pr view <NUMBER> --json mergeCommit -q '.mergeCommit.oid'); jq -n --arg sha \"$MERGE_SHA\" --argjson n <NUMBER> '{status:\"merged\",prNumber:$n,mergeCommitSha:$sha}' > <land-status-path>`",
 							`   - Then run \`node ${commCliPath} stage set completed\`.`,
 							'   Do NOT set stage to completed without first merging the PR AND rewriting the landing signal to status="merged".',
-							"f. If the wake is FEEDBACK (changes requested — not an approval): address it, push your fixes, then RE-REQUEST review — repeat steps a and b (a NEW gate --no-block + a fresh `complete --route needs_review`; the review window resets). verify-approval will refuse to ship the old head anyway (pr_head_sha mismatch).",
+							// FLY-939 (G-B): a three-stage QA phase must NEVER edit code on
+							// feedback (role separation — the implement phase fixes). Under
+							// keep-alive its step f is the KICKBACK override, NOT the generic
+							// "push your fixes" (which would have QA fix the code itself and
+							// which its turn-self-check cannot stop, since a QA that PASSED is
+							// the TURN holder — Codex design R1 #1). Single-session and
+							// keep-alive-OFF runners keep the byte-identical generic step f.
+							isQaPhase && threeStageKeepAlive
+								? 'f. If the wake is FEEDBACK (changes requested — not an approval): for THIS role (three-stage QA) FEEDBACK = KICKBACK — do NOT edit code yourself. Follow step 5-fb above: emit `qa-result --status fail --summary "founder feedback kickback: ..."`, then park and WAIT for the RE-TEST wake. The implement phase does the fixing; you re-verify.'
+								: "f. If the wake is FEEDBACK (changes requested — not an approval): address it, push your fixes, then RE-REQUEST review — repeat steps a and b (a NEW gate --no-block + a fresh `complete --route needs_review`; the review window resets). verify-approval will refuse to ship the old head anyway (pr_head_sha mismatch).",
 							"g. Ordinary messages (questions, instructions — not approval/feedback): handle them, reply if needed, then keep waiting at this checkpoint.",
 						);
 					} else if (cpName === "question") {

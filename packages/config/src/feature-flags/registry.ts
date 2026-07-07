@@ -286,6 +286,33 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "与 FLYWHEEL_THREE_STAGE 正交（那个关整条三段式）；本 env=0 只回退保活到 close+respawn，改后需重启 Bridge。",
 	},
 	{
+		// FLY-939 (G-D): Bridge boot logs its running HEAD and best-effort compares
+		// it to origin/main; a STALE checkout (HEAD strictly behind origin/main)
+		// WARNs + records a durable event + alerts the Lead. `=0` skips the whole
+		// check. Pure observability (never affects boot). Dev/QA-slot Bridges run
+		// branch checkouts → the ahead/diverged classification already silences them.
+		name: "boot_sha_check",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_BOOT_SHA_CHECK",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"Bridge 启动打印运行 HEAD 并 best-effort 比对 origin/main;落后(stale checkout,merged 未生效)→ WARN + durable event + Lead 报警。=0 整段跳过。纯可观测,绝不影响启动;分支 checkout(dev/QA slot)自动静音 (FLY-939 G-D)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/boot-sha-check.ts",
+				"runBootShaCheck",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "启动时一次性 best-effort git 检查;改后需重启 Bridge 才生效。",
+	},
+	{
 		// FLY-795: global kill-switch for restart-resilient resume. Default ON: a
 		// re-dispatched dead runner resumes from its committed progress.md cursor
 		// (reusing 793's shareParentBranch/startPoint worktree mechanism) instead of

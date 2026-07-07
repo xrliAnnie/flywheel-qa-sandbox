@@ -2366,6 +2366,28 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-939 (G-A2): implement phase-sessions stranded at awaiting_review —
+	 * candidates for the startup reconcile of a lost implement→QA handoff (a crash
+	 * / wake-fail between the implement completing needs_review and QA being
+	 * spawned). `chat_thread_role='implement'` excludes single-session ('main')
+	 * awaiting_review rows; the orchestrator further guards on "no qa row + no ship
+	 * claim" before re-driving. Mirrors getStrandedDesignPhaseSessions' shape.
+	 */
+	getStrandedImplementPhaseSessions(): Session[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE session_role = 'implement' AND status = 'awaiting_review' AND chat_thread_role = 'implement'",
+		);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
 	 * FLY-859: implement-phase count for an issue (three-stage fix-loop round
 	 * cap). `chat_thread_role` is the durable three-stage marker (Blueprint
 	 * writes the phase role ONLY for shareParentBranch phase sessions), so this
@@ -2488,10 +2510,15 @@ export class StateStore {
 	 */
 	getPhaseSessionsForIssue(issueId: string): Session[] {
 		const stmt = this.db.prepare(
+			// FLY-939 (Codex design R1 #2): a `rowid DESC` tiebreak makes the order
+			// deterministic when two rows share last_activity_at — the G-C ghost guard
+			// probes "the most-recent N rows", so ties must resolve stably (newest
+			// rowid = most-recently inserted). Byte-compat for the common distinct-
+			// timestamp case; only disambiguates exact ties (freshest-first preserved).
 			`SELECT * FROM sessions
 			 WHERE issue_id = ?
 			   AND chat_thread_role IN ('design', 'implement', 'qa')
-			 ORDER BY last_activity_at DESC`,
+			 ORDER BY last_activity_at DESC, rowid DESC`,
 		);
 		stmt.bind([issueId]);
 		const rows: Session[] = [];

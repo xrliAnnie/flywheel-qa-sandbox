@@ -87,7 +87,11 @@ import {
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
 import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
-import { type Session, StateStore } from "../StateStore.js";
+import {
+	REVIEW_BINDING_UNBOUND,
+	type Session,
+	StateStore,
+} from "../StateStore.js";
 import { AlertChannelHub, createDiscordOps } from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
 import {
@@ -109,6 +113,7 @@ import { AutoQaEffects } from "./auto-qa-effects.js";
 import { resolveAutoQaPolicy } from "./auto-qa-policy.js";
 import { AutoContinueArmer } from "./autocontinue-armer.js";
 import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
+import { runBootShaCheck } from "./boot-sha-check.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
@@ -4270,6 +4275,29 @@ export async function startBridge(
 							text,
 						});
 					},
+					// FLY-939 (G-B): does the QA session's bound review question already
+					// have a response in the project CommDB? A "changes requested" answer
+					// on the approve_to_ship gate IS that response — the signal that a QA
+					// FAIL now is a founder-feedback kickback, not a stray FAIL. Fail-
+					// closed: unbound sentinel / missing binding / any lookup error →
+					// false (refuse the kickback rather than yank a genuinely-pending gate).
+					hasGateResponse: (session) => {
+						const qid = session.review_question_id;
+						if (!qid || qid === REVIEW_BINDING_UNBOUND) return false;
+						const dbPath = commDbPathForProject(session.project_name ?? "");
+						if (!ffExistsSync(dbPath)) return false;
+						const db = new CommDB(dbPath);
+						try {
+							return db.getResponse(qid) !== undefined;
+						} catch (err) {
+							console.warn(
+								`[three-stage] hasGateResponse lookup failed for ${session.execution_id}: ${(err as Error).message}`,
+							);
+							return false;
+						} finally {
+							db.close();
+						}
+					},
 					maxFixRounds,
 				},
 				resolveThreeStage: (session) => {
@@ -4460,6 +4488,15 @@ export async function startBridge(
 						);
 						if (!target) return "absent";
 						return probeRunnerProcessLiveness(target.tmuxWindow);
+					},
+					// FLY-939 (G-C): probe a phase row's PERSISTED tmux target DIRECTLY,
+					// bypassing the CommDB registration lookup (which returns absent for a
+					// terminal-status row and would mask a still-live window — the exact
+					// pollution the ghost guard must catch, Codex design R1 #2). No
+					// persisted tmux_session → nothing to probe → absent.
+					probeGhostTmux: async (row) => {
+						if (!row.tmux_session) return "absent";
+						return probeRunnerProcessLiveness(row.tmux_session);
 					},
 					// FLY-887: park a completed-but-alive phase (CommDB declared-state;
 					// NOT closeRunner, NOT worktree removal). The shared worktree stays.
@@ -4685,6 +4722,16 @@ export async function startBridge(
 				// for the startup reconcile (boot marker drain lands them before this
 				// orchestrator is wired).
 				listStrandedDesignPhases: () => store.getStrandedDesignPhaseSessions(),
+				// FLY-939 (G-A2): implement rows stranded at awaiting_review — the
+				// startup reconcile re-drives their lost implement→QA handoff.
+				listStrandedImplementPhases: () =>
+					store.getStrandedImplementPhaseSessions() as PhaseSession[],
+				// FLY-939 (G-C): all rows for an issue+phase (any status, newest first
+				// with rowid tiebreak) — the ghost guard's probe pool.
+				listPhaseSessionRows: (issueId, phase) =>
+					store
+						.getPhaseSessionsForIssue(issueId)
+						.filter((s) => s.chat_thread_role === phase) as PhaseSession[],
 				logger: {
 					log: (m) => console.log(m),
 					warn: (m) => console.warn(m),
@@ -4716,6 +4763,71 @@ export async function startBridge(
 				`[three-stage] PhaseOrchestrator wiring failed: ${(err as Error).message} — three-stage disabled this boot`,
 			);
 		}
+	}
+
+	// FLY-939 (G-D): boot-time checkout-SHA visibility. Fire-and-forget (never on
+	// the critical path) — logs the running HEAD every restart and WARNs + records
+	// a durable event + alerts the Lead if this checkout is STALE (behind
+	// origin/main = merged work not live, the FLY-887 silent-non-deploy shape).
+	{
+		const here = dirname(fileURLToPath(import.meta.url));
+		const bridgeRepoRoot =
+			process.env.FLYWHEEL_REPO_ROOT?.trim() ||
+			resolve(here, "..", "..", "..", "..");
+		void runBootShaCheck({
+			projectRoot: bridgeRepoRoot,
+			env: process.env,
+			git: async (args) => {
+				const { stdout } = await execFileP(
+					"git",
+					["-C", bridgeRepoRoot, ...args],
+					{
+						timeout: 8_000,
+					},
+				);
+				return stdout;
+			},
+			logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+			recordStaleEvent: ({ headSha, originMainSha, aheadBy }) => {
+				store.insertEvent({
+					event_id: `bridge-boot-stale-${headSha}-${originMainSha}`,
+					execution_id: "bridge-boot",
+					issue_id: "bridge-boot",
+					project_name: "",
+					event_type: "bridge_boot_stale_checkout",
+					source: "bridge.boot-sha-check",
+					payload: { headSha, originMainSha, ...(aheadBy ? { aheadBy } : {}) },
+				});
+			},
+			alertStale: async ({ headSha, originMainSha, message }) => {
+				// Best-effort: alert the first project's resolved Lead. No issue/lead
+				// context for a Bridge-global event, so any resolution failure just
+				// leaves the durable event + console.warn as the signal.
+				const first = projects[0];
+				if (!first) return;
+				let leadId: string | undefined;
+				try {
+					leadId = resolveLeadForIssue(projects, first.projectName, []).lead
+						.agentId;
+				} catch {
+					/* no lead → event + console.warn suffice */
+				}
+				if (!leadId) return;
+				await leadAlertNotifier.alert({
+					leadId,
+					projectName: first.projectName,
+					eventId: `bridge-boot-stale:${headSha}:${originMainSha}`,
+					eventType: "bridge_boot_stale_checkout",
+					title: "Bridge running a STALE checkout — merged work is NOT live",
+					body: `${message}\n\n(pull + restart the Bridge on ${bridgeRepoRoot} to deploy the merged code)`,
+					severity: "warning",
+				});
+			},
+		}).catch((err) =>
+			console.warn(
+				`[bridge-boot] runBootShaCheck threw (non-fatal): ${(err as Error).message}`,
+			),
+		);
 	}
 
 	// FLY-368 rework: the repair chain (Cass → alphabetical fleet) drives thread

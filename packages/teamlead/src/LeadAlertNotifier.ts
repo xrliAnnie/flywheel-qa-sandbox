@@ -107,7 +107,13 @@ export type AlertEventType =
 	// sent/queued_transient). NOT emitted by the TS LeadWatchdog / notifier;
 	// present in the union so a queued bypass alert drains with a known
 	// eventType and the shared kind face (lead-alert.sh ↔ TS) has no drift.
-	| "restart_guard_bypass";
+	| "restart_guard_bypass"
+	// FLY-939 (G-D): the Bridge booted on a STALE checkout — its running HEAD is
+	// strictly behind origin/main, so merged work is NOT live (the FLY-887
+	// silent-non-deploy incident shape). A Lead-only alert; the durable
+	// `bridge_boot_stale_checkout` StateStore event + the boot console.warn are the
+	// primary signals. Fired from TS (boot-sha-check via the notifier), never shell.
+	| "bridge_boot_stale_checkout";
 
 export type AlertSeverity = "info" | "warning" | "severe";
 

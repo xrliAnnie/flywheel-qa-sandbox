@@ -100,6 +100,7 @@ describe("event-route qa_result split (FLY-859)", () => {
 				// FLY-887: keep-alive effects (unused here — this suite pins the
 				// LEGACY close-and-respawn FLY-859 flow via keepAliveEnabled=false).
 				probePhaseAlive: async () => "alive",
+				probeGhostTmux: async () => "absent",
 				parkPhaseRunner: async () => {},
 				wakePhaseRunner: async () => ({ ok: true }),
 				assertPhaseWorktreeReady: async () => ({ ok: true }),
@@ -107,6 +108,8 @@ describe("event-route qa_result split (FLY-859)", () => {
 			resolveThreeStage: () => ({ enabled: true }),
 			resolveLeadId: () => "test-lead",
 			listStrandedDesignPhases: () => [],
+			listStrandedImplementPhases: () => [],
+			listPhaseSessionRows: () => [],
 			// FLY-887: this suite asserts the LEGACY FAIL flow (close + spawn +
 			// intent.closed), which is exactly the keep-alive=OFF byte-compat path.
 			keepAliveEnabled: () => false,
@@ -144,6 +147,7 @@ describe("event-route qa_result split (FLY-859)", () => {
 				listStrandedPassCandidates: () =>
 					store.getStrandedThreeStageQaPassSessions() as unknown as PhaseSession[],
 				postIssueThread: async () => {},
+				hasGateResponse: () => false,
 			},
 		});
 

@@ -37,6 +37,7 @@ function makeQaVerdicts() {
 		getLatestQaResultEvent: vi.fn(() => undefined),
 		listStrandedPassCandidates: vi.fn((): PhaseSession[] => []),
 		postIssueThread: vi.fn(async () => {}),
+		hasGateResponse: vi.fn((): boolean => false),
 	};
 	return { qaVerdicts, intents };
 }
@@ -48,10 +49,13 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	const alertLeadPipelineError = vi.fn(async () => {});
 	// FLY-887 keep-alive effects (defaults — legacy tests never call them).
 	const probePhaseAlive = vi.fn(async () => "alive" as const);
+	const probeGhostTmux = vi.fn(async () => "absent" as const);
 	const parkPhaseRunner = vi.fn(async () => {});
 	const wakePhaseRunner = vi.fn(async () => ({ ok: true }));
 	const assertPhaseWorktreeReady = vi.fn(async () => ({ ok: true }));
 	const listStrandedDesignPhases = vi.fn((): PhaseSession[] => []);
+	const listStrandedImplementPhases = vi.fn((): PhaseSession[] => []);
+	const listPhaseSessionRows = vi.fn((): PhaseSession[] => []);
 	const { qaVerdicts, intents } = makeQaVerdicts();
 	const resolveLeadId = vi.fn((): string | undefined => "eng-lead");
 	// FLY-887: default keep-alive OFF so the existing tests validate the LEGACY
@@ -76,12 +80,15 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 			closePhaseRunner,
 			alertLeadPipelineError,
 			probePhaseAlive,
+			probeGhostTmux,
 			parkPhaseRunner,
 			wakePhaseRunner,
 			assertPhaseWorktreeReady,
 		},
 		resolveThreeStage: () => ({ enabled: true }),
 		listStrandedDesignPhases,
+		listStrandedImplementPhases,
+		listPhaseSessionRows,
 		resolveLeadId,
 		keepAliveEnabled,
 		getAlivePhaseSession,
@@ -99,10 +106,13 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		closePhaseRunner,
 		alertLeadPipelineError,
 		probePhaseAlive,
+		probeGhostTmux,
 		parkPhaseRunner,
 		wakePhaseRunner,
 		assertPhaseWorktreeReady,
 		listStrandedDesignPhases,
+		listStrandedImplementPhases,
+		listPhaseSessionRows,
 		resolveLeadId,
 		keepAliveEnabled,
 		getAlivePhaseSession,

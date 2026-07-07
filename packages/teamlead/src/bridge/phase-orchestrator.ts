@@ -57,6 +57,13 @@ export interface PhaseSession {
 	chat_thread_role?: string;
 	/** FLY-859: ship-gate binding — set by a needs_review completion. */
 	review_question_id?: string;
+	/**
+	 * FLY-939 (G-C): the persisted tmux session/window target. The ghost-probe
+	 * reads this DIRECTLY (never via the CommDB registration, which is cleared for
+	 * terminal sessions) to catch a terminal-status row whose tmux process is
+	 * still alive — the "don't respawn onto a live ghost" signal.
+	 */
+	tmux_session?: string;
 }
 
 /**
@@ -94,6 +101,14 @@ export interface ThreeStageVerdictIntent {
 }
 
 const DEFAULT_MAX_FIX_ROUNDS = 3;
+
+/**
+ * FLY-939 (G-C): how many of the most-recent phase rows the ghost guard probes
+ * before a spawn fallback. Old rows' tmux windows were close-cleaned long ago
+ * (their probe returns `absent` fast); bounding the scan keeps a stale-row pile
+ * from slowing every spawn.
+ */
+const GHOST_PROBE_MAX_ROWS = 3;
 
 // FLY-907: the FLY-887 face-C derivation that lived here (PhaseLineState /
 // computePhaseLineStates / renderPhaseStatusLine + the local PHASE_LINE_ORDER
@@ -217,6 +232,16 @@ export interface PhaseOrchestratorDeps {
 			session: PhaseSession,
 			expectedHeadSha: string,
 		): Promise<{ ok: boolean; reason?: string }>;
+		/**
+		 * FLY-939 (G-C): probe process liveness of a phase row's PERSISTED tmux
+		 * session directly (`row.tmux_session` → probeRunnerProcessLiveness), NOT
+		 * via the CommDB registration lookup. `probePhaseAlive` above goes through
+		 * the CommDB (`getTmuxTargetFromCommDb`), which returns `absent` when the
+		 * registration was cleared for a terminal session — exactly masking the
+		 * "terminal row, live tmux window" pollution the ghost guard must catch
+		 * (Codex design R1 #2). A row with no `tmux_session` → `absent`.
+		 */
+		probeGhostTmux(row: PhaseSession): Promise<PhaseLiveness>;
 	};
 	/** Per-project three-stage enablement (Step 1 policy). `reason` (present
 	 * when disabled) is logged at handoff boundaries — a disabled policy must
@@ -242,6 +267,25 @@ export interface PhaseOrchestratorDeps {
 	 * design_done before this orchestrator was wired, so the handoff never fired).
 	 */
 	listStrandedDesignPhases(): PhaseSession[];
+	/**
+	 * FLY-939 (G-A2): implement phase-sessions stranded at awaiting_review —
+	 * candidates for the startup reconcile of a lost implement→QA handoff. A
+	 * crash / wake-fail between the implement completing needs_review and the QA
+	 * being spawned leaves the implement parked at awaiting_review with no QA. The
+	 * reconcile re-drives `onPhaseComplete(implement)` ONLY when the issue has
+	 * ZERO qa phase rows and no ship-finalization claim (see reconcileOnStartup).
+	 * `role='implement' AND status='awaiting_review' AND chat_thread_role='implement'`.
+	 */
+	listStrandedImplementPhases(): PhaseSession[];
+	/**
+	 * FLY-939 (G-C): ALL phase-session rows for an issue + phase role (ANY status,
+	 * newest first with a `rowid DESC` tiebreak for deterministic ordering — Codex
+	 * design R1 #2). The ghost guard probes the most-recent few (with a
+	 * tmux_session) to detect a terminal-status row whose tmux is still alive
+	 * before a spawn fallback. plugin.ts:
+	 * `getPhaseSessionsForIssue(issue).filter(chat_thread_role===phase)`.
+	 */
+	listPhaseSessionRows(issueId: string, phase: ThreeStagePhase): PhaseSession[];
 	/**
 	 * FLY-887: the keep-alive kill-switch (FLYWHEEL_THREE_STAGE_KEEPALIVE). When
 	 * false, handoff/fail revert to the legacy close-and-respawn path (byte-compat).
@@ -348,6 +392,17 @@ export interface PhaseOrchestratorDeps {
 		listStrandedPassCandidates(): PhaseSession[];
 		/** Best-effort issue-thread note; the orchestrator logs failures. */
 		postIssueThread(session: PhaseSession, text: string): Promise<void>;
+		/**
+		 * FLY-939 (G-B): true when the session's bound review question
+		 * (`review_question_id`) ALREADY has a response in the project CommDB — i.e.
+		 * the founder/Lead answered the approve_to_ship gate. Used to distinguish a
+		 * legitimate founder-feedback KICKBACK (gate answered "changes requested",
+		 * QA re-emits qa-result FAIL) from a stray FAIL while a ship gate is
+		 * genuinely pending. Fail-closed: any lookup error → false (refuse the
+		 * kickback rather than yank a live gate). plugin.ts opens the project CommDB
+		 * and calls `getResponse(review_question_id)`.
+		 */
+		hasGateResponse(session: PhaseSession): boolean;
 		/** Fix-round cap (default 3); maxImplementPhases = 1 + maxFixRounds. */
 		maxFixRounds?: number;
 	};
@@ -447,7 +502,127 @@ export class PhaseOrchestrator {
 				);
 			}
 		}
+		await this.reconcileStrandedImplementHandoffs();
 		await this.reconcileQaVerdicts();
+	}
+
+	/**
+	 * FLY-939 (G-A2): re-drive an implement→QA handoff that a crash / wake-fail
+	 * lost. A stranded implement sits at awaiting_review with its review binding
+	 * set, but no QA was ever spawned/woken — so on the next boot re-fire
+	 * `onPhaseComplete(implement)` (the existing handoff, which spawns or wakes QA
+	 * and passes through the G-C ghost guard). Guarded HARD to only re-drive a
+	 * handoff that NEVER fired: skip if the issue already has ANY qa phase row
+	 * (alive OR terminal — either way the handoff fired once: an alive QA means the
+	 * pipeline owns itself; a terminal QA's stranded-pass is covered by
+	 * checkStrandedPass) or a ship-finalization claim (already shipped). This
+	 * mirrors design's `hasProgressedPastDesign` "only complete a never-fired
+	 * handoff" philosophy. Best-effort per session; one failure never blocks the rest.
+	 */
+	private async reconcileStrandedImplementHandoffs(): Promise<void> {
+		let stranded: PhaseSession[];
+		try {
+			stranded = this.deps.listStrandedImplementPhases();
+		} catch (err) {
+			this.warn(
+				`reconcileStrandedImplementHandoffs query failed: ${(err as Error).message}`,
+			);
+			return;
+		}
+		if (stranded.length > 0) {
+			this.log(
+				`reconcileStrandedImplementHandoffs: ${stranded.length} implement awaiting_review candidate(s)`,
+			);
+		}
+		for (const s of stranded) {
+			if (this.hasProgressedPastImplement(s.issue_id)) {
+				this.log(
+					`reconcileStrandedImplementHandoffs: ${s.execution_id} (${s.issue_id}) already has a qa row / ship claim — implement→qa handoff already fired; skip`,
+				);
+				continue;
+			}
+			try {
+				await this.onPhaseComplete(s);
+			} catch (err) {
+				this.warn(
+					`reconcileStrandedImplementHandoffs onPhaseComplete failed for ${s.execution_id}: ${(err as Error).message}`,
+				);
+			}
+		}
+	}
+
+	/**
+	 * FLY-939 (G-A2): has this issue's implement→QA handoff already fired? True
+	 * when ANY qa phase-session row exists for the issue (any status — an alive QA
+	 * means the pipeline is running itself; a terminal QA means the handoff fired
+	 * and its stranded-pass is the checkStrandedPass domain), OR the issue already
+	 * shipped (ship-finalization claim). Only a stranded implement whose QA NEVER
+	 * came up is a genuine lost-handoff remnant. `listPhaseSessionRows` returns all
+	 * statuses, so this sees terminal QA rows that `getAlivePhaseSession` cannot.
+	 */
+	private hasProgressedPastImplement(issueId: string): boolean {
+		if (this.deps.hasShipFinalizationClaim(issueId)) return true;
+		try {
+			return this.deps.listPhaseSessionRows(issueId, "qa").length > 0;
+		} catch (err) {
+			// Fail-closed: if we cannot prove there is NO qa row, do not re-drive a
+			// handoff (a duplicate QA spawn is worse than a missed re-drive, which the
+			// next boot retries once the query recovers).
+			this.warn(
+				`hasProgressedPastImplement qa-row query failed for ${issueId}: ${(err as Error).message} — treating as progressed (no re-drive)`,
+			);
+			return true;
+		}
+	}
+
+	/**
+	 * FLY-939 (G-C): the "never respawn onto a live ghost" structural guard.
+	 * Returns true when a spawn fallback may proceed; false (and alerts the Lead)
+	 * when a terminal-status phase row still has a live — or indeterminate — tmux
+	 * process, which spawning would duplicate (two writers on shared branch B).
+	 * Only reached from the keep-alive spawn fallbacks: `getAlivePhaseSession`
+	 * already returned undefined, so any probe-ALIVE row here is DB/tmux state
+	 * pollution (a bypass flipped the row terminal while its window lived on), not
+	 * a healthy parked phase. Fail-closed on `alive` AND `indeterminate` — an
+	 * unknown probe never licenses a duplicate; operator reconcile (FLY-934) or the
+	 * next trigger's re-probe clears it. Probes only the most-recent
+	 * GHOST_PROBE_MAX_ROWS rows carrying a tmux_session (newest first, deterministic
+	 * via the dep's rowid tiebreak).
+	 */
+	private async ghostGuard(
+		issueId: string,
+		phase: ThreeStagePhase,
+	): Promise<boolean> {
+		if (!this.deps.keepAliveEnabled()) return true; // never probe on the legacy path
+		let rows: PhaseSession[];
+		try {
+			rows = this.deps.listPhaseSessionRows(issueId, phase);
+		} catch (err) {
+			// A row query failure is not evidence of a ghost — warn + proceed rather
+			// than brick every handoff on a transient DB read error.
+			this.warn(
+				`ghostGuard row query failed for ${issueId}/${phase}: ${(err as Error).message} — proceeding with spawn`,
+			);
+			return true;
+		}
+		const probeRows = rows
+			.filter((r) => !!r.tmux_session)
+			.slice(0, GHOST_PROBE_MAX_ROWS);
+		for (const row of probeRows) {
+			const liveness = await this.deps.effects.probeGhostTmux(row);
+			if (liveness === "alive" || liveness === "indeterminate") {
+				await this.failClosed(
+					row,
+					`terminal-status ${phase} session ${row.execution_id} still has a ${
+						liveness === "alive"
+							? "LIVE"
+							: "possibly-live (indeterminate probe)"
+					} tmux process (${row.tmux_session}) — refusing to spawn a duplicate ${phase} (would double-write shared branch B). Operator must reconcile the stale row/window (FLY-934); the parked runner is not lost.`,
+				);
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/**
@@ -626,6 +801,27 @@ export class PhaseOrchestrator {
 		if ((session.chat_thread_role ?? "main") !== "qa") return; // not three-stage
 		const execId = session.execution_id;
 
+		// FLY-939 (G-B): a founder/Lead "changes requested" reply lands on the QA
+		// session's OWN approve_to_ship gate as a feedback wake. The QA prompt's
+		// kickback contract forbids QA from editing code (role separation) and has
+		// it re-emit `qa-result --status fail` instead. Recognize that legitimate
+		// kickback so the two guards below let it into the fix-loop (which WAKES the
+		// parked implement) rather than dropping it:
+		//   - keep-alive ON only (OFF closes QA after its single verdict → byte-compat);
+		//   - the incoming verdict is FAIL;
+		//   - the QA session sits at awaiting_review (its own ship gate is open);
+		//   - the gate's bound review question ALREADY has a response (the feedback).
+		// approved_to_ship is deliberately EXCLUDED (a verified approval was already
+		// consumed — a FAIL then must never un-ship; verify-approval's pr_head_sha
+		// binding would reject the old head anyway, but we refuse structurally too).
+		const incomingStatus = (verdict.status ?? "").trim().toLowerCase();
+		const isFeedbackKickback =
+			this.deps.keepAliveEnabled() &&
+			incomingStatus === "fail" &&
+			session.status === "awaiting_review" &&
+			hasRunnerDrivenReviewEvidence(session) &&
+			this.deps.qaVerdicts.hasGateResponse(session);
+
 		// The recorded intent is the AUTHORITY for this QA session — one verdict
 		// per lifecycle. Checked BEFORE validating the incoming verdict (Codex
 		// code R1 HIGH-1): an incomplete FAIL flow must resume no matter what a
@@ -661,19 +857,26 @@ export class PhaseOrchestrator {
 			// A prior PASS / terminal refusal (alertedAt) / keep-alive OFF is never a
 			// new round → ignore the new verdict (byte-compat: keep-alive OFF closes
 			// the QA session after its single verdict, so this never fires there).
+			// FLY-939 (G-B): EXCEPT a founder-feedback kickback — the QA session's
+			// prior intent is a PASS (it passed, opened the ship gate, then the
+			// founder asked for changes), so this must fall through over the recorded
+			// PASS to re-drive the fix-loop. Kept narrow via isFeedbackKickback
+			// (awaiting_review + answered gate) so an ordinary post-PASS stray FAIL
+			// is still ignored.
 			if (
 				!(
 					existing.status === "fail" &&
 					!!existing.fixExecId &&
 					this.deps.keepAliveEnabled()
-				)
+				) &&
+				!isFeedbackKickback
 			) {
 				this.log(
 					`qa_result ${verdict.eventId} for ${execId} ignored — verdict ${existing.event_id} already recorded`,
 				);
 				return;
 			}
-			// fall through → new round
+			// fall through → new round (or a founder-feedback kickback over a PASS)
 		}
 
 		const status = (verdict.status ?? "").trim().toLowerCase();
@@ -688,14 +891,24 @@ export class PhaseOrchestrator {
 		if (
 			status === "fail" &&
 			(session.status === "awaiting_review" ||
-				session.status === "approved_to_ship")
+				session.status === "approved_to_ship") &&
+			!isFeedbackKickback
 		) {
 			// A ship gate is already in flight for this QA session — a FAIL now
 			// would yank the gate holder. Runner misbehavior; never auto-loop.
+			// FLY-939 (G-B): the ONE exception is a founder-feedback kickback
+			// (isFeedbackKickback: awaiting_review + the bound gate already
+			// answered) — that FAIL IS the pipeline routing the founder's requested
+			// changes to the parked implement, so it falls through to the fix-loop.
 			this.warn(
-				`qa_result FAIL for ${execId} ignored — session is ${session.status} (ship gate in flight)`,
+				`qa_result FAIL for ${execId} ignored — session is ${session.status} (ship gate in flight; not a founder-feedback kickback)`,
 			);
 			return;
+		}
+		if (isFeedbackKickback) {
+			this.log(
+				`qa_result FAIL for ${execId} accepted as a founder-feedback KICKBACK (awaiting_review gate already answered) — routing to the fix-loop: WAKE the parked implement, never edit code in QA`,
+			);
 		}
 		this.deps.qaVerdicts.patchIntent(execId, {
 			status: status as "pass" | "fail",
@@ -953,26 +1166,42 @@ export class PhaseOrchestrator {
 				round,
 				qaSummary,
 			});
-			// Persist the fix binding AFTER the TURN + wake attempt so a same-verdict
-			// replay short-circuits in onQaResult (no double-wake).
-			this.deps.qaVerdicts.patchIntent(execId, {
-				fixExecId: impl.execution_id,
-			});
+			// FLY-939 (G-A): fail-loud on a failed wake, and keep the verdict intent
+			// REPLAYABLE. Only persist the fix binding on a SUCCESSFUL wake — a
+			// premature `fixExecId` (the pre-FLY-939 behavior) permanently short-
+			// circuits onQaResult's resume condition (`!existing.fixExecId`), so the
+			// boot `reconcileQaVerdicts` replay could never retry the missed wake and
+			// the pipeline stalled silently (543's respawn / today's dup runners were
+			// the visible symptom of this class of silent stall). Do NOT patch
+			// `fixExecId` and do NOT patch `alertedAt` on failure: the intent stays
+			// `{fail, no fixExecId, no alertedAt}` so the reconcile sweep re-drives
+			// this exact fix round (recordFixRound's insert-or-read returns the SAME
+			// round, the head is re-read from the SAME committed tip) and re-wakes.
 			if (woke.ok) {
+				this.deps.qaVerdicts.patchIntent(execId, {
+					fixExecId: impl.execution_id,
+				});
 				this.log(
 					`QA FAIL → WAKE implement fix round ${round} on ${session.issue_id} @ ${headSha.slice(0, 8)} (impl ${impl.execution_id})`,
 				);
+				await this.postFixThread(session, round, true);
 			} else {
-				this.warn(
-					`QA FAIL wake implement failed for ${impl.execution_id}: ${woke.error ?? "?"} — TURN set, held for reconcile`,
+				await this.failClosed(
+					impl,
+					`QA FAIL fix wake failed for ${impl.execution_id}: ${woke.error ?? "?"} — TURN set; the fix round is held REPLAYABLE and the boot reconcile sweep will re-drive it (Lead may nudge the implement runner via tmux to unblock sooner). NOT spawning a duplicate implement.`,
 				);
 			}
-			await this.postFixThread(session, round, true);
 			return;
 		}
 
 		// The implement phase died → spawn a fresh Implement-fix (dispatcher seam
 		// grants its TURN pre-launch). The QA session still parks (not closed).
+		// FLY-939 (G-C): but first ghost-probe — if a terminal-status implement row
+		// still has a live tmux window, that IS the implement (a bypass flipped its
+		// row to terminal); spawning would duplicate it + double-write branch B.
+		// ghostGuard alerts + returns false; the intent stays REPLAYABLE (fixExecId
+		// not patched) so a later reconcile retries once the pollution is cleared.
+		if (!(await this.ghostGuard(session.issue_id, "implement"))) return;
 		const fixLeadId = this.deps.resolveLeadId(session);
 		if (fixLeadId === undefined) {
 			this.warn(
@@ -1151,14 +1380,23 @@ export class PhaseOrchestrator {
 					`${prev.session_role} → ${next} WAKE on ${prev.issue_id} @ ${headSha.slice(0, 8)} (target ${target.execution_id})`,
 				);
 			} else {
-				this.warn(
-					`${prev.session_role} → ${next} wake failed for ${target.execution_id}: ${woke.error ?? "?"} — TURN set, held for reconcile`,
+				// FLY-939 (G-A): fail-loud, don't silently strand. The TURN already
+				// points at the parked target, so the reconcile re-drive (re-firing
+				// this same handoff) idempotently re-wakes it — but a silent warn hid
+				// the stall until a human noticed a dead pipeline, so alert the Lead.
+				await this.failClosed(
+					target,
+					`${prev.session_role} → ${next} wake failed for ${target.execution_id}: ${woke.error ?? "?"} — TURN set (points at the parked ${next}); the handoff is held for reconcile re-drive (Lead may nudge the ${next} runner via tmux). NOT spawning a duplicate ${next}.`,
 				);
 			}
 			return;
 		}
 
 		// No live next phase → SPAWN it (dispatcher pre-launch seam grants its TURN).
+		// FLY-939 (G-C): before spawning, ghost-probe — a terminal-status row with a
+		// live tmux window means a bypass polluted the state; spawning would create a
+		// duplicate + second writer. Fail-closed: ghostGuard alerts + returns false.
+		if (!(await this.ghostGuard(prev.issue_id, next))) return;
 		await this.dispatchNextPhase(prev, next, headSha);
 	}
 
