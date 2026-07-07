@@ -952,15 +952,16 @@ step_hydrate_linear() {
 # ═══════════════════════════════════════════════════════════════════════════
 
 # _fs_provision <args...> — the unchanged provisioner against the wizard's
-# internal staging artifact. FLYWHEEL_STATE_DIR is PINNED to the wizard's
-# state root (R1#7 "consistent HOME/--home/state-dir"): host-config gives an
-# inherited FLYWHEEL_STATE_DIR env priority, so without the pin a stray env
-# (or a wizard --state-dir) would make provision read/write a DIFFERENT
-# state root than the one the wizard's .env/journal live in.
+# internal staging artifact. FLY-954: the provisioner (a WRITER) now IGNORES
+# an inherited FLYWHEEL_STATE_DIR — the state root goes in explicitly via
+# --state-dir (same state root the wizard's .env/journal live in; R1#7
+# "consistent HOME/--home/state-dir"). The env PIN is kept as documentation
+# of intent but no longer carries the value.
 _fs_provision() {
   FLYWHEEL_STATE_DIR="$FLYWHEEL_SETUP_STATE_DIR" \
     bash "$FS_SCRIPT_DIR/provision-fleet-host.sh" \
-    --fleet-dir "$FS_FLEET_DIR" --home "$HOME" --repo-root "$FS_REPO_ROOT" "$@"
+    --fleet-dir "$FS_FLEET_DIR" --home "$HOME" --repo-root "$FS_REPO_ROOT" \
+    --state-dir "$FLYWHEEL_SETUP_STATE_DIR" "$@"
 }
 
 # step: preflight — dependencies FIRST, then the hard gate.
