@@ -1,13 +1,13 @@
 ---
 issue: FLY-954
 phase: implement
-phaseCursor: 6/9
-updated: 2026-07-07T18:43:57.169Z
-nextStep: "Task 7: three convergence mount points"
+phaseCursor: 7/9
+updated: 2026-07-07T18:48:26.242Z
+nextStep: "Task 8: test-entry hard sandbox HOME assertions"
 chunks: []
 pointers: {}
 ---
 
 # FLY-954 progress
-**phase**: implement (6/9)
-**next**: Task 7: three convergence mount points
+**phase**: implement (7/9)
+**next**: Task 8: test-entry hard sandbox HOME assertions
