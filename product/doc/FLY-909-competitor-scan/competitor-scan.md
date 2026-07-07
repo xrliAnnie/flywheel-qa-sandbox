@@ -1,4 +1,4 @@
-# FLY-909 竞品扫描 + 定位启发 — 交付物(round 2 · Annie 批注修订版)
+# FLY-909 竞品扫描 + 定位启发 — 交付物(round 2 · Annie 批注修订版 + Claude Cowork/Codex app 扩展)
 
 Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面上别人怎么做-喂产品定位形态)
 日期: 2026-07-07
@@ -7,7 +7,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 
 > 一页看完:市场怎么分、各家什么状态、能借什么、我们的差异**候选**线索在哪 —— 全部按「**非技术小生意主**」这个视角(Annie 已定:能读 PR/做验收的高阶画像出局)。
 > **口径(重要)**:「我们跟 Matrix/Paperclip 到底差异化不化、generic-vs-concrete」这类**定位大结论,归 FLY-911 跟 Annie 收敛,本文不硬下** —— 差异一律写成「候选 / 待 911 拍」。本文是喂料,不是定案。
-> **本版(Annie 批注)改了什么**:①用词去丧(别人做了 ≠ 我们不能做);②Paperclip 真挖深(机制/怎么起来的/可借鉴,不只下结论,见 paperclip-deepdive.md);③不 overclaim「完全非技术」(现在还没到,产品化是待解题);④修正 Lovable 分类(它主要是出 UI 的地方);⑤自托管诚实化(差异不是「不用自托管」,是「done-for-you 替你做」);⑥bootstrap 打法写进「可借鉴」。
+> **本版改了什么**:〔round-2.1 Annie 批注〕①用词去丧(别人做了 ≠ 我们不能做);②Paperclip 真挖深(见 paperclip-deepdive.md);③不 overclaim「完全非技术」(现在还没到);④修正 Lovable(主要是出 UI 的地方);⑤自托管诚实化(差异是「done-for-you 替你做」);⑥bootstrap 打法写进「可借鉴」。〔本次扩展〕⑦加 **Claude Cowork + Codex app**,诚实回答「我们还有没有价值 / 会不会被取代」(见新增 ⑥ 节)—— 编排引擎不占优要认,真差异落在 领域/常驻组织/手机 IM/供应商中立 的组合(候选,待 911)。
 
 ---
 
@@ -33,6 +33,8 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 | **🆕 Paperclip**(@dotta) | 把你的 agent 组织成一个公司的控制平面(org chart/预算/治理) | **明说给 operators**(solo 创始人/agency/甚至牙医·营销公司) | 自己跑的 Node server + React 面板;BYO agent | **瞄的人跟我们很像**,但上手要自托管(Docker/VPS);还「原型穿产品外衣」、每周 bug | **开源 MIT 免费**(自付基建) |
 | **Hermes**(Nous) | 会自己长本事的常驻 agent | 技术自托管者 / prosumer | 自己服务器跑 daemon(现有桌面 app) | 桌面 app 后好一点,根子仍是自托管单 agent | 开源(自付基建) |
 | **OpenHands**(All Hands) | 开源云端 coding agent 平台 | 开发者 | Cloud/CLI/SDK;连 GitHub → 出 PR | Cloud 也要懂 repo/git 流 | Free(BYOK)/$20 |
+| **🆕 Claude Cowork**(Anthropic) | 非技术知识工作者的 AI coworker(在你文件上干活) | **明确非技术知识工作者** | Claude 桌面 app GUI,描述「做完什么样」→ 它做完交到你文件夹 | **done-for-you + 无需编程** —— 但做的是**你文件上的知识工作**(研究/合同/报告),不是建并养一个软件产品;桌面端、锁 Claude、是「你启动一个任务」 | 随 Claude 订阅 |
+| **🆕 Codex app**(OpenAI) | agent 指挥中心(编排一队 coding agent) | **开发者-导演** | 桌面「command center」+ CLI;manager 协调并行 subagent(默认最多 6-8) | 面向开发者、要懂技术在桌面/CLI 编排;锁 OpenAI | 随 OpenAI 订阅 |
 | **🌟 Matrix**(flowith) | Launch a 0-Person Company that actually earns | 想 0 人创业的个人/小团队 | macOS 桌面 app + 游戏小人可视化 | 门槛低但要下桌面 app、跑营销生意不是软件 | 公测免费 |
 | **🎯 Flywheel** | 由你指挥、替你建并养一个真软件产品的 AI 团队 | **非技术小生意主/创始人** | Discord 里跟 AI Lead 聊,Lead 管 Runner 建并维护你 GitHub 里的真产品 | **目标 done-for-you**(你不用懂技术);⚠️ **坦白:现在还没到** —— 跑起来仍需要点工程水平(Annie 自己用都撞 bug),产品化是待解题 | Claude 订阅制 |
 
@@ -101,12 +103,38 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 
 ---
 
+## ⑥ 存在性拷问:Claude Cowork + Codex app 已经很 general 了 —— 我们还有没有价值?会不会被取代?(诚实答,别护短)
+
+> Annie 直接问的最硬的问题。我按「诚实、别护短、验证她的假设别替她下结论」来答。**这是喂 FLY-911 的诚实评估,不是定案。**
+
+**先说这俩是什么:**
+- **Claude Cowork**(Anthropic):明确做**非技术知识工作者**的 AI coworker,活在 **Claude 桌面 app** 的 GUI 里(no terminal / no coding / no technical background),直接读你电脑上一个文件夹。用法是 **done-for-you**:你**描述「做完长什么样」→ 它自己 start/run/finish、把成品交到你文件夹**,你 review 成品(告诉它 what,不是 how)。底层是 Claude Code 的 lead+sub-agent 编排(sub-agent 还能生 sub-agent)。
+- **Codex app**(OpenAI):**开发者的 agent 指挥中心** —— 桌面「command center」+ CLI,manager 协调一队并行 subagent(默认最多 6-8),覆盖 design/build/ship/maintain 全生命周期。开发者从写代码转成**编排/review/架构判断**。2M+ 周活。
+
+**诚实第 1 条(别护短):编排引擎不是我们的护城河。** 「把一个 lead agent 拆活、派给 sub-agent、还能 dispatcher 分诊」—— 这现在是 **Claude(Cowork / Code Agent Teams / `/goal` 常驻 / agents dashboard)和 Codex(subagents GA)两家的一方功能**,大厂资源更足、迭代更快。我们这套 leads/departments/三段式,在**编排机制层面**跟他们**重叠很多、且我们不占优**。这条要认。
+
+**诚实第 2 条(验证 Annie 的假设 —— 一半对一半不对):**
+- **Codex app**:✅ Annie 猜对 —— 它是**开发者工具**,你在桌面/CLI 当导演、要懂技术、锁 OpenAI。跟我们的目标用户(非技术小生意主)不是一路人。
+- **Claude Cowork**:⚠️ **Annie 的假设对它不成立,得诚实说** —— Cowork **恰恰是非技术 + done-for-you + 描述结果 review 成品 + 无需编程的 GUI**,这几乎就是我们对外讲的那套。**它是目前最贴、最该警惕的一家。**
+
+**诚实第 3 条:那价值/差异到底还剩什么?(候选,待 911 —— 我验证出来的,不替 Annie 下结论)**
+1. **领域**:Cowork 做的是**你文件上的知识工作**(研究综述 / 合同抽取 / 报告 / 数据整理),**不是建并长期维护一个真软件产品**;Codex 建软件但面向开发者。→ 「**替非技术的人建并养一个真软件产品/公司**」这块,两家目前都没正面做。
+2. **常驻组织 vs 你启动的任务**:Cowork/Codex 本质是「**你启动一个任务/会话** → 它 fan-out → 交付」(Cowork 能跨多天,但仍是项目会话)。我们是一个**常驻的组织**(CoS 自己分诊 backlog、Leads、部门、always-on),不是「你每次启动一个活」。这条是真结构差异,但**别吹太大**(值不值钱要 911 判)。
+3. **界面**:Cowork = **桌面 app + 你电脑上的文件夹**;Codex = 桌面/CLI。我们 = **手机原生 IM(Discord)**,不用开电脑、不用盯文件夹 —— 对「只带手机的非技术小生意主」是真差异。
+4. **agent-agnostic / 供应商中立(Annie ④)**:**Cowork 锁 Claude、Codex 锁 OpenAI**;我们架构上能跨后端(Claude / Codex / GLM / MiniMax / Antigravity / Kimi)。这是**第一方厂商结构上不会做**的事(它们不可能替你去用对手的模型)—— 所以这是一条**「定位层能打」的真差异**。
+   - ⚠️ **但要分清**:「**能打的差异**」≠「**现在就要建**」。Annie 早先定了 setup 先不做 agent-agnostic —— 不冲突:**现在可以把「供应商中立」当定位候选讲,但不必现在就建全**(能打≠现在建)。
+
+**诚实第 4 条:会不会被取代 / 风险在哪。** 最该盯的是 **Cowork(Anthropic 自己)**:它已经是「非技术 + done-for-you + 桌面 chat」。**如果 Anthropic 把 Cowork 指向「从手机替你建并长期维护一个软件产品」,我们的空间会被快速压缩。** 我们在**引擎层没有护城河**;价值全押在**把「done-for-you + 常驻组织 + 手机 IM + 供应商中立 + 真软件产品维护」这套组合,替一个非技术小生意主真正做通** —— 而这套**现在还没产品化**(见 ③ 的诚实边界)。**所以答案不是「我们注定被取代」,也不是「我们稳」,而是:差异存在、但薄,赢面取决于我们能不能比一个通用知识工作工具更早把这套具体组合做成真能用的 done-for-you 软件团队。这个判断,911 跟 Annie 拍。**
+
+---
+
 ## 我们跟谁「像」/ 差异候选(诚实 · 不硬下结论)
 
 - **跟 Matrix + Paperclip 最像 —— 连组织骨架都撞**(都是「你指挥的分层 AI 公司」;三角色也对得上)。这个壳区分度不高 —— 但**别人在做不等于我们不能做**。
 - 跟 Devin/Factory 的 async 派活→出 PR 同构,但它们卖给工程师、我们瞄非技术小生意主。
 - 跟 Paperclip/Hermes/OpenHands 一样都还早、都要点技术才跑得动 —— 包括我们。
-- → **真差异该落在「done-for-you + 真产品维护 + 可感知信任 + 我们自己的团队优势」,但具体主打哪条、成不成立,归 FLY-911 跟 Annie 收敛。本文只把候选摆出来。**
+- **跟 Claude Cowork 定位上最贴、最该警惕**(它也非技术 + done-for-you);跟 Codex app 的「一队 agent 覆盖软件全生命周期」编排重叠,但它面向开发者。**编排引擎层面我们不占优,详见 ⑥。**
+- → **真差异该落在「领域(建并养真软件产品)+ 常驻组织 + 手机 IM + 供应商中立 + done-for-you」的组合,但具体主打哪条、成不成立、薄不薄,归 FLY-911 跟 Annie 收敛。本文只把候选摆出来。**
 
 ---
 
@@ -116,3 +144,4 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 2. **主线差异化**:done-for-you / 真软件 / 结果证明 三条候选里,哪条当一句话定位主线?(我倾向:结果证明当锚、done-for-you 当切分 —— 但这是 911 跟 Annie 拍。)
 3. **反差 messaging**:「不是零人公司、是你做判断 AI 做工程」用不用当对外主线?
 4. **诚实边界怎么讲**:我们现在还没到「完全非技术能用」—— 对外要不要坦诚「正在把它做成 done-for-you」而不是假装已经是?(我倾向坦诚,和品类一起早,反而可信。)
+5. **面对 Cowork/Codex 这种大厂通用编排(尤其 Cowork = 非技术 done-for-you)**:我们押哪条组合当立身之本?(我验证下来:领域「建并养真软件产品」+ 常驻组织 + 手机 IM + 供应商中立,最能跟 Cowork 拉开;供应商中立现在「能讲」但不必「现在建全」。这条 911 拍。)

@@ -200,3 +200,31 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 - 增长/GTM:dev.to、eweek.com、@dotta × Greg Isenberg X、remoteopenclaw.com
 - 成熟度:vibecoding.app/blog(~7.8)、kunalganglani.com、github issues(4,953 open)
 - bootstrap 模板:github.com/paperclipai/companies、yesterday-ai/paperclip-plugin-company-wizard
+
+---
+
+## 7. 扩展(2026-07-07):Claude Cowork + Codex app —— 存在性拷问
+
+> Annie 加的:这两家已是很 general 的 agent 编排工具,我们还有没有价值/会不会被取代?诚实答、别护短、验证假设别替她下结论。产出进 competitor-scan.md ⑥ + review.html。
+
+### 7.1 Claude Cowork(Anthropic)
+- **面向**:明确做**非技术知识工作者**(no terminal / no coding / no technical background)。例子:研究综述、合同抽取、survey 处理、周期报告。
+- **形态**:活在 **Claude 桌面 app** GUI,直接读你电脑一个文件夹;底层是 Claude Code 的 lead+sub-agent 编排(sub-agent 还能生 sub-agent = dispatcher)。
+- **用法 = done-for-you**:你**描述「做完长什么样」→ 它 start/run/finish、把成品交到你文件夹**,你 review 成品(告诉它 what,不是 how)。「Chat 让你自己做得更快;Cowork 直接替你做完」。
+- **持久**:多天会话、本地文件、Dreaming feature,适合跨周项目(迁移/深研/文档)。
+- ⚠️ **对我们**:这是**最贴、最该警惕**的一家——非技术 + done-for-you 几乎就是我们的定位。差异靠:领域(它做文件知识工作,不是建养软件产品)、界面(桌面 app vs 手机 IM)、常驻组织 vs 任务、锁 Claude。
+
+### 7.2 Codex app(OpenAI)
+- **面向**:**开发者-导演**。桌面「command center for agents」+ CLI;manager 协调并行 subagent(subagents 2026-03-14 GA;max_threads 默认 6,官方另有到 8 的说法;max_depth 默认 1)。内部编排框架 = Symphony(开源 Elixir)。
+- **叙事**:「bottleneck 不再是 agent 能做什么,而是人怎么指挥/监督多个 agent」;开发者从写代码转向编排/review/架构判断。2M+ 周活。
+- ⚠️ **对我们**:Annie 的「他们是开发者工具、要懂技术」假设**对 Codex 成立**。
+
+### 7.3 诚实结论(喂 competitor-scan.md ⑥)
+- **编排引擎(lead+subagent+dispatcher)现在是 Claude(Cowork / Code Agent Teams / `/goal` 常驻 / agents dashboard)和 Codex(subagents GA)两家的一方功能** —— 我们在编排机制层面重叠多、不占优,大厂资源更足。**custom 子 agent 框架**(Flywheel 的前身那类)当初出现正是因为 Codex CLI 早期没 subagent;现在被一方功能吸收,这是「会不会被取代」的真实压力。
+- 差异候选(待 911):领域(建并养真软件产品)· 常驻组织 · 手机 IM · **供应商中立**(Cowork 锁 Claude / Codex 锁 OpenAI,第一方结构上不会替你用对手模型;Flywheel 多后端 claude-tmux/codex/antigravity/kimi)。**能打≠现在建**(Annie setup 先不做 agent-agnostic,不冲突)。
+- 风险:**Cowork(Anthropic 自己)最该盯** —— 若它指向「从手机替你建并维护一个软件产品」,我们空间快速被压缩。我们引擎层无护城河,赢面全在能不能更早把那套组合productize 成非技术真能用的 done-for-you 软件团队(现在还没到)。
+
+### 7.4 来源(2026-07 WebSearch)
+- Claude Cowork:anthropic.com/product/claude-cowork、claude.com/blog(how people use)、support.claude.com(get started)、mintmcp.com(use Cowork if not engineer)、aibl.to(Claude Trinity)、maven.com(Cowork for knowledge workers)、anthropics/knowledge-work-plugins
+- Codex app:openai.com/index/introducing-the-codex-app、intuitionlabs.ai、firecrawl.dev(multi-agent orchestration)、bhavishyapandit9.substack、morphllm.com(Codex vs Claude Code 2026)
+- 对比/持久 vs 任务:flowtivity.ai(Hermes vs Codex vs Cowork)、developersdigest.tech(Claude Code vs Codex app 2026)、code.claude.com/docs(agent-teams)、mindstudio.ai(Claude Code Agent Teams)
