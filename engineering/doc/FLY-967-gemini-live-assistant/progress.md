@@ -1,13 +1,13 @@
 ---
 issue: FLY-967
 phase: implement
-phaseCursor: 4/10
-updated: 2026-07-07T23:00:44.826Z
-nextStep: P4 BriefingEngine TDD (most independent module first)
+phaseCursor: 5/10
+updated: 2026-07-07T23:04:42.680Z
+nextStep: P5 assistant tools (lookup_issue/board_snapshot, mock HTTP)
 chunks: []
 pointers: {}
 ---
 
 # FLY-967 progress
-**phase**: implement (4/10)
-**next**: P4 BriefingEngine TDD (most independent module first)
+**phase**: implement (5/10)
+**next**: P5 assistant tools (lookup_issue/board_snapshot, mock HTTP)
