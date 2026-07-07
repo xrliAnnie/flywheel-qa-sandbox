@@ -23,6 +23,7 @@ import type { ChatThreadCreator } from "./bridge/ChatThreadCreator.js";
 import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
+import type { IssueDisplayRefreshHolder } from "./bridge/issue-display-refresher.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import { makeLinearDoneFinalizer } from "./bridge/linear-issue-finalizer.js";
 import {
@@ -86,6 +87,28 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		issueId: string,
 		projectName: string,
 	) => Promise<void>;
+
+	/**
+	 * FLY-907 (Step 4.1b): unified issue-display refresh holder. This in-process
+	 * sink writes session status via `upsertSession` DIRECTLY (it deliberately
+	 * does NOT route through applyTransition — see emitCompleted), so the
+	 * onTransition hook never sees its writes. Set by the composition root;
+	 * absent / `.current` undefined → byte-compat no-op. Enqueued after
+	 * started/completed/failed writes; the AWAITED `refresh` is threaded into
+	 * runPostShipFinalization so the ship-terminal display state lands BEFORE
+	 * the thread archive.
+	 */
+	public issueDisplayRefresh?: IssueDisplayRefreshHolder;
+
+	private notifyDisplayChanged(issueId: string): void {
+		try {
+			this.issueDisplayRefresh?.current?.enqueue(issueId);
+		} catch (err) {
+			console.warn(
+				`[DirectEventSink] issue-display enqueue threw for ${issueId}: ${(err as Error).message}`,
+			);
+		}
+	}
 
 	constructor(
 		private store: StateStore,
@@ -244,6 +267,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				`[DirectEventSink] chatThread guard: enabled=${!!this.config.chatThreadsEnabled} hasCreator=${!!this.chatThreadCreator} — skipping for ${env.issueId}`,
 			);
 		}
+
+		// FLY-907: a fresh session row (incl. an operator-reset's replacement
+		// exec) changes what all three display faces should show.
+		this.notifyDisplayChanged(env.issueId);
 
 		// Notify agent
 		this.pushNotification(env, "session_started");
@@ -633,6 +660,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
+		// FLY-907: completion status landed via upsertSession (bypasses the
+		// applyTransition onTransition hook) — trigger the display refresh here.
+		this.notifyDisplayChanged(env.issueId);
+
 		// FLY-123 (Codex design review R1 #4): persist adapter session-resume
 		// params (e.g. Codex threadId). MERGE-patch, never replace — proofshot
 		// state (GEO-151 `proofshot.*`, `last_artifact`) lives under the same
@@ -815,6 +846,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 						// by runPostShipFinalization's merge-evidence predicate).
 						markIssueDone: makeLinearDoneFinalizer(this.config),
+						// FLY-907: final terminal-state display refresh — awaited inside
+						// the orchestrator AFTER phase finalization, BEFORE archive.
+						refreshIssueDisplay: (issueId) =>
+							this.issueDisplayRefresh?.current?.refresh(issueId) ??
+							Promise.resolve(),
 					},
 				),
 			);
@@ -870,6 +906,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// TURN holder (FLY-543 shape) must still release the belt. Sister call:
 		// event-route.ts session_failed path.
 		await this.reconcileTurnBeltAfterTerminal(env.executionId);
+
+		// FLY-907: failure status landed via upsertSession (bypasses the
+		// applyTransition onTransition hook) — trigger the display refresh here.
+		this.notifyDisplayChanged(env.issueId);
 
 		this.pushNotification(env, "session_failed");
 	}

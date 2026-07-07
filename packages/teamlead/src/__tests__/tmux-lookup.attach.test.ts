@@ -27,6 +27,9 @@ describe("resolveCmuxAttachTarget", () => {
 		expect(target).toEqual({
 			kind: "cmux",
 			session: "cmux-FLY-560-claude-some-title",
+			// FLY-907 (Step 3): the resolved window_name rides along so callers
+			// can verify the window belongs to the issue before rendering.
+			windowName: "FLY-560-claude-some-title",
 		});
 		// Verified with an EXACT (=) match.
 		expect(calls).toContainEqual([
@@ -56,6 +59,9 @@ describe("resolveCmuxAttachTarget", () => {
 			kind: "base",
 			session: "runner-flywheel",
 			tmuxWindow: "runner-flywheel:@46",
+			// FLY-907 (Step 3): window_name was still resolved (display-message
+			// succeeded) — carried for the cross-wire guard on base fallback too.
+			windowName: "FLY-560-claude-some-title",
 		});
 	});
 

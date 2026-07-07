@@ -25,6 +25,8 @@ import {
 	type CommBackend,
 	resolveAllFlags,
 	resolveCommBackend as resolveCommBackendShared,
+	THREE_STAGE_PHASE_SEQUENCE,
+	type ThreeStagePhase,
 } from "flywheel-config";
 import {
 	closeRunnerTerminalView,
@@ -164,6 +166,15 @@ import { loadFounderMilestoneReportConfigByProject } from "./founder-milestone-c
 import { mountFounderUxRoutes } from "./founder-ux/routes.js";
 import { GatePoller } from "./gate-poller.js";
 import {
+	derivePhaseDisplayState,
+	type PhaseDisplayState,
+	renderPhaseStatusLine,
+} from "./issue-display.js";
+import {
+	IssueDisplayRefresher,
+	type IssueDisplayRefreshHolder,
+} from "./issue-display-refresher.js";
+import {
 	createBlockedMarkerReader,
 	createClaimsClaimer,
 	createClaimsReader,
@@ -180,10 +191,8 @@ import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { waitForPaneMarker } from "./pane-readiness.js";
 import {
-	computePhaseLineStates,
 	PhaseOrchestrator,
 	type PhaseSession,
-	renderPhaseStatusLine,
 	type ThreeStageVerdictIntent,
 	type TurnBeltRow,
 } from "./phase-orchestrator.js";
@@ -777,6 +786,17 @@ export interface BridgeAppOptions {
 	 */
 	accountRotationPost?: { current?: (detail: string) => Promise<void> };
 	/**
+	 * FLY-907: late-bound holder for the unified issue-display refresher. The
+	 * /events router, the actions router, the stale-blocker guard, and the
+	 * founder-consent gate-response hook all mount inside createBridgeApp
+	 * (pre-listen), but the refresher is built post-listen in startBridge (it
+	 * needs AutoQaEffects) — so every surface reads `.current` at fire time.
+	 * Absent / `.current` undefined ⇒ triggers dormant and the stage_changed
+	 * path falls back to the legacy stamp+pin (byte-compat / the
+	 * FLYWHEEL_ISSUE_DISPLAY_REFRESH=0 escape hatch).
+	 */
+	issueDisplayRefresh?: IssueDisplayRefreshHolder;
+	/**
 	 * FLY-871 R2/C5: the /api/account-switch route (mounted in createBridgeApp)
 	 * reads this holder at request time; startBridge sets `.current` only when
 	 * accountSwitchRepair + the unified Alerts channel exist
@@ -843,6 +863,8 @@ export function createBridgeApp(
 		config,
 		undefined,
 		transitionOpts,
+		// FLY-907: recovered-merge finalization display refresh (late-bound).
+		opts?.issueDisplayRefresh,
 	);
 	const fcNoop: express.RequestHandler = (_q, _s, next) => next();
 	const fcMw = (
@@ -955,6 +977,7 @@ export function createBridgeApp(
 			undefined, // _unusedForumTagUpdater (FLY-163)
 			registry,
 			onApproved,
+			opts?.issueDisplayRefresh, // FLY-907
 		),
 	);
 
@@ -997,6 +1020,7 @@ export function createBridgeApp(
 			opts?.autoQaCoordinator,
 			opts?.phaseOrchestrator,
 			opts?.accountRotationPost,
+			opts?.issueDisplayRefresh, // FLY-907
 		),
 	);
 
@@ -1379,6 +1403,7 @@ export function createBridgeApp(
 			undefined, // _unusedForumTagUpdater (FLY-163)
 			registry,
 			onApproved,
+			opts?.issueDisplayRefresh, // FLY-907
 		),
 	);
 
@@ -2378,6 +2403,13 @@ export function createBridgeApp(
 			store,
 			fsm: new WorkflowFSM(WORKFLOW_TRANSITIONS),
 			executor: new DirectiveExecutor(store),
+			// FLY-907 (Codex R1 #1): this INDEPENDENT opts instance bypasses the
+			// shared transitionOpts object — hook it too, or a stale-blocker
+			// finalization (stale blocker → completed) never refreshes the display.
+			onTransition: (executionId, _targetStatus, ctx) => {
+				const issueId = ctx.issueId ?? store.getSession(executionId)?.issue_id;
+				if (issueId) opts?.issueDisplayRefresh?.current?.enqueue(issueId);
+			},
 		};
 		const staleBlockerGuard = createStaleBlockerGuard({
 			enabled: process.env.FLYWHEEL_CRON_STALE_GUARD !== "0",
@@ -2733,10 +2765,31 @@ export async function startBridge(
 		);
 
 	let retryDispatcher = opts?.retryDispatcher;
+	// FLY-907: unified issue-display refresh. The holder is threaded into every
+	// trigger surface NOW (they read `.current` at fire time); the refresher
+	// itself is built post-listen (it needs AutoQaEffects). Master escape hatch:
+	// FLYWHEEL_ISSUE_DISPLAY_REFRESH=0 leaves `.current` unset forever → all
+	// NEW trigger surfaces stay dormant and stage_changed uses the legacy
+	// stamp+pin path (pre-FLY-907 behavior).
+	const issueDisplayRefreshEnabled =
+		process.env.FLYWHEEL_ISSUE_DISPLAY_REFRESH !== "0";
+	const issueDisplayRefreshHolder: IssueDisplayRefreshHolder = {};
 	// GEO-158: FSM instance + DirectiveExecutor for validated transitions
 	const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 	const executor = new DirectiveExecutor(store);
-	const transitionOpts: ApplyTransitionOpts = { store, fsm, executor };
+	const transitionOpts: ApplyTransitionOpts = {
+		store,
+		fsm,
+		executor,
+		// FLY-907 (Step 4.1): every applyTransition status write (kill /
+		// terminate / retry / reject / close-runner / crash-reaper / heartbeat
+		// reconcile / marker reconcilers / completion routes / founder consent)
+		// triggers ONE coalesced derive-from-state display refresh.
+		onTransition: (executionId, _targetStatus, ctx) => {
+			const issueId = ctx.issueId ?? store.getSession(executionId)?.issue_id;
+			if (issueId) issueDisplayRefreshHolder.current?.enqueue(issueId);
+		},
+	};
 	// FLY-247: fleet config snapshot provider (hot fleet-field overlay onto
 	// the boot topology; structural change → restart-required, R3#4) + the
 	// 30s evidence poller (single probe owner for Dashboard + watchdog, R6#5).
@@ -3113,6 +3166,9 @@ export async function startBridge(
 							phaseStatusLineRefreshHolder.current?.(issueId) ??
 							Promise.resolve(),
 					),
+					// FLY-907: the in-process sink's display-refresh holder (its
+					// upsertSession writes bypass the applyTransition hook).
+					issueDisplayRefresh: issueDisplayRefreshHolder,
 				},
 			);
 			startDispatcher = dispatcher;
@@ -3206,6 +3262,8 @@ export async function startBridge(
 			// FLY-871 R2/C5: /api/account-switch route reads this holder.
 			accountSwitchRoute: accountSwitchRouteHolder,
 			rescueRoute: rescueRouteHolder,
+			// FLY-907: unified issue-display refresher (populated post-listen).
+			issueDisplayRefresh: issueDisplayRefreshHolder,
 		},
 	);
 
@@ -3788,6 +3846,18 @@ export async function startBridge(
 		chatThreadsEnabled: config.chatThreadsEnabled,
 		transport: misroutePatrolTransport,
 		misrouteArchiveDir,
+		// FLY-907 (Step 4.5): issue-display reconcile sweep — piggybacked on this
+		// existing poll tick (zero new timer). The holder is populated post-listen;
+		// an empty holder / flag=0 makes the tick a no-op.
+		// FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS: cadence override (0 = disabled).
+		onDisplayReconcileTick: () =>
+			issueDisplayRefreshHolder.current?.runSweep?.(),
+		displayReconcileEveryNTicks: (() => {
+			const raw = process.env.FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS;
+			if (raw === undefined) return undefined; // GatePoller default (60)
+			const n = Number.parseInt(raw, 10);
+			return Number.isFinite(n) && n >= 0 ? n : undefined;
+		})(),
 		// FLY-605: bidirectional in-thread founder relay fallback. owner/token
 		// from config; the founder-reply cursor persists across restarts.
 		discordBotToken: config.discordBotToken,
@@ -3918,6 +3988,35 @@ export async function startBridge(
 		// dirs the live Bridge drainer reads.
 		...resolveAlertDirsFromEnv(process.env),
 	});
+
+	// FLY-907: build the unified issue-display refresher. The holder is read
+	// late-bound by EVERY trigger surface (applyTransition hook,
+	// DirectEventSink, event router, actions router, park/wake effects, sweep,
+	// founder-consent gate hook), so filling it here (post-listen) is correct;
+	// the GatePoller sweep reconciles anything that changed before this point.
+	// FLYWHEEL_ISSUE_DISPLAY_REFRESH=0 / chat-threads off → holder stays empty →
+	// every new trigger dormant + stage_changed keeps the legacy stamp+pin path.
+	if (issueDisplayRefreshEnabled && chatThreadCreator) {
+		issueDisplayRefreshHolder.current = new IssueDisplayRefresher({
+			store,
+			projects,
+			config,
+			chatThreadCreator,
+			flags: {
+				issueStatusEmojiEnabled:
+					process.env.FLYWHEEL_ISSUE_STATUS_EMOJI !== "0",
+				issueAttachPinEnabled: process.env.FLYWHEEL_ISSUE_ATTACH_PIN !== "0",
+			},
+			keepAliveEnabled: () => threeStageKeepAliveEnabled(),
+			// FLY-623 interaction: while HeartbeatService owns the ⚠️重连中 title,
+			// face A defers instead of overwriting it with a derived badge.
+			isReconnecting: (execId) =>
+				reconnectHolder.current?.isReconnecting(execId) ?? false,
+		});
+		console.log(
+			"[issue-display] FLY-907 unified refresher wired (derive-from-state, all lifecycle triggers)",
+		);
+	}
 
 	// FLY-579: build the auto-QA coordinator now that the LeadAlertNotifier exists
 	// (the effects need it for Lead-only pipeline-error alerts). Per-project qa
@@ -4057,11 +4156,38 @@ export async function startBridge(
 				issueId: string,
 			): Promise<void> => {
 				try {
+					// FLY-907: when the unified refresher is wired, every orchestrator
+					// refresh drives ALL THREE display faces (title + header + line)
+					// from real state — a qa_result / finalize is no longer a
+					// face-C-only update.
+					const unified = issueDisplayRefreshHolder.current;
+					if (unified) {
+						await unified.refresh(issueId);
+						return;
+					}
+					// Escape-hatch path (FLYWHEEL_ISSUE_DISPLAY_REFRESH=0): face C
+					// only, derived through the unified state machine with an
+					// "unknown" park probe (status-table-only — the pre-907 shape,
+					// rendered in the new FLY-907 vocabulary).
 					const sessions = store.getPhaseSessionsForIssue(issueId);
 					if (sessions.length === 0) return;
 					const anySession = store.getSession(sessions[0]!.execution_id);
 					if (!anySession) return;
-					const states = computePhaseLineStates(sessions);
+					const statusByRole = new Map<string, string>();
+					for (const s of sessions) {
+						const role = s.chat_thread_role;
+						if (role && !statusByRole.has(role)) {
+							statusByRole.set(role, s.status);
+						}
+					}
+					const states = {} as Record<ThreeStagePhase, PhaseDisplayState>;
+					for (const role of THREE_STAGE_PHASE_SEQUENCE) {
+						states[role] = derivePhaseDisplayState({
+							role,
+							status: statusByRole.get(role),
+							park: "unknown",
+						});
+					}
 					const text = renderPhaseStatusLine(states);
 					await phaseQaEffects.refreshPhaseStatusLine({
 						session: anySession,
@@ -4352,6 +4478,10 @@ export async function startBridge(
 						} finally {
 							db.close();
 						}
+						// FLY-907 (Step 4.2): a park changes the derived display state
+						// (boundary status + parked → ✅) with NO stage_changed — the
+						// FLY-902 Finding #4 stale-display root cause. Refresh.
+						issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
 					},
 					// FLY-887: fail-closed pre-wake worktree check (mirrors the close
 					// path's dirty guard, on the wake path).
@@ -4456,6 +4586,10 @@ export async function startBridge(
 							return { ok: false, error: (err as Error).message };
 						} finally {
 							db.close();
+							// FLY-907 (Step 4.2): the park marker was just cleared — the
+							// woken phase must flip back to ▶ (FLY-543 rework display).
+							// This is also the normal TURN re-grant path. Fire-and-forget.
+							issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
 						}
 					},
 				},

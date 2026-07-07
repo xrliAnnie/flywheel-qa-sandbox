@@ -14,7 +14,7 @@ import { StateStore } from "../StateStore.js";
 describe("buildPipelineHeaderContent (FLY-892 Step 4)", () => {
 	const ctx = { issueId: "FLY-892", issueIdentifier: "FLY-892" };
 
-	it("renders all three states: ✅+exec+cmd / ▶+exec+cmd / ⬜ planned", () => {
+	it("renders all three states: ✅+exec+cmd / ▶+exec+cmd / ◾ pending (FLY-907 vocabulary — grey ◾, not white ⬜)", () => {
 		const phases: PhaseHeaderRow[] = [
 			{
 				label: "[设计·Fable]",
@@ -28,14 +28,30 @@ describe("buildPipelineHeaderContent (FLY-892 Step 4)", () => {
 				execId: "8e5b4127",
 				attachCommand: "tmux attach -t runner-impl",
 			},
-			{ label: "[QA·Sonnet]", status: "planned", plannedModel: "Sonnet" },
+			{ label: "[QA·Sonnet]", status: "pending", plannedModel: "Sonnet" },
 		];
 		const out = buildPipelineHeaderContent(ctx, phases);
 		expect(out).toContain("📌 **[FLY-892] 三段流水线**");
 		expect(out).toContain("**[设计·Fable]** ✅ 完成 · exec `1a2b3c4d`");
 		expect(out).toContain("`tmux attach -t runner-design`");
 		expect(out).toContain("**[实现·Opus]** ▶ 进行中 · exec `8e5b4127`");
-		expect(out).toContain("**[QA·Sonnet]** ⬜ 未开始（计划模型 Sonnet）");
+		expect(out).toContain("**[QA·Sonnet]** ◾ 未开始（计划模型 Sonnet）");
+	});
+
+	it("FLY-907: a blocked phase renders 🔴 受阻; an attach cross-wire renders the degraded 终端待解析 marker instead of a command", () => {
+		const out = buildPipelineHeaderContent(ctx, [
+			{
+				label: "[实现·Opus]",
+				status: "active",
+				execId: "8e5b4127",
+				attachUnresolved: true,
+			},
+			{ label: "[QA·Opus]", status: "blocked", execId: "9f6c5238" },
+		]);
+		expect(out).toContain("**[实现·Opus]** ▶ 进行中 · exec `8e5b4127`");
+		expect(out).toContain("（终端待解析）");
+		expect(out).not.toContain("tmux");
+		expect(out).toContain("**[QA·Opus]** 🔴 受阻 · exec `9f6c5238`");
 	});
 
 	it("a DONE phase whose session is gone (pre-887) shows 已结束, no command", () => {
@@ -81,6 +97,38 @@ describe("ensureRunnerPipelineHeaderPin (FLY-892 Step 4)", () => {
 	});
 
 	const pin = () => ({ outcome: "pinned" as const });
+
+	it("FLY-907 (Codex R1 MED-1): a posted-but-UNPINNED header reports 'deferred' so the reconcile fingerprint is withheld and the sweep retries the pin", async () => {
+		mockFetch.mockResolvedValueOnce({
+			ok: true,
+			json: () => Promise.resolve({ id: "m-1" }),
+		});
+		// Fresh post, pin forbidden (bot lacks MANAGE_MESSAGES) → deferred.
+		const first = await creator.ensureRunnerPipelineHeaderPinResult(
+			ctx,
+			THREAD,
+			"📌 header v1",
+			{ pinImpl: () => ({ outcome: "forbidden" as const }), now: () => "t1" },
+		);
+		expect(first).toBe("deferred");
+		// Same content, pin retry still forbidden → still deferred (not noop).
+		const retry = await creator.ensureRunnerPipelineHeaderPinResult(
+			ctx,
+			THREAD,
+			"📌 header v1",
+			{ pinImpl: () => ({ outcome: "forbidden" as const }), now: () => "t2" },
+		);
+		expect(retry).toBe("deferred");
+		// Perms fixed → the retry pins and reports noop (content unchanged).
+		const healed = await creator.ensureRunnerPipelineHeaderPinResult(
+			ctx,
+			THREAD,
+			"📌 header v1",
+			{ pinImpl: () => ({ outcome: "pinned" as const }), now: () => "t3" },
+		);
+		expect(healed).toBe("noop");
+		expect(store.getChatThreadAttachPin(ISSUE, CH)?.pinnedAt).toBe("t3");
+	});
 
 	it("posts + pins the header content and stores it as the fingerprint", async () => {
 		mockFetch.mockResolvedValueOnce({

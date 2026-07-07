@@ -95,68 +95,12 @@ export interface ThreeStageVerdictIntent {
 
 const DEFAULT_MAX_FIX_ROUNDS = 3;
 
-/**
- * FLY-887 (founder-visibility ask): the rendered state of one phase in the
- * 3-stage status line. `pending` = no phase-session row yet; `active` =
- * status is `running`; `parked` = status sits at its post-boundary value
- * (design_done / awaiting_review / approved_to_ship — includes a woken
- * fix-in-progress session, since only an explicit re-`complete` flips the
- * status field back); `done` = completed/failed. Deliberately does NOT
- * cross-check the CommDB declared-state (park/wake) — the session `status`
- * field alone is the minimal signal that answers what Annie asked for
- * ("do the 3 phases coexist instead of closing"); the parked-vs-actively-
- * fixing distinction is a cosmetic nicety, not the point of this feature.
- */
-export type PhaseLineState = "pending" | "active" | "parked" | "done";
-
-const PHASE_LINE_ORDER: readonly ThreeStagePhase[] = [
-	"design",
-	"implement",
-	"qa",
-];
-const PHASE_LINE_EMOJI: Record<ThreeStagePhase, string> = {
-	design: "🎨",
-	implement: "🔨",
-	qa: "🧪",
-};
-
-/**
- * FLY-887: derive each phase's status-line state from the issue's phase
- * sessions (`StateStore.getPhaseSessionsForIssue` — any status, any role).
- * Pure/no I/O so it's trivially unit-testable; the caller (plugin.ts) owns
- * fetching `sessions` and posting/editing the rendered text.
- */
-export function computePhaseLineStates(
-	sessions: readonly Pick<PhaseSession, "chat_thread_role" | "status">[],
-): Record<ThreeStagePhase, PhaseLineState> {
-	const statusByRole = new Map<string, string>();
-	for (const s of sessions) {
-		const role = s.chat_thread_role;
-		if (!role || statusByRole.has(role)) continue; // sessions is ordered
-		statusByRole.set(role, s.status); // most-recent-first; keep the first hit
-	}
-	const stateFor = (phase: ThreeStagePhase): PhaseLineState => {
-		const status = statusByRole.get(phase);
-		if (!status) return "pending";
-		if (status === "completed" || status === "failed") return "done";
-		if (status === "running") return "active";
-		return "parked";
-	};
-	return {
-		design: stateFor("design"),
-		implement: stateFor("implement"),
-		qa: stateFor("qa"),
-	};
-}
-
-/** FLY-887: render the 3-stage status line, e.g. "🎨design(parked)·🔨implement(active)·🧪qa(pending)". */
-export function renderPhaseStatusLine(
-	states: Record<ThreeStagePhase, PhaseLineState>,
-): string {
-	return PHASE_LINE_ORDER.map(
-		(phase) => `${PHASE_LINE_EMOJI[phase]}${phase}(${states[phase]})`,
-	).join("·");
-}
+// FLY-907: the FLY-887 face-C derivation that lived here (PhaseLineState /
+// computePhaseLineStates / renderPhaseStatusLine + the local PHASE_LINE_ORDER
+// copy) moved to the unified issue-display module: derivePhaseDisplayState +
+// renderPhaseStatusLine in `issue-display.ts` (one state machine for faces
+// B+C, park/wake-aware, order derived from THREE_STAGE_PHASE_SEQUENCE so
+// FLY-905's re-sequencing follows automatically).
 
 /**
  * FLY-887: 4-state process liveness of a phase runner (mirrors

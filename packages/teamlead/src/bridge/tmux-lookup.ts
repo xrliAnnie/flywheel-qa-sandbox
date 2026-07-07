@@ -43,6 +43,15 @@ export interface AttachTarget {
 	session: string;
 	/** Full `base:@id` window target — only set/used for the base fallback. */
 	tmuxWindow?: string;
+	/**
+	 * FLY-907 (Step 3): the live `#{window_name}` read during resolution, when
+	 * available (undefined when display-message failed). Callers use it to
+	 * verify the window actually belongs to the issue being rendered
+	 * (`buildWindowLabel` = `<identifier>-<runner>-<title>`, FLY-272) before
+	 * rendering the attach command — a cross-wired CommDB row (FLY-543/923)
+	 * must degrade, never render a link into another issue's window.
+	 */
+	windowName?: string;
 }
 
 /** Test seam: run a tmux subcommand and return its stdout. */
@@ -81,10 +90,11 @@ export async function resolveCmuxAttachTarget(
 			try {
 				// Exact-match probe — `=` prevents fnmatch/prefix resolution.
 				await runTmux(["has-session", "-t", `=${cmuxSession}`]);
-				return { kind: "cmux", session: cmuxSession };
+				return { kind: "cmux", session: cmuxSession, windowName };
 			} catch {
 				// cmux session absent or probe failed — fall through to base.
 			}
+			return { kind: "base", session: baseSession, tmuxWindow, windowName };
 		}
 	} catch {
 		// display-message failed (window gone / tmux missing) — base fallback.

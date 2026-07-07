@@ -225,6 +225,44 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		expect(store.getSession(EXEC)?.status).toBe("completed");
 	});
 
+	// ── FLY-907 (Codex R1 MED-2): the recovered-merge path is the FOURTH
+	// completion sink — it must close a three-stage issue's parked phases and
+	// only THEN run the terminal display refresh (order enforced by
+	// runPostShipFinalization: phase finalization step 1.25 before the
+	// display-refresh step 1.3, both before archive). ──
+	it("recovered merge runs finalizeThreeStagePhases BEFORE the terminal display refresh", async () => {
+		upsert("awaiting_review");
+		withQaAndCodexGreen();
+		const session = store.getSession(EXEC);
+		if (!session) throw new Error("session missing");
+		parkMergeBlock(
+			store,
+			session,
+			HEAD,
+			computeShipDecision(store, session, HEAD, GATES_ON),
+		);
+		const qid = foundersApproved();
+		upsert("approved_to_ship", qid);
+
+		const order: string[] = [];
+		const completed = await finalizeRecoveredMerge(
+			store,
+			{} as BridgeConfig,
+			[],
+			EXEC,
+			undefined,
+			GATES_ON,
+			async () => {
+				order.push("refresh");
+			},
+			async () => {
+				order.push("finalize-phases");
+			},
+		);
+		expect(completed).toBe(true);
+		expect(order).toEqual(["finalize-phases", "refresh"]);
+	});
+
 	// ── Group ③b — recovery LEAVES the marker when a gate is still unmet (Codex R2 #2) ──
 	it("recovery does NOT clear the marker nor complete when the QA gate is still unmet", async () => {
 		// Parked (merged, Codex approved) but QA REQUIRED with no passing record; founder approves.

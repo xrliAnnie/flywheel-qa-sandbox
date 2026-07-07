@@ -225,6 +225,40 @@ export async function editDiscordMessageInChannel(
 	};
 }
 
+/**
+ * FLY-907 (Lead directive 17ab4f53 — converge status into the pinned block):
+ * delete a message the system previously scattered into a thread (the legacy
+ * standalone phase-status line). A 404 counts as ok — the message is already
+ * gone, which is the desired end state. Never throws.
+ */
+export async function deleteDiscordMessageInChannel(
+	threadId: string,
+	messageId: string,
+	botToken: string,
+	fetchImpl: typeof fetch = fetch,
+): Promise<EditDiscordResult> {
+	let res: Response;
+	try {
+		res = await fetchImpl(
+			`${DISCORD_API}/channels/${threadId}/messages/${messageId}`,
+			{
+				method: "DELETE",
+				headers: { Authorization: `Bot ${botToken}` },
+			},
+		);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		return { ok: false, error: `Discord DELETE failed: ${msg}` };
+	}
+	if (res.ok || res.status === 404) return { ok: true };
+	const detail = await res.text().catch(() => "");
+	return {
+		ok: false,
+		status: res.status,
+		error: `Discord ${res.status}: ${detail.slice(0, 200)}`,
+	};
+}
+
 // ──────────────────────────────────────────────────────────────────────
 // FLY-404: sendTypingToChannel — trigger the Discord "typing…" indicator.
 // ──────────────────────────────────────────────────────────────────────

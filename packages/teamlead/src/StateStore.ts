@@ -1274,7 +1274,9 @@ export class StateStore {
 				attach_pin_command TEXT,
 				attach_pin_pinned_at TEXT,
 				phase_status_message_id TEXT,
-				phase_status_text TEXT
+				phase_status_text TEXT,
+				display_fingerprint TEXT,
+				display_reconciled_at TEXT
 			)
 		`);
 		this.db.run(
@@ -1537,6 +1539,7 @@ export class StateStore {
 		this.migrateChatThreadsArchivedColumn();
 		this.migrateChatThreadsAttachPinColumns();
 		this.migrateChatThreadsPhaseStatusLineColumns();
+		this.migrateChatThreadsDisplayFingerprintColumns();
 		// FLY-643: qa_issue_* columns on auto_qa_record (separate QA issue)
 		this.migrateAutoQaRecordQaIssueColumns();
 	}
@@ -4130,6 +4133,113 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-907 (Step 4.5): persist the issue's display-reconcile fingerprint —
+	 * the stable serialization of ALL inputs the unified refresher derived the
+	 * three display faces from (sessions component + CommDB component). Written
+	 * ONLY after every enabled face confirmed changed/noop (Codex R2 #2); a
+	 * missing/mismatching fingerprint keeps the issue a sweep candidate.
+	 */
+	setChatThreadDisplayFingerprint(
+		issueId: string,
+		channelId: string,
+		fingerprint: string,
+		reconciledAt: string,
+	): void {
+		this.db.run(
+			`UPDATE chat_threads
+			 SET display_fingerprint = ?, display_reconciled_at = ?
+			 WHERE issue_id = ? AND channel_id = ?`,
+			[fingerprint, reconciledAt, issueId, channelId],
+		);
+		this.save();
+	}
+
+	/**
+	 * FLY-907 sweep layer 1 (cheap status scan, zero CommDB reads): chat-thread
+	 * issues — INCLUDING terminal ones (a stale face on a crashed finalization
+	 * must not hide) — with their stored fingerprint and the issue's newest
+	 * session activity, ordered newest-first with a keyset cursor so the LIMIT
+	 * never creates a permanent blind spot. `la` is COALESCE'd to "" so
+	 * session-less threads sort last and keyset comparison stays total.
+	 */
+	listDisplayReconcileCandidates(
+		cursor: { la: string; issueId: string } | null,
+		limit: number,
+	): Array<{
+		issue_id: string;
+		channel_id: string;
+		display_fingerprint: string | null;
+		la: string;
+	}> {
+		const where = cursor ? `AND (la < ? OR (la = ? AND ct.issue_id < ?))` : "";
+		const stmt = this.db.prepare(
+			`SELECT ct.issue_id, ct.channel_id, ct.display_fingerprint,
+			        COALESCE((SELECT MAX(s.last_activity_at) FROM sessions s WHERE s.issue_id = ct.issue_id), '') AS la
+			 FROM chat_threads ct
+			 WHERE ct.discord_missing_at IS NULL ${where}
+			 ORDER BY la DESC, ct.issue_id DESC
+			 LIMIT ?`,
+		);
+		stmt.bind(cursor ? [cursor.la, cursor.la, cursor.issueId, limit] : [limit]);
+		const rows: Array<{
+			issue_id: string;
+			channel_id: string;
+			display_fingerprint: string | null;
+			la: string;
+		}> = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				issue_id: row.issue_id as string,
+				channel_id: row.channel_id as string,
+				display_fingerprint: (row.display_fingerprint as string) ?? null,
+				la: (row.la as string) ?? "",
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-907 sweep layer 2 (CommDB-sensitive rotation): chat-thread issues that
+	 * still have a NON-terminal session (FSM no-out-edge terminal set:
+	 * completed/terminated/shelved), rotated by keyset cursor. These get an
+	 * UNCONDITIONAL refresh so Bridge-invisible CommDB-only drift (manual turn
+	 * re-grant, park marker change, late tmux_window registration, corrected
+	 * attach target) converges — the refresher's zero-churn writers make a
+	 * no-drift pass free of Discord requests.
+	 */
+	listDisplaySweepActiveIssues(
+		cursorIssueId: string | null,
+		limit: number,
+	): Array<{ issue_id: string; channel_id: string }> {
+		const where = cursorIssueId ? "AND ct.issue_id > ?" : "";
+		const stmt = this.db.prepare(
+			`SELECT ct.issue_id, ct.channel_id
+			 FROM chat_threads ct
+			 WHERE ct.discord_missing_at IS NULL ${where}
+			   AND EXISTS (
+			     SELECT 1 FROM sessions s
+			     WHERE s.issue_id = ct.issue_id
+			       AND s.status NOT IN ('completed', 'terminated', 'shelved')
+			   )
+			 ORDER BY ct.issue_id ASC
+			 LIMIT ?`,
+		);
+		stmt.bind(cursorIssueId ? [cursorIssueId, limit] : [limit]);
+		const rows: Array<{ issue_id: string; channel_id: string }> = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				issue_id: row.issue_id as string,
+				channel_id: row.channel_id as string,
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
 	 * FLY-892 (Step 5): the still-visible legacy phase threads (FLY-793 side-table
 	 * rows) the boot sweep must reconcile — a Discord thread still exists for each.
 	 * Filters out rows already archived or already marked missing so the sweep is
@@ -5147,6 +5257,31 @@ export class StateStore {
 	 * phase-status-line message columns to chat_threads on legacy DBs
 	 * (idempotent). Mirrors migrateChatThreadsAttachPinColumns.
 	 */
+	/**
+	 * FLY-907 (Step 4.5): add the display-reconcile fingerprint columns to
+	 * chat_threads on legacy DBs (idempotent). Mirrors
+	 * migrateChatThreadsAttachPinColumns (the FLY-560 additive pattern).
+	 */
+	private migrateChatThreadsDisplayFingerprintColumns(): void {
+		try {
+			const info = this.db.exec("PRAGMA table_info(chat_threads)");
+			if (info.length === 0) return;
+			const columns = info[0]!.values.map((row) => row[1] as string);
+			if (!columns.includes("display_fingerprint")) {
+				this.db.run(
+					"ALTER TABLE chat_threads ADD COLUMN display_fingerprint TEXT",
+				);
+			}
+			if (!columns.includes("display_reconciled_at")) {
+				this.db.run(
+					"ALTER TABLE chat_threads ADD COLUMN display_reconciled_at TEXT",
+				);
+			}
+		} catch {
+			// Table may not exist yet (first run) — CREATE TABLE will handle it
+		}
+	}
+
 	private migrateChatThreadsPhaseStatusLineColumns(): void {
 		try {
 			const info = this.db.exec("PRAGMA table_info(chat_threads)");

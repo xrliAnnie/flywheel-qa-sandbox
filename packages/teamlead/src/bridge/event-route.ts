@@ -5,15 +5,9 @@ import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
 import type { FounderUxGateMode } from "flywheel-config";
 import {
-	DEFAULT_PHASE_TIER,
 	isFounderUxGateEnabled,
 	isThreeStagePhaseRole,
-	modelDisplayName,
-	modelShortCode,
-	phaseMessageTag,
-	phaseThreadBadge,
 	resolveCompletionSessionRole,
-	THREE_STAGE_PHASE_SEQUENCE,
 } from "flywheel-config";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
@@ -23,11 +17,7 @@ import {
 	applyTransition,
 } from "../applyTransition.js";
 import type { ReconnectController } from "../HeartbeatService.js";
-import {
-	type ProjectEntry,
-	resolveAnnouncerBotToken,
-	resolveLeadForIssue,
-} from "../ProjectConfig.js";
+import type { ProjectEntry } from "../ProjectConfig.js";
 import {
 	REVIEW_BINDING_UNBOUND,
 	type Session,
@@ -36,11 +26,7 @@ import {
 import { handleArtifactEvent } from "./artifact-event.js";
 import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { isReviewHeld } from "./auto-qa-held.js";
-import {
-	buildPipelineHeaderContent,
-	type ChatThreadCreator,
-	type PhaseHeaderRow,
-} from "./ChatThreadCreator.js";
+import type { ChatThreadCreator } from "./ChatThreadCreator.js";
 import {
 	buildCodexInstruction,
 	codexReviewTypeFor,
@@ -53,6 +39,11 @@ import {
 import type { EventFilter } from "./EventFilter.js";
 import { evaluateFounderUxStageGuard } from "./founder-ux/stage-guard.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
+import {
+	type IssueDisplayRefreshHolder,
+	pinRunnerAttachForSession,
+	stampStageEmojiForSession,
+} from "./issue-display-refresher.js";
 import {
 	GUARDRAIL_EVENT_TYPES,
 	type LeadEventEnvelope,
@@ -73,11 +64,6 @@ import {
 import { handleProofShotAutoTrigger } from "./proofshot-trigger.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
-import {
-	buildAttachCommand,
-	getTmuxTargetFromCommDb,
-	resolveCmuxAttachTarget,
-} from "./tmux-lookup.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 
@@ -364,260 +350,13 @@ function handleCodexAutoTrigger(
 	}
 }
 
-/** Parse the JSON-encoded `issue_labels` column into a string[] (tolerant). */
-function parseIssueLabels(raw: string | undefined): string[] {
-	if (!raw) return [];
-	try {
-		const parsed = JSON.parse(raw);
-		return Array.isArray(parsed)
-			? parsed.filter((x): x is string => typeof x === "string")
-			: [];
-	} catch {
-		return [];
-	}
-}
-
-/**
- * FLY-560 UX iteration: emoji-only vs emoji+word badge mode. Default emoji+word
- * (Annie's feedback — emoji alone is hard to memorise); set
- * `FLYWHEEL_ISSUE_STATUS_WORD=0` to fall back to emoji-only. Read at stamp time
- * so a flag flip takes effect on the next stage transition without a code path
- * change (and so the createEventRouter signature stays untouched).
- */
-function issueStatusWordEnabled(): boolean {
-	return process.env.FLYWHEEL_ISSUE_STATUS_WORD !== "0";
-}
-
-/**
- * FLY-560 Feature A: fire-and-forget stamp of the current stage's badge onto
- * the issue's `[FLY-XX]` chat thread title. Resolves the issue's lead (for its
- * product channel + bot token), finds the existing thread, and delegates to
- * ChatThreadCreator.stampStageEmoji. Silent on any miss (no lead/channel/token,
- * or thread not created yet) — the next stage_changed reconciles. Never throws
- * into the event handler.
- */
-function stampStageEmojiForSession(
-	deps: {
-		store: StateStore;
-		projects: ProjectEntry[];
-		config: BridgeConfig;
-		chatThreadCreator: ChatThreadCreator;
-	},
-	session: Session,
-	stage: string,
-): void {
-	let chatChannel: string | undefined;
-	let botToken: string | undefined;
-	let leadId: string | undefined;
-	try {
-		const { lead } = resolveLeadForIssue(
-			deps.projects,
-			session.project_name,
-			parseIssueLabels(session.issue_labels),
-		);
-		chatChannel = lead.chatChannel;
-		botToken = lead.botToken ?? deps.config.discordBotToken;
-		leadId = lead.agentId;
-	} catch {
-		return; // project/lead not resolvable — skip
-	}
-	if (!chatChannel || !botToken) return;
-
-	const thread = deps.store.getChatThreadByIssue(session.issue_id, chatChannel);
-	if (!thread) return; // thread not created yet — a later stage_changed catches it
-
-	// FLY-892 (Step 6): on a three-stage issue the title prefix is the STAGE-level
-	// phase badge (🎨设计/🔨实现/🧪QA) of the reporting session's phase, which
-	// REPLACES the FLY-560 fine-grained stage word. `""` for a non-phase (main)
-	// session → falls back to the FLY-560 stage badge (byte-compat).
-	const phaseBadge = phaseThreadBadge(session.chat_thread_role) || undefined;
-
-	void deps.chatThreadCreator
-		.stampStageEmoji(
-			{
-				chatChannelId: chatChannel,
-				issueId: session.issue_id,
-				issueIdentifier: session.issue_identifier,
-				issueTitle: session.issue_title,
-				botToken,
-				leadId,
-				// FLY-728 Part D: ride the stage rename with the model short code
-				// (F/O/S/H) so the founder sees which model this issue is running.
-				// `?? null` = authoritative CLEAR on account-default, so a reused
-				// thread never keeps a stale code from a prior run (Codex code R1).
-				modelCode: modelShortCode(session.runner_model) ?? null,
-			},
-			thread.thread_id,
-			stage,
-			issueStatusWordEnabled(),
-			phaseBadge,
-		)
-		.catch((err: unknown) => {
-			console.warn(
-				`[event-route] stage-emoji stamp failed for ${session.execution_id}:`,
-				err instanceof Error ? err.message : err,
-			);
-		});
-}
-
-/**
- * FLY-892 (Step 4): statuses that render a phase as ✅ done in the pipeline header.
- * A DELIBERATELY header-local set — do NOT reuse a global TERMINAL_STATUSES here:
- * `awaiting_review` / `approved_to_ship` are a runner that is still ALIVE and
- * working (▶), not a finished phase. `design_done` is the design phase's handoff
- * marker (✅). The rest with a session are ▶ active; no session is ⬜ planned.
- */
-const HEADER_DONE_STATUSES: ReadonlySet<string> = new Set([
-	"completed",
-	"failed",
-	"blocked",
-	"merged",
-	"design_done",
-]);
-
-/**
- * FLY-560 Feature C + FLY-892 (Step 4): fire-and-forget ensure of the issue
- * thread's pinned message. On a THREE-STAGE issue this is the "pipeline header"
- * (all three phases: model + status + exec id + attach command); on any other
- * issue it is the byte-unchanged single-runner "Runner terminal" attach pin.
- * Resolves lead/channel/token + thread (same as stampStageEmojiForSession);
- * silent on any miss (next stage_changed reconciles); never throws into the
- * event handler.
- */
-function pinRunnerAttachForSession(
-	deps: {
-		store: StateStore;
-		projects: ProjectEntry[];
-		config: BridgeConfig;
-		chatThreadCreator: ChatThreadCreator;
-	},
-	session: Session,
-): void {
-	let chatChannel: string | undefined;
-	let botToken: string | undefined;
-	let leadId: string | undefined;
-	try {
-		const { lead } = resolveLeadForIssue(
-			deps.projects,
-			session.project_name,
-			parseIssueLabels(session.issue_labels),
-		);
-		chatChannel = lead.chatChannel;
-		botToken = lead.botToken ?? deps.config.discordBotToken;
-		leadId = lead.agentId;
-	} catch {
-		return; // project/lead not resolvable — skip
-	}
-	if (!chatChannel || !botToken) return;
-
-	const thread = deps.store.getChatThreadByIssue(session.issue_id, chatChannel);
-	if (!thread) return; // thread not created yet — a later stage_changed catches it
-
-	const resolvedChannel = chatChannel;
-	const resolvedToken = botToken;
-	const threadId = thread.thread_id;
-	// FLY-892 (Codex code R1 Med): the single-runner "Runner terminal" pin
-	// (non-three-stage fallback) MUST stay on the Lead bot — it is NOT a system
-	// broadcast, and switching it to the announcer would be a main-session
-	// behavior change + a 403 self-heal churn on the existing Lead-authored pin.
-	// Only the three-stage PIPELINE HEADER is a broadcast → announcer when the
-	// project configures one, else the Lead bot (byte-compat).
-	const ctx = {
-		chatChannelId: resolvedChannel,
-		issueId: session.issue_id,
-		issueIdentifier: session.issue_identifier,
-		issueTitle: session.issue_title,
-		botToken: resolvedToken,
-		leadId,
-	};
-	const headerBotToken =
-		resolveAnnouncerBotToken(deps.projects, session.project_name) ??
-		resolvedToken;
-	const headerCtx = { ...ctx, botToken: headerBotToken };
-	// Codex code R1 MED-1 / R2: the CommDB reads (getTmuxTargetFromCommDb opens a
-	// better-sqlite3 file with busy_timeout=5s) must NOT run on the request call
-	// stack — a locked comm.db could otherwise stall the stage_changed response.
-	// An async IIFE would run synchronously up to its first `await`, so push the
-	// ENTIRE chain (incl. the sync CommDB reads) past a real async boundary via
-	// Promise.resolve().then — the handler returns before any of it runs.
-	void Promise.resolve()
-		.then(async () => {
-			// FLY-892 (Step 4): a phase session on this issue ⇒ render the pipeline
-			// header. Empty ⇒ non-three-stage ⇒ byte-unchanged single-runner pin.
-			const phaseSessions = deps.store.getLatestPhaseSessionsForIssue(
-				session.issue_id,
-			);
-			if (phaseSessions.length === 0) {
-				const target = getTmuxTargetFromCommDb(
-					session.execution_id,
-					session.project_name,
-				);
-				if (!target) return; // tmux_window not registered yet — next stage reconciles
-				const attach = await resolveCmuxAttachTarget(target.tmuxWindow);
-				await deps.chatThreadCreator.ensureRunnerAttachPin(
-					ctx,
-					threadId,
-					buildAttachCommand(attach),
-				);
-				return;
-			}
-
-			const byRole = new Map(phaseSessions.map((s) => [s.chat_thread_role, s]));
-			const rows: PhaseHeaderRow[] = [];
-			for (const role of THREE_STAGE_PHASE_SEQUENCE) {
-				const plannedModel = modelDisplayName(
-					undefined,
-					DEFAULT_PHASE_TIER[role],
-				);
-				const ps = byRole.get(role);
-				if (!ps) {
-					rows.push({
-						label: phaseMessageTag(role).trim(),
-						status: "planned",
-						plannedModel,
-					});
-					continue;
-				}
-				const status: PhaseHeaderRow["status"] = HEADER_DONE_STATUSES.has(
-					ps.status,
-				)
-					? "done"
-					: "active";
-				let attachCommand: string | undefined;
-				let sessionEnded = false;
-				const target = getTmuxTargetFromCommDb(
-					ps.execution_id,
-					ps.project_name,
-				);
-				if (target) {
-					const attach = await resolveCmuxAttachTarget(target.tmuxWindow);
-					attachCommand = buildAttachCommand(attach);
-				} else if (status === "done") {
-					// pre-FLY-887: a finished phase's session is closed → no target.
-					sessionEnded = true;
-				}
-				rows.push({
-					label: phaseMessageTag(role, ps.runner_model).trim(),
-					status,
-					execId: ps.execution_id.slice(0, 8),
-					attachCommand,
-					sessionEnded,
-				});
-			}
-			const content = buildPipelineHeaderContent(headerCtx, rows);
-			await deps.chatThreadCreator.ensureRunnerPipelineHeaderPin(
-				headerCtx,
-				threadId,
-				content,
-			);
-		})
-		.catch((err: unknown) => {
-			console.warn(
-				`[event-route] attach-pin failed for ${session.execution_id}:`,
-				err instanceof Error ? err.message : err,
-			);
-		});
-}
+// FLY-907: `parseIssueLabels`, `issueStatusWordEnabled`, and the two legacy
+// stage_changed display renderers (`stampStageEmojiForSession`,
+// `pinRunnerAttachForSession`, incl. the FLY-892 HEADER_DONE_STATUSES set)
+// moved verbatim to `issue-display-refresher.ts` — event-route keeps thin
+// forwards. When the unified refresher holder is wired (default), the
+// stage_changed branch enqueues a full derive-from-state refresh instead; the
+// legacy functions remain the `FLYWHEEL_ISSUE_DISPLAY_REFRESH=0` escape hatch.
 
 export function createEventRouter(
 	store: StateStore,
@@ -658,6 +397,11 @@ export function createEventRouter(
 	// router). `.current` undefined ⇒ the event is acked but not posted (byte-compat:
 	// no unified channel = no self-heal Alerts surface).
 	accountRotationPost?: { current?: (detail: string) => Promise<void> },
+	// FLY-907: late-bound unified issue-display refresher. `.current` set (the
+	// default once startBridge wires it) → stage_changed enqueues ONE unified
+	// derive-from-state refresh of all three faces; unset (byte-compat /
+	// FLYWHEEL_ISSUE_DISPLAY_REFRESH=0) → the legacy per-face stamp+pin path.
+	issueDisplayRefresh?: IssueDisplayRefreshHolder,
 ): Router {
 	const router = Router();
 	const issueStatusEmojiEnabled =
@@ -667,7 +411,14 @@ export function createEventRouter(
 	// transitionOpts to close parked phases through the FSM). Undefined without
 	// transitionOpts → runPostShipFinalization skips it (byte-compat).
 	const finalizeThreeStagePhases = transitionOpts
-		? makeFinalizeThreeStagePhases(store, transitionOpts)
+		? makeFinalizeThreeStagePhases(
+				store,
+				transitionOpts,
+				(issueId) =>
+					// FLY-907: the post-close refresh now drives ALL THREE faces via the
+					// unified refresher (late-bound holder; absent → no refresh).
+					issueDisplayRefresh?.current?.refresh(issueId) ?? Promise.resolve(),
+			)
 		: undefined;
 
 	// Dedicated heartbeat route — lightweight, no session_events write, no lead notification
@@ -1571,6 +1322,10 @@ export function createEventRouter(
 							// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 							// by runPostShipFinalization's merge-evidence predicate).
 							markIssueDone: makeLinearDoneFinalizer(config),
+							// FLY-907: final terminal-state display refresh (before archive).
+							refreshIssueDisplay: (issueId) =>
+								issueDisplayRefresh?.current?.refresh(issueId) ??
+								Promise.resolve(),
 						},
 					).catch((err) => {
 						console.error(
@@ -1808,21 +1563,30 @@ export function createEventRouter(
 					) {
 						const sessionForStamp = store.getSession(event.execution_id);
 						if (sessionForStamp) {
-							if (issueStatusEmojiEnabled) {
-								stampStageEmojiForSession(
-									{ store, projects, config, chatThreadCreator },
-									sessionForStamp,
-									stage,
-								);
-							}
-							// FLY-560 Feature C: keep the pinned `tmux attach` command
-							// current (post on first stage once tmux_window registers;
-							// update only when the command changes).
-							if (issueAttachPinEnabled) {
-								pinRunnerAttachForSession(
-									{ store, projects, config, chatThreadCreator },
-									sessionForStamp,
-								);
+							if (issueDisplayRefresh?.current) {
+								// FLY-907: ONE unified derive-from-state refresh of all
+								// three faces (the persisted session_stage above is what
+								// the derivation reads, so the reported stage is honored).
+								issueDisplayRefresh.current.enqueue(event.issue_id);
+							} else {
+								// Legacy per-face path (FLYWHEEL_ISSUE_DISPLAY_REFRESH=0
+								// escape hatch, or refresher not yet wired).
+								if (issueStatusEmojiEnabled) {
+									stampStageEmojiForSession(
+										{ store, projects, config, chatThreadCreator },
+										sessionForStamp,
+										stage,
+									);
+								}
+								// FLY-560 Feature C: keep the pinned `tmux attach` command
+								// current (post on first stage once tmux_window registers;
+								// update only when the command changes).
+								if (issueAttachPinEnabled) {
+									pinRunnerAttachForSession(
+										{ store, projects, config, chatThreadCreator },
+										sessionForStamp,
+									);
+								}
 							}
 						}
 					}
@@ -2003,6 +1767,10 @@ export function createEventRouter(
 										// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 										// by runPostShipFinalization's merge-evidence predicate).
 										markIssueDone: makeLinearDoneFinalizer(config),
+										// FLY-907: final terminal-state display refresh (before archive).
+										refreshIssueDisplay: (issueId) =>
+											issueDisplayRefresh?.current?.refresh(issueId) ??
+											Promise.resolve(),
 									},
 								).catch((err) => {
 									console.error(

@@ -56,6 +56,7 @@ import type { StateStore } from "../StateStore.js";
 import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { EventFilter } from "./EventFilter.js";
+import type { IssueDisplayRefreshHolder } from "./issue-display-refresher.js";
 import { LaunchClaimStore } from "./launch-claim-store.js";
 import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import {
@@ -490,6 +491,12 @@ export interface RunInfraOptions {
 		issueId: string,
 		projectName: string,
 	) => Promise<void>;
+	/**
+	 * FLY-907: late-bound unified issue-display refresh holder, set on the
+	 * DirectEventSink (its upsertSession status writes bypass the applyTransition
+	 * hook, so the sink triggers refreshes itself). Absent → byte-compatible.
+	 */
+	issueDisplayRefresh?: IssueDisplayRefreshHolder;
 }
 
 export async function setupRunInfrastructure(
@@ -670,6 +677,8 @@ export async function setupRunInfrastructure(
 			// FLY-887: ship-time finalizer for keep-alive parked design/implement phases.
 			directSink.finalizeThreeStagePhases =
 				runInfraOpts?.finalizeThreeStagePhases;
+			// FLY-907: display-refresh holder for the in-process status writes.
+			directSink.issueDisplayRefresh = runInfraOpts?.issueDisplayRefresh;
 
 			// FLY-137 v1.27.2: construct AgentDispatcher (always — empty agents map is valid,
 			// dispatcher returns shipped-generic for every issue in that case).

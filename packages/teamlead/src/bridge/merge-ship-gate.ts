@@ -146,6 +146,26 @@ export async function finalizeRecoveredMerge(
 	execId: string,
 	removeCleanWorktree?: WorktreeCleanupFn,
 	env: NodeJS.ProcessEnv = process.env,
+	/**
+	 * FLY-907 (Step 4.1c): the unified issue-display refresh (awaited variant),
+	 * threaded into runPostShipFinalization so a recovered-merge finalization
+	 * also drives the three display faces to their terminal state (this is the
+	 * FOURTH completion write path — it bypasses both the applyTransition hook
+	 * and the DirectEventSink hook via its direct `upsertSession`).
+	 */
+	refreshIssueDisplay?: (issueId: string) => Promise<void>,
+	/**
+	 * FLY-907 Codex R1 MED-2: a recovered merge on a THREE-STAGE issue must
+	 * also close the still-alive parked design/implement phases + drop the TURN
+	 * row (exactly like the live completion sinks) — and only THEN run the
+	 * terminal display refresh. Built by the callers via
+	 * makeFinalizeThreeStagePhases (they hold transitionOpts; this module does
+	 * not). Absent → no phase finalization (byte-compat with pre-FLY-907).
+	 */
+	finalizeThreeStagePhases?: (
+		issueId: string,
+		projectName: string,
+	) => Promise<void>,
 ): Promise<boolean> {
 	const s = store.getSession(execId);
 	// Only a still-parked row (marker present) whose founder approval just landed.
@@ -192,6 +212,10 @@ export async function finalizeRecoveredMerge(
 				projects,
 				removeCleanWorktree,
 				markIssueDone: makeLinearDoneFinalizer(config),
+				// FLY-907 Codex R1 MED-2: close parked phases + drop TURN before the
+				// terminal display refresh (runPostShipFinalization orders them).
+				finalizeThreeStagePhases,
+				refreshIssueDisplay,
 			},
 		);
 	} catch (err) {

@@ -23,6 +23,7 @@ import {
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import type { StateStore } from "../../StateStore.js";
 import { finalizeRecoveredMerge } from "../merge-ship-gate.js";
+import { makeFinalizeThreeStagePhases } from "../post-ship-finalization.js";
 import { sendRunnerWake } from "../runner-wake.js";
 import { type BridgeConfig, sqliteDatetime } from "../types.js";
 import {
@@ -99,6 +100,12 @@ export function buildGateResponsePostWriteHook(deps: {
 	// at approved_to_ship). Absent → recovery only clears the marker (byte-compat).
 	config?: BridgeConfig;
 	projects?: ProjectEntry[];
+	// FLY-907 (Step 4.1c): late-bound unified issue-display refresh, threaded
+	// into the recovered-merge finalization so the display reaches its terminal
+	// state on this path too. Absent / `.current` undefined → no refresh.
+	issueDisplayRefresh?: {
+		current?: { refresh(issueId: string): Promise<void> };
+	};
 }): (info: {
 	executionId: string;
 	questionId: string;
@@ -161,11 +168,29 @@ export function buildGateResponsePostWriteHook(deps: {
 			// when now fully ship-eligible; an unmet QA/Codex gate leaves the durable marker in
 			// place (still held). Sister call: actions.approveExecution.
 			if (deps.config && deps.projects) {
+				const refreshIssueDisplay = deps.issueDisplayRefresh?.current
+					? (issueId: string) =>
+							deps.issueDisplayRefresh?.current?.refresh(issueId) ??
+							Promise.resolve()
+					: undefined;
 				const completed = await finalizeRecoveredMerge(
 					store,
 					deps.config,
 					deps.projects,
 					info.executionId,
+					undefined,
+					undefined,
+					// FLY-907: terminal-state display refresh on the recovered path.
+					refreshIssueDisplay,
+					// FLY-907 Codex R1 MED-2: the recovered-merge path must finalize a
+					// three-stage issue's parked phases like every other completion sink.
+					transitionOpts
+						? makeFinalizeThreeStagePhases(
+								store,
+								transitionOpts,
+								refreshIssueDisplay,
+							)
+						: undefined,
 				);
 				if (completed) {
 					log.warn(
@@ -214,6 +239,11 @@ export function buildFounderConsentWiring(
 	 * still fires but the status flip is skipped (legacy/test wiring).
 	 */
 	transitionOpts?: ApplyTransitionOpts,
+	// FLY-907: late-bound unified issue-display refresh holder (see
+	// buildGateResponsePostWriteHook).
+	issueDisplayRefresh?: {
+		current?: { refresh(issueId: string): Promise<void> };
+	},
 ): FounderConsentWiring | null {
 	const fc = config.founderConsent;
 	if (!fc) return null; // Track 2 not compiled into this config at all.
@@ -288,6 +318,8 @@ export function buildFounderConsentWiring(
 		// FLY-869 B-3: drive recovered-merge completion on this ship-approval path too.
 		config,
 		projects,
+		// FLY-907: terminal-state display refresh on the recovered-merge path.
+		issueDisplayRefresh,
 	});
 
 	// FLY-191 Phase 2 (Codex PR R1 CRITICAL): the gate router rejects answers

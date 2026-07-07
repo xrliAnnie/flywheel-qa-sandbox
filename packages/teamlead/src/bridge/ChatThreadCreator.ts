@@ -12,6 +12,11 @@ import {
 	removeUserFromChatThread,
 } from "./chat-thread-utils.js";
 import {
+	type DisplayWriteResult,
+	PHASE_DISPLAY_GLYPHS,
+	type PhaseDisplayState,
+} from "./issue-display.js";
+import {
 	hasIssueKeyHead,
 	modelMarkerCode,
 	splitStatusEmoji,
@@ -93,6 +98,14 @@ interface TitleWriteState {
 	target: string | null;
 	dirty: boolean;
 	done: Promise<void>;
+	/**
+	 * FLY-907 (Step 2, Codex R2 #2): the LAST write outcome of this drain, so
+	 * the result-returning stamp variants can report whether the (latest)
+	 * target actually reached Discord. Coalesced requesters share the drain and
+	 * therefore share this outcome — which is correct: the fingerprint they
+	 * gate on is computed from the same latest derived state.
+	 */
+	lastStatus?: TitleWriteResult["status"];
 }
 
 export interface ChatThreadContext {
@@ -191,8 +204,13 @@ function isPlaceholderThreadName(
 export interface PhaseHeaderRow {
 	/** `[设计·Fable]` — phase name · that phase's ACTUAL (or planned) model. */
 	label: string;
-	status: "planned" | "active" | "done";
-	/** Planned model display name, for the "(计划模型 X)" suffix on a planned row. */
+	/**
+	 * FLY-907 (Step 1c): the unified PhaseDisplayState vocabulary replaces the
+	 * old header-local 3-state ("planned"/"active"/"done") — "pending" is the
+	 * former "planned", and "blocked" (kill/terminate) is now representable.
+	 */
+	status: PhaseDisplayState;
+	/** Planned model display name, for the "(计划模型 X)" suffix on a pending row. */
 	plannedModel?: string;
 	/** Short exec id — present when a session exists for this phase. */
 	execId?: string;
@@ -200,13 +218,14 @@ export interface PhaseHeaderRow {
 	attachCommand?: string;
 	/** A DONE phase whose session is already gone (pre-FLY-887 keep-alive). */
 	sessionEnded?: boolean;
+	/**
+	 * FLY-907 (Step 3): the CommDB tmux target resolved to a window that does
+	 * NOT belong to this issue (identifier-prefix mismatch — FLY-543/923
+	 * cross-wire). The attach command is withheld; the row renders a degraded
+	 * `_(终端待解析)_` marker instead of a link into another issue's window.
+	 */
+	attachUnresolved?: boolean;
 }
-
-const PHASE_STATUS_BADGE: Readonly<Record<PhaseHeaderRow["status"], string>> = {
-	planned: "⬜ 未开始",
-	active: "▶ 进行中",
-	done: "✅ 完成",
-};
 
 /**
  * FLY-892 (Step 4, founder-approved ①+②): render the single pinned "pipeline
@@ -226,8 +245,8 @@ export function buildPipelineHeaderContent(
 	const label = key ? `[${key}]` : ctx.issueId;
 	const lines: string[] = [`📌 **${label} 三段流水线**`];
 	for (const p of phases) {
-		const head = `**${p.label}** ${PHASE_STATUS_BADGE[p.status]}`;
-		if (p.status === "planned") {
+		const head = `**${p.label}** ${PHASE_DISPLAY_GLYPHS[p.status]}`;
+		if (p.status === "pending") {
 			lines.push(
 				p.plannedModel ? `${head}（计划模型 ${p.plannedModel}）` : head,
 			);
@@ -235,6 +254,7 @@ export function buildPipelineHeaderContent(
 		}
 		lines.push(p.execId ? `${head} · exec \`${p.execId}\`` : head);
 		if (p.attachCommand) lines.push(`\`${p.attachCommand}\``);
+		else if (p.attachUnresolved) lines.push("_（终端待解析）_");
 		else if (p.sessionEnded) lines.push("_（session 已结束）_");
 	}
 	lines.push(
@@ -503,6 +523,37 @@ export class ChatThreadCreator {
 	}
 
 	/**
+	 * FLY-907 (Step 2): result-returning variant of `stampStageEmoji` for the
+	 * unified issue-display refresher — same coalescing writer, but reports
+	 * whether the (latest) badge actually reached Discord so the refresher can
+	 * decide whether to persist its reconcile fingerprint. The public void
+	 * method above stays byte-compatible for existing callers.
+	 */
+	async stampStageEmojiResult(
+		ctx: ChatThreadContext,
+		threadId: string,
+		stage: string,
+		withWord = false,
+		phaseBadge?: string | null,
+	): Promise<DisplayWriteResult> {
+		const badge = phaseBadge ? phaseBadge : stageBadge(stage, withWord);
+		if (!badge) return "noop"; // unknown stage + no phase badge → nothing to write
+		return this.enqueueTitleWriteResult(threadId, ctx, badge);
+	}
+
+	/**
+	 * FLY-907 (Step 2): result-returning variant of `stampStatusBadge` (used for
+	 * the cross-cutting 🔴受阻 badge, which is not a pipeline stage).
+	 */
+	async stampStatusBadgeResult(
+		ctx: ChatThreadContext,
+		threadId: string,
+		badge: string | null,
+	): Promise<DisplayWriteResult> {
+		return this.enqueueTitleWriteResult(threadId, ctx, badge);
+	}
+
+	/**
 	 * FLY-623 Display-A: stamp the cross-cutting "⚠️重连中" reconnecting marker
 	 * (`badge` non-null) or clear it back to the real/terminal badge (`badge` is the
 	 * stage badge, or null to strip the prefix entirely). Routed through the SAME
@@ -552,6 +603,35 @@ export class ChatThreadCreator {
 	}
 
 	/**
+	 * FLY-907 (Step 2): enqueue a title write and map the drain's final outcome
+	 * onto the DisplayWriteResult contract: ok→changed, noop→noop, a 429 whose
+	 * retries were exhausted→deferred (retry via sweep), error→failed.
+	 */
+	private enqueueTitleWriteResult(
+		threadId: string,
+		ctx: ChatThreadContext,
+		target: string | null,
+	): Promise<DisplayWriteResult> {
+		this.enqueueTitleWrite(threadId, ctx, target);
+		// enqueueTitleWrite either created the state or updated the existing one —
+		// read the live entry so we share ITS drain + outcome.
+		const state = this.titleWriters.get(threadId);
+		if (!state) return Promise.resolve("failed");
+		return state.done.then((): DisplayWriteResult => {
+			switch (state.lastStatus) {
+				case "ok":
+					return "changed";
+				case "noop":
+					return "noop";
+				case "rate_limited":
+					return "deferred";
+				default:
+					return "failed";
+			}
+		});
+	}
+
+	/**
 	 * FLY-630 ①: single per-thread drain loop. Writes the latest target; on a 429
 	 * waits the honored Retry-After then retries the (possibly-advanced) latest
 	 * target so the final stage always lands. Exits only when no newer target is
@@ -568,6 +648,7 @@ export class ChatThreadCreator {
 				const ctx = state.ctx;
 				const target = state.target;
 				const result = await this.writeTitleOnce(ctx, threadId, target);
+				state.lastStatus = result.status;
 				if (
 					result.status === "rate_limited" &&
 					rateLimitRetries < MAX_RATE_LIMIT_RETRIES
@@ -720,7 +801,7 @@ export class ChatThreadCreator {
 	 * same thread must run in submission order so two adjacent calls can't both
 	 * read "no message yet" and double-POST the pin.
 	 */
-	private attachChains = new Map<string, Promise<void>>();
+	private attachChains = new Map<string, Promise<unknown>>();
 
 	/**
 	 * FLY-560 Feature C: ensure the issue thread has a pinned, copy-pasteable
@@ -738,6 +819,22 @@ export class ChatThreadCreator {
 			now?: () => string;
 		} = {},
 	): Promise<void> {
+		await this.ensureRunnerAttachPinResult(ctx, threadId, command, deps);
+	}
+
+	/**
+	 * FLY-907 (Step 2): result-returning variant of `ensureRunnerAttachPin` for
+	 * the unified refresher (fingerprint gating). Public void method unchanged.
+	 */
+	async ensureRunnerAttachPinResult(
+		ctx: ChatThreadContext,
+		threadId: string,
+		command: string,
+		deps: {
+			pinImpl?: typeof pinThreadMessage;
+			now?: () => string;
+		} = {},
+	): Promise<DisplayWriteResult> {
 		// Single-runner (non-three-stage) path: fingerprint = the raw command
 		// (byte-compat), rendered message = the "📌 Runner terminal" template.
 		return this.enqueueAttachPin(
@@ -745,6 +842,35 @@ export class ChatThreadCreator {
 			threadId,
 			command,
 			this.buildAttachMessageContent(ctx, command),
+			deps,
+		);
+	}
+
+	/**
+	 * FLY-907 (Step 3): degrade the single-runner attach pin when the CommDB
+	 * tmux target resolved to ANOTHER issue's window (identifier-prefix
+	 * mismatch — FLY-543/923 cross-wire). The pin is actively rewritten to a
+	 * `_（终端待解析）_` marker so a stale/cross-wired command from a prior exec
+	 * is never left visible — the founder must NEVER be handed a wrong link.
+	 */
+	async ensureRunnerAttachUnresolvedResult(
+		ctx: ChatThreadContext,
+		threadId: string,
+		deps: {
+			pinImpl?: typeof pinThreadMessage;
+			now?: () => string;
+		} = {},
+	): Promise<DisplayWriteResult> {
+		const key = effectiveIssueKey(ctx);
+		const label = key ? `[${key}]` : (ctx.issueTitle ?? ctx.issueId);
+		const content =
+			`📌 **${label} Runner terminal** — _（终端待解析）_\n` +
+			"_当前 tmux 目标与本 issue 不符，已暂不显示 attach 命令；解析恢复后自动更新。_";
+		return this.enqueueAttachPin(
+			ctx,
+			threadId,
+			"(attach-unresolved)",
+			content,
 			deps,
 		);
 	}
@@ -766,6 +892,22 @@ export class ChatThreadCreator {
 			now?: () => string;
 		} = {},
 	): Promise<void> {
+		await this.enqueueAttachPin(ctx, threadId, content, content, deps);
+	}
+
+	/**
+	 * FLY-907 (Step 2): result-returning variant of `ensureRunnerPipelineHeaderPin`
+	 * for the unified refresher (fingerprint gating). Public void method unchanged.
+	 */
+	async ensureRunnerPipelineHeaderPinResult(
+		ctx: ChatThreadContext,
+		threadId: string,
+		content: string,
+		deps: {
+			pinImpl?: typeof pinThreadMessage;
+			now?: () => string;
+		} = {},
+	): Promise<DisplayWriteResult> {
 		return this.enqueueAttachPin(ctx, threadId, content, content, deps);
 	}
 
@@ -781,7 +923,7 @@ export class ChatThreadCreator {
 			pinImpl?: typeof pinThreadMessage;
 			now?: () => string;
 		},
-	): Promise<void> {
+	): Promise<DisplayWriteResult> {
 		const resolved = {
 			pinImpl: deps.pinImpl ?? pinThreadMessage,
 			now: deps.now ?? (() => new Date().toISOString()),
@@ -892,14 +1034,14 @@ export class ChatThreadCreator {
 		content: string,
 		signal: AbortSignal,
 		deps: { pinImpl: typeof pinThreadMessage; now: () => string },
-	): Promise<void> {
+	): Promise<DisplayWriteResult> {
 		const messageId = await this.postAttachMessage(
 			threadId,
 			content,
 			ctx.botToken,
 			signal,
 		);
-		if (!messageId) return; // POST failed — next stage retries
+		if (!messageId) return "failed"; // POST failed — next stage retries
 		this.store.setChatThreadAttachPin(ctx.issueId, ctx.chatChannelId, {
 			messageId,
 			command,
@@ -917,8 +1059,16 @@ export class ChatThreadCreator {
 			// Don't retain a known-missing record — clear it so the next stage
 			// reposts fresh (bounded: no same-call repost loop on a flapping 404).
 			this.store.clearChatThreadAttachPin(ctx.issueId, ctx.chatChannelId);
+			return "failed";
+		} else {
+			// forbidden/error: content posted but NOT pinned — leave pinnedAt null
+			// and report DEFERRED (FLY-907 Codex R1 MED-1): the reconcile
+			// fingerprint must NOT persist while the pin is outstanding, or a
+			// terminal issue's sweep would never retry the pin. Bounded churn: one
+			// pin retry per sweep tick until perms are fixed.
+			return "deferred";
 		}
-		// forbidden/error: leave pinnedAt null → next stage retries the pin.
+		return "changed";
 	}
 
 	/**
@@ -939,7 +1089,7 @@ export class ChatThreadCreator {
 		fingerprint: string,
 		content: string,
 		deps: { pinImpl: typeof pinThreadMessage; now: () => string },
-	): Promise<void> {
+	): Promise<DisplayWriteResult> {
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
 		try {
@@ -950,7 +1100,7 @@ export class ChatThreadCreator {
 			);
 
 			if (!pinState) {
-				await this.postAndPinAttach(
+				return await this.postAndPinAttach(
 					ctx,
 					threadId,
 					command,
@@ -958,7 +1108,6 @@ export class ChatThreadCreator {
 					controller.signal,
 					deps,
 				);
-				return;
 			}
 
 			if (pinState.command !== command) {
@@ -971,7 +1120,7 @@ export class ChatThreadCreator {
 				);
 				if (edit === "missing") {
 					this.store.clearChatThreadAttachPin(ctx.issueId, ctx.chatChannelId);
-					await this.postAndPinAttach(
+					return await this.postAndPinAttach(
 						ctx,
 						threadId,
 						command,
@@ -979,9 +1128,8 @@ export class ChatThreadCreator {
 						controller.signal,
 						deps,
 					);
-					return;
 				}
-				if (edit === "error") return; // next stage retries
+				if (edit === "error") return "failed"; // next stage retries
 				// edit ok: command updated; an edit never unpins, so keep pinnedAt —
 				// but if it was never pinned, ensure it is now.
 				let pinnedAt = pinState.pinnedAt;
@@ -994,7 +1142,7 @@ export class ChatThreadCreator {
 					if (pin.outcome === "pinned") pinnedAt = deps.now();
 					else if (pin.outcome === "missing") {
 						this.store.clearChatThreadAttachPin(ctx.issueId, ctx.chatChannelId);
-						await this.postAndPinAttach(
+						return await this.postAndPinAttach(
 							ctx,
 							threadId,
 							command,
@@ -1002,7 +1150,6 @@ export class ChatThreadCreator {
 							controller.signal,
 							deps,
 						);
-						return;
 					}
 				}
 				this.store.setChatThreadAttachPin(ctx.issueId, ctx.chatChannelId, {
@@ -1010,11 +1157,13 @@ export class ChatThreadCreator {
 					command,
 					pinnedAt,
 				});
-				return;
+				// FLY-907 Codex R1 MED-1: content updated but still unpinned →
+				// DEFERRED, so the fingerprint stays unset and the sweep retries.
+				return pinnedAt ? "changed" : "deferred";
 			}
 
 			// command unchanged
-			if (pinState.pinnedAt) return; // already pinned — zero churn
+			if (pinState.pinnedAt) return "noop"; // already pinned — zero churn
 
 			// posted but not yet pinned (e.g. earlier pin 403) → retry the pin.
 			const pin = await deps.pinImpl(
@@ -1028,9 +1177,11 @@ export class ChatThreadCreator {
 					command,
 					pinnedAt: deps.now(),
 				});
-			} else if (pin.outcome === "missing") {
+				return "noop"; // content unchanged; the pin flag self-healed
+			}
+			if (pin.outcome === "missing") {
 				this.store.clearChatThreadAttachPin(ctx.issueId, ctx.chatChannelId);
-				await this.postAndPinAttach(
+				return await this.postAndPinAttach(
 					ctx,
 					threadId,
 					command,
@@ -1039,7 +1190,11 @@ export class ChatThreadCreator {
 					deps,
 				);
 			}
-			// forbidden/error: leave pinnedAt null → next stage retries.
+			// forbidden/error: leave pinnedAt null → next stage retries. FLY-907
+			// Codex R1 MED-1: report DEFERRED (not noop) — the fingerprint must not
+			// persist while the pin is outstanding, or a terminal issue's sweep
+			// would never retry it.
+			return "deferred";
 		} catch (err) {
 			if ((err as Error).name === "AbortError") {
 				console.warn(
@@ -1051,6 +1206,7 @@ export class ChatThreadCreator {
 					(err as Error).message,
 				);
 			}
+			return "failed";
 		} finally {
 			clearTimeout(timeout);
 		}

@@ -27,6 +27,7 @@ import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import { finalizeRecoveredMerge } from "./merge-ship-gate.js";
+import { makeFinalizeThreeStagePhases } from "./post-ship-finalization.js";
 import { reconcileGatewayRetry } from "./retry-dispatch-wal.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import { sendRunnerWake } from "./runner-wake.js";
@@ -196,6 +197,10 @@ export async function approveExecution(
 	_unusedForumTagUpdater?: unknown,
 	registry?: RuntimeRegistry,
 	_onApproved?: (executionId: string, session: Session) => void,
+	// FLY-907 (Step 4.1c): unified issue-display refresh, threaded into the
+	// recovered-merge finalization (a completion path that bypasses both the
+	// applyTransition hook and the DirectEventSink hook).
+	refreshIssueDisplay?: (issueId: string) => Promise<void>,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -374,6 +379,18 @@ export async function approveExecution(
 			config,
 			projects,
 			session.execution_id,
+			undefined,
+			undefined,
+			refreshIssueDisplay,
+			// FLY-907 Codex R1 MED-2: the recovered-merge path must finalize a
+			// three-stage issue's parked phases like every other completion sink.
+			transitionOpts
+				? makeFinalizeThreeStagePhases(
+						store,
+						transitionOpts,
+						refreshIssueDisplay,
+					)
+				: undefined,
 		);
 		if (completed) {
 			console.log(
@@ -1266,6 +1283,11 @@ export function createActionRouter(
 	_unusedForumTagUpdater?: unknown,
 	registry?: RuntimeRegistry,
 	onApproved?: (executionId: string, session: Session) => void,
+	// FLY-907: unified issue-display refresh holder (late-bound; read at
+	// request time). Threaded into approveExecution's recovered-merge path.
+	issueDisplayRefresh?: {
+		current?: { refresh(issueId: string): Promise<void> };
+	},
 ): Router {
 	const router = Router();
 
@@ -1305,6 +1327,12 @@ export function createActionRouter(
 					undefined, // _unusedForumTagUpdater (FLY-163)
 					registry,
 					onApproved,
+					// FLY-907: recovered-merge finalization display refresh.
+					issueDisplayRefresh?.current
+						? (issueId) =>
+								issueDisplayRefresh.current?.refresh(issueId) ??
+								Promise.resolve()
+						: undefined,
 				);
 				if (result.success) {
 					res.json({

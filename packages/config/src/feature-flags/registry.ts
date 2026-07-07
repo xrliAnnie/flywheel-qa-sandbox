@@ -862,6 +862,46 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "issue_display_refresh",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_ISSUE_DISPLAY_REFRESH",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"统一 issue 显示刷新：三个显示面从真实状态派生,park/wake/kill/finalize 等全生命周期触发(FLY-907);=0 回退 stage_changed 旧路径",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"object_construction",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "issue_display_sweep_ticks",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS",
+		polarity: "default_on",
+		valueKind: "value",
+		default: "60",
+		description:
+			"issue 显示自愈 sweep 的 GatePoller tick 周期(默认 60 ≈ 3min@3s;0=关,FLY-907)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"object_construction",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "quiet_classifier",
 		category: "feature",
 		source: "env",

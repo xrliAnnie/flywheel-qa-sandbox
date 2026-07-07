@@ -151,6 +151,20 @@ export interface GatePollerConfig {
 	onHealthTick?: () => void | Promise<void>;
 	/** FLY-513: cadence for `onHealthTick` in poll ticks (default 20 ≈ 60s at 3s). */
 	healthCheckEveryNTicks?: number;
+	/**
+	 * FLY-907 (Step 4.5): the issue-display reconcile sweep, piggybacked on this
+	 * same poll tick (zero new periodic timers — FLY-169/172/208 discipline).
+	 * Error-isolated + fire-and-forget; MUST be cheap on a no-drift pass (the
+	 * refresher's zero-churn writers make it Discord-request-free). Absent →
+	 * complete no-op.
+	 */
+	onDisplayReconcileTick?: () => void | Promise<void>;
+	/**
+	 * FLY-907: cadence for `onDisplayReconcileTick` in poll ticks (default 60 ≈
+	 * 3min at the production 3s interval; plugin reads
+	 * FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS). 0 → sweep disabled.
+	 */
+	displayReconcileEveryNTicks?: number;
 
 	// ── FLY-605: bidirectional in-thread founder relay fallback ──
 	/** Global Discord bot token fallback (lead.botToken takes precedence). */
@@ -354,6 +368,26 @@ export class GatePoller {
 							`[GatePoller] FLY-513 codex-health probe error (non-fatal): ${(err as Error).message}`,
 						),
 					);
+			}
+
+			// FLY-907: issue-display reconcile sweep — same piggyback pattern as
+			// the FLY-513 health probe above (zero new timer, own catch, never
+			// blocks the poll). Cadence 0 → disabled.
+			{
+				const displayCadence = this.displayReconcileEveryNTicks();
+				if (
+					this.config.onDisplayReconcileTick &&
+					displayCadence > 0 &&
+					(this.tickCount - 1) % displayCadence === 0
+				) {
+					void Promise.resolve()
+						.then(() => this.config.onDisplayReconcileTick?.())
+						.catch((err) =>
+							console.warn(
+								`[GatePoller] FLY-907 display-reconcile sweep error (non-fatal): ${(err as Error).message}`,
+							),
+						);
+				}
 			}
 
 			const patrolDue =
@@ -656,6 +690,11 @@ export class GatePoller {
 	// FLY-513: cadence for the optional global-codex drift probe (default 20 ≈ 60s).
 	private healthCheckEveryNTicks(): number {
 		return this.config.healthCheckEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS;
+	}
+
+	/** FLY-907: display-reconcile sweep cadence (default 60 ≈ 3min at 3s). */
+	private displayReconcileEveryNTicks(): number {
+		return this.config.displayReconcileEveryNTicks ?? 60;
 	}
 
 	private backlogThreshold(): number {

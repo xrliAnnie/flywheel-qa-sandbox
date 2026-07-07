@@ -166,6 +166,16 @@ export interface PostShipDeps {
 		issueId: string,
 		projectName: string,
 	) => Promise<void>;
+	/**
+	 * FLY-907 (Step 4.1c / plan §2.5 form (a)): the unified issue-display
+	 * refresh (AWAITED variant). Called AFTER `finalizeThreeStagePhases` (so it
+	 * reads the phases already at their terminal `completed` status) and BEFORE
+	 * the notifier/archive steps (a rename/edit must land while the thread is
+	 * still un-archived) — the ship-terminal contract: title ✅完成, header all
+	 * ✅, status line done/done/done, never a leftover 「进行中」. Best-effort;
+	 * absent → no refresh (byte-compat).
+	 */
+	refreshIssueDisplay?: (issueId: string) => Promise<void>;
 }
 
 /**
@@ -344,6 +354,19 @@ export async function runPostShipFinalization(
 					(err as Error).message,
 				);
 			});
+	}
+
+	// ── (1.3) FLY-907 final terminal-state display refresh — AFTER phase
+	// finalization (reads phases already `completed`), BEFORE the notifier +
+	// archive below (a title rename / pin edit must land while the thread is
+	// still un-archived). Best-effort; never blocks teardown. ──
+	if (deps.refreshIssueDisplay) {
+		await deps.refreshIssueDisplay(opts.issueId).catch((err) => {
+			console.error(
+				`[post-ship] final issue-display refresh failed:`,
+				(err as Error).message,
+			);
+		});
 	}
 
 	// ── (1.5) FLY-603 Layer A worktree cleanup — AFTER tmux close (runner cwd is

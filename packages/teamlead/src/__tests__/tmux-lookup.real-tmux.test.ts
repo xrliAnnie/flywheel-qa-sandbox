@@ -177,14 +177,25 @@ describeReal("resolveCmuxAttachTarget + buildAttachCommand (real tmux)", () => {
 
 		// No cmux linked session yet → base fallback.
 		const before = await resolveCmuxAttachTarget(tmuxWindow);
-		expect(before).toEqual({ kind: "base", session: base, tmuxWindow });
+		// FLY-907 (Step 3): the resolved window_name rides along for the
+		// cross-wire guard, even on the base fallback.
+		expect(before).toEqual({
+			kind: "base",
+			session: base,
+			tmuxWindow,
+			windowName: winName,
+		});
 
 		// Create the cmux linked session (mirrors flywheel-cmux-sync.sh).
 		execFileSync("tmux", ["new-session", "-d", "-s", cmuxName, "-t", base], {
 			timeout: 5000,
 		});
 		const after = await resolveCmuxAttachTarget(tmuxWindow);
-		expect(after).toEqual({ kind: "cmux", session: cmuxName });
+		expect(after).toEqual({
+			kind: "cmux",
+			session: cmuxName,
+			windowName: winName,
+		});
 	});
 
 	it("renders shell-valid attach commands for both cmux and base fallback", () => {
