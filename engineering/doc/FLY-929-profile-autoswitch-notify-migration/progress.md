@@ -1,13 +1,13 @@
 ---
 issue: FLY-929
 phase: implement
-phaseCursor: 3/8
-updated: 2026-07-07T16:23:26.732Z
-nextStep: unit tests for repair/watchdog/Hub/event-route/reports-route + CLI + bash tests
+phaseCursor: 6/8
+updated: 2026-07-07T18:46:06.336Z
+nextStep: verify full-suite failures are pre-existing → codex code review → PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-929 progress
-**phase**: implement (3/8)
-**next**: unit tests for repair/watchdog/Hub/event-route/reports-route + CLI + bash tests
+**phase**: implement (6/8)
+**next**: verify full-suite failures are pre-existing → codex code review → PR
