@@ -990,6 +990,10 @@ function titleFor(kind: AlertEventType): string {
 		// own title); case exists for switch exhaustiveness.
 		case "bridge_boot_stale_checkout":
 			return "Bridge running a STALE checkout";
+		// FLY-945: never emitted by LeadWatchdog (the external-merge reconcile
+		// pass builds its own title); case exists for switch exhaustiveness.
+		case "external_merge_suspect":
+			return "Unverified external merge";
 	}
 }
 
@@ -1055,5 +1059,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-939 (G-D): never emitted by LeadWatchdog (boot-sha-check builds its own body).
 		case "bridge_boot_stale_checkout":
 			return "The Bridge booted on a checkout whose HEAD is behind origin/main — merged work is NOT live. Pull + restart the Bridge to deploy.";
+		// FLY-945: never emitted by LeadWatchdog (the external-merge reconcile pass builds its own body).
+		case "external_merge_suspect":
+			return "The external-merge reconcile pass found a merged PR it cannot verify (missing founder-attributed approval, or the merged head differs from the approved head). The session was NOT finalized/archived — review the merge.";
 	}
 }

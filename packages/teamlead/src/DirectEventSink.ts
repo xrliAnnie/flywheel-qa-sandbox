@@ -460,6 +460,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// Complete with an evidence-gap marker instead; finalization suppressed
 		// (isPostApproveShipComplete requires merged landing). Sister mapping:
 		// event-route.ts session_completed — both sinks MUST agree.
+		//
+		// FLY-945 Fix C sink agreement: event-route now maps approved_to_ship +
+		// needs_review WITH a NEW reviewQuestionId (≠ current binding) back to
+		// awaiting_review (review re-request after an expired approval). THIS
+		// sink structurally never carries a reviewQuestionId (BlueprintResult
+		// has no such field; the R5 comment below pins that a Phase-2-bound
+		// session's status is owned by the HTTP `complete --question-id` path)
+		// — so the "no new questionId" leg of the FLY-945 criterion holds here
+		// by construction and the 5a mapping below stays byte-identical. The
+		// recovery lap is reachable ONLY through event-route / the marker
+		// reconciler, both of which carry the questionId.
 		let evidenceGap = false;
 		if (route === "phase_design_complete") {
 			// FLY-793: a three-stage Design phase-session completed (docs on the

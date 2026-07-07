@@ -61,6 +61,14 @@ export interface PendingQuestionForThread {
 	/** Runner execution id (= question.from_agent). */
 	executionId: string;
 	createdAtMs: number;
+	/**
+	 * FLY-945 Fix A: per-checkpoint grace for founder messages matching THIS
+	 * question (approve_to_ship → FLYWHEEL_SHIP_GATE_GRACE_MS, default 15s;
+	 * everything else → the 10min FLY-605 grace). A message's applicable grace
+	 * is the MINIMUM across its matching questions. Absent → ctx.graceMs
+	 * (byte-compatible with pre-FLY-945 callers).
+	 */
+	checkpointGraceMs?: number;
 }
 
 export interface FounderReplyDeliverDeps {
@@ -190,6 +198,11 @@ export async function emitFounderReplyDeliveryForThread(
 		);
 		const now = Date.now();
 		let advanceableUpTo: string | undefined = cursor;
+		// FLY-945 Fix A: once a message with matching questions is immature (its
+		// applicable grace has not elapsed), the cursor is PINNED before it — but
+		// the scan continues so a later, already-mature ship message is still
+		// processed this pass instead of queueing behind the 10min grace.
+		let cursorPinned = false;
 
 		for (const msg of messages) {
 			const msgMs = snowflakeToMs(msg.id);
@@ -203,11 +216,18 @@ export async function emitFounderReplyDeliveryForThread(
 					: [];
 
 			if (matching.length === 0) {
-				advanceableUpTo = msg.id; // irrelevant / already answered → safe to pass
+				// irrelevant / already answered → safe to pass (unless pinned earlier)
+				if (!cursorPinned) advanceableUpTo = msg.id;
 				continue;
 			}
-			if (now - (msgMs as number) < ctx.graceMs) {
-				break; // not mature → STOP (re-read next sub-cadence), do not advance
+			// FLY-945 Fix A: applicable grace = min across matching questions'
+			// per-checkpoint graces (fallback ctx.graceMs = pre-FLY-945 behavior).
+			const applicableGraceMs = Math.min(
+				...matching.map((q) => q.checkpointGraceMs ?? ctx.graceMs),
+			);
+			if (now - (msgMs as number) < applicableGraceMs) {
+				cursorPinned = true; // not mature → re-read next sub-cadence
+				continue;
 			}
 
 			const ok = await processFounderMessage(
@@ -224,8 +244,10 @@ export async function emitFounderReplyDeliveryForThread(
 				},
 				pendingNow,
 			);
-			if (!ok) break; // transient failure → STOP before this message
-			advanceableUpTo = msg.id;
+			// Transient failure → STOP the scan entirely (as before FLY-945): a
+			// later message could otherwise answer the SAME question out of order.
+			if (!ok) break;
+			if (!cursorPinned) advanceableUpTo = msg.id;
 		}
 
 		if (advanceableUpTo !== undefined) {

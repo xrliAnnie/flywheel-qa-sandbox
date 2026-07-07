@@ -47,6 +47,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { CommDB } from "../db.js";
+import {
+	isTrustedApprovalAttribution,
+	resolveFounderAttributionGateOn,
+	resolveFounderId,
+} from "../founder-attribution.js";
 
 export interface VerifyApprovalArgs {
 	execId: string;
@@ -76,6 +81,7 @@ export type VerifyApprovalReason =
 	| "gate_not_answered"
 	| "response_not_structured_approval"
 	| "response_not_approved"
+	| "response_not_founder_attributed"
 	| "status_not_approved_to_ship"
 	| "pr_head_sha_missing"
 	| "pr_head_sha_mismatch"
@@ -309,6 +315,39 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 	}
 	if (parsedApproved !== true) {
 		return notApproved("response_not_approved", { questionId, responseFrom });
+	}
+
+	// 3.5 FLY-945 Fix E: FOUNDER ATTRIBUTION. The structured shape alone is not
+	// authority — the WRITER must be founder-side: the canonical founder Discord
+	// id (FLY-799 text/✅), "bridge" (/api/actions/approve), or
+	// "bridge-founder-consent" (the enforce-path gate-response router). A Lead
+	// id here means a `respond` self-approval (the FLY-921 door) → refused.
+	// Honest boundaries (documented in founder-attribution.ts): the founder id
+	// resolves LIVE from ~/.flywheel/.env; unresolvable id → this step is
+	// SKIPPED (a project without a Discord founder cannot be attribution-gated).
+	// Kill-switch FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0 (live .env read; QA rooms
+	// set it). `args.codexDotenvPath` doubles as the .env override for tests —
+	// all three live flags read the same ~/.flywheel/.env file.
+	const attributionGateOn = resolveFounderAttributionGateOn({
+		argsEnv: args.env,
+		processEnv: env,
+		dotenvPath: args.codexDotenvPath,
+	});
+	if (attributionGateOn) {
+		const founderId = resolveFounderId({
+			argsEnv: args.env,
+			processEnv: env,
+			dotenvPath: args.codexDotenvPath,
+		});
+		if (
+			founderId !== undefined &&
+			!isTrustedApprovalAttribution(responseFrom, founderId)
+		) {
+			return notApproved("response_not_founder_attributed", {
+				questionId,
+				responseFrom,
+			});
+		}
 	}
 
 	// 4. Status + PR-head binding.

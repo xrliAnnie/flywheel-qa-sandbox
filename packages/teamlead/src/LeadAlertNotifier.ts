@@ -113,7 +113,13 @@ export type AlertEventType =
 	// silent-non-deploy incident shape). A Lead-only alert; the durable
 	// `bridge_boot_stale_checkout` StateStore event + the boot console.warn are the
 	// primary signals. Fired from TS (boot-sha-check via the notifier), never shell.
-	| "bridge_boot_stale_checkout";
+	| "bridge_boot_stale_checkout"
+	// FLY-945 Fix D: the external-merge reconcile pass found a merged PR it
+	// cannot verify (no founder-attributed approval, or the merged head differs
+	// from the head the approval was bound to) OR an externally-merged parked
+	// session that is not ship-eligible. Lead-only — the session is NOT
+	// finalized/archived; a human must look at the merge.
+	| "external_merge_suspect";
 
 export type AlertSeverity = "info" | "warning" | "severe";
 

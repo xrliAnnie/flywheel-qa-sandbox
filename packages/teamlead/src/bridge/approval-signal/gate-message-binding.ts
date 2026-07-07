@@ -31,9 +31,19 @@ export function extractGateMessageId(body: unknown): string | null {
 	return typeof id === "string" && id.length > 0 ? id : null;
 }
 
-/** Stable, write-once event id for a question's ship-gate message binding. */
-export function bindingEventId(questionId: string): string {
-	return `ship-gate-msg-binding-${questionId}`;
+/**
+ * Stable, write-once event id for a `(question, head)` ship-gate message
+ * binding revision.
+ *
+ * FLY-945 Fix B (Codex R1 #1 / R2 #4): the id carries the FULL 40-hex head —
+ * a per-question-only id would make the row write-once forever, so a head
+ * rebind (QA-evidence commit moved the PR head) could never anchor the
+ * follow-up gate message. Each `(question, head)` is one immutable row; older
+ * heads' rows remain and simply stop matching `selectCurrentBinding`. Display
+ * text may shorten the sha; the persisted unique key never does.
+ */
+export function bindingEventId(questionId: string, prHeadSha: string): string {
+	return `ship-gate-msg-binding-${questionId}-${prHeadSha.toLowerCase()}`;
 }
 
 /**

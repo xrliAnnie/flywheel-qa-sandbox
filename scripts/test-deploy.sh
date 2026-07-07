@@ -563,6 +563,15 @@ if [[ "$ALERTS" == "1" ]]; then
   log "alerts mode: channel=${ALERT_CHANNEL_ID} repairBotEnv=${ALERT_REPAIR_BOT_TOKEN_ENV} (queue/claims/deadletter isolated to ${SLOT_DIR})"
 fi
 
+# FLY-945 Fix E: QA slots approve ship gates via lead-attributed
+# `flywheel-comm respond` (test-auto-approve.sh / the 529 drivers) — the
+# founder-attribution gate would refuse those in verify-approval (slots share
+# the production ~/.flywheel/.env, which resolves a real founder id). Bypass
+# for the slot Bridge AND its spawned Runners (Runners inherit the Bridge env;
+# the resolver honors a process-env key over the .env read for this exact case).
+BRIDGE_EXTRA_ENV+=("FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0")
+LEAD_EXTRA_ENV+=("FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0")
+
 # FLY-727: --digest mounts the daily-digest route on the slot Bridge by setting
 # FLYWHEEL_DIGEST_CHANNEL. The route renders /api/digest/render from the slot's
 # ISOLATED StateStore; scripts/daily-digest.sh then delivers via publish-report to

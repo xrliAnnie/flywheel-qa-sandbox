@@ -181,6 +181,21 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	// (Bridge validates + fail-closes on absence for needs_review).
 	if (opts.questionId?.trim())
 		payload.reviewQuestionId = opts.questionId.trim();
+	// FLY-945 Fix C: re-opening review FROM approved_to_ship (an approval
+	// expired because the head moved — verify-approval pr_head_sha mismatch)
+	// REQUIRES a NEW --question-id (a fresh `gate approve_to_ship --no-block`).
+	// Without one the Bridge treats this completion as the FLY-208 5a
+	// evidence-gap terminal instead of a fresh review window. Warn loudly —
+	// the CLI cannot see the session status, so this is advisory, not a guard.
+	if (opts.route === "needs_review" && !opts.questionId?.trim()) {
+		console.warn(
+			"[complete] needs_review WITHOUT --question-id: if this session was " +
+				"already approved_to_ship (re-review after a head move), the Bridge " +
+				"will NOT re-open the review window — open a NEW " +
+				"`gate approve_to_ship --no-block` and pass its questionId via " +
+				"--question-id.",
+		);
+	}
 
 	const body = {
 		event_id: randomUUID(),

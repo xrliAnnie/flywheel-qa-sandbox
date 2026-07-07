@@ -384,6 +384,206 @@ describe("FLY-605 emitFounderReplyDeliveryForThread (Part B)", () => {
 		expect(cursorStore.load("T1")).toBe(reply.id); // advanced after real wake
 	});
 
+	// ────────────────────────────────────────────────────────────────────
+	// FLY-945 Fix A: per-checkpoint grace (ship gates skip the 10min wait)
+	// + stop-advance loop (immature messages pin the cursor without blocking
+	// later mature ship messages).
+	// ────────────────────────────────────────────────────────────────────
+
+	it("FLY-945 ① mature ship (checkpointGraceMs=15s, msg 30s old) → waked immediately, cursor advanced", async () => {
+		const { store } = makeStore();
+		const cursorStore = new InMemoryInboundCursorStore();
+		const wakeImpl = vi.fn(async () => ({
+			ok: true,
+		})) as unknown as FounderReplyDeliverDeps["wakeImpl"];
+		const reply: RawMsg = {
+			id: snowflakeAt(Date.now() - 30_000), // 30s ago — inside the old 10min grace
+			content: "ship it",
+			author: { id: OWNER },
+		};
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("qs", "approve_to_ship", { checkpointGraceMs: 15_000 })],
+			{
+				store,
+				fetchImpl: discordGet([reply]),
+				cursorStore,
+				wakeImpl,
+				respondImpl: vi.fn(
+					async () => undefined,
+				) as unknown as FounderReplyDeliverDeps["respondImpl"],
+				commDbFactory: () => makeCommDb(["qs"]) as never,
+			},
+		);
+		expect(wakeImpl).toHaveBeenCalledTimes(1);
+		expect(cursorStore.load("T1")).toBe(reply.id);
+	});
+
+	it("FLY-945 ② immature non-ship BEFORE + mature ship AFTER → ship processed, cursor pinned before the non-ship msg", async () => {
+		const { store } = makeStore();
+		const cursorStore = new InMemoryInboundCursorStore();
+		const wakeImpl = vi.fn(async () => ({
+			ok: true,
+		})) as unknown as FounderReplyDeliverDeps["wakeImpl"];
+		const respondImpl = vi.fn(
+			async () => undefined,
+		) as unknown as FounderReplyDeliverDeps["respondImpl"];
+		const handoff = vi.fn(async () => true);
+		const now = Date.now();
+		// brainstorm question 20min ago; founder answers it 5min ago (immature: 10min grace)
+		const qb = q("qb", "brainstorm", {
+			createdAtMs: now - 20 * 60_000,
+			checkpointGraceMs: 600_000,
+		});
+		const m1: RawMsg = {
+			id: snowflakeAt(now - 5 * 60_000),
+			content: "for the brainstorm: use X",
+			author: { id: OWNER },
+		};
+		// ship gate 2min ago; founder says ship 30s ago (mature: 15s grace)
+		const qs = q("qs", "approve_to_ship", {
+			createdAtMs: now - 2 * 60_000,
+			checkpointGraceMs: 15_000,
+		});
+		const m2: RawMsg = {
+			id: snowflakeAt(now - 30_000),
+			content: "ship it",
+			author: { id: OWNER },
+		};
+		await emitFounderReplyDeliveryForThread(ctx(), [qb, qs], {
+			store,
+			fetchImpl: discordGet([m1, m2]),
+			cursorStore,
+			wakeImpl,
+			respondImpl,
+			deliverAmbiguousToLead: handoff,
+			commDbFactory: () => makeCommDb(["qb", "qs"]) as never,
+		});
+		// m2's ship half is processed (waked); its non-ship half is ambiguous
+		// (matching=2) → handoff, unchanged semantics.
+		expect(wakeImpl).toHaveBeenCalledTimes(1);
+		expect(handoff).toHaveBeenCalledTimes(1);
+		expect(respondImpl).not.toHaveBeenCalled();
+		// cursor MUST stay before m1 (the immature non-ship reply is re-read later)
+		expect(cursorStore.load("T1")).toBeUndefined();
+	});
+
+	it("FLY-945 ③ re-scan of the same mature ship msg is idempotent (marker dedupe, no second wake)", async () => {
+		const { store } = makeStore();
+		const wakeImpl = vi.fn(async () => ({
+			ok: true,
+		})) as unknown as FounderReplyDeliverDeps["wakeImpl"];
+		const reply: RawMsg = {
+			id: snowflakeAt(Date.now() - 60_000),
+			content: "ship it",
+			author: { id: OWNER },
+		};
+		const deps = (): FounderReplyDeliverDeps => ({
+			store,
+			fetchImpl: discordGet([reply]),
+			// fresh cursor each scan → the message is re-read both times
+			cursorStore: new InMemoryInboundCursorStore(),
+			wakeImpl,
+			respondImpl: vi.fn(
+				async () => undefined,
+			) as unknown as FounderReplyDeliverDeps["respondImpl"],
+			commDbFactory: () => makeCommDb(["qs"]) as never,
+		});
+		const shipQ = q("qs", "approve_to_ship", { checkpointGraceMs: 15_000 });
+		await emitFounderReplyDeliveryForThread(ctx(), [shipQ], deps());
+		await emitFounderReplyDeliveryForThread(ctx(), [shipQ], deps());
+		expect(wakeImpl).toHaveBeenCalledTimes(1);
+	});
+
+	it("FLY-945 ⑤ reverse-compat: ship grace raised to 600000 → 30s-old ship msg NOT processed (old behavior)", async () => {
+		const { store } = makeStore();
+		const cursorStore = new InMemoryInboundCursorStore();
+		const wakeImpl = vi.fn(async () => ({
+			ok: true,
+		})) as unknown as FounderReplyDeliverDeps["wakeImpl"];
+		const reply: RawMsg = {
+			id: snowflakeAt(Date.now() - 30_000),
+			content: "ship it",
+			author: { id: OWNER },
+		};
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("qs", "approve_to_ship", { checkpointGraceMs: 600_000 })],
+			{
+				store,
+				fetchImpl: discordGet([reply]),
+				cursorStore,
+				wakeImpl,
+				respondImpl: vi.fn(
+					async () => undefined,
+				) as unknown as FounderReplyDeliverDeps["respondImpl"],
+				commDbFactory: () => makeCommDb(["qs"]) as never,
+			},
+		);
+		expect(wakeImpl).not.toHaveBeenCalled();
+		expect(cursorStore.load("T1")).toBeUndefined();
+	});
+
+	it("FLY-945 ⑥ young non-ship question's founder reply is NOT lost: matching uses the full set, cursor waits", async () => {
+		// Old GatePoller pre-filter dropped young questions entirely → the reply
+		// found no matching question → classified irrelevant → cursor advanced
+		// past it → permanently lost. New semantics: the question is passed with
+		// its grace; the message is immature → cursor pinned, retried later.
+		const { store } = makeStore();
+		const cursorStore = new InMemoryInboundCursorStore();
+		const respondImpl = vi.fn(
+			async () => undefined,
+		) as unknown as FounderReplyDeliverDeps["respondImpl"];
+		const now = Date.now();
+		const young = q("q1", "brainstorm", {
+			createdAtMs: now - 60_000, // 1min old — pre-grace
+			checkpointGraceMs: 600_000,
+		});
+		const reply: RawMsg = {
+			id: snowflakeAt(now - 30_000),
+			content: "use approach B",
+			author: { id: OWNER },
+		};
+		await emitFounderReplyDeliveryForThread(ctx(), [young], {
+			store,
+			fetchImpl: discordGet([reply]),
+			cursorStore,
+			respondImpl,
+			commDbFactory: () => makeCommDb(["q1"]) as never,
+		});
+		expect(respondImpl).not.toHaveBeenCalled();
+		expect(cursorStore.load("T1")).toBeUndefined(); // NOT advanced past the reply
+	});
+
+	it("FLY-945: questions without checkpointGraceMs fall back to ctx.graceMs (byte-compat)", async () => {
+		const { store } = makeStore();
+		const cursorStore = new InMemoryInboundCursorStore();
+		const wakeImpl = vi.fn(async () => ({
+			ok: true,
+		})) as unknown as FounderReplyDeliverDeps["wakeImpl"];
+		const reply: RawMsg = {
+			id: snowflakeAt(Date.now() - 30_000),
+			content: "ship it",
+			author: { id: OWNER },
+		};
+		await emitFounderReplyDeliveryForThread(
+			ctx(), // graceMs = 10min
+			[q("qs", "approve_to_ship")], // no checkpointGraceMs
+			{
+				store,
+				fetchImpl: discordGet([reply]),
+				cursorStore,
+				wakeImpl,
+				respondImpl: vi.fn(
+					async () => undefined,
+				) as unknown as FounderReplyDeliverDeps["respondImpl"],
+				commDbFactory: () => makeCommDb(["qs"]) as never,
+			},
+		);
+		expect(wakeImpl).not.toHaveBeenCalled(); // still 10min-gated
+		expect(cursorStore.load("T1")).toBeUndefined();
+	});
+
 	it("ambiguous handoff failure → cursor not advanced (Codex R3 #2)", async () => {
 		const { store } = makeStore();
 		const cursorStore = new InMemoryInboundCursorStore();

@@ -169,6 +169,149 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		expect(r.exitCode).toBe(0);
 	});
 
+	// ── FLY-945 Fix E: founder attribution matrix ──
+
+	describe("FLY-945 Fix E: response attribution must be founder-side", () => {
+		const FOUNDER = "123456789012345678";
+
+		/** .env with founder id (codex gate kept OFF — same file feeds all flags). */
+		function founderEnv(extra = ""): string {
+			const p = join(tmpDir, "founder.env");
+			writeFileSync(
+				p,
+				`DISCORD_OWNER_USER_ID=${FOUNDER}\nFLYWHEEL_CODEX_HARD_GATE=0\n${extra}`,
+			);
+			return p;
+		}
+
+		function setupApprovedBy(from: string): void {
+			const qid = createGateQuestion();
+			answer(qid, JSON.stringify({ approved: true }), from);
+			writeStateSession({
+				execution_id: EXEC,
+				status: "approved_to_ship",
+				pr_head_sha: HEAD,
+				review_question_id: qid,
+			});
+		}
+
+		function runWithDotenv(dotenvPath: string) {
+			return verifyApproval({
+				execId: EXEC,
+				prHead: HEAD,
+				dbPath: commDbPath,
+				stateDbPath,
+				env: {} as NodeJS.ProcessEnv,
+				codexDotenvPath: dotenvPath,
+			});
+		}
+
+		it.each([["bridge"], ["bridge-founder-consent"]])(
+			"trusted bridge writer %s → approved",
+			(from) => {
+				setupApprovedBy(from);
+				const r = runWithDotenv(founderEnv());
+				expect(r.approved).toBe(true);
+			},
+		);
+
+		it("the canonical founder Discord id → approved", () => {
+			setupApprovedBy(FOUNDER);
+			expect(runWithDotenv(founderEnv()).approved).toBe(true);
+		});
+
+		it("🔴 a Lead id (respond self-approval — the FLY-921 door) → response_not_founder_attributed", () => {
+			setupApprovedBy(LEAD);
+			const r = runWithDotenv(founderEnv());
+			expect(r.approved).toBe(false);
+			expect(r.reason).toBe("response_not_founder_attributed");
+			expect(r.responseFrom).toBe(LEAD);
+		});
+
+		it("🔴 FOUNDER_AGENT 'founder-bridge-auto' on a ship gate is anomalous → refused", () => {
+			// The FLY-605 relay agent only ever writes NON-gated answers; its name on
+			// an approve_to_ship response means something forged the WAKE-only lane.
+			setupApprovedBy("founder-bridge-auto");
+			expect(runWithDotenv(founderEnv()).reason).toBe(
+				"response_not_founder_attributed",
+			);
+		});
+
+		it("honest boundary: founder id UNRESOLVABLE → attribution step skipped (feature-off)", () => {
+			setupApprovedBy(LEAD);
+			const p = join(tmpDir, "no-founder.env");
+			writeFileSync(p, "FLYWHEEL_CODEX_HARD_GATE=0\n");
+			expect(runWithDotenv(p).approved).toBe(true);
+		});
+
+		it("kill-switch FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0 (live .env) → byte-compat pass for a lead write", () => {
+			setupApprovedBy(LEAD);
+			const p = founderEnv("FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0\n");
+			expect(runWithDotenv(p).approved).toBe(true);
+		});
+
+		it("🔴 spoof guard (Codex code R1 HIGH): reserved attributions cannot be caller-supplied via respond --lead", async () => {
+			const { isReservedApprovalAttribution } = await import(
+				"../founder-attribution.js"
+			);
+			// the exact bridge names + anything Discord-snowflake-shaped (founder id)
+			expect(isReservedApprovalAttribution("bridge")).toBe(true);
+			expect(isReservedApprovalAttribution("bridge-founder-consent")).toBe(
+				true,
+			);
+			expect(isReservedApprovalAttribution(FOUNDER)).toBe(true);
+			// real Lead agent ids are names, never bare snowflakes → allowed
+			expect(isReservedApprovalAttribution("flywheel-eng-lead")).toBe(false);
+			expect(isReservedApprovalAttribution("founder-bridge-auto")).toBe(false);
+		});
+
+		it("🔴 spoof guard e2e: respond bypass path REFUSES a reserved --lead on an approve_to_ship gate", async () => {
+			const { respond } = await import("../commands/respond.js");
+			const qid = createGateQuestion();
+			for (const forged of ["bridge", "bridge-founder-consent", FOUNDER]) {
+				await expect(
+					respond({
+						questionId: qid,
+						fromAgent: forged,
+						answer: JSON.stringify({ approved: true }),
+						dbPath: commDbPath,
+						env: {
+							FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
+						} as NodeJS.ProcessEnv,
+					}),
+				).rejects.toThrow(/RESERVED approval attribution/);
+			}
+			// nothing was written
+			const db = new CommDB(commDbPath, false);
+			expect(db.getResponse(qid)).toBeUndefined();
+			db.close();
+		});
+
+		it("QA-room bypass: a PROCESS-env =0 wins over a readable .env (slots share the production .env)", async () => {
+			const { resolveFounderAttributionGateOn } = await import(
+				"../founder-attribution.js"
+			);
+			const envPath = founderEnv(); // readable .env, key absent → would be ON
+			expect(
+				resolveFounderAttributionGateOn({
+					argsEnv: undefined,
+					processEnv: {
+						FLYWHEEL_FOUNDER_ATTRIBUTION_GATE: "0",
+					} as NodeJS.ProcessEnv,
+					dotenvPath: envPath,
+				}),
+			).toBe(false);
+			// and without the process key, the same .env resolves ON
+			expect(
+				resolveFounderAttributionGateOn({
+					argsEnv: undefined,
+					processEnv: {} as NodeJS.ProcessEnv,
+					dotenvPath: envPath,
+				}),
+			).toBe(true);
+		});
+	});
+
 	// ── Input validation ──
 
 	it("rejects a short/invalid --pr-head (no prefix-match games)", () => {
