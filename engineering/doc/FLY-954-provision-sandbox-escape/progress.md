@@ -1,13 +1,13 @@
 ---
 issue: FLY-954
 phase: implement
-phaseCursor: 3/9
-updated: 2026-07-07T16:27:58.072Z
-nextStep: "Task 4: flywheel-daemon install_wrapper hardening"
+phaseCursor: 4/9
+updated: 2026-07-07T16:39:57.690Z
+nextStep: "Task 5: bin_integrity_drift alert kind (shell enum + TS union)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-954 progress
-**phase**: implement (3/9)
-**next**: Task 4: flywheel-daemon install_wrapper hardening
+**phase**: implement (4/9)
+**next**: Task 5: bin_integrity_drift alert kind (shell enum + TS union)
