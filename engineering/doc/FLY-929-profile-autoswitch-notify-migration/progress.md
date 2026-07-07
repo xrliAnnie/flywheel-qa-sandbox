@@ -1,14 +1,13 @@
 ---
 issue: FLY-929
 phase: implement
-phaseCursor: 0/8
-updated: 2026-07-07T09:11:27.844Z
-nextStep: read code sites
-  (plugin.ts/reports-route/account-switch/AutoRepairBot/AlertChannelHub/scripts)
+phaseCursor: 3/8
+updated: 2026-07-07T16:23:26.732Z
+nextStep: unit tests for repair/watchdog/Hub/event-route/reports-route + CLI + bash tests
 chunks: []
 pointers: {}
 ---
 
 # FLY-929 progress
-**phase**: implement (0/8)
-**next**: read code sites (plugin.ts/reports-route/account-switch/AutoRepairBot/AlertChannelHub/scripts)
+**phase**: implement (3/8)
+**next**: unit tests for repair/watchdog/Hub/event-route/reports-route + CLI + bash tests
