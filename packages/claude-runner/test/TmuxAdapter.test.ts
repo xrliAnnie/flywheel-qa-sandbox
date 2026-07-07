@@ -1219,6 +1219,50 @@ describe("TmuxAdapter", () => {
 			const args = newWindow!.args;
 			expect(args.join(" ")).toContain("FLYWHEEL_ISSUE_ID=GEO-42");
 		});
+
+		// ─── FLY-921 Fix A: sessionId passed to hookServer ──────────
+
+		it("waitForCompletion passes the runner's claudeSessionId as expectedSessionId", async () => {
+			const hookServer = makeMockHookServer({ resolveImmediately: true });
+			const { fn, calls } = makeMockExec({ paneDead: false });
+			const adapter = new TmuxAdapter("flywheel", fn, 100, 5000, hookServer);
+
+			await adapter.execute(makeCtx());
+
+			// The session id the adapter generated is visible in the claude CLI args
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const args = newWindow!.args;
+			const sessionIdIdx = args.findIndex((a) => a === "--session-id");
+			expect(sessionIdIdx).toBeGreaterThan(-1);
+			const claudeSessionId = args[sessionIdIdx + 1];
+
+			expect(hookServer.waitForCompletion).toHaveBeenCalled();
+			const call = hookServer.waitForCompletion.mock.calls[0]!;
+			expect(call[2]).toBe(claudeSessionId);
+		});
+
+		it("nested-session callback (mismatched sessionId) does not settle; pane_dead settles later", async () => {
+			// Mock a hookServer that honors expectedSessionId the way the real one
+			// does post-FLY-921: a mismatched callback never resolves the promise.
+			const waitForCompletion = vi.fn(
+				(_token: string, _timeoutMs: number, _expected?: string) =>
+					new Promise<never>(() => {}),
+			);
+			const hookServer = {
+				getPort: vi.fn(() => 9876),
+				waitForCompletion,
+				cancelWait: vi.fn(),
+			};
+			const { fn } = makeMockExecWithDelayedDead(2);
+			const adapter = new TmuxAdapter("flywheel", fn, 10, 5000, hookServer);
+
+			const result = await adapter.execute(makeCtx());
+
+			// Callback path never fired (nested session filtered); pane_dead backstop settled
+			expect(result.timedOut).toBe(false);
+			expect(waitForCompletion).toHaveBeenCalled();
+			expect(waitForCompletion.mock.calls[0]![2]).toBeDefined();
+		});
 	});
 
 	// =========================================================================

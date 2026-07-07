@@ -870,4 +870,84 @@ describe("DirectEventSink — FLY-793: completion must not clobber a phase role 
 		const s = store.getSession("exec-1");
 		expect(s?.session_role).toBe("main");
 	});
+
+	// ─── FLY-921 Fix C: turn-belt reconcile wiring pins ──────────
+	// Sister pins for the HTTP surface: event-route-fly921-turn-belt.test.ts.
+
+	function makeFakeOrchestrator() {
+		const reconcileTurnBelt = vi.fn(async () => {});
+		const onPhaseComplete = vi.fn(async () => {});
+		return {
+			holder: {
+				current: {
+					reconcileTurnBelt,
+					onPhaseComplete,
+				} as unknown as import("../bridge/phase-orchestrator.js").PhaseOrchestrator,
+			},
+			reconcileTurnBelt,
+			onPhaseComplete,
+		};
+	}
+
+	it("FLY-921: emitFailed of a three-stage phase session triggers a scoped turn-belt reconcile", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			session_role: "qa",
+			chat_thread_role: "qa",
+		});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		const fake = makeFakeOrchestrator();
+		sink.phaseOrchestrator = fake.holder;
+
+		await sink.emitFailed(makeEnvelope(), "killed by lead");
+
+		expect(fake.reconcileTurnBelt).toHaveBeenCalledOnce();
+		expect(fake.reconcileTurnBelt).toHaveBeenCalledWith({
+			issueId: "issue-1",
+			projectName: "geoforge3d",
+			terminalExecId: "exec-1",
+		});
+	});
+
+	it("FLY-921: emitCompleted of a three-stage phase session reconciles AFTER onPhaseComplete", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			session_role: "implement",
+			chat_thread_role: "implement",
+		});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		const fake = makeFakeOrchestrator();
+		sink.phaseOrchestrator = fake.holder;
+
+		await sink.emitCompleted(makeEnvelope(), needsReviewResult());
+
+		expect(fake.onPhaseComplete).toHaveBeenCalledOnce();
+		expect(fake.reconcileTurnBelt).toHaveBeenCalledOnce();
+		expect(fake.onPhaseComplete.mock.invocationCallOrder[0]!).toBeLessThan(
+			fake.reconcileTurnBelt.mock.invocationCallOrder[0]!,
+		);
+	});
+
+	it("FLY-921 byte-compat: a main-role failure does NOT touch the turn belt", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			session_role: "main",
+		});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		const fake = makeFakeOrchestrator();
+		sink.phaseOrchestrator = fake.holder;
+
+		await sink.emitFailed(makeEnvelope(), "boom");
+
+		expect(fake.reconcileTurnBelt).not.toHaveBeenCalled();
+	});
 });

@@ -96,6 +96,44 @@ describe("CommDB three_stage_turn (FLY-887)", () => {
 		ro.close();
 		rmSync(roDir, { recursive: true, force: true });
 	});
+
+	// ─── FLY-921 Fix C: listTurns (Bridge reconcile full-table read) ──────────
+
+	it("listTurns returns every TURN row in this DB", () => {
+		db.grantTurn("ISSUE-1", "exec-a", "design", T0);
+		db.grantTurn("ISSUE-2", "exec-b", "qa", T0 + 1);
+		const rows = db.listTurns();
+		expect(rows).toHaveLength(2);
+		const byIssue = new Map(rows.map((r) => [r.issue_id, r]));
+		expect(byIssue.get("ISSUE-1")).toMatchObject({
+			holder_exec_id: "exec-a",
+			phase: "design",
+			epoch: 1,
+		});
+		expect(byIssue.get("ISSUE-2")).toMatchObject({
+			holder_exec_id: "exec-b",
+			phase: "qa",
+			epoch: 1,
+		});
+	});
+
+	it("listTurns returns [] on an empty table", () => {
+		expect(db.listTurns()).toEqual([]);
+	});
+
+	it("listTurns on a readonly DB missing the table returns [] (never throws)", () => {
+		const roDir = mkdtempSync(join(tmpdir(), "flywheel-turn-ro2-"));
+		const roPath = join(roDir, "comm.db");
+		const seed = new CommDB(roPath);
+		seed.close();
+		const raw = new Database(roPath);
+		raw.exec("DROP TABLE IF EXISTS three_stage_turn");
+		raw.close();
+		const ro = CommDB.openReadonly(roPath);
+		expect(ro.listTurns()).toEqual([]);
+		ro.close();
+		rmSync(roDir, { recursive: true, force: true });
+	});
 });
 
 /**

@@ -934,8 +934,10 @@ export class TmuxAdapter implements IAdapter {
 				// ── v0.2 mode: HTTP callback (primary) + pane_dead poller + sentinel (fallback) ──
 
 				// Path 1: HTTP callback (use hard upper bound to match dynamic timeout)
+				// FLY-921: pass our own session id — nested sessions inherit the
+				// callback token via env, so token alone cannot identify the runner.
 				this.hookServer
-					.waitForCompletion(callbackToken, hardTimeoutMs)
+					.waitForCompletion(callbackToken, hardTimeoutMs, claudeSessionId)
 					.then((event) => {
 						if (event) settle(false);
 					});

@@ -703,6 +703,28 @@ export class CommDB {
 		return row ?? null;
 	}
 
+	/**
+	 * FLY-921: read ALL TURN rows in this DB — the Bridge's turn-belt reconcile
+	 * needs the full table to detect stale (dead-holder) TURNs. Rows carry no
+	 * project name; the caller (plugin.ts) owns the per-project attribution.
+	 * Readonly-tolerant: "no such table" reads as an empty table (mirrors getTurn).
+	 */
+	listTurns(): ThreeStageTurn[] {
+		try {
+			return this.db
+				.prepare(
+					`SELECT issue_id, holder_exec_id, phase, epoch, granted_at
+           FROM three_stage_turn`,
+				)
+				.all() as ThreeStageTurn[];
+		} catch (err) {
+			if (/no such table: three_stage_turn/i.test((err as Error).message)) {
+				return [];
+			}
+			throw err;
+		}
+	}
+
 	/** FLY-887: remove the TURN row for `issueId` (ship-time cleanup). Idempotent. */
 	deleteTurn(issueId: string): void {
 		this.db

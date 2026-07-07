@@ -112,6 +112,14 @@ describe("event-route qa_result split (FLY-859)", () => {
 			keepAliveEnabled: () => false,
 			getAlivePhaseSession: () => undefined,
 			grantTurn: () => {},
+			// FLY-921 Fix C: empty belt — this suite never exercises the reconcile.
+			turnBelt: {
+				listTurns: () => [],
+				getTurn: () => null,
+				deleteTurn: () => {},
+				getSessionForTurnHolder: () => undefined,
+				getPhaseSessionsForIssue: () => [],
+			},
 			qaVerdicts: {
 				getSession: (id) =>
 					store.getSession(id) as unknown as PhaseSession | undefined,

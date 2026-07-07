@@ -185,6 +185,7 @@ import {
 	type PhaseSession,
 	renderPhaseStatusLine,
 	type ThreeStageVerdictIntent,
+	type TurnBeltRow,
 } from "./phase-orchestrator.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import { makeFinalizeThreeStagePhases } from "./post-ship-finalization.js";
@@ -4498,6 +4499,54 @@ export async function startBridge(
 						db.close();
 					}
 				},
+				// FLY-921 Fix C: turn-belt reconcile reads/writes. Rows live in
+				// per-project CommDBs (no project column) — this seam owns the
+				// attribution so the orchestrator never sees an unattributed row.
+				turnBelt: {
+					listTurns: () => {
+						const rows: { projectName: string; turn: TurnBeltRow }[] = [];
+						for (const p of projects) {
+							const dbPath = commDbPathForProject(p.projectName);
+							if (!ffExistsSync(dbPath)) continue;
+							const db = new CommDB(dbPath);
+							try {
+								for (const turn of db.listTurns()) {
+									rows.push({ projectName: p.projectName, turn });
+								}
+							} catch (err) {
+								console.warn(
+									`[three-stage] turnBelt.listTurns failed for ${p.projectName}: ${(err as Error).message}`,
+								);
+							} finally {
+								db.close();
+							}
+						}
+						return rows;
+					},
+					getTurn: (issueId, projectName) => {
+						const dbPath = commDbPathForProject(projectName);
+						if (!ffExistsSync(dbPath)) return null;
+						const db = new CommDB(dbPath);
+						try {
+							return db.getTurn(issueId);
+						} finally {
+							db.close();
+						}
+					},
+					deleteTurn: (issueId, projectName) => {
+						const dbPath = commDbPathForProject(projectName);
+						if (!ffExistsSync(dbPath)) return;
+						const db = new CommDB(dbPath);
+						try {
+							db.deleteTurn(issueId);
+						} finally {
+							db.close();
+						}
+					},
+					getSessionForTurnHolder: (execId) => store.getSession(execId),
+					getPhaseSessionsForIssue: (issueId) =>
+						store.getPhaseSessionsForIssue(issueId) as PhaseSession[],
+				},
 				// FLY-793 (Codex full-PR R2 #1): source stranded design_done sessions
 				// for the startup reconcile (boot marker drain lands them before this
 				// orchestrator is wired).
@@ -4513,6 +4562,13 @@ export async function startBridge(
 			// never blocks boot.
 			void phaseOrchestratorHolder.current
 				.reconcileOnStartup()
+				.then(() =>
+					// FLY-921 Fix C startup position: full-table turn-belt scan AFTER
+					// the stranded-handoff replay (so it sees the replayed final state).
+					// Guard 2 (grant grace) protects any TURN a replayed handoff just
+					// granted to a still-in-flight spawn.
+					phaseOrchestratorHolder.current?.reconcileTurnBelt(),
+				)
 				.catch((err) =>
 					console.warn(
 						`[three-stage] reconcileOnStartup failed: ${(err as Error).message}`,

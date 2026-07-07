@@ -5,6 +5,7 @@ import {
 	type PhaseOrchestratorDeps,
 	type PhaseSession,
 	type ThreeStageVerdictIntent,
+	type TurnBeltRow,
 } from "../phase-orchestrator.js";
 import {
 	resolveHandoffDispatchChannelId,
@@ -60,6 +61,14 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	const hasShipFinalizationClaim = vi.fn((): boolean => false);
 	const refreshPhaseStatusLine = vi.fn(async (): Promise<void> => {});
 	const grantTurn = vi.fn(() => {});
+	// FLY-921 Fix C: turn-belt reconcile deps (defaults = empty belt).
+	const turnBelt: PhaseOrchestratorDeps["turnBelt"] = {
+		listTurns: vi.fn((): { projectName: string; turn: TurnBeltRow }[] => []),
+		getTurn: vi.fn((): TurnBeltRow | null => null),
+		deleteTurn: vi.fn(() => {}),
+		getSessionForTurnHolder: vi.fn((): PhaseSession | undefined => undefined),
+		getPhaseSessionsForIssue: vi.fn((): PhaseSession[] => []),
+	};
 	const deps: PhaseOrchestratorDeps = {
 		startDispatcher: { start },
 		effects: {
@@ -79,6 +88,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		hasShipFinalizationClaim,
 		refreshPhaseStatusLine,
 		grantTurn,
+		turnBelt,
 		qaVerdicts,
 		...over,
 	};
@@ -99,6 +109,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		hasShipFinalizationClaim,
 		refreshPhaseStatusLine,
 		grantTurn,
+		turnBelt,
 		qaVerdicts,
 		intents,
 	};
@@ -140,7 +151,12 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 	it("Implement awaiting_review → starts QA (Opus) on the same branch", async () => {
 		const { deps, start } = makeDeps();
 		await new PhaseOrchestrator(deps).onPhaseComplete(
-			session({ session_role: "implement", status: "awaiting_review" }),
+			// FLY-921: a genuine needs_review completion carries the review binding.
+			session({
+				session_role: "implement",
+				status: "awaiting_review",
+				review_question_id: "q-1",
+			}),
 		);
 		expect(start.mock.calls[0]![0]).toMatchObject({
 			sessionRole: "qa",
@@ -826,7 +842,12 @@ describe("handoff leadId resolution (combined-QA FLY-855)", () => {
 		const { deps, start, resolveLeadId } = makeDeps();
 		resolveLeadId.mockReturnValue(undefined);
 		await new PhaseOrchestrator(deps).onPhaseComplete(
-			session({ session_role: "implement", status: "awaiting_review" }),
+			// FLY-921: a genuine needs_review completion carries the review binding.
+			session({
+				session_role: "implement",
+				status: "awaiting_review",
+				review_question_id: "q-1",
+			}),
 		);
 		expect(start).toHaveBeenCalledOnce();
 		expect(start.mock.calls[0]![0]).toMatchObject({ sessionRole: "qa" });
@@ -972,5 +993,550 @@ describe("PhaseOrchestrator × three_stage_channels (FLY-902 regression)", () =>
 		);
 		expect(start).not.toHaveBeenCalled();
 		expect(warn).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * FLY-921 Fix B — implement→QA handoff evidence gate. A synthesized
+ * needs_review completion (nested-session callback / kill / early death,
+ * routed through DecisionLayer fallback) carries NO review binding, while a
+ * runner-driven `complete --route needs_review --question-id Q` always does.
+ * The gate: review_question_id present AND !== REVIEW_BINDING_UNBOUND.
+ */
+describe("FLY-921 Fix B — implement→QA handoff evidence gate", () => {
+	beforeEach(() => vi.clearAllMocks());
+
+	it("implement@awaiting_review WITHOUT review_question_id → fail-closed: no dispatch, no grantTurn, no wake; Lead alerted; status line refreshed", async () => {
+		const {
+			deps,
+			start,
+			grantTurn,
+			wakePhaseRunner,
+			alertLeadPipelineError,
+			refreshPhaseStatusLine,
+		} = makeDeps();
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({ session_role: "implement", status: "awaiting_review" }),
+		);
+		expect(start).not.toHaveBeenCalled();
+		expect(grantTurn).not.toHaveBeenCalled();
+		expect(wakePhaseRunner).not.toHaveBeenCalled();
+		expect(alertLeadPipelineError).toHaveBeenCalledOnce();
+		expect(alertLeadPipelineError.mock.calls[0]![0].reason).toContain(
+			"WITHOUT runner-driven review evidence",
+		);
+		expect(refreshPhaseStatusLine).toHaveBeenCalled();
+	});
+
+	it("review_question_id === 'unbound' sentinel → same fail-closed", async () => {
+		const { deps, start, alertLeadPipelineError } = makeDeps();
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({
+				session_role: "implement",
+				status: "awaiting_review",
+				review_question_id: "unbound",
+			}),
+		);
+		expect(start).not.toHaveBeenCalled();
+		expect(alertLeadPipelineError).toHaveBeenCalledOnce();
+	});
+
+	it("real review_question_id but NO pr_number → handoff proceeds (pr_number is NOT required evidence — Codex R1 #1)", async () => {
+		// The session shape has no pr_number field at all — a genuine
+		// needs_review completion without --pr must hand off normally.
+		const { deps, start, alertLeadPipelineError } = makeDeps();
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({
+				session_role: "implement",
+				status: "awaiting_review",
+				review_question_id: "q-real-1",
+			}),
+		);
+		expect(start).toHaveBeenCalledOnce();
+		expect(start.mock.calls[0]![0]).toMatchObject({ sessionRole: "qa" });
+		expect(alertLeadPipelineError).not.toHaveBeenCalled();
+	});
+
+	it("evidence present + keep-alive ON → wake-or-spawn handoff unchanged", async () => {
+		const qa = session({
+			execution_id: "qa-exec",
+			session_role: "qa",
+			chat_thread_role: "qa",
+			status: "running",
+		});
+		const { deps, start, grantTurn, wakePhaseRunner } = makeDeps({
+			keepAliveEnabled: vi.fn(() => true),
+			getAlivePhaseSession: vi.fn((_i: string, phase: string) =>
+				phase === "qa" ? qa : undefined,
+			),
+		});
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({
+				session_role: "implement",
+				status: "awaiting_review",
+				review_question_id: "q-real-1",
+			}),
+		);
+		expect(grantTurn).toHaveBeenCalledWith(
+			expect.objectContaining({ execId: "qa-exec", phase: "qa" }),
+		);
+		expect(wakePhaseRunner).toHaveBeenCalledOnce();
+		expect(start).not.toHaveBeenCalled();
+	});
+
+	it("design@design_done boundary is NOT evidence-gated (synthesized routes cannot produce design_done)", async () => {
+		const { deps, start, alertLeadPipelineError } = makeDeps();
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({ session_role: "design", status: "design_done" }),
+		);
+		expect(start).toHaveBeenCalledOnce();
+		expect(start.mock.calls[0]![0]).toMatchObject({ sessionRole: "implement" });
+		expect(alertLeadPipelineError).not.toHaveBeenCalled();
+	});
+
+	it("three-stage disabled + evidence missing → FLY-902 disabled-warn wins (no evidence-gate alert)", async () => {
+		const warn = vi.fn();
+		const { deps, start, alertLeadPipelineError } = makeDeps({
+			resolveThreeStage: () => ({ enabled: false, reason: "config off" }),
+			logger: { warn },
+		});
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({ session_role: "implement", status: "awaiting_review" }),
+		);
+		expect(start).not.toHaveBeenCalled();
+		expect(alertLeadPipelineError).not.toHaveBeenCalled();
+		expect(warn).toHaveBeenCalledOnce();
+		expect(warn.mock.calls[0]![0]).toContain("three-stage disabled");
+	});
+
+	it("reconcileOnStartup replaying an evidence-less implement@awaiting_review → same fail-closed (onPhaseComplete reuse)", async () => {
+		const { deps, start, alertLeadPipelineError, listStrandedDesignPhases } =
+			makeDeps();
+		listStrandedDesignPhases.mockReturnValue([
+			session({
+				execution_id: "impl-stranded",
+				session_role: "implement",
+				status: "awaiting_review",
+			}),
+		]);
+		await new PhaseOrchestrator(deps).reconcileOnStartup();
+		expect(start).not.toHaveBeenCalled();
+		expect(alertLeadPipelineError).toHaveBeenCalledOnce();
+	});
+});
+
+/**
+ * FLY-921 Fix C — turn-belt stale-holder reconcile. FLY-543 shape: the Lead
+ * kills the TURN holder's process, the epoch lock never releases, and the
+ * surviving (parked) design session polls `turn` forever getting `not-yours`.
+ * reconcileTurnBelt detects a dead holder and re-grants the TURN to the most
+ * downstream probed-ALIVE phase (qa → implement → design), or releases it.
+ */
+describe("FLY-921 Fix C — turn-belt stale-holder reconcile", () => {
+	beforeEach(() => vi.clearAllMocks());
+
+	const OLD = () => Date.now() - 10 * 60_000; // beyond the 5-min grant grace
+	const FRESH = () => Date.now() - 10_000; // inside the grace window
+
+	function turnRow(over: Partial<TurnBeltRow> = {}): TurnBeltRow {
+		return {
+			issue_id: "FLY-543",
+			holder_exec_id: "qa-dead",
+			phase: "qa",
+			epoch: 3,
+			granted_at: OLD(),
+			...over,
+		};
+	}
+
+	/** deps wired for one issue: a stale-candidate holder + a candidate pool. */
+	function makeBeltDeps(args: {
+		turn: TurnBeltRow | null;
+		holderSession?: PhaseSession;
+		candidates?: PhaseSession[];
+		/** liveness per execution_id (default absent). */
+		liveness?: Record<
+			string,
+			"alive" | "dead_pin" | "absent" | "indeterminate"
+		>;
+	}) {
+		const h = makeDeps();
+		(h.turnBelt.getTurn as ReturnType<typeof vi.fn>).mockImplementation(
+			() => args.turn,
+		);
+		(h.turnBelt.listTurns as ReturnType<typeof vi.fn>).mockImplementation(() =>
+			args.turn ? [{ projectName: "flywheel", turn: args.turn }] : [],
+		);
+		(
+			h.turnBelt.getSessionForTurnHolder as ReturnType<typeof vi.fn>
+		).mockImplementation((execId: string) =>
+			args.holderSession?.execution_id === execId
+				? args.holderSession
+				: undefined,
+		);
+		(
+			h.turnBelt.getPhaseSessionsForIssue as ReturnType<typeof vi.fn>
+		).mockImplementation(() => args.candidates ?? []);
+		h.probePhaseAlive.mockImplementation(async (s: PhaseSession) => {
+			return args.liveness?.[s.execution_id] ?? "absent";
+		});
+		return h;
+	}
+
+	const parkedDesign = () =>
+		session({
+			execution_id: "design-alive",
+			session_role: "design",
+			chat_thread_role: "design",
+			status: "design_done",
+		});
+
+	it("holder terminal (failed, FLY-543 kill shape) → TURN re-granted to probed-alive design; alert once", async () => {
+		const h = makeBeltDeps({
+			turn: turnRow(),
+			holderSession: session({
+				execution_id: "qa-dead",
+				session_role: "qa",
+				chat_thread_role: "qa",
+				status: "failed",
+			}),
+			candidates: [parkedDesign()],
+			liveness: { "design-alive": "alive" },
+		});
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt({
+			issueId: "FLY-543",
+			projectName: "flywheel",
+			terminalExecId: "qa-dead",
+		});
+		expect(h.grantTurn).toHaveBeenCalledOnce();
+		expect(h.grantTurn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				issueId: "FLY-543",
+				execId: "design-alive",
+				phase: "design",
+				projectName: "flywheel",
+			}),
+		);
+		expect(h.alertLeadPipelineError).toHaveBeenCalledOnce();
+		const reason = h.alertLeadPipelineError.mock.calls[0]![0].reason;
+		expect(reason).toContain("qa-dead");
+		expect(reason).toContain("design-alive");
+		expect(h.turnBelt.deleteTurn).not.toHaveBeenCalled();
+	});
+
+	it("holder terminal (completed) → stale → recovery", async () => {
+		const h = makeBeltDeps({
+			turn: turnRow({ holder_exec_id: "impl-done" }),
+			holderSession: session({
+				execution_id: "impl-done",
+				session_role: "implement",
+				chat_thread_role: "implement",
+				status: "completed",
+			}),
+			candidates: [parkedDesign()],
+			liveness: { "design-alive": "alive" },
+		});
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt({
+			issueId: "FLY-543",
+			projectName: "flywheel",
+			terminalExecId: "impl-done",
+		});
+		expect(h.grantTurn).toHaveBeenCalledOnce();
+	});
+
+	it("holder terminal (completed) + QA role → legitimate pipeline finish, NOT stale (Codex code R1 HIGH): no re-grant, no delete, no false alert", async () => {
+		// A normal approved-ship completion: the QA session reaches terminal
+		// `completed` while still the TURN holder (post-ship finalization deletes
+		// the TURN moments later). With keep-alive ON, an upstream design/implement
+		// phase is still parked-alive and WOULD be a recovery candidate — the bug
+		// was that reconcile handed the TURN to it + fired a STALE-TURN Lead alert
+		// on every successful three-stage ship. It must be a no-op.
+		const h = makeBeltDeps({
+			turn: turnRow({ holder_exec_id: "qa-shipped" }),
+			holderSession: session({
+				execution_id: "qa-shipped",
+				session_role: "qa",
+				chat_thread_role: "qa",
+				status: "completed",
+			}),
+			candidates: [parkedDesign()],
+			liveness: { "design-alive": "alive" },
+		});
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt({
+			issueId: "FLY-543",
+			projectName: "flywheel",
+			terminalExecId: "qa-shipped",
+		});
+		expect(h.grantTurn).not.toHaveBeenCalled();
+		expect(h.turnBelt.deleteTurn).not.toHaveBeenCalled();
+		expect(h.alertLeadPipelineError).not.toHaveBeenCalled();
+	});
+
+	it("holder terminal (failed) + QA role → STILL stale (kill shape, not a graceful ship) → recovery", async () => {
+		// Guard the scope of the ship carve-out above: a `failed` QA holder is the
+		// FLY-543 killed shape and must still recover, unlike `completed`.
+		const h = makeBeltDeps({
+			turn: turnRow({ holder_exec_id: "qa-killed" }),
+			holderSession: session({
+				execution_id: "qa-killed",
+				session_role: "qa",
+				chat_thread_role: "qa",
+				status: "failed",
+			}),
+			candidates: [parkedDesign()],
+			liveness: { "design-alive": "alive" },
+		});
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt({
+			issueId: "FLY-543",
+			projectName: "flywheel",
+			terminalExecId: "qa-killed",
+		});
+		expect(h.grantTurn).toHaveBeenCalledOnce();
+		expect(h.alertLeadPipelineError).toHaveBeenCalledOnce();
+	});
+
+	it("holder non-terminal + probe alive → healthy, no action, no alert", async () => {
+		const h = makeBeltDeps({
+			turn: turnRow({ holder_exec_id: "qa-live" }),
+			holderSession: session({
+				execution_id: "qa-live",
+				session_role: "qa",
+				chat_thread_role: "qa",
+				status: "running",
+			}),
+			liveness: { "qa-live": "alive" },
+		});
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt();
+		expect(h.grantTurn).not.toHaveBeenCalled();
+		expect(h.turnBelt.deleteTurn).not.toHaveBeenCalled();
+		expect(h.alertLeadPipelineError).not.toHaveBeenCalled();
+	});
+
+	it("holder non-terminal + probe dead_pin → stale → recovery", async () => {
+		const h = makeBeltDeps({
+			turn: turnRow({ holder_exec_id: "qa-pinned" }),
+			holderSession: session({
+				execution_id: "qa-pinned",
+				session_role: "qa",
+				chat_thread_role: "qa",
+				status: "running",
+			}),
+			candidates: [parkedDesign()],
+			liveness: { "qa-pinned": "dead_pin", "design-alive": "alive" },
+		});
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt();
+		expect(h.grantTurn).toHaveBeenCalledWith(
+			expect.objectContaining({ execId: "design-alive" }),
+		);
+	});
+
+	it("holder non-terminal + probe indeterminate → fail-closed skip, no alert", async () => {
+		const h = makeBeltDeps({
+			turn: turnRow({ holder_exec_id: "qa-maybe" }),
+			holderSession: session({
+				execution_id: "qa-maybe",
+				session_role: "qa",
+				chat_thread_role: "qa",
+				status: "running",
+			}),
+			candidates: [parkedDesign()],
+			liveness: { "qa-maybe": "indeterminate", "design-alive": "alive" },
+		});
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt();
+		expect(h.grantTurn).not.toHaveBeenCalled();
+		expect(h.turnBelt.deleteTurn).not.toHaveBeenCalled();
+		expect(h.alertLeadPipelineError).not.toHaveBeenCalled();
+	});
+
+	it("Codex R1 #2 pin: non-terminal absent QA holder is EXCLUDED from recovery — TURN never re-granted to the dead holder itself", async () => {
+		const deadQa = session({
+			execution_id: "qa-dead",
+			session_role: "qa",
+			chat_thread_role: "qa",
+			status: "awaiting_review", // non-terminal — a status-only selector would pick it
+		});
+		const h = makeBeltDeps({
+			turn: turnRow(),
+			holderSession: deadQa,
+			candidates: [deadQa, parkedDesign()],
+			liveness: { "qa-dead": "absent", "design-alive": "alive" },
+		});
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt();
+		expect(h.grantTurn).toHaveBeenCalledOnce();
+		expect(h.grantTurn).toHaveBeenCalledWith(
+			expect.objectContaining({ execId: "design-alive", phase: "design" }),
+		);
+	});
+
+	it("candidates probed in qa → implement → design order; dead candidates skipped", async () => {
+		const deadImpl = session({
+			execution_id: "impl-dead",
+			session_role: "implement",
+			chat_thread_role: "implement",
+			status: "awaiting_review",
+		});
+		const h = makeBeltDeps({
+			turn: turnRow(),
+			holderSession: session({
+				execution_id: "qa-dead",
+				chat_thread_role: "qa",
+				status: "failed",
+			}),
+			candidates: [parkedDesign(), deadImpl],
+			liveness: { "impl-dead": "absent", "design-alive": "alive" },
+		});
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt();
+		// implement probed before design (priority), found dead, skipped.
+		expect(h.grantTurn).toHaveBeenCalledOnce();
+		expect(h.grantTurn).toHaveBeenCalledWith(
+			expect.objectContaining({ execId: "design-alive" }),
+		);
+	});
+
+	it("candidate probe indeterminate → TURN untouched this round (never move on unknown liveness)", async () => {
+		const maybeImpl = session({
+			execution_id: "impl-maybe",
+			session_role: "implement",
+			chat_thread_role: "implement",
+			status: "awaiting_review",
+		});
+		const h = makeBeltDeps({
+			turn: turnRow(),
+			holderSession: session({
+				execution_id: "qa-dead",
+				chat_thread_role: "qa",
+				status: "failed",
+			}),
+			candidates: [maybeImpl, parkedDesign()],
+			liveness: { "impl-maybe": "indeterminate", "design-alive": "alive" },
+		});
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt();
+		expect(h.grantTurn).not.toHaveBeenCalled();
+		expect(h.turnBelt.deleteTurn).not.toHaveBeenCalled();
+		expect(h.alertLeadPipelineError).not.toHaveBeenCalled();
+	});
+
+	it("no live candidates → deleteTurn + alert (TURN released)", async () => {
+		const h = makeBeltDeps({
+			turn: turnRow(),
+			holderSession: session({
+				execution_id: "qa-dead",
+				chat_thread_role: "qa",
+				status: "failed",
+			}),
+			candidates: [],
+		});
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt();
+		expect(h.turnBelt.deleteTurn).toHaveBeenCalledWith("FLY-543", "flywheel");
+		expect(h.grantTurn).not.toHaveBeenCalled();
+		expect(h.alertLeadPipelineError).toHaveBeenCalledOnce();
+		expect(h.alertLeadPipelineError.mock.calls[0]![0].reason).toContain(
+			"TURN released",
+		);
+	});
+
+	it("idempotent: a second reconcile after recovery (new holder alive) takes no action, no second alert", async () => {
+		const design = parkedDesign();
+		const h = makeBeltDeps({
+			turn: turnRow({
+				holder_exec_id: "design-alive",
+				phase: "design",
+				epoch: 4,
+			}),
+			holderSession: design,
+			liveness: { "design-alive": "alive" },
+		});
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt();
+		expect(h.grantTurn).not.toHaveBeenCalled();
+		expect(h.alertLeadPipelineError).not.toHaveBeenCalled();
+	});
+
+	it("guard 1 (spawn race): event-scoped reconcile no-ops when the terminal exec is NOT the holder", async () => {
+		// implement just completed and handoff already granted the TURN to the
+		// freshly-spawned QA whose session row hasn't landed yet — do NOT touch it.
+		const h = makeBeltDeps({
+			turn: turnRow({ holder_exec_id: "qa-fresh-spawn", granted_at: FRESH() }),
+			holderSession: undefined,
+		});
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt({
+			issueId: "FLY-543",
+			projectName: "flywheel",
+			terminalExecId: "impl-done",
+		});
+		expect(h.probePhaseAlive).not.toHaveBeenCalled();
+		expect(h.grantTurn).not.toHaveBeenCalled();
+		expect(h.turnBelt.deleteTurn).not.toHaveBeenCalled();
+		expect(h.alertLeadPipelineError).not.toHaveBeenCalled();
+	});
+
+	it("guard 2 (grant grace): startup scan skips a missing-row holder granted < 5 min ago", async () => {
+		const h = makeBeltDeps({
+			turn: turnRow({ holder_exec_id: "qa-in-flight", granted_at: FRESH() }),
+			holderSession: undefined,
+			candidates: [parkedDesign()],
+			liveness: { "design-alive": "alive" },
+		});
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt();
+		expect(h.grantTurn).not.toHaveBeenCalled();
+		expect(h.turnBelt.deleteTurn).not.toHaveBeenCalled();
+		expect(h.alertLeadPipelineError).not.toHaveBeenCalled();
+	});
+
+	it("guard 2 counterpart: missing-row holder beyond the grace window IS a remnant → recovery", async () => {
+		const h = makeBeltDeps({
+			turn: turnRow({ holder_exec_id: "qa-remnant", granted_at: OLD() }),
+			holderSession: undefined,
+			candidates: [parkedDesign()],
+			liveness: { "design-alive": "alive" },
+		});
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt();
+		expect(h.grantTurn).toHaveBeenCalledWith(
+			expect.objectContaining({ execId: "design-alive" }),
+		);
+	});
+
+	it("startup full-table scan reconciles per project (grantTurn carries each row's projectName)", async () => {
+		const h = makeDeps();
+		const t1 = turnRow({ issue_id: "FLY-A", holder_exec_id: "dead-a" });
+		const t2 = turnRow({ issue_id: "FLY-B", holder_exec_id: "dead-b" });
+		(h.turnBelt.listTurns as ReturnType<typeof vi.fn>).mockReturnValue([
+			{ projectName: "proj-1", turn: t1 },
+			{ projectName: "proj-2", turn: t2 },
+		]);
+		(
+			h.turnBelt.getSessionForTurnHolder as ReturnType<typeof vi.fn>
+		).mockImplementation((execId: string) =>
+			session({
+				execution_id: execId,
+				chat_thread_role: "qa",
+				status: "failed",
+			}),
+		);
+		const designA = session({
+			execution_id: "design-a",
+			issue_id: "FLY-A",
+			chat_thread_role: "design",
+			status: "design_done",
+		});
+		const designB = session({
+			execution_id: "design-b",
+			issue_id: "FLY-B",
+			chat_thread_role: "design",
+			status: "design_done",
+		});
+		(
+			h.turnBelt.getPhaseSessionsForIssue as ReturnType<typeof vi.fn>
+		).mockImplementation((issueId: string) =>
+			issueId === "FLY-A" ? [designA] : [designB],
+		);
+		h.probePhaseAlive.mockResolvedValue("alive");
+		await new PhaseOrchestrator(h.deps).reconcileTurnBelt();
+		expect(h.grantTurn).toHaveBeenCalledTimes(2);
+		expect(h.grantTurn).toHaveBeenCalledWith(
+			expect.objectContaining({ execId: "design-a", projectName: "proj-1" }),
+		);
+		expect(h.grantTurn).toHaveBeenCalledWith(
+			expect.objectContaining({ execId: "design-b", projectName: "proj-2" }),
+		);
 	});
 });

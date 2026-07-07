@@ -59,6 +59,14 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	const hasShipFinalizationClaim = vi.fn((): boolean => false);
 	const refreshPhaseStatusLine = vi.fn(async (): Promise<void> => {});
 	const grantTurn = vi.fn(() => {});
+	// FLY-921 Fix C: turn-belt reconcile deps (defaults = empty belt).
+	const turnBelt: PhaseOrchestratorDeps["turnBelt"] = {
+		listTurns: vi.fn(() => []),
+		getTurn: vi.fn(() => null),
+		deleteTurn: vi.fn(() => {}),
+		getSessionForTurnHolder: vi.fn((): PhaseSession | undefined => undefined),
+		getPhaseSessionsForIssue: vi.fn((): PhaseSession[] => []),
+	};
 	const { qaVerdicts, intents, setSessionRow } = makeQaVerdicts();
 	const deps: PhaseOrchestratorDeps = {
 		startDispatcher: { start },
@@ -79,6 +87,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		hasShipFinalizationClaim,
 		refreshPhaseStatusLine,
 		grantTurn,
+		turnBelt,
 		qaVerdicts,
 		...over,
 	};
@@ -96,6 +105,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		hasShipFinalizationClaim,
 		refreshPhaseStatusLine,
 		grantTurn,
+		turnBelt,
 		qaVerdicts,
 		intents,
 		setSessionRow,
@@ -186,7 +196,12 @@ describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 			),
 		});
 		await new PhaseOrchestrator(h.deps).onPhaseComplete(
-			session({ session_role: "implement", status: "awaiting_review" }),
+			session({
+				session_role: "implement",
+				status: "awaiting_review",
+				// FLY-921: genuine completion carries the review binding.
+				review_question_id: "q-1",
+			}),
 		);
 		expect(h.parkPhaseRunner).toHaveBeenCalledOnce();
 		expect(h.assertPhaseWorktreeReady).toHaveBeenCalledWith(
@@ -222,7 +237,12 @@ describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 			},
 		});
 		await new PhaseOrchestrator(h.deps).onPhaseComplete(
-			session({ session_role: "implement", status: "awaiting_review" }),
+			session({
+				session_role: "implement",
+				status: "awaiting_review",
+				// FLY-921: genuine completion carries the review binding.
+				review_question_id: "q-1",
+			}),
 		);
 		expect(h.deps.effects.alertLeadPipelineError).toHaveBeenCalledOnce();
 		expect(h.grantTurn).not.toHaveBeenCalled();
@@ -249,7 +269,12 @@ describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 			},
 		});
 		await new PhaseOrchestrator(h.deps).onPhaseComplete(
-			session({ session_role: "implement", status: "awaiting_review" }),
+			session({
+				session_role: "implement",
+				status: "awaiting_review",
+				// FLY-921: genuine completion carries the review binding.
+				review_question_id: "q-1",
+			}),
 		);
 		expect(h.grantTurn).toHaveBeenCalledOnce(); // TURN set before wake
 		expect(h.deps.effects.alertLeadPipelineError).not.toHaveBeenCalled(); // not fail-closed

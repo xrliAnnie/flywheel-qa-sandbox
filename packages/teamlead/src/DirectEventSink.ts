@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import {
 	DEFAULT_PROOFSHOT_CONFIG,
+	isThreeStagePhaseRole,
 	modelShortCode,
 	resolveCompletionSessionRole,
 	type SkillsConfig,
@@ -750,6 +751,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
+		// FLY-921 Fix C: this completion may have terminated the current TURN
+		// holder — scoped reconcile (guard 1: only acts when this exec IS the
+		// holder). Runs AFTER the handoff so a just-granted TURN is never raced.
+		await this.reconcileTurnBeltAfterTerminal(env.executionId);
+
 		// FLY-579 + FLY-827: hold the founder while review-held — suppress the
 		// review-required delivery (the 🧪 / ship-ready posts reach the thread via the
 		// coordinator's ThreadPoster, not this sink). isReviewHeld is false with no
@@ -860,7 +866,38 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
+		// FLY-921 Fix C: session_failed never reaches onPhaseComplete — a killed
+		// TURN holder (FLY-543 shape) must still release the belt. Sister call:
+		// event-route.ts session_failed path.
+		await this.reconcileTurnBeltAfterTerminal(env.executionId);
+
 		this.pushNotification(env, "session_failed");
+	}
+
+	/**
+	 * FLY-921 Fix C: scoped turn-belt reconcile after a three-stage phase
+	 * session hit a terminal signal (completed/failed). Guard 1 lives inside
+	 * reconcileTurnBelt (terminalExecId must BE the holder). Never throws.
+	 */
+	private async reconcileTurnBeltAfterTerminal(
+		executionId: string,
+	): Promise<void> {
+		const orchestrator = this.phaseOrchestrator?.current;
+		if (!orchestrator) return;
+		const session = this.store.getSession(executionId);
+		if (!session?.project_name) return;
+		if (!isThreeStagePhaseRole(session.session_role)) return;
+		try {
+			await orchestrator.reconcileTurnBelt({
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				terminalExecId: executionId,
+			});
+		} catch (err) {
+			console.error(
+				`[DirectEventSink] reconcileTurnBelt threw for ${executionId}: ${(err as Error).message}`,
+			);
+		}
 	}
 
 	async emitHeartbeat(env: EventEnvelope): Promise<void> {

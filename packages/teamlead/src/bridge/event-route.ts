@@ -7,6 +7,7 @@ import type { FounderUxGateMode } from "flywheel-config";
 import {
 	DEFAULT_PHASE_TIER,
 	isFounderUxGateEnabled,
+	isThreeStagePhaseRole,
 	modelDisplayName,
 	modelShortCode,
 	phaseMessageTag,
@@ -2079,6 +2080,36 @@ export function createEventRouter(
 
 		// Skip notification when FSM rejected the transition
 		if (transitionRejected) {
+			// FLY-921 Fix C (Codex code R1 HIGH): a killed PARKED holder is exactly
+			// this shape — the FSM has no awaiting_review→failed edge, so the
+			// terminal signal is rejected and this early return would skip the
+			// stale-holder recovery below forever. The process is dead regardless
+			// of the status flip: run the scoped reconcile here too (guard 1 +
+			// the liveness probe inside reconcileTurnBelt keep it safe — a
+			// spurious signal against a live holder probes alive and no-ops).
+			if (
+				(event.event_type === "session_completed" ||
+					event.event_type === "session_failed") &&
+				phaseOrchestrator?.current
+			) {
+				const rejectedSession = store.getSession(event.execution_id);
+				if (
+					rejectedSession?.project_name &&
+					isThreeStagePhaseRole(rejectedSession.session_role)
+				) {
+					try {
+						await phaseOrchestrator.current.reconcileTurnBelt({
+							issueId: rejectedSession.issue_id,
+							projectName: rejectedSession.project_name,
+							terminalExecId: event.execution_id,
+						});
+					} catch (err) {
+						console.error(
+							`[event-route] reconcileTurnBelt (FSM-rejected path) threw for ${event.execution_id}: ${(err as Error).message}`,
+						);
+					}
+				}
+			}
 			res.json({
 				ok: true,
 				warning:
@@ -2208,6 +2239,32 @@ export function createEventRouter(
 			} catch (err) {
 				console.error(
 					`[event-route] onPhaseComplete threw for ${event.execution_id}: ${(err as Error).message}`,
+				);
+			}
+		}
+
+		// FLY-921 Fix C: a three-stage phase session reaching a terminal signal
+		// (completed OR failed — the failed path never goes through
+		// onPhaseComplete) may be the current TURN holder. Scoped reconcile with
+		// guard 1: only acts when this exec IS the holder, so a handoff that just
+		// moved the TURN to a fresh spawn is never raced. Runs AFTER the handoff
+		// above (same event flow, serial). Sister call: DirectEventSink.ts.
+		if (
+			(event.event_type === "session_completed" ||
+				event.event_type === "session_failed") &&
+			phaseOrchestrator?.current &&
+			session?.project_name &&
+			isThreeStagePhaseRole(session.session_role)
+		) {
+			try {
+				await phaseOrchestrator.current.reconcileTurnBelt({
+					issueId: session.issue_id,
+					projectName: session.project_name,
+					terminalExecId: event.execution_id,
+				});
+			} catch (err) {
+				console.error(
+					`[event-route] reconcileTurnBelt threw for ${event.execution_id}: ${(err as Error).message}`,
 				);
 			}
 		}

@@ -179,6 +179,36 @@ export interface WakePhaseRunnerArgs {
 	qaSummary?: string;
 }
 
+/**
+ * FLY-921 Fix C: one `three_stage_turn` row (mirrors flywheel-comm's
+ * ThreeStageTurn — re-declared here so teamlead does not import the CommDB
+ * package types). Rows carry no project name; plugin.ts owns attribution.
+ */
+export interface TurnBeltRow {
+	issue_id: string;
+	holder_exec_id: string;
+	phase: string;
+	epoch: number;
+	granted_at: number;
+}
+
+/**
+ * FLY-921 Fix C: a fresh spawn's TURN is granted at the dispatcher pre-launch
+ * seam BEFORE its `session_started` row lands (fire-and-forget) — a
+ * missing-row holder younger than this window is an in-flight spawn, not a
+ * remnant. Beyond it, dispatch and Bridge died together: genuine remnant.
+ */
+const TURN_GRANT_GRACE_MS = 5 * 60_000;
+
+/** Recovery target priority: most-downstream parked-alive phase first. */
+const TURN_RECOVERY_PRIORITY: readonly ThreeStagePhase[] = [
+	"qa",
+	"implement",
+	"design",
+];
+
+const TERMINAL_SESSION_STATUS = new Set(["completed", "failed"]);
+
 export interface PhaseOrchestratorDeps {
 	/** Dispatch a new phase-session (mirrors StartRequest subset). */
 	startDispatcher: {
@@ -317,6 +347,22 @@ export interface PhaseOrchestratorDeps {
 		projectName: string;
 	}): void;
 	/**
+	 * FLY-921 Fix C: turn-belt reconcile reads/writes. All rows are
+	 * project-attributed by plugin.ts (per-project CommDBs); the orchestrator
+	 * never touches an unattributed turn row. `getTurn` is the scoped
+	 * event-position read (guard 1 must NOT run the full stale matrix after a
+	 * successful handoff — Codex R3 non-blocking #2).
+	 */
+	turnBelt: {
+		listTurns(): { projectName: string; turn: TurnBeltRow }[];
+		getTurn(issueId: string, projectName: string): TurnBeltRow | null;
+		deleteTurn(issueId: string, projectName: string): void;
+		/** Fresh StateStore row for a TURN holder; undefined = no session row. */
+		getSessionForTurnHolder(execId: string): PhaseSession | undefined;
+		/** All phase sessions for the issue — the recovery candidate pool. */
+		getPhaseSessionsForIssue(issueId: string): PhaseSession[];
+	};
+	/**
 	 * FLY-859: the three-stage QA verdict machinery (Step 8's deferred
 	 * ThreeStageQaCoordinator, folded into this orchestrator). All helpers are
 	 * thin store closures wired in plugin.ts; intent read/patch operate on the
@@ -379,6 +425,19 @@ const HANDOFF_STATUS: Partial<Record<ThreeStagePhase, string>> = {
 	design: "design_done",
 	implement: "awaiting_review",
 };
+
+/**
+ * FLY-921 Fix B: runner-driven completion evidence for the implement→QA
+ * handoff. A genuine `complete --route needs_review --question-id Q` binds
+ * `review_question_id`; synthesized completions can't, and a forgotten
+ * `--question-id` lands the 'unbound' sentinel (which verify-approval
+ * rejects anyway). `pr_number` is deliberately NOT required — complete.ts
+ * does not force `--pr` for needs_review (Codex design R1 #1).
+ */
+function hasRunnerDrivenReviewEvidence(session: PhaseSession): boolean {
+	const qid = session.review_question_id;
+	return !!qid && qid !== REVIEW_BINDING_UNBOUND;
+}
 
 export class PhaseOrchestrator {
 	constructor(private readonly deps: PhaseOrchestratorDeps) {}
@@ -570,6 +629,22 @@ export class PhaseOrchestrator {
 			this.warn(
 				`three-stage disabled at ${phase} handoff for ${session.issue_id} (${session.execution_id}): ${policy.reason ?? "no reason given"} — handoff NOT dispatched`,
 			);
+			return;
+		}
+
+		// FLY-921 Fix B: implement→QA needs runner-driven completion EVIDENCE.
+		// A genuine `complete --route needs_review --question-id Q` binds
+		// review_question_id; a synthesized completion (nested-session callback,
+		// kill, early death — routed via DecisionLayer/fallback) never can, and
+		// a runner that forgot --question-id lands the 'unbound' sentinel which
+		// verify-approval already rejects. Order: boundary → policy (FLY-902
+		// disabled-warn keeps its semantics) → evidence → handoff.
+		if (phase === "implement" && !hasRunnerDrivenReviewEvidence(session)) {
+			await this.failClosed(
+				session,
+				`implement reached awaiting_review WITHOUT runner-driven review evidence (review_question_id=${session.review_question_id ?? "absent"}) — synthesized completion suspected (nested-session callback / early process death / kill); QA NOT started. Lead can re-drive after verifying the implement session.`,
+			);
+			await this.deps.refreshPhaseStatusLine(session.issue_id);
 			return;
 		}
 
@@ -1188,6 +1263,164 @@ export class PhaseOrchestrator {
 				`starting ${next} phase failed: ${(err as Error).message}`,
 			);
 		}
+	}
+
+	/**
+	 * FLY-921 Fix C: turn-belt stale-holder reconcile. FLY-543 shape: the TURN
+	 * holder's process is dead (killed / crashed) but the epoch lock never
+	 * releases, so the surviving parked phase polls `turn` forever getting
+	 * `not-yours`. Detect a stale holder and re-grant the TURN to the most
+	 * downstream probed-ALIVE phase (qa → implement → design), or release it.
+	 *
+	 * Scoped (event-driven) form: guard 1 — only act when the just-terminal
+	 * exec IS the holder ("the dead one is the holder himself"). A handoff that
+	 * already moved the TURN to a freshly-spawned next phase (whose session row
+	 * is still in flight — Blueprint's emitStarted is fire-and-forget) must
+	 * never have its grant stolen back (Codex R2 #1).
+	 *
+	 * Unscoped (startup) form: full table scan across projects; guard 2 — a
+	 * missing-row holder inside TURN_GRANT_GRACE_MS reads as indeterminate.
+	 *
+	 * Fail-closed everywhere: indeterminate liveness (holder OR candidate)
+	 * never moves the TURN and never alerts (next round re-checks).
+	 */
+	async reconcileTurnBelt(scope?: {
+		issueId: string;
+		projectName: string;
+		terminalExecId?: string;
+	}): Promise<void> {
+		if (scope) {
+			let turn: TurnBeltRow | null;
+			try {
+				turn = this.deps.turnBelt.getTurn(scope.issueId, scope.projectName);
+			} catch (err) {
+				this.warn(
+					`reconcileTurnBelt getTurn failed for ${scope.issueId}: ${(err as Error).message}`,
+				);
+				return;
+			}
+			if (!turn) return;
+			// Guard 1: event position only handles "the dead one IS the holder".
+			if (
+				scope.terminalExecId &&
+				turn.holder_exec_id !== scope.terminalExecId
+			) {
+				return;
+			}
+			await this.reconcileOneTurn(scope.projectName, turn);
+			return;
+		}
+
+		let rows: { projectName: string; turn: TurnBeltRow }[];
+		try {
+			rows = this.deps.turnBelt.listTurns();
+		} catch (err) {
+			this.warn(
+				`reconcileTurnBelt listTurns failed: ${(err as Error).message}`,
+			);
+			return;
+		}
+		for (const { projectName, turn } of rows) {
+			try {
+				await this.reconcileOneTurn(projectName, turn);
+			} catch (err) {
+				this.warn(
+					`reconcileTurnBelt failed for ${turn.issue_id}: ${(err as Error).message}`,
+				);
+			}
+		}
+	}
+
+	/** Stale determination + recovery for one project-attributed TURN row. */
+	private async reconcileOneTurn(
+		projectName: string,
+		turn: TurnBeltRow,
+	): Promise<void> {
+		const holder = this.deps.turnBelt.getSessionForTurnHolder(
+			turn.holder_exec_id,
+		);
+		let staleReason: string;
+		if (!holder) {
+			// Guard 2: pre-launch grant precedes the fire-and-forget session row —
+			// inside the grace window this is an in-flight spawn, not a remnant.
+			const ageMs = Date.now() - turn.granted_at;
+			if (ageMs < TURN_GRANT_GRACE_MS) return;
+			staleReason = `holder session row missing (granted ${Math.round(ageMs / 1000)}s ago — dispatch remnant)`;
+		} else if (TERMINAL_SESSION_STATUS.has(holder.status)) {
+			// FLY-921 (Codex code review R1 HIGH): a QA holder that reached a
+			// GRACEFUL `completed` is the pipeline legitimately finishing — an
+			// approved ship (post-ship finalization deletes the TURN moments
+			// later, from the event sink's `pending` queue) or a FLY-859
+			// stranded-pass (which raises its own alert). It is NOT the FLY-543
+			// killed shape (`failed`). Reconciling it would re-grant the TURN to
+			// a still-parked upstream phase + fire a false STALE-TURN Lead alert
+			// on EVERY successful three-stage ship — and there is no useful phase
+			// to recover to. Leave it to the finalization/handoff lifecycle. Only
+			// `failed` holders (killed / crashed — the actual FLY-543 shape) and
+			// completed NON-qa holders (a phase that finished while still holding
+			// the TURN because its handoff never ran — a genuine stuck state)
+			// stay stale-eligible.
+			const holderRole = holder.chat_thread_role ?? holder.session_role;
+			if (holder.status === "completed" && holderRole === "qa") {
+				return;
+			}
+			staleReason = `holder session is terminal (${holder.status})`;
+		} else {
+			const liveness = await this.deps.effects.probePhaseAlive(holder);
+			if (liveness === "alive") return; // healthy
+			if (liveness === "indeterminate") return; // fail-closed, no alert
+			staleReason = `holder process ${liveness}`;
+		}
+
+		// Recovery: most-downstream probed-ALIVE phase, EXCLUDING the stale
+		// holder itself (a status-only selector would re-pick a non-terminal dead
+		// holder and strand the TURN on it forever — Codex R1 #2).
+		const candidates = this.deps.turnBelt
+			.getPhaseSessionsForIssue(turn.issue_id)
+			.filter(
+				(s) =>
+					s.execution_id !== turn.holder_exec_id &&
+					!TERMINAL_SESSION_STATUS.has(s.status),
+			);
+		for (const phase of TURN_RECOVERY_PRIORITY) {
+			for (const cand of candidates.filter(
+				(c) => (c.chat_thread_role ?? c.session_role) === phase,
+			)) {
+				const liveness = await this.deps.effects.probePhaseAlive(cand);
+				if (liveness === "indeterminate") {
+					// Never change ownership while a candidate's liveness is unknown.
+					this.warn(
+						`reconcileTurnBelt: candidate ${cand.execution_id} liveness indeterminate on ${turn.issue_id} — leaving TURN untouched this round`,
+					);
+					return;
+				}
+				if (liveness !== "alive") continue; // dead_pin / absent → next candidate
+				this.deps.grantTurn({
+					issueId: turn.issue_id,
+					execId: cand.execution_id,
+					phase,
+					projectName,
+				});
+				await this.failClosed(
+					cand,
+					`turn-belt recovered a STALE TURN on ${turn.issue_id}: ${staleReason}; holder ${turn.holder_exec_id} (epoch ${turn.epoch}) → ${cand.execution_id} (${phase}, epoch ${turn.epoch + 1}). The parked ${phase} phase can now re-acquire the worktree turn.`,
+				);
+				return;
+			}
+		}
+
+		// No live phase to hand the TURN to — release it; a future spawn's
+		// pre-launch seam (or post-ship cleanup) rebuilds it.
+		this.deps.turnBelt.deleteTurn(turn.issue_id, projectName);
+		await this.failClosed(
+			holder ?? {
+				execution_id: turn.holder_exec_id,
+				issue_id: turn.issue_id,
+				project_name: projectName,
+				status: "unknown",
+			},
+			`turn-belt: STALE TURN on ${turn.issue_id} (${staleReason}; holder ${turn.holder_exec_id}, epoch ${turn.epoch}) had NO live phase to recover to — TURN released; the next spawn's pre-launch seam re-creates it.`,
+		);
 	}
 
 	private async failClosed(
