@@ -167,3 +167,36 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 - OpenHands 2026:openhands.dev、docs(Cloud)、aiagentslist、vellum.ai(best coding agents)
 - Hermes 2026:github.com/NousResearch/hermes-agent releases、theplanettools.ai(Hermes Desktop)、releasebot.io(v0.18.0)、hermes-agent.org
 - 非技术信任:curationai.ai(verification infrastructure)、vouched.id、dock.io、devoteam.com、cyberadvisors.com
+
+---
+
+## 6. round-2.1 补充(2026-07-07):Annie 批注修订 + Paperclip 真挖深
+
+> Annie 看完 round-2 给了实质批注(instruction 68563d64)。核心:①用词去丧(别人做了≠我们不能做);②真研究 Paperclip、别只下「generic 死了」的结论;③别 overclaim「完全非技术」(现在是假的);④Lovable 主要是出 UI 的地方;⑤自托管诚实化(差异是「done-for-you 替你做」不是「不用自托管」);⑥bootstrap 打法采纳。并且**定位大结论归 FLY-911**,竞品扫描不硬下,差异写成候选。以下是 Paperclip 真挖深的新事实。
+
+### 6.1 Paperclip 机制(org-chart / 预算 / 治理具体怎么设计)
+- **三角色**:CEO(一司一个)→ Manager(协调子团队、派 IC)→ IC(干活);汇报线定义委派(CEO→CTO→工程师)。
+- **预算**:每 agent 月度预算;80% 软预警、100% 自动暂停+挡新任务;board 可 override 恢复。
+- **治理**:agent 改动 Paperclip 本身受控;**雇新 agent 默认要 Board 批准**。
+- **ticket + heartbeat**:ticket 唤醒;定时 heartbeat + 事件触发;heartbeat 执行 = DB wakeup 队列(coalescing)+ 预算检查 + workspace 解析 + secret 注入 + skill 加载 + adapter 调用 → 结构化日志/成本事件/session 状态/审计。
+- **issue 一等公民**:company/project/goal/parent 链、原子 checkout + 执行锁、blocker 依赖、评论/文档/附件/work product/label/inbox。
+- **审计**:append-only 审计日志(不可改删)。
+- **BYO 任意 agent**:「能收 heartbeat 就算雇了」;到 6 月支持 Claude/Codex/Gemini/Cursor/Hermes/OpenClaw/Pi/OpenCode + Bash + HTTP。
+
+### 6.2 增长 / GTM
+- 3-2 发布 → 3 周 30K star → 4 月 42K+6,400 fork → **6-11 达 69,955 star**、105 contributors。
+- **明说给 operators 不给开发者**;@dotta × Greg Isenberg 47 分钟 live demo 拉非技术买家(solo 创始人/agency/牙医·营销公司)。
+- 自我软化:从「zero-human companies」→「the app people use to manage AI agents for work」。
+
+### 6.3 诚实成熟度(Annie #3 的证据:赛道都还早)
+- bug/404/agent 忽略 override;「a proof of concept wearing a product's clothing」;每周报 bug;context 丢了静默重启;**4,953 open issue vs 105 contributor**;化名 lead、无融资、无实体;评分 ~7.8/10。
+
+### 6.4 bootstrap 打法(先立具体旗舰)
+- paperclipai/companies 模板库:即导即跑的配置好公司(org chart+skills+治理)。**软件公司模板**:Superpowers(CEO/CTO/QA Engineer/Release Engineer/Staff Engineer + TDD + code review)、gstack Engineering Company、Full-Stack Forge(66 skill)。Company Wizard 插件(回答几问→装配)。
+- 落到我们:具体旗舰 = 软件公司 = dogfooding(Flywheel 建 Flywheel)。
+
+### 6.5 round-2.1 补充来源(2026-07 WebSearch)
+- 机制:paperclip.ing、github.com/paperclipai/paperclip、mintlify docs、stanza.dev、jimmysong.io、rywalker.com、contabo.com
+- 增长/GTM:dev.to、eweek.com、@dotta × Greg Isenberg X、remoteopenclaw.com
+- 成熟度:vibecoding.app/blog(~7.8)、kunalganglani.com、github issues(4,953 open)
+- bootstrap 模板:github.com/paperclipai/companies、yesterday-ai/paperclip-plugin-company-wizard
