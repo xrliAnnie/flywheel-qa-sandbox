@@ -1,13 +1,13 @@
 ---
 issue: FLY-927
 phase: implement
-phaseCursor: 12/18
-updated: 2026-07-07T19:11:35.272Z
-nextStep: Task 2.4 T2 判定 + 升级
+phaseCursor: 13/18
+updated: 2026-07-07T19:17:54.177Z
+nextStep: PR-3 Task 3.1 checkpoint-park 元组
 chunks: []
 pointers: {}
 ---
 
 # FLY-927 progress
-**phase**: implement (12/18)
-**next**: Task 2.4 T2 判定 + 升级
+**phase**: implement (13/18)
+**next**: PR-3 Task 3.1 checkpoint-park 元组
