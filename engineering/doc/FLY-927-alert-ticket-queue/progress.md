@@ -1,13 +1,13 @@
 ---
 issue: FLY-927
 phase: implement
-phaseCursor: 9/18
-updated: 2026-07-07T18:57:25.265Z
-nextStep: PR-2 Task 2.1 kind→owner 映射
+phaseCursor: 11/18
+updated: 2026-07-07T19:03:00.038Z
+nextStep: Task 2.3 root @-target + edit-in-place
 chunks: []
 pointers: {}
 ---
 
 # FLY-927 progress
-**phase**: implement (9/18)
-**next**: PR-2 Task 2.1 kind→owner 映射
+**phase**: implement (11/18)
+**next**: Task 2.3 root @-target + edit-in-place
