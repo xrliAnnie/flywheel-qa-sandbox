@@ -104,6 +104,11 @@ import {
 	buildRepairChain,
 	resolveFirstAvailableBotToken,
 } from "./alert-bot-chain.js";
+// FLY-927 (T1): unified-channel root-message rate cap.
+import {
+	createAlertRateLimiter,
+	rateLimitPerMinuteFromEnv,
+} from "./alert-rate-limiter.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
@@ -3979,6 +3984,9 @@ export async function startBridge(
 			}
 		: undefined;
 
+	// FLY-927 (T1): unified-channel root-message rate cap (production: 20/min).
+	// Env unset ⇒ no limiter ⇒ byte-compat unlimited sends.
+	const alertRatePerMin = rateLimitPerMinuteFromEnv(process.env);
 	const leadAlertNotifier = new LeadAlertNotifier({
 		store,
 		projects,
@@ -3986,6 +3994,9 @@ export async function startBridge(
 		claimsClaimer,
 		metaAlert: metaAlertNotifier,
 		unifiedAlert,
+		...(alertRatePerMin
+			? { rateLimiter: createAlertRateLimiter(alertRatePerMin) }
+			: {}),
 		// FLY-529: QA Testing Room alert isolation. Unset env → both fields
 		// undefined → notifier keeps its shared production defaults (byte-compat).
 		// The test Bridge sets FLYWHEEL_ALERT_QUEUE_DIR / _DEADLETTER_DIR to slot-

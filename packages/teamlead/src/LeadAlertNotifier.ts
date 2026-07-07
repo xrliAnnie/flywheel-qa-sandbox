@@ -32,6 +32,10 @@ import {
 	buildSendChain,
 	resolveFirstAvailableBotToken,
 } from "./bridge/alert-bot-chain.js";
+import {
+	type AlertRateLimiter,
+	formatOverflowSummary,
+} from "./bridge/alert-rate-limiter.js";
 import type { MetaAlertReason } from "./MetaAlertNotifier.js";
 import type { LeadConfig, ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
@@ -298,6 +302,13 @@ export interface LeadAlertNotifierConfig {
 	 * effective in unified mode; the legacy per-lead path never renders it.
 	 */
 	ticketsEnabled?: () => boolean;
+	/**
+	 * FLY-927 (T1): unified-channel root-message rate limiter (20/min in prod).
+	 * Absent (FLYWHEEL_ALERT_RATE_PER_MIN unset) ⇒ no limiting = byte-compat.
+	 * Only consulted on the unified path — legacy per-lead sends are never
+	 * limited (the T1 cap is a #flywheel-alerts channel semantic).
+	 */
+	rateLimiter?: AlertRateLimiter;
 }
 
 /** Queue reasons that are PERMANENT — config doesn't change at runtime, so
@@ -353,6 +364,7 @@ export class LeadAlertNotifier {
 	private queueMaxAgeMs: number;
 	private unifiedAlert?: UnifiedAlertConfig;
 	private ticketsEnabled: () => boolean;
+	private rateLimiter?: AlertRateLimiter;
 
 	constructor(config: LeadAlertNotifierConfig) {
 		this.store = config.store;
@@ -376,6 +388,7 @@ export class LeadAlertNotifier {
 		this.ticketsEnabled =
 			config.ticketsEnabled ??
 			(() => process.env.FLYWHEEL_ALERT_TICKETS === "1");
+		this.rateLimiter = config.rateLimiter;
 		mkdirSync(this.queueDir, { recursive: true });
 	}
 
@@ -500,6 +513,21 @@ export class LeadAlertNotifier {
 		if (!channel) {
 			await this.deadLetter(payload, "no-channel");
 			return { skipped: "no-channel", deadLettered: true };
+		}
+
+		// FLY-927 (T1): unified-channel root-message rate cap. Over the per-minute
+		// budget → the alert is queued ONCE (the existing queue format — the drain
+		// pass delivers it) + counted for the aggregate overflow summary. Runs
+		// AFTER the dedup claims (a queued alert already owns its eventId) and
+		// after channel resolution (config failures keep their dead-letter path).
+		if (
+			this.unifiedAlert &&
+			this.rateLimiter &&
+			!this.rateLimiter.tryAcquire(Date.now())
+		) {
+			this.rateLimiter.noteOverflow(payload.eventType);
+			this.enqueue(payload, "rate-limited");
+			return { queued: true };
 		}
 
 		// Step 5: Fire the Discord POST.
@@ -648,6 +676,20 @@ export class LeadAlertNotifier {
 		let sent = 0;
 		let deadLettered = 0;
 
+		// FLY-927 (T1): pending overflow → ONE aggregate summary per window, posted
+		// before the per-entry drain. The summary consumes a token; when even that
+		// is refused, the counts are KEPT for the next round — never a recursive
+		// summary-of-summaries. Cleared only after the summary actually posts.
+		if (this.unifiedAlert && this.rateLimiter) {
+			const overflow = this.rateLimiter.peekOverflow();
+			if (overflow && this.rateLimiter.tryAcquire(Date.now())) {
+				const posted = await this.postRawToUnifiedChannel(
+					formatOverflowSummary(overflow),
+				);
+				if (posted) this.rateLimiter.clearOverflow();
+			}
+		}
+
 		// Cap: dead-letter the oldest beyond queueMax before doing any work.
 		if (entries.length > this.queueMax) {
 			const overflow = entries.slice(0, entries.length - this.queueMax);
@@ -710,6 +752,12 @@ export class LeadAlertNotifier {
 			// queued alert is never re-sent via stale single-token logic. Chain is
 			// recomputed here (env/config may have changed); tokens are not stored.
 			if (this.unifiedAlert) {
+				// FLY-927 (T1): each drained root message consumes a token. Refused →
+				// STOP this drain round immediately; queue files stay untouched (no
+				// rewrite, no re-enqueue) and the next round resumes oldest-first.
+				if (this.rateLimiter && !this.rateLimiter.tryAcquire(Date.now())) {
+					break;
+				}
 				const sentResult = await this.postAlertWithSendChain(parsed, channel);
 				if (sentResult.ok) {
 					unlinkSync(path);
@@ -751,6 +799,51 @@ export class LeadAlertNotifier {
 			f.endsWith(".json"),
 		).length;
 		return { sent, remaining, deadLettered };
+	}
+
+	/**
+	 * FLY-927 (T1): post a RAW single message (the overflow summary) to the
+	 * unified channel — no claims, no queue, no 🎫-header formatting. Sender
+	 * identity: the D2 override when set, else the repair chain (Cass→alpha);
+	 * mentions always fully suppressed. Best-effort: any failure returns false
+	 * and the caller keeps the overflow counts for the next round.
+	 */
+	private async postRawToUnifiedChannel(content: string): Promise<boolean> {
+		const channel = this.unifiedAlert?.channelId;
+		if (!channel) return false;
+		const senderEnv = process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV?.trim();
+		const chain = senderEnv
+			? [senderEnv]
+			: buildRepairChain(
+					this.projects,
+					this.unifiedAlert?.repairBotTokenEnv ?? "",
+				);
+		for (const tokenEnv of chain) {
+			const token = process.env[tokenEnv];
+			if (!token) continue;
+			try {
+				const res = await this.fetchFn(
+					`${DISCORD_API}/channels/${channel}/messages`,
+					{
+						method: "POST",
+						headers: {
+							Authorization: `Bot ${token}`,
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify({
+							content,
+							allowed_mentions: { parse: [] as string[] },
+						}),
+					},
+				);
+				if (res.ok) return true;
+				if (!isSendChainFallthrough(res.status)) return false;
+				// 401/403/404 → try the next candidate.
+			} catch {
+				return false; // network blip — retry next drain round
+			}
+		}
+		return false;
 	}
 
 	/** Move a queue file into the dead-letter dir (no retry, kept for audit). */

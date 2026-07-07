@@ -1044,3 +1044,178 @@ describe("LeadAlertNotifier — FLY-927 Task 1.3: single sender identity (D2)", 
 		).toBe("Bot infra-tok");
 	});
 });
+
+describe("LeadAlertNotifier — FLY-927 Task 1.4: unified-channel rate cap (T1)", () => {
+	let store: StateStore;
+	let queueDir: string;
+	const saved: Record<string, string | undefined> = {};
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		queueDir = mkdtempSync(join(tmpdir(), "fly927-rate-"));
+		for (const k of [
+			"SIMBA_BOT_TOKEN",
+			"CASS_BOT_TOKEN",
+			"FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
+		]) {
+			saved[k] = process.env[k];
+		}
+		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.CASS_BOT_TOKEN = "cass-tok";
+		delete process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;
+	});
+	afterEach(() => {
+		rmSync(queueDir, { recursive: true, force: true });
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	});
+
+	const unified = { channelId: "OPS-CHAN", repairBotTokenEnv: "CASS_BOT_TOKEN" };
+
+	/** Deterministic limiter stub: a scripted sequence of tryAcquire answers. */
+	function scriptedLimiter(answers: boolean[]) {
+		let i = 0;
+		const overflow = new Map<string, number>();
+		return {
+			calls: () => i,
+			overflowMap: overflow,
+			tryAcquire: () => answers[Math.min(i++, answers.length - 1)]!,
+			noteOverflow: (kind: string) =>
+				overflow.set(kind, (overflow.get(kind) ?? 0) + 1),
+			peekOverflow: () => (overflow.size > 0 ? new Map(overflow) : null),
+			clearOverflow: () => overflow.clear(),
+		};
+	}
+
+	function okFetch() {
+		return vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+			json: async () => ({ id: "m-1" }),
+		});
+	}
+
+	it("over-limit alert is queued ONCE + counted; under-limit posts normally", async () => {
+		const limiter = scriptedLimiter([true, false]);
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+			rateLimiter: limiter,
+		});
+		const first = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(first.sent).toBe(true);
+		const second = await notifier.alert(
+			buildPayload({ leadId: "cos-lead", eventType: "rate_limit" }),
+		);
+		expect(second).toEqual({ queued: true });
+		expect(fetchFn).toHaveBeenCalledTimes(1); // the refused alert never POSTed
+		expect(readdirSync(queueDir).length).toBe(1);
+		expect(limiter.overflowMap.get("rate_limit")).toBe(1);
+	});
+
+	it("drain posts ONE aggregate summary first, then delivers the queue; overflow clears", async () => {
+		const limiter = scriptedLimiter([true, true, true]);
+		limiter.noteOverflow("rate_limit");
+		limiter.noteOverflow("rate_limit");
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+			rateLimiter: limiter,
+		});
+		// Seed one queued alert (as if rate-limited earlier).
+		const withLimiterOff = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: vi.fn().mockResolvedValue({
+				ok: false,
+				status: 503,
+				statusText: "x",
+				text: async () => "",
+			}),
+			queueDir,
+			unifiedAlert: unified,
+		});
+		await withLimiterOff.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(readdirSync(queueDir).length).toBe(1);
+
+		const result = await notifier.drainQueue();
+		expect(result.sent).toBe(1);
+		expect(result.remaining).toBe(0);
+		// First POST = the summary, second = the queued alert.
+		const firstBody = JSON.parse(
+			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+		);
+		expect(firstBody.content).toContain("🎫 速率攒批:2 条告警已入队");
+		expect(firstBody.content).toContain("rate_limit×2");
+		expect(limiter.peekOverflow()).toBeNull(); // cleared after the summary posted
+		expect(fetchFn).toHaveBeenCalledTimes(2);
+	});
+
+	it("summary itself refused → counts kept, no summary POST (no recursion)", async () => {
+		const limiter = scriptedLimiter([false]);
+		limiter.noteOverflow("usage_limit");
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+			rateLimiter: limiter,
+		});
+		await notifier.drainQueue();
+		expect(fetchFn).not.toHaveBeenCalled();
+		expect(limiter.peekOverflow()).toEqual(new Map([["usage_limit", 1]]));
+	});
+
+	it("drain STOPS mid-round when the bucket empties; queue files stay untouched", async () => {
+		// Seed two queued alerts.
+		const seed = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: vi.fn().mockResolvedValue({
+				ok: false,
+				status: 503,
+				statusText: "x",
+				text: async () => "",
+			}),
+			queueDir,
+			unifiedAlert: unified,
+		});
+		await seed.alert(buildPayload({ leadId: "cos-lead" }));
+		// distinct eventType → distinct queue filename even within the same ms
+		await seed.alert(
+			buildPayload({ leadId: "cos-lead", eventType: "rate_limit" }),
+		);
+		expect(readdirSync(queueDir).length).toBe(2);
+
+		// One token only (no overflow pending → no summary): first file sends,
+		// second is refused → drain stops, file remains.
+		const limiter = scriptedLimiter([true, false]);
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+			rateLimiter: limiter,
+		});
+		const result = await notifier.drainQueue();
+		expect(result.sent).toBe(1);
+		expect(result.remaining).toBe(1);
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+	});
+});
