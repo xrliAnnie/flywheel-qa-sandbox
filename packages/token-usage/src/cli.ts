@@ -198,8 +198,12 @@ export function resolveReportParams(
 	env: Record<string, string | undefined>,
 	today: string,
 ): ReportParams {
+	// FLY-929 B1: `report-day` shares the daily semantics — it exists so the
+	// shell pipeline can ask THIS CLI (the date authority, tz-aware) for the
+	// expected report day instead of recomputing dates in bash.
 	const reportDay =
-		str(flags, "date") ?? (cmd === "daily" ? shiftDay(today, -1) : today);
+		str(flags, "date") ??
+		(cmd === "daily" || cmd === "report-day" ? shiftDay(today, -1) : today);
 	const trendSince = str(flags, "trend-since") ?? shiftDay(reportDay, -27);
 	const comparison = deriveComparison(reportDay, flags, env, {
 		defaultWeekOverWeek: cmd === "daily",
@@ -237,6 +241,16 @@ export async function main(
 	// Resolve report day, trend/comparison windows, and the rolling aggregate window
 	// once, up front — the aggregate step must cover every day the report renders.
 	const params = resolveReportParams(cmd, flags, process.env, today);
+
+	// FLY-929 B1: `report-day` prints the resolved report day (daily semantics:
+	// yesterday in the report tz, `--date` override honored) and exits — no
+	// store access. token-usage-daily.sh feeds this to
+	// `publish-report --expected-date` so the Bridge receipt carries the
+	// CLI-authoritative date (Codex design R1#5: the Bridge never recomputes).
+	if (cmd === "report-day") {
+		process.stdout.write(`${params.reportDay}\n`);
+		return 0;
+	}
 
 	const resolved = await resolveUsageStore({ localPath });
 	if (resolved.warning) console.error(`[token-usage] ${resolved.warning}`);

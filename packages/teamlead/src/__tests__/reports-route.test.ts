@@ -373,6 +373,106 @@ describe("reports-route", () => {
 		});
 		expect(r.status).toBe(400);
 	});
+
+	// ── FLY-929 B1: deliver receipt fields (kind + expectedDate) ────────────
+
+	it("deliver: kind=token_report + expectedDate → receipt written after a 2xx text delivery", async () => {
+		const writeReceipt = vi.fn();
+		await startApp({ writeReceipt: writeReceipt as never });
+		const r = await post("/api/reports/deliver", {
+			url: "https://x",
+			projectName: "withGeneral",
+			kind: "token_report",
+			expectedDate: "2026-07-06",
+		});
+		expect(r.status).toBe(200);
+		expect(writeReceipt).toHaveBeenCalledTimes(1);
+		expect(writeReceipt).toHaveBeenCalledWith({
+			date: "2026-07-06",
+			messageId: "msg_text",
+		});
+	});
+
+	it("deliver: receipt also written on the screenshot path", async () => {
+		const writeReceipt = vi.fn();
+		await startApp({ writeReceipt: writeReceipt as never });
+		mkdirSync(registry.previewsDir(), { recursive: true });
+		const shot = join(registry.previewsDir(), "p.png");
+		writeFileSync(shot, PNG);
+		const r = await post("/api/reports/deliver", {
+			url: "https://x",
+			projectName: "withGeneral",
+			screenshotPath: shot,
+			kind: "token_report",
+			expectedDate: "2026-07-06",
+		});
+		expect(r.status).toBe(200);
+		expect(writeReceipt).toHaveBeenCalledWith({
+			date: "2026-07-06",
+			messageId: "msg_file",
+		});
+	});
+
+	it("deliver: NO kind/expectedDate → no receipt call (byte-compat)", async () => {
+		const writeReceipt = vi.fn();
+		await startApp({ writeReceipt: writeReceipt as never });
+		const r = await post("/api/reports/deliver", {
+			url: "https://x",
+			projectName: "withGeneral",
+		});
+		expect(r.status).toBe(200);
+		expect(writeReceipt).not.toHaveBeenCalled();
+	});
+
+	it("deliver: non-token_report kind → no receipt call", async () => {
+		const writeReceipt = vi.fn();
+		await startApp({ writeReceipt: writeReceipt as never });
+		const r = await post("/api/reports/deliver", {
+			url: "https://x",
+			projectName: "withGeneral",
+			kind: "some_other_report",
+			expectedDate: "2026-07-06",
+		});
+		expect(r.status).toBe(200);
+		expect(writeReceipt).not.toHaveBeenCalled();
+	});
+
+	it("deliver: delivery failure → NO receipt (a failed send must not fake a receipt)", async () => {
+		const writeReceipt = vi.fn();
+		postTextMock.mockResolvedValue({ ok: false, error: "403" });
+		await startApp({ writeReceipt: writeReceipt as never });
+		const r = await post("/api/reports/deliver", {
+			url: "https://x",
+			projectName: "withGeneral",
+			kind: "token_report",
+			expectedDate: "2026-07-06",
+		});
+		expect(r.status).toBe(502);
+		expect(writeReceipt).not.toHaveBeenCalled();
+	});
+
+	it("deliver: malformed expectedDate / kind → 400 (boundary validation)", async () => {
+		await startApp();
+		expect(
+			(
+				await post("/api/reports/deliver", {
+					url: "https://x",
+					projectName: "withGeneral",
+					kind: "token_report",
+					expectedDate: "07/06/2026",
+				})
+			).status,
+		).toBe(400);
+		expect(
+			(
+				await post("/api/reports/deliver", {
+					url: "https://x",
+					projectName: "withGeneral",
+					kind: 42,
+				})
+			).status,
+		).toBe(400);
+	});
 });
 
 describe("readPreviewFile (attack matrix)", () => {

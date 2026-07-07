@@ -96,7 +96,8 @@ Commands:
   publish-report   Publish HTML report to hosting + deliver to Discord as
             screenshot preview + unguessable link (FLY-203). Flags:
             --html <file> --project <name> [--title <t>] [--channel <id>]
-            [--no-screenshot]. Env: FLYWHEEL_BRIDGE_URL, TEAMLEAD_API_TOKEN,
+            [--no-screenshot] [--kind token_report --expected-date YYYY-MM-DD].
+            Env: FLYWHEEL_BRIDGE_URL, TEAMLEAD_API_TOKEN,
             FLYWHEEL_REMOTE_REPORTS=0 disables. Always prints a one-line
             JSON envelope to stdout.
   feature-flags   Feature-flag console helpers (FLY-709). Subcommands:
@@ -1222,6 +1223,8 @@ async function runPublishReport(args: string[]): Promise<void> {
 		title?: string;
 		channel?: string;
 		"no-screenshot"?: boolean;
+		kind?: string;
+		"expected-date"?: string;
 	};
 	try {
 		values = parseArgs({
@@ -1232,6 +1235,9 @@ async function runPublishReport(args: string[]): Promise<void> {
 				title: { type: "string" },
 				channel: { type: "string" },
 				"no-screenshot": { type: "boolean", default: false },
+				// FLY-929 B1: delivery-receipt seam (see PublishReportArgs).
+				kind: { type: "string" },
+				"expected-date": { type: "string" },
 			},
 			allowPositionals: false,
 		}).values;
@@ -1252,6 +1258,8 @@ async function runPublishReport(args: string[]): Promise<void> {
 		title: values.title,
 		channelId: values.channel,
 		noScreenshot: values["no-screenshot"],
+		kind: values.kind,
+		expectedDate: values["expected-date"],
 	};
 
 	const { envelope, exitCode } = await publishReport(reportArgs);

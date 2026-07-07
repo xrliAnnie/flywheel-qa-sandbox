@@ -41,6 +41,7 @@ import {
 	type PostDiscordResult,
 	postDiscordMessageToChannel,
 } from "./discord-utils.js";
+import { writeTokenReportReceipt } from "./notify-receipts.js";
 import {
 	ReportHtmlInvalidError,
 	type ReportRegistry,
@@ -63,6 +64,8 @@ export interface ReportsRouterOptions {
 	deployFiles?: typeof deployFilesToVercel;
 	postWithFile?: typeof postDiscordMessageWithFile;
 	postText?: typeof postDiscordMessageToChannel;
+	/** FLY-929 B1 test seam — the receipt writer (P-expect gated internally). */
+	writeReceipt?: typeof writeTokenReportReceipt;
 }
 
 export type PreviewFileRead =
@@ -321,6 +324,35 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 			});
 			return;
 		}
+		// FLY-929 B1: OPTIONAL delivery-receipt fields. `expectedDate` is
+		// authoritative from the CLI (computed under TOKEN_USAGE_TIMEZONE) — the
+		// Bridge only validates shape, never recomputes. Absent fields = the
+		// pre-FLY-929 request, byte-compat (no receipt is written).
+		const { kind, expectedDate } = body;
+		if (kind !== undefined && (typeof kind !== "string" || kind.length > 64)) {
+			res.status(400).json({
+				error: "kind must be a string of at most 64 characters",
+			});
+			return;
+		}
+		if (
+			expectedDate !== undefined &&
+			(typeof expectedDate !== "string" ||
+				!/^\d{4}-\d{2}-\d{2}$/.test(expectedDate))
+		) {
+			res.status(400).json({
+				error: "expectedDate must be a YYYY-MM-DD string",
+			});
+			return;
+		}
+		const writeReceipt = opts.writeReceipt ?? writeTokenReportReceipt;
+		const recordReceipt = (messageId: string | undefined) => {
+			if (kind !== "token_report" || !expectedDate) return;
+			writeReceipt({
+				date: expectedDate,
+				...(messageId ? { messageId } : {}),
+			});
+		};
 
 		// Channel resolution: explicit param → project generalChannel → 400.
 		let channel: string | undefined;
@@ -384,6 +416,7 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 			} catch {
 				// non-fatal
 			}
+			recordReceipt(result.messageId);
 			res.json({ ok: true, messageId: result.messageId });
 			return;
 		}
@@ -397,6 +430,7 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 			res.status(502).json({ error: result.error });
 			return;
 		}
+		recordReceipt(result.messageIds[0]);
 		res.json({ ok: true, messageId: result.messageIds[0] });
 	});
 

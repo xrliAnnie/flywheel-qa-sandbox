@@ -11,7 +11,10 @@ import {
 } from "flywheel-config";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
-import { formatAccountRotationNotice } from "../account-heal/account-rotation-notice.js";
+import {
+	type AccountRotationNotice,
+	formatAccountRotationNotice,
+} from "../account-heal/account-rotation-notice.js";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -395,8 +398,14 @@ export function createEventRouter(
 	// FLY-696 M1/④: late-bound Alerts-post for `account_rotation` events. Built in
 	// startBridge (needs the unified-channel DiscordOps, constructed after this
 	// router). `.current` undefined ⇒ the event is acked but not posted (byte-compat:
-	// no unified channel = no self-heal Alerts surface).
-	accountRotationPost?: { current?: (detail: string) => Promise<void> },
+	// no unified channel = no self-heal Alerts surface). FLY-929 A4: the structured
+	// notice rides along as an optional second argument for the notify digest.
+	accountRotationPost?: {
+		current?: (
+			detail: string,
+			rotation?: AccountRotationNotice,
+		) => Promise<void>;
+	},
 	// FLY-907: late-bound unified issue-display refresher. `.current` set (the
 	// default once startBridge wires it) → stage_changed enqueues ONE unified
 	// derive-from-state refresh of all three faces; unset (byte-compat /
@@ -461,17 +470,22 @@ export function createEventRouter(
 				});
 				return;
 			}
-			const detail = formatAccountRotationNotice({
+			// FLY-929 A4: keep the STRUCTURED notice and pass it alongside the
+			// formatted Alerts line, so the plugin's post site can build the
+			// #flywheel-notify digest from structured data instead of re-parsing
+			// human text (Codex design R1#3). Detail-only impls stay valid.
+			const notice: AccountRotationNotice = {
 				provider,
 				to,
 				from: asString(rot.from),
 				reason: asString(rot.reason),
 				resetAt: asString(rot.resetAt),
-			});
+			};
+			const detail = formatAccountRotationNotice(notice);
 			const post = accountRotationPost?.current;
 			if (post) {
 				try {
-					await post(detail);
+					await post(detail, notice);
 				} catch (err) {
 					console.error(
 						`[event-route] account_rotation post failed: ${(err as Error).message}`,

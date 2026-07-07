@@ -29,6 +29,10 @@ import {
 } from "../LeadWatchdog.js";
 import type { AlertThreadRow, StateStore } from "../StateStore.js";
 import type { AutoRepairBot } from "./AutoRepairBot.js";
+import {
+	formatAccountCapOwnerAssignment,
+	resolveAccountCapOwnerId,
+} from "./infra-notify.js";
 import { fingerprintOutput } from "./stuck-candidate.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
@@ -302,14 +306,36 @@ export class AlertChannelHub {
 		if (bot) {
 			const repair = await bot.attempt(payload, ck);
 			if (repair.outcome === "needs_human") {
-				// Cass genuinely can't fix this → the ONE place we REALLY @Annie.
-				const fid = this.founderId();
-				const mention = fid ? `<@${fid}>` : "Annie";
-				await this.safePostToThread(
-					threadId,
-					`🙋 ${mention} 这个 Cass 修不了，需要你：${repair.detail}`,
-					fid ? { mentionUserId: fid } : undefined,
-				);
+				// FLY-929 A5: a CLAUDE account-cap needs_human (usage_limit with
+				// claude accountLimit metadata — the not-attemptable pool/bin shape)
+				// is ASSIGNED to the owner bot instead of immediately paging the
+				// founder, but ONLY when self-heal + P-identity + the infra bot id
+				// are all present (`resolveAccountCapOwnerId`). The bot's playbook
+				// (FLY-871: retries exhausted → @Annie and stop) carries the final
+				// founder escalation until the FLY-927 ticket state machine lands.
+				// Any env missing / any other needs_human kind → the founder
+				// escalation below, byte-for-byte.
+				const capOwnerId =
+					payload.eventType === "usage_limit" &&
+					payload.metadata?.accountLimit?.provider === "claude"
+						? resolveAccountCapOwnerId()
+						: undefined;
+				if (capOwnerId) {
+					await this.safePostToThread(
+						threadId,
+						formatAccountCapOwnerAssignment(capOwnerId, repair.detail),
+						{ mentionUserId: capOwnerId },
+					);
+				} else {
+					// Cass genuinely can't fix this → the ONE place we REALLY @Annie.
+					const fid = this.founderId();
+					const mention = fid ? `<@${fid}>` : "Annie";
+					await this.safePostToThread(
+						threadId,
+						`🙋 ${mention} 这个 Cass 修不了，需要你：${repair.detail}`,
+						fid ? { mentionUserId: fid } : undefined,
+					);
+				}
 			} else {
 				// "attempted": a safe action was sent — posted verbatim. FLY-871 R2/W6:
 				// an `account_switch` enqueue IS the Codex Infra Bot's ASSIGNMENT —

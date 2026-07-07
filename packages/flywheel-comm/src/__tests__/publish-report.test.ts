@@ -236,6 +236,37 @@ describe("publishReport", () => {
 		expect(deliverBody.screenshotPath).toBeUndefined();
 	});
 
+	// ── FLY-929 B1: receipt fields ride the deliver body ────────────────
+
+	it("kind + expectedDate are forwarded verbatim in the deliver body", async () => {
+		publishOk();
+		deliverOk();
+		const { exitCode } = await publishReport(
+			makeArgs({
+				noScreenshot: true,
+				kind: "token_report",
+				expectedDate: "2026-07-06",
+			}),
+		);
+		expect(exitCode).toBe(0);
+		const deliverBody = JSON.parse(
+			(fetchMock.mock.calls[1] as [string, RequestInit])[1].body as string,
+		);
+		expect(deliverBody.kind).toBe("token_report");
+		expect(deliverBody.expectedDate).toBe("2026-07-06");
+	});
+
+	it("absent kind/expectedDate → deliver body carries NEITHER key (byte-compat)", async () => {
+		publishOk();
+		deliverOk();
+		await publishReport(makeArgs({ noScreenshot: true }));
+		const deliverBody = JSON.parse(
+			(fetchMock.mock.calls[1] as [string, RequestInit])[1].body as string,
+		);
+		expect("kind" in deliverBody).toBe(false);
+		expect("expectedDate" in deliverBody).toBe(false);
+	});
+
 	// ── failure paths ───────────────────────────────────────────────────
 
 	it("publish failure → exit 1, no screenshot/deliver attempted", async () => {

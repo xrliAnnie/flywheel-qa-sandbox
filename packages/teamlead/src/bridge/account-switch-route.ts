@@ -31,7 +31,10 @@
  */
 
 import { Router } from "express";
-import type { AccountSwitchRepair } from "../account-heal/account-switch-repair.js";
+import type {
+	AccountSwitchRepair,
+	RepairDisposition,
+} from "../account-heal/account-switch-repair.js";
 import { withMkdirLock } from "../account-heal/mkdir-lock.js";
 import {
 	claimPending,
@@ -66,8 +69,15 @@ export interface AccountSwitchAuditEntry {
 export interface AccountSwitchRuntime {
 	/** Reuse the production switch executor (does the switch + resolvePending). */
 	repair: Pick<AccountSwitchRepair, "executeSwitch">;
-	/** Post the switch result back to the Alerts thread (the watchdog's path). */
-	postResult: (detail: string) => Promise<void>;
+	/**
+	 * Post the switch result back to the Alerts thread (the watchdog's path).
+	 * FLY-929: the disposition rides along as an OPTIONAL second argument (see
+	 * AccountSwitchWatchdogDeps.post) — single-arg impls stay valid.
+	 */
+	postResult: (
+		detail: string,
+		disposition?: RepairDisposition,
+	) => Promise<void>;
 	/** Append an audit row (before + after). */
 	audit: (entry: AccountSwitchAuditEntry) => void;
 	/**
