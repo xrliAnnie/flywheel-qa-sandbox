@@ -1368,4 +1368,92 @@ describe("chat-thread routes (tools.ts)", () => {
 			expect(mockFetch).not.toHaveBeenCalled();
 		});
 	});
+
+	// ─── FLY-927 Task 1.6: alert-channel sender gating ──────────────────────
+	describe("FLY-927 alert-channel gating (ticket queue)", () => {
+		const saved: Record<string, string | undefined> = {};
+		beforeEach(() => {
+			for (const k of [
+				"FLYWHEEL_ALERT_ROUTING",
+				"FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID",
+			]) {
+				saved[k] = process.env[k];
+			}
+		});
+		afterEach(() => {
+			for (const [k, v] of Object.entries(saved)) {
+				if (v === undefined) delete process.env[k];
+				else process.env[k] = v;
+			}
+		});
+
+		function serverOn() {
+			return createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				globalBotToken: "global-token",
+			});
+		}
+
+		it("REFUSES /send targeting the unified alert channel when gating is on", async () => {
+			process.env.FLYWHEEL_ALERT_ROUTING = "1";
+			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "ch-100";
+			serverOn();
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-927",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: "hello",
+			});
+			expect(res.status).toBe(403);
+			expect((res.body as { error: string }).error).toBe(
+				"alert_channel_gated",
+			);
+		});
+
+		it("REFUSES /create targeting the unified alert channel when gating is on", async () => {
+			process.env.FLYWHEEL_ALERT_ROUTING = "1";
+			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "ch-100";
+			serverOn();
+			const res = await request(server, "POST", "/api/chat-threads/create", {
+				issueId: "uuid-fly-927",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+			});
+			expect(res.status).toBe(403);
+			expect((res.body as { error: string }).error).toBe(
+				"alert_channel_gated",
+			);
+		});
+
+		it("ALLOWS a different channel while gating is on (proceeds past the gate)", async () => {
+			process.env.FLYWHEEL_ALERT_ROUTING = "1";
+			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "ch-alert-999";
+			serverOn();
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-927",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: "hello",
+			});
+			expect(res.status).not.toBe(403); // gate not tripped (downstream may fail otherwise)
+		});
+
+		it("SENTINEL: env unset → alert-channel sends are NOT gated (byte-compat)", async () => {
+			delete process.env.FLYWHEEL_ALERT_ROUTING;
+			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "ch-100";
+			serverOn();
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-927",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: "hello",
+			});
+			expect(res.status).not.toBe(403);
+		});
+	});
 });
