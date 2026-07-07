@@ -73,7 +73,16 @@ alert() {  # <title> <body> <signature> — best-effort (claims.db dedup inside)
 rc=0
 for f in $FILES; do
   src="$REPO_ROOT/scripts/$f"; dst="$BIN_DIR/$f"
-  if [ ! -f "$src" ]; then log "WARN: repo source missing: $src (skip)"; continue; fi
+  # Codex code R1 HIGH: a MISSING required source is as disqualifying as an
+  # insane one — exit 0 here would let the pre-kickstart mount treat an
+  # unverifiable (mid-pull / broken) checkout as healthy and kickstart anyway.
+  if [ ! -f "$src" ]; then
+    log "ERROR: repo source missing: $src — cannot verify/repair $f (fail-safe)"
+    alert "bin integrity: repo source missing for $f" \
+      "$src does not exist in this checkout (mid-pull/corrupt?) — $dst cannot be verified or repaired. Investigate the repo checkout (FLY-954)." \
+      "$f|srcmissing"
+    rc=1; continue
+  fi
   src_sha="$(sha "$src")"; dst_sha="$(sha "$dst")"
   if [ -n "$dst_sha" ] && [ "$src_sha" = "$dst_sha" ]; then
     # content converged — enforce the MODE half of the invariant (Codex R1#1)

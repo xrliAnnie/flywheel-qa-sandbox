@@ -99,6 +99,19 @@ if [ "$RC" -eq 0 ] && grep -q '🧪\[sandbox test\]' "$SB/alerts.log"; then
   pass "C6: non-default state root → alert title carries the 🧪[sandbox test] prefix"
 else fail "C6: drill prefix missing (rc=$RC)"; cat "$SB/alerts.log" 2>/dev/null; fi
 
+# C8 (Codex code R1 HIGH): a required repo source that is MISSING entirely
+# (mid-pull / broken checkout) must FAIL the converge (rc=1) + alert — never
+# exit 0 with an unverifiable bin. The pre-kickstart mount treats exit 0 as
+# "healthy, safe to kickstart".
+: > "$SB/alerts.log"
+rm -f "$FR/scripts/flywheel-bridge-wrapper.sh"     # repo source vanishes
+run_converge; RC=$?
+if [ "$RC" -ne 0 ] && grep -q 'missing' "$SB/alerts.log"; then
+  pass "C8: missing repo source → alert + non-zero exit (never silently healthy)"
+else fail "C8: absent source was tolerated (rc=$RC)"; cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null; fi
+# restore the source for C7
+{ echo '#!/bin/bash'; i=1; while [ "$i" -le 80 ]; do echo "echo repo-flywheel-bridge-wrapper.sh-$i >/dev/null"; i=$((i+1)); done; } > "$FR/scripts/flywheel-bridge-wrapper.sh"
+
 # C7: the PRODUCTION shape (STATE_DIR == $HOME/.flywheel) must NOT be prefixed
 # — simulated with a fake HOME inside the sandbox (never the real one).
 FH="$SB/fakehome"; mkdir -p "$FH/.flywheel/bin"
