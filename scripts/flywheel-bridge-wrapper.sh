@@ -84,6 +84,21 @@ if [[ -f "$BRIDGE_PORT_LIB" ]]; then
     # lib also redirects, but keep the override clean too.
     log "FAIL-LOUD [$reason] $title — $body" >&2
     [[ -x "$META_ALERT" ]] && "$META_ALERT" "$reason" "$title" "$body" || true
+    # FLY-927 (D4): the Discord leg prefers the GATED lead-alert.sh pipeline
+    # (unified channel + single sender identity + claims dedup; kind =
+    # bridge_wrapper_fail with the conventional system identity). Minute-level
+    # signature: launchd crash-loop retries collapse to ≤1 post/min while a
+    # DISTINCT later failure still rings. Script missing / non-zero → the
+    # direct-curl core-channel fallback below — the Bridge is DOWN here, so
+    # delivery capability must never be lost (FLY-929 decision).
+    local lead_alert="${FLYWHEEL_DIR}/scripts/lead-alert.sh"
+    if [[ -x "$lead_alert" ]] && "$lead_alert" \
+         --project flywheel --lead bridge \
+         --kind bridge_wrapper_fail --severity severe \
+         --title "$title" --body "$body" \
+         --signature "${reason}-$(date -u +%Y%m%d%H%M)" >/dev/null 2>&1; then
+      return 0
+    fi
     local token="${SIMBA_BOT_TOKEN:-${DISCORD_BOT_TOKEN:-}}"
     if [[ -n "$token" && -n "${DISCORD_CORE_CHANNEL:-}" ]] && command -v jq >/dev/null 2>&1; then
       curl -sf -X POST "https://discord.com/api/v10/channels/${DISCORD_CORE_CHANNEL}/messages" \
