@@ -1,0 +1,277 @@
+<title>FLY-909 竞品扫描 · Annie review</title>
+<style>
+  :root{
+    color-scheme:light;
+    --paper:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --muted:#6e6e73;
+    --line:#e4e7ec; --line-soft:#eef1f4;
+    --accent:#2f5fd0; --accent-soft:#eaf0fd;
+    --rival:#c77d2a; --rival-soft:#fbf1e3;
+    --us:#2f9e6b; --us-soft:#e7f5ee;
+    --shadow:0 1px 3px rgba(0,0,0,.06),0 8px 24px rgba(0,0,0,.05);
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:-apple-system,system-ui,"Segoe UI",Roboto,sans-serif;
+    line-height:1.6;-webkit-text-size-adjust:100%;
+  }
+  .wrap{max-width:780px;margin:0 auto;padding:0 18px 120px}
+  code,.mono{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.86em}
+
+  /* sticky bar */
+  .bar{position:sticky;top:0;z-index:40;background:color-mix(in srgb,var(--paper) 88%,transparent);
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--line);}
+  .bar-in{max-width:780px;margin:0 auto;padding:10px 18px;display:flex;align-items:center;gap:12px}
+  .bar b{font-size:14px;letter-spacing:.01em}
+  .bar .sp{flex:1}
+  .btn{border:1px solid var(--accent);background:var(--accent);color:#fff;font:inherit;
+    font-size:13px;font-weight:600;padding:7px 13px;border-radius:9px;cursor:pointer;white-space:nowrap}
+  .btn.ghost{background:transparent;color:var(--accent)}
+  .btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  header.hero{padding:30px 0 6px}
+  .eyebrow{font-size:12px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--accent)}
+  h1{font-size:27px;line-height:1.22;margin:.32em 0 .3em;text-wrap:balance;letter-spacing:-.01em}
+  .lede{color:var(--muted);font-size:15px;margin:0}
+  .meta{margin-top:14px;font-size:12.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 14px}
+  .howto{margin:18px 0 6px;background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 25%,transparent);
+    border-radius:12px;padding:13px 15px;font-size:13.5px}
+  .howto b{color:var(--accent)}
+
+  section.card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);
+    border-radius:var(--radius);box-shadow:var(--shadow);padding:20px 20px 8px;margin:18px 0}
+  section.card.rival{border-left-color:var(--rival)}
+  section.card.us{border-left-color:var(--us)}
+  .kicker{font-size:11.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+  h2{font-size:20px;margin:.15em 0 .5em;letter-spacing:-.01em;text-wrap:balance}
+  h3{font-size:15.5px;margin:1.1em 0 .3em}
+  p{margin:.55em 0}
+  ul{margin:.5em 0;padding-left:1.15em}li{margin:.3em 0}
+  .small{font-size:13px;color:var(--muted)}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;vertical-align:middle}
+  .tag.r{background:var(--rival-soft);color:var(--rival)}
+  .tag.u{background:var(--us-soft);color:var(--us)}
+  .tag.a{background:var(--accent-soft);color:var(--accent)}
+  mark{background:color-mix(in srgb,var(--accent) 18%,transparent);color:inherit;padding:0 3px;border-radius:3px}
+  .warn{background:var(--rival-soft);border-radius:9px;padding:9px 12px;font-size:13px;margin:.6em 0}
+
+  .scroll{overflow-x:auto;margin:.6em -4px;padding:0 4px;-webkit-overflow-scrolling:touch}
+  table{border-collapse:collapse;font-size:12.5px;min-width:560px;width:100%}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--line-soft);font-weight:700;position:sticky;left:0}
+  thead th{position:static}
+  td.us,th.us{background:var(--us-soft)}
+  .num{font-variant-numeric:tabular-nums}
+
+  /* comment box */
+  .cmt{margin:16px 0 4px;border-top:1px dashed var(--line);padding-top:12px}
+  .cmt label{display:block;font-size:12px;font-weight:700;color:var(--accent);margin-bottom:6px}
+  .cmt label::before{content:"✍️ ";}
+  textarea{width:100%;min-height:52px;resize:vertical;background:var(--paper);color:var(--ink);
+    border:1px solid var(--line);border-radius:9px;padding:9px 11px;font:inherit;font-size:14px}
+  textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+  .saved{font-size:11px;color:var(--us);margin-top:4px;height:14px}
+
+  /* modal */
+  .modal{position:fixed;inset:0;background:rgba(10,14,20,.55);display:none;align-items:center;
+    justify-content:center;z-index:60;padding:18px}
+  .modal.on{display:flex}
+  .modal-in{background:var(--card);border:1px solid var(--line);border-radius:14px;max-width:640px;
+    width:100%;max-height:82vh;overflow:auto;padding:18px;box-shadow:var(--shadow)}
+  .modal-in h3{margin-top:0}
+  .modal-in textarea{min-height:240px;font-size:12.5px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+  footer{margin-top:26px;font-size:12px;color:var(--muted);text-align:center}
+  @media(max-width:480px){h1{font-size:23px}h2{font-size:18px}.wrap{padding:0 14px 120px}}
+</style>
+
+<div class="bar">
+  <div class="bar-in">
+    <b>FLY-909 · 竞品扫描</b>
+    <span class="sp"></span>
+    <button class="btn" onclick="openExport()">导出我的批注</button>
+  </div>
+</div>
+
+<div class="wrap">
+  <header class="hero">
+    <div class="eyebrow">对外定位线 · 喂 FLY-908</div>
+    <h1>市面上别人怎么做 —— 竞品扫描 &amp; 对我们定位的启发</h1>
+    <p class="lede">把「AI 开发团队 / 自主编码 / 让非工程也能造软件」这波玩家扫一遍,重点回答:我们跟谁像、跟谁不一样,以及能借什么。</p>
+    <div class="meta">
+      <span>日期 2026-07-06</span><span>草稿 / WIP · 不是要 ship 的东西</span><span>给 Annie review</span>
+    </div>
+    <div class="howto">
+      <b>怎么用这一页 →</b> 每一节下面都有一个「✍️ 留言框」,你的意见写在对应位置就行(会自动暂存)。写完点右上角 <b>「导出我的批注」</b>,把汇总复制发回来,我照着改。
+    </div>
+  </header>
+
+  <!-- TLDR -->
+  <section class="card">
+    <div class="kicker">先看结论</div>
+    <h2>三句话</h2>
+    <ol>
+      <li><b>市场分两大形态</b>:①「自助建造工具」(Lovable / Base44 / Bolt / Replit —— 非技术<b>自己</b>在画布里 prompt 出 app);②「派活给一个 agent」(Devin / Factory —— 工程团队把任务派给<b>一个 AI 工程师</b>,出 PR)。</li>
+      <li><b>行业叙事正往我们这边走</b>:Karpathy 2026 宣布 vibe coding「passe」→「agentic engineering」(人给方向与 review,agent 做实现)—— 这就是我们「founder 只管两头,AI 团队自治」。</li>
+      <li><b>「一整个 AI 公司」这个位有人正面占了 —— <span class="tag r">Matrix</span></b>,而且组织骨架跟我们撞车。所以真差异要落到三条:<mark>领域(软件 vs 生意)· 界面(Discord vs 桌面app)· 可信度(工程级验收 vs 轻 proof)</mark>。</li>
+    </ol>
+    <div class="cmt"><label for="c_tldr">对这三句话的定位判断,你怎么看?</label>
+      <textarea id="c_tldr" placeholder="比如:哪句最戳你 / 哪句你不同意…"></textarea><div class="saved" id="s_c_tldr"></div></div>
+  </section>
+
+  <!-- 重点对标 Matrix -->
+  <section class="card rival">
+    <div class="kicker">🌟 重点对标 · 你点名的那家</div>
+    <h2>Matrix(flowith 出品)—— 目前跟我们最像的一家</h2>
+    <p class="small">你在小红书刷到的就是它。特征全对上:desktop App、~18 人、~$9M 融资、slogan「数万家 0 人公司真赚钱」。</p>
+    <p><b>它是什么</b>:「Launch a 0-Person Company that actually earns」。你设目标 → 一个 CEO 级 Agent 自建部门、自主分工 → build → ship → distribute → earn 全闭环。跑 Codex / Claude Code 订阅 + BYOK(跟我们一样)。</p>
+    <p><b>为什么「非常像」是字面的像</b> —— 它官宣的架构是
+      <code>Brain → Runtime → Departments → Leads → Workers → Proof</code>,几乎就是我们的
+      <code>CoS → Lead → Runner + 验收</code>,连最后「Proof」层都对应。</p>
+    <div class="warn"><b>结论(重要)</b>:靠「AI 公司 / 分层组织 / 订阅驱动」<b>已经区分不开</b>我们和 Matrix 了。真差异必须落到下面「差异化三轴」。</div>
+    <h3>它的软肋(= 我们的机会点)</h3>
+    <ul>
+      <li><b>coding 弱</b>:flowith 评测明说 technical/coding 能力有限;它 3 家官方示例公司(Video Commerce / SEO Growth / Lead Gen)全是<b>营销获客生意,不是软件产品</b>。</li>
+      <li><b>验证成本</b>:评论区有人直接质疑「AI 说建好了,谁来验、验得起吗」—— 它只有轻量「proof」。</li>
+      <li><b>桌面 app 绑定</b>:Matrix 本体 macOS 起家,「要开盖才能工作」。<span class="small">(精确:flowith 母平台有 iOS app 能监看,但 Matrix 0 人公司能否手机全程验收未确认;见下 GTM 那节。)</span></li>
+      <li><b>⚠️ 诚实</b>:「数万家 0 人公司真赚钱」目前<b>只有官方口径、无第三方实证</b>,仍 beta、~18 人。</li>
+    </ul>
+    <div class="cmt"><label for="c_matrix">Matrix 这家,你觉得我们最该跟它划清哪条界线?</label>
+      <textarea id="c_matrix" placeholder="比如:我更想强调 ___ / 我担心 ___ / 你漏了 ___"></textarea><div class="saved" id="s_c_matrix"></div></div>
+  </section>
+
+  <!-- 候选 list -->
+  <section class="card">
+    <div class="kicker">候选名单 · 待你补充</div>
+    <h2>竞品候选 list</h2>
+    <p class="small">按「怎么服务非技术用户」分三档。🌟 = 最贴我们的重点对标。你可以圈掉不想看的、补上想看的。</p>
+    <h3>档一 · no/low-code AI builder（非技术自己 prompt 出 app,最贴目标客户）</h3>
+    <p>Lovable · Base44(Wix)· Replit Agent · Bolt.new · v0(Vercel)</p>
+    <h3>档二 · 自主编码 agent / AI 开发（只看形态与定位打法）</h3>
+    <p>Devin(Cognition)· Factory(Droids)· OpenAI Codex · GitHub Copilot · Claude Code</p>
+    <h3>档三 · teammate / AI 组织形态（照出「像谁 / 不像谁」）</h3>
+    <p><span class="tag r">🌟 Matrix / flowith</span> · Lindy(AI 员工/运营)· Artisan(自主 BDR)</p>
+    <h3>你补充的两个（已认出真身）</h3>
+    <ul>
+      <li><b>hermas agent → Hermes Agent</b>（Nous Research）:开源、自托管在你自己服务器的常驻 daemon,跨会话记忆 + 自己写 skill + 接 16+ 消息平台。面向<b>技术自托管者</b>。</li>
+      <li><b>open people → OpenHands</b>（原 OpenDevin）<span class="tag a">待你确认</span>:开源版 Devin,给个 GitHub issue → 自主出 PR。面向<b>开发者</b>。<br><span class="small">「people」↔「hands」音近;如果你指的是别的(OpenClaw / 某中文圈产品 / 真叫 OpenPeople 的),说一声我重认。</span></li>
+    </ul>
+    <div class="cmt"><label for="c_list">还有哪些「感觉像我们」的要补进来?第一批深挖你想先看哪几家?</label>
+      <textarea id="c_list" placeholder="补充竞品 / 第一批深挖名单(我建议 Matrix+Lovable+Base44+Devin+Factory,或先只挖 Matrix)"></textarea><div class="saved" id="s_c_list"></div></div>
+  </section>
+
+  <!-- GTM -->
+  <section class="card">
+    <div class="kicker">你要学的 · 他们推广为什么成功</div>
+    <h2>Go-to-Market 情报</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>维度</th><th>Matrix</th><th>Lovable</th><th>Base44</th><th>Devin</th></tr></thead>
+        <tbody>
+          <tr><td><b>定价模型</b></td><td>公测免费+邀请码送额度;credit 制</td><td>Free/$25/$50,credit+隐藏用量</td><td>Free/~$16,双 credit</td><td>Free/$20/$500,按 ACU 算力</td></tr>
+          <tr><td><b>主推渠道</b></td><td>邀请码稀缺+推荐环;X demo agent 干活;<b>小红书</b></td><td>build-in-public(X+LinkedIn 全员);249 KOL;12+ 渠道飞轮</td><td>build-in-public(创始人 LinkedIn 连载);产品自传播</td><td>企业销售;降价 $500→$20 新闻循环</td></tr>
+          <tr><td><b>怎么获客</b></td><td>invite-only+每人2邀请→病毒环</td><td>PLG,<b>几乎零付费广告</b>($100M ARR)</td><td>PLG+病毒环;3周 $1M ARR</td><td>waitlist+自上而下</td></tr>
+          <tr><td><b>手机能验收?</b></td><td><b>⚠️ Matrix 本体桌面起家</b>;flowith 有 iOS app 但只是监看</td><td>⚠️ web 勉强</td><td>⚠️ web 勉强</td><td>✅ Slack 手机可达</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3>你能直接学的 6 条 playbook</h3>
+    <ul>
+      <li><b>build-in-public</b>:创始人/团队第一人称连载做产品的过程(中文圈用<b>小红书</b>)。</li>
+      <li><b>产品自传播 onboarding</b>:让人几分钟看到「真东西被建出来」→ 自发去晒(Base44「招募布道者而非转化用户」)。</li>
+      <li><b>最好的 demo = 产品当众干活</b>(Matrix 演示 agent 写爆款 X;我们可演示 AI 团队当众建/修一个真功能)。</li>
+      <li><b>邀请码稀缺 + 推荐环 + 免费额度</b>(Matrix 低成本获客三件套)。</li>
+      <li><b>几乎零付费广告</b>:头部都靠 PLG+内容+社区($100M–$400M ARR 都这么起)。</li>
+      <li><b>计费单位是定位信号</b>:全行业 credit 烧 = bill shock 痛点;「可预测/按验收」更贴非技术心智。</li>
+    </ul>
+    <div class="cmt"><label for="c_gtm">GTM 里哪条你最想我们抄?中文圈(小红书)这条要不要重点做?</label>
+      <textarea id="c_gtm" placeholder="比如:先抄 ___ / 小红书这条 ___"></textarea><div class="saved" id="s_c_gtm"></div></div>
+  </section>
+
+  <!-- 差异化 -->
+  <section class="card us">
+    <div class="kicker">我们的位置</div>
+    <h2>差异化三轴（Matrix 之后收窄）</h2>
+    <p class="small">组织形态已跟 Matrix 撞,真差异只剩这三条,每条都标了 vs Matrix 成不成立。</p>
+    <h3>① 领域轴 · 我们建「真软件产品」<span class="tag u">强</span></h3>
+    <p>vs Matrix:它的 agent 团队去开<b>营销/获客生意</b>(video/SEO/lead-gen),coding 是短板;我们的团队<b>建并长期养一个真 codebase</b>(走 PR/CI/review,dogfooding:Flywheel 建 Flywheel)。</p>
+    <h3>② 界面轴 · 聊天(Discord)为主界面 <span class="tag u">强</span></h3>
+    <p>vs Matrix:它是 <b>macOS 桌面 app + 游戏小人可视化</b>;它母平台 flowith 虽有 iOS app,但那是<b>外挂的「监看产出」companion</b>。我们的<b>主界面本就是手机原生 chat(Discord)</b> —— 在你<b>已经在用的 IM</b> 里全程给方向 + 验收 + 跟 Lead 对话,不是去新 app 看进度。<span class="small">(你问的「只带手机怎么验收」= 这就是我们的具体优势。)</span></p>
+    <h3>③ 可信度轴 · 工程级「可信交付」<span class="tag u">强,对 Matrix 最锋利</span></h3>
+    <p>vs Matrix:它的软肋是验证(verification cost);我们把<b>真 PR / CI / code review / QA / founder 验收 gate</b> 做成硬「可信」卖点 —— 正打它痛处。</p>
+    <div class="warn"><b>诚实红线</b>:「无按 token 计费」不是护城河 —— Matrix 也订阅驱动;「手机可达」本身也不独有(Devin 靠 Slack)。<b>真正独有 = 「非技术 + 手机 IM + 一整个团队 + 工程级验收」的组合。</b></div>
+    <div class="cmt"><label for="c_diff">这三轴你认可吗?主打哪一条当主线?</label>
+      <textarea id="c_diff" placeholder="比如:主打 ___ 轴 / ___ 轴我觉得不够硬"></textarea><div class="saved" id="s_c_diff"></div></div>
+  </section>
+
+  <!-- 定位候选 -->
+  <section class="card us">
+    <div class="kicker">给你挑 / 改</div>
+    <h2>一句话定位候选（按 Matrix 收窄,必带 软件/聊天/可信 至少一条）</h2>
+    <p><b>A（领域+可信)</b>:替非技术创始人把软件建出来、并像真团队一样养着的 AI 开发团队 —— 有 PR、有 review、有验收,不是黑箱。</p>
+    <p><b>B（对比 Matrix 显式切分)</b>:Matrix 让 agent 去开个自动赚钱的生意;我们让 AI 团队替你把一个真软件产品建出来、长期维护。</p>
+    <p><b>C（界面+只管两头)</b>:你在聊天里给方向、验收结果,一支 AI 团队替你把软件建出来 —— 不用下 app、不进 IDE、不盯小人。</p>
+    <div class="cmt"><label for="c_pos">哪条最接近你心里的定位?怎么改更对?</label>
+      <textarea id="c_pos" placeholder="选 A/B/C 或自己写一句…"></textarea><div class="saved" id="s_c_pos"></div></div>
+  </section>
+
+  <!-- 开放问题 -->
+  <section class="card">
+    <div class="kicker">等你定</div>
+    <h2>开放问题</h2>
+    <ol>
+      <li>目标客户收窄:「有点技术直觉的创始人」(能看懂 PR/验收)还是「完全非技术」(那验收界面要重新想)?</li>
+      <li>第一批深挖名单:Matrix + Lovable + Base44 + Devin + Factory,还是先只挖 Matrix?</li>
+      <li>要不要我对 Matrix 跑一次 ChatGPT Deep Research(带引用的深度复核)?</li>
+    </ol>
+    <div class="cmt"><label for="c_open">这三个问题的答复:</label>
+      <textarea id="c_open" placeholder="1. … 2. … 3. …"></textarea><div class="saved" id="s_c_open"></div></div>
+  </section>
+
+  <footer>Flywheel · FLY-909 竞品扫描 · 草稿,任何东西都不会在你批准前 ship</footer>
+</div>
+
+<div class="modal" id="modal" onclick="if(event.target===this)closeExport()">
+  <div class="modal-in">
+    <h3>你的批注汇总</h3>
+    <p class="small">下面是你写的所有意见。已尝试自动复制到剪贴板;没复制成功的话,长按/全选下面文字手动复制,发回给团队即可。</p>
+    <textarea id="exportBox" readonly></textarea>
+    <div class="row">
+      <button class="btn" onclick="copyExport()">复制</button>
+      <button class="btn ghost" onclick="closeExport()">关闭</button>
+      <span class="saved" id="copyMsg" style="align-self:center"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+  var KEY="fly909_cmt_v1";
+  var FIELDS={c_tldr:"三句话定位",c_matrix:"重点对标 Matrix",c_list:"候选 list / 第一批",
+    c_gtm:"GTM 情报",c_diff:"差异化三轴",c_pos:"一句话定位",c_open:"开放问题(3 问)"};
+  function load(){try{return JSON.parse(localStorage.getItem(KEY)||"{}")}catch(e){return{}}}
+  function save(d){try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}}
+  var data=load();
+  Object.keys(FIELDS).forEach(function(id){
+    var el=document.getElementById(id);if(!el)return;
+    if(data[id]){el.value=data[id]}
+    el.addEventListener("input",function(){
+      data[id]=el.value;save(data);
+      var s=document.getElementById("s_"+id);if(s){s.textContent="已暂存 ✓";clearTimeout(el._t);el._t=setTimeout(function(){s.textContent=""},1200)}
+    });
+  });
+  function compile(){
+    var out="【Annie 对 FLY-909 竞品扫描的批注】\n";var any=false;
+    Object.keys(FIELDS).forEach(function(id){
+      var v=(data[id]||"").trim();if(v){any=true;out+="\n■ "+FIELDS[id]+"\n"+v+"\n"}
+    });
+    return any?out:"(还没写任何批注)";
+  }
+  function openExport(){document.getElementById("exportBox").value=compile();document.getElementById("modal").classList.add("on");
+    try{navigator.clipboard.writeText(compile()).then(function(){msg("已复制到剪贴板 ✓")},function(){})}catch(e){}}
+  function copyExport(){var t=document.getElementById("exportBox");t.select();
+    try{navigator.clipboard.writeText(t.value).then(function(){msg("已复制 ✓")},fallback)}catch(e){fallback()}
+    function fallback(){try{document.execCommand("copy");msg("已复制 ✓")}catch(e){msg("请手动全选复制")}}}
+  function msg(m){document.getElementById("copyMsg").textContent=m;}
+  function closeExport(){document.getElementById("modal").classList.remove("on")}
+</script>
