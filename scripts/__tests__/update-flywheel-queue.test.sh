@@ -45,6 +45,13 @@ export UPDATE_FLYWHEEL_SOURCED=1
 export ENV_FILE=/dev/null
 export HOME="${TMP}/home"; mkdir -p "$HOME"
 export DISCORD_CORE_CHANNEL="" SIMBA_BOT_TOKEN="" DISCORD_BOT_TOKEN="" NOTIFY_BOT_TOKEN=""
+# FLY-954: update_main now converges <state>/bin (mount b). A runner-born
+# production FLYWHEEL_STATE_DIR would outrank the sandboxed HOME above and the
+# converger would "repair" the REAL ~/.flywheel/bin from THIS (possibly branch)
+# checkout — exactly the escape shape this issue root-cures for the provision
+# suites. Pin the state root inside the sandbox (same defense family as the
+# provision suites' _assert_sandboxed_home).
+export FLYWHEEL_STATE_DIR="${HOME}/.flywheel"; mkdir -p "$FLYWHEEL_STATE_DIR"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/update-flywheel.sh"
 
