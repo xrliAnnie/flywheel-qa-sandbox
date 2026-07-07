@@ -1,13 +1,13 @@
 ---
 issue: FLY-954
-phase: implement
+phase: qa
 phaseCursor: 9/9
-updated: 2026-07-07T19:34:15.651Z
-nextStep: CI green → land-status ready_to_merge → approve gate (no-block) → park
+updated: 2026-07-07T20:31:34.312Z
+nextStep: approve gate open → park awaiting review/QA
 chunks: []
 pointers: {}
 ---
 
 # FLY-954 progress
-**phase**: implement (9/9)
-**next**: CI green → land-status ready_to_merge → approve gate (no-block) → park
+**phase**: qa (9/9)
+**next**: approve gate open → park awaiting review/QA
