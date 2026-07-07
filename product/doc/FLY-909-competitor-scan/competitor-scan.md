@@ -43,7 +43,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 
 > 每条都标了「跟谁对比」和「站不站得住」。这些是喂 FLY-908 定位的**候选差异点**,给 Annie 挑。
 
-> ⚠️ **诚实修正(Matrix 之后)**:第一版说「一整个 AI 公司这个位没人正面占」是**错的**。**Matrix(flowith)正面占了**,而且组织骨架跟我们撞车(`Brain→Runtime→Departments→Leads→Workers→Proof` ≈ `CoS→Lead→Runner+验收`)。所以下面 #1 不再当「独有差异」,真差异是 #3/#4/#7 的**领域 + 界面 + 可信度**三条。
+> ⚠️ **诚实修正(逐家深挖之后)**:第一版说「一整个 AI 公司这个位没人正面占」是**错的**。不止 Matrix —— **分层多 agent 已是行业标配**:Matrix 有 `Departments→Leads→Workers→Proof`、**Devin 2.0 能「manage/schedule Devins」**(主协调一队 managed Devin)、Factory 一群 Droid。所以「我们是团队、别人是单 agent」这条**已死,别再讲**。下面 #1 不再当独有差异,真差异是 #3/#4/#7 的**领域 + 界面 + 可信度**三条(外加**无锁定**:builder 档 Lovable 撞 technical cliff、Base44 锁数据,我们建在你自己的真 GitHub repo)。
 
 1. **卖「一整个 AI 公司/团队」,不是一个工具、也不是一个工程师** ✅ 中(**不再独有** —— Matrix 也这么定位)
    - vs Lovable/Base44:它们给你**工具**,你自己是唯一的建造者;我们给你**一支队伍**。
