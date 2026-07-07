@@ -1,39 +1,14 @@
 <title>FLY-909 竞品扫描 · Annie review</title>
 <style>
   :root{
-    --paper:#f7f8fa; --card:#ffffff; --ink:#161a22; --muted:#5b6472;
+    color-scheme:light;
+    --paper:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --muted:#6e6e73;
     --line:#e4e7ec; --line-soft:#eef1f4;
     --accent:#2f5fd0; --accent-soft:#eaf0fd;
     --rival:#c77d2a; --rival-soft:#fbf1e3;
     --us:#2f9e6b; --us-soft:#e7f5ee;
-    --shadow:0 1px 3px rgba(20,26,34,.06),0 8px 24px rgba(20,26,34,.05);
+    --shadow:0 1px 3px rgba(0,0,0,.06),0 8px 24px rgba(0,0,0,.05);
     --radius:14px;
-  }
-  @media (prefers-color-scheme:dark){
-    :root{
-      --paper:#0f1319; --card:#161b23; --ink:#e9ecf1; --muted:#9aa4b2;
-      --line:#262d38; --line-soft:#1d232c;
-      --accent:#6f9bff; --accent-soft:#1a2740;
-      --rival:#e0a35c; --rival-soft:#2c2213;
-      --us:#54c391; --us-soft:#12271d;
-      --shadow:0 1px 3px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35);
-    }
-  }
-  :root[data-theme="dark"]{
-    --paper:#0f1319; --card:#161b23; --ink:#e9ecf1; --muted:#9aa4b2;
-    --line:#262d38; --line-soft:#1d232c;
-    --accent:#6f9bff; --accent-soft:#1a2740;
-    --rival:#e0a35c; --rival-soft:#2c2213;
-    --us:#54c391; --us-soft:#12271d;
-    --shadow:0 1px 3px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35);
-  }
-  :root[data-theme="light"]{
-    --paper:#f7f8fa; --card:#ffffff; --ink:#161a22; --muted:#5b6472;
-    --line:#e4e7ec; --line-soft:#eef1f4;
-    --accent:#2f5fd0; --accent-soft:#eaf0fd;
-    --rival:#c77d2a; --rival-soft:#fbf1e3;
-    --us:#2f9e6b; --us-soft:#e7f5ee;
-    --shadow:0 1px 3px rgba(20,26,34,.06),0 8px 24px rgba(20,26,34,.05);
   }
   *{box-sizing:border-box}
   body{
@@ -115,7 +90,6 @@
   <div class="bar-in">
     <b>FLY-909 · 竞品扫描</b>
     <span class="sp"></span>
-    <button class="btn ghost" onclick="toggleTheme()" id="themeBtn" aria-label="切换深浅色">◐</button>
     <button class="btn" onclick="openExport()">导出我的批注</button>
   </div>
 </div>
@@ -300,7 +274,4 @@
     function fallback(){try{document.execCommand("copy");msg("已复制 ✓")}catch(e){msg("请手动全选复制")}}}
   function msg(m){document.getElementById("copyMsg").textContent=m;}
   function closeExport(){document.getElementById("modal").classList.remove("on")}
-  function toggleTheme(){var r=document.documentElement;
-    var cur=r.getAttribute("data-theme")|| (matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");
-    r.setAttribute("data-theme",cur==="dark"?"light":"dark")}
 </script>
