@@ -113,7 +113,11 @@ export type AlertEventType =
 	// silent-non-deploy incident shape). A Lead-only alert; the durable
 	// `bridge_boot_stale_checkout` StateStore event + the boot console.warn are the
 	// primary signals. Fired from TS (boot-sha-check via the notifier), never shell.
-	| "bridge_boot_stale_checkout";
+	| "bridge_boot_stale_checkout"
+	// FLY-954: <state>/bin runtime-script drift detected by
+	// scripts/converge-flywheel-bin.sh (shell path via lead-alert.sh; the
+	// Bridge never emits this kind itself — union parity only).
+	| "bin_integrity_drift";
 
 export type AlertSeverity = "info" | "warning" | "severe";
 

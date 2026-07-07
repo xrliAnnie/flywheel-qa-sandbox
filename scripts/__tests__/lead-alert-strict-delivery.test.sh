@@ -136,6 +136,16 @@ OUT=$(PATH="$TMP/bin:$PATH" FLYWHEEL_PROJECTS_FILE="$PROJECTS_FILE" \
   --kind not_a_real_kind --severity severe --title T --body B --strict-delivery 2>/dev/null); RC=$?
 if [ "$RC" = "1" ] && [ "$OUT" = "config_error" ]; then ok "unknown kind rejected → config_error (exit 1)"; else bad "unknown kind: rc=$RC out='$OUT'"; fi
 
+# FLY-954: bin_integrity_drift is a real, accepted kind end-to-end (real shell
+# enum + HTTP-200 stub — no fake sink; the converge suite's alert stub does NOT
+# pin this allowlist). run_alert's built-in --kind is overridden by the extra
+# --kind here (lead-alert.sh arg loop: last flag wins).
+OUT=$(run_alert 200 --lead flywheel-eng-lead --kind bin_integrity_drift \
+  --signature sig-bid --strict-delivery 2>/dev/null); RC=$?
+if [ "$RC" = "0" ] && [ "$OUT" = "sent" ]; then
+  ok "bin_integrity_drift accepted → sent (exit 0)"
+else bad "bin_integrity_drift: rc=$RC out='$OUT'"; fi
+
 # ── 8. TS union parity (shared kind face has no drift) ───────────────────────
 TS="${REPO_ROOT}/packages/teamlead/src/LeadAlertNotifier.ts"
 grep -q '"restart_guard_bypass"' "$TS" \
@@ -144,6 +154,13 @@ grep -q '"restart_guard_bypass"' "$TS" \
 grep -q 'restart_guard_bypass' "$LEAD_ALERT" \
   && ok "lead-alert.sh kind allowlist contains restart_guard_bypass" \
   || bad "lead-alert.sh allowlist missing restart_guard_bypass"
+# FLY-954: bin_integrity_drift parity (converge-flywheel-bin.sh ↔ shell ↔ TS)
+grep -q '"bin_integrity_drift"' "$TS" \
+  && ok "TS AlertEventType union contains bin_integrity_drift" \
+  || bad "TS union missing bin_integrity_drift"
+grep -q 'bin_integrity_drift' "$LEAD_ALERT" \
+  && ok "lead-alert.sh kind allowlist contains bin_integrity_drift" \
+  || bad "lead-alert.sh allowlist missing bin_integrity_drift"
 
 echo ""
 echo "$PASS passed, $FAIL failed"

@@ -990,6 +990,11 @@ function titleFor(kind: AlertEventType): string {
 		// own title); case exists for switch exhaustiveness.
 		case "bridge_boot_stale_checkout":
 			return "Bridge running a STALE checkout";
+		// FLY-954: never emitted by LeadWatchdog (converge-flywheel-bin.sh fires
+		// it via lead-alert.sh with its own title); case exists for switch
+		// exhaustiveness.
+		case "bin_integrity_drift":
+			return "bin runtime script drift";
 	}
 }
 
@@ -1055,5 +1060,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-939 (G-D): never emitted by LeadWatchdog (boot-sha-check builds its own body).
 		case "bridge_boot_stale_checkout":
 			return "The Bridge booted on a checkout whose HEAD is behind origin/main — merged work is NOT live. Pull + restart the Bridge to deploy.";
+		// FLY-954: never emitted by LeadWatchdog (converge-flywheel-bin.sh builds its own body via lead-alert.sh).
+		case "bin_integrity_drift":
+			return "A ~/.flywheel/bin runtime script drifted from its repo source. This kind is emitted by scripts/converge-flywheel-bin.sh via lead-alert.sh (shell path) — the Watchdog never raises it; see the shell alert body for file + sha details (FLY-954).";
 	}
 }
