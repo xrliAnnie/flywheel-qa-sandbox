@@ -18,7 +18,7 @@ import { CommDB } from "flywheel-comm/db";
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
 import { modelShortCode, phaseMessageTag } from "flywheel-config";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
-import type { LeadAlertNotifier } from "../LeadAlertNotifier.js";
+import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import {
 	type ProjectEntry,
 	resolveAnnouncerBotToken,
@@ -74,8 +74,9 @@ export interface AutoQaEffectsDeps {
 	store: StateStore;
 	projects: ProjectEntry[];
 	config: BridgeConfig;
-	/** Lead-only alert sink for pipeline errors (alert channel). */
-	leadAlertNotifier?: LeadAlertNotifier;
+	/** Lead-only alert sink for pipeline errors (alert channel). FLY-927: widened
+	 * to the minimal sink face so plugin.ts can inject the ROUTED sink shim. */
+	leadAlertNotifier?: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	/**
 	 * FLY-630 ②: drives the PARENT issue thread's stage badge during the QA phase.
 	 * Undefined when the chat-thread feature is off → `stampIssueStage` no-ops.

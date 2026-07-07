@@ -109,6 +109,8 @@ import {
 	createAlertRateLimiter,
 	rateLimitPerMinuteFromEnv,
 } from "./alert-rate-limiter.js";
+// FLY-927 (W1): D1 responder-based routing — ticket queue vs issue thread.
+import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
@@ -3774,6 +3776,15 @@ export async function startBridge(
 	const leadPendingAlertHolder: {
 		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	} = {};
+	// FLY-927 (Task 1.1): late-bound ROUTED alert sink — the single funnel every
+	// emission source calls, so the D1 Router sees every infra event. Populated
+	// right after the raw alertSink below; emitters constructed earlier read
+	// `.current` at fire time and fall back to the raw notifier during the
+	// synchronous boot window (identical behavior — routing only matters at
+	// runtime, and FLYWHEEL_ALERT_ROUTING unset keeps it a pure passthrough).
+	const routedAlertSinkHolder: {
+		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
+	} = {};
 	// FLY-799: founder-in-thread ship approval. When the founder replies "ship
 	// it" / ✅ in a `[FLY-XX]` thread, this callback attributes the approval to
 	// HER (canonical founder id), writes {"approved":true} to the approve_to_ship
@@ -4059,7 +4070,13 @@ export async function startBridge(
 				store,
 				projects,
 				config,
-				leadAlertNotifier,
+				// FLY-927 (W1): route auto-QA alerts through the routed sink (both its
+				// kinds are ticket-class, so behavior is unchanged — this closes the
+				// bypass so EVERY emission source shares the one funnel).
+				leadAlertNotifier: {
+					alert: (p) =>
+						(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(p),
+				},
 				// FLY-630 ②: drive the PARENT issue thread's stage badge across the QA
 				// phase (🧪QA while running → ⏳待批 on pass → 🔨实现中 on fail). Only
 				// set when the chat-thread feature is on; otherwise stampIssueStage
@@ -4478,7 +4495,11 @@ export async function startBridge(
 							);
 							return;
 						}
-						await leadAlertNotifier.alert({
+						// FLY-927 (W1): through the ROUTED sink — an issue-progress kind
+						// with a bound [FLY-XX] thread lands there (D1); unset routing env
+						// / boot window = the raw notifier exactly as before. sessionKey
+						// carries the execution id the Router's thread resolution keys on.
+						await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
 							leadId,
 							projectName,
 							eventId: `three-stage-stuck:${session.execution_id}:${Date.now()}`,
@@ -4488,6 +4509,7 @@ export async function startBridge(
 							}`,
 							body: reason,
 							severity: "warning",
+							sessionKey: session.execution_id,
 						});
 					},
 					// FLY-887: 4-state PROCESS liveness (not window existence). No tmux
@@ -4824,7 +4846,9 @@ export async function startBridge(
 					/* no lead → event + console.warn suffice */
 				}
 				if (!leadId) return;
-				await leadAlertNotifier.alert({
+				// FLY-927 (W1): through the routed sink (ticket kind → same funnel
+				// discipline; falls back to the raw notifier during the boot window).
+				await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
 					leadId,
 					projectName: first.projectName,
 					eventId: `bridge-boot-stale:${headSha}:${originMainSha}`,
@@ -5174,9 +5198,25 @@ export async function startBridge(
 	// adds threading + auto-repair; otherwise it's the raw notifier (byte-compat).
 	const alertSink: { alert: (p: AlertPayload) => Promise<AlertResult> } =
 		alertHub ? { alert: (p) => alertHub.handle(p) } : leadAlertNotifier;
+
+	// FLY-927 (W1): wrap the raw sink with the D1 Router. FLYWHEEL_ALERT_ROUTING
+	// unset ⇒ pure passthrough (the resolver is never even consulted). An
+	// issue-progress alert with a bound [FLY-XX] thread is delivered THERE via
+	// the issue-thread infra leg; any resolution/delivery failure fail-safes back
+	// to the raw sink (ticket queue) — never silent, never recursive.
+	const routedAlertSink = buildInfraAlertRouting({
+		store,
+		projects,
+		globalBotToken: config.discordBotToken,
+		rawSink: alertSink,
+	});
+	routedAlertSinkHolder.current = routedAlertSink;
+
 	// FLY-637-ext: now that the shared alert sink exists, point the GatePoller's
 	// late-bound lead-pending page-Annie holder at it (same routing as FLY-195 Q7).
-	leadPendingAlertHolder.current = alertSink;
+	// FLY-927: via the Router — runner_lead_pending_unhandled is an issue-progress
+	// kind, so with routing ON it lands in the issue's own thread.
+	leadPendingAlertHolder.current = routedAlertSink;
 
 	// FLY-182 §4.1: surface any Lead whose alert channel/token cannot resolve
 	// from config — the silent gap that broke alerting for 25 days. LOUD log +
@@ -5218,7 +5258,7 @@ export async function startBridge(
 		// as Lead alerts so it lands in the unified channel + gets a thread + the
 		// conservative auto-repair attempt (when enabled). Falls back to the raw
 		// notifier when the Hub is off (byte-compat).
-		notifier: alertSink,
+		notifier: routedAlertSink,
 		// FLY-818 M3 (default-ON, kill-switch FLYWHEEL_STUCK_FOUNDER_PAGE=0): the
 		// founder page for a genuinely-stuck runner posts an @founder message into
 		// that runner's OWN [FLY-XX] issue thread (Annie's design), using the owning
@@ -5266,7 +5306,7 @@ export async function startBridge(
 			? (() => {
 					const quotaScan = makeRunnerQuotaScan({
 						projects,
-						alert: (p) => alertSink.alert(p),
+						alert: (p) => routedAlertSink.alert(p),
 						isTransient: isTransientThrottlePane,
 						now: () => Date.now(),
 					});
@@ -5276,7 +5316,7 @@ export async function startBridge(
 					// only fires for unrecognized-anomalous panes (healthy/pattern panes
 					// never spend a model call).
 					const authScan = makeRunnerAuthScan({
-						alert: (p) => alertSink.alert(p),
+						alert: (p) => routedAlertSink.alert(p),
 						resolveLeadId: defaultResolveLeadId(projects),
 						// FLY-871 R2/C7: populate the account-state ledger — a confirmed
 						// runner logout marks the active account's live auth as stale.
@@ -5369,7 +5409,7 @@ export async function startBridge(
 		store,
 		// FLY-368: route through the unified sink (Hub adds threading + auto-repair
 		// when enabled; otherwise this is the raw notifier — byte-compat).
-		notifier: (payload) => alertSink.alert(payload),
+		notifier: (payload) => routedAlertSink.alert(payload),
 		locateWindowFn: (projectName, leadId) =>
 			locateLeadWindow(projectName, leadId),
 		captureFn: leadPaneCaptureFn,
