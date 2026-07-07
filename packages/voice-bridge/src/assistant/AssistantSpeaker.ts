@@ -15,8 +15,8 @@
  * fillerDelayMs; neither may ever cut a live turn stream.
  */
 import { PassThrough } from "node:stream";
-import { upsample24kMonoTo48kStereo } from "../audio/resample.js";
 import type { PlayerLike, ResourceSource } from "./../audio/LeadSpeaker.js";
+import { upsample24kMonoTo48kStereo } from "../audio/resample.js";
 
 export interface AssistantSpeakerOptions {
 	player: PlayerLike;

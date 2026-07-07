@@ -16,8 +16,8 @@ import type {
 	LiveConnectParams,
 	LiveServerEvent,
 } from "../backends/gemini/transport.js";
-import { TalkSessionRotator } from "../TalkSessionRotator.js";
 import { TypedEmitter } from "../emitter.js";
+import { TalkSessionRotator } from "../TalkSessionRotator.js";
 import type {
 	ConversationEventMap,
 	ConversationSession,
@@ -68,9 +68,7 @@ async function makeSession(opts: {
 	const transport = new FakeTransport();
 	const backend = new GeminiLiveBackend({ transport, profile });
 	const session = await (
-		backend.createConversation as NonNullable<
-			typeof backend.createConversation
-		>
+		backend.createConversation as NonNullable<typeof backend.createConversation>
 	)({
 		brain: new FakeBrain([]),
 		...opts,

@@ -5,7 +5,13 @@
  * write/read, refresh-failure-keeps-old, staleness, docs mtime re-read, and
  * docs[] path-traversal fail-fast.
  */
-import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -103,7 +109,8 @@ describe("BriefingEngine (FLY-967 P4)", () => {
 				charBudget: 8000,
 				docs: ["product/prd.md"],
 			},
-			fetchIssues: fetchIssues as unknown as BriefingEngineOptions["fetchIssues"],
+			fetchIssues:
+				fetchIssues as unknown as BriefingEngineOptions["fetchIssues"],
 			...over,
 		});
 	}
@@ -213,7 +220,8 @@ describe("BriefingEngine (FLY-967 P4)", () => {
 			throw new Error("must not be called before compose");
 		});
 		const e2 = makeEngine({
-			fetchIssues: neverFetch as unknown as BriefingEngineOptions["fetchIssues"],
+			fetchIssues:
+				neverFetch as unknown as BriefingEngineOptions["fetchIssues"],
 		});
 		e2.loadCache(); // cache read only — no refresh kicked
 		const r = e2.compose();
@@ -265,7 +273,11 @@ describe("BriefingEngine (FLY-967 P4)", () => {
 		expect(e.docReadCount).toBe(1);
 		const doc = join(root, "product", "prd.md");
 		writeFileSync(doc, "PRD 改版:新的要点。");
-		utimesSync(doc, new Date(T0.getTime() + 700_000), new Date(T0.getTime() + 700_000));
+		utimesSync(
+			doc,
+			new Date(T0.getTime() + 700_000),
+			new Date(T0.getTime() + 700_000),
+		);
 		await vi.advanceTimersByTimeAsync(600_000);
 		expect(e.docReadCount).toBe(2);
 		expect(e.compose().text).toContain("新的要点");

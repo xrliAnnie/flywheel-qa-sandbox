@@ -7,8 +7,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	buildAssistantTools,
 	type AssistantToolDeps,
+	buildAssistantTools,
 } from "../assistant/tools.js";
 
 type FetchCall = { url: string; init: RequestInit };
@@ -91,9 +91,9 @@ describe("assistant tools (FLY-967 P5)", () => {
 		for (const c of calls) {
 			expect(c.url).toContain("projectName=flywheel");
 			expect(c.url).not.toContain("secret-token");
-			expect(
-				(c.init.headers as Record<string, string>).Authorization,
-			).toBe("Bearer secret-token");
+			expect((c.init.headers as Record<string, string>).Authorization).toBe(
+				"Bearer secret-token",
+			);
 		}
 		expect(calls[0].url).toContain("/api/linear/issue?");
 		expect(calls[1].url).toContain("/api/linear/issues?");

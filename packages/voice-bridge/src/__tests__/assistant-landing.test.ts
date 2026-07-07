@@ -69,7 +69,10 @@ describe("AssistantLanding (FLY-967 P6a)", () => {
 		const receipt = JSON.parse(
 			readFileSync(join(dir, "landing-receipt.json"), "utf8"),
 		);
-		expect(receipt).toMatchObject({ issueId: "FLY-1234", sessionId: "sess-abc" });
+		expect(receipt).toMatchObject({
+			issueId: "FLY-1234",
+			sessionId: "sess-abc",
+		});
 	});
 
 	it("comment failure: no close, no receipt, transcript fallback named", async () => {

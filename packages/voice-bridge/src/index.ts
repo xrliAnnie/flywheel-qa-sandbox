@@ -6,6 +6,52 @@
  * signal + per-Lead voices), FLY-967 (/live assistant mode, which builds its
  * assistant/* modules on this exact chassis).
  */
+
+// ---- FLY-967 /live assistant mode (assistant/*) ----
+export {
+	AssistantLanding,
+	type AssistantLandingOptions,
+	type LandingInput,
+	type LandingLinear,
+	type LandingResult,
+} from "./assistant/AssistantLanding.js";
+export {
+	AssistantSession,
+	type AssistantSessionOptions,
+	type AssistantSessionState,
+	type ConversationLike,
+	type EarsFeed,
+	type SpeakerLike,
+	type TivSurface,
+	type VoicePresence,
+} from "./assistant/AssistantSession.js";
+export {
+	AssistantSpeaker,
+	type AssistantSpeakerOptions,
+} from "./assistant/AssistantSpeaker.js";
+export {
+	type BoardIssue,
+	BriefingEngine,
+	type BriefingEngineOptions,
+	type BriefingResult,
+	type IssuesPage,
+} from "./assistant/BriefingEngine.js";
+export {
+	type AssistantBriefingConfig,
+	type AssistantModeConfig,
+	resolveAssistantConfig,
+} from "./assistant/config.js";
+export {
+	LiveCommand,
+	type LiveCommandOptions,
+	type LiveInvocation,
+} from "./assistant/LiveCommand.js";
+export {
+	type AssistantToolDeps,
+	boardSnapshotTool,
+	buildAssistantTools,
+	lookupIssueTool,
+} from "./assistant/tools.js";
 export {
 	EarsReceiver,
 	type EarsReceiverOptions,

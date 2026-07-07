@@ -5,10 +5,10 @@
  *   ③ sendText 控制口 → 首音延迟(文字提示→第一个 response-audio chunk)
  * 用法: GEMINI_API_KEY=... node s-a1-gemini-side.mjs [voice ...]
  */
-import { mkdirSync, writeFileSync, appendFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import {
-	GeminiLiveBackend,
 	createGenaiTransport,
+	GeminiLiveBackend,
 	resolveConfig,
 } from "../../../packages/voice-core/dist/index.js";
 
@@ -133,10 +133,7 @@ async function runVoice(voiceArg) {
 		turnDone = newTurn();
 		sentAt = Date.now();
 		session.sendText(p);
-		await Promise.race([
-			turnDone,
-			new Promise((r) => setTimeout(r, 30_000)),
-		]);
+		await Promise.race([turnDone, new Promise((r) => setTimeout(r, 30_000))]);
 		const pcm = Buffer.concat(chunks);
 		results.turns.push({
 			prompt: p,
@@ -145,7 +142,12 @@ async function runVoice(voiceArg) {
 			audioSec: +(pcm.length / 2 / 24_000).toFixed(1),
 			transcript: transcript.join(""),
 		});
-		log({ voice: voiceArg, prompt: p, firstChunkMs, transcript: transcript.join("") });
+		log({
+			voice: voiceArg,
+			prompt: p,
+			firstChunkMs,
+			transcript: transcript.join(""),
+		});
 		if (pcm.length) {
 			const f = `${OUT}audition-${voiceArg}-${results.turns.length}.wav`;
 			writeFileSync(f, Buffer.concat([wavHeader(pcm.length), pcm]));

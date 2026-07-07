@@ -6,8 +6,9 @@
  * degradation, speaker wiring (turn gate / earcon / filler-resolve),
  * landing failure still tearing down, and slot release on every exit.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 import { TypedEmitter } from "flywheel-voice-core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AssistantSession } from "../assistant/AssistantSession.js";
 import { SessionSlot } from "../SessionSlot.js";
 
@@ -77,7 +78,7 @@ function harness(over: Record<string, unknown> = {}) {
 	const conv = new FakeConversation();
 	const speaker = new FakeSpeaker();
 	const slot = new SessionSlot();
-	expect(slot.acquire("live", "FLY-1234").ok).toBe(true); // command layer did this
+	expect(slot.acquire("live", "sess-1").ok).toBe(true); // command layer did this
 	let founderJoined: (() => void) | undefined;
 	let founderLeft: (() => void) | undefined;
 	let earsDown: (() => void) | undefined;
@@ -258,7 +259,11 @@ describe("AssistantSession (FLY-967 P6b)", () => {
 		const h = harness();
 		await h.session.start();
 		h.conv.emitter.emit("response-started");
-		h.conv.emitter.emit("tool-call", { callId: "c1", name: "lookup_issue", args: {} });
+		h.conv.emitter.emit("tool-call", {
+			callId: "c1",
+			name: "lookup_issue",
+			args: {},
+		});
 		h.conv.emitter.emit("response-audio", Buffer.from("a"), {});
 		h.conv.emitter.emit("response-cancelled");
 		expect(h.speaker.calls).toEqual([

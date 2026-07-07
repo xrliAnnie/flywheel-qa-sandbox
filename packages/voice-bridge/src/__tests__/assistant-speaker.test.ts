@@ -9,8 +9,8 @@
  */
 import type { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ResourceSource } from "../audio/LeadSpeaker.js";
 import { AssistantSpeaker } from "../assistant/AssistantSpeaker.js";
+import type { ResourceSource } from "../audio/LeadSpeaker.js";
 
 class FakePlayer {
 	played: ResourceSource[] = [];

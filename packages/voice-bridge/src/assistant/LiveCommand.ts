@@ -1,0 +1,117 @@
+/**
+ * LiveCommand (FLY-967 P7) — the /live invocation orchestrator:
+ * slot acquire (busy → founder-facing rejection, nothing created) → kickoff
+ * issue → invite reply (Join link) + founder @ping (+ best-effort MOVE) →
+ * hand off to the AssistantSession factory. The session owns the slot from
+ * here (it releases on every exit path); any failure BEFORE the handoff
+ * releases the slot right here so the room can never leak.
+ *
+ * Mirrors the MeetCommand shape (545 PR-2, not landed yet — whoever lands
+ * second extracts the shared discord/commandKit per the plan's 谁后落谁抽
+ * note). Discord specifics are injected seams.
+ */
+import { randomUUID } from "node:crypto";
+import type { SessionSlot } from "../SessionSlot.js";
+
+export interface LiveInvocation {
+	topic?: string;
+	/** the invocation reply (回执); the adapter renders joinUrl as a button. */
+	reply(text: string, opts?: { joinUrl?: string }): Promise<void>;
+}
+
+export interface LiveCommandOptions {
+	commandName?: string;
+	slot: SessionSlot;
+	/** the resident #huddle VC link for the Join button. */
+	joinUrl: string;
+	founderName?: string;
+	createIssue(title: string): Promise<{ identifier: string; url?: string }>;
+	/** channel @ping so her phone buzzes. */
+	pingFounder(text: string): Promise<void>;
+	/** MOVE_MEMBERS when she is already in another VC; false = no permission /
+	 * not applicable — never fatal (the Join button is always there). */
+	moveFounderToVc?(): Promise<boolean>;
+	startSession(args: {
+		sessionId: string;
+		issueId: string;
+		topic?: string;
+	}): Promise<void>;
+	now?: () => Date;
+	log?: (line: string) => void;
+}
+
+export class LiveCommand {
+	constructor(private readonly opts: LiveCommandOptions) {}
+
+	get name(): string {
+		return this.opts.commandName ?? "live";
+	}
+
+	async handle(inv: LiveInvocation): Promise<void> {
+		const sessionId = randomUUID();
+		const acquired = this.opts.slot.acquire("live", sessionId);
+		if (!acquired.ok) {
+			await inv.reply(acquired.message);
+			return;
+		}
+
+		let identifier: string;
+		let issueUrl: string | undefined;
+		try {
+			const created = await this.opts.createIssue(
+				kickoffTitle(
+					this.opts.now?.() ?? new Date(),
+					this.opts.founderName ?? "Annie",
+					inv.topic,
+				),
+			);
+			identifier = created.identifier;
+			issueUrl = created.url;
+		} catch (err) {
+			this.opts.slot.release("live", sessionId);
+			await inv.reply(
+				`/${this.name} 没起起来:立项 issue 创建失败(${String((err as Error).message ?? err)})。稍后再试。`,
+			);
+			return;
+		}
+
+		await inv.reply(
+			`🎙 /${this.name} 开场了 — 立项 ${identifier}${issueUrl ? `(${issueUrl})` : ""}。点 Join 进语音频道。`,
+			{ joinUrl: this.opts.joinUrl },
+		);
+		await this.opts.pingFounder(
+			`🎙 /${this.name} 在等你 — 点 Join 进 #huddle,聊完纪要自动落 ${identifier}。`,
+		);
+		if (this.opts.moveFounderToVc) {
+			const moved = await this.opts.moveFounderToVc().catch(() => false);
+			if (!moved) {
+				this.opts.log?.(
+					"[live-command] MOVE_MEMBERS unavailable — Join button is the path in",
+				);
+			}
+		}
+
+		try {
+			await this.opts.startSession({
+				sessionId,
+				issueId: identifier,
+				topic: inv.topic,
+			});
+		} catch (err) {
+			this.opts.slot.release("live", sessionId);
+			await inv.reply(
+				`/${this.name} 会话启动失败(${String((err as Error).message ?? err)})——${identifier} 保持打开,重新 /${this.name} 即可。`,
+			);
+		}
+	}
+}
+
+function kickoffTitle(now: Date, founder: string, topic?: string): string {
+	const d = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+	const t = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+	return `${d} ${t} · live(${founder})${topic ? ` — ${topic}` : ""}`;
+}
+
+function pad(n: number): string {
+	return String(n).padStart(2, "0");
+}

@@ -13,9 +13,10 @@
  * All Discord/Gemini/Linear specifics are injected seams (chassis pattern),
  * so every path is fake-timer testable.
  */
-import type { BriefingResult } from "./BriefingEngine.js";
-import type { LandingResult } from "./AssistantLanding.js";
+
 import type { SessionSlot } from "../SessionSlot.js";
+import type { LandingResult } from "./AssistantLanding.js";
+import type { BriefingResult } from "./BriefingEngine.js";
 
 /** the conversation surface the session drives (rotator-compatible). */
 export interface ConversationLike {
@@ -342,7 +343,7 @@ export class AssistantSession {
 		}
 		this.conv = null;
 		this.opts.voice.leave();
-		this.opts.slot.release("live", this.opts.issueId);
+		this.opts.slot.release("live", this.opts.sessionId);
 		this._state = "idle";
 	}
 

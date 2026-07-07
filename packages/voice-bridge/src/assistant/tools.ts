@@ -90,8 +90,7 @@ export function boardSnapshotTool(deps: AssistantToolDeps): LiveToolSpec {
 	return {
 		declaration: {
 			name: "board_snapshot",
-			description:
-				"Current project board: issues grouped by state. Read-only.",
+			description: "Current project board: issues grouped by state. Read-only.",
 			parameters: {
 				type: "OBJECT",
 				properties: {
@@ -118,7 +117,9 @@ export function boardSnapshotTool(deps: AssistantToolDeps): LiveToolSpec {
 			if (r.status !== 200 || !r.body) {
 				return `查询失败(Bridge 返回 ${r.status}),稍后再试或换个问法。`;
 			}
-			const issues = ((r.body as { issues?: IssueSummary[] }).issues ?? []).filter(
+			const issues = (
+				(r.body as { issues?: IssueSummary[] }).issues ?? []
+			).filter(
 				(i) =>
 					!stateFilter ||
 					(i.state ?? "").toLowerCase() === stateFilter.toLowerCase(),

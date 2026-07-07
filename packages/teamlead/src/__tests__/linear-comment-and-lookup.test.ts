@@ -142,9 +142,9 @@ describe("voice-bridge landing routes (FLY-967 / 545 P12)", () => {
 	it("comment: 400 when issueId or body is missing/blank", async () => {
 		expect((await postComment({ body: "hi" })).status).toBe(400);
 		expect((await postComment({ issueId: "FLY-967" })).status).toBe(400);
-		expect((await postComment({ issueId: "FLY-967", body: "   " })).status).toBe(
-			400,
-		);
+		expect(
+			(await postComment({ issueId: "FLY-967", body: "   " })).status,
+		).toBe(400);
 	});
 
 	it("comment: 404 when the issue does not exist (explicit, not opaque)", async () => {
@@ -226,9 +226,9 @@ describe("voice-bridge landing routes (FLY-967 / 545 P12)", () => {
 		const data = await res.json();
 		expect(data.matchType).toBe("keyword");
 		expect(data.count).toBe(2);
-		expect(data.issues.map((i: { identifier: string }) => i.identifier)).toEqual(
-			["FLY-967", "FLY-545"],
-		);
+		expect(
+			data.issues.map((i: { identifier: string }) => i.identifier),
+		).toEqual(["FLY-967", "FLY-545"]);
 		// keyword filter shape: title containsIgnoreCase, bounded first
 		const [query, vars] = mockRawRequest.mock.calls[0] as [
 			string,
