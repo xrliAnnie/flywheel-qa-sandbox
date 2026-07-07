@@ -1,13 +1,17 @@
 ---
 issue: FLY-929
-phase: implement
-phaseCursor: 8/8
-updated: 2026-07-07T19:36:31.297Z
-nextStep: "awaiting founder review (approve gate open, PR #490 ready_to_merge)"
+phase: qa
+phaseCursor: 1/1
+updated: 2026-07-07T20:00:00.000Z
+nextStep: "QA PASS — approve gate open for founder review (PR #490)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-929 progress
-**phase**: implement (8/8)
-**next**: awaiting founder review (approve gate open, PR #490 ready_to_merge)
+**phase**: qa (1/1)
+**next**: QA PASS — approve gate open for founder review (PR #490)
+
+QA verdict: PASS (see qa-report.md). Added fly929-date-contract.qa.test.ts
+(date-contract edge cases). All suites + CI green; dormant merge byte-compat
+proven; real-machine activation QA belongs to the enable window (FLY-928 W5).
