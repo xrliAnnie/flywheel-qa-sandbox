@@ -52,6 +52,23 @@ export PATH="$STUB_BIN:$PATH"
 # env -i can re-pass it; every provisioner invocation below goes through the
 # isolated helper with an explicit --home + pinned sandbox FLYWHEEL_STATE_DIR.
 STUB_PATH="$PATH"
+# FLY-954: hard isolation self-check — the sandbox HOME every provisioner
+# invocation gets must NEVER be the invoking user's real HOME (defense against
+# future edits that bypass the isolated helper; the 2026-07-06 escape ran with
+# the real env because nothing asserted otherwise).
+REAL_USER_HOME="$HOME"
+_assert_sandboxed_home() {
+  local h="$1"
+  if [ -z "$h" ] || [ "$h" = "$REAL_USER_HOME" ]; then
+    echo "FATAL(FLY-954): test HOME '$h' is the real user HOME — refusing to run" >&2
+    exit 1
+  fi
+  case "$h" in
+    "$SANDBOX"/*) ;;
+    *) echo "FATAL(FLY-954): test HOME '$h' escapes sandbox $SANDBOX" >&2; exit 1 ;;
+  esac
+}
+
 # _iso_prov <path> <home> <args...> — run provisioner in an env -i jail.
 # FLY-954: state-dir intent goes in via --state-dir (the provisioner now
 # IGNORES an inherited FLYWHEEL_STATE_DIR — writers don't trust runtime-reader
@@ -59,6 +76,7 @@ STUB_PATH="$PATH"
 # "$@" so individual cases can override it (last --state-dir wins).
 _iso_prov() {
   local _path="$1" _home="$2"; shift 2
+  _assert_sandboxed_home "$_home"
   env -i \
     PATH="$_path" \
     HOME="$_home" \
