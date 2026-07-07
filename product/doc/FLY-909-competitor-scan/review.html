@@ -1,4 +1,4 @@
-<title>FLY-909 竞品扫描 · Annie review</title>
+<title>FLY-909 竞品扫描 · Annie review(round 2)</title>
 <style>
   :root{
     color-scheme:light;
@@ -47,7 +47,7 @@
   h2{font-size:20px;margin:.15em 0 .5em;letter-spacing:-.01em;text-wrap:balance}
   h3{font-size:15.5px;margin:1.1em 0 .3em}
   p{margin:.55em 0}
-  ul{margin:.5em 0;padding-left:1.15em}li{margin:.3em 0}
+  ul,ol{margin:.5em 0;padding-left:1.15em}li{margin:.3em 0}
   .small{font-size:13px;color:var(--muted)}
   .tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;vertical-align:middle}
   .tag.r{background:var(--rival-soft);color:var(--rival)}
@@ -55,6 +55,9 @@
   .tag.a{background:var(--accent-soft);color:var(--accent)}
   mark{background:color-mix(in srgb,var(--accent) 18%,transparent);color:inherit;padding:0 3px;border-radius:3px}
   .warn{background:var(--rival-soft);border-radius:9px;padding:9px 12px;font-size:13px;margin:.6em 0}
+  .anchor{background:var(--us-soft);border-radius:9px;padding:9px 12px;font-size:13px;margin:.6em 0}
+  .sugg{background:var(--accent-soft);border:1px dashed color-mix(in srgb,var(--accent) 40%,transparent);
+    border-radius:9px;padding:9px 12px;font-size:13px;margin:.6em 0}
 
   .scroll{overflow-x:auto;margin:.6em -4px;padding:0 4px;-webkit-overflow-scrolling:touch}
   table{border-collapse:collapse;font-size:12.5px;min-width:560px;width:100%}
@@ -88,7 +91,7 @@
 
 <div class="bar">
   <div class="bar-in">
-    <b>FLY-909 · 竞品扫描</b>
+    <b>FLY-909 · 竞品扫描 · round 2</b>
     <span class="sp"></span>
     <button class="btn" onclick="openExport()">导出我的批注</button>
   </div>
@@ -96,140 +99,138 @@
 
 <div class="wrap">
   <header class="hero">
-    <div class="eyebrow">对外定位线 · 喂 FLY-908</div>
+    <div class="eyebrow">对外定位线 · 喂 FLY-908 / FLY-911</div>
     <h1>市面上别人怎么做 —— 竞品扫描 &amp; 对我们定位的启发</h1>
-    <p class="lede">把「AI 开发团队 / 自主编码 / 让非工程也能造软件」这波玩家扫一遍,重点回答:我们跟谁像、跟谁不一样,以及能借什么。</p>
+    <p class="lede">这轮全部按<b>你定的视角</b>重写:目标客户 = <b>完全非技术的小企业主</b>(会读 PR 的那种人不算)。重点回答:我们跟谁像、跟谁不一样,能借什么,以及一个非技术老板凭什么信我们。</p>
     <div class="meta">
-      <span>日期 2026-07-06</span><span>草稿 / WIP · 不是要 ship 的东西</span><span>给 Annie review</span>
+      <span>日期 2026-07-07</span><span>round 2(在你上轮批注基础上)</span><span>草稿 / 不是要 ship 的东西</span>
     </div>
     <div class="howto">
-      <b>怎么用这一页 →</b> 每一节下面都有一个「✍️ 留言框」,你的意见写在对应位置就行(会自动暂存)。写完点右上角 <b>「导出我的批注」</b>,把汇总复制发回来,我照着改。
+      <b>这轮改了什么 →</b> ①加了新竞品 <b>Paperclip</b>(开源免费的「AI 公司」框架);②所有对比换成「完全非技术能不能自己用」;③<b>可信度那条推倒重来</b> —— 你上轮 flag 的硬问题「非技术不读代码,怎么信」。每节下面有「✍️ 留言框」(自动暂存),写完点右上角 <b>「导出我的批注」</b>发回来。
     </div>
   </header>
 
   <!-- TLDR -->
   <section class="card">
     <div class="kicker">先看结论</div>
-    <h2>三句话</h2>
+    <h2>三句话(round 2)</h2>
     <ol>
-      <li><b>市场分两大形态</b>:①「自助建造工具」(Lovable / Base44 / Bolt / Replit —— 非技术<b>自己</b>在画布里 prompt 出 app);②「派活给一个 agent」(Devin / Factory —— 工程团队把任务派给<b>一个 AI 工程师</b>,出 PR)。</li>
-      <li><b>行业叙事正往我们这边走</b>:Karpathy 2026 宣布 vibe coding「passe」→「agentic engineering」(人给方向与 review,agent 做实现)—— 这就是我们「founder 只管两头,AI 团队自治」。</li>
-      <li><b>「一整个 AI 公司」这个位有人正面占了 —— <span class="tag r">Matrix</span></b>,而且组织骨架跟我们撞车。所以真差异要落到三条:<mark>领域(软件 vs 生意)· 界面(Discord vs 桌面app)· 可信度(工程级验收 vs 轻 proof)</mark>。</li>
+      <li><b>「一整个 AI 公司 / 一队 agent」这个位现在挤爆了、还商品化了</b>:Matrix(桌面、商业)+ <span class="tag r">🆕 Paperclip</span>(<b>开源、免费、43K star、病毒式</b>)+ 整个「Zero-Human Company」品类。把 agent 组织成公司 = 已经<b>免费+开源+人人可下</b>。→ <mark>「我们是一整个 AI 团队」当差异,彻底死透。</mark></li>
+      <li><b>品类自己的批评替我们指了路</b>:执行已不是瓶颈了,<b>需求 / 有没有人买 / 信任 / 判断</b>才是。我们<b>故意把人留在两头</b>(你给方向 + 你验收),正好压在品类承认「自动化不了」的地方。<span class="tag a">定位建议 · 待你拍</span></li>
+      <li><b>对一个完全非技术的老板,真差异只剩三条</b>:<mark>concrete 不 generic</mark>(替你建<b>你那个具体产品</b>,不是给你框架自己拼)· <mark>done-for-you 不自托管</mark>(Discord 说话,不装 server、不搭 org chart) · <mark>信得过</mark>(东西一试真能跑、下周还能跑)。</li>
     </ol>
-    <div class="cmt"><label for="c_tldr">对这三句话的定位判断,你怎么看?</label>
-      <textarea id="c_tldr" placeholder="比如:哪句最戳你 / 哪句你不同意…"></textarea><div class="saved" id="s_c_tldr"></div></div>
+    <div class="cmt"><label for="c_tldr">这三句话的定位判断,你怎么看?哪句最戳,哪句想改?</label>
+      <textarea id="c_tldr" placeholder="比如:最戳我的是 ___ / ___ 那句我不同意…"></textarea><div class="saved" id="s_c_tldr"></div></div>
   </section>
 
-  <!-- 重点对标 Matrix -->
+  <!-- AI 公司位商品化 + Paperclip -->
   <section class="card rival">
-    <div class="kicker">🌟 重点对标 · 你点名的那家</div>
-    <h2>Matrix(flowith 出品)—— 目前跟我们最像的一家</h2>
-    <p class="small">你在小红书刷到的就是它。特征全对上:desktop App、~18 人、~$9M 融资、slogan「数万家 0 人公司真赚钱」。</p>
-    <p><b>它是什么</b>:「Launch a 0-Person Company that actually earns」。你设目标 → 一个 CEO 级 Agent 自建部门、自主分工 → build → ship → distribute → earn 全闭环。跑 Codex / Claude Code 订阅 + BYOK(跟我们一样)。</p>
-    <p><b>为什么「非常像」是字面的像</b> —— 它官宣的架构是
-      <code>Brain → Runtime → Departments → Leads → Workers → Proof</code>,几乎就是我们的
-      <code>CoS → Lead → Runner + 验收</code>,连最后「Proof」层都对应。</p>
-    <div class="warn"><b>结论(重要)</b>:靠「AI 公司 / 分层组织 / 订阅驱动」<b>已经区分不开</b>我们和 Matrix 了。真差异必须落到下面「差异化三轴」。</div>
-    <h3>它的软肋(= 我们的机会点)</h3>
+    <div class="kicker">🆕 这轮最大的发现</div>
+    <h2>「AI 公司」这个位不但有人占,还免费开源了 —— Paperclip</h2>
+    <p><b>Paperclip</b>(作者 @dotta,2026-03 发布):一个<b>开源免费</b>的「把你的 agent 组织成一个公司」的控制平面 —— org chart、角色、预算、治理、ticket + 全程记录。「你是 CEO,agent 是员工」。<b>3 周 30K GitHub star、4 月破 43K</b>,史上最快的开源 agent 项目之一。</p>
+    <p class="small">有意思的是:作者是因为「同时开着 20–30 个 Claude Code 窗口、没人管得过来」才做的它 —— <b>跟我们的起源痛点一模一样</b>。</p>
+    <div class="warn"><b>对我们意味着什么</b>:加上 Matrix,「把 agent 组织成一整个公司」现在 = <b>免费 + 开源 + 人人可下</b>。<mark>这个壳当差异,已经没有护城河了。</mark></div>
+    <h3>但它有个致命门槛(= 我们的机会)</h3>
     <ul>
-      <li><b>coding 弱</b>:flowith 评测明说 technical/coding 能力有限;它 3 家官方示例公司(Video Commerce / SEO Growth / Lead Gen)全是<b>营销获客生意,不是软件产品</b>。</li>
-      <li><b>验证成本</b>:评论区有人直接质疑「AI 说建好了,谁来验、验得起吗」—— 它只有轻量「proof」。</li>
-      <li><b>桌面 app 绑定</b>:Matrix 本体 macOS 起家,「要开盖才能工作」。<span class="small">(精确:flowith 母平台有 iOS app 能监看,但 Matrix 0 人公司能否手机全程验收未确认;见下 GTM 那节。)</span></li>
-      <li><b>⚠️ 诚实</b>:「数万家 0 人公司真赚钱」目前<b>只有官方口径、无第三方实证</b>,仍 beta、~18 人。</li>
+      <li><b>要你会自托管</b>:自己跑 Node server / Docker / VPS,还得<b>自带 agent</b> —— 一个完全非技术的老板<b>根本装不起来</b>。</li>
+      <li><b>它是 generic 框架</b>:给你「搭任意 AI 公司」的能力,但<b>建什么、质量好不好、有没有人买,都是你的事</b>。</li>
     </ul>
-    <div class="cmt"><label for="c_matrix">Matrix 这家,你觉得我们最该跟它划清哪条界线?</label>
-      <textarea id="c_matrix" placeholder="比如:我更想强调 ___ / 我担心 ___ / 你漏了 ___"></textarea><div class="saved" id="s_c_matrix"></div></div>
+    <div class="anchor"><b>由此收窄的真差异(写死)</b>:Paperclip / Matrix 给你一个 <b>generic 框架自己拼</b>;Flywheel <b>concrete</b> —— 一支已经组装好、<b>替你建你那个具体产品</b>的团队。通用那层已被免费开源商品化,价值在「具体 + 替你做完 + 一试真能跑」。</div>
+    <div class="cmt"><label for="c_paperclip">Paperclip 这个发现你怎么看?「我们做 concrete、不做 generic 框架」这条,你认吗?</label>
+      <textarea id="c_paperclip" placeholder="比如:认 / 我担心 ___ / 那 Matrix 呢…"></textarea><div class="saved" id="s_c_paperclip"></div></div>
   </section>
 
-  <!-- 候选 list -->
-  <section class="card">
-    <div class="kicker">候选名单 · 待你补充</div>
-    <h2>竞品候选 list</h2>
-    <p class="small">按「怎么服务非技术用户」分三档。🌟 = 最贴我们的重点对标。你可以圈掉不想看的、补上想看的。</p>
-    <h3>档一 · no/low-code AI builder（非技术自己 prompt 出 app,最贴目标客户）</h3>
-    <p>Lovable · Base44(Wix)· Replit Agent · Bolt.new · v0(Vercel)</p>
-    <h3>档二 · 自主编码 agent / AI 开发（只看形态与定位打法）</h3>
-    <p>Devin(Cognition)· Factory(Droids)· OpenAI Codex · GitHub Copilot · Claude Code</p>
-    <h3>档三 · teammate / AI 组织形态（照出「像谁 / 不像谁」）</h3>
-    <p><span class="tag r">🌟 Matrix / flowith</span> · Lindy(AI 员工/运营)· Artisan(自主 BDR)</p>
-    <h3>你补充的两个（已认出真身）</h3>
+  <!-- 可信度轴重构 -->
+  <section class="card us">
+    <div class="kicker">你上轮 flag 的硬问题 · 这轮正面答</div>
+    <h2>一个完全非技术的老板,不读代码,凭什么信我们?</h2>
+    <p class="small">别人的「信任」机制(Paperclip 的记录面板、Matrix 的「return proof」、Hermes 的记忆图)—— 对纯非技术都是「一堆看不太懂的日志」。行业数据:只有 <b>6%</b> 的公司完全信任 AI agent 自主干活。所以「信任」得换成<b>他能亲身感知的东西</b>:</p>
+    <div class="anchor"><b>⚓ 锚点 · 结果证明</b>:东西<b>你一试真能跑,而且下周还能跑</b>(不崩、持续维护不烂)。这是非技术老板<b>唯一能自己验证</b>的信任 —— 而且恰恰是 <b>Matrix(coding 弱、跑营销生意)和 Paperclip(generic、质量看你自带的 agent)做不到的</b>。信任往这上面压。</div>
+    <h3>另外三件他能感知的事</h3>
     <ul>
-      <li><b>hermas agent → Hermes Agent</b>（Nous Research）:开源、自托管在你自己服务器的常驻 daemon,跨会话记忆 + 自己写 skill + 接 16+ 消息平台。面向<b>技术自托管者</b>。</li>
-      <li><b>open people → OpenHands</b>（原 OpenDevin）<span class="tag a">待你确认</span>:开源版 Devin,给个 GitHub issue → 自主出 PR。面向<b>开发者</b>。<br><span class="small">「people」↔「hands」音近;如果你指的是别的(OpenClaw / 某中文圈产品 / 真叫 OpenPeople 的),说一声我重认。</span></li>
+      <li><b>能对话的 named Lead</b>:你在 Discord 里能直接问它「为什么这么做」「改一下」,像信一个员工 / 承包商,不是信一个黑箱。</li>
+      <li><b>批决定,不批 diff</b>:Lead 用大白话说「我打算做 X,行吗?」,你批的是<b>你听得懂的一个决定</b>,不是一屏代码。</li>
+      <li><b>能感知的护栏</b>:不 surprise 账单(跑订阅、花费可预测)+ 随时能喊停。</li>
     </ul>
-    <div class="cmt"><label for="c_list">还有哪些「感觉像我们」的要补进来?第一批深挖你想先看哪几家?</label>
-      <textarea id="c_list" placeholder="补充竞品 / 第一批深挖名单(我建议 Matrix+Lovable+Base44+Devin+Factory,或先只挖 Matrix)"></textarea><div class="saved" id="s_c_list"></div></div>
+    <p class="small"><b>那 PR / CI / code review / QA 呢?</b> → 沉在<b>引擎盖下</b>当质量保证,是上面「一试真能跑、下周还能跑」的<b>底气</b>,不是拿去跟你(非技术)讲的卖点。别人给你看证据;我们给你一个<b>真能用、且有人替你养着</b>的东西。</p>
+    <div class="cmt"><label for="c_trust">这条「信任 = 一试真能跑 + 能对话的 Lead + 白话审批 + 护栏」,对得上你心里的感觉吗?</label>
+      <textarea id="c_trust" placeholder="比如:对 / 我其实最看重 ___ / 「结果证明」当主打我 ___"></textarea><div class="saved" id="s_c_trust"></div></div>
+  </section>
+
+  <!-- 横切表:谁能被非技术用 -->
+  <section class="card">
+    <div class="kicker">全景 · 新分水岭</div>
+    <h2>一个完全非技术的人,能自己用哪家?</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>能自己用吗</th><th>玩家</th><th>为什么</th></tr></thead>
+        <tbody>
+          <tr><td>✅ 能上手(有天花板)</td><td>Lovable · Base44</td><td>聊天出 app;撞 technical cliff 要雇人 / 数据锁平台搬不走</td></tr>
+          <tr><td>⚠️ 勉强 / 要进开发环境</td><td>Replit · Bolt · Matrix</td><td>Replit/Bolt 还是 IDE 味;Matrix 要下桌面 app + 跑营销生意不是软件</td></tr>
+          <tr><td>❌ 面向工程师</td><td>Devin · Factory · v0</td><td>要把活讲成工程语言 / 要懂 repo / 要点前端基础</td></tr>
+          <tr><td>❌ 面向自托管者</td><td><b>Paperclip</b> · Hermes · OpenHands</td><td>要会 Docker/VPS、要自带 agent、要连 key</td></tr>
+          <tr class="us"><td class="us">✅✅ 完全非技术</td><td class="us"><b>🎯 Flywheel</b></td><td class="us">不装 server、不搭 org chart、不自带 agent、不进 IDE —— 在已有的 IM(Discord)里说话</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small">没有一家是「完全非技术 + 在已有 IM 里说话 + 替你建真软件」。<mark>这就是空当。</mark></p>
+    <div class="cmt"><label for="c_matrix">这张「谁能被非技术用」的分档,有没有哪家你觉得放错了 / 想多看一家?</label>
+      <textarea id="c_matrix" placeholder="比如:___ 我觉得其实非技术能用 / 想补 ___"></textarea><div class="saved" id="s_c_matrix"></div></div>
   </section>
 
   <!-- GTM -->
   <section class="card">
     <div class="kicker">你要学的 · 他们推广为什么成功</div>
-    <h2>Go-to-Market 情报</h2>
+    <h2>Go-to-Market 情报(Building-in-Public)</h2>
+    <p class="small">你上轮点的方向:他们推广做得很成功,要学。核心一条 = <b>Building-in-Public</b>。</p>
     <div class="scroll">
       <table>
-        <thead><tr><th>维度</th><th>Matrix</th><th>Lovable</th><th>Base44</th><th>Devin</th></tr></thead>
+        <thead><tr><th>维度</th><th>Paperclip 🆕</th><th>Matrix</th><th>Lovable</th><th>Base44</th></tr></thead>
         <tbody>
-          <tr><td><b>定价模型</b></td><td>公测免费+邀请码送额度;credit 制</td><td>Free/$25/$50,credit+隐藏用量</td><td>Free/~$16,双 credit</td><td>Free/$20/$500,按 ACU 算力</td></tr>
-          <tr><td><b>主推渠道</b></td><td>邀请码稀缺+推荐环;X demo agent 干活;<b>小红书</b></td><td>build-in-public(X+LinkedIn 全员);249 KOL;12+ 渠道飞轮</td><td>build-in-public(创始人 LinkedIn 连载);产品自传播</td><td>企业销售;降价 $500→$20 新闻循环</td></tr>
-          <tr><td><b>怎么获客</b></td><td>invite-only+每人2邀请→病毒环</td><td>PLG,<b>几乎零付费广告</b>($100M ARR)</td><td>PLG+病毒环;3周 $1M ARR</td><td>waitlist+自上而下</td></tr>
-          <tr><td><b>手机能验收?</b></td><td><b>⚠️ Matrix 本体桌面起家</b>;flowith 有 iOS app 但只是监看</td><td>⚠️ web 勉强</td><td>⚠️ web 勉强</td><td>✅ Slack 手机可达</td></tr>
+          <tr><td><b>定价</b></td><td><b>开源免费</b>(自付基建)</td><td>公测免费+邀请码</td><td>Free/$25/$50</td><td>Free/~$16</td></tr>
+          <tr><td><b>怎么火的</b></td><td><b>开源 build-in-public</b>;化名创始人+HN/X 口碑;43K star 零广告</td><td>邀请码稀缺+推荐环;X demo agent 干活;<b>小红书</b></td><td>build-in-public(X+LinkedIn 全员);249 KOL</td><td>创始人 LinkedIn 第一人称连载;产品自传播</td></tr>
+          <tr><td><b>手机能验收?</b></td><td>❌ 自跑的面板</td><td>⚠️ 桌面起家;flowith 有 iOS 但只监看</td><td>⚠️ web 勉强</td><td>⚠️ web 勉强</td></tr>
         </tbody>
       </table>
     </div>
-    <h3>你能直接学的 6 条 playbook</h3>
+    <h3>你能直接抄的 4 条</h3>
     <ul>
-      <li><b>build-in-public</b>:创始人/团队第一人称连载做产品的过程(中文圈用<b>小红书</b>)。</li>
+      <li><b>Building-in-Public</b>:创始人/团队第一人称连载做产品的过程(中文圈用<b>小红书</b> —— 你就是在那刷到 Matrix 的)。</li>
       <li><b>产品自传播 onboarding</b>:让人几分钟看到「真东西被建出来」→ 自发去晒(Base44「招募布道者而非转化用户」)。</li>
-      <li><b>最好的 demo = 产品当众干活</b>(Matrix 演示 agent 写爆款 X;我们可演示 AI 团队当众建/修一个真功能)。</li>
-      <li><b>邀请码稀缺 + 推荐环 + 免费额度</b>(Matrix 低成本获客三件套)。</li>
-      <li><b>几乎零付费广告</b>:头部都靠 PLG+内容+社区($100M–$400M ARR 都这么起)。</li>
-      <li><b>计费单位是定位信号</b>:全行业 credit 烧 = bill shock 痛点;「可预测/按验收」更贴非技术心智。</li>
+      <li><b>最好的 demo = 产品当众干活</b>:我们可以演示「AI 团队当着人面把一个真功能建出来 / 修好」。</li>
+      <li><b>零付费广告</b>:Paperclip 43K star、Lovable $100M ARR,都靠内容+社区,不烧广告。</li>
     </ul>
-    <div class="cmt"><label for="c_gtm">GTM 里哪条你最想我们抄?中文圈(小红书)这条要不要重点做?</label>
+    <div class="cmt"><label for="c_gtm">GTM 里哪条你最想先抄?小红书(中文圈)这条要不要重点做?</label>
       <textarea id="c_gtm" placeholder="比如:先抄 ___ / 小红书这条 ___"></textarea><div class="saved" id="s_c_gtm"></div></div>
-  </section>
-
-  <!-- 差异化 -->
-  <section class="card us">
-    <div class="kicker">我们的位置</div>
-    <h2>差异化三轴（Matrix 之后收窄）</h2>
-    <p class="small">组织形态已跟 Matrix 撞,真差异只剩这三条,每条都标了 vs Matrix 成不成立。</p>
-    <h3>① 领域轴 · 我们建「真软件产品」<span class="tag u">强</span></h3>
-    <p>vs Matrix:它的 agent 团队去开<b>营销/获客生意</b>(video/SEO/lead-gen),coding 是短板;我们的团队<b>建并长期养一个真 codebase</b>(走 PR/CI/review,dogfooding:Flywheel 建 Flywheel)。</p>
-    <h3>② 界面轴 · 聊天(Discord)为主界面 <span class="tag u">强</span></h3>
-    <p>vs Matrix:它是 <b>macOS 桌面 app + 游戏小人可视化</b>;它母平台 flowith 虽有 iOS app,但那是<b>外挂的「监看产出」companion</b>。我们的<b>主界面本就是手机原生 chat(Discord)</b> —— 在你<b>已经在用的 IM</b> 里全程给方向 + 验收 + 跟 Lead 对话,不是去新 app 看进度。<span class="small">(你问的「只带手机怎么验收」= 这就是我们的具体优势。)</span></p>
-    <h3>③ 可信度轴 · 工程级「可信交付」<span class="tag u">强,对 Matrix 最锋利</span></h3>
-    <p>vs Matrix:它的软肋是验证(verification cost);我们把<b>真 PR / CI / code review / QA / founder 验收 gate</b> 做成硬「可信」卖点 —— 正打它痛处。</p>
-    <div class="warn"><b>诚实红线</b>:「无按 token 计费」不是护城河 —— Matrix 也订阅驱动;「手机可达」本身也不独有(Devin 靠 Slack)。<b>真正独有 = 「非技术 + 手机 IM + 一整个团队 + 工程级验收」的组合。</b></div>
-    <div class="cmt"><label for="c_diff">这三轴你认可吗?主打哪一条当主线?</label>
-      <textarea id="c_diff" placeholder="比如:主打 ___ 轴 / ___ 轴我觉得不够硬"></textarea><div class="saved" id="s_c_diff"></div></div>
   </section>
 
   <!-- 定位候选 -->
   <section class="card us">
     <div class="kicker">给你挑 / 改</div>
-    <h2>一句话定位候选（按 Matrix 收窄,必带 软件/聊天/可信 至少一条）</h2>
-    <p><b>A（领域+可信)</b>:替非技术创始人把软件建出来、并像真团队一样养着的 AI 开发团队 —— 有 PR、有 review、有验收,不是黑箱。</p>
-    <p><b>B（对比 Matrix 显式切分)</b>:Matrix 让 agent 去开个自动赚钱的生意;我们让 AI 团队替你把一个真软件产品建出来、长期维护。</p>
-    <p><b>C（界面+只管两头)</b>:你在聊天里给方向、验收结果,一支 AI 团队替你把软件建出来 —— 不用下 app、不进 IDE、不盯小人。</p>
-    <div class="cmt"><label for="c_pos">哪条最接近你心里的定位?怎么改更对?</label>
-      <textarea id="c_pos" placeholder="选 A/B/C 或自己写一句…"></textarea><div class="saved" id="s_c_pos"></div></div>
+    <h2>一句话定位候选(按 Matrix + Paperclip 收窄)</h2>
+    <p class="small">这轮必带 concrete / done-for-you / 一试真能跑 至少一条,否则跟 Matrix、Paperclip 撞脸。</p>
+    <p><b>A(concrete + 信得过)</b>:替非技术创始人把<b>你那个具体产品</b>建出来、并像真团队一样养着的 AI 开发团队 —— <b>一试真能跑、下周还能跑</b>,不是一次性 demo。</p>
+    <p><b>B(对比品类显式切分)</b>:别人给你一个搭 AI 公司的框架、让 agent 去开个自动赚钱的生意;我们<b>替你把你那个真软件产品建出来、长期维护</b> —— 你只管方向和验收。</p>
+    <p><b>C(done-for-you + 只管两头)</b>:你在<b>聊天里</b>给方向、验收结果,一支 AI 团队替你把软件建出来 —— 不用装 server、不搭 org chart、不自带 agent、不进 IDE。</p>
+    <div class="sugg"><b>💡 一条可选的对外反差(定位建议 · 待你拍,不是这轮能定的)</b>:品类都在喊「Zero-Human Company / 自动赚钱」;我们诚实反着讲 —— <b>「不是零人公司。是你做判断,AI 做工程。」</b> 正好压在品类承认自动化不了的地方(判断/关系/信任)。要不要当对外主 messaging,你和 FLY-911 那条线拍。</div>
+    <div class="cmt"><label for="c_pos">哪条最接近你心里的定位?那条「不是零人公司、是你做判断」的反差,用不用?</label>
+      <textarea id="c_pos" placeholder="选 A/B/C 或自己写一句;反差那条 用/不用…"></textarea><div class="saved" id="s_c_pos"></div></div>
   </section>
 
   <!-- 开放问题 -->
   <section class="card">
-    <div class="kicker">等你定</div>
-    <h2>开放问题</h2>
+    <div class="kicker">等你定 · 喂 FLY-911</div>
+    <h2>还剩的问题</h2>
     <ol>
-      <li>目标客户收窄:「有点技术直觉的创始人」(能看懂 PR/验收)还是「完全非技术」(那验收界面要重新想)?</li>
-      <li>第一批深挖名单:Matrix + Lovable + Base44 + Devin + Factory,还是先只挖 Matrix?</li>
-      <li>要不要我对 Matrix 跑一次 ChatGPT Deep Research(带引用的深度复核)?</li>
+      <li>✅ <b>已定(你上轮拍的)</b>:目标客户 = 完全非技术小企业主。本轮已按此全部重写。</li>
+      <li><b>主线</b>:三条真差异(concrete / done-for-you / 一试真能跑)里,主打哪条当一句话定位的主线?<span class="small">(我建议:「一试真能跑、下周还能跑」当锚,concrete 当切分。)</span></li>
+      <li><b>反差 messaging</b>:「不是零人公司、是你做判断 AI 做工程」这条,当不当对外主线?</li>
     </ol>
-    <div class="cmt"><label for="c_open">这三个问题的答复:</label>
-      <textarea id="c_open" placeholder="1. … 2. … 3. …"></textarea><div class="saved" id="s_c_open"></div></div>
+    <div class="cmt"><label for="c_open">这几个的答复:</label>
+      <textarea id="c_open" placeholder="2. 主线选 ___ 3. 反差 用/不用 …"></textarea><div class="saved" id="s_c_open"></div></div>
   </section>
 
-  <footer>Flywheel · FLY-909 竞品扫描 · 草稿,任何东西都不会在你批准前 ship</footer>
+  <footer>Flywheel · FLY-909 竞品扫描 round 2 · 草稿,任何东西都不会在你批准前 ship</footer>
 </div>
 
 <div class="modal" id="modal" onclick="if(event.target===this)closeExport()">
@@ -246,9 +247,10 @@
 </div>
 
 <script>
-  var KEY="fly909_cmt_v1";
-  var FIELDS={c_tldr:"三句话定位",c_matrix:"重点对标 Matrix",c_list:"候选 list / 第一批",
-    c_gtm:"GTM 情报",c_diff:"差异化三轴",c_pos:"一句话定位",c_open:"开放问题(3 问)"};
+  var KEY="fly909_cmt_v2";
+  var FIELDS={c_tldr:"三句话(round2)",c_paperclip:"Paperclip / concrete-vs-generic",
+    c_trust:"可信度重构(非技术怎么信)",c_matrix:"谁能被非技术用",
+    c_gtm:"GTM / Building-in-Public",c_pos:"一句话定位 + 反差",c_open:"还剩的问题"};
   function load(){try{return JSON.parse(localStorage.getItem(KEY)||"{}")}catch(e){return{}}}
   function save(d){try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}}
   var data=load();
@@ -261,7 +263,7 @@
     });
   });
   function compile(){
-    var out="【Annie 对 FLY-909 竞品扫描的批注】\n";var any=false;
+    var out="【Annie 对 FLY-909 竞品扫描 round-2 的批注】\n";var any=false;
     Object.keys(FIELDS).forEach(function(id){
       var v=(data[id]||"").trim();if(v){any=true;out+="\n■ "+FIELDS[id]+"\n"+v+"\n"}
     });

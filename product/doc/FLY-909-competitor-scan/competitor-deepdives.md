@@ -100,3 +100,27 @@ Issue: FLY-909
 - Devin 2.0:cognition.ai/blog(「manage Devins」「schedule Devins」)、venturebeat.com、analyticsvidhya.com、medium(Takafumi Endo);软肋见 idlen/评测
 - OpenHands:openhands.dev/pricing、docs.openhands.dev、openhands.dev/blog、theaiagentindex.com;at-cost 零加价
 - Factory / Replit / Hermes:见 research.md / candidate-list.md 来源
+
+---
+
+## round-2 补充(2026-07-07):完全非技术视角 + Paperclip
+
+> Annie round-2:目标客户 = 完全非技术;加 Paperclip;所有轴按非技术重构。Paperclip 独立见 **paperclip-deepdive.md**;这里只补它进逐家矩阵 + 一条非技术视角的横切收敛。
+
+### 6. Paperclip(@dotta)—— 开源免费的「AI 公司」控制平面(详见 paperclip-deepdive.md)
+- **定位**:「把你的 agent 组织成一个公司」的控制平面(不是 agent 框架);「你是 CEO,agent 是员工」。
+- **目标用户**:会自托管的开发者 / prosumer(**非完全非技术**)。
+- **产品形态**:自跑 Node server + React 面板;org chart + ticket + 预算 + 全程 tracing;**BYO agent**;MIT 开源免费自托管。
+- **软肋**:自托管门槛(非技术装不起来)+ BYO agent 把质量甩给你 + generic 框架把 PMF 甩给你 + 无托管云。
+- **vs Flywheel**:同形态(你指挥的分层 AI 公司)、连起源痛点都同源(管一堆 Claude Code 窗口);但它 **generic + 自托管 + BYO agent**,我们 **concrete + 替你托管 + Runner 已接好 + 面向完全非技术**。它免费开源 = 「AI 公司」壳没护城河的铁证。
+
+### 横切:按「完全非技术能不能自己用」重排(round-2 新分水岭)
+| 完全非技术能自己用吗 | 玩家 | 为什么 |
+|---|---|---|
+| ✅ 能上手(但有天花板) | Lovable / Base44 | 聊天出 app;天花板 = technical cliff（撞墙雇人）/ lock-in（数据搬不走） |
+| ⚠️ 勉强 / 要进开发环境 | Replit / Bolt / Matrix | Replit/Bolt 还是 IDE 味;Matrix 要下桌面 app + 跑的是营销生意不是软件 |
+| ❌ 面向工程师 | Devin / Factory / v0 | 要把活讲成工程语言 / 要懂 repo / 要点前端基础 |
+| ❌ 面向自托管者 | **Paperclip** / Hermes / OpenHands | 要会 Docker/VPS/自托管、要自带 agent、要连 key |
+| ✅✅ 完全非技术、在已有 IM 说话 | **🎯 Flywheel** | 不装 server、不搭 org chart、不自带 agent、不进 IDE —— Discord 里跟 Lead 说话 |
+
+**收敛**:round-1 说「我们是团队、别人是单 agent」这条早已死(Devin 管 Devin / Matrix Departments / Factory 一群 Droid / **Paperclip 免费开源**)。round-2 的真差异 = **concrete（你那个具体产品)+ done-for-you（非技术不自托管)+ 可感知信任（一试真能跑、有人养着)**。喂 competitor-scan.md ②③⑤。

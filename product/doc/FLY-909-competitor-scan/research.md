@@ -136,3 +136,34 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 - Copilot/Codex/Claude Code:datacamp.com、cosmicjs.com、lushbinary.com 2026 对比
 - Vibe coding 市场:taskade.com「State of Vibe Coding 2026」、keyholesoftware.com、hostinger.com 统计
 - AI employees:lindy.ai、vellum.ai、getbob.ai、teamday.ai 2026 评测
+
+---
+
+## 5. round-2 补充(2026-07-07):完全非技术视角 + 新竞品 + 可信度轴重构
+
+> Annie round-2 决定:目标客户锁死「完全非技术小企业主」(会读 PR 的 persona 出局);加 Paperclip;所有轴按非技术视角重写,尤其可信度轴。以下是新增/更新的事实。
+
+### 5.1 新竞品:Paperclip(@dotta,开源 AI 公司控制平面)
+- 见独立文件 **paperclip-deepdive.md**。要点:2026-03-02 发布、MIT 开源免费、自托管 Node.js+React、org chart+ticket+全程 tracing、**BYO agent**、3 周 30K→4 月 43K+ star。作者因「同时管 20–30 个 Claude Code 窗口」痛点而建(与 Flywheel 同源)。**定位 = generic 横向控制平面**,面向会自托管的开发者/prosumer,**非完全非技术**。
+- 意义:它 + Matrix 坐实「把 agent 组织成公司」= 已商品化(还免费开源)。→ 「AI 公司」壳当差异彻底死;真差异 = concrete(替你建你那个具体产品)vs generic(给你框架自己拼)。
+
+### 5.2 Hermes / OpenHands 按非技术视角重构(round-1 已有,这轮更新)
+- **OpenHands**(All Hands AI):2026 出了 **Cloud**(app.all-hands.dev,连 GitHub/GitLab/Bitbucket)+ 本地 GUI + CLI + SDK。但官方与评测一致:**「primarily designed for developers rather than non-technical users — requires understanding of code repositories and technical workflows」**。→ 对完全非技术仍是非起点。
+- **Hermes Agent**(Nous):2026-06 出**桌面 app**(mac/linux/win 一键装、简中 UI)+ 2026-07 **v0.18.0**(Mixture-of-Agents、self-verifying goals、/learn、/journey 学习时间线、memory-graph「看着 agent 长本事」)。→ 门槛降了,但根子仍是**自托管单 agent**(不是替你托管的一整个团队);memory-graph/self-verifying 是它的信任可视化 affordance。
+
+### 5.3 可信度轴重构素材(非技术怎么感知信任)
+- **只有 6% 的公司完全信任 AI agent 自主跑核心业务**(verification infrastructure 还没到位)。
+- 非技术信任来源:①可追溯 audit trail ②有名有姓的 business owner + technical owner、明确意图/风险边界 ③高影响动作要审批/多步验证 ④rate limit + guardrails + emergency stop。SMB 的治理不必重,轻但一致即可。
+- 竞品信任机制都是「给你看证据面板」:Paperclip ticket+tracing、Matrix return proof、Hermes memory-graph/self-verifying —— 对纯非技术仍是「看不太懂的记录」。
+- → Flywheel 面向非技术的可信度锚点 = **结果证明(一试真能跑 + 持续维护不烂)**,这是非技术老板唯一能自己验证的、且 Matrix(coding 弱)/Paperclip(generic BYO)做不到的地带;工程纪律(PR/CI/QA)沉到引擎盖下当底气。详见 competitor-scan.md ③。
+
+### 5.4 品类框架:「Zero-Human Company」(2026 命名品类)
+- 一波仓库数周内密集发布,前提:AI agent 不是辅助公司,而是**就是**公司(「zero-human」不是「AI-assisted」)。Paperclip 单月 43,900 star,GitHub 史上最快之一;还有 Pulsia、Felix Craft 等。
+- **品类自我批评(= 我们的定位礼物)**:这是真的架构趋势(多 agent 编排在发生)裹着 hype 品牌(「zero-human」过度承诺)。**瓶颈已不是执行,是需求 / PMF**——「AI 能 spin up 上千家公司,但谁在买?」;需要判断、创造、关系、信任、在模糊中拿捏的复杂活动**当前 AI 自动化不了**。→ 喂 competitor-scan.md TL;DR #2 的「不是零人公司、是你做判断 AI 做工程」(定位建议,待 Annie/FLY-911 拍)。
+
+### 5.5 round-2 补充来源(2026-07 WebSearch)
+- Paperclip:paperclip.ing、github.com/paperclipai/paperclip、contabo.com/blog、towardsai.net、mindstudio.ai、theaienterprise.io、Greg Isenberg X 帖、dev.to Deep Dive
+- Zero-Human Company 品类:ossinsight.io(zero-human-company-2026)、fortune.com(2026-03-05)、technologyreview.com(agent-orchestration)、flowtivity.ai、tldl.io
+- OpenHands 2026:openhands.dev、docs(Cloud)、aiagentslist、vellum.ai(best coding agents)
+- Hermes 2026:github.com/NousResearch/hermes-agent releases、theplanettools.ai(Hermes Desktop)、releasebot.io(v0.18.0)、hermes-agent.org
+- 非技术信任:curationai.ai(verification infrastructure)、vouched.id、dock.io、devoteam.com、cyberadvisors.com
