@@ -1,0 +1,61 @@
+/**
+ * GeminiLiveTransport — the injectable seam between GeminiLiveBackend and the
+ * actual @google/genai Live websocket. The adapter is written against THIS
+ * interface so it is fully unit-testable with a mock (CI needs no SDK / no
+ * GEMINI_API_KEY); the real SDK is wired only in genaiConnector.ts (lazy).
+ *
+ * Event names mirror the Live server messages the adapter maps onto voice-core's
+ * unified vocabulary (plan.md r2 §4 step 6). Note: there is NO client-side
+ * server-cancel — `interrupted` is a SERVER output signal (barge-in), and
+ * `tool-call-cancellation` is the server revoking a tool call. Manual client
+ * interrupt is a LOCAL suppression handled entirely in the session.
+ */
+import type { AudioFormat } from "../../types.js";
+
+export type LiveServerEvent =
+	| {
+			type: "transcript";
+			role: "user" | "assistant";
+			text: string;
+			final: boolean;
+	  }
+	| { type: "audio"; chunk: Buffer; format: AudioFormat }
+	| { type: "turn-complete" }
+	| { type: "tool-call"; callId: string; name: string; args: unknown }
+	/** server revoked already-issued tool calls → abort in-flight ask_lead. */
+	| { type: "tool-call-cancellation"; callIds: string[] }
+	/** serverContent.interrupted — user barge-in; server stopped generation. */
+	| { type: "interrupted" }
+	/** sessionResumptionUpdate.newHandle — rolls forward; adapter stores it. */
+	| { type: "resumption-update"; handle: string }
+	/** goAway.timeLeft (seconds) — connection about to drop. */
+	| { type: "go-away"; timeLeftSec: number }
+	| { type: "error"; message: string };
+
+export interface LiveConnection {
+	sendAudio(frame: Buffer, format: AudioFormat): void;
+	/** function-response back to the model, with optional scheduling. */
+	sendToolResponse(
+		callId: string,
+		output: string,
+		scheduling?: "silent" | "when_idle" | "interrupt",
+	): void;
+	onEvent(cb: (e: LiveServerEvent) => void): void;
+	close(): Promise<void>;
+}
+
+export interface LiveConnectParams {
+	model: string;
+	voice?: string;
+	systemHint?: string;
+	/** sessionResumption.handle for reconnect (resume). */
+	resumeHandle?: string;
+	/** declared tools (the brain is surfaced as ask_lead). */
+	toolNames: string[];
+	/** true iff the pinned model supports non-blocking function calls. */
+	asyncFunctionCalling: boolean;
+}
+
+export interface GeminiLiveTransport {
+	connect(params: LiveConnectParams): Promise<LiveConnection>;
+}

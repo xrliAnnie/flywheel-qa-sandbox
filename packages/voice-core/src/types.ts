@@ -1,0 +1,178 @@
+/**
+ * FLY-543 voice-core public contract (plan.md r2 §3).
+ *
+ * Round-1 abstracts voice as TWO independent capability faces:
+ *   - announce (speech-out only)  — a Lead "speaks" (read a report / standup).
+ *   - converse (speech-in + out)  — a full voice conversation with a Lead.
+ * A backend implements one or both. Edge TTS = announce only; Gemini Live =
+ * converse only (its ASR is built in, so round-1 needs no standalone STT).
+ *
+ * The brain (reasoning + memory) lives in-repo, orthogonal to the backend; only
+ * the converse face needs it (surfaced to the model as an ask_lead tool).
+ * Standalone STT, local models (whisper/CosyVoice/Qwen) and the high-risk
+ * ConfirmedTranscriptGate are deferred (the gate rides with action-routing).
+ */
+
+export type AudioFormat = {
+	encoding: "pcm16" | "wav" | "mp3";
+	sampleRateHz: number;
+	channels: 1 | 2;
+};
+
+export type Turn = { role: "user" | "assistant"; text: string; ts: string };
+
+export type ResumeHandle = { backendId: string; payload: unknown };
+
+export type ToolResult = { callId: string; output: string };
+
+/** Gemini's async function-response scheduling positions. */
+export type ScheduleHint = "silent" | "when_idle" | "interrupt";
+
+/** Every failure path surfaces as a VoiceError with a machine code. */
+export type VoiceErrorCode =
+	| "unsupported" // backend does not support a requested capability (e.g. resume)
+	| "component-missing" // component path missing / not executable (fail-fast)
+	| "subprocess-failed" // subprocess exited non-zero
+	| "timeout" // subprocess exceeded its deadline
+	| "cancelled" // aborted via AbortSignal
+	| "backend-protocol"; // backend protocol error (ws disconnect, bad frame, ...)
+
+export class VoiceError extends Error {
+	constructor(
+		public readonly code: VoiceErrorCode,
+		message: string,
+		public readonly cause?: unknown,
+	) {
+		super(message);
+		this.name = "VoiceError";
+	}
+}
+
+export interface VoiceBackendCapabilities {
+	/** provides createAnnouncer (speech-out only). */
+	announce: boolean;
+	/** provides createConversation (speech-in + out). */
+	converse: boolean;
+	bargeIn: boolean;
+	toolCallScheduling: "none" | "basic" | "scheduled";
+	transcriptGranularity: "final-only" | "partial";
+	supportsResume: boolean;
+	sessionLimits?: { connectionSec?: number; audioSec?: number };
+	voiceCloning: boolean;
+	audioOut: AudioFormat[];
+	/** may be omitted when converse=false. */
+	audioIn?: AudioFormat[];
+}
+
+export interface AnnouncerOptions {
+	/** voice id inside the backend's namespace (edge-tts: zh-CN-XiaoxiaoNeural). */
+	voice?: string;
+	transcriptSink?: TranscriptSink;
+}
+
+export interface ConversationOptions {
+	brain: BrainAdapter;
+	voice?: string;
+	/** spoken-register hint (short sentences / colloquial / no-markdown). */
+	systemHint?: string;
+	transcriptSink?: TranscriptSink;
+	/**
+	 * resume is injected at creation time (Gemini configures sessionResumption at
+	 * connect). supportsResume=false + a handle → VoiceError("unsupported").
+	 */
+	resumeHandle?: ResumeHandle;
+}
+
+export interface VoiceBackend {
+	readonly id:
+		| "edge-tts"
+		| "gemini-live"
+		| "openai-realtime"
+		| "cosyvoice"
+		| (string & {});
+	/** For Gemini: derived from the config-pinned model, never hardcoded. */
+	readonly capabilities: VoiceBackendCapabilities;
+	/** required when capabilities.announce is true (registry enforces). */
+	createAnnouncer?(opts: AnnouncerOptions): Promise<AnnouncerSession>;
+	/** required when capabilities.converse is true (registry enforces). */
+	createConversation?(opts: ConversationOptions): Promise<ConversationSession>;
+}
+
+export interface SpeakResult {
+	ttsFirstByteMs: number;
+	/**
+	 * End-to-end elapsed ms from when this utterance started being processed
+	 * (synth begins) until sound actually starts playing — when the founder
+	 * actually hears sound (the honest first-response anchor). MUST include the
+	 * TTS synth wait, not just local player spawn overhead (FLY-543).
+	 */
+	playbackStartMs: number;
+	durationMs: number;
+}
+
+export interface AnnouncerSession {
+	readonly sessionId: string;
+	/** serial queue: each speak() plays in order; abort/interrupt clears the rest. */
+	speak(text: string, opts?: { signal?: AbortSignal }): Promise<SpeakResult>;
+	interrupt(): void;
+	close(): Promise<void>;
+}
+
+export type ConversationEventMap = {
+	"speech-started": [];
+	"speech-stopped": [];
+	transcript: [{ role: "user" | "assistant"; text: string; final: boolean }];
+	"response-started": [];
+	"response-audio": [chunk: Buffer, format: AudioFormat];
+	"response-done": [];
+	/** emitted after any interrupt; no assistant transcript follows for that turn. */
+	"response-cancelled": [];
+	"tool-call": [{ callId: string; name: string; args: unknown }];
+	/** Gemini goAway.timeLeft maps here. */
+	"session-expiring": [{ inSec: number }];
+	error: [VoiceError];
+};
+
+export interface ConversationSession {
+	readonly sessionId: string;
+	sendAudio(frame: Buffer, format: AudioFormat): void;
+	interrupt(): void;
+	injectToolResult(r: ToolResult, sched?: ScheduleHint): void;
+	on<E extends keyof ConversationEventMap>(
+		e: E,
+		h: (...a: ConversationEventMap[E]) => void,
+	): () => void;
+	/** returns the latest resume handle (if the backend supports it). */
+	close(): Promise<ResumeHandle | undefined>;
+}
+
+export interface BrainAdapter {
+	respond(
+		turn: { text: string; history: Turn[] },
+		opts: { signal: AbortSignal },
+	): AsyncIterable<string>;
+}
+
+/** announce-face internal pluggable engine (edge-tts ↔ Azure fallback slot). */
+export interface TtsEngine {
+	synthesize(
+		text: string,
+		voice: string,
+		opts: { signal: AbortSignal },
+	): Promise<{ audio: Buffer; format: AudioFormat; ttsFirstByteMs: number }>;
+}
+
+export interface TranscriptSink {
+	/** failures throw explicitly — never swallowed. */
+	append(entry: TranscriptEntry): void;
+}
+
+export type TranscriptEntry = {
+	ts: string;
+	sessionId: string;
+	backendId: string;
+	face: "announce" | "converse";
+	role: "user" | "assistant";
+	text: string;
+	final: boolean;
+};
