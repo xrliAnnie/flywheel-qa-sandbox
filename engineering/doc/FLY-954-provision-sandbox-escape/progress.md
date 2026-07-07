@@ -1,13 +1,13 @@
 ---
 issue: FLY-954
 phase: implement
-phaseCursor: 2/9
-updated: 2026-07-07T16:22:27.586Z
-nextStep: "Task 3: flywheel-setup.sh --state-dir adaptation"
+phaseCursor: 3/9
+updated: 2026-07-07T16:27:58.072Z
+nextStep: "Task 4: flywheel-daemon install_wrapper hardening"
 chunks: []
 pointers: {}
 ---
 
 # FLY-954 progress
-**phase**: implement (2/9)
-**next**: Task 3: flywheel-setup.sh --state-dir adaptation
+**phase**: implement (3/9)
+**next**: Task 4: flywheel-daemon install_wrapper hardening
