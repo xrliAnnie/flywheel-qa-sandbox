@@ -46,6 +46,22 @@ describe("resolveConfig", () => {
 		expect(c.edgeTts.command).toBe("edge-tts");
 		expect(c.gemini.apiKeyEnv).toBe("GEMINI_API_KEY");
 	});
+
+	it("defaults gemini model to the live-verified gemini-3.1-flash-live-preview", () => {
+		const c = resolveConfig({}, {});
+		expect(c.gemini.model).toBe("gemini-3.1-flash-live-preview");
+	});
+
+	it("resolves micDevice: override > env > ':default'", () => {
+		expect(resolveConfig({}, {}).micDevice).toBe(":default");
+		expect(
+			resolveConfig({}, { FLYWHEEL_VOICE_MIC_DEVICE: ":2" }).micDevice,
+		).toBe(":2");
+		expect(
+			resolveConfig({ micDevice: ":1" }, { FLYWHEEL_VOICE_MIC_DEVICE: ":2" })
+				.micDevice,
+		).toBe(":1");
+	});
 });
 
 describe("fail-fast component checks", () => {

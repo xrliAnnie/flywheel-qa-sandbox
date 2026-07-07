@@ -40,6 +40,7 @@ export interface ProcessHandle {
 	readonly pid: number | undefined;
 	kill(signal?: NodeJS.Signals): void;
 	onStdout(cb: (chunk: Buffer) => void): void;
+	onStderr(cb: (chunk: Buffer) => void): void;
 	onExit(
 		cb: (code: number | null, signal: NodeJS.Signals | null) => void,
 	): void;
@@ -65,6 +66,9 @@ class NodeProcessHandle implements ProcessHandle {
 	}
 	onStdout(cb: (chunk: Buffer) => void): void {
 		this.child.stdout?.on("data", (c: Buffer) => cb(c));
+	}
+	onStderr(cb: (chunk: Buffer) => void): void {
+		this.child.stderr?.on("data", (c: Buffer) => cb(c));
 	}
 	onExit(
 		cb: (code: number | null, signal: NodeJS.Signals | null) => void,

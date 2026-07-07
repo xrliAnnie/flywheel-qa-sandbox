@@ -85,6 +85,10 @@ export {
 	type SpawnOptions,
 	TimeoutError,
 } from "./process.js";
+export {
+	TalkSessionRotator,
+	type TalkSessionRotatorOptions,
+} from "./TalkSessionRotator.js";
 // shared layer
 export { JsonlTranscriptSink, MemoryTranscriptSink } from "./transcript.js";
 // contract

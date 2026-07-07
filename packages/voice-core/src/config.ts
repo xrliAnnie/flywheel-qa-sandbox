@@ -16,6 +16,8 @@ export interface VoiceCoreConfig {
 	ffplayBin: string;
 	/** mic capture (converse). */
 	ffmpegBin: string;
+	/** mic capture device — avfoundation input spec (converse), e.g. ":default" / ":2". */
+	micDevice: string;
 	/** converse-face brain. */
 	claudeBin: string;
 	/** Lead identity.md; required only when the headless-claude brain is used. */
@@ -32,7 +34,7 @@ export interface VoiceCoreConfig {
 }
 
 const DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural";
-const DEFAULT_GEMINI_MODEL = "gemini-live-2.5-flash-preview";
+const DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-live-preview";
 const DEFAULT_TIMEOUTS = { ttsMs: 30_000, brainMs: 120_000 };
 
 export type ConfigOverrides = Partial<
@@ -81,6 +83,11 @@ export function resolveConfig(
 		afplayBin: pick(overrides.afplayBin, env.FLYWHEEL_VOICE_AFPLAY, "afplay"),
 		ffplayBin: pick(overrides.ffplayBin, env.FLYWHEEL_VOICE_FFPLAY, "ffplay"),
 		ffmpegBin: pick(overrides.ffmpegBin, env.FLYWHEEL_VOICE_FFMPEG, "ffmpeg"),
+		micDevice: pick(
+			overrides.micDevice,
+			env.FLYWHEEL_VOICE_MIC_DEVICE,
+			":default",
+		),
 		claudeBin: pick(
 			overrides.claudeBin,
 			env.FLYWHEEL_VOICE_CLAUDE_BIN,

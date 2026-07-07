@@ -37,9 +37,26 @@ import type {
 	GeminiLiveTransport,
 	LiveConnection,
 	LiveServerEvent,
+	LiveToolDeclaration,
 } from "./transport.js";
 
 const ASK_LEAD_TOOL = "ask_lead";
+
+const ASK_LEAD_DECLARATION: LiveToolDeclaration = {
+	name: ASK_LEAD_TOOL,
+	description:
+		"Ask the Lead (the project brain) a question about the project — its issues, status, decisions, or code. Always call this instead of guessing whenever the user asks about project matters.",
+	parameters: {
+		type: "OBJECT",
+		properties: {
+			question: {
+				type: "STRING",
+				description: "The user's question, in their own words.",
+			},
+		},
+		required: ["question"],
+	},
+};
 const PCM_24K: AudioFormat = {
 	encoding: "pcm16",
 	sampleRateHz: 24_000,
@@ -88,7 +105,7 @@ export class GeminiLiveBackend implements VoiceBackend {
 			voice: opts.voice,
 			systemHint: opts.systemHint,
 			resumeHandle: opts.resumeHandle?.payload as string | undefined,
-			toolNames: [ASK_LEAD_TOOL],
+			tools: [ASK_LEAD_DECLARATION],
 			asyncFunctionCalling: this.opts.profile.asyncFunctionCalling,
 		});
 		return new GeminiLiveSession(
