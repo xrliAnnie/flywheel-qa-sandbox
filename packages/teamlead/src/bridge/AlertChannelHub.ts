@@ -552,6 +552,7 @@ export class AlertChannelHub {
 				if (
 					row.session_key &&
 					(row.event_type === "runner_stuck_unhandled" ||
+						row.event_type === "runner_throttle_stalled" ||
 						row.event_type === "runner_login_expired")
 				) {
 					// FLY-871 R2/C8: a runner_login_expired resolves by the RUNNER's
