@@ -190,14 +190,15 @@ install_wrapper() {
     error "Wrapper source not found: ${src}"
   fi
 
-  mkdir -p "$FLYWHEEL_BIN"
-  # Atomic install (code-review H6): a half-copied wrapper must never be the
-  # live dispatch entrypoint for every Lead's KeepAlive restart.
-  local tmp="${dst}.tmp.$$"
-  cp "$src" "$tmp"
-  chmod +x "$tmp"
-  mv "$tmp" "$dst"
-  log "Wrapper installed: ${dst}"
+  # FLY-954: sanity + same-dir tmp + atomic mv + chmod 555 via the shared
+  # helper — a degenerate source (the 12-byte stub incident) must fail loudly,
+  # never become the live dispatch entrypoint for every Lead's KeepAlive.
+  # shellcheck source=lib/script-sanity.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/script-sanity.sh"
+  if ! install_script_atomic "$src" "$dst"; then
+    error "wrapper failed sanity/atomic install: ${src}"
+  fi
+  log "Wrapper installed: ${dst} (mode 555)"
 }
 
 # ════════════════════════════════════════════════════════════════
