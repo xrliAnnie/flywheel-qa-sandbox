@@ -55,7 +55,12 @@ record_deployed_range() {
         # the event. Best-effort: still swallow failures — this must never fail a deploy.
         FLYWHEEL_BRIDGE_URL="${FLYWHEEL_BRIDGE_URL:-${BRIDGE_URL:-http://localhost:9876}}" \
             node "$comm" report-deployed "${args[@]}" >/dev/null 2>&1 || true
-    done
+    # FLY-957: `|| true` runs the pipeline in an -e-ignored context (bash
+    # extends that suppression into the loop subshell), so a no-match grep —
+    # commit subject without an issue/PR marker — leaves the var empty and the
+    # range keeps processing instead of killing the whole deploy finalization
+    # under set -euo pipefail. Also swallows git-log failures (contract above).
+    done || true
     return 0
 }
 PLUGIN_RESTART_PENDING="${HOME}/.flywheel/plugin-restart-pending"
