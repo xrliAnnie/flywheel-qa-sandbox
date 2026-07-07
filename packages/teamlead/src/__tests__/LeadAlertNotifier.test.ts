@@ -773,3 +773,135 @@ describe("LeadAlertNotifier — FLY-368 rework: owner-attributed send chain", ()
 		rmSync(dlDir, { recursive: true, force: true });
 	});
 });
+
+describe("LeadAlertNotifier — FLY-927 Task 1.2: 🎫 ticket schema header", () => {
+	let store: StateStore;
+	let queueDir: string;
+	const saved: Record<string, string | undefined> = {};
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		queueDir = mkdtempSync(join(tmpdir(), "fly927-tickets-"));
+		for (const k of ["SIMBA_BOT_TOKEN", "CASS_BOT_TOKEN"]) {
+			saved[k] = process.env[k];
+		}
+		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.CASS_BOT_TOKEN = "cass-tok";
+	});
+	afterEach(() => {
+		rmSync(queueDir, { recursive: true, force: true });
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	});
+
+	const unified = { channelId: "OPS-CHAN", repairBotTokenEnv: "CASS_BOT_TOKEN" };
+
+	function okFetch() {
+		return vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+			json: async () => ({ id: "root-1" }),
+		});
+	}
+
+	function makeNotifier(
+		fetchFn: ReturnType<typeof okFetch>,
+		opts?: { tickets?: boolean; legacy?: boolean },
+	) {
+		return new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			...(opts?.legacy ? {} : { unifiedAlert: unified }),
+			ticketsEnabled: () => opts?.tickets ?? false,
+		});
+	}
+
+	it("SENTINEL: unified mode with tickets OFF keeps the exact two-line format", async () => {
+		const fetchFn = okFetch();
+		await makeNotifier(fetchFn, { tickets: false }).alert(
+			buildPayload({ leadId: "cos-lead", title: "T", body: "B" }),
+		);
+		const body = JSON.parse(
+			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+		);
+		expect(body.content).toBe("⚠️ **T** (cos-lead / pane_hash_stuck)\nB");
+		expect(body.allowed_mentions).toEqual({ parse: [] });
+	});
+
+	it("SENTINEL: legacy (per-lead) path NEVER renders 🎫 even with tickets on", async () => {
+		const fetchFn = okFetch();
+		await makeNotifier(fetchFn, { tickets: true, legacy: true }).alert(
+			buildPayload({ leadId: "cos-lead", title: "T", body: "B" }),
+		);
+		const body = JSON.parse(
+			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+		);
+		expect(body.content).toBe("⚠️ **T** (cos-lead / pane_hash_stuck)\nB");
+		expect(body.allowed_mentions).toBeUndefined();
+	});
+
+	it("tickets ON, no ticket context → 🎫 line with owner — and 状态 NEW", async () => {
+		const fetchFn = okFetch();
+		await makeNotifier(fetchFn, { tickets: true }).alert(
+			buildPayload({ leadId: "cos-lead", title: "T", body: "B" }),
+		);
+		const body = JSON.parse(
+			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+		);
+		const lines = (body.content as string).split("\n");
+		expect(lines[0]).toBe("⚠️ **T** (cos-lead / pane_hash_stuck)");
+		expect(lines[1]).toMatch(/^🎫 geoforge3d · 首见 \d{2}:\d{2} · owner — · 状态 NEW$/);
+		expect(lines[2]).toBe("B");
+		expect(body.allowed_mentions).toEqual({ parse: [] });
+	});
+
+	it("tickets ON + owner snowflake → <@id> in 🎫 line AND allowed_mentions.users", async () => {
+		const fetchFn = okFetch();
+		await makeNotifier(fetchFn, { tickets: true }).alert(
+			buildPayload({
+				leadId: "cos-lead",
+				title: "T",
+				body: "B",
+				ticket: {
+					ownerUserId: "123456789012345678",
+					ownerLabel: "claude bot",
+					status: "NEW",
+					firstSeenMs: new Date(2026, 6, 7, 9, 5).getTime(),
+				},
+			}),
+		);
+		const body = JSON.parse(
+			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+		);
+		expect((body.content as string).split("\n")[1]).toBe(
+			"🎫 geoforge3d · 首见 09:05 · owner <@123456789012345678> · 状态 NEW",
+		);
+		expect(body.allowed_mentions).toEqual({ users: ["123456789012345678"] });
+	});
+
+	it("malformed owner id degrades to the label + parse:[] (never a rejected mentions body)", async () => {
+		const fetchFn = okFetch();
+		await makeNotifier(fetchFn, { tickets: true }).alert(
+			buildPayload({
+				leadId: "cos-lead",
+				ticket: {
+					ownerUserId: "not-a-snowflake",
+					ownerLabel: "codex bot",
+					status: "ACK",
+					firstSeenMs: new Date(2026, 6, 7, 9, 5).getTime(),
+				},
+			}),
+		);
+		const body = JSON.parse(
+			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+		);
+		expect(body.content).toContain("owner codex bot · 状态 ACK");
+		expect(body.allowed_mentions).toEqual({ parse: [] });
+	});
+});

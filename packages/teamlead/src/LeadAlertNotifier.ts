@@ -190,6 +190,26 @@ export interface AlertMetadata {
 	};
 }
 
+/**
+ * FLY-927 (Task 1.2/2.3): per-ticket context rendered into the 🎫 header line
+ * and used for the owner @-target `allowed_mentions` — computed by the plugin
+ * wiring layer (owner map) BEFORE `alert()` so the root POST carries the
+ * mention atomically (the Hub gets the messageId only after the POST, so a
+ * retro-fit @ is impossible). Absent → the 🎫 line renders `owner —` and all
+ * mentions stay suppressed. Survives the retry queue (serialized with the
+ * payload).
+ */
+export interface AlertTicketContext {
+	/** Discord snowflake of the ONE owner bot to @; null = no owner configured. */
+	ownerUserId: string | null;
+	/** Human-readable owner label when no mention is possible (e.g. "claude bot"). */
+	ownerLabel: string;
+	/** Ticket lifecycle status (NEW/ACK/REPAIRING/RESOLVED/ESCALATED). */
+	status: string;
+	/** First-seen instant (ms epoch) — claims/episode first time. */
+	firstSeenMs: number;
+}
+
 export interface AlertPayload {
 	leadId: string;
 	projectName: string;
@@ -201,6 +221,8 @@ export interface AlertPayload {
 	sessionKey?: string;
 	/** FLY-368: optional structured metadata (ignored by Discord rendering). */
 	metadata?: AlertMetadata;
+	/** FLY-927: ticket header + owner @-target context (unified+tickets mode only). */
+	ticket?: AlertTicketContext;
 }
 
 export interface AlertResult {
@@ -270,6 +292,12 @@ export interface LeadAlertNotifierConfig {
 	queueMaxAgeMs?: number;
 	/** FLY-368: when set, ALL alerts route to one unified channel. */
 	unifiedAlert?: UnifiedAlertConfig;
+	/**
+	 * FLY-927: ticket schema header (🎫 line) enable — read at CALL time so a
+	 * live env flip applies. Default: FLYWHEEL_ALERT_TICKETS === "1". Only
+	 * effective in unified mode; the legacy per-lead path never renders it.
+	 */
+	ticketsEnabled?: () => boolean;
 }
 
 /** Queue reasons that are PERMANENT — config doesn't change at runtime, so
@@ -324,6 +352,7 @@ export class LeadAlertNotifier {
 	private queueMax: number;
 	private queueMaxAgeMs: number;
 	private unifiedAlert?: UnifiedAlertConfig;
+	private ticketsEnabled: () => boolean;
 
 	constructor(config: LeadAlertNotifierConfig) {
 		this.store = config.store;
@@ -344,6 +373,9 @@ export class LeadAlertNotifier {
 		this.queueMax = config.queueMax ?? DEFAULT_QUEUE_MAX;
 		this.queueMaxAgeMs = config.queueMaxAgeMs ?? DEFAULT_QUEUE_MAX_AGE_MS;
 		this.unifiedAlert = config.unifiedAlert;
+		this.ticketsEnabled =
+			config.ticketsEnabled ??
+			(() => process.env.FLYWHEEL_ALERT_TICKETS === "1");
 		mkdirSync(this.queueDir, { recursive: true });
 	}
 
@@ -796,13 +828,22 @@ export class LeadAlertNotifier {
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify({
-					content: formatContent(payload),
+					content: formatContent(payload, {
+						ticketHeader: !!this.unifiedAlert && this.ticketsEnabled(),
+					}),
 					// FLY-368 (Codex code R1 MEDIUM-3): suppress all mentions on the
 					// unified-channel root alert so an issue id / title / body can never
 					// @everyone/@here/@role-ping the channel. Gated on unified mode so the
 					// legacy per-lead POST body stays byte-identical.
+					// FLY-927 (Task 1.2/2.3): in unified+tickets mode with a validated
+					// owner snowflake, the ONE owner bot is whitelisted so the 🎫 header's
+					// `<@owner>` actually pings — everything else stays suppressed.
 					...(this.unifiedAlert
-						? { allowed_mentions: { parse: [] as string[] } }
+						? {
+								allowed_mentions: this.ticketOwnerMention(payload)
+									? { users: [this.ticketOwnerMention(payload) as string] }
+									: { parse: [] as string[] },
+							}
 						: {}),
 				}),
 			});
@@ -838,6 +879,18 @@ export class LeadAlertNotifier {
 			);
 			return { ok: false, transient: true };
 		}
+	}
+
+	/**
+	 * FLY-927: the validated owner snowflake for the root-POST mention whitelist.
+	 * Non-null ONLY in unified+tickets mode with a well-formed Discord snowflake
+	 * (reuses the Hub's founderId/infraBotId validation judgement) — a malformed
+	 * id degrades to plain text rather than a Discord-rejected mentions body.
+	 */
+	private ticketOwnerMention(payload: AlertPayload): string | null {
+		if (!this.unifiedAlert || !this.ticketsEnabled()) return null;
+		const id = payload.ticket?.ownerUserId?.trim();
+		return id && /^\d{17,20}$/.test(id) ? id : null;
 	}
 
 	private async sendDm(
@@ -962,14 +1015,43 @@ export function findUnreachableAlertLeads(
 	return out;
 }
 
-function formatContent(payload: AlertPayload): string {
+/** Local HH:MM for the 🎫 header's first-seen stamp (Hub `hhmm` idiom). */
+function ticketHHMM(ms: number): string {
+	const d = new Date(ms);
+	if (Number.isNaN(d.getTime())) return "??:??";
+	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * FLY-927 (Task 1.2): the 🎫 ticket header — appended AFTER the existing first
+ * line so the LeadWatchdog `ALERT_ECHO_START` anchor on `(<leadId> / <kind>)`
+ * keeps matching (append-only = minimum echo-regression radius, FLY-220).
+ * Rendered ONLY when the caller enables it (unified mode + FLYWHEEL_ALERT_TICKETS=1);
+ * legacy output stays byte-identical.
+ */
+function formatContent(
+	payload: AlertPayload,
+	opts?: { ticketHeader?: boolean },
+): string {
 	const sev =
 		payload.severity === "severe"
 			? "🚨"
 			: payload.severity === "warning"
 				? "⚠️"
 				: "ℹ️";
-	return `${sev} **${payload.title}** (${payload.leadId} / ${payload.eventType})\n${payload.body}`;
+	const firstLine = `${sev} **${payload.title}** (${payload.leadId} / ${payload.eventType})`;
+	if (!opts?.ticketHeader) {
+		return `${firstLine}\n${payload.body}`;
+	}
+	const t = payload.ticket;
+	const ownerId = t?.ownerUserId?.trim();
+	const owner =
+		ownerId && /^\d{17,20}$/.test(ownerId)
+			? `<@${ownerId}>`
+			: t?.ownerLabel?.trim() || "—";
+	const status = t?.status?.trim() || "NEW";
+	const firstSeen = ticketHHMM(t?.firstSeenMs ?? Date.now());
+	return `${firstLine}\n🎫 ${payload.projectName} · 首见 ${firstSeen} · owner ${owner} · 状态 ${status}\n${payload.body}`;
 }
 
 async function safeText(

@@ -33,10 +33,11 @@
 
 import { createHash } from "node:crypto";
 import { deriveAccountLimitForAlert } from "./account-heal/derive-account-limit.js";
-import type {
-	AlertEventType,
-	AlertPayload,
-	AlertResult,
+import {
+	ALERT_EVENT_TYPES,
+	type AlertEventType,
+	type AlertPayload,
+	type AlertResult,
 } from "./LeadAlertNotifier.js";
 import type { LeadWindowRef } from "./LeadWindowLocator.js";
 import type { ProjectEntry } from "./ProjectConfig.js";
@@ -746,8 +747,22 @@ function liveRegion(pane: string): string {
  * signature + the canned titles cover a non-`←` first line too.
  */
 const INBOUND_ECHO_LINE = /^\s*←/;
-const ALERT_ECHO_START =
-	/\(\s*[a-z0-9-]+\s*\/\s*(?:rate_limit|usage_limit|login_expired|permission_blocked|pane_hash_stuck|crash_loop|runner_stuck_unhandled)\s*\)|\blead hit (?:rate|usage) limit\b|\blead login expired\b|\blead waiting on permission prompt\b|\blead pane has been frozen\b|\blead crash-looping\b|\brunner stuck unhandled\b/i;
+/**
+ * FLY-927 (Task 1.2): the kind alternation is DERIVED from the shared
+ * `ALERT_EVENT_TYPES` table (LeadAlertNotifier) — the old hand-enumerated list
+ * covered only 7 kinds, so a first-line echo of any newer kind
+ * (runner_login_expired / three_stage_stuck / codex_gate_blocked / …) leaked
+ * past the strip and could re-trigger the FLY-220 storm family. Single source
+ * ⇒ a future kind can never silently miss echo immunity. The `|^\s*🎫\s`
+ * branch strips the FLY-927 ticket-header line (Bridge-unique — a real Claude
+ * TUI never renders it about itself).
+ */
+export const ALERT_ECHO_START = new RegExp(
+	`\\(\\s*[a-z0-9-]+\\s*\\/\\s*(?:${ALERT_EVENT_TYPES.join("|")})\\s*\\)` +
+		"|^\\s*🎫\\s" +
+		"|\\blead hit (?:rate|usage) limit\\b|\\blead login expired\\b|\\blead waiting on permission prompt\\b|\\blead pane has been frozen\\b|\\blead crash-looping\\b|\\brunner stuck unhandled\\b",
+	"i",
+);
 
 /**
  * FLY-220 — the Lead's OWN live state text: the live render region (FLY-193) with
