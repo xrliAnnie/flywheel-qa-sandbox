@@ -84,6 +84,7 @@ describe("buildRegistry (A5 pluggability, dual-face)", () => {
 		async connect(_p: LiveConnectParams): Promise<LiveConnection> {
 			return {
 				sendAudio() {},
+				sendText() {},
 				sendToolResponse() {},
 				onEvent() {},
 				async close() {},

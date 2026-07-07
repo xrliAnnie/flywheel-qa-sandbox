@@ -35,6 +35,7 @@ class RecordingConnection implements LiveConnection {
 	sendAudio(frame: Buffer): void {
 		this.sentAudio.push(frame);
 	}
+	sendText(): void {}
 	sendToolResponse(): void {}
 	onEvent(cb: (e: LiveServerEvent) => void): void {
 		this.cb = cb;

@@ -106,6 +106,7 @@ export class GeminiLiveBackend implements VoiceBackend {
 			model: this.opts.profile.model,
 			voice: opts.voice,
 			systemHint: opts.systemHint,
+			systemPreamble: opts.systemPreamble,
 			resumeHandle: opts.resumeHandle?.payload as string | undefined,
 			// ask_lead first (its brain path is fixed); extras are declared verbatim.
 			tools: [ASK_LEAD_DECLARATION, ...extraTools.map((t) => t.declaration)],
@@ -169,6 +170,11 @@ class GeminiLiveSession implements ConversationSession {
 
 	sendAudio(frame: Buffer, format: AudioFormat): void {
 		this.conn.sendAudio(frame, format);
+	}
+
+	/** control prompt — not the founder's words; never written to the transcript. */
+	sendText(text: string): void {
+		this.conn.sendText(text);
 	}
 
 	/** manual interrupt — LOCAL suppression only (no client server-cancel exists). */

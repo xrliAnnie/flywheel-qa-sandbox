@@ -36,6 +36,8 @@ export type LiveServerEvent =
 
 export interface LiveConnection {
 	sendAudio(frame: Buffer, format: AudioFormat): void;
+	/** FLY-967: text control prompt via sendRealtimeInput({ text }). */
+	sendText(text: string): void;
 	/** function-response back to the model, with optional scheduling. */
 	sendToolResponse(
 		callId: string,
@@ -60,6 +62,9 @@ export interface LiveConnectParams {
 	model: string;
 	voice?: string;
 	systemHint?: string;
+	/** FLY-967: briefing preamble — composed BEFORE systemHint into the
+	 * systemInstruction by the connector (preamble + "\n\n" + hint). */
+	systemPreamble?: string;
 	/** sessionResumption.handle for reconnect (resume). */
 	resumeHandle?: string;
 	/** declared tools (the brain is surfaced as ask_lead). */

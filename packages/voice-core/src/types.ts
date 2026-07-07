@@ -100,6 +100,12 @@ export interface ConversationOptions {
 	voice?: string;
 	/** spoken-register hint (short sentences / colloquial / no-markdown). */
 	systemHint?: string;
+	/**
+	 * FLY-967: session-scope context preamble (meeting briefing). When set it is
+	 * prefixed to the systemInstruction ahead of systemHint (joined by a blank
+	 * line). Unset = current behavior byte-for-byte (talk CLI / FLY-545).
+	 */
+	systemPreamble?: string;
 	transcriptSink?: TranscriptSink;
 	/**
 	 * resume is injected at creation time (Gemini configures sessionResumption at
@@ -166,6 +172,13 @@ export type ConversationEventMap = {
 export interface ConversationSession {
 	readonly sessionId: string;
 	sendAudio(frame: Buffer, format: AudioFormat): void;
+	/**
+	 * FLY-967: send a text control prompt to the model — steering the founder
+	 * never hears ("please open the meeting", "please recap"). These are NOT the
+	 * founder's words: nothing is written to the transcript sink for them, so
+	 * verbatim-quote pools built from user entries can never pick them up.
+	 */
+	sendText(text: string): void;
 	interrupt(): void;
 	injectToolResult(r: ToolResult, sched?: ScheduleHint): void;
 	on<E extends keyof ConversationEventMap>(

@@ -62,8 +62,19 @@ export function createGenaiTransport(
 					},
 				],
 			};
-			if (params.systemHint) {
-				config.systemInstruction = { parts: [{ text: params.systemHint }] };
+			// FLY-967: briefing preamble composes BEFORE the spoken-register hint.
+			const instruction = [params.systemPreamble, params.systemHint]
+				.filter((s): s is string => !!s)
+				.join("\n\n");
+			if (instruction) {
+				config.systemInstruction = { parts: [{ text: instruction }] };
+			}
+			if (params.voice) {
+				// voiceName only — native-audio Live models pick the language
+				// themselves and reject an explicit languageCode (FLY-967 R1 #3).
+				config.speechConfig = {
+					voiceConfig: { prebuiltVoiceConfig: { voiceName: params.voice } },
+				};
 			}
 
 			const session = await client.live.connect({
@@ -98,6 +109,9 @@ export function createGenaiTransport(
 							mimeType: "audio/pcm;rate=16000",
 						},
 					});
+				},
+				sendText(text: string) {
+					session.sendRealtimeInput({ text });
 				},
 				sendToolResponse(callId: string, output: string) {
 					session.sendToolResponse({

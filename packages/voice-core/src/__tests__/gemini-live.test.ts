@@ -29,6 +29,7 @@ class FakeConnection implements LiveConnection {
 	sendAudio(frame: Buffer): void {
 		this.sentAudio.push(frame);
 	}
+	sendText(): void {}
 	sendToolResponse(callId: string, output: string): void {
 		this.toolResponses.push({ callId, output });
 	}
