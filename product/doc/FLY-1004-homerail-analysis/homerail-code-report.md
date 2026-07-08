@@ -214,3 +214,14 @@ graph TD
 - **凭据加密 vs 我们**:它 key **加密后落盘**(SQLite 存密文 + 打码视图,manager_encrypted/legacy_plaintext);我们 key **明文放本地文件**(~/.flywheel/.env,靠文件权限)。做沙箱/多机(key 要给远程 worker)时它这套值得学 —— 我们 FLY-245 codex broker 已有类似思路。
 
 **生成式 UI mockup**:HTML v3 里做了一个手机样子(语音在跑 → 屏幕给"待确认卡/进度卡/状态卡",不读日志),给 Annie 看"到底长啥样"。
+
+---
+
+## v4 收敛结论(Annie 买账后的决定 · 2026-07-08)
+
+- **① DAG**:Annie GET + 大洞察 —— "**我们的 Session 就是一个 DAG:Design→Implement→QA**"。落点:homerail DAG 运行时(inject/fork 可加;**profile 我们已在做 = Fable/Opus 每 agent 配模型 FLY-241**)用到我们三段式;⭐ **每 Lead/任务类别一套 default DAG 模板(Eng≠Product)** = 值得做的方向。**详细模板设计归 FLY-353,1004 只点到不展开。**
+- **② 生成式 UI**:Annie 定 **not-now** —— commodity、Claude Code 已带;等做 agent-agnostic(脱开 Claude 自带那套)再考虑自造。之前只借思路(短朗读+详情进卡片+执行前确认)。
+- **③ 语音**:2 ASR = **fallback 关系**(native_realtime 主 / emulated_batch 备胎 / ark_voice 另一 provider)。双 TTS + ASR 主备降级 → **喂 FLY-906**(尤其 Discord 收音风险 FLY-544 的降级路径)。
+- **⑤ 经验图谱**:自动复盘(run 完抽 失败根因/教训)存 DB 图 → **呼应 FLY-347**;可学"自动从 run 抽结构化 lesson"(我们现在记忆主力人工 markdown)。
+- **⑥ 凭据加密**:对比清楚(它加密存 DB+打码;我们明文本地文件)—— 做沙箱/多机时学(FLY-245 broker 已类似)。
+- **总结**:borrow eng(DAG inject/fork · 语音双通道+ASR 降级 · Docker 沙箱+加密 key · 经验图谱自动抽 lesson),不做生成式 UI 引擎,别 adopt 定位。**最大抓手 = "Session 就是 DAG" + per-category 模板(→ FLY-353)。** 折不折进定位 Annie/FLY-911 拍。
