@@ -131,7 +131,7 @@ button.sec{ background:#e8e8ed; color:#1d1d1f; }
 
   <div class="callout"><b>一句话算账：</b>收益 = 安全隔离 + 环境可复现；代价 = 同时动「启动 / 观测 / 沟通」三层 + mac 上的 Docker 性能税。<b>在单机 mac 上，收益够不着代价。</b></div>
 
-  <div class="callout"><b>⚠️ 但有一件事要诚实说：</b>我们现在的 runner（默认那种）其实<b>没有真正的安全隔离</b> —— 它以你电脑用户的身份跑，理论上能读到机器上的密钥、别的项目。想补这个洞，<b>光加个「路径白名单」是不够的</b>（挡不住 runner 里的脚本自己去读），得靠容器 / mac 的 Seatbelt / 独立用户这类真机制。这是一个<b>独立的安全话题</b>，值不值得单独立项，你定。</p></div>
+  <div class="callout"><b>⚠️ 但有一件事要诚实说：</b>我们现在的 runner（默认那种）其实<b>没有真正的安全隔离</b> —— 它以你电脑用户的身份跑，理论上能读到机器上的密钥、别的项目。想补这个洞，<b>光加个「路径白名单」是不够的</b>（挡不住 runner 里的脚本自己去读），得靠容器 / mac 的 Seatbelt / 独立用户这类真机制。这是一个<b>独立的安全话题</b>，值不值得单独立项，你定。</div>
 
   <div class="cbox">
     <label>💬 哪条理由你觉得站不住 / 想反驳？或哪条其实你不在乎？</label>
@@ -190,7 +190,7 @@ button.sec{ background:#e8e8ed; color:#1d1d1f; }
     <li><b>容器（Container）= 底层砖头</b>。就是 Docker 那套「把一个程序连同它的环境打包、关进一个隔离盒子里跑」的技术。它是<b>机制</b>。</li>
     <li><b>沙箱（Sandbox）= 用途</b>。指「给 AI agent 安全跑活的封闭环境」。它<b>通常就是用容器实现的</b>。</li>
   </ul>
-  <div class="callout"><b>所以：AIO Sandbox 和 homerail 的 worker，都是「沙箱」，底下都用「容器」。</b>它俩的区别<b>不在</b>「沙箱 vs 容器」，而在下面这张图里的<b>形状</b>——一个是「一个大盒子」，一个是「一个工厂管很多小盒子」。</p></div>
+  <div class="callout"><b>所以：AIO Sandbox 和 homerail 的 worker，都是「沙箱」，底下都用「容器」。</b>它俩的区别<b>不在</b>「沙箱 vs 容器」，而在下面这张图里的<b>形状</b>——一个是「一个大盒子」，一个是「一个工厂管很多小盒子」。</div>
 
   <h3>一张图看懂区别</h3>
   <div style="display:flex;gap:12px;flex-wrap:wrap;margin:12px 0;">
