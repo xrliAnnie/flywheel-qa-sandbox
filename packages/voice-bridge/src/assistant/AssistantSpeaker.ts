@@ -1,5 +1,5 @@
 /**
- * AssistantSpeaker (FLY-967 P3) — the /live assistant's mouth on the
+ * AssistantSpeaker (FLY-967 P3) — the /gemini assistant's mouth on the
  * orchestrator bot. Unlike LeadSpeaker's discrete utterance queue, a model
  * turn here is a CONTINUOUS response-audio chunk stream:
  *

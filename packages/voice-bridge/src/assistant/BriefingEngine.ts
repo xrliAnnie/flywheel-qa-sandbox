@@ -3,7 +3,7 @@
  *
  * A background loop pre-generates a meeting briefing (board snapshot, recent
  * decisions, doc digests) and caches it to disk; `compose()` is memory-only so
- * /live opens with ZERO wait. A failing refresh keeps the previous snapshot —
+ * /gemini opens with ZERO wait. A failing refresh keeps the previous snapshot —
  * data-source trouble must never block a meeting; it only ages the briefing,
  * which `stale` surfaces so the session can post a "briefing may lag" notice.
  *
@@ -128,7 +128,7 @@ export class BriefingEngine {
 		}
 	}
 
-	/** memory-only assembly — zero IO, zero waiting (the /live opening path). */
+	/** memory-only assembly — zero IO, zero waiting (the /gemini opening path). */
 	compose(topic?: string): BriefingResult {
 		const snap = this.snapshot;
 		if (!snap) {

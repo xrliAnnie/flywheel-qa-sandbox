@@ -1,6 +1,6 @@
 /**
  * Assistant-mode config (FLY-967) — the OPTIONAL `huddle.assistant` sub-block
- * of ~/.flywheel/projects.json. Absent = /live is OFF and FLY-545's /meet
+ * of ~/.flywheel/projects.json. Absent = /gemini is OFF and FLY-545's /meet
  * behavior is byte-identical (the whole block is additive).
  *
  * Deliberately a SEPARATE resolver from 545's resolveHuddleBridgeConfig
@@ -8,6 +8,10 @@
  * discipline though: fail fast with fix guidance, tokens only from env,
  * never argv/logs.
  */
+
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export interface AssistantBriefingConfig {
 	refreshSec: number;
@@ -58,7 +62,7 @@ export function resolveAssistantConfig(
 	>;
 	if (typeof a !== "object") {
 		throw new Error(
-			"voice-bridge: huddle.assistant must be an object (see FLY-967 plan §4) — remove the key to turn /live off",
+			"voice-bridge: huddle.assistant must be an object (see FLY-967 plan §4) — remove the key to turn /gemini off",
 		);
 	}
 
@@ -138,4 +142,20 @@ function optPositive(
 		);
 	}
 	return v;
+}
+
+/** file-reading wrapper (mirrors loadHuddleBridgeConfig's source of truth). */
+export function loadAssistantConfig(
+	opts: { path?: string; env?: NodeJS.ProcessEnv } = {},
+): AssistantModeConfig | null {
+	const path = opts.path ?? join(homedir(), ".flywheel", "projects.json");
+	let raw: unknown;
+	try {
+		raw = JSON.parse(readFileSync(path, "utf-8"));
+	} catch {
+		// unreadable projects.json already fail-fasts in loadHuddleBridgeConfig;
+		// the assistant block simply resolves to OFF here.
+		return null;
+	}
+	return resolveAssistantConfig(raw, opts.env ?? process.env);
 }

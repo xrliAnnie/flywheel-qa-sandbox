@@ -3,7 +3,7 @@
  *
  * Consumed by THREE parties (public-contract standard, changes must stay
  * backward compatible): FLY-545 itself (/meet), FLY-546 (voice approval
- * signal + per-Lead voices), FLY-967 (/live assistant mode, which builds its
+ * signal + per-Lead voices), FLY-967 (/gemini assistant mode, which builds its
  * assistant/* modules on this exact chassis).
  */
 
@@ -53,6 +53,11 @@ export {
 	buildAssistantTools,
 	lookupIssueTool,
 } from "./assistant/tools.js";
+export {
+	type AssistantRuntime,
+	type WireAssistantOptions,
+	wireAssistantMode,
+} from "./assistant/wiring.js";
 export {
 	EarsReceiver,
 	type EarsReceiverOptions,

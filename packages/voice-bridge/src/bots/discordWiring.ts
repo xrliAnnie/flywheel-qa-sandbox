@@ -26,6 +26,54 @@ export interface DiscordDeps {
 	};
 	/** true when the guild member behind userId is a human (not a bot). */
 	isHumanFactory: (client: any, guildId: string) => (userId: string) => boolean;
+	// ---- FLY-967 /gemini assistant-mode surface ----
+	/** register a guild slash command with one optional STRING "topic" option. */
+	registerGuildCommand: (
+		client: any,
+		guildId: string,
+		spec: { name: string; description: string },
+	) => Promise<void>;
+	/** dispatch chat-input invocations of `name` to the handler. */
+	onChatCommand: (
+		client: any,
+		name: string,
+		cb: (inv: {
+			topic?: string;
+			userId: string;
+			reply: (text: string, opts?: { joinUrl?: string }) => Promise<void>;
+		}) => void,
+	) => void;
+	sendMessage: (client: any, channelId: string, text: string) => Promise<void>;
+	/** voice-state deltas (founder presence tracking). */
+	onVoiceStateUpdate: (
+		client: any,
+		cb: (u: {
+			userId: string;
+			isBot: boolean;
+			fromChannelId: string | null;
+			toChannelId: string | null;
+		}) => void,
+	) => () => void;
+	/** humans currently in a voice channel. */
+	voiceChannelHumanCount: (
+		client: any,
+		guildId: string,
+		channelId: string,
+	) => Promise<number>;
+	/** MOVE_MEMBERS; false on missing permission / member not in voice. */
+	moveMember: (
+		client: any,
+		guildId: string,
+		userId: string,
+		channelId: string,
+	) => Promise<boolean>;
+	/** tear down a voice connection (orchestrator leaves after the meeting). */
+	leaveVoice: (conn: any) => void;
+	/** connection liveness (ears down/up degradation signals). */
+	connectionEvents: (conn: any) => {
+		onDown: (cb: () => void) => () => void;
+		onUp: (cb: () => void) => () => void;
+	};
 }
 
 export async function createDiscordDeps(): Promise<DiscordDeps> {
@@ -119,5 +167,135 @@ export async function createDiscordDeps(): Promise<DiscordDeps> {
 			// explicit override for QA rigs).
 			return member ? member.user.bot === false : false;
 		},
+
+		// ---- FLY-967 /gemini assistant-mode surface (real SDK glue; exercised
+		// by the staged E2E, not unit tests — discordWiring discipline) ----
+
+		registerGuildCommand: async (client: any, guildId: string, spec) => {
+			const guild = await client.guilds.fetch(guildId);
+			await guild.commands.create({
+				name: spec.name,
+				description: spec.description,
+				options: [
+					{
+						type: 3, // STRING
+						name: "topic",
+						description: "想聊什么(可选,用于简报聚焦)",
+						required: false,
+					},
+				],
+			});
+		},
+
+		onChatCommand: (client: any, name: string, cb) => {
+			client.on("interactionCreate", (interaction: any) => {
+				if (!interaction.isChatInputCommand?.()) return;
+				if (interaction.commandName !== name) return;
+				cb({
+					topic: interaction.options.getString("topic") ?? undefined,
+					userId: interaction.user.id,
+					reply: async (text: string, opts?: { joinUrl?: string }) => {
+						const payload = {
+							content: text,
+							components: opts?.joinUrl
+								? [
+										{
+											type: 1,
+											components: [
+												{
+													type: 2,
+													style: 5, // Link
+													label: "Join",
+													url: opts.joinUrl,
+												},
+											],
+										},
+									]
+								: undefined,
+						};
+						if (interaction.replied || interaction.deferred) {
+							await interaction.followUp(payload);
+						} else {
+							await interaction.reply(payload);
+						}
+					},
+				});
+			});
+		},
+
+		sendMessage: async (client: any, channelId: string, text: string) => {
+			const channel = await client.channels.fetch(channelId);
+			await channel.send(text);
+		},
+
+		onVoiceStateUpdate: (client: any, cb) => {
+			const handler = (oldState: any, newState: any) => {
+				cb({
+					userId: newState.id,
+					isBot: newState.member?.user?.bot ?? true,
+					fromChannelId: oldState.channelId ?? null,
+					toChannelId: newState.channelId ?? null,
+				});
+			};
+			client.on("voiceStateUpdate", handler);
+			return () => client.off("voiceStateUpdate", handler);
+		},
+
+		voiceChannelHumanCount: async (
+			client: any,
+			guildId: string,
+			channelId: string,
+		) => {
+			const guild = await client.guilds.fetch(guildId);
+			const channel = await guild.channels.fetch(channelId);
+			let humans = 0;
+			for (const [, member] of channel?.members ?? []) {
+				if (member.user?.bot === false) humans++;
+			}
+			return humans;
+		},
+
+		moveMember: async (
+			client: any,
+			guildId: string,
+			userId: string,
+			channelId: string,
+		) => {
+			try {
+				const guild = await client.guilds.fetch(guildId);
+				const member = await guild.members.fetch(userId);
+				if (!member.voice?.channelId) return false; // not in any VC
+				await member.voice.setChannel(channelId);
+				return true;
+			} catch {
+				return false; // missing permission etc. — Join button is the path in
+			}
+		},
+
+		leaveVoice: (conn: any) => {
+			conn.destroy();
+		},
+
+		connectionEvents: (conn: any) => ({
+			onDown: (cb: () => void) => {
+				const handler = (_old: any, newState: any) => {
+					if (newState.status === voice.VoiceConnectionStatus.Disconnected)
+						cb();
+				};
+				conn.on("stateChange", handler);
+				return () => conn.off("stateChange", handler);
+			},
+			onUp: (cb: () => void) => {
+				const handler = (oldState: any, newState: any) => {
+					if (
+						newState.status === voice.VoiceConnectionStatus.Ready &&
+						oldState.status !== voice.VoiceConnectionStatus.Ready
+					)
+						cb();
+				};
+				conn.on("stateChange", handler);
+				return () => conn.off("stateChange", handler);
+			},
+		}),
 	};
 }

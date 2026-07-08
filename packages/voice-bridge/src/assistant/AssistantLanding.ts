@@ -1,5 +1,5 @@
 /**
- * AssistantLanding (FLY-967 P6a) — the /live after-meeting pipeline:
+ * AssistantLanding (FLY-967 P6a) — the /gemini after-meeting pipeline:
  * summary (assistant recap + the founder's VERBATIM quotes from the JSONL
  * transcript — control prompts never enter the quote pool by construction)
  * → POST comment → close issue.
@@ -25,6 +25,8 @@ export interface AssistantLandingOptions {
 	receiptPath: string;
 	/** named in the founder-facing fallback when the comment fails. */
 	transcriptPath: string;
+	/** the shipped slash-command name shown in the summary header. */
+	commandName?: string;
 	log?: (line: string) => void;
 }
 
@@ -53,9 +55,9 @@ interface Receipt {
 export class AssistantLanding {
 	constructor(private readonly opts: AssistantLandingOptions) {}
 
-	static buildSummary(input: LandingInput): string {
+	static buildSummary(input: LandingInput, commandName = "gemini"): string {
 		const lines = [
-			`## 会议纪要(/live 助理)`,
+			`## 会议纪要(/${commandName} 助理)`,
 			`assistant-summary ${input.sessionId}`,
 			"",
 		];
@@ -82,7 +84,7 @@ export class AssistantLanding {
 			try {
 				const posted = await this.opts.linear.comment(
 					input.issueId,
-					AssistantLanding.buildSummary(input),
+					AssistantLanding.buildSummary(input, this.opts.commandName),
 				);
 				receipt = {
 					issueId: input.issueId,

@@ -11,6 +11,14 @@
  * preflight on the health port), secrets only via env (never argv/logs).
  */
 import { createServer, type Server } from "node:http";
+import {
+	type AssistantModeConfig,
+	loadAssistantConfig,
+} from "./assistant/config.js";
+import {
+	type AssistantRuntime,
+	wireAssistantMode,
+} from "./assistant/wiring.js";
 import { BotRegistry } from "./bots/BotRegistry.js";
 import { createDiscordDeps, type DiscordDeps } from "./bots/discordWiring.js";
 import { type HuddleBridgeConfig, loadHuddleBridgeConfig } from "./config.js";
@@ -27,6 +35,18 @@ export interface RunVoiceBridgeOptions {
 	log?: (msg: string) => void;
 	/** test seam for the ffmpeg preflight probe. */
 	probe?: BinaryProbe;
+	/** FLY-967: assistant sub-block; undefined = load from projects.json,
+	 * null = explicitly off (byte-compat with the pre-assistant daemon). */
+	assistant?: AssistantModeConfig | null;
+	/** FLY-967 test seam: forwarded to wireAssistantMode. */
+	assistantWiring?: {
+		createConversation?: Parameters<
+			typeof wireAssistantMode
+		>[0]["createConversation"];
+		fetchImpl?: typeof fetch;
+		stateDir?: string;
+		env?: NodeJS.ProcessEnv;
+	};
 }
 
 const NOTE_TAKER = "note-taker";
@@ -38,13 +58,25 @@ export async function runVoiceBridge(
 	const log =
 		opts.log ?? ((msg: string) => console.log(`[voice-bridge] ${msg}`));
 	const config = opts.config ?? loadHuddleBridgeConfig();
+	const assistant =
+		opts.assistant !== undefined ? opts.assistant : loadAssistantConfig();
 
 	// playback stack dies here, not after a bot already joined the VC.
 	await verifyPlaybackStack(config.ffmpegBin, opts.probe);
-	if (!process.env.GEMINI_API_KEY) {
-		// PR-1 residency does not open a Gemini session yet; PR-2 (the /meet
-		// loop) upgrades this to fail-fast. Warn loudly so the deploy gets fixed
-		// before the loop lands.
+	if (
+		!process.env.GEMINI_API_KEY &&
+		!opts.assistantWiring?.createConversation
+	) {
+		if (assistant) {
+			// FLY-967: assistant mode opens a real Gemini Live session per meeting
+			// — a missing key must kill the deploy at startup, not mid-meeting.
+			throw new Error(
+				"voice-bridge: GEMINI_API_KEY unset but huddle.assistant is configured — /gemini would fail at first use",
+			);
+		}
+		// PR-1 residency without assistant mode does not open a Gemini session
+		// yet; PR-2 (the /meet loop) upgrades this to fail-fast. Warn loudly so
+		// the deploy gets fixed before the loop lands.
 		log(
 			"WARNING: GEMINI_API_KEY unset — the PR-2 conversation loop will fail-fast on this",
 		);
@@ -62,6 +94,8 @@ export async function runVoiceBridge(
 	const state = {
 		bots: [] as string[],
 		earsJoined: false,
+		/** FLY-967: the registered assistant command name (null = mode off). */
+		assistant: null as string | null,
 		// scripts/lib/bridge-port.sh classifies health JSON WITHOUT a
 		// shuttingDown field as "legacy" and reclaims (kills) the instance —
 		// omitting it would make every duplicate launchd start kill a healthy
@@ -80,6 +114,7 @@ export async function runVoiceBridge(
 					project: config.projectName,
 					bots: state.bots,
 					earsJoined: state.earsJoined,
+					assistant: state.assistant,
 				}),
 			);
 			return;
@@ -93,6 +128,7 @@ export async function runVoiceBridge(
 	});
 	log(`health endpoint on 127.0.0.1:${config.healthPort}/health`);
 
+	let assistantRuntime: AssistantRuntime | undefined;
 	try {
 		const bots = [
 			{ id: ORCHESTRATOR, token: config.orchestratorToken },
@@ -108,7 +144,7 @@ export async function runVoiceBridge(
 
 		// the Note-taker is the resident ear — selfMute (it never speaks),
 		// selfDeaf false (hearing is its whole job).
-		await registry.join(NOTE_TAKER, {
+		const earsConnection = await registry.join(NOTE_TAKER, {
 			guildId: config.guildId,
 			channelId: config.voiceChannelId,
 			selfMute: true,
@@ -116,6 +152,22 @@ export async function runVoiceBridge(
 		});
 		state.earsJoined = true;
 		log(`Note-taker resident in VC ${config.voiceChannelId}`);
+
+		// FLY-967: /gemini assistant mode — only when the config opts in.
+		if (assistant) {
+			assistantRuntime = await wireAssistantMode({
+				config,
+				assistant,
+				registry,
+				deps,
+				earsConnection,
+				log,
+				...opts.assistantWiring,
+			});
+			state.assistant = assistantRuntime.commandName;
+		} else {
+			log("assistant mode off (no huddle.assistant block)");
+		}
 	} catch (err) {
 		await new Promise<void>((resolve) => health.close(() => resolve()));
 		await registry.destroyAll();
@@ -130,6 +182,7 @@ export async function runVoiceBridge(
 		state.shuttingDown = true;
 		await Promise.race([
 			(async () => {
+				await assistantRuntime?.close();
 				await registry.destroyAll();
 				await new Promise<void>((resolve) => health.close(() => resolve()));
 			})(),

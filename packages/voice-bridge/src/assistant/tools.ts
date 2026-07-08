@@ -1,5 +1,5 @@
 /**
- * FLY-967 P5 — the /live assistant's read-only Live tools, riding the
+ * FLY-967 P5 — the /gemini assistant's read-only Live tools, riding the
  * FLY-545 extraTools dispatch contract (LiveToolSpec, voice-core):
  *
  *   lookup_issue   → GET /api/linear/issue?query=   (identifier exact first)
