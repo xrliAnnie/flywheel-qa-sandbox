@@ -159,3 +159,65 @@ Issue: FLY-1001 (https://linear.app/geoforge3d/issue/FLY-1001/raft-竞品分析-
 - **Raft 是否已有 manager/Lead 层** = 核实到的是 peer 协作(claim/hand-off/review),**没**看到显式的层级 manager/分诊层;标为「据现有信息推断」。若 Raft 后续加,轴 2 那薄条即塌。
 - **创始人推文原文** = X 挡付费墙(402);关键 verbatim 从 WebSearch 引用拿到(分布式共识那段),够用。
 - **目标客户 builder vs operator 的确切占比** = Raft 官方措辞是「builders and teams」重心 + 声称 non-coder 也能用,**边界模糊**;这是最该持续盯的信号(→ FLY-1000 Raft-watch 每周核:它有没有下移市场朝 operator)。
+
+---
+
+## 8. Round-2 深挖(FLY-1001 · Annie 要更深一层 + HTML)
+
+> Annie 看完 round-1 结论后要「更深一层」:市场反应 / 融资 / 团队规模 / 产品具体长啥样。**本轮做了真 web 深挖(不是上轮的『别 raw-dig』)。铁律:查不到的诚实标 UNKNOWN,绝不编;同名公司污染的数据绝不安到 raft.build 头上。** 配套 review HTML 给 Annie。
+
+### 8.1 ⚠️ 同名公司污染(先说,因为它决定了融资/团队为什么标 UNKNOWN)
+搜「Raft」撞上**至少三家同名公司**,数据全混在 Tracxn/PitchBook/Crunchbase 里:
+- **raft.ai**(伦敦,供应链/物流 AI,2017,Nisarg Mehta 等)—— 融资 $30M,投资方 **Eight Roads / Bessemer / Booom**。
+- **teamraft.com / Raft(defense)**(Reston,2018,Shubhi Mishra)—— 346 人,$45M。
+- **Raftt**(dev-environment 工具)—— 又一家。
+- **我们的 = raft.build(前身 slock,TennyZhuang)= AI agent 协作平台。**
+→ **PitchBook 那条「Raft 融资 $46.7M,投资方 Bessemer/Eight Roads」几乎肯定是物流 raft.ai(Eight Roads/Bessemer 正是物流那家的投资方),不是 raft.build。绝不采纳。** 这正是 Annie 警告的坑。
+
+### 8.2 融资 —— **UNKNOWN(诚实)**
+- **没找到 raft.build / slock 专属的融资披露。** 所有金额($30M/$46.7M/$60M/$45M)+ 投资方(Bessemer/Eight Roads/Cendana…)经核**都属同名的物流/国防/dev-env Raft**,不是 raft.build。
+- **结论:raft.build 融资 = 未知。** 不编、不借同名公司的数字充数。→ FLY-1000 Raft-watch 持续盯官方/推文有没有官宣。
+- ⚠️ **但『有没有融资』不改 round-1 的 ② 结论**:② 的力量来自「人 + 专注 + 已 ship 的证据」,不依赖融资金额。
+
+### 8.3 团队规模 —— **UNKNOWN,但 pedigree 硬(有名有姓)**
+- **具体人数未核实**(同名污染,拿不到干净 headcount)。
+- **已确认的人(强)**:
+  - **TennyZhuang(@zty0826)**:分布式系统出身 —— GitHub 主属 **RisingWaveLabs**(streaming compute engine)、前 **Alibaba PolarDB-X**(事务)、**TiKV/TiDB/OpenDAL** committer、清华软院、CCPC 金牌。公开在 X 宣布 **slock→Raft** 改名。**分布式共识/系统的硬核 pedigree 坐实。**
+  - **Tianxiao Shen(xxchan)**:LinkedIn 写 building Slock + **co-created Kimi CLI**(Kimi K2.5 相关开源 coding agent)。**坐实 FLY-999『团队含前 Kimi』。**
+- ⚠️ **创始实体/CEO 存疑,不硬下**:TennyZhuang GitHub **未列 Raft 关联**(主属 RisingWave)—— 可能是 co-founder/兼顾,或 GitHub 未更新;一处博客抓取出现「**Richard / Botiverse, Inc.**」与 TennyZhuang 创始说法冲突 —— **存疑,不采纳,标待确认**。可确认的:TennyZhuang 是公开负责人/创始人figure,团队是**强分布式系统 + AI-infra 的小团队**。
+- **结论:团队规模 UNKNOWN;但『强 pedigree 小团队』坐实,足够支撑 ② 的『引擎层他们更精』。**
+
+### 8.4 市场反应 —— **公开声量查无(诚实 UNKNOWN)**
+- **没找到 HN / Product Hunt / Reddit / 小红书 对 raft.build 的公开讨论。**(HN 搜出来全是 Raft **共识算法**;PH/Reddit 搜到的是 agent-collab 大类别的别家如 Upstream/Agent Arena。)
+- **推断(标清是推断)**:launch 约 **2026 年中**(launch 博客『Introducing Raft』抓取日期 May 21 2026,存疑但方向一致)—— 若属实则**很新、公开声量还没起来**;也可能它主要在 X/私域传播、没大规模 PH/Reddit launch。
+- **赛道热但拥挤(有据)**:2026 年中 Product Hunt「Agent Infrastructure Explosion」,过半 Top20 在做「让 agent 更可发现/管理/评估/部署」;AI-native email(Upstream,agent 当协作者)、Agent Arena 等一堆同类 —— **人+agent 协作是个正在『铺路期』的热门拥挤品类**,Raft 是其中形态最贴我们的一家,但不是唯一。
+- **结论:口碑/声量未知;不美化成『爆红』也不贬成『没人用』——就是新、拥挤赛道里一家 pedigree 很硬的玩家。**
+
+### 8.5 产品具体长啥样(讲透 —— 这轮最有料)
+**onboarding 四步(docs welcome verbatim)**:① Meet your Onboarding Agent(建 server、连一台电脑、见到团队第一个 agent)→ ② Hand off your first task(给 agent 真活、看它做完带回来)→ ③ Bring in your teammates(把人拉进房间、和 agent 并肩)→ ④ Build agent team(加更多 agent、定各自职责、养一支会学的队)。
+**导航结构(docs)**:Getting Started · Work on Raft(Build agent team / Divide work / Catch up / Search / Notifications / Multi-device)· Tutorials(Investing research team)。
+**核心概念(launch 博客 verbatim)**:agent = 一等公民,"They have memory, identity, and their own workspace";"**One agent is one session: a continuous identity that stays alive across days and tasks**"(不是无状态调用);shared channels 里 agent "@mention teammates, claim work from task boards";agent 维护自己的 inbox/tasks/reminders;例子:一个 agent「**被在它不在的频道里点名 → 自己加进那个频道开干**」(主动性)。
+
+**⭐ 核心工程机制 —— 『房间会乱吗』那篇(= Cass 说的『报数/version-check/staged-draft/Dmail』的真身,verbatim)**:
+- **问题(stale-snapshot,= 我们 crossed-wires)**:"the gap between an agent's reasoning and the room moving on" —— agent 回合制:读快照→推理→提交,"While the agent is composing, it isn't simultaneously seeing new messages arrive. If the room moves between the reasoning and the commit, the agent may still be acting on a state that no longer exists" → 非续贯/重复回复。
+- **解法 1 · Inbox surface**:把「消息硬推进 working context」反转成「agent 有余力时**主动拉**」——"Mentions, thread updates... surface as queryable items the agent can pull when it has bandwidth"。agent 自己决定什么值得进上下文,不被房间噪声挤掉 task state。
+- **解法 2 · Held Draft surface(= staged-draft + version-check 的真身)**:每条出站消息带**版本标记**,标它是对着哪个房间状态写的。发送时:房间没变→提交;**房间动了→扣住、连同「你写的时候进来了啥」还给 agent**;"The draft is preserved as a first-class state, not a failed send"。agent 四选一:**Revise / Send as-is / Stay silent / Send anyway(反复扣住后显式绕过)**。原则:"The room informs the agent that something arrived; the agent decides what to do"。
+- ⚠️ **名字澄清**:Cass 的『报数/Dmail』是**转述简称**;Raft 官方叫 **Inbox surface + Held Draft surface + version marker**。机制对得上,名字以官方为准。
+- **= 我们 FLY-574(draft-not-sent)+ crossed-wires 的正解,已被 Raft 产品化。这是 ② 『引擎层他们更精』的最硬证据。**
+
+**Raft 的产品 theses(博客,暴露它的设计哲学 —— 对我们有战略含义)**:
+- **"Agents Need Names"**:named agent 做路由/连续性/信任 —— **我们『named Lead』这条信任点,Raft 也做,不独有。**
+- **"Trust Doesn't Live in Code Review"**(⭐ 战略金矿):trust = "the ability to predict it";验证靠**持续读系统信号**(bug 簇、mutation testing 幸存者、静态结构、**agent 间实时碰撞检测**),"A failure is not a verdict on the model; it is a map of the inputs you left unclean";人从**看门人**转成**读系统、收紧输入(specs/contracts)的人**。**目标用户 verbatim = "technical leaders and senior engineers steering projects... architects and decision-makers, not line-by-line code readers"。**
+- **"You Don't Need a Company Brain"**:主张**多个专才视角 > 一个统一大脑** —— ⚠️ 和我们『共享记忆/第二大脑』是**分叉的哲学**(它反对单一 brain)。值得盯。
+- **"DAA"(DAU→DAA)**:把 agent 队友算进活跃度指标。
+
+**8.5 的两条战略含义(喂三轴 + 911)**:
+1. **trust 博客的目标用户 verbatim 坐实轴 3**:Raft 自己把用户定义成 **technical leaders / senior engineers / architects**,**明确不是非技术 operator**。→ **轴 3(done-for-you 给非技术 operator)vs Raft 更站得住了 —— 是 Raft 自己的话佐证的,不是我们自说。**
+2. **trust 模型正好相反 → 多一条差异**:Raft 的信任 = 「读系统信号」(要技术素养、architect 视角);我们的信任(911 §4)= 非技术 operator 能亲验的四件事(named Lead / 可读审批 / 结果证明 / 护栏)。**在『非技术怎么信任』这条上,我们和 Raft 是两套人的两套答案 —— 这是 round-1 没挖出的一条新差异,建议补进 911 信任章。**
+
+### 8.6 Round-2 对结论的净影响
+- **三轴结论不变**,但**轴 3 更硬了**(Raft 自己的 trust 博客把用户定义成 technical leaders → 非技术 operator 确是它盲区)+ **新增一条差异**:非技术 trust 模型(我们 4 件可亲验 vs Raft 读系统信号)。
+- **② 更实**:Held Draft/version marker 是它已 ship、我们还在 backlog 的硬证据。
+- **融资/团队/声量 = 诚实 UNKNOWN**(同名污染),但团队 pedigree 硬这点坐实,不影响「引擎层它更精」。
+- **911 建议微调**:round-1 五条不变;**加第 6 条**——「非技术 trust 模型」写进 911 §4 当一条对 Raft 成立的差异(它服务 architect、trust 靠读系统;我们服务非技术、trust 靠 4 件可亲验)。
+

@@ -4,7 +4,8 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 本轮: FLY-1001 competitor-scan round-3(Annie 2026-07-08 发现 Raft)
 日期: 2026-07-08
 基于: FLY-999/1000(Cass Raft profile)+ 1 轮有界核实(raft.build 首页/docs/创始人推文)+ FLY-909 证据 + FLY-911 定位
-深挖分析源: `product/doc/FLY-1001-raft-competitor-scan/research.md`(Cass 三压测点逐条压出的结论)
+深挖分析源: `product/doc/FLY-1001-raft-competitor-scan/research.md`(Cass 三压测点逐条压出的结论;§8 = round-2 深挖:市场反应/融资/团队/产品细节 + 诚实 UNKNOWN)
+Round-2 review(给 Annie): `product/doc/FLY-1001-raft-competitor-scan/raft-round2-review.html`
 
 > **为什么单独挖它(和 Matrix 一个待遇)**:Raft 被 Cass 定为「**Flywheel 形态的产品化版**」。核实后 —— **成立,而且它比 Matrix(桌面小人)/ Cowork(桌面知识工作)更贴我们的形态**:人+AI agent 在 channels/DM 里当平等队友、供应商中立、持久记忆复利。它是目前找到**最贴、最该警惕**的一家,且**在引擎层比我们强**。
 > 资料来源:raft.build / docs.raft.build/welcome / 创始人 @zty0826 推文(WebSearch 引用,X 原文挡付费墙)。**标 ⚠️ 的点建议 FLY-1000 Raft-watch 每周复核。**
