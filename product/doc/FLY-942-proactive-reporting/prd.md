@@ -86,6 +86,13 @@ flowchart TD
 ### 3.2 准确性机制 ✅ **Annie 拍:走 FLY-976 LLM 判断层**(读 per-pane 富态判 a/b/c)
 - **机械快路**(零 token,便宜初筛):真实 stage / park 元组明判明确态。
 - **LLM 判断层**(可疑才升级,省 token,FLY-976):读 pane 富态(token-flow + FSM 态)+ 真实 stage + park 元组 → 判 **a working / b parked / c stuck** + 归因(球在谁)+ 建议动作(nudge/respawn/切账号/@人)。正是 546 那种"报错后静默 idle"机械分不清、LLM 能。
+
+  **LLM 判断层设计定案(Annie 2026-07-08 拍)**:
+  1. **便宜小模型**(Haiku 档 / Codex 便宜档)—— 只是读文字做个判断,不重。
+  2. **跑在 Codex 上、不是 Claude(关键设计理由)**:Claude 是全系统的**瓶颈**(runner 天天撞 Claude 周限额),看门狗的判断再叠 Claude = 跟 runner 抢额度;**Codex 周限额用不完、错开跑**,把判断放 Codex 不占 runner 的 Claude 额度。
+  3. **读文字、不看图**:判断读的是 capture-pane 的**文字**(token 流 / 错误串 / 静默),不是截图,纯文字推理(呼应 §3.2b"帧"= 文字比对)。
+  4. **generic 模型 + 好 prompt**:不 fine-tune、不需深度懂系统;prompt 里写清"看什么信号、卡长啥样、健康长啥样"。
+  5. **ad-hoc、无状态调用**:看门狗(常驻)遇可疑 pane 时**临时叫一次**,**不单独养常驻判断 bot**。
 - **观察窗 + 二次确认(Tadashi 补,机制关键)**:三态判定最难是**边界** —— 长 turn 里瞬时空 prompt(看着 idle、下秒又吐)、error-but-looks-parked(报错后停在类 park 静默态)。→ 检测用**观察窗 + 二次确认**,**不是单帧快照**。**分类器最小契约(Codex R1 MED-5,只定契约不写实现)**:
   - **≥2 帧,间隔有界**(不是单帧);
   - **输入 = live-region diff + token-flow(在不在吐)+ 会话 FSM 态 + 最近 CommDB 事件(ask/park/stage)+ 已过时长**(单看 idle 有无不够 —— 现 `isIdleHealthyPane` 就是单帧、且现 `stuck-candidate` 明说漏掉"输出仍在变的卡"如 retry loop/spinner);
@@ -133,7 +140,7 @@ flowchart TD
 | `isIdleHealthyPane`(`LeadWatchdog.ts:811-826`) | 单帧判定 | 跨 ≥2 帧比对(文字 diff / token / 静默 delta) |
 | `BLOCKED_KEYWORDS`(`:137-153`) | 4 种(rate/usage/login-expired/permission) | + `Server error mid-response` / `Not logged in` / `ENOENT` |
 | `stuck-candidate`(`:16-26`) | 只认 stagnant-fingerprint(屏幕没动) | + 重复错误签名(变但循环同错)+ token-flow(真产出 vs 打转) |
-| 可疑态处理 | 机械直接压掉当 healthy | 升级 **FLY-976 LLM 判断层**判 a/b/c;不确定 → `fail-suspicious` 附原文、不静默 |
+| 可疑态处理 | 机械直接压掉当 healthy | 升级 **FLY-976 LLM 判断层**(便宜小模型 Haiku/Codex 便宜档、**跑 Codex 不占 Claude 额度**、读文字不看图、generic+好 prompt、ad-hoc 无状态)判 a/b/c;不确定 → `fail-suspicious` 附原文、不静默 |
 | 轮询 cadence(`DEFAULT_IDLE_POLL_MS` ~1h) | ~1h 抓屏 | 廉价 gap 扫描每 N min(读 CommDB 不抓 pane)+ pane 帧尽快 |
 | 升级流(~75min 链) | 1h+10min stagnation+5min Lead grace | **统一 Lead-first + ~30min**:发现→立刻通知 Lead→Lead ~30min 没解决→@Annie |
 | liveness | 信"进程活"当 healthy | 读 pane 真状态,不信 alive-flag |

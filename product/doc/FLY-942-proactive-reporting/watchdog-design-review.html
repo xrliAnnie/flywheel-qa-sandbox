@@ -89,7 +89,16 @@
       <tr><td class="k">多久叫到你</td><td class="frm">~75 分钟链</td><td class="to">发现 → 立刻给 Lead → Lead 30min 没解决 → 才 @ 你</td></tr>
       <tr><td class="k">信"进程活着"</td><td class="frm">当健康</td><td class="to">读屏幕真状态,不信"进程活"</td></tr>
     </table></div>
-    <div class="lbl">你的想法(改的方向对不对 / 哪处多余或缺):</div>
+    <div class="callout">🤖 <span class="kk">那个"拿不准时升级的 LLM 判断层"怎么设计</span>(你刚拍的):
+      <ul style="margin:6px 0 0">
+        <li>用<span class="kk">便宜的小模型</span>(读文字做个判断,不重);</li>
+        <li><span class="kk">跑在 Codex 上、不是 Claude</span> —— 因为 Claude 是我们天天撞额度的<span class="kk">瓶颈</span>,看门狗的判断放 Claude 会跟 runner 抢;Codex 额度用不完、错开跑;</li>
+        <li>只<span class="kk">读文字</span>(token 流 / 错误 / 静默),不看截图;</li>
+        <li>用通用模型 + 写好的 prompt(告诉它看什么、卡长啥样、健康长啥样),不用特训;</li>
+        <li><span class="kk">临时叫一次</span>就行,不单独养一个常驻判断机器人。</li>
+      </ul>
+    </div>
+    <div class="lbl">你的想法(改的方向对不对 / 哪处多余或缺 / LLM 层这么设计 OK 吗):</div>
     <textarea placeholder="② TO-BE —— 改法对不对?"></textarea>
   </div>
 
