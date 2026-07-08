@@ -1,13 +1,16 @@
 ---
 issue: FLY-980
 phase: implement
-phaseCursor: 3/9
-updated: 2026-07-08T04:17:44.999Z
-nextStep: build S3/S4/S7 scripts (no key needed); park at S3 if key absent
+phaseCursor: 4/9
+updated: 2026-07-08T04:23:51.719Z
+nextStep: "PARKED awaiting ELEVENLABS_API_KEY in ~/.flywheel/.env → on wake:
+  pnpm --filter flywheel-voice-core build; cd engineering/spike/FLY-980-eleven;
+  node usage.mjs before-all; start shim (FLY980_BRAIN=echo) + cloudflared
+  tunnel; node create-agent.mjs <tunnel-url> <token>; then S4 ladder per plan"
 chunks: []
 pointers: {}
 ---
 
 # FLY-980 progress
-**phase**: implement (3/9)
-**next**: build S3/S4/S7 scripts (no key needed); park at S3 if key absent
+**phase**: implement (4/9)
+**next**: PARKED awaiting ELEVENLABS_API_KEY in ~/.flywheel/.env → on wake: pnpm --filter flywheel-voice-core build; cd engineering/spike/FLY-980-eleven; node usage.mjs before-all; start shim (FLY980_BRAIN=echo) + cloudflared tunnel; node create-agent.mjs <tunnel-url> <token>; then S4 ladder per plan
