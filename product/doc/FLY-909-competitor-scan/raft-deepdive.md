@@ -20,7 +20,7 @@ Round-2 review(给 Annie): `product/doc/FLY-1001-raft-competitor-scan/raft-round
 
 ## 目标用户
 
-**"agent-native builders and teams"** —— 重心偏**技术 builder / 团队**(明写用例:codebase 记忆、CI/CD、code review)。声称 non-coder / GTM 团队也能上手,但**边界模糊**、重心在 builder。⚠️ 这条是**最关键的信号**:它现在**不**瞄「自己建不了的非技术 operator」—— 那正是我们 911 的 beachhead。
+**"agent-native builders and teams"** —— 重心偏**技术 builder / 团队**(明写用例:codebase 记忆、CI/CD、code review)。声称 non-coder / GTM 团队也能上手,但**边界模糊**、重心在 builder。⚠️ 这条是**最关键的信号**:它现在**不**瞄「自己建不了的非技术 operator」—— 那正是我们 911 的 最先专攻的客户群。
 
 ## 产品形态(怎么用)
 
@@ -76,7 +76,7 @@ Free(全功能、30 天历史)/ Pro **$8.80/seat/月**(human=1 seat, agent=0.1 s
 |---|---|---|
 | **① 领域**(替非技术 operator 建养真软件产品、跑真实业务、长期维护) | **部分成立** | 站得住 = **done-for-you + 给建不了的人 + 养**;塌 = 「跑在真实软件上」(**Raft 主场**,它 agent 本就跑你真 repo);且这条**待兑现**,我们还没 ship done-for-you |
 | **② 被协调常驻组织 + 复利**(always-on + 记忆 + 管理分诊 + Push) | **大部分不成立** | 复利/记忆/常驻**被 Raft 机制层匹配甚至更精**;只剩「**管理+Push 层(不用你当 PM)**」一薄条没塌,而且 **Raft 加个 manager agent 就能补** |
-| **③ done-for-you 给非技术 + founder 判断** | **成立(最硬的一轴)** | Raft 重心=builders/teams、盲区=非技术自己建不了的 operator = **我们 beachhead**;Annie operator-taste vs Raft engine-taste 真方向差。**但非结构、靠速度+聚焦守、done-for-you 还没 ship** |
+| **③ done-for-you 给非技术 + founder 判断** | **成立(最硬的一轴)** | Raft 重心=builders/teams、盲区=非技术自己建不了的 operator = **我们 最先专攻的客户群**;Annie operator-taste vs Raft engine-taste 真方向差。**但非结构、靠速度+聚焦守、done-for-you 还没 ship** |
 
 **净结论**:三轴里**②(大部分)+ ①(一半)被 Raft 匹配或塌**,只有**③(客户 wedge + taste)真站得住 —— 且它非结构、靠速度守、还没兑现**。
 
@@ -109,5 +109,5 @@ Free(全功能、30 天历史)/ Pro **$8.80/seat/月**(human=1 seat, agent=0.1 s
 
 ## 对 FLY-911 的影响 + 建议(只出建议,Annie 拍;详见 research.md §6)
 
-- **动摇了『可防御性』,没动摇『打谁』**:always-on + 记得一切被 Raft 匹配(从差异变 table stakes),甚至 Push 也薄;但 beachhead(非技术自己建不了的 operator)是 Raft 盲区、**站得住**。
-- **建议**:①把 Raft 列进『最该警惕』和 Cowork 并列(论威胁**形态**比 Cowork 更狠);②退『供应商中立/复利记忆』当差异(Raft 匹配);③主 messaging 狠押唯一站得住的客户 wedge + 管理/Push + build-in-public + Annie taste;④把『靠速度守、不靠结构守』写进诚实边界;⑤beachhead 不动。**引擎层别恋战 —— 全压 done-for-you 复利产品,ship 得比 Raft 掉头下移市场更快。**
+- **动摇了『可防御性』,没动摇『打谁』**:always-on + 记得一切被 Raft 匹配(从差异变 table stakes),甚至 Push 也薄;但 最先专攻的客户群(非技术自己建不了的 operator)是 Raft 盲区、**站得住**。
+- **建议**:①把 Raft 列进『最该警惕』和 Cowork 并列(论威胁**形态**比 Cowork 更狠);②退『供应商中立/复利记忆』当差异(Raft 匹配);③主 messaging 狠押唯一站得住的客户 wedge + 管理/Push + build-in-public + Annie taste;④把『靠速度守、不靠结构守』写进诚实边界;⑤最先专攻的客户群 不动。**引擎层别恋战 —— 全压 done-for-you 复利产品,ship 得比 Raft 掉头下移市场更快。**

@@ -99,7 +99,7 @@ Issue: FLY-1001 (https://linear.app/geoforge3d/issue/FLY-1001/raft-竞品分析-
 
 ### 轴 3 · done-for-you 给非技术 operator + founder 判断留两头
 **判定:成立 —— 目前最站得住的一轴;但非结构、靠聚焦+速度守。**
-- **站得住**:Raft 重心 = builders/teams,**你自己跑 daemon、你是房间里的 builder/PM**,agent 是你的 coding 队友。它**不是**「给一个建不了的非技术 operator done-for-you」。**那个客户是 Raft 的服务盲区,正是 911 的 beachhead。** Raft 的引擎-founder 在为 builder 优化,不为「非技术 operator done-for-you 体验」优化 —— 真方向 gap。Annie 的 operator-taste vs Raft 的 engine-taste 是真差。
+- **站得住**:Raft 重心 = builders/teams,**你自己跑 daemon、你是房间里的 builder/PM**,agent 是你的 coding 队友。它**不是**「给一个建不了的非技术 operator done-for-you」。**那个客户是 Raft 的服务盲区,正是 911 的 最先专攻的客户群。** Raft 的引擎-founder 在为 builder 优化,不为「非技术 operator done-for-you 体验」优化 —— 真方向 gap。Annie 的 operator-taste vs Raft 的 engine-taste 是真差。
 - ⚠️ **诚实边界**:(a) Raft 声称「non-coders adapt quickly」+ GTM 团队在用,边界模糊、**可下移市场**;(b)**非结构** —— 有钱的 Raft 能建 done-for-you operator 层 + 招 operator 共情;(c) 我们 **done-for-you 还没 ship**(产品没到、Annie 半技术)。所以它**今天作为定位 gap 成立**,但只由**我们抢在 Raft 掉头之前占住这个客户的速度+聚焦**来守。
 - **一句话**:**最硬的一轴,但硬在『Raft 现在不要这个客户』,不硬在结构;靠速度+聚焦,不是稳赢;且 done-for-you 我们还没兑现。**
 
@@ -108,7 +108,7 @@ Issue: FLY-1001 (https://linear.app/geoforge3d/issue/FLY-1001/raft-竞品分析-
 |---|---|---|
 | ① 领域(建养真软件产品) | **部分成立** | done-for-you+给建不了的人+养 站得住;「跑真实软件上」塌(Raft 主场);待兑现 |
 | ② 常驻组织+复利 | **大部分不成立** | 复利/记忆/常驻被 Raft 匹配;只剩「管理+Push 不用你当 PM」一薄条,还可被补 |
-| ③ done-for-you 给非技术+founder 判断 | **成立(最硬)** | Raft 服务盲区=我们 beachhead;但非结构、靠速度+聚焦、done-for-you 未 ship |
+| ③ done-for-you 给非技术+founder 判断 | **成立(最硬)** | Raft 服务盲区=我们 最先专攻的客户群;但非结构、靠速度+聚焦、done-for-you 未 ship |
 
 **净结论**:三轴里**两轴(②大部分、①一半)被 Raft 匹配或塌**,只有**一轴(③客户 wedge + taste)真站得住,且它非结构、靠速度守、还没兑现**。
 
@@ -124,7 +124,7 @@ Issue: FLY-1001 (https://linear.app/geoforge3d/issue/FLY-1001/raft-竞品分析-
 5. **是家专注、会讲工程博客、有定价的真公司** —— 不是玩具。
 
 **没威胁到(我们的口子)**:
-- **目标客户**:Raft 重心 = builders/teams(要跑 daemon、当 PM);**非技术、自己建不了的 operator 是它的盲区** = 我们的 beachhead。**这是唯一真口子。**
+- **目标客户**:Raft 重心 = builders/teams(要跑 daemon、当 PM);**非技术、自己建不了的 operator 是它的盲区** = 我们的 最先专攻的客户群。**这是唯一真口子。**
 - **done-for-you + 管理/Push 层**:Raft 让**你**当房间里的协调者;我们赌「组织自转、只找你拍板」。薄、可被补,但今天是差异。
 
 **一句话定性(不美化)**:**Raft 是我们目前找到最贴、最该警惕的竞品** —— 它把我们的形态产品化了、在引擎层比我们强、还供应商中立。它没吃掉我们的**唯一原因** = 它现在瞄的是 builders,不是我们那个「自己建不了的非技术 operator」。我们的活路窄且非结构:**在 Raft 掉头下移市场之前,把 done-for-you 复利产品替这个客户真正做通。**
@@ -135,11 +135,11 @@ Issue: FLY-1001 (https://linear.app/geoforge3d/issue/FLY-1001/raft-竞品分析-
 
 **Raft 动摇了定位吗?—— 动摇了『可防御性』,没动摇『打谁』。**
 
-911 主线 = 「一直在线、记得一切、还自己把活往前推的公司 —— 你只做判断」+ beachhead = 非技术 OPC operator。逐条对 Raft:
+911 主线 = 「一直在线、记得一切、还自己把活往前推的公司 —— 你只做判断」+ 最先专攻的客户群 = 非技术 OPC operator。逐条对 Raft:
 - **一直在线(always-on)** → Raft 匹配(persistent daemon agent)。**不再独有。**
 - **记得一切(memory)** → Raft 匹配(persistent memory)。**不再独有。**
 - **自己把活往前推(Push)** → Raft 偏 peer-你 steer;Push(组织自转、找你拍板)还算差异,**薄、可被补**。
-- **beachhead 非技术 OPC operator** → Raft 盲区。**站得住,最强。**
+- **最先专攻的客户群 非技术 OPC operator** → Raft 盲区。**站得住,最强。**
 
 **→ 结论:Raft 没使定位的『打谁(target)』失效(它恰恰不要我们的客户),但把定位的『机制卖点(always-on + 记得一切,甚至 Push)』掏空了 —— 这些从『差异』变成了『table stakes』,被一个资源更足、引擎更强的对手匹配。护城河 100% 押在『比 Raft 更早、更专注地把 done-for-you 非技术 operator 产品做通』。**
 
@@ -148,7 +148,7 @@ Issue: FLY-1001 (https://linear.app/geoforge3d/issue/FLY-1001/raft-竞品分析-
 2. **退『供应商中立』和『复利/记忆』当差异**:Raft 都匹配。911 已把供应商中立降为「未来原则」—— 确认它**连差异都不该列**(vs 同形态对手);「记忆/复利」(支柱 1)从『看家本领』改标『table stakes 底座』,**别拿它当主卖点领头**。
 3. **主 messaging 别绕 always-on / 记得一切 / Push 机制**(Raft 有)—— **狠押唯一站得住的**:客户 wedge(done-for-you 给一个**自己建不了**的非技术 operator)+ 管理/Push 层(不用你当 PM)+ build-in-public 真实感 + Annie 的 operator-taste。
 4. **要让 Annie 看到的那句不舒服的真话**:定位在 **target 层没被威胁**(Raft 不要我们的客户),但在**可防御性层被威胁** —— 我们能指的几乎每条机制,现在都被一个更有钱、引擎更强的对手匹配了。护城河就剩一句:**「把 done-for-you 非技术 operator 产品,ship 得比 Raft 掉头更快。」** 停在引擎层 = 被 Raft 吃(压测点 ①②)。所以战略含义是**执行聚焦**:别再打磨引擎(那儿我们输),全压 done-for-you 体验 + 真 ship 复利真产品维护,拿 build-in-public + Annie operator-taste 当**速度**优势。
-5. **我推荐的 911 具体动作**(Annie 拍):beachhead **不动**(Raft 的缺席反而验证了它);但 (a) 加 Raft 进最该警惕;(b) 把 memory/always-on 从『看家本领/支柱』降到『table-stakes 底座』;(c) 把支柱收敛成**领头 = 客户 wedge + 管理/Push + done-for-you 组合**;(d) 把『靠速度守、不靠结构守』这句诚实写进去(现在 911 §7 有诚实边界,但没点破『机制已被同形态对手匹配』这层)。
+5. **我推荐的 911 具体动作**(Annie 拍):最先专攻的客户群 **不动**(Raft 的缺席反而验证了它);但 (a) 加 Raft 进最该警惕;(b) 把 memory/always-on 从『看家本领/支柱』降到『table-stakes 底座』;(c) 把支柱收敛成**领头 = 客户 wedge + 管理/Push + done-for-you 组合**;(d) 把『靠速度守、不靠结构守』这句诚实写进去(现在 911 §7 有诚实边界,但没点破『机制已被同形态对手匹配』这层)。
 
 ---
 

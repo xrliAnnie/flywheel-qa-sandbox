@@ -104,7 +104,7 @@
       <li><strong>推断(标清是推断)</strong>:launch 约 <strong>2026 年中</strong>(launch 博客抓取日期 May 21 2026,存疑但方向一致)—— 若属实则很新、声量还没起来,或主要走 X/私域没大规模 launch。</li>
       <li><strong>赛道热但拥挤(有据)</strong>:2026 年中 Product Hunt「Agent Infrastructure Explosion」,过半 Top20 在做 agent 基建;同类一堆(AI-native email、Agent Arena…)。<span class="dim">Raft 是里面形态最贴我们的一家,但不是唯一。</span></li>
     </ul>
-    <p class="dim">口碑既不吹成「爆红」也不贬成「没人用」—— 就是新、拥挤赛道里一家 pedigree 很硬的玩家。</p>
+    <p class="dim">口碑既不吹成「爆红」也不贬成「没人用」—— 就是新、拥挤赛道里一家 团队出身 很硬的玩家。</p>
   </div>
 
   <div class="card gray">
@@ -118,7 +118,7 @@
   </div>
 
   <div class="card blue">
-    <h2>③ 团队规模 <span class="badge b-unknown">人数 UNKNOWN</span> <span class="badge b-hold">pedigree 硬</span></h2>
+    <h2>③ 团队规模 <span class="badge b-unknown">人数 UNKNOWN</span> <span class="badge b-hold">团队出身 硬</span></h2>
     <p>具体人数拿不到干净数据(同名污染)。但<strong>已确认的人有名有姓、且很强</strong>:</p>
     <ul>
       <li><strong>TennyZhuang(<span class="mono">@zty0826</span>)</strong> —— 分布式系统硬核:RisingWave(streaming compute)、前 Alibaba PolarDB-X(事务)、TiKV/TiDB committer、清华软院、CCPC 金牌。公开宣布 <span class="mono">slock→Raft</span> 改名。</li>
@@ -173,27 +173,28 @@
       </tr>
     </table>
     </div>
-    <p style="margin-top:12px"><strong>净结论:</strong>三轴里 <strong>②(大部分)+ ①(一半)被 Raft 匹配或塌</strong>,只有 <strong>③(客户 wedge + taste)真站得住,且非结构、靠速度守、还没兑现</strong>。</p>
+    <p style="margin-top:12px"><strong>净结论:</strong>三轴里 <strong>②(大部分)+ ①(一半)被 Raft 匹配或塌</strong>,只有 <strong>③(客户切入点 + taste)真站得住,且非结构、靠速度守、还没兑现</strong>。</p>
     <hr class="soft">
     <p><span class="hl-green">🆕 round-2 新挖出的一条差异(建议补进 911 信任章):</span><strong>非技术 trust 模型</strong> —— Raft 服务 architect、trust 靠「读系统信号」(要技术素养);我们服务非技术 operator、trust 靠 <strong>4 件可亲验</strong>(named Lead / 可读审批 / 结果证明 / 护栏)。<strong>「非技术怎么信任」是两套人的两套答案 —— 这条对 Raft 成立。</strong></p>
   </div>
 
   <div class="section-title">Cass 三压测点 —— 证据结论</div>
   <div class="card red">
-    <p><strong>① 停在 orchestrator 层 = 被吃</strong> → <span class="hl-red">完全成立、更扎心</span>。Raft 本身就是被产品化的 orchestrator 层、更成熟。护城河是<strong>待兑现的赌注、不是现有资产</strong>;按我们自认的诚实边界(done-for-you 没到),<strong>此刻我们离「停在引擎层」比离「已 ship 复利产品」更近</strong>。</p>
+    <p><strong>① 停在 调度引擎 层 = 被吃</strong> → <span class="hl-red">完全成立、更扎心</span>。Raft 本身就是被产品化的 调度引擎 层、更成熟。护城河是<strong>待兑现的赌注、不是现有资产</strong>;按我们自认的诚实边界(done-for-you 没到),<strong>此刻我们离「停在引擎层」比离「已 ship 复利产品」更近</strong>。</p>
     <p><strong>② 融资 + 专注 + 前 Kimi → 引擎更精</strong> → <span class="hl-amber">成立,认输这层</span>。硬证据 = Held Draft/version marker 他们已 ship、我们还在 backlog。<strong>别在引擎精巧度上跟它掰(必输战场)</strong>,引擎够用就行。</p>
     <p><strong>③ 唯一真差异(自用 + 真实产品闭环 + Annie 判断)</strong> → <span class="hl-amber">真实但薄</span>。dogfooding 不是护城河(Raft 也自用、还同主场);「跑真实产品上」= Raft 主场;复利被匹配;<strong>最能守的 = 指向非技术 operator 的 founder taste</strong>,但要转成 ship 出的产品才算数、且还在建(Anna)拿真客户声音磨。<strong>是先发 + 聚焦 + taste 优势,不是结构护城河。</strong></p>
   </div>
 
   <div class="section-title">对 FLY-911 定位的建议(弹药 + 推荐 · Annie 拍)</div>
   <div class="card green">
-    <p><strong>动摇了「可防御性」,没动摇「打谁」。</strong>always-on / 记得一切 / 复利被 Raft 匹配、从差异变 <span class="badge b-unknown">table stakes</span>;但 beachhead(非技术自己建不了的 operator)是 Raft 盲区、<strong>站得住</strong>。</p>
+    <p><strong>动摇了「可防御性」,没动摇「打谁」。</strong>always-on / 记得一切 / 复利被 Raft 匹配、从差异变 <span class="badge b-unknown">人人都有的基础能力</span>;但<strong>我们最先要专攻的那群客户</strong>(= 非技术、自己不会写代码、自己做电商/社媒的一人公司老板)是 Raft 盲区、<strong>站得住</strong>。</p>
+    <p class="dim" style="font-size:13px">💬 说明:上一版我用了「beachhead」这个词把你绕懵了,抱歉 —— 它是从军事借来的黑话(滩头阵地),在定位里意思就是「<strong>我们现在先集中火力拿下的那一小群最容易赢的客户</strong>」。这份里我已经全换成人话了。</p>
     <ol>
       <li>把 <strong>Raft 列进「最该警惕」,和 Cowork 并列</strong> —— 论威胁我们的<strong>形态</strong>,Raft 比 Cowork 更狠(它就是我们的形态、供应商中立、引擎领先)。</li>
-      <li><strong>退「供应商中立 / 复利记忆」当差异</strong>(Raft 匹配);memory/always-on 从「看家本领」降为「table stakes 底座」。</li>
-      <li>主 messaging <strong>狠押唯一站得住的</strong>:客户 wedge(给自己建不了的非技术 operator done-for-you)+ 管理/Push + build-in-public + Annie taste。</li>
+      <li><strong>退「供应商中立 / 复利记忆」当差异</strong>(Raft 匹配);memory/always-on 从「看家本领」降为「人人都有的基础能力 底座」。</li>
+      <li>主 messaging <strong>狠押唯一站得住的</strong>:客户切入点(给自己建不了的非技术 operator done-for-you)+ 管理/Push + build-in-public + Annie taste。</li>
       <li>诚实写「<strong>靠速度守、不靠结构守</strong>」;别恋战引擎 —— 全压 done-for-you 复利产品,ship 得比 Raft 掉头下移市场更快。</li>
-      <li><strong>beachhead 不动</strong>(Raft 的缺席反而验证了它)。</li>
+      <li><strong>最先专攻的那群客户不变</strong>(Raft 的缺席反而验证了它 —— 它不来抢这群人)。</li>
       <li><span class="hl-green">🆕</span> <strong>把「非技术 trust 模型」写进 911 §4</strong> 当一条对 Raft 成立的差异。</li>
     </ol>
     <p class="dim">FLY-911 positioning.md <strong>我没擅改</strong> —— 只出弹药 + 建议,定位调不调是 Annie 的决定。</p>
@@ -203,7 +204,7 @@
     <h2>诚实边界 —— 本轮没查到 / 存疑的</h2>
     <ul>
       <li><strong>融资金额 / 投资方 / 轮次</strong> = UNKNOWN(全被同名的物流/国防/dev-env Raft 污染,不硬凑)。</li>
-      <li><strong>团队规模(人数)</strong> = UNKNOWN(pedigree 硬这点坐实,人数没干净来源)。</li>
+      <li><strong>团队规模(人数)</strong> = UNKNOWN(团队出身 硬这点坐实,人数没干净来源)。</li>
       <li><strong>公开声量 / 口碑</strong> = 查无(没找到 HN/PH/Reddit/小红书 对 raft.build 的讨论)。</li>
       <li><strong>创始实体 / CEO</strong> = 存疑(TennyZhuang GitHub 未列 Raft;「Richard/Botiverse」冲突项不采纳)。</li>
       <li><strong>launch 确切日期</strong> = 推断 ~2026 年中(存疑)。</li>

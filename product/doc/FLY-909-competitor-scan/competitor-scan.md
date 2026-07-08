@@ -7,7 +7,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 
 > 一页看完:市场怎么分、各家什么状态、能借什么、我们的差异**候选**线索在哪 —— 全部按「**非技术小生意主**」这个视角(Annie 已定:能读 PR/做验收的高阶画像出局)。
 > **口径(重要)**:「我们跟 Matrix/Paperclip 到底差异化不化、generic-vs-concrete」这类**定位大结论,归 FLY-911 跟 Annie 收敛,本文不硬下** —— 差异一律写成「候选 / 待 911 拍」。本文是喂料,不是定案。
-> **本版改了什么**:〔round-2.1 Annie 批注〕①用词去丧(别人做了 ≠ 我们不能做);②Paperclip 真挖深(见 paperclip-deepdive.md);③不 overclaim「完全非技术」(现在还没到);④修正 Lovable(主要是出 UI 的地方);⑤自托管诚实化(差异是「done-for-you 替你做」);⑥bootstrap 打法写进「可借鉴」。〔round-2.2 扩展〕⑦加 **Claude Cowork + Codex app**,诚实回答「我们还有没有价值 / 会不会被取代」(见 ⑥ 节)—— 编排引擎不占优要认,真差异落在 领域/常驻组织/手机 IM/供应商中立 的组合(候选,待 911)。〔round-3 扩展〕⑧加 **Open Cloud/OpenClaw** 竞品 + **OPC beachhead** 答(见 ⑦ 节)+ 配套 **value-artifact.html**。〔round-3.1 Annie 纠正〕**OPC target 收窄 = 非技术电商/social operator(不是程序员)**;DIY 硬问题 reframe(会自己拼的是程序员、本就不是我们 target,风险不落在攻的这群);定位主线「替一个非技术的一人公司 operator,把一整个公司的活在聊天里做掉」。〔round-3.2 Raft — FLY-1001〕加 **Raft(raft.build,前身 slock)** 竞品(Annie 2026-07-08 发现)+ 三轴 vs Raft 逐轴标(见 §⑧ + `raft-deepdive.md`)。诚实结论:**Raft 是目前找到最贴、最该警惕的一家(比 Matrix/Cowork 更贴我们形态)、且引擎层比我们强(分布式共识+前 Kimi+已 ship version-check/staged-draft)**;三轴里两轴被它匹配/塌,只剩「非技术 operator done-for-you」这一轴站得住,且非结构、靠速度守。深挖分析 = `product/doc/FLY-1001-raft-competitor-scan/research.md`。
+> **本版改了什么**:〔round-2.1 Annie 批注〕①用词去丧(别人做了 ≠ 我们不能做);②Paperclip 真挖深(见 paperclip-deepdive.md);③不 overclaim「完全非技术」(现在还没到);④修正 Lovable(主要是出 UI 的地方);⑤自托管诚实化(差异是「done-for-you 替你做」);⑥bootstrap 打法写进「可借鉴」。〔round-2.2 扩展〕⑦加 **Claude Cowork + Codex app**,诚实回答「我们还有没有价值 / 会不会被取代」(见 ⑥ 节)—— 编排引擎不占优要认,真差异落在 领域/常驻组织/手机 IM/供应商中立 的组合(候选,待 911)。〔round-3 扩展〕⑧加 **Open Cloud/OpenClaw** 竞品 + **OPC 最先专攻的客户群** 答(见 ⑦ 节)+ 配套 **value-artifact.html**。〔round-3.1 Annie 纠正〕**OPC target 收窄 = 非技术电商/social operator(不是程序员)**;DIY 硬问题 reframe(会自己拼的是程序员、本就不是我们 target,风险不落在攻的这群);定位主线「替一个非技术的一人公司 operator,把一整个公司的活在聊天里做掉」。〔round-3.2 Raft — FLY-1001〕加 **Raft(raft.build,前身 slock)** 竞品(Annie 2026-07-08 发现)+ 三轴 vs Raft 逐轴标(见 §⑧ + `raft-deepdive.md`)。诚实结论:**Raft 是目前找到最贴、最该警惕的一家(比 Matrix/Cowork 更贴我们形态)、且引擎层比我们强(分布式共识+前 Kimi+已 ship version-check/staged-draft)**;三轴里两轴被它匹配/塌,只剩「非技术 operator done-for-you」这一轴站得住,且非结构、靠速度守。深挖分析 = `product/doc/FLY-1001-raft-competitor-scan/research.md`。
 
 ---
 
@@ -133,7 +133,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 
 ---
 
-## ⑦ Open Cloud / OpenClaw + OPC beachhead 的硬问题(Annie 新 beachhead)
+## ⑦ Open Cloud / OpenClaw + OPC 最先专攻的客户群 的硬问题(Annie 新 最先专攻的客户群)
 
 ### Open Cloud / OpenClaw 是什么(Annie 灵感来源)
 - **是什么**:Peter Steinberger 的开源**个人 AI 助理**,跑在**你自己的设备**上、在你**已经在用的 IM**(Discord/Telegram/Slack/WhatsApp/Signal… 29 个渠道)里回你;本地私有、零云依赖;能浏览网页/填表/读写文件/跑 shell,跨会话记忆你的偏好/项目/人。
@@ -150,8 +150,8 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
   3. **可靠性要 managed**:它把稳定性甩给自托管用户 —— 我们做**替你托管的可靠**,这正是「持久」区别于「昙花」的地方。
 - ⚠️ **Aimless Agent 查无实据**:两轮 WebSearch 没找到叫「Aimless Agent」的项目(可能很小众/很新,或名字近似,像之前 open people→OpenHands)。**请 Annie/Lead 确认真名或给个链接,我再补**;先不硬编造。
 
-### OPC beachhead(Annie 收窄):目标 = 非技术的一人公司 operator,不是程序员
-**⚠️ target 收窄(盖过早前「技术够的 solo founder」的说法)**:beachhead = **非技术的 OPC operator** —— 自己做电商、自己做 social media 的一人公司。他有「**一个人干一个团队的活**」的痛,但**不是程序员、自己拼不出来 → 需要 done-for-you**。**程序员 OPC 不是我们专门 target**(他们自己能搞、不需要我们、我们也抢不过;能用我们产品但不是攻的人)。
+### OPC 最先专攻的客户群(Annie 收窄):目标 = 非技术的一人公司 operator,不是程序员
+**⚠️ target 收窄(盖过早前「技术够的 solo founder」的说法)**:最先专攻的客户群 = **非技术的 OPC operator** —— 自己做电商、自己做 social media 的一人公司。他有「**一个人干一个团队的活**」的痛,但**不是程序员、自己拼不出来 → 需要 done-for-you**。**程序员 OPC 不是我们专门 target**(他们自己能搞、不需要我们、我们也抢不过;能用我们产品但不是攻的人)。
 
 **定位主线一句话(Annie 定)**:「**替一个非技术的一人公司 operator,把一整个『公司』的活在聊天里做掉。**」
 
@@ -173,7 +173,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 
 **Raft 是什么(核实)**:人+AI agent 在 channels/DM/threads 里当**平等队友**共建;agent 持久身份+记忆、**runtime-agnostic(Claude/Codex/Hermes)**、互相 hand-off+review、"the next one builds on"(复利);跑你自己硬件上的 **lightweight daemon**;目标 **agent-native builders/teams**;定价 Free / Pro $8.80/seat / Enterprise;创始人分布式共识出身+前 Kimi、工程博客已 ship version-check/staged-draft(正是我们还在 backlog 打的 FLY-574 那类坑)。
 
-**威胁到哪(正面撞车)**:①**形态**逐条命中(chat-teammate+@提及+agent 当同事,已产品化)②**供应商中立**——它第三方却做 runtime-agnostic,**打穿我们「中立=第一方不会做」的差异** ③**复利/记忆**机制层被匹配甚至更精 ④**引擎层比我们强**(人+专注+已 ship 的证据)⑤是家专注的真公司,不是玩具。**唯一没被吃的口子 = 目标客户**:Raft 瞄 builders/teams(你跑 daemon、当 PM),**非技术自己建不了的 operator 是它盲区** = 我们 beachhead。
+**威胁到哪(正面撞车)**:①**形态**逐条命中(chat-teammate+@提及+agent 当同事,已产品化)②**供应商中立**——它第三方却做 runtime-agnostic,**打穿我们「中立=第一方不会做」的差异** ③**复利/记忆**机制层被匹配甚至更精 ④**引擎层比我们强**(人+专注+已 ship 的证据)⑤是家专注的真公司,不是玩具。**唯一没被吃的口子 = 目标客户**:Raft 瞄 builders/teams(你跑 daemon、当 PM),**非技术自己建不了的 operator 是它盲区** = 我们 最先专攻的客户群。
 
 ### 三轴差异化 —— 逐轴标 vs Raft(核心交付)
 
@@ -181,7 +181,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 |---|---|---|
 | **① 领域**(替非技术 operator 建养真软件产品、跑真实业务、长期维护) | **部分成立** | 站得住 = **done-for-you + 给建不了的人 + 养**;塌 = 「跑在真实软件上」(**Raft 主场**,它 agent 本就跑你真 repo);且**待兑现**,我们还没 ship done-for-you |
 | **② 被协调常驻组织 + 复利**(always-on + 记忆 + 管理分诊 + Push) | **大部分不成立** | 复利/记忆/常驻**被 Raft 匹配甚至更精**;只剩「**管理+Push 层(不用你当 PM)**」一薄条,还可被 Raft 加个 manager agent 补 |
-| **③ done-for-you 给非技术 + founder 判断** | **成立(最硬)** | Raft 盲区=非技术建不了的 operator = **我们 beachhead**;Annie operator-taste vs Raft engine-taste 真方向差。**但非结构、靠速度+聚焦守、done-for-you 未 ship** |
+| **③ done-for-you 给非技术 + founder 判断** | **成立(最硬)** | Raft 盲区=非技术建不了的 operator = **我们 最先专攻的客户群**;Annie operator-taste vs Raft engine-taste 真方向差。**但非结构、靠速度+聚焦守、done-for-you 未 ship** |
 
 **净结论**:三轴里 **②(大部分)+ ①(一半)被 Raft 匹配或塌**,只有 **③(客户 wedge + taste)真站得住,且非结构、靠速度守、还没兑现**。
 
@@ -213,4 +213,4 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 3. **反差 messaging**:「不是零人公司、是你做判断 AI 做工程」用不用当对外主线?
 4. **诚实边界怎么讲**:我们现在还没到「完全非技术能用」—— 对外要不要坦诚「正在把它做成 done-for-you」而不是假装已经是?(我倾向坦诚,和品类一起早,反而可信。)
 5. **面对 Cowork/Codex 这种大厂通用编排(尤其 Cowork = 非技术 done-for-you)**:我们押哪条组合当立身之本?(我验证下来:领域「建并养真软件产品」+ 常驻组织 + 手机 IM + 供应商中立,最能跟 Cowork 拉开;供应商中立现在「能讲」但不必「现在建全」。这条 911 拍。)
-6. **🆕〔round-3〕面对 Raft(同形态、产品化、供应商中立、引擎领先)**:定位要不要调?(我的证据结论:target 层没被威胁——Raft 不要我们客户;可防御性层被威胁——供应商中立/复利/always-on 都被匹配。建议:①Raft 进最该警惕并列 Cowork ②退供应商中立/复利当差异、降 memory/always-on 为 table stakes ③狠押客户 wedge + 管理/Push + build-in-public + Annie taste ④诚实写『靠速度守非结构守』⑤beachhead 不动。**弹药+建议在此,调不调 Annie 拍;详见 `raft-deepdive.md` + `product/doc/FLY-1001-raft-competitor-scan/research.md §6`。**)
+6. **🆕〔round-3〕面对 Raft(同形态、产品化、供应商中立、引擎领先)**:定位要不要调?(我的证据结论:target 层没被威胁——Raft 不要我们客户;可防御性层被威胁——供应商中立/复利/always-on 都被匹配。建议:①Raft 进最该警惕并列 Cowork ②退供应商中立/复利当差异、降 memory/always-on 为 table stakes ③狠押客户 wedge + 管理/Push + build-in-public + Annie taste ④诚实写『靠速度守非结构守』⑤最先专攻的客户群 不动。**弹药+建议在此,调不调 Annie 拍;详见 `raft-deepdive.md` + `product/doc/FLY-1001-raft-competitor-scan/research.md §6`。**)

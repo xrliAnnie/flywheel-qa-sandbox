@@ -19,7 +19,7 @@ Annie 2026-07-08 发现新竞品 **Raft(raft.build,前身 slock)**,直觉是「K
 
 - **FLY-1001 / FLY-999 issue 正文** = Cass 扒的 Raft profile:频道协作平台、常驻带记忆 agent、本机 daemon、channels/threads/tasks/@提及、创始人分布式共识出身 + 前 Kimi、工程博客(『报数』stale-snapshot / 版本检查 / 暂存草稿 / Dmail)。
 - **FLY-909**:competitor-scan.md(横切表 A + 差异化章节)、matrix-deepdive.md(独立深挖模板)、competitor-deepdives.md(逐家对比矩阵)。
-- **FLY-911**:定位收敛 v1(beachhead = 非技术 OPC operator;真差异 = 协调 + Push;供应商中立已降为「未来原则」;引擎层无护城河已认)。
+- **FLY-911**:定位收敛 v1(最先专攻的客户群 = 非技术 OPC operator;真差异 = 协调 + Push;供应商中立已降为「未来原则」;引擎层无护城河已认)。
 - **有界核实(1 轮 WebFetch/WebSearch,只锁定分析枢轴,不重复 Cass 的 raw-dig)**:raft.build 首页 + docs welcome + 创始人推文。锁定了「目标客户 / 产品形态 / 部署形态 / runtime 后端 / 定价」这几个决定分析走向的事实(详见 research.md)。
 
 ## 核实出来、改变分析走向的两条硬事实(⚠️ 提前 flag)
