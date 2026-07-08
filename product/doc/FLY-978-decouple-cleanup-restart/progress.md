@@ -1,14 +1,14 @@
 ---
 issue: FLY-978
-phase: design
-phaseCursor: 6/8
-updated: 2026-07-08T00:23:01.799Z
-nextStep: PARKED for north-star (①) decision; ②③④ confirmed & logged; on ① →
-  write full PRD
+phase: implement
+phaseCursor: 7/8
+updated: 2026-07-08T00:44:23.481Z
+nextStep: "PR #500 open; awaiting Lead codex design-review -> Annie final
+  review; parked, not shipping"
 chunks: []
 pointers: {}
 ---
 
 # FLY-978 progress
-**phase**: design (6/8)
-**next**: PARKED for north-star (①) decision; ②③④ confirmed & logged; on ① → write full PRD
+**phase**: implement (7/8)
+**next**: PR #500 open; awaiting Lead codex design-review -> Annie final review; parked, not shipping
