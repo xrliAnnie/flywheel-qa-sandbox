@@ -252,3 +252,10 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 ### 8.4 来源(2026-07 WebSearch)
 - OpenClaw:openclaw.ai、github.com/openclaw/openclaw、digitalocean.com、kdnuggets.com、Fast Company AI 20;decline:medium(rosgluk rise-and-fall / mehul "is dead")、techcrunch.com(2026-02-16)、smartproductivitytools.com、elegantsoftwaresolutions.com(May review)、getagentiq.ai(myth-check)
 - Aimless Agent:两轮 WebSearch 无匹配(待确认)
+
+### 8.5 round-3.1 target 纠正(2026-07-07,Lead 指令 fe7ba7c3,盖过 8.2 的「技术够 solo founder」)
+- **target 收窄 = 非技术的 OPC operator**(自己做电商 / social 的一人公司):有「一人干一团队的活」的痛,**不是程序员、自己拼不出来 → 需要 done-for-you**。
+- **不打程序员 OPC**:他们自己能搞、不需要我们、抢不过;能用但不是专门 target。
+- **DIY 硬问题 reframe**:引擎无护城河属实 —— 但会自己拼的是程序员、本就不是我们攻的人,所以 **DIY 风险不落在非技术 operator 这群身上**。对能 DIY 的技术人不占优也不攻;对非技术 operator,他们要替他做 + 常驻组织 + 生态整合 + 体验气质。
+- **定位主线一句话(Annie 定)**:替一个非技术的一人公司 operator,把一整个「公司」的活在聊天里做掉。
+- 落地:competitor-scan.md ⑦ OPC 部分 + 标题本版说明重写;value-artifact.html hero/frame/各支柱 DIY 部分重框;review.html OpenClaw+OPC 卡重框。

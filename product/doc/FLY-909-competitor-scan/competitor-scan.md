@@ -7,7 +7,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 
 > 一页看完:市场怎么分、各家什么状态、能借什么、我们的差异**候选**线索在哪 —— 全部按「**非技术小生意主**」这个视角(Annie 已定:能读 PR/做验收的高阶画像出局)。
 > **口径(重要)**:「我们跟 Matrix/Paperclip 到底差异化不化、generic-vs-concrete」这类**定位大结论,归 FLY-911 跟 Annie 收敛,本文不硬下** —— 差异一律写成「候选 / 待 911 拍」。本文是喂料,不是定案。
-> **本版改了什么**:〔round-2.1 Annie 批注〕①用词去丧(别人做了 ≠ 我们不能做);②Paperclip 真挖深(见 paperclip-deepdive.md);③不 overclaim「完全非技术」(现在还没到);④修正 Lovable(主要是出 UI 的地方);⑤自托管诚实化(差异是「done-for-you 替你做」);⑥bootstrap 打法写进「可借鉴」。〔本次扩展〕⑦加 **Claude Cowork + Codex app**,诚实回答「我们还有没有价值 / 会不会被取代」(见新增 ⑥ 节)—— 编排引擎不占优要认,真差异落在 领域/常驻组织/手机 IM/供应商中立 的组合(候选,待 911)。
+> **本版改了什么**:〔round-2.1 Annie 批注〕①用词去丧(别人做了 ≠ 我们不能做);②Paperclip 真挖深(见 paperclip-deepdive.md);③不 overclaim「完全非技术」(现在还没到);④修正 Lovable(主要是出 UI 的地方);⑤自托管诚实化(差异是「done-for-you 替你做」);⑥bootstrap 打法写进「可借鉴」。〔round-2.2 扩展〕⑦加 **Claude Cowork + Codex app**,诚实回答「我们还有没有价值 / 会不会被取代」(见 ⑥ 节)—— 编排引擎不占优要认,真差异落在 领域/常驻组织/手机 IM/供应商中立 的组合(候选,待 911)。〔round-3 扩展〕⑧加 **Open Cloud/OpenClaw** 竞品 + **OPC beachhead** 答(见 ⑦ 节)+ 配套 **value-artifact.html**。〔round-3.1 Annie 纠正〕**OPC target 收窄 = 非技术电商/social operator(不是程序员)**;DIY 硬问题 reframe(会自己拼的是程序员、本就不是我们 target,风险不落在攻的这群);定位主线「替一个非技术的一人公司 operator,把一整个公司的活在聊天里做掉」。
 
 ---
 
@@ -141,14 +141,20 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
   - **可借鉴**:多渠道触达 + 跨会话记忆 + Discord-showroom 的 build-in-public;⚠️ 别学:深度本地访问的安全敞口、纯自托管把可靠性甩给用户。
 - ⚠️ **Aimless Agent 查无实据**:两轮 WebSearch 没找到叫「Aimless Agent」的项目(可能很小众/很新,或名字近似,像之前 open people→OpenHands)。**请 Annie/Lead 确认真名或给个链接,我再补**;先不硬编造。
 
-### OPC(One Person Company)beachhead:对「技术够、可能自己拼」的人,我们真差异在哪?(诚实压)
-Annie 把 beachhead 落到 **OPC = 一个人开公司那群人(技术够、越来越多)**。**诚实第一条**:OPC 技术够 —— 他**完全可能自己拼**(OpenClaw 自托管 + Cowork + Codex 攒一套),**= 引擎层我们没护城河,这个人群尤其能 DIY**。这条必须认。
+### OPC beachhead(Annie 收窄):目标 = 非技术的一人公司 operator,不是程序员
+**⚠️ target 收窄(盖过早前「技术够的 solo founder」的说法)**:beachhead = **非技术的 OPC operator** —— 自己做电商、自己做 social media 的一人公司。他有「**一个人干一个团队的活**」的痛,但**不是程序员、自己拼不出来 → 需要 done-for-you**。**程序员 OPC 不是我们专门 target**(他们自己能搞、不需要我们、我们也抢不过;能用我们产品但不是攻的人)。
 
-那对 OPC,真差异押哪?(候选,待 FLY-921 —— 都是「他能拼、但懒得拼 / 拼不出气质」的地方):
-1. **常驻组织(不是一个自托管助理、也不是一个你启动的任务)**:一支 always-on、自己分诊 backlog、有记忆、跨项目复用经验的组织 —— OPC 自己用 OpenClaw/Cowork 攒不出「常驻多部门 + 掌控全局」,那要持续搭+维护,不是周末 hack。
-2. **生态整合 / 供应商中立**:按任务难度配模型 + 成本、单一工具短板用别的补(CC 弱多模态 → 接 Antigravity)—— OpenClaw 锁你自己攒、Cowork 锁 Claude、Codex 锁 OpenAI;**中立整合是他能拼但很烦的活**。
-3. **体验气质**:managed、可靠、像真人团队在干(有趣 + drama + 真实,voice 让它像真人)—— 这是 DIY 攒一套永远达不到的「感觉」。
-**诚实总结**:对 OPC,我们赢的不是「他做不到」,而是「**他能拼但懒得拼 / 拼不出这份常驻 + 整合 + 气质**」。这薄不薄、够不够撑一个生意,**归 FLY-921 跟 Annie 拍**。详细的 Value 见配套 **value-artifact.html**。
+**定位主线一句话(Annie 定)**:「**替一个非技术的一人公司 operator,把一整个『公司』的活在聊天里做掉。**」
+
+**DIY 硬问题的诚实 reframe(关键)**:引擎层(编排)我们**确实没护城河** —— 但**会自己拼的是程序员,而程序员本就不是我们攻的人**,所以「能 DIY」这个风险**不落在我们要攻的那群(非技术电商/social operator)身上**。诚实两句:
+- 对**能 DIY 的技术人**:我们不占优、也**不攻他们**。
+- 对**非技术电商/social operator**:他们**拼不出来**(不是程序员),要的是**替他们做 + 常驻组织 + 生态整合 + 体验气质**,不是自己拼引擎。
+
+对这群人,真差异押哪(候选,待 FLY-921):
+1. **替你做(done-for-you)+ 常驻组织**:一支 always-on、自己分诊 backlog、有记忆、跨项目复用经验的组织,替一个非技术 operator 把一整个公司的活做掉 —— 他自己拼不出「常驻多部门 + 掌控全局」,也不该要求他去拼。
+2. **生态整合 / 供应商中立**:按任务难度配模型 + 成本、单一工具短板用别的补(CC 弱多模态 → 接 Antigravity)—— 非技术 operator 更不可能自己整合;Cowork 锁 Claude、Codex 锁 OpenAI,中立整合是第一方结构上不做的。
+3. **体验气质**:managed、可靠、像真人团队在干(有趣 + drama + 真实,voice 让它像真人)—— 一个非技术 operator 要的是「有支队在替我热闹地干活」,不是一堆要自己调的工具。
+**诚实总结**:对**非技术电商/social OPC operator**,我们赢的是「**他自己做不了 / 不该自己拼,我们替他把一整个公司的活在聊天里做掉**」。这够不够撑一个生意,**归 FLY-921 跟 Annie 拍**。详细 Value 见配套 **value-artifact.html**。
 
 ---
 
