@@ -225,3 +225,11 @@ graph TD
 - **⑤ 经验图谱**:自动复盘(run 完抽 失败根因/教训)存 DB 图 → **呼应 FLY-347**;可学"自动从 run 抽结构化 lesson"(我们现在记忆主力人工 markdown)。
 - **⑥ 凭据加密**:对比清楚(它加密存 DB+打码;我们明文本地文件)—— 做沙箱/多机时学(FLY-245 broker 已类似)。
 - **总结**:borrow eng(DAG inject/fork · 语音双通道+ASR 降级 · Docker 沙箱+加密 key · 经验图谱自动抽 lesson),不做生成式 UI 引擎,别 adopt 定位。**最大抓手 = "Session 就是 DAG" + per-category 模板(→ FLY-353)。** 折不折进定位 Annie/FLY-911 拍。
+
+---
+
+## v5 收敛(① DAG 讲清 + eng 点各归其位 · Annie v4 批注后)
+
+- **① DAG(讲清)**:① 她的理解**对** —— Session=Design→Impl→QA 是一种 DAG。② homerail 的 DAG **同理念(节点按依赖流转)、不同粒度**:我们=任务级(issue 三段式 + issue 间 dag-resolver 谁挡谁);homerail=活内部级(一个活拆多 agent 步骤 + inject/fork/profile 跑中能力,我们没有)。③ **FLY-353** = 把这 DAG 理念系统化成主动编排引擎(CoS 分诊 + 自动派 + 每类任务一套 DAG 模板 + inject/fork/profile)—— Annie 在 1004 悟到的"Session 就是 DAG + per-category 模板"正是 353 要落的。HTML v5 配了"我们 vs homerail DAG 粒度"对比图。
+- **eng 借鉴点各归其位(Lead 路由)**:DAG 运行时 → **FLY-353**;语音双 TTS + ASR 主备 → **FLY-906 round-2 backlog**(不改现有 PRD);Docker Worker → **FLY-1005**(多机系统 PRD,接沙箱 FLY-346);经验图谱自动抽 lesson → **FLY-347**(出小应用 HTML);生成式 UI = **not-now**;凭据加密对比清楚(沙箱/多机时学,FLY-245 broker 已类似)。
+- **收敛**:homerail 研究到此收敛。最大抓手 = "Session 就是 DAG" + per-category 模板(→ 353)。定位:borrow eng、别 adopt positioning;两战略点当 FLY-911 外部信号。工程点折不折进 911 = Annie/911 拍。
