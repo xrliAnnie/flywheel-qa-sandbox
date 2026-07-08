@@ -4,6 +4,9 @@ Issue: FLY-910 (https://linear.app/geoforge3d/issue/FLY-910/非工程快速-onbo
 日期: 2026-07-06
 基于: self-hosted-onboarding.md · 2026 web 研究(开源/自托管货币化 + AI agent pricing)
 
+> ## ⏸️ 收费 = placeholder(Annie 2026-07-08 定,块4)
+> **初期不做收费** —— 现在给**创始人自己用、免费全试**。下面这套「license-key 按 Team 订阅」是**后期精进方向**,**先不写死收费细节**,等 **WorkBuddy / homerail 竞品分析**完再一起深化。**隐私(数据在你自己机器、从不碰我们)仍当显式卖点。** 下方分析留作后期收费的底料。
+
 > Annie(2026-07-06)要通盘想清两点:① B 把东西全给对方了、之后怎么收费?A 明显是订阅,C 没想好。② 隐私——用户可能不放心数据放我们这跑,若如此 B 最安全。**下面是我的判断(你来带 Annie 拍),不是已定。**
 
 ---

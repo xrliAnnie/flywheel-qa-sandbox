@@ -9,6 +9,22 @@ Issue: FLY-910 (https://linear.app/geoforge3d/issue/FLY-910/非工程快速-onbo
 
 ---
 
+## ✅ Annie 已拍(2026-07-08)—— picks + 关键想法(已织进 onboarding-flow-detailed.md v2)
+
+> 想法比 picks 更重要,设计按想法改。
+
+| 块 | pick | 关键想法(按这个改设计) |
+|---|---|---|
+| 1 起步 | **A+C** | 终端命令 + 命令行一问一答 + **加「早聊一句」**(Discord+模型接好先跟 Captain 打招呼,工具没全接也行)。 |
+| 2 谁来带 | **自助** | **★重要重构:onboarding = 一个自助 agent「Onboarding Buddy」(参照 Metric)一步步带,跟 Anna 完全分开。Anna = Sales(客户进来 Sales 就结束,顶多传 context)。worst-case 转人工支持,不再喊 Anna。** |
+| 3 Discord bot | **C** | 主线 = **引导客户建他自己的 Discord(server+bot),我们能帮就帮、尽量降摩擦**;现成 bot 池捷径**标成理想/大概率做不成**(控制不了 Discord),当探索项不当承诺。 |
+| 4 收费·隐私 | **A(但延后)** | **收费初期不做**——现在给创始人自用、免费全试;license-key 按 Team = 后期精进,**标 placeholder 不写死**,等 WorkBuddy/homerail 竞品分析。隐私(数据在你自己机器)仍当显式卖点。 |
+| 5 开场文案 | 免费露/隐私露/砍GitHub/机器常开A | **开场文案改得更像人说话、口语自然。** |
+
+**新增待办**:Onboarding Buddy 正式名待定;WorkBuddy + homerail 竞品分析(喂块4 收费深化)。
+
+---
+
 ## 块 1 · 怎么起步(第一步长什么样)
 
 **别人怎么做**:自托管这类(OpenClaw / Hermes)都是**粘一条命令 → 进一个一问一答的引导**,默认给「快路」、把「全控」藏在后面。网页那类(Raft / Matrix)是**注册 → 连订阅 → 装个小程序 → 进频道**。OpenClaw 还专门留了「先别接那么多、直接进去聊一句」的快路。
