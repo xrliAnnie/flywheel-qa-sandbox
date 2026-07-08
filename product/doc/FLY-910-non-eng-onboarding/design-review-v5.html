@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-910 Onboarding Buddy v5 · 请过目</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; padding:0 16px 160px; background:#f5f5f7; color:#1d1d1f;
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif; line-height:1.6; -webkit-text-size-adjust:100%; }
+  .wrap { max-width:860px; margin:0 auto; }
+  header.top { padding:36px 0 6px; }
+  h1 { font-size:23px; margin:0 0 6px; letter-spacing:-0.02em; }
+  .sub { color:#86868b; font-size:15px; margin:0; }
+  .howto { background:#eaf3ff; border:1px solid #cfe3ff; border-radius:12px; padding:14px 18px; margin:22px 0 10px; font-size:15px; color:#1d3a5f; }
+  .block { background:#fff; border-radius:14px; padding:20px 22px 16px; margin:0 0 22px; box-shadow:0 1px 3px rgba(0,0,0,0.06); border-left:4px solid #34c759; }
+  .block h2 { font-size:18px; margin:0 0 4px; }
+  .cnum { color:#86868b; font-size:13px; font-weight:600; }
+  .p { font-size:15px; margin:8px 0 4px; color:#333; }
+  .p b { color:#1a7f37; }
+  .was { font-size:14px; color:#86868b; margin:6px 0 2px; }
+  ol.steps { margin:8px 0; padding-left:22px; font-size:14.5px; color:#333; }
+  ol.steps li { margin:3px 0; }
+  ol.steps b { color:#1a365d; }
+  .locked { background:#f2fbf5; border:1px solid #cdead6; border-radius:10px; padding:10px 14px; margin:10px 0; font-size:14px; color:#1a7f37; }
+  .yn { display:flex; align-items:center; flex-wrap:wrap; gap:9px 14px; margin:12px 0 6px; }
+  label.mini { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:14px; border:1px solid #e3e3e6; border-radius:999px; padding:5px 13px; }
+  label.mini input { width:17px; height:17px; margin:0; accent-color:#34c759; cursor:pointer; }
+  label.mini:has(input:checked) { border-color:#34c759; background:#eafaef; font-weight:600; }
+  textarea.cmt { width:100%; min-height:46px; resize:vertical; border:1.5px solid #ffcf5c; border-radius:10px; background:#fffdf5;
+    padding:9px 12px; font-family:inherit; font-size:15px; color:#1d1d1f; margin-top:4px; }
+  textarea.cmt:focus { outline:none; border-color:#d9a400; background:#fffef9; box-shadow:0 0 0 3px rgba(255,207,92,0.28); }
+  textarea.cmt::placeholder { color:#b8a25a; }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:rgba(255,255,255,0.97); backdrop-filter:blur(8px); border-top:1px solid #ddd; padding:10px 16px; box-shadow:0 -2px 10px rgba(0,0,0,0.06); }
+  .barin { max-width:860px; margin:0 auto; display:flex; flex-direction:column; gap:7px; }
+  #genbtn { background:#007aff; color:#fff; border:none; border-radius:10px; padding:12px; font-size:16px; font-weight:650; cursor:pointer; }
+  #out { width:100%; border:1px solid #ccc; border-radius:8px; padding:9px; font-size:13px; font-family:'SF Mono',ui-monospace,monospace; resize:vertical; display:none; min-height:110px; background:#fff; color:#1d1d1f; }
+  #hint { font-size:12px; color:#86868b; text-align:center; }
+  .foot { margin-top:24px; font-size:13px; color:#86868b; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <h1>Onboarding Buddy v5 · 你说的两处改了 🛠️ 请过目</h1>
+    <p class="sub">FLY-910 · 2026-07-08 · agent CLI 提到最前当地基(不写死厂商)· GitHub 接了</p>
+  </header>
+
+  <div class="howto">
+    <b>你 v4 说了两件,都改了:</b> ① 装 agent CLI 是<b>第一步、地基</b>(Onboarding Buddy 本身就跑在它上面),而且<b>不写死 Claude Code</b>(Claude Code / Codex / 任一都行);② <b>GitHub 接</b>,当基础工具之一。
+    <br>你上次锁的两块(先搭基础工具再问 · Discord 4 步)我没动。每块 👍/✏️ + 留言,拉到底一键复制发回。
+  </div>
+
+  <div class="locked">✅ 已锁(没动):<b>setup-first</b>(先搭基础工具再问做什么)· <b>welcome-first</b>(第一句暖场)· <b>Discord 简化</b>(用户只 4 步、bot 自动建结构)· Onboarding Buddy 分 Anna(Anna=Sales)· 收费=现在不做(placeholder)。</div>
+
+  <!-- R1 CLI=step0 vendor-agnostic -->
+  <div class="block">
+    <div class="cnum">改动 · agent CLI = 地基 / 第一步(vendor-agnostic)</div>
+    <h2>装 agent CLI 提到最前,Buddy 就跑在它上面;不写死厂商</h2>
+    <div class="was">改前:把「接大脑」放在中间的基础工具里,还写死了 Claude Code。</div>
+    <div class="p">改后:你点破的对 —— <b>装一个 agent CLI 是最前面的地基(第 0 步)</b>,因为 <b>Onboarding Buddy 本身就跑在这个 CLI 上</b>,没它就没 buddy、也没东西给用户用。而且 <b>不写死:Claude Code / Codex / 任一 agent CLI 都行</b>(vendor-agnostic)。那条命令干的第一件事就是把它装好 + 让用户登录自己的账号,然后 Buddy 在它上面起来、才有后面的对话。</div>
+    <div class="yn"><label class="mini"><input type="radio" name="c1" value="就这样">👍 就这样</label><label class="mini"><input type="radio" name="c1" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="cmt1" placeholder="比如默认装哪个 CLI / 有别的想法…"></textarea>
+  </div>
+
+  <!-- R2 github -->
+  <div class="block">
+    <div class="cnum">改动 · GitHub = 接</div>
+    <h2>GitHub 接上,当基础工具之一</h2>
+    <div class="was">改前:之前定的是「砍 GitHub、仓留本地」(还留了个问号问你)。</div>
+    <div class="p">改后:按你定的 —— <b>GitHub 接</b>,跟 agent CLI / Discord / 后台本子(Linear)并列当基础工具。用户团队做的东西(代码/产物)存 GitHub,安全、有版本、搬得走;onboarding 里点一下授权就接好(不贴 token)。那个问你的问号去掉了。</div>
+    <div class="yn"><label class="mini"><input type="radio" name="c2" value="就这样">👍 就这样</label><label class="mini"><input type="radio" name="c2" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="cmt2" placeholder="想说什么写这儿…"></textarea>
+  </div>
+
+  <!-- FLOW recap -->
+  <div class="block">
+    <div class="cnum">改后整条顺序(给你对一眼)</div>
+    <h2>从「粘一条命令」到「有个能跑的 system」</h2>
+    <ol class="steps">
+      <li><b>第 0 步 · 地基</b>:装一个 agent CLI(Claude Code/Codex/任一)+ 登录 —— Buddy 跑在它上面</li>
+      <li><b>欢迎</b>(暖场,不派活)</li>
+      <li><b>搭其余基础工具</b>:建你的 Discord · 后台本子(Linear)· GitHub</li>
+      <li>地基齐了,<b>才问你「想先搞定哪件事」</b></li>
+      <li>从你那句话<b>长出一个小团队</b>(Captain+Crew)</li>
+      <li><b>先跟 Captain 打个招呼</b></li>
+      <li><b>接你这件事要用的系统</b>(只接这件要的)</li>
+      <li>自动安顿上线(产物推到你的 GitHub 仓)</li>
+      <li><b>它真帮你干成第一件事</b></li>
+    </ol>
+    <div class="yn"><label class="mini"><input type="radio" name="c3" value="就这样">👍 顺序 OK</label><label class="mini"><input type="radio" name="c3" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="cmt3" placeholder="顺序想调就写这儿…"></textarea>
+  </div>
+
+  <div class="foot">草稿 · 不上线 · 不替你定。完整可建 spec 在 onboarding-buddy-spec.md;Discord 权限查证在 discord-permission-research.md。<br>
+  还开着:agent CLI 默认装哪个 · Buddy 正式名 · 命令具体形态 · 收费(等 WorkBuddy/homerail 竞品分析)· 「Draft」竞品(等你给链接)。</div>
+
+</div>
+
+<div class="bar"><div class="barin">
+  <button id="genbtn">✅ 生成我的反馈(一键复制)</button>
+  <textarea id="out" readonly></textarea>
+  <div id="hint">看完点这个 → 自动复制 → 粘贴发回给我</div>
+</div></div>
+
+<script nonce="__CSP_NONCE__">
+document.getElementById("genbtn").addEventListener("click", function () {
+  var items = [
+    { name: "c1", cmt: "cmt1", label: "agent CLI=地基/step0(vendor-agnostic)" },
+    { name: "c2", cmt: "cmt2", label: "GitHub=接" },
+    { name: "c3", cmt: "cmt3", label: "整条顺序" }
+  ];
+  var lines = ["FLY-910 Onboarding Buddy v5 — 我的反馈:"];
+  items.forEach(function (it) {
+    var r = document.querySelector('input[name="' + it.name + '"]:checked');
+    var c = document.getElementById(it.cmt);
+    var s = it.label + ": " + (r ? r.value : "(没点)");
+    if (c && c.value.trim()) s += " — " + c.value.trim();
+    lines.push(s);
+  });
+  var text = lines.join("\n");
+  var out = document.getElementById("out"), hint = document.getElementById("hint");
+  out.style.display = "block"; out.value = text; out.focus(); out.select();
+  try {
+    navigator.clipboard.writeText(text);
+    hint.textContent = "✅ 已复制,直接粘贴发回给我";
+  } catch (e) {
+    hint.textContent = "选中上面这段复制,发回给我";
+  }
+});
+</script>
+</body>
+</html>

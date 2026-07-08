@@ -19,9 +19,14 @@ Issue: FLY-910 (https://linear.app/geoforge3d/issue/FLY-910/非工程快速-onbo
 | 2 谁来带 | **自助** | **★重要重构:onboarding = 一个自助 agent「Onboarding Buddy」(参照 Metric)一步步带,跟 Anna 完全分开。Anna = Sales(客户进来 Sales 就结束,顶多传 context)。worst-case 转人工支持,不再喊 Anna。** |
 | 3 Discord bot | **C** | 主线 = **引导客户建他自己的 Discord(server+bot),我们能帮就帮、尽量降摩擦**;现成 bot 池捷径**标成理想/大概率做不成**(控制不了 Discord),当探索项不当承诺。 |
 | 4 收费·隐私 | **A(但延后)** | **收费初期不做**——现在给创始人自用、免费全试;license-key 按 Team = 后期精进,**标 placeholder 不写死**,等 WorkBuddy/homerail 竞品分析。隐私(数据在你自己机器)仍当显式卖点。 |
-| 5 开场文案 | 免费露/隐私露/砍GitHub/机器常开A | **开场文案改得更像人说话、口语自然。** |
+| 5 开场文案 | 免费露/隐私露/机器常开A(GitHub 见 v4 追加) | **开场文案改得更像人说话、口语自然。** |
 
-**新增待办**:Onboarding Buddy 正式名待定;WorkBuddy + homerail 竞品分析(喂块4 收费深化)。
+### v4 追加(Annie 2026-07-08 复审)
+- **agent CLI = 地基 / step 0 · vendor-agnostic**:装一个 agent CLI(Claude Code / Codex / 任一,不写死)是最前面的地基 —— Onboarding Buddy 就跑在它上面。取代原「接大脑=贴 key」。
+- **GitHub = 接**(推翻块5 的「砍 GitHub」):GitHub 作基础工具之一,跟 CLI / Discord / Linear 并列。
+- 已锁:setup-first · welcome-first · 建 Discord 简化(4 步手动 + bot 自动建结构)。
+
+**新增待办**:Onboarding Buddy 正式名待定;agent CLI 默认装哪个(vendor-agnostic);WorkBuddy + homerail 竞品分析(喂块4 收费深化)。
 
 ---
 

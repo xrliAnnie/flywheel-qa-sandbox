@@ -20,11 +20,12 @@ Issue: FLY-910 (https://linear.app/geoforge3d/issue/FLY-910/非工程快速-onbo
 
 ---
 
-## 状态机总览(给 Tadashi)— setup-first(Annie v3 定)
+## 状态机总览(给 Tadashi)— agent CLI 地基 + setup-first(Annie v3/v4 定)
 
 ```
-S0 装 → S1 Welcome(先暖场,不派活)
-     → S2 setup 基础工具(task-independent):2a Claude Code(装+登录,非 API key)· 2b 建你自己的 Discord(简化,bot 自动建结构)· 2c Linear(一点授权)
+step0 地基:装一个 agent CLI(Claude Code / Codex / 任一,vendor-agnostic)+ 登录 —— Buddy 就跑在它上面
+     → S1 Welcome(先暖场,不派活)
+     → S2 setup 其余基础工具(task-independent):2a 建你自己的 Discord(简化,bot 自动建结构)· 2b Linear(一点授权)· 2c GitHub(一点授权,Annie v4 定=接)
      → S3 才问「先搞定哪件事」 → S4 定 Team → S5 早聊一句(welcome-first)
      → S6 接第一件事要用的业务工具(JIT) → S7 自动安置 → S8 首次产出 → DONE
         每步写 onboarding-state.json(cursor + 已完成步),中断重跑从 cursor 续。
@@ -32,18 +33,20 @@ S0 装 → S1 Welcome(先暖场,不派活)
 ```
 状态持久化 `~/.flywheel-onboarding/state.json`(不含任何 secret)。
 
-> **⚠️ 本文以下屏级段落(S0–S8)是早期顺序 + 早期接法(含旧的『贴 model key』『S5/S5.5』编号)。权威流程以 `onboarding-buddy-spec.md` v2 为准**(setup-first 顺序 / 接大脑=Claude Code CLI 非 key / 简化 Discord 4 步)。本文保留作屏级文案参考,**顺序与接法以 buddy-spec 为准**;下方 S4、S5 已就地修正为新接法。
+> **⚠️ 本文以下屏级段落是早期编号/接法。权威流程以 `onboarding-buddy-spec.md` v3 为准**:① **agent CLI = 地基 / step 0**(vendor-agnostic:Claude Code/Codex/任一;Buddy 跑在它上面)· ② setup-first(先搭基础工具再问做什么)· ③ 基础工具 = Discord + Linear + **GitHub(接)** · ④ 简化 Discord 4 步。本文 S0/S4 已就地修正指向 step0;S7 已改为 GitHub 接。
 
 > **Onboarding Buddy 是谁(给 Tadashi)**:一个**自助引导 agent**,在终端里一步步带客户走完 S0–S8,能自动的后台悄悄做、要客户亲手的手把手带。它**独立于 Anna**(Anna=Sales,只在客户进来前;顶多把 Sales 阶段的 context 传给 Onboarding Buddy 当开场底料)。worst-case 它把客户转给**人工支持**,不是 Anna。
 
 ---
 
-## S0 · 一条 command(装 + 起 Onboarding Buddy)
+## S0 · 一条 command → 装 agent CLI 地基 + 起 Onboarding Buddy(Annie v4:CLI=地基 · vendor-agnostic)
+> **地基**:那条 command 的引导安装脚本先把**一个 agent CLI(Claude Code / Codex / 任一,不写死)**装好 + 登录**用户自己的账号/订阅**,**Onboarding Buddy 就跑在这个 CLI 上**——没它 Buddy 起不来。装好后 Buddy 在其上启动、接管后面全程。详见 buddy-spec 步骤 0。
 - **客户操作**:粘一条命令进终端。形态 ⟨待定:`curl -fsSL https://get.flywheel.ai | sh` vs `npx @flywheel/onboard`⟩。
-- **客户看到**(纯进度,非日志):
-  `正在准备… 检查环境 ✓  安装 ✓  启动向导 ✓`
-- **系统动作**:检测 Node≥20 / git → 缺则 `[AUTO]` 装或问一句「我帮你装 Node?(y/n)」→ 全局装 CLI → 起 Onboarding Buddy 进程(若 Anna 传了 context,载入当开场底料)。
-- **校验**:装完自检 `flywheel --version` 通。
+- **客户看到**(纯进度 + 一次登录):
+  `正在准备… 检查环境 ✓  装好你的 agent 工具 ✓  让你登录一下…`
+  > 先装一个 **agent 工具**(它是你这套东西的底座)。装好了,现在浏览器里登录你自己的账号、点同意 —— 用你自己的订阅,不用弄任何密钥。
+- **系统动作**:检测 Node≥20 / git(缺则 [AUTO] 装或问)→ 全局装 Flywheel onboard 层 → **`[AUTO]` 检测/装一个 agent CLI(vendor-agnostic:Claude Code/Codex/…,默认可配)+ 引导浏览器 OAuth 登录用户自己账号/订阅**(不收 key)→ 校验能起最小会话 → **在这个 CLI 上启动 Onboarding Buddy**(若 Anna 传了 context,载入当开场底料)。
+- **校验**:agent CLI 能起一个最小会话 + Buddy 在其上启动。
 - **失败分支**:
   - 无网络 → `连不上网,检查网络后重跑这条命令就行(已完成的不会重来)。`
   - 不支持 OS(非 macOS/Linux/WSL2,FLY-648)→ `你的系统我暂时还没支持(现支持 Mac / Linux / Windows 的 WSL2)。我帮你转个人工支持看看?`
@@ -84,20 +87,8 @@ S0 装 → S1 Welcome(先暖场,不派活)
 
 ---
 
-## S4 · 接大脑 = Claude Code CLI(装 + 登录;**不是贴 key** · Annie v3 改正)[MANUAL·引导]
-> **改正**:**不接 Cloud/API key** —— 是让用户在自己机器上**装 + 登录 Claude Code**(用他自己的 Claude 订阅)。新 setup-first 顺序里 = 步骤 2a(基础工具第一样)。
-- **客户看到**:
-  > 给团队接个「大脑」,用的是 **Claude Code**。你在这台电脑上装一下、登录你自己的 Claude 账号就行(用你的 Claude 订阅,不用弄什么密钥)。
-  > 我把安装命令给你准备好了,跑一下;然后它会让你在浏览器里登录 Claude,点同意就成。
-- **输入**:跑安装命令 + 浏览器 OAuth 登录(用户自己的 Claude 订阅)。
-- **系统动作**:`[AUTO]` 检测/装 Claude Code CLI → 引导 `claude` 登录 → 浏览器 OAuth → 校验能起一个最小会话。**不收 API key、不碰 Cloud key、无 key 明文落地。**
-- **校验**:能起一个最小 Claude Code 会话。
-- **失败分支**:
-  - 没装成 → 给手动安装链接 + `装好回来说声。`
-  - 登录没弹浏览器 → 给可复制登录 URL + `点这个登录。`
-  - 登录失败 2 次 → 转人工支持。
-- **延迟**:装 + 登录典型 30–90s。
-- **续传**:成功标记 done(登录态由 Claude Code 自管,不落 state 明文)。
+## S4 · (已上移到 S0 地基)接大脑 = 装 agent CLI + 登录 · vendor-agnostic
+> **Annie v4 改**:「接大脑」不再是中间某步、也不写死 Claude Code —— 它就是 **step 0 地基**:装一个 agent CLI(**Claude Code / Codex / 任一**)+ 登录用户自己账号/订阅,**Onboarding Buddy 跑在它上面**。**不接 Cloud/API key**(浏览器 OAuth 登录)。详见 **S0** 与 buddy-spec 步骤 0。此处不再单列。
 
 ## S5 · 建你自己的 Discord(server + bot)— 亲手事之二 [MANUAL·手把手]
 > **块3 决定(Annie)**:主线 = **引导客户建他自己的 Discord —— 我们能帮的都帮、尽量降摩擦**。Discord 建 bot 这一步**没法替他自动化**(平台不给接口),只能手把手带到「点错都难」。配**截图 + 15s 短视频**(脚本见附录 A)。
@@ -186,7 +177,7 @@ S0 装 → S1 Welcome(先暖场,不派活)
   > 都授权好了,我把你的团队正式安置一下 ——
   > ✓ 建工作区　✓ 配好 Captain 和 Crew　✓ 让团队常驻　✓ 上线自检
   > 搞定 🎉
-- **系统动作([AUTO])**:脚手架本地工作区(**砍 GitHub、仓留本地**)→ 写 projects.json → 生成+校验 manifest → 装 **OS-portable 常驻服务**(macOS launchd / Linux systemd / WSL2,FLY-648)→ 起 Bridge → 健康检查(bot 在线 + Captain 响应)。
+- **系统动作([AUTO])**:脚手架工作区 → **推到 GitHub 仓**(Annie v4:GitHub 已接、作基础工具之一;不再砍)→ 写 projects.json → 生成+校验 manifest → 装 **OS-portable 常驻服务**(macOS launchd / Linux systemd / WSL2,FLY-648)→ 起 Bridge → 健康检查(bot 在线 + Captain 响应)。
 - **校验**:health-check 全绿(bot online + Captain 能响应一条内部 ping)。
 - **失败分支**:某步失败 → 具体报错 + 自动重试 1 次 → 仍失败 `安置卡在「<步骤>」了,我帮你转个人工支持看一下,很快回你。` → escalate(不把栈信息甩客户)。
 - **延迟**:典型 30–90s,进度条逐项打勾。
