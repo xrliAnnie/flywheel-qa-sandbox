@@ -395,3 +395,165 @@ describe("FLY-818 M3 emitFounderStuckNotification (issue-thread page)", () => {
 		expect(r.kind).toBe("permanent_failed");
 	});
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// FLY-927 (Task 1.5): emitIssueThreadInfraNotification — the Router's
+// issue-thread delivery leg.
+// ─────────────────────────────────────────────────────────────────────────
+
+import { emitIssueThreadInfraNotification } from "../founder-thread-notifier.js";
+
+function infraOpts(over: Record<string, unknown> = {}) {
+	return {
+		executionId: "exec-9",
+		issueId: "issue-uuid-9",
+		issueIdentifier: "FLY-9",
+		projectName: "flywheel",
+		kind: "three_stage_stuck",
+		content: "🔧 [FLY-9] three-stage pipeline stuck — reason",
+		thread: {
+			thread_id: "T9",
+			channel_id: "C9",
+			lead_id: null,
+			archived_at: null,
+		},
+		botToken: "bot-token",
+		onUndeliverable: vi.fn(),
+		...over,
+	};
+}
+
+function okJson(status = 200): Response {
+	return {
+		ok: true,
+		status,
+		headers: { get: () => null },
+		json: async () => ({ id: "m-1" }),
+		text: async () => "",
+	} as unknown as Response;
+}
+
+describe("FLY-927 emitIssueThreadInfraNotification", () => {
+	it("2xx → posted + audit, mentions fully suppressed when no mentionUserId", async () => {
+		const { store, events } = makeStore();
+		const fetchImpl = vi.fn(async () => okJson());
+		const opts = infraOpts();
+		const r = await emitIssueThreadInfraNotification(
+			opts as Parameters<typeof emitIssueThreadInfraNotification>[0],
+			{ store, fetchImpl: fetchImpl as unknown as typeof fetch },
+		);
+		expect(r.kind).toBe("posted");
+		const body = JSON.parse(
+			(fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1]
+				.body as string,
+		);
+		expect(body.allowed_mentions).toEqual({ parse: [] });
+		expect(events.map((e) => e.event_type)).toEqual([
+			"issue_thread_infra_notified",
+		]);
+		expect(opts.onUndeliverable).not.toHaveBeenCalled();
+	});
+
+	it("validated mentionUserId → single-user allowed_mentions", async () => {
+		const { store } = makeStore();
+		const fetchImpl = vi.fn(async () => okJson());
+		await emitIssueThreadInfraNotification(
+			infraOpts({ mentionUserId: OWNER }) as Parameters<
+				typeof emitIssueThreadInfraNotification
+			>[0],
+			{ store, fetchImpl: fetchImpl as unknown as typeof fetch },
+		);
+		const body = JSON.parse(
+			(fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1]
+				.body as string,
+		);
+		expect(body.allowed_mentions).toEqual({ users: [OWNER] });
+	});
+
+	it("transient failures retry within budget, then onUndeliverable fires", async () => {
+		const { store, events } = makeStore();
+		const fetchImpl = vi.fn(async () => res(503));
+		const opts = infraOpts();
+		const r = await emitIssueThreadInfraNotification(
+			opts as Parameters<typeof emitIssueThreadInfraNotification>[0],
+			{
+				store,
+				fetchImpl: fetchImpl as unknown as typeof fetch,
+				maxAttempts: 3,
+				sleepFn: async () => {},
+			},
+		);
+		expect(r.kind).toBe("transient_failed");
+		expect(fetchImpl).toHaveBeenCalledTimes(3);
+		expect(opts.onUndeliverable).toHaveBeenCalledExactlyOnceWith(
+			"transient-503-budget-exhausted",
+		);
+		expect(
+			events.filter((e) => e.event_type === "issue_thread_infra_notify_failed")
+				.length,
+		).toBe(3);
+	});
+
+	it("transient then success within budget → posted, NO onUndeliverable", async () => {
+		const { store } = makeStore();
+		let n = 0;
+		const fetchImpl = vi.fn(async () => (++n === 1 ? res(503) : okJson()));
+		const opts = infraOpts();
+		const r = await emitIssueThreadInfraNotification(
+			opts as Parameters<typeof emitIssueThreadInfraNotification>[0],
+			{
+				store,
+				fetchImpl: fetchImpl as unknown as typeof fetch,
+				sleepFn: async () => {},
+			},
+		);
+		expect(r.kind).toBe("posted");
+		expect(opts.onUndeliverable).not.toHaveBeenCalled();
+	});
+
+	it("permanent 4xx → NO retry, onUndeliverable fires once", async () => {
+		const { store } = makeStore();
+		const fetchImpl = vi.fn(async () => res(403));
+		const opts = infraOpts();
+		const r = await emitIssueThreadInfraNotification(
+			opts as Parameters<typeof emitIssueThreadInfraNotification>[0],
+			{ store, fetchImpl: fetchImpl as unknown as typeof fetch },
+		);
+		expect(r.kind).toBe("permanent_failed");
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+		expect(opts.onUndeliverable).toHaveBeenCalledExactlyOnceWith(
+			"permanent-403",
+		);
+	});
+
+	it("DEFENSIVE: no thread binding → skipped + onUndeliverable (Router should have fail-safed)", async () => {
+		const { store, events } = makeStore();
+		const fetchImpl = vi.fn();
+		const opts = infraOpts({ thread: undefined });
+		const r = await emitIssueThreadInfraNotification(
+			opts as Parameters<typeof emitIssueThreadInfraNotification>[0],
+			{ store, fetchImpl: fetchImpl as unknown as typeof fetch },
+		);
+		expect(r.kind).toBe("skipped");
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(opts.onUndeliverable).toHaveBeenCalledExactlyOnceWith(
+			"no_chat_thread",
+		);
+		expect(events[0]?.event_type).toBe("issue_thread_infra_notify_skipped");
+	});
+
+	it("onUndeliverable throwing never breaks the alert path", async () => {
+		const { store } = makeStore();
+		const fetchImpl = vi.fn(async () => res(403));
+		const opts = infraOpts({
+			onUndeliverable: vi.fn(() => {
+				throw new Error("seam broke");
+			}),
+		});
+		const r = await emitIssueThreadInfraNotification(
+			opts as Parameters<typeof emitIssueThreadInfraNotification>[0],
+			{ store, fetchImpl: fetchImpl as unknown as typeof fetch },
+		);
+		expect(r.kind).toBe("permanent_failed");
+	});
+});

@@ -88,6 +88,13 @@ export interface AccountSwitchRuntime {
 	 * failure must never fail the request.
 	 */
 	onSwitchSuccess?: () => Promise<void>;
+	/**
+	 * FLY-927 (Task 2.3): ticket ACK — fired once the pending switch is
+	 * ATOMICALLY claimed (the owner bot took the ticket). `sourceAlertId` is the
+	 * alert eventId; the wiring resolves it via getActiveAlertThreadByEventId so
+	 * a stale episode can never be acked. Optional + best-effort (byte-compat).
+	 */
+	ackTicket?: (sourceAlertId: string) => void;
 	/** Defaults to the shared pending store path / its flock / withMkdirLock. */
 	pendingPath?: string;
 	pendingLockPath?: string;
@@ -208,6 +215,18 @@ export function createAccountSwitchRouter(
 					detail: `no unclaimed pending switch for key ${key} (missing or already claimed)`,
 				});
 				return;
+			}
+
+			// FLY-927 (Task 2.3): the atomic claim IS the ticket ACK — best-effort;
+			// an ack failure must never fail the switch.
+			if (rt.ackTicket) {
+				try {
+					rt.ackTicket(sourceAlertId);
+				} catch (err) {
+					console.warn(
+						`[account-switch] ticket ack failed: ${(err as Error).message}`,
+					);
+				}
 			}
 
 			// Execute the switch (switchAccount + resolvePending live inside).

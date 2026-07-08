@@ -30,6 +30,7 @@ import {
 } from "flywheel-comm/xiaohongshu-state";
 import {
 	type CommBackend,
+	phaseMessageTag,
 	resolveAllFlags,
 	resolveCommBackend as resolveCommBackendShared,
 	THREE_STAGE_PHASE_SEQUENCE,
@@ -115,6 +116,11 @@ import {
 	buildRepairChain,
 	resolveFirstAvailableBotToken,
 } from "./alert-bot-chain.js";
+// FLY-927 (T1): unified-channel root-message rate cap.
+import {
+	createAlertRateLimiter,
+	rateLimitPerMinuteFromEnv,
+} from "./alert-rate-limiter.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
@@ -127,6 +133,8 @@ import { AutoContinueArmer } from "./autocontinue-armer.js";
 import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { runBootShaCheck } from "./boot-sha-check.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
+// FLY-927 (Task 3.3): truthful stage wording for the three-stage stuck alert.
+import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
@@ -181,9 +189,13 @@ import {
 	buildGateResponsePostWriteHook,
 } from "./founder-consent/wiring.js";
 import { loadFounderMilestoneReportConfigByProject } from "./founder-milestone-config-source.js";
+// FLY-927 (Task 2.4): T2 escalation page reuses the FLY-818 stuck notification.
+import { emitFounderStuckNotification } from "./founder-thread-notifier.js";
 import { mountFounderUxRoutes } from "./founder-ux/routes.js";
 import { GatePoller } from "./gate-poller.js";
 import { buildSessionKey } from "./hook-payload.js";
+// FLY-927 (W1): D1 responder-based routing — ticket queue vs issue thread.
+import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
 	formatAccountCapOwnerAssignment,
 	formatRotationDigest,
@@ -3816,6 +3828,15 @@ export async function startBridge(
 	const leadPendingAlertHolder: {
 		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	} = {};
+	// FLY-927 (Task 1.1): late-bound ROUTED alert sink — the single funnel every
+	// emission source calls, so the D1 Router sees every infra event. Populated
+	// right after the raw alertSink below; emitters constructed earlier read
+	// `.current` at fire time and fall back to the raw notifier during the
+	// synchronous boot window (identical behavior — routing only matters at
+	// runtime, and FLYWHEEL_ALERT_ROUTING unset keeps it a pure passthrough).
+	const routedAlertSinkHolder: {
+		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
+	} = {};
 	// FLY-799: founder-in-thread ship approval. When the founder replies "ship
 	// it" / ✅ in a `[FLY-XX]` thread, this callback attributes the approval to
 	// HER (canonical founder id), writes {"approved":true} to the approve_to_ship
@@ -3953,7 +3974,11 @@ export async function startBridge(
 					session.project_name,
 					parseJsonStringArray(session.issue_labels) ?? [],
 				);
-				await leadAlertNotifier.alert({
+				// FLY-927 (merge integration): route through the shared infra funnel
+				// so the merged-in external_merge_suspect kind gets owner enrichment +
+				// AlertChannelHub ticket/thread lifecycle like every other infra
+				// emitter (routing OFF ⇒ passthrough to the raw notifier = byte-compat).
+				await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
 					leadId: lead.agentId,
 					projectName: session.project_name,
 					eventId: `external-merge:${session.execution_id}:${title}`,
@@ -4115,6 +4140,9 @@ export async function startBridge(
 			}
 		: undefined;
 
+	// FLY-927 (T1): unified-channel root-message rate cap (production: 20/min).
+	// Env unset ⇒ no limiter ⇒ byte-compat unlimited sends.
+	const alertRatePerMin = rateLimitPerMinuteFromEnv(process.env);
 	const leadAlertNotifier = new LeadAlertNotifier({
 		store,
 		projects,
@@ -4122,6 +4150,9 @@ export async function startBridge(
 		claimsClaimer,
 		metaAlert: metaAlertNotifier,
 		unifiedAlert,
+		...(alertRatePerMin
+			? { rateLimiter: createAlertRateLimiter(alertRatePerMin) }
+			: {}),
 		// FLY-529: QA Testing Room alert isolation. Unset env → both fields
 		// undefined → notifier keeps its shared production defaults (byte-compat).
 		// The test Bridge sets FLYWHEEL_ALERT_QUEUE_DIR / _DEADLETTER_DIR to slot-
@@ -4184,7 +4215,13 @@ export async function startBridge(
 				store,
 				projects,
 				config,
-				leadAlertNotifier,
+				// FLY-927 (W1): route auto-QA alerts through the routed sink (both its
+				// kinds are ticket-class, so behavior is unchanged — this closes the
+				// bypass so EVERY emission source shares the one funnel).
+				leadAlertNotifier: {
+					alert: (p) =>
+						(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(p),
+				},
 				// FLY-630 ②: drive the PARENT issue thread's stage badge across the QA
 				// phase (🧪QA while running → ⏳待批 on pass → 🔨实现中 on fail). Only
 				// set when the chat-thread feature is on; otherwise stampIssueStage
@@ -4609,7 +4646,28 @@ export async function startBridge(
 							);
 							return;
 						}
-						await leadAlertNotifier.alert({
+						// FLY-927 (Task 3.3, FLY-912 wording collapse): the body leads with
+						// the TRUTHFUL park line derived from the session's REPORTED stage
+						// (never guessed); underivable → an explicit stage未上报 prefix.
+						const fullSession = store.getSession(session.execution_id);
+						const parkTuple = fullSession
+							? deriveParkTuple({
+									session: fullSession,
+									pendingGates: [],
+									autoQaActive: false,
+									notifiedEvidence: false,
+									ownerLeadId: leadId,
+									nowMs: Date.now(),
+								})
+							: null;
+						const truthfulBody = parkTuple
+							? `${formatParkAlert(parkTuple, Date.now())}\n${reason}`
+							: `[stage未上报] ${reason}`;
+						// FLY-927 (W1): through the ROUTED sink — an issue-progress kind
+						// with a bound [FLY-XX] thread lands there (D1); unset routing env
+						// / boot window = the raw notifier exactly as before. sessionKey
+						// carries the execution id the Router's thread resolution keys on.
+						await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
 							leadId,
 							projectName,
 							eventId: `three-stage-stuck:${session.execution_id}:${Date.now()}`,
@@ -4617,8 +4675,9 @@ export async function startBridge(
 							title: `Three-stage pipeline stuck — ${
 								session.issue_identifier ?? session.issue_id
 							}`,
-							body: reason,
+							body: truthfulBody,
 							severity: "warning",
+							sessionKey: session.execution_id,
 						});
 					},
 					// FLY-887: 4-state PROCESS liveness (not window existence). No tmux
@@ -4955,7 +5014,9 @@ export async function startBridge(
 					/* no lead → event + console.warn suffice */
 				}
 				if (!leadId) return;
-				await leadAlertNotifier.alert({
+				// FLY-927 (W1): through the routed sink (ticket kind → same funnel
+				// discipline; falls back to the raw notifier during the boot window).
+				await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
 					leadId,
 					projectName: first.projectName,
 					eventId: `bridge-boot-stale:${headSha}:${originMainSha}`,
@@ -4976,8 +5037,20 @@ export async function startBridge(
 	// creation + ack/repair/resolve. Resolve it at boot for the enable gate; the
 	// Hub re-resolves per call (env may change). Tokens never logged.
 	const repairChainEnvs = buildRepairChain(projects, repairBotTokenEnvName);
-	const repairChainResolves = !!resolveFirstAvailableBotToken(repairChainEnvs);
-	const firstRepairBot = resolveFirstAvailableBotToken(repairChainEnvs);
+	// FLY-927 (Codex R1 MEDIUM): with the D2 single sender identity configured,
+	// IT is the authoritative send chain — Hub enablement keys on the SENDER
+	// token resolving (an empty repair chain must not disable the Hub, and a
+	// misspelled sender env must fail loud at boot, not at the first dead-letter).
+	// The Cass degraded-attribution warning is repair-chain-specific — skipped
+	// under the override (there is no chain to degrade to).
+	const alertSenderEnvName =
+		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV?.trim();
+	const repairChainResolves = alertSenderEnvName
+		? !!process.env[alertSenderEnvName]
+		: !!resolveFirstAvailableBotToken(repairChainEnvs);
+	const firstRepairBot = alertSenderEnvName
+		? null
+		: resolveFirstAvailableBotToken(repairChainEnvs);
 	if (
 		unifiedAlertChannelId &&
 		firstRepairBot &&
@@ -5015,11 +5088,20 @@ export async function startBridge(
 	// watchdog (piggybacked on onPollComplete below, no new timer) share one
 	// DiscordOps + one accountSwitch instance. accountSwitch is gated on
 	// FLYWHEEL_ACCOUNT_SELF_HEAL (default OFF = byte-compat → undefined).
-	const alertDiscordOps = createDiscordOps(() =>
-		buildRepairChain(projects, repairBotTokenEnvName)
+	const alertDiscordOps = createDiscordOps(() => {
+		// FLY-927 (D2): single sender identity — when set, Hub thread operations
+		// use the SAME one identity as the root alert (no repair-chain fan-out).
+		// Unresolvable token ⇒ empty chain ⇒ the op fails loudly via the Hub's
+		// safe wrapper (never a silent other-bot fallback). Unset ⇒ legacy chain.
+		const senderEnv = process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV?.trim();
+		if (senderEnv) {
+			const t = process.env[senderEnv];
+			return t ? [t] : [];
+		}
+		return buildRepairChain(projects, repairBotTokenEnvName)
 			.map((env) => process.env[env])
-			.filter((t): t is string => !!t),
-	);
+			.filter((t): t is string => !!t);
+	});
 	const accountSwitchRepair =
 		process.env.FLYWHEEL_ACCOUNT_SELF_HEAL === "1"
 			? makeAccountSwitchRepair({
@@ -5102,6 +5184,15 @@ export async function startBridge(
 					`account_switch_${e.phase}`,
 					JSON.stringify(e),
 				),
+			// FLY-927 (Task 2.3): the atomic pending-switch claim ACKs the matching
+			// ACTIVE ticket — exact event-id correlation, so a stale episode can
+			// never be acked; legacy rows (NULL ticket_status) untouched.
+			ackTicket: (sourceAlertId) => {
+				const row = store.getActiveAlertThreadByEventId(sourceAlertId);
+				if (row?.ticket_status) {
+					store.setTicketStatus(row.correlation_key, "ACK");
+				}
+			},
 		};
 
 		// FLY-871 R3/C9: build the infra self-heal rescue runtime — binds the pure
@@ -5260,6 +5351,28 @@ export async function startBridge(
 		rescueRouteHolder.current = {
 			rescueLead: rescueRuntime.rescueLead,
 			rescueRunner: rescueRuntime.rescueRunner,
+			// FLY-927 (Task 2.3): a rescue call is the owner bot's claim — ACK the
+			// matching ACTIVE ticket. Lead rescues correlate by (leadId,
+			// login_expired); runner rescues by (session_key=executionId,
+			// runner_login_expired). Unresolved / legacy row = no-op (never ack the
+			// wrong episode).
+			ackTicket: ({ route, leadId, executionId }) => {
+				const row =
+					route === "lead"
+						? leadId
+							? store.getActiveAlertThreadByLeadAndType(leadId, "login_expired")
+							: undefined
+						: store
+								.listActiveAlertThreads()
+								.find(
+									(r) =>
+										r.session_key === executionId &&
+										r.event_type === "runner_login_expired",
+								);
+				if (row?.ticket_status) {
+					store.setTicketStatus(row.correlation_key, "ACK");
+				}
+			},
 		};
 		// FLY-871 R3/W5: on a successful bot-claimed switch (the /api/account-switch
 		// route), sweep the incident-window login-stuck sessions. The watchdog-fired
@@ -5329,6 +5442,53 @@ export async function startBridge(
 						);
 						return isCaptureError(c) ? null : c.output;
 					},
+					// FLY-927 (Task 2.4): T2 escalation for an ISSUE-BOUND ticket pages
+					// the founder in the issue's own [FLY-XX] thread — the FLY-818 page
+					// + founder_page_ledger dedup (never re-pages the same event id).
+					escalateToIssueThread: async (row) => {
+						if (!row.session_key || !config.discordOwnerUserId) return false;
+						if (store.getFounderPaged(row.event_id) === true) return true;
+						const session = store.getSession(row.session_key);
+						if (!session) return false;
+						const { lead } = resolveLeadForIssue(
+							projects,
+							session.project_name,
+							parseJsonStringArray(session.issue_labels),
+						);
+						const thread = store.getChatThreadByIssue(
+							session.issue_id,
+							lead.chatChannel,
+						);
+						const firstSeenMs = row.first_seen_at
+							? Date.parse(`${row.first_seen_at.replace(" ", "T")}Z`)
+							: Number.NaN;
+						const outcome = await emitFounderStuckNotification(
+							{
+								executionId: row.session_key,
+								issueId: session.issue_id,
+								issueIdentifier: session.issue_identifier ?? undefined,
+								projectName: session.project_name,
+								leadAgentId: lead.agentId,
+								stuckMinutes: Number.isNaN(firstSeenMs)
+									? 0
+									: Math.max(
+											0,
+											Math.round((Date.now() - firstSeenMs) / 60_000),
+										),
+								thread,
+								botToken: lead.botToken ?? config.discordBotToken,
+								ownerUserId: config.discordOwnerUserId,
+								phasePrefix: phaseMessageTag(
+									session.chat_thread_role,
+									session.runner_model,
+								),
+							},
+							{ store },
+						);
+						const paged = outcome.kind === "posted";
+						store.recordFounderPaged(row.event_id, paged);
+						return paged;
+					},
 				})
 			: undefined;
 	if (alertHub) {
@@ -5341,9 +5501,25 @@ export async function startBridge(
 	// adds threading + auto-repair; otherwise it's the raw notifier (byte-compat).
 	const alertSink: { alert: (p: AlertPayload) => Promise<AlertResult> } =
 		alertHub ? { alert: (p) => alertHub.handle(p) } : leadAlertNotifier;
+
+	// FLY-927 (W1): wrap the raw sink with the D1 Router. FLYWHEEL_ALERT_ROUTING
+	// unset ⇒ pure passthrough (the resolver is never even consulted). An
+	// issue-progress alert with a bound [FLY-XX] thread is delivered THERE via
+	// the issue-thread infra leg; any resolution/delivery failure fail-safes back
+	// to the raw sink (ticket queue) — never silent, never recursive.
+	const routedAlertSink = buildInfraAlertRouting({
+		store,
+		projects,
+		globalBotToken: config.discordBotToken,
+		rawSink: alertSink,
+	});
+	routedAlertSinkHolder.current = routedAlertSink;
+
 	// FLY-637-ext: now that the shared alert sink exists, point the GatePoller's
 	// late-bound lead-pending page-Annie holder at it (same routing as FLY-195 Q7).
-	leadPendingAlertHolder.current = alertSink;
+	// FLY-927: via the Router — runner_lead_pending_unhandled is an issue-progress
+	// kind, so with routing ON it lands in the issue's own thread.
+	leadPendingAlertHolder.current = routedAlertSink;
 
 	// FLY-182 §4.1: surface any Lead whose alert channel/token cannot resolve
 	// from config — the silent gap that broke alerting for 25 days. LOUD log +
@@ -5353,6 +5529,9 @@ export async function startBridge(
 	const unreachableAlertLeads = findUnreachableAlertLeads(projects, {
 		channelId: unifiedAlertChannelId,
 		repairBotTokenEnv: repairBotTokenEnvName,
+		// FLY-927 (Codex R1 MEDIUM): D2 sender identity is the authoritative
+		// chain — a misspelled/unset sender env fails LOUD at boot.
+		senderTokenEnv: alertSenderEnvName,
 	});
 	if (unreachableAlertLeads.length > 0) {
 		for (const u of unreachableAlertLeads) {
@@ -5385,7 +5564,7 @@ export async function startBridge(
 		// as Lead alerts so it lands in the unified channel + gets a thread + the
 		// conservative auto-repair attempt (when enabled). Falls back to the raw
 		// notifier when the Hub is off (byte-compat).
-		notifier: alertSink,
+		notifier: routedAlertSink,
 		// FLY-818 M3 (default-ON, kill-switch FLYWHEEL_STUCK_FOUNDER_PAGE=0): the
 		// founder page for a genuinely-stuck runner posts an @founder message into
 		// that runner's OWN [FLY-XX] issue thread (Annie's design), using the owning
@@ -5433,7 +5612,7 @@ export async function startBridge(
 			? (() => {
 					const quotaScan = makeRunnerQuotaScan({
 						projects,
-						alert: (p) => alertSink.alert(p),
+						alert: (p) => routedAlertSink.alert(p),
 						isTransient: isTransientThrottlePane,
 						now: () => Date.now(),
 					});
@@ -5443,7 +5622,7 @@ export async function startBridge(
 					// only fires for unrecognized-anomalous panes (healthy/pattern panes
 					// never spend a model call).
 					const authScan = makeRunnerAuthScan({
-						alert: (p) => alertSink.alert(p),
+						alert: (p) => routedAlertSink.alert(p),
 						resolveLeadId: defaultResolveLeadId(projects),
 						// FLY-871 R2/C7: populate the account-state ledger — a confirmed
 						// runner logout marks the active account's live auth as stale.
@@ -5536,7 +5715,7 @@ export async function startBridge(
 		store,
 		// FLY-368: route through the unified sink (Hub adds threading + auto-repair
 		// when enabled; otherwise this is the raw notifier — byte-compat).
-		notifier: (payload) => alertSink.alert(payload),
+		notifier: (payload) => routedAlertSink.alert(payload),
 		locateWindowFn: (projectName, leadId) =>
 			locateLeadWindow(projectName, leadId),
 		captureFn: leadPaneCaptureFn,
@@ -5707,11 +5886,29 @@ export async function startBridge(
 		leadAlertDraining = true;
 		leadAlertNotifier
 			.drainQueue()
-			.then(async ({ sent, remaining, deadLettered }) => {
+			.then(async ({ sent, remaining, deadLettered, delivered }) => {
 				if (sent > 0 || remaining > 0 || deadLettered > 0) {
 					console.log(
 						`[Bridge] LeadAlert drain sent=${sent} remaining=${remaining} deadLettered=${deadLettered}`,
 					);
+				}
+				// FLY-927 (Codex R1 HIGH): a drained root must still get its per-error
+				// thread + ticket lifecycle — otherwise every over-cap (rate-limited /
+				// transient-retry) alert silently bypasses the Hub. Best-effort each.
+				if (alertHub) {
+					for (const d of delivered) {
+						try {
+							await alertHub.attachThreadForDelivered(
+								d.payload,
+								d.channelId,
+								d.messageId,
+							);
+						} catch (err) {
+							console.warn(
+								`[Bridge] drained-thread attach failed: ${(err as Error).message}`,
+							);
+						}
+					}
 				}
 				// Dead-letters happened → surface (Discord-independent).
 				if (deadLettered > 0) {

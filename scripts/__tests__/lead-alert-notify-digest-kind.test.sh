@@ -25,9 +25,19 @@ TMP=$(mktemp -d "/tmp/fly929-alert.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 
 mkdir -p "$TMP/bin"
+# Fake curl: records argv; captures `-K -` stdin config; honors -o; emits 200.
+# FLY-927 hardened lead-alert.sh passes the Authorization token via `curl -K -`
+# stdin config (NOT argv), so the token assertion below reads the stdin capture.
 cat > "$TMP/bin/curl" <<'FAKE'
 #!/bin/bash
 printf '%s\n' "$*" >> "$CURL_ARGS_FILE"
+out=""; prev=""
+for a in "$@"; do
+  [ "$prev" = "-o" ] && out="$a"
+  [ "$prev" = "-K" ] && [ "$a" = "-" ] && cat >> "${CURL_ARGS_FILE}.stdin"
+  prev="$a"
+done
+[ -n "$out" ] && : > "$out"
 printf '200'
 exit 0
 FAKE
@@ -69,17 +79,30 @@ run_alert() {
     > "$TMP/out.log" 2>&1
 }
 
-# 1. notify_digest_failed accepted → exit 0, POST fired with the resolved token
-: > "$TMP/curl-args.txt"
+# 1. notify_digest_failed accepted → exit 0, POST fired with the resolved token.
+# FLY-927 hardened lead-alert.sh: the token rides `curl -K -` stdin config, never
+# argv — so assert (a) a POST was attempted, (b) the token is in the stdin config,
+# (c) the token NEVER leaks into curl argv (FLY-927 §6 sender-gating hygiene).
+: > "$TMP/curl-args.txt"; : > "$TMP/curl-args.txt.stdin"
 if run_alert notify_digest_failed; then
   ok "notify_digest_failed accepted (exit 0)"
 else
   bad "notify_digest_failed rejected: $(cat "$TMP/out.log")"
 fi
-if grep -q "Bot ${TOKEN}" "$TMP/curl-args.txt" 2>/dev/null; then
-  ok "POST used the resolved alertBotTokenEnv token"
+if grep -q "discord.com/api" "$TMP/curl-args.txt" 2>/dev/null; then
+  ok "Discord POST attempted"
 else
-  bad "no Discord POST with the infra token: $(cat "$TMP/curl-args.txt" 2>/dev/null)"
+  bad "no Discord POST: $(cat "$TMP/curl-args.txt" 2>/dev/null)"
+fi
+if grep -qF "Authorization: Bot ${TOKEN}" "$TMP/curl-args.txt.stdin" 2>/dev/null; then
+  ok "POST used the resolved alertBotTokenEnv token (via -K - stdin config)"
+else
+  bad "infra token not in stdin config: $(cat "$TMP/curl-args.txt.stdin" 2>/dev/null)"
+fi
+if grep -q "Bot ${TOKEN}" "$TMP/curl-args.txt" 2>/dev/null; then
+  bad "token leaked into curl argv (FLY-927 hygiene regression)"
+else
+  ok "token never in curl argv (FLY-927 §6)"
 fi
 
 # 2. control: unknown kind rejected

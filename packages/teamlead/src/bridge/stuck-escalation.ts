@@ -526,19 +526,29 @@ export function createStuckUnhandledAlerter(
 			episodeFingerprint,
 			escalatedAt,
 		);
+		// FLY-927 (W-B): a 529-stalled runner is its OWN ticket kind — the owner
+		// bot ARCs it (same runnerStuck metadata contract as the generic stall).
+		// A healthy 529 (still retrying) never reaches here (detector-side gate).
+		const throttleStalled = payload.throttleStalled === true;
 		const result = await notifier.alert({
 			leadId: lead.agentId,
 			projectName: session.project_name,
 			eventId,
-			eventType: "runner_stuck_unhandled",
-			title: `Runner stuck UNHANDLED: ${issue}`,
+			eventType: throttleStalled
+				? "runner_throttle_stalled"
+				: "runner_stuck_unhandled",
+			title: throttleStalled
+				? `Runner stalled after throttle (529): ${issue}`
+				: `Runner stuck UNHANDLED: ${issue}`,
 			// FLY-253 §3.3 honesty fix: "may be down or stuck too" was a lie when
 			// the Lead was merely busy for 5 minutes (LEARN-57: Asha had disposed
 			// the previous episode 27s after its escalation).
-			body:
-				`Runner for ${issue} (execution ${session.execution_id}) has had unchanged terminal output for ~${stuckMinutes} min while status=running. ` +
-				`The Bridge escalated to ${lead.agentId} but no disposition receipt arrived within the grace window — the Lead may be busy, down, or stuck. ` +
-				`Check the Lead first, then the runner's tmux window. (FLY-195 Q7 fallback)`,
+			body: throttleStalled
+				? `Runner for ${issue} (execution ${session.execution_id}) STALLED after a 529/overloaded throttle — terminal unchanged ~${stuckMinutes} min with throttle residue and NO live retry. ` +
+					`The Bridge escalated to ${lead.agentId} but no disposition receipt arrived within the grace window. Auto-repair attempts the audited continue-nudge first. (FLY-927 W-B)`
+				: `Runner for ${issue} (execution ${session.execution_id}) has had unchanged terminal output for ~${stuckMinutes} min while status=running. ` +
+					`The Bridge escalated to ${lead.agentId} but no disposition receipt arrived within the grace window — the Lead may be busy, down, or stuck. ` +
+					`Check the Lead first, then the runner's tmux window. (FLY-195 Q7 fallback)`,
 			severity: "warning",
 			sessionKey: session.execution_id,
 			// FLY-368: structured fingerprint so the auto-repair bot can reuse the
@@ -559,6 +569,16 @@ export function createStuckUnhandledAlerter(
 			result.sent === true ||
 			result.queued === true ||
 			result.skipped === "duplicate";
+
+		// FLY-927 (Task 2.4, explicit behavior change — in Annie's morning brief):
+		// with the ticket queue ON, the IMMEDIATE founder page is replaced by the
+		// T2 "couldn't fix" page — the reconcile escalation pass pages the issue
+		// thread only after 2 ARC attempts / 5 minutes without recovery. Fewer,
+		// more accurate @Annie pings. FLYWHEEL_ALERT_TICKETS unset ⇒ the Q7
+		// immediate page below, exactly as today.
+		if (env.FLYWHEEL_ALERT_TICKETS === "1") {
+			return legacyResolved;
+		}
 
 		// FLY-818 M3 issue-thread founder page. Disabled (kill-switch / no owner / no
 		// store) ⇒ byte-identical legacy semantics. Gated on an owner id so a
