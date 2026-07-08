@@ -5,7 +5,7 @@ Issue: FLY-942 (https://linear.app/geoforge3d/issue/FLY-942/watchdog-lead-主动
 基于: exploration.md(本文件夹)、FLY-878/915/927/941/964/975/976 关联 issue、Annie 2026-07-07 深度 review
 母 Epic: FLY-989 Watchdog + 主动汇报 稳定化 EPIC (https://linear.app/geoforge3d/issue/FLY-989) — 本 PRD(FLY-942)= 该 Epic 的「主动汇报 + 检测」产品定义 PRD;Epic consolidate 878/975/976/927/915/970/973/941/964,以后发现一个提一个、定期 iterate。FLY-989 归 FLY-774 稳定化 EPIC 底下。
 
-> **状态**:**G1 + G2 全 converged(Annie 逐块拍定,2026-07-07~08)**。G1 检测层:兜两漏 + 时间阈值 + FLY-976 LLM 判断层读 per-pane 富态判三态(C 绝不漏)。G2 汇报层(Annie 2026-07-08 大幅砍简单):**全进对应 [FLY-XX] thread、自然语言;无 founder 频道 / 无决策卡 / 无 digest;唯一主动 @ Annie = 真卡死 / Lead 接不住**。→ 下一步 **codex design-review** → 拆 build issue 给 Tadashi。**不 ship / 不 merge / 不 create-issue**(ship 仍 founder-gated)。
+> **状态**:**G1 + G2 全 converged(Annie 逐块拍定,2026-07-07~08)+ Codex design-review APPROVED(3 轮:R1 7 项 → R2 3 项 → R3 approved)**。G1 检测层:兜两漏 + 时间阈值 + FLY-976 LLM 判断层读 per-pane 富态判三态(C 绝不漏)。G2 汇报层(Annie 2026-07-08 大幅砍简单):**全进对应 [FLY-XX] thread、自然语言;无 founder 频道 / 无决策卡 / 无 digest;主动 @ Annie 仅 T1 真卡死(立即)/ T2 Lead 接不住**。→ build-issue 提案见 `build-issues-draft.md`,交 Tadashi。**⚠️ 一个待 Annie 终确认点(§4.3 HIGH-1)**:case-c 是否"当场立刻 @"(按她原话定)vs 也走 Lead-grace。**不 ship / 不 merge / 不 create-issue**(ship 仍 founder-gated)。
 > **北极星:准确性 = 三态判对**((a) 在跑长turn / (b) 正常parked 不误报、(c) 真卡死 不漏报;读 per-pane 富态 token-flow+FSM 态,非粗信号)**+ Annie 四病症**(①误报=混淆a/b ②分发→consolidate ③漏报=漏c ④噪音)。主动汇报只有在检测足够准时才成立 —— "状态显示骗你一次你就再也懒得看"。两半同等重要:**① 检测层(准)+ ② 主动汇报层(兜漏、全进对应 thread 自然语言、极少 @)**。
 
 ---
@@ -219,6 +219,7 @@ stateDiagram-v2
 
 ## 7. Success metrics(北极星)= 三态判对(带优先级)+ 用例集 ✅ G1 定案
 **主指标 + 优先级(Annie 拍)**:**(c) 真卡死绝不漏(100%)>> (a) 在跑可容忍误报 >> (b) parked 要 surface(进 thread)**。
+> 澄清(Codex R3 LOW):**(b) parked 仅在"需要人且正常路径没处理"时才 surface**(已被 Lead 处理的 parked 保持静默,= R1);**(c) case-c 走 T1 立即 @ Annie + 并行通知 Lead**,不是纯 Lead-first;唯有"两漏 + 非-case-c 的 stall"走 Lead-first(§4.3/§4.5)。
 > **命名(Codex R1 MED-4)**:用例前缀 **FP(误报组)/ FN(漏报组)/ R(汇报)/ L(Lead 协议)**,**与三态 a/b/c 无关**(避免旧 A/B 标签与状态 a/b 混淆)。
 
 **检测用例(3 FP + 4 FN = 7;Cass 亲历 + Tadashi 印证 + 本 PRD dogfood)**:
