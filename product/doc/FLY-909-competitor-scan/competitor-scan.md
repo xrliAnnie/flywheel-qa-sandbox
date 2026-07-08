@@ -127,7 +127,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 **诚实第 3 条:那价值/差异到底还剩什么?(候选,待 911 —— 我验证出来的,不替 Annie 下结论)**
 1. **领域**:Cowork 做的是**你文件上的知识工作**(研究综述 / 合同抽取 / 报告 / 数据整理),**不是建并长期维护一个真软件产品**;Codex 建软件但面向开发者。→ 「**替非技术的人建并养一个真软件产品/公司**」这块,两家目前都没正面做。
 2. **常驻组织 vs 你启动的任务**:Cowork/Codex 本质是「**你启动一个任务/会话** → 它 fan-out → 交付」(Cowork 能跨多天,但仍是项目会话)。我们是一个**常驻的组织**(CoS 自己分诊 backlog、Leads、部门、always-on),不是「你每次启动一个活」。这条是真结构差异,但**别吹太大**(值不值钱要 911 判)。
-3. **界面**:Cowork = **桌面 app + 你电脑上的文件夹**;Codex = 桌面/CLI。我们 = **手机原生 IM(Discord)**,不用开电脑、不用盯文件夹 —— 对「只带手机的非技术小生意主」是真差异。
+3. **界面**:Cowork = **桌面 app + 你电脑上的文件夹**;Codex = 桌面/CLI。我们 = **手机原生 IM(Discord)**,不用开电脑、不用盯文件夹 —— 对「只带手机的非技术小生意主」体验更顺。**⚠️〔round-3/4 修正〕** 别把「手机 IM」当**真差异** —— WorkBuddy(官方 9 渠道含微信/Discord)+ OpenClaw(29 渠道)都做 IM 驱动,**手机 IM 已退为 table stakes**(见 §⑨);它是好体验,不是能拉开的差异。
 4. **agent-agnostic / 供应商中立(Annie ④)**:**Cowork 锁 Claude、Codex 锁 OpenAI**;我们架构上能跨后端(Claude / Codex / GLM / MiniMax / Antigravity / Kimi)。**⚠️〔round-3/4 修正 · 此判断已作废〕** 原写「这是第一方厂商结构上不会做的真差异」—— 但 Raft(第三方却做 runtime-agnostic)+ WorkBuddy(云厂商腾讯 TokenHub 原生一键切 14 模型)已证伪:**供应商中立已退为 table stakes、不是差异**(见 §⑧ Raft / §⑨ WorkBuddy)。「不锁死你」仍是可信承诺,不当差异主打。
    - ⚠️ **〔round-3/4 修正 · 此子判断已作废〕** 原写「供应商中立可当定位候选讲、只是不必现在建全」—— 但 Raft(第三方 runtime-agnostic)+ WorkBuddy(腾讯 TokenHub 一键切 14 模型)已把它做成现成功能 → **它是 table stakes、退出差异候选**(见 §⑧/§⑨)。Annie「setup 先不做 agent-agnostic」不受影响:那本就不是要靠它当差异,只作「不锁死你」的可信承诺。
 
