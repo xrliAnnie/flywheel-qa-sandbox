@@ -194,14 +194,9 @@ export async function createDiscordDeps(): Promise<DiscordDeps> {
 		},
 
 		onVoiceStateUpdate: (client: any, cb) => {
-			const handler = (oldState: any, newState: any) => {
-				cb({
-					userId: newState.id,
-					isBot: newState.member?.user?.bot ?? true,
-					fromChannelId: oldState.channelId ?? null,
-					toChannelId: newState.channelId ?? null,
-				});
-			};
+			const handler = makeVoiceStateForwarder(cb, (line) =>
+				console.error(line),
+			);
 			client.on("voiceStateUpdate", handler);
 			return () => client.off("voiceStateUpdate", handler);
 		},
@@ -212,12 +207,7 @@ export async function createDiscordDeps(): Promise<DiscordDeps> {
 			channelId: string,
 		) => {
 			const guild = await client.guilds.fetch(guildId);
-			const channel = await guild.channels.fetch(channelId);
-			let humans = 0;
-			for (const [, member] of channel?.members ?? []) {
-				if (member.user?.bot === false) humans++;
-			}
-			return humans;
+			return countHumansInVoiceChannel(guild, channelId);
 		},
 
 		moveMember: async (
@@ -374,6 +364,95 @@ export function makeCreateResource(voiceLib: {
  * needed); the next burst is admitted. Current VC occupants are prefetched at
  * construction so the founder's FIRST utterance is already audible.
  */
+/** duck-typed slice of a discord.js VoiceState (no SDK import). */
+export interface VoiceStateLike {
+	id: string;
+	channelId: string | null;
+	member?: { user?: { bot?: boolean } };
+	guild: {
+		members: { fetch: (userId: string) => Promise<{ user: { bot: boolean } }> };
+	};
+}
+
+/**
+ * Voice-state forwarder that never defaults an unresolved member to bot.
+ * Round-3 regression (Annie's third real-machine round): without the
+ * GuildMembers intent her member object was unresolved on the join event, the
+ * old `?? true` default classified her as a bot, wiring dropped the delta,
+ * founderPresent stayed false and the session never entered live. Mirrors the
+ * round-2 self-heal: resolve via a single-member REST fetch (VoiceState.guild
+ * carries the handle; discord.js caches the result so later events are sync).
+ * Resolution failure drops the delta fail-closed.
+ */
+export function makeVoiceStateForwarder(
+	cb: (u: {
+		userId: string;
+		isBot: boolean;
+		fromChannelId: string | null;
+		toChannelId: string | null;
+	}) => void,
+	log?: (line: string) => void,
+): (oldState: VoiceStateLike, newState: VoiceStateLike) => void {
+	return (oldState, newState) => {
+		const emit = (isBot: boolean) =>
+			cb({
+				userId: newState.id,
+				isBot,
+				fromChannelId: oldState.channelId ?? null,
+				toChannelId: newState.channelId ?? null,
+			});
+		const known = newState.member?.user?.bot ?? oldState.member?.user?.bot;
+		if (typeof known === "boolean") {
+			emit(known);
+			return;
+		}
+		newState.guild.members
+			.fetch(newState.id)
+			.then((m) => emit(m.user.bot === true))
+			.catch((err) => {
+				log?.(
+					`[voice-state] member ${newState.id} unresolvable — delta dropped fail-closed: ${String(
+						(err as Error).message ?? err,
+					)}`,
+				);
+			});
+	};
+}
+
+/** duck-typed slice of a discord.js Guild (no SDK import). */
+export interface GuildLike {
+	voiceStates?: { cache: Map<string, { channelId?: string | null }> };
+	members: {
+		cache?: Map<string, { user?: { bot?: boolean } }>;
+		fetch: (userId: string) => Promise<{ user: { bot: boolean } }>;
+	};
+}
+
+/**
+ * Humans currently in a voice channel, counted from voice states (NOT
+ * channel.members — that view silently omits unresolved members, which is
+ * exactly the pre-sitting-founder shape: GUILD_CREATE voice_states carry no
+ * member objects). Unresolved occupants are resolved via a single-member REST
+ * fetch; unresolvable ones count as not-human (fail-closed).
+ */
+export async function countHumansInVoiceChannel(
+	guild: GuildLike,
+	channelId: string,
+): Promise<number> {
+	let humans = 0;
+	for (const [userId, vs] of guild.voiceStates?.cache ?? []) {
+		if ((vs?.channelId ?? null) !== channelId) continue;
+		try {
+			const member =
+				guild.members.cache?.get(userId) ?? (await guild.members.fetch(userId));
+			if (member.user?.bot === false) humans++;
+		} catch {
+			// unknown member — fail-closed, not counted
+		}
+	}
+	return humans;
+}
+
 export function makeIsHuman(
 	client: {
 		guilds: {
