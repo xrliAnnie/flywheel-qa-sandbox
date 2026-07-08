@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WorkBuddy(腾讯)竞品分析 — FLY-1003</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,system-ui,"Segoe UI",Roboto,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    line-height:1.6; -webkit-text-size-adjust:100%;
+  }
+  .wrap{max-width:960px; margin:0 auto; padding:20px 16px 150px;}
+  header.top{padding:8px 2px 4px;}
+  h1{font-size:1.55rem; margin:.2em 0 .1em; letter-spacing:-.01em;}
+  .sub{color:var(--dim); font-size:.9rem; margin:.1em 0 .2em;}
+  .lede{
+    background:var(--card); border-radius:12px; padding:16px 18px; margin:14px 0;
+    box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid var(--red);
+  }
+  .lede b{color:var(--navy);}
+  .section-title{font-size:1.15rem; font-weight:700; margin:30px 2px 6px; display:flex; align-items:center; gap:8px;}
+  .section-title .dot{font-size:.8em;}
+  .note{color:var(--dim); font-size:.85rem; margin:2px 2px 10px;}
+  .card{
+    background:var(--card); border-radius:12px; padding:14px 16px; margin:12px 0;
+    box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid var(--blue);
+  }
+  .card.red{border-left-color:var(--red);}
+  .card.amber{border-left-color:var(--amber);}
+  .card.green{border-left-color:var(--green);}
+  .card.purple{border-left-color:var(--purple);}
+  .card.gray{border-left-color:var(--dim);}
+  .card h3{margin:.1em 0 .35em; font-size:1.02rem;}
+  .card p{margin:.35em 0;}
+  .card ul{margin:.35em 0; padding-left:1.2em;}
+  .card li{margin:.2em 0;}
+  .badge{display:inline-block; font-size:.72rem; font-weight:700; padding:2px 8px; border-radius:999px; margin-left:6px; vertical-align:middle; color:#fff;}
+  .b-collapse{background:var(--red);}
+  .b-partial{background:var(--amber);}
+  .b-stand{background:var(--green);}
+  .b-half{background:var(--purple);}
+  .grade{font-size:.72rem; color:var(--dim); font-weight:600;}
+  .evi{font-size:.72rem; color:#fff; background:var(--navy); border-radius:4px; padding:1px 6px; margin-right:4px; white-space:nowrap;}
+  .evi.warn{background:var(--amber);}
+  .react{margin-top:10px; padding-top:10px; border-top:1px dashed var(--line);}
+  .react .q{font-size:.82rem; color:var(--dim); margin-bottom:6px;}
+  .opts{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;}
+  .opts label{
+    font-size:.85rem; padding:6px 10px; border:1px solid var(--line); border-radius:999px;
+    cursor:pointer; user-select:none; background:#fafafa; display:inline-flex; align-items:center; gap:5px;
+  }
+  .opts input{accent-color:var(--blue); margin:0;}
+  .opts label:has(input:checked){border-color:var(--blue); background:#eaf2ff; color:var(--navy); font-weight:600;}
+  textarea{
+    width:100%; border:1px solid var(--line); border-radius:8px; padding:8px 10px;
+    font:inherit; font-size:.9rem; resize:vertical; background:#fafafa; color:var(--ink); min-height:44px;
+  }
+  textarea:focus{outline:none; border-color:var(--blue); background:#fff;}
+  table.axes{width:100%; border-collapse:collapse; font-size:.86rem; margin:.4em 0; display:block; overflow-x:auto;}
+  table.axes th,table.axes td{border:1px solid var(--line); padding:7px 9px; text-align:left; vertical-align:top;}
+  table.axes th{background:#fafafa; color:var(--navy); white-space:nowrap;}
+  .bar{
+    position:fixed; left:0; right:0; bottom:0; background:rgba(255,255,255,.96); backdrop-filter:blur(8px);
+    border-top:1px solid var(--line); padding:10px 16px; z-index:20;
+  }
+  .bar .inner{max-width:960px; margin:0 auto; display:flex; align-items:center; gap:12px; flex-wrap:wrap;}
+  button{
+    font:inherit; font-weight:600; font-size:.9rem; border:none; border-radius:999px; padding:9px 16px;
+    background:var(--navy); color:#fff; cursor:pointer;
+  }
+  button.ghost{background:#fff; color:var(--navy); border:1px solid var(--navy);}
+  #copy-status{font-size:.82rem; color:var(--green); font-weight:600;}
+  #export{
+    display:none; white-space:pre-wrap; word-break:break-word; background:#fff; border:1px solid var(--line);
+    border-radius:8px; padding:12px; font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:.8rem;
+    max-height:38vh; overflow:auto; margin-top:10px;
+  }
+  .tally{font-size:.82rem; color:var(--dim);}
+  .tally b{color:var(--ink);}
+  a{color:var(--blue);}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+  <h1>WorkBuddy(腾讯)竞品分析</h1>
+  <div class="sub">FLY-1003 · 2026-07-08 · 给 Annie 拍板 &nbsp;|&nbsp; 诚实结论,不美化,UNKNOWN 标 ⚠️</div>
+  <div class="sub">口径:定位大结论归 FLY-911 拍,本文差异写「候选」。每张卡下面可勾选反应 + <b>写留言</b>,底部一键复制你的批注。</div>
+</header>
+
+<div class="lede">
+  <b>一句话结论(先说,别护短)</b>:WorkBuddy 是我们扫过<b>量级最大、且最贴的一家大厂竞品</b>。它把我们一堆候选形态差异<b>一次覆盖</b>(9 渠道 IM + 14 模型 + 个性化记忆 + 多 agent + done-for-you),<b>官方还直接把「一人公司/自由职业者」当目标用户</b>、场景列电商选品/落地页/客服 —— 正面撞我们 beachhead。扫完后真正还站得住的候选差异,<b>收窄到两条且都更窄</b>:①领域 = 长期拥有并演进一套真软件/业务系统的 lifecycle;②被协调组织自推进 backlog。<b>靠产品化速度守,不靠形态独有。</b>
+</div>
+
+<!-- ========== 1. 是什么 ========== -->
+<div class="section-title"><span class="dot" style="color:var(--blue)">●</span>一、WorkBuddy 是什么</div>
+<div class="note">证据分级:<span class="evi">官方</span>腾讯官方页 · <span class="evi">媒体</span>TechNode/Forbes/PANews · <span class="evi warn">⚠️存疑</span>单源/与官方冲突</div>
+
+<div class="card blue">
+  <h3>身份 · 大厂办公 agent <span class="grade"><span class="evi">官方</span></span></h3>
+  <p>腾讯云 <b>CodeBuddy 团队</b>出的<b>全场景职场 AI 智能体桌面工作台</b> —— 腾讯从「服务开发者(CodeBuddy)」向「服务全职场人」延伸,继承 CodeBuddy 底层 agent 架构。TechNode 定性「OpenClaw-like workplace AI agent」。</p>
+  <div class="react" data-topic="what-identity" data-title="身份 · 腾讯 CodeBuddy 团队出品">
+    <div class="q">你怎么看?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-what-identity" value="✅ 同意"><span>✅ 同意</span></label>
+      <label><input type="radio" name="r-what-identity" value="⚠️ 存疑"><span>⚠️ 存疑</span></label>
+      <label><input type="radio" name="r-what-identity" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="what-identity" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card blue">
+  <h3>产品形态 · 桌面 app + 9 渠道 IM 双形态 <span class="grade"><span class="evi">官方</span></span></h3>
+  <p>桌面端直连本地机器读写文件、<b>sandbox 隔离执行</b>;IM 端<b>官方 9 个渠道</b>(微信 / Discord / Slack / Telegram / 企微 / 钉钉 / 飞书 / QQ / 元宝派)发指令 → 后台跑 → 回报。<span class="grade">(⚠️ 部分媒体说 12+,官方页只列 9 个)</span></p>
+  <p><b>持久性</b>:官方只证「个性化记忆」;<span class="evi warn">⚠️存疑</span>评测说「持久 daemon、离开工位也在」—— 官方不背书。</p>
+  <div class="react" data-topic="what-form" data-title="产品形态 · 桌面 + 9 渠道 IM">
+    <div class="q">你怎么看?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-what-form" value="✅ 同意"><span>✅ 同意</span></label>
+      <label><input type="radio" name="r-what-form" value="⚠️ 存疑"><span>⚠️ 存疑</span></label>
+      <label><input type="radio" name="r-what-form" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="what-form" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card blue">
+  <h3>核心机制 <span class="grade"><span class="evi">官方</span></span></h3>
+  <ul>
+    <li><b>多 agent 并行</b>(它的杀手锏):大目标拆子任务并行跑;Expert Teams = 一个 lead agent 协调多 sub-agent。</li>
+    <li><b>100+ 内置专家角色</b>(运营/设计/数据/<b>开发</b>… 当同事叫)—— 注意「开发」也在角色里,不是完全不碰编程。</li>
+    <li><b>多模型</b>:一键切 + TokenHub 接 14 个模型(混元/DeepSeek/GLM/Kimi/MiniMax + BYOK)。</li>
+    <li>MCP + 20+ skill:连 GitHub/Jira/Notion/Slack…</li>
+  </ul>
+  <div class="react" data-topic="what-mech" data-title="核心机制 · 多 agent 并行 + 100+ 专家 + 14 模型">
+    <div class="q">你怎么看?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-what-mech" value="✅ 同意"><span>✅ 同意</span></label>
+      <label><input type="radio" name="r-what-mech" value="⚠️ 存疑"><span>⚠️ 存疑</span></label>
+      <label><input type="radio" name="r-what-mech" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="what-mech" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card red">
+  <h3>目标用户 · 官方直接打「一人公司/自由职业者」 <span class="badge b-collapse">撞 beachhead</span> <span class="grade"><span class="evi">官方</span></span></h3>
+  <p>官方全球页逐字:<b>"One-person company: Individual entrepreneurs, freelancers, small team leaders"</b>;场景列 <b>电商选品 · 独立落地页生成 · IM/在线客服</b> · 市场调研 · 报告 · 数据洞察。</p>
+  <p>→ 这些正好是<b>非技术电商/social operator 天天要干的业务活</b>,跟我们 beachhead <b>正面重叠</b> —— 不是「跟我们错开的白领工具」。</p>
+  <div class="react" data-topic="what-target" data-title="目标用户 · 官方直接打一人公司(撞 beachhead)">
+    <div class="q">你怎么看?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-what-target" value="✅ 同意"><span>✅ 同意</span></label>
+      <label><input type="radio" name="r-what-target" value="⚠️ 存疑"><span>⚠️ 存疑</span></label>
+      <label><input type="radio" name="r-what-target" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="what-target" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card gray">
+  <h3>体量 · 中国第一效率 agent <span class="grade"><span class="evi">媒体</span> <span class="evi warn">⚠️非独立审计</span></span></h3>
+  <p>上线 3 个月 <b>13M+ DAU</b>、行业第二名 3-4 倍、DAU/MAU 65-75%(逼 Slack)、43 版/3 月。2026-03 国内上线、5 月出海、有企业版。<b>量级碾压是分发(微信生态),不是能力。</b></p>
+  <div class="react" data-topic="what-scale" data-title="体量 · 13M DAU 中国第一(⚠️非独立审计)">
+    <div class="q">你怎么看?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-what-scale" value="✅ 同意"><span>✅ 同意</span></label>
+      <label><input type="radio" name="r-what-scale" value="⚠️ 存疑"><span>⚠️ 存疑</span></label>
+      <label><input type="radio" name="r-what-scale" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="what-scale" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card amber">
+  <h3>软肋(诚实 = 机会点,别夸大) <span class="grade"><span class="evi">评测</span></span></h3>
+  <ul>
+    <li>复杂多步易错(算错/错位,要自己核对);error recovery ~3/5,活有时干一半。</li>
+    <li>大文件吃力、跨 OS 兼容问题、上线初期崩;代码深度落后 Cursor/Claude Code。</li>
+    <li><b>红海无鲜明优势</b>(评测原话)—— vs 微软 Copilot/字节豆包/WPS AI;生态偏腾讯,兼容非腾讯工具差。</li>
+  </ul>
+  <div class="react" data-topic="what-weak" data-title="软肋 = 我们的机会点(别夸大)">
+    <div class="q">你怎么看?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-what-weak" value="✅ 同意"><span>✅ 同意</span></label>
+      <label><input type="radio" name="r-what-weak" value="⚠️ 存疑"><span>⚠️ 存疑</span></label>
+      <label><input type="radio" name="r-what-weak" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="what-weak" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card purple">
+  <h3>腾讯三剑客分工(关键 nuance) <span class="grade"><span class="evi">评测</span></span></h3>
+  <ul>
+    <li><b>CodeBuddy</b> = 给程序员的「对话即编程」(<b>造软件的那个</b>)。</li>
+    <li><b>WorkBuddy</b> = 办公室全能助理(含开发角色<b>但不主打编程</b>)。</li>
+    <li><b>QClaw</b> = 基于 OpenClaw 的微信直连遥控器 —— <b>腾讯真正的 OpenClaw 衍生品是 QClaw,不是 WorkBuddy</b>。</li>
+  </ul>
+  <div class="react" data-topic="what-trio" data-title="三剑客辨析 · 别把 WorkBuddy 当 OpenClaw fork">
+    <div class="q">你怎么看?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-what-trio" value="✅ 同意"><span>✅ 同意</span></label>
+      <label><input type="radio" name="r-what-trio" value="⚠️ 存疑"><span>⚠️ 存疑</span></label>
+      <label><input type="radio" name="r-what-trio" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="what-trio" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<!-- ========== 2. vs 我们 ========== -->
+<div class="section-title"><span class="dot" style="color:var(--amber)">●</span>二、它 vs Flywheel(逐轴 站/塌)</div>
+<div class="note">每条轴你可勾选「同意判定 / 存疑 / 想调整」+ 写留言。</div>
+
+<div class="card amber">
+  <table class="axes">
+    <tr><th>轴</th><th>判定</th><th>为什么</th></tr>
+    <tr><td>③ 手机 IM 界面</td><td><span class="badge b-collapse">塌</span></td><td>官方 9 渠道 IM 正面覆盖,不再独有。跟 Raft 收敛。</td></tr>
+    <tr><td>④ 供应商中立/多模型</td><td><span class="badge b-collapse">塌</span></td><td>它一键切 14 模型。「第一方结构上不做」被云厂商腾讯证伪。</td></tr>
+    <tr><td>⑦ 目标用户</td><td><span class="badge b-partial">部分塌</span></td><td>官方就打一人公司/自由职业者 + 电商选品/落地页/客服。差异不在目标用户本身,在「目标用户 + job」。</td></tr>
+    <tr><td>⑥ Push</td><td><span class="badge b-half">半塌</span></td><td>异步远程执行+回报已商品化;活着的只剩「自发起 backlog + 跨 Lead 协调 + 持续 own」半。</td></tr>
+    <tr><td>① 领域 = 长期 ownership</td><td><span class="badge b-stand">候选(最站)</span></td><td>它是任务式交付,不是长期拥有并演进一个 codebase/业务系统;造软件在分开的 CodeBuddy。</td></tr>
+    <tr><td>② 被协调组织自推进 backlog</td><td><span class="badge b-partial">候选(更窄)</span></td><td>它有记忆+派活+Expert Teams,但每个活仍是「你派任务→它回报」;差异在协调+持续 own,不在数量/记忆。</td></tr>
+    <tr><td>⑧ 工程纪律/可信</td><td><span class="badge b-partial">方向对没做实</span></td><td>它软肋真(结果证明是机会),但我们「一试真能跑」也还没做实。</td></tr>
+  </table>
+</div>
+
+<div class="card green">
+  <h3>① 领域(长期 ownership)—— 当前最站得住的候选 <span class="badge b-stand">候选</span></h3>
+  <p>WorkBuddy 一件件把办公/业务活做完交付;<b>我们押的是长期拥有 + 变更管理 + 维护 + 验收 + 随业务演进一套系统的 lifecycle</b>。<b>⚠️ Watch</b>:腾讯把 WorkBuddy 办公/IM + CodeBuddy 建软件 + 腾讯云部署 融成 operator 系统 → 这条会快速压缩。</p>
+  <div class="react" data-topic="axis-domain" data-title="① 领域:长期拥有并演进一套真软件/业务系统">
+    <div class="q">这条差异你认吗?够不够当立身之本?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-axis-domain" value="✅ 同意"><span>✅ 同意</span></label>
+      <label><input type="radio" name="r-axis-domain" value="⚠️ 存疑"><span>⚠️ 存疑</span></label>
+      <label><input type="radio" name="r-axis-domain" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="axis-domain" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card amber">
+  <h3>② 被协调组织自推进 backlog <span class="badge b-partial">候选(更窄)</span></h3>
+  <p>「常驻/有记忆」这半塌了(WorkBuddy 官方也有);剩的候选 = <b>一个被协调、自己推 backlog、持续 own 的组织</b> vs <b>一个你派活的(有记忆的)助理</b>。别吹大。</p>
+  <div class="react" data-topic="axis-org" data-title="② 被协调组织自推进 backlog + 持续 ownership">
+    <div class="q">这条差异你认吗?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-axis-org" value="✅ 同意"><span>✅ 同意</span></label>
+      <label><input type="radio" name="r-axis-org" value="⚠️ 存疑"><span>⚠️ 存疑</span></label>
+      <label><input type="radio" name="r-axis-org" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="axis-org" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<!-- ========== 3. 威胁形态 ========== -->
+<div class="section-title"><span class="dot" style="color:var(--red)">●</span>三、大厂做办公 agent 的威胁形态</div>
+
+<div class="card red">
+  <h3>威胁为什么真 · ⭐ substitution path</h3>
+  <p>腾讯<b>不用抄我们架构</b>就能伤我们 —— 把 <b>IM 派发(微信/企微/QQ)+ 办公/业务 skill(选品/落地页/客服)+ 腾讯云部署 + TokenHub 多模型 + CodeBuddy 建软件 + 企业销售 + 存储捆绑 + 社交图谱</b> 拼成<b>够用的 operator 系统</b>,就能在我们产品化前<b>从「够用的业务自动化」侧吃掉 beachhead</b> —— 全程不用长得像 GitHub/PR/CI。</p>
+  <div class="react" data-topic="threat-real" data-title="威胁为什么真 · substitution path">
+    <div class="q">你怎么看这个威胁?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-threat-real" value="✅ 同意"><span>✅ 同意</span></label>
+      <label><input type="radio" name="r-threat-real" value="⚠️ 存疑"><span>⚠️ 存疑</span></label>
+      <label><input type="radio" name="r-threat-real" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="threat-real" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card green">
+  <h3>没到取代 · 诚实的另一半</h3>
+  <ul>
+    <li><b>长期 ownership 的缝还在</b>:今天是任务式交付,没有长期拥有+维护+演进一个 operator 系统的闭环;造软件在分开的 CodeBuddy,两者还没融。</li>
+    <li>验收/可信仍弱;大厂融合这件对它非核心的事有结构惰性。</li>
+    <li><b>窗口靠速度守,不靠护城河。</b></li>
+  </ul>
+  <div class="react" data-topic="threat-half" data-title="没到取代 · 诚实的另一半">
+    <div class="q">你怎么看?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-threat-half" value="✅ 同意"><span>✅ 同意</span></label>
+      <label><input type="radio" name="r-threat-half" value="⚠️ 存疑"><span>⚠️ 存疑</span></label>
+      <label><input type="radio" name="r-threat-half" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="threat-half" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<!-- ========== 4. 对 911 影响 + 你的决定 ========== -->
+<div class="section-title"><span class="dot" style="color:var(--purple)">●</span>四、对 FLY-911 定位的影响 + 你拍板</div>
+
+<div class="card purple">
+  <h3>影响评估 · 不推翻,坐实已有诚实姿态</h3>
+  <p>FLY-911 早已(诚实地)把供应商中立降级、把差异框成「协调不是数量」、认「引擎层无护城河、防御全在产品化速度」。<b>WorkBuddy 是最强印证</b>,同时逼我们把差异表述<b>再收窄</b>(目标用户不再当差异)。</p>
+  <p><b>已做的轻改</b>(不动主线/beachhead/支柱/信任):§5 竞品表加 WorkBuddy 一行 + §7 诚实边界补:手机 IM/供应商中立退出、目标用户不再是差异、活着的候选 = 长期 ownership + 被协调组织。</p>
+  <div class="react" data-topic="pos-impact" data-title="对 911 的影响评估">
+    <div class="q">这个「轻改不推翻」的处理你同意吗?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-pos-impact" value="✅ 同意"><span>✅ 同意</span></label>
+      <label><input type="radio" name="r-pos-impact" value="⚠️ 存疑"><span>⚠️ 存疑</span></label>
+      <label><input type="radio" name="r-pos-impact" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="pos-impact" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card purple">
+  <h3>拍板 A · 只剩两条候选差异(长期 ownership + 被协调组织),<b>够不够撑一个生意?</b></h3>
+  <div class="react" data-topic="q-enough" data-title="决定 A:两条候选差异够不够撑生意">
+    <div class="q">你的判断?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-q-enough" value="✅ 够"><span>✅ 够</span></label>
+      <label><input type="radio" name="r-q-enough" value="⚠️ 悬"><span>⚠️ 悬</span></label>
+      <label><input type="radio" name="r-q-enough" value="✋ 要再想"><span>✋ 要再想</span></label>
+    </div>
+    <textarea data-comment="q-enough" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card purple">
+  <h3>拍板 B · 面对腾讯的 substitution path,<b>要不要把「长期拥有并演进真系统」这条更早做实、当立身之本?</b></h3>
+  <div class="react" data-topic="q-speed" data-title="决定 B:要不要把「长期养真系统」更早做实当立身之本">
+    <div class="q">你的判断?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-q-speed" value="✅ 要,提前"><span>✅ 要,提前</span></label>
+      <label><input type="radio" name="r-q-speed" value="⚠️ 看情况"><span>⚠️ 看情况</span></label>
+      <label><input type="radio" name="r-q-speed" value="✋ 不急"><span>✋ 不急</span></label>
+    </div>
+    <textarea data-comment="q-speed" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card purple">
+  <h3>拍板 C · 对外要不要显式讲「<b>大厂能做够用的办公活,我们做的是替你长期养一套真系统</b>」当反差 messaging?</h3>
+  <div class="react" data-topic="q-messaging" data-title="决定 C:对外要不要显式讲反差">
+    <div class="q">你的判断?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-q-messaging" value="✅ 讲"><span>✅ 讲</span></label>
+      <label><input type="radio" name="r-q-messaging" value="⚠️ 试试"><span>⚠️ 试试</span></label>
+      <label><input type="radio" name="r-q-messaging" value="✋ 不讲"><span>✋ 不讲</span></label>
+    </div>
+    <textarea data-comment="q-messaging" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<!-- ========== 5. 二轮深挖(Annie 逐条存疑) ========== -->
+<div class="section-title"><span class="dot" style="color:var(--blue)">●</span>五、二轮深挖 —— 你逐条存疑的答复</div>
+<div class="note">你上一轮的具体问题,逐条查证(诚实,查不到标 UNKNOWN)。</div>
+
+<div class="card blue">
+  <h3>A. 跑在谁的机器上? · <b>双模式,你选</b> <span class="grade"><span class="evi">官方</span></span></h3>
+  <ul>
+    <li><b>本机模式</b>:跑<b>你自己电脑</b>(Docker/Podman 本地容器),直读本地文件,适合敏感数据。代价:<b>电脑要开着、不能关机/休眠</b>。</li>
+    <li><b>云端沙箱模式</b>:跑<b>腾讯给的机器</b>(指向 E2B 托管云沙箱),<b>不依赖你电脑开机</b>,适合出差/只有手机时。</li>
+    <li><b>手机 / IM 端 = 遥控器 UI,不是干活的地方</b>:微信/企微/QQ/飞书/钉钉 发指令(语音/拍照/传文件)→ 后台跑(云沙箱 或 远程控制你本机)→ 回报。</li>
+    <li><b>「后台常驻跑哪几个渠道?」(你的原问)—— 精确答</b>:常驻的<b>不是「某几个渠道」,而是一个后端</b>(云沙箱 或 你的本机)。9 个 IM 渠道<b>都只是往这一个后端派活+收结果的入口,本身不各自常驻</b>。准确说 =「一个常驻后端 + 9 个发起/接收渠道」,不是「9 个渠道各跑一个常驻 agent」。</li>
+  </ul>
+  <p class="note">→ 它「云沙箱替你托管、不用开机」是我们也想做的;它「本机模式不能关机」的运维负担甩回用户,是反面教材。</p>
+  <div class="react" data-topic="deep-deploy" data-title="A. 部署/运行模型(双模式)">
+    <div class="q">这个回答清楚吗?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-deep-deploy" value="✅ 清楚了"><span>✅ 清楚了</span></label>
+      <label><input type="radio" name="r-deep-deploy" value="⚠️ 还想问"><span>⚠️ 还想问</span></label>
+      <label><input type="radio" name="r-deep-deploy" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="deep-deploy" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card blue">
+  <h3>B. 多模型切换 · 怎么切 / 收费 / BYOK <span class="grade"><span class="evi">官方</span></span></h3>
+  <ul>
+    <li><b>怎么切</b>:对话界面<b>底部有「模型切换入口」</b> → 点「+配置自定义模型」。有 UI、在对话框底部。</li>
+    <li><b>收费</b>:走腾讯云 <b>TokenHub</b> —— token 配额套餐,内置模型收费(输入/输出分别计价、分阶越高越便宜)。免费档能上车但<b>有限制</b>(用户吐槽免费版被限速逼付费)。</li>
+    <li><b>BYOK</b>:<b>支持</b>。带自己第三方 API key 调任何模型(「内置=招牌菜收费,自定义=自带食材免费」)。</li>
+  </ul>
+  <p class="note">→ 它把「供应商中立/多模型」做成了产品里一个下拉+BYOK 的现成功能 —— 我们那条候选差异塌得更实。</p>
+  <div class="react" data-topic="deep-model" data-title="B. 多模型切换(UI+TokenHub+BYOK)">
+    <div class="q">这个回答清楚吗?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-deep-model" value="✅ 清楚了"><span>✅ 清楚了</span></label>
+      <label><input type="radio" name="r-deep-model" value="⚠️ 还想问"><span>⚠️ 还想问</span></label>
+      <label><input type="radio" name="r-deep-model" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="deep-model" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card purple">
+  <h3>C. 三剑客 clarify · CodeBuddy / WorkBuddy / 腾讯云 <span class="grade"><span class="evi">官方</span></span></h3>
+  <ul>
+    <li><b>CodeBuddy</b>(2025-04)= 全流程 AI 编程助手(需求→设计→研发→上线),IDE/插件/CLI,给<b>开发者</b>。<b>造软件的那个。</b></li>
+    <li><b>WorkBuddy</b>(2026-03)= AI 办公工作台,给职场人。<b>基于 CodeBuddy 的智能体架构开发</b>(复用多 agent/记忆底座)。</li>
+    <li><b>腾讯云(Core Cloud)</b> = 基础设施层(CloudBase / EdgeOne Pages 部署),两个 Buddy 都用它部署。</li>
+  </ul>
+  <p class="note">→ CodeBuddy(建软件)+ WorkBuddy(办公)= 双子星共享底座;腾讯云是部署地基。<b>腾讯三块拼图都有了,只差缝成「替非技术 operator 长期养一套系统」——这就是 substitution 威胁。</b></p>
+  <div class="react" data-topic="deep-trio" data-title="C. 三剑客+腾讯云关系">
+    <div class="q">这个回答清楚吗?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-deep-trio" value="✅ 清楚了"><span>✅ 清楚了</span></label>
+      <label><input type="radio" name="r-deep-trio" value="⚠️ 还想问"><span>⚠️ 还想问</span></label>
+      <label><input type="radio" name="r-deep-trio" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="deep-trio" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card amber">
+  <h3>D. 真实用户评价(小红书+知乎,非官方页) <span class="grade"><span class="evi">评测</span></span></h3>
+  <p><b>① 好处</b>:效率翻倍(周报 2h→1min)、傻瓜式点预设、企微/QQ 手机发消息电脑干活、安全合规、腾讯生态、跨会话记忆「用一个月越来越懂我」。</p>
+  <p><b>② 需改进(吐槽)</b>:<b>稳定性差是最大槽点</b>(小红书 511 赞爆帖:「太不稳定、半成品、智障、直接宕机、自动化任务到点失败、客户端打字特别慢」);<b>建东西弱</b>(「做网页比 qoderwork 差太多,普通办公够了」);免费版限制逼付费;技能少于 AutoClaw;正面帖被怼「这么硬的营销吗」。</p>
+  <p><b>⭐ 关键洞察</b>:用户点出要它稳定好用<b>得自己搭「记忆文件+工作空间+中转层+日志系统」,「把它当成建自己的系统慢慢搭」</b>;对比 OpenClaw「<b>一个组装好的、一个自己组装的</b>」;「它是实习生,干不好指导老师(你)自我反思」。</p>
+  <div class="react" data-topic="deep-reviews" data-title="D. 真实用户评价(优点+吐槽+关键洞察)">
+    <div class="q">你怎么看这些真实评价?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-deep-reviews" value="✅ 有用"><span>✅ 有用</span></label>
+      <label><input type="radio" name="r-deep-reviews" value="⚠️ 想深挖"><span>⚠️ 想深挖</span></label>
+      <label><input type="radio" name="r-deep-reviews" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="deep-reviews" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card green">
+  <h3>E. ⭐ 最关键一问 · 能不能长期拥有并演进一套真系统? <span class="badge b-stand">决定差异</span></h3>
+  <p><b>诚实结论:不是纯一次性(它也能建软件),但也不是「长期拥有并演进一套系统」的 owner —— 它是一个『你得自己搭台、每天重新 brief 的 per-session 执行器』。我们那条差异站得住,而且更精准。</b></p>
+  <p><b>它「不止一次性」</b>:跨会话记忆 + Checkpoints + 多 agent(前/后端/测试)+ 自动化基础设施 + 真有大型案例(<b>600+ 轮、15000+ 行、10+ 次部署</b>)。</p>
+  <p><b>但「不是长期 codebase steward」(逐条)</b>:①无自主 repo/项目 ownership;②项目连续性<b>靠人肉日志、每天重新 brief</b>(否则失忆);③<b>无 git/PR/CI/review 工程纪律</b>,部署手动;④真实翻车 = 系统级失忆、<b>日志造假(写了但没做)</b>、宕机。</p>
+  <p>→ 差异<b>不是「软件 vs 办公」</b>,是「<b>人力搭台的 per-session 执行器(你当架构师/PM)</b>」vs「<b>替你拥有并养一套系统、带工程纪律的组织</b>」。WorkBuddy 把「攒成一个持续系统」留给用户;Flywheel 替你做了。<b>⚠️ 但我们这套 done-for-you 也还没做实,是要争的。</b></p>
+  <div class="react" data-topic="deep-verdict" data-title="E. 最关键一问:长期 ownership 差异站不站得住">
+    <div class="q">这条差异(替你拥有并养一套系统)你认吗?够不够当立身之本?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-deep-verdict" value="✅ 认,站得住"><span>✅ 认,站得住</span></label>
+      <label><input type="radio" name="r-deep-verdict" value="⚠️ 半信"><span>⚠️ 半信</span></label>
+      <label><input type="radio" name="r-deep-verdict" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="deep-verdict" rows="3" maxlength="3000" placeholder="写你的判断…"></textarea>
+  </div>
+</div>
+
+<!-- ========== 6. 三轮深挖(Annie 深挖 v4 后) ========== -->
+<div class="section-title"><span class="dot" style="color:var(--purple)">●</span>六、三轮深挖 —— 你深挖 v4 后的 4 问</div>
+<div class="note">⚠️ 官方页只泛证「个性化记忆/沙箱」,以下架构细节多来自第三方深度评测/E2B 机制,标了 provenance;一手确证需官方架构文档(暂无)。</div>
+
+<div class="card blue">
+  <h3>R3-① 跨 OS 兼容问题具体指什么 <span class="grade"><span class="evi">官方要求+评测</span></span></h3>
+  <ul>
+    <li><b>支持</b>:Windows 10(1909+)/ Win 11(64位);macOS 10.15+(Intel + M 系列)。<b>不支持</b>:Win 7 等旧系统、<b>各类 Linux 图形界面</b>。</li>
+    <li><b>具体坑(不是泛泛不兼容)</b>:① <b>Windows 安装脚本易报错</b>(权限模型分叉:Win 证书链强制验证 vs Unix 文件属性软约束);② 装完打不开常因缺 <b>Node.js/Git/.NET</b> 运行时;③ <b>Intel Mac 视觉识别性能弱</b>,官方建议用 M 芯片。</li>
+  </ul>
+  <p class="note">→ 这些是桌面自托管 app 的跨平台运维税,正是我们用 Discord+managed 想替用户绕开的。</p>
+  <div class="react" data-topic="r3-os" data-title="R3-① 跨 OS 兼容具体指什么">
+    <div class="q">这个回答清楚吗?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-r3-os" value="✅ 清楚了"><span>✅ 清楚了</span></label>
+      <label><input type="radio" name="r-r3-os" value="⚠️ 还想问"><span>⚠️ 还想问</span></label>
+      <label><input type="radio" name="r-r3-os" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="r3-os" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card green">
+  <h3>R3-② ⭐ 记忆模型:跟用户走还是跟项目走?(你最想知道) <span class="grade"><span class="evi warn">评测⚠️</span></span></h3>
+  <ul>
+    <li><b>两者都有,分开存(两级)</b>:<b>用户级</b>(跟你走、跨项目)= <code>~/.workbuddy/</code>(偏好:时区/代码风格/报告格式);<b>项目级</b>(跟项目走、隔离)= <code>{workspace}/.workbuddy/</code>(项目技能+上下文)。</li>
+    <li><b>三层时间维度</b>(评测口径⚠️):L1 范式(永久行为原则)/ L2 归档(项目+决策摘要)/ L3 会话(31 天滚动日志)。</li>
+    <li><b>做完 A 明天开 B 记不记得 A?</b> <b>机制上记得</b>(同一工作空间:用户偏好+项目记忆+L2+L3)。<b>但不牢靠</b>:会「系统级失忆、日志造假」,要你自建日志兜底。</li>
+    <li><b>有没有像我们的常驻 leader? ❌ 没有。</b> 它的「leader」是 Expert Teams 里 <b>per-task 临时组的 lead agent(干完就散)</b>;记忆是文件/分层存储跟用户或项目走,<b>不是一个跨时间常驻、持有全局、主动盯 backlog 的人格化 Lead</b>。</li>
+  </ul>
+  <p class="note">→ 对我们差异有利:我们卖的「常驻 named Lead = 记忆+掌控+主动 Push」它结构上没有,它是「记忆文件 + 临时 lead agent」。</p>
+  <div class="react" data-topic="r3-memory" data-title="R3-② 记忆模型(用户级+项目级/跨task/无常驻leader)">
+    <div class="q">这条钉透了吗?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-r3-memory" value="✅ 钉透了"><span>✅ 钉透了</span></label>
+      <label><input type="radio" name="r-r3-memory" value="⚠️ 还想挖"><span>⚠️ 还想挖</span></label>
+      <label><input type="radio" name="r-r3-memory" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="r3-memory" rows="3" maxlength="3000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card blue">
+  <h3>R3-③ 云沙箱生命周期(核实你的假设) <span class="grade"><span class="evi warn">E2B机制⚠️</span></span></h3>
+  <ul>
+    <li><b>创建</b>:按需(开工/发指令起沙箱)。<b>销毁</b>:idle 超时自动销毁(评测约 30 分钟;官方默认值 ⚠️UNKNOWN)+ 主动销毁。</li>
+    <li><b>持久化</b>:E2B 用 <b>CRIU 秒级快照</b>(只传文件系统变更)→ pause/resume + 快照恢复;企业版每人独立沙箱、对话+文件持久保存。</li>
+    <li><b>接回</b>:支持 pause/resume 接回同一环境。</li>
+  </ul>
+  <p class="note">→ 你的假设「开工开沙箱→干完关→数据进冷存储→下次接回」<b>大致对</b>(按需起+超时关+CRIU 快照持久化+resume 接回);⚠️「冷存储」实际是 CRIU 快照+文件 diff,默认 timeout/保留时长官方值 UNKNOWN。</p>
+  <div class="react" data-topic="r3-sandbox" data-title="R3-③ 云沙箱生命周期">
+    <div class="q">这个核实清楚吗?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-r3-sandbox" value="✅ 清楚了"><span>✅ 清楚了</span></label>
+      <label><input type="radio" name="r-r3-sandbox" value="⚠️ 还想问"><span>⚠️ 还想问</span></label>
+      <label><input type="radio" name="r-r3-sandbox" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="r3-sandbox" rows="2" maxlength="2000" placeholder="留言(可选)…"></textarea>
+  </div>
+</div>
+
+<div class="card green">
+  <h3>R3-④ ⭐ 帮不帮长期拥有并演进同一 codebase vs 一次性?(钉死) <span class="badge b-stand">决定差异</span></h3>
+  <p><b>诚实结论:它 CAN 在同一个项目工作空间上持续迭代(机制齐),所以不是「只做一次性」;但它不是「替你 own 并演进一个 codebase 的自主组织」—— owner/项目经理/工程治理 三顶帽子都还戴在你头上。我们差异站得住,且钉到机制层。</b></p>
+  <p><b>能持续迭代的机制</b>:项目级记忆 {workspace}/.workbuddy + 沙箱 CRIU resume + 分层记忆 + 大项目案例(同一项目 600+ 轮/15k 行)。→ 纠正二轮「per-session 执行器」的过简说法。</p>
+  <p><b>但它不是 codebase owner(逐条)</b>:① 在「工作空间目录」迭代 ≠ own 一个 git repo(<b>无 git/PR/CI/review/版本治理</b>,部署手动);② owner 是你(靠你维护记忆/日志、每次发起、re-brief,记忆漏了你兜);③ 没有常驻组织盯这 codebase 的 backlog 主动推进(你当 PM)。</p>
+  <p>→ 差异<b>不是「能不能在同一 codebase 迭代」(它能),是「谁 own + 谁盯 backlog + 有没有工程纪律 + 记忆牢不牢」</b>。<b>WorkBuddy 给你工具+记忆,但把 owner/PM/工程治理留给你;Flywheel(常驻组织 own repo+自推 backlog+PR/CI/review+常驻 Lead)替你做了。⚠️ 但我们这套 done-for-you 也还没做实。</b></p>
+  <div class="react" data-topic="r3-codebase" data-title="R3-④ 长期拥有演进同一 codebase 差异钉死">
+    <div class="q">这条钉死了吗?差异站得住吗?</div>
+    <div class="opts">
+      <label><input type="radio" name="r-r3-codebase" value="✅ 站得住"><span>✅ 站得住</span></label>
+      <label><input type="radio" name="r-r3-codebase" value="⚠️ 半信"><span>⚠️ 半信</span></label>
+      <label><input type="radio" name="r-r3-codebase" value="✋ 想调整"><span>✋ 想调整</span></label>
+    </div>
+    <textarea data-comment="r3-codebase" rows="3" maxlength="3000" placeholder="写你的判断…"></textarea>
+  </div>
+</div>
+
+<div class="card gray">
+  <h3>其它想法 / 总留言</h3>
+  <p class="note">任何补充、纠正、方向 —— 写这里。</p>
+  <div class="react" data-topic="q-open" data-title="其它想法 / 总留言">
+    <div class="q">留言:</div>
+    <textarea data-comment="q-open" rows="3" maxlength="4000" placeholder="写你的想法…"></textarea>
+  </div>
+</div>
+
+</div><!-- /wrap -->
+
+<div class="bar">
+  <div class="inner">
+    <button id="copy-btn" type="button">复制我的批注</button>
+    <button id="toggle-btn" type="button" class="ghost">预览</button>
+    <span id="copy-status"></span>
+    <span class="tally">已批注 <b id="t-count">0</b> 项</span>
+  </div>
+  <div class="inner"><pre id="export"></pre></div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  "use strict";
+  var GENERATED_AT = "2026-07-08";
+  var blocks = document.querySelectorAll(".react[data-topic]");
+
+  function collect(){
+    var out = [];
+    blocks.forEach(function(b){
+      var topic = b.getAttribute("data-topic");
+      var title = b.getAttribute("data-title") || topic;
+      var checked = b.querySelector('input[type=radio]:checked');
+      var reaction = checked ? checked.value : null;
+      var ta = b.querySelector('textarea[data-comment="'+topic+'"]');
+      var comment = ta ? ta.value.trim() : "";
+      if (reaction || comment) out.push({ title: title, reaction: reaction, comment: comment });
+    });
+    return out;
+  }
+
+  function count(){
+    var n = collect().length;
+    var el = document.getElementById("t-count");
+    if (el) el.textContent = n;
+    return n;
+  }
+
+  function render(){
+    var rows = collect();
+    var lines = ["# Annie 对 WorkBuddy 竞品分析的批注(FLY-1003 · " + GENERATED_AT + ")", ""];
+    if (!rows.length) { lines.push("(暂无批注 —— 勾选反应或写留言后再复制)"); }
+    rows.forEach(function(r){
+      lines.push("## " + r.title);
+      if (r.reaction) lines.push("- 反应:" + r.reaction);
+      if (r.comment) lines.push("- 留言:" + r.comment);
+      lines.push("");
+    });
+    return lines.join("\n");
+  }
+
+  document.addEventListener("change", function(e){
+    if (e.target && e.target.type === "radio") count();
+  });
+  document.addEventListener("input", function(e){
+    if (e.target && e.target.tagName === "TEXTAREA") count();
+  });
+
+  var statusEl = document.getElementById("copy-status");
+  document.getElementById("copy-btn").addEventListener("click", function(){
+    var text = render();
+    var pre = document.getElementById("export");
+    pre.textContent = text;
+    pre.style.display = "block";
+    function ok(){ statusEl.textContent = "已复制 ✓ 粘回 Discord 即可"; }
+    function fail(){ statusEl.textContent = "复制失败 — 请手动长按下面文本选择"; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(ok, fail);
+    } else { fail(); }
+  });
+
+  document.getElementById("toggle-btn").addEventListener("click", function(){
+    var pre = document.getElementById("export");
+    if (pre.style.display === "block") { pre.style.display = "none"; }
+    else { pre.textContent = render(); pre.style.display = "block"; }
+  });
+
+  count();
+})();
+</script>
+</body>
+</html>
