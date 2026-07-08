@@ -56,14 +56,15 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 </head>
 <div class="wrap">
 <header>
-  <h1>主动 DAG 编排 —— 设计 co-eval v2</h1>
-  <p class="sub">FLY-353 · 2026-07-08 · 已把你上一轮 co-eval 的重塑折进来(判断在 run 里不在派发 · LLM 分流 · 引擎要重设计 · phase 1 就要强分诊)</p>
+  <h1>主动 DAG 编排 —— 设计 co-eval v3</h1>
+  <p class="sub">FLY-353 · 2026-07-08 · v3 新增:大架构全景图 + LLM 分诊节点 = 你设计的 CoS(判断在 run 里不在派发 · 引擎要重设计 · phase 1 就要强分诊)</p>
   <div><span class="pill cand">设计草案 · 逐节留言</span><span class="pill">收敛后 → PRD → Tadashi</span></div>
 </header>
 
 <div class="note">
-  <b>v2 改了什么(照你上轮批注):</b> ① 派发环节<b>不再留人分类</b> —— 默认自动派发,<b>判断挪到 runner 跑的时候</b>(简单的自己跑完、复杂的用现有 brainstorm gate 跑中拉你);
-  ② 分流不用机械规则、<b>用一个 LLM 判断</b>(还相关吗?派给谁?),LLM 分诊本身是流程里的一个节点;③ 现有引擎老、大概率要<b>重设计</b>(不照搬);④ <b>phase 1 就带强分诊辅助</b>。
+  <b>v3 新增(照你这轮批注):</b> 加了一张<b>大架构全景图</b>(下面 🗺️ 节)+ 把 <b>LLM 分诊节点明确成 = 你设计的 CoS</b>(不加新组件)。
+  <b>v2 的框架(仍成立):</b> ① 派发不留人分类 —— 默认自动派发,<b>判断挪到 runner 跑的时候</b>(简单自跑完、复杂用现有 brainstorm gate 跑中拉你);
+  ② 分流用 <b>CoS(LLM)</b>判断、非机械;③ 现有引擎老、要<b>重设计</b>;④ <b>phase 1 就带强分诊</b>。
   每小节下有留言框,底部「复制批注」收走;每版从空白开始。<span class="tag unk">UNKNOWN</span> = 查不到实证、没瞎编。
 </div>
 
@@ -79,6 +80,33 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
   所以「homerail 有 DAG」<b>不代表</b>它做我们这件事。<span class="tag unk">UNKNOWN</span>:homerail 没有公开架构文档,以上是直接读码得出的结论、非官方 doc。</p></div>
 </div>
 <div class="cmt"><label>💬 对「要解决的痛 / homerail」的留言(要不要我深挖 homerail?)</label><textarea data-k="pain" data-label="1 · 痛 / homerail"></textarea></div>
+
+<!-- 1.5 全景架构图 -->
+<h2><span class="secnum">🗺️ ·</span> 全景:主动 DAG 编排长什么样(你要的大架构图)</h2>
+<div class="card purple">
+  <div class="you"><b>你说:</b>「需要你画一个大的 architecture,这东西应该长什么样?」+「那个 LLM 分诊节点,用每个项目部门的 CoS 可以吗?我一开始设计 CoS 就是想做这个。」→ <b>对,完全可以,而且就该这样。</b>下面这张图里,<b>LLM 分诊节点 = CoS</b> —— 不是新组件,就是你已有的、本来就干 triage+路由的 Chief of Staff(如 Aunt Cass)。</div>
+  <div style="max-width:560px;margin:8px auto">
+    <div class="step" style="text-align:center;background:#fff8e6;border-color:#ffe0a3"><b>你 / founder</b>:只列大方向 —— 开 Linear issue + 标依赖</div>
+    <div class="arrow">↓</div>
+    <div class="step" style="text-align:center"><b>DAG 依赖层</b>:从 Linear <code>blockedBy</code> 建图 → 挑出「没被 block、可开跑」的 issue</div>
+    <div class="arrow">↓</div>
+    <div class="step hi" style="text-align:center"><b>🧠 LLM 分诊节点 = CoS</b>(每个部门的 Chief of Staff)<br>判:这条还相关吗?派哪个部门 / 谁?优先级?<br><span style="font-size:12px;color:#7a2fb0">← 你说 CoS 本来就是设计来做这个的;不机械、有判断</span></div>
+    <div class="arrow">↓</div>
+    <div class="step" style="text-align:center"><b>自动派发</b>:起 Runner(按部门)—— 不用你一个个 assign</div>
+    <div class="arrow">↓</div>
+    <div class="step hi" style="text-align:center"><b>Runner 干活 —— 判断点在这</b><br>简单 → 自己跑完 · 复杂 → 现有 brainstorm gate 跑中拉你/Lead 一起定</div>
+    <div class="arrow">↓</div>
+    <div class="step" style="text-align:center">三段式:设计 → 实现 → QA</div>
+    <div class="arrow">↓</div>
+    <div class="step" style="text-align:center;background:#fff8e6;border-color:#ffe0a3"><b>🔒 founder gate</b>:ship 永远你点头(不变)</div>
+  </div>
+  <div class="you" style="background:#f4f9ff;border-color:#bcd9ff"><b>── 贯穿全程的监管护栏 ──</b><br>
+  · <b>看得见</b>:一个面板显示 哪些在跑 / 排队 / 被 block / 升级等你<br>
+  · <b>随时接管 / 叫停</b>:暂停自动流、把某条抽出来转人工<br>
+  · <b>出错 → 升级给人</b>(不静默 shelve 了继续)</div>
+  <p class="hint">一句话看图:<b>你列大方向 → DAG 挑能做的 → CoS(LLM)判相关性+分流 → 自动派 Runner → Runner 跑中该判断处拉你 → 三段式 → 你点头 ship;全程可看、可停、出错叫人。</b></p>
+</div>
+<div class="cmt"><label>💬 对全景架构图的留言(这张图对吗?CoS 当分诊节点合你的设想吗?)</label><textarea data-k="arch" data-label="🗺️ 全景架构图 + CoS=分诊节点"></textarea></div>
 
 <!-- 2 -->
 <h2><span class="secnum">2 ·</span> 三形态对照(静态 DAG / 我们现在 / 提议)</h2>
@@ -117,7 +145,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
   </div>
 </div>
 </div>
-<div class="you"><b>你的关键洞察(v2 已采纳):</b>「总得有一个 LLM 在中间做分流才行;LLM 节点也可以是 DAG 的一部分。」→ 对。🅒 里那个 <b>LLM 分诊节点</b>就是它:不是机械规则挑任务,是一个 LLM 判「这条还相关吗 / 该派给谁 / 现在该做吗」;它本身就是编排图里的一个节点,输出决定下游怎么走。</div>
+<div class="you"><b>你的关键洞察(v2/v3 已采纳):</b>「总得有一个 LLM 在中间做分流;LLM 节点可以是 DAG 一部分」+「这个 LLM 分诊节点用每个部门的 CoS 就行,我本来就为此设计 CoS」。→ <b>对,🅒 里那个 LLM 分诊节点 = CoS</b>:不是机械规则挑任务,是<b>你已有的 Chief of Staff</b> 判「这条还相关吗 / 派给谁 / 现在该做吗」;它本身是编排图里的一个节点,输出决定下游怎么走。<b>= 复用现有 CoS,不加新组件。</b></div>
 <div class="cmt"><label>💬 对三形态 / LLM 分流节点的留言</label><textarea data-k="compare" data-label="2 · 三形态 + LLM 分流节点"></textarea></div>
 
 <!-- 3 -->
@@ -126,7 +154,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
   <div class="you"><b>你上轮把我上一版的脊梁纠正了,v2 照你的重写:</b>「不一定在派发环节留人。现在每个任务跑起来不是自己悄悄跑完不反馈,更多是运行过程中跟我们一起 brainstorm。简单的自己跑完,复杂的还是跟我们走 brainstorm。所以留人判断更多在 runner 跑的时候。」</div>
   <p><b>所以新脊梁 = 两处判断,都不在派发:</b></p>
   <ul>
-    <li><span class="k">① 派发前:LLM 分诊(不是留人、是 LLM)</span> —— 一个 LLM 判「这条 issue 还相关吗?该现在做吗?派哪种 runner?」。这解决你说的「机械会把早就不重要的 issue 照跑」。默认<b>自动派发</b>,分诊是 LLM 而非机械、也不是人肉一个个 assign。</li>
+    <li><span class="k">① 派发前:LLM 分诊 = CoS(不是留人、也不是机械)</span> —— 用<b>现有的 CoS</b>(部门 Chief of Staff,你本来就为此设计的)判「这条 issue 还相关吗?该现在做吗?派哪种 runner?」。这解决你说的「机械会把早就不重要的 issue 照跑」。默认<b>自动派发</b>,分诊由 CoS(LLM)做、非机械、也不是人肉一个个 assign。</li>
     <li><span class="k">② runner 跑的时候:判断内建在 run 里(现有机制)</span> —— <b>简单的 issue:runner 自己跑完</b>;<b>复杂的:runner 用<u>现有的 brainstorm gate</u> 跑到一半把你/Lead 拉进来</b>一起定,再继续。这不是新东西 —— Flywheel 的 runner 本来就在跑中 brainstorm-gate,我们只是让「派发」自动化,把「判断」留在它本来就在的地方(run 里)。</li>
   </ul>
   <p class="hint">对比我上一版[已废]:上一版想「派发前就把 issue 分成 可自动 / 留人 两类」。你的意见更对 —— <b>不用在派发切,几乎都能自动派;判断该在 LLM 分诊 + runner 跑中,不在派发口留人。</b></p>
