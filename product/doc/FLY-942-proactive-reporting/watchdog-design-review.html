@@ -78,7 +78,7 @@
       <li><span class="kk">盯 Runner 的</span>(每<span class="bad">约 1 小时</span>看一眼):屏幕内容<span class="bad">连续 10 分钟一模一样</span> + 状态还是 running → 判候选卡 → 先告诉负责的 Lead → 给 Lead <span class="bad">5 分钟</span> → 还没人处理 → 才 @ 你(进对应 issue 的 thread)。</li>
     </ul>
     <p><span class="kk">去重</span>:同一类问题每天只报一次。<span class="kk">通知</span>:只 @ 你、进对应 issue thread。</p>
-    <div class="callout warn"><span class="kk">现状 4 个毛病</span>(你已认可):① 只看一帧 → 冻结后长得像闲着,分不清;② 只认"屏幕没动" → 反复刷同一个错的看不出;③ 只认 4 种错误(<code>Server error</code>/<code>Not logged in</code>/<code>ENOENT</code> 都不认);④ 最坏 <span class="bad">~75 分钟</span>才叫到你。</div>
+    <div class="callout warn"><span class="kk">现状 4 个毛病</span>(你已认可):① 只看一帧 → 冻结后长得像闲着,分不清;② 只认"屏幕没动" → 反复刷同一个错的看不出;③ 只认 4 种错误(<code>Server error</code>/<code>Not logged in</code>/<code>ENOENT</code> 都不认);④ 最坏 <span class="bad">~75 分钟起</span>才叫到你(实际可能更久)。</div>
     <div class="lbl">你的想法(现在的逻辑我写对了吗):</div>
     <textarea id="t1" placeholder="① AS-IS —— 描述准不准 / 还漏了哪块?"></textarea>
   </div>
@@ -94,7 +94,7 @@
       <tr><td class="k">盯 Runner 判卡</td><td class="frm">只认"屏幕没动"</td><td class="to">+ "重复错误签名"(变但循环同一个错)+ 看 token 在不在真吐</td></tr>
       <tr><td class="k">拿不准时</td><td class="frm">直接压掉当健康</td><td class="to">升级给 LLM 判断层判 a/b/c;还不确定 → 附原始屏幕上报、不静默</td></tr>
       <tr><td class="k">多久看一眼</td><td class="frm">~1 小时</td><td class="to">便宜的扫描每几分钟(不抓屏)+ 抓屏尽快</td></tr>
-      <tr><td class="k">多久叫到你</td><td class="frm">~75 分钟链</td><td class="to">发现 → 立刻给 Lead → Lead 30min 没解决 → 才 @ 你</td></tr>
+      <tr><td class="k">多久叫到你</td><td class="frm">~75 分钟起(可能更久)</td><td class="to">发现 → 立刻给 Lead → Lead 30min 没解决 → 才 @ 你</td></tr>
       <tr><td class="k">信"进程活着"</td><td class="frm">当健康</td><td class="to">读屏幕真状态,不信"进程活"</td></tr>
     </table></div>
     <div class="lbl">你的想法(改的方向对不对 / 哪处多余或缺):</div>

@@ -106,7 +106,7 @@ flowchart TD
 
 **现状两个结构性盲点(为什么机械必漏)**:
 1. **单帧 + stagnant-fingerprint**:`isIdleHealthyPane`(`LeadWatchdog.ts:811-826`)是纯 `(pane)=>bool` 单帧判定 —— 无 blocked-keyword(只 4 种:rate/usage/login-expired/permission,`:137-153`)+ 无 working-marker(`esc to interrupt`/`Compacting`,`:683-687`)+ 有 idle-anchor(`ctx N%`/`⏵⏵ bypass`/`? for shortcuts`,`:696-702`)→ 判 healthy。**它自己承认**(`:677-681`):"冻结在 extended-thinking 后 与 idle-after-thinking 单帧无法区分,favouring no-spam 压掉"。而 runner 侧 `stuck-candidate`(`:16-20`)承认**漏掉输出还在变的卡**(retry loop / spinner)。→ 两头都漏:冻结后像 idle(546/837 silent)+ 变但循环同一错误(910 ENOENT / spinner)。
-2. **到 founder 最坏 ~75min**:RunnerIdleWatchdog 轮询 `DEFAULT_IDLE_POLL_MS = 3_600_000`(~1h,FLY-628 band-aid,`stuck-escalation.ts:88` / `plugin.ts:5261`)+ stagnation `STUCK_THRESHOLD_MS = 600_000`(10min)+ Lead grace `LEAD_GRACE_MS = 300_000`(5min)→ **~75min 才到 founder**,且仅对 stagnant 输出。→ 达不到"不再每 30-60min 巡查"。
+2. **到 founder 慢(~75min 是乐观下限,实际可 ~2h+)**:RunnerIdleWatchdog 轮询 `DEFAULT_IDLE_POLL_MS = 3_600_000`(~1h,FLY-628 band-aid,`stuck-escalation.ts:88` / `plugin.ts:5261`)+ stagnation `STUCK_THRESHOLD_MS = 600_000`(10min)+ Lead grace `LEAD_GRACE_MS = 300_000`(5min)。**注(Codex R1)**:`stuck-candidate` **首次** poll 见某输出只起 episode,**下次** poll 见同输出才按 10min 阈值判候选 —— ~1h poll 下"确认 stagnant"要相邻两次 poll,采样边界最坏 **~2h+** 才到 founder,且仅对 stagnant 输出(变但打转的更漏)。→ 远达不到"不再每 30-60min 巡查"。
 
 > **澄清"帧"(Annie 2026-07-08)**:"帧" = 终端 pane 的**文字内容在两个时间点各抓一次做比对**(**不是 video / 图像**,不需要看视频)。机械快筛做**便宜的文字 diff / token 数 / 关键词**判明确态;只有**拿不准的才升级 LLM 判断层**读富态。全程文字,不涉图像/视频。
 
@@ -128,7 +128,7 @@ flowchart TD
 | **FN1** 910 worktree 删 | 反复滚动、不断变的 `ENOENT` 错误行 | ① liveness=alive 过 ② 输出一直变 → fingerprint 每轮变 → `output_changing` 排除,永不到 10min 阈值(正是它自认漏的 retry-loop)③ 无 ENOENT 处理 | **重复错误签名 delta**(变但循环同错)+ 认 `ENOENT` |
 | **FP0/FP1** 长 turn 误报 | 在跑长 turn(有 `esc to interrupt` 或 token 在吐) | 单帧偶发瞬时空 prompt / 无 stage_changed → 误判 stuck | 观察窗 ≥2 帧见 token-flow 在动 → 判 a working,不报 |
 
-> **升级流(检测 → @Annie)对比**:现状 ~75min(1h 轮询→10min stagnation→5min Lead grace→founder page,`founder-thread-notifier` @founder 进 issue thread,`:459`)。**新设计(Annie 2026-07-08 定稿)= 统一 Lead-first + ~30min**:检测(case-c 或 两漏)那刻 → **立刻通知责任 Lead**(进对应 thread + Lead inbox)→ **Lead ~30min 没解决 → 才 @ Annie**(`founder-thread-notifier` founder @)。比现状 ~75min 快、且不当场轰炸 Annie;fleet 级(一片同挂)走 915 不走这 30min。
+> **升级流(检测 → @Annie)对比**:现状 ~75min 起(乐观下限;实际因 stagnant 需两次 poll 确认可 ~2h+,见 §3.2b 注)(1h 轮询→10min stagnation→5min Lead grace→founder page,`founder-thread-notifier` @founder 进 issue thread,`:459`)。**新设计(Annie 2026-07-08 定稿)= 统一 Lead-first + ~30min**:检测(case-c 或 两漏)那刻 → **立刻通知责任 Lead**(进对应 thread + Lead inbox)→ **Lead ~30min 没解决 → 才 @ Annie**(`founder-thread-notifier` founder @)。比现状 ~75min 快、且不当场轰炸 Annie;fleet 级(一片同挂)走 915 不走这 30min。
 
 ### 3.2c 机制 spec 四块(AS-IS / TO-BE delta / scenario 表 / UML)—— Annie 要"一条条看清"
 
