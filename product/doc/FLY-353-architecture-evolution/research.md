@@ -84,6 +84,14 @@ FLY-1002。**所以 353 的主交付 = 抄 A 的 session-log,B/C 给结论即可
 **这三痛今天是分头治的(939 保活 / 916 树+facade / 978 收尾状态机),session-log 是它们共同的
 缺失底座。** 补上底座,三条各自的方案都会变轻、变稳。
 
+> **⚠️ Annie co-eval 收窄(2026-07-08,已认同、贯穿):上表的"缺"要按场景读,不是笼统"我们缺 session"。**
+> 我们用 Claude Code,brain/hands/session 原生就有(transcript = session、`--resume` 续、auto-compact)。
+> 所以 session-log **不是"我们缺 session"**,是**"要不要 Flywheel 自己 OWN 这条 log"** —— 只在 3 场景才多出
+> 价值:**① Codex/kimi(无 Claude 原生 session 层)· ② 跨 agent 查询/切片(916 主动 slice/facade)· ③ 多机
+> (单机 tmux 保活 OK、多机不行,tmux send-keys 跨不了主机)**。对 **Claude+单机**,原生够用、这条不必做。
+> 上表三行里,939/978 在**单机**多靠 tmux 保活 + durable finalization 已能兜;真正只有踩到上面 3 场景,自己
+> own 才是解。→ **本 research 不再把 session-log 当"必做候选#1",改成"这 3 场景才需要,按场景定值不值"。**
+
 ### 2.4 与 FLY-916(Lead scale / 树+facade)的关系 —— 并进不重开
 
 Lead 带 5-6 session 就吃力(FLY-916),解法是**树状 Lead + facade 压缩层**(Lead 只看摘要不看每个

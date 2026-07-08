@@ -11,6 +11,11 @@ Issue: FLY-353 (https://linear.app/geoforge3d/issue/FLY-353/架构进化-researc
 > (含工程约束 + 一个可能的 build 拆分),已过 Codex design review;但它<b>只作 co-evaluate 的输入</b>,
 > **不作 build handoff**,也**不在本轮 create build issue**。定案 + 交接 Tadashi 留到 Annie 拍板之后。
 > **FLY-916 并进本条,不重复开**(它是 session-log 的消费者)。
+>
+> 🎯 **Annie co-eval 收窄(2026-07-08):session-log 不再是"必做候选#1"。** 我们用 Claude Code,session 原生
+> 就有;所以问题是"要不要 Flywheel 自己 OWN 这条 log",只在 **3 场景**才值:① Codex/kimi(无原生 session)·
+> ② 跨 agent 查询/切片(916)· ③ 多机(单机 tmux 保活 OK)。**按场景定值不值**,不是笼统"做不做 session-log"。
+> 下面的落地设计只在"某场景确认要做"时才作对应那块的起点。详见 research.md 收窄 + architecture-review.html。
 
 ---
 
