@@ -78,4 +78,8 @@ Issue: FLY-964 (https://linear.app/geoforge3d/issue/FLY-964/三段式designimple
   - prd.md 加 §6、非目标 renumber §7;review.html 同步加「⑤ 落地补充」含转移表(自查 0 prefers-color-scheme、div 30/30 浅色)。
   - **commit + push flywheel-FLY-964 → PR #499 自动更新**(Lead 要 codex 再过一遍 → 过了 Lead merge)。
   - 更新 review URL: https://fw-reports-a53de2.vercel.app/r/9164f2ae623ee2e2ababe659157497c6/
-- **PARK 待命**:Lead 再跑 codex → 过了 **Lead merge**(别 ship / 别自 merge / 别归档,等 Lead)。要改 Lead relay。
+- [x] codex R2:4/5 gap 过,剩 1 处**两段式 scope 文本矛盾**(§2.6「同一套显示规则」+ §5a build 列了两段式渲染,和 §6.3 打架)。
+- [x] **统一两段式 scope**(lead-instruction 075576ff):§2.6 改『本次锁三段式、两段式仅方向说明不进 build、待 FLY-830』;§5a 去掉两段式 build 项改『本次不含两段式渲染 deferred FLY-830』;review.html ①卡 + ④(a) 同步。自查:旧矛盾措辞 prd/review 均 0,三处 scope 一致,review.html 0 prefers-color-scheme + div 30/30。
+  - 更新 review URL: https://fw-reports-a53de2.vercel.app/r/05d74f3352c4c41bcf2a195580b99ed2/
+  - commit + push → PR #499 更新;Lead grep 核(不再全跑 codex)→ 过了 Lead merge + 建 Ship-964 交 Tadashi + 归档 thread。
+- **PARK 待命**:等 Lead grep 核 + merge #499(别 ship / 别自 merge / 别清 / 别归档,等 Lead)。要改 Lead relay。

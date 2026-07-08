@@ -120,8 +120,8 @@
     </div>
 
     <div class="card blue">
-      <h3>两种模式:三段 / 两段</h3>
-      <p>同一套显示规则:<b>三段式</b> = 3 行(设计/实现/QA);<b>两段式</b> = 2 行(设计+实现合一 / QA)。<span class="tag t-tbd">两段式结构待定义 · FLY-830</span> 本 PRD 只锁显示形态,不锁 pipeline 怎么切。</p>
+      <h3>模式范围:本次锁三段式</h3>
+      <p><b>本次 964 = 三段式显示</b>(设计 / 实现 / QA)。<b>两段式</b>(设计+实现合一 / QA)仅作方向说明保留,<b>不进本次 build</b>、不纠结合并段徽章。<span class="tag t-tbd">两段式待 FLY-830 定义后再实现</span></p>
     </div>
   </div>
 
@@ -183,7 +183,8 @@
       <ul>
         <li><b>4 态词表</b>:现有代码是 pending/active/done/blocked → 重映射成 ◻/▶/✅,<b>新增 🔁 等待中</b>;终态失败改走归档清桩(edge ①)不显受阻。</li>
         <li><b>置顶每段一行</b> + cmux attach 引用;去掉球在谁/下一步。</li>
-        <li><b>标题方案 A</b>(只当前段徽章)· <b>侧边栏徽章</b>(返工不进)· <b>两段式合并行</b>渲染。</li>
+        <li><b>标题方案 A</b>(只当前段徽章)· <b>侧边栏徽章</b>(返工不进)。</li>
+        <li><b>本次不含两段式渲染</b> —— deferred → FLY-830(scope 外)。</li>
       </ul>
     </div>
     <div class="card green">
