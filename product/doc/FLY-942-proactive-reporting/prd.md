@@ -123,6 +123,39 @@ flowchart TD
 
 > **升级流(检测 → @Annie)对比**:现状 ~75min(1h 轮询→10min stagnation→5min Lead grace→founder page,`founder-thread-notifier` @founder 进 issue thread,`:459`)。**新设计(Annie 2026-07-08 定稿)= 统一 Lead-first + ~30min**:检测(case-c 或 两漏)那刻 → **立刻通知责任 Lead**(进对应 thread + Lead inbox)→ **Lead ~30min 没解决 → 才 @ Annie**(`founder-thread-notifier` founder @)。比现状 ~75min 快、且不当场轰炸 Annie;fleet 级(一片同挂)走 915 不走这 30min。
 
+### 3.2c 机制 spec 四块(AS-IS / TO-BE delta / scenario 表 / UML)—— Annie 要"一条条看清"
+
+> AS-IS(现在怎么跑)见 §3.0 + §3.2b;此处给 **TO-BE delta**(一处处 from→to)+ **scenario 处理机制表**(每情况:输入信号→判定→动作→通知谁)。Annie 面向图文版 = `watchdog-design-review.html`(含渲染的时序图)。
+
+**TO-BE delta(要改哪几处,一条条 from→to)**:
+| 哪一块(现有位置) | 现在(AS-IS) | 改成(TO-BE) |
+|---|---|---|
+| `isIdleHealthyPane`(`LeadWatchdog.ts:811-826`) | 单帧判定 | 跨 ≥2 帧比对(文字 diff / token / 静默 delta) |
+| `BLOCKED_KEYWORDS`(`:137-153`) | 4 种(rate/usage/login-expired/permission) | + `Server error mid-response` / `Not logged in` / `ENOENT` |
+| `stuck-candidate`(`:16-26`) | 只认 stagnant-fingerprint(屏幕没动) | + 重复错误签名(变但循环同错)+ token-flow(真产出 vs 打转) |
+| 可疑态处理 | 机械直接压掉当 healthy | 升级 **FLY-976 LLM 判断层**判 a/b/c;不确定 → `fail-suspicious` 附原文、不静默 |
+| 轮询 cadence(`DEFAULT_IDLE_POLL_MS` ~1h) | ~1h 抓屏 | 廉价 gap 扫描每 N min(读 CommDB 不抓 pane)+ pane 帧尽快 |
+| 升级流(~75min 链) | 1h+10min stagnation+5min Lead grace | **统一 Lead-first + ~30min**:发现→立刻通知 Lead→Lead ~30min 没解决→@Annie |
+| liveness | 信"进程活"当 healthy | 读 pane 真状态,不信 alive-flag |
+
+**scenario 处理机制表(每情况:输入信号 → 判定 → 动作 → 通知谁)**:
+| 情况 | 输入信号 | 判定 | 看门狗动作 | 通知谁 |
+|---|---|---|---|---|
+| 正常等 review/founder(已 surface + Lead 处理) | FSM=awaiting_review/park + 正常路径已动 | b parked | 静默 | 不通知 |
+| 长 turn 在跑 | token 在吐 / working-marker | a working | 不报 | 不通知 |
+| 真卡死 case-c | 跨帧无进展 + 空框 / 认得的错误串 | c stuck | 立刻通知 Lead → 30min 没解决 → @Annie | Lead 先 → Annie(30min后) |
+| 漏① runner 没找 Lead | parked/需人但无对 Lead 通信 | 漏① | 提醒 Lead → 30min → @Annie | Lead → Annie |
+| 漏② Lead 漏应答 | runner 找了 Lead、Lead 超时未理 | 漏② | 再提醒 Lead → 30min → @Annie | Lead → Annie |
+| FN2 546/975 报错后静默 | `Server error` 后回空框、跨帧不变 | c | 同真卡死 | Lead → Annie |
+| FN3 837 /compact 卡 | compact 后回空框、跨帧无进展 | c | 同真卡死 | Lead → Annie |
+| FN4 574 草稿没发出 | "发了" vs "送达" 对不上(非 pane) | 发送失败 | 传输层对账(send-confirm) | Lead |
+| FN0 910 登出 | 认 `Not logged in` 串 | c | 同真卡死 | Lead → Annie |
+| FN1 910 目录删 | 反复刷 `ENOENT`(变但循环同错) | c | 重复错误签名 → 同真卡死 | Lead → Annie |
+| FP0/FP1 915 长 turn(曾误报) | 跨帧见 token 在动 | a working | 不报 | 不通知 |
+| ghost 僵尸 | status=running 但进程/pane 死 | 僵尸 | 检测+清+over-notify 抑制 | (清理) |
+
+**UML(时序图)**:见 `watchdog-design-review.html` §④(已渲染 PNG 内嵌);逻辑同 §6 状态机 + §2 数据流图。
+
 ### 3.3 看门狗抓什么(catalog,超时间阈值才响;喂 FLY-927/976)
 | 检测类 | 判定(准确性要点) | 先报谁 | 归属 |
 |---|---|---|---|
