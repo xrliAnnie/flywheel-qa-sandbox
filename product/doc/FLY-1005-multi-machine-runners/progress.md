@@ -20,10 +20,10 @@ Cursor: co-eval 迭代中(v3 已发)— park 等 Annie 逐节批注
 - Codex design(3 轮)+ code(2 轮)APPROVED;旧 ship gate 65ac4c93 已被 Annie changes-requested、任其 stale(Lead 定:research 不 fire ship gate)
 - **纠正记录**:research docs-only 不该 fire approve_to_ship / 不该触发 QA(FLY-1011);以后 research 只到 Codex design/code review
 - co-eval HTML 迭代(一个 current 链接,旧版作废):
-  - v1→…→v6(全作废)→ **v7 current** https://fw-reports-a53de2.vercel.app/r/97081a31a3e065beb81542c3f476f08f/
-  - v6(Annie v5):图全改真 Mermaid inline SVG;多租户 a/b/c 真实 team 名 + 联邦 + sync sequence 图
-  - v7(Annie v6 两问):① 托管/SaaS B vs C 决策图 —— 内部可信=B(便宜/隔离弱)、对外付费 SaaS=C(硬隔离);⭐ C=联邦=productization(FLY-648)、容器化=规模化 provision C 的手段;结论内部 B/对外 C。② 沙箱 vs container:要浏览器不必上 AIO,做瘦容器(浏览器+headless Chrome+终端、去 IDE/Jupyter)就够,接 profile 池『带浏览器 profile』=预登录 Chrome 瘦容器;要『容器(隔离)+浏览器(provision)』非整套 AIO。
-- docs 已折进 v3-v7(research §3.2 联邦双推荐 / §3.6a 节点来源 / §3.7 DB+多租户(B理解+C跨team Discord+SaaS内部B对外C+C=联邦=productization)+profile mapping+沙箱vs container+瘦容器+sync 时序;plan §4B+§6)
-- **技术**:mmdc 渲图配方=htmlLabels:false + useMaxWidth:false + puppeteer 指系统 Chrome;占位符模板 + node 注入 SVG(不读进上下文);overflow-x:auto 包图
-备注: 仍 research、未 ship。**最关键待 Annie 拍:联邦 vs 非联邦 主线**。
-下轮 co-eval:攒齐一轮改 + 发一张新 HTML(先告诉 Lead 上版作废)。不 ship、不 fire gate。图 Mermaid→inline SVG 无外链(CSP 安全)。
+  - v1→…→v7(全作废)→ **v8 current** https://fw-reports-a53de2.vercel.app/r/b755bde25068099c2cd56b286504f947/
+  - v7(Annie v6):托管 SaaS B vs C 决策图 + 沙箱 vs 瘦容器
+  - v8(Annie v7 大收敛):⭐ 分阶段路线收敛。内部跳过 B(单租户+多机=非联邦单 hub+无状态卫星);A→Phase1(1005核心:多机单租户容器化)→Phase2(产品化=C 联邦=FLY-648);Container 贯穿两阶段=must-have、Phase1 容器化=Phase2 种子。2 图:路线图 + 过渡版形态(对我们 1hub+N卫星容器 / 对别人 打包自部署)。第6节请 Annie 确认分阶段计划→确认后写 PRD
+- docs 已折进 v3-v8(research §3.2/§3.6a/§3.7(跳过B收敛);plan 顶部 v8 2 阶段收敛框 + §4B+§6)
+- **技术**:mmdc 渲图配方=htmlLabels:false + useMaxWidth:false + puppeteer 指系统 Chrome;占位符模板+node 注入 SVG;overflow-x:auto 包图;**坑**:node 标签多 <br/> + 边标签会触发 mermaid v11 splitLineToFitWidth bug → node 标签压短、细节放 HTML 正文;边标签别含 `=`
+备注: 仍 research、未 ship。**⭐ 下一步取决于 Annie 确认 v8 分阶段计划:她 OK + Lead 发话 → 写正式 PRD(不抢跑)**。
+若继续 co-eval:攒齐一轮改 + 发新 HTML(先告知上版作废)。不 ship、不 fire gate。图 Mermaid→inline SVG 无外链(CSP 安全)。

@@ -217,7 +217,7 @@ graph LR
 - **(b-共享 hub 多租户)** 各 team 的 Lead+Bridge 跑在**同一容器/机器**,所有 Runner 共用这个 hub、经它通信(**仍一个 Bridge 连所有 Runner**,Annie 理解正确);省资源但 hub 要做多租户鉴权/隔离、一崩全崩、安全最难。
 - **(c-每 team 自己一套)** 每 team 独立 Bridge+DB+专属 Runner 容器 = **team 级联邦**;隔离最干净、契合 FLY-648「给别人用」。
 - **⭐ C 下跨 team Lead 怎么通信(Annie 尖问):所有方案 UI 都落 Discord → Discord 就是跨栈互联层**;C 里各 team 互不直连,跨 team Lead 通信走 **Discord 共享层(如 leads-roundtable)**。
-- **建议(Annie v7 SaaS 决策收敛):内部可信多 team(我们自己)用 B(运维便宜、隔离弱可接受);对外付费 SaaS 用 C(付费客户的数据/凭据/blast-radius 必须硬隔离,B 的逻辑隔离不够)。** ⭐ **C = 联邦 = productization(FLY-648);容器化 = 让 C 规模化 provision 的手段**(每客户自动开一套容器化的完整栈,「容器打包整套环境」正是给别人用更简单的关键)。注意 (c) = team 级联邦 → 多租户与联邦是同一问题(见 §3.2 推荐)。
+- **建议(Annie v8 大收敛 —— 内部甚至不需要 B):** 内部 = **单租户(就我们)+ 多机 = 非联邦「单 hub + 无状态卫星」(a 的多机版)**,不涉及多租户 → **跳过 B**。**B(共享 hub 多租户)只在「多租户共享同一套」时才要**,而真要给别人用则数据/凭据/blast-radius 必须硬隔离 = C。→ **对外付费 SaaS 用 C**。⭐ **C = 联邦 = productization(FLY-648);容器化 = 让 C 规模化 provision 的手段**(每客户自动开一套容器化完整栈)。注意 (c) = team 级联邦 → 多租户与联邦是同一问题(见 §3.2 + §8 分阶段)。
 
 **(d) warm pool 生命周期 + ⭐ profile 分池(Annie v4/v5 co-eval):**
 - **warm 的是「节点」不是「session」:** warm 池 = 开好机 + 已登录 claude CLI + runner-agent 注册 + 入 tailnet 的节点,空转待命。来一个 issue → 在 warm 节点上起**全新 Claude session**(干净 context)→ 做完 **exit**、节点续 warm。**不是**挂一个 session 注 context 复用(会串味 + 违背 Flywheel「一 issue 一 session」)。贵的是开节点(分钟)、起 session 便宜(秒)。

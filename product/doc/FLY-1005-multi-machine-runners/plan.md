@@ -10,6 +10,10 @@ Status: **draft PRD — 主线待 Annie 拍板后由 Lead 收口**(这是她点�
 ---
 
 > **命题(Annie 2026-07-08 校正):** 『换大机救急』已单独做完、与本 issue 无关;**1005 不是『多机值不值得』,而是『怎么做好横向扩展 → 上云(无上限 horizontal scale)』。** 分阶段从『第一台卫星/云节点』起,不从换大机起。
+>
+> **⭐ v8 大收敛(Annie 2026-07-08,co-eval 8 轮后):产品化 2 阶段框 + 跳过 B。** A(今天:单租户单机)→ **Phase 1 = 1005 核心**(我们多机单租户、非联邦「单 hub + 无状态卫星节点容器」、profile 预登录 + 每 session sync-to-latest、横向扩展,**不碰多租户**)→ **Phase 2 = 产品化**(把 Phase1 容器化栈打包成别人跑自己一份 = **C 联邦 = FLY-648**)。**内部跳过 B**(共享 hub 多租户只在 hosted 共享才要);**Container 贯穿两阶段 must-have**(Phase1 做节点 / Phase2 打包)。下方 §3 的阶段0-3 是 Phase 1 的内部细化。
+>
+> **状态:PRD 待 Annie 确认这个分阶段计划后再写**(v8 co-eval HTML 请她确认;Lead 发话我再出正式 PRD,不抢跑)。
 
 ## 1. 结论 (TL;DR)
 
