@@ -1,16 +1,16 @@
 ---
 issue: FLY-997
 phase: implement
-phaseCursor: 2/5
-updated: 2026-07-08T20:59:36.269Z
-nextStep: "S2 matrix: flash tier 50/50 done, pro tier in progress (bg task
-  b3eg5m5ou). S3 live harness written (degraded text-mode per plan risk 3,
-  voice-core is audio-in only). Lead naming instruction (/gemini-advanced)
-  acked+DONE. Next: on matrix completion run S3+S4, then findings.md"
+phaseCursor: 3/5
+updated: 2026-07-08T21:02:23.584Z
+nextStep: "flash tier 50/50 ALL PASS (100% all scenarios, 0 hallucination, 0
+  schema violations); pro tier in progress. findings.md skeleton drafted
+  (S1+contract+D5 final, S2/S3/S4 TBD). On matrix completion: run S3+S4,
+  backfill findings, commit+PR"
 chunks: []
 pointers: {}
 ---
 
 # FLY-997 progress
-**phase**: implement (2/5)
-**next**: S2 matrix: flash tier 50/50 done, pro tier in progress (bg task b3eg5m5ou). S3 live harness written (degraded text-mode per plan risk 3, voice-core is audio-in only). Lead naming instruction (/gemini-advanced) acked+DONE. Next: on matrix completion run S3+S4, then findings.md
+**phase**: implement (3/5)
+**next**: flash tier 50/50 ALL PASS (100% all scenarios, 0 hallucination, 0 schema violations); pro tier in progress. findings.md skeleton drafted (S1+contract+D5 final, S2/S3/S4 TBD). On matrix completion: run S3+S4, backfill findings, commit+PR
