@@ -108,6 +108,15 @@ export async function wireAssistantMode(
 		);
 	}
 
+	if (assistant.assistantToken) {
+		// resolved+validated by config, but v1 always speaks through the
+		// orchestrator bot (plan D2 default) — silently ignoring a configured
+		// dedicated bot would be a lie (Codex R3 LOW). Reject until wired.
+		throw new Error(
+			"voice-bridge: huddle.assistant.assistantBotTokenEnv is configured, but the dedicated assistant bot is not wired yet (v1 speaks through the orchestrator bot) — drop the key for now",
+		);
+	}
+
 	const fetchImpl = opts.fetchImpl ?? fetch;
 	const stateDir =
 		opts.stateDir ??
@@ -151,10 +160,11 @@ export async function wireAssistantMode(
 	const founderLeaveCbs = new Set<() => void>();
 	const unsubVoiceState = deps.onVoiceStateUpdate(orchestratorClient, (u) => {
 		if (u.isBot) return;
-		if (u.toChannelId === config.voiceChannelId) {
+		const delta = classifyVoiceDelta(u, config.voiceChannelId);
+		if (delta === "join") {
 			humanCount++;
 			for (const cb of founderJoinCbs) cb();
-		} else if (u.fromChannelId === config.voiceChannelId) {
+		} else if (delta === "leave") {
 			humanCount = Math.max(0, humanCount - 1);
 			if (humanCount === 0) for (const cb of founderLeaveCbs) cb();
 		}
@@ -357,6 +367,21 @@ export async function wireAssistantMode(
 	};
 }
 
+/**
+ * Classify a voice-state update relative to the huddle VC. Mute/deaf/video
+ * updates fire voiceStateUpdate with from === to — counting those as joins
+ * drifts the presence counter and can suppress founder-leave teardown
+ * (Codex R3 MEDIUM). Only true channel transitions count.
+ */
+export function classifyVoiceDelta(
+	u: { fromChannelId: string | null; toChannelId: string | null },
+	vcId: string,
+): "join" | "leave" | "none" {
+	if (u.toChannelId === vcId && u.fromChannelId !== vcId) return "join";
+	if (u.fromChannelId === vcId && u.toChannelId !== vcId) return "leave";
+	return "none";
+}
+
 // ---- Bridge Linear proxy client ----
 
 interface LinearClientOpts {
@@ -505,16 +530,21 @@ function makeRealConversationFactory(
  * ConversationLike over the TalkSessionRotator: handlers survive goAway
  * rotation because the rotator re-binds them onto every successor session.
  */
-class RotatorConversationAdapter implements ConversationLike {
+export class RotatorConversationAdapter implements ConversationLike {
 	private readonly handlers = new Map<
 		string,
 		Set<(...args: never[]) => void>
 	>();
+	/** the live session — rotator.start() attaches the FIRST session before
+	 * AssistantSession has registered any handlers, so on() must bind to the
+	 * current session too, not only replay into future bind()s (Codex R3 HIGH). */
+	private current: ConversationSession | null = null;
 
 	constructor(private readonly rotator: TalkSessionRotator) {}
 
 	/** rotator attach hook — first session and every rotated successor. */
 	bind(session: ConversationSession): void {
+		this.current = session;
 		for (const [event, cbs] of this.handlers) {
 			for (const cb of cbs) {
 				session.on(event as never, cb as never);
@@ -534,8 +564,9 @@ class RotatorConversationAdapter implements ConversationLike {
 		const set = this.handlers.get(event) ?? new Set();
 		set.add(h);
 		this.handlers.set(event, set);
-		// re-bind semantics live in bind(); unbind just stops future rebinding —
-		// teardown closes the whole rotator anyway.
+		// late registration must reach the ALREADY-attached session (Codex R3).
+		this.current?.on(event as never, h as never);
+		// unbind stops future rebinding — teardown closes the whole rotator.
 		return () => set.delete(h);
 	}
 

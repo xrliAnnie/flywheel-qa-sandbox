@@ -11,7 +11,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationLike } from "../assistant/AssistantSession.js";
-import { wireAssistantMode } from "../assistant/wiring.js";
+import {
+	classifyVoiceDelta,
+	RotatorConversationAdapter,
+	wireAssistantMode,
+} from "../assistant/wiring.js";
 import type { DiscordDeps } from "../bots/discordWiring.js";
 import { runVoiceBridge } from "../cli.js";
 import type { HuddleBridgeConfig } from "../config.js";
@@ -243,6 +247,75 @@ describe("wireAssistantMode (FLY-967 QA-B1)", () => {
 				stateDir,
 			}),
 		).rejects.toThrow(/GEMINI_API_KEY/);
+	});
+});
+
+describe("Codex R3 regressions", () => {
+	it("adapter: handlers registered AFTER the first session attaches still receive events (R3 HIGH)", () => {
+		// simulate the rotator: attach the first session, THEN register handlers
+		const bound: Record<string, ((...a: unknown[]) => void)[]> = {};
+		const fakeSession = {
+			on: (event: string, h: (...a: unknown[]) => void) => {
+				(bound[event] ??= []).push(h);
+				return () => {};
+			},
+		};
+		const adapter = new RotatorConversationAdapter({
+			sendText() {},
+			sendAudio() {},
+			close: async () => undefined,
+		} as never);
+		adapter.bind(fakeSession as never); // rotator.start() attached first
+		const seen: string[] = [];
+		adapter.on("response-audio", (() => seen.push("audio")) as never);
+		expect(bound["response-audio"]).toHaveLength(1); // late handler reached the live session
+		bound["response-audio"][0]();
+		expect(seen).toEqual(["audio"]);
+	});
+
+	it("presence: mute/deaf updates (from === to === VC) are not joins or leaves (R3 MEDIUM)", () => {
+		expect(
+			classifyVoiceDelta(
+				{ fromChannelId: "vc-1", toChannelId: "vc-1" },
+				"vc-1",
+			),
+		).toBe("none");
+		expect(
+			classifyVoiceDelta({ fromChannelId: null, toChannelId: "vc-1" }, "vc-1"),
+		).toBe("join");
+		expect(
+			classifyVoiceDelta({ fromChannelId: "vc-1", toChannelId: null }, "vc-1"),
+		).toBe("leave");
+		expect(
+			classifyVoiceDelta(
+				{ fromChannelId: "other", toChannelId: "vc-1" },
+				"vc-1",
+			),
+		).toBe("join");
+		expect(
+			classifyVoiceDelta(
+				{ fromChannelId: "other", toChannelId: "elsewhere" },
+				"vc-1",
+			),
+		).toBe("none");
+	});
+
+	it("a configured dedicated assistant bot is rejected until wired (R3 LOW)", async () => {
+		const f = makeFakes();
+		await expect(
+			wireAssistantMode({
+				config: CONFIG,
+				assistant: { ...ASSISTANT, assistantToken: "dedicated-token" },
+				registry: f.registry,
+				deps: f.deps,
+				earsConnection: {},
+				env: { FLYWHEEL_API_TOKEN: "t" },
+				log: () => {},
+				createConversation: f.createConversation,
+				fetchImpl: f.fetchImpl,
+				stateDir: mkdtempSync(join(tmpdir(), "fly967-r3-")),
+			}),
+		).rejects.toThrow(/assistantBotTokenEnv/);
 	});
 });
 
