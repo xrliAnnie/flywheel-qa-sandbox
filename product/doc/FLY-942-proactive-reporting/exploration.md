@@ -137,9 +137,11 @@ Annie 的根因判断(FLY-976):**看门狗最大问题是它不是 LLM,没法理
 | **Lead 压着没 relay** | runner 抛需 relay 的东西、Lead 应答超时未转 | lead(先 nudge)| **FLY-878 scenario 3 / HL** |
 | **dead-but-registered ghost** | status=running 但 alive=false 僵尸 | 系统(检测+清)| **FLY-970/973** |
 
-### 5.5.4 over-notify 抑制(治 ghost 刷屏)
+### 5.5.4 over-notify 抑制(治 ghost 刷屏)+ 治 ghost 源头(HL 补)
 
-已知 / 正在清 / 已升级的问题 **绝不 re-alert**(FLY-970 死着还一直 fire session_stuck)。复用去重设施(claims.db / episode-latch),并对"正在清理中"的 ghost 加抑制态。这是"绝不静默 ⨯ 不刷屏"里"不刷屏"的一条硬约束。
+- **抑制**:已知 / 正在清 / 已升级的问题 **绝不 re-alert**(FLY-970 死着还一直 fire session_stuck)。复用去重设施(claims.db / episode-latch),并对"正在清理中"的 ghost 加抑制态。这是"绝不静默 ⨯ 不刷屏"里"不刷屏"的一条硬约束。
+- **治源头(auto-QA-spawn gate)**:FLY-970 那个 ghost 的根因 = 一个 product / no-three-stage issue(FLY-915)被**错误地 auto-spawn 了 QA session**。**需求**:product / no-three-stage 类 issue 不该自动 spawn QA(接 FLY-579 auto-QA gate / FLY-707 opt-in 政策)→ 从源头少造 ghost。归属 = eng(Tadashi)。
+- **关联收敛**:FLY-973(auto-spawned 子 session 的 scope 归 parent issue 的 lead、不是一律 eng → 拥有 issue 的 lead 才关得掉自己派生的子 session)、FLY-962(归档约束:只真 done/shipped 才归档、活跃线程绝不归档 —— 接 FLY-964 §4.3 / FLY-978 根治)。这两条都是"ghost / 死态清理"这一族的相邻问题,本 PRD 引过去、不重做。
 
 ### 5.5.5 mid-turn hard-stop(相邻能力,标边界)
 

@@ -82,8 +82,10 @@ flowchart LR
 | Lead 压着没 relay | runner 抛需 relay、Lead 应答超时未转 | lead(先 nudge) | **FLY-878 s3 / HL** |
 | dead-but-registered ghost | status=running 但 alive=false 僵尸 | 系统(检测+清) | **FLY-970/973** |
 
-### 3.4 over-notify 抑制(治 ghost 刷屏)〔Q9〕
-已知 / 正在清 / 已升级的问题**绝不 re-alert**。复用去重设施 + 对"清理中"ghost 加抑制态。清理机制 = eng(927/973)。
+### 3.4 over-notify 抑制(治 ghost 刷屏)+ 治源头〔Q9〕
+- **抑制**:已知 / 正在清 / 已升级的问题**绝不 re-alert**(FLY-970 死着还一直 fire session_stuck)。复用去重设施 + 对"清理中"ghost 加抑制态。
+- **治源头(auto-QA-spawn gate)**:FLY-970 ghost 根因 = product/no-three-stage issue 被错误 auto-spawn QA。需求:此类 issue 不该自动 spawn QA(接 FLY-579 auto-QA gate / FLY-707 opt-in)。
+- 清理机制 / 子 session scope 归属 = eng(FLY-973:归 parent lead 非一律 eng);归约束 = FLY-962/978。
 
 ### 3.5 mid-turn hard-stop(相邻能力,标边界)〔Q10〕
 现状 queued STOP 只在 turn 边界生效 → runner 烧完 token 做完不想要的才停(FLY-915 v2 就多做了个 PRD+PR)。需求:能 kill 当前 turn。实现 = harness/eng,可能独立 issue;待 Annie 定是否纳入 942 scope。
@@ -183,7 +185,7 @@ stateDiagram-v2
 
 ## 8. 边界 / 分工
 - **942**(本 PRD)= 检测(要检测什么 + 准确性)+ 主动汇报(founder 体验:何时/怎么 surface)。
-- **927** = 检测实现(park 元组/归因/@-target/阈值)。**976** = LLM 判断层实现。**915** = 通知管线(频道/工单/门禁/profile 切换)。**941** = tool-leak 检测。**964** = 持久显示。**973** = 子 session scope 归属。
+- **927** = 检测实现(park 元组/归因/@-target/阈值)。**976** = LLM 判断层实现。**915** = 通知管线(频道/工单/门禁/profile 切换)。**941** = tool-leak 检测。**964** = 持久显示。**973** = 子 session scope 归属(归 parent lead)。**962/978** = 归档约束 / 死态清理根治。**579/707** = auto-QA-spawn gate(治 ghost 源头)。
 
 ## 9. Build workstreams(**只提议,不 create-issue**;converge 定稿后交 Tadashi 拆)
 | # | workstream | 对应节 | 依赖 |
