@@ -1,14 +1,13 @@
 ---
 issue: FLY-980
 phase: design
-phaseCursor: 2/4
-updated: 2026-07-08T02:26:59.800Z
-nextStep: "research.md: Custom LLM protocol + pricing + multilingual voices +
-  tool/interrupt semantics"
+phaseCursor: 3/4
+updated: 2026-07-08T02:33:11.068Z
+nextStep: plan.md → codex design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-980 progress
-**phase**: design (2/4)
-**next**: research.md: Custom LLM protocol + pricing + multilingual voices + tool/interrupt semantics
+**phase**: design (3/4)
+**next**: plan.md → codex design review
