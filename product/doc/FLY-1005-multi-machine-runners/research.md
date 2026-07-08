@@ -212,22 +212,24 @@ graph LR
   | 劣 | DB 跟 hub 同生共死、绑那台机、不好备份/接管 | 多一跳网络延迟、要 SQLite→Postgres 迁移、多一个服务/成本 |
 - **建议:家里阶段0-1 用一体 SQLite(简单够用);上云阶段换分离云 DB**(独立存活 + 备份 + hub 可接管,也让 hub 更接近无状态)。单写者不变 → 不碰一致性坑。
 
-**(c) ⭐ 多租户 3 模型(「team」= 租户:我们的 fleet / 老公项目 / 以后给别人用):**
-- **(a-单租户)** 一个 team 一套 = 今天;最简单。
-- **(b-共享 hub 多租户)** 一个 hub 服务多 team、runner 各自容器隔离;省资源但 hub 要做多租户鉴权/隔离、一崩全崩、安全最难。
-- **(c-每 team 自己一套)** hub+bridge+DB 各自独立 = **team 级联邦**;隔离最干净、契合 FLY-648「给别人用」。
+**(c) ⭐ 多租户 3 模型(「team」= 租户,真实例:Flywheel / GeoForge3D / Tidal echo):**
+- **(a-单租户)** 一个 team 一套 = 今天(已有多 team 概念、但全在一套 hub 上);最简单。
+- **(b-共享 hub 多租户)** 各 team 的 Lead+Bridge 跑在**同一容器/机器**,所有 Runner 共用这个 hub、经它通信(**仍一个 Bridge 连所有 Runner**,Annie 理解正确);省资源但 hub 要做多租户鉴权/隔离、一崩全崩、安全最难。
+- **(c-每 team 自己一套)** 每 team 独立 Bridge+DB+专属 Runner 容器 = **team 级联邦**;隔离最干净、契合 FLY-648「给别人用」。
+- **⭐ C 下跨 team Lead 怎么通信(Annie 尖问):所有方案 UI 都落 Discord → Discord 就是跨栈互联层**;C 里各 team 互不直连,跨 team Lead 通信走 **Discord 共享层(如 leads-roundtable)**。
 - **建议:我们现状 (a);产品化/多项目走 (c);(b) 除非做托管 SaaS 否则别碰。** **注意 (c) = team 级联邦 → 多租户与联邦是同一问题(见 §3.2 推荐)。**
 
 **(d) warm pool 生命周期 + ⭐ profile 分池(Annie v4/v5 co-eval):**
 - **warm 的是「节点」不是「session」:** warm 池 = 开好机 + 已登录 claude CLI + runner-agent 注册 + 入 tailnet 的节点,空转待命。来一个 issue → 在 warm 节点上起**全新 Claude session**(干净 context)→ 做完 **exit**、节点续 warm。**不是**挂一个 session 注 context 复用(会串味 + 违背 Flywheel「一 issue 一 session」)。贵的是开节点(分钟)、起 session 便宜(秒)。
-- **⭐ 按 profile 分池(采纳 Annie 点子):** 不是一个统一大池,而是**按 profile 分几个小池**。profile = 该节点预装/预登录了哪些账号+工具(如 Cloud CLI / Chrome / Suno / Linear / GitHub)。项目派活带 profile 需求(「要带 Suno 的 profile」)→ hub 只匹配那类池。→ 解决「多数节点不需要 Suno」的浪费。
-- **provisioning = 预烤登录态(bake)+ 站在 346 沙箱上:** 每个 profile = 一份**预烤好登录态/工具的镜像/快照**(取即用 = Annie 说的「准备好」)。**能站在 FLY-346 AIO Sandbox(浏览器+终端+VSCode+MCP 一体容器)上,profile 化 = 给它套不同「预登录层」**,不必自写沙箱 —— 跟 346 对齐。
+- **⭐ 按 profile 分池 = 一个 mapping(采纳 Annie 点子,v6 澄清):** profile = 该节点预装/预登录了哪些账号+工具(Cloud CLI / Chrome / Suno / Linear / GitHub)。**它是一个映射:每 team lead → 他能指挥哪些 profile**;派活带 profile 需求(「要带 Suno 的 profile」)→ 命中「lead 有权 + 有该 profile 的 warm 节点」。→ 解决「多数节点不需要 Suno」的浪费。**profile 分池正交于 B/C、两种都能用**(B 在一个 hub 内按 lead→profile 分派;C 各自 hub 内同样)。
+- **provisioning = 预烤登录态(bake)+ 载体是 container(非沙箱)(Annie v6 尖问「沙箱还是 container」):** 跟 346 一致区分——**沙箱 sandbox = 全套开发环境**(浏览器+终端+VSCode+MCP,给人/agent 交互式用);**container = 轻隔离执行单元**(无人值守跑 runner)。**warm-node 的预登录载体 = container 镜像/快照**(取即用,不是给人用的沙箱);profile = 不同预登录层。346 AIO Sandbox 是「需要全套交互环境」时才上的更重形态,两者不打架、跟 346 对齐。
 
 **(e) spot/抢占为啥消失 + 兜底(Annie v5:spot 特性非架构必然):** spot = 云商骨折卖闲置算力、随时(几十秒~2 分钟甚至无通知)收回 + 网络分区/硬件故障。**这只是 spot 的代价、不是架构注定** —— on-demand 不会被抢;**用户自己的物理机更没这问题**(§3.6a 节点来源可选)。兜底:heartbeat(FLY-172)发现 → session-log(FLY-353)无损重建续跑;关键/长任务用 on-demand、可容忍中断批量用 spot;有预警时 drain。
 
 **(f) ⭐ 状态 sync + 清理(立为一等硬要求,Annie v5):** N 台机最后都汇到**同一个 GitHub**,节点复用(profile 池)更要防「过时」:
 - **每次起 session 前:节点必须 sync-to-latest** —— git pull 到最新 + 装最新依赖 + 拉其它需要的状态,**绝不拿 outdated 树干活**(否则基于旧代码出错/撞车)。呼应 QA fetch-HEAD 纪律 + 防撞车 FLY-1002。
 - **session 结束后:清本地残留** —— 删该 issue 的 worktree/临时文件,别污染下一个 issue。
+- **时序(Annie v6 sequence 图确认):取节点 → ① sync-to-latest → ② 起全新 session 跑 → ③ cleanup → 回池。** 含义:**session 结束不能原样立刻复用,每次起前必须先 sync** —— 这正是「一 issue 一干净 session」的**代价 + 正确性来源**(不拿旧代码干活/撞车)。
 
 ---
 
