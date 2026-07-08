@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FLY-347 Run 教训沉淀 PRD v2 — 瘦身后长什么样</title>
+<title>FLY-347 Run 教训库 PRD v3 — 长什么样(含 data-flow 图)</title>
 <style>
   :root { --ink:#1d1d1f; --dim:#86868b; --blue:#007aff; --navy:#1a365d; --green:#34c759; }
   * { box-sizing:border-box; }
@@ -18,8 +18,9 @@
   .card { background:#fff; border-radius:12px; padding:1rem 1.15rem; margin:1rem 0;
     box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid #d2d2d7; }
   .card.shape { border-left-color:var(--blue); }
-  .card.cut { border-left-color:#ff3b30; }
-  .card.one { border-left-color:#ff9500; }
+  .card.flow { border-left-color:#5856d6; }
+  .card.change { border-left-color:#ff9500; }
+  .card.one { border-left-color:#ff3b30; }
   .card.gap { border-left-color:#af52de; }
   .card.std { border-left-color:#86868b; }
   .card.decide { border-left-color:var(--green); }
@@ -29,20 +30,24 @@
   .card p { margin:.5rem 0; font-size:.95rem; }
   .card ul, .card ol { margin:.4rem 0 .4rem 1.2rem; padding:0; font-size:.93rem; }
   .card li { margin:.3rem 0; }
+  .faces { display:grid; grid-template-columns:repeat(2,1fr); gap:.5rem; margin:.5rem 0; }
+  .face { background:#f7f7f9; border:1px solid #e6e6ea; border-radius:8px; padding:.5rem .65rem; font-size:.88rem; }
+  .face b { color:var(--navy); }
   pre.code { background:#1d1d1f; color:#e8e8ed; border-radius:10px; padding:.75rem .85rem;
     font-family:"SF Mono", ui-monospace, monospace; font-size:.78rem; overflow-x:auto;
     line-height:1.45; margin:.5rem 0; white-space:pre; }
   pre.code .k { color:#7ee081; }
   pre.code .c { color:#8fbfff; }
-  .flow { background:#0f1b2d; color:#dfe8f5; border-radius:10px; padding:.7rem .85rem;
-    font-family:"SF Mono", ui-monospace, monospace; font-size:.76rem; overflow-x:auto; margin:.5rem 0; white-space:pre; line-height:1.5; }
+  .svgwrap { overflow-x:auto; margin:.5rem 0; text-align:center; }
+  svg.flowdiagram { max-width:100%; height:auto; }
   code, .mono { font-family:"SF Mono", ui-monospace, monospace; font-size:.86em;
     background:#f0f0f2; padding:.05rem .3rem; border-radius:5px; }
   table { width:100%; border-collapse:collapse; font-size:.85rem; margin:.6rem 0; }
   th, td { text-align:left; padding:.45rem .5rem; border-bottom:1px solid #eee; vertical-align:top; }
   th { color:var(--navy); font-size:.82rem; }
   .table-wrap { overflow-x:auto; }
-  .no { color:#ff3b30; font-weight:600; }
+  .in { color:#34c759; font-weight:600; }
+  .out { color:#ff3b30; font-weight:600; }
   .comment-label { display:block; font-size:.8rem; color:#555; margin-top:.7rem; font-weight:600; }
   textarea { width:100%; font-family:inherit; font-size:.9rem; border:1px solid #e0e0e5;
     border-radius:8px; padding:.5rem; margin-top:.25rem; resize:vertical; }
@@ -75,111 +80,143 @@
   <pre id="export-output"></pre>
 </div>
 
-<h1>Run 教训沉淀 —— 瘦身后长什么样</h1>
-<div class="sub">FLY-347 · PRD v2(照你说的大幅简化)· 原名『经验图谱』→ MVP 不是图 · 你确认样子就拿给 Tadashi</div>
+<h1>Run 教训库 —— 长什么样(v3)</h1>
+<div class="sub">FLY-347 · PRD v3 · 加回轻量 index + lint / 加 data-flow 图 · 图/向量仍不做 · 仍一件事(库的四面)</div>
 
 <div class="tldr" data-key="tldr">
-  <p>照你的简化本能<b>大砍了</b>:去掉图、去掉后台 pipeline、收成一件事、时机改到 <b>ship 前写进
-  同一个 PR</b>。<b>一句话:Runner ship 前用 LLM 把这趟坑写成一个 markdown 塞进 PR、跟代码一起
-  ship;下次 Runner 起活按标签捞相关教训读一读、不重踩。</b>就是几个 markdown 文件,不是图、不是
-  数据库。看下面样子对不对,对了点「样子 OK,拿给 Tadashi」。</p>
+  <p><b>照你 v2 的话改了:</b>① 加回<b>轻量 index</b>(查得快)② 加回 <b>lint / 合并</b>(定期去重退役、
+  防库烂 —— 你判定必须,这也绕回 347 最早的 Memory Lint)③ 加了一张 <b>data-flow 图</b>(下面第 2 节,
+  你看图确认结构)④ 写清 <b>LLM 抽取 = Runner 自己</b>。<b>图 / 向量仍不做</b>。它还是<b>一个连贯功能</b>
+  —— 一个 lesson 库的四面:写 / 索引 / lint / 读。</p>
   <label class="comment-label" for="c-tldr">你的留言</label>
   <textarea id="c-tldr" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
 <div class="card shape" data-key="shape">
-  <h2><span class="n">1</span>建出来是什么样</h2>
-
-  <h3>① 写(ship 前,进同一个 PR)</h3>
-  <p><b>时机(写死)</b>:Runner 确认要 ship、<b>请求 approve 之前</b>那一步,用 LLM 给这趟 run 写段
-  简短复盘(踩了什么坑 / 根因 / 下次怎么避),提交进<b>当前 PR</b>,跟代码一起 ship。
-  <b>没踩到值得记的就跳过,不硬写。</b></p>
-  <p><b>写成什么样(一个文件 <code>knowledge/lessons/&lt;ISSUE&gt;-&lt;slug&gt;.md</code>)</b>:</p>
+  <h2><span class="n">1</span>建出来是什么样:一个库的四面</h2>
+  <p>就是 repo 里 <code>knowledge/lessons/</code> 下一堆 markdown + 一个轻量 index。四面:</p>
+  <div class="faces">
+    <div class="face"><b>①写</b> ship 前 Runner <b>自己用 LLM</b> 把这趟坑写成 1 个 md,进同一个 PR(没值得记的跳过)</div>
+    <div class="face"><b>②索引</b> 写的同一步更新 <code>index.md</code> 一行(文件名·一句话·tags),查得快</div>
+    <div class="face"><b>③lint</b> 定期一个 pass 去重/合并/退役过时 → <b>可审 diff,不自动删</b>,防库烂</div>
+    <div class="face"><b>④读</b> 下次 Runner onboard 先读 index、按 tag 捞相关 lesson → 避坑</div>
+  </div>
+  <h3>一个真实教训文件长这样(拿我们真踩过的 FLY-176)</h3>
   <pre class="code"><span class="c">---</span>
 <span class="k">issue:</span> FLY-176
 <span class="k">tags:</span> [bridge, restart, process-kill]
 <span class="c">---</span>
 # 改 Bridge 重启逻辑:PID 变量要加引号
-
 **踩的坑**: restart-services.sh:523 的 multi-line PID 没加引号 → kill 静默失败 → 手动重启。
 **避法**: PID 加引号,或 pgrep -f run-bridge | xargs kill -9。</pre>
-  <p>frontmatter 只两项:<code>issue</code>(溯源)+ <code>tags</code>(下次按它捞)。正文只要<b>踩的坑 +
-  避法</b>。需要就手加 <code>[[别的教训]]</code> 链一下,<b>不强制、不搞索引</b>。存目标 repo 的
-  <code>knowledge/lessons/</code>,随 PR 合进 main。</p>
-
-  <h3>② 读(下次 Runner 起活时)</h3>
-  <p>起活(onboard)自动扫 <code>knowledge/lessons/*.md</code>,按<b>这单的标签/关键词</b>和文件
-  <code>tags</code> 做<b>简单匹配</b>(tag 交集 / 关键词 grep)→ 命中的几个读进来 → 开工前避坑。
-  <b>不搞向量、不搞图检索、不建索引</b> —— 小规模扫目录够。</p>
-
-  <h3>③ 一个真实例子(端到端)</h3>
-  <ol>
-    <li>某 Runner 干 FLY-176 改 Bridge 重启,踩了「PID 没加引号 kill 失败」,修好。</li>
-    <li>ship 前写 <code>FLY-176-bridge-pid-quote.md</code>(上面格式),提交进 PR,一起 merge。</li>
-    <li>三周后另一个 Runner 要再动 Bridge restart → 起活按 tag <code>[bridge,restart]</code> 扫到它 →
-      读到「PID 要加引号」→ 直接避开。</li>
-  </ol>
-
-  <h3>④ 闭环</h3>
-  <div class="flow">Runner 干活 ─▶ 修好 ─▶ ship 前用 LLM 写 1 个教训 md ─▶ 提交进同一个 PR ─▶ 随代码 ship
-                                                                    │
-下一个 Runner 起活 ◀─ 按 tag/关键词扫 knowledge/lessons/ 捞相关教训 ─┘
-        └─ 读到相关教训 ─▶ 避坑开工</div>
+  <p>时机写死:写在 Runner <b>请求 approve 之前</b>那一步(进被 review 的 diff、不 head drift)。</p>
   <label class="comment-label" for="c-shape">你的留言(样子哪里要改?)</label>
-  <textarea id="c-shape" rows="3" maxlength="3000" placeholder="…"></textarea>
+  <textarea id="c-shape" rows="2" maxlength="3000" placeholder="…"></textarea>
 </div>
 
-<div class="card cut" data-key="cut">
-  <h2><span class="n">2</span>砍了什么(直接回答你问的『为什么不是图』)</h2>
-  <p>你问得对 —— <b>MVP 不该是图</b>。下面全砍出 MVP,归 far-future(真需要再说):</p>
+<div class="card flow" data-key="flow">
+  <h2><span class="n">2</span>data-flow 图(写 → 索引 → lint → 读)</h2>
+  <p>你要的结构图。一个自我保鲜的循环:<b>写</b>让库长、<b>索引</b>让它查得快、<b>lint</b>让它不烂、<b>读</b>让它被用上。</p>
+  <div class="svgwrap">
+  <svg class="flowdiagram" viewBox="0 0 760 540" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Run 教训库 data-flow:写→索引→lint→读 的循环">
+    <defs>
+      <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+        <path d="M0,0 L7,3 L0,6 Z" fill="#86868b"/>
+      </marker>
+    </defs>
+    <!-- A Runner run -->
+    <rect x="280" y="22" width="200" height="46" rx="10" fill="#fff" stroke="#007aff" stroke-width="2"/>
+    <text x="380" y="50" text-anchor="middle" font-size="13" fill="#1d1d1f">Runner 跑一个 run</text>
+    <!-- B write+index -->
+    <rect x="248" y="112" width="264" height="58" rx="10" fill="#fff" stroke="#34c759" stroke-width="2"/>
+    <text x="380" y="135" text-anchor="middle" font-size="12.5" fill="#1d1d1f">①写 lesson.md ②更新 index.md</text>
+    <text x="380" y="153" text-anchor="middle" font-size="11" fill="#86868b">(Runner 自己用 LLM 写复盘)</text>
+    <!-- C hub library -->
+    <rect x="248" y="224" width="264" height="62" rx="10" fill="#f0f4ff" stroke="#1a365d" stroke-width="2"/>
+    <text x="380" y="248" text-anchor="middle" font-size="13" fill="#1a365d" font-weight="600">lesson 库</text>
+    <text x="380" y="268" text-anchor="middle" font-size="10.5" fill="#1a365d" font-family="ui-monospace, monospace">knowledge/lessons/*.md + index.md</text>
+    <!-- D lint -->
+    <rect x="558" y="222" width="190" height="66" rx="10" fill="#fff" stroke="#ff3b30" stroke-width="2"/>
+    <text x="653" y="245" text-anchor="middle" font-size="12" fill="#1d1d1f">③ lint(定期)</text>
+    <text x="653" y="262" text-anchor="middle" font-size="10.5" fill="#86868b">去重·合并·退役过时</text>
+    <text x="653" y="278" text-anchor="middle" font-size="10.5" fill="#86868b">→ 可审 diff,不自动删</text>
+    <!-- E read -->
+    <rect x="248" y="344" width="264" height="62" rx="10" fill="#fff" stroke="#af52de" stroke-width="2"/>
+    <text x="380" y="368" text-anchor="middle" font-size="12.5" fill="#1d1d1f">④ 下个 Runner onboard</text>
+    <text x="380" y="387" text-anchor="middle" font-size="11" fill="#86868b">读 index → 按 tag 捞相关 → 避坑</text>
+    <!-- arrows -->
+    <line x1="380" y1="68" x2="380" y2="110" stroke="#86868b" stroke-width="1.6" marker-end="url(#ah)"/>
+    <text x="388" y="93" font-size="10.5" fill="#86868b">ship 前</text>
+    <line x1="380" y1="170" x2="380" y2="222" stroke="#86868b" stroke-width="1.6" marker-end="url(#ah)"/>
+    <text x="388" y="200" font-size="10.5" fill="#86868b">merge 进同一个 PR</text>
+    <line x1="512" y1="255" x2="556" y2="255" stroke="#86868b" stroke-width="1.6" marker-end="url(#ah)"/>
+    <line x1="556" y1="268" x2="512" y2="268" stroke="#86868b" stroke-width="1.6" marker-end="url(#ah)"/>
+    <text x="534" y="300" text-anchor="middle" font-size="10.5" fill="#86868b">定期保鲜</text>
+    <line x1="380" y1="286" x2="380" y2="344" stroke="#86868b" stroke-width="1.6" marker-end="url(#ah)"/>
+    <text x="388" y="320" font-size="10.5" fill="#86868b">onboard 查</text>
+    <!-- loop back E->A -->
+    <path d="M248,375 L200,375 L200,45 L278,45" fill="none" stroke="#86868b" stroke-width="1.6" stroke-dasharray="4,3" marker-end="url(#ah)"/>
+    <text x="150" y="212" font-size="10.5" fill="#86868b" transform="rotate(-90 150 212)">它 ship 时又写一条</text>
+  </svg>
+  </div>
+  <label class="comment-label" for="c-flow">你的留言(结构对吗?图要改吗?)</label>
+  <textarea id="c-flow" rows="2" maxlength="2000" placeholder="…"></textarea>
+</div>
+
+<div class="card change" data-key="change">
+  <h2><span class="n">3</span>加回了什么 · 仍然砍什么</h2>
   <div class="table-wrap"><table>
-    <tr><th>砍掉的</th><th>为什么</th></tr>
-    <tr><td><b>图结构</b>(节点/边/关系)</td><td>过度设计;MVP 就是几个 md 文件,需要才手加 <code>[[链接]]</code></td></tr>
-    <tr><td>正式 index / 目录文件</td><td>扫目录 + tag 匹配够,不维护索引</td></tr>
-    <tr><td>向量 / 语义检索</td><td>简单 tag/关键词捞够;规模大了再说</td></tr>
-    <tr><td>独立后台抽取 pipeline / 服务</td><td>不做后台;ship 前 Runner 顺手写一个文件而已</td></tr>
-    <tr><td>拆成 4 个 issue(EG-1..4)</td><td>你嫌多易忘 → 收成<b>一件事</b></td></tr>
+    <tr><th>项</th><th>v2</th><th>v3(本版)</th></tr>
+    <tr><td>轻量 index / 目录</td><td class="out">砍</td><td class="in">加回(写时更新,查得快)</td></tr>
+    <tr><td>lint / consolidation</td><td class="out">砍</td><td class="in">加回(定期去重/合并/退役,防库烂)</td></tr>
+    <tr><td>data-flow 图</td><td class="out">无</td><td class="in">加(上面第 2 节)</td></tr>
+    <tr><td>图结构(节点/边)</td><td class="out">砍</td><td class="out">仍砍(far-future)</td></tr>
+    <tr><td>向量/语义检索</td><td class="out">砍</td><td class="out">仍砍(你确认 not-now)</td></tr>
+    <tr><td>拆成多个 issue</td><td>一件事</td><td>仍一件事(库的四面一体)</td></tr>
   </table></div>
-  <label class="comment-label" for="c-cut">你的留言</label>
-  <textarea id="c-cut" rows="2" maxlength="2000" placeholder="…"></textarea>
+  <p><b>为什么加回 lint(你判定必须)</b>:光往里叠加,库会长出重复/矛盾/过时(正是我们现在 MEMORY 187
+  文件的病)。lint 让它不烂 —— 这是 347 最早『Memory Lint』的核心,绕回来进了 MVP。</p>
+  <label class="comment-label" for="c-change">你的留言</label>
+  <textarea id="c-change" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
 <div class="card one" data-key="one">
-  <h2><span class="n">3</span>MVP = 一件事(不拆)</h2>
-  <p><b>一个功能、一个 PR 做完</b>:『Runner ship 前写一个教训 markdown 进 PR』+『下次 Runner 起活
-  按 tag/关键词读相关教训』。写 + 读是一体,不拆子 issue。</p>
+  <h2><span class="n">4</span>MVP = 一个连贯功能(不是 4 个散的)</h2>
+  <p>四面服务同一个库、一起做才成立(只写不 lint 会烂、有 index 才查得快),所以是<b>一个连贯功能 /
+  一个 build issue</b>,不是 4 个散活 —— 跟你「别搞 4 个散的」不冲突。</p>
   <label class="comment-label" for="c-one">你的留言</label>
   <textarea id="c-one" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
 <div class="card gap" data-key="gap">
-  <h2><span class="n">4</span>跟现状差距 + 为什么值得</h2>
-  <p><b>现状</b>:教训靠人事后<b>记得</b>才写进 MEMORY,大量蒸发;写了也只能整份 MEMORY.md 注入靠运气。
-  <b>这个做的</b>:把「写教训」固定成 ship 流程一步(不靠记得)、把「读教训」固定成起活一步(按需捞、不靠运气)。
-  省重复 debug 的真实时间。诚实:这是很<b>薄的一层流程 + 约定</b>,不是新系统 —— 正合你的简化本能。</p>
+  <h2><span class="n">5</span>差距 + 为什么值得</h2>
+  <p><b>现状</b>:教训靠人记得才写进 MEMORY(已有 123 feedback+31 qa,而且<b>已经在烂</b>:重复/只增不并);
+  起活整份注入靠运气。<b>这个做的</b>:写固定成 ship 一步、读固定成 onboard 一步、<b>lint 防它重蹈 MEMORY
+  越攒越烂</b>。省重复 debug 的时间 + 一个不会烂的库。诚实:仍是薄的一层流程+约定(markdown+一个 index+
+  一个定期 pass),不是新系统。</p>
   <label class="comment-label" for="c-gap">你的留言</label>
   <textarea id="c-gap" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
 <div class="card std" data-key="std">
-  <h2><span class="n">5</span>常规 PRD 段(浓缩)</h2>
+  <h2><span class="n">6</span>常规 PRD 段(浓缩)</h2>
   <ul>
-    <li><b>Problem</b>:run 教训靠人记得才留、留了也难被下次精准读到 → 同类坑反复重踩。</li>
-    <li><b>Users</b>:Runner(ship 前顺手写 / 起活自动读)、Lead(间接:少踩老坑);人不直接管文件。</li>
-    <li><b>Goals</b>:ship 前写教训成流程一步 / 起活按 tag 读到 / 全用 repo markdown 零新基建。</li>
-    <li><b>Non-goals</b>:不做图/索引/向量;不做后台 pipeline;不重写 MEMORY;不跨项目;不自动删。</li>
-    <li><b>Success</b>:有值得记的 run 稳定产 1 教训文件、没的跳过 · 起活按 tag 捞到相关(Bridge/Discord 两场景验收) · 同类坑重踩降 · 不拖慢 ship/起活。</li>
-    <li><b>Open Q(给 Tadashi)</b>:写在 approve 前还是 :cool: 前(建议 approve 前避 head drift)· tag 从哪取(建议 label+标题)· 起活注入量级 · 文件放 repo 根还是 doc/。</li>
+    <li><b>Problem</b>:run 教训靠人记得才留、难被下次读到、只叠不并会越攒越烂 → 同类坑重踩、库不可信。</li>
+    <li><b>Users</b>:Runner(ship 前写 / onboard 读)、Lead(少踩老坑 + 审 lint diff)。</li>
+    <li><b>Goals</b>:写成流程一步 / 按 index 读到 / 定期 lint 保库不烂 / 全用 repo markdown。</li>
+    <li><b>Non-goals</b>:不做图/向量;不做后台服务;不重写 MEMORY;不跨项目;lint 不自动删。</li>
+    <li><b>Success</b>:有值得记的 run 稳定产 1 教训+更新 index、没的跳过 · onboard 按 tag 捞到相关(Bridge/Discord 验收)· lint 能合并退役出可审 diff · 库不膨胀失控 · 不拖慢 ship/onboard。</li>
+    <li><b>Open Q(给 Tadashi)</b>:写在 approve 前 vs :cool: 前(建议 approve 前)· tag 从哪取 · lint 触发(手动/低频定时/攒到 N)· index 格式 · lint diff 谁审(建议 Lead)。</li>
   </ul>
   <label class="comment-label" for="c-std">你的留言</label>
   <textarea id="c-std" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
 <div class="card decide" data-key="decide">
-  <h2><span class="n">6</span>你确认『样子』</h2>
+  <h2><span class="n">7</span>你确认『样子』</h2>
   <div class="choices">
-    <label><input type="radio" name="lean" value="shape-ok"> 样子 OK —— 拿给 Tadashi 建(一个 issue)</label>
-    <label><input type="radio" name="lean" value="tweak"> 大方向对,样子还要改几处(写下面 / 各节框)</label>
+    <label><input type="radio" name="lean" value="shape-ok"> 样子 OK —— 拿给 Tadashi 建(一个 issue,库的四面)</label>
+    <label><input type="radio" name="lean" value="tweak"> 大方向对,还要改几处(写下面 / 各节框)</label>
     <label><input type="radio" name="lean" value="smaller"> 还能更小(说砍到哪)</label>
     <label><input type="radio" name="lean" value="talk"> 想再聊聊</label>
   </div>
@@ -187,7 +224,7 @@
   <textarea id="c-decide" rows="3" maxlength="4000" placeholder="…"></textarea>
 </div>
 
-<div class="foot">改完点顶部「复制我的批注 JSON」→ 发回给 Honey Lemon · FLY-347 Run 教训沉淀 PRD v2 · draft,未 ship/未建 issue</div>
+<div class="foot">改完点顶部「复制我的批注 JSON」→ 发回给 Honey Lemon · FLY-347 Run 教训库 PRD v3 · draft,未 ship/未建 issue</div>
 
 <script nonce="__CSP_NONCE__">
 (function () {
@@ -209,7 +246,7 @@
   }
   function payload() {
     return JSON.stringify(
-      { issue: ISSUE, kind: "annie-eg-prd-v2-shape-review", lean: lean(), comments: collect() },
+      { issue: ISSUE, kind: "annie-eg-prd-v3-shape-review", lean: lean(), comments: collect() },
       null, 2
     );
   }
