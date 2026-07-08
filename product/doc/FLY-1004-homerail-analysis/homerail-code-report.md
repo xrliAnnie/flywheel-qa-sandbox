@@ -200,3 +200,17 @@ graph TD
 - **修正**:上一版说"homerail 没有跨-run 记忆"——**错**。它有 experience 知识图谱(§1.6),只是结构化(非语义向量)。已在 research.md / deepdive / eng-idea 同步修正。
 - **UNKNOWN**:VAD 位置(大概客户端,服务端没确认);experience 图谱/生成式 UI 的真实成熟度(作者标 in exploration,是否产品里真复用不确定);UI 是否 codex 做(评论区推测);star/更新时间为 2026-07-08 快照。
 - **没实跑**:结论 = 读码 + 官方文档,没 `hr start` 亲测运行体验。视频没转写(README/ROADMAP 已权威覆盖同内容)。
+
+---
+
+## Annie 逐节问题 Q&A(v3 · 大白话答案,HTML 里有完整版)
+
+- **DAG Worker A/B 怎么分**:做**不同的活的不同步骤**(不是同活分两份)。例:"做发布清单" → node A 起草 → handoff → node B 审校 → review。inject=中途插话给正在跑的 node;replay=重启从记录重建进度;fork=从某 node 当前进度岔新分支重跑(旧的不动);profile=给不同 node 配不同模型(难步骤贵模型、体力步骤便宜模型)。
+- **TOML 是啥**:一种比 JSON 好写的简单文本格式,模型用它描述"显示一张什么卡"。用户不碰。
+- **Claude/Codex 已有生成式 UI?我们要自己写吗**:Claude 有 Artifacts(这份报告就是)、Codex 有自己界面;homerail 自写是因为有自己的桌面 shell。**我们大概率不用自己写引擎** —— 已有 Artifacts/publish-report HTML + Discord 卡片 + dashboard 三个等价面;借思路不抄引擎。校验-修复回路=防坏卡片,我们很少出→价值不大。
+- **语音双 TTS(TTS=文字转语音,ASR=语音转文字/自动语音识别)**:两条音流 = 一条报进度旁白(commentary,"我在查了…")+ 一条报最终结论(final)。native_realtime=边说边实时出字;emulated_batch=说完一段一次性转(降级备胎,≈"说完 10 句一起转");ark_voice=用字节火山引擎。
+- **经验图谱 = 自动复盘 + 像 wiki?**:基本是 —— run 跑完自动抽 失败根因/教训/信号,存 Manager SQLite 的图里。像 wiki(越用越厚的知识库)但**自动生成 + 结构化**(非人写散文)。按项目分区 UNKNOWN。呼应 FLY-347。
+- **浏览器 UI 像我们 dashboard?**:是,基本一个角色(看 run/DAG/评分、配模型、聊 Manager)。
+- **凭据加密 vs 我们**:它 key **加密后落盘**(SQLite 存密文 + 打码视图,manager_encrypted/legacy_plaintext);我们 key **明文放本地文件**(~/.flywheel/.env,靠文件权限)。做沙箱/多机(key 要给远程 worker)时它这套值得学 —— 我们 FLY-245 codex broker 已有类似思路。
+
+**生成式 UI mockup**:HTML v3 里做了一个手机样子(语音在跑 → 屏幕给"待确认卡/进度卡/状态卡",不读日志),给 Annie 看"到底长啥样"。
