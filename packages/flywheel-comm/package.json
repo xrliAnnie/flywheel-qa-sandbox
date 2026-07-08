@@ -1,7 +1,7 @@
 {
 	"name": "flywheel-comm",
 	"version": "0.1.0",
-	"description": "CLI for Lead ↔ Runner bidirectional communication via SQLite",
+	"description": "CLI for Lead \u2194 Runner bidirectional communication via SQLite",
 	"type": "module",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
@@ -19,7 +19,8 @@
 		"./xiaohongshu-analysis-store": "./dist/xiaohongshu-analysis-store.js",
 		"./xiaohongshu-review-locator": "./dist/xiaohongshu-review-locator.js",
 		"./xiaohongshu-review-delivery": "./dist/xiaohongshu-review-delivery.js",
-		"./verify-lifecycle-consent": "./dist/commands/verify-lifecycle-consent.js"
+		"./verify-lifecycle-consent": "./dist/commands/verify-lifecycle-consent.js",
+		"./founder-attribution": "./dist/founder-attribution.js"
 	},
 	"bin": {
 		"flywheel-comm": "dist/index.js"

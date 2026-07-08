@@ -31,6 +31,7 @@ ONLY_PHASE=""
 FROM_PHASE=""
 SKIP_TOKEN_CHECK=0
 FORCE=0
+STATE_DIR_FLAG=""
 BRIDGE_URL="${FLYWHEEL_BRIDGE_URL:-http://127.0.0.1:9876}"
 
 ALL_PHASES=(preflight deps repos flywheel-home tokens skills launchd validate)
@@ -44,6 +45,7 @@ Usage: provision-fleet-host.sh [options]
   --home DIR           target home (default: \$HOME)
   --repo-root DIR      flywheel checkout providing scripts/ (default: this repo)
   --fleet-dir DIR      captured artifact dir (default: <repo-root>/fleet)
+  --state-dir DIR      custom state dir (the ONLY way to redirect state writes; inherited FLYWHEEL_STATE_DIR is ignored)
   --skip-token-check   do not block on empty tokens (staged provisioning)
   --force              allow --apply even if a live fleet already exists here
   --bridge-url URL     Bridge base URL for validation (default: $BRIDGE_URL)
@@ -60,6 +62,7 @@ while [ "$#" -gt 0 ]; do
     --home) HOME_DIR="$2"; shift 2 ;;
     --repo-root) REPO_ROOT="$2"; shift 2 ;;
     --fleet-dir) FLEET_DIR="$2"; shift 2 ;;
+    --state-dir) STATE_DIR_FLAG="$2"; shift 2 ;;
     --skip-token-check) SKIP_TOKEN_CHECK=1; shift ;;
     --force) FORCE=1; shift ;;
     --bridge-url) BRIDGE_URL="$2"; shift 2 ;;
@@ -83,12 +86,29 @@ source "$SCRIPT_DIR/lib/host-config.sh"
 source "$SCRIPT_DIR/lib/supervisor.sh"
 # shellcheck source=lib/platform-deps.sh
 source "$SCRIPT_DIR/lib/platform-deps.sh"
+# shellcheck source=lib/script-sanity.sh
+source "$SCRIPT_DIR/lib/script-sanity.sh"
 
 # ── helpers ───────────────────────────────────────────────────────────────
 log()  { echo "[provision] $*"; }
 plan() { echo "[dry-run] would: $*"; }
 warn() { echo "[provision][warn] $*" >&2; }
 die()  { echo "[provision][error] $*" >&2; exit 1; }
+
+# FLY-954: the provisioner is a WRITER — it must not trust env vars designed
+# for runtime READERS (the wrappers). Incident 2026-07-06: a runner-born
+# production FLYWHEEL_STATE_DIR silently outranked the test's --home sandbox
+# (host-config.sh gives env top priority) and 12-byte fixture stubs were cp'd
+# into the real ~/.flywheel/bin. State-dir intent now enters ONLY via
+# --state-dir (or host.json stateDir); inherited env is discarded loudly.
+if [ -n "${FLYWHEEL_STATE_DIR:-}" ]; then
+  warn "ignoring inherited FLYWHEEL_STATE_DIR='${FLYWHEEL_STATE_DIR}' — writers only honor --state-dir / host.json"
+fi
+if [ -n "${FLYWHEEL_DIR:-}" ]; then
+  warn "ignoring inherited FLYWHEEL_DIR='${FLYWHEEL_DIR}' — use --repo-root / host.json"
+fi
+unset FLYWHEEL_STATE_DIR FLYWHEEL_DIR
+[ -n "$STATE_DIR_FLAG" ] && export FLYWHEEL_STATE_DIR="$STATE_DIR_FLAG"
 
 # run CMD args...  — execute in apply mode, print intent in dry-run mode.
 # Pass argv as separate words (run cp "$a" "$b"), never one quoted string.
@@ -294,11 +314,19 @@ phase_flywheel_home() {
       run cp "$FLEET_DIR/host.json" "$HOST_JSON"
     fi
   fi
-  # install runtime bin scripts from the checkout.
+  # install runtime bin scripts from the checkout (FLY-954: sanity + atomic +
+  # write-protected 555 — a degenerate source must fail the provision loudly,
+  # never install silently; bare cp is banned for <state>/bin).
   local f
   for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh; do
     if [ -f "$REPO_ROOT/scripts/$f" ]; then
-      run cp "$REPO_ROOT/scripts/$f" "$FW/bin/$f"
+      if [ "$DRY_RUN" -eq 1 ]; then
+        plan "install (sanity+atomic+555) $REPO_ROOT/scripts/$f -> $FW/bin/$f"
+      else
+        log "exec: install_script_atomic $REPO_ROOT/scripts/$f $FW/bin/$f"
+        install_script_atomic "$REPO_ROOT/scripts/$f" "$FW/bin/$f" \
+          || die "bin script failed sanity/atomic install: $f"
+      fi
     fi
   done
 }

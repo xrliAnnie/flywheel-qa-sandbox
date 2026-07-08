@@ -260,11 +260,26 @@ describe("GeminiLiveBackend converse face", () => {
 			"handle-abc",
 		);
 		expect(conn.params.resumeHandle).toBe("handle-abc");
-		expect(conn.params.toolNames).toContain("ask_lead");
+		const askLead = conn.params.tools.find((t) => t.name === "ask_lead");
+		expect(askLead).toBeDefined();
 		conn.emit({ type: "resumption-update", handle: "handle-def" });
 		const handle = await session.close();
 		expect(conn.closed).toBe(true);
 		expect(handle).toEqual({ backendId: "gemini-live", payload: "handle-def" });
+	});
+
+	it("declares ask_lead with description + parameters schema (FLY-959 bug 3)", async () => {
+		const { conn } = await makeSession();
+		const tool = conn.params.tools[0];
+		expect(tool.name).toBe("ask_lead");
+		expect(tool.description).toMatch(/project/i);
+		expect(tool.parameters).toMatchObject({
+			type: "OBJECT",
+			required: ["question"],
+		});
+		expect(
+			(tool.parameters as { properties: Record<string, unknown> }).properties,
+		).toHaveProperty("question");
 	});
 
 	it("rejects a resume handle from a different backend", async () => {

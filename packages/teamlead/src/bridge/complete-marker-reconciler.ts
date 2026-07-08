@@ -188,6 +188,15 @@ type MarkerBody = {
 export function expectedStatusFromMarker(
 	body: MarkerBody,
 	currentStatus: string | undefined,
+	/**
+	 * FLY-945 Fix C (Codex R1 #5): the session row's CURRENT
+	 * `review_question_id`. Needed for the new-vs-old questionId comparison —
+	 * `(body, currentStatus)` alone cannot express the recovery-lap criterion.
+	 * Omitted (legacy call shape) → the comparison degrades to "marker carries
+	 * ANY valid questionId", which still mirrors event-route when the row has
+	 * no binding.
+	 */
+	currentReviewQuestionId?: string,
 ): string | null {
 	const route = body.payload?.decision?.route;
 	const landing = body.payload?.evidence?.landingStatus?.status;
@@ -210,6 +219,25 @@ export function expectedStatusFromMarker(
 		// then force the successfully-unstuck session to "failed" on boot
 		// drain (a false failure on the exact Bridge-down recovery path the
 		// markers exist to protect).
+		//
+		// FLY-945 Fix C: EXCEPT the recovery lap — approved_to_ship +
+		// needs_review whose marker carries a NEW reviewQuestionId (`complete
+		// --route needs_review --question-id` writes it into the completion
+		// payload) ≠ the row's current binding → event-route maps it to
+		// awaiting_review (fresh review window), so this expectation copy must
+		// agree or the correctly-replayed marker gets quarantined. A missing /
+		// malformed / SAME questionId fail-safes to the 5a "completed"
+		// expectation exactly as before.
+		if (isPostApproveShip && route === "needs_review") {
+			const rawQid = body.payload?.reviewQuestionId;
+			const markerQid =
+				typeof rawQid === "string" && /^[0-9a-fA-F-]{8,64}$/.test(rawQid.trim())
+					? rawQid.trim()
+					: undefined;
+			if (markerQid && markerQid !== currentReviewQuestionId) {
+				return "awaiting_review";
+			}
+		}
 		return isPostApproveShip ? "completed" : "awaiting_review";
 	}
 	if (route === "blocked") {
@@ -393,7 +421,11 @@ export async function tryReconcileComplete(
 		}
 	}
 
-	const expectedStatus = expectedStatusFromMarker(body, currentStatus);
+	const expectedStatus = expectedStatusFromMarker(
+		body,
+		currentStatus,
+		currentSession?.review_question_id,
+	);
 	if (expectedStatus === null) {
 		// FLY-222 #1 (Codex code-review R2 MED): if the session already reached a
 		// terminal state, an unreplayable/stale marker (e.g. a no_code marker that

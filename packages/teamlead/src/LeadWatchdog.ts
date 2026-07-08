@@ -1014,6 +1014,15 @@ function titleFor(kind: AlertEventType): string {
 		// builds its own title); case exists for switch exhaustiveness.
 		case "runner_throttle_stalled":
 			return "Runner stalled after throttle";
+		// FLY-954: never emitted by LeadWatchdog (converge-flywheel-bin.sh fires
+		// it via lead-alert.sh with its own title); case exists for switch
+		// exhaustiveness.
+		case "bin_integrity_drift":
+			return "bin runtime script drift";
+		// FLY-945: never emitted by LeadWatchdog (the external-merge reconcile
+		// pass builds its own title); case exists for switch exhaustiveness.
+		case "external_merge_suspect":
+			return "Unverified external merge";
 	}
 }
 
@@ -1085,5 +1094,11 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-927 W-B: never emitted by LeadWatchdog (the stuck-runner escalation builds its own body).
 		case "runner_throttle_stalled":
 			return "A Runner is genuinely stalled after a 529/overloaded throttle (stagnant pane, throttle residue, no live retry). The auto-repair bot attempts the audited continue-nudge first.";
+		// FLY-954: never emitted by LeadWatchdog (converge-flywheel-bin.sh builds its own body via lead-alert.sh).
+		case "bin_integrity_drift":
+			return "A ~/.flywheel/bin runtime script drifted from its repo source. This kind is emitted by scripts/converge-flywheel-bin.sh via lead-alert.sh (shell path) — the Watchdog never raises it; see the shell alert body for file + sha details (FLY-954).";
+		// FLY-945: never emitted by LeadWatchdog (the external-merge reconcile pass builds its own body).
+		case "external_merge_suspect":
+			return "The external-merge reconcile pass found a merged PR it cannot verify (missing founder-attributed approval, or the merged head differs from the approved head). The session was NOT finalized/archived — review the merge.";
 	}
 }

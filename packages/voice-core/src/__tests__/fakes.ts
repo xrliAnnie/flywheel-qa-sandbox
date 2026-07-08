@@ -17,6 +17,7 @@ export class FakeProcessHandle implements ProcessHandle {
 	written: string[] = [];
 	ended = false;
 	private stdoutCbs: ((c: Buffer) => void)[] = [];
+	private stderrCbs: ((c: Buffer) => void)[] = [];
 	private exitCbs: ((
 		code: number | null,
 		sig: NodeJS.Signals | null,
@@ -27,6 +28,9 @@ export class FakeProcessHandle implements ProcessHandle {
 	}
 	onStdout(cb: (chunk: Buffer) => void): void {
 		this.stdoutCbs.push(cb);
+	}
+	onStderr(cb: (chunk: Buffer) => void): void {
+		this.stderrCbs.push(cb);
 	}
 	onExit(cb: (code: number | null, sig: NodeJS.Signals | null) => void): void {
 		this.exitCbs.push(cb);
@@ -42,6 +46,10 @@ export class FakeProcessHandle implements ProcessHandle {
 	emitStdout(s: string | Buffer): void {
 		const buf = Buffer.isBuffer(s) ? s : Buffer.from(s);
 		for (const cb of [...this.stdoutCbs]) cb(buf);
+	}
+	emitStderr(s: string | Buffer): void {
+		const buf = Buffer.isBuffer(s) ? s : Buffer.from(s);
+		for (const cb of [...this.stderrCbs]) cb(buf);
 	}
 	emitExit(code: number | null = 0, sig: NodeJS.Signals | null = null): void {
 		for (const cb of [...this.exitCbs]) cb(code, sig);

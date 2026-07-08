@@ -75,6 +75,8 @@ export {
 	type ConverseWiring,
 	type RegistryWiring,
 } from "./factory.js";
+// headphone mode (FLY-546) — pure logic layer
+export * from "./headphone/index.js";
 export {
 	AbortError,
 	NodeProcessRunner,
@@ -85,6 +87,10 @@ export {
 	type SpawnOptions,
 	TimeoutError,
 } from "./process.js";
+export {
+	TalkSessionRotator,
+	type TalkSessionRotatorOptions,
+} from "./TalkSessionRotator.js";
 // shared layer
 export { JsonlTranscriptSink, MemoryTranscriptSink } from "./transcript.js";
 // contract

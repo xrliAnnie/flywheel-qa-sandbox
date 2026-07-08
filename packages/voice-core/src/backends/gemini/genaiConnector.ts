@@ -3,12 +3,9 @@
  * separate from index.ts and dynamically imported, so the package builds and its
  * tests run without the SDK installed (CI uses the mock transport).
  *
- * ⚠️ S0.2-PENDING: the exact SDK message → LiveServerEvent mapping below is
- * written to the documented @google/genai Live shape (research.md r2: connect-
- * time sessionResumption, dual-side transcription, toolCallCancellation) but has
- * NOT yet been verified against a live session (needs GEMINI_API_KEY — plan.md
- * r2 §4 S0.2). Treat as best-effort until evidence/poc-converse.md confirms it.
- * The tested contract is GeminiLiveBackend against the injectable transport.
+ * The SDK message → LiveServerEvent mapping below is live-verified (FLY-543
+ * real-machine QA, evidence/poc-converse.md). The tested contract is
+ * GeminiLiveBackend against the injectable transport.
  */
 import { Buffer } from "node:buffer";
 import type {
@@ -45,6 +42,9 @@ export function createGenaiTransport(
 
 			let onEvent: (e: LiveServerEvent) => void = () => {};
 			let intentionalClose = false;
+			// callId → declared tool name, so function-responses echo the exact
+			// name the model called (was hardcoded "ask_lead").
+			const callNames = new Map<string, string>();
 			const config: any = {
 				responseModalities: [Modality.AUDIO],
 				outputAudioTranscription: {},
@@ -54,7 +54,11 @@ export function createGenaiTransport(
 					: {},
 				tools: [
 					{
-						functionDeclarations: [{ name: params.toolNames[0] ?? "ask_lead" }],
+						functionDeclarations: params.tools.map((t) => ({
+							name: t.name,
+							description: t.description,
+							parameters: t.parameters,
+						})),
 					},
 				],
 			};
@@ -66,7 +70,11 @@ export function createGenaiTransport(
 				model: params.model,
 				config,
 				callbacks: {
-					onmessage: (msg: any) => mapMessage(msg, onEvent),
+					onmessage: (msg: any) =>
+						mapMessage(msg, (e) => {
+							if (e.type === "tool-call") callNames.set(e.callId, e.name);
+							onEvent(e);
+						}),
 					onerror: (e: any) =>
 						onEvent({ type: "error", message: String(e?.message ?? e) }),
 					onclose: (e: any) => {
@@ -75,7 +83,7 @@ export function createGenaiTransport(
 						if (!intentionalClose) {
 							onEvent({
 								type: "error",
-								message: `Gemini Live connection closed unexpectedly${e?.reason ? `: ${e.reason}` : ""}`,
+								message: describeUnexpectedClose(e?.reason, params.model),
 							});
 						}
 					},
@@ -94,9 +102,15 @@ export function createGenaiTransport(
 				sendToolResponse(callId: string, output: string) {
 					session.sendToolResponse({
 						functionResponses: [
-							{ id: callId, name: "ask_lead", response: { output } },
+							{
+								id: callId,
+								name:
+									callNames.get(callId) ?? params.tools[0]?.name ?? "ask_lead",
+								response: { output },
+							},
 						],
 					});
+					callNames.delete(callId);
 				},
 				onEvent(cb) {
 					onEvent = cb;
@@ -170,4 +184,23 @@ function secondsFrom(timeLeft: any): number {
 		if (m) return Math.round(Number(m[1]));
 	}
 	return 0;
+}
+
+/** Human-actionable message for an unexpected ws close. A "model not found"
+ * reason gets self-rescue guidance (FLY-959 bug 4: Google retires preview
+ * models; the next 404 should cost the user 30 seconds, not a debug session). */
+export function describeUnexpectedClose(
+	reason: string | undefined,
+	model: string,
+): string {
+	const base = `Gemini Live connection closed unexpectedly${reason ? `: ${reason}` : ""}`;
+	if (
+		reason &&
+		/is not found for API version|not supported for bidiGenerateContent/i.test(
+			reason,
+		)
+	) {
+		return `${base} — the configured model "${model}" looks retired/renamed; set FLYWHEEL_VOICE_GEMINI_MODEL to a live model (verify with client.models.list(); snapshot: packages/voice-core/evidence/real-live-models-list.json)`;
+	}
+	return base;
 }

@@ -64,10 +64,50 @@ export interface VoiceBackendCapabilities {
 	audioIn?: AudioFormat[];
 }
 
+/**
+ * A fully-specified voice: backend voice id + optional per-call prosody
+ * (FLY-546 per-agent voices). rate is "±N%" and pitch is "±NHz" — the exact
+ * edge-tts CLI grammar; other backends may reinterpret but the wire format is
+ * fixed so configs stay portable.
+ */
+export type VoiceSpec = { voiceId: string; rate?: string; pitch?: string };
+
+/** string = bare voice id (backwards compatible). */
+export type VoiceRef = string | VoiceSpec;
+
+export function toVoiceSpec(ref: VoiceRef): VoiceSpec {
+	return typeof ref === "string" ? { voiceId: ref } : ref;
+}
+
 export interface AnnouncerOptions {
-	/** voice id inside the backend's namespace (edge-tts: zh-CN-XiaoxiaoNeural). */
-	voice?: string;
+	/** voice inside the backend's namespace (edge-tts: zh-CN-XiaoxiaoNeural). */
+	voice?: VoiceRef;
 	transcriptSink?: TranscriptSink;
+}
+
+/** A full function declaration the backend passes to the model verbatim
+ * (structurally identical to the Gemini transport's LiveToolDeclaration —
+ * kept here so the orchestrator-facing contract has no backend import). */
+export interface ToolDeclaration {
+	name: string;
+	description: string;
+	/** JSON-schema-style object ({ type: "OBJECT", properties, required }). */
+	parameters: Record<string, unknown>;
+}
+
+/**
+ * FLY-545: an orchestrator-provided Live tool — declaration + handler. The
+ * backend declares it to the model and dispatches matching tool-calls to the
+ * handler; the resolved string is injected back as the function response
+ * (default WHEN_IDLE). A declared-but-unhandled tool would hang the Live turn
+ * forever, so declaration and handler travel together. Cancellation contract
+ * is identical to ask_lead: tool-call-cancellation / manual interrupt /
+ * close() abort the handler via `signal` and the late result is dropped.
+ */
+export interface LiveToolSpec {
+	declaration: ToolDeclaration;
+	/** runs orchestrator-side; returned text is injected as the function response. */
+	handler: (args: unknown, opts: { signal: AbortSignal }) => Promise<string>;
 }
 
 export interface ConversationOptions {
@@ -81,6 +121,11 @@ export interface ConversationOptions {
 	 * connect). supportsResume=false + a handle → VoiceError("unsupported").
 	 */
 	resumeHandle?: ResumeHandle;
+	/**
+	 * FLY-545: additional Live tools (declaration + handler) dispatched by the
+	 * backend. Default [] = current behavior (ask_lead only).
+	 */
+	extraTools?: LiveToolSpec[];
 }
 
 export interface VoiceBackend {
@@ -157,7 +202,7 @@ export interface BrainAdapter {
 export interface TtsEngine {
 	synthesize(
 		text: string,
-		voice: string,
+		voice: VoiceRef,
 		opts: { signal: AbortSignal },
 	): Promise<{ audio: Buffer; format: AudioFormat; ttsFirstByteMs: number }>;
 }

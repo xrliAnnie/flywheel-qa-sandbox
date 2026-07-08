@@ -39,6 +39,15 @@ Phase 0 spike 机器事实见 `engineering/doc/FLY-543-pluggable-voice-skill/evi
 （mapMessage）纯函数可后补测；被单测覆盖的合同是 `GeminiLiveBackend` 对注入
 transport 的完整行为（mock ws 事件序列全覆盖）。
 
+## FLY-959 回归（4 处已知 bug 修复，2026-07-07）
+
+| 验收 | 结果 | 证据 |
+|------|------|------|
+| R1 mic 跟随系统默认（`:default`） | PASS（设备打开铁证 + `:0` 对照；声学收音留白天真人补） | `fly-959-regression.md` |
+| R2 session 过期自动续期 | PASS（真 CLI + 真麦克风跨 goAway `[session resumed]`；driver 跨续期问答成立） | `fly-959-regression.md`、`fly-959-e2e-events.json` |
+| R3 ask_lead 全 schema 真调用 | PASS（真 tool-call 事件 + 真 brain 回答、不再瞎编） | 同上 |
+| R4 默认模型 `gemini-3.1-flash-live-preview` 直连 | PASS（Task 0 复核 models.list + 两条真会话无 404） | 同上 |
+
 ## 范围说明（承 plan r2 §0 安全边界）
 
 POC 脑 = **只读的 Lead persona 近似**（`claude -p` 零工具）：语音里说 approve/ship/merge

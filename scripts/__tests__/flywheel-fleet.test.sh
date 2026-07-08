@@ -61,11 +61,14 @@ mkdir -p "$CTL" "$SANDBOX/.flywheel/manifests" "$SANDBOX/Library/LaunchAgents" \
   "$SANDBOX/.flywheel/bin" "$SANDBOX/Dev/flywheel/scripts" "$SANDBOX/proj/geo" "$SANDBOX/proj/joy"
 
 # Fake wrapper source for Phase W installs (FLY-224 dispatch marker included).
-cat > "$SANDBOX/Dev/flywheel/scripts/flywheel-lead-wrapper.sh" <<'EOF'
-#!/bin/bash
-# fake wrapper for tests — leadBackend dispatch marker (FLY-224)
-exit 0
-EOF
+# FLY-954: fixture must PASS install_script_atomic's source sanity (≥1KB +
+# substantive lines) — the 12-byte stub shape is exactly what installs refuse.
+{
+  echo '#!/bin/bash'
+  echo '# fake wrapper for tests — leadBackend dispatch marker (FLY-224)'
+  i=1; while [ "$i" -le 60 ]; do echo "echo sane-fixture-wrapper-line-$i >/dev/null"; i=$((i+1)); done
+  echo 'exit 0'
+} > "$SANDBOX/Dev/flywheel/scripts/flywheel-lead-wrapper.sh"
 chmod +x "$SANDBOX/Dev/flywheel/scripts/flywheel-lead-wrapper.sh"
 
 # launchctl / tmux stubs (same state machine as the daemon test).

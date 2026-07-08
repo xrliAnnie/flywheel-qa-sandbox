@@ -1,0 +1,182 @@
+# FLY-909 竞品扫描 + 定位启发 — 交付物(round 2 · Annie 批注修订版 + Claude Cowork/Codex app 扩展)
+
+Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面上别人怎么做-喂产品定位形态)
+日期: 2026-07-07
+基于: research.md + round-2 deep research + Annie round-2 批注(instruction 68563d64)
+喂给: FLY-908(对外定位 & 产品形态 EPIC)/ FLY-911(定位收敛 —— 定位大结论在那拍)
+
+> 一页看完:市场怎么分、各家什么状态、能借什么、我们的差异**候选**线索在哪 —— 全部按「**非技术小生意主**」这个视角(Annie 已定:能读 PR/做验收的高阶画像出局)。
+> **口径(重要)**:「我们跟 Matrix/Paperclip 到底差异化不化、generic-vs-concrete」这类**定位大结论,归 FLY-911 跟 Annie 收敛,本文不硬下** —— 差异一律写成「候选 / 待 911 拍」。本文是喂料,不是定案。
+> **本版改了什么**:〔round-2.1 Annie 批注〕①用词去丧(别人做了 ≠ 我们不能做);②Paperclip 真挖深(见 paperclip-deepdive.md);③不 overclaim「完全非技术」(现在还没到);④修正 Lovable(主要是出 UI 的地方);⑤自托管诚实化(差异是「done-for-you 替你做」);⑥bootstrap 打法写进「可借鉴」。〔round-2.2 扩展〕⑦加 **Claude Cowork + Codex app**,诚实回答「我们还有没有价值 / 会不会被取代」(见 ⑥ 节)—— 编排引擎不占优要认,真差异落在 领域/常驻组织/手机 IM/供应商中立 的组合(候选,待 911)。〔round-3 扩展〕⑧加 **Open Cloud/OpenClaw** 竞品 + **OPC beachhead** 答(见 ⑦ 节)+ 配套 **value-artifact.html**。〔round-3.1 Annie 纠正〕**OPC target 收窄 = 非技术电商/social operator(不是程序员)**;DIY 硬问题 reframe(会自己拼的是程序员、本就不是我们 target,风险不落在攻的这群);定位主线「替一个非技术的一人公司 operator,把一整个公司的活在聊天里做掉」。
+
+---
+
+## TL;DR(3 句话)
+
+1. **「一整个 AI 公司 / 一队 agent」这个形态,有人正面在做、而且做得早做得响**:Matrix(桌面、商业)+ **Paperclip(开源、免费、~70K star)** + 整个「Zero-Human Company」品类。**但「别人在做」不等于我们不能做**(OpenAI 之后有 Anthropic)—— 真差异不在「AI 公司」这个壳,而在我们能不能把**自己团队的优势**打出来。
+2. **这条赛道自己也承认瓶颈**:执行已不是难点,**需求 / 有没有人买 / 信任 / 判断**才是。而且**大家都还早**——连 70K star 的 Paperclip 都被评测叫「原型穿着产品外衣」、每周报 bug。我们可以诚实地把「**人留在两头**(你给方向 + 你验收)」当一条对外线索。〔定位建议 · 待 Annie / FLY-911 拍〕
+3. **对非技术小生意主,我们的差异候选(待 911)= 三条,用他听得懂的话讲**:**done-for-you 替你做**(目标是你不用自己攒/配/盯 —— 不是「不用自托管」,我们八成也要那套基建,而是替你搞定)· **建并养一个真软件产品** · **信得过**(东西一试真能跑、下周还能跑)。这三条是**候选线索**,主打哪条由 FLY-911 收敛。
+
+---
+
+## ① 横切表 A:各家什么形态、非技术小生意主用起来什么体验
+
+| 玩家 | 定位一句话 | 目标用户 | 产品形态 | 非技术小生意主的现实体验 | 定价形态 |
+|---|---|---|---|---|---|
+| **Lovable** | 主要是**用聊天快速生成 UI / 前端**的地方(也能带全栈,但重心和口碑在界面) | 要快速出界面/原型的非技术、设计、PM | 聊天 prompt → 生成 UI(可带后端) | 出个好看界面/原型很快;复杂后端、长期维护不是它的重心 —— **跟「替你建并养一个真产品」不是一类** | Free/$25/$50 |
+| **Base44**(Wix) | 一句话→带 DB+认证+托管的全栈内部工具 | 做内部工具/dashboard 的非技术 | prompt → 可部署 app | 出全栈内部工具最快,但数据锁平台、只出 SPA | Free/~$16 |
+| **Replit Agent** | 大白话变 app,不碰文件 | 非技术+原型开发者 | 云 IDE + Agent | 还是个 IDE,要进开发环境;credit 易 bill shock | Free/$20/$100 |
+| **v0**(Vercel) | 高质量 UI 组件工厂 | 偏前端/半技术 | prompt → UI 组件 | 要点 React 基础 | Free/$20/$30座 |
+| **Bolt.new** | 浏览器里整套开发环境 | beginner 全栈原型 | 聊天 → 建+部署 | 面向会点开发的 beginner | Free/~$20 |
+| **Devin**(Cognition) | AI software engineer | 工程团队 | Slack 派任务 → 出 PR;Devin 能管 Devin | 卖给工程师,要把活讲成工程语言 | Free/$20/$500 |
+| **Factory**(Droids) | agent-native 覆盖 SDLC | 企业工程团队 | Slack 触发 + Linear;async → PR | 面向企业工程,无免费 | $20/$100/$200 |
+| **🆕 Paperclip**(@dotta) | 把你的 agent 组织成一个公司的控制平面(org chart/预算/治理) | **明说给 operators**(solo 创始人/agency/甚至牙医·营销公司) | 自己跑的 Node server + React 面板;BYO agent | **瞄的人跟我们很像**,但上手要自托管(Docker/VPS);还「原型穿产品外衣」、每周 bug | **开源 MIT 免费**(自付基建) |
+| **Hermes**(Nous) | 会自己长本事的常驻 agent | 技术自托管者 / prosumer | 自己服务器跑 daemon(现有桌面 app) | 桌面 app 后好一点,根子仍是自托管单 agent | 开源(自付基建) |
+| **🆕 Open Cloud / OpenClaw** | 跑你自己设备、在你已用的 IM 里回你的**个人 AI 助理** | 技术自托管者(靠 Discord 把 agent 推向更广人群) | 本地自托管 + **29 个消息渠道**(Discord/TG/Slack/WhatsApp…)+ 跨会话记忆 + 浏览/填表/跑 shell | **界面跟我们最像(IM 驱动)**,但**多开几个也是各自为战、你得自己 juggle**(不是被协调的组织);2026 爆红(60 天 250K star)后因定价套利+安全降温 | 开源(自付基建) |
+| **OpenHands**(All Hands) | 开源云端 coding agent 平台 | 开发者 | Cloud/CLI/SDK;连 GitHub → 出 PR | Cloud 也要懂 repo/git 流 | Free(BYOK)/$20 |
+| **🆕 Claude Cowork**(Anthropic) | 非技术知识工作者的 AI coworker(在你文件上干活) | **明确非技术知识工作者** | Claude 桌面 app GUI,描述「做完什么样」→ 它做完交到你文件夹 | **done-for-you + 无需编程** —— 但做的是**你文件上的知识工作**(研究/合同/报告),不是建并养一个软件产品;桌面端、锁 Claude、是「你启动一个任务」 | 随 Claude 订阅 |
+| **🆕 Codex app**(OpenAI) | agent 指挥中心(编排一队 coding agent) | **开发者-导演** | 桌面「command center」+ CLI;manager 协调并行 subagent(默认最多 6-8) | 面向开发者、要懂技术在桌面/CLI 编排;锁 OpenAI | 随 OpenAI 订阅 |
+| **🌟 Matrix**(flowith) | Launch a 0-Person Company that actually earns | 想 0 人创业的个人/小团队 | macOS 桌面 app + 游戏小人可视化 | 门槛低但要下桌面 app、跑营销生意不是软件 | 公测免费 |
+| **🎯 Flywheel** | 由你指挥、替你建并养一个真软件产品的 AI 团队 | **非技术小生意主/创始人** | Discord 里跟 AI Lead 聊,Lead 管 Runner 建并维护你 GitHub 里的真产品 | **目标 done-for-you**(你不用懂技术);⚠️ **坦白:现在还没到** —— 跑起来仍需要点工程水平(Annie 自己用都撞 bug),产品化是待解题 | Claude 订阅制 |
+
+**这张表看出的东西(观察,不是定位结论)**:
+- **没有一家是「非技术真能自己跑起来 + 在已有 IM 里说话 + 替你建真软件」**;但要诚实 —— **这个「非技术真能自己用」现在谁都没做到**(连 Paperclip 都还是原型状态),我们也还没到。这是赛道的共同未解题,谁先把「done-for-you 真产品化」跑通谁赢。
+- **builder 档(Lovable/Base44)** 里,Lovable 其实是**出 UI/前端**为主,别跟「替你建并养真产品」混一类。
+- **agent 档(Devin/Factory/OpenHands)** 面向工程师;**开源框架档(Paperclip/Hermes)** 面向自托管者 —— 但 **Paperclip 明确在往 operators / 非技术小生意主打**,跟我们目标人群重叠。
+
+---
+
+## ② 「AI 公司」这个形态:有人在做、都还早 —— 我们能借什么(不硬下定位结论)
+
+- **Matrix** = 商业化的「你指挥的 AI 公司」(桌面 app)。**Paperclip** = 开源免费的同类(~70K star、105 contributors、明说给 operators)。加上 **Devin 能管 Devin、Factory 一群 Droid** —— 分层多 agent 组织是 2026 的常见形态。
+- **口径**:靠「AI 公司 / 分层组织」这个壳,我们和 Matrix/Paperclip **区分度不高**;但**这不等于我们不该做** —— 该做的是把差异落到别处(done-for-you / 真产品 / 可信),而**具体怎么落、主打哪条,归 FLY-911 跟 Annie 收敛**。
+
+**⭐ 可借鉴:先立具体旗舰来 bootstrap 通用能力(Annie + 独立 catch,采纳)**
+> generic 产品一开始没人用 —— 所以聪明的玩家**先立一个可信的、具体的旗舰样板**来 bootstrap 那个通用能力。**Matrix** 用 live 示例公司(agency 类)、**Paperclip** 用 `companies` 模板库(里面一堆**软件公司**模板:Superpowers = CEO/CTO/QA/Release Eng + TDD + code review;gstack;Full-Stack Forge)+ Company Wizard(回答几问→装配)。
+> **这是打法、该学,不是弱点。** 落到我们:**我们的具体旗舰样板 = 一个软件公司 = dogfooding(Flywheel 建 Flywheel）**,正好贴我们的背景。→ 喂 FLY-908/910/911。
+
+**⭐ 可借鉴:Paperclip 的几个具体机制**(详见 paperclip-deepdive.md)
+- **每 agent 月预算 + 80% 预警 + 100% 自停** → 把「不 surprise 账单」做成结构护栏(对非技术尤其重要)。
+- **雇新 agent 默认要 Board 批准** → 「高影响动作要人批」的产品化,跟我们 founder 验收 gate 同类。
+- **import 即跑的公司模板 + Company Wizard** → 非技术 onboarding 的好范式(喂 FLY-910)。
+- **append-only 审计轨迹** → 「可信」的可视化底座。
+
+---
+
+## ③ 可信度轴:非技术小生意主不读 PR/CI,他怎么感知信任?(Annie flag 的关键重想点)
+
+**非技术老板读不懂 PR/CI。** 那份工程纪律(PR/CI/review/QA)仍然是**东西真能用**的根本原因,但它**不是**非技术老板能亲身感知的东西。所以这条轴按「他能感知什么」重述(这些是**候选表达**,主线待 911):
+
+行业事实:只有 **6%** 的公司完全信任 AI agent 自主跑核心业务;竞品的信任机制(Paperclip 的 ticket+tracing、Matrix 的 return proof、Hermes 的 memory-graph)对纯非技术仍是「一堆看不太懂的记录」。
+
+**面向非技术的可信度,候选四件事(他能亲身感知的):**
+1. **⚓ 结果证明(候选锚点)—— 东西一试真能跑,而且下周还能跑。** 这是非技术老板**唯一能自己验证**的信任(功能能用、不崩、持续维护不烂)。这也是这条赛道普遍的短板 —— Matrix coding 弱、Paperclip 还「原型穿产品外衣」;谁把「真能用且养得住」做实,谁在这条轴上占先。⚠️ 诚实:**我们现在也还没做实**(还一堆 bug),这是要争的地方,不是已经赢的地方。
+2. **关系型信任 —— 有个能对话的 named Lead。** 你在 Discord 里能直接问它「为什么这么做」「改一下」,像信一个员工/承包商。
+3. **可读的审批 —— 批决定,不批 diff。** Lead 用大白话说「我打算做 X,行吗」,你批的是听得懂的决定。
+4. **能感知的护栏 —— 不 surprise 账单 + 能喊停。**(Paperclip 的月预算自停机制值得借鉴。)
+
+> **PR / CI / code review / QA** = 沉在引擎盖下的质量保证,是上面「一试真能跑」的**底气**,不是拿去跟非技术老板讲的卖点。
+
+---
+
+## ④ 值得借鉴清单(按非技术视角,喂 onboarding sibling issue FLY-910)
+
+1. **「几分钟内出一个真能跑的东西」的 onboarding**(Lovable/Base44):非技术第一次用,产物要已经在跑。
+2. **import 即跑的公司模板 + 回答几问就装配**(Paperclip Company Wizard):非技术 onboarding 好范式。
+3. **后端/认证/托管开箱接好**(Base44 黄金标准)。
+4. **「像招个员工/团队」的叙事**(Devin/Matrix/Paperclip「你是 CEO」)—— 讲更聚焦的版本(替你建软件并养着,不是自动赚钱)。
+5. **operator 语言、不跟开发者讲**(Paperclip 明确「给 operators」)—— 我们对外也用非技术小生意主听得懂的话。
+6. **定价可预测 / 月预算自停**(OpenHands at-cost、Paperclip 预算护栏):把 bill-shock 痛点做成「不 surprise」。
+7. **Building-in-Public 的 GTM(steer:Matrix + Base44 + Paperclip)**:见 gtm-intel.md。build-in-public(中文圈用小红书)+ 产品自传播 onboarding +「产品当众干活」当病毒 demo(Paperclip 的 Greg Isenberg live demo 是标杆)。
+
+---
+
+## ⑤ 对 FLY-908 / FLY-911 定位的启发(喂料 · 差异写成候选,定位在 911 拍)
+
+- **要打败的替代品(定位靶子)不是 Lovable、也不是 Matrix,而是**:雇 freelancer/外包 dev shop、自己上 no-code 然后自己维护、以及「干脆不做」。
+- **「AI 公司」这个壳我们和 Matrix/Paperclip 区分度不高** —— 但别人在做不等于我们不能做。一句话定位往哪走(带上 done-for-you / 真软件 / 可信 哪几条、怎么讲)**由 FLY-911 收敛,本文不定**。
+- **差异化候选线索(喂 911,不是定案)**:
+  - **done-for-you 替你做**(候选):目标是你不用自己攒/配/盯。⚠️ 诚实:差异不是「不用自托管」(我们八成也要 Docker/VPS 那套),是「替你搞定」。
+  - **建并养一个真软件产品**(候选):不是一次性 MVP、不是营销生意。
+  - **结果证明「一试真能跑、下周还能跑」**(候选锚点):非技术唯一能亲验的信任;⚠️ 我们现在也还没做实,是要争的地方。
+  - **具体旗舰 = dogfooding 软件公司**(可借鉴的 bootstrap 打法落到我们)。
+- **〔定位建议 · 待 Annie / FLY-911 拍〕** 一条可选的对外反差:品类喊「Zero-Human Company / 自动赚钱」,我们诚实反着讲——**「不是零人公司,是你做判断、AI 做工程」**。压在品类承认自动化不了的地方(判断/关系/信任)。用不用当主 messaging,911 拍。
+
+---
+
+## ⑥ 存在性拷问:Claude Cowork + Codex app 已经很 general 了 —— 我们还有没有价值?会不会被取代?(诚实答,别护短)
+
+> Annie 直接问的最硬的问题。我按「诚实、别护短、验证她的假设别替她下结论」来答。**这是喂 FLY-911 的诚实评估,不是定案。**
+
+**先说这俩是什么:**
+- **Claude Cowork**(Anthropic):明确做**非技术知识工作者**的 AI coworker,活在 **Claude 桌面 app** 的 GUI 里(no terminal / no coding / no technical background),直接读你电脑上一个文件夹。用法是 **done-for-you**:你**描述「做完长什么样」→ 它自己 start/run/finish、把成品交到你文件夹**,你 review 成品(告诉它 what,不是 how)。底层是 Claude Code 的 lead+sub-agent 编排(sub-agent 还能生 sub-agent)。
+- **Codex app**(OpenAI):**开发者的 agent 指挥中心** —— 桌面「command center」+ CLI,manager 协调一队并行 subagent(默认最多 6-8),覆盖 design/build/ship/maintain 全生命周期。开发者从写代码转成**编排/review/架构判断**。2M+ 周活。
+
+**诚实第 1 条(别护短):编排引擎不是我们的护城河。** 「把一个 lead agent 拆活、派给 sub-agent、还能 dispatcher 分诊」—— 这现在是 **Claude(Cowork / Code Agent Teams / `/goal` 常驻 / agents dashboard)和 Codex(subagents GA)两家的一方功能**,大厂资源更足、迭代更快。我们这套 leads/departments/三段式,在**编排机制层面**跟他们**重叠很多、且我们不占优**。这条要认。
+
+**诚实第 2 条(验证 Annie 的假设 —— 一半对一半不对):**
+- **Codex app**:✅ Annie 猜对 —— 它是**开发者工具**,你在桌面/CLI 当导演、要懂技术、锁 OpenAI。跟我们的目标用户(非技术小生意主)不是一路人。
+- **Claude Cowork**:⚠️ **Annie 的假设对它不成立,得诚实说** —— Cowork **恰恰是非技术 + done-for-you + 描述结果 review 成品 + 无需编程的 GUI**,这几乎就是我们对外讲的那套。**它是目前最贴、最该警惕的一家。**
+
+**诚实第 3 条:那价值/差异到底还剩什么?(候选,待 911 —— 我验证出来的,不替 Annie 下结论)**
+1. **领域**:Cowork 做的是**你文件上的知识工作**(研究综述 / 合同抽取 / 报告 / 数据整理),**不是建并长期维护一个真软件产品**;Codex 建软件但面向开发者。→ 「**替非技术的人建并养一个真软件产品/公司**」这块,两家目前都没正面做。
+2. **常驻组织 vs 你启动的任务**:Cowork/Codex 本质是「**你启动一个任务/会话** → 它 fan-out → 交付」(Cowork 能跨多天,但仍是项目会话)。我们是一个**常驻的组织**(CoS 自己分诊 backlog、Leads、部门、always-on),不是「你每次启动一个活」。这条是真结构差异,但**别吹太大**(值不值钱要 911 判)。
+3. **界面**:Cowork = **桌面 app + 你电脑上的文件夹**;Codex = 桌面/CLI。我们 = **手机原生 IM(Discord)**,不用开电脑、不用盯文件夹 —— 对「只带手机的非技术小生意主」是真差异。
+4. **agent-agnostic / 供应商中立(Annie ④)**:**Cowork 锁 Claude、Codex 锁 OpenAI**;我们架构上能跨后端(Claude / Codex / GLM / MiniMax / Antigravity / Kimi)。这是**第一方厂商结构上不会做**的事(它们不可能替你去用对手的模型)—— 所以这是一条**「定位层能打」的真差异**。
+   - ⚠️ **但要分清**:「**能打的差异**」≠「**现在就要建**」。Annie 早先定了 setup 先不做 agent-agnostic —— 不冲突:**现在可以把「供应商中立」当定位候选讲,但不必现在就建全**(能打≠现在建)。
+
+**诚实第 4 条:会不会被取代 / 风险在哪。** 最该盯的是 **Cowork(Anthropic 自己)**:它已经是「非技术 + done-for-you + 桌面 chat」。**如果 Anthropic 把 Cowork 指向「从手机替你建并长期维护一个软件产品」,我们的空间会被快速压缩。** 我们在**引擎层没有护城河**;价值全押在**把「done-for-you + 常驻组织 + 手机 IM + 供应商中立 + 真软件产品维护」这套组合,替一个非技术小生意主真正做通** —— 而这套**现在还没产品化**(见 ③ 的诚实边界)。**所以答案不是「我们注定被取代」,也不是「我们稳」,而是:差异存在、但薄,赢面取决于我们能不能比一个通用知识工作工具更早把这套具体组合做成真能用的 done-for-you 软件团队。这个判断,911 跟 Annie 拍。**
+
+---
+
+## ⑦ Open Cloud / OpenClaw + OPC beachhead 的硬问题(Annie 新 beachhead)
+
+### Open Cloud / OpenClaw 是什么(Annie 灵感来源)
+- **是什么**:Peter Steinberger 的开源**个人 AI 助理**,跑在**你自己的设备**上、在你**已经在用的 IM**(Discord/Telegram/Slack/WhatsApp/Signal… 29 个渠道)里回你;本地私有、零云依赖;能浏览网页/填表/读写文件/跑 shell,跨会话记忆你的偏好/项目/人。
+- **怎么起来的**:Clawdbot → Moltbot → OpenClaw(2026-01);2 月破 100K star、**~60 天 250K star(史上最快 repo)**;**build-in-public + Discord 当 showroom**、半百万系统在跑,创始人上 Fast Company AI 20。
+- **现状(热度回落 —— 诚实)**:安全事故(恶意第三方 skill / 过度授权 / 钓鱼 repo)后降温,「OpenClaw is dead」成论坛梗。**真因 = 定价套利泡沫**(靠一段被低估的算力起来,平台把算力调贵后几天崩,休闲用户走光、只剩认真工作流)+ 创始人转投 OpenAI 阵营带走社区 + 深度本地访问的安全风险。**但项目没死** —— 转成 AI-agent stack 里认真-谨慎的一层,375K+ star、周更、猛推可靠性(agent 恢复/audit trail/MCP 校验/LTS)。
+- **⭐ 起源故事(Annie,真实 —— 写进 building-in-public 素材)**:**Flywheel 最早就是搭在 Open Cloud 上的** —— Annie 一开始在 OpenClaw 上搭这套系统,后来 Claude Code 能连 Discord 了才迁过来。所以 OpenClaw 对我们不只是竞品,是**起点**。这条真实起源(「我自己在 OpenClaw 上搭、撞到墙,才做了 Flywheel」)是极强的 build-in-public 故事,建议进 GTM 素材。
+- **跟我们:重叠 / 差异(诚实,已按 Annie 纠正)**:
+  - **重叠(界面最像)**:它就是「把 agent 通过 Discord/IM 推给更广人群」—— 跟我们**手机 IM 驱动**的界面赌注一样,连 Discord-当门面都像。
+  - **⚠️ 差异不在 agent 数量、在协调(Annie 纠正,重要)**:别再讲「我们多部门组织 vs 它单个助理」—— **多开几个 OpenClaw 也能凑成多部门,这框站不住**。真差异 = **N 个 OpenClaw = 各自为战、你得自己 juggle**(各跑各的、不互通、你当人肉调度);**我们 = 一个被协调的常驻组织**(Leads 互通、共享 backlog、跨项目复用经验、部门分工)—— **对外是一家公司在动,不是 N 个你得盯的助理**。
+  - **可借鉴**:多渠道触达 + 跨会话记忆 + Discord-showroom 的 build-in-public。
+- **⚠️ OpenClaw 踩的坑 → 我们怎么避(喂「持久 vs 昙花」这条)**:
+  1. **硬定价、别做套利泡沫**:它靠一段被低估的算力爆红、算力调贵后几天崩 —— 我们定价要建在**真实可持续的价值**上,不赌一时的价格红利。
+  2. **安全、别裸 provision**:它深度本地访问 + 恶意第三方 skill 出事 —— 我们要 **managed、有边界、不把安全敞口甩给用户**。
+  3. **可靠性要 managed**:它把稳定性甩给自托管用户 —— 我们做**替你托管的可靠**,这正是「持久」区别于「昙花」的地方。
+- ⚠️ **Aimless Agent 查无实据**:两轮 WebSearch 没找到叫「Aimless Agent」的项目(可能很小众/很新,或名字近似,像之前 open people→OpenHands)。**请 Annie/Lead 确认真名或给个链接,我再补**;先不硬编造。
+
+### OPC beachhead(Annie 收窄):目标 = 非技术的一人公司 operator,不是程序员
+**⚠️ target 收窄(盖过早前「技术够的 solo founder」的说法)**:beachhead = **非技术的 OPC operator** —— 自己做电商、自己做 social media 的一人公司。他有「**一个人干一个团队的活**」的痛,但**不是程序员、自己拼不出来 → 需要 done-for-you**。**程序员 OPC 不是我们专门 target**(他们自己能搞、不需要我们、我们也抢不过;能用我们产品但不是攻的人)。
+
+**定位主线一句话(Annie 定)**:「**替一个非技术的一人公司 operator,把一整个『公司』的活在聊天里做掉。**」
+
+**DIY 硬问题的诚实 reframe(关键)**:引擎层(编排)我们**确实没护城河** —— 但**会自己拼的是程序员,而程序员本就不是我们攻的人**,所以「能 DIY」这个风险**不落在我们要攻的那群(非技术电商/social operator)身上**。诚实两句:
+- 对**能 DIY 的技术人**:我们不占优、也**不攻他们**。
+- 对**非技术电商/social operator**:他们**拼不出来**(不是程序员),要的是**替他们做 + 常驻组织 + 生态整合 + 体验气质**,不是自己拼引擎。
+
+对这群人,真差异押哪(候选,待 FLY-921):
+1. **替你做(done-for-you)+ 被协调的常驻组织**:差异**不在 agent 多不多**(多开几个 OpenClaw 也能凑数),**在协调** —— 一个 always-on、Leads 互通、共享 backlog、跨项目复用、部门分工的**被协调组织**,对外像**一家公司在动**;而不是 N 个各自为战、要你自己 juggle 的助理。一个非技术 operator 更弄不出这份协调,也不该要求他去当人肉调度。
+2. **生态整合 / 供应商中立**:按任务难度配模型 + 成本、单一工具短板用别的补(CC 弱多模态 → 接 Antigravity)—— 非技术 operator 更不可能自己整合;Cowork 锁 Claude、Codex 锁 OpenAI,中立整合是第一方结构上不做的。
+3. **体验气质**:managed、可靠、像真人团队在干(有趣 + drama + 真实,voice 让它像真人)—— 一个非技术 operator 要的是「有支队在替我热闹地干活」,不是一堆要自己调的工具。
+**诚实总结**:对**非技术电商/social OPC operator**,我们赢的是「**他自己做不了 / 不该自己拼,我们替他把一整个公司的活在聊天里做掉**」。这够不够撑一个生意,**归 FLY-921 跟 Annie 拍**。详细 Value 见配套 **value-artifact.html**。
+
+---
+
+## 我们跟谁「像」/ 差异候选(诚实 · 不硬下结论)
+
+- **跟 Matrix + Paperclip 最像 —— 连组织骨架都撞**(都是「你指挥的分层 AI 公司」;三角色也对得上)。这个壳区分度不高 —— 但**别人在做不等于我们不能做**。
+- 跟 Devin/Factory 的 async 派活→出 PR 同构,但它们卖给工程师、我们瞄非技术小生意主。
+- 跟 Paperclip/Hermes/OpenHands 一样都还早、都要点技术才跑得动 —— 包括我们。
+- **跟 Claude Cowork 定位上最贴、最该警惕**(它也非技术 + done-for-you);跟 Codex app 的「一队 agent 覆盖软件全生命周期」编排重叠,但它面向开发者。**编排引擎层面我们不占优,详见 ⑥。**
+- → **真差异该落在「领域(建并养真软件产品)+ 常驻组织 + 手机 IM + 供应商中立 + done-for-you」的组合,但具体主打哪条、成不成立、薄不薄,归 FLY-911 跟 Annie 收敛。本文只把候选摆出来。**
+
+---
+
+## 开放问题(喂 FLY-911)
+
+1. ✅ **已定(Annie)**:目标客户 = 非技术小生意主。本文已按此重写。
+2. **主线差异化**:done-for-you / 真软件 / 结果证明 三条候选里,哪条当一句话定位主线?(我倾向:结果证明当锚、done-for-you 当切分 —— 但这是 911 跟 Annie 拍。)
+3. **反差 messaging**:「不是零人公司、是你做判断 AI 做工程」用不用当对外主线?
+4. **诚实边界怎么讲**:我们现在还没到「完全非技术能用」—— 对外要不要坦诚「正在把它做成 done-for-you」而不是假装已经是?(我倾向坦诚,和品类一起早,反而可信。)
+5. **面对 Cowork/Codex 这种大厂通用编排(尤其 Cowork = 非技术 done-for-you)**:我们押哪条组合当立身之本?(我验证下来:领域「建并养真软件产品」+ 常驻组织 + 手机 IM + 供应商中立,最能跟 Cowork 拉开;供应商中立现在「能讲」但不必「现在建全」。这条 911 拍。)

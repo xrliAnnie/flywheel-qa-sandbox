@@ -1778,3 +1778,97 @@ describe("FLY-534: resolveCanonicalProjectName (case-insensitive projectName)", 
 		expect(resolveCanonicalProjectName(colliding, "sub")).toBe("sub");
 	});
 });
+
+describe("leads[].voice per-agent voice config (FLY-546 A3)", () => {
+	const originalEnv = process.env.FLYWHEEL_PROJECTS;
+
+	afterEach(() => {
+		if (originalEnv === undefined) {
+			delete process.env.FLYWHEEL_PROJECTS;
+		} else {
+			process.env.FLYWHEEL_PROJECTS = originalEnv;
+		}
+	});
+
+	const baseLead = {
+		agentId: "eng-lead",
+		chatChannel: "456",
+		match: { labels: ["Engineering"] },
+	};
+
+	const withVoice = (voice: unknown) =>
+		JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [{ ...baseLead, voice }],
+			},
+		]);
+
+	it("loads a valid voice config verbatim", () => {
+		process.env.FLYWHEEL_PROJECTS = withVoice({
+			voiceId: "zh-CN-YunxiNeural",
+			rate: "-10%",
+		});
+		const projects = loadProjects();
+		expect(projects[0]!.leads[0]!.voice).toEqual({
+			voiceId: "zh-CN-YunxiNeural",
+			rate: "-10%",
+		});
+	});
+
+	it("loads voiceId + pitch without rate", () => {
+		process.env.FLYWHEEL_PROJECTS = withVoice({
+			voiceId: "zh-CN-XiaoyiNeural",
+			pitch: "+2Hz",
+		});
+		const projects = loadProjects();
+		expect(projects[0]!.leads[0]!.voice).toEqual({
+			voiceId: "zh-CN-XiaoyiNeural",
+			pitch: "+2Hz",
+		});
+	});
+
+	it("accepts a bare string voiceId (FLY-545 huddle form, VoiceRef parity)", () => {
+		process.env.FLYWHEEL_PROJECTS = withVoice("zh-CN-YunxiNeural");
+		const projects = loadProjects();
+		expect(projects[0]!.leads[0]!.voice).toBe("zh-CN-YunxiNeural");
+	});
+
+	it("throws on a voice that is neither string nor object", () => {
+		process.env.FLYWHEEL_PROJECTS = withVoice(42);
+		expect(() => loadProjects()).toThrow(/leads\[0\]\.voice/);
+		process.env.FLYWHEEL_PROJECTS = withVoice("");
+		expect(() => loadProjects()).toThrow(/leads\[0\]\.voice/);
+	});
+
+	it("throws on empty voiceId", () => {
+		process.env.FLYWHEEL_PROJECTS = withVoice({ voiceId: "" });
+		expect(() => loadProjects()).toThrow(/leads\[0\]\.voice\.voiceId/);
+	});
+
+	it("throws on missing voiceId", () => {
+		process.env.FLYWHEEL_PROJECTS = withVoice({ rate: "-10%" });
+		expect(() => loadProjects()).toThrow(/leads\[0\]\.voice\.voiceId/);
+	});
+
+	it("throws on malformed rate", () => {
+		process.env.FLYWHEEL_PROJECTS = withVoice({ voiceId: "v", rate: "10%" });
+		expect(() => loadProjects()).toThrow(/leads\[0\]\.voice\.rate/);
+	});
+
+	it("throws on malformed pitch", () => {
+		process.env.FLYWHEEL_PROJECTS = withVoice({ voiceId: "v", pitch: "2hz" });
+		expect(() => loadProjects()).toThrow(/leads\[0\]\.voice\.pitch/);
+	});
+
+	it("no voice field → load result deep-equals the pre-FLY-546 shape (reverse-compat)", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{ projectName: "test", projectRoot: "/tmp", leads: [baseLead] },
+		]);
+		const projects = loadProjects();
+		const lead = projects[0]!.leads[0]!;
+		expect("voice" in lead).toBe(false);
+		expect(lead).toEqual({ ...baseLead, canSpawnRunners: true });
+	});
+});

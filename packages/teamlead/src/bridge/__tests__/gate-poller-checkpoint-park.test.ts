@@ -15,9 +15,7 @@ vi.mock("flywheel-comm/wake", () => ({
 	}),
 }));
 vi.mock("flywheel-comm/db", () => ({
-	CommDB: class {
-		constructor(_path: string) {}
-	},
+	CommDB: class {},
 }));
 
 const OWNER = "123456789012345678";

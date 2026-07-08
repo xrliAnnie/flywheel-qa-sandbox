@@ -1615,6 +1615,53 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-546: events of one type across ALL executions — the voice
+	 * gate-binding endpoint reverse-looks-up a ship-gate message id against
+	 * every persisted `ship_gate_msg_binding` row.
+	 */
+	getEventsByType(eventType: string): SessionEvent[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM session_events WHERE event_type = ? ORDER BY id",
+		);
+		stmt.bind([eventType]);
+		const rows: SessionEvent[] = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				event_id: row.event_id as string,
+				execution_id: row.execution_id as string,
+				issue_id: row.issue_id as string,
+				project_name: row.project_name as string,
+				event_type: row.event_type as string,
+				severity: row.severity as string,
+				payload: row.payload ? JSON.parse(row.payload as string) : undefined,
+				source: row.source as string,
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-546: all live (non-missing) chat thread ids — main + phase tables.
+	 * The voice scope contract lists them as founder-facing channels.
+	 */
+	getAllChatThreadIds(): string[] {
+		const ids: string[] = [];
+		for (const table of ["chat_threads", "phase_chat_threads"]) {
+			const stmt = this.db.prepare(
+				`SELECT thread_id FROM ${table} WHERE discord_missing_at IS NULL`,
+			);
+			while (stmt.step()) {
+				const row = stmt.getAsObject() as Record<string, unknown>;
+				ids.push(row.thread_id as string);
+			}
+			stmt.free();
+		}
+		return ids;
+	}
+
+	/**
 	 * FLY-727: session_completed events in a UTC time window, carrying `id` + `ts`.
 	 * The daily digest queries a WIDE UTC window and does the exact Pacific-day
 	 * (+ DST) filtering per-event downstream. Read-only; ordered ASC by ts so a
@@ -2760,6 +2807,29 @@ export class StateStore {
 		this.save();
 	}
 
+	/**
+	 * FLY-945 Fix B: update ONLY the reviewed head of a session that is still
+	 * `awaiting_review` — the ship-gate rebind after a QA-evidence commit moved
+	 * the PR head forward (`git merge-base --is-ancestor` verified by the
+	 * caller). The `review_question_id` binding is intentionally untouched (the
+	 * gate question does not rotate on a rebind). The status guard is in the
+	 * WHERE clause so a concurrent approval flip (awaiting_review →
+	 * approved_to_ship) makes this a no-op instead of retargeting a decided
+	 * gate. Returns true iff the row was updated.
+	 */
+	setSessionPrHeadShaForRebind(
+		executionId: string,
+		prHeadSha: string,
+	): boolean {
+		this.db.run(
+			"UPDATE sessions SET pr_head_sha = ? WHERE execution_id = ? AND status = 'awaiting_review'",
+			[prHeadSha, executionId],
+		);
+		const updated = this.db.getRowsModified() > 0;
+		this.save();
+		return updated;
+	}
+
 	getSessionByIdentifier(identifier: string): Session | undefined {
 		const stmt = this.db.prepare(
 			"SELECT * FROM sessions WHERE issue_identifier = ? ORDER BY last_activity_at DESC LIMIT 1",
@@ -2930,6 +3000,57 @@ export class StateStore {
 		}
 		stmt.free();
 		return results;
+	}
+
+	/**
+	 * FLY-945 Fix D: parked (awaiting_review / approved_to_ship) sessions of a
+	 * project — path-1 candidates for the external-merge reconcile pass.
+	 */
+	listParkedSessionsForProject(projectName: string): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE project_name = ?
+			   AND status IN ('awaiting_review', 'approved_to_ship')
+			 ORDER BY last_activity_at ASC`,
+		);
+		stmt.bind([projectName]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-945 Fix D: recently-completed sessions of a project that carry a PR
+	 * clue — path-2 (completed-but-unfinalized) candidates. Bounded by
+	 * `sinceTs` (SQLite UTC "YYYY-MM-DD HH:MM:SS") so the sweep never digs
+	 * through old history.
+	 */
+	listCompletedSessionsWithPrSince(
+		projectName: string,
+		sinceTs: string,
+	): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE project_name = ?
+			   AND status = 'completed'
+			   AND last_activity_at >= ?
+			   AND (pr_number IS NOT NULL OR pr_head_sha IS NOT NULL)
+			 ORDER BY last_activity_at ASC`,
+		);
+		stmt.bind([projectName, sinceTs]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
 	}
 
 	getTerminalSessionsSince(sinceTs: string): Session[] {

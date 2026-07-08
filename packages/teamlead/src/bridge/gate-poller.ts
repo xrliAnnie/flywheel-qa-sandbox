@@ -184,6 +184,15 @@ export interface GatePollerConfig {
 	founderThreadRetryBudgetMs?: number;
 	/** Part B grace before auto-delivering a founder reply (default 10min). */
 	founderReplyDeliverGraceMs?: number;
+	/**
+	 * FLY-945 Fix A: grace for approve_to_ship gates ONLY (text + ✅-reaction
+	 * founder approvals). The 10min FLY-605 grace exists so the Lead can relay
+	 * first — but a ship gate's answer is founder-only (the Lead is FORBIDDEN
+	 * from relaying it), so the wait is pure dead time. Default 15s. Env
+	 * `FLYWHEEL_SHIP_GATE_GRACE_MS` overrides (set 600000 to restore the old
+	 * behavior — that IS the kill-switch). Non-ship checkpoints are untouched.
+	 */
+	shipGateGraceMs?: number;
 	/** Part B slow sub-cadence in poll ticks (default 20 ≈ 60s at 3s). */
 	founderReplyDeliverEveryNTicks?: number;
 	/** Part B thread-read cursor store (default in-memory). */
@@ -195,6 +204,13 @@ export interface GatePollerConfig {
 	 * approve_to_ship gate response. Absent → deliverer stays WAKE-only.
 	 */
 	tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
+
+	/**
+	 * FLY-945 Fix D: the external-merge convergence sweeper closure (built in
+	 * plugin.ts via createExternalMergeReconciler). Runs on the patrol cadence;
+	 * owns its own kill-switch + per-project gh budget. Absent → no sweep.
+	 */
+	externalMergeReconcile?: () => Promise<void>;
 
 	/**
 	 * FLY-799: the flag-gated founder ✅-reaction ship-approval callback (built in
@@ -678,6 +694,25 @@ export class GatePoller {
 				} catch (err) {
 					console.warn(
 						"[GatePoller] stale approved_to_ship reconcile error:",
+						err instanceof Error ? err.message : String(err),
+					);
+					this.maybeRecoverStore(err);
+				}
+			}
+
+			// FLY-945 Fix D: external-merge convergence sweeper on the patrol
+			// cadence (zero new timer). The closure (built in plugin.ts) owns its
+			// own kill-switch (FLYWHEEL_EXTERNAL_MERGE_RECONCILE=0) and gh budget;
+			// fully isolated — its errors never abort the poll loop.
+			if (
+				this.config.externalMergeReconcile &&
+				this.tickCount % this.patrolEveryNTicks() === 1
+			) {
+				try {
+					await this.config.externalMergeReconcile();
+				} catch (err) {
+					console.warn(
+						"[GatePoller] external-merge reconcile error:",
 						err instanceof Error ? err.message : String(err),
 					);
 					this.maybeRecoverStore(err);
@@ -2200,6 +2235,23 @@ export class GatePoller {
 		return this.config.founderReplyDeliverGraceMs ?? 10 * 60_000;
 	}
 
+	/** FLY-945 Fix A: ship-gate grace (env > config > 15s default). */
+	private shipGateGraceMs(): number {
+		const env = Number.parseInt(
+			process.env.FLYWHEEL_SHIP_GATE_GRACE_MS ?? "",
+			10,
+		);
+		if (Number.isFinite(env) && env >= 0) return env;
+		return this.config.shipGateGraceMs ?? 15_000;
+	}
+
+	/** FLY-945 Fix A: per-checkpoint founder-message grace. */
+	private checkpointGraceMsFor(checkpoint: string | null): number {
+		return checkpoint === "approve_to_ship"
+			? this.shipGateGraceMs()
+			: this.founderReplyDeliverGraceMs();
+	}
+
 	private founderReplyDeliverEveryNTicks(): number {
 		return (
 			this.config.founderReplyDeliverEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS
@@ -2236,14 +2288,21 @@ export class GatePoller {
 					continue; // CommDB not present yet
 				}
 
-				// Group past-grace pending questions by issue thread.
+				// Group pending questions by issue thread. FLY-945 Fix A: the old
+				// per-question "past 10min grace" pre-filter is REPLACED — every
+				// pending question joins its thread group (each carrying its own
+				// per-checkpoint grace), and a thread is scanned as soon as ANY of
+				// its questions has passed its own threshold. The deliverer matches
+				// founder messages against the FULL set (so a reply to a young
+				// question is never classified irrelevant and lost), while maturity
+				// only decides "process now vs pin the cursor and wait".
 				const byThread = new Map<
 					string,
 					{ ctx: FounderReplyThreadCtx; questions: PendingQuestionForThread[] }
 				>();
 				for (const q of pending) {
 					const createdMs = parseSqliteUtcMs(q.created_at);
-					if (createdMs === null || now - createdMs < graceMs) continue;
+					if (createdMs === null) continue;
 					const session = this.config.store.getSession(q.from_agent);
 					if (!session) continue;
 					// FLY-892 (converge): group founder replies by the single issue
@@ -2275,6 +2334,7 @@ export class GatePoller {
 						checkpoint: q.checkpoint,
 						executionId: q.from_agent,
 						createdAtMs: createdMs,
+						checkpointGraceMs: this.checkpointGraceMsFor(q.checkpoint),
 					});
 				}
 
@@ -2283,6 +2343,15 @@ export class GatePoller {
 					project.projectName,
 				);
 				for (const { ctx, questions } of byThread.values()) {
+					// Scan only threads where at least one question passed its own
+					// scan threshold (all-young thread → byte-compatible no-scan).
+					if (
+						!questions.some(
+							(q) => now - q.createdAtMs >= (q.checkpointGraceMs ?? graceMs),
+						)
+					) {
+						continue;
+					}
 					try {
 						await emitFounderReplyDeliveryForThread(ctx, questions, {
 							store: this.config.store,
@@ -2325,7 +2394,11 @@ export class GatePoller {
 		if (!this.config.chatThreadsEnabled) return;
 		const ownerUserId = this.config.discordOwnerUserId;
 		if (!isDiscordSnowflake(ownerUserId)) return;
-		const graceMs = this.founderReplyDeliverGraceMs();
+		// FLY-945 Fix A (Codex R1 #6): all gates here are approve_to_ship — use
+		// the ship-gate grace, not the 10min founder-reply grace, or a founder ✅
+		// still waits out the full 10min end-to-end (the 15s reaction-check
+		// interval below is only a per-question re-check throttle).
+		const graceMs = this.shipGateGraceMs();
 		const now = Date.now();
 		const fetchImpl = this.config.fetchImpl ?? fetch;
 

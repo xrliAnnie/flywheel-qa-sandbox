@@ -196,6 +196,66 @@ describe("expectedStatusFromMarker (event-route parity, Codex R2 #6)", () => {
 		).toBe("blocked");
 	});
 
+	// FLY-945 Fix C: the recovery lap — approved_to_ship + needs_review whose
+	// marker carries a NEW reviewQuestionId (≠ the row's current binding) maps
+	// to awaiting_review (event-route re-opens the review window on replay);
+	// the expectation copy MUST agree or the correctly-replayed marker gets
+	// quarantined and boot drain can false-fail the session.
+	it("FLY-945: approved_to_ship + needs_review + NEW marker questionId → awaiting_review", () => {
+		const marker = mk("needs_review", false) as ReturnType<typeof mk> & {
+			payload: Record<string, unknown>;
+		};
+		marker.payload.reviewQuestionId = "22222222-2222-2222-2222-222222222222";
+		expect(
+			expectedStatusFromMarker(
+				marker,
+				"approved_to_ship",
+				"11111111-1111-1111-1111-111111111111",
+			),
+		).toBe("awaiting_review");
+	});
+	it("FLY-945: SAME / malformed / missing marker questionId → 5a completed (fail-safe)", () => {
+		const same = mk("needs_review", false) as ReturnType<typeof mk> & {
+			payload: Record<string, unknown>;
+		};
+		same.payload.reviewQuestionId = "11111111-1111-1111-1111-111111111111";
+		expect(
+			expectedStatusFromMarker(
+				same,
+				"approved_to_ship",
+				"11111111-1111-1111-1111-111111111111",
+			),
+		).toBe("completed");
+		const malformed = mk("needs_review", false) as ReturnType<typeof mk> & {
+			payload: Record<string, unknown>;
+		};
+		malformed.payload.reviewQuestionId = "not a qid!!";
+		expect(
+			expectedStatusFromMarker(
+				malformed,
+				"approved_to_ship",
+				"11111111-1111-1111-1111-111111111111",
+			),
+		).toBe("completed");
+		// legacy call shape (no currentReviewQuestionId) + no marker qid → 5a
+		expect(
+			expectedStatusFromMarker(mk("needs_review", false), "approved_to_ship"),
+		).toBe("completed");
+	});
+	it("FLY-945: auto_approve NEVER takes the recovery lap (needs_review only)", () => {
+		const marker = mk("auto_approve", false) as ReturnType<typeof mk> & {
+			payload: Record<string, unknown>;
+		};
+		marker.payload.reviewQuestionId = "22222222-2222-2222-2222-222222222222";
+		expect(
+			expectedStatusFromMarker(
+				marker,
+				"approved_to_ship",
+				"11111111-1111-1111-1111-111111111111",
+			),
+		).toBe("completed");
+	});
+
 	it("undefined route + approved_to_ship → completed (natural completion)", () => {
 		expect(
 			expectedStatusFromMarker(mk(undefined, false), "approved_to_ship"),

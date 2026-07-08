@@ -1,0 +1,12 @@
+{
+	"name": "fly980-eleven-spike",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "node --test shim.test.mjs"
+	},
+	"dependencies": {
+		"@anthropic-ai/sdk": "^0.57.0",
+		"ws": "^8.18.0"
+	}
+}

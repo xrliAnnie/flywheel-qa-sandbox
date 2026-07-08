@@ -865,6 +865,32 @@ install_restart_guard_hook() {
     log "WARNING: flywheel-restart-guard hook install failed/skipped (non-fatal)"
   fi
 }
+
+# ── FLY-954: converge <state>/bin runtime scripts (anti-drift) ──────────────
+# Incident 2026-07-06: 12-byte stubs sat in ~/.flywheel/bin for 8h, then a
+# deploy kickstart took all 13 Leads down. Every Lead start now verifies
+# installed-copy == repo-source and repairs + alerts on drift. Single source
+# of truth: scripts/converge-flywheel-bin.sh (FLY-913 convergence pattern).
+# NOTE this mount heals bridge-wrapper/restart-services copies and day-to-day
+# drift only — a broken lead-wrapper cannot heal itself from here (this code
+# runs AFTER the wrapper already worked); the updater + pre-kickstart mounts
+# cover that case. Non-fatal: a Lead must still boot if convergence hiccups.
+converge_flywheel_bin() {
+  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
+    log "DRY-RUN: skipping flywheel-bin convergence"
+    return
+  fi
+  local converger="${FLYWHEEL_ROOT}/scripts/converge-flywheel-bin.sh"
+  if [ ! -f "$converger" ]; then
+    log "WARNING: converge-flywheel-bin.sh not found: $converger"
+    return
+  fi
+  if bash "$converger" >/dev/null 2>&1; then
+    log "flywheel-bin convergence OK"
+  else
+    log "WARNING: flywheel-bin convergence left unhealthy state (non-fatal; alert sent via lead-alert)"
+  fi
+}
 # FLY-231: companion skips installing the PostCompact bootstrap hook (it doesn't
 # want to (re)install the engineering bootstrap re-send). Note the hook is GLOBAL
 # in ~/.claude/settings.json and may already be installed by other Leads — the
@@ -898,6 +924,11 @@ if command -v jq >/dev/null 2>&1; then
 else
   log "WARNING: jq not found. Skipping flywheel-restart-guard PreToolUse hook install."
 fi
+
+# FLY-954: converge <state>/bin runtime scripts on every Lead start — global
+# machine invariant (installed copy == repo source), same rationale as the
+# restart guard above.
+converge_flywheel_bin
 
 # ── GEO-285: Early auto-compact + env exports ─────────────
 export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"

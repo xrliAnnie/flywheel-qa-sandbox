@@ -1,0 +1,5 @@
+node_modules/
+out/
+ref/*.mp3
+ref/*.pcm
+ref/*.wav

@@ -29,10 +29,21 @@ describe("extractGateMessageId", () => {
 	});
 });
 
-describe("bindingEventId — stable + immutable per question", () => {
-	it("is deterministic per questionId", () => {
-		expect(bindingEventId("Q-1")).toBe(bindingEventId("Q-1"));
-		expect(bindingEventId("Q-1")).not.toBe(bindingEventId("Q-2"));
+describe("bindingEventId — stable + immutable per (question, head) revision (FLY-945 Fix B)", () => {
+	const H1 = "a".repeat(40);
+	const H2 = "b".repeat(40);
+	it("is deterministic per (questionId, prHeadSha)", () => {
+		expect(bindingEventId("Q-1", H1)).toBe(bindingEventId("Q-1", H1));
+		expect(bindingEventId("Q-1", H1)).not.toBe(bindingEventId("Q-2", H1));
+	});
+	it("a NEW head for the same question is a NEW revision id (rebind anchor)", () => {
+		expect(bindingEventId("Q-1", H1)).not.toBe(bindingEventId("Q-1", H2));
+	});
+	it("carries the FULL 40-hex head, case-normalized (Codex R2 #4: an 8-char prefix is display-only)", () => {
+		expect(bindingEventId("Q-1", H1)).toContain(H1);
+		expect(bindingEventId("Q-1", H1.toUpperCase())).toBe(
+			bindingEventId("Q-1", H1),
+		);
 	});
 });
 

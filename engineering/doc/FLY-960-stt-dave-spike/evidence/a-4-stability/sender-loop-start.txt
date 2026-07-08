@@ -1,0 +1,6 @@
+sender loop @ 16:29:56Z (window start), captured through DAVE:
+第一句,把545的Bridge排上,明天先跑smoke test。
+第二句,这个PR的CI已经绿了,等any确认之后再ship。
+第三句,哈动模式的latency目标是首音800毫秒以内。
+第四句,如果decrypt失败,今晚就切到fallback方案。
+第五句,让TaiC把word tree建好,然后开始PDD。

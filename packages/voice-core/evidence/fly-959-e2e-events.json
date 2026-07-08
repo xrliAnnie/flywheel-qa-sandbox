@@ -1,0 +1,247 @@
+[
+	{
+		"atMs": 0,
+		"kind": "config",
+		"model": "gemini-3.1-flash-live-preview"
+	},
+	{
+		"atMs": 321,
+		"kind": "started"
+	},
+	{
+		"atMs": 5642,
+		"kind": "transcript",
+		"role": "user",
+		"text": "Hello, can you hear me? Please say yes if you can.",
+		"final": false
+	},
+	{
+		"atMs": 5645,
+		"kind": "transcript",
+		"role": "assistant",
+		"text": "Yes, I",
+		"final": false
+	},
+	{
+		"atMs": 5645,
+		"kind": "response-audio",
+		"bytes": 2
+	},
+	{
+		"atMs": 5679,
+		"kind": "phase-A",
+		"answered": true,
+		"answer": "Yes, I"
+	},
+	{
+		"atMs": 5686,
+		"kind": "response-audio",
+		"bytes": 10560
+	},
+	{
+		"atMs": 5711,
+		"kind": "response-audio",
+		"bytes": 11520
+	},
+	{
+		"atMs": 5716,
+		"kind": "response-audio",
+		"bytes": 1920
+	},
+	{
+		"atMs": 5750,
+		"kind": "transcript",
+		"role": "assistant",
+		"text": " can hear",
+		"final": false
+	},
+	{
+		"atMs": 5751,
+		"kind": "response-audio",
+		"bytes": 9600
+	},
+	{
+		"atMs": 5787,
+		"kind": "response-audio",
+		"bytes": 7680
+	},
+	{
+		"atMs": 5796,
+		"kind": "transcript",
+		"role": "assistant",
+		"text": " you.",
+		"final": false
+	},
+	{
+		"atMs": 5796,
+		"kind": "response-audio",
+		"bytes": 7680
+	},
+	{
+		"atMs": 5829,
+		"kind": "response-audio",
+		"bytes": 7680
+	},
+	{
+		"atMs": 5829,
+		"kind": "response-audio",
+		"bytes": 1920
+	},
+	{
+		"atMs": 5857,
+		"kind": "transcript",
+		"role": "assistant",
+		"text": " How can",
+		"final": false
+	},
+	{
+		"atMs": 5857,
+		"kind": "response-audio",
+		"bytes": 7680
+	},
+	{
+		"atMs": 5890,
+		"kind": "response-audio",
+		"bytes": 7680
+	},
+	{
+		"atMs": 5912,
+		"kind": "response-audio",
+		"bytes": 7680
+	},
+	{
+		"atMs": 5962,
+		"kind": "transcript",
+		"role": "assistant",
+		"text": " I help",
+		"final": false
+	},
+	{
+		"atMs": 5962,
+		"kind": "response-audio",
+		"bytes": 11520
+	},
+	{
+		"atMs": 5963,
+		"kind": "response-audio",
+		"bytes": 1920
+	},
+	{
+		"atMs": 6096,
+		"kind": "transcript",
+		"role": "assistant",
+		"text": " you?",
+		"final": false
+	},
+	{
+		"atMs": 6096,
+		"kind": "response-audio",
+		"bytes": 17280
+	},
+	{
+		"atMs": 6140,
+		"kind": "response-audio",
+		"bytes": 5760
+	},
+	{
+		"atMs": 540549,
+		"kind": "session-expiring",
+		"inSec": 50
+	},
+	{
+		"atMs": 540740,
+		"kind": "rotator",
+		"line": "[session resumed]"
+	},
+	{
+		"atMs": 540865,
+		"kind": "phase-rotation",
+		"resumed": true
+	},
+	{
+		"atMs": 545890,
+		"kind": "transcript",
+		"role": "user",
+		"text": "Hey, can you briefly tell me what Fly 543 is about?",
+		"final": false
+	},
+	{
+		"atMs": 545893,
+		"kind": "tool-call",
+		"callId": "fc_6478266169522919146",
+		"name": "ask_lead"
+	},
+	{
+		"atMs": 566108,
+		"kind": "transcript",
+		"role": "assistant",
+		"text": "I don't",
+		"final": false
+	},
+	{
+		"atMs": 566108,
+		"kind": "response-audio",
+		"bytes": 2
+	},
+	{
+		"atMs": 566115,
+		"kind": "response-audio",
+		"bytes": 3360
+	},
+	{
+		"atMs": 566249,
+		"kind": "response-audio",
+		"bytes": 9600
+	},
+	{
+		"atMs": 566308,
+		"kind": "response-audio",
+		"bytes": 7680
+	},
+	{
+		"atMs": 566374,
+		"kind": "response-audio",
+		"bytes": 9600
+	},
+	{
+		"atMs": 566377,
+		"kind": "response-audio",
+		"bytes": 5760
+	},
+	{
+		"atMs": 566402,
+		"kind": "transcript",
+		"role": "assistant",
+		"text": " have",
+		"final": false
+	},
+	{
+		"atMs": 566402,
+		"kind": "response-audio",
+		"bytes": 9600
+	},
+	{
+		"atMs": 566448,
+		"kind": "transcript",
+		"role": "assistant",
+		"text": " any information",
+		"final": false
+	},
+	{
+		"atMs": 566448,
+		"kind": "response-audio",
+		"bytes": 11520
+	},
+	{
+		"atMs": 566468,
+		"kind": "response-audio",
+		"bytes": 7680
+	},
+	{
+		"atMs": 566509,
+		"kind": "phase-B",
+		"toolCalled": true,
+		"answered": true,
+		"answer": "I don't have any information"
+	}
+]

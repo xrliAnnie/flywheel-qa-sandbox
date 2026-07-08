@@ -894,7 +894,20 @@ export function createEventRouter(
 				// evidence-gap marker; post-ship finalization is suppressed for it
 				// (isPostApproveShipComplete now requires merged landing) — see
 				// markEvidenceGapCompletion / FLY-210 for the later cleanup.
+				//
+				// FLY-945 Fix C: EXCEPT when the completion carries a NEW review
+				// question binding (see the needs_review branch) — that is a
+				// deliberate review re-request after an expired approval, mapped to
+				// awaiting_review via the new approved_to_ship→awaiting_review edge.
 				let evidenceGap = false;
+				// FLY-945 Fix C: the completion's reviewQuestionId, validated at the
+				// boundary (hoisted above the status mapping — the needs_review
+				// branch needs it; setReviewBinding below reuses it).
+				const reviewQidRaw = asString(payload.reviewQuestionId)?.trim();
+				const reviewQuestionId =
+					reviewQidRaw && /^[0-9a-fA-F-]{8,64}$/.test(reviewQidRaw)
+						? reviewQidRaw
+						: undefined;
 				// FLY-869 B: ship-eligibility gate computed BEFORE any status mutation
 				// (design R2 HIGH-1). SISTER computation to DirectEventSink.emitCompleted —
 				// both sinks MUST agree. A merged landing that is NOT ship-eligible is
@@ -969,8 +982,23 @@ export function createEventRouter(
 						// FLY-869 B: merged → completed ONLY when ship-eligible.
 						status = erShipEligible ? "completed" : erParkUnapprovedMerge();
 					} else if (isPostApproveShip) {
-						status = "completed";
-						evidenceGap = true;
+						// FLY-945 Fix C: an approved_to_ship session re-requesting
+						// review with a NEW question binding (≠ its current one) is a
+						// deliberate recovery lap (approval expired on a head move) —
+						// back to awaiting_review; writeReviewBinding below rebinds
+						// question + pr_head via the standard needs_review path.
+						// Same/missing questionId → FLY-208 5a evidence-gap completion
+						// (a re-emission or a binding-less legacy completion, not a
+						// re-review). Sister branch: DirectEventSink + reconciler.
+						if (
+							reviewQuestionId &&
+							reviewQuestionId !== existingSession?.review_question_id
+						) {
+							status = "awaiting_review";
+						} else {
+							status = "completed";
+							evidenceGap = true;
+						}
 					} else {
 						status = "awaiting_review";
 					}
@@ -1061,11 +1089,7 @@ export function createEventRouter(
 					prHeadShaRaw && /^[0-9a-f]{40}$/.test(prHeadShaRaw)
 						? prHeadShaRaw
 						: undefined;
-				const reviewQidRaw = asString(payload.reviewQuestionId)?.trim();
-				const reviewQuestionId =
-					reviewQidRaw && /^[0-9a-fA-F-]{8,64}$/.test(reviewQidRaw)
-						? reviewQidRaw
-						: undefined;
+				// (reviewQuestionId validated above the status mapping — FLY-945.)
 				const writeReviewBinding = (): void => {
 					if (status !== "awaiting_review") return;
 					store.setReviewBinding(event.execution_id, {

@@ -65,4 +65,40 @@ describe("gate-message-binding store", () => {
 	it("read is null when there is no binding", () => {
 		expect(readCurrentGateMessageBinding(store, "E-1", "Q-1", HEAD)).toBeNull();
 	});
+
+	// ── FLY-945 Fix B: revision semantics — one write-once row PER (question, head) ──
+
+	it("a NEW head for the same question creates a NEW revision row (rebind anchor)", () => {
+		const NEW_HEAD = "b".repeat(40);
+		expect(writeGateMessageBinding(store, binding(), "proj")).toBe(true);
+		expect(
+			writeGateMessageBinding(
+				store,
+				binding({ prHeadSha: NEW_HEAD, gateMessageId: "GATE-REBOUND" }),
+				"proj",
+			),
+		).toBe(true); // NOT swallowed by the old head's UNIQUE row
+		// current head resolves the new anchor; the old head row remains readable
+		expect(
+			readCurrentGateMessageBinding(store, "E-1", "Q-1", NEW_HEAD)
+				?.gateMessageId,
+		).toBe("GATE-REBOUND");
+		expect(
+			readCurrentGateMessageBinding(store, "E-1", "Q-1", HEAD)?.gateMessageId,
+		).toBe("GATE-1");
+	});
+
+	it("same (question, head) twice stays idempotent after the revision change", () => {
+		expect(writeGateMessageBinding(store, binding(), "proj")).toBe(true);
+		expect(
+			writeGateMessageBinding(
+				store,
+				binding({ gateMessageId: "GATE-2" }),
+				"proj",
+			),
+		).toBe(false);
+		expect(
+			readCurrentGateMessageBinding(store, "E-1", "Q-1", HEAD)?.gateMessageId,
+		).toBe("GATE-1");
+	});
 });

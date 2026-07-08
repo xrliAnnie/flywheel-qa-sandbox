@@ -327,6 +327,45 @@ export class AutoQaEffects implements AutoQaSideEffects {
 		});
 	}
 
+	/**
+	 * FLY-945 Fix B: the ship-gate rebind follow-up. Posted with the LEAD bot
+	 * (the same identity that posts gate messages — the founder's ✅ target),
+	 * NOT the announcer broadcast token. Returns the created message id +
+	 * thread id so the coordinator anchors the new `(question, head)` binding
+	 * on it; `{ok:false}` on any miss (no thread / post failure) so the
+	 * coordinator records the durable retry marker instead of a bad anchor.
+	 */
+	async notifyShipGateRebound(args: {
+		session: Session;
+		oldSha: string;
+		newSha: string;
+	}): Promise<{ ok: boolean; messageId?: string; threadId?: string }> {
+		const t = this.resolveThread(args.session);
+		if (!t) {
+			console.warn(
+				`[auto-qa-effects] no chat thread for ${args.session.issue_id} — ship-gate rebind follow-up skipped`,
+			);
+			return { ok: false };
+		}
+		const text =
+			`⚠️ gate 更新:PR head \`${args.oldSha.slice(0, 8)}\` → \`${args.newSha.slice(0, 8)}\`` +
+			"(QA 证据 commit,QA PASS)。你的批准将绑定新 head——在这条消息上 ✅ 或直接回复批准即可。";
+		const res = await postDiscordMessageToChannel(
+			t.threadId,
+			text,
+			t.botToken,
+			{},
+			this.deps.fetchImpl ?? fetch,
+		);
+		if (!res.ok || res.messageIds.length === 0) {
+			console.warn(
+				`[auto-qa-effects] ship-gate rebind follow-up post failed for ${args.session.issue_id}: ${res.ok ? "no message id" : res.error}`,
+			);
+			return { ok: false };
+		}
+		return { ok: true, messageId: res.messageIds[0], threadId: t.threadId };
+	}
+
 	async feedbackWakeMain(args: {
 		session: Session;
 		summary: string;

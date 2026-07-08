@@ -148,6 +148,101 @@ describe("gate-response-router (Surface B)", () => {
 		db.close();
 	});
 
+	// ── FLY-945 Fix E write-side attribution matrix (Codex R1 #2 / R2 #2) ──
+
+	it("FLY-945: ENFORCE allow → response attributed 'bridge-founder-consent' (verify-approval trusted set)", async () => {
+		const qid = seedQuestion("approve_to_ship");
+		mkServer(fakeEvaluator("allow", "enforce"));
+		await request("POST", "/api/founder-consent/runner-gate-response", {
+			questionId: qid,
+			leadId: "lead-x",
+			answer: JSON.stringify({ approved: true }),
+			executionId: "exec-1",
+		});
+		const db = new CommDB(commDbPath, false);
+		expect(db.getResponse(qid)?.from_agent).toBe("bridge-founder-consent");
+		db.close();
+	});
+
+	it("FLY-945: ENFORCE bypass → also 'bridge-founder-consent'", async () => {
+		const qid = seedQuestion("approve_to_ship");
+		mkServer(fakeEvaluator("bypass", "enforce"));
+		await request("POST", "/api/founder-consent/runner-gate-response", {
+			questionId: qid,
+			leadId: "lead-x",
+			answer: JSON.stringify({ approved: true }),
+			executionId: "exec-1",
+		});
+		const db = new CommDB(commDbPath, false);
+		expect(db.getResponse(qid)?.from_agent).toBe("bridge-founder-consent");
+		db.close();
+	});
+
+	it("🔴 FLY-945: audit_only + evaluator DENY still writes — but attributed to the LEAD (read side then refuses)", async () => {
+		// audit_only allows EVERY write, even denied ones. If this write carried
+		// the trusted attribution, audit_only+deny would become a verify-passable
+		// approval and the Lead self-approval door would re-open (Codex R2 #2).
+		const qid = seedQuestion("approve_to_ship");
+		mkServer(fakeEvaluator("deny", "audit_only"));
+		const res = await request(
+			"POST",
+			"/api/founder-consent/runner-gate-response",
+			{
+				questionId: qid,
+				leadId: "lead-x",
+				answer: JSON.stringify({ approved: true }),
+				executionId: "exec-1",
+			},
+		);
+		expect(res.status).toBe(200);
+		const db = new CommDB(commDbPath, false);
+		expect(db.getResponse(qid)?.from_agent).toBe("lead-x");
+		db.close();
+	});
+
+	it("FLY-945: audit_only + evaluator ALLOW also keeps the LEAD attribution", async () => {
+		const qid = seedQuestion("approve_to_ship");
+		mkServer(fakeEvaluator("allow", "audit_only"));
+		await request("POST", "/api/founder-consent/runner-gate-response", {
+			questionId: qid,
+			leadId: "lead-x",
+			answer: JSON.stringify({ approved: true }),
+			executionId: "exec-1",
+		});
+		const db = new CommDB(commDbPath, false);
+		expect(db.getResponse(qid)?.from_agent).toBe("lead-x");
+		db.close();
+	});
+
+	it("🔴 FLY-945 spoof guard (Codex code R1 HIGH): reserved leadId (bridge / bridge-founder-consent / founder snowflake) → 400, nothing written", async () => {
+		for (const forged of [
+			"bridge",
+			"bridge-founder-consent",
+			"123456789012345678",
+		]) {
+			const qid = seedQuestion("approve_to_ship");
+			mkServer(fakeEvaluator("allow", "enforce"));
+			const res = await request(
+				"POST",
+				"/api/founder-consent/runner-gate-response",
+				{
+					questionId: qid,
+					leadId: forged,
+					answer: JSON.stringify({ approved: true }),
+					executionId: "exec-1",
+				},
+			);
+			expect(res.status).toBe(400);
+			expect((res.body as { error?: string }).error).toBe(
+				"reserved_attribution",
+			);
+			const db = new CommDB(commDbPath, false);
+			expect(db.getResponse(qid)).toBeUndefined();
+			db.close();
+			server.close();
+		}
+	});
+
 	it("rejects caller-supplied dbPath (security)", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("allow"));
