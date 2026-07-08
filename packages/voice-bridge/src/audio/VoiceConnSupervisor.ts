@@ -134,7 +134,11 @@ export function superviseVoiceConnection(
 			loud("connection destroyed");
 			return;
 		}
-		if (to === "disconnected") {
+		// ANY other state (disconnected, but also signalling/connecting — the
+		// @discordjs/voice self-reconnect path can stall there, Codex R15) gets
+		// a settle check. Only arm when none is pending: rapid flapping between
+		// non-ready states must not keep resetting (starving) the check.
+		if (!timer) {
 			armSettleCheck();
 		}
 	});

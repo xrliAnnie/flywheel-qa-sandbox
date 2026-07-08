@@ -171,6 +171,28 @@ describe("FLY-967 — superviseVoiceConnection", () => {
 		expect(lines.some((l) => l.includes("ERROR: boom"))).toBe(true);
 	});
 
+	it("stalling in signalling/connecting is supervised too — rejoin then fatal, never a silent stall (Codex R15)", () => {
+		const { h, t, fatals } = supervise({ maxRejoins: 2 });
+		// @discordjs/voice's own reconnect path: ready -> signalling, then stuck.
+		h.emitState("ready", "signalling");
+		expect(t.pendingCount()).toBe(1); // settle armed for the non-ready state
+		t.fire(); // still signalling → rejoin 1
+		t.fire(); // rejoin 2
+		t.fire(); // exhausted → fatal
+		expect(h.rejoinCalls).toHaveLength(2);
+		expect(fatals).toHaveLength(1);
+	});
+
+	it("flapping between non-ready states never starves the settle check (single pending timer)", () => {
+		const { h, t } = supervise();
+		h.emitState("ready", "disconnected");
+		h.emitState("disconnected", "signalling");
+		h.emitState("signalling", "connecting");
+		expect(t.pendingCount()).toBe(1); // re-arms do not stack nor reset-starve
+		t.fire(); // still connecting → rejoin fires despite the flapping
+		expect(h.rejoinCalls).toHaveLength(1);
+	});
+
 	it("dispose unsubscribes and cancels any pending settle work", () => {
 		const { h, t, dispose } = supervise();
 		h.emitState("ready", "disconnected");
