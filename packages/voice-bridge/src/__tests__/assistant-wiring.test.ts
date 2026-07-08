@@ -256,7 +256,8 @@ describe("Codex R3 regressions", () => {
 		const bound: Record<string, ((...a: unknown[]) => void)[]> = {};
 		const fakeSession = {
 			on: (event: string, h: (...a: unknown[]) => void) => {
-				(bound[event] ??= []).push(h);
+				if (!bound[event]) bound[event] = [];
+				bound[event].push(h);
 				return () => {};
 			},
 		};
