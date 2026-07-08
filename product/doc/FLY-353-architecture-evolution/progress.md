@@ -1,13 +1,13 @@
 ---
 issue: FLY-353
 phase: design
-phaseCursor: 2/8
-updated: 2026-07-08T18:30:55.581Z
-nextStep: open BRAINSTORM GATE
+phaseCursor: 3/8
+updated: 2026-07-08T18:39:50.088Z
+nextStep: write research.md (A deep-dive + B benchmark + C reference)
 chunks: []
 pointers: {}
 ---
 
 # FLY-353 progress
-**phase**: design (2/8)
-**next**: open BRAINSTORM GATE
+**phase**: design (3/8)
+**next**: write research.md (A deep-dive + B benchmark + C reference)
