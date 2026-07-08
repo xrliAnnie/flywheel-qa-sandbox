@@ -1,13 +1,13 @@
 ---
 issue: FLY-1001
-phase: design
-phaseCursor: 1/5
-updated: 2026-07-08T07:03:40.599Z
-nextStep: 过 brainstorm gate → 写 research.md
+phase: implement
+phaseCursor: 4/5
+updated: 2026-07-08T07:22:02.945Z
+nextStep: commit → push → PR → DONE 报 Honey Lemon → approve gate
 chunks: []
 pointers: {}
 ---
 
 # FLY-1001 progress
-**phase**: design (1/5)
-**next**: 过 brainstorm gate → 写 research.md
+**phase**: implement (4/5)
+**next**: commit → push → PR → DONE 报 Honey Lemon → approve gate
