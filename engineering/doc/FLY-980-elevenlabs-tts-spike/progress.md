@@ -1,16 +1,15 @@
 ---
 issue: FLY-980
 phase: implement
-phaseCursor: 4/9
-updated: 2026-07-08T04:23:51.719Z
-nextStep: "PARKED awaiting ELEVENLABS_API_KEY in ~/.flywheel/.env → on wake:
-  pnpm --filter flywheel-voice-core build; cd engineering/spike/FLY-980-eleven;
-  node usage.mjs before-all; start shim (FLY980_BRAIN=echo) + cloudflared
-  tunnel; node create-agent.mjs <tunnel-url> <token>; then S4 ladder per plan"
+phaseCursor: 5/9
+updated: 2026-07-08T04:32:43.598Z
+nextStep: PARKED awaiting ELEVENLABS_API_KEY; on wake → S3 (usage baseline, shim
+  FLY980_BRAIN=echo + cloudflared, create-agent) then S4 ladder (agent default
+  model=sonnet per V4 local data)
 chunks: []
 pointers: {}
 ---
 
 # FLY-980 progress
-**phase**: implement (4/9)
-**next**: PARKED awaiting ELEVENLABS_API_KEY in ~/.flywheel/.env → on wake: pnpm --filter flywheel-voice-core build; cd engineering/spike/FLY-980-eleven; node usage.mjs before-all; start shim (FLY980_BRAIN=echo) + cloudflared tunnel; node create-agent.mjs <tunnel-url> <token>; then S4 ladder per plan
+**phase**: implement (5/9)
+**next**: PARKED awaiting ELEVENLABS_API_KEY; on wake → S3 (usage baseline, shim FLY980_BRAIN=echo + cloudflared, create-agent) then S4 ladder (agent default model=sonnet per V4 local data)
