@@ -44,7 +44,32 @@ staged hold elapsed — shutting down
   「简报真出」的现场体感 → A/B 与 545(B)对比定方向。这一段按 Tadashi 裁决等 Annie 点 bot
   URL + 给 VC 再跑,是 founder 的最终验收,QA 无法替她做。
 
+## Final verdict run(2026-07-07 22:47 PT,Annie 批 General VC 后,Tadashi 指令 d7e50390)
+
+前置(Discord REST 真查):guild `1485787271192907816` 唯一语音频道 **General =
+`1485787273193853170`**;pool-06(`1523232391349403850`)在 guild ✅;orchestrator
+(flywheel-pool-05)+ note-taker 在 guild ✅。
+
+真机跑(exit 0,隔离 Bridge 9877):
+```
+bots online: orchestrator, note-taker
+Note-taker resident in VC 1485787273193853170
+/gemini registered on guild 1485787271192907816
+autostart QA seam armed (topic: 967 final QA — 起一轮+简报)
+[gemini-command] MOVE_MEMBERS unavailable — Join button is the path in
+```
+
+- **起一轮** ✅:autostart→command.handle→真建 Linear issue **FLY-992**(已 QA 收尾 Canceled)。
+- **会议简报真出** ✅(**关键新证据**):清空缓存后 fresh compose —— `voice-briefing.cache.json`
+  `generatedAt 2026-07-08T05:47:46.785Z`,从**真 FLY/Flywheel board**(经隔离 Bridge→真
+  Linear)拉到 **33 条 board issue**(FLY-545/FLY-793/FLY-927… In Progress 分组)+ **15 条近
+  14 天决策**(truncated=true,FLY-990/FLY-546/FLY-977/FLY-887…),4 段模板拼装完成,作
+  systemPreamble 注入 Gemini 连接(注入后模型准确引用已由 S-A1 evidence 证)。docs=0(staged
+  config docs[] 为空,预期)。→ **简报不是空壳,是真板子内容。**
+
 ## 结论
 
-round-1 FAIL 的 B1 在真机上验证已修:daemon 真的注册 `/gemini` 并把 autostart 驱动到真 Linear
-建单。「起一轮」的 round-opening 链真机跑通;live 全双工对话的最终体感验收归 Annie(A8)。
+FLY-967 最终真机 verdict = **PASS**(code-face + machine-side staged 双过)。round-1 FAIL 的
+B1 在真机验证已修:daemon 真注册 `/gemini` 并把 autostart 驱动到真 Linear 建单;**会议简报从
+真板子 fresh 拼出并注入**(起一轮 + 简报真出 双达标)。唯一未覆盖 = live 全双工语音对话的现场
+体感 + A/B 与 545(B)对比定方向 = **Annie A8,部署后她真开一轮**(Tadashi 裁决,QA 无法替她做)。
