@@ -233,3 +233,18 @@ graph TD
 - **① DAG(讲清)**:① 她的理解**对** —— Session=Design→Impl→QA 是一种 DAG。② homerail 的 DAG **同理念(节点按依赖流转)、不同粒度**:我们=任务级(issue 三段式 + issue 间 dag-resolver 谁挡谁);homerail=活内部级(一个活拆多 agent 步骤 + inject/fork/profile 跑中能力,我们没有)。③ **FLY-353** = 把这 DAG 理念系统化成主动编排引擎(CoS 分诊 + 自动派 + 每类任务一套 DAG 模板 + inject/fork/profile)—— Annie 在 1004 悟到的"Session 就是 DAG + per-category 模板"正是 353 要落的。HTML v5 配了"我们 vs homerail DAG 粒度"对比图。
 - **eng 借鉴点各归其位(Lead 路由)**:DAG 运行时 → **FLY-353**;语音双 TTS + ASR 主备 → **FLY-906 round-2 backlog**(不改现有 PRD);Docker Worker → **FLY-1005**(多机系统 PRD,接沙箱 FLY-346);经验图谱自动抽 lesson → **FLY-347**(出小应用 HTML);生成式 UI = **not-now**;凭据加密对比清楚(沙箱/多机时学,FLY-245 broker 已类似)。
 - **收敛**:homerail 研究到此收敛。最大抓手 = "Session 就是 DAG" + per-category 模板(→ 353)。定位:borrow eng、别 adopt positioning;两战略点当 FLY-911 外部信号。工程点折不折进 911 = Annie/911 拍。
+
+---
+
+## 最终结论(收尾版 · Annie v5 co-eval 后 · 待她签字)
+
+**homerail = 借鉴工程,不 adopt 定位(borrow engineering · don't adopt positioning)。**
+
+- **借鉴的工程点(4 块,各归各家)**:DAG 运行时(inject/fork/profile)→ **FLY-353**;语音(双通道 + ASR 主备批量转写降级)→ **FLY-906 backlog**;Docker Worker(容器沙箱 + 凭据加密 + mount 白名单)→ **FLY-1005**(接沙箱 FLY-346);经验图谱(自动从 run 抽结构化教训)→ **FLY-347**;生成式 UI = **not-now**(commodity,Claude Code 已带)。
+- **不 adopt 它的定位**:它单人跑自己 NAS、明确不做软件;跟我们非技术 founder 手机指挥建软件不是一个赛道。
+- **折进 FLY-911 = 只当两条外部信号,不改 911 定位主体**:
+  - 信号 ①:它主动让出软件赛道(说软件最难判断)→ 印证我们"给非技术 founder 建软件"是块空地。
+  - 信号 ②:它 vendor-neutral、不自造 harness → 印证我们 executor-backend 方向对。
+  - 工程点不塞进定位叙事;各归各家(353/906/1005/347)。
+
+**收尾版 HTML** 已发 FLY-1004 thread 给 Annie 签字。她 OK → docs 入库(ship 走 verify→codex→报 Lead→Tadashi executor-merge,不自 :cool:)。
