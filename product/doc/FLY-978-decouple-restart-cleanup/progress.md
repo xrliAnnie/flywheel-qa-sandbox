@@ -2,12 +2,13 @@
 issue: FLY-978
 phase: design
 phaseCursor: 4/8
-updated: 2026-07-07T23:47:42.766Z
-nextStep: Round-1 brainstorm gate fired; await Annie on block-1 (decouple cascade)
+updated: 2026-07-08T00:05:52.474Z
+nextStep: "PARKED: Round-1 confirmed by Lead + relayed to Annie; awaiting
+  Annie's decision on block-1 direction (有定见/发挥)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-978 progress
 **phase**: design (4/8)
-**next**: Round-1 brainstorm gate fired; await Annie on block-1 (decouple cascade)
+**next**: PARKED: Round-1 confirmed by Lead + relayed to Annie; awaiting Annie's decision on block-1 direction (有定见/发挥)
