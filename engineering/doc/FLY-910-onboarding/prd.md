@@ -11,6 +11,12 @@ Issue: FLY-910 (https://linear.app/geoforge3d/issue/FLY-910/非工程快速-onbo
 > 1. **agent CLI 默认 = Claude Code、可切 Codex**(open-q1 定了;step0 vendor-agnostic 地基支持切换)。
 > 2. **改名 + reframe**:「Onboarding Buddy」→ **「Buddy」**(去 onboarding 前缀)。Buddy 不只 onboarding 时在,是一个**常驻的用户面自助助手**(有问题帮修、想开新 team 帮开、日常自助)。**但守 scope:本 PRD 的 MVP 仍 = onboarding(step 0–8);常驻 = 愿景 / phase-2**(见 §6.5),**不塞进 MVP build**。
 > 3. 新增 §6.5 愿景+分期 · §6.6 边界(Buddy vs FLY-915/942 infra 告警 bot)。
+>
+> ## 🆕 v3 改(Codex design review R1 fold,2026-07-08)
+> Codex 确认**方向可建、MVP scope 正确**,但抓出 PRD 把几项**还没闭合的底座能力写成了已可用契约**。8 条全采纳,核心是**把「MVP-minimum vs 目标」诚实分层 + 底座前置说清 + build 依赖重排**:
+> - 新增 **§4.5 Supersedes/Final decisions**(锁定决策覆盖旧文档);
+> - 新增 **§6.7 MVP 可建性收敛**(macOS 安置成熟度 / Linear·GitHub OAuth-vs-token / Discord 频道-vs-全结构 / agent CLI provider seam / state seam 统一 / 首个产出 vertical —— 逐条 MVP-minimum·目标·底座前置·决策点);
+> - 重排 **§12 build issues**(FLY-648 closeout 前置 + 依赖顺序 + 每个真验收)。
 
 ---
 
@@ -45,6 +51,18 @@ Issue: FLY-910 (https://linear.app/geoforge3d/issue/FLY-910/非工程快速-onbo
 | 收费 | 不做,免费全试(创始人自用起步) | license-key 按 Team 等(待竞品分析) |
 | done-for-you | 部分(引导 + 自动) | 完整兑现 |
 
+## 4.5 Supersedes / Final decisions(本 PRD 为准,覆盖旧文档 · Codex R1#7)
+> 上游设计文档留有旧决定(如「砍 GitHub」「agent CLI 默认待定」「Buddy 名待定」),与本 PRD v2/v3 锁定冲突。**以本表为准**;eng 拆 issue 只认本表。
+
+| 决策 | 最终(本 PRD) | 覆盖的旧说法 / 位置 |
+|---|---|---|
+| GitHub | **接**(基础工具之一,OAuth/安全 token 见 §6.7)| 「砍 GitHub、仓留本地」(provisioning-automation-boundary.md · onboarding-flow-detailed.md 旧段) |
+| agent CLI 默认 | **默认 Claude Code、可切 Codex**(vendor-agnostic seam,§6.7)| 「默认待定 / 让用户选」(onboarding-buddy-spec.md 旧「仍开放」) |
+| 名称 | **Buddy**(常驻用户面自助;MVP=onboarding)| 「Onboarding Buddy」(全部旧文档) |
+| Discord 自动建 | MVP-minimum=**频道 + bot online/post/delete probe**;roles/webhooks/guild_id 预选 = **目标/BI-3 扩展**(§6.7)| 「bot 自动建全套结构(频道/角色/webhook)」当已可用(§7/§8-A 旧措辞)|
+| Linear/GitHub 授权 | **目标=OAuth 不贴 token**;**MVP 可 fallback 安全隐藏 token**(现状底座已有)= BI-3 决策点(§6.7)| 「一次 OAuth、不贴 token」当已建 |
+| macOS 自动安置 | **MVP-minimum 可为 guided/manual fallback**;全自动 = FLY-648 closeout 前置(§6.7)| 「step7 全自动」当已可用 |
+
 ## 5. 体验标准(非技术视角红线 · 全程铁律)
 
 1. **绝不露工程黑话**:Lead/Runner/Department/manifest/launchd/Bridge/projects.json/repo/token 一律不对客户露。对客户只说:**向导(Buddy)/ 你的 Team(里有 Captain + Crew)/ 后台清单 / 安置**。
@@ -58,7 +76,7 @@ Issue: FLY-910 (https://linear.app/geoforge3d/issue/FLY-910/非工程快速-onbo
 - **是什么**:一个**跑在 agent CLI 上**的自助对话 agent。用户跑完命令、装好 agent CLI 后面对的就是它。
 - **persona**:耐心、热情、**像同事**(参照 Metric 那种成熟自助引导 agent)。先给「有搭档陪我」的感觉,再谈正事。**绝不端着。**
 - **operating loop(每步都跑)**:说人话(warm,一次一件)→ 要用户做的给到「点这→点这→贴回来」级 → 能自动的后台悄悄做 → 当场校验 → 成则落 state 进下一步 / 不成给具体报错+恢复 → 卡住转人工。
-- **状态 + 续传**:每步写 `~/.flywheel-onboarding/state.json`(cursor + 已完成步 + 非敏感 config;**绝不存 secret**);中断重跑从 cursor 续。
+- **状态 + 续传**:每步把 onboarding cursor 写进**与 FLY-648 setup journal 共用/桥接的同一个 state schema**(cursor + 已完成步 + 非敏感证据;**绝不存 secret**;确切路径/schema 由 BI-2 定,不另起漂移的第二 state 根,§6.7);中断重跑从 cursor 续。
 - **决策引擎(自适应核心)**:① 用户描述 → Team 结构(从描述长出、不预设行业)· ② 「第一件事」→ 推断接哪些业务系统(只接最少必需集)· ③ 何时升级(同一步失败 2 次 / 用户连说「不懂」→ 转人工)。
 - **跟 Anna 的边界**:**Anna = Sales**(只在用户进门前;顶多把 context 传给 Buddy 当开场底料);进来后跟 Buddy 搭、跟 Anna 无关;**卡住转人工支持,不是 Anna**。
 
@@ -85,9 +103,25 @@ Annie 的 reframe:**Buddy 不只 onboarding 时在,而是一个常驻的用户�
 
 **别混**:Buddy 是「客户身边的自助搭档」,不是「监控系统健康的看门狗」;FLY-915/942 那套告警/watchdog 是平台侧、面向运维,**不归 Buddy**。两者可互补(Buddy 帮用户自助修的某些问题,信号可能来自 infra 层),但**角色、面向的人、触发方式都不同,设计/build 分开**。
 
+## 6.7 MVP 可建性收敛(Codex R1)—— MVP-minimum vs 目标 · 底座前置 · 决策点
+
+> Codex 抓出:§7/§8 的逐步骤描述的是**目标 UX**,但有几项**当前底座还没闭合**(macOS 自动服务、Linear/GitHub OAuth、Discord roles/webhooks、agent CLI provider 抽象、首个产出 connector)。**下表逐条把「MVP-minimum(现在真能建)」和「目标」分开,并标底座前置/决策点。§7 的步骤读作目标;MVP 验收以本表为准。**
+
+| 能力 | MVP-minimum(首批验收) | 目标(可后续扩) | 底座前置 / 决策点 |
+|---|---|---|---|
+| **step0 agent CLI provider**(R1#4) | **Claude Code** 作 MVP provider(detect/install/login/smoke/startBuddy/resume) | Codex adapter(注意 CLAUDE.md 生产 Codex = windowed TUI 硬规则) | **BI-1 建 `AgentCliProvider` 合同 seam**;Codex 是同-MVP adapter 还是 post-MVP = 决策点(默认 Claude Code 先落地) |
+| **step2 Linear/GitHub 授权**(R1#2) | **Linear**:安全隐藏 token + keychain/0600(现状 FLY-648 wizard 已有,Linear 已用)· **GitHub**:token/OAuth/create-push **尚未实现**(现状 skeleton 只 local git、无 GitHub 建/推)—— 属 BI-3/BI-0 决策(可先 `gh auth` 作 MVP GitHub path) | **OAuth device flow / 不贴 token**(更顺) | **BI-3 决策点**:OAuth vs 安全 token —— 目标 OAuth,MVP 可先安全 token(Linear)/`gh auth`(GitHub);PRD 不把「不贴 token」当已建 |
+| **step2 Discord 自动建**(R1#3) | **bot 自动建频道 + online/post/delete probe**(现状 wizard 已建基础频道) | roles/webhooks/分类全套 + `guild_id` 预选 + 幂等 + 403 fallback | **BI-3 扩 permission 整数(加 Manage Roles/Webhooks)+ 幂等建 + 测试矩阵**;首批可只频道 |
+| **step7 自动安置(macOS)**(R1#1) | **可为 guided/manual fallback**(现状 Darwin 是 operator-run launchd);**Linux/systemd 若更成熟可先全自动** | macOS clean-host 全自动 bring-up | **FLY-648 closeout 前置**:manifest 生成 → plist install/bootstrap → Bridge reload → bot online → Captain ping 的真实验收 |
+| **state/secret seam**(R1#5) | **与 FLY-648 setup journal 共用/桥接一个 state schema**(cursor + 非密证据 + 脱敏);不另起漂移的第二 state 根 | — | **BI-2/BI-7 共用 state contract**;验收加 **secret-scan**(任何 token 不得出现在 state/logs/prompt transcript/support summary) |
+| **首个真产出 vertical**(R1#6) | **选一个 beachhead vertical = dropship 订单**(订单系统 + 邮箱/确认邮件,只读)+ **fixture/demo fallback** + 无连接器诚实路径 | 更多 vertical(广告/CRM/文案…) | **BI-4/BI-6 交付一条可验收的 first-output path**,不只是「connector seam」;北极星 = 拿到第一个真产出,没真 vertical 会变空壳 |
+
+> **一句话**:MVP 先把 **Claude Code provider + 安全 token(或 OAuth)+ Discord 频道自动建 + 一个真 dropship 订单 vertical(带 fixture fallback)+ 共用 state/secret contract** 做通;macOS 全自动安置、Discord roles/webhooks、OAuth、Codex adapter、更多 vertical 是**目标/后续**,不阻塞首批「拿到第一个真产出」。
+
 ## 7. 详细需求 —— 逐步骤(step 0–8),eng 照着能建
 
 > 每步给:**目标 · 客户看到的确切文案 · 交互 · 系统动作(命令/调用/[AUTO])· 校验 · 失败分支(原话+恢复)· 续传 · 验收标准**。真话术样例见 onboarding-buddy-spec.md,可直接当模板。
+> **⚠️ 以下步骤描述目标 UX;每项的「MVP-minimum vs 目标 / 底座前置」以 §6.7 为准**(step0 provider seam / step2 授权 token-vs-OAuth + Discord 频道-vs-全结构 / step7 macOS 成熟度 / step6-8 首个 vertical)。
 
 ### 步骤 0 · 地基:装一个 agent CLI(vendor-agnostic)+ 登录 —— Buddy 跑在它上面
 - **目标**:把底座(agent CLI)弄好,并在其上启动 Buddy。**没它 Buddy 起不来**——所以是最前面的地基。
@@ -197,17 +231,52 @@ Buddy 从「第一件事」推断要接哪些系统 → 一次一个 → OAuth �
 - 转人工的上下文摘要**脱敏**(不含 secret);永不把栈信息/黑话甩客户。
 - 外部输入(用户描述、贴入的 key/token)在边界校验;失败路径显式处理。
 
-## 12. 交给 eng 的 build issues(建议拆分 · 收敛后由 Lead 挂 Tadashi 队列)
-> 每个链回本 PRD 段 + FLY-648 底座;**本 issue 不派 eng-build runner**,拆分/建单在 PRD 收敛后进行。
+## 12. 交给 eng 的 build issues(最终清单 · 收敛后由 Lead 挂 Tadashi 队列)
+> 每个链回本 PRD 段 + FLY-648 底座;**本 issue 不派 eng-build runner**,建单/路由由 Lead 在 PRD 收敛后做。
+> **依赖顺序(Codex R1#8 重排)**:`BI-0 底座前置` → `BI-1 bootstrap+provider` →(`BI-2 状态机` ∥ `BI-7 转人工`,共用 state contract)→ `BI-3 基础工具` → `BI-5 安置` → `BI-4+BI-6 vertical+首产出` → `BI-8 素材`。BI-1/3/5 依赖 BI-0,不能盲并发。
 
-1. **BI-1 · 一条 command bootstrap + agent CLI 地基(step 0)**:装 Flywheel onboard 层 + vendor-agnostic 检测/装 agent CLI(Claude Code/Codex/…)+ 引导登录 + 在其上起 Buddy。(§7 step0;FLY-648)
-2. **BI-2 · Buddy agent 本体**:operating loop + 话术层(system prompt/模板,温暖同事基调)+ state 续传(onboarding-state.json)+ 决策引擎(描述→Team / 推断接哪些系统 / 何时升级)。(§6·§7)
-3. **BI-3 · 基础工具接入**:Discord(高权限 bot + 自动建结构 + 4 步引导 + 校验)· Linear OAuth+provision · GitHub OAuth+建/绑仓。(§7 step2 · §8-A)
-4. **BI-4 · 业务系统连接器 + JIT 接入**:MCP/连接器 seam · 推断最少必需集 · OAuth/隐藏 key · 最小只读探测 · 只读 scope。(§7 step6 · §8-B;FLY-648)
-5. **BI-5 · 自动安置**:脚手架 + 推 GitHub 仓 + projects.json + manifest + OS-portable 常驻服务 + health-check。(§7 step7;FLY-648)
-6. **BI-6 · 早聊一句 + 第一个产出编排**:最小可对话 Captain(welcome-first)+ 首件事预置/开口 → 跨源查 → 结果+下一步。(§7 step5/step8)
-7. **BI-7 · 卡住/worst-case 转人工支持通道**:升级阶梯 + 脱敏上下文摘要 + `escalated` 终态可被人工接手。(§6·§11)
-8. **BI-8 · Discord 4 步截图/短视频素材**。(§8-A 附录)
+- **BI-0 · FLY-648 底座 closeout** —— **拆两档,别把 target-only 的东西当 MVP 硬阻塞(Codex R2#1)**
+  - **(a) MVP 硬前置(真阻塞 BI-1/3/5)**:① `AgentCliProvider` seam 落位(BI-1 要)· ② Linear/GitHub 授权方式**定案**(OAuth or 安全 token / `gh auth`;BI-3 要)· ③ 与 setup journal 共用/桥接的 **state schema 定案**(BI-2 要)· ④ macOS 安置**至少有 guided/manual 可跑通**(BI-5 要,全自动见下 b)。
+  - **(b) target closeout / follow-up(不阻塞 MVP,后续)**:macOS clean-host **全自动** bring-up(manifest→plist install/bootstrap→Bridge reload,真验收)· Discord **roles/webhooks** 权限扩 + 幂等建 · OAuth(若 MVP 走安全 token)· Codex adapter。
+  - 验收:(a) 每项定案 + 可跑(自动或明确 guided/manual 且 UX 标注);(b) 有单独 follow-up issue,不进首批 MVP 验收。
+  - 依赖:FLY-648。挂:Tadashi(底座)。
+
+1. **BI-1 · 一条 command bootstrap + agent CLI 地基(step 0)+ AgentCliProvider seam**
+  - 范围:装 Flywheel onboard 层 + `AgentCliProvider`(detect/install/login/smoke/startBuddy/resume/repair)· **MVP provider = Claude Code**(登录用户订阅,不收 key)· 在其上起 Buddy。**Codex adapter = 决策点**(同-MVP or post-MVP;守 CLAUDE.md windowed-TUI 硬规则)。
+  - 验收:非技术用户粘一条命令 + 一次浏览器登录 → 得到已登录 Claude Code + 在其上运行的 Buddy;无 key 明文;provider seam 有 Codex 占位。
+  - 依赖:BI-0(provider seam)。§7 step0 · §6.7。挂:Tadashi。
+
+2. **BI-2 · Buddy agent 本体**(∥ BI-7,共用 state contract)
+  - 范围:operating loop + 话术层(system prompt/模板,温暖同事基调)+ **state 续传(与 FLY-648 setup journal 共用/桥接一个 schema,§6.7)** + 决策引擎(描述→Team / 推断接哪些系统 / 何时升级)。
+  - 验收:中断重跑从 cursor 续;**secret-scan 通过**(任何 token 不入 state/logs/prompt transcript)。
+  - 依赖:BI-1。§6 · §6.7 · §7。挂:Tadashi。
+
+3. **BI-3 · 基础工具接入**(按 BI-0 授权方式定案实现)
+  - 范围:**Discord**(MVP:高权限邀请 + bot 自动建**频道** + online/post/delete probe;**目标扩**:roles/webhooks/guild_id 预选 + 幂等 + 403 fallback)· **Linear**(OAuth 或安全 token,按 §6.7 决策)+ provision team/labels · **GitHub**(OAuth 或安全 token)+ 建/绑仓。
+  - 验收:三样各自一次授权即接好 + 校验;token keychain/0600;可续传/重试。
+  - 依赖:BI-0(权限/授权定案)、BI-1。§7 step2 · §8-A · §6.7。挂:Tadashi。
+
+4. **BI-4 · 业务系统连接器 + JIT 接入**(与 BI-6 合成首个 vertical)
+  - 范围:MCP/连接器 seam · 推断最少必需集 · OAuth/隐藏 key · 最小**只读**探测 · 只读 scope · 无连接器诚实路径。
+  - 验收:**首个 beachhead vertical = dropship 订单(订单系统 + 邮箱/确认邮件)只读接入通**。**⚠️ fixture/demo fallback 只算 QA/demo/进度兜底(连接器缺失时诚实路径),不算生产 North Star 的「成功」**(Codex R2#4)—— 生产成功 = 从客户**真实系统**出第一个真产出。
+  - 依赖:BI-1、BI-2。§7 step6 · §8-B · §6.7。挂:Tadashi(FLY-648 连接器)。
+
+5. **BI-5 · 自动安置**(建立真实 health-check)
+  - 范围:脚手架 + 推 GitHub 仓 + projects.json + manifest + OS-portable 常驻服务 + health-check(bot online + Captain ping)。**macOS 成熟度按 §6.7:MVP 可 guided/manual、全自动依赖 BI-0。**
+  - 验收:health-check 全绿;每子步幂等可续传;客户只看干净进度。
+  - 依赖:BI-0、BI-3。§7 step7 · §6.7。挂:Tadashi。
+
+6. **BI-6 · 早聊一句 + 第一个真产出编排**(与 BI-4 合成首个 vertical)
+  - 范围:最小可对话 Captain(welcome-first)+ 首件事预置/开口 → 跨源查 → **一条可信结果 + 下一步选项**(dropship 订单诊断样例)。
+  - 验收:**≤60s 拿到第一个真产出**(dropship vertical);需未接系统时诚实回接入、不假装。
+  - 依赖:BI-4。§7 step5/step8 · §6.7。挂:Tadashi。
+
+7. **BI-7 · 卡住/worst-case 转人工支持通道**(∥ BI-2,共用 state contract)
+  - 范围:升级阶梯 + **脱敏**上下文摘要 + `escalated` 终态可被人工接手 + 人工支持投递面。
+  - 验收:任一步失败 2 次可转人工;摘要脱敏(secret-scan);人工可接手续跑。
+  - 依赖:BI-2。§6 · §11。挂:Tadashi。
+
+8. **BI-8 · Discord 4 步截图/短视频素材**。依赖:BI-3。§8-A 附录。挂:Tadashi(或内容)。
 
 ## 13. Open questions(不自己填,待 Annie/后续)
 > **已定(v2)**:~~agent CLI 默认~~→ 默认 Claude Code、可切 Codex(§7 step0)· ~~Buddy 正式名~~→「Buddy」。
