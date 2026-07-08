@@ -59,6 +59,20 @@ FLY-1002。**所以 353 的主交付 = 抄 A 的 session-log,B/C 给结论即可
 **结论:Flywheel 已经天然是 brain/hands 解耦的形态,唯独缺 session 层。** 补上它,brain 就能真正
 无状态 —— 这正是"最高杠杆"的技术根据:我们不是要重构 brain/hands,只要**补一层日志**。
 
+### 2.2.1 编排:我们用不用 DAG?动态 vs 静态(Annie 在 336 问,grounded 核代码)
+
+- **我们有 DAG 代码,但 dormant。** `packages/dag-resolver`(Kahn 拓扑排序 Linear `blockedBy`)是 v0.2
+  老架构(老图「Linear→DAG resolver→sessions」);但 grounded 核代码:整图自动执行的 `DagDispatcher`
+  在**生产 Bridge 路径 0 处实例化**(全仓 `new DagDispatcher` 生产路径无命中)→ 事实上没在跑。
+- **当前真实派活 = 动态、Lead 驱动、逐 issue。** `RunDispatcher`(FLY-22,`/api/runs/start`)一 issue 一次
+  触发;`AgentDispatcher.dispatch({issueLabels, owningDept})` 按 label/部门动态选 role;issue 内编排 =
+  三段式(design→impl→QA)。谁跑/何时跑 = Lead(Cass 分诊 / Tadashi 派)/ founder **现场决定**。唯一起
+  作用的"依赖" = Linear `blockedBy`,由**人读了判断**,不是自动 DAG 执行器 gate。
+- **vs homerail 静态 DAG(general pattern,已核实;homerail 具体实现 UNKNOWN 未查到官方文档):** 静态 DAG =
+  Planner 预规划整图 → Executor 照图走 → 依赖预声明。**我们相反:没有"先规划整图再自动执行",每次派活现场
+  动态、人在环。** "是否已很像 homerail":表面像(有 dag-resolver 包 + Linear blockedBy),实质不像 —— 分水岭
+  是"谁决定执行/何时决定":静态 DAG 预先/自动,我们现场/Lead 动态。**不该被归成静态 DAG 那一类。**
+
 ### 2.3 补上 session 层 → 一箭治三痛(为什么是最高杠杆)
 
 | 痛 | 现状(exploration 详) | 有了 session-log 后 |

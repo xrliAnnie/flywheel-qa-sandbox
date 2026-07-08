@@ -1,12 +1,16 @@
-# FLY-353 架构进化 — session-log 解耦 PRD(产品需求文档)
+# FLY-353 架构进化 — session-log 解耦(候选设计输入,非定案 PRD)
 
 Issue: FLY-353 (https://linear.app/geoforge3d/issue/FLY-353/架构进化-research-综合-managed-agents-openclaw-raft-精进-flywheel-系统架构)
 日期: 2026-07-08
-基于: exploration.md(现状审计)、research.md(综合调研)、brainstorm gate 已确认方向
+基于: exploration.md(现状审计)、research.md(综合调研)
 
-> 状态:**draft(待 codex design review + Lead↔Annie 共创轮 review)。** 本 PRD 只定**产品行为 +
-> 机制 + 工程约束**;具体 eng 设计与实现 = **Tadashi**。Lead 已确认:出 build-ready PRD(含 build-issue
-> 拆分,像 FLY-978);详细版会回到 Lead 跟 Annie 的共创轮 review。**FLY-916 并进本条,不重复开。**
+> ⚠️ **状态(2026-07-08 Lead 调整节奏后):这不是定案 PRD,是「候选设计输入」。** 本轮主交付 =
+> 给 Annie 的**研究 HTML**(`architecture-review.html`,把三家架构做法讲清 + 对照我们当前系统 +
+> 把 session-log 等列成**候选做法**),之后 **Lead 带 Annie co-evaluate** 再决定做不做、怎么做。
+> **session-log 解耦在本轮是「候选方向」,不是已定结论。** 下面这份文档是我把候选做法想细的产物
+> (含工程约束 + 一个可能的 build 拆分),已过 Codex design review;但它<b>只作 co-evaluate 的输入</b>,
+> **不作 build handoff**,也**不在本轮 create build issue**。定案 + 交接 Tadashi 留到 Annie 拍板之后。
+> **FLY-916 并进本条,不重复开**(它是 session-log 的消费者)。
 
 ---
 
