@@ -32,6 +32,7 @@ import {
 	TalkSessionRotator,
 } from "flywheel-voice-core";
 import { EarsReceiver } from "../audio/EarsReceiver.js";
+import { superviseVoiceConnection } from "../audio/VoiceConnSupervisor.js";
 import type { DiscordDeps } from "../bots/discordWiring.js";
 import type { HuddleBridgeConfig } from "../config.js";
 import { SessionSlot } from "../SessionSlot.js";
@@ -202,6 +203,17 @@ export async function wireAssistantMode(
 	const unsubUp = conn.onUp(() => {
 		for (const cb of earsUpCbs) cb();
 	});
+	// diagnostics only (FLY-967 round-3): the ears connection has its own
+	// EARS_LOST degradation flow; here we just want every state transition and
+	// error in the venue log.
+	const earsHandle = deps.voiceConnHandle?.(opts.earsConnection);
+	const disposeEarsWatch = earsHandle
+		? superviseVoiceConnection(earsHandle, {
+				label: "ears",
+				log,
+				mode: "observe",
+			})
+		: undefined;
 
 	const slot = new SessionSlot();
 	let activeSession: AssistantSession | null = null;
@@ -262,6 +274,7 @@ export async function wireAssistantMode(
 			// and turns cannot start before join completes).
 			let realPlayer: import("../audio/LeadSpeaker.js").PlayerLike | null =
 				null;
+			let disposeOrchWatch: (() => void) | undefined;
 			const speaker = new AssistantSpeaker({
 				player: {
 					play: (resource) => realPlayer?.play(resource),
@@ -288,8 +301,26 @@ export async function wireAssistantMode(
 							selfDeaf: true, // the ears bot hears; the mouth must not echo
 						});
 						realPlayer = deps.createPlayer(orchestratorConn);
+						// FLY-967 round-3: the mouth died ASYNCHRONOUSLY after a clean
+						// Ready on Annie's rounds (best hypothesis: Node v25 IP-discovery
+						// error post-join) and nothing noticed. Supervise the connection:
+						// log every transition, auto-rejoin, and go LOUD if it cannot
+						// recover — never a silent death again.
+						const orchHandle = deps.voiceConnHandle?.(orchestratorConn);
+						disposeOrchWatch = orchHandle
+							? superviseVoiceConnection(orchHandle, {
+									label: "orchestrator",
+									log,
+									onFatal: (reason) =>
+										log(
+											`[voice-conn][orchestrator] the meeting mouth is DOWN (${reason}) — a fresh /${assistant.commandName ?? "gemini"} round is required`,
+										),
+								})
+							: undefined;
 					},
 					leave: () => {
+						disposeOrchWatch?.();
+						disposeOrchWatch = undefined;
 						if (orchestratorConn) deps.leaveVoice(orchestratorConn);
 						orchestratorConn = undefined;
 						realPlayer = null;
@@ -394,6 +425,7 @@ ${o.joinUrl}`
 			unsubVoiceState();
 			unsubDown();
 			unsubUp();
+			disposeEarsWatch?.();
 			ears.detach();
 			await activeSession?.stop();
 			activeSession = null;

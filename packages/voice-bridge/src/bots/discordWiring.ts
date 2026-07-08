@@ -6,6 +6,7 @@
  */
 import type { Readable } from "node:stream";
 import type { PlayerLike, ResourceSource } from "../audio/LeadSpeaker.js";
+import type { VoiceConnHandle } from "../audio/VoiceConnSupervisor.js";
 import type { VoiceJoinOpts } from "./BotRegistry.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -74,6 +75,10 @@ export interface DiscordDeps {
 		onDown: (cb: () => void) => () => void;
 		onUp: (cb: () => void) => () => void;
 	};
+	/** FLY-967 round-3: duck-typed lifecycle handle for VoiceConnSupervisor
+	 * (state-transition log + error listener + rejoin). Optional so test
+	 * fakes without it keep compiling; wiring guards with ?. */
+	voiceConnHandle?: (conn: any) => VoiceConnHandle;
 }
 
 export async function createDiscordDeps(): Promise<DiscordDeps> {
@@ -209,6 +214,27 @@ export async function createDiscordDeps(): Promise<DiscordDeps> {
 			const guild = await client.guilds.fetch(guildId);
 			return countHumansInVoiceChannel(guild, channelId);
 		},
+
+		voiceConnHandle: (conn: any): VoiceConnHandle => ({
+			status: () => String(conn.state?.status ?? "unknown"),
+			rejoin: () => {
+				try {
+					return conn.rejoin() === true;
+				} catch {
+					return false;
+				}
+			},
+			onStateChange: (cb) => {
+				const h = (o: any, n: any) =>
+					cb(String(o?.status ?? "unknown"), String(n?.status ?? "unknown"));
+				conn.on("stateChange", h);
+				return () => conn.off("stateChange", h);
+			},
+			onError: (cb) => {
+				conn.on("error", cb);
+				return () => conn.off("error", cb);
+			},
+		}),
 
 		moveMember: async (
 			client: any,
