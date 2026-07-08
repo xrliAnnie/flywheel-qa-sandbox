@@ -76,6 +76,7 @@
     <div class="secn">② 新设计:真卡死(c)到底怎么判</div>
     <h2>读"活的一段" + 至少两帧 + LLM 兜可疑</h2>
     <p>不再只看一帧、不再只看"动没动",而是<span class="good">读 pane 的富信息、跨至少 2 帧比对</span>,综合这些信号判 <span class="kk">a 在跑 / b 正常等 / c 真卡死</span>:</p>
+    <div class="callout">📝 <span class="kk">"帧"是什么</span>:就是把终端**文字**在两个时间点各抓一次、比一比(<span class="kk">不是看视频/截图</span>)。便宜的先用文字 diff / token 数 / 关键词判明确的;<span class="kk">只有拿不准的才升级给 LLM</span> 读得更细。全程文字,不涉图像。</div>
     <ul>
       <li><span class="kk">在不在真产出</span>(token 在吐)—— 关键是分"真在往前"和"变但在原地打转(反复刷同一个错)";</li>
       <li><span class="kk">会话状态</span>(在跑 / 等 review / parked)+ 真实 stage;</li>
@@ -108,27 +109,32 @@
   <!-- 4 -->
   <div class="sec flow">
     <div class="secn">④ 从"发现"到"叫你",走几步</div>
-    <h2>现状 ~75min → 新设计:真卡死当场叫你</h2>
-    <p><span class="bad">现在</span>:每小时看一眼 → 连续卡 10min 才算候选 → 给 Lead 5min → 才 @ 你 ≈ <span class="bad">最坏 75 分钟</span>。</p>
-    <p><span class="good">新设计</span>,分两条:</p>
+    <h2>统一:都先给 Lead → ~30min 没解决才叫你(你定的)</h2>
+    <p><span class="bad">现在</span>:每小时看一眼 → 连续卡 10min → 给 Lead 5min → 才 @ 你 ≈ <span class="bad">最坏 75 分钟</span>。</p>
+    <p><span class="good">新设计(你 2026-07-08 定的统一规则)</span>:看门狗一发现(<span class="kk">真卡死 或 两类漏</span>)→ <span class="good">立刻先通知责任 Lead</span> → <span class="kk">Lead ~30min 没解决/没反应 → 才 @ 你</span>。这是唯一会主动打断你的路径。</p>
     <ul>
-      <li><span class="kk">真卡死(c)= T1 · 当场立刻 @ 你</span> —— 判定那刻就 @ 你进对应 issue thread,<span class="good">同时</span>也通知责任 Lead 去修。不排那 75min 的队。(这是唯一会主动打断你的。)</li>
-      <li><span class="kk">两类"漏"(runner 没找 Lead / Lead 忙漏了)= T2</span> —— 先私下提醒 Lead;只有 Lead 超时没接 / 找不到人,才升级 @ 你。</li>
+      <li><span class="kk">真卡死(c)</span>:立刻通知 Lead(Lead 去看屏幕修)→ ~30min 没解决 → @ 你。</li>
+      <li><span class="kk">两类漏</span>(runner 没找 Lead / Lead 忙漏了):先私下提醒 Lead → ~30min 超时 → @ 你。</li>
     </ul>
-    <p>日常问答、Lead 替你拍的小决定 → 都进对应 thread、安静、<span class="kk">不 @ 你</span>。</p>
-    <div class="lbl">你的想法(这个"何时叫你"对不对):</div>
-    <textarea placeholder="④ 升级流 —— 真卡死当场叫你 / 其余安静进 thread,对吗?"></textarea>
+    <p><span class="kk">"绝不漏" = "~30min 内 Lead 没解决就 @ 你"兜底</span>(不再当场轰炸你)。日常问答、Lead 替你拍的小决定 → 进 thread、安静、不 @ 你。</p>
+    <div class="callout warn">🌐 <span class="kk">边界</span>:一大片 runner/Lead 同时挂(fleet 级)→ 走另一套(915 的即时告警 + infra bot),<span class="kk">不走这 30min</span>。这 30min 只管<span class="kk">单个</span> runner/Lead 卡死。</div>
+    <div class="lbl">你的想法(这个"都先给 Lead、30min 没解决才叫你"对不对):</div>
+    <textarea placeholder="④ 升级流 —— 统一 Lead-first + 30min,对吗?30min 合适吗?"></textarea>
   </div>
 
   <!-- 5 -->
   <div class="sec confirm">
-    <div class="secn">⑤ 请你最后过一眼(你之前已定)</div>
-    <h2>真卡死 = 当场立刻 @ 你 + 并行通知 Lead</h2>
-    <p>你 G2 已经定了『真卡死当场立刻 @』。落进设计 = <span class="kk">看门狗判定 case-c 那刻,立即 @ 你(进对应 thread)+ 同时通知 owning Lead</span>(Lead 照样按协议 capture pane 去修,但你不被排在 Lead 的窗口后面等)。</p>
-    <div class="callout">为什么真卡死不先给 Lead 窗口:它罕见、严重、常要你动手(切账号 / 重启),又是"绝不漏"的头号。所以你立即知道,Lead 同时也在处理。</div>
-    <p>有异议就在下面标(比如"真卡死也想先给 Lead 5min");没异议这条就这么定。</p>
-    <div class="lbl">你的确认 / 异议:</div>
-    <textarea placeholder="⑤ 真卡死当场 @ 你 —— OK / 想改成先给 Lead 窗口?"></textarea>
+    <div class="secn">⑤ 定稿确认</div>
+    <h2>全部统一成:准检测 → 先给 Lead → 30min 没解决才 @ 你</h2>
+    <p>你把升级流统一了(真卡死<span class="kk">也</span>先给 Lead、30min 没解决才 @ 你)—— 已按你的决定落进设计。整份现在是:</p>
+    <ul>
+      <li><span class="kk">准</span>:读文字富态、跨 ≥2 帧判 a/b/c,历史漏报逐个抓(①②③)。</li>
+      <li><span class="kk">兜底不漏</span>:一发现 → 立刻给 Lead → ~30min 没解决 → @ 你(④)。</li>
+      <li><span class="kk">不刷屏</span>:日常安静进 thread,只有 30min 没解决才打断你。fleet 级走 915。</li>
+    </ul>
+    <p>这份就是给 Tadashi 建的依据(跟 915/927 一起拆)。哪里还想改,下面标。</p>
+    <div class="lbl">最终确认 / 还想改的:</div>
+    <textarea placeholder="⑤ 整份设计 OK 拆给 Tadashi? 还是哪里想改?"></textarea>
   </div>
 
   <!-- 回流 -->
@@ -139,8 +145,8 @@
 ① 现状两盲点(单帧 / 只看没动 + ~75min 太慢)：
 ② 真卡死判信号(token-flow/状态/错误串/静默delta/重复错误)：
 ③ 历史漏报抓法（546/837/574/910×2/915）：
-④ 升级流（真卡死当场@我，其余安静进thread）：
-⑤ 真卡死当场@我 + 并行通知Lead：OK / 改成？
+④ 升级流（都先给Lead、~30min没解决才@我；fleet走915）：
+⑤ 整份设计 OK 拆给 Tadashi？还想改：
 其它：</textarea>
   </div>
 
