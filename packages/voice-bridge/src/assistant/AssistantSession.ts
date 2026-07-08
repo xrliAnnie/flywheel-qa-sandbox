@@ -83,6 +83,7 @@ export interface AssistantSessionOptions {
 		closeIssue(issueId: string): Promise<void>;
 	};
 	timeouts?: {
+		connectMs?: number;
 		founderJoinMs?: number;
 		earsDownMs?: number;
 		recapWaitMs?: number;
@@ -107,9 +108,31 @@ const EARS_LOST_PROMPT =
 const END_WORDS = /结束|就这样|收尾|到这里/;
 const AFFIRMATIVES = /^(对|没问题|可以|好的|嗯,?对|OK|ok|确认)/;
 
+const DEFAULT_CONNECT_MS = 30_000;
 const DEFAULT_FOUNDER_JOIN_MS = 600_000;
 const DEFAULT_EARS_DOWN_MS = 60_000;
 const DEFAULT_RECAP_WAIT_MS = 300_000;
+
+/** bound a promise; the timer never keeps the process alive. */
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const t = setTimeout(
+			() => reject(new Error(`${what} timed out after ${ms}ms`)),
+			ms,
+		);
+		(t as NodeJS.Timeout).unref?.();
+		p.then(
+			(v) => {
+				clearTimeout(t);
+				resolve(v);
+			},
+			(e) => {
+				clearTimeout(t);
+				reject(e);
+			},
+		);
+	});
+}
 
 export class AssistantSession {
 	private _state: AssistantSessionState = "idle";
@@ -122,6 +145,8 @@ export class AssistantSession {
 	private earsTimer: ReturnType<typeof setTimeout> | undefined;
 	private recapTimer: ReturnType<typeof setTimeout> | undefined;
 	private done = false;
+	private firstFrameLogged = false;
+	private firstAudioLogged = false;
 
 	constructor(private readonly opts: AssistantSessionOptions) {}
 
@@ -131,15 +156,36 @@ export class AssistantSession {
 
 	async start(): Promise<void> {
 		this._state = "invoked";
+		this.log("state -> invoked");
 		this.opts.tiv.status("🎙 正在进场…");
-		await this.opts.voice.join();
-		const brief = this.opts.briefing.compose(this.opts.topic);
-		if (brief.stale) {
-			this.opts.tiv.status(
-				"⚠️ 简报可能滞后(缓存超龄)——事实问题请让助理用工具现查。",
+		// round-5 (Annie re-verification FAIL): everything before the presence
+		// subscription must be BOUNDED and LOGGED. The Gemini connect used to be
+		// awaited unbounded — a hanging connect left the session in `invoked`
+		// forever with zero log lines (onFounderJoin never registered, wireEars
+		// never ran) and, on the throw path, a zombie orchestrator in the VC.
+		try {
+			await this.opts.voice.join();
+			this.log("voice joined — orchestrator in the VC");
+			const brief = this.opts.briefing.compose(this.opts.topic);
+			this.log(
+				`briefing composed (${brief.text.length} chars, stale=${brief.stale})`,
 			);
+			if (brief.stale) {
+				this.opts.tiv.status(
+					"⚠️ 简报可能滞后(缓存超龄)——事实问题请让助理用工具现查。",
+				);
+			}
+			this.log("connecting Gemini Live…");
+			this.conv = await withTimeout(
+				this.opts.createConversation(brief.text),
+				this.opts.timeouts?.connectMs ?? DEFAULT_CONNECT_MS,
+				"Gemini Live connect",
+			);
+			this.log("conversation ready");
+		} catch (err) {
+			await this.abortStartFailure(String((err as Error).message ?? err));
+			throw err; // the command layer sends the founder-facing failure reply
 		}
-		this.conv = await this.opts.createConversation(brief.text);
 		this.wireConversation(this.conv);
 		this.wireEars(this.conv);
 		this.unsubs.push(
@@ -149,22 +195,25 @@ export class AssistantSession {
 				}
 			}),
 		);
-		if (this.opts.voice.founderPresent()) {
-			this.enterLive();
+		const present = this.opts.voice.founderPresent();
+		this.log(`founderPresent()=${present} at post-connect check`);
+		if (present) {
+			this.enterLive("initial-check");
 		} else {
 			this.unsubs.push(
 				this.opts.voice.onFounderJoin(() => {
+					this.log(`founder-join signal received (state=${this._state})`);
 					if (this._state === "invoked") {
 						this.clearTimer("join");
-						this.enterLive();
+						this.enterLive("founder-join");
 					}
 				}),
 			);
-			this.joinTimer = setTimeout(
-				() => void this.abortNoShow(),
-				this.opts.timeouts?.founderJoinMs ?? DEFAULT_FOUNDER_JOIN_MS,
-			);
+			const joinMs =
+				this.opts.timeouts?.founderJoinMs ?? DEFAULT_FOUNDER_JOIN_MS;
+			this.joinTimer = setTimeout(() => void this.abortNoShow(), joinMs);
 			this.joinTimer.unref?.();
+			this.log(`no-show timer armed (${joinMs}ms)`);
 		}
 	}
 
@@ -177,16 +226,27 @@ export class AssistantSession {
 		}
 	}
 
-	private enterLive(): void {
+	private enterLive(source: string): void {
 		this._state = "live";
+		this.log(`state -> live (${source})`);
 		this.opts.tiv.status("🎙 listening");
 		this.conv?.sendText(OPENING_PROMPT);
+	}
+
+	private log(line: string): void {
+		this.opts.log?.(`[assistant-session][${this.opts.sessionId}] ${line}`);
 	}
 
 	private wireEars(conv: ConversationLike): void {
 		this.unsubs.push(
 			this.opts.ears.onFrame((frame, format) => {
 				if (this._state === "live" || this._state === "concluding") {
+					if (!this.firstFrameLogged) {
+						this.firstFrameLogged = true;
+						this.log(
+							`first ears frame forwarded to Gemini (${frame.length} bytes)`,
+						);
+					}
 					conv.sendAudio(frame, format);
 				}
 			}),
@@ -219,6 +279,10 @@ export class AssistantSession {
 				this.opts.tiv.status("💬 speaking");
 			}),
 			on("response-audio", (...a) => {
+				if (!this.firstAudioLogged) {
+					this.firstAudioLogged = true;
+					this.log("first response audio from Gemini");
+				}
 				this.opts.speaker.noteToolResolved();
 				this.opts.speaker.feed(a[0] as Buffer);
 			}),
@@ -305,6 +369,26 @@ export class AssistantSession {
 		} catch (err) {
 			this.opts.tiv.error(
 				`落地失败:${String((err as Error).message ?? err)}——transcript 兜底在,issue 未关,可重跑。`,
+			);
+		}
+		await this.teardown();
+	}
+
+	/** start() failed before live (connect hang/refusal etc.) — degrade
+	 * honestly: LOUD log, close the kickoff issue, free the room. */
+	private async abortStartFailure(reason: string): Promise<void> {
+		if (this.done) return;
+		this.log(`FATAL — session start failed before live: ${reason}`);
+		try {
+			await this.opts.linearAbort.comment(
+				this.opts.issueId,
+				`语音会议没起来——助理启动失败(${reason})。issue 自动关闭,重新发起即可再试。`,
+			);
+			await this.opts.linearAbort.closeIssue(this.opts.issueId);
+			this.opts.tiv.status(`会没起来(${reason}),立项 issue 已关。`);
+		} catch (err) {
+			this.opts.tiv.error(
+				`启动失败的收尾也失败:${String((err as Error).message ?? err)}——请人工处理 ${this.opts.issueId}。`,
 			);
 		}
 		await this.teardown();

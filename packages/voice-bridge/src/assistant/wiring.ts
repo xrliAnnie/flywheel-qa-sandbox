@@ -155,18 +155,32 @@ export async function wireAssistantMode(
 		)
 		.then((n) => {
 			humanCount = n;
+			log(`[presence] humanCount seeded=${n} (boot occupancy)`);
 		})
-		.catch(() => {});
+		.catch((err) => {
+			log(
+				`[presence] humanCount seed FAILED (staying 0): ${String((err as Error).message ?? err)}`,
+			);
+		});
 	const founderJoinCbs = new Set<() => void>();
 	const founderLeaveCbs = new Set<() => void>();
+	// round-5: this chain was completely blind on the real machine — every
+	// delta, count mutation and subscriber fan-out is now in the venue log.
 	const unsubVoiceState = deps.onVoiceStateUpdate(orchestratorClient, (u) => {
-		if (u.isBot) return;
 		const delta = classifyVoiceDelta(u, config.voiceChannelId);
+		log(
+			`[presence] voiceState user=${u.userId} bot=${u.isBot} ${u.fromChannelId ?? "-"} -> ${u.toChannelId ?? "-"} delta=${delta} humanCount=${humanCount} joinSubs=${founderJoinCbs.size}`,
+		);
+		if (u.isBot) return;
 		if (delta === "join") {
 			humanCount++;
+			log(
+				`[presence] JOIN — humanCount=${humanCount}, firing ${founderJoinCbs.size} founder-join subscriber(s)`,
+			);
 			for (const cb of founderJoinCbs) cb();
 		} else if (delta === "leave") {
 			humanCount = Math.max(0, humanCount - 1);
+			log(`[presence] LEAVE — humanCount=${humanCount}`);
 			if (humanCount === 0) for (const cb of founderLeaveCbs) cb();
 		}
 	});
@@ -325,7 +339,13 @@ export async function wireAssistantMode(
 						orchestratorConn = undefined;
 						realPlayer = null;
 					},
-					founderPresent: () => humanCount > 0,
+					founderPresent: () => {
+						const present = humanCount > 0;
+						log(
+							`[presence] founderPresent()=${present} (humanCount=${humanCount})`,
+						);
+						return present;
+					},
 					onFounderJoin: (cb) => {
 						founderJoinCbs.add(cb);
 						return () => founderJoinCbs.delete(cb);

@@ -437,6 +437,9 @@ export function makeVoiceStateForwarder(
 				try {
 					const m = await newState.guild.members.fetch(userId);
 					isBot = m.user.bot === true;
+					log?.(
+						`[voice-state] member ${userId} resolved via REST: bot=${isBot}`,
+					);
 				} catch (err) {
 					log?.(
 						`[voice-state] member ${userId} unresolvable — delta dropped fail-closed: ${String(
