@@ -2,13 +2,12 @@
 issue: FLY-910
 phase: design
 phaseCursor: 3/3
-updated: 2026-07-08T22:50:34.178Z
-nextStep: "PARK: PRD 写好(engineering/doc/FLY-910-onboarding/prd.md)+过目HTML已发;
-  等Annie产品review; 收敛后codex eng-review再拆build"
+updated: 2026-07-08T23:03:59.275Z
+nextStep: "PARK: PRD v2(Buddy改名+常驻phase-2+CLI默认+边界)+过目HTML已发; 等Annie过目"
 chunks: []
 pointers: {}
 ---
 
 # FLY-910 progress
 **phase**: design (3/3)
-**next**: PARK: PRD 写好(engineering/doc/FLY-910-onboarding/prd.md)+过目HTML已发; 等Annie产品review; 收敛后codex eng-review再拆build
+**next**: PARK: PRD v2(Buddy改名+常驻phase-2+CLI默认+边界)+过目HTML已发; 等Annie过目
