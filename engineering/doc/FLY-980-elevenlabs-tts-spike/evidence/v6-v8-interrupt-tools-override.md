@@ -73,6 +73,11 @@ claude -p `--append-system-prompt-file` —— 全链真实生效，无固定 pe
 node e2e-session.mjs <agent_id> --label v6 --rounds u4slow,u4slow,u4slow --interrupt
 FLY980_TOOL_MODE=auto node shim.mjs   # + u3en 轮 → V7a
 FLY980_INJECT_FACTS=1 node shim.mjs   # + u5status 轮 → V7b
+# V8 —— shim 必须 FLY980_RESUME=0(与原始运行一致,shim-v8.log 可证):平台默认
+# 不带 elevenlabs_extra_body/user_id,resume 模式下两次会话会落同一个
+# single-session 键共享 brain 串味。要用 resume 复现 V8 就必须给每次会话
+# --extra-body '{"conversation_id":"<唯一 id>"}'(custom_llm_extra_body 通路)。
+FLY980_RESUME=0 node shim.mjs
 node e2e-session.mjs <agent_id> --label v8 --rounds u6who \
   --override-voice <voice_id> --override-prompt-file <persona.md>
 ```

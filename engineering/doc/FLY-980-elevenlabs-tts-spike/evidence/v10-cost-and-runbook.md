@@ -36,10 +36,13 @@ Issue: FLY-980
    `custom_llm.request_headers.Authorization` 且 GET 回读值正确（存储 OK），
    但**运行时平台不送这个值**——实际送来的是无关的 12 字符 Bearer
    （scheme=Bearer len=19，与配置值 sha 不符）。
-   **可用形状 = workspace secret**：
+   **可用形状 = workspace secret**（create-agent.mjs 已内建此流程，token 走
+   env `FLY980_TOKEN` 绝不进 argv）：
    ```
    POST /v1/convai/secrets {type:"new", name, value}  → secret_id
    custom_llm.api_key = {secret_id}                    # 平台送 Bearer <value> ✅
+   # 用法: FLY980_TOKEN=<bearer> node create-agent.mjs <tunnel-url>
+   # 清理: node delete-agent.mjs <agent_id> <secret_id>
    ```
 4. **agent create 最小体**：`agent.language=zh`、`prompt.llm="custom-llm"`、
    `custom_llm={url:<tunnel>/v1, model_id, api_type:"chat_completions",

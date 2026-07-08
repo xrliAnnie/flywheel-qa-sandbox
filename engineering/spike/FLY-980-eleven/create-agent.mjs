@@ -3,14 +3,22 @@
 // shape discovery, Codex R1#6: the accepted shape is what the readback shows,
 // not what docs suggest).
 //
-// usage: node create-agent.mjs <tunnel-url> <bearer-token> [name]
-// env: ELEVENLABS_API_KEY (~/.flywheel/.env), FLY980_VOICE_ID (optional)
+// Auth = workspace secret (the ONLY runtime-working shape — request_headers
+// is stored-but-never-transmitted, see evidence/v10-cost-and-runbook.md §2):
+// this script creates the secret itself and wires custom_llm.api_key.
+//
+// usage: FLY980_TOKEN=<bearer> node create-agent.mjs <tunnel-url> [name]
+//   (token via env, NEVER argv — argv is a leak surface)
+// env: ELEVENLABS_API_KEY (~/.flywheel/.env), FLY980_TOKEN, FLY980_VOICE_ID?
 import { mkdirSync, writeFileSync } from "node:fs";
 import { redactAgentConfig, xi } from "./lib/eleven.mjs";
 
-const [, , tunnelUrl, bearerToken, name = "fly980-eleven-spike"] = process.argv;
+const [, , tunnelUrl, name = "fly980-eleven-spike"] = process.argv;
+const bearerToken = process.env.FLY980_TOKEN;
 if (!tunnelUrl || !bearerToken) {
-	console.error("usage: node create-agent.mjs <tunnel-url> <bearer-token>");
+	console.error(
+		"usage: FLY980_TOKEN=<bearer> node create-agent.mjs <tunnel-url> [name]",
+	);
 	process.exit(2);
 }
 
@@ -18,6 +26,13 @@ const BASE_PROMPT = [
 	"你是 Flywheel 的语音助手。用简短口语化的中文回答；",
 	"如果对方说英文就用英文答。不要输出 markdown。",
 ].join("");
+
+// workspace secret 承载 shim bearer(平台运行时唯一可用的鉴权通路)
+const secret = await xi("/v1/convai/secrets", {
+	method: "POST",
+	body: { type: "new", name: `fly980-shim-${Date.now()}`, value: bearerToken },
+});
+console.log(`secret_id=${secret.secret_id} (delete with delete-agent.mjs)`);
 
 const body = {
 	name,
@@ -32,7 +47,8 @@ const body = {
 					url: `${tunnelUrl.replace(/\/$/, "")}/v1`,
 					model_id: "flywheel-claude-brain",
 					api_type: "chat_completions",
-					request_headers: { Authorization: `Bearer ${bearerToken}` },
+					api_key: { secret_id: secret.secret_id },
+					request_headers: {},
 				},
 			},
 		},
