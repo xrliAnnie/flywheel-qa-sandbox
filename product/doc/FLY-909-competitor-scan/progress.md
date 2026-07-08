@@ -3,29 +3,29 @@ issue: FLY-909
 phase: design
 phaseCursor: 4/4
 updated: 2026-07-07
-nextStep: 新 URL 已交 Lead → Lead 发 Annie。存在性拷问喂 FLY-911。不 ship(founder-gated)。
-round: 2.2
+nextStep: 两个 URL 交 Lead → Lead relay Annie。喂 FLY-921 定位。不 ship(founder-gated)。
+round: 3
 chunks: []
 pointers: {}
 ---
 
 # FLY-909 progress
 
-**round**: 2.2(Cowork/Codex 存在性拷问扩展;round-1/2/2.1 历史见 git log)
-**phase**: design (4/4) — Cowork+Codex 扩展落地、发布、复验全绿,新 URL 已交 Lead
-**next**: Lead 发 Annie;存在性判断归 FLY-911。**不 ship / 不开新 PR / 不 create-issue**。
+**round**: 3(Open Cloud 竞品 + OPC beachhead + Value 工件;round-1/2/2.1/2.2 见 git log)
+**phase**: design (4/4) — round-3 三块落地、发布、复验全绿,两个 URL 待交 Lead
+**next**: Lead relay Annie(附要 Annie 拍的点);喂 FLY-921 定位。**不 ship / 不开新 PR / 不 create-issue**。
 
-## round-2.2 完成清单(Annie 加 Claude Cowork + Codex app)
-- [done] 深研 Cowork(Anthropic 非技术知识工作者 done-for-you 桌面 app)+ Codex app(OpenAI 开发者 agent 指挥中心)
-- [done] 诚实结论:编排引擎是两家一方功能、我们不占优(别护短要认)
-- [done] 验证 Annie 假设:Codex=开发者工具(对);Cowork=非技术 done-for-you(她假设不成立,最该警惕)
-- [done] 差异候选(待 911):领域(建养真软件产品)/常驻组织/手机 IM/供应商中立(能打≠现在建)
-- [done] competitor-scan.md:① 表加 Cowork+Codex 两行 + 新增 ⑥「存在性拷问」节 + 更新「我们跟谁像」+ 开放问题 #5 + 标题/本版说明
-- [done] review.html:新增「Cowork+Codex 存在性拷问」卡(第 2 张)+ c_cowork 批注框 + FIELDS v3 同步 8 框;Apple 浅色 0 prefers-color-scheme
-- [done] research.md 补 §7 Cowork/Codex + 来源
-- [done] commit + push(更新 PR #470,真实 diff=10 docs 无污染)
-- [done] 新发布 URL(见 Lead 报告)+ curl+grep 复验 HTTP 200 / 0 prefers-color-scheme / 诚实锚点齐
-- [done] 新 URL + summary 报 Lead(她发 Annie)
+## round-3 完成清单(Lead 指令 3b81e3cd)
+- [done] 块1 Open Cloud/OpenClaw 深研(是什么/60天250K star 怎么起来/定价套利+安全降温现状/借鉴/重叠差异)→ competitor-scan ①表+行 + ⑦节;⚠️ Aimless Agent 查无实据(标待确认)
+- [done] 块2 OPC beachhead 硬问题(诚实:OPC 技术够能 DIY=引擎无护城河;押 常驻组织+生态整合+体验气质=他能拼但懒得拼)→ competitor-scan ⑦节
+- [done] 块3 Value 工件 value-artifact.html(5 支柱 for OPC「你一个人手握一整个公司」,每支柱标为什么 DIY 攒不出 + Annie 体验;demo 气质=有趣+drama+真实/voice;可批注)
+- [done] review.html 加 OpenClaw+OPC 卡 + c_openclaw 框(FIELDS 9);Apple 浅色 0 prefers-color-scheme
+- [done] research.md 补 §8 + 来源
+- [done] commit + push(更新 PR #470)
+- [done] 发布两个 URL:review.html(竞品扫描)+ value-artifact.html(Value 工件)+ curl+grep 复验
+- [done] 两 URL + 要 Annie 拍的点 报 Lead
 
-## 核心诚实结论(喂 FLY-911)
-不是「注定被取代」也不是「稳」;引擎层无护城河、差异存在但薄;赢面 = 能不能比通用知识工作工具(尤其 Cowork)更早把「done-for-you+常驻组织+手机 IM+供应商中立+真软件产品维护」组合 productize 成非技术真能用的东西(现在还没到)。判断归 911。
+## 要 Annie 拍的点(喂 FLY-921)
+1. Value 5 支柱哪几条是立身之本(承认 OPC 能 DIY 前提下)?
+2. OPC「他能拼但懒得拼」的答法够不够撑一个生意?
+3. Aimless Agent 真名/链接确认。

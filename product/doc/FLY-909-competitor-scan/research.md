@@ -228,3 +228,27 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 - Claude Cowork:anthropic.com/product/claude-cowork、claude.com/blog(how people use)、support.claude.com(get started)、mintmcp.com(use Cowork if not engineer)、aibl.to(Claude Trinity)、maven.com(Cowork for knowledge workers)、anthropics/knowledge-work-plugins
 - Codex app:openai.com/index/introducing-the-codex-app、intuitionlabs.ai、firecrawl.dev(multi-agent orchestration)、bhavishyapandit9.substack、morphllm.com(Codex vs Claude Code 2026)
 - 对比/持久 vs 任务:flowtivity.ai(Hermes vs Codex vs Cowork)、developersdigest.tech(Claude Code vs Codex app 2026)、code.claude.com/docs(agent-teams)、mindstudio.ai(Claude Code Agent Teams)
+
+---
+
+## 8. round-3 扩展(2026-07-07):Open Cloud/OpenClaw + OPC beachhead + Value 工件
+
+> Lead 指令 3b81e3cd:加 Open Cloud(OpenClaw)+ Aimless Agent 竞品;回答 OPC(One Person Company)beachhead 硬问题;产出 Value 工件(5 支柱)。beachhead 从「完全非技术」演进到「OPC = 技术够的单人创始人」。
+
+### 8.1 Open Cloud / OpenClaw(Annie 灵感来源)
+- **是什么**:Peter Steinberger 开源个人 AI 助理,本地跑你自己设备、在你已用的 IM(Discord/TG/Slack/WhatsApp/Signal… 29 渠道)回你;本地私有零云、能浏览/填表/读写文件/跑 shell、跨会话记忆。
+- **怎么起来的**:Clawdbot→Moltbot→OpenClaw(2026-01);2 月 100K star、~60 天 250K star(史上最快 repo,超 React 十年);build-in-public + Discord 当 showroom、半百万系统在跑,创始人 Fast Company AI 20。
+- **现状(热度回落)**:安全事故(恶意第三方 skill/过度授权/钓鱼 repo)后降温,「OpenClaw is dead」论坛梗。真因=**定价套利泡沫**(靠被低估算力起,平台调贵后 Feb→Apr 几天崩、只剩认真工作流)+ 创始人转投 OpenAI 带走社区(Anthropic 拒 hire)+ 深度本地访问安全风险。**项目没死**,转 AI-agent stack 认真-谨慎一层,375K+ star、周更、猛推可靠性(恢复/audit/MCP 校验/LTS)。
+- **跟我们**:重叠=IM 驱动界面赌注最像(连 Discord 门面);差异=它是你自己跑的单个助理(self-host/single-agent),不是常驻多部门 done-for-you 组织;爆红-回落一课=定价套利+病毒自托管不持久,持久=managed 可靠性+audit。可借鉴=多渠道触达+跨会话记忆+Discord-showroom GTM;别学=深度本地访问安全敞口/纯自托管甩锅可靠性。
+- ⚠️ **Aimless Agent 查无实据**:两轮 WebSearch 未找到,标待 Annie/Lead 确认真名(不硬编造)。
+
+### 8.2 OPC beachhead 硬问题(诚实)
+- Annie 落 beachhead 到 OPC=一个人开公司(技术够、越来越多)。诚实第一条:OPC 能自己拼(OpenClaw 自托管+Cowork+Codex)=引擎层无护城河、此人群尤其能 DIY,必须认。
+- 真差异押(候选,待 921,「他能拼但懒得拼/拼不出气质」):①常驻组织(非单助理/非你启动的任务)②生态整合/供应商中立(按难度配模型成本、单一工具短板别家补;Cowork 锁 Claude/Codex 锁 OpenAI 结构不会替你用对手)③体验气质(managed/可靠/像真人团队、有趣+drama+真实、voice)。总结:赢的不是「他做不到」,是「他能拼但不值当自己搭+维护这套」。
+
+### 8.3 Value 工件(value-artifact.html)
+- 把 Annie 5 支柱包装成 OPC 外人可感知的商业 Value:①常驻组织=记忆+掌控(常驻 Lead+long-term memory+Linear 第二大脑)②多线并行各自独立不糊(每 session 自己 thread/file vs CC 一个窗口)③多视角团队(工程/管理/产品 Lead,越用越强、跨项目复用)④供应商中立生态整合(CC 弱多模态→Antigravity)⑤(未来)成本+价值可视(token+eval 面板)。框架=OPC「你一个人手握一整个公司」;每支柱标「为什么 DIY 攒不出」;demo 气质=有趣+drama+真实、voice 像真人。目的=技术优势+Annie 个人体验→外人可感知商业 Value。
+
+### 8.4 来源(2026-07 WebSearch)
+- OpenClaw:openclaw.ai、github.com/openclaw/openclaw、digitalocean.com、kdnuggets.com、Fast Company AI 20;decline:medium(rosgluk rise-and-fall / mehul "is dead")、techcrunch.com(2026-02-16)、smartproductivitytools.com、elegantsoftwaresolutions.com(May review)、getagentiq.ai(myth-check)
+- Aimless Agent:两轮 WebSearch 无匹配(待确认)
