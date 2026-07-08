@@ -41,13 +41,47 @@ TTFT + thinking。
 5. 与 FLY-543 先验（Opus 满上下文 resume 全轮 6.5s）对照：空 cwd + 快模型
    把全轮从 6.5s 压到 sonnet 6.2s / 首 token 3.2s —— 有改善但没跨代。
 
+## 追加：常驻脑 / 预热实验（Lead 指令② —— 1-2s 能不能拉到）
+
+**答案：拉不进 1-2s。** claude -p 形态的脑首 token 硬地板 ≈ 2-3.5s（模型
+TTFT 本身），spawn 开销只占其中 ~0.8-1.0s。三形态实测（sonnet，5 轮中位）：
+
+| 形态 | 中位首 token | 区间 | 说明 |
+|------|--------------|------|------|
+| baseline：每轮 spawn+立即写（fresh） | 3159ms | — | bench-brain.mjs |
+| **persistent：单进程 `--input-format stream-json` 常驻** | 3294ms | 2206-3551 | 进程 init 831ms 只付一次，但每轮首 token 没变快 —— 地板是 API TTFT |
+| **prespawn-fresh：提前 2.5s 起进程 + 全量历史注入** | **2974ms** | 2069-3813 | 最优中位；省下的 ~1s 冷启动被 TTFT 方差吃掉大半 |
+| prespawn + --resume | 7766ms | 2283-14684 | resume 加载 + 方差爆炸，弃 |
+
+分解归因（Lead 指令③的本地半边）：CLI 冷启动→首事件 ≈ 0.8-1.0s；其余
+全部是 Anthropic API 经 CLI 的 TTFT。**要进 1-2s 只有换 API 直连形态
+（违背 D10' 订阅要求，如实报，不偷切）或换更快的 serving 路径。**
+
+## 追加：thinking 开关排查（Lead 指令①）
+
+- 根因找到：本机全局 `~/.claude/settings.json` 有 `alwaysThinkingEnabled:
+  true` + `effortLevel: xhigh`，每个 claude -p 子进程都继承。
+- 但实测 **sonnet 对语音短答本来就不出 thinking**（first_thinking=None），
+  `--settings '{"alwaysThinkingEnabled":false}'` / `--effort low` 均无收益
+  （2623 vs 3566 vs 3446ms，噪声级）。
+- **haiku 4.5 则默认每轮先吐 thinking 块**（首 thinking 3.1-5.5s 后才出
+  文本）—— 这是 haiku 比 sonnet 慢的主因。结论：**选 sonnet 即绕开
+  thinking 问题**，不需要额外开关。
+
+### S4 真机配方决定
+
+E2E 阶梯 claude 档默认 = **sonnet + FLY980_RESUME=0（全量注入）**，
+prespawn 优化只有 ~200ms 中位收益、复杂度不值，不进 shim。预计全链
+speech-end→首音 ≈ 脑 3.0s + 平台/隧道（echo 档实测补齐）≈ 3.7-4.5s ——
+V5b soft timeout 垫话体验决定 go/no-go。
+
 ## 复现
 
 ```bash
 cd engineering/spike/FLY-980-eleven
-node bench-brain.mjs --turns 6         # 全 6 配置
-node bench-brain.mjs --configs sonnet-fresh --turns 6
-# 原始逐轮数据: out/bench-brain.json
+node bench-brain.mjs --turns 6         # 基线 6 配置 → out/bench-brain.json
+node bench-warm.mjs --model sonnet --turns 5   # 常驻/预热 → out/bench-warm.json
+node bench-warm.mjs --model sonnet --turns 5 --modes prespawn-fresh
 ```
 
 样本量注：每配置 5 个 2+ 轮样本（Opus 2 轮），中位数稳健但非大样本；
