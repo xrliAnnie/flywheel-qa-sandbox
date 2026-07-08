@@ -9,29 +9,31 @@ Status: **draft PRD — 主线待 Annie 拍板后由 Lead 收口**(这是她点�
 
 ---
 
+> **命题(Annie 2026-07-08 校正):** 『换大机救急』已单独做完、与本 issue 无关;**1005 不是『多机值不值得』,而是『怎么做好横向扩展 → 上云(无上限 horizontal scale)』。** 分阶段从『第一台卫星/云节点』起,不从换大机起。
+
 ## 1. 结论 (TL;DR)
 
-- **多机值得做,但先分阶段、为对的理由做。** 当下最痛是**内存**,内存最便宜的解是**阶段0 先榨干单机:runner footprint 减负(FLY-751,已部分做)+ 换/用更大 host**。多机不解决额度(额度 per-账号)。
-- 多机真正不可替代的价值 = **爆炸半径隔离 + 无上限横向 scale + 异构放置**。
-- 架构走 **Option A:单 Bridge hub(state 留主机)+ 无状态卫星 runner**,复用已有**出站 HTTP**(stage/complete/heartbeat/events)+ Tailscale 内网,**刻意回避跨机 StateStore 一致性**。被 homerail 产品级验证。**注意**:ask/gate 问答态 + wake 现仍依赖本地 CommDB,阶段1 要补路由到 hub(不是「改个 URL」)。
-- near-term 物理多机**不强制上沙箱(FLY-346)**;沙箱留云阶段。**session-log(FLY-353)**是稳健 failover 的前提,建议先落或并行。
+- **战略:横向 → 云 = 无上限。** 纵向(换大机)有天花板 + 单点、且已做;1005 = 横向:多台 → **弹性云节点** → 按需 scale、无上限、失败域隔离。额度不在此列(多机不加额度,per-账号)。
+- **架构主线 Option A:单 Bridge hub(state 留 hub)+ 无状态卫星/云节点 runner**,复用已有**出站 HTTP**(stage/complete/heartbeat/events)+ Tailscale 内网,**刻意回避跨机 StateStore 一致性——无状态才敢弹性开关节点**。被 homerail(Manager/Node/Worker + callback URL)产品级验证。**注意**:ask/gate 问答态 + wake 现仍依赖本地 CommDB,阶段1 要补路由到 hub(不是「改个 URL」)。
+- **路线:第一台卫星(打通架构)→ 云 provision+deploy(战略终点)。** 同一套骨架,云只是把「卫星」换成「弹性镜像节点」。
+- **云阶段:沙箱(FLY-346)从可选变必需**(云节点 = Linux + 容器);**session-log(FLY-353)从可选升级变刚需**(云节点朝生暮死,runner 要能从 hub 日志无损重启)。
 
 ---
 
 ## 2. 目标 / 非目标
 
 **目标**
-- G1 突破单机内存/容量上限,让 fleet 能跑更多 runner。
-- G2 降低爆炸半径:一台机崩不再让整个 fleet 同时崩。
-- G3 支持异构/隔离放置(老公 Windows 项目、对外 agent 单独一台)。
-- G4 Discord 仍是唯一集中控制 UI,手机一个 Discord 控全部。
+- G1 **横向扩展 runner 容量到无上限** —— 多台机器 + 弹性开/关云节点,不受单机/物理机数量限制。
+- G2 **Provision + Deploy 上云** —— 把节点 setup 固化成可复现镜像,能按需弹性开云实例(scale up/down)。
+- G3 降低爆炸半径:失败域拆开,一个节点崩不再让整个 fleet 同时崩。
+- G4 Discord 仍是唯一集中控制 UI,手机一个 Discord 控全部(现已解耦,天然满足)。
+- G5(红利,非主目标)异构/隔离放置(对外 agent 单独节点)。
 
 **非目标(本轮明确不做)**
-- N1 **不做**跨机 StateStore 强一致(Option C);单 brain 绕过。
-- N2 **不做**云端弹性 scale(FLY-559,远期,epic FLY-648 下)。
-- N3 **不强制**容器化 runner(FLY-346);物理机即隔离。
-- N4 **不解决**额度瓶颈(那是加账号,不是加机器)。
-- N5 **不做**树状 Lead 层级(FLY-916,正交纵轴,另走)。
+- N1 **不做**跨机 StateStore 强一致(Option C);单 hub brain 绕过(且无状态才好弹性)。
+- N2 **不解决**额度瓶颈(那是加账号,不是加机器/节点)。
+- N3 **不做**树状 Lead 层级(FLY-916,正交纵轴,另走)。
+- N4 **不重复**换大机 / 内存优化(已单独做完,separate)。
 
 ---
 
@@ -39,19 +41,19 @@ Status: **draft PRD — 主线待 Annie 拍板后由 Lead 收口**(这是她点�
 
 ```mermaid
 graph LR
-    P0["阶段0 榨干单机<br/>footprint 减负 + 换大机 · 治内存救急"] --> P1["阶段1 最小 remote-runner<br/>单 hub + 无状态卫星"]
-    P1 --> P2["阶段2 沙箱 + 云/Linux 节点<br/>(FLY-346 + FLY-559)"]
-    P1 -.并行小路.-> PB["联邦 Option B<br/>异构放置最省力(老公 Windows/对外 agent)"]
-    P3S["FLY-353 session-log<br/>(先落/并行)"] -.enable 无损 failover.-> P1
+    P1["阶段1 第一台卫星<br/>单 hub + 无状态卫星 runner<br/>(打通 Option A 架构)"] --> P2["阶段2 云节点镜像<br/>provision+deploy 上云<br/>(FLY-346 容器 + FLY-559)"]
+    P2 --> P3["阶段3 弹性 horizontal scale<br/>按需开/关云节点 + 调度"]
+    P1 -.并行小路.-> PB["联邦 Option B<br/>异构放置最省力(对外 agent/独立项目)"]
+    P3S["FLY-353 session-log"] -.阶段1 enable failover / 阶段3 刚需.-> P1
 ```
 
 | 阶段 | 内容 | 前置 | 判定 |
 |---|---|---|---|
-| **0 榨干单机** | footprint 减负(FLY-751)+ 换大机(48GB→更大,FLY-558 搬大机 + FLY-519) | 无 | 立即,治内存 |
-| **1 最小 remote-runner** | 单 Bridge hub + 无状态卫星 runner-agent(§4) | Tailscale + 阶段0 或现机 | 本 PRD 主体 |
-| **1' 联邦(可选并行)** | 每机独立完整 Flywheel,各连 Discord(Option B) | 无(=复制单机) | 只为异构放置 |
-| **2 沙箱 + 云** | 容器化 runner + Linux/云节点(FLY-346 + FLY-559) | 阶段1 | 远期 |
-| **(横切) session-log** | FLY-353 事件日志 → 无状态 runner 可重建 | 独立 | 先落/并行,给阶段1 无损 failover |
+| **1 第一台卫星** | 单 Bridge hub + 无状态卫星 runner-agent(§4),两台机 + Tailscale 打通架构 | Tailscale | 本 PRD 主体、架构最小验证 |
+| **2 云节点镜像** | 卫星 provision 固化成云节点镜像(容器,FLY-346)+ 弹性 provision/deploy(§4.6) | 阶段1 | 战略核心:上云 |
+| **3 弹性 scale** | 按需开/关云节点 + 跨机调度/placement + 云失败域(§4.6) | 阶段2 + FLY-353 | 无上限 horizontal scale |
+| **1' 联邦(可选并行)** | 每机/节点独立完整 Flywheel,各连 Discord(Option B) | 无(=复制单机) | 只为异构放置,不等主线 |
+| **(横切) session-log** | FLY-353 事件日志 → 无状态 runner 可重建 | 独立 | 阶段1 给 failover;阶段3 刚需 |
 
 ---
 
@@ -136,8 +138,33 @@ graph TB
 - 复用 FLY-519 脚本,加一个「卫星子集」模式。
 
 ### 4.5 可观测(对齐 FLY-561)
-- 多机后 Discord thread 要标 runner 在**哪台机** + tmux attach 命令(FLY-561)。
+- 多机后 Discord thread 要标 runner 在**哪台机/节点** + tmux attach 命令(FLY-561)。
 - **[UNKNOWN]** cmux GUI 跨机看不到卫星 pane(cmux 桌面 app,不跨机);手机场景靠 `ssh <卫星> + tmux attach`(FLY-561 已指此方向)。统一多机可观测需单独设计。
+
+---
+
+## 4B. 阶段2-3 详细设计:Provision + Deploy 上云 + 弹性 horizontal scale(1005 战略核心)
+
+> 阶段1 在两台物理机上打通 Option A 骨架后,**同一套骨架把「卫星」换成「弹性云镜像节点」** —— 这才是 Annie 说的无上限 horizontal scale。
+
+**(6) 云节点镜像(阶段2)**
+- 把 §4.4 的卫星 provision **固化成一个可复现节点镜像**(容器 / VM image):base OS(Linux)+ node/pnpm + claude CLI + runner-agent + tailscale。
+- **容器化(FLY-346)在这里从可选变必需** —— 云节点天然 Linux + 容器;homerail 的 `homerail_node` 起 Docker Worker、Worker 经 callback URL 回连 Manager,正是这个形态(research §4)。runner-agent ≈ `homerail_node`,容器 runner ≈ `homerail_worker`。
+- 开一个云节点 = 拉镜像 + 起 runner-agent + 入 tailnet + 向 hub 注册(§4.2 1)。
+
+**(7) 弹性 provision/deploy —— scale up/down(阶段3)**
+- hub 的 admission(§4.2 3)从「在固定几台里选」升级成一个 **node pool 管理器**:队列积压/现有节点满 → **开一台新云节点**;节点闲置超时 → **关掉**。
+- 实例选型 = **memory-optimized 高 RAM**(fleet 是内存游戏,每 runner ~1.3-1.4GB;别选 CPU-optimized)。对齐 FLY-559。
+- **调度/placement**(D7):issue 派到哪个节点、何时预热节点池摊平冷启动延迟(开实例+拉镜像+登录态就绪可能分钟级)。
+
+**(8) 云失败域 + 无损重启(阶段3,依赖 FLY-353)**
+- 云节点比家里机器更会**无预警消失**(spot 回收 / 网络分区)。heartbeat(FLY-172)察觉 → 从 **session-log(FLY-353)重建** runner → 在另一节点续跑。**这里 session-log 从「可选升级」变「刚需」**:节点朝生暮死,runner 必须能从 hub 日志无损重启,否则弹性 = 频繁丢 WIP。
+
+**(9) 云 secret / 登录态分发(阶段2-3,安全面)**
+- token / claude 登录态怎么安全推到一个临时云节点、销毁时怎么擦除?(D8)复用 FLY-245 gateway/broker 思路还是新机制,要 Codex/安全设计。云节点入 tailnet(私有 mesh、无公网入站)接 hub。
+
+**(10) 成本 model(阶段3 决策输入)**
+- memory-optimized 云实例按小时计费 + always-on hub;弹性开关省多少 vs 冷启动/预热浪费多少,要真实算账,决定「云 vs 多买几台物理机」哪个更值(D9)。
 
 ---
 
@@ -147,38 +174,49 @@ graph TB
 
 | 已有 issue | 本 PRD 对应 | 备注 |
 |---|---|---|
-| FLY-556 跨机 comm/StateStore | §4.2(1)(2)(4) + §4.3 | **改口径**:不做跨机 StateStore(N1),改成「单 hub + 无状态卫星 + HTTP/wake 跨机」 |
-| FLY-557 per-machine load + dispatch | §4.2(3) | admission per-node |
-| FLY-558 migration vs provision | §4.4 + 阶段0 | 搬大机 vs 卫星子集 |
-| FLY-561 tmux/机器可观测 | §4.5 | 多机后标机器 |
-| FLY-519 provisioning(done) | §4.4 | 加卫星子集模式 |
+| FLY-556 跨机 comm/StateStore | §4.2(1)(2)(4) + §4.3 | **改口径**:不做跨机 StateStore(N1),改成「单 hub + 无状态卫星/节点 + HTTP/wake 跨机」 |
+| FLY-557 per-machine load + dispatch | §4.2(3) + §4B(7) | admission per-node → 阶段3 升级成 node pool 弹性调度 |
+| FLY-558 migration vs provision | §4.4 | 卫星子集 provision(搬大机已 separate、非本 issue) |
+| FLY-561 tmux/机器可观测 | §4.5 | 多机后标机器/节点 |
+| FLY-519 provisioning(done) | §4.4 + §4B(6) | 卫星子集模式 → 云节点镜像雏形 |
+| FLY-559 云端弹性 scale | §4B(6)(7)(10) | **阶段2-3 战略核心**(上云 + 弹性),不再是「远期非目标」 |
+| FLY-346 AIO Sandbox / 容器 | §4B(6) | 云节点阶段**必需**(节点=容器) |
 | **新增建议** | runner-agent daemon | FLY-556 里没有独立列;建议单开一个 sub |
 | **新增建议** | Bridge tailnet 暴露 + 安全过审 | D1 决策后开 |
+| **新增建议** | 云 node pool 管理器 + 镜像 | 阶段3;可挂 FLY-559 |
 
-**横切依赖:** FLY-353 session-log(§4.2(5) 无损 failover)· FLY-346 沙箱(阶段2)· FLY-916 树(正交,不阻塞)。
+**横切依赖:** FLY-353 session-log(阶段1 failover / 阶段3 刚需)· FLY-916 树(正交纵轴,不阻塞)· FLY-648 可移植/核心-项目分离(云镜像的前置思路)。
 
 ---
 
 ## 6. 开放决策(要 Annie / Codex 拍)
 
 - **D1 Bridge 暴露方式:** (a) 放宽 loopback + token,还是 (b) tailnet 反代?(倾向 b,要 spike)—— 安全 sensitive,建议 Codex/安全过。
-- **D2 阶段0 先做哪个?** 先榨干单机 = footprint 减负(FLY-751,零成本)+ 换大机(48GB→更大)。内存最便宜的解;若 Annie 想直接跳阶段1 也行,但阶段1 有工程周期,救急还是要阶段0。
-- **D6 ask/gate/wake 路由方式:** 卫星 runner 的 ask/gate 问答态 + wake 现依赖本地 CommDB(§4.2 1b)。走 (a) HTTP 到 hub CommDB(倾向,同出站姿态),还是 (b) 给卫星一份可路由 comm 视图?这是阶段1 真正的工程量所在,要 Tadashi/Codex 定。
-- **D3 联邦 Option B 要不要作为并行小路先上?** 若近期就要「老公 Windows 独立跑 / 对外 agent 单独一台」,B 比阶段1 省力得多,可先做。
-- **D4 session-log(FLY-353)排序:** 先落 353 再多机(无损 failover 从第一天有),还是多机先上、353 到位再升级?
-- **D5 强能力 API 暴露到 tailnet 的风险边界** —— `/api/actions/*` 要不要在多机模式下进一步收紧(只允许 hub-local 触发)?
+- **D2 云 vs 更多物理机的先后:** 阶段1 用家里第二台物理机打通架构后,阶段2 直接上云,还是先多摆两台物理机?(战略终点是云,但物理机验证更快/更省;要 Annie 拍节奏。)
+- **D3 联邦 Option B 要不要作为并行小路先上?** 若近期就要「对外 agent / 独立项目单独节点」,B 比主线省力得多,可先做。
+- **D4 session-log(FLY-353)排序:** 先落 353 再多机(无损 failover 从第一天有),还是阶段1 先上、353 到位再升级?(注意:阶段3 云弹性时 353 是刚需,不是可选。)
+- **D5 强能力 API 暴露到 tailnet 的风险边界** —— `/api/actions/*` 要不要在多机/云模式下进一步收紧(只允许 hub-local 触发)?
+- **D6 ask/gate/wake 路由方式:** 卫星/节点 runner 的 ask/gate 问答态 + wake 现依赖本地 CommDB(§4.2 1b)。走 (a) HTTP 到 hub CommDB(倾向,同出站姿态),还是 (b) 给节点一份可路由 comm 视图?阶段1 真正的工程量所在,要 Tadashi/Codex 定。
+- **D7 云调度/placement + 冷启动:** issue 派到哪个节点、何时开新节点/回收、要不要预热节点池摊平冷启动延迟?(阶段3)
+- **D8 云 secret 分发:** 登录态/token 怎么安全推到临时云节点、销毁怎么擦除?复用 FLY-245 broker 还是新机制?(安全,阶段2-3)
+- **D9 成本 model:** 云 memory-optimized 弹性开关 vs 多买物理机,哪个更值?要真实算账。(阶段3 决策输入)
 
 ---
 
 ## 7. 验收 / QA 思路
 
-- **阶段0:** 换机后 fleet 满载 free-RAM 稳定 > 阈值、无 swap thrash、nightly crash 消失。
-- **阶段1 真机 E2E(两台机 + Tailscale):**
-  1. hub dispatch → 卫星起 runner → runner 走 HTTP 回报 stage/gate/complete 全链通。
-  2. 跨机 wake:hub 唤醒卫星 idle runner,runner 醒。
-  3. admission:卫星满 → 新 dispatch 排队/转另一台,不 swap thrash。
+- **阶段1 真机 E2E(两台物理机 + Tailscale):**
+  1. hub dispatch → 卫星起 runner → runner 走 HTTP 回报 stage/complete/events 全链通。
+  2. 跨机 ask/gate/wake:hub 收到卫星 runner 的 ask/gate、唤醒卫星 idle runner,runner 醒(§4.2 1b)。
+  3. admission:卫星满 → 新 dispatch 排队/转另一台。
   4. failover:kill 卫星 → hub 察觉 → 重派;(有 353 则验无损续跑)。
   5. Discord 集中控制:手机 Discord 能看到并驱动跨机 runner(标了机器)。
+  6. 安全:未配 token 时多机模式 fail-start;`/actions` 不可从 tailnet 到达。
+- **阶段2-3 E2E(云):**
+  1. 从镜像开一个云节点 → 自动入 tailnet + 注册 hub + 起 runner,全自动(冷启动计时)。
+  2. 弹性:队列积压 → 自动开新节点;闲置 → 自动回收。
+  3. 云失败域:强杀/回收一个云节点 → hub 从 session-log 无损重启 runner 到另一节点。
+  4. secret:登录态安全分发 + 节点销毁后擦除验证。
 - 独立 QA(非实现者自验),对齐项目 auto-QA 政策。
 
 ---

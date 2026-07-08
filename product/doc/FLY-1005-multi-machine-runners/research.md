@@ -67,33 +67,33 @@ if (!ALLOWED_HOSTS.has(host)) throw new Error("TEAMLEAD_HOST must be loopback…
 
 ---
 
-## 2. 单机瓶颈的诚实诊断(回答问题①)
+## 2. 为什么是横向扩展 → 上云(而非纵向加内存)
 
-| 瓶颈类型 | 是不是真瓶颈 | 多机能治吗 | 更便宜的解 |
-|---|---|---|---|
-| **内存** | ✅ 是(结构性容量约束,非泄漏) | ✅ 能(把 runner 摊到多台) | **先榨干单机:换大机 AND/OR 减 footprint**(阶段0) |
-| **Claude 额度** | ⚠️ 是个真约束,但 **per-账号不 per-机器** | ❌ **不能**(加机器不加额度;同账号无论几台机都是同一 5h/7d 滚动上限) | 加账号 / codex multi-account fallback(已有) |
-| **CPU** | 🟡 次要(N 个 Claude+Chrome 抢核,但主要压力是 RAM/swap) | ✅ 能 | 换大机也能 |
-| **稳定性 / 爆炸半径** | ✅ 是(nightly「crash」= load 飙高 + WindowServer panic;一台崩 = 整个 fleet 同时崩) | ✅ **只有多机能治** | 无(单机再大也是单点) |
-| **安全 / 隔离** | ✅ Annie 说的主因(对外/不可信 agent 与主机同盘) | ✅ 多机 or 沙箱 | 沙箱(FLY-346)是另一条 |
+**重要定位(Annie 2026-07-08 校正):** 『换大机救急』**已经单独做完、与本 issue 无关** —— 内存瓶颈已被 vertical scale(换大机)解决。**FLY-1005 不讨论『多机值不值得做 / 内存该怎么治』**,而是专攻 **multi-machine 本身:横向扩展 → 把 Provision + Deploy 搬上云 → 真正无上限的 horizontal scale。**
 
-> **容量证据(2026-07 现状,已核):** driver 是 FLY-517(当时 16GB 机装不下 fleet)。但更近的实测在 `engineering/doc/FLY-753-memory-capacity/research.md` 与 `FLY-751-runner-memory-footprint/research.md`:每 session 约 **1.3-1.4GB**,一台 **48GB** host 在**优化前约 15-22 session 饱和**;而 **runner footprint 优化(FLY-751 slim MCP,默认给非-QA runner 拿掉 Chrome,已部分落地)可显著抬高单机容量**。→ 结论:**「16GB 需 25GB」是 FLY-517 旧测量,现状已在 48GB + footprint 优化的轨道上**;research 用当前证据,别引旧数字当唯一依据。
+战略框架(Annie 原话精神):
 
-**诚实结论(问题①):**
-1. **当下最痛的瓶颈是内存,而治内存最便宜的不是多机、是先榨干单机容量**——即 **runner footprint 减负(FLY-751,已部分做)+ 换/用更大 host(48GB→更大)**。只为治内存上多机 = 用分布式系统的复杂度换本可靠单机优化解决的问题,不划算。→ **阶段0 应该先榨干单机(footprint + 大机),对齐 FLY-517 ①/② + FLY-751/753。**
-2. **额度这条要澄清:多机不解决额度。** 若哪天真瓶颈变成额度,方向是加账号,不是加机器。别让「多机」背这个锅。
-3. **多机真正不可替代的价值 = 爆炸半径隔离 + 无上限横向 scale + 异构放置(老公 Windows / 对外 agent 单独一台)。** 这些**不是现在最痛、但随 fleet 变大和对外 agent(Anna 访谈 bot)到来会变成硬需求**。→ 所以多机**值得做**,但要**为对的理由做、分阶段做**。
+| | 纵向 vertical(加内存/换大机) | 横向 horizontal(多机 → 云)= 本 issue |
+|---|---|---|
+| 手段 | 一台机器堆更大 RAM | 多台机器 + 弹性开云节点 |
+| 上限 | **有天花板**(买不到无限大的机;单点) | **无上限**(按需开/关节点) |
+| 状态 | ✅ 已做(separate,非 1005 命题) | ⬅ 1005 命题 |
+| 爆炸半径 | 单点(再大也一台崩全崩) | 隔离(失败域拆开) |
+| 弹性 | 无(固定容量) | 有(按需 scale up/down) |
+
+→ 所以本 research 的命题不是『做不做』,而是『**怎么做好横向扩展 → 上云**』。诚实前提:横向的代价是**分布式复杂度**(跨机状态、调度、失败域),要设计好、UNKNOWN 标清(§7)。
+
+**关于额度(顺带澄清,不是命题):** 多机不增加 Claude 额度(额度 per-账号,同账号无论几台机都是同一 5h/7d 滚动上限)。横向 scale 是加**算力/节点**,不是加额度;额度到顶是加账号 / codex multi-account fallback(已有)。别让『多机』背额度的锅。
+
+**顺带保留的另两个横向价值(非命题、但真实):** 爆炸半径隔离(一台崩不再全崩)+ 异构/隔离放置(对外 agent 如 Anna 访谈 bot 单独节点)。它们是横向天然带来的红利,cloud 化后更强。
 
 ---
 
 ## 3. 方案空间(回答问题②:怎么做)
 
-### 3.1 纵向(阶段0):先榨干单机 —— footprint 减负 + 大机
+### 3.1 起点不是『换大机』,是『第一台卫星 / 云节点』
 
-- 做法两条并行:(a) **runner footprint 减负**(FLY-751 slim MCP 已部分落地;继续减非必要进程 = 同机塞更多 session,零硬件成本);(b) **换/用更大 host**(48GB→更大 Mac Studio,Apple Migration Assistant 全套搂过去 = FLY-558「搬大机」+ FLY-519 补 fleet 启动)。
-- 优点:(a) 零成本;(b) 零代码、立即治内存、当天见效。
-- 缺点:有上限(footprint 减到头 + 买不到无限大的机)、单点(还是一台崩全崩)、无隔离。
-- 定位:**先做这个救急 + 给多机争取时间**,不是终点。
+纵向(换大机)**已做且有天花板**(§2),不在本 research 的路线里。**1005 的分阶段从第一台卫星节点起**:先在一台额外机器(家里第二台 Mac,或第一个云节点)跑无状态 runner,把最小 remote-runner 架构(§3.2 Option A)在两台机上打通,再走向**弹性云 provision + deploy**(§3.6)。终点是「Discord 一处集中控制,底下按需开关云节点跑 runner」的无上限 horizontal scale。
 
 ### 3.2 横向物理多机 —— 三个架构选项
 
@@ -141,8 +141,25 @@ graph LR
 
 ### 3.5 provision / setup(FLY-558 / FLY-519)
 
-- 两条路别混:**搬大机** = Migration Assistant 全克隆(阶段0);**拆多机** = 每台 provision 一个子集(FLY-519 脚本,已 done)。
-- 卫星机的 provision 比主机轻:只要 node/pnpm/tmux/claude CLI + runner-agent + Tailscale 入网,**不需要** Discord bot / Lead / 全套 launchd。
+- 卫星/云节点的 provision 比主机轻:只要 node/pnpm/tmux/claude CLI + runner-agent + Tailscale 入网,**不需要** Discord bot / Lead / 全套 launchd。
+- FLY-519 provisioning 脚本(已 done)是起点;加一个「卫星子集」模式(见 plan §4.4)。这条脚本正是**云节点镜像**的雏形(§3.6)。
+
+### 3.6 走向云:Provision + Deploy 上云 = 无上限 horizontal scale(1005 战略核心)
+
+家里几台物理机只是第一步(受物理机数量限制);**真正的 horizontal scale 是把 provision + deploy 搬上云 —— 按需弹性开/关云节点**。三块:
+
+- **云节点 = 可复现镜像。** 把 §3.5 的卫星 provision 固化成一个**节点镜像**(容器 / VM image):node + claude CLI + runner-agent + 入 tailnet。开一个云实例 = 拉镜像 + 起 runner-agent + 向 hub 注册。**这里容器化(FLY-346)从「可选」变「必需」** —— 云节点天然是 Linux + 容器,homerail 的 Worker-in-Docker(§4)正是这个形态。
+- **弹性 provision/deploy(scale up/down)。** hub 的 admission(§3.3)从「在固定几台里选」升级成「不够就**开一台新云节点**、闲了**关掉**」。这是纵向永远给不了的:纵向买一台大机是固定容量 + 单点;横向按需开云节点 = 无上限 + 无单点。
+- **实例选型 = 内存优化型。** fleet 是内存游戏(每 runner ~1.3-1.4GB),云实例要选 **memory-optimized 高 RAM**(不是 CPU-optimized)。参照 FLY-559 的记录。
+
+**horizontal scale 架构的三个硬问题(诚实,UNKNOWN 见 §7):**
+1. **调度(scheduling/placement):** 一个 issue 派到哪个节点?何时开新节点、何时回收?冷启动延迟(开云实例 + 拉镜像 + 登录态就绪)怎么摊平?
+2. **跨机状态:** 沿用 Option A「单 hub brain + state 留 hub」→ 云节点无状态、可随时开关(这是刻意为弹性选的:无状态才敢弹)。ask/gate/wake 收口到 hub(§1.3)。**这是为什么不走 Option C**:跨机共享 DB 会让「随手关一个节点」变危险。
+3. **失败域(failure domains):** 云节点比家里机器更会「无预警消失」(spot 回收 / 网络分区)。heartbeat(FLY-172)+ 从 session-log 重建(FLY-353)是弹性云的**刚需**,不再是「可选升级」—— 云节点朝生暮死,runner 必须可从 hub 日志无损重启。
+4. **安全/网络:** 云节点入 tailnet(私有 mesh,无公网入站)接 hub;secret(claude 登录态 / token)怎么安全分发到临时节点、节点销毁时怎么擦除 = 云化的新安全面(§7 UNKNOWN)。
+5. **成本:** 云 memory-optimized 实例按小时计费;弹性开关 = 只为真在跑的 runner 付费。但 always-on hub + 频繁开关的冷启动成本要 model(§7 UNKNOWN)。
+
+> **定位:** 家里第一台卫星(§3.2)= 打通架构的最小验证;云 provision+deploy(本节)= 战略终点。两者同一套 Option A 骨架,云只是把「卫星」换成「弹性镜像节点」。
 
 ---
 
@@ -210,17 +227,24 @@ homerail(GitHub xiaotianfotos/homerail)= 一个 TypeScript 编排 runtime,形态
 - **[UNKNOWN] 卫星 runner 的 mailbox 唤醒的确切落地** —— 是「wake 走 HTTP 到卫星的 runner-agent、由它写本地 inbox 文件」,还是「新增一个网络 transport 让 runner 直接联网收 wake」?transport 已抽象(§1.3)使两者都可行,但哪个更稳要看 Agent Team inbox 轮询的实现细节(未深挖到轮询频率/文件锁)。
 - **[UNKNOWN] cmux GUI 的跨机可观测** —— Annie 现在靠 cmux 看所有 pane;卫星机的 tmux 不在主机 cmux 里。FLY-561(tmux attach + 标机器)是方向,但「手机/主机怎么统一看多台的 runner」需要单独设计。tmux 支持远程 attach(ssh),cmux 不行(桌面 app)。
 - **[已知约束,非 UNKNOWN] git/worktree 跨机** —— 卫星 runner 在本地 checkout 干活、push 分支、开 PR;这条本来就走 GitHub(云),跨机无碍。**已知设计约束**:worktree 是 runner 本地的,GitHub/PR 态天然共享,但「主机 Lead / Annie 想看卫星 runner 的本地 diff / handoff」要走 GitHub(不是本地文件)——这是个**产品决策点**(diff 观感/handoff UX 怎么呈现),不是技术未知。
-- **[UNKNOWN] Claude CLI 登录态跨机** —— 每台卫星要各自 `claude login`(或复制 CLAUDE_CONFIG_DIR)。多机 = 多套登录态维护;和 codex multi-account 一样要 per-机管理。运维成本项,未量化。
+- **[UNKNOWN] Claude CLI 登录态跨机 / 云** —— 每台卫星要各自 `claude login`(或复制 CLAUDE_CONFIG_DIR)。多机 = 多套登录态维护;云弹性节点更棘手:临时节点怎么安全拿到登录态、销毁时怎么擦除(见下一条 secret)。运维成本项,未量化。
+- **[UNKNOWN·云] 冷启动延迟** —— 开一个云实例 + 拉镜像 + runner-agent 注册 + 登录态就绪要多久?若是分钟级,弹性 scale 的响应性 / 何时预热节点池要设计。
+- **[UNKNOWN·云] spot / 抢占式回收的失败率** —— 用便宜的 spot 实例省钱但会被无预警回收;回收率多高、是否值得用,取决于 session-log(FLY-353)重建的成熟度。要 model。
+- **[UNKNOWN·云] secret 分发到临时节点** —— token / claude 登录态怎么安全推到一个朝生暮死的云节点、节点销毁时怎么保证擦除?复用 FLY-245 gateway/broker 的思路还是新机制?安全面,要 Codex/安全设计。
+- **[UNKNOWN·云] 成本 model** —— memory-optimized 云实例按小时计费 + always-on hub;弹性开关省多少、冷启动/预热浪费多少,要真实算一笔账才知道云 vs 多买几台物理机哪个更值。
 
 ---
 
 ## 8. 诚实结论
 
-1. **做不做?** **做,但分阶段、为对的理由做。** 当下最痛是内存,而内存最便宜的解是**先榨干单机(阶段0):runner footprint 减负(FLY-751,已部分做)+ 换/用更大 host**——不要用多机的分布式复杂度去背内存的锅,更不要用它背「额度」的锅(多机不加额度)。多机真正的价值是**隔离/爆炸半径 + 无上限横向 scale + 异构放置**,这些随 fleet 变大 + 对外 agent 到来会变硬需求。
-2. **怎么做?** **Option A:单 Bridge hub(state 留主机)+ 无状态卫星 runner-agent + 复用已有出站 HTTP + Tailscale 内网。刻意回避跨机 StateStore 一致性(Option C)。** 这被 homerail(Manager/Node/Worker + callback URL)产品级验证。**出站控制面**(stage/complete/heartbeat/events 走 HTTP、Discord 出站、transport 抽象、heartbeat)大体就绪;**但要补一层把 ask/gate 问答态 + wake(现依赖本地 CommDB)路由到 hub**。要破:锚点 A(Bridge 暴露,3 步:绑内网 + 显式 TEAMLEAD_URL + 保本地兜底)+ 锚点 C(卫星 spawn + wake + 本地 CommDB 依赖)。**安全前置**:多机模式必须 fail-start 除非配了 token;`/actions` 等宽 dashboard 路由保持 loopback-only(见 plan §4.2)。
-3. **沙箱(346)?** near-term 物理多机**不强制**(物理机即隔离);沙箱留给云/Linux 节点阶段(那时必需)。macOS 上 Docker 是 Linux VM,别在 Mac 卫星硬上。
-4. **session-log(353)?** 不是基本分布的前提,是**稳健 failover 的前提**;353 杠杆更高、正好去掉多机最难一块 → 先落或并行,两 research 互引。
-5. **树(916)?** 正交横纵轴,别互相绑死。
-6. **异构放置(老公 Windows / 对外 agent)** 若只需要「各跑各的、Discord 集中看」,**Option B(联邦)比 Option A 更省力** —— 值得在 PRD 里作为一条并行小路(不用等阶段1 的跨机编排)。
+> **命题已校正(Annie 2026-07-08):** 不是『多机做不做 / 内存怎么治』(换大机已单独做完),而是『**怎么做好横向扩展 → 上云**』。以下是「怎么做」的诚实结论。
+
+1. **战略框架:横向 → 云 = 无上限。** 纵向(换大机)有天花板 + 单点、且已做;1005 = 横向:多台 → 弹性云节点 → 按需 scale、无上限、失败域隔离。额度不在此列(多机不加额度)。
+2. **怎么做(架构主线)?** **Option A:单 Bridge hub(state 留 hub)+ 无状态卫星/云节点 runner + 复用已有出站 HTTP + Tailscale 内网。刻意回避跨机 StateStore 一致性(Option C)——无状态才敢弹性开关节点。** 被 homerail(Manager/Node/Worker + callback URL)产品级验证。**出站控制面**(stage/complete/heartbeat/events 走 HTTP、Discord 出站、transport 抽象、heartbeat)大体就绪;**但要补一层把 ask/gate 问答态 + wake(现依赖本地 CommDB)路由到 hub**。要破:锚点 A(Bridge 暴露,3 步:绑内网 + spawn 侧 TEAMLEAD_URL + 保本地兜底)+ 锚点 C(节点 spawn + wake + 本地 CommDB 依赖);锚点 B(本地 SQLite)靠 state 只留 hub 绕过。**安全前置**:多机模式必须 fail-start 除非配了 token;`/actions` 等宽 dashboard 路由保持 loopback-only(见 plan §4.2)。
+3. **路线:从第一台卫星起、终点在云。** 阶段1 = 家里第一台卫星机打通 Option A(最小验证);阶段2 = 把卫星 provision 固化成**云节点镜像 + 弹性 provision/deploy**(§3.6)= 战略终点。同一套骨架,云只是把「卫星」换成「弹性镜像节点」。
+4. **沙箱(346)?** 家里物理卫星**不强制**(物理机即隔离);**云节点阶段变必需**(云节点 = Linux + 容器,homerail 的 Worker-in-Docker 就是这个形态)。macOS 上 Docker 是 Linux VM,别在 Mac 卫星硬上;云节点则天然容器。
+5. **session-log(353)?** 家里卫星阶段是「稳健 failover 的前提」;**云弹性阶段变刚需**——云节点朝生暮死(spot 回收),runner 必须能从 hub 日志无损重启。353 杠杆更高 → 先落或并行,两 research 互引。
+6. **树(916)?** 正交:树 = 纵轴(一个 Lead 注意力),多机 = 横轴(物理/云容量),别互相绑死。
+7. **横向的三大硬问题(诚实):** 调度/placement + 冷启动、跨机状态(选 Option A 无状态)、失败域(云更会无预警消失)——见 §3.6 + §7 UNKNOWN。
 
 → 具体分阶段路线 + 阶段1 给 Tadashi 的可建设计 + sub-issue 映射,见 plan.md。

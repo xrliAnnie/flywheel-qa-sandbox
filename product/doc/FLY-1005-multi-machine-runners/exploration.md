@@ -10,9 +10,9 @@ Issue: FLY-1005 (https://linear.app/geoforge3d/issue/FLY-1005/多机部署-multi
 
 Annie 2026-07-08 从 PRD 总览把「多机部署」选为 5-day-window 大方向之一。目标:把 runner 从『只在主开发机跑』扩展到**分散到多台机器**,突破单机资源上限 + 隔离风险。research → 值得就出 PRD → Tadashi。
 
-**直接 driver = FLY-517**(16GB 机器装不下当前 fleet):实测 fleet 负载需约 25GB(swap 用满 = 物理 RAM 的 2.5×)→ 永久 swap thrash、极慢。**无内存泄漏、无跑飞进程** —— 13 lead + 一堆 runner + Chrome 这套本身就装不进 16GB。今天 load 54→71 + swap tripwire(<400M free)又验证一次。这是一个**结构性容量约束**,不是 bug。
+**命题(Annie 2026-07-08 校正):** 历史 driver 是 FLY-517(16GB 装不下 fleet 的内存瓶颈),但**换大机救急已单独做完、与本 issue 无关**——内存瓶颈已被 vertical scale 解决。**1005 不讨论『多机值不值得 / 内存怎么治』**,而是专攻 **multi-machine 本身:横向扩展 → 把 Provision + Deploy 搬上云 → 真正无上限的 horizontal scale**(纵向加内存有天花板 + 单点;只有横向无上限)。
 
-> 关键:Annie 明确「不预设答案」。本 research 的第一问就是「到底做不做」,可能的诚实结论包括「先别做多机、先换台大机器」。
+> 关键:命题从「到底做不做」改成「**怎么做好横向扩展 → 上云**」。分阶段**从第一台卫星/云节点起,不从换大机起**。诚实、UNKNOWN 标清。
 
 ---
 
@@ -46,13 +46,13 @@ Annie 2026-07-08 从 PRD 总览把「多机部署」选为 5-day-window 大方�
 
 ## 3. 五个开放问题(research 提纲)
 
-逐个在 research.md 诚实回答,查不到标 UNKNOWN。
+逐个在 research.md 诚实回答,查不到标 UNKNOWN。(原始 issue 的 Q1『到底做不做』已被 Annie 校正为『怎么做好横向 → 上云』;下面按校正后命题组织。)
 
-1. **到底做不做?** 单机真实瓶颈是什么(资源/额度/稳定性)?多机能解决哪些、代价多大?
-2. **怎么做?** 部署架构:runner 怎么分发到多机、状态/记忆怎么同步、Bridge/Lead 怎么跨机协调、失败怎么 failover。
-3. **和沙箱化(FLY-346)的关系**(开放,不预设):多机要不要/怎么用沙箱?
-4. **和架构进化(FLY-353)/ fleet 规模(FLY-916)的关系:** 353 的 session-log 解耦是不是多机前提?树 vs 多机怎么协调、别重复?
-5. **参考 homerail**(GitHub xiaotianfotos/homerail):Home=跑自家 NAS/homelab + 沙箱,看它多机/隔离怎么做。
+1. **横向 → 云怎么做好?** 部署架构:runner 怎么分发到多机/云节点、Provision+Deploy 怎么上云弹性 scale、状态怎么处理、Bridge/Lead 怎么跨机协调、失败(尤其云节点无预警消失)怎么 failover。
+2. **横向 scale 的三大硬问题:** 调度/placement + 冷启动、跨机状态、失败域。
+3. **和沙箱化(FLY-346)的关系**(开放,不预设):多机要不要/怎么用沙箱?(云节点阶段是否必需?)
+4. **和架构进化(FLY-353)/ fleet 规模(FLY-916)的关系:** 353 的 session-log 解耦对云弹性 failover 是不是刚需?树 vs 多机怎么协调、别重复?
+5. **参考 homerail**(GitHub xiaotianfotos/homerail):Manager-hub + 无状态 Worker 容器 + callback URL,看它多机/云/隔离怎么做。
 
 ---
 
@@ -60,15 +60,12 @@ Annie 2026-07-08 从 PRD 总览把「多机部署」选为 5-day-window 大方�
 
 多机这个词底下缠了好几个不同的问题,先拆开:
 
-- **瓶颈的三种可能** —— 内存 ≠ 额度 ≠ 稳定性。三者的最优解不同(见 research §2):
-  - 内存不够 → 换大机 or 加机器都行。
-  - 额度不够 → **多机没用**(Claude 额度是 per-账号,不是 per-机器;加机器不加额度)。
-  - 稳定性(一台崩全崩)→ 只有多机(隔离爆炸半径)能治。
-- **纵向 vs 横向 scale:**
-  - 纵向 = 换更大的机器(32-64GB Mac Studio)。零代码,直接治内存,但有上限 + 单点。
-  - 横向 = 多台机器。突破上限 + 隔离,但分布式复杂度大。
-- **物理机 vs 云:** Annie 先物理机(安全考虑,自己买几台),成熟后考虑云端(FLY-559/648)。两条路的隔离/provision 手段不同。
-- **「跑在哪台」(placement)vs「隔离多强」(sandbox):** 多机 = runner 跑在**哪台物理机**;FLY-346 沙箱 = runner 在一台机上被**隔离多强**(Docker)。正交,可组合(research §5)。
+- **纵向 vs 横向 scale(核心区分):**
+  - 纵向 = 换更大的机器。**有天花板 + 单点,且已单独做完**(非本 issue)。
+  - 横向 = 多台机器 + **弹性云节点**。**无上限 + 失败域隔离** = **本 issue 命题**。代价 = 分布式复杂度(跨机状态/调度/失败域)。
+- **物理机 → 云(路线,不是二选一):** 先物理机(第一台卫星打通架构),再上云(provision+deploy 上云 = 真正无上限的弹性 scale)。不是「先物理再看看云」,云是战略终点(见 research §3.6)。
+- **额度 ≠ 算力:** 多机加的是**算力/节点**,不加 Claude 额度(额度 per-账号)。额度到顶是加账号,别让多机背这个锅。
+- **「跑在哪台」(placement)vs「隔离多强」(sandbox):** 多机 = runner 跑在**哪个节点**;FLY-346 沙箱 = runner 被**隔离多强**(容器)。正交但**云节点阶段沙箱变必需**(节点=容器,research §5)。
 
 ---
 
@@ -84,7 +81,7 @@ Annie 2026-07-08 从 PRD 总览把「多机部署」选为 5-day-window 大方�
 
 ## 6. 初步 thesis(将在 research 论证,非预设)
 
-> 多机**值得做,但不是主要为了治内存** —— 治内存最便宜的是先换台大机器(阶段0)。多机真正不可替代的价值是**隔离/爆炸半径 + 无上限横向 scale + 异构放置**,这些随 fleet 变大和「对外/不可信 agent(如 Anna 访谈 bot)」到来而变成硬需求。推荐**分阶段**:阶段0 换大机救急 → 阶段1 最小 remote-runner(单 Bridge brain + StateStore 留主机 + 无状态卫星 runner,复用已有 HTTP 通道 + Tailscale 内网,刻意回避跨机 StateStore 一致性)→ 阶段2 沙箱+云。这正是 homerail 的架构。
+> **横向扩展 → 上云是主线**(换大机纵向已单独做完、有天花板,非本 issue)。架构主线 = 单 Bridge hub(state 留 hub)+ 无状态卫星/云节点 runner,复用已有出站 HTTP + Tailscale,刻意回避跨机 StateStore 一致性(无状态才敢弹性开关节点)—— 正是 homerail 的 Manager-hub + 无状态 Worker。**分阶段:阶段1 第一台卫星打通架构 → 阶段2 provision+deploy 上云(容器镜像 + 弹性)→ 阶段3 按需开关云节点的无上限 horizontal scale。** 云阶段沙箱(346)变必需、session-log(353)变刚需。详见 research + plan。
 
 ---
 
