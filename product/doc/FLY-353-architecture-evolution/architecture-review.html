@@ -105,6 +105,25 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
   而不是当成一个笼统的「要不要做 session-log」。</b></p>
 </div>
 
+<div class="card green">
+  <h3>↩︎ 回应你第一轮批注(v3,逐条)</h3>
+  <ul>
+    <li><b>「用 Claude Code 就已经有 brain/hands/session、甚至不用自己存 session,对吗?」→ 对,完全正确。</b>
+    这就是收窄的核心:Claude Code 本身 = brain(它+harness)、hands(工具沙箱)、session(它的对话 transcript)。
+    <b>单机 + Claude,我们不用自己存 session。</b>只有用 <b>Codex/kimi</b> 才缺这层、体验差在记忆/续跑 —— 你说的这个正是场景①。</li>
+    <li><b>「Raft 和我们的 Lead 非常像」→ 对,架构上非常像</b>(持久进程 + 身份/记忆/专长、认领/并行/传话、跑自己硬件、换 runtime)。
+    唯一真差异<b>不在架构、在受众/产品</b>:Raft 面向开发者;我们面向非技术 founder + 有 Lead 做产品判断。<b>架构上我们没落后。</b></li>
+    <li><b>「我们绝不 respawn —— 真的吗?怎么做到?tmux?crash 了 tmux 还在、记住名字就行?」→ 见下面问题② 我修正了一点:</b>
+    真正保住 context 的<b>不是 tmux 扛住 crash,是我们不让那个进程退出(保活)</b>;真 crash 还是会丢 context(tmux 救不回死进程的记忆),那时只能粗粒度重建。这道缝 + 多机,正是自己 own log 的动机。</li>
+    <li><b>「单机可以,multi-machine 就不是这样了」→ 对,完全正确</b>(tmux send-keys 跨不了主机)= 场景③。</li>
+    <li><b>「静态 DAG 要你预先知道全部;开放式、边做边推进的活没法预先规划成静态图」→ 你说到根子上了,完全对。</b>
+    这正是我们把 DAG 弃用、转「Lead 现场动态派 + 人在环」的原因:我们的活是<b>探索性/开放式</b>(需求边做边清、要产品判断),
+    没法预先画成一张静态图照走。<b>所以不是我们不会做静态 DAG,是我们的活本来就不该用静态 DAG。</b></li>
+  </ul>
+  <p class="hint">注:你这轮批注是在 v1 上写的;v2/v3 已把「为什么做 DAG / DAG 优势」「tmux 保活怎么实现」补进下面
+  <b>2c 节</b>(4 个问题的 grounded 答案),可对照看。你 <b>section 3</b> 的批注我这边只收到半句(截断了)—— 有更多的话再发我。</p>
+</div>
+
 <div class="legend">
   图例:<span class="tag have">我们已有</span> <span class="tag part">部分有/形态不同</span>
   <span class="tag gap">我们缺</span> <span class="tag unk">UNKNOWN</span>
@@ -225,6 +244,12 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
   <p><b>单机怎么实现(现状):</b> 每个 runner 跑在一个 <b>tmux</b> 会话里。为了不丢状态,我们<b>不 respawn、而是保活 + 唤醒</b>
   (FLY-887 保活 + FLY-939 wake-not-respawn):那个 phase session 一直<b>挂着(parked)</b>;要重跑/复验时,Bridge 给它发一个
   <b>mailbox 唤醒 + 用 <code>tmux send-keys</code> 把消息打进那个终端</b>,让原来那个进程接着干,<b>而不是</b>新起一个。</p>
+  <p><b>⚠️ 精确一点(回应你的问题「crash 了 tmux 还在、记住名字就行?」):不完全是。</b> 真正保住 context 的<b>不是 tmux</b>,是
+  <b>「我们不让那个 claude 进程退出」</b> —— 它 parked/idle 但<b>一直活着</b>,所以它<b>内存里的完整 context 还在</b>(代码原话:
+  parked session「woken, not respawned, keep full context」)。tmux 只是<b>托住这个活进程的壳</b>。<b>如果进程<u>真的挂了</u></b>
+  (crash / 显式 terminate / reboot),tmux 窗口还在,<b>但那个死进程内存里的 context 就没了 —— tmux 救不回死进程的记忆</b>;
+  这时只能重启 + 从 <code>progress.md</code> <b>粗粒度</b>重建(丢细节)。<b>所以真机制 = 「别让进程退出」;它在单机、进程没真死时好用,
+  真 crash 会丢、多机也不行</b> —— 这两道缝正是「自己 own 一条 log」能补的(= 场景②③ 的动机)。</p>
   <p><b>为什么这套只在单机成立:</b> <code>tmux send-keys</code> 是<b>本机操作</b> —— Bridge 得和那个 tmux 会话在<b>同一台机器</b>、
   用同一个 tmux socket 才能戳进去。我们现在正是<b>单机</b>(Lead + 所有 runner 都在同一台 Mac)。</p>
   <p><b>多机就不是这样了(你点的那点,对):</b> 一旦 runner 分散到<b>多台机器</b>,machine A 的 Bridge<b>没法</b> <code>tmux send-keys</code>
