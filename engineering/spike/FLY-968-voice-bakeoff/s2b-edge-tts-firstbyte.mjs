@@ -44,11 +44,19 @@ for (const [i, text] of SENTENCES.entries()) {
 	for (let run = 0; run < 3; run++) {
 		const r = await probe(text, `out/s2b-${i}-${run}.mp3`);
 		results.push({ sentence: i, run, chars: text.length, ...r });
-		console.error(`[s${i} r${run}] firstByte=${r.firstByteMs}ms total=${r.totalMs}ms`);
+		console.error(
+			`[s${i} r${run}] firstByte=${r.firstByteMs}ms total=${r.totalMs}ms`,
+		);
 	}
 }
-writeFileSync("out/s2b-firstbyte-results.json", JSON.stringify(results, null, 2));
+writeFileSync(
+	"out/s2b-firstbyte-results.json",
+	JSON.stringify(results, null, 2),
+);
 const fbs = results.map((r) => r.firstByteMs).sort((a, b) => a - b);
 console.log(
-	JSON.stringify({ median_firstByte_ms: fbs[Math.floor(fbs.length / 2)], all: fbs }),
+	JSON.stringify({
+		median_firstByte_ms: fbs[Math.floor(fbs.length / 2)],
+		all: fbs,
+	}),
 );

@@ -5,11 +5,13 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import WebSocket from "ws";
-import { makeLogger, sleep, pcmToWav } from "./lib/events.mjs";
+import { makeLogger, pcmToWav, sleep } from "./lib/events.mjs";
 
 const [, , agentId, roundsArg] = process.argv;
 if (!process.env.ELEVENLABS_API_KEY || !agentId) {
-	console.error("usage: ELEVENLABS_API_KEY=... node s5-elevenlabs-agent.mjs <agent_id>");
+	console.error(
+		"usage: ELEVENLABS_API_KEY=... node s5-elevenlabs-agent.mjs <agent_id>",
+	);
 	process.exit(2);
 }
 const { now, logEvent } = makeLogger("out/s5-elevenlabs.jsonl");
@@ -44,12 +46,17 @@ ws.on("message", (raw) => {
 		return;
 	}
 	if (msg.type === "ping") {
-		ws.send(JSON.stringify({ type: "pong", event_id: msg.ping_event?.event_id }));
+		ws.send(
+			JSON.stringify({ type: "pong", event_id: msg.ping_event?.event_id }),
+		);
 		return;
 	}
 	logEvent({ type: `evt:${msg.type}` });
 	if (msg.type === "conversation_initiation_metadata")
-		logEvent({ type: "init-detail", meta: msg.conversation_initiation_metadata_event });
+		logEvent({
+			type: "init-detail",
+			meta: msg.conversation_initiation_metadata_event,
+		});
 	if (!round) return;
 	if (msg.type === "user_transcript")
 		round.userTx = msg.user_transcription_event?.user_transcript ?? "";
@@ -85,13 +92,17 @@ for (const spec of ROUNDS) {
 		agentText: "",
 	};
 	for (let k = 0; k < 15; k++) {
-		ws.send(JSON.stringify({ user_audio_chunk: silenceFrame.toString("base64") }));
+		ws.send(
+			JSON.stringify({ user_audio_chunk: silenceFrame.toString("base64") }),
+		);
 		await sleep(FRAME_MS);
 	}
 	for (let off = 0; off < speech.length; off += FRAME_BYTES) {
 		ws.send(
 			JSON.stringify({
-				user_audio_chunk: speech.subarray(off, off + FRAME_BYTES).toString("base64"),
+				user_audio_chunk: speech
+					.subarray(off, off + FRAME_BYTES)
+					.toString("base64"),
 			}),
 		);
 		await sleep(FRAME_MS);
@@ -101,14 +112,18 @@ for (const spec of ROUNDS) {
 	// 尾随静音直到收到首 audio + 再等 4s 收尾(或 20s 超时)
 	const t0 = Date.now();
 	while (round.firstAudioMs === null && Date.now() - t0 < 20_000) {
-		ws.send(JSON.stringify({ user_audio_chunk: silenceFrame.toString("base64") }));
+		ws.send(
+			JSON.stringify({ user_audio_chunk: silenceFrame.toString("base64") }),
+		);
 		await sleep(FRAME_MS);
 	}
 	await sleep(4000);
 	results.push({
 		id: spec.id,
 		endpointToFirstAudio_ms:
-			round.firstAudioMs !== null ? round.firstAudioMs - round.speechEndMs : null,
+			round.firstAudioMs !== null
+				? round.firstAudioMs - round.speechEndMs
+				: null,
 		endpointToFirstText_ms:
 			round.firstTextMs !== null ? round.firstTextMs - round.speechEndMs : null,
 		audioBytes: round.audioBytes,
@@ -123,7 +138,13 @@ for (const spec of ROUNDS) {
 }
 ws.close();
 if (chunksAll.length)
-	writeFileSync("out/s5-elevenlabs-agent.wav", pcmToWav(Buffer.concat(chunksAll), 16000));
-writeFileSync("out/s5-elevenlabs-results.json", JSON.stringify({ agentId, results }, null, 2));
+	writeFileSync(
+		"out/s5-elevenlabs-agent.wav",
+		pcmToWav(Buffer.concat(chunksAll), 16000),
+	);
+writeFileSync(
+	"out/s5-elevenlabs-results.json",
+	JSON.stringify({ agentId, results }, null, 2),
+);
 console.log(JSON.stringify(results, null, 2));
 process.exit(0);

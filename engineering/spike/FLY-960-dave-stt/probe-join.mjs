@@ -1,7 +1,7 @@
 // 诊断探针:join 握手全链路观测(gateway raw 事件 + adapter sendPayload + 状态机)。
 // usage: DISCORD_TOKEN=... node probe-join.mjs <guildId> <channelId>
 
-import { joinVoiceChannel, VoiceConnectionStatus } from "@discordjs/voice";
+import { joinVoiceChannel } from "@discordjs/voice";
 import { Client, Events, GatewayIntentBits } from "discord.js";
 
 const [, , guildId, channelId] = process.argv;

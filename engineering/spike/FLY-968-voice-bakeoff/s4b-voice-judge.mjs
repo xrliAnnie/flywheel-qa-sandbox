@@ -6,7 +6,7 @@
 //   e.g. node s4b-voice-judge.mjs out/s4a-voice- gemini
 //        node s4b-voice-judge.mjs out/s3-voice-  openai
 
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { GoogleGenAI } from "@google/genai";
 import { sleep } from "./lib/events.mjs";
 
@@ -19,7 +19,8 @@ if (!prefix || !label) {
 	console.error("usage: node s4b-voice-judge.mjs <prefix> <label>");
 	process.exit(2);
 }
-const JUDGE_MODEL = process.env.FLYWHEEL_VOICE_JUDGE_MODEL ?? "gemini-2.5-flash";
+const JUDGE_MODEL =
+	process.env.FLYWHEEL_VOICE_JUDGE_MODEL ?? "gemini-2.5-flash";
 const SENTENCE = "大家好，我是语音会议里的工程 Lead。Huddle 模式今天可以用了。";
 
 const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -39,7 +40,12 @@ for (const f of files) {
 			{
 				role: "user",
 				parts: [
-					{ inlineData: { mimeType: "audio/wav", data: audio.toString("base64") } },
+					{
+						inlineData: {
+							mimeType: "audio/wav",
+							data: audio.toString("base64"),
+						},
+					},
 					{
 						text:
 							`这段音频应该念的是:「${SENTENCE}」。请输出 JSON(不要 markdown 包裹):` +
@@ -61,7 +67,9 @@ for (const f of files) {
 		judged = { parseError: res.text.slice(0, 200) };
 	}
 	perVoice.push({ voice, file: `${dir}/${f}`, ...judged });
-	console.error(`[${voice}] intel=${judged.intelligibility} ${judged.gender ?? ""} ${judged.timbre ?? ""}`);
+	console.error(
+		`[${voice}] intel=${judged.intelligibility} ${judged.gender ?? ""} ${judged.timbre ?? ""}`,
+	);
 	await sleep(300);
 }
 
@@ -87,7 +95,9 @@ const res2 = await client.models.generateContent({
 });
 let ranking = null;
 try {
-	ranking = JSON.parse(res2.text.replace(/^```json?\s*/i, "").replace(/```\s*$/, ""));
+	ranking = JSON.parse(
+		res2.text.replace(/^```json?\s*/i, "").replace(/```\s*$/, ""),
+	);
 } catch {
 	ranking = { parseError: res2.text.slice(0, 400) };
 }

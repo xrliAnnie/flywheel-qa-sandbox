@@ -56,7 +56,8 @@ async function runCase(id, model, injectFn) {
 			callbacks: {
 				onmessage: (msg) => {
 					const sc = msg?.serverContent;
-					if (sc?.outputTranscription?.text) st.outTx += sc.outputTranscription.text;
+					if (sc?.outputTranscription?.text)
+						st.outTx += sc.outputTranscription.text;
 					for (const p of sc?.modelTurn?.parts ?? []) {
 						if (p?.inlineData?.data) {
 							st.bytes += Buffer.from(p.inlineData.data, "base64").length;
@@ -71,13 +72,21 @@ async function runCase(id, model, injectFn) {
 			},
 		});
 	} catch (e) {
-		return { id, model, status: "connect-failed", error: String(e?.message ?? e) };
+		return {
+			id,
+			model,
+			status: "connect-failed",
+			error: String(e?.message ?? e),
+		};
 	}
 
 	const pushAudio = async (pcm) => {
 		for (let k = 0; k < 15; k++) {
 			session.sendRealtimeInput({
-				audio: { data: silenceFrame.toString("base64"), mimeType: "audio/pcm;rate=16000" },
+				audio: {
+					data: silenceFrame.toString("base64"),
+					mimeType: "audio/pcm;rate=16000",
+				},
 			});
 			await sleep(FRAME_MS);
 		}
@@ -91,12 +100,17 @@ async function runCase(id, model, injectFn) {
 			await sleep(FRAME_MS);
 		}
 		const end = now();
-		const done = new Promise((r) => (st.turnDone = r));
+		const done = new Promise((r) => {
+			st.turnDone = r;
+		});
 		let silencing = true;
 		const silencer = (async () => {
 			while (silencing) {
 				session.sendRealtimeInput({
-					audio: { data: silenceFrame.toString("base64"), mimeType: "audio/pcm;rate=16000" },
+					audio: {
+						data: silenceFrame.toString("base64"),
+						mimeType: "audio/pcm;rate=16000",
+					},
 				});
 				await sleep(FRAME_MS);
 			}
@@ -129,7 +143,7 @@ async function runCase(id, model, injectFn) {
 	st.bytes = 0;
 	st.outTx = "";
 	st.firstAudioMs = null;
-	const end = await pushAudio(readFileSync("ref/u5-16k.pcm"));
+	await pushAudio(readFileSync("ref/u5-16k.pcm"));
 	const result = {
 		id,
 		model,
@@ -168,9 +182,16 @@ const injectRealtimeText = async (session) => {
 };
 
 const results = [];
-results.push(await runCase("B-31-clientContent", MODEL_31, injectClientContent));
-results.push(await runCase("C-25-clientContent", MODEL_25, injectClientContent));
+results.push(
+	await runCase("B-31-clientContent", MODEL_31, injectClientContent),
+);
+results.push(
+	await runCase("C-25-clientContent", MODEL_25, injectClientContent),
+);
 results.push(await runCase("D-25-realtimeText", MODEL_25, injectRealtimeText));
-writeFileSync("out/s4c-feed-comparison-results.json", JSON.stringify(results, null, 2));
+writeFileSync(
+	"out/s4c-feed-comparison-results.json",
+	JSON.stringify(results, null, 2),
+);
 console.log(JSON.stringify(results, null, 2));
 process.exit(0);

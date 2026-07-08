@@ -7,7 +7,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import WebSocket from "ws";
-import { makeLogger, sleep, pcmToWav } from "./lib/events.mjs";
+import { makeLogger, pcmToWav, sleep } from "./lib/events.mjs";
 
 if (!process.env.OPENAI_API_KEY) {
 	console.error("OPENAI_API_KEY missing in env");
@@ -17,8 +17,16 @@ const MODEL = process.env.FLYWHEEL_VOICE_OPENAI_MODEL ?? "gpt-realtime-2.1";
 const PART = process.argv[2] ?? "all";
 const { now, logEvent } = makeLogger("out/s3-openai-basics.jsonl");
 const VOICES = [
-	"alloy", "ash", "ballad", "coral", "echo",
-	"sage", "shimmer", "verse", "marin", "cedar",
+	"alloy",
+	"ash",
+	"ballad",
+	"coral",
+	"echo",
+	"sage",
+	"shimmer",
+	"verse",
+	"marin",
+	"cedar",
 ];
 const SENTENCE = "大家好，我是语音会议里的工程 Lead。Huddle 模式今天可以用了。";
 const FRAME_BYTES = 960;
@@ -32,7 +40,9 @@ function connect(sessionPatch, onMsg) {
 			{ headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` } },
 		);
 		ws.on("open", () => {
-			ws.send(JSON.stringify({ type: "session.update", session: sessionPatch }));
+			ws.send(
+				JSON.stringify({ type: "session.update", session: sessionPatch }),
+			);
 		});
 		ws.on("message", (raw) => {
 			let msg;
@@ -43,7 +53,10 @@ function connect(sessionPatch, onMsg) {
 			}
 			if (msg.type === "error") {
 				logEvent({ type: "error-detail", error: msg.error });
-				console.error("[server error]", JSON.stringify(msg.error).slice(0, 300));
+				console.error(
+					"[server error]",
+					JSON.stringify(msg.error).slice(0, 300),
+				);
 			}
 			if (msg.type === "session.updated") resolve(ws);
 			onMsg(msg, ws);
@@ -54,11 +67,21 @@ function connect(sessionPatch, onMsg) {
 
 async function streamSpeech(ws, pcm) {
 	for (let k = 0; k < 15; k++) {
-		ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: silenceFrame.toString("base64") }));
+		ws.send(
+			JSON.stringify({
+				type: "input_audio_buffer.append",
+				audio: silenceFrame.toString("base64"),
+			}),
+		);
 		await sleep(FRAME_MS);
 	}
 	for (let off = 0; off < pcm.length; off += FRAME_BYTES) {
-		ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: pcm.subarray(off, off + FRAME_BYTES).toString("base64") }));
+		ws.send(
+			JSON.stringify({
+				type: "input_audio_buffer.append",
+				audio: pcm.subarray(off, off + FRAME_BYTES).toString("base64"),
+			}),
+		);
 		await sleep(FRAME_MS);
 	}
 }
@@ -69,12 +92,16 @@ async function partVoices() {
 	for (const voice of VOICES) {
 		const chunks = [];
 		let done = null;
-		const donePromise = new Promise((r) => (done = r));
+		const donePromise = new Promise((r) => {
+			done = r;
+		});
 		const ws = await connect(
 			{
 				type: "realtime",
 				output_modalities: ["audio"],
-				audio: { output: { format: { type: "audio/pcm", rate: 24000 }, voice } },
+				audio: {
+					output: { format: { type: "audio/pcm", rate: 24000 }, voice },
+				},
 			},
 			(msg) => {
 				if (msg.type === "response.output_audio.delta")
@@ -90,12 +117,22 @@ async function partVoices() {
 				},
 			}),
 		);
-		const status = await Promise.race([donePromise, sleep(20_000).then(() => "timeout")]);
+		const status = await Promise.race([
+			donePromise,
+			sleep(20_000).then(() => "timeout"),
+		]);
 		const pcm = Buffer.concat(chunks);
 		if (pcm.length > 0)
 			writeFileSync(`out/s3-voice-${voice}.wav`, pcmToWav(pcm, 24000));
-		summary.push({ voice, status, audioBytes: pcm.length, seconds: +(pcm.length / 48000).toFixed(1) });
-		console.error(`[voice ${voice}] ${status} ${(pcm.length / 48000).toFixed(1)}s`);
+		summary.push({
+			voice,
+			status,
+			audioBytes: pcm.length,
+			seconds: +(pcm.length / 48000).toFixed(1),
+		});
+		console.error(
+			`[voice ${voice}] ${status} ${(pcm.length / 48000).toFixed(1)}s`,
+		);
 		ws.close();
 		await sleep(300);
 	}
@@ -107,9 +144,13 @@ async function partVoices() {
 async function partTool() {
 	const events = [];
 	let callDone = null;
-	const callPromise = new Promise((r) => (callDone = r));
+	const callPromise = new Promise((r) => {
+		callDone = r;
+	});
 	let finalDone = null;
-	const finalPromise = new Promise((r) => (finalDone = r));
+	const finalPromise = new Promise((r) => {
+		finalDone = r;
+	});
 	let phase = "call";
 	let call = null;
 	let finalText = "";
@@ -142,7 +183,11 @@ async function partTool() {
 		(msg) => {
 			events.push(msg.type);
 			if (msg.type === "response.function_call_arguments.done")
-				call = { name: msg.name ?? "get_issue_status", call_id: msg.call_id, args: msg.arguments };
+				call = {
+					name: msg.name ?? "get_issue_status",
+					call_id: msg.call_id,
+					args: msg.arguments,
+				};
 			if (msg.type === "response.output_text.delta" && phase === "final")
 				finalText += msg.delta ?? "";
 			if (msg.type === "response.done") {
@@ -158,7 +203,12 @@ async function partTool() {
 	let silencing = true;
 	const silencer = (async () => {
 		while (silencing) {
-			ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: silenceFrame.toString("base64") }));
+			ws.send(
+				JSON.stringify({
+					type: "input_audio_buffer.append",
+					audio: silenceFrame.toString("base64"),
+				}),
+			);
 			await sleep(FRAME_MS);
 		}
 	})();
@@ -174,7 +224,11 @@ async function partTool() {
 				item: {
 					type: "function_call_output",
 					call_id: call.call_id,
-					output: JSON.stringify({ issue: "FLY-968", status: "In Progress", pr: "not yet approved" }),
+					output: JSON.stringify({
+						issue: "FLY-968",
+						status: "In Progress",
+						pr: "not yet approved",
+					}),
 				},
 			}),
 		);
@@ -187,10 +241,14 @@ async function partTool() {
 		callArgs: call?.args ?? null,
 		speechEndToCall_ms: call ? callMs : null,
 		finalText,
-		eventChain: events.filter((e) => /function_call|response\.(created|done)|speech_/.test(e)),
+		eventChain: events.filter((e) =>
+			/function_call|response\.(created|done)|speech_/.test(e),
+		),
 	};
 	writeFileSync("out/s3-tool-result.json", JSON.stringify(result, null, 2));
-	console.error(`[tool] fired=${result.toolCallFired} args=${result.callArgs} final="${finalText.slice(0, 80)}"`);
+	console.error(
+		`[tool] fired=${result.toolCallFired} args=${result.callArgs} final="${finalText.slice(0, 80)}"`,
+	);
 	return result;
 }
 
@@ -237,12 +295,21 @@ async function partBarge() {
 	// 尾随静音让 server VAD 判定 speech 结束;有界等待首个 audio delta
 	const waitStart = Date.now();
 	while (firstAudio === null && Date.now() - waitStart < 20_000) {
-		ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: silenceFrame.toString("base64") }));
+		ws.send(
+			JSON.stringify({
+				type: "input_audio_buffer.append",
+				audio: silenceFrame.toString("base64"),
+			}),
+		);
 		await sleep(FRAME_MS);
 	}
 	if (firstAudio === null) {
 		ws.close();
-		const result = { cancelled: false, error: "no-audio-response-within-20s", timeline };
+		const result = {
+			cancelled: false,
+			error: "no-audio-response-within-20s",
+			timeline,
+		};
 		writeFileSync("out/s3-barge-result.json", JSON.stringify(result, null, 2));
 		return result;
 	}
@@ -252,7 +319,12 @@ async function partBarge() {
 	await streamSpeech(ws, readFileSync("ref/u3a-24k.pcm"));
 	// 静音尾巴等服务端反应
 	for (let k = 0; k < 100; k++) {
-		ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: silenceFrame.toString("base64") }));
+		ws.send(
+			JSON.stringify({
+				type: "input_audio_buffer.append",
+				audio: silenceFrame.toString("base64"),
+			}),
+		);
 		await sleep(FRAME_MS);
 	}
 	await sleep(3000);

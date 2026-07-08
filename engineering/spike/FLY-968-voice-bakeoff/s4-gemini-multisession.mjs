@@ -9,7 +9,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { GoogleGenAI, Modality } from "@google/genai";
-import { makeLogger, sleep, pcmToWav } from "./lib/events.mjs";
+import { makeLogger, pcmToWav, sleep } from "./lib/events.mjs";
 
 if (!process.env.GEMINI_API_KEY) {
 	console.error("GEMINI_API_KEY missing in env");
@@ -75,15 +75,19 @@ async function openLead(lead) {
 			},
 			inputAudioTranscription: {},
 			outputAudioTranscription: {},
-			systemInstruction: { parts: [{ text: `${DISCIPLINE}\n${lead.persona}` }] },
+			systemInstruction: {
+				parts: [{ text: `${DISCIPLINE}\n${lead.persona}` }],
+			},
 		},
 		callbacks: {
 			onmessage: (msg) => {
 				const t = now();
 				const sc = msg?.serverContent;
 				if (msg?.usageMetadata) s.usage.push(msg.usageMetadata);
-				if (sc?.inputTranscription?.text) s.roundInTx += sc.inputTranscription.text;
-				if (sc?.outputTranscription?.text) s.roundOutTx += sc.outputTranscription.text;
+				if (sc?.inputTranscription?.text)
+					s.roundInTx += sc.inputTranscription.text;
+				if (sc?.outputTranscription?.text)
+					s.roundOutTx += sc.outputTranscription.text;
 				for (const p of sc?.modelTurn?.parts ?? []) {
 					if (p?.inlineData?.data) {
 						const buf = Buffer.from(p.inlineData.data, "base64");
@@ -97,10 +101,18 @@ async function openLead(lead) {
 			},
 			onerror: (e) => {
 				s.errors.push(String(e?.message ?? e));
-				logEvent({ type: "error", lead: lead.name, message: String(e?.message ?? e) });
+				logEvent({
+					type: "error",
+					lead: lead.name,
+					message: String(e?.message ?? e),
+				});
 			},
 			onclose: (e) =>
-				logEvent({ type: "close", lead: lead.name, reason: String(e?.reason ?? "") }),
+				logEvent({
+					type: "close",
+					lead: lead.name,
+					reason: String(e?.reason ?? ""),
+				}),
 		},
 	});
 	return s;
@@ -133,7 +145,8 @@ async function broadcastSpeech(targets, pcm, { leadSilenceFrames = 15 } = {}) {
 	}
 	const speechEnd = now();
 	for (const s of targets)
-		s.totalAudioInMs += leadSilenceFrames * FRAME_MS + (pcm.length / FRAME_BYTES) * FRAME_MS;
+		s.totalAudioInMs +=
+			leadSilenceFrames * FRAME_MS + (pcm.length / FRAME_BYTES) * FRAME_MS;
 	return speechEnd;
 }
 
@@ -186,12 +199,17 @@ async function phaseA() {
 			],
 			turnComplete: true,
 		});
-		const done = new Promise((r) => (s.turnDone = r));
+		const done = new Promise((r) => {
+			s.turnDone = r;
+		});
 		await Promise.race([done, sleep(15_000)]);
 		s.turnDone = null;
 		const pcm = Buffer.concat(s.chunks);
 		if (pcm.length > 0)
-			writeFileSync(`out/s4-intro-${s.lead.name.replace(" ", "")}.wav`, pcmToWav(pcm, 24000));
+			writeFileSync(
+				`out/s4-intro-${s.lead.name.replace(" ", "")}.wav`,
+				pcmToWav(pcm, 24000),
+			);
 		intro.push({
 			lead: s.lead.name,
 			voice: s.lead.voice,
@@ -199,7 +217,9 @@ async function phaseA() {
 			outTx: s.roundOutTx,
 			errors: s.errors.slice(),
 		});
-		console.error(`[t3a ${s.lead.name}/${s.lead.voice}] ${(pcm.length / 48000).toFixed(1)}s "${s.roundOutTx.slice(0, 60)}"`);
+		console.error(
+			`[t3a ${s.lead.name}/${s.lead.voice}] ${(pcm.length / 48000).toFixed(1)}s "${s.roundOutTx.slice(0, 60)}"`,
+		);
 	}
 	results.phases.a = {
 		concurrentReady: leads.length,
@@ -212,7 +232,18 @@ async function phaseA() {
 
 // ═══ T3-b all-listen(V4) + T3-d 延迟(V6) ═════════════════════
 async function phaseB(leads) {
-	const ORDER = ["u3a", "u3b", "u3c", "u3a", "u3b", "u3c", "u3a", "u3b", "u3c", "u3a"];
+	const ORDER = [
+		"u3a",
+		"u3b",
+		"u3c",
+		"u3a",
+		"u3b",
+		"u3c",
+		"u3a",
+		"u3b",
+		"u3c",
+		"u3a",
+	];
 	const NAMED = {
 		u3a: "Tadashi",
 		u3b: "Honey Lemon",
@@ -236,7 +267,9 @@ async function phaseB(leads) {
 		}));
 		rounds.push({ round: i + 1, uid, named: NAMED[uid], outcome, perLead });
 		const named = perLead.find((p) => p.named);
-		const offenders = perLead.filter((p) => !p.named && p.spoke).map((p) => p.lead);
+		const offenders = perLead
+			.filter((p) => !p.named && p.spoke)
+			.map((p) => p.lead);
 		console.error(
 			`[t3b r${i + 1} →${NAMED[uid]}] namedSpoke=${named.spoke} firstAudio=${named.firstAudio_ms}ms offenders=[${offenders.join(",")}]`,
 		);
@@ -249,11 +282,19 @@ async function phaseB(leads) {
 	const roundsWithViolation = rounds.filter((r) =>
 		r.perLead.some((p) => !p.named && p.spoke),
 	).length;
-	const namedMiss = rounds.filter((r) => !r.perLead.find((p) => p.named)?.spoke).length;
+	const namedMiss = rounds.filter(
+		(r) => !r.perLead.find((p) => p.named)?.spoke,
+	).length;
 	const namedLatencies = rounds
 		.map((r) => r.perLead.find((p) => p.named)?.firstAudio_ms)
 		.filter((v) => v !== null && v !== undefined);
-	results.phases.b = { rounds, violations, roundsWithViolation, namedMiss, namedLatencies };
+	results.phases.b = {
+		rounds,
+		violations,
+		roundsWithViolation,
+		namedMiss,
+		namedLatencies,
+	};
 	console.error(
 		`[t3b] roundsWithViolation=${roundsWithViolation}/10 namedMiss=${namedMiss} latencies=${JSON.stringify(namedLatencies)}`,
 	);
@@ -288,13 +329,20 @@ async function phaseC() {
 	resetRound(tadashi);
 	for (const seg of feedSegments) {
 		injectText(tadashi, seg);
-		logEvent({ type: "t3c-feed", to: "Tadashi", method: FEED_METHOD, payload: seg });
+		logEvent({
+			type: "t3c-feed",
+			to: "Tadashi",
+			method: FEED_METHOD,
+			payload: seg,
+		});
 		await sleep(700);
 	}
 	await sleep(2500); // 观察窗:补喂后是否抢答
 	const feedSpokeBytes = tadashi.roundAudioBytes;
 	const feedSpoke = feedSpokeBytes > SPEECH_BYTES_THRESHOLD;
-	console.error(`[t3c-①feed] Tadashi bytes-during-feed=${feedSpokeBytes} spoke=${feedSpoke}`);
+	console.error(
+		`[t3c-①feed] Tadashi bytes-during-feed=${feedSpokeBytes} spoke=${feedSpoke}`,
+	);
 
 	// 点名提问:发布时间(u5,只推 Tadashi = gated)
 	resetRound(tadashi);
@@ -304,10 +352,14 @@ async function phaseC() {
 	const s1Answer = {
 		outTx: tadashi.roundOutTx,
 		firstAudio_ms:
-			tadashi.roundFirstAudioMs !== null ? tadashi.roundFirstAudioMs - end5 : null,
+			tadashi.roundFirstAudioMs !== null
+				? tadashi.roundFirstAudioMs - end5
+				: null,
 		citesFact: /周五|下午三点|15[:点]/.test(tadashi.roundOutTx),
 	};
-	console.error(`[t3c-①ask] cites=${s1Answer.citesFact} "${s1Answer.outTx.slice(0, 80)}"`);
+	console.error(
+		`[t3c-①ask] cites=${s1Answer.citesFact} "${s1Answer.outTx.slice(0, 80)}"`,
+	);
 
 	// ② 跨 agent:问 Tadashi 代号(gated 只推他)
 	resetRound(tadashi);
@@ -317,10 +369,14 @@ async function phaseC() {
 	const aAnswer = {
 		outTx: tadashi.roundOutTx,
 		firstAudio_ms:
-			tadashi.roundFirstAudioMs !== null ? tadashi.roundFirstAudioMs - end4a : null,
+			tadashi.roundFirstAudioMs !== null
+				? tadashi.roundFirstAudioMs - end4a
+				: null,
 		containsFact: /蓝鲸七号/.test(tadashi.roundOutTx),
 	};
-	console.error(`[t3c-②A] fact=${aAnswer.containsFact} "${aAnswer.outTx.slice(0, 80)}"`);
+	console.error(
+		`[t3c-②A] fact=${aAnswer.containsFact} "${aAnswer.outTx.slice(0, 80)}"`,
+	);
 
 	// 负对照先行:Hiro 未补喂,同问(u4c) → 应答不出/瞎编
 	resetRound(hiro);
@@ -331,13 +387,20 @@ async function phaseC() {
 		outTx: hiro.roundOutTx,
 		knowsFact: /蓝鲸七号/.test(hiro.roundOutTx),
 	};
-	console.error(`[t3c-②neg] knowsFact=${negControl.knowsFact} "${negControl.outTx.slice(0, 80)}"`);
+	console.error(
+		`[t3c-②neg] knowsFact=${negControl.knowsFact} "${negControl.outTx.slice(0, 80)}"`,
+	);
 
 	// 把 A 的回答转写注入 Honey Lemon(逐字落 evidence)
 	resetRound(honey);
 	const injection = `(会议记录)Tadashi 刚才说:「${aAnswer.outTx.trim()}」`;
 	injectText(honey, injection);
-	logEvent({ type: "t3c-inject", to: "Honey Lemon", method: FEED_METHOD, payload: injection });
+	logEvent({
+		type: "t3c-inject",
+		to: "Honey Lemon",
+		method: FEED_METHOD,
+		payload: injection,
+	});
 	await sleep(2500);
 	const injectSpoke = honey.roundAudioBytes > SPEECH_BYTES_THRESHOLD;
 
@@ -352,7 +415,9 @@ async function phaseC() {
 			honey.roundFirstAudioMs !== null ? honey.roundFirstAudioMs - end4b : null,
 		citesFact: /蓝鲸七号/.test(honey.roundOutTx),
 	};
-	console.error(`[t3c-②B] cites=${bAnswer.citesFact} "${bAnswer.outTx.slice(0, 80)}"`);
+	console.error(
+		`[t3c-②B] cites=${bAnswer.citesFact} "${bAnswer.outTx.slice(0, 80)}"`,
+	);
 
 	// T3-e 素材:per-session 音频量 + usage
 	const usage = leads.map((s) => ({
@@ -365,7 +430,13 @@ async function phaseC() {
 	results.phases.c = {
 		feedMethod: FEED_METHOD,
 		scene1: { feedSpokeBytes, feedSpoke, answer: s1Answer, feedSegments },
-		scene2: { aAnswer, negControl, injectionPayload: injection, injectSpoke, bAnswer },
+		scene2: {
+			aAnswer,
+			negControl,
+			injectionPayload: injection,
+			injectSpoke,
+			bAnswer,
+		},
 		usage,
 	};
 }
@@ -385,6 +456,9 @@ if (leadsA) {
 }
 if (PHASE === "c" || PHASE === "all") await phaseC();
 
-writeFileSync("out/s4-multisession-results.json", JSON.stringify(results, null, 2));
+writeFileSync(
+	"out/s4-multisession-results.json",
+	JSON.stringify(results, null, 2),
+);
 console.log(JSON.stringify(results, null, 2));
 process.exit(0);

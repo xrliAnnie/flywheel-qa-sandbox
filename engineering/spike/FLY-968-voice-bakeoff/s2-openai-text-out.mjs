@@ -6,8 +6,8 @@
 //   (音频固定用 ref/u1-24k.pcm / ref/u2-24k.pcm,轮次 = u1,u2,u1)
 // env: FLYWHEEL_VOICE_OPENAI_MODEL 覆盖模型名(默认 gpt-realtime-2.1)
 
-import { readFileSync, writeFileSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
 import WebSocket from "ws";
 import { makeLogger, sleep } from "./lib/events.mjs";
 
@@ -75,14 +75,14 @@ ws.on("message", (raw) => {
 		logEvent({ type: `${msg.type}-detail`, session: msg.session });
 	}
 	if (!round) return;
-	if (msg.type === "input_audio_buffer.speech_stopped")
-		round.vadStopMs = t;
-	if (
-		msg.type === "conversation.item.input_audio_transcription.completed"
-	) {
+	if (msg.type === "input_audio_buffer.speech_stopped") round.vadStopMs = t;
+	if (msg.type === "conversation.item.input_audio_transcription.completed") {
 		round.inputTranscript = msg.transcript ?? "";
 	}
-	if (msg.type === "response.output_text.delta" || msg.type === "response.text.delta") {
+	if (
+		msg.type === "response.output_text.delta" ||
+		msg.type === "response.text.delta"
+	) {
 		if (round.firstTextMs === null) {
 			round.firstTextMs = t;
 			round.textDeltaEventName = msg.type;
@@ -92,7 +92,10 @@ ws.on("message", (raw) => {
 		if (round.firstSentenceMs === null && /[。！？!?.]/.test(round.text))
 			round.firstSentenceMs = t;
 	}
-	if (msg.type === "response.output_audio.delta" || msg.type === "response.audio.delta")
+	if (
+		msg.type === "response.output_audio.delta" ||
+		msg.type === "response.audio.delta"
+	)
 		round.audioDeltaCount += 1;
 	if (msg.type === "response.done") {
 		round.doneMs = t;
@@ -132,7 +135,9 @@ async function edgeTtsSynth(text, outFile) {
 			"--write-media",
 			outFile,
 		]);
-		p.on("exit", (c) => (c === 0 ? resolve() : reject(new Error(`edge-tts exit ${c}`))));
+		p.on("exit", (c) =>
+			c === 0 ? resolve() : reject(new Error(`edge-tts exit ${c}`)),
+		);
 		p.on("error", reject);
 	});
 	return Date.now() - t0;
@@ -214,14 +219,16 @@ for (const spec of ROUNDS) {
 		outcome,
 		status: round.status,
 		textDeltaEventName: round.textDeltaEventName,
-		vadLag_ms: round.vadStopMs !== null ? round.vadStopMs - round.speechEndMs : null,
+		vadLag_ms:
+			round.vadStopMs !== null ? round.vadStopMs - round.speechEndMs : null,
 		endpointToFirstText_ms:
 			round.firstTextMs !== null ? round.firstTextMs - round.speechEndMs : null,
 		endpointToFirstSentence_ms:
 			round.firstSentenceMs !== null
 				? round.firstSentenceMs - round.speechEndMs
 				: null,
-		endpointToDone_ms: round.doneMs !== null ? round.doneMs - round.speechEndMs : null,
+		endpointToDone_ms:
+			round.doneMs !== null ? round.doneMs - round.speechEndMs : null,
 		audioDeltaCount: round.audioDeltaCount,
 		inputTranscript: round.inputTranscript,
 		text: round.text,

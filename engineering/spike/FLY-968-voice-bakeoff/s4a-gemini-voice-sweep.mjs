@@ -5,7 +5,7 @@
 
 import { writeFileSync } from "node:fs";
 import { GoogleGenAI, Modality } from "@google/genai";
-import { makeLogger, sleep, pcmToWav } from "./lib/events.mjs";
+import { makeLogger, pcmToWav, sleep } from "./lib/events.mjs";
 
 if (!process.env.GEMINI_API_KEY) {
 	console.error("GEMINI_API_KEY missing in env");
@@ -15,8 +15,16 @@ const MODEL =
 	process.env.FLYWHEEL_VOICE_GEMINI_MODEL ?? "gemini-3.1-flash-live-preview";
 const { logEvent } = makeLogger("out/s4a-voice-sweep.jsonl");
 const SHORTLIST = [
-	"Charon", "Sadaltager", "Iapetus", "Puck", "Fenrir",
-	"Kore", "Aoede", "Leda", "Sulafat", "Gacrux",
+	"Charon",
+	"Sadaltager",
+	"Iapetus",
+	"Puck",
+	"Fenrir",
+	"Kore",
+	"Aoede",
+	"Leda",
+	"Sulafat",
+	"Gacrux",
 ];
 const SENTENCE = "大家好，我是语音会议里的工程 Lead。Huddle 模式今天可以用了。";
 
@@ -26,7 +34,9 @@ const summary = [];
 for (const voice of SHORTLIST) {
 	const chunks = [];
 	let done = null;
-	const donePromise = new Promise((r) => (done = r));
+	const donePromise = new Promise((r) => {
+		done = r;
+	});
 	let errored = null;
 	let session;
 	try {
@@ -56,7 +66,11 @@ for (const voice of SHORTLIST) {
 			},
 		});
 	} catch (e) {
-		summary.push({ voice, status: "connect-failed", error: String(e?.message ?? e) });
+		summary.push({
+			voice,
+			status: "connect-failed",
+			error: String(e?.message ?? e),
+		});
 		console.error(`[${voice}] connect-failed: ${e?.message ?? e}`);
 		continue;
 	}
@@ -65,13 +79,18 @@ for (const voice of SHORTLIST) {
 			{
 				role: "user",
 				parts: [
-					{ text: `请一字不差地用中文念这句话，不要加任何别的内容：${SENTENCE}` },
+					{
+						text: `请一字不差地用中文念这句话，不要加任何别的内容：${SENTENCE}`,
+					},
 				],
 			},
 		],
 		turnComplete: true,
 	});
-	const status = await Promise.race([donePromise, sleep(20_000).then(() => "timeout")]);
+	const status = await Promise.race([
+		donePromise,
+		sleep(20_000).then(() => "timeout"),
+	]);
 	const pcm = Buffer.concat(chunks);
 	if (pcm.length > 0)
 		writeFileSync(`out/s4a-voice-${voice}.wav`, pcmToWav(pcm, 24000));
@@ -85,5 +104,8 @@ for (const voice of SHORTLIST) {
 	session.close();
 	await sleep(400);
 }
-writeFileSync("out/s4a-voices-summary.json", JSON.stringify({ model: MODEL, summary }, null, 2));
+writeFileSync(
+	"out/s4a-voices-summary.json",
+	JSON.stringify({ model: MODEL, summary }, null, 2),
+);
 console.log(JSON.stringify({ model: MODEL, summary }, null, 2));

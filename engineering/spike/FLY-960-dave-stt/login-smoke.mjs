@@ -11,7 +11,7 @@ client.once("clientReady", async () => {
 	clearTimeout(timer);
 	const guilds = await client.guilds.fetch();
 	console.log(
-		`LOGIN_OK tag=${client.user.tag} id=${client.user.id} guilds=${guilds.size}${guilds.size ? " [" + [...guilds.values()].map((g) => g.id).join(",") + "]" : ""}`,
+		`LOGIN_OK tag=${client.user.tag} id=${client.user.id} guilds=${guilds.size}${guilds.size ? ` [${[...guilds.values()].map((g) => g.id).join(",")}]` : ""}`,
 	);
 	client.destroy();
 	process.exit(0);
