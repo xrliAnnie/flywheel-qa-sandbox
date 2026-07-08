@@ -67,7 +67,7 @@
 <body>
 <div class="wrap">
   <h1>看门狗机制 — 一条条给你看清 <span class="draft">FLY-942 · 深化 spec</span></h1>
-  <p class="sub">你说上一版还太概括。这版拆成 4 块给你一条条看:<span class="kk">① 现在怎么跑 → ② 要改哪几处 → ③ 每种情况到底做什么 → ④ 一张流程图</span>。都是大白话 + 表 + 图,不堆代码。有异议每块下面标,或底部复制模板回我。</p>
+  <p class="sub">你说上一版太概括、LLM 判断层没看到。这版拆清给你一条条看:<span class="kk">① 现在怎么跑 → ② 要改哪几处 → ★ LLM 判断层怎么设计(单独拎出来) → ③ 每种情况到底做什么 → ④ 一张流程图</span>。都是大白话 + 表 + 图,不堆代码。<span class="kk">每块下面写想法框 → 底部一键收集复制</span>回我。</p>
 
   <!-- ① AS-IS -->
   <div class="sec asis">
@@ -97,17 +97,24 @@
       <tr><td class="k">多久叫到你</td><td class="frm">~75 分钟链</td><td class="to">发现 → 立刻给 Lead → Lead 30min 没解决 → 才 @ 你</td></tr>
       <tr><td class="k">信"进程活着"</td><td class="frm">当健康</td><td class="to">读屏幕真状态,不信"进程活"</td></tr>
     </table></div>
-    <div class="callout">🤖 <span class="kk">那个"拿不准时升级的 LLM 判断层"怎么设计</span>(你刚拍的):
-      <ul style="margin:6px 0 0">
-        <li>用<span class="kk">便宜的小模型</span>(读文字做个判断,不重);</li>
-        <li><span class="kk">跑在 Codex 上、不是 Claude</span> —— 因为 Claude 是我们天天撞额度的<span class="kk">瓶颈</span>,看门狗的判断放 Claude 会跟 runner 抢;Codex 额度用不完、错开跑;</li>
-        <li>只<span class="kk">读文字</span>(token 流 / 错误 / 静默),不看截图;</li>
-        <li>用通用模型 + 写好的 prompt(告诉它看什么、卡长啥样、健康长啥样),不用特训;</li>
-        <li><span class="kk">临时叫一次</span>就行,不单独养一个常驻判断机器人。</li>
-      </ul>
-    </div>
-    <div class="lbl">你的想法(改的方向对不对 / 哪处多余或缺 / LLM 层这么设计 OK 吗):</div>
+    <div class="lbl">你的想法(改的方向对不对 / 哪处多余或缺):</div>
     <textarea id="t2" placeholder="② TO-BE —— 改法对不对?"></textarea>
+  </div>
+
+  <!-- LLM 判断层(单独、显眼) -->
+  <div class="sec" style="border-left-color:#5856d6">
+    <div class="secn" style="color:#5856d6">★ 关键 · LLM 判断层怎么设计</div>
+    <h2>"拿不准时升级的那个判断层" —— 你聊了好几轮的 5 条</h2>
+    <p>前面 ①②③ 里说的"拿不准 → 升级 LLM 判断 / 读富态判 a/b/c",用的就是<span class="kk">这个判断层</span>。它这么设计(你拍的):</p>
+    <ol>
+      <li><span class="kk">便宜的小模型</span>(Haiku 档 / Codex 便宜档)—— 就是读文字做个判断,不重、不贵。</li>
+      <li>⭐ <span class="kk">跑在 Codex 上、不是 Claude</span> —— <span class="kk">关键理由</span>:Claude 是我们天天撞额度的<span class="bad">瓶颈</span>(runner 天天撞 Claude 周限);看门狗的判断再放 Claude = 跟 runner <span class="bad">抢额度</span>。<span class="good">Codex 周限额用不完、错开跑</span> → 把判断放 Codex,不占 runner 的 Claude 额度。</li>
+      <li><span class="kk">读文字、不看图</span> —— 判断读的是屏幕<span class="kk">文字</span>(token 流 / 错误串 / 静默),不是截图,纯文字推理。</li>
+      <li><span class="kk">通用模型 + 好 prompt</span> —— 不特训(fine-tune)、不用深度懂系统;prompt 里写清"看什么信号、卡长啥样、健康长啥样"。</li>
+      <li><span class="kk">临时叫一次、无状态</span> —— 看门狗(常驻的)遇到可疑屏幕时临时叫它一次,<span class="kk">不单独养一个常驻判断机器人</span>。</li>
+    </ol>
+    <div class="lbl">你的想法(LLM 判断层这么设计对不对):</div>
+    <textarea id="t5" placeholder="★ LLM 判断层 —— 5 条对不对 / 想改哪条?"></textarea>
   </div>
 
   <!-- ③ SCENARIO -->
@@ -156,7 +163,7 @@
 
 <script nonce="__CSP_NONCE__">
 (function(){
-  var blocks=[["t1","① AS-IS 现在逻辑"],["t2","② TO-BE 要改哪几处"],["t3","③ 每种情况的动作/通知"],["t4","④ 流程图"]];
+  var blocks=[["t1","① AS-IS 现在逻辑"],["t2","② TO-BE 要改哪几处"],["t5","★ LLM 判断层"],["t3","③ 每种情况的动作/通知"],["t4","④ 流程图"]];
   var btn=document.getElementById("genbtn");
   btn.addEventListener("click",function(){
     var lines=["FLY-942 看门狗机制(深化)— 我的意见:"], any=false;
