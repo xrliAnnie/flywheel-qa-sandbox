@@ -137,6 +137,15 @@ Live 直持 4 真工具,单步派活 10/10 成功,全 turn 4.8-8.6s,零幻觉。
 - **模型档建议**:**默认 flash**(`gemini-3.5-flash`:100% 且成本低、步数多一点但都收敛);pro 留给 PRD 定义的重规划场景开关。两档在 config 里可切,像 voice-core 的模型 pin 惯例。
 - **接线**:工具→Bridge HTTP(合同 §2,全现成);语音→两层(Live 持单个 delegate 工具→深脑 loop,模式 a「ACK+完成注回」;S3 数据支撑);文本→`/gemini-advanced` command 直调同一 loop(名字 Lead 2026-07-08 拍板)。角色 = 能被语音/文本唤起的 dispatch 助手,不是新 Lead/Runner。
 
+### ④-附:Claude Code 源码参考的 license 边界(2026-07-08 增补)
+
+Annie 提供了一份 CC 源码 fork(本地 `~/Dev/claude-code`,含 QueryEngine/Tool/tools 等真 loop 源码)。按「边界按 license 定」审计:
+
+- **LICENSE 审计结果**:该 repo 自述「UNLICENSED — NOT FOR REDISTRIBUTION…leaked proprietary source code belonging to Anthropic…strictly for educational and research purposes…NOT open-source」——**泄露的专有代码,无任何授权**。
+- **license 定出的边界**:照抄代码 = 侵权风险直接进产品仓,**不可**;贴近转写结构 = 衍生作品风险,**不建议**;设计模式层面(想法非表达)= 可,且**已应用**(单主循环/工具白名单/审计先行/结果截断——来自 FLY-31 对公开行为的分析,spike 以 100/100 实证)。据此**不产出逐文件转写地图**——那张地图的唯一用途就是 license 禁止的用法。
+- **build 阶段纪律建议**:实现 `packages/gemini-agent` 时不打开该 repo(clean-room,防无意识抄写)。真需要源码级参考时走合法替代:**gemini-cli(Apache-2.0,Google 官方,同款 `@google/genai` 面——loop/流式/中断处理的最佳合法源码参考)**;Codex CLI(Apache-2.0,协议原因不作骨架但源码可读);ADK-JS(Apache-2.0)。
+- **对结论的影响:零**。薄 loop 已自证(100/100),「照着别人的 loop 写」的需求已被数据替代;剩下的机制疑难查 gemini-cli 即可。
+
 ### ⑤ guardrail — 三层复用 + D5 静态审计(build 形态核对单)
 
 行为层证据见 §4(10/10 零绕过、话术自动贴 gate)。**结构层**(对未来 `packages/gemini-agent` 的静态核对单,PR review 逐条打钩):
