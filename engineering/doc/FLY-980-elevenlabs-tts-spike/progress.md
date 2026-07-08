@@ -1,13 +1,14 @@
 ---
 issue: FLY-980
 phase: design
-phaseCursor: 1/4
-updated: 2026-07-08T00:41:37.136Z
-nextStep: brainstorm gate → research.md → plan.md → design review
+phaseCursor: 2/4
+updated: 2026-07-08T02:26:59.800Z
+nextStep: "research.md: Custom LLM protocol + pricing + multilingual voices +
+  tool/interrupt semantics"
 chunks: []
 pointers: {}
 ---
 
 # FLY-980 progress
-**phase**: design (1/4)
-**next**: brainstorm gate → research.md → plan.md → design review
+**phase**: design (2/4)
+**next**: research.md: Custom LLM protocol + pricing + multilingual voices + tool/interrupt semantics
