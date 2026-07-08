@@ -18,6 +18,36 @@ Issue: FLY-1004 (https://linear.app/geoforge3d/issue/FLY-1004/homerail-竞品分
 
 ---
 
+## ⭐ 深挖:Annie 点名的 4 块(code-grounded 实现细节 + 我们能学啥)
+
+> Annie 看了 README,点了 4 个"最该学"的方向。本节按她的点逐块给足实现细节(带 repo 文件出处)。其余功能域见 §1 略读。
+
+### ① DAG 运行时 —— loop / replay / inject / profile 怎么实现(她明说想了解)
+- **loop**(`orchestration/dag-engine.ts`):`loop_gateway` node + `loop_sources`。loop source `handoff` 后**保持 RUNNING 不 COMPLETED**;`_wakeLoopSource` / `_wakeLoopGatewayReceiver` 在有新数据时把它拉回 READY,并把 mailbox 里多条**只留最后一条**(last-value coalescing)。→ 支持"迭代直到满足条件"的循环子图,不是纯 DAG。
+- **replay**(`runtime/active-runs.ts` `_replayHandoffsInto`):Manager 重启后,从**持久化的 handoff 历史重放**进一个中性 DAGRun 重建内存态,再把权威 node-state snapshot 叠上去 = **确定性重建**,run 态不因进程重启丢。
+- **inject**(`active-runs.ts:1090` `injectActiveRun`):运行中给某 node **注入一条指令**,emit `dag:instruction_injected`(type "inject");这条 intervention 后来被 experience 图谱抽成 RunSignal(intervention.total)。→ 人随时干预跑着的 run + 留痕。
+- **checkpoint resume**(`active-runs.ts:845` `checkpointResumeActiveRun`):**fork 一个新 session**(拒绝复用父 session;attempt++;`checkpointForkSession` 把 transcript 截断到某 entry,记 keptEntries/totalEntries),把 resume 指令塞进 node mailbox 的 `checkpoint_resume`,node→READY。→ 恢复不是"接着原 transcript 跑",是"**fork 干净 session + resume 指令注进下一个 prompt**"(codex adapter 也明说走这条)。
+- **profile**(`protocol/types.ts` `RuntimeProfile`):DAG 模板声明 `runtime_profiles` map,每 profile 的 `agents` 把每个 agent 角色映射到 provider/model/agent_type,`"*"` 通配设默认 + 逐 agent 覆盖。选一个 profile(如 `offline-deterministic`)= **一键把整张图的模型配置切换**。"贵脑子便宜手"就靠它给 planner/worker 配不同模型。
+- **我们能学**:①replay 式**确定性重建**(重启不丢 run 态)→ 借鉴我们 Bridge 重启对账(FLY-172);②**inject 运行中干预 + 记成 intervention signal**;③checkpoint resume = **fork 新 session + 注 prompt**(比接原 transcript 干净,值得对照我们 resume);④profile **一键切整图模型**(对照我们 per-agent model override FLY-241)。**⚠️ 编排基元不用换**——我们 issue-driven 三段式更贴真实协作;但这 4 个运行时能力值得**单点借鉴**。
+
+### ② 生成式 UI —— 做法 + 亮点(她说我们做的已 OK,找加分项)
+- **做法**(`widgets/widget-file-protocol.ts` + `protocol/manager-agent-tools.ts`):model 调 `show_*_card`/`show_dynamic_widget`/`write_widget_file`(TOML)→ `parseWidgetToml` → `validateWidgetToml`(**校验失败返错 → model 自己修再写**)→ `renderWidget`(按 type 归一化)→ 写 **per-session TOML 文件**(projectId/sessionId/widgetId)→ UI 读归一化 widget。有 `widgetTomlExample` 给 model 参考的 canonical 例子。
+- **亮点(对比我们,3 个加分项)**:① **校验-修复回路**(model 吐的 TOML 过 schema,错了让它自己修再渲染)—— 比"直接渲染 model 输出"更稳;② **per-session 文件 + 稳定 widget_id**(更新不重复建卡,防刷屏);③ **voice_memo / task_draft 是带状态机的结构化 widget**(listening→clarifying→ready→executing→done / draft→needs_confirmation→submitted)—— **UI 即状态**。
+- **我们能学**:校验-修复回路 + 稳定 id 去重 + 状态机 widget,这三个直接是我们生成式 UI 的加分项。
+
+### ③ 语音面 —— 双 TTS + 3 ASR 的实现(挑喂 Voice PRD FLY-906 的亮点)
+- **双 TTS 通道**(`server/voice.ts:61`):`thinking` 事件→**commentary**(边干边说),`text`→**final**(答案);commentary **只有会 stream reasoning 的后端(Codex)自动合成**(claude-sdk/kimi 沉默 = provider capability gap)。
+- **3 ASR 策略**(`voice.ts:51`):`native_realtime`(WS 代理上游 `/v1/realtime`)/ `emulated_batch`(收 PCM16、finish 时批量转,**伪实时降级**)/ `ark_voice`。一个 WS server(`/api/voice/asr/realtime`)桥接麦↔provider,PCM16↔WAV 自拼头。
+- **亮点喂我们 Voice PRD**:① **双通道让"在想/在说"有声音**(直接是我们 §12/§15 的 filler「让我看一下」);② **emulated_batch 降级策略** —— 实时 STT 起不来先做"说完批量转",对我们 **Discord 收音风险(FLY-544)是可行的 MVP 降级路径**;③ 生成式 UI 让**朗读短**(长内容进卡片,不念)。**⚠️ 约束**:commentary 依赖后端 reasoning stream,别假设所有后端都有 → filler 设计别绑死 reasoning。
+
+### ④ Docker Worker —— Manager→Node→Worker 隔离/生命周期(接多机 FLY-1005 + 沙箱 FLY-346,给足工程细节)
+- **链路**:Manager 经 WS 让 Node `createWorkerContainer`(`node/lifecycle/create.ts`,默认 image `homerail-worker:latest`)→ Node 用 `DockerCliProvider`(`node/providers/docker-cli-provider.ts`,**`ExecutionProvider` 抽象**,shell 到 docker CLI)`docker create`(bind mount workspace + env + label + network + entrypoint)→ start → exec/logs → stop/rm。
+- **隔离**:**一 DAG node 一容器**;**非 root `node` 用户**(Dockerfile);**mount 策略**(`node/storage/mount-policy.ts` `validateMounts` + `allowed_host_roots` 白名单 + `workerAllowedMounts`)控制能挂哪些宿主目录;**凭据加密**(env 值 encryptSecret)。worker 镜像里烤了 `kimi` CLI。
+- **生命周期**(`DockerCliProvider`):create / inspect / logs(`-f` 流式)/ remove(`-f`)/ start / stop / kill,**typed 错误**(DockerNotFound / DockerDaemon / DockerPermission),**跨平台 docker binary 解析**(Windows 候选路径 + env `HOMERAIL_DOCKER_BIN`/`DOCKER_BIN`)。
+- **我们能学(这块对 346/1005 最直接)**:① **`ExecutionProvider` 抽象** —— 可换 docker/podman/远程,**多机(FLY-1005)时每机一个 provider**;② **mount 白名单 = 沙箱核心闸**(FLY-346 直接能用的模型);③ **一 node 一容器 + 非 root + 凭据加密** = 沙箱隔离范式;④ container lifecycle(create/start/exec/logs/stop/rm)+ typed 错误 + 跨平台 binary 解析 = **现成的工程细节**。**这是我们下一步(346 沙箱 + 1005 多机)最能直接抄工程细节的一块。**
+
+---
+
 ## 1. 功能盘点 —— 它现在到底有多少功能(逐条,code-grounded)
 
 **总览:大致 15 个功能域**(成熟度差别很大:DAG 编排 / harness / provider / 语音最成熟;生成式 UI、经验图谱作者自己标 "in exploration" / 早期)。逐域列:
