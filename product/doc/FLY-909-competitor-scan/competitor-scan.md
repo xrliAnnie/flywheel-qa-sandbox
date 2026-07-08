@@ -129,9 +129,9 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 2. **常驻组织 vs 你启动的任务**:Cowork/Codex 本质是「**你启动一个任务/会话** → 它 fan-out → 交付」(Cowork 能跨多天,但仍是项目会话)。我们是一个**常驻的组织**(CoS 自己分诊 backlog、Leads、部门、always-on),不是「你每次启动一个活」。这条是真结构差异,但**别吹太大**(值不值钱要 911 判)。
 3. **界面**:Cowork = **桌面 app + 你电脑上的文件夹**;Codex = 桌面/CLI。我们 = **手机原生 IM(Discord)**,不用开电脑、不用盯文件夹 —— 对「只带手机的非技术小生意主」是真差异。
 4. **agent-agnostic / 供应商中立(Annie ④)**:**Cowork 锁 Claude、Codex 锁 OpenAI**;我们架构上能跨后端(Claude / Codex / GLM / MiniMax / Antigravity / Kimi)。**⚠️〔round-3/4 修正 · 此判断已作废〕** 原写「这是第一方厂商结构上不会做的真差异」—— 但 Raft(第三方却做 runtime-agnostic)+ WorkBuddy(云厂商腾讯 TokenHub 原生一键切 14 模型)已证伪:**供应商中立已退为 table stakes、不是差异**(见 §⑧ Raft / §⑨ WorkBuddy)。「不锁死你」仍是可信承诺,不当差异主打。
-   - ⚠️ **但要分清**:「**能打的差异**」≠「**现在就要建**」。Annie 早先定了 setup 先不做 agent-agnostic —— 不冲突:**现在可以把「供应商中立」当定位候选讲,但不必现在就建全**(能打≠现在建)。
+   - ⚠️ **〔round-3/4 修正 · 此子判断已作废〕** 原写「供应商中立可当定位候选讲、只是不必现在建全」—— 但 Raft(第三方 runtime-agnostic)+ WorkBuddy(腾讯 TokenHub 一键切 14 模型)已把它做成现成功能 → **它是 table stakes、退出差异候选**(见 §⑧/§⑨)。Annie「setup 先不做 agent-agnostic」不受影响:那本就不是要靠它当差异,只作「不锁死你」的可信承诺。
 
-**诚实第 4 条:会不会被取代 / 风险在哪。** 最该盯的是 **Cowork(Anthropic 自己)**:它已经是「非技术 + done-for-you + 桌面 chat」。**如果 Anthropic 把 Cowork 指向「从手机替你建并长期维护一个软件产品」,我们的空间会被快速压缩。** 我们在**引擎层没有护城河**;价值全押在**把「done-for-you + 常驻组织 + 手机 IM + 供应商中立 + 真软件产品维护」这套组合,替一个非技术小生意主真正做通** —— 而这套**现在还没产品化**(见 ③ 的诚实边界)。**所以答案不是「我们注定被取代」,也不是「我们稳」,而是:差异存在、但薄,赢面取决于我们能不能比一个通用知识工作工具更早把这套具体组合做成真能用的 done-for-you 软件团队。这个判断,911 跟 Annie 拍。**
+**诚实第 4 条:会不会被取代 / 风险在哪。** 最该盯的是 **Cowork(Anthropic 自己)**:它已经是「非技术 + done-for-you + 桌面 chat」。**如果 Anthropic 把 Cowork 指向「从手机替你建并长期维护一个软件产品」,我们的空间会被快速压缩。** 我们在**引擎层没有护城河**;价值全押在**把「done-for-you + 常驻组织 + 真软件产品维护」这套组合,替一个非技术小生意主真正做通** —— 而这套**现在还没产品化**(见 ③ 的诚实边界)。**⚠️〔round-3/4 修正〕** 此处原把「手机 IM + 供应商中立」也列进组合 —— 经 Raft/WorkBuddy 覆盖,这两条已退为 table stakes、不算组合里的差异项(见 §⑧/§⑨)。**所以答案不是「我们注定被取代」,也不是「我们稳」,而是:差异存在、但薄,赢面取决于我们能不能比一个通用知识工作工具更早把这套具体组合做成真能用的 done-for-you 软件团队。这个判断,911 跟 Annie 拍。**
 
 ---
 
@@ -238,6 +238,6 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 2. **主线差异化**:done-for-you / 真软件 / 结果证明 三条候选里,哪条当一句话定位主线?(我倾向:结果证明当锚、done-for-you 当切分 —— 但这是 911 跟 Annie 拍。)
 3. **反差 messaging**:「不是零人公司、是你做判断 AI 做工程」用不用当对外主线?
 4. **诚实边界怎么讲**:我们现在还没到「完全非技术能用」—— 对外要不要坦诚「正在把它做成 done-for-you」而不是假装已经是?(我倾向坦诚,和品类一起早,反而可信。)
-5. **面对 Cowork/Codex 这种大厂通用编排(尤其 Cowork = 非技术 done-for-you)**:我们押哪条组合当立身之本?(我验证下来:领域「建并养真软件产品」+ 常驻组织 + 手机 IM + 供应商中立,最能跟 Cowork 拉开;供应商中立现在「能讲」但不必「现在建全」。这条 911 拍。)
+5. **面对 Cowork/Codex 这种大厂通用编排(尤其 Cowork = 非技术 done-for-you)**:我们押哪条组合当立身之本?(⚠️〔round-3/4 修正〕原写「领域 + 常驻组织 + 手机 IM + 供应商中立最能拉开」—— 经 Raft/WorkBuddy 收窄,**手机 IM + 供应商中立已退为 table stakes**;活着的 = 领域「替非技术 operator 长期养真软件系统」+ 被协调组织自推进 backlog + done-for-you。这条 911 拍。)
 6. **🆕〔round-3〕面对 Raft(同形态、产品化、供应商中立、引擎领先)**:定位要不要调?(我的证据结论:target 层没被威胁——Raft 不要我们客户;可防御性层被威胁——供应商中立/复利/always-on 都被匹配。建议:①Raft 进最该警惕并列 Cowork ②退供应商中立/复利当差异、降 memory/always-on 为 table stakes ③狠押客户 wedge + 管理/Push + build-in-public + Annie taste ④诚实写『靠速度守非结构守』⑤最先专攻的客户群 不动。**弹药+建议在此,调不调 Annie 拍;详见 `raft-deepdive.md` + `product/doc/FLY-1001-raft-competitor-scan/research.md §6`。**)
 7. **🆕〔round-4 · FLY-1003〕面对 WorkBuddy(腾讯,带微信生态分发 + 已正面打一人公司)**:手机 IM / 供应商中立经它覆盖后已退出;活着的候选只剩「长期 ownership lifecycle + 被协调组织自推进 backlog」两条,且靠**产品化速度**守。问题:(a)这两条够不够撑一个生意?(b)面对腾讯的 substitution path(选品/落地页/客服 + 腾讯云部署拼成够用的 operator 系统),我们要不要把「长期拥有并演进真系统」这条**更早做实**当立身之本?(c)对外要不要显式讲「大厂能做够用的办公活,我们做的是替你长期养一套真系统」?—— 与 Raft(#6)结论收敛,911 跟 Annie 拍。
