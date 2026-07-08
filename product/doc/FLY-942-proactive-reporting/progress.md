@@ -1,14 +1,14 @@
 ---
 issue: FLY-942
 phase: design
-phaseCursor: 9/10
-updated: 2026-07-08T05:42:52.058Z
-nextStep: G2 decision artifact published (JS-free); URL to HL for QA+relay;
-  await Annie Qa-Qd → finalize PRD reporting layer
+phaseCursor: 10/10
+updated: 2026-07-08T06:30:30.358Z
+nextStep: G1+G2 fully converged; running codex design-review on prd.md → then
+  build-issue proposal for Tadashi (draft, no create-issue)
 chunks: []
 pointers: {}
 ---
 
 # FLY-942 progress
-**phase**: design (9/10)
-**next**: G2 decision artifact published (JS-free); URL to HL for QA+relay; await Annie Qa-Qd → finalize PRD reporting layer
+**phase**: design (10/10)
+**next**: G1+G2 fully converged; running codex design-review on prd.md → then build-issue proposal for Tadashi (draft, no create-issue)
