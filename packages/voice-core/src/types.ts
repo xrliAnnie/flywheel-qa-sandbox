@@ -64,9 +64,24 @@ export interface VoiceBackendCapabilities {
 	audioIn?: AudioFormat[];
 }
 
+/**
+ * A fully-specified voice: backend voice id + optional per-call prosody
+ * (FLY-546 per-agent voices). rate is "±N%" and pitch is "±NHz" — the exact
+ * edge-tts CLI grammar; other backends may reinterpret but the wire format is
+ * fixed so configs stay portable.
+ */
+export type VoiceSpec = { voiceId: string; rate?: string; pitch?: string };
+
+/** string = bare voice id (backwards compatible). */
+export type VoiceRef = string | VoiceSpec;
+
+export function toVoiceSpec(ref: VoiceRef): VoiceSpec {
+	return typeof ref === "string" ? { voiceId: ref } : ref;
+}
+
 export interface AnnouncerOptions {
-	/** voice id inside the backend's namespace (edge-tts: zh-CN-XiaoxiaoNeural). */
-	voice?: string;
+	/** voice inside the backend's namespace (edge-tts: zh-CN-XiaoxiaoNeural). */
+	voice?: VoiceRef;
 	transcriptSink?: TranscriptSink;
 }
 
@@ -187,7 +202,7 @@ export interface BrainAdapter {
 export interface TtsEngine {
 	synthesize(
 		text: string,
-		voice: string,
+		voice: VoiceRef,
 		opts: { signal: AbortSignal },
 	): Promise<{ audio: Buffer; format: AudioFormat; ttsFirstByteMs: number }>;
 }

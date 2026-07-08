@@ -157,12 +157,15 @@ export interface LeadConfig {
 		| "write-capable"
 		| "full-access";
 	/**
-	 * FLY-545/FLY-546: optional edge-tts voice id for this Lead (e.g.
-	 * "zh-CN-YunxiNeural"). Consumed by voice surfaces (voice-bridge announce /
-	 * huddle); absent → voice-core DEFAULT_VOICE downstream. Deliberately NOT
-	 * normalized (FLY-231 pattern): absent stays absent.
+	 * FLY-546: per-agent voice for headphone mode (PRD §17 "换 agent 换声线").
+	 * Consumed by the voice-headphone daemon via `GET /api/voice/scope` /
+	 * VoiceDirectory — the Bridge itself never speaks. rate is "±N%", pitch is
+	 * "±NHz" (the edge-tts CLI grammar; validated at load so a typo fails the
+	 * config load, not a live announce). Absent = project default voice.
+	 * Deliberately NOT normalized (FLY-231 pattern): absent stays absent so
+	 * existing in-memory Lead objects keep their exact shape (reverse-compat).
 	 */
-	voice?: string;
+	voice?: string | { voiceId: string; rate?: string; pitch?: string };
 	/**
 	 * FLY-671: per-Lead reasoning-effort override (`low|medium|high|xhigh|max`).
 	 * Mirrors `model`: only effective for the `claude-code` backend, flowing
@@ -504,6 +507,48 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 				);
 			}
 
+			// FLY-546: validate optional per-agent voice (headphone mode). Same
+			// fail-loud style as botTokenEnv — a malformed voice is a config error
+			// caught at load, never at announce time.
+			if (lead.voice !== undefined) {
+				const where = `Project "${entry.projectName}" leads[${i}].voice`;
+				if (typeof lead.voice === "string") {
+					// FLY-545 huddle form: bare edge-tts voice id (voice-bridge
+					// consumes it verbatim). VoiceRef parity with voice-core.
+					if (lead.voice.length === 0) {
+						throw new Error(
+							`${where}: must be a non-empty string (edge-tts voice id) or an object { voiceId, rate?, pitch? }, got ""`,
+						);
+					}
+				} else if (
+					typeof lead.voice !== "object" ||
+					lead.voice === null ||
+					Array.isArray(lead.voice)
+				) {
+					throw new Error(
+						`${where}: must be a non-empty string (edge-tts voice id) or an object { voiceId, rate?, pitch? }, got ${JSON.stringify(lead.voice)}`,
+					);
+				} else {
+					// FLY-546 headphone form: voiceId + optional prosody.
+					const { voiceId, rate, pitch } = lead.voice;
+					if (typeof voiceId !== "string" || voiceId.trim().length === 0) {
+						throw new Error(
+							`${where}.voiceId: must be a non-empty string, got ${JSON.stringify(voiceId)}`,
+						);
+					}
+					if (rate !== undefined && !/^[+-]\d+%$/.test(rate as string)) {
+						throw new Error(
+							`${where}.rate: must match ±N% (e.g. "-10%"), got ${JSON.stringify(rate)}`,
+						);
+					}
+					if (pitch !== undefined && !/^[+-]\d+Hz$/.test(pitch as string)) {
+						throw new Error(
+							`${where}.pitch: must match ±NHz (e.g. "+2Hz"), got ${JSON.stringify(pitch)}`,
+						);
+					}
+				}
+			}
+
 			// FLY-83: validate optional alert fields
 			for (const field of [
 				"alertChannel",
@@ -640,17 +685,6 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 							`"codex-app-server" is a follow-up — FLY-879.`,
 					);
 				}
-			}
-
-			// FLY-545/FLY-546: validate optional per-lead voice (edge-tts voice id).
-			// Absent stays absent (FLY-231 pattern) — only type-check when present.
-			if (
-				lead.voice !== undefined &&
-				(typeof lead.voice !== "string" || lead.voice.length === 0)
-			) {
-				throw new Error(
-					`Project "${entry.projectName}" leads[${i}].voice: if provided, must be a non-empty string (edge-tts voice id), got ${JSON.stringify(lead.voice)}`,
-				);
 			}
 
 			// FLY-671: validate optional per-lead effort (closed CLI enum). Absent

@@ -3,9 +3,16 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
 	existsSync as ffExistsSync,
 	readFileSync as ffReadFileSync,
+	realpathSync as voiceRealpathSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import {
+	dirname,
+	join,
+	isAbsolute as pathIsAbsolute,
+	relative as pathRelative,
+	resolve,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import express from "express";
@@ -107,6 +114,7 @@ import {
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
+import type { GateResponseDb } from "./approval-signal/write-gate-response.js";
 import { loadQaConfigByProject } from "./auto-qa-config-source.js";
 import { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { AutoQaEffects } from "./auto-qa-effects.js";
@@ -118,7 +126,7 @@ import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
-import { commDbPathForProject } from "./commdb-path.js";
+import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
 import {
 	deleteCommDbSession,
 	pruneDeadTerminalCommDbSessions,
@@ -294,6 +302,7 @@ import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
 import { createTriageTemplateRouter } from "./triage-template-route.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
+import { createVoiceRouter } from "./voice-routes.js";
 import {
 	gitWorktreeClean,
 	makeBridgeWorktreeCleanup,
@@ -3838,6 +3847,60 @@ export async function startBridge(
 				>[0]["db"],
 			}),
 	});
+
+	// FLY-546: /api/voice/* — the headphone daemon's Bridge face (scope /
+	// context / gate-binding / voice ship-approval). ALWAYS registered — the
+	// approval kill-switch answers 403 inside, never 404 (FLY-175 R1 lesson);
+	// the ship-approval write itself refuses tokenless deployments (503) and
+	// runs the SAME flip+wake post-write hook as the text/reaction sources.
+	app.use(
+		"/api/voice",
+		tokenAuthMiddleware(config.apiToken),
+		createVoiceRouter({
+			store,
+			projects,
+			apiTokenConfigured: Boolean(config.apiToken),
+			discordOwnerUserId: config.discordOwnerUserId,
+			founderConsentUserId: config.founderConsent?.founderUserId,
+			roundtableChannelIds: (
+				process.env.FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS ?? ""
+			)
+				.split(",")
+				.map((s) => s.trim())
+				.filter(Boolean),
+			globalBotToken: config.discordBotToken,
+			// server-derived CommDB via the SHARED path convention (Codex R1
+			// MEDIUM-5: commDbPathForProject honors FLYWHEEL_COMM_DIR so the
+			// voice write can never land on a different db than the rest of the
+			// Bridge). Containment = realpath + path.relative, never a string
+			// prefix (which would let `commX` pass a `comm` check).
+			openCommDb: (projectName) => {
+				try {
+					const canonical = voiceRealpathSync(
+						commDbPathForProject(projectName),
+					);
+					const rel = pathRelative(
+						voiceRealpathSync(commDbRootDir()),
+						canonical,
+					);
+					if (rel.startsWith("..") || pathIsAbsolute(rel)) return null;
+					return new CommDB(canonical, false) as unknown as GateResponseDb;
+				} catch {
+					return null;
+				}
+			},
+			onResponseWritten: (info) =>
+				founderShipPostWriteHook({
+					executionId: info.executionId,
+					questionId: info.questionId,
+					leadId: info.actor,
+					answer: info.answer,
+					db: info.db as unknown as Parameters<
+						typeof founderShipPostWriteHook
+					>[0]["db"],
+				}),
+		}),
+	);
 
 	// FLY-725: per-project founder milestone-report config, read from each
 	// project's CANONICAL root (never a runner's PR worktree).

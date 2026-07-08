@@ -75,6 +75,8 @@ export {
 	type ConverseWiring,
 	type RegistryWiring,
 } from "./factory.js";
+// headphone mode (FLY-546) — pure logic layer
+export * from "./headphone/index.js";
 export {
 	AbortError,
 	NodeProcessRunner,

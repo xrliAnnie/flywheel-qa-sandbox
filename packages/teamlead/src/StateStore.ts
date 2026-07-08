@@ -1597,6 +1597,53 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-546: events of one type across ALL executions — the voice
+	 * gate-binding endpoint reverse-looks-up a ship-gate message id against
+	 * every persisted `ship_gate_msg_binding` row.
+	 */
+	getEventsByType(eventType: string): SessionEvent[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM session_events WHERE event_type = ? ORDER BY id",
+		);
+		stmt.bind([eventType]);
+		const rows: SessionEvent[] = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				event_id: row.event_id as string,
+				execution_id: row.execution_id as string,
+				issue_id: row.issue_id as string,
+				project_name: row.project_name as string,
+				event_type: row.event_type as string,
+				severity: row.severity as string,
+				payload: row.payload ? JSON.parse(row.payload as string) : undefined,
+				source: row.source as string,
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-546: all live (non-missing) chat thread ids — main + phase tables.
+	 * The voice scope contract lists them as founder-facing channels.
+	 */
+	getAllChatThreadIds(): string[] {
+		const ids: string[] = [];
+		for (const table of ["chat_threads", "phase_chat_threads"]) {
+			const stmt = this.db.prepare(
+				`SELECT thread_id FROM ${table} WHERE discord_missing_at IS NULL`,
+			);
+			while (stmt.step()) {
+				const row = stmt.getAsObject() as Record<string, unknown>;
+				ids.push(row.thread_id as string);
+			}
+			stmt.free();
+		}
+		return ids;
+	}
+
+	/**
 	 * FLY-727: session_completed events in a UTC time window, carrying `id` + `ts`.
 	 * The daily digest queries a WIDE UTC window and does the exact Pacific-day
 	 * (+ DST) filtering per-event downstream. Read-only; ordered ASC by ts so a

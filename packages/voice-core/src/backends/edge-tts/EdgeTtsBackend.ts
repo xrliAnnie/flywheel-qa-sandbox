@@ -15,6 +15,7 @@ import {
 	type VoiceBackend,
 	type VoiceBackendCapabilities,
 	VoiceError,
+	type VoiceRef,
 } from "../../types.js";
 
 const EDGE_TTS_CAPABILITIES: VoiceBackendCapabilities = {
@@ -77,7 +78,7 @@ class EdgeTtsAnnouncerSession implements AnnouncerSession {
 		private readonly backendId: string,
 		private readonly tts: TtsEngine,
 		private readonly player: AudioPlayer,
-		private readonly voice: string,
+		private readonly voice: VoiceRef,
 		private readonly sink: TranscriptSink | undefined,
 		private readonly now: () => number,
 	) {}
