@@ -11,9 +11,14 @@ Status: **draft PRD — 主线待 Annie 拍板后由 Lead 收口**(这是她点�
 
 > **命题(Annie 2026-07-08 校正):** 『换大机救急』已单独做完、与本 issue 无关;**1005 不是『多机值不值得』,而是『怎么做好横向扩展 → 上云(无上限 horizontal scale)』。** 分阶段从『第一台卫星/云节点』起,不从换大机起。
 >
-> **⭐ v8 大收敛(Annie 2026-07-08,co-eval 8 轮后):产品化 2 阶段框 + 跳过 B。** A(今天:单租户单机)→ **Phase 1 = 1005 核心**(我们多机单租户、非联邦「单 hub + 无状态卫星节点容器」、profile 预登录 + 每 session sync-to-latest、横向扩展,**不碰多租户**)→ **Phase 2 = 产品化**(把 Phase1 容器化栈打包成别人跑自己一份 = **C 联邦 = FLY-648**)。**内部跳过 B**(共享 hub 多租户只在 hosted 共享才要);**Container 贯穿两阶段 must-have**(Phase1 做节点 / Phase2 打包)。下方 §3 的阶段0-3 是 Phase 1 的内部细化。
+> **⭐ 分阶段收敛(Annie 2026-07-08,co-eval 9 轮后,重新编号 Phase 1 = 今天):**
+> - **Phase 1 = 今天:** 单机 —— hub(Bridge+DB+Leads)+ 所有 runner 一台机(worktree/tmux),单租户。(起点)
+> - **Phase 2 = 自己多机(核心 1005):** 单 hub(Bridge+Leads,**hub+DB 最好拆云**)+ 多机**无状态卫星节点容器**(profile 预登录、每 session sync-to-latest),单租户、横向扩展,**不碰多租户**。delta = runner 从本机 worktree/tmux → 多机无状态容器化卫星,突破单机容量 + 失败域隔离。(自然子步:先起云节点跑通、再 hub+DB 拆云;主线仍一个 Phase。)
+> - **Phase 3 = 产品化:** Phase 2 容器化栈打包 → 别人自部署一份 = **C 联邦(每租户一整套硬隔离)= FLY-648**。delta = 从我们一套 → 每租户各自一整套。**Phase 2 容器化 = 这步的种子;Container 贯穿 = must-have。**
+> - **⭐ 为什么跳过 B(共享 hub 多租户):** 内部只我们一个租户(Phase 2 单租户,不需要多租户共享);对外付费必须硬隔离 = C(Phase 3)。B 只在「专门做 hosted 共享服务」才有意义,不在 1005 主线。
+> - 下方 §3 的阶段0-3 是 **Phase 2** 的内部细化。
 >
-> **状态:PRD 待 Annie 确认这个分阶段计划后再写**(v8 co-eval HTML 请她确认;Lead 发话我再出正式 PRD,不抢跑)。
+> **状态:PRD 待 Annie 确认这 3 个 Phase 后再写**(v9 co-eval HTML 请她确认;Lead 发话我再出正式 PRD,不抢跑)。
 
 ## 1. 结论 (TL;DR)
 
