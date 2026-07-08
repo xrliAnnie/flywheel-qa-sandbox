@@ -101,8 +101,9 @@ if (cmd === "list") {
 	console.log(`samples → ${AUD_DIR}`);
 } else if (cmd === "judge") {
 	loadFlywheelEnv();
+	resolveGeminiKey();
 	if (!process.env.GEMINI_API_KEY) {
-		console.error("GEMINI_API_KEY missing (~/.flywheel/.env)");
+		console.error("GEMINI_API_KEY missing (~/.flywheel/.env or ~/.zshrc)");
 		process.exit(2);
 	}
 	const judgeModel = process.env.FLY980_JUDGE_MODEL ?? "gemini-2.5-flash";
@@ -158,6 +159,29 @@ if (cmd === "list") {
 		"usage: node audition.mjs list | synth <candidates.json> [--final] | judge [dir]",
 	);
 	process.exit(2);
+}
+
+// gemini-image skill 同款 key 解析链: env → ~/.zshrc 的 export 行
+function resolveGeminiKey() {
+	if (process.env.GEMINI_API_KEY) return;
+	try {
+		const zshrc = readFileSync(join(homedir(), ".zshrc"), "utf8");
+		for (const name of [
+			"GEMINI_API_KEY",
+			"GEMINI_IMAGE_API_KEY",
+			"NANOBANANA_GEMINI_API_KEY",
+		]) {
+			const m = zshrc.match(
+				new RegExp(`^export ${name}=["']?([^"'\\n]+)["']?$`, "m"),
+			);
+			if (m) {
+				process.env.GEMINI_API_KEY = m[1];
+				return;
+			}
+		}
+	} catch {
+		// no zshrc — caller reports the missing key
+	}
 }
 
 async function geminiCall(model, parts) {
