@@ -129,9 +129,12 @@ deploy 侧把 idle-wait 从「session 数=0」改成「**真收到 finalization-
 ## 7. 需求 —— Block 4：清干净验收清单（5 条全满足，缺一不可）
 
 **可测性前提 —— 权威资源清单(authoritative inventory):** 进入 `finalizing` 时,冻结(或可从持久记录重建)
-一份该任务的**权威资源清单**:task id · PR id · 所有 phase / run session ids · worktree registry · CMux tag
-registry。**验收判据 = expected set − closed set == ∅**(期望关闭集 减 已关闭集 为空)。没有这份清单,只能证明
-「关了我看见的」、无法证明「一个不漏」,零 ghost 不可判定。
+一份该任务的**权威资源清单**:task id · PR id · 所有 phase / run session ids · worktree registry ·
+**Discord thread(`discord_thread_id` / channel / message / archive target)** · CMux tag registry。
+**验收判据 = expected set − closed set == ∅**(期望关闭集 减 已关闭集 为空)。**thread 必须进这份清单** ——
+第 4 步要归档它、验收又是 expected−closed==∅,不列进来就只能证明「归档了我后来找到的 thread」、不能证明
+「一个不漏」;确无 thread 时也要显式标 `not_applicable_with_reason` 或 `missing_inventory_blocked`,
+**不能静默通过**。没有这份清单,只能证明「关了我看见的」、无法证明「一个不漏」,零 ghost 不可判定。
 
 一个任务「清干净」当且仅当以下 5 条(按权威清单)**全部完成且可核验**:
 
@@ -319,8 +322,10 @@ flowchart TD
 
 - **E1（block 1 核心）**:按选定方案实现「可续 / 跨重启不丢的 ship 收尾管线」—— 5 步幂等 + 断点续 + 覆盖所有
   merge 路径。根治 exploration §2.5 killer + §3.2 六类 ghost。扩展而非重造 FLY-638/369。
-- **E2（block 3）**:落实「重启与清理解耦」不变量 —— 无论何种 cadence 的重启都不 race / 打断清理
-  (deploy 屏障 / 清理 durable 二选一或并用,取决于 E1 方案)。**重启 cadence 具体值归多机部署 PRD,不在此 issue 定义**;cross-ref 之。
+- **E2（block 3）**:落实「重启与清理解耦」不变量 —— 无论何种 cadence 的重启都不 race / 打断清理。
+  **durable / resumable finalization 是 mandatory(硬不变量靠它保);deploy 屏障只能作额外 mitigation,
+  不得替代 durable finalization**(呼应 §5.2 —— 方案 3 非候选、只作过渡)。**重启 cadence 具体值归多机部署
+  PRD,不在此 issue 定义**;cross-ref 之。
 - **E3（block 4）**:5 步清干净收口 —— 把 tab / viewer / CommDB / worktree 兜底从 boot-only 改成事件 + 短周期;
   统一「清干净」核验;没-PR 绑真实 close。
 - **E4（gate）**:严格 Founder-Gate 收尾 —— 只在证得出 founder-approve 才清 + 归档,证不出挂起报 Annie(复用
