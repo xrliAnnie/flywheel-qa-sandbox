@@ -2,13 +2,13 @@
 issue: FLY-978
 phase: implement
 phaseCursor: 7/8
-updated: 2026-07-08T00:47:44.536Z
-nextStep: "anchor fix pushed (63c31419); PR #500 current; awaiting Lead codex
-  design-review; parked"
+updated: 2026-07-08T00:56:41.151Z
+nextStep: codex R2 folded (5 blocker+3 secondary), pushed 1bc823af; awaiting
+  Lead codex re-run; parked
 chunks: []
 pointers: {}
 ---
 
 # FLY-978 progress
 **phase**: implement (7/8)
-**next**: anchor fix pushed (63c31419); PR #500 current; awaiting Lead codex design-review; parked
+**next**: codex R2 folded (5 blocker+3 secondary), pushed 1bc823af; awaiting Lead codex re-run; parked
