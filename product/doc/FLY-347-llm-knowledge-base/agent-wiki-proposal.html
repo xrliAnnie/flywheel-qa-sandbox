@@ -32,6 +32,9 @@
   .con { background:#fff4e5; border-radius:8px; padding:.5rem .7rem; margin:.4rem 0; font-size:.9rem; }
   .net { background:#f0f4ff; border-radius:8px; padding:.5rem .7rem; margin:.4rem 0; font-size:.92rem;
     color:var(--navy); font-weight:500; }
+  .analogy { background:#fff8ef; border:1px dashed #f0c98a; border-radius:8px; padding:.55rem .75rem;
+    margin:.5rem 0; font-size:.92rem; }
+  .fact { background:#f3f0fb; border-radius:8px; padding:.5rem .7rem; margin:.5rem 0; font-size:.9rem; }
   code, .mono { font-family:"SF Mono", ui-monospace, monospace; font-size:.86em;
     background:#f0f0f2; padding:.05rem .3rem; border-radius:5px; }
   b.num { color:#ff3b30; }
@@ -74,14 +77,14 @@
 </div>
 
 <h1>Flywheel 给 Agent 用的 compounding wiki</h1>
-<div class="sub">FLY-347 提案 · 给 agent 参考,不是给人看 · 诚实评估值不值得(现有 memory 已经不错)</div>
+<div class="sub">FLY-347 提案 v2 · 给 agent 参考,不是给人看 · 诚实评估值不值得(现有 memory 已经不错)</div>
 
 <div class="tldr" data-key="tldr">
   <p><b>结论先给,不埋:</b>Flywheel <b>不需要从头建 Karpathy 的 wiki</b> —— 我们已经有它
   ~70% 的骨架(页 + 索引 + 互链)。真正缺的是他那条核心洞见:<b>LLM 自己跑的『维护回路』</b>。
   且这个缺口有<b>真痛证据</b>(<b class="num">187</b> 个记忆文件、<b class="num">123</b> 个
-  feedback、索引只增不并)。所以提案 = <b>不建大 wiki,只补最有杠杆的一小块小 MVP:一个
-  agent 自跑的记忆 consolidation/lint pass。</b>更大的等它证明价值再说。</p>
+  feedback、索引只增不并 —— 库在慢慢『烂』)。所以提案 = <b>不建大 wiki,只补最有杠杆的一小块
+  小 MVP:一个 agent 自跑的记忆 consolidation/Lint pass。</b>Ingest/Query/语义搜索都留后。</p>
   <label class="comment-label" for="c-tldr">你的留言(整体感觉)</label>
   <textarea id="c-tldr" rows="2" maxlength="2000" placeholder="例:方向对 / 我其实想要更大的 / 这块真的痛吗…"></textarea>
 </div>
@@ -111,36 +114,47 @@
     <tr><td>raw sources</td><td><code>docs/solutions</code>(/compound)、per-project 记忆</td><td class="yes">✅ 有</td></tr>
   </table></div>
   <p><b>结论:我们不是从零,骨架在了。</b>这也是为什么你说现有系统「用起来也还不错」—— 你是对的。</p>
+  <div class="fact"><b>事实校正(会有人问『我们不是有 mem0 吗』):</b>我们确实有 mem0 式的
+  <code>MemoryService</code> 代码(在 <code>packages/edge-worker/src/memory/</code>,含 pgvector/
+  embedding 路径),<b>但 pgvector 基本没接、活的主力是文件 markdown</b>(证据 = 上面那 187 个
+  <code>memory/*.md</code> + MEMORY.md,是本会话真正在用的)。所以下面说的『编译 wiki 层』是
+  <b>真缺</b>,不是重复造 mem0 的轮子。</div>
   <label class="comment-label" for="c-have">你的留言</label>
   <textarea id="c-have" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
-<div class="card gap" data-key="gap">
-  <h2><span class="n">3</span>缺的那层 & 那个回路</h2>
-  <p>我们有「离散的页 + 索引 + 零散互链」,缺 Karpathy 真正的增量:</p>
-  <ul>
-    <li><b>Ingest 时『整合』而非只『追加』</b>:现在新知识来了就新增一个文件,不会去修订相关页、
-      和解矛盾。他那种「一个源触 10-15 页」的整合,我们没有。</li>
-    <li><b>综述/概念页</b>:我们是原子事实,没有*被维护的主题页*(如「关于 Runner 生命周期我们
-      知道的一切」随新证据更新)。</li>
-    <li><b>系统化 Lint 回路</b>:没有定期去重/和解矛盾/去陈旧/找孤儿的 pass。现在的
-      check-before-write 是逐次即兴,不是系统 pass。</li>
-    <li><b>Query 结果回填</b>:agent 综合出的答案蒸发在对话里,没 file back 成页。</li>
-  </ul>
-  <label class="comment-label" for="c-gap">你的留言</label>
-  <textarea id="c-gap" rows="2" maxlength="2000" placeholder="…"></textarea>
+<div class="card re" data-key="layer">
+  <h2><span class="n">3</span>缺的那层 + 回路具体怎么做</h2>
+  <p>我们有「离散的页 + 索引 + 零散互链」。要补的,是在<b>现有 markdown 记忆之上</b>加一个
+  <b>agent 维护的『编译层』</b> —— <b>不建新存储</b>,就是现有 markdown 树 + 一个维护 skill +
+  index/schema 约定。这个编译层靠一个三段回路活着:</p>
+  <div class="table-wrap"><table>
+    <tr><th>回路</th><th>agent 具体做什么</th><th>现状</th></tr>
+    <tr><td><b>Ingest(喂)</b></td><td>读到新东西 → 写成互链的 wiki 页 + 补 <code>[[链接]]</code> + 更新 index;不仅新增,还修订相关页 + 标矛盾</td><td>只「新增」,少「整合」</td></tr>
+    <tr><td><b>Query(查)</b></td><td>答难题时<b>先读编译好的 wiki / index,不翻 raw</b>;综合结果可回填成新页</td><td>索引注入✅;综合<b>不回填</b></td></tr>
+    <tr><td><b>Lint(体检)</b></td><td>定期 pass:去重、并重叠、消解矛盾、清过时、找孤儿链、瘦身索引 → 出<b>可审 diff</b></td><td class="no">完全缺(=本 MVP)</td></tr>
+  </table></div>
+  <p>三段是<b>完整回路的描述</b>(讲清整体长什么样);但 <b>MVP 只做其中 Lint 那一段</b>(见第 6 节 —
+  因为 Ingest+index+互链我们已有 ~70%,先补最痛的 Lint)。</p>
+  <label class="comment-label" for="c-layer">你的留言</label>
+  <textarea id="c-layer" rows="2" maxlength="2000" placeholder="例:这个『编译层』我懂了 / Query 先读 wiki 这点重要…"></textarea>
 </div>
 
-<div class="card gap" data-key="map">
-  <h2><span class="n">4</span>他的 Ingest→Query→Lint 映射到我们</h2>
-  <div class="table-wrap"><table>
-    <tr><th>Karpathy op</th><th>映射到 Flywheel agent</th><th>现状</th></tr>
-    <tr><td><b>Ingest</b></td><td>学到东西→写记忆:不仅新增,还更新相关页 + 标矛盾 + 更新索引</td><td>只「新增」,少「整合」</td></tr>
-    <tr><td><b>Query</b></td><td>答难题先读 MEMORY.md 索引→钻相关页→综合</td><td>索引注入✅;综合<b>不回填</b></td></tr>
-    <tr><td><b>Lint</b></td><td>定期 agent pass:去重、并重叠、标矛盾/陈旧、找孤儿链、瘦身索引→<b>可审 diff</b></td><td class="no">完全缺(=本 MVP)</td></tr>
-  </table></div>
-  <label class="comment-label" for="c-map">你的留言</label>
-  <textarea id="c-map" rows="2" maxlength="2000" placeholder="…"></textarea>
+<div class="card gap" data-key="whylint">
+  <h2><span class="n">4</span>为什么必须有 Lint(这段是你要我讲清的)</h2>
+  <p><b>知识库越攒越大,会『烂』。</b>攒到几百页时,自然长出三种病:</p>
+  <ul>
+    <li><b>重复</b>:同一件事被写进好几页(我们现在 187 文件里,123 个 feedback_* + 31 个 qa_* 明显有可并项)。</li>
+    <li><b>矛盾</b>:新证据推翻了旧断言,但旧页还在,两页打架,agent 读到哪页看运气。</li>
+    <li><b>过时 & 孤儿</b>:陈旧的页没人清、没有入链的页查不到 —— 占 context、拖准确率。</li>
+  </ul>
+  <div class="analogy"><b>就像 lint 代码:</b>代码不 lint 会烂(死代码、重复、不一致),所以我们跑 linter
+  定期体检。<b>知识库同理</b> —— Lint = 给记忆库跑的 linter:定期一个 pass 去重 / 消解矛盾 /
+  清过时 / 标缺口,让库一直健康。Karpathy 的原话就是:<b>维护(bookkeeping)才是人放弃 wiki 的
+  真正原因,而 LLM 不会腻、不会忘</b> —— 所以这件事正好该交给 agent 定期做。</div>
+  <p>这也是为什么 MVP 选它:我们的库<b>已经在『烂』的边缘</b>(只增不并),Lint 是当下最痛、最该先补的一段。</p>
+  <label class="comment-label" for="c-whylint">你的留言</label>
+  <textarea id="c-whylint" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
 <div class="card honest" data-key="worth">
@@ -182,7 +196,7 @@
     <li class="no">❌ 不自动删记忆 —— 只出可审 diff。</li>
     <li class="no">❌ 不上向量库/语义搜索(MVP index-first 够,他亲述 ~100 页 index 就够)。</li>
   </ul>
-  <p>留后(不在 MVP):维护式综述页 · query 结果自动回填 · 大规模上 qmd 语义搜索。</p>
+  <p>留后(不在 MVP):完整 Ingest 整合(触多页)· 维护式综述页 · query 结果自动回填 · 大规模上 qmd 语义搜索。</p>
   <label class="comment-label" for="c-scope">你的留言</label>
   <textarea id="c-scope" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
@@ -190,7 +204,7 @@
 <div class="card mvp" data-key="decision">
   <h2><span class="n">8</span>你的取舍</h2>
   <div class="choices">
-    <label><input type="radio" name="lean" value="do-mvp"> 做 MVP(Memory Lint pass)—— 小、对准真痛、纯 agent-facing(我推荐)</label>
+    <label><input type="radio" name="lean" value="do-mvp"> 做 MVP(Memory Lint/consolidation pass)—— 小、对准真痛、纯 agent-facing(我推荐)</label>
     <label><input type="radio" name="lean" value="go-bigger"> 我想要更大的(整合式 ingest + 综述页),别只做 lint</label>
     <label><input type="radio" name="lean" value="not-now"> 先不做,现有够用,理解存档就好</label>
     <label><input type="radio" name="lean" value="rethink"> 改方向 / 还要再深入(下面写)</label>
