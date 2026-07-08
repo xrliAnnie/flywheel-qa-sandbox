@@ -1,14 +1,14 @@
 ---
 issue: FLY-942
 phase: design
-phaseCursor: 4/10
-updated: 2026-07-08T03:28:11.905Z
-nextStep: gate round1 confirmed by HL (+relay-latency ball-state); await Annie
-  framework confirm → round2 (decision-card fields / 🟡 / digest)
+phaseCursor: 5/10
+updated: 2026-07-08T03:33:41.744Z
+nextStep: dug 878/975/976/970/973; folded detection-accuracy half + Q1-Q10
+  clarify set into exploration; reporting to HL to relay Annie
 chunks: []
 pointers: {}
 ---
 
 # FLY-942 progress
-**phase**: design (4/10)
-**next**: gate round1 confirmed by HL (+relay-latency ball-state); await Annie framework confirm → round2 (decision-card fields / 🟡 / digest)
+**phase**: design (5/10)
+**next**: dug 878/975/976/970/973; folded detection-accuracy half + Q1-Q10 clarify set into exploration; reporting to HL to relay Annie
