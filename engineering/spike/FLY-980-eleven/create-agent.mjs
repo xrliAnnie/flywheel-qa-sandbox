@@ -80,6 +80,15 @@ try {
 } catch (err) {
 	console.error("create failed (recording exact rejection for evidence):");
 	console.error(String(err.message));
+	// agent 没建成 → 别把 bearer 留在 ElevenLabs(失败路径的 secret 回收)
+	try {
+		await xi(`/v1/convai/secrets/${secret.secret_id}`, { method: "DELETE" });
+		console.error(`cleaned up secret ${secret.secret_id}`);
+	} catch (cleanupErr) {
+		console.error(
+			`⚠️ secret ${secret.secret_id} NOT cleaned up (${String(cleanupErr?.message ?? cleanupErr).slice(0, 120)}) — delete manually: node delete-agent.mjs - ${secret.secret_id}`,
+		);
+	}
 	process.exit(1);
 }
 const agentId = created.agent_id;
