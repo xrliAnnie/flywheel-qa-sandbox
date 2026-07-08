@@ -164,12 +164,13 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 <!-- 3.5 DAG 两层 -->
 <h2><span class="secnum">🧩 ·</span> DAG 的两层含义:issue 派发图 + 每类任务的 workflow 模板</h2>
 <div class="card purple">
-  <div class="you"><b>你 articulate 的洞察(来自 1004/homerail,采纳):</b>「DAG 不只是 issue 自动派发,更是每类任务一套 workflow 模板 —— 三段式本身就是一个 DAG;每个 Lead/任务类别可以有自己 default 的 DAG 模板;还能 inject / fork / 每节点配模型。」</div>
-  <p><b>所以「DAG」在我们这里是<u>两层</u>,叠在一起:</b></p>
+  <div class="you"><b>你在 1004 里 articulate 的两层模型(比之前更清楚,采纳):</b>「DAG 是两层。<b>第一层</b> = 每类任务一套模板(像<b>乐高积木</b>:同一套底层积木,engineer issue 一种编排、designer issue 另一种,编排随任务类型变);<b>第二层</b> = 353 这个更高 level 的自动编排引擎,决定『还相关吗 / 派给谁 / 何时 / 怎么更 proactive』。」</div>
+  <p><b>两层的关系(用你的 framing):</b></p>
   <ul>
-    <li><span class="k">第一层 · issue 派发 DAG(前面讲的)</span> —— 跨 issue、按 <code>blockedBy</code> 依赖、CoS 分诊、自动派 runner。</li>
-    <li><span class="k">第二层 · 每类任务的 workflow 模板 DAG(新)</span> —— 一个 issue 被派下去后,它<b>内部</b>怎么跑,也是一张 DAG。<b>三段式(设计→实现→QA)就是一个模板</b>。</li>
+    <li><span class="k">第一层 · 模板层(乐高):做<u>一个</u> issue 怎么编排</span> —— 每类任务一套 DAG 模板。同一套底层「积木」(节点),eng issue 一种拼法(三段式:设计→实现→QA)、designer issue 另一种(更短/不同),<b>编排随任务类型变</b>。≈ homerail 的「活内部工作流」就在这一层。</li>
+    <li><span class="k">第二层 · 353 引擎层:决定做<u>哪些</u> issue + 怎么自动推进</span> —— 在模板<b>之上</b>,CoS 分诊判「还相关吗 / 派给谁 / 何时 / 怎么更 proactive」+ 按依赖自动派发。<b>这层就是 353 要建的。</b></li>
   </ul>
+  <p class="hint">一句话:第一层「一个 issue <u>怎么</u>跑」(模板 / 乐高)· 第二层「做<u>哪些</u> issue、<u>怎么</u>自动推进」(353 引擎 = CoS 分诊 + 自动派发)。之前我把两层编号写反了,已按你的 framing 对齐。</p>
   <p><b>每类任务一套 default 模板:</b></p>
   <div class="scroll"><table>
   <thead><tr><th>任务类别</th><th>default DAG 模板</th></tr></thead>
@@ -185,11 +186,11 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
     <li><b>fork</b> —— 从一个节点岔成两个方向<b>并行试</b>(如 implement 岔两方案)。</li>
     <li><b>profile</b> —— <b>每个节点绑一个模型</b>。<span class="tag new">已在做</span> grounded:<code>three-stage-phases.ts</code> 就是「每 phase 一个模型」的单一真相 —— 设计/实现偏 Fable、<b>QA=Opus</b>。三段式已经是一张「节点绑模型」的 DAG。</li>
   </ul>
-  <div class="you" style="background:#f4f9ff;border-color:#bcd9ff"><b>三层套一层(整个东西的分层):</b><br>
-  · <b>模板层</b>:每类任务一套 DAG 模板 —— 定「这类活<u>怎么跑</u>」(形态)<br>
-  · <b>CoS 分诊层</b>:CoS 判相关/派给谁/用哪套模板 —— 定「<u>派什么、给谁</u>」(派发)<br>
-  · <b>护栏层</b>:founder gate / 接管叫停 / 出错升级 —— 定「<u>怎么不失控</u>」(安全)</div>
-  <p class="src">注:本节是照 Lead ffe866f5 把 1004 洞察融进设计源,已 grounded(three-stage-phases.ts = per-phase 模型)。将随下一版设计 / PRD 一起呈现。</p>
+  <div class="you" style="background:#f4f9ff;border-color:#bcd9ff"><b>对齐你的两层 + 护栏(整个东西的分层):</b><br>
+  · <b>第一层 · 模板层(乐高)</b>:每类任务一套 DAG 模板 —— 定「一个 issue <u>怎么跑</u>」(形态)<br>
+  · <b>第二层 · 353 引擎层 = CoS 分诊 + 自动派发</b>:判相关/派给谁/何时/proactive + 按依赖派 —— 定「做<u>哪些</u> issue、<u>怎么</u>自动推进」(派发)<br>
+  · <b>(包在外面)护栏</b>:founder gate / 接管叫停 / 出错升级 —— 定「<u>怎么不失控</u>」(安全)</div>
+  <p class="src">注:本节照 Lead ffe866f5 + a89c805d 把 1004 洞察 + 你的两层 framing 融进设计源,已 grounded(three-stage-phases.ts = per-phase 模型)。将随下一版设计 / PRD 一起呈现。</p>
 </div>
 <div class="cmt"><label>💬 对「DAG 两层 / 每类任务模板 / inject·fork·profile」的留言</label><textarea data-k="templates" data-label="🧩 DAG 两层 + 任务模板 + inject/fork/profile"></textarea></div>
 
