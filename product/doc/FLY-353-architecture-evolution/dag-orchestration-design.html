@@ -73,7 +73,10 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
   <p>你的烦躁:<b>手动开一堆 Linear issue,再一个个跟 Lead 说「你做 1、你做 2」</b>。issue 一多,派活本身就累。</p>
   <p><b>主动 DAG 编排给你的:</b> 你<b>只列大方向</b>(开 issue + 标依赖)→ 系统<b>自动</b>挑出能做的、派 runner 去做、做完自动推进,<b>你不用一个个 assign</b>。</p>
   <div class="you"><b>你问:homerail 的 DAG 是做这件事吗?→ 不是,它是<u>另一个层级</u>的 DAG。</b><br>
-  澄清:homerail 的 DAG 是 <b>「一个 agent 一次 run 内部的工作流图」</b>(一个 agent 干活时,内部把步骤/子任务排成 DAG 跑)。<b>不是</b>我们这里要做的 <b>「issue 级、跨 fleet 的自动派发」</b>(决定接下来哪个 Linear issue 派给谁跑)。<b>两个「DAG」不是一回事:homerail = run 内部 · 我们要做的 = issue 级派发。</b>所以「homerail 有 DAG」不代表它做我们这件事。<span class="tag unk">UNKNOWN</span> homerail 更细的内部实现我仍没查到公开文档 —— 要更精确要我专门深挖。</p></div>
+  澄清(有人 firsthand 读了 homerail 代码):homerail 的 DAG 是 <b>「一个 agent 一次 run <u>内部</u>的工作流图」</b> —— 一个 run 里,node 按
+  <b>port / 条件边 / loop</b> 流转(即单个 agent 干一件事时,内部的步骤编排)。<b>不是</b>我们这里要做的 <b>「issue 级、跨 fleet 的自动派发」</b>
+  (决定接下来哪个 Linear issue 派给谁跑)。<b>两个「DAG」不是一回事:homerail = run 内部工作流 · 我们要做的 = issue 级派发。</b>
+  所以「homerail 有 DAG」<b>不代表</b>它做我们这件事。<span class="tag unk">UNKNOWN</span>:homerail 没有公开架构文档,以上是直接读码得出的结论、非官方 doc。</p></div>
 </div>
 <div class="cmt"><label>💬 对「要解决的痛 / homerail」的留言(要不要我深挖 homerail?)</label><textarea data-k="pain" data-label="1 · 痛 / homerail"></textarea></div>
 
@@ -154,7 +157,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
     <li><b>没有</b>监管护栏(出错就 <code>shelve</code> 掉继续跑别的,不升级给人);</li>
     <li><b>没接进生产</b>(dormant),也没跟现在演进过的 Lead/三段式/founder-gate/brainstorm-gate 栈整合。</li>
   </ul>
-  <p><b>结论:不该照搬复活它。</b> 倾向<b>重新设计</b>:图逻辑(拓扑排序 + 从 Linear blockedBy 建图)这块概念可借,但整个引擎要按「LLM 分诊 + 跑中判断 + 护栏」重做。<b>建议</b>:按你说的,单开一个 issue 专门<b>评估 + 重设计现有引擎</b>(是否作 bug / 技术 issue,你和 Tadashi 定)。—— 我没擅自开,等你点头。</p>
+  <p><b>结论:现引擎 = 需重设计,不该照搬复活它</b>(依据 = 上面的诚实评估)。图逻辑(拓扑排序 + 从 Linear blockedBy 建图)这块概念可借,但整个引擎要按「LLM 分诊 + 跑中判断 + 护栏」重做。<b>「评估 + 重设计现有引擎」是 eng 活</b> —— 等这份设计收敛成 PRD、拆 build issue 时,以 bug/assessment 一起交 Tadashi;<b>现在不单开 issue</b>。</p>
 </div>
 <div class="cmt"><label>💬 对「引擎重设计 / 单开 issue」的留言</label><textarea data-k="engine" data-label="5 · 引擎评估+重设计"></textarea></div>
 
