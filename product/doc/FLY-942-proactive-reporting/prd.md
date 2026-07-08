@@ -85,7 +85,11 @@ flowchart TD
 ### 3.2 准确性机制 ✅ **Annie 拍:走 FLY-976 LLM 判断层**(读 per-pane 富态判 a/b/c)
 - **机械快路**(零 token,便宜初筛):真实 stage / park 元组明判明确态。
 - **LLM 判断层**(可疑才升级,省 token,FLY-976):读 pane 富态(token-flow + FSM 态)+ 真实 stage + park 元组 → 判 **a working / b parked / c stuck** + 归因(球在谁)+ 建议动作(nudge/respawn/切账号/@人)。正是 546 那种"报错后静默 idle"机械分不清、LLM 能。
-- **观察窗 + 二次确认(Tadashi 补,机制关键)**:三态判定最难是**边界** —— 长 turn 里瞬时空 prompt(看着 idle、下秒又吐)、error-but-looks-parked(报错后停在类 park 静默态)。→ 检测用**观察窗 + 二次确认(多帧/时间窗)**,**不是单帧快照**:别把恢复中的长 turn 当卡死(护 a)、也别把真卡死当短暂空(护 C)。这条直接服务"C 绝不漏"。
+- **观察窗 + 二次确认(Tadashi 补,机制关键)**:三态判定最难是**边界** —— 长 turn 里瞬时空 prompt(看着 idle、下秒又吐)、error-but-looks-parked(报错后停在类 park 静默态)。→ 检测用**观察窗 + 二次确认**,**不是单帧快照**。**分类器最小契约(Codex R1 MED-5,只定契约不写实现)**:
+  - **≥2 帧,间隔有界**(不是单帧);
+  - **输入 = live-region diff + token-flow(在不在吐)+ 会话 FSM 态 + 最近 CommDB 事件(ask/park/stage)+ 已过时长**(单看 idle 有无不够 —— 现 `isIdleHealthyPane` 就是单帧、且现 `stuck-candidate` 明说漏掉"输出仍在变的卡"如 retry loop/spinner);
+  - **不确定时 → `fail-suspicious` 附 pane 原文上报,绝不静默压掉**(降级变糙、不吞)。
+  - 目的:别把恢复中的长 turn 当卡死(护 a)、也别把真卡死当短暂空(护 C)。直接服务"C 绝不漏"。
 - **配套 lead 协议(FLY-937)**:Lead 收 stuck 报警**先 capture pane 验当下**(不信 stale alive-flag/commit);**报警默认可信、值得查,不默认误报**。自动看门狗读 capture-pane 判 frozen/rate-limit = **FLY-778**。
 - **降级永不静默**(FLY-878 标签分层):认不出→AI 兜底;仍不确定→`fail-suspicious` 附 pane 原文上报(标签变糙、绝不吞)。
 - 边界:判断层**实现** = FLY-976 eng + 937 lead 协议 + 778;本 PRD 定"要这种理解 + 输出契约"。
@@ -128,18 +132,39 @@ flowchart TD
 - **日常 问 / 答 / FYI** → thread、安静、**无 @**。
 - 形态 = **自然语言**,**不要固定卡片格式、不要 digest**。
 
-### 4.3 唯一会主动 @ Annie 的情况(绝不漏兜底)
-**只有 runner 真卡死(case c)/ Lead 接不住 → 看门狗当场立刻 @ 她。** 这是系统**唯一**主动打断 Annie 的情况(高信号、稀有,正对北极星"C 绝不漏")。日常全走 thread、安静、无 @。
+### 4.3 主动 @ Annie 的两个(且仅两个)触发 —— 解决 escalation 语义(Codex R1 HIGH-1)
+系统**唯一**主动 @/打断 Annie 的情况,精确定义为下面两条(消除"case-c 立即 @ vs Lead-first"的歧义):
+
+| 触发 | 时序 | Lead 参与 |
+|---|---|---|
+| **T1 · 真卡死 case-c** | **看门狗判定 case-c 那刻立即 @ Annie**(不等 Lead grace) | **同时**通知责任 Lead(Lead 仍按 FLY-937 capture pane 去修;但 case-c 严重 + 北极星#1,Annie 不排在 Lead grace 之后) |
+| **T2 · gap-Lead-接不住** | 两漏(①runner 没找 Lead / ②Lead 漏应答)先 nudge Lead;**Lead 超 grace 无 ACK / 不可达 → 才 @ Annie** | Lead-first,升级兜底 |
+
+> **为什么 case-c 立即 @ 而 gap 走 Lead-first**:真卡死 = 罕见、严重、常需 founder 动作(切账号/重启),且是北极星"绝不漏"的核心,不该压在 Lead grace 之后;两漏是"没人转/没人接"的责任问题,Lead 是第一责任人、给窗口自处理。**此条按 Annie 原话"真卡死 → 当场立刻 @ 她"定;待她终确认(若她要 case-c 也走 Lead-grace,改 T1 时序即可)。**
+
+日常 问/答/FYI/Lead 替拍安静帖 全走 thread、安静、**无 @**。
 
 ### 4.4 反刷屏 ⨯ 绝不静默(靠检测,不靠 digest)
-- **不刷屏**:日常无 @;去重 + over-notify 抑制;正常路径 work 时静默。
-- **绝不静默**:靠**两漏检测 + case-c @**(**不靠 digest** —— Annie 明确不要):runner 没找 Lead / Lead 漏应答 → 看门狗兜(提醒 Lead;**Lead 接不住 → @ Annie**);真卡死 → 立刻 @。→ digest 被砍后,"绝不静默"由检测层(两漏 + case-c 绝不漏)保证,非 digest 网底。
+- **不刷屏**:日常无 @;去重 + over-notify 抑制;正常路径 work 时静默;T1/T2 都稀有高信号。
+- **绝不静默**:靠**两漏检测(T2)+ case-c 绝不漏(T1)**(**不靠 digest** —— Annie 明确不要)。digest 被砍后,"绝不静默"由检测层(两漏 + case-c 100% 不漏)保证,非 digest 网底。
 
-### 4.5 Lead 响应契约 + 两漏(检测层输出去向)
+### 4.5 Lead 响应契约 + Lead-提醒 transport(Codex R1 HIGH-2)
 看门狗检测到两漏 + stall(§3.3),**责任 Lead 第一响应人**:① 排查 ② 自愈 ③ 真需 Annie 拍 → 在对应 thread 用**自然语言**surface(不是固定卡片)④ **绝不静默**(留痕)。
-- 漏① runner 没找 Lead → 提醒 Lead(thread/安静)。
-- 漏② Lead 漏应答 → 提醒 Lead;**Lead 接不住 → 看门狗 @ Annie**(= §4.3 触发之一)。
-- 真卡死 case-c → **看门狗立刻 @ Annie**(§4.3 触发之二)。
+- **Lead-提醒的投递契约(不是 founder-thread-notifier —— 那是 founder-only,只 @ ownerUserId)**:
+  - **目标 Lead** = 按 parent issue 的 dept label 解析出的 owner Lead(非一律 eng)。
+  - **投递** = 进对应 [FLY-XX] thread 一条帖 **+ 经现有 Lead inbox/mailbox 机制通知该 Lead**(复用 FLY-161 `runner_question`→Lead inbox / FLY-168 mailbox wake;**不复用 founder-only 的 `founder-thread-notifier`**)。
+  - **ACK/凭据** = Lead 的 disposition/回应(自愈记录 / relay / 明确 dismiss)。
+  - **升级** = 超 grace 无 ACK / Lead 不可达 → **@ Annie(= T2)**。
+- 漏① runner 没找 Lead → 提醒 Lead(thread + Lead inbox)。
+- 漏② Lead 漏应答 → 提醒 Lead;**Lead 接不住 → @ Annie(T2)**。
+- 真卡死 case-c → **看门狗立刻 @ Annie(T1)+ 并行通知 Lead**。
+
+### 4.6 检测 cadence / 时延契约(Codex R1 HIGH-3:阈值必须绑到真实轮询)
+**现状**:Runner idle/stuck 轮询默认 **~1h**(`DEFAULT_IDLE_POLL_MS = 3_600_000`;stuck 首检也放宽到 ~1h);现有 10min stagnant 阈值受该轮询驱动。→ **光在纸上写 20min 阈值、但仍每小时看一眼 runner,达不到"不再每 30–60min 巡查"。** 阈值必须绑 cadence:
+- **廉价 gap/state 扫描**(读 CommDB `runner_declared_states` / ask 记录 / stage,**不抓 pane**)每 N 分钟(便宜、可高频)→ 判两漏(①②)。
+- **pane 观察帧**(capture pane,较贵)在 M 分钟内取 ≥2 帧(用于 case-c 富态判定,§3.2)。
+- **首个 actionable Lead 提醒 ≤ 配置阈值(~20min,global+per-project)**;case-c 判定 → 立即 @ Annie(T1)。
+- 若昂贵 pane capture 现实上仍 ~1h,则 20min 只保证廉价 gap 检测,case-c pane 诊断时延更粗 —— **eng 需定 scheduler**(见 W-cadence)。**验收写明 max 检测时延**,不留 cadence 隐式。
 
 > 早稿 `mockup.html` 的决策卡/digest 形态已被 Annie 简化为**自然语言进 thread**;mockup 仅存历史,PRD 以本节为准。
 
@@ -185,46 +210,59 @@ stateDiagram-v2
   note right of at_annie: 唯一主动打断 Annie(无 digest、无频道、无卡片)
 ```
 
-## 7. Success metrics(北极星)= 三态判对(带优先级)+ 六 test case ✅ G1 定案
-**主指标 + 优先级(Annie 拍)**:**(c) 绝不漏(100%)>> (a) 可容忍误报 >> (b) 要 surface(feature)**。
+## 7. Success metrics(北极星)= 三态判对(带优先级)+ 用例集 ✅ G1 定案
+**主指标 + 优先级(Annie 拍)**:**(c) 真卡死绝不漏(100%)>> (a) 在跑可容忍误报 >> (b) parked 要 surface(进 thread)**。
+> **命名(Codex R1 MED-4)**:用例前缀 **FP(误报组)/ FN(漏报组)/ R(汇报)/ L(Lead 协议)**,**与三态 a/b/c 无关**(避免旧 A/B 标签与状态 a/b 混淆)。
 
-**真实 test case = 北极星验收(Cass 亲历 + Tadashi 印证 + 本 PRD dogfood)**:
-| # | case | 真态 | 现状误判 | 验收标准 |
+**检测用例(3 FP + 4 FN = 7;Cass 亲历 + Tadashi 印证 + 本 PRD dogfood)**:
+| # | case | 真态 | 现状 | 验收 |
 |---|---|:--:|---|---|
-| **A0 🐕 dogfood** | **本 942 PRD 的 runner 在长 draft turn(无 stage_changed)被现有机械 watchdog 误报 `session_stuck`**;HL 手动 capture 见在动、按 A-可容忍未转 Annie(= 人工版 937 协议) | a | 误报 | 不判 stuck —— **写 PRD 的 runner 本身被它要治的 watchdog 误报 = 最好的 dogfood** |
-| **A1** | 零-commit 只读/QA run 被判 stuck(FLY-798「没 commit=stuck」认不出非-commit 工作) | a/b | 误报 | 不判 stuck(可容忍偶发) |
-| **A2** | 长操作 idle-timeout 误杀(等 codex/build/test,慢但在动) | a | 误报误杀 | 不判 stuck(观察窗护住) |
-| **A3** | Lead 见「刚 commit」机械 dismiss 了真 stuck(07-06 rate-limit;watchdog 对/Lead 错) | c | 被 Lead 误 dismiss | **937 协议:capture pane 验当下,报警默认可信** |
-| **B0 🐕 dogfood** | **910 runner tmux alive=true 但 Claude auth 挂了(`Not logged in`)** → 机械检测当 healthy | c | **漏报** | **100% 判 stuck** —— 活例佐证 **liveness≠healthy,必须读 pane** |
-| **B1** | error-then-idle → HEALTHY(FLY-546/975) | c | **漏报** | **100% 判 stuck** |
-| **B2** | `/compact` 静默 stall(FLY-837,进程 alive 活死) | c | **漏报** | **100% 判 stuck** |
-| **B3** | Lead draft-not-sent(FLY-574,status 绿但发不出) | c | **漏报** | **100% 判 stuck** |
+| **FP0 🐕** | 本 942 runner 长 draft turn(无 stage_changed)被误报 `session_stuck`;HL capture 见在动、可容忍未转 Annie | a | 误报 | 不判 stuck(dogfood:写 PRD 的 runner 被它要治的 watchdog 误报) |
+| **FP1** | 零-commit 只读/QA run 被判 stuck(FLY-798「没commit=stuck」) | a/b | 误报 | 不判 stuck(可容忍偶发) |
+| **FP2** | 长操作 idle-timeout 误杀(等 codex/build/test,慢但在动) | a | 误报误杀 | 不判 stuck(观察窗护) |
+| **FN0 🐕** | 910 runner alive=true 但 auth 挂(`Not logged in`)→ 机械当 healthy | c | **漏报** | **100% 判 stuck**(liveness≠healthy,须读 pane) |
+| **FN1** | error-then-idle → HEALTHY(FLY-546/975) | c | **漏报** | **100% 判 stuck** |
+| **FN2** | `/compact` 静默 stall(FLY-837,进程 alive 活死) | c | **漏报** | **100% 判 stuck** |
+| **FN3** | Lead draft-not-sent(FLY-574,status 绿但发不出) | c | **漏报** | **100% 判 stuck** |
 
-**共同根子** = 判断靠机械信号/alive-flag/idle 有无、**不读 pane 当下** → 读 per-pane 富态 + 观察窗二次确认后全判对。**C 类(B0/B1/B2/B3)必须 100% 不漏;A 类(A0/A1/A2)可容忍误报;B 类(parked)要 surface(进 thread)。**
+**汇报用例(gap/parked → 通知目标;Codex R1 MED-4 补,直接测汇报层)**:
+| # | 场景 | 期望 |
+|---|---|---|
+| **R1** | parked 等 founder + 已 surface 到 thread + Lead 处理了 | 看门狗**静默**(不报,正常路径) |
+| **R2** | parked/需要人 + runner 没告诉 Lead(漏①) | 提醒 Lead(thread + Lead inbox) |
+| **R3** | runner 告诉了 Lead 但 Lead 漏应答(漏②)超 grace | **@ Annie(T2)** |
+| **R4** | 真卡死 case-c | **立即 @ Annie(T1)+ 通知 Lead** |
+
+**Lead 协议用例(937)**:**L1** = Lead 见「刚 commit」机械 dismiss 真 stuck(07-06 rate-limit;watchdog 对/Lead 错)→ **937:capture pane 验当下、报警默认可信、不默认误报**。
+
+**共同根子** = 判断靠机械信号/alive-flag/idle 有无、**不读 pane 当下** → 读 per-pane 富态 + 观察窗二次确认后全判对。**FN 组(FN0-FN3,真态 c)必须 100% 不漏 + `fail-suspicious` 兜底;FP 组(FP0-FP2)可容忍偶发误报;汇报按 R1-R4 判对。语料随事故增补。**
 
 四病症验收(并轨):
-- **② 分发命中**:所有汇报进**对应 [FLY-XX] thread**(自然语言)→ 100%;进被忽略的 alert room = 0;主动 @ Annie 仅限真卡死/Lead 接不住。
+- **② 分发命中**:所有汇报进**对应 [FLY-XX] thread**(自然语言)→ 100%;进被忽略的 alert room = 0;主动 @ Annie 仅限 T1/T2。
 - **④ 噪音**:同一/错误问题的重复告警 → 去重+抑制后趋零;日常无 @、正常路径 work 时零打扰。
 - 附:归因准确(措辞/球在谁 与真实 stage 一致 → 100%);可扩展(新 Lead 零配置被覆盖)。
 
 ## 8. 边界 / 分工
 - **942**(本 PRD)= 检测(要检测什么 + 准确性)+ 主动汇报(founder 体验:何时/怎么 surface)。
+- **⚠️ 边界澄清(Codex R1 LOW-7)**:FLY-942 的"无频道/无卡片/无 digest"**只砍它自己给 runner 主动汇报造的 founder 收件面**;**FLY-915 的 `#flywheel-alerts` infra bot 工单队列 + `#flywheel-notify` infra digest 是另一条独立管线,不受本 PRD 影响、也不被本 PRD 复用回来**。别把 942 读成废掉 915 的 infra alert 管线。
 - **927** = 检测实现(park 元组/归因/@-target/阈值)。**976** = LLM 判断层实现(读 per-pane 富态判 a/b/c)。**937** = lead 收 stuck 报警 capture-pane 验当下协议。**778** = 自动看门狗读 capture-pane 判 frozen/rate-limit。**915** = 通知管线(频道/工单/门禁/profile 切换)。**941** = tool-leak 检测。**964** = 持久显示。**973** = 子 session scope 归属(归 parent lead)。**962/978** = 归档约束 / 死态清理根治。**579/707** = auto-QA-spawn gate(治 ghost 源头)。
 
 ## 9. Build workstreams(**只提议,不 create-issue**;定稿后交 Tadashi 拆)
 | # | workstream | 对应节 | 依赖 |
 |---|---|---|---|
-| W1 | 时间阈值兜两漏(漏①没找 Lead / 漏② Lead 漏应答)→ 进对应 thread、自然语言;Lead 接不住 → @ Annie | §4.2/4.5 | founder-thread-notifier |
-| W2 | 真卡死 case-c → 看门狗当场立刻 @ Annie(唯一主动打断) | §4.3 | 检测层 + founder-thread-notifier |
-| W3 | 检测准确性:读 per-pane 富态判 a/b/c(LLM 判断层)+ 观察窗二次确认 + isIdleHealthyPane 修 + lead 协议 | §3.0–3.3 | **FLY-976 / 975 / 937 / 778 / 927** |
-| W4 | over-notify 抑制(ghost)+ auto-QA-spawn gate 治源头 + mid-turn hard-stop | §3.4/3.5 | 970/973/579 + harness |
+| W1 | 时间阈值兜两漏(漏①没找 Lead / 漏② Lead 漏应答)→ 进对应 thread + **Lead inbox 提醒**;Lead 接不住 → @ Annie(T2) | §4.2/4.5 | **Lead inbox/mailbox(FLY-161/168),不用 founder-only 的 founder-thread-notifier** |
+| W2 | 真卡死 case-c → 看门狗当场立刻 @ Annie(T1)+ 并行通知 Lead | §4.3 | 检测层 + `founder-thread-notifier`(founder @) |
+| W-cadence | scheduler/时延契约:廉价 gap 扫描每 N 分钟 + pane 帧 M 分钟内 ≥2 帧 + 首个 Lead 提醒 ≤ ~20min(现 `DEFAULT_IDLE_POLL_MS` ~1h 需改) | §4.6 | scheduler / poll |
+| W3 | 检测准确性:读 per-pane 富态判 a/b/c(LLM 判断层)+ 观察窗二次确认(≥2 帧 + live-region/token-flow/FSM/近事件)+ isIdleHealthyPane 修 + lead 协议 | §3.0–3.3 | **FLY-976 / 975 / 937 / 778 / 927** |
+| W4 | **仅** over-notify 抑制(ghost 已知/正清理不 re-alert)+ owner 归属链 | §3.4 | 970/973 |
 
+> **移出 942 build(Codex R1 MED-6,除非 Annie 再确认纳入)**:auto-QA-spawn gate = **FLY-579/707**;ghost 清理/scope = **970/973/962/978**;mid-turn hard-stop = **独立 issue**(§3.5,harness 能力,待 Annie 定 scope)。942 只列它们为**需求/依赖**,不在本 PRD build。
 > **砍掉的(Annie 2026-07-08 简化)**:决策卡固定格式、🟡 类型、consolidate 独立 founder 频道/开放队列、每日 digest —— 全部作废,汇报回归"进对应 thread、自然语言"。
 
 ## 10. 决策进度 ✅ **全 converged(G1 + G2 已拍定)**
 **G1 · 框架 + 检测准确性 ✅ Annie 拍(2026-07-07 深度 review)**:
 - 框架:① 不是 push-every-ball-change → 兜两漏;② 不是立即 push → 时间阈值型。
-- 准确性 = **FLY-976 LLM 判断层**(读 per-pane 富态判 a/b/c)+ 观察窗二次确认;北极星 = **三态判对(C 绝不漏 100%)+ 四病症**;七 test case(A0-A2/B0-B3)。
+- 准确性 = **FLY-976 LLM 判断层**(读 per-pane 富态判 a/b/c)+ 观察窗二次确认;北极星 = **三态判对(C 绝不漏 100%)+ 四病症**;用例集 = 检测 7(FP0-2/FN0-3)+ 汇报 R1-4 + Lead 协议 L1(§7)。
 
 **G2 · 汇报层 ✅ Annie 定稿(2026-07-08,大幅砍简单)**:
 - **全进对应 [FLY-XX] thread、自然语言**;**无 founder 频道 / 无决策卡模板 / 无 digest**。
