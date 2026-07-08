@@ -222,16 +222,20 @@ stateDiagram-v2
 > 澄清(Codex R3 LOW):**(b) parked 仅在"需要人且正常路径没处理"时才 surface**(已被 Lead 处理的 parked 保持静默,= R1);**(c) case-c 走 T1 立即 @ Annie + 并行通知 Lead**,不是纯 Lead-first;唯有"两漏 + 非-case-c 的 stall"走 Lead-first(§4.3/§4.5)。
 > **命名(Codex R1 MED-4)**:用例前缀 **FP(误报组)/ FN(漏报组)/ R(汇报)/ L(Lead 协议)**,**与三态 a/b/c 无关**(避免旧 A/B 标签与状态 a/b 混淆)。
 
-**检测用例(3 FP + 4 FN = 7;Cass 亲历 + Tadashi 印证 + 本 PRD dogfood)**:
+**检测用例(4 FP + 5 FN = 9;Cass 亲历 + Tadashi 踩坑 + dogfood)**:
 | # | case | 真态 | 现状 | 验收 |
 |---|---|:--:|---|---|
 | **FP0 🐕** | 本 942 runner 长 draft turn(无 stage_changed)被误报 `session_stuck`;HL capture 见在动、可容忍未转 Annie | a | 误报 | 不判 stuck(dogfood:写 PRD 的 runner 被它要治的 watchdog 误报) |
-| **FP1** | 零-commit 只读/QA run 被判 stuck(FLY-798「没commit=stuck」) | a/b | 误报 | 不判 stuck(可容忍偶发) |
-| **FP2** | 长操作 idle-timeout 误杀(等 codex/build/test,慢但在动) | a | 误报误杀 | 不判 stuck(观察窗护) |
+| **FP1 🐕** | 915 runner 23min 长 turn 被误报 `session_stuck`;HL capture-pane 核实在动 → 正确抑制、没惊动 Annie(= 人工版 937) | a | 误报 | 不判 stuck(**A 可容忍**活例) |
+| **FP2** | 零-commit 只读/QA run 被判 stuck(FLY-798「没commit=stuck」) | a/b | 误报 | 不判 stuck(可容忍偶发) |
+| **FP3** | 长操作 idle-timeout 误杀(等 codex/build/test,慢但在动) | a | 误报误杀 | 不判 stuck(观察窗护) |
 | **FN0 🐕** | 910 runner alive=true 但 auth 挂(`Not logged in`)→ 机械当 healthy | c | **漏报** | **100% 判 stuck**(liveness≠healthy,须读 pane) |
-| **FN1** | error-then-idle → HEALTHY(FLY-546/975) | c | **漏报** | **100% 判 stuck** |
-| **FN2** | `/compact` 静默 stall(FLY-837,进程 alive 活死) | c | **漏报** | **100% 判 stuck** |
-| **FN3** | Lead draft-not-sent(FLY-574,status 绿但发不出) | c | **漏报** | **100% 判 stuck** |
+| **FN1 🐕** | 910 runner tmux 活但 cwd(worktree)被删 → hook `ENOENT` 死循环;机械 liveness 当 healthy | c | **漏报** | **100% 判 stuck**(pane 重复 ENOENT = 活死) |
+| **FN2** | error-then-idle → HEALTHY(FLY-546/975:`Server error mid-response` 后停空 `❯`) | c | **漏报** | **100% 判 stuck** |
+| **FN3** | `/compact` 静默 stall(FLY-837,进程 alive 活死) | c | **漏报** | **100% 判 stuck** |
+| **FN4** | Lead draft-not-sent(FLY-574,status 绿但发不出) | c | **漏报** | **100% 判 stuck** |
+
+> **Tadashi 踩坑史(喂 FP 组)**:历史最密坑 = **长 turn 被误报 `session_stuck`**(案例 `4661ccad` / `b7b4b54d` / `0b01ff5f`);最脆点 = **`isIdleHealthyPane` 单帧判定**分不清"长 turn 瞬时空 prompt" vs "真卡" → 正是 FP 组 + 观察窗二次确认要治的。
 
 **汇报用例(gap/parked → 通知目标;Codex R1 MED-4 补,直接测汇报层)**:
 | # | 场景 | 期望 |
@@ -243,7 +247,7 @@ stateDiagram-v2
 
 **Lead 协议用例(937)**:**L1** = Lead 见「刚 commit」机械 dismiss 真 stuck(07-06 rate-limit;watchdog 对/Lead 错)→ **937:capture pane 验当下、报警默认可信、不默认误报**。
 
-**共同根子** = 判断靠机械信号/alive-flag/idle 有无、**不读 pane 当下** → 读 per-pane 富态 + 观察窗二次确认后全判对。**FN 组(FN0-FN3,真态 c)必须 100% 不漏 + `fail-suspicious` 兜底;FP 组(FP0-FP2)可容忍偶发误报;汇报按 R1-R4 判对。语料随事故增补。**
+**共同根子** = 判断靠机械信号/alive-flag/idle 有无、**不读 pane 当下** → 读 per-pane 富态 + 观察窗二次确认后全判对。**FN 组(FN0-FN4,真态 c)必须 100% 不漏 + `fail-suspicious` 兜底;FP 组(FP0-FP3)可容忍偶发误报;汇报按 R1-R4 判对。语料随事故增补。**
 
 四病症验收(并轨):
 - **② 分发命中**:所有汇报进**对应 [FLY-XX] thread**(自然语言)→ 100%;进被忽略的 alert room = 0;主动 @ Annie 仅限 T1/T2。
@@ -270,7 +274,7 @@ stateDiagram-v2
 ## 10. 决策进度 ✅ **全 converged(G1 + G2 已拍定)**
 **G1 · 框架 + 检测准确性 ✅ Annie 拍(2026-07-07 深度 review)**:
 - 框架:① 不是 push-every-ball-change → 兜两漏;② 不是立即 push → 时间阈值型。
-- 准确性 = **FLY-976 LLM 判断层**(读 per-pane 富态判 a/b/c)+ 观察窗二次确认;北极星 = **三态判对(C 绝不漏 100%)+ 四病症**;用例集 = 检测 7(FP0-2/FN0-3)+ 汇报 R1-4 + Lead 协议 L1(§7)。
+- 准确性 = **FLY-976 LLM 判断层**(读 per-pane 富态判 a/b/c)+ 观察窗二次确认;北极星 = **三态判对(C 绝不漏 100%)+ 四病症**;用例集 = 检测 9(FP0-3/FN0-4)+ 汇报 R1-4 + Lead 协议 L1(§7)。
 
 **G2 · 汇报层 ✅ Annie 定稿(2026-07-08,大幅砍简单)**:
 - **全进对应 [FLY-XX] thread、自然语言**;**无 founder 频道 / 无决策卡模板 / 无 digest**。
