@@ -12,12 +12,11 @@
 body{margin:0;background:var(--bg);color:var(--ink);
   font-family:-apple-system,system-ui,"SF Pro Text",Segoe UI,Roboto,sans-serif;
   line-height:1.6;-webkit-text-size-adjust:100%}
-.wrap{max-width:960px;margin:0 auto;padding:20px 16px 80px}
+.wrap{max-width:960px;margin:0 auto;padding:20px 16px 90px}
 header.top{padding:8px 0 4px}
 h1{font-size:26px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
 .sub{color:var(--dim);font-size:14px;margin:0 0 4px}
 .pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;background:#eef;color:var(--navy);margin-right:6px;margin-top:6px}
-.pill.warn{background:#fff4e5;color:#a05a00}
 .pill.cand{background:#f3e9fb;color:#7a2fb0}
 .note{background:#fff;border:1px solid var(--line);border-left:4px solid var(--amber);
   border-radius:12px;padding:12px 14px;margin:16px 0;font-size:14px;color:#5a4a20}
@@ -44,22 +43,20 @@ code,.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.86em;
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:10px 0}
 table{border-collapse:collapse;width:100%;min-width:640px;font-size:13.5px}
 th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
-th{background:#fafafd;font-weight:600;position:sticky;top:0}
+th{background:#fafafd;font-weight:600}
 td.us{background:#f4f9ff}
-.cmt{margin-top:12px}
+.cmt{margin:10px 0 4px;background:#fbfbfd;border:1px dashed #d6d6de;border-radius:10px;padding:8px 10px}
 .cmt label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
-.cmt textarea{width:100%;min-height:64px;border:1px solid var(--line);border-radius:10px;
-  padding:9px 11px;font:inherit;font-size:14px;color:var(--ink);background:#fcfcfe;resize:vertical}
+.cmt textarea{width:100%;min-height:52px;border:1px solid var(--line);border-radius:8px;
+  padding:8px 10px;font:inherit;font-size:14px;color:var(--ink);background:#fff;resize:vertical}
 .cmt textarea:focus{outline:2px solid var(--blue);outline-offset:1px;border-color:transparent}
 .bar{position:sticky;bottom:0;margin-top:26px;background:rgba(245,245,247,.92);
   backdrop-filter:saturate(180%) blur(8px);border-top:1px solid var(--line);
   padding:10px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-button{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:10px;
-  padding:9px 16px;cursor:pointer}
+button{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:10px;padding:9px 16px;cursor:pointer}
 button.primary{background:var(--blue);color:#fff}
 button.ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}
 .hint{color:var(--dim);font-size:12.5px}
-.legend{font-size:12.5px;color:var(--dim);margin:6px 0 0}
 .src{font-size:12px;color:var(--dim);margin-top:8px}
 .k{color:var(--navy);font-weight:600}
 dialog{border:none;border-radius:14px;padding:0;max-width:680px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.25)}
@@ -72,7 +69,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 <div class="wrap">
 <header class="top">
   <h1>他们的架构怎么做的 → 怎么推进我们自己的</h1>
-  <p class="sub">FLY-353 · 架构进化研究 · 2026-07-08 · 综合 Managed Agents / openclaw / Raft</p>
+  <p class="sub">FLY-353 · 架构进化研究 v4 · 2026-07-08 · 综合 Managed Agents / openclaw / Raft</p>
   <div>
     <span class="pill">研究稿 · 给 Annie 过目 + 一起评估</span>
     <span class="pill cand">下面的做法都是「候选」,不是定案</span>
@@ -80,343 +77,220 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 </header>
 
 <div class="note">
-  <b>怎么看这份东西。</b> 这不是结论、不是 PRD。它做三件事:①把三家参考的<b>真实架构做法</b>挖清楚
-  (事件日志 / session / 记忆 / 编排 / failover 各怎么实现);②对照<b>我们现在的系统</b>(用最新状态,不用旧描述);
-  ③把「可以怎么推进我们自己」的做法列成<b>候选选项</b>给你评估 —— 定案留到我们一起过完再说。
-  每一节下面有留言框,你可以直接打字批注;最后点「导出我的批注」把你的想法收走。
-  <span class="tag unk">UNKNOWN</span> 标的是查不到实证的地方,我没瞎编。
+  <b>怎么看 + 怎么留言(v4 两处改了):</b> 这不是结论、不是 PRD。它把三家参考的<b>真实架构做法</b>挖清楚、对照<b>我们现在</b>的系统、
+  把 session-log 等列成<b>候选</b>给你评估。<b>① 你上一轮的留言我清掉了,这是干净的一版</b>(每次新版都从空白开始);
+  <b>② 现在<u>每一个小节下面</u>都有一个留言框</b>(不再是一个大 section 一个框)。你随手在对应小节打字,最后点底部
+  「导出我的批注」把所有留言收走。<span class="tag unk">UNKNOWN</span> 标的是查不到实证的地方,我没瞎编。
 </div>
 
 <div class="card purple">
-  <h3>🎯 Annie co-eval 后的收窄(v2 更新,已认同并贯穿全文)</h3>
-  <p><b>关键洞察:我们已经用 Claude Code,brain / hands / session 三层<u>原生就有</u>了。</b>Claude Code 自己
-  的对话 transcript 就是一条 session 日志、<code>--resume</code> 能续、context 满了会 auto-compact。</p>
-  <p>所以「session-log 解耦」<b>不是「我们缺 session」这个命题</b> —— 而是 <b>「要不要 Flywheel 自己
-  <u>OWN</u> 这条 log」</b>。而自己 own 只在<b>三个场景</b>才多出价值:</p>
+  <h3>🎯 收窄(你上一轮 co-eval 的洞察,已认同并贯穿全文)</h3>
+  <p><b>我们已经用 Claude Code,brain / hands / session 三层<u>原生就有</u>。</b>Claude Code 的对话 transcript 就是 session、
+  <code>--resume</code> 能续、context 满了会 auto-compact。所以「session-log 解耦」<b>不是「我们缺 session」</b>,而是
+  <b>「要不要 Flywheel 自己 <u>OWN</u> 这条 log」</b> —— 只在<b>三个场景</b>才多出价值:</p>
   <ul>
-    <li><b>① Codex / kimi</b> —— 它们<b>没有</b> Claude Code 那层原生 session,想要同样的续跑能力,只能靠
-    Flywheel 自己的 log。</li>
-    <li><b>② 跨 agent 查询 / 切片</b> —— Claude 的 jsonl 不是给 Bridge 结构化查询/切片用的;916 那种「主动
-    slice 长跑记忆、压给 Lead 当 facade」需要一条我们能查的 log。</li>
-    <li><b>③ 多机</b> —— Claude 的 transcript + <code>--resume</code> 是<b>单机本地</b>的;tmux 保活也只在单机成立
-    (见下文问题②)。真要多机,状态得 host-independent,才需要自己 own 的 log。</li>
+    <li><b>① Codex / kimi</b> —— 没 Claude 那层原生 session,想要同样的续跑得靠自己的 log。</li>
+    <li><b>② 跨 agent 查询 / 切片</b> —— 916 那种「主动 slice 长跑记忆、压给 Lead 当 facade」需要一条 Bridge 能查的 log。</li>
+    <li><b>③ 多机</b> —— Claude 的 transcript + tmux 保活是<b>单机本地</b>的;多机才需要 host-independent 的 log(见 2c 问题②)。</li>
   </ul>
-  <p><b>→ 所以下面候选 1 已经从「必做的最高杠杆」改成「这 3 场景才需要」,请你<u>按场景</u>判断值不值,
-  而不是当成一个笼统的「要不要做 session-log」。</b></p>
+  <p><b>→ 所以候选 1 从「必做的最高杠杆」改成「这 3 场景才需要」,请你<u>按场景</u>判断值不值。</b></p>
 </div>
 
-<div class="card green">
-  <h3>↩︎ 回应你第一轮批注(v3,逐条)</h3>
-  <ul>
-    <li><b>「用 Claude Code 就已经有 brain/hands/session、甚至不用自己存 session,对吗?」→ 对,完全正确。</b>
-    这就是收窄的核心:Claude Code 本身 = brain(它+harness)、hands(工具沙箱)、session(它的对话 transcript)。
-    <b>单机 + Claude,我们不用自己存 session。</b>只有用 <b>Codex/kimi</b> 才缺这层、体验差在记忆/续跑 —— 你说的这个正是场景①。</li>
-    <li><b>「Raft 和我们的 Lead 非常像」→ 对,架构上非常像</b>(持久进程 + 身份/记忆/专长、认领/并行/传话、跑自己硬件、换 runtime)。
-    唯一真差异<b>不在架构、在受众/产品</b>:Raft 面向开发者;我们面向非技术 founder + 有 Lead 做产品判断。<b>架构上我们没落后。</b></li>
-    <li><b>「我们绝不 respawn —— 真的吗?怎么做到?tmux?crash 了 tmux 还在、记住名字就行?」→ 见下面问题② 我修正了一点:</b>
-    真正保住 context 的<b>不是 tmux 扛住 crash,是我们不让那个进程退出(保活)</b>;真 crash 还是会丢 context(tmux 救不回死进程的记忆),那时只能粗粒度重建。这道缝 + 多机,正是自己 own log 的动机。</li>
-    <li><b>「单机可以,multi-machine 就不是这样了」→ 对,完全正确</b>(tmux send-keys 跨不了主机)= 场景③。</li>
-    <li><b>「静态 DAG 要你预先知道全部;开放式、边做边推进的活没法预先规划成静态图」→ 你说到根子上了,完全对。</b>
-    这正是我们把 DAG 弃用、转「Lead 现场动态派 + 人在环」的原因:我们的活是<b>探索性/开放式</b>(需求边做边清、要产品判断),
-    没法预先画成一张静态图照走。<b>所以不是我们不会做静态 DAG,是我们的活本来就不该用静态 DAG。</b></li>
-  </ul>
-  <p class="hint">注:你这轮批注是在 v1 上写的;v2/v3 已把「为什么做 DAG / DAG 优势」「tmux 保活怎么实现」补进下面
-  <b>2c 节</b>(4 个问题的 grounded 答案),可对照看。你 <b>section 3</b> 的批注我这边只收到半句(截断了)—— 有更多的话再发我。</p>
-</div>
+<p class="hint">图例:<span class="tag have">我们已有</span> <span class="tag part">部分有/场景性</span>
+<span class="tag gap">我们缺</span> <span class="tag unk">UNKNOWN</span></p>
 
-<div class="legend">
-  图例:<span class="tag have">我们已有</span> <span class="tag part">部分有/形态不同</span>
-  <span class="tag gap">我们缺</span> <span class="tag unk">UNKNOWN</span>
-</div>
-
-<!-- ============ 1. 三家怎么做 ============ -->
+<!-- ============ 1 ============ -->
 <h2><span class="secnum">1 ·</span> 他们的架构怎么做的</h2>
 
 <div class="card blue">
   <h3>A · Anthropic「Managed Agents」<span class="pill">工程博客,细节最实</span></h3>
-  <p>核心是把一个 agent 拆成<b>三个能各自独立替换的部件</b>(它管这叫「cattle not pets」——牲口,不是宠物):</p>
+  <p>把一个 agent 拆成<b>三个能各自独立替换的部件</b>(它叫「cattle not pets」):</p>
   <ul>
-    <li><span class="k">brain(大脑)</span> = Claude + harness,只负责<b>做决策</b>。它<b>无状态</b> —— 记忆不攒在进程里,而是每次用的时候从 session 日志里按需读回来。所以大脑随时可以被杀掉重建,不丢东西。</li>
-    <li><span class="k">hands(手)</span> = 沙箱和工具,负责<b>执行动作</b>。统一接口 <code>execute(name, input) → string</code>;harness 对任何工具/MCP/自己的工具一视同仁,它「不知道沙箱是一个容器、一部手机、还是一个宝可梦模拟器」= 完全跟执行环境解耦。</li>
-    <li><span class="k">session(会话日志)</span> = <b>「发生过的一切的 append-only 日志」,存在模型 context 之外</b>。这是最关键的一层。支持:<code>emitEvent(id,event)</code> 写、<code>getEvents()</code> 取某段位置切片、<b>rewind</b> 回退到某一刻之前几条事件重读、<code>wake(sessionId)</code> 在 harness 崩溃后重新拉起、<code>getSession(id)</code> 取回。</li>
+    <li><span class="k">brain(大脑)</span> = Claude + harness,只做决策。<b>无状态</b> —— 记忆不攒进程里,每次从 session 日志按需读回,所以大脑随时可杀可重建不丢。</li>
+    <li><span class="k">hands(手)</span> = 沙箱 + 工具,统一接口 <code>execute(name, input) → string</code>;它「不知道沙箱是容器、手机、还是宝可梦模拟器」= 跟执行环境完全解耦。</li>
+    <li><span class="k">session</span> = <b>「发生过的一切的 append-only 日志」,在 context 之外</b>。<code>emitEvent</code> 写 / <code>getEvents</code> 取位置切片 / rewind 回退 / <code>wake(sessionId)</code> 崩溃后重启读。</li>
   </ul>
-  <p><b>它换来什么:</b> 因为大脑无状态、手不绑大脑,推理可以立刻开始不用等容器 provision → 它报的数是 <b>p50 首字延迟降约 60%、p95 降超 90%</b>;而且<b>多个大脑可以互相传手</b>(工具不绑任何一个大脑),session 在崩溃后能 <code>wake</code> 续上。</p>
-  <p><b>对我们的意义:</b> 我们其实<b>已经</b>是「大脑/手解耦」的形态(runner 已跨 4 种引擎、工具已是 execute 式)。三层里我们<b>唯独缺 session 这层</b> —— 一条自己拥有、可 replay 的日志。</p>
-  <p class="src">来源:anthropic.com/engineering/managed-agents(2026,已逐条核实)。事件的确切字段结构博客没给全 <span class="tag unk">UNKNOWN</span>。</p>
+  <p><b>换来:</b> 推理立即开始不等容器 → p50 首字延迟降约 60%、p95 降超 90%;多个大脑可<b>互传手</b>;崩溃能 <code>wake</code> 续。</p>
+  <p><b>对我们:</b> 我们<b>已经</b>是大脑/手解耦(runner 跨 4 引擎、工具已 execute 式),差的只是「自己 own 的 session 日志」—— 而这只在收窄的 3 场景才需要。</p>
+  <p class="src">来源:anthropic.com/engineering/managed-agents(已逐条核实)。事件确切字段结构博客没给全 <span class="tag unk">UNKNOWN</span>。</p>
 </div>
+<div class="cmt"><label>💬 对 A(Managed Agents)的留言</label><textarea data-k="a" data-label="1A · Managed Agents"></textarea></div>
 
 <div class="card green">
   <h3>B · openclaw <span class="pill">开源,已被 OpenAI 收购(2026-02)</span></h3>
-  <p>一个 24/7 无人值守的个人 agent 框架,一周拿了 10 万 GitHub star。它的实现文档很细,值得逐条对照(下面是查到的真实配置键):</p>
+  <p>24/7 无人值守个人 agent 框架(一周 10 万 star)。查到的真实配置键:</p>
   <ul>
-    <li><span class="k">Gateway 常驻 daemon</span>(Linux systemd / macOS LaunchAgent):管消息渠道连接、把消息路由到 agent session、调度。路由用 <code>bindings[]</code> 按确定顺序匹配(peer→guild→team→account→默认)。写锁 <code>session.writeLock</code>(60s 拿锁、1800s 抢回僵锁)。</li>
-    <li><span class="k">session 持久化</span>:<code>~/.openclaw/agents/{id}/sessions/sessions.json</code> per-agent;维护策略 <code>pruneAfter:30d</code> / <code>maxEntries:500</code> + transcript 归档保留。</li>
-    <li><span class="k">记忆 / 长跑 context</span>(和我们最相关):workspace 里 <code>AGENTS.md/SOUL.md/HEARTBEAT.md</code> 注入系统提示;<b>关键是它处理 context 饱和的手法</b> —— <code>compaction</code>(default/safeguard 两档,chunked LLM 摘要、可用专用小模型);<b><code>memoryFlush</code>:在自动 compaction <u>之前</u>先跑一个静默 agent 轮,把该记的东西写进 workspace 的 <code>memory/*.md</code></b>,再压缩,减少信息损失;还有 <code>contextInjection:continuation-skip</code>(安全续跑不重复注入)、<code>startupContext</code>(重置后注入最近的每日记忆)、<code>contextPruning:cache-ttl</code>。</li>
-    <li><span class="k">消息队列</span>:<code>messages.queue.mode</code> = steer(插进正跑的轮)/ followup(跑完再跑)/ collect(批)/ interrupt(打断);debounce 2000ms;队列 cap 20 + drop 策略(summarize/old/new)。</li>
-    <li><span class="k">failover</span>:<code>model:{primary, fallbacks:[...]}</code> 失败按序退;<code>utilityModel</code>/<code>imageModel</code> 各自 fallback;OpenAI 模型默认走 codex harness。</li>
+    <li><span class="k">Gateway 常驻 daemon</span>(systemd / LaunchAgent):管渠道、路由消息到 session、调度;写锁 <code>session.writeLock</code>。</li>
+    <li><span class="k">session 持久化</span>:<code>~/.openclaw/agents/{id}/sessions/sessions.json</code>;<code>pruneAfter:30d</code> / <code>maxEntries:500</code>。</li>
+    <li><span class="k">记忆 / context 饱和</span>(和我们最相关):<code>compaction</code>(有损摘要)+ <b><code>memoryFlush</code>:压缩<u>前</u>先把记忆写进 <code>memory/*.md</code></b> 再压;+ <code>startupContext</code> 注入每日记忆。</li>
+    <li><span class="k">队列</span>:<code>messages.queue.mode</code>=steer/followup/collect/interrupt;debounce 2s;cap 20 + drop。</li>
+    <li><span class="k">failover</span>:<code>model:{primary, fallbacks}</code> 按序退;utilityModel/imageModel 各自 fallback。</li>
   </ul>
-  <p><b>对我们的意义:</b> 这些编排能力我们<b>几乎逐条都有对应</b>(下节对照表)。openclaw <b>不是</b>一个我们该照抄的新架构;真正值得学的是它<b>处理 context 饱和的具体手法</b>(尤其 <code>memoryFlush</code> = 压缩前先把记忆落到文件)—— 注意这跟 A 的「全事件日志」是<b>两条不同的路</b>:openclaw 还是有损压缩 + 一层 markdown 记忆兜底,A 是根本不丢的 append-only 日志。这个分叉正是你要评估的点。</p>
-  <p class="src">来源:docs.openclaw.ai/gateway/{config-agents,heartbeat}(2026,已核实配置键)。JSONL transcript 确切格式、OAuth 刷新、多实例 leader-election 文档没给 <span class="tag unk">UNKNOWN</span>。</p>
+  <p><b>对我们:</b> 编排能力我们<b>几乎逐条都有</b>(见对照表)。<b>不该照抄它的架构</b>;值得学的只是它<b>处理 context 饱和的手法</b>(<code>memoryFlush</code> = 压缩前先落记忆)。注意:它是<b>有损压缩 + md 记忆兜底</b>,和 A 的<b>全事件日志不丢</b>是<b>两条路</b>。</p>
+  <p class="src">来源:docs.openclaw.ai/gateway/*(已核实配置键)。transcript 格式、OAuth 刷新、多实例选主 <span class="tag unk">UNKNOWN</span>。</p>
 </div>
+<div class="cmt"><label>💬 对 B(openclaw)的留言</label><textarea data-k="b" data-label="1B · openclaw"></textarea></div>
 
 <div class="card purple">
   <h3>C · Raft(raft.build)<span class="pill">闭源产品,和我们形态最像</span></h3>
-  <p>「人和 AI agent 一起 build」的平台,和我们的形态几乎重合:</p>
   <ul>
-    <li>每个 agent 是<b>持久进程、有自己的身份 + 记忆 + 专长</b>(记住 codebase 偏好、过往对话)→ 掉了活能<b>接着上次的干</b>。</li>
-    <li>agent <b>认领</b>任务、并行跑、<b>互相传活</b>、在共享 thread 里<b>互相 review</b>;人和 agent 共享同一个 context(channel/DM/thread 全靠消息)。</li>
-    <li>跑在<b>你自己的硬件</b>上、一个轻量 daemon;runtime 本地直连 provider,Raft 不居中。</li>
-    <li>agent 支持<b>换 runtime</b>(Claude/Codex/Hermes…),换了之后<b>保留 workspace / 记忆 / 身份</b>。</li>
+    <li>每个 agent 是<b>持久进程,有自己身份+记忆+专长</b>,掉了活<b>接着上次干</b>;<b>认领</b>任务、并行、<b>互相传活</b>、共享 thread 互 review。</li>
+    <li>跑在<b>你自己硬件</b>上、轻量 daemon;支持<b>换 runtime</b> 且保留 workspace/记忆/身份。</li>
   </ul>
-  <p><b>Annie 关注的那点(stale-snapshot / 「报数」):</b> 多个 agent 各自从旧快照行动 → 重复干活 / 撞车。Raft 给我们的启发是<b>提交副作用动作前 version-check + staged-draft(先暂存草稿不发)</b>。<span class="tag unk">UNKNOWN</span>:这套机制在 raft.build 里的<b>确切实现</b>公开文档没写,这是从我们对 Raft 的解读(FLY-1002)反推的,不是它官方 API。</p>
-  <p><b>对我们的意义:</b> 这条<b>我们已经在做了</b> —— 已落成 <b>FLY-1002</b>(Bridge 侧 re-read + 软 claim,Tadashi 在建),竞品分析在 FLY-909/1001。本研究<b>只引用不重复</b>。</p>
-  <p class="src">来源:raft.build、docs.raft.build/features/{agents/runtime,server}(2026)。version-check/staged-draft 的内部实现 <span class="tag unk">UNKNOWN</span>。</p>
+  <p><b>你上轮说的对:这跟我们的 Lead + 系统<u>架构上非常像</u></b>(持久进程/身份记忆/认领并行传话/自己硬件/换 runtime)。唯一真差异<b>不在架构、在受众</b>:Raft 面向开发者;我们面向非技术 founder + 有 Lead 做产品判断。</p>
+  <p><b>防撞车(你关注的「报数」):</b> 提交副作用前 version-check + staged-draft = 我们<b>已落 FLY-1002</b>(Tadashi 在建),本研究只引用。Raft 内部确切实现 <span class="tag unk">UNKNOWN</span>。</p>
+  <p class="src">来源:raft.build、docs.raft.build/features/*(已核实)。</p>
 </div>
+<div class="cmt"><label>💬 对 C(Raft)的留言</label><textarea data-k="c" data-label="1C · Raft"></textarea></div>
 
-<div class="cmt">
-  <label>💬 你对「他们怎么做的」这节的批注(哪家最戳你 / 哪里想多问)</label>
-  <textarea data-k="s1" placeholder="直接打字…"></textarea>
-</div>
-
-<!-- ============ 2. 我们现在 ============ -->
-<h2><span class="secnum">2 ·</span> 我们现在的系统(最新状态,不是旧描述)</h2>
+<!-- ============ 2 ============ -->
+<h2><span class="secnum">2 ·</span> 我们现在的系统(最新状态)</h2>
 <div class="card gray">
-  <p>把我们当前真实的架构摊开,方便和上面对照。<b>刻意用最新事实</b>(有些地方已经进化过,别用老印象):</p>
   <ul>
-    <li><span class="k">Runner = 大脑,已经跟引擎解耦。</span> 现在支持 <b>4 种</b> runner 引擎:<code>claude-tmux</code> / <code>codex-tmux</code> / <code>antigravity-tmux</code> / <code>kimi-tmux</code>。工具(flywheel-comm / MCP / bash / git)= 手,已是 execute 式。<b>→ 我们已经是 A 的「大脑/手解耦」形态。</b></li>
-    <li><span class="k">Bridge = 常驻 daemon</span>(launchd,KeepAlive)。状态库 StateStore <b>现在是原生 better-sqlite3 + WAL</b>(FLY-663 已把老的 sql.js WASM 引擎<b>整个换掉</b>了 —— 这点是「旧状态」,现在不成立了)。</li>
-    <li><span class="k">我们有一条 append-only 日志,但装的是「编排事件」</span>:<code>session_events</code> 表(session_completed / stage_changed 之类)驱动状态机 + 收尾。<b>它不是 runner 自己的工作记忆</b>(不是它的推理 / 工具调用 / 中间产物)。</li>
-    <li><span class="k">死后重建 = 粗粒度、文档级</span>(FLY-795 progressResume):一个 runner 死了被重派时,读 <code>progress.md</code> 的 cursor(阶段/chunk)+ branch 上已提交的 exploration/research/plan + 状态机权威阶段。<b>粒度是「阶段」,不是「事件」;而且只覆盖『死了再派』。</b></li>
-    <li><span class="k">活 runner 的 context 饱和 —— 今天基本没治</span>:填满了只能靠引擎自己的<b>有损 auto-compact</b>(vendor 黑盒),我们既控不了也看不到丢了什么。<span class="tag gap">缺</span></li>
-    <li><span class="k">respawn 丢状态 → 现在的对策是「绝不 respawn」</span>(FLY-939 已上线 + FLY-887 keepalive):被迫<b>全程保活</b>那个常驻 phase session、需要时唤醒它,而不敢重建。</li>
-    <li><span class="k">编排</span>:Linear issue → DAG resolver → 派发 → Runner(tmux);三段式流水线(设计/实现/QA);Lead↔Runner 走文件 inbox + flywheel-comm;<b>ship 永远 founder-gated</b>。</li>
-    <li><span class="k">always-on / failover</span>:launchd 保活 + HeartbeatService(存活/健康 tick + tmux-liveness 兜底 + 孤儿对账,FLY-172);多账号 <code>codex-with-fallback</code> 轮转。</li>
-    <li><span class="k">防撞车</span>:FLY-1002(re-read + 软 claim,在建)= Raft 那条。</li>
+    <li><span class="k">Runner = 大脑,已跟引擎解耦</span>:4 引擎 <code>claude-tmux</code> / <code>codex-tmux</code> / <code>antigravity-tmux</code> / <code>kimi-tmux</code>;工具=手,已 execute 式。</li>
+    <li><span class="k">Bridge = 常驻 daemon</span>(launchd)。StateStore <b>现在是 better-sqlite3 + WAL</b>(FLY-663 已把老的 sql.js 整个换掉 —— 旧印象作废)。</li>
+    <li><span class="k">有一条 append-only 日志,但装的是「编排事件」</span>(<code>session_events</code>:session_completed / stage_changed),<b>不是 runner 的工作记忆</b>。</li>
+    <li><span class="k">死后重建 = 粗粒度、文档级</span>(FLY-795):读 <code>progress.md</code> cursor + branch 上 committed 文档 + 状态机阶段;只覆盖「死了再派」。</li>
+    <li><span class="k">活 runner context 饱和</span>:靠 Claude 引擎<b>有损 auto-compact</b>(单机+Claude 够用,黑盒);我们不拥有/看不到。</li>
+    <li><span class="k">respawn</span>:FLY-887 保活 + FLY-939 <b>wake-not-respawn</b>(见 2c 问题② 的精确机制)。</li>
+    <li><span class="k">编排 / failover</span>:Linear→派发→三段式(设计/实现/QA);Lead↔Runner;<b>ship 永远 founder-gated</b>;launchd + HeartbeatService + codex 多账号轮转;防撞车 FLY-1002。</li>
   </ul>
 </div>
-<div class="cmt">
-  <label>💬 你对「我们现在」这节的批注(哪里描述得不对 / 你印象里的现状不一样?)</label>
-  <textarea data-k="s2" placeholder="直接打字…"></textarea>
-</div>
+<div class="cmt"><label>💬 对「我们现在」的留言(哪里和你印象不一样?)</label><textarea data-k="cur" data-label="2 · 我们现在的系统"></textarea></div>
 
-<!-- ============ 2b. DAG 问题 ============ -->
-<h2><span class="secnum">2b ·</span> 你问的:我们到底用不用 DAG?动态还是静态?跟 homerail 差在哪</h2>
+<!-- ============ 2b ============ -->
+<h2><span class="secnum">2b ·</span> DAG:动态 vs 静态 / 跟 homerail 差在哪</h2>
 <div class="card red">
-  <p><b>先给结论(已 grounded 核代码,不是猜):我们是<u>动态编排</u>,不是静态预编排 DAG。</b></p>
+  <p><b>结论(已 grounded 核代码):我们是<u>动态编排</u>,不是静态预编排 DAG。</b></p>
   <ul>
-    <li><span class="k">我们有 DAG 代码,但它 dormant(没在跑)。</span> 仓里确实有个 <code>dag-resolver</code> 包(用 Kahn 拓扑排序处理 Linear 的 <code>blockedBy</code> 依赖)—— 这是 v0.2 老架构留下的(老图「Linear issues → DAG resolver → sessions」)。<b>但核代码事实:整图自动执行的 <code>DagDispatcher</code> 在当前生产 Bridge 路径里<u>没有任何实例化点</u></b>(全仓 grep <code>new DagDispatcher</code> = 生产路径 0 处)→ 这套「预排好一张图、自动照图走」的机制<b>事实上没在跑</b>。</li>
-    <li><span class="k">当前真实派活 = Lead 逐 issue 动态派。</span> 生产入口是 <code>RunDispatcher</code>(FLY-22)按 <code>/api/runs/start</code> <b>一个 issue 一次</b>触发;<code>AgentDispatcher.dispatch({issueLabels, owningDept})</code> 按 label/部门<b>动态选</b>哪个 agent role;一个 issue 内部的编排 = <b>三段式</b>(设计→实现→QA)。<b>谁跑、什么时候跑,是 Lead(Cass 分诊 / Tadashi 派)或 founder <u>现场决定</u>的,不是一张预先规划好的图在自动走。</b></li>
-    <li><span class="k">唯一起作用的「依赖」= Linear 自己的 <code>blockedBy</code></span> —— 由<b>人/Lead 读了判断</b>先做哪个,<b>不是</b>一个自动 DAG 执行器在 gate。</li>
+    <li>有 <code>dag-resolver</code> 包(Kahn 拓扑排序 Linear <code>blockedBy</code>),但整图自动执行的 <code>DagDispatcher</code> 在<b>生产路径 0 处实例化</b> = dormant。</li>
+    <li>真实派活 = Lead 逐 issue 动态派(RunDispatcher / AgentDispatcher),issue 内三段式;<b>谁跑/何时跑 = Lead/founder 现场决定</b>;<code>blockedBy</code> 是给人读的。</li>
   </ul>
-  <p><b>跟 homerail 的「静态 DAG」差在哪:</b></p>
-  <ul>
-    <li><b>静态 DAG 的形态</b>(general pattern,已核实):一个 Planner <b>预先把整张任务图规划好</b> → Executor <b>照图走</b> → 依赖<b>预声明</b>、执行顺序固定(需要时有 Replanner 调整)。「先规划、后自动执行」。</li>
-    <li><b>我们相反</b>:没有「先把整图规划好再自动执行」这一步。<b>每次派活是 Lead/founder 现场动态决定的,人在环。</b>那张「图」(Linear blockedBy)是<b>给人看的 advisory</b>,不是自动执行的。</li>
-  </ul>
-  <p><b>「我们是不是已经跟 homerail 很像了?」诚实答:表面像、实质不像。</b> 表面像 —— 我们确实有个 dag-resolver 包、Linear 也有 blockedBy 依赖;但那只停在「都有依赖这个概念」。<b>实质不像</b> —— 真正的分水岭是<b>「谁决定执行、何时决定」</b>:静态 DAG 是<b>预先 / 自动</b>照图执行;我们是<b>现场 / Lead 动态派、人驱动</b>。所以我们不该被归成「静态 DAG 那一类」。</p>
-  <p class="src"><span class="tag unk">UNKNOWN</span> homerail 的<b>确切</b>架构我没查到官方实证(公开搜索没命中它的架构文档);以上对 homerail 的描述是基于「静态 DAG」这个 general orchestration pattern + 你给的前提。要逐字精确对标需 homerail 官方文档 —— 需要我再深挖可以说。我们这侧的结论是 grounded 核了代码的。</p>
-  <p class="src">来源(我们这侧):<code>packages/dag-resolver/</code>(dormant)· <code>packages/edge-worker/src/DagDispatcher.ts</code>(生产未实例化)· <code>packages/teamlead/src/bridge/run-dispatcher.ts</code>(FLY-22 真入口)· <code>AgentDispatcher.dispatch()</code>(按 label 动态选 role)· 三段式 <code>three-stage-policy</code>。静态 DAG pattern:2026 orchestration 综述(microsoft conductor / redis / dataiku 等)。</p>
+  <p><b>你上轮那句说到根子上了,完全对:</b>静态 DAG 要你<b>预先把整张任务图规划好</b> → Executor 照图走;<b>但开放式、边做边推进的活没法预先规划成静态图</b>。我们的活正是<b>探索性/需求边做边清/要产品判断</b> —— <b>所以不是我们不会做静态 DAG,是我们的活本来就不该用静态 DAG</b>,故弃 DAG、转「Lead 动态派 + 人在环」。</p>
+  <p><b>「是不是已很像 homerail?」:</b>表面像(有 dag-resolver 包 + Linear blockedBy),<b>实质不像</b> —— 静态 DAG 预先/自动,我们现场/Lead 动态人在环。<span class="tag unk">UNKNOWN</span> homerail 确切架构没查到官方文档。</p>
 </div>
-<div class="cmt">
-  <label>💬 你对 DAG 这节的批注(动态 vs 静态,你想让我们往哪边走?)</label>
-  <textarea data-k="s2b" placeholder="直接打字…"></textarea>
-</div>
+<div class="cmt"><label>💬 对 DAG / homerail 的留言</label><textarea data-k="dag" data-label="2b · DAG / homerail"></textarea></div>
 
-<!-- ============ 2c. 4 个问题 ============ -->
+<!-- ============ 2c ============ -->
 <h2><span class="secnum">2c ·</span> 你问的 4 个问题(grounded 核代码答)</h2>
 
 <div class="card blue">
-  <h3>① DAG:当初为啥建、优势是啥、为啥现在 dormant?</h3>
-  <p><b>为啥建:</b> DAG 是<b>最初版(v0.1.0,第一个 Core Loop)</b>的编排原语 —— 那会儿的设想就是「Linear
-  issues → DAG resolver → Claude Code sessions → PR」,让系统<b>自动</b>把一堆 issue 按 <code>blockedBy</code>
-  依赖排好序、自己往下跑。</p>
-  <p><b>优势(它擅长的):</b> 用 Kahn 拓扑排序<b>自动</b>算出「现在哪些没被 block、可以开跑」(<code>getReady</code>)、
-  做完标 <code>markDone</code>、卡住 <code>shelve</code> 并<b>自动挡住下游</b>;独立分支能<b>并行</b>。= 一张图排好、<b>不用人</b>
-  盯着就自动按依赖跑完。</p>
-  <p><b>为啥现在 dormant(不跑了):</b> 产品方向变了。我们从「自动跑整张图」转成<b>「Lead 逐 issue 动态派、人在环」</b>
-  (v0.2 起、多 Lead 之后)。v0.2 架构文档把 DAG resolver 标成<b>「Preserved 代码不变」</b> —— 留着,但<b>没接进
-  live 派活</b>。根本原因:<b>我们赌的是「人的注意力才是瓶颈」+ 每次派活要过 founder/Lead 的产品判断</b>,而不是让
-  一个自动 planner 把整张图跑完。所以那张自动执行器被「人/Lead 现场决定」取代了,<code>blockedBy</code> 现在是给人看的。</p>
+  <h3>① DAG:当初为啥建、优势、为啥现在 dormant?</h3>
+  <p><b>为啥建:</b> v0.1.0 第一个 Core Loop 的编排原语 —— 设想「Linear issues → DAG resolver → sessions → PR」,<b>自动</b>按依赖排序往下跑。</p>
+  <p><b>优势:</b> Kahn 拓扑排序<b>自动</b>挑出「谁没被 block、可开跑」、做完标 done、卡住 shelve 挡下游、独立分支<b>并行</b> = 图排好<b>不用人盯</b>自动跑完。</p>
+  <p><b>为啥 dormant:</b> 产品方向变了(见 2b)—— 我们的活开放式、要产品判断,转成「Lead 逐 issue 动态派、人在环」;v0.2 把 DAG 标「Preserved 代码不变」但<b>没接进 live 派活</b>。</p>
 </div>
+<div class="cmt"><label>💬 对问题① DAG 的留言</label><textarea data-k="q1" data-label="2c① · DAG why/dormant"></textarea></div>
 
 <div class="card green">
-  <h3>② respawn / tmux 保活具体怎么实现?多机时怎么变?</h3>
-  <p><b>单机怎么实现(现状):</b> 每个 runner 跑在一个 <b>tmux</b> 会话里。为了不丢状态,我们<b>不 respawn、而是保活 + 唤醒</b>
-  (FLY-887 保活 + FLY-939 wake-not-respawn):那个 phase session 一直<b>挂着(parked)</b>;要重跑/复验时,Bridge 给它发一个
-  <b>mailbox 唤醒 + 用 <code>tmux send-keys</code> 把消息打进那个终端</b>,让原来那个进程接着干,<b>而不是</b>新起一个。</p>
-  <p><b>⚠️ 精确一点(回应你的问题「crash 了 tmux 还在、记住名字就行?」):不完全是。</b> 真正保住 context 的<b>不是 tmux</b>,是
-  <b>「我们不让那个 claude 进程退出」</b> —— 它 parked/idle 但<b>一直活着</b>,所以它<b>内存里的完整 context 还在</b>(代码原话:
-  parked session「woken, not respawned, keep full context」)。tmux 只是<b>托住这个活进程的壳</b>。<b>如果进程<u>真的挂了</u></b>
-  (crash / 显式 terminate / reboot),tmux 窗口还在,<b>但那个死进程内存里的 context 就没了 —— tmux 救不回死进程的记忆</b>;
-  这时只能重启 + 从 <code>progress.md</code> <b>粗粒度</b>重建(丢细节)。<b>所以真机制 = 「别让进程退出」;它在单机、进程没真死时好用,
-  真 crash 会丢、多机也不行</b> —— 这两道缝正是「自己 own 一条 log」能补的(= 场景②③ 的动机)。</p>
-  <p><b>为什么这套只在单机成立:</b> <code>tmux send-keys</code> 是<b>本机操作</b> —— Bridge 得和那个 tmux 会话在<b>同一台机器</b>、
-  用同一个 tmux socket 才能戳进去。我们现在正是<b>单机</b>(Lead + 所有 runner 都在同一台 Mac)。</p>
-  <p><b>多机就不是这样了(你点的那点,对):</b> 一旦 runner 分散到<b>多台机器</b>,machine A 的 Bridge<b>没法</b> <code>tmux send-keys</code>
-  到 machine B 上的会话 → <b>「保活 + 唤醒」直接失效</b>。这时候要么状态得做成 <b>host-independent</b>(= 场景③ 那条自己 own 的
-  log,fresh runner 在<b>任意机器</b>上从 log 重建),要么得有跨机的协调层。<b>多机目前是 future</b>(有份 <code>008-multi-machine-consensus</code>
-  研究在评 Raft/BFT/中心 Coordinator),还没做。</p>
+  <h3>② respawn / tmux 保活具体怎么实现?多机怎么变?</h3>
+  <p><b>你问「crash 了 tmux 还在、记住名字就行?」—— 精确一点:不完全是。</b> 真正保住 context 的<b>不是 tmux</b>,是<b>「我们不让那个 claude 进程退出」</b>:它 parked/idle 但<b>一直活着</b>,所以内存里<b>完整 context 还在</b>(代码原话 parked session「woken, not respawned, keep full context」);要它继续就<b>唤醒</b>(mailbox + <code>tmux send-keys</code>)。tmux 只是<b>托住这个活进程的壳</b>。</p>
+  <p><b>如果进程<u>真的挂了</u></b>(crash / terminate / reboot):tmux 窗口还在,<b>但死进程内存里的 context 没了 —— tmux 救不回死进程的记忆</b>;只能重启 + 从 <code>progress.md</code> <b>粗粒度</b>重建(丢细节)。</p>
+  <p><b>多机(你说的对):</b> <code>tmux send-keys</code> 是<b>本机</b>操作,跨不了主机 → 多机时保活/唤醒<b>直接失效</b> → 要 host-independent 的 log(= 场景③)。多机目前是 future(有 <code>008-multi-machine-consensus</code> 研究)。</p>
+  <p><b>→ 所以:真机制 = 「别让进程退出」;单机+进程没真死时好用,真 crash 会丢、多机也不行</b> —— 这两道缝正是自己 own log 的动机。</p>
 </div>
+<div class="cmt"><label>💬 对问题② tmux 保活 / 多机的留言</label><textarea data-k="q2" data-label="2c② · tmux keepalive / multi-machine"></textarea></div>
 
 <div class="card gray">
-  <h3>③「编排层」大白话是啥?(= 谁决定下一步派谁干啥)</h3>
-  <p>「编排层」就是<b>「决定下一步该干嘛、该让谁去干」的那层</b>。我们现在这层<b>是人/Lead 在现场做的</b>,不是一个自动程序:</p>
+  <h3>③「编排层」大白话(= 谁决定下一步派谁干啥)</h3>
   <ul>
-    <li>一个 Linear issue 进来 → <b>CoS(Aunt Cass)</b>先分诊:打标签、判断归哪个部门 → 路由给对应的<b>部门 Lead(比如 Tadashi)</b>;</li>
-    <li>Lead 决定<b>派一个 Runner</b>去干这个 issue(什么时候派、派哪种 agent,Lead 现场定);</li>
-    <li>一个 issue<b>内部</b>,走<b>三段式</b>:设计 → 实现 → QA,一段做完进下一段;</li>
-    <li><b>ship(合入)永远是 founder 点头</b>。</li>
+    <li>Linear issue 进来 → <b>CoS(Aunt Cass)</b>分诊、打标签、路由给对应<b>部门 Lead(如 Tadashi)</b>;</li>
+    <li>Lead 决定<b>派一个 Runner</b>去干(何时派、派哪种,现场定);</li>
+    <li>issue<b>内部</b>走<b>三段式</b>:设计→实现→QA;</li>
+    <li><b>ship(合入)永远 founder 点头</b>。</li>
   </ul>
-  <p>所以「编排 = 一串人/Lead 的现场决定」。<b>那个 dormant 的 DAG,当年就是想把这层自动化掉</b>(机器照图决定下一步),现在这层交回给了人 + Lead。</p>
+  <p>所以「编排 = 一串人/Lead 的现场决定」。那个 dormant 的 DAG,当年就是想把这层<b>自动化</b>掉;现在交回给了人 + Lead。</p>
 </div>
+<div class="cmt"><label>💬 对问题③ 编排层的留言</label><textarea data-k="q3" data-label="2c③ · 编排层"></textarea></div>
 
 <div class="card purple">
-  <h3>④ session-log:Claude Code 原生已给我们啥 vs Flywheel 自己 own 才多出啥</h3>
+  <h3>④ session-log:Claude 原生已给啥 vs Flywheel 自己 own 才多出啥</h3>
   <div class="scroll">
   <table>
-  <thead><tr><th>能力</th><th>Claude Code 原生已给(现状)</th><th>Flywheel 自己 own 才多出</th></tr></thead>
+  <thead><tr><th>能力</th><th>Claude Code 原生已给</th><th>Flywheel 自己 own 才多出</th></tr></thead>
   <tbody>
-    <tr><td class="k">完整对话/工作记录</td><td>有 —— per-session <code>jsonl</code> transcript(本机)</td><td>—(单看这条,不 own 也够)</td></tr>
-    <tr><td class="k">续跑 / resume</td><td>有 —— <code>--resume</code> 接着上次的对话</td><td>把续跑做成<b>引擎无关</b>(见下)</td></tr>
-    <tr><td class="k">context 满了</td><td>有 —— 引擎<b>有损 auto-compact</b>(黑盒)</td><td>我们能<b>控/看/主动 slice</b>(场景②)</td></tr>
-    <tr><td class="k">跨引擎(Codex/kimi/agy)</td><td class="us"><b>没有</b> —— 只有 Claude 有这层</td><td class="us"><b>场景① 才多出:</b>给它们同样的续跑</td></tr>
-    <tr><td class="k">Bridge 能查询/切片</td><td class="us"><b>没有</b> —— jsonl 不是给 Bridge 结构化查的</td><td class="us"><b>场景② 才多出:</b>916 主动 slice/facade</td></tr>
-    <tr><td class="k">跨机器</td><td class="us"><b>没有</b> —— transcript+resume 是单机本地</td><td class="us"><b>场景③ 才多出:</b>任意机器从 log 重建</td></tr>
+    <tr><td class="k">完整工作记录</td><td>有 — per-session <code>jsonl</code>(本机)</td><td>—(单看这条不 own 也够)</td></tr>
+    <tr><td class="k">续跑</td><td>有 — <code>--resume</code></td><td>把续跑做成<b>引擎无关</b></td></tr>
+    <tr><td class="k">context 满</td><td>有 — 引擎<b>有损 auto-compact</b></td><td><b>可控/可查/主动 slice</b>(场景②)</td></tr>
+    <tr><td class="k">跨引擎(Codex/kimi)</td><td class="us"><b>没有</b> — 只有 Claude 有</td><td class="us"><b>场景① 才多出</b></td></tr>
+    <tr><td class="k">Bridge 能查/切片</td><td class="us"><b>没有</b></td><td class="us"><b>场景② 才多出</b>(916)</td></tr>
+    <tr><td class="k">跨机器</td><td class="us"><b>没有</b> — 单机本地</td><td class="us"><b>场景③ 才多出</b></td></tr>
   </tbody>
   </table>
   </div>
-  <p><b>一句话:</b> 对 <b>Claude Code + 单机</b> 的场景,我们<b>基本不缺</b>(原生够用)。<b>只有</b>踩到<b>非-Claude 引擎 / 跨 agent 切片 / 多机</b>
-  这三条线,「Flywheel 自己 own 一条 log」才真多出东西。<b>值不值,你按你现在最痛/最想要的场景定。</b></p>
+  <p><b>一句话:</b> <b>Claude + 单机</b> 我们基本不缺(原生够用);<b>只有</b>踩到<b>非-Claude 引擎 / 跨 agent 切片 / 多机</b>,自己 own 才真多出东西。<b>值不值,你按现在最痛的场景定。</b></p>
 </div>
+<div class="cmt"><label>💬 对问题④ session-log native vs owned 的留言</label><textarea data-k="q4" data-label="2c④ · native vs owned"></textarea></div>
 
-<div class="cmt">
-  <label>💬 你对这 4 个答案的批注(哪个答案解了你的疑 / 哪个还想追问)</label>
-  <textarea data-k="s2c" placeholder="直接打字…"></textarea>
-</div>
-
-<!-- ============ 3. 对照表 ============ -->
+<!-- ============ 3 ============ -->
 <h2><span class="secnum">3 ·</span> 逐维度对照:他们 vs 我们</h2>
 <div class="scroll">
 <table>
-<thead><tr>
-  <th>维度</th><th>Managed Agents (A)</th><th>openclaw (B)</th><th>Raft (C)</th><th>我们现在</th>
-</tr></thead>
+<thead><tr><th>维度</th><th>Managed Agents</th><th>openclaw</th><th>Raft</th><th>我们现在</th></tr></thead>
 <tbody>
-<tr>
-  <td class="k">事件日志 / session</td>
-  <td>append-only 全事件日志,在 context 外;getEvents/rewind/wake</td>
-  <td>per-agent sessions.json + transcript 归档(有损压缩)</td>
-  <td>persistent agent 有自己 memory;实现 <span class="tag unk">UNK</span></td>
-  <td class="us">Claude 原生 transcript 就是 session(单机够用);缺的是 Flywheel <b>自己 own</b>(跨引擎/可查/跨机)<span class="tag part">场景性</span></td>
-</tr>
-<tr>
-  <td class="k">记忆 / context 饱和</td>
-  <td>大脑无状态,从日志重建;不靠有损压缩</td>
-  <td>compaction + <b>memoryFlush</b>(压缩前落记忆到 md)+ 每日记忆</td>
-  <td>agent 自留记忆(codebase 偏好/对话)</td>
-  <td class="us">Claude 引擎 auto-compact(单机够用,黑盒);缺<b>可控/可查/主动 slice</b>(场景②/916)<span class="tag part">场景性</span></td>
-</tr>
-<tr>
-  <td class="k">respawn / 崩溃恢复</td>
-  <td><code>wake(sessionId)</code> 从日志重建,进程死没关系</td>
-  <td>session store + 写锁;续跑跳过重复注入</td>
-  <td>掉了活「接着上次干」;机制 <span class="tag unk">UNK</span></td>
-  <td class="us">粗粒度 progressResume(死后再派)+ 被迫 keepalive 绝不 respawn <span class="tag part">部分</span></td>
-</tr>
-<tr>
-  <td class="k">编排 / 多 agent</td>
-  <td>大脑间可<b>互传手</b></td>
-  <td>Gateway 路由 + 队列(steer/followup/…)+ 心跳调度</td>
-  <td>认领 / 并行 / 互传活 / 共享 thread 互 review</td>
-  <td class="us">DAG→派发→三段式流水线 + Lead↔Runner + founder gate <span class="tag have">已有</span></td>
-</tr>
-<tr>
-  <td class="k">failover / always-on</td>
-  <td>无状态大脑独立扩容;凭证存 vault</td>
-  <td>daemon + model primary/fallbacks + 心跳(HEARTBEAT.md 主动清单)</td>
-  <td>本地 daemon 直连 provider</td>
-  <td class="us">launchd + HeartbeatService(存活型)+ codex 多账号轮转 <span class="tag have">已有</span></td>
-</tr>
-<tr>
-  <td class="k">引擎无关</td>
-  <td>手不知沙箱是什么;换执行环境无感</td>
-  <td>provider 路由 + 各家 harness</td>
-  <td>换 runtime 保留 memory/身份</td>
-  <td class="us">4 引擎(claude/codex/agy/kimi),但「记忆恢复」还钉在各家原生 transcript <span class="tag part">部分</span></td>
-</tr>
+<tr><td class="k">事件日志/session</td><td>append-only 全事件日志;getEvents/rewind/wake</td><td>sessions.json + transcript 归档(有损)</td><td>持久 agent 自留 memory <span class="tag unk">UNK</span></td><td class="us">Claude 原生 transcript 就是 session(单机够);缺自己 own(跨引擎/可查/跨机) <span class="tag part">场景性</span></td></tr>
+<tr><td class="k">记忆/context 饱和</td><td>无状态,从日志重建</td><td>compaction + memoryFlush</td><td>agent 自留记忆</td><td class="us">Claude auto-compact(单机够,黑盒);缺可控/可查/主动 slice <span class="tag part">场景性</span></td></tr>
+<tr><td class="k">respawn/崩溃恢复</td><td><code>wake</code> 从日志重建</td><td>session store + 写锁</td><td>「接着上次干」<span class="tag unk">UNK</span></td><td class="us">保活进程不退出(单机);真 crash → 粗粒度 progressResume <span class="tag part">部分</span></td></tr>
+<tr><td class="k">编排/多 agent</td><td>大脑互传手</td><td>Gateway 路由+队列+心跳</td><td>认领/并行/传活/互 review</td><td class="us">Lead 逐 issue 动态派+三段式+founder gate <span class="tag have">已有</span></td></tr>
+<tr><td class="k">failover/always-on</td><td>无状态大脑独立扩容</td><td>daemon + primary/fallbacks + 心跳</td><td>本地 daemon 直连</td><td class="us">launchd + HeartbeatService + codex 轮转 <span class="tag have">已有</span></td></tr>
+<tr><td class="k">引擎无关</td><td>手不知沙箱是什么</td><td>provider 路由</td><td>换 runtime 保记忆/身份</td><td class="us">4 引擎;记忆恢复还钉在各家原生 <span class="tag part">部分</span></td></tr>
 </tbody>
 </table>
 </div>
-<p class="hint">读法(收窄后):<b>编排 / failover 我们基本齐平甚至更成熟</b>(绿);记忆/session/respawn 这几列,<b>Claude + 单机原生已够用</b> —— 差异不是「我们缺」,而是<b>「要不要自己 own」(仅 3 场景才值):非-Claude 引擎 / 跨 agent 可查切片 / 多机</b>。</p>
-<div class="cmt">
-  <label>💬 你对这张对照表的批注(哪一格你不同意 / 哪个缺口你觉得最痛)</label>
-  <textarea data-k="s3" placeholder="直接打字…"></textarea>
-</div>
+<p class="hint">读法:<b>编排/failover 我们基本齐平甚至更成熟</b>;记忆/session/respawn 这几列 <b>Claude+单机原生已够用</b> —— 差异不是「我们缺」,是「要不要自己 own」(仅 3 场景才值)。</p>
+<div class="cmt"><label>💬 对这张对照表的留言</label><textarea data-k="tbl" data-label="3 · 对照表"></textarea></div>
 
-<!-- ============ 4. 候选做法 ============ -->
-<h2><span class="secnum">4 ·</span> 可以怎么推进我们自己(候选做法,不是定案)</h2>
-<p class="hint">下面每条都是<b>候选</b>,请你按「值不值得做 / 先做哪个 / 不做」来批。做不做、怎么分期,留到我们一起过完再定。</p>
+<!-- ============ 4 ============ -->
+<h2><span class="secnum">4 ·</span> 可以怎么推进我们自己(候选,不是定案)</h2>
 
 <div class="card blue">
-  <h3><span class="pill cand">候选 1 · 场景化(不是笼统必做)</span> Flywheel 自己 own 一条 session-log —— 只在 3 场景才需要</h3>
-  <p><b>做法:</b> 给每个 runner 一条 Flywheel 拥有、在 context 外、可 replay 的 append-only 工作记忆日志(经 flywheel-comm 写,天然覆盖 4 种引擎),fresh runner 从日志切片重建。</p>
-  <p><b>先说清(Annie 的收窄):对 Claude Code + 单机,原生 session 已经够用,这条<u>不必做</u>。</b> 只有踩到下面 3 条线,自己 own 才多出价值 —— 请<b>按场景</b>判断:</p>
+  <h3><span class="pill cand">候选 1 · 场景化</span> Flywheel 自己 own 一条 session-log —— 只在 3 场景才需要</h3>
+  <p><b>对 Claude + 单机,原生够用,这条<u>不必做</u>。</b>只有踩到下面 3 条线才多出价值,请<b>按场景</b>判断:</p>
   <ul>
-    <li><b>场景①:要不要认真上 Codex / kimi 干活?</b> 它们没原生 session 层 → 想要 Claude 同款续跑,得靠这条 log。<span class="tag part">看你多依赖非-Claude 引擎</span></li>
-    <li><b>场景②:要不要 916 那种「Lead 带很多 session、主动 slice 长跑记忆压成 facade」?</b> 需要一条 Bridge 能查/切的 log。<span class="tag part">看 916 优先级</span></li>
-    <li><b>场景③:要不要多机?</b> 单机 tmux 保活已 OK;多机才需要 host-independent 的 log(见问题②)。<span class="tag part">看多机什么时候真做</span></li>
+    <li><b>场景①:</b>要不要认真上 Codex/kimi 干活?依赖越重越值。</li>
+    <li><b>场景②:</b>要不要 916 那种「带很多 session、主动 slice 记忆压成 facade」?</li>
+    <li><b>场景③:</b>要不要多机?单机 tmux 保活已 OK。</li>
   </ul>
-  <p><b>诚实的边界:</b> 真要做也是底层大改,得分期(先日志+死后重建、再活 slice)、默认关可灰度、存储独立于 Bridge 状态库。<b>但先别问「做不做 session-log」,先问「上面哪个场景对你现在最真/最急」—— 有场景才做对应那块,没场景就不做。</b></p>
+  <p><b>先别问「做不做 session-log」,先问「哪个场景对你现在最真/最急」—— 有场景才做对应那块。</b></p>
 </div>
+<div class="cmt"><label>💬 对候选 1(自有 session-log,按场景)的留言:哪个场景对你最真/最急?</label><textarea data-k="c1" data-label="4 · 候选1 session-log(场景化)"></textarea></div>
 
 <div class="card green">
-  <h3><span class="pill cand">候选 2</span> 学 B 的 memoryFlush:压缩前先把记忆落到文件</h3>
-  <p><b>做法:</b> 在 runner context 快满、要被有损压缩之前,先跑一轮「把该记的写下来」(像 openclaw 的 <code>memoryFlush</code> 落到 workspace md)。比候选 1 轻得多。</p>
-  <p><b>取舍:</b> 见效快、改动小,但它是<b>有损兜底</b>(不是根治),和候选 1 的「全事件日志」是两条路 —— 可以先做 2 顶一阵,也可以直接奔 1。<b>要不要先上这个轻的?</b></p>
+  <h3><span class="pill cand">候选 2</span> 学 B 的 memoryFlush:压缩前先把记忆落文件</h3>
+  <p>context 快满、要被有损压缩之前,先跑一轮「把该记的写下来」。比候选 1 <b>轻得多</b>,但是<b>有损兜底</b>(不是根治)。可以先上这个顶一阵,也可以直接奔候选 1。</p>
 </div>
+<div class="cmt"><label>💬 对候选 2(memoryFlush 轻做法)的留言</label><textarea data-k="c2" data-label="4 · 候选2 memoryFlush"></textarea></div>
 
 <div class="card gray">
-  <h3><span class="pill">benchmark 结论</span> B 的编排层:印证我们在正道,不重写</h3>
-  <p>openclaw 的 Gateway / 队列 / 多渠道 / failover,我们<b>几乎逐条都有</b>(见对照表绿格)。<b>不建议</b>为它重写编排层。唯一可选的轻借鉴:把心跳从「存活探测」升级成 openclaw 式的「主动清单」(但我们已有定时 issue / Lead 巡检,别重复造)。<span class="tag part">可选,非重点</span></p>
+  <h3>benchmark / 已在做(不新开活)</h3>
+  <p><b>B openclaw 编排层:</b>我们几乎逐条都有,<b>不重写</b>;唯一可选轻借鉴 = 把心跳从「存活探测」升级成 openclaw 式「主动清单」(但我们已有定时 issue/巡检,别重复造)。<br>
+  <b>C Raft 防撞车:</b>已落 <b>FLY-1002</b>(Tadashi),只引用。</p>
 </div>
+<div class="cmt"><label>💬 对 benchmark / 已在做部分的留言</label><textarea data-k="c3" data-label="4 · benchmark/已在做"></textarea></div>
 
-<div class="card purple">
-  <h3><span class="pill">已在做</span> C 的防撞车:引用即可</h3>
-  <p>Raft 的 version-check + staged-draft = <b>FLY-1002</b>(Tadashi 在建)。本研究只引用,<b>不重复开新活</b>。</p>
-</div>
-
-<div class="cmt">
-  <label>💬 你对候选做法的批注(每条:值不值得 / 先做哪个 / 不做?尤其候选 1 的分期)</label>
-  <textarea data-k="s4" placeholder="直接打字…"></textarea>
-</div>
-
-<!-- ============ 5. 待你拍 ============ -->
-<h2><span class="secnum">5 ·</span> 留给我们一起评估的几个问题</h2>
+<!-- ============ 5 ============ -->
+<h2><span class="secnum">5 ·</span> 留给我们一起评估的问题</h2>
 <div class="card red">
   <ul>
-    <li><b>按场景定(核心):</b> 自己 own session-log 的 3 个场景 —— ① Codex/kimi 认真干活 ② 916 主动 slice/facade ③ 多机 —— <b>哪个对你现在最真、最急?</b>(没有一个急,就先不做;有哪个,就只做对应那块。)</li>
-    <li><b>轻的先上?</b> 就算暂不做自有 log,要不要先上候选 2(openclaw 式 memoryFlush:压缩前先把记忆落文件)顶一阵?</li>
-    <li><b>多机时间表:</b> 多机(场景③)你大概什么时候真要?这直接决定 host-independent 状态/session-log 的紧迫度。</li>
-    <li><b>Codex/kimi 权重:</b> 你打算多依赖非-Claude 引擎?依赖越重,场景① 越值。</li>
-    <li><b>UNKNOWN:</b> Raft 确切机制、openclaw transcript 格式、homerail 架构我都标了查不到 —— 要我再深挖哪块?</li>
+    <li><b>按场景定(核心):</b>3 场景 —— ① Codex/kimi 认真干活 ② 916 主动 slice ③ 多机 —— <b>哪个对你现在最真、最急?</b>(没有急的就先不做;有哪个就只做那块。)</li>
+    <li><b>轻的先上?</b>暂不做自有 log,要不要先上候选 2(memoryFlush)顶一阵?</li>
+    <li><b>多机时间表:</b>多机(场景③)你大概什么时候真要?直接决定紧迫度。</li>
+    <li><b>Codex/kimi 权重:</b>你打算多依赖非-Claude 引擎?越重场景① 越值。</li>
   </ul>
 </div>
-<div class="cmt">
-  <label>💬 你的总批注 / 决定 / 下一步想让我干什么</label>
-  <textarea data-k="s5" placeholder="直接打字…"></textarea>
-</div>
+<div class="cmt"><label>💬 总批注 / 决定 / 下一步想让我干什么</label><textarea data-k="final" data-label="5 · 总批注 / 决定"></textarea></div>
 
 <div class="bar">
   <button class="primary" id="exportBtn" type="button">导出我的批注</button>
   <button class="ghost" id="clearBtn" type="button">清空</button>
-  <span class="hint" id="saveHint">批注自动存在本机浏览器,刷新不丢。</span>
+  <span class="hint" id="saveHint">每个小节下都有留言框;批注只存在你这台机器,刷新不丢(新版本从空白开始)。</span>
 </div>
 </div>
 
 <dialog id="dlg">
   <div class="dlg">
     <h3>你的批注(已整理成 Markdown)</h3>
-    <p class="hint">已自动复制到剪贴板。也可以点下载,或直接选中复制发给我。</p>
+    <p class="hint">已自动复制到剪贴板。也可点下载,或直接选中复制发给我。</p>
     <textarea id="out" readonly></textarea>
     <div class="bar" style="position:static;background:none;border:none;padding-top:12px">
       <button class="primary" id="dlBtn" type="button">下载 .md</button>
@@ -427,19 +301,10 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 
 <script nonce="__CSP_NONCE__">
 (function(){
-  var KEY = "fly353-arch-review-comments";
-  var LABELS = {
-    s1:"1 · 他们怎么做的",
-    s2:"2 · 我们现在的系统",
-    s2b:"2b · DAG:动态 vs 静态 / homerail",
-    s2c:"2c · 4 个问题的 grounded 答案",
-    s3:"3 · 逐维度对照表",
-    s4:"4 · 候选做法(场景化)",
-    s5:"5 · 总批注 / 决定"
-  };
+  // v4: bumped key so previous rounds' comments do NOT carry into this version.
+  var KEY = "fly353-arch-review-v4";
   var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
 
-  // restore
   var saved = {};
   try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ saved = {}; }
   areas.forEach(function(t){
@@ -454,16 +319,15 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
   });
 
   function buildMd(){
-    var lines = ["# FLY-353 架构进化研究 — Annie 的批注", "", "日期: " + new Date().toLocaleString(), ""];
+    var lines = ["# FLY-353 架构进化研究 v4 — Annie 的批注", "", "日期: " + new Date().toLocaleString(), ""];
     var any = false;
     areas.forEach(function(t){
-      var k = t.getAttribute("data-k");
       var v = (t.value || "").trim();
-      lines.push("## " + (LABELS[k] || k));
-      if (v){ lines.push("", v, ""); any = true; }
-      else { lines.push("", "_(空)_", ""); }
+      if (!v) return;
+      any = true;
+      lines.push("## " + (t.getAttribute("data-label") || t.getAttribute("data-k")), "", v, "");
     });
-    if (!any) lines.push("", "> (还没有批注)");
+    if (!any) lines.push("> (还没有批注)");
     return lines.join("\n");
   }
 
@@ -471,35 +335,25 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
   var out = document.getElementById("out");
 
   document.getElementById("exportBtn").addEventListener("click", function(){
-    var md = buildMd();
-    out.value = md;
-    if (navigator.clipboard && navigator.clipboard.writeText){
-      navigator.clipboard.writeText(md).catch(function(){});
-    }
-    if (dlg.showModal) dlg.showModal(); else alert(md);
+    out.value = buildMd();
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(out.value).catch(function(){});
+    if (dlg.showModal) dlg.showModal(); else alert(out.value);
   });
-
   document.getElementById("clearBtn").addEventListener("click", function(){
-    if (!confirm("清空所有批注?此操作不可撤销。")) return;
+    if (!confirm("清空所有批注?不可撤销。")) return;
     areas.forEach(function(t){ t.value = ""; });
     saved = {};
     try { localStorage.removeItem(KEY); } catch(e){}
-    var h = document.getElementById("saveHint");
-    if (h) h.textContent = "已清空。";
+    var h = document.getElementById("saveHint"); if (h) h.textContent = "已清空。";
   });
-
   document.getElementById("dlBtn").addEventListener("click", function(){
     var blob = new Blob([out.value], {type:"text/markdown"});
     var url = URL.createObjectURL(blob);
     var a = document.createElement("a");
-    a.href = url; a.download = "fly353-annie-批注.md";
-    document.body.appendChild(a); a.click();
-    document.body.removeChild(a);
+    a.href = url; a.download = "fly353-annie-批注-v4.md";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
   });
-
-  document.getElementById("closeBtn").addEventListener("click", function(){
-    if (dlg.close) dlg.close();
-  });
+  document.getElementById("closeBtn").addEventListener("click", function(){ if (dlg.close) dlg.close(); });
 })();
 </script>
