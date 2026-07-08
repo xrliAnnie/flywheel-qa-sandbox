@@ -231,3 +231,64 @@ describe("account-switch-repair · executeSwitch", () => {
 		expect(r.detail).toContain("keychain locked");
 	});
 });
+
+// FLY-929 A4: `notifySuccess` is the STRUCTURED digest payload — present ONLY
+// on a real `switched` outcome (a noop/no_account/failed digest would be noise).
+describe("account-switch-repair · notifySuccess (FLY-929 digest payload)", () => {
+	it("switched → notifySuccess carries from/to/scope/resetAt", async () => {
+		const switchImpl = vi.fn(
+			async (): Promise<SwitchResult> => ({
+				outcome: "switched",
+				from: "personal",
+				to: "school",
+				generation: 4,
+			}),
+		);
+		const p = pending();
+		const r = await repair(switchImpl).executeSwitch(p);
+		expect(r.notifySuccess).toEqual({
+			from: "personal",
+			to: "school",
+			scope: p.scope,
+			resetAt: p.resetAt,
+		});
+	});
+
+	it("noop_already_switched → NO notifySuccess", async () => {
+		const switchImpl = vi.fn(
+			async (): Promise<SwitchResult> => ({
+				outcome: "noop_already_switched",
+				activeAccount: "school",
+			}),
+		);
+		const r = await repair(switchImpl).executeSwitch(pending());
+		expect(r.notifySuccess).toBeUndefined();
+	});
+
+	it("no_account → NO notifySuccess", async () => {
+		const switchImpl = vi.fn(
+			async (): Promise<SwitchResult> => ({
+				outcome: "no_account",
+				earliestReset: null,
+			}),
+		);
+		const r = await repair(switchImpl).executeSwitch(pending());
+		expect(r.notifySuccess).toBeUndefined();
+	});
+
+	it("failed → NO notifySuccess", async () => {
+		const switchImpl = vi.fn(
+			async (): Promise<SwitchResult> => ({
+				outcome: "failed",
+				reason: "keychain locked",
+			}),
+		);
+		const r = await repair(switchImpl).executeSwitch(pending());
+		expect(r.notifySuccess).toBeUndefined();
+	});
+
+	it("enqueue never carries notifySuccess (no switch happened yet)", async () => {
+		const r = await repair(vi.fn()).enqueue(payload());
+		expect(r.notifySuccess).toBeUndefined();
+	});
+});

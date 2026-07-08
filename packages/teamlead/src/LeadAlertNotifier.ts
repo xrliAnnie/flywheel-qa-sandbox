@@ -147,6 +147,13 @@ export const ALERT_EVENT_TYPES = [
 	// session that is not ship-eligible. Lead-only — the session is NOT
 	// finalized/archived; a human must look at the merge.
 	"external_merge_suspect",
+	// FLY-929 B2/C2: the daily token report was NOT delivered (no receipt by the
+	// 01:00 deadline — Bridge expect-tick) or its pipeline step failed in place
+	// (token-usage-daily.sh fail-loud via lead-alert.sh). Only exists under
+	// P-expect (FLYWHEEL_NOTIFY_DIGEST_EXPECT=1); eventId embeds the expected
+	// report date → at most one alert per expected day (claims-table dedup,
+	// shared kind face with the lead-alert.sh allowlist).
+	"notify_digest_failed",
 ] as const;
 
 export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];

@@ -43,7 +43,11 @@ import {
 } from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
 import { recordAuthHealth as ledgerRecordAuthHealth } from "../account-heal/account-ledger.js";
-import { makeAccountSwitchRepair } from "../account-heal/account-switch-repair.js";
+import type { AccountRotationNotice } from "../account-heal/account-rotation-notice.js";
+import {
+	makeAccountSwitchRepair,
+	type RepairDisposition,
+} from "../account-heal/account-switch-repair.js";
 import { accountSwitchWatchdogTick } from "../account-heal/account-switch-watchdog.js";
 import {
 	claudeProfileBinPath,
@@ -193,6 +197,14 @@ import { buildSessionKey } from "./hook-payload.js";
 // FLY-927 (W1): D1 responder-based routing — ticket queue vs issue thread.
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
+	formatAccountCapOwnerAssignment,
+	formatRotationDigest,
+	formatSwitchSuccessDigest,
+	infraSenderTokenOr,
+	postInfraNotifyDigest,
+	resolveAccountCapOwnerId,
+} from "./infra-notify.js";
+import {
 	derivePhaseDisplayState,
 	type PhaseDisplayState,
 	renderPhaseStatusLine,
@@ -216,6 +228,8 @@ import { queryLinearIssues } from "./linear-query.js";
 import { resolveLinearScope, resolveProjectNameParam } from "./linear-scope.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { createMemoryRouter } from "./memory-route.js";
+import { notifyDigestExpectTick } from "./notify-digest-expect.js";
+import { defaultReceiptsPath } from "./notify-receipts.js";
 import { waitForPaneMarker } from "./pane-readiness.js";
 import {
 	PhaseOrchestrator,
@@ -816,7 +830,12 @@ export interface BridgeAppOptions {
 	 * exist. Absent / `.current` undefined ⇒ the event is acknowledged but not
 	 * posted (byte-compat: no unified channel = no self-heal Alerts surface).
 	 */
-	accountRotationPost?: { current?: (detail: string) => Promise<void> };
+	accountRotationPost?: {
+		current?: (
+			detail: string,
+			rotation?: AccountRotationNotice,
+		) => Promise<void>;
+	};
 	/**
 	 * FLY-907: late-bound holder for the unified issue-display refresher. The
 	 * /events router, the actions router, the stale-blocker guard, and the
@@ -2583,7 +2602,11 @@ export function createBridgeApp(
 	const reportsRouter = createReportsRouter({
 		enabled: reportsEnabled,
 		vercelToken: opts?.vercelToken,
-		discordBotToken: opts?.globalBotToken,
+		// FLY-929 W3b ①: sender = Claude Infra Bot when P-identity holds (BOTH
+		// CLAUDE_INFRA_BOT_TOKEN + FLYWHEEL_NOTIFY_CHANNEL), else the legacy
+		// global bot token byte-for-byte. Once live there is NO Simba fallback on
+		// delivery failure — the P-expect receipt check owns fail-loud.
+		discordBotToken: infraSenderTokenOr(opts?.globalBotToken),
 		projects,
 		registry: new ReportRegistry(reportsBaseDir, {
 			// FLY-203 follow-up (founder): report links expire after 7 days.
@@ -3076,10 +3099,16 @@ export async function startBridge(
 	// FLY-71: The sending bot must NOT be the standup lead (CoS/Simba), because
 	// Discord bots don't receive their own MESSAGE_CREATE events — Simba needs
 	// to see the standup message to trigger triage. Use a different lead's token.
+	// FLY-929 W3b ③: when P-identity holds the sender becomes the Claude Infra
+	// Bot — which is not a CoS lead, so the FLY-71 non-CoS constraint holds by
+	// construction (Simba still receives the standup MESSAGE_CREATE). P-identity
+	// dormant ⇒ the legacy fallback chain byte-for-byte.
 	const standupSenderLead = (standupProject?.leads ?? []).find(
 		(l) => l.agentId !== standupLeadId && l.botToken,
 	);
-	const standupBotToken = standupSenderLead?.botToken ?? standupLead?.botToken;
+	const standupBotToken = infraSenderTokenOr(
+		standupSenderLead?.botToken ?? standupLead?.botToken,
+	);
 
 	// Parse stale threshold for standup (same env var as GEO-270 patrol)
 	const standupStaleThresholdHours = (() => {
@@ -3243,7 +3272,10 @@ export async function startBridge(
 	// below once the unified-channel DiscordOps exists. Null until then / when no
 	// unified channel = the event is acked but not posted (byte-compat).
 	const accountRotationPostHolder: {
-		current?: (detail: string) => Promise<void>;
+		current?: (
+			detail: string,
+			rotation?: AccountRotationNotice,
+		) => Promise<void>;
 	} = {};
 
 	// FLY-871 R2/C5: the /api/account-switch route reads this holder at request
@@ -5090,16 +5122,61 @@ export async function startBridge(
 	// self-heal gate below). Declared here so the account-switch watchdog tick
 	// (onPollComplete, later in this closure) can trigger the post-switch sweep.
 	let rescueRuntime: RescueRuntime | undefined;
+	// FLY-929 A4+A5: the SHARED switch-result post used by both executor paths
+	// (watchdog tick + /api/account-switch route) — hoisted so the onPollComplete
+	// watchdog tick (a later closure) reuses the exact same routing. Set inside
+	// the self-heal gate below; undefined ⇒ self-heal off (neither path runs).
+	let postSwitchResult:
+		| ((detail: string, disposition?: RepairDisposition) => Promise<void>)
+		| undefined;
 	if (accountSwitchRepair && unifiedAlertChannelId) {
-		accountRotationPostHolder.current = (detail) =>
-			alertDiscordOps.postToThread(unifiedAlertChannelId, detail);
+		// The Alerts post is authoritative and unchanged in the dormant states;
+		// on top of it:
+		//  - needs_human (no_account / failed / not-attemptable) +
+		//    resolveAccountCapOwnerId ⇒ the post becomes the owner-bot ASSIGNMENT
+		//    (mention) instead of a plain line — the FLY-871 bot playbook carries
+		//    the eventual founder escalation until FLY-927's ticket state machine
+		//    lands. Any env missing ⇒ plain detail post byte-for-byte.
+		//  - notifySuccess (a REAL switched outcome only) + P-identity ⇒ ONE
+		//    best-effort digest to #flywheel-notify (never blocks the Alerts
+		//    record; postInfraNotifyDigest logs and swallows failures).
+		postSwitchResult = async (
+			detail: string,
+			disposition?: RepairDisposition,
+		): Promise<void> => {
+			const capOwnerId =
+				disposition?.outcome === "needs_human"
+					? resolveAccountCapOwnerId()
+					: undefined;
+			if (capOwnerId) {
+				await alertDiscordOps.postToThread(
+					unifiedAlertChannelId,
+					formatAccountCapOwnerAssignment(capOwnerId, detail),
+					{ mentionUserId: capOwnerId },
+				);
+			} else {
+				await alertDiscordOps.postToThread(unifiedAlertChannelId, detail);
+			}
+			if (disposition?.notifySuccess) {
+				await postInfraNotifyDigest(
+					formatSwitchSuccessDigest(disposition.notifySuccess),
+				);
+			}
+		};
+		accountRotationPostHolder.current = async (detail, rotation) => {
+			await alertDiscordOps.postToThread(unifiedAlertChannelId, detail);
+			// FLY-929 A4: rotation digest from the STRUCTURED payload (never
+			// re-parsed from the Alerts line). P-identity dormant ⇒ no-op.
+			if (rotation) {
+				await postInfraNotifyDigest(formatRotationDigest(rotation));
+			}
+		};
 		// FLY-871 R2/C5: bind the /api/account-switch runtime (same self-heal gate).
 		// The route claims a pending record + reuses accountSwitchRepair.executeSwitch,
 		// posts the result to the Alerts channel, and audits before/after to lead_events.
 		accountSwitchRouteHolder.current = {
 			repair: accountSwitchRepair,
-			postResult: (detail) =>
-				alertDiscordOps.postToThread(unifiedAlertChannelId, detail),
+			postResult: postSwitchResult,
 			audit: (e) =>
 				store.appendLeadEvent(
 					e.actorBotId,
@@ -5681,8 +5758,14 @@ export async function startBridge(
 						now: () => Date.now(),
 						executeSwitch: (pending) =>
 							accountSwitchRepair.executeSwitch(pending),
-						post: (detail) =>
-							alertDiscordOps.postToThread(unifiedAlertChannelId, detail),
+						// FLY-929 A4+A5: shared switch-result routing (owner-bot
+						// assignment on needs_human + notify digest on real success);
+						// falls back to the legacy plain post if the shared helper was
+						// somehow not built (defensive — same gate builds both).
+						post:
+							postSwitchResult ??
+							((detail) =>
+								alertDiscordOps.postToThread(unifiedAlertChannelId, detail)),
 						// FLY-871 R3/W5: a deadline-fired switch → sweep incident-window
 						// login-stuck sessions (same sweep the /api/account-switch route
 						// triggers). Undefined rescueRuntime ⇒ no sweep (byte-compat).
@@ -5699,6 +5782,25 @@ export async function startBridge(
 						}`,
 					);
 				}
+			}
+			// FLY-929 B2: notify-digest expectation check — the daily token
+			// report must leave a delivery receipt by 01:00 (report tz) or ONE
+			// deduped notify_digest_failed alert fires per expected day. The tick
+			// itself is gated on FLYWHEEL_NOTIFY_DIGEST_EXPECT=1 (unset ⇒
+			// "inactive", zero side effects). Same piggybacked poll — no timer.
+			try {
+				await notifyDigestExpectTick({
+					now: new Date(),
+					tz: process.env.TOKEN_USAGE_TIMEZONE ?? "America/Los_Angeles",
+					receiptsPath: defaultReceiptsPath(),
+					alert: (p) => leadAlertNotifier.alert(p),
+				});
+			} catch (err) {
+				console.warn(
+					`[Bridge] FLY-929 notify-digest expect tick failed: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
 			}
 		},
 		// FLY-193: default ON now that the idle-pane recognizer is validated

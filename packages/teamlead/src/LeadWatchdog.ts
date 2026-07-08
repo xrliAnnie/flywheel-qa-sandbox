@@ -1023,6 +1023,11 @@ function titleFor(kind: AlertEventType): string {
 		// pass builds its own title); case exists for switch exhaustiveness.
 		case "external_merge_suspect":
 			return "Unverified external merge";
+		// FLY-929: never emitted by LeadWatchdog (the notify-digest expect tick /
+		// token-usage-daily.sh build their own titles); case exists for switch
+		// exhaustiveness.
+		case "notify_digest_failed":
+			return "Daily token report not delivered";
 	}
 }
 
@@ -1100,5 +1105,9 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-945: never emitted by LeadWatchdog (the external-merge reconcile pass builds its own body).
 		case "external_merge_suspect":
 			return "The external-merge reconcile pass found a merged PR it cannot verify (missing founder-attributed approval, or the merged head differs from the approved head). The session was NOT finalized/archived — review the merge.";
+		// FLY-929: never emitted by LeadWatchdog (the notify-digest expect tick /
+		// token-usage-daily.sh build their own bodies via lead-alert.sh).
+		case "notify_digest_failed":
+			return "The daily token report was not delivered (no receipt / pipeline step failed). Check launchd com.flywheel.token-usage-daily, Bridge /api/reports delivery, and /tmp/flywheel-token-usage-daily.err.";
 	}
 }

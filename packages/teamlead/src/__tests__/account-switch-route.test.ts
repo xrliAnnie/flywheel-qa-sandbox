@@ -249,7 +249,14 @@ describe("POST /api/account-switch", () => {
 			phase: "result",
 			outcome: "attempted",
 		});
-		expect(postResult).toHaveBeenCalledWith(expect.stringContaining("已切"));
+		// FLY-929 (Codex code R1 HIGH): the FULL disposition must ride along as
+		// the second argument — the plugin's shared postSwitchResult reads
+		// notifySuccess (W6 digest) and outcome (A5 owner mention) from it, so a
+		// detail-only call on the bot-claimed path silently loses both.
+		expect(postResult).toHaveBeenCalledWith(
+			expect.stringContaining("已切"),
+			expect.objectContaining({ outcome: "attempted" }),
+		);
 	});
 
 	it("409 when there is no pending record for the key (claim miss)", async () => {
@@ -285,6 +292,12 @@ describe("POST /api/account-switch", () => {
 		expect(r.status).toBe(200);
 		expect(r.body.ok).toBe(false);
 		expect(r.body.outcome).toBe("needs_human");
+		// FLY-929: the needs_human disposition also rides along so the A5
+		// owner-mention routing sees the outcome on the bot-claimed path.
+		expect(postResult).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.objectContaining({ outcome: "needs_human" }),
+		);
 	});
 
 	it("still 200 when the result post fails (best-effort, switch already committed)", async () => {

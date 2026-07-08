@@ -39,6 +39,18 @@ export interface RepairDisposition {
 	outcome: "attempted" | "needs_human";
 	action: "account_switch" | "none";
 	detail: string;
+	/**
+	 * FLY-929 W6: structured success payload for the #flywheel-notify digest.
+	 * Filled ONLY on a real `switched` executor outcome — never on
+	 * noop_already_switched / no_account / failed (a "duplicate trigger skipped"
+	 * digest would be noise). Optional ⇒ existing consumers ignore it.
+	 */
+	notifySuccess?: {
+		from?: string;
+		to: string;
+		scope?: "5h" | "weekly" | "both";
+		resetAt?: string;
+	};
 }
 
 export interface AccountSwitchRepairDeps {
@@ -166,6 +178,12 @@ export function makeAccountSwitchRepair(
 						outcome: "attempted",
 						action: "account_switch",
 						detail: `🔧 已切机器 Claude 账号 ${result.from}→${result.to}（${scopeLabel(pending.scope)} 到, reset ${pending.resetAt}）。新 spawn 的 runner/lead 用新账号;当前 session 等 reset 或需 founder 重启自愈。`,
+						notifySuccess: {
+							from: result.from,
+							to: result.to,
+							scope: pending.scope,
+							resetAt: pending.resetAt,
+						},
 					};
 				case "noop_already_switched":
 					return {
