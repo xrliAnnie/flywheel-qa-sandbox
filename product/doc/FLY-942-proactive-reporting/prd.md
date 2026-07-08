@@ -142,7 +142,7 @@ flowchart TD
 | `stuck-candidate`(`:16-26`) | 只认 stagnant-fingerprint(屏幕没动) | + 重复错误签名(变但循环同错)+ token-flow(真产出 vs 打转) |
 | 可疑态处理 | 机械直接压掉当 healthy | 升级 **FLY-976 LLM 判断层**(便宜小模型 Haiku/Codex 便宜档、**跑 Codex 不占 Claude 额度**、读文字不看图、generic+好 prompt、ad-hoc 无状态)判 a/b/c;不确定 → `fail-suspicious` 附原文、不静默 |
 | 轮询 cadence(`DEFAULT_IDLE_POLL_MS` ~1h) | ~1h 抓屏 | 廉价 gap 扫描每 N min(读 CommDB 不抓 pane)+ pane 帧尽快 |
-| 升级流(~75min 链) | 1h+10min stagnation+5min Lead grace | **统一 Lead-first + ~30min**:发现→立刻通知 Lead→Lead ~30min 没解决→@Annie |
+| 升级流 | ~75min 起(乐观下限,实际可 ~2h+:1h poll + stagnant 需两次 poll 确认 + 5min grace) | **统一 Lead-first + ~30min**:发现→立刻通知 Lead→Lead ~30min 没解决→@Annie |
 | liveness | 信"进程活"当 healthy | 读 pane 真状态,不信 alive-flag |
 
 **scenario 处理机制表(每情况:输入信号 → 判定 → 动作 → 通知谁)**:
