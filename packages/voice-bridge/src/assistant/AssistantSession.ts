@@ -158,6 +158,7 @@ export class AssistantSession {
 		this._state = "invoked";
 		this.log("state -> invoked");
 		this.opts.tiv.status("🎙 正在进场…");
+		let connectPromise: Promise<ConversationLike> | null = null;
 		// round-5 (Annie re-verification FAIL): everything before the presence
 		// subscription must be BOUNDED and LOGGED. The Gemini connect used to be
 		// awaited unbounded — a hanging connect left the session in `invoked`
@@ -176,15 +177,34 @@ export class AssistantSession {
 				);
 			}
 			this.log("connecting Gemini Live…");
+			connectPromise = this.opts.createConversation(brief.text);
 			this.conv = await withTimeout(
-				this.opts.createConversation(brief.text),
+				connectPromise,
 				this.opts.timeouts?.connectMs ?? DEFAULT_CONNECT_MS,
 				"Gemini Live connect",
 			);
 			this.log("conversation ready");
 		} catch (err) {
-			await this.abortStartFailure(String((err as Error).message ?? err));
-			throw err; // the command layer sends the founder-facing failure reply
+			// a conversation fulfilling AFTER the timeout must not leak (R17)
+			connectPromise?.then(
+				(c) => void c.close().catch(() => {}),
+				() => {},
+			);
+			const issueClosed = await this.abortStartFailure(
+				String((err as Error).message ?? err),
+			);
+			// the command layer sends the founder-facing failure reply; tell it
+			// whether the kickoff issue was already closed so the wording is true
+			throw Object.assign(err as Error, { issueClosed });
+		}
+		if (this.done) {
+			// stop() raced the connect (R17): the runtime is already torn down —
+			// do NOT resurrect; close the late conversation and stay idle.
+			this.log("session stopped during connect — closing late conversation");
+			const late = this.conv;
+			this.conv = null;
+			await late?.close().catch(() => {});
+			return;
 		}
 		this.wireConversation(this.conv);
 		this.wireEars(this.conv);
@@ -375,16 +395,19 @@ export class AssistantSession {
 	}
 
 	/** start() failed before live (connect hang/refusal etc.) — degrade
-	 * honestly: LOUD log, close the kickoff issue, free the room. */
-	private async abortStartFailure(reason: string): Promise<void> {
-		if (this.done) return;
+	 * honestly: LOUD log, close the kickoff issue, free the room. Returns
+	 * whether the issue actually got closed (the failure reply must not lie). */
+	private async abortStartFailure(reason: string): Promise<boolean> {
+		if (this.done) return false;
 		this.log(`FATAL — session start failed before live: ${reason}`);
+		let issueClosed = false;
 		try {
 			await this.opts.linearAbort.comment(
 				this.opts.issueId,
 				`语音会议没起来——助理启动失败(${reason})。issue 自动关闭,重新发起即可再试。`,
 			);
 			await this.opts.linearAbort.closeIssue(this.opts.issueId);
+			issueClosed = true;
 			this.opts.tiv.status(`会没起来(${reason}),立项 issue 已关。`);
 		} catch (err) {
 			this.opts.tiv.error(
@@ -392,6 +415,7 @@ export class AssistantSession {
 			);
 		}
 		await this.teardown();
+		return issueClosed;
 	}
 
 	private async abortNoShow(): Promise<void> {

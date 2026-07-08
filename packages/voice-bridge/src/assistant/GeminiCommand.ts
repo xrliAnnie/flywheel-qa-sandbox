@@ -109,8 +109,14 @@ export class GeminiCommand {
 			});
 		} catch (err) {
 			this.opts.slot.release(ASSISTANT_SLOT_MODE, sessionId);
+			// the session's abort path may have already closed the kickoff issue
+			// (flagged on the error) — the founder-facing reply must not lie (R17)
+			const issueClosed =
+				(err as { issueClosed?: boolean }).issueClosed === true;
 			await inv.reply(
-				`/${this.name} 会话启动失败(${String((err as Error).message ?? err)})——${identifier} 保持打开,重新 /${this.name} 即可。`,
+				issueClosed
+					? `/${this.name} 会话启动失败(${String((err as Error).message ?? err)})——${identifier} 已自动关闭,重新 /${this.name} 即可再试。`
+					: `/${this.name} 会话启动失败(${String((err as Error).message ?? err)})——${identifier} 保持打开,重新 /${this.name} 即可。`,
 			);
 		}
 	}

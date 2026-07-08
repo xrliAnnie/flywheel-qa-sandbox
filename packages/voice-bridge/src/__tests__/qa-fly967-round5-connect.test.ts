@@ -22,7 +22,10 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { AssistantSession } from "../assistant/AssistantSession.js";
+import { GeminiCommand } from "../assistant/GeminiCommand.js";
 import { SessionSlot } from "../SessionSlot.js";
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
 
 function harness(over: Record<string, unknown> = {}) {
 	const slot = new SessionSlot();
@@ -136,6 +139,86 @@ describe("FLY-967 round-5 — bounded Gemini connect + honest start-failure abor
 		expect(all).toContain("conversation ready");
 		expect(all).toContain("founderPresent()=true");
 		expect(all).toContain("state -> live (initial-check)");
+	});
+
+	it("stop() racing a pending connect must NOT resurrect the session — the late conversation is closed (Codex R17)", async () => {
+		let resolveConv: ((c: unknown) => void) | undefined;
+		const lateConv = {
+			sendText: vi.fn(),
+			sendAudio: vi.fn(),
+			on: (_e: string, _h: unknown) => () => {},
+			close: vi.fn(async () => undefined),
+		};
+		const { session } = harness({
+			createConversation: () =>
+				new Promise((r) => {
+					resolveConv = r;
+				}),
+			timeouts: { connectMs: 5_000 },
+		});
+		const started = session.start();
+		await tick();
+		await session.stop(); // daemon shutdown while the connect is in flight
+		expect(session.state).toBe("idle");
+		resolveConv?.(lateConv); // connect finally lands AFTER teardown
+		await started;
+		await tick();
+		expect(lateConv.close).toHaveBeenCalled(); // no leaked Gemini session
+		expect(lateConv.sendText).not.toHaveBeenCalled(); // no OPENING — not resurrected
+		expect(session.state).toBe("idle");
+	});
+
+	it("a conversation fulfilling AFTER the connect timeout is closed, not leaked (Codex R17)", async () => {
+		let resolveConv: ((c: unknown) => void) | undefined;
+		const lateConv = {
+			sendText: vi.fn(),
+			sendAudio: vi.fn(),
+			on: (_e: string, _h: unknown) => () => {},
+			close: vi.fn(async () => undefined),
+		};
+		const { session } = harness({
+			createConversation: () =>
+				new Promise((r) => {
+					resolveConv = r;
+				}),
+			timeouts: { connectMs: 20 },
+		});
+		await expect(session.start()).rejects.toThrow(/timed out/);
+		resolveConv?.(lateConv);
+		await tick();
+		expect(lateConv.close).toHaveBeenCalled();
+	});
+
+	it("GeminiCommand failure reply matches reality: issue CLOSED by the abort path says closed, not 保持打开 (Codex R17)", async () => {
+		const replies: string[] = [];
+		const slot = { acquire: () => ({ ok: true }) as const, release: () => {} };
+		const closedErr = Object.assign(
+			new Error("Gemini Live connect timed out"),
+			{
+				issueClosed: true,
+			},
+		);
+		const cmd = new GeminiCommand({
+			slot: slot as never,
+			createIssue: async () => ({ identifier: "FLY-1", url: undefined }),
+			pingFounder: async () => {},
+			joinUrl: "https://discord.gg/x",
+			startSession: async () => {
+				throw closedErr;
+			},
+			now: () => new Date("2026-07-08T12:00:00"),
+		} as never);
+		await cmd.handle({
+			topic: undefined,
+			userId: "u1",
+			reply: async (t: string) => {
+				replies.push(t);
+			},
+		});
+		const failure = replies.find((r) => r.includes("启动失败"));
+		expect(failure).toBeDefined();
+		expect(failure).toContain("已自动关闭");
+		expect(failure).not.toContain("保持打开");
 	});
 
 	it("waiting path logs the no-show timer and the founder-join trigger source", async () => {
