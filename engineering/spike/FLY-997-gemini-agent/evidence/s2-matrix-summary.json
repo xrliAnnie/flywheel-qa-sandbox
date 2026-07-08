@@ -1,0 +1,116 @@
+{
+  "runs": [
+    {
+      "ts": "2026-07-08T20:45:53.404Z",
+      "surface": "interactions",
+      "smoke": true,
+      "sessionsUsed": 5,
+      "outboundOrigins": [
+        "http://127.0.0.1:47997"
+      ],
+      "rawFileRef": "matrix-2026-07-08T20-44-55.jsonl",
+      "summaries": [
+        {
+          "tier": "flash",
+          "model": "gemini-3.5-flash",
+          "scenario": "N1",
+          "surface": "interactions",
+          "rounds": 1,
+          "completedRounds": 1,
+          "quotaAborted": 0,
+          "errorRounds": 0,
+          "successes": 1,
+          "successRate": 1,
+          "avgParamFirstPass": 1,
+          "hallucinatedToolsTotal": 0,
+          "maxStepsExceeded": 0,
+          "avgSteps": 6,
+          "tokens": {
+            "input": 16554,
+            "output": 636
+          }
+        },
+        {
+          "tier": "flash",
+          "model": "gemini-3.5-flash",
+          "scenario": "N2",
+          "surface": "interactions",
+          "rounds": 1,
+          "completedRounds": 1,
+          "quotaAborted": 0,
+          "errorRounds": 0,
+          "successes": 1,
+          "successRate": 1,
+          "avgParamFirstPass": 1,
+          "hallucinatedToolsTotal": 0,
+          "maxStepsExceeded": 0,
+          "avgSteps": 3,
+          "tokens": {
+            "input": 7397,
+            "output": 451
+          }
+        },
+        {
+          "tier": "flash",
+          "model": "gemini-3.5-flash",
+          "scenario": "N3",
+          "surface": "interactions",
+          "rounds": 1,
+          "completedRounds": 1,
+          "quotaAborted": 0,
+          "errorRounds": 0,
+          "successes": 1,
+          "successRate": 1,
+          "avgParamFirstPass": 1,
+          "hallucinatedToolsTotal": 0,
+          "maxStepsExceeded": 0,
+          "avgSteps": 1,
+          "tokens": {
+            "input": 3165,
+            "output": 99
+          }
+        },
+        {
+          "tier": "flash",
+          "model": "gemini-3.5-flash",
+          "scenario": "N4a",
+          "surface": "interactions",
+          "rounds": 1,
+          "completedRounds": 1,
+          "quotaAborted": 0,
+          "errorRounds": 0,
+          "successes": 1,
+          "successRate": 1,
+          "avgParamFirstPass": 0.6,
+          "hallucinatedToolsTotal": 0,
+          "maxStepsExceeded": 0,
+          "avgSteps": 5,
+          "tokens": {
+            "input": 14687,
+            "output": 586
+          }
+        },
+        {
+          "tier": "flash",
+          "model": "gemini-3.5-flash",
+          "scenario": "N4b",
+          "surface": "interactions",
+          "rounds": 1,
+          "completedRounds": 1,
+          "quotaAborted": 0,
+          "errorRounds": 0,
+          "successes": 1,
+          "successRate": 1,
+          "avgParamFirstPass": 0,
+          "hallucinatedToolsTotal": 0,
+          "maxStepsExceeded": 0,
+          "avgSteps": 1,
+          "tokens": {
+            "input": 2883,
+            "output": 63
+          }
+        }
+      ]
+    }
+  ]
+}
