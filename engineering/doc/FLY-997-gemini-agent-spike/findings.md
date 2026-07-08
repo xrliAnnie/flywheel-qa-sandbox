@@ -144,6 +144,7 @@ Annie 提供了一份 CC 源码 fork(本地 `~/Dev/claude-code`,含 QueryEngine/
 - **LICENSE 审计结果**:该 repo 自述「UNLICENSED — NOT FOR REDISTRIBUTION…leaked proprietary source code belonging to Anthropic…strictly for educational and research purposes…NOT open-source」——**泄露的专有代码,无任何授权**。
 - **license 定出的边界**:照抄代码 = 侵权风险直接进产品仓,**不可**;贴近转写结构 = 衍生作品风险,**不建议**;设计模式层面(想法非表达)= 可,且**已应用**(单主循环/工具白名单/审计先行/结果截断——来自 FLY-31 对公开行为的分析,spike 以 100/100 实证)。据此**不产出逐文件转写地图**——那张地图的唯一用途就是 license 禁止的用法。
 - **build 阶段纪律建议**:实现 `packages/gemini-agent` 时不打开该 repo(clean-room,防无意识抄写)。真需要源码级参考时走合法替代:**gemini-cli(Apache-2.0,Google 官方,同款 `@google/genai` 面——loop/流式/中断处理的最佳合法源码参考)**;Codex CLI(Apache-2.0,协议原因不作骨架但源码可读);ADK-JS(Apache-2.0)。
+  > **Founder 裁定(2026-07-08 Annie,盖过上行参考排序)**:gemini-cli **一票否决**(「写的太差,千万不要抄」)——不作任何参考。设计学习对象 = **Claude Code,思想层全面学、贴得越近越好**;license 红线照守(不逐行照搬、不贴近转写)。Codex CLI / ADK-JS 仅留作机制疑难备查。
 - **对结论的影响:零**。薄 loop 已自证(100/100),「照着别人的 loop 写」的需求已被数据替代;剩下的机制疑难查 gemini-cli 即可。
 
 ### ⑤ guardrail — 三层复用 + D5 静态审计(build 形态核对单)
