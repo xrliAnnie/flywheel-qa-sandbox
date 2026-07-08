@@ -41,18 +41,22 @@ Status: **draft PRD — 主线待 Annie 拍板后由 Lead 收口**(这是她点�
 
 ```mermaid
 graph LR
-    P1["阶段1 第一台卫星<br/>单 hub + 无状态卫星 runner<br/>(打通 Option A 架构)"] --> P2["阶段2 云节点镜像<br/>provision+deploy 上云<br/>(FLY-346 容器 + FLY-559)"]
-    P2 --> P3["阶段3 弹性 horizontal scale<br/>按需开/关云节点 + 调度"]
-    P1 -.并行小路.-> PB["联邦 Option B<br/>异构放置最省力(对外 agent/独立项目)"]
+    P0["阶段0/近期 摆几台物理机<br/>横向摊开 fleet(Annie lean)<br/>非换大机"] --> P1["阶段1 第一台卫星<br/>单 hub + 无状态 runner<br/>(打通 Option A 架构)"]
+    P1 --> P2["阶段2 云节点镜像<br/>provision+deploy 上云<br/>(FLY-346 容器 + FLY-559)"]
+    P2 --> P3["阶段3 弹性 horizontal scale<br/>节点池按需开/关 + 调度"]
+    P0 -.并行小路.-> PB["联邦 Option B<br/>各自完整(对外 agent/独立项目)"]
     P3S["FLY-353 session-log"] -.阶段1 enable failover / 阶段3 刚需.-> P1
 ```
 
+> **主线选型待 Annie 拍(v3 co-eval 第 3 节):联邦 vs 非联邦。** 下表按非联邦(单 hub)主线列;若选联邦,阶段1 简化成「复制单机到每台」、跳过破 3 锚点。
+
 | 阶段 | 内容 | 前置 | 判定 |
 |---|---|---|---|
-| **1 第一台卫星** | 单 Bridge hub + 无状态卫星 runner-agent(§4),两台机 + Tailscale 打通架构 | Tailscale | 本 PRD 主体、架构最小验证 |
-| **2 云节点镜像** | 卫星 provision 固化成云节点镜像(容器,FLY-346)+ 弹性 provision/deploy(§4.6) | 阶段1 | 战略核心:上云 |
-| **3 弹性 scale** | 按需开/关云节点 + 跨机调度/placement + 云失败域(§4.6) | 阶段2 + FLY-353 | 无上限 horizontal scale |
-| **1' 联邦(可选并行)** | 每机/节点独立完整 Flywheel,各连 Discord(Option B) | 无(=复制单机) | 只为异构放置,不等主线 |
+| **0/近期 物理机** | 横向多摆几台物理机(非换大机)+ Tailscale,摊开 fleet | 无 | Annie lean、稳定 baseline + 上云前验证台 |
+| **1 第一台卫星** | 单 Bridge hub + 无状态卫星 runner-agent(§4),打通 Option A | 阶段0 + Tailscale | 架构最小验证 |
+| **2 云节点镜像** | 节点 provision 固化成容器镜像(FLY-346)+ 弹性 provision/deploy(§4B) | 阶段1 | 战略核心:上云 |
+| **3 弹性 scale** | 节点池按需开/关 + 跨机调度/placement + 云失败域(§4B) | 阶段2 + FLY-353 | 无上限 horizontal scale |
+| **1' 联邦(可选并行 / 或主线)** | 每机/节点独立完整 Flywheel,各连 Discord(Option B) | 无(=复制单机) | 异构/隔离放置;**若 Annie 选它=主线** |
 | **(横切) session-log** | FLY-353 事件日志 → 无状态 runner 可重建 | 独立 | 阶段1 给 failover;阶段3 刚需 |
 
 ---
@@ -152,19 +156,30 @@ graph TB
 - **容器化(FLY-346)在这里从可选变必需** —— 云节点天然 Linux + 容器;homerail 的 `homerail_node` 起 Docker Worker、Worker 经 callback URL 回连 Manager,正是这个形态(research §4)。runner-agent ≈ `homerail_node`,容器 runner ≈ `homerail_worker`。
 - 开一个云节点 = 拉镜像 + 起 runner-agent + 入 tailnet + 向 hub 注册(§4.2 1)。
 
-**(7) 弹性 provision/deploy —— scale up/down(阶段3)**
-- hub 的 admission(§4.2 3)从「在固定几台里选」升级成一个 **node pool 管理器**:队列积压/现有节点满 → **开一台新云节点**;节点闲置超时 → **关掉**。
-- 实例选型 = **memory-optimized 高 RAM**(fleet 是内存游戏,每 runner ~1.3-1.4GB;别选 CPU-optimized)。对齐 FLY-559。
-- **调度/placement**(D7):issue 派到哪个节点、何时预热节点池摊平冷启动延迟(开实例+拉镜像+登录态就绪可能分钟级)。
+**(6b) 容器镜像讲细(Annie co-eval):** 「固化成镜像」= 把手动 provision 一次性烤进 Dockerfile,开节点 = `docker run <镜像>`,不用每台重装;provision 逻辑从「每台手动」变「构建镜像时一次(build 一次、deploy 多次)」。Docker 只在云/Linux 节点必需;家里 Mac 卫星可裸跑。
+
+**(7) 弹性 provision/deploy —— 四步闭环(阶段3)**
+- hub 的 admission(§4.2 3)升级成 **node pool 管理器**,四步:**触发**(队列积压/节点满过阈值)→ **provision**(调云 API 从镜像开实例)→ **入池**(节点 boot + runner-agent 注册 → 加进可用池)→ **销毁**(闲置超时 → 收干净 → 关实例)。
+- **关键澄清(Annie co-eval 5.1):不是每 issue 开新节点**(冷启动几分钟又贵)。是**节点池复用**:issue 先派给池里有空位的节点;**只有池满**才开新节点;闲了回收。
+- 实例选型 = **memory-optimized 高 RAM**(每 runner ~1.3-1.4GB;别选 CPU-optimized)。对齐 FLY-559。
+- **调度/placement**(D7):池里怎么选、何时预热摊平冷启动。
 
 **(8) 云失败域 + 无损重启(阶段3,依赖 FLY-353)**
 - 云节点比家里机器更会**无预警消失**(spot 回收 / 网络分区)。heartbeat(FLY-172)察觉 → 从 **session-log(FLY-353)重建** runner → 在另一节点续跑。**这里 session-log 从「可选升级」变「刚需」**:节点朝生暮死,runner 必须能从 hub 日志无损重启,否则弹性 = 频繁丢 WIP。
 
-**(9) 云 secret / 登录态分发(阶段2-3,安全面)**
-- token / claude 登录态怎么安全推到一个临时云节点、销毁时怎么擦除?(D8)复用 FLY-245 gateway/broker 思路还是新机制,要 Codex/安全设计。云节点入 tailnet(私有 mesh、无公网入站)接 hub。
+**(9) 云 secret / 登录态分发 —— 不是难点(Annie co-eval 5.3 降级)**
+- 有成熟方案:节点 boot 时从 **AWS Secrets Manager / Vault** 经 tailnet 拉登录态/token,随实例销毁一起没。标准做法,不当难点夸大;选型(哪家 / 是否复用 FLY-245 broker)是实现细节。云节点入 tailnet(私有 mesh、无公网入站)接 hub。
 
-**(10) 成本 model(阶段3 决策输入)**
-- memory-optimized 云实例按小时计费 + always-on hub;弹性开关省多少 vs 冷启动/预热浪费多少,要真实算账,决定「云 vs 多买几台物理机」哪个更值(D9)。
+**(10) 成本 model(D9,已做一版粗估;精确需真实报价 + runner-hours)**
+- 假设:每 runner ~1.3-1.4GB;32GB 节点 ~15-20 runner。
+
+| 方案 | 成本形态 | 粗估 | 适合 |
+|---|---|---|---|
+| 物理机(Mac 32-64GB) | 一次性 ~$1.3k-2.5k/台,always-on | 摊 3 年 ≈ $40-70/月/台 | 稳定 baseline |
+| 云 on-demand(32GB 内存优化) | ~$0.2-0.4/hr | always-on ≈ $150-290/月;scale-to-zero 只付活跃小时 | 突发/弹性 |
+| 云 spot | ~$0.07-0.13/hr(会被回收) | 更便宜,需 session-log failover | 可容忍中断批量 |
+
+- **结论:baseline 用物理机更省(amortized capex 便宜),突发峰值用云弹性(scale-to-zero)→ 支持「近期物理机 + 云补弹性」(D2 + D9)。**
 
 ---
 
@@ -189,11 +204,13 @@ graph TB
 
 ---
 
-## 6. 开放决策(要 Annie / Codex 拍)
+## 6. 决策(★ = 待 Annie 拍;✅ = 已按 co-eval 定)
 
-- **D1 Bridge 暴露方式:** (a) 放宽 loopback + token,还是 (b) tailnet 反代?(倾向 b,要 spike)—— 安全 sensitive,建议 Codex/安全过。
-- **D2 云 vs 更多物理机的先后:** 阶段1 用家里第二台物理机打通架构后,阶段2 直接上云,还是先多摆两台物理机?(战略终点是云,但物理机验证更快/更省;要 Annie 拍节奏。)
-- **D3 联邦 Option B 要不要作为并行小路先上?** 若近期就要「对外 agent / 独立项目单独节点」,B 比主线省力得多,可先做。
+- **★ D0 主线选型:联邦 vs 非联邦(最关键,Annie co-eval 第 3 节)** —— 单 hub(弹性强、要破锚点)vs 各自完整联邦(简单、天然隔离、弹性弱)。可组合。**主线选哪个决定后续设计,待 Annie 拍。**
+- **✅ D2 近期先摆几台物理机**(Annie lean)—— 横向多摆物理机(非换大机)当阶段0/近期 baseline + 上云前验证台;云补弹性峰值(成本 §4B(10) 支持)。
+- **✅ D9 成本估算** —— 已做粗版(§4B(10)):物理机 amortized $40-70/月 vs 云 on-demand $150-290/月 vs spot;结论 baseline 物理 + 突发云弹性。精确待真实报价。
+- **✅ D8 secrets** —— 非难点,用 AWS Secrets Manager/Vault 标准方案(§4B(9))。
+- **D1 Bridge 暴露方式:** (a) 放宽 loopback + token,还是 (b) tailnet 反代?(倾向 b,要 spike)—— 安全 sensitive,建议 Codex/安全过。(工程向,交 Tadashi/Codex)
 - **D4 session-log(FLY-353)排序:** 先落 353 再多机(无损 failover 从第一天有),还是阶段1 先上、353 到位再升级?(注意:阶段3 云弹性时 353 是刚需,不是可选。)
 - **D5 强能力 API 暴露到 tailnet 的风险边界** —— `/api/actions/*` 要不要在多机/云模式下进一步收紧(只允许 hub-local 触发)?
 - **D6 ask/gate/wake 路由方式:** 卫星/节点 runner 的 ask/gate 问答态 + wake 现依赖本地 CommDB(§4.2 1b)。走 (a) HTTP 到 hub CommDB(倾向,同出站姿态),还是 (b) 给节点一份可路由 comm 视图?阶段1 真正的工程量所在,要 Tadashi/Codex 定。

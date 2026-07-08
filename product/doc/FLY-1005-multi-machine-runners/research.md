@@ -121,6 +121,18 @@ graph LR
 - 优点:最简单、天然隔离、零跨机编排(每台就是今天的单机)。契合 FLY-648「核心/项目分离」+ 异构放置。
 - 缺点:不是「一个 fleet 摊开」,而是「N 个独立 fleet」;跨机协作(主机 Lead 驱动 Windows runner)做不到;状态各自为政。
 - 定位:**异构放置 / 对外 agent 隔离的最省力解**;不满足「一个大 fleet 弹性摊开」。
+- **⭐ 升级为一等选型(Annie 2026-07-08 co-eval):** Annie 说**联邦本来是她最早想的方案**。→ 联邦 vs 非联邦不是「主线 + 小路」,而是要她**明确选主线**的对照题:
+
+  | | 非联邦(Option A,单 hub) | 联邦(Option B,各自完整) |
+  |---|---|---|
+  | 大脑 | 1 个中央 hub | 每节点各有 |
+  | 跨机协作 | ✓ hub 调度任意节点 runner | ✗ 各跑各的 |
+  | 复杂度 | 中(要破 3 锚点) | 低(每台=今天单机,复制即可) |
+  | 弹性云 scale | ✓ 强(无状态节点按需开关) | 弱(每个是完整重实例) |
+  | 爆炸半径 | 节点崩 hub 重派 | 天然完全隔离 |
+  | 最适合 | 一个大 fleet 弹性摊开 / 无上限 scale | 隔离放置(对外 agent/独立项目)、异构 OS、快速独立扩 |
+
+  **可组合**(主 fleet 非联邦弹性 + 对外/独立项目联邦隔离),但**主线选哪个决定后续设计,待 Annie 拍**(v3 co-eval HTML 第 3 节)。
 
 **Option C — 跨机共享 StateStore(networked DB)。**
 - 把 teamlead.db 换成一个联网 DB(Postgres/Supabase),多台 Bridge 共读写。这是 FLY-556「StateStore 跨机化」的字面解。
@@ -146,20 +158,39 @@ graph LR
 
 ### 3.6 走向云:Provision + Deploy 上云 = 无上限 horizontal scale(1005 战略核心)
 
-家里几台物理机只是第一步(受物理机数量限制);**真正的 horizontal scale 是把 provision + deploy 搬上云 —— 按需弹性开/关云节点**。三块:
+家里几台物理机只是第一步(受物理机数量限制);**真正的 horizontal scale 是把 provision + deploy 搬上云 —— 按需弹性开/关云节点**。
 
-- **云节点 = 可复现镜像。** 把 §3.5 的卫星 provision 固化成一个**节点镜像**(容器 / VM image):node + claude CLI + runner-agent + 入 tailnet。开一个云实例 = 拉镜像 + 起 runner-agent + 向 hub 注册。**这里容器化(FLY-346)从「可选」变「必需」** —— 云节点天然是 Linux + 容器,homerail 的 Worker-in-Docker(§4)正是这个形态。
-- **弹性 provision/deploy(scale up/down)。** hub 的 admission(§3.3)从「在固定几台里选」升级成「不够就**开一台新云节点**、闲了**关掉**」。这是纵向永远给不了的:纵向买一台大机是固定容量 + 单点;横向按需开云节点 = 无上限 + 无单点。
-- **实例选型 = 内存优化型。** fleet 是内存游戏(每 runner ~1.3-1.4GB),云实例要选 **memory-optimized 高 RAM**(不是 CPU-optimized)。参照 FLY-559 的记录。
+**(a) 云节点 = 容器镜像(阶段2,讲细,Annie co-eval 要求):**
+- **「固化成容器镜像」啥意思:** 今天开一台节点要手动装 node/claude CLI/runner-agent/tailscale(FLY-519 脚本)。容器镜像 = 把这些**一次性烤进一个 Docker 镜像**;以后开节点 = 一条 `docker run <镜像>`(拉镜像 + 起 runner-agent),不用每台重装。
+- **还要不要 provision?** 要,但**从「每台手动」变成「构建镜像时一次性(写进 Dockerfile)」** → build 一次、deploy 很多次;单台手动 provision 消失。
+- **要不要 Docker?** 云/Linux 节点**要**(容器就是 Docker),homerail 的 Worker-in-Docker(§4)正是这个形态,**容器化(FLY-346)在这步从可选变必需**;家里 Mac 卫星(阶段0/1)可**裸跑不用 Docker**,Docker 是上云这步才必需。
 
-**horizontal scale 架构的三个硬问题(诚实,UNKNOWN 见 §7):**
-1. **调度(scheduling/placement):** 一个 issue 派到哪个节点?何时开新节点、何时回收?冷启动延迟(开云实例 + 拉镜像 + 登录态就绪)怎么摊平?
-2. **跨机状态:** 沿用 Option A「单 hub brain + state 留 hub」→ 云节点无状态、可随时开关(这是刻意为弹性选的:无状态才敢弹)。ask/gate/wake 收口到 hub(§1.3)。**这是为什么不走 Option C**:跨机共享 DB 会让「随手关一个节点」变危险。
-3. **失败域(failure domains):** 云节点比家里机器更会「无预警消失」(spot 回收 / 网络分区)。heartbeat(FLY-172)+ 从 session-log 重建(FLY-353)是弹性云的**刚需**,不再是「可选升级」—— 云节点朝生暮死,runner 必须可从 hub 日志无损重启。
-4. **安全/网络:** 云节点入 tailnet(私有 mesh,无公网入站)接 hub;secret(claude 登录态 / token)怎么安全分发到临时节点、节点销毁时怎么擦除 = 云化的新安全面(§7 UNKNOWN)。
-5. **成本:** 云 memory-optimized 实例按小时计费;弹性开关 = 只为真在跑的 runner 付费。但 always-on hub + 频繁开关的冷启动成本要 model(§7 UNKNOWN)。
+**(b) 弹性 provision/deploy —— 按需自动开/关(阶段3,四步闭环,讲细):**
+1. **触发:** 队列积压 / 现有节点都满过阈值 → 该扩。
+2. **provision:** hub 调云 API 从镜像开一台实例(或起一个容器)。
+3. **入池:** 新节点 boot → runner-agent 向 hub 注册 → hub 加进可用池、开始派活。
+4. **销毁:** 节点闲置超时 → hub 把它上面的活收干净 → 关实例(省钱)。
+- **实例选型 = memory-optimized 高 RAM**(fleet 是内存游戏,每 runner ~1.3-1.4GB;不是 CPU-optimized)。参照 FLY-559。
 
-> **定位:** 家里第一台卫星(§3.2)= 打通架构的最小验证;云 provision+deploy(本节)= 战略终点。两者同一套 Option A 骨架,云只是把「卫星」换成「弹性镜像节点」。
+**(c) 关键澄清:不是每 issue 开一台新节点(Annie co-eval 5.1):** 那样冷启动几分钟又贵。是 hub 维护一个**温着的节点池**:issue 来先派给池里**有空位**的节点;**只有池满**才开新节点;**闲了**回收。= 每 issue 复用现有节点,池子整体弹性伸缩。
+
+**horizontal scale 架构的硬问题(诚实):**
+1. **调度/placement:** 池里怎么选节点、何时扩/缩、冷启动(开实例+拉镜像+登录态就绪,可能分钟级)怎么靠预热池摊平。[UNKNOWN,§7]
+2. **跨机状态:** 沿用 Option A「单 hub brain + state 留 hub」→ 云节点无状态、可随时开关(刻意为弹性)。**这是为什么不走 Option C**:跨机共享 DB 会让「随手关一个节点」变危险。
+3. **失败域:** 云节点比家里机器更会「无预警消失」(spot 回收/网络分区)。heartbeat(FLY-172)+ 从 session-log(FLY-353)重建是**弹性云的刚需**(不再是可选升级)。
+4. **安全/网络 = 不是难点(Annie co-eval 5.3 降级):** 云节点入 tailnet(私有 mesh、无公网入站)接 hub;secret(登录态/token)用**成熟方案**(AWS Secrets Manager / Vault):节点 boot 时经 tailnet 拉、随实例销毁一起没。标准做法,不当难点夸大。
+
+**(d) 成本估算(D9,粗版):** 假设每 runner ~1.3-1.4GB、一台 32GB 节点 ~15-20 runner;数字为 2026 粗估,精确需真实报价 + 实际 runner-hours [UNKNOWN-精度]。
+
+| 方案 | 成本形态 | 粗估 | 适合 |
+|---|---|---|---|
+| 物理机(Mac 32-64GB) | 一次性 ~$1.3k-2.5k/台,always-on | 摊 3 年 ≈ $40-70/月/台(用不用都在) | 稳定/高负载 baseline |
+| 云 on-demand(32GB 内存优化) | ~$0.2-0.4/hr | always-on ≈ $150-290/月/节点;scale-to-zero 只付活跃小时 | 突发/弹性 |
+| 云 spot | ~$0.07-0.13/hr(会被回收) | 更便宜,需 session-log failover | 可容忍中断的批量 |
+
+→ **结论:稳定 baseline 用物理机更省(amortized capex 便宜);突发峰值用云弹性(scale-to-zero)。支持「近期物理机(D2)+ 云补弹性」。**
+
+> **定位:** 家里物理机(阶段0-1)= 打通架构 + 稳定 baseline;云 provision+deploy(阶段2-3)= 弹性 + 无上限。同一套 Option A 骨架,云只是把「卫星」换成「弹性镜像节点」。
 
 ---
 
@@ -230,7 +261,7 @@ homerail(GitHub xiaotianfotos/homerail)= 一个 TypeScript 编排 runtime,形态
 - **[UNKNOWN] Claude CLI 登录态跨机 / 云** —— 每台卫星要各自 `claude login`(或复制 CLAUDE_CONFIG_DIR)。多机 = 多套登录态维护;云弹性节点更棘手:临时节点怎么安全拿到登录态、销毁时怎么擦除(见下一条 secret)。运维成本项,未量化。
 - **[UNKNOWN·云] 冷启动延迟** —— 开一个云实例 + 拉镜像 + runner-agent 注册 + 登录态就绪要多久?若是分钟级,弹性 scale 的响应性 / 何时预热节点池要设计。
 - **[UNKNOWN·云] spot / 抢占式回收的失败率** —— 用便宜的 spot 实例省钱但会被无预警回收;回收率多高、是否值得用,取决于 session-log(FLY-353)重建的成熟度。要 model。
-- **[UNKNOWN·云] secret 分发到临时节点** —— token / claude 登录态怎么安全推到一个朝生暮死的云节点、节点销毁时怎么保证擦除?复用 FLY-245 gateway/broker 的思路还是新机制?安全面,要 Codex/安全设计。
+- **[已解·非难点] secret 分发到临时节点(Annie co-eval 5.3 降级)** —— 有成熟方案:节点 boot 时从 **AWS Secrets Manager / Vault** 经 tailnet 拉登录态/token,随实例销毁一起没。标准做法,不当难点夸大;选型(哪家 / 是否复用 FLY-245 broker)是实现细节,非阻塞未知。
 - **[UNKNOWN·云] 成本 model** —— memory-optimized 云实例按小时计费 + always-on hub;弹性开关省多少、冷启动/预热浪费多少,要真实算一笔账才知道云 vs 多买几台物理机哪个更值。
 
 ---
