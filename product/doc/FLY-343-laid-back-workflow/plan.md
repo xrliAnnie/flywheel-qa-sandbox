@@ -91,3 +91,11 @@ Issue: FLY-343 (https://linear.app/geoforge3d/issue/FLY-343/xhsclaude-躺平工�
 - D2/D3 两条评论真出现在 FLY-906 / FLY-914(Linear 可见)。
 - 判定(不独立立项、折入 + 抽 2 原则 + 手柄指 JoyCon)在文档里可查。
 - Codex design-review 过 + approve gate 过(ship 仍 founder-gated)。
+
+## 7. 执行记录(Execution log)
+
+- Codex design-review:**APPROVED**(round 1,xhigh;事实链全核实,2 条非阻断建议已 fold)。
+- D2 FLY-906 建议评论:已 post,comment id 791bd337。
+- D3 FLY-914 建议评论:已 post,comment id 21fb3046。
+- FLY-343 折入判定摘要评论:已 post 到本 issue(供 founder keep/close 决定)。
+- D5:FLY-343 关单 **未自行执行**(founder-gated),判定已写清理由供 Annie 决定。
