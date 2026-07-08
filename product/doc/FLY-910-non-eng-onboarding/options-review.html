@@ -5,74 +5,63 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FLY-910 onboarding · 5 个战术问题请你挑</title>
 <style>
-  :root { color-scheme: light; }
   * { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 0 16px 64px;
-    background: #f5f5f7; color: #1d1d1f;
-    font-family: -apple-system, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
-    line-height: 1.65; -webkit-font-smoothing: antialiased;
-  }
-  .wrap { max-width: 860px; margin: 0 auto; }
-  header.top { padding: 40px 0 8px; }
-  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.02em; }
-  .sub { color: #86868b; font-size: 15px; margin: 0; }
-  .howto {
-    background: #eaf3ff; border: 1px solid #cfe3ff; border-radius: 12px;
-    padding: 14px 18px; margin: 22px 0 10px; font-size: 15px; color: #1d3a5f;
-  }
-  .anchor {
-    background: #fff; border-radius: 12px; padding: 14px 18px; margin: 12px 0 30px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06); font-size: 14px; color: #444;
-  }
-  .anchor b { color: #1d1d1f; }
-  .block {
-    background: #fff; border-radius: 14px; padding: 22px 22px 18px; margin: 0 0 26px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06); border-left: 4px solid #007aff;
-  }
-  .block h2 { font-size: 19px; margin: 0 0 4px; }
-  .block .qnum { color: #86868b; font-size: 13px; font-weight: 600; letter-spacing: 0.04em; }
-  .label { font-size: 12px; font-weight: 700; color: #86868b; letter-spacing: 0.05em;
-    text-transform: uppercase; margin: 16px 0 6px; }
-  .others { font-size: 15px; color: #333; margin: 0 0 4px; }
-  .opt {
-    border: 1px solid #e3e3e6; border-radius: 10px; padding: 11px 14px; margin: 8px 0;
-    display: flex; gap: 12px; align-items: flex-start; font-size: 15px;
-  }
-  .opt .badge {
-    flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%;
-    background: #86868b; color: #fff; font-weight: 700; font-size: 13px;
-    display: inline-flex; align-items: center; justify-content: center; margin-top: 1px;
-  }
-  .opt.rec { border-color: #34c759; background: #f2fbf5; }
-  .opt.rec .badge { background: #34c759; }
-  .opt .rectag {
-    display: inline-block; background: #34c759; color: #fff; font-size: 11px;
-    font-weight: 700; border-radius: 6px; padding: 1px 7px; margin-left: 8px; vertical-align: 2px;
-  }
-  .picklabel { font-size: 14px; font-weight: 700; color: #6b4e00; margin: 16px 0 6px; }
-  textarea {
-    width: 100%; min-height: 62px; resize: vertical;
-    border: 1.5px solid #ffcf5c; border-radius: 10px; background: #fffdf5;
-    padding: 11px 13px; font-family: inherit; font-size: 15px; color: #1d1d1f; line-height: 1.5;
-  }
-  textarea:focus { outline: none; border-color: #d9a400; background: #fffef9; box-shadow: 0 0 0 3px rgba(255,207,92,0.28); }
-  textarea::placeholder { color: #b8a25a; }
-  table.summary { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 15px;
-    background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
-  table.summary th, table.summary td { text-align: left; padding: 12px 16px; border-bottom: 1px solid #f0f0f2; vertical-align: top; }
-  table.summary th { background: #1a365d; color: #fff; font-weight: 600; }
-  table.summary td:first-child { font-weight: 600; white-space: nowrap; color: #1a365d; }
-  table.summary tr:last-child td { border-bottom: none; }
-  .master {
-    background: #fff8e6; border: 1px solid #ffcf5c; border-radius: 14px;
-    padding: 20px 22px; margin: 14px 0 0;
-  }
-  .master h3 { margin: 0 0 4px; font-size: 18px; color: #6b4e00; }
-  .master p { margin: 0 0 12px; font-size: 14px; color: #6b4e00; }
-  .master textarea { min-height: 200px; background: #fff; }
-  .foot { margin-top: 30px; font-size: 13px; color: #86868b; text-align: center; }
-  h2.sec { font-size: 20px; margin: 34px 0 12px; }
+  body { margin:0; padding:0 16px 150px; background:#f5f5f7; color:#1d1d1f;
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6; -webkit-text-size-adjust:100%; }
+  .wrap { max-width:860px; margin:0 auto; }
+  header.top { padding:36px 0 6px; }
+  h1 { font-size:25px; margin:0 0 6px; letter-spacing:-0.02em; }
+  .sub { color:#86868b; font-size:15px; margin:0; }
+  .howto { background:#eaf3ff; border:1px solid #cfe3ff; border-radius:12px;
+    padding:14px 18px; margin:22px 0 10px; font-size:15px; color:#1d3a5f; }
+  .anchor { background:#fff; border-radius:12px; padding:14px 18px; margin:12px 0 28px;
+    box-shadow:0 1px 3px rgba(0,0,0,0.06); font-size:14px; color:#444; }
+  .anchor b { color:#1d1d1f; }
+  .block { background:#fff; border-radius:14px; padding:22px 22px 18px; margin:0 0 24px;
+    box-shadow:0 1px 3px rgba(0,0,0,0.06); border-left:4px solid #007aff; }
+  .block h2 { font-size:19px; margin:0 0 4px; }
+  .qnum { color:#86868b; font-size:13px; font-weight:600; letter-spacing:0.04em; }
+  .label { font-size:12px; font-weight:700; color:#86868b; letter-spacing:0.05em;
+    text-transform:uppercase; margin:15px 0 6px; }
+  .others { font-size:15px; color:#333; margin:0 0 4px; }
+  label.opt { display:flex; gap:12px; align-items:flex-start; cursor:pointer;
+    border:1px solid #e3e3e6; border-radius:10px; padding:11px 14px; margin:8px 0; font-size:15px; }
+  label.opt input { width:20px; height:20px; margin:1px 0 0; flex:0 0 auto; accent-color:#007aff; cursor:pointer; }
+  label.opt:has(input:checked) { border-color:#007aff; background:#eef7ff; box-shadow:0 0 0 1.5px #007aff inset; }
+  label.opt.rec { border-color:#34c759; background:#f4fbf6; }
+  label.opt.rec:has(input:checked) { border-color:#1a9c3e; background:#e7f8ec; box-shadow:0 0 0 1.5px #34c759 inset; }
+  label.opt.rec input { accent-color:#34c759; }
+  .rectag { display:inline-block; background:#34c759; color:#fff; font-size:11px; font-weight:700;
+    border-radius:6px; padding:1px 7px; margin-left:6px; vertical-align:2px; }
+  .yn { display:flex; align-items:center; flex-wrap:wrap; gap:10px 16px; margin:8px 0;
+    padding:10px 14px; border:1px solid #eee; border-radius:10px; font-size:15px; }
+  .yn .q { flex:1 1 220px; }
+  label.mini { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:14px;
+    border:1px solid #e3e3e6; border-radius:999px; padding:4px 12px; }
+  label.mini input { width:17px; height:17px; margin:0; accent-color:#34c759; cursor:pointer; }
+  label.mini:has(input:checked) { border-color:#34c759; background:#eafaef; font-weight:600; }
+  .idea { margin-top:12px; }
+  .idea .il { font-size:13px; font-weight:700; color:#6b4e00; margin-bottom:5px; }
+  textarea.idea-box { width:100%; min-height:52px; resize:vertical; border:1.5px solid #ffcf5c;
+    border-radius:10px; background:#fffdf5; padding:10px 12px; font-family:inherit; font-size:15px; color:#1d1d1f; }
+  textarea.idea-box:focus { outline:none; border-color:#d9a400; background:#fffef9; box-shadow:0 0 0 3px rgba(255,207,92,0.28); }
+  textarea.idea-box::placeholder { color:#b8a25a; }
+  table.summary { width:100%; border-collapse:collapse; margin-top:8px; font-size:15px;
+    background:#fff; border-radius:12px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.06); }
+  table.summary th, table.summary td { text-align:left; padding:12px 16px; border-bottom:1px solid #f0f0f2; vertical-align:top; }
+  table.summary th { background:#1a365d; color:#fff; font-weight:600; }
+  table.summary td:first-child { font-weight:600; white-space:nowrap; color:#1a365d; }
+  table.summary tr:last-child td { border-bottom:none; }
+  h2.sec { font-size:20px; margin:32px 0 12px; }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:rgba(255,255,255,0.97);
+    backdrop-filter:blur(8px); border-top:1px solid #ddd; padding:10px 16px; box-shadow:0 -2px 10px rgba(0,0,0,0.06); }
+  .barin { max-width:860px; margin:0 auto; display:flex; flex-direction:column; gap:7px; }
+  #genbtn { background:#007aff; color:#fff; border:none; border-radius:10px; padding:12px; font-size:16px; font-weight:650; cursor:pointer; }
+  #out { width:100%; border:1px solid #ccc; border-radius:8px; padding:9px; font-size:13px;
+    font-family:'SF Mono',ui-monospace,monospace; resize:vertical; display:none; min-height:120px; background:#fff; color:#1d1d1f; }
+  #hint { font-size:12px; color:#86868b; text-align:center; }
+  .foot { margin-top:26px; font-size:13px; color:#86868b; text-align:center; }
 </style>
 </head>
 <body>
@@ -80,13 +69,13 @@
 
   <header class="top">
     <h1>非工程 onboarding · 5 个战术问题请你挑 🧭</h1>
-    <p class="sub">FLY-910 · 2026-07-08 · Honey Lemon 给你逐块拍板用</p>
+    <p class="sub">FLY-910 · 2026-07-08 · 现在能真点选了</p>
   </header>
 
   <div class="howto">
-    <b>怎么用这一页:</b> 每块我给你「别人怎么做 → 我们 2-3 个 option → 我的建议」。
-    每块下面有一个<b>能打字的框</b>,你直接写「我选 A / B / C + 想法」就行。
-    嫌一块块填麻烦?直接拉到<b>最底下那个大框</b>一次填完,全选复制发回给我。定一块,我把那块确切文案织进设计,流程不动。
+    <b>怎么用:</b> 每块给你「别人怎么做 → 我们 2-3 个 option → 我的建议」。<b>我已经把 ★我的建议预选好了</b> ——
+    你只要<b>改你想改的</b>,其余保持就是采纳我的建议。每块还有个想法框可以打字。
+    改完拉到<b>最底下点「生成我的选择」→ 一键复制 → 发回给我</b>就行。定一块我织进设计,流程不动。
   </div>
 
   <div class="anchor">
@@ -99,14 +88,14 @@
     <div class="qnum">问题 1 / 5</div>
     <h2>怎么起步(第一步长什么样)</h2>
     <div class="label">别人怎么做</div>
-    <p class="others">自托管这类(OpenClaw / Hermes)都是「粘一条命令 → 进一个一问一答的引导」,默认给快路、全控藏在后面。
-      网页那类(Raft / Matrix)是「注册 → 连你的订阅 → 装个小程序 → 进频道」。OpenClaw 还专门留了「先别接那么多、直接进去聊一句」的快路。</p>
-    <div class="label">我们的 option</div>
-    <div class="opt"><span class="badge">A</span><div>终端一条命令 → 命令行里一问一答(默认走快路,想全控加个 --advanced)。贴「客户懂点电脑」,不用先建网页,授权那几步才弹浏览器。</div></div>
-    <div class="opt"><span class="badge">B</span><div>网页注册 → 网页里引导(像 Raft / Matrix,更亲民),但要先做一个网页、我们得替他多跑一些。</div></div>
-    <div class="opt rec"><span class="badge">C</span><div>A 再加一条早聊路:命令起步,一旦 Discord 和模型接好,先让他跟 Captain 说上一句话(哪怕业务工具还没全接),完整结果随后再来。<span class="rectag">★ 我建议 A+C</span></div></div>
-    <div class="picklabel">✍️ 块 1 你选(打字):也顺便答两个小确认 —— ① 认这个「命令+一问一答、默认快路」形态吗?② 要那个「工具没全接就先打招呼」的早时刻吗?</div>
-    <textarea placeholder="例:我选 A+C;早聊时刻要;形态认。或写你的新想法…"></textarea>
+    <p class="others">自托管这类(OpenClaw / Hermes)都是「粘一条命令 → 进一个一问一答的引导」,默认给快路。
+      网页那类(Raft / Matrix)是「注册 → 连你的订阅 → 装个小程序 → 进频道」。OpenClaw 还留了「先别接那么多、直接进去聊一句」的快路。</p>
+    <div class="label">你选一个(已预选我的建议)</div>
+    <label class="opt"><input type="radio" name="q1" value="A 终端一条命令+一问一答"><div>A · 终端一条命令 → 命令行里一问一答(默认快路,--advanced 全控)。不用先建网页。</div></label>
+    <label class="opt"><input type="radio" name="q1" value="B 网页注册引导"><div>B · 网页注册 → 网页里引导(像 Raft/Matrix,更亲民),但要先做网页、我们多兜一些。</div></label>
+    <label class="opt rec"><input type="radio" name="q1" value="A+C 命令+早聊一句" checked><div>C · A 再加一条早聊路:Discord 和模型一接好,先让他跟 Captain 说上一句(工具没全接也行),完整结果随后。<span class="rectag">★ 我建议</span></div></label>
+    <div class="idea"><div class="il">✍️ 想法 / 那两个小确认(① 认这形态吗 ② 要早聊时刻吗)</div>
+      <textarea class="idea-box" id="idea1" placeholder="不用也行;有想法就写…"></textarea></div>
   </div>
 
   <!-- BLOCK 2 -->
@@ -114,14 +103,14 @@
     <div class="qnum">问题 2 / 5</div>
     <h2>第一版谁来带客户接进来</h2>
     <div class="label">别人怎么做</div>
-    <p class="others">Matrix / Lovable / Base44 都是纯自助(自己下、自己跑)。Paperclip 是自助 + 一堆现成模板。
-      没有谁把「真人陪你接进来」做成产品(但大家都还很早期、都有卡壳)。做小生意的通行智慧:先用人手把第一批客户跑通,再谈自动化。</p>
-    <div class="label">我们的 option</div>
-    <div class="opt rec"><span class="badge">A</span><div>第一版 Anna 人肉陪:带头几个客户手把手接进来,客户只体验「聊需求 + 收结果」两头,中间工程步骤我们替他兜。先跑通、边跑边学真痛点。<span class="rectag">★ 我建议 先A后C</span></div></div>
-    <div class="opt"><span class="badge">B</span><div>第一版全自助:客户自己走完引导,只有卡死了才喊 Anna。</div></div>
-    <div class="opt"><span class="badge">C</span><div>混合:自助为主 + 最容易卡的那一步(建 Discord 机器人)Anna 待命随时上来陪。</div></div>
-    <div class="picklabel">✍️ 块 2 你选(打字):</div>
-    <textarea placeholder="例:先 A(头几个人肉陪)、磨顺转 C。或写你的想法…"></textarea>
+    <p class="others">Matrix / Lovable / Base44 都是纯自助(自己下、自己跑)。没有谁把「真人陪你接进来」做成产品。
+      做小生意的通行智慧:先用人手把第一批客户跑通,再谈自动化。</p>
+    <div class="label">你选一个(已预选我的建议)</div>
+    <label class="opt rec"><input type="radio" name="q2" value="A 先人肉陪(磨顺再转混合)" checked><div>A · 第一版 Anna 人肉陪:带头几个客户手把手接进来,客户只体验「聊需求+收结果」两头,中间我们兜。磨顺再转 C。<span class="rectag">★ 我建议</span></div></label>
+    <label class="opt"><input type="radio" name="q2" value="B 全自助"><div>B · 第一版全自助:客户自己走完引导,卡死了才喊 Anna。</div></label>
+    <label class="opt"><input type="radio" name="q2" value="C 混合"><div>C · 混合:自助为主 + 最容易卡的那步(建 Discord 机器人)Anna 待命上来陪。</div></label>
+    <div class="idea"><div class="il">✍️ 想法</div>
+      <textarea class="idea-box" id="idea2" placeholder="不用也行;有想法就写…"></textarea></div>
   </div>
 
   <!-- BLOCK 3 -->
@@ -129,14 +118,14 @@
     <div class="qnum">问题 3 / 5</div>
     <h2>Discord 机器人怎么给客户配</h2>
     <div class="label">别人怎么做</div>
-    <p class="others">OpenClaw 手把手引导用户自己去 Discord 后台建机器人(这一步谁都自动化不了,Discord 没有替建的接口)。
-      Raft 是装个本地小程序连你自己账号。「给一个现成机器人直接邀请」这种捷径没人做过 —— 这是我们独有的一招(我们已有一个机器人池)。</p>
-    <div class="label">我们的 option</div>
-    <div class="opt"><span class="badge">A</span><div>默认让客户自己建:手把手带他去后台建一个属于他自己的机器人(配截图 + 15 秒短视频)。机器人完全是他的。贴「你自己拥有」的卖点。</div></div>
-    <div class="opt"><span class="badge">B</span><div>默认给现成的:我们给一个预建好的机器人,客户只点一下「邀请进我的服务器」,跳过整个后台。最省事,但机器人身份是我们托管的、不是他完全自有。</div></div>
-    <div class="opt rec"><span class="badge">C</span><div>默认自建(A),同时把「想省事?」的一键捷径(B)露出来当可选。要掌控的走自建,怕麻烦的选捷径。<span class="rectag">★ 我建议 C</span></div></div>
-    <div class="picklabel">✍️ 块 3 你选(打字):</div>
-    <textarea placeholder="例:C(默认自建 + 露一键捷径)。或写你的想法…"></textarea>
+    <p class="others">OpenClaw 手把手引导用户自己去 Discord 后台建机器人(这一步谁都自动化不了)。
+      「给一个现成机器人直接邀请」这种捷径没人做过 —— 这是我们独有的一招(我们已有一个机器人池)。</p>
+    <div class="label">你选一个(已预选我的建议)</div>
+    <label class="opt"><input type="radio" name="q3" value="A 默认客户自建"><div>A · 默认让客户自己建:手把手带他去后台建一个属于他自己的机器人(配截图+短视频)。完全是他的。</div></label>
+    <label class="opt"><input type="radio" name="q3" value="B 默认给现成的"><div>B · 默认给现成的:客户只点一下「邀请进我的服务器」,跳过整个后台。最省事,但身份是我们托管的。</div></label>
+    <label class="opt rec"><input type="radio" name="q3" value="C 默认自建+露捷径" checked><div>C · 默认自建(A)+ 把「想省事?」的一键捷径(B)露出来当可选。要掌控走自建,怕麻烦选捷径。<span class="rectag">★ 我建议</span></div></label>
+    <div class="idea"><div class="il">✍️ 想法</div>
+      <textarea class="idea-box" id="idea3" placeholder="不用也行;有想法就写…"></textarea></div>
   </div>
 
   <!-- BLOCK 4 -->
@@ -144,37 +133,48 @@
     <div class="qnum">问题 4 / 5</div>
     <h2>怎么收费 + 隐私怎么讲</h2>
     <div class="label">别人怎么做</div>
-    <p class="others">Paperclip 完全免费开源、你自付基建(它没有托管云 = 想要「别人替我跑」的人它接不了)。Matrix 公测免费送额度,母平台按订阅 + 额度。
-      Cowork 跟着 Claude 订阅走。自托管软件的成熟范式(n8n):社区版免费自托管,商用/高级功能要一个每天联网校验的 license key。
-      行业趋势:按人头收费在退潮,按「几个 AI 员工 / 几个部门」收更贴「搭 AI 公司」的感觉。</p>
-    <div class="label">我们的 option(收费骨架)</div>
-    <div class="opt rec"><span class="badge">A</span><div>license key 订阅(月/年)门商用和规模,自托管核心可免费试;按「几个 Team / 几个在岗 AI 人力」分档(不按人头);Anna 陪接入当一个服务档。以后加云托管版不用推倒重来。<span class="rectag">★ 我建议 A</span></div></div>
-    <div class="opt"><span class="badge">B</span><div>完全免费开源先冲量(像 Paperclip),以后再想怎么收。</div></div>
-    <div class="opt"><span class="badge">C</span><div>纯订阅网页服务(像母平台 flowith)—— 但这跟我们「跑在你自己机器、数据不碰我们」的卖点有点打架。</div></div>
-    <div class="label">隐私 + 三个小问题(自托管天生强项:数据永远在客户自己机器、从不碰我们)</div>
-    <div class="opt rec"><span class="badge">1</span><div>把「你的数据跑在你自己机器上、从不碰我们」写成开场一句显式卖点?<span class="rectag">★ 建议 要</span></div></div>
-    <div class="opt rec"><span class="badge">2</span><div>给「1 个 Team 免费试」(降门槛 + 拉新)?<span class="rectag">★ 建议 要</span></div></div>
-    <div class="opt rec"><span class="badge">3</span><div>加 license 条款「给你自己的 AI 公司用、不许转售」(防别人白嫖)?<span class="rectag">★ 建议 要</span></div></div>
-    <div class="picklabel">✍️ 块 4 你选(打字):收费骨架挑一个 + 三个小问题各「要/不要」</div>
-    <textarea placeholder="例:收费选 A;隐私卖点 要;免费试 要;不许转售 要。或写你的想法…"></textarea>
+    <p class="others">Paperclip 完全免费开源、自付基建(没托管云)。Matrix 公测免费送额度。自托管软件成熟范式(n8n):社区版免费,商用/高级要 license key。
+      行业趋势:按人头收费在退潮,按「几个 AI 员工 / 部门」收更贴。</p>
+    <div class="label">收费骨架 — 你选一个(已预选我的建议)</div>
+    <label class="opt rec"><input type="radio" name="q4pay" value="A license-key订阅+按Team计费" checked><div>A · license key 订阅门商用/规模,自托管核心免费试;按「几个 Team / AI 人力」分档(不按人头);Anna 陪接入当服务档。以后加云托管不用推倒。<span class="rectag">★ 我建议</span></div></label>
+    <label class="opt"><input type="radio" name="q4pay" value="B 完全免费开源先冲量"><div>B · 完全免费开源先冲量(像 Paperclip),以后再想怎么收。</div></label>
+    <label class="opt"><input type="radio" name="q4pay" value="C 纯订阅网页服务"><div>C · 纯订阅网页服务(像 flowith)—— 但跟「数据在你自己机器」的卖点有点打架。</div></label>
+    <div class="label">隐私 · 三个小问题(已预选我的建议:都要)</div>
+    <div class="yn"><span class="q">1. 把「数据跑在你自己机器、从不碰我们」写成开场显式卖点?</span>
+      <label class="mini"><input type="radio" name="q4priv1" value="要" checked>要</label>
+      <label class="mini"><input type="radio" name="q4priv1" value="不要">不要</label></div>
+    <div class="yn"><span class="q">2. 给「1 个 Team 免费试」(降门槛+拉新)?</span>
+      <label class="mini"><input type="radio" name="q4priv2" value="要" checked>要</label>
+      <label class="mini"><input type="radio" name="q4priv2" value="不要">不要</label></div>
+    <div class="yn"><span class="q">3. 加 license 条款「给你自己的 AI 公司用、不许转售」?</span>
+      <label class="mini"><input type="radio" name="q4priv3" value="要" checked>要</label>
+      <label class="mini"><input type="radio" name="q4priv3" value="不要">不要</label></div>
+    <div class="idea"><div class="il">✍️ 想法</div>
+      <textarea class="idea-box" id="idea4" placeholder="不用也行;有想法就写…"></textarea></div>
   </div>
 
   <!-- BLOCK 5 -->
   <div class="block">
     <div class="qnum">问题 5 / 5</div>
     <h2>开场那几句话怎么说(4 个小开关)</h2>
-    <div class="others">这几个不影响流程结构,只影响开场文案。我的建议:</div>
-    <div class="opt rec"><span class="badge">1</span><div>开场露「1 个 Team 免费试」?<span class="rectag">★ 建议 露</span></div></div>
-    <div class="opt rec"><span class="badge">2</span><div>开场来一句「数据在你自己机器、从不碰我们」?<span class="rectag">★ 建议 露</span></div></div>
-    <div class="opt rec"><span class="badge">3</span><div>砍 GitHub、代码仓留他本地(少一个账号、少一步)?<span class="rectag">★ 建议 砍</span></div></div>
-    <div class="opt"><span class="badge">4</span><div><b>机器常开怎么说</b>(团队得在一台一直开着的机器上干活,关机=公司停摆):<br>
-      &nbsp;&nbsp;A. 开场就轻松诚实说一句「像真员工上班,机器开着它们才在岗」&nbsp;<span class="rectag">★ 我建议 A</span><br>
-      &nbsp;&nbsp;B. 不主动提,装的时候顺带说&nbsp;&nbsp;/&nbsp;&nbsp;C. 只放文档里</div></div>
-    <div class="picklabel">✍️ 块 5 你选(打字):四个开关各挑一下(前三个建议都「要/砍」;第 4 个建议 A)</div>
-    <textarea placeholder="例:免费试 露、隐私 露、GitHub 砍、机器常开 选 A。或写你的想法…"></textarea>
+    <div class="others">这几个不影响流程结构,只影响开场文案。已预选我的建议。</div>
+    <div class="yn"><span class="q">1. 开场露「1 个 Team 免费试」?</span>
+      <label class="mini"><input type="radio" name="q5free" value="露" checked>露</label>
+      <label class="mini"><input type="radio" name="q5free" value="不露">不露</label></div>
+    <div class="yn"><span class="q">2. 开场来一句「数据在你自己机器、从不碰我们」?</span>
+      <label class="mini"><input type="radio" name="q5priv" value="露" checked>露</label>
+      <label class="mini"><input type="radio" name="q5priv" value="不露">不露</label></div>
+    <div class="yn"><span class="q">3. 砍 GitHub、代码仓留他本地(少一个账号一步)?</span>
+      <label class="mini"><input type="radio" name="q5gh" value="砍" checked>砍</label>
+      <label class="mini"><input type="radio" name="q5gh" value="留">留</label></div>
+    <div class="yn"><span class="q">4. 机器常开怎么说(关机=公司停摆)?</span>
+      <label class="mini"><input type="radio" name="q5machine" value="A 开场轻松诚实说一句" checked>A 开场就说</label>
+      <label class="mini"><input type="radio" name="q5machine" value="B 装时顺带说">B 装时顺带</label>
+      <label class="mini"><input type="radio" name="q5machine" value="C 只放文档">C 只放文档</label></div>
+    <div class="idea"><div class="il">✍️ 想法</div>
+      <textarea class="idea-box" id="idea5" placeholder="不用也行;有想法就写…"></textarea></div>
   </div>
 
-  <!-- SUMMARY -->
   <h2 class="sec">一页汇总(我的建议)</h2>
   <table class="summary">
     <tr><th>问题</th><th>我的建议</th></tr>
@@ -185,23 +185,58 @@
     <tr><td>5 开场文案</td><td>免费试露 / 隐私露 / 砍 GitHub / 机器常开轻松诚实说一句</td></tr>
   </table>
 
-  <!-- MASTER -->
-  <div class="master">
-    <h3>👇 一次填完最方便</h3>
-    <p>在这个框里把 5 块的选择一次填完 → <b>点进框里全选</b>(电脑 Cmd+A / 手机长按「全选」)→ <b>复制</b> → 发回给 Honey Lemon 就行。</p>
-    <textarea>块1 起步形态 · 我选:
-块2 谁来带 · 我选:
-块3 Discord机器人 · 我选:
-块4 收费·隐私 · 我选:(收费骨架 + 隐私卖点/免费试/不许转售 各 要或不要)
-块5 开场文案 · 我选:(免费试 / 隐私句 / 砍GitHub / 机器常开 A或B或C)
-
-其他想法 / 想改的:
-</textarea>
-  </div>
-
   <p class="foot">仍是草稿 · 不上线 · 不替你定 —— 你逐块挑,定一块我织进设计文案,流程结构不动。<br>
-  (你点名的「Draft」我没查到对应产品,Honey Lemon 已问你要链接/截图;其余不受影响。)</p>
+  (你点名的「Draft」我没查到对应产品,已问你要链接/截图;其余不受影响。)</p>
 
 </div>
+
+<div class="bar"><div class="barin">
+  <button id="genbtn">✅ 生成我的选择(一键复制)</button>
+  <textarea id="out" readonly></textarea>
+  <div id="hint">改完点这个按钮 → 自动复制 → 粘贴发回给我</div>
+</div></div>
+
+<script nonce="__CSP_NONCE__">
+document.getElementById("genbtn").addEventListener("click", function () {
+  var groups = [
+    { name: "q1", label: "块1 起步形态" },
+    { name: "q2", label: "块2 谁来带" },
+    { name: "q3", label: "块3 Discord机器人" },
+    { name: "q4pay", label: "块4 收费骨架" },
+    { name: "q4priv1", label: "  隐私卖点" },
+    { name: "q4priv2", label: "  1个Team免费试" },
+    { name: "q4priv3", label: "  不许转售条款" },
+    { name: "q5free", label: "块5开场·免费试" },
+    { name: "q5priv", label: "块5开场·隐私句" },
+    { name: "q5gh", label: "块5开场·砍GitHub" },
+    { name: "q5machine", label: "块5开场·机器常开" }
+  ];
+  var ideas = [
+    { id: "idea1", label: "块1 想法" },
+    { id: "idea2", label: "块2 想法" },
+    { id: "idea3", label: "块3 想法" },
+    { id: "idea4", label: "块4 想法" },
+    { id: "idea5", label: "块5 想法" }
+  ];
+  var lines = ["FLY-910 onboarding — 我的选择:"];
+  groups.forEach(function (g) {
+    var el = document.querySelector('input[name="' + g.name + '"]:checked');
+    lines.push(g.label + ": " + (el ? el.value : "(未选)"));
+  });
+  ideas.forEach(function (g) {
+    var t = document.getElementById(g.id);
+    if (t && t.value.trim()) lines.push(g.label + ": " + t.value.trim());
+  });
+  var text = lines.join("\n");
+  var out = document.getElementById("out"), hint = document.getElementById("hint");
+  out.style.display = "block"; out.value = text; out.focus(); out.select();
+  try {
+    navigator.clipboard.writeText(text);
+    hint.textContent = "✅ 已复制,直接粘贴发回给我";
+  } catch (e) {
+    hint.textContent = "选中上面这段复制,发回给我";
+  }
+});
+</script>
 </body>
 </html>
