@@ -213,8 +213,8 @@ stateDiagram-v2
   t1 --> [*]
   t2 --> [*]
 
-  note right of case_c: T1 = 唯一立即 @;稀有高信号
-  note right of watch: 去重+抑制;ghost 不 re-alert;无 digest/频道/卡片
+  note right of case_c: T1 唯一立即通知 Annie 稀有高信号
+  note right of watch: 去重与抑制 已知或正清理不重复报 无 digest 无频道 无卡片
 ```
 
 ## 7. Success metrics(北极星)= 三态判对(带优先级)+ 用例集 ✅ G1 定案
