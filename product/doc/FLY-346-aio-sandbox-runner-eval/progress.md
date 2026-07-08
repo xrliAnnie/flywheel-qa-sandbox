@@ -1,14 +1,13 @@
 ---
 issue: FLY-346
 phase: design
-phaseCursor: 1/3
-updated: 2026-07-08T18:38:30.496Z
-nextStep: "write research.md (3 threads: AIO fit/gap, multi-machine open Q,
-  homerail source)"
+phaseCursor: 2/3
+updated: 2026-07-08T18:41:13.600Z
+nextStep: align Thread B with FLY-1005 multi-machine; write plan.md; codex design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-346 progress
-**phase**: design (1/3)
-**next**: write research.md (3 threads: AIO fit/gap, multi-machine open Q, homerail source)
+**phase**: design (2/3)
+**next**: align Thread B with FLY-1005 multi-machine; write plan.md; codex design review
