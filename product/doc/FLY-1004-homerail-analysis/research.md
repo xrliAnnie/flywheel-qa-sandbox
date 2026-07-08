@@ -149,7 +149,7 @@ registerAgentBackend(name, factory) // 运行时注册自定义后端
 - **有** 一套 **experience 知识图谱**(`server/experience.ts` + 表 `experience_nodes`/`experience_relationships`/`experience_ingest_jobs` + `memories`):从每个 run 的 evidence + scorecard 抽 **17 种节点类型**(含 FailureRootCause / Lesson / RunSignal)+ 类型化关系,ingest 进图谱(接进 run 流,非纯脚手架)。
 - **但没有** 向量库 / embedding / 语义检索(没见 embedding 列)—— 它是**结构化"从过去 run 学教训"**的图谱,不是语义向量记忆。
 - 短期 context 管理仍靠:node 隔离 + handoff evidence 前传 + per-run workspace + per-session voice_memo。
-→ **不是"它弱我们强",是两条不同路线**:它 = 结构化 lesson/failure 图谱;我们 = 语义向量记忆(mem0 + Supabase pgvector,GEO-145)。**查"相关经验"我们的语义检索更强;"结构化学教训"它有一条我们没有的路**(可互补借鉴)。成熟度 UNKNOWN(是否产品里真复用)。
+→ **两条不同路线 · ⚠️ 已按事实校正(grep 了我们 codebase)**:它 = 结构化 lesson/failure 图谱;我们 = **语义向量记忆(mem0 + Supabase/pgvector)代码在但基本没接**(`edge-worker/src/memory/createMemoryService.ts` 要 GOOGLE_API_KEY+SUPABASE_URL+SUPABASE_KEY 才启用,没配就 "Disabling memory"),**主力记忆是文件 markdown**(per-project .md)。**所以别说"我们语义检索更强"** —— 诚实讲:两边都不是活的语义检索;它是自动从 run 抽 lesson 的结构化图谱,我们是人工维护的 markdown,**它这块可能反而更成熟**(自动抽结构化 lesson 回喂 = 我们可学的)。成熟度双方均 UNKNOWN。
 
 ## 7. Skills 分发(核实 · `skills/README.md`)
 - skill = `SKILL.md` 目录,**symlink** 进 `$CODEX_HOME/skills` 和 `$HOME/.claude/skills`(链接式装,repo pull 即更新)。skills:`homerail-cli / dag-ops / install-ops / shared`。
@@ -189,7 +189,7 @@ homerail 和我们**独立**收敛到同一架构决定:**编排层 vendor-neutr
 | 语音 | **成熟**:双 TTS 通道 + 3 ASR 策略 + 生成式 UI | voice PRD 定稿、实现待建(FLY-542 树,STT 收音是风险) | **homerail 语音领先我们** → 可借鉴 |
 | harness | vendor-neutral AgentClient(claude/codex/kimi) | vendor-neutral executor-backend(claude/codex/antigravity/kimi) | 平,独立撞车 |
 | 隔离 | Docker 容器 per node | tmux runner + worktree | homerail 更硬(容器) |
-| memory | 结构化 experience/lesson 图谱(无语义向量) | per-project mem0 + pgvector(语义向量) | 两条不同路线:语义检索我们强,结构化学教训它有一条 |
+| memory | 结构化 experience/lesson 图谱(无语义向量,自动从 run 抽) | mem0+pgvector 代码在但**没接**、主力=**文件 markdown**(人工维护) | ⚠️校正:别说"我们语义检索更强";两边都非活的语义检索,它自动抽 lesson 这块可能更成熟 |
 | QA | runtime 内置 scorecard | 独立 auto-QA Runner(FLY-579) | 各有取舍 |
 | 审计 | per-run checksum transcript | 审计表(founder_consent 等) | 平,思路同 |
 | 界面 | 桌面 shell + 浏览器 UI + 未来手机/车 | Discord(手机原生 IM) | 不同赌注 |

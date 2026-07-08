@@ -68,7 +68,7 @@ Issue: FLY-1004 (https://linear.app/geoforge3d/issue/FLY-1004/homerail-竞品分
 
 ### B6. 结构化"从 run 抽教训"经验图谱(FailureRootCause / Lesson / RunSignal) 🟡待评估
 - **它怎么做**:`server/experience.ts` + 表 `experience_nodes`/`experience_relationships` —— run 终态时从 evidence + scorecard 抽 `ExperienceDelta`(17 种节点类型,含 FailureRootCause / Lesson / RunSignal + 类型化关系),ingest 进图谱。**结构化、非语义向量**(无 embedding)。
-- **我们能怎么用**:我们记忆是 mem0+pgvector(**语义向量**,查"相关经验"强)。homerail 这条是**互补的另一维**:把"这个 run 为什么失败(FailureRootCause)/ 学到什么(Lesson)"**结构化抽出来**,以后同类任务前置提示。可考虑给我们的 Runner run 收尾加一步"抽结构化 lesson"喂回 memory。
+- **我们能怎么用**:⚠️ **事实校正**(grep 了 codebase):我们 mem0+pgvector **代码在但基本没接**(env-gated,没配就 Disabling memory),**主力记忆是文件 markdown**。所以不是"我们语义向量更强"—— homerail 这条"自动从 run 抽 FailureRootCause/Lesson 进结构化图谱"是**我们目前没有的能力**,可考虑给 Runner run 收尾加一步"抽结构化 lesson"喂回 memory。
 - **值不值**:🟡 **待评估**。概念好、跟我们语义记忆互补;但我们语义记忆已覆盖大部分场景,要不要再加结构化 lesson 抽取看 Tadashi 判断。**注意**:homerail 这套成熟度 UNKNOWN(作者可能也还没真复用)。
 
 ---
@@ -100,7 +100,7 @@ Issue: FLY-1004 (https://linear.app/geoforge3d/issue/FLY-1004/homerail-竞品分
 ## D. ❌ 明确不用抄的(诚实划界)
 
 - **静态 DAG(YAML 模板)编排基元**:homerail 是"提前画好 DAG 图、node 沿边流"。我们是"Linear issue → 三段式 → runner",更贴真实协作、更动态。**别为了像它去改成静态 DAG** —— 那是它"做好判断的结果任务"的形态,不适合我们"建并养软件"的动态活。
-- **memory 的语义检索维度**:⚠️ **修正上一版** —— homerail **有**一套结构化 experience/lesson 图谱(不是"没记忆",见 homerail-code-report.md §1.6),只是没有语义向量;我们 mem0+pgvector 的**语义检索更强**,这层不用抄。**但**它"从 run 结构化抽 FailureRootCause/Lesson 进图谱"是一条我们没有的路 → 见 B6(可借鉴,🟡 待评估)。
+- **memory**:⚠️ **两处校正** —— ① homerail **有**结构化 experience/lesson 图谱(不是"没记忆");② 我们 mem0+pgvector **代码在但基本没接**(env-gated、主力是文件 markdown),**别说"我们语义检索更强"**。诚实:两边都非活的语义检索;它自动从 run 抽 lesson 这条我们没有 → 见 B6(可借鉴)。
 - **桌面 shell / 浏览器 UI 界面**:它赌桌面+未来多终端,我们赌手机原生 IM(Discord)。**界面别学它。**
 - **它的收音链路**:桌面直接拿麦,跟我们 Discord bot 收音(FLY-544 风险)不同架构,**不能搬**(只借"批量转写降级"思路,见 A5)。
 - **"不做软件"这个定位**:它主动放弃软件,我们主动做软件(这正是我们的空地,§9.1)。**方向相反,别学。**

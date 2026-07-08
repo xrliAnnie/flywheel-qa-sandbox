@@ -4,7 +4,11 @@ Issue: FLY-1004 (https://linear.app/geoforge3d/issue/FLY-1004/homerail-竞品分
 日期: 2026-07-08
 基于: research.md + eng-idea-for-tadashi.md(同文件夹)。**本文是 Annie 反馈后的 v2 深挖 —— 逐条盘功能 + 细架构 + 诚实对比,读代码得出,不靠视频。**
 
-> **⚠️ 对我上一版的修正**:第一版把 homerail 说得太概括,还错说了一句"它没有跨-run 记忆"。**读了持久化层后发现错了** —— 它有一套**经验/知识图谱**(experience graph)在从跑过的 run 里抽 lessons/failures/signals。本文已修正,详见 §1.6 + §7。
+> **⚠️ 对我上一版的修正 + 我们自己系统的事实校正(grep 了 codebase,不拍脑袋)**:
+> ① 第一版错说"它没有跨-run 记忆" —— 错,它有 experience/lesson 结构化图谱(§1.6/§7)。
+> ② **我们没用 Docker** —— Runner 是 tmux + git worktree 裸跑在主机上(codebase:docker 1 处 / tmux 744 / worktree 842)。它的 Docker 容器隔离是我们**没有**的一层(→ 沙箱 FLY-346 / 多机 FLY-1005 可借鉴)。
+> ③ **我们 mem0+pgvector 代码在但基本没接**(env-gated,主力=文件 markdown)—— 别再说"我们语义检索更强"。
+> ④ **grounded 编排对比**:我们的 DAG = `dag-resolver`(Kahn 拓扑、**严格无环**、issue 级依赖),没有 homerail 那种 run 内工作流 loop;fork 我们靠 Claude Code 原生 `--resume`(不做截断分叉);replay 我们有一种(Bridge 重启按 executionId 确定性重认领 Runner)。详见 ⭐ 深挖节的对比。
 
 ---
 
@@ -83,7 +87,7 @@ Issue: FLY-1004 (https://linear.app/geoforge3d/issue/FLY-1004/homerail-竞品分
 - **experience 知识图谱**(`server/experience.ts` + 表 `experience_nodes`/`experience_relationships`/`experience_ingest_jobs`):从每个 run 的 evidence + scorecard 抽 `ExperienceDelta`(upsert_nodes + upsert_relationships + evidence + promoted 标)。
 - **17 种节点类型**:UserGoal/Issue/Run/PullRequest/OrchestrationTemplate/RuntimeProfile/Provider/Model/WorkerAgent/Tool/Skill/Hook/ArtifactContract/ScorecardResult/**FailureRootCause/Lesson/RunSignal**。
 - 抽取 intervention/failure/lesson **signals**,ingest 进图谱(经 `/api/runs/:id/experience` + `dag-status/:id/experience-ingest/retry` 接进 run 流,非纯脚手架)。另有 `memories` 表(kind 索引)。
-- **性质**:这是**结构化"从过去的 run 学教训"的知识图谱**(节点+类型化关系+lesson 抽取),**不是**语义向量记忆(没见 embedding/vector 列)。→ 跟我们 mem0+pgvector(语义向量)是**两条不同的记忆路线**,不是"它没记忆"。成熟度 UNKNOWN(是否在产品里真被 replay/复用不确定)。
+- **性质**:这是**结构化"从过去的 run 学教训"的知识图谱**(节点+类型化关系+lesson 抽取),**不是**语义向量记忆(没见 embedding/vector 列)。→ ⚠️ **事实校正(grep 了我们 codebase)**:我们 mem0+pgvector **代码在但基本没接**(`createMemoryService` env-gated,没配就 Disabling memory),**主力记忆是文件 markdown**;所以**不是"我们语义更强"** —— 两边都非活的语义检索,它"自动从 run 抽结构化 lesson"这条**我们没有、可能反而更成熟**。成熟度双方 UNKNOWN。
 
 ### 1.7 质量 / 评估 / 审计(招牌:auditable)
 - **Scorecard**(`server/scorecard.ts`):run 跑完自动打分,check 类型(实测)= `no_failed_nodes` / `handoff_reported_blockers` / **`handoff_success_contradictions`(声称成功但证据不符)** / **`tool_activity_evidence`(真调工具干活 vs 只说话)** / `handoff_header_contract` / `blind_spot`;结果含 verdict/score/hard_error/soft_warning/blind_spot/intervention 计数 + 每 node tool 活动。**= "agent 到底真干活了没、有没有谎报成功"的质量闸。**

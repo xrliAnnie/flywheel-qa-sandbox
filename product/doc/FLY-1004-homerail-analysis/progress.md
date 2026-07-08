@@ -3,9 +3,16 @@ issue: FLY-1004
 phase: implement
 phaseCursor: 6/6
 updated: 2026-07-08
-round: 2 (Annie 反馈:太概括 → code-grounded 深挖)
-nextStep: push v2 → 重新请 approve gate(founder-gated,停这)
+round: 4 (Annie 批注 → 每块画图+用户视角+grounded 对比+事实校正)
+nextStep: HTML v4 已发 FLY-1004 thread;等 Annie 批注;gate HOLD
 ---
+
+## round-4(Annie 详细批注:5 图 + 用户视角 + grounded 对比我们 + 事实校正)
+- [done] grep 我们 codebase 核实:没 Docker(tmux+worktree)/ pgvector 没接主力 markdown / dag-resolver 严格无环 / Claude --resume 原生 / Bridge replay
+- [done] HTML v4:5 张内联 SVG 图(DAG/双TTS/3ASR/Docker/记忆图谱)+ 每块用户视角 benefit + grounded 对比 + 事实校正框
+- [done] publish --channel 1524471882428973176 直发 FLY-1004 thread(带 screenshot);curl 验过(nonce 0 残留 / 8 textarea / 6 SVG / 0 内联 handler)
+- [done] 全文校正 pgvector 优越性错误说法(research/eng-idea/code-report)
+- URL: https://fw-reports-a53de2.vercel.app/r/ecd93d46c1706285cf064920e1eaa43a/
 
 # FLY-1004 progress — homerail 竞品分析 + 扒开源代码
 
