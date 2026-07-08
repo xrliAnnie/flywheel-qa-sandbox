@@ -206,7 +206,10 @@ graph TB
 
 ## 6. 决策(★ = 待 Annie 拍;✅ = 已按 co-eval 定)
 
-- **★ D0 主线选型:联邦 vs 非联邦(最关键,Annie co-eval 第 3 节)** —— 单 hub(弹性强、要破锚点)vs 各自完整联邦(简单、天然隔离、弹性弱)。可组合。**主线选哪个决定后续设计,待 Annie 拍。**
+- **★ D0 主线选型:联邦 vs 非联邦(最关键)** —— **推荐(诚实、分层组合):team 内部 scale 走非联邦(单 hub + 无状态节点,唯一给一个 fleet 无上限弹性 = 1005 目标);跨 team/多租户/给别人用走联邦(每 team 一套,隔离,= Annie 最早直觉且对)。两个都要、不同层级。** 最终主线待 Annie 拍(Lead 会加推荐)。
+- **✅ D10 多租户(§4B / research §3.7c):** 我们现状=单租户 (a);产品化/多项目走 (c) 每 team 自己一套(= team 级联邦);(b) 共享 hub 除非做 SaaS 否则别碰(安全最难)。
+- **✅ D11 Hub+DB 一体 vs 分离(research §3.7b):** Annie 直觉对——「不共享 DB」只指「不做多 hub 写一个 DB」;单 hub + 云 DB(单写者)是好的。建议家里阶段用一体 SQLite、上云换分离云 DB(独立存活+备份+HA)。
+- **✅ warm pool(research §3.7d):** warm 的是节点(开机+登录+注册),每 issue 起新 session(干净 context)做完 exit,非挂 session 复用。
 - **✅ D2 近期先摆几台物理机**(Annie lean)—— 横向多摆物理机(非换大机)当阶段0/近期 baseline + 上云前验证台;云补弹性峰值(成本 §4B(10) 支持)。
 - **✅ D9 成本估算** —— 已做粗版(§4B(10)):物理机 amortized $40-70/月 vs 云 on-demand $150-290/月 vs spot;结论 baseline 物理 + 突发云弹性。精确待真实报价。
 - **✅ D8 secrets** —— 非难点,用 AWS Secrets Manager/Vault 标准方案(§4B(9))。

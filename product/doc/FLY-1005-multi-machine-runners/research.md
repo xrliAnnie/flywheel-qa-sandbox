@@ -132,7 +132,10 @@ graph LR
   | 爆炸半径 | 节点崩 hub 重派 | 天然完全隔离 |
   | 最适合 | 一个大 fleet 弹性摊开 / 无上限 scale | 隔离放置(对外 agent/独立项目)、异构 OS、快速独立扩 |
 
-  **可组合**(主 fleet 非联邦弹性 + 对外/独立项目联邦隔离),但**主线选哪个决定后续设计,待 Annie 拍**(v3 co-eval HTML 第 3 节)。
+  **⭐ 推荐(诚实、分层组合,非二选一 — v4 co-eval):**
+  - **一个 team 内部要 scale → 非联邦(单 hub + 无状态节点)。** 只有它给「一个 fleet 弹性、无上限」= 1005 原目标;联邦给不了(N 个独立 fleet、不能池化算力)。
+  - **跨 team / 多租户 / 给别人用 → 联邦(每 team 自己一套 = §3.7c)。** 隔离最干净、契合 FLY-648;**正是 Annie 最早的直觉、且对。**
+  - → **主 fleet 非联邦拿弹性;对外 agent / 独立项目 / 别人用走联邦拿隔离。** Annie 的联邦直觉没错,只是它解「隔离/多租户」不是「一个 fleet 无上限 scale」——两个都要、在不同层级。(Lead 会加她的推荐;最终主线待 Annie 拍。)
 
 **Option C — 跨机共享 StateStore(networked DB)。**
 - 把 teamlead.db 换成一个联网 DB(Postgres/Supabase),多台 Bridge 共读写。这是 FLY-556「StateStore 跨机化」的字面解。
@@ -191,6 +194,30 @@ graph LR
 → **结论:稳定 baseline 用物理机更省(amortized capex 便宜);突发峰值用云弹性(scale-to-zero)。支持「近期物理机(D2)+ 云补弹性」。**
 
 > **定位:** 家里物理机(阶段0-1)= 打通架构 + 稳定 baseline;云 provision+deploy(阶段2-3)= 弹性 + 无上限。同一套 Option A 骨架,云只是把「卫星」换成「弹性镜像节点」。
+
+### 3.7 Hub+DB / 多租户 / warm pool(Annie v4 co-eval 深挖)
+
+**(a) Hub 在不在容器 + 通信:** 在不在容器 = 部署选择(云上放容器最自然、家里可裸进程);关键是 hub 唯一。通信 = 节点→hub 走 HTTP(现成 `/events`),唤醒可选加 WebSocket 做 push(homerail 用 WS)。
+
+**(b) ⭐ Hub+DB 一体 vs 分离 —— 澄清「不共享 DB」的真正含义(Annie 直觉正确):**
+- 之前 §2.2 说的「不跨机共享 DB」**只指「不做多个 hub 同时写一个 DB」**(= Option C 的分布式一致性大坑:选主/锁/防撞)。
+- **一个 hub + 一个独立/云 DB 是完全不同的事:仍是单写者(那唯一的 hub),没有共识问题。** 「不共享」≠「不能有一个中心云 DB」。**Annie 的「DB 分离」直觉对。**
+
+  | | 一体(hub 进程内 SQLite,今天) | 分离(hub + 独立/云 DB,单写者不变) |
+  |---|---|---|
+  | 优 | 简单、快、无网络往返 | DB 独立存活(hub 崩状态还在)、托管备份、可做 hub 接管(HA)、状态不绑机 |
+  | 劣 | DB 跟 hub 同生共死、绑那台机、不好备份/接管 | 多一跳网络延迟、要 SQLite→Postgres 迁移、多一个服务/成本 |
+- **建议:家里阶段0-1 用一体 SQLite(简单够用);上云阶段换分离云 DB**(独立存活 + 备份 + hub 可接管,也让 hub 更接近无状态)。单写者不变 → 不碰一致性坑。
+
+**(c) ⭐ 多租户 3 模型(「team」= 租户:我们的 fleet / 老公项目 / 以后给别人用):**
+- **(a-单租户)** 一个 team 一套 = 今天;最简单。
+- **(b-共享 hub 多租户)** 一个 hub 服务多 team、runner 各自容器隔离;省资源但 hub 要做多租户鉴权/隔离、一崩全崩、安全最难。
+- **(c-每 team 自己一套)** hub+bridge+DB 各自独立 = **team 级联邦**;隔离最干净、契合 FLY-648「给别人用」。
+- **建议:我们现状 (a);产品化/多项目走 (c);(b) 除非做托管 SaaS 否则别碰。** **注意 (c) = team 级联邦 → 多租户与联邦是同一问题(见 §3.2 推荐)。**
+
+**(d) warm pool 生命周期澄清(Annie 问的):warm 的是「节点」不是「session」。** warm 池 = 开好机 + 已登录 claude CLI + runner-agent 注册 + 入 tailnet 的节点,空转待命。来一个 issue → 在 warm 节点上起**全新 Claude session**(干净 context)→ 做完 **exit**、节点续 warm。**不是**挂一个 session 注 context 复用(会串味 + 违背 Flywheel「一 issue 一 session」)。贵的是开节点(分钟)、起 session 便宜(秒)。
+
+**(e) spot/抢占为啥消失 + 兜底:** spot = 云商骨折卖闲置算力、随时(几十秒~2 分钟甚至无通知)收回 + 网络分区/硬件故障。兜底:heartbeat(FLY-172)发现 → session-log(FLY-353)无损重建续跑;关键/长任务用 on-demand、可容忍中断批量用 spot;有预警时 drain。
 
 ---
 
