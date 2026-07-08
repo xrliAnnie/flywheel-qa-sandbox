@@ -1,179 +1,118 @@
-# FLY-347 经验图谱(Experience Graph) — PRD (draft)
+# FLY-347 Run 教训沉淀(Run Lessons) — PRD (draft v2, 瘦身版)
 
 Issue: FLY-347 (https://linear.app/geoforge3d/issue/FLY-347/xhsclaude-karpathy用-llm-构建个人知识库token-从处理代码转向处理知识)
 日期: 2026-07-08
-基于: product/doc/FLY-347-llm-knowledge-base/proposal.md, product/doc/FLY-347-llm-knowledge-base/experience-graph-application.html
+基于: product/doc/FLY-347-llm-knowledge-base/proposal.md, engineering/doc/FLY-347-experience-graph/prd.md (v1)
 
-> 状态:**draft**。Annie 定 make-prd,但要先看清『建出来长什么样』才拿给 Tadashi。
-> 本 PRD 第 1 节就是那个『样子』。未 create build issue、未 ship。
+> 状态:**draft v2**。Annie shape-review 后**大幅瘦身**(她的简化本能对):去掉图、去掉独立
+> pipeline、收成一件事、时机改到 ship 前写进同一个 PR。原名『经验图谱』——**MVP 不是图**,
+> 图/关系是 far-future(见 §2)。未 create build issue、未 ship。
 
 ---
 
-## 1. 建出来是什么样(具体形态 —— Annie 最在意这节)
+## 1. 建出来是什么样(具体、够 Tadashi 直接建)
 
-一句话:**在我们现有的 markdown 记忆层之上,加一层「run 教训图」+ 两条自动管道(抽 / 查)**。
-不建新数据库,复用 agent-facing wiki 提案里那套「markdown 页 + frontmatter + `[[链接]]` +
-index」。下面把三块讲成看得见的东西。
+**一句话**:**Runner 在 ship 前,把这趟 run 学到的教训用 LLM 写成一个 markdown 文件、提交进
+同一个 PR、跟代码一起 ship;下次 Runner 起活时,按标签/关键词捞出相关的几个教训文件读一读,
+不重踩老坑。** 就这么简单 —— 几个 markdown 文件,不是图、不是数据库、不是独立服务。
 
-### 1.1 数据模型:图长什么样
+### 1.1 写(ship 前,进同一个 PR)
 
-**节点(node)= 一个 markdown 文件**,放在 `<project>/knowledge/lessons/`。三类节点:
-
-| 节点类型 | 是什么 | 关键字段(frontmatter) |
-|---|---|---|
-| `lesson`(教训) | 一条可复用的避坑经验 | id / from_run / subsystem[] / failure_type / severity / links |
-| `root_cause`(失败根因) | 某次失败的真因(可被多条 lesson 引用) | id / from_run / subsystem[] |
-| `signal`(信号) | 触发/征兆关键词(用于匹配未来的活) | id / pattern / subsystem[] |
-
-**边(edge)= frontmatter 里的 ref + body 里的 `[[链接]]`**(不建图数据库,边就是这些引用):
-
-- `from_run`:这条来自哪次 run(FLY-XX)——溯源。
-- `subsystem`:碰的子系统(bridge / discord / cmux / runner-lifecycle …)——**查的时候按这个匹配**。
-- `failure_type`:失败类型(process-kill / ratelimit / auth / race …)。
-- `caused_by` / `relates_to`:lesson ↔ root_cause / lesson ↔ lesson 的因果与关联。
-
-**一个真实节点长这样**(拿我们真踩过的 FLY-176 那个坑举例):
+- **触发点(写死)**:在 Runner 的 ship 准备阶段 —— **它确认要 ship、准备请求 approve 之前**
+  (即 `gate approve_to_ship` / `complete --route needs_review` 之前那一步)。此时 Runner 用
+  LLM **给这趟 run 写一段简短复盘**(自己回看:踩了什么坑、根因、下次怎么避)。
+  - 为什么放这一步:这样教训文件**进入被 review 的 diff、跟代码一起 ship**,而且**不会在批准
+    之后再改 PR head**(避免 head drift 要重审 —— FLY-945)。
+- **写什么(格式,写死)**:一个文件 `knowledge/lessons/<ISSUE>-<slug>.md`,内容极简:
 
 ```markdown
 ---
-type: lesson
-id: bridge-restart-pid-unquoted
-from_run: FLY-176
-subsystem: [bridge, restart]
-failure_type: process-kill
-severity: high
-signals: ["multi-line PID", "kill 静默失败", "restart-services.sh"]
-caused_by: [[rc-restart-services-523-unquoted-pid]]
-relates_to: [[lesson-config-before-kill-bridge]]
+issue: FLY-176
+tags: [bridge, restart, process-kill]
 ---
-改 Bridge 重启逻辑时:`restart-services.sh:523` 的 multi-line PID 变量没加引号 →
-`kill` 静默失败 → 得手动重启。**避坑**:PID 变量加引号,或用 `pgrep -f run-bridge | xargs kill -9`。
+# 改 Bridge 重启逻辑:PID 变量要加引号
+
+**踩的坑**: restart-services.sh:523 的 multi-line PID 没加引号 → kill 静默失败 → 手动重启。
+**避法**: PID 加引号,或 pgrep -f run-bridge | xargs kill -9。
 ```
 
-**index = `knowledge/lessons/index.md`**:按 subsystem / failure_type 归类的目录(查询入口,
-等价 Karpathy 的 index.md)。查的时候先读它定位,再钻具体页 —— 中小规模够用,不需要向量库。
+  - frontmatter 只两项:`issue`(溯源)+ `tags`(下次按它捞;从这单碰的子系统/失败类型取词)。
+  - 正文只要两块:**踩的坑** + **避法**(标题一句话点题)。需要就手加 `[[别的教训文件名]]` 链一下,
+    **不强制、不搞索引**。
+- **存哪(写死)**:目标 repo 里 `knowledge/lessons/`(和代码同 repo),随 PR 合进 main。
+- **没值得记的就不写(白话)**:这趟 run 平淡、没踩到值得记的坑,就**跳过,不硬写一个**
+  (对应『抽取不确定就不写』)。宁缺毋滥,别用废话污染。
 
-### 1.2 自动抽 pipeline:教训怎么自动进图(不靠人写)
+### 1.2 读(下次 Runner 起活时)
 
-**触发**:一个 run 到达终态时(`session_completed` / PR merged / `blocked` / QA verdict 出)。
+- **何时**:Runner/Lead 起活(onboard 阶段)自动做一次。
+- **怎么捞(简单,写死)**:扫 `knowledge/lessons/*.md`,按**这单 issue 的标签/关键词**(从 label +
+  标题 + 大概率碰的子系统取)和各文件 frontmatter 的 `tags` 做**简单匹配**(tag 交集 / 关键词
+  grep)→ 命中的几个教训文件读进来。**不搞向量、不搞图检索、不建索引** —— 小规模直接扫目录够用。
+- **怎么用**:Runner 开工前读到相关教训 → 不把老坑重踩一遍。
 
-**抽什么、怎么抽**:一个抽取 pass(skill/agent,固定 schema)读这次 run 的产物 ——
-transcript + CI 结果 + code-review verdict + QA verdict + 已有 retro —— 输出 0..N 条结构化
-lesson/root_cause/signal。**fail-closed:抽不确定就不写**(宁缺毋滥,别污染图)。
+### 1.3 一个真实例子(端到端)
 
-```
-run 终态 ──▶ 收集产物(transcript / CI / review / QA / retro)
-        ──▶ LLM 抽取 pass(固定 schema)──▶ {lesson, root_cause, signals, subsystem, failure_type, severity}
-        ──▶ 写成 markdown 节点 + 补 index + 连边   (幂等:run+signal 去重,已有则更新不重建)
-```
+1. 某 Runner 干 FLY-176(改 Bridge 重启),踩了「PID 没加引号 kill 失败」的坑,修好。
+2. ship 前它写 `knowledge/lessons/FLY-176-bridge-pid-quote.md`(上面那个格式),提交进 PR,一起 merge。
+3. 三周后另一个 Runner 起活要再动 Bridge restart → 起活时按 tag `[bridge, restart]` 扫到这个文件 →
+   读到「PID 要加引号」→ 直接避开,不重踩。
 
-**关键**:现在这些教训是「人事后记得了才手写进 MEMORY」,大量 run 的教训蒸发;这条 pipeline
-让它**每次 run 完自动沉一次**。
-
-### 1.3 查/检索:起活时怎么用上(具体交互)
-
-**何时查**:Runner/Lead **起活时(onboard 阶段)**,自动做一次,不用人主动想起来。
-
-**怎么查**:从这单 issue 推断 `subsystem` / `task_type`(用 label + 标题 + 大概率要碰的文件)
-→ 按 index 的 subsystem/failure_type 匹配 → 取 top-N 相关 lesson。
-
-**查出来长啥样**(注入进 Runner context 的一块「相关历史教训」):
+### 1.4 闭环(简化)
 
 ```
-[相关历史教训 · 子系统=bridge/restart]
-· bridge-restart-pid-unquoted (FLY-176): restart-services.sh:523 PID 没加引号→kill 静默失败;PID 加引号或 pgrep|xargs kill
-· config-before-kill-bridge (FLY-193): 改 config 要在 kill Bridge 之前(launchd KeepAlive 会 respawn 用旧 config)
-· bootout-wrong-pid: launchd job PID ≠ 真 Bridge PID,bootout 会杀错进程
+Runner 干活 ──▶ 修好 ──▶ ship 前用 LLM 写 1 个教训 md ──▶ 提交进同一个 PR ──▶ 随代码 ship
+                                                                                    │
+下一个 Runner 起活 ◀──按 tag/关键词扫 knowledge/lessons/ 捞相关教训──────────────────┘
+        └──读到相关教训──▶ 避坑开工
 ```
 
-**怎么用**:Runner 起活前先读这块 → **不把老坑重踩一遍**。这就是整件事的产出价值。
+## 2. 明确砍了什么(直接回答『为什么不是图』)
 
-### 1.4 一张图看全(闭环)
+Annie 问得对 —— **MVP 不该是图**。以下全部**砍出 MVP**,归为 far-future(真需要再说):
 
-```mermaid
-graph LR
-  R[Runner run 到终态] -->|① 自动抽| E[抽取 pass]
-  E -->|lesson/root_cause/signal| G[(经验图<br/>markdown+frontmatter+links)]
-  G -->|② 按 subsystem/task targeted 查| Q[下一个 Runner 起活]
-  Q -->|注入相关教训| R2[Runner 避坑开工]
-  R2 -.完成后又抽.-> E
-```
-
-## 2. MVP 范围(先做骨干,别做花的)
-
-**做(MVP)**:① 自动抽(run 终态触发,fail-closed)② 存(markdown 图:节点+frontmatter 边+index)
-③ targeted 查(起活时按 subsystem/task 拉 top-N 注入)。
-
-**先砍(每样说清为什么)**:
-
-| 砍掉的 | 为什么先不做 |
+| 砍掉的 | 为什么 |
 |---|---|
-| 图可视化 UI | 纯 agent-facing,没人看图;省掉整块前端 |
-| 向量/语义搜索(pgvector) | MVP 规模 index + subsystem 过滤够用(Karpathy 亲述 ~100 页 index 就够);要了再上 |
-| 自动 merge/去重/lint | 那是另一片(agent-wiki 提案的 Lint MVP),别混进来 |
-| 因果推理引擎 | 边先靠抽取 pass 显式写(caused_by/relates_to),不做自动推断 |
-| 跨项目图 | 先单项目(flywheel 自己)跑通 |
+| **图结构**(节点类型/边/关系) | 过度设计。MVP 就是几个 markdown 文件,文件间需要才手加 `[[链接]]`。 |
+| **正式 index / 目录文件** | 小规模扫目录 + tag 匹配够用,不用维护索引。 |
+| **向量 / 语义检索(pgvector)** | 简单 tag/关键词捞够用;规模真大了再说。 |
+| **独立 post-run 抽取 pipeline / 服务** | 不做后台管道。就是 ship 前 Runner 自己顺手写一个文件。 |
+| **拆成 EG-1..4 多个 issue** | Annie 明确嫌多易忘。收成**一件事**(见 §3)。 |
 
-## 3. 跟现状的差距 + 为什么值得
+## 3. MVP = 一件事(不拆)
 
-- **现状**:教训靠人事后手写进 MEMORY(已有 123 个 `feedback_*` + 31 个 `qa_*`);`MEMORY.md`
-  (20KB)整份注入每个会话;mem0 `MemoryService` 代码在 `packages/edge-worker/src/memory/`
-  但 **pgvector 基本没接、活的主力是文件 markdown**。
-- **差距**(不在「有没有教训」,在「怎么进 / 怎么出」):① 进 —— 没有 run 完自动抽,靠人记得;
-  ② 结构 —— 零散文件,不能按子系统/失败类型查;③ 出 —— 整份索引注入靠运气命中,不是 targeted。
-- **为什么值得**:真教训现在会蒸发;起活时把相关的自动摆到面前,省的是**重复 debug 的真实时间**
-  (§1.3 的 Bridge / Discord 场景每条都真坑过我们)。诚实边界:这是**增量**,不是从零 —— 我们已有
-  骨架,这补的是「自动进 + 按需出」。
+**一个功能**:『**Runner ship 前写一个教训 markdown 进 PR** + **下次 Runner 起活按 tag/关键词读相关教训**』。
+两半是一体(写 + 读),一个 build issue 做完。不拆 EG-1..4。
 
-## 4. Problem
+## 4. 跟现状差距 + 为什么值得
 
-Runner/Lead 每次 run 都产生宝贵的失败根因/教训/信号,但现在只有一部分靠人事后手写进 MEMORY,
-大量蒸发;即使写了,起活时也只能整份索引注入、靠运气命中相关那条。结果:**同类坑被反复重踩**
-(Bridge 重启、Discord E2E 等有据可查地重复过)。
+- **现状**:教训靠人事后**记得**才手写进 MEMORY(已有 123 feedback + 31 qa),大量 run 的教训蒸发;
+  即使写了,起活也只能整份 `MEMORY.md` 注入靠运气命中。mem0 `MemoryService` 代码在但 pgvector 没接、
+  主力人工 markdown。
+- **差距 / 为什么值得**:把「写教训」**固定成 ship 流程的一步**(不靠人记得)、把「读教训」**固定成起活
+  的一步**(按需捞、不靠运气)。省的是重复 debug 的真实时间。诚实:这是很**薄的一层流程 + 约定**,不是
+  新系统 —— 正合 Annie 的简化本能。
 
-## 5. Users
+## 5. 常规 PRD 段
 
-- **Runner**(主要):起活时自动拿到相关历史教训,避坑;完成后其教训自动沉淀。
-- **Lead**:起活/派活时看到某子系统的已知坑,派得更稳。
-- (非用户:人不直接看图 —— 纯 agent-facing。)
+- **Problem**:run 的教训现在靠人记得才留、且留了也难被下次精准读到 → 同类坑反复重踩。
+- **Users**:Runner(ship 前顺手写、起活自动读)、Lead(间接受益:派出去的活少踩老坑)。人不直接管这些文件。
+- **Goals**:① ship 前写教训成为流程一步(不靠人记得)② 起活按 tag 读到相关教训 ③ 全用 repo 里 markdown,零新基建。
+- **Non-goals**:不做图/索引/向量检索;不做独立后台 pipeline;不重写 MEMORY;不跨项目;不自动删。
+- **Success metrics**:① 接真实 ship 流后,有值得记的 run 能稳定产出 1 个教训文件、没值得的跳过(不硬写)②
+  起活能按 tag 捞到相关教训(拿 Bridge / Discord E2E 两类真教训做验收:再动这俩能捞到已知坑)③ 一段时间后
+  同类坑重踩下降(定性)④ 不拖慢 ship / 起活。
+- **Open questions**(给 Tadashi):
+  1. 教训写在 approve 前(进 reviewed diff)还是 :cool: 前(能记到 ship 阶段的坑)?**建议默认 approve 前**,避免 head drift。
+  2. tag 从哪取(label / 标题 / diff 文件路径)?**建议 MVP:label + 标题关键词**,够简单。
+  3. 起活「读」挂在 onboard 的哪一步、注入多少条(top-N/字数上限)避免撑 context?
+  4. `knowledge/lessons/` 放目标 repo 根,还是 `doc/` 下?(建议 repo 根 `knowledge/lessons/`。)
 
-## 6. Goals
+## 6. 交给 Tadashi(一个 build issue —— draft 阶段不建)
 
-1. 每个 run 终态**自动**沉淀 0..N 条结构化教训(不靠人记得写)。
-2. Runner 起活时能**按子系统/任务** targeted 拿到相关历史教训。
-3. 复用现有 markdown 记忆层,**不建新存储**,不加运维负担。
+> 等 Annie 确认『样子』OK,再由 Lead/Tadashi 建**一个** issue。
 
-## 7. Non-goals
-
-- 不做人类图可视化 UI。
-- 不上向量库/语义搜索(MVP)。
-- 不做自动 merge/去重(那是 Lint 片)。
-- 不替换 / 不重写现有 MEMORY 系统。
-- 不做跨项目图(MVP 单项目)。
-- 不自动删任何东西。
-
-## 8. Success metrics(什么为真=成功)
-
-- **进**:接上真实 run 后,run 终态能稳定产出结构化节点(抽取 pass 有召回、fail-closed 不乱写)。
-- **出**:起活 query 能对给定子系统返回相关 top-N(用 §1.3 两个真实场景做验收:改 Bridge / Discord E2E 能捞到那几条已知坑)。
-- **省**:一段时间后,同类坑重踩率下降(定性观察 + 抽样)。
-- **不退**:引入后现有 recall / 起活流程不变慢、不出错。
-
-## 9. Open questions(给 Tadashi/Annie 定)
-
-1. 抽取 pass 挂在哪:Bridge 的 `session_completed` hook,还是独立 skill 手动/定时跑?(建议:先 hook + 可手动补跑)
-2. `subsystem` / `task_type` 怎么推断:label + 标题够,还是要看 diff 的文件路径?(建议 MVP:label+标题+文件路径 heuristic)
-3. 节点放 `<project>/knowledge/lessons/` 还是并进现有 `memory/`?(建议:新目录,和人工 feedback 记忆分开,便于自动管道独占)
-4. 起活注入的量级(top-N 的 N、字数上限)怎么定,避免撑爆 context?
-5. 抽取质量怎么把关(fail-closed 阈值 / 人抽检)?
-
-## 10. Build-issue 拆分(拟挂 Tadashi —— **本 PRD draft 阶段不 create**)
-
-> 以下是**提案**,等 Annie 确认『样子』OK 后再由 Lead/Tadashi 正式建 issue。
-
-- **EG-1 数据模型 + 图约定**:定 `knowledge/lessons/` 的节点 schema(frontmatter)、边约定、index 格式;写 schema doc。
-- **EG-2 抽取 pipeline**:run 终态触发 → 收集产物 → LLM 抽取 pass(固定 schema,fail-closed)→ 写节点+index+边(幂等)。
-- **EG-3 targeted 查 + 注入**:起活时按 subsystem/task 查 index → top-N → 注入 Runner context 的「相关历史教训」块。
-- **EG-4 回填种子 + 验收**:用现有 123 feedback/31 qa 里的 run 教训回填一批种子节点;用 §8 两个真实场景做端到端验收。
-
-(EG-2 依赖 EG-1;EG-3 依赖 EG-1;EG-4 依赖 EG-1/2/3。MVP = EG-1→EG-2→EG-3→EG-4。)
+- **Run 教训沉淀 MVP(一件事)**:① 在 Runner ship-prep(approve 前)加一步:用 LLM 写
+  `knowledge/lessons/<ISSUE>-<slug>.md`(格式见 §1.1),提交进当前 PR;没值得记的跳过。
+  ② 在 Runner 起活(onboard)加一步:按本单 tag/关键词扫 `knowledge/lessons/` 捞相关教训注入 context。
+  一个 PR 做完两半。**不拆子 issue。**

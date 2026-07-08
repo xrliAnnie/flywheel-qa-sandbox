@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FLY-347 经验图谱 PRD — 建出来长什么样</title>
+<title>FLY-347 Run 教训沉淀 PRD v2 — 瘦身后长什么样</title>
 <style>
   :root { --ink:#1d1d1f; --dim:#86868b; --blue:#007aff; --navy:#1a365d; --green:#34c759; }
   * { box-sizing:border-box; }
@@ -12,16 +12,16 @@
     padding:1.2rem 1rem 6rem; line-height:1.6; -webkit-text-size-adjust:100%; }
   h1 { font-size:1.5rem; margin:.2rem 0 .1rem; line-height:1.25; }
   .sub { color:var(--dim); font-size:.9rem; margin:.1rem 0 1rem; }
-  .tldr { background:#eef4ff; border:1px solid #cfe0ff; border-radius:12px;
+  .tldr { background:#eef7ee; border:1px solid #cfe9cf; border-radius:12px;
     padding:.9rem 1.1rem; margin:1rem 0; font-size:.95rem; }
-  .tldr b { color:#0a58ca; }
+  .tldr b { color:#1e7d34; }
   .card { background:#fff; border-radius:12px; padding:1rem 1.15rem; margin:1rem 0;
     box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid #d2d2d7; }
   .card.shape { border-left-color:var(--blue); }
-  .card.mvp { border-left-color:#ff3b30; }
-  .card.gap { border-left-color:#ff9500; }
+  .card.cut { border-left-color:#ff3b30; }
+  .card.one { border-left-color:#ff9500; }
+  .card.gap { border-left-color:#af52de; }
   .card.std { border-left-color:#86868b; }
-  .card.build { border-left-color:#af52de; }
   .card.decide { border-left-color:var(--green); }
   .card h2 { font-size:1.14rem; margin:.1rem 0 .5rem; }
   .card h2 .n { color:var(--dim); font-weight:600; font-size:.9rem; margin-right:.4rem; }
@@ -34,18 +34,15 @@
     line-height:1.45; margin:.5rem 0; white-space:pre; }
   pre.code .k { color:#7ee081; }
   pre.code .c { color:#8fbfff; }
-  .query-out { background:#0f1b2d; color:#dfe8f5; border-radius:10px; padding:.7rem .85rem;
-    font-family:"SF Mono", ui-monospace, monospace; font-size:.78rem; overflow-x:auto; margin:.5rem 0; white-space:pre; }
-  .query-out .lbl { color:#7ee081; }
-  .flow { display:flex; flex-wrap:wrap; gap:.4rem; align-items:center; margin:.6rem 0; font-size:.84rem; }
-  .step { background:#f0f7f0; border:1px solid #cfe9cf; border-radius:8px; padding:.35rem .6rem; }
-  .arrow { color:var(--dim); font-weight:700; }
+  .flow { background:#0f1b2d; color:#dfe8f5; border-radius:10px; padding:.7rem .85rem;
+    font-family:"SF Mono", ui-monospace, monospace; font-size:.76rem; overflow-x:auto; margin:.5rem 0; white-space:pre; line-height:1.5; }
   code, .mono { font-family:"SF Mono", ui-monospace, monospace; font-size:.86em;
     background:#f0f0f2; padding:.05rem .3rem; border-radius:5px; }
   table { width:100%; border-collapse:collapse; font-size:.85rem; margin:.6rem 0; }
   th, td { text-align:left; padding:.45rem .5rem; border-bottom:1px solid #eee; vertical-align:top; }
   th { color:var(--navy); font-size:.82rem; }
   .table-wrap { overflow-x:auto; }
+  .no { color:#ff3b30; font-weight:600; }
   .comment-label { display:block; font-size:.8rem; color:#555; margin-top:.7rem; font-weight:600; }
   textarea { width:100%; font-family:inherit; font-size:.9rem; border:1px solid #e0e0e5;
     border-radius:8px; padding:.5rem; margin-top:.25rem; resize:vertical; }
@@ -78,138 +75,119 @@
   <pre id="export-output"></pre>
 </div>
 
-<h1>经验图谱 PRD —— 建出来长什么样</h1>
-<div class="sub">FLY-347 · draft PRD 预览 · 你确认『样子』OK 就拿给 Tadashi 建 · 未 ship / 未建 build issue</div>
+<h1>Run 教训沉淀 —— 瘦身后长什么样</h1>
+<div class="sub">FLY-347 · PRD v2(照你说的大幅简化)· 原名『经验图谱』→ MVP 不是图 · 你确认样子就拿给 Tadashi</div>
 
 <div class="tldr" data-key="tldr">
-  <p>你定了 <b>值得做</b>。这页是给你看『<b>建出来长什么样</b>』的 —— 你最在意这个。看下面第 1 节
-  的数据模型 + 一个真实节点长啥样 + 起活查出来长啥样;觉得样子对了,就点最后的<b>「样子 OK,拿给
-  Tadashi」</b>。样子要改就写在框里,我改完再给你。</p>
-  <label class="comment-label" for="c-tldr">你的留言(整体)</label>
+  <p>照你的简化本能<b>大砍了</b>:去掉图、去掉后台 pipeline、收成一件事、时机改到 <b>ship 前写进
+  同一个 PR</b>。<b>一句话:Runner ship 前用 LLM 把这趟坑写成一个 markdown 塞进 PR、跟代码一起
+  ship;下次 Runner 起活按标签捞相关教训读一读、不重踩。</b>就是几个 markdown 文件,不是图、不是
+  数据库。看下面样子对不对,对了点「样子 OK,拿给 Tadashi」。</p>
+  <label class="comment-label" for="c-tldr">你的留言</label>
   <textarea id="c-tldr" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
 <div class="card shape" data-key="shape">
-  <h2><span class="n">1</span>建出来是什么样(核心)</h2>
-  <p>一句话:<b>在现有 markdown 记忆层之上,加一层「run 教训图」+ 两条自动管道(抽 / 查)</b>。
-  不建新数据库,复用「markdown 页 + frontmatter + <code>[[链接]]</code> + index」。</p>
+  <h2><span class="n">1</span>建出来是什么样</h2>
 
-  <h3>① 数据模型:图长什么样</h3>
-  <p><b>节点 = 一个 markdown 文件</b>(放 <code>knowledge/lessons/</code>),三类:<b>lesson</b>(教训)/
-  <b>root_cause</b>(失败根因)/ <b>signal</b>(信号)。<b>边 = frontmatter 里的 ref + body 的
-  <code>[[链接]]</code></b>(不建图数据库):<code>from_run</code>(溯源)/ <code>subsystem</code>
-  (查的时候按这个匹配)/ <code>failure_type</code> / <code>caused_by</code> / <code>relates_to</code>。</p>
-
-  <h3>② 一个真实节点长这样(拿我们真踩过的 FLY-176 那个坑举例)</h3>
+  <h3>① 写(ship 前,进同一个 PR)</h3>
+  <p><b>时机(写死)</b>:Runner 确认要 ship、<b>请求 approve 之前</b>那一步,用 LLM 给这趟 run 写段
+  简短复盘(踩了什么坑 / 根因 / 下次怎么避),提交进<b>当前 PR</b>,跟代码一起 ship。
+  <b>没踩到值得记的就跳过,不硬写。</b></p>
+  <p><b>写成什么样(一个文件 <code>knowledge/lessons/&lt;ISSUE&gt;-&lt;slug&gt;.md</code>)</b>:</p>
   <pre class="code"><span class="c">---</span>
-<span class="k">type:</span> lesson
-<span class="k">id:</span> bridge-restart-pid-unquoted
-<span class="k">from_run:</span> FLY-176
-<span class="k">subsystem:</span> [bridge, restart]
-<span class="k">failure_type:</span> process-kill
-<span class="k">severity:</span> high
-<span class="k">signals:</span> ["multi-line PID", "kill 静默失败", "restart-services.sh"]
-<span class="k">caused_by:</span> [[rc-restart-services-523-unquoted-pid]]
-<span class="k">relates_to:</span> [[lesson-config-before-kill-bridge]]
+<span class="k">issue:</span> FLY-176
+<span class="k">tags:</span> [bridge, restart, process-kill]
 <span class="c">---</span>
-改 Bridge 重启逻辑时:restart-services.sh:523 的 multi-line PID 变量没加引号
-→ kill 静默失败 → 得手动重启。避坑:PID 变量加引号,或 pgrep -f run-bridge | xargs kill -9。</pre>
-  <p><b>index = <code>knowledge/lessons/index.md</code></b>:按 subsystem/failure_type 归类的目录,
-  查询先读它定位再钻页(中小规模够用,不需要向量库)。</p>
+# 改 Bridge 重启逻辑:PID 变量要加引号
 
-  <h3>③ 自动抽:教训怎么自动进图(不靠人写)</h3>
-  <div class="flow">
-    <span class="step">run 到终态</span><span class="arrow">→</span>
-    <span class="step">收集 transcript/CI/review/QA/retro</span><span class="arrow">→</span>
-    <span class="step">LLM 抽取 pass(固定 schema)</span><span class="arrow">→</span>
-    <span class="step">写节点+index+边(幂等)</span>
-  </div>
-  <p><b>fail-closed:抽不确定就不写</b>(宁缺毋滥)。现在教训靠人事后记得手写、大量蒸发;这条让它
-  <b>每次 run 完自动沉一次</b>。</p>
+**踩的坑**: restart-services.sh:523 的 multi-line PID 没加引号 → kill 静默失败 → 手动重启。
+**避法**: PID 加引号,或 pgrep -f run-bridge | xargs kill -9。</pre>
+  <p>frontmatter 只两项:<code>issue</code>(溯源)+ <code>tags</code>(下次按它捞)。正文只要<b>踩的坑 +
+  避法</b>。需要就手加 <code>[[别的教训]]</code> 链一下,<b>不强制、不搞索引</b>。存目标 repo 的
+  <code>knowledge/lessons/</code>,随 PR 合进 main。</p>
 
-  <h3>④ 起活时查出来长啥样(注入 Runner 的「相关历史教训」块)</h3>
-  <div class="query-out"><span class="lbl">[相关历史教训 · 子系统=bridge/restart]</span>
-· bridge-restart-pid-unquoted (FLY-176): restart-services.sh:523 PID 没加引号→kill 静默失败
-· config-before-kill-bridge (FLY-193): 改 config 要在 kill Bridge 之前(KeepAlive 会 respawn 用旧 config)
-· bootout-wrong-pid: launchd job PID ≠ 真 Bridge PID,bootout 会杀错进程</div>
-  <p><b>何时查</b>:Runner/Lead 起活时(onboard)自动做,不用人想起来。<b>怎么用</b>:开工前先读这块,
-  <b>不把老坑重踩一遍</b> —— 这就是产出价值。</p>
+  <h3>② 读(下次 Runner 起活时)</h3>
+  <p>起活(onboard)自动扫 <code>knowledge/lessons/*.md</code>,按<b>这单的标签/关键词</b>和文件
+  <code>tags</code> 做<b>简单匹配</b>(tag 交集 / 关键词 grep)→ 命中的几个读进来 → 开工前避坑。
+  <b>不搞向量、不搞图检索、不建索引</b> —— 小规模扫目录够。</p>
 
-  <h3>⑤ 闭环</h3>
-  <pre class="code">run 到终态 ──①自动抽──▶ 抽取 pass ──▶ 经验图(markdown+frontmatter+links)
-                                              │
-下一个 Runner 起活 ◀──②按 subsystem/task 查──┘
-        └──注入相关教训──▶ 避坑开工 ──(完成后又抽)──▶ …</pre>
+  <h3>③ 一个真实例子(端到端)</h3>
+  <ol>
+    <li>某 Runner 干 FLY-176 改 Bridge 重启,踩了「PID 没加引号 kill 失败」,修好。</li>
+    <li>ship 前写 <code>FLY-176-bridge-pid-quote.md</code>(上面格式),提交进 PR,一起 merge。</li>
+    <li>三周后另一个 Runner 要再动 Bridge restart → 起活按 tag <code>[bridge,restart]</code> 扫到它 →
+      读到「PID 要加引号」→ 直接避开。</li>
+  </ol>
+
+  <h3>④ 闭环</h3>
+  <div class="flow">Runner 干活 ─▶ 修好 ─▶ ship 前用 LLM 写 1 个教训 md ─▶ 提交进同一个 PR ─▶ 随代码 ship
+                                                                    │
+下一个 Runner 起活 ◀─ 按 tag/关键词扫 knowledge/lessons/ 捞相关教训 ─┘
+        └─ 读到相关教训 ─▶ 避坑开工</div>
   <label class="comment-label" for="c-shape">你的留言(样子哪里要改?)</label>
-  <textarea id="c-shape" rows="3" maxlength="3000" placeholder="例:节点字段够不够 / 查出来这块我想要更…/ 存哪我有想法…"></textarea>
+  <textarea id="c-shape" rows="3" maxlength="3000" placeholder="…"></textarea>
 </div>
 
-<div class="card mvp" data-key="mvp">
-  <h2><span class="n">2</span>MVP 范围(先做骨干,别做花的)</h2>
-  <p><b>做</b>:① 自动抽(run 终态触发,fail-closed)② 存(markdown 图)③ targeted 查(起活按 subsystem/task 拉 top-N 注入)。</p>
+<div class="card cut" data-key="cut">
+  <h2><span class="n">2</span>砍了什么(直接回答你问的『为什么不是图』)</h2>
+  <p>你问得对 —— <b>MVP 不该是图</b>。下面全砍出 MVP,归 far-future(真需要再说):</p>
   <div class="table-wrap"><table>
-    <tr><th>先砍的</th><th>为什么先不做</th></tr>
-    <tr><td>图可视化 UI</td><td>纯 agent-facing,没人看图</td></tr>
-    <tr><td>向量/语义搜索(pgvector)</td><td>MVP 规模 index+subsystem 过滤够用,要了再上</td></tr>
-    <tr><td>自动 merge/去重/lint</td><td>那是另一片(agent-wiki 的 Lint MVP),别混</td></tr>
-    <tr><td>因果推理引擎</td><td>边先靠抽取显式写,不做自动推断</td></tr>
-    <tr><td>跨项目图</td><td>先单项目跑通</td></tr>
+    <tr><th>砍掉的</th><th>为什么</th></tr>
+    <tr><td><b>图结构</b>(节点/边/关系)</td><td>过度设计;MVP 就是几个 md 文件,需要才手加 <code>[[链接]]</code></td></tr>
+    <tr><td>正式 index / 目录文件</td><td>扫目录 + tag 匹配够,不维护索引</td></tr>
+    <tr><td>向量 / 语义检索</td><td>简单 tag/关键词捞够;规模大了再说</td></tr>
+    <tr><td>独立后台抽取 pipeline / 服务</td><td>不做后台;ship 前 Runner 顺手写一个文件而已</td></tr>
+    <tr><td>拆成 4 个 issue(EG-1..4)</td><td>你嫌多易忘 → 收成<b>一件事</b></td></tr>
   </table></div>
-  <label class="comment-label" for="c-mvp">你的留言(scope 合适吗?)</label>
-  <textarea id="c-mvp" rows="2" maxlength="2000" placeholder="…"></textarea>
+  <label class="comment-label" for="c-cut">你的留言</label>
+  <textarea id="c-cut" rows="2" maxlength="2000" placeholder="…"></textarea>
+</div>
+
+<div class="card one" data-key="one">
+  <h2><span class="n">3</span>MVP = 一件事(不拆)</h2>
+  <p><b>一个功能、一个 PR 做完</b>:『Runner ship 前写一个教训 markdown 进 PR』+『下次 Runner 起活
+  按 tag/关键词读相关教训』。写 + 读是一体,不拆子 issue。</p>
+  <label class="comment-label" for="c-one">你的留言</label>
+  <textarea id="c-one" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
 <div class="card gap" data-key="gap">
-  <h2><span class="n">3</span>跟现状差距 + 为什么值得</h2>
-  <p><b>现状</b>:教训靠人事后手写进 MEMORY(已有 123 feedback + 31 qa);MEMORY.md 整份注入;
-  mem0 <code>MemoryService</code> 代码在但 <b>pgvector 基本没接、主力人工 markdown</b>。</p>
-  <p><b>差距</b>(不在有没有教训,在怎么进/怎么出):进 —— 没 run 完自动抽;结构 —— 零散文件不能按维度查;
-  出 —— 整份索引注入靠运气,不是 targeted。<b>为什么值得</b>:真教训会蒸发,起活时自动摆到面前,省的是
-  重复 debug 的真实时间。诚实:这是<b>增量</b>(补「自动进 + 按需出」),不是从零。</p>
+  <h2><span class="n">4</span>跟现状差距 + 为什么值得</h2>
+  <p><b>现状</b>:教训靠人事后<b>记得</b>才写进 MEMORY,大量蒸发;写了也只能整份 MEMORY.md 注入靠运气。
+  <b>这个做的</b>:把「写教训」固定成 ship 流程一步(不靠记得)、把「读教训」固定成起活一步(按需捞、不靠运气)。
+  省重复 debug 的真实时间。诚实:这是很<b>薄的一层流程 + 约定</b>,不是新系统 —— 正合你的简化本能。</p>
   <label class="comment-label" for="c-gap">你的留言</label>
   <textarea id="c-gap" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
 <div class="card std" data-key="std">
-  <h2><span class="n">4</span>常规 PRD 段(浓缩)</h2>
+  <h2><span class="n">5</span>常规 PRD 段(浓缩)</h2>
   <ul>
-    <li><b>Problem</b>:每次 run 产生宝贵教训,但只有一部分靠人写进 MEMORY、大量蒸发;即使写了起活也只能整份注入靠运气 → 同类坑反复重踩。</li>
-    <li><b>Users</b>:Runner(起活避坑 + 完成后自动沉淀)、Lead(派活看已知坑);人不直接看图。</li>
-    <li><b>Goals</b>:run 完自动沉教训 / 起活 targeted 拿到 / 复用现有 markdown 不建新存储。</li>
-    <li><b>Non-goals</b>:不做人类 UI / 不上向量库 / 不做 merge 去重 / 不重写 MEMORY / 不跨项目 / 不自动删。</li>
-    <li><b>Success</b>:run 终态稳定产结构化节点(fail-closed)· 起活能捞到相关 top-N(拿 Bridge/Discord 两场景验收)· 同类坑重踩率降 · 不拖慢现有流程。</li>
-    <li><b>Open questions</b>:抽取挂哪(hook vs skill)· subsystem 怎么推断 · 放新目录还是并进 memory · 注入量级 · 抽取质量把关。</li>
+    <li><b>Problem</b>:run 教训靠人记得才留、留了也难被下次精准读到 → 同类坑反复重踩。</li>
+    <li><b>Users</b>:Runner(ship 前顺手写 / 起活自动读)、Lead(间接:少踩老坑);人不直接管文件。</li>
+    <li><b>Goals</b>:ship 前写教训成流程一步 / 起活按 tag 读到 / 全用 repo markdown 零新基建。</li>
+    <li><b>Non-goals</b>:不做图/索引/向量;不做后台 pipeline;不重写 MEMORY;不跨项目;不自动删。</li>
+    <li><b>Success</b>:有值得记的 run 稳定产 1 教训文件、没的跳过 · 起活按 tag 捞到相关(Bridge/Discord 两场景验收) · 同类坑重踩降 · 不拖慢 ship/起活。</li>
+    <li><b>Open Q(给 Tadashi)</b>:写在 approve 前还是 :cool: 前(建议 approve 前避 head drift)· tag 从哪取(建议 label+标题)· 起活注入量级 · 文件放 repo 根还是 doc/。</li>
   </ul>
   <label class="comment-label" for="c-std">你的留言</label>
   <textarea id="c-std" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
-<div class="card build" data-key="build">
-  <h2><span class="n">5</span>拆给 Tadashi 的活(draft,现在不建 issue)</h2>
-  <ul>
-    <li><b>EG-1 数据模型 + 图约定</b>:定节点 schema/边约定/index 格式。</li>
-    <li><b>EG-2 抽取 pipeline</b>:run 终态触发 → 抽取 pass(fail-closed)→ 写节点+index+边(幂等)。</li>
-    <li><b>EG-3 targeted 查 + 注入</b>:起活按 subsystem/task 查 → top-N → 注入「相关历史教训」块。</li>
-    <li><b>EG-4 回填种子 + 验收</b>:用现有 feedback/qa 回填种子;两个真实场景端到端验收。</li>
-  </ul>
-  <p>顺序:EG-1 → EG-2/EG-3 → EG-4。<b>等你确认样子 OK,才由 Lead/Tadashi 正式建。</b></p>
-  <label class="comment-label" for="c-build">你的留言</label>
-  <textarea id="c-build" rows="2" maxlength="2000" placeholder="…"></textarea>
-</div>
-
 <div class="card decide" data-key="decide">
   <h2><span class="n">6</span>你确认『样子』</h2>
   <div class="choices">
-    <label><input type="radio" name="lean" value="shape-ok"> 样子 OK —— 拿给 Tadashi 建(按上面 EG-1..4)</label>
-    <label><input type="radio" name="lean" value="tweak"> 大方向对,但『样子』要改几处(写在下面 / 各节框里)</label>
-    <label><input type="radio" name="lean" value="smaller"> 先更小:只做其中一段先看效果(说砍到哪)</label>
-    <label><input type="radio" name="lean" value="talk"> 还想聊聊再定</label>
+    <label><input type="radio" name="lean" value="shape-ok"> 样子 OK —— 拿给 Tadashi 建(一个 issue)</label>
+    <label><input type="radio" name="lean" value="tweak"> 大方向对,样子还要改几处(写下面 / 各节框)</label>
+    <label><input type="radio" name="lean" value="smaller"> 还能更小(说砍到哪)</label>
+    <label><input type="radio" name="lean" value="talk"> 想再聊聊</label>
   </div>
   <label class="comment-label" for="c-decide">总评论</label>
   <textarea id="c-decide" rows="3" maxlength="4000" placeholder="…"></textarea>
 </div>
 
-<div class="foot">改完点顶部「复制我的批注 JSON」→ 发回给 Honey Lemon · FLY-347 经验图谱 PRD · draft,未 ship/未建 issue</div>
+<div class="foot">改完点顶部「复制我的批注 JSON」→ 发回给 Honey Lemon · FLY-347 Run 教训沉淀 PRD v2 · draft,未 ship/未建 issue</div>
 
 <script nonce="__CSP_NONCE__">
 (function () {
@@ -231,7 +209,7 @@
   }
   function payload() {
     return JSON.stringify(
-      { issue: ISSUE, kind: "annie-eg-prd-shape-review", lean: lean(), comments: collect() },
+      { issue: ISSUE, kind: "annie-eg-prd-v2-shape-review", lean: lean(), comments: collect() },
       null, 2
     );
   }
