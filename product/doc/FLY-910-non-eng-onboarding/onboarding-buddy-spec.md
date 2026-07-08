@@ -7,6 +7,8 @@ Issue: FLY-910 (https://linear.app/geoforge3d/issue/FLY-910/非工程快速-onbo
 > **这是 Annie 要的核心**:把 Onboarding Buddy 从「一个概念」做成 **Tadashi 照着能建的详细交互 spec** —— 真流程 + 真话术 + 真 action。
 > **参照**:Metric 那种成熟自助引导 agent —— 温暖、有耐心、像同事,把一个**非技术新人**从「刚拿到 access」带到「**手里有一个真能跑的 system**」,全程不用懂工程词。
 
+> **⭐ 更名 + reframe(Annie PRD 反馈,2026-07-08)**:「Onboarding Buddy」现更名为 **「Buddy」**(去 onboarding 前缀)—— 它是一个**常驻的用户面自助助手**(onboarding 只是它的第一件事;上手后还能帮开新 team / 帮修问题 / 日常自助)。**但 MVP scope 不变 = onboarding(本文 step 0–8);常驻 = phase-2 愿景,不进 MVP build。** 权威分期 + 边界(vs FLY-915/942 infra 告警 bot)见 `engineering/doc/FLY-910-onboarding/prd.md` §6.5 / §6.6。本文以下沿用「Onboarding Buddy / Buddy」指同一个 agent。
+
 > ## 🆕 决定演进(逐版织入)
 > - **v2(Annie 逐块)**:客户=甲(半技术)· 部署=自托管 MVP(managed=V2)· 用词 Captain/Crew/Team · 收费=placeholder(免费全试,待竞品分析)。
 > - **v2.1(Annie v3 复审)**:setup-first(先搭基础工具再问做什么)· welcome-first(第一句暖场不派活)· 建 Discord 简化。

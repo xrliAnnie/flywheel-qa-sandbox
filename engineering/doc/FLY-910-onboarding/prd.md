@@ -1,11 +1,16 @@
-# FLY-910 非工程快速 onboarding — PRD(Onboarding Buddy)
+# FLY-910 非工程快速 onboarding — PRD(Buddy)
 
 Issue: FLY-910 (https://linear.app/geoforge3d/issue/FLY-910/非工程快速-onboarding-体验设计一条-command-上手后体验)
-日期: 2026-07-08
+日期: 2026-07-08(v2,折入 Annie PRD 反馈)
 基于: `product/doc/FLY-910-non-eng-onboarding/` 全套设计(onboarding-buddy-spec.md v3 · onboarding-flow-detailed.md · discord-permission-research.md · provisioning-automation-boundary.md · tactical-options.md · deployment-decision-and-mvp-scope.md · monetization-privacy-strategy.md · competitor-onboarding-research.md)+ Annie 逐块/逐小节共创收敛(2026-07-08 全过)· 定位见 FLY-911 · 底座 FLY-648
 
 > **这份 PRD = eng-buildable**:每块写清 UX / 交互 / 命令 / 调用 / 系统动作 / 文案 / 边界 / 验收,eng 照着能建、不用再回来掰细节。中文 body,English where natural。
 > **状态**:设计已与 Annie 逐小节收敛定稿;本 PRD 待 Annie/Lead review → 收敛后拆 build issues 挂 Tadashi eng 队列(**本 issue 不派 eng-build runner**)。**PRD 是 docs,不 ship build。**
+>
+> ## 🆕 v2 改(Annie PRD 反馈,2026-07-08)
+> 1. **agent CLI 默认 = Claude Code、可切 Codex**(open-q1 定了;step0 vendor-agnostic 地基支持切换)。
+> 2. **改名 + reframe**:「Onboarding Buddy」→ **「Buddy」**(去 onboarding 前缀)。Buddy 不只 onboarding 时在,是一个**常驻的用户面自助助手**(有问题帮修、想开新 team 帮开、日常自助)。**但守 scope:本 PRD 的 MVP 仍 = onboarding(step 0–8);常驻 = 愿景 / phase-2**(见 §6.5),**不塞进 MVP build**。
+> 3. 新增 §6.5 愿景+分期 · §6.6 边界(Buddy vs FLY-915/942 infra 告警 bot)。
 
 ---
 
@@ -22,7 +27,7 @@ Issue: FLY-910 (https://linear.app/geoforge3d/issue/FLY-910/非工程快速-onbo
 ## 3. 目标 / 非目标(Goals / Non-goals)
 
 **Goals**
-- G1 一条命令起步 → **Onboarding Buddy(自助 agent)**一步步带,把非技术新人从「刚拿到 access」带到「**手里有一个真能跑的 system**」。
+- G1 一条命令起步 → **Buddy(自助 agent)**一步步带,把非技术新人从「刚拿到 access」带到「**手里有一个真能跑的 system**」。
 - G2 全程非技术视角:**看得懂、不用懂工程**;绝不出现工程黑话。
 - G3 **第一个真产出**:onboarding 完成的标志不是「装好了」,是客户拿到**第一个「它真帮到我了」的结果**(≤60s)。
 - G4 交付一份 eng 照着能建的设计 → 拆 build issues 交 eng。
@@ -42,13 +47,13 @@ Issue: FLY-910 (https://linear.app/geoforge3d/issue/FLY-910/非工程快速-onbo
 
 ## 5. 体验标准(非技术视角红线 · 全程铁律)
 
-1. **绝不露工程黑话**:Lead/Runner/Department/manifest/launchd/Bridge/projects.json/repo/token 一律不对客户露。对客户只说:**向导(Onboarding Buddy)/ 你的 Team(里有 Captain + Crew)/ 后台清单 / 安置**。
+1. **绝不露工程黑话**:Lead/Runner/Department/manifest/launchd/Bridge/projects.json/repo/token 一律不对客户露。对客户只说:**向导(Buddy)/ 你的 Team(里有 Captain + Crew)/ 后台清单 / 安置**。
 2. **secret 只走 CLI 隐藏输入或 OAuth 登录** → OS keychain 或 600 文件;**绝不进对话 / 日志 / state.json / git**。
 3. **一次一件事 · 校验过才前进 · 失败给具体原因(不是「出错了」)· 可续传 · worst-case 一键转人工支持。**
 4. **用词(对外皮)= Captain(=内部 Lead)/ Crew(=内部 Runner)/ Team(=内部 Department)**;内部代码不改写。
 5. **vendor-agnostic**:agent CLI 可以是 Claude Code / Codex / 任一,不写死。
 
-## 6. Onboarding Buddy(核心)—— 运作模型
+## 6. Buddy(核心)—— 运作模型
 
 - **是什么**:一个**跑在 agent CLI 上**的自助对话 agent。用户跑完命令、装好 agent CLI 后面对的就是它。
 - **persona**:耐心、热情、**像同事**(参照 Metric 那种成熟自助引导 agent)。先给「有搭档陪我」的感觉,再谈正事。**绝不端着。**
@@ -57,16 +62,39 @@ Issue: FLY-910 (https://linear.app/geoforge3d/issue/FLY-910/非工程快速-onbo
 - **决策引擎(自适应核心)**:① 用户描述 → Team 结构(从描述长出、不预设行业)· ② 「第一件事」→ 推断接哪些业务系统(只接最少必需集)· ③ 何时升级(同一步失败 2 次 / 用户连说「不懂」→ 转人工)。
 - **跟 Anna 的边界**:**Anna = Sales**(只在用户进门前;顶多把 context 传给 Buddy 当开场底料);进来后跟 Buddy 搭、跟 Anna 无关;**卡住转人工支持,不是 Anna**。
 
+## 6.5 愿景:Buddy 常驻(phase-2)+ 分期(Annie v2 reframe)
+
+Annie 的 reframe:**Buddy 不只 onboarding 时在,而是一个常驻的用户面自助助手**(像用户身边一直在的一个搭档)—— 上手之后:**有问题帮你修、想开新 team 帮你开、日常自助**。
+
+**但守 scope(每加一样说清砍哪)**:
+| 阶段 | Buddy 做什么 | 状态 |
+|---|---|---|
+| **MVP(本 PRD,现在建)** | **onboarding(step 0–8)**:把非技术新人从「刚拿到 access」带到「有一个能跑的 system + 第一个真产出」 | ✅ 本 PRD 全部需求 |
+| **phase-2(愿景,MVP 不做)** | **常驻自助**:① 想再开一个新 team → Buddy 引导开(复用 onboarding 的 Team/工具接入机制)· ② 系统/某个接入出问题 → Buddy 帮你自助修(诊断 + 引导重连/修复)· ③ 日常「我想让团队多做件 X」的自助引导 | 🔭 方向,**不进 MVP build** |
+
+**分期红线**:MVP build **只做 onboarding(step 0–8)**;上面 phase-2 三样(开新 team / 自助修 / 日常自助)**先不建** —— 现在只把架构留出可扩位(Buddy 是常驻 agent 形态、不是一次性 onboarding 脚本),真做常驻功能是 phase-2 单独 PRD。**每加一样都要说清砍哪:MVP 砍掉常驻三样、只保 onboarding,换 ship 速度。**
+
+## 6.6 边界:Buddy vs infra 告警 bot(FLY-915/942)—— 两个角色别混
+
+| | **Buddy(本 issue)** | **infra 告警 bot(FLY-915 / FLY-942)** |
+|---|---|---|
+| 面向 | **用户(客户自己)** | **系统运维 / founder** |
+| 干啥 | 用户面**自助**:onboarding +(phase-2)开 team / 修问题 / 日常引导 | **系统健康检测 + 告警**(watchdog:卡住/异常/告警上报) |
+| 触发 | 用户来找它 / 它在 onboarding 里主动带 | 系统状态变化自动触发 |
+| 关系 | 客户体验层 | 平台可靠性层 |
+
+**别混**:Buddy 是「客户身边的自助搭档」,不是「监控系统健康的看门狗」;FLY-915/942 那套告警/watchdog 是平台侧、面向运维,**不归 Buddy**。两者可互补(Buddy 帮用户自助修的某些问题,信号可能来自 infra 层),但**角色、面向的人、触发方式都不同,设计/build 分开**。
+
 ## 7. 详细需求 —— 逐步骤(step 0–8),eng 照着能建
 
 > 每步给:**目标 · 客户看到的确切文案 · 交互 · 系统动作(命令/调用/[AUTO])· 校验 · 失败分支(原话+恢复)· 续传 · 验收标准**。真话术样例见 onboarding-buddy-spec.md,可直接当模板。
 
 ### 步骤 0 · 地基:装一个 agent CLI(vendor-agnostic)+ 登录 —— Buddy 跑在它上面
-- **目标**:把底座(agent CLI)弄好,并在其上启动 Onboarding Buddy。**没它 Buddy 起不来**——所以是最前面的地基。
+- **目标**:把底座(agent CLI)弄好,并在其上启动 Buddy。**没它 Buddy 起不来**——所以是最前面的地基。
 - **谁做**:那条 command 的**引导安装脚本**(此刻 Buddy 还没起);装好+登录后 Buddy 在 CLI 上启动、接管后续。
 - **客户看到**:`正在准备… 检查环境 ✓  装好你的 agent 工具 ✓  让你登录一下…` +「先装一个 agent 工具(它是你这套东西的底座)。装好了,现在浏览器里登录你自己的账号、点同意 —— 用你自己的订阅,不用弄任何密钥。」
 - **交互**:粘 command(触发)+ 浏览器 OAuth 登录用户自己账号/订阅。
-- **系统动作**:检测 Node≥20 / git(缺则 [AUTO] 装或问)→ 全局装 Flywheel onboard 层 → **[AUTO] 检测/装一个 agent CLI(默认可配,vendor-agnostic:Claude Code / Codex / …)** → 引导登录命令 → 浏览器 OAuth → 校验能起最小会话 → **在该 CLI 上启动 Onboarding Buddy**。**不收 API/Cloud key。**
+- **系统动作**:检测 Node≥20 / git(缺则 [AUTO] 装或问)→ 全局装 Flywheel onboard 层 → **[AUTO] 装 agent CLI:默认 Claude Code、可切 Codex(vendor-agnostic 地基,Annie v2 定;架构保持可切换、不写死)** → 引导登录命令 → 浏览器 OAuth 登录用户自己账号/订阅 → 校验能起最小会话 → **在该 CLI 上启动 Buddy**。**不收 API/Cloud key。**
 - **校验**:agent CLI 能起一个最小会话 + Buddy 在其上启动。
 - **失败分支**:没装成→手动安装链接+「装好回来说声」;登录没弹浏览器→可复制登录 URL;失败 2 次→转人工。
 - **续传**:装/登录态由 CLI 自管,不落 state 明文;重跑跳过已装。
@@ -173,7 +201,7 @@ Buddy 从「第一件事」推断要接哪些系统 → 一次一个 → OAuth �
 > 每个链回本 PRD 段 + FLY-648 底座;**本 issue 不派 eng-build runner**,拆分/建单在 PRD 收敛后进行。
 
 1. **BI-1 · 一条 command bootstrap + agent CLI 地基(step 0)**:装 Flywheel onboard 层 + vendor-agnostic 检测/装 agent CLI(Claude Code/Codex/…)+ 引导登录 + 在其上起 Buddy。(§7 step0;FLY-648)
-2. **BI-2 · Onboarding Buddy agent 本体**:operating loop + 话术层(system prompt/模板,温暖同事基调)+ state 续传(onboarding-state.json)+ 决策引擎(描述→Team / 推断接哪些系统 / 何时升级)。(§6·§7)
+2. **BI-2 · Buddy agent 本体**:operating loop + 话术层(system prompt/模板,温暖同事基调)+ state 续传(onboarding-state.json)+ 决策引擎(描述→Team / 推断接哪些系统 / 何时升级)。(§6·§7)
 3. **BI-3 · 基础工具接入**:Discord(高权限 bot + 自动建结构 + 4 步引导 + 校验)· Linear OAuth+provision · GitHub OAuth+建/绑仓。(§7 step2 · §8-A)
 4. **BI-4 · 业务系统连接器 + JIT 接入**:MCP/连接器 seam · 推断最少必需集 · OAuth/隐藏 key · 最小只读探测 · 只读 scope。(§7 step6 · §8-B;FLY-648)
 5. **BI-5 · 自动安置**:脚手架 + 推 GitHub 仓 + projects.json + manifest + OS-portable 常驻服务 + health-check。(§7 step7;FLY-648)
@@ -182,11 +210,10 @@ Buddy 从「第一件事」推断要接哪些系统 → 一次一个 → OAuth �
 8. **BI-8 · Discord 4 步截图/短视频素材**。(§8-A 附录)
 
 ## 13. Open questions(不自己填,待 Annie/后续)
-1. **agent CLI 默认装哪个**(vendor-agnostic,但要不要给个默认 / 让用户选)。
-2. **Onboarding Buddy 正式名**(暂名)。
-3. **一条 command 具体形态**(`curl … | sh` vs `npx @flywheel/onboard`)。
-4. **收费** = placeholder,待 **WorkBuddy / homerail 竞品分析**完再深化(块4)。
-5. **「Draft」竞品**待 Annie 给链接/截图(补 competitor-onboarding-research.md)。
+> **已定(v2)**:~~agent CLI 默认~~→ 默认 Claude Code、可切 Codex(§7 step0)· ~~Buddy 正式名~~→「Buddy」。
+1. **一条 command 具体形态**(`curl … | sh` vs `npx @flywheel/onboard`)。
+2. **收费** = placeholder,待 **WorkBuddy / homerail 竞品分析**完再深化(块4)。
+3. **「Draft」竞品**待 Annie 给链接/截图(补 competitor-onboarding-research.md)。
 
 ## 14. 引用
 - 设计全套:`product/doc/FLY-910-non-eng-onboarding/`(权威可建 spec = onboarding-buddy-spec.md v3)。
