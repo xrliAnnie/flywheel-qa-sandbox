@@ -79,12 +79,12 @@
   <p class="sub">让 Annie 不再人肉 QA:状态一变,系统主动把"带类型"的通知推进对应 <code>[FLY-XX]</code> thread。下面每张卡 = 那种通知在 thread 里长什么样。格式是建议稿,逐块跟你过。</p>
 
   <div class="note">
-    <b>只在"球换手"时 push</b>(常规进展不 push = 治刷屏)。四种 push + 一种私下 nudge Lead + 每日兜底 digest;全部同源(从真实 stage 派生),与 FLY-964 的置顶/标题显示永不打架。
+    <b>看门狗只在正常路径漏了(runner 没找 Lead / Lead 漏应答)或真卡、且超时间阈值没人动时才报</b>(不是球换手就发 = 治噪音/刷屏)。报给对的人:先责任 Lead、consolidate 接收点;下面是"报到 Annie 时"的形态。全部同源(真实 stage 派生),与 FLY-964 显示永不打架。
   </div>
 
   <!-- 1 -->
-  <div class="sech">① ✅ 干完了,等你拍 <span class="tag">parked 等 founder · 立即 push</span></div>
-  <div class="caption">runner park 那一刻【立即】发,不等超时。正向 surface,不是告警。</div>
+  <div class="sech">① ✅ 干完了,等你拍 <span class="tag">parked 等 founder · 时间阈值兜漏</span></div>
+  <div class="caption">正常路径:runner 告诉 Lead → relay。若超时间阈值仍没被处理 → 看门狗兜(先 nudge Lead 转)。不是那刻立即。</div>
   <div class="card green">
     <div class="thloc"># FLY-931 · voice-bridge PR-2</div>
     <div class="msg">
@@ -189,8 +189,8 @@
   <!-- legend -->
   <div class="sech">图例:每种通知 ↔ 机制</div>
   <table class="legend">
-    <tr><td>① ✅ 干完等你拍</td><td>球换手到 founder(parked at ship gate)。park <b>那刻立即</b> push,不等超时。治"parked 静默没人发现"。</td></tr>
-    <tr><td>② 🔴 决策卡</td><td>要 founder 拍的每个决策 = 一张独立固定格式卡。一事一卡、立即、绝不批量进 digest。</td></tr>
+    <tr><td>① ✅ 干完等你拍</td><td>parked-等-founder。正常路径 relay;<b>超时间阈值没被处理</b> → 看门狗兜(先 Lead)。治"parked 静默没人发现"。</td></tr>
+    <tr><td>② 🔴 决策卡</td><td>要 founder 拍的每个决策 = 一张独立固定格式卡。一事一卡、绝不批量进 digest。</td></tr>
     <tr><td>③ 🟡 Lead 已替你决定</td><td>可回退的技术决定,透明 FYI。建议只进 digest/安静帖,不单独 ping(待确认 Q7)。</td></tr>
     <tr><td>④ 🔴 卡住 @Lead</td><td>看门狗 capture pane 判真卡 → 先 @ 责任 Lead。检测/归因/@-target = FLY-927;措辞按真实 stage 不猜。</td></tr>
     <tr><td>⑤ ⏱ Lead 没 relay</td><td>私下 nudge 该 Lead(Annie 看不到),给窗口自转。Annie 7-05 在 FLY-878 就 spec 过(scenario 3)。</td></tr>

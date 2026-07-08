@@ -33,51 +33,55 @@ runner 干完一轮 parked、或真卡住时,**系统主动、准确、及时地
 
 ---
 
-## 2. 核心洞察:两个互补的界面 + 一条升级阶梯,全部同源
+## 2. 核心洞察:正常路径自洽,看门狗只兜"漏"(Annie 2026-07-07 深度 revise)
 
-Annie 现在人肉 QA 的本质是:**唯一能"知道 runner 停了"的界面是她主动去看**。要根治,得让"知道"这件事变成系统 push 给对的人。
+> **⚠️ 关键 revise**:早稿把汇报层设计成"球一换手就 push"——**Annie 否掉了**。因为换手时 runner 大概率自己会找 Lead、Lead 处理或 relay —— 这条**正常路径自己就 work**,系统不该在它正常运转时插一脚(那就是噪音 = 病症④)。
 
-把这件事拆成两个界面 + 一条阶梯:
+**看门狗真正要兜的是正常路径的两类失败(漏):**
+- **漏①:runner 忘了找 Lead** —— 停/需要人,却没告诉 Lead(= FLY-878 场景1)。
+- **漏②:Lead 漏应答** —— runner 找了 Lead,但 Lead 忙、把 message 忽略了(= FLY-878 场景3:看门狗也看 Lead 应答时效)。
 
-| | 是什么 | 谁看 | 触发 | 归属 |
-|---|---|---|---|---|
-| **持久显示(pull)** | 置顶消息 + thread 标题徽章,恒在,反映"现在整体在哪一步" | Annie 想看时扫一眼 | 每个生命周期事件**静默**重算刷新 | **FLY-964**(已定) |
-| **主动推送(push)** | 状态变时往 thread 发的**一条新的带类型通知**(会 ping) | 通知自己来找 Annie / 责任 Lead | **只在"球换手到 founder / Lead 已替你决定 / 真卡了"时** push | **本 PRD** |
-| **升级阶梯(safety net)** | 超时未处理 → owner Lead 先接 → 兜底 digest | 责任 Lead → (兜底)Annie | 阈值(1h,FLY-927)+ 每日一次 | 检测=FLY-927;founder 体验=本 PRD |
+其余换手(runner 找了 + Lead 处理了)→ **看门狗静默,不管**。
 
-**为什么两个界面而不是一个**:光有持久显示(964)不够——它是 pull,Annie 还得主动去看 = 还在人肉 QA。光有 push 又会刷屏。**持久显示恒在但静默,推送稀有但高信号**;两者同源(都从 `flywheel-comm stage set` 上报的真实 stage + park 元组派生),所以永不矛盾。**这条"同源"是"准确性=北极星"的技术底座**(接 FLY-964 §4 / FLY-927 fix#1:按真实 stage 报,不靠 heuristic 猜——FLY-912 那条"Code Review 卡 3h"错的措辞就是猜出来的)。
+所以汇报层 = **两个界面 + 一张时间阈值的兜漏网**,全部同源:
 
----
+| | 是什么 | 谁看 | 触发 |
+|---|---|---|---|
+| 持久显示(FLY-964,pull) | 置顶/标题恒在、静默刷新 | Annie 想看时扫一眼 | 每生命周期事件重算 |
+| 看门狗兜漏(本 PRD,**时间阈值**) | 正常路径失败(两漏 + 真 stall)且**超时间阈值没人动** → 报责任 Lead(consolidate 接收点) | 责任 Lead 先接;解不了才到 Annie | **停在那没人动 + 超时间阈值** |
 
-## 3. 状态 → 通知映射(把 5 块串起来的骨架)
-
-一个 session 在任一时刻,按真实 stage + park 元组,归到"球在谁手上":
-
-| 球在谁 | 触发状态(真实 stage 派生) | push? | 通知形态 | 对应 5 块 |
-|---|---|---|---|---|
-| **runner / CI**(在干活 / 跑测试 / CI 中) | running、test、CI 中 | ❌ 不 push | 仅 964 置顶显 ▶ 进行中 | — |
-| **founder — 干完等你拍** | parked 在 approve_to_ship / ship gate,活已完成且健康 | ✅ **立即 push** | 『✅ [FLY-XXX] 干完了,等你拍 X』| 块3 ✅ |
-| **founder — 需要你做个决定** | 要 founder 二选一 / 拍方向 | 🔴 **立即 push(决策卡)** | 『🔴 [FLY-XXX] 需要你拍:<一句话> — A / B — 建议 X』| 块4 决策卡 |
-| **某 Lead — 真卡了** | 真 stuck / hang / rate-limit 冻结 / tool-leak(FLY-941) | 🔴 **push + @该 Lead** | 『🔴 [FLY-XXX] 卡住(在等 <Lead>):停在 <真实stage> 已 Nh』| 块2/5 |
-| **某 Lead — 压着没 relay**(HL 2026-07-07 补) | runner 抛了需 founder relay 的东西,但走 Lead 中转、Lead 还没转 | ⏱ **计时 → 超时先 nudge 该 Lead**(不先让 Annie 看到) | (先私下 nudge Lead;Lead 转成 ✅/🔴 卡进 thread) | 块5 |
-| **founder — Lead 已替你决定** | Lead 自主拍了个可逆的技术决定 | 🟡 **FYI** | 『🟡 [FLY-XXX] Lead 已替你决定 Z(可回退)』| 块3 🟡 |
-
-**关键:两个时刻,别混**(这是相对 FLY-927 的核心 reframe):
-1. **立即正向 surface**(事件驱动):runner 一 park-等-founder,**立刻** push 一条 ✅ / 🔴,**不等 1h**。它不是告警、是把"该你了"正向、及时地端到你面前。
-2. **超时升级**(FLY-927 阈值):同一条若 1h 仍没人处理 → 看门狗按 FLY-927 升级(owner Lead 先接)。1h 阈值治的是"拖太久没人管",**不是**首次 surface 的门槛。
+**为什么不是 push-every-change**:正常路径 work 时插 push = 噪音(病症④);看门狗只在路径"漏"了、且**超时间阈值没人动**时才响 = 高信号、不刷屏。同源(真实 stage + park 元组派生)保证"准"(北极星),与 964 显示永不打架(接 FLY-927 fix#1:按真实 stage 报不靠猜——FLY-912"Code Review 卡 3h"就是猜错的)。
 
 ---
 
-## 4. 反刷屏 + 绝不静默:去重与升级阶梯(块1 的心脏)
+## 3. 看门狗抓什么 + 报给谁(时间阈值,不即时)
 
-两个诉求看似矛盾,用一条阶梯化解:
+一个 session 停在需要人介入的态、且**超过时间阈值没人动**,看门狗按下面分类,**先报责任 Lead**(不即时、不先戳 Annie):
 
-1. **去重(dedup)**:一条 push 对每个 (issue, 球在谁) 转移**只发一次**。同状态不重复报。**球必须真的换手**才会再 push。→ Annie 离开 5h、期间无状态变化 = 0 条新通知。
-2. **绝不对 Annie 定时 re-ping**:首次 ✅/🔴 push 之后,**不**按计时器反复戳 Annie(那就是刷屏)。
-3. **超时 → 先找 Lead,不是再戳 Annie**(FLY-927 owner 首响应):一条"球在 founder"的项若超阈未处理,看门狗**先 @ 责任 Lead**——Lead 的活是确保这张卡够醒目 / 必要时 relay 提醒,**不是**再刷 Annie。(真只有 Annie 能拍的决定,Lead 不能替她拍,但能保证"它没被埋掉"。)
-4. **每日兜底 digest**:每天一次,把**当前所有"在等你"的开放项**(未处理的决策卡 + parked-等-founder)汇总成一条 founder 面向的 roll-up。→ 即便某次 push 漏了(Bridge 短暂 down 等),也绝不会有东西静默烂在那。
+| 检测类(超阈值才响) | 判定 | 先报谁 | 来源 |
+|---|---|---|---|
+| **漏①:runner 没找 Lead** | parked/需要人,但无对 Lead 的通信 | 责任 Lead | 878 s1 |
+| **漏②:Lead 漏应答** | runner 找了 Lead,Lead 超应答时效未理 | 提醒该 Lead | 878 s3 / HL |
+| 真 stall / error | capture pane:冻住 + 无进展(非健康 idle) | owner Lead | 878/975 |
+| rate-limit / 冻结 / 登出 | capture pane 认菜单/登出(**非 alive-flag**) | owner Lead/infra | alive-flag 家族 |
+| tool-call-leak | 输出含未执行的 invoke 文字块 | owner Lead | FLY-941 |
+| ghost(dead-but-registered) | status=running 但 alive=false | 系统(检测+清+抑制) | 970/973 |
 
-**这四条合起来 = "绝不静默停着" ⨯ "离开数小时不刷屏"**:立即 push 一次(去重)+ 不再 re-spam + 超时先找 Lead + 每日兜底。这是本 PRD 的产品灵魂。
+- **时间阈值(不即时,Annie revise 2)**:Lead 忙、10min 后处理完全 OK。所以看门狗**不在事发那刻响**,而是设可配阈值(878:默认 ~20min,global+per-project)判"是不是停在那没人动了"。超阈值才响。→ 早稿的"✅/🔴 park 那刻立即 push"**作废**。
+- **报给谁 = consolidate 接收点(Annie 病症②)**:现状分发乱——有的给 Lead[被看到、好]、有的进 alert room[被忽略]。→ 看门狗输出**统一到实际被看到的接收点**:issue 相关→对应 thread;Lead 相关→该 Lead(不是被忽略的 alert room)。owner Lead 先接,解不了才升级到 founder 的 consolidate 队列。
+- **它真到 Annie 时的形态**(经 Lead relay 或系统 surface):决策卡『🔴 [FLY-XXX] 需要你拍:<一句话> — A/B — 建议 X』/ 干完等你拍『✅ …』/ Lead 已替你决『🟡 …(可回退)FYI』。格式见 `mockup.html`。**但何时到 Annie 由"正常路径 + 看门狗兜漏"决定,不是每次即时 push。**
+
+---
+
+## 4. 反刷屏 ⨯ 绝不静默:时间阈值 + 去重 + consolidate + digest(对上 Annie 四病症)
+
+- **时间阈值(治噪音④/误报)**:不即时响,超阈值(没人动)才响 → 正常路径 work 时零打扰。
+- **去重 + over-notify 抑制**:同一"漏"只报一次(复用 claims.db/episode-latch);已知/正清理的 ghost 绝不 re-alert(治病症④狂发)。
+- **先报 Lead、不先戳 Annie**:owner Lead 首响应(自愈/relay);解不了才升级 founder。
+- **consolidate 接收点(治病症②)**:统一到被看到的点(thread/Lead),不散落进被忽略的 alert room。
+- **每日兜底 digest(治病症③漏报的网底)**:每天一次把当前所有"在等你"的开放项汇总成 founder 面向 roll-up → 即便某次漏了也不静默烂掉。
+
+**合起来 = 绝不静默(兜两漏 + stall + digest 网底)⨯ 不刷屏(时间阈值 + 去重 + consolidate)**,直接对上 Annie 的四病症(①误报 ②分发 ③漏报 ④噪音)。这是本 PRD 的产品灵魂。
 
 ---
 
@@ -93,8 +97,8 @@ Annie 现在人肉 QA 的本质是:**唯一能"知道 runner 停了"的界面是
 
 块3 说"Bridge 自动往 thread 发、不经 Lead 手转";HL 又指出"Lead 压着 runner surfaced 的东西没转"是真 case。二者**不矛盾**,是按状态可判定性分两条路径:
 
-- **路径 A · 机器可明判的状态 → Bridge 直投 thread(不经 Lead)**:runner parked 在 ship gate = ✅干完等你拍;正式 gate question = 🔴决策卡 —— 这些从真实 stage / park 元组能明确判定,**Bridge 直接发对应 thread、只 @ founder**(块3 的"不经 Lead 手转"就是这条,消灭了大部分 Lead-relay 依赖)。
-- **路径 B · 需 Lead 判断/塑形的状态 → Lead 是中转,但看门狗盯它的 relay 延迟**:runner 抛出一个需 Lead 先塑形成决策卡(或先自己试着解)的问题 → Lead 是中转 hop。**看门狗对这条 hop 计时**:超时 Lead 还没 relay/ACK → **先私下 nudge 该 Lead**(给窗口自转,别让 Annie 靠"看门狗 flag"先发现)。HL 今天漏转 978 round-1 就是这条:watchdog 本应先 nudge HL,而非 Annie 先看到。
+- **路径 A · 机器可明判的状态 → 系统可直接 surface 到对应 thread(不依赖 Lead 手转)**:runner parked 在 ship gate、正式 gate question 这些从真实 stage/park 元组能明判 —— 系统可直接 surface 到对应 thread、只 @ founder(**消灭 gap① 风险**:不靠 Lead 记得转)。**但仍走时间阈值**:不在那刻即时轰炸,超阈值没人动才由看门狗兜(= Annie revise 2)。
+- **路径 B · 需 Lead 判断/塑形的状态 → Lead 是中转,看门狗盯 relay 延迟(= 漏②)**:runner 抛出一个需 Lead 先塑形成决策卡(或先自己试着解)的问题 → Lead 是中转 hop。**看门狗对这条 hop 计时**:超应答时效 Lead 还没 relay/ACK → **先私下 nudge 该 Lead**(给窗口自转,别让 Annie 靠"看门狗 flag"先发现)。HL 今天漏转 978 round-1 就是这条(= FLY-878 场景3)。
 
 **这两条合起来才完整**:路径 A 把常见态直投(去掉 relay 依赖),路径 B 用"Lead-relay 延迟看门"堵住"Lead 坐着不转"的漏。都归到 §3 第 3 条"超时先 @ Lead 不再戳 Annie"。
 
@@ -107,6 +111,13 @@ Annie 现在人肉 QA 的本质是:**唯一能"知道 runner 停了"的界面是
 > Cass 要 FLY-878 / 975 / 976 跟 942 收敛 → 本 PRD 是收敛这一族的**产品层**。主动汇报(§2–§5)只有在**检测足够准**时才成立 —— "状态显示骗你一次你就再也懒得看"(FLY-964 §4 同根)。所以**准确性是本 PRD 的北极星**,检测层与汇报层同等重要。
 
 ### 5.5.1 准确性为什么是北极星(现状为什么不准)
+
+> **G1 北极星验收 = Annie 亲给的四病症(2026-07-07)**,PRD 的准确性验收就照这四条:
+> - **① 误报**:机械匹配旧 message、遇新 error 认不出 → 误报(**坐实 FLY-976 LLM 判断层**,机械规则不够)。
+> - **② 分发不合理**:有的报给 Lead[被看到、好]、有的进 alert room[被忽略] → **consolidate 接收点**(统一到实际被看到的点)。
+> - **③ 漏报**:真 stuck 没反应(如 FLY-546)。
+> - **④ 噪音过多**:对错的问题狂发(如 ghost SPAM)。
+> 北极星一句话:**watchdog 说卡就是真卡、说健康就是真健康;报了就是该报的、报到的就是看得到的。**
 
 现有检测是**机械规则**(pane-hash 冻结 + 固定错误模式 + `isIdleHealthyPane` 抑制器),两头都错:
 - **漏报**(false negative,最致命 —— 直接逼 Annie 人肉巡查):FLY-975/546 —— runner 撞 `Server error mid-response` 后停在空 `❯` 静默 22min,被 `isIdleHealthyPane` 当"健康 idle"压掉;错误模式也不认(只认 Stream idle timeout / 限流)。**FLY-927 不修这条**(没动 isIdleHealthyPane、没加该错误模式)。
@@ -173,34 +184,34 @@ Annie 的根因判断(FLY-976):**看门狗最大问题是它不是 LLM,没法理
 
 ---
 
-## 7. 要跟 Annie converge 的 clarify 集(HL relay;小步多轮,建议排序)
+## 7. converge 进度 + 剩余 clarify(HL relay;小步多轮)
 
-> Annie 交付:逐块 converge,不一次性甩全 PRD。每条给我的建议 + 开放点。**建议排序**:round 2 = Q1+Q2(准确性机制+验收,北极星,最基础);round 3 = Q3(阈值/阶梯);round 4 = Q4–Q7(汇报细节);round 5 = Q8–Q10(边界/scope)。
+> **母 Epic**:Annie 2026-07-07 要建 **Watchdog Epic**,把 942/878/975/976/970… consolidate,以后发现一个提一个 issue、定期 iterate。**本 PRD 挂 Epic 底下**。
 
-**框架** ✅ round-1 HL 已确认(两界面/两时刻/反刷屏阶梯/边界干净),并补第 5 球态"Lead 压着没 relay"。待 Annie 框架终确认。
+**框架** ✅✅ **Annie 深度 review + 两条核心 revise(2026-07-07)已落**:① 不是 push-every-ball-change → 看门狗兜两漏(runner 没找 Lead / Lead 漏应答);② 不是 park 立即 push → **时间阈值型 stall 检测**。第 5 球态"Lead 漏应答"= 漏②,与 878 场景3 对齐。
 
-### Group 1 · 检测准确性(北极星,先过)
-- **Q1 准确性机制**:确认走 **FLY-976 的 hybrid**(机械快路省 token 判明确态 + LLM 判断层兜底可疑态,读 pane/真实stage/park元组 → 卡/健康idle/正常等待 + 归因 + 建议动作)作为 THE 准确性机制?〔rec:是——纯机械(878 零-token)已被 975/546 证明会漏〕
-- **Q2 北极星验收(准确率怎么衡量)**:什么算"够准"?〔rec:分三面 —— **漏报 FN**(missed 真 stall,如 546;最致命=直接逼 Annie 人肉巡查,目标近零)/ **误报 FP**(alert 健康 runner;可容忍低)/ **措辞归因准确**(别再"Code Review 卡 3h" 猜错)。**FN 权重 >> FP**(漏一个比偶尔误报一个糟得多)〕
-- **Q3 阈值/时序(nudge-Lead 先于 founder)**:878 说 20min→Lead、927 说 1h,怎么统一?〔rec:**分层可配**(global+per-project):静默停车 ~20min → 先 nudge 责任 Lead;Lead 未解/未转 再 +X → 升级 founder。**✅干完等你拍 = park 那刻立即 push,不受此超时阈值管**(它是正向 surface,不是超时告警)〕
+### Group 1 · 检测准确性(北极星)✅ **Annie 已拍(四病症)**
+- **Q1 准确性机制** ✅ 走 **FLY-976 LLM 判断层**(病症① 坐实:机械匹配旧 msg/新 error 认不出)。
+- **Q2 北极星验收** ✅ = **Annie 四病症**:①误报 ②分发不合理→consolidate 接收点 ③漏报 ④噪音过多(见 §5.5.1)。
+- **Q3 阈值** ✅ **时间阈值型**(878 ~20min 可配,不即时);早稿"立即 push"作废。
 
-### Group 2 · 主动汇报细节(round-1 已确认,补细节)
-- **Q4 digest 触发模型**:event vs 定时?〔rec:**两者** —— event 主动 push(球换手,主)+ 每日兜底 digest(网底)。HL brief 已倾向〕
-- **Q5 digest 内容/落点/时点**:〔rec:内容 = 当前所有"在等你"开放项(谁在跑/谁 parked 等你/谁真卡/什么要你决策 vs Lead 已替你决);时点 = 每日 1 次;**落点 = founder 面向 roll-up,待 Annie 定**(她的 DM? 某专属频道?与 FLY-915 #flywheel-notify 的非-@ 系统 digest 不同——这是"你的开放队列",可轻 @)〕
-- **Q6 决策卡固定字段**:〔rec:`🔴 [FLY-XXX] 需要你拍:<一句话> — 选项 A / 选项 B — 建议 X(一句理由)`;一事一卡、立即、**绝不批量进 digest**〕确认字段。
-- **Q7 🟡 Lead 已替你决定**:push(ping)还是只进 digest?〔rec:**只进 digest / 安静 thread 帖,不 ping**(它是 FYI 透明,不需打断)〕
+### Group 2 · 剩余 converge(下一轮)
+- **Qa consolidate 接收点具体在哪**(病症②新开):看门狗输出统一到哪个"实际被看到"的点?〔rec:issue 相关→对应 thread;Lead 相关→该 Lead;founder 兜底→一个 consolidated"你的开放队列"(非被忽略的 alert room)。落点待 Annie 定〕
+- **Qb 决策卡固定字段**〔rec:`🔴 [FLY-XXX] 需要你拍:<一句话> — A/B — 建议 X(一句理由)`;一事一卡、绝不批量〕
+- **Qc 🟡 Lead 已替你决定**:进 digest 还是安静帖?〔rec:只进 digest/安静帖,不 ping〕
+- **Qd digest 内容/落点/时点**〔rec:内容=当前所有"在等你"开放项;每日 1 次;落点=consolidate 队列(同 Qa)〕
 
-### Group 3 · 边界 / scope
-- **Q8 942 ↔ 915 边界**:〔rec:**942 = 检测(要检测什么+准确性北极星)+ 主动汇报(founder 体验:何时/怎么 surface)**;**915 = 通知管线(频道架构/bot 工单队列/发送方门禁/profile 切换)**。942 喂 thread-落点需求给 915,不重做管线〕
-- **Q9 ghost 检测+抑制**:纳入 942 需求?〔rec:**检测 dead-but-registered(status=running/alive=false)+ over-notify 抑制(已知/正清理的别 re-alert)= 942 需求**;清理机制/scope 归属 = eng(927/973)〕
-- **Q10 mid-turn hard-stop**:纳入 942 scope 还是兄弟 issue?〔rec:列为**需求**(让跑偏 runner 能被及时叫停,别烧完 token),但实现 = harness/eng,**可能独立 issue**;待 Annie 定是否算 942 一部分〕
+### Group 3 · 边界 / scope(下一轮)
+- **Qe 942 ↔ 915 边界**〔rec:942=检测+主动汇报兜漏;915=通知管线。942 喂 thread/consolidate 落点需求给 915〕
+- **Qf ghost 检测+抑制 + auto-QA-spawn gate 治源头**〔rec:检测+over-notify 抑制=942 需求;清理/scope/gate=eng(970/973/579)〕
+- **Qg mid-turn hard-stop**:纳入 942 scope 还是兄弟 issue?〔rec:列需求,实现 harness/eng,可能独立 issue〕
 
 ---
 
 ## 8. 假设(实现前显式列出,请 Annie 证伪)
 
-1. runner 的真实 stage 已经可靠上报(`flywheel-comm stage set`)且 Bridge 能读到 —— 这是"按真实 stage 报、不靠猜"的前提(FLY-927 fix#1 也建立在此)。待审计确认覆盖度。
+1. runner 的真实 stage 已经可靠上报(`flywheel-comm stage set`)且 Bridge 能读到 —— "按真实 stage 报、不靠猜"的前提(FLY-927 fix#1 也建立在此)。待审计确认覆盖度。
 2. 每条 issue 已有专属 `[FLY-XX]` chat thread,且 `founder-thread-notifier` 能往里发(FLY-523/818 已在跑)。
-3. "干完 parked 等你拍"是一个可从 stage/park 元组明确判定的状态(approve_to_ship / ship gate),不是靠画面猜。
+3. runner 在需要人介入时会 declare(park / ask Lead)—— 看门狗判"漏①(没找 Lead)"依赖能看到"有没有对 Lead 的通信"(现有 CommDB `runner_declared_states` / ask 记录)。
 4. 去重键可复用 FLY-915/927 的 claims.db / episode-latch,不需新建去重设施。
-5. Annie 要的"主动"= 通知 push 到 thread + 她被 ping,而不是"Lead 手动把状态转述给她"(块3 明确"不经 Lead 手转")。
+5. "consolidate 接收点"存在一个"实际被 Annie/Lead 看到"的落点(非被忽略的 alert room)—— 具体落点待 Annie 定(Qa)。
