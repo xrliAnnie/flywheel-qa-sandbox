@@ -217,12 +217,13 @@ graph LR
 - **(b-共享 hub 多租户)** 各 team 的 Lead+Bridge 跑在**同一容器/机器**,所有 Runner 共用这个 hub、经它通信(**仍一个 Bridge 连所有 Runner**,Annie 理解正确);省资源但 hub 要做多租户鉴权/隔离、一崩全崩、安全最难。
 - **(c-每 team 自己一套)** 每 team 独立 Bridge+DB+专属 Runner 容器 = **team 级联邦**;隔离最干净、契合 FLY-648「给别人用」。
 - **⭐ C 下跨 team Lead 怎么通信(Annie 尖问):所有方案 UI 都落 Discord → Discord 就是跨栈互联层**;C 里各 team 互不直连,跨 team Lead 通信走 **Discord 共享层(如 leads-roundtable)**。
-- **建议:我们现状 (a);产品化/多项目走 (c);(b) 除非做托管 SaaS 否则别碰。** **注意 (c) = team 级联邦 → 多租户与联邦是同一问题(见 §3.2 推荐)。**
+- **建议(Annie v7 SaaS 决策收敛):内部可信多 team(我们自己)用 B(运维便宜、隔离弱可接受);对外付费 SaaS 用 C(付费客户的数据/凭据/blast-radius 必须硬隔离,B 的逻辑隔离不够)。** ⭐ **C = 联邦 = productization(FLY-648);容器化 = 让 C 规模化 provision 的手段**(每客户自动开一套容器化的完整栈,「容器打包整套环境」正是给别人用更简单的关键)。注意 (c) = team 级联邦 → 多租户与联邦是同一问题(见 §3.2 推荐)。
 
 **(d) warm pool 生命周期 + ⭐ profile 分池(Annie v4/v5 co-eval):**
 - **warm 的是「节点」不是「session」:** warm 池 = 开好机 + 已登录 claude CLI + runner-agent 注册 + 入 tailnet 的节点,空转待命。来一个 issue → 在 warm 节点上起**全新 Claude session**(干净 context)→ 做完 **exit**、节点续 warm。**不是**挂一个 session 注 context 复用(会串味 + 违背 Flywheel「一 issue 一 session」)。贵的是开节点(分钟)、起 session 便宜(秒)。
 - **⭐ 按 profile 分池 = 一个 mapping(采纳 Annie 点子,v6 澄清):** profile = 该节点预装/预登录了哪些账号+工具(Cloud CLI / Chrome / Suno / Linear / GitHub)。**它是一个映射:每 team lead → 他能指挥哪些 profile**;派活带 profile 需求(「要带 Suno 的 profile」)→ 命中「lead 有权 + 有该 profile 的 warm 节点」。→ 解决「多数节点不需要 Suno」的浪费。**profile 分池正交于 B/C、两种都能用**(B 在一个 hub 内按 lead→profile 分派;C 各自 hub 内同样)。
-- **provisioning = 预烤登录态(bake)+ 载体是 container(非沙箱)(Annie v6 尖问「沙箱还是 container」):** 跟 346 一致区分——**沙箱 sandbox = 全套开发环境**(浏览器+终端+VSCode+MCP,给人/agent 交互式用);**container = 轻隔离执行单元**(无人值守跑 runner)。**warm-node 的预登录载体 = container 镜像/快照**(取即用,不是给人用的沙箱);profile = 不同预登录层。346 AIO Sandbox 是「需要全套交互环境」时才上的更重形态,两者不打架、跟 346 对齐。
+- **provisioning = 预烤登录态(bake)+ 载体是 container(非沙箱)(Annie v6/v7 尖问):** 跟 346 一致区分——**沙箱 sandbox = 全套交互开发环境**(浏览器+终端+VSCode+Jupyter+MCP);**container = 轻隔离执行单元**。**要隔离看容器、要浏览器看 provisioning(预装什么)——两件事分开。** warm-node 载体 = **container 镜像/快照**,profile = 不同预登录层。
+  - **⭐ 要浏览器的活不必上整套 AIO(Annie v7):做「瘦容器」就够** —— 浏览器 + headless Chrome + 终端,**去掉 IDE/Jupyter**,更轻。接 profile 池:「带浏览器 profile」节点 = 预装+预登录 Chrome 的瘦容器,要浏览器的活派给它、其它用纯执行 container。**要的是「容器(隔离)+ 浏览器(provision)」,非整套 AIO**;346 AIO 只在「要全套交互环境」时才上。
 
 **(e) spot/抢占为啥消失 + 兜底(Annie v5:spot 特性非架构必然):** spot = 云商骨折卖闲置算力、随时(几十秒~2 分钟甚至无通知)收回 + 网络分区/硬件故障。**这只是 spot 的代价、不是架构注定** —— on-demand 不会被抢;**用户自己的物理机更没这问题**(§3.6a 节点来源可选)。兜底:heartbeat(FLY-172)发现 → session-log(FLY-353)无损重建续跑;关键/长任务用 on-demand、可容忍中断批量用 spot;有预警时 drain。
 
