@@ -161,6 +161,38 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 </div>
 <div class="cmt"><label>💬 对新脊梁(判断在 run 里)的留言</label><textarea data-k="spine" data-label="3 · 新脊梁:判断在 run 里"></textarea></div>
 
+<!-- 3.5 DAG 两层 -->
+<h2><span class="secnum">🧩 ·</span> DAG 的两层含义:issue 派发图 + 每类任务的 workflow 模板</h2>
+<div class="card purple">
+  <div class="you"><b>你 articulate 的洞察(来自 1004/homerail,采纳):</b>「DAG 不只是 issue 自动派发,更是每类任务一套 workflow 模板 —— 三段式本身就是一个 DAG;每个 Lead/任务类别可以有自己 default 的 DAG 模板;还能 inject / fork / 每节点配模型。」</div>
+  <p><b>所以「DAG」在我们这里是<u>两层</u>,叠在一起:</b></p>
+  <ul>
+    <li><span class="k">第一层 · issue 派发 DAG(前面讲的)</span> —— 跨 issue、按 <code>blockedBy</code> 依赖、CoS 分诊、自动派 runner。</li>
+    <li><span class="k">第二层 · 每类任务的 workflow 模板 DAG(新)</span> —— 一个 issue 被派下去后,它<b>内部</b>怎么跑,也是一张 DAG。<b>三段式(设计→实现→QA)就是一个模板</b>。</li>
+  </ul>
+  <p><b>每类任务一套 default 模板:</b></p>
+  <div class="scroll"><table>
+  <thead><tr><th>任务类别</th><th>default DAG 模板</th></tr></thead>
+  <tbody>
+    <tr><td class="k">Eng(工程)</td><td>三段式:设计 → 实现 → QA(现有,3 节点)</td></tr>
+    <tr><td class="k">Product(产品)</td><td>完全不同、更短(如 1-2 节点:调研/收敛)—— 不该套三段式</td></tr>
+    <tr><td class="k">未来别的类型</td><td>各自一套;<b>提供几种 DAG 模板让不同事件挑</b></td></tr>
+  </tbody>
+  </table></div>
+  <p><b>运行时能力(节点级):</b></p>
+  <ul>
+    <li><b>inject</b> —— 跑中插一个节点(如 implement 中途发现要改,插一步)。</li>
+    <li><b>fork</b> —— 从一个节点岔成两个方向<b>并行试</b>(如 implement 岔两方案)。</li>
+    <li><b>profile</b> —— <b>每个节点绑一个模型</b>。<span class="tag new">已在做</span> grounded:<code>three-stage-phases.ts</code> 就是「每 phase 一个模型」的单一真相 —— 设计/实现偏 Fable、<b>QA=Opus</b>。三段式已经是一张「节点绑模型」的 DAG。</li>
+  </ul>
+  <div class="you" style="background:#f4f9ff;border-color:#bcd9ff"><b>三层套一层(整个东西的分层):</b><br>
+  · <b>模板层</b>:每类任务一套 DAG 模板 —— 定「这类活<u>怎么跑</u>」(形态)<br>
+  · <b>CoS 分诊层</b>:CoS 判相关/派给谁/用哪套模板 —— 定「<u>派什么、给谁</u>」(派发)<br>
+  · <b>护栏层</b>:founder gate / 接管叫停 / 出错升级 —— 定「<u>怎么不失控</u>」(安全)</div>
+  <p class="src">注:本节是照 Lead ffe866f5 把 1004 洞察融进设计源,已 grounded(three-stage-phases.ts = per-phase 模型)。将随下一版设计 / PRD 一起呈现。</p>
+</div>
+<div class="cmt"><label>💬 对「DAG 两层 / 每类任务模板 / inject·fork·profile」的留言</label><textarea data-k="templates" data-label="🧩 DAG 两层 + 任务模板 + inject/fork/profile"></textarea></div>
+
 <!-- 4 -->
 <h2><span class="secnum">4 ·</span> ⚠️ 监管护栏(判断点已挪,护栏随之更新)</h2>
 <div class="card amber">
