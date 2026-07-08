@@ -124,7 +124,13 @@ function kickoffTitle(
 ): string {
 	const d = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 	const t = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-	return `${d} ${t} · ${command}(${founder})${topic ? ` — ${topic}` : ""}`;
+	// raw Discord mention markup in the typed topic (<@id>/<@!id>/<#id>/<@&id>)
+	// must not leak into the founder-facing issue title (FLY-993 regression).
+	const cleaned = topic
+		?.replace(/<[@#][!&]?\d+>/g, "")
+		.replace(/\s+/g, " ")
+		.trim();
+	return `${d} ${t} · ${command}(${founder})${cleaned ? ` — ${cleaned}` : ""}`;
 }
 
 function pad(n: number): string {

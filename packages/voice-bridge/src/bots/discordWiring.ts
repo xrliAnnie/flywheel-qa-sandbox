@@ -152,21 +152,12 @@ export async function createDiscordDeps(): Promise<DiscordDeps> {
 			};
 		},
 
-		createResource: (src: ResourceSource) =>
-			src.kind === "file"
-				? voice.createAudioResource(src.path)
-				: voice.createAudioResource(src.stream as Readable),
+		createResource: makeCreateResource(voice),
 
 		speakingEvents: (conn: any) => conn.receiver.speaking,
 
-		isHumanFactory: (client: any, guildId: string) => (userId: string) => {
-			const member = client.guilds.cache
-				.get(guildId)
-				?.members.cache.get(userId);
-			// unknown member → NOT admitted (fail-closed; allowUserIds is the
-			// explicit override for QA rigs).
-			return member ? member.user.bot === false : false;
-		},
+		isHumanFactory: (client: any, guildId: string) =>
+			makeIsHuman(client, guildId),
 
 		// ---- FLY-967 /gemini assistant-mode surface (real SDK glue; exercised
 		// by the staged E2E, not unit tests — discordWiring discipline) ----
@@ -191,35 +182,9 @@ export async function createDiscordDeps(): Promise<DiscordDeps> {
 			client.on("interactionCreate", (interaction: any) => {
 				if (!interaction.isChatInputCommand?.()) return;
 				if (interaction.commandName !== name) return;
-				cb({
-					topic: interaction.options.getString("topic") ?? undefined,
-					userId: interaction.user.id,
-					reply: async (text: string, opts?: { joinUrl?: string }) => {
-						const payload = {
-							content: text,
-							components: opts?.joinUrl
-								? [
-										{
-											type: 1,
-											components: [
-												{
-													type: 2,
-													style: 5, // Link
-													label: "Join",
-													url: opts.joinUrl,
-												},
-											],
-										},
-									]
-								: undefined,
-						};
-						if (interaction.replied || interaction.deferred) {
-							await interaction.followUp(payload);
-						} else {
-							await interaction.reply(payload);
-						}
-					},
-				});
+				void handleChatInteraction(interaction, cb, (line) =>
+					console.error(line),
+				);
 			});
 		},
 
@@ -297,5 +262,170 @@ export async function createDiscordDeps(): Promise<DiscordDeps> {
 				return () => conn.off("stateChange", handler);
 			},
 		}),
+	};
+}
+
+// ---------------------------------------------------------------------------
+// FLY-967 round-2 helpers — extracted SDK-free so Annie's real-machine
+// failures stay pinned by unit tests (classifyVoiceDelta precedent). Only
+// this module may construct them against real SDK objects.
+// ---------------------------------------------------------------------------
+
+/** duck-typed slice of a ChatInputCommandInteraction (no SDK import). */
+export interface ChatInteractionLike {
+	deferReply(): Promise<unknown>;
+	editReply(payload: unknown): Promise<unknown>;
+	followUp(payload: unknown): Promise<unknown>;
+	user: { id: string };
+	options: { getString(name: string): string | null };
+}
+
+/**
+ * Defer-first interaction handling. Discord voids the interaction token 3s
+ * after delivery; every slow step of /gemini (slot, Linear kickoff issue,
+ * briefing) runs AFTER the handler starts — so the ack must be the FIRST
+ * await, unconditionally (Annie round-1: "The application did not respond").
+ * The first reply resolves the deferred placeholder via editReply; later
+ * replies are followUps. A dead token (defer threw) never blocks the command
+ * — replies degrade to no-ops and the founder ping is the fallback channel.
+ */
+export async function handleChatInteraction(
+	interaction: ChatInteractionLike,
+	cb: (inv: {
+		topic?: string;
+		userId: string;
+		reply: (text: string, opts?: { joinUrl?: string }) => Promise<void>;
+	}) => void | Promise<void>,
+	log?: (line: string) => void,
+): Promise<void> {
+	let acked = true;
+	try {
+		await interaction.deferReply();
+	} catch (err) {
+		acked = false;
+		log?.(
+			`[chat-command] deferReply failed (command continues; replies dropped): ${String(
+				(err as Error).message ?? err,
+			)}`,
+		);
+	}
+	let repliedOnce = false;
+	await cb({
+		topic: interaction.options.getString("topic") ?? undefined,
+		userId: interaction.user.id,
+		reply: async (text, opts) => {
+			if (!acked) return; // token dead — nothing to edit, don't throw
+			const payload = {
+				content: text,
+				components: opts?.joinUrl
+					? [
+							{
+								type: 1,
+								components: [
+									{
+										type: 2,
+										style: 5, // Link
+										label: "Join",
+										url: opts.joinUrl,
+									},
+								],
+							},
+						]
+					: undefined,
+			};
+			if (repliedOnce) {
+				await interaction.followUp(payload);
+			} else {
+				repliedOnce = true;
+				await interaction.editReply(payload);
+			}
+		},
+	});
+}
+
+/**
+ * Resource factory. Stream sources are AssistantSpeaker's raw 48kHz s16le
+ * stereo PCM and MUST be declared StreamType.Raw — the default
+ * (StreamType.Arbitrary) sends headerless PCM through an ffmpeg probe that
+ * mis-decodes it (Annie round-2: garbled assistant voice). File sources keep
+ * the ffmpeg path: files have probeable headers.
+ */
+export function makeCreateResource(voiceLib: {
+	// method syntax (bivariant) so the real @discordjs/voice module and the
+	// unit-test stub both satisfy the seam
+	createAudioResource(input: any, options?: any): unknown;
+	StreamType: { Raw: unknown };
+}): (src: ResourceSource) => unknown {
+	return (src) =>
+		src.kind === "file"
+			? voiceLib.createAudioResource(src.path)
+			: voiceLib.createAudioResource(src.stream as Readable, {
+					inputType: voiceLib.StreamType.Raw,
+				});
+}
+
+/**
+ * Human filter that self-heals cache misses. members.cache alone is a trap:
+ * GUILD_CREATE voice_states carry NO member objects, so a founder already
+ * sitting in the VC before boot never appears in the cache and every speaking
+ * burst is dropped fail-closed (Annie round-2/3: the assistant heard nothing;
+ * both landed summaries had zero quotes). On a miss we stay fail-closed for
+ * THIS burst but kick a single-member REST fetch (no privileged intent
+ * needed); the next burst is admitted. Current VC occupants are prefetched at
+ * construction so the founder's FIRST utterance is already audible.
+ */
+export function makeIsHuman(
+	client: {
+		guilds: {
+			cache: Map<
+				string,
+				{
+					members: {
+						cache: Map<string, { user: { bot: boolean } }>;
+						fetch?: (userId: string) => Promise<{ user: { bot: boolean } }>;
+					};
+					voiceStates?: { cache: Map<string, unknown> };
+				}
+			>;
+			fetch: (guildId: string) => Promise<{
+				members: {
+					fetch: (userId: string) => Promise<{ user: { bot: boolean } }>;
+				};
+			}>;
+		};
+	},
+	guildId: string,
+): (userId: string) => boolean {
+	const resolved = new Map<string, boolean>();
+	const inflight = new Set<string>();
+	const ensureResolve = (userId: string) => {
+		if (inflight.has(userId) || resolved.has(userId)) return;
+		inflight.add(userId);
+		const cached = client.guilds.cache.get(guildId);
+		const member = cached?.members.fetch
+			? cached.members.fetch(userId)
+			: client.guilds.fetch(guildId).then((g) => g.members.fetch(userId));
+		member
+			.then((m) => {
+				resolved.set(userId, m.user.bot === false);
+			})
+			.catch(() => {
+				// stay unknown — a later burst retries (transient REST outage)
+			})
+			.finally(() => {
+				inflight.delete(userId);
+			});
+	};
+	for (const [userId] of client.guilds.cache.get(guildId)?.voiceStates?.cache ??
+		[]) {
+		ensureResolve(userId);
+	}
+	return (userId: string) => {
+		const member = client.guilds.cache.get(guildId)?.members.cache.get(userId);
+		if (member) return member.user.bot === false;
+		const known = resolved.get(userId);
+		if (known !== undefined) return known;
+		ensureResolve(userId);
+		return false;
 	};
 }
