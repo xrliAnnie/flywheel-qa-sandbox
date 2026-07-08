@@ -71,7 +71,7 @@ Annie 2026-07-08 从 PRD 总览把「多机部署」选为 5-day-window 大方�
 
 ## 5. 显式假设
 
-1. **额度不是瓶颈可通过多机解的** —— Claude 是订阅制、额度按账号算;多机不增加额度。若真瓶颈是额度,答案是「加账号/加 codex fallback」不是「加机器」。(research 会验证瓶颈到底是不是内存。)
+1. **额度不是多机能解的** —— Claude 是订阅制、额度按账号算;多机加的是算力/节点,不增加额度。若瓶颈是额度,答案是「加账号/加 codex fallback」不是「加机器」。(内存/换大机已 separate、不在 1005;1005 只处理 runner placement / cloud scale。)
 2. **Discord 控制面已经解耦、可跨机复用** —— Bridge 只出站连 Discord,不需要公网入站;每台机器可独立连 Discord。(codebase 已确认。)
 3. **runner↔Bridge 控制通道「半 HTTP」** —— stage/complete/heartbeat/events 已走 HTTP(`FLYWHEEL_BRIDGE_URL` + `FLYWHEEL_INGEST_TOKEN` 注入 runner env);但 ask/gate 问答态 + mailbox wake 仍走本地 CommDB,阶段1 需路由到 hub。(codebase 已确认,见 research §1.3。)
 4. **Annie 的物理机场景是「自己的几台 Mac + 可能一台 Windows」**,不是先上云;安全/隔离是她说的主因。
