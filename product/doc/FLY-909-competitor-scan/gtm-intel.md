@@ -94,3 +94,14 @@ Annie 给的特征:desktop App、~18 人 / ~$9M 融资、slogan「数万家零�
 - Devin 定价/GTM:devin.ai/pricing、costbench.com、techcrunch.com(降价 + 融资)
 - Replit 定价:replit.com/pricing、nocode.mba
 - 可达面:各家官网 + 前述评测;Matrix macOS-only 见 XHS 评论区 + matrix.build「available for macOS」
+
+---
+
+## 5. round-3.2 补充(2026-07-07):Flywheel 的真实起源故事(Annie,build-in-public 素材)
+
+> Annie 批注(instruction bc5a5854):OpenClaw = Flywheel 起点,写进 GTM/story 素材。
+
+**故事(真实,极强的 build-in-public 素材)**:
+- **Flywheel 最早就是搭在 Open Cloud(OpenClaw)上的** —— Annie 一开始在 OpenClaw 上搭这套「一个人指挥一支 AI 队」的系统,**后来 Claude Code 能连 Discord 了,才迁过来成了 Flywheel**。
+- 所以 OpenClaw 对我们不只是竞品,是**起点**。这条起源天然真实、有 building-in-public 的说服力:「我自己在 OpenClaw 上搭、搭到撞墙(各自为战、你得自己 juggle、不持久),才做了 Flywheel —— 一个被协调的常驻组织。」
+- **GTM 用法**:第一人称连载「为什么我从 OpenClaw 走到自己做 Flywheel」——起源可信、痛点真实、还自带 OpenClaw 的流量势能(它 375K star 的社区正是我们的目标人群相邻圈)。对标 OpenClaw 自己「Discord 当 showroom + 创始人 build-in-public」的打法。

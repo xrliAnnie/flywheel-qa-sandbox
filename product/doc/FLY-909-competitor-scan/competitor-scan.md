@@ -32,7 +32,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 | **Factory**(Droids) | agent-native 覆盖 SDLC | 企业工程团队 | Slack 触发 + Linear;async → PR | 面向企业工程,无免费 | $20/$100/$200 |
 | **🆕 Paperclip**(@dotta) | 把你的 agent 组织成一个公司的控制平面(org chart/预算/治理) | **明说给 operators**(solo 创始人/agency/甚至牙医·营销公司) | 自己跑的 Node server + React 面板;BYO agent | **瞄的人跟我们很像**,但上手要自托管(Docker/VPS);还「原型穿产品外衣」、每周 bug | **开源 MIT 免费**(自付基建) |
 | **Hermes**(Nous) | 会自己长本事的常驻 agent | 技术自托管者 / prosumer | 自己服务器跑 daemon(现有桌面 app) | 桌面 app 后好一点,根子仍是自托管单 agent | 开源(自付基建) |
-| **🆕 Open Cloud / OpenClaw** | 跑你自己设备、在你已用的 IM 里回你的**个人 AI 助理** | 技术自托管者(靠 Discord 把 agent 推向更广人群) | 本地自托管 + **29 个消息渠道**(Discord/TG/Slack/WhatsApp…)+ 跨会话记忆 + 浏览/填表/跑 shell | **界面跟我们最像(IM 驱动)**,但是**你自己跑的单个助理**、不是常驻组织;2026 爆红(60 天 250K star)后因定价套利+安全降温 | 开源(自付基建) |
+| **🆕 Open Cloud / OpenClaw** | 跑你自己设备、在你已用的 IM 里回你的**个人 AI 助理** | 技术自托管者(靠 Discord 把 agent 推向更广人群) | 本地自托管 + **29 个消息渠道**(Discord/TG/Slack/WhatsApp…)+ 跨会话记忆 + 浏览/填表/跑 shell | **界面跟我们最像(IM 驱动)**,但**多开几个也是各自为战、你得自己 juggle**(不是被协调的组织);2026 爆红(60 天 250K star)后因定价套利+安全降温 | 开源(自付基建) |
 | **OpenHands**(All Hands) | 开源云端 coding agent 平台 | 开发者 | Cloud/CLI/SDK;连 GitHub → 出 PR | Cloud 也要懂 repo/git 流 | Free(BYOK)/$20 |
 | **🆕 Claude Cowork**(Anthropic) | 非技术知识工作者的 AI coworker(在你文件上干活) | **明确非技术知识工作者** | Claude 桌面 app GUI,描述「做完什么样」→ 它做完交到你文件夹 | **done-for-you + 无需编程** —— 但做的是**你文件上的知识工作**(研究/合同/报告),不是建并养一个软件产品;桌面端、锁 Claude、是「你启动一个任务」 | 随 Claude 订阅 |
 | **🆕 Codex app**(OpenAI) | agent 指挥中心(编排一队 coding agent) | **开发者-导演** | 桌面「command center」+ CLI;manager 协调并行 subagent(默认最多 6-8) | 面向开发者、要懂技术在桌面/CLI 编排;锁 OpenAI | 随 OpenAI 订阅 |
@@ -135,10 +135,15 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 - **是什么**:Peter Steinberger 的开源**个人 AI 助理**,跑在**你自己的设备**上、在你**已经在用的 IM**(Discord/Telegram/Slack/WhatsApp/Signal… 29 个渠道)里回你;本地私有、零云依赖;能浏览网页/填表/读写文件/跑 shell,跨会话记忆你的偏好/项目/人。
 - **怎么起来的**:Clawdbot → Moltbot → OpenClaw(2026-01);2 月破 100K star、**~60 天 250K star(史上最快 repo)**;**build-in-public + Discord 当 showroom**、半百万系统在跑,创始人上 Fast Company AI 20。
 - **现状(热度回落 —— 诚实)**:安全事故(恶意第三方 skill / 过度授权 / 钓鱼 repo)后降温,「OpenClaw is dead」成论坛梗。**真因 = 定价套利泡沫**(靠一段被低估的算力起来,平台把算力调贵后几天崩,休闲用户走光、只剩认真工作流)+ 创始人转投 OpenAI 阵营带走社区 + 深度本地访问的安全风险。**但项目没死** —— 转成 AI-agent stack 里认真-谨慎的一层,375K+ star、周更、猛推可靠性(agent 恢复/audit trail/MCP 校验/LTS)。
-- **跟我们:重叠 / 差异(诚实)**:
+- **⭐ 起源故事(Annie,真实 —— 写进 building-in-public 素材)**:**Flywheel 最早就是搭在 Open Cloud 上的** —— Annie 一开始在 OpenClaw 上搭这套系统,后来 Claude Code 能连 Discord 了才迁过来。所以 OpenClaw 对我们不只是竞品,是**起点**。这条真实起源(「我自己在 OpenClaw 上搭、撞到墙,才做了 Flywheel」)是极强的 build-in-public 故事,建议进 GTM 素材。
+- **跟我们:重叠 / 差异(诚实,已按 Annie 纠正)**:
   - **重叠(界面最像)**:它就是「把 agent 通过 Discord/IM 推给更广人群」—— 跟我们**手机 IM 驱动**的界面赌注一样,连 Discord-当门面都像。
-  - **差异**:它是**你自己跑的单个个人助理**(self-host、single-agent),不是**常驻的多部门组织 done-for-you**;它的爆红-回落还给了一课:**靠定价套利 + 病毒自托管不是持久生意,持久的是「managed 可靠性 + audit」**——正好是我们该压的方向。
-  - **可借鉴**:多渠道触达 + 跨会话记忆 + Discord-showroom 的 build-in-public;⚠️ 别学:深度本地访问的安全敞口、纯自托管把可靠性甩给用户。
+  - **⚠️ 差异不在 agent 数量、在协调(Annie 纠正,重要)**:别再讲「我们多部门组织 vs 它单个助理」—— **多开几个 OpenClaw 也能凑成多部门,这框站不住**。真差异 = **N 个 OpenClaw = 各自为战、你得自己 juggle**(各跑各的、不互通、你当人肉调度);**我们 = 一个被协调的常驻组织**(Leads 互通、共享 backlog、跨项目复用经验、部门分工)—— **对外是一家公司在动,不是 N 个你得盯的助理**。
+  - **可借鉴**:多渠道触达 + 跨会话记忆 + Discord-showroom 的 build-in-public。
+- **⚠️ OpenClaw 踩的坑 → 我们怎么避(喂「持久 vs 昙花」这条)**:
+  1. **硬定价、别做套利泡沫**:它靠一段被低估的算力爆红、算力调贵后几天崩 —— 我们定价要建在**真实可持续的价值**上,不赌一时的价格红利。
+  2. **安全、别裸 provision**:它深度本地访问 + 恶意第三方 skill 出事 —— 我们要 **managed、有边界、不把安全敞口甩给用户**。
+  3. **可靠性要 managed**:它把稳定性甩给自托管用户 —— 我们做**替你托管的可靠**,这正是「持久」区别于「昙花」的地方。
 - ⚠️ **Aimless Agent 查无实据**:两轮 WebSearch 没找到叫「Aimless Agent」的项目(可能很小众/很新,或名字近似,像之前 open people→OpenHands)。**请 Annie/Lead 确认真名或给个链接,我再补**;先不硬编造。
 
 ### OPC beachhead(Annie 收窄):目标 = 非技术的一人公司 operator,不是程序员
@@ -151,7 +156,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 - 对**非技术电商/social operator**:他们**拼不出来**(不是程序员),要的是**替他们做 + 常驻组织 + 生态整合 + 体验气质**,不是自己拼引擎。
 
 对这群人,真差异押哪(候选,待 FLY-921):
-1. **替你做(done-for-you)+ 常驻组织**:一支 always-on、自己分诊 backlog、有记忆、跨项目复用经验的组织,替一个非技术 operator 把一整个公司的活做掉 —— 他自己拼不出「常驻多部门 + 掌控全局」,也不该要求他去拼。
+1. **替你做(done-for-you)+ 被协调的常驻组织**:差异**不在 agent 多不多**(多开几个 OpenClaw 也能凑数),**在协调** —— 一个 always-on、Leads 互通、共享 backlog、跨项目复用、部门分工的**被协调组织**,对外像**一家公司在动**;而不是 N 个各自为战、要你自己 juggle 的助理。一个非技术 operator 更弄不出这份协调,也不该要求他去当人肉调度。
 2. **生态整合 / 供应商中立**:按任务难度配模型 + 成本、单一工具短板用别的补(CC 弱多模态 → 接 Antigravity)—— 非技术 operator 更不可能自己整合;Cowork 锁 Claude、Codex 锁 OpenAI,中立整合是第一方结构上不做的。
 3. **体验气质**:managed、可靠、像真人团队在干(有趣 + drama + 真实,voice 让它像真人)—— 一个非技术 operator 要的是「有支队在替我热闹地干活」,不是一堆要自己调的工具。
 **诚实总结**:对**非技术电商/social OPC operator**,我们赢的是「**他自己做不了 / 不该自己拼,我们替他把一整个公司的活在聊天里做掉**」。这够不够撑一个生意,**归 FLY-921 跟 Annie 拍**。详细 Value 见配套 **value-artifact.html**。
