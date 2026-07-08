@@ -61,25 +61,29 @@ function fakeState(opts: {
 }
 
 describe("FLY-967 round-3 ① makeVoiceStateForwarder — unresolved member must not default to bot", () => {
-	it("resolved human emits synchronously with isBot=false", () => {
+	it("resolved human emits without any REST fetch, isBot=false", async () => {
 		const out: Emitted[] = [];
+		const fetched: string[] = [];
 		const forward = makeVoiceStateForwarder((u) => out.push(u));
 		forward(
 			fakeState({ id: "annie", channelId: null }),
-			fakeState({ id: "annie", channelId: "vc", bot: false }),
+			fakeState({ id: "annie", channelId: "vc", bot: false, fetched }),
 		);
+		await tick();
 		expect(out).toEqual([
 			{ userId: "annie", isBot: false, fromChannelId: null, toChannelId: "vc" },
 		]);
+		expect(fetched).toEqual([]);
 	});
 
-	it("resolved bot emits isBot=true", () => {
+	it("resolved bot emits isBot=true", async () => {
 		const out: Emitted[] = [];
 		const forward = makeVoiceStateForwarder((u) => out.push(u));
 		forward(
 			fakeState({ id: "b1", channelId: null }),
 			fakeState({ id: "b1", channelId: "vc", bot: true }),
 		);
+		await tick();
 		expect(out[0]?.isBot).toBe(true);
 	});
 
@@ -92,9 +96,9 @@ describe("FLY-967 round-3 ① makeVoiceStateForwarder — unresolved member must
 			fakeState({ id: "annie", channelId: "vc", fetchBot: false, fetched }),
 		);
 		expect(out).toEqual([]); // not yet — resolution in flight
+		await tick();
+		await tick();
 		expect(fetched).toEqual(["annie"]);
-		await tick();
-		await tick();
 		expect(out).toHaveLength(1);
 		expect(out[0]?.isBot).toBe(false);
 		// the wiring chain: this delta is a JOIN → humanCount++ → founderPresent
@@ -130,15 +134,63 @@ describe("FLY-967 round-3 ① makeVoiceStateForwarder — unresolved member must
 		expect(lines.join(" ")).toContain("ghost");
 	});
 
-	it("leave events fall back to the OLD state's member when the new one is bare", () => {
+	it("leave events fall back to the OLD state's member when the new one is bare", async () => {
 		const out: Emitted[] = [];
 		const forward = makeVoiceStateForwarder((u) => out.push(u));
 		forward(
 			fakeState({ id: "annie", channelId: "vc", bot: false }),
 			fakeState({ id: "annie", channelId: null }),
 		);
+		await tick();
 		expect(out).toEqual([
 			{ userId: "annie", isBot: false, fromChannelId: "vc", toChannelId: null },
+		]);
+	});
+
+	it("REST resolution must NOT reorder gateway order — unresolved join then leave stays join,leave even when the leave could resolve first (Codex R13)", async () => {
+		const out: Emitted[] = [];
+		const forward = makeVoiceStateForwarder((u) => out.push(u));
+		// join: fetch resolves SLOWLY; leave: fetch would resolve instantly.
+		let releaseJoin: (() => void) | undefined;
+		const joinGate = new Promise<void>((r) => {
+			releaseJoin = r;
+		});
+		const fetchLog: string[] = [];
+		const slowGuild = {
+			members: {
+				fetch: async (userId: string) => {
+					fetchLog.push(`join-fetch:${userId}`);
+					await joinGate;
+					return { user: { bot: false } };
+				},
+			},
+		};
+		const fastGuild = {
+			members: {
+				fetch: async (userId: string) => {
+					fetchLog.push(`leave-fetch:${userId}`);
+					return { user: { bot: false } };
+				},
+			},
+		};
+		forward(
+			{ id: "annie", channelId: null, guild: slowGuild },
+			{ id: "annie", channelId: "vc", guild: slowGuild },
+		);
+		forward(
+			{ id: "annie", channelId: "vc", guild: fastGuild },
+			{ id: "annie", channelId: null, guild: fastGuild },
+		);
+		await tick();
+		await tick();
+		expect(out).toEqual([]); // both queued behind the slow join resolution
+		releaseJoin?.();
+		await tick();
+		await tick();
+		await tick();
+		expect(out.map((u) => `${u.fromChannelId}->${u.toChannelId}`)).toEqual([
+			"null->vc",
+			"vc->null",
 		]);
 	});
 });

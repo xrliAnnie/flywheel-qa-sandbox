@@ -393,29 +393,40 @@ export function makeVoiceStateForwarder(
 	}) => void,
 	log?: (line: string) => void,
 ): (oldState: VoiceStateLike, newState: VoiceStateLike) => void {
+	// per-user serialization (Codex R13): each user's deltas run through ONE
+	// promise chain, so a slow REST resolution can never reorder gateway order
+	// (unresolved join + quick leave used to emit leave-before-join and corrupt
+	// humanCount). Different users stay independent.
+	const chains = new Map<string, Promise<void>>();
 	return (oldState, newState) => {
-		const emit = (isBot: boolean) =>
-			cb({
-				userId: newState.id,
-				isBot,
-				fromChannelId: oldState.channelId ?? null,
-				toChannelId: newState.channelId ?? null,
-			});
+		const userId = newState.id;
 		const known = newState.member?.user?.bot ?? oldState.member?.user?.bot;
-		if (typeof known === "boolean") {
-			emit(known);
-			return;
-		}
-		newState.guild.members
-			.fetch(newState.id)
-			.then((m) => emit(m.user.bot === true))
-			.catch((err) => {
-				log?.(
-					`[voice-state] member ${newState.id} unresolvable — delta dropped fail-closed: ${String(
-						(err as Error).message ?? err,
-					)}`,
-				);
-			});
+		const fromChannelId = oldState.channelId ?? null;
+		const toChannelId = newState.channelId ?? null;
+		const step = async () => {
+			let isBot: boolean;
+			if (typeof known === "boolean") {
+				isBot = known;
+			} else {
+				try {
+					const m = await newState.guild.members.fetch(userId);
+					isBot = m.user.bot === true;
+				} catch (err) {
+					log?.(
+						`[voice-state] member ${userId} unresolvable — delta dropped fail-closed: ${String(
+							(err as Error).message ?? err,
+						)}`,
+					);
+					return;
+				}
+			}
+			cb({ userId, isBot, fromChannelId, toChannelId });
+		};
+		const tail = (chains.get(userId) ?? Promise.resolve()).then(step);
+		chains.set(userId, tail);
+		void tail.finally(() => {
+			if (chains.get(userId) === tail) chains.delete(userId);
+		});
 	};
 }
 
