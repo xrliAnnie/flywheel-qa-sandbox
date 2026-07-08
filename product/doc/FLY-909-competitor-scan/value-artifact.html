@@ -110,14 +110,16 @@
 
   <!-- Pillar 2 -->
   <section class="pillar">
-    <h2><span class="pnum">2</span>十件事同时推进,每件都清清楚楚</h2>
-    <div class="sub">多线并行,各自独立不糊</div>
-    <p>每个活跑在<b>自己的线里</b>(自己的 thread / 文件),互不串味。<mark>不像一个窗口里堆到最后 —— 「任务一完成」时你已经忘了任务一是啥。</mark></p>
-    <div class="exp"><b>你亲身体验</b>:并行十条线各归各的,回头看每条都清楚;不像 Claude Code 全挤一个窗口越并行越糊。</div>
+    <h2><span class="pnum">2</span>Push Model:活自己推进,需要你才来找你</h2>
+    <div class="sub">多线并行 · push 不是 pull · thread 不半途而废</div>
+    <p>每个活跑在<b>自己的线里</b>(自己的 thread),互不串味 —— 不像一个窗口堆到最后「任务一完成」时你已经忘了任务一是啥。</p>
+    <p><b>① Push 不是 pull</b>:每条线<b>自己往前推</b>,<mark>只在卡住 / 要你拍板时才来找你</mark>。系统接管了「盯进度、调度」这件你以前得自己干的事 —— 你<b>不用当追十条线的项目经理</b>,活自己推进、需要你才 ping 你 → 把你的注意力还给你。</p>
+    <p><b>② Thread 持久 = 不半途而废</b>:没做完的 thread <b>一直在</b>,下个月想起来接着做,<mark>想法 / 半成品都不丢</mark>。</p>
+    <div class="exp"><b>你亲身体验</b>:十条线各自推进,你只在它们来找你时才管;搁置的活下次回来还在,不用重头再来。</div>
     <h3 class="diy">为什么你自己弄不出来 / 这得替你做</h3>
-    <p class="small">多开几个助理(OpenClaw)或多开几个窗口(Claude Code)也不解决 —— 它们<b>各自为战、不互通</b>,你并行到后面还是得自己记谁在干嘛。「每条活各自独立、又有人统一盯着全局」要有<b>被协调的组织化隔离</b> —— 一个非技术 operator <b>装不起、也调不动</b>这套(OpenClaw 要自托管、Claude Code 要进终端)。</p>
-    <div class="cmt"><label for="c_p2">这条的「糊 vs 不糊」对比,你想怎么让外人一秒 get?</label>
-      <textarea id="c_p2" placeholder="比如:用 ___ 的例子 / 我最烦的是糊掉那一刻…"></textarea><div class="saved" id="s_c_p2"></div></div>
+    <p class="small">多开几个助理(OpenClaw)或多开几个窗口(Claude Code)也不解决 —— 它们<b>各自为战、不互通,而且是 pull(你不去戳它就停)</b>,你还得自己盯、自己 juggle。「自己 push + 持久 + 有人统一盯全局」要有<b>被协调的组织</b> —— 一个非技术 operator <b>装不起、也调不动</b>(OpenClaw 要自托管、Claude Code 要进终端)。</p>
+    <div class="cmt"><label for="c_p2">Push Model(活自己推进、需要你才找你)+ thread 不半途而废 —— 这两条对你最真实的画面是什么?</label>
+      <textarea id="c_p2" placeholder="比如:我最烦的是自己追十条线进度那一刻 / 半途而废的活 ___…"></textarea><div class="saved" id="s_c_p2"></div></div>
   </section>
 
   <!-- Pillar 3 -->
@@ -125,7 +127,7 @@
     <h2><span class="pnum">3</span>工程 + 管理 + 产品,一整支会长本事的团队</h2>
     <div class="sub">一支多视角团队,越用越强</div>
     <p>你一个人开公司,却像身边<b>有工程、管理、产品几个帮手</b> —— 每件事都有对的人替你想,<mark>你不用自己啥都懂</mark>。越用,他们越懂你的生意;这个项目学到的,下个项目立刻用得上。</p>
-    <div class="exp"><b>你亲身体验</b>:不同帮手各有专长;你只管说要什么,不用自己既当工程又当产品又当运营。</div>
+    <div class="exp"><b>你亲身体验 + 具体 demo</b>:不同帮手各有专长,你只管说要什么;而且经验会攒下来、跨项目复用 —— <mark>比如一个能力写成 global skill,别的 team 直接拿去用</mark>,这就是「学一次、到处能用」的实证。</div>
     <h3 class="diy">为什么你自己弄不出来 / 这得替你做</h3>
     <p class="small">攒几个 prompt ≠ 一支有分工、会积累 perspective、跨项目复用经验的团队 —— 而且攒 prompt 本身就要技术。一个非技术 operator 要的是<b>现成一支会长本事的队</b>,不是自己配 bot。</p>
     <div class="cmt"><label for="c_p3">「多视角团队 / 越用越强」你有没有具体一件事能当 demo?</label>
@@ -146,10 +148,10 @@
 
   <!-- Pillar 5 (future) -->
   <section class="pillar future">
-    <h2><span class="pnum">5</span>花了多少、值不值,一眼看得见 <span class="tag">未来 / roadmap</span></h2>
+    <h2><span class="pnum">5</span>花了多少、值不值,一眼看得见 <span class="tag">已起步 / 待打磨</span></h2>
     <div class="sub">成本 + 价值可视</div>
-    <p>token 花费面板 + eval(产出质量)面板 —— <mark>成本和产出都摆在明面上</mark>,像看自己公司的一张简版财报:这个月这支队花了多少、干出了什么、值不值。</p>
-    <div class="exp"><b>为什么标未来</b>:这条现在还没做,是 roadmap;放进来是因为它把前 4 条的价值「量化成看得见的钱和产出」,对 OPC 最终最有说服力。</div>
+    <p>token 花费 + eval(产出质量)—— <mark>成本和产出都摆在明面上</mark>,像看自己公司的一张简版财报:这个月这支队花了多少、干出了什么、值不值。</p>
+    <div class="exp"><b>现状(已起步、待打磨)</b>:token 的<b>每日汇报(daily-post)已经在跑了</b>(连着 alerts 那条 token report),成本这半边有了雏形;把它做成<b>一眼看懂的「财报」</b> + 加上 <b>eval 产出面板</b> = 待打磨。放进来是因为它把前 4 条的价值「量化成看得见的钱和产出」,对 OPC 最终最有说服力。</div>
     <div class="cmt"><label for="c_p5">这条(成本+价值可视)你觉得多重要?要不要早点做?</label>
       <textarea id="c_p5" placeholder="比如:很重要,因为 ___ / 现在不急…"></textarea><div class="saved" id="s_c_p5"></div></div>
   </section>
