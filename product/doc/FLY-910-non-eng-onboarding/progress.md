@@ -1,13 +1,14 @@
 ---
 issue: FLY-910
-phase: implement
+phase: design
 phaseCursor: 3/3
-updated: 2026-07-08T20:38:32.806Z
-nextStep: "PARK: v6 逐小节格式 HTML 已发(relay v6 不 relay v5); 等 Annie 过目"
+updated: 2026-07-08T22:50:34.178Z
+nextStep: "PARK: PRD 写好(engineering/doc/FLY-910-onboarding/prd.md)+过目HTML已发;
+  等Annie产品review; 收敛后codex eng-review再拆build"
 chunks: []
 pointers: {}
 ---
 
 # FLY-910 progress
-**phase**: implement (3/3)
-**next**: PARK: v6 逐小节格式 HTML 已发(relay v6 不 relay v5); 等 Annie 过目
+**phase**: design (3/3)
+**next**: PARK: PRD 写好(engineering/doc/FLY-910-onboarding/prd.md)+过目HTML已发; 等Annie产品review; 收敛后codex eng-review再拆build
