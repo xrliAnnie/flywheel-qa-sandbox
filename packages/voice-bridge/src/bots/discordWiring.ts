@@ -123,7 +123,15 @@ export async function createDiscordDeps(): Promise<DiscordDeps> {
 			new prism.opus.Decoder({ rate: 48_000, channels: 2, frameSize: 960 }),
 
 		createPlayer: (conn: any): PlayerLike => {
-			const player = voice.createAudioPlayer();
+			const player = voice.createAudioPlayer({
+				behaviors: {
+					// FLY-967 round-5b: the default (5 missed 20ms frames = 100ms of
+					// underflow) KILLS a live Raw stream on the first network gap
+					// between Gemini audio chunks — Annie heard one "咕" fragment and
+					// then silence. Tolerate up to 5s of underflow before giving up.
+					maxMissedFrames: 250,
+				},
+			});
 			conn.subscribe(player);
 			const handlers: Record<string, ((err?: Error) => void)[]> = {
 				playing: [],

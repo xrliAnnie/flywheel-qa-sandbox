@@ -282,19 +282,13 @@ export async function wireAssistantMode(
 		log,
 		startSession: async ({ sessionId, issueId, topic }) => {
 			let orchestratorConn: unknown;
-			// the real AudioPlayer exists only after the orchestrator joins the VC;
-			// AssistantSpeaker only ever calls play/stop, so a deferred proxy is a
-			// safe seam (no buffering needed — nothing plays before a turn streams,
-			// and turns cannot start before join completes).
-			let realPlayer: import("../audio/LeadSpeaker.js").PlayerLike | null =
-				null;
+			// the real AudioPlayer exists only after the orchestrator joins the VC.
+			// makeDeferredPlayer (round-5b) queues on() registrations until then
+			// and logs LOUDLY if anything plays with no player — never silent.
+			const deferredPlayer = makeDeferredPlayer(log);
 			let disposeOrchWatch: (() => void) | undefined;
 			const speaker = new AssistantSpeaker({
-				player: {
-					play: (resource) => realPlayer?.play(resource),
-					stop: () => realPlayer?.stop(),
-					on: (event, cb) => realPlayer?.on(event, cb),
-				},
+				player: deferredPlayer.player,
 				createResource: deps.createResource,
 				log,
 			});
@@ -314,7 +308,7 @@ export async function wireAssistantMode(
 							selfMute: false,
 							selfDeaf: true, // the ears bot hears; the mouth must not echo
 						});
-						realPlayer = deps.createPlayer(orchestratorConn);
+						deferredPlayer.setReal(deps.createPlayer(orchestratorConn));
 						// FLY-967 round-3: the mouth died ASYNCHRONOUSLY after a clean
 						// Ready on Annie's rounds (best hypothesis: Node v25 IP-discovery
 						// error post-join) and nothing noticed. Supervise the connection:
@@ -337,7 +331,7 @@ export async function wireAssistantMode(
 						disposeOrchWatch = undefined;
 						if (orchestratorConn) deps.leaveVoice(orchestratorConn);
 						orchestratorConn = undefined;
-						realPlayer = null;
+						deferredPlayer.clear();
 					},
 					founderPresent: () => {
 						const present = humanCount > 0;
@@ -459,6 +453,57 @@ ${o.joinUrl}`
  * drifts the presence counter and can suppress founder-leave teardown
  * (Codex R3 MEDIUM). Only true channel transitions count.
  */
+/**
+ * Deferred PlayerLike (round-5b): the real AudioPlayer exists only after the
+ * orchestrator joins the VC, but the AssistantSpeaker is constructed before.
+ * The old inline proxy silently dropped on() registrations and play() calls
+ * made before join — nothing uses on() today, but "silently" is exactly the
+ * failure class Annie's rounds kept hitting, so: on() queues and replays when
+ * the real player arrives, play()/stop() without a player log LOUDLY, and
+ * attachment itself is logged (timing evidence in the venue log).
+ */
+export function makeDeferredPlayer(log: (line: string) => void): {
+	player: import("../audio/LeadSpeaker.js").PlayerLike;
+	setReal(p: import("../audio/LeadSpeaker.js").PlayerLike): void;
+	clear(): void;
+} {
+	type P = import("../audio/LeadSpeaker.js").PlayerLike;
+	let real: P | null = null;
+	const pendingOns: Parameters<P["on"]>[] = [];
+	return {
+		player: {
+			play: (resource) => {
+				if (!real) {
+					log(
+						"[deferred-player] play() dropped — no real player yet (orchestrator not in VC)",
+					);
+					return;
+				}
+				real.play(resource);
+			},
+			stop: () => {
+				if (!real) return;
+				real.stop();
+			},
+			on: (event, cb) => {
+				if (real) {
+					real.on(event, cb);
+				} else {
+					pendingOns.push([event, cb]);
+				}
+			},
+		},
+		setReal: (p) => {
+			real = p;
+			log("[deferred-player] real player attached (orchestrator in VC)");
+			for (const [event, cb] of pendingOns.splice(0)) real.on(event, cb);
+		},
+		clear: () => {
+			real = null;
+		},
+	};
+}
+
 export function classifyVoiceDelta(
 	u: { fromChannelId: string | null; toChannelId: string | null },
 	vcId: string,

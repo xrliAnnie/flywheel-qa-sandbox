@@ -46,6 +46,8 @@ export class AssistantSpeaker {
 	private fillerTimer: ReturnType<typeof setTimeout> | undefined;
 	/** observability: late chunks dropped by the turn gate. */
 	droppedChunks = 0;
+	private chunksThisTurn = 0;
+	private bytesThisTurn = 0;
 
 	constructor(private readonly opts: AssistantSpeakerOptions) {}
 
@@ -53,6 +55,9 @@ export class AssistantSpeaker {
 	beginTurn(): void {
 		this.active = true;
 		this.warnedBackpressure = false;
+		this.chunksThisTurn = 0;
+		this.bytesThisTurn = 0;
+		this.opts.log?.("[assistant-speaker] turn begin");
 	}
 
 	/** one response-audio chunk (24k mono s16le) of the current turn. */
@@ -61,6 +66,13 @@ export class AssistantSpeaker {
 			this.droppedChunks++;
 			return;
 		}
+		this.chunksThisTurn++;
+		this.bytesThisTurn += chunk.length;
+		if (this.chunksThisTurn === 1) {
+			this.opts.log?.(
+				`[assistant-speaker] first audio chunk (${chunk.length} bytes, 24k mono)`,
+			);
+		}
 		if (!this.stream) {
 			this.stream = new PassThrough({
 				highWaterMark: this.opts.highWaterMark ?? DEFAULT_HWM,
@@ -68,6 +80,7 @@ export class AssistantSpeaker {
 			this.opts.player.play(
 				this.opts.createResource({ kind: "stream", stream: this.stream }),
 			);
+			this.opts.log?.("[assistant-speaker] playing turn stream on the player");
 		}
 		const upsample = this.opts.upsample ?? upsample24kMonoTo48kStereo;
 		const ok = this.stream.write(upsample(chunk));
@@ -82,6 +95,9 @@ export class AssistantSpeaker {
 	/** the turn finished cleanly (response-done) — let the tail play out. */
 	endTurn(): void {
 		this.active = false;
+		this.opts.log?.(
+			`[assistant-speaker] turn end — chunks=${this.chunksThisTurn} bytes=${this.bytesThisTurn} dropped=${this.droppedChunks}`,
+		);
 		this.stream?.end();
 		this.stream = null;
 	}

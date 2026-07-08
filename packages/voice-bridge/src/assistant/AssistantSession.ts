@@ -147,6 +147,10 @@ export class AssistantSession {
 	private done = false;
 	private firstFrameLogged = false;
 	private firstAudioLogged = false;
+	/** live-chain observability (round-5b): both directions counted. */
+	private earsFramesForwarded = 0;
+	private audioChunksTotal = 0;
+	private audioChunksThisTurn = 0;
 
 	constructor(private readonly opts: AssistantSessionOptions) {}
 
@@ -210,8 +214,9 @@ export class AssistantSession {
 		this.wireEars(this.conv);
 		this.unsubs.push(
 			this.opts.voice.onFounderLeave(() => {
+				this.log(`founder-leave signal received (state=${this._state})`);
 				if (this._state === "live" || this._state === "concluding") {
-					void this.toLanding(false);
+					void this.toLanding(false, "founder-leave");
 				}
 			}),
 		);
@@ -240,7 +245,7 @@ export class AssistantSession {
 	/** external stop (daemon shutdown) — degrade honestly, release the room. */
 	async stop(): Promise<void> {
 		if (this._state === "live" || this._state === "concluding") {
-			await this.toLanding(false);
+			await this.toLanding(false, "external-stop");
 		} else if (!this.done) {
 			await this.teardown();
 		}
@@ -251,6 +256,7 @@ export class AssistantSession {
 		this.log(`state -> live (${source})`);
 		this.opts.tiv.status("🎙 listening");
 		this.conv?.sendText(OPENING_PROMPT);
+		this.log("OPENING prompt sent to Gemini");
 	}
 
 	private log(line: string): void {
@@ -261,11 +267,14 @@ export class AssistantSession {
 		this.unsubs.push(
 			this.opts.ears.onFrame((frame, format) => {
 				if (this._state === "live" || this._state === "concluding") {
+					this.earsFramesForwarded++;
 					if (!this.firstFrameLogged) {
 						this.firstFrameLogged = true;
 						this.log(
 							`first ears frame forwarded to Gemini (${frame.length} bytes)`,
 						);
+					} else if (this.earsFramesForwarded % 250 === 0) {
+						this.log(`ears frames forwarded: ${this.earsFramesForwarded}`);
 					}
 					conv.sendAudio(frame, format);
 				}
@@ -295,10 +304,16 @@ export class AssistantSession {
 		) => () => void;
 		this.unsubs.push(
 			on("response-started", () => {
+				this.audioChunksThisTurn = 0;
+				this.log(
+					`response started (ears frames forwarded so far: ${this.earsFramesForwarded})`,
+				);
 				this.opts.speaker.beginTurn();
 				this.opts.tiv.status("💬 speaking");
 			}),
 			on("response-audio", (...a) => {
+				this.audioChunksTotal++;
+				this.audioChunksThisTurn++;
 				if (!this.firstAudioLogged) {
 					this.firstAudioLogged = true;
 					this.log("first response audio from Gemini");
@@ -307,10 +322,14 @@ export class AssistantSession {
 				this.opts.speaker.feed(a[0] as Buffer);
 			}),
 			on("response-done", () => {
+				this.log(
+					`response done (audio chunks this turn: ${this.audioChunksThisTurn}, total: ${this.audioChunksTotal})`,
+				);
 				this.opts.speaker.endTurn();
 				this.opts.tiv.status("🎙 listening");
 			}),
 			on("response-cancelled", () => {
+				this.log("response cancelled (barge-in) — flushing speaker");
 				this.opts.speaker.flush();
 			}),
 			on("tool-call", () => {
@@ -341,6 +360,7 @@ export class AssistantSession {
 		const ts = new Date().toISOString();
 		this.quotes.push({ ts, text });
 		if (this._state === "live" && END_WORDS.test(text)) {
+			this.log(`end-word detected in founder line — sending RECAP prompt`);
 			this.conv?.sendText(RECAP_PROMPT);
 			this.enterConcluding(false);
 			return;
@@ -350,7 +370,7 @@ export class AssistantSession {
 			this.awaitingConfirm &&
 			AFFIRMATIVES.test(text.trim())
 		) {
-			void this.toLanding(true);
+			void this.toLanding(true, "recap-confirmed");
 		}
 		// anything non-affirmative during concluding = a correction — the model
 		// re-recaps naturally; we simply keep waiting for the clear yes.
@@ -358,17 +378,22 @@ export class AssistantSession {
 
 	private enterConcluding(earsLost: boolean): void {
 		this._state = "concluding";
+		this.log(`state -> concluding (${earsLost ? "ears-lost" : "end-word"})`);
 		this.awaitingConfirm = !earsLost; // she can't be heard once ears are gone
 		this.opts.tiv.status("📝 收尾 recap 中…");
 		this.recapTimer = setTimeout(() => {
-			if (this._state === "concluding") void this.toLanding(false);
+			if (this._state === "concluding")
+				void this.toLanding(false, "recap-timeout");
 		}, this.opts.timeouts?.recapWaitMs ?? DEFAULT_RECAP_WAIT_MS);
 		this.recapTimer.unref?.();
 	}
 
-	private async toLanding(confirmed: boolean): Promise<void> {
+	private async toLanding(confirmed: boolean, trigger: string): Promise<void> {
 		if (this._state === "landing" || this.done) return;
 		this._state = "landing";
+		this.log(
+			`state -> landing (trigger=${trigger} confirmed=${confirmed}; ears frames forwarded=${this.earsFramesForwarded}, assistant audio chunks=${this.audioChunksTotal})`,
+		);
 		this.clearTimer("recap");
 		this.opts.tiv.status("🛬 正在落纪要…");
 		try {
