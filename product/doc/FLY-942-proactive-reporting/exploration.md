@@ -132,9 +132,10 @@ runner 干完一轮 parked、或真卡住时,**系统主动、准确、及时地
 
 **优先级(Annie 拍)**:**(c) 真卡死绝不漏(100%)>> (a) 在跑误报可容忍 >> (b) 正常 parked = feature 要 surface**(不是误报;parked 等她 + 没人转 → 汇报层 gap② 兜)。北极星 = C 绝不漏 >> A/B。
 
-**六个真实 test case(Cass 亲历 + Tadashi 印证)**:
+**真实 test case(Cass 亲历 + Tadashi 印证 + 本 PRD dogfood)**:
 | # | case | 真态 | 验收 |
 |---|---|:--:|---|
+| A0 🐕 | 本 942 runner 长 draft turn(无 stage_changed)被现有 watchdog 误报 session_stuck;HL 手动 capture 见在动、按 A-可容忍未转 Annie | a | 不判 stuck(**dogfood**:写 PRD 的 runner 被它要治的 watchdog 误报) |
 | A1 | 零-commit 只读/QA run 被判 stuck(FLY-798「没commit=stuck」) | a/b | 不判 stuck(可容忍偶发) |
 | A2 | 长操作 idle-timeout 误杀(等 codex/build/test) | a | 不判 stuck(观察窗护) |
 | A3 | Lead 见「刚 commit」机械 dismiss 真 stuck(07-06 rate-limit) | c | 937:capture pane 验、报警默认可信 |

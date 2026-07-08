@@ -192,9 +192,10 @@ stateDiagram-v2
 ## 7. Success metrics(北极星)= 三态判对(带优先级)+ 六 test case ✅ G1 定案
 **主指标 + 优先级(Annie 拍)**:**(c) 绝不漏(100%)>> (a) 可容忍误报 >> (b) 要 surface(feature)**。
 
-**六个真实 test case = 北极星验收(Cass 亲历 + Tadashi 印证)**:
+**真实 test case = 北极星验收(Cass 亲历 + Tadashi 印证 + 本 PRD dogfood)**:
 | # | case | 真态 | 现状误判 | 验收标准 |
 |---|---|:--:|---|---|
+| **A0 🐕 dogfood** | **本 942 PRD 的 runner 在长 draft turn(无 stage_changed)被现有机械 watchdog 误报 `session_stuck`**;HL 手动 capture 见在动、按 A-可容忍未转 Annie(= 人工版 937 协议) | a | 误报 | 不判 stuck —— **写 PRD 的 runner 本身被它要治的 watchdog 误报 = 最好的 dogfood** |
 | **A1** | 零-commit 只读/QA run 被判 stuck(FLY-798「没 commit=stuck」认不出非-commit 工作) | a/b | 误报 | 不判 stuck(可容忍偶发) |
 | **A2** | 长操作 idle-timeout 误杀(等 codex/build/test,慢但在动) | a | 误报误杀 | 不判 stuck(观察窗护住) |
 | **A3** | Lead 见「刚 commit」机械 dismiss 了真 stuck(07-06 rate-limit;watchdog 对/Lead 错) | c | 被 Lead 误 dismiss | **937 协议:capture pane 验当下,报警默认可信** |
