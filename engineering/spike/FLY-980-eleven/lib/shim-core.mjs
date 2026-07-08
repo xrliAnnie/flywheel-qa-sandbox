@@ -197,6 +197,21 @@ export function maybeToolCall(tools, turnText, mode) {
 	return null;
 }
 
+/**
+ * V7a 真机发现:平台执行完 tool 会立刻带同一句用户话重新调 LLM——如果启发式
+ * 仍然命中就无限循环(同 event_id 连发)。生产实现必须 per-turn 去重;spike 用
+ * per-key 冷却窗演示修法。
+ */
+const lastToolFire = new Map();
+export function maybeToolCallWithCooldown(tools, turnText, mode, key, nowMs) {
+	const call = maybeToolCall(tools, turnText, mode);
+	if (!call) return null;
+	const last = lastToolFire.get(key) ?? 0;
+	if (nowMs - last < 15_000) return null; // 同会话 15s 内不重复触发
+	lastToolFire.set(key, nowMs);
+	return call;
+}
+
 function guessLang(text) {
 	const cjk = (text.match(/[一-鿿]/g) ?? []).length;
 	const latin = (text.match(/[a-zA-Z]/g) ?? []).length;
@@ -237,7 +252,17 @@ export function createShimServer(opts) {
 		}
 		const auth = req.headers.authorization ?? "";
 		if (auth !== `Bearer ${token}`) {
-			log({ type: "auth_reject" });
+			// 诊断但不落明文: scheme 词 + 长度 + sha256 前 8(平台送来的到底长啥样)
+			const scheme = auth.split(" ")[0] ?? "";
+			log({
+				type: "auth_reject",
+				scheme,
+				len: auth.length,
+				sha8: createHash("sha256").update(auth).digest("hex").slice(0, 8),
+				header_names: Object.keys(req.headers).filter(
+					(h) => h.includes("auth") || h.startsWith("xi-"),
+				),
+			});
 			res.writeHead(401, { "content-type": "application/json" });
 			res.end(JSON.stringify({ error: { message: "unauthorized" } }));
 			return;
@@ -306,7 +331,13 @@ export function createShimServer(opts) {
 			})}\n\n`;
 
 		// V7a: platform-offered tool → OpenAI function-call response
-		const toolCall = maybeToolCall(body.tools, turnText, toolMode);
+		const toolCall = maybeToolCallWithCooldown(
+			body.tools,
+			turnText,
+			toolMode,
+			key,
+			Date.now(),
+		);
 		if (toolCall) {
 			log({ type: "tool_call", requestId, name: toolCall.name });
 			res.writeHead(200, sseHeaders());

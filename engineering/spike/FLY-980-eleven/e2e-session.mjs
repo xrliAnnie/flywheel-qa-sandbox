@@ -36,6 +36,7 @@ const ROUND_PCM = {
 	u3en: "ref/u3en-16k.pcm",
 	u4slow: "ref/u4slow-16k.pcm",
 	u5status: "ref/u5status-16k.pcm",
+	u6who: "ref/u6who-16k.pcm",
 };
 for (const id of roundIds) {
 	if (!ROUND_PCM[id] || !existsSync(ROUND_PCM[id])) {
@@ -164,11 +165,15 @@ ws.on("message", (raw) => {
 		round.chunks.push(b);
 	}
 });
+let wsClosed = false;
 ws.on("error", (e) => {
 	console.error("ws error:", e?.message ?? e);
 	process.exit(1);
 });
-ws.on("close", (code) => logEvent({ type: "ws_close", code }));
+ws.on("close", (code) => {
+	wsClosed = true;
+	logEvent({ type: "ws_close", code });
+});
 await new Promise((r) => ws.on("open", r));
 logEvent({
 	type: "init_sent",
@@ -180,6 +185,10 @@ await sleep(800);
 
 const results = [];
 for (const id of roundIds) {
+	if (wsClosed) {
+		console.error(`ws closed — aborting remaining rounds at ${id}`);
+		break;
+	}
 	const speech = readFileSync(ROUND_PCM[id]);
 	round = {
 		id,

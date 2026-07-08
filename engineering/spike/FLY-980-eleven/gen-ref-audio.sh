@@ -24,3 +24,5 @@ gen u3en "$VOICE_EN" "Can you give me a quick summary of what the team shipped t
 gen u4slow "$VOICE_ZH" "帮我想一下，如果要把语音会议做成产品，最大的三个技术风险是什么？"
 # V7b 注入演示: 问 issue 状态
 gen u5status "$VOICE_ZH" "FLY-980 现在是什么状态？"
+# V8 override 验证: 自我介绍问句
+gen u6who "$VOICE_ZH" "你是谁？一句话自我介绍一下。"
