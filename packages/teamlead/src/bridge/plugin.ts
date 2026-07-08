@@ -3942,7 +3942,11 @@ export async function startBridge(
 					session.project_name,
 					parseJsonStringArray(session.issue_labels) ?? [],
 				);
-				await leadAlertNotifier.alert({
+				// FLY-927 (merge integration): route through the shared infra funnel
+				// so the merged-in external_merge_suspect kind gets owner enrichment +
+				// AlertChannelHub ticket/thread lifecycle like every other infra
+				// emitter (routing OFF ⇒ passthrough to the raw notifier = byte-compat).
+				await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
 					leadId: lead.agentId,
 					projectName: session.project_name,
 					eventId: `external-merge:${session.execution_id}:${title}`,
