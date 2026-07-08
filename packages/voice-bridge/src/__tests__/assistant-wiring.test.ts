@@ -320,6 +320,69 @@ describe("Codex R3 regressions", () => {
 	});
 });
 
+describe("staged QA seams (FLY-967 ②)", () => {
+	it("FLYWHEEL_GEMINI_AUTOSTART opens a round without a human interaction", async () => {
+		vi.useFakeTimers();
+		try {
+			const f = makeFakes();
+			const stateDir = mkdtempSync(join(tmpdir(), "fly967-auto-"));
+			const runtime = await wireAssistantMode({
+				config: CONFIG,
+				assistant: ASSISTANT,
+				registry: f.registry,
+				deps: f.deps,
+				earsConnection: {},
+				env: {
+					FLYWHEEL_API_TOKEN: "t",
+					FLYWHEEL_GEMINI_AUTOSTART: "staged 冒烟",
+				},
+				log: () => {},
+				createConversation: f.createConversation,
+				fetchImpl: f.fetchImpl,
+				stateDir,
+			});
+			await vi.advanceTimersByTimeAsync(2_100); // seam delay
+			await vi.waitFor(() => {
+				if (f.conversations.length === 0) throw new Error("not yet");
+			});
+			// the synthetic invocation drove the same chain: issue + reply on TIV
+			expect(f.fetchCalls.some((c) => c.url.includes("create-issue"))).toBe(
+				true,
+			);
+			expect(f.messages.some((m) => m.includes("FLY-1400"))).toBe(true);
+			await runtime.close();
+			rmSync(stateDir, { recursive: true, force: true });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("slash-registration scope failure is LOUD but not fatal (daemon stays up)", async () => {
+		const f = makeFakes();
+		(f.deps.registerGuildCommand as ReturnType<typeof vi.fn>).mockRejectedValue(
+			new Error("Missing Access"),
+		);
+		const logs: string[] = [];
+		const stateDir = mkdtempSync(join(tmpdir(), "fly967-scope-"));
+		const runtime = await wireAssistantMode({
+			config: CONFIG,
+			assistant: ASSISTANT,
+			registry: f.registry,
+			deps: f.deps,
+			earsConnection: {},
+			env: { FLYWHEEL_API_TOKEN: "t" },
+			log: (m) => logs.push(m),
+			createConversation: f.createConversation,
+			fetchImpl: f.fetchImpl,
+			stateDir,
+		});
+		expect(logs.some((l) => l.includes("applications.commands"))).toBe(true);
+		expect(f.commandHandlers.has("gemini")).toBe(true); // dispatch still wired
+		await runtime.close();
+		rmSync(stateDir, { recursive: true, force: true });
+	});
+});
+
 describe("runVoiceBridge assistant hook (FLY-967 QA-B1)", () => {
 	it("assistant: null keeps the daemon byte-compatible (no assistant surface)", async () => {
 		const f = makeFakes();

@@ -342,16 +342,50 @@ export async function wireAssistantMode(
 		},
 	});
 
-	await deps.registerGuildCommand(orchestratorClient, config.guildId, {
-		name: command.name,
-		description: "纯 Gemini 语音助理 — 开一场带简报的快聊",
-	});
+	try {
+		await deps.registerGuildCommand(orchestratorClient, config.guildId, {
+			name: command.name,
+			description: "纯 Gemini 语音助理 — 开一场带简报的快聊",
+		});
+		log(`/${command.name} registered on guild ${config.guildId}`);
+	} catch (err) {
+		// a bot invited without the applications.commands scope cannot register
+		// slash commands — LOUD, and the daemon stays up (the autostart QA seam
+		// below still exercises the full meeting chain on staged rigs).
+		log(
+			`WARNING: /${command.name} slash registration failed (missing applications.commands scope on the bot invite?): ${String((err as Error).message ?? err)}`,
+		);
+	}
 	deps.onChatCommand(orchestratorClient, command.name, (inv) => {
 		void command
 			.handle({ topic: inv.topic, reply: inv.reply })
 			.catch((err) => log(`/${command.name} handle failed: ${err.message}`));
 	});
-	log(`/${command.name} registered on guild ${config.guildId}`);
+
+	// QA test-injection seam (allowUserIds precedent): a staged rig has no human
+	// to click the slash command, so an env-gated autostart drives the SAME
+	// GeminiCommand.handle path with a synthetic invocation whose replies land
+	// on the TIV channel. Unset = zero behavior change.
+	const autostartTopic = env.FLYWHEEL_GEMINI_AUTOSTART;
+	if (autostartTopic !== undefined) {
+		log(`autostart QA seam armed (topic: ${autostartTopic || "(none)"})`);
+		setTimeout(() => {
+			void command
+				.handle({
+					topic: autostartTopic || undefined,
+					reply: async (text, o) =>
+						deps.sendMessage(
+							orchestratorClient,
+							config.voiceChannelId,
+							o?.joinUrl
+								? `${text}
+${o.joinUrl}`
+								: text,
+						),
+				})
+				.catch((err) => log(`autostart handle failed: ${err.message}`));
+		}, 2_000).unref?.();
+	}
 
 	return {
 		commandName: command.name,
