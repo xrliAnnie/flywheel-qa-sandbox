@@ -110,9 +110,26 @@ runner 干完一轮 parked、或真卡住时,**系统主动、准确、及时地
 
 > Cass 要 FLY-878 / 975 / 976 跟 942 收敛 → 本 PRD 是收敛这一族的**产品层**。主动汇报(§2–§5)只有在**检测足够准**时才成立 —— "状态显示骗你一次你就再也懒得看"(FLY-964 §4 同根)。所以**准确性是本 PRD 的北极星**,检测层与汇报层同等重要。
 
+### 5.5.0 现状:多组件粗信号,分不清三种"看起来 idle"(Cass 亲历 + Tadashi code/运营)
+
+现 watchdog = 多组件(`RunnerIdleWatchdog` / `LeadWatchdog` / `HeartbeatService` / `GatePoller` / `stuck-detector`)**各扫各的**,判"卡"靠**粗信号**(idle 时长 / 没 `stage_changed` / message 模式匹配 / alive-flag —— 全是 stale + 机械)。**核心病 = 分不清三种"看起来 idle":**
+
+| 态 | 真相 | 现状误判 | 例 |
+|---|---|---|---|
+| **(a) 在跑的长 turn** | pane 里 token 在流(真在产出) | **误报卡住** | Tadashi:FLY-545 一个 48min implement turn 狂吐 token 却被报 stuck |
+| **(b) 正常 parked 等 gate** | awaiting_review + 明确 park(合法等人) | **误报** | parked 等 founder 被当卡 |
+| **(c) 真卡死** | error + 空 prompt + 不恢复 | **漏报** | FLY-975/546:error-then-idle 被 `isIdleHealthyPane` 当 HEALTHY |
+
+**粗信号混三态 → 误报 (a)(b) + 漏报 (c)。** 误报还叠一层:codex-hold 被映射成罐头"等很久"、不分正常 hold vs 真卡(FLY-863 半修、FLY-912 这错)。
+
+### 5.5.0b 核心跃迁:粗信号 → 读 per-pane 富态(区分 a/b/c)
+
+**942 检测层的核心跃迁 = 从"粗信号机械匹配"→"读 per-pane 富态"**:看 pane 实际 **token-flow**(在不在吐)+ 会话 **FSM 态**(running / awaiting_review / park…)→ 判 a(working)/ b(parked)/ c(stuck)。**这正是 Tadashi 手动 fleet-scan 在做的**(capture pane → 眼判 working/parked/stuck),**942 = 把它自动化**。
+- eng 方向:**FLY-976 LLM 判断层**(读 pane 富态理解上下文)+ **FLY-937 lead 协议**(收报警先 capture pane 验当下,不信 stale alive-flag/commit;**Watchdog 报警默认可信、值得查,不默认误报**)+ **FLY-778**(自动看门狗本身读 capture-pane 文字判 frozen/rate-limit)。
+
 ### 5.5.1 准确性为什么是北极星(现状为什么不准)
 
-> **G1 北极星验收 = Annie 亲给的四病症(2026-07-07)**,PRD 的准确性验收就照这四条:
+> **G1 北极星验收 = Annie 亲给的四病症(2026-07-07)** + **三态判对**(HL/Tadashi 拼齐):**准 = 三态判对 —— (a) working / (b) parked 不误报、(c) stuck 不漏报**(直接映射:病症①误报 = 混淆 a/b;病症③漏报 = 漏 c)。PRD 的准确性验收就照四病症 + 三态:
 > - **① 误报**:机械匹配旧 message、遇新 error 认不出 → 误报(**坐实 FLY-976 LLM 判断层**,机械规则不够)。
 > - **② 分发不合理**:有的报给 Lead[被看到、好]、有的进 alert room[被忽略] → **consolidate 接收点**(统一到实际被看到的点)。
 > - **③ 漏报**:真 stuck 没反应(如 FLY-546)。
@@ -186,7 +203,7 @@ Annie 的根因判断(FLY-976):**看门狗最大问题是它不是 LLM,没法理
 
 ## 7. converge 进度 + 剩余 clarify(HL relay;小步多轮)
 
-> **母 Epic = FLY-989**(Watchdog + 主动汇报 稳定化 EPIC,https://linear.app/geoforge3d/issue/FLY-989):consolidate 878/975/976/927/915/970/973/941/964,以后发现一个提一个、定期 iterate;归 FLY-774 底下。**本 PRD(FLY-942)= 该 Epic 的「主动汇报 + 检测」产品定义 PRD**(parent=989 HL 已设)。
+> **母 Epic = FLY-989**(Watchdog + 主动汇报 稳定化 EPIC,https://linear.app/geoforge3d/issue/FLY-989):consolidate 878/975/976/937/778/927/915/970/973/941/964,以后发现一个提一个、定期 iterate;归 FLY-774 底下。**本 PRD(FLY-942)= 该 Epic 的「主动汇报 + 检测」产品定义 PRD**(parent=989 HL 已设)。
 
 **框架** ✅✅ **Annie 深度 review + 两条核心 revise(2026-07-07)已落**:① 不是 push-every-ball-change → 看门狗兜两漏(runner 没找 Lead / Lead 漏应答);② 不是 park 立即 push → **时间阈值型 stall 检测**。第 5 球态"Lead 漏应答"= 漏②,与 878 场景3 对齐。
 

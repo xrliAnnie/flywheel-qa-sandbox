@@ -6,7 +6,7 @@ Issue: FLY-942 (https://linear.app/geoforge3d/issue/FLY-942/watchdog-lead-主动
 母 Epic: FLY-989 Watchdog + 主动汇报 稳定化 EPIC (https://linear.app/geoforge3d/issue/FLY-989) — 本 PRD(FLY-942)= 该 Epic 的「主动汇报 + 检测」产品定义 PRD;Epic consolidate 878/975/976/927/915/970/973/941/964,以后发现一个提一个、定期 iterate。FLY-989 归 FLY-774 稳定化 EPIC 底下。
 
 > **状态**:DRAFT。**Annie 已深度 review 并 revise 框架 + 拍 G1(2026-07-07)**:① 汇报层不是 push-every-ball-change → **看门狗兜两漏**(runner 没找 Lead / Lead 漏应答);② 不是立即 push → **时间阈值型**;③ 准确性走 **FLY-976 LLM 判断层**,北极星验收 = **四病症**。**剩余 Qa–Qg 待逐块 converge**(见 §10)。**不 ship / 不 merge / 不 create-issue**。
-> **北极星:准确性(= Annie 四病症:①误报 ②分发不合理→consolidate ③漏报 ④噪音)。** 主动汇报只有在检测足够准时才成立 —— "状态显示骗你一次你就再也懒得看"。两半同等重要:**① 检测层(准)+ ② 主动汇报层(兜漏、consolidate、不刷屏)**。
+> **北极星:准确性 = 三态判对**((a) 在跑长turn / (b) 正常parked 不误报、(c) 真卡死 不漏报;读 per-pane 富态 token-flow+FSM 态,非粗信号)**+ Annie 四病症**(①误报=混淆a/b ②分发→consolidate ③漏报=漏c ④噪音)。主动汇报只有在检测足够准时才成立 —— "状态显示骗你一次你就再也懒得看"。两半同等重要:**① 检测层(准)+ ② 主动汇报层(兜漏、consolidate、不刷屏)**。
 
 ---
 
@@ -57,20 +57,32 @@ flowchart TD
 
 ## 3. ① 检测层(准确性 = 北极星)
 
-### 3.1 北极星验收 = Annie 四病症(2026-07-07 拍);现状为什么不准
-**G1 北极星验收照这四条**:
-- **① 误报**:机械匹配旧 message、遇新 error 认不出 → 误报(**坐实 FLY-976 LLM 判断层**)。
-- **② 分发不合理**:有的报给 Lead[被看到、好]、有的进 alert room[被忽略] → **consolidate 接收点**。
-- **③ 漏报**:真 stuck 没反应(FLY-975/546:`Server error mid-response` 后停空 `❯` 静默 22min 被 `isIdleHealthyPane` 当"健康"压掉;927 不修)。
-- **④ 噪音过多**:对错的问题狂发(长活 runner 误判 FLY-871;ghost 死着还一直 fire FLY-970)。
-- 底层:**alive-flag 不可信**(alive=true 却登出/卡菜单/冻结,FLY-909)→ 必须 capture pane;**归因不靠猜**(FLY-912"Code Review 卡 3h"是猜错的)。
+### 3.0 核心病:分不清三种"看起来 idle"(Cass 亲历 + Tadashi code/运营)
+现 watchdog = 多组件(`RunnerIdleWatchdog`/`LeadWatchdog`/`HeartbeatService`/`GatePoller`/`stuck-detector`)**各扫各的**,靠**粗信号**(idle 时长 / 无 `stage_changed` / message 模式匹配 / alive-flag,stale+机械)。**分不清三态**:
+
+| 态 | 真相 | 现状误判 | 例 |
+|---|---|---|---|
+| **(a) 在跑长 turn** | pane token 在流 | **误报** | FLY-545 48min implement 狂吐 token 却报 stuck |
+| **(b) 正常 parked 等 gate** | awaiting_review + 明确 park | **误报** | parked 等 founder 被当卡 |
+| **(c) 真卡死** | error + 空 prompt + 不恢复 | **漏报** | FLY-975/546 error-then-idle 被当 HEALTHY |
+
+粗信号混三态 → 误报(a)(b)+漏报(c);codex-hold 罐头"等很久"不分正常 hold vs 真卡(FLY-863 半修 / 912)。**核心跃迁 = 从"粗信号机械匹配"→"读 per-pane 富态"(token-flow + 会话 FSM 态)区分 a/b/c** = 自动化 Tadashi 手动 fleet-scan。
+
+### 3.1 北极星验收 = Annie 四病症 + 三态判对
+**准 = 三态判对:(a) working / (b) parked 不误报、(c) stuck 不漏报。** 映射 Annie 四病症:
+- **① 误报** = 混淆 a/b(把在跑/合法 parked 当卡);机械匹配旧 msg、遇新 error 认不出 → **坐实 FLY-976 LLM 判断层**。
+- **② 分发不合理**:有的报给 Lead[好]、有的进 alert room[被忽略] → **consolidate 接收点**。
+- **③ 漏报** = 漏 c(真 stuck 没反应,FLY-975/546)。
+- **④ 噪音过多**:对错的问题狂发(FLY-871 / ghost FLY-970)。
+- 底层:**alive-flag 不可信**(alive=true 却登出/卡菜单/冻结 FLY-909)→ 必须 capture pane;**归因不靠猜**(FLY-912)。
 - 一句话:**watchdog 说卡就是真卡、说健康就是真健康;报了就是该报的、报到的就是看得到的。**
 
-### 3.2 准确性机制 ✅ **Annie 拍:走 FLY-976 LLM 判断层**(病症①)
-- **机械快路**(零 token,便宜初筛):真实 stage / park 元组明判(parked-at-gate=合法等 founder;running+pane 活跃=健康;已知错误模式秒认)。
-- **LLM 判断层**(可疑才升级,省 token,FLY-976):读 pane 尾 + 真实 stage + park 元组 + 最近事件 → 输出「卡住 / 健康 idle / 正常等待」+ 归因(球在谁)+ 建议动作(nudge / respawn / 切账号 / @人)。正是 546 那种"报错后静默 idle"机械分不清、LLM 能。
+### 3.2 准确性机制 ✅ **Annie 拍:走 FLY-976 LLM 判断层**(读 per-pane 富态判 a/b/c)
+- **机械快路**(零 token,便宜初筛):真实 stage / park 元组明判明确态。
+- **LLM 判断层**(可疑才升级,省 token,FLY-976):读 pane 富态(token-flow + FSM 态)+ 真实 stage + park 元组 → 判 **a working / b parked / c stuck** + 归因(球在谁)+ 建议动作(nudge/respawn/切账号/@人)。正是 546 那种"报错后静默 idle"机械分不清、LLM 能。
+- **配套 lead 协议(FLY-937)**:Lead 收 stuck 报警**先 capture pane 验当下**(不信 stale alive-flag/commit);**报警默认可信、值得查,不默认误报**。自动看门狗读 capture-pane 判 frozen/rate-limit = **FLY-778**。
 - **降级永不静默**(FLY-878 标签分层):认不出→AI 兜底;仍不确定→`fail-suspicious` 附 pane 原文上报(标签变糙、绝不吞)。
-- 边界:判断层**实现** = FLY-976 eng;本 PRD 定"要这种理解 + 输出契约"。
+- 边界:判断层**实现** = FLY-976 eng + 937 lead 协议 + 778;本 PRD 定"要这种理解 + 输出契约"。
 
 ### 3.3 看门狗抓什么(catalog,超时间阈值才响;喂 FLY-927/976)
 | 检测类 | 判定(准确性要点) | 先报谁 | 归属 |
@@ -170,16 +182,18 @@ stateDiagram-v2
   note right of report_lead: 每日 digest 兜底所有"在等你"开放项
 ```
 
-## 7. Success metrics(北极星)= Annie 四病症 ✅(2026-07-07 拍)
-- **① 误报率**:alert 健康 runner 的假报率 → 目标低(机械匹配旧 msg/新 error 认不出 → 走 FLY-976 LLM 判断层压下去)。
-- **② 分发命中**:看门狗输出到"实际被看到"的接收点(thread/Lead/consolidate 队列)比例 → 100%;进被忽略的 alert room = 0。
-- **③ 漏报率(最致命)**:被 Annie 自己先发现的真 stall/停止数 / 周 → 目标近零(漏报=直接逼人肉巡查)。
+## 7. Success metrics(北极星)= 三态判对 + Annie 四病症 ✅
+**主指标:三态判对率**(读 per-pane 富态判 a working / b parked / c stuck):
+- **(a)(b) 不误报**:在跑长 turn(token 在流)+ 合法 parked 等 gate → 判为在轨,零误报(= 病症① · FLY-545 那类)。
+- **(c) 不漏报(最致命)**:error+空 prompt+不恢复 → 判 stuck,被 Annie 自己先发现的真 stall 数/周 → 近零(= 病症③ · FLY-975/546)。
+四病症验收:
+- **② 分发命中**:输出到"实际被看到"的接收点(thread/Lead/consolidate 队列)→ 100%;进被忽略的 alert room = 0。
 - **④ 噪音**:同一/错误问题的重复告警 → 去重+抑制后趋零;正常路径 work 时零打扰。
 - 附:归因准确(措辞/球在谁 与真实 stage 一致 → 100%);可扩展(新 Lead 零配置被覆盖)。
 
 ## 8. 边界 / 分工
 - **942**(本 PRD)= 检测(要检测什么 + 准确性)+ 主动汇报(founder 体验:何时/怎么 surface)。
-- **927** = 检测实现(park 元组/归因/@-target/阈值)。**976** = LLM 判断层实现。**915** = 通知管线(频道/工单/门禁/profile 切换)。**941** = tool-leak 检测。**964** = 持久显示。**973** = 子 session scope 归属(归 parent lead)。**962/978** = 归档约束 / 死态清理根治。**579/707** = auto-QA-spawn gate(治 ghost 源头)。
+- **927** = 检测实现(park 元组/归因/@-target/阈值)。**976** = LLM 判断层实现(读 per-pane 富态判 a/b/c)。**937** = lead 收 stuck 报警 capture-pane 验当下协议。**778** = 自动看门狗读 capture-pane 判 frozen/rate-limit。**915** = 通知管线(频道/工单/门禁/profile 切换)。**941** = tool-leak 检测。**964** = 持久显示。**973** = 子 session scope 归属(归 parent lead)。**962/978** = 归档约束 / 死态清理根治。**579/707** = auto-QA-spawn gate(治 ghost 源头)。
 
 ## 9. Build workstreams(**只提议,不 create-issue**;converge 定稿后交 Tadashi 拆)
 | # | workstream | 对应节 | 依赖 |
@@ -187,7 +201,7 @@ stateDiagram-v2
 | W1 | 时间阈值兜两漏(漏①没找 Lead / 漏② Lead 漏应答)+ 决策卡固定格式 + 🟡 类型 | §4.2–4.5/4.7 | founder-thread-notifier |
 | W2 | consolidate 接收点(先报 Lead → founder 队列,非被忽略 alert room) | §4.4 | FLY-915 落点 |
 | W3 | per-runner "你的开放队列" 每日兜底 digest | §4.6 | DigestService/StandupService |
-| W4 | 检测准确性:LLM 判断层接线 + isIdleHealthyPane 修 + capture-pane | §3.2/3.3 | **FLY-976 / 975 / 927** |
+| W4 | 检测准确性:读 per-pane 富态判 a/b/c(LLM 判断层)+ isIdleHealthyPane 修 + capture-pane + lead 协议 | §3.0–3.3 | **FLY-976 / 975 / 937 / 778 / 927** |
 | W5 | over-notify 抑制(ghost)+ auto-QA-spawn gate 治源头 + mid-turn hard-stop | §3.4/3.5 | 970/973/579 + harness |
 
 ## 10. 决策进度
