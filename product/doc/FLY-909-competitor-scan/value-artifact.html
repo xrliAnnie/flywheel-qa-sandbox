@@ -1,0 +1,223 @@
+<title>Flywheel Value · 你一个人,手握一整个公司(OPC)</title>
+<style>
+  :root{
+    color-scheme:light;
+    --paper:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --muted:#6e6e73;
+    --line:#e4e7ec; --line-soft:#eef1f4;
+    --accent:#2f5fd0; --accent-soft:#eaf0fd;
+    --us:#2f9e6b; --us-soft:#e7f5ee;
+    --gold:#c77d2a; --gold-soft:#fbf1e3;
+    --shadow:0 1px 3px rgba(0,0,0,.06),0 10px 30px rgba(0,0,0,.06);
+    --radius:16px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:-apple-system,system-ui,"Segoe UI",Roboto,sans-serif;line-height:1.62;-webkit-text-size-adjust:100%}
+  .wrap{max-width:820px;margin:0 auto;padding:0 18px 130px}
+  code,.mono{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.86em}
+
+  .bar{position:sticky;top:0;z-index:40;background:color-mix(in srgb,var(--paper) 88%,transparent);
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  .bar-in{max-width:820px;margin:0 auto;padding:10px 18px;display:flex;align-items:center;gap:12px}
+  .bar b{font-size:14px}
+  .bar .sp{flex:1}
+  .btn{border:1px solid var(--accent);background:var(--accent);color:#fff;font:inherit;font-size:13px;
+    font-weight:600;padding:7px 13px;border-radius:9px;cursor:pointer;white-space:nowrap}
+  .btn.ghost{background:transparent;color:var(--accent)}
+  .btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  header.hero{padding:40px 0 8px;text-align:center}
+  .eyebrow{font-size:12px;font-weight:700;letter-spacing:.10em;text-transform:uppercase;color:var(--accent)}
+  h1{font-size:32px;line-height:1.18;margin:.34em 0 .28em;text-wrap:balance;letter-spacing:-.02em}
+  .lede{color:var(--muted);font-size:16px;margin:0 auto;max-width:620px}
+  .meta{margin-top:16px;font-size:12.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 14px;justify-content:center}
+  .frame{margin:22px 0 6px;background:var(--us-soft);border:1px solid color-mix(in srgb,var(--us) 30%,transparent);
+    border-radius:14px;padding:15px 17px;font-size:14px}
+  .frame b{color:var(--us)}
+
+  section.pillar{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--us);
+    border-radius:var(--radius);box-shadow:var(--shadow);padding:22px 22px 10px;margin:20px 0}
+  section.pillar.future{border-left-color:var(--gold);opacity:.97}
+  .pnum{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;
+    background:var(--us-soft);color:var(--us);font-weight:800;font-size:14px;margin-right:8px}
+  section.pillar.future .pnum{background:var(--gold-soft);color:var(--gold)}
+  h2{font-size:21px;margin:.1em 0 .15em;letter-spacing:-.01em;text-wrap:balance;display:flex;align-items:center;gap:2px}
+  .sub{color:var(--muted);font-size:13.5px;margin:.1em 0 .7em}
+  h3{font-size:14px;margin:1em 0 .2em;color:var(--accent);text-transform:uppercase;letter-spacing:.04em}
+  h3.diy{color:var(--gold)}
+  p{margin:.5em 0}
+  ul{margin:.4em 0;padding-left:1.15em}li{margin:.28em 0}
+  .small{font-size:13px;color:var(--muted)}
+  .exp{background:var(--paper);border-radius:9px;padding:8px 12px;font-size:13px;margin:.5em 0;border:1px solid var(--line-soft)}
+  .exp b{color:var(--ink)}
+  mark{background:color-mix(in srgb,var(--us) 20%,transparent);color:inherit;padding:0 3px;border-radius:3px}
+  .tag{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;
+    background:var(--gold-soft);color:var(--gold);vertical-align:middle;margin-left:6px}
+
+  .cmt{margin:16px 0 4px;border-top:1px dashed var(--line);padding-top:12px}
+  .cmt label{display:block;font-size:12px;font-weight:700;color:var(--accent);margin-bottom:6px}
+  .cmt label::before{content:"✍️ "}
+  textarea{width:100%;min-height:52px;resize:vertical;background:var(--paper);color:var(--ink);
+    border:1px solid var(--line);border-radius:9px;padding:9px 11px;font:inherit;font-size:14px}
+  textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+  .saved{font-size:11px;color:var(--us);margin-top:4px;height:14px}
+
+  section.note{background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 22%,transparent);
+    border-radius:var(--radius);padding:20px 22px 10px;margin:22px 0}
+  section.note h2{font-size:18px}
+  .modal{position:fixed;inset:0;background:rgba(10,14,20,.55);display:none;align-items:center;justify-content:center;z-index:60;padding:18px}
+  .modal.on{display:flex}
+  .modal-in{background:var(--card);border:1px solid var(--line);border-radius:14px;max-width:640px;width:100%;
+    max-height:82vh;overflow:auto;padding:18px;box-shadow:var(--shadow)}
+  .modal-in h3{margin-top:0;color:var(--ink)}
+  .modal-in textarea{min-height:240px;font-size:12.5px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+  footer{margin-top:28px;font-size:12px;color:var(--muted);text-align:center}
+  @media(max-width:480px){h1{font-size:26px}h2{font-size:19px}.wrap{padding:0 14px 130px}}
+</style>
+
+<div class="bar">
+  <div class="bar-in">
+    <b>Flywheel Value · OPC</b>
+    <span class="sp"></span>
+    <button class="btn" onclick="openExport()">导出我的批注</button>
+  </div>
+</div>
+
+<div class="wrap">
+  <header class="hero">
+    <div class="eyebrow">对外 Value 工件 · 喂 FLY-921 定位</div>
+    <h1>你一个人 —— 手握一整个公司</h1>
+    <p class="lede">给<b>非技术的一人公司 operator</b>(自己做电商、自己做 social 的那种):你在<b>一个人干一整个团队的活</b>。这不是一个工具,是一支<b>替你把公司的活做掉的队</b>。</p>
+    <div class="oneliner" style="margin:14px auto 0;max-width:640px;background:var(--card);border:1px solid var(--line);border-left:4px solid var(--us);border-radius:12px;padding:12px 16px;font-size:15px;box-shadow:var(--shadow)"><b>一句话</b>:替一个<b>非技术的一人公司 operator</b>,把一整个「公司」的活<b>在聊天里做掉</b>。</div>
+    <div class="meta"><span>日期 2026-07-07</span><span>草稿 · 喂 FLY-921</span><span>给 Annie review</span></div>
+    <div class="frame">
+      <b>目标是谁 →</b> <b>非技术的</b>一人公司 operator —— 他有「一个人干一个团队的活」的痛,但<b>不是程序员、自己拼不出来</b>,要的是<mark>替他做(done-for-you)</mark>。<span class="small">(会自己拼的是程序员,本就不是我们攻的人 —— 他们能用,但不是专门 target。)</span>所以每根支柱讲的是「对一个非技术 operator,这份价值是什么 / 为什么他自己弄不出来」。你在每节留言,写完点右上角<b>「导出我的批注」</b>发回。
+    </div>
+  </header>
+
+  <!-- Pillar 1 -->
+  <section class="pillar">
+    <h2><span class="pnum">1</span>你的公司一直在线,而且记得一切</h2>
+    <div class="sub">常驻组织 = 记忆 + 掌控</div>
+    <p>一个 <b>always-on 的 Lead</b> + long-term memory + Linear 当第二大脑 —— 它<b>始终握着项目全局</b>:你想法随口一说就存下不丢,随时问「现在整体到哪了」都有答案,<mark>不用每次重新同步 context</mark>。</p>
+    <div class="exp"><b>你亲身体验</b>:常驻 Lead 记得所有在飞的活,你不用每次从头交代;idea 丢进去就不会忘。</div>
+    <h3 class="diy">为什么你自己弄不出来 / 这得替你做</h3>
+    <p class="small">关键不在 agent 多不多 —— 就算你多开几个助理(OpenClaw 那种),它们也是<b>各自为战</b>:各记各的、不互通,你还得自己当<b>人肉调度</b>盯全局。<mark>一个被协调的常驻组织</mark>(帮手之间互通、共享一个全局、跨项目复用)才是持续工程 —— 一个非技术 operator <b>弄不出来</b>,也不该要求他去 juggle。</p>
+    <div class="cmt"><label for="c_p1">这条对你最真实的那一刻是什么?外人怎么讲才有感?</label>
+      <textarea id="c_p1" placeholder="比如:最戳我的是 ___ / 对外这么讲更有感…"></textarea><div class="saved" id="s_c_p1"></div></div>
+  </section>
+
+  <!-- Pillar 2 -->
+  <section class="pillar">
+    <h2><span class="pnum">2</span>Push Model:活自己推进,需要你才来找你</h2>
+    <div class="sub">多线并行 · push 不是 pull · thread 不半途而废</div>
+    <p>每个活跑在<b>自己的线里</b>(自己的 thread),互不串味 —— 不像一个窗口堆到最后「任务一完成」时你已经忘了任务一是啥。</p>
+    <p><b>① Push 不是 pull</b>:每条线<b>自己往前推</b>,<mark>只在卡住 / 要你拍板时才来找你</mark>。系统接管了「盯进度、调度」这件你以前得自己干的事 —— 你<b>不用当追十条线的项目经理</b>,活自己推进、需要你才 ping 你 → 把你的注意力还给你。</p>
+    <p><b>② Thread 持久 = 不半途而废</b>:没做完的 thread <b>一直在</b>,下个月想起来接着做,<mark>想法 / 半成品都不丢</mark>。</p>
+    <div class="exp"><b>你亲身体验</b>:十条线各自推进,你只在它们来找你时才管;搁置的活下次回来还在,不用重头再来。</div>
+    <h3 class="diy">为什么你自己弄不出来 / 这得替你做</h3>
+    <p class="small">多开几个助理(OpenClaw)或多开几个窗口(Claude Code)也不解决 —— 它们<b>各自为战、不互通,而且是 pull(你不去戳它就停)</b>,你还得自己盯、自己 juggle。「自己 push + 持久 + 有人统一盯全局」要有<b>被协调的组织</b> —— 一个非技术 operator <b>装不起、也调不动</b>(OpenClaw 要自托管、Claude Code 要进终端)。</p>
+    <div class="cmt"><label for="c_p2">Push Model(活自己推进、需要你才找你)+ thread 不半途而废 —— 这两条对你最真实的画面是什么?</label>
+      <textarea id="c_p2" placeholder="比如:我最烦的是自己追十条线进度那一刻 / 半途而废的活 ___…"></textarea><div class="saved" id="s_c_p2"></div></div>
+  </section>
+
+  <!-- Pillar 3 -->
+  <section class="pillar">
+    <h2><span class="pnum">3</span>工程 + 管理 + 产品,一整支会长本事的团队</h2>
+    <div class="sub">一支多视角团队,越用越强</div>
+    <p>你一个人开公司,却像身边<b>有工程、管理、产品几个帮手</b> —— 每件事都有对的人替你想,<mark>你不用自己啥都懂</mark>。越用,他们越懂你的生意;这个项目学到的,下个项目立刻用得上。</p>
+    <div class="exp"><b>你亲身体验 + 具体 demo</b>:不同帮手各有专长,你只管说要什么;而且经验会攒下来、跨项目复用 —— <mark>比如一个能力写成 global skill,别的 team 直接拿去用</mark>,这就是「学一次、到处能用」的实证。</div>
+    <h3 class="diy">为什么你自己弄不出来 / 这得替你做</h3>
+    <p class="small">攒几个 prompt ≠ 一支有分工、会积累 perspective、跨项目复用经验的团队 —— 而且攒 prompt 本身就要技术。一个非技术 operator 要的是<b>现成一支会长本事的队</b>,不是自己配 bot。</p>
+    <div class="cmt"><label for="c_p3">「多视角团队 / 越用越强」你有没有具体一件事能当 demo?</label>
+      <textarea id="c_p3" placeholder="比如:___ 那次某个 Lead 视角救了我 / 跨项目复用的例子…"></textarea><div class="saved" id="s_c_p3"></div></div>
+  </section>
+
+  <!-- Pillar 4 -->
+  <section class="pillar">
+    <h2><span class="pnum">4</span>永远用对的工具干对的活,不被一家绑死</h2>
+    <div class="sub">工具 / 供应商中立的生态整合</div>
+    <p>每件活都用<b>对的工具</b>去干:难活用强的、简单活用省钱的;哪家强用哪家,一家的短板用别家补(比如某工具不会看图 → 换个会的)。<mark>你不用管背后是哪家模型 —— 我们替你选对的那个。</mark></p>
+    <div class="exp"><b>你亲身体验</b>:难活配强的、简单活配便宜的;某家工具卡住就换别家补上,你不用操心背后是谁。</div>
+    <h3 class="diy">为什么你弄不出来 / 别家也不替你做</h3>
+    <p class="small"><b>Cowork 锁 Claude、Codex 锁 OpenAI</b> —— 第一方厂商结构上不会替你去用对手的模型。中立整合对一个非技术 operator 更是<b>天方夜谭</b>(要懂每家模型强弱和成本)—— 这正是要<b>替他做</b>的。<span class="tag">能打≠现在建</span> <span class="small">(定位上现在能讲这条差异;真建全是后话,不冲突。)</span></p>
+    <div class="cmt"><label for="c_p4">「不被一家绑死」对 OPC 是不是真在乎的点?怎么讲最有感?</label>
+      <textarea id="c_p4" placeholder="比如:我最在乎 ___ / 换工具补短板那次…"></textarea><div class="saved" id="s_c_p4"></div></div>
+  </section>
+
+  <!-- Pillar 5 (future) -->
+  <section class="pillar future">
+    <h2><span class="pnum">5</span>花了多少、值不值,一眼看得见 <span class="tag">已起步 / 待打磨</span></h2>
+    <div class="sub">成本 + 价值可视</div>
+    <p>token 花费 + eval(产出质量)—— <mark>成本和产出都摆在明面上</mark>,像看自己公司的一张简版财报:这个月这支队花了多少、干出了什么、值不值。</p>
+    <div class="exp"><b>现状(已起步、待打磨)</b>:token 的<b>每日汇报(daily-post)已经在跑了</b>(连着 alerts 那条 token report),成本这半边有了雏形;把它做成<b>一眼看懂的「财报」</b> + 加上 <b>eval 产出面板</b> = 待打磨。放进来是因为它把前 4 条的价值「量化成看得见的钱和产出」,对 OPC 最终最有说服力。</div>
+    <div class="cmt"><label for="c_p5">这条(成本+价值可视)你觉得多重要?要不要早点做?</label>
+      <textarea id="c_p5" placeholder="比如:很重要,因为 ___ / 现在不急…"></textarea><div class="saved" id="s_c_p5"></div></div>
+  </section>
+
+  <!-- 怎么给外人看 -->
+  <section class="note">
+    <div class="eyebrow">怎么把这份 Value 给外人看</div>
+    <h2>demo 的气质:有趣 + drama + 真实</h2>
+    <p class="small">对外 demo <b>不表演「质量多高」,表演「有趣的性质」</b> —— 让人看到一支队在你手底下热闹地干活、有戏剧性、是真的在动。<b>voice 让它像真人在干</b>,不是冷冰冰的 log。目的:把上面的技术优势 + 你的个人体验,变成外人一眼能感知的商业 Value。</p>
+    <div class="cmt"><label for="c_demo">「有趣+drama+真实、voice 像真人」这个 demo 气质,你脑子里有画面吗?</label>
+      <textarea id="c_demo" placeholder="比如:我想象的画面是 ___ / voice 那块我想 ___"></textarea><div class="saved" id="s_c_demo"></div></div>
+  </section>
+
+  <!-- 整体 -->
+  <section class="note" style="border-color:color-mix(in srgb,var(--us) 30%,transparent);background:var(--us-soft)">
+    <div class="eyebrow" style="color:var(--us)">整体</div>
+    <h2>对一个非技术电商 / social operator,这 5 条哪几条最打动他?</h2>
+    <p class="small">诚实前提:引擎层没护城河 —— 但会自己拼的是<b>程序员</b>,不是我们攻的<b>非技术电商/social operator</b>。这 5 条里,哪几条最能让一个非技术 operator 觉得「<b>这支队替我把公司做掉了</b>」、最撑得住我们的价值?喂 FLY-921 跟你一起拍。</p>
+    <div class="cmt"><label for="c_overall">你选哪几条当主线?有没有哪条你觉得其实不成立?</label>
+      <textarea id="c_overall" placeholder="主线我选 ___;___ 这条我觉得站不住…"></textarea><div class="saved" id="s_c_overall"></div></div>
+  </section>
+
+  <footer>Flywheel · OPC Value 工件 · 草稿,喂 FLY-921 · 任何东西都不会在你批准前 ship</footer>
+</div>
+
+<div class="modal" id="modal" onclick="if(event.target===this)closeExport()">
+  <div class="modal-in">
+    <h3>你的批注汇总</h3>
+    <p class="small">下面是你写的所有意见。已尝试自动复制到剪贴板;没复制成功就长按/全选手动复制,发回给团队。</p>
+    <textarea id="exportBox" readonly></textarea>
+    <div class="row">
+      <button class="btn" onclick="copyExport()">复制</button>
+      <button class="btn ghost" onclick="closeExport()">关闭</button>
+      <span class="saved" id="copyMsg" style="align-self:center"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+  var KEY="fly909_value_v1";
+  var FIELDS={c_p1:"P1 常驻组织=记忆+掌控",c_p2:"P2 多线并行不糊",c_p3:"P3 多视角团队",
+    c_p4:"P4 供应商中立整合",c_p5:"P5 成本+价值可视(未来)",c_demo:"demo 气质(有趣+drama+真实)",
+    c_overall:"整体:哪几条是立身之本"};
+  function load(){try{return JSON.parse(localStorage.getItem(KEY)||"{}")}catch(e){return{}}}
+  function save(d){try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}}
+  var data=load();
+  Object.keys(FIELDS).forEach(function(id){
+    var el=document.getElementById(id);if(!el)return;
+    if(data[id]){el.value=data[id]}
+    el.addEventListener("input",function(){
+      data[id]=el.value;save(data);
+      var s=document.getElementById("s_"+id);if(s){s.textContent="已暂存 ✓";clearTimeout(el._t);el._t=setTimeout(function(){s.textContent=""},1200)}
+    });
+  });
+  function compile(){
+    var out="【Annie 对 Flywheel OPC Value 工件的批注】\n";var any=false;
+    Object.keys(FIELDS).forEach(function(id){
+      var v=(data[id]||"").trim();if(v){any=true;out+="\n■ "+FIELDS[id]+"\n"+v+"\n"}
+    });
+    return any?out:"(还没写任何批注)";
+  }
+  function openExport(){document.getElementById("exportBox").value=compile();document.getElementById("modal").classList.add("on");
+    try{navigator.clipboard.writeText(compile()).then(function(){msg("已复制到剪贴板 ✓")},function(){})}catch(e){}}
+  function copyExport(){var t=document.getElementById("exportBox");t.select();
+    try{navigator.clipboard.writeText(t.value).then(function(){msg("已复制 ✓")},fallback)}catch(e){fallback()}
+    function fallback(){try{document.execCommand("copy");msg("已复制 ✓")}catch(e){msg("请手动全选复制")}}}
+  function msg(m){document.getElementById("copyMsg").textContent=m}
+  function closeExport(){document.getElementById("modal").classList.remove("on")}
+</script>
