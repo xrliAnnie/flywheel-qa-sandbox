@@ -72,4 +72,10 @@ Issue: FLY-964 (https://linear.app/geoforge3d/issue/FLY-964/三段式designimple
   - 未触发 codex design_review gate:Lead 明确『product PRD,验收=Annie+我、无 QA』→ Lead 是 reviewer(已在报告注明,Lead 要可再叫)。
   - 注:review.html live 截图因 Chrome 扩展断连没跑成;已 grep 自查浅色达标。
   - commit 待提交(未 push)。已报 Lead。
-- **PARK 待命**:等 Lead QA review.html + 过 Annie。不 create-issue、不 PR、不 ship。
+- [x] Lead QA PRD 过 + Annie approve 964;codex design-review 过(方向 sound)挑出 5 buildability gap。
+- [x] **补齐 5 个 buildability gap**(照 issue-display.ts 状态机如实,lead-instruction c163f664):
+  - §6.1 状态行 face C 规格化(renderPhaseStatusLine 紧凑行、4 态图标同套、同源刷新);§6.2 964 验收边界独立于 978/962;§6.3 两段式明确划出本次 scope(待 FLY-830);§6.4 4 态完整转移表(现状机基线 + 新增 🔁 规则[某段 parked 但更早段 active→🔁,修 parked-QA 错显已过 bug] + 10 场景事件表含多轮返工/QA重开/设计打回/kill取消归档);§6.5 exec/attach 行最小生命周期。
+  - prd.md 加 §6、非目标 renumber §7;review.html 同步加「⑤ 落地补充」含转移表(自查 0 prefers-color-scheme、div 30/30 浅色)。
+  - **commit + push flywheel-FLY-964 → PR #499 自动更新**(Lead 要 codex 再过一遍 → 过了 Lead merge)。
+  - 更新 review URL: https://fw-reports-a53de2.vercel.app/r/9164f2ae623ee2e2ababe659157497c6/
+- **PARK 待命**:Lead 再跑 codex → 过了 **Lead merge**(别 ship / 别自 merge / 别归档,等 Lead)。要改 Lead relay。

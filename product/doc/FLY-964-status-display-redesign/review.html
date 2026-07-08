@@ -200,6 +200,50 @@
     </div>
   </div>
 
+  <!-- 5 落地补充 -->
+  <div class="section">
+    <h2>⑤ 落地补充(给工程 · codex 挑的 5 处)</h2>
+    <p class="sub">照 issue-display 状态机如实补的 buildability 细节 —— 设计不变,只是写死怎么落地。</p>
+
+    <div class="card blue">
+      <h3>状态行(face C)= 置顶顶部一览摘要行</h3>
+      <p>紧凑单行 <code>🎨设计✅·🔨实现▶·🧪QA◻</code>(现有 renderPhaseStatusLine),4 态图标和置顶明细同一套;和标题+置顶<b>同源刷新</b>(refresher+sweep),不是特例。v5 已批的 per-phase 明细不动。</p>
+    </div>
+
+    <div class="card green">
+      <h3>964 独立可验收(不 block 在 978/962)</h3>
+      <p>964=显示层,验收=显示永远反映真实+自愈,<b>独立达标可 ship</b>。978/962 是并行降噪(让要显示的错变少),不是 964 的门槛。</p>
+    </div>
+
+    <div class="card amber">
+      <h3>两段式 = 本次 scope 外</h3>
+      <p>两段式显示<b>不纳入本次验收</b>,待 <span class="tag t-tbd">FLY-830</span> 定义;不实现、不纠结合并段徽章。</p>
+    </div>
+
+    <div class="card navy">
+      <h3>4 态完整转移表(照状态机)</h3>
+      <table>
+        <tr><th>#</th><th>场景</th><th>设计</th><th>实现</th><th>QA</th><th>标题</th></tr>
+        <tr><td>1</td><td>设计中</td><td>▶</td><td>◻</td><td>◻</td><td>🎨设计</td></tr>
+        <tr><td>2</td><td>实现中(首次)</td><td>✅</td><td>▶</td><td>◻</td><td>🔨实现</td></tr>
+        <tr><td>3</td><td>实现完、等 QA</td><td>✅</td><td>✅</td><td>◻</td><td>🔨实现</td></tr>
+        <tr><td>4</td><td>QA 中(首次)</td><td>✅</td><td>✅</td><td>▶</td><td>🧪QA</td></tr>
+        <tr><td>5</td><td><b>QA 打回 → 返工</b></td><td>✅</td><td>▶</td><td>🔁</td><td>🔨实现</td></tr>
+        <tr><td>6</td><td>多轮返工(第 N 轮)</td><td>✅</td><td>▶</td><td>🔁</td><td>🔨实现</td></tr>
+        <tr><td>7</td><td>返工完、QA 重开</td><td>✅</td><td>✅</td><td>▶</td><td>🧪QA</td></tr>
+        <tr><td>8</td><td>设计被打回</td><td>▶</td><td>🔁</td><td>🔁</td><td>🎨设计</td></tr>
+        <tr><td>9</td><td>三段全绿</td><td>✅</td><td>✅</td><td>✅</td><td>🧪QA</td></tr>
+        <tr><td>10</td><td>人工 kill / 取消</td><td colspan="3" style="text-align:center">归档清桩</td><td>不显受阻</td></tr>
+      </table>
+      <p class="note"><b>新增 🔁 等待中规则:</b>某段本轮做完/parked、但更早的段又 ▶进行中(返工回退)→ 显 🔁 不显 ✅。这修的正是现状 bug —— 现在 parked QA 会错显「已过」。终态失败(kill/取消)→ 归档清桩,不显 🔴。</p>
+    </div>
+
+    <div class="card">
+      <h3>exec / attach 行最小生命周期</h3>
+      <p>有 live/parked session 的段带 exec+attach;完成段 session 还在则留、结束则去掉 attach 留 exec;未开始段无;清桩交互→FLY-978,置顶随 thread 到真 done/shipped 才归档。</p>
+    </div>
+  </div>
+
   <div class="footer">
     FLY-964 收口 PRD · draft · 验收 = Annie + HL · 拿来一起改<br>
     落地边界:显示层 + 正确性 = Tadashi · 根治机制 = FLY-978 · 两段式结构 = FLY-830

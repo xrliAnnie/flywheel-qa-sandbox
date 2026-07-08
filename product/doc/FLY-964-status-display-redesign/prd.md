@@ -161,9 +161,80 @@ FLY-907 已根治「只在 `stage_changed` 时刷新 → 卡住」:三个显示�
 
 ---
 
-## 6. 非目标 / 边界
+## 6. Buildability 规格补充(codex R1 — 5 项)
+
+> 照 `issue-display.ts` 状态机如实写、不靠猜;补完可 build。
+
+### 6.1 状态行(face C)规格化
+
+- **形态**:紧凑单行、三段一览 —— `🎨设计<态>·🔨实现<态>·🧪QA<态>`(现 `renderPhaseStatusLine`,`issue-display.ts`)。例:`🎨设计✅·🔨实现▶·🧪QA◻`。
+- **4 态图标映射**(与置顶 per-phase 图标**同一套**):◻未开始 / ▶进行中 / ✅已完成 / 🔁等待中。现 `PHASE_DISPLAY_GLYPH_PARTS` 用 ◾(pending)且无 🔁 → build 需把 pending 图标 ◾→◻、并新增 🔁(见 §6.4)。
+- **placement**:face C 与 v5 置顶 per-phase 明细**同源**(FLY-907 已把 face C 收进置顶 header)—— 作置顶顶部的一览摘要行(per-phase 明细行在下)。两者渲染同一份 phase-state 向量,永不打架。**不改 v5 已批的 per-phase 明细**,face C 只是它的紧凑摘要。
+- **更新频率 / 失败重试**:与标题 + 置顶**完全一致** —— 都由 `issue-display-refresher` 同源刷新,每个生命周期事件触发「从真实状态重算」,写结果 `changed/noop/deferred/failed`,`deferred/failed` 不落指纹 → sweep 补回。face C 不是特例,是同一 refresher 写的三面之一。
+
+### 6.2 964 验收边界 vs FLY-978 / FLY-962
+
+- **964 = 显示层**。验收 = **显示永远反映真实 + 自愈(refresher + sweep 独立达标)**,**不 block 在 978/962**。
+- FLY-978(清桩 / 解耦重启)、FLY-962(归档约束)= 修根,让「需要被显示的错误状态」变少;但**不是 964 验收的前置**。964 的自愈保证:即使根没修完,任何写失败也被 sweep 补回、绝不永久停错态。
+- 一句话:**964 独立可验收、可 ship;978/962 是并行降噪,不是门槛。**
+
+### 6.3 两段式显示 — 明确划出本次 scope
+
+- 两段式(`[设计+实现]` 合并段)显示**不纳入 964 本次实现验收,待 FLY-830 定义**两段式 pipeline 结构后再定。
+- 本次 build **不实现**两段式渲染,也不纠结 `[设计+实现]` 合并段标题显哪个徽章 —— 明确 scope 外。v5 mockup 的两段式卡仅为「显示形态示意」,非本次交付。
+
+### 6.4 4 态完整转移表(照 `derivePhaseDisplayState` 状态机)
+
+**现状态机(事实基线)** — 输入 `(status, park)` → 现输出 `PhaseDisplayState`:
+
+| 输入 | 现输出 |
+|---|---|
+| 无 session | pending |
+| completed / merged | done |
+| failed / terminated / blocked / rejected | blocked |
+| park=parked(任何 live status) | done |
+| boundary(design_done / awaiting_review / approved_to_ship)+ park=unknown | done |
+| boundary + park=not_parked(FLY-543 唤醒) | active |
+| running / 其它有 session | active |
+
+**目标 4 态映射 + 新增 🔁 规则**:
+- `pending → ◻未开始`;`active → ▶进行中`;`done`(仅 completed/merged 终态)`→ ✅已完成`。
+- **新增 `🔁等待中`**:某段处于「本轮做完 / parked」形态(经 park / boundary 判 done、**非** completed/merged 终态)**且序列中更早的段当前为 ▶进行中**(pipeline 回退返工)→ 显 `🔁等待中`(而非 ✅)。**这修的正是现状 bug**:现在 parked QA 判 done → 错显「QA 已过」,返工时状态不实。
+- **终态失败**(terminated / rejected / 取消)→ **不显 🔴**,走归档清桩(edge ①,§4.5)。现 `blocked→🔴受阻` 改为归档。
+
+**事件 →(设计, 实现, QA)+ 标题徽章**(覆盖 Lead 点名的所有组合):
+
+| # | 场景 | 设计 | 实现 | QA | 标题 |
+|---|---|:--:|:--:|:--:|---|
+| 1 | 设计中 | ▶ | ◻ | ◻ | 🎨设计 |
+| 2 | 实现中(首次) | ✅ | ▶ | ◻ | 🔨实现 |
+| 3 | 实现完成、等 QA(handoff gap) | ✅ | ✅ | ◻ | 🔨实现 ¹ |
+| 4 | QA 中(首次) | ✅ | ✅ | ▶ | 🧪QA |
+| 5 | QA 打回 → 返工中 | ✅ | ▶ | 🔁 | 🔨实现 |
+| 6 | 多轮返工(第 N 轮) | ✅ | ▶ | 🔁 | 🔨实现 ² |
+| 7 | 返工完成、QA 重开 | ✅ | ✅ | ▶ | 🧪QA |
+| 8 | 设计被打回返工 | ▶ | 🔁 | 🔁 | 🎨设计 ³ |
+| 9 | 三段全绿 | ✅ | ✅ | ✅ | 🧪QA(→ completed) |
+| 10 | 人工 kill / 取消中途 | — | — | — | **归档清桩,不显受阻**(edge ①) |
+
+- 注 ¹:handoff gap 无 active 段,`deriveIssueTitleBadge` 取第一个 pending 段之前一段 = 实现 → 🔨实现;QA session 一起就 ▶ → 🧪QA。
+- 注 ²:多轮返工显示形态与第 1 轮同(第几轮靠 exec / round 区分,不是新态)。
+- 注 ³:设计被打回 → 设计段 active、后续已跑过的段回落 🔁。设计是否会被打回属 pipeline(FLY-793)行为,显示层如实反映即可。
+
+### 6.5 exec / attach 行生命周期(最小规则)
+
+- **有 live / parked cmux session 的段** → 显 `· exec <id>` + 下面一条 attach 行。
+- **完成段(✅已完成)**:其 session 还在(parked keep-alive)→ 保留 exec + attach;session 已结束(finalize 后)→ 保留 `exec <id>`、**去掉 attach 行**(可标 `session 已结束`)。
+- **parked session** → 保留 attach(仍可 attach)。
+- **未开始段(◻)** → 无 exec、无 attach。
+- **清桩后**:清桩(stub cleanup)交互属 FLY-978;**964 最小规则** = 置顶随 thread 存续到 issue 真 done / shipped → 按 §4.3 随 thread 归档;未 done 前置顶持续反映当前 sessions。
+
+---
+
+## 7. 非目标 / 边界
 
 - 不改 pipeline **引擎/相位**本身(FLY-793/887 是 eng;产品线 pipeline 形态 + PM 验收 = FLY-830)。
 - 不在本 issue 定义 FLY-978 的根治机制细节。
+- 两段式渲染不纳入本次实现(§6.3)。
 - 本 issue 只定 **状态显示 UX + 正确性产品需求 + build 拆分提议**。
 - 验收 = Annie + HL(product PRD,无 QA)。
