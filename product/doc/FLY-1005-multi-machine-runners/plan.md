@@ -158,11 +158,16 @@ graph TB
 
 **(6b) 容器镜像讲细(Annie co-eval):** 「固化成镜像」= 把手动 provision 一次性烤进 Dockerfile,开节点 = `docker run <镜像>`,不用每台重装;provision 逻辑从「每台手动」变「构建镜像时一次(build 一次、deploy 多次)」。Docker 只在云/Linux 节点必需;家里 Mac 卫星可裸跑。
 
-**(7) 弹性 provision/deploy —— 四步闭环(阶段3)**
+**(7) 弹性 provision/deploy —— 四步闭环 + ⭐ profile 分池(阶段3)**
 - hub 的 admission(§4.2 3)升级成 **node pool 管理器**,四步:**触发**(队列积压/节点满过阈值)→ **provision**(调云 API 从镜像开实例)→ **入池**(节点 boot + runner-agent 注册 → 加进可用池)→ **销毁**(闲置超时 → 收干净 → 关实例)。
-- **关键澄清(Annie co-eval 5.1):不是每 issue 开新节点**(冷启动几分钟又贵)。是**节点池复用**:issue 先派给池里有空位的节点;**只有池满**才开新节点;闲了回收。
-- 实例选型 = **memory-optimized 高 RAM**(每 runner ~1.3-1.4GB;别选 CPU-optimized)。对齐 FLY-559。
+- **不是每 issue 开新节点**(冷启动几分钟又贵),是**节点池复用**:issue 先派给池里有空位的节点;**只有池满**才开新节点;闲了回收。
+- **⭐ 按 profile 分池(Annie v5 采纳):** profile = 节点预装/预登录的账号+工具集(Cloud CLI/Chrome/Suno/Linear/GitHub);项目带 profile 需求 → hub 匹配那类池(解决「多数节点不需 Suno」浪费)。每 profile = 一份**预烤登录态镜像**;**站在 FLY-346 AIO Sandbox 上做「预登录层」,不自写沙箱**(research §3.7d)。
+- **节点来源可选(Annie v5):云 OR 用户自己物理机(开源自管)**,都接进同一 hub 池;自管物理机无 spot 消失问题、uptime 自担。
+- 实例选型 = **memory-optimized 高 RAM**(每 runner ~1.3-1.4GB)。对齐 FLY-559。
 - **调度/placement**(D7):池里怎么选、何时预热摊平冷启动。
+
+**(7b) ⭐ 状态 sync + 清理(一等硬要求,Annie v5)**
+- N 台机汇同一 GitHub、profile 池复用节点 → **每次起 session 前必须 sync-to-latest**(git pull + 最新依赖 + 其它状态),绝不拿 outdated 树干活(呼应 QA fetch-HEAD + 防撞车 FLY-1002);**session-exit 清本地残留**(worktree/临时文件),不污染下一个 issue。runner-agent 负责(§4.2 1)。
 
 **(8) 云失败域 + 无损重启(阶段3,依赖 FLY-353)**
 - 云节点比家里机器更会**无预警消失**(spot 回收 / 网络分区)。heartbeat(FLY-172)察觉 → 从 **session-log(FLY-353)重建** runner → 在另一节点续跑。**这里 session-log 从「可选升级」变「刚需」**:节点朝生暮死,runner 必须能从 hub 日志无损重启,否则弹性 = 频繁丢 WIP。
@@ -206,7 +211,9 @@ graph TB
 
 ## 6. 决策(★ = 待 Annie 拍;✅ = 已按 co-eval 定)
 
-- **★ D0 主线选型:联邦 vs 非联邦(最关键)** —— **推荐(诚实、分层组合):team 内部 scale 走非联邦(单 hub + 无状态节点,唯一给一个 fleet 无上限弹性 = 1005 目标);跨 team/多租户/给别人用走联邦(每 team 一套,隔离,= Annie 最早直觉且对)。两个都要、不同层级。** 最终主线待 Annie 拍(Lead 会加推荐)。
+- **★ D0 主线选型:联邦 vs 非联邦(最关键)** —— **Runner 推荐(诚实、分层组合):team 内部 scale 走非联邦(单 hub + 无状态节点,唯一给一个 fleet 无上限弹性 = 1005 目标);跨 team/多租户/给别人用走联邦(每 team 一套,隔离,= Annie 最早直觉且对)。两个都要、不同层级。 Honey Lemon 推荐:正交都要,先非联邦横扩(眼前 scale)、联邦=productization 后续。** 最终主线待 Annie 拍。
+- **✅ 状态 sync + 清理(Annie v5 一等要求)** —— 每 session 前 sync-to-latest、exit 清残留(§4B 7b)。
+- **✅ 节点来源可选(Annie v5)** —— 云 OR 用户自己物理机(自管);profile 分池 + 站 346 沙箱(§4B 7)。
 - **✅ D10 多租户(§4B / research §3.7c):** 我们现状=单租户 (a);产品化/多项目走 (c) 每 team 自己一套(= team 级联邦);(b) 共享 hub 除非做 SaaS 否则别碰(安全最难)。
 - **✅ D11 Hub+DB 一体 vs 分离(research §3.7b):** Annie 直觉对——「不共享 DB」只指「不做多 hub 写一个 DB」;单 hub + 云 DB(单写者)是好的。建议家里阶段用一体 SQLite、上云换分离云 DB(独立存活+备份+HA)。
 - **✅ warm pool(research §3.7d):** warm 的是节点(开机+登录+注册),每 issue 起新 session(干净 context)做完 exit,非挂 session 复用。

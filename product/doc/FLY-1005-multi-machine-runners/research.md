@@ -135,7 +135,8 @@ graph LR
   **⭐ 推荐(诚实、分层组合,非二选一 — v4 co-eval):**
   - **一个 team 内部要 scale → 非联邦(单 hub + 无状态节点)。** 只有它给「一个 fleet 弹性、无上限」= 1005 原目标;联邦给不了(N 个独立 fleet、不能池化算力)。
   - **跨 team / 多租户 / 给别人用 → 联邦(每 team 自己一套 = §3.7c)。** 隔离最干净、契合 FLY-648;**正是 Annie 最早的直觉、且对。**
-  - → **主 fleet 非联邦拿弹性;对外 agent / 独立项目 / 别人用走联邦拿隔离。** Annie 的联邦直觉没错,只是它解「隔离/多租户」不是「一个 fleet 无上限 scale」——两个都要、在不同层级。(Lead 会加她的推荐;最终主线待 Annie 拍。)
+  - → **主 fleet 非联邦拿弹性;对外 agent / 独立项目 / 别人用走联邦拿隔离。** Annie 的联邦直觉没错,只是它解「隔离/多租户」不是「一个 fleet 无上限 scale」——两个都要、在不同层级。
+  - **Honey Lemon(Lead)推荐:** 正交、都要 —— **先做非联邦横扩(眼前 scale),联邦 = productization 后续**(给别人用那步再上)。最终主线待 Annie 拍。
 
 **Option C — 跨机共享 StateStore(networked DB)。**
 - 把 teamlead.db 换成一个联网 DB(Postgres/Supabase),多台 Bridge 共读写。这是 FLY-556「StateStore 跨机化」的字面解。
@@ -162,6 +163,8 @@ graph LR
 ### 3.6 走向云:Provision + Deploy 上云 = 无上限 horizontal scale(1005 战略核心)
 
 家里几台物理机只是第一步(受物理机数量限制);**真正的 horizontal scale 是把 provision + deploy 搬上云 —— 按需弹性开/关云节点**。
+
+**(a) 节点来源可选(Annie v5):云 OR 用户自己物理机(开源自管)。** 两种都接进同一个 hub 池:云节点 = 弹性、无上限(on-demand 稳、spot 便宜但会被抢);自管物理机 = **没 spot 消失问题**、代价是 uptime/维护/固定容量自担。要弹性用云,要省心/隐私用自己的机。
 
 **(a) 云节点 = 容器镜像(阶段2,讲细,Annie co-eval 要求):**
 - **「固化成容器镜像」啥意思:** 今天开一台节点要手动装 node/claude CLI/runner-agent/tailscale(FLY-519 脚本)。容器镜像 = 把这些**一次性烤进一个 Docker 镜像**;以后开节点 = 一条 `docker run <镜像>`(拉镜像 + 起 runner-agent),不用每台重装。
@@ -215,9 +218,16 @@ graph LR
 - **(c-每 team 自己一套)** hub+bridge+DB 各自独立 = **team 级联邦**;隔离最干净、契合 FLY-648「给别人用」。
 - **建议:我们现状 (a);产品化/多项目走 (c);(b) 除非做托管 SaaS 否则别碰。** **注意 (c) = team 级联邦 → 多租户与联邦是同一问题(见 §3.2 推荐)。**
 
-**(d) warm pool 生命周期澄清(Annie 问的):warm 的是「节点」不是「session」。** warm 池 = 开好机 + 已登录 claude CLI + runner-agent 注册 + 入 tailnet 的节点,空转待命。来一个 issue → 在 warm 节点上起**全新 Claude session**(干净 context)→ 做完 **exit**、节点续 warm。**不是**挂一个 session 注 context 复用(会串味 + 违背 Flywheel「一 issue 一 session」)。贵的是开节点(分钟)、起 session 便宜(秒)。
+**(d) warm pool 生命周期 + ⭐ profile 分池(Annie v4/v5 co-eval):**
+- **warm 的是「节点」不是「session」:** warm 池 = 开好机 + 已登录 claude CLI + runner-agent 注册 + 入 tailnet 的节点,空转待命。来一个 issue → 在 warm 节点上起**全新 Claude session**(干净 context)→ 做完 **exit**、节点续 warm。**不是**挂一个 session 注 context 复用(会串味 + 违背 Flywheel「一 issue 一 session」)。贵的是开节点(分钟)、起 session 便宜(秒)。
+- **⭐ 按 profile 分池(采纳 Annie 点子):** 不是一个统一大池,而是**按 profile 分几个小池**。profile = 该节点预装/预登录了哪些账号+工具(如 Cloud CLI / Chrome / Suno / Linear / GitHub)。项目派活带 profile 需求(「要带 Suno 的 profile」)→ hub 只匹配那类池。→ 解决「多数节点不需要 Suno」的浪费。
+- **provisioning = 预烤登录态(bake)+ 站在 346 沙箱上:** 每个 profile = 一份**预烤好登录态/工具的镜像/快照**(取即用 = Annie 说的「准备好」)。**能站在 FLY-346 AIO Sandbox(浏览器+终端+VSCode+MCP 一体容器)上,profile 化 = 给它套不同「预登录层」**,不必自写沙箱 —— 跟 346 对齐。
 
-**(e) spot/抢占为啥消失 + 兜底:** spot = 云商骨折卖闲置算力、随时(几十秒~2 分钟甚至无通知)收回 + 网络分区/硬件故障。兜底:heartbeat(FLY-172)发现 → session-log(FLY-353)无损重建续跑;关键/长任务用 on-demand、可容忍中断批量用 spot;有预警时 drain。
+**(e) spot/抢占为啥消失 + 兜底(Annie v5:spot 特性非架构必然):** spot = 云商骨折卖闲置算力、随时(几十秒~2 分钟甚至无通知)收回 + 网络分区/硬件故障。**这只是 spot 的代价、不是架构注定** —— on-demand 不会被抢;**用户自己的物理机更没这问题**(§3.6a 节点来源可选)。兜底:heartbeat(FLY-172)发现 → session-log(FLY-353)无损重建续跑;关键/长任务用 on-demand、可容忍中断批量用 spot;有预警时 drain。
+
+**(f) ⭐ 状态 sync + 清理(立为一等硬要求,Annie v5):** N 台机最后都汇到**同一个 GitHub**,节点复用(profile 池)更要防「过时」:
+- **每次起 session 前:节点必须 sync-to-latest** —— git pull 到最新 + 装最新依赖 + 拉其它需要的状态,**绝不拿 outdated 树干活**(否则基于旧代码出错/撞车)。呼应 QA fetch-HEAD 纪律 + 防撞车 FLY-1002。
+- **session 结束后:清本地残留** —— 删该 issue 的 worktree/临时文件,别污染下一个 issue。
 
 ---
 
