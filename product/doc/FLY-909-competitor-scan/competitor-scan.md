@@ -128,7 +128,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 1. **领域**:Cowork 做的是**你文件上的知识工作**(研究综述 / 合同抽取 / 报告 / 数据整理),**不是建并长期维护一个真软件产品**;Codex 建软件但面向开发者。→ 「**替非技术的人建并养一个真软件产品/公司**」这块,两家目前都没正面做。
 2. **常驻组织 vs 你启动的任务**:Cowork/Codex 本质是「**你启动一个任务/会话** → 它 fan-out → 交付」(Cowork 能跨多天,但仍是项目会话)。我们是一个**常驻的组织**(CoS 自己分诊 backlog、Leads、部门、always-on),不是「你每次启动一个活」。这条是真结构差异,但**别吹太大**(值不值钱要 911 判)。
 3. **界面**:Cowork = **桌面 app + 你电脑上的文件夹**;Codex = 桌面/CLI。我们 = **手机原生 IM(Discord)**,不用开电脑、不用盯文件夹 —— 对「只带手机的非技术小生意主」是真差异。
-4. **agent-agnostic / 供应商中立(Annie ④)**:**Cowork 锁 Claude、Codex 锁 OpenAI**;我们架构上能跨后端(Claude / Codex / GLM / MiniMax / Antigravity / Kimi)。这是**第一方厂商结构上不会做**的事(它们不可能替你去用对手的模型)—— 所以这是一条**「定位层能打」的真差异**。
+4. **agent-agnostic / 供应商中立(Annie ④)**:**Cowork 锁 Claude、Codex 锁 OpenAI**;我们架构上能跨后端(Claude / Codex / GLM / MiniMax / Antigravity / Kimi)。**⚠️〔round-3/4 修正 · 此判断已作废〕** 原写「这是第一方厂商结构上不会做的真差异」—— 但 Raft(第三方却做 runtime-agnostic)+ WorkBuddy(云厂商腾讯 TokenHub 原生一键切 14 模型)已证伪:**供应商中立已退为 table stakes、不是差异**(见 §⑧ Raft / §⑨ WorkBuddy)。「不锁死你」仍是可信承诺,不当差异主打。
    - ⚠️ **但要分清**:「**能打的差异**」≠「**现在就要建**」。Annie 早先定了 setup 先不做 agent-agnostic —— 不冲突:**现在可以把「供应商中立」当定位候选讲,但不必现在就建全**(能打≠现在建)。
 
 **诚实第 4 条:会不会被取代 / 风险在哪。** 最该盯的是 **Cowork(Anthropic 自己)**:它已经是「非技术 + done-for-you + 桌面 chat」。**如果 Anthropic 把 Cowork 指向「从手机替你建并长期维护一个软件产品」,我们的空间会被快速压缩。** 我们在**引擎层没有护城河**;价值全押在**把「done-for-you + 常驻组织 + 手机 IM + 供应商中立 + 真软件产品维护」这套组合,替一个非技术小生意主真正做通** —— 而这套**现在还没产品化**(见 ③ 的诚实边界)。**所以答案不是「我们注定被取代」,也不是「我们稳」,而是:差异存在、但薄,赢面取决于我们能不能比一个通用知识工作工具更早把这套具体组合做成真能用的 done-for-you 软件团队。这个判断,911 跟 Annie 拍。**
@@ -163,7 +163,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 
 对这群人,真差异押哪(候选,待 FLY-921):
 1. **替你做(done-for-you)+ 被协调的常驻组织**:差异**不在 agent 多不多**(多开几个 OpenClaw 也能凑数),**在协调** —— 一个 always-on、Leads 互通、共享 backlog、跨项目复用、部门分工的**被协调组织**,对外像**一家公司在动**;而不是 N 个各自为战、要你自己 juggle 的助理。一个非技术 operator 更弄不出这份协调,也不该要求他去当人肉调度。
-2. **生态整合 / 供应商中立**:按任务难度配模型 + 成本、单一工具短板用别的补(CC 弱多模态 → 接 Antigravity)—— 非技术 operator 更不可能自己整合;Cowork 锁 Claude、Codex 锁 OpenAI,中立整合是第一方结构上不做的。
+2. **生态整合 / 供应商中立**:按任务难度配模型 + 成本、单一工具短板用别的补(CC 弱多模态 → 接 Antigravity)—— 非技术 operator 更不可能自己整合。**⚠️〔round-3/4 修正〕** 别再讲「中立整合是第一方结构上不做的」—— Raft/WorkBuddy 都做了多模型(见 §⑧/§⑨);活着的点是**「替非技术 operator 免自己整合」的 done-for-you**,不是「中立」本身(那已是 table stakes)。
 3. **体验气质**:managed、可靠、像真人团队在干(有趣 + drama + 真实,voice 让它像真人)—— 一个非技术 operator 要的是「有支队在替我热闹地干活」,不是一堆要自己调的工具。
 **诚实总结**:对**非技术电商/social OPC operator**,我们赢的是「**他自己做不了 / 不该自己拼,我们替他把一整个公司的活在聊天里做掉**」。这够不够撑一个生意,**归 FLY-921 跟 Annie 拍**。详细 Value 见配套 **value-artifact.html**。
 

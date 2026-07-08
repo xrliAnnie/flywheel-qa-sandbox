@@ -249,4 +249,4 @@ WorkBuddy 一次性覆盖了我们**一堆候选形态差异**,且比之前扫�
 ## 建议下一步
 
 1. ⚠️ 可选:对 WorkBuddy 跑一次 **ChatGPT Deep Research**(Annie 已通用授权),复核实际交互模型(是不是真「常驻 daemon 组织」)+ DAU 数字的独立佐证 + 它到底能不能碰「长期维护一个 codebase」。—— **非阻塞,不影响本结论量级**;要更硬的一手事实再跑。
-2. 结论已折进 `competitor-scan.md`(横切表 A + ⑧ 节)+ 轻改 `FLY-911 positioning.md`(§5 竞品表 + §7 诚实边界)。
+2. 结论已折进 `competitor-scan.md`(横切表 A + §⑨ 节;§⑧ 是 Raft/FLY-1001)+ 轻改 `FLY-911 positioning.md`(§5 竞品表 + §7 诚实边界)。
