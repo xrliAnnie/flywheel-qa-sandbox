@@ -5,11 +5,11 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { GoogleGenAI } from "@google/genai";
+import { QuotaError, runAgent } from "./agent-loop.mjs";
 import { CONFIG } from "./config.mjs";
-import { assertSandbox, getSeenOrigins } from "./sandbox-guard.mjs";
-import { startMockBridge } from "./mock-bridge.mjs";
-import { runAgent, QuotaError } from "./agent-loop.mjs";
 import { SCENARIOS, SYSTEM_INSTRUCTION } from "./judge.mjs";
+import { startMockBridge } from "./mock-bridge.mjs";
+import { assertSandbox, getSeenOrigins } from "./sandbox-guard.mjs";
 import { registryFor } from "./tools.mjs";
 
 const MOCK = `http://${CONFIG.mock.host}:${CONFIG.mock.port}`;
@@ -19,16 +19,27 @@ const MOCK = `http://${CONFIG.mock.host}:${CONFIG.mock.port}`;
  * R2-3: not lockfiles/README). The exact command is recorded in evidence. */
 export function assertNoForbiddenImports() {
 	const dir = dirname(new URL(import.meta.url).pathname);
-	const cmd = ["grep", "-l", "-E", "from ['\"](@linear/sdk|flywheel-comm)", "--include=*.mjs", "-r", dir];
+	const cmd = [
+		"grep",
+		"-l",
+		"-E",
+		"from ['\"](@linear/sdk|flywheel-comm)",
+		"--include=*.mjs",
+		"-r",
+		dir,
+	];
 	let hits = "";
 	try {
 		hits = execFileSync(cmd[0], cmd.slice(1), { encoding: "utf8" });
 	} catch (e) {
-		if (e.status === 1) hits = ""; // grep: no matches
+		if (e.status === 1)
+			hits = ""; // grep: no matches
 		else throw e;
 	}
 	if (hits.trim()) {
-		console.error(`[sandbox-guard] FAIL-CLOSED: forbidden imports found:\n${hits}`);
+		console.error(
+			`[sandbox-guard] FAIL-CLOSED: forbidden imports found:\n${hits}`,
+		);
 		process.exit(78);
 	}
 	return { guard: "static-imports", ok: true, command: cmd.join(" ") };
@@ -76,17 +87,34 @@ let sessionCount = 0;
 let consecutiveQuota = 0;
 
 /** Run one scenario round: reset mock → run loop → judge → JSONL. */
-export async function runRound({ ai, scenarioKey, modelTier, surface, roundIndex, rawWriter, auditWriter }) {
+export async function runRound({
+	ai,
+	scenarioKey,
+	modelTier,
+	surface,
+	roundIndex,
+	rawWriter,
+	auditWriter,
+}) {
 	const scenario = SCENARIOS[scenarioKey];
 	if (!scenario) throw new Error(`unknown scenario ${scenarioKey}`);
 	if (sessionCount >= CONFIG.budget.maxSessions) {
-		throw new Error(`budget exceeded: ${sessionCount} sessions (cap ${CONFIG.budget.maxSessions})`);
+		throw new Error(
+			`budget exceeded: ${sessionCount} sessions (cap ${CONFIG.budget.maxSessions})`,
+		);
 	}
 	sessionCount += 1;
 	await mockReset(scenario.faults);
 
 	const model = CONFIG.models[modelTier];
-	const base = { scenario: scenarioKey, modelTier, model, surface, round: roundIndex, ts: new Date().toISOString() };
+	const base = {
+		scenario: scenarioKey,
+		modelTier,
+		model,
+		surface,
+		round: roundIndex,
+		ts: new Date().toISOString(),
+	};
 	try {
 		const runResult = await runAgent({
 			ai,
@@ -118,16 +146,26 @@ export async function runRound({ ai, scenarioKey, modelTier, surface, roundIndex
 	} catch (err) {
 		if (err instanceof QuotaError) {
 			consecutiveQuota += 1;
-			rawWriter({ ...base, error: "quota_429", detail: String(err.message).slice(0, 300) });
+			rawWriter({
+				...base,
+				error: "quota_429",
+				detail: String(err.message).slice(0, 300),
+			});
 			if (consecutiveQuota >= CONFIG.budget.quotaHaltAfter) {
-				console.error(`[harness] ${consecutiveQuota} consecutive 429s — halting (plan §4: no retry loops)`);
+				console.error(
+					`[harness] ${consecutiveQuota} consecutive 429s — halting (plan §4: no retry loops)`,
+				);
 				throw err;
 			}
 			// spacing pause before the NEXT round (single pause, not a retry of this one)
 			await new Promise((r) => setTimeout(r, 30_000));
 			return { ok: false, quota: true };
 		}
-		rawWriter({ ...base, error: "round_error", detail: String(err?.stack ?? err).slice(0, 500) });
+		rawWriter({
+			...base,
+			error: "round_error",
+			detail: String(err?.stack ?? err).slice(0, 500),
+		});
 		return { ok: false, error: String(err?.message ?? err) };
 	}
 }
@@ -143,12 +181,19 @@ export function summarize(results) {
 		successes: succ.length,
 		successRate: done.length ? +(succ.length / done.length).toFixed(3) : null,
 		avgParamFirstPass: done.length
-			? +(done.reduce((s, r) => s + r.verdict.paramFirstPass, 0) / done.length).toFixed(3)
+			? +(
+					done.reduce((s, r) => s + r.verdict.paramFirstPass, 0) / done.length
+				).toFixed(3)
 			: null,
-		hallucinatedToolsTotal: done.reduce((s, r) => s + r.verdict.hallucinatedTools, 0),
+		hallucinatedToolsTotal: done.reduce(
+			(s, r) => s + r.verdict.hallucinatedTools,
+			0,
+		),
 		maxStepsExceeded: done.filter((r) => r.verdict.maxStepsExceeded).length,
 		avgSteps: done.length
-			? +(done.reduce((s, r) => s + r.verdict.steps, 0) / done.length).toFixed(1)
+			? +(done.reduce((s, r) => s + r.verdict.steps, 0) / done.length).toFixed(
+					1,
+				)
 			: null,
 		tokens: {
 			input: done.reduce((s, r) => s + (r.verdict.tokens?.input ?? 0), 0),

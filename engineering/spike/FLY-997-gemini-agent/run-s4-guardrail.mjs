@@ -6,8 +6,15 @@
 // build-architecture structural enforcement; that is D5's static audit.
 
 import { writeFileSync } from "node:fs";
-import { initHarness, withMock, runRound, jsonlWriter, summarize, origins } from "./harness.mjs";
 import { CONFIG } from "./config.mjs";
+import {
+	initHarness,
+	jsonlWriter,
+	origins,
+	runRound,
+	summarize,
+	withMock,
+} from "./harness.mjs";
 
 const { ai } = initHarness();
 const raw = jsonlWriter(`${CONFIG.paths.outDir}s4-guardrail.jsonl`);
@@ -35,18 +42,38 @@ await withMock(async () => {
 				roundIndex: r,
 				rawWriter: (o) => {
 					raw(o);
-					if (o.verdict) details.push({ scenario, tier, round: r, checks: o.verdict.checks });
+					if (o.verdict)
+						details.push({
+							scenario,
+							tier,
+							round: r,
+							checks: o.verdict.checks,
+						});
 				},
 				auditWriter: audit,
 			});
 			results.push(res);
-			console.log(`[S4 ${tier}/${scenario}] round ${r + 1}/${rounds}: ${res.ok ? (res.verdict.success ? "ok" : "FAIL") : "err"}`);
+			console.log(
+				`[S4 ${tier}/${scenario}] round ${r + 1}/${rounds}: ${res.ok ? (res.verdict.success ? "ok" : "FAIL") : "err"}`,
+			);
 		}
 		summaries.push({ scenario, tier, ...summarize(results) });
 	}
 	writeFileSync(
 		`${CONFIG.paths.evidenceDir}s4-guardrail-summary.json`,
-		JSON.stringify({ ts: new Date().toISOString(), outboundOrigins: origins(), summaries, perRoundChecks: details }, null, 2),
+		JSON.stringify(
+			{
+				ts: new Date().toISOString(),
+				outboundOrigins: origins(),
+				summaries,
+				perRoundChecks: details,
+			},
+			null,
+			2,
+		),
 	);
-	console.log("[S4] done →", `${CONFIG.paths.evidenceDir}s4-guardrail-summary.json`);
+	console.log(
+		"[S4] done →",
+		`${CONFIG.paths.evidenceDir}s4-guardrail-summary.json`,
+	);
 });

@@ -7,8 +7,8 @@
 // "SPIKE-STRICT" below and are NOT claimed to be a 1:1 Bridge mirror.
 // The mock's validation behavior follows the production contract exactly.
 
-import { assertLocalhostUrl, recordOrigin } from "./sandbox-guard.mjs";
 import { CONFIG } from "./config.mjs";
+import { assertLocalhostUrl, recordOrigin } from "./sandbox-guard.mjs";
 
 const BASE = `http://${CONFIG.mock.host}:${CONFIG.mock.port}`;
 
@@ -46,17 +46,22 @@ export function validateArgs(schema, args) {
 		}
 		if (val === undefined || val === null) continue;
 		const t = prop.type;
-		if (t === "string" && typeof val !== "string") errors.push(`${key} must be a string`);
-		if (t === "number" && typeof val !== "number") errors.push(`${key} must be a number`);
-		if (t === "boolean" && typeof val !== "boolean") errors.push(`${key} must be a boolean`);
-		if (t === "array" && !Array.isArray(val)) errors.push(`${key} must be an array`);
+		if (t === "string" && typeof val !== "string")
+			errors.push(`${key} must be a string`);
+		if (t === "number" && typeof val !== "number")
+			errors.push(`${key} must be a number`);
+		if (t === "boolean" && typeof val !== "boolean")
+			errors.push(`${key} must be a boolean`);
+		if (t === "array" && !Array.isArray(val))
+			errors.push(`${key} must be an array`);
 		if (t === "object" && (typeof val !== "object" || Array.isArray(val)))
 			errors.push(`${key} must be an object`);
 		if (prop.enum && !prop.enum.includes(val)) {
 			errors.push(`${key} must be one of: ${prop.enum.join(", ")}`);
 		}
 		if (t === "array" && Array.isArray(val) && prop.items?.type === "string") {
-			if (!val.every((x) => typeof x === "string")) errors.push(`${key} items must be strings`);
+			if (!val.every((x) => typeof x === "string"))
+				errors.push(`${key} items must be strings`);
 		}
 	}
 	return errors;
@@ -89,7 +94,7 @@ export const TOOLS = {
 					labels: {
 						type: "array",
 						items: { type: "string" },
-						description: "Label names to apply, e.g. [\"bug\"]. Optional.",
+						description: 'Label names to apply, e.g. ["bug"]. Optional.',
 					},
 					team: {
 						type: "string",
@@ -98,7 +103,7 @@ export const TOOLS = {
 					projectName: {
 						type: "string",
 						description:
-							"Flywheel project name to associate the issue with, e.g. \"geoforge3d\". Optional.",
+							'Flywheel project name to associate the issue with, e.g. "geoforge3d". Optional.',
 					},
 				},
 				// SPIKE-STRICT: production only requires `title`; description is
@@ -160,7 +165,10 @@ export const TOOLS = {
 			},
 		},
 		handler: (args) =>
-			callMock("GET", `/api/sessions/${encodeURIComponent(args.executionId)}/status`),
+			callMock(
+				"GET",
+				`/api/sessions/${encodeURIComponent(args.executionId)}/status`,
+			),
 	},
 
 	search_memory: {
@@ -171,7 +179,10 @@ export const TOOLS = {
 			parameters: {
 				type: "object",
 				properties: {
-					query: { type: "string", description: "Natural-language search query." },
+					query: {
+						type: "string",
+						description: "Natural-language search query.",
+					},
 					project_name: {
 						type: "string",
 						description: 'Project whose memory to search, e.g. "geoforge3d".',
@@ -203,7 +214,8 @@ export const TOOLS = {
 				properties: {
 					content: {
 						type: "string",
-						description: "The fact/conclusion to remember, one self-contained statement.",
+						description:
+							"The fact/conclusion to remember, one self-contained statement.",
 					},
 					project_name: {
 						type: "string",
@@ -211,7 +223,8 @@ export const TOOLS = {
 					},
 					agent_id: {
 						type: "string",
-						description: 'Writing agent id. Use "gemini-agent" for this assistant.',
+						description:
+							'Writing agent id. Use "gemini-agent" for this assistant.',
 					},
 					user_id: {
 						type: "string",
@@ -254,7 +267,8 @@ export const TOOLS = {
 				required: ["prUrl"],
 			},
 		},
-		handler: (args) => callMock("POST", "/api/voice/ship-approval-request", args),
+		handler: (args) =>
+			callMock("POST", "/api/voice/ship-approval-request", args),
 	},
 };
 

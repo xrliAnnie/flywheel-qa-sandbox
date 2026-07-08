@@ -27,7 +27,9 @@ function isQuota(err) {
 }
 function isTransient(err) {
 	const s = String(err?.message ?? err);
-	return /\b(500|502|503)\b|INTERNAL|UNAVAILABLE|overloaded|fetch failed/i.test(s);
+	return /\b(500|502|503)\b|INTERNAL|UNAVAILABLE|overloaded|fetch failed/i.test(
+		s,
+	);
 }
 
 async function callModel(fn) {
@@ -177,7 +179,11 @@ function generateContentAdapter(ai, model, systemInstruction, registry) {
 			contents.push({
 				role: "user",
 				parts: functionResults.map((r) => ({
-					functionResponse: { id: r.id, name: r.name, response: { result: r.result } },
+					functionResponse: {
+						id: r.id,
+						name: r.name,
+						response: { result: r.result },
+					},
 				})),
 			});
 			return send();
@@ -255,7 +261,9 @@ export async function runAgent({
 				functionResults.push({
 					id: fc.id,
 					name: fc.name,
-					result: { error: `unknown tool: ${fc.name}. Available tools: ${Object.keys(registry).join(", ")}` },
+					result: {
+						error: `unknown tool: ${fc.name}. Available tools: ${Object.keys(registry).join(", ")}`,
+					},
 					isError: true,
 				});
 				result.toolCalls.push(record);

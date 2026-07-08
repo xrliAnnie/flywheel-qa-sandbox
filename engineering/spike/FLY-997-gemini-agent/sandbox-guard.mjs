@@ -2,7 +2,11 @@
 // Every harness entrypoint MUST call assertSandbox() before doing anything,
 // and every outbound HTTP request MUST go through assertLocalhostUrl().
 
-const FORBIDDEN_ENV = ["BRIDGE_URL", "FLYWHEEL_BRIDGE_URL", "TEAMLEAD_API_TOKEN"];
+const FORBIDDEN_ENV = [
+	"BRIDGE_URL",
+	"FLYWHEEL_BRIDGE_URL",
+	"TEAMLEAD_API_TOKEN",
+];
 const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
 /** Guard 2: fail-closed if production Bridge env vars are present. */

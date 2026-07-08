@@ -8,9 +8,17 @@
 //   ./run.sh run-matrix.mjs --scenario N1 --model pro --rounds 20
 //   ./run.sh run-matrix.mjs --surface generateContent
 
-import { writeFileSync, existsSync, readFileSync } from "node:fs";
-import { initHarness, withMock, runRound, jsonlWriter, summarize, origins, sessionsUsed } from "./harness.mjs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { CONFIG } from "./config.mjs";
+import {
+	initHarness,
+	jsonlWriter,
+	origins,
+	runRound,
+	sessionsUsed,
+	summarize,
+	withMock,
+} from "./harness.mjs";
 
 const args = process.argv.slice(2);
 function flag(name, dflt) {
@@ -66,18 +74,36 @@ await withMock(async () => {
 					auditWriter: audit,
 				});
 				results.push(res);
-				const v = res.ok ? (res.verdict.success ? "ok" : "FAIL") : (res.quota ? "quota" : "err");
-				process.stdout.write(`[${tier}/${scenario}] round ${r + 1}/${rounds}: ${v}\n`);
+				const v = res.ok
+					? res.verdict.success
+						? "ok"
+						: "FAIL"
+					: res.quota
+						? "quota"
+						: "err";
+				process.stdout.write(
+					`[${tier}/${scenario}] round ${r + 1}/${rounds}: ${v}\n`,
+				);
 			}
-			const agg = { tier, model: CONFIG.models[tier], scenario, surface, ...summarize(results) };
+			const agg = {
+				tier,
+				model: CONFIG.models[tier],
+				scenario,
+				surface,
+				...summarize(results),
+			};
 			summaries.push(agg);
-			console.log(`[matrix] ${tier}/${scenario}: success ${agg.successes}/${agg.completedRounds} (${agg.successRate})`);
+			console.log(
+				`[matrix] ${tier}/${scenario}: success ${agg.successes}/${agg.completedRounds} (${agg.successRate})`,
+			);
 		}
 	}
 
 	// merge into committed evidence (accumulate across partial runs)
 	const evPath = `${CONFIG.paths.evidenceDir}s2-matrix-summary.json`;
-	const prev = existsSync(evPath) ? JSON.parse(readFileSync(evPath, "utf8")) : { runs: [] };
+	const prev = existsSync(evPath)
+		? JSON.parse(readFileSync(evPath, "utf8"))
+		: { runs: [] };
 	prev.runs.push({
 		ts: new Date().toISOString(),
 		surface,
@@ -88,7 +114,9 @@ await withMock(async () => {
 		summaries,
 	});
 	writeFileSync(evPath, JSON.stringify(prev, null, 2));
-	console.log(`\n[matrix] done. sessions=${sessionsUsed()} origins=${origins().join(",")}`);
+	console.log(
+		`\n[matrix] done. sessions=${sessionsUsed()} origins=${origins().join(",")}`,
+	);
 	console.log(`[matrix] raw: ${rawFile}`);
 	console.log(`[matrix] evidence: ${evPath}`);
 });

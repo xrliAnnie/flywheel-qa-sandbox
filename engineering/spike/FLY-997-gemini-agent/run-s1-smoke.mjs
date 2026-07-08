@@ -7,17 +7,20 @@
 //      the protocol level the smoke retries on generateContent and records
 //      the fallback reason.
 
-import { writeFileSync, readFileSync } from "node:fs";
-import { initHarness, withMock, runRound, jsonlWriter, origins, assertNoForbiddenImports } from "./harness.mjs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { runAgent } from "./agent-loop.mjs";
-import { registryFor } from "./tools.mjs";
-import { SYSTEM_INSTRUCTION } from "./judge.mjs";
 import { CONFIG } from "./config.mjs";
+import { initHarness, jsonlWriter, origins, withMock } from "./harness.mjs";
+import { SYSTEM_INSTRUCTION } from "./judge.mjs";
+import { registryFor } from "./tools.mjs";
 
 const { ai, guards } = initHarness();
 
 const sdkVersion = JSON.parse(
-	readFileSync(new URL("./node_modules/@google/genai/package.json", import.meta.url), "utf8"),
+	readFileSync(
+		new URL("./node_modules/@google/genai/package.json", import.meta.url),
+		"utf8",
+	),
 ).version;
 
 const env = {
@@ -43,7 +46,9 @@ await withMock(async () => {
 	const rounds = [];
 
 	for (let i = 0; i < 3; i++) {
-		await fetch(`http://${CONFIG.mock.host}:${CONFIG.mock.port}/__mock/reset`, { method: "POST" });
+		await fetch(`http://${CONFIG.mock.host}:${CONFIG.mock.port}/__mock/reset`, {
+			method: "POST",
+		});
 		try {
 			const res = await runAgent({
 				ai,
@@ -55,23 +60,60 @@ await withMock(async () => {
 				maxSteps: 4,
 				audit: (l) => audit({ smoke: i, ...l }),
 			});
-			const mockState = await (await fetch(`http://${CONFIG.mock.host}:${CONFIG.mock.port}/__mock/state`)).json();
+			const mockState = await (
+				await fetch(
+					`http://${CONFIG.mock.host}:${CONFIG.mock.port}/__mock/state`,
+				)
+			).json();
 			const created = mockState.issues.length === 1;
 			const answered = res.finalText.trim().length > 0;
-			const pass = created && answered && res.toolCalls.every((c) => !c.hallucinated && c.validationErrors.length === 0);
-			rounds.push({ round: i, surface, pass, created, answered, steps: res.steps, usage: res.usage });
-			raw({ round: i, surface, pass, finalText: res.finalText, toolCalls: res.toolCalls, issues: mockState.issues });
-			console.log(`[S1] round ${i} surface=${surface} pass=${pass} steps=${res.steps} tokens=${JSON.stringify(res.usage)}`);
+			const pass =
+				created &&
+				answered &&
+				res.toolCalls.every(
+					(c) => !c.hallucinated && c.validationErrors.length === 0,
+				);
+			rounds.push({
+				round: i,
+				surface,
+				pass,
+				created,
+				answered,
+				steps: res.steps,
+				usage: res.usage,
+			});
+			raw({
+				round: i,
+				surface,
+				pass,
+				finalText: res.finalText,
+				toolCalls: res.toolCalls,
+				issues: mockState.issues,
+			});
+			console.log(
+				`[S1] round ${i} surface=${surface} pass=${pass} steps=${res.steps} tokens=${JSON.stringify(res.usage)}`,
+			);
 		} catch (err) {
-			raw({ round: i, surface, error: String(err?.stack ?? err).slice(0, 800) });
-			console.error(`[S1] round ${i} surface=${surface} ERROR: ${err?.message ?? err}`);
+			raw({
+				round: i,
+				surface,
+				error: String(err?.stack ?? err).slice(0, 800),
+			});
+			console.error(
+				`[S1] round ${i} surface=${surface} ERROR: ${err?.message ?? err}`,
+			);
 			if (surface === "interactions" && i === 0) {
 				fallbackReason = `interactions surface failed at protocol level: ${String(err?.message ?? err).slice(0, 300)}`;
 				surface = "generateContent";
 				i -= 1; // redo this round on the fallback surface
 				continue;
 			}
-			rounds.push({ round: i, surface, pass: false, error: String(err?.message ?? err) });
+			rounds.push({
+				round: i,
+				surface,
+				pass: false,
+				error: String(err?.message ?? err),
+			});
 		}
 	}
 
@@ -88,6 +130,8 @@ await withMock(async () => {
 		`${CONFIG.paths.evidenceDir}s1-environment.json`,
 		JSON.stringify(report, null, 2),
 	);
-	console.log(`\n[S1] verdict: ${report.verdict}; surface=${surface}; origins=${report.outboundOrigins.join(",")}`);
+	console.log(
+		`\n[S1] verdict: ${report.verdict}; surface=${surface}; origins=${report.outboundOrigins.join(",")}`,
+	);
 	if (!allPass) process.exit(1);
 });

@@ -82,7 +82,10 @@ function handleRunsStart(body, res) {
 		return json(res, 400, { success: false, message: "issueId is required" });
 	}
 	if (!projectName || typeof projectName !== "string") {
-		return json(res, 400, { success: false, message: "projectName is required" });
+		return json(res, 400, {
+			success: false,
+			message: "projectName is required",
+		});
 	}
 	// agentName: undefined/null → ok; wrong type / empty string → 400 INVALID_AGENT_NAME
 	const rawAgentName = body.agentName;
@@ -156,7 +159,9 @@ function handleCreateIssue(body, res) {
 		return json(res, 400, { error: "labels must be a string array" });
 	}
 	if (team !== undefined && typeof team !== "string") {
-		return json(res, 400, { error: 'team must be a string (team key, e.g. "FLY")' });
+		return json(res, 400, {
+			error: 'team must be a string (team key, e.g. "FLY")',
+		});
 	}
 	if (project !== undefined && typeof project !== "string") {
 		return json(res, 400, { error: "project must be a string (project name)" });
@@ -181,9 +186,7 @@ function handleStatus(id, res) {
 	if (state.faults.statusNotFound) {
 		return json(res, 404, { error: "Session not found" });
 	}
-	const run = state.runs.find(
-		(r) => r.executionId === id || r.issueId === id,
-	);
+	const run = state.runs.find((r) => r.executionId === id || r.issueId === id);
 	if (!run) {
 		return json(res, 404, { error: "Session not found" });
 	}
@@ -252,10 +255,14 @@ function handleMemoryAdd(body, res) {
 			return json(res, 400, { error: "each message must be an object" });
 		}
 		if (msg.role !== "user" && msg.role !== "assistant") {
-			return json(res, 400, { error: 'message role must be "user" or "assistant"' });
+			return json(res, 400, {
+				error: 'message role must be "user" or "assistant"',
+			});
 		}
 		if (!isNonEmptyString(msg.content)) {
-			return json(res, 400, { error: "message content must be a non-empty string" });
+			return json(res, 400, {
+				error: "message content must be a non-empty string",
+			});
 		}
 	}
 	if (metadata !== undefined && !isPlainObject(metadata)) {
@@ -309,18 +316,32 @@ export function startMockBridge({ host = "127.0.0.1", port = 47997 } = {}) {
 			return;
 		} else if (req.method === "POST" && url.pathname === "/api/runs/start") {
 			status = handleRunsStart(body, res);
-		} else if (req.method === "POST" && url.pathname === "/api/linear/create-issue") {
+		} else if (
+			req.method === "POST" &&
+			url.pathname === "/api/linear/create-issue"
+		) {
 			status = handleCreateIssue(body, res);
-		} else if (req.method === "GET" && url.pathname.match(/^\/api\/sessions\/[^/]+\/status$/)) {
-			status = handleStatus(decodeURIComponent(url.pathname.split("/")[3]), res);
+		} else if (
+			req.method === "GET" &&
+			url.pathname.match(/^\/api\/sessions\/[^/]+\/status$/)
+		) {
+			status = handleStatus(
+				decodeURIComponent(url.pathname.split("/")[3]),
+				res,
+			);
 		} else if (req.method === "POST" && url.pathname === "/api/memory/search") {
 			status = handleMemorySearch(body, res);
 		} else if (req.method === "POST" && url.pathname === "/api/memory/add") {
 			status = handleMemoryAdd(body, res);
-		} else if (req.method === "POST" && url.pathname === "/api/voice/ship-approval-request") {
+		} else if (
+			req.method === "POST" &&
+			url.pathname === "/api/voice/ship-approval-request"
+		) {
 			status = handleShipApproval(body, res);
 		} else {
-			status = json(res, 404, { error: `unknown route ${req.method} ${url.pathname}` });
+			status = json(res, 404, {
+				error: `unknown route ${req.method} ${url.pathname}`,
+			});
 		}
 		entry.status = status;
 		state.requestLog.push(entry);

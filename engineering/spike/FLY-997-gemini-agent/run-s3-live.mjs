@@ -19,12 +19,12 @@
 //   dispatch × 10 rounds. Measured: success + turnaround.
 
 import { writeFileSync } from "node:fs";
-import { GoogleGenAI, Modality, Behavior } from "@google/genai";
-import { CONFIG } from "./config.mjs";
-import { initHarness, withMock, jsonlWriter, origins } from "./harness.mjs";
+import { Behavior, Modality } from "@google/genai";
 import { runAgent } from "./agent-loop.mjs";
-import { TOOLS, registryFor, validateArgs } from "./tools.mjs";
+import { CONFIG } from "./config.mjs";
+import { initHarness, jsonlWriter, origins, withMock } from "./harness.mjs";
 import { SYSTEM_INSTRUCTION } from "./judge.mjs";
+import { registryFor, validateArgs } from "./tools.mjs";
 
 const { ai } = initHarness();
 const raw = jsonlWriter(`${CONFIG.paths.outDir}s3-live.jsonl`);
@@ -55,7 +55,10 @@ function liveRound({ model, tools, handleToolCall, timeoutMs = 60_000 }) {
 	let onTurnComplete = null;
 	api.nextTurn = (ms = timeoutMs) =>
 		new Promise((resolve, reject) => {
-			const timer = setTimeout(() => reject(new Error("live turn timeout")), ms);
+			const timer = setTimeout(
+				() => reject(new Error("live turn timeout")),
+				ms,
+			);
 			onTurnComplete = (texts) => {
 				clearTimeout(timer);
 				resolve(texts);
@@ -82,7 +85,10 @@ function liveRound({ model, tools, handleToolCall, timeoutMs = 60_000 }) {
 					events.push({
 						t: Date.now(),
 						kind: "toolCall",
-						calls: msg.toolCall.functionCalls.map((fc) => ({ name: fc.name, args: fc.args })),
+						calls: msg.toolCall.functionCalls.map((fc) => ({
+							name: fc.name,
+							args: fc.args,
+						})),
 					});
 					const responses = [];
 					for (const fc of msg.toolCall.functionCalls) {
@@ -100,14 +106,24 @@ function liveRound({ model, tools, handleToolCall, timeoutMs = 60_000 }) {
 					turnTexts.push(msg.serverContent.outputTranscription.text);
 				}
 				if (msg.serverContent?.turnComplete) {
-					events.push({ t: Date.now(), kind: "turnComplete", text: turnTexts.join("") });
+					events.push({
+						t: Date.now(),
+						kind: "turnComplete",
+						text: turnTexts.join(""),
+					});
 					const texts = turnTexts.join("");
 					turnTexts = [];
 					onTurnComplete?.(texts);
 				}
 			},
-			onerror: (e) => events.push({ t: Date.now(), kind: "error", message: String(e?.message ?? e) }),
-			onclose: (e) => events.push({ t: Date.now(), kind: "close", reason: e?.reason }),
+			onerror: (e) =>
+				events.push({
+					t: Date.now(),
+					kind: "error",
+					message: String(e?.message ?? e),
+				}),
+			onclose: (e) =>
+				events.push({ t: Date.now(), kind: "close", reason: e?.reason }),
 		},
 	});
 	return connectPromise.then((s) => {
@@ -135,7 +151,10 @@ await withMock(async () => {
 		parameters: {
 			type: "object",
 			properties: {
-				request: { type: "string", description: "The user's request, restated completely." },
+				request: {
+					type: "string",
+					description: "The user's request, restated completely.",
+				},
 			},
 			required: ["request"],
 		},
@@ -149,10 +168,17 @@ await withMock(async () => {
 			model: CONFIG.models.live,
 			tools: [{ functionDeclarations: [DELEGATE_DECL] }],
 			handleToolCall: async (fc) => {
-				if (fc.name !== "agent_task") return { error: `unknown tool ${fc.name}` };
+				if (fc.name !== "agent_task")
+					return { error: `unknown tool ${fc.name}` };
 				delegateRequest = fc.args?.request ?? null;
 				tAck0 = Date.now();
-				return { result: { accepted: true, taskId: `T-${round + 1}`, note: "task accepted; completion will be announced" } };
+				return {
+					result: {
+						accepted: true,
+						taskId: `T-${round + 1}`,
+						note: "task accepted; completion will be announced",
+					},
+				};
 			},
 		});
 		const rec = { part: "A", round, ok: false };
@@ -176,7 +202,12 @@ await withMock(async () => {
 					surface: "interactions",
 					systemInstruction: SYSTEM_INSTRUCTION,
 					userMessage: `${delegateRequest}\n\n(把它建成 issue、派给 geoforge3d 的 Runner、盯到完成,最后一句话总结结果,包括 PR 链接。)`,
-					registry: registryFor(["create_issue", "dispatch_runner", "query_status", "save_memory"]),
+					registry: registryFor([
+						"create_issue",
+						"dispatch_runner",
+						"query_status",
+						"save_memory",
+					]),
 					maxSteps: 10,
 					audit: () => {},
 				});
@@ -220,7 +251,9 @@ await withMock(async () => {
 				model: CONFIG.models.live,
 				tools: [
 					{
-						functionDeclarations: [{ ...DELEGATE_DECL, behavior: Behavior.NON_BLOCKING }],
+						functionDeclarations: [
+							{ ...DELEGATE_DECL, behavior: Behavior.NON_BLOCKING },
+						],
 					},
 				],
 				handleToolCall: async () => ({
@@ -243,17 +276,30 @@ await withMock(async () => {
 		}
 		raw(rec);
 		results.partB = rec;
-		console.log(`[S3-B] NON_BLOCKING accepted=${rec.accepted}${rec.error ? ` ERR=${rec.error}` : ""}`);
+		console.log(
+			`[S3-B] NON_BLOCKING accepted=${rec.accepted}${rec.error ? ` ERR=${rec.error}` : ""}`,
+		);
 	}
 
 	// ===== Part C: single-layer, Live directly holds 4 tools (10 rounds) =====
-	const singleLayerTools = registryFor(["create_issue", "dispatch_runner", "query_status", "search_memory"]);
+	const singleLayerTools = registryFor([
+		"create_issue",
+		"dispatch_runner",
+		"query_status",
+		"search_memory",
+	]);
 	for (let round = 0; round < 10; round++) {
 		await mockReset();
 		const toolLog = [];
 		const live = await liveRound({
 			model: CONFIG.models.live,
-			tools: [{ functionDeclarations: Object.values(singleLayerTools).map((t) => t.declaration) }],
+			tools: [
+				{
+					functionDeclarations: Object.values(singleLayerTools).map(
+						(t) => t.declaration,
+					),
+				},
+			],
 			handleToolCall: async (fc) => {
 				const tool = singleLayerTools[fc.name];
 				if (!tool) {
@@ -273,7 +319,9 @@ await withMock(async () => {
 		const rec = { part: "C", round, ok: false };
 		try {
 			const t0 = Date.now();
-			await live.send("把 issue MOCK-5 派给 geoforge3d 项目的 Runner 去处理,派完告诉我一声。");
+			await live.send(
+				"把 issue MOCK-5 派给 geoforge3d 项目的 Runner 去处理,派完告诉我一声。",
+			);
 			// allow up to 3 turns for tool call + confirm
 			let text = await live.nextTurn();
 			const mock1 = await mockState();
@@ -283,7 +331,8 @@ await withMock(async () => {
 				text = await live.nextTurn();
 			}
 			const mock = await mockState();
-			rec.dispatched = mock.runs.length >= 1 && mock.runs[0].issueId === "MOCK-5";
+			rec.dispatched =
+				mock.runs.length >= 1 && mock.runs[0].issueId === "MOCK-5";
 			rec.finalText = text;
 			rec.latencyMs = Date.now() - t0;
 			rec.toolLog = toolLog;
@@ -326,10 +375,19 @@ await withMock(async () => {
 			rounds: c.length,
 			ok: c.filter((r) => r.ok).length,
 			latencyMsAll: c.map((r) => r.latencyMs ?? null),
-			hallucinated: c.reduce((s, r) => s + (r.toolLog?.filter((t) => t.hallucinated).length ?? 0), 0),
+			hallucinated: c.reduce(
+				(s, r) => s + (r.toolLog?.filter((t) => t.hallucinated).length ?? 0),
+				0,
+			),
 		},
 		outboundOrigins: origins(),
 	};
-	writeFileSync(`${CONFIG.paths.evidenceDir}s3-live-summary.json`, JSON.stringify(summary, null, 2));
-	console.log("\n[S3] done →", `${CONFIG.paths.evidenceDir}s3-live-summary.json`);
+	writeFileSync(
+		`${CONFIG.paths.evidenceDir}s3-live-summary.json`,
+		JSON.stringify(summary, null, 2),
+	);
+	console.log(
+		"\n[S3] done →",
+		`${CONFIG.paths.evidenceDir}s3-live-summary.json`,
+	);
 });
