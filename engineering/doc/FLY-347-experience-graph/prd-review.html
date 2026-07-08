@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-347 经验图谱 PRD — 建出来长什么样</title>
+<style>
+  :root { --ink:#1d1d1f; --dim:#86868b; --blue:#007aff; --navy:#1a365d; --green:#34c759; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system, system-ui, "PingFang SC", sans-serif;
+    background:#f5f5f7; color:var(--ink); max-width:840px; margin:0 auto;
+    padding:1.2rem 1rem 6rem; line-height:1.6; -webkit-text-size-adjust:100%; }
+  h1 { font-size:1.5rem; margin:.2rem 0 .1rem; line-height:1.25; }
+  .sub { color:var(--dim); font-size:.9rem; margin:.1rem 0 1rem; }
+  .tldr { background:#eef4ff; border:1px solid #cfe0ff; border-radius:12px;
+    padding:.9rem 1.1rem; margin:1rem 0; font-size:.95rem; }
+  .tldr b { color:#0a58ca; }
+  .card { background:#fff; border-radius:12px; padding:1rem 1.15rem; margin:1rem 0;
+    box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid #d2d2d7; }
+  .card.shape { border-left-color:var(--blue); }
+  .card.mvp { border-left-color:#ff3b30; }
+  .card.gap { border-left-color:#ff9500; }
+  .card.std { border-left-color:#86868b; }
+  .card.build { border-left-color:#af52de; }
+  .card.decide { border-left-color:var(--green); }
+  .card h2 { font-size:1.14rem; margin:.1rem 0 .5rem; }
+  .card h2 .n { color:var(--dim); font-weight:600; font-size:.9rem; margin-right:.4rem; }
+  .card h3 { font-size:.98rem; margin:.8rem 0 .3rem; color:var(--navy); }
+  .card p { margin:.5rem 0; font-size:.95rem; }
+  .card ul, .card ol { margin:.4rem 0 .4rem 1.2rem; padding:0; font-size:.93rem; }
+  .card li { margin:.3rem 0; }
+  pre.code { background:#1d1d1f; color:#e8e8ed; border-radius:10px; padding:.75rem .85rem;
+    font-family:"SF Mono", ui-monospace, monospace; font-size:.78rem; overflow-x:auto;
+    line-height:1.45; margin:.5rem 0; white-space:pre; }
+  pre.code .k { color:#7ee081; }
+  pre.code .c { color:#8fbfff; }
+  .query-out { background:#0f1b2d; color:#dfe8f5; border-radius:10px; padding:.7rem .85rem;
+    font-family:"SF Mono", ui-monospace, monospace; font-size:.78rem; overflow-x:auto; margin:.5rem 0; white-space:pre; }
+  .query-out .lbl { color:#7ee081; }
+  .flow { display:flex; flex-wrap:wrap; gap:.4rem; align-items:center; margin:.6rem 0; font-size:.84rem; }
+  .step { background:#f0f7f0; border:1px solid #cfe9cf; border-radius:8px; padding:.35rem .6rem; }
+  .arrow { color:var(--dim); font-weight:700; }
+  code, .mono { font-family:"SF Mono", ui-monospace, monospace; font-size:.86em;
+    background:#f0f0f2; padding:.05rem .3rem; border-radius:5px; }
+  table { width:100%; border-collapse:collapse; font-size:.85rem; margin:.6rem 0; }
+  th, td { text-align:left; padding:.45rem .5rem; border-bottom:1px solid #eee; vertical-align:top; }
+  th { color:var(--navy); font-size:.82rem; }
+  .table-wrap { overflow-x:auto; }
+  .comment-label { display:block; font-size:.8rem; color:#555; margin-top:.7rem; font-weight:600; }
+  textarea { width:100%; font-family:inherit; font-size:.9rem; border:1px solid #e0e0e5;
+    border-radius:8px; padding:.5rem; margin-top:.25rem; resize:vertical; }
+  .exportbar { position:sticky; top:0; z-index:5; background:rgba(245,245,247,.96);
+    backdrop-filter:saturate(180%) blur(8px); padding:.6rem 0; margin:-.4rem 0 .4rem;
+    border-bottom:1px solid #e0e0e5; }
+  .exportbar .row { display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; }
+  button { font:inherit; font-size:.9rem; background:var(--blue); color:#fff; border:0;
+    border-radius:8px; padding:.45rem .9rem; cursor:pointer; }
+  button.secondary { background:#e8e8ed; color:#1d1d1f; }
+  #copy-status { font-size:.85rem; color:var(--green); }
+  #export-output { white-space:pre-wrap; word-break:break-all; background:#1d1d1f;
+    color:#e8e8ed; font-family:"SF Mono", ui-monospace, monospace; font-size:.76rem;
+    border-radius:10px; padding:.8rem; margin-top:.6rem; max-height:320px; overflow:auto; display:none; }
+  .choices { display:flex; flex-direction:column; gap:.45rem; margin:.5rem 0; }
+  .choices label { display:flex; gap:.5rem; align-items:flex-start; font-size:.92rem;
+    background:#f7f7f9; border:1px solid #e6e6ea; border-radius:8px; padding:.5rem .6rem; cursor:pointer; }
+  .choices input { margin-top:.2rem; }
+  .foot { color:var(--dim); font-size:.8rem; margin-top:1.5rem; text-align:center; }
+</style>
+</head>
+<body>
+
+<div class="exportbar">
+  <div class="row">
+    <button id="copy-json" type="button">复制我的批注 JSON</button>
+    <button id="toggle-output" type="button" class="secondary">查看/隐藏</button>
+    <span id="copy-status"></span>
+  </div>
+  <pre id="export-output"></pre>
+</div>
+
+<h1>经验图谱 PRD —— 建出来长什么样</h1>
+<div class="sub">FLY-347 · draft PRD 预览 · 你确认『样子』OK 就拿给 Tadashi 建 · 未 ship / 未建 build issue</div>
+
+<div class="tldr" data-key="tldr">
+  <p>你定了 <b>值得做</b>。这页是给你看『<b>建出来长什么样</b>』的 —— 你最在意这个。看下面第 1 节
+  的数据模型 + 一个真实节点长啥样 + 起活查出来长啥样;觉得样子对了,就点最后的<b>「样子 OK,拿给
+  Tadashi」</b>。样子要改就写在框里,我改完再给你。</p>
+  <label class="comment-label" for="c-tldr">你的留言(整体)</label>
+  <textarea id="c-tldr" rows="2" maxlength="2000" placeholder="…"></textarea>
+</div>
+
+<div class="card shape" data-key="shape">
+  <h2><span class="n">1</span>建出来是什么样(核心)</h2>
+  <p>一句话:<b>在现有 markdown 记忆层之上,加一层「run 教训图」+ 两条自动管道(抽 / 查)</b>。
+  不建新数据库,复用「markdown 页 + frontmatter + <code>[[链接]]</code> + index」。</p>
+
+  <h3>① 数据模型:图长什么样</h3>
+  <p><b>节点 = 一个 markdown 文件</b>(放 <code>knowledge/lessons/</code>),三类:<b>lesson</b>(教训)/
+  <b>root_cause</b>(失败根因)/ <b>signal</b>(信号)。<b>边 = frontmatter 里的 ref + body 的
+  <code>[[链接]]</code></b>(不建图数据库):<code>from_run</code>(溯源)/ <code>subsystem</code>
+  (查的时候按这个匹配)/ <code>failure_type</code> / <code>caused_by</code> / <code>relates_to</code>。</p>
+
+  <h3>② 一个真实节点长这样(拿我们真踩过的 FLY-176 那个坑举例)</h3>
+  <pre class="code"><span class="c">---</span>
+<span class="k">type:</span> lesson
+<span class="k">id:</span> bridge-restart-pid-unquoted
+<span class="k">from_run:</span> FLY-176
+<span class="k">subsystem:</span> [bridge, restart]
+<span class="k">failure_type:</span> process-kill
+<span class="k">severity:</span> high
+<span class="k">signals:</span> ["multi-line PID", "kill 静默失败", "restart-services.sh"]
+<span class="k">caused_by:</span> [[rc-restart-services-523-unquoted-pid]]
+<span class="k">relates_to:</span> [[lesson-config-before-kill-bridge]]
+<span class="c">---</span>
+改 Bridge 重启逻辑时:restart-services.sh:523 的 multi-line PID 变量没加引号
+→ kill 静默失败 → 得手动重启。避坑:PID 变量加引号,或 pgrep -f run-bridge | xargs kill -9。</pre>
+  <p><b>index = <code>knowledge/lessons/index.md</code></b>:按 subsystem/failure_type 归类的目录,
+  查询先读它定位再钻页(中小规模够用,不需要向量库)。</p>
+
+  <h3>③ 自动抽:教训怎么自动进图(不靠人写)</h3>
+  <div class="flow">
+    <span class="step">run 到终态</span><span class="arrow">→</span>
+    <span class="step">收集 transcript/CI/review/QA/retro</span><span class="arrow">→</span>
+    <span class="step">LLM 抽取 pass(固定 schema)</span><span class="arrow">→</span>
+    <span class="step">写节点+index+边(幂等)</span>
+  </div>
+  <p><b>fail-closed:抽不确定就不写</b>(宁缺毋滥)。现在教训靠人事后记得手写、大量蒸发;这条让它
+  <b>每次 run 完自动沉一次</b>。</p>
+
+  <h3>④ 起活时查出来长啥样(注入 Runner 的「相关历史教训」块)</h3>
+  <div class="query-out"><span class="lbl">[相关历史教训 · 子系统=bridge/restart]</span>
+· bridge-restart-pid-unquoted (FLY-176): restart-services.sh:523 PID 没加引号→kill 静默失败
+· config-before-kill-bridge (FLY-193): 改 config 要在 kill Bridge 之前(KeepAlive 会 respawn 用旧 config)
+· bootout-wrong-pid: launchd job PID ≠ 真 Bridge PID,bootout 会杀错进程</div>
+  <p><b>何时查</b>:Runner/Lead 起活时(onboard)自动做,不用人想起来。<b>怎么用</b>:开工前先读这块,
+  <b>不把老坑重踩一遍</b> —— 这就是产出价值。</p>
+
+  <h3>⑤ 闭环</h3>
+  <pre class="code">run 到终态 ──①自动抽──▶ 抽取 pass ──▶ 经验图(markdown+frontmatter+links)
+                                              │
+下一个 Runner 起活 ◀──②按 subsystem/task 查──┘
+        └──注入相关教训──▶ 避坑开工 ──(完成后又抽)──▶ …</pre>
+  <label class="comment-label" for="c-shape">你的留言(样子哪里要改?)</label>
+  <textarea id="c-shape" rows="3" maxlength="3000" placeholder="例:节点字段够不够 / 查出来这块我想要更…/ 存哪我有想法…"></textarea>
+</div>
+
+<div class="card mvp" data-key="mvp">
+  <h2><span class="n">2</span>MVP 范围(先做骨干,别做花的)</h2>
+  <p><b>做</b>:① 自动抽(run 终态触发,fail-closed)② 存(markdown 图)③ targeted 查(起活按 subsystem/task 拉 top-N 注入)。</p>
+  <div class="table-wrap"><table>
+    <tr><th>先砍的</th><th>为什么先不做</th></tr>
+    <tr><td>图可视化 UI</td><td>纯 agent-facing,没人看图</td></tr>
+    <tr><td>向量/语义搜索(pgvector)</td><td>MVP 规模 index+subsystem 过滤够用,要了再上</td></tr>
+    <tr><td>自动 merge/去重/lint</td><td>那是另一片(agent-wiki 的 Lint MVP),别混</td></tr>
+    <tr><td>因果推理引擎</td><td>边先靠抽取显式写,不做自动推断</td></tr>
+    <tr><td>跨项目图</td><td>先单项目跑通</td></tr>
+  </table></div>
+  <label class="comment-label" for="c-mvp">你的留言(scope 合适吗?)</label>
+  <textarea id="c-mvp" rows="2" maxlength="2000" placeholder="…"></textarea>
+</div>
+
+<div class="card gap" data-key="gap">
+  <h2><span class="n">3</span>跟现状差距 + 为什么值得</h2>
+  <p><b>现状</b>:教训靠人事后手写进 MEMORY(已有 123 feedback + 31 qa);MEMORY.md 整份注入;
+  mem0 <code>MemoryService</code> 代码在但 <b>pgvector 基本没接、主力人工 markdown</b>。</p>
+  <p><b>差距</b>(不在有没有教训,在怎么进/怎么出):进 —— 没 run 完自动抽;结构 —— 零散文件不能按维度查;
+  出 —— 整份索引注入靠运气,不是 targeted。<b>为什么值得</b>:真教训会蒸发,起活时自动摆到面前,省的是
+  重复 debug 的真实时间。诚实:这是<b>增量</b>(补「自动进 + 按需出」),不是从零。</p>
+  <label class="comment-label" for="c-gap">你的留言</label>
+  <textarea id="c-gap" rows="2" maxlength="2000" placeholder="…"></textarea>
+</div>
+
+<div class="card std" data-key="std">
+  <h2><span class="n">4</span>常规 PRD 段(浓缩)</h2>
+  <ul>
+    <li><b>Problem</b>:每次 run 产生宝贵教训,但只有一部分靠人写进 MEMORY、大量蒸发;即使写了起活也只能整份注入靠运气 → 同类坑反复重踩。</li>
+    <li><b>Users</b>:Runner(起活避坑 + 完成后自动沉淀)、Lead(派活看已知坑);人不直接看图。</li>
+    <li><b>Goals</b>:run 完自动沉教训 / 起活 targeted 拿到 / 复用现有 markdown 不建新存储。</li>
+    <li><b>Non-goals</b>:不做人类 UI / 不上向量库 / 不做 merge 去重 / 不重写 MEMORY / 不跨项目 / 不自动删。</li>
+    <li><b>Success</b>:run 终态稳定产结构化节点(fail-closed)· 起活能捞到相关 top-N(拿 Bridge/Discord 两场景验收)· 同类坑重踩率降 · 不拖慢现有流程。</li>
+    <li><b>Open questions</b>:抽取挂哪(hook vs skill)· subsystem 怎么推断 · 放新目录还是并进 memory · 注入量级 · 抽取质量把关。</li>
+  </ul>
+  <label class="comment-label" for="c-std">你的留言</label>
+  <textarea id="c-std" rows="2" maxlength="2000" placeholder="…"></textarea>
+</div>
+
+<div class="card build" data-key="build">
+  <h2><span class="n">5</span>拆给 Tadashi 的活(draft,现在不建 issue)</h2>
+  <ul>
+    <li><b>EG-1 数据模型 + 图约定</b>:定节点 schema/边约定/index 格式。</li>
+    <li><b>EG-2 抽取 pipeline</b>:run 终态触发 → 抽取 pass(fail-closed)→ 写节点+index+边(幂等)。</li>
+    <li><b>EG-3 targeted 查 + 注入</b>:起活按 subsystem/task 查 → top-N → 注入「相关历史教训」块。</li>
+    <li><b>EG-4 回填种子 + 验收</b>:用现有 feedback/qa 回填种子;两个真实场景端到端验收。</li>
+  </ul>
+  <p>顺序:EG-1 → EG-2/EG-3 → EG-4。<b>等你确认样子 OK,才由 Lead/Tadashi 正式建。</b></p>
+  <label class="comment-label" for="c-build">你的留言</label>
+  <textarea id="c-build" rows="2" maxlength="2000" placeholder="…"></textarea>
+</div>
+
+<div class="card decide" data-key="decide">
+  <h2><span class="n">6</span>你确认『样子』</h2>
+  <div class="choices">
+    <label><input type="radio" name="lean" value="shape-ok"> 样子 OK —— 拿给 Tadashi 建(按上面 EG-1..4)</label>
+    <label><input type="radio" name="lean" value="tweak"> 大方向对,但『样子』要改几处(写在下面 / 各节框里)</label>
+    <label><input type="radio" name="lean" value="smaller"> 先更小:只做其中一段先看效果(说砍到哪)</label>
+    <label><input type="radio" name="lean" value="talk"> 还想聊聊再定</label>
+  </div>
+  <label class="comment-label" for="c-decide">总评论</label>
+  <textarea id="c-decide" rows="3" maxlength="4000" placeholder="…"></textarea>
+</div>
+
+<div class="foot">改完点顶部「复制我的批注 JSON」→ 发回给 Honey Lemon · FLY-347 经验图谱 PRD · draft,未 ship/未建 issue</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var ISSUE = "FLY-347";
+  function collect() {
+    var out = [];
+    document.querySelectorAll("[data-key]").forEach(function (blk) {
+      var key = blk.getAttribute("data-key");
+      var ta = blk.querySelector("textarea");
+      var comment = ta ? ta.value.trim() : "";
+      if (comment) out.push({ section: key, comment: comment });
+    });
+    return out;
+  }
+  function lean() {
+    var r = document.querySelector('input[name="lean"]:checked');
+    return r ? r.value : null;
+  }
+  function payload() {
+    return JSON.stringify(
+      { issue: ISSUE, kind: "annie-eg-prd-shape-review", lean: lean(), comments: collect() },
+      null, 2
+    );
+  }
+  var status = document.getElementById("copy-status");
+  document.getElementById("copy-json").addEventListener("click", function () {
+    var json = payload();
+    var out = document.getElementById("export-output");
+    out.textContent = json;
+    out.style.display = "block";
+    function ok() { status.textContent = "已复制 ✓ 发回给我即可"; }
+    function fail() { status.textContent = "复制失败,请手动选下面文本"; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(json).then(ok, fail);
+    } else { fail(); }
+  });
+  document.getElementById("toggle-output").addEventListener("click", function () {
+    var out = document.getElementById("export-output");
+    if (out.style.display === "block") { out.style.display = "none"; }
+    else { out.textContent = payload(); out.style.display = "block"; }
+  });
+})();
+</script>
+</body>
+</html>
