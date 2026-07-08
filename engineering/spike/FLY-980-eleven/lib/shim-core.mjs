@@ -135,6 +135,28 @@ export class CwdProcessRunner {
 	}
 }
 
+/**
+ * claude -p stream-json emits partial text_deltas AND a final complete
+ * assistant message; voice-core's parseStreamLine forwards both, so the full
+ * reply arrives once as deltas and once as a single echo piece — TTS would
+ * speak it twice (real-machine finding, S2 round C). Spike-side fix (D8': no
+ * voice-core changes): drop any piece that exactly equals the entire
+ * accumulated text of the turn. A legitimate delta identical to the whole
+ * accumulation is theoretically possible but effectively never happens.
+ */
+export function dedupeFinalEcho(brain) {
+	return {
+		async *respond(turn, opts) {
+			let acc = "";
+			for await (const piece of brain.respond(turn, opts)) {
+				if (acc.length > 0 && piece === acc) continue;
+				acc += piece;
+				yield piece;
+			}
+		},
+	};
+}
+
 // ------------------------------------------------------------- tool calls ---
 
 /**

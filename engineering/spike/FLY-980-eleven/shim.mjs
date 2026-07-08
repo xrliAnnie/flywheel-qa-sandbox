@@ -24,6 +24,7 @@ import {
 	BrainSessions,
 	CwdProcessRunner,
 	createShimServer,
+	dedupeFinalEcho,
 } from "./lib/shim-core.mjs";
 
 loadFlywheelEnv();
@@ -168,7 +169,7 @@ const brainFactory =
 			: () => makeEchoBrain();
 
 const sessions = new BrainSessions({
-	brainFactory: (info) => withSleep(brainFactory(info)),
+	brainFactory: (info) => withSleep(dedupeFinalEcho(brainFactory(info))),
 	resume: RESUME,
 });
 

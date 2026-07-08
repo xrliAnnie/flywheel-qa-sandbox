@@ -11,6 +11,7 @@ import {
 	BrainSessions,
 	CwdProcessRunner,
 	createShimServer,
+	dedupeFinalEcho,
 	deriveConversationKey,
 	mapMessages,
 	maybeToolCall,
@@ -426,6 +427,37 @@ test("maybeToolCall: off mode and absent tools never fire", () => {
 	);
 	const forced = maybeToolCall(tools, "hello", "force:language_detection");
 	assert.equal(forced.name, "language_detection");
+});
+
+// ---- dedupe: claude -p stream-json emits deltas AND a final full assistant
+// message; voice-core forwards both → the reply would be spoken twice ----
+test("dedupeFinalEcho drops the final full-text echo, keeps real deltas", async () => {
+	const collect = async (pieces) => {
+		const brain = {
+			async *respond() {
+				yield* pieces;
+			},
+		};
+		const out = [];
+		for await (const p of dedupeFinalEcho(brain).respond(
+			{ text: "", history: [] },
+			{ signal: new AbortController().signal },
+		)) {
+			out.push(p);
+		}
+		return out;
+	};
+	// delta, delta, final echo == joined deltas → echo dropped
+	assert.deepEqual(await collect(["链路", "通了。", "链路通了。"]), [
+		"链路",
+		"通了。",
+	]);
+	// single delta + echo
+	assert.deepEqual(await collect(["hello", "hello"]), ["hello"]);
+	// no echo (non-partial single message) → kept
+	assert.deepEqual(await collect(["full reply"]), ["full reply"]);
+	// unrelated repeat that is not the full accumulation → kept
+	assert.deepEqual(await collect(["a", "b", "b"]), ["a", "b", "b"]);
 });
 
 // ---- stream:false → aggregated JSON completion ----
