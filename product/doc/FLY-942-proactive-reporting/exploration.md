@@ -186,7 +186,7 @@ Annie 的根因判断(FLY-976):**看门狗最大问题是它不是 LLM,没法理
 
 ## 7. converge 进度 + 剩余 clarify(HL relay;小步多轮)
 
-> **母 Epic**:Annie 2026-07-07 要建 **Watchdog Epic**,把 942/878/975/976/970… consolidate,以后发现一个提一个 issue、定期 iterate。**本 PRD 挂 Epic 底下**。
+> **母 Epic = FLY-989**(Watchdog + 主动汇报 稳定化 EPIC,https://linear.app/geoforge3d/issue/FLY-989):consolidate 878/975/976/927/915/970/973/941/964,以后发现一个提一个、定期 iterate;归 FLY-774 底下。**本 PRD(FLY-942)= 该 Epic 的「主动汇报 + 检测」产品定义 PRD**(parent=989 HL 已设)。
 
 **框架** ✅✅ **Annie 深度 review + 两条核心 revise(2026-07-07)已落**:① 不是 push-every-ball-change → 看门狗兜两漏(runner 没找 Lead / Lead 漏应答);② 不是 park 立即 push → **时间阈值型 stall 检测**。第 5 球态"Lead 漏应答"= 漏②,与 878 场景3 对齐。
 

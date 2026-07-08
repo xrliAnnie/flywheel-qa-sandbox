@@ -3,7 +3,7 @@
 Issue: FLY-942 (https://linear.app/geoforge3d/issue/FLY-942/watchdog-lead-主动汇报机制-产品设计-prd让-annie-不再当人肉-qa)
 日期: 2026-07-07
 基于: exploration.md(本文件夹)、FLY-878/915/927/941/964/975/976 关联 issue、Annie 2026-07-07 深度 review
-母 Epic: Watchdog Epic(Annie 2026-07-07 建;consolidate 942/878/975/976/970…,以后发现一个提一个、定期 iterate)
+母 Epic: FLY-989 Watchdog + 主动汇报 稳定化 EPIC (https://linear.app/geoforge3d/issue/FLY-989) — 本 PRD(FLY-942)= 该 Epic 的「主动汇报 + 检测」产品定义 PRD;Epic consolidate 878/975/976/927/915/970/973/941/964,以后发现一个提一个、定期 iterate。FLY-989 归 FLY-774 稳定化 EPIC 底下。
 
 > **状态**:DRAFT。**Annie 已深度 review 并 revise 框架 + 拍 G1(2026-07-07)**:① 汇报层不是 push-every-ball-change → **看门狗兜两漏**(runner 没找 Lead / Lead 漏应答);② 不是立即 push → **时间阈值型**;③ 准确性走 **FLY-976 LLM 判断层**,北极星验收 = **四病症**。**剩余 Qa–Qg 待逐块 converge**(见 §10)。**不 ship / 不 merge / 不 create-issue**。
 > **北极星:准确性(= Annie 四病症:①误报 ②分发不合理→consolidate ③漏报 ④噪音)。** 主动汇报只有在检测足够准时才成立 —— "状态显示骗你一次你就再也懒得看"。两半同等重要:**① 检测层(准)+ ② 主动汇报层(兜漏、consolidate、不刷屏)**。
