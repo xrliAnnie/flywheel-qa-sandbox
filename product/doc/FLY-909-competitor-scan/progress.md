@@ -4,10 +4,17 @@ phase: design
 phaseCursor: 4/4
 updated: 2026-07-07
 nextStep: 两个 URL 交 Lead → Lead relay Annie。喂 FLY-921 定位。不 ship(founder-gated)。
-round: 3
+round: 3.1
 chunks: []
 pointers: {}
 ---
+
+## round-3.1 target 纠正(Lead fe7ba7c3,盖过前 beachhead)
+- target 收窄 = 非技术电商/social OPC operator(不是程序员,拼不出来,要 done-for-you)
+- DIY 硬问题 reframe:会自己拼的是程序员本就不是 target → DIY 风险不落在攻的这群
+- 定位主线:替一个非技术的一人公司 operator,把一整个公司的活在聊天里做掉
+- competitor-scan ⑦+标题 / value-artifact hero+frame+各支柱 DIY / review OpenClaw+OPC 卡 / research §8.5;两 HTML 0 prefers-color-scheme
+- commit b8bd1b3c;新 URL:review c1da82c2 / value 3d02dd6e;报 Lead 6c8a36ec
 
 # FLY-909 progress
 
