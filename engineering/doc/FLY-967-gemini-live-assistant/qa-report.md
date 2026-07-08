@@ -106,3 +106,27 @@ pnpm lint                                          # exit 0
 # B1 事实核对
 grep -rn "interactionCreate\|SlashCommandBuilder\|resolveAssistantConfig\|new AssistantSession" packages/voice-bridge/src packages/teamlead/src | grep -v __tests__   # 仅 index.ts 导出，无运行时装配
 ```
+
+---
+
+## Round 2 — RE-TEST 复验(2026-07-07,head bf8369b1)
+
+implement 阶段(session 525f8151)针对 round-1 两条 FAIL 提交了修复(commits
+`d29c658c`→`bf8369b1`,Codex R3-R8 六轮 APPROVED)。QA 独立复核:
+
+### 代码面(Tadashi 裁决 = 本轮 partial verdict)= **PASS**
+
+| 复验项 | 结果 |
+|--------|------|
+| **B1 修复** — `/gemini` 真接进 daemon | ✅ 新 `assistant/wiring.ts`(610 行)`wireAssistantMode`:`deps.registerGuildCommand` + `deps.onChatCommand` 真注册 slash 命令 + interaction 分发 → GeminiCommand → AssistantSession,**真依赖**(BriefingEngine.start / 真 VC presence / 真 Linear proxy / 真 Gemini rotator / 真 AssistantLanding)。`cli.ts` 在 config opt-in 时调用它 + 缺 GEMINI_API_KEY **启动即 fail-fast**。**不再是休眠库代码。** |
+| **B1 真机验证** | ✅ 隔离 staged rig 真跑:bots online + `/gemini registered on guild` + autostart→command.handle→真建 Linear issue(见 `evidence/staged-e2e-round-opening.md`) |
+| **B2 修复** — 落地纪要 `/live`→`/gemini` | ✅ `buildSummary(input, commandName="gemini")` 参数化命令名;我那条红回归 `qa-fly967-naming.test.ts` **转绿** |
+| 测试 | ✅ voice-bridge **131/131**(+11 新 wiring 测 + 我 2 条回归)、voice-core 116/116、teamlead 路由 18/18 |
+| lint / typecheck | ✅ FLY-967 触碰的 16 文件 biome 干净(scoped exit 0);typecheck exit 0。全仓 `pnpm lint` 的 1 error 是 **gitignored 运行时产物** `.flywheel/runs/*/land-status.json`,14 warnings 在 d652fbec 也在(**预存**,非 FLY-967) |
+| Codex 修复对得上 | ✅ R3(adapter late-handler / presence delta / dedicated-bot honesty)、R7(staged prod-port refusal + SIGTERM)等在代码里可核 |
+
+### 最终验收(staged E2E full)= **等 Annie**(Tadashi 裁决)
+
+round-opening 链已真机验过(见 evidence)。**live 全双工对话 + 「简报真出」现场体感 +
+A/B 与 545(B)对比定方向 = Annie A8**,需她点 bot 邀请 URL + 进 VC 带麦克风,QA 无法替她做。
+本轮不开 ship approve gate —— 代码面 PASS 报 Tadashi,最终 ship 等 Annie 的 staged E2E。
