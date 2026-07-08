@@ -70,6 +70,31 @@ export interface AnnouncerOptions {
 	transcriptSink?: TranscriptSink;
 }
 
+/** A full function declaration the backend passes to the model verbatim
+ * (structurally identical to the Gemini transport's LiveToolDeclaration —
+ * kept here so the orchestrator-facing contract has no backend import). */
+export interface ToolDeclaration {
+	name: string;
+	description: string;
+	/** JSON-schema-style object ({ type: "OBJECT", properties, required }). */
+	parameters: Record<string, unknown>;
+}
+
+/**
+ * FLY-545: an orchestrator-provided Live tool — declaration + handler. The
+ * backend declares it to the model and dispatches matching tool-calls to the
+ * handler; the resolved string is injected back as the function response
+ * (default WHEN_IDLE). A declared-but-unhandled tool would hang the Live turn
+ * forever, so declaration and handler travel together. Cancellation contract
+ * is identical to ask_lead: tool-call-cancellation / manual interrupt /
+ * close() abort the handler via `signal` and the late result is dropped.
+ */
+export interface LiveToolSpec {
+	declaration: ToolDeclaration;
+	/** runs orchestrator-side; returned text is injected as the function response. */
+	handler: (args: unknown, opts: { signal: AbortSignal }) => Promise<string>;
+}
+
 export interface ConversationOptions {
 	brain: BrainAdapter;
 	voice?: string;
@@ -81,6 +106,11 @@ export interface ConversationOptions {
 	 * connect). supportsResume=false + a handle → VoiceError("unsupported").
 	 */
 	resumeHandle?: ResumeHandle;
+	/**
+	 * FLY-545: additional Live tools (declaration + handler) dispatched by the
+	 * backend. Default [] = current behavior (ask_lead only).
+	 */
+	extraTools?: LiveToolSpec[];
 }
 
 export interface VoiceBackend {

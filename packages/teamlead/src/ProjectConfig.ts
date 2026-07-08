@@ -157,6 +157,13 @@ export interface LeadConfig {
 		| "write-capable"
 		| "full-access";
 	/**
+	 * FLY-545/FLY-546: optional edge-tts voice id for this Lead (e.g.
+	 * "zh-CN-YunxiNeural"). Consumed by voice surfaces (voice-bridge announce /
+	 * huddle); absent → voice-core DEFAULT_VOICE downstream. Deliberately NOT
+	 * normalized (FLY-231 pattern): absent stays absent.
+	 */
+	voice?: string;
+	/**
 	 * FLY-671: per-Lead reasoning-effort override (`low|medium|high|xhigh|max`).
 	 * Mirrors `model`: only effective for the `claude-code` backend, flowing
 	 * `fleet apply → manifest → generate_plist` as `FLYWHEEL_LEAD_EFFORT` →
@@ -212,6 +219,29 @@ export interface ProjectLinearBinding {
 	label?: string;
 }
 
+/**
+ * FLY-545: optional per-project Huddle (voice meeting) binding, consumed by
+ * the standalone voice-bridge daemon (packages/voice-bridge reads
+ * ~/.flywheel/projects.json itself — this validator only guards the shape).
+ * Absent OR `null` ⇒ huddle disabled for the project (byte-compat). Defaults
+ * (commandName "meet", moveMembers true) are applied by the CONSUMER, not
+ * normalized in here (FLY-231 pattern).
+ */
+export interface HuddleConfig {
+	/** Discord guild hosting the resident #huddle voice channel. REQUIRED. */
+	guildId: string;
+	/** The resident voice channel id (its text area doubles as the TIV). REQUIRED. */
+	voiceChannelId: string;
+	/** Env var NAME for the orchestrator bot token (pool claim). REQUIRED. */
+	orchestratorBotTokenEnv: string;
+	/** Env var NAME for the ears (receive) bot token (pool claim). REQUIRED. */
+	earsBotTokenEnv: string;
+	/** Slash-command name (PRD R10: configurable). Consumer default: "meet". */
+	commandName?: string;
+	/** Zero-tap MOVE_MEMBERS when the founder is already in a VC. Consumer default: true. */
+	moveMembers?: boolean;
+}
+
 export interface ProjectEntry {
 	projectName: string;
 	projectRoot: string;
@@ -232,6 +262,11 @@ export interface ProjectEntry {
 	announcerBotToken?: string;
 	/** Memory API user_id allowlist. Fail-closed: requests rejected if not configured. */
 	memoryAllowedUsers?: string[];
+	/**
+	 * FLY-545: optional Huddle binding — see `HuddleConfig`. `| null` mirrors
+	 * the `linear` field's deployed-roster null tolerance (FLY-371 lesson).
+	 */
+	huddle?: HuddleConfig | null;
 	/**
 	 * FLY-371: optional Linear binding, resolved from `projectName` by the
 	 * create-issue / issues / triage endpoints. NOT normalized (FLY-231 pattern):
@@ -607,6 +642,17 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 				}
 			}
 
+			// FLY-545/FLY-546: validate optional per-lead voice (edge-tts voice id).
+			// Absent stays absent (FLY-231 pattern) — only type-check when present.
+			if (
+				lead.voice !== undefined &&
+				(typeof lead.voice !== "string" || lead.voice.length === 0)
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].voice: if provided, must be a non-empty string (edge-tts voice id), got ${JSON.stringify(lead.voice)}`,
+				);
+			}
+
 			// FLY-671: validate optional per-lead effort (closed CLI enum). Absent
 			// stays absent (reverse-compat). Codex Leads have no `--effort` runtime
 			// path → reject the mixture as dead config (Codex design review R2 LOW-5,
@@ -750,6 +796,51 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 						`Project "${entry.projectName}" memoryAllowedUsers: each user must be a non-empty string`,
 					);
 				}
+			}
+		}
+
+		// FLY-545: validate optional Huddle binding. `null` and `undefined` BOTH
+		// mean "huddle disabled" and short-circuit (same deployed-roster null
+		// tolerance as `linear` below). Required fields are the four the
+		// voice-bridge cannot start without; optional fields are type-checked
+		// only when present; unknown keys stay tolerated (loose-validation).
+		const huddle = (entry as Record<string, unknown>).huddle;
+		if (huddle != null) {
+			if (typeof huddle !== "object" || Array.isArray(huddle)) {
+				throw new Error(
+					`Project "${entry.projectName}" huddle: if provided, must be an object { guildId, voiceChannelId, orchestratorBotTokenEnv, earsBotTokenEnv, commandName?, moveMembers? }, got ${JSON.stringify(huddle)}`,
+				);
+			}
+			const hb = huddle as Record<string, unknown>;
+			for (const field of [
+				"guildId",
+				"voiceChannelId",
+				"orchestratorBotTokenEnv",
+				"earsBotTokenEnv",
+			] as const) {
+				if (typeof hb[field] !== "string" || hb[field].length === 0) {
+					throw new Error(
+						`Project "${entry.projectName}" huddle.${field}: must be a non-empty string, got ${JSON.stringify(hb[field])}`,
+					);
+				}
+			}
+			if (hb.commandName !== undefined) {
+				// Discord chat-input command grammar (the subset we use): lowercase
+				// alphanumerics/dash/underscore, 1-32 chars. Reject at the config
+				// boundary instead of a confusing Discord 400 at registration time.
+				if (
+					typeof hb.commandName !== "string" ||
+					!/^[a-z0-9_-]{1,32}$/.test(hb.commandName)
+				) {
+					throw new Error(
+						`Project "${entry.projectName}" huddle.commandName: if provided, must match ^[a-z0-9_-]{1,32}$ (Discord slash-command grammar), got ${JSON.stringify(hb.commandName)}`,
+					);
+				}
+			}
+			if (hb.moveMembers !== undefined && typeof hb.moveMembers !== "boolean") {
+				throw new Error(
+					`Project "${entry.projectName}" huddle.moveMembers: if provided, must be a boolean, got ${JSON.stringify(hb.moveMembers)}`,
+				);
 			}
 		}
 
