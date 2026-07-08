@@ -28,9 +28,26 @@ Issue: FLY-978
 5. **关 CMux Tag**(cmux window/tag)
 - 没 PR 的任务(QA/文档/纯配置):绑**『真实的 close / 完成动作』**,**不**光凭 Linear 翻 Done 就归档(呼应 FLY-962 误归档担忧)。
 
-### ① 北极星 north star ⏳ 待 Annie 拍(Lead 在确认)
-- 你我都倾向 **A = 『done 必清必归档、一次不漏』为 north star;『残留可见性』做兜底**(万一真漏要能被看见/自愈,绝不静默)。
-- Lead:「① 她一拍我就给你全套让你写 PRD。」
+### ① 北极星 north star ✅ 已定 = A(Annie 拍)
+- **A = 『done 必清必归档、一次不漏』为 north star;『残留可见性』做兜底**(万一真漏要能被看见/自愈,绝不静默,
+  兜底层 = FLY-942 watchdog)。
+
+## Annie 终审锁定(2026-07-07,instruction 00bd1bc7) —— 全部定案
+
+- **block 1 = 方案 1(持久化收尾状态机),唯一实现路径。** 方案 2/3 从正文降为备选/已弃。
+- **清干净 5 条,两处细化:**
+  - #1 session 数:**三段式 = 3 个 session**(设计/实现/QA 都关);**普通 = 1 个 session**。权威 inventory 按此填。
+  - #3 加 **:cool ship-flow**(Annie 新加,重要):很多 repo 走 :cool —— PR comment `:cool`(hook)→ CI/CD →
+    deploy → **deploy 过了才 merge to main**。repo 有 :cool → 「merge 落地」= :cool flow 完成的那次 merge,
+    cleanup 在其后触发,Founder-Gate 授权 = 那次 :cool 由 Annie 授权;repo 无 :cool → 直接 merge。`merge_detected`
+    要认两种。其余 3 条(worktree/thread/CMux tag)不变。
+- **Founder-Gate:维持现状(Annie 拍 ship)。** future note:Annie 希望最终 Lead 能替她做 ship 决定(渐进放权,
+  接 **FLY-816**),但现在仍 founder gate。
+- **重启不 race:确认不变。**
+- **block 5 误归档护栏 = 定了:** ① Done issue 别急着归档(还在讨论的不归);② **不做自动 unarchive**(需要的情况
+  少,真要 Annie 手动;以后手动太多再开 issue 议);③ no-PR close authority = 保守默认 Lead/founder 显式 close(不变)。
+- **流程:** 落定稿 → Lead 末轮 codex(重点 verify :cool flow)→ 过了 Lead merge 入库 + 我拆 E1–E5 build issue 给
+  Tadashi。仍别 ship/清/merge/归档,等 Lead。
 
 ## 写 PRD 时要核实 / 注意的点(不改变已定方向)
 - **worktree 数量语义**:Annie 说『清这三个 worktree』。但代码里三段式常**共享一个 worktree**

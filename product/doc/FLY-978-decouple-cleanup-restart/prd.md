@@ -4,9 +4,9 @@ Issue: FLY-978 (https://linear.app/geoforge3d/issue/FLY-978/infrareliability-完
 日期: 2026-07-07
 基于: exploration.md（现状调研）、decisions-log.md（Annie 拍板记录）
 
-> 状态：draft（codex design-review R2 findings 已收 → 待 Honey Lemon 复跑 codex → Annie 最终 review）。
-> 本 PRD 只定**产品行为 + 机制**;具体 eng 设计与实现 = Tadashi。block 1 给候选实现方案供 Annie 挑
-> (方案 1/2 为候选,方案 3 仅 mitigation);block 5 标『待定』。
+> 状态：**Annie 终审锁定(2026-07-07)—— 全部定案。** block 1 = **方案 1(持久化收尾状态机),唯一实现路径**;
+> block 5 已定;新增 **:cool ship-flow** 到 merge 判定。本 PRD 只定**产品行为 + 机制**;具体 eng 设计与实现 =
+> Tadashi。待 Honey Lemon 末轮 codex(重点 verify :cool flow)→ 过后合入 + 拆 E1–E5 给 Tadashi。
 
 ---
 
@@ -75,38 +75,27 @@ Lead 手动 merge + 手动让 runner 下线。
 
 - **自动 ship = 唯一主路径。** 手动 / 直接在 GitHub 上 merge 当 **0.01% 边缘兜底**(能被收敛清理,或在
   证不出授权时挂起报 Annie,见 §6),不是常规路径。
-- **ship 一落地(merge 到 main 且已验证 founder-approved)→ 当场可靠清干净(§7 五步)+ 跨重启不丢。**
+- **ship 一落地(merge 到 main 且已验证 founder-approved;走 :cool 的 repo = :cool flow 完成的那次 merge,
+  见 §7 第 3 步)→ 当场可靠清干净(§7 五步)+ 跨重启不丢。**
   「跨重启不丢」= 无论何种 cadence 的重启(定时 / ad-hoc)在收尾中途发生,收尾都能从断点续、最终收敛到
   5 步全绿;绝不出现「claim 插了但被打断就永不重跑」。(cadence 具体值见 §8 / 多机部署 PRD。)
 
-### 5.2 三个实现方案（供 Annie 挑；eng 细节 = Tadashi）
+### 5.2 实现方案 —— 已锁定 = 方案 1（持久化收尾状态机）
 
-> 都满足「落地即清 + 跨重启不丢 + 严格 Founder-Gate」;区别在 **稳健度 vs 改动量**。
+> **Annie 终审拍板:block 1 = 方案 1,是唯一实现路径。** 方案 2/3 从正文降为「备选(存档)」——不实现。
 
-**方案 1 —— 持久化收尾状态机（durable finalization state machine）【我推荐】**
+**✅ 方案 1（选定）—— 持久化收尾状态机（durable finalization state machine）**
 把「收尾」变成一条**持久化任务**(每个任务一条),5 步各打**独立 checkpoint**、每步**幂等**。一个专门的
 finalizer:① ship 落地事件上**当场**跑;② Bridge 启动时 + **每隔几分钟**周期重扫未完成的收尾,从「上次
 做到哪步」**接着做**。
-- 优:一次不漏最强;根治「claim 插了被打断永不重跑」;5 步状态天然可观测 → 直接喂可见性兜底(942)。
-- 代价:改动最大(新持久 job 表 + finalizer + drain)。
+- 为什么选它:**一次不漏最强**;根治「claim 插了被打断永不重跑」;5 步状态天然可观测 → 直接喂可见性兜底
+  (942)。代价是改动最大(新持久 job 表 + finalizer + drain),Annie 认这个代价换「一次不漏」。
 
-**方案 2 —— 幂等重放 +『收尾未完成』marker（中量）**
-保留现有 inline 收尾管线,但把「完成判据」从「claim 插入」改成「**5 步全部经独立核验为真**」。落地时写一个
-持久 `finalization-pending` marker;一个 reconciler(**inline + 每分钟周期,不再 boot-only**)不断补跑缺失
-的步、直到 marker 被核验清掉。
-- 优:复用现有管线,改动中等;marker 天然抗重启。
-- 代价:靠「核验」而非「断点」,极端交错下可能重复跑某步(幂等兜底)。
-
-**方案 3 —— 重启加屏障 + 兜底去 boot 化（仅 mitigation / 过渡，不满足北极星）**
-> ⚠️ **不与方案 1/2 同列为「满足北极星」的候选。** 它自己承认屏障有 **5 分钟强制重启上限、极端下仍可能被
-> 打断**,因此**不满足『一次不漏』**;只作为快速缓解 / 过渡,或与方案 1/2 叠加。
-deploy 侧把 idle-wait 从「session 数=0」改成「**真收到 finalization-done**」屏障;并把现在**只在 boot 跑**的
-兜底(worktree Layer B / tab / viewer / CommDB reaper)改成**短周期**(heartbeat / GatePoller)跑。
-- 优:改动最小、见效快。
-- 代价:屏障有 5 分钟强制重启上限,极端下仍可能被打断 → **不满足『一次不漏』**。
-
-**满足北极星的候选 = 方案 1 或 方案 2**(供 Annie 挑,我推荐**方案 1**);**方案 3 不是候选**,只作快速缓解 /
-过渡 / 叠加。
+**备选(已评估、未选,存档留痕):**
+- **方案 2 —— 幂等重放 +『收尾未完成』marker(中量):** 复用现有管线,「完成判据」改成「5 步全核验为真」+
+  持久 marker + 每分钟 reconciler 补跑。改动中等,但靠「反复核验」而非「断点续」,极端交错下可能重复跑某步。
+- **方案 3 —— 重启加屏障 + 兜底去 boot 化(mitigation):** 有 5 分钟强制重启上限、极端下仍可能被打断 →
+  **不满足『一次不漏』**;**已弃**(至多作方案 1 之上的额外 mitigation,不替代)。
 
 ---
 
@@ -123,6 +112,10 @@ deploy 侧把 idle-wait 从「session 数=0」改成「**真收到 finalization-
   但**任何 cleanup 副作用(关 runner / 删 worktree / 归档 thread / 关 CMux)必须发生在授权证明通过之后**。
   **绝不允许「先入队做清理、后核验授权」**—— 否则重启在中途打断,可能把一次未授权的 merge 误清掉。
   (对应状态机:只有 `finalization_candidate` 通过授权证明进入 `finalizing` 后才有副作用。)
+- **:cool repo 的授权证明:** 对走 :cool 的 repo,授权证明 = **那次 :cool 由 Annie 授权**(她 comment `:cool`
+  或批准触发);其余不变(证不出 → 挂起报她)。见 §7 第 3 步。
+- **Future note(渐进放权,接 FLY-816):** Annie 希望**最终 Lead 能替她做 ship 决定**(逐步放权);但**现在
+  仍是 founder gate** —— 本 PRD 维持现状,放权是未来 **FLY-816** 的事,不在 978 做。
 
 ---
 
@@ -138,13 +131,22 @@ deploy 侧把 idle-wait 从「session 数=0」改成「**真收到 finalization-
 
 一个任务「清干净」当且仅当以下 5 条(按权威清单)**全部完成且可核验**:
 
-1. **关该任务所有 runner session** —— 三段式 impl / design / QA 的 session 都要关(不是只关主 session)。
+1. **关该任务所有 runner session** —— **三段式任务 = 3 个 session**(设计 / 实现 / QA 都关);**普通任务 =
+   1 个 session**。权威 inventory 按此填 session 集合(不是只关主 session)。
 2. **清该任务所有关联 worktree** —— 一个不留。
    > ⚠️ 语义待 eng 核实:Annie 说『这三个 worktree』;代码里三段式常**共享一个** worktree。PRD 按真实机制
    > 写成「清掉该任务**所有**关联 worktree(1 个共享 or N 个 per-phase,取决于 three-stage keep-alive 配置)」,
    > 给 Tadashi 的 build issue 里点明这个歧义,别照字面锁死『恰好 3 个』。
 3. **PR merged to main** —— **仅对有 PR 的任务**;`no_pr_task ⇒ pr_step = not_applicable_with_reason`
    (显式标 N/A + 理由,不计入「漏」,也不阻塞验收)。
+   > **:cool ship-flow(Annie 新加,重要):** 很多 repo 不是裸 `git merge` 到 main,而是走 **:cool 机制** ——
+   > 在 PR comment `:cool`(一个 hook)→ 跑 CI/CD → deploy → **deploy 过了才 merge 到 main**。所以
+   > 「done / merge」判定要认这两种:
+   > - **repo 有 :cool** → 「merge 落地」= **:cool flow 完成的那次 merge**(不是裸 git merge);cleanup 在
+   >   :cool flow 落地 merge 之后触发。Founder-Gate 授权证明 = **那次 :cool 由 Annie 授权**(她 comment
+   >   `:cool` 或批准触发)。
+   > - **repo 无 :cool** → 直接 merge 到 main(现有逻辑)。
+   > `merge_detected` 状态(§9)必须识别这两种落地方式。
 4. **关 / 归档 Discord thread**。
 5. **关 CMux Tag**(cmux window / tag)。
 
@@ -200,9 +202,9 @@ stateDiagram-v2
     completed --> [*]
 
     note right of merge_detected
-      "PR 已 merge / 真做完" 的入口不限:completion event /
-      external sweeper / Bridge boot recovery /
-      stale task 巡检 / runner 死在发事件前 / evidence-gap
+      入口不限:completion event / external sweeper /
+      Bridge boot recovery / stale 巡检 / runner 死在发事件前 / evidence-gap。
+      merge 落地两种都要认:直接 git merge / :cool flow(deploy 过才 merge)
     end note
     note right of finalizing
       清干净 5 步(幂等、可断点续、按权威 inventory 核验):
@@ -235,7 +237,7 @@ sequenceDiagram
     R->>A: 完工,请求 approve(gate)
     A->>B: approve 这个任务 ship(Founder-Gate)
     B->>R: 唤醒放行 ship
-    R->>G: ship(merge PR to main)
+    R->>G: ship —— repo 有 :cool 则 comment :cool→CI/CD→deploy→过了才 merge;否则直接 merge to main
     R->>B: session_completed(merged 证据)→ merge_detected
 
     Note over X,B: 边缘路径 —— completion 没到 / runner 死 / 手动·external merge / evidence-gap
@@ -292,24 +294,30 @@ flowchart TD
 4. **Founder-Gate 硬保证**:没有一个未授权的 merge 被当完成清掉 / 归档。
 5. **可见性兜底**:万一漏,FLY-942 watchdog 在阈值内把它作为「done 但未清干净」暴露 + 自愈重试。
 6. **体感度量**:一段时间内『ghost 残留数』趋 0;『Annie 手动清桩 / 手动归档次数』趋 0(= 困扰消失)。
+7. **:cool ship-flow 正确识别**:走 :cool 的 repo,「merge 落地」判定 = :cool flow 完成的 merge(不是裸 git
+   merge)、cleanup 在其后触发;无 :cool 的 repo 走直接 merge。两种都被 `merge_detected` 认。
 
 ---
 
-## 13. Block 5：误归档护栏 —— 待定（Annie 未定，别写死）
+## 13. Block 5：误归档护栏 —— 已定（Annie 终审拍板）
 
-『还在讨论的 Done issue 不该被急着归档』的护栏细节(阈值 / 是否要「无其它 active runner + 真 wrap-up」双条件 /
-是否允许 Discord 自动 unarchive 兜底)**标为待定·Annie 未定**。现有机制已有 `no-other-active` + 「绑真实 close
-而非 Linear-Done」的护栏(见 §7、FLY-369),978 先不改写、不写死;等 Annie 拍。
+- **原则:Done issue 别急着归档** —— 还在讨论的不归。沿用现有 `no-other-active` + 「绑真实 close 动作、
+  非 Linear-Done」护栏(见 §7、FLY-369)。
+- **不做自动 unarchive** —— Annie 说需要的情况少,真要就她**手动 unarchive**;**以后手动太多再单开 issue 议**,
+  978 不做自动 unarchive。
+- **no-PR close authority:保守默认 = Lead / founder 显式 close**(不光凭 runner self-report;§7)—— 不变。
 
 ---
 
 ## 14. Open Questions（写 PRD 时浮出，待 review 收敛）
 
-1. **block 1 方案**:方案 1 / 2 由 Annie 挑(我推荐 1;方案 3 非候选,见 §5.2)。
-2. **worktree 数量语义**(§7 note):三段式共享 or per-phase,eng 核实后定「所有关联 worktree」的确切集合。
-3. **block 5 误归档护栏 + no-PR close authority**:待 Annie 定;§7 的「no-PR 需 Lead/founder 显式 close」是
-   保守默认先兜着(§13)。
-4. **可见性兜底与 942 的接口**:978 产出的「未清干净」信号的确切格式 / 落点,与 FLY-942 对齐。
+1. **worktree 数量语义**(§7 note):三段式共享 or per-phase,eng(E1/E3)核实后定「所有关联 worktree」的
+   确切集合(Annie 说『3 个』是「任务里 3 个 session」的直觉;实际 worktree 数由 three-stage keep-alive 配置定)。
+2. **可见性兜底与 942 的接口**:978 产出的「未清干净」信号的确切格式 / 落点,与 FLY-942 对齐。
+3. **:cool flow 的 repo 识别 + 授权绑定**:eng(E1/E4)确认「repo 是否走 :cool」的判定来源,以及 :cool 授权与
+   `verifyApproval` 的绑定。
+
+> 已定案、不再是 open question:block 1(=方案 1)、block 5(误归档护栏)、北极星(A)、Founder-Gate、重启不变量。
 
 > 注:原「完成事件缺证据(evidence-gap)的收敛」已不再是 open question —— 它现在是状态机(§9/§10)里
 > 由 reconciler 汇聚到 `finalization_candidate` 的显式覆盖态,不再悬空(codex R2 blocker 2 已收)。
@@ -318,20 +326,21 @@ flowchart TD
 
 ## 15. 交接 —— Build-issue 拆分方案（给 Tadashi；先出方案，暂不 create）
 
-> PRD 定稿(Annie 挑定 block-1 方案)后,再把下列拆成 eng issue(Flywheel 标签)交 Tadashi。
+> PRD 已定稿(**Annie 终审锁定,block 1 = 方案 1**)。下列拆成 eng issue(Flywheel 标签)交 Tadashi
+> —— Honey Lemon 合入本 PRD 后再 create-issue。
 
-- **E1（block 1 核心）**:按选定方案实现「可续 / 跨重启不丢的 ship 收尾管线」—— 5 步幂等 + 断点续 + 覆盖所有
-  merge 路径。根治 exploration §2.5 killer + §3.2 六类 ghost。扩展而非重造 FLY-638/369。
+- **E1（block 1 核心）**:实现**方案 1(持久化收尾状态机)** —— 持久 finalization job + 5 步幂等断点续 +
+  finalizer(落地当场 + boot + 周期 drain)+ 覆盖所有 merge 路径(含 `merge_detected` 识别 **:cool flow vs
+  直接 merge**)。根治 exploration §2.5 killer + §3.2 六类 ghost。扩展而非重造 FLY-638/369。
 - **E2（block 3）**:落实「重启与清理解耦」不变量 —— 无论何种 cadence 的重启都不 race / 打断清理。
   **durable / resumable finalization 是 mandatory(硬不变量靠它保);deploy 屏障只能作额外 mitigation,
-  不得替代 durable finalization**(呼应 §5.2 —— 方案 3 非候选、只作过渡)。**重启 cadence 具体值归多机部署
-  PRD,不在此 issue 定义**;cross-ref 之。
-- **E3（block 4）**:5 步清干净收口 —— 把 tab / viewer / CommDB / worktree 兜底从 boot-only 改成事件 + 短周期;
-  统一「清干净」核验;没-PR 绑真实 close。
-- **E4（gate）**:严格 Founder-Gate 收尾 —— 只在证得出 founder-approve 才清 + 归档,证不出挂起报 Annie(复用
-  verifyApproval)。
+  不得替代 durable finalization**。**重启 cadence 具体值归多机部署 PRD,不在此 issue 定义**;cross-ref 之。
+- **E3（block 4 + block 5）**:5 步清干净收口 + 权威 inventory(含 thread)+ `expected−closed==∅` 核验;把
+  tab / viewer / CommDB / worktree 兜底从 boot-only 改成事件 + 短周期;**三段式 = 3 session、普通 = 1 session**;
+  no-PR 绑 Lead/founder 显式 close;**block 5 护栏**(Done 不急归 + **不做自动 unarchive**、真要手动)。
+- **E4（gate + :cool）**:严格 Founder-Gate 收尾 —— 只在证得出 founder-approve 才清 + 归档,证不出挂起报
+  Annie(复用 verifyApproval);**:cool repo 的授权 = 那次 :cool 由 Annie 授权**。future:接 **FLY-816** 渐进放权。
 - **E5（可见性兜底 → 归 FLY-942）**:「done 但未清干净」暴露 + 自愈,归 942 watchdog(cross-ref,不在 978 建)。
-- **block 5 误归档护栏**:待 Annie 定后再拆。
 
 **PM 验收 = 未来 FLY-830**(本 issue 不做)。
 
@@ -341,4 +350,5 @@ flowchart TD
 
 FLY-964(状态显示正确性,978 是头号根治)· FLY-970(ghost 实例)· FLY-638(inline 收尾,已做但不可靠)·
 FLY-369(close→archive 级联,已做)· FLY-942(watchdog / 可见性兜底 + 主动汇报)· FLY-975(watchdog 盲区)·
-FLY-962(显示 bug + 误归档担忧,次要)· 多机部署 PRD(重启拓扑 cross-ref)。
+FLY-962(显示 bug + 误归档担忧,次要)· FLY-816(渐进放权:未来 Lead 替 founder 做 ship 决定)·
+多机部署 PRD(重启拓扑 cross-ref)。
