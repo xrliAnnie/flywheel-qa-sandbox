@@ -20,16 +20,19 @@ Issue: FLY-910 (https://linear.app/geoforge3d/issue/FLY-910/非工程快速-onbo
 
 ---
 
-## 状态机总览(给 Tadashi)
+## 状态机总览(给 Tadashi)— setup-first(Annie v3 定)
 
 ```
-S0 装 → S1 起 Onboarding Buddy(开场) → S2 摸需求 → S3 定Team → S4 模型key → S5 建自己的 Discord(server+bot)
-     → S5.5 早聊一句(先跟 Captain 打招呼,工具没全接也行) → S6 Linear
-     → S6.5 连接第一件事要用的业务工具(JIT) → S7 自动安置 → S8 首次产出 → DONE
-        每步写一个 onboarding-state.json(cursor + 已完成步),中断重跑从 cursor 续。
-        任一步 worst-case → escalate 转人工支持(不阻死;Anna 不在此环,Anna=Sales)。
+S0 装 → S1 Welcome(先暖场,不派活)
+     → S2 setup 基础工具(task-independent):2a Claude Code(装+登录,非 API key)· 2b 建你自己的 Discord(简化,bot 自动建结构)· 2c Linear(一点授权)
+     → S3 才问「先搞定哪件事」 → S4 定 Team → S5 早聊一句(welcome-first)
+     → S6 接第一件事要用的业务工具(JIT) → S7 自动安置 → S8 首次产出 → DONE
+        每步写 onboarding-state.json(cursor + 已完成步),中断重跑从 cursor 续。
+        任一步 worst-case → escalate 转人工支持(不阻死;Anna=Sales 不在此环)。
 ```
-状态持久化 `~/.flywheel-onboarding/state.json`(不含任何 secret);secret 落各自安全存储(见各屏)。
+状态持久化 `~/.flywheel-onboarding/state.json`(不含任何 secret)。
+
+> **⚠️ 本文以下屏级段落(S0–S8)是早期顺序 + 早期接法(含旧的『贴 model key』『S5/S5.5』编号)。权威流程以 `onboarding-buddy-spec.md` v2 为准**(setup-first 顺序 / 接大脑=Claude Code CLI 非 key / 简化 Discord 4 步)。本文保留作屏级文案参考,**顺序与接法以 buddy-spec 为准**;下方 S4、S5 已就地修正为新接法。
 
 > **Onboarding Buddy 是谁(给 Tadashi)**:一个**自助引导 agent**,在终端里一步步带客户走完 S0–S8,能自动的后台悄悄做、要客户亲手的手把手带。它**独立于 Anna**(Anna=Sales,只在客户进来前;顶多把 Sales 阶段的 context 传给 Onboarding Buddy 当开场底料)。worst-case 它把客户转给**人工支持**,不是 Anna。
 
@@ -81,23 +84,25 @@ S0 装 → S1 起 Onboarding Buddy(开场) → S2 摸需求 → S3 定Team → S
 
 ---
 
-## S4 · 录模型 key(Claude)— 亲手事之一 [MANUAL·引导]
+## S4 · 接大脑 = Claude Code CLI(装 + 登录;**不是贴 key** · Annie v3 改正)[MANUAL·引导]
+> **改正**:**不接 Cloud/API key** —— 是让用户在自己机器上**装 + 登录 Claude Code**(用他自己的 Claude 订阅)。新 setup-first 顺序里 = 步骤 2a(基础工具第一样)。
 - **客户看到**:
-  > 你的团队用 Claude 当脑子。你有 Claude 的订阅或者 API key 吗?
-  > 有 → 我带你安全贴进来(不会显示在对话里)。
-  > 没有 → 这个链接注册:https://console.anthropic.com/ ,弄好回来跟我说一声。
-- **输入**:CLI **隐藏** prompt 收 key。
-- **系统动作**:key → 本地安全存储(OS keychain / 权限 600 文件,**不进 state.json / 不进 git / 不进日志**)→ 发一个最小 test 调用校验。
-- **校验**:test 调用 200。
+  > 给团队接个「大脑」,用的是 **Claude Code**。你在这台电脑上装一下、登录你自己的 Claude 账号就行(用你的 Claude 订阅,不用弄什么密钥)。
+  > 我把安装命令给你准备好了,跑一下;然后它会让你在浏览器里登录 Claude,点同意就成。
+- **输入**:跑安装命令 + 浏览器 OAuth 登录(用户自己的 Claude 订阅)。
+- **系统动作**:`[AUTO]` 检测/装 Claude Code CLI → 引导 `claude` 登录 → 浏览器 OAuth → 校验能起一个最小会话。**不收 API key、不碰 Cloud key、无 key 明文落地。**
+- **校验**:能起一个最小 Claude Code 会话。
 - **失败分支**:
-  - key 无效 → `这个 key 连不上——看看是不是没复制全,或者额度用完了。再贴一次?`
-  - 无额度 → `key 是对的,但这个账号好像没额度了,去充一下再回来。`
-- **延迟**:校验 ≤5s。
-- **续传**:成功标记 S4 done(不存 key 明文于 state)。
+  - 没装成 → 给手动安装链接 + `装好回来说声。`
+  - 登录没弹浏览器 → 给可复制登录 URL + `点这个登录。`
+  - 登录失败 2 次 → 转人工支持。
+- **延迟**:装 + 登录典型 30–90s。
+- **续传**:成功标记 done(登录态由 Claude Code 自管,不落 state 明文)。
 
 ## S5 · 建你自己的 Discord(server + bot)— 亲手事之二 [MANUAL·手把手]
 > **块3 决定(Annie)**:主线 = **引导客户建他自己的 Discord —— 我们能帮的都帮、尽量降摩擦**。Discord 建 bot 这一步**没法替他自动化**(平台不给接口),只能手把手带到「点错都难」。配**截图 + 15s 短视频**(脚本见附录 A)。
 > **⟨现成 bot 池一键邀请捷径 = 理想 / 大概率做不成⟩**:我们控制不了 Discord 平台,「给个现成 bot 直接邀请」这条能不能长期成立没把握——**当探索项,不当承诺**;第一版**默认走客户自建**,捷径成了再说。
+> **🆕 简化(Annie v3 + discord-permission-research.md)**:**高权限 bot 一进群就自动建好频道/角色/webhook 全套结构**——用户**只做 4 件平台锁死删不掉的**(建 server / 建 bot 拿 token / 开 2 个 intent / 点高权限邀请),其余全自动。逐步简化版见 `onboarding-buddy-spec.md` §2。
 
 - **客户看到**(一步一确认,每步附截图):
   > 你的团队在 **Discord** 里跟你干活,所以先弄好你自己的 Discord。跟我做,几分钟:
@@ -109,7 +114,7 @@ S0 装 → S1 起 Onboarding Buddy(开场) → S2 摸需求 → S3 定Team → S
   > **3/4** ✓ 收到。同一页往下,打开两个开关:**Message Content Intent** 和 **Server Members Intent**(见截图)。开好说一声。
   > **4/4** ✓ 连上了、机器人在线!最后点这个把它请进你刚建的服务器 → [自动生成的邀请链接]。
   > ✓ 进群了,Discord 这步就完成了。
-- **系统动作**:token→安全存储(**绝不进对话/日志**)→ 连 Discord Gateway 校验 → 用 app client id 生成 **invite-url**(含所需权限 scope)→ 轮询检测 bot 已加入目标 server → `[AUTO]` 建所需频道。
+- **系统动作**:token→安全存储(**绝不进对话/日志**)→ 连 Discord Gateway 校验 → 生成**高权限 OAuth2 邀请链接**(权限整数含 Manage Channels/Roles/Webhooks + 发消息,`guild_id=用户server` 预选)→ 轮询检测 bot 已入群 → **bot `[AUTO]` 自动建好所有频道/分类/角色/webhook 全套结构**(不止频道)。
 - **校验**:Gateway 连通 + intents 开 + bot 在目标 server。
 - **失败分支(具体到哪一步)**:
   - 没有 server → `先建一个你自己的服务器(左边那个「+」),几秒钟,建好回来。`[附截图]
@@ -117,7 +122,7 @@ S0 装 → S1 起 Onboarding Buddy(开场) → S2 摸需求 → S3 定Team → S
   - intents 没开 → `还差一个:Message Content Intent 那个开关还没开(第 3 步截图里红圈处)。`
   - 没邀进服务器 → `还没看到它进群——点一下这个邀请链接,选你刚建的服务器。`
   - **worst-case**(卡住 / 来回失败 2 次)→ `这步有点绕,我帮你转个人工支持,让个真人跟你连屏一起弄?` → escalate 转人工支持。
-- **降摩擦(我们能帮的都帮)**:自动生成带正确权限的邀请链接、自动建频道、每步即时校验给具体报错、短视频/截图兜底;客户只需在 Portal 点几下 + 贴一次 token。
+- **降摩擦(能自动的全自动)**:高权限邀请链接(权限 + 预选 server 都替他填好)+ **bot 自动建全套结构(频道/角色/webhook)**+ 每步即时校验给具体报错 + 短视频/截图兜底;客户手动面**只剩那 4 件平台锁死的**(建 server / 建 bot 拿 token / 开 2 个 intent / 点邀请)。为什么删不掉见 `discord-permission-research.md`。
 - **延迟**:人手步骤,无超时压;每次校验 ≤5s。
 - **续传**:token 存后即使中断,重跑从「开 intents / 邀请」续,不重建 app。
 
