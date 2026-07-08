@@ -1,14 +1,14 @@
 ---
 issue: FLY-980
 phase: implement
-phaseCursor: 5/9
-updated: 2026-07-08T04:44:28.809Z
-nextStep: "PARKED awaiting ELEVENLABS_API_KEY; S4 recipe locked: sonnet +
-  FLY980_RESUME=0; on wake → S3 per plan"
+phaseCursor: 6/9
+updated: 2026-07-08T05:40:00.983Z
+nextStep: V6 interrupt → V7 tools → V8 override → V9 audition → V10 cost →
+  evidence+report; agent=agent_7801kx02km20ed4vp0ewcmdfyp5w
 chunks: []
 pointers: {}
 ---
 
 # FLY-980 progress
-**phase**: implement (5/9)
-**next**: PARKED awaiting ELEVENLABS_API_KEY; S4 recipe locked: sonnet + FLY980_RESUME=0; on wake → S3 per plan
+**phase**: implement (6/9)
+**next**: V6 interrupt → V7 tools → V8 override → V9 audition → V10 cost → evidence+report; agent=agent_7801kx02km20ed4vp0ewcmdfyp5w
