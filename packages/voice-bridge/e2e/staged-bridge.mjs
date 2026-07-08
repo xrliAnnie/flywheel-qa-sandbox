@@ -51,9 +51,11 @@ const server = app.listen(port, "127.0.0.1", () => {
 	console.log(`[staged-bridge] up on 127.0.0.1:${port} (isolated, in-memory)`);
 });
 
-process.on("SIGINT", () => {
+const shutdown = () => {
 	server.close(() => {
 		store.close();
 		process.exit(0);
 	});
-});
+};
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

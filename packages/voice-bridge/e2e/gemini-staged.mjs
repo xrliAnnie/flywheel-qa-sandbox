@@ -36,6 +36,17 @@ const guildId = need("STAGED_GUILD_ID");
 const voiceChannelId = need("STAGED_VC_ID");
 need("GEMINI_API_KEY");
 need("FLYWHEEL_API_TOKEN");
+// isolation guard (Codex R7 HIGH): the wiring falls back to the PROD Bridge
+// (127.0.0.1:9876) when FLYWHEEL_BRIDGE_URL is unset — a staged run must be
+// pinned to the staged Bridge explicitly, and pointing it at the prod port
+// is refused outright.
+process.env.FLYWHEEL_BRIDGE_URL ??= "http://127.0.0.1:9877";
+if (/:9876(\/|$)/.test(process.env.FLYWHEEL_BRIDGE_URL)) {
+	console.error(
+		"refusing to run staged E2E against the production Bridge port (9876) — start e2e/staged-bridge.mjs and point FLYWHEEL_BRIDGE_URL at it",
+	);
+	process.exit(2);
+}
 
 const config = {
 	projectName: process.env.STAGED_PROJECT_NAME ?? "flywheel",
