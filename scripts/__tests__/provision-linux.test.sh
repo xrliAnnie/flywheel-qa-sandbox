@@ -65,7 +65,26 @@ echo '{ "schemaVersion": 1, "skillsRepo": "xrliAnnie/flywheel-skills" }' > "$FLE
 
 H="$SANDBOX/home"; mkdir -p "$H"
 UNIT_DIR="$SANDBOX/systemd-user"
+
+# FLY-954: hard isolation self-check — the sandbox HOME every provisioner
+# invocation gets must NEVER be the invoking user's real HOME (defense against
+# future edits that bypass the isolated helper; the 2026-07-06 escape ran with
+# the real env because nothing asserted otherwise).
+REAL_USER_HOME="$HOME"
+_assert_sandboxed_home() {
+  local h="$1"
+  if [ -z "$h" ] || [ "$h" = "$REAL_USER_HOME" ]; then
+    echo "FATAL(FLY-954): test HOME '$h' is the real user HOME — refusing to run" >&2
+    exit 1
+  fi
+  case "$h" in
+    "$SANDBOX"/*) ;;
+    *) echo "FATAL(FLY-954): test HOME '$h' escapes sandbox $SANDBOX" >&2; exit 1 ;;
+  esac
+}
+
 prov() {
+  _assert_sandboxed_home "$H"
   env -i HOME="$H" PATH="$PATH" USER="tester" FLYWHEEL_PLATFORM=linux \
     FLYWHEEL_SYSTEMD_USER_DIR="$UNIT_DIR" \
     bash "$PROVISION" --home "$H" --repo-root "$REPO_ROOT" --fleet-dir "$FLEET" "$@"
@@ -126,6 +145,7 @@ fi
 # under `set -u` the linger call used to die with "USER: unbound variable"
 # (found by the FLY-648 container real-machine QA). Must fall back to id -un.
 : > "$CALLS"
+_assert_sandboxed_home "$H"   # FLY-954: direct (non-helper) invocation below
 OUT="$(env -i HOME="$H" PATH="$PATH" FLYWHEEL_PLATFORM=linux \
   FLYWHEEL_SYSTEMD_USER_DIR="$UNIT_DIR" \
   bash "$PROVISION" --home "$H" --repo-root "$REPO_ROOT" --fleet-dir "$FLEET" \

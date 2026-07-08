@@ -19,7 +19,7 @@
 # Usage:
 #   lead-alert.sh \
 #     --lead <lead-id> --project <project-name> \
-#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass> \
+#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bin_integrity_drift> \
 #     --severity <info|warning|severe> \
 #     --title <string> --body <string> \
 #     [--signature <string>] [--strict-delivery]
@@ -94,7 +94,9 @@ case "$KIND" in
   # FLY-913: restart_guard_bypass — the flywheel-restart-guard PreToolUse hook's
   # mandatory bypass alert (every bypass MUST ring; the hook fail-closes on
   # anything but sent/queued_transient). Same TS-union parity convention.
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass) ;;
+  # FLY-954: bin_integrity_drift — converge-flywheel-bin.sh 检出 <state>/bin 与
+  # repo 源漂移(修复成功/失败/源坏拒修均响)。Same TS-union parity convention.
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bin_integrity_drift) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"

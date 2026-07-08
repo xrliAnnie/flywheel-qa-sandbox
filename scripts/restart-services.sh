@@ -954,6 +954,34 @@ do_restart_all_leads() {
     local skipped=0
     local failed=0
 
+    # FLY-954: converge <state>/bin BEFORE kickstarting any Lead — kickstarting
+    # a corrupted wrapper takes the fleet down (2026-07-06: 12-byte stub +
+    # KeepAlive throttling = 13 Leads offline). FAIL-LOUD: if convergence
+    # cannot leave bin healthy, refuse the whole Lead restart wave (reported
+    # through the existing skipped/failed stdout contract; deploy aborts and
+    # deployed-sha does not advance).
+    # Codex code R1 MEDIUM: report the refusal through the stdout contract and
+    # return 0 — all three call sites capture this function via $( ) under
+    # `set -e`, so a non-zero return would kill the whole script at the
+    # assignment, skipping the existing failed>0 handling (deploy-failure
+    # notification + deployed-sha hold + plugin-only retry marker).
+    local _conv_dir
+    _conv_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "${_conv_dir}/converge-flywheel-bin.sh" ]; then
+        if ! bash "${_conv_dir}/converge-flywheel-bin.sh" >&2; then
+            log "ERROR: flywheel-bin convergence failed — refusing to kickstart Leads on a possibly-corrupt bin (FLY-954)" >&2
+            echo "skipped:0 failed:1"
+            return 0
+        fi
+    else
+        # bin-copy execution context (fleet host): fall back to FLYWHEEL_DIR repo
+        if ! bash "${FLYWHEEL_DIR}/scripts/converge-flywheel-bin.sh" >&2; then
+            log "ERROR: flywheel-bin convergence failed — refusing to kickstart Leads (FLY-954)" >&2
+            echo "skipped:0 failed:1"
+            return 0
+        fi
+    fi
+
     # Source 1: collect Lead IDs from manifests
     local manifest_leads=""
     shopt -s nullglob

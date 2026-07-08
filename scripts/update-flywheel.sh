@@ -182,6 +182,15 @@ update_main() {
   fi
   trap 'ssq_lock_release' EXIT INT TERM
 
+  # FLY-954: converge <state>/bin BEFORE any deploy decision. This job's plist
+  # execs the repo script directly, so it is the ONLY self-heal path that does
+  # not depend on a possibly-broken lead wrapper (a stub wrapper exits 0
+  # instantly — Lead-start convergence never runs). Non-fatal: deploy
+  # availability wins (FLY-739 principle); drift alerts via lead-alert.sh.
+  if ! bash "${SCRIPT_DIR}/converge-flywheel-bin.sh" >/dev/null 2>&1; then
+    log "converge-flywheel-bin reported unhealthy state (non-fatal; continuing)"
+  fi
+
   local guard=0
   while :; do
     guard=$((guard + 1)); (( guard > 1000 )) && { log "loop guard tripped"; break; }
