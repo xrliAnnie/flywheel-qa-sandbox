@@ -1,13 +1,14 @@
 ---
 issue: FLY-343
 phase: design
-phaseCursor: 1/4
-updated: 2026-07-08T18:33:07.921Z
-nextStep: "brainstorm gate: confirm fold-in vs standalone direction"
+phaseCursor: 2/4
+updated: 2026-07-08T18:40:33.378Z
+nextStep: write research.md + plan.md (fold-in judgment + 906/914 comment
+  drafts) -> Codex design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-343 progress
-**phase**: design (1/4)
-**next**: brainstorm gate: confirm fold-in vs standalone direction
+**phase**: design (2/4)
+**next**: write research.md + plan.md (fold-in judgment + 906/914 comment drafts) -> Codex design review
