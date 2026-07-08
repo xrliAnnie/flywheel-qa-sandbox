@@ -1,5 +1,5 @@
 /**
- * LiveCommand (FLY-967 P7) — the /live invocation orchestrator:
+ * GeminiCommand (FLY-967 P7) — the /gemini invocation orchestrator:
  * slot acquire (busy → founder-facing rejection, nothing created) → kickoff
  * issue → invite reply (Join link) + founder @ping (+ best-effort MOVE) →
  * hand off to the AssistantSession factory. The session owns the slot from
@@ -12,14 +12,15 @@
  */
 import { randomUUID } from "node:crypto";
 import type { SessionSlot } from "../SessionSlot.js";
+import { ASSISTANT_SLOT_MODE } from "./config.js";
 
-export interface LiveInvocation {
+export interface GeminiInvocation {
 	topic?: string;
 	/** the invocation reply (回执); the adapter renders joinUrl as a button. */
 	reply(text: string, opts?: { joinUrl?: string }): Promise<void>;
 }
 
-export interface LiveCommandOptions {
+export interface GeminiCommandOptions {
 	commandName?: string;
 	slot: SessionSlot;
 	/** the resident #huddle VC link for the Join button. */
@@ -40,16 +41,16 @@ export interface LiveCommandOptions {
 	log?: (line: string) => void;
 }
 
-export class LiveCommand {
-	constructor(private readonly opts: LiveCommandOptions) {}
+export class GeminiCommand {
+	constructor(private readonly opts: GeminiCommandOptions) {}
 
 	get name(): string {
-		return this.opts.commandName ?? "live";
+		return this.opts.commandName ?? "gemini";
 	}
 
-	async handle(inv: LiveInvocation): Promise<void> {
+	async handle(inv: GeminiInvocation): Promise<void> {
 		const sessionId = randomUUID();
-		const acquired = this.opts.slot.acquire("live", sessionId);
+		const acquired = this.opts.slot.acquire(ASSISTANT_SLOT_MODE, sessionId);
 		if (!acquired.ok) {
 			await inv.reply(acquired.message);
 			return;
@@ -61,6 +62,7 @@ export class LiveCommand {
 			const created = await this.opts.createIssue(
 				kickoffTitle(
 					this.opts.now?.() ?? new Date(),
+					this.name,
 					this.opts.founderName ?? "Annie",
 					inv.topic,
 				),
@@ -68,7 +70,7 @@ export class LiveCommand {
 			identifier = created.identifier;
 			issueUrl = created.url;
 		} catch (err) {
-			this.opts.slot.release("live", sessionId);
+			this.opts.slot.release(ASSISTANT_SLOT_MODE, sessionId);
 			await inv.reply(
 				`/${this.name} 没起起来:立项 issue 创建失败(${String((err as Error).message ?? err)})。稍后再试。`,
 			);
@@ -86,7 +88,7 @@ export class LiveCommand {
 			const moved = await this.opts.moveFounderToVc().catch(() => false);
 			if (!moved) {
 				this.opts.log?.(
-					"[live-command] MOVE_MEMBERS unavailable — Join button is the path in",
+					"[gemini-command] MOVE_MEMBERS unavailable — Join button is the path in",
 				);
 			}
 		}
@@ -98,7 +100,7 @@ export class LiveCommand {
 				topic: inv.topic,
 			});
 		} catch (err) {
-			this.opts.slot.release("live", sessionId);
+			this.opts.slot.release(ASSISTANT_SLOT_MODE, sessionId);
 			await inv.reply(
 				`/${this.name} 会话启动失败(${String((err as Error).message ?? err)})——${identifier} 保持打开,重新 /${this.name} 即可。`,
 			);
@@ -106,10 +108,15 @@ export class LiveCommand {
 	}
 }
 
-function kickoffTitle(now: Date, founder: string, topic?: string): string {
+function kickoffTitle(
+	now: Date,
+	command: string,
+	founder: string,
+	topic?: string,
+): string {
 	const d = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 	const t = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-	return `${d} ${t} · live(${founder})${topic ? ` — ${topic}` : ""}`;
+	return `${d} ${t} · ${command}(${founder})${topic ? ` — ${topic}` : ""}`;
 }
 
 function pad(n: number): string {

@@ -187,8 +187,8 @@ Annie 原话:「相当于把 Claude Code 做的事情在 Gemini 那边再做一�
 - `/assist` 偏「客服」;`/quick` 语义悬空(quick 什么?)。
 - 命令名可配置(545 的 `commandName` 同款),定稿权在 Annie+Honey Lemon,design 只给建议。
 
-> **落定注记(2026-07-07)**:Annie 拍板 = **/live**(取代本节建议的 /talk);命令名仍可配置
-> (config `commandName`,默认 "live")。代码模块相应叫 LiveCommand。
+> **落定注记(2026-07-07)**:Annie 先拍 /live、**终稿 = /gemini**(取代本节建议的 /talk);
+> 命令名仍可配置(config `commandName`,默认 "gemini")。代码模块相应叫 GeminiCommand。
 
 ### D8. 交付切法与时序
 

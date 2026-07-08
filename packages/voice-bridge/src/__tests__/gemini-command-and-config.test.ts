@@ -1,11 +1,11 @@
 /**
- * FLY-967 P7 — LiveCommand (slot → issue → invite → session handoff, slot
+ * FLY-967 P7 — GeminiCommand (slot → issue → invite → session handoff, slot
  * never leaks on failure) + the optional huddle.assistant config sub-block
  * (absent = /live off, byte-compat; present = fail-fast validation).
  */
 import { describe, expect, it, vi } from "vitest";
 import { resolveAssistantConfig } from "../assistant/config.js";
-import { LiveCommand } from "../assistant/LiveCommand.js";
+import { GeminiCommand } from "../assistant/GeminiCommand.js";
 import { SessionSlot } from "../SessionSlot.js";
 
 function makeCommand(over: Record<string, unknown> = {}) {
@@ -24,7 +24,7 @@ function makeCommand(over: Record<string, unknown> = {}) {
 			replies.push({ text, joinUrl: opts?.joinUrl });
 		}),
 	};
-	const cmd = new LiveCommand({
+	const cmd = new GeminiCommand({
 		slot,
 		joinUrl: "https://discord.com/channels/g/vc",
 		createIssue,
@@ -46,9 +46,9 @@ function makeCommand(over: Record<string, unknown> = {}) {
 	};
 }
 
-describe("LiveCommand (FLY-967 P7)", () => {
-	it("defaults to /live, configurable name", () => {
-		expect(makeCommand().cmd.name).toBe("live");
+describe("GeminiCommand (FLY-967 P7)", () => {
+	it("defaults to /gemini, configurable name", () => {
+		expect(makeCommand().cmd.name).toBe("gemini");
 		expect(makeCommand({ commandName: "chat" }).cmd.name).toBe("chat");
 	});
 
@@ -56,7 +56,7 @@ describe("LiveCommand (FLY-967 P7)", () => {
 		const h = makeCommand();
 		await h.cmd.handle(h.inv);
 		expect(h.createIssue).toHaveBeenCalledWith(
-			"2026-07-07 15:00 · live(Annie) — 声线选型",
+			"2026-07-07 15:00 · gemini(Annie) — 声线选型",
 		);
 		expect(h.replies[0].text).toContain("FLY-1300");
 		expect(h.replies[0].joinUrl).toBe("https://discord.com/channels/g/vc");
@@ -127,7 +127,7 @@ describe("resolveAssistantConfig (FLY-967 P7 config contract)", () => {
 	it("empty block gets full defaults", () => {
 		const c = resolveAssistantConfig(base({}), {});
 		expect(c).toMatchObject({
-			commandName: "live",
+			commandName: "gemini",
 			assistantToken: null,
 			localBargeIn: false,
 			briefing: {

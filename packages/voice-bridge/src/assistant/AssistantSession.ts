@@ -1,5 +1,5 @@
 /**
- * AssistantSession (FLY-967 P6b) — the /live lifecycle:
+ * AssistantSession (FLY-967 P6b) — the /gemini assistant lifecycle:
  *
  *   invoked → live → concluding → landing → teardown → idle
  *
@@ -17,6 +17,7 @@
 import type { SessionSlot } from "../SessionSlot.js";
 import type { LandingResult } from "./AssistantLanding.js";
 import type { BriefingResult } from "./BriefingEngine.js";
+import { ASSISTANT_SLOT_MODE } from "./config.js";
 
 /** the conversation surface the session drives (rotator-compatible). */
 export interface ConversationLike {
@@ -296,7 +297,7 @@ export class AssistantSession {
 			});
 			if (r.ok) {
 				this.opts.tiv.card(
-					`✅ /live 纪要已落 ${this.opts.issueId}${r.commentUrl ? `\n${r.commentUrl}` : ""}${confirmed ? "" : "\n(未经口头确认,见 issue 标注)"}`,
+					`✅ 会议纪要已落 ${this.opts.issueId}${r.commentUrl ? `\n${r.commentUrl}` : ""}${confirmed ? "" : "\n(未经口头确认,见 issue 标注)"}`,
 				);
 			} else {
 				this.opts.tiv.error(r.message);
@@ -314,7 +315,7 @@ export class AssistantSession {
 		try {
 			await this.opts.linearAbort.comment(
 				this.opts.issueId,
-				"/live 会议没开成——发起后 10 分钟内没有人进语音频道,自动关闭。",
+				"语音会议没开成——发起后 10 分钟内没有人进语音频道,自动关闭。",
 			);
 			await this.opts.linearAbort.closeIssue(this.opts.issueId);
 			this.opts.tiv.status("会没开成(10 分钟无人进场),立项 issue 已关。");
@@ -343,7 +344,7 @@ export class AssistantSession {
 		}
 		this.conv = null;
 		this.opts.voice.leave();
-		this.opts.slot.release("live", this.opts.sessionId);
+		this.opts.slot.release(ASSISTANT_SLOT_MODE, this.opts.sessionId);
 		this._state = "idle";
 	}
 

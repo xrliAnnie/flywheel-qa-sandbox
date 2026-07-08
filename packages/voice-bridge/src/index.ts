@@ -7,7 +7,7 @@
  * assistant/* modules on this exact chassis).
  */
 
-// ---- FLY-967 /live assistant mode (assistant/*) ----
+// ---- FLY-967 /gemini assistant mode (assistant/*) ----
 export {
 	AssistantLanding,
 	type AssistantLandingOptions,
@@ -37,15 +37,16 @@ export {
 	type IssuesPage,
 } from "./assistant/BriefingEngine.js";
 export {
+	ASSISTANT_SLOT_MODE,
 	type AssistantBriefingConfig,
 	type AssistantModeConfig,
 	resolveAssistantConfig,
 } from "./assistant/config.js";
 export {
-	LiveCommand,
-	type LiveCommandOptions,
-	type LiveInvocation,
-} from "./assistant/LiveCommand.js";
+	GeminiCommand,
+	type GeminiCommandOptions,
+	type GeminiInvocation,
+} from "./assistant/GeminiCommand.js";
 export {
 	type AssistantToolDeps,
 	boardSnapshotTool,

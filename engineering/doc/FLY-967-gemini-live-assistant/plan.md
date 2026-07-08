@@ -5,12 +5,12 @@ Issue: FLY-967 (https://linear.app/geoforge3d/issue/FLY-967/voicea-会议模式-
 
 > **给 implement 阶段**:三段式同分支交付,implement=Fable、QA=Opus(issue 钉的)。**1 个 PR**;
 > implement 的 VC 接线**等 545 PR-1 落地**(issue 硬约束;依赖面精确清单 = research §3,滑期
-> 升级 Tadashi)。每 Phase 先测后码(TDD),频繁 commit。命令命名**已定稿 = /live**(Annie
-> 拍板,取代 design 阶段建议的 /talk)—— 实现用 config 默认值("live"),仍可配置。
+> 升级 Tadashi)。每 Phase 先测后码(TDD),频繁 commit。命令命名**最终定稿 = /gemini**(Annie 二次拍板,
+> 取代先前的 /live 与 design 建议的 /talk)—— 实现用 config 默认值("gemini"),仍可配置。
 
 ## 0. 目标与非目标
 
-**目标**:`/live [topic]` → 自动建立项 issue → orchestrator bot + 耳朵 bot 进 `#huddle` VC →
+**目标**:`/gemini [topic]` → 自动建立项 issue → orchestrator bot + 耳朵 bot 进 `#huddle` VC →
 Gemini Live **用自己的声音**与 Annie 全双工对话(native audio、单一声线、最低首音)——开场前
 简报注入(board/相关 issue/最近决策/文档要点,她零科普)、会中 3 个只读工具查事实、原生
 barge-in;结束 → 助理口头 recap 等确认 → summary(引用原话)落立项 issue → 关 issue → TIV
@@ -22,9 +22,8 @@ queue(FLY-546)、**任何写动作/语音授权**(D3/D4 硬边界;FLY-546 的「
 上线后 A/B 自动继承,**本 issue 不自造批准通道**,v1 = readback + 现有 founder gate)、建
 worktree(A 是聊清事情不是派活会)、OpenAI Realtime/本地模型、多场并发、跨重启会话恢复。
 
-> 命名注记(gate ⑥ + Annie 拍板):`/live` 是 Discord slash 命令(Annie 定名,取代 design
-> 建议的 /talk;与 voice-core **本机** talk CLI(543)的同词混淆随 /live 定名自然消解)。
-> 代码里命令模块叫 `LiveCommand`(Discord 面),不去动 voice-core cli。
+> 命名注记(gate ⑥ + Annie 拍板):`/gemini` 是 Discord slash 命令(Annie 定名,先 /live 后终稿 /gemini;与 voice-core **本机** talk CLI(543)的同词混淆随 /gemini 定名自然消解)。
+> 代码里命令模块叫 `GeminiCommand`(Discord 面),不去动 voice-core cli。
 
 ## 1. 架构总览
 
@@ -32,13 +31,13 @@ worktree(A 是聊清事情不是派活会)、OpenAI Realtime/本地模型、多�
 flowchart LR
     subgraph dc["Discord #huddle VC(与 545 共用)"]
         ANNIE((Annie))
-        ORCB["orchestrator bot<br/>/live·TIV·播音=助理的嘴"]
+        ORCB["orchestrator bot<br/>/gemini·TIV·播音=助理的嘴"]
         EARS["耳朵 bot(收音,545 复用)"]
     end
     subgraph vb["packages/voice-bridge(545 同 daemon)"]
         REG[BotRegistry 复用]
         RX[EarsReceiver 复用<br/>48k→16k PCM]
-        SLOT[SessionSlot<br/>/meet·/live 单场互斥]
+        SLOT[SessionSlot<br/>/meet·/gemini 单场互斥]
         ASESS[AssistantSession 状态机<br/>invoked→live→concluding→landing→teardown]
         APLAY["AssistantSpeaker(新)<br/>24k→48k stereo→opus→AudioPlayer"]
         BRIEF["BriefingEngine(新)<br/>定时缓存→systemInstruction 注入"]
@@ -72,7 +71,7 @@ flowchart LR
 
 | 交付物 | 范围 | 真机验收(evidence/ 落档) |
 |--------|------|--------------------------|
-| **单 PR「/live 助理模式」**(545 PR-1 之上增量) | voice-core `systemPreamble` 可选字段 + voice-bridge `assistant/*` 全部 + SessionSlot + 两条 Bridge 路由(若 545 PR-2 未先落)+ 配置合同 | ①S-A1 首音/打断实测数字;②staged E2E(529 Room 纪律,QA 当 founder 全流程);③**Annie 真用一轮 /live**(A 侧北极星;A/B 对比由她各开一轮后拍板) |
+| **单 PR「/gemini 助理模式」**(545 PR-1 之上增量) | voice-core `systemPreamble` 可选字段 + voice-bridge `assistant/*` 全部 + SessionSlot + 两条 Bridge 路由(若 545 PR-2 未先落)+ 配置合同 | ①S-A1 首音/打断实测数字;②staged E2E(529 Room 纪律,QA 当 founder 全流程);③**Annie 真用一轮 /gemini**(A 侧北极星;A/B 对比由她各开一轮后拍板) |
 
 ## 3. 文件结构
 
@@ -84,7 +83,7 @@ flowchart LR
 
 ```
 packages/voice-bridge/src/
-├── SessionSlot.ts               # 单场互斥(/meet 与 /live 共用;acquire/release;
+├── SessionSlot.ts               # 单场互斥(/meet 与 /gemini 共用;acquire/release;
 │                                #   占用中二次 acquire → 显式拒绝带「有会进行中」文案)。
 │                                #   归属改判:由 545 PR-1 建(见上方边界裁决),967 消费。
 ├── audio/resample.ts            # 545 PR-1 文件,加一个方向:upsample24kMonoTo48kStereo(纯函数)
@@ -99,7 +98,7 @@ packages/voice-bridge/src/
     ├── AssistantSession.ts      # 状态机 invoked→live→concluding→landing→teardown(§6)
     ├── AssistantLanding.ts      # recap 模板→确认/纠正/离场降级→summary(引用原话 from JSONL)
     │                            #   →comment→close→TIV 卡片;失败语义照 545 §6 landing 同款
-    └── LiveCommand.ts           # slash 命令注册(名字可配,默认 "talk")+ Join link button +
+    └── GeminiCommand.ts           # slash 命令注册(名字可配,默认 "talk")+ Join link button +
                                  #   founder @ping + MOVE_MEMBERS + 建立项 issue;
                                  #   照 545 MeetCommand 形态 —— 若 MeetCommand 已落地,抽共享
                                  #   discord/commandKit.ts(注册/按钮/@ping 三件套),谁后落谁抽
@@ -112,14 +111,14 @@ packages/teamlead/src/bridge/plugin.ts  # 仅当 545 PR-2 未先落:POST /api/li
 ## 4. 配置合同
 
 `~/.flywheel/projects.json` 的 `huddle` 块(545 PR-1 定义)加**可选** `assistant` 子块
-(不设 = /live 不注册,A 关,字节兼容;545 的 B 面行为零变化):
+(不设 = /gemini 不注册,A 关,字节兼容;545 的 B 面行为零变化):
 
 ```jsonc
 "huddle": {
   "guildId": "…", "voiceChannelId": "…",            // 545 PR-1 已有,A 共用
   "orchestratorBotTokenEnv": "…", "earsBotTokenEnv": "…",
   "assistant": {
-    "commandName": "live",              // 可选,默认 "live"(Annie 拍板 /live,仍可配)
+    "commandName": "live",              // 可选,默认 "live"(Annie 拍板 /gemini,仍可配)
     "voice": "Kore",                    // 可选:Gemini prebuilt voiceName;缺省用模型默认;
                                         //   实现期试听 3-5 个预置声线选型记 config 注释。
                                         //   注意:native audio 模型自动选语言,不支持显式
@@ -244,8 +243,8 @@ readback 不执行 ——「我记下了,X 会走正式批准流程」,执行永
 ## 6. AssistantSession 状态机
 
 ```
-idle ──/live [topic]──▶ invoked(SessionSlot.acquire 失败 → 回执「有会进行中」即止;
-      │                 建立项 issue(title「2026-07-07 15:00 · live(Annie)」+topic)via
+idle ──/gemini [topic]──▶ invoked(SessionSlot.acquire 失败 → 回执「有会进行中」即止;
+      │                 建立项 issue(title「2026-07-07 15:00 · gemini(Annie)」+topic)via
       │                 create-issue 现有路由;发起频道回执 + Join 按钮;@ping Annie;
       │                 她已在本 guild 任一 VC 且 moveMembers → MOVE_MEMBERS)
       ▼
@@ -277,7 +276,7 @@ landing(AssistantLanding:summary+要点(逐条附原话引用 ts+原句,from JSO
 teardown(bot 退出 VC;rotator close;transcript 收尾;SessionSlot.release)──▶ idle
 ```
 
-- **单场互斥**:SessionSlot 为 /meet(545)与 /live 共享的进程内闸;A 先落地 = A 引入,
+- **单场互斥**:SessionSlot 为 /meet(545)与 /gemini 共享的进程内闸;A 先落地 = A 引入,
   545 PR-2 对齐(implement 时同步一条对齐注释到 545 侧文档,防两边各造一个闸)。
 - **barge-in 口径(S-A1 定档)**:主路 = Gemini 服务端 VAD(response-cancelled → flush)。
   S-A1 实测「她开口→停播」体感;若 >400ms 不跟手 → 启用**本地预停门**:EarsReceiver
@@ -311,14 +310,14 @@ teardown(bot 退出 VC;rotator close;transcript 收尾;SessionSlot.release)─�
   (fake timers):正常全流程(含开场/收尾 sendText 控制提示各一发)、10min 未进 abort、
   说「结束」/离开 VC 两种 concluding 入口、耳朵断连 >60s 降级、landing 失败语义三组
   (comment 失败不关 issue/close 失败留人工/重跑读回执不重发 comment)。
-- **P7 LiveCommand**:命令注册(可配名)、Join button、@ping、MOVE_MEMBERS(mock REST +
+- **P7 GeminiCommand**:命令注册(可配名)、Join button、@ping、MOVE_MEMBERS(mock REST +
   权限缺失显式错误)、建立项 issue(BridgeLinearClient mock,title 形状断言)。
 - **P8 Bridge 路由(条件)**:implement 前 grep `/api/linear/comment`;545 PR-2 已落 → 本步
   no-op;未落 → 照 545 plan §5.3/P12 合同逐字建两条路由 + 单测(auth/501/参数校验/not-found/
   identifier 精确/关键词歧义),测试形态照 create-issue 现有测试。
 - **P9 真机闭环 + E2E**:①staged(529 Room 纪律:QA 真人当 founder,测试 guild,全流程
-  /live→聊→收尾→issue 关闭链接可点);②生产部署(daemon 重启走 Bridge 重启纪律,攒批)→
-  **Annie 真用一轮 /live**(A 侧北极星)→ evidence;A/B 对比卡(exploration §7 四维度)
+  /gemini→聊→收尾→issue 关闭链接可点);②生产部署(daemon 重启走 Bridge 重启纪律,攒批)→
+  **Annie 真用一轮 /gemini**(A 侧北极星)→ evidence;A/B 对比卡(exploration §7 四维度)
   由 Lead 在两轮都跑完后端给 Annie。QA=Opus 独立 session(不自验)。
 - 全程:vitest 全绿 + 全仓 lint;每 Phase 一 commit;progress.md 每步更新。
 
@@ -328,12 +327,12 @@ teardown(bot 退出 VC;rotator close;transcript 收尾;SessionSlot.release)─�
 |---|------|------|
 | A1 | vitest 全绿 + 全仓 lint 干净;545 现有测试零改动全绿(字节兼容) | CI |
 | A2 | S-A1:首音分布实测(≤1.2s 达标线)+ 打断延迟 + 声线选型 + 简报答题抽查 | evidence/s-a1-first-audio.md |
-| A3 | 真机闭环:/live 全流程跑通,issue 建/关、summary 引用原话、TIV 卡片链接可点 | staged E2E 记录 |
-| A4 | 简报零等待:/live 到助理开场 ≤3s(缓存命中路径);简报滞后时 TIV 提示可见 | staged E2E + 单测 |
+| A3 | 真机闭环:/gemini 全流程跑通,issue 建/关、summary 引用原话、TIV 卡片链接可点 | staged E2E 记录 |
+| A4 | 简报零等待:/gemini 到助理开场 ≤3s(缓存命中路径);简报滞后时 TIV 提示可见 | staged E2E + 单测 |
 | A5 | 工具真答:lookup_issue 真机答对一条在库 issue;board_snapshot 分组正确;ask_lead 兜底一例 | staged E2E 记录 |
 | A6 | 失败路径显式:配置缺失/Bridge 不可达/耳朵断连/landing 失败全部有面向她的降级(不静默) | 单测 + staged E2E |
 | A7 | argv/日志卫生:token/简报正文/对话正文不进 argv,日志 redact | 单测 |
-| A8 | **Annie 真用一轮 /live 全程跑通**(A 侧北极星;A/B 拍板是她各开一轮后的体感决定) | 终验 evidence |
+| A8 | **Annie 真用一轮 /gemini 全程跑通**(A 侧北极星;A/B 拍板是她各开一轮后的体感决定) | 终验 evidence |
 
 ## 9. 风险与对策(research §9 汇总)
 
@@ -352,7 +351,7 @@ teardown(bot 退出 VC;rotator close;transcript 收尾;SessionSlot.release)─�
 
 search_context / get_thread_summary(A 胜出后再建)· 多声线(546/547,B 线)· 耳机模式/
 异步 queue(546)· 语音执行任意动作/语音授权(D3/D4;546 第三信号源上线自动继承,不自造)·
-建 worktree · 早晚会 · OpenAI Realtime/本地模型 · 多场并发 · 跨重启恢复(断了重开 /live)·
+建 worktree · 早晚会 · OpenAI Realtime/本地模型 · 多场并发 · 跨重启恢复(断了重开 /gemini)·
 Bridge 除两条(条件)路由外零改动 · StateStore 零改动。
 
 ## 11. 给 Annie 的一段话(gate 要求照抄,Lead 投递时用)

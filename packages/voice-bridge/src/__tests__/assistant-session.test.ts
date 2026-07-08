@@ -78,7 +78,7 @@ function harness(over: Record<string, unknown> = {}) {
 	const conv = new FakeConversation();
 	const speaker = new FakeSpeaker();
 	const slot = new SessionSlot();
-	expect(slot.acquire("live", "sess-1").ok).toBe(true); // command layer did this
+	expect(slot.acquire("gemini", "sess-1").ok).toBe(true); // command layer did this
 	let founderJoined: (() => void) | undefined;
 	let founderLeft: (() => void) | undefined;
 	let earsDown: (() => void) | undefined;

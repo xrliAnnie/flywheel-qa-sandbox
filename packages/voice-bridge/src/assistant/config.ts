@@ -17,7 +17,7 @@ export interface AssistantBriefingConfig {
 }
 
 export interface AssistantModeConfig {
-	/** slash-command name (Annie-final default: live; still configurable). */
+	/** slash-command name (Annie-final default: gemini; still configurable). */
 	commandName: string;
 	/** Gemini prebuilt voiceName; unset = model default (audition pick: Kore). */
 	voice?: string;
@@ -28,7 +28,11 @@ export interface AssistantModeConfig {
 	localBargeIn: boolean;
 }
 
-const DEFAULT_COMMAND = "live";
+const DEFAULT_COMMAND = "gemini";
+
+/** the SessionSlot mode key both GeminiCommand (acquire) and
+ * AssistantSession (release) must agree on. */
+export const ASSISTANT_SLOT_MODE = "gemini";
 const DEFAULT_REFRESH_SEC = 600;
 const DEFAULT_MAX_AGE_SEC = 1800;
 const DEFAULT_CHAR_BUDGET = 8000;
