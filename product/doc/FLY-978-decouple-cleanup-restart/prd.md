@@ -53,6 +53,8 @@ Lead 手动 merge + 手动让 runner 下线。
   信号供其消费。
 - **不改 merge / ship gate 的授权语义**:merge 仍 founder-gated(见 §6 gate 硬约束),978 不放宽授权。
 - **不修显示 bug**:阶段线不翻(FLY-962)归 962;978 只保证「清干净后状态不再显示成还在跑」。
+- **不定义重启 cadence 的权威值**:重启频率 / 触发(主机节奏、卫星机 release 巡检、ad-hoc)是部署政策,
+  归**多机部署 PRD**;978 只定义『重启与清理解耦』的不变量(§8),cadence 值 cross-ref,防两份 PRD drift。
 - **不在本 issue 真建 eng issue / 不 ship / 不清 / 不 merge / 不归档**:只出 PRD + 拆分方案。
 
 ---
@@ -73,8 +75,8 @@ Lead 手动 merge + 手动让 runner 下线。
 - **自动 ship = 唯一主路径。** 手动 / 直接在 GitHub 上 merge 当 **0.01% 边缘兜底**(能被收敛清理,或在
   证不出授权时挂起报 Annie,见 §6),不是常规路径。
 - **ship 一落地(merge 到 main 且已验证 founder-approved)→ 当场可靠清干净(§7 五步)+ 跨重启不丢。**
-  「跨重启不丢」= 无论 6h 常规重启还是 ad-hoc 手动重启在收尾中途发生,收尾都能从断点续、最终收敛到
-  5 步全绿;绝不出现「claim 插了但被打断就永不重跑」。
+  「跨重启不丢」= 无论何种 cadence 的重启(定时 / ad-hoc)在收尾中途发生,收尾都能从断点续、最终收敛到
+  5 步全绿;绝不出现「claim 插了但被打断就永不重跑」。(cadence 具体值见 §8 / 多机部署 PRD。)
 
 ### 5.2 三个实现方案（供 Annie 挑；eng 细节 = Tadashi）
 
@@ -134,13 +136,20 @@ deploy 侧把 idle-wait 从「session 数=0」改成「**真收到 finalization-
 
 ---
 
-## 8. 需求 —— Block 3：重启 = 独立、定时的事（与清理解耦）
+## 8. 需求 —— Block 3：重启与清理解耦（978 拥有『不变量』；cadence 归多机部署 PRD）
 
-- **Flywheel 主机(core):每 6h、且『有变更』才重启;保留 ad-hoc 手动重启。**
-- **卫星机 / 普通项目:每日检测新 release**(有则上)。普通项目的清理**根本不等重启**(merge 落地当场清)。
-- **核心不变量(硬):6h 常规 + ad-hoc 手动重启,都不能 race / 打断正在收尾的清理。** 清理做成
-  durable / resumable,重启只用来换代码、绝不吃掉清理。
-- **cross-ref 多机部署 PRD**(卫星机 / 主机拓扑、release 检测节奏在那边定;978 只约束「重启不 race 清理」)。
+**978 在本 block 唯一权威定义的 = 一个不变量(不定义重启频率):**
+
+- **不变量(硬):清理不等重启、也不被任何 cadence 的重启 race / 打断。** 无论重启因何触发、以何频率发生,
+  清理都做成 durable / resumable,重启只用来换代码,绝不吃掉正在收尾的清理。
+- 推论:普通项目的清理**根本不等重启**(merge 落地当场清);Flywheel 主机的定时 / ad-hoc 重启也一样 ——
+  收尾能从断点续、收敛到 5 步全绿。
+
+**重启 cadence 的具体值不在 978 定义(避免两份 PRD 各定义一遍 cadence 而 drift)—— 归『多机部署 PRD』拥有:**
+
+- 见**多机部署 PRD**(尚未开)。**当前拟定(非本 PRD 权威,以多机部署 PRD 为准):** 主机 6h-变更才重启、
+  卫星机日巡 release、支持 ad-hoc 手动重启。
+- 978 只对这些 cadence 提**一个约束**:任何一种重启(定时 / ad-hoc / 日巡上新)都必须满足上面的『不变量』。
 
 ---
 
@@ -208,19 +217,23 @@ sequenceDiagram
 
 ---
 
-## 11. 重启调度（与清理解耦，独立定时）
+## 11. 重启与清理解耦（978 owns 不变量；cadence 见多机部署 PRD）
 
 ```mermaid
 flowchart TD
-    subgraph 重启 = 独立定时(与清理解耦)
-      H[Flywheel 主机] --> H1[每 6h:有变更才重启]
-      H --> H2[保留 ad-hoc 手动重启]
-      S[卫星机/普通项目] --> S1[每日检测新 release,有则上]
+    INV[978 owns 唯一不变量:清理不等重启、也不被任何 cadence 的重启 race/打断<br/>清理 durable/resumable,重启只换代码、不吃清理]
+    subgraph cadence["cadence 归多机部署 PRD(当前拟定 · 非本 PRD 权威)"]
+      H1[主机:6h-有变更才重启]
+      H2[主机:ad-hoc 手动重启]
+      S1[卫星机:日巡 release,有则上]
     end
-    H1 --> INV
-    H2 --> INV
-    INV[核心不变量:6h 常规 + ad-hoc 都不能 race/打断正在收尾的清理<br/>清理 durable/resumable,重启只换代码、不吃清理]
+    H1 -.必须满足.-> INV
+    H2 -.必须满足.-> INV
+    S1 -.必须满足.-> INV
 ```
+
+> cadence 具体值 cross-ref『多机部署 PRD』(尚未开);978 不写死 cadence,只要求任何重启都满足上方不变量,
+> 避免两份 PRD 各定义一遍 cadence 造成 drift。
 
 ---
 
@@ -228,8 +241,8 @@ flowchart TD
 
 1. **每个 ship 落地的任务,清干净 5 步全部完成**,且各有审计事件可证(session closed / worktree removed /
    PR merged / thread archived / cmux closed 各一条)—— **零 ghost 残留**。
-2. **重启不吃清理**:无论 6h 常规还是 ad-hoc 重启在收尾中途发生,没有一个任务的收尾被永久打断;重启后
-   reconciler 能把未完成收尾补齐,收敛到 5 步全绿。
+2. **重启不吃清理**:无论何种 cadence 的重启(定时 / ad-hoc)在收尾中途发生,没有一个任务的收尾被永久
+   打断;重启后 reconciler 能把未完成收尾补齐,收敛到 5 步全绿。
 3. **覆盖所有 merge 路径**:自动 ship(主路径)+ 手动 / GitHub merge(边缘)都能被收敛清理,或在证不出授权
    时挂起报 Annie(不静默、不误清)。
 4. **Founder-Gate 硬保证**:没有一个未授权的 merge 被当完成清掉 / 归档。
@@ -263,8 +276,8 @@ flowchart TD
 
 - **E1（block 1 核心）**:按选定方案实现「可续 / 跨重启不丢的 ship 收尾管线」—— 5 步幂等 + 断点续 + 覆盖所有
   merge 路径。根治 exploration §2.5 killer + §3.2 六类 ghost。扩展而非重造 FLY-638/369。
-- **E2（block 3）**:重启解耦 + 独立定时 —— 主机 6h-有变更 + ad-hoc;卫星每日;落实「重启不 race 清理」不变量
-  (deploy 屏障 / 清理 durable 二选一或并用,取决于 E1 方案)。cross-ref 多机部署 PRD。
+- **E2（block 3）**:落实「重启与清理解耦」不变量 —— 无论何种 cadence 的重启都不 race / 打断清理
+  (deploy 屏障 / 清理 durable 二选一或并用,取决于 E1 方案)。**重启 cadence 具体值归多机部署 PRD,不在此 issue 定义**;cross-ref 之。
 - **E3（block 4）**:5 步清干净收口 —— 把 tab / viewer / CommDB / worktree 兜底从 boot-only 改成事件 + 短周期;
   统一「清干净」核验;没-PR 绑真实 close。
 - **E4（gate）**:严格 Founder-Gate 收尾 —— 只在证得出 founder-approve 才清 + 归档,证不出挂起报 Annie(复用
