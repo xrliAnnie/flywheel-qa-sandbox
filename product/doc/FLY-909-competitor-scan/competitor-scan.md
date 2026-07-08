@@ -1,4 +1,4 @@
-# FLY-909 竞品扫描 + 定位启发 — 交付物(round 2 · Annie 批注修订版 + Claude Cowork/Codex app 扩展)
+# FLY-909 竞品扫描 + 定位启发 — 交付物(round 2 · Annie 批注修订版 + Claude Cowork/Codex app 扩展 + round-4 WorkBuddy 折进)
 
 Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面上别人怎么做-喂产品定位形态)
 日期: 2026-07-07
@@ -7,7 +7,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 
 > 一页看完:市场怎么分、各家什么状态、能借什么、我们的差异**候选**线索在哪 —— 全部按「**非技术小生意主**」这个视角(Annie 已定:能读 PR/做验收的高阶画像出局)。
 > **口径(重要)**:「我们跟 Matrix/Paperclip 到底差异化不化、generic-vs-concrete」这类**定位大结论,归 FLY-911 跟 Annie 收敛,本文不硬下** —— 差异一律写成「候选 / 待 911 拍」。本文是喂料,不是定案。
-> **本版改了什么**:〔round-2.1 Annie 批注〕①用词去丧(别人做了 ≠ 我们不能做);②Paperclip 真挖深(见 paperclip-deepdive.md);③不 overclaim「完全非技术」(现在还没到);④修正 Lovable(主要是出 UI 的地方);⑤自托管诚实化(差异是「done-for-you 替你做」);⑥bootstrap 打法写进「可借鉴」。〔round-2.2 扩展〕⑦加 **Claude Cowork + Codex app**,诚实回答「我们还有没有价值 / 会不会被取代」(见 ⑥ 节)—— 编排引擎不占优要认,真差异落在 领域/常驻组织/手机 IM/供应商中立 的组合(候选,待 911)。〔round-3 扩展〕⑧加 **Open Cloud/OpenClaw** 竞品 + **OPC 最先专攻的客户群** 答(见 ⑦ 节)+ 配套 **value-artifact.html**。〔round-3.1 Annie 纠正〕**OPC target 收窄 = 非技术电商/social operator(不是程序员)**;DIY 硬问题 reframe(会自己拼的是程序员、本就不是我们 target,风险不落在攻的这群);定位主线「替一个非技术的一人公司 operator,把一整个公司的活在聊天里做掉」。〔round-3.2 Raft — FLY-1001〕加 **Raft(raft.build,前身 slock)** 竞品(Annie 2026-07-08 发现)+ 三轴 vs Raft 逐轴标(见 §⑧ + `raft-deepdive.md`)。诚实结论:**Raft 是目前找到最贴、最该警惕的一家(比 Matrix/Cowork 更贴我们形态)、且引擎层比我们强(分布式共识+前 Kimi+已 ship version-check/staged-draft)**;三轴里两轴被它匹配/塌,只剩「非技术 operator done-for-you」这一轴站得住,且非结构、靠速度守。深挖分析 = `product/doc/FLY-1001-raft-competitor-scan/research.md`。
+> **本版改了什么**:〔round-2.1 Annie 批注〕①用词去丧(别人做了 ≠ 我们不能做);②Paperclip 真挖深(见 paperclip-deepdive.md);③不 overclaim「完全非技术」(现在还没到);④修正 Lovable(主要是出 UI 的地方);⑤自托管诚实化(差异是「done-for-you 替你做」);⑥bootstrap 打法写进「可借鉴」。〔round-2.2 扩展〕⑦加 **Claude Cowork + Codex app**,诚实回答「我们还有没有价值 / 会不会被取代」(见 ⑥ 节)—— 编排引擎不占优要认,真差异落在 领域/常驻组织/手机 IM/供应商中立 的组合(候选,待 911)。〔round-3 扩展〕⑧加 **Open Cloud/OpenClaw** 竞品 + **OPC 最先专攻的客户群** 答(见 ⑦ 节)+ 配套 **value-artifact.html**。〔round-3.1 Annie 纠正〕**OPC target 收窄 = 非技术电商/social operator(不是程序员)**;DIY 硬问题 reframe(会自己拼的是程序员、本就不是我们 target,风险不落在攻的这群);定位主线「替一个非技术的一人公司 operator,把一整个公司的活在聊天里做掉」。〔round-3.2 Raft — FLY-1001〕加 **Raft(raft.build,前身 slock)** 竞品(Annie 2026-07-08 发现)+ 三轴 vs Raft 逐轴标(见 §⑧ + `raft-deepdive.md`)。诚实结论:**Raft 是目前找到最贴、最该警惕的一家(比 Matrix/Cowork 更贴我们形态)、且引擎层比我们强(分布式共识+前 Kimi+已 ship version-check/staged-draft)**;三轴里两轴被它匹配/塌,只剩「非技术 operator done-for-you」这一轴站得住,且非结构、靠速度守。深挖分析 = `product/doc/FLY-1001-raft-competitor-scan/research.md`。〔round-4 扩展 · FLY-1003〕⑨加 **WorkBuddy(腾讯)** —— 我们扫过量级最大的大厂威胁(见 §⑨ + workbuddy-deepdive.md)。诚实结论:它把手机 IM / 供应商中立 / 个性化记忆+后台派发回报 / done-for-you / 目标是一人公司 一次覆盖,**手机 IM + 供应商中立两条候选差异退出、目标用户不再是差异**;活着的候选收窄到「长期 ownership lifecycle + 被协调组织自推进 backlog」两条,靠产品化速度守。跟 Raft(FLY-1001)结论收敛。
 
 ---
 
@@ -38,6 +38,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 | **OpenHands**(All Hands) | 开源云端 coding agent 平台 | 开发者 | Cloud/CLI/SDK;连 GitHub → 出 PR | Cloud 也要懂 repo/git 流 | Free(BYOK)/$20 |
 | **🆕 Claude Cowork**(Anthropic) | 非技术知识工作者的 AI coworker(在你文件上干活) | **明确非技术知识工作者** | Claude 桌面 app GUI,描述「做完什么样」→ 它做完交到你文件夹 | **done-for-you + 无需编程** —— 但做的是**你文件上的知识工作**(研究/合同/报告),不是建并养一个软件产品;桌面端、锁 Claude、是「你启动一个任务」 | 随 Claude 订阅 |
 | **🆕 Codex app**(OpenAI) | agent 指挥中心(编排一队 coding agent) | **开发者-导演** | 桌面「command center」+ CLI;manager 协调并行 subagent(默认最多 6-8) | 面向开发者、要懂技术在桌面/CLI 编排;锁 OpenAI | 随 OpenAI 订阅 |
+| **🆕 WorkBuddy**(腾讯) | 一句话→像同事一样自主规划执行、交付可验收结果的全场景职场 AI agent(**大厂办公 agent**) | **官方打一人公司/个体创业者/自由职业者/小团队 + 白领 + 企业**(与我们 beachhead **正面重叠**) | 桌面 app(读本地文件·sandbox)+ **官方 9 个 IM 渠道**(微信/Discord/Slack/TG/钉钉/飞书…)派活回报;多 agent 并行 + 100+ 专家角色 + 14 模型 TokenHub | **贴得最狠** —— 电商选品/落地页/客服都能做、一句话就跑;但**任务式交付、缺长期养一套系统的 ownership**;红海无鲜明优势(vs Copilot/豆包/WPS) | 个人 39/99/299 · 企业 99/199/999 元/月(免费档+50GB;⚠️各源出入) |
 | **🌟 Matrix**(flowith) | Launch a 0-Person Company that actually earns | 想 0 人创业的个人/小团队 | macOS 桌面 app + 游戏小人可视化 | 门槛低但要下桌面 app、跑营销生意不是软件 | 公测免费 |
 | **🆕🌟 Raft**(raft.build,前身 slock) | 人+AI agent 在频道/DM 里当**平等队友**共建("humans and AI agents build together") | **agent-native builders / teams**(重心偏技术;声称 non-coder 也能) | web workspace(channels/threads/@提及)+ 本机 daemon;agent **供应商中立**(Claude/Codex/Hermes)+ 持久记忆复利 | **形态最贴我们,但你得自己跑 daemon、当房间里的 PM** —— 对非技术自己建不了的 operator **不是 done-for-you**;引擎层它比我们强 | Free / Pro $8.80/seat / Enterprise |
 | **🎯 Flywheel** | 由你指挥、替你建并养一个真软件产品的 AI 团队 | **非技术小生意主/创始人** | Discord 里跟 AI Lead 聊,Lead 管 Runner 建并维护你 GitHub 里的真产品 | **目标 done-for-you**(你不用懂技术);⚠️ **坦白:现在还没到** —— 跑起来仍需要点工程水平(Annie 自己用都撞 bug),产品化是待解题 | Claude 订阅制 |
@@ -47,6 +48,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 - **builder 档(Lovable/Base44)** 里,Lovable 其实是**出 UI/前端**为主,别跟「替你建并养真产品」混一类。
 - **agent 档(Devin/Factory/OpenHands)** 面向工程师;**开源框架档(Paperclip/Hermes)** 面向自托管者 —— 但 **Paperclip 明确在往 operators / 非技术小生意主打**,跟我们目标人群重叠。
 - **🆕 Raft 是这张表里跟我们形态最贴的一家**(chat-teammate + 供应商中立 + 复利记忆),但它瞄 **builders/teams**、要你自己跑 daemon 当 PM —— 它**没占**「非技术自己建不了的 operator + done-for-you」这格。**这格现在仍空,但守它的护城河非结构、靠速度**(见 §⑧)。
+- **🆕 大厂档(WorkBuddy/腾讯)已把多条候选形态差异一次覆盖**:多渠道 IM(官方 9 个)+ 多模型(14 个 TokenHub)+ 个性化记忆 + 多 agent 并行 + done-for-you,**且官方直接打「一人公司/自由职业者」+ 电商选品/落地页/客服** —— 「靠单点形态差异化 + 靠目标用户差异化」两条路都被它堵。详见 §⑨ + workbuddy-deepdive.md。
 
 ---
 
@@ -183,7 +185,7 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 | **② 被协调常驻组织 + 复利**(always-on + 记忆 + 管理分诊 + Push) | **大部分不成立** | 复利/记忆/常驻**被 Raft 匹配甚至更精**;只剩「**管理+Push 层(不用你当 PM)**」一薄条,还可被 Raft 加个 manager agent 补 |
 | **③ done-for-you 给非技术 + founder 判断** | **成立(最硬)** | Raft 盲区=非技术建不了的 operator = **我们 最先专攻的客户群**;Annie operator-taste vs Raft engine-taste 真方向差。**但非结构、靠速度+聚焦守、done-for-you 未 ship** |
 
-**净结论**:三轴里 **②(大部分)+ ①(一半)被 Raft 匹配或塌**,只有 **③(客户 wedge + taste)真站得住,且非结构、靠速度守、还没兑现**。
+**净结论**:三轴里 **②(大部分)+ ①(一半)被 Raft 匹配或塌**,只有 **③(客户 wedge + taste)真站得住,且非结构、靠速度守、还没兑现**。〔与 WorkBuddy(§⑨)结论收敛:手机 IM/供应商中立/记忆 都被大厂+同形态竞品匹配,只剩「替非技术 operator done-for-you 长期养系统」这条靠速度守。〕
 
 ### Cass 三压测点 —— 证据结论(一句话;详见 research.md §1–3)
 - **① 停在 orchestrator 层=被吃** → **完全成立、更扎心**:Raft 本身=被产品化的 orchestrator 层、更成熟。护城河是**待兑现赌注不是现有资产**;按我们诚实边界(done-for-you 没到),**此刻我们离『停在引擎层』比离『已 ship 复利产品』更近**。
@@ -195,14 +197,38 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 
 ---
 
+## ⑨ WorkBuddy(腾讯)—— 最强的大厂威胁(FLY-1003 折进;深挖见 workbuddy-deepdive.md)
+
+> Annie 2026-07-08 点名的又一竞品(跟 Raft/FLY-1001 同一套打法)。**这是我们扫过量级最大、且比其他家更贴的一家** —— 它把我们一堆候选形态差异一次覆盖,官方还直接打「一人公司/自由职业者」。**诚实、不护短。**
+
+**是什么**:腾讯云 CodeBuddy 团队出的**全场景职场 AI 智能体桌面工作台**(腾讯从「服务开发者」向「服务全职场人」延伸)。桌面 app(读本地文件·sandbox)+ 官方 9 个 IM 渠道派活回报;多 agent 并行(Expert Teams:lead+sub)+ 100+ 专家角色 + 14 模型 TokenHub + MCP。上线 3 个月 **13M+ DAU**(⚠️非独立审计)、中国第一效率 agent。**辨析**:腾讯真正的 OpenClaw 衍生品是 **QClaw**(微信直连遥控器);造软件的是 **CodeBuddy**(给开发者);**WorkBuddy = 办公,含 development 角色但不主打编程**。
+
+**逐轴站/塌(诚实):**
+1. **③ 手机 IM / ④ 供应商中立 —— ❌ 塌了**。官方 9 渠道 IM + 14 模型 TokenHub 正面覆盖;「第一方结构上不做多模型」站不住(**云厂商腾讯原生就做**)。**两条退出差异清单,跟 Raft 结论收敛。**
+2. **⑦ 目标用户 —— ⚠️ 部分塌 / 重叠很大**。官方逐字打 **"one-person company / individual entrepreneurs / freelancers / small team leaders"** + 电商选品/落地页/IM 客服场景 —— **正面撞我们 beachhead**。差异不在「目标用户」本身,在「目标用户 + job」的绑定。
+3. **⑥ Push —— 半塌**。「异步远程执行 + 回报」已商品化(它也有);活着的候选只剩「自发起 backlog 分诊 + 跨 Lead 协调 + 持续 ownership」半(「always-on daemon」官方未证,⚠️存疑)。
+4. **① 领域(长期 ownership)+ ② 被协调组织 —— ⚠️ 当前最像还站得住的候选,但更窄**。WorkBuddy 是**任务式交付**(一件件做完交付),不是「长期拥有并演进一套软件/业务系统的 lifecycle」;是**你派活的(有记忆的)助理**,不是「被协调、自己推 backlog、持续 own 的组织」。**Watch:腾讯把 WorkBuddy 办公/IM + CodeBuddy 建软件 + 腾讯云部署 融成 operator 系统 → 这条快速压缩。**
+5. **⑧ 工程纪律/可信 —— ⚠️ 方向对但我们没做实**(它复杂任务易错/半途/代码深度弱是机会;我们「一试真能跑」也还没做实)。
+
+**大厂威胁形态(founder 该看的)**:
+- **威胁真**:量级碾压(13M DAU + 微信生态分发 + 企业渠道,不是能力碾压)+ 覆盖面&目标都撞。**⭐ Substitution path**:腾讯**不用抄我们架构** —— 把 IM 派发(微信/企微/QQ)+ 办公/业务 skill(选品/落地页/客服)+ 腾讯云部署 + TokenHub + CodeBuddy 建软件 + 企业销售 + 存储捆绑 + 社交图谱 拼成**够用的 operator 系统**,就能在我们产品化之前**从「够用的业务自动化」侧吃掉 beachhead** —— 全程不用长得像 GitHub/PR/CI。
+- **没到取代(诚实另一半)**:长期 ownership 的闭环还没有(任务式交付、造软件在分开的 CodeBuddy 给开发者、两者还没融);验收/可信仍弱;大厂融合这件对它非核心的事有结构惰性。**窗口靠速度守,不靠护城河。**
+
+**可借鉴**:多 agent 并行拆解 / 100+ 专家角色即现成虚拟团队(喂 FLY-910)/ sandbox 隔离(能感知的护栏)/ 免费档+50GB。**别学**:红海堆功能无鲜明优势 + 腾讯生态锁定(兼容非腾讯工具差 —— 正是我们「供应商中立整合」可讲、但只当可信方向不当现在主卖点的地方)。
+
+**一句话差异化候选(收窄后,给 Annie 挑)**:「WorkBuddy 是大厂的、什么办公活都能帮你一件件交付的 AI 助手(还打一人公司);Flywheel 押的是**替非技术 operator 长期拥有并演进一套真软件/业务系统 —— 一个被协调、自己推 backlog 的组织在替你养着**。」当前最像还站得住的候选差异 = 长期 ownership lifecycle + 被协调组织自推进 backlog,**均更窄、靠产品化速度守;主打哪条归 FLY-911 拍**。
+
+---
+
 ## 我们跟谁「像」/ 差异候选(诚实 · 不硬下结论)
 
 - **跟 Matrix + Paperclip 最像 —— 连组织骨架都撞**(都是「你指挥的分层 AI 公司」;三角色也对得上)。这个壳区分度不高 —— 但**别人在做不等于我们不能做**。
 - 跟 Devin/Factory 的 async 派活→出 PR 同构,但它们卖给工程师、我们瞄非技术小生意主。
 - 跟 Paperclip/Hermes/OpenHands 一样都还早、都要点技术才跑得动 —— 包括我们。
 - **🆕 跟 Raft 形态上最贴、和 Cowork 并列最该警惕**(见 §⑧ + `raft-deepdive.md`):它就是「人+agent 频道协作」的产品化版,**供应商中立 + 复利记忆 + 引擎层比我们强**。**论威胁我们的形态,Raft 比 Cowork 更狠**(Cowork 是上方威胁=Anthropic 非技术 done-for-you;Raft 是侧翼=有钱创业、就是我们的形态)。唯一没被它吃的口子 = 它瞄 builders/teams、不瞄「自己建不了的非技术 operator」。
-- **跟 Claude Cowork 定位上最贴、最该警惕**(它也非技术 + done-for-you);跟 Codex app 的「一队 agent 覆盖软件全生命周期」编排重叠,但它面向开发者。**编排引擎层面我们不占优,详见 ⑥;Raft 出现后更坐实——有人正拿更足资源、更专注地把编排层做成产品,详见 ⑧。**
-- → **真差异该落在「领域(替非技术 operator done-for-you 建养真软件产品)+ 管理/Push 层(不用你当 PM)+ 客户 wedge(自己建不了的非技术 operator)」—— ⚠️ round-3 修正:『供应商中立』和『复利/记忆』被 Raft 匹配,退出差异候选、当 table stakes;真差异非结构、靠速度+聚焦守。具体主打哪条、调不调定位,归 FLY-911 跟 Annie 收敛。本文只把候选摆出来。**
+- **🆕 跟 WorkBuddy(腾讯)是量级最大的大厂威胁,且覆盖面 + 目标都撞**(官方打一人公司/自由职业者、9 渠道 IM、14 模型、done-for-you)。**它逼我们把差异表述再收窄:手机 IM + 供应商中立两条经它正面覆盖已退出;目标用户不再是差异。详见 §⑨。**
+- **跟 Claude Cowork 定位上最贴、最该警惕**(它也非技术 + done-for-you);跟 Codex app 的「一队 agent 覆盖软件全生命周期」编排重叠,但它面向开发者。**编排引擎层面我们不占优,详见 ⑥;Raft(§⑧)+ WorkBuddy(§⑨)出现后更坐实——有人正拿更足资源/更专注(Raft)或更大分发(腾讯)把编排层做成产品。**
+- → **真差异该落在「领域 = 替非技术 operator done-for-you 长期拥有并演进一套真软件/业务系统 + 被协调组织自推进 backlog(不用你当 PM)+ 客户 wedge(自己建不了的非技术 operator)」—— ⚠️ 经 Raft(§⑧)+ WorkBuddy(§⑨)双重收窄:『供应商中立 / 复利记忆 / 手机 IM / 个性化记忆 / 目标是一人公司』都被匹配或覆盖,退出差异候选、当 table stakes;活着的差异非结构、靠速度 + 聚焦守、还没兑现。具体主打哪条、调不调定位,归 FLY-911 跟 Annie 收敛。本文只把候选摆出来。**
 
 ---
 
@@ -214,3 +240,4 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 4. **诚实边界怎么讲**:我们现在还没到「完全非技术能用」—— 对外要不要坦诚「正在把它做成 done-for-you」而不是假装已经是?(我倾向坦诚,和品类一起早,反而可信。)
 5. **面对 Cowork/Codex 这种大厂通用编排(尤其 Cowork = 非技术 done-for-you)**:我们押哪条组合当立身之本?(我验证下来:领域「建并养真软件产品」+ 常驻组织 + 手机 IM + 供应商中立,最能跟 Cowork 拉开;供应商中立现在「能讲」但不必「现在建全」。这条 911 拍。)
 6. **🆕〔round-3〕面对 Raft(同形态、产品化、供应商中立、引擎领先)**:定位要不要调?(我的证据结论:target 层没被威胁——Raft 不要我们客户;可防御性层被威胁——供应商中立/复利/always-on 都被匹配。建议:①Raft 进最该警惕并列 Cowork ②退供应商中立/复利当差异、降 memory/always-on 为 table stakes ③狠押客户 wedge + 管理/Push + build-in-public + Annie taste ④诚实写『靠速度守非结构守』⑤最先专攻的客户群 不动。**弹药+建议在此,调不调 Annie 拍;详见 `raft-deepdive.md` + `product/doc/FLY-1001-raft-competitor-scan/research.md §6`。**)
+7. **🆕〔round-4 · FLY-1003〕面对 WorkBuddy(腾讯,带微信生态分发 + 已正面打一人公司)**:手机 IM / 供应商中立经它覆盖后已退出;活着的候选只剩「长期 ownership lifecycle + 被协调组织自推进 backlog」两条,且靠**产品化速度**守。问题:(a)这两条够不够撑一个生意?(b)面对腾讯的 substitution path(选品/落地页/客服 + 腾讯云部署拼成够用的 operator 系统),我们要不要把「长期拥有并演进真系统」这条**更早做实**当立身之本?(c)对外要不要显式讲「大厂能做够用的办公活,我们做的是替你长期养一套真系统」?—— 与 Raft(#6)结论收敛,911 跟 Annie 拍。
