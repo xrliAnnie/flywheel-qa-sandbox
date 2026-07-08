@@ -50,22 +50,27 @@
     display: inline-block; background: #34c759; color: #fff; font-size: 11px;
     font-weight: 700; border-radius: 6px; padding: 1px 7px; margin-left: 8px; vertical-align: 2px;
   }
-  .pick {
-    margin-top: 14px; background: #fff8e6; border: 1px dashed #ffcf5c; border-radius: 10px;
-    padding: 12px 14px; font-size: 15px; color: #6b4e00;
+  .picklabel { font-size: 14px; font-weight: 700; color: #6b4e00; margin: 16px 0 6px; }
+  textarea {
+    width: 100%; min-height: 62px; resize: vertical;
+    border: 1.5px solid #ffcf5c; border-radius: 10px; background: #fffdf5;
+    padding: 11px 13px; font-family: inherit; font-size: 15px; color: #1d1d1f; line-height: 1.5;
   }
-  .pick b { color: #4a3600; }
-  .pills { margin-top: 6px; }
-  .pill {
-    display: inline-block; border: 1.5px solid #d9a400; border-radius: 999px;
-    padding: 3px 13px; margin: 4px 8px 0 0; font-size: 14px; color: #6b4e00; font-weight: 600;
-  }
+  textarea:focus { outline: none; border-color: #d9a400; background: #fffef9; box-shadow: 0 0 0 3px rgba(255,207,92,0.28); }
+  textarea::placeholder { color: #b8a25a; }
   table.summary { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 15px;
     background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
   table.summary th, table.summary td { text-align: left; padding: 12px 16px; border-bottom: 1px solid #f0f0f2; vertical-align: top; }
   table.summary th { background: #1a365d; color: #fff; font-weight: 600; }
   table.summary td:first-child { font-weight: 600; white-space: nowrap; color: #1a365d; }
   table.summary tr:last-child td { border-bottom: none; }
+  .master {
+    background: #fff8e6; border: 1px solid #ffcf5c; border-radius: 14px;
+    padding: 20px 22px; margin: 14px 0 0;
+  }
+  .master h3 { margin: 0 0 4px; font-size: 18px; color: #6b4e00; }
+  .master p { margin: 0 0 12px; font-size: 14px; color: #6b4e00; }
+  .master textarea { min-height: 200px; background: #fff; }
   .foot { margin-top: 30px; font-size: 13px; color: #86868b; text-align: center; }
   h2.sec { font-size: 20px; margin: 34px 0 12px; }
 </style>
@@ -80,7 +85,8 @@
 
   <div class="howto">
     <b>怎么用这一页:</b> 每块我给你「别人怎么做 → 我们 2-3 个 option → 我的建议」。
-    你逐块挑一个(选我的建议、选别的、或你有新想法都行),告诉 Honey Lemon 就行。定一块,我把那块的确切文案织进设计,流程不动。
+    每块下面有一个<b>能打字的框</b>,你直接写「我选 A / B / C + 想法」就行。
+    嫌一块块填麻烦?直接拉到<b>最底下那个大框</b>一次填完,全选复制发回给我。定一块,我把那块确切文案织进设计,流程不动。
   </div>
 
   <div class="anchor">
@@ -99,9 +105,8 @@
     <div class="opt"><span class="badge">A</span><div>终端一条命令 → 命令行里一问一答(默认走快路,想全控加个 --advanced)。贴「客户懂点电脑」,不用先建网页,授权那几步才弹浏览器。</div></div>
     <div class="opt"><span class="badge">B</span><div>网页注册 → 网页里引导(像 Raft / Matrix,更亲民),但要先做一个网页、我们得替他多跑一些。</div></div>
     <div class="opt rec"><span class="badge">C</span><div>A 再加一条早聊路:命令起步,一旦 Discord 和模型接好,先让他跟 Captain 说上一句话(哪怕业务工具还没全接),完整结果随后再来。<span class="rectag">★ 我建议 A+C</span></div></div>
-    <div class="pick"><b>你挑哪个?</b> 这块也顺便答两个小确认:① 认这个「命令 + 一问一答、默认快路」形态吗?② 要不要那个「工具没全接就先打个招呼」的早时刻?
-      <div class="pills"><span class="pill">□ A</span><span class="pill">□ B</span><span class="pill">□ A+C(我建议)</span><span class="pill">□ 新想法</span></div>
-    </div>
+    <div class="picklabel">✍️ 块 1 你选(打字):也顺便答两个小确认 —— ① 认这个「命令+一问一答、默认快路」形态吗?② 要那个「工具没全接就先打招呼」的早时刻吗?</div>
+    <textarea placeholder="例:我选 A+C;早聊时刻要;形态认。或写你的新想法…"></textarea>
   </div>
 
   <!-- BLOCK 2 -->
@@ -115,9 +120,8 @@
     <div class="opt rec"><span class="badge">A</span><div>第一版 Anna 人肉陪:带头几个客户手把手接进来,客户只体验「聊需求 + 收结果」两头,中间工程步骤我们替他兜。先跑通、边跑边学真痛点。<span class="rectag">★ 我建议 先A后C</span></div></div>
     <div class="opt"><span class="badge">B</span><div>第一版全自助:客户自己走完引导,只有卡死了才喊 Anna。</div></div>
     <div class="opt"><span class="badge">C</span><div>混合:自助为主 + 最容易卡的那一步(建 Discord 机器人)Anna 待命随时上来陪。</div></div>
-    <div class="pick"><b>你挑哪个?</b>
-      <div class="pills"><span class="pill">□ 先A后C(我建议)</span><span class="pill">□ B 全自助</span><span class="pill">□ C 混合</span><span class="pill">□ 新想法</span></div>
-    </div>
+    <div class="picklabel">✍️ 块 2 你选(打字):</div>
+    <textarea placeholder="例:先 A(头几个人肉陪)、磨顺转 C。或写你的想法…"></textarea>
   </div>
 
   <!-- BLOCK 3 -->
@@ -131,9 +135,8 @@
     <div class="opt"><span class="badge">A</span><div>默认让客户自己建:手把手带他去后台建一个属于他自己的机器人(配截图 + 15 秒短视频)。机器人完全是他的。贴「你自己拥有」的卖点。</div></div>
     <div class="opt"><span class="badge">B</span><div>默认给现成的:我们给一个预建好的机器人,客户只点一下「邀请进我的服务器」,跳过整个后台。最省事,但机器人身份是我们托管的、不是他完全自有。</div></div>
     <div class="opt rec"><span class="badge">C</span><div>默认自建(A),同时把「想省事?」的一键捷径(B)露出来当可选。要掌控的走自建,怕麻烦的选捷径。<span class="rectag">★ 我建议 C</span></div></div>
-    <div class="pick"><b>你挑哪个?</b>
-      <div class="pills"><span class="pill">□ A 自建</span><span class="pill">□ B 给现成的</span><span class="pill">□ C 自建+捷径(我建议)</span><span class="pill">□ 新想法</span></div>
-    </div>
+    <div class="picklabel">✍️ 块 3 你选(打字):</div>
+    <textarea placeholder="例:C(默认自建 + 露一键捷径)。或写你的想法…"></textarea>
   </div>
 
   <!-- BLOCK 4 -->
@@ -148,14 +151,12 @@
     <div class="opt rec"><span class="badge">A</span><div>license key 订阅(月/年)门商用和规模,自托管核心可免费试;按「几个 Team / 几个在岗 AI 人力」分档(不按人头);Anna 陪接入当一个服务档。以后加云托管版不用推倒重来。<span class="rectag">★ 我建议 A</span></div></div>
     <div class="opt"><span class="badge">B</span><div>完全免费开源先冲量(像 Paperclip),以后再想怎么收。</div></div>
     <div class="opt"><span class="badge">C</span><div>纯订阅网页服务(像母平台 flowith)—— 但这跟我们「跑在你自己机器、数据不碰我们」的卖点有点打架。</div></div>
-    <div class="label">隐私 + 两个小问题(自托管天生强项:数据永远在客户自己机器、从不碰我们)</div>
-    <p class="others">这对「要掌控」的第一批客户是<b>吸引他的理由</b>,不是要安抚的顾虑。</p>
-    <div class="opt rec"><span class="badge">1</span><div>把「你的数据跑在你自己机器上、从不碰我们」写成开场一句显式卖点?<span class="rectag">★ 我建议 要</span></div></div>
-    <div class="opt rec"><span class="badge">2</span><div>给「1 个 Team 免费试」(降门槛 + 拉新)?<span class="rectag">★ 我建议 要</span></div></div>
-    <div class="opt rec"><span class="badge">3</span><div>加 license 条款「给你自己的 AI 公司用、不许转售」(防别人白嫖)?<span class="rectag">★ 我建议 要</span></div></div>
-    <div class="pick"><b>你挑哪个收费骨架 + 三个小问题各是/否?</b>
-      <div class="pills"><span class="pill">□ A(我建议)</span><span class="pill">□ B</span><span class="pill">□ C</span><span class="pill">□ 新想法</span></div>
-    </div>
+    <div class="label">隐私 + 三个小问题(自托管天生强项:数据永远在客户自己机器、从不碰我们)</div>
+    <div class="opt rec"><span class="badge">1</span><div>把「你的数据跑在你自己机器上、从不碰我们」写成开场一句显式卖点?<span class="rectag">★ 建议 要</span></div></div>
+    <div class="opt rec"><span class="badge">2</span><div>给「1 个 Team 免费试」(降门槛 + 拉新)?<span class="rectag">★ 建议 要</span></div></div>
+    <div class="opt rec"><span class="badge">3</span><div>加 license 条款「给你自己的 AI 公司用、不许转售」(防别人白嫖)?<span class="rectag">★ 建议 要</span></div></div>
+    <div class="picklabel">✍️ 块 4 你选(打字):收费骨架挑一个 + 三个小问题各「要/不要」</div>
+    <textarea placeholder="例:收费选 A;隐私卖点 要;免费试 要;不许转售 要。或写你的想法…"></textarea>
   </div>
 
   <!-- BLOCK 5 -->
@@ -169,9 +170,8 @@
     <div class="opt"><span class="badge">4</span><div><b>机器常开怎么说</b>(团队得在一台一直开着的机器上干活,关机=公司停摆):<br>
       &nbsp;&nbsp;A. 开场就轻松诚实说一句「像真员工上班,机器开着它们才在岗」&nbsp;<span class="rectag">★ 我建议 A</span><br>
       &nbsp;&nbsp;B. 不主动提,装的时候顺带说&nbsp;&nbsp;/&nbsp;&nbsp;C. 只放文档里</div></div>
-    <div class="pick"><b>四个开关你各挑一下</b>(前三个我建议都「要/砍」;第 4 个我建议 A,轻松诚实说,别吓人)。
-      <div class="pills"><span class="pill">□ 全按我建议</span><span class="pill">□ 想改哪个告诉我</span></div>
-    </div>
+    <div class="picklabel">✍️ 块 5 你选(打字):四个开关各挑一下(前三个建议都「要/砍」;第 4 个建议 A)</div>
+    <textarea placeholder="例:免费试 露、隐私 露、GitHub 砍、机器常开 选 A。或写你的想法…"></textarea>
   </div>
 
   <!-- SUMMARY -->
@@ -184,6 +184,20 @@
     <tr><td>4 收费 · 隐私</td><td>license key 订阅 + 按 Team 计费 + 1 个 Team 免费试;隐私当显式卖点;不许转售</td></tr>
     <tr><td>5 开场文案</td><td>免费试露 / 隐私露 / 砍 GitHub / 机器常开轻松诚实说一句</td></tr>
   </table>
+
+  <!-- MASTER -->
+  <div class="master">
+    <h3>👇 一次填完最方便</h3>
+    <p>在这个框里把 5 块的选择一次填完 → <b>点进框里全选</b>(电脑 Cmd+A / 手机长按「全选」)→ <b>复制</b> → 发回给 Honey Lemon 就行。</p>
+    <textarea>块1 起步形态 · 我选:
+块2 谁来带 · 我选:
+块3 Discord机器人 · 我选:
+块4 收费·隐私 · 我选:(收费骨架 + 隐私卖点/免费试/不许转售 各 要或不要)
+块5 开场文案 · 我选:(免费试 / 隐私句 / 砍GitHub / 机器常开 A或B或C)
+
+其他想法 / 想改的:
+</textarea>
+  </div>
 
   <p class="foot">仍是草稿 · 不上线 · 不替你定 —— 你逐块挑,定一块我织进设计文案,流程结构不动。<br>
   (你点名的「Draft」我没查到对应产品,Honey Lemon 已问你要链接/截图;其余不受影响。)</p>
