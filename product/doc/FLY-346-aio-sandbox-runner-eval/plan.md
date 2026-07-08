@@ -60,3 +60,25 @@ homerail(`xiaotianfotos/homerail`)**确实已有沙箱概念,且比 AIO 更工�
 - ✅ Codex design review 修订:隔离可行性诚实降级、AIO arm64 事实更新、backend 精确化、单机 threat model 补齐。
 - ❌ 不写任何 runner 架构生产代码。PR 只 ship 这三份 doc。
 - 🔜 下一步:PR → 交 Annie 在 §6 选 A/B/C。
+
+## 8. 与 Annie 的 co-eval 学习记录（2026-07-08 · founder 决定 keep + ship）
+
+> **Founder 决定：346 keep + ship，核心结论「AIO 非必须」。** Annie 用一版可交互 HTML 跟本 issue 做了多轮 co-eval，收敛出的学习记录如下（补充/精化前文，作为 durable 记录）。
+
+1. **「AIO 非必须」** —— 现状（单机 Mac / tmux / cmux）下，把 AIO Sandbox 当 runner 运行时整套采用不值得（FLY-398 headless 冲突 / comm 上网络 / macOS Docker 税 / egress 仅 Linux）。AIO 不是我们必须做的东西。
+
+2. **分层模型（关键洞察：AIO 与 homerail 不是二选一，可分层用）**：
+   - **Hub 层 = 一个普通 container**（Lead + Bridge）—— 不用 AIO 胖环境，普通容器就够，你在这层实时看。
+   - **Worker 层 = 每 runner 一个 container**（homerail 式、互相隔离）—— 要浏览器就把浏览器装进该 worker 容器。
+   - **AIO = 可选的「胖节点」方案** —— 只在某个 worker 节点要「自带浏览器 + 桌面一整套」时才考虑（多半精简版），**不是 hub 层**。
+   - 分层正好落在 1005 的「共享 hub + 每 runner 一节点」上。
+
+3. **与 FLY-1005 对齐（AIO 的真正定位）** —— 1005 v5 已写「节点 provisioning 可站在 346 AIO Sandbox 上」。所以 346 AIO Sandbox 的定位 = **1005 预热节点池的容器化基座候选**（云/Linux 上 Docker 税消失、它自带浏览器桌面正好放 profile），**不是 346 独立采用**。要不要 + 用哪个（AIO 精简 / 自搭瘦镜像 / homerail 式），归 1005 定。
+
+4. **Sandbox vs Container** —— 容器 = 底层机制（Docker 隔离/打包），沙箱 = 用途（给 agent 安全跑活），沙箱通常用容器实现；二者非对立。AIO 与 homerail 都是「沙箱」、底下都用「容器」，区别在形状（AIO = 面向人用的胖工作台 / homerail = 面向 agent 执行的瘦单元）。
+
+5. **砍层 trade-off** —— AIO 开源可 fork 砍层，但砍到只剩终端+浏览器 ≈ 自己拼瘦容器。**诚实结论：与其「用 AIO 再砍」，不如「拿它当参考（组件构成/镜像分层）自搭瘦镜像」**（每层可控、保留实时看）。注：官方 repo 未提交现成 Dockerfile。
+
+6. **AIO base OS** —— 容器里永远是 Linux（Mac 上走 Docker Desktop Linux VM = 性能税根因）。具体发行版据外部资料为 **Ubuntu 系（约 25.10）**；官方 repo 无 Dockerfile → 确切 base image **UNKNOWN / 待核**（未编造）。
+
+**交付物**：本三件套 doc + 可交互 co-eval HTML（`co-eval-review.html`，分层图标签已澄清 hub=普通容器 / worker=container / AIO=可选胖节点）。**Ship = docs only，零 runner 架构生产代码。**
