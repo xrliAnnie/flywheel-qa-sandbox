@@ -1,0 +1,66 @@
+{
+	"ts": "2026-07-08T20:44:11.819Z",
+	"node": "v25.6.1",
+	"sdk": "@google/genai@2.10.0",
+	"surfacePrimary": "interactions",
+	"models": {
+		"pro": "gemini-3.1-pro-preview",
+		"flash": "gemini-3.5-flash",
+		"live": "gemini-3.1-flash-live-preview"
+	},
+	"afcNote": "Interactions surface: function execution is manual by construction (calls arrive as content items; loop must send function_result to continue) — no AFC to disable on this surface. generateContent fallback sets automaticFunctionCalling:{disable:true} explicitly.",
+	"guards": [
+		{
+			"guard": "env",
+			"ok": true,
+			"checked": ["BRIDGE_URL", "FLYWHEEL_BRIDGE_URL", "TEAMLEAD_API_TOKEN"]
+		},
+		{
+			"guard": "static-imports",
+			"ok": true,
+			"command": "grep -l -E from ['\"](@linear/sdk|flywheel-comm) --include=*.mjs -r /Users/xiaorongli/Dev/flywheel-FLY-997/engineering/spike/FLY-997-gemini-agent"
+		}
+	],
+	"surfaceUsed": "interactions",
+	"fallbackReason": null,
+	"rounds": [
+		{
+			"round": 0,
+			"surface": "interactions",
+			"pass": true,
+			"created": true,
+			"answered": true,
+			"steps": 1,
+			"usage": {
+				"input": 1248,
+				"output": 88
+			}
+		},
+		{
+			"round": 1,
+			"surface": "interactions",
+			"pass": true,
+			"created": true,
+			"answered": true,
+			"steps": 1,
+			"usage": {
+				"input": 1263,
+				"output": 99
+			}
+		},
+		{
+			"round": 2,
+			"surface": "interactions",
+			"pass": true,
+			"created": true,
+			"answered": true,
+			"steps": 1,
+			"usage": {
+				"input": 1423,
+				"output": 118
+			}
+		}
+	],
+	"outboundOrigins": ["http://127.0.0.1:47997"],
+	"verdict": "PASS"
+}
