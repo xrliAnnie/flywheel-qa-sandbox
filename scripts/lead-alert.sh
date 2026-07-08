@@ -19,7 +19,7 @@
 # Usage:
 #   lead-alert.sh \
 #     --lead <lead-id> --project <project-name> \
-#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bin_integrity_drift> \
+#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bin_integrity_drift|notify_digest_failed> \
 #     --severity <info|warning|severe> \
 #     --title <string> --body <string> \
 #     [--signature <string>] [--strict-delivery]
@@ -96,7 +96,9 @@ case "$KIND" in
   # anything but sent/queued_transient). Same TS-union parity convention.
   # FLY-954: bin_integrity_drift — converge-flywheel-bin.sh 检出 <state>/bin 与
   # repo 源漂移(修复成功/失败/源坏拒修均响)。Same TS-union parity convention.
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bin_integrity_drift) ;;
+  # FLY-929: notify_digest_failed — the daily token report failed in place
+  # (token-usage-daily.sh fail-loud) or left no receipt (Bridge expect tick).
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bin_integrity_drift|notify_digest_failed) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"

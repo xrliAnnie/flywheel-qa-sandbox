@@ -64,6 +64,15 @@ export interface PublishReportArgs {
 	title?: string;
 	channelId?: string;
 	noScreenshot?: boolean;
+	/**
+	 * FLY-929 B1: OPTIONAL delivery-receipt fields forwarded verbatim in the
+	 * /deliver body. `kind: "token_report"` + `expectedDate` (YYYY-MM-DD, the
+	 * report day the token-report CLI computed under TOKEN_USAGE_TIMEZONE) let
+	 * the Bridge write the P-expect receipt. Absent ⇒ pre-FLY-929 body,
+	 * byte-compat (JSON.stringify drops undefined keys).
+	 */
+	kind?: string;
+	expectedDate?: string;
 	/** Test seams. */
 	env?: NodeJS.ProcessEnv;
 	fetchImpl?: typeof fetch;
@@ -227,6 +236,10 @@ export async function publishReport(
 				title: args.title,
 				channelId: args.channelId,
 				screenshotPath: screenshot ?? undefined,
+				// FLY-929 B1: receipt fields — undefined keys are dropped by
+				// JSON.stringify, so the no-flag body stays byte-identical.
+				kind: args.kind,
+				expectedDate: args.expectedDate,
 			}),
 		});
 		const body = (await res.json().catch(() => ({}))) as Record<

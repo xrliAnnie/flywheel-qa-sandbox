@@ -102,7 +102,11 @@ describe("accountSwitchWatchdogTick", () => {
 		expect(await t.run()).toBe(2);
 		expect(t.executeSwitch).toHaveBeenCalledTimes(2);
 		expect(t.post).toHaveBeenCalledTimes(2);
-		expect(t.post).toHaveBeenCalledWith("🔧 已切 personal→school");
+		// FLY-929: detail stays the first arg; the disposition rides along second.
+		expect(t.post).toHaveBeenCalledWith(
+			"🔧 已切 personal→school",
+			expect.objectContaining({ outcome: "attempted" }),
+		);
 	});
 
 	it("a failing executeSwitch is logged and does not wedge the others", async () => {
@@ -152,5 +156,23 @@ describe("accountSwitchWatchdogTick", () => {
 		const t = tick({ onSwitchSuccess });
 		expect(await t.run()).toBe(1); // the switch still counts as fired
 		expect(onSwitchSuccess).toHaveBeenCalledOnce();
+	});
+
+	// FLY-929 A4: the FULL disposition rides along as post's second argument so
+	// the plugin's post site can route needs_human to the owner bot and append
+	// the notify digest on notifySuccess. Detail stays the first arg (existing
+	// single-arg post impls are untouched).
+	it("post receives (detail, disposition) — the full disposition rides along", async () => {
+		writePending([rec()], pendingPath);
+		const disposition = {
+			outcome: "attempted" as const,
+			action: "account_switch",
+			detail: "🔧 已切 personal→school",
+			notifySuccess: { from: "personal", to: "school" },
+		};
+		const executeSwitch = vi.fn(async () => disposition);
+		const t = tick({ executeSwitch });
+		expect(await t.run()).toBe(1);
+		expect(t.post).toHaveBeenCalledWith(disposition.detail, disposition);
 	});
 });
