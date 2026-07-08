@@ -248,3 +248,8 @@ graph TD
   - 工程点不塞进定位叙事;各归各家(353/906/1005/347)。
 
 **收尾版 HTML** 已发 FLY-1004 thread 给 Annie 签字。她 OK → docs 入库(ship 走 verify→codex→报 Lead→Tadashi executor-merge,不自 :cool:)。
+
+### Annie 的两层 DAG 模型(v5 co-eval 收进结论)
+- **第一层 = 每类 issue 一套 DAG 模板(乐高)**:Eng issue 一种编排、Designer 另一种;底层积木/逻辑同,编排随任务类型变。**这层最接近 homerail**(它就是"怎么执行一个活"的工作流引擎)。
+- **第二层 = FLY-353 的自动编排引擎(更高 level)**:自动分诊 + 决定做哪些 issue + proactive 把活派给对的第一层模板。**353 = 第二层,不是第一层。**
+- → homerail 借鉴的 DAG 运行时能力(inject/fork/profile)= 喂第一层模板的跑中能力;第二层引擎归 FLY-353。
