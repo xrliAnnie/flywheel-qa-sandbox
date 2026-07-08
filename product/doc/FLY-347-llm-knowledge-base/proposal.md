@@ -10,6 +10,18 @@ Issue: FLY-347 (https://linear.app/geoforge3d/issue/FLY-347/xhsclaude-karpathy�
 > 砍掉人类 UI（不 Obsidian 不 Notion）。出一个具体提案 + 小 MVP,并**诚实评估值不值得**
 > —— 现有 memory「用起来也还不错」,别硬吹。仍 design/research,不 build、不 ship、不 close。
 
+## 决定（2026-07-08, Annie via Lead 39f91c49）:**not-now**
+
+Annie 看完提案(HTML v2)后定:**not-now** —— **不 build** 这个 agent-wiki/consolidation
+MVP,proposal **park** 着。issue 留 **backlog**,标『deferred / not-now』,**不 close**
+(是 not-now、不是永不做,以后可能回来)、不 build、不 ship。
+
+价值不是白做:诚实审计出「我们已有 Karpathy ~70% 骨架、只缺 consolidation」,帮她做了个
+**干净的 not-now 决定**(而不是在 not-now 上盲目 build,或在没搞清现状时草率 close)。
+以后若回来:直接从本文件 §6 的 Memory Lint MVP 起步。
+
+---
+
 ## 0. 一句话结论（先给,不埋）
 
 **Flywheel 不需要「从头建 Karpathy 的 wiki」—— 我们已经有它 ~70% 的骨架(页 + 索引 +
