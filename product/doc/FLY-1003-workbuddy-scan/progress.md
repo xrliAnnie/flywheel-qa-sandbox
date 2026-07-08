@@ -1,13 +1,13 @@
 ---
 issue: FLY-1003
-phase: design
-phaseCursor: 3/8
-updated: 2026-07-08T17:51:20.994Z
-nextStep: open brainstorm gate
+phase: implement
+phaseCursor: 6/8
+updated: 2026-07-08T18:20:22.028Z
+nextStep: write workbuddy-deepdive.md + fold competitor-scan + light positioning edit
 chunks: []
 pointers: {}
 ---
 
 # FLY-1003 progress
-**phase**: design (3/8)
-**next**: open brainstorm gate
+**phase**: implement (6/8)
+**next**: write workbuddy-deepdive.md + fold competitor-scan + light positioning edit
