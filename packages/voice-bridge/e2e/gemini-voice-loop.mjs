@@ -59,6 +59,13 @@ if (/:9876(\/|$)/.test(process.env.FLYWHEEL_BRIDGE_URL)) {
 }
 
 const log = (m) => console.log(`[${new Date().toISOString()}] ${m}`);
+// fail-closed verdict tracking (Codex R11): ANY failed assert must exit 1 —
+// this harness is a QA gate, a green exit with a red log is a false PASS.
+const failures = [];
+const fail = (m) => {
+	failures.push(m);
+	log(`FAIL: ${m}`);
+};
 
 // ---- injector identity first: we must allowlist its user id in the venue ----
 const { Client, GatewayIntentBits } = await import("discord.js");
@@ -72,6 +79,32 @@ await injector.login(injectorToken);
 await new Promise((r) => injector.once("clientReady", r));
 const injectorId = injector.user.id;
 log(`injector online as ${injector.user.tag} (${injectorId})`);
+
+// ---- bug-3 regression probe (Codex R11): the audio loop below admits the
+// injector via allowUserIds, which BYPASSES the human filter — so probe
+// makeIsHuman directly against a REAL client + REAL REST here. Target = the
+// guild owner (the founder, always a human, id needs no extra env). Force a
+// cache miss (the "already in VC before boot" shape), assert fail-closed on
+// the first burst and self-healed admission after the background fetch. ----
+{
+	const { makeIsHuman } = await import("../dist/bots/discordWiring.js");
+	const probeGuild = await injector.guilds.fetch(guildId);
+	const ownerId = probeGuild.ownerId;
+	injector.guilds.cache.get(guildId)?.members.cache.delete(ownerId);
+	const isHuman = makeIsHuman(injector, guildId);
+	const firstBurst = isHuman(ownerId); // kicks the REST resolve
+	await new Promise((r) => setTimeout(r, 3000));
+	const secondBurst = isHuman(ownerId);
+	if (secondBurst !== true) {
+		fail(
+			`bug-3 probe: cache-missed human (guild owner ${ownerId}) did not self-heal to admitted (first=${firstBurst}, second=${secondBurst})`,
+		);
+	} else {
+		log(
+			`bug-3 probe PASS — cache-missed founder: first-burst=${firstBurst} (fail-closed), post-resolve admitted`,
+		);
+	}
+}
 
 // ---- venue boots with the injector allowlisted + autostart round ----
 process.env.FLYWHEEL_GEMINI_AUTOSTART = "voice-loop 自验";
@@ -169,7 +202,9 @@ for (const root of stateRoots) {
 	}
 }
 if (!transcriptHit)
-	log("IN-leg: no transcript hit yet (check landing comment quotes)");
+	fail(
+		"IN-leg: probe utterance never reached a transcript — VC audio is not feeding Gemini Live",
+	);
 
 // ---- OUT-leg assert: recorded audio transcribes to sane Chinese ----
 if (recordedBytes > 48000) {
@@ -212,13 +247,13 @@ if (recordedBytes > 48000) {
 	const text =
 		j?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") ?? "";
 	log(`OUT-leg transcription: ${text.slice(0, 400)}`);
-	log(
-		/GARBLE/.test(text) || text.trim().length < 4
-			? "OUT-leg FAIL — garble"
-			: "OUT-leg PASS — clean speech",
-	);
+	if (/GARBLE/.test(text) || text.trim().length < 4) {
+		fail("OUT-leg: recorded assistant audio transcribes as garble/noise");
+	} else {
+		log("OUT-leg PASS — clean speech");
+	}
 } else {
-	log("OUT-leg FAIL — assistant produced (almost) no audio");
+	fail("OUT-leg: assistant produced (almost) no audio");
 }
 
 // ---- teardown ----
@@ -229,5 +264,10 @@ try {
 	await injector.destroy();
 } catch {}
 await runtime.close();
-log("voice-loop done");
+if (failures.length > 0) {
+	log(`voice-loop VERDICT: FAIL (${failures.length})`);
+	for (const f of failures) log(`  - ${f}`);
+	process.exit(1);
+}
+log("voice-loop VERDICT: PASS");
 process.exit(0);
