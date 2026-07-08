@@ -68,12 +68,17 @@ TTFT 本身），spawn 开销只占其中 ~0.8-1.0s。三形态实测（sonnet�
   文本）—— 这是 haiku 比 sonnet 慢的主因。结论：**选 sonnet 即绕开
   thinking 问题**，不需要额外开关。
 
-### S4 真机配方决定
+### S4 真机测法（模型选择注记，Lead 指示 2026-07-08）
 
-E2E 阶梯 claude 档默认 = **sonnet + FLY980_RESUME=0（全量注入）**，
-prespawn 优化只有 ~200ms 中位收益、复杂度不值，不进 shim。预计全链
-speech-end→首音 ≈ 脑 3.0s + 平台/隧道（echo 档实测补齐）≈ 3.7-4.5s ——
-V5b soft timeout 垫话体验决定 go/no-go。
+- **生产脑模型是 founder 的决定**（Annie 原话 sonnet/haiku、最新倾向
+  haiku）—— sonnet 更快只是数据，不是答案；报告里 present 成
+  「最快选项待 founder 拍」。
+- spike 可行性判定用 **sonnet + FLY980_RESUME=0（全量注入）作 best-case
+  上界**（/eleven 到底行不行，先看上界）；haiku 档同矩阵一起测供拍板。
+- prespawn 优化只有 ~200ms 中位收益、复杂度不值，不进 shim。预计全链
+  speech-end→首音 ≈ 脑 3.0s + 平台/隧道（echo 档实测补齐）≈ 3.7-4.5s ——
+  **V5b soft timeout 垫话（边算边垫）能否救回 4s+ 体感 = /eleven 生死
+  实验，S3 通后第一优先做**。
 
 ## 复现
 
