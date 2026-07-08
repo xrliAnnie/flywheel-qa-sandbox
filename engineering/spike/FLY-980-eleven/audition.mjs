@@ -8,16 +8,11 @@
 // 产物: ~/fly980-eleven/audition/<lead>/<voice>-<lang>.mp3/.wav + judge json
 // env: ELEVENLABS_API_KEY / GEMINI_API_KEY (~/.flywheel/.env)
 import { execFileSync } from "node:child_process";
-import {
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	writeFileSync,
-} from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { loadFlywheelEnv } from "./lib/env.mjs";
 import { API_BASE, requireApiKey, xi } from "./lib/eleven.mjs";
+import { loadFlywheelEnv } from "./lib/env.mjs";
 
 const AUD_DIR = join(homedir(), "fly980-eleven", "audition");
 
@@ -30,7 +25,10 @@ export const LEADS = {
 	belle: { want: "女声 Bright 辨识度高", edge: "zh-CN-shaanxi-XiaoniNeural" },
 	peter: { want: "男声 Sunshine", edge: "zh-CN-YunxiNeural" },
 	hiro: { want: "男声 年轻感", edge: "zh-CN-YunxiaNeural" },
-	simba: { want: "wildcard 不报身份也能听辨", edge: "zh-CN-liaoning-XiaobeiNeural" },
+	simba: {
+		want: "wildcard 不报身份也能听辨",
+		edge: "zh-CN-liaoning-XiaobeiNeural",
+	},
 };
 
 // 样句: zh 逐字沿用 s4b(跨厂商可比);en/mix 全 Lead 统一(D11'/D12')
@@ -71,10 +69,7 @@ if (cmd === "list") {
 		mkdirSync(dir, { recursive: true });
 		for (const vid of voices) {
 			for (const lang of langs) {
-				const outBase = join(
-					dir,
-					`${vid}-${lang}${FINAL ? "-final" : ""}`,
-				);
+				const outBase = join(dir, `${vid}-${lang}${FINAL ? "-final" : ""}`);
 				const res = await fetch(
 					`${API_BASE}/v1/text-to-speech/${vid}?output_format=mp3_44100_128`,
 					{
@@ -127,7 +122,13 @@ if (cmd === "list") {
 			const [, vid, lang] = m;
 			const audio = readFileSync(join(dir, f));
 			const judged = await geminiJudge(judgeModel, audio, SENTENCES[lang]);
-			perSample.push({ lead, voice_id: vid, lang, file: join(dir, f), ...judged });
+			perSample.push({
+				lead,
+				voice_id: vid,
+				lang,
+				file: join(dir, f),
+				...judged,
+			});
 			console.error(
 				`[${lead}/${vid}/${lang}] intel=${judged.intelligibility} ${judged.gender ?? ""} ${judged.timbre ?? ""}`,
 			);
@@ -139,7 +140,7 @@ if (cmd === "list") {
 		"你是声线选配评委。下面是 8 个角色的 persona 要求和候选声线的逐样本评测。",
 		"为每个角色选 1 个最合适的 voice_id(同一 voice 的 zh/en/mix 表现都要好——",
 		"一把声线中英通吃是硬要求),给出理由;然后对 8 个终选声线两两比较,",
-		'给整体可区分度打分(0-3, 3=闭眼能分清)。输出 JSON(不要 markdown):',
+		"给整体可区分度打分(0-3, 3=闭眼能分清)。输出 JSON(不要 markdown):",
 		'{"picks":{"<lead>":{"voice_id":"...","reason":"..."}},"distinctiveness":0-3,"notes":"..."}',
 		`persona 要求: ${JSON.stringify(Object.fromEntries(Object.entries(LEADS).map(([k, v]) => [k, v.want])))}`,
 		`逐样本评测: ${JSON.stringify(perSample.map(({ file, ...rest }) => rest))}`,
@@ -153,7 +154,9 @@ if (cmd === "list") {
 	console.log(JSON.stringify(summary, null, 2));
 	console.log("full → out/audition-judge.json");
 } else {
-	console.error("usage: node audition.mjs list | synth <candidates.json> [--final] | judge [dir]");
+	console.error(
+		"usage: node audition.mjs list | synth <candidates.json> [--final] | judge [dir]",
+	);
 	process.exit(2);
 }
 
@@ -169,9 +172,7 @@ async function geminiCall(model, parts) {
 	const json = await res.json();
 	const text = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 	try {
-		return JSON.parse(
-			text.replace(/^```json?\s*/i, "").replace(/```\s*$/, ""),
-		);
+		return JSON.parse(text.replace(/^```json?\s*/i, "").replace(/```\s*$/, ""));
 	} catch {
 		return { parseError: text.slice(0, 300) };
 	}

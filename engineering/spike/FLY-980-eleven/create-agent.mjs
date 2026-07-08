@@ -47,7 +47,11 @@ const body = {
 	platform_settings: {
 		overrides: {
 			conversation_config_override: {
-				agent: { prompt: { prompt: true }, language: true, first_message: true },
+				agent: {
+					prompt: { prompt: true },
+					language: true,
+					first_message: true,
+				},
 				tts: { voice_id: true },
 			},
 		},
@@ -69,10 +73,7 @@ console.log(`agent_id=${agentId}`);
 const readback = await xi(`/v1/convai/agents/${agentId}`);
 mkdirSync("out", { recursive: true });
 const snapshot = redactAgentConfig(readback);
-writeFileSync(
-	"out/agent-readback.json",
-	JSON.stringify(snapshot, null, 2),
-);
+writeFileSync("out/agent-readback.json", JSON.stringify(snapshot, null, 2));
 const overrides =
 	readback?.platform_settings?.overrides?.conversation_config_override;
 console.log("accepted custom_llm shape (redacted):");

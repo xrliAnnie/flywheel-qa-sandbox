@@ -39,7 +39,9 @@ const ROUND_PCM = {
 };
 for (const id of roundIds) {
 	if (!ROUND_PCM[id] || !existsSync(ROUND_PCM[id])) {
-		console.error(`round ${id}: pcm missing (${ROUND_PCM[id] ?? "unknown id"}) — run ./gen-ref-audio.sh`);
+		console.error(
+			`round ${id}: pcm missing (${ROUND_PCM[id] ?? "unknown id"}) — run ./gen-ref-audio.sh`,
+		);
 		process.exit(2);
 	}
 }
@@ -168,7 +170,11 @@ ws.on("error", (e) => {
 });
 ws.on("close", (code) => logEvent({ type: "ws_close", code }));
 await new Promise((r) => ws.on("open", r));
-logEvent({ type: "init_sent", override, extra: initFrame.custom_llm_extra_body ?? null });
+logEvent({
+	type: "init_sent",
+	override,
+	extra: initFrame.custom_llm_extra_body ?? null,
+});
 ws.send(JSON.stringify(initFrame));
 await sleep(800);
 
@@ -240,7 +246,9 @@ for (const id of roundIds) {
 	const r = {
 		id,
 		endpointToFirstAudio_ms:
-			round.firstAudioMs !== null ? round.firstAudioMs - round.speechEndMs : null,
+			round.firstAudioMs !== null
+				? round.firstAudioMs - round.speechEndMs
+				: null,
 		endpointToFirstText_ms:
 			round.firstTextMs !== null ? round.firstTextMs - round.speechEndMs : null,
 		audioBytes: round.audioBytes,
