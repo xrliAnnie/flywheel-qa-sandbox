@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-942 看门狗设计 — 请你核一眼</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#ffffff; --txt:#1d1d1f; --muted:#6e6e73; --dim:#86868b;
+    --line:#e5e5ea; --code:#f2f2f4; --codetxt:#8a5a00;
+    --blue:#007aff; --green:#34c759; --red:#ff3b30; --amber:#ff9500; --purple:#af52de; --navy:#1a365d;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,system-ui,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:800px;margin:0 auto;padding:24px 16px 90px}
+  h1{font-size:23px;margin:6px 0 3px;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:14.5px;margin:0 0 20px}
+  .draft{display:inline-block;background:#fff3e0;color:#c86a00;font-size:11px;font-weight:700;
+    padding:3px 9px;border-radius:11px;margin-left:8px;vertical-align:middle}
+  code{background:var(--code);border-radius:5px;padding:1px 6px;font-size:13px;
+    font-family:"SF Mono",ui-monospace,Menlo,monospace;color:var(--codetxt)}
+  .sec{background:var(--card);border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+    padding:18px 20px;margin:18px 0;border-left:4px solid var(--purple)}
+  .sec.prob{border-left-color:var(--red)}
+  .sec.fix{border-left-color:var(--green)}
+  .sec.flow{border-left-color:var(--blue)}
+  .sec.confirm{border-left-color:var(--amber)}
+  .secn{font-size:12px;font-weight:700;color:var(--purple);letter-spacing:.5px;text-transform:uppercase}
+  .sec.prob .secn{color:var(--red)}.sec.fix .secn{color:#1a8a3d}.sec.flow .secn{color:var(--blue)}.sec.confirm .secn{color:#b56b00}
+  h2{font-size:18px;margin:3px 0 10px;letter-spacing:-.01em}
+  h3{font-size:15px;margin:16px 0 5px}
+  p{margin:8px 0}
+  ul{margin:8px 0;padding-left:22px}
+  li{margin:5px 0}
+  .kk{font-weight:700;color:var(--navy)}
+  .bad{color:var(--red);font-weight:600}
+  .good{color:#1a8a3d;font-weight:600}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13.5px;display:block;overflow-x:auto}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#fafafc;font-weight:700;white-space:nowrap}
+  td.c{white-space:nowrap;font-weight:700;color:var(--navy)}
+  .callout{background:#eef4ff;border-radius:9px;padding:11px 14px;margin:12px 0;font-size:14px;color:#33415c}
+  .callout.warn{background:#fff8ec;color:#7a5b00}
+  .lbl{font-size:12.5px;color:var(--dim);margin:14px 0 5px;font-weight:600}
+  textarea{width:100%;border:1px solid var(--line);border-radius:11px;padding:11px 12px;
+    font-family:inherit;font-size:15px;color:var(--txt);background:#fff;resize:vertical;min-height:60px;-webkit-appearance:none}
+  textarea:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,122,255,.12)}
+  .sendbox{background:#fffdf5;border:1px solid #f0dfa8;border-radius:14px;padding:16px 18px;margin:26px 0 0}
+  .sendbox h2{color:#8a6d00;margin:0 0 6px}
+  .sendbox p{font-size:13.5px;color:var(--muted);margin:0 0 10px}
+  .master{min-height:190px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:13.5px;line-height:1.6}
+  .foot{color:var(--dim);font-size:12.5px;margin-top:22px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>看门狗要这么设计,你核一眼对不对 <span class="draft">FLY-942 · 判死细节</span></h1>
+  <p class="sub">你要看门狗『说卡就是真卡、说健康就是真健康』。下面把 <span class="kk">真卡死怎么判 / 每类历史漏报机械为啥漏 + 新设计怎么抓 / 多久能叫到你</span> 讲清楚(都对着真代码写)。每节留了想法框;有异议直接在框里标,或底部复制模板回我。</p>
+
+  <!-- 1 -->
+  <div class="sec prob">
+    <div class="secn">① 现状为什么会漏、会误报</div>
+    <h2>两个结构性盲点</h2>
+    <p><span class="kk">盲点 A · 只看一帧(single-frame)。</span> 现在判"健康"的函数 <code>isIdleHealthyPane</code> 只看**当下一张**屏幕:没报错关键词 + 没"正在跑"标记 + 有"空闲输入框"标记 → 判健康。它<span class="bad">自己代码里都承认</span>:"卡死在思考后 和 想完正常闲着,单看一帧分不清,为了不刷屏就压掉了"。→ <span class="bad">冻结后长得像 idle 的,全漏</span>(546、837 静默那种)。</p>
+    <p><span class="kk">盲点 B · 只认"屏幕没动"(stagnant)。</span> runner 侧只在"屏幕内容一直不变"时才判卡;它也<span class="bad">自认漏掉"屏幕一直在变但其实在原地打转"</span>的(比如反复刷同一个错误、转圈)。→ <span class="bad">910 worktree 被删后反复刷 ENOENT、卡在 retry loop 的,全漏</span>。</p>
+    <p><span class="kk">而且认得的错误只有 4 种</span>(rate limit / usage limit / 登录过期 / 权限)。<code>Server error mid-response</code>、<code>Not logged in</code>、<code>ENOENT</code> <span class="bad">一个都不认</span>。</p>
+    <div class="callout warn">⏱ <span class="kk">还太慢</span>:现在真卡了,最坏要 <span class="bad">~75 分钟</span>才叫到你(每小时才看一眼 + 要连续卡 10min + 给 Lead 5min)。这就是你还得自己每 30-60min 巡查的根。</div>
+    <div class="lbl">你的想法(这两点是不是你观察到的根?):</div>
+    <textarea placeholder="① 现状盲点 —— 对不对 / 还漏了别的?"></textarea>
+  </div>
+
+  <!-- 2 -->
+  <div class="sec fix">
+    <div class="secn">② 新设计:真卡死(c)到底怎么判</div>
+    <h2>读"活的一段" + 至少两帧 + LLM 兜可疑</h2>
+    <p>不再只看一帧、不再只看"动没动",而是<span class="good">读 pane 的富信息、跨至少 2 帧比对</span>,综合这些信号判 <span class="kk">a 在跑 / b 正常等 / c 真卡死</span>:</p>
+    <ul>
+      <li><span class="kk">在不在真产出</span>(token 在吐)—— 关键是分"真在往前"和"变但在原地打转(反复刷同一个错)";</li>
+      <li><span class="kk">会话状态</span>(在跑 / 等 review / parked)+ 真实 stage;</li>
+      <li><span class="kk">扩充认得的错误串</span> → 加 <code>Server error</code>、<code>Not logged in</code>、<code>ENOENT</code>;</li>
+      <li><span class="kk">静默 delta</span>(停在空 <code>❯</code> + 内容不变 + 一段时间没任何来往)—— 单帧分不清、跨帧能;</li>
+      <li><span class="kk">重复错误签名</span>(同一个错反复出现,哪怕字在变)—— 治"在原地打转"。</li>
+    </ul>
+    <p><span class="kk">谁做二次确认</span>:机械快路先便宜地筛明确的;<span class="good">可疑的升级给 LLM 判断层</span>(读上面这些富信息,输出"卡 / 健康 / 正常等" + 谁的球 + 建议动作)。<span class="kk">还是拿不准 → 附上原始屏幕上报、绝不悄悄压掉</span>(宁可标糙,不吞)。</p>
+    <div class="lbl">你的想法(这套"判卡"的信号够不够、对不对):</div>
+    <textarea placeholder="② 真卡死判定 —— 信号对不对 / 还要加什么?"></textarea>
+  </div>
+
+  <!-- 3 -->
+  <div class="sec fix">
+    <div class="secn">③ 每类历史漏报:机械为啥漏 → 新设计怎么抓</div>
+    <h2>你踩过的坑,逐个对</h2>
+    <table>
+      <tr><th>事故</th><th>屏幕长啥样</th><th>机械为啥漏</th><th>新设计怎么抓</th></tr>
+      <tr><td class="c">546/975<br>报错后静默</td><td><code>Server error</code> 后回到空 <code>❯</code>,静默 22min</td><td>① 这错误串不认 ② 见"空闲框"标记 → 判健康</td><td class="good">跨帧静默 delta + 认 Server error 串</td></tr>
+      <tr><td class="c">837<br>/compact 卡</td><td>compact 没弹窗、悄悄回到空框、底层不恢复</td><td>没"正在跑"标记 → 单帧判健康</td><td class="good">跨帧"没进展" delta</td></tr>
+      <tr><td class="c">574<br>草稿没发出</td><td>Lead 屏幕正常,消息其实没发出去</td><td>这不是屏幕能看到的 —— 是"发送"这一层失败</td><td class="good">发送层对账(发了 vs 真送达),不靠看屏幕</td></tr>
+      <tr><td class="c">910·登出</td><td>空框,底层 <code>Not logged in</code></td><td><code>Not logged in</code> 不认;进程还活 → 当健康</td><td class="good">认这串 + 读屏幕不信"进程活着"</td></tr>
+      <tr><td class="c">910·目录删<br>(dogfood)</td><td>反复滚动、不停变的 <code>ENOENT</code> 报错</td><td>进程活 + 屏幕一直在变 → 永远够不到"卡"阈值(正是它自认漏的打转)</td><td class="good">重复错误签名(变但循环同错)+ 认 ENOENT</td></tr>
+      <tr><td class="c">915·23min长turn<br>(dogfood,误报)</td><td>在跑的长 turn(在吐 token)</td><td>瞬时空 prompt → 单帧误判卡(HL 手动 capture 才拦住)</td><td class="good">跨帧见 token 在动 → 判在跑,不报(这是"可容忍的误报"那类)</td></tr>
+    </table>
+    <div class="lbl">你的想法(哪个 case 抓法不对 / 还有你记得的漏报没列):</div>
+    <textarea placeholder="③ 历史漏报 —— 抓法对不对 / 补充 case?"></textarea>
+  </div>
+
+  <!-- 4 -->
+  <div class="sec flow">
+    <div class="secn">④ 从"发现"到"叫你",走几步</div>
+    <h2>现状 ~75min → 新设计:真卡死当场叫你</h2>
+    <p><span class="bad">现在</span>:每小时看一眼 → 连续卡 10min 才算候选 → 给 Lead 5min → 才 @ 你 ≈ <span class="bad">最坏 75 分钟</span>。</p>
+    <p><span class="good">新设计</span>,分两条:</p>
+    <ul>
+      <li><span class="kk">真卡死(c)= T1 · 当场立刻 @ 你</span> —— 判定那刻就 @ 你进对应 issue thread,<span class="good">同时</span>也通知责任 Lead 去修。不排那 75min 的队。(这是唯一会主动打断你的。)</li>
+      <li><span class="kk">两类"漏"(runner 没找 Lead / Lead 忙漏了)= T2</span> —— 先私下提醒 Lead;只有 Lead 超时没接 / 找不到人,才升级 @ 你。</li>
+    </ul>
+    <p>日常问答、Lead 替你拍的小决定 → 都进对应 thread、安静、<span class="kk">不 @ 你</span>。</p>
+    <div class="lbl">你的想法(这个"何时叫你"对不对):</div>
+    <textarea placeholder="④ 升级流 —— 真卡死当场叫你 / 其余安静进 thread,对吗?"></textarea>
+  </div>
+
+  <!-- 5 -->
+  <div class="sec confirm">
+    <div class="secn">⑤ 请你最后过一眼(你之前已定)</div>
+    <h2>真卡死 = 当场立刻 @ 你 + 并行通知 Lead</h2>
+    <p>你 G2 已经定了『真卡死当场立刻 @』。落进设计 = <span class="kk">看门狗判定 case-c 那刻,立即 @ 你(进对应 thread)+ 同时通知 owning Lead</span>(Lead 照样按协议 capture pane 去修,但你不被排在 Lead 的窗口后面等)。</p>
+    <div class="callout">为什么真卡死不先给 Lead 窗口:它罕见、严重、常要你动手(切账号 / 重启),又是"绝不漏"的头号。所以你立即知道,Lead 同时也在处理。</div>
+    <p>有异议就在下面标(比如"真卡死也想先给 Lead 5min");没异议这条就这么定。</p>
+    <div class="lbl">你的确认 / 异议:</div>
+    <textarea placeholder="⑤ 真卡死当场 @ 你 —— OK / 想改成先给 Lead 窗口?"></textarea>
+  </div>
+
+  <!-- 回流 -->
+  <div class="sendbox">
+    <h2>📋 把你的意见粘回 Discord</h2>
+    <p>下面框里改成你的意见(没意见的留空/写 OK),<span class="kk">全选复制</span> → 粘到 Discord 回 Honey Lemon。</p>
+    <textarea class="master">FLY-942 看门狗设计 — 我核完:
+① 现状两盲点(单帧 / 只看没动 + ~75min 太慢)：
+② 真卡死判信号(token-flow/状态/错误串/静默delta/重复错误)：
+③ 历史漏报抓法（546/837/574/910×2/915）：
+④ 升级流（真卡死当场@我，其余安静进thread）：
+⑤ 真卡死当场@我 + 并行通知Lead：OK / 改成？
+其它：</textarea>
+  </div>
+
+  <p class="foot">核完这份我就把细节判死进 PRD、跟 915/927 一起拆给 Tadashi。— FLY-942 · Honey Lemon 团队(挂 Watchdog Epic FLY-989)</p>
+</div>
+</body>
+</html>

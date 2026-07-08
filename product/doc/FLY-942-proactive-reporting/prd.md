@@ -96,6 +96,32 @@ flowchart TD
 - **降级永不静默**(FLY-878 标签分层):认不出→AI 兜底;仍不确定→`fail-suspicious` 附 pane 原文上报(标签变糙、绝不吞)。
 - 边界:判断层**实现** = FLY-976 eng + 937 lead 协议 + 778;本 PRD 定"要这种理解 + 输出契约"。
 
+### 3.2b 判死:c 真卡死怎么判 + 每类历史漏报的检测逻辑(全 code-grounded)
+
+**现状两个结构性盲点(为什么机械必漏)**:
+1. **单帧 + stagnant-fingerprint**:`isIdleHealthyPane`(`LeadWatchdog.ts:811-826`)是纯 `(pane)=>bool` 单帧判定 —— 无 blocked-keyword(只 4 种:rate/usage/login-expired/permission,`:137-153`)+ 无 working-marker(`esc to interrupt`/`Compacting`,`:683-687`)+ 有 idle-anchor(`ctx N%`/`⏵⏵ bypass`/`? for shortcuts`,`:696-702`)→ 判 healthy。**它自己承认**(`:677-681`):"冻结在 extended-thinking 后 与 idle-after-thinking 单帧无法区分,favouring no-spam 压掉"。而 runner 侧 `stuck-candidate`(`:16-20`)承认**漏掉输出还在变的卡**(retry loop / spinner)。→ 两头都漏:冻结后像 idle(546/837 silent)+ 变但循环同一错误(910 ENOENT / spinner)。
+2. **到 founder 最坏 ~75min**:RunnerIdleWatchdog 轮询 `DEFAULT_IDLE_POLL_MS = 3_600_000`(~1h,FLY-628 band-aid,`stuck-escalation.ts:88` / `plugin.ts:5261`)+ stagnation `STUCK_THRESHOLD_MS = 600_000`(10min)+ Lead grace `LEAD_GRACE_MS = 300_000`(5min)→ **~75min 才到 founder**,且仅对 stagnant 输出。→ 达不到"不再每 30-60min 巡查"。
+
+**c 真卡死判定信号契约(新设计,喂 FLY-976/927)**:读**观察窗 ≥2 帧**,综合:
+- **token-flow**(真在产出 vs 没动)—— 关键:区分"真产出"与"变但循环同一错误"(bytes 变 ≠ 在进展);
+- **FSM 态**(running / awaiting_review / park…)+ 真实 stage;
+- **错误串扩充**(现只认 4 种)→ 加 `Server error mid-response`(546/975)、`Not logged in`(910 auth,现只认 `login…expired`/`reauth` 漏掉它)、`ENOENT`/hook-fail(910 worktree);
+- **静默 delta**(空 `❯` prompt + hash 不变 + 无 inbound N 分钟)—— 单帧分不清,跨帧能;
+- **重复错误签名 delta**(同一错误类反复出现即使 bytes 变)—— stagnant-fingerprint 结构上看不见;
+- 二次确认 = **LLM 判断层**读上述富态输出「a working / b parked / c stuck」+ 归因 + 建议动作;**不确定 → `fail-suspicious` 附 pane 原文,不静默**。
+
+**每类历史漏报:机械为什么漏 → 新设计怎么抓(code-grounded)**:
+| case | pane 长什么样 | 机械为什么漏(code) | 新设计怎么抓 |
+|---|---|---|---|
+| **FN2** 546/975 error-then-idle | `Server error mid-response` 后回到空 `❯`(有 `ctx N%`)静默 22min | ① 错误串不在 BLOCKED_KEYWORDS ② isIdleHealthyPane 见 `ctx N%` idle-anchor + 无 working-marker → 判 healthy | 跨帧**静默 delta**(hash 不变 + 无 inbound)+ 认 `Server error` 串 |
+| **FN3** 837 /compact | live 变体显 `Compacting`(会报);**silent 变体**回到空 idle box 底层不 resume | silent 变体无 marker → 单帧判 healthy | 跨帧**无进展 delta**(同 FN2) |
+| **FN4** 574 draft-not-sent | Lead pane 正常 idle;**非 pane 可观测** | 交付层失败,不是 pane 态;无"意图发 X vs 实际发出"对账 | **传输层信号**:send-confirmation / outbox 对账(mailbox `writeVerified` / notifier POST 结果),**非 pane** |
+| **FN0** 910 auth | 空 idle box,底层 `Not logged in` | `Not logged in` 无 matcher(只认 login…expired/reauth);liveness=alive 过 | 认 `Not logged in` 串 + 读 pane 非 alive-flag |
+| **FN1** 910 worktree 删 | 反复滚动、不断变的 `ENOENT` 错误行 | ① liveness=alive 过 ② 输出一直变 → fingerprint 每轮变 → `output_changing` 排除,永不到 10min 阈值(正是它自认漏的 retry-loop)③ 无 ENOENT 处理 | **重复错误签名 delta**(变但循环同错)+ 认 `ENOENT` |
+| **FP0/FP1** 长 turn 误报 | 在跑长 turn(有 `esc to interrupt` 或 token 在吐) | 单帧偶发瞬时空 prompt / 无 stage_changed → 误判 stuck | 观察窗 ≥2 帧见 token-flow 在动 → 判 a working,不报 |
+
+> **升级流(检测 → @Annie)对比**:现状 ~75min(1h 轮询→10min stagnation→5min Lead grace→founder page,`founder-thread-notifier` @founder 进 issue thread,`:459`)。**新设计 case-c = T1 当场立刻 @ Annie(§4.3)**:检测判定 case-c 那刻 → `founder-thread-notifier` founder @ 进对应 thread + 并行通知 owner Lead,**不排 ~75min 链**。两漏走 T2(Lead-first,超 grace 无 ACK 才 @)。
+
 ### 3.3 看门狗抓什么(catalog,超时间阈值才响;喂 FLY-927/976)
 | 检测类 | 判定(准确性要点) | 先报谁 | 归属 |
 |---|---|---|---|
