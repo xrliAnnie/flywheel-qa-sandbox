@@ -68,8 +68,14 @@ flowchart TD
 
 粗信号混三态 → 误报(a)(b)+漏报(c);codex-hold 罐头"等很久"不分正常 hold vs 真卡(FLY-863 半修 / 912)。**核心跃迁 = 从"粗信号机械匹配"→"读 per-pane 富态"(token-flow + 会话 FSM 态)区分 a/b/c** = 自动化 Tadashi 手动 fleet-scan。
 
-### 3.1 北极星验收 = Annie 四病症 + 三态判对
-**准 = 三态判对:(a) working / (b) parked 不误报、(c) stuck 不漏报。** 映射 Annie 四病症:
+### 3.1 北极星验收 = 三态判对(带优先级)+ Annie 四病症 ✅ G1 定案
+**准 = 三态判对,且带优先级(Annie 拍)**:
+- **(c) 真卡死 = 头号北极星,绝不放过(100% 不漏)** —— 报错+空prompt+不恢复 / rate-limit冻 / `/compact` 死等。检测第一优先 = 可靠认出 C。**漏 C = 直接逼 Annie 人肉巡查。**
+- **(a) 在跑长 turn 被误报 = 可容忍、低优先** —— 用户一看知道是假的、不处理;修但非 top。
+- **(b) 正常 parked 等她 = 不是误报、是 feature,要 surface** —— parked 等她 + 没人告诉她 → watcher surface 正是最该做的(接汇报层 gap② Lead-漏应答)。看门狗不把 (b) 当"卡"告警,但汇报层要兜"parked-等-founder 却没人转"。
+- **北极星 = C 绝不漏 >> A/B。**
+
+映射 Annie 四病症:
 - **① 误报** = 混淆 a/b(把在跑/合法 parked 当卡);机械匹配旧 msg、遇新 error 认不出 → **坐实 FLY-976 LLM 判断层**。
 - **② 分发不合理**:有的报给 Lead[好]、有的进 alert room[被忽略] → **consolidate 接收点**。
 - **③ 漏报** = 漏 c(真 stuck 没反应,FLY-975/546)。
@@ -80,6 +86,7 @@ flowchart TD
 ### 3.2 准确性机制 ✅ **Annie 拍:走 FLY-976 LLM 判断层**(读 per-pane 富态判 a/b/c)
 - **机械快路**(零 token,便宜初筛):真实 stage / park 元组明判明确态。
 - **LLM 判断层**(可疑才升级,省 token,FLY-976):读 pane 富态(token-flow + FSM 态)+ 真实 stage + park 元组 → 判 **a working / b parked / c stuck** + 归因(球在谁)+ 建议动作(nudge/respawn/切账号/@人)。正是 546 那种"报错后静默 idle"机械分不清、LLM 能。
+- **观察窗 + 二次确认(Tadashi 补,机制关键)**:三态判定最难是**边界** —— 长 turn 里瞬时空 prompt(看着 idle、下秒又吐)、error-but-looks-parked(报错后停在类 park 静默态)。→ 检测用**观察窗 + 二次确认(多帧/时间窗)**,**不是单帧快照**:别把恢复中的长 turn 当卡死(护 a)、也别把真卡死当短暂空(护 C)。这条直接服务"C 绝不漏"。
 - **配套 lead 协议(FLY-937)**:Lead 收 stuck 报警**先 capture pane 验当下**(不信 stale alive-flag/commit);**报警默认可信、值得查,不默认误报**。自动看门狗读 capture-pane 判 frozen/rate-limit = **FLY-778**。
 - **降级永不静默**(FLY-878 标签分层):认不出→AI 兜底;仍不确定→`fail-suspicious` 附 pane 原文上报(标签变糙、绝不吞)。
 - 边界:判断层**实现** = FLY-976 eng + 937 lead 协议 + 778;本 PRD 定"要这种理解 + 输出契约"。
@@ -182,11 +189,22 @@ stateDiagram-v2
   note right of report_lead: 每日 digest 兜底所有"在等你"开放项
 ```
 
-## 7. Success metrics(北极星)= 三态判对 + Annie 四病症 ✅
-**主指标:三态判对率**(读 per-pane 富态判 a working / b parked / c stuck):
-- **(a)(b) 不误报**:在跑长 turn(token 在流)+ 合法 parked 等 gate → 判为在轨,零误报(= 病症① · FLY-545 那类)。
-- **(c) 不漏报(最致命)**:error+空 prompt+不恢复 → 判 stuck,被 Annie 自己先发现的真 stall 数/周 → 近零(= 病症③ · FLY-975/546)。
-四病症验收:
+## 7. Success metrics(北极星)= 三态判对(带优先级)+ 六 test case ✅ G1 定案
+**主指标 + 优先级(Annie 拍)**:**(c) 绝不漏(100%)>> (a) 可容忍误报 >> (b) 要 surface(feature)**。
+
+**六个真实 test case = 北极星验收(Cass 亲历 + Tadashi 印证)**:
+| # | case | 真态 | 现状误判 | 验收标准 |
+|---|---|:--:|---|---|
+| **A1** | 零-commit 只读/QA run 被判 stuck(FLY-798「没 commit=stuck」认不出非-commit 工作) | a/b | 误报 | 不判 stuck(可容忍偶发) |
+| **A2** | 长操作 idle-timeout 误杀(等 codex/build/test,慢但在动) | a | 误报误杀 | 不判 stuck(观察窗护住) |
+| **A3** | Lead 见「刚 commit」机械 dismiss 了真 stuck(07-06 rate-limit;watchdog 对/Lead 错) | c | 被 Lead 误 dismiss | **937 协议:capture pane 验当下,报警默认可信** |
+| **B1** | error-then-idle → HEALTHY(FLY-546/975) | c | **漏报** | **100% 判 stuck** |
+| **B2** | `/compact` 静默 stall(FLY-837,进程 alive 活死) | c | **漏报** | **100% 判 stuck** |
+| **B3** | Lead draft-not-sent(FLY-574,status 绿但发不出) | c | **漏报** | **100% 判 stuck** |
+
+**共同根子** = 判断靠机械信号/alive-flag/idle 有无、**不读 pane 当下** → 读 per-pane 富态 + 观察窗二次确认后全判对。**C 类(B1/B2/B3)必须 100% 不漏;A 类(A1/A2)可容忍误报;B 类(parked)要 surface。**
+
+四病症验收(并轨):
 - **② 分发命中**:输出到"实际被看到"的接收点(thread/Lead/consolidate 队列)→ 100%;进被忽略的 alert room = 0。
 - **④ 噪音**:同一/错误问题的重复告警 → 去重+抑制后趋零;正常路径 work 时零打扰。
 - 附:归因准确(措辞/球在谁 与真实 stage 一致 → 100%);可扩展(新 Lead 零配置被覆盖)。

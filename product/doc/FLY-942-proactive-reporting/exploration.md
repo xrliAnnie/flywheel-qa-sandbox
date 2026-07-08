@@ -126,6 +126,23 @@ runner 干完一轮 parked、或真卡住时,**系统主动、准确、及时地
 
 **942 检测层的核心跃迁 = 从"粗信号机械匹配"→"读 per-pane 富态"**:看 pane 实际 **token-flow**(在不在吐)+ 会话 **FSM 态**(running / awaiting_review / park…)→ 判 a(working)/ b(parked)/ c(stuck)。**这正是 Tadashi 手动 fleet-scan 在做的**(capture pane → 眼判 working/parked/stuck),**942 = 把它自动化**。
 - eng 方向:**FLY-976 LLM 判断层**(读 pane 富态理解上下文)+ **FLY-937 lead 协议**(收报警先 capture pane 验当下,不信 stale alive-flag/commit;**Watchdog 报警默认可信、值得查,不默认误报**)+ **FLY-778**(自动看门狗本身读 capture-pane 文字判 frozen/rate-limit)。
+- **观察窗 + 二次确认(Tadashi 补)**:三态最难是边界 —— 长 turn 瞬时空 prompt(看着 idle、下秒又吐)、error-but-looks-parked(报错后停在类 park 静默态)。→ 检测用**观察窗 + 二次确认(多帧/时间窗),非单帧快照**:别把恢复中的长 turn 当卡死(护 a)、别把真卡死当短暂空(护 C)。
+
+### 5.5.0c 北极星验收:三态优先级 + 六 test case ✅ G1 定案
+
+**优先级(Annie 拍)**:**(c) 真卡死绝不漏(100%)>> (a) 在跑误报可容忍 >> (b) 正常 parked = feature 要 surface**(不是误报;parked 等她 + 没人转 → 汇报层 gap② 兜)。北极星 = C 绝不漏 >> A/B。
+
+**六个真实 test case(Cass 亲历 + Tadashi 印证)**:
+| # | case | 真态 | 验收 |
+|---|---|:--:|---|
+| A1 | 零-commit 只读/QA run 被判 stuck(FLY-798「没commit=stuck」) | a/b | 不判 stuck(可容忍偶发) |
+| A2 | 长操作 idle-timeout 误杀(等 codex/build/test) | a | 不判 stuck(观察窗护) |
+| A3 | Lead 见「刚 commit」机械 dismiss 真 stuck(07-06 rate-limit) | c | 937:capture pane 验、报警默认可信 |
+| B1 | error-then-idle → HEALTHY(546/975) | c | **100% 判 stuck** |
+| B2 | `/compact` 静默 stall(FLY-837,进程 alive 活死) | c | **100% 判 stuck** |
+| B3 | Lead draft-not-sent(FLY-574,status 绿发不出) | c | **100% 判 stuck** |
+
+共同根子 = 靠机械信号/alive-flag/idle 有无、不读 pane 当下。C 类(B1/B2/B3)100% 不漏、A 类可容忍、B 类要 surface。
 
 ### 5.5.1 准确性为什么是北极星(现状为什么不准)
 
