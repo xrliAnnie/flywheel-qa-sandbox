@@ -35,6 +35,8 @@ runner 干完一轮 parked、或真卡住时,**系统主动、准确、及时地
 
 ## 2. 核心洞察:正常路径自洽,看门狗只兜"漏"(Annie 2026-07-07 深度 revise)
 
+> **⚠️ 汇报层最终形态(Annie 2026-07-08 定稿,大幅砍简单)以 `prd.md` §4 为准**:所有汇报**进对应 [FLY-XX] thread、自然语言**;**无 founder 频道 / 无决策卡模板 / 无 digest**;**唯一主动 @ Annie = 真卡死(case c)/ Lead 接不住**。本节以下的 consolidate 接收点 / 每日 digest 是 07-07 converge 中间态,已被简化取代;检测层(§5.5,兜两漏 + 三态)不变。
+
 > **⚠️ 关键 revise**:早稿把汇报层设计成"球一换手就 push"——**Annie 否掉了**。因为换手时 runner 大概率自己会找 Lead、Lead 处理或 relay —— 这条**正常路径自己就 work**,系统不该在它正常运转时插一脚(那就是噪音 = 病症④)。
 
 **看门狗真正要兜的是正常路径的两类失败(漏):**
@@ -139,6 +141,7 @@ runner 干完一轮 parked、或真卡住时,**系统主动、准确、及时地
 | A1 | 零-commit 只读/QA run 被判 stuck(FLY-798「没commit=stuck」) | a/b | 不判 stuck(可容忍偶发) |
 | A2 | 长操作 idle-timeout 误杀(等 codex/build/test) | a | 不判 stuck(观察窗护) |
 | A3 | Lead 见「刚 commit」机械 dismiss 真 stuck(07-06 rate-limit) | c | 937:capture pane 验、报警默认可信 |
+| B0 🐕 | 910 runner alive=true 但 Claude auth 挂(Not logged in)→ 机械当 healthy | c | **100% 判 stuck**(dogfood:liveness≠healthy,须读 pane) |
 | B1 | error-then-idle → HEALTHY(546/975) | c | **100% 判 stuck** |
 | B2 | `/compact` 静默 stall(FLY-837,进程 alive 活死) | c | **100% 判 stuck** |
 | B3 | Lead draft-not-sent(FLY-574,status 绿发不出) | c | **100% 判 stuck** |
