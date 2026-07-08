@@ -142,11 +142,14 @@ registerAgentBackend(name, factory) // 运行时注册自定义后端
 
 ---
 
-## 6. Memory(诚实:没有跨 run 语义记忆)
+## 6. Memory / 经验图谱(⚠️ 修正:它有,只是路线不同)
 
-- **没有** 向量库 / 语义检索 / 跨 run 记忆。context 管理靠:node 隔离(每 node 独立 context window)+ handoff evidence 前传 + per-run workspace artifact。
-- 唯一的"记忆"= per-session 的 voice_memo widget(TOML)+ per-run audit transcript。
-→ **这块 homerail 比我们弱**:我们有 per-project memory(mem0 + Supabase pgvector,GEO-145)。**不用抄,反而是我们的相对优势。**
+> **修正上一版的错**:上一版说"homerail 没有跨-run 记忆"——**错**。读持久化层后发现它有 experience 知识图谱。详见 homerail-code-report.md §1.6。
+
+- **有** 一套 **experience 知识图谱**(`server/experience.ts` + 表 `experience_nodes`/`experience_relationships`/`experience_ingest_jobs` + `memories`):从每个 run 的 evidence + scorecard 抽 **17 种节点类型**(含 FailureRootCause / Lesson / RunSignal)+ 类型化关系,ingest 进图谱(接进 run 流,非纯脚手架)。
+- **但没有** 向量库 / embedding / 语义检索(没见 embedding 列)—— 它是**结构化"从过去 run 学教训"**的图谱,不是语义向量记忆。
+- 短期 context 管理仍靠:node 隔离 + handoff evidence 前传 + per-run workspace + per-session voice_memo。
+→ **不是"它弱我们强",是两条不同路线**:它 = 结构化 lesson/failure 图谱;我们 = 语义向量记忆(mem0 + Supabase pgvector,GEO-145)。**查"相关经验"我们的语义检索更强;"结构化学教训"它有一条我们没有的路**(可互补借鉴)。成熟度 UNKNOWN(是否产品里真复用)。
 
 ## 7. Skills 分发(核实 · `skills/README.md`)
 - skill = `SKILL.md` 目录,**symlink** 进 `$CODEX_HOME/skills` 和 `$HOME/.claude/skills`(链接式装,repo pull 即更新)。skills:`homerail-cli / dag-ops / install-ops / shared`。
@@ -186,7 +189,7 @@ homerail 和我们**独立**收敛到同一架构决定:**编排层 vendor-neutr
 | 语音 | **成熟**:双 TTS 通道 + 3 ASR 策略 + 生成式 UI | voice PRD 定稿、实现待建(FLY-542 树,STT 收音是风险) | **homerail 语音领先我们** → 可借鉴 |
 | harness | vendor-neutral AgentClient(claude/codex/kimi) | vendor-neutral executor-backend(claude/codex/antigravity/kimi) | 平,独立撞车 |
 | 隔离 | Docker 容器 per node | tmux runner + worktree | homerail 更硬(容器) |
-| memory | 无跨-run 语义记忆 | per-project mem0 + pgvector | **我们强** |
+| memory | 结构化 experience/lesson 图谱(无语义向量) | per-project mem0 + pgvector(语义向量) | 两条不同路线:语义检索我们强,结构化学教训它有一条 |
 | QA | runtime 内置 scorecard | 独立 auto-QA Runner(FLY-579) | 各有取舍 |
 | 审计 | per-run checksum transcript | 审计表(founder_consent 等) | 平,思路同 |
 | 界面 | 桌面 shell + 浏览器 UI + 未来手机/车 | Discord(手机原生 IM) | 不同赌注 |

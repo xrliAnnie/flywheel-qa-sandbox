@@ -1,0 +1,168 @@
+# FLY-1004 homerail 代码深挖报告(基于源码,不是视频)
+
+Issue: FLY-1004 (https://linear.app/geoforge3d/issue/FLY-1004/homerail-竞品分析-开源代码借鉴-语音多-agent-编排-ex-jarvis)
+日期: 2026-07-08
+基于: research.md + eng-idea-for-tadashi.md(同文件夹)。**本文是 Annie 反馈后的 v2 深挖 —— 逐条盘功能 + 细架构 + 诚实对比,读代码得出,不靠视频。**
+
+> **⚠️ 对我上一版的修正**:第一版把 homerail 说得太概括,还错说了一句"它没有跨-run 记忆"。**读了持久化层后发现错了** —— 它有一套**经验/知识图谱**(experience graph)在从跑过的 run 里抽 lessons/failures/signals。本文已修正,详见 §1.6 + §7。
+
+---
+
+## 0. 项目坐标(GitHub 链接 + 怎么读的)
+
+- **GitHub**:**https://github.com/xiaotianfotos/homerail**(公开、可 clone、MIT 系)。
+- 一句话:*"Voice-first local agent orchestration runtime for auditable DAG workflows."*
+- **规模(实测)**:**~95,000 行代码**,6 个包 + agent-ui + skills。分布:manager 27.9K / agent-ui 41.3K(Vue)/ worker 11.2K / cli 8.5K / node 4.4K / protocol 2.1K。**这是一个体量真实的工程项目,不是 demo。** TypeScript,~191★,clone 时 3h 前还在 push。
+- **作者**:小天fotos(独立开发者,陕西);模型栈自述 glm max 年 + kimi 199 包年 + $200/月 codex。
+- **方法(回应 Annie:看代码不看视频)**:把 repo clone 到本地,读了 30+ 个源文件 + 全部 48 张 SQLite 表结构 + CLI 命令注册 + 进程间 WS/JSON-RPC 协议。功能盘点和架构均 code-grounded,带文件出处。
+
+---
+
+## 1. 功能盘点 —— 它现在到底有多少功能(逐条,code-grounded)
+
+**总览:大致 15 个功能域**(成熟度差别很大:DAG 编排 / harness / provider / 语音最成熟;生成式 UI、经验图谱作者自己标 "in exploration" / 早期)。逐域列:
+
+### 1.1 DAG 编排(最成熟的核心)
+- mailbox 式 DAG 引擎(`orchestration/dag-engine.ts`):7 种 node 状态(PENDING/READY/RUNNING/COMPLETED/FAILED/CANCELLED/SKIPPED)、显式 port、边 condition(`on_success`/`on_failure`/`always`)、`after_dep` 排序边、失败路由、`_skipDependentNodes` + 有替代路径兜底。
+- **循环支持**:`loop_gateway` node + `loop_sources`(可回环,非纯 DAG)。
+- **YAML 编排模板**(`assets/orchestrations/*.yaml.template`)+ `list_orchestrations` 让 Manager Agent 挑模板起 run。
+- **RuntimeProfile**(`protocol/types.ts:65-126`):`runtime_profiles` map,每 profile 给每个 agent 角色映射 provider/model(如 `offline-deterministic` 测试用;真 profile 把 planner→贵模型、worker→便宜模型)。
+- run 级 **workspace 隔离**(`${HOMERAIL_HOME}/workspace/<run_id>/`)。
+- 运维动作:`replay`(重放)、`supervise`(盯)、`inject`(运行中给某 node 注入指令)、`quick`/`watch`/`chats`/`handoffs`(看 run 内部)。
+
+### 1.2 Worker 的编排原语(`worker/dag-tools/`)
+4 个工具:`handoff(port,content,summary)`(每轮一次,交给下游)、`send_message`/`receive_message(timeout=300s)`(node↔node 直接消息,阻塞等 inbox)、`get_graph_context`(worker 查自己所在图)。
+
+### 1.3 语音(比我们成熟)
+- **两条 TTS 通道**:`commentary`(边干边说/推理流)+ `final`(答案),可配(`voice.ts:61`)。
+- **3 种 ASR 实时策略**:`native_realtime`(WS 代理 `/v1/realtime`)/ `emulated_batch`(收 PCM16 批量转)/ `ark_voice`(字节)。`/api/voice/asr/realtime` WS server 桥接麦↔provider,PCM16↔WAV 自拼。
+- `recognition_mode`:`asr` | `omni`(多模态音频模型路径)。VAD 未在服务端见,大概客户端(⚠️ UNKNOWN)。
+- 语音供应商:小米 MiMo / 字节火山 openspeech+Ark+Doubao / OpenAI-兼容 / qwen3-tts。
+
+### 1.4 生成式 UI(作者标 in exploration)
+- Manager Agent voice 模式下调工具吐 UI:`show_status_card`/`show_list_card`/`show_progress_card`/`show_note_card`/`show_artifact_card`/`show_dynamic_widget`(type=html/metric_strip/timeline/dag_flow/chart/topic_outline/slide_deck)。
+- 6 种 widget file 类型(memo/task_draft/progress_status/checklist/artifact_ref/timeline),存 per-session TOML、稳定 id 更新不重复(`widget-file-protocol.ts`)。
+- `voice_memo`(多轮补槽:known_facts/open_questions/todos/next_action/ready_to_execute)+ `task_draft`(执行前确认:acceptance/constraints/status)。
+
+### 1.5 模型 / Provider(7 家中国模型 + 计费模型抽象 —— 真产品洞察)
+- **7 个 provider 家族**(`provider-catalog.ts`):Kimi/Moonshot、智谱 GLM、Xiaomi MiMo、DeepSeek、MiniMax、阿里云百炼/DashScope(qwen)、火山方舟(Volcengine Ark)。
+- **每家有计费变体**:`API 计费` / `Coding Plan` / `Token Plan` / `subscription`。→ **它的 provider 抽象是围绕"中国独立开发者的订阅/包年现实"设计的**,不只是 per-token API。
+- `llm_settings` 用能力位(`supports_asr`/`supports_tts`/`supports_llm`)+ `is_active`/`is_default` 管理;凭据加密存储(§1.8)。CLI:`hr model configure` / `llm-settings` / `provider`。
+
+### 1.6 记忆 / 经验图谱(⚠️ 修正:它有,不是没有)
+- **experience 知识图谱**(`server/experience.ts` + 表 `experience_nodes`/`experience_relationships`/`experience_ingest_jobs`):从每个 run 的 evidence + scorecard 抽 `ExperienceDelta`(upsert_nodes + upsert_relationships + evidence + promoted 标)。
+- **17 种节点类型**:UserGoal/Issue/Run/PullRequest/OrchestrationTemplate/RuntimeProfile/Provider/Model/WorkerAgent/Tool/Skill/Hook/ArtifactContract/ScorecardResult/**FailureRootCause/Lesson/RunSignal**。
+- 抽取 intervention/failure/lesson **signals**,ingest 进图谱(经 `/api/runs/:id/experience` + `dag-status/:id/experience-ingest/retry` 接进 run 流,非纯脚手架)。另有 `memories` 表(kind 索引)。
+- **性质**:这是**结构化"从过去的 run 学教训"的知识图谱**(节点+类型化关系+lesson 抽取),**不是**语义向量记忆(没见 embedding/vector 列)。→ 跟我们 mem0+pgvector(语义向量)是**两条不同的记忆路线**,不是"它没记忆"。成熟度 UNKNOWN(是否在产品里真被 replay/复用不确定)。
+
+### 1.7 质量 / 评估 / 审计(招牌:auditable)
+- **Scorecard**(`server/scorecard.ts`):run 跑完自动打分,check 类型(实测)= `no_failed_nodes` / `handoff_reported_blockers` / **`handoff_success_contradictions`(声称成功但证据不符)** / **`tool_activity_evidence`(真调工具干活 vs 只说话)** / `handoff_header_contract` / `blind_spot`;结果含 verdict/score/hard_error/soft_warning/blind_spot/intervention 计数 + 每 node tool 活动。**= "agent 到底真干活了没、有没有谎报成功"的质量闸。**
+- **审计**:per-run JSONL transcript + **SHA checksum + sidecar + 完整性校验**(`worker/audit/`)+ tool-event + error-log。
+- **eval-run / replay / trace / stats / evidence** CLI + `/api/runs/:id/{scorecard,eval-run,replay,audit/summary,metrics}`。
+
+### 1.8 安全(有真东西)
+- **凭据加密**:MCP server / node 的环境变量值 `encryptSecret` 后存(`secret-store.ts`),`secret_storage: manager_encrypted | legacy_plaintext`,对外 masked view;表 `encrypted_credentials`/`temporary_keys`。
+- **Mount 策略**(`node/storage/mount-policy.ts`):`allowed_host_roots` 白名单 + `validateMounts`/`workerAllowedMounts` —— 控制 worker 容器能挂哪些宿主目录。
+- 表 `security_policies` / `security_audit_logs`。
+
+### 1.9 多节点 / 容器 / 运维
+- **Node 服务**起 Docker Worker 容器(`node/lifecycle/{create,inspect,logs,remove,start,stop}.ts` + `control-plane/`),一 DAG node 一容器,非 root `node` 用户,workspace 挂载,`kimi` CLI 烤进镜像。表 `nodes`/`node_sessions`/`worker_container_mappings`/`container_volumes`。
+- **服务化**:`hr runtime {start,status,stop,restart,logs,install,uninstall,delete-service}` —— 可装成常驻服务。`hr doctor`/`smoke` 自检。
+- **多节点**是 ROADMAP long-term,已有 node 抽象铺路。
+
+### 1.10 集成
+- **MCP servers**(`mcp-servers.ts`):STDIO | SSE,env 加密。→ worker 可接 MCP 工具。
+- **git_servers** 表(git 集成)、**storages**/存储用量追踪。
+
+### 1.11 CLI(~28 命令域,比 README 列的多得多)
+config(+wizard/show/path/set)、provider、profile、llm-settings、model、run/runs、dag(resume/sync/quick/watch/supervise/chats/handoffs/inject)、doctor、scorecard、eval-run、replay、trace、stats、evidence、inject、resume、stop、status、runtime(9 子命令)、smoke、voice、templates。
+
+### 1.12 UI
+- **agent-ui**:Vue,~41K 行(i18n/composables/stores/router)—— 独立浏览器 UI 操作 Manager。
+- 桌面 voice shell(ROADMAP 要三平台签名安装包)。
+
+---
+
+## 2. 工程架构(细)
+
+### 2.1 六包分工
+| 包 | 行数 | 职责 |
+|---|---|---|
+| `homerail_protocol` | 2.1K | 共享消息/校验契约 + Manager Agent prompt/tool catalog(单一真相) |
+| `homerail_manager` | 27.9K | Manager 服务:DAG 协调 + voice surface + 生成式 UI 契约 + 持久化(48 表)+ REST/WS + scorecard + experience |
+| `homerail_node` | 4.4K | 起/管 Docker Worker 容器;provider;mount 策略;控制面 ws-client |
+| `homerail_worker` | 11.2K | 容器内 Worker runtime:harness adapter(claude/codex/kimi)+ DAG tools + audit |
+| `homerail_cli` | 8.5K | `hr` CLI(~28 命令域) |
+| `agent-ui` | 41.3K | 浏览器 UI(Vue) |
+
+### 2.2 一个请求的生命周期(code-grounded)
+```mermaid
+graph TD
+  V[语音/文字 输入] --> MA[Manager Agent<br/>chat/voice 模式]
+  MA -->|create_and_run yamlPath+profile| DE[DAG Engine<br/>mailbox 调度]
+  DE -->|node READY| NW[Node 服务<br/>起 Docker 容器]
+  NW --> WK[Worker runtime]
+  WK -->|AGENT_BACKEND| HA[Harness adapter<br/>claude-sdk / codex app-server / kimi acp]
+  HA -->|thinking/text 事件| WK
+  WK -->|handoff port,content| DE
+  DE -->|下游 node| NW
+  DE -->|run 终态| SC[Scorecard 打分]
+  SC --> EX[Experience 图谱<br/>抽 lessons/signals]
+  MA -->|voice 模式| UI[生成式 UI widget<br/>+ commentary/final TTS]
+```
+- Manager Agent 把请求转成 `create_and_run`(选 YAML 模板 + profile)→ DAG Engine 按 mailbox 调度 → node READY 时 Node 服务起容器 → Worker 用 `AGENT_BACKEND` 选 harness 驱动模型 → 模型 `thinking`/`text` 事件回流(thinking→commentary TTS)→ worker `handoff` 把成果路由到下游 node 信箱 → run 终态触发 scorecard → 打分结果 + 证据 ingest 进 experience 图谱。
+
+### 2.3 进程间协议(3 层)
+- **Manager↔Node / Manager↔Worker**:WebSocket(`node/websocket.ts`/`worker/websocket.ts`),消息 `response`/`ping`/`manager_command_result` 等。
+- **Worker↔Harness**:**stdio JSON-RPC 2.0**(codex app-server:`thread/start`→`turn/start`→drain notification;kimi:`kimi acp`)。
+- **兜底**:不支持原生 tool-call 的 harness 用文本标记 `<homerail_tool_call>` / `<homerail_handoff>`。
+
+### 2.4 持久化(48 张 SQLite 表,分组)
+- 编排:dag_runs/dag_workflows/dag_events/dag_handoffs/dag_chats/dag_metrics/dag_runtime_profiles/dag_session_index/orchestrations/changes/change_runs
+- Agent/session:agents/agent_sessions/agent_messages/sessions/session_messages/session_activity_logs/node_sessions
+- 模型:llm_providers/llm_provider_endpoints/llm_provider_models/llm_settings/llm_custom_providers
+- 记忆:memories/experience_nodes/experience_relationships/experience_ingest_jobs
+- 安全:encrypted_credentials/temporary_keys/security_policies/security_audit_logs
+- 运维:nodes/node_sessions/worker_container_mappings/container_volumes/storages/storage_node_statuses/storage_usage_trackers
+- 集成/其它:mcp_servers/git_servers/skills/prompts/projects/voice_settings/voice_agent_config/voice_agent_sessions/voice_ui_events/manager_agent_config/event_records/schema_migrations
+
+### 2.5 REST API 面(部分)
+`/api/dag-status/:run_id/{events,metrics,node/:id/chat,manager/chat,experience-ingest/retry}`、`/api/runs/:run_id/{scorecard,eval-run,replay,audit/summary,handoffs,experience,supervise,status,events}`、`/api/runs/active/{dashboard,list}`、`/api/runtime/status`、`/api/voice/*`、`/api/settings/{nodes,workspace}`。
+
+### 2.6 部署形态
+跑用户自己家硬件(mac/win/linux 桌面 shell + 本地 Manager/Node 服务 + Docker)。**不是 SaaS、不上云**(ROADMAP Non-goal)。
+
+---
+
+## 3. 它对我们的优势(concrete,读码得出)
+
+1. **语音层成熟度**:双 TTS 通道 + 3 种 ASR 策略 + 生成式 UI 已成型;我们 voice 还在 PRD→实现、且 STT 收音是未验证风险(FLY-544)。**这是它最实的领先。**
+2. **容器级 worker 隔离**:一 node 一 Docker 容器 + mount 白名单 + 凭据加密;我们是 host 上 tmux+worktree,隔离更软。
+3. **runtime 内置 scorecard**:每 run 自动查"真干活没/谎报成功没/blind spot",便宜、每次跑;我们 auto-QA 是重的独立 Runner。
+4. **7 家中国模型 + 计费模型抽象**:围绕订阅/包年/coding-plan 现实设计的 provider 目录;我们后端中立但没这么细的中国计费建模。
+5. **经验图谱(结构化学教训)**:从 run 抽 FailureRootCause/Lesson/Signal 进图谱 —— 一条"结构化跨-run 学习"路线(跟我们语义向量记忆不同)。
+6. **DAG 可预测性 + replay/eval/trace 工具链**:静态 DAG 让"重放、评测、追踪"很自然;我们 issue-driven 更动态但没这套 replay/eval CLI。
+
+## 4. 我们能学什么(top —— 细节全在 eng-idea-for-tadashi.md)
+- **P1 语音**:双 TTS 通道(commentary/final)/ 生成式 UI 让朗读短 / task_draft 执行前确认 / voice_memo 多轮补槽 → 直接喂 voice PRD(FLY-906)。**注意约束**:commentary 只有会 stream reasoning 的后端(Codex)能自动合成,filler 别依赖 reasoning stream。
+- **P2 质量闸**:runtime 内置轻量 scorecard(真干活/谎报成功/blind spot 检查),当 auto-QA 前的第一道廉价闸。
+- **P2 安全卫生**:凭据加密 + worker mount 白名单 + codex 每实例独立 CODEX_HOME + 日志脱敏。
+- **P3 记忆**:结构化"从 run 抽 lesson/failure-rootcause 进图谱"——跟我们语义记忆互补,可考虑加一层"结构化教训"。
+- **验证类**:vendor-neutral harness 注册表 / 贵脑便宜手 / skills symlink —— 我们已有,它独立撞车 = 方向对。
+
+## 5. 我们哪里做得更好(concrete)
+1. **目标价值高一档**:我们做"建并养真软件产品",它**主动放弃软件**(说软件最难判断)——它让出的正是我们的空地。
+2. **交互对象 & 界面**:我们 = 非技术 founder 在**手机原生 IM(Discord)**指挥一个**常驻被协调的多部门 AI 组织**;它 = 单人 operator 跑自己 NAS 的桌面 shell + 静态 DAG。对"只带手机的非技术小生意主",我们的界面赌注更贴。
+3. **真实协作编排**:我们 issue-driven 三段式 + Lead↔Runner + founder gate,贴真实"提需求→干→验收";它是提前画好的静态 DAG 模板(更可预测但更死)。
+4. **记忆的语义维度**:我们 mem0+pgvector 是语义检索(它是结构化图谱、无 embedding)——查"相关经验"我们更强。
+5. **常驻组织 + 多 Lead 协调 + 供应商中立整合**(FLY-909 定位候选):它是单机单 operator,没有"一家公司在动"的协调层。
+
+## 6. 对"要不要折进定位"的建议(Annie 要 detail 后再定)
+- **建议:homerail 主要当"语音层 + 质量闸的技术借鉴来源"(喂 eng),不当"定位靶子"。** 理由:它跟我们**目标用户和产品赛道并不同**(单人 operator 跑自己 NAS 做易判断的活 vs 非技术 founder 手机指挥建软件),硬折进定位叙事会稀释我们已收敛的主线。
+- **但两个战略点值得写进 FLY-911 的"外部信号"**(不是定位主体):① 一个同构开源项目主动放弃软件 → 坐实我们空地;② 它独立撞车 vendor-neutral → 方向验证。
+- **净判断**:borrow its **eng**(语音/质量闸/安全),don't adopt its **positioning**。最终折不折进定位由 Annie / FLY-911 拍——本文只给足细节支撑这个判断。
+
+## 7. 诚实边界 + 对上一版的修正
+- **修正**:上一版说"homerail 没有跨-run 记忆"——**错**。它有 experience 知识图谱(§1.6),只是结构化(非语义向量)。已在 research.md / deepdive / eng-idea 同步修正。
+- **UNKNOWN**:VAD 位置(大概客户端,服务端没确认);experience 图谱/生成式 UI 的真实成熟度(作者标 in exploration,是否产品里真复用不确定);UI 是否 codex 做(评论区推测);star/更新时间为 2026-07-08 快照。
+- **没实跑**:结论 = 读码 + 官方文档,没 `hr start` 亲测运行体验。视频没转写(README/ROADMAP 已权威覆盖同内容)。
