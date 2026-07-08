@@ -18,7 +18,7 @@ runner 干完一轮 parked、或真卡住时,正常路径(runner 告诉 Lead →
 
 - **Problem**:runner 经常干完一轮 parked(等 founder 拍板)或真卡住,没人主动汇报 → Annie 被迫人肉巡查每个 runner(人肉 QA);要她拍的决策埋在长消息、不进对应 thread、不够醒目。且现有看门狗**不准**(漏报真 stall / 误报健康 runner / alive-flag 不可信 / 归因错措辞),不准 → Annie 更得自己盯。
 - **Users**:**Annie(founder)** 只在"真需要她拍 / 真卡了"时被精准醒目叫到,其余不打扰,离开数小时回来一眼看清"哪些在等我";**Lead** 从"要会巡查"解放为"看门狗一响我第一个排查",自愈或 relay;**Runner / Watchdog / Bridge** = 状态的产生 / 检测 / 投递。
-- **Goals**:① **准**(北极星):检测漏报近零、误报可容忍低、归因/措辞按真实 stage 不猜。② **绝不静默**:任何需人介入的停止,系统一定让"该负责的人"知道。③ **不刷屏**:无新状态变化=无新通知。④ **决策醒目进 thread**:一事一卡。⑤ **可扩展**:检测是系统级看门狗的活,不靠每 Lead 手动扫。
+- **Goals**:① **准**(北极星):检测漏报近零、误报可容忍低、归因/措辞按真实 stage 不猜。② **绝不静默**:任何需人介入的停止,系统一定让"该负责的人"知道。③ **不刷屏**:无新状态变化=无新通知。④ **决策进对应 thread**:一事一帖(自然语言,非固定卡片)。⑤ **可扩展**:检测是系统级看门狗的活,不靠每 Lead 手动扫。
 - **Non-goals(划走给别 issue,本 PRD 只定产品行为,不重做)**:
   - 检测**实现**(park 元组 / 真实 stage 归因 / @-target / 时间阈值)= **FLY-927 Watchdog v2**(In Progress;注:927 现用 1h,本 PRD 收敛为 878 的 ~20min 可配,Qe/eng 对齐)。
   - 看门狗 **LLM 判断层实现** = **FLY-976** eng(Tadashi);本 PRD 定"要什么判断行为"。
@@ -39,15 +39,17 @@ flowchart TD
   WD -->|机械快路 明确态| CLS[分类]
   WD -->|可疑态升级 省token| LLM[LLM 判断层 FLY-976<br/>卡/健康idle/正常等待 + 归因]
   LLM --> CLS
-  CLS --> G1[漏① runner 没找 Lead]
-  CLS --> G2[漏② Lead 漏应答]
-  CLS --> G3[真 stall/error/rate-limit/tool-leak/ghost]
-  G1 --> DEDUP[去重 + over-notify 抑制 claims.db]
-  G2 --> DEDUP
-  G3 --> DEDUP
-  DEDUP --> THREAD[进对应 FLY-XX thread · 自然语言 · 先提醒责任 Lead<br/>无频道/无卡片/无 digest]
+  CLS --> G12[漏①/② gap]
+  CLS --> G3[疑似 stall/error/rate-limit/tool-leak/ghost]
+  G3 --> OW{观察窗 ≥2帧 二次确认<br/>判 case-c?}
+  OW -->|不是 c 只是 gap/parked/在跑| G12
+  OW -->|判定 case-c| T1[T1 · 立即 @ Annie<br/>+ 并行通知 Lead]
+  G12 --> DEDUP[去重 + over-notify 抑制 claims.db]
+  DEDUP --> THREAD[进对应 thread + Lead inbox 提醒责任 Lead<br/>自然语言 · 无频道/卡片/digest]
   THREAD -->|Lead 自愈/relay| DONE2[✔ 解决 · 安静无 @]
-  THREAD -. 真卡死 case-c / Lead 接不住 .-> ANNIE[看门狗当场立刻 @ Annie<br/>唯一主动打断]
+  THREAD -. Lead 超 grace 无 ACK/不可达 .-> T2[T2 · @ Annie]
+  T1 --> ANNIE[Annie 处理]
+  T2 --> ANNIE
 ```
 
 **两半各自的价值**:检测层保证"准"(北极星,否则汇报不可信);汇报层保证"进 thread、自然语言、极少 @"。**准确性 = 三态判对(C 绝不漏)+ Annie 四病症**。**汇报 = 全进对应 thread、自然语言;唯一主动 @ = 真卡死/Lead 接不住**(Annie 2026-07-08 简化)。**同源**——都从 `flywheel-comm stage set` 真实 stage + park 元组派生 → 与 FLY-964 显示永不打架,归因永不靠猜。
@@ -108,11 +110,11 @@ flowchart TD
 
 ### 3.4 over-notify 抑制(治 ghost 刷屏)+ 治源头〔Q9〕
 - **抑制**:已知 / 正在清 / 已升级的问题**绝不 re-alert**(FLY-970 死着还一直 fire session_stuck)。复用去重设施 + 对"清理中"ghost 加抑制态。
-- **治源头(auto-QA-spawn gate)**:FLY-970 ghost 根因 = product/no-three-stage issue 被错误 auto-spawn QA。需求:此类 issue 不该自动 spawn QA(接 FLY-579 auto-QA gate / FLY-707 opt-in)。
-- 清理机制 / 子 session scope 归属 = eng(FLY-973:归 parent lead 非一律 eng);归约束 = FLY-962/978。
+- **治源头(auto-QA-spawn gate)= follow-up ref,不在 942 build**(§9 已移出):FLY-970 ghost 根因 = product/no-three-stage issue 被错误 auto-spawn QA → 此类 issue 不该自动 spawn QA(归 **FLY-579/707**)。942 只把它列为相邻需求。
+- 清理机制 / 子 session scope 归属 = eng(FLY-973:归 parent lead 非一律 eng);归约束 = FLY-962/978。**均 follow-up,非 942 build。**
 
-### 3.5 mid-turn hard-stop(相邻能力,标边界)〔Q10〕
-现状 queued STOP 只在 turn 边界生效 → runner 烧完 token 做完不想要的才停(FLY-915 v2 就多做了个 PRD+PR)。需求:能 kill 当前 turn。实现 = harness/eng,可能独立 issue;待 Annie 定是否纳入 942 scope。
+### 3.5 mid-turn hard-stop(相邻能力)= follow-up 独立 issue,不在 942 build
+现状 queued STOP 只在 turn 边界生效 → runner 烧完 token 做完不想要的才停(FLY-915 v2 就多做了个 PRD+PR)。需求:能 kill 当前 turn。实现 = harness/eng,**独立 issue**(§9 已移出 942 build);待 Annie 定是否纳入 942 scope(默认不纳入)。
 
 ---
 
@@ -176,7 +178,7 @@ flowchart TD
 |---|---|---|
 | Runner | `stage set` 报真实 stage(`stage.ts`→`stage_changed`→`sessions.session_stage`);干完 `park`(CommDB `runner_declared_states`) | 已建;⚠️ park 后现状静默 |
 | Watchdog | 检测/分类(球在谁)/去重;park 元组+@-target+阈值=FLY-927;LLM 判断=FLY-976 | 部分已建;927/976 计划中 |
-| Bridge | 把两漏+stall 用**自然语言**投对应 thread(复用 `founder-thread-notifier`)+ 去重(claims.db);真卡死/Lead 接不住 → **@ Annie** | 通知器/去重已建;三态判定 + case-c 即时 @ + 观察窗要补(**无卡片/无 digest**) |
+| Bridge | **两漏/T2** → 进对应 thread + **Lead inbox/mailbox(FLY-161/168)提醒 Lead(不用 founder-only 的 `founder-thread-notifier`)**;**T1 case-c / Lead 接不住** → `founder-thread-notifier` **仅走 founder @ 那条路**;去重 claims.db | Lead inbox/去重已建;三态判定 + case-c 即时 @ + 观察窗 + Lead-ACK 契约要补(**无卡片/无 digest**) |
 | Lead | 第一响应人(§4.7) | 契约要形式化 |
 | FLY-964 显示 | 同源持久显示 | 不重做 |
 
@@ -194,20 +196,25 @@ stateDiagram-v2
 
   running --> gap1: 漏① 没告诉 Lead
   normal --> gap2: 漏② Lead 漏应答
-  running --> stall: 真 stall/error/rate-limit/tool-leak/ghost
+  running --> suspect: 疑似 stall/error/rate-limit/tool-leak/ghost
 
-  gap1 --> watch: 时间阈值计时(默认~20min)
+  suspect --> classify: 观察窗 ≥2帧 二次确认
+  classify --> gap1: 不是 c(gap/parked/在跑)
+  classify --> case_c: 判定真卡死 case-c
+  case_c --> t1: T1 · 立即 @ Annie + 并行通知 Lead
+
+  gap1 --> watch: 时间阈值计时(~20min)
   gap2 --> watch
-  stall --> watch
   watch --> silent: 阈值内被处理 → 静默不报
-  watch --> report_thread: 超阈值没人动 → 进对应 thread、自然语言、提醒 Lead
-  report_thread --> resolved: Lead 自愈/relay(安静无 @)
-  report_thread --> at_annie: 真卡死 case-c / Lead 接不住 → 看门狗当场 @ Annie
+  watch --> report_lead: 超阈值 → 进 thread + Lead inbox 提醒 Lead
+  report_lead --> resolved: Lead 自愈/relay(安静无 @)
+  report_lead --> t2: Lead 超 grace 无 ACK/不可达 → T2 · @ Annie
   resolved --> [*]
-  at_annie --> [*]
+  t1 --> [*]
+  t2 --> [*]
 
-  note right of watch: 去重+抑制:同一漏只报一次;ghost 不 re-alert
-  note right of at_annie: 唯一主动打断 Annie(无 digest、无频道、无卡片)
+  note right of case_c: T1 = 唯一立即 @;稀有高信号
+  note right of watch: 去重+抑制;ghost 不 re-alert;无 digest/频道/卡片
 ```
 
 ## 7. Success metrics(北极星)= 三态判对(带优先级)+ 用例集 ✅ G1 定案
@@ -269,6 +276,6 @@ stateDiagram-v2
 - Qa 接收点 = 进该 issue thread(砍 founder 频道/开放队列);Qb 决策卡 = **砍**(自然语言);Qc Lead 替拍可回退 = **安静帖不 @**;Qd digest = **砍**。
 - **唯一主动 @ Annie = 真卡死 case-c / Lead 接不住。**
 
-**边界/scope**:942(检测+兜漏)↔ 915(通知管线);ghost 检测+抑制+auto-QA-gate(清理/gate=eng);mid-turn hard-stop(需求列入,实现 eng/可能独立 issue)。
+**边界/scope**(同 §8/§9):942 build = 检测准确性 + 两漏兜 thread/Lead inbox + case-c @Annie(T1)+ over-notify 抑制(仅 §3.4 那条)。**移出 942 build → follow-up**:auto-QA-spawn gate(579/707)、ghost 清理/scope(970/973/962/978)、mid-turn hard-stop(独立 issue,待 Annie 定 scope)。942↔915(通知管线)独立。
 
 → **全 converged。下一步:codex design-review → 拆 build issue 给 Tadashi(不 create-issue,draft,ship 仍 founder-gated)。**
