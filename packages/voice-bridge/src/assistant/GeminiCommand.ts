@@ -77,13 +77,21 @@ export class GeminiCommand {
 			return;
 		}
 
-		await inv.reply(
-			`🎙 /${this.name} 开场了 — 立项 ${identifier}${issueUrl ? `(${issueUrl})` : ""}。点 Join 进语音频道。`,
-			{ joinUrl: this.opts.joinUrl },
-		);
-		await this.opts.pingFounder(
-			`🎙 /${this.name} 在等你 — 点 Join 进 #huddle,聊完纪要自动落 ${identifier}。`,
-		);
+		// invite + ping are best-effort: a Discord hiccup here must not strand
+		// the acquired slot before the session takes ownership (Codex R1 MEDIUM).
+		try {
+			await inv.reply(
+				`🎙 /${this.name} 开场了 — 立项 ${identifier}${issueUrl ? `(${issueUrl})` : ""}。点 Join 进语音频道。`,
+				{ joinUrl: this.opts.joinUrl },
+			);
+			await this.opts.pingFounder(
+				`🎙 /${this.name} 在等你 — 点 Join 进 #huddle,聊完纪要自动落 ${identifier}。`,
+			);
+		} catch (err) {
+			this.opts.log?.(
+				`[gemini-command] invite/ping failed (non-fatal, session continues): ${String((err as Error).message ?? err)}`,
+			);
+		}
 		if (this.opts.moveFounderToVc) {
 			const moved = await this.opts.moveFounderToVc().catch(() => false);
 			if (!moved) {

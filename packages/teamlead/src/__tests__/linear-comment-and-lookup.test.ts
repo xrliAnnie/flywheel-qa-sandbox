@@ -64,6 +64,15 @@ const ISSUE_NODE = {
 	state: { name: "In Progress", type: "started" },
 	labels: { nodes: [{ name: "Flywheel" }] },
 	assignee: { name: "runner" },
+	project: { name: "Flywheel" },
+};
+
+const FOREIGN_NODE = {
+	...ISSUE_NODE,
+	id: "uuid-geo",
+	identifier: "GEO-5",
+	labels: { nodes: [{ name: "GeoForge3D" }] },
+	project: { name: "GeoForge3D" },
 };
 
 /** rawRequest router: IssueByIdentifier vs ListIssues, by query text. */
@@ -148,7 +157,7 @@ describe("voice-bridge landing routes (FLY-967 / 545 P12)", () => {
 	});
 
 	it("comment: 404 when the issue does not exist (explicit, not opaque)", async () => {
-		mockIssueFn.mockRejectedValue(new Error("Entity not found"));
+		routeRawRequest({ exact: null });
 		const res = await postComment({ issueId: "FLY-99999", body: "summary" });
 		expect(res.status).toBe(404);
 		const data = await res.json();
@@ -157,7 +166,7 @@ describe("voice-bridge landing routes (FLY-967 / 545 P12)", () => {
 	});
 
 	it("comment: resolves identifier → UUID and creates the comment", async () => {
-		mockIssueFn.mockResolvedValue({ id: "uuid-967" });
+		routeRawRequest({ exact: ISSUE_NODE });
 		mockCreateComment.mockResolvedValue({
 			comment: Promise.resolve({ id: "cmt-1", url: "https://l/c/1" }),
 		});
@@ -176,10 +185,41 @@ describe("voice-bridge landing routes (FLY-967 / 545 P12)", () => {
 	});
 
 	it("comment: 502 when Linear createComment fails", async () => {
-		mockIssueFn.mockResolvedValue({ id: "uuid-967" });
+		routeRawRequest({ exact: ISSUE_NODE });
 		mockCreateComment.mockRejectedValue(new Error("boom"));
 		const res = await postComment({ issueId: "FLY-967", body: "x" });
 		expect(res.status).toBe(502);
+	});
+
+	it("comment: projectName scopes the write — out-of-scope issue is 403 (Codex R1)", async () => {
+		routeRawRequest({ exact: FOREIGN_NODE });
+		mockCreateComment.mockResolvedValue({
+			comment: Promise.resolve({ id: "cmt-x", url: "u" }),
+		});
+		const res = await postComment({
+			issueId: "GEO-5",
+			body: "x",
+			projectName: "flywheel",
+		});
+		expect(res.status).toBe(403);
+		expect(mockCreateComment).not.toHaveBeenCalled();
+	});
+
+	it("comment: projectName + in-scope issue passes", async () => {
+		routeRawRequest({ exact: ISSUE_NODE });
+		mockCreateComment.mockResolvedValue({
+			comment: Promise.resolve({ id: "cmt-1", url: "u" }),
+		});
+		const res = await postComment({
+			issueId: "FLY-967",
+			body: "纪要",
+			projectName: "flywheel",
+		});
+		expect(res.status).toBe(200);
+		expect(mockCreateComment).toHaveBeenCalledWith({
+			issueId: "uuid-967",
+			body: "纪要",
+		});
 	});
 
 	// ---- GET /api/linear/issue ----
@@ -207,6 +247,20 @@ describe("voice-bridge landing routes (FLY-967 / 545 P12)", () => {
 		});
 		// exact branch only — no keyword list query issued
 		expect(mockRawRequest).toHaveBeenCalledTimes(1);
+	});
+
+	it("lookup: exact hit outside the named project scope is a miss, not a leak (Codex R1)", async () => {
+		routeRawRequest({ exact: FOREIGN_NODE, list: [] });
+		const res = await getIssue("query=GEO-5&projectName=flywheel");
+		expect(res.status).toBe(404); // fell through to the scoped keyword search
+	});
+
+	it("lookup: exact hit inside the named scope returns the single issue", async () => {
+		routeRawRequest({ exact: ISSUE_NODE });
+		const res = await getIssue("query=FLY-967&projectName=flywheel");
+		expect(res.status).toBe(200);
+		const data = await res.json();
+		expect(data.matchType).toBe("identifier");
 	});
 
 	it("lookup: identifier-shaped miss falls through to keyword search", async () => {

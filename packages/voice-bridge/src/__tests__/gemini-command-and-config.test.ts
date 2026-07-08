@@ -95,6 +95,17 @@ describe("GeminiCommand (FLY-967 P7)", () => {
 		expect(h.slot.acquire("meet", "x").ok).toBe(true);
 	});
 
+	it("a Discord invite/ping failure never strands the slot (Codex R1)", async () => {
+		const log = vi.fn();
+		const h = makeCommand({ log });
+		h.inv.reply.mockRejectedValueOnce(new Error("discord 503"));
+		await h.cmd.handle(h.inv);
+		// meeting proceeds — the session takes slot ownership as usual
+		expect(h.startSession).toHaveBeenCalled();
+		expect(h.slot.acquire("meet", "x").ok).toBe(false); // held by the session
+		expect(log).toHaveBeenCalledWith(expect.stringContaining("non-fatal"));
+	});
+
 	it("missing MOVE permission is never fatal", async () => {
 		const log = vi.fn();
 		const h = makeCommand({ moveFounderToVc: vi.fn(async () => false), log });

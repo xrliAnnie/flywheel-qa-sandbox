@@ -25,6 +25,8 @@ export interface LinearIssue {
 	stateType: string;
 	labels: string[];
 	assignee: string | null;
+	/** Linear project name (null when the issue has none). */
+	project: string | null;
 	url: string;
 	createdAt: string;
 	updatedAt: string;
@@ -98,6 +100,7 @@ export async function queryLinearIssues(
 					state { name type }
 					labels { nodes { name } }
 					assignee { name }
+					project { name }
 				}
 				pageInfo { hasNextPage endCursor }
 			}
@@ -162,6 +165,7 @@ type LinearIssueNode = {
 	state: { name: string; type: string };
 	labels: { nodes: Array<{ name: string }> };
 	assignee: { name: string } | null;
+	project?: { name: string } | null;
 };
 
 function mapIssueNode(n: LinearIssueNode, slim: boolean): LinearIssue {
@@ -176,6 +180,7 @@ function mapIssueNode(n: LinearIssueNode, slim: boolean): LinearIssue {
 		stateType: n.state.type,
 		labels: n.labels.nodes.map((l) => l.name),
 		assignee: n.assignee?.name ?? null,
+		project: n.project?.name ?? null,
 		url: n.url,
 		createdAt: n.createdAt,
 		updatedAt: n.updatedAt,
@@ -208,6 +213,7 @@ export async function lookupLinearIssueByIdentifier(
 				state { name type }
 				labels { nodes { name } }
 				assignee { name }
+				project { name }
 			}
 		}
 	`;

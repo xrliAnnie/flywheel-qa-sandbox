@@ -103,3 +103,22 @@ export function resolveLinearScope(
 				: undefined;
 	return { project, labels };
 }
+
+/**
+ * FLY-967 (Codex R1): does a concrete issue fall inside a project binding?
+ * Mirrors resolveLinearScope's both-filters semantics: every constraint the
+ * binding declares must hold — team key (identifier prefix), project name,
+ * and scope label. Used by the read (exact-identifier) and write (comment)
+ * proxies so an explicit identifier can never cross the project boundary.
+ */
+export function issueMatchesBinding(
+	issue: { identifier: string; labels: string[]; project: string | null },
+	binding: ProjectLinearBinding,
+): boolean {
+	if (binding.team && issue.identifier.split("-")[0] !== binding.team) {
+		return false;
+	}
+	if (binding.project && issue.project !== binding.project) return false;
+	if (binding.label && !issue.labels.includes(binding.label)) return false;
+	return true;
+}

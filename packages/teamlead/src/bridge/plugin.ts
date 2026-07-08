@@ -196,7 +196,11 @@ import {
 	lookupLinearIssueByIdentifier,
 	queryLinearIssues,
 } from "./linear-query.js";
-import { resolveLinearScope, resolveProjectNameParam } from "./linear-scope.js";
+import {
+	issueMatchesBinding,
+	resolveLinearScope,
+	resolveProjectNameParam,
+} from "./linear-scope.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { waitForPaneMarker } from "./pane-readiness.js";
@@ -2335,17 +2339,42 @@ export function createBridgeApp(
 				res.status(400).json({ error: "body is required" });
 				return;
 			}
+			// FLY-967 Codex R1: this is a WRITE path — when the caller names a
+			// project, the target issue must fall inside its binding (voice-bridge
+			// clients always pass projectName; absent keeps the update-issue-style
+			// unscoped behavior for existing internal callers).
+			const boundComment = resolveProjectNameParam(
+				projects,
+				req.body?.projectName,
+			);
+			if (!boundComment.ok) {
+				res.status(boundComment.status).json({ error: boundComment.error });
+				return;
+			}
 			try {
 				const { LinearClient } = await import("@linear/sdk");
 				const client = new LinearClient({ apiKey: config.linearApiKey });
-				let issue: { id: string } | undefined;
-				try {
-					issue = await client.issue(issueId);
-				} catch {
-					issue = undefined;
-				}
+				// issue(id:) accepts UUID or identifier; the mapped lookup also
+				// carries labels/project for the scope check.
+				const issue = await lookupLinearIssueByIdentifier(
+					config.linearApiKey,
+					issueId,
+				);
 				if (!issue) {
 					res.status(404).json({ error: `issue "${issueId}" not found` });
+					return;
+				}
+				if (
+					boundComment.binding &&
+					!issueMatchesBinding(issue, boundComment.binding)
+				) {
+					res.status(403).json({
+						error: `issue "${issue.identifier}" is outside the "${String(
+							Array.isArray(req.body?.projectName)
+								? req.body?.projectName[0]
+								: req.body?.projectName,
+						)}" project scope`,
+					});
 					return;
 				}
 				const payload = await client.createComment({
@@ -2358,10 +2387,7 @@ export function createBridgeApp(
 					comment: { id: comment?.id, url: comment?.url },
 				});
 			} catch (err) {
-				console.error(
-					"[linear-proxy] comment failed:",
-					(err as Error).message,
-				);
+				console.error("[linear-proxy] comment failed:", (err as Error).message);
 				res.status(502).json({ error: "Linear API error" });
 			}
 		},
@@ -2412,12 +2438,19 @@ export function createBridgeApp(
 						config.linearApiKey,
 						q,
 					);
-					if (exact) {
+					// FLY-967 Codex R1: an exact hit OUTSIDE the caller's project
+					// binding is treated as a miss (falls through to the scoped
+					// keyword search) — an explicit identifier must not cross the
+					// project boundary when a scope was named.
+					if (
+						exact &&
+						(!bound.binding || issueMatchesBinding(exact, bound.binding))
+					) {
 						res.json({ matchType: "identifier", issue: exact });
 						return;
 					}
-					// identifier-shaped but unknown — fall through to keyword search
-					// (it may be a literal title fragment); a full miss is a 404 below.
+					// identifier-shaped but unknown/out-of-scope — fall through to the
+					// keyword search; a full miss is a 404 below.
 				}
 				const result = await queryLinearIssues(config.linearApiKey, {
 					titleContains: q,
