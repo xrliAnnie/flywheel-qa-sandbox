@@ -80,7 +80,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
   <b>怎么看 + 怎么留言(v4 两处改了):</b> 这不是结论、不是 PRD。它把三家参考的<b>真实架构做法</b>挖清楚、对照<b>我们现在</b>的系统、
   把 session-log 等列成<b>候选</b>给你评估。<b>① 你上一轮的留言我清掉了,这是干净的一版</b>(每次新版都从空白开始);
   <b>② 现在<u>每一个小节下面</u>都有一个留言框</b>(不再是一个大 section 一个框)。你随手在对应小节打字,最后点底部
-  「导出我的批注」把所有留言收走。<span class="tag unk">UNKNOWN</span> 标的是查不到实证的地方,我没瞎编。
+  「复制批注」把所有小节的留言收集成一段 markdown 复制走。<span class="tag unk">UNKNOWN</span> 标的是查不到实证的地方,我没瞎编。
 </div>
 
 <div class="card purple">
@@ -281,9 +281,9 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 <div class="cmt"><label>💬 总批注 / 决定 / 下一步想让我干什么</label><textarea data-k="final" data-label="5 · 总批注 / 决定"></textarea></div>
 
 <div class="bar">
-  <button class="primary" id="exportBtn" type="button">导出我的批注</button>
+  <button class="primary" id="exportBtn" type="button">复制批注</button>
   <button class="ghost" id="clearBtn" type="button">清空</button>
-  <span class="hint" id="saveHint">每个小节下都有留言框;批注只存在你这台机器,刷新不丢(新版本从空白开始)。</span>
+  <span class="hint" id="saveHint">每个小节下都有留言框;「复制批注」把所有小节收集成 markdown 复制走。批注只存你这台机器,刷新不丢(每个新版本都从空白开始)。</span>
 </div>
 </div>
 
@@ -301,8 +301,12 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 
 <script nonce="__CSP_NONCE__">
 (function(){
-  // v4: bumped key so previous rounds' comments do NOT carry into this version.
-  var KEY = "fly353-arch-review-v4";
+  // Global standard: scope localStorage to THIS published page (location.pathname).
+  // Every publish gets a unique /r/<id>/ path → its own clean namespace → previous
+  // rounds' comments never carry over (no manual version bump needed); a refresh of
+  // the SAME url still persists. This is the reusable "clean empty boxes each version".
+  var pathScope = (typeof location !== "undefined" && location.pathname) ? location.pathname : "local";
+  var KEY = "fly353-arch-review::" + pathScope;
   var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
 
   var saved = {};
