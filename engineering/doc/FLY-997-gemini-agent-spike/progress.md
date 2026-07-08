@@ -1,16 +1,16 @@
 ---
 issue: FLY-997
 phase: implement
-phaseCursor: 3/5
-updated: 2026-07-08T21:02:23.584Z
-nextStep: "flash tier 50/50 ALL PASS (100% all scenarios, 0 hallucination, 0
-  schema violations); pro tier in progress. findings.md skeleton drafted
-  (S1+contract+D5 final, S2/S3/S4 TBD). On matrix completion: run S3+S4,
-  backfill findings, commit+PR"
+phaseCursor: 4/5
+updated: 2026-07-08T21:59:37.866Z
+nextStep: "ALL experiments done: S2 100/100, S3 5/5+10/10 (delegate decision
+  ~0.6s), S4 10/10 zero bypass. findings.md final. PR #513 open,
+  stage=pr_created (Bridge auto-triggers Codex review), CI polling in bg. Next:
+  on CI green write ready_to_merge signal, approve gate flow, park"
 chunks: []
 pointers: {}
 ---
 
 # FLY-997 progress
-**phase**: implement (3/5)
-**next**: flash tier 50/50 ALL PASS (100% all scenarios, 0 hallucination, 0 schema violations); pro tier in progress. findings.md skeleton drafted (S1+contract+D5 final, S2/S3/S4 TBD). On matrix completion: run S3+S4, backfill findings, commit+PR
+**phase**: implement (4/5)
+**next**: ALL experiments done: S2 100/100, S3 5/5+10/10 (delegate decision ~0.6s), S4 10/10 zero bypass. findings.md final. PR #513 open, stage=pr_created (Bridge auto-triggers Codex review), CI polling in bg. Next: on CI green write ready_to_merge signal, approve gate flow, park
