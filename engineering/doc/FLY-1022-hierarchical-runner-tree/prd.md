@@ -145,7 +145,9 @@ DR 相对我 web-research 新增可落的一条 = **『有界队列 + 显式 cre
 
 > Annie/Lead 要求 PRD 详细、别浓缩(353/1005 都栽在 PRD 太精简)。故把 `tree-patterns-research.md` 的实质**全搬进这里**。
 > 9 条机制,每条:**机制 / 权衡(尽量定量)/ 来源 / 映射到我们的树 / MVP-or-later**。ChatGPT DR(29 引用)+ 我 web-research(14 源)**双重印证**。
-> 标注:一手引用 URL 见 `tree-patterns-research.md §11`;DR 的精确 primary-source URL 待导出补(§11)。
+> **来源标注(Annie 未选 A/B,不再等 —— 次要问题)**:本目录的机制来源 = 我 web-research 的 14 条一手来源(`tree-patterns-research.md §11`)
+> + ChatGPT DR 的 executive 结论(§4.1b)。**DR 报告内那 29 条精确 primary-source URL 待补** —— 自动导出被跨域 iframe hit-test 挡
+> (FLY-541,Tadashi 修根因中);**substance 与架构不受影响**,URL 属可后补的精确度问题。
 
 **4A-1 · 部分聚合上汇(partial aggregation / tree aggregation)** `MVP`
 - **机制**:叶子产局部结果 → 中间层 sub-lead **先做部分聚合、只送聚合值** → **对数轮**收敛到顶。抄 Spark `treeAggregate` / MapReduce combiner / rack combiner(机架层 fan-in)。
@@ -213,6 +215,49 @@ DR 相对我 web-research 新增可落的一条 = **『有界队列 + 显式 cre
 - **来源**:Erlang/OTP supervisor 官方文档(DR 引)。
 - **映射**:**sub-lead = 它那摊 runner 的 supervisor**;runner 反复失败**超 restart intensity** → sub-lead 停止重试、**上报父级**(逐层,§5)——正好给「子失败该怎么办」一套成熟词汇,呼应 942「失败 3 次问 founder」+ 现有 runner retry。let-it-crash ≈ 我们的「坏 worktree 清掉重派」。
 - **MVP**:✅(策略/契约层;具体重启复用现有 runner retry + 942 升级,不新造引擎)。
+
+---
+
+## 4B. 整体架构:9 机制装进树(给 Tadashi 一眼看清「怎么拼」)
+
+> Annie 拍板加这张。目的:把散在 §4A/§5/§8.3/§9 的机制**装进 Lead→sub-lead→runner 树、标清每个在哪一层**,让 Tadashi 一眼看清怎么拼。
+> **可建 = research(抄什么,`tree-patterns-research.md`)+ PRD 契约(grounded,§4A/§5/§8.3/§9)+ 这张架构(怎么拼)+ §13 build 拆分。** 产品/机制层,不下实现细节(那是 build 时的活)。
+> 视觉版(inline SVG,Apple-light,参 353 风格)见终审卡;此处 Mermaid 等价。
+
+```mermaid
+graph TB
+    A["Annie (founder)<br/>每件事的 [ISSUE-ID] thread 直达(§7 树不藏)"]
+    L["<b>Lead(root)</b><br/>⑨ summary-merge:各组摘要聚一屏<br/>⑧ owner-resolution 权威(label=dept/root)<br/>消费 ③ credit → 喂 353 capacity-aware 派发"]
+    SLA["<b>sub-lead A</b> = facade/压缩层<br/>① bounded fan-out ≤~5-6 · ④ bulkhead+熔断(子树=cell)<br/>⑤ soft-suspicion 第一响应 · ⑥ OTP restart supervisor<br/>⑨ merge(有界 top-K) · ③ 有界队列+credit"]
+    SLB["<b>sub-lead B</b> = 同上,另一摊"]
+    R1["runner<br/>⑦ health 自报"]
+    R2["runner"]
+    R3["runner(多机:卫星节点 · 1005)"]
+    A -->|⑤ escalation 逐层到顶 / founder fallback| L
+    L -->|⑧ dispatch 落 assignedLeadId ↓| SLA
+    L -->|⑧ ↓| SLB
+    SLA -->|⑥ restart / 派活 ↓| R1
+    SLA --> R2
+    SLB --> R3
+    R1 -.⑦ health / ② typed 摘要 / ③ credit ↑.-> SLA
+    SLA -.② 摘要 + ⑨ merge + ③ credit ↑.-> L
+```
+
+**9 机制装在哪一层(每个标 §ref):**
+
+| # | 机制 | 装在哪一层 | 干什么 |
+|---|---|---|---|
+| ① | bounded fan-out | **sub-lead** | 每个 sub-lead ≤~5-6 runner(认知容量钉 fan-out,§4A-8) |
+| ② | typed 摘要上汇(partial aggregation) | **sub-lead → Lead 边(↑)** | 部分聚合成可结合的 typed 摘要(§4A-1/§4.2) |
+| ③ | 有界队列 + credit(backpressure) | **sub-lead → Lead 边(↑)** | 饱和发背压 credit → Lead/353 停派该子树(§4A-4) |
+| ④ | circuit-breaker + bulkhead | **sub-lead 子树** | 子树 = cell,隔离卡住;sub 自身冻住则 root 跳闸(§4A-3) |
+| ⑤ | soft-suspicion(SWIM-inspired) | **sub-lead(第一响应)→ 逐层** | 先疑再判死 + 层层升级到 founder(§5) |
+| ⑥ | OTP restart | **sub-lead → runner 边(↓)** | sub-lead = 它那摊 runner 的 supervisor;超 restart intensity 上报父级(§4A-9) |
+| ⑦ | health-rollup | **runner → sub-lead → Lead(↑)** | 叶子自报 → 逐层聚合压缩(§4.2/§9) |
+| ⑧ | owner-resolution(assignedLeadId) | **dispatch 边 + 所有事件路由** | label=dept/root 权威;dispatch 落 assignedLeadId;所有 owner-resolve 路径优先 session owner(§8.3,MVP 最硬) |
+| ⑨ | summary-merge | **每个父节点(sub-lead + Lead)** | 有界 top-K + droppedCount,任意序 merge 结果一致(§9) |
+
+**一句话拼法**:runner 自报(⑦)→ sub-lead 用 ①④⑤⑥ 管住一摊、用 ②⑨ 压成 typed 摘要、用 ③ 发容量信号 → Lead 用 ⑨ 聚一屏 + ⑧ 保证事件落对节点 + 把 ③ 喂给 353;卡住沿 ⑤ 逐层升到 founder;每件事的 thread 始终直达 founder(§7)。
 
 ---
 
