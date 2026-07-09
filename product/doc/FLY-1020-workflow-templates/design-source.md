@@ -33,6 +33,20 @@ Annie 第 2 轮把叙事从「模板」升级到 **静态 DAG → 动态 DAG**:
 
 **MVP(v3 定稿方向,待 Annie 拍)**:轻 YAML 模板(节点+边+loop)+ 几套 shipped(eng/product)+ profile 复用 + QA 变模板节点 + 裸 session 默认 + 可覆盖;default-off 字节兼容。Later:fork。可能永不做:node-inject / 编辑器 / 自定义 / 自动学。
 
+## v4 — Annie 第 3 轮大收敛(固定节点 + loop + skip = 动态,不加节点)
+
+Annie nail 了最终模型,设计收敛:
+
+1. ⭐ **节点集固定**(Design/Implement/QA),**动态全来自 loop + skip,不加新节点**(§1)。—— 纠正 v2/v3 里「product 有自己的 explore/converge 节点」的旧框架:现在是**同一套固定节点**,product 靠 **skip QA** 得到不同路。
+2. **skip**(§2,新概念)= 条件跳过节点:Product skip QA(纯 doc)/ 简单任务 skip Design。同套节点、不同任务不同路。
+3. **loop**(§3)= 重复直到条件:① Implement↔QA(已硬编码 FLY-939 kickback)② Design→4PR = loop (Implement→QA) ×4。
+4. **一张图**(§4):固定节点竖列 + loop 回边(QA→Implement fail)+ skip 条件边(Product 跳 QA / 简单跳 Design)+ 三条路(eng/product/简单走同套节点不同路)。
+5. ⭐ **node-inject 明确「不做」**(Annie 确认不需要加新节点,从 Later 降级)· **fork 也不做/远期**。核心动态 = **loop + skip**(+ profile 已有)。
+6. **homerail 印证**(§7):homerail 动态也是 loop_gateway + skip(`_skipDependentNodes`),**没有随意加节点**;其 inject = 消息 inject。= Annie 收敛跟成熟做法一致。
+7. **YAML 定义**(§8)升级带 skip:`nodes{model}` + `edges` + `qa->implement {loop_when: fail}`(loop 回边)+ `skip: qa {when: category==product}`(skip 条件)。没有「加节点」语法(不需要)。
+
+**MVP(v4 收敛,待 Annie 最终拍)**:轻 YAML(节点 + 边 + **loop** + **skip**)+ profile 复用 + 几套 shipped(eng 全节点带 QA loop / product skip QA / 简单 skip Design)+ 裸 session 默认 + 可覆盖;default-off 字节兼容。**明确不做**:node-inject / fork / 可视化编辑器 / 用户自定义 / 自动学。
+
 ## 1. 分工(与 FLY-353)
 
 两层 DAG(Annie 在 1004 articulate):
