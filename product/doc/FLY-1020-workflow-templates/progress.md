@@ -46,3 +46,14 @@ auto-QA 是 default-ON opt-out(非 opt-in,被 types.ts:616 stale 注释误导)·
 
 ## 约束状态
 - prd.md 仍冻结在 f6f39c6e(每次 commit 后 git diff 核过)· 未写 PRD · 未拆 build · 未 ship · 未碰 gate
+
+## §2 深挖轮 v2(Annie:「文字论证太抽象」→ 要可视 + 能判)
+- [done] v2 卡 commit 645dd730 + publish(v1 a5141aed 作废)+ curl 自验(真 nonce 77cfa0e7 / 0 外链 / 内联 SVG=1 / 表=4 / 框=9)
+  - URL: https://fw-reports-a53de2.vercel.app/r/92159904c29813f2066b36f24d5acd5b/ · msg 1524665483675045968
+- ① 系统流程图(内联 SVG):简单任务=只 agent.md(DAG 零参与) vs 复杂任务=引擎读 DAG(虚线框「Claude 看不到」)串 3 个 agent.md → 3 个独立 session(Fable/Fable/Opus 独立 context)+ loop 回边
+- ② pros/cons 矩阵(高效/安全/Claude 原生兼容):🅐 共存分层=推荐 · 🅑 DAG 取代 agent.md(homerail 实证零复用)· 🅒 **让 Claude 自己编排 = 决定性反证**(跑着的 Claude session 物理上无法自换模型、无法开看不见自身上下文的隔离 session → Annie 两个诉求一个都满足不了 = 引擎层必须存在的唯一理由)
+- ③ 三条代码实据配 file:line:frontmatter 全 inert → 分层是代码现状非提案;用户 agent.md 物理上无法自授能力 = 扩展性给出去权限没给出去;成本形状(per-type 5 处硬编码 vs 通用节点一次性)
+- [wait] Lead QA v2 → relay Annie → confirm 分层 → fold 指令
+
+## 约束状态(每次 commit 后核过)
+- prd.md 仍冻结 f6f39c6e · 未写 PRD · 未拆 build · 未 ship · 未碰 gate
