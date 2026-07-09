@@ -197,6 +197,15 @@ export interface GatePollerConfig {
 	 * behavior — that IS the kill-switch). Non-ship checkpoints are untouched.
 	 */
 	shipGateGraceMs?: number;
+	/**
+	 * FLY-1041 Chunk 6: grace before the approve_to_ship founder CARD is
+	 * posted (the deterministic approval carrier — reply-to-card / ✅). The
+	 * 10min FLY-605 grace made the card a rarely-seen fallback; for ship gates
+	 * the card IS the primary surface, so it fires after ~15s (default). Env
+	 * `FLYWHEEL_SHIP_GATE_CARD_GRACE_MS` overrides; `FLYWHEEL_SHIP_GATE_CARD=0`
+	 * restores the 10min fallback behavior. Brainstorm is untouched.
+	 */
+	shipGateCardGraceMs?: number;
 	/** Part B slow sub-cadence in poll ticks (default 20 ≈ 60s at 3s). */
 	founderReplyDeliverEveryNTicks?: number;
 	/** Part B thread-read cursor store (default in-memory). */
@@ -1771,6 +1780,21 @@ export class GatePoller {
 		return this.config.founderThreadNotifyGraceMs ?? 10 * 60_000;
 	}
 
+	/** FLY-1041 Chunk 6: default-ON kill-switch for the fast ship card. */
+	private shipGateCardEnabled(): boolean {
+		return process.env.FLYWHEEL_SHIP_GATE_CARD !== "0";
+	}
+
+	/** FLY-1041 Chunk 6: ship-card grace (env > config > 15s default). */
+	private shipGateCardGraceMs(): number {
+		const env = Number.parseInt(
+			process.env.FLYWHEEL_SHIP_GATE_CARD_GRACE_MS ?? "",
+			10,
+		);
+		if (Number.isFinite(env) && env >= 0) return env;
+		return this.config.shipGateCardGraceMs ?? 15_000;
+	}
+
 	private founderThreadRetryBudgetMs(): number {
 		return this.config.founderThreadRetryBudgetMs ?? 45 * 60_000;
 	}
@@ -1814,10 +1838,20 @@ export class GatePoller {
 		}
 
 		// Grace: the gate must have sat unanswered ≥ grace (= "the Lead dropped it").
+		// FLY-1041 Chunk 6: approve_to_ship gets the SHORT ship-card grace — the
+		// card is the founder's deterministic approval carrier (reply-to-card /
+		// ✅), not a fallback; brainstorm keeps the 10min FLY-605 grace. Hold
+		// semantics are untouched: the relay loop's isReviewHeld skip runs before
+		// this method, so a held gate never reaches here — the card lands on the
+		// first tick after the hold clears.
 		const createdMs = parseSqliteUtcMs(question.created_at);
 		if (createdMs === null) return;
 		const now = Date.now();
-		if (now - createdMs < this.founderThreadGraceMs()) return;
+		const graceMs =
+			cp === "approve_to_ship" && this.shipGateCardEnabled()
+				? this.shipGateCardGraceMs()
+				: this.founderThreadGraceMs();
+		if (now - createdMs < graceMs) return;
 
 		// Dedup: terminal in-process, or a durable marker survived a restart.
 		if (this.founderNotifyDone.has(question.id)) return;

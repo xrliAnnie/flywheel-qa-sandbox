@@ -312,3 +312,74 @@ describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 });
+
+describe("FLY-1041 Chunk 6: ship-gate card promotion (15s grace)", () => {
+	afterEach(() => {
+		delete process.env.FLYWHEEL_SHIP_GATE_CARD;
+		delete process.env.FLYWHEEL_SHIP_GATE_CARD_GRACE_MS;
+		vi.restoreAllMocks();
+	});
+
+	it("un-held ship gate 30s old → card posted NOW (15s ship grace, not the 10min fallback)", async () => {
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+		const poller = makePoller({
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+		await fallback(
+			poller,
+			makeSession(),
+			makeQuestion({
+				checkpoint: "approve_to_ship",
+				created_at: sqliteAgo(30_000),
+			}),
+		);
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+	});
+
+	it("brainstorm gate 30s old → still waits the 10min grace (unchanged)", async () => {
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+		const poller = makePoller({
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+		await fallback(
+			poller,
+			makeSession(),
+			makeQuestion({ created_at: sqliteAgo(30_000) }),
+		);
+		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+
+	it("FLYWHEEL_SHIP_GATE_CARD=0 → ship gate 30s old NOT posted (byte-compat 10min sentinel)", async () => {
+		process.env.FLYWHEEL_SHIP_GATE_CARD = "0";
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+		const poller = makePoller({
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+		await fallback(
+			poller,
+			makeSession(),
+			makeQuestion({
+				checkpoint: "approve_to_ship",
+				created_at: sqliteAgo(30_000),
+			}),
+		);
+		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+
+	it("FLYWHEEL_SHIP_GATE_CARD_GRACE_MS env override wins over the default", async () => {
+		process.env.FLYWHEEL_SHIP_GATE_CARD_GRACE_MS = "60000";
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+		const poller = makePoller({
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+		await fallback(
+			poller,
+			makeSession(),
+			makeQuestion({
+				checkpoint: "approve_to_ship",
+				created_at: sqliteAgo(30_000), // younger than the 60s override
+			}),
+		);
+		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+});

@@ -557,3 +557,31 @@ describe("FLY-927 emitIssueThreadInfraNotification", () => {
 		expect(r.kind).toBe("permanent_failed");
 	});
 });
+
+describe("FLY-1041 Chunk 6: ship card carries the binding guidance line", () => {
+	it("approve_to_ship copy tells the founder to reply-to-card or ✅ (and promises the receipt)", async () => {
+		const { store } = makeStore();
+		const fetchImpl = vi.fn(async () => res(200));
+		await emitFounderThreadNotification(
+			baseOpts({ checkpoint: "approve_to_ship" }),
+			{ store, fetchImpl: fetchImpl as unknown as typeof fetch },
+		);
+		const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+		const content = JSON.parse(init.body as string).content as string;
+		expect(content).toContain("回复这条消息");
+		expect(content).toContain("✅");
+		expect(content).toContain("其它回复不会被当成批准");
+	});
+
+	it("brainstorm copy is unchanged (no ship guidance line)", async () => {
+		const { store } = makeStore();
+		const fetchImpl = vi.fn(async () => res(200));
+		await emitFounderThreadNotification(baseOpts(), {
+			store,
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+		const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+		const content = JSON.parse(init.body as string).content as string;
+		expect(content).not.toContain("回复这条消息");
+	});
+});
