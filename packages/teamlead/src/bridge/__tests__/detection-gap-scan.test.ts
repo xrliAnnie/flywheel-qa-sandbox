@@ -50,7 +50,8 @@ function baseInput(over: {
 			oldestUnconsumedDeliveryAgeMs: null,
 			...over.comm,
 		},
-		founderNotified: over.founderNotified ?? false,
+		founderNotified:
+			over.founderNotified === undefined ? false : over.founderNotified,
 		nowMs: NOW,
 		thresholds: THRESHOLDS,
 	};

@@ -135,6 +135,14 @@ import { runBootShaCheck } from "./boot-sha-check.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 // FLY-927 (Task 3.3): truthful stage wording for the three-stage stuck alert.
 import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
+import { parseSqliteUtcMs } from "./founder-notify-utils.js";
+import {
+	createSuspicionRegistry,
+	defaultGapThresholds,
+	evaluateGapSuspicion,
+	openGapReader,
+	type SuspicionRecord,
+} from "./detection-gap-scan.js";
 import { deliverSuspiciousReport } from "./detection-suspicious.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
@@ -282,6 +290,7 @@ import { createRunsRouter } from "./runs-route.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
 import {
 	captureSession as defaultCaptureSession,
+	defaultGetCommDbPath,
 	isCaptureError,
 } from "./session-capture.js";
 import {
@@ -3997,11 +4006,93 @@ export async function startBridge(
 		},
 	});
 
+	// FLY-1048 (A6): cheap gap/state scan — OBSERVE ONLY in PR-A (in-process
+	// registry + debug log; the notification leg arrives with PR-C). Zero pane
+	// capture, zero tokens: StateStore sessions + readonly per-project CommDB.
+	// Env checked INSIDE the tick so a live FLYWHEEL_DETECTION_GAP_SCAN flip
+	// applies without a restart; unset = the tick returns immediately.
+	const gapSuspicionRegistry = createSuspicionRegistry();
+	const gapScanTick = async (): Promise<void> => {
+		if (process.env.FLYWHEEL_DETECTION_GAP_SCAN !== "1") return;
+		const nowMs = Date.now();
+		const thresholds = defaultGapThresholds(process.env);
+		const records: SuspicionRecord[] = [];
+		const byProject = new Map<string, Session[]>();
+		for (const s of store.getActiveSessions()) {
+			const list = byProject.get(s.project_name) ?? [];
+			list.push(s);
+			byProject.set(s.project_name, list);
+		}
+		for (const [projectName, projectSessions] of byProject) {
+			const reader = openGapReader(defaultGetCommDbPath(projectName));
+			// Fail-closed: unreadable/missing comm.db → skip this project's
+			// comm-derived judgements this round.
+			if (!reader) continue;
+			try {
+				for (const session of projectSessions) {
+					const comm = reader.evidenceFor(session.execution_id, null, nowMs);
+					let founderNotified: boolean | null = null;
+					try {
+						founderNotified = store
+							.getEventsByExecution(session.execution_id)
+							.some(
+								(e) =>
+									e.event_type === "founder_thread_notified" ||
+									e.event_id?.startsWith("founder-thread-notify-"),
+							);
+					} catch {
+						founderNotified = null; // unreadable → gap1 degrades (fail-closed)
+					}
+					const rawActivity = session.last_activity_at;
+					const parsedActivity = rawActivity ? Date.parse(rawActivity) : NaN;
+					const lastActivityAtMs = Number.isFinite(parsedActivity)
+						? parsedActivity
+						: rawActivity
+							? parseSqliteUtcMs(rawActivity)
+							: null;
+					records.push(
+						...evaluateGapSuspicion({
+							session: {
+								executionId: session.execution_id,
+								projectName,
+								status: session.status,
+								lastActivityAtMs,
+							},
+							comm,
+							founderNotified,
+							nowMs,
+							thresholds,
+						}),
+					);
+				}
+			} finally {
+				reader.close();
+			}
+		}
+		gapSuspicionRegistry.sweep(records, nowMs);
+		if (records.length > 0) {
+			console.log(
+				`[gap-scan] ${records.length} suspicion(s): ${records
+					.map((r) => `${r.kind}:${r.targetKey.slice(0, 8)}`)
+					.join(", ")}`,
+			);
+		}
+	};
+
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
 		projects,
 		store,
 		runtimeRegistry: registry,
+		// FLY-1048 (A6): gap-scan piggyback (zero new timer; env-gated inside).
+		onGapScanTick: gapScanTick,
+		gapScanEveryNTicks: (() => {
+			const n = Number.parseInt(
+				process.env.FLYWHEEL_GAP_SCAN_EVERY_N_TICKS ?? "",
+				10,
+			);
+			return Number.isFinite(n) && n > 0 ? n : undefined; // default 100
+		})(),
 		// FLY-945 Fix D: run the sweeper on the patrol cadence (zero new timer).
 		externalMergeReconcile: () => externalMergeReconciler.pass(),
 		leadAlertSink: {
