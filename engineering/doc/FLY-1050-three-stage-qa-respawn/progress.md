@@ -1,14 +1,13 @@
 ---
 issue: FLY-1050
 phase: implement
-phaseCursor: 3/6
-updated: 2026-07-09T20:29:14.485Z
-nextStep: triage full-suite failures vs base (suspect pre-existing), then lint +
-  commit + codex review + PR
+phaseCursor: 4/6
+updated: 2026-07-09T20:37:40.305Z
+nextStep: commit + push + PR + codex code review loop
 chunks: []
 pointers: {}
 ---
 
 # FLY-1050 progress
-**phase**: implement (3/6)
-**next**: triage full-suite failures vs base (suspect pre-existing), then lint + commit + codex review + PR
+**phase**: implement (4/6)
+**next**: commit + push + PR + codex code review loop
