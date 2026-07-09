@@ -135,6 +135,8 @@ import { runBootShaCheck } from "./boot-sha-check.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 // FLY-927 (Task 3.3): truthful stage wording for the three-stage stuck alert.
 import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
+import { createFocusedFrameScheduler } from "./focused-frame-scheduler.js";
+import { hashPane, liveRegion } from "./pane-live-region.js";
 import { parseSqliteUtcMs } from "./founder-notify-utils.js";
 import {
 	createSuspicionRegistry,
@@ -143,7 +145,12 @@ import {
 	openGapReader,
 	type SuspicionRecord,
 } from "./detection-gap-scan.js";
-import { deliverSuspiciousReport } from "./detection-suspicious.js";
+import {
+	buildPaneTail,
+	deliverSuspiciousReport,
+	type SuspiciousOwner,
+	type SuspiciousReport,
+} from "./detection-suspicious.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
@@ -4006,12 +4013,112 @@ export async function startBridge(
 		},
 	});
 
+	// FLY-1048 (A5): shared owner-Lead resolution for suspicious reports —
+	// used by BOTH the LeadWatchdog multi-frame veto and the focused-frame
+	// unclear path (one resolver, no drift).
+	const resolveSuspiciousOwner = (
+		r: SuspiciousReport,
+	): SuspiciousOwner | null => {
+		if (r.targetKind === "lead") {
+			// State key is `<project>:<leadId>` (LeadWatchdog stateKey).
+			const idx = r.targetKey.indexOf(":");
+			if (idx <= 0 || idx === r.targetKey.length - 1) return null;
+			return {
+				projectName: r.targetKey.slice(0, idx),
+				leadId: r.targetKey.slice(idx + 1),
+			};
+		}
+		// Runner target: execId → session → label-derived owner Lead.
+		const session = store.getSession(r.targetKey);
+		if (!session?.project_name) return null;
+		const project = projects.find(
+			(p) => p.projectName === session.project_name,
+		);
+		if (!project) return null;
+		for (const lead of project.leads) {
+			try {
+				if (matchesLead(session, lead.agentId, projects)) {
+					return {
+						leadId: lead.agentId,
+						projectName: project.projectName,
+						executionId: session.execution_id,
+						issueId: session.issue_id,
+					};
+				}
+			} catch {
+				/* try the next lead */
+			}
+		}
+		return null;
+	};
+	const deliverSuspicious = (report: SuspiciousReport): void => {
+		void deliverSuspiciousReport(
+			{ store, runtimeRegistry: registry, resolveOwner: resolveSuspiciousOwner },
+			report,
+		).catch((err) =>
+			console.warn(
+				`[detection-suspicious] delivery failed: ${(err as Error).message}`,
+			),
+		);
+	};
+
 	// FLY-1048 (A6): cheap gap/state scan — OBSERVE ONLY in PR-A (in-process
 	// registry + debug log; the notification leg arrives with PR-C). Zero pane
 	// capture, zero tokens: StateStore sessions + readonly per-project CommDB.
 	// Env checked INSIDE the tick so a live FLYWHEEL_DETECTION_GAP_SCAN flip
 	// applies without a restart; unset = the tick returns immediately.
 	const gapSuspicionRegistry = createSuspicionRegistry();
+
+	// FLY-1048 (A7): focused frames for gap-scan suspects. Every successful
+	// capture ALSO feeds the existing stuck-runner detector (checkSession with
+	// a precaptured outcome) — its hard gates + dispositions stay the single
+	// escalation authority, it just accumulates episode time at the focused
+	// cadence (~4min) instead of the 1h fleet sweep. Unclear windows go
+	// fail-suspicious (A5); the ~1h sweep default is deliberately untouched.
+	const focusedFrames = createFocusedFrameScheduler({
+		capture: async (t) => {
+			const res = await defaultCaptureSession(t.targetKey, t.projectName, 200);
+			return "output" in res ? res.output : null;
+		},
+		onFrame: async (t, frameText) => {
+			const session = store.getSession(t.targetKey);
+			if (!session) return;
+			await stuckDetectorHolder.current?.checkSession(session, {
+				ok: true,
+				output: frameText,
+			});
+		},
+		onVerdict: (v) => {
+			if (v.verdict === "unclear") {
+				deliverSuspicious({
+					targetKind: "runner",
+					targetKey: v.target.targetKey,
+					reason:
+						"focused_frames_unclear: multi-frame window is neither flowing nor a clean silence/error loop — mechanical layer cannot conclude",
+					paneTail: buildPaneTail(v.latestFrame),
+					episodeFingerprint: hashPane(liveRegion(v.latestFrame)),
+				});
+				return;
+			}
+			console.log(
+				`[focused-frames] ${v.target.targetKey.slice(0, 8)} verdict=${v.verdict} (span=${Math.round(v.deltas.spanMs / 1000)}s)`,
+			);
+		},
+		intervalMs: (() => {
+			const n = Number.parseInt(
+				process.env.FLYWHEEL_FRAME_INTERVAL_MS ?? "",
+				10,
+			);
+			return Number.isFinite(n) && n > 0 ? n : undefined; // default 4min
+		})(),
+		capturesPerTick: (() => {
+			const n = Number.parseInt(
+				process.env.FLYWHEEL_FRAME_CAPTURES_PER_TICK ?? "",
+				10,
+			);
+			return Number.isFinite(n) && n > 0 ? n : undefined; // default 2
+		})(),
+	});
 	const gapScanTick = async (): Promise<void> => {
 		if (process.env.FLYWHEEL_DETECTION_GAP_SCAN !== "1") return;
 		const nowMs = Date.now();
@@ -4077,6 +4184,13 @@ export async function startBridge(
 					.join(", ")}`,
 			);
 		}
+		// FLY-1048 (A7): focused frames for the progress suspects surfaced above.
+		await focusedFrames.tick(
+			gapSuspicionRegistry
+				.snapshot()
+				.filter((r) => r.kind === "pane_progress_suspect")
+				.map((r) => ({ targetKey: r.targetKey, projectName: r.projectName })),
+		);
 	};
 
 	const gatePoller = new GatePoller({
@@ -5907,53 +6021,9 @@ export async function startBridge(
 		// single-frame behavior byte-for-byte (gray-rollout knob, plan §6).
 		multiFrame: process.env.FLYWHEEL_PANE_MULTIFRAME === "1",
 		// FLY-1048 (A5): fail-suspicious → quiet owner-Lead report (guardrail
-		// lead_event; never an alert, never founder-facing).
-		onSuspicious: (report) => {
-			void deliverSuspiciousReport(
-				{
-					store,
-					runtimeRegistry: registry,
-					resolveOwner: (r) => {
-						if (r.targetKind === "lead") {
-							// State key is `<project>:<leadId>` (LeadWatchdog stateKey).
-							const idx = r.targetKey.indexOf(":");
-							if (idx <= 0 || idx === r.targetKey.length - 1) return null;
-							return {
-								projectName: r.targetKey.slice(0, idx),
-								leadId: r.targetKey.slice(idx + 1),
-							};
-						}
-						// Runner target: execId → session → label-derived owner Lead.
-						const session = store.getSession(r.targetKey);
-						if (!session?.project_name) return null;
-						const project = projects.find(
-							(p) => p.projectName === session.project_name,
-						);
-						if (!project) return null;
-						for (const lead of project.leads) {
-							try {
-								if (matchesLead(session, lead.agentId, projects)) {
-									return {
-										leadId: lead.agentId,
-										projectName: project.projectName,
-										executionId: session.execution_id,
-										issueId: session.issue_id,
-									};
-								}
-							} catch {
-								/* try the next lead */
-							}
-						}
-						return null;
-					},
-				},
-				report,
-			).catch((err) =>
-				console.warn(
-					`[detection-suspicious] delivery failed: ${(err as Error).message}`,
-				),
-			);
-		},
+		// lead_event; never an alert, never founder-facing). Shared deliverer +
+		// owner resolver with the focused-frame unclear path.
+		onSuspicious: deliverSuspicious,
 	});
 	leadWatchdog.start();
 	console.log(
