@@ -5,15 +5,14 @@ Issue: FLY-1022 (https://linear.app/geoforge3d/issue/FLY-1022/lead-scaling-one-l
 基于: 无
 
 ## Phase 1: design co-eval v1 — DONE (Annie GO)
-- [x] exploration.md + research.md + explainer HTML → Annie GO 写 PRD
-
 ## Phase 2: PRD — DONE (发 QA)
-- [x] engineering/doc/.../prd.md (折 Lead §1-§9 全 refine) + prd-review.html
+## Phase 3: web-grounded research — DONE (合进 PR #516)
 
-## Phase 3: grounded research (Annie: DDIA 段太概念) — 本轮已交付,等 QA
-- [x] tree-patterns-research.md (8 类机制:部分聚合/两级调度/bulkhead-cell/背压/SWIM/B-tree/一致性哈希/LSM fan-out;每条 机制+权衡+一手来源+映射)
-- [x] PRD §4/§5/§9/§10/§15 换掉概念化 DDIA 段 → grounded 机制(MVP 抄4+2取舍+2 later)
-- [x] tree-patterns-research.html → https://fw-reports-a53de2.vercel.app/r/43b4733c457104ba36ecb163224da877/
+## Phase 4: ChatGPT Deep Research — 真跑完了,导出被环境挡,等 Lead A/B
+- [x] deep-research skill 走 claude-in-chrome → ChatGPT Pro(headed + 登录确认)
+- [x] 提交 6 点研究问题 → DR 完成:『Hierarchical Command Trees for Autonomous Coding Agents』· 8m · 29 citations · 521 searches · conv 6a4f1346
+- [x] Executive summary 已读取(印证我 grounded 8 条 + MVP 抄4/2取舍/2later)
+- [!] 原生导出(↓菜单)被 OOPIF hit-test 挡(headed 仍复现 FLY-541;坐标标定 100% 准但 click 不入跨域子帧);Copy-response 空、conv API 无正文
+- [ ] 等 Lead 选:(A) 人手 2 步导出 /tmp/dr-final.md → 我 fold(带一手引用)/(B) 我截图转写(丢精确 URL)
 
-## 本轮止于此(Lead: gate 别碰、不 ship)
-next: 发 Lead QA → relay Annie → 收敛(要更深则 Lead 用 deep-research skill 补)→ 定稿 PRD → ship(codex→冻→核 mergeable→fire gate→Annie→Tadashi)
+next: Lead 定 A/B → 拿到全文 → fold 进 PRD §4/§5(一手引用+定量)→ 发 QA+relay Annie
