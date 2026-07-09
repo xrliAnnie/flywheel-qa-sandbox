@@ -3,7 +3,7 @@
 Issue: FLY-1020 (https://linear.app/geoforge3d/issue/FLY-1020/low-level-dag-per-task-category-workflow-templates-lightoverridable)
 日期: 2026-07-08
 基于: `product/doc/FLY-1020-workflow-templates/design-source.md` + co-eval HTML v6(Annie 拍板)+ `agentmd-vs-dag.html`(§2 深挖,Annie converged)· Codex design-review R1→R3
-Status: draft(R1+R2+R3 APPROVED;R4 七条 + R5 三条(generic output 生产者/写入/replay 契约、§5.2 收窄残留、§11 8-surface 对齐)已折入 → 待 Codex R6 确认)
+Status: **Codex APPROVED**(6 轮:R1 10 项 + R2 5 项 + R4 7 项 + R5 3 项 findings 全采纳;R3 与 R6 APPROVED。R6 两处非阻塞引用清理已折入)
 
 > co-eval 收敛后的**建造蓝图**。放**结论 + 机制**(eng 照着能建),不堆 Q&A;过程在 design-source.md。
 > **UI / dashboard 不在本 PRD** —— 拆到 **FLY-1038**(§12)。
@@ -244,7 +244,7 @@ nodes:
 现有 completion 是**路由制、硬编码**:`flywheel-comm complete` 只认 `auto_approve` / `needs_review` / `blocked` / `no_code` / `pr_handoff` / `phase_design_complete`(`complete.ts:30`,`:101`);两个 sink + marker reconciler 镜像这套(`event-route.ts:832`,`DirectEventSink.ts:355`,`complete-marker-reconciler.ts:78`)。**`generic` 节点今天没有「怎么产出、下游怎么读」的定义。**
 
 **MVP 契约(read-only / doc-producing generic)**:
-- `generic` 节点经**已有的安全 route** 收尾:**默认 `no_code`**(已认可 route,marker 可 replay,`complete.ts` + `complete-marker-reconciler.ts:5-7`;不写共享分支、不开 PR)。
+- `generic` 节点经**已有的安全 route** 收尾:**默认 `no_code`**(已认可 route,marker 可 replay,`complete.ts` + `complete-marker-reconciler.ts:74-82`;不写共享分支、不开 PR)。
 - 产出落 **`workflow_node_outputs[node_id]`**,**下游节点从这里读**,不经 PR/branch。
 
 ⭐ **生产者 / 写入 / replay 契约(R5#1 —— 补齐;不能靠 completion payload)**:
@@ -492,7 +492,7 @@ pipeline:
 7. 迁 phase table 进注册表(§4.2 全部职责 + capabilities);`design/implement/qa` 逐字兼容。
 8. Orchestrator 按 snapshot 解释 sequence + `skip`;再把现有 QA loop 迁成配置化 loop 边(§6.1 全 spec,含 kickback 守卫)。
 9. Auto-QA 边界迁移(§8.3/8.4/8.5)。
-10. 生命周期收口余项 + reverse-compat sentinels(S1–S14)。
+10. 生命周期收口余项 + reverse-compat sentinels(S1–S16)。
 11. **启用 core-shipped 模板**(eng / product / 裸 default)**+ `generic`** + default-off + doc-drift 修正。
 
 > **阶段 2**(任意具名节点类型,大概率不必;shared-branch generic)· **roadmap**(node-inject / fork)· **UI**(FLY-1038)不在本 epic。
