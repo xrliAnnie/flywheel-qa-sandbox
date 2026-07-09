@@ -104,17 +104,18 @@ buddy_captain_preview_start() {
   [ -n "$project" ] || { _bcp_log "no project identity available"; return 1; }
   [ -f "$_BCP_LEAD_SH" ] || { _bcp_log "lead launcher missing: $_BCP_LEAD_SH"; return 1; }
 
-  _bcp_resolve "$state_dir" "$project" || return 1
-  # gate 3 converge ONLY on the real customer root (state dir == ~/.flywheel):
-  # the launcher hardcodes ~/.flywheel/bin, so a custom --state-dir run (QA
-  # sandbox on an operator machine) must never mutate the real home
-  # (Codex R1#3). Elsewhere the launcher's own missing-script abort is the
-  # honest outcome.
-  if [ "$state_dir" = "$HOME/.flywheel" ]; then
-    _bcp_converge_bin "$HOME/.flywheel/bin"
-  else
-    _bcp_log "custom state dir ($state_dir) — leaving ~/.flywheel/bin untouched"
+  # the launcher hardcodes several ~/.flywheel paths (bin, claude-sessions,
+  # blocked, alert-queue, alerts) and creates them EARLY — a preview from a
+  # custom --state-dir (QA sandbox on an operator machine) must therefore
+  # refuse BEFORE the launcher runs, or it would mutate the real home
+  # (Codex R1#3 + R2#2). Honest degrade: the early chat moves to after
+  # placement.
+  if [ "$state_dir" != "$HOME/.flywheel" ]; then
+    _bcp_log "custom state dir ($state_dir) — the Captain preview only runs on the real customer root; skipping (early chat moves after placement)"
+    return 1
   fi
+  _bcp_resolve "$state_dir" "$project" || return 1
+  _bcp_converge_bin "$HOME/.flywheel/bin"
 
   # secrets: load the live .env into THIS process env only (never echoed),
   # then hand the launcher the Captain's OWN token — claude-lead.sh expects
@@ -150,6 +151,17 @@ buddy_captain_preview_start() {
       return 0
     fi
     _bcp_log "dry-run launch plan did NOT complete — see $log"
+    return 1
+  fi
+
+  # LIVE preview is explicit opt-in (Codex R2#1): the launcher's pane-env
+  # mechanism passes DISCORD_BOT_TOKEN by VALUE through tmux argv — a
+  # fleet-wide trait of claude-lead.sh that violates the customer-product
+  # argv red line, and fixing it is a launcher-wide follow-up, not a buddy
+  # patch. Until that lands, the default is the plan's sanctioned honest
+  # degrade: the early chat moves to after placement.
+  if [ "${FLYWHEEL_BUDDY_PREVIEW_LIVE:-0}" != "1" ]; then
+    _bcp_log "live preview deferred (launcher pane-env argv hygiene follow-up) — early chat moves after placement"
     return 1
   fi
 

@@ -156,16 +156,30 @@ else
   fail "P3 rc=$RC3 out='$OUT3'"
 fi
 
-# ── P4b: custom --state-dir must NOT mutate the real home (Codex R1#3) ──
+# ── P4b: custom --state-dir → REFUSED before the launcher runs; the real
+#        home is not mutated AT ALL (Codex R1#3 + R2#2) ──
 H6="$SANDBOX/home6"; make_fixture "$H6"
 mkdir -p "$H6/custom-state"; chmod go-w "$H6/custom-state"
 cp "$H6/.flywheel/projects.json" "$H6/.flywheel/.env" "$H6/.flywheel/setup-state.json" "$H6/custom-state/"
 rm -rf "$H6/.flywheel"
-run_preview "$H6" buddy_captain_preview_start "$H6/custom-state" --project qa-captain >/dev/null 2>&1
-if [ ! -d "$H6/.flywheel/bin" ]; then
-  pass "P4b custom state dir: real \$HOME/.flywheel/bin left untouched (no stub install)"
+OUT4B="$(run_preview "$H6" buddy_captain_preview_start "$H6/custom-state" --project qa-captain 2>&1)"
+RC4B=$?
+if [ "$RC4B" -ne 0 ] && [ ! -e "$H6/.flywheel" ] && grep -q "custom state dir" <<<"$OUT4B"; then
+  pass "P4b custom state dir: refused before launch, real \$HOME/.flywheel untouched entirely"
 else
-  fail "P4b bin dir created in real home: $(ls "$H6/.flywheel/bin")"
+  fail "P4b rc=$RC4B home=$(ls -a "$H6/.flywheel" 2>/dev/null | tr '\n' ' ') out='$OUT4B'"
+fi
+
+# ── P6: LIVE preview is explicit opt-in (Codex R2#1 argv red line) ──
+H8="$SANDBOX/home8"; make_fixture "$H8"
+OUT6="$(env -i HOME="$H8" USER=tester PATH="$STUB_BIN:$PATH" \
+  bash -c 'source "'"$LIB"'" || exit 97; buddy_captain_preview_start "$HOME/.flywheel" --project qa-captain' 2>&1)"
+RC6=$?
+if [ "$RC6" -ne 0 ] && grep -q "live preview deferred" <<<"$OUT6" \
+   && [ ! -f "$H8/.flywheel/captain-preview.pid" ]; then
+  pass "P6 live preview off by default: honest degrade, no launcher spawned"
+else
+  fail "P6 rc=$RC6 out='$OUT6'"
 fi
 
 # ── P5: stop without a pid file is a safe no-op ──

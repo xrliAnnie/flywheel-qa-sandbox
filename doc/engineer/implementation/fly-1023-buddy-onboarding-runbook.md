@@ -53,6 +53,8 @@ Captain(claude-lead.sh)在客户机的四道启动门槛与闭合方式:
 
 合同测试:`scripts/__tests__/flywheel-buddy-captain.test.sh`(真 launcher dry-run 出全 LAUNCH_PLAN 为准)。
 
+**live 预览默认关**(`FLYWHEEL_BUDDY_PREVIEW_LIVE=1` 显式开,真机 QA 用):launcher 的 pane 环境机制会把 Captain 的钥匙值经 tmux 参数传递(全 fleet 既有形态),对客户产品违反「密钥不进命令行参数」红线 —— launcher 侧的 pane-env 参数卫生是独立 follow-up;修好前,缺省行为 = 早聊挪到安顿之后(plan 批准的诚实降级分支)。自定义 `--state-dir` 下预览直接拒绝(launcher 会在真 home 建目录)。
+
 ## 5. 真机 QA 清单(hermetic 之外,QA 阶段执行;plan §4)
 
 1. 干净 VM(linux/WSL2)+ macOS 各一次全流程 founder-run(curl 入口 → 第一个产出)。
