@@ -50,7 +50,7 @@ Issue: FLY-1082 (https://linear.app/geoforge3d/issue/FLY-1082/infra-alerts-fleet
 |---|---|---|---|---|
 | `swap_pressure_high`(OOM 预警) | Bridge tick 顺风车读 swap 水位(`sysctl vm.swapusage`),阈值默认 80% + 滞回;**传感器 seam 可注入**(QA 用) | Claude bot | (a) 置 Bridge「暂停派新 runner」flag(可逆,水位回落自动解除)+ 通知各 Lead 降载。**与 FLY-1072 的派活门槛共用同一水位读数 seam,门槛本体归 1072** | 水位持续超阈 >T 或 pause 无效 → @Annie |
 | `tmux_server_lost` | ① Bridge tick:tmux socket probe 失败 且 StateStore 有 running session;② boot reconcile:上次 running N≥阈 且 pane 集体消失(与逐个 dead-pin 区分) | Claude bot | (a) 批量标记死亡 session(复用 crash-reaper 收尸腿)→ **按 Lead 分组通知**,附各自阵亡 runner 清单 + resume 指针($FLYWHEEL_PROGRESS_PATH / FLY-795);**respawn 由各 Lead 驱动**(Lead 管 runner lifecycle 铁律 + 防 respawn stampede:通知里带当前内存水位) | 通知投递失败 / Lead 不响应(走 FLY-637-ext 梯子)→ @Annie |
-| `bridge_abnormal_exit` | 双腿:① **wrapper 腿(Bridge-independent)**:Bridge 进程非 clean-shutdown 退出 → lead-alert.sh 直发(扩 bp_fail_loud 覆盖「死了」);② **boot 自检腿**:clean-shutdown marker 缺失 → 复活后的 Bridge 给自己开工单 | Claude bot | (a) launchd respawn 本身就是 remediation;工单动作 = ACK + 复活自检(StateStore 完整性 / boot 对账跑完)→ 安静 resolve | crash-loop(复用 `scripts/lib/bridge-port.sh` 已有 crash-loop 检测)→ @Annie |
+| `bridge_abnormal_exit` | **三腿**:① **wrapper 腿(Bridge-independent,快路径)**:Bridge 进程非 clean-shutdown 退出 → lead-alert.sh 直发(扩 bp_fail_loud 覆盖「死了」);② **boot 自检腿**:clean-shutdown marker 缺失 → 复活后的 Bridge 给自己开工单;③ **外部心跳兜底(慢路径,gate 补充,Tadashi 2026-07-09)**:Codex Infra Bot(独立 launchd home / 独立 auth / 独立进程)定期探 Bridge health,**连续 down 超过 N 分钟 → 直接升级 @Annie**,不依赖 Bridge 复活、不依赖 wrapper 那一发 —— 覆盖「死了且没活过来」(launchd 卡死 / 反复 crash-loop / wrapper 腿也失败)的静默洞。本单只定职责 + 触发判据;bot 本体 enable/部署归 FLY-1071/928 | Claude bot(外部心跳腿的执行者 = Codex bot,真「谁都不救自己」:Claude/Bridge 侧死了归 Codex 侧从外面看) | (a) launchd respawn 本身就是 remediation;工单动作 = ACK + 复活自检(StateStore 完整性 / boot 对账跑完)→ 安静 resolve | crash-loop(复用 `scripts/lib/bridge-port.sh` 已有 crash-loop 检测)或 外部心跳判「一直没起来」→ @Annie |
 | `infra_bot_down` | Bridge tick 探两个 bot 的 lead session / launchd job 存活(bot 本身是 windowed Lead,已在 watchdog 视野;job 级死亡补 launchctl 探针) | **交叉**:Claude bot 死 → @Codex bot;Codex bot 死 → @Claude bot(issue 原文「它自己死了归 Codex Infra Bot」) | (a) `launchctl kickstart` 对应 job(可逆) | kickstart 两次失败 → @Annie |
 | `zombie_session_backlog`(跨 Lead 僵尸) | Bridge 低频扫描 CommDB↔StateStore 对账(检测口径 = FLY-1066 已取证的三形态:CommDB-only 孤儿 / StateStore 终态未同步 / scope 挡住的残留),积压 ≥N 才开单 | Claude bot | (b) **v1 无 ARC、直接升级**(带样本清单);收割机制 = FLY-1066,其落地后把本 kind 从 (b) 升 (a)(remediation = 调 scope-free 清理入口) | 直接 @Annie(带清单 + 一个决定) |
 
@@ -107,4 +107,10 @@ escalate 路径上(AlertChannelHub)统计:同一 kind 近 7 天 ESCALATED 次数
 
 ## 6. 推荐方向
 
-按 §3 全套做:5 个 kind + 三层 ARC 执行 + kind-contract fail-loud 启动校验 + 反复升级自动立单 + QA Room 三注入实证。核心哲学:**检测面允许活在 Bridge 里(它有 launchd 兜底、死了会回来),但「死过」这件事必须留下不可磨灭的信号**(wrapper 腿 + dirty-exit marker),复活后的第一件事是把 fleet 事件翻译成有主的工单。
+按 §3 全套做:5 个 kind + 三层 ARC 执行 + kind-contract fail-loud 启动校验 + 反复升级自动立单 + QA Room 三注入实证。核心哲学:**检测面允许活在 Bridge 里(它有 launchd 兜底、死了会回来),但「死过」这件事必须留下不可磨灭的信号**(wrapper 腿 + dirty-exit marker),复活后的第一件事是把 fleet 事件翻译成有主的工单;**再加一条 Bridge 进程外的独立视角**(Codex bot 外部心跳)兜住「死了且没活过来」。
+
+## 7. Brainstorm gate 结果(Tadashi,2026-07-09)
+
+**通过**,逐条认可(kind 划分 / fail-loud 注册表含存量映射 / ARC 三层 / respawn stampede 防护 / 自动立单 / QA Room 验收),**一条硬性补充已折进 §3.1**:
+- Bridge 进程外的「还没活过来」心跳兜底 —— Codex Infra Bot 定期探 Bridge health,连续 down 超 N 分钟直接升级,与 wrapper 快路径互补(wrapper 抓死亡瞬间;外部心跳抓「一直没起来」)。今晚的事故正是「没活过来、也没人从外面看」。
+- 分界:本单定「外部心跳职责 + 触发升级判据」;Codex bot 本体 enable/部署照旧归 FLY-1071/928。
