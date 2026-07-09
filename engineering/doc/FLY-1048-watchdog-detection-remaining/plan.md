@@ -4,6 +4,8 @@ Issue: FLY-1048 (https://linear.app/geoforge3d/issue/FLY-1048/build-fly-942-watc
 日期: 2026-07-09
 基于: research.md(同文件夹;上游 exploration.md 缺口清单 + brainstorm gate 拍定)
 
+> **状态:Codex design review APPROVED(2 轮,xhigh;R1 6 项全采纳:B1 spawn/stdin 合同、A4/A5 事件面与 echo 防毒、C2/C3 无-thread 语义、C4a 新旧互斥、B3 judge 降级有界、A6 readonly 合同 + FN4 诚实化)。**
+
 > **For agentic workers:** 本 plan 供三段式 Implement 阶段照建(TDD:每任务先 RED 后 GREEN,频繁 commit)。任务用 checkbox 跟踪。1048 = 三个 PR 全落 + QA 覆盖整体才算 done(Tadashi 拍),别把 PR-A 当 done 收。
 
 **Goal:** 按 FLY-942 PRD 落地 watchdog detection 剩余部分:① 检测准确性(三态 a/b/c、≥2 帧观察窗、错误串扩充、重复错误签名、fail-suspicious)② 分钟级 cadence(零 token gap 扫描 + 窄化取帧)③ LLM 判断层(= FLY-976,跑 Codex)④ 统一升级流(新检测类 Lead-first ~30min → @Annie)+ over-notify 抑制补齐。
@@ -118,7 +120,7 @@ export function computeFrameDeltas(frames: PaneFrame[], opts: { minSpanMs: numbe
 - 开启时,`tickLead` 每 poll 把 `ownStateRegion(pane)` push 进 FrameWindow(targetKey = stateKey);`isIdleHealthyPane` 判 healthy **之前**加两道多帧否决:
   1. 窗口内任一帧命中 `scanErrorSignatures` → 不 healthy → 走 `pane_error_stalled` 新 kind(错误后静默 = FN2/FN0 Lead 侧等价);
   2. `silenceDelta && !tokenFlowActive` 且窗口含 thinking-residue(现 :678-682 自认盲点)→ **fail-suspicious**(Task A5),不再静默压掉。
-- 新 kind **`pane_error_stalled`** 与 **`detection_suspicious`** 加入 `AlertEventType` union(LeadAlertNotifier.ts)→ echo 交替组自动同源派生(FLY-927 判例);同步 `TICKET_KINDS`(pane_error_stalled → ticket,claude bot owner;detection_suspicious → 见 A5 投递,不进 ticket 队列)。
+- 新 kind **`pane_error_stalled`** 加入 `AlertEventType` union(LeadAlertNotifier.ts)——它是真实告警面 kind,必须**全面接入**该 surface(Codex R1 #2):`titleFor`/`bodyFor` 显式 case(穷举 switch)、severity、`TICKET_KINDS` 路由 + owner map(claude bot,provider 无关默认)、echo 交替组同源派生 + 双向 echo fixture。**`detection_suspicious` 不进 `AlertEventType`**(它不是告警面 kind,是 Lead 面事件;投递契约见 A5)。
 - `isTransientThrottlePane`(FLY-218)优先级不变:529 瞬时限流仍在多帧否决之前短路(健康 529 绝不误报)。
 - [ ] RED:FN2-lead fixture(Server error 后空框,现状 suppress)→ 开关下 must-alert;Peter ctx-100% 等全部既有 must-suppress fixture 两态(env 开/关)都 suppress;frozen-compact must-alert 不回归
 - [ ] GREEN + sentinel + Commit
@@ -141,9 +143,11 @@ export interface SuspiciousReport {
 ```
 
 - 投递 = **owner Lead only**:lead_event(eventType `detection_suspicious`,加入 `GUARDRAIL_EVENT_TYPES` 重投集合)+ 该 issue thread 一条安静帖(无 mention;Lead 面允许附 paneTail,thread 帖**不附**原文只写 reason —— thread 可能被 founder 看到,沿用隐私判例)。founder 面永不带 raw pane。
+- **渲染契约(Codex R1 #2)**:lead_event 的通用 formatter 只渲染已知字段(mailbox-lead-runtime.ts:292-319 / commdb-lead-runtime.ts:160-182),任意 `paneTail` 会被丢——两个 LeadRuntime 的 `formatEnvelope` 增加 `detection_suspicious` 显式分支(渲染 reason + 有界 paneTail),payload 字段显式定型(HookPayload 惯例),两侧渲染测试。
+- **echo 防毒(Codex R1 #2)**:paneTail 投进 Lead pane 后会被 LeadWatchdog 重新 capture——现有 echo 剥离只认 `←` 行与 `(<leadId> / <AlertEventType>)` 签名,不认 lead_event 文本。故 paneTail 每行以固定引用前缀 `▏` 包裹投递,`scanErrorSignatures`(A1)与 `evaluateStuckCandidate` 的签名路(A3)**跳过 `▏` 前缀行**;新增 echo-poisoning fixture:投递过 suspicious 报告的 Lead pane 不得触发 `pane_error_stalled` / 二次 `detection_suspicious` 循环。
 - 去重:per (targetKey, episodeFingerprint) 一次,复用 session_events UNIQUE event_id 惯例(`detection-suspicious-<fp>`)。
 - **绝不静默**:judge 不可用(PR-B 前 / env 关 / fail-closed)时,A4/A3 的不确定分支一律走此路。
-- [ ] RED:投递形态(lead_event + thread)/去重/founder 面无 pane 断言先挂
+- [ ] RED:投递形态(lead_event + thread)/两 runtime 渲染/echo-poisoning/去重/founder 面无 pane 断言先挂
 - [ ] GREEN + Commit
 
 ### Task A6 廉价 gap/state 扫描(零 token,分钟级)
@@ -164,7 +168,8 @@ export interface SuspiciousReport {
   - `pane_progress_suspect`:active session stage 停滞超阈值(喂 A7 取帧,不直接告警)。
 - **PR-A 内 gap 扫描不发任何用户可见告警**(检测基底;PR-C 才接升级流)——只暴露查询 API + debug 日志,便于独立验证与灰度观察。
 - 判据全部纯函数(`evaluateGapSuspicion(inputs) → SuspicionRecord[]`),CommDB/Store 读取注入。
-- [ ] RED:判据矩阵(parked×有无 lead 通信×有无 evidence;ask 阻塞/非阻塞×答/未答×超龄;delivered/read 组合)先挂
+- **readonly 读取合同(Codex R1 #6)**:`CommDB.openReadonly()` 刻意跳过建表/迁移(db.ts:111-120)——A6 的 reader API 对**每张表/每列**都要照 `getEffectiveDeclaredState` 判例(db.ts:618-650)显式处理缺表/缺列(旧 comm.db 可能无 `runner_declared_states` / `delivered_at` / `read_at` / `checkpoint`):缺 → 该判据静默降级为「无信号」,绝不 throw、绝不误报;comm.db 文件缺失/readonly 打开失败 → 本轮跳过该 project(fail-closed)。reader API 作为独立模块入 plan 交付面,缺表/缺列/坏库三态测试。
+- [ ] RED:判据矩阵(parked×有无 lead 通信×有无 evidence;ask 阻塞/非阻塞×答/未答×超龄;delivered/read 组合)+ reader 缺表/缺列/坏库三态先挂
 - [ ] GREEN + sentinel(env 未设 = GatePoller 行为字节不变)+ Commit
 
 ### Task A7 窄化取帧调度(focused frames)
@@ -194,12 +199,13 @@ export interface SuspiciousReport {
 
 **Files:**
 - Create: `packages/teamlead/src/bridge/watchdog-judge.ts`
-- Test: `watchdog-judge.test.ts`(注入 execFile;不真调 codex)
+- Test: `watchdog-judge.test.ts`(注入 spawn runner;不真调 codex)
 
 - argv 模式抄 codex-resume(research §2):`[<bin>, "exec", "--json", "-C", <repoRoot>, "-s", "read-only", ("-m", <model>)?, "-"]`,prompt 走 **stdin**(零 shell 插值);bin = `FLYWHEEL_WATCHDOG_JUDGE_BIN?.trim() || FLYWHEEL_CODEX_BIN || "codex-with-fallback"`;model = `FLYWHEEL_WATCHDOG_JUDGE_MODEL`(未设不传 `-m`,用 codex 配置默认;生产配便宜档)。
-- 调用合同抄 subscription-claude-classifier-runner(fail-closed):`execFile` 无 shell、`FLYWHEEL_WATCHDOG_JUDGE_TIMEOUT_MS` 默认 30_000、maxBuffer 1MB;exec 错/超时/限流/JSON 解析失败/verdict 越界 → 返回 `null`,**永不 throw、永不假装成功**;子进程 env 洗 `*TOKEN*/*SECRET*/*KEY*` + 剥 GH_TOKEN 族(codex-resume :251-259 判例)。
+- **进程原语 = 可注入 `spawn` runner,不是 `execFile`(Codex R1 #1)**:codex-resume 真身用 `spawn(..., stdio:["pipe","pipe",…])` + `child.stdin.write(prompt)` 让 prompt 不进 argv(codex-resume.ts:261-280);subscription-runner 用 execFile 是因为它 prompt 走 argv——pane 文本不可接受。B1 = 注入式 spawn runner:stdin 写 prompt、stdout 有界采集(1MB 上限,超限 kill+null)、timeout 到点 kill 进程树、fail-closed。
+- 调用合同抄 subscription-claude-classifier-runner 的 **fail-closed parser 合同**(仅合同、不抄进程原语):`FLYWHEEL_WATCHDOG_JUDGE_TIMEOUT_MS` 默认 30_000;exec 错/超时/限流/JSON 解析失败/verdict 越界 → 返回 `null`,**永不 throw、永不假装成功**;子进程 env 洗 `*TOKEN*/*SECRET*/*KEY*` + 剥 GH_TOKEN 族(codex-resume :251-259 判例)。测试必须证明 **prompt 不出现在 argv 与 env**。
 - **ad-hoc 无状态**:无常驻进程、无 thread/resume;并发闸 = 进程内单飞(同 target 冷却 `FLYWHEEL_JUDGE_COOLDOWN_MS` 默认 10min)+ 全局在飞上限 1(队列化,FLY-513 「别乱拉进程」注释判例)。
-- [ ] RED:argv 构造/stdin/env 洗涤/超时/解析失败矩阵先挂
+- [ ] RED:argv 构造(prompt 不在 argv/env)/stdin 写入/stdout 上限 kill/超时 kill/env 洗涤/解析失败矩阵先挂
 - [ ] GREEN + Commit
 
 ### Task B2 prompt + verdict 契约
@@ -223,9 +229,13 @@ export interface SuspiciousReport {
 - env `FLYWHEEL_WATCHDOG_JUDGE=1`(未设 = PR-A 行为:不确定一律 fail-suspicious)。
 - 流:机械 delta 明确(c 候选 / a / b)→ **不调 judge**(省 token);不确定 → judge:
   - `c_stuck` → 进现有 escalation 入口(PR-A 阶段 = runner_stuck 流;PR-C 后 = 统一流),附 judge rationale 进 evidence;
-  - `a_working` / `b_parked` → 抑制,但**必须留审计**:session_events `watchdog_judge_suppressed`(payload 含 verdict/rationale/帧指纹)——C-绝不漏 的可追溯性(judge 压错了能事后归因);
+  - **judge 降级有界(Codex R1 #5,护 C-绝不漏)**:
+    - **高置信机械 C 信号(重复错误签名 + 空 prompt / A1 表内致命错误串命中)judge 无权降级**——这类根本不该进 judge;若仍收到 a/b verdict → 按 `suspicious` 处理(走 A5);
+    - `b_parked` 必须有**机械佐证**(CommDB declared park / pending gate / awaiting_review 之一)才生效,仅凭模型 rationale → 按 `suspicious` 处理;
+    - 生效的 `a_working`/`b_parked` 抑制**带 TTL**(`FLYWHEEL_JUDGE_SUPPRESS_TTL_MS` 默认 20min):TTL 内静音,到期 target 重回 suspicion 队列重评(不是关死 episode);
+    - 抑制必留审计:session_events `watchdog_judge_suppressed`(payload 含 verdict/rationale/帧指纹/TTL)。
   - `suspicious` / `null`(fail-closed)→ fail-suspicious(A5),**绝不静默**。
-- [ ] RED:四路(c/a/b/null)行为 + 审计行 + env 未设旁路先挂
+- [ ] RED:四路(c/a/b/null)行为 + 高置信 C 不可降级 + b_parked 佐证门 + TTL 重评 + 审计行 + env 未设旁路先挂
 - [ ] GREEN + sentinel + Commit
 
 ### Task B4 FLY-976 收口(流程任务)
@@ -254,7 +264,7 @@ export interface SuspiciousReport {
 - Test: `detection-escalation.test.ts`
 
 `notifyLeadFirst(record)`:
-1. **issue thread 安静帖**(自然语言、无 mention):`emitIssueThreadInfraNotification`(mentionUserId 不传 → parse:[]);无绑定 thread → 跳过 thread 腿(lead_event 仍走),不 fail。
+1. **issue thread 安静帖**(自然语言、无 mention):`emitIssueThreadInfraNotification`(mentionUserId 不传 → parse:[])。**无 thread 语义(Codex R1 #3)**:该 helper 对 missing thread 会记 `issue_thread_infra_notify_skipped` 并强制调 `onUndeliverable`(现有 caller 借此 fail-safe 进 ticket 队列,founder-thread-notifier.ts:623-633)——本腿**不要**带着 undefined thread 去调它:**pre-call guard** 先查绑定,无 thread → 不调 helper、不触发 onUndeliverable、静默跳过 thread 腿(lead_event 腿仍走);有 thread 但 POST 失败 → onUndeliverable 收口到告警队列(现状 fail-safe),Lead 腿不受影响。
 2. **Lead inbox**:`appendLeadEvent(ownerLead, "detection_escalation", …)` + `runtime.deliver`;eventType 加入 `GUARDRAIL_EVENT_TYPES`(失败重投)。owner Lead = `resolveLeadForIssue`(dept label,非一律 eng —— PRD §4.5)。
 3. 写 C1 行 → LEAD_NOTIFIED。
 - 文案:`formatParkAlert` 同源真话模板(球在谁/真实 stage/下一步),kind 专属一句话;**不含 raw pane**(fail-suspicious 的 tail 只在 A5 的 lead_event,本腿不重复)。
@@ -267,10 +277,22 @@ export interface SuspiciousReport {
 - Modify: `packages/teamlead/src/bridge/stuck-remanage-routes.ts`(ACK 端点扩展)
 - Test: 两侧扩展
 
-- reconcile 每轮:`LEAD_NOTIFIED` 且 `now - lead_notified_at ≥ FLYWHEEL_DETECTION_LEAD_GRACE_MS`(默认 1_800_000 = 30min;global + per-project 可配)且无 ack → **founder page**:经 `emitIssueThreadInfraNotification`(@founder,mentionUserId = ownerUserId)进该 issue thread,文案「Lead ~30min 未解决」真话模板;→ ESCALATED;`founder_page_ledger` 同款防重页。
+- reconcile 每轮:`LEAD_NOTIFIED` 且 `now - lead_notified_at ≥ FLYWHEEL_DETECTION_LEAD_GRACE_MS`(默认 1_800_000 = 30min;global + per-project 可配)且无 ack → **founder page**:经 `emitIssueThreadInfraNotification`(@founder,mentionUserId = `config.discordOwnerUserId` 即 founder/Annie 的 user id,勿与 owner Lead 混淆)进该 issue thread,文案「Lead ~30min 未解决」真话模板;`founder_page_ledger` 同款防重页。**只有 page 确证送达(posted)才标 ESCALATED(Codex R1 #3)**:无 thread / POST 失败 → **不标 ESCALATED**,transient 走 helper 既有重试预算,预算烧完/永久失败 → `onUndeliverable` 收口进告警队列(绝不静默),行保持 LEAD_NOTIFIED 待下轮 reconcile 重试。
 - **Lead-ACK**:扩展现有 disposition 路由(stuck-remanage-routes 判例)接受 `(target_key, kind, episode_fingerprint)` 的 ack/resolve/dismiss → ACKED/RESOLVED(Lead 自愈或 relay 都算 ACK);runner 侧状态恢复(session 进展/terminal)→ 自动 RESOLVED。
 - **fleet guard**:同 kind 同窗口活跃 episode ≥ `FLYWHEEL_DETECTION_FLEET_THRESHOLD`(默认 4)→ 本流**不页 founder、不刷 Lead**,发一条聚合 ticket 进 915 队列(现有 alertSink),episode 标 ESCALATED(fleet)——PRD §4.3 边界。
 - [ ] RED:30min 门/ACK 三态/防重页/fleet guard/重启恢复(耐久行接续计时)先挂 → GREEN + Commit
+
+### Task C4a 新旧升级流互斥(interop,先于 C4 GREEN;Codex R1 #4)
+
+**Files:**
+- Modify: `detection-escalation.ts` + `packages/teamlead/src/bridge/stuck-runner-detector.ts` / `stuck-escalation.ts`(pre-emit 检查)
+- Test: no-double-fire 矩阵测试
+
+- **权威 episode key** = `(execution_id, episode_fingerprint)`(与 `stuck_dispositions` 同键);**权威去重存储 = `detection_escalations`(C1)**。
+- `FLYWHEEL_DETECTION_ESCALATION=1` 时的所有权划分:case-c 类(runner 冻结/错误循环)由**统一流独家**通知——`stuck-runner-detector` 在 emit `runner_stuck_escalation` / Q7 `runner_stuck_unhandled` **之前**查 `detection_escalations` 活跃行,存在 → 跳过旧 emitter(旧 lead_event/Q7/ticket 不再发);`runner_throttle_stalled` 的 kind 细分保留(统一流沿用该 kind 语义)。env 未设 → 旧路径逐字不变。
+- ACK/resolution 镜像:Lead 对旧 `stuck_dispositions` 的处置(既有 route)同步映射到 `detection_escalations`(ACKED/RESOLVED),反向亦然——单一事实源为 `detection_escalations`,`stuck_dispositions` 保持兼容读写(不迁移旧行)。
+- [ ] RED:no-double-fire 矩阵(`runner_stuck_escalation` / `runner_stuck_unhandled` / `runner_throttle_stalled` / `detection_stuck_confirmed` × env 开/关 × episode 活跃/无)+ `alert_threads`/`founder_page_ledger` 不重复行先挂
+- [ ] GREEN + sentinel + Commit
 
 ### Task C4 detector 接线:case-c + 两漏 + consumed-ack + FN4
 
@@ -283,7 +305,7 @@ export interface SuspiciousReport {
   - case-c 确认(A7/B3 判 c)→ `detection_stuck_confirmed`(与既有 runner_stuck 流的关系:env 开启时 c 类走统一流,旧 Q7 路径由同一 episode 去重抑制,不双发);
   - 漏① → `runner_parked_unreported`;漏② → `lead_ask_unanswered`;
   - consumed-ack → `delivery_unconsumed`(D6);
-  - **FN4 传输对账(D4 独立小块)**:扫 `lead_events`(delivery_attempts 耗尽 / delivered_at NULL 超龄)+ CommDB delivered/read 超龄 + founder-thread `onUndeliverable` 已有升级缝 → `delivery_failed_reconcile`;**不碰 pane 帧逻辑**。
+  - **FN4 传输对账(D4 独立小块;范围诚实化,Codex R1 #6)**:本 PR 只对账**今天存在的投递证据**——`lead_events`(delivery_attempts 耗尽 / delivered_at NULL 超龄)+ CommDB delivered/read 超龄 + founder-thread `onUndeliverable` 结果 → `delivery_failed_reconcile`;**不碰 pane 帧逻辑**。⚠️ 574 原事故的「Lead 起草了但从未发出」(draft-intent)今天**没有任何 durable 意图记录**可对账——真 draft-intent 对账 = 显式 follow-up(需先造「意图发 X」的落盘面),本 PR 的 FN4 验收范围限定为「已知投递尝试的失败/未消费不再静默」。
 - R1 静默判例:parked 等 founder 且正常路径已处理(有 founder-notified evidence / Lead 已回)→ **绝不触发**(验收 R1)。
 - [ ] RED:R1-R4 场景表 + 每 kind 触发/不触发矩阵先挂 → GREEN + sentinel + Commit
 
@@ -303,7 +325,7 @@ export interface SuspiciousReport {
 
 | 组 | 用例 | 验收 |
 |---|---|---|
-| FN(真态 c,**100% 不漏**) | FN0 910 auth(Not logged in 空框)/ FN1 910 ENOENT 循环 / FN2 546/975 error-then-idle / FN3 837 compact 静默 / FN4 574 draft-not-sent | 开关全开下全部判 stuck/对账触发;fixture 双向;fail-suspicious 兜底路径可证 |
+| FN(真态 c,**100% 不漏**) | FN0 910 auth(Not logged in 空框)/ FN1 910 ENOENT 循环 / FN2 546/975 error-then-idle / FN3 837 compact 静默 / FN4 574 draft-not-sent(范围 = C4 诚实化:已知投递尝试的失败/未消费;draft-intent = follow-up) | 开关全开下全部判 stuck/对账触发;fixture 双向;fail-suspicious 兜底路径可证 |
 | FP(可容忍,不误报) | FP0 长 draft turn / FP1 23min 长 turn / FP2 零 commit 只读 / FP3 慢长操作 | 两态(env 开/关)均不告警;token-flow/observation-window 护 |
 | R(汇报) | R1 parked 已处理→静默 / R2 漏①→提醒 Lead / R3 漏② 30min→@Annie / R4 case-c Lead-first 30min→@Annie | C4/C3 场景表 |
 | 时延契约(BI-2 验收,写死在测试注释) | 廉价 gap 检测 ≤ gap-scan 周期(默认 ~5min);pane case-c 判定 ≤ 发现 + 2×帧间隔(默认 ≤ ~13min);首个 Lead 提醒 ≤ ~20min;founder ≤ +30min | 注入 clock 断言 max 时延 |
