@@ -1,13 +1,13 @@
 ---
 issue: FLY-1082
 phase: design
-phaseCursor: 1/5
-updated: 2026-07-09T23:04:56.482Z
-nextStep: codebase audit (3 Explore agents) → exploration.md → brainstorm gate
+phaseCursor: 2/5
+updated: 2026-07-09T23:30:33.774Z
+nextStep: brainstorm gate (blocking) -> research.md -> plan.md -> design_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1082 progress
-**phase**: design (1/5)
-**next**: codebase audit (3 Explore agents) → exploration.md → brainstorm gate
+**phase**: design (2/5)
+**next**: brainstorm gate (blocking) -> research.md -> plan.md -> design_review
