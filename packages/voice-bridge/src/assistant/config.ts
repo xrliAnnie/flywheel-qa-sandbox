@@ -33,8 +33,10 @@ export interface AssistantModeConfig {
 	/** FLY-967 round-5 (Annie's call): server-VAD voice barge-in. Default ON —
 	 * she can cut the assistant off by speaking (headphone users). Set false
 	 * for SPEAKER users: the mic echoes the assistant's own audio back and
-	 * server VAD misjudges it as an interruption, cancelling every reply. */
-	bargeIn: boolean;
+	 * server VAD misjudges it as an interruption, cancelling every reply.
+	 * Optional so hand-constructed configs (runVoiceBridge callers, e2e rigs)
+	 * stay compatible; unset = ON everywhere downstream (Codex R21). */
+	bargeIn?: boolean;
 }
 
 const DEFAULT_COMMAND = "gemini";
@@ -118,8 +120,24 @@ export function resolveAssistantConfig(
 			docs: docsRaw as string[],
 		},
 		localBargeIn: a.localBargeIn === true,
-		bargeIn: a.bargeIn !== false,
+		bargeIn: optBoolean(a, "bargeIn") ?? true,
 	};
+}
+
+/** a truthy STRING like "false" silently meaning ON is exactly the failure
+ * this switch protects speaker users from — non-boolean fails fast (R21). */
+function optBoolean(
+	o: Record<string, unknown>,
+	key: string,
+): boolean | undefined {
+	const v = o[key];
+	if (v == null) return undefined;
+	if (typeof v !== "boolean") {
+		throw new Error(
+			`voice-bridge: huddle.assistant.${key} must be true or false when set (got ${JSON.stringify(v)})`,
+		);
+	}
+	return v;
 }
 
 function optString(
