@@ -1170,6 +1170,153 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "conversational",
 	},
+	// ─── FLY-1041: founder-approval binding — single bindable ship gate ───
+	{
+		name: "ship_gate_retire",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_SHIP_GATE_RETIRE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1041 Fix A: rebind 后 retire 被取代的 approve_to_ship gate(event-route 主路径 + GatePoller sweeper 兜底)——同一时刻只留一个可绑 ship gate(=0 回到 FLY-910 前的僵尸 gate 现状)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/event-route.ts",
+				"retireSupersededShipGate",
+				"call_time",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/gate-poller.ts",
+				"shipGateRetireEnabled",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "ship_gate_card",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_SHIP_GATE_CARD",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1041 Fix B: approve_to_ship 的 founder 卡转正为主载体(15s grace;=0 回到 10min FLY-605 兜底节奏)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/gate-poller.ts",
+				"shipGateCardEnabled",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "ship_gate_card_grace_ms",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_SHIP_GATE_CARD_GRACE_MS",
+		polarity: "opt_in",
+		valueKind: "value",
+		default: "15000",
+		description:
+			"FLY-1041 Fix B: ship 卡发出前的 grace(ms;默认 15s;env > config > default)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/gate-poller.ts",
+				"shipGateCardGraceMs",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "reply_to_card",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_REPLY_TO_CARD",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1041 Fix B: founder 真·Discord 回复(type 19)ship 卡 → 确定性收窄到该 gate 归因(=0 忽略 message_reference,回现状)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/founder-reply-deliverer.ts",
+				"processFounderMessage (reply-to-card qualification)",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "attribution_hold_align",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_ATTRIBUTION_HOLD_ALIGN",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1041 Fix B: held(codex 未绿/QA 未绿/merge_block)期间三个 founder 批准写入源(text/✅/voice)统一拒写(=0 回到 held 也写入的 FLY-910 现状;一个开关管三源)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/auto-qa-held.ts",
+				"founderApprovalHoldGuard",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "tier2_prefix_norm",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_TIER2_PREFIX_NORM",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1041 Fix C: tier2 允许剥离纯语气前缀(「嗯ship」→「ship」确定性命中;=0 回到降级 tier3 的现状——确定性批准语义扩张的独立回滚)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/approval-signal/text-approval-source.ts",
+				"evaluateTextSource",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "founder_approval_ack",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_FOUNDER_APPROVAL_ACK",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1041 Fix C: founder 消息处理后在她消息上点 ✅(绑上)/❓(没绑上)回执 reaction(纯通知,无批准语义;=0 不点)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/founder-reply-deliverer.ts",
+				"processFounderMessage (receipt reaction)",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
 	{
 		name: "viewer_session_reaper",
 		category: "kill_switch",
