@@ -21,6 +21,10 @@
  */
 
 import { createHash } from "node:crypto";
+import {
+	type ErrorSignatureHit,
+	scanErrorSignatures,
+} from "./error-signatures.js";
 
 /** Patient threshold: output unchanged this long ⇒ candidate. Default 10 min. */
 export const STUCK_THRESHOLD_MS = 600_000;
@@ -69,6 +73,14 @@ export interface StuckEvidence {
 	 * (plan §5) pins it for the installed Claude Code version (FLY-169 lesson).
 	 */
 	input_box_present: boolean;
+	/**
+	 * FLY-1048 (A3): the error-signature KIND (error-signatures.ts) that drove
+	 * or accompanied this candidate — lets the escalation wording tell the
+	 * truth ("Not logged in" vs a generic freeze). Additive; absent on
+	 * candidates with no known error string. NEVER the raw matched line
+	 * (echo immunity, FLY-220).
+	 */
+	errorSignature?: string;
 }
 
 /**
@@ -104,6 +116,16 @@ export interface StuckEpisodeState {
 	 * suppressed the alert. One Annie alert per episode (Codex R1 MEDIUM-5).
 	 */
 	annieAlerted?: boolean;
+	/**
+	 * FLY-1048 (A3, env-gated): the normalized error signature currently being
+	 * tracked in the evidence tail. While set, the episode `fingerprint` is
+	 * PINNED to `sig:<hash(errorSig)>` — stable across churning full-text
+	 * fingerprints — so Lead dispositions and the Q7 grace window key
+	 * consistently on a rolling-error episode.
+	 */
+	errorSig?: string;
+	/** Wall-clock (ms) when the tracked signature was first seen in the tail. */
+	firstErrorSigAt?: number;
 }
 
 export interface StuckCandidateInput {
@@ -137,6 +159,12 @@ export interface StuckCandidateInput {
 	thresholdMs?: number;
 	/** Override trailing line count for evidence. */
 	tailLines?: number;
+	/**
+	 * FLY-1048 (A3): enable the repeated-error-signature path. Absent → reads
+	 * FLYWHEEL_STUCK_ERRORSIG === "1"; unset env = pre-FLY-1048 behavior
+	 * byte-for-byte (reverse-compat sentinel).
+	 */
+	errorSigEnabled?: boolean;
 }
 
 export interface StuckCandidateResult {
@@ -280,6 +308,32 @@ export function evaluateStuckCandidate(
 		};
 	}
 
+	// FLY-1048 (A3, env-gated): repeated-error-signature path. A retry loop
+	// keeps CHANGING the pane text, so the fingerprint stagnation clock below
+	// resets every poll and never fires (the module-header documented MISS).
+	// When a known error signature appears in the evidence TAIL (tail-scoped so
+	// a stale error line high in scrollback never counts — FP3), the episode is
+	// tracked by NORMALIZED SIGNATURE instead, with the episode fingerprint
+	// pinned to the signature so Lead dispositions + the Q7 grace window key
+	// stably across churning text. Runs AFTER the hard safety gates.
+	const errorSigEnabled =
+		input.errorSigEnabled ?? process.env.FLYWHEEL_STUCK_ERRORSIG === "1";
+	if (errorSigEnabled) {
+		const tailHits = scanErrorSignatures(
+			extractTail(input.output, tailLines),
+		);
+		if (tailHits.length > 0) {
+			return evaluateErrorSignatureEpisode(
+				input,
+				tailHits,
+				thresholdMs,
+				tailLines,
+			);
+		}
+		// No signature in the tail → legacy fingerprint flow below; fresh
+		// episodes never copy sig-tracking fields, so tracking resets naturally.
+	}
+
 	// Stagnation tracking.
 	const fp = fingerprintOutput(input.output);
 	const sameOutput = input.prior?.fingerprint === fp;
@@ -324,6 +378,76 @@ export function evaluateStuckCandidate(
 			...episode,
 			escalated: true,
 			// FLY-927 (W-B): classify the stall flavor from the SAME capture.
+			throttleStalled: detectThrottleStall(input.output),
+		},
+		evidence,
+	};
+}
+
+/** FLY-1048 (A3): stable episode fingerprint for a tracked error signature. */
+function sigFingerprint(signature: string): string {
+	return `sig:${createHash("sha256").update(signature).digest("hex").slice(0, 16)}`;
+}
+
+/**
+ * FLY-1048 (A3): advance/emit for an episode whose evidence tail carries a
+ * known error signature. Continuity is by NORMALIZED SIGNATURE (full-text
+ * fingerprints may churn — the retry-loop MISS this path fixes); the same
+ * threshold/dedup shape as the fingerprint flow applies. A legacy fingerprint
+ * episode that already escalated this exact static pane carries its
+ * escalation state over (a flag flip mid-episode must not double-alert).
+ */
+function evaluateErrorSignatureEpisode(
+	input: StuckCandidateInput,
+	tailHits: ErrorSignatureHit[],
+	thresholdMs: number,
+	tailLines: number,
+): StuckCandidateResult {
+	const prior = input.prior;
+	const continuing =
+		prior?.errorSig !== undefined &&
+		tailHits.some((h) => h.signature === prior.errorSig);
+	const tracked = continuing ? prior.errorSig! : tailHits[0]!.signature;
+	const trackedHit = tailHits.find((h) => h.signature === tracked)!;
+	const firstAt = continuing ? (prior.firstErrorSigAt ?? input.now) : input.now;
+
+	const carryEscalation = continuing
+		? prior
+		: prior !== undefined &&
+				prior.escalated &&
+				prior.fingerprint === fingerprintOutput(input.output)
+			? prior
+			: undefined;
+
+	const episode: StuckEpisodeState = {
+		...(carryEscalation ?? {}),
+		fingerprint: sigFingerprint(tracked),
+		firstStagnantAt: firstAt,
+		escalated: carryEscalation?.escalated ?? false,
+		errorSig: tracked,
+		firstErrorSigAt: firstAt,
+	};
+
+	const sigAgeMs = input.now - firstAt;
+	if (sigAgeMs < thresholdMs) {
+		return { candidate: false, exclusion: "below_threshold", episode };
+	}
+	if (episode.escalated) {
+		return { candidate: false, exclusion: "already_escalated", episode };
+	}
+
+	const evidence: StuckEvidence = {
+		stuck_minutes: Math.floor(sigAgeMs / 60_000),
+		tail: extractTail(input.output, tailLines),
+		stream_error_signature: detectStreamErrorSignature(input.output),
+		input_box_present: detectInputBoxPresent(input.output),
+		errorSignature: trackedHit.kind,
+	};
+	return {
+		candidate: true,
+		episode: {
+			...episode,
+			escalated: true,
 			throttleStalled: detectThrottleStall(input.output),
 		},
 		evidence,
