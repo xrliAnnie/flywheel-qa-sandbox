@@ -1,0 +1,14 @@
+⏺ The tests pass. Now I'll wire the new detector into the poller and note
+  that a missing file is logged, not fatal — the reader was not logged
+  incorrectly before, so the journal shows every entry.
+
+⏺ Bash(pnpm vitest run src/bridge/__tests__/gate-poller-health.test.ts)
+  ⎿  ✓ src/bridge/__tests__/gate-poller-health.test.ts (12 tests) 841ms
+
+✻ Cooking… (34s · ↑ 2.1k tokens · esc to interrupt)
+
+──────────────────────────────────────────────── @runner-fly-101 ──
+❯
+────────────────────────────────────────────────────────────────────
+  Opus 4.8 | ⚡runner-fly-101 | ctx 55%
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
