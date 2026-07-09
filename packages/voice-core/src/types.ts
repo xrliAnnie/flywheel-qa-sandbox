@@ -115,6 +115,21 @@ export interface ConversationOptions {
 	voice?: string;
 	/** spoken-register hint (short sentences / colloquial / no-markdown). */
 	systemHint?: string;
+	/**
+	 * FLY-967: session-scope context preamble (meeting briefing). When set it is
+	 * prefixed to the systemInstruction ahead of systemHint (joined by a blank
+	 * line). Unset = current behavior byte-for-byte (talk CLI / FLY-545).
+	 */
+	systemPreamble?: string;
+	/**
+	 * FLY-967 round-5: voice barge-in switch. true (default) keeps the
+	 * backend's native interruption (server VAD cancels the live response when
+	 * the user starts speaking — right for headphone users). false pins
+	 * NO_INTERRUPTION: the model always finishes speaking — recommended for
+	 * SPEAKER users, whose mic feeds the assistant's own audio back and the
+	 * echo gets misjudged as an interruption (~0.3s cancel on every reply).
+	 */
+	bargeIn?: boolean;
 	transcriptSink?: TranscriptSink;
 	/**
 	 * resume is injected at creation time (Gemini configures sessionResumption at
@@ -181,6 +196,20 @@ export type ConversationEventMap = {
 export interface ConversationSession {
 	readonly sessionId: string;
 	sendAudio(frame: Buffer, format: AudioFormat): void;
+	/**
+	 * FLY-967: send a text control prompt to the model — steering the founder
+	 * never hears ("please open the meeting", "please recap"). These are NOT the
+	 * founder's words: nothing is written to the transcript sink for them, so
+	 * verbatim-quote pools built from user entries can never pick them up.
+	 */
+	sendText(text: string): void;
+	/**
+	 * FLY-967 round-6: the user finished their utterance — commit the turn so
+	 * the model responds. Needed because Discord silence-suppression ends the
+	 * audio stream abruptly (no trailing silence), so the server VAD never
+	 * commits end-of-speech on its own. No-op backends may ignore it.
+	 */
+	endUserTurn(): void;
 	interrupt(): void;
 	injectToolResult(r: ToolResult, sched?: ScheduleHint): void;
 	on<E extends keyof ConversationEventMap>(

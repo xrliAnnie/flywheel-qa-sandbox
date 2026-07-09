@@ -106,6 +106,8 @@ export class GeminiLiveBackend implements VoiceBackend {
 			model: this.opts.profile.model,
 			voice: opts.voice,
 			systemHint: opts.systemHint,
+			systemPreamble: opts.systemPreamble,
+			bargeIn: opts.bargeIn ?? true,
 			resumeHandle: opts.resumeHandle?.payload as string | undefined,
 			// ask_lead first (its brain path is fixed); extras are declared verbatim.
 			tools: [ASK_LEAD_DECLARATION, ...extraTools.map((t) => t.declaration)],
@@ -149,6 +151,8 @@ class GeminiLiveSession implements ConversationSession {
 	private closed = false;
 	/** true after the current assistant turn was cancelled (barge-in or manual). */
 	private turnCancelled = false;
+	/** true while a model response window is open (response-started emitted). */
+	private turnActive = false;
 	/** in-flight tool executions (ask_lead AND extraTools share one abort map —
 	 * the cancellation contract is identical for both). */
 	private readonly toolAborts = new Map<string, AbortController>();
@@ -169,6 +173,18 @@ class GeminiLiveSession implements ConversationSession {
 
 	sendAudio(frame: Buffer, format: AudioFormat): void {
 		this.conn.sendAudio(frame, format);
+	}
+
+	/** control prompt — not the founder's words; never written to the transcript. */
+	sendText(text: string): void {
+		this.conn.sendText(text);
+	}
+
+	/** FLY-967 round-6: the user stopped speaking — commit their turn so the
+	 * model responds (Discord silence-suppression gives no trailing silence for
+	 * the server VAD to detect end-of-speech on its own). */
+	endUserTurn(): void {
+		this.conn.endAudioStream();
 	}
 
 	/** manual interrupt — LOCAL suppression only (no client server-cancel exists). */
@@ -201,6 +217,7 @@ class GeminiLiveSession implements ConversationSession {
 	private cancelCurrentTurn(): void {
 		if (this.turnCancelled) return;
 		this.turnCancelled = true;
+		this.turnActive = false; // the next turn re-opens its own window
 		this.abortAllTools();
 		this.emitter.emit("response-cancelled");
 	}
@@ -210,11 +227,22 @@ class GeminiLiveSession implements ConversationSession {
 		this.toolAborts.clear();
 	}
 
+	/** open the response window lazily on the FIRST model output of a turn.
+	 * FLY-967 round-4: keying response-started off user transcripts left
+	 * sendText-initiated turns (the /gemini opening) with no window — the
+	 * speaker never saw beginTurn and gate-dropped every opening chunk. */
+	private ensureTurnStarted(): void {
+		if (this.turnActive || this.turnCancelled) return;
+		this.turnActive = true;
+		this.emitter.emit("response-started");
+	}
+
 	private onServerEvent(e: LiveServerEvent): void {
 		switch (e.type) {
 			case "transcript":
 				// suppress assistant transcript after a cancel (contract); user always flows.
 				if (e.role === "assistant" && this.turnCancelled) return;
+				if (e.role === "assistant") this.ensureTurnStarted();
 				this.emitter.emit("transcript", {
 					role: e.role,
 					text: e.text,
@@ -222,18 +250,21 @@ class GeminiLiveSession implements ConversationSession {
 				});
 				if (e.final) this.writeTranscript(e.role, e.text);
 				if (e.role === "user") {
-					// a new user turn starts a fresh assistant response window.
+					// a new user turn resets a cancelled window; the response window
+					// itself opens on the first MODEL output (ensureTurnStarted).
 					this.turnCancelled = false;
-					this.emitter.emit("response-started");
 				}
 				break;
 			case "audio":
 				if (this.turnCancelled) return; // drop suppressed audio
+				this.ensureTurnStarted();
 				this.emitter.emit("response-audio", e.chunk, e.format);
 				break;
 			case "turn-complete":
-				if (!this.turnCancelled) this.emitter.emit("response-done");
+				if (!this.turnCancelled && this.turnActive)
+					this.emitter.emit("response-done");
 				this.turnCancelled = false;
+				this.turnActive = false;
 				break;
 			case "tool-call":
 				// a tool call arriving after this turn was cancelled belongs to the

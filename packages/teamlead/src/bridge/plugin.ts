@@ -242,8 +242,15 @@ import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { reconcileLegacyPhaseThreads } from "./legacy-phase-thread-sweep.js";
-import { queryLinearIssues } from "./linear-query.js";
-import { resolveLinearScope, resolveProjectNameParam } from "./linear-scope.js";
+import {
+	lookupLinearIssueByIdentifier,
+	queryLinearIssues,
+} from "./linear-query.js";
+import {
+	issueMatchesBinding,
+	resolveLinearScope,
+	resolveProjectNameParam,
+} from "./linear-scope.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { notifyDigestExpectTick } from "./notify-digest-expect.js";
@@ -2363,6 +2370,167 @@ export function createBridgeApp(
 			} catch (err) {
 				console.error(
 					"[linear-proxy] list-issues failed:",
+					(err as Error).message,
+				);
+				res.status(502).json({ error: "Linear API error" });
+			}
+		},
+	);
+
+	// FLY-967 (contract: FLY-545 plan §5.3/P12, first-to-land builds): comment
+	// proxy — the voice-bridge landing writes the meeting summary onto the
+	// kickoff issue. issueId accepts a UUID or an identifier ("FLY-123"): it is
+	// resolved first so an unknown issue is an explicit 404, never an opaque
+	// GraphQL error.
+	app.post(
+		"/api/linear/comment",
+		tokenAuthMiddleware(config.apiToken),
+		async (req, res) => {
+			if (!config.linearApiKey) {
+				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
+				return;
+			}
+			const { issueId, body } = req.body ?? {};
+			if (!issueId || typeof issueId !== "string") {
+				res.status(400).json({ error: "issueId is required" });
+				return;
+			}
+			if (!body || typeof body !== "string" || body.trim().length === 0) {
+				res.status(400).json({ error: "body is required" });
+				return;
+			}
+			// FLY-967 Codex R1: this is a WRITE path — when the caller names a
+			// project, the target issue must fall inside its binding (voice-bridge
+			// clients always pass projectName; absent keeps the update-issue-style
+			// unscoped behavior for existing internal callers).
+			const boundComment = resolveProjectNameParam(
+				projects,
+				req.body?.projectName,
+			);
+			if (!boundComment.ok) {
+				res.status(boundComment.status).json({ error: boundComment.error });
+				return;
+			}
+			try {
+				const { LinearClient } = await import("@linear/sdk");
+				const client = new LinearClient({ apiKey: config.linearApiKey });
+				// issue(id:) accepts UUID or identifier; the mapped lookup also
+				// carries labels/project for the scope check.
+				const issue = await lookupLinearIssueByIdentifier(
+					config.linearApiKey,
+					issueId,
+				);
+				if (!issue) {
+					res.status(404).json({ error: `issue "${issueId}" not found` });
+					return;
+				}
+				if (
+					boundComment.binding &&
+					!issueMatchesBinding(issue, boundComment.binding)
+				) {
+					res.status(403).json({
+						error: `issue "${issue.identifier}" is outside the "${String(
+							Array.isArray(req.body?.projectName)
+								? req.body?.projectName[0]
+								: req.body?.projectName,
+						)}" project scope`,
+					});
+					return;
+				}
+				const payload = await client.createComment({
+					issueId: issue.id,
+					body,
+				});
+				const comment = await payload.comment;
+				res.json({
+					ok: true,
+					comment: { id: comment?.id, url: comment?.url },
+				});
+			} catch (err) {
+				console.error("[linear-proxy] comment failed:", (err as Error).message);
+				res.status(502).json({ error: "Linear API error" });
+			}
+		},
+	);
+
+	// FLY-967 (contract: FLY-545 plan §5.3/P12): precise read-only issue lookup
+	// for the voice assistant's lookup_issue tool. Identifier exact match is its
+	// own FIRST branch (deterministic — 545 Codex R2 guardrail ②) and returns
+	// regardless of scope: an explicit identifier is an explicit ask and this
+	// path is read-only. Keyword falls back to a small best-match list with
+	// stable updatedAt ordering, scoped by the projectName binding (FLY-371).
+	app.get(
+		"/api/linear/issue",
+		tokenAuthMiddleware(config.apiToken),
+		async (req, res) => {
+			if (!config.linearApiKey) {
+				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
+				return;
+			}
+			const queryRaw = Array.isArray(req.query.query)
+				? String(req.query.query[0])
+				: (req.query.query as string | undefined);
+			if (
+				!queryRaw ||
+				typeof queryRaw !== "string" ||
+				queryRaw.trim().length === 0
+			) {
+				res.status(400).json({ error: "query is required" });
+				return;
+			}
+			const q = queryRaw.trim();
+			const limitRaw =
+				req.query.limit !== undefined
+					? parseInt(String(req.query.limit), 10)
+					: 5;
+			const limit = Number.isNaN(limitRaw)
+				? 5
+				: Math.min(Math.max(1, limitRaw), 20);
+			const bound = resolveProjectNameParam(projects, req.query.projectName);
+			if (!bound.ok) {
+				res.status(bound.status).json({ error: bound.error });
+				return;
+			}
+			const scope = resolveLinearScope(bound.binding, {});
+			try {
+				if (/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(q)) {
+					const exact = await lookupLinearIssueByIdentifier(
+						config.linearApiKey,
+						q,
+					);
+					// FLY-967 Codex R1: an exact hit OUTSIDE the caller's project
+					// binding is treated as a miss (falls through to the scoped
+					// keyword search) — an explicit identifier must not cross the
+					// project boundary when a scope was named.
+					if (
+						exact &&
+						(!bound.binding || issueMatchesBinding(exact, bound.binding))
+					) {
+						res.json({ matchType: "identifier", issue: exact });
+						return;
+					}
+					// identifier-shaped but unknown/out-of-scope — fall through to the
+					// keyword search; a full miss is a 404 below.
+				}
+				const result = await queryLinearIssues(config.linearApiKey, {
+					titleContains: q,
+					project: scope.project,
+					labels: scope.labels,
+					limit,
+				});
+				if (result.issues.length === 0) {
+					res.status(404).json({ error: `no issue matched "${q}"` });
+					return;
+				}
+				res.json({
+					matchType: "keyword",
+					issues: result.issues,
+					count: result.issues.length,
+					truncated: result.truncated,
+				});
+			} catch (err) {
+				console.error(
+					"[linear-proxy] issue-lookup failed:",
 					(err as Error).message,
 				);
 				res.status(502).json({ error: "Linear API error" });

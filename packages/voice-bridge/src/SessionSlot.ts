@@ -2,7 +2,7 @@
  * SessionSlot — the single-session mutex of the resident VC (FLY-545).
  *
  * The resident #huddle VC hosts ONE voice session at a time; /meet (huddle,
- * FLY-545) and /live (assistant, FLY-967) contend for the SAME slot — the
+ * FLY-545) and /gemini (assistant, FLY-967) contend for the SAME slot — the
  * concurrency=1 rule is a property of the room, not of either mode. Generic
  * semantics per the 545/967 boundary ruling: acquire/release keyed by
  * (mode, holder), busy rejections carry the current holder plus a

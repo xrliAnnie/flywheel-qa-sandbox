@@ -26,8 +26,13 @@ class FakeConnection implements LiveConnection {
 	closed = false;
 	private cb?: (e: LiveServerEvent) => void;
 	constructor(readonly params: LiveConnectParams) {}
+	audioStreamEnds = 0;
 	sendAudio(frame: Buffer): void {
 		this.sentAudio.push(frame);
+	}
+	sendText(): void {}
+	endAudioStream(): void {
+		this.audioStreamEnds++;
 	}
 	sendToolResponse(callId: string, output: string): void {
 		this.toolResponses.push({ callId, output });
@@ -142,6 +147,73 @@ describe("GeminiLiveBackend converse face", () => {
 			role: "user",
 			backendId: "gemini-live",
 		});
+	});
+
+	it("endUserTurn commits the turn via audioStreamEnd (FLY-967 round-6: Discord silence-suppression gives no trailing silence)", async () => {
+		const { session, conn } = await makeSession();
+		session.endUserTurn();
+		session.endUserTurn();
+		expect(conn.audioStreamEnds).toBe(2);
+	});
+
+	it("threads bargeIn to the transport (default true; explicit false honored)", async () => {
+		const transport = new FakeTransport();
+		const backend = new GeminiLiveBackend({ transport, profile: profile() });
+		const create = (
+			backend.createConversation as NonNullable<
+				typeof backend.createConversation
+			>
+		).bind(backend);
+		await create({ brain: new FakeBrain([]) });
+		expect(transport.lastConnection?.params.bargeIn).toBe(true);
+		await create({ brain: new FakeBrain([]), bargeIn: false });
+		expect(transport.lastConnection?.params.bargeIn).toBe(false);
+	});
+
+	it("a sendText-initiated model turn fires response-started BEFORE its audio (FLY-967 round-4: the opening was gated dead in the speaker)", async () => {
+		const { session, conn } = await makeSession();
+		const order: string[] = [];
+		session.on("response-started", () => order.push("started"));
+		session.on("response-audio", () => order.push("audio"));
+		// NO user transcript — the turn was initiated by a sendText control
+		// prompt (the /gemini opening). The old mapping only opened a response
+		// window on user transcripts, so the speaker never saw beginTurn and
+		// dropped every opening chunk.
+		conn.emit({ type: "audio", chunk: Buffer.from("PCM"), format: PCM });
+		conn.emit({ type: "audio", chunk: Buffer.from("PCM"), format: PCM });
+		conn.emit({ type: "turn-complete" });
+		expect(order).toEqual(["started", "audio", "audio"]);
+	});
+
+	it("response-started fires exactly once per model turn and re-fires for the next turn", async () => {
+		const { session, conn } = await makeSession();
+		const counts = counter(session);
+		conn.emit({ type: "audio", chunk: Buffer.from("A"), format: PCM });
+		conn.emit({ type: "audio", chunk: Buffer.from("B"), format: PCM });
+		conn.emit({ type: "turn-complete" });
+		conn.emit({ type: "audio", chunk: Buffer.from("C"), format: PCM });
+		conn.emit({ type: "turn-complete" });
+		expect(counts["response-started"]).toBe(2);
+		expect(counts["response-done"]).toBe(2);
+	});
+
+	it("an assistant transcript arriving before any audio also opens the response window", async () => {
+		const { session, conn } = await makeSession();
+		const counts = counter(session);
+		conn.emit({
+			type: "transcript",
+			role: "assistant",
+			text: "开场",
+			final: false,
+		});
+		expect(counts["response-started"]).toBe(1);
+	});
+
+	it("a turn-complete with no model output emits no response-done (nothing began)", async () => {
+		const { session, conn } = await makeSession();
+		const counts = counter(session);
+		conn.emit({ type: "turn-complete" });
+		expect(counts["response-done"]).toBeUndefined();
 	});
 
 	it("surfaces the brain via ask_lead and sends the answer back", async () => {

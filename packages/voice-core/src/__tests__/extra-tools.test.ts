@@ -30,6 +30,7 @@ class FakeConnection implements LiveConnection {
 	private cb?: (e: LiveServerEvent) => void;
 	constructor(readonly params: LiveConnectParams) {}
 	sendAudio(): void {}
+	sendText(): void {}
 	sendToolResponse(callId: string, output: string, scheduling?: string): void {
 		this.toolResponses.push({ callId, output, scheduling });
 	}

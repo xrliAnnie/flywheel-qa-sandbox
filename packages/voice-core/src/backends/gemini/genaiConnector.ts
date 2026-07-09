@@ -62,8 +62,29 @@ export function createGenaiTransport(
 					},
 				],
 			};
-			if (params.systemHint) {
-				config.systemInstruction = { parts: [{ text: params.systemHint }] };
+			// FLY-967 round-5 (Annie's call — barge-in switch, default ON):
+			// bargeIn=false pins NO_INTERRUPTION so a live response cannot be
+			// cancelled by server VAD — for SPEAKER users, whose mic echoes the
+			// assistant's own audio back and every reply died ~0.3s in (round-4).
+			// ON/unset = the SDK's native START_OF_ACTIVITY_INTERRUPTS: headphone
+			// users get real voice barge-in. The string literal IS the
+			// @google/genai ActivityHandling enum value (verified against 1.44.0).
+			if (params.bargeIn === false) {
+				config.realtimeInputConfig = { activityHandling: "NO_INTERRUPTION" };
+			}
+			// FLY-967: briefing preamble composes BEFORE the spoken-register hint.
+			const instruction = [params.systemPreamble, params.systemHint]
+				.filter((s): s is string => !!s)
+				.join("\n\n");
+			if (instruction) {
+				config.systemInstruction = { parts: [{ text: instruction }] };
+			}
+			if (params.voice) {
+				// voiceName only — native-audio Live models pick the language
+				// themselves and reject an explicit languageCode (FLY-967 R1 #3).
+				config.speechConfig = {
+					voiceConfig: { prebuiltVoiceConfig: { voiceName: params.voice } },
+				};
 			}
 
 			const session = await client.live.connect({
@@ -98,6 +119,12 @@ export function createGenaiTransport(
 							mimeType: "audio/pcm;rate=16000",
 						},
 					});
+				},
+				sendText(text: string) {
+					session.sendRealtimeInput({ text });
+				},
+				endAudioStream() {
+					session.sendRealtimeInput({ audioStreamEnd: true });
 				},
 				sendToolResponse(callId: string, output: string) {
 					session.sendToolResponse({

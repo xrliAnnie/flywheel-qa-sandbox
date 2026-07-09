@@ -30,6 +30,7 @@ class FakeSession implements ConversationSession {
 	sendAudio(frame: Buffer): void {
 		this.frames.push(frame);
 	}
+	sendText(): void {}
 	interrupt(): void {}
 	injectToolResult(_r: ToolResult, _s?: ScheduleHint): void {}
 	on<E extends keyof ConversationEventMap>(
