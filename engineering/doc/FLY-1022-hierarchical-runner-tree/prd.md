@@ -126,7 +126,7 @@ DR 相对我 web-research 新增可落的一条 = **『有界队列 + 显式 cre
 | Lead 委派给 sub-lead | **两级调度**(Mesos two-level) | ✅ 一层 | **root 失全局细粒度视图**、跨组抢占难 → 故 MVP 一层、跨组回 root(§4.4) |
 | 隔离卡住的子树 | **bulkhead / cell + circuit breaker** | ✅ | 隔离降利用率(可接受,注意力隔离本就是目的)(§4.4) |
 | 过载往上传 | **背压 = 容量信号**(Reactive Streams) | ✅ 接 353 | 故意压过载吞吐换不崩;待办必须有界(§4.4) |
-| 谁卡了、别误报 | **SWIM suspect-before-declare** | ✅ 喂回 942 | 弱一致(几轮才到顶),异步人在环可接受(§5) |
+| 谁卡了、别误报 | **SWIM-inspired suspect-before-declare(gossip later)** | ✅ 喂回 942(仅 suspect-before-declare) | MVP 检测仍集中式 O(N);SWIM 扩展性保证 = later(§5) |
 | 何时加/合并 sub-lead | **B-tree 分裂/合并**(滞回阈值) | ⏸ later | churn/thrash → MVP 手动配置,不自动(§10) |
 | runner 分到哪个 sub-lead | **一致性哈希 + vnode** | ⏸ later | 环/vnode 元数据复杂,小规模过度 → MVP 静态分配(§10) |
 
@@ -179,8 +179,10 @@ DR 相对我 web-research 新增可落的一条 = **『有界队列 + 显式 cre
 - **机制**:outsourced heartbeat + gossip 传播;**检测时延/误报率/每进程消息负载与组大小无关**(传统 heartbeat 是 O(N²));传播时延随成员数**对数**增长;**suspect-before-declare**(先怀疑再宣告)降误报。
 - **权衡**:弱一致(失败几轮才传到顶)—— 对异步 + 人在环完全可接受。
 - **来源**:SWIM(Das/Gupta/Motivala 2002);DR『soft-suspicion-before-declare』。
-- **映射**:树 + 逐层上报 = 分层故障检测;sub-lead **先 suspect(加一档观察)再升级** → 治 FLY-218/220 误报;**O(N²)→分层 = 树观测能 scale 的理论依据**。
-- **MVP**:✅(喂 942,§5)。
+- **映射(⭐ MVP 只取 suspect-before-declare,不继承 SWIM 复杂度保证)**:MVP 从 SWIM **只借『先 suspect 再 declare』这一条**给 942
+  加软怀疑态(sub-lead 先加一档观察再升级)→ 治 FLY-218/220 误报。**SWIM 的『负载与组大小无关 / 对数传播 / 避免 O(N²)』MVP 不成立** ——
+  MVP 检测仍是看门狗集中式 O(N) 扫描;那些扩展性保证要真上 gossip/outsourced-heartbeat(= later『分布式检测』项,§5)。
+- **MVP**:✅ 只『suspect-before-declare』喂 942(§5);⏸ gossip 扩展性 = later。
 
 **4A-6 · 何时加/合并 sub-lead(B-tree 分裂/合并)** `later 留位`
 - **机制**:节点满→**在中位数分裂**成两个;占用率跌破阈值(underflow)→**合并/借**兄弟;大 fan-out 保持树浅而快。
@@ -190,14 +192,17 @@ DR 相对我 web-research 新增可落的一条 = **『有界队列 + 显式 cre
 - **MVP**:⏸ later(只留 schema 位)。
 
 **4A-7 · runner 分到哪个 sub-lead(一致性哈希 + 虚拟节点)** `later 留位`
-- **机制**:一致性哈希——加/删一个节点只重映射 **~K/N** 的 key(朴素取模要重映射 ~99%);**虚拟节点**(如 128/节点)→ 负载标准差压到均值 5-10%,加节点时从多个节点各拿一小片。
-- **权衡**:环 + vnode 的**元数据复杂度**;我们只有一小把 sub-lead 时**过度设计**(DR:heavy virtual-node hashing 此规模过早)。
+- **机制(此处数字是直觉/类比,非我们要兑现的保证 —— Codex R1)**:一致性哈希——加/删一个节点只重映射「一小部分」key(数量级 ~K/N;朴素取模几乎全重映射),
+  多 key 时**虚拟节点**能显著抹平负载偏斜(具体偏斜依 key 数 / vnode 数 / 权重 / 哈希质量而定)。
+- **权衡**:环 + vnode 的**元数据复杂度**;我们只有一小把 sub-lead(key 极少)时**过度设计**(DR:heavy virtual-node hashing 此规模过早)。
 - **来源**:Dynamo consistent hashing + virtual nodes。
 - **映射**:**MVP 用简单静态/轮询分配就够**;要动态增删 sub-lead 又不想全体重洗时才上。
 - **MVP**:⏸ later。
 
 **4A-8 · 每 sub-lead 该带多宽(fan-out 放大权衡,LSM 视角)** `写进 PRD 取舍`
-- **机制/权衡**:LSM leveled compaction 写放大 = fanout;fanout 越大→树越浅但每层聚合越重;fanout=2→写放大低但**层数翻倍、读时延翻倍**。一般:宽(每 sub-lead 带更多 runner)= 树浅、升级跳数少、查任意 runner 状态快,但每 sub-lead 聚合负担重;窄 = 树深、跳数多。
+- **机制/权衡(用作类比,非精确 LSM 建模 —— Codex R1)**:LSM 的 fan-out 直观说明「浅 vs 宽」取舍(fan-out 大→树浅但每层聚合重;
+  fan-out 小→树深、跳数多、时延高)。一般:宽(每 sub-lead 带更多 runner)= 树浅、升级跳数少、查任意 runner 状态快,但每 sub-lead 聚合负担重;窄 = 树深、跳数多。
+  (LSM leveled/tiered 的精确写/读/空间放大权衡不是本产品决策所需,略。)
 - **来源**:RocksDB compaction(leveled/tiered);leveled compaction overview。
 - **映射**:每 sub-lead fan-out **上界 = 认知容量 ≈5-6**(人/agent 注意力瓶颈,不是磁盘)→ 我们的 fan-out 天然被认知容量钉住,不用调到 128。
 - **MVP**:写进 PRD 的取舍(定 fan-out 默认值 ~5-6)。
@@ -220,9 +225,14 @@ DR 相对我 web-research 新增可落的一条 = **『有界队列 + 显式 cre
 - **⭐ 落点变**:看门狗判定某 runner 静默卡住 → **报给它的直属 sub-lead(最底层),而不是直接顶到 root Lead**。
 - **层层上报(escalate)**:sub-lead 是**第一响应人**(942 契约:Lead=响应);它先自愈 / relay。**只有 sub-lead 层解决不了、
   或 sub-lead 自己应答超时**,才升级到它的父节点;逐层向上;最终才到 root Lead / founder(沿用现有 stuck→founder 深层页)。
-- **⭐ suspect-before-declare(抄 SWIM,`research §5`)**:sub-lead **先「怀疑」(加一档观察)、确认才「宣告」升级** —— 不一有静默就顶到上层。
-  这直接治 FLY-218/220 的**误报**病(整屏哈希漂移 / 回声导致的假阳)。且 SWIM 的性质保证:**逐层分层检测下,检测负载不随 fleet 大小 O(N²) 爆**、
-  卡住信号升到 root 的时延随层数**对数**增长 —— 这是**树的观测能 scale 的理论依据**,不是拍脑袋。
+- **⭐ SWIM-inspired suspect-before-declare(`research §5`)**:sub-lead **先「怀疑」(加一档观察)、确认才「宣告」升级** ——
+  不一有静默就顶到上层。直接治 FLY-218/220 的**误报**病(整屏哈希漂移 / 回声导致的假阳)。
+- **⭐ MVP 具体状态机(Codex R1 校正:MVP 检测逻辑没换,别继承 SWIM 的复杂度保证)**:
+  `suspected_stuck`(看门狗判静默超**可配置阈值**)→ **直属 sub-lead 第一响应**(自愈 / relay)→ **sub-lead 应答超时**(942 §2 的应答时效阈值)
+  → 冒泡到 parent → 逐层 → 最终 **founder fallback**(现有 stuck→founder 深层页);全程**持久化去重**(沿用 942)。
+- **[later,不在 MVP]** SWIM 的『每进程负载与组大小无关 / 传播对数增长 / 避免 O(N²)』**只有真上 gossip / outsourced-heartbeat 才成立**;
+  **MVP 检测仍是看门狗集中式 O(N) 扫描**(`RunnerIdleWatchdog` 串行扫所有 running session,Bridge 侧 O(N))。要那些扩展性保证 = 另立
+  『分布式检测(SWIM/gossip)』**later 项**,别在 MVP 宣称。—— 树 MVP 的收益是**注意力压缩 + 分层第一响应**,不是检测负载的复杂度改善。
 - **健康摘要走同一条上报路**:sub-lead 周期把「本组健康摘要」聚合上报(§4.2),看门狗的**告警**并进这条摘要流(带类型:
   `✅ 干完等拍` / `🔴 卡住在等谁` / `🟡 已替你决定`,942 §3 的结构化通知)。
 - **喂回 942**:这条「树-aware 落点 + 层层升级 + sub-lead 应答时效」作为 **FLY-942/878/927 的一个增强项**记回去
@@ -255,6 +265,13 @@ DR 相对我 web-research 新增可落的一条 = **『有界队列 + 显式 cre
 - **谁把内容写进 thread**:沿用现状 —— runner 发不了 Discord,**由负责的 Lead / sub-lead 写进 thread**(树里改成:该 runner 的
   直属 sub-lead 负责写它那些 issue 的 thread)。**thread 的所有权下放到 sub-lead,但 thread 本身照常一件一条、直达 founder。**
 
+**⭐ 频道 / 权限契约(Codex R1:别让 founder 可见性漂了)**:现状 `chat_threads` 按 `(issue_id, channel_id)` 唯一
+(`StateStore.ts`),注册时校验 registering Lead 已配置 + 频道 == 该 Lead 的 `chatChannel`(`chat-thread-register.ts`)。树落地要定死:
+- **canonical issue-thread 频道 = root 部门频道,或一个<u>显式配置的、founder 可见的</u> sub-lead 频道 —— 不留隐式**。sub-lead 若用自己的 `chatChannel`,该频道必须 founder 可见,否则可见性会从现有 dept-lead 频道契约漂走。
+- **sub-lead 的 bot 在 canonical 频道必须有 send / thread 权限**(分配前校验),否则它 owned 的 thread 写不进去。
+- **一件 issue 不得 fork 成 root + sub-lead 两条 founder thread** —— 除非显式升级、且带 cross-link。
+- **测试**:注册 / 防重复 / 投递 / archive / sub-lead-owned thread 的 founder 可见性。
+
 ---
 
 ## 8. 多机放置(与 FLY-1005 合成)+ Lead-as-child 通信
@@ -269,11 +286,33 @@ DR 相对我 web-research 新增可落的一条 = **『有界队列 + 显式 cre
 - 现状:`LeadConfig`(`ProjectConfig.ts`)扁平 `leads[]`、零层级字段;通信是 Bridge→单个 `LeadRuntime`(per leadId)。
 - **本 PRD 加的是「一个 Lead 能当另一个 Lead 的孩子」这层角色**:sub-lead **向上**汇报组摘要(当另一个 Lead 的 runner-源)+
   **向下**派/带自己那摊 runner。
-- **复用同一套 Lead→Runner 机制、只调 schema**(Tadashi 初判「中等改动」):
-  - `LeadConfig` 加 `parentLeadId?`(可空;root Lead 不设)—— 定义树边。
-  - dispatch 多一跳:Bridge 把活派给 sub-lead(它对它那摊 runner 就是「那个 Lead」),而非直连 runner。
-  - 上报:sub-lead 把「组摘要 + 升级项」经现有 `LeadRuntime`/CommDB 机制**投给它的 parent**(parent 把它当一个「runner 源」收)。
+- schema:`LeadConfig` 加 `parentLeadId?`(可空;root Lead 不设)—— 定义树边;dispatch 多一跳(Bridge 派给 sub-lead 而非直连 runner);
+  上报走现有 `LeadRuntime`/CommDB 投给 parent。
 - **字节兼容**:`parentLeadId` 不设 = 今天的扁平行为,零变化(default-off,MVP 只给需要的 Lead 挂一层)。
+
+### 8.3 ⭐⭐ Tree-aware owner-resolution 契约(Codex R1 blocker —— 最硬的实现接缝,别低估)
+
+> **`parentLeadId + dispatch 多一跳` 远不够。** Codex 核过码:今天**多条关键路径重新从 issue label 解析 owner Lead**,不是从树。
+> 若 sub-lead 成为 runtime owner 但 issue 仍带 root 部门 label,gate/stuck/thread 事件会被跳过或落到 root;若 root 与 sub-lead
+> 同部门 label,`DepartmentRegistry` 会把 issue 判成 ambiguous。—— 这条不解决,树在现有 label 路由上根本落不对地方。
+
+**现状(核过码,Codex 确认)**:
+- `/api/runs/start` 从 label 自动解析 `leadId`(`runs-route.ts:399-410`)+ 按该 canonical Lead enforce 部门 scope(`:432-465`)。
+- `resolveLeadForIssue()` 返回扁平 `leads[]` 里**第一个 label 命中**的 Lead(`ProjectConfig.ts:988-1010`)。
+- `GatePoller` 投递调 `matchesLead()`——**又**从 label 重解析,只有 label-derived Lead == 当前迭代 Lead 才投(`lead-scope.ts:51-59`,`gate-poller.ts:1068-1100`)。
+- `HeartbeatService` / `RunnerIdleWatchdog` / stuck-escalation / thread / retry-phase-handoff 同理按 label-resolved / leadId 走。
+
+**契约(MVP 必做,写成一个独立 build 前置 = B1.5)**:
+1. **持久化 per-session 的 runtime owner**:dispatch 时给每个 session 落 `assignedLeadId`(= 该 runner 的直属 sub-lead)。
+   **label = 部门 / root 权威;不再等于 leaf owner。**
+2. **所有 owner-resolve 路径改为「优先持久化 session owner、缺失才 fallback 到 label 解析」**:`matchesLead` /
+   `RuntimeRegistry.resolveWithLead` / `HeartbeatService` / `RunnerIdleWatchdog` / stuck-escalation / artifact+event 投递 /
+   retry+phase handoff / thread 路由。**一处不改,那类事件就漏到 root、树白搭。**
+3. **校验 `parentLeadId`**:同 project 内、拒 orphan parent / 环 / 跨部门 parent / 不安全的 root+sub 同 label spawn 组合。
+4. **测试**:(a) byte-compat —— 不设 `parentLeadId` = 逐字现状路由;(b) tree —— gate/stuck/idle 事件确实落到**最低负责 sub-lead**。
+
+> **净意义**:这是 1022 真正的实现重心(不是 `parentLeadId` 一个字段)。§13 把它抽成 **B1.5** 排在 B2 前;PRD 明确列全部要改的
+> owner-resolve 路径,免得 Tadashi 只改 dispatch 一处、其余照 label 漏到 root。
 
 ---
 
@@ -296,9 +335,15 @@ sequenceDiagram
     Note over L: Lead 注意力 = O(直属 sub-lead 数), 不是 O(runner 数)
 ```
 
-- **健康摘要 schema(草案,co-eval / 实现细化)**:`{groupId, subLeadId, counts:{running, parked_ok, needs_founder, stuck}, saturation:{capacity, inUse}, escalations:[{issueId, kind, waitingOn, sinceMs}]}`。
+- **健康摘要 schema(草案,co-eval / 实现细化)**:`{groupId, subLeadId, counts:{running, parked_ok, needs_founder, stuck}, saturation:{capacity, inUse}, escalations:[{issueId, kind, waitingOn, sinceMs}], droppedEscalationCount}`。
   —— **必须是 associative aggregate**(`research §1`:部分聚合只对可结合函数成立):计数可结合、`saturation` 是背压/容量信号(§4.4 喂 353)、
-  `escalations` 是冒泡的少数异常个案。**压掉每 runner 的原始 pane 细节**;顶层拿的是有损摘要,细节留下层。**确切压什么/留什么 = §14 开放,Annie co-eval。**
+  `escalations` 是冒泡的少数异常个案。**压掉每 runner 的原始 pane 细节**;顶层拿的是有损摘要,细节留下层。
+- **⭐ merge 函数(Codex R1:必须在 PRD 定死,否则 escalations 无界会退回 O(runner 数)、不是压缩层)**:
+  - `counts`:按状态**求和**。
+  - `saturation`:同时带**总量 + 瓶颈**(`{capacity:Σ, inUse:Σ, tightestFreeRatio:min}`)—— 求和给总容量,min 给「最挤的那组」(背压判定看瓶颈)。
+  - `escalations`:**有界 top-K/组**,排序 = severity → `sinceMs`(久的优先)→ 稳定 `issueId`;超出的计入 `droppedEscalationCount`(让 root 知道被截断、可下钻)。
+  - **验收:任意分组/任意顺序 merge 出的 root 可见结果一致**(可结合 + 确定性)。
+- **确切阈值 / K 值 = §14 开放,Annie co-eval。**
 - **升级判定**:sub-lead 应答超时(942 §2 的 Lead 应答时效阈值,可配置)→ 冒泡到 parent;逐层。
 - **thread 所有权**:每个 `[ISSUE-ID]` thread 由该 runner 的**直属 sub-lead** owned(写更新/决策卡);root Lead 只在事被升级到它时介入该 thread。
 
@@ -309,7 +354,7 @@ sequenceDiagram
 **MVP(§11 gating 满足后才启)**
 - 只**一层 sub-lead**:root Lead → sub-lead → runner(两层指挥树)。
 - sub-lead = **同一套 Lead 代码 + 一个精简「sub」角色 prompt**(职责:带一摊 runner + 聚合上报组摘要 + owned 那些 `[ISSUE-ID]` thread + 942 第一响应)。**不新造进程类型。**
-- `LeadConfig.parentLeadId` schema + dispatch 多一跳 + 组摘要聚合上报 + 942 树-aware 落点(§5)。
+- `LeadConfig.parentLeadId` schema + **⭐ tree-aware owner-resolution / 持久化 `assignedLeadId`(§8.3/B1.5,MVP 必做非细节)** + dispatch 多一跳 + 组摘要聚合上报 + 942 树-aware 落点(§5)。
 - 每个 runner 的 `[ISSUE-ID]` thread 照常直达 founder(§7)。
 
 **坚决砍(MVP 一律不做)** `later`(有成熟机制、只是现在不上,`research §6/§7`)
@@ -328,12 +373,21 @@ sequenceDiagram
 
 1. **看门狗落地稳定**:FLY-942 定的观测(FLY-878/927)已实现且在跑 —— 因为**树是放大器**(多层 = 多处藏静默卡死),
    可靠检测是树的**硬前置**。没有它先加层 = 放大风险。
-2. **一层结构稳定跑几天**:当前 fleet 稳定性(FLY-774 家族)+ 单 Lead 平铺已稳定运行数天,基线不抖,再往上加指挥层。
+2. **基线(= 当前<u>扁平</u>一 Lead 层,不是本 PRD 的树)稳定跑几天**:当前 fleet 稳定性(FLY-774 家族)+ 单 Lead 平铺已稳定运行数天、基线不抖,再往上加指挥层。
+
+> **⭐ 澄清(Codex R1:『一层』有歧义)**:这里的「一层」= **今天的扁平 root-Lead→runner 基线**,不是本 PRD 的 root→sub-lead→runner MVP。
+> 即:先证明扁平基线稳,才建树。
+
+**⭐ 可度量 go/no-go 清单(Codex R1:别只写散文,Tadashi 队列要能判)**——build 前四条全绿 + 证据贴到 Linear:
+- FLY-942/878/927 **已 ship 且在生产跑 ≥N 天**(N 待 Annie 定,建议 3-5)。
+- **无未决的看门狗误报风暴 / 投递积压超阈值**(claims.db / lead_events 无异常堆积)。
+- **扁平 fleet 在当前目标负载下跑 ≥N 天零『静默漏 prompt』/ 零未投递 lead event**。
+- 上述证据**附到 FLY-1022 的 Linear issue**;未附齐前,所有 tree build-issue 保持 `scale-gated`、不启。
 
 **触发点(需求侧)**:1005 Phase 2 多机真把 runner 铺开、单 Lead 的 runner 数持续压过「一个脑扛得住」(≈5-6)时,树从「可选」变「需要」。
 **在触发点之前**:353(capacity-aware 派发)+ 942(自动检测)先扛近期痛;树先停在「PRD + schema 位」。
 
-> **每个 build-issue 都必须在描述里写明这两个 gating 条件 + 触发点(§13)。** Tadashi 的队列里它们标 `scale-gated`,不早启。
+> **每个 build-issue 都必须在描述里写明这两个 gating 条件 + 上面的 go/no-go 清单 + 触发点(§13)。** Tadashi 队列里标 `scale-gated`,不早启。
 
 ---
 
@@ -353,11 +407,12 @@ sequenceDiagram
 
 | # | build-issue(草案) | 内容 | 依赖 |
 |---|---|---|---|
-| B1 | **Lead-as-child schema + 树边** | `LeadConfig.parentLeadId`(default-off)+ 校验 + 树解析;字节兼容 sentinel | 无 |
-| B2 | **dispatch 多一跳** | Bridge 把活派给 sub-lead 而非直连 runner(§8.2) | B1 |
-| B3 | **组摘要聚合上报 + 背压 credit** | sub-lead 聚合本组健康 → 投 parent(§4.2/§9 schema,associative aggregate);摘要带 `saturation` credit → 353 消费(§4A-4) | B1 |
-| B4 | **⭐ 942 树-aware 落点 + 层层升级** | 看门狗报最近负责节点 → sub-lead 第一响应 → 超时逐层冒泡(§5);**与 942 看门狗实现同步** | FLY-942 impl |
-| B5 | **thread 所有权下放 sub-lead** | 每 `[ISSUE-ID]` thread 由直属 sub-lead owned、照常直达 founder(§7) | B1 |
+| B1 | **Lead-as-child schema + 树边** | `LeadConfig.parentLeadId`(default-off)+ 校验(拒 orphan/环/跨部门/不安全 spawn 组合)+ 树解析;字节兼容 sentinel | 无 |
+| **B1.5 ⭐** | **Tree-aware owner-resolution 契约(§8.3,Codex R1 blocker)** | 持久化 per-session `assignedLeadId`;**所有** owner-resolve 路径(matchesLead / RuntimeRegistry / Heartbeat / IdleWatchdog / stuck-escalation / event+artifact 投递 / retry+phase handoff / thread 路由)改「优先 session owner、缺失 fallback label」;byte-compat + tree 路由测试 | B1 |
+| B2 | **dispatch 多一跳** | Bridge 把活派给 sub-lead 而非直连 runner(§8.2),dispatch 时落 `assignedLeadId` | B1.5 |
+| B3 | **组摘要聚合上报 + 背压 credit** | sub-lead 聚合本组健康 → 投 parent(§4.2/§9 schema + merge 函数,associative aggregate);摘要带 `saturation` credit → 353 消费(§4A-4) | B1.5 |
+| B4 | **⭐ 942 树-aware 落点 + 层层升级** | 看门狗报最近负责节点 → sub-lead 第一响应 → 超时逐层冒泡(§5);**与 942 看门狗实现同步** | FLY-942 impl + B1.5 |
+| B5 | **thread 所有权下放 sub-lead + 频道契约** | 每 `[ISSUE-ID]` thread 由直属 sub-lead owned、照常直达 founder;canonical 频道显式(root 部门频道 or 显式 founder-可见 sub 频道)+ sub-lead bot 权限校验 + 不 fork 双 thread(§7 频道契约) | B1.5 |
 | B6 | **sub-lead 角色 prompt + restart 契约** | 同套 Lead 代码 + 精简「sub」role(带一摊 + 聚合 + owned thread + 942 第一响应 + OTP 式 restart-strategy/intensity 契约,§4A-9) | B1 |
 | B7 | (later) 多层递归 / 智能分组 / 多机放置策略 | 只留位,MVP 不做(§10 砍单) | 后续 |
 
