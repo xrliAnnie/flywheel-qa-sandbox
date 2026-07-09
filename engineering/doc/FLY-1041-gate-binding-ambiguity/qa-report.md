@@ -94,12 +94,24 @@ Issue: FLY-1041 (https://linear.app/geoforge3d/issue/FLY-1041/founder-approval-b
 3. `--report` 降噪 —— 3 条 DONE 仍 pending-for-Lead(relay 不变)但从 founder 候选集排除;
 4. byte-compat sanity anchor —— 不 retire 时 ambiguity 仍在(证明助手非空断言)。
 
-## 6. 范围边界(诚实声明)
+## 6. 529 Room 真机 Discord E2E(Tadashi 要求补跑)
 
-- 本 QA 为**三段式 QA 阶段的独立复核**(模块 + 真 CommDB 集成级),非真 Discord E2E。
-- plan §4 的 **529 Room 真机 Discord E2E**(founder 真发「嗯ship」→ 绑上 → ✅ 回执 → verify-approval 对新 head approved)由**独立 QA session**执行(见 memory `feedback_qa_default_real_discord_e2e`);本报告不替代该验收。若 Tadashi/Annie 要求 ship 前必跑真机 E2E,建议在批准前排一次 529 Room 场景 A-D。
+Tadashi 判定 founder-approval binding = relay 类功能,Annie 标准 = 真 Discord N-to-N 验收,要求补跑。方式 = **模块驱动**(FLY-605 Tadashi-approved 先例:真编译 fn + 真 better-sqlite3 CommDB + 真 Discord thread POST/GET,零 mock)。证据见 `qa-evidence/point1-and-card-real.md`。
+
+| 点 | 内容 | 状态 |
+|---|---|---|
+| ① 单一可绑 gate retire | 真 comm.db:re-fire 双 gate → retire → **恰 1** 可绑 gate + 真批准落幸存 gate + retire 拒改写已答复 | ✅ **真机 PASS**(harness `packages/teamlead/qa-fly1041-real.mts`) |
+| outbound approve_to_ship 卡 | 真 529 thread(`1524781215385649332`)真发卡 + 真 GET 回卡体含 Fix B 引导句 | ✅ **真机 PASS** |
+| ② reply-to-card 绑定 | founder 真回复卡 → 只绑该 gate | ⏳ **待 Annie 登录**(Chrome-as-Annie) |
+| ③ ✅ reaction | founder 短语批准 → 她消息被真点 ✅ | ⏳ **待 Annie 登录** |
+| ④ ❓ 回执 | held 场景 founder 批准 → 真点 ❓ + 不写 response | ⏳ **待 Annie 登录** |
+
+**②③④ 的 founder 依赖(结构性)**:deliverer 硬闸 `founder-reply-deliverer.ts:245` = `author.id===ownerUserId && author.bot!==true`(handler:111 / text-source:53 同 canonicalFounderId 闸)—— 防伪,任何 bot 模拟不了 founder,需一条来自 Annie 真账号的消息。Tadashi 确认走 **Chrome-as-Annie standing rule**(FLY-612 后固化):QA 需真 founder Discord 动作时默认用 Claude-in-Chrome 驱动她登录态、在隔离 thread 做。唯一前置 = Chrome 里 discord.com 现为登出态(967 QA 实证),Annie 早上会做一次登录;登录落地后立即补跑 ②③④(纪律:只隔离 thread、只测试内容、留档)。
+
 - Bridge 侧改动需**一次 Bridge 重启**方生效(teamlead 包);flywheel-comm CLI + Blueprint 文本 `git pull` 即生效(FLY-217 同型)。
 
 ## 7. Verdict
 
-**PASS @ `af55b745`** — 设计契约全守、专项测试全绿、回归红全部证伪为环境 flake、核心逻辑审读通过、补充端到端不变量测试通过。可进 founder ship-gate(建议保留 529 Room 真机 E2E 作为 ship 前最后一道,按项目惯例)。
+**代码级 + 点①/卡 真机 = PASS**;**②③④ 真机待 Annie 登录后补(Chrome-as-Annie)**。
+
+设计契约全守、专项测试全绿(291)、回归红全部证伪为环境 flake、核心逻辑审读通过、补充端到端不变量测试通过;点① retire + outbound 卡真机往返 PASS。剩 ②③④(founder-reply 真 E2E)在 Annie Discord 登录后由本 session 用 Chrome-as-Annie 补跑,补齐后维持 PASS 交 Tadashi 上报 founder。gate 现由 Tadashi 按住,不提前上报。
