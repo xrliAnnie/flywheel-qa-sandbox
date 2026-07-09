@@ -3,7 +3,7 @@
 Issue: FLY-1005 (https://linear.app/geoforge3d/issue/FLY-1005/多机部署-multi-machine-runner-分散到多台机器跑-research-prd)
 日期: 2026-07-08
 基于: exploration.md, research.md (同文件夹)
-Status: **draft PRD — 主线待 Annie 拍板后由 Lead 收口**(这是她点名最重要的方向,最终方向 lock 在她拍板后)
+Status: **SUPERSEDED — 正式 PRD 已定稿并经 Annie 确认。** 本文是 research/co-eval 阶段的收敛草稿(历史记录);**权威文档 = `engineering/doc/FLY-1005-multi-machine/prd.md`(详细版 PRD,含 Phase 1/2/2.1/3 + 11 条 build-issue)**。主线已定(见下)——eng 照正式 PRD 的 BI-1..BI-11 执行。
 
 > 本文是**分阶段 PRD 草案**。§1 结论、§3 路线、§6 开放决策是要 Annie 拍的;§4 阶段1 详细设计是给 Tadashi 照着能建的深度。凡未验证处标 UNKNOWN,不硬编答案。
 
@@ -19,7 +19,7 @@ Status: **draft PRD — 主线待 Annie 拍板后由 Lead 收口**(这是她点�
 > - **⭐ 为什么跳过 B:** 区分——**内部我们的 team 共享一个 hub(Phase 1-2)是现状、低风险、可接受**(Phase 2.1 在此基础按 churn 逐个拆);**B 特指「给外部多个租户共享一个 hub」** → 对外付费必须硬隔离 = C(Phase 3),所以**跳过对外 B**(只在专做 hosted 共享服务才有意义)。
 > - 下方 §3 的阶段0-3 是 **Phase 2/2.1** 的内部细化。
 >
-> **状态:PRD 待 Annie 确认这 3 个 Phase 后再写**(v9 co-eval HTML 请她确认;Lead 发话我再出正式 PRD,不抢跑)。
+> **状态:✅ 正式 PRD 已写并经 Annie 确认** —— 权威文档 `engineering/doc/FLY-1005-multi-machine/prd.md`(详细版)。本节 3-Phase 已被 PRD 收编(PRD 重编号 Phase 1=今天 / Phase 2=自己多机 / Phase 2.1=拆 Flywheel hub / Phase 3=产品化)。
 
 ## 1. 结论 (TL;DR)
 
@@ -58,7 +58,7 @@ graph LR
     P3S["FLY-353 session-log"] -.阶段1 enable failover / 阶段3 刚需.-> P1
 ```
 
-> **主线选型待 Annie 拍(v3 co-eval 第 3 节):联邦 vs 非联邦。** 下表按非联邦(单 hub)主线列;若选联邦,阶段1 简化成「复制单机到每台」、跳过破 3 锚点。
+> **主线已定(Annie 确认,见正式 PRD §3):team 内部 scale 走非联邦(单 hub + 无状态节点)= Phase 2 主线;跨 team/给别人用走联邦(每 team 一套=C)= Phase 3。** 两者分层组合、不是二选一。下表按非联邦主线列。
 
 | 阶段 | 内容 | 前置 | 判定 |
 |---|---|---|---|
@@ -219,9 +219,9 @@ graph TB
 
 ---
 
-## 6. 决策(★ = 待 Annie 拍;✅ = 已按 co-eval 定)
+## 6. 决策(✅ = 已定,均已收进正式 PRD)
 
-- **★ D0 主线选型:联邦 vs 非联邦(最关键)** —— **Runner 推荐(诚实、分层组合):team 内部 scale 走非联邦(单 hub + 无状态节点,唯一给一个 fleet 无上限弹性 = 1005 目标);跨 team/多租户/给别人用走联邦(每 team 一套,隔离,= Annie 最早直觉且对)。两个都要、不同层级。 Honey Lemon 推荐:正交都要,先非联邦横扩(眼前 scale)、联邦=productization 后续。** 最终主线待 Annie 拍。
+- **✅ D0 主线选型:联邦 vs 非联邦 —— 已定(Annie 确认)。** 分层组合:team 内部 scale 走非联邦(单 hub + 无状态节点,= Phase 2 主线,唯一给一个 fleet 无上限弹性);跨 team/给别人用走联邦(每 team 一套=C,= Phase 3,隔离/productization=FLY-648)。两个都要、不同层级。
 - **✅ 状态 sync + 清理(Annie v5 一等要求)** —— 每 session 前 sync-to-latest、exit 清残留(§4B 7b)。
 - **✅ 节点来源可选(Annie v5)** —— 云 OR 用户自己物理机(自管);profile 分池 + 站 346 沙箱(§4B 7)。
 - **✅ D10 多租户(§4B / research §3.7c):** 我们现状=单租户 (a);产品化/多项目走 (c) 每 team 自己一套(= team 级联邦);(b) 共享 hub 除非做 SaaS 否则别碰(安全最难)。
