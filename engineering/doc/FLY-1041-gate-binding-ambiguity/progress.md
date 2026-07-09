@@ -1,13 +1,13 @@
 ---
 issue: FLY-1041
 phase: implement
-phaseCursor: 6/10
-updated: 2026-07-09T08:16:34.705Z
-nextStep: "Chunk 7: reply-to-card deterministic binding"
+phaseCursor: 7/10
+updated: 2026-07-09T12:08:35.869Z
+nextStep: "Chunk 8: founder ack reaction (✅/❓)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1041 progress
-**phase**: implement (6/10)
-**next**: Chunk 7: reply-to-card deterministic binding
+**phase**: implement (7/10)
+**next**: Chunk 8: founder ack reaction (✅/❓)
