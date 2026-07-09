@@ -231,9 +231,7 @@ describe("SuspicionRegistry", () => {
 		);
 		const snap = reg.snapshot();
 		expect(snap).toHaveLength(2);
-		expect(
-			snap.find((r) => r.targetKey === "exec-1")?.firstSeenMs,
-		).toBe(NOW);
+		expect(snap.find((r) => r.targetKey === "exec-1")?.firstSeenMs).toBe(NOW);
 		// Third sweep: exec-1 recovered → dropped; exec-2 persists.
 		reg.sweep(
 			[

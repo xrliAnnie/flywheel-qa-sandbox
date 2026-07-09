@@ -101,10 +101,7 @@ describe("computeFrameDeltas — FP guards (must-not)", () => {
 	it("FP0: token flow (changing healthy content) → tokenFlowActive, no silence, no repeat", () => {
 		const a = loadErrorPane("fp-healthy-working.txt");
 		const b = a.replace("(34s ·", "(87s ·").replace("↑ 2.1k", "↑ 5.7k");
-		const d = computeFrameDeltas(
-			[frame(a, 0), frame(b, 300_000)],
-			MIN_SPAN,
-		);
+		const d = computeFrameDeltas([frame(a, 0), frame(b, 300_000)], MIN_SPAN);
 		expect(d.tokenFlowActive).toBe(true);
 		expect(d.silenceDelta).toBe(false);
 		expect(d.repeatedErrorSig).toBeNull();

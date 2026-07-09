@@ -319,9 +319,7 @@ export function evaluateStuckCandidate(
 	const errorSigEnabled =
 		input.errorSigEnabled ?? process.env.FLYWHEEL_STUCK_ERRORSIG === "1";
 	if (errorSigEnabled) {
-		const tailHits = scanErrorSignatures(
-			extractTail(input.output, tailLines),
-		);
+		const tailHits = scanErrorSignatures(extractTail(input.output, tailLines));
 		if (tailHits.length > 0) {
 			return evaluateErrorSignatureEpisode(
 				input,
@@ -413,9 +411,7 @@ function evaluateErrorSignatureEpisode(
 
 	const carryEscalation = continuing
 		? prior
-		: prior !== undefined &&
-				prior.escalated &&
-				prior.fingerprint === fingerprintOutput(input.output)
+		: prior?.escalated && prior.fingerprint === fingerprintOutput(input.output)
 			? prior
 			: undefined;
 

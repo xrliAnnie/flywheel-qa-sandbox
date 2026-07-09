@@ -135,22 +135,6 @@ import { runBootShaCheck } from "./boot-sha-check.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 // FLY-927 (Task 3.3): truthful stage wording for the three-stage stuck alert.
 import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
-import { createFocusedFrameScheduler } from "./focused-frame-scheduler.js";
-import { hashPane, liveRegion } from "./pane-live-region.js";
-import { parseSqliteUtcMs } from "./founder-notify-utils.js";
-import {
-	createSuspicionRegistry,
-	defaultGapThresholds,
-	evaluateGapSuspicion,
-	openGapReader,
-	type SuspicionRecord,
-} from "./detection-gap-scan.js";
-import {
-	buildPaneTail,
-	deliverSuspiciousReport,
-	type SuspiciousOwner,
-	type SuspiciousReport,
-} from "./detection-suspicious.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
@@ -167,6 +151,19 @@ import type { CrashReaperInjectedDeps } from "./crash-reaper.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { createDeploymentsRouter } from "./deployments-route.js";
+import {
+	createSuspicionRegistry,
+	defaultGapThresholds,
+	evaluateGapSuspicion,
+	openGapReader,
+	type SuspicionRecord,
+} from "./detection-gap-scan.js";
+import {
+	buildPaneTail,
+	deliverSuspiciousReport,
+	type SuspiciousOwner,
+	type SuspiciousReport,
+} from "./detection-suspicious.js";
 import { createDigestRouter } from "./digest-route.js";
 import { DigestService } from "./digest-service.js";
 import {
@@ -200,11 +197,13 @@ import {
 	handleStage,
 	loopbackSelfOrigin,
 } from "./fleet-routes.js";
+import { createFocusedFrameScheduler } from "./focused-frame-scheduler.js";
 import {
 	buildFounderConsentWiring,
 	buildGateResponsePostWriteHook,
 } from "./founder-consent/wiring.js";
 import { loadFounderMilestoneReportConfigByProject } from "./founder-milestone-config-source.js";
+import { parseSqliteUtcMs } from "./founder-notify-utils.js";
 // FLY-927 (Task 2.4): T2 escalation page reuses the FLY-818 stuck notification.
 import { emitFounderStuckNotification } from "./founder-thread-notifier.js";
 import { mountFounderUxRoutes } from "./founder-ux/routes.js";
@@ -246,6 +245,7 @@ import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { notifyDigestExpectTick } from "./notify-digest-expect.js";
 import { defaultReceiptsPath } from "./notify-receipts.js";
+import { hashPane, liveRegion } from "./pane-live-region.js";
 import { waitForPaneMarker } from "./pane-readiness.js";
 import {
 	PhaseOrchestrator,
@@ -4053,7 +4053,11 @@ export async function startBridge(
 	};
 	const deliverSuspicious = (report: SuspiciousReport): void => {
 		void deliverSuspiciousReport(
-			{ store, runtimeRegistry: registry, resolveOwner: resolveSuspiciousOwner },
+			{
+				store,
+				runtimeRegistry: registry,
+				resolveOwner: resolveSuspiciousOwner,
+			},
 			report,
 		).catch((err) =>
 			console.warn(

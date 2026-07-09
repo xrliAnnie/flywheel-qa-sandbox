@@ -9,7 +9,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
 	createFocusedFrameScheduler,
 	type FocusedFrameVerdict,
@@ -38,7 +38,9 @@ function makeHarness(opts: {
 			if (seq === undefined) return null;
 			const n = captureCount.get(t.targetKey) ?? 0;
 			captureCount.set(t.targetKey, n + 1);
-			return typeof seq === "string" ? seq : (seq[Math.min(n, seq.length - 1)] ?? null);
+			return typeof seq === "string"
+				? seq
+				: (seq[Math.min(n, seq.length - 1)] ?? null);
 		},
 		onFrame: (t, text) => {
 			frames.push({ key: t.targetKey, text });

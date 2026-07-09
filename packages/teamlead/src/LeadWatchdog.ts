@@ -51,10 +51,10 @@ import {
 	hashPane,
 	ownStateRegion,
 } from "./bridge/pane-live-region.js";
-import {
-	type AlertEventType,
-	type AlertPayload,
-	type AlertResult,
+import type {
+	AlertEventType,
+	AlertPayload,
+	AlertResult,
 } from "./LeadAlertNotifier.js";
 import type { LeadWindowRef } from "./LeadWindowLocator.js";
 import type { ProjectEntry } from "./ProjectConfig.js";
@@ -188,7 +188,8 @@ interface LeadState {
  * FLY-193 blind spot: no interrupt hint, so WORKING_MARKERS miss it and the
  * pane reads idle-healthy while genuinely hung mid-thinking.
  */
-const FROZEN_THINKING_RESIDUE = /\(\s*\d+m?\s*\d*s\s*·[^)\n]*thinking[^)\n]*\)/i;
+const FROZEN_THINKING_RESIDUE =
+	/\(\s*\d+m?\s*\d*s\s*·[^)\n]*thinking[^)\n]*\)/i;
 
 const BLOCKED_KEYWORDS: Array<{ kind: AlertEventType; tokens: RegExp[] }> = [
 	{ kind: "rate_limit", tokens: [/\brate[-\s]?limit\b/i] },
@@ -503,8 +504,7 @@ export class LeadWatchdog {
 				// suppressing silently. One report per frozen episode.
 				const deltas = computeFrameDeltas(window, {
 					minSpanMs:
-						this.config.multiFrameMinSpanMs ??
-						this.config.pollIntervalMs * 2,
+						this.config.multiFrameMinSpanMs ?? this.config.pollIntervalMs * 2,
 				});
 				if (
 					deltas.silenceDelta &&

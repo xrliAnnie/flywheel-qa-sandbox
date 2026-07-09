@@ -11,9 +11,9 @@
 
 import { CommDB } from "flywheel-comm/db";
 import {
+	formatDetectionSuspicious,
 	formatDurationMs,
 	formatGateQuestion,
-	formatDetectionSuspicious,
 	formatMisroutedReport,
 	formatStuckEscalation,
 } from "./hook-payload.js";

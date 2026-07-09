@@ -58,9 +58,7 @@ describe("scanErrorSignatures — FN kinds (must-detect)", () => {
 		const hits = scanErrorSignatures(
 			loadErrorPane("fn2-server-error-then-idle.txt"),
 		);
-		expect(hits.some((h) => h.kind === "server_error_mid_response")).toBe(
-			true,
-		);
+		expect(hits.some((h) => h.kind === "server_error_mid_response")).toBe(true);
 	});
 
 	it("existing stream-idle-timeout string joins the table (same strictness)", () => {
@@ -78,9 +76,9 @@ describe("scanErrorSignatures — FN kinds (must-detect)", () => {
 
 describe("scanErrorSignatures — FP guards (must-not-match)", () => {
 	it("healthy working pane produces zero hits", () => {
-		expect(scanErrorSignatures(loadErrorPane("fp-healthy-working.txt"))).toEqual(
-			[],
-		);
+		expect(
+			scanErrorSignatures(loadErrorPane("fp-healthy-working.txt")),
+		).toEqual([]);
 	});
 
 	it("real idle lead panes produce zero hits", () => {

@@ -173,14 +173,16 @@ describe("A4 sentinels: existing suppress/alert behavior survives multiFrame ON"
 
 	it("frozen-compact must-alert does not regress with multiFrame ON", async () => {
 		const h = makeHarness();
-		for (let i = 0; i < 4; i++) await h.tick(loadFixture("freeze-compacting.txt"));
+		for (let i = 0; i < 4; i++)
+			await h.tick(loadFixture("freeze-compacting.txt"));
 		expect(h.alerts.length).toBe(1);
 		expect(h.alerts[0]!.eventType).toBe("pane_hash_stuck");
 	});
 
 	it("529 transient throttle short-circuit stays ahead of the multi-frame vetoes", async () => {
 		const h = makeHarness();
-		for (let i = 0; i < 5; i++) await h.tick(loadFixture("throttle-529-live.txt"));
+		for (let i = 0; i < 5; i++)
+			await h.tick(loadFixture("throttle-529-live.txt"));
 		expect(h.alerts.length).toBe(0);
 		expect(h.suspicious.length).toBe(0);
 	});

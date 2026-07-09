@@ -24,9 +24,9 @@ import type {
 } from "flywheel-agent-team-transport";
 import { MailboxTransport } from "../mailbox/MailboxTransport.js";
 import {
+	formatDetectionSuspicious,
 	formatDurationMs,
 	formatGateQuestion,
-	formatDetectionSuspicious,
 	formatMisroutedReport,
 	formatStuckEscalation,
 } from "./hook-payload.js";

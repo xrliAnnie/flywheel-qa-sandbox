@@ -98,7 +98,10 @@ export function defaultGapThresholds(env: NodeJS.ProcessEnv): GapThresholds {
 }
 
 /** Session statuses that mean "waiting on a human" for the gap1 judgement. */
-const AWAITING_HUMAN_STATUSES = new Set(["awaiting_review", "approved_to_ship"]);
+const AWAITING_HUMAN_STATUSES = new Set([
+	"awaiting_review",
+	"approved_to_ship",
+]);
 
 /**
  * Pure judgement matrix. Every trigger is a MULTI-condition AND (risk list #1:

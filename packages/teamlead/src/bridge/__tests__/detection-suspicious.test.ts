@@ -22,7 +22,10 @@ import {
 	formatDetectionSuspicious,
 	type HookPayload,
 } from "../hook-payload.js";
-import { GUARDRAIL_EVENT_TYPES, type LeadEventEnvelope } from "../lead-runtime.js";
+import {
+	GUARDRAIL_EVENT_TYPES,
+	type LeadEventEnvelope,
+} from "../lead-runtime.js";
 import { MailboxLeadRuntime } from "../mailbox-lead-runtime.js";
 
 function report(over: Partial<SuspiciousReport> = {}): SuspiciousReport {
@@ -110,8 +113,8 @@ describe("deliverSuspiciousReport", () => {
 		const outcome = await deliverSuspiciousReport(deps, r);
 		expect(outcome).toBe("delivered");
 		expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
-		const [leadId, eventId, eventType, payloadJson] =
-			store.appendLeadEvent.mock.calls[0] as string[];
+		const [leadId, eventId, eventType, payloadJson] = store.appendLeadEvent.mock
+			.calls[0] as string[];
 		expect(leadId).toBe("cos-lead");
 		expect(eventId).toBe(suspiciousEventId(r));
 		expect(eventType).toBe("detection_suspicious");
