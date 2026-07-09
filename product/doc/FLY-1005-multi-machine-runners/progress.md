@@ -25,5 +25,6 @@ Cursor: co-eval 迭代中(v3 已发)— park 等 Annie 逐节批注
   - v10(Annie 确认 3-Phase + 加 Phase 2.1):4 图(P1/P2/2.1新/P3)。⭐ **Phase 2.1 = 拆出高 churn 的 Flywheel hub**(4 次/天)从共享 hub 独立、跟稳定 team(Jolt 3D/Tidal Echo 1 次/天)分开,runner 仍分散 = **FLY-978 decouple-restart 多机延伸**;踏脚石 P2 共享 hub→2.1 先拆最高 churn→P3 每 team 一整套=C。精确「跳过 B」=内部共享 hub 是现状/可接受、B 特指对外多租户共享→对外必 C。第6节请 Annie 确认(含 2.1)→写 PRD
 - docs 已折进 v3-v8(research §3.2/§3.6a/§3.7(跳过B收敛);plan 顶部 v8 2 阶段收敛框 + §4B+§6)
 - **技术**:mmdc 渲图配方=htmlLabels:false + useMaxWidth:false + puppeteer 指系统 Chrome;占位符模板+node 注入 SVG;overflow-x:auto 包图;**坑**:node 标签多 <br/> + 边标签会触发 mermaid v11 splitLineToFitWidth bug → node 标签压短、细节放 HTML 正文;边标签别含 `=`
-备注: 仍 research、未 ship。**⭐ 下一步取决于 Annie 确认 v8 分阶段计划:她 OK + Lead 发话 → 写正式 PRD(不抢跑)**。
-若继续 co-eval:攒齐一轮改 + 发新 HTML(先告知上版作废)。不 ship、不 fire gate。图 Mermaid→inline SVG 无外链(CSP 安全)。
+- **✅ 正式 PRD 已写**(Annie v10 确认后,Lead [b21b366b] 发话):engineering/doc/FLY-1005-multi-machine/prd.md(commit b63003a8)。11 节 + 3 mermaid + 11 条 build-issue 拆分(已发 Lead 清单,他建 FLY issue 挂 Tadashi)。PRD 过目 HTML: https://fw-reports-a53de2.vercel.app/r/dbe50814b89976188a4d81a43ba89eb3/
+备注: 仍 research、未 ship、**未跑 codex、未 fire gate**。
+**⭐ 下一步 = Lead QA + Annie 过目 PRD → 收敛后 ship 流程**:定稿 → **codex design review 先跑**(记住:先跑再冻再请批,别像 346/942 反复重批)→ 冻 head → fire approve gate → Lead cue Annie → Tadashi executor-merge。**绝不自 :cool:/merge、不自 fire gate**,等 Lead 发话。
