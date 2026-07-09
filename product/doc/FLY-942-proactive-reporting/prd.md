@@ -175,6 +175,29 @@ flowchart TD
 
 > 注:"干完 parked 等 founder"/"需 founder 决策"是**正常路径**surface 的状态(runner→Lead→relay 或系统直投 thread),**看门狗只在它超阈值停滞时**才按 漏①/漏② 兜。
 
+### 3.3b 三种新失败模式 = 显式检测目标 + consumed-ack 契约(Peter roundtable 2026-07-09;PR-C / FLY-1048 D7 依赖本节)
+
+**背景(为什么加这节)**:Leads 会汇报"runner 在跑",但那 runner 其实死了 / 根本没接住任务 —— 只能人肉翻 pane 才发现。全团队都踩(Peter GeoForge3D 真复现 + 我 Flywheel 侧一夜三踩)。根因 = **状态信号会撒谎**(`alive=true` / `parked-alive` / `status=executing` / 配额 % 都可能与真实 tmux/进程脱节)+ **投递 ≠ 接收**(Lead `send` 了 brief,没信号说 runner 读了/开工了)。把这三种模式**显式列为检测目标**,补进 §3.3 catalog:
+
+| 检测类(新) | 判定(准确性要点) | 阈值 | 先报谁(走 §4.3 已批三级路由) | 依赖的可信信号 |
+|---|---|---|---|---|
+| **M1 死 pane + 未读 brief** | 有未读 brief / 在办任务,但 pane **真的死了**(实探 pane/进程,非缓存 flag) | pane-dead 即判(非时间阈值);**未读 brief** 超 **~consumed-ack 超时** | owner Lead 立刻 → ~30min 未解决 → @Annie(§4.3) | infra 真探活(**FLY-820/823**)+ consumed-ack |
+| **M2 零进展 N 分** | 在办任务、pane 活着,但 **N 分钟零进展**(非健康 idle、非正常 parked) | **~20min**(与首个 Lead 提醒 ≤~20min 对齐,§4.6);global+per-project 可配 | owner Lead → 30min → @Annie(§4.3) | pane 帧 ≥2 帧 delta(§3.2/W3)+ 活进程探针 |
+| **M3 状态信号过期** | `alive` / `executing` / 配额 % 等**被 cache 的信号与真实脱节** —— 本身不直接告警,而是**让 M1/M2/两漏的判定不许信 cache**,必须取真信号 | 不独立计时;作**判定前置**(判任何"卡"前先核 ground truth) | 不直接 surface;喂给上面各类的判定 | infra 真探活(**FLY-820/823**)+ FSM/land-status/heartbeat |
+
+**⚠️ consumed-ack 契约(delivered ≠ consumed —— 本 PRD 收编为检测输入,不单开 issue)**:
+- Lead / 系统 `send` 一条 brief/指令 = **已投递(delivered)**;runner 在下一个 loop tick 真读到 = **已消费(consumed)**,回一个 **consumed-ack**。
+- 检测目标:**"已投递但超 ~N 分钟未被消费"= 死信箱信号**(就是 turtle runner 那次的时序坑)。喂 M1(死 pane)+ 独立"未消费超时"告警。
+- **归属**:consumed-ack 的**产生** = infra(Tadashi;runner loop 回执);942 **消费**它做检测。不单开 issue(Cass/Tadashi 2026-07-09 定)。
+
+**⚠️ 准确性硬约束(北极星 = C 绝不漏,但也绝不假警健康 runner)**:判 M2"零进展"前,**必须先看有没有活着的子进程**(codex-companion / build / pnpm / 长 xhigh 思考)。实测假阳两例(2026-07-09,FLY-1044/1045 在跑长 Codex xhigh review 时 pane 数分钟无输出被误判零进展)。→ 检测层判"零进展"= pane 帧无 delta **且** 无活跃子进程 **且** 无 live-region/token-flow 迹象(≥2 帧二次确认)。[已由 FLY-1048 PR-A 的 `frozen-extended-thinking` fixture 验证:该态 → 不告警、升 suspicious 给 LLM judge,不静默也不假警。]
+
+**契约:看门狗订阅可信信号、不自己钻 tmux 探活**(与 §8 分工 + 1048 plan D5 一致):真探活(pane/进程存活)= **infra(FLY-820/823)**;consumed-ack 产生 = infra;942/看门狗**只订阅这些可信信号 + reconcile 事件做主动 surface**,自己不实探 tmux。infra 先把信号变真,watchdog 才准。
+
+**路由 = 复用 §4.3(无需新 founder 决策)**:M1/M2 都走已批的"owner Lead 立刻 → ~30min 未解决 → @Annie"三级路由;M3 是判定前置不独立 surface;consumed-ack 超时并入 M1。fleet 级(一大片同时挂)照旧走 FLY-915,不走 30min。→ 三模式是**插进已批路由**,不改 §4.3 框架。
+
+**姊妹项(infra 侧,Tadashi)**:FLY-820/823(alive 真探活)· FLY-1042/1050(tmux 没了但 FSM 卡 non-terminal 的 ghost/QA reconcile)· FLY-778(durable 健康扫描)。本节只定**产品行为**(检测目标 + 阈值 + surfacing),infra 落法由 Tadashi 定。
+
 ### 3.4 over-notify 抑制(治 ghost 刷屏)+ 治源头〔Q9〕
 - **抑制**:已知 / 正在清 / 已升级的问题**绝不 re-alert**(FLY-970 死着还一直 fire session_stuck)。复用去重设施 + 对"清理中"ghost 加抑制态。
 - **治源头(auto-QA-spawn gate)= follow-up ref,不在 942 build**(§9 已移出):FLY-970 ghost 根因 = product/no-three-stage issue 被错误 auto-spawn QA → 此类 issue 不该自动 spawn QA(归 **FLY-579/707**)。942 只把它列为相邻需求。
@@ -332,6 +355,9 @@ stateDiagram-v2
 | W-cadence | scheduler/时延契约:廉价 gap 扫描每 N 分钟 + pane 帧 M 分钟内 ≥2 帧 + 首个 Lead 提醒 ≤ ~20min(现 `DEFAULT_IDLE_POLL_MS` ~1h 需改) | §4.6 | scheduler / poll |
 | W3 | 检测准确性:读 per-pane 富态判 a/b/c(LLM 判断层)+ 观察窗二次确认(≥2 帧 + live-region/token-flow/FSM/近事件)+ isIdleHealthyPane 修 + lead 协议 | §3.0–3.3 | **FLY-976 / 975 / 937 / 778 / 927** |
 | W4 | **仅** over-notify 抑制(ghost 已知/正清理不 re-alert)+ owner 归属链 | §3.4 | 970/973 |
+| W5 | **三新失败模式检测**(M1 死pane+未读brief / M2 零进展N分 / M3 状态信号过期)+ consumed-ack 检测输入;判定前先核 ground truth + 活进程探针(防长-Codex 假阳) | **§3.3b** | infra 真探活 **820/823** + consumed-ack(infra 产生) |
+
+> **W5 = FLY-1048 PR-C 依赖本节(D7)。** PR-A(机械层,含 frozen-extended-thinking 假阳护栏)已 merge;PR-C 落 W5 的通知面 + 阈值,以 §3.3b 为准。
 
 > **移出 942 build(Codex R1 MED-6,除非 Annie 再确认纳入)**:auto-QA-spawn gate = **FLY-579/707**;ghost 清理/scope = **970/973/962/978**;mid-turn hard-stop = **独立 issue**(§3.5,harness 能力,待 Annie 定 scope)。942 只列它们为**需求/依赖**,不在本 PRD build。
 > **砍掉的(Annie 2026-07-08 简化)**:决策卡固定格式、🟡 类型、consolidate 独立 founder 频道/开放队列、每日 digest —— 全部作废,汇报回归"进对应 thread、自然语言"。
