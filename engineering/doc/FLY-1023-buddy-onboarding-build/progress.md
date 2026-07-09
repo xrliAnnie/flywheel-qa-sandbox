@@ -1,15 +1,15 @@
 ---
 issue: FLY-1023
 phase: implement
-phaseCursor: 0/9
-updated: 2026-07-09T08:04:28.349Z
-nextStep: "implement phase start: reading base code (flywheel-setup.sh + test
-  idiom), then TDD M0 (step CLI + journal v2 + secret helper + provider
-  contract)"
+phaseCursor: 1/9
+updated: 2026-07-09T13:03:23.630Z
+nextStep: "M0 committed (step CLI + journal v2 + string-scan + provider
+  contract, all tests green). Next: M1 bootstrap + claude provider + codex
+  placeholder + model_key orchestration"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1023 progress
-**phase**: implement (0/9)
-**next**: implement phase start: reading base code (flywheel-setup.sh + test idiom), then TDD M0 (step CLI + journal v2 + secret helper + provider contract)
+**phase**: implement (1/9)
+**next**: M0 committed (step CLI + journal v2 + string-scan + provider contract, all tests green). Next: M1 bootstrap + claude provider + codex placeholder + model_key orchestration
