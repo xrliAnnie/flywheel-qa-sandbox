@@ -67,7 +67,7 @@ EOF
 
 # PATH for stub runs: jq + coreutils only (no stubcli → detect misses).
 CONTRACT_BIN="$SANDBOX/bin"; mkdir -p "$CONTRACT_BIN"
-for t in jq bash grep sed env dirname mktemp cat chmod mv rm head tail tr; do
+for t in jq bash grep sed env dirname mktemp cat chmod mv rm head tail tr sleep; do
   p="$(command -v "$t" 2>/dev/null)" && ln -sf "$p" "$CONTRACT_BIN/$t"
 done
 CONTRACT_PATH="$CONTRACT_BIN"
