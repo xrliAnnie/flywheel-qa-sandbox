@@ -309,3 +309,181 @@ describe("evaluateStuckCandidate — stagnation tracking", () => {
 		expect(r.evidence?.stream_error_signature).toBe(false);
 	});
 });
+
+describe("FLY-1048 A3: repeated-error-signature path (env-gated)", () => {
+	const errorPanesDir = join(
+		__dirname,
+		"..",
+		"bridge",
+		"__tests__",
+		"fixtures",
+		"error-panes",
+	);
+	const loadErrorPane = (name: string): string =>
+		readFileSync(join(errorPanesDir, name), "utf8");
+
+	const frame1 = loadErrorPane("fn1-enoent-loop-frame1.txt");
+	const frame2 = loadErrorPane("fn1-enoent-loop-frame2.txt");
+
+	it("FN1: rolling ENOENT loop (text churns) becomes a CANDIDATE when enabled", () => {
+		const first = evaluateStuckCandidate(
+			baseInput({ output: frame1, errorSigEnabled: true }),
+		);
+		expect(first.candidate).toBe(false);
+		expect(first.episode?.errorSig).toBeDefined();
+		const second = evaluateStuckCandidate(
+			baseInput({
+				output: frame2,
+				now: T0 + STUCK_THRESHOLD_MS,
+				prior: first.episode ?? undefined,
+				errorSigEnabled: true,
+			}),
+		);
+		expect(second.candidate).toBe(true);
+		expect(second.evidence?.errorSignature).toBe("enoent_loop");
+		expect(second.episode?.escalated).toBe(true);
+		// The episode fingerprint is PINNED to the signature (stable across
+		// churning text) so Lead dispositions + Q7 grace key consistently.
+		expect(second.episode?.fingerprint).toBe(first.episode?.fingerprint);
+	});
+
+	it("env unset (default) keeps the pre-FLY-1048 behavior byte-for-byte", () => {
+		const first = evaluateStuckCandidate(baseInput({ output: frame1 }));
+		expect(first.exclusion).toBe("output_changing");
+		expect(first.episode?.errorSig).toBeUndefined();
+		const second = evaluateStuckCandidate(
+			baseInput({
+				output: frame2,
+				now: T0 + STUCK_THRESHOLD_MS,
+				prior: first.episode ?? undefined,
+			}),
+		);
+		expect(second.candidate).toBe(false);
+		expect(second.exclusion).toBe("output_changing");
+	});
+
+	it("reads FLYWHEEL_STUCK_ERRORSIG=1 when the input override is absent", () => {
+		process.env.FLYWHEEL_STUCK_ERRORSIG = "1";
+		try {
+			const first = evaluateStuckCandidate(baseInput({ output: frame1 }));
+			expect(first.episode?.errorSig).toBeDefined();
+		} finally {
+			delete process.env.FLYWHEEL_STUCK_ERRORSIG;
+		}
+	});
+
+	it("FP3: a stale error line ABOVE the evidence tail does not start tracking", () => {
+		// Error long scrolled up; fresh healthy output below fills the tail.
+		const stale = [
+			"  ⎿  Error: ENOENT: no such file or directory, open '/tmp/x.ts'",
+			...Array.from({ length: 20 }, (_, i) => `✓ processed chunk ${i}`),
+		].join("\n");
+		const first = evaluateStuckCandidate(
+			baseInput({ output: stale, errorSigEnabled: true }),
+		);
+		expect(first.episode?.errorSig).toBeUndefined();
+		const second = evaluateStuckCandidate(
+			baseInput({
+				output: `${stale}\n✓ processed chunk 20`,
+				now: T0 + STUCK_THRESHOLD_MS,
+				prior: first.episode ?? undefined,
+				errorSigEnabled: true,
+			}),
+		);
+		expect(second.candidate).toBe(false);
+	});
+
+	it("signature disappearing resets the tracking", () => {
+		const first = evaluateStuckCandidate(
+			baseInput({ output: frame1, errorSigEnabled: true }),
+		);
+		const healthy = evaluateStuckCandidate(
+			baseInput({
+				output: "✓ file restored\n✓ read ok\nall good",
+				now: T0 + STUCK_THRESHOLD_MS,
+				prior: first.episode ?? undefined,
+				errorSigEnabled: true,
+			}),
+		);
+		expect(healthy.candidate).toBe(false);
+		expect(healthy.episode?.errorSig).toBeUndefined();
+	});
+
+	it("dedup: after the signature candidate fired, the episode is already_escalated (drives Q7)", () => {
+		const first = evaluateStuckCandidate(
+			baseInput({ output: frame1, errorSigEnabled: true }),
+		);
+		const second = evaluateStuckCandidate(
+			baseInput({
+				output: frame2,
+				now: T0 + STUCK_THRESHOLD_MS,
+				prior: first.episode ?? undefined,
+				errorSigEnabled: true,
+			}),
+		);
+		expect(second.candidate).toBe(true);
+		const third = evaluateStuckCandidate(
+			baseInput({
+				output: frame1,
+				now: T0 + STUCK_THRESHOLD_MS * 2,
+				prior: second.episode ?? undefined,
+				errorSigEnabled: true,
+			}),
+		);
+		expect(third.candidate).toBe(false);
+		expect(third.exclusion).toBe("already_escalated");
+		expect(third.episode?.fingerprint).toBe(second.episode?.fingerprint);
+	});
+
+	it("hard gates still win over the signature path", () => {
+		const first = evaluateStuckCandidate(
+			baseInput({ output: frame1, errorSigEnabled: true }),
+		);
+		const gated = evaluateStuckCandidate(
+			baseInput({
+				output: frame2,
+				now: T0 + STUCK_THRESHOLD_MS,
+				prior: first.episode ?? undefined,
+				errorSigEnabled: true,
+				hasPendingGate: true,
+			}),
+		);
+		expect(gated.candidate).toBe(false);
+		expect(gated.exclusion).toBe("pending_gate");
+	});
+
+	it("FN2: static error-then-idle pane carries the truthful errorSignature kind", () => {
+		const fn2 = loadErrorPane("fn2-server-error-then-idle.txt");
+		const first = evaluateStuckCandidate(
+			baseInput({ output: fn2, errorSigEnabled: true }),
+		);
+		const second = evaluateStuckCandidate(
+			baseInput({
+				output: fn2,
+				now: T0 + STUCK_THRESHOLD_MS,
+				prior: first.episode ?? undefined,
+				errorSigEnabled: true,
+			}),
+		);
+		expect(second.candidate).toBe(true);
+		expect(second.evidence?.errorSignature).toBe("server_error_mid_response");
+	});
+
+	it("a legacy-escalated static episode is not double-alerted when the flag turns on", () => {
+		const fn2 = loadErrorPane("fn2-server-error-then-idle.txt");
+		// Legacy path escalated this exact static pane (flag was off).
+		const legacy = runStagnant(fn2);
+		expect(legacy.candidate).toBe(true);
+		// Flag flips on mid-episode: same pane, signature now tracked — must NOT
+		// re-emit a fresh candidate for the same static failure.
+		const flipped = evaluateStuckCandidate(
+			baseInput({
+				output: fn2,
+				now: T0 + STUCK_THRESHOLD_MS * 3,
+				prior: legacy.episode ?? undefined,
+				errorSigEnabled: true,
+			}),
+		);
+		expect(flipped.candidate).toBe(false);
+	});
+});
