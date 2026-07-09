@@ -145,6 +145,20 @@ describe("GeminiLiveBackend converse face", () => {
 		});
 	});
 
+	it("threads bargeIn to the transport (default true; explicit false honored)", async () => {
+		const transport = new FakeTransport();
+		const backend = new GeminiLiveBackend({ transport, profile: profile() });
+		const create = (
+			backend.createConversation as NonNullable<
+				typeof backend.createConversation
+			>
+		).bind(backend);
+		await create({ brain: new FakeBrain([]) });
+		expect(transport.lastConnection?.params.bargeIn).toBe(true);
+		await create({ brain: new FakeBrain([]), bargeIn: false });
+		expect(transport.lastConnection?.params.bargeIn).toBe(false);
+	});
+
 	it("a sendText-initiated model turn fires response-started BEFORE its audio (FLY-967 round-4: the opening was gated dead in the speaker)", async () => {
 		const { session, conn } = await makeSession();
 		const order: string[] = [];

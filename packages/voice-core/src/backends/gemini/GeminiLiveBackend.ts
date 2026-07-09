@@ -107,6 +107,7 @@ export class GeminiLiveBackend implements VoiceBackend {
 			voice: opts.voice,
 			systemHint: opts.systemHint,
 			systemPreamble: opts.systemPreamble,
+			bargeIn: opts.bargeIn ?? true,
 			resumeHandle: opts.resumeHandle?.payload as string | undefined,
 			// ask_lead first (its brain path is fixed); extras are declared verbatim.
 			tools: [ASK_LEAD_DECLARATION, ...extraTools.map((t) => t.declaration)],

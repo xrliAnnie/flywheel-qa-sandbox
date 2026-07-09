@@ -30,6 +30,11 @@ export interface AssistantModeConfig {
 	briefing: AssistantBriefingConfig;
 	/** §6 local pre-stop barge-in gate; default OFF pending full-chain S-A1. */
 	localBargeIn: boolean;
+	/** FLY-967 round-5 (Annie's call): server-VAD voice barge-in. Default ON —
+	 * she can cut the assistant off by speaking (headphone users). Set false
+	 * for SPEAKER users: the mic echoes the assistant's own audio back and
+	 * server VAD misjudges it as an interruption, cancelling every reply. */
+	bargeIn: boolean;
 }
 
 const DEFAULT_COMMAND = "gemini";
@@ -113,6 +118,7 @@ export function resolveAssistantConfig(
 			docs: docsRaw as string[],
 		},
 		localBargeIn: a.localBargeIn === true,
+		bargeIn: a.bargeIn !== false,
 	};
 }
 

@@ -141,6 +141,7 @@ describe("resolveAssistantConfig (FLY-967 P7 config contract)", () => {
 			commandName: "gemini",
 			assistantToken: null,
 			localBargeIn: false,
+			bargeIn: true, // Annie's call: default ON (headphone users get real barge-in)
 			briefing: {
 				refreshSec: 600,
 				maxAgeSec: 1800,
@@ -149,6 +150,11 @@ describe("resolveAssistantConfig (FLY-967 P7 config contract)", () => {
 			},
 		});
 		expect(c?.voice).toBeUndefined();
+	});
+
+	it("bargeIn: false is honored (speaker users — assistant echo would cancel live responses)", () => {
+		const c = resolveAssistantConfig(base({ bargeIn: false }), {});
+		expect(c?.bargeIn).toBe(false);
 	});
 
 	it("explicit fields override defaults", () => {

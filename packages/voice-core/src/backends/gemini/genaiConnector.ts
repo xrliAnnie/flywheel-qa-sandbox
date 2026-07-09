@@ -49,14 +49,6 @@ export function createGenaiTransport(
 				responseModalities: [Modality.AUDIO],
 				outputAudioTranscription: {},
 				inputAudioTranscription: {},
-				// FLY-967 round-4: with the default START_OF_ACTIVITY_INTERRUPTS,
-				// server VAD cancelled every live response ~0.3s in — the founder's
-				// speakers echo the assistant's own audio back through her mic (and
-				// utterance tails re-trigger activity). v1 = the model always finishes
-				// speaking; voice barge-in returns with the local pre-stop gate
-				// (assistant.localBargeIn / FLY-545). The string literal IS the
-				// @google/genai ActivityHandling enum value (verified against 1.44.0).
-				realtimeInputConfig: { activityHandling: "NO_INTERRUPTION" },
 				sessionResumption: params.resumeHandle
 					? { handle: params.resumeHandle }
 					: {},
@@ -70,6 +62,16 @@ export function createGenaiTransport(
 					},
 				],
 			};
+			// FLY-967 round-5 (Annie's call — barge-in switch, default ON):
+			// bargeIn=false pins NO_INTERRUPTION so a live response cannot be
+			// cancelled by server VAD — for SPEAKER users, whose mic echoes the
+			// assistant's own audio back and every reply died ~0.3s in (round-4).
+			// ON/unset = the SDK's native START_OF_ACTIVITY_INTERRUPTS: headphone
+			// users get real voice barge-in. The string literal IS the
+			// @google/genai ActivityHandling enum value (verified against 1.44.0).
+			if (params.bargeIn === false) {
+				config.realtimeInputConfig = { activityHandling: "NO_INTERRUPTION" };
+			}
 			// FLY-967: briefing preamble composes BEFORE the spoken-register hint.
 			const instruction = [params.systemPreamble, params.systemHint]
 				.filter((s): s is string => !!s)

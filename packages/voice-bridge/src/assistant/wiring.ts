@@ -635,6 +635,7 @@ function makeRealConversationFactory(
 					voice: assistant.voice,
 					systemHint: SYSTEM_HINT,
 					systemPreamble,
+					bargeIn: assistant.bargeIn !== false,
 					transcriptSink,
 					resumeHandle,
 					extraTools: buildAssistantTools({

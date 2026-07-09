@@ -65,6 +65,9 @@ export interface LiveConnectParams {
 	/** FLY-967: briefing preamble — composed BEFORE systemHint into the
 	 * systemInstruction by the connector (preamble + "\n\n" + hint). */
 	systemPreamble?: string;
+	/** FLY-967 round-5: false pins NO_INTERRUPTION (anti-echo for speaker
+	 * users); true/unset keeps native server-VAD interruption. */
+	bargeIn?: boolean;
 	/** sessionResumption.handle for reconnect (resume). */
 	resumeHandle?: string;
 	/** declared tools (the brain is surfaced as ask_lead). */

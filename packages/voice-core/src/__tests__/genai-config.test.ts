@@ -123,8 +123,15 @@ describe("realtime input frames", () => {
 		expect(config.responseModalities).toEqual(["AUDIO"]);
 	});
 
-	it("activity handling is NO_INTERRUPTION — server VAD must not cancel a live response (FLY-967 round-4: every reply died ~0.3s in on speaker echo)", async () => {
+	it("bargeIn ON (default) keeps native interruption — no realtimeInputConfig override (Annie's call: headphone users get real barge-in)", async () => {
 		const { config } = await connectWith({ voice: "Kore" });
+		expect(config).not.toHaveProperty("realtimeInputConfig");
+		const explicit = await connectWith({ voice: "Kore", bargeIn: true });
+		expect(explicit.config).not.toHaveProperty("realtimeInputConfig");
+	});
+
+	it("bargeIn OFF pins NO_INTERRUPTION — speaker users' echo must not cancel a live response (FLY-967 round-4: every reply died ~0.3s in)", async () => {
+		const { config } = await connectWith({ voice: "Kore", bargeIn: false });
 		expect(config.realtimeInputConfig).toEqual({
 			activityHandling: "NO_INTERRUPTION",
 		});

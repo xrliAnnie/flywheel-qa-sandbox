@@ -106,6 +106,15 @@ export interface ConversationOptions {
 	 * line). Unset = current behavior byte-for-byte (talk CLI / FLY-545).
 	 */
 	systemPreamble?: string;
+	/**
+	 * FLY-967 round-5: voice barge-in switch. true (default) keeps the
+	 * backend's native interruption (server VAD cancels the live response when
+	 * the user starts speaking — right for headphone users). false pins
+	 * NO_INTERRUPTION: the model always finishes speaking — recommended for
+	 * SPEAKER users, whose mic feeds the assistant's own audio back and the
+	 * echo gets misjudged as an interruption (~0.3s cancel on every reply).
+	 */
+	bargeIn?: boolean;
 	transcriptSink?: TranscriptSink;
 	/**
 	 * resume is injected at creation time (Gemini configures sessionResumption at
