@@ -41,6 +41,10 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 		"permission_blocked",
 		"crash_loop",
 		"pane_hash_stuck",
+		// FLY-1048 (A4): same responder family as pane_hash_stuck — an infra bot
+		// can act on a frozen-after-error Lead pane. Owner map: provider-agnostic
+		// default (claude bot).
+		"pane_error_stalled",
 		"runner_stuck_unhandled",
 		"runner_login_expired",
 		"runner_throttle_stalled",

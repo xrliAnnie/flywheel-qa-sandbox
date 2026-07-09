@@ -11,6 +11,7 @@
 
 import { CommDB } from "flywheel-comm/db";
 import {
+	formatDetectionSuspicious,
 	formatDurationMs,
 	formatGateQuestion,
 	formatMisroutedReport,
@@ -150,6 +151,13 @@ export class CommDBLeadRuntime implements LeadRuntime {
 		// formatStuckEscalation (FLY-195 lesson).
 		if (e.event_type === "runner_misrouted_report") {
 			return formatMisroutedReport(env);
+		}
+
+		// FLY-1048 (A5): detection_suspicious — the generic formatter would drop
+		// suspicious_reason / suspicious_pane_tail entirely. Shared renderer
+		// (parity with MailboxLeadRuntime by construction).
+		if (e.event_type === "detection_suspicious") {
+			return formatDetectionSuspicious(env);
 		}
 
 		// FLY-59: Prefix role label for non-main sessions

@@ -26,6 +26,9 @@ export interface HookPayload {
 	terminal_tail?: string;
 	/** Canonical `API Error: ... Stream idle timeout` signature seen in the tail. */
 	stream_error_signature?: boolean;
+	/** FLY-1048 (A3): error-signature KIND (error-signatures.ts) behind a
+	 * repeated-signature stuck candidate. Kind only — never the matched line. */
+	error_signature?: string;
 	/** Claude interactive input box visible at the bottom (idle-at-prompt). */
 	input_box_present?: boolean;
 	// action-specific fields (GEO-167)
@@ -75,6 +78,19 @@ export interface HookPayload {
 	notification_context?: string;
 	// FLY-91: Chat thread for per-issue conversation in chatChannel
 	chat_thread_id?: string;
+
+	// FLY-1048 (A5): detection_suspicious fields — the fail-suspicious
+	// contract. The mechanical watchdog layer could not conclude a/b/c; the
+	// owner Lead gets a QUIET report instead of silence.
+	/** "runner" | "lead" — what kind of target the report is about. */
+	detection_target_kind?: string;
+	/** execId (runner) or `<project>:<leadId>` state key (lead). */
+	detection_target_key?: string;
+	/** Why the mechanical layer could not conclude (enum-ish + one sentence). */
+	suspicious_reason?: string;
+	/** ▏-quoted bounded pane tail. Lead-face ONLY — renderers must keep the
+	 * quote prefix (echo immunity) and it must NEVER reach the founder. */
+	suspicious_pane_tail?: string;
 
 	// GEO-151: ProofShot artifact delivery fields. Only populated when
 	// `event_type === "artifact_delivery"`. HookPayload remains a single
@@ -177,6 +193,12 @@ export function formatStuckEscalation(
 		'(echo this fingerprint EXACTLY as "episode_fingerprint" in your stuck-disposition / recovery-nudge call)',
 		`Evidence: input_box_present=${e.input_box_present ?? "?"} | stream_error_signature=${e.stream_error_signature ?? "?"}`,
 	];
+	// FLY-1048 (A3): the error-signature KIND behind a repeated-signature
+	// candidate (enoent_loop / not_logged_in / …) — kind only, never the raw
+	// matched line (echo immunity, FLY-220).
+	if (e.error_signature) {
+		lines.push(`Error-Signature: ${e.error_signature}`);
+	}
 	if (e.terminal_tail) {
 		const tailLines = e.terminal_tail.split("\n").slice(-STUCK_TAIL_MAX_LINES);
 		let tail = tailLines.join("\n");
@@ -290,5 +312,45 @@ export function formatGateQuestion(env: StuckEscalationEnvelopeLike): string {
 	}
 	lines.push(`Question ID: ${e.question_id}`, `CommDB: ${e.comm_db_path}`);
 	if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
+	return lines.join("\n");
+}
+
+// ── FLY-1048 (A5): shared detection_suspicious renderer ──
+
+/**
+ * FLY-1048 (A5): the fail-suspicious report the owner Lead reads. SHARED
+ * between MailboxLeadRuntime and CommDBLeadRuntime (parity-by-construction,
+ * FLY-195/FLY-208 lesson) — without an explicit branch the generic formatter
+ * drops `suspicious_pane_tail` entirely (Codex design R1 #2).
+ *
+ * Contract:
+ *  - QUIET framing: this is an FYI, not an alert; the Lead judges.
+ *  - The pane tail arrives ▏-quoted and MUST stay quoted (echo immunity) —
+ *    the Lead is told to never repost the quoted lines (founder privacy).
+ */
+export function formatDetectionSuspicious(
+	env: StuckEscalationEnvelopeLike,
+): string {
+	const e = env.event;
+	const lines = [
+		`[Event #${env.seq}] detection_suspicious`,
+		`Target: ${e.detection_target_kind ?? "?"} ${e.detection_target_key ?? "—"} | Project: ${e.project_name ?? "—"}`,
+		"[SUSPICIOUS] Watchdog quiet FYI — mechanical detection could not conclude working/parked/stuck:",
+		"---",
+		e.suspicious_reason ?? "(no reason captured)",
+		"---",
+	];
+	if (e.suspicious_pane_tail) {
+		lines.push(
+			"Pane tail (▏-quoted; never share the quoted pane lines outside this inbox — not in threads, never to the founder):",
+			e.suspicious_pane_tail.slice(0, 2_000),
+			"---",
+		);
+	}
+	lines.push(
+		"Judge it: glance at the tmux pane when convenient. No response required if healthy; if genuinely stuck, re-manage as usual.",
+		`Fingerprint: ${e.episode_fingerprint ?? "—"}`,
+		`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`,
+	);
 	return lines.join("\n");
 }

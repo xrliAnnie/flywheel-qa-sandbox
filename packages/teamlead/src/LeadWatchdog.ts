@@ -34,14 +34,33 @@
 import { createHash } from "node:crypto";
 import { deriveAccountLimitForAlert } from "./account-heal/derive-account-limit.js";
 import {
-	ALERT_EVENT_TYPES,
-	type AlertEventType,
-	type AlertPayload,
-	type AlertResult,
+	buildPaneTail,
+	type SuspiciousReport,
+} from "./bridge/detection-suspicious.js";
+import { scanErrorSignatures } from "./bridge/error-signatures.js";
+import {
+	computeFrameDeltas,
+	createFrameWindowStore,
+} from "./bridge/pane-frames.js";
+// FLY-1048 (Task A2): the live-region/echo-strip pure helpers moved to a shared
+// module so the multi-frame window + runner detectors reuse the exact same
+// parsing. Behavior is byte-identical (committed pane fixtures guard it);
+// ALERT_ECHO_START is re-exported below for existing consumers.
+import {
+	ALERT_ECHO_START,
+	hashPane,
+	ownStateRegion,
+} from "./bridge/pane-live-region.js";
+import type {
+	AlertEventType,
+	AlertPayload,
+	AlertResult,
 } from "./LeadAlertNotifier.js";
 import type { LeadWindowRef } from "./LeadWindowLocator.js";
 import type { ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
+
+export { ALERT_ECHO_START };
 
 export type LeadWatchdogState =
 	| "AwaitingFirstCapture"
@@ -113,6 +132,27 @@ export interface LeadWatchdogConfig {
 	 * (undefined → falsy) so unit tests opt in explicitly.
 	 */
 	suppressIdleHealthy?: boolean;
+	/**
+	 * FLY-1048 (A4): multi-frame overlay. When true, every poll pushes the
+	 * lead's own-state region into a K=3 frame window, and the idle-healthy
+	 * suppression gains two vetoes: an error signature frozen in the window →
+	 * `pane_error_stalled` alert; a silent window carrying frozen
+	 * extended-thinking residue → a quiet `onSuspicious` report (never an
+	 * alert, never silent). Wired from FLYWHEEL_PANE_MULTIFRAME=1 in plugin.ts;
+	 * undefined/false = single-frame behavior byte-for-byte.
+	 */
+	multiFrame?: boolean;
+	/**
+	 * FLY-1048 (A4): minimum first→last frame span before a silence conclusion
+	 * (observation window). Default 2 × pollIntervalMs.
+	 */
+	multiFrameMinSpanMs?: number;
+	/**
+	 * FLY-1048 (A5): sink for fail-suspicious reports (the detection-suspicious
+	 * deliverer routes them to the owner Lead). Absent → reports are logged
+	 * only. Best-effort: a throwing sink must never break the tick.
+	 */
+	onSuspicious?: (report: SuspiciousReport) => void | Promise<void>;
 }
 
 interface LeadState {
@@ -133,7 +173,23 @@ interface LeadState {
 	 * onRecovery hook exactly once when the lead recovers (covers both blocked
 	 * kinds and pane_hash_stuck). Null once recovery has been signaled. */
 	lastAlertedKind: AlertEventType | null;
+	/** FLY-1048 (A4): live-hash of the episode whose suspicious report already
+	 * fired — one quiet report per frozen episode; a changed live region opens
+	 * a new episode and may report again. */
+	lastSuspiciousHash: string | null;
 }
+
+/**
+ * FLY-1048 (A4): the FROZEN extended-thinking spinner form — an elapsed timer
+ * with thinking-progress wording, e.g. `✢ Pondering… (11m 3s · almost done
+ * thinking)`. Deliberately EXCLUDES the completed-turn residue (`✻ Cooked for
+ * 2s`) that lingers in every healthy idle live region — matching that is the
+ * exact over-match that defeated FLY-193 suppression. This is the documented
+ * FLY-193 blind spot: no interrupt hint, so WORKING_MARKERS miss it and the
+ * pane reads idle-healthy while genuinely hung mid-thinking.
+ */
+const FROZEN_THINKING_RESIDUE =
+	/\(\s*\d+m?\s*\d*s\s*·[^)\n]*thinking[^)\n]*\)/i;
 
 const BLOCKED_KEYWORDS: Array<{ kind: AlertEventType; tokens: RegExp[] }> = [
 	{ kind: "rate_limit", tokens: [/\brate[-\s]?limit\b/i] },
@@ -164,6 +220,8 @@ export class LeadWatchdog {
 	private polling = false;
 	private readonly now: () => number;
 	private readonly logger: (msg: string) => void;
+	/** FLY-1048 (A4): per-lead K=3 window of own-state regions (multiFrame). */
+	private readonly frames = createFrameWindowStore();
 
 	constructor(private readonly config: LeadWatchdogConfig) {
 		this.now = config.now ?? (() => Date.now());
@@ -229,6 +287,8 @@ export class LeadWatchdog {
 					if (!membership.has(key)) this.leadStates.delete(key);
 				}
 			}
+			// FLY-1048 (A4): frame windows follow the same membership lifecycle.
+			if (this.config.multiFrame) this.frames.prune(membership);
 			// FLY-368: run the reconcile pass (or any post-poll work) on the SAME
 			// 30s cadence — no second timer. Wrapped so it can never wedge the poll.
 			if (this.config.onPollComplete) {
@@ -288,6 +348,15 @@ export class LeadWatchdog {
 			);
 			if (state.state !== "Cooldown") state.state = "AwaitingFirstCapture";
 			return;
+		}
+
+		// FLY-1048 (A4): record this poll's own-state region in the frame window
+		// BEFORE any early return, so changing panes accumulate frames too.
+		if (this.config.multiFrame) {
+			this.frames.push(stateKey(projectName, leadId), {
+				text: ownStateRegion(pane),
+				capturedAtMs: this.now(),
+			});
 		}
 
 		// FLY-220: classify the Lead's OWN live state (echo/scrollback stripped) up
@@ -406,6 +475,48 @@ export class LeadWatchdog {
 			kind === "pane_hash_stuck" &&
 			isIdleHealthyPane(pane)
 		) {
+			// FLY-1048 (A4): two multi-frame vetoes BEFORE accepting idle-healthy.
+			// Single-frame recognition cannot tell "quiet and fine" from "frozen
+			// right after an error / mid-thinking"; the frame window can.
+			if (this.config.multiFrame) {
+				const window = this.frames.window(stateKey(projectName, leadId));
+				const latest = window.at(-1);
+				// Veto 1: a known error signature frozen in the (static) live region
+				// across ≥2 polls → error-stalled, not idle (FN0/FN2 lead-side).
+				if (
+					window.length >= 2 &&
+					latest &&
+					scanErrorSignatures(latest.text).length > 0
+				) {
+					await this.emitAlert(
+						projectName,
+						leadId,
+						pane,
+						state,
+						"pane_error_stalled",
+						liveHash,
+					);
+					return;
+				}
+				// Veto 2: a silent window still showing a frozen extended-thinking
+				// spinner (the documented FLY-193 blind spot) → cannot conclude
+				// idle. Report suspicious (quiet, owner-Lead-face) instead of
+				// suppressing silently. One report per frozen episode.
+				const deltas = computeFrameDeltas(window, {
+					minSpanMs:
+						this.config.multiFrameMinSpanMs ?? this.config.pollIntervalMs * 2,
+				});
+				if (
+					deltas.silenceDelta &&
+					!deltas.tokenFlowActive &&
+					latest &&
+					FROZEN_THINKING_RESIDUE.test(latest.text) &&
+					state.lastSuspiciousHash !== liveHash
+				) {
+					state.lastSuspiciousHash = liveHash;
+					this.fireSuspicious(projectName, leadId, latest.text, liveHash);
+				}
+			}
 			state.state = "Healthy";
 			return;
 		}
@@ -551,24 +662,46 @@ export class LeadWatchdog {
 				cooldownSignature: null,
 				episodeKind: null,
 				lastAlertedKind: null,
+				lastSuspiciousHash: null,
 			};
 			this.leadStates.set(leadId, state);
 		}
 		return state;
 	}
-}
 
-function hashPane(content: string): string {
-	const normalized = content
-		// biome-ignore lint/suspicious/noControlCharactersInRegex: strip ANSI escape sequences from tmux pane
-		.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
-		.replace(/\r/g, "")
-		.split("\n")
-		.map((line) => line.replace(/\s+$/g, ""))
-		.filter((line) => !/^\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?$/i.test(line))
-		.join("\n")
-		.trim();
-	return createHash("sha1").update(normalized).digest("hex");
+	/**
+	 * FLY-1048 (A5): hand a fail-suspicious report to the wired sink. Quiet by
+	 * contract — never an alert, never founder-facing. Best-effort: sink
+	 * errors are logged, never thrown into the tick.
+	 */
+	private fireSuspicious(
+		projectName: string,
+		leadId: string,
+		regionText: string,
+		liveHash: string,
+	): void {
+		const report: SuspiciousReport = {
+			targetKind: "lead",
+			targetKey: stateKey(projectName, leadId),
+			reason:
+				"frozen_extended_thinking: live region static across the observation window while still showing an in-flight thinking spinner — cannot conclude idle vs hung",
+			paneTail: buildPaneTail(regionText),
+			episodeFingerprint: liveHash,
+		};
+		if (!this.config.onSuspicious) {
+			this.logger(
+				`detection_suspicious (no sink wired): ${report.targetKey} — ${report.reason}`,
+			);
+			return;
+		}
+		try {
+			void Promise.resolve(this.config.onSuspicious(report)).catch((err) =>
+				this.logger(`onSuspicious rejected: ${(err as Error).message}`),
+			);
+		} catch (err) {
+			this.logger(`onSuspicious threw: ${(err as Error).message}`);
+		}
+	}
 }
 
 /**
@@ -620,6 +753,16 @@ export function classifyLeadAlertPane(pane: string): AlertEventType {
  */
 export function leadPaneLiveHash(pane: string): string {
 	return hashPane(ownStateRegion(pane));
+}
+
+/**
+ * FLY-1048 (A4): PUBLIC — does the Lead's own-state region carry a known error
+ * signature? The AlertChannelHub reconcile pass resolves a `pane_error_stalled`
+ * thread only when this returns false (the error left the live region);
+ * fail-toward-active while the error is still visible.
+ */
+export function leadPaneHasErrorSignature(pane: string): boolean {
+	return scanErrorSignatures(ownStateRegion(pane)).length > 0;
 }
 
 /**
@@ -702,105 +845,9 @@ const IDLE_READY_MARKERS: RegExp[] = [
 	/\bctx\s+\d+%/i, // status-bar context gauge
 ];
 
-/**
- * The top border of the input box, rendered as a long horizontal rule ending in
- * the agent handle: `──…── @product-lead ──`. Used to locate the live render
- * region (input box + status bar) at the bottom of the pane.
- */
-const INPUT_BOX_TOP = /─{6,}[^\n]*@[\w-]+\s+─/u;
-
-/**
- * FLY-193: extract the LIVE render region of a pane — the input box and status
- * bar at the bottom, plus a few lines above to catch a spinner that is actively
- * rendering (or frozen) immediately above the box.
- *
- * Why: `LeadWatchdog` captures 200 lines of scrollback (`capture-pane -S -200`).
- * Scanning the whole capture for working/idle markers gets poisoned by STALE
- * lines — a Lead that printed "…thinking…" or "…working…" 50 lines ago and is
- * now idle would never be recognized as idle (false positive persists). The live
- * TUI render is always the LAST thing in the pane, so we anchor to it.
- */
-function liveRegion(pane: string): string {
-	const lines = pane.replace(/\r/g, "").split("\n");
-	let boxIdx = -1;
-	for (let i = lines.length - 1; i >= 0; i--) {
-		if (INPUT_BOX_TOP.test(lines[i]!)) {
-			boxIdx = i;
-			break;
-		}
-	}
-	// 4 lines above the box top captures a spinner rendering just above the
-	// input box; if no box border is found (e.g. a startup resume/compact menu
-	// that has not rendered the normal TUI), fall back to the last 12 lines.
-	const start =
-		boxIdx >= 0 ? Math.max(0, boxIdx - 4) : Math.max(0, lines.length - 12);
-	return lines.slice(start).join("\n");
-}
-
-/**
- * FLY-220 — signals that a pane line STARTS an alert echo (a Bridge alert posted
- * to a SHARED core channel echoes into every Lead's pane). These are
- * BRIDGE-UNIQUE — text a real Claude Code TUI never emits about itself — so
- * stripping a line on them alone can NEVER hide a genuine Lead block (Codex R1
- * HIGH-1). Inbound messages render `←`-prefixed and are usually truncated to one
- * line (see the real `idle-product-lead.txt` fixture); the `(<lead> / <kind>)`
- * signature + the canned titles cover a non-`←` first line too.
- */
-const INBOUND_ECHO_LINE = /^\s*←/;
-/**
- * FLY-927 (Task 1.2): the kind alternation is DERIVED from the shared
- * `ALERT_EVENT_TYPES` table (LeadAlertNotifier) — the old hand-enumerated list
- * covered only 7 kinds, so a first-line echo of any newer kind
- * (runner_login_expired / three_stage_stuck / codex_gate_blocked / …) leaked
- * past the strip and could re-trigger the FLY-220 storm family. Single source
- * ⇒ a future kind can never silently miss echo immunity. The `|^\s*🎫\s`
- * branch strips the FLY-927 ticket-header line (Bridge-unique — a real Claude
- * TUI never renders it about itself).
- */
-export const ALERT_ECHO_START = new RegExp(
-	`\\(\\s*[a-z0-9-]+\\s*\\/\\s*(?:${ALERT_EVENT_TYPES.join("|")})\\s*\\)` +
-		"|^\\s*🎫\\s" +
-		"|\\blead hit (?:rate|usage) limit\\b|\\blead login expired\\b|\\blead waiting on permission prompt\\b|\\blead pane has been frozen\\b|\\blead crash-looping\\b|\\brunner stuck unhandled\\b",
-	"i",
-);
-
-/**
- * FLY-220 — the Lead's OWN live state text: the live render region (FLY-193) with
- * inbound-Discord echoes and the Bridge's own alert template removed (line by
- * line). EVERY blocked-keyword read (`classify`, `isIdleHealthyPane`,
- * `isTransientThrottlePane`) goes through this, so an alert echoed back into a
- * pane (or a stale one in the live region) can never re-trigger the same alert —
- * root cure for the cross-Lead alert-amplification loop on a shared channel.
- *
- * A line is dropped ONLY when it is unambiguously NOT the Lead's own state:
- *  - `←`-prefixed (an inbound Discord message — tmux's inbound marker), OR
- *  - it carries a Bridge-UNIQUE alert signature (`ALERT_ECHO_START`: the
- *    `(<lead> / <kind>)` token or a canned title — text a real Claude TUI never
- *    emits about itself).
- *
- * Deliberately a per-line filter with NO body-continuation stripping (Codex R3):
- * real inbound echoes render TRUNCATED to a single `←` line (see the committed
- * `idle-product-lead.txt` fixture — even the kind is cut: `pane_hash_stuc…`), so
- * the alert body never appears on its own line. Trying to strip a "wrapped body"
- * would risk swallowing a genuine block rendered right after an echo — and hiding
- * a real block is worse than a duplicate alarm. If a future REAL capture ever
- * shows a multi-line (wrapped) echo, the un-stripped body would at worst produce
- * one extra alarm (fail-toward-alerting), never a hidden block.
- *
- * Echoes are removed from the FULL pane BEFORE the live-region window is taken
- * (Codex R7 HIGH-2): otherwise several inbound echoes accumulating between a real
- * block line and the input box would consume the window's 4-line budget and push
- * the genuine block out of view → classify misses it → first alert never fires.
- */
-function ownStateRegion(pane: string): string {
-	const withoutEchoes = pane
-		.split("\n")
-		.filter(
-			(line) => !INBOUND_ECHO_LINE.test(line) && !ALERT_ECHO_START.test(line),
-		)
-		.join("\n");
-	return liveRegion(withoutEchoes);
-}
+// FLY-1048 (Task A2): INPUT_BOX_TOP / liveRegion / INBOUND_ECHO_LINE /
+// ALERT_ECHO_START / ownStateRegion moved verbatim to
+// ./bridge/pane-live-region.ts (shared with the multi-frame window).
 
 /**
  * FLY-182 B3 / FLY-193 — recognize an alive-but-IDLE Claude Code Lead pane.
@@ -963,6 +1010,10 @@ function titleFor(kind: AlertEventType): string {
 			return "Lead crash-looping";
 		case "pane_hash_stuck":
 			return "Lead pane has been frozen";
+		// FLY-1048 (A4): multi-frame veto 1 — a known error signature frozen in
+		// an otherwise idle-looking live region.
+		case "pane_error_stalled":
+			return "Lead pane error-stalled";
 		// FLY-195: never emitted by LeadWatchdog (the stuck-runner detector owns
 		// it and builds its own title); case exists for switch exhaustiveness.
 		case "runner_stuck_unhandled":
@@ -1063,6 +1114,10 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "Lead has crashed repeatedly. Check the supervisor log under ~/.flywheel/logs/ — likely Claude CLI / config issue.";
 		case "pane_hash_stuck":
 			return "Lead pane has been frozen for several poll cycles with no recognizable blocked-prompt pattern. Open the tmux pane to investigate.";
+		// FLY-1048 (A4): deliberately does NOT echo the matched error line
+		// (FLY-220 echo immunity) — kind + suggested action only.
+		case "pane_error_stalled":
+			return "A known error is frozen in the Lead's live pane (error visible above an idle input box across multiple polls). The Lead likely errored and stopped; open the tmux pane and nudge or recover it.";
 		// FLY-195: never emitted by LeadWatchdog (see titleFor).
 		case "runner_stuck_unhandled":
 			return "A stuck Runner episode received no Lead disposition within the grace window. Check the owning Lead, then the runner tmux window.";

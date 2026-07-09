@@ -25,6 +25,7 @@ import type {
 import {
 	classifyLeadAlertPane,
 	isIdleHealthyPane,
+	leadPaneHasErrorSignature,
 	leadPaneLiveHash,
 } from "../LeadWatchdog.js";
 import type { AlertThreadRow, StateStore } from "../StateStore.js";
@@ -260,6 +261,9 @@ const LEAD_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"permission_blocked",
 	"crash_loop",
 	"pane_hash_stuck",
+	// FLY-1048 (A4): pane-driven like the rest — reconcile resolves it when
+	// the error signature leaves the live region (see shouldResolveLead).
+	"pane_error_stalled",
 ]);
 
 export function correlationKeyFor(p: {
@@ -760,6 +764,13 @@ export class AlertChannelHub {
 		eventType: string,
 		pane: string,
 	): Promise<boolean> {
+		// FLY-1048 (A4): pane_error_stalled — classify() never returns this kind,
+		// so the blocked-kind rule below would resolve it instantly. Recovered
+		// iff the error signature left the live region (fail-toward-active while
+		// the error is still visible).
+		if (eventType === "pane_error_stalled") {
+			return !leadPaneHasErrorSignature(pane);
+		}
 		if (eventType !== "pane_hash_stuck") {
 			// A blocked kind (rate/usage/login/permission): recovered iff the kind
 			// is no longer present in the live pane.

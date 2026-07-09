@@ -115,6 +115,12 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED:
 		"internal ops lever: opt-in reap of unattributed Chrome, default off (FLY-766)",
 	// tuning knobs (numeric)
+	FLYWHEEL_GAP_SCAN_EVERY_N_TICKS:
+		"tuning knob: gap-scan cadence in GatePoller ticks (FLY-1048 A6)",
+	FLYWHEEL_FRAME_INTERVAL_MS:
+		"tuning knob: focused-frame capture interval ms (FLY-1048 A7)",
+	FLYWHEEL_FRAME_CAPTURES_PER_TICK:
+		"tuning knob: focused-frame capture budget per tick (FLY-1048 A7)",
 	FLYWHEEL_REPORT_SHOT_WIDTH: "tuning knob: screenshot width",
 	FLYWHEEL_ALERT_DRAIN_STUCK_CYCLES: "tuning knob: alert drain cycles",
 	FLYWHEEL_ALERT_QUEUE_MAX: "tuning knob: alert queue max",

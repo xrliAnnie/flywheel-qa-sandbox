@@ -174,6 +174,16 @@ export interface GatePollerConfig {
 	 * FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS). 0 → sweep disabled.
 	 */
 	displayReconcileEveryNTicks?: number;
+	/**
+	 * FLY-1048 (A6): the cheap gap/state scan, piggybacked on this same tick
+	 * (zero new periodic timer — FLY-513 pattern). MUST stay zero-pane /
+	 * zero-token (StateStore + readonly CommDB reads only); fully
+	 * error-isolated. Absent → complete no-op (byte-compat).
+	 */
+	onGapScanTick?: () => void | Promise<void>;
+	/** FLY-1048 (A6): cadence in poll ticks (default 100 ≈ 5min at 3s; plugin
+	 * reads FLYWHEEL_GAP_SCAN_EVERY_N_TICKS). */
+	gapScanEveryNTicks?: number;
 
 	// ── FLY-605: bidirectional in-thread founder relay fallback ──
 	/** Global Discord bot token fallback (lead.botToken takes precedence). */
@@ -462,6 +472,24 @@ export class GatePoller {
 							),
 						);
 				}
+			}
+
+			// FLY-1048 (A6): cheap gap/state scan — same piggyback pattern as the
+			// FLY-513 health probe above (zero new timer, own catch, never blocks
+			// the poll). Cadence default 100 ticks ≈ 5min at the production 3s
+			// interval; `(tickCount - 1) % n === 0` fires on tick 1 and works for
+			// n=1 (FLY-513 Codex R1 LOW precedent).
+			if (
+				this.config.onGapScanTick &&
+				(this.tickCount - 1) % this.gapScanEveryNTicks() === 0
+			) {
+				void Promise.resolve()
+					.then(() => this.config.onGapScanTick?.())
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] FLY-1048 gap-scan tick error (non-fatal): ${(err as Error).message}`,
+						),
+					);
 			}
 
 			const patrolDue =
@@ -812,6 +840,11 @@ export class GatePoller {
 	/** FLY-907: display-reconcile sweep cadence (default 60 ≈ 3min at 3s). */
 	private displayReconcileEveryNTicks(): number {
 		return this.config.displayReconcileEveryNTicks ?? 60;
+	}
+
+	/** FLY-1048 (A6): gap-scan cadence (default 100 ≈ 5min at 3s). */
+	private gapScanEveryNTicks(): number {
+		return this.config.gapScanEveryNTicks ?? 100;
 	}
 
 	private backlogThreshold(): number {

@@ -25,6 +25,7 @@ export const GUARDRAIL_EVENT_TYPES = new Set([
 	"runner_stuck_escalation", // FLY-195: stuck-candidate handoff to owning Lead — Lead judges + re-manages (plan §3.2)
 	"runner_lead_pending_escalation", // FLY-637-ext: Lead has not answered a runner's blocking question gate — reliable nudge (R1 #6)
 	"scheduled_run_blocked", // FLY-742: a scheduled/cron run-start was DECLINED by a stale session — Lead/founder must reliably learn the job is silently skipping
+	"detection_suspicious", // FLY-1048 (A5): fail-suspicious is "never silent" — a dropped delivery would BE the silence it exists to prevent
 ]);
 
 /**
