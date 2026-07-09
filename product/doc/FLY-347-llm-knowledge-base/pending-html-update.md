@@ -21,14 +21,14 @@ Issue: FLY-347
    > **MVP 定稿(Lead 钉死,别再两版)**:MVP = **agent 自跑的 memory consolidation/Lint
    > pass**(去重 / 合并 / 清过时,出**可审 diff、可逆、绝不自动删**),**不是 Ingest+index**。
    > 理由:我们已有 Ingest+index+互链 ~70%,真痛点 gap = consolidation(索引只增不并、
-   > 187 文件/123 feedback 没合)。Lead chat 里的「Ingest+index」是说岔了,以提案 HTML 原本
+   > 约 190 文件/约 126 feedback 没合)。Lead chat 里的「Ingest+index」是说岔了,以提案 HTML 原本
    > 写的 Lint/consolidation 为准。Ingest/Query/语义搜索 都明确留后。
    > **注意:已 publish 的 agent-wiki-proposal.html 里 MVP 本来就写的是 Lint/consolidation
    > —— 已经对了,MVP 段不用改。** HTML 要改的只是下面 §「执行时的动作」里 Annie 的 3 点补充。
 
 3. **事实校正(已初步 grounded)**:我们有 mem0 `MemoryService`(在
    `packages/edge-worker/src/memory/MemoryService.ts`,含 pgvector/embedding 代码路径),
-   **但 pgvector 基本没接、主力是文件 markdown**(证据:187 个 `memory/*.md` + MEMORY.md 是
+   **但 pgvector 基本没接、主力是文件 markdown**(证据:约 190 个 `memory/*.md` + MEMORY.md 是
    活 substrate)。→ 所以「编译 wiki 层确实缺」,提案成立。执行时可再确认 pgvector 是否真 dormant。
 
 ## 执行时的动作(quota 回来后)

@@ -1,5 +1,9 @@
 # FLY-347 Run 教训库 MVP — build-issue spec
 
+Issue: FLY-347 (https://linear.app/geoforge3d/issue/FLY-347/xhsclaude-karpathy用-llm-构建个人知识库token-从处理代码转向处理知识)
+日期: 2026-07-08
+基于: engineering/doc/FLY-347-experience-graph/prd.md (v5 定稿)
+
 > **已建:build issue = FLY-1033**(Lead 于 2026-07-08 建,一个连贯功能,挂 Tadashi 队列)。
 > 交 Lead 建 FLY eng build issue 挂 Tadashi 队列(Runner 不自建 issue、不自 ship)。
 > 定稿依据:engineering/doc/FLY-347-experience-graph/prd.md (v5 定稿)。

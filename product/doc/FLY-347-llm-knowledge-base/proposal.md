@@ -26,7 +26,7 @@ MVP,proposal **park** 着。issue 留 **backlog**,标『deferred / not-now』,**
 
 **Flywheel 不需要「从头建 Karpathy 的 wiki」—— 我们已经有它 ~70% 的骨架(页 + 索引 +
 互链)。真正缺的是 Karpathy 那一条核心洞见的落地:LLM 自己跑的『维护回路(Lint)』+ 综述。**
-且证据显示这个缺口是**真痛**(187 个记忆文件、123 个 feedback_*、索引 20KB,只增不并)。
+且证据显示这个缺口是**真痛**(约 190 个记忆文件、约 126 个 feedback_*、索引 20KB,只增不并)。
 所以提案 = **不建大 wiki,只补那一条最有杠杆的小 MVP:一个 agent 自己跑的记忆
 consolidation/lint pass。** 更大的(综述页、query 回填)等 MVP 证明价值再说。
 
@@ -45,9 +45,9 @@ Karpathy 的原版是**人在环里**:Obsidian 浏览、人策展、"Obsidian �
 
 | Karpathy 的要件 | Flywheel 现状 | 有没有 |
 |---|---|---|
-| 一事一页(atomic pages) | **187 个 `*.md` 记忆文件**,一事一文件 + frontmatter | ✅ 有 |
-| index.md（目录,查询先读它） | **`MEMORY.md`(139 行/20KB),每次会话注入** | ✅ 有(=Karpathy 的 index.md) |
-| backlinks/互链 | **`[[name]]` 链接共 229 处**,已有 hub 页(如 `[[feedback_dont_manufacture_fake_decisions]]` 被链 8 次) | ✅ 有 |
+| 一事一页(atomic pages) | **约 190 个 `*.md` 记忆文件**,一事一文件 + frontmatter | ✅ 有 |
+| index.md（目录,查询先读它） | **`MEMORY.md`(约 140 行/20KB),每次会话注入** | ✅ 有(=Karpathy 的 index.md) |
+| backlinks/互链 | **`[[name]]` 链接共 约 236 处**,已有 hub 页(如 `[[feedback_dont_manufacture_fake_decisions]]` 被链 8 次) | ✅ 有 |
 | schema/约定（CLAUDE.md 式） | 记忆写入规则(frontmatter type、check-before-write、delete-wrong) | ✅ 部分 |
 | raw sources | `docs/solutions`(/compound)、per-project `.flywheel/` 记忆 | ✅ 有 |
 
@@ -63,8 +63,8 @@ Karpathy 的原版是**人在环里**:Obsidian 浏览、人策展、"Obsidian �
 2. **综述/概念页(synthesis pages)**:我们是原子事实,没有*被维护的主题页*(如「关于
    Runner 生命周期我们知道的一切」这样一页,随新证据更新)。
 3. **系统化的 Lint 回路**:没有定期的去重/和解矛盾/去陈旧/找孤儿页的 pass。现在的
-   check-before-write 是**逐次即兴**,不是系统 pass —— 证据就是 187 文件 / 123 feedback_*
-   / 31 qa_* 明显有可并项,索引也在膨胀。
+   check-before-write 是**逐次即兴**,不是系统 pass —— 证据就是 约 190 文件 / 约 126 feedback_*
+   / 一批 qa 明显有可并项,索引也在膨胀。
 4. **Query 结果回填**:agent 辛苦综合出的答案蒸发在对话里,没 file back 成新页。
 
 ## 4. Karpathy 的 Ingest→Query→Lint 映射到我们（agent 怎么做）
@@ -81,7 +81,7 @@ Karpathy 的原版是**人在环里**:Obsidian 浏览、人策展、"Obsidian �
   这么说。全套 wiki(整合式 ingest + 综述页 + 语义搜索)是**明显的 over-engineering
   风险**,正是 FLY-212「做完 PR+QA 才发现没戳心坎」的坑。token 成本也真(一次整合触多页)。
 - **正方(值得做的那一小块)**:唯一有**真痛证据**的缺口是 **Lint/consolidation**:
-  187 文件、123 feedback_*、索引 20KB「只增不并」——这正是 Karpathy 说的「维护/bookkeeping
+  约 190 文件、约 126 feedback_*、索引 20KB「只增不并」——这正是 Karpathy 说的「维护/bookkeeping
   是人放弃 wiki 的原因,而 LLM 不会腻」。让 agent 定期并一次,**低成本、直接对准已观测到
   的痛、纯 agent-facing**。
 - **净判断**:**不建大 wiki。只做 Lint MVP。** 综述页 / query 回填 / 语义搜索 = 明确列为
@@ -91,7 +91,7 @@ Karpathy 的原版是**人在环里**:Obsidian 浏览、人策展、"Obsidian �
 
 **MVP:Memory Consolidation/Lint pass（agent 自跑,输出可审 diff,绝不自动删）**
 
-- **输入**:一个项目的 `memory/` 目录(187 文件 + MEMORY.md)。
+- **输入**:一个项目的 `memory/` 目录(约 190 文件 + MEMORY.md)。
 - **agent 做什么**:
   1. **去重/并项**:找主题重叠的 fact 文件(如多个 qa_* / feedback_* 讲同一件事),提议
      merge 成一页(保留所有来源要点)。
@@ -102,7 +102,7 @@ Karpathy 的原版是**人在环里**:Obsidian 浏览、人策展、"Obsidian �
   founder/Lead review 后才落。**可逆、不自动删**(对齐记忆规则「delete 前先看、不是你建的先surface」)。
 - **不是什么**:不是新数据库、不是向量 RAG、不是人类 UI、不是重写记忆系统 —— 就是一个
   跑在现有 markdown 记忆上的维护 pass。
-- **验证成功 = 什么为真**:跑一遍能把 187→更少且不丢信息、索引更小、矛盾被标出;Lead 用
+- **验证成功 = 什么为真**:跑一遍能把 约 190→更少且不丢信息、索引更小、矛盾被标出;Lead 用
   consolidation 后的记忆一段时间,recall 不降(最好升)。
 
 **留后(不在 MVP)**:B) 维护式综述/概念页;C) query 结果自动回填;D) 大规模上 qmd 语义搜索。

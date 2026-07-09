@@ -82,7 +82,7 @@
 <div class="tldr" data-key="tldr">
   <p><b>结论先给,不埋:</b>Flywheel <b>不需要从头建 Karpathy 的 wiki</b> —— 我们已经有它
   ~70% 的骨架(页 + 索引 + 互链)。真正缺的是他那条核心洞见:<b>LLM 自己跑的『维护回路』</b>。
-  且这个缺口有<b>真痛证据</b>(<b class="num">187</b> 个记忆文件、<b class="num">123</b> 个
+  且这个缺口有<b>真痛证据</b>(<b class="num">~190</b> 个记忆文件、<b class="num">~126</b> 个
   feedback、索引只增不并 —— 库在慢慢『烂』)。所以提案 = <b>不建大 wiki,只补最有杠杆的一小块
   小 MVP:一个 agent 自跑的记忆 consolidation/Lint pass。</b>Ingest/Query/语义搜索都留后。</p>
   <label class="comment-label" for="c-tldr">你的留言(整体感觉)</label>
@@ -107,16 +107,16 @@
   <p>我审计了本项目的 MEMORY,把它和 Karpathy 的要件逐条对:</p>
   <div class="table-wrap"><table>
     <tr><th>Karpathy 的要件</th><th>Flywheel 现状</th><th>有没有</th></tr>
-    <tr><td>一事一页(atomic pages)</td><td><b class="num">187</b> 个记忆文件,一事一文件 + frontmatter</td><td class="yes">✅ 有</td></tr>
-    <tr><td>index.md(查询先读它)</td><td><code>MEMORY.md</code> 139 行/20KB,<b>每次会话注入</b></td><td class="yes">✅ 有(=他的 index.md)</td></tr>
-    <tr><td>backlinks 互链</td><td><code>[[name]]</code> 共 <b class="num">229</b> 处,已有 hub 页</td><td class="yes">✅ 有</td></tr>
+    <tr><td>一事一页(atomic pages)</td><td><b class="num">~190</b> 个记忆文件,一事一文件 + frontmatter</td><td class="yes">✅ 有</td></tr>
+    <tr><td>index.md(查询先读它)</td><td><code>MEMORY.md</code> 约 140 行/20KB,<b>每次会话注入</b></td><td class="yes">✅ 有(=他的 index.md)</td></tr>
+    <tr><td>backlinks 互链</td><td><code>[[name]]</code> 共 <b class="num">~236</b> 处,已有 hub 页</td><td class="yes">✅ 有</td></tr>
     <tr><td>schema/约定</td><td>记忆写入规则(type、check-before-write、delete-wrong)</td><td class="yes">✅ 部分</td></tr>
     <tr><td>raw sources</td><td><code>docs/solutions</code>(/compound)、per-project 记忆</td><td class="yes">✅ 有</td></tr>
   </table></div>
   <p><b>结论:我们不是从零,骨架在了。</b>这也是为什么你说现有系统「用起来也还不错」—— 你是对的。</p>
   <div class="fact"><b>事实校正(会有人问『我们不是有 mem0 吗』):</b>我们确实有 mem0 式的
   <code>MemoryService</code> 代码(在 <code>packages/edge-worker/src/memory/</code>,含 pgvector/
-  embedding 路径),<b>但 pgvector 基本没接、活的主力是文件 markdown</b>(证据 = 上面那 187 个
+  embedding 路径),<b>但 pgvector 基本没接、活的主力是文件 markdown</b>(证据 = 上面那约 190 个
   <code>memory/*.md</code> + MEMORY.md,是本会话真正在用的)。所以下面说的『编译 wiki 层』是
   <b>真缺</b>,不是重复造 mem0 的轮子。</div>
   <label class="comment-label" for="c-have">你的留言</label>
@@ -144,7 +144,7 @@
   <h2><span class="n">4</span>为什么必须有 Lint(这段是你要我讲清的)</h2>
   <p><b>知识库越攒越大,会『烂』。</b>攒到几百页时,自然长出三种病:</p>
   <ul>
-    <li><b>重复</b>:同一件事被写进好几页(我们现在 187 文件里,123 个 feedback_* + 31 个 qa_* 明显有可并项)。</li>
+    <li><b>重复</b>:同一件事被写进好几页(我们现在 约 190 文件里,约 126 个 feedback_* + 一批 qa 明显有可并项)。</li>
     <li><b>矛盾</b>:新证据推翻了旧断言,但旧页还在,两页打架,agent 读到哪页看运气。</li>
     <li><b>过时 & 孤儿</b>:陈旧的页没人清、没有入链的页查不到 —— 占 context、拖准确率。</li>
   </ul>
@@ -163,7 +163,7 @@
   也这么说。全套 wiki(整合式 ingest + 综述页 + 语义搜索)是<b>明显的 over-engineering 风险</b>,
   正是 FLY-212「做完 PR+QA 才发现没戳心坎」的坑。token 成本也真。</div>
   <div class="pro"><b>正方(值得做的那一小块):</b>唯一有<b>真痛证据</b>的缺口是 <b>Lint/consolidation</b>:
-  187 文件、123 feedback、索引 20KB「只增不并」—— 正是他说的「维护是人放弃 wiki 的原因,而
+  约 190 文件、约 126 feedback、索引 20KB「只增不并」—— 正是他说的「维护是人放弃 wiki 的原因,而
   LLM 不会腻」。让 agent 定期并一次,<b>低成本、对准已观测的痛、纯 agent-facing</b>。</div>
   <div class="net"><b>净判断:不建大 wiki,只做 Lint MVP。</b>综述页 / query 回填 / 语义搜索 =
   明确「以后再说,MVP 证明价值后」,不塞进这版。</div>
@@ -175,14 +175,14 @@
   <h2><span class="n">6</span>小 MVP:Memory Consolidation/Lint pass</h2>
   <p><b>一个 agent 自跑、输出可审 diff、绝不自动删</b>的维护 pass:</p>
   <ul>
-    <li><b>输入</b>:一个项目的 <code>memory/</code>(187 文件 + MEMORY.md)。</li>
+    <li><b>输入</b>:一个项目的 <code>memory/</code>(约 190 文件 + MEMORY.md)。</li>
     <li><b>去重/并项</b>:找主题重叠的文件(多个 qa_*/feedback_* 讲同一事),提议 merge 成一页(留全来源要点)。</li>
     <li><b>标矛盾/陈旧</b>:找互相打架或被新事件推翻的断言。</li>
     <li><b>孤儿 & 断链</b>:找无入链的页 + 指向不存在页的 <code>[[链接]]</code>。</li>
     <li><b>索引瘦身</b>:提议精简 MEMORY.md(它每次注入,越小越省 context)。</li>
     <li><b>输出</b>:一份 consolidation 提案 <b>diff</b> + 理由 → 你/Lead review 后才落。<b>可逆、不自动删。</b></li>
   </ul>
-  <p><b>成功 = 什么为真</b>:跑一遍能 187→更少且不丢信息、索引更小、矛盾被标;用一阵后 recall 不降(最好升)。</p>
+  <p><b>成功 = 什么为真</b>:跑一遍能 约 190→更少且不丢信息、索引更小、矛盾被标;用一阵后 recall 不降(最好升)。</p>
   <p><b>不是什么</b>:不是新数据库/向量 RAG/人类 UI/重写记忆系统 —— 就是跑在现有 markdown 记忆上的一个 pass。</p>
   <label class="comment-label" for="c-mvp">你的留言(scope 合适吗?)</label>
   <textarea id="c-mvp" rows="2" maxlength="2000" placeholder="…"></textarea>

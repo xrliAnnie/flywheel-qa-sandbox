@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FLY-347 Run 教训库 PRD v4 — lint 定义写死</title>
+<title>FLY-347 Run 教训库 PRD v5 — lint 定义(每周)</title>
 <style>
   :root { --ink:#1d1d1f; --dim:#86868b; --blue:#007aff; --navy:#1a365d; --green:#34c759; }
   * { box-sizing:border-box; }
@@ -83,11 +83,11 @@
   <pre id="export-output"></pre>
 </div>
 
-<h1>Run 教训库 —— 长什么样(v4)</h1>
-<div class="sub">FLY-347 · PRD v4 · 你认可了 data-flow 图 → 这版把 lint 定义写死(多久一次 + 做什么)· 其余沿用 v3</div>
+<h1>Run 教训库 —— 长什么样(v5)</h1>
+<div class="sub">FLY-347 · PRD v5(定稿)· lint = 每周一次(+ 可手动)· data-flow 图沿用你认可的版本</div>
 
 <div class="tldr" data-key="tldr">
-  <p><b>这版只改一处:把 lint 讲清楚</b>(你 v3 要的)。lint = <b>多久一次</b>(攒到 N 条 / 每周 / 手动,可配)
+  <p><b>定稿:lint 讲清楚了</b>。lint = <b>多久一次</b>(就每周一次 + 可手动)
   + <b>做 4 件</b>(去重合并近似 / 退役过时被推翻 / 消解矛盾 / 更新 index)—— 见下面<b>第 3 节</b>。
   其余(库的四面、data-flow 图、图/向量仍不做)都沿用你认可的 v3。</p>
   <label class="comment-label" for="c-tldr">你的留言</label>
@@ -160,12 +160,12 @@
 <div class="card lint" data-key="lintdef">
   <h2><span class="n">3</span>⭐ lint 定义(写死 —— 你 v3 要讲清的)</h2>
 
-  <h3>① 多久 lint 一次(cadence,可配)</h3>
+  <h3>① 多久 lint 一次:就每周一次(+ 可手动)</h3>
   <p>两个触发<b>取先到者</b>,都能在 config 调,外加随时手动:</p>
   <div class="lintbox">
-    <b>· 攒到 N 条新 lesson</b>(默认 <b>N=10</b>)&nbsp;&nbsp;<b>或</b>&nbsp;&nbsp;<b>· 每周一次</b>(默认周频低频定时)
+    <b>· 就每周一次</b>(一个低频定时活动)
     &nbsp;&nbsp;<b>+ 随时可手动触发</b>(Lead 想清理时跑一次)。
-    <br><span style="color:#86868b;font-size:.85rem;">config 键如 <code>lesson_lint.every_n_lessons: 10</code> / <code>lesson_lint.cron: weekly</code>;不配用默认。</span>
+    <br><span style="color:#86868b;font-size:.85rem;">config 键如 <code>lesson_lint.cron: weekly</code>;不配用默认。Annie 定稿:去掉了「攒到 N 条」双触发,cadence 就是周频。</span>
   </div>
 
   <h3>② lint 时做什么(4 件,写死)</h3>
@@ -205,7 +205,7 @@
 
 <div class="card gap" data-key="gap">
   <h2><span class="n">6</span>差距 + 为什么值得</h2>
-  <p><b>现状</b>:教训靠人记得才写进 MEMORY(已有 123 feedback+31 qa,<b>已经在烂</b>:重复/只增不并);起活整份
+  <p><b>现状</b>:教训靠人记得才写进 MEMORY(已有 约 126 feedback + 一批 qa,<b>已经在烂</b>:重复/只增不并);起活整份
   注入靠运气。<b>这个做的</b>:写固定成 ship 一步、读固定成 onboard 一步、<b>lint 防它重蹈 MEMORY 越攒越烂</b>。
   省重复 debug 的时间 + 一个不会烂的库。诚实:仍是薄的一层流程+约定,不是新系统。</p>
   <label class="comment-label" for="c-gap">你的留言</label>
@@ -238,7 +238,7 @@
   <textarea id="c-decide" rows="3" maxlength="4000" placeholder="…"></textarea>
 </div>
 
-<div class="foot">改完点顶部「复制我的批注 JSON」→ 发回给 Honey Lemon · FLY-347 Run 教训库 PRD v4 · draft,未 ship/未建 issue</div>
+<div class="foot">改完点顶部「复制我的批注 JSON」→ 发回给 Honey Lemon · FLY-347 Run 教训库 PRD v5 · draft,未 ship/未建 issue</div>
 
 <script nonce="__CSP_NONCE__">
 (function () {
@@ -260,7 +260,7 @@
   }
   function payload() {
     return JSON.stringify(
-      { issue: ISSUE, kind: "annie-eg-prd-v4-shape-review", lean: lean(), comments: collect() },
+      { issue: ISSUE, kind: "annie-eg-prd-v5-shape-review", lean: lean(), comments: collect() },
       null, 2
     );
   }
