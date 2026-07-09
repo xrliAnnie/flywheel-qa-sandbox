@@ -261,6 +261,9 @@ const LEAD_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"permission_blocked",
 	"crash_loop",
 	"pane_hash_stuck",
+	// FLY-1048 (A4): pane-driven like the rest — reconcile resolves it when
+	// the error signature leaves the live region (see shouldResolveLead).
+	"pane_error_stalled",
 ]);
 
 export function correlationKeyFor(p: {

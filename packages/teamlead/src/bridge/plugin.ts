@@ -134,6 +134,7 @@ import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { runBootShaCheck } from "./boot-sha-check.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 // FLY-927 (Task 3.3): truthful stage wording for the three-stage stuck alert.
+import { resolveChatThreadId } from "./chat-thread-utils.js";
 import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
@@ -161,6 +162,7 @@ import {
 import {
 	buildPaneTail,
 	deliverSuspiciousReport,
+	formatSuspiciousThreadNote,
 	type SuspiciousOwner,
 	type SuspiciousReport,
 } from "./detection-suspicious.js";
@@ -4051,12 +4053,37 @@ export async function startBridge(
 		}
 		return null;
 	};
+	// FLY-1048 (A5, Codex code R1 #1): the quiet issue-thread leg. Late-bound
+	// holder — alertDiscordOps is constructed further down the boot sequence;
+	// until it is wired the leg silently skips (the guardrail lead_event leg is
+	// the reliable channel; the thread note is best-effort by contract).
+	const suspiciousThreadPoster: {
+		current: ((threadId: string, content: string) => Promise<void>) | null;
+	} = { current: null };
 	const deliverSuspicious = (report: SuspiciousReport): void => {
 		void deliverSuspiciousReport(
 			{
 				store,
 				runtimeRegistry: registry,
 				resolveOwner: resolveSuspiciousOwner,
+				// Pre-call guard (plan A5 / Codex design R1 #3): only post when an
+				// issue thread is actually bound AND the poster is wired — never
+				// call the thread leg with an undefined thread. Reason only, no
+				// mention, never the pane (formatSuspiciousThreadNote).
+				emitThreadNote: async (r, owner) => {
+					const poster = suspiciousThreadPoster.current;
+					if (!poster || !owner.issueId) return;
+					const lead = projects
+						.find((p) => p.projectName === owner.projectName)
+						?.leads.find((l) => l.agentId === owner.leadId);
+					const threadId = resolveChatThreadId(
+						store,
+						owner.issueId,
+						lead?.chatChannel,
+					);
+					if (!threadId) return;
+					await poster(threadId, formatSuspiciousThreadNote(r));
+				},
 			},
 			report,
 		).catch((err) =>
@@ -5312,6 +5339,11 @@ export async function startBridge(
 			.map((env) => process.env[env])
 			.filter((t): t is string => !!t);
 	});
+	// FLY-1048 (A5): wire the suspicious-report quiet thread leg now that the
+	// Discord ops exist (the deliverer skipped the leg while this was null).
+	suspiciousThreadPoster.current = async (threadId, content) => {
+		await alertDiscordOps.postToThread(threadId, content);
+	};
 	const accountSwitchRepair =
 		process.env.FLYWHEEL_ACCOUNT_SELF_HEAL === "1"
 			? makeAccountSwitchRepair({

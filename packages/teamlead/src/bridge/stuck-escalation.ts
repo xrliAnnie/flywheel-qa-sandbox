@@ -372,6 +372,9 @@ export function createStuckEscalationEmitter(
 			terminal_tail: evidence.tail,
 			stream_error_signature: evidence.stream_error_signature,
 			input_box_present: evidence.input_box_present,
+			// FLY-1048 (A3): surface the signature KIND so the Lead sees WHAT is
+			// looping (enoent_loop / not_logged_in / …), not just "stuck".
+			error_signature: evidence.errorSignature,
 			stage_context:
 				"FLY-195 stuck-runner escalation: capture the terminal (runner_terminal_capture) and judge. " +
 				"If genuinely stuck: ladder = mailbox wake first, wait, re-capture; still frozen at the input box → " +

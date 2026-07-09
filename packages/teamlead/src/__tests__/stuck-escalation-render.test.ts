@@ -110,6 +110,16 @@ describe("formatStuckEscalation (shared renderer)", () => {
 		expect(text).toContain("NOT a verdict");
 	});
 
+	it("FLY-1048 (A3): renders the error-signature KIND when present, never the raw line", () => {
+		const text = formatStuckEscalation(
+			envelope(stuckEvent({ error_signature: "enoent_loop" })),
+		);
+		expect(text).toContain("Error-Signature: enoent_loop");
+		// Absent → no signature line at all.
+		const plain = formatStuckEscalation(envelope(stuckEvent()));
+		expect(plain).not.toContain("Error-Signature:");
+	});
+
 	it("truncates a long tail (lines + chars bounded)", () => {
 		const longTail = Array.from(
 			{ length: 50 },

@@ -26,6 +26,9 @@ export interface HookPayload {
 	terminal_tail?: string;
 	/** Canonical `API Error: ... Stream idle timeout` signature seen in the tail. */
 	stream_error_signature?: boolean;
+	/** FLY-1048 (A3): error-signature KIND (error-signatures.ts) behind a
+	 * repeated-signature stuck candidate. Kind only — never the matched line. */
+	error_signature?: string;
 	/** Claude interactive input box visible at the bottom (idle-at-prompt). */
 	input_box_present?: boolean;
 	// action-specific fields (GEO-167)
@@ -190,6 +193,12 @@ export function formatStuckEscalation(
 		'(echo this fingerprint EXACTLY as "episode_fingerprint" in your stuck-disposition / recovery-nudge call)',
 		`Evidence: input_box_present=${e.input_box_present ?? "?"} | stream_error_signature=${e.stream_error_signature ?? "?"}`,
 	];
+	// FLY-1048 (A3): the error-signature KIND behind a repeated-signature
+	// candidate (enoent_loop / not_logged_in / …) — kind only, never the raw
+	// matched line (echo immunity, FLY-220).
+	if (e.error_signature) {
+		lines.push(`Error-Signature: ${e.error_signature}`);
+	}
 	if (e.terminal_tail) {
 		const tailLines = e.terminal_tail.split("\n").slice(-STUCK_TAIL_MAX_LINES);
 		let tail = tailLines.join("\n");
