@@ -1,13 +1,13 @@
 ---
 issue: FLY-1048
 phase: design
-phaseCursor: 3/6
-updated: 2026-07-09T07:33:42.345Z
-nextStep: brainstorm gate with Tadashi (blocking)
+phaseCursor: 4/6
+updated: 2026-07-09T07:38:30.267Z
+nextStep: research.md (820/823 interface + codex invocation precedents + consumed-ack)
 chunks: []
 pointers: {}
 ---
 
 # FLY-1048 progress
-**phase**: design (3/6)
-**next**: brainstorm gate with Tadashi (blocking)
+**phase**: design (4/6)
+**next**: research.md (820/823 interface + codex invocation precedents + consumed-ack)
