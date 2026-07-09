@@ -1,27 +1,30 @@
 # FLY-1020 progress ledger
 
-Phase: plan (PRD Codex-APPROVED, head 冻结, 待 Lead QA)
-Cursor: PRD/3 (Codex design-review 3 轮 APPROVED)
+Phase: plan (PRD Codex-APPROVED + 终审卡已发 · 待 Annie 终审)
+Cursor: 终审/1 (终审 HTML published, awaiting Annie sign-off)
 
 ## Chunks
 - [done] onboard + 核码 + homerail grounding
-- [done] co-eval v1→v6(6 轮),v6 Annie 拍板通过(三层设计;UI 拆出 FLY-1038)
+- [done] co-eval v1→v6(6 轮),v6 Annie 拍板(三层设计;UI 拆出 FLY-1038)
 - [done] 非 UI 详细 PRD:engineering/doc/FLY-1020-workflow-templates/prd.md
-- [done] Codex design-review R1(10 findings 全采纳)→ R2(5 findings 全采纳)→ R3 **APPROVED**(3 条非阻塞注记已折入)
-- [done] review 证据存档(codex-review-r1/r2/r3.md)+ 冻 head **f6f39c6e**
-- [wait] Lead QA PRD → 拆 build issue 交 Tadashi
-- [next] Lead QA 过 → build issue 拆分(§13 九步)
+- [done] Codex design-review R1(10)→R2(5)→R3 **APPROVED**;3 条非阻塞注记折入;证据存档 codex-review-r1/r2/r3.md
+- [done] **PRD 冻结 head f6f39c6e**(其后所有 commit 均未动 prd.md,已 git diff 核实)
+- [done] Lead QA PRD 过
+- [done] 终审 HTML(结论版,照 353 c5f664d6 风格)commit d6b45ac1 + publish + curl 自验
+- [wait] Lead QA 终审卡 → relay Annie 终审(§2 MVP 收敛需她拍板)
+- [next] Annie OK → 按 §13 九步拆 build issue 交 Tadashi
 
-## Codex review 逼出的实质修正(全部独立核过源码)
-1. auto-QA 是 **default-ON opt-out**(FLY-752),不是 opt-in —— 原 PRD 写反,被 types.ts:616 的 stale 注释误导(doc drift 已列入验收)
-2. **ship-gate 死锁**:evaluateQaShipGate 在 qa_required=1 时索要 passed auto_qa_record,而三段式内部 QA 只写 three_stage_verdict → 复用 qa_required 会永久挂死 ship。改为 workflow-aware 分支(workflow_qa_required/passed/exempt),遗留路径字节不变
-3. product skip-QA **不能**搭 onMainAwaitingReview(coordinator + 两个 sink 都只处理 main 行)→ 改为入口写 workflow_qa_exempt
-4. snapshot 必须**物化**(归一化 nodes/edges/skip/counters + workflow_run_id),不能只存 id/hash —— session_params 是 per-execution,handoff/retry 都起新 execution
-5. loop 条件源必须含 **founder_feedback_kickback**(保留其守卫),否则回归现有 founder 反馈修复路径
-6. MVP 收敛到内建 design/implement/qa;任意节点类型降为阶段 2(持久化/展示/finalizer/retry 全硬编码三角色)
-7. build 顺序重排:**ship-gate 证据契约先于 orchestrator**
-8. workflow_qa_passed 的 head **不得信 runner 自报**(qa-result 的 prHeadSha 默认取 runner git HEAD)→ 服务端 capture 或校验,不一致 fail-closed
+## Publish artifacts
+- 终审卡 (current): https://fw-reports-a53de2.vercel.app/r/41631d6833489c7238eaa3d9beee4b8f/ · msg 1524657811064361041
+- v6 co-eval 设计卡(设计阶段已完成,历史): .../bdcfb9ead0683e0c75c05cf6a0554443/
+
+## ⭐ 需 Annie 拍板的一条(终审卡 §2)
+MVP 只做内建 design/implement/qa;任意节点类型(创作视频 Research/生成视频)挪阶段 2。
+理由:三角色硬编码在 持久化/展示/ship收尾/retry/重启对账 五个生产面。
+**不是砍功能,是排期** —— 三层设计 + 注册表 seam 原样保留。
+
+## Codex 逼出的实质修正(全部独立核过源码)
+auto-QA 是 default-ON opt-out(非 opt-in,被 types.ts:616 stale 注释误导)· **ship-gate 死锁**(qa_required 索要 auto_qa_record,三段式只写 three_stage_verdict)· product skip-QA 搭不上 main-only 的 onMainAwaitingReview · snapshot 须物化(+workflow_run_id)· loop 须含 founder_feedback_kickback · MVP 收敛 · build 顺序:ship-gate 证据契约先于 orchestrator · workflow_qa_passed 的 head 服务端校验、不信 runner 自报
 
 ## Notes
-- 遵 Lead steering:不 ship、gate 别碰。PR #514 = co-eval doc 载体不 merge。
-- UI/dashboard → FLY-1038(cross-ref,不在本 PRD)。消费方 → FLY-353。scale → FLY-1022。
+- 遵 Lead steering:不 ship、gate 别碰。PR #514 = doc 载体不 merge。Annie 睡了不急。
