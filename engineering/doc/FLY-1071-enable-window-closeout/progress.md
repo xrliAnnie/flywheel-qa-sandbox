@@ -1,13 +1,13 @@
 ---
 issue: FLY-1071
 phase: implement
-phaseCursor: 1/7
-updated: 2026-07-09T22:55:52.073Z
-nextStep: W5 10min 稳定窗观察至 16:03;Task 2 W4 fresh login
+phaseCursor: 4/7
+updated: 2026-07-09T23:34:41.002Z
+nextStep: 等 Annie 跑 handoff stop(经 Tadashi)→ W4 fresh login → 探针③ → 演练 → 收口
 chunks: []
 pointers: {}
 ---
 
 # FLY-1071 progress
-**phase**: implement (1/7)
-**next**: W5 10min 稳定窗观察至 16:03;Task 2 W4 fresh login
+**phase**: implement (4/7)
+**next**: 等 Annie 跑 handoff stop(经 Tadashi)→ W4 fresh login → 探针③ → 演练 → 收口
