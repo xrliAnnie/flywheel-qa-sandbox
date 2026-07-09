@@ -1,13 +1,13 @@
 ---
 issue: FLY-1071
 phase: design
-phaseCursor: 2/4
-updated: 2026-07-09T22:19:27.481Z
-nextStep: research.md 完成;写 plan.md
+phaseCursor: 4/4
+updated: 2026-07-09T22:43:03.524Z
+nextStep: design docs 齐(codex R2 APPROVED);commit+push+phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-1071 progress
-**phase**: design (2/4)
-**next**: research.md 完成;写 plan.md
+**phase**: design (4/4)
+**next**: design docs 齐(codex R2 APPROVED);commit+push+phase_design_complete
