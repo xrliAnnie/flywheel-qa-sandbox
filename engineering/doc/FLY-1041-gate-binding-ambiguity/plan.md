@@ -42,8 +42,9 @@ Issue: FLY-1041 (https://linear.app/geoforge3d/issue/FLY-1041/founder-approval-b
 | `FLYWHEEL_SHIP_GATE_CARD` | Chunk 6 | 卡回到 10min 兜底 grace(现状) |
 | `FLYWHEEL_REPLY_TO_CARD` | Chunk 7 | 忽略 message_reference(现状) |
 | `FLYWHEEL_FOUNDER_APPROVAL_ACK` | Chunk 8 | 不点回执(现状) |
-| `FLYWHEEL_ATTRIBUTION_HOLD_ALIGN` | Chunk 5 | held 期间仍可绑定(现状) |
-| (无开关) | Chunk 3 tier2 归一化、Chunk 4 审计、Chunk 9 `--report` | 纯加法:归一化有表驱动测试钉边界;审计只写事件;`--report` 不传= 现状 |
+| `FLYWHEEL_ATTRIBUTION_HOLD_ALIGN` | Chunk 5(text + reaction + voice 全部写入源共用一个开关) | held 期间仍可写批准(现状) |
+| `FLYWHEEL_TIER2_PREFIX_NORM` | Chunk 3 | 不剥离语气前缀,「嗯ship」降级 Tier-3(现状;Codex R1 #2:确定性批准语义扩张必须有独立回滚) |
+| (无开关) | Chunk 4 审计、Chunk 9 `--report` | 纯加法:审计只写事件;`--report` 不传 = 现状 |
 
 读取方式沿用项目惯例:`process.env.X !== "0"`(GatePoller/factory 内 per-call 读,免重启翻转)。
 
@@ -104,8 +105,9 @@ export function isSupersededShipGate(q: {id, checkpoint, created_at},
 - 命中 → 复用 Chunk 1 的 `retireShipGate` + 同款审计事件(`by: "gate-poller-sweeper"`,event_id 同前缀 → insertEvent UNIQUE 天然去重)+ 本 tick `continue`(不 relay、不发卡)。
 - boundQuestion 读取:同一 CommDB 只读连接 `getMessageById(session.review_question_id)`(relay 循环已持有 dbPath)。
 - 零新 timer(内联既有循环,项目惯例)。
+- **接受的保守 tradeoff(Codex R1 #5,写入代码注释)**:sweeper 是保守兜底,不是完备保证 —— 同秒 re-fire 且主路径 retire 失败的交叠场景下,旧 gate 会 pending 到 TTL(安全侧:宁可多噪音,绝不误杀)。主路径(Chunk 1)按确切 qid retire,不受同秒影响,覆盖正常 re-fire 全部场景。**禁止**把判据放宽到 `>=`。
 
-**测试**:判据表驱动(同秒不 retire / 绑定行缺失不 retire / 新 gate 未 rebind 窗口不 retire / 正常 supersede retire);集成:pending 两个 ship gate + session 绑新 → 旧被 sweep + 不再 relay。
+**测试**:判据表驱动(同秒不 retire / 绑定行缺失不 retire / 新 gate 未 rebind 窗口不 retire / 正常 supersede retire / created_at 解析失败不 retire);集成:pending 两个 ship gate + session 绑新 → 旧被 sweep + 不再 relay。
 
 ### Chunk 3 — tier2 语气前缀归一化(Fix C)
 
@@ -117,14 +119,15 @@ export const TIER2_AFFIRMATION_PREFIXES: readonly string[] =
   ["嗯嗯", "嗯", "好的", "好", "哦", "行", "okk", "ok", "yes"];
 ```
 
-`matchTier2Approval` 修改(顺序敏感):
+`matchTier2Approval` 增可选参数 `opts?: { prefixNorm?: boolean }`(纯模块不读 env;调用方 `evaluateTextSource` per-call 读 `FLYWHEEL_TIER2_PREFIX_NORM !== "0"` 传入 —— Codex R1 #2:确定性批准语义扩张必须有独立 kill-switch,关闭即字节兼容现状)。顺序敏感:
+
 1. 结构复杂度检查(不动,在最前);
 2. deny token 检查(不动,剥离**前**跑一遍);
-3. 新增:循环剥离前导语气前缀(每次剥一个、按最长优先;CJK 无空格粘连也剥,如 "嗯ship"→"ship"、"好 ship"→"ship");
+3. 新增(prefixNorm 时):循环剥离前导语气前缀(每次剥一个、按最长优先;CJK 无空格粘连也剥,如 "嗯ship"→"ship"、"好 ship"→"ship");
 4. deny token 检查**再跑一遍**(剥离后残句可能暴露 hedge);
 5. 引用校验 + 整句 allowlist(不动)。
 
-**测试(表驱动追加)**:`嗯ship`→approve;`嗯嗯 可以`→approve;`好ship`→approve;`嗯 先别ship`→downgrade(deny);`嗯?ship`→downgrade(结构);`okk`(剥完为空)→downgrade;`嗯ship FLY-999`(错引用)→downgrade;既有全部用例不回归。
+**测试(表驱动追加)**:`嗯ship`→approve;`嗯嗯 可以`→approve;`好ship`→approve;`嗯 先别ship`→downgrade(deny);`嗯?ship`→downgrade(结构);`okk`(剥完为空)→downgrade;`嗯ship FLY-999`(错引用)→downgrade;**`FLYWHEEL_TIER2_PREFIX_NORM=0` 时 `嗯ship`→downgrade(reverse-compat sentinel)**;既有全部用例不回归。
 
 ### Chunk 4 — 归因全链审计(Fix C 观测底座)
 
@@ -135,14 +138,33 @@ export const TIER2_AFFIRMATION_PREFIXES: readonly string[] =
 
 **测试**:handler 单测断言每条路径(narrow 0/1/N、tier2 命中、tier3 各 verdict、runner_failed)落对应事件;deliverer 集成测事件写到 store。
 
-### Chunk 5 — 归因与 review-hold 对齐(Fix B 一致性)
+### Chunk 5 — 归因与 review-hold 对齐(Fix B 一致性;Codex R1 #1 Critical:覆盖**全部** founder 批准写入源)
 
-- `plugin.ts` 组合根:`makeFounderShipApprovalCallback` 新增 dep `isHeld?: (executionId) => boolean`,生产接 `(id) => isReviewHeld(store, store.getSession(id))`。
-- `founder-ship-approval-handler`:A-2 收窄得到唯一 gate 后、评估信号**前**:`if (holdAlignEnabled && deps.isHeld?.(gate.executionId)) → auditSink("founder_ship_attribution", {stage:"held_declined"}) → return null`(落回 WAKE-only;Chunk 8 对此 outcome 点 ❓)。
-- 效果:codex/QA 未绿时 founder 批准不再被静默写入(910 的 05:47:41 翻转即此类);她会收到 ❓ + 卡文案解释,绿了之后卡会重新到位(hold 释放 → Chunk 6 发卡)。
-- kill-switch `FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0` 回到现状。
+审计发现能调用 `writeGateResponseAndRunPostWrite` 写 `{approved:true}` 的 founder 侧入口有 **3 个**:文本归因(founder-ship-approval-handler)、✅ reaction(founder-reaction-approval-handler,gate-poller.ts:2411-2488 的 reaction pass 无 hold 检查)、voice 批准(voice-routes.ts:419-431)。hold 对齐必须三处同覆盖,否则 text 挡住了、✅/voice 仍可推进 held session(与 `isReviewHeld` 的 merge_block「所有 founder surface 全 hold」契约冲突)。
 
-**测试**:held session(codex record pending)+ founder "ship" → 不写 response、落 held_declined、WAKE-only 照旧;un-held → 照常写入;kill-switch=0 → held 也写入(现状 sentinel)。
+- **共享守卫**(放 `auto-qa-held.ts`,不动 write-gate-response.ts 红线):
+
+```ts
+/** FLY-1041: shared pre-write hold guard for EVERY founder approval source. */
+export function founderApprovalHoldGuard(
+  store: AutoQaHeldStore & CodexGateStore,
+  session: QaHeldSession | undefined,
+  env = process.env,
+): boolean {  // true = decline (held)
+  if (env.FLYWHEEL_ATTRIBUTION_HOLD_ALIGN === "0") return false;
+  return isReviewHeld(store, session, env);
+}
+```
+
+- **3 个调用点**(各自在评估/写入前调用,拒绝时落 `held_declined` 审计 + 各自的现状 fallback):
+  1. `founder-ship-approval-handler`:A-2 收窄得唯一 gate 后、评估信号**前** → decline 时 return null(WAKE-only;Chunk 8 点 ❓)。**明确语义(Codex R2 注记 3,刻意保守)**:held 期间 founder 文本的 approve **和 reject/feedback 都**不落 response、统一 WAKE-only,直到 hold 解除 —— 测试钉住这一点;
+  2. `founder-reaction-approval-handler` **内部**(Codex R2 注记 2:守卫放在「reaction source 检测到 founder ✅ 之后、写 response 之前」,不放 gate-poller 预调用侧 —— 否则无 ✅ 也会刷 held_declined 噪音):✅ 命中且 held → 不写、审计;**测试:held + 无 ✅ → 零 held_declined 事件;held + ✅ → 恰一条 held_declined 且无 response**;
+  3. `voice-routes.ts` 批准分支:held → 拒绝写入、返回明确错误文案(voice 通道自身回执)。
+- `plugin.ts` 组合根:统一注入 `isHeld = (id) => founderApprovalHoldGuard(store, store.getSession(id))`。
+- 效果:codex/QA 未绿时 founder 批准不再被任何通道静默写入(910 的 05:47:41 翻转即此类);text/reply 通道她收 ❓ + 卡文案解释,hold 释放后卡重新到位(Chunk 6)。
+- 单一 kill-switch `FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0` 整组回现状(Codex R1 #1 建议)。
+
+**测试**(×3 写入源 ×3 hold 形态 = 矩阵):held(codex pending / QA running / merge_block)+ founder 批准(text、✅、voice)→ 全部不写 response、落 held_declined;un-held → 三源照常写入;kill-switch=0 → held 也写入(现状 sentinel)。
 
 ### Chunk 6 — ship gate 卡转正(Fix B 载体及时性)
 
@@ -155,14 +177,15 @@ export const TIER2_AFFIRMATION_PREFIXES: readonly string[] =
 
 ### Chunk 7 — reply-to-card 确定性绑定(Fix B 核心)
 
-- `founder-reply-deliverer.ts`:`RawDiscordMessage` 增可选 `message_reference?: { message_id?: string }`(GET 返回已含,research §2.3)。
-- `processFounderMessage` ship 分支前:若 `replyToCardEnabled && msg.message_reference?.message_id`,对每个 matching ship gate 用注入的 `readCurrentBinding(executionId, questionId, session.pr_head_sha)`(复用 ✅ reaction 的 reader,plugin.ts 已有装配形态)查 current binding;`binding.gateMessageId === message_reference.message_id` 命中者 → **只对该 gate** 走归因(shipGates 收窄为 [命中 gate],A-2 收窄自然通过),并给 tier3 传 `replyToCard: true`。
+- `founder-reply-deliverer.ts`:`RawDiscordMessage` 增可选 `type?: number` 与 `message_reference?: { type?: number; message_id?: string; channel_id?: string }`(批量 GET 返回已含,research §2.3)。
+- **Reply 判定(Codex R1 #3:必须区分真 Discord reply 与其它 reference 形态)**:仅当 `msg.type === 19`(REPLY)且 `message_reference.type` 为 0/缺省(DEFAULT,排除 forward 等)且 `message_reference.channel_id === ctx.threadId` 时才视为 reply-to-card 候选 —— pin/crosspost/forward 携带的 reference 一律走现状路径。
+- `processFounderMessage` ship 分支前:若 `replyToCardEnabled && 上述 reply 判定通过`,对每个 matching ship gate 用注入的 `readCurrentBinding(executionId, questionId, session.pr_head_sha)`(复用 ✅ reaction 的 reader,plugin.ts 已有装配形态)查 current binding;`binding.gateMessageId === message_reference.message_id` 命中者 → **只对该 gate** 走归因(shipGates 收窄为 [命中 gate],A-2 收窄自然通过),并给 tier3 传 `replyToCard: true`。
 - `founder-ship-approval-classifier.buildPrompt`:输入增可选 `replyToCard?: boolean`,为真时 prompt 增一行:"This message is a DIRECT Discord reply to the ship-approval card for this exact gate — treat short affirmations (ok / okk / 嗯 / 好) as approval of THIS gate unless hedged or negative."(reject/unclear 规则不放松)。
 - 命中卡但文本判 reject → 照现有 reject 路径写 feedback;判 unclear → WAKE-only + Chunk 8 ❓。
 - 对**非 ship** question 的 reply-to-card:不做(卡只为 ship gate 存在)。
 - `message_reference` 指向非卡消息(如引用别人聊天)→ 无 binding 命中 → 完全走现状路径(字节兼容)。
 
-**测试**:reply-to-card + "okk" → tier3 收到 replyToCard 上下文(mock classifier 断言 prompt)→ approve → response 写入;reply 指向无关消息 → 现状路径;binding 缺失/head 不匹配 → 现状路径;kill-switch=0 → 忽略 reference。
+**测试**:reply-to-card + "okk" → tier3 收到 replyToCard 上下文(mock classifier 断言 prompt)→ approve → response 写入;reply 指向无关消息 → 现状路径;binding 缺失/head 不匹配 → 现状路径;**负向(Codex R1 #3)**:`type !== 19` 但 reference.message_id 恰好等于卡 id(forward 形态)→ 现状路径;`reference.channel_id` ≠ thread → 现状路径;kill-switch=0 → 忽略 reference。
 
 ### Chunk 8 — founder 回执 reaction(Fix C,Annie 痛点核心)
 
@@ -187,9 +210,10 @@ export async function reactToFounderMessage(args: {
 
 ### Chunk 9 — `ask --report`(Fix D 降噪)
 
-- `db.ts`:幂等 `ALTER TABLE messages ADD COLUMN kind TEXT`(沿 L148 先例吞 duplicate column);`insertQuestion(from, to, content, opts?)` 增 `opts.kind?: "report"`;`Message` 类型加 `kind?: string | null`。
+- `db.ts`:幂等 `ALTER TABLE messages ADD COLUMN kind TEXT`(沿 L148 先例吞 duplicate column);`insertQuestion(from, to, content, opts?)` 增 `opts.kind?: "report"`。
+- `types.ts`(Codex R1 #4:补上类型面):`Message` 与 `PendingQuestion` 均加 `kind?: string | null`(getPendingQuestions 返回整行,漏了会逼出 any cast)。
 - `ask.ts` + `index.ts` CLI:`--report` flag → kind='report';返回值/marker 行为不变(Bridge `runner_question` relay 事件照发 —— Lead 仍收到汇报)。
-- 排除点(唯一):`gate-poller.ts founderReplyDeliverPass` 组装 thread questions 时 `if (q.kind === "report") continue;` —— founder 回复候选集不含汇报;`relayToLead` / lead-pending nudge(checkpoint==='question' 才触发,汇报无 checkpoint)/ `pending` CLI 全不动。
+- **排除范围明确声明(Codex R1 #4)**:`kind='report'` **只**从 founder 回复候选集(`gate-poller.ts founderReplyDeliverPass` 组装 thread questions 时 `if (q.kind === "report") continue;`)排除;`relayToLead`、lead-pending nudge(checkpoint==='question' 才触发,汇报无 checkpoint)、`pending` CLI、liveness/stuck 巡检等一切 pending-question 语义**刻意不变** —— 汇报在传输层仍是 question,只是 founder 永远不会被绑到它上。
 - `Blueprint.ts:1344` LEAD REPORT-BACK 文本:DONE 汇报命令加 `--report`(同 PR 落地;旧 dist + 旧提示词自洽,同 FLY-217 生效模型:merge + 生产 git pull)。
 - 旧数据:存量无 kind 的 DONE questions 不受影响(72h 自然过期);不做回填。
 
@@ -205,7 +229,7 @@ Lead 点名的 5 类,映射到测试(①-④ 在各 chunk 已建,此处集成串
 | ② | "嗯ship" 语气前缀 → tier2 确定性命中 | tier2 表驱动(Chunk 3) |
 | ③ | reply-to-card → 绑上 | Chunk 7 集成 |
 | ④ | --report 汇报 → 排除出候选集 | Chunk 9 集成 |
-| ⑤ 负向 | 非 founder id 发 approve → 拒(handler 身份闸 + evaluateTextSource 身份闸,既有测试保持绿);旧批准对新 head → verify-approval `pr_head_sha_mismatch` 照旧(verify-approval 既有测试全绿 = 未动的直接证据);retire 绝不动已答复 gate(Chunk 1 WHERE 双保险测试);sweeper 同秒/窗口期不误杀(Chunk 2) | 各处 |
+| ⑤ 负向 | 非 founder id 发 approve → 拒(handler 身份闸 + evaluateTextSource 身份闸,既有测试保持绿);旧批准对新 head → verify-approval `pr_head_sha_mismatch` 照旧(verify-approval 既有测试全绿 = 未动的直接证据);retire 绝不动已答复 gate(Chunk 1 WHERE 双保险测试);sweeper 同秒/窗口期不误杀(Chunk 2);held session 下 text/✅/voice 三源批准全被拒 + 审计(Chunk 5 矩阵);forward 形态 reference 不当 reply(Chunk 7) | 各处 |
 
 收口:`pnpm lint` 全仓 + 受影响包全测 + reverse-compat sentinel(所有 kill-switch=0 时关键路径行为与 main 一致的对照测试,项目惯例)。
 
@@ -214,7 +238,7 @@ Lead 点名的 5 类,映射到测试(①-④ 在各 chunk 已建,此处集成串
 独立 QA session(不是本 runner 自验),529 Room 真 Discord:
 
 1. **场景 A(核心复现)**:真 runner 走到 approve_to_ship gate → 模拟 re-fire(第二次 gate + complete --route needs_review)→ 断言 comm.db 旧 gate 立即出 pending + `ship_gate_superseded` 事件 → founder(测试号,QA room 的 canonicalFounderId)thread 里发「嗯ship」→ 绑上(response 落新 qid)+ 她消息被点 ✅ → `verify-approval` 对新 head 返回 approved:true(QA room codex gate 按其 .env 配置)。
-2. **场景 B(卡 + 回复卡 + ✅)**:un-held gate 15s 内出卡 → 分别验证 (a) 回复卡「okk」绑上、(b) 点卡 ✅ 绑上;held(伪造 codex record pending)→ 不出卡、founder「ship」→ 不写批准 + ❓ 回执 + held_declined 审计。
+2. **场景 B(卡 + 回复卡 + ✅)**:un-held gate 15s 内出卡 → 分别验证 (a) 回复卡「okk」绑上、(b) 点卡 ✅ 绑上;held(伪造 codex record pending)→ 不出卡、founder「ship」→ 不写批准 + ❓ 回执 + held_declined 审计,**且点 ✅ 同样不写批准**(Chunk 5 全源覆盖)。
 3. **场景 C(降噪)**:runner 发 3 条 `ask --report` 汇报 + 1 个 ship gate → founder 短语批准 → 直接绑 gate,零 `founder_reply_ambiguous`。
 4. **场景 D(非法路径照拦)**:非 founder 账号发「ship」→ 无 response、无 ✅;head 漂移后旧批准 → verify-approval mismatch 拒。
 5. 证据按项目 QA 惯例留全(pane 抓屏 + DB 快照 + 事件账本),QA 报告绑 PR head。
@@ -224,6 +248,7 @@ Lead 点名的 5 类,映射到测试(①-④ 在各 chunk 已建,此处集成串
 | 文件 | 改动 |
 |---|---|
 | `packages/flywheel-comm/src/db.ts` | `kind` 列迁移;`insertQuestion` opts.kind;`retireShipGate()` |
+| `packages/flywheel-comm/src/types.ts` | `Message` / `PendingQuestion` 加 `kind?`(Codex R1 #4) |
 | `packages/flywheel-comm/src/commands/ask.ts` + `src/index.ts` | `--report` flag |
 | `packages/teamlead/src/bridge/event-route.ts` | rebind 后 retire 旧 gate + 审计 |
 | `packages/teamlead/src/bridge/gate-poller.ts` | sweeper(relay 循环内);ship 卡 grace 分流;deliver pass 排除 report |
@@ -232,6 +257,9 @@ Lead 点名的 5 类,映射到测试(①-④ 在各 chunk 已建,此处集成串
 | `packages/teamlead/src/bridge/approval-signal/text-approval-source.ts` | evidence 上浮(stage/reason) |
 | `packages/teamlead/src/bridge/approval-signal/founder-ship-approval-handler.ts` | auditSink;isHeld 对齐;reply-to-card 单 gate 收窄入参 |
 | `packages/teamlead/src/bridge/approval-signal/founder-ship-approval-factory.ts` | isHeld / auditSink 透传;hold-align kill-switch |
+| `packages/teamlead/src/bridge/approval-signal/founder-reaction-approval-handler.ts`(或其 gate-poller 调用侧) | ✅ 路径接共享 hold 守卫(Codex R1 #1) |
+| `packages/teamlead/src/bridge/voice-routes.ts` | voice 批准分支接共享 hold 守卫(Codex R1 #1) |
+| `packages/teamlead/src/bridge/auto-qa-held.ts` | `founderApprovalHoldGuard()` 共享守卫 |
 | `packages/teamlead/src/bridge/approval-signal/founder-ship-approval-classifier.ts` | replyToCard prompt 上下文 |
 | `packages/teamlead/src/bridge/approval-signal/founder-ack.ts`(新) | 回执 PUT |
 | `packages/teamlead/src/bridge/founder-thread-notifier.ts` | 卡文案指引句 |
@@ -239,7 +267,7 @@ Lead 点名的 5 类,映射到测试(①-④ 在各 chunk 已建,此处集成串
 | `packages/edge-worker/src/Blueprint.ts` | REPORT-BACK 文本加 `--report` |
 | 各对应 `__tests__` | Chunk 1-10 测试 |
 
-**不动**:`verify-approval.ts`、`respond.ts`、`write-gate-response.ts`、`workflow-fsm.ts`、`DirectEventSink.ts`(rebind 不经它,R4 契约)、`founder-reaction-approval-handler.ts`(✅ 路径原样受益)。
+**不动**:`verify-approval.ts`、`respond.ts`、`write-gate-response.ts`(hold 守卫放调用侧,不进这个红线文件)、`workflow-fsm.ts`、`DirectEventSink.ts`(rebind 不经它,R4 契约)。
 
 ## 6. 部署与回滚
 
