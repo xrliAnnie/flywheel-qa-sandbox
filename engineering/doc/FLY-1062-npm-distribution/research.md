@@ -136,3 +136,12 @@ src(→dist 原样镜像)里是**裸包名 import**(`from "flywheel-core"` 等)�
 | 9 | payload 端点不可用 = 客户装不了(单点) | 托管选高可用底座(FLY-203 模式);薄壳给诚实话术 + 重试;端点健康监控进 runbook |
 | 10 | key 走漏进日志/journal/转人工摘要 | secret 红线机械保证(§10)+ scan_for_secrets 补 license-key pattern + hermetic 注入测试 |
 | 11 | payload tarball 体积(几十 MB)传输边角 | 实现期真机验大文件下载 + 断点重试;sha256 校验兜完整性 |
+
+## 12. 交接复核注记(post-OOM,2026-07-09,successor design runner)
+
+前任 design runner(852c70ef)死于 OOM 后,接棒 runner 对本设计做了**独立增量审计**(未读本三件套先审代码,结论回并):
+
+1. **PKG_ROOT 布局合同对两处最硬的路径推导逐字成立**(独立推演复核,与 §0/P0 冒烟③④一致):
+   - `packages/teamlead/src/bridge/run-infra.ts:139-155` — repo root = `import.meta.url` 上跳 4 级 + `agents/generic-executor.md` 哨兵校验(附 `FLYWHEEL_REPO_ROOT` env 覆盖 seam)。PKG_ROOT 形态下 `node_modules/flywheel-teamlead/dist/bridge` 上跳 4 级恰落 PKG_ROOT,`agents/` 物理在根 → 哨兵命中,与 monorepo 形态(`packages/teamlead/dist/bridge` 上跳 4 级 = repo 根)同构;
+   - `packages/edge-worker/src/Blueprint.ts:945` — commCliPath = 从 edge-worker dist 相对解析 `../../flywheel-comm/dist/index.js`。两形态同构成立的前提 = **内嵌目录名与包名一致且与 packages/ 目录同深度**(`node_modules/flywheel-comm` ↔ `packages/flywheel-comm`),此为 §0 布局合同的隐含不变式,P0 冒烟①②已覆盖。
+2. 复核结论:**零设计变更**;审计其余发现(git clone 位点、provisioner build 链、native 依赖面、skills/plugin 两个相邻 fetch 洞)均已被 §1-§5 覆盖且本文更完整。

@@ -45,6 +45,8 @@ FLY-910 PRD §「一条 command 具体形态」本来就把 `curl … | sh` vs `
 - **prompts/copy/persona**(Buddy 话术、lead-rules、brain-prompts):运行时必需的明文文本,交付即可读。**这是暴露面里最接近产品 IP 的部分**——渠道选项(§5)的差异主要就在谁能拿到这些。
 - **绝不交付**:src/、__tests__/、doc/(全部内部设计文档)、git history、fixtures 里的任何真实数据、.env/token 类(打包时过 `scan_for_secrets` 强制门)。
 
+**一句话边界**:Node/bash 产品不存在真·源码保护——bash 与编译后 JS 天然可读。本层真正保证的是:客户拿不到 TS 源码、git 历史、内部文档,全程零仓库访问凭证;防的是「客户必须碰仓库」与「整仓(含历史与内部资料)落入客户手里」,不是「客户读不懂交付产物」。Annie 在 A/B 渠道选项中已知情此边界,并据此拍 B(话术/prompts 只有持 key 客户可得)。
+
 ## 4. 方案空间:分发形态(三层拆解)
 
 把问题拆成三层,每层独立可换:
