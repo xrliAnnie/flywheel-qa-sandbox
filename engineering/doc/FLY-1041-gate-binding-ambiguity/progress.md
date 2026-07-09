@@ -1,13 +1,13 @@
 ---
 issue: FLY-1041
 phase: implement
-phaseCursor: 9/10
-updated: 2026-07-09T12:16:18.709Z
-nextStep: "Chunk 10: full test suites + lint + red-line diff assertion"
+phaseCursor: 10/10
+updated: 2026-07-09T12:35:09.848Z
+nextStep: triage remaining 10 teamlead failures (TMPDIR-neutral run) → codex review → PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-1041 progress
-**phase**: implement (9/10)
-**next**: Chunk 10: full test suites + lint + red-line diff assertion
+**phase**: implement (10/10)
+**next**: triage remaining 10 teamlead failures (TMPDIR-neutral run) → codex review → PR
