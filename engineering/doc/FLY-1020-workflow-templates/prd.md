@@ -3,7 +3,7 @@
 Issue: FLY-1020 (https://linear.app/geoforge3d/issue/FLY-1020/low-level-dag-per-task-category-workflow-templates-lightoverridable)
 日期: 2026-07-08
 基于: `product/doc/FLY-1020-workflow-templates/design-source.md` + co-eval HTML v6(Annie 拍板)+ `agentmd-vs-dag.html`(§2 深挖,Annie converged)· Codex design-review R1→R3
-Status: draft(R1+R2+R3 已折入;R4 七条(frontmatter 收窄 / generic output 契约 / node-id substrate 8 面 / 严格 loader+内容寻址 / Blueprint 门控先行 / 两道 gate / schema 规则)已折入 → 待 Codex R5)
+Status: draft(R1+R2+R3 APPROVED;R4 七条 + R5 三条(generic output 生产者/写入/replay 契约、§5.2 收窄残留、§11 8-surface 对齐)已折入 → 待 Codex R6 确认)
 
 > co-eval 收敛后的**建造蓝图**。放**结论 + 机制**(eng 照着能建),不堆 Q&A;过程在 design-source.md。
 > **UI / dashboard 不在本 PRD** —— 拆到 **FLY-1038**(§12)。
@@ -211,7 +211,7 @@ skip:
 
 ### 5.2 分层不是提案,是**代码现状**(§2.7)
 
-`readAgentFile` 纯文本注入 + **全仓无 frontmatter 解析** ⇒ agent.md 的 `model:`/`skills:`/`permissionMode:` **全 inert** ⇒ **agent.md 天然只承载 WHO;模型/技能/能力只能来自注册表。** 本 PRD 只是把「另一层」显式化为一等公民。
+`readAgentFile` 纯文本注入 + **没有任何 Runner agent.md 派发路径消费其 frontmatter**(§2.7 精确表述,非「全仓无解析器」)⇒ Runner agent.md 的 `model:`/`skills:`/`permissionMode:` **在派发路径上 inert** ⇒ **agent.md 天然只承载 WHO;模型/技能/能力只能来自注册表。** 本 PRD 只是把「另一层」显式化为一等公民。
 
 ### 5.3 ⭐ 由此得到的**物理安全性质**
 
@@ -244,11 +244,18 @@ nodes:
 现有 completion 是**路由制、硬编码**:`flywheel-comm complete` 只认 `auto_approve` / `needs_review` / `blocked` / `no_code` / `pr_handoff` / `phase_design_complete`(`complete.ts:30`,`:101`);两个 sink + marker reconciler 镜像这套(`event-route.ts:832`,`DirectEventSink.ts:355`,`complete-marker-reconciler.ts:78`)。**`generic` 节点今天没有「怎么产出、下游怎么读」的定义。**
 
 **MVP 契约(read-only / doc-producing generic)**:
-- `generic` 节点经**已有的安全 route** 收尾:**默认 `no_code`**(不写共享分支、不开 PR)。
-- 产出落 **`workflow_node_outputs[node_id]`**(snapshot / issue-level 持久化的结构化 payload),**下游节点从这里读**,不经 PR/branch。
-- 若某模板确实要 `generic` 往共享分支写 doc/证据 —— 那 `shared_branch_writer=false` 就是错的默认,**必须在该模板实例显式声明能力**,并相应给它 writer 的 output route。MVP 只交付 **read-only / no_code 形态**;shared-branch generic = 阶段 2。
+- `generic` 节点经**已有的安全 route** 收尾:**默认 `no_code`**(已认可 route,marker 可 replay,`complete.ts` + `complete-marker-reconciler.ts:5-7`;不写共享分支、不开 PR)。
+- 产出落 **`workflow_node_outputs[node_id]`**,**下游节点从这里读**,不经 PR/branch。
 
-注册表 / snapshot 因此需字段:`completion_route`(默认 `no_code`)· `output_mode`(如 `node_output_payload`)· `output_visibility` · `handoff_payload`。
+⭐ **生产者 / 写入 / replay 契约(R5#1 —— 补齐;不能靠 completion payload)**:
+- **写入通道独立于 `complete`**:今天 `complete` 的 payload 只有自由字段 `summary`(`complete.ts:72`/`:172`-`:178`),**塞不下结构化 node output**。因此 `generic` 节点用**一条专门的 runner→Bridge 写入**(新 `flywheel-comm workflow-output --node-id <id> --payload <...>`,或 mailbox 事件),把结构化产出写进 **issue-level `workflow_node_outputs[node_id]`**(与 snapshot 同处、issue 为主键、带 `workflow_run_id`)。
+- **顺序 = 先写产出、再 `complete`**:runner 先写 `workflow_node_outputs`,**成功后**才 `complete --route no_code`。Bridge 侧 **completion 前校验**:声明了 output 的 generic 节点若无对应 `workflow_node_outputs[node_id]` → **fail-closed**(不推进 handoff)。
+- **replay(crash 安全)**:`workflow_node_outputs` 是 issue-level 持久态,**不依赖在途事件**;Bridge 重启 / marker replay 时,下游节点从持久表读,**与 completion marker 解耦**(completion marker 只推状态,不承载 output —— 正是 R5#1 指出的:双 sink + marker 只能推状态)。
+- **幂等**:`workflow_node_outputs[node_id]` 按 `(workflow_run_id, node_id)` upsert;重复写覆盖同一 key,不产生歧义。
+
+- 若某模板确实要 `generic` 往共享分支写 doc/证据 —— 那 `shared_branch_writer=false` 就是错的默认,**必须在该模板实例显式声明能力** + 给它 writer 的 output route。MVP 只交付 **read-only / no_code 形态**;shared-branch generic = 阶段 2。
+
+注册表 / snapshot 因此需字段:`completion_route`(默认 `no_code`)· `output_mode`(如 `node_output_payload`)· `output_visibility` · `produces_output`(bool,用于 completion 前的 output-present 校验)。
 
 ### 5.7 ⭐ Blueprint capability 门控**必须先于** `generic` dispatch(R4#5)
 
@@ -419,7 +426,7 @@ pipeline:
 5. loop / skip 条件域**受限枚举**,不引入自由表达式 DSL。
 6. **DAG 永不交给 Claude**:每个节点只把**一个 agent.md 的角色文本**交给它。
 
-> **「为什么不开放任意节点类型」的准确答案**:不是不能扩展,是**成本形状**不同 —— 任意具名类型 = **per-type** 付 §2.3 那 5 个面的账;`generic` 节点 = **一次性**付账,之后任何 agent.md 零代码可用,**且天然更安全**(§5.3)。
+> **「为什么不开放任意节点类型」的准确答案**:不是不能扩展,是**成本形状**不同 —— 任意具名类型 = **per-type** 付 §2.3b 那 8 个面的账;`generic` 节点 = **一次性**建 substrate,之后任何 agent.md 零代码可用,**且天然更安全**(§5.3)。
 
 ---
 
@@ -463,6 +470,8 @@ pipeline:
 | S12 | ⭐ `generic` 节点的 `agent_file` 指向 repo 外 / symlink 逃逸 / 不存在 | **走严格 loader → fail-closed**(不 warn+fallback 到通用实现提示词,§5.4) |
 | S13 | ⭐ 全 write/ship capability=false 的 `generic` 节点 | **不**收到 branch/PR/approve/ship 指令;有明确 completion 命令(§5.7) |
 | S14 | ⭐ `generic` 节点落库为一个未被扩枚举的 role | **fail-closed**,**绝不静默归一成 `main`**(§2.3b 陷阱);legacy 三角色仍逐字兼容 |
+| S15 | ⭐ `produces_output` 的 `generic` 节点未写 `workflow_node_outputs` 就 `complete` | **completion fail-closed**,不推进 handoff(§5.6) |
+| S16 | ⭐ 写完 `workflow_node_outputs` 后 Bridge 重启 / marker replay | 下游节点仍能从 issue-level 持久表读到产出(与 completion marker 解耦,§5.6) |
 
 ---
 
@@ -476,7 +485,7 @@ pipeline:
 2. Entry 选模板 + 持久化**物化 workflow snapshot**(§7,含**内容寻址的 agent.md**);copy-forward 契约;修 retry `shareParentBranch` 缺口。
 3. ⭐ **node-id 生命周期 substrate**(§3.1 + §2.3b 全 8 面):承载字段(`workflow_node_id`,与 legacy role 解耦)· **未知 role/id fail-closed 不静默归一** · role 枚举 / phase-active 查询 / 反查 / 展示+refresher / **TURN recovery 优先级** / completion sinks / marker replay / finalizer / retry / 启动对账。
 4. ⭐ **Ship-gate 证据模型**(§8):`workflow_qa_*` + workflow-aware 分支 + 遗留 sentinel + **权威 head capture/校验**。
-5. ⭐ **generic output / completion 契约**(§5.6):`workflow_node_outputs` + `completion_route`(默认 `no_code`)+ 严格 `agent_file` loader(fail-closed,§5.4)。
+5. ⭐ **generic output / completion 契约**(§5.6):独立 output 写入通道(`workflow-output`,先写产出再 `complete`)+ issue-level `workflow_node_outputs`(按 `(workflow_run_id, node_id)` upsert,与 completion marker 解耦、可 replay)+ completion 前 output-present 校验 fail-closed + `completion_route`(默认 `no_code`)+ 严格 `agent_file` loader(fail-closed,§5.4)。
 6. ⭐ **Blueprint capability 门控**(§5.7,**必须先于任何 generic dispatch**):去 `isDesignPhase/isImplementPhase/isQaPhase` 硬分支,改读注册表 capability。
 
 **Gate B — 行为迁移 + 开跑(Gate A 全绿后)**:
