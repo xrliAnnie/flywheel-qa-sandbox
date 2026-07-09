@@ -121,7 +121,6 @@ import {
 	createAlertRateLimiter,
 	rateLimitPerMinuteFromEnv,
 } from "./alert-rate-limiter.js";
-import { founderApprovalHoldGuard } from "./auto-qa-held.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
@@ -129,6 +128,7 @@ import type { GateResponseDb } from "./approval-signal/write-gate-response.js";
 import { loadQaConfigByProject } from "./auto-qa-config-source.js";
 import { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { AutoQaEffects } from "./auto-qa-effects.js";
+import { founderApprovalHoldGuard } from "./auto-qa-held.js";
 import { resolveAutoQaPolicy } from "./auto-qa-policy.js";
 import { AutoContinueArmer } from "./autocontinue-armer.js";
 import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
