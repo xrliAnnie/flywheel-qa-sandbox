@@ -28,7 +28,7 @@ flowchart TD
   SH -->|"--print + persona"| BR["headless brain(用户订阅)<br/>描述→{意图/Team/系统} JSON · 自由问答"]
   SC --> J[("setup-state.json v2<br/>同一 state 根 + 安全信封")]
   SC --> ENV[("~/.flywheel/.env 0600<br/>secret 唯一落点")]
-  SH --> CAP["M6 Captain 预览(claude-lead.sh 前台直跑)<br/>早聊一句 → M5 安置后转常驻"]
+  SH --> CAP["M6 Captain 预览(packages/teamlead/scripts/claude-lead.sh 前台直跑)<br/>早聊一句 → M5 安置后转常驻"]
   SC --> CONN["M4 只读连接器<br/>Shopify/Veeqo/Ordoro + IMAP"]
   CAP --> OUT["M6 第一个真产出 ≤60s<br/>(Captain 侧 first-output skill,跨源还原)"]
   SH -.失败2次/连说不懂.-> ESC["M7 转人工:脱敏摘要(scan_for_secrets)<br/>+ escalated 标记,可接手续跑"]
@@ -45,7 +45,8 @@ flowchart TD
 
 **范围**:后续所有 M 的公共机械件;PRD BI-0(a) 四项定案落地。
 1. **step CLI 薄壳** `scripts/flywheel-buddy-steps.sh`:`FLYWHEEL_SETUP_SOURCED=1 source flywheel-setup.sh`;子命令 `run <step-id>` / `verify <step-id>` / `status --json` / `state get|set <buddy.key> <value>`(仅非敏感 buddy 键)。stdout = 单行 JSON `{ok, step, evidence?, error_code?, hint?}`;exit 语义:0 成 / 1 败 / 3 需引导(继承 fs_discord_api 的 return 3 约定)。secret 类 `FLYWHEEL_SETUP_ANSWER_*` 注入在该壳内**默认拒绝**(`FLYWHEEL_BUDDY_ALLOW_ANSWER_INJECTION=1` 仅测试开)。
-2. **journal v2**:`{version:2, steps:{…v1 不变…}, buddy:{cursor, first_task_summary?, team_proposal?, connected_systems[], escalated?}}`;v1→v2 就地幂等升级;同 `_fs_atomic_write_600` 信封;buddy 键白名单校验(拒绝任何形如 token/key/secret 的键名与值模式,写入前过 `scan_for_secrets` 单值形态)。
+   **stdout 纪律(机械规格,Codex R1#3)**:该壳绕过 `fs_main`,因此必须自己做三件事——① 任何 journal/评估路径之前先 `_fs_bootstrap_jq`(干净 Ubuntu/WSL 在 preflight 前是无 jq 的);② 复刻 `fs_main` 的 identity/engine 初始化(`fs_derive_identity` + state dir 推导 + `setup_engine_init`);③ **stdout 只许最终那一行 JSON**——`fs_log` 现状写 stdout,step CLI 内把被调 step 函数的 stdout/stderr 全部重定向到 stderr(或 0600 日志文件),人读输出永不混入机读通道。每个子命令(`run/verify/status/state`)都配 **stdout 污染 sentinel 测试**(断言 stdout 恰好一行、可 jq 解析)。
+2. **journal v2**:`{version:2, steps:{…v1 不变…}, buddy:{cursor, first_task_summary?, team_proposal?, connected_systems[], escalated?}}`;v1→v2 就地幂等升级;同 `_fs_atomic_write_600` 信封;buddy 键白名单校验(拒绝任何形如 token/key/secret 的键名与值模式)。**secret 扫描 API 事实(Codex R1#4)**:`scan_for_secrets` 现状是 **path-only**(`fleet-sanitize.sh:97`,拒缺失路径)——本 M 给 `fleet-sanitize.sh` 加 opt-in 小 helper `scan_string_for_secrets`(单值/字符串形态,复用同一 pattern 集,自带测试,既有函数字节不变);journal buddy 键与 M7 摘要写入前走该 helper(或等价地:候选内容先落 0600 临时文件再以 path 形态扫,实现期二选一、测试锁行为)。
 3. **授权定案(记录在案,BI-3 按此建)**:Linear = 安全 token(648 已闭合)· GitHub = gh auth device flow(MVP)· macOS 安置 = guided/manual(648 现状,满足 §6.7)· state = journal v2(本 M)。
 4. **provider 合同文件**(仅合同 + 测试夹具,实现在 M1):`scripts/lib/agent-cli-providers/CONTRACT.md` + 函数签名/JSON 输出/exit 语义的合同测试(对 claude.sh 的桩跑)。
 
@@ -90,18 +91,24 @@ flowchart TD
 ### M5 · BI-5 自动安置(复用为主 + Captain 交接)
 
 **范围**:复用 config/services/finish 步(staging→真 loader 闸→supervisor seam→health check);Buddy 化 = §7 step7 的干净进度话术(✓ 建工作区 ✓ 配好 Captain 和 Crew ✓ 常驻上岗 ✓ 上线自检);**macOS = guided/manual(648 现状,§6.7 认可);linux/WSL2 = systemd 自动**。新增:安置前停 M6 的 Captain 预览进程、安置后 health-check 扩展为「Bridge 2xx + bot online + **Captain 能响应一条内部 ping**」(经 chat 频道探针消息,复用 `_fs_channel_probe` 模式)。
-**验收**:hermetic(FLY-648 WI-H 同款 temp-HOME 全链 + 隔离断言)——每子步幂等可续传;health-check 三项全绿才 done;客户输出零 JSON/栈;darwin 分支零 launchctl 字面(supervisor seam 守卫既有)。真机段:linux/WSL2 全自动、macOS guided 各走通。
-**依赖**:M0、M3(config 消费三样接入产物)。**可拆点:M5 可独立成单。**
+
+**工作项 M5-a · Lead 启动合同 closeout(Codex R1#2;M6 预览与本 M health-check 共同前置)**:真实 Lead launcher = `packages/teamlead/scripts/claude-lead.sh`(launchd 路经 `scripts/flywheel-lead-wrapper.sh` exec 它;根 scripts/ 下**没有** claude-lead.sh)。它的硬启动门槛逐项列名、在干净客户机上逐项「装齐或有意绕过」并测试(预览态 + 安置后常驻态都要过):
+  1. role detection 要求 `~/.flywheel/projects.json` 里有该 project/lead 条目(fail-stop)——预览必须在 config 步产物落地后才可能起;
+  2. 要求 `.lead/<lead-id>/identity.md`(或 agent.md)存在——skeleton 步保证生成;
+  3. 缺 `~/.flywheel/bin/check-discord-plugin.sh` / `update-discord-plugin.sh` 会 abort,而现有 provision/converge 只安置部分 bin 脚本、且 `converge_flywheel_bin` 修复时点在 Discord 插件检查**之后**——干净机会先撞检查;本工作项把 bin 收敛提前/补齐进安置链(或预览安全模式显式绕过,二选一、测试锁定);
+  4. 缺省 mailbox backend 要求 `agent-team-transport` 在 PATH,否则 fail-closed——预览态显式选定 backend(如 `FLYWHEEL_COMM_BACKEND=commdb`)或先安置该 CLI,取舍在本工作项定案并写进合同测试。
+**验收**:hermetic(FLY-648 WI-H 同款 temp-HOME 全链 + 隔离断言)——每子步幂等可续传;health-check 三项全绿才 done;**M5-a 合同测试:干净 temp-HOME 上预览态与常驻态各自能把 Lead 带到「bot online + 频道能应答」,或在缺门槛项时给出具体(非黑话)报错**;客户输出零 JSON/栈;darwin 分支零 launchctl 字面(supervisor seam 守卫既有)。真机段:linux/WSL2 全自动、macOS guided 各走通。
+**依赖**:M0、M3(config 消费三样接入产物)。**可拆点:M5 可独立成单(M5-a 是其中不可再拆的核心)。**
 
 ### M4+M6 · BI-4+BI-6 首个 vertical(dropship 只读连接器 + 早聊 + ≤60s 首产出)
 
 **范围(一个里程碑交付一条真路径)**:
 1. **连接器合同 + 4 个探测器**(`scripts/lib/buddy-connectors/{shopify,veeqo,ordoro,imap}.sh`):统一 `{connect(隐藏录密→校验→0600), probe(最小只读探针), pull(最近订单/确认邮件,JSON)}`;Shopify = custom app Admin API token(read_orders);Veeqo/Ordoro = API key;邮箱 = IMAP + app password(只读 SELECT/SEARCH/FETCH)。**只读 scope 铁律**;无连接器 = 诚实路径(记录诉求 + 「先记下让工程看能不能加」话术,PRD 原话);`FLYWHEEL_BUDDY_DEMO=1` 显式 fixture 通道(**仅 QA/demo,生产北极星不算成功**,PRD Codex R2#4)。
 2. **JIT 接入(step 6)**:brain `parse_first_task.systems_needed` → 最少必需集 → 一次一个引导(§8-B 话术);每接一个当场 probe;connect 成功即后台预取一次订单+邮件摘要缓存(非敏感字段:单号/状态/时间戳/发件人域,**不缓存邮件正文全文**)。
-3. **早聊一句(step 5)**:config 落定后前台直跑 `claude-lead.sh` 起 **Captain 预览进程**(真 Lead 身份、真 bot 上线、welcome-first 话术按用例适配、不硬塞订单);**首个实现任务 = 预览模式最小 env 合同探针**(claude-lead.sh 在仅有 bot token+频道+Linear 时能否起——不满足则诚实降级:早聊挪安置后,PRD 步骤 5 分支允许);用户不聊不阻塞。
+3. **早聊一句(step 5)**:config 落定后前台直跑 `packages/teamlead/scripts/claude-lead.sh` 起 **Captain 预览进程**(真 Lead 身份、真 bot 上线、welcome-first 话术按用例适配、不硬塞订单)。**预览可行性以 M5-a「Lead 启动合同 closeout」为准**(role detection/identity 文件/bin 脚本/transport backend 四道门槛在 M5-a 逐项闭合,不是一次含糊探针);M5-a 结论若判某门槛在预览时点不可满足 → 诚实降级:早聊挪安置后(PRD 步骤 5 分支允许「不阻塞继续」)。用户不聊不阻塞。**运行时步序(step5 早聊在 step7 安置前)与 build 依赖序(M6 在 M5 之后建)是两个轴——早聊功能建在 M6,但它复用 M5-a 闭合的启动合同,不越序。**
 4. **首产出编排(step 8)**:**MVP = Captain 侧 `first-output` skill**(项目 lead skills 内):读连接器 pull(+预取缓存)→ 跨源还原(订单状态 × 确认邮件匹配)→ 一条可信结果 + 下一步选项(§7 step8 样例形态)。**诚实设计决策:MVP 不走真 Runner 派活**——完整 Runner pipeline(onboard/brainstorm/PR)结构性做不到 ≤60s;「让 Crew 去查」是表现层话术,机械上 Captain 自查;真 Crew 派活 = phase-2/目标层(拆单表列 follow-up)。需要未接系统 → 诚实回 step 6 单工具引导,绝不假装有答案。
 **验收**:hermetic(stub 各 API):四连接器 connect/probe/pull 合同一致、key 错/权限窄的具体报错话术、诚实路径触发;**≤60s 计时断言**(stub 延迟注入下编排预算:预取缓存命中时 brain 单调用 + 组装 < 60s;未命中并行拉取路径也断言);fixture 通道只在显式 env 下可达。真机段(QA):真 Shopify 店(或 Veeqo)+ 真邮箱走通「今天有没有卡住的单」→ 计时 ≤60s → 结果与后台事实一致。
-**依赖**:M1、M2(brain/shell)、M3(Discord/Linear 供 Captain 预览)。**可拆点:建议拆两单——M4(连接器+JIT)与 M6(早聊+首产出编排);也可合一单由一人纵向打穿(推荐,vertical 完整性优先)。**
+**依赖(Codex R1#1 修正,与已锁顺序一致)**:**M4(连接器+JIT)依赖 M1、M2、M3;M6(早聊+首产出编排)依赖 M4、M5**(M5-a 的 Lead 启动合同是早聊/首产出的硬前置;首产出跑在安置/health-check 过的 Captain 上)。**可拆点:建议拆两单——M4 与 M6;也可合一单由一人纵向打穿(vertical 完整性优先),但内部实现顺序仍须 M5 产物先行。**
 
 ### M8 · BI-8 Discord 4 步素材
 
@@ -114,7 +121,7 @@ flowchart TD
 - **idiom**:FLY-648/519/650 的 hermetic bash 测试(`scripts/__tests__/flywheel-buddy*.test.sh`):temp-HOME + `FLYWHEEL_SETUP_STATE_DIR` 隔离 + stub 外部二进制(claude/gh/curl 假体)+ 隔离断言(temp home 之外零读写)+ 负例(真 ~/.flywheel 拒碰,复用 live-fleet guard)。
 - **RED 起点(每 M 首个失败测试)**:M0 = 「step CLI run preflight 输出合法 JSON」;M1 = 「provider detect 在无 claude 的 stub PATH 返回 not-found JSON」;M2 = 「状态机在空 journal 从 step0 话术开场」;M7 = 「连续两次注入失败生成 secret-free 摘要」;M3 = 「github step 在 stub gh 未登录时走 login 引导」;M5 = 「health-check 三项其一 red 时 finish 不 mark done」;M4/M6 = 「shopify probe 对 401 stub 给精确话术 error_code」。
 - **贯穿断言(每 M 验收自带)**:reverse-compat sentinel(flywheel-setup.sh 交互模式逐字不变)· secret-scan(journal/logs/brain transcript/摘要)· 黑话 lint(copy + shell 输出)。
-- **真机/QA 段(implement 后、QA 阶段执行)**:① 干净 VM(linux/WSL2)+ macOS 各一次全流程 founder-run;② 真账号连接器(Shopify 或 Veeqo + Gmail app password)——**vendor 全部 flag/endpoint 真 auth 实测**;③ ≤60s 北极星真机计时;④ Captain 预览 env 合同探针结论回灌 M6 设计。
+- **真机/QA 段(implement 后、QA 阶段执行)**:① 干净 VM(linux/WSL2)+ macOS 各一次全流程 founder-run;② 真账号连接器(Shopify 或 Veeqo + Gmail app password)——**vendor 全部 flag/endpoint 真 auth 实测**;③ ≤60s 北极星真机计时;④ M5-a Lead 启动合同测试在真机的结论回灌 M6 设计。
 
 ## 5. 字节兼容 / 风险
 
@@ -125,7 +132,7 @@ flowchart TD
 | 1 | claude CLI flag/安装形态漂移(--print/续接/安装命令) | M1 实现期真机核验清单;provider 层单点吸收;smoke fail-closed |
 | 2 | brain JSON 输出不稳定 | schema 校验 + 重试 ≤2 + 结构化兜底分支(3 例子选);brain 永不执行 |
 | 3 | ≤60s 依赖外部 API 延迟 | step6 预取缓存 + 并行拉取;计时断言进 hermetic + 真机 |
-| 4 | Captain 预览 env 合同不满足 | M6 首任务=探针;诚实降级路径预设(早聊挪安置后) |
+| 4 | Captain 预览撞 Lead launcher 硬门槛(role detection/identity/bin 脚本/transport) | M5-a 合同 closeout 逐项闭合;诚实降级路径预设(早聊挪安置后) |
 | 5 | vendor 自助可得性(Shopify custom app/Gmail app password 政策变化) | 4 连接器互为替补 + 诚实路径;真机段最早验证 |
 | 6 | TTY 边角(无 /dev/tty 环境、SSH) | fs_ask_* 既有 fail-loud 语义保留;bootstrap 前置 TTY 检查给人话报错 |
 | 7 | 一条 command 形态/命名待 Annie | 入口脚本与分发皮解耦;缺省 curl 形态,换皮零实现改动 |
@@ -140,8 +147,9 @@ flowchart TD
 | M2 Buddy 本体 | BI-2 | M0(M1 可 stub 并行) | ✅ | 与 M7 同窗 |
 | M7 转人工 | BI-7 | M0 | ✅ | 并入 M2 或独立小单 |
 | M3 三工具接入 | BI-3 | M0,M1 | ✅ | 单独一单(GitHub 可再拆) |
-| M5 安置 | BI-5 | M0,M3 | ✅ | 单独一单 |
-| M4+M6 vertical | BI-4+6 | M1,M2,M3 | ✅ | 推荐合一单纵向打穿(或拆连接器/编排两单) |
+| M5 安置(含 M5-a Lead 启动合同) | BI-5 | M0,M3 | ✅ | 单独一单 |
+| M4 连接器+JIT | BI-4 | M1,M2,M3 | ✅ | 可与 M6 合单纵向打穿 |
+| M6 早聊+首产出编排 | BI-6 | **M4,M5** | ✅ | 同上;内部顺序 M5 产物先行 |
 | M8 素材 | BI-8 | M3 | ✅ | 独立小单(可内容侧) |
 
 **Follow-up(不进首批,§6.7/BI-0(b) 目标层,拆单时另立)**:macOS clean-host 全自动 bring-up · Discord roles/webhooks + guild_id 预选 · Linear/GitHub OAuth · Codex adapter 真实现 · 真 Crew 派活的首产出 · 支持队列自动投递 · 更多 vertical · Gmail API OAuth。
@@ -150,7 +158,7 @@ flowchart TD
 
 - 新脚本:`scripts/flywheel-onboard.sh` · `scripts/flywheel-buddy.sh` · `scripts/flywheel-buddy-steps.sh` · `scripts/lib/agent-cli-providers/{CONTRACT.md,claude.sh,codex.sh}` · `scripts/lib/buddy-connectors/{shopify,veeqo,ordoro,imap}.sh` · `scripts/buddy/{persona.md,copy/*.md,brain-prompts/*.md}`
 - flywheel-setup.sh 的 opt-in 小改(journal v2 + 个别函数可重入化;缺省行为 sentinel 锁)
-- Captain 侧 `first-output` skill(项目 lead skills)+ claude-lead.sh 预览模式探针结论
+- Captain 侧 `first-output` skill(项目 lead skills)+ M5-a Lead 启动合同 closeout(`packages/teamlead/scripts/claude-lead.sh` 四道门槛的装齐/绕过定案 + 合同测试)
 - 测试:`scripts/__tests__/flywheel-buddy*.test.sh` 全套(hermetic + sentinels + secret-scan + 黑话 lint)
 - 文档:runbook 新章(Buddy 路)· `assets-brief.md` · 本文件夹三件套 + progress
 - 版本号 tentative:**v1.x(ship 时按当时 held PR 队列 re-version)**
@@ -160,5 +168,5 @@ flowchart TD
 1. claude CLI:官方安装命令 · `--print --output-format json` 会话续接 flag 组合 · `--append-system-prompt-file` 在 --print 模式下生效 —— 真 auth 实测(M1)。
 2. gh:device/web flow 子命令形态 · `gh repo create` 行为 —— 真账号实测(M3)。
 3. Shopify custom app / Veeqo / Ordoro / Gmail app password:自助可得性 + 只读 scope 面 —— 真账号实测(M4)。
-4. claude-lead.sh 预览模式最小 env 合同 —— 探针(M6 首任务)。
+4. `packages/teamlead/scripts/claude-lead.sh` 预览/常驻两态启动门槛(role detection · identity 文件 · ~/.flywheel/bin 脚本 · agent-team-transport backend)—— M5-a 合同测试逐项闭合(非含糊探针)。
 5. WSL2:浏览器回环 + gh apt source(FLY-648 runbook 既有项回归)。

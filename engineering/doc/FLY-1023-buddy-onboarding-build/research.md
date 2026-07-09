@@ -29,7 +29,7 @@ Issue: FLY-1023 (https://linear.app/geoforge3d/issue/FLY-1023/fly-910-onboarding
 | 诚实告知 + live-fleet guard | `fs_main` 内 NOTICE 块(`:1225`)· 已有 fleet 拒碰(`:1216`) | Buddy 层沿用 |
 | persona 注入 | `--append-system-prompt-file`(`TmuxAdapter.ts:742`,0600 tmp 文件防 argv 超长/泄露) | brain 调用采用同 flag |
 | headless 调用 | `ClaudeCodeAdapter`:`--print --output-format json`(`ClaudeCodeAdapter.ts:89`) | brain 的现成形态参照 |
-| Captain 进程拉起 | launchd 路 `flywheel-lead-wrapper.sh` → `claude-lead.sh`;**手动/前台路 = claude-lead.sh 直跑**(wrapper 头注释 `:10`) | R7「早聊」预览用 |
+| Captain 进程拉起 | launchd 路 `flywheel-lead-wrapper.sh` → `packages/teamlead/scripts/claude-lead.sh`(根 scripts/ 下无此文件);**手动/前台路 = 该 package 路径直跑**(wrapper 头注释 `:10`) | R7「早聊」预览用;真实启动门槛见 plan M5-a |
 
 ## R2 · Buddy 运行形态(本 research 最重要结论)
 
@@ -103,7 +103,7 @@ flowchart LR
 ## R7 · 「早聊一句」最小可对话 Captain(BI-6 前半)
 
 - 排除「Buddy 代扮 Captain」:身份不诚实,且 Captain persona/记忆不延续。
-- **推荐:Captain 预览进程** = 在 step 5(config 已落、bot/频道已通、Linear 已接)后,前台/后台子进程直跑 `claude-lead.sh`(手动路,不装 launchd)——真 Lead 身份、真 bot 上线、能在频道回话;step 7 安置时停预览进程、交给 supervisor 常驻。风险:claude-lead.sh 对 env/manifest 的完整性要求(token gate)可能高于 step 5 时点已有的最小集——**plan 把「预览模式最小 env 合同」列为 M6 的首个实现任务**(不满足就诚实降级:早聊挪到安置后,PRD 步骤 5 失败分支本就允许「不阻塞继续」)。
+- **推荐:Captain 预览进程** = 在 step 5(config 已落、bot/频道已通、Linear 已接)后,前台/后台子进程直跑 `packages/teamlead/scripts/claude-lead.sh`(手动路,不装 launchd)——真 Lead 身份、真 bot 上线、能在频道回话;step 7 安置时停预览进程、交给 supervisor 常驻。风险:该 launcher 的硬启动门槛(projects.json role detection、`.lead/<id>/identity.md`、`~/.flywheel/bin` 的 discord-plugin 检查脚本、mailbox backend 的 agent-team-transport)高于 step 5 时点的最小集——**plan 以 M5-a「Lead 启动合同 closeout」逐项闭合**(不满足就诚实降级:早聊挪到安置后,PRD 步骤 5 失败分支本就允许「不阻塞继续」)。
 - 648 向导步序(channels→linear→config→services)与 PRD 步序(工具→Team→早聊→JIT→安置)的对齐:step CLI 化后顺序由 Buddy shell 状态机决定,config 步已支持 find-or-create/幂等,提前到 Team 确认后执行(staging 目录机制不变)。
 
 ## R8 · 转人工投递面(BI-7)
@@ -117,7 +117,7 @@ flowchart LR
 |---|---|---|
 | 一条 command 形态(curl 管道 sh vs npx) | curl 管道 sh(command-form-research 推荐;npx 有 Node 鸡生蛋) | Annie(PRD open-q 1) |
 | Codex adapter 同-MVP 还是 post-MVP | post-MVP 占位(PRD §12 BI-1 缺省) | Tadashi 拆单时 |
-| 早聊预览若 env 合同不满足 | 诚实降级:早聊挪安置后 | 实现期按 M6 探针结论 |
+| 早聊预览若启动门槛不满足 | 诚实降级:早聊挪安置后 | 实现期按 plan M5-a Lead 启动合同测试结论 |
 | 邮箱供应商范围(MVP 只 Gmail?) | Gmail 优先 + 通用 IMAP 参数兜底 | 实现期 + 产品层 |
 
 ## R10 · 下一步
