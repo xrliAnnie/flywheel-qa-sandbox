@@ -120,3 +120,18 @@ MVP 只吃 `profile`;inject/fork 往后放(它俩最像「重建 homerail run �
 3. ⭐⭐ **两层定义**(§6,关键):**第一层 YAML = DAG 形状**(哪些节点/顺序/loop/skip,按名字引用)· **第二层 节点类型注册表 = 每节点「是什么」**(prompt + skills + model)= 泛化 `three-stage-phases.ts`(它现在只管 model/phase → 加 skills+prompt)。YAML 管结构、注册表管行为;示例:eng.yaml 引用 design → node_types.design={model:fable, skills:[brainstorm,research,design-review], prompt}。新类别加新节点类型 = 只动注册表(= §1 可扩展的落地)。
 
 **MVP(v5 收敛,大概率定稿)**:两层定义(YAML 形状 + 节点类型注册表)+ loop + skip + profile 复用 + 几套 shipped(eng/product/未来创作类)+ 裸 session 默认 + 可覆盖;default-off 字节兼容。现在不做(留用例):node-inject / fork。不做:可视化编辑器 / 用户自定义 / 自动学。
+
+## v6 — Annie 第 5 轮 co-eval(三层定义 + inject/fork=roadmap,大概率定稿)
+
+1. ⭐⭐ **三层定义**(§6,关键澄清,最底层今天不变):
+   - 第一层 YAML = DAG 形状(节点/顺序/loop/skip,按名引用)【新增】
+   - 第二层 节点类型注册表 = 每节点带哪些技能 + 模型(design={skills:[brainstorm,research,superpower,design-review], model:fable})= 泛化 three-stage-phases.ts【新增】
+   - 第三层 Markdown = 每个技能/步骤怎么做(brainstorm.md/research.md/design-review.md)= **今天这套 Markdown,一个字不改**【不变】
+   - ⭐ 打消误解:**YAML+注册表 = 加在现有 Markdown 之上的编排层、不替代 Markdown**;design 节点=「用这些技能」,每个技能怎么做还是各自 Markdown 说了算。新增只在上两层。
+   - grounded:brainstorm.md/research.md/write-plan.md/implement.md 今天在 ~/.claude/commands/;design-review=codex/gemini-design-review skill。第三层「不变」是实锤。
+2. **inject/fork = roadmap**(§5,改自 v5 的「现在不做」):Annie 定 = 有价值、post-MVP、进后续 PRD,不是「不做」也不是「可能永不做」;保留用例(node-inject=跑中加新步骤如安全审计;fork=并行 A/B)。
+3. 保留 v5:节点类型 per-category 可扩展(§1)· loop+skip=MVP 动态(§2/3)· 流程图(§4)。
+
+**MVP(v6 收敛,大概率定稿)**:新增上两层(YAML 结构 + 节点类型注册表)+ loop + skip + profile 复用 + 几套 shipped(eng/product/未来创作类)+ 裸 session 默认 + 可覆盖;**第三层 Markdown 不动**;default-off 字节兼容。roadmap(post-MVP):node-inject / fork。不做:编辑器 / 自定义 / 自动学。
+
+**下一步**:v6 清 → 写 1020 PRD(exploration/research/plan,补齐三件套)+ 收敛前跑 Codex → 拆 build issue 交 Tadashi。

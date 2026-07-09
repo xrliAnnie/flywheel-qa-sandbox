@@ -1,7 +1,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FLY-1020 · 两层动态 DAG(YAML 形状 + 节点类型注册表)— 设计 co-eval v5</title>
+<title>FLY-1020 · 三层动态 DAG(YAML 结构 + 注册表 + Markdown 步骤)— 设计 co-eval v6</title>
 <style>
 :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--navy:#1a365d;
   --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de}
@@ -9,7 +9,7 @@
 body{margin:0;background:var(--bg);color:var(--ink);
   font-family:-apple-system,system-ui,"SF Pro Text",Segoe UI,Roboto,sans-serif;line-height:1.6;-webkit-text-size-adjust:100%}
 .wrap{max-width:960px;margin:0 auto;padding:20px 16px 90px}
-h1{font-size:23px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+h1{font-size:22px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
 .sub{color:var(--dim);font-size:14px;margin:0 0 4px}
 .pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;background:#eef;color:var(--navy);margin:6px 6px 0 0}
 .pill.cand{background:#f3e9fb;color:#7a2fb0}
@@ -28,7 +28,7 @@ pre{background:#f6f6fa;border:1px solid var(--line);border-radius:10px;padding:1
 pre .c{color:#8a8a90}pre .n{color:#1a5fb4}pre .l{color:#1a7a3c;font-weight:600}pre .s{color:#a05a00;font-weight:600}pre .r{color:#7a2fb0;font-weight:600}
 .tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:6px;vertical-align:middle}
 .tag.done{background:#e3f9ea;color:#1a7a3c}.tag.new{background:#e7f0ff;color:#1a5fb4}
-.tag.unk{background:#ececef;color:#6a6a70}.tag.no{background:#fde8e8;color:#c0322b}
+.tag.unk{background:#ececef;color:#6a6a70}.tag.keep{background:#e3f9ea;color:#1a7a3c}
 .tag.mvp{background:#e3f9ea;color:#1a7a3c}.tag.later{background:#fff4e5;color:#a05a00}
 .k{color:var(--navy);font-weight:600}
 .src{font-size:12px;color:var(--dim);margin-top:8px}
@@ -48,11 +48,14 @@ th{background:#fafafd;font-weight:600}
 .paths .step{display:inline-block;background:#fff;border:1px solid var(--line);border-radius:8px;padding:4px 8px;font-size:12.5px;margin:2px}
 .paths .step.sk{border-style:dashed;color:var(--dim);text-decoration:line-through}
 .paths .lp{color:#1a7a3c;font-weight:600;font-size:12px}
-.two{display:flex;gap:14px;flex-wrap:wrap;margin:10px 0}
-.two .lyr{flex:1 1 280px;min-width:260px;border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:#fcfcff}
-.two .lyr h4{margin:0 0 6px;font-size:14px}
-.two .lyr.a{border-top:3px solid var(--blue)}.two .lyr.b{border-top:3px solid var(--purple)}
+.three{margin:12px 0}
+.lyr3{border:1px solid var(--line);border-radius:12px;padding:11px 14px;background:#fcfcff;margin:0}
+.lyr3.a{border-left:4px solid var(--blue)}.lyr3.b{border-left:4px solid var(--purple)}.lyr3.c{border-left:4px solid var(--green)}
+.lyr3 .h{font-weight:600;font-size:13.5px;margin-bottom:2px}
+.lyr3 .d{font-size:12.5px;color:#444}
+.dn{text-align:center;color:var(--dim);font-size:12px;margin:5px 0}
 .you{background:#fff8e6;border:1px solid #ffe0a3;border-radius:10px;padding:8px 11px;margin:10px 0;font-size:13.5px}
+.big{background:#f4f9ff;border:1px solid #bcd9ff;border-radius:10px;padding:10px 13px;margin:10px 0;font-size:13.5px}
 .new-badge{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:6px;background:#e7f0ff;color:#1a5fb4;margin-left:6px}
 .cmt{margin:10px 0 4px;background:#fbfbfd;border:1px dashed #d6d6de;border-radius:10px;padding:8px 10px}
 .cmt label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
@@ -70,17 +73,17 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 </head>
 <div class="wrap">
 <header>
-  <h1>两层动态 DAG:YAML 形状 + 节点类型注册表 —— 设计 co-eval v5</h1>
-  <p class="sub">FLY-1020 · 2026-07-08 · 折进你 v4 的 3 个收敛点(节点类型可扩展 · 用例 · 两层定义)· 这版清了大概率能定 → 写 PRD</p>
+  <h1>三层动态 DAG:YAML 结构 + 注册表 + Markdown 步骤 —— 设计 co-eval v6</h1>
+  <p class="sub">FLY-1020 · 2026-07-08 · 折进你 v5 的两点(inject/fork=roadmap · 其实是三层、最底层 Markdown 不变)· 这版清了就写 PRD</p>
   <div><span class="pill cand">设计草案 · 逐节留言</span><span class="pill">定了 → PRD → Tadashi</span></div>
 </header>
 
 <div class="note">
-  <b>v5 照你 v4 co-eval 改:</b>
-  ① ⭐ <b>纠正「固定节点」</b>:节点类型是 <b>per-category + 可扩展</b>(eng=Design/Implement/QA;创作视频=Research/生成视频)——「固定」= <b>模板内固定 + 跑中不 inject</b>,不是全局只 3 个(§1);
-  ② <b>node-inject / fork = 现在不做 + 用例</b>(你要例子)(§5);
-  ③ ⭐⭐ <b>两层定义</b>:YAML = DAG 形状 · 节点类型注册表 = 每节点「是什么」(prompt+skills+model)= 泛化 <code>three-stage-phases.ts</code>(§6)。<br>
-  <span class="tag done">已做</span> 核码 · <span class="tag mvp">MVP</span> 做 · <span class="tag later">现在不做</span> 留概念 · <span class="tag unk">UNKNOWN</span> 不瞎编。
+  <b>v6 照你 v5 co-eval 改:</b>
+  ① ⭐⭐ <b>其实是三层,最底层 Markdown 不变</b>:YAML(结构)+ 注册表(每节点带哪些技能)= <b>加在现有 Markdown 之上的编排层,不替代 Markdown</b>;每个技能(brainstorm/research/design-review)怎么做,还是<b>今天这套 Markdown 说了算、一个字不改</b>(§6);
+  ② <b>inject / fork = roadmap</b>(post-MVP、有意义、进后续 PRD),不是「不做」,保留用例(§5)。<br>
+  其余保留 v5:节点类型 per-category 可扩展(§1)· loop+skip 是 MVP 动态(§2/3)。<br>
+  <span class="tag keep">不变</span> 今天这套 · <span class="tag mvp">MVP</span> 做 · <span class="tag later">roadmap</span> post-MVP · <span class="tag done">已核码</span>。
 </div>
 
 <!-- 0 红线 -->
@@ -90,57 +93,49 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 </div>
 <div class="cmt"><label>💬 对红线的留言</label><textarea data-k="redline" data-label="0 · 红线"></textarea></div>
 
-<!-- 1 节点类型 per-category -->
-<h2><span class="secnum">1 ·</span> ⭐ 纠正「固定节点」:节点类型是 per-category + 可扩展</h2>
+<!-- 1 节点类型 -->
+<h2><span class="secnum">1 ·</span> 节点类型:per-category + 可扩展(「固定」的准确含义)</h2>
 <div class="card purple">
-  <div class="you"><b>你 v4 co-eval 纠的:</b>「不是只有 Design/Implement/QA。eng 是这 3 个;<b>创作视频 = Research / 生成视频(新节点类型)</b>。新类别定义新节点类型(在 YAML/注册表里定义,<b>不是跑中插</b>)。别让人误解成全局只那 3 个。」</div>
-  <p><b>「固定节点」的准确含义(两条,缺一不可):</b></p>
-  <ul>
-    <li><span class="k">① 模板内固定</span> —— 一个类别的模板,节点在<b>定义时(YAML)</b>就定死,跑之前就知道有哪些节点。</li>
-    <li><span class="k">② 跑中不 node-inject</span> —— 跑起来<b>不</b>临时长新节点(动态只靠 loop+skip)。</li>
-    <li><span class="k">≠ 全局只 3 种</span> —— <b>节点类型是 per-category、可扩展的</b>:新类别在<b>注册表</b>里定义自己的新节点类型。</li>
-  </ul>
+  <p>节点类型<b>不是全局只 Design/Implement/QA</b> —— 它是 <b>per-category、可扩展的</b>:</p>
   <div class="scroll"><table>
   <thead><tr><th>类别</th><th>节点类型(定义时定,跑中不变)</th></tr></thead>
   <tbody>
-    <tr><td class="k">eng(工程)</td><td>Design → Implement → QA(3 个)</td></tr>
-    <tr><td class="k">product(产品)</td><td>Design → Implement(复用,skip QA)</td></tr>
+    <tr><td class="k">eng</td><td>Design → Implement → QA</td></tr>
+    <tr><td class="k">product</td><td>Design → Implement(skip QA)</td></tr>
     <tr><td class="k">创作视频</td><td><b>Research → 生成视频</b>(新节点类型)</td></tr>
-    <tr><td class="k">新类别</td><td>在注册表里<b>定义自己的新节点类型</b>(§6 第二层)</td></tr>
+    <tr><td class="k">新类别</td><td>在注册表里定义自己的新节点类型(§6 第二层)</td></tr>
   </tbody>
   </table></div>
-  <p class="hint">一句话:<b>节点类型「定义时可扩展(注册表加)、跑中不可变(不 inject)」</b>。QA→Implement→QA 这种循环 = loop,<b>能实现</b>(§3 有硬证据:已跑过一个硬编码版)。</p>
+  <p class="hint"><b>「固定节点」= ① 模板内固定(YAML 定义时定死)② 跑中不加节点(no node-inject)。≠ 全局只 3 种。</b> 扩展 = 定义时在注册表加,不是跑中插。</p>
 </div>
-<div class="cmt"><label>💬 对「节点类型 per-category 可扩展」的留言(这个纠正对吗?)</label><textarea data-k="nodetypes" data-label="1 · 节点类型 per-category"></textarea></div>
+<div class="cmt"><label>💬 对节点类型的留言</label><textarea data-k="nodetypes" data-label="1 · 节点类型 per-category"></textarea></div>
 
-<!-- 2 动态=loop+skip -->
+<!-- 2 loop+skip -->
 <h2><span class="secnum">2 ·</span> 动态 = loop + skip(作用在该类别的节点上)</h2>
 <div class="card blue">
-  <p>一个类别的节点定死后,<b>动态全来自两个算子</b>:</p>
   <ul>
-    <li><span class="k">skip</span> = <b>条件跳过</b>某节点。例:Product <b>skip QA</b>(纯 doc 不测)· 简单任务 <b>skip Design</b>(直接干)。同套节点、不同任务不同路。</li>
-    <li><span class="k">loop</span> = 某节点/子图<b>重复到条件</b>(§3 展开)。</li>
+    <li><span class="k">skip</span> = 条件跳过某节点(Product <b>skip QA</b> / 简单任务 <b>skip Design</b>)。同套节点、不同任务不同路。</li>
+    <li><span class="k">loop</span> = 某节点/子图重复到条件(§3)。</li>
   </ul>
-  <p class="hint"><b>节点类型定义时可扩展(§1)+ loop/skip 跑时造动态 = 表达千变万化的流程,全程不加新节点。</b></p>
+  <p class="hint">节点类型定义时可扩展 + loop/skip 跑时造动态 = 表达千变万化的流程,全程不加新节点。</p>
 </div>
 <div class="cmt"><label>💬 对 loop+skip 的留言</label><textarea data-k="dynamic" data-label="2 · loop+skip"></textarea></div>
 
 <!-- 3 loop 两例 -->
-<h2><span class="secnum">3 ·</span> loop = 重复直到条件(你两个例子,确认能实现)</h2>
+<h2><span class="secnum">3 ·</span> loop = 重复直到条件(你两个例子,能实现)</h2>
 <div class="card green">
   <div class="scroll"><table>
   <thead><tr><th>例子</th><th>= loop</th><th>能实现吗</th></tr></thead>
   <tbody>
-    <tr><td class="k">① QA↔Implement 来回</td><td><b>loop(Implement↔QA)</b> 直到 QA 过</td><td><span class="tag done">能 · 已跑过硬编码版</span> FLY-939 kickback(QA fail→唤醒 parked implement 重做,<code>phase-orchestrator.ts</code>)。升级 = 把它变成一条<b>可声明的 loop 回边</b>。</td></tr>
-    <tr><td class="k">② Design→4 PR</td><td><b>loop (Implement→QA) 子图 4 次</b></td><td><span class="tag new">能 · 新形状</span> 同一个 loop 原语,重复次数/条件不同</td></tr>
+    <tr><td class="k">① QA↔Implement 来回</td><td><b>loop(Implement↔QA)</b> 直到 QA 过</td><td><span class="tag done">能 · 已跑过硬编码版</span> FLY-939 kickback(<code>phase-orchestrator.ts</code>),升级 = 变成可声明的 loop 回边</td></tr>
+    <tr><td class="k">② Design→4 PR</td><td><b>loop (Implement→QA) 子图 4 次</b></td><td><span class="tag new">能 · 新形状</span> 同一个 loop 原语</td></tr>
   </tbody>
   </table></div>
-  <p class="hint">两例都是 loop(重复子图)。<b>QA→Implement→QA 循环确认能实现</b> —— 我们已经跑过一个硬编码版了。</p>
 </div>
 <div class="cmt"><label>💬 对 loop 两例的留言</label><textarea data-k="loop" data-label="3 · loop 两例"></textarea></div>
 
 <!-- 4 一张图 -->
-<h2><span class="secnum">4 ·</span> 一张图看全(以 eng 为例:同套节点 + loop 回边 + skip 条件边)</h2>
+<h2><span class="secnum">4 ·</span> 流程图看全(eng 例:同套节点 + loop 回边 + skip 条件边)</h2>
 <div class="card purple">
   <div class="map">
     <div class="nodes">
@@ -155,78 +150,72 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
       <div class="node" style="border-color:var(--green)">完</div>
     </div>
     <div class="legend">
-      <div class="li"><b>loop 回边</b>:<code>QA→Implement</code>(fail 时)—— 重复直到过。</div>
+      <div class="li loop"><b>loop 回边</b>:<code>QA→Implement</code>(fail 时)。</div>
       <div class="li skip"><b>skip 条件边</b>:Product 跳 QA · 简单跳 Design。</div>
-      <div class="li"><b>节点类型 per-category</b>:这是 eng 的三类;<b>创作视频</b>会是另一组(Research / 生成视频),同样用 loop+skip 组织。</div>
-      <div class="li"><b>没有</b>「跑中加节点」—— 形状变化全由 loop + skip 给出。</div>
+      <div class="li"><b>创作视频</b>是另一组节点类型(Research / 生成视频),同样用 loop+skip 组织。</div>
     </div>
   </div>
   <div class="paths scroll">
-    <p><b>eng</b>:<span class="step">Design</span> → <span class="step">Implement</span> <span class="lp">⇄↺</span> <span class="step">QA</span>(loop 直到过)→ <span class="step">完</span></p>
-    <p><b>product</b>:<span class="step">Design</span> → <span class="step">Implement</span> → <span class="step sk">QA</span>(skip)→ <span class="step">完</span></p>
-    <p><b>创作视频</b>(节点类型不同):<span class="step">Research</span> → <span class="step">生成视频</span> <span class="lp">↺</span>(不满意重生成)→ <span class="step">完</span></p>
+    <p><b>eng</b>:<span class="step">Design</span> → <span class="step">Implement</span> <span class="lp">⇄↺</span> <span class="step">QA</span> → <span class="step">完</span></p>
+    <p><b>product</b>:<span class="step">Design</span> → <span class="step">Implement</span> → <span class="step sk">QA</span> → <span class="step">完</span></p>
+    <p><b>创作视频</b>:<span class="step">Research</span> → <span class="step">生成视频</span> <span class="lp">↺</span> → <span class="step">完</span></p>
   </div>
 </div>
-<div class="cmt"><label>💬 对这张图的留言(加了创作视频那条路,清楚吗?)</label><textarea data-k="diagram" data-label="4 · 一张图"></textarea></div>
+<div class="cmt"><label>💬 对流程图的留言</label><textarea data-k="diagram" data-label="4 · 流程图"></textarea></div>
 
-<!-- 5 node-inject/fork 现在不做+用例 -->
-<h2><span class="secnum">5 ·</span> node-inject / fork = 现在不做 + 用例(你要的例子)</h2>
+<!-- 5 roadmap -->
+<h2><span class="secnum">5 ·</span> node-inject / fork = roadmap(post-MVP,进后续 PRD)+ 用例</h2>
 <div class="card amber">
-  <div class="you"><b>你定的:</b>两个都<b>现在不做</b>,但概念 + 用例留着(方便以后需要时有据)。</div>
+  <div class="you"><b>你定的:</b>两个<b>都有价值,排 roadmap</b> —— 不是 MVP 这一刀、也不是不做,而是 <b>post-MVP 会加进后续 PRD</b>。概念 + 用例先留着。</div>
   <div class="scroll"><table>
-  <thead><tr><th>能力</th><th>用例(什么时候才会想要)</th><th>为什么现在不做</th></tr></thead>
+  <thead><tr><th>能力</th><th>用例(什么时候想要)</th><th>状态</th></tr></thead>
   <tbody>
-    <tr><td class="k">node-inject<br>(跑中加新节点)</td><td>跑中要一个<b>模板里没有、又不是 loop/skip 能覆盖</b>的新步骤 —— 如 implement 中途发现要加一个『安全审计』节点。</td><td><span class="tag later">现在不做</span> 很少见;loop+skip 已覆盖你现有痛点;跑中改图难追踪/难治理。留概念+用例。</td></tr>
-    <tr><td class="k">fork<br>(并行分支)</td><td>同时试<b>多个方案比较</b> —— 两种实现策略并行、或 A/B 两版设计并行,择优。</td><td><span class="tag later">现在不做</span> 你现有痛是串行 loop 不是并行;成本翻倍要治理。留概念+用例。</td></tr>
+    <tr><td class="k">node-inject<br>(跑中加新节点)</td><td>跑中要一个<b>模板里没有、又非 loop/skip 覆盖</b>的新步骤 —— 如 implement 中途要加『安全审计』节点。</td><td><span class="tag later">roadmap · post-MVP</span> 跑中改图要更强的追踪/治理,值得单独一版 PRD 做好。</td></tr>
+    <tr><td class="k">fork<br>(并行分支)</td><td>同时试<b>多方案比较</b> —— 两种实现策略并行、或 A/B 两版设计并行,择优。</td><td><span class="tag later">roadmap · post-MVP</span> 现有痛是串行 loop 优先;成本翻倍要专门治理。</td></tr>
   </tbody>
   </table></div>
-  <p class="hint">MVP 动态 = <b>loop + skip</b>(+ profile 已有)。node-inject / fork <b>现在不做</b>,但不是删掉 —— 用例记在这,真需要时再评估。</p>
+  <p class="hint">MVP 动态 = <b>loop + skip</b>(+ profile 已有)。<b>node-inject / fork 排 roadmap</b>(有价值、进后续 PRD),用例记在这,不是砍掉。</p>
 </div>
-<div class="cmt"><label>💬 对「现在不做 + 用例」的留言(用例举得对吗?)</label><textarea data-k="defer" data-label="5 · node-inject/fork 用例"></textarea></div>
+<div class="cmt"><label>💬 对 roadmap + 用例的留言</label><textarea data-k="defer" data-label="5 · node-inject/fork roadmap"></textarea></div>
 
-<!-- 6 两层定义 -->
-<h2><span class="secnum">6 ·</span> ⭐⭐ 两层定义:YAML 管<u>结构</u>、注册表管<u>行为</u><span class="new-badge">v5 关键新节</span></h2>
+<!-- 6 三层定义 -->
+<h2><span class="secnum">6 ·</span> ⭐⭐ 三层定义:YAML 结构 + 注册表 + Markdown 步骤(最底层今天不变)<span class="new-badge">v6 关键</span></h2>
 <div class="card green">
-  <div class="you"><b>你定的关键分层:</b>「YAML(第一层)= DAG 形状(哪些节点/顺序/loop/skip,<b>按名字引用</b>)。<b>节点类型注册表(第二层)= 每节点『是什么』</b>(design 节点 = session prompt + 带哪些技能 + 模型)。『design 具体做什么』在注册表、<b>不</b>在 DAG YAML。就是 <code>three-stage-phases.ts</code> 泛化成每节点类型一份。」</div>
-  <div class="two">
-    <div class="lyr a"><h4>第一层 · YAML = 结构(形状)</h4>
-      哪些节点(<b>按名字引用</b>)· 顺序 · 哪里 loop · 哪里 skip。<b>轻、好读、好覆盖。</b></div>
-    <div class="lyr b"><h4>第二层 · 注册表 = 行为(是什么)</h4>
-      每个<b>节点类型</b>:prompt(session 提示词)+ skills(带哪些技能)+ model。<b>= 泛化 three-stage-phases.ts</b>(它现在只管 model/phase → 加上 skills+prompt)。</div>
+  <div class="you"><b>你 v5 co-eval 的关键澄清:</b>「其实是<b>三层</b>,最底层是 <b>Markdown(今天这套、不变)</b>:①YAML=DAG 形状 ②注册表=每节点带哪些技能+模型 ③<b>Markdown=每个技能具体怎么做</b>(brainstorm.md/research.md/design-review.md)= 我们今天这套 Markdown 结构、不动。YAML+注册表 = 加在现有 Markdown 之上的编排层、<b>不替代 Markdown</b>。」</div>
+  <div class="three">
+    <div class="lyr3 a"><div class="h">第一层 · YAML = 结构(形状)</div><div class="d">哪些节点(按名字引用)· 顺序 · 哪 loop · 哪 skip。轻、好读、好覆盖。<span class="tag new">新增</span></div></div>
+    <div class="dn">↓ 节点按名字引用</div>
+    <div class="lyr3 b"><div class="h">第二层 · 注册表 = 每节点带哪些技能 + 模型</div><div class="d"><code>design = {skills:[brainstorm,research,superpower,design-review], model:fable}</code>。= 泛化 <code>three-stage-phases.ts</code>。<span class="tag new">新增</span></div></div>
+    <div class="dn">↓ 技能按名字引用</div>
+    <div class="lyr3 c"><div class="h">第三层 · Markdown = 每个技能/步骤怎么做</div><div class="d"><code>brainstorm.md</code> · <code>research.md</code> · <code>design-review.md</code> …… <b>= 我们今天这套 Markdown,一个字不改。</b><span class="tag keep">今天这套 · 不变</span></div></div>
   </div>
-  <p><b>放一起看(示意):</b></p>
-<pre><span class="c"># ── 第一层:DAG 形状 eng.yaml —— 只按名字引用节点,不管它们怎么干 ──</span>
+  <div class="big"><b>⭐ 打消一个误解:不是用 YAML 重写 brainstorm/research。</b> 那些 Markdown 技能定义<b>原封不动</b>。YAML + 注册表只是<b>加在上面的编排层</b> —— design 节点说「<b>用这些技能</b>」,每个技能<b>具体怎么做</b>还是各自的 Markdown 说了算。<b>新增的只有『怎么把节点/技能编排起来』,没动『每个技能怎么做』。</b></div>
+  <p><b>三层放一起(示意):</b></p>
+<pre><span class="c"># ── 第一层 YAML:结构(新增)──</span>
 nodes: [design, implement, qa]
-edges:
-  design    -> implement
-  implement -> qa
-  <span class="l">qa -> implement  {loop_when: fail}</span>     <span class="c"># loop</span>
-skip:
-  <span class="s">qa {when: category == product}</span>          <span class="c"># skip</span>
+edges: design -> implement -> qa;  <span class="l">qa -> implement {loop_when: fail}</span>
+skip:  <span class="s">qa {when: category == product}</span>
 
-<span class="c"># ── 第二层:节点类型注册表 —— 每个『是什么』(泛化 three-stage-phases.ts)──</span>
+<span class="c"># ── 第二层 注册表:每节点带哪些技能 + 模型(新增,泛化 three-stage-phases.ts)──</span>
 node_types:
-  <span class="r">design</span>:    {model: fable, skills: [brainstorm, research, design-review], prompt: "你是设计阶段…"}
-  <span class="r">implement</span>: {model: fable, skills: [test-driven-development],            prompt: "你是实现阶段…"}
-  <span class="r">qa</span>:        {model: opus,  skills: [qa-verify],                         prompt: "你是 QA 阶段…"}
-  <span class="c"># 创作视频类别 → 在这里加新节点类型:</span>
-  <span class="r">research</span>:      {model: fable, skills: [deep-research], prompt: "…"}
-  <span class="r">generate_video</span>: {model: fable, skills: [gemini-video], prompt: "…"}
+  <span class="r">design</span>:    {model: fable, skills: [brainstorm, research, superpower, design-review]}
+  <span class="r">implement</span>: {model: fable, skills: [test-driven-development]}
+  <span class="r">qa</span>:        {model: opus,  skills: [qa-verify]}
+
+<span class="c"># ── 第三层 Markdown:每个技能怎么做(= 今天这套,不动)──</span>
+skills/brainstorm.md      <span class="c">← 不变</span>
+skills/research.md         <span class="c">← 不变</span>
+skills/design-review.md    <span class="c">← 不变</span>
 </pre>
-  <p><b>为什么两层好:</b></p>
-  <ul>
-    <li><b>YAML 管结构</b> = 改流程只动形状(加条 loop 边 / skip 条件),不碰行为。</li>
-    <li><b>注册表管行为</b> = 节点类型可<b>跨模板复用</b>(design 到处引用一份定义);<b>新类别加新节点类型只动注册表</b>(§1 的可扩展就是这么落的)。</li>
-    <li><b>「design 做什么」= 注册表</b>(prompt/skills/model),<b>不塞进 DAG YAML</b> → YAML 保持轻。</li>
-  </ul>
+  <p class="hint">分工:<b>YAML 管「节点怎么连」· 注册表 管「每节点用哪些技能+模型」· Markdown 管「每个技能怎么做」(不变)</b>。新增只在上两层。</p>
 </div>
-<div class="cmt"><label>💬 对两层定义的留言(YAML 管结构 / 注册表管行为 —— 这个分层清楚吗?示例对吗?)</label><textarea data-k="twolayer" data-label="6 · 两层定义"></textarea></div>
+<div class="cmt"><label>💬 对三层定义的留言(三层清楚吗?「Markdown 不变、只在上面加编排层」打消你的顾虑了吗?)</label><textarea data-k="threelayer" data-label="6 · 三层定义"></textarea></div>
 
 <!-- 7 现状+auto-QA -->
 <h2><span class="secnum">7 ·</span> 头号动机(Auto-QA)+ 现状 + homerail(印证)</h2>
 <div class="card gray">
-  <p><b>Auto-QA 误触发</b>:老的一刀切(<code>auto-qa-coordinator.ts</code>,项目级 <code>qa.auto</code>)对纯 doc 的 product 误 spawn QA。<b>skip QA 从根治它</b>(product 模板不走 QA 节点)。</p>
-  <p><b>现状核码</b>:今天 = 静态线性(<code>three-stage-phases.ts</code>)+ 一个焊死的 QA→implement loop(FLY-939)+ 无 skip + 无节点类型注册表(model/phase 焊死)。<b>homerail 印证</b>:它动态也是 loop_gateway + skip、没随意加节点、其 inject=消息型;模板用 YAML。= 你的收敛跟成熟做法一致。</p>
+  <p><b>Auto-QA 误触发</b>:老的一刀切(<code>auto-qa-coordinator.ts</code>,项目级 <code>qa.auto</code>)对纯 doc 的 product 误 spawn QA。<b>skip QA 从根治它</b>。</p>
+  <p><b>现状核码</b>:今天 = 静态线性(<code>three-stage-phases.ts</code>,只管 model/phase)+ 一个焊死的 QA→implement loop(FLY-939)+ 无 skip + 无注册表 + Markdown 技能已在(<code>brainstorm.md</code> 等)。<b>homerail 印证</b>:它动态也是 loop_gateway + skip、没随意加节点、模板用 YAML。= 你的收敛跟成熟做法一致。</p>
 </div>
 <div class="cmt"><label>💬 对现状/动机的留言</label><textarea data-k="current" data-label="7 · Auto-QA+现状+homerail"></textarea></div>
 
@@ -235,8 +224,8 @@ node_types:
 <div class="card blue">
   <p><b>可覆盖:</b> 换整套 YAML · 单 issue 调节点(临时 skip / 换模型)· 裸兜底(不挂 = 裸 session)。</p>
   <ul>
-    <li><span class="k">阶段 1(MVP)</span>:两层定义(YAML 形状 + 节点类型注册表)+ loop + skip + profile 复用 + 几套 shipped(eng/product/未来创作类)+ 裸 session 默认 + 可覆盖。<b>default-off、字节兼容</b>。</li>
-    <li><span class="k">现在不做(留概念+用例)</span>:node-inject · fork。</li>
+    <li><span class="k">阶段 1(MVP)</span>:三层里<b>新增上两层</b>(YAML 结构 + 节点类型注册表)+ loop + skip + profile 复用 + 几套 shipped(eng/product/未来创作类)+ 裸 session 默认 + 可覆盖。<b>Markdown 第三层不动</b>。<b>default-off、字节兼容</b>。</li>
+    <li><span class="k">阶段 2 · roadmap(post-MVP,进后续 PRD)</span>:node-inject · fork(有价值、留用例)。</li>
     <li><span class="k">不做</span>:可视化编辑器 · 用户自定义 · 学历史自动调。</li>
   </ul>
   <p class="hint">安全阀在第二层(353)治理里 —— 所以这层可以轻。</p>
@@ -247,11 +236,11 @@ node_types:
 <h2><span class="secnum">9 ·</span> 留给你定的点(定了我就去写 PRD)</h2>
 <div class="card red">
   <ul>
-    <li><b>节点类型(§1):</b>「per-category + 可扩展、模板内固定、跑中不 inject」—— 准确吗?</li>
-    <li><b>⭐⭐ 两层定义(§6):</b> YAML 管结构 + 注册表管行为(= 泛化 three-stage-phases.ts)—— 这是关键,合你意吗?示例对吗?</li>
-    <li><b>node-inject/fork(§5):</b> 现在不做 + 留用例 —— 用例举得对吗?</li>
-    <li><b>MVP 范围(§8):</b> 两层 + loop + skip + profile + 几套 shipped + 裸默认;不做编辑器/自定义 —— 认同吗?</li>
-    <li><b>就绪:</b> 这几个定了,我就把 v5 收敛成 PRD(exploration/research/plan)→ 拆 build issue 交 Tadashi。定了就说<b>「收敛,写 PRD」</b>。</li>
+    <li><b>⭐⭐ 三层定义(§6):</b> YAML 结构 + 注册表(带哪些技能) + <b>Markdown 步骤(今天这套不变)</b> —— 这个分层 + 「只在上面加编排层、不改 Markdown」清楚了吗?</li>
+    <li><b>节点类型(§1):</b> per-category + 可扩展、跑中不 inject —— 对吗?</li>
+    <li><b>inject/fork(§5):</b> roadmap(post-MVP、进后续 PRD)+ 留用例 —— 对吗?</li>
+    <li><b>MVP 范围(§8):</b> 新增上两层 + loop + skip + profile + 几套 shipped + 裸默认;Markdown 不动;不做编辑器/自定义 —— 认同吗?</li>
+    <li><b>就绪:</b> 这几个定了,我就把 v6 收敛成 PRD(exploration/research/plan)→ 拆 build issue 交 Tadashi。定了就说<b>「收敛,写 PRD」</b>。</li>
   </ul>
 </div>
 <div class="cmt"><label>💬 总批注 / 决定 / 下一步</label><textarea data-k="final" data-label="9 · 总批注 / 决定"></textarea></div>
@@ -278,7 +267,7 @@ node_types:
 <script nonce="__CSP_NONCE__">
 (function(){
   var pathScope = (typeof location !== "undefined" && location.pathname) ? location.pathname : "local";
-  var KEY = "fly1020-templates-design-v5::" + pathScope;
+  var KEY = "fly1020-templates-design-v6::" + pathScope;
   var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
   var saved = {};
   try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ saved = {}; }
@@ -292,7 +281,7 @@ node_types:
     });
   });
   function buildMd(){
-    var lines = ["# FLY-1020 两层动态 DAG 设计 v5 — Annie 的批注", "", "日期: " + new Date().toLocaleString(), ""];
+    var lines = ["# FLY-1020 三层动态 DAG 设计 v6 — Annie 的批注", "", "日期: " + new Date().toLocaleString(), ""];
     var any = false;
     areas.forEach(function(t){
       var v = (t.value || "").trim(); if (!v) return; any = true;
@@ -315,7 +304,7 @@ node_types:
   });
   document.getElementById("dlBtn").addEventListener("click", function(){
     var blob = new Blob([out.value], {type:"text/markdown"}), url = URL.createObjectURL(blob);
-    var a = document.createElement("a"); a.href = url; a.download = "fly1020-dag-design-v5-批注.md";
+    var a = document.createElement("a"); a.href = url; a.download = "fly1020-dag-design-v6-批注.md";
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
   });
