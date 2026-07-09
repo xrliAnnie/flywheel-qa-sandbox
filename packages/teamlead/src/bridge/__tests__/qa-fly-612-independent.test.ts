@@ -318,11 +318,19 @@ describe("FLY-612 G2: 🔴 FLY-175 — thread NL never becomes merge authority",
 			expect(wakeImpl).toHaveBeenCalledTimes(1);
 			const wakeArg = (wakeImpl as ReturnType<typeof vi.fn>).mock.calls[0][0];
 			expect(wakeArg.content).toContain("verify-approval");
-			// 🔴 0 consent-HTTP: the ONLY outbound call is the Discord thread GET
-			expect(fetchSpy).toHaveBeenCalledTimes(1);
-			expect(calls).toHaveLength(1);
-			expect(calls[0].method).toBe("GET");
-			expect(calls[0].url).toContain("/channels/T1/messages");
+			// 🔴 0 consent-HTTP. Allowed outbound is EXACTLY: the Discord thread
+			// GET, plus (FLY-1041 Chunk 8) the ❓ receipt reaction PUT on the
+			// founder's own message — a pure notification, method PUT to the
+			// Discord reactions API, carrying no approval/consent semantics.
+			// Anything else (any POST, any consent/attacker URL) is a violation.
+			const gets = calls.filter((c) => c.method === "GET");
+			expect(gets).toHaveLength(1);
+			expect(gets[0].url).toContain("/channels/T1/messages");
+			const nonGets = calls.filter((c) => c.method !== "GET");
+			for (const c of nonGets) {
+				expect(c.method).toBe("PUT");
+				expect(c.url).toMatch(/\/reactions\/.+\/@me$/);
+			}
 			// nothing POSTed anywhere, in particular not to the attacker bridge
 			expect(calls.some((c) => c.method === "POST")).toBe(false);
 			expect(calls.some((c) => c.url.includes("attacker-bridge"))).toBe(false);
