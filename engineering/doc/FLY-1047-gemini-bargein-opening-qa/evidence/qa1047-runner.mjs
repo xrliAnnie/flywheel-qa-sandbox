@@ -83,9 +83,7 @@ while (Date.now() - t0 < MAX_MS) {
 	}
 	await new Promise((r) => setTimeout(r, 500));
 }
-log(
-	`shutting down (session length ${((Date.now() - t0) / 1000).toFixed(1)}s)`,
-);
+log(`shutting down (session length ${((Date.now() - t0) / 1000).toFixed(1)}s)`);
 await runtime.close();
 log("daemon closed");
 process.exit(0);

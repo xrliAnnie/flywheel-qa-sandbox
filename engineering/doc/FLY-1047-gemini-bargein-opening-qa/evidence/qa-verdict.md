@@ -63,6 +63,26 @@ STT 全程转写结尾「好了,简报是8点26分生成的。」在句中戛止
 5. **QA 素材**:probe-zh-48k.wav(2.04s)/ interrupt-zh-48k.wav(2.47s),均 pcm_s16le 48k stereo(ffprobe 核实)。
 6. **机器负载**:开跑时 load ~16-29 (18 核),全程 rig 无音频卡顿表现。
 
+## 补充判定 A:『⚠️ Gemini Live connection closed unexpectedly: The operation was aborted』(Annie 亲眼所见,FLY-1053 频道)
+
+**定性:正常收尾断开模式,非故障;不影响 ③/① 任何判定。**
+
+- 时间线:该 ⚠️ 出现在幕一 daemon 被 QA 主动关停的时刻。runner1 于 15:26:20 收到 quit 信号 → `state -> landing (trigger=external-stop)` → 关停流程 abort 掉**仍处于打开状态**的 Gemini Live WebSocket → SDK 上抛 "The operation was aborted" → orchestrator 把它渲染成频道警告。runner2 收尾(15:27:54 external-stop)同理。
+- 判据窗口早已完成:③ 全部锚点在 15:19:11(开场 turn end)收官,比该 abort 早 **7 分钟**;① 在 runner2 于 15:26:50 完成,其 abort 出现在 runner2 自己的收尾。abort 与任何判据窗口零重叠。
+- 反证:若是真故障,landing 链路不会完整——实际两轮会议纪要都自动落了 comment、FLY-1053/FLY-1054 都被 landing 链自动关为 Done。
+- 与昨天 FLY-1017/1046 轮里的同款报错同源:会话被外部结束时的断开路径,非新问题。
+- 改进建议(非 PR #501 行为缺陷,不影响本 verdict):orchestrator 应区分「主动关停」与「意外断开」的频道文案,免得 founder 把正常收尾读成错误——建议开 follow-up issue。
+
+## 补充判定 B:替身静音状态(Annie 观察 vs API 证据)
+
+Annie 观察到替身(Chrome web 的 xrliannie 连接)某时刻显示未静音;我方仅有起跑前 32s 的 API 抽查(15:18:25 voice state `mute=true`),测试窗口内未再抽查——两个观察无法完全对齐,如实记录。
+
+**但两条判定都不受影响,有更硬的管道级证据(daemon ears 帧计数器)**:
+
+- runner1 从起跑(15:18:57)到我方第一次探针注入(15:21:24)——覆盖**完整开场 turn + 68s 静默窗**——转发给 Gemini 的音频帧为 **0**(`response started (ears frames forwarded so far: 0)`;首帧 15:21:24.976 与探针 INJECT 时间戳逐毫秒对齐)。
+- runner1 全会话累计 277 帧(~5.5s 音频)≈ 两次探针注入之和;runner2 累计 128 帧(~2.6s)≈ interrupt WAV(2.47s)。
+- 结论:无论替身 UI 静音与否,**静默窗口内没有任何音频进入管道** → ② 的静默前提由管道计数器直接证明;① 的 cancel 只可能由注入帧触发(注入后 0.5s 内发生、且此前 8.5 分钟运行零 cancel)。
+
 ## 场地与生产隔离(红线核对)
 
 - venue 冻结:零频道/权限变更;两轮 autostart kickoff issue **FLY-1053 / FLY-1054** 均已由 landing 链路自动落纪要并关为 Done(无残留,无需 Cancel)。

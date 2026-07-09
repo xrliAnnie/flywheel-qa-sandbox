@@ -59,7 +59,9 @@ const conn = voice.joinVoiceChannel({
 	selfMute: false,
 	selfDeaf: false,
 });
-conn.on("error", (e) => log(`voice conn error (non-fatal): ${e?.message ?? e}`));
+conn.on("error", (e) =>
+	log(`voice conn error (non-fatal): ${e?.message ?? e}`),
+);
 conn.on("stateChange", (o, n) => log(`voice conn ${o.status} -> ${n.status}`));
 client.on("error", (e) => log(`client error (non-fatal): ${e?.message ?? e}`));
 await voice.entersState(conn, voice.VoiceConnectionStatus.Ready, 15_000);
@@ -150,7 +152,9 @@ try {
 try {
 	await client.destroy();
 } catch {}
-log(`captured total ${bytes} bytes (~${(bytes / (48000 * 2 * 2)).toFixed(1)}s speech)`);
+log(
+	`captured total ${bytes} bytes (~${(bytes / (48000 * 2 * 2)).toFixed(1)}s speech)`,
+);
 
 if (bytes < 48000) {
 	log("CAPTURE: (almost) no audio captured — no WAV/STT");
