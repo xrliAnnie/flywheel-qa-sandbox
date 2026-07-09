@@ -873,12 +873,12 @@ describe("FLY-1041 Chunk 8: founder receipt reaction (✅/❓)", () => {
 		);
 	});
 
-	it("durable marker dedup: an existing founder-ack-<msgId> marker suppresses the PUT", async () => {
+	it("durable marker dedup: an existing same-outcome marker suppresses the PUT", async () => {
 		const msgId = snowflakeAt(Date.now() - 30 * 60_000);
 		const { deps, reactImpl } = ackHarness({
 			msgId,
 			handled: true,
-			existingEventIds: [`founder-ack-${msgId}`],
+			existingEventIds: [`founder-ack-${msgId}-bound`],
 		});
 		await emitFounderReplyDeliveryForThread(
 			ctx(),
@@ -886,6 +886,24 @@ describe("FLY-1041 Chunk 8: founder receipt reaction (✅/❓)", () => {
 			deps,
 		);
 		expect(reactImpl).not.toHaveBeenCalled();
+	});
+
+	it("Codex R1 MEDIUM: an earlier ❓ (unbound marker) must NOT suppress the ✅ when a re-scan binds", async () => {
+		const msgId = snowflakeAt(Date.now() - 30 * 60_000);
+		const { deps, reactImpl } = ackHarness({
+			msgId,
+			handled: true, // the retry bound successfully this pass
+			existingEventIds: [`founder-ack-${msgId}-unbound`],
+		});
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			deps,
+		);
+		expect(reactImpl).toHaveBeenCalledTimes(1);
+		expect((reactImpl.mock.calls[0]?.[0] as { emoji: string }).emoji).toBe(
+			"✅",
+		);
 	});
 
 	it("FLYWHEEL_FOUNDER_APPROVAL_ACK=0 kill-switch → no receipt (byte-compat)", async () => {

@@ -437,19 +437,23 @@ async function processFounderMessage(
 	}
 
 	// ── FLY-1041 Chunk 8: founder receipt reaction — the ship branch's SINGLE
-	// decision spot (at most one receipt per founder message). ✅ = her decision
-	// bound (a response was written, approve OR reject); ❓ = ship gates matched
-	// but nothing bound (unclear / classifier failure / held / narrow-multi /
-	// auto-approve off) — "retry won't help, look at the card". No ship gates
-	// matched → no receipt (chatter stays untouched). The durable marker is
-	// inserted BEFORE the PUT so a pinned-cursor re-scan can never double-react;
-	// a PUT failure is audited and NOT retried (best-effort, never blocks
-	// delivery). Kill-switch FLYWHEEL_FOUNDER_APPROVAL_ACK=0.
+	// decision spot (at most one receipt per founder message PER OUTCOME).
+	// ✅ = her decision bound (a response was written, approve OR reject);
+	// ❓ = ship gates matched but nothing bound (unclear / classifier failure /
+	// held / narrow-multi / auto-approve off). No ship gates matched → no
+	// receipt (chatter stays untouched). The durable marker is keyed on
+	// (msgId, outcome) — Codex R1 MEDIUM: a transiently-failed message is
+	// re-scanned (cursor pinned), and if the retry BINDS after an initial ❓,
+	// the ✅ must still fire (one-way ❓→✅ upgrade; a bound gate leaves
+	// pending, so the reverse can never happen). Same-outcome re-scans stay
+	// deduped. Marker is inserted BEFORE the PUT so a re-scan can never
+	// double-react; a PUT failure is audited and NOT retried (best-effort,
+	// never blocks delivery). Kill-switch FLYWHEEL_FOUNDER_APPROVAL_ACK=0.
 	if (ship.length > 0 && process.env.FLYWHEEL_FOUNDER_APPROVAL_ACK !== "0") {
 		const emoji: "✅" | "❓" = handled.size > 0 ? "✅" : "❓";
 		const outcome = handled.size > 0 ? "bound" : "unbound";
 		const markerFresh = store.insertEvent({
-			event_id: `founder-ack-${msg.id}`,
+			event_id: `founder-ack-${msg.id}-${outcome}`,
 			execution_id: ship[0]?.executionId ?? "",
 			issue_id: ctx.issueId,
 			project_name: ctx.projectName,
