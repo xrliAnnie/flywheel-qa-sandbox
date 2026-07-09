@@ -164,7 +164,7 @@ step_run_captain_health() {
 }
 
 # Buddy-region keys writable via `state set` — non-secret by design.
-BS_BUDDY_KEY_WHITELIST='^(cursor|first_task_summary|team_proposal|connected_systems|escalated|brain_session_id)$'
+BS_BUDDY_KEY_WHITELIST='^(cursor|first_task_summary|team_proposal|connected_systems|requested_systems|escalated|brain_session_id)$'
 
 # ── JSON emission (the ONLY stdout writers in this file) ────────────────────
 bs_emit() { jq -nc "$@"; }

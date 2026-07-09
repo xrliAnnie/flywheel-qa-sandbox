@@ -358,12 +358,27 @@ fb_b6() {
   fi
 }
 
+fb_project_name() {
+  local i=0 n="${#FB_ARGS[@]}"
+  while [ "$i" -lt "$n" ]; do
+    if [ "${FB_ARGS[$i]}" = "--project" ]; then printf '%s' "${FB_ARGS[$((i+1))]}"; return 0; fi
+    i=$((i+1))
+  done
+  jq -r '.buddy.identity.project // empty' "$FB_STATE_DIR/setup-state.json" 2>/dev/null
+}
+
 fb_b7() {
   fb_gap; fb_copy step7-placement; fb_gap
   if [ -f "$FB_PREVIEW_LIB" ]; then
     # shellcheck disable=SC1090
     source "$FB_PREVIEW_LIB"
     buddy_captain_preview_stop "$FB_STATE_DIR" 2>>"$FB_STATE_DIR/buddy-steps.log" || true
+  fi
+  if [ -f "$FB_CONNECT_LIB" ]; then
+    # shellcheck disable=SC1090
+    source "$FB_CONNECT_LIB"
+    buddy_install_first_output_skill "$FB_STATE_DIR" "$(fb_project_name)" \
+      2>>"$FB_STATE_DIR/buddy-steps.log" || true
   fi
   fb_run_guarded services "让团队常驻上岗" || true
   fb_run_guarded finish "确认家里的大本营开张" || true
