@@ -1,13 +1,13 @@
 ---
 issue: FLY-1041
-phase: design
-phaseCursor: 4/4
-updated: 2026-07-09T06:51:28.590Z
-nextStep: commit docs + phase_design_complete + park
+phase: implement
+phaseCursor: 0/10
+updated: 2026-07-09T06:53:53.939Z
+nextStep: read code map, then Chunk 1 TDD (retire-on-rebind)
 chunks: []
 pointers: {}
 ---
 
 # FLY-1041 progress
-**phase**: design (4/4)
-**next**: commit docs + phase_design_complete + park
+**phase**: implement (0/10)
+**next**: read code map, then Chunk 1 TDD (retire-on-rebind)
