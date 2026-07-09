@@ -59,6 +59,15 @@ if [ "$STATE_DIR" != "$HOME/.flywheel" ] && [ "${FLYWHEEL_CONVERGE_PROD_STATE:-0
 fi
 
 FILES="flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh"
+# FLY-1062: a PACKAGED tree (root carries .flywheel-prebuilt) never ships
+# restart-services.sh — it is monorepo deploy machinery. There its absence is
+# the EXPECTED shape, not an integrity incident; without this branch every
+# Lead start on a packaged install would fire a repo-source-missing alert.
+# Monorepo checkouts carry no sentinel, so the fail-loud list above stays
+# verbatim (reverse-compat sentinel: packaged-seams.test.sh S7/S8).
+if [ -f "$REPO_ROOT/.flywheel-prebuilt" ]; then
+  FILES="flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh"
+fi
 
 log() { echo "[converge-bin] $*"; }
 sha() { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
