@@ -26,6 +26,7 @@ import { MailboxTransport } from "../mailbox/MailboxTransport.js";
 import {
 	formatDurationMs,
 	formatGateQuestion,
+	formatDetectionSuspicious,
 	formatMisroutedReport,
 	formatStuckEscalation,
 } from "./hook-payload.js";
@@ -283,6 +284,13 @@ export class MailboxLeadRuntime implements LeadRuntime {
 		// formatStuckEscalation (FLY-195 lesson).
 		if (e.event_type === "runner_misrouted_report") {
 			return formatMisroutedReport(env);
+		}
+
+		// FLY-1048 (A5): detection_suspicious — the generic formatter would drop
+		// suspicious_reason / suspicious_pane_tail entirely. Shared renderer
+		// (parity with CommDBLeadRuntime by construction).
+		if (e.event_type === "detection_suspicious") {
+			return formatDetectionSuspicious(env);
 		}
 
 		const roleLabel =

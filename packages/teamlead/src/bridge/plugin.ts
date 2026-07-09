@@ -135,6 +135,7 @@ import { runBootShaCheck } from "./boot-sha-check.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 // FLY-927 (Task 3.3): truthful stage wording for the three-stage stuck alert.
 import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
+import { deliverSuspiciousReport } from "./detection-suspicious.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
@@ -5811,6 +5812,57 @@ export async function startBridge(
 		// Escape hatch: set FLYWHEEL_PANE_IDLE_SUPPRESS=0 to force suppression OFF
 		// and restore the legacy always-alert-on-stuck-pane behavior.
 		suppressIdleHealthy: process.env.FLYWHEEL_PANE_IDLE_SUPPRESS !== "0",
+		// FLY-1048 (A4): multi-frame overlay — default OFF; unset env keeps the
+		// single-frame behavior byte-for-byte (gray-rollout knob, plan §6).
+		multiFrame: process.env.FLYWHEEL_PANE_MULTIFRAME === "1",
+		// FLY-1048 (A5): fail-suspicious → quiet owner-Lead report (guardrail
+		// lead_event; never an alert, never founder-facing).
+		onSuspicious: (report) => {
+			void deliverSuspiciousReport(
+				{
+					store,
+					runtimeRegistry: registry,
+					resolveOwner: (r) => {
+						if (r.targetKind === "lead") {
+							// State key is `<project>:<leadId>` (LeadWatchdog stateKey).
+							const idx = r.targetKey.indexOf(":");
+							if (idx <= 0 || idx === r.targetKey.length - 1) return null;
+							return {
+								projectName: r.targetKey.slice(0, idx),
+								leadId: r.targetKey.slice(idx + 1),
+							};
+						}
+						// Runner target: execId → session → label-derived owner Lead.
+						const session = store.getSession(r.targetKey);
+						if (!session?.project_name) return null;
+						const project = projects.find(
+							(p) => p.projectName === session.project_name,
+						);
+						if (!project) return null;
+						for (const lead of project.leads) {
+							try {
+								if (matchesLead(session, lead.agentId, projects)) {
+									return {
+										leadId: lead.agentId,
+										projectName: project.projectName,
+										executionId: session.execution_id,
+										issueId: session.issue_id,
+									};
+								}
+							} catch {
+								/* try the next lead */
+							}
+						}
+						return null;
+					},
+				},
+				report,
+			).catch((err) =>
+				console.warn(
+					`[detection-suspicious] delivery failed: ${(err as Error).message}`,
+				),
+			);
+		},
 	});
 	leadWatchdog.start();
 	console.log(
