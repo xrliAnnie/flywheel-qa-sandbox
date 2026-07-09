@@ -1,10 +1,10 @@
 ---
 issue: FLY-1004
-phase: implement
+phase: ship
 phaseCursor: 6/6
 updated: 2026-07-08
 round: 4 (Annie 批注 → 每块画图+用户视角+grounded 对比+事实校正)
-nextStep: HTML v4 已发 FLY-1004 thread;等 Annie 批注;gate HOLD
+nextStep: Annie 批准 9e025761 → 收尾 ship;跑 827 codex → 冻 head → approve gate → Tadashi merge
 ---
 
 ## round-4(Annie 详细批注:5 图 + 用户视角 + grounded 对比我们 + 事实校正)
