@@ -1,0 +1,10 @@
+⏺ Reviewing the runner reports before the standup summary.
+
+✢ Pondering… (11m 3s · almost done thinking)
+
+───────────────────────────────────────────────────────────────────────────────────────────────────── @cos-lead ──
+❯
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 4.8/xhigh | ⚡cos-lead | ~/.flywheel/lead-workspace/cos-lead | ctx 62% ����������
+  5h ���������� 12% reset today 21:30  |  7d ���������� 41% reset Mon 09:00
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
