@@ -26,10 +26,14 @@ class FakeConnection implements LiveConnection {
 	closed = false;
 	private cb?: (e: LiveServerEvent) => void;
 	constructor(readonly params: LiveConnectParams) {}
+	audioStreamEnds = 0;
 	sendAudio(frame: Buffer): void {
 		this.sentAudio.push(frame);
 	}
 	sendText(): void {}
+	endAudioStream(): void {
+		this.audioStreamEnds++;
+	}
 	sendToolResponse(callId: string, output: string): void {
 		this.toolResponses.push({ callId, output });
 	}
@@ -143,6 +147,13 @@ describe("GeminiLiveBackend converse face", () => {
 			role: "user",
 			backendId: "gemini-live",
 		});
+	});
+
+	it("endUserTurn commits the turn via audioStreamEnd (FLY-967 round-6: Discord silence-suppression gives no trailing silence)", async () => {
+		const { session, conn } = await makeSession();
+		session.endUserTurn();
+		session.endUserTurn();
+		expect(conn.audioStreamEnds).toBe(2);
 	});
 
 	it("threads bargeIn to the transport (default true; explicit false honored)", async () => {

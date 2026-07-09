@@ -180,6 +180,13 @@ class GeminiLiveSession implements ConversationSession {
 		this.conn.sendText(text);
 	}
 
+	/** FLY-967 round-6: the user stopped speaking — commit their turn so the
+	 * model responds (Discord silence-suppression gives no trailing silence for
+	 * the server VAD to detect end-of-speech on its own). */
+	endUserTurn(): void {
+		this.conn.endAudioStream();
+	}
+
 	/** manual interrupt — LOCAL suppression only (no client server-cancel exists). */
 	interrupt(): void {
 		this.cancelCurrentTurn();

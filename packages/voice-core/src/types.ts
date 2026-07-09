@@ -188,6 +188,13 @@ export interface ConversationSession {
 	 * verbatim-quote pools built from user entries can never pick them up.
 	 */
 	sendText(text: string): void;
+	/**
+	 * FLY-967 round-6: the user finished their utterance — commit the turn so
+	 * the model responds. Needed because Discord silence-suppression ends the
+	 * audio stream abruptly (no trailing silence), so the server VAD never
+	 * commits end-of-speech on its own. No-op backends may ignore it.
+	 */
+	endUserTurn(): void;
 	interrupt(): void;
 	injectToolResult(r: ToolResult, sched?: ScheduleHint): void;
 	on<E extends keyof ConversationEventMap>(

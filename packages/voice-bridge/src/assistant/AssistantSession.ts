@@ -23,6 +23,8 @@ import { ASSISTANT_SLOT_MODE } from "./config.js";
 export interface ConversationLike {
 	sendText(text: string): void;
 	sendAudio(frame: Buffer, format: unknown): void;
+	/** FLY-967 round-6: commit the user's turn (they stopped speaking). */
+	endUserTurn(): void;
 	on(event: string, h: (...args: never[]) => void): () => void;
 	close(): Promise<unknown>;
 }
@@ -46,6 +48,8 @@ export interface VoicePresence {
 
 export interface EarsFeed {
 	onFrame(cb: (frame: Buffer, format: unknown) => void): () => void;
+	/** FLY-967 round-6: the founder stopped speaking (Discord speaking-end). */
+	onSpeakingEnd(cb: () => void): () => void;
 	onDown(cb: () => void): () => void;
 	onUp(cb: () => void): () => void;
 }
@@ -151,6 +155,7 @@ export class AssistantSession {
 	private earsFramesForwarded = 0;
 	private audioChunksTotal = 0;
 	private audioChunksThisTurn = 0;
+	private framesThisUtterance = 0;
 
 	constructor(private readonly opts: AssistantSessionOptions) {}
 
@@ -268,6 +273,7 @@ export class AssistantSession {
 			this.opts.ears.onFrame((frame, format) => {
 				if (this._state === "live" || this._state === "concluding") {
 					this.earsFramesForwarded++;
+					this.framesThisUtterance++;
 					if (!this.firstFrameLogged) {
 						this.firstFrameLogged = true;
 						this.log(
@@ -278,6 +284,20 @@ export class AssistantSession {
 					}
 					conv.sendAudio(frame, format);
 				}
+			}),
+			// FLY-967 round-6: Discord silence-suppression ends her audio stream
+			// abruptly when she stops — with no trailing silence the server VAD
+			// never commits end-of-speech and the model never replies (reproduced:
+			// abrupt audio = NO_RESPONSE). On speaking-end, if she actually sent
+			// audio this utterance, commit the turn so Gemini responds.
+			this.opts.ears.onSpeakingEnd(() => {
+				if (this._state !== "live" && this._state !== "concluding") return;
+				if (this.framesThisUtterance === 0) return; // backchannel/noise
+				this.log(
+					`founder speaking-end — committing turn (${this.framesThisUtterance} frames this utterance)`,
+				);
+				this.framesThisUtterance = 0;
+				conv.endUserTurn();
 			}),
 			this.opts.ears.onDown(() => {
 				if (this._state !== "live") return;

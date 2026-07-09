@@ -44,6 +44,10 @@ export class TalkSessionRotator {
 
 	/** FLY-967: forward a control prompt to the current session; dropped while a
 	 * rotation is in flight (sub-second window — the caller may re-issue). */
+	endUserTurn(): void {
+		this.session?.endUserTurn();
+	}
+
 	sendText(text: string): void {
 		this.session?.sendText(text);
 	}

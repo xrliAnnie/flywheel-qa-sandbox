@@ -188,6 +188,7 @@ export async function wireAssistantMode(
 	// ---- resident ears: ONE receiver for the daemon lifetime; frames are
 	// routed to whichever meeting is live (SessionSlot enforces ≤1). ----
 	let activeFrames: ((frame: Buffer, format: unknown) => void) | null = null;
+	let activeSpeakingEnd: (() => void) | null = null;
 	const earsDownCbs = new Set<() => void>();
 	const earsUpCbs = new Set<() => void>();
 	const ears = new EarsReceiver({
@@ -203,6 +204,9 @@ export async function wireAssistantMode(
 				sampleRateHz: 16_000,
 				channels: 1,
 			}),
+		// FLY-967 round-6: route speaking-end to the live meeting so it can commit
+		// the founder's turn (Discord silence-suppression gives no trailing silence).
+		onSpeakingEnd: () => activeSpeakingEnd?.(),
 		// v1: Gemini server VAD is the barge-in main path (plan §6); the local
 		// pre-stop gate arrives with assistant.localBargeIn after full-chain S-A1.
 		onBargeIn: () => {},
@@ -354,6 +358,12 @@ export async function wireAssistantMode(
 						activeFrames = cb;
 						return () => {
 							if (activeFrames === cb) activeFrames = null;
+						};
+					},
+					onSpeakingEnd: (cb) => {
+						activeSpeakingEnd = cb;
+						return () => {
+							if (activeSpeakingEnd === cb) activeSpeakingEnd = null;
 						};
 					},
 					onDown: (cb) => {
@@ -686,6 +696,10 @@ export class RotatorConversationAdapter implements ConversationLike {
 
 	sendText(text: string): void {
 		this.rotator.sendText(text);
+	}
+
+	endUserTurn(): void {
+		this.rotator.endUserTurn();
 	}
 
 	sendAudio(frame: Buffer, format: unknown): void {

@@ -51,6 +51,7 @@ function harness(over: Record<string, unknown> = {}) {
 	};
 	const ears = {
 		onFrame: (_cb: (f: Buffer, fmt: unknown) => void) => () => {},
+		onSpeakingEnd: (_cb: () => void) => () => {},
 		onDown: (_cb: () => void) => () => {},
 		onUp: (_cb: () => void) => () => {},
 	};

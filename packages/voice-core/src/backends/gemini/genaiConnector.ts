@@ -123,6 +123,9 @@ export function createGenaiTransport(
 				sendText(text: string) {
 					session.sendRealtimeInput({ text });
 				},
+				endAudioStream() {
+					session.sendRealtimeInput({ audioStreamEnd: true });
+				},
 				sendToolResponse(callId: string, output: string) {
 					session.sendToolResponse({
 						functionResponses: [

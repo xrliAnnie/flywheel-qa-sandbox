@@ -38,6 +38,12 @@ export interface LiveConnection {
 	sendAudio(frame: Buffer, format: AudioFormat): void;
 	/** FLY-967: text control prompt via sendRealtimeInput({ text }). */
 	sendText(text: string): void;
+	/** FLY-967 round-6: signal end-of-user-audio (audioStreamEnd) so the model
+	 * commits the turn and responds. Discord silence-suppression stops the
+	 * audio stream abruptly when the user goes quiet — with no trailing silence
+	 * and no turn-end signal the server VAD never commits and the model never
+	 * replies (reproduced: abrupt audio end = NO_RESPONSE). */
+	endAudioStream(): void;
 	/** function-response back to the model, with optional scheduling. */
 	sendToolResponse(
 		callId: string,

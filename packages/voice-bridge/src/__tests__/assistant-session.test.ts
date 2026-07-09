@@ -33,6 +33,10 @@ class FakeConversation {
 	sendAudio(frame: Buffer): void {
 		this.sentAudio.push(frame);
 	}
+	userTurnEnds = 0;
+	endUserTurn(): void {
+		this.userTurnEnds++;
+	}
 	on<E extends keyof ConvEvents>(
 		e: E,
 		h: (...a: ConvEvents[E]) => void,
@@ -82,6 +86,8 @@ function harness(over: Record<string, unknown> = {}) {
 	let founderJoined: (() => void) | undefined;
 	let founderLeft: (() => void) | undefined;
 	let earsDown: (() => void) | undefined;
+	let earsSpeakingEnd: (() => void) | undefined;
+	let earsFrame: ((f: Buffer, fmt: unknown) => void) | undefined;
 	let earsUp: (() => void) | undefined;
 	const tiv = {
 		status: vi.fn(),
@@ -108,7 +114,14 @@ function harness(over: Record<string, unknown> = {}) {
 		},
 	};
 	const ears = {
-		onFrame: (_cb: (f: Buffer, fmt: unknown) => void) => () => {},
+		onFrame: (cb: (f: Buffer, fmt: unknown) => void) => {
+			earsFrame = cb;
+			return () => {};
+		},
+		onSpeakingEnd: (cb: () => void) => {
+			earsSpeakingEnd = cb;
+			return () => {};
+		},
 		onDown: (cb: () => void) => {
 			earsDown = cb;
 			return () => {};
@@ -151,6 +164,8 @@ function harness(over: Record<string, unknown> = {}) {
 		founderJoin: () => founderJoined?.(),
 		founderLeave: () => founderLeft?.(),
 		earsDown: () => earsDown?.(),
+		earsSpeakingEnd: () => earsSpeakingEnd?.(),
+		earsFrame: (f: Buffer) => earsFrame?.(f, { sampleRateHz: 16000 }),
 		earsUp: () => earsUp?.(),
 	};
 }
@@ -165,6 +180,27 @@ describe("AssistantSession (FLY-967 P6b)", () => {
 		vi.setSystemTime(new Date("2026-07-07T15:00:00"));
 	});
 	afterEach(() => vi.useRealTimers());
+
+	it("FLY-967 round-6: founder speaking-end commits her turn only after she actually sent audio (Discord silence-suppression)", async () => {
+		const h = harness();
+		await h.session.start();
+		expect(h.session.state).toBe("live");
+		// pure speaking-end with no frames this utterance = backchannel/noise: no commit
+		h.earsSpeakingEnd();
+		expect(h.conv.userTurnEnds).toBe(0);
+		// she speaks (frames flow), then stops → the turn commits exactly once
+		h.earsFrame(Buffer.alloc(640));
+		h.earsFrame(Buffer.alloc(640));
+		h.earsSpeakingEnd();
+		expect(h.conv.userTurnEnds).toBe(1);
+		// a second speaking-end with no new frames does NOT re-commit
+		h.earsSpeakingEnd();
+		expect(h.conv.userTurnEnds).toBe(1);
+		// next utterance commits again
+		h.earsFrame(Buffer.alloc(640));
+		h.earsSpeakingEnd();
+		expect(h.conv.userTurnEnds).toBe(2);
+	});
 
 	it("happy path: open → chat → 结束 → recap → 对 → landing(confirmed) → teardown", async () => {
 		const h = harness();
