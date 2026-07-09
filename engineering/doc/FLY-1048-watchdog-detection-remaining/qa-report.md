@@ -4,9 +4,9 @@ Issue: FLY-1048 (https://linear.app/geoforge3d/issue/FLY-1048)
 日期: 2026-07-09
 基于: plan.md(同文件夹)+ PR #522(feat(watchdog): FLY-1048 PR-A — mechanical detection layer + minutes-scale cadence)
 
-> **三段式 QA 阶段结论:FAIL(1 个真实、可复现、CI-blocking 缺陷)。**
-> 缺陷来源 = PR-A 本身(新增 6 个 `FLYWHEEL_*` env 未注册),不是环境噪音。
-> 修复归 Implement 阶段(QA 不自改代码,按三段式契约)。
+> **三段式 QA 最终结论:PASS(RE-TEST round 2,head `496c245d`,CI GREEN)。**
+> Round 1 = FAIL(1 个真实、可复现、CI-blocking 缺陷:6 个 `FLYWHEEL_*` env 未注册);
+> Implement 阶段已在本 branch 修复(commit `496c245d`),QA round 2 复验通过。详见 §6。
 
 ---
 
@@ -124,7 +124,37 @@ A5 late-bound thread poster(alertDiscordOps 就绪后再挂)、`onGapScanTick`/`
 
 ## 5. QA 判定
 
-**FAIL** —— 单一阻断项 = §2 的 feature-flag drift guard(CI RED)。
-PR-A 逻辑本身健全、回归干净、lint/typecheck 均过;修好 env 登记 → CI 应转绿 → 可再验收。
-按三段式契约:QA 不自改代码;此报告 + `qa-result --status fail` 交回 Implement 阶段在本 branch 修,
-修后 push 同一 branch → 唤醒 QA 复验。
+**Round 1 = FAIL** —— 单一阻断项 = §2 的 feature-flag drift guard(CI RED)。
+PR-A 逻辑本身健全、回归干净、lint/typecheck 均过;唯 env 登记缺失。
+按三段式契约:QA 不自改代码;交回 Implement 阶段在本 branch 修,修后唤醒 QA 复验。
+
+---
+
+## 6. RE-TEST(round 2)—— PASS
+
+**触发**:Implement 阶段推 commit `496c245d`「fix(config): register FLY-1048 watchdog env in
+feature-flag registry (QA fix round 1)」,worktree 已在新 head(同目录,零 fetch)。`turn` 确认
+`yours`(epoch=5)后复验。
+
+**修复内容核对(仅动 `packages/config`,teamlead 代码逐字未变 → 我 round-1 的 189 项测试仍有效)**:
+
+| 未登记 env | 修法 | 是否正确 |
+|---|---|---|
+| `FLYWHEEL_STUCK_ERRORSIG` | 注册进 `FEATURE_FLAGS`(name `stuck_errorsig`,opt_in/bool/default false,readSite stuck-candidate.ts) | ✅ |
+| `FLYWHEEL_PANE_MULTIFRAME` | 注册进 `FEATURE_FLAGS`(name `pane_multiframe`,opt_in/bool/default false,readSite plugin.ts) | ✅ |
+| `FLYWHEEL_DETECTION_GAP_SCAN` | 注册进 `FEATURE_FLAGS`(name `detection_gap_scan`,opt_in/bool/default false,readSite plugin.ts) | ✅ |
+| `FLYWHEEL_GAP_SCAN_EVERY_N_TICKS` | 加入 `NON_FLAG_ALLOWLIST`(tuning knob,FLY-766 判例) | ✅ |
+| `FLYWHEEL_FRAME_INTERVAL_MS` | 同上(tuning knob) | ✅ |
+| `FLYWHEEL_FRAME_CAPTURES_PER_TICK` | 同上(tuning knob) | ✅ |
+
+3 个布尔 gate 正式注册(不是塞 allowlist 糊弄)、3 个数值 knob 归 allowlist——**分类正确,drift guard 本身未被削弱/篡改**(guard 逻辑零改;只在 `NON_FLAG_ALLOWLIST` 加了 3 行带 reason 的条目)。
+
+**复验证据(head `496c245d`)**:
+- ✅ **CI「Build & Test」GREEN**(run 29027216717,pass,11m35s)—— round-1 唯一阻断项已消除,clean-env 权威确认。
+- ✅ **`packages/config` 全量套件**:20 文件 / **359/359 PASS**(含 feature-flags-drift 的 3 项);config typecheck exit 0。
+- ✅ **FLY-1048 teamlead 单测 + 927 sentinel**(重跑于新 head):13 文件 / **189/189 PASS**。
+- ✅ teamlead 侧代码未改动 → round-1 已验的回归/lint/typecheck 结论继续成立。
+
+**最终判定:PASS。** PR #522(PR-A)ship-ready:CI 绿、QA 双轮验收通过、字节兼容(全新 env default off)。
+下一步 = 开 approve gate,等 founder 批 → 我(本 pipeline ship executor)执行 :cool: ship。
+(范围提醒不变:FLY-1048 issue 级 done 仍需 PR-B / PR-C,另起 pipeline。)
