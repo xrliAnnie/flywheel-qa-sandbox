@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-347 — 用 LLM 构建个人知识库到底怎么做</title>
+<style>
+  :root { --ink:#1d1d1f; --dim:#86868b; --blue:#007aff; --navy:#1a365d; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system, system-ui, "PingFang SC", sans-serif;
+    background:#f5f5f7; color:var(--ink); max-width:820px; margin:0 auto;
+    padding:1.2rem 1rem 6rem; line-height:1.6; -webkit-text-size-adjust:100%; }
+  h1 { font-size:1.5rem; margin:.2rem 0 .1rem; line-height:1.25; }
+  .sub { color:var(--dim); font-size:.9rem; margin:.1rem 0 1rem; }
+  .card { background:#fff; border-radius:12px; padding:1rem 1.15rem; margin:1rem 0;
+    box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid #d2d2d7; }
+  .card.k { border-left-color:var(--blue); }
+  .card.gen { border-left-color:#34c759; }
+  .card.cmp { border-left-color:#af52de; }
+  .card.honest { border-left-color:#ff9500; }
+  .card.next { border-left-color:#ff3b30; }
+  .card h2 { font-size:1.12rem; margin:.1rem 0 .5rem; }
+  .card h2 .n { color:var(--dim); font-weight:600; font-size:.9rem; margin-right:.4rem; }
+  .card p { margin:.5rem 0; font-size:.95rem; }
+  .card ul { margin:.4rem 0 .4rem 1.1rem; padding:0; font-size:.93rem; }
+  .card li { margin:.3rem 0; }
+  .q { background:#f0f4ff; border-radius:8px; padding:.5rem .7rem; font-size:.9rem;
+    color:var(--navy); margin:.5rem 0; }
+  .q .lbl { font-weight:600; font-size:.75rem; color:var(--blue); display:block;
+    margin-bottom:.15rem; letter-spacing:.02em; }
+  code, .mono { font-family:"SF Mono", ui-monospace, monospace; font-size:.86em;
+    background:#f0f0f2; padding:.05rem .3rem; border-radius:5px; }
+  a { color:var(--blue); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .tag { display:inline-block; font-size:.72rem; padding:.1rem .5rem; border-radius:999px;
+    color:#fff; vertical-align:middle; }
+  .tag.unk { background:#ff9500; }
+  .tag.src { background:#34c759; }
+  table { width:100%; border-collapse:collapse; font-size:.86rem; margin:.6rem 0; }
+  th, td { text-align:left; padding:.45rem .5rem; border-bottom:1px solid #eee;
+    vertical-align:top; }
+  th { color:var(--navy); font-size:.82rem; }
+  .table-wrap { overflow-x:auto; }
+  .comment-label { display:block; font-size:.8rem; color:#555; margin-top:.7rem;
+    font-weight:600; }
+  textarea { width:100%; font-family:inherit; font-size:.9rem; border:1px solid #e0e0e5;
+    border-radius:8px; padding:.5rem; margin-top:.25rem; resize:vertical; }
+  .exportbar { position:sticky; top:0; z-index:5; background:rgba(245,245,247,.96);
+    backdrop-filter:saturate(180%) blur(8px); padding:.6rem 0; margin:-.4rem 0 .4rem;
+    border-bottom:1px solid #e0e0e5; }
+  .exportbar .row { display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; }
+  button { font:inherit; font-size:.9rem; background:var(--blue); color:#fff; border:0;
+    border-radius:8px; padding:.45rem .9rem; cursor:pointer; }
+  button.secondary { background:#e8e8ed; color:#1d1d1f; }
+  #copy-status { font-size:.85rem; color:#34c759; }
+  #export-output { white-space:pre-wrap; word-break:break-all; background:#1d1d1f;
+    color:#e8e8ed; font-family:"SF Mono", ui-monospace, monospace; font-size:.76rem;
+    border-radius:10px; padding:.8rem; margin-top:.6rem; max-height:320px; overflow:auto;
+    display:none; }
+  .choices { display:flex; flex-direction:column; gap:.45rem; margin:.5rem 0; }
+  .choices label { display:flex; gap:.5rem; align-items:flex-start; font-size:.92rem;
+    background:#f7f7f9; border:1px solid #e6e6ea; border-radius:8px; padding:.5rem .6rem;
+    cursor:pointer; }
+  .choices input { margin-top:.2rem; }
+  .foot { color:var(--dim); font-size:.8rem; margin-top:1.5rem; text-align:center; }
+</style>
+</head>
+<body>
+
+<div class="exportbar">
+  <div class="row">
+    <button id="copy-json" type="button">复制我的批注 JSON</button>
+    <button id="toggle-output" type="button" class="secondary">查看/隐藏</button>
+    <span id="copy-status"></span>
+  </div>
+  <pre id="export-output"></pre>
+</div>
+
+<h1>用 LLM 构建个人知识库到底怎么做</h1>
+<div class="sub">FLY-347 · Karpathy 的方法 + 通用做法 · 讲清源头(这轮不判 close,你理解后再定)</div>
+
+<div class="card" data-key="how-to-use">
+  <h2><span class="n">0</span>怎么用这一页</h2>
+  <p>这页把「用 LLM 建个人知识库」从源头讲清:<b>Karpathy 具体怎么做的</b> + <b>通用做法全景</b>。
+  每节底下有个留言框 —— 有想法/疑问/"这块我想这样"就直接打进去。看完点顶部
+  <b>复制我的批注 JSON</b>,把它发回给我(Honey Lemon),我据此陪你定下一步。</p>
+  <p><b>诚实标注</b>:<span class="tag src">一手已核</span> = 从 Karpathy gist 原文逐字核到;
+  <span class="tag unk">UNKNOWN</span> = 查不到/二手,没替他编。</p>
+</div>
+
+<div class="card k" data-key="source">
+  <h2><span class="n">1</span>源头(以及对「他好像没 GitHub」的更正)</h2>
+  <p>Karpathy ~2026 年 4 月发推讲这个,16M+ 阅读。<b>他其实有公开产出</b> —— 但那是一份
+  GitHub <b>gist「思路文件(idea file)」,不是一个能跑的仓库/工具</b>。gist 开头原话:
+  <i>"This is an idea file… designed to be copy pasted to your own LLM Agent… your agent
+  will build out the specifics in collaboration with you."</i> 也就是他给的是<b>模式</b>,
+  具体目录/脚本/配置由你和你的 agent 一起搭。<span class="tag src">一手已核</span></p>
+  <ul>
+    <li>原推:<a href="https://x.com/karpathy/status/2039805659525644595">x.com/karpathy/status/2039805659525644595</a>
+      <span class="tag unk">UNKNOWN</span> 全文需登录,未逐字核到,framing 是二手转述</li>
+    <li>gist「LLM Wiki」:<a href="https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f">gist.github.com/karpathy/442a6bf…</a>
+      <span class="tag src">一手已核</span> 本页引用以它为准</li>
+  </ul>
+  <p>他的一句原话 framing:大量 token「less into manipulating <b>code</b>, and more into
+  manipulating <b>knowledge</b>」(以 markdown + 图片存)。</p>
+  <label class="comment-label" for="c-source">你的留言</label>
+  <textarea id="c-source" rows="2" maxlength="2000" placeholder="例:我想先搞清他到底存在哪、怎么起步…"></textarea>
+</div>
+
+<div class="card k" data-key="not-rag">
+  <h2><span class="n">2</span>核心:为什么这不是 RAG</h2>
+  <p>他一开篇就把它和 RAG 对立(引号=原文):</p>
+  <ul>
+    <li>RAG(NotebookLM / ChatGPT 传文件):查的时候取相关片段拼答案 —— <i>"the LLM is
+      rediscovering knowledge from scratch on every question. <b>There's no accumulation.</b>"</i></li>
+    <li>他的做法:LLM <i>"incrementally builds and maintains a <b>persistent wiki</b>"</i> ——
+      一堆结构化、互相链接的 markdown,夹在你和原始资料之间。新来一个源,LLM 不是只索引待查,
+      而是读它、抽要点、<b>整合进现有 wiki</b>(更新实体页、修订综述、标出和旧结论矛盾的地方)。</li>
+    <li>关键:<i>"<b>the wiki is a persistent, compounding artifact.</b>"</i> 交叉引用已经在了、
+      矛盾已经标了、综述已反映你读过的一切。每加一个源都让库更富,而不是每次从头重来。</li>
+  </ul>
+  <p class="q"><span class="lbl">他的类比</span>"Obsidian is the IDE; the LLM is the
+  programmer; the wiki is the codebase." —— 你选源、问问题;LLM 干所有 bookkeeping。</p>
+  <label class="comment-label" for="c-not-rag">你的留言</label>
+  <textarea id="c-not-rag" rows="2" maxlength="2000" placeholder="例:这个『累积』的点戳到我了 / 我们的 MEMORY 是不是也该这样…"></textarea>
+</div>
+
+<div class="card k" data-key="arch">
+  <h2><span class="n">3</span>三层架构</h2>
+  <div class="table-wrap"><table>
+    <tr><th>层</th><th>是什么</th><th>谁负责</th></tr>
+    <tr><td><b>Raw sources</b></td><td>你精选的源(文章/论文/图/数据)。<b>不可变</b>,source of truth</td><td>你选,LLM 只读</td></tr>
+    <tr><td><b>The wiki</b></td><td>一堆 LLM 生成的 markdown:摘要页/实体页/概念页/对比/综述</td><td><i>"The LLM owns this layer entirely."</i></td></tr>
+    <tr><td><b>The schema</b></td><td>一份 <code>CLAUDE.md</code> 或 <code>AGENTS.md</code>,写清 wiki 怎么组织、各操作走什么流程</td><td>你和 LLM 共同演化</td></tr>
+  </table></div>
+  <p>schema 是关键:<i>"it's what makes the LLM a disciplined wiki maintainer rather than a
+  generic chatbot."</i> <span class="tag src">一手已核</span></p>
+  <label class="comment-label" for="c-arch">你的留言</label>
+  <textarea id="c-arch" rows="2" maxlength="2000" placeholder="…"></textarea>
+</div>
+
+<div class="card k" data-key="ops">
+  <h2><span class="n">4</span>三个操作 + 两个特殊文件</h2>
+  <ul>
+    <li><b>Ingest(喂源)</b>:丢进 raw → LLM 读 → 和你讨论要点 → 写摘要页 → 更新 index →
+      更新相关实体/概念页 → 追加 log。<i>"A single source might touch 10-15 wiki pages."</i></li>
+    <li><b>Query(问)</b>:LLM 搜相关页 → 综合 + 引用。答案可是页/对比表/幻灯/图表。关键:
+      <i>"good answers can be <b>filed back into the wiki</b> as new pages."</i> —— 你的探索也 compound 进库。</li>
+    <li><b>Lint(体检)</b>:定期让 LLM 找矛盾、过时断言、孤儿页、缺失交叉引用、可补的数据缺口。</li>
+  </ul>
+  <ul>
+    <li><code>index.md</code>:全库目录(每页一链+一行摘要),答问题先读它再钻。<b>他说这在 ~100 源、
+      数百页的规模「surprisingly well」,不需要向量 RAG 基建。</b></li>
+    <li><code>log.md</code>:append-only 时间线,前缀统一就能 <span class="mono">grep "^## \[" log.md | tail -5</span>。</li>
+  </ul>
+  <label class="comment-label" for="c-ops">你的留言</label>
+  <textarea id="c-ops" rows="2" maxlength="2000" placeholder="…"></textarea>
+</div>
+
+<div class="card k" data-key="tools">
+  <h2><span class="n">5</span>工具与技巧(他 gist 里点名的)</h2>
+  <ul>
+    <li><b>Obsidian Web Clipper</b>:浏览器扩展,把网页转 markdown 进 raw。</li>
+    <li><b>图片本地化</b>:Obsidian 里设固定附件目录 + 绑热键一键下图。<b>诚实局限</b>:LLM 一次
+      读不了内联图,得先读文字再单独看图 —— 他原话 <i>"a bit clunky but works well enough."</i></li>
+    <li><b>Obsidian graph view</b> 看库形状;<b>Marp</b> 出幻灯;<b>Dataview</b> 按 frontmatter 生成动态表。</li>
+    <li><b>wiki 就是个 git repo</b> —— 白拿版本历史/分支/协作。</li>
+    <li>规模大了要真搜索:推荐 <b>qmd</b>(本地 markdown 搜索,BM25+向量+LLM 重排,有 CLI 也有 MCP)。</li>
+  </ul>
+  <label class="comment-label" for="c-tools">你的留言</label>
+  <textarea id="c-tools" rows="2" maxlength="2000" placeholder="…"></textarea>
+</div>
+
+<div class="card k" data-key="why">
+  <h2><span class="n">6</span>为什么这套行得通</h2>
+  <p><i>"The tedious part of maintaining a knowledge base is not the reading or the thinking —
+  <b>it's the bookkeeping.</b>"</i> 人放弃 wiki 是因为维护负担涨得比价值快;LLM 不会腻、不会
+  忘更新交叉引用、一次能改 15 个文件 —— 维护成本≈0,库就一直活着。</p>
+  <p>思想血缘:<b>Vannevar Bush 的 Memex(1945)</b> —— 私人、主动策展、文档间关联和文档本身一样
+  值钱。Bush 没解决"谁来维护";<i>"The LLM handles that."</i></p>
+  <label class="comment-label" for="c-why">你的留言</label>
+  <textarea id="c-why" rows="2" maxlength="2000" placeholder="…"></textarea>
+</div>
+
+<div class="card gen" data-key="landscape">
+  <h2><span class="n">7</span>通用做法全景(不只 Karpathy)</h2>
+  <div class="table-wrap"><table>
+    <tr><th>路线</th><th>代表</th><th>检索</th><th>特点 / 局限</th></tr>
+    <tr><td><b>RAG / 传即查</b></td><td>NotebookLM、ChatGPT 传文件、向量库</td><td>查时取 chunk</td><td>上手快;<b>不累积</b>,每次从头拼</td></tr>
+    <tr><td><b>传统 PKM(人维护)</b></td><td>Obsidian、Roam、Logseq、Zettelkasten、Second Brain/PARA</td><td>人建互链+全文搜</td><td>结构好;<b>维护靠人,常烂尾</b></td></tr>
+    <tr><td><b>Agentic wiki(LLM 维护)</b></td><td><b>Karpathy 的 LLM Wiki</b></td><td>index 优先,大了加语义搜</td><td>累积+LLM 维护;<b>新,吃 token,规模/新鲜度是开放问题</b></td></tr>
+  </table></div>
+  <p><b>诚实的开放问题</b>:①规模上限 <span class="tag unk">UNKNOWN</span>(~100 源够,再大要语义搜,
+  成本曲线无公开定论);②token 成本明显(一次 ingest 触 10-15 页);③图片处理 clunky;④新鲜度靠
+  定期 lint 兜,不是自动强一致。</p>
+  <label class="comment-label" for="c-landscape">你的留言</label>
+  <textarea id="c-landscape" rows="2" maxlength="2000" placeholder="…"></textarea>
+</div>
+
+<div class="card cmp" data-key="vs-flywheel">
+  <h2><span class="n">8</span>对照:我们已有 vs Karpathy 差距(理解用,不是 close 理由)</h2>
+  <div class="table-wrap"><table>
+    <tr><th>Karpathy 的环节</th><th>Flywheel 最接近的东西</th><th>差距/关系</th></tr>
+    <tr><td>raw → 持续编译成互链 wiki</td><td><code>/compound</code>→<code>docs/solutions</code>、文件式 MEMORY</td><td>我们是<b>离散手动沉淀</b>,无 backlinks/lint/index/log 纪律</td></tr>
+    <tr><td>LLM 把零散输入结构化</td><td><code>xiaohongshu-learning</code> 闭环(它生成了 FLY-347)</td><td>已在做,但产物是 Linear 草稿,不是 compounding wiki</td></tr>
+    <tr><td>个人研究主题库</td><td><b>你的 Notion 第二大脑(FLY-510)</b></td><td>另一种 substrate(Notion vs markdown+Obsidian+agent)</td></tr>
+  </table></div>
+  <p>一句话:<b>同向、精神相近,但我们没有那套「持续编译+互链+lint+index/log」的知识库形态</b>;
+  你个人层已有 Notion。要不要把它变成能力,你理解后再定。</p>
+  <label class="comment-label" for="c-vs">你的留言</label>
+  <textarea id="c-vs" rows="2" maxlength="2000" placeholder="例:我更想在 Notion 上做 / 想要 markdown+Obsidian 这套…"></textarea>
+</div>
+
+<div class="card honest" data-key="unknown">
+  <h2><span class="n">9</span>我没核实的地方(诚实边界)</h2>
+  <ul>
+    <li>原推<b>全文未逐字核到</b>(x.com 需登录);framing/规模是二手转述。gist 全文已逐字核。</li>
+    <li>"~400K 字" 这个规模数<b>没在 gist 出现</b>,来自二手 → <span class="tag unk">UNKNOWN</span>。</li>
+    <li>他<b>没开源能跑的实现/仓库</b>,只有 gist idea file + 提到第三方 <code>qmd</code>;网上"他的具体
+      目录/脚本"多是社区二手指南的演绎,非他官方。</li>
+  </ul>
+  <label class="comment-label" for="c-unknown">你的留言</label>
+  <textarea id="c-unknown" rows="2" maxlength="2000" placeholder="例:帮我把原推全文补上 / 我想看真实规模数据…"></textarea>
+</div>
+
+<div class="card next" data-key="next">
+  <h2><span class="n">10</span>你的下一步倾向</h2>
+  <p>你在这页继续深入即可;想给我一个方向的话,选一个(可留空,后面再定):</p>
+  <div class="choices">
+    <label><input type="radio" name="lean" value="self-obsidian"> 我自己用 Karpathy 这套(Obsidian+agent+markdown)搭一个,先手动跑跑看</label>
+    <label><input type="radio" name="lean" value="on-notion"> 我更想在已有的 Notion 第二大脑上做,不另起 markdown 一套</label>
+    <label><input type="radio" name="lean" value="flywheel-capability"> 想让 Flywheel 长出这个能力(先出个小 PRD 再说,范围要小)</label>
+    <label><input type="radio" name="lean" value="park"> 先不做,理解了就好,观望</label>
+    <label><input type="radio" name="lean" value="deeper"> 还要再深入(在下面总评论里写想让我继续研究什么)</label>
+  </div>
+  <label class="comment-label" for="c-next">总评论 / 想让我继续做什么</label>
+  <textarea id="c-next" rows="3" maxlength="4000" placeholder="随便写,我据此陪你定下一步…"></textarea>
+</div>
+
+<div class="foot">改完点顶部「复制我的批注 JSON」→ 发回给 Honey Lemon · FLY-347</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var ISSUE = "FLY-347";
+  function collect() {
+    var out = [];
+    document.querySelectorAll(".card[data-key]").forEach(function (card) {
+      var key = card.getAttribute("data-key");
+      var ta = card.querySelector("textarea");
+      var comment = ta ? ta.value.trim() : "";
+      if (comment) out.push({ section: key, comment: comment });
+    });
+    return out;
+  }
+  function lean() {
+    var r = document.querySelector('input[name="lean"]:checked');
+    return r ? r.value : null;
+  }
+  function payload() {
+    return JSON.stringify(
+      { issue: ISSUE, kind: "annie-review", lean: lean(), comments: collect() },
+      null, 2
+    );
+  }
+  var status = document.getElementById("copy-status");
+  document.getElementById("copy-json").addEventListener("click", function () {
+    var json = payload();
+    var out = document.getElementById("export-output");
+    out.textContent = json;
+    out.style.display = "block";
+    function ok() { status.textContent = "已复制 ✓ 发回给我即可"; }
+    function fail() { status.textContent = "复制失败,请手动选下面文本"; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(json).then(ok, fail);
+    } else { fail(); }
+  });
+  document.getElementById("toggle-output").addEventListener("click", function () {
+    var out = document.getElementById("export-output");
+    if (out.style.display === "block") { out.style.display = "none"; }
+    else { out.textContent = payload(); out.style.display = "block"; }
+  });
+})();
+</script>
+</body>
+</html>
