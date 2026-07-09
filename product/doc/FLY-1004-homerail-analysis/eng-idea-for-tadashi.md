@@ -69,7 +69,7 @@ Issue: FLY-1004 (https://linear.app/geoforge3d/issue/FLY-1004/homerail-竞品分
 ### B6. 结构化"从 run 抽教训"经验图谱(FailureRootCause / Lesson / RunSignal) 🟡待评估
 - **它怎么做**:`server/experience.ts` + 表 `experience_nodes`/`experience_relationships` —— run 终态时从 evidence + scorecard 抽 `ExperienceDelta`(17 种节点类型,含 FailureRootCause / Lesson / RunSignal + 类型化关系),ingest 进图谱。**结构化、非语义向量**(无 embedding)。
 - **我们能怎么用**:⚠️ **事实校正**(grep 了 codebase):我们 mem0+pgvector **代码在但基本没接**(env-gated,没配就 Disabling memory),**主力记忆是文件 markdown**。所以不是"我们语义向量更强"—— homerail 这条"自动从 run 抽 FailureRootCause/Lesson 进结构化图谱"是**我们目前没有的能力**,可考虑给 Runner run 收尾加一步"抽结构化 lesson"喂回 memory。
-- **值不值**:🟡 **待评估**。概念好、跟我们语义记忆互补;但我们语义记忆已覆盖大部分场景,要不要再加结构化 lesson 抽取看 Tadashi 判断。**注意**:homerail 这套成熟度 UNKNOWN(作者可能也还没真复用)。
+- **值不值**:🟡 **待评估**。概念好、跟我们语义记忆互补;⚠️ 但我们语义记忆(mem0+pgvector)其实基本没接、主力是文件 markdown,所以这条『自动抽 lesson』对我们价值可能不小,要不要加看 Tadashi 判断。**注意**:homerail 这套成熟度 UNKNOWN(作者可能也还没真复用)。
 
 ---
 
@@ -117,4 +117,4 @@ Issue: FLY-1004 (https://linear.app/geoforge3d/issue/FLY-1004/homerail-竞品分
 | **P4(和别的 PRD 一起看)** | C1 容器隔离(配多机部署 task#8) · B3 Runner 直连(配 Lead 效率 task#9) | 单独不值,组合才有意义 |
 | **验证类(不用做)** | B1 vendor-neutral · B5 贵脑便宜手 · C4 skills symlink | 我们已有,homerail 独立撞车 = 方向对 |
 
-> **一句话给 Annie**:homerail 最值得我们借的是**语音层**(双通道 TTS + 生成式 UI 短朗读 + 执行前确认草稿,A1/A3/A4 直接喂 voice 树);编排/harness 层它跟我们独立撞车(验证方向对,不用抄);它主动放弃软件 = 我们"建并养真软件"是块空地(好消息)。诚实:它 memory 比我们弱、界面/DAG 基元不适合我们。
+> **一句话给 Annie**:homerail 最值得我们借的是**语音层**(双通道 TTS + 生成式 UI 短朗读 + 执行前确认草稿,A1/A3/A4 直接喂 voice 树);编排/harness 层它跟我们独立撞车(验证方向对,不用抄);它主动放弃软件 = 我们"建并养真软件"是块空地(好消息)。诚实:它记忆走结构化 lesson 图谱(自动抽、可能反而更成熟;我们 pgvector 基本没接、主力 markdown)、界面/DAG 基元不适合我们。
