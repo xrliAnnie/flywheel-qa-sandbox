@@ -54,7 +54,7 @@ FLY-1049 第一步(必做):确认 925 / 928 到底还剩什么没做 —— PRD 
 
 ### 缺口 E · 927 运行时启用(它自己 plan §5 步 2-5)— 未执行
 
-- 5 个 env 翻转 + 一次 Bridge 重启(plan 原文:`FLYWHEEL_ALERT_ROUTING=1`、`FLYWHEEL_ALERT_TICKETS=1`、`FLYWHEEL_ALERT_RATE_PER_MIN=20`、`FLYWHEEL_ALERT_SENDER_TOKEN_ENV=CASS_BOT_TOKEN` 过渡 → 928 后切 Claude Infra Bot、`FLYWHEEL_CHECKPOINT_WATCHDOG=1`)。
+- 5 个 env 翻转 + 一次 Bridge 重启(927 plan 原文:`FLYWHEEL_ALERT_ROUTING=1`、`FLYWHEEL_ALERT_TICKETS=1`、`FLYWHEEL_ALERT_RATE_PER_MIN=20`、`FLYWHEEL_ALERT_SENDER_TOKEN_ENV=CASS_BOT_TOKEN` 过渡 → 928 后切 Claude Infra Bot、`FLYWHEEL_CHECKPOINT_WATCHDOG=1`)。**【后续修正】**sender 身份终态已两次改写:Q4 裁掉 CASS 过渡态;design R1 再修正为**专用 dispatcher 身份**(绝不用任何 owner bot 的 token,作者≠owner)—— 以 plan.md 头注 + enable-window-runbook.md 步 2 为准。
 - ops:告警频道 Discord 权限收紧(只给 infra bot + 发送身份 Send)—— 927 plan 步 3 写明「写进 FLY-928 部署 runbook 交叉引用」,即本来就打算在 928 的窗里做。
 - 独立真机 QA(529 Room)+ Annie 早报确认项(D1/D2 裁定 + founder-page 行为变更)。
 - **scope 归属待 Tadashi 确认**:「927 已 ship 不要重复」= 不重复实现代码;但它的启用窗至今无主 —— 不启用则整条 915 pipeline 白建(alert 频道行为零变化)。

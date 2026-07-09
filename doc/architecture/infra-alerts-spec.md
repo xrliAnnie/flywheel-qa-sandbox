@@ -112,7 +112,8 @@ stateDiagram-v2
 
 **单一发送身份(D2)**:`FLYWHEEL_ALERT_SENDER_TOKEN_ENV` 设了 → root/DM/drain/Hub thread 操作全部坍缩为该身份;
 解析不到 token → dead-letter + meta-alert,**绝不**静默回退 own-bot 链(宁可 dead-letter 也不越权发)。
-未设 → own-bot→Cass→字母序链逐字保留。过渡期生产配 `CASS_BOT_TOKEN`,FLY-928 后切 Claude Infra Bot(纯配置)。
+未设 → own-bot→Cass→字母序链逐字保留。生产终态配 `FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN`(专用 sender-only dispatcher;
+**绝不配任何 owner bot 的 token** —— bot 收不到自己发的 MESSAGE_CREATE,作者=owner 是自盲区,见 §11 / FLY-1049;CASS 过渡态已裁掉)。
 bridge-wrapper 死机 🚨(D4)优先经 `lead-alert.sh`(kind=`bridge_wrapper_fail`),失败保留直 curl fallback。
 
 ## 7. 治假冻结(W-B)

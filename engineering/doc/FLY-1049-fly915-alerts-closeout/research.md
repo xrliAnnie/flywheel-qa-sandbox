@@ -69,7 +69,7 @@ Issue: FLY-1049 (https://linear.app/geoforge3d/issue/FLY-1049/build-fly-915-aler
 FLYWHEEL_ALERT_ROUTING=1
 FLYWHEEL_ALERT_TICKETS=1
 FLYWHEEL_ALERT_RATE_PER_MIN=20            # T1 已锁
-FLYWHEEL_ALERT_SENDER_TOKEN_ENV=CLAUDE_INFRA_BOT_TOKEN   # Q4:跳过 CASS 过渡态,直接 W5 身份
+FLYWHEEL_ALERT_SENDER_TOKEN_ENV=FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN   # 专用 dispatcher(Q4 跳过 CASS 过渡态;design R1 修正:sender 绝不用 owner bot token,作者≠owner)
 FLYWHEEL_CHECKPOINT_WATCHDOG=1            # Watchdog v2(1h 默认阈值)
 ```
 
