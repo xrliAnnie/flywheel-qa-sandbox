@@ -26,13 +26,23 @@ Issue: FLY-1089 (https://linear.app/geoforge3d/issue/FLY-1089/建-pm-prototype-�
 | 2 | `.flywheel/agents/engineering/prototype-executor.md` | **新建**。全新四步流 |
 | 3 | `.flywheel/agents/engineering/product-designer-executor.md` | **改**。抽掉 Mode A,只留文档/设计产出;头部改写 |
 | 4 | `.flywheel/config.yaml` | **改**。label 重划 + 两个新 agent 条目(双注册) |
-| 5 | `scripts/__tests__/test-pm-executor-contract.sh` | **改**。从「PM 一个文件」扩成「三个 role 文件的契约」 |
+| 5 | `scripts/__tests__/test-pm-executor-contract.sh` | **改**。从「PM 一个文件」扩成「三个 role 文件的契约」+ 结构性检查 |
 | 6 | `packages/edge-worker/src/__tests__/designer-agent-dispatch.test.ts` | **改**。修掉「pm/product → product-designer」这条已过时的断言 |
-| 7 | `packages/edge-worker/src/__tests__/role-agent-dispatch.test.ts` | **新建**。跑真 ConfigLoader,断言六个 agent 的标签集两两不相交 + 全映射 |
-| 8 | `scripts/qa-fly-901-real-config-dispatch-e2e.mjs` | **改**。双注册 E2E 补上 pm / prototype |
+| 7 | `packages/edge-worker/src/__tests__/AgentDispatcher.test.ts` | **改**(Codex R1#1 HIGH)。`:469-528` 的 FLY-901 双注册 fixture 仍写死 `product-designer` 含 `product`/`pm` 并断言其路由 —— 改成最终映射 |
+| 8 | `packages/edge-worker/src/__tests__/role-agent-dispatch.test.ts` | **新建**。跑真 ConfigLoader,断言六个 agent 的标签集两两不相交 + 全映射 |
+| 9 | `scripts/qa-fly-901-real-config-dispatch-e2e.mjs` | **改**。双注册 E2E 补上 pm / prototype |
+| 10 | `.flywheel/agents/general-executor.md` | **改**(Codex R1#2 MED)。`:13` 的 manual-routing pointer:PM/product 共创指 `pm-executor`,不再笼统指 `product-designer` |
+| 11 | `.flywheel/agents/engineering/engineer-executor.md` | **改**(Codex R1#2 MED)。`:18` 「product/UX 探索 + design spec 归 product-designer」→ 拆清:产品共创/PRD 归 `pm`、可行性验证归 `prototype`、文档/设计 spec 才归 `product-designer` |
+| 12 | `.flywheel/agents/engineering/designer-executor.md` | **改**(Codex R1#2 MED,**碰 FLY-1059 文件的 3 行**)。`:37-43` 把 `product-designer` 描述成「PM / product co-creation / PRD」已过时 → 指向 `pm-executor` |
 
 **引擎零改动**:`Blueprint.ts` / `AgentDispatcher.ts` / `three-stage-policy.ts` / `ConfigLoader.ts`
 一行不动。
+
+> ⚠️ #12 是**唯一一处改到 FLY-1059 引入的文件正文**(designer-executor.md 的 3 行边界描述)。
+> 因为本分支 base 在 1059 之上,这是对 1059 文件的干净增量编辑,1059 merge 后 rebase 到 main
+> 依然干净。但它超出「只碰 1059 一条过时测试断言」的原始边界 —— **报 Lead 时必须点名**。
+> 理由:PM 从 product-designer 抽走后,designer 里「product-designer = PM/PRD」这句就成了
+> 谎话,不改边界描述就自相矛盾。
 
 ## 3. label 重划(最终态)
 
@@ -43,15 +53,30 @@ Issue: FLY-1089 (https://linear.app/geoforge3d/issue/FLY-1089/建-pm-prototype-�
 | `product-designer` | doc, docs, design, ux | engineering, product |
 | `designer`(FLY-1059) | designer, mockup | engineering, product |
 | **`pm`**(新) | **pm, product** | **engineering, product** |
-| **`prototype`**(新) | **prototype, poc** | **engineering, product** |
+| **`prototype`**(新) | **prototype** | **engineering, product** |
 | `general` | (空,catch-all) | — |
 
 **不变式:六个标签集两两不相交** → 路由与 YAML 书写顺序无关(见 research.md §2)。
-唯一移动:`pm` / `product` 从 `product-designer` → `pm`。新增:`prototype` / `poc`。
+唯一移动:`pm` / `product` 从 `product-designer` → `pm`。新增:`prototype`。
 **没有任何标签被丢弃。**
 
-> `poc` 略带黑话,但它是 **Lead 派发用的内部标签**,不是 founder 面文案 —— Annie 的
-> 「去黑话」约束针对界面 / 产出。role .md 正文与 founder 面文字里不出现 DAG / poc 这类词。
+> **去掉 `poc`(Codex R1#3 MED)**:原稿给 prototype 配了 `prototype` + `poc` 两个 label。
+> `poc` 是黑话,Annie 明确要求去黑话,且容易被误用到「泛泛 spike」而非「founder 体验的可行性
+> 验证」。v1 **只上 `prototype` 一个 label** —— 心智模型更干净:`prototype` = 「用最便宜的
+> 真原型验证这件事做不做得成」。dispatch 测试断言未识别的 `poc` 走 shipped-generic 兜底
+> (证明它**不是** alias、没被偷偷保留)。将来真需要别名,用清楚的非黑话词(如 `validation`)
+> 且先核对既有 label 习惯,不在本 issue 做。
+
+### label 边界的显式例子(Codex R1#6 LOW — 写进 role .md + dispatch 测试)
+
+`design`/`ux`(→ product-designer)与 `designer`/`mockup`(→ designer)的分界不直觉,用例子钉死:
+
+| 真实 issue | 该打的 label | 路由到 | 因为 |
+|---|---|---|---|
+| 「给这个功能写一份 UX spec / 交互规范」 | `ux` / `design` | product-designer | 文档/规范/planning |
+| 「把这个界面做出 2-3 版视觉方向让我挑」 | `designer` / `mockup` | designer | 独立视觉 mockup-first 执行 |
+| 「这个需求到底要做什么,一起收敛个 PRD」 | `pm` / `product` | pm | 产品共创 / PRD |
+| 「这事技术上做不做得成,搭个原型验证」 | `prototype` | prototype | 可行性验证 |
 
 ## 4. `pm-executor.md` 的内容契约
 
@@ -114,16 +139,27 @@ Annie 亲口拍的文字**不改写**。
 
 ## 7. 测试
 
-### 7.1 `scripts/__tests__/test-pm-executor-contract.sh` → 三角色契约守卫
+### 7.1 `scripts/__tests__/test-pm-executor-contract.sh` → 三角色契约 smoke(Codex R1#5 LOW)
+
+这是**便宜的 smoke sentinel,不是 contract test** —— role .md 是提示词,守卫证明不了行为,
+只能挡住两个真实风险:(a) 文件超 40k 注入截断红线;(b) 流程语义锚点被静默删掉。
+真正证明**路由行为**的是 §7.2/§7.3 的 dispatch 测试。
+
+> 措辞修正:运行时截断是 JS `slice(0, 40_000)` **字符**;shell 守卫用 `wc -c`(字节),
+> 对多字节中文更严格 —— 这是**故意留余量的 byte-budget sentinel**,不冒充精确运行时契约。
 
 改成对**三个** role .md 各跑一组断言(重命名内部逻辑,文件名不动以免破坏 CI 引用):
 
 | 文件 | 断言 |
 |---|---|
-| 全部三个 | 存在 + `< 40000` 字节(注入截断红线) + 含 `flywheel-comm ask`(回报通道)|
+| 全部三个 | 存在 + `< 40000` 字节(byte-budget sentinel) + 含 `flywheel-comm ask`(回报通道)|
 | `pm-executor.md` | `产品共创` / `有定见` / `BLOCKING gate` + `non-blocking` + `different* primitive from` / `prd.md` / `no-three-stage` / `create-issue` / `FLY-830` / **`explainer`**(新)/ **`co-eval`**(新)/ **不带 `--channel`** 语义锚点 |
 | `prototype-executor.md` | `可行性` / **`drop`** / `不是生产级` / `no-three-stage` / `create-issue` / `proofshot` / 「最便宜」排序锚点 |
 | `product-designer-executor.md` | `codex-design-review`(Mode B 存活) / `design` / **不再含 `产品共创`**(Mode A 已迁出,防回流) |
+
+**加结构性检查(比裸 grep 难被误满足,Codex R1#5)**:PM 与 Prototype 各自必须含四类
+必需小节标题 —— 「一个 session / 单 session」、「founder 门 / gate」、「产出 / 交付契约」、
+「交工程 / handoff」。锚点删一个,守卫红。
 
 > 断言选的是**流程语义锚点**,删掉它们等于删掉契约 —— 而不是可以随手改的措辞。
 
@@ -139,10 +175,19 @@ Annie 亲口拍的文字**不改写**。
    永久锁住「路由与 YAML 顺序无关」;
 4. 未知 label + `owningDept=product` → `shipped-generic`(兜底没坏)。
 
-### 7.3 修 `designer-agent-dispatch.test.ts`
+### 7.3 修两处已过时的 dispatch 断言(推翻旧契约 —— PR 点名)
 
-它现在断言 `product` / `pm` → `product-designer`。改成 `design` / `ux` → `product-designer`,
-并把 `pm` / `product` 的期望挪进 7.2。**这是唯一一处「推翻既有断言」,必须在 PR 里点名说明。**
+两个文件都写死了「`product` / `pm` → `product-designer`」的旧契约,label 重划后必须改:
+
+- **`designer-agent-dispatch.test.ts`**(FLY-1059 引入):现断言 `product`/`pm` → `product-designer`。
+  改成 `design`/`ux` → `product-designer`,`pm`/`product` 期望挪进 §7.2。
+- **`AgentDispatcher.test.ts:469-528`**(Codex R1#1 HIGH):FLY-901 双注册 fixture 把
+  `product-designer` 的 labels 写成 `["doc","design","product","pm","ux"]` 并断言 `product`/`pm`/
+  `ux`/`design` → `product-designer`。改成最终映射:`pm`/`product` → `pm`、`prototype` → `prototype`、
+  `doc`/`design`/`ux` 留 `product-designer`;**保留** FLY-901 那条「双注册 agent 被 product Lead
+  派发时 `department: "product"`」的断言(它验的是机制,不是标签)。
+
+> 这是全 issue 仅有的「推翻既有断言」两处,PR 描述必须点名。
 
 ### 7.4 `scripts/qa-fly-901-real-config-dispatch-e2e.mjs`
 
@@ -158,23 +203,51 @@ FLY-901 双注册 E2E:把 `pm` / `prototype` 加进被验证的 agent 列表。
 
 - ❌ **不改引擎**(Blueprint / AgentDispatcher / three-stage-policy / ConfigLoader)。
 - ❌ **不加代码强制单 session** —— 靠 `no-three-stage` 纪律 + 既有频道白名单(research.md §3)。
-  结构化 `issue-type → pipeline` = **FLY-830**。
+  结构化 `issue-type → pipeline` = **FLY-830**。⚠️ 单 session 是**运行前提(precondition),不是
+  代码保证的不变式**(Codex R1#4 MED)—— 见 §8.1 的三格矩阵,不吹成 code-enforced 属性。
 - ❌ **不做 DAG mapping** —— 单独 follow-up,等 FLY-1020 的 DAG 落地。
 - ❌ **不改 `product-designer` 的名字**。
 - ❌ **不动 FLY-1059 的任何文件内容**(除了 7.3 那条必须改的过时断言)。
 - ❌ **不 ship / 不自 merge / 不 fire approve gate** —— 改动先报 Lead,他 OK 才 publish / 开 PR。
+
+## 8.1 单 session 的三格矩阵(Codex R1#4 —— 前提,不是不变式)
+
+「一个工种 = 一个 session」在**当前配置下**成立,但它是操作前提,取决于**从哪个频道派 + 带没带
+`no-three-stage`**。三种情况写清楚(作为 role .md 里的派发纪律 + §7.2 dispatch 测试的覆盖点,
+不是引擎改动):
+
+| 派发来源 | 带 `no-three-stage`? | 结果 | 机制 |
+|---|---|---|---|
+| 产品频道(Honey Lemon,非白名单) | 无所谓 | **单 session** | `dispatchChannelId` 不在 `three_stage_channels` → fail-close(three-stage-policy.ts) |
+| 工程频道(白名单内) | 带 | **单 session** | `no-three-stage` label per-issue override |
+| 工程频道(白名单内) | **不带** | **会进三段式** ← 这是 role .md 明令禁止的派发方式 | 无代码拦截,靠纪律 |
+
+**结论**:PM / Prototype 的正确派发 = 产品频道(天然单 session),或工程频道**必带
+`no-three-stage`**。role .md 的「派我时带 `no-three-stage`」写成硬规则,守卫测试断言这句在。
+
+## 8.2 in-flight label 迁移 —— pre-ship checklist(Codex R1#7 LOW)
+
+label 重划部署 / reload 后,已打开的、带 `product` / `pm` 标签的 issue 会从 `product-designer`
+**改路由到 `pm`**。这**基本是预期**(它们本就是产品共创),但 label 是共享的人类工作流状态,
+必有一小撮把 `product` 当「文档/设计 planning」用的会被顺带迁走。ship 前:
+
+- [ ] 审一遍当前 open 的 Flywheel Product issue 里带 `product` / `pm` 的,确认它们确实是产品共创而非
+      文档 planning;把纯文档 planning 的改标成 `doc` / `design` / `ux`。
+- [ ] PR 描述里写明这是**有意的 reroute**:今后文档/设计 planning 用 `doc`/`design`/`ux`,
+      产品共创用 `pm`/`product`。
 
 ## 9. 步骤(带 progress ledger 游标)
 
 | 步 | 内容 | ledger |
 |---|---|---|
 | 0 | 文档三件套 + 分支 base 到 1059 | design 3/3 |
-| 1 | 写 `pm-executor.md` | implement 1/6 |
-| 2 | 写 `prototype-executor.md` | implement 2/6 |
-| 3 | 收缩 `product-designer-executor.md` | implement 3/6 |
-| 4 | 改 `.flywheel/config.yaml` | implement 4/6 |
-| 5 | 测试:守卫脚本 + dispatch 测试 + 修过时断言 + 901 E2E | implement 5/6 |
-| 6 | `pnpm lint` + 全量测试跑绿 | implement 6/6 |
+| 1 | 写 `pm-executor.md` | implement 1/7 |
+| 2 | 写 `prototype-executor.md` | implement 2/7 |
+| 3 | 收缩 `product-designer-executor.md` | implement 3/7 |
+| 4 | 改 `.flywheel/config.yaml` | implement 4/7 |
+| 5 | 改 3 处 manual-routing pointer(general / engineer / designer executor) | implement 5/7 |
+| 6 | 测试:守卫脚本 + 结构性检查 + 3 个 dispatch 测试(新 role-agent + 修 designer-agent + 修 AgentDispatcher fixture) + 901 E2E | implement 6/7 |
+| 7 | `pnpm lint` + 全量测试跑绿 | implement 7/7 |
 | 7 | codex-design-review(本计划)→ 折 feedback | design_review |
 | 8 | 报 Lead → 他 OK → 开 PR → codex-code-review → CI 绿 → approve gate | pr_created |
 
