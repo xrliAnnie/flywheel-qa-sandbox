@@ -1,14 +1,13 @@
 ---
 issue: FLY-1023
 phase: design
-phaseCursor: 4/7
-updated: 2026-07-09T07:42:14.896Z
-nextStep: research.md done; ask 3c2da6d7 sent to Lead (buddy-shell refinement,
-  non-blocking); writing plan.md M0..M8
+phaseCursor: 5/7
+updated: 2026-07-09T07:45:47.764Z
+nextStep: 3 design docs committed; entering design_review (Codex)
 chunks: []
 pointers: {}
 ---
 
 # FLY-1023 progress
-**phase**: design (4/7)
-**next**: research.md done; ask 3c2da6d7 sent to Lead (buddy-shell refinement, non-blocking); writing plan.md M0..M8
+**phase**: design (5/7)
+**next**: 3 design docs committed; entering design_review (Codex)
