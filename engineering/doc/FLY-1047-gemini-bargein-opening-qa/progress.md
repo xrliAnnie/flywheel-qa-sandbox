@@ -1,13 +1,13 @@
 ---
 issue: FLY-1047
 phase: implement
-phaseCursor: 5/6
-updated: 2026-07-09T15:33:10.614Z
-nextStep: "P6: commit evidence + PR + approve-gate flow"
+phaseCursor: 6/6
+updated: 2026-07-09T20:12:36.236Z
+nextStep: "PR #524 CI green -> landing signal -> approve gate flow -> park"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1047 progress
-**phase**: implement (5/6)
-**next**: P6: commit evidence + PR + approve-gate flow
+**phase**: implement (6/6)
+**next**: PR #524 CI green -> landing signal -> approve gate flow -> park
