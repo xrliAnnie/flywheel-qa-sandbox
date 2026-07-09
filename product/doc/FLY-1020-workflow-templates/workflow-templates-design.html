@@ -1,7 +1,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FLY-1020 · 每类任务的 workflow 模板(低层 DAG)— 设计 co-eval v1</title>
+<title>FLY-1020 · 每类任务的 workflow 模板(低层 DAG)— 设计 co-eval v2</title>
 <style>
 :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--navy:#1a365d;
   --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de}
@@ -40,6 +40,7 @@ th{background:#fafafd;font-weight:600}
 .arrow{text-align:center;color:var(--dim);font-size:13px;margin:2px 0}
 .env{font-size:12px;color:var(--dim);margin-top:8px;border-top:1px dashed var(--line);padding-top:6px}
 .you{background:#fff8e6;border:1px solid #ffe0a3;border-radius:10px;padding:8px 11px;margin:10px 0;font-size:13.5px}
+.new-badge{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:6px;background:#e7f0ff;color:#1a5fb4;margin-left:6px}
 .cmt{margin:10px 0 4px;background:#fbfbfd;border:1px dashed #d6d6de;border-radius:10px;padding:8px 10px}
 .cmt label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
 .cmt textarea{width:100%;min-height:52px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;color:var(--ink);background:#fff;resize:vertical}
@@ -56,193 +57,197 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 </head>
 <div class="wrap">
 <header>
-  <h1>每类任务的 workflow 模板(低层 DAG)—— 设计 co-eval v1</h1>
-  <p class="sub">FLY-1020 · 2026-07-08 · 你在 1004 里 articulate 的两层 DAG 的<b>第一层</b>(乐高模板层)· 兄弟 = FLY-353(第二层引擎)</p>
+  <h1>每类任务的 workflow 模板(低层 DAG)—— 设计 co-eval v2</h1>
+  <p class="sub">FLY-1020 · 2026-07-08 · 折进你上一轮 co-eval 的 7 点 · 兄弟 = FLY-353(第二层引擎)</p>
   <div><span class="pill cand">设计草案 · 逐节留言</span><span class="pill">收敛后 → PRD → Tadashi</span></div>
 </header>
 
 <div class="note">
-  <b>这是什么:</b> 你在 1004 里把 DAG 分成两层。<b>这张 = 第一层(模板层 / 乐高)</b>:「一个 issue <u>怎么跑</u>(形态)」。
-  第二层(CoS 分诊 + 自动派发,决定「做<u>哪些</u> issue」)在 <b>FLY-353</b>,这里不重讲、只引用。<br>
-  <b>怎么用:</b> 每小节下有留言框;底部「复制批注」收成 markdown 发我;每版从空白开始。<br>
-  <span class="tag unk">UNKNOWN</span> = 没实证不瞎编 · <span class="tag done">已做</span> = 核过码、现在就有 · <span class="tag new">新</span> = 要建 · <span class="tag later">later</span> = 建议放后面/可不做。
+  <b>v2 照你 co-eval 改了什么:</b>
+  ① 把「<b>三段式只是 eng 那块积木</b>」提成主线(§1);
+  ② 把「<b>Auto-QA 误触发</b>」当整层<b>头号动机</b>(§2);
+  ③ 把 inject 拆成<b>「消息 inject(已有)」vs「节点 inject(净新)」</b>——不再混(§6);
+  ④ 画清 <b>inject / fork / loop 各治什么</b>(你 4-PR 串行 = loop 不是 fork)(§6);
+  ⑤ <b>default = 一个裸 session</b>(没定义就随便做),per-category opt-in 后加(§5);
+  ⑥ 讲清 <b>自定义模板 / DSL / 编辑器</b>三件不同事,MVP 明确不做后两个(§8,核过 homerail);
+  ⑦ inject/fork 深挖清楚 → 留你拍 Later(§6/§9)。<br>
+  <span class="tag unk">UNKNOWN</span> 没实证不瞎编 · <span class="tag done">已做</span> 核过码 · <span class="tag new">新</span> 要建 · <span class="tag later">later</span> 建议放后面。
 </div>
 
 <!-- 0 红线 -->
-<h2><span class="secnum">0 ·</span> ⭐ 把你的红线先钉在最上面(整张图都服从它)</h2>
+<h2><span class="secnum">0 ·</span> ⭐ 红线(整张图服从它,不变)</h2>
 <div class="card amber">
-  <div class="you"><b>你的原话(这张图的北极星):</b> 模板必须是<b>轻的 / 默认的 / 可覆盖的 —— 不是死板的紧身衣</b>。「固定的每一步模板会限制越来越强的模型。」模板是<b>一个起手式默认、模型可以偏离</b>;真正耐用的价值在第二层的<b>治理</b>(founder gate / 人在环 / 成本控制),<b>不在于把模型的推理钉死</b>。</div>
-  <p><b>我把它翻成三条贯穿全文的设计约束:</b></p>
-  <ul>
-    <li><span class="k">① 模板只定「粗脚手架」,不定「怎么想」</span> —— 模板决定:分几个<b>独立 context 的 session</b>、<b>每个 session 用哪个模型</b>、<b>gate/QA 卡在哪</b>。节点<u>内部</u>模型怎么推理,模板一个字都不管。</li>
-    <li><span class="k">② 默认可偏离,偏离是「一等公民」不是「异常」</span> —— 一条 issue 可以覆盖成别的模板,或跑中插/岔/跳节点。deviation 走正门。</li>
-    <li><span class="k">③ 先怀疑「要不要建」再想「怎么建」</span> —— 下面 §4/§5 我会<b>主动 push back</b>:哪些其实不用做、哪些是为了做而做。宁可少建。</li>
-  </ul>
-  <p class="hint">一句话:<b>我们不绑模型的脑子,我们只挂治理和编排的钩子。</b>(= 你 1004 里那句 framing)</p>
+  <div class="you"><b>你的北极星:</b>模板 = <b>轻的 / 默认的 / 可覆盖的,不是死板紧身衣</b>。模板是起手式默认、模型可偏离,不 micro-manage 每步。真正耐用的价值在治理,不在把模型推理钉死。</div>
+  <p>翻成三条贯穿约束:<b>① 模板只钉粗脚手架(几个 session / 每个哪个模型 / gate·QA 卡哪),不定节点内部怎么想 · ② 默认可偏离,偏离走正门 · ③ 先怀疑「要不要建」再想「怎么建」,宁可少建。</b></p>
 </div>
-<div class="cmt"><label>💬 对红线翻译的留言(这三条约束抓对了吗?有没有过/欠?)</label><textarea data-k="redline" data-label="0 · 红线三约束"></textarea></div>
+<div class="cmt"><label>💬 对红线的留言</label><textarea data-k="redline" data-label="0 · 红线三约束"></textarea></div>
 
-<!-- 1 分工 -->
-<h2><span class="secnum">1 ·</span> 跟 353 的分工(这层只管「怎么跑」)</h2>
-<div class="card gray">
-  <div class="scroll"><table>
-  <thead><tr><th>层</th><th>回答的问题</th><th>在哪</th></tr></thead>
-  <tbody>
-    <tr><td class="k">第二层 · 引擎(FLY-353)</td><td>做<b>哪些</b> issue?还相关吗?派给谁?何时?怎么更 proactive?</td><td>CoS 分诊 + 自动派发(353)</td></tr>
-    <tr><td class="k">第一层 · 模板(本 issue)</td><td>选中一条 issue 后,它<b>怎么跑</b>?几个阶段?每阶段哪个模型?QA/gate 卡哪?</td><td>模板层(1020)</td></tr>
-  </tbody>
-  </table></div>
-  <p class="hint">353 挑出「跑这条」→ 交给这层:「那这条<u>按哪套模板</u>跑」。<b>两层解耦</b>:353 不用懂三段式细节,这层不用懂分诊。本文只谈第一层。</p>
-</div>
-<div class="cmt"><label>💬 对分工的留言(这条边界清楚吗?)</label><textarea data-k="split" data-label="1 · 与 353 分工"></textarea></div>
-
-<!-- 2 现状 -->
-<h2><span class="secnum">2 ·</span> 现状(我核过码 · 诚实):今天只有<u>一个硬编码模板</u></h2>
-<div class="card blue">
-  <p><b>先厘清一个容易混的点:今天「任务类别」已经有一个信号了 —— 但它只决定「谁跑」,不决定「怎么跑」。</b></p>
-  <ul>
-    <li><span class="k">谁跑(已有)</span>:Linear <b>label → agent/Lead</b> 路由(<code>AgentDispatcher</code> + <code>config.yaml</code> 的 <code>agents[].match.labels</code> / <code>default_agent</code>)。eng label 派给 Tadashi 线、product label 派给 HL 线…… 这挑的是<b>哪个部门/agent</b>。</li>
-    <li><span class="k">怎么跑(几乎没有)</span>:唯一的「工作流形态」开关 = <code>pipeline.three_stage: true/false</code>(<code>three-stage-policy.ts</code>)。它是<b>一个全局布尔</b>,不是「每类任务一套」。</li>
-  </ul>
-  <p><b>那个唯一的模板 = 三段式,长这样(全硬编码):</b></p>
-  <div class="scroll"><table>
-  <thead><tr><th>能力</th><th>今天的状态</th><th>证据(核过的文件)</th></tr></thead>
-  <tbody>
-    <tr><td class="k">模板序列</td><td><span class="tag done">已做但写死</span> 设计→实现→QA,3 节点,顺序固定、不可配</td><td><code>three-stage-phases.ts</code> <code>THREE_STAGE_PHASE_SEQUENCE</code></td></tr>
-    <tr><td class="k">profile(每节点绑模型)</td><td><span class="tag done">已做但写死</span> 设计=Fable / 实现=Fable / QA=Opus(零 Sonnet)</td><td><code>three-stage-phases.ts</code> <code>DEFAULT_PHASE_TIER</code></td></tr>
-    <tr><td class="k">开关粒度</td><td><span class="tag done">已做</span> 全项目 on/off(<code>pipeline.three_stage</code>)+ 单 issue 用 <code>no-three-stage</code> label 关 + channel 白名单</td><td><code>three-stage-policy.ts</code></td></tr>
-    <tr><td class="k">按<b>任务类别</b>选不同模板</td><td><span class="tag new">没有</span> 开了就<b>所有</b> issue 都套这一套三段式;product issue 也会被套(除非它单独 opt-out)</td><td>grep 无 <code>taskCategory</code>/<code>templateRegistry</code></td></tr>
-    <tr><td class="k">可选模板库</td><td><span class="tag new">没有</span> 没有「几套模板挑一套」的概念,就一套</td><td>grep 无 <code>workflowTemplate</code></td></tr>
-    <tr><td class="k">inject(跑中插节点)</td><td><span class="tag new">没有</span></td><td>grep 无</td></tr>
-    <tr><td class="k">fork(岔并行试)</td><td><span class="tag new">没有</span></td><td>grep 无</td></tr>
-  </tbody>
-  </table></div>
-  <p><b>结论:</b> 你要的「每类任务一套模板」,今天<b>一半都没有</b> —— 我们有的是<b>一个写死的三段式 + 一个全局开关</b>。profile 这一格已经在做(而且做得对),它是唯一能直接「升格」的存量。</p>
-</div>
-<div class="cmt"><label>💬 对现状核码的留言(哪格你意外?哪格想让我再挖?)</label><textarea data-k="current" data-label="2 · 现状核码"></textarea></div>
-
-<!-- 3 缺口 -->
-<h2><span class="secnum">3 ·</span> 缺口(用你的乐高比喻)</h2>
+<!-- 1 主线 -->
+<h2><span class="secnum">1 ·</span> 主线:三段式只是 <u>eng</u> 那一块乐高(你这轮点透的)</h2>
 <div class="card purple">
-  <div class="you"><b>你的乐高比喻:</b>「同一套底层积木,engineer issue 一种拼法、designer issue 另一种,编排随任务类型变;三段式只是 eng 那一套。不是所有人都用三段式。」</div>
-  <p><b>今天的问题正好是:只有 eng 那一块乐高、而且焊死了。</b></p>
+  <div class="you"><b>你 co-eval 的核心:</b>「三段式(设计→实现→QA)只对 eng。product / designer 要<b>不同的 session / 节点</b> —— 这才是这层的核心。DAG 搭积木的价值 = <b>加一套新模板很省事</b>。」</div>
+  <p><b>这就是整层的主轴。</b> 今天系统里三段式是<u>唯一</u>被表达出来的形态,而且是 eng 的形态。问题:</p>
   <ul>
-    <li>product / 调研 / 文档类 issue,今天要么<b>裸跑单 session</b>(没有属于它自己的形态),要么被三段式<b>误套</b>(一个「写份 PRD」的活被塞进设计→实现→QA,是浪费也别扭)。</li>
-    <li>「起手式默认应该随类别变」这件事,系统里<b>没有位置放</b> —— label 只挂了「谁跑」,没挂「怎么跑」。</li>
+    <li><span class="k">product 的活形状不一样</span> —— 写 PRD / 调研 = 探索 + 收敛,<b>没有「实现→QA」这个尾巴</b>。硬套三段式是错的形状。</li>
+    <li><span class="k">designer 的活又不一样</span> —— 出稿 / 评审 / 迭代,可能是「探索几版 → founder 挑 → 精修」,也不是三段式。</li>
+    <li><span class="k">今天没有地方表达「这类活这样跑」</span> —— 所以要么裸跑、要么被 eng 三段式误套。</li>
   </ul>
-  <p><b>Layer 1 要补的,就是给那个<u>已经存在的类别信号(label/agent)</u>,再挂一个「默认怎么跑」。</b> —— 这跟 353 复用现有 CoS 当分诊节点是同一个思路:<b>不加新分类器,复用已有的路由信号</b>。</p>
+  <p><b>乐高价值(你的原话):</b> 底层是同一套「积木」(节点 = 一个带模型的 fresh session + 它的 gate/QA 位置)。<b>eng 拼成三段式、product 拼成短的、designer 拼成另一种。加一类任务 = 拼一套新积木,不动引擎。</b> —— 这层要给的,就是这个「拼法随任务类型变」的能力。</p>
 </div>
-<div class="cmt"><label>💬 对缺口的留言(乐高比喻我落对了吗?)</label><textarea data-k="gap" data-label="3 · 缺口 / 乐高"></textarea></div>
+<div class="cmt"><label>💬 对主线的留言(「三段式=eng 专属、每类各拼」这个主轴对吗?product/designer 的形状你心里有草图吗?)</label><textarea data-k="spine" data-label="1 · 主线:三段式只对 eng"></textarea></div>
 
-<!-- 4 核心张力 -->
-<h2><span class="secnum">4 ·</span> 核心张力:模型越来越强,还要模板干嘛?(正面回答你的挑战)</h2>
+<!-- 2 头号动机 auto-QA -->
+<h2><span class="secnum">2 ·</span> ⭐ 头号动机:Auto-QA 误触发(最具体的痛,直接证明「不够 generic」)</h2>
 <div class="card red">
-  <div class="you"><b>你的挑战(我不绕过):</b>「是不是过度设计了?固定模板会不会限制越来越强的模型?」</div>
-  <p><b>先摆三档,让你亲手把刻度拨到位:</b></p>
-  <div class="scroll"><div class="flow">
-    <div class="col"><h4>🅐 不要模板(模型全自由)</h4>
-      <div class="step">一个 session,模型自己决定:要不要 QA、用哪个模型、何时叫你</div>
-      <div class="env"><b>好</b>:最灵活,不绑脑子。<b>软肋</b>:①全跑在重模型上,<b>成本没治</b>;②QA 变成「模型自己检查自己」,没独立验证;③每条 issue 形态都不一样,<b>状态面板没法稳定显示「它在哪一步」</b>;④founder gate 卡哪、要不要卡,全看模型心情。</div></div>
-    <div class="col" style="border-color:var(--purple)"><h4>🅑 轻默认模板 · 可覆盖(提议)</h4>
-      <div class="step hi">模板只钉<b>粗脚手架</b>:几个 session、每个哪个模型、gate/QA 卡哪</div>
-      <div class="step">节点<u>内部</u>模型<b>自由推理</b>;形态可偏离(插/岔/跳/换模板)</div>
-      <div class="env"><b>= 🅐 的自由(脑子不绑)+ 治理的钩子(成本/独立QA/可见/gate 位置)。</b>这一档就是你红线里的「轻默认可覆盖」。</div></div>
-    <div class="col"><h4>🅒 死板每步模板(你怕的那个)</h4>
-      <div class="step">模板规定每一微步,模型必须照做</div>
-      <div class="env"><b>软肋</b>:正是你说的 —— 越强的模型越被它拖住。<b>❌ 明确否掉,不做这个。</b></div></div>
-  </div></div>
+  <div class="you"><b>你点的头号动机:</b>「老的自动 spawn QA 对 Product(纯 doc、根本不需要 QA)会<b>误触发</b> —— 这就是不够 generic 的铁证。per-category DAG 正好治它。」</div>
+  <p><b>现状(核过码):</b> Auto-QA(FLY-579)是「<b>一刀切</b>」的:一个 PR 过了 code review,Bridge 就自动 spawn 一个独立 QA Runner 去验(<code>auto-qa-coordinator.ts</code>,项目级 <code>qa.auto</code> opt-in)。它<b>不分任务类别</b> —— 你只能全项目开/关,没法说「eng PR 要 QA、product doc PR 不要」。</p>
+  <p><b>痛在哪:</b> 一个「写份 PRD」的 product issue 走到 PR,auto-QA 照样 spawn 一个 QA Runner 去「验证」一份文档 —— <b>没有可验的功能,纯浪费一个 runner + 一次 founder 干扰</b>。这正是「一个模板套所有」的代价。</p>
+  <div class="you" style="background:#f4f9ff;border-color:#bcd9ff"><b>per-category 模板怎么治:</b> QA <b>不再是全局开关,而是模板里的一个节点</b>。<br>
+  · <b>eng 模板</b>:设计→实现→<b>QA 节点(在)</b> —— 该验的验。<br>
+  · <b>product 模板</b>:探索→收敛,<b>没有 QA 节点</b> —— 从根上不会误触发,不用 opt-out 补丁。<br>
+  「要不要 QA」变成「这类活的模板里有没有 QA 这块积木」的自然结果,而不是一个全局布尔去猜。</div>
+  <p class="hint">一句话:<b>Auto-QA 误触发 = 「一个模板套所有」最疼的具体证据;per-category 模板把「要不要 QA」放进模板形态里,从根上 generic 了。</b></p>
+</div>
+<div class="cmt"><label>💬 对头号动机的留言(auto-QA 误触发当主动机,击中你的点了吗?还有别的「一刀切」痛想一起列吗?)</label><textarea data-k="autoqa" data-label="2 · 头号动机 Auto-QA"></textarea></div>
 
-  <p><b>那 🅑 里「模板」到底买到了什么(值不值的关键):</b> 我诚实盘一遍,模板挂住的<b>全是治理/基建的钩子,没有一样是「替模型想」</b> ——</p>
+<!-- 3 现状 -->
+<h2><span class="secnum">3 ·</span> 现状(核过码 · 诚实):今天只有一个写死的 eng 模板</h2>
+<div class="card blue">
   <div class="scroll"><table>
-  <thead><tr><th>模板钉住的东西</th><th>它是「治理/基建」还是「绑推理」?</th><th>越强的模型让它过时吗?</th></tr></thead>
+  <thead><tr><th>能力</th><th>今天</th><th>证据</th></tr></thead>
   <tbody>
-    <tr><td class="k">profile:每节点用哪个模型</td><td>成本/质量控制(便宜活用便宜模型)</td><td><b>不会</b> —— 模型再强,你也不想拿 Opus 跑一个 lint 修复</td></tr>
-    <tr><td class="k">QA 是「独立 fresh session」这个位置</td><td>治理:独立验证(不让写代码的自己判自己)</td><td><b>不会</b> —— 独立性是治理要求,不是能力问题</td></tr>
-    <tr><td class="k">founder gate / brainstorm gate 卡在哪</td><td>治理:人在环的落点</td><td><b>不会</b> —— gate 是你要的控制,不是模型的短板</td></tr>
-    <tr><td class="k">分几个独立 context 的 session</td><td>基建:根治 context 饱和(每段 fresh 上下文)</td><td><b>不会</b> —— 上下文预算是物理约束</td></tr>
-    <tr><td class="k">形态稳定 → 状态面板能显示「在哪一步」</td><td>可观测:你读「它跑到哪了」</td><td><b>不会</b> —— 形态乱 = 面板没锚点</td></tr>
+    <tr><td class="k">任务类别 → 谁跑</td><td><span class="tag done">已有</span> label→agent/Lead(只决定 who,不决定 how)</td><td><code>AgentDispatcher</code> · <code>config.yaml agents[].match.labels</code></td></tr>
+    <tr><td class="k">模板序列</td><td><span class="tag done">写死</span> 设计→实现→QA,固定、就一套</td><td><code>three-stage-phases.ts</code></td></tr>
+    <tr><td class="k">profile(每节点绑模型)</td><td><span class="tag done">写死</span> 设计/实现=Fable、QA=Opus</td><td><code>three-stage-phases.ts</code> <code>DEFAULT_PHASE_TIER</code></td></tr>
+    <tr><td class="k">开关粒度</td><td><span class="tag done">全局</span> <code>pipeline.three_stage</code> on/off + <code>no-three-stage</code> label</td><td><code>three-stage-policy.ts</code></td></tr>
+    <tr><td class="k">Auto-QA</td><td><span class="tag done">一刀切</span> 项目级 <code>qa.auto</code>,不分类别(§2 的痛)</td><td><code>auto-qa-coordinator.ts</code></td></tr>
+    <tr><td class="k">按任务类别选模板</td><td><span class="tag new">没有</span></td><td>grep 无 <code>taskCategory</code>/<code>templateRegistry</code></td></tr>
+    <tr><td class="k">消息 inject(跑中给 runner 传话)</td><td><span class="tag done">已有</span> <code>flywheel-comm send</code>→mailbox 唤醒 · brainstorm gate 跑中拉人</td><td><code>send.ts</code> · <code>gate.ts</code></td></tr>
+    <tr><td class="k">节点 inject / fork / loop</td><td><span class="tag new">没有</span>(§6 深挖)</td><td>grep 无</td></tr>
   </tbody>
   </table></div>
-  <p><b>所以对你挑战的正面回答:</b> 模板<u>不</u>告诉模型「在设计节点里该怎么想」—— 那部分完全放开、模型越强越好。模板只钉<b>成本、控制、可见性、独立验证</b>这几件<u>你本来就想钉、而且模型变强也不会消失</u>的事。这不是绑脑子,是给脑子搭个「花多少钱、在哪停下来给你看、怎么让你读懂」的架子。<b>→ 建议落 🅑。</b></p>
 </div>
-<div class="cmt"><label>💬 对核心张力的留言(🅑 站得住吗?「模板=治理钩子、不绑推理」这个论证服不服你?刻度该往 🅐 还是往中间?)</label><textarea data-k="tension" data-label="4 · 核心张力 A/B/C"></textarea></div>
+<div class="cmt"><label>💬 对现状的留言</label><textarea data-k="current" data-label="3 · 现状核码"></textarea></div>
 
-<!-- 5 提议最小形态 -->
-<h2><span class="secnum">5 ·</span> 提议的<u>最小</u>形态:每类任务一套 default 模板(可覆盖)</h2>
+<!-- 4 张力 -->
+<h2><span class="secnum">4 ·</span> 核心张力:模型越来越强,还要模板干嘛?(压缩版,论证不变)</h2>
+<div class="card gray">
+  <p>三档:<b>🅐 不要模板</b>(全自由,但成本没治 / 无独立 QA / 状态面板没锚点 / gate 位置看心情)· <b>🅑 轻默认可覆盖(提议)</b> · <b>🅒 死板每步</b>(拖住强模型,❌ 否掉)。</p>
+  <p><b>回答你的挑战:</b> 模板挂住的<b>全是治理/基建钩子</b>(profile 成本 / 独立 QA 位置 / gate 落点 / context 隔离 / 状态可观测)——<b>没一样是替模型想,而且模型变强也不会让它们过时</b>。节点<u>内部</u>怎么推理完全放开。→ 落 <b>🅑</b>。</p>
+</div>
+<div class="cmt"><label>💬 对核心张力的留言</label><textarea data-k="tension" data-label="4 · 核心张力"></textarea></div>
+
+<!-- 5 最小形态 -->
+<h2><span class="secnum">5 ·</span> 提议的<u>最小</u>形态(v2 改:default = 裸 session)</h2>
 <div class="card green">
-  <p><b>最小可用 = 三件事,没有一件是新引擎:</b></p>
+  <div class="you"><b>你 co-eval 定的默认:</b>「<b>default 就是一个裸 session</b> —— 没定义模板,agent 就随便做(= 无模板)。per-category 模板是 opt-in、后续加。」采纳。</div>
+  <p><b>最小可用 = 三件事,没有新引擎:</b></p>
   <ul>
-    <li><span class="k">① 一小撮 shipped 模板(2-3 套就够起步)</span> —— 每套 = 「节点序列 + 每节点 profile + gate 位置」。这只是把今天写死的三段式<b>抽成数据 + 再加一两套短的</b>。</li>
-    <li><span class="k">② 用<u>已有的</u> label/agent 信号选默认模板</span> —— 不加新分类器。eng 类 → 三段式;product 类 → 短模板;文档类 → 更短。选谁跟「派给谁」用同一个信号。</li>
-    <li><span class="k">③ profile 直接复用</span> —— <code>three-stage-phases.ts</code> 已经是「每节点绑模型」的单一真相,把它从「三段式专属」升成「模板通用的一个字段」即可。</li>
+    <li><span class="k">① default = 裸单 session</span> —— 不挂模板的活,就是今天的裸跑(agent 自己决定怎么做)。这是<b>最轻的默认</b>,也天然满足你的红线:不定义 = 不约束。</li>
+    <li><span class="k">② per-category 模板 = opt-in,先给 2-3 套 shipped</span> —— eng 三段式(把写死的抽成数据)+ product 短模板 + 未来按需加。用<b>已有 label 信号</b>选,不加新分类器。</li>
+    <li><span class="k">③ profile 直接复用</span> —— <code>three-stage-phases.ts</code> 升成模板通用字段。</li>
   </ul>
-  <p><b>起步的模板表(草案,数字/形态都可改):</b></p>
   <div class="scroll"><table>
-  <thead><tr><th>任务类别(现有 label)</th><th>default 模板</th><th>为什么</th></tr></thead>
+  <thead><tr><th>任务类别</th><th>模板</th><th>QA 节点?</th></tr></thead>
   <tbody>
-    <tr><td class="k">Eng(工程)</td><td>三段式:设计(Fable)→ 实现(Fable)→ QA(Opus)<span class="tag done">已有</span></td><td>要独立 QA + context 隔离,现有形态直接抬进来</td></tr>
-    <tr><td class="k">Product(产品/PRD/调研)</td><td>短模板:如 探索/收敛(1-2 节点)<span class="tag new">新</span>,无「实现→QA」尾</td><td>产出是文档/决策,不该套 eng 的实现+QA</td></tr>
-    <tr><td class="k">Docs / 小改 / 低风险</td><td>单节点(= 今天的裸跑,但显式化)<span class="tag new">新</span></td><td>轻活别上重流程(呼应「过程按风险分档」)</td></tr>
-    <tr><td class="k">未来别的类型</td><td>各自加一套;<b>提供几套让不同事件挑</b></td><td>乐高:加积木不改引擎</td></tr>
+    <tr><td class="k">未挂模板(default)</td><td><b>裸单 session</b>(agent 随便做)<span class="tag new">新·作默认</span></td><td>无(不套流程)</td></tr>
+    <tr><td class="k">Eng</td><td>三段式:设计→实现→QA<span class="tag done">已有·抽成数据</span></td><td><b>有</b></td></tr>
+    <tr><td class="k">Product</td><td>短模板:探索→收敛<span class="tag new">新</span></td><td><b>无</b>(治 §2 误触发)</td></tr>
+    <tr><td class="k">未来类型</td><td>各自加一套(乐高)</td><td>看形态</td></tr>
   </tbody>
   </table></div>
-  <div class="you" style="background:#f4f9ff;border-color:#bcd9ff"><b>刻意的克制:</b> 起步<b>不建 template DSL / 不建可视化编辑器 / 不让用户自定义模板</b>。就是「几套 hardcoded 模板 + 按类别选 + 可覆盖」。等真跑出「这几套不够用」的具体痛,再谈自定义。<b>先证明「分类别选模板」有用,再谈让它更花哨。</b></div>
+  <div class="you" style="background:#f4f9ff;border-color:#bcd9ff"><b>刻意克制:</b> 起步<b>几套写死模板 + 裸 session 默认</b>就够。不做 DSL / 编辑器 / 用户自定义(见 §8)。先证明「分类别选模板 + 裸 session 兜底」有用。</div>
 </div>
-<div class="cmt"><label>💬 对最小形态的留言(2-3 套够吗?product 短模板长啥样你有想法吗?哪套多余?)</label><textarea data-k="mvp" data-label="5 · 最小形态 + 模板表"></textarea></div>
+<div class="cmt"><label>💬 对最小形态的留言(裸 session 作默认对吗?起步 eng+product 两套 + 裸兜底够不够?)</label><textarea data-k="mvp" data-label="5 · 最小形态 + 裸session默认"></textarea></div>
 
-<!-- 6 节点级能力 -->
-<h2><span class="secnum">6 ·</span> 节点级运行时能力:profile / inject / fork —— 逐个 push back「值不值」</h2>
+<!-- 6 节点级能力 inject/fork/loop -->
+<h2><span class="secnum">6 ·</span> 节点级能力:先把 inject / fork / loop 分清(你这轮问得最关键)</h2>
+
 <div class="card amber">
-  <p>你在 1004 列了三个从 homerail 借的能力。我逐个诚实评,<b>不是三个都建</b>:</p>
-  <ul>
-    <li><span class="k">profile(每节点绑模型)</span> <span class="tag done">已做 · MVP 直接用</span><br>
-      成本/质量控制,已 grounded(<code>three-stage-phases.ts</code>)。<b>无争议,升成模板字段即可。</b></li>
-    <li><span class="k">inject(跑中插节点)</span> <span class="tag later">later · 先怀疑</span><br>
-      <b>push back:</b> 一个越来越强的模型,在「实现」节点里发现要多改一步 —— 它<b>直接改了</b>就行,为什么要一个正式的「插节点」原语?<b>inject 只有在你想给插进来的那步<u>单独绑模型 / 单独卡 gate / 单独在面板显示</u>时才值。</b>否则就是仪式。→ 建议 later,而且只在「它靠治理钩子挣到饭」时才做。</li>
-    <li><span class="k">fork(岔成并行试)</span> <span class="tag later">later · power feature</span><br>
-      真有用(两个方案并行、择优),但这是<b>加分项不是地基</b>,而且成本翻倍要治理。→ 建议 later,单独一档,不进 MVP。</li>
-  </ul>
-  <p class="hint">收敛:<b>MVP 只吃 profile(已有)。inject/fork 都往后放</b> —— 它们最像「在重建 homerail 的 run 内引擎」,而在一个模型越来越能自理的系统里,这恰恰是最该怀疑「是不是为做而做」的部分。</p>
+  <h3>6.1 两种 inject —— 别混(你点破的)</h3>
+  <div class="you"><b>你的分辨:</b>「inject 有两种:我们已有『<b>消息 inject</b>』(人中途插指令/feedback);homerail 那种是『<b>节点 inject</b>』(往跑着的 DAG 图动态加/改节点,如 design→拆 4 个 PR→回去跑剩下)。别混。」</div>
+  <div class="scroll"><table>
+  <thead><tr><th></th><th>消息 inject</th><th>节点 inject</th></tr></thead>
+  <tbody>
+    <tr><td class="k">是什么</td><td>往<b>跑着的 session</b> 插一条<b>指令/feedback</b>(内容变,图不变)</td><td>往<b>跑着的 DAG 图</b> 动态<b>加/改/跳节点</b>(图的形状变)</td></tr>
+    <tr><td class="k">例子</td><td>你中途跟 runner 说「顺便也改下 X」</td><td>design 节点发现要拆成 4 个实现 → 图上长出 4 个 implement 节点 → 跑完回主线</td></tr>
+    <tr><td class="k">我们</td><td><span class="tag done">已有</span> <code>flywheel-comm send</code>→mailbox · brainstorm gate</td><td><span class="tag new">净新</span> 固定三段式做不到</td></tr>
+    <tr><td class="k">homerail</td><td>它的 <code>inject</code> 其实<b>也是这种</b>(往 node 注入指令 + 记 intervention),核过码</td><td><span class="tag unk">部分/UNKNOWN</span> homerail 靠 <b>loop + skip</b> 拿动态性,<b>没有</b>干净的「自由插新节点」;所以「节点 inject」largely 是净新,不是照抄</td></tr>
+  </tbody>
+  </table></div>
+  <p class="hint">收敛:<b>消息 inject 我们有、不用建;节点 inject 才是值得 deep-dive 的净新能力</b>(而且诚实说,homerail 也没干净做,别把它当现成方案抄)。</p>
 </div>
-<div class="cmt"><label>💬 对 inject/fork 的留言(我把它俩往后放,你同意吗?还是你有一个具体场景现在就需要?)</label><textarea data-k="nodecaps" data-label="6 · profile/inject/fork"></textarea></div>
+
+<div class="card amber">
+  <h3>6.2 inject / fork / loop 各治什么(你 4-PR 串行 = loop,不是 fork)</h3>
+  <div class="you"><b>你的澄清:</b>「fork = 并行分支(两种实现同时试);我那个 4-PR 串行 = <b>loop</b>(重复 implement),不是 fork;并行独立才 fork。」对,画清:</div>
+  <div class="scroll"><div class="flow">
+    <div class="col"><h4>节点 inject <span class="tag new">净新</span></h4>
+      <div class="step">跑中<b>改图</b>:加/改/跳节点</div>
+      <div class="env">治:开跑才发现「这活其实要拆/要多一步」。固定图做不到。</div></div>
+    <div class="col"><h4>fork <span class="tag later">later</span></h4>
+      <div class="step hi">从一个节点<b>并行岔两条独立分支</b>(两种实现<u>同时</u>试,择优)</div>
+      <div class="env">治:方案不确定、想并行比。<b>成本翻倍</b>要治理。homerail:checkpoint fork 干净 session。</div></div>
+    <div class="col"><h4>loop <span class="tag later">later</span></h4>
+      <div class="step">同一节点<b>重复迭代</b>(<u>串行</u>,做完一个再下一个 / 迭代到满足)</div>
+      <div class="env">治:<b>你的 4-PR 串行</b> = implement 循环 4 次。homerail:loop_gateway + loop_sources。</div></div>
+  </div></div>
+  <p><b>profile</b> <span class="tag done">已有</span>:每节点绑模型(<code>three-stage-phases.ts</code>),无争议,MVP 直接用。</p>
+  <div class="you" style="background:#f4f9ff;border-color:#bcd9ff"><b>MVP 边界 + 留你拍(⑦):</b> MVP 只吃 <b>profile(已有)</b>。<b>节点 inject / fork / loop 我深挖清楚了 —— 都建议 Later,请你拍板</b>:它们最像「重建 homerail 的 run 内引擎」,在一个模型越来越能自理的系统里,最该问「现在就要、还是等真痛」。有没有哪个你现在就有具体场景非要?</div>
+</div>
+<div class="cmt"><label>💬 对 inject/fork/loop 三分 + Later 的留言(三分清楚吗?节点 inject / fork / loop 有哪个你现在就要?)</label><textarea data-k="nodecaps" data-label="6 · inject/fork/loop 三分 + Later"></textarea></div>
 
 <!-- 7 可覆盖 -->
 <h2><span class="secnum">7 ·</span> 「可覆盖」怎么落(deviation 走正门)</h2>
 <div class="card blue">
-  <p>模板是<b>默认</b>,不是锁。三个层次的偏离,从粗到细:</p>
   <ul>
-    <li><span class="k">换整套模板</span> —— 单条 issue 用 label / dispatch 参数指定别的模板(就像今天 <code>no-three-stage</code> label 关三段式,泛化成「选 X 模板」)。</li>
-    <li><span class="k">调这一套的节点</span> —— 某条 issue 跳过某节点 / 换某节点的模型(per-run override,不改全局默认)。</li>
-    <li><span class="k">跑中偏离</span> —— (若将来做 inject/fork)模型在 run 里自己插/岔。这是最"活"的一层,归到 §6 的 later。</li>
+    <li><b>换整套模板</b> —— 单 issue 用 label/dispatch 参数指定别的模板(泛化今天的 <code>no-three-stage</code>)。</li>
+    <li><b>调这套的节点</b> —— 单 issue 跳某节点 / 换某节点模型(per-run override)。</li>
+    <li><b>裸兜底</b> —— 不挂模板 = 裸 session(§5),永远有个「不套流程」的出口。</li>
   </ul>
-  <p class="hint">设计原则:<b>默认省心、覆盖顺手、偏离不惩罚</b>。绝不出现「模板逼着一个明明单步能完的活跑三段式」。</p>
+  <p class="hint">原则:<b>默认省心、覆盖顺手、偏离不惩罚</b>。绝不逼一个单步能完的活跑三段式。</p>
 </div>
-<div class="cmt"><label>💬 对可覆盖机制的留言(覆盖入口用 label 够顺吗?还是你想要别的方式?)</label><textarea data-k="override" data-label="7 · 可覆盖机制"></textarea></div>
+<div class="cmt"><label>💬 对可覆盖的留言</label><textarea data-k="override" data-label="7 · 可覆盖机制"></textarea></div>
 
-<!-- 8 分阶段 -->
-<h2><span class="secnum">8 ·</span> 分阶段(default-off,抄三段式那套上线纪律)</h2>
+<!-- 8 DSL/编辑器 -->
+<h2><span class="secnum">8 ·</span> 讲清三件不同事:自定义模板 / DSL / 编辑器(你要求区分)<span class="new-badge">v2 新节</span></h2>
+<div class="card purple">
+  <div class="scroll"><table>
+  <thead><tr><th>东西</th><th>是什么</th><th>homerail 有吗(核过码)</th><th>我们 MVP</th></tr></thead>
+  <tbody>
+    <tr><td class="k">自定义模板</td><td>让<b>用户</b>定义自己的模板(超出 shipped 那几套)</td><td>有(YAML 模板文件可加)</td><td><b>不做</b> · 远期</td></tr>
+    <tr><td class="k">DSL(写模板的小语言)</td><td>一套<b>文本格式/小语言</b>去写模板</td><td>有 —— <b>YAML orchestration 模板</b>(<code>assets/orchestrations/*.yaml.template</code>)。<b>注:homerail 的 TOML 是它的 UI widget 格式、不是模板格式</b>(常被误传)</td><td><b>不做</b> · 起步几套写死够</td></tr>
+    <tr><td class="k">编辑器(可视化 UI)</td><td>拖拉拽<b>画模板</b>的界面</td><td><span class="tag unk">没找到</span> —— homerail 模板是<b>手写 YAML</b>;它的 agent-ui(Vue)是语音/run 状态界面,<b>不是模板编辑器</b></td><td><b>不做</b> · 最远期</td></tr>
+  </tbody>
+  </table></div>
+  <p><b>MVP 明确边界:</b> <b>几套写死模板 + 裸 session 默认</b>。<u>不做</u> DSL、<u>不做</u>编辑器、<u>不做</u>用户自定义。等真跑出「这几套不够、需要自己写」的具体痛,再谈 DSL(大概率也是 YAML 文件,不是可视化编辑器)。</p>
+</div>
+<div class="cmt"><label>💬 对 DSL/编辑器 澄清的留言(MVP 不做这三个,认同吗?)</label><textarea data-k="dsl" data-label="8 · 自定义/DSL/编辑器"></textarea></div>
+
+<!-- 9 分阶段 -->
+<h2><span class="secnum">9 ·</span> 分阶段(default-off,抄三段式那套上线纪律)</h2>
 <div class="card green">
   <ul>
-    <li><span class="k">阶段 1(MVP)</span>:模板抽成数据 + 按类别选 + profile 复用 + 2-3 套 shipped 模板 + 可覆盖(换模板/调节点)。<b>default-off、字节兼容</b>(不配 = 跟今天一模一样),可灰度、可回退 —— 完全照 <code>pipeline.three_stage</code> 那套 opt-in 纪律。</li>
-    <li><span class="k">阶段 2</span>:inject / fork(若 §6 证明值)、更多模板、per-run 更细的 override。</li>
-    <li><span class="k">不做(除非跑出真痛)</span>:模板 DSL、可视化编辑器、用户自定义模板、「学历史自动调模板」。</li>
+    <li><span class="k">阶段 1(MVP)</span>:裸 session 作默认 + per-category 模板 opt-in(eng 三段式抽数据 + product 短模板)+ profile 复用 + QA 变成模板节点(治 §2)+ 可覆盖。<b>default-off、字节兼容</b>,照 <code>pipeline.three_stage</code> opt-in 纪律。</li>
+    <li><span class="k">阶段 2</span>:节点 inject / fork / loop(若你拍要)、更多模板。</li>
+    <li><span class="k">不做(除非真痛)</span>:DSL、编辑器、用户自定义模板、学历史自动调。</li>
   </ul>
-  <p class="hint">这层的所有决定,<b>安全阀都在第二层(353)的治理里</b> —— 就算模板选错/偏离过头,founder gate + 接管叫停 + 出错升级兜底。这也是为什么这层可以「轻」。</p>
+  <p class="hint">安全阀在第二层(353)治理里(founder gate + 接管叫停 + 出错升级),所以这层可以「轻」。</p>
 </div>
-<div class="cmt"><label>💬 对分阶段的留言(MVP 这一刀切得对吗?太大/太小?)</label><textarea data-k="phase" data-label="8 · 分阶段"></textarea></div>
+<div class="cmt"><label>💬 对分阶段的留言</label><textarea data-k="phase" data-label="9 · 分阶段"></textarea></div>
 
-<!-- 9 留给你定 -->
-<h2><span class="secnum">9 ·</span> 留给你定的点(收敛这几个我就去写 PRD)</h2>
+<!-- 10 留给你定 -->
+<h2><span class="secnum">10 ·</span> 留给你定的点(收敛这几个我就去写 PRD)</h2>
 <div class="card red">
   <ul>
-    <li><b>刻度(§4):</b> 落 🅑「轻默认可覆盖」,对吗?还是你想更靠 🅐(更少模板、更多让模型自己定)?</li>
-    <li><b>「模板=治理钩子、不绑推理」(§4):</b> 这个核心论证,是你想要的答案吗?哪里还不放心?</li>
-    <li><b>起步几套模板(§5):</b> Eng 三段式 + Product 短 + Docs 单节点 —— 这 3 套作第一刀?product 短模板你心里有具体形状吗?</li>
-    <li><b>inject/fork(§6):</b> 同意都放 later 吗?还是有一个场景你现在就要 fork?</li>
-    <li><b>范围红线(§5/§8):</b> 起步<b>不做</b>自定义模板/DSL/编辑器 —— 这个克制你认同吗?</li>
+    <li><b>主线(§1):</b>「三段式=eng 专属、每类各拼积木」作主轴,对吗?product/designer 的模板形状你要不要现在给个草图?</li>
+    <li><b>头号动机(§2):</b> auto-QA 误触发当主动机 —— 击中了吗?还有别的「一刀切」痛要一起列吗?</li>
+    <li><b>默认(§5):</b> 裸 session 作 default、per-category opt-in —— 对吗?</li>
+    <li><b>inject/fork/loop(§6):</b> 三分清楚了;<b>都建议 Later</b> —— 你拍板:有哪个现在就要?</li>
+    <li><b>范围(§8):</b> MVP 不做 DSL/编辑器/自定义 —— 认同这个克制吗?</li>
   </ul>
 </div>
-<div class="cmt"><label>💬 总批注 / 决定 / 下一步</label><textarea data-k="final" data-label="9 · 总批注 / 决定"></textarea></div>
+<div class="cmt"><label>💬 总批注 / 决定 / 下一步</label><textarea data-k="final" data-label="10 · 总批注 / 决定"></textarea></div>
 
 <div class="bar">
   <button class="primary" id="exportBtn" type="button">复制批注</button>
@@ -266,7 +271,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 <script nonce="__CSP_NONCE__">
 (function(){
   var pathScope = (typeof location !== "undefined" && location.pathname) ? location.pathname : "local";
-  var KEY = "fly1020-templates-design::" + pathScope;
+  var KEY = "fly1020-templates-design-v2::" + pathScope;
   var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
   var saved = {};
   try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ saved = {}; }
@@ -280,7 +285,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
     });
   });
   function buildMd(){
-    var lines = ["# FLY-1020 每类任务 workflow 模板设计 v1 — Annie 的批注", "", "日期: " + new Date().toLocaleString(), ""];
+    var lines = ["# FLY-1020 每类任务 workflow 模板设计 v2 — Annie 的批注", "", "日期: " + new Date().toLocaleString(), ""];
     var any = false;
     areas.forEach(function(t){
       var v = (t.value || "").trim(); if (!v) return; any = true;
@@ -303,7 +308,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
   });
   document.getElementById("dlBtn").addEventListener("click", function(){
     var blob = new Blob([out.value], {type:"text/markdown"}), url = URL.createObjectURL(blob);
-    var a = document.createElement("a"); a.href = url; a.download = "fly1020-templates-design-v1-批注.md";
+    var a = document.createElement("a"); a.href = url; a.download = "fly1020-templates-design-v2-批注.md";
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
   });

@@ -8,6 +8,18 @@ Issue: FLY-1020 (https://linear.app/geoforge3d/issue/FLY-1020/low-level-dag-per-
 > 按 Lead 的 co-creation 节奏:**先出交互设计 HTML 给 Annie co-eval → 收敛 → 再写完整 PRD**。
 > 所以此刻**不写 PRD/plan**;exploration/research/plan 三件套等 co-eval 收敛后补齐。
 
+## v2 — 折进 Annie 第 1 轮 co-eval(7 点)
+
+1. **三段式只对 eng** → 提成主线(§1):product/designer 要不同 session/节点;DAG 搭积木价值 = 加新模板省事。
+2. ⭐ **Auto-QA 误触发 = 头号动机**(§2):`auto-qa-coordinator.ts` 一刀切(项目级 `qa.auto`,不分类别),对纯 doc 的 Product 误 spawn QA runner = 浪费 + 干扰 founder。per-category:QA 变模板节点(eng 有 / product 无),从根上 generic。
+3. **两种 inject 分开**(§6.1):**消息 inject**(往跑着 session 插指令,内容变图不变)= 我们已有(`flywheel-comm send`→mailbox / brainstorm gate);homerail 的 `inject`(active-runs.ts:1090)其实也是这种。**节点 inject**(往跑着 DAG 图加/改/跳节点,图形状变)= 净新;固定三段式做不到。诚实标:homerail 图动态性靠 loop_gateway + skip,**没有**干净的自由插节点,所以节点 inject largely 净新、非照抄。
+4. **inject/fork/loop 三分**(§6.2):inject=改图 · fork=并行独立分支(两实现同时试;homerail checkpoint fork 干净 session)· loop=串行重复迭代(Annie 的 4-PR = loop 不是 fork;homerail loop_gateway+loop_sources)。
+5. **default = 裸单 session**(§5):没挂模板 = agent 随便做 = 无约束(天然满足红线);per-category 模板 opt-in 后加。
+6. **DSL/编辑器澄清**(§8,核过 homerail 码):自定义模板 / DSL(写模板小语言)/ 编辑器(可视化 UI)三件不同。**homerail 模板 DSL = YAML**(`assets/orchestrations/*.yaml.template`)——**TOML 是它的 UI widget 格式、不是模板格式**(纠 Lead 转述);**无可视化模板编辑器**(agent-ui 是语音/run 界面,模板手写 YAML)。MVP 明确不做 DSL/编辑器/自定义。
+7. **inject/fork/loop 深挖清楚 → 留 Annie 拍 Later**(§6/§9)。MVP 只吃 profile(已有)。
+
+grounding 来源:`product/doc/FLY-1004-homerail-analysis/homerail-code-report.md`(code-grounded)。
+
 ## 1. 分工(与 FLY-353)
 
 两层 DAG(Annie 在 1004 articulate):
