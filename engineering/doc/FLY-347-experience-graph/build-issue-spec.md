@@ -1,5 +1,6 @@
 # FLY-347 Run 教训库 MVP — build-issue spec
 
+> **已建:build issue = FLY-1033**(Lead 于 2026-07-08 建,一个连贯功能,挂 Tadashi 队列)。
 > 交 Lead 建 FLY eng build issue 挂 Tadashi 队列(Runner 不自建 issue、不自 ship)。
 > 定稿依据:engineering/doc/FLY-347-experience-graph/prd.md (v5 定稿)。
 
