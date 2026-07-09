@@ -1,36 +1,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FLY-353 主动 DAG 编排 + 监管护栏 — PRD(终审)</title>
+<title>FLY-353 主动 DAG 编排 + 监管护栏 — PRD(详细版·终审)</title>
 <style>
-:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--navy:#1a365d;--purple:#af52de;--green:#34c759;--amber:#ff9500;--red:#ff3b30}
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--navy:#1a365d}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,system-ui,"SF Pro Text",Segoe UI,Roboto,sans-serif;line-height:1.62;-webkit-text-size-adjust:100%}
 .wrap{max-width:900px;margin:0 auto;padding:20px 16px 90px}
-h1{font-size:24px;line-height:1.25;margin:0 0 4px;letter-spacing:-.02em}
-.sub{color:var(--dim);font-size:13.5px;margin:0 0 4px}
-.pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;background:#e3f9ea;color:#1a7a3c;margin:6px 6px 0 0}
-.pill.g{background:#f3e9fb;color:#7a2fb0}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:12px 0;box-shadow:0 1px 3px rgba(0,0,0,.05)}
-h2{font-size:18px;margin:26px 0 4px;letter-spacing:-.01em}
-.secnum{color:var(--dim)}
-h3{font-size:15px;margin:12px 0 4px;color:var(--navy)}
-p{margin:7px 0}ul{margin:6px 0 6px 2px;padding-left:20px}li{margin:3px 0}
+h1{font-size:23px;line-height:1.28;margin:18px 0 6px;letter-spacing:-.02em}
+h2{font-size:18px;margin:26px 0 6px;letter-spacing:-.01em;border-top:1px solid var(--line);padding-top:16px}
+h3{font-size:15px;margin:14px 0 4px;color:var(--navy)}
+p{margin:7px 0}ul,ol{margin:6px 0 8px 2px;padding-left:22px}li{margin:3px 0}
 code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.85em;background:#f0f0f4;padding:1px 5px;border-radius:5px}
-.k{color:var(--navy);font-weight:600}
-.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:6px}
-.tag.n{background:#e7f0ff;color:#1a5fb4}
-.hi{background:#fff8e6;border:1px solid #ffe0a3;border-radius:9px;padding:7px 10px;margin:8px 0;font-size:13.5px}
-.warn{border-left:4px solid var(--amber)}
-.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:8px 0}
-table{border-collapse:collapse;width:100%;min-width:520px;font-size:13px}
-th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
-th{background:#fafafd;font-weight:600}
+b{color:#111}
+blockquote{margin:10px 0;padding:9px 13px;background:#fff8e6;border-left:4px solid #ff9500;border-radius:8px;font-size:13.5px;color:#5a4a20}
+hr{border:none;border-top:0;margin:0}
 .svgwrap{width:100%;overflow-x:auto;margin:8px 0}
 svg{max-width:100%;height:auto;display:block;margin:0 auto}
-.cmt{margin:16px 0 4px;background:#fbfbfd;border:1px dashed #d6d6de;border-radius:10px;padding:10px 12px}
+.cmt{margin:20px 0 4px;background:#fbfbfd;border:1px dashed #d6d6de;border-radius:10px;padding:10px 12px}
 .cmt label{display:block;font-size:13px;color:var(--navy);font-weight:600;margin-bottom:5px}
-.cmt textarea{width:100%;min-height:72px;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font:inherit;font-size:14px;color:var(--ink);background:#fff;resize:vertical}
+.cmt textarea{width:100%;min-height:80px;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font:inherit;font-size:14px;color:var(--ink);background:#fff;resize:vertical}
 .cmt textarea:focus{outline:2px solid #007aff;outline-offset:1px;border-color:transparent}
 .bar{position:sticky;bottom:0;margin-top:24px;background:rgba(245,245,247,.92);backdrop-filter:saturate(180%) blur(8px);border-top:1px solid var(--line);padding:10px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 button{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:10px;padding:9px 16px;cursor:pointer}
@@ -40,149 +29,495 @@ dialog{border:none;border-radius:14px;padding:0;max-width:680px;width:92%;box-sh
 dialog::backdrop{background:rgba(0,0,0,.35)}
 .dlg{padding:18px 20px}.dlg h3{margin-top:0}
 .dlg textarea{width:100%;min-height:200px;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px}
+.topnote{background:#fff;border:1px solid var(--line);border-left:4px solid #34c759;border-radius:12px;padding:12px 14px;margin:8px 0 4px;font-size:13.5px}
 </style>
 </head>
 <div class="wrap">
-<header>
-  <h1>FLY-353 · 主动 DAG 编排 + 监管护栏 —— PRD</h1>
-  <p class="sub">2026-07-08 · 你 v7 设计已确认「OK,去落实成 PRD」→ 这是落成的 PRD · Codex design review APPROVED(2 轮)· 待你终审</p>
-  <div><span class="pill">Codex 复审 APPROVED</span><span class="pill g">353 = 第二层治理引擎</span></div>
-</header>
-
-<div class="card">
-  <p><b>一句话:</b> 你只列大方向(开 issue + 偶尔标个大依赖),<b>系统自动把该做的挑出来、派下去、推进到底</b> —— 你不再一个个 assign;但<b>判断没丢、可监管、ship 仍你点头</b>。</p>
-  <p class="hint">下面是 PRD 全文的可读版。看完在最后留个话:OK 就 sign-off;有要改的直接写。</p>
+<div class="topnote"><b>这是 353 PRD 的详细全文(你说太精简 → 已按 1005 红线展开,v1-v7 co-eval 的机制全搬进来了)。</b> Codex design review APPROVED(3 轮)。全文 md 在 <code>engineering/doc/FLY-353-dag-orchestration/prd.md</code>。看完在最后 sign-off 或写要改的。</div>
+<h1>FLY-353 主动 DAG 编排 + 监管护栏 — PRD(详细版 · 产品需求文档)</h1>
+<p>Issue: FLY-353 (https://linear.app/geoforge3d/issue/FLY-353/架构进化-research-综合-managed-agents-openclaw-raft-精进-flywheel-系统架构)</p>
+<p>日期: 2026-07-08</p>
+<p>基于: research.md(3 家架构综合)、dag-orchestration-design.html(设计 co-eval v1→v7,<b>Annie 已确认</b>)、exploration.md(现状审计)</p>
+<blockquote>状态:<b>draft(详细版;设计 v7 Annie 已确认;待 Codex design review 复审 + Honey Lemon QA + Annie 终审)。</b> <b>本 PRD 遵循 1005 红线:PRD 是最详细、eng 照着能建的文档,不是摘要 —— v1→v7 co-eval 讨论的机制全部搬进来,不浓缩。</b> 具体 eng 设计与实现 = <b>Tadashi</b>。文档位置:本 PRD 落 <code>engineering/doc/FLY-353-dag-orchestration/prd.md</code>(eng 树,交 Tadashi);上游 research / 设计 co-eval 文档在 <code>product/doc/FLY-353-architecture-evolution/</code>。</blockquote>
+<hr>
+<h2>0. 阅读指南 + 这份 PRD 是怎么收敛出来的（co-eval 全轨迹）</h2>
+<p>FLY-353 起于「综合 Anthropic Managed Agents / openclaw / Raft → 精进 Flywheel 架构」的 research(源自 Annie 从小红书</p>
+<p>精选的 8 个方向)。它<b>不是一开始就是 DAG</b>,而是一路和 Annie co-eval 收敛出来的。把轨迹讲清,因为 PRD 的每个决定都</p>
+<p>带着这段讨论的理由(1005 红线要求不丢这些):</p>
+<ol>
+<li><b>research(3 家架构)</b> → 发现最高杠杆候选是「session-log 解耦」(抄 Managed Agents:把 runner 记忆/事件从 context</li>
+</ol>
+<p>   拆成 context 外的 append-only 日志 → 无状态 runner 可安全 respawn)。</p>
+<ol>
+<li><b>Annie 收窄 session-log</b> → 我们已经用 Claude Code,brain/hands/session 原生就有;session-log 不是「我们缺 session」,</li>
+</ol>
+<p>   是「要不要 Flywheel 自己 OWN 这条 log」,只在 3 场景才值(① Codex/kimi 无原生 session · ② 跨 agent 查询/切片 · ③ 多机)。</p>
+<p>   单机 Claude 不痛 → <b>session-log 收窄为 backlog(§14)</b>。</p>
+<ol>
+<li><b>Annie 把 DAG 连到当下真痛</b> → 她看 research 时自己 articulate:现在最烦的是「一堆 Linear issue 怎么开、怎么派」——</li>
+</ol>
+<p>   手动开 issue、再一个个跟 Lead 说「你做 1、你做 2」。她意识到 DAG 的价值正是「我只列大方向,系统自动按依赖挑着跑、</p>
+<p>   不用一个个 assign」。→ <b>DAG 主动编排 = 353 的答案(优先),session-log = backlog。</b></p>
+<ol>
+<li><b>设计 co-eval v1→v7</b>(和 Annie 逐节共创,每轮她批注、我折):</li>
+</ol>
+<ul>
+<li>v1→v2:判断<b>不在派发环节、不机械</b> → 用 LLM 分诊 + 判断内建在 runner 跑的时候(现有 brainstorm gate)。</li>
+<li>v3:LLM 分诊节点 = <b>现有的 CoS</b>(Annie:「CoS 本就是我设计来做这个的」);大架构全景图。</li>
+<li>v4→v5:<b>轻模板 + 强治理</b> framing(回应她「会不会过度复杂化 / 固定模板限制强模型」);两层拆两 PRD。</li>
+<li>v6:频次改「<b>周期扫为主</b>」(不是事件驱动);CoS 输出两样(语言指令 + HTML);<b>毕业曲线</b>(早会学偏好 → 全自动)。</li>
+<li>v7:CoS(不叫 Klaus)· <b>§6 每 6h 扫 + 补齐 capacity</b>· 学习机制 = 单独 issue FLY-1034。</li>
+<li><b>Annie 确认 v7:「OK,353 看起来 OK,去落实成 PRD 吧。」</b></li>
+</ul>
+<ol>
+<li><b>Codex design review</b>:R1 CHANGES REQUESTED(8 条,含真安全边界:CoS <code>canSpawnRunners:false</code>、不能直接 spawn)</li>
+</ol>
+<p>   → 全折进;R2 APPROVED。</p>
+<p><b>读法:</b> §1-§2 背景/北极星 · §3 Non-goal(边界) · §4 framing(轻模板+强治理) · §5 两层 · §6 CoS 分诊 · §7 依赖 ·</p>
+<p>§8 调度 · §9 CoS 输出+面板 · §10 护栏 · §11 毕业曲线 · §12 引擎 · §13 流程图 · §14 session-log · §15 验收 · §16 build 拆分 ·</p>
+<p>§17 open questions · §18 homerail · §19 关联。</p>
+<hr>
+<h2>1. 背景与问题（详）</h2>
+<p><b>Annie 的痛(原话 + 展开):</b> 「现在烦这些 Linear issue 怎么开、怎么解。以前我可能要开好 issue 1 到 10,然后再去跟</p>
+<p>Lead 说:你去做 1、你去做 2、你去做 3。」—— 核心是:<b>issue 一多,「派活」这个动作本身就变成 founder 的重复劳动</b>。她</p>
+<p>只想列大方向,不想当人肉调度员。</p>
+<p><b>为什么这是架构问题(不只是体验):</b> 今天 Flywheel 的编排是「Lead 逐 issue 动态派、人在环」——CoS 分诊 → 部门 Lead</p>
+<p>现场判断派谁 → Runner 跑 → founder gate ship。这套在少量 issue 时可行,但<b>「谁下一步做什么」这层始终是人肉的</b>;</p>
+<p>issue 一多、想让一个人管很多活时,人肉调度就成瓶颈。</p>
+<p><b>353 的答案:</b> 把「谁下一步做什么」这层<b>从人肉搬成自动(在有护栏的前提下)</b> = <b>主动 DAG 编排(第二层治理引擎)</b>。</p>
+<p>人只列大方向,系统按分诊 + 依赖 + 负荷自动挑/派/推进,人不再一个个 assign;但判断不丢、可监管、ship 仍 founder-gated。</p>
+<p><b>注:</b> 我们审计过现有 <code>dag-resolver</code> 代码(v0.1.0 的老编排原语,dormant 没接生产)——它是机械挑任务的,不满足新需求</p>
+<p>(见 §12);353 不复活它、重搭。</p>
+<hr>
+<h2>2. 北极星 / 目标（详）</h2>
+<p><b>North Star = 『founder 只列大方向,系统自动把该做的挑出来、派下去、推进到底 —— 人不再一个个 assign,但判断没丢、不失控』。</b></p>
+<p>拆成可检验的目标:</p>
+<ul>
+<li><b>省心(核心):</b> Annie 开一批 issue(偶尔标个大依赖)后,<b>不用逐个 assign</b>;CoS 自动分诊 + 按依赖/负荷自动派,该跑的跑起来。</li>
+<li><b>判断没丢:</b> 复杂的活 runner 跑中经现有 brainstorm gate 拉她一起定;不该自动跑的(旧/不相关)被 CoS 分诊挡下、不机械照派。</li>
+<li><b>不失控:</b> ship 仍 founder-gated;可随时接管/叫停;失败升级给人;Discord 看得见。</li>
+<li><b>渐进自治:</b> 通过早会 founder 驱动地学偏好,系统越来越自主(§11 毕业曲线),终点全自动。</li>
+</ul>
+<p><b>一句话验收:</b> Annie 开一批 issue 后不用逐个 assign;CoS 自动分诊 + 每 6h 按负荷/依赖自动派(补齐到 capacity);</p>
+<p>复杂的活 runner 跑中拉她定;ship 仍她点头;全程她在 Discord 看得见、随时能叫停。</p>
+<hr>
+<h2>3. Non-goals（边界；避免与别的 issue 重叠 —— Cass dedup）</h2>
+<p>353 <b>只做</b>「DAG 主动编排(第二层治理引擎)」。以下明确<b>不在 353</b>,写清防越界:</p>
+<ul>
+<li><b>不做 session-log MVP</b> —— 收窄为 backlog(§14);Claude Code 单机不痛,只在 3 场景才值,等 Codex 实测真痛再做。</li>
+<li><b>不碰 lead-tree / fleet-scaling</b> —— 「一个 Lead 带很多 runner 的树状扩展 / 分 sub-lead」= <b>FLY-1022</b>,不在 353。</li>
+</ul>
+<p>  <b>互补关系:</b> 353 = offload/自动派发让<b>单个 Lead 拿更多</b>;FLY-1022 = <b>分 sub-lead 每个拿更少</b>。两个是互补的扩展解,</p>
+<p>  353 不覆盖 fleet-scaling。</p>
+<ul>
+<li><b>不建「学习引擎」</b> —— 「CoS 学怎么派发 + Lead 学替 founder 决策」(拿什么 signal/data、怎么 convert 成自主决定)=</li>
+</ul>
+<p>  <b>FLY-1034</b>(autonomy learning,单独 co-eval,已建)。<b>353 的毕业曲线依赖 FLY-1034,但不 build 它。</b></p>
+<ul>
+<li><b>不建第一层「轻模板」</b> —— 每类任务的 DAG 模板(乐高)= <b>FLY-1020</b>,单独 issue。<b>353 只调用第一层,不建它。</b></li>
+<li><b>不另做 dashboard</b> —— <b>Discord 就是面板</b>(§9),复用现有 publish-report。</li>
+<li><b>不改 ship / merge 授权语义</b> —— ship 永远 founder-gated(§10 护栏①)。</li>
+<li><b>不在本 issue 实现 / 建 eng build issue / ship</b> —— 只出 PRD + 拆分方案(§16);eng issue 由 Lead 按 910 那套建(1 issue+PRD)。</li>
+</ul>
+<hr>
+<h2>4. 核心 framing：轻模板 + 强治理（回应「会不会过度复杂化 / 固定模板限制越来越强的模型」）</h2>
+<p><b>Annie 的担心(原话):</b> 「是不是把简单的事情复杂化了?固定模板会不会限制越来越强的模型?」—— 这担心很对,是这份设计</p>
+<p>必须正面回答的。答案是:<b>我们不束缚模型「怎么想」;我们提供的是治理 + 编排。</b> 拆成两条:</p>
+<h3>4.1 模板 = 轻的、可覆盖的默认起手式,不是死模板 / 紧身衣</h3>
+<ul>
+<li>给一个「这类活一般这么起手」的<b>默认</b>(如 eng 常走 设计→实现→QA),但<b>模型可以偏离</b> —— 简单的自己一步跑完、</li>
+</ul>
+<p>  复杂的自己多绕几步。模板<b>不锁死模型的每一步</b>。</p>
+<ul>
+<li><b>模型越强,越能在模板之上自由发挥。</b> 我们不是要把强模型塞进固定流程,而是给它一个起手式 + 一套治理,推理怎么走是它的事。</li>
+<li>这也是为什么第一层模板(FLY-1020)刻意做成「轻/可覆盖」:如果做成死模板,确实会限制强模型 —— 所以它是 default、不是强制每步。</li>
+</ul>
+<h3>4.2 DAG 真正不可替代的价值 = 治理,不是限制思考</h3>
+<ul>
+<li><b>治理 = 分诊(该不该做/派给谁)· founder gate(合入你点头)· 随时接管/叫停 · 成本控制(贵模型只用在难步骤)。</b></li>
+<li>这些是<b>控制 / 信任 / 成本</b>的需求 —— <b>模型再强都还要</b>:再强的模型你也要能决定「派它做什么、谁批它的产出、花多少钱」。</li>
+<li>治理管的是「派什么、谁批、花多少」,<b>不是「模型该怎么推理」</b>。所以它不会因为模型变强而过时;它随模型变强而更有价值</li>
+</ul>
+<p>  (越强的模型跑越多活,越需要治理来控成本/信任/方向)。</p>
+<p>**一句话:轻模板(不锁模型)+ 强治理(可控可信可省钱)。这直接回答「过度复杂化」—— 复杂度只加在治理层(它有持久价值),</p>
+<p>不加在束缚模型思考上。**</p>
+<hr>
+<h2>5. 两层 DAG 模型（乐高；353 只做第二层）</h2>
+<p>Annie 在 1004 里 articulate 的最清楚的 framing:DAG 在我们这里是<b>两层</b>,叠在一起。</p>
+<h3>5.1 第一层 · 轻模板层（≈乐高，= FLY-1020，单独 issue，353 只调用）</h3>
+<ul>
+<li><b>做<u>一个</u> issue 怎么跑。</b> 每类任务一套<b>轻/可覆盖</b>的默认 DAG 模板 —— 用她的乐高比喻:同一套底层「积木」(节点),</li>
+</ul>
+<p>  不同任务类型拼成不同编排。</p>
+<ul>
+<li><b>eng issue</b> → 三段式(设计→实现→QA)—— <b>注意:三段式只是 eng 的<u>一个</u>模板,不是唯一。</b> 不同粒度的 Runner 可用</li>
+</ul>
+<p>  不同 DAG(小改可能 1-2 节点,不必都三段式)。Annie 原话:「不同粒度底下的 Runner 用的 DAG 大概率不一样,并不是所有人都用三段式。」</p>
+<ul>
+<li><b>product / designer issue</b> → 完全不同、更短(如 1-2 节点:调研/收敛)。</li>
+<li><b>未来别的任务类型</b> → 各自一套;可提供几种模板让不同事件挑。</li>
+<li><b>节点级运行时能力:</b></li>
+<li><b>profile(节点绑模型)—— <u>已是现实</u>:</b> grounded,<code>packages/config/src/three-stage-phases.ts</code> 是「每 phase 一个模型」</li>
+</ul>
+<p>    的单一真相(QA=Opus)。<b>三段式本就是一张「节点绑模型」的 DAG</b>,profile 是这条能力的<b>泛化,不是新建</b>。</p>
+<ul>
+<li><b>inject(跑中插节点)· fork(岔并行试)—— 挪到后续</b>(§16 E6,v1 不做;当前没有同等成熟的 runtime/state contract)。</li>
+<li><b>≈ homerail 的「一个 agent 一次 run 内部的工作流图」就在这一层</b>(§18)。</li>
+<li><b>FLY-1020 是第一层的家;353 只调用第一层模板,不在 353 建它。</b></li>
+</ul>
+<h3>5.2 第二层 · 353 治理引擎（本 issue 的全部重点）</h3>
+<ul>
+<li><b>决定做<u>哪些</u> issue + 派给谁 + 何时 + 怎么更 proactive + 护栏。</b> = CoS 分诊(§6)+ 自动派发(§6/§8)+ 监管(§10)。</li>
+<li><b>两层怎么套:</b> 第二层(353 引擎)决定「派哪条 issue、给谁、用哪套第一层模板、何时」;第一层(FLY-1020 模板)决定</li>
+</ul>
+<p>  「这条 issue 被派下去后内部怎么跑」;<b>护栏(§10)包在外面管安全</b>。三层职责:模板定形态 / 引擎定派发 / 护栏管安全。</p>
+<hr>
+<h2>6. CoS = LLM 分诊节点 —— 机制详 + 「产决策 ≠ 有 spawn 权」（Codex R1 HIGH-1）</h2>
+<h3>6.1 为什么分流必须 LLM、且 = 现有 CoS</h3>
+<ul>
+<li><b>分流必须由 LLM 判断,不是机械 DAG。</b> Annie 明确点了:机械挑任务容易错 —— 「以前创建的 issue 已经不重要了,它还要去做」。</li>
+</ul>
+<p>  纯机械(如旧 dag-resolver 的 topo-sort)不会判「这条还该做吗」。</p>
+<ul>
+<li><b>这个 LLM 分诊节点 = 各 dept/project 现有的 CoS</b>(如 Aunt Cass)。Annie 原话:「那个 LLM 分诊节点,用每个项目部门的</li>
+</ul>
+<p>  CoS 可以吗?其实我一开始设计 CoS 就是想来做这个的。」<b>grounded:CoS 本就是 triage/路由 persona。</b> → 不新造角色。</p>
+<h3>6.2 CoS 每轮分诊做什么（机制）</h3>
+<p>每轮(周期扫,§8)CoS 对候选 issue 逐条判:</p>
+<ul>
+<li><b>还相关吗?</b> —— 早已不重要 / 已被别的取代 / 方向变了的,不派(挂起 / escalate)。</li>
+<li><b>派给谁?</b> —— 哪个部门 / 哪个 Lead(按 label / 内容 / 现有 owningDept 路由)。</li>
+<li><b>用哪套模板?</b> —— 选第一层(FLY-1020)的哪个模板(eng 三段式 / product 短模板 / …)。</li>
+<li><b>何时?</b> —— 现在派、还是优先级低先放放(§8 按负荷 + top-priority)。</li>
+<li><b>怎么更 proactive?</b> —— 结合 founder 偏好(§11 早会学到的:节奏/依赖/优先级)。</li>
+<li><b>置信度:</b> 拿不准 / 模糊 → <b>低置信 → escalate 给人,不 dispatch</b>(§10)。</li>
+</ul>
+<h3>6.3 ⚠️ 产决策 ≠ 有 spawn 权（真安全边界，Codex R1 HIGH-1）</h3>
+<ul>
+<li><b>CoS 今天没有 spawn 权、也不该直接拿到。</b> grounded:<code>flywheel-cos-lead</code> = <code>Flywheel-Triage</code>、<code>canSpawnRunners:false</code>;</li>
+</ul>
+<p>  config.yaml 写明「CoS Aunt Cass triage/route + Eng Lead Tadashi spawn Runners」;<code>DepartmentRegistry.isLeadInScope()</code></p>
+<p>  会先拒 <code>lead_cannot_spawn</code>(<code>packages/teamlead/src/department-registry.ts:220-266</code>);而能 spawn 的 lead(如</p>
+<p>  <code>flywheel-eng-lead</code>)是 <code>canSpawnRunners:true</code>。<code>AgentDispatcher</code> 是 <b>deterministic label/dept router,不是 LLM 分诊</b>。</p>
+<ul>
+<li>**若直接让 CoS 调 <code>/api/runs/start</code>,Bridge 会 fail-closed;若为过而把 CoS 改成 <code>canSpawnRunners:true</code>,会破坏</li>
+</ul>
+<p>  Lead→department spawn 边界、扩大 triage lead 的生产权限。两者都不对。**</p>
+<ul>
+<li><b>正确设计(v1):CoS 只<u>产决策</u>,不 spawn。</b></li>
+<li>CoS(LLM triage)输出一个 typed <b><code>DispatchDecision</code></b>:`{issue, targetLead, targetDept, template, confidence,</li>
+</ul>
+<p>    rationale, dependencies}`。</p>
+<ul>
+<li><b>由它底下的 dept Lead 执行 spawn</b>(= CoS 给 Lead 的语言指令,§9),spawn 前仍经 <code>DepartmentRegistry</code> 校验</li>
+</ul>
+<p>    issue label / target lead / department / template eligibility;<b>CoS 本身保持 <code>canSpawnRunners:false</code></b>。</p>
+<ul>
+<li><b>机器执行真相 = typed <code>DispatchDecision</code> + dispatch ledger</b>(§9/§10),不是语言指令的 prose。</li>
+<li><code>AgentDispatcher</code> 明确定位为 runner-role / agent-label router(选哪种 agent),不是 LLM 分诊 —— 两者不同东西。</li>
+<li><b>一句话:CoS 判「该做什么」(decision);spawn 权仍在受控执行层(dept Lead)+ department 校验里(authority)。decision ≠ authority。</b></li>
+</ul>
+<hr>
+<h2>7. 依赖层：轻、可选、emergent + 精确语义（Codex R1 MED-5 / R2 LOW-3）</h2>
+<h3>7.1 轻、可选（Annie 定）</h3>
+<ul>
+<li><b>不建重度人工依赖图。</b> Annie 原话:「我甚至可能不会把所有东西都标上依赖,每次去讲的时候只会有一个大方向,比如</li>
+</ul>
+<p>  A depend on B。大多数时候,还是需要 Lead 和 PM 来判断互相之间的依赖关系。这个 DAG 的依赖层可能一开始就不一定会有,</p>
+<p>  我觉得很难去 rely on 人去说清楚。」</p>
+<ul>
+<li><b>所以:</b> 大多数 issue <b>不标依赖</b>;founder <b>偶尔</b>给个大方向(A→B);其余<b>主要靠 Lead/PM 临时判断</b>;依赖层**一开始</li>
+</ul>
+<p>  可以基本没有**。</p>
+<ul>
+<li><b>CoS 推进规则:</b> 有标的依赖 → 尊重(A 没完不派 B);没标的 → <b>并行 / 按到达序 + 负荷</b>(§8)。依赖是 emergent 的,</li>
+</ul>
+<p>  <b>不是前置门槛</b> —— 不要求 Annie 预先把整张图画好才能开跑(这正是「静态 DAG 要你预先知道全部」的反面)。</p>
+<h3>7.2 精确语义（fail-closed + visible；eng 必须定，不留给实现者猜）</h3>
+<ul>
+<li><b>v1 canonical source = Linear relation <code>blocks</code> 权威</b>(反推 blockedBy,过滤 completed/canceled,同旧 <code>LinearGraphBuilder</code>)。</li>
+<li><b>founder 自然语言 note(Codex R2 LOW-3):</b> 只生成 <b>proposed edge</b>,需过 CoS 置信阈值 + 面板可见 / 人确认后才能</li>
+</ul>
+<p>  block/unblock 派发 —— 不把 NL note 直接当等价 relation,防静默造错误依赖边。</p>
+<ul>
+<li><b>unknown / cross-project blocker → 不越过、升级</b>(不 silently 跨过 blocker)。</li>
+<li><b>cycle → escalate,不死跑。</b></li>
+<li><b>terminal state(done/canceled)→ 释放下游。</b></li>
+<li><b>Linear fetch 失败 → 不派发</b>(fail-closed)。</li>
+<li><b>无依赖 = eligible,≠ 无并发上限</b>(仍受 §8 capacity 限)。</li>
+</ul>
+<hr>
+<h2>8. 频次 + 调度：周期扫为主，每 6h，读负荷 → 补齐到 capacity（Annie 定，完整逻辑）</h2>
+<h3>8.1 为什么周期扫为主，不是事件驱动（Annie 纠正）</h3>
+<p>Annie 原话:「调度的逻辑,我感觉应该以『周期扫』为主。如果采用事件驱动会有一个问题:很多时候我们去新建一个 issue,</p>
+<p>并不代表马上就要去执行。任务本身是有优先级的,有的需要立刻处理,低优先级的可以先放一放,这就需要通过分诊来做决定。」</p>
+<ul>
+<li><b>所以:新 issue ≠ 马上执行。</b> 事件驱动「来一个派一个」会把低优先级的也立刻拉起来。正确是 CoS 分诊<b>成批</b>判「现在做哪些、</li>
+</ul>
+<p>  哪些先放放」。</p>
+<h3>8.2 初期 cadence = 每 6 小时扫一次，完整逻辑</h3>
+<p>每 6h(cadence 可配)一轮:</p>
+<ol>
+<li><b>读每个 Lead 当前负荷</b> —— 每个 Lead 一次带的上限如 N=5 件;看现在 Lead 1 / Lead 2 / Lead 3 各手里还有几件。</li>
+<li><b>谁不满 → 用 backlog 的 top-priority 补齐到上限</b> —— Lead 1 手上 0 件 → 加 5 件;Lead 2 手上 2 件 → 加 3 件。</li>
+<li><b>补的活 = 从 backlog 抓当前 top-priority 的,按每个 Lead 的余量分发</b> —— 余 5 个就给 5 个、余 3 个就给 3 个。</li>
+</ol>
+<ul>
+<li><b>= 读负荷 → 抓 top-priority → 按各 Lead 余量分发。</b> 这样保证一直有活跑、又不过载。</li>
+</ul>
+<h3>8.3 v1 capacity 来源（Codex R2 LOW-2）</h3>
+<ul>
+<li><b>明确 config/env 配 per-Lead 上限。</b> 负荷 = 数 active session 状态 + dispatch ledger 里 <code>dispatching</code>/<code>queued</code> 行</li>
+</ul>
+<p>  (哪些 status 算、awaiting_review/approved_to_ship 算不算,eng 在 E3 定)。<b>读负荷含糊 → no-dispatch / escalate。</b></p>
+<ul>
+<li><b>底座已有:</b> <code>/api/triage/data</code> 已能合并 Linear issues + active sessions + capacity(<code>getActiveSessions</code> /</li>
+</ul>
+<p>  <code>filterSessionsByLead</code>),但现在报的是全局 admission(<code>max:null</code>)、非 per-Lead 配额 —— E3 要加 per-Lead 配额。</p>
+<h3>8.4 动态负载触发 = 后续北极星（讲清为什么现在只做固定周期）</h3>
+<p>Annie 原话:「更合理的逻辑是动态负载触发 —— 基于 Lead 容量上限 + 基于系统资源(内存/token):比如设一个系统水位,如果</p>
+<p>当前运行的任务占了 70% 内存,当降到 50% 时系统就自动扫一次 backlog,保证一直有活跑又不过载。检测 token 额度是否够、</p>
+<p>内存是否有空间。」</p>
+<ul>
+<li><b>但她也诚实说:</b> 「基于系统内存和 Token 额度来做动态调度,目前可以作为一个北极星目标,因为我们现在其实还没有那么强的</li>
+</ul>
+<p>  能力去监控系统内存这些指标。」</p>
+<ul>
+<li>**所以:v1 先做「每 6h 固定 + capacity 补齐」;把「读负荷」升级成「按系统水位(内存/token)自动决定何时扫」= 后续北极星</li>
+</ul>
+<p>  (§16 E5)。** 现在没能力监控内存/token,先固定周期。</p>
+<hr>
+<h2>9. CoS 输出两样 + Discord 面板 + cron（publish-report = FLY-203，Codex R1 LOW-6 / R2 LOW-1）</h2>
+<h3>9.1 CoS 每轮分诊完输出两样（Annie 定）</h3>
+<p>Annie 原话:「CoS 每轮分诊完,确定今天谁跑谁之后,它可以出两个东西:1. 语言指令:比如跟 Lead A 说你要去做 12345、</p>
+<p>跟 Lead B 说你要去做 5678910;2. 一个 HTML 文件:说实话这个只是给我看的,我不一定会马上看,但有时间会去瞟一眼。」</p>
+<ul>
+<li><b>① 语言指令(给各 Lead)</b> —— 跟 Lead A 说「你去做 1/2/3」、Lead B 说「你去做 4/5/6」。= §6 的「dept Lead 执行 spawn」的载体。</li>
+<li><b>② 一个 HTML(给 founder 瞟)</b> —— 主要给她看、不一定马上看、有空瞟一眼。</li>
+<li>⚠️ <b>机器执行真相 = typed <code>DispatchDecision</code> + ledger,不是语言指令(Codex R2 LOW-1)。</b> 真正触发 spawn 的是引擎消费</li>
+</ul>
+<p>  typed decision → 经 <code>RunDispatcher</code> / <code>/api/runs/start</code> + <code>DepartmentRegistry</code> 校验派发(§16 E3),<b>不是</b>让某个 Lead LLM</p>
+<p>  解析 prose。语言指令只是<b>人可读的渲染 + 审计产物</b>;若由 Lead daemon 实际调 <code>/api/runs/start</code>,它消费 decision id、把</p>
+<p>  结果 execution id 报回 ledger。否则会弱化 durable ledger / dry-run 契约。</p>
+<h3>9.2 面板 = Discord（不另做 dashboard）</h3>
+<p>Annie 原话:「我们需要一个专门的面板展示吗?还是说其实我们现在设计的这个 Discord 系统就是面板呀?」→ <b>Discord 就是面板。</b></p>
+<ul>
+<li>复用 <b>FLY-203 <code>publish-report</code> / reports-route</b>(注:是 FLY-203,非 FLY-930;publish-report 是 report delivery、不是 live</li>
+</ul>
+<p>  dashboard)。</p>
+<ul>
+<li><b>约束(防刷屏,Codex R1 LOW-6):</b> 每轮 sweep 发一条 <b>summary HTML</b> → core room → @founder;事件性只在</li>
+</ul>
+<p>  dispatched / escalated / blocked / pause 等<b>关键状态</b>发短消息或合并进下一轮 report;定义 report 字段 + dedupe/noise</p>
+<p>  budget + @founder 规则(publish-report 是静态 report,不是 live-updating,不能每次 triage 都刷一条)。</p>
+<h3>9.3 cron = 引擎里的定时节点</h3>
+<ul>
+<li><b>cron(每天/定时跑的活)= 引擎里一个定时触发节点</b>,到点自动触发某类活;结果<b>同一个 Discord 面板 HTML</b> 露出。</li>
+</ul>
+<p>  cron 不是另一套系统。</p>
+<hr>
+<h2>10. 主轴 + 4 监管护栏（判断在 run 里；护栏落成硬验收，Codex R1 HIGH-2）</h2>
+<h3>10.1 主轴：判断在 run 里，不在派发口（Annie 纠正）</h3>
+<p>Annie 原话:「不一定是在派发环节需要留人。因为现在每个任务跑起来,都不是它自己悄悄跑完不跟我们反馈,更多的是在运行过程中</p>
+<p>跟我们一起走 brainstorm 的过程。比较简单的它可能自己就跑完了;比较复杂的,它还是会跟我们一起走 brainstorm。所以更多的是</p>
+<p>在 runner 跑的时候,才需要留人去做判断。」</p>
+<ul>
+<li>**所以:默认全自动派发;简单 issue runner 自己跑完;复杂的 runner <u>用现有的 brainstorm gate</u> 跑到一半把 founder/Lead</li>
+</ul>
+<p>  拉进来一起定,再继续。** 这不是新东西 —— runner 本来就跑中 brainstorm-gate(grounded:Blueprint 注入 ask / brainstorm /</p>
+<p>  approve gate)。我们只让「派发」自动化,把「判断」留在它本来就在的地方(run 里)。</p>
+<h3>10.2 4 护栏（且必须是 engine 硬验收，不是口号）</h3>
+<p><b>为什么要硬:</b> 即使 ship 是 founder-gated,<b>错误派活的 blast radius 不只在 ship</b> —— 会启动高成本 runner、占 active</p>
+<p>session slot、开分支、耗模型、制造 PR 噪声、和三段式 / FLY-1002 防撞车产生并发冲突。所以护栏要内建成引擎的启动前置条件。</p>
+<ol>
+<li><b>ship 仍 founder-gated(不变)</b> —— 自动的是「派活 + 跑」,<b>合入 main 永远 founder 点头</b>。复用 `flywheel-comm</li>
+</ol>
+<p>   verify-approval`(grounded:fail-closed 绑 approve_to_ship question + structured approval + founder attribution +</p>
+<p>   PR head 绑定 + Codex review gate)。自动 ≠ 自动发布。</p>
+<ol>
+<li><b>随时接管 / 叫停</b> —— founder/Lead 能暂停整个自动流、把某条 issue 抽出来转人工、改依赖重排。机制:面板上一个操作 /</li>
+</ol>
+<p>   一个 flag,引擎每轮读它,被 pause 的不派。</p>
+<ol>
+<li><b>失败 → <code>escalated</code> 态 + 升级给人,不静默</b> —— 启动失败 / gate 超时 / runner 卡住 / wrong-label reject / 跑偏 →</li>
+</ol>
+<p>   进 <code>escalated</code> 态、上面板、告诉人;<b>绝不「静默 shelve 了继续跑别的」</b>(正是要弃用旧 resolver「shelve 掉继续」的原因,§12)。</p>
+<ol>
+<li><b>看得见</b> —— Discord 面板(§9)显示 在跑 / 排队 / 被 block / 升级等你。</li>
+</ol>
+<h3>10.3 引擎必须内建的硬护栏（启动前置 / 验收项，每条讲机制）</h3>
+<ul>
+<li><b>全局 kill switch + 默认 off</b> —— <code>FLYWHEEL_AUTO_DISPATCH=0</code>(或等价)一键停;不配置 = 关。可 per-project / per-label allowlist。</li>
+<li><b>首批 rollout = dry-run / report-only 模式</b> —— 先只「出决策 + 上面板」不真 spawn,验证准确性再开真派发。</li>
+<li><b>per-issue opt-out / hold label</b> —— 某条 issue 打标即不进自动流。</li>
+<li><b>per-project / per-dept 最大并发上限</b> —— 防自动流一次拉爆 session slot(和 §8 capacity 同源)。</li>
+<li><b>CoS 低置信 / 模糊 / 不确定 → escalate,不 dispatch</b> —— 拿不准就升级给人,不硬派。</li>
+<li><b>启动前写 durable dispatch ledger</b> —— 每次派发前先落一条持久记录(谁 / 哪条 issue / 什么决策 / 何时 / execution id),</li>
+</ul>
+<p>  供审计 + 崩溃恢复 + 面板;绝不「派了但没留痕」。ledger 是机器执行的真相(§9.1)。</p>
+<hr>
+<h2>11. 渐进自治：早会学偏好 → 全自动 DAG（毕业曲线；依赖 FLY-1034）</h2>
+<h3>11.1 毕业曲线（Annie 的协调设想）</h3>
+<p>全自动不是一步到位,是<b>一条毕业曲线</b> —— 这是 Annie 对「早会 vs 全自动 DAG 怎么协调」的设想:</p>
+<ul>
+<li><b>近期:founder 早会(重)</b> —— founder 和 CoS 开早会,CoS 在早会里<b>学 founder 偏好</b>(节奏 / dependency / priority)。</li>
+</ul>
+<p>  founder 定得多、CoS 学。</p>
+<ul>
+<li><b>中期:学够了</b> —— 自主 triage 升高、早会变短、founder 少管。</li>
+<li><b>终点(北极星):全自动 DAG</b> —— CoS 自主 triage + 派发,founder 只瞟 HTML + 随时介入。</li>
+<li><b>回路 = 早会学偏好:</b> CoS 每轮分诊的决定 → 早会上 founder 确认/纠正 → CoS 学到「你这类活喜欢什么节奏 / 谁做 / 什么先」→</li>
+</ul>
+<p>  下轮更准 → 早会需要 founder 的地方变少。<b>全自动是北极星,路径就是这条早会学偏好回路。</b> founder 随时能介入,越到后面越少需要。</p>
+<h3>11.2 依赖 FLY-1034（353 不 build 学习引擎）</h3>
+<ul>
+<li>Annie 指出:「怎么学」(拿什么 signal/data、怎么 convert 成能自己做决定)是<b>另一个 separate issue</b>,而且<b>两处都要学</b>:</li>
+</ul>
+<p>  ① 早会:CoS 学「不同 issue 怎么派发」;② Lead:学「替 founder 做决定」(现在 Lead 常把 runner 的问题转 founder、或给</p>
+<p>  founder 几个 option 让她选;目标是 Lead 学会帮她 decide)。</p>
+<ul>
+<li>**⭐ 这个学习引擎 = FLY-1034(autonomy learning,单独 co-eval,已建)。353 只用「早会 + 渐进自治」这个运行模型/轨迹,</li>
+</ul>
+<p>  学习引擎在 FLY-1034 展开;353 依赖 FLY-1034,但不 build 它。**</p>
+<ul>
+<li><b>voice 化早会</b> —— 语音系统做好后 founder 可以每天用语音跟 CoS 开早会 = <b>FLY-906</b> context,<b>非 353 硬依赖</b>(353 不等它)。</li>
+</ul>
+<hr>
+<h2>12. 引擎：删没用的旧 dag-resolver + 重搭（Codex R1 LOW-7 迁移note）</h2>
+<h3>12.1 诚实评估（grounded；Annie 怀疑它不行，成立）</h3>
+<p>Annie 原话:「现有的引擎 code 如果没在用的话,直接删掉就可以了。我很怀疑它做得不怎么样,需要重新设计。」核代码后确认:</p>
+<ul>
+<li>现有 <code>dag-resolver</code> = <b>v0.1.0 最早期</b>的东西:只有基础 Kahn 拓扑排序 + getReady/markDone/shelve + <code>LinearGraphBuilder</code></li>
+</ul>
+<p>  从 blockedBy 建图 + <code>DagDispatcher</code>;<b>没接进生产</b>(<code>new DagDispatcher</code> 生产路径 0 处,只在 scripts/tests);<b>没有</b> LLM</p>
+<p>  分诊(机械挑任务 = Annie 担心的「会判断错」);<b>没有</b>监管护栏(出错就 <code>shelve</code> 掉继续、不升级);也没跟现在演进过的</p>
+<p>  Lead / 三段式 / founder-gate / brainstorm-gate 栈整合。</p>
+<ul>
+<li><b>结论:不复活、直接删没在用的 dag-resolver,按新模型(§4-§11)重搭。</b> 图逻辑(拓扑排序 + 从 Linear blockedBy 建图)这块</li>
+</ul>
+<p>  <b>概念</b>可借鉴,但不照搬旧引擎。</p>
+<h3>12.2 删除迁移 note（E1 scope；不机械删导致 breakage）</h3>
+<ul>
+<li><code>DagDispatcher</code> 不在生产路径,但 <code>packages/edge-worker</code> 仍 import <code>DagNode</code> type from <code>flywheel-dag-resolver</code>、package</li>
+</ul>
+<p>  依赖仍在、scripts/tests 还实例化 <code>DagDispatcher</code>。</p>
+<ul>
+<li>→ **先 move/minimize shared types(<code>DagNode</code> 若 Blueprint tests 还要)、移除 <code>flywheel-dag-resolver</code> 依赖、更新 smoke</li>
+</ul>
+<p>  scripts/tests,或标 deprecated 一个 release 再删** —— 别机械删导致 mechanical breakage,也别留死依赖达不到「删没用 code」。</p>
+<hr>
+<h2>13. 端到端流程</h2>
+<div class="svgwrap"><svg viewBox="0 0 640 470" role="img" aria-label="端到端流程" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3 L0,6 z" fill="#86868b"/></marker></defs><style>.tb{font:600 12.5px -apple-system,system-ui,sans-serif;fill:#1a365d}.ts{font:11px -apple-system,system-ui,sans-serif;fill:#86868b}.ln{stroke:#86868b;stroke-width:1.6;fill:none}</style><rect x="150" y="12" width="340" height="42" rx="10" fill="#fff8e6" stroke="#ffcf7a" stroke-width="1.5"/><text x="320" y="30" text-anchor="middle" class="tb">founder 只列大方向 + 偶尔标大依赖</text><text x="320" y="46" text-anchor="middle" class="ts">周期扫每 6h 读各 Lead 负荷 · cron 定时节点</text><line x1="320" y1="54" x2="320" y2="76" class="ln" marker-end="url(#ah)"/><rect x="24" y="80" width="592" height="228" rx="14" fill="#faf5ff" stroke="#c9a3e6" stroke-width="1.6"/><text x="40" y="100" class="tb" fill="#7a2fb0">第二层 · 353 治理引擎</text><rect x="140" y="110" width="360" height="46" rx="10" fill="#fff" stroke="#c9a3e6" stroke-width="1.5"/><text x="320" y="129" text-anchor="middle" class="tb">CoS 分诊(LLM)逐条判 → 产 DispatchDecision</text><text x="320" y="146" text-anchor="middle" class="ts">还相关?派谁?哪套模板?何时?置信? 低置信→escalate</text><line x1="320" y1="156" x2="320" y2="176" class="ln" marker-end="url(#ah)"/><rect x="120" y="180" width="400" height="46" rx="10" fill="#fff" stroke="#c9a3e6" stroke-width="1.5"/><text x="320" y="199" text-anchor="middle" class="tb">补齐到 capacity · dept Lead 执行 spawn</text><text x="320" y="216" text-anchor="middle" class="ts">CoS 产决策≠spawn权;DepartmentRegistry 校验;派发前写 ledger</text><line x1="320" y1="226" x2="320" y2="246" class="ln" marker-end="url(#ah)"/><rect x="140" y="250" width="360" height="30" rx="9" fill="#fbfbfd" stroke="#b8b8c2" stroke-width="1.4" stroke-dasharray="6 4"/><text x="320" y="269" text-anchor="middle" class="ts">第一层轻模板 FLY-1020:eng 三段式其一/product 更短/模型可偏离</text><text x="40" y="298" class="ts">护栏:默认off/kill-switch · dry-run首发 · 接管叫停 · max并发 · 失败escalate</text><line x1="320" y1="308" x2="320" y2="330" class="ln" marker-end="url(#ah)"/><rect x="130" y="334" width="380" height="44" rx="10" fill="#fff" stroke="#c9c9d2" stroke-width="1.5"/><text x="320" y="353" text-anchor="middle" class="tb">Runner 跑 — 判断在 run 里</text><text x="320" y="370" text-anchor="middle" class="ts">简单自己完 · 复杂用现有 brainstorm gate 跑中拉 founder</text><line x1="320" y1="378" x2="320" y2="398" class="ln" marker-end="url(#ah)"/><rect x="200" y="402" width="240" height="24" rx="8" fill="#fff8e6" stroke="#ffcf7a" stroke-width="1.5"/><text x="320" y="418" text-anchor="middle" class="tb">🔒 founder gate:ship 永远 founder 点头</text><text x="320" y="452" text-anchor="middle" class="ts">毕业曲线:早会 founder 学偏好 → 自主度↑(依赖 FLY-1034)</text></svg></div>
+<hr>
+<h2>14. session-log（backlog，不展开）</h2>
+<p>research 阶段的「Flywheel 自己 own 一条 agent-agnostic 事件日志」—— <b>backlog</b>:</p>
+<ul>
+<li><b>理由:</b> Claude Code 单机下 brain/hands/session 原生就有,记忆现在不痛;session-log 只在 3 场景才值(① Codex/kimi 无原生</li>
+</ul>
+<p>  session 层 · ② 跨 agent 查询/切片 · ③ 多机,单机 tmux 保活 OK)。等 Annie 用 Codex 实跑一段、真发现记忆有问题,再拿出来做。</p>
+<ul>
+<li>本 PRD 不展开,只记一笔、不丢(详见 research.md 收窄)。</li>
+</ul>
+<hr>
+<h2>15. 验收标准（可衡量）</h2>
+<ol>
+<li><b>省心:</b> Annie 开一批 issue 后不用逐个 assign;CoS 自动分诊 + 每 6h 按负荷/依赖自动派(读负荷 → top-priority 补齐到</li>
+</ol>
+<p>   capacity → 按余量分发)。</p>
+<ol>
+<li><b>判断没丢:</b> 复杂 issue runner 跑中经 brainstorm gate 拉人;旧/不相关 issue 被 CoS 分诊挡下、低置信 escalate,不机械照派。</li>
+<li><b>授权边界:</b> CoS 只产 <code>DispatchDecision</code>、<code>canSpawnRunners:false</code>;spawn 由 dept Lead 经 <code>DepartmentRegistry</code> 校验执行;</li>
+</ol>
+<p>   机器真相 = decision + ledger,不是语言指令。</p>
+<ol>
+<li><b>不失控(硬护栏):</b> 默认 off + kill switch;首批 dry-run;per-issue opt-out;max concurrency;低置信 escalate;dispatch</li>
+</ol>
+<p>   ledger;失败进 escalated 上面板;ship 仍 founder-gated;可随时接管/叫停。</p>
+<ol>
+<li><b>依赖 fail-closed:</b> v1 Linear relation 权威、NL note 需确认;unknown/cross-project blocker 不越过、cycle escalate、</li>
+</ol>
+<p>   Linear fetch 失败不派;无依赖 ≠ 无并发上限。</p>
+<ol>
+<li><b>调度:</b> 周期扫为主、每 6h、读负荷 + 补齐到 capacity + 按余量分发;capacity 来源明确(config + active sessions + ledger);</li>
+</ol>
+<p>   动态内存/token 水位 = 后续北极星。</p>
+<ol>
+<li><b>面板:</b> CoS 每轮出 语言指令 + summary HTML(FLY-203 publish-report)→ core room @founder;有 dedupe/noise budget;</li>
+</ol>
+<p>   cron 定时节点结果同面板露出。</p>
+<ol>
+<li><b>毕业曲线:</b> 早会 founder 学偏好 → 自主度↑;学习引擎依赖 FLY-1034(353 不 build)。</li>
+<li><b>两层:</b> 第一层每类任务一套轻/可覆盖模板(eng≠都三段式,= FLY-1020)+ profile 复用现有;第二层 CoS 分诊 + 自动派发。</li>
+<li><b>引擎:</b> 没用的 dag-resolver 按迁移 note 删除;新引擎按本 PRD 重搭。</li>
+<li><b>不越界:</b> 353 不覆盖 lead-tree(FLY-1022)/ 学习引擎(FLY-1034)/ 第一层模板(FLY-1020)。</li>
+</ol>
+<hr>
+<h2>16. 交接 —— Build-issue 拆分（给 Tadashi；顺序依 Codex R1 MED-3：schema/授权/可观测/default-off 先行）</h2>
+<blockquote><b>这是调度/治理系统,不是普通 feature —— schema / 授权边界 / 可观测 / default-off 必须先定,否则实现会把 LLM output、 Bridge API、StateStore、Linear events 拼成隐式合同。</b> eng issue <b>由 Lead 按 910 那套建(1 个 issue + PRD),不在本 PRD 里 create。</b></blockquote>
+<ul>
+<li><b>E1 · 决策 schema + durable ledger + default-off + dry-run 面板(先行)</b> —— 定义 typed <code>DispatchDecision</code> schema;每次派发</li>
+</ul>
+<p>  前写 durable dispatch ledger(status:<code>queued</code>/<code>dispatching</code>/<code>dispatched</code>/<code>escalated</code>/<code>done</code>);全局 kill switch +</p>
+<p>  <code>FLYWHEEL_AUTO_DISPATCH</code> 默认 off + allowlist;首批 dry-run/report-only(只出决策 + 上面板不真 spawn)。**含 §12 删</p>
+<p>  <code>dag-resolver</code> 的迁移 scope。**</p>
+<ul>
+<li><b>E2 · CoS 分诊(只产决策,不 spawn)</b> —— CoS LLM triage 每轮产 typed <code>DispatchDecision</code>(§6.2 的相关/派谁/模板/何时/置信);</li>
+</ul>
+<p>  低置信 escalate;<code>canSpawnRunners:false</code> 不变。</p>
+<ul>
+<li><b>E3 · 引擎校验 + 派发 + 调度</b> —— 引擎校验 decision,经现有 <code>RunDispatcher</code> / <code>/api/runs/start</code> + <code>DepartmentRegistry</code></li>
+</ul>
+<p>  边界派发(dept Lead 执行 spawn);**每 6h 周期扫 + 读 per-Lead 负荷(config + active sessions + ledger)+ 补齐到 capacity +</p>
+<p>  按余量分发(§8)**;轻量依赖 fail-closed(§7)。</p>
+<ul>
+<li><b>E4 · 护栏 + 面板硬化</b> —— pause/takeover · 失败 escalated · max concurrency · Discord 面板(FLY-203 publish-report:</li>
+</ul>
+<p>  每轮 语言指令 + summary HTML → core @founder,dedupe/noise budget);cron 定时节点。</p>
+<ul>
+<li><b>E5 · 动态负载触发(北极星,后续)</b> —— 系统水位(内存/token)决定何时扫;capacity 对接 FLY-1022。</li>
+<li><b>E6 · 第一层模板泛化(后续)</b> —— inject/fork 等通用 template-runtime 能力(v1 不做;v1 只支持现有成熟形态:single-session /</li>
+</ul>
+<p>  现有三段式 eng / product single-session-gate)。<b>第一层模板本身 = FLY-1020(单独 issue)。</b></p>
+<ul>
+<li><b>依赖(353 不 build,cross-ref):</b> FLY-1034(学习引擎)· FLY-906(voice 早会)· FLY-1022(capacity/lead-tree)· FLY-1020(第一层模板)。</li>
+</ul>
+<p><b>PM 验收 = 后续跟踪(本 issue 不做实现)。</b></p>
+<hr>
+<h2>17. Open Questions</h2>
+<ol>
+<li><b>模板选择:</b> 每类任务 default 模板由谁定义、CoS 怎么给 issue 选模板(eng 有多套时)—— 大部分归第一层模板 issue FLY-1020。</li>
+<li><b>周期扫重排规则:</b> 每 6h 默认下,什么条件重排/挂起一个 backlog issue、priority 怎么算(与 CoS 分诊的 relevance 判断结合)。</li>
+<li><b>面板信息密度:</b> CoS 每轮 summary HTML 展示哪些(在跑/排队/block/升级)、与现有 status 显示的关系、dedupe/noise budget 具体值。</li>
+<li><b>依赖标注入口:</b> founder「偶尔标大依赖」用什么(Linear blockedBy / 一句话 NL note → proposed edge)。</li>
+<li><b>与 FLY-1034 的接口:</b> 毕业曲线「早会学偏好」喂给 CoS 的确切形态(什么 signal/data),待 FLY-1034 co-eval 对齐。</li>
+<li><b>capacity 状态计数:</b> 哪些 session status 算负荷(awaiting_review / approved_to_ship 算不算),ledger 行怎么计(E3 定)。</li>
+</ol>
+<blockquote><b>已定案(不再 open):</b> DAG 主动编排=优先(session-log backlog)· 轻模板+强治理 · 两层(353=第二层引擎,第一层模板=FLY-1020)· CoS=分诊、产决策≠spawn · 判断在 run 里 · 依赖轻量 emergent + fail-closed · 周期扫每 6h + capacity 补齐 + 按余量分发 · Discord=面板(FLY-203)· 4 硬护栏 · 毕业曲线(依赖 FLY-1034)· 删旧引擎重搭 · Non-goal(lead-tree=1022 / 学习=1034 / voice=906)。</blockquote>
+<hr>
+<h2>18. 附录 · homerail 澄清（答 Annie「homerail 的 DAG 是做这事吗」）</h2>
+<p>homerail 的 DAG 是<b>「一个 agent 一次 run 内部的工作流图」</b>(run 里 node 按 port / 条件边 / loop 流转;1004 runner</p>
+<p>firsthand 读码结论)—— 相当于我们的<b>第一层(模板层 / FLY-1020)</b>,<b>不是</b> 353 要做的**第二层(issue 级、跨 fleet 的</p>
+<p>自动派发)**。「homerail 有 DAG」≠「它做我们这件事」。(homerail 无公开架构文档,结论来自读码。)</p>
+<hr>
+<h2>19. 关联 issue</h2>
+<ul>
+<li><b>痛/上游:</b> FLY-353(本 issue)· FLY-916(Lead scale,proactive 受益方)· FLY-1002(Raft 防撞车,与并发安全 cross-ref)。</li>
+<li><b>互补/边界(353 不覆盖):</b> FLY-1020(第一层轻模板)· FLY-1022(lead-tree/fleet-scaling/capacity)· FLY-1034(autonomy</li>
+</ul>
+<p>  learning 引擎)· FLY-906(voice 早会)。</p>
+<ul>
+<li><b>consolidated:</b> FLY-334(Managed Agents)· FLY-335(openclaw)· FLY-370(Raft)。</li>
+<li><b>backlog:</b> session-log(§14)。</li>
+<li><b>实现交接:</b> Tadashi(Flywheel 标签),eng issue 由 Lead 按 910 那套建。</li>
+</ul>
+<blockquote>注:<code>research.md</code> 早期把 session-log 写成 MVP —— 已被 dag-orchestration-design v7 / Annie co-eval <b>superseded</b>; session-log 现为 backlog(§14),以本 PRD 为准(Codex R1 LOW-8)。</blockquote>
+<div class="cmt"><label>💬 你的终审:OK 就 sign-off,有要改/要补的直接写(改完我更新 PRD)</label><textarea data-k="signoff" data-label="终审 / sign-off"></textarea></div>
+<div class="bar"><button class="primary" id="exportBtn" type="button">复制批注</button><button class="ghost" id="clearBtn" type="button">清空</button><span class="hint" id="saveHint">留言只存你这台机器,刷新不丢。</span></div>
 </div>
-
-<h2><span class="secnum">1–2 ·</span> 痛 + 北极星</h2>
-<div class="card">
-  <p><b>痛(你的原话):</b>现在烦「一堆 Linear issue 怎么开、怎么派」—— 手动开 issue、再一个个跟 Lead 说你做 1、你做 2;issue 一多派活就累。</p>
-  <p><b>北极星:</b>founder 只列大方向,系统自动挑/派/推进到底,人不再一个个 assign,判断没丢、不失控。</p>
-</div>
-
-<h2><span class="secnum">🗺️ ·</span> 全景架构图(353 = 第二层治理引擎)</h2>
-<div class="card">
-  <div class="svgwrap">
-  <svg viewBox="0 0 640 470" role="img" aria-label="架构图" xmlns="http://www.w3.org/2000/svg">
-    <defs><marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3 L0,6 z" fill="#86868b"/></marker></defs>
-    <style>.tb{font:600 12.5px -apple-system,system-ui,sans-serif;fill:#1a365d}.ts{font:11px -apple-system,system-ui,sans-serif;fill:#86868b}.ln{stroke:#86868b;stroke-width:1.6;fill:none}</style>
-    <rect x="170" y="12" width="300" height="42" rx="10" fill="#fff8e6" stroke="#ffcf7a" stroke-width="1.5"/>
-    <text x="320" y="30" text-anchor="middle" class="tb">你 / founder:只列大方向 + 偶尔标大依赖</text>
-    <text x="320" y="46" text-anchor="middle" class="ts">周期扫每 6h(读各 Lead 负荷)· cron 定时节点</text>
-    <line x1="320" y1="54" x2="320" y2="76" class="ln" marker-end="url(#ah)"/>
-    <rect x="24" y="80" width="592" height="230" rx="14" fill="#faf5ff" stroke="#c9a3e6" stroke-width="1.6"/>
-    <text x="40" y="100" class="tb" fill="#7a2fb0">第二层 · 353 治理引擎(本 issue)</text>
-    <rect x="150" y="110" width="340" height="46" rx="10" fill="#fff" stroke="#c9a3e6" stroke-width="1.5"/>
-    <text x="320" y="129" text-anchor="middle" class="tb">🧠 CoS 分诊(LLM)→ 产 DispatchDecision</text>
-    <text x="320" y="146" text-anchor="middle" class="ts">还相关吗?派给谁?何时?低置信→escalate 不派</text>
-    <line x1="320" y1="156" x2="320" y2="176" class="ln" marker-end="url(#ah)"/>
-    <rect x="120" y="180" width="400" height="46" rx="10" fill="#fff" stroke="#c9a3e6" stroke-width="1.5"/>
-    <text x="320" y="199" text-anchor="middle" class="tb">受控派发:dept Lead 执行 spawn</text>
-    <text x="320" y="216" text-anchor="middle" class="ts">CoS 产决策≠spawn 权;DepartmentRegistry 校验;补齐到 capacity</text>
-    <line x1="320" y1="226" x2="320" y2="246" class="ln" marker-end="url(#ah)"/>
-    <rect x="150" y="250" width="340" height="30" rx="9" fill="#fbfbfd" stroke="#b8b8c2" stroke-width="1.4" stroke-dasharray="6 4"/>
-    <text x="320" y="269" text-anchor="middle" class="ts">第一层轻模板(FLY-1020,另开):eng 三段式其一 / product 更短 / 模型可偏离</text>
-    <text x="40" y="298" class="ts">护栏:默认 off/kill-switch · dry-run 首发 · 随时接管叫停 · 失败 escalate · dispatch ledger</text>
-    <line x1="320" y1="310" x2="320" y2="332" class="ln" marker-end="url(#ah)"/>
-    <rect x="130" y="336" width="380" height="44" rx="10" fill="#fff" stroke="#c9c9d2" stroke-width="1.5"/>
-    <text x="320" y="355" text-anchor="middle" class="tb">Runner 跑 —— 判断在 run 里</text>
-    <text x="320" y="372" text-anchor="middle" class="ts">简单自己完 · 复杂用现有 brainstorm gate 跑中拉你</text>
-    <line x1="320" y1="380" x2="320" y2="400" class="ln" marker-end="url(#ah)"/>
-    <rect x="200" y="404" width="240" height="24" rx="8" fill="#fff8e6" stroke="#ffcf7a" stroke-width="1.5"/>
-    <text x="320" y="420" text-anchor="middle" class="tb">🔒 founder gate:ship 永远你点头</text>
-    <text x="320" y="452" text-anchor="middle" class="ts">CoS 每轮出:语言指令(派 Lead)+ HTML(给你瞟)→ Discord 面板 @你</text>
-  </svg>
-  </div>
-</div>
-
-<h2><span class="secnum">4 ·</span> 核心 framing:轻模板 + 强治理(回应「会不会过度复杂化」)</h2>
-<div class="card">
-  <ul>
-    <li><b>轻模板:</b>模板是轻的、可覆盖的默认起手式,<b>不锁模型每一步</b> —— 模型越强越能在模板之上自由发挥。<b>不束缚它怎么想。</b></li>
-    <li><b>强治理:</b>DAG 真正不可替代的价值 = 分诊 / founder gate / 随时接管 / 成本控制(贵模型只用在难步骤)—— 控制/信任/成本需求,<b>模型再强都还要</b>。</li>
-  </ul>
-</div>
-
-<h2><span class="secnum">5 ·</span> 两层 DAG(353 只做第二层)</h2>
-<div class="card">
-  <ul>
-    <li><b>第一层 · 轻模板层(≈乐高,= FLY-1020,另开 issue):</b>一个 issue 怎么跑;每类任务一套轻模板(eng 三段式其一、product 更短);节点绑模型(profile,已有)。353 只调用、不建。</li>
-    <li><b>第二层 · 353 治理引擎(本 issue):</b>决定做哪些 issue + 派给谁 + 何时 + 护栏 = CoS 分诊 + 自动派发 + 监管。</li>
-  </ul>
-</div>
-
-<h2><span class="secnum">6 ·</span> CoS 分诊:产决策 ≠ spawn 权</h2>
-<div class="card warn">
-  <p>分诊节点 = 现有的 <b>CoS</b>(你设计的)。但 CoS 今天没 spawn 权、也不该直接拿(会破坏安全边界)。</p>
-  <p><b>正确:CoS 只产决策</b>(typed <code>DispatchDecision</code>:相关/派谁/模板/何时/置信)→ <b>底下 dept Lead 执行 spawn</b>,仍经 DepartmentRegistry 校验;CoS 保持不能 spawn。<b>decision ≠ authority。</b></p>
-</div>
-
-<h2><span class="secnum">7–8 ·</span> 依赖(轻) + 频次(每 6h 周期扫)</h2>
-<div class="card">
-  <p><b>依赖:</b>不建重度人工依赖图;大多数不标,你偶尔给 A→B,其余 Lead/PM 临时判;一开始可基本没有。有标就尊重、没标并行/按负荷。(v1 Linear relation 权威;自然语言 note 只作 proposed 需确认。unknown/cycle/fetch 失败 → 不越过/升级。)</p>
-  <p><b>频次 = 周期扫为主(不是事件驱动)</b> —— 新建 issue ≠ 马上做,靠分诊定。<b>初期每 6 小时扫一次</b>:读每个 Lead 负荷(上限如 5)→ 谁不满用 backlog top-priority 补齐到上限(Lead1 有0→+5、Lead2 有2→+3)→ 按余量分发。动态内存/token 水位 = 后续北极星(现在还监控不了)。capacity 关联 FLY-1022。</p>
-</div>
-
-<h2><span class="secnum">9 ·</span> CoS 输出两样 + Discord 面板</h2>
-<div class="card">
-  <p>CoS 每轮出:<b>① 语言指令</b>(给各 Lead 派活,可读/审计)+ <b>② HTML</b>(给你瞟)。<b>Discord 就是面板</b>(不另做 dashboard,复用 publish-report),每轮 summary → core room @你。cron = 引擎里的定时节点,同面板露出。</p>
-  <p class="hint">机器执行真相 = typed DispatchDecision + ledger(不是语言指令);语言指令只是给人看的渲染。</p>
-</div>
-
-<h2><span class="secnum">10 ·</span> ⚠️ 4 监管护栏(自动但不失控)</h2>
-<div class="card warn">
-  <ul>
-    <li><b>① ship 仍 founder-gated</b>(合入 main 永远你点头)</li>
-    <li><b>② 随时接管 / 叫停</b>(暂停自动流、抽某条转人工)</li>
-    <li><b>③ 失败 → 升级给人,不静默</b>(卡住/报错/跑偏 → escalate 上面板)</li>
-    <li><b>④ 看得见</b>(Discord 面板)</li>
-  </ul>
-  <p class="hint">工程硬护栏:默认 off + kill switch、首批 dry-run 只出决策、per-issue opt-out、最大并发上限、低置信升级、派发前留 ledger。</p>
-</div>
-
-<h2><span class="secnum">11 ·</span> 🎓 渐进自治:早会学偏好 → 全自动(毕业曲线)</h2>
-<div class="card">
-  <p>近期 founder 早会(CoS 学你偏好:节奏/依赖/优先级)→ 学够了自主 triage↑、早会↓ → 终点全自动 DAG(你只瞟 HTML + 随时介入)。全自动=北极星,路径=早会学偏好回路。</p>
-  <p class="hint">依赖(353 不 build):<span class="tag n">FLY-1034</span> 学习引擎(CoS 学派发 + Lead 学替你决策)· <span class="tag n">FLY-906</span> 语音早会(context)。</p>
-</div>
-
-<h2><span class="secnum">12 ·</span> 引擎:删没用的旧 code,重搭</h2>
-<div class="card">
-  <p>现有 <code>dag-resolver</code> 是 v0.1.0 基础货(没接生产、无 LLM 分诊、无护栏)→ 删掉,按新模型重搭(含迁移 note:共享 type / 依赖 / tests)。</p>
-</div>
-
-<h2><span class="secnum">14 ·</span> session-log(backlog)</h2>
-<div class="card">
-  <p>「自己 own 事件日志」= backlog,等 Codex 实测真痛再做(单机 Claude 不痛)。</p>
-</div>
-
-<h2><span class="secnum">3 / 16 ·</span> 范围边界(Non-goal)+ 交接拆分</h2>
-<div class="card">
-  <p><b>353 不碰(避免越界):</b>lead-tree/fleet-scaling = <span class="tag n">FLY-1022</span> · 学习引擎 = <span class="tag n">FLY-1034</span> · 第一层轻模板 = <span class="tag n">FLY-1020</span> · voice 早会 = <span class="tag n">FLY-906</span> · session-log = backlog · dashboard(用 Discord)。</p>
-  <p><b>给 Tadashi 的 build 拆分(顺序:schema/护栏先行):</b> E1 决策 schema+ledger+默认off+dry-run(含删旧引擎)· E2 CoS 只产决策 · E3 引擎校验+派发(每6h+capacity)· E4 护栏+面板 · E5 动态负载(后续)· E6 模板泛化 inject/fork(后续)。<b>eng issue 由 Lead 按 910 那套建(1 issue+PRD),不在此建。</b></p>
-</div>
-
-<div class="card">
-  <p class="hint"><b>Codex design review:</b> APPROVED(2 轮,xhigh)—— R1 的 8 条(含一个真安全边界:CoS 不能直接 spawn)全折进;R2 无 grounded 错误,只剩已折的 4 条 LOW 实现澄清。全文 PRD 在 <code>engineering/doc/FLY-353-dag-orchestration/prd.md</code>。</p>
-</div>
-
-<div class="cmt">
-  <label>💬 你的终审:OK 就 sign-off,有要改的直接写(改完我更新 PRD)</label>
-  <textarea data-k="signoff" data-label="终审 / sign-off"></textarea>
-</div>
-
-<div class="bar">
-  <button class="primary" id="exportBtn" type="button">复制批注</button>
-  <button class="ghost" id="clearBtn" type="button">清空</button>
-  <span class="hint" id="saveHint">留言只存你这台机器,刷新不丢。</span>
-</div>
-</div>
-
 <dialog id="dlg"><div class="dlg"><h3>你的批注(Markdown)</h3><p class="hint">已复制到剪贴板。</p><textarea id="out" readonly></textarea><div class="bar" style="position:static;background:none;border:none;padding-top:12px"><button class="ghost" id="closeBtn" type="button">关闭</button></div></div></dialog>
-
 <script nonce="__CSP_NONCE__">
 (function(){
-  var KEY="fly353-prd-review::"+((typeof location!=="undefined"&&location.pathname)?location.pathname:"local");
+  var KEY="fly353-prd-detail::"+((typeof location!=="undefined"&&location.pathname)?location.pathname:"local");
   var areas=Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
   var saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||"{}")}catch(e){saved={}}
   areas.forEach(function(t){var k=t.getAttribute("data-k");if(saved[k])t.value=saved[k];
