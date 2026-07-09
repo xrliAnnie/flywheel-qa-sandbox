@@ -20,6 +20,19 @@ Issue: FLY-1020 (https://linear.app/geoforge3d/issue/FLY-1020/low-level-dag-per-
 
 grounding 来源:`product/doc/FLY-1004-homerail-analysis/homerail-code-report.md`(code-grounded)。
 
+## v3 — 折进 Annie 第 2 轮 co-eval(叙事升级:静态 DAG → 动态 DAG)
+
+Annie 第 2 轮把叙事从「模板」升级到 **静态 DAG → 动态 DAG**:
+
+1. **核心 = 动态 DAG**(§1):三段式 = 静态线性图;现实要动态(能 loop / 回头 / 重复)。「模板」只是外壳,真升级是静态→动态。
+2. **两个铁例都是 loop**(§2):① QA↔implement 来回 = loop(重复直到过)② Design→4 PR(每 PR:implement→QA)= loop(重复 implement+QA)。**关键 grounding:① 已被硬编码进三段式**(FLY-939 QA→implement kickback fix-loop,`phase-orchestrator.ts:910`:QA fail → 唤醒 parked implement 重做)—— 证明 loop 需求真到已焊死它,但焊在一个 eng 模板里、非可声明原语。② 是新 loop 形状,焊死版做不到。
+3. **loop = MVP 动态原语**(§3);**node-inject = Later 且诚实说可能永不做**(loop 覆盖痛点;随意加节点更复杂/更险/难治理);**fork = Later**(这俩痛是串行 loop 非并行)。答 Annie「加节点对不对」= loop 先、node-inject 可能不做。
+4. **homerail 静/动**(§6,核码):动态,但靠 loop_gateway 迭代 + skip;其 `inject` ≈ 消息 inject(往 node 注入指令,非改图);**没有干净的随意加节点** → 印证 loop 成熟、node-inject 连竞品都没干净做。
+5. ⭐ **YAML 模板定义(采纳,修正 v2 的「不做 DSL」)**(§7):DAG 需定义格式,**YAML 最合适**(homerail 用 YAML)。MVP **要**轻 YAML 模板(节点+边+**loop 边**,如 `qa -> implement {when: fail}`)+ profile 字段;**不做可视化编辑器**、不做用户自定义。裸 session = 不挂 YAML 的默认。product 模板无 qa 节点 = 从根治 auto-QA 误触发。
+6. **三段式泛化**(§7):三段式 = 一份 YAML(带 QA→implement loop);product = 短 YAML(无 QA)。
+
+**MVP(v3 定稿方向,待 Annie 拍)**:轻 YAML 模板(节点+边+loop)+ 几套 shipped(eng/product)+ profile 复用 + QA 变模板节点 + 裸 session 默认 + 可覆盖;default-off 字节兼容。Later:fork。可能永不做:node-inject / 编辑器 / 自定义 / 自动学。
+
 ## 1. 分工(与 FLY-353)
 
 两层 DAG(Annie 在 1004 articulate):
