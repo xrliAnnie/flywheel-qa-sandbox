@@ -28,3 +28,21 @@ auto-QA 是 default-ON opt-out(非 opt-in,被 types.ts:616 stale 注释误导)·
 
 ## Notes
 - 遵 Lead steering:不 ship、gate 别碰。PR #514 = doc 载体不 merge。Annie 睡了不急。
+
+## §2 深挖轮(agent.md vs DAG)— Annie 要求先论证清楚再回 PRD
+- [done] **firsthand clone homerail 读真码**(github.com/xiaotianfotos/homerail,333 ts 文件)
+  - 结论与预期相反:**它处理了 DAG vs agent 定义,而且就是分层**
+  - DAG 模板三块:runtime_profiles(agent→model_alias+agent_type)/ agents(内嵌 system 角色提示词)/ nodes(节点按名 `agent: drafter` 引用 agent)
+  - worker/src/index.ts:`systemPrompt = agentConfig.system` → **worker 只拿自己 agent,拿不到 DAG**(实锤「DAG 永不甩给模型」)
+  - createWorkerContainer:一 node 一容器 → **防 bias = 结构隔离**
+  - profile:reviewer=kimi-main/kimi_code,default=local-qwen/claude-sdk → **实锤「多 model」理由**
+  - ⚠️ 不该抄:agent 定义内嵌进每个 DAG,**agents 数==nodes 数(1/1、5/5、2/2)零复用**;全 repo 无独立可复用 agent.md 等价物 → 我们独立 agent.md 更好
+- [done] 我们自己的码:readAgentFile 当纯文本读+40k 截断;**全仓零 frontmatter 解析** → agent.md 的 model/skills/permissionMode 全 inert
+  → 推论:**「agent.md 管 WHO / 别层管模型+能力」不是提案,是代码现状**;且用户 agent.md **物理上无法自授 can_ship/can_land/creates_pr/选模型** = 通用节点天然安全
+- [done] co-eval HTML `agentmd-vs-dag.html`(10 节)commit 6c72d4be + publish + curl 自验
+  - URL: https://fw-reports-a53de2.vercel.app/r/a5141aed5695504a3203f3b77538c2cf/ · msg 1524663718905122916
+- [wait] Lead QA → relay Annie → 她 confirm 分层 → Lead 给 fold 指令
+- [next] fold 进 PRD(加「DAG↔agent.md 对齐」节 + MVP 加通用节点)→ 出**一个大 epic** 交 Tadashi(按 Annie §11:一个大 PRD + 一个 epic,他自己拆)
+
+## 约束状态
+- prd.md 仍冻结在 f6f39c6e(每次 commit 后 git diff 核过)· 未写 PRD · 未拆 build · 未 ship · 未碰 gate
