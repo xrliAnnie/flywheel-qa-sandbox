@@ -3,7 +3,7 @@
 Issue: FLY-1020 (https://linear.app/geoforge3d/issue/FLY-1020/low-level-dag-per-task-category-workflow-templates-lightoverridable)
 日期: 2026-07-08
 基于: `product/doc/FLY-1020-workflow-templates/design-source.md` + co-eval HTML v6(Annie 拍板)+ `agentmd-vs-dag.html`(§2 深挖,Annie converged)· Codex design-review R1→R3
-Status: draft(R1+R2+R3 已折入;新增 §5 DAG↔agent.md 对齐 + 通用节点 → 待 Codex 重跑)
+Status: draft(R1+R2+R3 已折入;R4 七条(frontmatter 收窄 / generic output 契约 / node-id substrate 8 面 / 严格 loader+内容寻址 / Blueprint 门控先行 / 两道 gate / schema 规则)已折入 → 待 Codex R5)
 
 > co-eval 收敛后的**建造蓝图**。放**结论 + 机制**(eng 照着能建),不堆 Q&A;过程在 design-source.md。
 > **UI / dashboard 不在本 PRD** —— 拆到 **FLY-1038**(§12)。
@@ -49,7 +49,20 @@ Annie 的**两层 DAG**(FLY-1004):第二层 = 高层编排引擎(**FLY-353**,决
 | 双 sink | `DirectEventSink` + `event-route` 都触发 auto-QA / handoff / turn-belt(`DirectEventSink.ts:748`,`event-route.ts:2035`) |
 | 启动对账 | 重放 stranded design/implement + QA verdict(`StateStore.ts:2413`,`:2433`) |
 
-**这 5 处(持久化 / 展示 / ship 收尾 / retry / 启动对账)是「新增一个节点类型」的成本面。** 见 §3。
+### 2.3b ⚠️ 「新增一个节点角色」的**完整**成本面(R4#3 —— 比原稿列的 5 处更多)
+
+| # | 面 | 硬编码点 |
+|---|---|---|
+| 1 | `ChatThreadRole` 枚举 | 固定 `"main"｜"design"｜"implement"｜"qa"`;**未知 role 静默归一成 `main`**(`StateStore.ts:263`,`:276`) |
+| 2 | phase / active 查询 | 只含三角色(`StateStore.ts:2549`,`:2576`,`:2659`) |
+| 3 | phase-thread 反查 | 未知存储 role **又被归一回 `main`**(`StateStore.ts:4137`,`:4147`) |
+| 4 | issue 展示 | 从 `THREE_STAGE_PHASE_SEQUENCE` + `PHASE_THREAD_BADGE` 派生(`issue-display.ts:16`,`:153`,`:214`);refresher 走三角色查询(`issue-display-refresher.ts:254`,`:618`) |
+| 5 | **TURN recovery 优先级** | 硬编码 `qa` → `implement` → `design`(`phase-orchestrator.ts:162`;候选过滤 `:1560`,`:1567`) |
+| 6 | completion sinks | 只保全三段式 role(`resolveCompletionSessionRole`,`three-stage-phases.ts:77`;`event-route.ts:1088`;`DirectEventSink.ts:612`) |
+| 7 | ship 收尾 | 只关 parked design/implement(`post-ship-finalization.ts:205`) |
+| 8 | retry / 启动对账 | `actions.ts:852`;`StateStore.ts:2413`,`:2433` |
+
+> ⚠️ **静默归一是数据损坏陷阱**:第 1/3 项把**未知 role 悄悄变成 `main`**。若 `generic` 节点被当成新 role 落库而未先扩枚举,它会**静默退化成 main session**,带着 main 的 PR/ship 语义 —— 不报错、行为全错。**任何 node-id 落库都必须 fail-closed,不得静默归一。**
 
 ### 2.4 Auto-QA 是 **default-ON opt-out**(R1#4 —— 原稿此处写错)
 
@@ -70,28 +83,51 @@ Annie 的**两层 DAG**(FLY-1004):第二层 = 高层编排引擎(**FLY-353**,决
 
 QA PASS 打开 approve gate 后,**founder/Lead 的反馈**在窄条件下被当作 FAIL kickback,绕过「已记录 PASS」守卫、路由回 implement(`phase-orchestrator.ts:804`,`:817`,`:860`;`Blueprint.ts:1020`)。守卫:**keep-alive ON only** · QA session 位于 `awaiting_review` · runner-driven review evidence 存在 · gate response 已记录 · **QA 永不改代码**。
 
-### 2.7 ⭐ agent.md 是**纯提示词文本**,其 frontmatter **全部 inert**(新增,§5 的基础)
+### 2.7 ⭐ Runner `agent.md` 是**纯提示词文本**,其 frontmatter 在**派发路径上 inert**(§5 的基础)
 
-- `readAgentFile` 把 agent.md 当**纯文本**读,做路径/symlink 逃逸拦截,`slice(0, 40_000)` 后直接塞进 session 提示词(`Blueprint.ts:1602`,`:1967`-`:1998`)。
-- **全仓没有任何 frontmatter 解析器**(grep 无 gray-matter / matter() / parseFrontmatter)→ agent.md 里的 `model:` / `skills:` / `permissionMode:` **一个都不被 runtime 消费**。`permissionMode` 是 `Blueprint.ts:1682` 硬编码;`AgentDispatcher` 完全不碰 model。
+**精确表述(R4#1 收窄 —— 不要说「全仓无 frontmatter 解析器」,那是假的)**:
 
-→ **今天的代码里,agent.md 只能表达「我是谁」;模型 / 技能 / 能力只能来自 agent.md 之外。** 这条是 §5 分层契约与其安全性质的**事实基础**。
+> **没有任何 Runner `agent.md` 派发路径消费它的 `model:` / `skills:` / `permissionMode:` frontmatter。**
+
+逐条证据:
+
+| 断言 | 证据 |
+|---|---|
+| agent.md 当**纯文本**注入 | `Blueprint.ts:1602`/`:1606`(`agentContent.slice(0, 40_000)` → `## Agent Role`)+ `:1631`(其后追加常规 baseline prompt) |
+| `permissionMode` 是**硬编码**的 | `Blueprint.ts:1676`(`bypassPermissions`) |
+| model **不来自** agent.md | `Blueprint.ts:1686` 取 `ctx.runnerModel`;`resolveRoleAdapter()` 从 label / dispatch model / project roles / env / 默认解析(`role-adapter-resolver.ts:165`,`:173`,`:197`,`:206`,`:218`) |
+| `AgentDispatcher` 只做路由,不读 model/能力 | `AgentDispatcher.ts:31`,`:215`;类型 `AgentConfig` 只有 `agent_file` / `domain_file` / dept metadata / `match`,**无** `model`/`skills`/capability 字段(`types.ts:123`) |
+| skills 来自**固定模板注入**,不是 per-agent frontmatter | `SkillInjector.ts:23` |
+
+> **反例澄清(R4#1)**:仓库里**确实存在** frontmatter 解析 —— 例如 Codex Lead persona 加载会 strip YAML frontmatter(`codex-lead-runtime.ts:1017`,`:1028`)。那是**另一条路径**(Lead persona,非 Runner agent.md 派发),**不影响**上面的安全性质。本 PRD 只主张 Runner 派发路径。
+
+→ **今天的代码里,Runner 的 agent.md 只能表达「我是谁」;模型 / 技能 / 能力只能来自它之外。** 这是 §5 分层契约与其安全性质的**事实基础**。
 
 ---
 
 ## 3. ⭐ MVP 范围决策(R1#1/#10 + Annie converged)
 
-**问题**:`design|implement|qa` 硬编码在 §2.3 的 **5 个生产面**。「支持任意新节点类型」与「抽象化现有三段式」若塞进同一 MVP,会漏掉整片生产生命周期面。
+**问题**:`design|implement|qa` 硬编码在 §2.3b 的 **8 个生产面**。「支持任意新节点类型」与「抽象化现有三段式」若塞进同一 MVP,会漏掉整片生产生命周期面。
 
 **但 Annie 的收敛给出了更好的解**(§5):**不需要开放任意节点类型 —— 加一个「通用节点」即可**。
 
 | | MVP(本轮验收) | 阶段 2 / 可能不需要 |
 |---|---|---|
 | 节点类型 | **内建 `design` / `implement` / `qa`** + ⭐ **`generic`(agent.md-参数化)** | 任意**具名**新节点类型(`research` / `generate_video` …) |
-| 成本 | 引入 `generic` = **一次性**把那 5 个生产面从「三值硬编码」扩成「node-id 集合」 | 每加一个具名类型 = **再付一次** 5 面的账(per-type) |
+| 成本 | 引入 `generic` = **一次性**建起 §3.1 的 **node-id 生命周期 substrate**(把 §2.3b 那 8 个面从「三值硬编码」扩成 node-id 感知) | 每加一个具名类型 = **再付一次** per-type 的账 |
 | 扩展方式 | 非工程师**写一个 agent.md + 挂 `generic` 节点** → **零代码** | 需改代码 |
 
-**结论(这也是「为什么不开放任意节点类型」的准确答案)**:不是「不能扩展」,而是**成本形状不同**。`generic` 节点是**更便宜、更安全**的扩展路径 —— 一次性付账,之后任何人靠 agent.md 零代码扩展。**具名任意节点类型因此在 MVP 之后大概率也不必做。**
+**结论(这也是「为什么不开放任意节点类型」的准确答案)**:不是「不能扩展」,而是**成本形状不同**。`generic` 是**更便宜、更安全**的扩展路径 —— 一次性付账,之后任何人靠 agent.md 零代码扩展。**具名任意节点类型因此在 MVP 之后大概率也不必做。**
+
+### 3.1 ⚠️ `generic` 进 MVP 的**前置条件**(R4#3/#5/#6 —— 不满足就不许开跑)
+
+`generic` **不是一个便宜的参数化节点**。它引入了「非三段式的 workflow 节点角色」,必须先有 **substrate**:
+
+1. **node-id 生命周期 substrate**:明确**哪个 DB/session 字段承载 node-id**(建议:新增 `workflow_node_id`,与 legacy `chat_thread_role` **并存且解耦**);legacy 三角色**逐字兼容**;**未知 node-id 一律 fail-closed,绝不静默归一成 `main`**(§2.3b 陷阱)。覆盖:role 枚举 / phase-active 查询 / 反查 / 展示 + refresher / **TURN recovery 优先级** / completion sinks / marker replay / finalizer / retry / 启动对账。
+2. **generic 的 output / completion 契约**(§5.6)。
+3. **Blueprint capability 门控先落地**(§5.7):否则 `generic` 会**继承默认的 implement/PR/approve 提示词**(`Blueprint.ts:1031`,`:1041`)。
+
+> **顺序硬约束**:上面三条属于 §14 的 **Gate A(substrate)**;`generic` 的任何 dispatch 必须在 Gate A 之后。
 
 ---
 
@@ -128,7 +164,11 @@ skip:
 - 从项目 **canonical / mainline root** 加载,**绝不**从实现 PR worktree(同 `three-stage-policy.ts:21`、`auto-qa-policy.ts:17`)。
 - **tri-state**:absent → OFF(字节兼容)· malformed → **project fail-closed + 大声报错**(不 crash 整 Bridge,mirror `ConfigLoader.ts:380`)· present+valid → ON。
 - `schema_version` 必填;**unknown key → reject**;external refs 必须在 canonical root 内(**路径逃逸拒绝**)。
-- **引用完整性**:每个节点的 `type` 必须在注册表有定义;edge/skip 目标必须是已声明的节点 `id`;loop 边两端必须存在。
+- **引用完整性 + schema 规则(R4#7)**:
+  - 每个节点的 `type` 必须在注册表有定义;
+  - **节点 `id` 全局唯一**;edge 的 source/target、skip 目标、loop 边两端**都必须是已声明的 `id`**;
+  - **每条 loop 边有唯一 `edge_id`**(snapshot 的 `loop_counters` / `current_node_id` 按 id 索引,避免歧义);
+  - **`agent_file` 仅 `type: generic` 允许且<u>必填</u>;core 节点类型(design/implement/qa)带 `agent_file` → reject**。
 
 ### 4.2 第二层 — 节点类型注册表(行为 + 能力)
 
@@ -189,13 +229,34 @@ nodes:
 
 | 项 | 规则 |
 |---|---|
-| `agent_file` | 相对 **canonical root**;复用 `readAgentFile` 的现成容器检查(拒绝绝对路径 / `..` 逃逸 / symlink 逃出 repo,`Blueprint.ts:1971`-`:1998`)。**不存在 / 逃逸 → fail-closed**,不静默降级。 |
+| `agent_file` | 相对 **canonical root**。**MVP 用一个<u>严格 loader</u>**(见下),不是现有 `readAgentFile`。 |
 | prompt | **只**来自 `agent_file` 的文本(沿用 40k 截断) |
 | `model` | 来自注册表 `generic` 条目,或模板 per-node override。**绝不**来自 agent.md |
 | capabilities | **由 core registry 的 `generic` 条目钉死**。MVP 保守默认:`shared_branch_writer=false` · `creates_pr=false` · `can_ship=false` · `can_land=false` · `approval_gate_holder=false` |
 | skills | 来自注册表 `generic` 条目 |
 
-**成本**:引入 `generic` 需**一次性**把 §2.3 的 5 个生产面从「三值硬编码」扩成「node-id 集合」(存的角色枚举 / phase query / 展示 / ship 收尾 / retry+启动对账)。**付一次,之后任何 agent.md 零代码可用。**
+⚠️ **严格 loader(R4#4 —— 不能直接复用 `readAgentFile`)**:现有 `readAgentFile` 的容器检查(拒绝绝对 / `..` / symlink 逃逸,`Blueprint.ts:1971`-`:1998`)可复用,**但它对不安全/不存在的文件返回 `null`,而现调用方是 warn + fallback 到通用 implement 提示词**(`Blueprint.ts:1624`)—— 这**违反** `generic` 要求的 fail-closed。所以 workflow `generic` 走一个**独立严格入口**:容器检查同款,但 **`null` → 拒绝该 run/config admission,绝不 fallback**。
+
+⚠️ **内容寻址,防 TOCTOU(R4#4)**:snapshot 必须存**已读入的 agent.md 内容本身**(或**内容寻址 blob**),**不能**只存「canonical 路径 + `agent_file_hash`」—— 否则后续 phase 重读路径时文件可能已变(TOCTOU)。§7 据此收紧。
+
+### 5.6 ⭐ `generic` 的 output / completion 契约(R4#2 —— 缺了不许进 MVP)
+
+现有 completion 是**路由制、硬编码**:`flywheel-comm complete` 只认 `auto_approve` / `needs_review` / `blocked` / `no_code` / `pr_handoff` / `phase_design_complete`(`complete.ts:30`,`:101`);两个 sink + marker reconciler 镜像这套(`event-route.ts:832`,`DirectEventSink.ts:355`,`complete-marker-reconciler.ts:78`)。**`generic` 节点今天没有「怎么产出、下游怎么读」的定义。**
+
+**MVP 契约(read-only / doc-producing generic)**:
+- `generic` 节点经**已有的安全 route** 收尾:**默认 `no_code`**(不写共享分支、不开 PR)。
+- 产出落 **`workflow_node_outputs[node_id]`**(snapshot / issue-level 持久化的结构化 payload),**下游节点从这里读**,不经 PR/branch。
+- 若某模板确实要 `generic` 往共享分支写 doc/证据 —— 那 `shared_branch_writer=false` 就是错的默认,**必须在该模板实例显式声明能力**,并相应给它 writer 的 output route。MVP 只交付 **read-only / no_code 形态**;shared-branch generic = 阶段 2。
+
+注册表 / snapshot 因此需字段:`completion_route`(默认 `no_code`)· `output_mode`(如 `node_output_payload`)· `output_visibility` · `handoff_payload`。
+
+### 5.7 ⭐ Blueprint capability 门控**必须先于** `generic` dispatch(R4#5)
+
+今天 Blueprint 只认 `ctx.sessionRole === "design"|"implement"|"qa"`(`:913`,`:917`,`:927`);**其它一切都拿默认的「建分支 / commit / push / 开 PR」实现提示词**(`:1031`)+ merge/approve/land 规则(`:1041`,`:1348`,`:1459`)。→ 若 `generic` 在 Blueprint capability 重构**之前**就能被 dispatch,它会**继承 implement/PR/approve 行为**,与 §5.4 的保守能力**直接冲突**。
+
+**硬约束**:capability-driven 的 Blueprint prompt 重构属于 §14 **Gate A**,**必须先于**任何 `generic` dispatch。第一条 generic sentinel(S13)即断言:**全 write/ship capability=false 的 generic 节点<u>不</u>收到 branch/PR/approve/ship 指令,且有明确的 completion 命令。**
+
+**成本更正(R4#3)**:引入 `generic` 的一次性账 = §2.3b 的 **8 个生产面**(不是原稿说的 5 个)—— 尤其含 **role 枚举的 fail-closed(不静默归一)、TURN recovery 优先级、completion-route 映射**。**付一次 substrate,之后任何 agent.md 零代码可用。**
 
 ### 5.5 homerail firsthand 佐证(clone 读码,非二手)
 
@@ -258,7 +319,8 @@ nodes:
 
 | 字段 | 内容 |
 |---|---|
-| `nodes[]` | **归一化节点实例**(id + type + 生效的 model / capability / badge;`generic` 节点含**已解析的 agent.md 内容或其不可变引用**) |
+| `nodes[]` | **归一化节点实例**(id + type + 生效的 model / capability / badge;⭐ `generic` 节点含**已读入的 agent.md 内容本身,或内容寻址 blob** —— **不是** canonical 路径 + hash,防 TOCTOU,R4#4) |
+| `workflow_node_outputs` | 每个节点的结构化产出(§5.6;下游节点从此读,不经 PR/branch) |
 | `edges[]` | 已解析的边(含 loop 边 id + 条件源 + `max_iterations`) |
 | `skip[]` | skip 决策(或足以重算的输入) |
 | `overrides` | 本 run 的 per-run override |
@@ -397,26 +459,31 @@ pipeline:
 | S8 | founder-feedback kickback | 走**现有守卫路径**,与今天逐字等价 |
 | S9 | QA runner 上报伪造 `prHeadSha` | 与服务端 capture 不一致 → **fail-closed** |
 | S10 | 同 issue 旧 workflow 的在途事件 | 被 `workflow_run_id` 挡下,不误读最新 snapshot |
-| S11 | ⭐ 用户 agent.md 里写 `model:` / `permissionMode:` / `skills:` | **全部无效**;实际 model/能力来自 core registry(物理安全性质) |
-| S12 | ⭐ `generic` 节点的 `agent_file` 指向 repo 外 / symlink 逃逸 / 不存在 | **fail-closed**,不静默降级 |
+| S11 | ⭐ 用户 Runner agent.md 里写 `model:` / `permissionMode:` / `skills:` | 在**派发路径上全部无效**;实际 model/能力来自 core registry(§2.7 物理安全性质) |
+| S12 | ⭐ `generic` 节点的 `agent_file` 指向 repo 外 / symlink 逃逸 / 不存在 | **走严格 loader → fail-closed**(不 warn+fallback 到通用实现提示词,§5.4) |
+| S13 | ⭐ 全 write/ship capability=false 的 `generic` 节点 | **不**收到 branch/PR/approve/ship 指令;有明确 completion 命令(§5.7) |
+| S14 | ⭐ `generic` 节点落库为一个未被扩枚举的 role | **fail-closed**,**绝不静默归一成 `main`**(§2.3b 陷阱);legacy 三角色仍逐字兼容 |
 
 ---
 
 ## 14. 交付方式:**一个大 epic 交 Tadashi**(Annie 定:一个大 PRD + 一个 epic,他自己拆)
 
-> 本 PRD 不预先拆成 N 个 build issue。交付 = **一个 epic**,由 Tadashi 按下面的**依赖正确顺序**自行拆分。
-> 顺序原则:**先定 durable shape 与 ship-gate 证据契约,再迁行为** —— 否则 registry 只是包着旧硬编码的一层新配置,且 ship gate 会死锁。
+> 本 PRD 不预先拆成 N 个 build issue。交付 = **一个 epic**,由 Tadashi 自行拆分。
+> ⭐ **顺序分两道 gate(R4#6)**:因为 `generic` 是 MVP 的一部分,**durable node-id substrate + output/completion 契约 + 严格 loader + Blueprint capability 门控必须先于 orchestrator 能正确解释含 generic 的 snapshot**。
 
-**建议实施顺序(依赖已排好)**:
-1. 模板 / 注册表 config schema + canonical loader + validation(tri-state、unknown-key reject、schema_version、路径逃逸、fail-closed)。
-2. Entry 选模板 + 持久化**物化 workflow snapshot**(§7);copy-forward 契约;修 retry `shareParentBranch` 缺口。
-3. ⭐ **Ship-gate 证据模型**(§8,必须先于 orchestrator):`workflow_qa_*` 字段 + workflow-aware 分支 + 遗留分支 sentinel + **权威 head capture/校验**。
-4. 迁 phase table 进注册表(§4.2 全部职责 + capabilities);`design/implement/qa` 逐字兼容。
-5. Orchestrator 按 snapshot 解释 sequence + `skip`;再把现有 QA loop 迁成配置化 loop 边(§6.1 全 spec,含 kickback 守卫)。
-6. ⭐ **`generic` 节点**(§5.4):把 §2.3 的 5 个生产面从三值硬编码扩成 node-id 集合(**一次性**);`agent_file` 加载 + 路径安全 + capabilities 由 core registry 钉死。
-7. Auto-QA 边界迁移(§8.3/8.4/8.5)。
-8. 生命周期 workstream(R1#6):双 sink、startup reconcile、complete-marker drain、`session_failed`/transition-rejected、TURN recovery、issue display refresh、post-ship finalization。
-9. Blueprint prompt / capability 改读注册表(去 `isDesignPhase/isImplementPhase/isQaPhase` 硬分支)。
-10. core-shipped 模板(eng / product / 裸 default)+ default-off + reverse-compat sentinels(S1–S12)+ doc-drift 修正。
+**Gate A — substrate(必须先全部落地)**:
+1. 模板 / 注册表 config schema + canonical loader + validation(tri-state、unknown-key reject、schema_version、路径逃逸、唯一 id、`agent_file` 仅 generic、fail-closed)。
+2. Entry 选模板 + 持久化**物化 workflow snapshot**(§7,含**内容寻址的 agent.md**);copy-forward 契约;修 retry `shareParentBranch` 缺口。
+3. ⭐ **node-id 生命周期 substrate**(§3.1 + §2.3b 全 8 面):承载字段(`workflow_node_id`,与 legacy role 解耦)· **未知 role/id fail-closed 不静默归一** · role 枚举 / phase-active 查询 / 反查 / 展示+refresher / **TURN recovery 优先级** / completion sinks / marker replay / finalizer / retry / 启动对账。
+4. ⭐ **Ship-gate 证据模型**(§8):`workflow_qa_*` + workflow-aware 分支 + 遗留 sentinel + **权威 head capture/校验**。
+5. ⭐ **generic output / completion 契约**(§5.6):`workflow_node_outputs` + `completion_route`(默认 `no_code`)+ 严格 `agent_file` loader(fail-closed,§5.4)。
+6. ⭐ **Blueprint capability 门控**(§5.7,**必须先于任何 generic dispatch**):去 `isDesignPhase/isImplementPhase/isQaPhase` 硬分支,改读注册表 capability。
 
-> **阶段 2**(任意具名节点类型,大概率不必)· **roadmap**(node-inject / fork)· **UI**(FLY-1038)不在本 epic。
+**Gate B — 行为迁移 + 开跑(Gate A 全绿后)**:
+7. 迁 phase table 进注册表(§4.2 全部职责 + capabilities);`design/implement/qa` 逐字兼容。
+8. Orchestrator 按 snapshot 解释 sequence + `skip`;再把现有 QA loop 迁成配置化 loop 边(§6.1 全 spec,含 kickback 守卫)。
+9. Auto-QA 边界迁移(§8.3/8.4/8.5)。
+10. 生命周期收口余项 + reverse-compat sentinels(S1–S14)。
+11. **启用 core-shipped 模板**(eng / product / 裸 default)**+ `generic`** + default-off + doc-drift 修正。
+
+> **阶段 2**(任意具名节点类型,大概率不必;shared-branch generic)· **roadmap**(node-inject / fork)· **UI**(FLY-1038)不在本 epic。
