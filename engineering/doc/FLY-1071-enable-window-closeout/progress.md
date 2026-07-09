@@ -1,13 +1,13 @@
 ---
 issue: FLY-1071
 phase: design
-phaseCursor: 1/4
-updated: 2026-07-09T22:10:38.001Z
-nextStep: exploration.md 完成(双 crash 根因钉死);brainstorm gate 等 Lead 确认
+phaseCursor: 2/4
+updated: 2026-07-09T22:19:27.481Z
+nextStep: research.md 完成;写 plan.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-1071 progress
-**phase**: design (1/4)
-**next**: exploration.md 完成(双 crash 根因钉死);brainstorm gate 等 Lead 确认
+**phase**: design (2/4)
+**next**: research.md 完成;写 plan.md
