@@ -4,36 +4,18 @@ Issue: FLY-353 (https://linear.app/geoforge3d/issue/FLY-353/架构进化-researc
 日期: 2026-07-08
 基于: research.md(3 家架构综合)、dag-orchestration-design.html(设计 co-eval v1→v7,**Annie 已确认**)、exploration.md(现状审计)
 
-> 状态:**draft(详细版;设计 v7 Annie 已确认;待 Codex design review 复审 + Honey Lemon QA + Annie 终审)。**
-> **本 PRD 遵循 1005 红线:PRD 是最详细、eng 照着能建的文档,不是摘要 —— v1→v7 co-eval 讨论的机制全部搬进来,不浓缩。**
-> 具体 eng 设计与实现 = **Tadashi**。文档位置:本 PRD 落 `engineering/doc/FLY-353-dag-orchestration/prd.md`(eng 树,交
-> Tadashi);上游 research / 设计 co-eval 文档在 `product/doc/FLY-353-architecture-evolution/`。
+> 状态:**draft(结论版;设计 Annie 已确认 + 终审;Codex design review APPROVED)。**
+> **本 PRD 是最详细、eng 照着能建的文档 —— 只列最终结论/机制/契约,写到实现级细节;不堆 co-eval 过程 / Q&A**
+> **(Annie 终审要求:「只放结论,但结论要够细节」)。过程 / 讨论轨迹见上游 `product/doc/FLY-353-architecture-evolution/`**
+> **的 exploration.md / research.md。** 具体 eng 设计与实现 = **Tadashi**。
 
 ---
 
-## 0. 阅读指南 + 这份 PRD 是怎么收敛出来的（co-eval 全轨迹）
+## 0. 阅读指南
 
-FLY-353 起于「综合 Anthropic Managed Agents / openclaw / Raft → 精进 Flywheel 架构」的 research(源自 Annie 从小红书
-精选的 8 个方向)。它**不是一开始就是 DAG**,而是一路和 Annie co-eval 收敛出来的。把轨迹讲清,因为 PRD 的每个决定都
-带着这段讨论的理由(1005 红线要求不丢这些):
-
-1. **research(3 家架构)** → 发现最高杠杆候选是「session-log 解耦」(抄 Managed Agents:把 runner 记忆/事件从 context
-   拆成 context 外的 append-only 日志 → 无状态 runner 可安全 respawn)。
-2. **Annie 收窄 session-log** → 我们已经用 Claude Code,brain/hands/session 原生就有;session-log 不是「我们缺 session」,
-   是「要不要 Flywheel 自己 OWN 这条 log」,只在 3 场景才值(① Codex/kimi 无原生 session · ② 跨 agent 查询/切片 · ③ 多机)。
-   单机 Claude 不痛 → **session-log 收窄为 backlog(§14)**。
-3. **Annie 把 DAG 连到当下真痛** → 她看 research 时自己 articulate:现在最烦的是「一堆 Linear issue 怎么开、怎么派」——
-   手动开 issue、再一个个跟 Lead 说「你做 1、你做 2」。她意识到 DAG 的价值正是「我只列大方向,系统自动按依赖挑着跑、
-   不用一个个 assign」。→ **DAG 主动编排 = 353 的答案(优先),session-log = backlog。**
-4. **设计 co-eval v1→v7**(和 Annie 逐节共创,每轮她批注、我折):
-   - v1→v2:判断**不在派发环节、不机械** → 用 LLM 分诊 + 判断内建在 runner 跑的时候(现有 brainstorm gate)。
-   - v3:LLM 分诊节点 = **现有的 CoS**(Annie:「CoS 本就是我设计来做这个的」);大架构全景图。
-   - v4→v5:**轻模板 + 强治理** framing(回应她「会不会过度复杂化 / 固定模板限制强模型」);两层拆两 PRD。
-   - v6:频次改「**周期扫为主**」(不是事件驱动);CoS 输出两样(语言指令 + HTML);**毕业曲线**(早会学偏好 → 全自动)。
-   - v7:CoS(不叫 Klaus)· **§6 每 6h 扫 + 补齐 capacity**· 学习机制 = 单独 issue FLY-1034。
-   - **Annie 确认 v7:「OK,353 看起来 OK,去落实成 PRD 吧。」**
-5. **Codex design review**:R1 CHANGES REQUESTED(8 条,含真安全边界:CoS `canSpawnRunners:false`、不能直接 spawn)
-   → 全折进;R2 APPROVED。
+353 = **主动 DAG 编排(第二层治理引擎)**:founder 只列大方向,系统按分诊 + 依赖 + 负荷自动挑 / 派 / 推进,人不再逐个
+assign,判断不丢、可监管、ship 仍 founder-gated。收敛过程(research 3 家架构 → session-log 收窄为 backlog → DAG 主动
+编排定为答案 → 设计 co-eval)见上游 exploration.md / research.md;本 PRD 只列结论。
 
 **读法:** §1-§2 背景/北极星 · §3 Non-goal(边界) · §4 framing(轻模板+强治理) · §5 两层 · §6 CoS 分诊 · §7 依赖 ·
 §8 调度 · §9 CoS 输出+面板 · §10 护栏 · §11 毕业曲线 · §12 引擎 · §13 流程图 · §14 session-log · §15 验收 · §16 build 拆分 ·
@@ -43,9 +25,8 @@ FLY-353 起于「综合 Anthropic Managed Agents / openclaw / Raft → 精进 Fl
 
 ## 1. 背景与问题（详）
 
-**Annie 的痛(原话 + 展开):** 「现在烦这些 Linear issue 怎么开、怎么解。以前我可能要开好 issue 1 到 10,然后再去跟
-Lead 说:你去做 1、你去做 2、你去做 3。」—— 核心是:**issue 一多,「派活」这个动作本身就变成 founder 的重复劳动**。她
-只想列大方向,不想当人肉调度员。
+**痛点:** issue 一多,「派活」这个动作本身就变成 founder 的重复劳动 —— 要一个个开 issue、再一个个跟 Lead 说「你做 1、
+你做 2」。founder 只想列大方向,不想当人肉调度员。
 
 **为什么这是架构问题(不只是体验):** 今天 Flywheel 的编排是「Lead 逐 issue 动态派、人在环」——CoS 分诊 → 部门 Lead
 现场判断派谁 → Runner 跑 → founder gate ship。这套在少量 issue 时可行,但**「谁下一步做什么」这层始终是人肉的**;
@@ -94,8 +75,7 @@ issue 一多、想让一个人管很多活时,人肉调度就成瓶颈。
 
 ## 4. 核心 framing：轻模板 + 强治理（回应「会不会过度复杂化 / 固定模板限制越来越强的模型」）
 
-**Annie 的担心(原话):** 「是不是把简单的事情复杂化了?固定模板会不会限制越来越强的模型?」—— 这担心很对,是这份设计
-必须正面回答的。答案是:**我们不束缚模型「怎么想」;我们提供的是治理 + 编排。** 拆成两条:
+**结论(回应「会不会过度复杂化 / 固定模板会不会限制越来越强的模型」):不束缚模型「怎么想」,提供的是治理 + 编排。** 拆成两条:
 
 ### 4.1 模板 = 轻的、可覆盖的默认起手式,不是死模板 / 紧身衣
 - 给一个「这类活一般这么起手」的**默认**(如 eng 常走 设计→实现→QA),但**模型可以偏离** —— 简单的自己一步跑完、
@@ -116,13 +96,13 @@ issue 一多、想让一个人管很多活时,人肉调度就成瓶颈。
 
 ## 5. 两层 DAG 模型（乐高；353 只做第二层）
 
-Annie 在 1004 里 articulate 的最清楚的 framing:DAG 在我们这里是**两层**,叠在一起。
+**结论:** DAG 在我们这里是**两层**,叠在一起。
 
 ### 5.1 第一层 · 轻模板层（≈乐高，= FLY-1020，单独 issue，353 只调用）
 - **做<u>一个</u> issue 怎么跑。** 每类任务一套**轻/可覆盖**的默认 DAG 模板 —— 用她的乐高比喻:同一套底层「积木」(节点),
   不同任务类型拼成不同编排。
 - **eng issue** → 三段式(设计→实现→QA)—— **注意:三段式只是 eng 的<u>一个</u>模板,不是唯一。** 不同粒度的 Runner 可用
-  不同 DAG(小改可能 1-2 节点,不必都三段式)。Annie 原话:「不同粒度底下的 Runner 用的 DAG 大概率不一样,并不是所有人都用三段式。」
+  不同 DAG(小改可能 1-2 节点,不必都三段式) —— 不同粒度底下的 Runner 用的 DAG 大概率不一样,并不是所有人都三段式。
 - **product / designer issue** → 完全不同、更短(如 1-2 节点:调研/收敛)。
 - **未来别的任务类型** → 各自一套;可提供几种模板让不同事件挑。
 - **节点级运行时能力:**
@@ -142,10 +122,9 @@ Annie 在 1004 里 articulate 的最清楚的 framing:DAG 在我们这里是**�
 ## 6. CoS = LLM 分诊节点 —— 机制详 + 「产决策 ≠ 有 spawn 权」（Codex R1 HIGH-1）
 
 ### 6.1 为什么分流必须 LLM、且 = 现有 CoS
-- **分流必须由 LLM 判断,不是机械 DAG。** Annie 明确点了:机械挑任务容易错 —— 「以前创建的 issue 已经不重要了,它还要去做」。
-  纯机械(如旧 dag-resolver 的 topo-sort)不会判「这条还该做吗」。
-- **这个 LLM 分诊节点 = 各 dept/project 现有的 CoS**(如 Aunt Cass)。Annie 原话:「那个 LLM 分诊节点,用每个项目部门的
-  CoS 可以吗?其实我一开始设计 CoS 就是想来做这个的。」**grounded:CoS 本就是 triage/路由 persona。** → 不新造角色。
+- **分流必须由 LLM 判断,不是机械 DAG。** 机械挑任务容易错 —— 早已不重要的 issue 仍被照派;纯机械(如旧 dag-resolver 的
+  topo-sort)不会判「这条还该做吗」。
+- **这个 LLM 分诊节点 = 各 dept/project 现有的 CoS**(如 Aunt Cass)。**grounded:CoS 本就是 triage/路由 persona。** → 不新造角色。
 
 ### 6.2 CoS 每轮分诊做什么（机制）
 每轮(周期扫,§8)CoS 对候选 issue 逐条判:
@@ -157,8 +136,9 @@ Annie 在 1004 里 articulate 的最清楚的 framing:DAG 在我们这里是**�
 - **置信度:** 拿不准 / 模糊 → **低置信 → escalate 给人,不 dispatch**(§10)。
 
 ### 6.3 ⚠️ 产决策 ≠ 有 spawn 权（真安全边界，Codex R1 HIGH-1）
-- **CoS 今天没有 spawn 权、也不该直接拿到。** grounded:`flywheel-cos-lead` = `Flywheel-Triage`、`canSpawnRunners:false`;
-  config.yaml 写明「CoS Aunt Cass triage/route + Eng Lead Tadashi spawn Runners」;`DepartmentRegistry.isLeadInScope()`
+- **CoS 今天没有 spawn 权、也不该直接拿到。** grounded:`flywheel-cos-lead` = `Flywheel-Triage`、`canSpawnRunners:false`
+  (实际 `canSpawnRunners` 值在 `~/.flywheel/projects.json`;`.flywheel/config.yaml` 记录「CoS Aunt Cass triage/route +
+  Eng Lead Tadashi spawn Runners」的 self-hosting 分工);`DepartmentRegistry.isLeadInScope()`
   会先拒 `lead_cannot_spawn`(`packages/teamlead/src/department-registry.ts:220-266`);而能 spawn 的 lead(如
   `flywheel-eng-lead`)是 `canSpawnRunners:true`。`AgentDispatcher` 是 **deterministic label/dept router,不是 LLM 分诊**。
 - **若直接让 CoS 调 `/api/runs/start`,Bridge 会 fail-closed;若为过而把 CoS 改成 `canSpawnRunners:true`,会破坏
@@ -176,12 +156,9 @@ Annie 在 1004 里 articulate 的最清楚的 framing:DAG 在我们这里是**�
 
 ## 7. 依赖层：轻、可选、emergent + 精确语义（Codex R1 MED-5 / R2 LOW-3）
 
-### 7.1 轻、可选（Annie 定）
-- **不建重度人工依赖图。** Annie 原话:「我甚至可能不会把所有东西都标上依赖,每次去讲的时候只会有一个大方向,比如
-  A depend on B。大多数时候,还是需要 Lead 和 PM 来判断互相之间的依赖关系。这个 DAG 的依赖层可能一开始就不一定会有,
-  我觉得很难去 rely on 人去说清楚。」
-- **所以:** 大多数 issue **不标依赖**;founder **偶尔**给个大方向(A→B);其余**主要靠 Lead/PM 临时判断**;依赖层**一开始
-  可以基本没有**。
+### 7.1 轻、可选
+- **不建重度人工依赖图。** 大多数 issue **不标依赖**;founder **偶尔**给个大方向(A→B);其余**主要靠 Lead/PM 临时判断**
+  互相依赖;依赖层**一开始可以基本没有**(很难 rely on 人预先把依赖说清楚)。
 - **CoS 推进规则:** 有标的依赖 → 尊重(A 没完不派 B);没标的 → **并行 / 按到达序 + 负荷**(§8)。依赖是 emergent 的,
   **不是前置门槛** —— 不要求 Annie 预先把整张图画好才能开跑(这正是「静态 DAG 要你预先知道全部」的反面)。
 
@@ -197,13 +174,11 @@ Annie 在 1004 里 articulate 的最清楚的 framing:DAG 在我们这里是**�
 
 ---
 
-## 8. 频次 + 调度：周期扫为主，每 6h，读负荷 → 补齐到 capacity（Annie 定，完整逻辑）
+## 8. 频次 + 调度：周期扫为主，每 6h，读负荷 → 补齐到 capacity（完整逻辑）
 
-### 8.1 为什么周期扫为主，不是事件驱动（Annie 纠正）
-Annie 原话:「调度的逻辑,我感觉应该以『周期扫』为主。如果采用事件驱动会有一个问题:很多时候我们去新建一个 issue,
-并不代表马上就要去执行。任务本身是有优先级的,有的需要立刻处理,低优先级的可以先放一放,这就需要通过分诊来做决定。」
-- **所以:新 issue ≠ 马上执行。** 事件驱动「来一个派一个」会把低优先级的也立刻拉起来。正确是 CoS 分诊**成批**判「现在做哪些、
-  哪些先放放」。
+### 8.1 为什么周期扫为主，不是事件驱动
+- **结论:调度以「周期扫」为主,不是事件驱动。新 issue ≠ 马上执行。** 事件驱动「来一个派一个」会把低优先级的也立刻拉起来;
+  任务有优先级(有的要立刻、低优先可先放),正确是 CoS 分诊**成批**判「现在做哪些、哪些先放放」。
 
 ### 8.2 初期 cadence = 每 6 小时扫一次，完整逻辑
 每 6h(cadence 可配)一轮:
@@ -219,21 +194,17 @@ Annie 原话:「调度的逻辑,我感觉应该以『周期扫』为主。如果
   `filterSessionsByLead`),但现在报的是全局 admission(`max:null`)、非 per-Lead 配额 —— E3 要加 per-Lead 配额。
 
 ### 8.4 动态负载触发 = 后续北极星（讲清为什么现在只做固定周期）
-Annie 原话:「更合理的逻辑是动态负载触发 —— 基于 Lead 容量上限 + 基于系统资源(内存/token):比如设一个系统水位,如果
-当前运行的任务占了 70% 内存,当降到 50% 时系统就自动扫一次 backlog,保证一直有活跑又不过载。检测 token 额度是否够、
-内存是否有空间。」
-- **但她也诚实说:** 「基于系统内存和 Token 额度来做动态调度,目前可以作为一个北极星目标,因为我们现在其实还没有那么强的
-  能力去监控系统内存这些指标。」
-- **所以:v1 先做「每 6h 固定 + capacity 补齐」;把「读负荷」升级成「按系统水位(内存/token)自动决定何时扫」= 后续北极星
-  (§16 E5)。** 现在没能力监控内存/token,先固定周期。
+- **北极星:动态负载触发** —— 基于 Lead 容量上限 + 系统资源(内存/token):设一个系统水位,当前运行任务占 70% 内存、降到
+  50% 时自动扫一次 backlog,保证一直有活跑又不过载。
+- **但现在没能力监控内存/token 这些指标 → 只能作北极星。所以:v1 先做「每 6h 固定 + capacity 补齐」;把「读负荷」升级成
+  「按系统水位(内存/token)自动决定何时扫」= 后续(§16 E5)。**
 
 ---
 
 ## 9. CoS 输出两样 + Discord 面板 + cron（publish-report = FLY-203，Codex R1 LOW-6 / R2 LOW-1）
 
-### 9.1 CoS 每轮分诊完输出两样（Annie 定）
-Annie 原话:「CoS 每轮分诊完,确定今天谁跑谁之后,它可以出两个东西:1. 语言指令:比如跟 Lead A 说你要去做 12345、
-跟 Lead B 说你要去做 5678910;2. 一个 HTML 文件:说实话这个只是给我看的,我不一定会马上看,但有时间会去瞟一眼。」
+### 9.1 CoS 每轮分诊完输出两样
+**结论:** CoS 每轮分诊完(确定今天谁跑谁)输出两样 ——
 - **① 语言指令(给各 Lead)** —— 跟 Lead A 说「你去做 1/2/3」、Lead B 说「你去做 4/5/6」。= §6 的「dept Lead 执行 spawn」的载体。
 - **② 一个 HTML(给 founder 瞟)** —— 主要给她看、不一定马上看、有空瞟一眼。
 - ⚠️ **机器执行真相 = typed `DispatchDecision` + ledger,不是语言指令(Codex R2 LOW-1)。** 真正触发 spawn 的是引擎消费
@@ -242,7 +213,7 @@ Annie 原话:「CoS 每轮分诊完,确定今天谁跑谁之后,它可以出两�
   结果 execution id 报回 ledger。否则会弱化 durable ledger / dry-run 契约。
 
 ### 9.2 面板 = Discord（不另做 dashboard）
-Annie 原话:「我们需要一个专门的面板展示吗?还是说其实我们现在设计的这个 Discord 系统就是面板呀?」→ **Discord 就是面板。**
+**结论:Discord 就是面板,不另做 dashboard。**
 - 复用 **FLY-203 `publish-report` / reports-route**(注:是 FLY-203,非 FLY-930;publish-report 是 report delivery、不是 live
   dashboard)。
 - **约束(防刷屏,Codex R1 LOW-6):** 每轮 sweep 发一条 **summary HTML** → core room → @founder;事件性只在
@@ -257,12 +228,9 @@ Annie 原话:「我们需要一个专门的面板展示吗?还是说其实我们
 
 ## 10. 主轴 + 4 监管护栏（判断在 run 里；护栏落成硬验收，Codex R1 HIGH-2）
 
-### 10.1 主轴：判断在 run 里，不在派发口（Annie 纠正）
-Annie 原话:「不一定是在派发环节需要留人。因为现在每个任务跑起来,都不是它自己悄悄跑完不跟我们反馈,更多的是在运行过程中
-跟我们一起走 brainstorm 的过程。比较简单的它可能自己就跑完了;比较复杂的,它还是会跟我们一起走 brainstorm。所以更多的是
-在 runner 跑的时候,才需要留人去做判断。」
-- **所以:默认全自动派发;简单 issue runner 自己跑完;复杂的 runner <u>用现有的 brainstorm gate</u> 跑到一半把 founder/Lead
-  拉进来一起定,再继续。** 这不是新东西 —— runner 本来就跑中 brainstorm-gate(grounded:Blueprint 注入 ask / brainstorm /
+### 10.1 主轴：判断在 run 里，不在派发口
+- **结论:判断留在 run 里,不在派发环节。默认全自动派发;简单 issue runner 自己跑完;复杂的 runner <u>用现有的 brainstorm
+  gate</u> 跑到一半把 founder/Lead 拉进来一起定,再继续。** 这不是新东西 —— runner 本来就跑中 brainstorm-gate(grounded:Blueprint 注入 ask / brainstorm /
   approve gate)。我们只让「派发」自动化,把「判断」留在它本来就在的地方(run 里)。
 
 ### 10.2 4 护栏（且必须是 engine 硬验收，不是口号）
@@ -291,8 +259,8 @@ session slot、开分支、耗模型、制造 PR 噪声、和三段式 / FLY-100
 
 ## 11. 渐进自治：早会学偏好 → 全自动 DAG（毕业曲线；依赖 FLY-1034）
 
-### 11.1 毕业曲线（Annie 的协调设想）
-全自动不是一步到位,是**一条毕业曲线** —— 这是 Annie 对「早会 vs 全自动 DAG 怎么协调」的设想:
+### 11.1 毕业曲线
+**结论:** 全自动不是一步到位,是**一条毕业曲线**(早会 → 全自动 DAG 的协调路径):
 - **近期:founder 早会(重)** —— founder 和 CoS 开早会,CoS 在早会里**学 founder 偏好**(节奏 / dependency / priority)。
   founder 定得多、CoS 学。
 - **中期:学够了** —— 自主 triage 升高、早会变短、founder 少管。
@@ -312,8 +280,8 @@ session slot、开分支、耗模型、制造 PR 噪声、和三段式 / FLY-100
 
 ## 12. 引擎：删没用的旧 dag-resolver + 重搭（Codex R1 LOW-7 迁移note）
 
-### 12.1 诚实评估（grounded；Annie 怀疑它不行，成立）
-Annie 原话:「现有的引擎 code 如果没在用的话,直接删掉就可以了。我很怀疑它做得不怎么样,需要重新设计。」核代码后确认:
+### 12.1 诚实评估（grounded）
+**结论:现有引擎没在用 → 直接删、重搭。** 核代码后确认:
 - 现有 `dag-resolver` = **v0.1.0 最早期**的东西:只有基础 Kahn 拓扑排序 + getReady/markDone/shelve + `LinearGraphBuilder`
   从 blockedBy 建图 + `DagDispatcher`;**没接进生产**(`new DagDispatcher` 生产路径 0 处,只在 scripts/tests);**没有** LLM
   分诊(机械挑任务 = Annie 担心的「会判断错」);**没有**监管护栏(出错就 `shelve` 掉继续、不升级);也没跟现在演进过的
@@ -423,7 +391,7 @@ research 阶段的「Flywheel 自己 own 一条 agent-agnostic 事件日志」�
 
 ---
 
-## 18. 附录 · homerail 澄清（答 Annie「homerail 的 DAG 是做这事吗」）
+## 18. 附录 · homerail 澄清（homerail 的 DAG 是不是做这件事）
 
 homerail 的 DAG 是**「一个 agent 一次 run 内部的工作流图」**(run 里 node 按 port / 条件边 / loop 流转;1004 runner
 firsthand 读码结论)—— 相当于我们的**第一层(模板层 / FLY-1020)**,**不是** 353 要做的**第二层(issue 级、跨 fleet 的
