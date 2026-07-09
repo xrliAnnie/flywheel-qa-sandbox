@@ -1,0 +1,4 @@
+[2026-07-09T20:05:27.820Z] ACT4 start (baseline line 57) — injecting p1 (part 1 of 2)
+[2026-07-09T20:05:29.814Z] ACT4 injecting p2 (part 2 of 2) after ~0.65s pause
+[2026-07-09T20:05:34.631Z] CASE-B saw: response started (no deadlock)
+[2026-07-09T20:05:46.738Z] CASE-B saw: response completed — ACT4 done (PASS-shape)

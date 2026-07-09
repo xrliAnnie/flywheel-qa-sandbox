@@ -1,0 +1,7 @@
+[2026-07-09T19:33:21.697Z] ACT3 start (baseline line 124) — injecting NO-TAIL probe question
+[2026-07-09T19:34:04.868Z] CASE-A FAIL-shape: no 'response started' within 30s of no-tail inject
+[2026-07-09T20:00:30.736Z] ACT3 start (baseline line 26) — injecting NO-TAIL probe question
+[2026-07-09T20:00:38.130Z] CASE-A saw: response started (abrupt-end speech now commits the turn)
+[2026-07-09T20:00:39.091Z] CASE-A saw: first audio chunk — sleeping 2.0s then interrupting (① regression)
+[2026-07-09T20:00:41.825Z] ACT3 interrupt inject
+[2026-07-09T20:01:24.360Z] ① regression FAIL-shape: no cancel within 20s
