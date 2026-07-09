@@ -286,6 +286,36 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "与 FLYWHEEL_THREE_STAGE 正交（那个关整条三段式）；本 env=0 只回退保活到 close+respawn，改后需重启 Bridge。",
 	},
 	{
+		// FLY-1050: kill-switch for the dead-QA respawn. Default ON: a dead
+		// three-stage QA phase row (terminated/failed/completed, no ship claim)
+		// no longer blocks the implement→QA handoff re-drive — the stranded
+		// implement gets a fresh QA respawned (boot reconcile + the scoped
+		// QA-death event sites). `=0` reverts the respawn paths to the pre-fix
+		// row-exists criteria (scoped sites inert; the G-A2 zero-row boot
+		// re-drive is preserved). The terminated stranded-pass alert hardening
+		// is deliberately NOT gated by this switch (rolling back the respawn
+		// must not re-introduce the FLY-967 silent strand).
+		name: "three_stage_qa_respawn_killswitch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_THREE_STAGE_QA_RESPAWN",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"三段式死 QA 重生开关（=0 回退修复前行为:死 qa row 继续挡 implement→QA 重驱,scoped 事件位点不重生;terminated stranded-pass 告警硬化不受此开关控制）(FLY-1050)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/phase-orchestrator.ts",
+				"qaRespawnEnabled",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "与 FLYWHEEL_THREE_STAGE / FLYWHEEL_THREE_STAGE_KEEPALIVE 正交；本 env=0 只关死-QA 重生路径，改后需重启 Bridge。",
+	},
+	{
 		// FLY-939 (G-D): Bridge boot logs its running HEAD and best-effort compares
 		// it to origin/main; a STALE checkout (HEAD strictly behind origin/main)
 		// WARNs + records a durable event + alerts the Lead. `=0` skips the whole
