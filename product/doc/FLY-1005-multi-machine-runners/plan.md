@@ -13,10 +13,11 @@ Status: **draft PRD — 主线待 Annie 拍板后由 Lead 收口**(这是她点�
 >
 > **⭐ 分阶段收敛(Annie 2026-07-08,co-eval 9 轮后,重新编号 Phase 1 = 今天):**
 > - **Phase 1 = 今天:** 单机 —— hub(Bridge+DB+Leads)+ 所有 runner 一台机(worktree/tmux),单租户。(起点)
-> - **Phase 2 = 自己多机(核心 1005):** 单 hub(Bridge+Leads,**hub+DB 最好拆云**)+ 多机**无状态卫星节点容器**(profile 预登录、每 session sync-to-latest),单租户、横向扩展,**不碰多租户**。delta = runner 从本机 worktree/tmux → 多机无状态容器化卫星,突破单机容量 + 失败域隔离。(自然子步:先起云节点跑通、再 hub+DB 拆云;主线仍一个 Phase。)
-> - **Phase 3 = 产品化:** Phase 2 容器化栈打包 → 别人自部署一份 = **C 联邦(每租户一整套硬隔离)= FLY-648**。delta = 从我们一套 → 每租户各自一整套。**Phase 2 容器化 = 这步的种子;Container 贯穿 = must-have。**
-> - **⭐ 为什么跳过 B(共享 hub 多租户):** 内部只我们一个租户(Phase 2 单租户,不需要多租户共享);对外付费必须硬隔离 = C(Phase 3)。B 只在「专门做 hosted 共享服务」才有意义,不在 1005 主线。
-> - 下方 §3 的阶段0-3 是 **Phase 2** 的内部细化。
+> - **Phase 2 = 自己多机(核心 1005):** 共享 hub(我们的 team 仍共用一套 Bridge+Leads,**hub+DB 最好拆云**)+ 多机**无状态卫星节点容器**(profile 预登录、每 session sync-to-latest),横向扩展。delta = runner 从本机 worktree/tmux → 多机无状态容器化卫星,突破单机容量 + 失败域隔离。(自然子步:先起云节点跑通、再 hub+DB 拆云;主线仍一个 Phase。)
+> - **⭐ Phase 2.1 = 拆出高 churn 的 Flywheel hub(Annie v10 加):** 把 **Flywheel 的 hub(Bridge+Lead)从共享 hub 单独拆出来**,跟稳定 team(Jolt 3D/Tidal Echo)分开;**runner 仍分散**。驱动 = Flywheel 高频改(4 次/天)vs 其他 team 稳(1 次/天),拆开后 Flywheel 频繁重启**不再逼其他 team 跟着重启** = **decouple-restart(FLY-978)在多机上的延伸**。踏脚石:Phase 2(共享 hub)→ Phase 2.1(**先拆最高 churn 的**)→ Phase 3(每 team 一整套=C),按「谁最需要独立先拆」。
+> - **Phase 3 = 产品化:** 把容器化栈打包 → 别人自部署一份 = **C 联邦(每租户一整套硬隔离)= FLY-648**。delta = 从内部按 churn 逐个拆 hub → 每租户(含外部付费客户)各自一整套。**Phase 2 容器化 = 种子;Container 贯穿 = must-have。**
+> - **⭐ 为什么跳过 B:** 区分——**内部我们的 team 共享一个 hub(Phase 1-2)是现状、低风险、可接受**(Phase 2.1 在此基础按 churn 逐个拆);**B 特指「给外部多个租户共享一个 hub」** → 对外付费必须硬隔离 = C(Phase 3),所以**跳过对外 B**(只在专做 hosted 共享服务才有意义)。
+> - 下方 §3 的阶段0-3 是 **Phase 2/2.1** 的内部细化。
 >
 > **状态:PRD 待 Annie 确认这 3 个 Phase 后再写**(v9 co-eval HTML 请她确认;Lead 发话我再出正式 PRD,不抢跑)。
 
