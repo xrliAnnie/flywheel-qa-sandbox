@@ -25,7 +25,7 @@ Issue: FLY-1089 (https://linear.app/geoforge3d/issue/FLY-1089/建-pm-prototype-�
 | 1 | `.flywheel/agents/engineering/pm-executor.md` | **新建**。Mode A 正文搬入 + 补 v5 两步 |
 | 2 | `.flywheel/agents/engineering/prototype-executor.md` | **新建**。全新四步流 |
 | 3 | `.flywheel/agents/engineering/product-designer-executor.md` | **改**。抽掉 Mode A,只留文档/设计产出;头部改写 |
-| 4 | `.flywheel/config.yaml` | **改**。label 重划 + 两个新 agent 条目(双注册) |
+| 4 | `.flywheel/config.yaml` | **改**。label 重划 + 两个新 agent 条目(双注册)+ **同步更新上方注释块**(Codex R2#5:`:128-145` / `:164-175` 的注释仍把 `product-designer` 描述成拥有 product/PM planning、说 FLY-1059 只移了 `designer` —— 改成最终 split:`pm`→pm/product、`prototype`→prototype、`product-designer`→doc/docs/design/ux、`designer`→designer/mockup) |
 | 5 | `scripts/__tests__/test-pm-executor-contract.sh` | **改**。从「PM 一个文件」扩成「三个 role 文件的契约」+ 结构性检查 |
 | 6 | `packages/edge-worker/src/__tests__/designer-agent-dispatch.test.ts` | **改**。修掉「pm/product → product-designer」这条已过时的断言 |
 | 7 | `packages/edge-worker/src/__tests__/AgentDispatcher.test.ts` | **改**(Codex R1#1 HIGH)。`:469-528` 的 FLY-901 双注册 fixture 仍写死 `product-designer` 含 `product`/`pm` 并断言其路由 —— 改成最终映射 |
@@ -169,11 +169,14 @@ Annie 亲口拍的文字**不改写**。
 
 1. `pm` / `prototype` 存在且 `departments === ["engineering", "product"]`;
 2. 全映射表(engineering + product 两个 dept 各跑一遍):
-   `pm|product → pm`、`prototype|poc → prototype`、`doc|docs|design|ux → product-designer`、
+   `pm|product → pm`、**`prototype → prototype`**、`doc|docs|design|ux → product-designer`、
    `designer|mockup → designer`、`qa|testing → qa`、`code|feat|… → engineer`;
 3. **标签互斥不变式**:遍历所有 agent 的 `match.labels`,任意两个集合交集为空 —— 一条测试
    永久锁住「路由与 YAML 顺序无关」;
-4. 未知 label + `owningDept=product` → `shipped-generic`(兜底没坏)。
+4. **`poc` 不是 alias(Codex R2#1 HIGH)**:断言 `poc` 出现在**任何** agent 的 `match.labels`
+   里 = false,且 `poc + owningDept=product → shipped-generic` —— 证明砍掉 `poc` 是真的、
+   没被偷偷当别名保留;
+5. 未知 label + `owningDept=product` → `shipped-generic`(兜底没坏)。
 
 ### 7.3 修两处已过时的 dispatch 断言(推翻旧契约 —— PR 点名)
 
@@ -193,11 +196,18 @@ Annie 亲口拍的文字**不改写**。
 
 FLY-901 双注册 E2E:把 `pm` / `prototype` 加进被验证的 agent 列表。
 
-### 7.5 回归
+### 7.5 回归(Codex R2#4 —— 用准确包名)
+
+包名是 `flywheel-edge-worker` / `flywheel-config`,**不是** `edge-worker`(`pnpm --filter edge-worker`
+会「No projects matched」静默跳过 —— 恰恰跳过路由改动所在)。用:
 
 - `pnpm lint`(全仓,push 前必跑)
-- `pnpm test --filter edge-worker --filter flywheel-config`
+- `pnpm --filter flywheel-edge-worker --filter flywheel-config test:run`
+- 开发中针对性跑新/改的 dispatch 测试:`pnpm --filter flywheel-edge-worker exec vitest run
+  src/__tests__/role-agent-dispatch.test.ts src/__tests__/designer-agent-dispatch.test.ts
+  src/__tests__/AgentDispatcher.test.ts`
 - `bash scripts/__tests__/test-pm-executor-contract.sh`
+- `node scripts/qa-fly-901-real-config-dispatch-e2e.mjs`
 
 ## 8. 明确不做的事(边界)
 
@@ -207,14 +217,22 @@ FLY-901 双注册 E2E:把 `pm` / `prototype` 加进被验证的 agent 列表。
   代码保证的不变式**(Codex R1#4 MED)—— 见 §8.1 的三格矩阵,不吹成 code-enforced 属性。
 - ❌ **不做 DAG mapping** —— 单独 follow-up,等 FLY-1020 的 DAG 落地。
 - ❌ **不改 `product-designer` 的名字**。
-- ❌ **不动 FLY-1059 的任何文件内容**(除了 7.3 那条必须改的过时断言)。
+- ❌ **不改 FLY-1059 的设计/实现逻辑**(Codex R2#2 —— 与 §2 对齐)。仅允许两类 stacked cleanup,
+  且都在 PR / Lead handoff 里点名:(a) §7.3 那条过时的 dispatch 断言;(b) `designer-executor.md`
+  的 3 行边界描述(把「product-designer = PM/PRD」指向新 `pm-executor`)。除此之外不碰 1059 文件。
 - ❌ **不 ship / 不自 merge / 不 fire approve gate** —— 改动先报 Lead,他 OK 才 publish / 开 PR。
 
 ## 8.1 单 session 的三格矩阵(Codex R1#4 —— 前提,不是不变式)
 
 「一个工种 = 一个 session」在**当前配置下**成立,但它是操作前提,取决于**从哪个频道派 + 带没带
-`no-three-stage`**。三种情况写清楚(作为 role .md 里的派发纪律 + §7.2 dispatch 测试的覆盖点,
-不是引擎改动):
+`no-three-stage`**。三种情况写清楚。
+
+> **覆盖归属澄清(Codex R2#3)**:这三格属于 **role .md 派发纪律 + 本文档的 QA checklist**,
+> **不是** §7.2 能验的 —— §7.2 是 ConfigLoader + AgentDispatcher 的 label 路由测试,
+> AgentDispatcher **不知道** `dispatchChannelId` / `three_stage_channels` / `no-three-stage`
+> (那些活在 teamlead 的 `resolveThreeStageEntry` / `resolveThreeStagePolicy`)。这条 channel 行为
+> 是**既有机制**、已被 FLY-793/887 自己的 `three-stage-policy.test.ts` 覆盖,本 issue 不新增引擎
+> 测试(纯配置 scope)。§7.2 只证 label→agent 路由。
 
 | 派发来源 | 带 `no-three-stage`? | 结果 | 机制 |
 |---|---|---|---|
