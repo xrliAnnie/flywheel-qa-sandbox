@@ -1,0 +1,28 @@
+[2026-07-09T19:48:17.342Z] health endpoint on 127.0.0.1:9880/health
+[2026-07-09T19:48:18.081Z] bots online: orchestrator, note-taker
+[2026-07-09T19:48:18.451Z] Note-taker resident in VC 1485787273193853170
+[2026-07-09T19:48:18.456Z] [presence] humanCount seeded=0 (boot occupancy)
+[2026-07-09T19:48:18.599Z] /gemini registered on guild 1485787271192907816
+[2026-07-09T19:48:18.599Z] autostart QA seam armed (topic: FLY-1047 复验完整轮)
+[2026-07-09T19:48:18.599Z] daemon up — health :9880, assistant=/gemini
+[2026-07-09T19:48:22.302Z] [gemini-command] MOVE_MEMBERS unavailable — Join button is the path in
+[2026-07-09T19:48:22.302Z] [assistant-session][3d1e53b6-2933-438c-a440-369eca574214] state -> invoked
+[2026-07-09T19:48:22.393Z] [presence] voiceState user=1523230048243417178 bot=true - -> 1485787273193853170 delta=join humanCount=0 joinSubs=0
+[2026-07-09T19:48:22.792Z] [deferred-player] real player attached (orchestrator in VC)
+[2026-07-09T19:48:22.792Z] [assistant-session][3d1e53b6-2933-438c-a440-369eca574214] voice joined — orchestrator in the VC
+[2026-07-09T19:48:22.792Z] [assistant-session][3d1e53b6-2933-438c-a440-369eca574214] briefing composed (3137 chars, stale=false)
+[2026-07-09T19:48:22.792Z] [assistant-session][3d1e53b6-2933-438c-a440-369eca574214] connecting Gemini Live…
+[2026-07-09T19:48:22.962Z] [assistant-session][3d1e53b6-2933-438c-a440-369eca574214] conversation ready
+[2026-07-09T19:48:22.963Z] [presence] founderPresent()=false (humanCount=0)
+[2026-07-09T19:48:22.963Z] [assistant-session][3d1e53b6-2933-438c-a440-369eca574214] founderPresent()=false at post-connect check
+[2026-07-09T19:48:22.963Z] [assistant-session][3d1e53b6-2933-438c-a440-369eca574214] no-show timer armed (600000ms)
+[2026-07-09T19:53:50.465Z] [presence] voiceState user=1138241636057481306 bot=false - -> 1485787273193853170 delta=join humanCount=0 joinSubs=1
+[2026-07-09T19:53:50.465Z] [presence] JOIN — humanCount=1, firing 1 founder-join subscriber(s)
+[2026-07-09T19:53:50.465Z] [assistant-session][3d1e53b6-2933-438c-a440-369eca574214] founder-join signal received (state=invoked)
+[2026-07-09T19:53:50.465Z] [assistant-session][3d1e53b6-2933-438c-a440-369eca574214] state -> live (founder-join)
+[2026-07-09T19:53:50.471Z] [assistant-session][3d1e53b6-2933-438c-a440-369eca574214] OPENING prompt sent to Gemini
+[2026-07-09T19:57:58.032Z] quit file seen after 579.4s
+[2026-07-09T19:57:58.036Z] shutting down (session length 579.4s)
+[2026-07-09T19:57:58.045Z] shutting down (bounded)
+[2026-07-09T19:57:58.046Z] [assistant-session][3d1e53b6-2933-438c-a440-369eca574214] state -> landing (trigger=external-stop confirmed=false; ears frames forwarded=0, assistant audio chunks=0)
+[2026-07-09T19:58:01.985Z] daemon closed

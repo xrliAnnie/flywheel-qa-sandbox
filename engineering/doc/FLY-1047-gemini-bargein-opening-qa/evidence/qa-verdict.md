@@ -103,6 +103,53 @@ Annie 观察到替身(Chrome web 的 xrliannie 连接)某时刻显示未静音;�
 
 Chrome 截图(会话记录内,按 ID 引用):登出态 ss_0726wyxik / 登录+VC 页 ss_02416df6e / Annie+探针在 VC ss_0243s3amt / 全员退出后 VC 清空 ss_5325qrbdk。VC 成员权威核查以 vc-members.mjs API 输出为准(0/1/2 人各时点均有时间戳记录)。
 
-## 结论
+## 结论(第一轮,head 6c3ec409)
 
-PR #501 @ 6c3ec409 的 barge-in 默认 ON 行为、静默不误掐、R20 开场懒开窗修复,三条真机判据全部 PASS。建议:安排 Annie 最后一听(venue 由父单 implement 会话按流程重拉起,非本单职责)。
+PR #501 @ 6c3ec409 的 barge-in 默认 ON 行为、静默不误掐、R20 开场懒开窗修复,三条真机判据全部 PASS。
+
+---
+
+# 复验轮(round 2)— head 683418b4(round-6 真根因修复)
+
+日期: 2026-07-09(晚)
+背景: Annie 真机试用发现真根因——她停口时 Discord 静音抑制使音频流骤停、无 turn-end 信号,Gemini 永远等她「说完」;第一轮注入 WAV 的收尾形态未暴露此路径(盲区,本轮 4.1 有实锤)。修复 = ears speaking-end 时提交用户 turn(audioStreamEnd),commit `683418b4`(Codex R24 APPROVED)。本轮在**同一 QA worktree** checkout 683418b4、全量重建 dist 后执行。
+
+## 复验矩阵结果:**全 PASS**
+
+| 项 | 结果 | 关键实测 |
+|----|------|---------|
+| ③ 开场回归 | PASS ×3 | initial-check 路径 ×2(0.79s/0.80s 首 chunk,chunks=26/24 dropped=0)+ founder-join 路径 ×1(enterLive 即时) |
+| ② 静默回归 | PASS | 68s 干净静默 hold:**0** cancel + **0** ears 帧(管道级静默证明);外加 34s 附加静默段同样零误掐 |
+| ① 打断回归 | PASS | 快时机注入(首 chunk+0.8s):interrupt → `response cancelled (barge-in) — flushing speaker` **~1.4s**(阈 3s) |
+| 新案例 A『骤停音频』 | PASS | 无尾静音 probe(1.997s,原素材尾静音仅 46ms 被剥净)注入 → `founder speaking-end — committing turn (105 frames)` → **2.5s 后 response started**、完整回答收尾。**同素材在第一轮 head(6c3ec409)两次注入均 NO_RESPONSE**——修复前后对照实锤 |
+| 新案例 B『中途停顿』 | PASS | p1(1.12s)→ ~0.65s 停顿 → p2(1.83s):停顿期间**零抢答**(response started 仅在 p2 完结后出现一次),单次完整回答 43 chunks 干净收尾,零死锁 |
+
+单测门 @ 683418b4:voice-core **124** + voice-bridge **179** 全绿(各含修复新增测试)。
+
+## 4.1 计划外黄金证据:Annie 真人现场验证(物理真人差异 A8 覆盖)
+
+复验期间 Annie 本人经 Chrome web 解除静音、用**真麦克风**与助理实时对话(runner3 会话,19:28-19:29Z):
+
+- `founder speaking-end — committing turn (79 frames)` → **0.86s 后 response started** —— 真人骤停音频(Discord 静音抑制的真实形态)在修复头上立即得到回答;她的多个 utterance(66/95/109 帧)全部 commit + 应答,一场 755 ears 帧 / 283 chunks 的多轮对话流畅完成。
+- 她插话时触发真人 `response cancelled (barge-in)`(19:28:08.7)——①的真人版。
+- 她离开 VC 触发 `founder-leave` → session 正常 landing——founder-leave 收尾路径顺带验证。
+- **Annie 原话验收:「感觉还不错,一来一回的」**(经 Tadashi 转达;她的文本面板显示反馈已拆 FLY-1065,不在 #501 范围)。
+
+这组证据同时反证第一轮盲区:第一轮幕二同款 probe 问句两次「引不出回答」当时按环境记录——现在确认那正是根因的现场表现(骤停流 → server VAD 收不到尾静音 → 永久等待),复验案例 A 在新 head 上同素材直接通过。
+
+## 复验执行注记(诚实声明)
+
+1. ① 回归第一次注入曾出现 no-cancel FAIL-shape,诊断为 **rig 时机假象**:该轮回答生成窗口仅 5.5s,interrupt 帧到达时(注入+传输 ~0.5s)`response done` 已落——服务端无进行中生成可打断,interrupt 被当作新 turn 正常应答(log 可见 91 帧 commit + 完整回答)。快时机重试(+0.8s)1.4s 内 cancel;加上 Annie 真人插话 cancel 证据,①无回归。
+2. runner4 一轮作废:Gemini 连接在 invoked 态空闲 5.5 分钟后 OPENING 无响应(环境形态,连接闲置失效);runner5 以 founder 先在场的 initial-check 路径即起即响。已按红线 6 区分环境失败与行为失败。
+3. 复验期间 claude-in-chrome 曾断连(Chrome 重启后扩展未向 relay 注册),由 Tadashi 杀 native host + 重启 Chrome + Annie 点开扩展面板后恢复(新 deviceId 4077cf93);全程按「不 retry 循环、逐步升级」纪律处理。
+4. 本轮探针 finalize 时 Decoder 崩溃,WAV/STT 自动归档失败;413s 采集音频已手动转出(/tmp/fly1047-rig/out-capture-r2.wav,79MB 不入库,留存至 verdict 消化);判据锚点全部在 daemon log,不受影响。
+5. venue 处置同第一轮纪律:Tadashi 本人停 venue 开窗,QA 复用 staged bridge(本轮 :9878),零 venue 进程接触;结束时 VC members=0(API 证)。
+6. 本轮 autostart kickoff issue(复验完整轮 R2 等)按 landing 链自动收尾,残留核查见 evidence 提交后的 DONE 报告。
+
+## 复验证据文件
+
+daemon3.log(Annie 真人对话 + ③②回归)、daemon4.log(作废轮,环境注记)、daemon5.log(③②回归 + 案例 A/B + 快时机①)、act3/act4 driver log、probe3 采集日志——本目录 `r2-*` 前缀归档。
+
+## 最终结论
+
+**PR #501 @ 683418b4:第一轮三判据回归 + 两个新案例(骤停音频/中途停顿)全 PASS,叠加 Annie 真人真麦克风现场验证(含她本人口头验收)。QA 放行,#501 交 founder ship 决定。**
