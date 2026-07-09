@@ -33,6 +33,15 @@
 
 import { createHash } from "node:crypto";
 import { deriveAccountLimitForAlert } from "./account-heal/derive-account-limit.js";
+import {
+	buildPaneTail,
+	type SuspiciousReport,
+} from "./bridge/detection-suspicious.js";
+import { scanErrorSignatures } from "./bridge/error-signatures.js";
+import {
+	computeFrameDeltas,
+	createFrameWindowStore,
+} from "./bridge/pane-frames.js";
 // FLY-1048 (Task A2): the live-region/echo-strip pure helpers moved to a shared
 // module so the multi-frame window + runner detectors reuse the exact same
 // parsing. Behavior is byte-identical (committed pane fixtures guard it);
@@ -123,6 +132,27 @@ export interface LeadWatchdogConfig {
 	 * (undefined → falsy) so unit tests opt in explicitly.
 	 */
 	suppressIdleHealthy?: boolean;
+	/**
+	 * FLY-1048 (A4): multi-frame overlay. When true, every poll pushes the
+	 * lead's own-state region into a K=3 frame window, and the idle-healthy
+	 * suppression gains two vetoes: an error signature frozen in the window →
+	 * `pane_error_stalled` alert; a silent window carrying frozen
+	 * extended-thinking residue → a quiet `onSuspicious` report (never an
+	 * alert, never silent). Wired from FLYWHEEL_PANE_MULTIFRAME=1 in plugin.ts;
+	 * undefined/false = single-frame behavior byte-for-byte.
+	 */
+	multiFrame?: boolean;
+	/**
+	 * FLY-1048 (A4): minimum first→last frame span before a silence conclusion
+	 * (observation window). Default 2 × pollIntervalMs.
+	 */
+	multiFrameMinSpanMs?: number;
+	/**
+	 * FLY-1048 (A5): sink for fail-suspicious reports (the detection-suspicious
+	 * deliverer routes them to the owner Lead). Absent → reports are logged
+	 * only. Best-effort: a throwing sink must never break the tick.
+	 */
+	onSuspicious?: (report: SuspiciousReport) => void | Promise<void>;
 }
 
 interface LeadState {
@@ -143,7 +173,22 @@ interface LeadState {
 	 * onRecovery hook exactly once when the lead recovers (covers both blocked
 	 * kinds and pane_hash_stuck). Null once recovery has been signaled. */
 	lastAlertedKind: AlertEventType | null;
+	/** FLY-1048 (A4): live-hash of the episode whose suspicious report already
+	 * fired — one quiet report per frozen episode; a changed live region opens
+	 * a new episode and may report again. */
+	lastSuspiciousHash: string | null;
 }
+
+/**
+ * FLY-1048 (A4): the FROZEN extended-thinking spinner form — an elapsed timer
+ * with thinking-progress wording, e.g. `✢ Pondering… (11m 3s · almost done
+ * thinking)`. Deliberately EXCLUDES the completed-turn residue (`✻ Cooked for
+ * 2s`) that lingers in every healthy idle live region — matching that is the
+ * exact over-match that defeated FLY-193 suppression. This is the documented
+ * FLY-193 blind spot: no interrupt hint, so WORKING_MARKERS miss it and the
+ * pane reads idle-healthy while genuinely hung mid-thinking.
+ */
+const FROZEN_THINKING_RESIDUE = /\(\s*\d+m?\s*\d*s\s*·[^)\n]*thinking[^)\n]*\)/i;
 
 const BLOCKED_KEYWORDS: Array<{ kind: AlertEventType; tokens: RegExp[] }> = [
 	{ kind: "rate_limit", tokens: [/\brate[-\s]?limit\b/i] },
@@ -174,6 +219,8 @@ export class LeadWatchdog {
 	private polling = false;
 	private readonly now: () => number;
 	private readonly logger: (msg: string) => void;
+	/** FLY-1048 (A4): per-lead K=3 window of own-state regions (multiFrame). */
+	private readonly frames = createFrameWindowStore();
 
 	constructor(private readonly config: LeadWatchdogConfig) {
 		this.now = config.now ?? (() => Date.now());
@@ -239,6 +286,8 @@ export class LeadWatchdog {
 					if (!membership.has(key)) this.leadStates.delete(key);
 				}
 			}
+			// FLY-1048 (A4): frame windows follow the same membership lifecycle.
+			if (this.config.multiFrame) this.frames.prune(membership);
 			// FLY-368: run the reconcile pass (or any post-poll work) on the SAME
 			// 30s cadence — no second timer. Wrapped so it can never wedge the poll.
 			if (this.config.onPollComplete) {
@@ -298,6 +347,15 @@ export class LeadWatchdog {
 			);
 			if (state.state !== "Cooldown") state.state = "AwaitingFirstCapture";
 			return;
+		}
+
+		// FLY-1048 (A4): record this poll's own-state region in the frame window
+		// BEFORE any early return, so changing panes accumulate frames too.
+		if (this.config.multiFrame) {
+			this.frames.push(stateKey(projectName, leadId), {
+				text: ownStateRegion(pane),
+				capturedAtMs: this.now(),
+			});
 		}
 
 		// FLY-220: classify the Lead's OWN live state (echo/scrollback stripped) up
@@ -416,6 +474,49 @@ export class LeadWatchdog {
 			kind === "pane_hash_stuck" &&
 			isIdleHealthyPane(pane)
 		) {
+			// FLY-1048 (A4): two multi-frame vetoes BEFORE accepting idle-healthy.
+			// Single-frame recognition cannot tell "quiet and fine" from "frozen
+			// right after an error / mid-thinking"; the frame window can.
+			if (this.config.multiFrame) {
+				const window = this.frames.window(stateKey(projectName, leadId));
+				const latest = window.at(-1);
+				// Veto 1: a known error signature frozen in the (static) live region
+				// across ≥2 polls → error-stalled, not idle (FN0/FN2 lead-side).
+				if (
+					window.length >= 2 &&
+					latest &&
+					scanErrorSignatures(latest.text).length > 0
+				) {
+					await this.emitAlert(
+						projectName,
+						leadId,
+						pane,
+						state,
+						"pane_error_stalled",
+						liveHash,
+					);
+					return;
+				}
+				// Veto 2: a silent window still showing a frozen extended-thinking
+				// spinner (the documented FLY-193 blind spot) → cannot conclude
+				// idle. Report suspicious (quiet, owner-Lead-face) instead of
+				// suppressing silently. One report per frozen episode.
+				const deltas = computeFrameDeltas(window, {
+					minSpanMs:
+						this.config.multiFrameMinSpanMs ??
+						this.config.pollIntervalMs * 2,
+				});
+				if (
+					deltas.silenceDelta &&
+					!deltas.tokenFlowActive &&
+					latest &&
+					FROZEN_THINKING_RESIDUE.test(latest.text) &&
+					state.lastSuspiciousHash !== liveHash
+				) {
+					state.lastSuspiciousHash = liveHash;
+					this.fireSuspicious(projectName, leadId, latest.text, liveHash);
+				}
+			}
 			state.state = "Healthy";
 			return;
 		}
@@ -561,10 +662,45 @@ export class LeadWatchdog {
 				cooldownSignature: null,
 				episodeKind: null,
 				lastAlertedKind: null,
+				lastSuspiciousHash: null,
 			};
 			this.leadStates.set(leadId, state);
 		}
 		return state;
+	}
+
+	/**
+	 * FLY-1048 (A5): hand a fail-suspicious report to the wired sink. Quiet by
+	 * contract — never an alert, never founder-facing. Best-effort: sink
+	 * errors are logged, never thrown into the tick.
+	 */
+	private fireSuspicious(
+		projectName: string,
+		leadId: string,
+		regionText: string,
+		liveHash: string,
+	): void {
+		const report: SuspiciousReport = {
+			targetKind: "lead",
+			targetKey: stateKey(projectName, leadId),
+			reason:
+				"frozen_extended_thinking: live region static across the observation window while still showing an in-flight thinking spinner — cannot conclude idle vs hung",
+			paneTail: buildPaneTail(regionText),
+			episodeFingerprint: liveHash,
+		};
+		if (!this.config.onSuspicious) {
+			this.logger(
+				`detection_suspicious (no sink wired): ${report.targetKey} — ${report.reason}`,
+			);
+			return;
+		}
+		try {
+			void Promise.resolve(this.config.onSuspicious(report)).catch((err) =>
+				this.logger(`onSuspicious rejected: ${(err as Error).message}`),
+			);
+		} catch (err) {
+			this.logger(`onSuspicious threw: ${(err as Error).message}`);
+		}
 	}
 }
 
@@ -617,6 +753,16 @@ export function classifyLeadAlertPane(pane: string): AlertEventType {
  */
 export function leadPaneLiveHash(pane: string): string {
 	return hashPane(ownStateRegion(pane));
+}
+
+/**
+ * FLY-1048 (A4): PUBLIC — does the Lead's own-state region carry a known error
+ * signature? The AlertChannelHub reconcile pass resolves a `pane_error_stalled`
+ * thread only when this returns false (the error left the live region);
+ * fail-toward-active while the error is still visible.
+ */
+export function leadPaneHasErrorSignature(pane: string): boolean {
+	return scanErrorSignatures(ownStateRegion(pane)).length > 0;
 }
 
 /**
@@ -864,6 +1010,10 @@ function titleFor(kind: AlertEventType): string {
 			return "Lead crash-looping";
 		case "pane_hash_stuck":
 			return "Lead pane has been frozen";
+		// FLY-1048 (A4): multi-frame veto 1 — a known error signature frozen in
+		// an otherwise idle-looking live region.
+		case "pane_error_stalled":
+			return "Lead pane error-stalled";
 		// FLY-195: never emitted by LeadWatchdog (the stuck-runner detector owns
 		// it and builds its own title); case exists for switch exhaustiveness.
 		case "runner_stuck_unhandled":
@@ -964,6 +1114,10 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "Lead has crashed repeatedly. Check the supervisor log under ~/.flywheel/logs/ — likely Claude CLI / config issue.";
 		case "pane_hash_stuck":
 			return "Lead pane has been frozen for several poll cycles with no recognizable blocked-prompt pattern. Open the tmux pane to investigate.";
+		// FLY-1048 (A4): deliberately does NOT echo the matched error line
+		// (FLY-220 echo immunity) — kind + suggested action only.
+		case "pane_error_stalled":
+			return "A known error is frozen in the Lead's live pane (error visible above an idle input box across multiple polls). The Lead likely errored and stopped; open the tmux pane and nudge or recover it.";
 		// FLY-195: never emitted by LeadWatchdog (see titleFor).
 		case "runner_stuck_unhandled":
 			return "A stuck Runner episode received no Lead disposition within the grace window. Check the owning Lead, then the runner tmux window.";
