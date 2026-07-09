@@ -226,8 +226,9 @@ async function verify(scenario: string) {
 			readCurrentBinding: (e: string, q: string, p: string) =>
 				readCurrentGateMessageBinding(store, e, q, p),
 			reactToFounderMessageImpl: async (a: any) => {
-				reactions.push({ emoji: a.emoji, messageId: a.messageId });
-				return reactToFounderMessage(a);
+				const r = await reactToFounderMessage(a); // REAL Discord PUT
+				reactions.push({ emoji: a.emoji, messageId: a.messageId, ok: r.ok });
+				return r;
 			},
 			wakeImpl: async () => ({ ok: true }),
 			respondImpl: async () => {},
@@ -245,30 +246,37 @@ async function verify(scenario: string) {
 	);
 	console.log(`  reactions emitted: ${JSON.stringify(reactions)}`);
 
-	// fetch the thread to show the real reaction on Annie's message
+	// Re-FETCH Annie's message from Discord and assert the REAL persisted reaction
+	// (not just the local array — Codex R2 MEDIUM: a failed PUT must not false-green).
 	const msgs = await api(`/channels/${s.threadId}/messages?limit=10`);
 	const annieMsg = (msgs.json as any[]).find(
 		(m) => m.author?.id === ANNIE && m.id > s.beforeCursor,
 	);
-	console.log(
-		`  Annie's msg: id=${annieMsg?.id} content=${JSON.stringify(annieMsg?.content)} reactions=${JSON.stringify((annieMsg?.reactions ?? []).map((r: any) => r.emoji?.name))}`,
+	const fetched: string[] = (annieMsg?.reactions ?? []).map(
+		(r: any) => r.emoji?.name,
 	);
+	console.log(
+		`  Annie's msg: id=${annieMsg?.id} content=${JSON.stringify(annieMsg?.content)} REAL reactions=${JSON.stringify(fetched)}`,
+	);
+	// Any reaction the deliverer attempted THIS run must have really succeeded.
+	if (reactions.some((r) => r.ok === false))
+		throw new Error("ASSERT FAIL: a real reaction PUT returned ok:false");
 
-	if (held) {
-		if (resp)
-			throw new Error("ASSERT FAIL: held session must NOT write a response");
-		if (!reactions.some((r) => r.emoji === "❓"))
-			throw new Error("ASSERT FAIL: held → expected ❓ receipt");
-		console.log("  ✅ ④ held → NO response + ❓ receipt: PASS");
-	} else {
-		if (!resp || !resp.content.includes('"approved": true'))
-			throw new Error("ASSERT FAIL: expected approved:true response");
-		if (!reactions.some((r) => r.emoji === "✅"))
-			throw new Error("ASSERT FAIL: expected ✅ receipt");
-		console.log(
-			`  ✅ ${scenario === "reply" ? "② reply-to-card → bound + ✅" : "③ ship → approved + ✅"}: PASS`,
+	const want = held ? "❓" : "✅";
+	if (held && resp)
+		throw new Error("ASSERT FAIL: held session must NOT write a response");
+	if (!held && (!resp || !resp.content.includes('"approved": true')))
+		throw new Error("ASSERT FAIL: expected approved:true response");
+	// Ground truth: the emoji is really on Annie's message (re-fetched from Discord).
+	if (!fetched.includes(want))
+		throw new Error(
+			`ASSERT FAIL: expected REAL ${want} on Annie's message (fetched=${JSON.stringify(fetched)})`,
 		);
-	}
+	console.log(
+		held
+			? "  ✅ ④ held → NO response + REAL ❓ on Annie's msg: PASS"
+			: `  ✅ ${scenario === "reply" ? "② reply-to-card → bound + REAL ✅" : "③ ship → approved + REAL ✅"} on Annie's msg: PASS`,
+	);
 }
 
 const [, , cmd, scenario] = process.argv;
