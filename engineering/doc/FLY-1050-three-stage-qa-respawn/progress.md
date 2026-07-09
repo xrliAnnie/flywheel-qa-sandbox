@@ -1,13 +1,13 @@
 ---
 issue: FLY-1050
 phase: design
-phaseCursor: 5/6
-updated: 2026-07-09T19:08:02.344Z
-nextStep: codex design review loop until APPROVED
+phaseCursor: 6/6
+updated: 2026-07-09T19:23:14.811Z
+nextStep: design complete (codex APPROVED R2); implement phase takes over on this branch
 chunks: []
 pointers: {}
 ---
 
 # FLY-1050 progress
-**phase**: design (5/6)
-**next**: codex design review loop until APPROVED
+**phase**: design (6/6)
+**next**: design complete (codex APPROVED R2); implement phase takes over on this branch
