@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FLY-347 Run 教训库 PRD v3 — 长什么样(含 data-flow 图)</title>
+<title>FLY-347 Run 教训库 PRD v4 — lint 定义写死</title>
 <style>
   :root { --ink:#1d1d1f; --dim:#86868b; --blue:#007aff; --navy:#1a365d; --green:#34c759; }
   * { box-sizing:border-box; }
@@ -19,8 +19,9 @@
     box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid #d2d2d7; }
   .card.shape { border-left-color:var(--blue); }
   .card.flow { border-left-color:#5856d6; }
+  .card.lint { border-left-color:#ff3b30; }
   .card.change { border-left-color:#ff9500; }
-  .card.one { border-left-color:#ff3b30; }
+  .card.one { border-left-color:#ffcc00; }
   .card.gap { border-left-color:#af52de; }
   .card.std { border-left-color:#86868b; }
   .card.decide { border-left-color:var(--green); }
@@ -33,6 +34,8 @@
   .faces { display:grid; grid-template-columns:repeat(2,1fr); gap:.5rem; margin:.5rem 0; }
   .face { background:#f7f7f9; border:1px solid #e6e6ea; border-radius:8px; padding:.5rem .65rem; font-size:.88rem; }
   .face b { color:var(--navy); }
+  .lintbox { background:#fff4f2; border:1px solid #f6cfc7; border-radius:8px; padding:.6rem .8rem; margin:.5rem 0; font-size:.92rem; }
+  .lintbox b { color:#c0392b; }
   pre.code { background:#1d1d1f; color:#e8e8ed; border-radius:10px; padding:.75rem .85rem;
     font-family:"SF Mono", ui-monospace, monospace; font-size:.78rem; overflow-x:auto;
     line-height:1.45; margin:.5rem 0; white-space:pre; }
@@ -80,26 +83,25 @@
   <pre id="export-output"></pre>
 </div>
 
-<h1>Run 教训库 —— 长什么样(v3)</h1>
-<div class="sub">FLY-347 · PRD v3 · 加回轻量 index + lint / 加 data-flow 图 · 图/向量仍不做 · 仍一件事(库的四面)</div>
+<h1>Run 教训库 —— 长什么样(v4)</h1>
+<div class="sub">FLY-347 · PRD v4 · 你认可了 data-flow 图 → 这版把 lint 定义写死(多久一次 + 做什么)· 其余沿用 v3</div>
 
 <div class="tldr" data-key="tldr">
-  <p><b>照你 v2 的话改了:</b>① 加回<b>轻量 index</b>(查得快)② 加回 <b>lint / 合并</b>(定期去重退役、
-  防库烂 —— 你判定必须,这也绕回 347 最早的 Memory Lint)③ 加了一张 <b>data-flow 图</b>(下面第 2 节,
-  你看图确认结构)④ 写清 <b>LLM 抽取 = Runner 自己</b>。<b>图 / 向量仍不做</b>。它还是<b>一个连贯功能</b>
-  —— 一个 lesson 库的四面:写 / 索引 / lint / 读。</p>
+  <p><b>这版只改一处:把 lint 讲清楚</b>(你 v3 要的)。lint = <b>多久一次</b>(攒到 N 条 / 每周 / 手动,可配)
+  + <b>做 4 件</b>(去重合并近似 / 退役过时被推翻 / 消解矛盾 / 更新 index)—— 见下面<b>第 3 节</b>。
+  其余(库的四面、data-flow 图、图/向量仍不做)都沿用你认可的 v3。</p>
   <label class="comment-label" for="c-tldr">你的留言</label>
   <textarea id="c-tldr" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
 <div class="card shape" data-key="shape">
   <h2><span class="n">1</span>建出来是什么样:一个库的四面</h2>
-  <p>就是 repo 里 <code>knowledge/lessons/</code> 下一堆 markdown + 一个轻量 index。四面:</p>
+  <p>repo 里 <code>knowledge/lessons/</code> 下一堆 markdown + 一个轻量 index。四面:</p>
   <div class="faces">
     <div class="face"><b>①写</b> ship 前 Runner <b>自己用 LLM</b> 把这趟坑写成 1 个 md,进同一个 PR(没值得记的跳过)</div>
-    <div class="face"><b>②索引</b> 写的同一步更新 <code>index.md</code> 一行(文件名·一句话·tags),查得快</div>
-    <div class="face"><b>③lint</b> 定期一个 pass 去重/合并/退役过时 → <b>可审 diff,不自动删</b>,防库烂</div>
-    <div class="face"><b>④读</b> 下次 Runner onboard 先读 index、按 tag 捞相关 lesson → 避坑</div>
+    <div class="face"><b>②索引</b> 写的同一步更新 <code>index.md</code> 一行,查得快</div>
+    <div class="face"><b>③lint</b> 定期去重/合并/退役过时 → 可审 diff,不自动删(<b>第 3 节写死</b>)</div>
+    <div class="face"><b>④读</b> 下次 Runner onboard 读 index、按 tag 捞相关 → 避坑</div>
   </div>
   <h3>一个真实教训文件长这样(拿我们真踩过的 FLY-176)</h3>
   <pre class="code"><span class="c">---</span>
@@ -109,14 +111,13 @@
 # 改 Bridge 重启逻辑:PID 变量要加引号
 **踩的坑**: restart-services.sh:523 的 multi-line PID 没加引号 → kill 静默失败 → 手动重启。
 **避法**: PID 加引号,或 pgrep -f run-bridge | xargs kill -9。</pre>
-  <p>时机写死:写在 Runner <b>请求 approve 之前</b>那一步(进被 review 的 diff、不 head drift)。</p>
-  <label class="comment-label" for="c-shape">你的留言(样子哪里要改?)</label>
+  <p>时机:写在 Runner <b>请求 approve 之前</b>那一步(进被 review 的 diff、不 head drift)。</p>
+  <label class="comment-label" for="c-shape">你的留言</label>
   <textarea id="c-shape" rows="2" maxlength="3000" placeholder="…"></textarea>
 </div>
 
 <div class="card flow" data-key="flow">
-  <h2><span class="n">2</span>data-flow 图(写 → 索引 → lint → 读)</h2>
-  <p>你要的结构图。一个自我保鲜的循环:<b>写</b>让库长、<b>索引</b>让它查得快、<b>lint</b>让它不烂、<b>读</b>让它被用上。</p>
+  <h2><span class="n">2</span>data-flow 图(你已认可,原样保留)</h2>
   <div class="svgwrap">
   <svg class="flowdiagram" viewBox="0 0 760 540" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Run 教训库 data-flow:写→索引→lint→读 的循环">
     <defs>
@@ -124,27 +125,21 @@
         <path d="M0,0 L7,3 L0,6 Z" fill="#86868b"/>
       </marker>
     </defs>
-    <!-- A Runner run -->
     <rect x="280" y="22" width="200" height="46" rx="10" fill="#fff" stroke="#007aff" stroke-width="2"/>
     <text x="380" y="50" text-anchor="middle" font-size="13" fill="#1d1d1f">Runner 跑一个 run</text>
-    <!-- B write+index -->
     <rect x="248" y="112" width="264" height="58" rx="10" fill="#fff" stroke="#34c759" stroke-width="2"/>
     <text x="380" y="135" text-anchor="middle" font-size="12.5" fill="#1d1d1f">①写 lesson.md ②更新 index.md</text>
     <text x="380" y="153" text-anchor="middle" font-size="11" fill="#86868b">(Runner 自己用 LLM 写复盘)</text>
-    <!-- C hub library -->
     <rect x="248" y="224" width="264" height="62" rx="10" fill="#f0f4ff" stroke="#1a365d" stroke-width="2"/>
     <text x="380" y="248" text-anchor="middle" font-size="13" fill="#1a365d" font-weight="600">lesson 库</text>
     <text x="380" y="268" text-anchor="middle" font-size="10.5" fill="#1a365d" font-family="ui-monospace, monospace">knowledge/lessons/*.md + index.md</text>
-    <!-- D lint -->
     <rect x="558" y="222" width="190" height="66" rx="10" fill="#fff" stroke="#ff3b30" stroke-width="2"/>
     <text x="653" y="245" text-anchor="middle" font-size="12" fill="#1d1d1f">③ lint(定期)</text>
     <text x="653" y="262" text-anchor="middle" font-size="10.5" fill="#86868b">去重·合并·退役过时</text>
     <text x="653" y="278" text-anchor="middle" font-size="10.5" fill="#86868b">→ 可审 diff,不自动删</text>
-    <!-- E read -->
     <rect x="248" y="344" width="264" height="62" rx="10" fill="#fff" stroke="#af52de" stroke-width="2"/>
     <text x="380" y="368" text-anchor="middle" font-size="12.5" fill="#1d1d1f">④ 下个 Runner onboard</text>
     <text x="380" y="387" text-anchor="middle" font-size="11" fill="#86868b">读 index → 按 tag 捞相关 → 避坑</text>
-    <!-- arrows -->
     <line x1="380" y1="68" x2="380" y2="110" stroke="#86868b" stroke-width="1.6" marker-end="url(#ah)"/>
     <text x="388" y="93" font-size="10.5" fill="#86868b">ship 前</text>
     <line x1="380" y1="170" x2="380" y2="222" stroke="#86868b" stroke-width="1.6" marker-end="url(#ah)"/>
@@ -154,68 +149,87 @@
     <text x="534" y="300" text-anchor="middle" font-size="10.5" fill="#86868b">定期保鲜</text>
     <line x1="380" y1="286" x2="380" y2="344" stroke="#86868b" stroke-width="1.6" marker-end="url(#ah)"/>
     <text x="388" y="320" font-size="10.5" fill="#86868b">onboard 查</text>
-    <!-- loop back E->A -->
     <path d="M248,375 L200,375 L200,45 L278,45" fill="none" stroke="#86868b" stroke-width="1.6" stroke-dasharray="4,3" marker-end="url(#ah)"/>
     <text x="150" y="212" font-size="10.5" fill="#86868b" transform="rotate(-90 150 212)">它 ship 时又写一条</text>
   </svg>
   </div>
-  <label class="comment-label" for="c-flow">你的留言(结构对吗?图要改吗?)</label>
+  <label class="comment-label" for="c-flow">你的留言</label>
   <textarea id="c-flow" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
+<div class="card lint" data-key="lintdef">
+  <h2><span class="n">3</span>⭐ lint 定义(写死 —— 你 v3 要讲清的)</h2>
+
+  <h3>① 多久 lint 一次(cadence,可配)</h3>
+  <p>两个触发<b>取先到者</b>,都能在 config 调,外加随时手动:</p>
+  <div class="lintbox">
+    <b>· 攒到 N 条新 lesson</b>(默认 <b>N=10</b>)&nbsp;&nbsp;<b>或</b>&nbsp;&nbsp;<b>· 每周一次</b>(默认周频低频定时)
+    &nbsp;&nbsp;<b>+ 随时可手动触发</b>(Lead 想清理时跑一次)。
+    <br><span style="color:#86868b;font-size:.85rem;">config 键如 <code>lesson_lint.every_n_lessons: 10</code> / <code>lesson_lint.cron: weekly</code>;不配用默认。</span>
+  </div>
+
+  <h3>② lint 时做什么(4 件,写死)</h3>
+  <p>一个 pass 扫整库,做:</p>
+  <ol>
+    <li><b>去重 / 合并近似 lesson</b>:讲同一个坑的多条并成一条(<b>保留全部要点 + 各自来源 issue/from_run</b>)。</li>
+    <li><b>退役过时 / 被推翻的</b>:某条被新 run 证明不再成立(坑已根治)→ 标记退役 / 移出 active(<b>不物理删,可逆</b>)。</li>
+    <li><b>消解互相矛盾的</b>:两条打架 → 合并成一条<b>带条件说明</b>的(「A 情况 X,B 情况 Y」),或 flag 给 Lead 定。</li>
+    <li><b>更新 index</b>:并/退役/合并后同步 <code>index.md</code>(删并走的行、改摘要、修 tag),库和目录一致。</li>
+  </ol>
+  <p><b>安全</b>:输出<b>可审 diff</b>(哪些并、哪些退役、index 怎么改)+ 理由,<b>Lead review 后才落,绝不自动删</b>。</p>
+  <label class="comment-label" for="c-lintdef">你的留言(lint 这样定义清楚了吗?)</label>
+  <textarea id="c-lintdef" rows="2" maxlength="3000" placeholder="…"></textarea>
+</div>
+
 <div class="card change" data-key="change">
-  <h2><span class="n">3</span>加回了什么 · 仍然砍什么</h2>
+  <h2><span class="n">4</span>范围回顾:图/向量仍不做</h2>
   <div class="table-wrap"><table>
-    <tr><th>项</th><th>v2</th><th>v3(本版)</th></tr>
-    <tr><td>轻量 index / 目录</td><td class="out">砍</td><td class="in">加回(写时更新,查得快)</td></tr>
-    <tr><td>lint / consolidation</td><td class="out">砍</td><td class="in">加回(定期去重/合并/退役,防库烂)</td></tr>
-    <tr><td>data-flow 图</td><td class="out">无</td><td class="in">加(上面第 2 节)</td></tr>
-    <tr><td>图结构(节点/边)</td><td class="out">砍</td><td class="out">仍砍(far-future)</td></tr>
-    <tr><td>向量/语义检索</td><td class="out">砍</td><td class="out">仍砍(你确认 not-now)</td></tr>
-    <tr><td>拆成多个 issue</td><td>一件事</td><td>仍一件事(库的四面一体)</td></tr>
+    <tr><th>项</th><th>状态</th></tr>
+    <tr><td>轻量 index / lint / consolidation</td><td class="in">在 MVP(lint 见第 3 节)</td></tr>
+    <tr><td>图结构(节点/边)</td><td class="out">仍砍(far-future)</td></tr>
+    <tr><td>向量 / 语义检索</td><td class="out">仍砍(你确认 not-now)</td></tr>
+    <tr><td>独立后台抽取服务</td><td class="out">不做(写=Runner ship 前顺手)</td></tr>
+    <tr><td>拆成多个 issue</td><td>仍一件事(库的四面一体)</td></tr>
   </table></div>
-  <p><b>为什么加回 lint(你判定必须)</b>:光往里叠加,库会长出重复/矛盾/过时(正是我们现在 MEMORY 187
-  文件的病)。lint 让它不烂 —— 这是 347 最早『Memory Lint』的核心,绕回来进了 MVP。</p>
   <label class="comment-label" for="c-change">你的留言</label>
   <textarea id="c-change" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
 <div class="card one" data-key="one">
-  <h2><span class="n">4</span>MVP = 一个连贯功能(不是 4 个散的)</h2>
-  <p>四面服务同一个库、一起做才成立(只写不 lint 会烂、有 index 才查得快),所以是<b>一个连贯功能 /
-  一个 build issue</b>,不是 4 个散活 —— 跟你「别搞 4 个散的」不冲突。</p>
+  <h2><span class="n">5</span>MVP = 一个连贯功能(不是 4 个散的)</h2>
+  <p>四面服务同一个库、一起做才成立(只写不 lint 会烂、有 index 才查得快),是<b>一个连贯功能 / 一个 build
+  issue</b>,不是 4 个散活 —— 跟你「别搞 4 个散的」不冲突。</p>
   <label class="comment-label" for="c-one">你的留言</label>
   <textarea id="c-one" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
 <div class="card gap" data-key="gap">
-  <h2><span class="n">5</span>差距 + 为什么值得</h2>
-  <p><b>现状</b>:教训靠人记得才写进 MEMORY(已有 123 feedback+31 qa,而且<b>已经在烂</b>:重复/只增不并);
-  起活整份注入靠运气。<b>这个做的</b>:写固定成 ship 一步、读固定成 onboard 一步、<b>lint 防它重蹈 MEMORY
-  越攒越烂</b>。省重复 debug 的时间 + 一个不会烂的库。诚实:仍是薄的一层流程+约定(markdown+一个 index+
-  一个定期 pass),不是新系统。</p>
+  <h2><span class="n">6</span>差距 + 为什么值得</h2>
+  <p><b>现状</b>:教训靠人记得才写进 MEMORY(已有 123 feedback+31 qa,<b>已经在烂</b>:重复/只增不并);起活整份
+  注入靠运气。<b>这个做的</b>:写固定成 ship 一步、读固定成 onboard 一步、<b>lint 防它重蹈 MEMORY 越攒越烂</b>。
+  省重复 debug 的时间 + 一个不会烂的库。诚实:仍是薄的一层流程+约定,不是新系统。</p>
   <label class="comment-label" for="c-gap">你的留言</label>
   <textarea id="c-gap" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
 <div class="card std" data-key="std">
-  <h2><span class="n">6</span>常规 PRD 段(浓缩)</h2>
+  <h2><span class="n">7</span>常规 PRD 段(浓缩)</h2>
   <ul>
     <li><b>Problem</b>:run 教训靠人记得才留、难被下次读到、只叠不并会越攒越烂 → 同类坑重踩、库不可信。</li>
     <li><b>Users</b>:Runner(ship 前写 / onboard 读)、Lead(少踩老坑 + 审 lint diff)。</li>
     <li><b>Goals</b>:写成流程一步 / 按 index 读到 / 定期 lint 保库不烂 / 全用 repo markdown。</li>
     <li><b>Non-goals</b>:不做图/向量;不做后台服务;不重写 MEMORY;不跨项目;lint 不自动删。</li>
-    <li><b>Success</b>:有值得记的 run 稳定产 1 教训+更新 index、没的跳过 · onboard 按 tag 捞到相关(Bridge/Discord 验收)· lint 能合并退役出可审 diff · 库不膨胀失控 · 不拖慢 ship/onboard。</li>
-    <li><b>Open Q(给 Tadashi)</b>:写在 approve 前 vs :cool: 前(建议 approve 前)· tag 从哪取 · lint 触发(手动/低频定时/攒到 N)· index 格式 · lint diff 谁审(建议 Lead)。</li>
+    <li><b>Success</b>:有值得记的 run 稳定产 1 教训+更新 index · onboard 按 tag 捞到相关(Bridge/Discord 验收)· lint 按 cadence 合并退役出可审 diff · 库不膨胀失控 · 不拖慢 ship/onboard。</li>
+    <li><b>Open Q(给 Tadashi)</b>:写在 approve 前 vs :cool: 前(建议 approve 前)· tag 从哪取 · lint cadence 默认值微调 · index 格式 · lint diff 谁审(建议 Lead)。</li>
   </ul>
   <label class="comment-label" for="c-std">你的留言</label>
   <textarea id="c-std" rows="2" maxlength="2000" placeholder="…"></textarea>
 </div>
 
 <div class="card decide" data-key="decide">
-  <h2><span class="n">7</span>你确认『样子』</h2>
+  <h2><span class="n">8</span>你确认『样子』</h2>
   <div class="choices">
-    <label><input type="radio" name="lean" value="shape-ok"> 样子 OK —— 拿给 Tadashi 建(一个 issue,库的四面)</label>
+    <label><input type="radio" name="lean" value="shape-ok"> 样子 OK(含 lint 定义)—— 拿给 Tadashi 建(一个 issue,库的四面)</label>
     <label><input type="radio" name="lean" value="tweak"> 大方向对,还要改几处(写下面 / 各节框)</label>
     <label><input type="radio" name="lean" value="smaller"> 还能更小(说砍到哪)</label>
     <label><input type="radio" name="lean" value="talk"> 想再聊聊</label>
@@ -224,7 +238,7 @@
   <textarea id="c-decide" rows="3" maxlength="4000" placeholder="…"></textarea>
 </div>
 
-<div class="foot">改完点顶部「复制我的批注 JSON」→ 发回给 Honey Lemon · FLY-347 Run 教训库 PRD v3 · draft,未 ship/未建 issue</div>
+<div class="foot">改完点顶部「复制我的批注 JSON」→ 发回给 Honey Lemon · FLY-347 Run 教训库 PRD v4 · draft,未 ship/未建 issue</div>
 
 <script nonce="__CSP_NONCE__">
 (function () {
@@ -246,7 +260,7 @@
   }
   function payload() {
     return JSON.stringify(
-      { issue: ISSUE, kind: "annie-eg-prd-v3-shape-review", lean: lean(), comments: collect() },
+      { issue: ISSUE, kind: "annie-eg-prd-v4-shape-review", lean: lean(), comments: collect() },
       null, 2
     );
   }

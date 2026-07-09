@@ -1,13 +1,13 @@
-# FLY-347 Run 教训沉淀(Lesson Library) — PRD (draft v3)
+# FLY-347 Run 教训沉淀(Lesson Library) — PRD (draft v4)
 
 Issue: FLY-347 (https://linear.app/geoforge3d/issue/FLY-347/xhsclaude-karpathy用-llm-构建个人知识库token-从处理代码转向处理知识)
 日期: 2026-07-08
-基于: engineering/doc/FLY-347-experience-graph/prd.md (v2), product/doc/FLY-347-llm-knowledge-base/proposal.md
+基于: engineering/doc/FLY-347-experience-graph/prd.md (v3), product/doc/FLY-347-llm-knowledge-base/proposal.md
 
-> 状态:**draft v3**。Annie v2 shape-review(lean=tweak)后:加回**轻量 index** + **lint/合并**
-> (她判定必须——光叠加会烂),加一张 **data-flow 图**,写清 **LLM 抽取 = Runner 本身**。
-> **图 / 向量仍不做**(她确认 not-now)。这仍是**一个连贯功能**(库的 写/索引/lint/读 四面),
-> 不是 4 个散 build。未 create build issue、未 ship。
+> 状态:**draft v4**。Annie v3 shape-review(lean=tweak):data-flow 图认可,要 **lint 定义得更清楚**
+> —— v4 把 lint 的**cadence(多久一次)**和**做什么(4 件)**写死(§1.3)。其余(四面结构、data-flow 图、
+> 图/向量仍不做)沿用 v3。仍是**一个连贯功能**(库的 写/索引/lint/读 四面),不是 4 个散 build。
+> 未 create build issue、未 ship。
 
 ---
 
@@ -51,13 +51,24 @@ tags: [bridge, restart, process-kill]
 - **谁更新**:写 lesson 的同一步(§1.1)顺手加/改 index 的那一行。**轻量**——不是数据库、不是图,就是一个目录 md。
 - **干嘛用**:下次查(§1.4)先读 index 快速定位相关的几条,再钻具体文件,不用全扫。
 
-### 1.3 lint / consolidation(定期,防库烂 —— Annie 判定必须)
+### 1.3 lint / consolidation(定义写死 —— Annie v4 要求讲清楚)
 
-- **为什么必须**:光往里叠加,库会长出**重复 / 矛盾 / 过时**(这正是我们现在 MEMORY 187 文件的病)。
-  不 lint,库越大越没人信。
-- **怎么做**:一个**定期 lint pass**(手动触发 or 低频定时)扫整库 —— **去重**(合并讲同一坑的多条)、
-  **退役过时**(被新 run 推翻的标记/移出)、**清孤儿 / 修 index**。
-- **安全约定(沿用 347 最早 Memory Lint MVP)**:输出**可审 diff**,人/Lead review 后才落,**可逆、绝不自动删**。
+**为什么必须**:光往里叠加,库会长出**重复 / 矛盾 / 过时**(正是我们现在 MEMORY 187 文件的病)。不 lint,库越大越没人信。
+
+**① 多久 lint 一次(cadence,可配)**:两个触发条件**取先到者**,都可在 config 调:
+- **攒到 N 条新 lesson**(建议默认 `N = 10`),或
+- **每周一次**(建议默认周频的低频定时),
+- 外加**随时可手动触发**(Lead 想清理时跑一次)。
+- (config 键,如 `lesson_lint.every_n_lessons: 10` / `lesson_lint.cron: weekly`;不配就用默认。)
+
+**② lint 时做什么(4 件,写死)**:一个 pass 扫整库,做:
+1. **去重 / 合并近似 lesson**:把讲同一个坑的多条并成一条(**保留全部要点 + 各自来源 `issue`/`from_run`**)。
+2. **退役过时 / 被推翻的**:某条被新 run 证明不再成立(如那个坑已被根治)→ 标记退役 / 移出 active(不物理删,可逆)。
+3. **消解互相矛盾的**:两条打架 → 合并成一条**带条件说明**的(「A 情况下 X,B 情况下 Y」),或标记冲突 flag 给 Lead 定。
+4. **更新 index**:并/退役/合并后,同步 `index.md`(删掉并走的行、改摘要、修 tag),保持目录和库一致。
+
+**安全约定(沿用 347 最早 Memory Lint MVP)**:输出**可审 diff**(哪些并、哪些退役、index 怎么改)+ 理由,
+Lead review 后才落,**可逆、绝不自动删**。
 
 ### 1.4 读(下次 Runner onboard)
 
@@ -121,7 +132,7 @@ Runner 跑一个 run ──ship 前──▶ ①写 lesson.md(+②更新 index.m
 - **Open questions(给 Tadashi)**:
   1. 写在 approve 前 vs :cool: 前?**建议 approve 前**(避 head drift)。
   2. tag 从哪取?**建议 label + 标题**。
-  3. lint 触发:纯手动 / 低频定时 / 攒到 N 条触发?**建议先手动 + 可低频定时**。
+  3. lint cadence 的默认值定多少(§1.3 建议 N=10 / 周频,可配)—— 上线后按库增速微调。
   4. index 格式(纯目录 md vs 带 frontmatter)+ onboard 注入量级(top-N/字数上限)。
   5. lint diff 谁审(Lead / founder)?**建议 Lead 审**(沿用 review 后才落)。
 
@@ -133,5 +144,6 @@ Runner 跑一个 run ──ship 前──▶ ①写 lesson.md(+②更新 index.m
   1. **写**:Runner ship-prep(approve 前)加一步,用 LLM 写 `knowledge/lessons/<ISSUE>-<slug>.md`(§1.1 格式),没值得记的跳过;
   2. **索引**:同一步更新 `knowledge/lessons/index.md` 的一行;
   3. **读**:Runner onboard 加一步,读 index → 按 tag 捞相关 lesson 注入 context;
-  4. **lint**:一个可手动/低频定时跑的 lint pass,去重/合并/退役过时 → 可审 diff(不自动删)。
+  4. **lint**:一个 lint pass,cadence = 攒到 N 条(默认 10)/ 每周 / 手动,取先到者、可配(§1.3①);
+     做 4 件:去重合并近似 / 退役过时被推翻 / 消解矛盾 / 更新 index(§1.3②)→ 可审 diff,Lead 审后才落,不自动删。
   一个 PR / 一个 issue 做完这四面。**不拆子 issue。**
