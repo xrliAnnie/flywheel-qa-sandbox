@@ -308,6 +308,35 @@ export class CommDB {
 	}
 
 	/**
+	 * FLY-1041: retire a SUPERSEDED approve_to_ship gate — expire NOW so it
+	 * drops out of `getPendingQuestions` immediately (`resolveGate(qid, 0)`
+	 * semantics: the pending filter is `expires_at > now`, NOT `resolved_at`).
+	 * Double-guarded WHERE so a rebind race can never rewrite history:
+	 * only `checkpoint='approve_to_ship'` AND only while UNANSWERED — an
+	 * already-answered gate (a real approval) is untouchable. The row is kept
+	 * for forensics until the normal prune; the durable audit trail is the
+	 * Bridge-side `ship_gate_superseded` session_event. Returns true iff a
+	 * row was retired.
+	 */
+	retireShipGate(questionId: string): boolean {
+		const info = this.db
+			.prepare(
+				`UPDATE messages SET
+				 resolved_at = datetime('now'),
+				 read_at = COALESCE(read_at, datetime('now')),
+				 expires_at = datetime('now')
+				 WHERE id = ? AND type = 'question'
+				 AND checkpoint = 'approve_to_ship'
+				 AND expires_at > datetime('now')
+				 AND NOT EXISTS (
+				   SELECT 1 FROM messages r WHERE r.parent_id = messages.id AND r.type = 'response'
+				 )`,
+			)
+			.run(questionId);
+		return info.changes > 0;
+	}
+
+	/**
 	 * Mark a gate question as resolved: set resolved_at, mark read,
 	 * and shorten TTL to the configured cleanup hours.
 	 */
