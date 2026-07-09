@@ -219,6 +219,13 @@ export interface GatePollerConfig {
 	tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
 
 	/**
+	 * FLY-1041 Chunk 7: the durable gate-message binding reader (same closure
+	 * the ✅-reaction callback uses), threaded into the founder-reply deliverer
+	 * for reply-to-card narrowing. Absent → replies are never card-matched.
+	 */
+	readCurrentBinding?: FounderReplyDeliverDeps["readCurrentBinding"];
+
+	/**
 	 * FLY-945 Fix D: the external-merge convergence sweeper closure (built in
 	 * plugin.ts via createExternalMergeReconciler). Runs on the patrol cadence;
 	 * owns its own kill-switch + per-project gh budget. Absent → no sweep.
@@ -2512,6 +2519,8 @@ export class GatePoller {
 							deliverAmbiguousToLead,
 							// FLY-799: founder text approval → gate write (flag-gated; absent → WAKE-only).
 							tryFounderShipApproval: this.config.tryFounderShipApproval,
+							// FLY-1041 Chunk 7: reply-to-card binding reader.
+							readCurrentBinding: this.config.readCurrentBinding,
 						});
 					} catch (err) {
 						console.warn(

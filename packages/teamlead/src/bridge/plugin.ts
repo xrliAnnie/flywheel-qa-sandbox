@@ -4049,6 +4049,10 @@ export async function startBridge(
 		tryFounderShipApproval: founderShipApprovalCallback,
 		// FLY-799: founder ✅-reaction ship approval (per-gate reaction poll).
 		tryFounderReactionApproval: founderReactionApprovalCallback,
+		// FLY-1041 Chunk 7: the SAME durable binding reader the reaction path
+		// uses — reply-to-card narrows a founder REPLY to its bound ship gate.
+		readCurrentBinding: (executionId, questionId, prHeadSha) =>
+			readCurrentGateMessageBinding(store, executionId, questionId, prHeadSha),
 		cursorStore: founderReplyCursorPath
 			? new FileInboundCursorStore(founderReplyCursorPath)
 			: undefined,

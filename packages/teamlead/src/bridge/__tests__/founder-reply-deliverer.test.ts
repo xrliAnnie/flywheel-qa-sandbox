@@ -609,3 +609,140 @@ describe("FLY-605 emitFounderReplyDeliveryForThread (Part B)", () => {
 		expect(cursorStore.load("T1")).toBeUndefined();
 	});
 });
+
+describe("FLY-1041 Chunk 7: reply-to-card deterministic binding", () => {
+	afterEach(() => {
+		delete process.env.FLYWHEEL_REPLY_TO_CARD;
+		vi.restoreAllMocks();
+	});
+
+	const CARD_MSG_ID = "424242424242424242";
+	const HEAD = "a".repeat(40);
+
+	function replyMsg(over: Record<string, unknown> = {}) {
+		return {
+			id: snowflakeAt(Date.now() - 30 * 60_000),
+			content: "okk",
+			author: { id: OWNER },
+			type: 19,
+			message_reference: {
+				message_id: CARD_MSG_ID,
+				channel_id: "T1",
+			},
+			...over,
+		} as RawMsg;
+	}
+
+	function makeShipDeps(msg: RawMsg) {
+		const { store } = makeStore();
+		(store as unknown as { getSession: unknown }).getSession = vi.fn(() => ({
+			pr_head_sha: HEAD,
+			status: "awaiting_review",
+		}));
+		const tryShip = vi.fn(
+			async (args: { shipGates: Array<{ questionId: string }> }) => ({
+				handled: args.shipGates.map((g) => g.questionId),
+				retrySafe: true,
+			}),
+		);
+		// Only q2's current binding points at the card message.
+		const readCurrentBinding = vi.fn(
+			(_execId: string, questionId: string, _head: string) =>
+				questionId === "q2"
+					? ({ gateMessageId: CARD_MSG_ID, threadId: "T1" } as never)
+					: null,
+		);
+		const wakeImpl = vi.fn(async () => ({
+			ok: true,
+		})) as unknown as FounderReplyDeliverDeps["wakeImpl"];
+		const deps: FounderReplyDeliverDeps = {
+			store,
+			fetchImpl: discordGet([msg]),
+			cursorStore: new InMemoryInboundCursorStore(),
+			wakeImpl,
+			commDbFactory: () => makeCommDb(["q1", "q2"]) as never,
+			tryFounderShipApproval:
+				tryShip as unknown as FounderReplyDeliverDeps["tryFounderShipApproval"],
+			readCurrentBinding,
+		};
+		return { deps, tryShip, readCurrentBinding };
+	}
+
+	const twoShipGates = [q("q1", "approve_to_ship"), q("q2", "approve_to_ship")];
+
+	it("verified reply to the card narrows the attribution to THAT gate + passes replyToCard", async () => {
+		const { deps, tryShip } = makeShipDeps(replyMsg());
+		await emitFounderReplyDeliveryForThread(ctx(), twoShipGates, deps);
+		expect(tryShip).toHaveBeenCalledTimes(1);
+		const args = tryShip.mock.calls[0]?.[0] as {
+			shipGates: Array<{ questionId: string }>;
+			replyToCard?: boolean;
+		};
+		expect(args.shipGates.map((g) => g.questionId)).toEqual(["q2"]);
+		expect(args.replyToCard).toBe(true);
+	});
+
+	it("reference to an unrelated message (no binding hit) → full ship set, no replyToCard (byte-compat)", async () => {
+		const { deps, tryShip } = makeShipDeps(
+			replyMsg({
+				message_reference: { message_id: "111", channel_id: "T1" },
+			}),
+		);
+		await emitFounderReplyDeliveryForThread(ctx(), twoShipGates, deps);
+		const args = tryShip.mock.calls[0]?.[0] as {
+			shipGates: Array<{ questionId: string }>;
+			replyToCard?: boolean;
+		};
+		expect(args.shipGates.map((g) => g.questionId)).toEqual(["q1", "q2"]);
+		expect(args.replyToCard).toBeFalsy();
+	});
+
+	it("negative (Codex R1 #3): type !== 19 with a reference to the card id (forward shape) → NOT narrowed", async () => {
+		const { deps, tryShip } = makeShipDeps(replyMsg({ type: 0 }));
+		await emitFounderReplyDeliveryForThread(ctx(), twoShipGates, deps);
+		const args = tryShip.mock.calls[0]?.[0] as {
+			shipGates: Array<{ questionId: string }>;
+			replyToCard?: boolean;
+		};
+		expect(args.shipGates).toHaveLength(2);
+		expect(args.replyToCard).toBeFalsy();
+	});
+
+	it("negative: message_reference.type = 1 (forward) → NOT narrowed", async () => {
+		const { deps, tryShip } = makeShipDeps(
+			replyMsg({
+				message_reference: {
+					type: 1,
+					message_id: CARD_MSG_ID,
+					channel_id: "T1",
+				},
+			}),
+		);
+		await emitFounderReplyDeliveryForThread(ctx(), twoShipGates, deps);
+		expect(
+			(tryShip.mock.calls[0]?.[0] as { replyToCard?: boolean }).replyToCard,
+		).toBeFalsy();
+	});
+
+	it("negative: reference.channel_id ≠ this thread → NOT narrowed", async () => {
+		const { deps, tryShip } = makeShipDeps(
+			replyMsg({
+				message_reference: { message_id: CARD_MSG_ID, channel_id: "OTHER" },
+			}),
+		);
+		await emitFounderReplyDeliveryForThread(ctx(), twoShipGates, deps);
+		expect(
+			(tryShip.mock.calls[0]?.[0] as { replyToCard?: boolean }).replyToCard,
+		).toBeFalsy();
+	});
+
+	it("FLYWHEEL_REPLY_TO_CARD=0 kill-switch → message_reference ignored entirely", async () => {
+		process.env.FLYWHEEL_REPLY_TO_CARD = "0";
+		const { deps, tryShip, readCurrentBinding } = makeShipDeps(replyMsg());
+		await emitFounderReplyDeliveryForThread(ctx(), twoShipGates, deps);
+		expect(readCurrentBinding).not.toHaveBeenCalled();
+		expect(
+			(tryShip.mock.calls[0]?.[0] as { replyToCard?: boolean }).replyToCard,
+		).toBeFalsy();
+	});
+});
