@@ -66,7 +66,7 @@ graph LR
 | **1 第一台卫星** | 单 Bridge hub + 无状态卫星 runner-agent(§4),打通 Option A | 阶段0 + Tailscale | 架构最小验证 |
 | **2 云节点镜像** | 节点 provision 固化成容器镜像(FLY-346)+ 弹性 provision/deploy(§4B) | 阶段1 | 战略核心:上云 |
 | **3 弹性 scale** | 节点池按需开/关 + 跨机调度/placement + 云失败域(§4B) | 阶段2 + FLY-353 | 无上限 horizontal scale |
-| **1' 联邦(可选并行 / 或主线)** | 每机/节点独立完整 Flywheel,各连 Discord(Option B) | 无(=复制单机) | 异构/隔离放置;**若 Annie 选它=主线** |
+| **联邦(= Phase 3 路径 / 可选并行小路)** | 每机/节点独立完整 Flywheel,各连 Discord(= C) | 无(=复制单机) | 跨 team/给别人用的隔离(= Phase 3 productization);**非 Phase 2 主线候选**(主线已定=非联邦) |
 | **(横切) session-log** | FLY-353 事件日志 → 无状态 runner 可重建 | 独立 | 阶段1 给 failover;阶段3 刚需 |
 
 ---
