@@ -33,6 +33,7 @@ import {
 	type ThreeStagePhase,
 } from "flywheel-config";
 import { REVIEW_BINDING_UNBOUND } from "../StateStore.js";
+import { isMergeBlocked } from "./merge-ship-gate.js";
 
 /**
  * Minimal session shape this coordinator needs (subset of StateStore Session).
@@ -57,6 +58,13 @@ export interface PhaseSession {
 	chat_thread_role?: string;
 	/** FLY-859: ship-gate binding — set by a needs_review completion. */
 	review_question_id?: string;
+	/**
+	 * FLY-869: the durable merged-but-unapproved park marker (`merge_block`).
+	 * FLY-1050 F9: an implement stuck at awaiting_review whose PR already
+	 * MERGED carries this — it DELIVERED; the merge-block recovery flow owns
+	 * it, and the QA-respawn re-drive must never spawn onto a merged branch.
+	 */
+	merge_block_reason?: string;
 	/**
 	 * FLY-939 (G-C): the persisted tmux session/window target. The ghost-probe
 	 * reads this DIRECTLY (never via the CommDB registration, which is cleared for
@@ -598,6 +606,18 @@ export class PhaseOrchestrator {
 	 * fail-closed-alerted inside the handoff.
 	 */
 	private async tryRedriveImplementHandoff(impl: PhaseSession): Promise<void> {
+		// FLY-1050 F9 (merged-but-awaiting_review, e.g. FLY-1023): a merge_block
+		// marker means this implement's PR already MERGED without ship approval —
+		// it DELIVERED. The FLY-869 recovery flow owns it (and its doctrine says a
+		// parked merge_block session must never leak into QA surfaces), so never
+		// re-drive its handoff / respawn a QA onto a merged branch. No alert —
+		// the once-per-head merge_without_approval alert already fired.
+		if (isMergeBlocked(impl)) {
+			this.log(
+				`tryRedriveImplementHandoff: ${impl.execution_id} (${impl.issue_id}) is merge-blocked (PR merged without ship approval) — delivered; skip QA respawn`,
+			);
+			return;
+		}
 		if (this.redriveInFlight.has(impl.issue_id)) return;
 		this.redriveInFlight.add(impl.issue_id);
 		try {

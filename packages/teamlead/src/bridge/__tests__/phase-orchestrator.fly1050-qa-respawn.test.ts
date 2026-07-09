@@ -553,6 +553,47 @@ describe("FLY-1050: concurrency + idempotency", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// F9 — merged-but-awaiting_review implement (FLY-1023 shape): delivered, never respawn
+// ─────────────────────────────────────────────────────────────────────────────
+describe("FLY-1050 F9: a merge-blocked implement (PR merged, stuck awaiting_review) never respawns QA", () => {
+	const mergedImpl = () =>
+		implRow({ merge_block_reason: "merge_without_approval:off/off" });
+
+	it("scoped reconcileQaLoss on a dead qa row → NO spawn, NO alert (delivered; merge-block flow owns it)", async () => {
+		const h = makeHarness({
+			implementRows: [mergedImpl()],
+			qaRows: [deadQaRow()],
+		});
+		await new PhaseOrchestrator(h.deps).reconcileQaLoss({
+			issueId: ISSUE,
+			terminalExecId: "qa-dead-1",
+		});
+		expect(h.start).not.toHaveBeenCalled();
+		expect(h.alertLeadPipelineError).not.toHaveBeenCalled();
+		expect(h.postIssueThread).not.toHaveBeenCalled();
+	});
+
+	it("boot reconcile → NO spawn, NO alert (same guard, boot path)", async () => {
+		const h = makeHarness({
+			implementRows: [mergedImpl()],
+			qaRows: [deadQaRow()],
+		});
+		await new PhaseOrchestrator(h.deps).reconcileOnStartup();
+		expect(h.start).not.toHaveBeenCalled();
+		expect(h.alertLeadPipelineError).not.toHaveBeenCalled();
+	});
+
+	it("zero qa rows (G-A2 candidate) but merge-blocked → NO spawn (a merged branch never gets a QA)", async () => {
+		const h = makeHarness({
+			implementRows: [mergedImpl()],
+			qaRows: [],
+		});
+		await new PhaseOrchestrator(h.deps).reconcileOnStartup();
+		expect(h.start).not.toHaveBeenCalled();
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Existing gates keep guarding the redrive
 // ─────────────────────────────────────────────────────────────────────────────
 describe("FLY-1050: the redrive passes through the existing handoff gates", () => {
