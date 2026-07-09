@@ -721,6 +721,68 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "conversational",
 	},
+	// FLY-1048 (PR-A): the three watchdog-detection opt-in gates. All default
+	// OFF = byte-compat; gray-rollout order per the FLY-1048 plan §6.
+	{
+		name: "stuck_errorsig",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_STUCK_ERRORSIG",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"stuck-candidate 重复错误签名路(滚动错误循环也判 candidate,FLY-1048 A3)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/stuck-candidate.ts",
+				"evaluateStuckCandidate",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "pane_multiframe",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_PANE_MULTIFRAME",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"LeadWatchdog 多帧观察窗叠加(pane_error_stalled + frozen-thinking fail-suspicious,FLY-1048 A4)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"createBridgeApp",
+				"object_construction",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "detection_gap_scan",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DETECTION_GAP_SCAN",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"零 token gap/state 扫描 + focused frames(PR-A 只观测,FLY-1048 A6/A7)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"gapScanTick",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
 	{
 		name: "auto_repair",
 		category: "feature",
