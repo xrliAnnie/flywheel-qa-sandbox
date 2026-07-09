@@ -1,13 +1,15 @@
 ---
 issue: FLY-1050
-phase: design
-phaseCursor: 6/6
-updated: 2026-07-09T19:23:14.811Z
-nextStep: design complete (codex APPROVED R2); implement phase takes over on this branch
+phase: implement
+phaseCursor: 0/6
+updated: 2026-07-09T19:25:11.304Z
+nextStep: audit code sites
+  (phase-orchestrator/StateStore/sink/event-route/actions/crash-reaper) then
+  write red tests
 chunks: []
 pointers: {}
 ---
 
 # FLY-1050 progress
-**phase**: design (6/6)
-**next**: design complete (codex APPROVED R2); implement phase takes over on this branch
+**phase**: implement (0/6)
+**next**: audit code sites (phase-orchestrator/StateStore/sink/event-route/actions/crash-reaper) then write red tests
