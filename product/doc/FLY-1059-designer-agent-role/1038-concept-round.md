@@ -6,9 +6,9 @@ Issue: FLY-1059 (https://linear.app/geoforge3d/issue/FLY-1059/add-a-designer-age
 
 > 这是新 Designer 角色的**第一次真跑(dogfood)**:用 mockup-first 工作流给 FLY-1038 出概念方向轮 A/B/C。**本 PR = 概念方向轮(证据)**;founder-pick(设计门)+ 高保真 = 交 Annie 的 follow-up 真跑(交互 + 要 founder 在场,headless 跑不完整轮)。
 
-## Step 0 — mockup 类型(诚实标注)
+## Step 0 — mockup 类型(已确认 = 真 UI 增量)
 
-工作流第 0 步是**必答 gate**:确认「一次性静态方向图」vs「必须落真 app 的 UI 增量」。本 dogfood 无 founder 在场,按**静态方向图**假设推进(先让 Annie 对「长什么样」反应);FLY-1038 本体后续要落到真 Fleet console(type b),那是选定方向后 implement 的事。**真跑时这一步先问 Annie。**
+工作流第 0 步是**必答 gate**:确认「一次性静态方向图」vs「必须落真 app 的 UI 增量」。**Lead 转达 founder 已确认 = 真 UI 增量**——重设计要长在现有 Fleet 控制台上(localhost UI,http://127.0.0.1:9877),不是扔掉的静态图。所以 A/B/C 是「真 app 上这块该长什么样」的方向探索;选定方向后出高保真,**生产 wiring / 真数据 / tests / PR 交 implement(engineer)** 落到真 Fleet console。
 
 ## 被设计对象(FLY-1038 需求)
 
