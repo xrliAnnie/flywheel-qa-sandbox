@@ -122,4 +122,11 @@ describe("realtime input frames", () => {
 		const { config } = await connectWith({ voice: "Kore" });
 		expect(config.responseModalities).toEqual(["AUDIO"]);
 	});
+
+	it("activity handling is NO_INTERRUPTION — server VAD must not cancel a live response (FLY-967 round-4: every reply died ~0.3s in on speaker echo)", async () => {
+		const { config } = await connectWith({ voice: "Kore" });
+		expect(config.realtimeInputConfig).toEqual({
+			activityHandling: "NO_INTERRUPTION",
+		});
+	});
 });

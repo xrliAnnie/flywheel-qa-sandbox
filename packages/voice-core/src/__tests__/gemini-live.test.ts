@@ -145,6 +145,52 @@ describe("GeminiLiveBackend converse face", () => {
 		});
 	});
 
+	it("a sendText-initiated model turn fires response-started BEFORE its audio (FLY-967 round-4: the opening was gated dead in the speaker)", async () => {
+		const { session, conn } = await makeSession();
+		const order: string[] = [];
+		session.on("response-started", () => order.push("started"));
+		session.on("response-audio", () => order.push("audio"));
+		// NO user transcript — the turn was initiated by a sendText control
+		// prompt (the /gemini opening). The old mapping only opened a response
+		// window on user transcripts, so the speaker never saw beginTurn and
+		// dropped every opening chunk.
+		conn.emit({ type: "audio", chunk: Buffer.from("PCM"), format: PCM });
+		conn.emit({ type: "audio", chunk: Buffer.from("PCM"), format: PCM });
+		conn.emit({ type: "turn-complete" });
+		expect(order).toEqual(["started", "audio", "audio"]);
+	});
+
+	it("response-started fires exactly once per model turn and re-fires for the next turn", async () => {
+		const { session, conn } = await makeSession();
+		const counts = counter(session);
+		conn.emit({ type: "audio", chunk: Buffer.from("A"), format: PCM });
+		conn.emit({ type: "audio", chunk: Buffer.from("B"), format: PCM });
+		conn.emit({ type: "turn-complete" });
+		conn.emit({ type: "audio", chunk: Buffer.from("C"), format: PCM });
+		conn.emit({ type: "turn-complete" });
+		expect(counts["response-started"]).toBe(2);
+		expect(counts["response-done"]).toBe(2);
+	});
+
+	it("an assistant transcript arriving before any audio also opens the response window", async () => {
+		const { session, conn } = await makeSession();
+		const counts = counter(session);
+		conn.emit({
+			type: "transcript",
+			role: "assistant",
+			text: "开场",
+			final: false,
+		});
+		expect(counts["response-started"]).toBe(1);
+	});
+
+	it("a turn-complete with no model output emits no response-done (nothing began)", async () => {
+		const { session, conn } = await makeSession();
+		const counts = counter(session);
+		conn.emit({ type: "turn-complete" });
+		expect(counts["response-done"]).toBeUndefined();
+	});
+
 	it("surfaces the brain via ask_lead and sends the answer back", async () => {
 		const { session, conn } = await makeSession(
 			new FakeBrain(["The answer ", "is 42."]),

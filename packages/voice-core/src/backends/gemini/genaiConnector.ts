@@ -49,6 +49,14 @@ export function createGenaiTransport(
 				responseModalities: [Modality.AUDIO],
 				outputAudioTranscription: {},
 				inputAudioTranscription: {},
+				// FLY-967 round-4: with the default START_OF_ACTIVITY_INTERRUPTS,
+				// server VAD cancelled every live response ~0.3s in — the founder's
+				// speakers echo the assistant's own audio back through her mic (and
+				// utterance tails re-trigger activity). v1 = the model always finishes
+				// speaking; voice barge-in returns with the local pre-stop gate
+				// (assistant.localBargeIn / FLY-545). The string literal IS the
+				// @google/genai ActivityHandling enum value (verified against 1.44.0).
+				realtimeInputConfig: { activityHandling: "NO_INTERRUPTION" },
 				sessionResumption: params.resumeHandle
 					? { handle: params.resumeHandle }
 					: {},
