@@ -1,14 +1,14 @@
 ---
 issue: FLY-1023
 phase: implement
-phaseCursor: 5/9
-updated: 2026-07-09T13:46:10.046Z
-nextStep: "M3 committed (github step 5/5). Next: M5 placement + M5-a lead-launch
-  contract closeout (claude-lead.sh four gates on clean temp-HOME)"
+phaseCursor: 6/9
+updated: 2026-07-09T13:58:51.867Z
+nextStep: "M5+M5-a committed (7/7; real claude-lead.sh dry-run gates green on
+  buddy-shaped HOME). Next: M4+M6 connectors + JIT + first-output skill"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1023 progress
-**phase**: implement (5/9)
-**next**: M3 committed (github step 5/5). Next: M5 placement + M5-a lead-launch contract closeout (claude-lead.sh four gates on clean temp-HOME)
+**phase**: implement (6/9)
+**next**: M5+M5-a committed (7/7; real claude-lead.sh dry-run gates green on buddy-shaped HOME). Next: M4+M6 connectors + JIT + first-output skill
