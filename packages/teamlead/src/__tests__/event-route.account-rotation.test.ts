@@ -176,4 +176,37 @@ describe("Event route — account_rotation (FLY-696 M1/④)", () => {
 		expect(status).toBe(200);
 		expect(json).toEqual({ ok: true });
 	});
+
+	// FLY-929 A4: the STRUCTURED notice rides along as the post's second
+	// argument so the plugin's site can build the #flywheel-notify digest from
+	// structured data (never re-parsed from the formatted Alerts line).
+	it("passes the structured notice as the second argument", async () => {
+		const calls: Array<[string, unknown]> = [];
+		const app = await makeApp({
+			current: async (detail: string, rotation?: unknown) => {
+				calls.push([detail, rotation]);
+			},
+		});
+		server = app.server;
+		const { status } = await post(app.baseUrl, {
+			event_id: "rot-5",
+			event_type: "account_rotation",
+			payload: {
+				provider: "codex",
+				from: "school",
+				to: "business",
+				reason: "rate_limit",
+				resetAt: "2026-07-08T02:00:00Z",
+			},
+		});
+		expect(status).toBe(200);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]![1]).toEqual({
+			provider: "codex",
+			from: "school",
+			to: "business",
+			reason: "rate_limit",
+			resetAt: "2026-07-08T02:00:00Z",
+		});
+	});
 });

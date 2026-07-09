@@ -110,6 +110,7 @@ Issue: FLY-911 (https://linear.app/geoforge3d/issue/FLY-911/产品定位-and-产
 | **Claude Cowork** | Anthropic 非技术知识工作者 done-for-you 桌面 app | **最贴、最该警惕**;做文件知识工作不是建养软件产品;桌面端;锁 Claude |
 | **Codex app** | OpenAI 开发者 agent 指挥中心 | 开发者-导演工具、锁 OpenAI —— 非我们目标人群 |
 | **Open Cloud / OpenClaw** | 开源个人 AI 助理(IM 驱动、29 渠道) | **界面赌注最像 + 是我们起点**;单个自托管助理、多开也各自为战;爆红-回落(定价套利+安全)给「持久 vs 昙花」一课 |
+| **WorkBuddy**(腾讯) 〔FLY-1003 折进〕 | 大厂云的全场景职场 AI 智能体(桌面+9 IM 渠道、100+ 专家、14 模型 TokenHub、13M DAU) | **最强大厂威胁 · 覆盖面+目标都撞**(官方直接打「一人公司/自由职业者」+ 电商选品/落地页/客服);手机 IM + 供应商中立经它正面覆盖已退出;**活着的候选差异 = 长期拥有并演进一套软件/业务系统的 lifecycle + 被协调组织自推进 backlog**,靠产品化速度守 |
 
 **总结**:引擎商品化、我们不占引擎;占的是**协调 + Push + done-for-you + 真软件维护**替一个非技术 operator 做通。
 
@@ -130,8 +131,9 @@ Issue: FLY-911 (https://linear.app/geoforge3d/issue/FLY-911/产品定位-and-产
 
 - **产品化还没到**:「非技术真能自己用」现在谁都没做到(连 Paperclip 都还是原型状态),我们也没到 —— 这是赛道共同未解题,谁先把 done-for-you 真产品化跑通谁赢。对外**坦诚「正在把它做成 done-for-you」**而不是假装已经是(和品类一起早,反而可信)。
 - **结果证明还没做实**:信任锚点(一试真能跑、下周还能跑)是要争的地方,不是已赢。
-- **供应商中立「能打≠现在建」**:定位上现在能讲这条差异,不必现在建全(与 Annie「setup 先不做 agent-agnostic」不冲突)。
+- **供应商中立 —— 已退出差异清单(经 Raft + WorkBuddy 覆盖;见下条 FLY-1003 折进)**:曾当「能讲的差异」,但云厂商(腾讯 TokenHub 一键切 14 模型)+ 同形态第三方(Raft runtime-agnostic)都原生做多模型 → 它是 **table stakes、不是差异**;作为「不锁死你」的可信承诺仍可留(且与 Annie「setup 先不做 agent-agnostic」不冲突),但**不当定位差异主打**。
 - **Cowork 是结构性威胁**:引擎层无护城河,防御全在 done-for-you 组合的产品化速度。
+- **〔FLY-1003 折进〕WorkBuddy(腾讯)= 量级最大的大厂威胁,逼差异再收窄**(诚实结论,详见 `FLY-909/workbuddy-deepdive.md`):(a)**手机 IM + 供应商中立**经 WorkBuddy(官方 9 渠道 + 14 模型 TokenHub)正面覆盖,**退出差异清单**(「第一方结构上不做多模型」被云厂商腾讯证伪);(b)**目标用户不再是差异** —— WorkBuddy 官方直接打「一人公司/个体创业者/自由职业者」+ 电商选品/落地页/客服,正面重叠 beachhead;(c)活着的 **Push 只剩「自发起 backlog 分诊 + 跨 Lead 协调 + 持续 ownership」半**,「记忆 + IM 后台派发/回报」半已商品化(「always-on daemon」⚠️存疑,官方只证个性化记忆);(d)**当前最像还站得住的候选差异 = 「长期拥有并演进一套软件/业务系统的 lifecycle(给非技术 operator)」+「被协调组织自推进 backlog」**,两条都更窄、靠**产品化速度 + 长期 ownership 专注**守,不靠形态独有。**均写「候选/待 911」;主线/beachhead/支柱不因本条改动 —— 定位大结论仍 Annie 拍。**
 
 ---
 

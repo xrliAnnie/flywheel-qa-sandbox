@@ -2,7 +2,7 @@
  * FLY-368: AlertChannelHub — per-error threading, degradation, recovery resolve,
  * and the restart-safe reconcile pass.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	AlertChannelHub,
 	createDiscordOps,
@@ -491,6 +491,141 @@ describe("AlertChannelHub (FLY-368)", () => {
 		const ck = "flywheel|tadashi|runner_stuck_unhandled|exec-8";
 		await hub.reconcile();
 		expect(store.getActiveAlertThread(ck)).toBeDefined(); // stays active
+	});
+
+	// ── FLY-929 A5: Claude account-cap needs_human → owner-bot assignment ──
+	//
+	// When self-heal + P-identity + the infra bot id are ALL present, a
+	// usage_limit alert carrying CLAUDE accountLimit metadata routes its
+	// needs_human post to the OWNER BOT (assignment mention) instead of the
+	// immediate founder escalation. Any env missing / any other kind ⇒ the
+	// legacy founder escalation byte-for-byte.
+	describe("FLY-929 A5 account-cap owner routing", () => {
+		const A5_ENV = {
+			FLYWHEEL_ACCOUNT_SELF_HEAL: "1",
+			CLAUDE_INFRA_BOT_TOKEN: "infra-token",
+			FLYWHEEL_NOTIFY_CHANNEL: "1521630422918758472",
+			FLYWHEEL_INFRA_BOT_USER_ID: "152321932456152283",
+			FLYWHEEL_FOUNDER_DISCORD_USER_ID: "113824163605748130",
+		} as const;
+		let saved: Record<string, string | undefined>;
+		beforeEach(() => {
+			saved = {};
+			for (const k of Object.keys(A5_ENV)) {
+				saved[k] = process.env[k];
+			}
+		});
+		afterEach(() => {
+			for (const [k, v] of Object.entries(saved)) {
+				if (v === undefined) delete process.env[k];
+				else process.env[k] = v;
+			}
+		});
+		function setEnv(omit: string[] = []) {
+			for (const [k, v] of Object.entries(A5_ENV)) {
+				if (omit.includes(k)) delete process.env[k];
+				else process.env[k] = v;
+			}
+		}
+		function capPayload(
+			provider: "claude" | "codex" = "claude",
+			over: Partial<AlertPayload> = {},
+		): AlertPayload {
+			return payload({
+				eventType: "usage_limit",
+				eventId: `cap-${provider}`,
+				metadata: {
+					accountLimit: {
+						provider,
+						scope: "5h",
+						resetAt: "2026-07-08T02:00:00Z",
+						observedAccount: "personal",
+						observedGeneration: 1,
+					},
+				},
+				...over,
+			});
+		}
+		async function run(p: AlertPayload) {
+			const discord = makeDiscord();
+			const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
+			const hub = new AlertChannelHub({
+				store,
+				notifier,
+				discord,
+				// not-attemptable shape: bot present but canAttempt=false → needs_human
+				autoRepairBot: repairBot("needs_human", false),
+			});
+			await hub.handle(p);
+			return discord;
+		}
+
+		it("all envs present + claude cap → owner-bot assignment mention, NO founder escalation", async () => {
+			setEnv();
+			const discord = await run(capPayload("claude"));
+			const assignment = discord.posts.find(([, c]) => c.includes("请认领"));
+			expect(assignment).toBeDefined();
+			expect(assignment![1]).toContain(
+				`<@${A5_ENV.FLYWHEEL_INFRA_BOT_USER_ID}>`,
+			);
+			expect(assignment![1]).toContain("T2");
+			expect(assignment![2]).toEqual({
+				mentionUserId: A5_ENV.FLYWHEEL_INFRA_BOT_USER_ID,
+			});
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
+		});
+
+		it("P-identity incomplete (no notify channel) → legacy founder escalation", async () => {
+			setEnv(["FLYWHEEL_NOTIFY_CHANNEL"]);
+			const discord = await run(capPayload("claude"));
+			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
+			const nh = discord.posts.find(([, c]) => c.includes("修不了"));
+			expect(nh).toBeDefined();
+			expect(nh![2]).toEqual({
+				mentionUserId: A5_ENV.FLYWHEEL_FOUNDER_DISCORD_USER_ID,
+			});
+		});
+
+		it("self-heal off → legacy founder escalation", async () => {
+			setEnv(["FLYWHEEL_ACCOUNT_SELF_HEAL"]);
+			const discord = await run(capPayload("claude"));
+			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);
+		});
+
+		it("missing infra bot user id → legacy founder escalation", async () => {
+			setEnv(["FLYWHEEL_INFRA_BOT_USER_ID"]);
+			const discord = await run(capPayload("claude"));
+			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);
+		});
+
+		it("usage_limit WITHOUT accountLimit metadata → founder escalation even with all envs", async () => {
+			setEnv();
+			const discord = await run(
+				payload({ eventType: "usage_limit", eventId: "no-meta" }),
+			);
+			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);
+		});
+
+		it("codex-provider accountLimit → founder escalation (Claude caps only)", async () => {
+			setEnv();
+			const discord = await run(capPayload("codex"));
+			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);
+		});
+
+		it("other needs_human kinds (rate_limit / login_expired / generic) stay founder-routed", async () => {
+			setEnv();
+			for (const eventType of ["rate_limit", "login_expired"] as const) {
+				const discord = await run(
+					payload({ eventType, eventId: `neg-${eventType}` }),
+				);
+				expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
+				expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);
+			}
+		});
 	});
 });
 

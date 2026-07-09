@@ -248,7 +248,10 @@ async function postFounderThreadCore(
 	threadId: string,
 	body: string,
 	botToken: string,
-	ownerUserId: string,
+	// FLY-927: null ⇒ suppress ALL mentions (parse:[]) — the infra-notification
+	// leg posts without a ping. The gate/milestone/stuck callers always pass the
+	// validated founder id, so their POST bodies are unchanged.
+	ownerUserId: string | null,
 	fetchImpl: typeof fetch,
 ): Promise<PostFounderThreadOutcome> {
 	const controller = new AbortController();
@@ -266,7 +269,9 @@ async function postFounderThreadCore(
 				// @everyone/@here/role (ChatThreadCreator default blocks all mentions).
 				body: JSON.stringify({
 					content: body,
-					allowed_mentions: { users: [ownerUserId] },
+					allowed_mentions: ownerUserId
+						? { users: [ownerUserId] }
+						: { parse: [] as string[] },
 				}),
 				signal: controller.signal,
 			},
@@ -532,6 +537,162 @@ export async function emitFounderStuckNotification(
 		body: outcome.body,
 	});
 	return { kind: "permanent_failed" };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// FLY-927 (Task 1.5): generic issue-thread INFRA notification — the Router's
+// "issue_thread" delivery leg. An issue-progress alert (three_stage_stuck /
+// founder_milestone_undelivered / runner_lead_pending_unhandled) lands in the
+// issue's OWN [FLY-XX] thread where the responsible party has context, instead
+// of the alert channel. Same skeleton as the gate/milestone/stuck entries
+// (validate → POST via the shared core → classify + audit), plus:
+//  - a BOUNDED transient retry budget inside the call (alerts are one-shot —
+//    there is no GatePoller retry loop behind this leg), and
+//  - a MANDATORY `onUndeliverable` seam: budget burned / permanent failure /
+//    defensive-skip all invoke it so the caller can fail-safe the original
+//    alert into the ticket queue. NEVER silent, never recursive (the caller
+//    wires it to the RAW sink, not back through the Router).
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface IssueThreadInfraNotifyOpts {
+	executionId: string;
+	issueId: string;
+	issueIdentifier?: string;
+	projectName: string;
+	/** Alert kind (audit payload). */
+	kind: string;
+	/** Fully-formatted message content (the caller owns wording). */
+	content: string;
+	/** Optional single real @-ping (validated snowflake); absent ⇒ parse:[]. */
+	mentionUserId?: string;
+	/** Pre-resolved via getChatThreadByIssue. */
+	thread?: ChatThreadRef;
+	/** lead.botToken ?? config.discordBotToken. */
+	botToken?: string;
+	/** Fail-safe seam — invoked on ANY non-posted terminal outcome. */
+	onUndeliverable: (reason: string) => void | Promise<void>;
+}
+
+export interface IssueThreadInfraNotifyDeps extends FounderThreadNotifyDeps {
+	/** Transient attempts budget (default 3 total). */
+	maxAttempts?: number;
+	/** Injected for tests; default = real setTimeout sleep (capped at 5s). */
+	sleepFn?: (ms: number) => Promise<void>;
+}
+
+function auditInfra(
+	store: StateStore,
+	opts: IssueThreadInfraNotifyOpts,
+	eventType: string,
+	payload: Record<string, unknown>,
+): void {
+	store.insertEvent({
+		event_id: `${eventType}-${randomUUID()}`,
+		execution_id: opts.executionId,
+		issue_id: opts.issueId,
+		project_name: opts.projectName,
+		event_type: eventType,
+		source: "bridge.founder-thread-notifier",
+		payload: { kind: opts.kind, ...payload },
+	});
+}
+
+export async function emitIssueThreadInfraNotification(
+	opts: IssueThreadInfraNotifyOpts,
+	deps: IssueThreadInfraNotifyDeps,
+): Promise<FounderThreadNotifyResult> {
+	const { store, fetchImpl = fetch } = deps;
+	const maxAttempts = deps.maxAttempts ?? 3;
+	const sleepFn =
+		deps.sleepFn ??
+		((ms: number) =>
+			new Promise<void>((r) => setTimeout(r, Math.min(ms, 5_000))));
+
+	const undeliverable = async (
+		reason: string,
+		result: FounderThreadNotifyResult,
+	): Promise<FounderThreadNotifyResult> => {
+		try {
+			await opts.onUndeliverable(reason);
+		} catch {
+			// The fail-safe seam itself must never throw back into the alert path.
+		}
+		return result;
+	};
+
+	// ── (A) VALIDATE ── (defensive: the Router fail-safes unbound events to the
+	// ticket queue before this leg is ever called, but a config gap here must
+	// still surface — via the same onUndeliverable seam, never silently.)
+	if (!opts.thread?.thread_id) {
+		auditInfra(store, opts, "issue_thread_infra_notify_skipped", {
+			reason: "no_chat_thread",
+		});
+		return undeliverable("no_chat_thread", {
+			kind: "skipped",
+			skipReason: "no_chat_thread",
+		});
+	}
+	if (!opts.botToken) {
+		auditInfra(store, opts, "issue_thread_infra_notify_skipped", {
+			reason: "no_bot_token",
+		});
+		return undeliverable("no_bot_token", {
+			kind: "skipped",
+			skipReason: "no_bot_token",
+		});
+	}
+	const mention =
+		opts.mentionUserId && isDiscordSnowflake(opts.mentionUserId)
+			? opts.mentionUserId
+			: null;
+
+	// ── (B) POST with a bounded transient retry budget ──
+	let lastTransient: string | undefined;
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		const outcome = await postFounderThreadCore(
+			opts.thread.thread_id,
+			opts.content,
+			opts.botToken,
+			mention,
+			fetchImpl,
+		);
+		if (outcome.kind === "posted") {
+			auditInfra(store, opts, "issue_thread_infra_notified", {
+				threadId: opts.thread.thread_id,
+				status: outcome.status,
+				attempt,
+			});
+			return { kind: "posted" };
+		}
+		if (outcome.kind === "permanent_failed") {
+			auditInfra(store, opts, "issue_thread_infra_notify_failed", {
+				severity: "permanent",
+				status: outcome.status,
+				body: outcome.body,
+				attempt,
+			});
+			return undeliverable(`permanent-${outcome.status}`, {
+				kind: "permanent_failed",
+			});
+		}
+		// transient — sleep (429 honors Retry-After, capped) and retry.
+		lastTransient =
+			outcome.status !== undefined
+				? `transient-${outcome.status}`
+				: `transient-${outcome.error ?? "network"}`;
+		auditInfra(store, opts, "issue_thread_infra_notify_failed", {
+			severity: "transient",
+			status: outcome.status,
+			error: outcome.error,
+			attempt,
+		});
+		if (attempt < maxAttempts) {
+			await sleepFn(outcome.retryAfterMs ?? 1_000);
+		}
+	}
+	return undeliverable(`${lastTransient ?? "transient"}-budget-exhausted`, {
+		kind: "transient_failed",
+	});
 }
 
 export async function emitFounderMilestoneNotification(

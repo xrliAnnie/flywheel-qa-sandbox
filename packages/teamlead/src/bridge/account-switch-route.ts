@@ -31,7 +31,10 @@
  */
 
 import { Router } from "express";
-import type { AccountSwitchRepair } from "../account-heal/account-switch-repair.js";
+import type {
+	AccountSwitchRepair,
+	RepairDisposition,
+} from "../account-heal/account-switch-repair.js";
 import { withMkdirLock } from "../account-heal/mkdir-lock.js";
 import {
 	claimPending,
@@ -66,8 +69,15 @@ export interface AccountSwitchAuditEntry {
 export interface AccountSwitchRuntime {
 	/** Reuse the production switch executor (does the switch + resolvePending). */
 	repair: Pick<AccountSwitchRepair, "executeSwitch">;
-	/** Post the switch result back to the Alerts thread (the watchdog's path). */
-	postResult: (detail: string) => Promise<void>;
+	/**
+	 * Post the switch result back to the Alerts thread (the watchdog's path).
+	 * FLY-929: the disposition rides along as an OPTIONAL second argument (see
+	 * AccountSwitchWatchdogDeps.post) — single-arg impls stay valid.
+	 */
+	postResult: (
+		detail: string,
+		disposition?: RepairDisposition,
+	) => Promise<void>;
 	/** Append an audit row (before + after). */
 	audit: (entry: AccountSwitchAuditEntry) => void;
 	/**
@@ -78,6 +88,13 @@ export interface AccountSwitchRuntime {
 	 * failure must never fail the request.
 	 */
 	onSwitchSuccess?: () => Promise<void>;
+	/**
+	 * FLY-927 (Task 2.3): ticket ACK — fired once the pending switch is
+	 * ATOMICALLY claimed (the owner bot took the ticket). `sourceAlertId` is the
+	 * alert eventId; the wiring resolves it via getActiveAlertThreadByEventId so
+	 * a stale episode can never be acked. Optional + best-effort (byte-compat).
+	 */
+	ackTicket?: (sourceAlertId: string) => void;
 	/** Defaults to the shared pending store path / its flock / withMkdirLock. */
 	pendingPath?: string;
 	pendingLockPath?: string;
@@ -200,6 +217,18 @@ export function createAccountSwitchRouter(
 				return;
 			}
 
+			// FLY-927 (Task 2.3): the atomic claim IS the ticket ACK — best-effort;
+			// an ack failure must never fail the switch.
+			if (rt.ackTicket) {
+				try {
+					rt.ackTicket(sourceAlertId);
+				} catch (err) {
+					console.warn(
+						`[account-switch] ticket ack failed: ${(err as Error).message}`,
+					);
+				}
+			}
+
 			// Execute the switch (switchAccount + resolvePending live inside).
 			const disposition = await rt.repair.executeSwitch(record);
 			rt.audit({
@@ -215,8 +244,11 @@ export function createAccountSwitchRouter(
 			});
 			// Post the result back to the Alerts thread — best-effort (the switch has
 			// already committed; a Discord post failure must not 500 the request).
+			// FLY-929 (Codex code R1 HIGH): the disposition MUST ride along so the
+			// bot-claimed path gets the same W6 digest + A5 owner-mention routing
+			// as the watchdog path (plugin.ts postSwitchResult reads it).
 			try {
-				await rt.postResult(disposition.detail);
+				await rt.postResult(disposition.detail, disposition);
 			} catch (err) {
 				console.warn(
 					`[account-switch] postResult failed: ${(err as Error).message}`,

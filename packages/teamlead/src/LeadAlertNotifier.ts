@@ -32,6 +32,10 @@ import {
 	buildSendChain,
 	resolveFirstAvailableBotToken,
 } from "./bridge/alert-bot-chain.js";
+import {
+	type AlertRateLimiter,
+	formatOverflowSummary,
+} from "./bridge/alert-rate-limiter.js";
 import type { MetaAlertReason } from "./MetaAlertNotifier.js";
 import type { LeadConfig, ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
@@ -49,77 +53,110 @@ export interface MetaAlertSink {
 	}): Promise<unknown>;
 }
 
-export type AlertEventType =
-	| "rate_limit"
-	| "usage_limit"
-	| "login_expired"
-	| "permission_blocked"
-	| "crash_loop"
-	| "pane_hash_stuck"
+/**
+ * FLY-927: the SINGLE source of truth for the alert-kind face. `AlertEventType`
+ * is derived from this array, and the LeadWatchdog echo-immunity regex
+ * (`ALERT_ECHO_START`) derives its kind alternation from it too — so a new kind
+ * can never silently miss echo stripping (the FLY-220 storm family).
+ */
+export const ALERT_EVENT_TYPES = [
+	"rate_limit",
+	"usage_limit",
+	"login_expired",
+	"permission_blocked",
+	"crash_loop",
+	"pane_hash_stuck",
 	// FLY-195 (plan §3.6 Q7): a stuck-runner episode the owning Lead did not
 	// dispose of within the grace window — Bridge pages Annie directly.
 	// eventId format (FLY-253: escalatedAt = generation salt so a post-re-arm
 	// / post-TTL second fallback is not swallowed by the persistent dedup):
 	// `runner-stuck-unhandled:${execution_id}:${fingerprint}:${escalatedAt}`.
-	| "runner_stuck_unhandled"
+	"runner_stuck_unhandled",
 	// FLY-579: the auto-QA pipeline could not proceed (spawn failed, QA ended
 	// without a verdict, or a fail-closed pr_head_sha). A Lead-only alert — the
 	// founder is intentionally never surfaced for a non-green QA. NOT a
 	// founder-facing notification (those go to the issue thread).
-	| "auto_qa_stuck"
+	"auto_qa_stuck",
 	// FLY-827: a session reached awaiting_review but Codex code review is NOT
 	// APPROVED for the current PR head → the hard gate blocked auto-QA + merge and
 	// held the founder. A Lead-only alert (founder never surfaced pre-Codex).
 	// eventId `codex-gate:${execution_id}:${sha}` (no timestamp → fires ONCE per head).
-	| "codex_gate_blocked"
+	"codex_gate_blocked",
 	// FLY-793: a three-stage pipeline phase handoff (Design→Implement→QA) could
 	// not proceed — head-SHA capture failed, the previous phase runner would not
 	// close, or the next phase dispatch threw. Fail-closed: the next phase is NOT
 	// started and this Lead-only alert fires so a completed phase is never
 	// silently stranded. Not a founder-facing notification.
-	| "three_stage_stuck"
+	"three_stage_stuck",
 	// FLY-637-ext: the owning Lead did not answer a runner's BLOCKING question
 	// gate after the configured number of backoff nudges → page Annie ONCE
 	// (final fallback). DISTINCT from runner_stuck_unhandled: the runner is fine,
 	// the Lead is unresponsive — so this is deliberately NOT in
 	// AUTO_ATTEMPT_EVENT_TYPES and carries no runnerStuck metadata, so the
 	// AutoRepairBot never sends the runner a `continue` nudge (Codex design R1 #3).
-	| "runner_lead_pending_unhandled"
+	"runner_lead_pending_unhandled",
 	// FLY-725 (Annie 2026-07-01: "never silently drop"): the Bridge could not
 	// deliver a failed/blocked milestone @founder ping to its issue thread
 	// (permanent 4xx / missing thread|token|owner / transient retry budget
 	// elapsed). Surfaced so the founder is not left in the dark. Not a runner-
 	// stuck event — the runner is fine; the notification channel failed.
-	| "founder_milestone_undelivered"
+	"founder_milestone_undelivered",
 	// FLY-871 R2/C8: a runner sitting at a login prompt (auth/session expired) —
 	// DISTINCT from the lead `login_expired` so AlertChannelHub.reconcile resolves
 	// it by the RUNNER pane, and the R3 rescue keys on this event's still-pending row.
-	| "runner_login_expired"
+	"runner_login_expired",
 	// FLY-871 §12 W2: a windowed (cmux TUI) Codex Lead's founder-facing pane could
 	// not be (re)created after K consecutive liveness checks — "silent no-pane". NOT
 	// emitted by the TS LeadWatchdog / notifier: it is fired ONLY by the runtime's
 	// guard via scripts/lead-alert.sh (Discord-independent). Present in the union so
 	// the shared kind face (lead-alert.sh allowlist ↔ TS) has no drift.
-	| "tui_window_lost"
+	"tui_window_lost",
 	// FLY-913: the flywheel-restart-guard PreToolUse hook's mandatory bypass
 	// alert — fired ONLY via scripts/lead-alert.sh --strict-delivery (Discord-
 	// independent path; the hook fail-closes unless the strict result is
 	// sent/queued_transient). NOT emitted by the TS LeadWatchdog / notifier;
 	// present in the union so a queued bypass alert drains with a known
 	// eventType and the shared kind face (lead-alert.sh ↔ TS) has no drift.
-	| "restart_guard_bypass"
+	"restart_guard_bypass",
 	// FLY-939 (G-D): the Bridge booted on a STALE checkout — its running HEAD is
 	// strictly behind origin/main, so merged work is NOT live (the FLY-887
 	// silent-non-deploy incident shape). A Lead-only alert; the durable
 	// `bridge_boot_stale_checkout` StateStore event + the boot console.warn are the
 	// primary signals. Fired from TS (boot-sha-check via the notifier), never shell.
-	| "bridge_boot_stale_checkout"
+	"bridge_boot_stale_checkout",
+	// FLY-927 (D4): the Bridge launchd wrapper's fail-loud path (port stuck /
+	// preflight failure while the Bridge is DOWN) — fired ONLY via
+	// scripts/lead-alert.sh from flywheel-bridge-wrapper.sh `bp_fail_loud`
+	// (Discord-independent; direct-curl core-channel kept as fallback). Present in
+	// the union so a queued wrapper alert drains with a known eventType and the
+	// shared kind face (lead-alert.sh allowlist ↔ TS) has no drift.
+	"bridge_wrapper_fail",
+	// FLY-927 W-B: a RUNNER that is genuinely STALLED after a 529/overloaded
+	// throttle — pane stagnant + throttle residue + NO live retry activity. A
+	// subtype of runner_stuck_unhandled (same runnerStuck metadata contract) so
+	// the AutoRepairBot can attempt the audited continue-nudge; a HEALTHY 529
+	// (still retrying) never emits this (FLY-218 suppression stays).
+	"runner_throttle_stalled",
+	// FLY-954: <state>/bin runtime-script drift detected by
+	// scripts/converge-flywheel-bin.sh (shell path via lead-alert.sh; the
+	// Bridge never emits this kind itself — union parity only).
+	"bin_integrity_drift",
 	// FLY-945 Fix D: the external-merge reconcile pass found a merged PR it
 	// cannot verify (no founder-attributed approval, or the merged head differs
 	// from the head the approval was bound to) OR an externally-merged parked
 	// session that is not ship-eligible. Lead-only — the session is NOT
 	// finalized/archived; a human must look at the merge.
-	| "external_merge_suspect";
+	"external_merge_suspect",
+	// FLY-929 B2/C2: the daily token report was NOT delivered (no receipt by the
+	// 01:00 deadline — Bridge expect-tick) or its pipeline step failed in place
+	// (token-usage-daily.sh fail-loud via lead-alert.sh). Only exists under
+	// P-expect (FLYWHEEL_NOTIFY_DIGEST_EXPECT=1); eventId embeds the expected
+	// report date → at most one alert per expected day (claims-table dedup,
+	// shared kind face with the lead-alert.sh allowlist).
+	"notify_digest_failed",
+] as const;
+
+export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];
 
 export type AlertSeverity = "info" | "warning" | "severe";
 
@@ -174,6 +211,28 @@ export interface AlertMetadata {
 	};
 }
 
+/**
+ * FLY-927 (Task 1.2/2.3): per-ticket context rendered into the 🎫 header line
+ * and used for the owner @-target `allowed_mentions` — computed by the plugin
+ * wiring layer (owner map) BEFORE `alert()` so the root POST carries the
+ * mention atomically (the Hub gets the messageId only after the POST, so a
+ * retro-fit @ is impossible). Absent → the 🎫 line renders `owner —` and all
+ * mentions stay suppressed. Survives the retry queue (serialized with the
+ * payload).
+ */
+export interface AlertTicketContext {
+	/** Discord snowflake of the ONE owner bot to @; null = no owner configured. */
+	ownerUserId: string | null;
+	/** Human-readable owner label when no mention is possible (e.g. "claude bot"). */
+	ownerLabel: string;
+	/** Ticket lifecycle status (NEW/ACK/REPAIRING/RESOLVED/ESCALATED). */
+	status: string;
+	/** First-seen instant (ms epoch) — claims/episode first time. */
+	firstSeenMs: number;
+	/** Persisted owner ref (`infra_bot:claude|codex` / `lead:<id>`); not rendered. */
+	ownerRef?: string;
+}
+
 export interface AlertPayload {
 	leadId: string;
 	projectName: string;
@@ -185,6 +244,8 @@ export interface AlertPayload {
 	sessionKey?: string;
 	/** FLY-368: optional structured metadata (ignored by Discord rendering). */
 	metadata?: AlertMetadata;
+	/** FLY-927: ticket header + owner @-target context (unified+tickets mode only). */
+	ticket?: AlertTicketContext;
 }
 
 export interface AlertResult {
@@ -254,6 +315,19 @@ export interface LeadAlertNotifierConfig {
 	queueMaxAgeMs?: number;
 	/** FLY-368: when set, ALL alerts route to one unified channel. */
 	unifiedAlert?: UnifiedAlertConfig;
+	/**
+	 * FLY-927: ticket schema header (🎫 line) enable — read at CALL time so a
+	 * live env flip applies. Default: FLYWHEEL_ALERT_TICKETS === "1". Only
+	 * effective in unified mode; the legacy per-lead path never renders it.
+	 */
+	ticketsEnabled?: () => boolean;
+	/**
+	 * FLY-927 (T1): unified-channel root-message rate limiter (20/min in prod).
+	 * Absent (FLYWHEEL_ALERT_RATE_PER_MIN unset) ⇒ no limiting = byte-compat.
+	 * Only consulted on the unified path — legacy per-lead sends are never
+	 * limited (the T1 cap is a #flywheel-alerts channel semantic).
+	 */
+	rateLimiter?: AlertRateLimiter;
 }
 
 /** Queue reasons that are PERMANENT — config doesn't change at runtime, so
@@ -308,6 +382,8 @@ export class LeadAlertNotifier {
 	private queueMax: number;
 	private queueMaxAgeMs: number;
 	private unifiedAlert?: UnifiedAlertConfig;
+	private ticketsEnabled: () => boolean;
+	private rateLimiter?: AlertRateLimiter;
 
 	constructor(config: LeadAlertNotifierConfig) {
 		this.store = config.store;
@@ -328,6 +404,10 @@ export class LeadAlertNotifier {
 		this.queueMax = config.queueMax ?? DEFAULT_QUEUE_MAX;
 		this.queueMaxAgeMs = config.queueMaxAgeMs ?? DEFAULT_QUEUE_MAX_AGE_MS;
 		this.unifiedAlert = config.unifiedAlert;
+		this.ticketsEnabled =
+			config.ticketsEnabled ??
+			(() => process.env.FLYWHEEL_ALERT_TICKETS === "1");
+		this.rateLimiter = config.rateLimiter;
 		mkdirSync(this.queueDir, { recursive: true });
 	}
 
@@ -454,6 +534,21 @@ export class LeadAlertNotifier {
 			return { skipped: "no-channel", deadLettered: true };
 		}
 
+		// FLY-927 (T1): unified-channel root-message rate cap. Over the per-minute
+		// budget → the alert is queued ONCE (the existing queue format — the drain
+		// pass delivers it) + counted for the aggregate overflow summary. Runs
+		// AFTER the dedup claims (a queued alert already owns its eventId) and
+		// after channel resolution (config failures keep their dead-letter path).
+		if (
+			this.unifiedAlert &&
+			this.rateLimiter &&
+			!this.rateLimiter.tryAcquire(Date.now())
+		) {
+			this.rateLimiter.noteOverflow(payload.eventType);
+			this.enqueue(payload, "rate-limited");
+			return { queued: true };
+		}
+
 		// Step 5: Fire the Discord POST.
 		// FLY-368 rework: in unified mode the root alert is posted via the
 		// owner-attributed send chain (stuck agent's own bot → Cass → alphabetical
@@ -536,7 +631,18 @@ export class LeadAlertNotifier {
 		status?: number;
 	}> {
 		const repairEnv = this.unifiedAlert?.repairBotTokenEnv ?? "";
-		const chain = buildSendChain(this.projects, payload.leadId, repairEnv);
+		// FLY-927 (D2, single sender identity): when FLYWHEEL_ALERT_SENDER_TOKEN_ENV
+		// names a token env, the send chain COLLAPSES to that one identity — the
+		// gate keeper's own voice, replacing the own-bot→Cass→alpha attribution
+		// chain (the 7-06 PRD decision supersedes the 6-22 own-bot one). If the
+		// named env doesn't resolve, the loop below finds no token and the caller
+		// dead-letters + meta-alerts — deliberately NO silent fallback to the
+		// own-bot chain (gating semantics: better a dead-letter than an
+		// unauthorized sender). Unset ⇒ the legacy chain, byte-identical.
+		const senderEnv = process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV?.trim();
+		const chain = senderEnv
+			? [senderEnv]
+			: buildSendChain(this.projects, payload.leadId, repairEnv);
 		let lastStatus: number | undefined;
 		for (const tokenEnv of chain) {
 			const token = process.env[tokenEnv];
@@ -582,12 +688,44 @@ export class LeadAlertNotifier {
 		sent: number;
 		remaining: number;
 		deadLettered: number;
+		/**
+		 * FLY-927 (Codex R1 HIGH): unified-mode drains that actually POSTed, with
+		 * the root channel+message id — the Bridge drain loop feeds these through
+		 * the Hub so a rate-limited (or transiently-failed) alert still gets its
+		 * per-error thread + ticket lifecycle instead of silently bypassing them.
+		 * Entries without a parsed messageId are omitted (root-only degrade —
+		 * same contract as the live path). Empty on the legacy path.
+		 */
+		delivered: Array<{
+			payload: AlertPayload;
+			channelId: string;
+			messageId: string;
+		}>;
 	}> {
 		let entries = readdirSync(this.queueDir)
 			.filter((f) => f.endsWith(".json"))
 			.sort(); // names start with an ISO-ish stamp → lexical ≈ chronological
 		let sent = 0;
 		let deadLettered = 0;
+		const delivered: Array<{
+			payload: AlertPayload;
+			channelId: string;
+			messageId: string;
+		}> = [];
+
+		// FLY-927 (T1): pending overflow → ONE aggregate summary per window, posted
+		// before the per-entry drain. The summary consumes a token; when even that
+		// is refused, the counts are KEPT for the next round — never a recursive
+		// summary-of-summaries. Cleared only after the summary actually posts.
+		if (this.unifiedAlert && this.rateLimiter) {
+			const overflow = this.rateLimiter.peekOverflow();
+			if (overflow && this.rateLimiter.tryAcquire(Date.now())) {
+				const posted = await this.postRawToUnifiedChannel(
+					formatOverflowSummary(overflow),
+				);
+				if (posted) this.rateLimiter.clearOverflow();
+			}
+		}
 
 		// Cap: dead-letter the oldest beyond queueMax before doing any work.
 		if (entries.length > this.queueMax) {
@@ -651,10 +789,26 @@ export class LeadAlertNotifier {
 			// queued alert is never re-sent via stale single-token logic. Chain is
 			// recomputed here (env/config may have changed); tokens are not stored.
 			if (this.unifiedAlert) {
+				// FLY-927 (T1): each drained root message consumes a token. Refused →
+				// STOP this drain round immediately; queue files stay untouched (no
+				// rewrite, no re-enqueue) and the next round resumes oldest-first.
+				if (this.rateLimiter && !this.rateLimiter.tryAcquire(Date.now())) {
+					break;
+				}
 				const sentResult = await this.postAlertWithSendChain(parsed, channel);
 				if (sentResult.ok) {
 					unlinkSync(path);
 					sent++;
+					// FLY-927 (Codex R1 HIGH): hand the delivered root to the Hub so a
+					// drained alert still gets its thread + ticket lifecycle.
+					if (sentResult.messageId) {
+						const { queueReason: _qr, queuedAt: _qa, ...payload } = parsed;
+						delivered.push({
+							payload: payload as AlertPayload,
+							channelId: channel,
+							messageId: sentResult.messageId,
+						});
+					}
 				} else if (!sentResult.transient) {
 					// Every candidate permanently failed → dead-letter.
 					this.moveQueueFileToDeadLetter(
@@ -691,7 +845,52 @@ export class LeadAlertNotifier {
 		const remaining = readdirSync(this.queueDir).filter((f) =>
 			f.endsWith(".json"),
 		).length;
-		return { sent, remaining, deadLettered };
+		return { sent, remaining, deadLettered, delivered };
+	}
+
+	/**
+	 * FLY-927 (T1): post a RAW single message (the overflow summary) to the
+	 * unified channel — no claims, no queue, no 🎫-header formatting. Sender
+	 * identity: the D2 override when set, else the repair chain (Cass→alpha);
+	 * mentions always fully suppressed. Best-effort: any failure returns false
+	 * and the caller keeps the overflow counts for the next round.
+	 */
+	private async postRawToUnifiedChannel(content: string): Promise<boolean> {
+		const channel = this.unifiedAlert?.channelId;
+		if (!channel) return false;
+		const senderEnv = process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV?.trim();
+		const chain = senderEnv
+			? [senderEnv]
+			: buildRepairChain(
+					this.projects,
+					this.unifiedAlert?.repairBotTokenEnv ?? "",
+				);
+		for (const tokenEnv of chain) {
+			const token = process.env[tokenEnv];
+			if (!token) continue;
+			try {
+				const res = await this.fetchFn(
+					`${DISCORD_API}/channels/${channel}/messages`,
+					{
+						method: "POST",
+						headers: {
+							Authorization: `Bot ${token}`,
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify({
+							content,
+							allowed_mentions: { parse: [] as string[] },
+						}),
+					},
+				);
+				if (res.ok) return true;
+				if (!isSendChainFallthrough(res.status)) return false;
+				// 401/403/404 → try the next candidate.
+			} catch {
+				return false; // network blip — retry next drain round
+			}
+		}
+		return false;
 	}
 
 	/** Move a queue file into the dead-letter dir (no retry, kept for audit). */
@@ -780,13 +979,22 @@ export class LeadAlertNotifier {
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify({
-					content: formatContent(payload),
+					content: formatContent(payload, {
+						ticketHeader: !!this.unifiedAlert && this.ticketsEnabled(),
+					}),
 					// FLY-368 (Codex code R1 MEDIUM-3): suppress all mentions on the
 					// unified-channel root alert so an issue id / title / body can never
 					// @everyone/@here/@role-ping the channel. Gated on unified mode so the
 					// legacy per-lead POST body stays byte-identical.
+					// FLY-927 (Task 1.2/2.3): in unified+tickets mode with a validated
+					// owner snowflake, the ONE owner bot is whitelisted so the 🎫 header's
+					// `<@owner>` actually pings — everything else stays suppressed.
 					...(this.unifiedAlert
-						? { allowed_mentions: { parse: [] as string[] } }
+						? {
+								allowed_mentions: this.ticketOwnerMention(payload)
+									? { users: [this.ticketOwnerMention(payload) as string] }
+									: { parse: [] as string[] },
+							}
 						: {}),
 				}),
 			});
@@ -822,6 +1030,18 @@ export class LeadAlertNotifier {
 			);
 			return { ok: false, transient: true };
 		}
+	}
+
+	/**
+	 * FLY-927: the validated owner snowflake for the root-POST mention whitelist.
+	 * Non-null ONLY in unified+tickets mode with a well-formed Discord snowflake
+	 * (reuses the Hub's founderId/infraBotId validation judgement) — a malformed
+	 * id degrades to plain text rather than a Discord-rejected mentions body.
+	 */
+	private ticketOwnerMention(payload: AlertPayload): string | null {
+		if (!this.unifiedAlert || !this.ticketsEnabled()) return null;
+		const id = payload.ticket?.ownerUserId?.trim();
+		return id && /^\d{17,20}$/.test(id) ? id : null;
 	}
 
 	private async sendDm(
@@ -887,7 +1107,14 @@ export interface UnreachableAlertLead {
  */
 export function findUnreachableAlertLeads(
 	projects: ProjectEntry[],
-	unified?: { channelId?: string; repairBotTokenEnv?: string },
+	unified?: {
+		channelId?: string;
+		repairBotTokenEnv?: string;
+		/** FLY-927 (D2): the single-sender env NAME — when set it is the
+		 * authoritative chain, so startup validation checks IT (a misspelled
+		 * sender env fails loud at boot instead of dead-lettering at runtime). */
+		senderTokenEnv?: string;
+	},
 ): UnreachableAlertLead[] {
 	const out: UnreachableAlertLead[] = [];
 	// FLY-368 rework: in unified mode every alert resolves a token via the
@@ -896,6 +1123,19 @@ export function findUnreachableAlertLeads(
 	// — a single fleet-wide failure, not per-lead noise. (The per-thread
 	// repair-bot fail-loud lives in plugin.ts.)
 	if (unified?.channelId) {
+		// FLY-927 (Codex R1 MEDIUM): D2 override — the sender identity IS the
+		// chain; there is deliberately NO own-bot/repair fallback behind it.
+		const senderEnv = unified.senderTokenEnv?.trim();
+		if (senderEnv) {
+			if (!process.env[senderEnv]) {
+				out.push({
+					projectName: "*",
+					leadId: "*",
+					reason: `FLYWHEEL_ALERT_SENDER_TOKEN_ENV "${senderEnv}" is not set / empty — single-sender mode has no fallback, alerts cannot be sent`,
+				});
+			}
+			return out;
+		}
 		const repairEnv = unified.repairBotTokenEnv ?? "";
 		const anyBot = resolveFirstAvailableBotToken(
 			buildRepairChain(projects, repairEnv),
@@ -946,14 +1186,43 @@ export function findUnreachableAlertLeads(
 	return out;
 }
 
-function formatContent(payload: AlertPayload): string {
+/** Local HH:MM for the 🎫 header's first-seen stamp (Hub `hhmm` idiom). */
+function ticketHHMM(ms: number): string {
+	const d = new Date(ms);
+	if (Number.isNaN(d.getTime())) return "??:??";
+	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * FLY-927 (Task 1.2): the 🎫 ticket header — appended AFTER the existing first
+ * line so the LeadWatchdog `ALERT_ECHO_START` anchor on `(<leadId> / <kind>)`
+ * keeps matching (append-only = minimum echo-regression radius, FLY-220).
+ * Rendered ONLY when the caller enables it (unified mode + FLYWHEEL_ALERT_TICKETS=1);
+ * legacy output stays byte-identical.
+ */
+function formatContent(
+	payload: AlertPayload,
+	opts?: { ticketHeader?: boolean },
+): string {
 	const sev =
 		payload.severity === "severe"
 			? "🚨"
 			: payload.severity === "warning"
 				? "⚠️"
 				: "ℹ️";
-	return `${sev} **${payload.title}** (${payload.leadId} / ${payload.eventType})\n${payload.body}`;
+	const firstLine = `${sev} **${payload.title}** (${payload.leadId} / ${payload.eventType})`;
+	if (!opts?.ticketHeader) {
+		return `${firstLine}\n${payload.body}`;
+	}
+	const t = payload.ticket;
+	const ownerId = t?.ownerUserId?.trim();
+	const owner =
+		ownerId && /^\d{17,20}$/.test(ownerId)
+			? `<@${ownerId}>`
+			: t?.ownerLabel?.trim() || "—";
+	const status = t?.status?.trim() || "NEW";
+	const firstSeen = ticketHHMM(t?.firstSeenMs ?? Date.now());
+	return `${firstLine}\n🎫 ${payload.projectName} · 首见 ${firstSeen} · owner ${owner} · 状态 ${status}\n${payload.body}`;
 }
 
 async function safeText(

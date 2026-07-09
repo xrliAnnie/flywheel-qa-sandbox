@@ -73,6 +73,8 @@ export interface StuckUnhandledPayload {
 	stuckMinutes: number;
 	/** Wall-clock ms when the Lead escalation was emitted. */
 	escalatedAt: number;
+	/** FLY-927 (W-B): the episode classified as a 529 throttle STALL. */
+	throttleStalled?: boolean;
 }
 
 /** Both rows that can govern one episode (FLY-253 L2). */
@@ -543,6 +545,8 @@ export class StuckRunnerDetector {
 				episodeFingerprint: episode.fingerprint,
 				stuckMinutes: Math.floor((now - episode.firstStagnantAt) / 60_000),
 				escalatedAt: episode.escalatedAt,
+				// FLY-927 (W-B): the candidate-time throttle-stall classification.
+				throttleStalled: episode.throttleStalled,
 			});
 			if (resolved) {
 				this.episodes.set(session.execution_id, {

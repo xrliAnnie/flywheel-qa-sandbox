@@ -216,4 +216,22 @@ describe("resolveReportParams (daily orchestration seam)", () => {
 		const p = resolveReportParams("daily", { since: "2026-06-01" }, {}, today);
 		expect(p.aggregateSince).toBe("2026-06-01");
 	});
+
+	// FLY-929 B1: `report-day` shares daily semantics — it is the shell seam
+	// that hands the CLI-authoritative report day to publish-report
+	// --expected-date (the Bridge never recomputes dates).
+	it("report-day resolves to yesterday (daily semantics)", () => {
+		const p = resolveReportParams("report-day", {}, {}, today);
+		expect(p.reportDay).toBe("2026-06-30");
+	});
+
+	it("report-day honors an explicit --date override", () => {
+		const p = resolveReportParams(
+			"report-day",
+			{ date: "2026-06-15" },
+			{},
+			today,
+		);
+		expect(p.reportDay).toBe("2026-06-15");
+	});
 });

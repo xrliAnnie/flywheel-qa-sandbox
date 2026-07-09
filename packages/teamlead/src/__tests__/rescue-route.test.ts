@@ -141,3 +141,58 @@ describe("POST /api/rescue", () => {
 		expect(r.status).toBe(500);
 	});
 });
+
+describe("FLY-927 Task 2.3: rescue call ACKs the ticket", () => {
+	it("runner rescue fires ackTicket with the correlation inputs BEFORE the rescue", async () => {
+		const calls: string[] = [];
+		const app = makeApp({
+			rescueLead: vi.fn(),
+			rescueRunner: vi.fn(async () => {
+				calls.push("rescue");
+				return { outcome: "attempted", detail: "ok" } as never;
+			}),
+			ackTicket: (input) => {
+				calls.push(`ack:${input.route}:${input.executionId}`);
+			},
+		});
+		const res = await request(app, "/api/rescue", {
+			route: "runner",
+			executionId: "exec-9",
+		});
+		expect(res.status).toBe(200);
+		expect(calls).toEqual(["ack:runner:exec-9", "rescue"]);
+	});
+
+	it("ackTicket throwing never fails the rescue", async () => {
+		const app = makeApp({
+			rescueLead: vi.fn(
+				async () => ({ outcome: "attempted", detail: "ok" }) as never,
+			),
+			rescueRunner: vi.fn(),
+			ackTicket: () => {
+				throw new Error("ack broke");
+			},
+		});
+		const res = await request(app, "/api/rescue", {
+			route: "lead",
+			projectName: "fw",
+			leadId: "lead-a",
+		});
+		expect(res.status).toBe(200);
+	});
+
+	it("runtime WITHOUT ackTicket keeps working (byte-compat)", async () => {
+		const app = makeApp({
+			rescueLead: vi.fn(
+				async () => ({ outcome: "attempted", detail: "ok" }) as never,
+			),
+			rescueRunner: vi.fn(),
+		});
+		const res = await request(app, "/api/rescue", {
+			route: "lead",
+			projectName: "fw",
+			leadId: "lead-a",
+		});
+		expect(res.status).toBe(200);
+	});
+});

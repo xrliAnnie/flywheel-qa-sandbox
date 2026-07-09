@@ -21,8 +21,14 @@ export interface AccountSwitchWatchdogDeps {
 	now: () => number;
 	pendingPath?: string;
 	executeSwitch: (pending: PendingSwitch) => Promise<RepairDisposition>;
-	/** Post the switch result into the Alerts thread. */
-	post: (detail: string) => Promise<void>;
+	/**
+	 * Post the switch result into the Alerts thread. FLY-929: the full
+	 * disposition rides along as an OPTIONAL second argument so the plugin's
+	 * post site can route needs_human failures to the owner bot and append the
+	 * notify digest on `notifySuccess` — existing single-arg callers are
+	 * untouched (byte-compat).
+	 */
+	post: (detail: string, disposition?: RepairDisposition) => Promise<void>;
 	/**
 	 * FLY-871 R3/W5: fired AFTER a successful switch (`outcome === "attempted"`) so
 	 * the rescue runtime can sweep every session still stuck at a login prompt in
@@ -43,7 +49,7 @@ export async function accountSwitchWatchdogTick(
 	for (const pending of due) {
 		try {
 			const result = await deps.executeSwitch(pending);
-			await deps.post(result.detail);
+			await deps.post(result.detail, result);
 			fired++;
 			// FLY-871 R3/W5: a successful switch → sweep the incident-window logins.
 			if (result.outcome === "attempted" && deps.onSwitchSuccess) {

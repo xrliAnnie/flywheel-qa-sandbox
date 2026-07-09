@@ -104,6 +104,18 @@ function isLinearUuid(s: string): boolean {
 	);
 }
 
+/**
+ * FLY-927 (Task 1.6): true iff a chat-threads write targets the unified alert
+ * channel WHILE the ticket-queue gating is on. The alert channel is a bot
+ * ticket queue — only the infra alert pipeline may write there. Both envs are
+ * read at CALL time (live flips apply); either unset ⇒ no gating (byte-compat).
+ */
+function isGatedAlertChannel(channelId: string): boolean {
+	if (process.env.FLYWHEEL_ALERT_ROUTING !== "1") return false;
+	const alertChannel = process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID?.trim();
+	return !!alertChannel && channelId === alertChannel;
+}
+
 export function createQueryRouter(
 	store: StateStore,
 	projects: ProjectEntry[],
@@ -517,6 +529,18 @@ export function createQueryRouter(
 			return;
 		}
 
+		// FLY-927 (Task 1.6): sender gating — the unified alert channel is a bot
+		// TICKET QUEUE; generic Lead sends are refused so nothing but the infra
+		// alert pipeline (LeadAlertNotifier / lead-alert.sh) can write there.
+		// Same switch as the Router (FLYWHEEL_ALERT_ROUTING); unset = no gating.
+		if (isGatedAlertChannel(channelId)) {
+			res.status(403).json({
+				error: "alert_channel_gated",
+				hint: "告警走 LeadAlertNotifier / lead-alert.sh 管道,不走 chat-threads",
+			});
+			return;
+		}
+
 		// Reuse shared validation (project/lead/channel check)
 		const validation = validateChatThreadParams(
 			{ channelId, leadId, projectName },
@@ -687,6 +711,15 @@ export function createQueryRouter(
 			res.status(400).json({
 				error:
 					"channelId, leadId, projectName, text, and at least one of issueId/issueIdentifier are required",
+			});
+			return;
+		}
+
+		// FLY-927 (Task 1.6): sender gating — see /chat-threads/create above.
+		if (isGatedAlertChannel(channelId)) {
+			res.status(403).json({
+				error: "alert_channel_gated",
+				hint: "告警走 LeadAlertNotifier / lead-alert.sh 管道,不走 chat-threads",
 			});
 			return;
 		}

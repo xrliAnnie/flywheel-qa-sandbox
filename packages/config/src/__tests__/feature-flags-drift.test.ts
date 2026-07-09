@@ -135,6 +135,21 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: cron stale-blocker TTL minutes (FLY-742)",
 	FLYWHEEL_THREE_STAGE_MAX_FIX_ROUNDS:
 		"tuning knob: three-stage QA fix-loop round cap, default 3 (FLY-859)",
+	// FLY-927 infra-alert ticket-queue rollout levers (all default-off = current
+	// behavior; ops-flipped in ~/.flywheel/.env + Bridge restart, NOT founder
+	// dashboard toggles yet — same class as the internal ops levers above). When
+	// FLY-928 deploys them, consider promoting the three boolean gates to
+	// registered founder flags like FLY-368's alert_threads / auto_repair.
+	FLYWHEEL_ALERT_ROUTING:
+		"internal ops lever: D1 responder-based alert routing + /send gating, default-off (FLY-927)",
+	FLYWHEEL_ALERT_TICKETS:
+		"internal ops lever: 🎫 ticket schema header + owner @-target + lifecycle/T2, default-off (FLY-927)",
+	FLYWHEEL_CHECKPOINT_WATCHDOG:
+		"internal ops lever: Watchdog v2 checkpoint-park patrol, default-off (FLY-927)",
+	FLYWHEEL_ALERT_SENDER_TOKEN_ENV:
+		"config value: single alert-sender token env NAME (D2), default-unset = own-bot chain (FLY-927)",
+	FLYWHEEL_CHECKPOINT_STUCK_MS:
+		"tuning knob: Watchdog v2 checkpoint-park stuck threshold ms, default 3600000 (FLY-927)",
 };
 
 function walk(dir: string, out: string[]): void {

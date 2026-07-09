@@ -773,3 +773,583 @@ describe("LeadAlertNotifier — FLY-368 rework: owner-attributed send chain", ()
 		rmSync(dlDir, { recursive: true, force: true });
 	});
 });
+
+describe("LeadAlertNotifier — FLY-927 Task 1.2: 🎫 ticket schema header", () => {
+	let store: StateStore;
+	let queueDir: string;
+	const saved: Record<string, string | undefined> = {};
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		queueDir = mkdtempSync(join(tmpdir(), "fly927-tickets-"));
+		for (const k of ["SIMBA_BOT_TOKEN", "CASS_BOT_TOKEN"]) {
+			saved[k] = process.env[k];
+		}
+		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.CASS_BOT_TOKEN = "cass-tok";
+	});
+	afterEach(() => {
+		rmSync(queueDir, { recursive: true, force: true });
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	});
+
+	const unified = {
+		channelId: "OPS-CHAN",
+		repairBotTokenEnv: "CASS_BOT_TOKEN",
+	};
+
+	function okFetch() {
+		return vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+			json: async () => ({ id: "root-1" }),
+		});
+	}
+
+	function makeNotifier(
+		fetchFn: ReturnType<typeof okFetch>,
+		opts?: { tickets?: boolean; legacy?: boolean },
+	) {
+		return new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			...(opts?.legacy ? {} : { unifiedAlert: unified }),
+			ticketsEnabled: () => opts?.tickets ?? false,
+		});
+	}
+
+	it("SENTINEL: unified mode with tickets OFF keeps the exact two-line format", async () => {
+		const fetchFn = okFetch();
+		await makeNotifier(fetchFn, { tickets: false }).alert(
+			buildPayload({ leadId: "cos-lead", title: "T", body: "B" }),
+		);
+		const body = JSON.parse(
+			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+		);
+		expect(body.content).toBe("⚠️ **T** (cos-lead / pane_hash_stuck)\nB");
+		expect(body.allowed_mentions).toEqual({ parse: [] });
+	});
+
+	it("SENTINEL: legacy (per-lead) path NEVER renders 🎫 even with tickets on", async () => {
+		const fetchFn = okFetch();
+		await makeNotifier(fetchFn, { tickets: true, legacy: true }).alert(
+			buildPayload({ leadId: "cos-lead", title: "T", body: "B" }),
+		);
+		const body = JSON.parse(
+			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+		);
+		expect(body.content).toBe("⚠️ **T** (cos-lead / pane_hash_stuck)\nB");
+		expect(body.allowed_mentions).toBeUndefined();
+	});
+
+	it("tickets ON, no ticket context → 🎫 line with owner — and 状态 NEW", async () => {
+		const fetchFn = okFetch();
+		await makeNotifier(fetchFn, { tickets: true }).alert(
+			buildPayload({ leadId: "cos-lead", title: "T", body: "B" }),
+		);
+		const body = JSON.parse(
+			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+		);
+		const lines = (body.content as string).split("\n");
+		expect(lines[0]).toBe("⚠️ **T** (cos-lead / pane_hash_stuck)");
+		expect(lines[1]).toMatch(
+			/^🎫 geoforge3d · 首见 \d{2}:\d{2} · owner — · 状态 NEW$/,
+		);
+		expect(lines[2]).toBe("B");
+		expect(body.allowed_mentions).toEqual({ parse: [] });
+	});
+
+	it("tickets ON + owner snowflake → <@id> in 🎫 line AND allowed_mentions.users", async () => {
+		const fetchFn = okFetch();
+		await makeNotifier(fetchFn, { tickets: true }).alert(
+			buildPayload({
+				leadId: "cos-lead",
+				title: "T",
+				body: "B",
+				ticket: {
+					ownerUserId: "123456789012345678",
+					ownerLabel: "claude bot",
+					status: "NEW",
+					firstSeenMs: new Date(2026, 6, 7, 9, 5).getTime(),
+				},
+			}),
+		);
+		const body = JSON.parse(
+			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+		);
+		expect((body.content as string).split("\n")[1]).toBe(
+			"🎫 geoforge3d · 首见 09:05 · owner <@123456789012345678> · 状态 NEW",
+		);
+		expect(body.allowed_mentions).toEqual({ users: ["123456789012345678"] });
+	});
+
+	it("malformed owner id degrades to the label + parse:[] (never a rejected mentions body)", async () => {
+		const fetchFn = okFetch();
+		await makeNotifier(fetchFn, { tickets: true }).alert(
+			buildPayload({
+				leadId: "cos-lead",
+				ticket: {
+					ownerUserId: "not-a-snowflake",
+					ownerLabel: "codex bot",
+					status: "ACK",
+					firstSeenMs: new Date(2026, 6, 7, 9, 5).getTime(),
+				},
+			}),
+		);
+		const body = JSON.parse(
+			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+		);
+		expect(body.content).toContain("owner codex bot · 状态 ACK");
+		expect(body.allowed_mentions).toEqual({ parse: [] });
+	});
+});
+
+describe("LeadAlertNotifier — FLY-927 Task 1.3: single sender identity (D2)", () => {
+	let store: StateStore;
+	let queueDir: string;
+	const saved: Record<string, string | undefined> = {};
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		queueDir = mkdtempSync(join(tmpdir(), "fly927-sender-"));
+		for (const k of [
+			"SIMBA_BOT_TOKEN",
+			"CASS_BOT_TOKEN",
+			"INFRA_SENDER_TOKEN",
+			"FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
+		]) {
+			saved[k] = process.env[k];
+		}
+		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.CASS_BOT_TOKEN = "cass-tok";
+	});
+	afterEach(() => {
+		rmSync(queueDir, { recursive: true, force: true });
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	});
+
+	const unified = {
+		channelId: "OPS-CHAN",
+		repairBotTokenEnv: "CASS_BOT_TOKEN",
+	};
+
+	function okFetch() {
+		return vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+			json: async () => ({ id: "root-1" }),
+		});
+	}
+
+	it("sender env set → root posts with THAT token, own-bot chain never tried", async () => {
+		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV = "INFRA_SENDER_TOKEN";
+		process.env.INFRA_SENDER_TOKEN = "infra-tok";
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+		});
+		const result = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(result.sent).toBe(true);
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+		expect(
+			(
+				(fetchFn.mock.calls[0] as [string, RequestInit])[1].headers as Record<
+					string,
+					string
+				>
+			).Authorization,
+		).toBe("Bot infra-tok");
+	});
+
+	it("sender env set but UNRESOLVABLE → dead-letter, NO silent own-bot fallback", async () => {
+		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV = "INFRA_SENDER_TOKEN";
+		delete process.env.INFRA_SENDER_TOKEN;
+		const fetchFn = okFetch();
+		const dlDir = mkdtempSync(join(tmpdir(), "fly927-sender-dl-"));
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			deadLetterDir: dlDir,
+			unifiedAlert: unified,
+		});
+		const result = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(result.deadLettered).toBe(true);
+		expect(fetchFn).not.toHaveBeenCalled(); // own bot (simba) never consulted
+		expect(readdirSync(dlDir).length).toBe(1);
+		rmSync(dlDir, { recursive: true, force: true });
+	});
+
+	it("SENTINEL: sender env unset → legacy own-bot attribution unchanged", async () => {
+		delete process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+		});
+		await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(
+			(
+				(fetchFn.mock.calls[0] as [string, RequestInit])[1].headers as Record<
+					string,
+					string
+				>
+			).Authorization,
+		).toBe("Bot simba-tok");
+	});
+
+	it("drainQueue retries with the sender identity too (same chain logic)", async () => {
+		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV = "INFRA_SENDER_TOKEN";
+		process.env.INFRA_SENDER_TOKEN = "infra-tok";
+		// First send: transient 503 → queued.
+		const fetch503 = vi.fn().mockResolvedValue({
+			ok: false,
+			status: 503,
+			statusText: "Service Unavailable",
+			text: async () => "",
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: fetch503,
+			queueDir,
+			unifiedAlert: unified,
+		});
+		const queued = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(queued).toEqual({ queued: true });
+		// Drain succeeds with the sender token.
+		const fetchOk = okFetch();
+		(notifier as unknown as { fetchFn: typeof fetchOk }).fetchFn = fetchOk;
+		const drained = await notifier.drainQueue();
+		expect(drained.sent).toBe(1);
+		expect(
+			(
+				(fetchOk.mock.calls[0] as [string, RequestInit])[1].headers as Record<
+					string,
+					string
+				>
+			).Authorization,
+		).toBe("Bot infra-tok");
+	});
+});
+
+describe("LeadAlertNotifier — FLY-927 Task 1.4: unified-channel rate cap (T1)", () => {
+	let store: StateStore;
+	let queueDir: string;
+	const saved: Record<string, string | undefined> = {};
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		queueDir = mkdtempSync(join(tmpdir(), "fly927-rate-"));
+		for (const k of [
+			"SIMBA_BOT_TOKEN",
+			"CASS_BOT_TOKEN",
+			"FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
+		]) {
+			saved[k] = process.env[k];
+		}
+		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.CASS_BOT_TOKEN = "cass-tok";
+		delete process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;
+	});
+	afterEach(() => {
+		rmSync(queueDir, { recursive: true, force: true });
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	});
+
+	const unified = {
+		channelId: "OPS-CHAN",
+		repairBotTokenEnv: "CASS_BOT_TOKEN",
+	};
+
+	/** Deterministic limiter stub: a scripted sequence of tryAcquire answers. */
+	function scriptedLimiter(answers: boolean[]) {
+		let i = 0;
+		const overflow = new Map<string, number>();
+		return {
+			calls: () => i,
+			overflowMap: overflow,
+			tryAcquire: () => answers[Math.min(i++, answers.length - 1)]!,
+			noteOverflow: (kind: string) =>
+				overflow.set(kind, (overflow.get(kind) ?? 0) + 1),
+			peekOverflow: () => (overflow.size > 0 ? new Map(overflow) : null),
+			clearOverflow: () => overflow.clear(),
+		};
+	}
+
+	function okFetch() {
+		return vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+			json: async () => ({ id: "m-1" }),
+		});
+	}
+
+	it("over-limit alert is queued ONCE + counted; under-limit posts normally", async () => {
+		const limiter = scriptedLimiter([true, false]);
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+			rateLimiter: limiter,
+		});
+		const first = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(first.sent).toBe(true);
+		const second = await notifier.alert(
+			buildPayload({ leadId: "cos-lead", eventType: "rate_limit" }),
+		);
+		expect(second).toEqual({ queued: true });
+		expect(fetchFn).toHaveBeenCalledTimes(1); // the refused alert never POSTed
+		expect(readdirSync(queueDir).length).toBe(1);
+		expect(limiter.overflowMap.get("rate_limit")).toBe(1);
+	});
+
+	it("drain posts ONE aggregate summary first, then delivers the queue; overflow clears", async () => {
+		const limiter = scriptedLimiter([true, true, true]);
+		limiter.noteOverflow("rate_limit");
+		limiter.noteOverflow("rate_limit");
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+			rateLimiter: limiter,
+		});
+		// Seed one queued alert (as if rate-limited earlier).
+		const withLimiterOff = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: vi.fn().mockResolvedValue({
+				ok: false,
+				status: 503,
+				statusText: "x",
+				text: async () => "",
+			}),
+			queueDir,
+			unifiedAlert: unified,
+		});
+		await withLimiterOff.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(readdirSync(queueDir).length).toBe(1);
+
+		const result = await notifier.drainQueue();
+		expect(result.sent).toBe(1);
+		expect(result.remaining).toBe(0);
+		// First POST = the summary, second = the queued alert.
+		const firstBody = JSON.parse(
+			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+		);
+		expect(firstBody.content).toContain("🎫 速率攒批:2 条告警已入队");
+		expect(firstBody.content).toContain("rate_limit×2");
+		expect(limiter.peekOverflow()).toBeNull(); // cleared after the summary posted
+		expect(fetchFn).toHaveBeenCalledTimes(2);
+	});
+
+	it("summary itself refused → counts kept, no summary POST (no recursion)", async () => {
+		const limiter = scriptedLimiter([false]);
+		limiter.noteOverflow("usage_limit");
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+			rateLimiter: limiter,
+		});
+		await notifier.drainQueue();
+		expect(fetchFn).not.toHaveBeenCalled();
+		expect(limiter.peekOverflow()).toEqual(new Map([["usage_limit", 1]]));
+	});
+
+	it("drain STOPS mid-round when the bucket empties; queue files stay untouched", async () => {
+		// Seed two queued alerts.
+		const seed = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: vi.fn().mockResolvedValue({
+				ok: false,
+				status: 503,
+				statusText: "x",
+				text: async () => "",
+			}),
+			queueDir,
+			unifiedAlert: unified,
+		});
+		await seed.alert(buildPayload({ leadId: "cos-lead" }));
+		// distinct eventType → distinct queue filename even within the same ms
+		await seed.alert(
+			buildPayload({ leadId: "cos-lead", eventType: "rate_limit" }),
+		);
+		expect(readdirSync(queueDir).length).toBe(2);
+
+		// One token only (no overflow pending → no summary): first file sends,
+		// second is refused → drain stops, file remains.
+		const limiter = scriptedLimiter([true, false]);
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+			rateLimiter: limiter,
+		});
+		const result = await notifier.drainQueue();
+		expect(result.sent).toBe(1);
+		expect(result.remaining).toBe(1);
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("LeadAlertNotifier — FLY-927 Codex R1 fixes", () => {
+	let store: StateStore;
+	let queueDir: string;
+	const saved: Record<string, string | undefined> = {};
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		queueDir = mkdtempSync(join(tmpdir(), "fly927-r1-"));
+		for (const k of [
+			"SIMBA_BOT_TOKEN",
+			"CASS_BOT_TOKEN",
+			"INFRA_SENDER_TOKEN",
+			"FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
+		]) {
+			saved[k] = process.env[k];
+		}
+		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.CASS_BOT_TOKEN = "cass-tok";
+		delete process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;
+	});
+	afterEach(() => {
+		rmSync(queueDir, { recursive: true, force: true });
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	});
+
+	const unified = {
+		channelId: "OPS-CHAN",
+		repairBotTokenEnv: "CASS_BOT_TOKEN",
+	};
+
+	it("HIGH fix: unified drain returns the delivered roots (payload + channel + messageId) for Hub attach", async () => {
+		// Seed a queued alert (transient 503 on first send).
+		const seed = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: vi.fn().mockResolvedValue({
+				ok: false,
+				status: 503,
+				statusText: "x",
+				text: async () => "",
+			}),
+			queueDir,
+			unifiedAlert: unified,
+		});
+		await seed.alert(buildPayload({ leadId: "cos-lead" }));
+
+		const fetchOk = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+			json: async () => ({ id: "drained-root-1" }),
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: fetchOk,
+			queueDir,
+			unifiedAlert: unified,
+		});
+		const result = await notifier.drainQueue();
+		expect(result.sent).toBe(1);
+		expect(result.delivered).toHaveLength(1);
+		expect(result.delivered[0]).toMatchObject({
+			channelId: "OPS-CHAN",
+			messageId: "drained-root-1",
+		});
+		expect(result.delivered[0]!.payload.eventType).toBe("pane_hash_stuck");
+		// queue-bookkeeping fields stripped from the Hub-bound payload
+		expect(
+			(result.delivered[0]!.payload as Record<string, unknown>).queueReason,
+		).toBeUndefined();
+	});
+
+	it("HIGH fix: legacy (non-unified) drain returns an empty delivered list", async () => {
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: vi.fn(),
+			queueDir,
+		});
+		const result = await notifier.drainQueue();
+		expect(result.delivered).toEqual([]);
+	});
+
+	it("MEDIUM fix: sender env set + resolvable → startup check passes even with an EMPTY repair chain", () => {
+		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV = "INFRA_SENDER_TOKEN";
+		process.env.INFRA_SENDER_TOKEN = "infra-tok";
+		delete process.env.CASS_BOT_TOKEN;
+		delete process.env.SIMBA_BOT_TOKEN;
+		expect(
+			findUnreachableAlertLeads([], {
+				channelId: "OPS-CHAN",
+				repairBotTokenEnv: "CASS_BOT_TOKEN",
+				senderTokenEnv: "INFRA_SENDER_TOKEN",
+			}),
+		).toEqual([]);
+	});
+
+	it("MEDIUM fix: sender env set but UNRESOLVABLE → loud boot-time unreachable (even though the repair chain resolves)", () => {
+		delete process.env.INFRA_SENDER_TOKEN;
+		const out = findUnreachableAlertLeads(testProjects, {
+			channelId: "OPS-CHAN",
+			repairBotTokenEnv: "CASS_BOT_TOKEN",
+			senderTokenEnv: "INFRA_SENDER_TOKEN",
+		});
+		expect(out).toHaveLength(1);
+		expect(out[0]!.reason).toContain("INFRA_SENDER_TOKEN");
+		expect(out[0]!.reason).toContain("single-sender");
+	});
+
+	it("SENTINEL: no sender env → the existing repair-chain check unchanged", () => {
+		const out = findUnreachableAlertLeads(testProjects, {
+			channelId: "OPS-CHAN",
+			repairBotTokenEnv: "CASS_BOT_TOKEN",
+		});
+		expect(out).toEqual([]); // CASS_BOT_TOKEN resolves in beforeEach
+	});
+});

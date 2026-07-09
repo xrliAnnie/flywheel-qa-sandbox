@@ -114,6 +114,29 @@ notify_discord() {
 # a bad token/manifest/config).
 severe_alert() { log "SEVERE: $1"; notify_discord "🚨 $1"; }
 
+# FLY-929 W3b ②: ROUTINE notices (✅/🔄/⏳ — progress/result, no human action
+# needed) migrate to the Claude Infra Bot → #flywheel-notify when BOTH
+# CLAUDE_INFRA_BOT_TOKEN and FLYWHEEL_NOTIFY_CHANNEL are set (P-identity).
+# Either missing → the exact legacy notify_discord path (byte-compat).
+# ⚠️/🚨 and everything through severe_alert stay on notify_discord
+# UNCONDITIONALLY — human-rescue signals must ride the battle-tested token
+# (FLY-929 exploration §3.6; a mis-provisioned new token must never silence a
+# deploy failure).
+notify_routine() {
+    local message="$1"
+    if [[ -n "${CLAUDE_INFRA_BOT_TOKEN:-}" && -n "${FLYWHEEL_NOTIFY_CHANNEL:-}" ]]; then
+        local payload
+        payload=$(jq -n --arg content "$message" '{content: $content}')
+        curl -sf -X POST "https://discord.com/api/v10/channels/${FLYWHEEL_NOTIFY_CHANNEL}/messages" \
+            -H "Authorization: Bot ${CLAUDE_INFRA_BOT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            --max-time 5 || log "WARNING: Discord notification failed"
+        return 0
+    fi
+    notify_discord "$message"
+}
+
 # ════════════════════════════════════════════════════════════════
 # Discord plugin fork detection
 # ════════════════════════════════════════════════════════════════
@@ -572,7 +595,7 @@ wait_for_idle() {
             else
                 zero_streak=0   # any active session resets the stabilization streak
                 if (( elapsed == 0 || elapsed % 300 == 0 )); then
-                    notify_discord "⏳ 等待 ${count} 个 active session idle... (${elapsed}s/${MAX_WAIT_SECONDS}s)"
+                    notify_routine "⏳ 等待 ${count} 个 active session idle... (${elapsed}s/${MAX_WAIT_SECONDS}s)"
                 fi
             fi
         fi
@@ -954,6 +977,34 @@ do_restart_all_leads() {
     local skipped=0
     local failed=0
 
+    # FLY-954: converge <state>/bin BEFORE kickstarting any Lead — kickstarting
+    # a corrupted wrapper takes the fleet down (2026-07-06: 12-byte stub +
+    # KeepAlive throttling = 13 Leads offline). FAIL-LOUD: if convergence
+    # cannot leave bin healthy, refuse the whole Lead restart wave (reported
+    # through the existing skipped/failed stdout contract; deploy aborts and
+    # deployed-sha does not advance).
+    # Codex code R1 MEDIUM: report the refusal through the stdout contract and
+    # return 0 — all three call sites capture this function via $( ) under
+    # `set -e`, so a non-zero return would kill the whole script at the
+    # assignment, skipping the existing failed>0 handling (deploy-failure
+    # notification + deployed-sha hold + plugin-only retry marker).
+    local _conv_dir
+    _conv_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "${_conv_dir}/converge-flywheel-bin.sh" ]; then
+        if ! bash "${_conv_dir}/converge-flywheel-bin.sh" >&2; then
+            log "ERROR: flywheel-bin convergence failed — refusing to kickstart Leads on a possibly-corrupt bin (FLY-954)" >&2
+            echo "skipped:0 failed:1"
+            return 0
+        fi
+    else
+        # bin-copy execution context (fleet host): fall back to FLYWHEEL_DIR repo
+        if ! bash "${FLYWHEEL_DIR}/scripts/converge-flywheel-bin.sh" >&2; then
+            log "ERROR: flywheel-bin convergence failed — refusing to kickstart Leads (FLY-954)" >&2
+            echo "skipped:0 failed:1"
+            return 0
+        fi
+    fi
+
     # Source 1: collect Lead IDs from manifests
     local manifest_leads=""
     shopt -s nullglob
@@ -1111,7 +1162,7 @@ rollback_and_restart() {
 deploy_and_verify() {
     local restarted=()
 
-    notify_discord "🔄 开始更新 Flywheel: \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`"
+    notify_routine "🔄 开始更新 Flywheel: \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`"
 
     # Step 1: Stop Bridge FIRST (triggers stopAccepting + drain)
     # FLY-516 (Codex R1 HIGH): fail-closed — if the old Bridge's port can't be
@@ -1192,7 +1243,7 @@ deploy_and_verify() {
     # Update project repo deployed SHAs (FLY-43)
     update_project_shas
 
-    notify_discord "✅ Flywheel 已更新到 \`${CURRENT_HEAD:0:7}\`。重启了: ${restarted[*]:-无}"
+    notify_routine "✅ Flywheel 已更新到 \`${CURRENT_HEAD:0:7}\`。重启了: ${restarted[*]:-无}"
 }
 
 # ════════════════════════════════════════════════════════════════
@@ -1202,7 +1253,7 @@ deploy_and_verify() {
 if [[ "$PLUGIN_ONLY_RESTART" == "true" ]]; then
     # Lead-only restart path: plugin update or project .lead/ changes (no Flywheel code change)
     log "Lead-only restart: plugin=$plugin_needs_restart project_lead=$project_lead_changed"
-    notify_discord "🔄 Lead 重启中 (plugin=$plugin_needs_restart project_lead=$project_lead_changed)..."
+    notify_routine "🔄 Lead 重启中 (plugin=$plugin_needs_restart project_lead=$project_lead_changed)..."
 
     lead_result=$(do_restart_all_leads)
     leads_skipped=$(echo "$lead_result" | sed 's/.*skipped:\([0-9]*\).*/\1/')
@@ -1225,7 +1276,7 @@ if [[ "$PLUGIN_ONLY_RESTART" == "true" ]]; then
         notify_discord "⚠️ Discord plugin 更新后 ${leads_skipped} 个 Lead 跳过（无 manifest）。请手动重启。"
         exit 0
     fi
-    notify_discord "✅ Lead 重启完成 (plugin=$plugin_needs_restart project_lead=$project_lead_changed)。"
+    notify_routine "✅ Lead 重启完成 (plugin=$plugin_needs_restart project_lead=$project_lead_changed)。"
     # FLY-90: Sync gbrain project Wiki (non-blocking, best-effort)
     if [[ -x "$HOME/.flywheel/bin/sync-gbrain-docs.sh" ]]; then
         nohup "$HOME/.flywheel/bin/sync-gbrain-docs.sh" >/dev/null 2>&1 &

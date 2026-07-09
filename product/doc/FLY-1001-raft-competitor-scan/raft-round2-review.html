@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raft 深挖 round-2 — Raft vs Flywheel · FLY-1001</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --dim:#86868b;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759;
+    --purple:#af52de; --navy:#1a365d;
+    --line:#e5e5ea;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:960px; margin:0 auto; padding:28px 20px 72px}
+  header.top{margin:8px 0 22px}
+  .kicker{font-size:13px; color:var(--dim); letter-spacing:.02em}
+  h1{font-size:27px; line-height:1.25; margin:6px 0 8px; letter-spacing:-.01em}
+  .sub{font-size:15px; color:var(--dim)}
+  .id{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12px; color:var(--navy)}
+  .meta{margin-top:10px; font-size:12.5px; color:var(--dim)}
+  .meta a{color:var(--blue); text-decoration:none}
+
+  .card{
+    background:var(--card); border-radius:12px; padding:18px 20px; margin:14px 0;
+    box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid var(--line);
+  }
+  .card.red{border-left-color:var(--red)}
+  .card.amber{border-left-color:var(--amber)}
+  .card.blue{border-left-color:var(--blue)}
+  .card.green{border-left-color:var(--green)}
+  .card.purple{border-left-color:var(--purple)}
+  .card.navy{border-left-color:var(--navy)}
+  .card.gray{border-left-color:#c7c7cc}
+
+  .card h2{font-size:19px; margin:0 0 8px; letter-spacing:-.01em}
+  .card h3{font-size:15.5px; margin:14px 0 5px; color:var(--navy)}
+  .card p{margin:7px 0}
+  .card ul{margin:7px 0 7px; padding-left:20px}
+  .card li{margin:4px 0}
+  .lead{font-size:15.5px}
+  .dim{color:var(--dim)}
+  strong{font-weight:650}
+  .hl-red{color:var(--red); font-weight:650}
+  .hl-green{color:var(--green); font-weight:650}
+  .hl-amber{color:var(--amber); font-weight:650}
+
+  .badge{display:inline-block; font-size:11px; font-weight:700; padding:2px 9px; border-radius:20px; vertical-align:middle; letter-spacing:.02em}
+  .b-hold{background:rgba(52,199,89,.14); color:#248a3d}
+  .b-part{background:rgba(255,149,0,.16); color:#a35b00}
+  .b-fail{background:rgba(255,59,48,.14); color:#c1281f}
+  .b-unknown{background:rgba(134,134,139,.16); color:#5c5c61}
+
+  .section-title{font-size:13px; font-weight:700; color:var(--dim); text-transform:uppercase; letter-spacing:.06em; margin:30px 4px 6px}
+
+  table{width:100%; border-collapse:collapse; font-size:14px; margin:6px 0}
+  th,td{text-align:left; padding:10px 10px; border-bottom:1px solid var(--line); vertical-align:top}
+  th{font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; font-weight:700}
+  td.axis{font-weight:650; width:31%}
+  .tablewrap{overflow-x:auto}
+
+  .verdict{background:linear-gradient(180deg,#fff, #fbfbfd); border:1px solid var(--line)}
+  .verdict .big{font-size:17px; font-weight:650; line-height:1.5}
+
+  .q{font-weight:700; color:var(--navy)}
+  .quote{border-left:3px solid var(--line); padding:2px 0 2px 12px; margin:8px 0; color:#3a3a3c; font-size:14px; font-style:italic}
+  .mono{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12.5px; background:#f2f2f4; padding:1px 5px; border-radius:5px}
+  footer{margin-top:34px; font-size:12px; color:var(--dim); text-align:center; line-height:1.7}
+  .pill{display:inline-block; padding:3px 10px; border-radius:20px; background:#eef0f3; font-size:12px; margin:2px 4px 2px 0; color:#444}
+  hr.soft{border:0; border-top:1px solid var(--line); margin:14px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div class="kicker">竞品深挖 · round-2 · 给 Annie 的战略输入</div>
+    <h1>Raft vs Flywheel —— 更深一层</h1>
+    <div class="sub">新竞品 <strong>Raft</strong>(raft.build,前身 <span class="mono">slock</span>)到底威胁到哪、我们的差异还站不站得住</div>
+    <div class="meta">
+      <span class="id">FLY-1001</span> · competitor-scan round-3 · 2026-07-08 ·
+      诚实结论不美化 · 查不到的一律标 <span class="badge b-unknown">UNKNOWN</span> 绝不编 ·
+      证据链 <span class="mono">research.md</span> · <a href="https://raft.build">raft.build</a>
+    </div>
+  </header>
+
+  <div class="card verdict navy">
+    <div class="big">一句话:<span class="hl-red">Raft 是目前找到最贴、最该警惕的一家</span> —— 它把「人+agent 频道协作」产品化了、引擎层比我们强、还供应商中立。</div>
+    <p style="margin-top:10px">它<strong>没吃掉我们的唯一原因</strong> = 它瞄的是 <strong>技术 leader / 工程师</strong>(它自己 trust 博客原话:"technical leaders and senior engineers... architects, not line-by-line code readers"),<strong>不是</strong>我们那个「自己建不了的非技术 operator」。</p>
+    <p><strong>round-2 净影响:</strong>三轴结论不变,但<span class="hl-green">轴 3(给非技术 operator)反而更硬了</span> —— 是 <em>Raft 自己的话</em> 佐证的;并挖出<strong>一条新差异</strong>(非技术 trust 模型)。融资 / 团队规模 / 声量 = 诚实 <span class="badge b-unknown">UNKNOWN</span>(被同名公司数据污染,不硬凑)。</p>
+  </div>
+
+  <div class="section-title">Annie 问的四件事</div>
+
+  <div class="card gray">
+    <h2>① 市场反应 <span class="badge b-unknown">公开声量查无</span></h2>
+    <p>没找到 HN / Product Hunt / Reddit / 小红书 对 <span class="mono">raft.build</span> 的公开讨论。(HN 搜出来全是 Raft <strong>共识算法</strong>;PH/Reddit 是 agent-collab 大类的<em>别家</em>。)</p>
+    <ul>
+      <li><strong>推断(标清是推断)</strong>:launch 约 <strong>2026 年中</strong>(launch 博客抓取日期 May 21 2026,存疑但方向一致)—— 若属实则很新、声量还没起来,或主要走 X/私域没大规模 launch。</li>
+      <li><strong>赛道热但拥挤(有据)</strong>:2026 年中 Product Hunt「Agent Infrastructure Explosion」,过半 Top20 在做 agent 基建;同类一堆(AI-native email、Agent Arena…)。<span class="dim">Raft 是里面形态最贴我们的一家,但不是唯一。</span></li>
+    </ul>
+    <p class="dim">口碑既不吹成「爆红」也不贬成「没人用」—— 就是新、拥挤赛道里一家 团队出身 很硬的玩家。</p>
+  </div>
+
+  <div class="card gray">
+    <h2>② 融资 <span class="badge b-unknown">UNKNOWN</span></h2>
+    <p><span class="hl-amber">⚠️ 关键坑(Annie 提醒的那个)</span>:搜「Raft」撞上<strong>至少 3 家同名公司</strong> —— 物流 <span class="mono">raft.ai</span>(伦敦,$30M,投资方 Eight Roads/Bessemer)、国防 <span class="mono">teamraft.com</span>(346 人,$45M)、dev-env <span class="mono">Raftt</span>。</p>
+    <ul>
+      <li>PitchBook 那条「Raft 融资 <strong>$46.7M</strong>,Bessemer/Eight Roads」<span class="hl-red">几乎肯定是物流那家</span>(Eight Roads/Bessemer 正是物流 Raft 的投资方)——<strong>不采纳</strong>。</li>
+      <li><strong>没找到 raft.build / slock 专属融资披露 → 标 UNKNOWN,不借同名公司数字充数。</strong></li>
+    </ul>
+    <p class="dim">但「有没有融资」不改结论 —— 「引擎层它更精」的力量来自人 + 专注 + 已 ship 的证据,不靠融资金额。</p>
+  </div>
+
+  <div class="card blue">
+    <h2>③ 团队规模 <span class="badge b-unknown">人数 UNKNOWN</span> <span class="badge b-hold">团队出身 硬</span></h2>
+    <p>具体人数拿不到干净数据(同名污染)。但<strong>已确认的人有名有姓、且很强</strong>:</p>
+    <ul>
+      <li><strong>TennyZhuang(<span class="mono">@zty0826</span>)</strong> —— 分布式系统硬核:RisingWave(streaming compute)、前 Alibaba PolarDB-X(事务)、TiKV/TiDB committer、清华软院、CCPC 金牌。公开宣布 <span class="mono">slock→Raft</span> 改名。</li>
+      <li><strong>Tianxiao Shen(<span class="mono">xxchan</span>)</strong> —— LinkedIn 写 building Slock + <strong>co-created Kimi CLI</strong>。<span class="dim">→ 坐实「团队含前 Kimi」。</span></li>
+    </ul>
+    <p class="dim">⚠️ 创始实体/CEO 存疑不硬下:TennyZhuang GitHub 主属 RisingWave、未列 Raft;一处抓取出现「Richard / Botiverse, Inc.」与创始说法冲突 —— 存疑、待确认、不采纳。</p>
+    <p><strong>结论:强分布式系统 + AI-infra 的小团队 —— 足够支撑「引擎层他们更精」。</strong></p>
+  </div>
+
+  <div class="card purple">
+    <h2>④ 产品具体长啥样(讲透)</h2>
+    <h3>怎么用(onboarding 四步 · 官方原话)</h3>
+    <p>① 见到 Onboarding Agent(建 server、连一台电脑、见团队第一个 agent)→ ② 交第一个任务(给真活、看它做完带回来)→ ③ 把队友拉进房间(人和 agent 并肩)→ ④ 养一支 agent 队(加 agent、定职责、越用越会)。</p>
+    <p class="dim">形态 = web workspace(channels / threads / tasks / @提及)+ agent 跑你自己硬件上的 lightweight daemon;agent = 一等公民,"one agent is one session:跨天跨任务的连续身份",自己维护 inbox/tasks/reminders,能被点名后主动加进频道开干。</p>
+
+    <h3>⭐ 核心工程机制 —— Cass 说的『报数/staged-draft/version-check』的真身</h3>
+    <p class="dim">(官方叫 <strong>Inbox surface + Held Draft surface + version marker</strong>;『报数/Dmail』是 Cass 的转述简称。)</p>
+    <div class="quote">问题:"the gap between an agent's reasoning and the room moving on" —— agent 回合制读快照→推理→提交,写的时候看不到新消息进来;房间在推理和提交之间动了,它可能还在对着一个已不存在的状态说话。<strong>← 这正是我们的 crossed-wires(Lead 读旧频道快照)。</strong></div>
+    <ul>
+      <li><strong>Inbox surface</strong>:把「消息硬推进上下文」反转成「agent 有余力时主动拉」—— @提及/thread 更新变成可查询项,agent 自己决定啥值得进上下文,不被房间噪声挤掉任务状态。</li>
+      <li><strong>Held Draft + version marker</strong>:每条出站消息带版本标记(标它对着哪个房间状态写的)。发送时房间没变→提交;<strong>房间动了→扣住、连同「你写时进来了啥」还给 agent</strong>("draft 是一等状态,不是发送失败")。agent 四选一:<span class="pill">Revise 重写</span><span class="pill">Send as-is</span><span class="pill">Stay silent</span><span class="pill">Send anyway</span></li>
+    </ul>
+    <p><span class="hl-red">= 我们 FLY-574(draft-not-sent)+ crossed-wires 的正解,已被 Raft 产品化。这是「引擎层他们更精」最硬的证据。</span></p>
+
+    <h3>Raft 的产品哲学(博客暴露的,对我们有战略含义)</h3>
+    <ul>
+      <li><strong>"Agents Need Names"</strong> —— named agent 做信任/路由。<span class="dim">→ 我们「named Lead」这条信任点,Raft 也做,<strong>不独有</strong>。</span></li>
+      <li><strong>"Trust Doesn't Live in Code Review"</strong>(⭐ 战略金矿)—— trust = "能预测它";验证靠<strong>持续读系统信号</strong>(bug 簇 / mutation testing / agent 间碰撞检测);人从看门人变成「读系统、收紧输入」的人。<strong>目标用户原话 = technical leaders / senior engineers / architects,明确不是非技术。</strong></li>
+      <li><strong>"You Don't Need a Company Brain"</strong> —— 主张多专才视角 &gt; 一个统一大脑。<span class="dim">⚠️ 和我们「共享记忆/第二大脑」是<strong>分叉哲学</strong>,值得盯。</span></li>
+    </ul>
+  </div>
+
+  <div class="section-title">三轴差异化 —— 逐轴标 vs Raft(round-2 更新)</div>
+  <div class="card navy">
+    <div class="tablewrap">
+    <table>
+      <tr><th>轴</th><th>vs Raft</th><th>一句话(round-2)</th></tr>
+      <tr>
+        <td class="axis">① 领域<br><span class="dim">替非技术 operator 建养真软件产品</span></td>
+        <td><span class="badge b-part">部分成立</span></td>
+        <td>站得住 = <strong>done-for-you + 给建不了的人 + 养</strong>;塌 = 「跑在真实软件上」(<strong>Raft 主场</strong>,它 agent 本就跑你真 repo);且待兑现,done-for-you 还没 ship。</td>
+      </tr>
+      <tr>
+        <td class="axis">② 被协调常驻组织 + 复利<br><span class="dim">always-on + 记忆 + 管理 + Push</span></td>
+        <td><span class="badge b-fail">大部分不成立</span></td>
+        <td>复利 / 记忆 / 常驻<strong>被 Raft 匹配甚至更精</strong>(Held Draft/version marker 就是证据);只剩「管理 + Push(不用你当 PM)」一薄条,还可被 Raft 加个 manager agent 补。</td>
+      </tr>
+      <tr>
+        <td class="axis">③ done-for-you 给非技术 + founder 判断</td>
+        <td><span class="badge b-hold">成立(最硬)</span></td>
+        <td><span class="hl-green">round-2 更硬</span>:Raft 自己 trust 博客把用户定义成 technical leaders/architects → <strong>非技术 operator 确是它盲区(它自己的话佐证)</strong>。Annie operator-taste vs Raft engine-taste 真方向差。<strong>但非结构、靠速度+聚焦守、done-for-you 未 ship。</strong></td>
+      </tr>
+    </table>
+    </div>
+    <p style="margin-top:12px"><strong>净结论:</strong>三轴里 <strong>②(大部分)+ ①(一半)被 Raft 匹配或塌</strong>,只有 <strong>③(客户切入点 + taste)真站得住,且非结构、靠速度守、还没兑现</strong>。</p>
+    <hr class="soft">
+    <p><span class="hl-green">🆕 round-2 新挖出的一条差异(建议补进 911 信任章):</span><strong>非技术 trust 模型</strong> —— Raft 服务 architect、trust 靠「读系统信号」(要技术素养);我们服务非技术 operator、trust 靠 <strong>4 件可亲验</strong>(named Lead / 可读审批 / 结果证明 / 护栏)。<strong>「非技术怎么信任」是两套人的两套答案 —— 这条对 Raft 成立。</strong></p>
+  </div>
+
+  <div class="section-title">Cass 三压测点 —— 证据结论</div>
+  <div class="card red">
+    <p><strong>① 停在 调度引擎 层 = 被吃</strong> → <span class="hl-red">完全成立、更扎心</span>。Raft 本身就是被产品化的 调度引擎 层、更成熟。护城河是<strong>待兑现的赌注、不是现有资产</strong>;按我们自认的诚实边界(done-for-you 没到),<strong>此刻我们离「停在引擎层」比离「已 ship 复利产品」更近</strong>。</p>
+    <p><strong>② 融资 + 专注 + 前 Kimi → 引擎更精</strong> → <span class="hl-amber">成立,认输这层</span>。硬证据 = Held Draft/version marker 他们已 ship、我们还在 backlog。<strong>别在引擎精巧度上跟它掰(必输战场)</strong>,引擎够用就行。</p>
+    <p><strong>③ 唯一真差异(自用 + 真实产品闭环 + Annie 判断)</strong> → <span class="hl-amber">真实但薄</span>。dogfooding 不是护城河(Raft 也自用、还同主场);「跑真实产品上」= Raft 主场;复利被匹配;<strong>最能守的 = 指向非技术 operator 的 founder taste</strong>,但要转成 ship 出的产品才算数、且还在建(Anna)拿真客户声音磨。<strong>是先发 + 聚焦 + taste 优势,不是结构护城河。</strong></p>
+  </div>
+
+  <div class="section-title">对 FLY-911 定位的建议(弹药 + 推荐 · Annie 拍)</div>
+  <div class="card green">
+    <p><strong>动摇了「可防御性」,没动摇「打谁」。</strong>always-on / 记得一切 / 复利被 Raft 匹配、从差异变 <span class="badge b-unknown">人人都有的基础能力</span>;但<strong>我们最先要专攻的那群客户</strong>(= 非技术、自己不会写代码、自己做电商/社媒的一人公司老板)是 Raft 盲区、<strong>站得住</strong>。</p>
+    <p class="dim" style="font-size:13px">💬 说明:上一版我用了「beachhead」这个词把你绕懵了,抱歉 —— 它是从军事借来的黑话(滩头阵地),在定位里意思就是「<strong>我们现在先集中火力拿下的那一小群最容易赢的客户</strong>」。这份里我已经全换成人话了。</p>
+    <ol>
+      <li>把 <strong>Raft 列进「最该警惕」,和 Cowork 并列</strong> —— 论威胁我们的<strong>形态</strong>,Raft 比 Cowork 更狠(它就是我们的形态、供应商中立、引擎领先)。</li>
+      <li><strong>退「供应商中立 / 复利记忆」当差异</strong>(Raft 匹配);memory/always-on 从「看家本领」降为「人人都有的基础能力 底座」。</li>
+      <li>主 messaging <strong>狠押唯一站得住的</strong>:客户切入点(给自己建不了的非技术 operator done-for-you)+ 管理/Push + build-in-public + Annie taste。</li>
+      <li>诚实写「<strong>靠速度守、不靠结构守</strong>」;别恋战引擎 —— 全压 done-for-you 复利产品,ship 得比 Raft 掉头下移市场更快。</li>
+      <li><strong>最先专攻的那群客户不变</strong>(Raft 的缺席反而验证了它 —— 它不来抢这群人)。</li>
+      <li><span class="hl-green">🆕</span> <strong>把「非技术 trust 模型」写进 911 §4</strong> 当一条对 Raft 成立的差异。</li>
+    </ol>
+    <p class="dim">FLY-911 positioning.md <strong>我没擅改</strong> —— 只出弹药 + 建议,定位调不调是 Annie 的决定。</p>
+  </div>
+
+  <div class="card amber">
+    <h2>诚实边界 —— 本轮没查到 / 存疑的</h2>
+    <ul>
+      <li><strong>融资金额 / 投资方 / 轮次</strong> = UNKNOWN(全被同名的物流/国防/dev-env Raft 污染,不硬凑)。</li>
+      <li><strong>团队规模(人数)</strong> = UNKNOWN(团队出身 硬这点坐实,人数没干净来源)。</li>
+      <li><strong>公开声量 / 口碑</strong> = 查无(没找到 HN/PH/Reddit/小红书 对 raft.build 的讨论)。</li>
+      <li><strong>创始实体 / CEO</strong> = 存疑(TennyZhuang GitHub 未列 Raft;「Richard/Botiverse」冲突项不采纳)。</li>
+      <li><strong>launch 确切日期</strong> = 推断 ~2026 年中(存疑)。</li>
+    </ul>
+    <p class="dim">→ 这些留给 <span class="mono">FLY-1000 Raft-watch</span>(每周盯官方/推文)持续补;有官宣再更新,不编。</p>
+  </div>
+
+  <footer>
+    FLY-1001 · Raft 竞品分析 round-2 · 折进 FLY-909 competitor-scan(PR #505,仍 draft、未 merge)<br>
+    证据链 = <span class="mono">product/doc/FLY-1001-raft-competitor-scan/research.md</span> · 深挖 = <span class="mono">raft-deepdive.md</span><br>
+    诚实不美化 · 查不到标 UNKNOWN 绝不编 · Honey Lemon → Annie
+  </footer>
+
+</div>
+</body>
+</html>

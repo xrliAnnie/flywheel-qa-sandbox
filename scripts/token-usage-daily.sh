@@ -68,14 +68,52 @@ if [ ! -f "$COMM" ]; then
 	exit 1
 fi
 
+# FLY-929 C2: fail-loud — a failing pipeline step raises a notify_digest_failed
+# alert via lead-alert.sh (claims-deduped, Bridge-independent) BUT ONLY under
+# P-expect (FLYWHEEL_NOTIFY_DIGEST_EXPECT=1, sourced from .env above). Unset ⇒
+# failure behavior is exactly the pre-FLY-929 exit (same code, same stderr).
+# Best-effort ('|| true'): the alert must never mask the original exit code.
+fail_loud() {
+	local step="$1" code="$2"
+	if [ "${FLYWHEEL_NOTIFY_DIGEST_EXPECT:-}" = "1" ]; then
+		local alert_sh="${REPO}/scripts/lead-alert.sh"
+		if [ -f "$alert_sh" ]; then
+			bash "$alert_sh" \
+				--lead codex-infra-bot-lead --project flywheel \
+				--kind notify_digest_failed --severity warning \
+				--title "token report 发送失败" \
+				--body "step=${step} exit=${code} log=/tmp/flywheel-token-usage-daily.err" \
+				|| true
+		else
+			log "WARNING: lead-alert.sh not found at $alert_sh — fail-loud alert skipped"
+		fi
+	fi
+	exit "$code"
+}
+
 # Aggregate the rolling window (default 14 days) and render yesterday's report to HTML.
 log "aggregating + rendering daily report → $OUT"
-node "$COMM" token-report daily --out "$OUT"
+rc=0
+node "$COMM" token-report daily --out "$OUT" || rc=$?
+if [ "$rc" -ne 0 ]; then fail_loud "token-report daily" "$rc"; fi
 
 # Publish to the dedicated channel if configured (best-effort).
 if [ -n "$CHANNEL" ]; then
+	# FLY-929 B1: ask the token-report CLI (the tz-aware date authority) for the
+	# report day and forward it so the Bridge can write the delivery receipt.
+	# An old/failed CLI ⇒ no flags (byte-compat body; receipt simply not written).
+	EXPECTED_DATE=$(node "$COMM" token-report report-day 2>/dev/null || true)
+	RECEIPT_ARGS=()
+	if [[ "$EXPECTED_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+		RECEIPT_ARGS=(--kind token_report --expected-date "$EXPECTED_DATE")
+	else
+		log "WARNING: token-report report-day returned '$EXPECTED_DATE' — publishing without receipt fields"
+	fi
 	log "publishing to channel $CHANNEL"
-	node "$COMM" publish-report --html "$OUT" --project "$PROJECT" --channel "$CHANNEL" --title "每日 Token 用量报告"
+	rc=0
+	node "$COMM" publish-report --html "$OUT" --project "$PROJECT" --channel "$CHANNEL" --title "每日 Token 用量报告" \
+		${RECEIPT_ARGS[@]+"${RECEIPT_ARGS[@]}"} || rc=$?
+	if [ "$rc" -ne 0 ]; then fail_loud "publish-report" "$rc"; fi
 else
 	log "WARNING: FLYWHEEL_TOKEN_USAGE_CHANNEL is unset — report NOT delivered to Discord."
 	log "         Set it in the plist or in $ENV_FILE to auto-publish (see token-usage-setup-channel.sh)."

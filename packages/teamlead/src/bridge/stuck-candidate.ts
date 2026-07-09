@@ -91,6 +91,14 @@ export interface StuckEpisodeState {
 	 */
 	escalatedAt?: number;
 	/**
+	 * FLY-927 (W-B): the stagnant pane carries 529/overloaded throttle residue
+	 * with NO live line-level retry — a runner genuinely STALLED after a
+	 * throttle. Refines the Q7 alert kind to `runner_throttle_stalled` (the
+	 * ticket owner bot can ARC it); a healthy 529 (still retrying) never sets
+	 * this. Computed at candidate time from the same capture.
+	 */
+	throttleStalled?: boolean;
+	/**
 	 * True once the Q7 fallback has resolved for this episode — either Annie
 	 * was alerted (runner_stuck_unhandled) or a Lead disposition terminally
 	 * suppressed the alert. One Annie alert per episode (Codex R1 MEDIUM-5).
@@ -312,7 +320,44 @@ export function evaluateStuckCandidate(
 	};
 	return {
 		candidate: true,
-		episode: { ...episode, escalated: true },
+		episode: {
+			...episode,
+			escalated: true,
+			// FLY-927 (W-B): classify the stall flavor from the SAME capture.
+			throttleStalled: detectThrottleStall(input.output),
+		},
 		evidence,
 	};
+}
+
+/**
+ * FLY-927 (W-B): a RUNNER pane genuinely stalled after a 529/overloaded
+ * throttle. Runner-side, deliberately independent of the Lead-side
+ * `isTransientThrottlePane` (FLY-218) to avoid coupling — but reuses its
+ * line-level retry-evidence idea: only the CURRENT interruptible spinner
+ * line's OWN retry text vouches for a live retry (a stale error line's
+ * "Retrying…(attempt N/M)" never does).
+ *
+ * Caller contract: only consulted on an ALREADY-STAGNANT pane (the 10-min
+ * fingerprint gate ran first) — a healthy 529 whose retry counter is ticking
+ * keeps changing the pane and never reaches this.
+ *  - no throttle residue → false (a plain frozen turn stays runner_stuck_unhandled)
+ *  - residue + a spinner line CARRYING retry text → false (conservative:
+ *    stays runner_stuck_unhandled — the generic stall, not the throttle flavor)
+ *  - residue + spinner without retry text / no spinner at all → true
+ */
+export function detectThrottleStall(output: string): boolean {
+	const lines = output.replace(/\r/g, "").split("\n");
+	const hasThrottleResidue = lines.some((l) =>
+		/server is temporarily limiting requests|overloaded_error|not your usage limit/i.test(
+			l,
+		),
+	);
+	if (!hasThrottleResidue) return false;
+	for (let i = lines.length - 1; i >= 0; i--) {
+		if (/esc to interrupt/i.test(lines[i]!)) {
+			return !/\bretry(?:ing)?\b|\battempt\s+\d+\s*\/\s*\d+/i.test(lines[i]!);
+		}
+	}
+	return true;
 }

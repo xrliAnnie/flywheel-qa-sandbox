@@ -25,6 +25,8 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { readContentRef } from "flywheel-comm/utils";
+// FLY-927 (Task 3.2): checkpoint-park patrol wake primitive.
+import { wakeRunnerMailbox } from "flywheel-comm/wake";
 import {
 	type FounderMilestoneReportConfig,
 	type MilestoneKind,
@@ -44,6 +46,8 @@ import type { Session, StateStore } from "../StateStore.js";
 import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
 import { isReviewHeld } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
+// FLY-927 (Task 3.3): truthful park wording for the lead-pending nudge.
+import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
 import { DISCORD_API } from "./discord-utils.js";
 import {
 	isDiscordSnowflake,
@@ -58,6 +62,7 @@ import {
 import {
 	emitFounderMilestoneNotification,
 	emitFounderThreadNotification,
+	emitIssueThreadInfraNotification,
 } from "./founder-thread-notifier.js";
 import type { HookPayload } from "./hook-payload.js";
 import {
@@ -532,6 +537,22 @@ export class GatePoller {
 									);
 									this.maybeRecoverStore(lpErr);
 								}
+							}
+							// FLY-927 (Task 3.2, Watchdog v2): the checkpoint-park 1h patrol —
+							// third sibling, own try/catch, kill-switch default OFF.
+							try {
+								await this.maybeEmitCheckpointParkAlert(
+									lead,
+									session,
+									question,
+									dbPath,
+								);
+							} catch (cpErr) {
+								console.warn(
+									`[GatePoller] checkpoint-park patrol error for ${lead.agentId} (qid=${question.id}):`,
+									cpErr instanceof Error ? cpErr.message : String(cpErr),
+								);
+								this.maybeRecoverStore(cpErr);
 							}
 						}
 						// FLY-307 B: a clean pass closes the circuit; a relay throw counts as
@@ -1309,6 +1330,21 @@ export class GatePoller {
 			return true;
 		const issue = session.issue_identifier ?? session.issue_id;
 		const ageMin = Math.round((now - createdMs) / 60_000);
+		// FLY-927 (Task 3.3, FLY-912 wording collapse): the nudge leads with the
+		// TRUTHFUL park line (authoritative session_stage, ball with the LEAD, the
+		// gate's real age) instead of hand-built prose; underivable → an explicit
+		// stage未上报 prefix, never a guessed stage name.
+		const parkTuple = deriveParkTuple({
+			session,
+			pendingGates: [{ checkpoint: "question", createdAtMs: createdMs }],
+			autoQaActive: false,
+			notifiedEvidence: false,
+			ownerLeadId: lead.agentId,
+			nowMs: now,
+		});
+		const truthfulLine = parkTuple
+			? formatParkAlert(parkTuple, now)
+			: `[stage未上报] Runner ${issue} is blocked at a question gate`;
 		const payload: HookPayload = {
 			event_type: "runner_lead_pending_escalation",
 			execution_id: session.execution_id,
@@ -1317,8 +1353,8 @@ export class GatePoller {
 			project_name: session.project_name,
 			status: session.status,
 			summary:
-				`Runner ${issue} is blocked at a question gate (stage=${session.session_stage ?? "?"}) waiting for YOU to answer — ` +
-				`${ageMin} min, no progress (reminder #${nudgeCount}). Answer it via flywheel-comm respond so the runner can continue.`,
+				`${truthfulLine} — waiting for YOU to answer, ${ageMin} min, no progress (reminder #${nudgeCount}). ` +
+				"Answer it via flywheel-comm respond so the runner can continue.",
 			question_id: question.id,
 			session_role: session.session_role ?? "main",
 		};
@@ -1400,6 +1436,213 @@ export class GatePoller {
 		return (
 			result.sent === true || result.queued === true || result.dmSent === true
 		);
+	}
+
+	// ── FLY-927 (Task 3.2, Watchdog v2): checkpoint-park 1h patrol ────────────
+	// FLY-912: a session parked at a founder checkpoint for hours with NO
+	// delivery evidence means the founder was never told. First response goes to
+	// the OWNER (runner mailbox wake + Lead event — the self-heal path: the
+	// runner re-verifies/retries its founder notification); only a SECOND full
+	// window without evidence pages the founder in the issue's own thread with
+	// the truthful park template. Kill-switch FLYWHEEL_CHECKPOINT_WATCHDOG
+	// unset ⇒ the whole patrol is off (byte-compat). Piggybacks this poll tick —
+	// no new timer (FLY-169).
+
+	private checkpointWatchdogEnabled(): boolean {
+		return process.env.FLYWHEEL_CHECKPOINT_WATCHDOG === "1";
+	}
+
+	/** FLYWHEEL_CHECKPOINT_STUCK_MS — default 1h (FLY-912: 3h was too slow). */
+	private checkpointStuckMs(): number {
+		const n = Number(process.env.FLYWHEEL_CHECKPOINT_STUCK_MS);
+		return Number.isFinite(n) && n > 0 ? n : 3_600_000;
+	}
+
+	private async maybeEmitCheckpointParkAlert(
+		lead: LeadConfig,
+		session: Session,
+		question: PendingQuestion,
+		dbPath: string,
+	): Promise<void> {
+		if (!this.checkpointWatchdogEnabled()) return;
+		const cp = question.checkpoint;
+		if (cp !== "brainstorm" && cp !== "approve_to_ship") return; // founder parks (v1)
+		if (!ACTIVE_SESSION_STATUSES.has(session.status)) return;
+		try {
+			if (!matchesLead(session, lead.agentId, this.config.projects)) return;
+		} catch {
+			return;
+		}
+		const createdMs = parseSqliteUtcMs(question.created_at);
+		if (createdMs === null) return;
+		const now = Date.now();
+		const windowMs = this.checkpointStuckMs();
+		if (now - createdMs < windowMs) return;
+
+		const events = this.config.store.getEventsByExecution(session.execution_id);
+		// Evidence = a SUCCESSFUL founder-facing delivery audit for THIS gate
+		// (the FLY-605 fallback's `founder_thread_notified`). Evidence present ⇒
+		// the founder already knows — waiting on her is not "stuck", stay silent.
+		const notifiedEvidence = events.some(
+			(e) =>
+				e.event_type === "founder_thread_notified" &&
+				(e.payload as { questionId?: string } | undefined)?.questionId ===
+					question.id,
+		);
+		const tuple = deriveParkTuple({
+			session,
+			pendingGates: [{ checkpoint: cp, createdAtMs: createdMs }],
+			autoQaActive: false,
+			notifiedEvidence,
+			ownerLeadId: lead.agentId,
+			nowMs: now,
+		});
+		if (!tuple || tuple.party !== "founder" || tuple.notifiedEvidence) return;
+		const line = formatParkAlert(tuple, now);
+
+		// ── FIRST window: wake the OWNER (durable marker = once per gate) ──
+		const nudgeMarker = `checkpoint-park-nudged-${question.id}`;
+		const nudgeRow = events.find((e) => e.event_id === nudgeMarker);
+		if (!nudgeRow) {
+			const ownerAsk =
+				`${line}。第一响给你(owner):校验这个 founder 通知是否真的送达` +
+				"(publish-report / gate 通知),失败就重试并上报;修不掉才升级 founder。";
+			// Runner mailbox wake — the FLY-912 self-heal (best-effort).
+			try {
+				const db = new CommDB(dbPath);
+				await wakeRunnerMailbox({
+					db,
+					execId: session.execution_id,
+					fromAgent: "bridge",
+					content: ownerAsk,
+					metadata: {
+						kind: "checkpoint_park_nudge",
+						questionId: question.id,
+					},
+				});
+			} catch (err) {
+				console.warn(
+					`[GatePoller] checkpoint-park runner wake failed (${session.execution_id}): ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+			}
+			// Lead gets the SAME line via the guardrail lead_events lane.
+			try {
+				const seq = this.config.store.appendLeadEvent(
+					lead.agentId,
+					`checkpoint-park-lead-${question.id}`,
+					"checkpoint_park_nudge",
+					JSON.stringify({
+						event_type: "checkpoint_park_nudge",
+						execution_id: session.execution_id,
+						issue_id: session.issue_id,
+						issue_identifier: session.issue_identifier,
+						project_name: session.project_name,
+						status: session.status,
+						summary: ownerAsk,
+						question_id: question.id,
+						session_role: session.session_role ?? "main",
+					}),
+					session.execution_id,
+				);
+				const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
+				if (runtime) {
+					const result = await runtime.deliver({
+						seq,
+						event: {
+							event_type: "checkpoint_park_nudge",
+							execution_id: session.execution_id,
+							issue_id: session.issue_id,
+							project_name: session.project_name,
+							status: session.status,
+							summary: ownerAsk,
+						} as HookPayload,
+						sessionKey: session.execution_id,
+						leadId: lead.agentId,
+						timestamp: new Date().toISOString(),
+					});
+					if (result.delivered) this.config.store.markLeadEventDelivered(seq);
+					else
+						this.config.store.recordDeliveryFailure(
+							seq,
+							result.error ?? "deliver returned false",
+						);
+				}
+			} catch (err) {
+				console.warn(
+					`[GatePoller] checkpoint-park lead nudge failed (${lead.agentId}): ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+			}
+			// Durable marker (restart-safe once-per-gate) — carries the nudge time
+			// the second-window check reads.
+			this.config.store.insertEvent({
+				event_id: nudgeMarker,
+				execution_id: session.execution_id,
+				issue_id: session.issue_id,
+				project_name: session.project_name,
+				event_type: "checkpoint_park_nudged",
+				source: "bridge.gate-poller",
+				payload: { questionId: question.id, nudgedAtMs: now, line },
+			});
+			return;
+		}
+
+		// ── SECOND window past the nudge, still no evidence → founder page ──
+		const pageMarker = `checkpoint-park-paged-${question.id}`;
+		if (events.some((e) => e.event_id === pageMarker)) return;
+		const nudgedAtMs =
+			(nudgeRow.payload as { nudgedAtMs?: number } | undefined)?.nudgedAtMs ??
+			createdMs;
+		if (now - nudgedAtMs < windowMs) return;
+
+		const thread = this.config.store.getChatThreadByIssue(
+			session.issue_id,
+			lead.chatChannel,
+		);
+		const result = await emitIssueThreadInfraNotification(
+			{
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+				issueIdentifier: session.issue_identifier,
+				projectName: session.project_name,
+				kind: "checkpoint_park",
+				content: `🕰️ ${line}\n(owner 第一响已发、一窗内仍无送达证据 → 升级给你。)`,
+				mentionUserId: this.config.discordOwnerUserId,
+				thread,
+				botToken: lead.botToken ?? this.config.discordBotToken,
+				// NEVER silent: undeliverable pages ride the existing undelivered
+				// escalation (deterministic eventId → claims-deduped across retries).
+				onUndeliverable: (reason) =>
+					this.escalateFounderThreadUndelivered(
+						lead,
+						session,
+						question,
+						`checkpoint-park page undeliverable: ${reason}`,
+					),
+			},
+			{ store: this.config.store, fetchImpl: this.config.fetchImpl },
+		);
+		// Terminal outcomes write the once-marker; a no_chat_thread skip stays
+		// unmarked so the page retries when the thread appears (escalation above
+		// already told the Lead lane, deduped).
+		if (
+			result.kind === "posted" ||
+			result.kind === "permanent_failed" ||
+			result.kind === "transient_failed"
+		) {
+			this.config.store.insertEvent({
+				event_id: pageMarker,
+				execution_id: session.execution_id,
+				issue_id: session.issue_id,
+				project_name: session.project_name,
+				event_type: "checkpoint_park_paged",
+				source: "bridge.gate-poller",
+				payload: { questionId: question.id, outcome: result.kind, line },
+			});
+		}
 	}
 
 	private founderThreadNotifyEnabled(): boolean {

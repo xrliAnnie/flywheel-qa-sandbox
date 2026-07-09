@@ -33,10 +33,11 @@
 
 import { createHash } from "node:crypto";
 import { deriveAccountLimitForAlert } from "./account-heal/derive-account-limit.js";
-import type {
-	AlertEventType,
-	AlertPayload,
-	AlertResult,
+import {
+	ALERT_EVENT_TYPES,
+	type AlertEventType,
+	type AlertPayload,
+	type AlertResult,
 } from "./LeadAlertNotifier.js";
 import type { LeadWindowRef } from "./LeadWindowLocator.js";
 import type { ProjectEntry } from "./ProjectConfig.js";
@@ -746,8 +747,22 @@ function liveRegion(pane: string): string {
  * signature + the canned titles cover a non-`←` first line too.
  */
 const INBOUND_ECHO_LINE = /^\s*←/;
-const ALERT_ECHO_START =
-	/\(\s*[a-z0-9-]+\s*\/\s*(?:rate_limit|usage_limit|login_expired|permission_blocked|pane_hash_stuck|crash_loop|runner_stuck_unhandled)\s*\)|\blead hit (?:rate|usage) limit\b|\blead login expired\b|\blead waiting on permission prompt\b|\blead pane has been frozen\b|\blead crash-looping\b|\brunner stuck unhandled\b/i;
+/**
+ * FLY-927 (Task 1.2): the kind alternation is DERIVED from the shared
+ * `ALERT_EVENT_TYPES` table (LeadAlertNotifier) — the old hand-enumerated list
+ * covered only 7 kinds, so a first-line echo of any newer kind
+ * (runner_login_expired / three_stage_stuck / codex_gate_blocked / …) leaked
+ * past the strip and could re-trigger the FLY-220 storm family. Single source
+ * ⇒ a future kind can never silently miss echo immunity. The `|^\s*🎫\s`
+ * branch strips the FLY-927 ticket-header line (Bridge-unique — a real Claude
+ * TUI never renders it about itself).
+ */
+export const ALERT_ECHO_START = new RegExp(
+	`\\(\\s*[a-z0-9-]+\\s*\\/\\s*(?:${ALERT_EVENT_TYPES.join("|")})\\s*\\)` +
+		"|^\\s*🎫\\s" +
+		"|\\blead hit (?:rate|usage) limit\\b|\\blead login expired\\b|\\blead waiting on permission prompt\\b|\\blead pane has been frozen\\b|\\blead crash-looping\\b|\\brunner stuck unhandled\\b",
+	"i",
+);
 
 /**
  * FLY-220 — the Lead's OWN live state text: the live render region (FLY-193) with
@@ -990,10 +1005,29 @@ function titleFor(kind: AlertEventType): string {
 		// own title); case exists for switch exhaustiveness.
 		case "bridge_boot_stale_checkout":
 			return "Bridge running a STALE checkout";
+		// FLY-927 (D4): never emitted by LeadWatchdog (the bridge wrapper fires it
+		// via scripts/lead-alert.sh with its own title); case exists for switch
+		// exhaustiveness.
+		case "bridge_wrapper_fail":
+			return "Bridge wrapper fail-loud";
+		// FLY-927 W-B: never emitted by LeadWatchdog (the stuck-runner escalation
+		// builds its own title); case exists for switch exhaustiveness.
+		case "runner_throttle_stalled":
+			return "Runner stalled after throttle";
+		// FLY-954: never emitted by LeadWatchdog (converge-flywheel-bin.sh fires
+		// it via lead-alert.sh with its own title); case exists for switch
+		// exhaustiveness.
+		case "bin_integrity_drift":
+			return "bin runtime script drift";
 		// FLY-945: never emitted by LeadWatchdog (the external-merge reconcile
 		// pass builds its own title); case exists for switch exhaustiveness.
 		case "external_merge_suspect":
 			return "Unverified external merge";
+		// FLY-929: never emitted by LeadWatchdog (the notify-digest expect tick /
+		// token-usage-daily.sh build their own titles); case exists for switch
+		// exhaustiveness.
+		case "notify_digest_failed":
+			return "Daily token report not delivered";
 	}
 }
 
@@ -1059,8 +1093,21 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-939 (G-D): never emitted by LeadWatchdog (boot-sha-check builds its own body).
 		case "bridge_boot_stale_checkout":
 			return "The Bridge booted on a checkout whose HEAD is behind origin/main — merged work is NOT live. Pull + restart the Bridge to deploy.";
+		// FLY-927 (D4): never emitted by LeadWatchdog (the bridge wrapper builds its own body via lead-alert.sh).
+		case "bridge_wrapper_fail":
+			return "The Bridge launchd wrapper hit a fail-loud condition (port stuck / preflight failure) while the Bridge is down. Check ~/.flywheel/logs and the wrapper output.";
+		// FLY-927 W-B: never emitted by LeadWatchdog (the stuck-runner escalation builds its own body).
+		case "runner_throttle_stalled":
+			return "A Runner is genuinely stalled after a 529/overloaded throttle (stagnant pane, throttle residue, no live retry). The auto-repair bot attempts the audited continue-nudge first.";
+		// FLY-954: never emitted by LeadWatchdog (converge-flywheel-bin.sh builds its own body via lead-alert.sh).
+		case "bin_integrity_drift":
+			return "A ~/.flywheel/bin runtime script drifted from its repo source. This kind is emitted by scripts/converge-flywheel-bin.sh via lead-alert.sh (shell path) — the Watchdog never raises it; see the shell alert body for file + sha details (FLY-954).";
 		// FLY-945: never emitted by LeadWatchdog (the external-merge reconcile pass builds its own body).
 		case "external_merge_suspect":
 			return "The external-merge reconcile pass found a merged PR it cannot verify (missing founder-attributed approval, or the merged head differs from the approved head). The session was NOT finalized/archived — review the merge.";
+		// FLY-929: never emitted by LeadWatchdog (the notify-digest expect tick /
+		// token-usage-daily.sh build their own bodies via lead-alert.sh).
+		case "notify_digest_failed":
+			return "The daily token report was not delivered (no receipt / pipeline step failed). Check launchd com.flywheel.token-usage-daily, Bridge /api/reports delivery, and /tmp/flywheel-token-usage-daily.err.";
 	}
 }

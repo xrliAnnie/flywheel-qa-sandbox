@@ -52,15 +52,37 @@ export PATH="$STUB_BIN:$PATH"
 # env -i can re-pass it; every provisioner invocation below goes through the
 # isolated helper with an explicit --home + pinned sandbox FLYWHEEL_STATE_DIR.
 STUB_PATH="$PATH"
+# FLY-954: hard isolation self-check — the sandbox HOME every provisioner
+# invocation gets must NEVER be the invoking user's real HOME (defense against
+# future edits that bypass the isolated helper; the 2026-07-06 escape ran with
+# the real env because nothing asserted otherwise).
+REAL_USER_HOME="$HOME"
+_assert_sandboxed_home() {
+  local h="$1"
+  if [ -z "$h" ] || [ "$h" = "$REAL_USER_HOME" ]; then
+    echo "FATAL(FLY-954): test HOME '$h' is the real user HOME — refusing to run" >&2
+    exit 1
+  fi
+  case "$h" in
+    "$SANDBOX"/*) ;;
+    *) echo "FATAL(FLY-954): test HOME '$h' escapes sandbox $SANDBOX" >&2; exit 1 ;;
+  esac
+}
+
 # _iso_prov <path> <home> <args...> — run provisioner in an env -i jail.
+# FLY-954: state-dir intent goes in via --state-dir (the provisioner now
+# IGNORES an inherited FLYWHEEL_STATE_DIR — writers don't trust runtime-reader
+# env; see P8). env -i jail kept as belt-and-suspenders. The flag sits before
+# "$@" so individual cases can override it (last --state-dir wins).
 _iso_prov() {
   local _path="$1" _home="$2"; shift 2
+  _assert_sandboxed_home "$_home"
   env -i \
     PATH="$_path" \
     HOME="$_home" \
     FLYWHEEL_PLATFORM=darwin \
-    FLYWHEEL_STATE_DIR="$_home/.flywheel" \
-    bash "$PROVISION" --repo-root "$RR" --fleet-dir "$FLEET" --home "$_home" "$@"
+    bash "$PROVISION" --repo-root "$RR" --fleet-dir "$FLEET" --home "$_home" \
+      --state-dir "$_home/.flywheel" "$@"
 }
 
 # FLY-650: this is the DARWIN provisioning test (it predates platform-awareness and
@@ -95,8 +117,14 @@ EOF
 # ── fixture repo-root with stub scripts ───────────────────────────────────
 RR="$SANDBOX/repo"
 mkdir -p "$RR/scripts/launchd" "$RR/scripts/lib"
+# FLY-954: fixture wrappers must PASS source sanity (the 12-byte stub shape is
+# now exactly what the provisioner refuses to install — see P10 for that case).
 for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh; do
-  echo '#!/bin/bash' > "$RR/scripts/$f"; chmod +x "$RR/scripts/$f"
+  { echo '#!/bin/bash'
+    echo "# sane fixture for $f (FLY-954)"
+    i=1; while [ "$i" -le 60 ]; do echo "echo fixture-$f-line-$i >/dev/null"; i=$((i+1)); done
+  } > "$RR/scripts/$f"
+  chmod +x "$RR/scripts/$f"
 done
 echo '#!/bin/bash' > "$RR/scripts/flywheel-fleet.sh"; chmod +x "$RR/scripts/flywheel-fleet.sh"
 echo '# lib' > "$RR/scripts/lib/fleet-sanitize.sh"
@@ -228,6 +256,60 @@ if [ "$P7RC" -ne 0 ]; then
   pass "P7: failed Bridge/launchd checks → validate phase aborts non-zero"
 else
   fail "P7: validate swallowed health-check failures (rc=$P7RC)"; tail -8 "$SANDBOX/prov7.log"
+fi
+
+# ── P8 (FLY-954 INCIDENT REGRESSION): inherited FLYWHEEL_STATE_DIR must be
+#     IGNORED by the provisioner (writer). Deliberately NOT env -i — this is
+#     the exact 2026-07-06 escape shape (runner-born prod env + --home sandbox).
+H8="$SANDBOX/home8"; mkdir -p "$H8"
+FAKEPROD="$SANDBOX/fakeprod/.flywheel"; mkdir -p "$FAKEPROD/bin"
+env PATH="$STUB_PATH" HOME="$H8" FLYWHEEL_PLATFORM=darwin \
+  FLYWHEEL_STATE_DIR="$FAKEPROD" \
+  bash "$PROVISION" --repo-root "$RR" --fleet-dir "$FLEET" --home "$H8" \
+  --apply --skip-token-check >"$SANDBOX/prov8.log" 2>&1
+P8RC=$?
+if [ "$P8RC" -eq 0 ] && [ ! -f "$FAKEPROD/projects.json" ] \
+   && [ -z "$(ls -A "$FAKEPROD/bin" 2>/dev/null)" ] \
+   && [ -f "$H8/.flywheel/projects.json" ] \
+   && grep -q 'ignoring inherited FLYWHEEL_STATE_DIR' "$SANDBOX/prov8.log"; then
+  pass "P8: inherited FLYWHEEL_STATE_DIR ignored — writes land under --home, polluted target untouched, warn logged"
+else
+  fail "P8: escape regression (rc=$P8RC)"; ls -R "$SANDBOX/fakeprod" 2>/dev/null; tail -20 "$SANDBOX/prov8.log"
+fi
+
+# ── P9 (FLY-954): --state-dir is the ONLY way to redirect state writes ──────
+H9="$SANDBOX/home9"; mkdir -p "$H9"
+SD9="$SANDBOX/customstate"
+run_prov "$H9" --apply --skip-token-check --state-dir "$SD9"
+if [ "$PROV_RC" -eq 0 ] && [ -f "$SD9/projects.json" ] && [ -f "$SD9/bin/flywheel-lead-wrapper.sh" ]; then
+  pass "P9: explicit --state-dir redirects state (projects.json + bin installs)"
+else
+  fail "P9: --state-dir (rc=$PROV_RC)"; tail -20 "$PROV_LOG"
+fi
+
+# ── P10 (FLY-954): a degenerate bin source must FAIL the provision loudly ───
+RRBAD="$SANDBOX/repobad"; mkdir -p "$RRBAD/scripts"
+cp -R "$RR/scripts/." "$RRBAD/scripts/"
+echo '#!/bin/bash' > "$RRBAD/scripts/flywheel-lead-wrapper.sh"   # the incident stub
+H10="$SANDBOX/home10"; mkdir -p "$H10"
+env -i PATH="$STUB_PATH" HOME="$H10" FLYWHEEL_PLATFORM=darwin \
+  bash "$PROVISION" --repo-root "$RRBAD" --fleet-dir "$FLEET" --home "$H10" \
+  --apply --skip-token-check >"$SANDBOX/prov10.log" 2>&1
+P10RC=$?
+if [ "$P10RC" -ne 0 ] && [ ! -f "$H10/.flywheel/bin/flywheel-lead-wrapper.sh" ] \
+   && ! grep -q '\[provision\] done\.' "$SANDBOX/prov10.log"; then
+  pass "P10: 12-byte stub source → provision dies, nothing installed, no done."
+else
+  fail "P10: stub source was tolerated (rc=$P10RC)"; tail -10 "$SANDBOX/prov10.log"
+fi
+
+# ── P11 (FLY-954): installed copies are write-protected (555) ───────────────
+W11="$H2/.flywheel/bin/flywheel-lead-wrapper.sh"   # installed by P2a earlier
+if [ -f "$W11" ] && [ ! -w "$W11" ] && [ -x "$W11" ] \
+   && ! cp "$RRBAD/scripts/flywheel-lead-wrapper.sh" "$W11" 2>/dev/null; then
+  pass "P11: installed copy is 555 — bare cp over it fails (incident shape blocked)"
+else
+  fail "P11: write protection"; ls -l "$W11" 2>/dev/null
 fi
 
 # ── P5: validate_tokens unit ──────────────────────────────────────────────
