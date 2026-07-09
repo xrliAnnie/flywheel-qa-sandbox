@@ -1,13 +1,13 @@
 ---
 issue: FLY-1048
 phase: design
-phaseCursor: 1/6
-updated: 2026-07-09T07:21:41.447Z
-nextStep: code audit (3 parallel explorers) → gap list → exploration.md → brainstorm gate
+phaseCursor: 2/6
+updated: 2026-07-09T07:27:33.863Z
+nextStep: await escalation+commdb audits → write exploration.md gap list
 chunks: []
 pointers: {}
 ---
 
 # FLY-1048 progress
-**phase**: design (1/6)
-**next**: code audit (3 parallel explorers) → gap list → exploration.md → brainstorm gate
+**phase**: design (2/6)
+**next**: await escalation+commdb audits → write exploration.md gap list
