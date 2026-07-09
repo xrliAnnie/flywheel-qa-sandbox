@@ -1,18 +1,29 @@
 #!/bin/bash
-# FLY-880: Guard test for the internal PM agent role .md
-# (.flywheel/agents/engineering/product-designer-executor.md).
+# FLY-880 / FLY-1089: Guard test for the creative executor role .md files.
 #
-# The role .md is injected verbatim into the Runner system prompt (readAgentFile,
-# truncated at 40k chars — Blueprint.ts). It is prompt text, not runtime code, so
-# there is no vitest surface; this lite guard defends the two real risks:
-#   1. the file grows past the 40k injection-truncation red line, or
-#   2. the product-co-creation contract (mode A) OR the inherited docs/design
-#      contract (mode B) silently regresses.
+# Role .md files are injected verbatim into the Runner system prompt (readAgentFile,
+# truncated at 40k CHARS — Blueprint.ts). They are prompt text, not runtime code, so
+# there is no vitest surface: this is a CHEAP SMOKE SENTINEL, not a contract test —
+# grep anchors can't prove behavior, only that the byte budget and the process
+# semantic anchors survive an edit. The REAL routing behavior is proven by the
+# edge-worker dispatch tests (pm-prototype-agent-dispatch.test.ts +
+# designer-agent-dispatch.test.ts + AgentDispatcher.test.ts).
+#
+# FLY-1089 split the three creative work-types into three role files:
+#   - pm-executor.md          (Program Manager / product co-creation, ex-"Mode A")
+#   - prototype-executor.md   (feasibility-first prototype)
+#   - product-designer-executor.md (docs / UX-spec / design-production only)
+# This guard defends: (1) each file stays under the 40k byte budget; (2) each role's
+# process semantics + required section headings survive; (3) Mode A did not leak back
+# into product-designer.
 # Run: bash scripts/__tests__/test-pm-executor-contract.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROLE_MD="${SCRIPT_DIR}/../../.flywheel/agents/engineering/product-designer-executor.md"
+AGENTS_DIR="${SCRIPT_DIR}/../../.flywheel/agents/engineering"
+PM_MD="${AGENTS_DIR}/pm-executor.md"
+PROTO_MD="${AGENTS_DIR}/prototype-executor.md"
+PD_MD="${AGENTS_DIR}/product-designer-executor.md"
 
 PASS=0; FAIL=0
 assert_file_exists() {
@@ -31,7 +42,9 @@ assert_contains() {
   fi
 }
 assert_max_bytes() {
-  # $1 file, $2 max, $3 label
+  # $1 file, $2 max, $3 label. wc -c (bytes) is a deliberately-stricter byte-budget
+  # SENTINEL for the runtime 40000-CHAR slice — multi-byte Chinese makes bytes >
+  # chars, so passing the byte check guarantees the char check.
   local n; n=$(wc -c < "$1" | tr -d ' ')
   if [ "$n" -lt "$2" ]; then
     PASS=$((PASS+1)); echo "  PASS: $3 (${n} < $2 bytes)"
@@ -48,51 +61,76 @@ assert_not_contains() {
   fi
 }
 
-echo "Test: PM executor role .md contract"
-assert_file_exists "$ROLE_MD" "role .md exists"
+echo "Test: creative executor role .md contracts (FLY-1089)"
 
-# ── injection-truncation red line ──
-# readAgentFile truncates the injected role at 40000 chars; stay well under.
-assert_max_bytes "$ROLE_MD" 40000 "role .md under 40k injection-truncation red line"
+# ── all three exist, under the byte-budget sentinel, keep the reporting rule ──
+for f in "$PM_MD" "$PROTO_MD" "$PD_MD"; do
+  assert_file_exists "$f" "role .md exists: $(basename "$f")"
+  assert_max_bytes "$f" 40000 "under 40k byte-budget sentinel: $(basename "$f")"
+  assert_contains "$f" "flywheel-comm ask" "reporting via flywheel-comm ask: $(basename "$f")"
+done
 
-# ── Mode A: product co-creation (FLY-880 new body) ──
-assert_contains "$ROLE_MD" "产品共创"        "mode A anchor: 产品共创 (product co-creation)"
-assert_contains "$ROLE_MD" "有定见"          "探定见 protocol: 有定见 / 发挥 (opinion vs run-with-it)"
-assert_contains "$ROLE_MD" "gate question"   "interaction primitive: gate question (one-question-per-round)"
+# ════════════════════════════════════════════════════════════════════════════
+# pm-executor.md — product co-creation (FLY-880 Mode A, extracted) + v5 additions
+# ════════════════════════════════════════════════════════════════════════════
+echo "--- pm-executor.md ---"
+assert_contains "$PM_MD" "产品共创"        "PM anchor: 产品共创 (product co-creation)"
+assert_contains "$PM_MD" "有定见"          "探定见 protocol: 有定见 / 发挥 (opinion vs run-with-it)"
+assert_contains "$PM_MD" "gate question"   "interaction primitive: gate question (one-question-per-round)"
 # The interaction loop is the BLOCKING gate, DISTINCT from the non-blocking
-# `flywheel-comm ask` reporting channel (Codex R1 conflated them). Assert BOTH
-# sides of the contrast so a future edit can't keep "BLOCKING gate" yet silently
-# drop the "different from ask" clause (Codex R2). Needles carry no backticks
-# (zsh command-substitution footgun, FLY-372).
-assert_contains "$ROLE_MD" "BLOCKING gate"    "interaction primitive named as the BLOCKING gate"
-assert_contains "$ROLE_MD" "non-blocking"     "the ask reporting channel is called out as non-blocking"
-assert_contains "$ROLE_MD" "different* primitive from" \
+# `flywheel-comm ask` reporting channel. Assert BOTH sides of the contrast (needles
+# carry no backticks — zsh command-substitution footgun, FLY-372).
+assert_contains "$PM_MD" "BLOCKING gate"    "interaction primitive named as the BLOCKING gate"
+assert_contains "$PM_MD" "non-blocking"     "the ask reporting channel is called out as non-blocking"
+assert_contains "$PM_MD" "different* primitive from" \
                 "gate named a DIFFERENT primitive from ask (loop-is-gate-not-ask)"
-assert_contains "$ROLE_MD" "the interaction loop is the blocking" \
+assert_contains "$PM_MD" "the interaction loop is the blocking" \
                 "loop is explicitly the blocking gate (not the ask channel)"
-assert_contains "$ROLE_MD" "prd.md"          "PRD output location: prd.md"
-assert_contains "$ROLE_MD" "no-three-stage"  "dispatch discipline: no-three-stage label"
-assert_contains "$ROLE_MD" "create-issue"    "handoff: create-issue (break PRD into build issues)"
+assert_contains "$PM_MD" "prd.md"          "PRD output location: prd.md"
+assert_contains "$PM_MD" "no-three-stage"  "dispatch discipline: no-three-stage label"
+assert_contains "$PM_MD" "create-issue"    "handoff: create-issue (break PRD into build issues)"
+assert_contains "$PM_MD" "FLY-830"         "boundary: PM acceptance = FLY-830 (not here)"
+# ── v5 additions (FLY-1089): the two steps Mode A was missing ──
+assert_contains "$PM_MD" "explainer"       "v5 step: research + explainer page"
+assert_contains "$PM_MD" "co-eval"         "v5 step: co-eval with the founder"
+assert_contains "$PM_MD" "WITHOUT \`--channel\`" "explainer hosted WITHOUT --channel (Lead delivers)"
+# ── structural section headings (harder to satisfy accidentally than a bare grep) ──
+assert_contains "$PM_MD" "One session"     "structural: one-session heading"
+assert_contains "$PM_MD" "founder门"        "structural: founder gate heading"
+assert_contains "$PM_MD" "build issue"     "structural: output = build issues"
+assert_contains "$PM_MD" "交工程"           "structural: handoff (交工程) heading"
 
-# ── boundary preserved: PM acceptance gate is out of scope (FLY-830) ──
-assert_contains "$ROLE_MD" "FLY-830"         "boundary: PM acceptance / pipeline shape = FLY-830 (not here)"
+# ════════════════════════════════════════════════════════════════════════════
+# prototype-executor.md — feasibility-first (new, FLY-1089)
+# ════════════════════════════════════════════════════════════════════════════
+echo "--- prototype-executor.md ---"
+assert_contains "$PROTO_MD" "可行性"         "prototype anchor: 可行性 (feasibility)"
+assert_contains "$PROTO_MD" "drop"           "verdict: not-doable -> drop (a success)"
+assert_contains "$PROTO_MD" "不是生产级"      "boundary: prototype is NOT production-grade"
+assert_contains "$PROTO_MD" "cheapest"       "cheapest-real-prototype ladder"
+assert_contains "$PROTO_MD" "no-three-stage" "dispatch discipline: no-three-stage label"
+assert_contains "$PROTO_MD" "create-issue"   "handoff (4a doable): create-issue -> productionize"
+assert_contains "$PROTO_MD" "proofshot"      "founder experience: proofshot"
+# ── boundary with designer must be explicit (Annie required it) ──
+assert_contains "$PROTO_MD" "Designer"       "explicit boundary vs the visual Designer role"
+# ── structural section headings ──
+assert_contains "$PROTO_MD" "One session"    "structural: one-session heading"
+assert_contains "$PROTO_MD" "founder门"       "structural: founder gate heading"
+assert_contains "$PROTO_MD" "verdict"        "structural: doable/not-doable verdict"
+assert_contains "$PROTO_MD" "交工程"          "structural: handoff (交工程) / drop"
 
-# ── Mode B: inherited docs/design responsibility must NOT be deleted ──
-assert_contains "$ROLE_MD" "codex-design-review" "mode B survives: codex-design-review for design specs"
-assert_contains "$ROLE_MD" "design"          "mode B survives: docs/design labels"
-
-# ── critical reporting rule preserved (FLY-208 / FLY-270) ──
-assert_contains "$ROLE_MD" "flywheel-comm ask" "reporting: flywheel-comm ask (not stock SendMessage)"
-
-# ── FLY-1059: `designer` label moved to the separate visual Designer role ──
-assert_contains "$ROLE_MD" "FLY-1059"            "boundary: references FLY-1059 designer split"
-assert_contains "$ROLE_MD" "designer-executor"   "boundary: points to the separate designer-executor role"
-# the old stale text ("no separate Designer role yet") must NOT come back
-assert_not_contains "$ROLE_MD" "no separate Designer role yet" \
-                "stale text removed: 'no separate Designer role yet'"
-# `designer` must no longer be listed as one of product-designer's Mode B labels
-assert_not_contains "$ROLE_MD" "\`design\` / \`ux\` / \`designer\`" \
-                "Mode B label list no longer claims 'designer'"
+# ════════════════════════════════════════════════════════════════════════════
+# product-designer-executor.md — docs / design-production ONLY (Mode A removed)
+# ════════════════════════════════════════════════════════════════════════════
+echo "--- product-designer-executor.md ---"
+assert_contains "$PD_MD" "codex-design-review" "docs/design survives: codex-design-review"
+assert_contains "$PD_MD" "design"          "docs/design survives: design labels"
+assert_contains "$PD_MD" "FLY-1089"        "boundary: references the FLY-1089 split"
+# Mode A (product co-creation) must NOT have leaked back — the sentinel is the
+# Chinese 产品共创; the boundary text points to pm-executor in English instead.
+assert_not_contains "$PD_MD" "产品共创"     "Mode A removed: no 产品共创 co-creation body"
+assert_not_contains "$PD_MD" "有定见"       "Mode A removed: no 有定见 probe protocol"
+assert_contains "$PD_MD" "pm-executor"     "routes PM co-creation to pm-executor"
 
 echo ""
 echo "RESULT: $PASS passed, $FAIL failed"

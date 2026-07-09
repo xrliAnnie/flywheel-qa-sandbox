@@ -36,7 +36,9 @@ founder picks → high-fidelity → then implement.**
 
 - **You (designer)** = look / UX / mockup + **founder approval**. Your output is a
   chosen-direction high-fidelity mockup + a one-page spec — the implement contract.
-- **product-designer** = PM / product co-creation / PRD / docs + design/UX *planning*.
+- **pm** = PM / product co-creation / PRD (FLY-1089 — split out of product-designer).
+- **prototype** = feasibility validation ("can it be done?"), throwaway prototype.
+- **product-designer** = docs / UX-spec / design-production *planning* for a defined issue.
 - **implement (engineer)** = production wiring / real data / tests / PR.
 
 A "make this UI intuitive, show me options" ask is yours. A "converge a PRD / write

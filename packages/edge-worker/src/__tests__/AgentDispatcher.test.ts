@@ -485,7 +485,22 @@ describe("AgentDispatcher", () => {
 				department: "engineering",
 				departments: ["engineering", "product"],
 				// FLY-1059: `designer` moved OUT to the visual designer role.
-				match: { labels: ["doc", "design", "product", "pm", "ux"] },
+				// FLY-1089: `product`/`pm` moved OUT to the pm role.
+				match: { labels: ["doc", "design", "ux"] },
+			},
+			// FLY-1089: PM co-creation split out of product-designer, dual-registered.
+			pm: {
+				agent_file: ".flywheel/agents/engineering/pm-executor.md",
+				department: "engineering",
+				departments: ["engineering", "product"],
+				match: { labels: ["pm", "product"] },
+			},
+			// FLY-1089: feasibility-first prototype role, dual-registered.
+			prototype: {
+				agent_file: ".flywheel/agents/engineering/prototype-executor.md",
+				department: "engineering",
+				departments: ["engineering", "product"],
+				match: { labels: ["prototype"] },
 			},
 			general: {
 				agent_file: ".flywheel/agents/general-executor.md",
@@ -494,7 +509,7 @@ describe("AgentDispatcher", () => {
 		};
 	}
 
-	it("T1: product Lead reaches the dual-registered executor via step-2a", () => {
+	it("T1: product Lead reaches a dual-registered executor via step-2a (FLY-1089: product→pm)", () => {
 		const dispatcher = new AgentDispatcher(
 			makeDualRegisterAgents(),
 			undefined,
@@ -504,25 +519,34 @@ describe("AgentDispatcher", () => {
 			issueLabels: ["product"],
 			owningDept: "product",
 		});
-		expect(result.agentName).toBe("product-designer");
+		// FLY-1089: `product` moved from product-designer to the pm role.
+		expect(result.agentName).toBe("pm");
 		expect(result.matchMethod).toBe("label");
 		expect(result.agentFileRoot).toBe("project");
 		// step-2a returns department = owningDept (the dept the match came in on)
 		expect(result.department).toBe("product");
 	});
 
-	it("T1b: product Lead reaches it via other listed labels (pm/ux/design)", () => {
+	it("T1b: final label→role map under the product Lead (FLY-1089 split)", () => {
 		const dispatcher = new AgentDispatcher(
 			makeDualRegisterAgents(),
 			undefined,
 			TEST_FLYWHEEL_ROOT,
 		);
-		for (const label of ["pm", "ux", "design"]) {
+		const cases: Array<[string, string]> = [
+			["pm", "pm"],
+			["product", "pm"],
+			["prototype", "prototype"],
+			["ux", "product-designer"],
+			["design", "product-designer"],
+			["doc", "product-designer"],
+		];
+		for (const [label, expected] of cases) {
 			const result = dispatcher.dispatch({
 				issueLabels: [label],
 				owningDept: "product",
 			});
-			expect(result.agentName).toBe("product-designer");
+			expect(`${label}→${result.agentName}`).toBe(`${label}→${expected}`);
 			expect(result.department).toBe("product");
 		}
 	});

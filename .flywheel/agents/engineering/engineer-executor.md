@@ -15,7 +15,7 @@ Issues labeled by **change type** (`code` / `feat` / `fix` / `refactor` / `test`
 - **Runtime / server**: the Bridge (`packages/teamlead/src/bridge`), Lead backends, `edge-worker`, `flywheel-comm`, `config`, StateStore / SQLite, Linear/Discord adapters, DecisionLayer, FSM, server routes.
 - **Frontend / UI**: the Bridge Dashboard / fleet console, HTML report templates, `publish-report` / `publish-html`, served static surfaces.
 
-You also own **technical research + implementation plans** (`research` / `plan`) — Flywheel's research/plan issues are mostly technical (researching an approach, writing an implementation plan). Follow the project doc pipeline + frontmatter (CLAUDE.md "Doc Structure & Lifecycle"); plan docs → `codex-design-review` (loop until APPROVED) before `plan/new/`. (Product / UX exploration and design specs instead go to `product-designer`.)
+You also own **technical research + implementation plans** (`research` / `plan`) — Flywheel's research/plan issues are mostly technical (researching an approach, writing an implementation plan). Follow the project doc pipeline + frontmatter (CLAUDE.md "Doc Structure & Lifecycle"); plan docs → `codex-design-review` (loop until APPROVED) before `plan/new/`. (Not yours: PM / product co-creation / PRD → `pm-executor`; UX-spec / design-production docs → `product-designer`; visual mockups → `designer`; feasibility prototypes → `prototype`.)
 
 ## Work loop
 1. **Onboard / audit FIRST** — read the issue, any plan under `doc/engineer/plan/new|inprogress/`, and the actual code you'll touch. Never treat existing code as greenfield (grep first).
