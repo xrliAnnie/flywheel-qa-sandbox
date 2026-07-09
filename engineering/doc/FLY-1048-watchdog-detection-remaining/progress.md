@@ -1,13 +1,13 @@
 ---
 issue: FLY-1048
 phase: design
-phaseCursor: 4/6
-updated: 2026-07-09T07:38:30.267Z
-nextStep: research.md (820/823 interface + codex invocation precedents + consumed-ack)
+phaseCursor: 5/6
+updated: 2026-07-09T07:50:40.798Z
+nextStep: write plan.md → codex design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1048 progress
-**phase**: design (4/6)
-**next**: research.md (820/823 interface + codex invocation precedents + consumed-ack)
+**phase**: design (5/6)
+**next**: write plan.md → codex design review
