@@ -1,14 +1,15 @@
 ---
 issue: FLY-1062
 phase: implement
-phaseCursor: 2/6
-updated: 2026-07-09T22:27:49.794Z
-nextStep: P0 package-onboard.test.sh(fixture
-  mini-monorepo:assembly/union/patch/四道门/幂等/审计覆盖)+ 真 npm 冒烟
+phaseCursor: 3/6
+updated: 2026-07-09T23:00:14.497Z
+nextStep: P2 hermetic 测试(provision-prebuilt.test.sh +
+  setup-prebuilt.test.sh:prebuilt --apply 零 clone/零 pnpm + bootstrap temp-HOME +
+  无哨兵 sentinel)
 chunks: []
 pointers: {}
 ---
 
 # FLY-1062 progress
-**phase**: implement (2/6)
-**next**: P0 package-onboard.test.sh(fixture mini-monorepo:assembly/union/patch/四道门/幂等/审计覆盖)+ 真 npm 冒烟
+**phase**: implement (3/6)
+**next**: P2 hermetic 测试(provision-prebuilt.test.sh + setup-prebuilt.test.sh:prebuilt --apply 零 clone/零 pnpm + bootstrap temp-HOME + 无哨兵 sentinel)
