@@ -75,6 +75,49 @@ export const TIER2_DENY_CJK: readonly string[] = [
 	"稍",
 ];
 
+/**
+ * FLY-1041 Fix C: PURE affirmation prefixes ("嗯ship" → "ship"). Stripped only
+ * when `prefixNorm` is on (caller reads FLYWHEEL_TIER2_PREFIX_NORM per call —
+ * a deterministic-approval semantic expansion MUST have its own kill-switch,
+ * Codex R1 #2). CJK affirmations glue without whitespace, so stripping is
+ * prefix-based (longest-first), not token-based. Deny tokens are checked both
+ * BEFORE stripping (whole message) and AFTER (a boundary-hidden hedge can be
+ * exposed by the strip), so this list must stay PURE affirmation — never add
+ * anything that could carry hedge/condition semantics.
+ */
+export const TIER2_AFFIRMATION_PREFIXES: readonly string[] = [
+	"嗯嗯",
+	"嗯",
+	"好的",
+	"好",
+	"哦",
+	"行",
+	"okk",
+	"ok",
+	"yes",
+];
+
+const AFFIRMATION_PREFIXES_LONGEST_FIRST: readonly string[] = [
+	...TIER2_AFFIRMATION_PREFIXES,
+].sort((a, b) => b.length - a.length);
+
+/** Repeatedly strip leading affirmation prefixes (longest-first each round). */
+function stripAffirmationPrefixes(norm: string): string {
+	let out = norm;
+	let progressed = true;
+	while (progressed) {
+		progressed = false;
+		for (const p of AFFIRMATION_PREFIXES_LONGEST_FIRST) {
+			if (out.startsWith(p)) {
+				out = out.slice(p.length).trimStart();
+				progressed = true;
+				break;
+			}
+		}
+	}
+	return out;
+}
+
 const MAX_CHARS = 32;
 const MAX_TOKENS = 5;
 
@@ -187,6 +230,7 @@ export function hasExplicitMismatchedReference(
 export function matchTier2Approval(
 	rawMessage: string,
 	gate: Tier2Gate,
+	opts?: { prefixNorm?: boolean },
 ): "approve" | "downgrade" {
 	if (typeof rawMessage !== "string") return "downgrade";
 	if (hasStructuralComplexity(rawMessage)) return "downgrade";
@@ -204,8 +248,23 @@ export function matchTier2Approval(
 		if (norm.includes(tok)) return "downgrade";
 	}
 
+	// FLY-1041 Fix C: strip pure affirmation prefixes ("嗯ship" → "ship"), then
+	// RE-RUN the deny guard — stripping can expose a boundary-hidden hedge
+	// ("okknot ship" → "not ship"). Off (default when opts absent) = the
+	// pre-FLY-1041 byte-compatible matcher.
+	let phrase = norm;
+	if (opts?.prefixNorm) {
+		phrase = stripAffirmationPrefixes(phrase);
+		for (const tok of TIER2_DENY_LATIN) {
+			if (new RegExp(`\\b${tok}\\b`).test(phrase)) return "downgrade";
+		}
+		for (const tok of TIER2_DENY_CJK) {
+			if (phrase.includes(tok)) return "downgrade";
+		}
+	}
+
 	// Any issue/PR reference must target the current gate.
-	const stripped = stripAndVerifyReferences(norm, gate);
+	const stripped = stripAndVerifyReferences(phrase, gate);
 	if (stripped === null) return "downgrade";
 
 	return TIER2_APPROVAL_PHRASES.has(stripped) ? "approve" : "downgrade";

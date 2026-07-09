@@ -78,6 +78,54 @@ describe("matchTier2Approval — bypass surface downgrades to Tier-3 (Codex R7/R
 	});
 });
 
+describe("matchTier2Approval — affirmation-prefix normalization (FLY-1041 Fix C)", () => {
+	const NORM = { prefixNorm: true } as const;
+
+	it.each([
+		"嗯ship", // the FLY-910 killer: CJK affirmation glued to the approval
+		"嗯 ship",
+		"嗯嗯 可以",
+		"好ship",
+		"好的 上线吧",
+		"哦 批准",
+		"行 ship",
+		"okk ship",
+		"ok ship it",
+		"yes ship",
+		"嗯嗯嗯ship", // repeated prefixes all strip
+		"嗯 可以 ship",
+	])("approves affirmation-prefixed approval: %j", (m) => {
+		expect(matchTier2Approval(m, GATE, NORM)).toBe("approve");
+	});
+
+	it.each([
+		"嗯 先别ship", // deny caught BEFORE stripping
+		"嗯?ship", // structural complexity still first
+		"okk", // strips to empty — an affirmation alone is NOT a ship approval
+		"嗯",
+		"嗯嗯",
+		"嗯ship FLY-999", // wrong reference still fails
+		"okknot ship", // deny re-check AFTER stripping ("not" was boundary-hidden)
+		"嗯 等等 ship", // deny token survives stripping
+	])("still downgrades: %j", (m) => {
+		expect(matchTier2Approval(m, GATE, NORM)).toBe("downgrade");
+	});
+
+	it("reverse-compat sentinel: without opts (prefixNorm off) 嗯ship downgrades exactly as before", () => {
+		expect(matchTier2Approval("嗯ship", GATE)).toBe("downgrade");
+		expect(matchTier2Approval("嗯ship", GATE, { prefixNorm: false })).toBe(
+			"downgrade",
+		);
+	});
+
+	it("existing bare approvals are unaffected by prefixNorm", () => {
+		expect(matchTier2Approval("ship", GATE, NORM)).toBe("approve");
+		expect(matchTier2Approval("可以", GATE, NORM)).toBe("approve");
+		expect(matchTier2Approval("ship FLY-799", GATE, NORM)).toBe("approve");
+		expect(matchTier2Approval("先别 ship", GATE, NORM)).toBe("downgrade");
+	});
+});
+
 describe("hasExplicitMismatchedReference (FLY-799 Codex R1 HIGH-3)", () => {
 	it("explicit wrong FLY-<n> → true (fail-closed target)", () => {
 		expect(hasExplicitMismatchedReference("ship FLY-756", GATE)).toBe(true);

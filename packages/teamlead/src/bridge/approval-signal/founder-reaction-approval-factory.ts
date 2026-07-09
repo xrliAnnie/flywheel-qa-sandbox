@@ -29,6 +29,24 @@ export interface FounderReactionApprovalFactoryConfig {
 	denylistProjects?: ReadonlySet<string>;
 	evaluateReactionImpl?: ReactionApprovalHandlerDeps["evaluateReactionImpl"];
 	writeGateResponseImpl?: ReactionApprovalHandlerDeps["writeGateResponseImpl"];
+	/**
+	 * FLY-1041 Chunk 4/5: attribution audit target (see the text factory).
+	 * The reaction pass re-polls every ~15s, so the event id is keyed on the
+	 * gate question (stable) → one audit row per (gate, stage), not per poll.
+	 */
+	auditStore?: {
+		insertEvent(event: {
+			event_id: string;
+			execution_id: string;
+			issue_id: string;
+			project_name: string;
+			event_type: string;
+			source: string;
+			payload?: Record<string, unknown>;
+		}): boolean;
+	};
+	/** FLY-1041 Chunk 5: shared founder-approval hold guard (plugin injects). */
+	isHeld?: ReactionApprovalHandlerDeps["isHeld"];
 	/** Test seam. */
 	handlerImpl?: typeof defaultHandler;
 }
@@ -66,6 +84,31 @@ export function makeFounderReactionApprovalCallback(
 		);
 		if (!canonicalFounderId) return null; // fail-closed
 
+		const auditStore = config.auditStore;
+		const auditSink = auditStore
+			? (stage: string, payload?: Record<string, unknown>): void => {
+					try {
+						auditStore.insertEvent({
+							event_id: `founder-ship-attribution-reaction-${args.gate.questionId}-${stage}`,
+							execution_id: args.gate.executionId,
+							issue_id: args.ctx.issueId,
+							project_name: args.ctx.projectName,
+							event_type: "founder_ship_attribution",
+							source: "bridge.founder-reaction-approval",
+							payload: {
+								stage,
+								questionId: args.gate.questionId,
+								...(payload ?? {}),
+							},
+						});
+					} catch (err) {
+						console.warn(
+							`[founder-reaction-approval] attribution audit write failed (${stage}): ${(err as Error).message}`,
+						);
+					}
+				}
+			: undefined;
+
 		return handler(
 			{
 				gate: args.gate,
@@ -80,6 +123,8 @@ export function makeFounderReactionApprovalCallback(
 				onResponseWritten: config.onResponseWritten,
 				evaluateReactionImpl: config.evaluateReactionImpl,
 				writeGateResponseImpl: config.writeGateResponseImpl,
+				auditSink,
+				isHeld: config.isHeld,
 			},
 		);
 	};

@@ -1112,6 +1112,62 @@ export function createEventRouter(
 					});
 				};
 
+				// FLY-1041 Fix A (main path): after a successful REBIND to a NEW
+				// question, retire the SUPERSEDED gate's CommDB row so only ONE
+				// approve_to_ship gate is founder-bindable at a time (the FLY-910
+				// multi-gate ambiguity). Order is rebind FIRST (authoritative,
+				// already done by writeReviewBinding) then retire — a crash in
+				// between leaves the old gate alive a little longer and the
+				// gate-poller sweeper converges it (R2). retireShipGate's WHERE is
+				// double-guarded (approve_to_ship + unanswered), so an answered
+				// gate can never be rewritten. Kill-switch
+				// `FLYWHEEL_SHIP_GATE_RETIRE=0` restores byte-compat (no retire).
+				const retireSupersededShipGate = (): void => {
+					if (process.env.FLYWHEEL_SHIP_GATE_RETIRE === "0") return;
+					if (status !== "awaiting_review") return;
+					const supersededQid = existingSession?.review_question_id;
+					if (
+						!supersededQid ||
+						supersededQid === REVIEW_BINDING_UNBOUND ||
+						!reviewQuestionId ||
+						supersededQid === reviewQuestionId
+					) {
+						return;
+					}
+					try {
+						const commDb = new CommDB(
+							commDbPathForProject(event.project_name),
+							false,
+						);
+						let retired = false;
+						try {
+							retired = commDb.retireShipGate(supersededQid);
+						} finally {
+							commDb.close();
+						}
+						if (retired) {
+							store.insertEvent({
+								event_id: `ship-gate-superseded-${supersededQid}`,
+								execution_id: event.execution_id,
+								issue_id: event.issue_id,
+								project_name: event.project_name,
+								event_type: "ship_gate_superseded",
+								source: "bridge.event-route",
+								payload: {
+									supersededQid,
+									newQid: reviewQuestionId,
+									by: "event-route",
+								},
+							});
+						}
+					} catch (err) {
+						console.warn(
+							`[event-route] FLY-1041 ship-gate retire failed for ${supersededQid} ` +
+								`(${event.execution_id}): ${(err as Error).message} — sweeper will converge it`,
+						);
+					}
+				};
+
 				// FLY-191 Phase 2: shared completion-evidence patch (used by both the
 				// normal transition success branch and the re-review branch below).
 				// pr_head_sha deliberately NOT here — it is owned by
@@ -1187,6 +1243,8 @@ export function createEventRouter(
 					} else {
 						store.resetAwaitingReviewWindow(event.execution_id);
 						writeReviewBinding();
+						// FLY-1041 Fix A: the old gate is now superseded — retire it.
+						retireSupersededShipGate();
 						console.log(
 							`[event-route] re-review request for ${event.execution_id}: window reset, questionId=${reviewQuestionId ?? "(unbound)"}, pr_head_sha=${prHeadSha ?? "(cleared)"}`,
 						);
@@ -1221,6 +1279,10 @@ export function createEventRouter(
 						);
 						patchCompletionEvidence();
 						writeReviewBinding();
+						// FLY-1041 Fix A: covers the FLY-945 approved_to_ship →
+						// awaiting_review recovery lap (and is a no-op on a first
+						// needs_review — no prior binding to supersede).
+						retireSupersededShipGate();
 
 						// FLY-208 5a: evidence-gap completion — persist the marker
 						// (FLY-210 consumes it) and warn loudly.

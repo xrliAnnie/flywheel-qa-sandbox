@@ -29,6 +29,8 @@ export interface TextSourceMessage {
 export interface TextSourceArgs {
 	gate: Omit<GateBinding, "targetMessageId">;
 	message: TextSourceMessage;
+	/** FLY-1041 Chunk 7: verified Discord reply to THIS gate's ship card. */
+	replyToCard?: boolean;
 }
 
 export type ClassifyImpl = (
@@ -64,8 +66,15 @@ export async function evaluateTextSource(
 	};
 
 	// Tier-2 exact allowlist — zero AI, never calls the classifier.
-	if (matchTier2Approval(message.content, tier2Gate) === "approve") {
-		return { ...base, kind: "approve" };
+	// FLY-1041 Fix C: affirmation-prefix normalization ("嗯ship" → "ship") is
+	// default-ON with its own kill-switch (read per call — flip without a
+	// Bridge restart). `FLYWHEEL_TIER2_PREFIX_NORM=0` → byte-compatible
+	// pre-FLY-1041 matcher (「嗯ship」 downgrades to Tier-3).
+	const prefixNorm = process.env.FLYWHEEL_TIER2_PREFIX_NORM !== "0";
+	if (
+		matchTier2Approval(message.content, tier2Gate, { prefixNorm }) === "approve"
+	) {
+		return { ...base, kind: "approve", evidence: { stage: "tier2_approve" } };
 	}
 
 	// FLY-799 (Codex R1 HIGH-3): an EXPLICIT wrong-target reference (`ship
@@ -75,7 +84,14 @@ export async function evaluateTextSource(
 	// downgrade to Tier-3), so an ordinary approval that happens to cite a number
 	// is unaffected.
 	if (hasExplicitMismatchedReference(message.content, tier2Gate)) {
-		return { ...base, kind: "unclear" };
+		return {
+			...base,
+			kind: "unclear",
+			evidence: {
+				stage: "tier2_downgrade",
+				reason: "explicit_mismatched_reference",
+			},
+		};
 	}
 
 	// Tier-3 — ambiguous free text only.
@@ -89,9 +105,31 @@ export async function evaluateTextSource(
 			issueId: gate.issueId,
 			issueIdentifier: gate.issueIdentifier,
 			prHeadSha: gate.prHeadSha,
+			replyToCard: args.replyToCard,
 		},
 		deps.classifierDeps,
 	);
 
-	return { ...base, kind: verdict.kind };
+	// FLY-1041 Chunk 4: surface WHICH tier-3 outcome (and why) instead of
+	// folding everything into a bare kind — a classifier spawn failure
+	// (runnerFailed) is a different production problem than a model "unclear".
+	const stage =
+		verdict.kind === "approve"
+			? ("tier3_approve" as const)
+			: verdict.kind === "reject"
+				? ("tier3_reject" as const)
+				: verdict.runnerFailed
+					? ("tier3_runner_failed" as const)
+					: ("tier3_unclear" as const);
+	const reason =
+		verdict.kind === "reject"
+			? verdict.reason
+			: verdict.kind === "unclear"
+				? verdict.reason
+				: undefined;
+	return {
+		...base,
+		kind: verdict.kind,
+		evidence: { stage, ...(reason !== undefined ? { reason } : {}) },
+	};
 }

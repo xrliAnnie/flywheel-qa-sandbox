@@ -117,3 +117,39 @@ describe("classifyFounderShipApproval — prompt binding", () => {
 		expect(prompt).toContain(INPUT.messageContent);
 	});
 });
+
+describe("classifyFounderShipApproval — failure attribution (FLY-1041 Chunk 4)", () => {
+	it("runner ok:false → unclear WITH runnerFailed + the runner's reason (no longer folded away)", async () => {
+		const res = await classifyFounderShipApproval(INPUT, {
+			runnerImpl: async () => ({ ok: false, reason: "cli_missing" }),
+		});
+		expect(res).toMatchObject({
+			kind: "unclear",
+			runnerFailed: true,
+			reason: "cli_missing",
+		});
+	});
+
+	it("runner throw → unclear WITH runnerFailed", async () => {
+		const res = await classifyFounderShipApproval(INPUT, {
+			runnerImpl: async () => {
+				throw new Error("boom");
+			},
+		});
+		expect(res).toMatchObject({ kind: "unclear", runnerFailed: true });
+	});
+
+	it("evidence mismatch → unclear with a distinguishing reason (NOT runnerFailed)", async () => {
+		const res = await classifyFounderShipApproval(INPUT, {
+			runnerImpl: async () => ({
+				ok: true,
+				verdict: { decision: "approve", evidence_message_id: "WRONG" },
+			}),
+		});
+		expect(res.kind).toBe("unclear");
+		expect((res as { runnerFailed?: boolean }).runnerFailed).toBeUndefined();
+		expect((res as { reason?: string }).reason).toBe(
+			"evidence_message_id_mismatch",
+		);
+	});
+});

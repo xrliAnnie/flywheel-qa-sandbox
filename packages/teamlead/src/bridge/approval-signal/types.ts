@@ -8,6 +8,24 @@
  * evidence.
  */
 
+/**
+ * FLY-1041 Chunk 4: WHERE in the tier chain a text signal was decided (and
+ * why) — the raw material for the `founder_ship_attribution` audit trail.
+ * `tier3_runner_failed` is deliberately distinct from `tier3_unclear`: a
+ * classifier spawn failure used to be folded into "unclear" and became
+ * un-diagnosable in production (the 「嗯ship」 forensics gap).
+ */
+export interface ApprovalAttributionEvidence {
+	stage:
+		| "tier2_approve"
+		| "tier2_downgrade"
+		| "tier3_approve"
+		| "tier3_reject"
+		| "tier3_unclear"
+		| "tier3_runner_failed";
+	reason?: string;
+}
+
 export type ApprovalSignal =
 	| {
 			source: "reaction";
@@ -25,6 +43,8 @@ export type ApprovalSignal =
 			prHeadSha: string;
 			messageId: string;
 			authorUserId: string;
+			/** FLY-1041 Chunk 4: attribution evidence (additive — optional). */
+			evidence?: ApprovalAttributionEvidence;
 	  }
 	| {
 			source: "image";

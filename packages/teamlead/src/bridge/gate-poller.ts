@@ -42,7 +42,11 @@ import {
 	InMemoryInboundCursorStore,
 } from "../lead-backends/codex/InboundCursorStore.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
-import type { Session, StateStore } from "../StateStore.js";
+import {
+	REVIEW_BINDING_UNBOUND,
+	type Session,
+	type StateStore,
+} from "../StateStore.js";
 import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
 import { isReviewHeld } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
@@ -193,6 +197,15 @@ export interface GatePollerConfig {
 	 * behavior — that IS the kill-switch). Non-ship checkpoints are untouched.
 	 */
 	shipGateGraceMs?: number;
+	/**
+	 * FLY-1041 Chunk 6: grace before the approve_to_ship founder CARD is
+	 * posted (the deterministic approval carrier — reply-to-card / ✅). The
+	 * 10min FLY-605 grace made the card a rarely-seen fallback; for ship gates
+	 * the card IS the primary surface, so it fires after ~15s (default). Env
+	 * `FLYWHEEL_SHIP_GATE_CARD_GRACE_MS` overrides; `FLYWHEEL_SHIP_GATE_CARD=0`
+	 * restores the 10min fallback behavior. Brainstorm is untouched.
+	 */
+	shipGateCardGraceMs?: number;
 	/** Part B slow sub-cadence in poll ticks (default 20 ≈ 60s at 3s). */
 	founderReplyDeliverEveryNTicks?: number;
 	/** Part B thread-read cursor store (default in-memory). */
@@ -204,6 +217,13 @@ export interface GatePollerConfig {
 	 * approve_to_ship gate response. Absent → deliverer stays WAKE-only.
 	 */
 	tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
+
+	/**
+	 * FLY-1041 Chunk 7: the durable gate-message binding reader (same closure
+	 * the ✅-reaction callback uses), threaded into the founder-reply deliverer
+	 * for reply-to-card narrowing. Absent → replies are never card-matched.
+	 */
+	readCurrentBinding?: FounderReplyDeliverDeps["readCurrentBinding"];
 
 	/**
 	 * FLY-945 Fix D: the external-merge convergence sweeper closure (built in
@@ -306,6 +326,8 @@ interface PendingQuestion {
 	checkpoint: string | null;
 	content_type: string;
 	content_ref: string | null;
+	/** FLY-1041: 'report' = runner status report (`ask --report`). */
+	kind?: string | null;
 }
 
 const ACTIVE_SESSION_STATUSES = new Set([
@@ -313,6 +335,37 @@ const ACTIVE_SESSION_STATUSES = new Set([
 	"awaiting_review",
 	"approved_to_ship",
 ]);
+
+/**
+ * FLY-1041 Fix A (sweeper judgement, pure). A pending approve_to_ship gate is
+ * SUPERSEDED when its session has re-bound to a DIFFERENT question whose row
+ * was created STRICTLY later — the founder must only ever see ONE bindable
+ * ship gate.
+ *
+ * ACCEPTED CONSERVATIVE TRADEOFF (Codex R1 #5): this sweeper is a backstop,
+ * not a completeness guarantee. Under a same-second re-fire (SQLite
+ * `created_at` has 1s resolution) where the main event-route retire ALSO
+ * failed, the old gate stays pending until its TTL — safe side: noise over a
+ * false kill of the founder's only bindable gate. The main path (event-route)
+ * retires by EXACT qid and is unaffected by same-second timing. Do NOT widen
+ * the comparison to `>=`.
+ */
+export function isSupersededShipGate(
+	q: { id: string; checkpoint: string | null; created_at: string },
+	session: { review_question_id?: string | null },
+	boundQuestion: { created_at: string } | undefined,
+): boolean {
+	if (q.checkpoint !== "approve_to_ship") return false;
+	const boundQid = session.review_question_id;
+	if (!boundQid || boundQid === REVIEW_BINDING_UNBOUND || boundQid === q.id) {
+		return false;
+	}
+	if (!boundQuestion) return false;
+	const boundMs = parseSqliteUtcMs(boundQuestion.created_at);
+	const qMs = parseSqliteUtcMs(q.created_at);
+	if (boundMs === null || qMs === null) return false;
+	return boundMs > qMs;
+}
 
 export class GatePoller {
 	private timerHandle: ReturnType<typeof setInterval> | null = null;
@@ -477,6 +530,14 @@ export class GatePoller {
 								console.warn(
 									`[GatePoller] orphan question — no session for from_agent=${question.from_agent} (qid=${question.id}, lead=${lead.agentId})`,
 								);
+								continue;
+							}
+							// FLY-1041 Fix A (sweeper): a superseded ship gate is retired +
+							// skipped BEFORE any founder surface — runs even for a held
+							// session (a zombie gate on a held session must still die).
+							if (
+								this.maybeSweepSupersededShipGate(question, session, dbPath)
+							) {
 								continue;
 							}
 							// FLY-579: QA-held — do NOT surface the parent's approve_to_ship
@@ -1645,12 +1706,102 @@ export class GatePoller {
 		}
 	}
 
+	/** FLY-1041: default-ON kill-switch shared with the event-route retire path. */
+	private shipGateRetireEnabled(): boolean {
+		return process.env.FLYWHEEL_SHIP_GATE_RETIRE !== "0";
+	}
+
+	/**
+	 * FLY-1041 Fix A (sweeper): converge a superseded approve_to_ship gate the
+	 * event-route retire missed (crash between rebind and retire, manual gate).
+	 * Returns true when this gate is superseded → the relay loop `continue`s
+	 * (no relay, no founder card) this tick; the retire write is best-effort
+	 * (a failure re-tries next tick — the gate stays suppressed either way).
+	 * Zero new timer: inlined in the existing relay loop.
+	 */
+	private maybeSweepSupersededShipGate(
+		question: PendingQuestion,
+		session: Session,
+		dbPath: string,
+	): boolean {
+		if (!this.shipGateRetireEnabled()) return false;
+		if (question.checkpoint !== "approve_to_ship") return false;
+		const boundQid = session.review_question_id;
+		if (
+			!boundQid ||
+			boundQid === REVIEW_BINDING_UNBOUND ||
+			boundQid === question.id
+		) {
+			return false;
+		}
+		let boundQuestion: { created_at: string } | undefined;
+		try {
+			const rdb = CommDB.openReadonly(dbPath);
+			try {
+				boundQuestion = rdb.getMessageById(boundQid);
+			} finally {
+				rdb.close();
+			}
+		} catch {
+			return false; // comm.db unreadable → judge nothing this tick
+		}
+		if (!isSupersededShipGate(question, session, boundQuestion)) return false;
+
+		try {
+			const wdb = new CommDB(dbPath, false);
+			let retired = false;
+			try {
+				retired = wdb.retireShipGate(question.id);
+			} finally {
+				wdb.close();
+			}
+			if (retired) {
+				// Same event-id prefix as the event-route path → insertEvent's
+				// UNIQUE constraint dedupes naturally across both writers.
+				this.config.store.insertEvent({
+					event_id: `ship-gate-superseded-${question.id}`,
+					execution_id: session.execution_id,
+					issue_id: session.issue_id,
+					project_name: session.project_name,
+					event_type: "ship_gate_superseded",
+					source: "bridge.gate-poller",
+					payload: {
+						supersededQid: question.id,
+						newQid: boundQid,
+						by: "gate-poller-sweeper",
+					},
+				});
+			}
+		} catch (err) {
+			console.warn(
+				`[GatePoller] FLY-1041 sweeper retire failed for ${question.id}: ` +
+					`${err instanceof Error ? err.message : String(err)} — retried next tick`,
+			);
+		}
+		return true;
+	}
+
 	private founderThreadNotifyEnabled(): boolean {
 		return process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY !== "0";
 	}
 
 	private founderThreadGraceMs(): number {
 		return this.config.founderThreadNotifyGraceMs ?? 10 * 60_000;
+	}
+
+	/** FLY-1041 Chunk 6: default-ON kill-switch for the fast ship card. */
+	private shipGateCardEnabled(): boolean {
+		return process.env.FLYWHEEL_SHIP_GATE_CARD !== "0";
+	}
+
+	/** FLY-1041 Chunk 6: ship-card grace (env > config > 15s default). */
+	private shipGateCardGraceMs(): number {
+		const env = Number.parseInt(
+			process.env.FLYWHEEL_SHIP_GATE_CARD_GRACE_MS ?? "",
+			10,
+		);
+		if (Number.isFinite(env) && env >= 0) return env;
+		return this.config.shipGateCardGraceMs ?? 15_000;
 	}
 
 	private founderThreadRetryBudgetMs(): number {
@@ -1696,10 +1847,20 @@ export class GatePoller {
 		}
 
 		// Grace: the gate must have sat unanswered ≥ grace (= "the Lead dropped it").
+		// FLY-1041 Chunk 6: approve_to_ship gets the SHORT ship-card grace — the
+		// card is the founder's deterministic approval carrier (reply-to-card /
+		// ✅), not a fallback; brainstorm keeps the 10min FLY-605 grace. Hold
+		// semantics are untouched: the relay loop's isReviewHeld skip runs before
+		// this method, so a held gate never reaches here — the card lands on the
+		// first tick after the hold clears.
 		const createdMs = parseSqliteUtcMs(question.created_at);
 		if (createdMs === null) return;
 		const now = Date.now();
-		if (now - createdMs < this.founderThreadGraceMs()) return;
+		const graceMs =
+			cp === "approve_to_ship" && this.shipGateCardEnabled()
+				? this.shipGateCardGraceMs()
+				: this.founderThreadGraceMs();
+		if (now - createdMs < graceMs) return;
 
 		// Dedup: terminal in-process, or a durable marker survived a restart.
 		if (this.founderNotifyDone.has(question.id)) return;
@@ -2301,6 +2462,12 @@ export class GatePoller {
 					{ ctx: FounderReplyThreadCtx; questions: PendingQuestionForThread[] }
 				>();
 				for (const q of pending) {
+					// FLY-1041 Chunk 9 (Fix D): a runner's `ask --report` status report
+					// is NEVER a founder-reply binding candidate — it neither absorbs
+					// a founder "ship" nor inflates the ambiguity denominator. This is
+					// the ONLY place reports are special-cased: relayToLead, the
+					// pending CLI, and liveness all keep treating them as questions.
+					if (q.kind === "report") continue;
 					const createdMs = parseSqliteUtcMs(q.created_at);
 					if (createdMs === null) continue;
 					const session = this.config.store.getSession(q.from_agent);
@@ -2360,6 +2527,8 @@ export class GatePoller {
 							deliverAmbiguousToLead,
 							// FLY-799: founder text approval → gate write (flag-gated; absent → WAKE-only).
 							tryFounderShipApproval: this.config.tryFounderShipApproval,
+							// FLY-1041 Chunk 7: reply-to-card binding reader.
+							readCurrentBinding: this.config.readCurrentBinding,
 						});
 					} catch (err) {
 						console.warn(

@@ -16,7 +16,11 @@
 
 import type { ImageAttachment } from "./image-approval-source.js";
 import { evaluateTextSource } from "./text-approval-source.js";
-import type { ApprovalSignal, GateBinding } from "./types.js";
+import type {
+	ApprovalAttributionEvidence,
+	ApprovalSignal,
+	GateBinding,
+} from "./types.js";
 import {
 	type GateResponseDb,
 	writeGateResponseAndRunPostWrite,
@@ -56,6 +60,22 @@ export interface ShipApprovalHandlerDeps {
 			imageAttachments: ImageAttachment[];
 		};
 	}) => Promise<ApprovalSignal | null>;
+	/**
+	 * FLY-1041 Chunk 4: attribution audit sink. Called at every decision point
+	 * (narrowing, hold, signal evaluation, write outcome) with a stage keyword
+	 * + payload; the factory turns it into an idempotent
+	 * `founder_ship_attribution` session_event. Absent → zero audit (tests /
+	 * legacy assemblies unchanged).
+	 */
+	auditSink?: (stage: string, payload?: Record<string, unknown>) => void;
+	/**
+	 * FLY-1041 Chunk 5: the shared founder-approval hold guard
+	 * (`founderApprovalHoldGuard` — codex gate / QA / merge_block). While held,
+	 * founder text is NEVER written — neither approve NOR reject/feedback —
+	 * deliberately conservative: everything stays WAKE-only until the hold
+	 * clears (Codex R2 note 3). Absent → no hold check (byte-compat).
+	 */
+	isHeld?: (executionId: string) => boolean;
 }
 
 export interface ShipApprovalHandlerArgs {
@@ -74,6 +94,13 @@ export interface ShipApprovalHandlerArgs {
 		createdAtMs: number;
 	}[];
 	ctx: { issueId: string; threadId: string };
+	/**
+	 * FLY-1041 Chunk 7: this founder message is a VERIFIED Discord reply
+	 * (type 19 + reference in this thread) to THIS gate's ship card — the
+	 * deliverer already narrowed shipGates to that one gate. Threaded into the
+	 * Tier-3 prompt so short affirmations on the card bind deterministically.
+	 */
+	replyToCard?: boolean;
 }
 
 export async function tryFounderShipApproval(
@@ -91,12 +118,51 @@ export async function tryFounderShipApproval(
 			s?.status === "awaiting_review" && s?.review_question_id === g.questionId
 		);
 	});
-	if (current.length !== 1) return null;
+	if (current.length === 0) {
+		deps.auditSink?.("narrow_zero", {
+			shipGateQids: args.shipGates.map((g) => g.questionId),
+		});
+		return null;
+	}
+	if (current.length > 1) {
+		deps.auditSink?.("narrow_multi", {
+			candidates: current.map((g) => {
+				const s = deps.store.getSession(g.executionId);
+				return {
+					questionId: g.questionId,
+					executionId: g.executionId,
+					status: s?.status,
+					reviewQuestionId: s?.review_question_id,
+				};
+			}),
+		});
+		return null;
+	}
 
 	const gate = current[0];
 	if (!gate) return null;
 	const session = deps.store.getSession(gate.executionId);
-	if (!session?.pr_head_sha) return null;
+	if (!session?.pr_head_sha) {
+		deps.auditSink?.("narrow_no_head", { questionId: gate.questionId });
+		return null;
+	}
+
+	// FLY-1041 Chunk 5: held (codex not green / QA running / merge_block) →
+	// decline EVERY founder text decision — approve AND reject alike stay
+	// unwritten (WAKE-only) until the hold clears. The founder gets the ❓
+	// receipt (Chunk 8) instead of a silent write that verify-approval would
+	// refuse anyway (the FLY-910 05:47 confusion).
+	if (deps.isHeld?.(gate.executionId)) {
+		deps.auditSink?.("held_declined", {
+			questionId: gate.questionId,
+			executionId: gate.executionId,
+		});
+		return null;
+	}
+
+	if (args.replyToCard) {
+		deps.auditSink?.("reply_to_card_hit", { questionId: gate.questionId });
+	}
 
 	const binding: Omit<GateBinding, "targetMessageId"> = {
 		questionId: gate.questionId,
@@ -140,9 +206,21 @@ export async function tryFounderShipApproval(
 				content: args.msg.content ?? "",
 				authorId: args.msg.authorId ?? "",
 			},
+			replyToCard: args.replyToCard,
 		});
 	}
-	if (!signal || signal.kind === "unclear") return null; // WAKE-only fallback
+	if (!signal) return null;
+
+	// FLY-1041 Chunk 4: audit the evaluation outcome — the evidence stage when
+	// the source provided one (text), else the bare signal kind (image).
+	const evidence = (signal as { evidence?: ApprovalAttributionEvidence })
+		.evidence;
+	deps.auditSink?.(evidence?.stage ?? `signal_${signal.kind}`, {
+		questionId: gate.questionId,
+		kind: signal.kind,
+		...(evidence?.reason !== undefined ? { reason: evidence.reason } : {}),
+	});
+	if (signal.kind === "unclear") return null; // WAKE-only fallback
 
 	const write = deps.writeGateResponseImpl ?? writeGateResponseAndRunPostWrite;
 	const answer =
@@ -159,6 +237,13 @@ export async function tryFounderShipApproval(
 		answer,
 		expectedCurrentReviewQuestionId: session.review_question_id ?? undefined,
 		onResponseWritten: deps.onResponseWritten,
+	});
+	deps.auditSink?.(res.written ? "response_written" : "write_refused", {
+		questionId: gate.questionId,
+		decision: signal.kind,
+		written: res.written,
+		retrySafe: res.retrySafe,
+		...(res.reason !== undefined ? { reason: res.reason } : {}),
 	});
 
 	if (!res.written && !res.retrySafe) return { handled: [], retrySafe: false };

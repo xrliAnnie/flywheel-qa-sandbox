@@ -20,6 +20,24 @@ import {
 } from "./founder-ship-approval-handler.js";
 import type { GateResponseDb } from "./write-gate-response.js";
 
+/**
+ * FLY-1041 Chunk 4: structural audit surface (the real StateStore satisfies
+ * it). Every attribution decision is persisted as an idempotent
+ * `founder_ship_attribution` session_event — the forensics trail the FLY-910
+ * incident lacked.
+ */
+export interface AttributionAuditStore {
+	insertEvent(event: {
+		event_id: string;
+		execution_id: string;
+		issue_id: string;
+		project_name: string;
+		event_type: string;
+		source: string;
+		payload?: Record<string, unknown>;
+	}): boolean;
+}
+
 export interface FounderShipApprovalFactoryConfig {
 	discordOwnerUserId?: string;
 	founderConsentUserId?: string;
@@ -29,6 +47,10 @@ export interface FounderShipApprovalFactoryConfig {
 	denylistProjects?: ReadonlySet<string>;
 	evaluateTextImpl?: ShipApprovalHandlerDeps["evaluateTextImpl"];
 	writeGateResponseImpl?: ShipApprovalHandlerDeps["writeGateResponseImpl"];
+	/** FLY-1041 Chunk 4: attribution audit target. Absent → no audit events. */
+	auditStore?: AttributionAuditStore;
+	/** FLY-1041 Chunk 5: shared founder-approval hold guard (plugin injects). */
+	isHeld?: ShipApprovalHandlerDeps["isHeld"];
 	/**
 	 * FLY-799 image approval (default-OFF fast-follow): the production image
 	 * evaluator (download + sha256 + multimodal classify). Absent → text-only.
@@ -50,6 +72,8 @@ export interface FounderShipApprovalCallbackArgs {
 	}[];
 	ctx: { issueId: string; threadId: string; projectName: string };
 	db: GateResponseDb;
+	/** FLY-1041 Chunk 7: deliverer-verified reply to THIS gate's ship card. */
+	replyToCard?: boolean;
 }
 
 /** Default ON — only an explicit `=0` disables (kill-switch). */
@@ -77,11 +101,37 @@ export function makeFounderShipApprovalCallback(
 		);
 		if (!canonicalFounderId) return null; // fail-closed
 
+		// FLY-1041 Chunk 4: per-call audit sink. Event id = msgId + stage →
+		// insertEvent's UNIQUE constraint makes re-processing the same founder
+		// message (cursor retry) idempotent per stage. Audit must never break
+		// attribution — swallow its own failures.
+		const auditStore = config.auditStore;
+		const auditSink = auditStore
+			? (stage: string, payload?: Record<string, unknown>): void => {
+					try {
+						auditStore.insertEvent({
+							event_id: `founder-ship-attribution-${args.msg.id}-${stage}`,
+							execution_id: args.shipGates[0]?.executionId ?? "",
+							issue_id: args.ctx.issueId,
+							project_name: args.ctx.projectName,
+							event_type: "founder_ship_attribution",
+							source: "bridge.founder-ship-approval",
+							payload: { stage, msgId: args.msg.id, ...(payload ?? {}) },
+						});
+					} catch (err) {
+						console.warn(
+							`[founder-ship-approval] attribution audit write failed (${stage}): ${(err as Error).message}`,
+						);
+					}
+				}
+			: undefined;
+
 		return handler(
 			{
 				msg: args.msg,
 				shipGates: args.shipGates,
 				ctx: { issueId: args.ctx.issueId, threadId: args.ctx.threadId },
+				replyToCard: args.replyToCard,
 			},
 			{
 				canonicalFounderId,
@@ -94,6 +144,8 @@ export function makeFounderShipApprovalCallback(
 				// evaluator, which is the flip-on fast-follow).
 				imageApproval: imageApprovalEnabled(),
 				evaluateImageImpl: config.evaluateImageImpl,
+				auditSink,
+				isHeld: config.isHeld,
 			},
 		);
 	};

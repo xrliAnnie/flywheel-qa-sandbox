@@ -24,6 +24,8 @@ import { respond as defaultRespond } from "flywheel-comm/respond";
 import { wakeRunnerMailbox as defaultWake } from "flywheel-comm/wake";
 import type { InboundCursorStore } from "../lead-backends/codex/InboundCursorStore.js";
 import type { StateStore } from "../StateStore.js";
+import { reactToFounderMessage as defaultReactToFounderMessage } from "./approval-signal/founder-ack.js";
+import type { GateMessageBinding } from "./approval-signal/gate-message-binding.js";
 import {
 	msToSnowflakeLowerBound,
 	snowflakeToMs,
@@ -35,11 +37,25 @@ const GET_TIMEOUT_MS = 5_000;
 const GET_LIMIT = 50;
 const SUMMARY_MAX = 1_000;
 const FOUNDER_AGENT = "founder-bridge-auto";
+/** Discord message type 19 = REPLY (the only shape reply-to-card accepts). */
+const DISCORD_MESSAGE_TYPE_REPLY = 19;
 
 interface RawDiscordMessage {
 	id: string;
 	content?: string;
 	author?: { id?: string; bot?: boolean };
+	/**
+	 * FLY-1041 Chunk 7: already present in the batch GET response — a REPLY
+	 * message (type 19) carries `message_reference.message_id`. No extra API
+	 * call needed; `referenced_message` (full object) is NOT relied on.
+	 */
+	type?: number;
+	message_reference?: {
+		/** 0/absent = DEFAULT reference; 1 = forward — only DEFAULT qualifies. */
+		type?: number;
+		message_id?: string;
+		channel_id?: string;
+	};
 }
 
 export interface FounderReplyThreadCtx {
@@ -103,7 +119,26 @@ export interface FounderReplyDeliverDeps {
 		shipGates: PendingQuestionForThread[];
 		ctx: FounderReplyThreadCtx;
 		db: CommDB;
+		/** FLY-1041 Chunk 7: verified reply to shipGates[0]'s ship card. */
+		replyToCard?: boolean;
 	}) => Promise<{ handled: string[]; retrySafe: boolean } | null>;
+	/**
+	 * FLY-1041 Chunk 7: read the ONE current durable
+	 * `(questionId, prHeadSha) → gateMessageId` binding (same reader the
+	 * ✅-reaction path uses, fail-closed via selectCurrentBinding). When a
+	 * founder message is a true Discord REPLY whose reference resolves to a
+	 * gate's bound card message, attribution is narrowed to THAT gate —
+	 * a short "okk" on the card binds deterministically regardless of how many
+	 * other questions the thread has accumulated. Absent → replies are treated
+	 * exactly like any other founder message (byte-compat).
+	 */
+	readCurrentBinding?: (
+		executionId: string,
+		questionId: string,
+		prHeadSha: string,
+	) => GateMessageBinding | null;
+	/** FLY-1041 Chunk 8: test seam for the receipt-reaction PUT. */
+	reactToFounderMessageImpl?: typeof defaultReactToFounderMessage;
 }
 
 function audit(
@@ -241,6 +276,9 @@ export async function emitFounderReplyDeliveryForThread(
 					respondImpl,
 					deliverAmbiguousToLead: deps.deliverAmbiguousToLead,
 					tryFounderShipApproval: deps.tryFounderShipApproval,
+					readCurrentBinding: deps.readCurrentBinding,
+					fetchImpl,
+					reactToFounderMessageImpl: deps.reactToFounderMessageImpl,
 				},
 				pendingNow,
 			);
@@ -269,6 +307,9 @@ async function processFounderMessage(
 		respondImpl: typeof defaultRespond;
 		deliverAmbiguousToLead?: FounderReplyDeliverDeps["deliverAmbiguousToLead"];
 		tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
+		readCurrentBinding?: FounderReplyDeliverDeps["readCurrentBinding"];
+		fetchImpl?: typeof fetch;
+		reactToFounderMessageImpl?: FounderReplyDeliverDeps["reactToFounderMessageImpl"];
 	},
 	pendingNow: Set<string>,
 ): Promise<boolean> {
@@ -278,6 +319,43 @@ async function processFounderMessage(
 	const nonShip = matching.filter((q) => q.checkpoint !== "approve_to_ship");
 	let allOk = true;
 
+	// ── FLY-1041 Chunk 7: reply-to-card deterministic binding. A founder
+	// message qualifies ONLY as a true Discord REPLY (type 19) whose reference
+	// is a DEFAULT reference (type 0/absent — pin/forward/crosspost carry other
+	// reference types, Codex R1 #3) inside THIS thread; the referenced message
+	// id must then equal a gate's durably-bound card message id (the same
+	// fail-closed reader the ✅-reaction path uses). A hit narrows attribution
+	// to THAT gate — a short "okk" on the card binds regardless of how many
+	// other questions the thread accumulated. Any miss → the byte-compatible
+	// full-set path below. Kill-switch FLYWHEEL_REPLY_TO_CARD=0.
+	let cardGate: PendingQuestionForThread | undefined;
+	if (
+		process.env.FLYWHEEL_REPLY_TO_CARD !== "0" &&
+		deps.readCurrentBinding &&
+		ship.length > 0 &&
+		msg.type === DISCORD_MESSAGE_TYPE_REPLY &&
+		(msg.message_reference?.type === undefined ||
+			msg.message_reference.type === 0) &&
+		msg.message_reference?.channel_id === ctx.threadId &&
+		msg.message_reference.message_id
+	) {
+		const refMsgId = msg.message_reference.message_id;
+		for (const g of ship) {
+			const gateSession = store.getSession(g.executionId);
+			const head = gateSession?.pr_head_sha;
+			if (!head) continue;
+			const binding = deps.readCurrentBinding(
+				g.executionId,
+				g.questionId,
+				head,
+			);
+			if (binding?.gateMessageId === refMsgId) {
+				cardGate = g;
+				break;
+			}
+		}
+	}
+
 	// ── FLY-799: attribute a founder approval BEFORE WAKE-only. When enabled, a
 	// clear founder approval/rejection writes the gate response (the post-write
 	// hook flips status + wakes the runner); those question ids are "handled" and
@@ -286,9 +364,13 @@ async function processFounderMessage(
 	if (deps.tryFounderShipApproval && ship.length > 0) {
 		const res = await deps.tryFounderShipApproval({
 			msg: { id: msg.id, content: msg.content, authorId: msg.author?.id },
-			shipGates: ship,
+			// FLY-1041 Chunk 7: a verified card reply narrows the candidate set to
+			// exactly that gate (the handler's A-2 exactly-one narrowing then
+			// passes naturally even in a multi-gate thread).
+			shipGates: cardGate ? [cardGate] : ship,
 			ctx,
 			db,
+			replyToCard: !!cardGate,
 		});
 		if (res) {
 			for (const id of res.handled) handled.add(id);
@@ -351,6 +433,58 @@ async function processFounderMessage(
 				msgId: msg.id,
 			});
 			allOk = false;
+		}
+	}
+
+	// ── FLY-1041 Chunk 8: founder receipt reaction — the ship branch's SINGLE
+	// decision spot (at most one receipt per founder message PER OUTCOME).
+	// ✅ = her decision bound (a response was written, approve OR reject);
+	// ❓ = ship gates matched but nothing bound (unclear / classifier failure /
+	// held / narrow-multi / auto-approve off). No ship gates matched → no
+	// receipt (chatter stays untouched). The durable marker is keyed on
+	// (msgId, outcome) — Codex R1 MEDIUM: a transiently-failed message is
+	// re-scanned (cursor pinned), and if the retry BINDS after an initial ❓,
+	// the ✅ must still fire (one-way ❓→✅ upgrade; a bound gate leaves
+	// pending, so the reverse can never happen). Same-outcome re-scans stay
+	// deduped. Marker is inserted BEFORE the PUT so a re-scan can never
+	// double-react; a PUT failure is audited and NOT retried (best-effort,
+	// never blocks delivery). Kill-switch FLYWHEEL_FOUNDER_APPROVAL_ACK=0.
+	if (ship.length > 0 && process.env.FLYWHEEL_FOUNDER_APPROVAL_ACK !== "0") {
+		const emoji: "✅" | "❓" = handled.size > 0 ? "✅" : "❓";
+		const outcome = handled.size > 0 ? "bound" : "unbound";
+		const markerFresh = store.insertEvent({
+			event_id: `founder-ack-${msg.id}-${outcome}`,
+			execution_id: ship[0]?.executionId ?? "",
+			issue_id: ctx.issueId,
+			project_name: ctx.projectName,
+			event_type: "founder_ack_marker",
+			source: "bridge.founder-reply-deliverer",
+			payload: { msgId: msg.id, emoji, outcome },
+		});
+		if (markerFresh) {
+			const react =
+				deps.reactToFounderMessageImpl ?? defaultReactToFounderMessage;
+			const r = await react({
+				botToken: ctx.botToken,
+				channelId: ctx.threadId,
+				messageId: msg.id,
+				emoji,
+				fetchImpl: deps.fetchImpl,
+			});
+			if (r.ok) {
+				audit(store, ctx, ship[0]?.executionId ?? "", "founder_ack_reacted", {
+					msgId: msg.id,
+					emoji,
+					outcome,
+				});
+			} else {
+				audit(store, ctx, ship[0]?.executionId ?? "", "founder_ack_failed", {
+					msgId: msg.id,
+					emoji,
+					outcome,
+					...(r.status !== undefined ? { status: r.status } : {}),
+				});
+			}
 		}
 	}
 

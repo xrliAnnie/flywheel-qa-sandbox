@@ -96,6 +96,26 @@ export function isReviewHeld(
 	return isQaHeld(store, session);
 }
 
+/**
+ * FLY-1041 Chunk 5: the shared pre-write hold guard for EVERY founder
+ * approval source (text attribution / ✅ reaction / voice). While
+ * `isReviewHeld` holds (codex gate unsatisfied / QA not green / merge_block),
+ * NO founder approval may be written by ANY channel — the pre-FLY-1041 text
+ * path silently wrote approvals on held sessions (FLY-910 05:47), producing
+ * "bound but unshippable" confusion. The kill-switch
+ * `FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0` restores that byte-compatible behavior
+ * for all three sources at once (one switch, Codex R1 #1).
+ * Returns true = DECLINE the write (held).
+ */
+export function founderApprovalHoldGuard(
+	store: AutoQaHeldStore & CodexGateStore,
+	session: QaHeldSession | undefined,
+	env: Record<string, string | undefined> = process.env,
+): boolean {
+	if (env.FLYWHEEL_ATTRIBUTION_HOLD_ALIGN === "0") return false;
+	return isReviewHeld(store, session, env);
+}
+
 export function isQaHeld(
 	store: AutoQaHeldStore,
 	session: QaHeldSession | undefined,

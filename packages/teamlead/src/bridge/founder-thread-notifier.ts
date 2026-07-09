@@ -108,7 +108,11 @@ function buildBody(opts: FounderThreadNotifyOpts): string {
 			"",
 			summary,
 			"",
-			`…实现 + code-review 完成、等你 ship。已等 ${opts.ageMinutes} 分钟（Lead 可能漏转）。`,
+			"…实现 + code-review 完成、等你 ship。",
+			// FLY-1041 Chunk 6: the card is the deterministic approval carrier —
+			// spell out the two binding actions + the ✅ receipt promise so a short
+			// reply elsewhere in the thread is never mistaken for the protocol.
+			"直接**回复这条消息**或点 ✅ 即批准；其它回复不会被当成批准。批准绑定后我会在你的消息上点 ✅ 确认。",
 		].join("\n");
 	}
 	return [

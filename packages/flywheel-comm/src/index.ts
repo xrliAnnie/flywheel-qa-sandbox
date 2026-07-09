@@ -65,6 +65,9 @@ function printUsage(): void {
 
 Commands:
   ask       Ask your Lead a question (non-blocking; Lead notified ≤1 poll tick via Bridge)
+            With --report (FLY-1041): mark it a fire-and-forget status report
+            ("DONE: …") — the Lead still gets it, but founder thread replies
+            can never bind to it.
   check     Check if a question has been answered
   gate      Block at a checkpoint until Lead responds (ask+poll+resolve).
             With --no-block (FLY-191): park the question + return questionId
@@ -321,6 +324,9 @@ function runAsk(args: string[]): void {
 			db: { type: "string" },
 			project: { type: "string" },
 			json: { type: "boolean", default: false },
+			// FLY-1041: fire-and-forget status report — excluded from the
+			// founder-reply binding candidate set (Lead relay unchanged).
+			report: { type: "boolean", default: false },
 		},
 		allowPositionals: true,
 	});
@@ -340,6 +346,7 @@ function runAsk(args: string[]): void {
 		execId: values["exec-id"],
 		question,
 		dbPath,
+		report: values.report,
 	});
 
 	if (values.json) {

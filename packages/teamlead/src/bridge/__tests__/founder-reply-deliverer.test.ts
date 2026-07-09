@@ -609,3 +609,311 @@ describe("FLY-605 emitFounderReplyDeliveryForThread (Part B)", () => {
 		expect(cursorStore.load("T1")).toBeUndefined();
 	});
 });
+
+describe("FLY-1041 Chunk 7: reply-to-card deterministic binding", () => {
+	afterEach(() => {
+		delete process.env.FLYWHEEL_REPLY_TO_CARD;
+		vi.restoreAllMocks();
+	});
+
+	const CARD_MSG_ID = "424242424242424242";
+	const HEAD = "a".repeat(40);
+
+	function replyMsg(over: Record<string, unknown> = {}) {
+		return {
+			id: snowflakeAt(Date.now() - 30 * 60_000),
+			content: "okk",
+			author: { id: OWNER },
+			type: 19,
+			message_reference: {
+				message_id: CARD_MSG_ID,
+				channel_id: "T1",
+			},
+			...over,
+		} as RawMsg;
+	}
+
+	function makeShipDeps(msg: RawMsg) {
+		const { store } = makeStore();
+		(store as unknown as { getSession: unknown }).getSession = vi.fn(() => ({
+			pr_head_sha: HEAD,
+			status: "awaiting_review",
+		}));
+		const tryShip = vi.fn(
+			async (args: { shipGates: Array<{ questionId: string }> }) => ({
+				handled: args.shipGates.map((g) => g.questionId),
+				retrySafe: true,
+			}),
+		);
+		// Only q2's current binding points at the card message.
+		const readCurrentBinding = vi.fn(
+			(_execId: string, questionId: string, _head: string) =>
+				questionId === "q2"
+					? ({ gateMessageId: CARD_MSG_ID, threadId: "T1" } as never)
+					: null,
+		);
+		const wakeImpl = vi.fn(async () => ({
+			ok: true,
+		})) as unknown as FounderReplyDeliverDeps["wakeImpl"];
+		const deps: FounderReplyDeliverDeps = {
+			store,
+			fetchImpl: discordGet([msg]),
+			cursorStore: new InMemoryInboundCursorStore(),
+			wakeImpl,
+			commDbFactory: () => makeCommDb(["q1", "q2"]) as never,
+			tryFounderShipApproval:
+				tryShip as unknown as FounderReplyDeliverDeps["tryFounderShipApproval"],
+			readCurrentBinding,
+		};
+		return { deps, tryShip, readCurrentBinding };
+	}
+
+	const twoShipGates = [q("q1", "approve_to_ship"), q("q2", "approve_to_ship")];
+
+	it("verified reply to the card narrows the attribution to THAT gate + passes replyToCard", async () => {
+		const { deps, tryShip } = makeShipDeps(replyMsg());
+		await emitFounderReplyDeliveryForThread(ctx(), twoShipGates, deps);
+		expect(tryShip).toHaveBeenCalledTimes(1);
+		const args = tryShip.mock.calls[0]?.[0] as {
+			shipGates: Array<{ questionId: string }>;
+			replyToCard?: boolean;
+		};
+		expect(args.shipGates.map((g) => g.questionId)).toEqual(["q2"]);
+		expect(args.replyToCard).toBe(true);
+	});
+
+	it("reference to an unrelated message (no binding hit) → full ship set, no replyToCard (byte-compat)", async () => {
+		const { deps, tryShip } = makeShipDeps(
+			replyMsg({
+				message_reference: { message_id: "111", channel_id: "T1" },
+			}),
+		);
+		await emitFounderReplyDeliveryForThread(ctx(), twoShipGates, deps);
+		const args = tryShip.mock.calls[0]?.[0] as {
+			shipGates: Array<{ questionId: string }>;
+			replyToCard?: boolean;
+		};
+		expect(args.shipGates.map((g) => g.questionId)).toEqual(["q1", "q2"]);
+		expect(args.replyToCard).toBeFalsy();
+	});
+
+	it("negative (Codex R1 #3): type !== 19 with a reference to the card id (forward shape) → NOT narrowed", async () => {
+		const { deps, tryShip } = makeShipDeps(replyMsg({ type: 0 }));
+		await emitFounderReplyDeliveryForThread(ctx(), twoShipGates, deps);
+		const args = tryShip.mock.calls[0]?.[0] as {
+			shipGates: Array<{ questionId: string }>;
+			replyToCard?: boolean;
+		};
+		expect(args.shipGates).toHaveLength(2);
+		expect(args.replyToCard).toBeFalsy();
+	});
+
+	it("negative: message_reference.type = 1 (forward) → NOT narrowed", async () => {
+		const { deps, tryShip } = makeShipDeps(
+			replyMsg({
+				message_reference: {
+					type: 1,
+					message_id: CARD_MSG_ID,
+					channel_id: "T1",
+				},
+			}),
+		);
+		await emitFounderReplyDeliveryForThread(ctx(), twoShipGates, deps);
+		expect(
+			(tryShip.mock.calls[0]?.[0] as { replyToCard?: boolean }).replyToCard,
+		).toBeFalsy();
+	});
+
+	it("negative: reference.channel_id ≠ this thread → NOT narrowed", async () => {
+		const { deps, tryShip } = makeShipDeps(
+			replyMsg({
+				message_reference: { message_id: CARD_MSG_ID, channel_id: "OTHER" },
+			}),
+		);
+		await emitFounderReplyDeliveryForThread(ctx(), twoShipGates, deps);
+		expect(
+			(tryShip.mock.calls[0]?.[0] as { replyToCard?: boolean }).replyToCard,
+		).toBeFalsy();
+	});
+
+	it("FLYWHEEL_REPLY_TO_CARD=0 kill-switch → message_reference ignored entirely", async () => {
+		process.env.FLYWHEEL_REPLY_TO_CARD = "0";
+		const { deps, tryShip, readCurrentBinding } = makeShipDeps(replyMsg());
+		await emitFounderReplyDeliveryForThread(ctx(), twoShipGates, deps);
+		expect(readCurrentBinding).not.toHaveBeenCalled();
+		expect(
+			(tryShip.mock.calls[0]?.[0] as { replyToCard?: boolean }).replyToCard,
+		).toBeFalsy();
+	});
+});
+
+describe("FLY-1041 Chunk 8: founder receipt reaction (✅/❓)", () => {
+	afterEach(() => {
+		delete process.env.FLYWHEEL_FOUNDER_APPROVAL_ACK;
+		vi.restoreAllMocks();
+	});
+
+	/** insertEvent enforcing UNIQUE(event_id) like the real StateStore. */
+	function uniqueStore(existing: string[] = []) {
+		const ids = new Set(existing);
+		const events: Array<{ event_id: string; event_type?: string }> =
+			existing.map((event_id) => ({ event_id }));
+		const store = {
+			insertEvent: vi.fn((e: { event_id: string; event_type: string }) => {
+				if (ids.has(e.event_id)) return false;
+				ids.add(e.event_id);
+				events.push({ event_id: e.event_id, event_type: e.event_type });
+				return true;
+			}),
+			getEventsByExecution: vi.fn(() => events.slice()),
+		} as unknown as FounderReplyDeliverDeps["store"];
+		return { store, events };
+	}
+
+	function ackHarness(opts: {
+		msgId?: string;
+		handled?: boolean;
+		existingEventIds?: string[];
+		reactResult?: { ok: boolean; status?: number };
+	}) {
+		const msgId = opts.msgId ?? snowflakeAt(Date.now() - 30 * 60_000);
+		const { store, events } = uniqueStore(opts.existingEventIds ?? []);
+		const reactImpl = vi.fn(
+			async () => opts.reactResult ?? { ok: true, status: 204 },
+		);
+		const wakeImpl = vi.fn(async () => ({
+			ok: true,
+		})) as unknown as FounderReplyDeliverDeps["wakeImpl"];
+		const tryShip = vi.fn(
+			async (args: { shipGates: Array<{ questionId: string }> }) =>
+				opts.handled
+					? {
+							handled: args.shipGates.map((g) => g.questionId),
+							retrySafe: true,
+						}
+					: null,
+		);
+		const msg: RawMsg = {
+			id: msgId,
+			content: "嗯ship",
+			author: { id: OWNER },
+		};
+		const deps: FounderReplyDeliverDeps = {
+			store,
+			fetchImpl: discordGet([msg]),
+			cursorStore: new InMemoryInboundCursorStore(),
+			wakeImpl,
+			commDbFactory: () => makeCommDb(["q1"]) as never,
+			tryFounderShipApproval:
+				tryShip as unknown as FounderReplyDeliverDeps["tryFounderShipApproval"],
+			reactToFounderMessageImpl:
+				reactImpl as unknown as FounderReplyDeliverDeps["reactToFounderMessageImpl"],
+		};
+		return { deps, reactImpl, events, msgId };
+	}
+
+	it("bound decision (approve written) → ✅ on the founder's message + founder_ack_reacted audit", async () => {
+		const { deps, reactImpl, events, msgId } = ackHarness({ handled: true });
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			deps,
+		);
+		expect(reactImpl).toHaveBeenCalledTimes(1);
+		const call = reactImpl.mock.calls[0]?.[0] as {
+			emoji: string;
+			messageId: string;
+			channelId: string;
+		};
+		expect(call.emoji).toBe("✅");
+		expect(call.messageId).toBe(msgId);
+		expect(call.channelId).toBe("T1");
+		expect(events.some((e) => e.event_type === "founder_ack_reacted")).toBe(
+			true,
+		);
+	});
+
+	it("unbound (unclear / null attribution) → ❓ receipt", async () => {
+		const { deps, reactImpl } = ackHarness({ handled: false });
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			deps,
+		);
+		expect((reactImpl.mock.calls[0]?.[0] as { emoji: string }).emoji).toBe(
+			"❓",
+		);
+	});
+
+	it("no ship gates in matching (brainstorm only) → zero receipts (chatter untouched)", async () => {
+		const { deps, reactImpl } = ackHarness({ handled: false });
+		const respondImpl = vi.fn(
+			async () => undefined,
+		) as unknown as FounderReplyDeliverDeps["respondImpl"];
+		await emitFounderReplyDeliveryForThread(ctx(), [q("q1", "brainstorm")], {
+			...deps,
+			respondImpl,
+		});
+		expect(reactImpl).not.toHaveBeenCalled();
+	});
+
+	it("PUT failure (403) → founder_ack_failed audit, never throws, no retry", async () => {
+		const { deps, reactImpl, events } = ackHarness({
+			handled: true,
+			reactResult: { ok: false, status: 403 },
+		});
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			deps,
+		);
+		expect(reactImpl).toHaveBeenCalledTimes(1);
+		expect(events.some((e) => e.event_type === "founder_ack_failed")).toBe(
+			true,
+		);
+	});
+
+	it("durable marker dedup: an existing same-outcome marker suppresses the PUT", async () => {
+		const msgId = snowflakeAt(Date.now() - 30 * 60_000);
+		const { deps, reactImpl } = ackHarness({
+			msgId,
+			handled: true,
+			existingEventIds: [`founder-ack-${msgId}-bound`],
+		});
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			deps,
+		);
+		expect(reactImpl).not.toHaveBeenCalled();
+	});
+
+	it("Codex R1 MEDIUM: an earlier ❓ (unbound marker) must NOT suppress the ✅ when a re-scan binds", async () => {
+		const msgId = snowflakeAt(Date.now() - 30 * 60_000);
+		const { deps, reactImpl } = ackHarness({
+			msgId,
+			handled: true, // the retry bound successfully this pass
+			existingEventIds: [`founder-ack-${msgId}-unbound`],
+		});
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			deps,
+		);
+		expect(reactImpl).toHaveBeenCalledTimes(1);
+		expect((reactImpl.mock.calls[0]?.[0] as { emoji: string }).emoji).toBe(
+			"✅",
+		);
+	});
+
+	it("FLYWHEEL_FOUNDER_APPROVAL_ACK=0 kill-switch → no receipt (byte-compat)", async () => {
+		process.env.FLYWHEEL_FOUNDER_APPROVAL_ACK = "0";
+		const { deps, reactImpl } = ackHarness({ handled: true });
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			deps,
+		);
+		expect(reactImpl).not.toHaveBeenCalled();
+	});
+});

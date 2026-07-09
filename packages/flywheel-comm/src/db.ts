@@ -168,6 +168,22 @@ export class CommDB {
 				}
 			}
 		}
+		if (!columns.some((c) => c.name === "kind")) {
+			// FLY-1041: 'report' marks a fire-and-forget runner→Lead status report
+			// (`ask --report`). Deliberately NOT the checkpoint column — GatePoller
+			// gives checkpoints gate-eviction / nudge semantics that do not apply
+			// to reports. Transport-wise a report is still a question (relayToLead,
+			// pending CLI, liveness all unchanged); ONLY the founder-reply
+			// candidate set excludes it. Same race-tolerance as delivered_at.
+			try {
+				this.db.exec("ALTER TABLE messages ADD COLUMN kind TEXT");
+			} catch (err) {
+				const msg = (err as Error).message ?? "";
+				if (!/duplicate column name: kind/i.test(msg)) {
+					throw err;
+				}
+			}
+		}
 		this.db.exec(
 			"CREATE INDEX IF NOT EXISTS idx_messages_checkpoint ON messages(checkpoint) WHERE checkpoint IS NOT NULL",
 		);
@@ -244,6 +260,10 @@ export class CommDB {
 			 * a minutes-scale runner-lifecycle confirmation, plan §5.1). A
 			 * non-positive/non-finite value falls back to the schema default. */
 			ttlSeconds?: number;
+			/** FLY-1041: 'report' = runner→Lead status report — excluded from the
+			 * founder-reply binding candidate set; all other question semantics
+			 * (relay, pending, liveness) unchanged. */
+			kind?: "report";
 		},
 	): string {
 		const id = randomUUID();
@@ -253,8 +273,8 @@ export class CommDB {
 		if (customTtl) {
 			this.db
 				.prepare(
-					`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type, expires_at)
-         VALUES (?, ?, ?, 'question', ?, ?, ?, ?, datetime('now', ?))`,
+					`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type, kind, expires_at)
+         VALUES (?, ?, ?, 'question', ?, ?, ?, ?, ?, datetime('now', ?))`,
 				)
 				.run(
 					id,
@@ -264,14 +284,15 @@ export class CommDB {
 					opts?.checkpoint ?? null,
 					opts?.contentRef ?? null,
 					opts?.contentType ?? "text",
+					opts?.kind ?? null,
 					`+${Math.floor(ttl as number)} seconds`,
 				);
 		} else {
 			// Default-TTL path (byte-compat with the pre-FLY-245 schema default).
 			this.db
 				.prepare(
-					`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type)
-         VALUES (?, ?, ?, 'question', ?, ?, ?, ?)`,
+					`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type, kind)
+         VALUES (?, ?, ?, 'question', ?, ?, ?, ?, ?)`,
 				)
 				.run(
 					id,
@@ -281,6 +302,7 @@ export class CommDB {
 					opts?.checkpoint ?? null,
 					opts?.contentRef ?? null,
 					opts?.contentType ?? "text",
+					opts?.kind ?? null,
 				);
 		}
 		return id;
@@ -305,6 +327,35 @@ export class CommDB {
 			)
 			.run(questionId, checkpoint);
 		return info.changes === 1;
+	}
+
+	/**
+	 * FLY-1041: retire a SUPERSEDED approve_to_ship gate — expire NOW so it
+	 * drops out of `getPendingQuestions` immediately (`resolveGate(qid, 0)`
+	 * semantics: the pending filter is `expires_at > now`, NOT `resolved_at`).
+	 * Double-guarded WHERE so a rebind race can never rewrite history:
+	 * only `checkpoint='approve_to_ship'` AND only while UNANSWERED — an
+	 * already-answered gate (a real approval) is untouchable. The row is kept
+	 * for forensics until the normal prune; the durable audit trail is the
+	 * Bridge-side `ship_gate_superseded` session_event. Returns true iff a
+	 * row was retired.
+	 */
+	retireShipGate(questionId: string): boolean {
+		const info = this.db
+			.prepare(
+				`UPDATE messages SET
+				 resolved_at = datetime('now'),
+				 read_at = COALESCE(read_at, datetime('now')),
+				 expires_at = datetime('now')
+				 WHERE id = ? AND type = 'question'
+				 AND checkpoint = 'approve_to_ship'
+				 AND expires_at > datetime('now')
+				 AND NOT EXISTS (
+				   SELECT 1 FROM messages r WHERE r.parent_id = messages.id AND r.type = 'response'
+				 )`,
+			)
+			.run(questionId);
+		return info.changes > 0;
 	}
 
 	/**

@@ -420,3 +420,40 @@ describe("capture command", () => {
 		);
 	});
 });
+
+describe("ask --report (FLY-1041)", () => {
+	let tmpDir: string;
+	let dbPath: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-ask-report-"));
+		dbPath = join(tmpDir, "comm.db");
+	});
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("report:true marks the question kind='report'; default stays NULL", () => {
+		const reportId = ask({
+			lead: "lead-1",
+			execId: "exec-1",
+			question: "DONE: merged",
+			dbPath,
+			report: true,
+		});
+		const plainId = ask({
+			lead: "lead-1",
+			execId: "exec-1",
+			question: "which db should I use?",
+			dbPath,
+		});
+		const db = new CommDB(dbPath);
+		try {
+			expect(db.getMessageById(reportId)?.kind).toBe("report");
+			expect(db.getMessageById(plainId)?.kind).toBeNull();
+		} finally {
+			db.close();
+		}
+	});
+});

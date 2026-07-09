@@ -103,6 +103,14 @@ export interface VoiceRouterDeps {
 	openCommDb: (projectName: string) => GateResponseDb | null;
 	onResponseWritten?: WriteGateResponseArgs["onResponseWritten"];
 	writeGateResponseImpl?: typeof writeGateResponseAndRunPostWrite;
+	/**
+	 * FLY-1041 Chunk 5: shared founder-approval hold guard (plugin injects
+	 * `founderApprovalHoldGuard` over the real StateStore). While held, a
+	 * voice approve is declined with an explicit `kind:"held"` verdict (the
+	 * daemon narrates it) instead of writing an unshippable approval. Absent
+	 * → no hold check (byte-compat).
+	 */
+	isHeld?: (executionId: string) => boolean;
 	/** env override for tests; kill-switches are read PER CALL. */
 	env?: Record<string, string | undefined>;
 }
@@ -398,6 +406,27 @@ export function createVoiceRouter(deps: VoiceRouterDeps): express.Router {
 					binding,
 				);
 				res.json({ written: false, kind: signal.kind });
+				return;
+			}
+
+			// FLY-1041 Chunk 5: review-hold alignment — a founder voice approve on
+			// a HELD session (codex not green / QA running / merge_block) is
+			// declined with an explicit verdict the daemon can narrate, never
+			// silently written (parity with the text/reaction sources).
+			if (deps.isHeld?.(binding.executionId)) {
+				audit(
+					{
+						outcome: "held_declined",
+						transcript,
+						receiptMessageId: body.receiptMessageId,
+					},
+					binding,
+				);
+				res.json({
+					written: false,
+					kind: "held",
+					reason: "review held — code review / QA not green yet",
+				});
 				return;
 			}
 
