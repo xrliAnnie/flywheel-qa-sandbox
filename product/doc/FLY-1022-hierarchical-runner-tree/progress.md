@@ -4,16 +4,16 @@ Issue: FLY-1022 (https://linear.app/geoforge3d/issue/FLY-1022/lead-scaling-one-l
 日期: 2026-07-08
 基于: 无
 
-## Phase: design (co-eval v1) — 本轮已交付,等 Annie co-eval
+## Phase 1: design co-eval v1 — DONE (Annie GO)
+- [x] exploration.md + research.md (核过码现状 + 五轴合成)
+- [x] explainer HTML v1 → 发布 → Annie co-eval → GO 写 PRD
 
-- [x] onboard + 读 issue 群 (1022/1005/916/353/1020/942/878)
-- [x] 对齐兄弟 co-eval (1005 Phase 2 / 353 引擎 / 1020 模板)；Cass dedup 划界(1022=lead-tree canonical,916 并入)
-- [x] 代码审计 (Lead↔Runner 协调现状 · 核过码钉行号)
-- [x] exploration.md
-- [x] research.md
-- [x] brainstorm gate → Honey Lemon 批准 + 3 refine (lean 942 / scale-gate 具体化 / dogfood 证据)
-- [x] 交互 explainer HTML v1 (FLY-930 nonce · Apple-light · 10 节 textarea · curl 自验 PASS)
-- [x] publish-report --channel 1524580811645521920 → https://fw-reports-a53de2.vercel.app/r/db7511bf485aeab2f8b56202992aaca1/
+## Phase 2: PRD — 本轮已交付,等 Annie QA/收敛
+- [x] engineering/doc/FLY-1022-hierarchical-runner-tree/prd.md (折 Lead §1-§9 全部 refine)
+    · 353=capacity-aware派发 / 1022=抬单Lead容量;⭐942 tree-aware层层上报;⭐多层设计MVP一层;
+      树聚合+DDIA;⭐节点=整条三段式session不拆(对齐1020);⭐per-issue thread 保留硬约束;
+      多机放置+Lead-as-child schema;scale-gate(看门狗完+一层稳);build拆分挂Tadashi全标scale-gated
+- [x] prd-review.html (过目 co-eval) → publish → https://fw-reports-a53de2.vercel.app/r/5c371de47ac6d261d0b8ea13eba2c44f/
 
 ## 本轮止于此(Lead: gate 别碰、不 ship)
-next: 发 Lead QA+relay → 等 Annie co-eval 收敛 → 下一轮写 PRD → 拆 build issue 给 Tadashi
+next: 发 Lead QA → relay Annie → 收敛 → ship(codex 先跑→冻→核 mergeable→fire gate→Annie→Tadashi)→ create build-issue 挂 Tadashi
