@@ -183,7 +183,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
   </div>
   <p><b>回路 = 早会学偏好:</b>CoS 每轮分诊的决定 → 早会上你确认/纠正 → CoS 学到「你这类活喜欢什么节奏 / 谁做 / 什么先」→ 下轮更准 → 早会需要你的地方变少。<b>全自动是北极星,路径就是这条早会学偏好回路。</b>你随时能介入,越到后面越少需要。</p>
   <p class="hint">🔊 早会以后<b>可语音化</b>(接 voice agent,<span class="tag new">FLY-906</span>):语音系统做好后,你可以每天用语音跟 CoS 开早会。—— 这是 context / 顺带,<b>不是 353 的硬依赖</b>(353 不等它)。</p>
-  <div class="you" style="background:#f4f9ff;border-color:#bcd9ff"><b>⚠️ 你 v6 点的关键(采纳):「怎么学」= 另一个 separate issue,不在 353。</b> 早会/Lead 具体<b>拿什么信号 / data 去学、怎么 convert 成能自己做决策</b> —— 这是个全新的东西(你说之前讨论过没结果)。而且<b>两处都要学</b>:① <b>早会:CoS 学「不同 issue 怎么派发」</b>;② <b>Lead:学「替你做决定」</b>(现在 Lead 常把 runner 的问题转你、或给你 options 让你选;目标是他学会帮你 decide)。<b>353 只用「早会 + 渐进自治」这个<u>运行模型/轨迹</u>,不建「学习引擎」本身</b> —— 学习引擎另开 issue(你定要不要现在做)。</div>
+  <div class="you" style="background:#f4f9ff;border-color:#bcd9ff"><b>⚠️ 你 v6 点的关键(采纳):「怎么学」= 另一个 separate issue,不在 353。</b> 早会/Lead 具体<b>拿什么信号 / data 去学、怎么 convert 成能自己做决策</b> —— 这是个全新的东西(你说之前讨论过没结果)。而且<b>两处都要学</b>:① <b>早会:CoS 学「不同 issue 怎么派发」</b>;② <b>Lead:学「替你做决定」</b>(现在 Lead 常把 runner 的问题转你、或给你 options 让你选;目标是他学会帮你 decide)。<b>353 只用「早会 + 渐进自治」这个<u>运行模型/轨迹</u>,不建「学习引擎」本身。</b><br><b>依赖:<span class="tag new">FLY-1034</span> autonomy learning(单独 co-eval,已建)</b> —— 353 的毕业曲线<b>依赖</b> FLY-1034,但<b>353 不 build 它</b>(学习引擎在 1034 单独展开)。</div>
 </div>
 <div class="cmt"><label>💬 对「毕业曲线 / 早会学偏好」的留言(这就是你想的协调方式吗?)</label><textarea data-k="grad" data-label="🎓 渐进自治·早会学偏好·毕业曲线"></textarea></div>
 
@@ -236,7 +236,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
       <ol>
         <li>系统先<b>读每个 Lead 当前负荷</b>(假设每 Lead 一次带 N=5 件:看 Lead 1/2/3 手里各还有几件)。</li>
         <li><b>把每个 Lead 补齐到 capacity</b>:Lead 1 手上 0 件 → 加 5 件;Lead 2 手上 2 件 → 加 3 件。</li>
-        <li>补的活 = 从系统里<b>抓当前 top-priority</b> 的填进去。<span class="src">(你这句在我这边收到时截断了 —— 「最后根据他…」后半没传完,把后半发我我再补精确规则。)</span></li>
+        <li>补的活 = 从 backlog 里<b>抓当前 top-priority</b> 的,<b>按每个 Lead 的余量分发</b>填进去(余 5 个就给 5 个、余 3 个就给 3 个)。</li>
       </ol>
     </li>
     <li><b>动态负载触发(北极星,后续):</b>把上面的「读负荷」升级成按<b>系统水位</b>(内存 / token 额度)自动决定何时扫(如内存降到某阈值就补活、满载不过载)。<span class="tag new">诚实</span> 现在还没能力监控内存/token,<b>先做每 6h 固定 + capacity 补齐,水位触发作后续</b>。capacity 上限关联 <span class="tag new">FLY-1022</span>。</li>
