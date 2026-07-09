@@ -1,13 +1,13 @@
 ---
 issue: FLY-1041
 phase: design
-phaseCursor: 3/4
-updated: 2026-07-09T06:25:28.172Z
-nextStep: codex design review
+phaseCursor: 4/4
+updated: 2026-07-09T06:51:28.590Z
+nextStep: commit docs + phase_design_complete + park
 chunks: []
 pointers: {}
 ---
 
 # FLY-1041 progress
-**phase**: design (3/4)
-**next**: codex design review
+**phase**: design (4/4)
+**next**: commit docs + phase_design_complete + park
