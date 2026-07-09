@@ -1,0 +1,284 @@
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1020 · agent.md vs DAG — 本质区别 / 为什么要 DAG / 三选项(co-eval)</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--navy:#1a365d;--purple:#af52de}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,system-ui,"SF Pro Text",Segoe UI,Roboto,sans-serif;line-height:1.62;-webkit-text-size-adjust:100%}
+.wrap{max-width:900px;margin:0 auto;padding:20px 16px 90px}
+h1{font-size:22px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:13.5px;margin:0 0 4px}
+h2{font-size:19px;margin:30px 0 4px;letter-spacing:-.01em}
+.secnum{color:var(--dim)}
+h3{font-size:15px;margin:12px 0 4px;color:var(--navy)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:10px 0;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.card.blue{border-left:4px solid #007aff}.card.green{border-left:4px solid #34c759}.card.purple{border-left:4px solid var(--purple)}.card.amber{border-left:4px solid #ff9500}.card.gray{border-left:4px solid var(--dim)}.card.red{border-left:4px solid #ff3b30}
+p{margin:7px 0}ul,ol{margin:6px 0 8px 2px;padding-left:22px}li{margin:4px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.85em;background:#f0f0f4;padding:1px 5px;border-radius:5px}
+pre{background:#f6f6fa;border:1px solid var(--line);border-radius:10px;padding:11px 13px;overflow-x:auto;-webkit-overflow-scrolling:touch;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.55;margin:9px 0}
+pre .c{color:#8a8a90}pre .b{color:#1a5fb4;font-weight:600}pre .g{color:#1a7a37;font-weight:600}pre .p{color:#7a2fb0;font-weight:600}
+.k{color:var(--navy);font-weight:600}b{color:#111}
+.concl{background:#f1faf3;border:1px solid #b8e6c4;border-radius:10px;padding:8px 11px;margin:9px 0;font-size:13.5px}
+.concl.blue{background:#f4f9ff;border-color:#bcd9ff}
+.concl .lbl{font-weight:700;color:#1a7a37}.concl.blue .lbl{color:#1a5fb4}
+.you{background:#fff8e6;border:1px solid #ffe0a3;border-radius:10px;padding:8px 11px;margin:9px 0;font-size:13.5px}
+.finding{background:#fff5f4;border:2px solid #ff8f86;border-radius:12px;padding:12px 14px;margin:10px 0;font-size:13.8px}
+.finding .lbl{font-weight:800;color:#c0322b;display:block;margin-bottom:3px}
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:6px}
+.tag.ok{background:#e3f9ea;color:#1a7a3c}.tag.no{background:#fde8e8;color:#c0322b}.tag.warn{background:#fff4e5;color:#a05a00}
+.hint{color:var(--dim);font-size:12.5px;margin:6px 0}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:8px 0}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:13px}
+th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+th{background:#fafafd;font-weight:600}
+.cmt{margin:8px 0 4px;background:#fbfbfd;border:1px dashed #d6d6de;border-radius:10px;padding:8px 10px}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+.cmt textarea{width:100%;min-height:52px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;color:var(--ink);background:#fff;resize:vertical}
+.cmt textarea:focus{outline:2px solid #007aff;outline-offset:1px;border-color:transparent}
+.bar{position:sticky;bottom:0;margin-top:24px;background:rgba(245,245,247,.92);backdrop-filter:saturate(180%) blur(8px);border-top:1px solid var(--line);padding:10px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+button{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:10px;padding:9px 16px;cursor:pointer}
+button.primary{background:#007aff;color:#fff}button.ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}
+.topnote{background:#fff;border:1px solid var(--line);border-left:4px solid #34c759;border-radius:12px;padding:12px 14px;margin:8px 0;font-size:13.5px}
+dialog{border:none;border-radius:14px;padding:0;max-width:680px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+dialog::backdrop{background:rgba(0,0,0,.35)}
+.dlg{padding:18px 20px}.dlg h3{margin-top:0}.dlg textarea{width:100%;min-height:200px;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px}
+</style>
+</head>
+<div class="wrap">
+<header>
+  <h1>agent.md vs DAG —— 本质区别 · 为什么要 DAG · 三选项</h1>
+  <p class="sub">FLY-1020 §2 深挖 · 2026-07-08 · <b>不写 PRD、不拆 build</b> —— 只把这件事论证清楚</p>
+</header>
+<div class="topnote">
+  你说 §2 要深挖:<b>DAG 和 agent.md 到底什么关系?为什么不干脆只用 agent.md?</b><br>
+  这张把它论透:①本质区别 ②你给的两个理由(多 model / 防 bias)成不成立 ③<b>取代 / 共存 / 分层</b> 三选项 ④HL 的分层框架 ⑤ ⭐ <b>我把 homerail 的代码 clone 下来亲手读了</b> —— 看它怎么处理这件事。<br>
+  <b>结论先说:分层是对的,而且 homerail 独立走到了同一个答案。</b>
+</div>
+
+<!-- 1 -->
+<h2><span class="secnum">1 ·</span> 先给结论(一句话)</h2>
+<div class="card green">
+  <div class="concl"><span class="lbl">一句话:</span><b>agent.md 是「谁来干」(角色/人格),DAG 是「分几步、每步谁干、每步用哪个模型」(工作流)。两者不是竞争关系,是<u>上下层</u>。</b> 简单活只要 agent.md;只有当你需要「不同步骤用不同模型」或「写的人和验的人必须隔离」时,才在上面加一层 DAG。</div>
+  <div class="concl blue"><span class="lbl">而且:</span><b>DAG 永远不交给 Claude</b> —— 是我们的引擎读 DAG、按图调度,<b>每个节点只把「一个 agent.md 的角色」交给 Claude</b>。Claude 从头到尾不知道有张图。</div>
+</div>
+<div class="cmt"><label>💬 对这个结论的第一反应</label><textarea data-k="s1" data-label="1 · 一句话结论"></textarea></div>
+
+<!-- 2 -->
+<h2><span class="secnum">2 ·</span> 本质区别:一个是「演员」,一个是「剧本 + 排班表」</h2>
+<div class="card blue">
+  <div class="scroll"><table>
+  <thead><tr><th></th><th>agent.md</th><th>DAG(工作流模板)</th></tr></thead>
+  <tbody>
+    <tr><td class="k">回答什么</td><td><b>谁来干</b>(WHO):你是什么角色、什么风格、什么职责边界</td><td><b>怎么跑</b>(HOW):分几步、什么顺序、哪步可跳、哪步要重复</td></tr>
+    <tr><td class="k">内容</td><td>一段<b>角色提示词</b></td><td>节点 + 顺序 + loop + skip</td></tr>
+    <tr><td class="k">谁读它</td><td><b>Claude 读</b>(塞进它的提示词)</td><td><b>引擎读</b>(Claude 永远看不到)</td></tr>
+    <tr><td class="k">粒度</td><td>一个角色 = 一个 session</td><td>一条 issue = 多个 session,每个 session 一个角色</td></tr>
+    <tr><td class="k">管模型吗</td><td><b>不管</b>(见 §7:它的 model 字段根本没人读)</td><td><b>管</b>:每个节点绑一个模型</td></tr>
+  </tbody>
+  </table></div>
+  <div class="concl"><span class="lbl">类比:</span>agent.md = <b>一个演员的人设</b>;DAG = <b>剧本(几场戏、什么顺序)+ 排班表(哪场戏谁演、用哪台机器)</b>。你不会因为有了人设就不需要剧本,也不会因为有了剧本就不需要人设。</div>
+</div>
+<div class="cmt"><label>💬 对「演员 vs 剧本」这个区分的留言(准确吗?)</label><textarea data-k="s2" data-label="2 · 本质区别"></textarea></div>
+
+<!-- 3 -->
+<h2><span class="secnum">3 ·</span> 为什么非要 DAG?——你给的两个理由,我逐个验证</h2>
+<div class="card purple">
+  <div class="you"><b>你的两个理由:</b>① 不同步骤要用<b>不同模型</b> ② 写代码的和验代码的要<b>隔离,防 bias</b>(不能自己判自己)。</div>
+
+  <h3>理由 ①:多 model —— <span class="tag ok">成立,而且 agent.md 物理上做不到</span></h3>
+  <p>我们今天就在做:<b>设计/实现用 Fable、QA 用 Opus</b>。这个「哪一步用哪个模型」的信息,<b>没地方放进 agent.md</b> —— 我核过码:<b>agent.md 里就算写了 <code>model:</code>,系统根本不读</b>(§7)。它只被当成一段提示词文本塞给 Claude。所以「每步换模型」这件事,<b>必须由 agent.md 之外的一层来说</b>。那一层就是 DAG + 节点注册表。</p>
+
+  <h3>理由 ②:防 bias 隔离 —— <span class="tag ok">成立,而且这是「结构」不是「叮嘱」</span></h3>
+  <p>你可以在 agent.md 里写「请客观地验一遍自己的代码」—— 但那只是<b>叮嘱</b>。真正的独立验证需要:<b>QA 是另一个 fresh session、另一个模型、看不到写代码时的思路</b>。<b>一个 agent.md = 一个 session</b>,它无法把自己劈成两个互相隔离的 session。<b>只有编排层能做「切成两个节点」这件事。</b></p>
+  <div class="concl"><span class="lbl">所以:</span>你要的这两件事,<b>恰恰是 agent.md 这一层的能力边界之外</b>。这不是「要不要多一层」的偏好问题,是<b>缺了这层就做不到</b>。</div>
+  <div class="concl blue"><span class="lbl">反过来也成立:</span>如果一件活<b>只有一个角色、一个模型、不需要独立验证</b> —— 那 DAG 一点用没有,<b>只用 agent.md 就够</b>(= 我们 PRD 里的「裸单 session 默认」)。</div>
+</div>
+<div class="cmt"><label>💬 对这两个理由的验证有异议吗?还有第三个理由吗?</label><textarea data-k="s3" data-label="3 · 两个理由验证"></textarea></div>
+
+<!-- 4 -->
+<h2><span class="secnum">4 ·</span> 三个选项:取代 / 共存 / 分层</h2>
+<div class="card gray">
+  <div class="scroll"><table>
+  <thead><tr><th>选项</th><th>是什么</th><th>评价</th></tr></thead>
+  <tbody>
+    <tr><td class="k">🅐 取代<br>(DAG 取代 agent.md)</td><td>把角色人格也写进 DAG,不要 agent.md</td><td><span class="tag no">否</span> ① DAG 不含人格,写进去就是把 agent.md 塞进 YAML(更难读、不可复用)② 简单活被迫画图,违反你的红线</td></tr>
+    <tr><td class="k">🅑 共存<br>(两套并行,各管各)</td><td>agent.md 一套、DAG 一套,谁都能定模型/技能</td><td><span class="tag warn">危险</span> 职责重叠 → 「模型到底听谁的」会打架;非工程师改 agent.md 可能悄悄改掉流程</td></tr>
+    <tr><td class="k">🅒 分层<br>(HL 的框架)</td><td>agent.md = 通用原子/默认;DAG = <b>可选</b>编排层,只在多 model / 防 bias 时上</td><td><span class="tag ok">对</span> 职责不重叠、简单活零负担、能力边界清楚 —— 而且 <b>homerail 独立走到了同一个答案</b>(§6)</td></tr>
+  </tbody>
+  </table></div>
+</div>
+<div class="cmt"><label>💬 三选项你倾向哪个?分层的理由服你吗?</label><textarea data-k="s4" data-label="4 · 三选项"></textarea></div>
+
+<!-- 5 -->
+<h2><span class="secnum">5 ·</span> 分层框架长什么样(HL 抛的,我核过工程可行)</h2>
+<div class="card green">
+  <ol>
+    <li><b>agent.md = 通用原子 / 默认</b>(Claude 原生的东西)。不挂 DAG 的活,就是「一个 agent.md 跑一个 session」—— 今天就这样。</li>
+    <li><b>DAG = 我们引擎内的<u>可选</u>编排层</b>。只在需要「多 model」或「防 bias 隔离」时才上。</li>
+    <li>⭐ <b>DAG 永不甩给 Claude。</b> 引擎读 DAG → 决定「现在跑哪个节点」→ <b>把那个节点对应的一个 agent.md 角色</b>交给 Claude 跑。Claude 只看到自己的角色,不知道有图。</li>
+    <li><b>简单活不需要 DAG</b> —— 永远留着「不套流程」的出口。</li>
+  </ol>
+  <div class="concl"><span class="lbl">这层框架的好处:</span>DAG 的复杂度<b>被关在引擎里</b>,不外溢给模型、也不外溢给你。你和非工程师面对的永远是<b>「写一个 agent.md 角色」</b>这件简单事。</div>
+</div>
+<div class="cmt"><label>💬 对分层框架的留言</label><textarea data-k="s5" data-label="5 · 分层框架"></textarea></div>
+
+<!-- 6 homerail -->
+<h2><span class="secnum">6 ·</span> ⭐ homerail 怎么处理的(我 clone 了它的码,亲手读的)</h2>
+<div class="card red">
+  <div class="finding">
+    <span class="lbl">⚠️ 结论跟我们原本的猜测相反 —— 它<u>处理了</u>,而且就是分层。</span>
+    HL 原本猜「homerail 可能没处理这件事」。<b>我把 repo clone 下来读了真码:它处理得很明确。</b> 如实报告。
+  </div>
+  <p><b>homerail 的一个 DAG 模板文件里,是三块:</b>(下面是它仓库里 <code>public-two-node.yaml.template</code> 的真实内容,我删了注释)</p>
+<pre><span class="c"># ① 绑模型:哪个 agent 用哪个模型 / 哪个 harness</span>
+<span class="p">runtime_profiles</span>:
+  offline-deterministic:
+    agents: { "*": { agent_type: deterministic } }
+
+<span class="c"># ② agent 定义:每个 agent 就是一段 system 角色提示词</span>
+<span class="b">agents</span>:
+  drafter:   { system: "You are the drafting node ..." }
+  reviewer:  { system: "You are the review node ..." }
+
+<span class="c"># ③ 图:每个节点【按名字引用】一个 agent</span>
+<span class="g">nodes</span>:
+  draft:   { name: Draft,  <span class="b">agent: drafter</span>,  after: [],      outputs: { drafted: {to: "review.in:draft"} } }
+  review:  { name: Review, <span class="b">agent: reviewer</span>, after: [draft], outputs: { approved: {to: ""} } }
+</pre>
+  <p><b>它独立的 profile 文件里(<code>example-runtime.profile.yaml</code>),不同 agent 绑不同模型 + 不同 harness:</b></p>
+<pre>default: { model_alias: local-qwen,  agent_type: claude-sdk }
+agents:
+  reviewer: { <span class="p">model_alias: kimi-main</span>, <span class="p">agent_type: kimi_code</span> }   <span class="c"># 审稿的用 kimi,其他用 qwen</span>
+</pre>
+  <div class="concl"><span class="lbl">三条硬证据(我读码得出,非二手):</span>
+  ① <b>节点 ≠ agent,节点<u>引用</u> agent</b>(<code>agent: drafter</code>)—— 跟分层框架一模一样。<br>
+  ② <b>worker 只拿到「自己那个 agent 的 system 提示词」,拿不到整张 DAG</b>(<code>worker/src/index.ts</code>:<code>systemPrompt = agentConfig.system</code>)—— <b>实锤了「DAG 永不甩给模型」</b>。<br>
+  ③ <b>一个节点一个容器</b>(<code>createWorkerContainer</code>)—— 节点之间物理隔离,这就是<b>防 bias 的结构做法</b>,不是靠叮嘱。</div>
+  <div class="concl blue"><span class="lbl">它也验证了你的「多 model」理由:</span>它的 profile 里 <b>reviewer 用 kimi、其余用 qwen</b>,连 harness 都不同。<b>「审稿的换个模型」是它明确支持的一等能力</b> —— 跟我们 QA 用 Opus 是同一个动机。</div>
+  <div class="concl"><span class="lbl">⚠️ 但它有一个我们不该抄的地方:</span>它把 <b>agent 定义内嵌进每个 DAG 文件</b>,而且我数了它三个模板:<b>agents 的数量 == nodes 的数量</b>(1/1、5/5、2/2)—— 也就是<b>每个 DAG 都要重写一遍自己的 agent,零复用</b>。它<b>没有</b>任何独立可复用的「agent.md」。<br>
+  <b>我们的做法更好:agent.md 是独立、可复用的文件</b>,一个角色写一次,任何 DAG 都能引用。</div>
+</div>
+<div class="cmt"><label>💬 对 homerail 做法的留言(它的分层 = 我们的分层;它的内嵌 = 我们不抄)</label><textarea data-k="s6" data-label="6 · homerail firsthand"></textarea></div>
+
+<!-- 7 -->
+<h2><span class="secnum">7 ·</span> 我们自己的代码事实:「分层」不是我们发明的,是现状</h2>
+<div class="card amber">
+  <p>我核了我们自己的码,三条:</p>
+  <ol>
+    <li>系统读 agent.md 时,是<b>当纯文本读</b>,截断到 4 万字符,直接塞进提示词(<code>Blueprint.ts</code> 的 <code>readAgentFile</code>)。</li>
+    <li><b>全仓没有任何地方解析 agent.md 的 frontmatter</b> —— 你在里面写 <code>model:</code> / <code>skills:</code> / <code>permissionMode:</code>,<b>系统一个都不读</b>,它们只是提示词里的字。</li>
+    <li>所以今天:<b>agent.md 只能表达「我是谁」</b>;模型、技能、能力(能不能开 PR、能不能 ship)<b>只能来自 agent.md 之外</b>。</li>
+  </ol>
+  <div class="concl"><span class="lbl">推论:</span><b>「agent.md 管 WHO / 别的层管模型和能力」不是一个设计提案 —— 代码今天就是这样。</b> DAG + 节点注册表只是<b>把「别的层」这件事说清楚、变成一等公民</b>。</div>
+</div>
+<div class="cmt"><label>💬 对这条的留言</label><textarea data-k="s7" data-label="7 · 我们的代码事实"></textarea></div>
+
+<!-- 8 -->
+<h2><span class="secnum">8 ·</span> 「通用节点」给非工程师 —— 顺便回答「为什么不开任意节点类型」</h2>
+<div class="card blue">
+  <p><b>通用节点 = 一个节点,它跑「某个 agent.md 角色」。</b> 非工程师写一个自己的 agent.md(比如「小红书选题官」),挂到通用节点上,就能进 DAG 跑。</p>
+  <div class="concl"><span class="lbl">为什么它比「开放任意节点类型」更好(这是你 §2 那个问题的真正答案):</span>
+  <b>不是「不能扩展」,是成本形状不同。</b><br>
+  · <b>开放任意新节点类型</b>:每加一种,就要动 5 处硬编码的生产面(存的角色枚举 / Discord 展示 / ship 收尾 / retry / 重启对账)= <b>每加一种付一次账</b>。<br>
+  · <b>通用节点</b>:<b>只加这一个类型、只付一次账</b>;之后<b>任何人写自己的 agent.md 就能用,零代码改动</b>。</div>
+  <div class="concl blue"><span class="lbl">而且它天然安全(不是妥协):</span>因为 agent.md 的 frontmatter 系统不读(§7),<b>非工程师写的 agent.md 物理上无法给自己授予「能 ship」「能合并」「能开 PR」,也无法自选模型</b> —— 这些能力永远只在我们内置的注册表里。<b>扩展性给出去了,权限没给出去。</b></div>
+</div>
+<div class="cmt"><label>💬 对通用节点 / 「为什么不开任意节点类型」的留言</label><textarea data-k="s8" data-label="8 · 通用节点"></textarea></div>
+
+<!-- 9 -->
+<h2><span class="secnum">9 ·</span> 那到底什么时候该上 DAG?(可直接用的判据)</h2>
+<div class="card gray">
+  <div class="scroll"><table>
+  <thead><tr><th>这件活…</th><th>用什么</th></tr></thead>
+  <tbody>
+    <tr><td>一个角色 · 一个模型 · 不需要独立验证</td><td><b>只用 agent.md</b>(裸单 session)—— 不碰 DAG</td></tr>
+    <tr><td>不同步骤要<b>不同模型</b>(如设计 Fable / QA Opus)</td><td><b>上 DAG</b></td></tr>
+    <tr><td>写的人和验的人必须<b>隔离</b>(防自己判自己)</td><td><b>上 DAG</b></td></tr>
+    <tr><td>要「不过就回去重做,直到过」/「同一段重复 N 次」</td><td><b>上 DAG</b>(loop)</td></tr>
+    <tr><td>某类任务要<b>跳过</b>某一步(如纯 doc 不测)</td><td><b>上 DAG</b>(skip)</td></tr>
+  </tbody>
+  </table></div>
+  <div class="concl"><span class="lbl">一句话:</span><b>DAG 是「例外时才拿出来的工具」,不是默认。默认永远是一个 agent.md 跑一个 session。</b></div>
+</div>
+<div class="cmt"><label>💬 这张判据表对吗?要不要加条目?</label><textarea data-k="s9" data-label="9 · 何时上 DAG"></textarea></div>
+
+<!-- 10 -->
+<h2><span class="secnum">10 ·</span> 留给你定的</h2>
+<div class="card red">
+  <ul>
+    <li><b>分层(§4 🅒 / §5)</b>:agent.md = 默认原子 · DAG = 可选编排层 · DAG 永不甩给 Claude —— <b>confirm 吗?</b></li>
+    <li><b>两个理由(§3)</b>:多 model + 防 bias 隔离 = 引入 DAG 的充分理由 —— 同意吗?还有第三个?</li>
+    <li><b>通用节点(§8)</b>:非工程师写 agent.md + 挂通用节点 = 扩展性不砍、权限不外泄 —— 这个答案能解你「为什么不开任意节点类型」的疑问吗?</li>
+    <li><b>判据表(§9)</b>:什么时候上 DAG —— 够用吗?</li>
+  </ul>
+  <p class="hint">这几条 confirm 后,我才回去把它们折进 PRD(加一节「DAG ↔ agent.md 对齐」+ MVP 加通用节点),再出一个大 epic 交 Tadashi。<b>现在不写 PRD、不拆 build。</b></p>
+</div>
+<div class="cmt"><label>💬 总批注 / confirm(同意就说「分层 confirm,回 PRD」)</label><textarea data-k="final" data-label="10 · confirm"></textarea></div>
+
+<div class="bar">
+  <button class="primary" id="exportBtn" type="button">复制批注</button>
+  <button class="ghost" id="clearBtn" type="button">清空</button>
+  <span class="hint" id="saveHint">每小节下有留言框;「复制批注」收成 markdown。批注只存你这台机器,刷新不丢。</span>
+</div>
+</div>
+
+<dialog id="dlg">
+  <div class="dlg">
+    <h3>你的批注(Markdown)</h3>
+    <p class="hint">已自动复制到剪贴板。也可下载,或直接选中复制发给我。</p>
+    <textarea id="out" readonly></textarea>
+    <div class="bar" style="position:static;background:none;border:none;padding-top:12px">
+      <button class="primary" id="dlBtn" type="button">下载 .md</button>
+      <button class="ghost" id="closeBtn" type="button">关闭</button>
+    </div>
+  </div>
+</dialog>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var pathScope = (typeof location !== "undefined" && location.pathname) ? location.pathname : "local";
+  var KEY = "fly1020-agentmd-vs-dag::" + pathScope;
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ saved = {}; }
+  areas.forEach(function(t){
+    var k = t.getAttribute("data-k");
+    if (saved[k]) t.value = saved[k];
+    t.addEventListener("input", function(){
+      saved[k] = t.value;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch(e){}
+      var h = document.getElementById("saveHint"); if (h) h.textContent = "已保存 ✓ · " + new Date().toLocaleTimeString();
+    });
+  });
+  function buildMd(){
+    var lines = ["# FLY-1020 agent.md vs DAG — Annie 的批注", "", "日期: " + new Date().toLocaleString(), ""];
+    var any = false;
+    areas.forEach(function(t){
+      var v = (t.value || "").trim(); if (!v) return; any = true;
+      lines.push("## " + (t.getAttribute("data-label") || t.getAttribute("data-k")), "", v, "");
+    });
+    if (!any) lines.push("> (还没有批注)");
+    return lines.join("\n");
+  }
+  var dlg = document.getElementById("dlg"), out = document.getElementById("out");
+  document.getElementById("exportBtn").addEventListener("click", function(){
+    out.value = buildMd();
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(out.value).catch(function(){});
+    if (dlg.showModal) dlg.showModal(); else alert(out.value);
+  });
+  document.getElementById("clearBtn").addEventListener("click", function(){
+    if (!confirm("清空所有批注?不可撤销。")) return;
+    areas.forEach(function(t){ t.value = ""; }); saved = {};
+    try { localStorage.removeItem(KEY); } catch(e){}
+    var h = document.getElementById("saveHint"); if (h) h.textContent = "已清空。";
+  });
+  document.getElementById("dlBtn").addEventListener("click", function(){
+    var blob = new Blob([out.value], {type:"text/markdown"}), url = URL.createObjectURL(blob);
+    var a = document.createElement("a"); a.href = url; a.download = "fly1020-agentmd-vs-dag-批注.md";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  });
+  document.getElementById("closeBtn").addEventListener("click", function(){ if (dlg.close) dlg.close(); });
+})();
+</script>
