@@ -12,13 +12,13 @@ Issue: FLY-1063 (https://linear.app/geoforge3d/issue/FLY-1063/prd-github-pr-comm
 |---|------|--------------|
 | Q1 | source of truth | **方案 B**：**Discord = 授权源**（她说 cool 就是 founder 授权），**GitHub = 执行 + 门禁**，不是竞争授权 |
 | Q2 | 身份分离（bot vs 她本人账号） | **暂不做**，先用她的 GitHub 账号。**列 follow-up，并注明：产品化给外部用户时是前置**（理由见 §7） |
-| Q3 | 第一批 repo | **FlyView + GeoForge3D**（「Flavio」= FlyView） |
+| Q3 | 第一批 repo | **FlyView + GeoForge3D**。**FlyView = flywheel 本仓**（Annie 2026-07-09 确认，「Flavio」= FlyView = Flywheel 的产品名，不是另一个 repo）。故第一批 = **flywheel + GeoForge3D** |
 | — | 关键设计意见 | **所有 repo 用同一个 flow，变的只是 gate 的重量** |
 | — | 记账 | **「记账」是流程里的一等步骤**，🆒 flow 最后一步自动销账 |
 
 写死一句话：**Discord 授权，GitHub 执行。**
 
-> **⚠️ 一处需 HL/Annie 确认的命名**：`xrliAnnie/flyview` 这个 repo **不存在**（实测 404）。而项目记忆里记着 **FlyView = Flywheel 的别名**（Annie 对本产品的叫法）。因此本 PRD 按 **「FlyView 即 flywheel 本仓」** 理解，第一批 = **flywheel + GeoForge3D**（两者实测都存在：`xrliAnnie/flywheel`、`xrliAnnie/GeoForge3D`）。这也与「Flywheel-first」一致。**若 FlyView 实为另一个尚未创建的 repo，请纠正，rollout 章节需改。**
+> **命名已确认（Annie 2026-07-09）**：**FlyView = flywheel 本仓**（是 Flywheel 的产品名，不是另一个/待建 repo；`xrliAnnie/flyview` 实测 404 正因它不是独立 repo）。故第一批 = **flywheel + GeoForge3D**（两者实测都存在：`xrliAnnie/flywheel`、`xrliAnnie/GeoForge3D`），与「Flywheel-first」一致。
 
 ---
 
@@ -222,7 +222,7 @@ Annie 决定**现在不做**，先用她自己的 GitHub 账号。但必须列�
 
 | 阶段 | repo | 说明 |
 |------|------|------|
-| P0 | **flywheel**（= FlyView，待确认命名） | 先跑通：M1 gating job + 销账 + 瘦 caller |
+| P0 | **flywheel**（= FlyView，Annie 已确认同一仓） | 先跑通：M1 gating job + 销账 + 瘦 caller |
 | P1 | **GeoForge3D** | 第二个代码 repo，验证 gate 重量可变 + deploy 腿 per-repo |
 | P2+ | 其余 repo（flywheel-skills / 内容 repo…） | 验证「轻 gate / 空 gate」档，形状不变 |
 
@@ -236,7 +236,7 @@ Annie 决定**现在不做**，先用她自己的 GitHub 账号。但必须列�
 
 | # | 项 | 状态 |
 |---|----|------|
-| R1 | **FlyView 是否就是 flywheel 本仓**（`xrliAnnie/flyview` 实测 404；记忆记着 FlyView=Flywheel 别名） | **待 HL/Annie 确认** |
+| R1 | ~~FlyView 是否就是 flywheel 本仓~~ | ✅ **已确认（Annie 2026-07-09）：FlyView = flywheel 本仓**。第一批 = flywheel + GeoForge3D |
 | R2 | 无 branch protection（Free plan 限制），main 敞着 | REQ-3，建议一并解决 |
 | R3 | M1 依赖 Mac 在线 | 可接受（Runner 本就在这台机器） |
 | R4 | 「门禁」是否真的引入 Prow | 选型归 eng |
@@ -270,7 +270,7 @@ Annie 决定**现在不做**，先用她自己的 GitHub 账号。但必须列�
 | **无 branch protection**（Free plan 403） | `gh api repos/xrliAnnie/flywheel/branches/main/protection` |
 | 100% 真实 ship run actor = xrliAnnie / type=User | `gh api .../actions/workflows/254044724/runs` |
 | GitHub App comment 结构性可辨（`linear[bot]`, `type=Bot`） | `gh api repos/xrliAnnie/flywheel/issues/524/comments` |
-| `xrliAnnie/flyview` 不存在；GeoForge3D / flywheel-skills 存在 | `gh api repos/xrliAnnie/<name>` |
+| `xrliAnnie/flyview` 无独立 repo（FlyView = flywheel 本仓，Annie 确认）；GeoForge3D / flywheel-skills 存在 | `gh api repos/xrliAnnie/<name>` + Annie 2026-07-09 确认 |
 | `issue_comment` workflow 恒用默认分支的文件，PR 分支改不动 | https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows |
 | `GITHUB_TOKEN` 发的事件不触发新 workflow（PAT / App token 会） | https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow |
 | 私有仓 reusable workflow 跨 repo 复用 GA + Access 设置 | https://github.blog/changelog/2022-12-13-github-actions-sharing-actions-and-reusable-workflows-from-private-repositories-is-now-ga/ |
