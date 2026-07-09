@@ -2,7 +2,7 @@
 
 Issue: FLY-1022 (https://linear.app/geoforge3d/issue/FLY-1022/lead-scaling-one-lead-managing-many-runners-via-a-tree-hierarchical)
 日期: 2026-07-08
-基于: product/doc/FLY-1022-hierarchical-runner-tree/{exploration.md, research.md, hierarchical-runner-tree-design.html}(Annie co-eval v1 已 GO)
+基于: product/doc/FLY-1022-hierarchical-runner-tree/{exploration.md, research.md, tree-patterns-research.md(grounded 机制调研), hierarchical-runner-tree-design.html}(Annie co-eval v1 已 GO;§4 概念化 DDIA 段已按 Annie 要求换成 grounded 机制)
 
 > **状态:draft PRD —— build 是 scale-gated 的。** Annie co-eval 后拍板:**PRD 现在写**(把设计 + 接口 + 拆分想清楚),
 > **工程实现等两个 gating 条件都满足再启**(§11:看门狗 FLY-942/878/927 落地 + 一层结构稳定跑几天)。本 PRD 只定
@@ -85,14 +85,40 @@ graph TB
   不看每个 runner 的原始细节。Lead 注意力 = O(直属子节点数),而非 O(runner 总数)。
 - **为什么能 scale**:只要每个节点的**直属子节点数**保持在「一个脑扛得住」(≈今天的 5-6),总容量随层数**指数级**涨(§4.2)。
 
-### 4.2 树聚合(classic tree aggregation · DDIA 参考)
+### 4.2 树聚合 = 部分聚合上汇(partial aggregation,不是概念是成熟机制)
 
-- **模式** = 叶子(runner)**自报健康** → 每层父节点(sub-lead)**聚合 + 压缩** → 再上报 → 到 root Lead 时已是「几组摘要」。
-  这是经典的**树形聚合 / roll-up**(每层扇出 fan-out ~5,fan-in 聚合)。
-- **容量算术(说明设计上限,不是 MVP 目标)**:1(Lead) → 5(sub-lead) → 25(sub-sub-lead) → 125(runner)……
-  每加一层,单 Lead 可及的 runner 数 ×~5。**MVP 只一层(§3):1 Lead → 5 sub-lead → ~25-30 runner**,已远超今天的 5-6。
-- **eng 参考**:**DDIA(《Designing Data-Intensive Applications》)** —— 层级聚合、扇出/扇入、背压、局部失败不放大全局,
-  是 Tadashi 实现聚合/上报层时的对照读物(尤其「聚合树」「fan-out on write vs read」「背压」章节)。
+> 详见 grounded 调研 `tree-patterns-research.md §1`(机制 + 权衡 + 来源)。这里只落设计。
+
+- **机制**(抄 Spark `treeAggregate` / MapReduce combiner):叶子(runner)自报健康 → 每层 sub-lead **做部分聚合**、只把**聚合值**往上送 →
+  **对数轮**收敛到 root。root Lead 拿到的是「几组摘要」,不是 N 个原始细节。
+- **⭐ 权衡(直接约束 §9 schema)**:部分聚合**只对 associative+commutative 的聚合成立**(count/max) → 顶层拿到的**必然是有损摘要**、细节留下层。
+  → **§9 的健康摘要 schema 必须是「可结合聚合」**(计数 + 冒泡的少数异常个案),**不能**把每个 runner 的原始 pane 往上堆。
+- **容量算术(说明上限,非 MVP 目标)**:1 → 5 → 25 → 125……每层 ×~fan-out。**MVP 只一层(§3):1 Lead → ~5 sub-lead → ~25-30 runner**,已远超今天 5-6。
+- **fan-out 上界 = 认知容量**(`research §8` LSM 放大权衡):每 sub-lead 带多少 runner = fan-out;宽=树浅升级跳数少但聚合重、窄=树深。
+  我们的 fan-out **被「一个脑扛得住」天然钉在 ≈5-6**(认知瓶颈,不是磁盘),不用调到 128。
+
+### 4.3 借来的成熟机制总览(每条:抄什么 + 权衡 + 来源见 research)
+
+> **⭐ 这张表替换原来那句概念化的「DDIA 参考」** —— 每条都是 DB/分布式里几十年的成熟机制,`tree-patterns-research.md` 有机制+权衡+一手来源。
+
+| 能力 | 借的机制 | MVP? | 权衡(诚实) |
+|---|---|---|---|
+| 健康/负载往上压 | **部分聚合**(Spark treeAggregate / combiner) | ✅ | 只能 associative 聚合、顶层有损(§4.2) |
+| Lead 委派给 sub-lead | **两级调度**(Mesos two-level) | ✅ 一层 | **root 失全局细粒度视图**、跨组抢占难 → 故 MVP 一层、跨组回 root(§4.4) |
+| 隔离卡住的子树 | **bulkhead / cell + circuit breaker** | ✅ | 隔离降利用率(可接受,注意力隔离本就是目的)(§4.4) |
+| 过载往上传 | **背压 = 容量信号**(Reactive Streams) | ✅ 接 353 | 故意压过载吞吐换不崩;待办必须有界(§4.4) |
+| 谁卡了、别误报 | **SWIM suspect-before-declare** | ✅ 喂回 942 | 弱一致(几轮才到顶),异步人在环可接受(§5) |
+| 何时加/合并 sub-lead | **B-tree 分裂/合并**(滞回阈值) | ⏸ later | churn/thrash → MVP 手动配置,不自动(§10) |
+| runner 分到哪个 sub-lead | **一致性哈希 + vnode** | ⏸ later | 环/vnode 元数据复杂,小规模过度 → MVP 静态分配(§10) |
+
+### 4.4 三条 MVP 就抄的机制,落到设计
+
+- **子树隔离(bulkhead / cell)**:每个 sub-lead 的子树 = 一个**隔舱 / cell**,blast radius = 1/(sub-lead 数)。一个 runner 或整组卡住,
+  **隔在该子树内、不级联**到兄弟组或 root。**circuit breaker**:若某 sub-lead **自己**冻住/失联,root **跳闸**它 → 重路由或直接升级 founder,不干等。
+- **⭐ 背压 = 353 的容量信号(精确接缝)**:sub-lead 饱和(它那摊到容量)→ **向上发背压** → root / **353 派发器停止往这个子树派新活**。
+  **sub-lead 的饱和信号,就是 353 capacity-aware 派发消费的容量信号** —— 1022 的树和 353 的流控**用「背压」这一个机制接上**,不是两套东西。
+- **两级委派的已知代价(写清、不装没有)**:委派给 sub-lead = root **失去对单个 runner 的全局细粒度视图**(跨组优先级/抢占难,Mesos 两级的经典代价)。
+  → **这正是 MVP 只做一层、跨组协调仍回 root / founder 的原因**。是取舍,不是缺陷。
 
 ---
 
@@ -105,6 +131,9 @@ graph TB
 - **⭐ 落点变**:看门狗判定某 runner 静默卡住 → **报给它的直属 sub-lead(最底层),而不是直接顶到 root Lead**。
 - **层层上报(escalate)**:sub-lead 是**第一响应人**(942 契约:Lead=响应);它先自愈 / relay。**只有 sub-lead 层解决不了、
   或 sub-lead 自己应答超时**,才升级到它的父节点;逐层向上;最终才到 root Lead / founder(沿用现有 stuck→founder 深层页)。
+- **⭐ suspect-before-declare(抄 SWIM,`research §5`)**:sub-lead **先「怀疑」(加一档观察)、确认才「宣告」升级** —— 不一有静默就顶到上层。
+  这直接治 FLY-218/220 的**误报**病(整屏哈希漂移 / 回声导致的假阳)。且 SWIM 的性质保证:**逐层分层检测下,检测负载不随 fleet 大小 O(N²) 爆**、
+  卡住信号升到 root 的时延随层数**对数**增长 —— 这是**树的观测能 scale 的理论依据**,不是拍脑袋。
 - **健康摘要走同一条上报路**:sub-lead 周期把「本组健康摘要」聚合上报(§4.2),看门狗的**告警**并进这条摘要流(带类型:
   `✅ 干完等拍` / `🔴 卡住在等谁` / `🟡 已替你决定`,942 §3 的结构化通知)。
 - **喂回 942**:这条「树-aware 落点 + 层层升级 + sub-lead 应答时效」作为 **FLY-942/878/927 的一个增强项**记回去
@@ -178,8 +207,9 @@ sequenceDiagram
     Note over L: Lead 注意力 = O(直属 sub-lead 数), 不是 O(runner 数)
 ```
 
-- **健康摘要 schema(草案,co-eval / 实现细化)**:`{groupId, subLeadId, counts:{running, parked_ok, needs_founder, stuck}, escalations:[{issueId, kind, waitingOn, sinceMs}]}`。
-  —— 压掉每 runner 的原始 pane 细节,保留「组计数 + 需要往上的少数个案」。**确切压什么/留什么 = §14 开放,Annie co-eval。**
+- **健康摘要 schema(草案,co-eval / 实现细化)**:`{groupId, subLeadId, counts:{running, parked_ok, needs_founder, stuck}, saturation:{capacity, inUse}, escalations:[{issueId, kind, waitingOn, sinceMs}]}`。
+  —— **必须是 associative aggregate**(`research §1`:部分聚合只对可结合函数成立):计数可结合、`saturation` 是背压/容量信号(§4.4 喂 353)、
+  `escalations` 是冒泡的少数异常个案。**压掉每 runner 的原始 pane 细节**;顶层拿的是有损摘要,细节留下层。**确切压什么/留什么 = §14 开放,Annie co-eval。**
 - **升级判定**:sub-lead 应答超时(942 §2 的 Lead 应答时效阈值,可配置)→ 冒泡到 parent;逐层。
 - **thread 所有权**:每个 `[ISSUE-ID]` thread 由该 runner 的**直属 sub-lead** owned(写更新/决策卡);root Lead 只在事被升级到它时介入该 thread。
 
@@ -193,12 +223,13 @@ sequenceDiagram
 - `LeadConfig.parentLeadId` schema + dispatch 多一跳 + 组摘要聚合上报 + 942 树-aware 落点(§5)。
 - 每个 runner 的 `[ISSUE-ID]` thread 照常直达 founder(§7)。
 
-**坚决砍(MVP 一律不做)** `later`
+**坚决砍(MVP 一律不做)** `later`(有成熟机制、只是现在不上,`research §6/§7`)
 - 递归任意深树 / sub-lead 自动再开 sub-lead(只留 schema 位,不实现)。
+- **自动加/合并 sub-lead**(机制 = B-tree 分裂/合并 + 滞回阈值,`research §6`)—— MVP 手动/配置,不自动(防 thrash)。
+- **runner→sub-lead 动态 rebalance**(机制 = 一致性哈希 + vnode,`research §7`)—— MVP 静态/轮询分配。
 - 复杂负载均衡 / 动态调度 / 跨机自动 rebalance。
 - sub-lead 之间横向协商。
 - runner 三段式内部拆节点(§6,永不做)。
-- 自动决定「几个 runner 该配一个 sub-lead」的智能分组(MVP 手动/配置)。
 
 ---
 
@@ -255,7 +286,11 @@ sequenceDiagram
 
 ## 15. 参考
 
-- **DDIA**《Designing Data-Intensive Applications》(树聚合 / fan-out / 背压 / 局部失败不放大 —— eng 实现聚合上报层的对照)。
+- **⭐ grounded 机制调研**:`product/doc/FLY-1022-hierarchical-runner-tree/tree-patterns-research.md`(每条机制的具体做法 + 权衡 + 一手来源)——
+  §4/§5 的设计全部落在它上面。含:部分聚合(Spark treeAggregate / MapReduce combiner)· 两级调度(Mesos/Omega/Borg survey)·
+  故障隔离(Azure bulkhead / cell-based blast radius)· 背压(Reactive Streams)· 故障检测(SWIM,Das/Gupta/Motivala 2002)·
+  B-tree 分裂合并 · 一致性哈希+vnode(Dynamo)· LSM leveled/tiered 放大权衡(RocksDB)。
+- **DDIA**《Designing Data-Intensive Applications》—— 作总纲对照(分区 / 复制 / 背压 / 聚合章节);**具体机制以上面 research 的一手来源为准**。
 - FLY-916(origin · Tadashi 树+可观测洞察,已并入本 issue)· FLY-1005(横轴多机 · 节点放置)· FLY-353(capacity-aware 派发 / DAG,划界不覆盖)·
   FLY-1020(节点内部模板,§6 对齐)· FLY-942 + FLY-878/927(看门狗 · §5 增强对象,已 done PR #506)· homerail(Manager/Node/Worker 中间层)·
   产品体验 spec §2.4(per-issue thread)。

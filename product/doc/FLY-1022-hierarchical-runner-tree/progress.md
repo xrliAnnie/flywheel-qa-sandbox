@@ -5,15 +5,15 @@ Issue: FLY-1022 (https://linear.app/geoforge3d/issue/FLY-1022/lead-scaling-one-l
 基于: 无
 
 ## Phase 1: design co-eval v1 — DONE (Annie GO)
-- [x] exploration.md + research.md (核过码现状 + 五轴合成)
-- [x] explainer HTML v1 → 发布 → Annie co-eval → GO 写 PRD
+- [x] exploration.md + research.md + explainer HTML → Annie GO 写 PRD
 
-## Phase 2: PRD — 本轮已交付,等 Annie QA/收敛
-- [x] engineering/doc/FLY-1022-hierarchical-runner-tree/prd.md (折 Lead §1-§9 全部 refine)
-    · 353=capacity-aware派发 / 1022=抬单Lead容量;⭐942 tree-aware层层上报;⭐多层设计MVP一层;
-      树聚合+DDIA;⭐节点=整条三段式session不拆(对齐1020);⭐per-issue thread 保留硬约束;
-      多机放置+Lead-as-child schema;scale-gate(看门狗完+一层稳);build拆分挂Tadashi全标scale-gated
-- [x] prd-review.html (过目 co-eval) → publish → https://fw-reports-a53de2.vercel.app/r/5c371de47ac6d261d0b8ea13eba2c44f/
+## Phase 2: PRD — DONE (发 QA)
+- [x] engineering/doc/.../prd.md (折 Lead §1-§9 全 refine) + prd-review.html
+
+## Phase 3: grounded research (Annie: DDIA 段太概念) — 本轮已交付,等 QA
+- [x] tree-patterns-research.md (8 类机制:部分聚合/两级调度/bulkhead-cell/背压/SWIM/B-tree/一致性哈希/LSM fan-out;每条 机制+权衡+一手来源+映射)
+- [x] PRD §4/§5/§9/§10/§15 换掉概念化 DDIA 段 → grounded 机制(MVP 抄4+2取舍+2 later)
+- [x] tree-patterns-research.html → https://fw-reports-a53de2.vercel.app/r/43b4733c457104ba36ecb163224da877/
 
 ## 本轮止于此(Lead: gate 别碰、不 ship)
-next: 发 Lead QA → relay Annie → 收敛 → ship(codex 先跑→冻→核 mergeable→fire gate→Annie→Tadashi)→ create build-issue 挂 Tadashi
+next: 发 Lead QA → relay Annie → 收敛(要更深则 Lead 用 deep-research skill 补)→ 定稿 PRD → ship(codex→冻→核 mergeable→fire gate→Annie→Tadashi)
