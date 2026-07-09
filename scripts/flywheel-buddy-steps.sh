@@ -159,8 +159,12 @@ step_run_captain_health() {
   [ -n "${FS_CHANNEL_ENG:-}" ] && [ "$FS_CHANNEL_ENG" != "__FILL_DISCORD_CHANNEL_ID_ENG__" ] \
     || { fs_err "no chat channel recorded (channels step incomplete?)"; return 1; }
   _fs_channel_probe "$tok" "$FS_CHANNEL_ENG" "Captain" || return 1
+  # level:transport-probe — honest scope marker (Codex R1#4): this proves the
+  # PIPE (Bridge up, bot identity valid, channel readable+postable), not that
+  # a live Captain answers; the live-answer check is the real-machine QA
+  # acceptance gate (runbook §5).
   setup_mark_done captain_health \
-    '{"bridge":"2xx","bot":"identity-ok","channel":"post+read probe"}'
+    '{"bridge":"2xx","bot":"identity-ok","channel":"post+read probe","level":"transport-probe"}'
 }
 
 # Buddy-region keys writable via `state set` — non-secret by design.

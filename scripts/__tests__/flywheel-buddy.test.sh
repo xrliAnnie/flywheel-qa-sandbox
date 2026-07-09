@@ -233,6 +233,20 @@ else
   fail "D5C rc=$RC5C cursor=$CURSOR5 out: $(tail -3 <<<"$T5C")"
 fi
 
+# ── D7: REQUIRED step skip → run PAUSES, cursor does NOT advance (Codex R1#1) ──
+H7="$SANDBOX/home7"; mkdir -p "$H7/.flywheel"; chmod go-w "$H7/.flywheel"
+echo 99 > "$H7/.flywheel/fail-bots"
+T7="$(run_buddy "$H7" $'\n跳过\n' 2>&1)"   # b1 enter; bots fail 1 → skip
+RC7=$?
+CURSOR7="$(jq -r '.buddy.cursor' "$H7/.flywheel/setup-state.json" 2>/dev/null)"
+BOTS7="$(jq -r '.steps.bots.status // "pending"' "$H7/.flywheel/setup-state.json" 2>/dev/null)"
+if [ "$RC7" -eq 0 ] && [ "$CURSOR7" = "2" ] && [ "$BOTS7" != "done" ] \
+   && grep -q "先停在这儿" <<<"$T7" && ! grep -q "搞定 🎉" <<<"$T7" && ! grep -q "地基齐了" <<<"$T7"; then
+  pass "D7 required-step skip: run pauses honestly, cursor stays at b2, no completion copy"
+else
+  fail "D7 rc=$RC7 cursor=$CURSOR7 bots=$BOTS7 out: $(tail -3 <<<"$T7")"
+fi
+
 # ── D6: static jargon lint (copy templates + fb_say literals). persona.md is
 # NOT user-visible copy — it is the brain's instruction sheet and must NAME
 # the forbidden words to ban them, so it stays out of this lint. ──

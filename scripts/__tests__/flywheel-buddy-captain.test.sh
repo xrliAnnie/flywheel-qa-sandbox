@@ -112,10 +112,17 @@ H1="$SANDBOX/home1"; make_fixture "$H1"
 run_preview "$H1" buddy_captain_preview_start "$H1/.flywheel" --project qa-captain 2>"$SANDBOX/p1.err"
 RC1=$?
 if [ "$RC1" -eq 0 ] && grep -q 'LAUNCH_PLAN_END' "$H1/.flywheel/captain-preview.log" \
-   && grep -q $'ROLE\tstandard' "$H1/.flywheel/captain-preview.log"; then
-  pass "P1 clean buddy-shaped HOME: all four gates pass, launch plan completes (role=standard)"
+   && grep -q $'ROLE\tstandard' "$H1/.flywheel/captain-preview.log" \
+   && grep -q $'PANE_ENV\tDISCORD_BOT_TOKEN\tset' "$H1/.flywheel/captain-preview.log"; then
+  pass "P1 clean buddy-shaped HOME: all four gates pass, launch plan completes with the Captain's token SET"
 else
   fail "P1 rc=$RC1 err=$(tail -3 "$SANDBOX/p1.err" 2>/dev/null) log=$(tail -3 "$H1/.flywheel/captain-preview.log" 2>/dev/null)"
+fi
+# secret canary: the fixture token value must never appear in the log
+if ! grep -q "fixture-eng-value" "$H1/.flywheel/captain-preview.log"; then
+  pass "P1s token value never echoed into the preview log"
+else
+  fail "P1s token value leaked into the log"
 fi
 
 # ── P4: gate-3 guard stubs installed 0700 when absent; never overwritten ──
@@ -147,6 +154,18 @@ if [ "$RC3" -ne 0 ] && grep -q "skeleton" <<<"$OUT3"; then
   pass "P3 missing identity.md: refused with a specific reason"
 else
   fail "P3 rc=$RC3 out='$OUT3'"
+fi
+
+# ── P4b: custom --state-dir must NOT mutate the real home (Codex R1#3) ──
+H6="$SANDBOX/home6"; make_fixture "$H6"
+mkdir -p "$H6/custom-state"; chmod go-w "$H6/custom-state"
+cp "$H6/.flywheel/projects.json" "$H6/.flywheel/.env" "$H6/.flywheel/setup-state.json" "$H6/custom-state/"
+rm -rf "$H6/.flywheel"
+run_preview "$H6" buddy_captain_preview_start "$H6/custom-state" --project qa-captain >/dev/null 2>&1
+if [ ! -d "$H6/.flywheel/bin" ]; then
+  pass "P4b custom state dir: real \$HOME/.flywheel/bin left untouched (no stub install)"
+else
+  fail "P4b bin dir created in real home: $(ls "$H6/.flywheel/bin")"
 fi
 
 # ── P5: stop without a pid file is a safe no-op ──

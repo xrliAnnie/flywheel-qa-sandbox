@@ -1040,7 +1040,14 @@ _fs_model_key_orchestrated() {
   fi
   ver="$(jq -r '.version // "unknown"' <<<"$det" 2>/dev/null)"
   provider_login_guide >/dev/null || { fs_err "agent CLI login did not complete"; return 3; }
-  provider_smoke >/dev/null || { fs_err "agent CLI smoke call failed — login incomplete?"; return 1; }
+  # a stale CLI state dir can pass the login heuristic while the real auth is
+  # broken — a failed smoke gets ONE repair pass (re-drives the login flow)
+  # before this step fails (Codex R1#5).
+  if ! provider_smoke >/dev/null; then
+    fs_log "agent CLI smoke call failed — attempting login repair" >&2
+    provider_repair >/dev/null \
+      || { fs_err "agent CLI smoke call failed and the login repair did not recover it"; return 1; }
+  fi
   setup_mark_done model_key "$(jq -nc --arg p "$pid" --arg v "$ver" \
     '{mode:"agent-cli", provider:$p, version:$v}')"
 }

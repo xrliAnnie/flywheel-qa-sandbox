@@ -119,8 +119,12 @@ fb_state_set() { fb_steps state set "$1" "$2" >/dev/null 2>&1; }
 fb_run_step() { fb_steps run "$1" 2>>"$FB_STATE_DIR/buddy-steps.log"; }
 
 # fb_run_guarded <step-id> <friendly-label> [extra-env...]
-# The escalation ladder (spec §4): failure 1 → plain-words error + retry;
-# failure 2 → offer the human handoff; decline → keep trying.
+# The escalation ladder (spec §4) for REQUIRED steps: failure 1 → plain-words
+# error + retry; failure 2 → offer the human handoff; decline → keep trying.
+# This function only ever RETURNS on success — a required step can never be
+# silently passed over (the cursor must not advance past missing
+# infrastructure, Codex R1#1). "跳过" pauses the whole run with progress kept
+# (resume re-enters the same buddy step); escalation exits via the ladder.
 fb_run_guarded() {
   local id="$1" label="$2"; shift 2
   local fails=0 out rc
@@ -138,8 +142,12 @@ fb_run_guarded() {
     fb_gap
     if [ "$fails" -lt 2 ]; then
       fb_say "「${label}」这步没成功 —— 多半是刚才某个东西贴错了或还没弄完。咱们回头看一眼,弄好了再试一次。"
-      fb_ask "(回车重试,输入「跳过」先放一放)"
-      case "$FB_INPUT" in 跳过|skip) fb_say "好,先放一放,回头再补。"; return 2 ;; esac
+      fb_ask "(回车重试,输入「跳过」先停在这里)"
+      case "$FB_INPUT" in
+        跳过|skip)
+          fb_say "好,先停在这儿 —— 这一步是后面要用的,弄好之后再运行这条命令,咱们从这里接着继续,前面的进度都在。"
+          exit 0 ;;
+      esac
     else
       fb_copy escalate-offer
       fb_ask ">"
@@ -272,7 +280,7 @@ fb_cursor_label() {
 
 fb_b0() {
   fb_say "正在做最后的底座检查…"
-  fb_run_guarded preflight "把需要的基础软件装齐" || true
+  fb_run_guarded preflight "把需要的基础软件装齐"
   fb_run_guarded model_key "装好 AI 助手并登录你自己的账号" \
     FLYWHEEL_AGENT_CLI_ORCHESTRATE=1 FLYWHEEL_AGENT_CLI="${FLYWHEEL_AGENT_CLI:-claude}" || true
 }
@@ -286,15 +294,15 @@ fb_b1() {
 fb_b2() {
   fb_copy step2-tools-open; fb_gap
   # project scaffold is invisible plumbing — quietly, before anything needs it.
-  fb_run_step skeleton >/dev/null || true
+  fb_run_guarded skeleton "把工作区搭好"
   fb_copy step2a-discord; fb_gap
-  fb_run_guarded bots "把团队成员的工牌办好" || true
-  fb_run_guarded channels "把办公室的房间布置好" || true
+  fb_run_guarded bots "把团队成员的工牌办好"
+  fb_run_guarded channels "把办公室的房间布置好"
   fb_gap; fb_copy step2b-linear; fb_gap
-  fb_run_guarded linear "接上后台小本子" || true
+  fb_run_guarded linear "接上后台小本子"
   if fb_step_known github; then
     fb_gap; fb_copy step2c-github; fb_gap
-    fb_run_guarded github "接上 GitHub" || true
+    fb_run_guarded github "接上 GitHub"
   fi
   fb_gap; fb_copy step2-close
 }
@@ -328,7 +336,7 @@ fb_b4() {
     fi
   fi
   fb_say "我这就把小组安排下去,稍等…"
-  fb_run_guarded config "把小组落到册子上" || true
+  fb_run_guarded config "把小组落到册子上"
 }
 
 fb_b5() {
@@ -380,10 +388,10 @@ fb_b7() {
     buddy_install_first_output_skill "$FB_STATE_DIR" "$(fb_project_name)" \
       2>>"$FB_STATE_DIR/buddy-steps.log" || true
   fi
-  fb_run_guarded services "让团队常驻上岗" || true
-  fb_run_guarded finish "确认家里的大本营开张" || true
+  fb_run_guarded services "让团队常驻上岗"
+  fb_run_guarded finish "确认家里的大本营开张"
   if fb_step_known captain_health; then
-    fb_run_guarded captain_health "上线自检(团队能收发消息)" || true
+    fb_run_guarded captain_health "上线自检(团队能收发消息)"
   fi
   fb_run_step digest >/dev/null || true
 }

@@ -146,6 +146,34 @@ else
   fail "O5 rc=$RC5 out='$O5'"
 fi
 
+# ── O6: stale CLI state → failed smoke triggers ONE login-repair pass ──
+cat > "$STUB_BIN/claude-broken" <<'EOF'
+#!/bin/bash
+[ -t 0 ] || cat >/dev/null
+for a in "$@"; do
+  case "$a" in
+    --version) echo "9.9.9 (Claude Code)"; exit 0 ;;
+    --print) exit 1 ;;
+  esac
+done
+exit 0
+EOF
+chmod +x "$STUB_BIN/claude-broken"
+H6O="$SANDBOX/home6o"; mkdir -p "$H6O/.claude"   # stale state dir: heuristic says logged in
+O6="$(env -i HOME="$H6O" USER=tester PATH="$STUB_BIN:$PATH" \
+  FLYWHEEL_PLATFORM=linux FLYWHEEL_AGENT_CLI_ORCHESTRATE=1 FLYWHEEL_AGENT_CLI=claude \
+  FLYWHEEL_CLAUDE_BIN=claude-broken FLYWHEEL_AGENT_CLI_TIMEOUT_SECS=10 \
+  bash "$REPO_ROOT/scripts/flywheel-buddy-steps.sh" --project qa-onboard --cos-persona Cass --eng-persona Tad run model_key 2>/dev/null)"
+RC6=$?
+LOG6="$(jq -r '.log // empty' <<<"$O6" 2>/dev/null)"
+if [ "$RC6" -ne 0 ] \
+   && [ -n "$LOG6" ] && grep -q "attempting login repair" "$LOG6" 2>/dev/null \
+   && [ "$(jq -r '.steps.model_key.status // "pending"' "$H6O/.flywheel/setup-state.json" 2>/dev/null)" != "done" ]; then
+  pass "O6 stale login: failed smoke gets a repair pass; still-broken auth fails closed (not done)"
+else
+  fail "O6 rc=$RC6 out='$O6' log=$(grep -c repair "$H6O/.flywheel/buddy-steps.log" 2>/dev/null)"
+fi
+
 echo ""
 echo "flywheel-onboard.test: $PASSED passed, $FAILED failed"
 [ "$FAILED" -eq 0 ]

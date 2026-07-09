@@ -74,6 +74,7 @@ _bcp_resolve() {
   BCP_PROJECT_NAME="$project"
   BCP_PROJECT_ROOT="$(jq -r '.projectRoot' <<<"$entry")"
   BCP_LEAD_ID="$(jq -r '[.leads[] | select(.agentId != "cos-lead")][0].agentId // empty' <<<"$entry")"
+  BCP_TOKEN_ENV="$(jq -r '[.leads[] | select(.agentId != "cos-lead")][0].botTokenEnv // empty' <<<"$entry")"
   if [ -z "$BCP_LEAD_ID" ]; then
     _bcp_log "cannot start the Captain yet: 册子里没有可用的 Captain 记录"
     return 1
@@ -104,27 +105,46 @@ buddy_captain_preview_start() {
   [ -f "$_BCP_LEAD_SH" ] || { _bcp_log "lead launcher missing: $_BCP_LEAD_SH"; return 1; }
 
   _bcp_resolve "$state_dir" "$project" || return 1
-  # the launcher hardcodes ~/.flywheel/bin — converge relative to $HOME,
-  # regardless of a custom state dir.
-  _bcp_converge_bin "$HOME/.flywheel/bin"
+  # gate 3 converge ONLY on the real customer root (state dir == ~/.flywheel):
+  # the launcher hardcodes ~/.flywheel/bin, so a custom --state-dir run (QA
+  # sandbox on an operator machine) must never mutate the real home
+  # (Codex R1#3). Elsewhere the launcher's own missing-script abort is the
+  # honest outcome.
+  if [ "$state_dir" = "$HOME/.flywheel" ]; then
+    _bcp_converge_bin "$HOME/.flywheel/bin"
+  else
+    _bcp_log "custom state dir ($state_dir) — leaving ~/.flywheel/bin untouched"
+  fi
 
-  # secrets: the launcher resolves the lead's bot token env from the live
-  # .env — loaded into THIS process env only, never echoed.
+  # secrets: load the live .env into THIS process env only (never echoed),
+  # then hand the launcher the Captain's OWN token — claude-lead.sh expects
+  # its caller to provide DISCORD_BOT_TOKEN (launchd wrappers do the same);
+  # it does not self-resolve from projects.json (Codex R1#2).
   if [ -f "$state_dir/.env" ]; then
     set -a
     # shellcheck disable=SC1091
     source "$state_dir/.env"
     set +a
   fi
+  if [ -n "${BCP_TOKEN_ENV:-}" ]; then
+    export DISCORD_BOT_TOKEN="${!BCP_TOKEN_ENV:-}"
+  fi
+  if [ -z "${DISCORD_BOT_TOKEN:-}" ]; then
+    _bcp_log "cannot start the Captain yet: 它的工牌钥匙还没配好(bots 那步没完成)"
+    return 1
+  fi
   export FLYWHEEL_COMM_BACKEND="${FLYWHEEL_COMM_BACKEND:-commdb}"
 
   local log="$state_dir/captain-preview.log"
   ( umask 077; : >> "$log" )
 
+  local -a lead_args=("$BCP_LEAD_ID" "$BCP_PROJECT_ROOT" "$BCP_PROJECT_NAME")
+  [ -n "${BCP_TOKEN_ENV:-}" ] && lead_args+=(--bot-token-env "$BCP_TOKEN_ENV")
+
   if [ "${FLYWHEEL_BUDDY_PREVIEW_DRY_RUN:-0}" = "1" ]; then
     # contract mode: the launcher's own FLY-231 dry-run must reach a complete
     # launch plan — proof all four gates pass on this machine state.
-    if FLYWHEEL_LEAD_DRY_RUN=1 bash "$_BCP_LEAD_SH" "$BCP_LEAD_ID" "$BCP_PROJECT_ROOT" "$BCP_PROJECT_NAME" >>"$log" 2>&1 \
+    if FLYWHEEL_LEAD_DRY_RUN=1 bash "$_BCP_LEAD_SH" "${lead_args[@]}" >>"$log" 2>&1 \
        && grep -q 'LAUNCH_PLAN_END' "$log"; then
       _bcp_log "dry-run launch plan complete (gates green)"
       return 0
@@ -133,7 +153,7 @@ buddy_captain_preview_start() {
     return 1
   fi
 
-  nohup bash "$_BCP_LEAD_SH" "$BCP_LEAD_ID" "$BCP_PROJECT_ROOT" "$BCP_PROJECT_NAME" >>"$log" 2>&1 &
+  nohup bash "$_BCP_LEAD_SH" "${lead_args[@]}" >>"$log" 2>&1 &
   local pid=$!
   printf '%s\n' "$pid" > "$state_dir/captain-preview.pid"
   # bounded aliveness check — a launcher that dies in its gates dies fast.
