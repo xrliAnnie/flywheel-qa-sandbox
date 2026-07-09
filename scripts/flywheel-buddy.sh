@@ -366,7 +366,10 @@ fb_b7() {
     buddy_captain_preview_stop "$FB_STATE_DIR" 2>>"$FB_STATE_DIR/buddy-steps.log" || true
   fi
   fb_run_guarded services "让团队常驻上岗" || true
-  fb_run_guarded finish "上线自检" || true
+  fb_run_guarded finish "确认家里的大本营开张" || true
+  if fb_step_known captain_health; then
+    fb_run_guarded captain_health "上线自检(团队能收发消息)" || true
+  fi
   fb_run_step digest >/dev/null || true
 }
 

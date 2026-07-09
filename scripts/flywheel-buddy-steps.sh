@@ -52,7 +52,7 @@ source "$BS_SCRIPT_DIR/lib/fleet-sanitize.sh"
 # after linear / before config so the config artifact can record the repo
 # binding). SINGLE POINT for the Buddy shell (`steps` subcommand) and for
 # done-step rehydration order.
-BS_STEP_IDS=(preflight skeleton model_key bots channels linear github config services finish digest)
+BS_STEP_IDS=(preflight skeleton model_key bots channels linear github config services finish captain_health digest)
 
 # ── buddy-only step: github (M3 / BI-3) ─────────────────────────────────────
 # gh-CLI path (§6.7 MVP): device/web login (no tokens pasted — gh keeps its
@@ -138,6 +138,29 @@ step_hydrate_github() {
   repo="$(setup_step_evidence github | jq -r '.repo // empty')"
   [ -n "$repo" ] || return 1
   FS_PROJECT_SLUG="$repo"
+}
+
+# ── buddy-only step: captain_health (M5) ────────────────────────────────────
+# The placement health check, extended past the base finish step's Bridge
+# probe: ① Bridge answers 2xx ② the Captain's bot identity answers Discord
+# ③ the chat channel takes a post+read probe (the _fs_channel_probe pattern —
+# the same two load-bearing needs the runtime has). All three green or the
+# step is NOT done (fail-closed). A live "Captain answers a ping" belongs to
+# the real-machine QA stage; the REST probe is the hermetic contract.
+step_run_captain_health() {
+  local url="${FLYWHEEL_BRIDGE_URL:-http://127.0.0.1:9876}"
+  curl -fsS -m 5 "$url/api/runs/active" >/dev/null 2>&1 \
+    || { fs_err "the team's home base is not answering at $url"; return 1; }
+  local tok
+  tok="$(fs_env_get "$FS_ENG_ENV")" \
+    || { fs_err "no $FS_ENG_ENV in .env (bots step incomplete?)"; return 1; }
+  fs_discord_api GET /users/@me "$tok" >/dev/null \
+    || { fs_err "the Captain's Discord identity did not answer"; return 1; }
+  [ -n "${FS_CHANNEL_ENG:-}" ] && [ "$FS_CHANNEL_ENG" != "__FILL_DISCORD_CHANNEL_ID_ENG__" ] \
+    || { fs_err "no chat channel recorded (channels step incomplete?)"; return 1; }
+  _fs_channel_probe "$tok" "$FS_CHANNEL_ENG" "Captain" || return 1
+  setup_mark_done captain_health \
+    '{"bridge":"2xx","bot":"identity-ok","channel":"post+read probe"}'
 }
 
 # Buddy-region keys writable via `state set` — non-secret by design.

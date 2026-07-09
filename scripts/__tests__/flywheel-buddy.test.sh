@@ -50,7 +50,7 @@ J="$SD/setup-state.json"
 while [ $# -gt 0 ]; do case "$1" in --*) shift 2 ;; *) break ;; esac; done
 cmd="${1:-}"; shift || true
 case "$cmd" in
-  steps) echo '{"ok":true,"steps":["preflight","skeleton","model_key","bots","channels","linear","github","config","services","finish","digest"]}' ;;
+  steps) echo '{"ok":true,"steps":["preflight","skeleton","model_key","bots","channels","linear","github","config","services","finish","captain_health","digest"]}' ;;
   run)
     id="$1"
     echo "$id" >> "$SD/run-order.log"
@@ -120,8 +120,8 @@ J1="$H1/.flywheel/setup-state.json"
 ORDER="$(tr '\n' ' ' < "$H1/.flywheel/run-order.log" 2>/dev/null)"
 CURSOR1="$(jq -r '.buddy.cursor' "$J1" 2>/dev/null)"
 DONE1="$(jq -r '[.steps|to_entries[]|select(.value.status=="done")|.key]|length' "$J1" 2>/dev/null)"
-if [ "$RC1" -eq 0 ] && [ "$CURSOR1" = "9" ] && [ "$DONE1" -eq 11 ] \
-   && [ "$ORDER" = "preflight model_key skeleton bots channels linear github config services finish digest " ] \
+if [ "$RC1" -eq 0 ] && [ "$CURSOR1" = "9" ] && [ "$DONE1" -eq 12 ] \
+   && [ "$ORDER" = "preflight model_key skeleton bots channels linear github config services finish captain_health digest " ] \
    && grep -q "欢迎入伙" <<<"$T1" && grep -q "地基齐了" <<<"$T1" && grep -q "搞定 🎉" <<<"$T1"; then
   pass "D1 full dry run: exits 0, 11 steps done in canonical order, cursor past b8"
 else
