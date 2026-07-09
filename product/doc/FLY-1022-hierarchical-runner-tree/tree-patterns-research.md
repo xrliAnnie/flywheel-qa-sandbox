@@ -167,11 +167,22 @@ Issue: FLY-1022 (https://linear.app/geoforge3d/issue/FLY-1022/lead-scaling-one-l
 
 ---
 
-## 10. 深度边界 / 若要更深
+## 10. ChatGPT Deep Research 已跑（2026-07-08）—— 独立印证 + 两条新增
 
-本文 grounded 到「机制 + 权衡 + 一手概念来源」层，够改 PRD、够 Tadashi 照着建。**若 Annie 要更深**
-（如 SWIM/一致性哈希的形式化保证、two-level 调度的完整学术综述、真实系统 benchmark 数据），**建议 Lead 用 deep-research skill
-（ChatGPT Deep Research）补一轮**喂回本文 §1-§8——本文结构已经给它留好了每条的钻取点。
+按 Annie 要求真跑了一轮 **ChatGPT Deep Research**（『Hierarchical Command Trees for Autonomous Coding Agents』,
+8 分钟 / **29 citations / 521 searches**,conversation `6a4f1346`）。它**独立**收敛到跟本文（web-research）**同一套 MVP-vs-later 判断**:
+
+- **Executive 结论**:树 = **bounded-fan-out 聚合 + 监督层级**,不是加标签的平铺派发;最可借三处 = associative tree aggregation ·
+  high-fan-out 平衡树 + minimal-movement hashing · backpressure + supervision。
+- **⭐ 小规模（几十 agent）人在环最该先上 6 条**（= 本文 §9 MVP,DR 独立同批）:固定小 fan-out · typed associative summaries ·
+  **带显式 credit 的有界队列** · 子树边界 circuit-breaker + bulkhead · **soft-suspicion-before-declare** · **Erlang 式 restart 策略**。
+- **⭐ 此规模下通常过早**（= 本文 §9 later）:full gossip membership · heavy virtual-node hashing · LSM 式后台 compaction。
+- **相对本文 web-research 的两条新增**:①『**有界队列 + 显式 credit**』(比『背压』更具体的容量语义,已并入 PRD §4A-4)②『**Erlang/OTP
+  supervision tree**』的 restart-strategy 语言(one_for_one / restart intensity / let-it-crash,已并入 PRD §4A-9)。
+
+**⚠️ 精确一手引用 URL 待补**:DR 报告在跨域 sandbox iframe(oaiusercontent OOPIF);自动导出被 synthetic-click 的 OOPIF hit-test
+挡住(FLY-541,本机 headed 仍复现;坐标已标定证明 100% 准,click 落 IFRAME 元素但不入子帧)。→ 走人手 2 步 Export to Markdown
+(真人手势能过 OOPIF)拿全文 + 29 条解析引用 URL,补进 §11。**substance 已先落地**(上面 + PRD §4A)。若还要更深(形式化/benchmark)可再跑一轮。
 
 ---
 

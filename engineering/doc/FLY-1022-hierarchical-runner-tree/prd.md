@@ -2,7 +2,7 @@
 
 Issue: FLY-1022 (https://linear.app/geoforge3d/issue/FLY-1022/lead-scaling-one-lead-managing-many-runners-via-a-tree-hierarchical)
 日期: 2026-07-08
-基于: product/doc/FLY-1022-hierarchical-runner-tree/{exploration.md, research.md, tree-patterns-research.md(grounded 机制调研), hierarchical-runner-tree-design.html}(Annie co-eval v1 已 GO;§4 概念化 DDIA 段已按 Annie 要求换成 grounded 机制)
+基于: product/doc/FLY-1022-hierarchical-runner-tree/{exploration.md, research.md, tree-patterns-research.md(grounded 机制调研 + ChatGPT DR 记录), hierarchical-runner-tree-design.html}(Annie co-eval v1 已 GO;§4 概念化 DDIA 段已换成 grounded 机制;§4.1b/§4A 已 fold 真跑的 ChatGPT Deep Research 实质——精确一手引用 URL 待人手导出补,substance 先落地)
 
 > **状态:draft PRD —— build 是 scale-gated 的。** Annie co-eval 后拍板:**PRD 现在写**(把设计 + 接口 + 拆分想清楚),
 > **工程实现等两个 gating 条件都满足再启**(§11:看门狗 FLY-942/878/927 落地 + 一层结构稳定跑几天)。本 PRD 只定
@@ -85,9 +85,28 @@ graph TB
   不看每个 runner 的原始细节。Lead 注意力 = O(直属子节点数),而非 O(runner 总数)。
 - **为什么能 scale**:只要每个节点的**直属子节点数**保持在「一个脑扛得住」(≈今天的 5-6),总容量随层数**指数级**涨(§4.2)。
 
+### 4.1b ⭐ ChatGPT Deep Research 背书(真跑:8 分钟 / 29 citations / 521 searches)
+
+> 按 Annie 要求真跑了一轮 **ChatGPT Deep Research**(标题『Hierarchical Command Trees for Autonomous Coding Agents』,
+> conversation 6a4f1346)。它的 executive 结论**独立**收敛到跟本 PRD **同一套设计判断**(它用了 29 个一手引用、521 次检索),
+> = 方向的第三方背书。原文实质:
+
+- **树 = bounded-fan-out 聚合 + 监督层级(supervision hierarchy),不是『加标签的平铺派发』** —— 正是本 PRD §2/§4 的核心 framing。
+- **最可借的三处**:① associative tree aggregation(健康/负载/结果摘要上汇,§4.2)· ② high-fan-out 平衡树 + minimal-movement
+  hashing(加/分/合/重分配子节点,§4A-6/7)· ③ **backpressure + supervision**(防过载/故障子树污染全局,§4.4/§5)。
+- **⭐ 小规模(几十 agent)人在环最该先上的 6 条(= 本 PRD 的 MVP 清单,DR 独立收敛到同一批)**:固定小 fan-out ·
+  typed associative summaries · **带显式 credit 的有界队列(bounded queues with explicit credits)** · 子树边界 circuit-breaker + bulkhead ·
+  **soft-suspicion-before-declare** 故障检测 · **Erlang 式 restart 策略**。
+- **⭐ 此规模下通常过早(= 本 PRD 的 later 清单)**:full gossip membership · heavy virtual-node hashing · LSM 式后台 compaction。
+
+**净意义**:DR 用 29 个一手引用**独立**收敛到跟我 web-research 完全一样的 **MVP-vs-later** 判断 → 方向可信、非我一家之言。
+DR 相对我 web-research 新增可落的一条 = **『有界队列 + 显式 credit』**(比『背压』更具体的容量语义,见 §4.4 强化)+ **Erlang/OTP supervision**
+的 restart 策略语言(见 §4A-9)。**精确一手引用 URL** 因跨域 iframe 自动导出被挡(FLY-541,Tadashi 修根因中)暂缺,补齐后升级 §4A 的来源;
+**substance 已先落地**(本节 + §4A + §5)。
+
 ### 4.2 树聚合 = 部分聚合上汇(partial aggregation,不是概念是成熟机制)
 
-> 详见 grounded 调研 `tree-patterns-research.md §1`(机制 + 权衡 + 来源)。这里只落设计。
+> 详见 §4A-1 + grounded 调研 `tree-patterns-research.md §1`(机制 + 权衡 + 来源)。这里只落设计。
 
 - **机制**(抄 Spark `treeAggregate` / MapReduce combiner):叶子(runner)自报健康 → 每层 sub-lead **做部分聚合**、只把**聚合值**往上送 →
   **对数轮**收敛到 root。root Lead 拿到的是「几组摘要」,不是 N 个原始细节。
@@ -119,6 +138,76 @@ graph TB
   **sub-lead 的饱和信号,就是 353 capacity-aware 派发消费的容量信号** —— 1022 的树和 353 的流控**用「背压」这一个机制接上**,不是两套东西。
 - **两级委派的已知代价(写清、不装没有)**:委派给 sub-lead = root **失去对单个 runner 的全局细粒度视图**(跨组优先级/抢占难,Mesos 两级的经典代价)。
   → **这正是 MVP 只做一层、跨组协调仍回 root / founder 的原因**。是取舍,不是缺陷。
+
+---
+
+## 4A. Grounded 机制目录(详版 —— 全搬进 PRD,不外链)
+
+> Annie/Lead 要求 PRD 详细、别浓缩(353/1005 都栽在 PRD 太精简)。故把 `tree-patterns-research.md` 的实质**全搬进这里**。
+> 9 条机制,每条:**机制 / 权衡(尽量定量)/ 来源 / 映射到我们的树 / MVP-or-later**。ChatGPT DR(29 引用)+ 我 web-research(14 源)**双重印证**。
+> 标注:一手引用 URL 见 `tree-patterns-research.md §11`;DR 的精确 primary-source URL 待导出补(§11)。
+
+**4A-1 · 部分聚合上汇(partial aggregation / tree aggregation)** `MVP`
+- **机制**:叶子产局部结果 → 中间层 sub-lead **先做部分聚合、只送聚合值** → **对数轮**收敛到顶。抄 Spark `treeAggregate` / MapReduce combiner / rack combiner(机架层 fan-in)。
+- **权衡(定量)**:部分聚合**只对 associative+commutative 聚合成立**(count/max/sum);Spark `treeAggregate` 把 driver 负载从「收 O(partitions) 份」降到「对数轮通信」。顶层拿到的**必然有损**(压掉明细)。
+- **来源**:Spark treeReduce/treeAggregate;MapReduce combiner。
+- **映射**:sub-lead 把 N runner 压成**可结合聚合**(状态计数 + 冒泡的少数异常)。→ 直接约束 §9 的健康摘要 schema。
+- **MVP**:✅。
+
+**4A-2 · 两级调度委派(two-level scheduling)** `MVP(一层)`
+- **机制**:拆开「资源分配」与「任务放置」;上层把资源 offer/派给下层独立调度器,下层自定放置。抄 Mesos(首创两级)。
+- **权衡**:下层**看不到全局放置选项** → root **失全局细粒度视图、跨组优先级抢占难**;Mesos 在「job 远小于集群 + 短命」时好,gang-schedule 靠囤积会死锁。委派 = 用全局视图换可扩展。
+- **来源**:Mesos/Omega/Borg survey (umbrant)。
+- **映射**:Lead = 资源管理器,派给 sub-lead(它对它那摊就是「那个 Lead」)。→ **这条代价正是 MVP 只一层、跨组协调回 root/founder 的原因**(取舍,非缺陷)。
+- **MVP**:✅(仅一层)。
+
+**4A-3 · 子树故障隔离(bulkhead + circuit breaker + cell)** `MVP`
+- **机制**:**隔舱**=资源分独立池,一处失败不耗尽全局、限 blast radius;**熔断**=某依赖反复失败→跳闸停打、防级联、优雅降级;**cell**=blast radius 1/N(可靠性变成可调 scaling 旋钮)。
+- **权衡**:隔离**限爆炸半径但降利用率**(被隔开的空闲 slack 不共享)—— 对我们可接受(注意力隔离本就是目的)。
+- **来源**:Azure Bulkhead pattern;cell-based / blast radius。
+- **映射**:每个 sub-lead 子树 = 一个**隔舱/cell**,一组卡住不级联到兄弟组/root;若某 sub-lead **自己**冻住→root **跳闸**它、重路由或升级 founder。= 「检测+隔离卡住子树」的成熟对应。
+- **MVP**:✅。
+
+**4A-4 · 背压 = 容量信号(backpressure + 显式 credit)** `MVP(接 353)`
+- **机制**:下游处理不过来→**向上游发信号减速**,不让队列无界膨胀。抄 Reactive Streams(subscriber `request(n)`);**DR 补强:带显式 credit 的有界队列**(sub-lead 显式声明「我还能收 n 个」)。
+- **权衡**:背压**故意压过载时吞吐**换不崩;待办**必须有界**(无界缓冲→OOM/级联)。
+- **来源**:Reactive Streams;GfG back pressure;DR『bounded queues with explicit credits』。
+- **映射**:sub-lead 饱和 → 向上发背压/credit=0 → **root/353 停止往这个子树派新活**。**sub-lead 的 credit,就是 353 capacity-aware 派发消费的容量信号** —— 树与 353 用「背压/credit」一个机制接上,不是两套东西。
+- **MVP**:✅。
+
+**4A-5 · 可扩展故障检测(SWIM / gossip)** `MVP(喂回 942)`
+- **机制**:outsourced heartbeat + gossip 传播;**检测时延/误报率/每进程消息负载与组大小无关**(传统 heartbeat 是 O(N²));传播时延随成员数**对数**增长;**suspect-before-declare**(先怀疑再宣告)降误报。
+- **权衡**:弱一致(失败几轮才传到顶)—— 对异步 + 人在环完全可接受。
+- **来源**:SWIM(Das/Gupta/Motivala 2002);DR『soft-suspicion-before-declare』。
+- **映射**:树 + 逐层上报 = 分层故障检测;sub-lead **先 suspect(加一档观察)再升级** → 治 FLY-218/220 误报;**O(N²)→分层 = 树观测能 scale 的理论依据**。
+- **MVP**:✅(喂 942,§5)。
+
+**4A-6 · 何时加/合并 sub-lead(B-tree 分裂/合并)** `later 留位`
+- **机制**:节点满→**在中位数分裂**成两个;占用率跌破阈值(underflow)→**合并/借**兄弟;大 fan-out 保持树浅而快。
+- **权衡**:分裂/合并有 churn;频繁增删会 thrash → **滞回阈值**(高水位分裂、低水位合并、中间留 gap);Postgres 为并发**不做** underflow 合并(极端取舍案例)。
+- **来源**:B-tree (Wikipedia);B+tree underflow merge-or-borrow。
+- **映射**:sub-lead = 有容量(≈5-6)的树节点;超容量→分裂(挪一半 runner,中位分割保平衡);两个都低→合并退休一个。**MVP 手动/配置,不自动**(防 thrash + 复杂度)。
+- **MVP**:⏸ later(只留 schema 位)。
+
+**4A-7 · runner 分到哪个 sub-lead(一致性哈希 + 虚拟节点)** `later 留位`
+- **机制**:一致性哈希——加/删一个节点只重映射 **~K/N** 的 key(朴素取模要重映射 ~99%);**虚拟节点**(如 128/节点)→ 负载标准差压到均值 5-10%,加节点时从多个节点各拿一小片。
+- **权衡**:环 + vnode 的**元数据复杂度**;我们只有一小把 sub-lead 时**过度设计**(DR:heavy virtual-node hashing 此规模过早)。
+- **来源**:Dynamo consistent hashing + virtual nodes。
+- **映射**:**MVP 用简单静态/轮询分配就够**;要动态增删 sub-lead 又不想全体重洗时才上。
+- **MVP**:⏸ later。
+
+**4A-8 · 每 sub-lead 该带多宽(fan-out 放大权衡,LSM 视角)** `写进 PRD 取舍`
+- **机制/权衡**:LSM leveled compaction 写放大 = fanout;fanout 越大→树越浅但每层聚合越重;fanout=2→写放大低但**层数翻倍、读时延翻倍**。一般:宽(每 sub-lead 带更多 runner)= 树浅、升级跳数少、查任意 runner 状态快,但每 sub-lead 聚合负担重;窄 = 树深、跳数多。
+- **来源**:RocksDB compaction(leveled/tiered);leveled compaction overview。
+- **映射**:每 sub-lead fan-out **上界 = 认知容量 ≈5-6**(人/agent 注意力瓶颈,不是磁盘)→ 我们的 fan-out 天然被认知容量钉住,不用调到 128。
+- **MVP**:写进 PRD 的取舍(定 fan-out 默认值 ~5-6)。
+
+**4A-9 · ⭐ 进程监督树(Erlang/OTP supervision tree)** `MVP 策略语言(DR 新增)`
+- **机制**:supervisor 监督一组 children,按 **restart strategy**(`one_for_one` 只重启挂的那个 / `one_for_all` 全组一起重启 / `rest_for_one` 重启它及其后的)恢复;**restart intensity** 限流(`max_restarts` / `period`,超了 supervisor 自己「放弃」并上报**它的**父 supervisor);**let-it-crash**(不试图修复坏状态,直接重启到干净态)。
+- **权衡**:重启**丢进程内存态**(我们靠 progress.md / FLY-353 session-log 重建工作态,不在本 issue 范围);restart intensity 防「重启风暴」。
+- **来源**:Erlang/OTP supervisor 官方文档(DR 引)。
+- **映射**:**sub-lead = 它那摊 runner 的 supervisor**;runner 反复失败**超 restart intensity** → sub-lead 停止重试、**上报父级**(逐层,§5)——正好给「子失败该怎么办」一套成熟词汇,呼应 942「失败 3 次问 founder」+ 现有 runner retry。let-it-crash ≈ 我们的「坏 worktree 清掉重派」。
+- **MVP**:✅(策略/契约层;具体重启复用现有 runner retry + 942 升级,不新造引擎)。
 
 ---
 
@@ -266,10 +355,10 @@ sequenceDiagram
 |---|---|---|---|
 | B1 | **Lead-as-child schema + 树边** | `LeadConfig.parentLeadId`(default-off)+ 校验 + 树解析;字节兼容 sentinel | 无 |
 | B2 | **dispatch 多一跳** | Bridge 把活派给 sub-lead 而非直连 runner(§8.2) | B1 |
-| B3 | **组摘要聚合上报** | sub-lead 聚合本组健康 → 投 parent(§4.2/§9 schema);经现有 CommDB/LeadRuntime | B1 |
+| B3 | **组摘要聚合上报 + 背压 credit** | sub-lead 聚合本组健康 → 投 parent(§4.2/§9 schema,associative aggregate);摘要带 `saturation` credit → 353 消费(§4A-4) | B1 |
 | B4 | **⭐ 942 树-aware 落点 + 层层升级** | 看门狗报最近负责节点 → sub-lead 第一响应 → 超时逐层冒泡(§5);**与 942 看门狗实现同步** | FLY-942 impl |
 | B5 | **thread 所有权下放 sub-lead** | 每 `[ISSUE-ID]` thread 由直属 sub-lead owned、照常直达 founder(§7) | B1 |
-| B6 | **sub-lead 角色 prompt** | 同套 Lead 代码 + 精简「sub」role(带一摊 + 聚合 + owned thread + 942 第一响应) | B1 |
+| B6 | **sub-lead 角色 prompt + restart 契约** | 同套 Lead 代码 + 精简「sub」role(带一摊 + 聚合 + owned thread + 942 第一响应 + OTP 式 restart-strategy/intensity 契约,§4A-9) | B1 |
 | B7 | (later) 多层递归 / 智能分组 / 多机放置策略 | 只留位,MVP 不做(§10 砍单) | 后续 |
 
 ---
