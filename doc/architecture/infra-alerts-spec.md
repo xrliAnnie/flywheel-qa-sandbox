@@ -140,7 +140,7 @@ bridge-wrapper 死机 🚨(D4)优先经 `lead-alert.sh`(kind=`bridge_wrapper_fai
 | `FLYWHEEL_ALERT_ROUTING` | D1 Router + `/send` 门禁 | `1` |
 | `FLYWHEEL_ALERT_TICKETS` | 🎫 schema 头 + owner @ + 生命周期/T2 | `1` |
 | `FLYWHEEL_ALERT_RATE_PER_MIN` | T1 令牌桶 | `20` |
-| `FLYWHEEL_ALERT_SENDER_TOKEN_ENV` | D2 单一发送身份(存 env 名) | `CASS_BOT_TOKEN`(过渡)→ Claude Infra Bot |
+| `FLYWHEEL_ALERT_SENDER_TOKEN_ENV` | D2 单一发送身份(存 env 名) | `FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN`(专用 dispatcher,作者≠owner —— FLY-1049 修正,CASS 过渡态已裁掉) |
 | `FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID` | Claude bot owner @(T3/FLY-928 后填) | 待 FLY-928 |
 | `FLYWHEEL_CHECKPOINT_WATCHDOG` / `FLYWHEEL_CHECKPOINT_STUCK_MS` | Watchdog v2 巡检 / 时效 | `1` / 默认 1h |
 
@@ -152,3 +152,18 @@ bridge-wrapper 死机 🚨(D4)优先经 `lead-alert.sh`(kind=`bridge_wrapper_fai
 - FLY-637-ext / FLY-605 / FLY-195:既有升级梯子 —— Watchdog v2 只兜底 + 收口措辞,不重建。
 - FLY-912:错措辞事故(「Code Review 卡 3h」)—— §8 的直接动机。
 - 边界:bot 建/部署 = FLY-928;notify sender 迁移 + self-heal 启用 = FLY-929;quick-fix = FLY-925。
+
+## 11. 运行时开关与 enable 状态(FLY-1049 索引)
+
+§9 的 env 全部 default-off,**统一在一个 founder-gated enable 窗翻转**(先写全表 env、
+再一次 Bridge 重启吃下)。执行清单(单一权威,本节只做索引不复制)=
+`engineering/doc/FLY-1049-fly915-alerts-closeout/enable-window-runbook.md`
+(收敛 FLY-871 C6 部署步 + FLY-929 enable-runbook + 本 spec 所属 FLY-927 plan §5 步 2-5)。
+
+- **发送身份终态(FLY-1049 Codex R1 修正)**:`FLYWHEEL_ALERT_SENDER_TOKEN_ENV=FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN`
+  —— 专用 sender-only dispatcher bot,不走 CASS 过渡态,也**绝不用任何 owner bot 的
+  token**:Discord bot 收不到自己发的 MESSAGE_CREATE,作者 = owner 会让该 owner 永远
+  收不到 @ 自己的工单(自盲区)。不变量:**工单帖作者 ≠ 任何 owner**。
+- **FLY-925 先行 env**(`FLYWHEEL_BRIDGE_URL` / `STANDUP_PROJECT_NAME`)已落机
+  (2026-07-09,token report 已 GREEN);防复发说明见根目录 `SETUP.md`。
+- enable 后的探活/演练/观察 = runbook 步 5-9;验收 = FLY-1049 plan §3 七条。
