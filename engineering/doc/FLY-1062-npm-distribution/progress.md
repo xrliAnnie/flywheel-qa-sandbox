@@ -1,17 +1,14 @@
 ---
 issue: FLY-1062
-phase: design
-phaseCursor: 4/4
-updated: 2026-07-09T22:06:16.817Z
-nextStep: "design DONE (recovered+folded, 6587c7d6). Implement resumes HERE:
-  branch already includes main 7b9ac429 (merge 157c7ece); pop stash
-  oom-incident-20260709 (stash@{1} on flywheel-FLY-1062, 6 files) + recover
-  dangling checkpoint fa108be1 (P0 packaging pipeline + packaged-mode seams,
-  pre-rebase untested); then continue P0 hermetic tests"
+phase: implement
+phaseCursor: 1/6
+updated: 2026-07-09T22:10:11.088Z
+nextStep: OOM 现场已恢复(fa108be1 cherry-picked + stash 增量已提交 aee6ff33)。下一步:审计恢复代码现状
+  + 写 P0 hermetic tests(package-onboard assembly/安全门/冒烟),TDD 补齐
 chunks: []
 pointers: {}
 ---
 
 # FLY-1062 progress
-**phase**: design (4/4)
-**next**: design DONE (recovered+folded, 6587c7d6). Implement resumes HERE: branch already includes main 7b9ac429 (merge 157c7ece); pop stash oom-incident-20260709 (stash@{1} on flywheel-FLY-1062, 6 files) + recover dangling checkpoint fa108be1 (P0 packaging pipeline + packaged-mode seams, pre-rebase untested); then continue P0 hermetic tests
+**phase**: implement (1/6)
+**next**: OOM 现场已恢复(fa108be1 cherry-picked + stash 增量已提交 aee6ff33)。下一步:审计恢复代码现状 + 写 P0 hermetic tests(package-onboard assembly/安全门/冒烟),TDD 补齐
