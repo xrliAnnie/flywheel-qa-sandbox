@@ -39,6 +39,25 @@ PAIRS="$(node -e '
   for (const [dir, name] of Object.entries(m)) console.log(`${dir}\t${name}`);
 ' "$PKG_ROOT/package.json")" || exit 1
 
+# ── vendored nested deps: vendor/<npm-name>/… → node_modules/<npm-name>/node_modules/ ──
+# npm pack cannot ship node_modules nested inside bundled deps, so the payload
+# stages the registered disjoint-version closures under vendor/ and this step
+# COPIES them into place (real files — no symlink/realpath resolution caveats).
+if [ -d "$PKG_ROOT/vendor" ]; then
+  for vdir in "$PKG_ROOT/vendor"/*; do
+    [ -d "$vdir" ] || continue
+    vname="$(basename "$vdir")"
+    if [ ! -d "$PKG_ROOT/node_modules/$vname" ]; then
+      err "vendor target package missing: node_modules/$vname"
+      exit 1
+    fi
+    mkdir -p "$PKG_ROOT/node_modules/$vname/node_modules"
+    cp -Rf "$vdir/." "$PKG_ROOT/node_modules/$vname/node_modules/" \
+      || { err "vendored nested copy failed for $vname"; exit 1; }
+    echo "[compat-mirror] vendored nested deps installed for $vname"
+  done
+fi
+
 mkdir -p "$PKG_ROOT/packages"
 rc=0
 while IFS=$'\t' read -r dir name; do

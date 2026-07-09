@@ -8,3 +8,4 @@ scripts/flywheel-setup.sh	xrliAnnie/flywheel	runtime-branched: fleet-manifest te
 scripts/flywheel-setup.sh	git clone	doc-only: comment text describing the monorepo flow; no executable clone on the customer path
 scripts/lib/host-config.sh	xrliAnnie/flywheel-skills	default-unused-on-customer-path: skillsRepo default; customer manifests carry skillsSyncPresent:false and no skills clone exists on the packaged path (research audit A#4)
 scripts/flywheel-setup.sh	xrliAnnie/flywheel-skills	default-unused-on-customer-path: FS_SKILLS_REPO default written into host.json skillsRepo; never fetched on the packaged path
+scripts/flywheel-buddy-steps.sh	xrliAnnie/flywheel-skills	default-unused-on-customer-path: FS_SKILLS_REPO passthrough default; never fetched on the packaged path

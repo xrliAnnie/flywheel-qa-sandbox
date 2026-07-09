@@ -48,7 +48,25 @@ PO_PACKAGES=${PO_PACKAGES:-"teamlead edge-worker core config flywheel-comm claud
 # Extra runtime asset dirs per package (beyond package.json + dist/), colon
 # separated as <pkg-dir>:<asset-dir>. claude-lead.sh + Lead runtime read these
 # from the packages/teamlead tree at runtime.
-PO_PACKAGE_ASSETS=${PO_PACKAGE_ASSETS:-"teamlead:scripts teamlead:prompts teamlead:lead-rules-base teamlead:static"}
+PO_PACKAGE_ASSETS=${PO_PACKAGE_ASSETS:-"teamlead:prompts teamlead:lead-rules-base teamlead:static"}
+
+# File-level asset whitelist (<pkg-dir>:<relative-file>) — packages/teamlead/
+# scripts is a grab bag of launcher runtime AND operator/ops one-offs
+# (mufasa launchers, test-*, verify-*) that must NOT ship (internal slugs,
+# machine-specific paths). This is the launcher runtime closure only.
+PO_PACKAGE_ASSET_FILES=${PO_PACKAGE_ASSET_FILES:-"teamlead:scripts/claude-lead.sh
+teamlead:scripts/codex-lead.sh
+teamlead:scripts/codex-lead-tui-home.sh
+teamlead:scripts/lead-rules-bundle.sh
+teamlead:scripts/apply-core-room-mention-gate.sh
+teamlead:scripts/find-window.sh
+teamlead:scripts/post-compact-bootstrap.sh
+teamlead:scripts/inbox-ack-rule.md
+teamlead:scripts/screencapture-l3-skill.md
+teamlead:scripts/expect-dev-channels.exp
+teamlead:scripts/lib/mcp-inherit.sh
+teamlead:scripts/lib/reap-orphan-adapters.sh
+teamlead:scripts/templates/codex-read-deny-profile.toml"}
 
 # Curated scripts/ whitelist — EXPLICIT file list, not an ignore list. Every
 # entry here must have a row in the packaged-path audit table
@@ -196,33 +214,263 @@ EOF
 }
 
 # ── dependency union ────────────────────────────────────────────────────────
-# po_dependency_union <repo-root> → JSON object of third-party deps on stdout.
-# Any package pinning the SAME dep at a DIFFERENT range fails the build.
+# po_dependency_union <repo-root> → JSON {union: {...}, nested: [{pkgDir, dep}]}.
+#
+# Third-party deps of all embedded packages, resolved to ONE top-level range
+# each (npm installs them flat at the customer prefix; the bundled packages'
+# bare imports resolve via Node walk-up — verified empirically: npm does NOT
+# install dependencies declared by bundled deps themselves).
+#
+# Conflict policy:
+#   • INTERSECTING ranges (^12.0.0 vs ^12.8.0) → auto-resolve to the declared
+#     range equal to the intersection (else a constructed ">=lo <hi").
+#   • DISJOINT ranges (zod ^3 vs ^4) → must be REGISTERED in
+#     scripts/packaged/dependency-union-exceptions.tsv, which names the winner
+#     and the packages that instead get a NESTED vendored copy of their own
+#     resolved version (exact bits pnpm resolves for them today). An
+#     UNREGISTERED disjoint conflict FAILS the build (align by hand or
+#     register deliberately) — never silently picked.
+# Range grammar understood: exact "a.b.c" and caret "^a.b.c" (everything the
+# runtime packages use today); anything else must be string-identical across
+# declarers or it is treated as disjoint.
 po_dependency_union() {
-  local root="$1" dir names_json="[]" entries="[]"
-  for dir in $PO_PACKAGES; do
-    local name
-    name="$(po_pkg_npm_name "$root" "$dir")" || { po_err "no package.json name for packages/$dir"; return 1; }
-    names_json="$(jq -c --arg n "$name" '. + [$n]' <<<"$names_json")"
-  done
-  for dir in $PO_PACKAGES; do
-    entries="$(jq -c --slurpfile pj "$root/packages/$dir/package.json" --arg dir "$dir" \
-      '. + ($pj[0].dependencies // {} | to_entries | map({name:.key, version:.value, from:$dir}))' \
-      <<<"$entries")" || return 1
-  done
-  jq -e --argjson ws "$names_json" '
-    [ .[] | select(.name as $n | ($ws | index($n)) | not) ]
-    | group_by(.name)
-    | map({name: .[0].name,
-           versions: (map(.version) | unique),
-           from: (map(.from) | unique)})
-    | (map(select(.versions | length > 1))) as $conflicts
-    | if ($conflicts | length) > 0 then
-        error("dependency union conflict: " + ($conflicts | tojson))
-      else
-        map({(.name): .versions[0]}) | add // {}
-      end
-  ' <<<"$entries"
+  local root="$1"
+  local exceptions="${PO_UNION_EXCEPTIONS:-$root/scripts/packaged/dependency-union-exceptions.tsv}"
+  PO_UNION_PACKAGES="$PO_PACKAGES" PO_UNION_EXC="$exceptions" node - "$root" <<'EOF'
+const fs = require("node:fs");
+const path = require("node:path");
+const root = process.argv[2];
+const dirs = process.env.PO_UNION_PACKAGES.trim().split(/\s+/);
+const excFile = process.env.PO_UNION_EXC;
+
+const pkgs = dirs.map((dir) => {
+	const pj = JSON.parse(
+		fs.readFileSync(path.join(root, "packages", dir, "package.json"), "utf8"),
+	);
+	return { dir, name: pj.name, deps: pj.dependencies || {} };
+});
+const workspaceNames = new Set(pkgs.map((p) => p.name));
+
+// range → [lo, hi) with lo inclusive; hi=null means exact (single version).
+function parseRange(r) {
+	let m = /^(\d+)\.(\d+)\.(\d+)$/.exec(r);
+	if (m) return { lo: m.slice(1).map(Number), hi: null, exact: true };
+	m = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(r);
+	if (m) {
+		const lo = m.slice(1).map(Number);
+		return { lo, hi: [lo[0] + 1, 0, 0], exact: false };
+	}
+	return null; // unsupported grammar
+}
+const cmp = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+function intersect(a, b) {
+	// exact vs range
+	const aHi = a.hi ?? a.lo;
+	const bHi = b.hi ?? b.lo;
+	const lo = cmp(a.lo, b.lo) >= 0 ? a.lo : b.lo;
+	const hi = cmp(aHi, bHi) <= 0 ? aHi : bHi;
+	const hiExclusive = !(a.hi === null && cmp(hi, a.lo) === 0) && !(b.hi === null && cmp(hi, b.lo) === 0);
+	if (a.hi === null && b.hi === null)
+		return cmp(a.lo, b.lo) === 0 ? a : null;
+	if (a.hi === null) return cmp(a.lo, b.lo) >= 0 && cmp(a.lo, bHi) < 0 ? a : null;
+	if (b.hi === null) return cmp(b.lo, a.lo) >= 0 && cmp(b.lo, aHi) < 0 ? b : null;
+	return cmp(lo, hi) < 0 ? { lo, hi, exact: false } : null;
+}
+
+// exceptions: dep<TAB>winnerRange<TAB>comma-list-of-pkg-dirs-to-nest
+const exceptions = new Map();
+if (fs.existsSync(excFile)) {
+	for (const line of fs.readFileSync(excFile, "utf8").split("\n")) {
+		if (!line.trim() || line.startsWith("#")) continue;
+		const [dep, winner, nest] = line.split("\t");
+		exceptions.set(dep, { winner, nest: nest.trim().split(",").map((s) => s.trim()) });
+	}
+}
+
+const byDep = new Map();
+for (const p of pkgs) {
+	for (const [dep, range] of Object.entries(p.deps)) {
+		if (workspaceNames.has(dep)) continue;
+		if (!byDep.has(dep)) byDep.set(dep, []);
+		byDep.get(dep).push({ dir: p.dir, range });
+	}
+}
+
+const union = {};
+const nested = [];
+const failures = [];
+for (const [dep, decls] of byDep) {
+	const ranges = [...new Set(decls.map((d) => d.range))];
+	if (ranges.length === 1) {
+		union[dep] = ranges[0];
+		continue;
+	}
+	const parsed = ranges.map(parseRange);
+	let inter = null;
+	if (parsed.every(Boolean)) {
+		inter = parsed.reduce((acc, r) => (acc ? intersect(acc, r) : null), {
+			lo: [0, 0, 0],
+			hi: [999999, 0, 0],
+			exact: false,
+		});
+	}
+	if (inter) {
+		// prefer a declared range whose interval equals the intersection
+		const eq = ranges.find((r) => {
+			const p = parseRange(r);
+			return (
+				cmp(p.lo, inter.lo) === 0 &&
+				((p.hi === null && inter.hi === null) ||
+					(p.hi !== null && inter.hi !== null && cmp(p.hi, inter.hi) === 0) ||
+					(p.hi === null && cmp(inter.lo, inter.hi ?? inter.lo) === 0))
+			);
+		});
+		union[dep] = eq ?? `>=${inter.lo.join(".")} <${inter.hi.join(".")}`;
+		continue;
+	}
+	// disjoint → must be registered
+	const exc = exceptions.get(dep);
+	if (!exc) {
+		failures.push({ dep, decls });
+		continue;
+	}
+	if (!ranges.includes(exc.winner)) {
+		failures.push({ dep, decls, error: `exception winner '${exc.winner}' not among declared ranges` });
+		continue;
+	}
+	const winnerParsed = parseRange(exc.winner);
+	const needNest = decls
+		.filter((d) => {
+			const p = parseRange(d.range);
+			return !(p && winnerParsed && intersect(p, winnerParsed));
+		})
+		.map((d) => d.dir);
+	// nest "-" = RESOLUTION-UNIFORM: declared ranges are disjoint on paper but
+	// the workspace lockfile resolves ONE version for every declarer (zod:
+	// manifests still say ^3 while pnpm installs 4.3.6 everywhere — production
+	// reality). Behavioral parity follows the RESOLVED version, so no nesting;
+	// verified here against each declarer's actual node_modules resolution —
+	// if a package someday truly resolves a different major, the build fails
+	// and the exception must be re-registered with an explicit nest set.
+	if (exc.nest.length === 1 && exc.nest[0] === "-") {
+		let ok = true;
+		for (const d of needNest) {
+			const rp = path.join(root, "packages", d, "node_modules", ...dep.split("/"), "package.json");
+			if (!fs.existsSync(rp)) {
+				failures.push({ dep, decls, error: `resolution-uniform check: packages/${d} has no resolved ${dep} — run pnpm install` });
+				ok = false;
+				break;
+			}
+			const v = JSON.parse(fs.readFileSync(fs.realpathSync(rp), "utf8")).version;
+			const vp = parseRange(v);
+			if (!(vp && winnerParsed && intersect(vp, winnerParsed))) {
+				failures.push({ dep, decls, error: `resolution-uniform violated: packages/${d} resolves ${dep}@${v}, winner ${exc.winner} — register an explicit nest set` });
+				ok = false;
+				break;
+			}
+		}
+		if (!ok) continue;
+		union[dep] = exc.winner;
+		continue;
+	}
+	const registered = [...exc.nest].sort().join(",");
+	const actual = [...new Set(needNest)].sort().join(",");
+	if (registered !== actual) {
+		failures.push({
+			dep,
+			decls,
+			error: `exception nest-set drift: registered [${registered}] vs actual [${actual}] — update the exceptions file deliberately`,
+		});
+		continue;
+	}
+	union[dep] = exc.winner;
+	for (const dir of exc.nest) nested.push({ pkgDir: dir, dep });
+}
+
+if (failures.length) {
+	console.error("dependency union conflict (unregistered/mismatched):");
+	console.error(JSON.stringify(failures, null, 2));
+	process.exit(1);
+}
+console.log(JSON.stringify({ union, nested }));
+EOF
+}
+
+# po_vendor_nested <repo-root> <tree> <pkg-dir> <dep>
+# Vendor the EXACT dependency closure the monorepo resolves for packages/<dir>
+# today (pnpm layout: realpath through the virtual store). Staged under
+# vendor/<npm-name>/ — npm pack refuses to include node_modules dirs nested
+# inside bundled deps (verified empirically), so the closure ships as regular
+# payload files and create-compat-mirror.sh COPIES it into
+# node_modules/<npm-name>/node_modules/ at install time. Node's nearest-wins
+# resolution then keeps the package on its true version while the top-level
+# union serves everyone else.
+po_vendor_nested() {
+  local root="$1" tree="$2" dir="$3" dep="$4"
+  local name
+  name="$(po_pkg_npm_name "$root" "$dir")" || return 1
+  PO_VN_DEST="$tree/vendor/$name" node - "$root" "$dir" "$dep" <<'EOF' || return 1
+const fs = require("node:fs");
+const path = require("node:path");
+const [root, dir, dep] = process.argv.slice(2);
+const destNM = process.env.PO_VN_DEST;
+
+function realDepDir(fromDir, name) {
+	const p = path.join(fromDir, "node_modules", ...name.split("/"));
+	if (!fs.existsSync(p)) return null;
+	return fs.realpathSync(p);
+}
+// siblings in the pnpm virtual store: walk up from a real package dir to the
+// nearest directory literally named node_modules.
+function storeNM(realDir) {
+	let d = realDir;
+	while (d !== path.dirname(d)) {
+		d = path.dirname(d);
+		if (path.basename(d) === "node_modules") return d;
+	}
+	return null;
+}
+function storeSibling(nm, name) {
+	const p = path.join(nm, ...name.split("/"));
+	if (!fs.existsSync(p)) return null;
+	return fs.realpathSync(p);
+}
+const seen = new Set();
+function vendor(realDir, name) {
+	const key = name + "@" + JSON.parse(fs.readFileSync(path.join(realDir, "package.json"), "utf8")).version;
+	if (seen.has(key)) return;
+	seen.add(key);
+	const dest = path.join(destNM, ...name.split("/"));
+	fs.mkdirSync(path.dirname(dest), { recursive: true });
+	// filter by RELATIVE path: the SOURCE lives inside the pnpm store (its
+	// absolute path always contains /node_modules/) — only a node_modules
+	// segment INSIDE the copied package must be excluded.
+	fs.cpSync(realDir, dest, {
+		recursive: true,
+		dereference: true,
+		filter: (src) =>
+			!path.relative(realDir, src).split(path.sep).includes("node_modules"),
+	});
+	const pj = JSON.parse(fs.readFileSync(path.join(realDir, "package.json"), "utf8"));
+	const nm = storeNM(realDir);
+	for (const d of Object.keys(pj.dependencies || {})) {
+		let sub = nm ? storeSibling(nm, d) : null;
+		if (sub === null) sub = realDepDir(path.join(root, "packages", dir), d);
+		if (sub === null) {
+			console.error(`vendor closure: cannot resolve ${d} (needed by ${name}) for packages/${dir}`);
+			process.exit(1);
+		}
+		vendor(sub, d);
+	}
+}
+const top = realDepDir(path.join(root, "packages", dir), dep);
+if (!top) {
+	console.error(`vendor: packages/${dir} has no resolved node_modules/${dep} — run pnpm install`);
+	process.exit(1);
+}
+vendor(top, dep);
+console.log(`vendored ${dep} closure (${seen.size} pkgs) into ${destNM}`);
+EOF
 }
 
 # ── assembly ────────────────────────────────────────────────────────────────
@@ -273,7 +521,13 @@ po_assemble() {
     name="$(po_pkg_npm_name "$root" "$dir")" || { po_err "packages/$dir has no npm name"; return 1; }
     [ -d "$root/packages/$dir/dist" ] || { po_err "packages/$dir/dist missing — run pnpm build first (fail-closed)"; return 1; }
     mkdir -p "$tree/node_modules/$name"
-    cp -p "$root/packages/$dir/package.json" "$tree/node_modules/$name/package.json" || return 1
+    # Strip the package's own `files` whitelist from the embedded copy: npm
+    # pack re-applies it to BUNDLED deps too (verified empirically — teamlead's
+    # files:["dist","bin"] silently dropped scripts/ + the nested vendored deps
+    # from the tarball). Our embedded dir already contains exactly the curated
+    # runtime set, so the payload allowlist gate is the content authority.
+    jq 'del(.files)' "$root/packages/$dir/package.json" > "$tree/node_modules/$name/package.json" \
+      || { po_err "cannot rewrite package.json for $name"; return 1; }
     cp -Rp "$root/packages/$dir/dist" "$tree/node_modules/$name/dist" || return 1
     mirror_json="$(jq -c --arg d "$dir" --arg n "$name" '. + {($d): $n}' <<<"$mirror_json")"
   done
@@ -287,14 +541,39 @@ po_assemble() {
     cp -Rp "$root/packages/$dir/$asset" "$tree/node_modules/$name/$asset" || return 1
     rm -rf "$tree/node_modules/$name/$asset/__tests__"
   done < <(printf '%s\n' $PO_PACKAGE_ASSETS)
+  while IFS= read -r spec; do
+    [ -z "$spec" ] && continue
+    dir="${spec%%:*}"; local afile="${spec#*:}"
+    name="$(po_pkg_npm_name "$root" "$dir")" || return 1
+    [ -f "$root/packages/$dir/$afile" ] || { po_err "package asset file missing: packages/$dir/$afile"; return 1; }
+    mkdir -p "$tree/node_modules/$name/$(dirname "$afile")"
+    cp -p "$root/packages/$dir/$afile" "$tree/node_modules/$name/$afile" || return 1
+  done <<<"$PO_PACKAGE_ASSET_FILES"
 
-  # 5. strip non-runtime residue from the embedded packages.
+  # 5. strip non-runtime residue from the embedded packages. Source maps are a
+  #    HARD strip: tsc sourcemaps can embed the ORIGINAL TypeScript source via
+  #    sourcesContent — shipping them would leak the source the whole payload
+  #    exists to withhold. Type declarations are runtime-dead weight.
   find "$tree/node_modules" -type d -name "__tests__" -prune -exec rm -rf {} + 2>/dev/null
-  find "$tree/node_modules" -type f \( -name "*.test.js" -o -name "*.test.d.ts" -o -name "*.test.js.map" \) -delete 2>/dev/null
+  find "$tree/node_modules" -type f \( -name "*.test.js" -o -name "*.map" -o -name "*.d.ts" -o -name "*.d.mts" -o -name "*.d.cts" -o -name "*.tsbuildinfo" \) -delete 2>/dev/null
 
-  # 6. dependency union + payload package.json.
-  local union deps_json bundle_json="[]"
-  union="$(po_dependency_union "$root")" || return 1
+  # 6. dependency union (+ registered nested vendoring) + payload package.json.
+  local union_out union deps_json bundle_json="[]"
+  union_out="$(po_dependency_union "$root")" || return 1
+  union="$(jq -c '.union' <<<"$union_out")" || return 1
+  local ndir ndep
+  while IFS=$'\t' read -r ndir ndep; do
+    [ -z "$ndir" ] && continue
+    po_vendor_nested "$root" "$tree" "$ndir" "$ndep" || return 1
+  done < <(jq -r '.nested[]? | [.pkgDir, .dep] | @tsv' <<<"$union_out")
+  # Vendored PUBLIC packages ship their own sources/docs on npm (zod v3
+  # includes src/*.ts; READMEs carry `git clone` doc text) — strip everything
+  # the runtime doesn't load so the release gates stay strict: TypeScript of
+  # any kind, sourcemaps, markdown docs (LICENSE files are kept for
+  # attribution).
+  if [ -d "$tree/vendor" ]; then
+    find "$tree/vendor" -type f \( -name "*.ts" -o -name "*.mts" -o -name "*.cts" -o -name "*.map" -o -name "*.tsbuildinfo" -o -name "*.md" -o -name "*.markdown" \) -delete 2>/dev/null
+  fi
   deps_json="$union"
   for dir in $PO_PACKAGES; do
     name="$(po_pkg_npm_name "$root" "$dir")" || return 1
@@ -317,7 +596,7 @@ po_assemble() {
       engines: { node: ">=20" },
       dependencies: ($deps | to_entries | sort_by(.key) | from_entries),
       bundleDependencies: ($bundle | sort),
-      files: ["scripts", "agents", "dist", "node_modules", ".flywheel-prebuilt", "LICENSE", "README.md"],
+      files: ["scripts", "agents", "dist", "node_modules", "vendor", ".flywheel-prebuilt", "LICENSE", "README.md"],
       flywheelPackagesMirror: $mirror
     }' > "$tree/package.json" || return 1
 
@@ -367,10 +646,11 @@ po_pack() {
 #      scripts/packaged/audit-grep-allowlist.tsv.
 po_gate() {
   local tree="$1" root="$2" fail=0
-  # ① secrets
+  # ① secrets (code-tree calibrated: vendor tokens + entropy everywhere, the
+  #   full assignment net on config-class files — see fleet-sanitize.sh)
   # shellcheck source=lib/fleet-sanitize.sh
   source "$root/scripts/lib/fleet-sanitize.sh"
-  if ! scan_for_secrets "$tree"; then
+  if ! scan_code_tree_for_secrets "$tree"; then
     po_err "gate①: secret-like content in release tree"
     fail=1
   fi
@@ -395,9 +675,13 @@ po_gate() {
     po_err "gate②: files NOT in the release allowlist (add explicitly to $(basename "$allow") if intended):"
     printf '%s' "$bad_paths" >&2
   fi
-  # ③ forbidden content classes
+  # ③ forbidden content classes: zero TypeScript of ANY kind (assembly strips
+  #   even .d.ts), zero source dirs outside compiled dist output (tsc trees like
+  #   dist/src/*.js are compiled JS, not source; vendor/ holds PUBLIC third-party
+  #   packages whose own layout may keep an src dir — the *.ts rule still
+  #   applies to it), zero tests/doc/git history.
   local hits
-  hits="$(cd "$tree" && find . \( -name "*.ts" ! -name "*.d.ts" \) -o -type d -name "src" -o -type d -name "__tests__" -o -type d -name "doc" -o -name ".git" | sed 's|^\./||')"
+  hits="$(cd "$tree" && find . \( -name "*.ts" -o -name "*.mts" -o -name "*.cts" \) -o \( -type d -name "src" ! -path "*/dist/*" ! -path "./vendor/*" \) -o -type d -name "__tests__" -o -type d -name "doc" -o -name ".git" | sed 's|^\./||')"
   if [ -n "$hits" ]; then
     po_err "gate③: forbidden content in release tree:"
     printf '%s\n' "$hits" >&2
