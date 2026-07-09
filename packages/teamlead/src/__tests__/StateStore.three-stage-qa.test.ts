@@ -193,10 +193,23 @@ describe("getStrandedThreeStageQaPassSessions (FLY-859 sweep c)", () => {
 				three_stage_verdict: { status: "pass", event_id: "e5" },
 			}),
 		});
+		// FLY-1050: a TERMINATED qa with an intent (the FLY-967 shape) is a
+		// candidate too — it was silently invisible to the boot sweep pre-fix.
+		seedSession(store, {
+			execution_id: "terminated-with-intent",
+			issue_id: "FLY-6",
+			session_role: "qa",
+			chat_thread_role: "qa",
+			status: "terminated",
+			session_params: JSON.stringify({
+				three_stage_verdict: { status: "pass", event_id: "e6" },
+			}),
+		});
 		const rows = store.getStrandedThreeStageQaPassSessions();
 		expect(rows.map((r) => r.execution_id).sort()).toEqual([
 			"failed-with-intent",
 			"stranded",
+			"terminated-with-intent",
 		]);
 	});
 });

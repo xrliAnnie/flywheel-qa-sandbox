@@ -52,6 +52,9 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 	let server: http.Server;
 	let baseUrl: string;
 	let reconcileCalls: Array<Record<string, unknown> | undefined>;
+	let qaLossCalls: Array<Record<string, unknown>>;
+	// FLY-1050: interleaved call order — reconcileQaLoss must run BEFORE the belt.
+	let callOrder: string[];
 
 	const ingestHeaders = {
 		"Content-Type": "application/json",
@@ -69,11 +72,18 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
 		reconcileCalls = [];
+		qaLossCalls = [];
+		callOrder = [];
 
 		const fakeOrchestrator = {
 			onPhaseComplete: vi.fn(async () => {}),
 			reconcileTurnBelt: vi.fn(async (scope?: Record<string, unknown>) => {
 				reconcileCalls.push(scope);
+				callOrder.push("belt");
+			}),
+			reconcileQaLoss: vi.fn(async (scope: Record<string, unknown>) => {
+				qaLossCalls.push(scope);
+				callOrder.push("qaLoss");
 			}),
 		} as unknown as PhaseOrchestrator;
 
@@ -211,5 +221,59 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 		});
 		expect(res.status).toBe(200);
 		expect(reconcileCalls).toHaveLength(0);
+		expect(qaLossCalls).toHaveLength(0);
+	});
+
+	// ─── FLY-1050: QA-loss re-drive wiring pins (sister: DirectEventSink) ───
+
+	it("FLY-1050: session_failed of a three-stage QA row fires reconcileQaLoss BEFORE the belt reconcile", async () => {
+		seedPhaseSession("qa-exec-1050", "qa");
+		const res = await postEvent({
+			event_id: "evt-fail-1050",
+			execution_id: "qa-exec-1050",
+			issue_id: "FLY-543",
+			project_name: "flywheel",
+			event_type: "session_failed",
+			payload: { error: "killed by lead" },
+		});
+		expect(res.status).toBe(200);
+		expect(qaLossCalls).toHaveLength(1);
+		expect(qaLossCalls[0]).toMatchObject({
+			issueId: "FLY-543",
+			terminalExecId: "qa-exec-1050",
+		});
+		expect(callOrder).toEqual(["qaLoss", "belt"]);
+	});
+
+	it("FLY-1050: session_failed of a non-qa phase row does NOT fire reconcileQaLoss", async () => {
+		seedPhaseSession("impl-exec-1050", "implement");
+		const res = await postEvent({
+			event_id: "evt-fail-impl-1050",
+			execution_id: "impl-exec-1050",
+			issue_id: "FLY-543",
+			project_name: "flywheel",
+			event_type: "session_failed",
+			payload: { error: "boom" },
+		});
+		expect(res.status).toBe(200);
+		expect(qaLossCalls).toHaveLength(0);
+		expect(reconcileCalls).toHaveLength(1); // belt still runs
+	});
+
+	it("FLY-1050: the FSM-rejected path (parked qa killed) does NOT fire reconcileQaLoss (row never terminal)", async () => {
+		seedPhaseSession("qa-parked-1050", "qa", "awaiting_review");
+		const res = await postEvent({
+			event_id: "evt-fail-parked-1050",
+			execution_id: "qa-parked-1050",
+			issue_id: "FLY-543",
+			project_name: "flywheel",
+			event_type: "session_failed",
+			payload: { error: "killed by lead" },
+		});
+		expect(res.status).toBe(200);
+		// FSM rejected awaiting_review→failed → row not terminal → belt-only path.
+		expect(store.getSession("qa-parked-1050")!.status).toBe("awaiting_review");
+		expect(qaLossCalls).toHaveLength(0);
+		expect(reconcileCalls).toHaveLength(1);
 	});
 });

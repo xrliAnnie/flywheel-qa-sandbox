@@ -877,15 +877,18 @@ describe("DirectEventSink — FLY-793: completion must not clobber a phase role 
 	function makeFakeOrchestrator() {
 		const reconcileTurnBelt = vi.fn(async () => {});
 		const onPhaseComplete = vi.fn(async () => {});
+		const reconcileQaLoss = vi.fn(async () => {});
 		return {
 			holder: {
 				current: {
 					reconcileTurnBelt,
 					onPhaseComplete,
+					reconcileQaLoss,
 				} as unknown as import("../bridge/phase-orchestrator.js").PhaseOrchestrator,
 			},
 			reconcileTurnBelt,
 			onPhaseComplete,
+			reconcileQaLoss,
 		};
 	}
 
@@ -949,5 +952,53 @@ describe("DirectEventSink — FLY-793: completion must not clobber a phase role 
 		await sink.emitFailed(makeEnvelope(), "boom");
 
 		expect(fake.reconcileTurnBelt).not.toHaveBeenCalled();
+	});
+
+	// ─── FLY-1050: QA-loss re-drive wiring pins ──────────
+	// Sister pins for the HTTP surface: event-route-fly921-turn-belt.test.ts.
+
+	it("FLY-1050: emitFailed of a three-stage QA row fires reconcileQaLoss BEFORE the belt reconcile", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			session_role: "qa",
+			chat_thread_role: "qa",
+		});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		const fake = makeFakeOrchestrator();
+		sink.phaseOrchestrator = fake.holder;
+
+		await sink.emitFailed(makeEnvelope(), "killed");
+
+		expect(fake.reconcileQaLoss).toHaveBeenCalledOnce();
+		expect(fake.reconcileQaLoss).toHaveBeenCalledWith({
+			issueId: "issue-1",
+			terminalExecId: "exec-1",
+		});
+		expect(fake.reconcileTurnBelt).toHaveBeenCalledOnce();
+		expect(fake.reconcileQaLoss.mock.invocationCallOrder[0]!).toBeLessThan(
+			fake.reconcileTurnBelt.mock.invocationCallOrder[0]!,
+		);
+	});
+
+	it("FLY-1050: emitFailed of a non-qa phase row does NOT fire reconcileQaLoss", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			session_role: "implement",
+			chat_thread_role: "implement",
+		});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		const fake = makeFakeOrchestrator();
+		sink.phaseOrchestrator = fake.holder;
+
+		await sink.emitFailed(makeEnvelope(), "boom");
+
+		expect(fake.reconcileQaLoss).not.toHaveBeenCalled();
+		expect(fake.reconcileTurnBelt).toHaveBeenCalledOnce(); // belt still runs
 	});
 });

@@ -270,7 +270,31 @@ describe("FLY-939 G-A2: reconcile re-drives a stranded implement→QA handoff", 
 		expect(h.start.mock.calls[0]![0]).toMatchObject({ sessionRole: "qa" });
 	});
 
-	it("a qa row already exists (terminal) → handoff already fired → skip", async () => {
+	it("an ALIVE qa row exists → pipeline owns itself → skip", async () => {
+		// FLY-1050 contract change: a DEAD qa row (terminated/failed/completed,
+		// no ship claim) no longer counts as "the handoff fired" — that exact
+		// criteria stranded FLY-967 (dead qa row blocked the re-drive forever).
+		// The ownership signal is now an ALIVE qa (or a latest-FAIL fix-loop /
+		// ship claim); dead-row respawn is covered by
+		// phase-orchestrator.fly1050-qa-respawn.test.ts.
+		const aliveQa = session({
+			execution_id: "qa-live",
+			chat_thread_role: "qa",
+			status: "awaiting_review",
+		});
+		const h = makeDeps({
+			listStrandedImplementPhases: () => [strandedImpl()],
+			listPhaseSessionRows: (_issue, phase) =>
+				phase === "qa" ? [aliveQa] : [],
+			getAlivePhaseSession: vi.fn((_i, phase) =>
+				phase === "qa" ? aliveQa : undefined,
+			),
+		});
+		await new PhaseOrchestrator(h.deps).reconcileOnStartup();
+		expect(h.start).not.toHaveBeenCalled();
+	});
+
+	it("FLY-1050: a DEAD (completed, no ship claim) qa row no longer blocks the re-drive", async () => {
 		const terminalQa = session({
 			execution_id: "qa-old",
 			chat_thread_role: "qa",
@@ -283,7 +307,8 @@ describe("FLY-939 G-A2: reconcile re-drives a stranded implement→QA handoff", 
 			getAlivePhaseSession: () => undefined,
 		});
 		await new PhaseOrchestrator(h.deps).reconcileOnStartup();
-		expect(h.start).not.toHaveBeenCalled();
+		expect(h.start).toHaveBeenCalledOnce();
+		expect(h.start.mock.calls[0]![0]).toMatchObject({ sessionRole: "qa" });
 	});
 
 	it("issue already shipped (finalization claim) → skip", async () => {
