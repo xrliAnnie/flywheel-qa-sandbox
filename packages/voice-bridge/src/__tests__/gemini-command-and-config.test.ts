@@ -157,10 +157,10 @@ describe("resolveAssistantConfig (FLY-967 P7 config contract)", () => {
 		expect(c?.bargeIn).toBe(false);
 	});
 
-	it("a non-boolean bargeIn fails FAST — a string \"false\" silently meaning ON is the exact speaker-user trap (Codex R21)", () => {
-		expect(() => resolveAssistantConfig(base({ bargeIn: "false" }), {})).toThrow(
-			/bargeIn must be true or false/,
-		);
+	it('a non-boolean bargeIn fails FAST — a string "false" silently meaning ON is the exact speaker-user trap (Codex R21)', () => {
+		expect(() =>
+			resolveAssistantConfig(base({ bargeIn: "false" }), {}),
+		).toThrow(/bargeIn must be true or false/);
 	});
 
 	it("explicit fields override defaults", () => {
