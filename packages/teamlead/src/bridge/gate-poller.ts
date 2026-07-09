@@ -42,7 +42,11 @@ import {
 	InMemoryInboundCursorStore,
 } from "../lead-backends/codex/InboundCursorStore.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
-import type { Session, StateStore } from "../StateStore.js";
+import {
+	REVIEW_BINDING_UNBOUND,
+	type Session,
+	type StateStore,
+} from "../StateStore.js";
 import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
 import { isReviewHeld } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
@@ -314,6 +318,37 @@ const ACTIVE_SESSION_STATUSES = new Set([
 	"approved_to_ship",
 ]);
 
+/**
+ * FLY-1041 Fix A (sweeper judgement, pure). A pending approve_to_ship gate is
+ * SUPERSEDED when its session has re-bound to a DIFFERENT question whose row
+ * was created STRICTLY later — the founder must only ever see ONE bindable
+ * ship gate.
+ *
+ * ACCEPTED CONSERVATIVE TRADEOFF (Codex R1 #5): this sweeper is a backstop,
+ * not a completeness guarantee. Under a same-second re-fire (SQLite
+ * `created_at` has 1s resolution) where the main event-route retire ALSO
+ * failed, the old gate stays pending until its TTL — safe side: noise over a
+ * false kill of the founder's only bindable gate. The main path (event-route)
+ * retires by EXACT qid and is unaffected by same-second timing. Do NOT widen
+ * the comparison to `>=`.
+ */
+export function isSupersededShipGate(
+	q: { id: string; checkpoint: string | null; created_at: string },
+	session: { review_question_id?: string | null },
+	boundQuestion: { created_at: string } | undefined,
+): boolean {
+	if (q.checkpoint !== "approve_to_ship") return false;
+	const boundQid = session.review_question_id;
+	if (!boundQid || boundQid === REVIEW_BINDING_UNBOUND || boundQid === q.id) {
+		return false;
+	}
+	if (!boundQuestion) return false;
+	const boundMs = parseSqliteUtcMs(boundQuestion.created_at);
+	const qMs = parseSqliteUtcMs(q.created_at);
+	if (boundMs === null || qMs === null) return false;
+	return boundMs > qMs;
+}
+
 export class GatePoller {
 	private timerHandle: ReturnType<typeof setInterval> | null = null;
 	private polling = false;
@@ -477,6 +512,14 @@ export class GatePoller {
 								console.warn(
 									`[GatePoller] orphan question — no session for from_agent=${question.from_agent} (qid=${question.id}, lead=${lead.agentId})`,
 								);
+								continue;
+							}
+							// FLY-1041 Fix A (sweeper): a superseded ship gate is retired +
+							// skipped BEFORE any founder surface — runs even for a held
+							// session (a zombie gate on a held session must still die).
+							if (
+								this.maybeSweepSupersededShipGate(question, session, dbPath)
+							) {
 								continue;
 							}
 							// FLY-579: QA-held — do NOT surface the parent's approve_to_ship
@@ -1643,6 +1686,81 @@ export class GatePoller {
 				payload: { questionId: question.id, outcome: result.kind, line },
 			});
 		}
+	}
+
+	/** FLY-1041: default-ON kill-switch shared with the event-route retire path. */
+	private shipGateRetireEnabled(): boolean {
+		return process.env.FLYWHEEL_SHIP_GATE_RETIRE !== "0";
+	}
+
+	/**
+	 * FLY-1041 Fix A (sweeper): converge a superseded approve_to_ship gate the
+	 * event-route retire missed (crash between rebind and retire, manual gate).
+	 * Returns true when this gate is superseded → the relay loop `continue`s
+	 * (no relay, no founder card) this tick; the retire write is best-effort
+	 * (a failure re-tries next tick — the gate stays suppressed either way).
+	 * Zero new timer: inlined in the existing relay loop.
+	 */
+	private maybeSweepSupersededShipGate(
+		question: PendingQuestion,
+		session: Session,
+		dbPath: string,
+	): boolean {
+		if (!this.shipGateRetireEnabled()) return false;
+		if (question.checkpoint !== "approve_to_ship") return false;
+		const boundQid = session.review_question_id;
+		if (
+			!boundQid ||
+			boundQid === REVIEW_BINDING_UNBOUND ||
+			boundQid === question.id
+		) {
+			return false;
+		}
+		let boundQuestion: { created_at: string } | undefined;
+		try {
+			const rdb = CommDB.openReadonly(dbPath);
+			try {
+				boundQuestion = rdb.getMessageById(boundQid);
+			} finally {
+				rdb.close();
+			}
+		} catch {
+			return false; // comm.db unreadable → judge nothing this tick
+		}
+		if (!isSupersededShipGate(question, session, boundQuestion)) return false;
+
+		try {
+			const wdb = new CommDB(dbPath, false);
+			let retired = false;
+			try {
+				retired = wdb.retireShipGate(question.id);
+			} finally {
+				wdb.close();
+			}
+			if (retired) {
+				// Same event-id prefix as the event-route path → insertEvent's
+				// UNIQUE constraint dedupes naturally across both writers.
+				this.config.store.insertEvent({
+					event_id: `ship-gate-superseded-${question.id}`,
+					execution_id: session.execution_id,
+					issue_id: session.issue_id,
+					project_name: session.project_name,
+					event_type: "ship_gate_superseded",
+					source: "bridge.gate-poller",
+					payload: {
+						supersededQid: question.id,
+						newQid: boundQid,
+						by: "gate-poller-sweeper",
+					},
+				});
+			}
+		} catch (err) {
+			console.warn(
+				`[GatePoller] FLY-1041 sweeper retire failed for ${question.id}: ` +
+					`${err instanceof Error ? err.message : String(err)} — retried next tick`,
+			);
+		}
+		return true;
 	}
 
 	private founderThreadNotifyEnabled(): boolean {
