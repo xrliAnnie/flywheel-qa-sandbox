@@ -193,6 +193,29 @@ check_flag  "S10-minified-behind-id: secret after a decimal channel id" \
 check_clean "S11-minified-clean: minified line of only env names + ids" \
   '{"botTokenEnv":"FLYWHEEL_COS_BOT_TOKEN","chatChannel":"1512578695468941333"}'
 
+# ── FLY-1023 M0: scan_string_for_secrets (single-value form; same patterns) ─
+if scan_string_for_secrets "check stuck orders daily" >/dev/null 2>&1; then
+  pass "STR1-clean: ordinary sentence passes the string scan"
+else
+  fail "STR1-clean: ordinary sentence flagged"
+fi
+if ! scan_string_for_secrets "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcd1234" >/dev/null 2>&1; then
+  pass "STR2-vendor: GitHub token flagged by the string scan"
+else
+  fail "STR2-vendor: GitHub token NOT flagged"
+fi
+if ! scan_string_for_secrets "LINEAR_API_KEY=lin_api_realLooking0123456789" >/dev/null 2>&1; then
+  pass "STR3-assignment: secret-named assignment flagged by the string scan"
+else
+  fail "STR3-assignment: secret assignment NOT flagged"
+fi
+scan_string_for_secrets >/dev/null 2>&1; STR_RC=$?
+if [ "$STR_RC" -eq 2 ]; then
+  pass "STR4-usage: no-arg call returns 2 (usage error)"
+else
+  fail "STR4-usage: rc=$STR_RC (want 2)"
+fi
+
 echo ""
 echo "Results: ${PASSED} passed, ${FAILED} failed"
 [ "$FAILED" -eq 0 ] || exit 1

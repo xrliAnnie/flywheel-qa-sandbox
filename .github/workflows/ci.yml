@@ -116,6 +116,15 @@ jobs:
           bash scripts/__tests__/flywheel-setup-poc.test.sh
           bash scripts/__tests__/flywheel-setup-resume-e2e.test.sh
 
+      # FLY-1023: Buddy onboarding — step CLI over the unchanged wizard
+      # (journal v2, stdout discipline, secret-injection refusal) + the
+      # AgentCliProvider contract. Hermetic — same stub infrastructure as the
+      # FLY-648 suite; needs the built teamlead dist (real-loader gate).
+      - name: Test — FLY-1023 Buddy onboarding (step CLI + provider contract)
+        run: |
+          bash scripts/__tests__/flywheel-buddy-steps.test.sh
+          bash scripts/__tests__/agent-cli-provider-contract.test.sh
+
       # FLY-882: Discord bot token pool — hermetic (stub curl, fixture
       # DISCORD_BOT_POOL_HOME, no real ~/.flywheel touched, no real network).
       - name: Test — FLY-882 Discord bot token pool
