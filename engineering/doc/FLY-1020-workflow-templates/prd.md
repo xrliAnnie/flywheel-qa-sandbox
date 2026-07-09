@@ -2,12 +2,11 @@
 
 Issue: FLY-1020 (https://linear.app/geoforge3d/issue/FLY-1020/low-level-dag-per-task-category-workflow-templates-lightoverridable)
 日期: 2026-07-08
-基于: `product/doc/FLY-1020-workflow-templates/design-source.md` + co-eval HTML v6(Annie 拍板通过)· Codex design-review R1→R3
-Status: **Codex APPROVED**(R3,3 轮;R1 10 项 + R2 5 项 findings 全采纳,R3 3 条非阻塞实现注记已折入)
+基于: `product/doc/FLY-1020-workflow-templates/design-source.md` + co-eval HTML v6(Annie 拍板)+ `agentmd-vs-dag.html`(§2 深挖,Annie converged)· Codex design-review R1→R3
+Status: draft(R1+R2+R3 已折入;新增 §5 DAG↔agent.md 对齐 + 通用节点 → 待 Codex 重跑)
 
-> co-eval 收敛后的**建造蓝图**。设计经 6 轮 Annie co-eval,v6 拍板。
-> 放**结论 + 机制**(eng 照着能建),不堆 Q&A;过程在 design-source.md。
-> **UI / dashboard 不在本 PRD** —— 拆到 **FLY-1038**(§11)。
+> co-eval 收敛后的**建造蓝图**。放**结论 + 机制**(eng 照着能建),不堆 Q&A;过程在 design-source.md。
+> **UI / dashboard 不在本 PRD** —— 拆到 **FLY-1038**(§12)。
 
 ---
 
@@ -50,6 +49,8 @@ Annie 的**两层 DAG**(FLY-1004):第二层 = 高层编排引擎(**FLY-353**,决
 | 双 sink | `DirectEventSink` + `event-route` 都触发 auto-QA / handoff / turn-belt(`DirectEventSink.ts:748`,`event-route.ts:2035`) |
 | 启动对账 | 重放 stranded design/implement + QA verdict(`StateStore.ts:2413`,`:2433`) |
 
+**这 5 处(持久化 / 展示 / ship 收尾 / retry / 启动对账)是「新增一个节点类型」的成本面。** 见 §3。
+
 ### 2.4 Auto-QA 是 **default-ON opt-out**(R1#4 —— 原稿此处写错)
 
 优先级链(`auto-qa-policy.ts:8-13`,fail-safe):`FLYWHEEL_AUTO_QA=0` → `no-qa` label → qaConfig **malformed(fail-closed)** → `qa.auto:false` → `skip_labels` → 否则 **ON**(FLY-752 fleet-wide default-on)。
@@ -60,30 +61,37 @@ Annie 的**两层 DAG**(FLY-1004):第二层 = 高层编排引擎(**FLY-353**,决
 
 - `onMainAwaitingReview` **仅处理 `session_role === "main"` 的行**(`auto-qa-coordinator.ts:306`,`:323`);两个 sink 也只对 main 行调用它(`DirectEventSink.ts:755`,`event-route.ts:2015`)。
   → **templated product run 的可评审 phase 是 `implement`,不是 `main` ⇒ 该 hook 永不触发。**
-- `evaluateQaShipGate`:`qa_required=1` ⇒ **必须**存在该 head 的 passed `auto_qa_record`,否则 `qa_not_passed`(`ship-eligibility.ts:114`,`:185`)。
-- 但三段式内部 QA PASS **只写 `three_stage_verdict`**,QA runner 直接走 founder ship gate,**不写 `auto_qa_record`**(`phase-orchestrator.ts:929`)。
+- `evaluateQaShipGate`:`qa_required=1` ⇒ **必须**存在该 head 的 passed `auto_qa_record`(`ship-eligibility.ts:114`,`:185`)。
+- 但三段式内部 QA PASS **只写 `three_stage_verdict`**,不写 `auto_qa_record`(`phase-orchestrator.ts:929`)。
 
-→ **结论**:给 templated 内部 QA 设 `qa_required=1` 会**永久死锁 ship gate**(索要一份永不会写的记录);给 product 用 `onMainAwaitingReview` 写 `qa_required=0` 则**根本不会执行**。§7 据此重写。
+→ 复用 `qa_required` 会**永久死锁 ship gate**。§8 据此重写。
 
-### 2.6 ⚠️ QA loop 还有第二个触发形态:founder-feedback kickback(R2#4)
+### 2.6 QA loop 还有第二个触发形态:founder-feedback kickback(R2#4)
 
-QA PASS 打开 approve gate 后,**founder/Lead 的反馈**在窄条件下被当作 FAIL kickback,绕过「已记录 PASS」守卫、路由回 implement(`phase-orchestrator.ts:804`,`:817`,`:860`;Blueprint 显式提示 QA 发这条,`Blueprint.ts:1020`)。守卫:**keep-alive ON only** · QA session 位于 `awaiting_review`(其自身 ship gate 已开)· runner-driven review evidence 存在 · gate response 已记录 · **QA 永不改代码**(角色分离)。
-→ loop 条件源若只认 `qa_fail`,会**回归掉这条现有修复路径**。
+QA PASS 打开 approve gate 后,**founder/Lead 的反馈**在窄条件下被当作 FAIL kickback,绕过「已记录 PASS」守卫、路由回 implement(`phase-orchestrator.ts:804`,`:817`,`:860`;`Blueprint.ts:1020`)。守卫:**keep-alive ON only** · QA session 位于 `awaiting_review` · runner-driven review evidence 存在 · gate response 已记录 · **QA 永不改代码**。
+
+### 2.7 ⭐ agent.md 是**纯提示词文本**,其 frontmatter **全部 inert**(新增,§5 的基础)
+
+- `readAgentFile` 把 agent.md 当**纯文本**读,做路径/symlink 逃逸拦截,`slice(0, 40_000)` 后直接塞进 session 提示词(`Blueprint.ts:1602`,`:1967`-`:1998`)。
+- **全仓没有任何 frontmatter 解析器**(grep 无 gray-matter / matter() / parseFrontmatter)→ agent.md 里的 `model:` / `skills:` / `permissionMode:` **一个都不被 runtime 消费**。`permissionMode` 是 `Blueprint.ts:1682` 硬编码;`AgentDispatcher` 完全不碰 model。
+
+→ **今天的代码里,agent.md 只能表达「我是谁」;模型 / 技能 / 能力只能来自 agent.md 之外。** 这条是 §5 分层契约与其安全性质的**事实基础**。
 
 ---
 
-## 3. ⭐ MVP 范围决策(R1#1/#10)
+## 3. ⭐ MVP 范围决策(R1#1/#10 + Annie converged)
 
-**问题**:v6 设计说「节点类型 per-category + 可扩展」。但 §2.3 表明 `design|implement|qa` 硬编码在持久化/展示/finalizer/retry/对账里。把「任意节点类型」与「抽象化现有三段式」塞进同一 MVP,会漏掉整片生产生命周期面。
+**问题**:`design|implement|qa` 硬编码在 §2.3 的 **5 个生产面**。「支持任意新节点类型」与「抽象化现有三段式」若塞进同一 MVP,会漏掉整片生产生命周期面。
 
-**决策(eng 排期,不改设计)**:
+**但 Annie 的收敛给出了更好的解**(§5):**不需要开放任意节点类型 —— 加一个「通用节点」即可**。
 
-| | MVP(本轮验收) | 阶段 2(需先做泛化 workstream) |
+| | MVP(本轮验收) | 阶段 2 / 可能不需要 |
 |---|---|---|
-| 节点类型 | **仅内建 `design`/`implement`/`qa`** | 任意注册节点类型(`research`/`generate_video`…) |
-| 能力 | 模板**选择** · **skip** · per-node **model override** · 现有 QA loop **配置化** | 泛化:`ThreeStagePhase`→node-id、`ChatThreadRole`+phase query、issue-display、post-ship-finalization、retry、thread-role + 迁移 |
+| 节点类型 | **内建 `design` / `implement` / `qa`** + ⭐ **`generic`(agent.md-参数化)** | 任意**具名**新节点类型(`research` / `generate_video` …) |
+| 成本 | 引入 `generic` = **一次性**把那 5 个生产面从「三值硬编码」扩成「node-id 集合」 | 每加一个具名类型 = **再付一次** 5 面的账(per-type) |
+| 扩展方式 | 非工程师**写一个 agent.md + 挂 `generic` 节点** → **零代码** | 需改代码 |
 
-**三层设计与注册表 seam 不变**(Annie 拍板的架构成立);**可扩展性被排期,不被放弃**。创作视频 = **扩展样例**,不作本轮验收。
+**结论(这也是「为什么不开放任意节点类型」的准确答案)**:不是「不能扩展」,而是**成本形状不同**。`generic` 节点是**更便宜、更安全**的扩展路径 —— 一次性付账,之后任何人靠 agent.md 零代码扩展。**具名任意节点类型因此在 MVP 之后大概率也不必做。**
 
 ---
 
@@ -93,18 +101,21 @@ QA PASS 打开 approve gate 后,**founder/Lead 的反馈**在窄条件下被当�
 第一层 · YAML          = DAG 形状:哪些节点 / 顺序 / loop / skip(按名引用)         【新增】
         ↓ 节点按名引用
 第二层 · 节点类型注册表  = 每节点「是什么」:model + skills + prompt + 展示 + 能力    【新增,泛化 three-stage-phases.ts】
-        ↓ 技能按名引用
-第三层 · Markdown 技能   = 每个技能怎么做:brainstorm.md / research.md / …          【今天这套,不变】
+        ↓ 技能 / 角色按名引用
+第三层 · Markdown       = 每个技能怎么做 + 每个角色是谁:skill .md / agent.md      【今天这套,不变】
 ```
 
-**关键原则**:YAML + 注册表 = **加在现有 Markdown 之上的编排层,不替代 Markdown**。`design` 节点 = 「用这些技能」;技能**怎么做**仍由各自 Markdown 决定。**新增只在上两层。**
+**关键原则**:YAML + 注册表 = **加在现有 Markdown 之上的编排层,不替代 Markdown**。**新增只在上两层。**
 
 ### 4.1 第一层 — YAML(DAG 形状)
 
 ```yaml
 # templates/eng.yaml   (core-shipped)
 schema_version: 1
-nodes: [design, implement, qa]          # MVP:只能引用内建三节点
+nodes:
+  - { id: design,    type: design }
+  - { id: implement, type: implement }
+  - { id: qa,        type: qa }
 edges:
   - design    -> implement
   - implement -> qa
@@ -116,8 +127,8 @@ skip:
 **加载与校验**:
 - 从项目 **canonical / mainline root** 加载,**绝不**从实现 PR worktree(同 `three-stage-policy.ts:21`、`auto-qa-policy.ts:17`)。
 - **tri-state**:absent → OFF(字节兼容)· malformed → **project fail-closed + 大声报错**(不 crash 整 Bridge,mirror `ConfigLoader.ts:380`)· present+valid → ON。
-- `schema_version` 必填;**unknown key → reject**;external file refs 必须在 canonical root 内(**路径逃逸拒绝**)。
-- **引用完整性**:`nodes` 成员必须在注册表有定义;edge/skip 目标必须在 `nodes` 内。MVP 额外:`nodes ⊆ {design, implement, qa}`。
+- `schema_version` 必填;**unknown key → reject**;external refs 必须在 canonical root 内(**路径逃逸拒绝**)。
+- **引用完整性**:每个节点的 `type` 必须在注册表有定义;edge/skip 目标必须是已声明的节点 `id`;loop 边两端必须存在。
 
 ### 4.2 第二层 — 节点类型注册表(行为 + 能力)
 
@@ -125,232 +136,287 @@ skip:
 
 | 字段 | 今天在哪 |
 |---|---|
-| `id` | `ThreeStagePhase` |
+| `id`(类型名) | `ThreeStagePhase` |
 | `model` | `DEFAULT_PHASE_TIER` |
-| `skills` | 无(新增,→ 第三层) |
+| `skills` | 无(新增,→ 第三层 skill .md) |
 | `prompt` | 散在 `Blueprint.ts` 的 `isDesignPhase/isImplementPhase/isQaPhase` 分支 |
 | `badge` / display metadata | `PHASE_THREAD_BADGE` |
 | `is_phase_role` | `isThreeStagePhaseRole` |
 | `preserve_completion_role` | `resolveCompletionSessionRole` |
 | `next_resolver` | `nextPhase`(改为按 YAML edge) |
 
-⭐ **节点能力(capabilities,R1#7)** —— 缺了会让 product/research 节点误继承 implement/land/approve 行为:
+⭐ **节点能力(capabilities,R1#7)** —— 缺了会让 product/generic 节点误继承 implement/land/approve 行为:
 
 `shared_branch_writer` · `creates_pr` · `can_ship` · `approval_gate_holder` · `needs_review_evidence` · `can_land` · `needs_mailbox_transport` · `keepalive_park` · `qa_verdict_emitter`
 
 **实现落点**:新建 `packages/config/src/node-type-registry.ts`;Blueprint 改读 capability 而非 `sessionRole` 硬分支。**`design/implement/qa` 三条条目与今天行为逐字等价**(reverse-compat sentinel)。
 
-### 4.3 第三层 — Markdown 技能(不变)
+### 4.3 第三层 — Markdown(不变)
 
-`skills:` 解析到**现有** Markdown 技能/命令。**本 PRD 不改任何 Markdown 技能文件。**
+- `skills:` 解析到**现有** skill / command Markdown。
+- `agent_file:`(仅 `generic` 节点)解析到**现有 agent.md**。
+- **本 PRD 不改任何 Markdown 文件。**
 
 ---
 
-## 5. 动态语义:loop + skip
+## 5. ⭐ DAG ↔ agent.md 对齐(分层契约,Annie converged)
 
-### 5.1 loop —— MVP = 把**现有 QA loop 配置化**(R1#3 + R2#4)
+### 5.1 三条分层契约
+
+1. **agent.md = 角色原子(WHO),Claude 原生。** 一段角色提示词。**不挂 DAG 的活 = 一个 agent.md 跑一个 session** —— 这是默认,永远保留(§11 红线 4)。
+2. **DAG = 引擎内的可选编排层(HOW MANY / WHICH STEP)。** 引擎读 DAG 决定跑哪个节点;**DAG 永不交给 Claude**。每一步只把**一个 agent.md 的角色文本**交给 Claude。Claude 从头到尾不知道有图。
+3. ⭐ **通用节点 = 参数化跑任意 agent.md 的节点。** 非工程师写一个 agent.md,挂 `generic` 节点,即可进 DAG,**零代码**。
+
+**为什么必须有引擎层(决定性论证)**:一个正在运行的 Claude session **物理上无法给自己换模型**,也**无法开一个看不见自身上下文的隔离 session**。而 Annie 引入 DAG 的两个理由恰恰是:① 不同步骤用**不同模型**(设计 Fable / QA Opus)② 写与验必须**隔离防 bias**。→ **这两件事只能由 Claude 之外的一层做。这就是 DAG 存在的唯一理由 —— 不是为了管模型怎么想。**
+
+### 5.2 分层不是提案,是**代码现状**(§2.7)
+
+`readAgentFile` 纯文本注入 + **全仓无 frontmatter 解析** ⇒ agent.md 的 `model:`/`skills:`/`permissionMode:` **全 inert** ⇒ **agent.md 天然只承载 WHO;模型/技能/能力只能来自注册表。** 本 PRD 只是把「另一层」显式化为一等公民。
+
+### 5.3 ⭐ 由此得到的**物理安全性质**
+
+因为 frontmatter inert:**用户(非工程师)编写的 agent.md 物理上无法给自己授予** `can_ship` / `can_land` / `creates_pr` / `approval_gate_holder`,**也无法自选模型**。这些只在 **core-shipped 注册表**里。
+
+> **扩展性给出去了,权限没给出去。** 这不是靠约定,是靠「没有代码去读那些字段」。
+
+### 5.4 通用节点(`generic`)规格
+
+```yaml
+# 模板里:节点实例 = {id, type, [agent_file]}
+nodes:
+  - { id: curate, type: generic, agent_file: agents/content/xhs-curator.md }
+```
+
+| 项 | 规则 |
+|---|---|
+| `agent_file` | 相对 **canonical root**;复用 `readAgentFile` 的现成容器检查(拒绝绝对路径 / `..` 逃逸 / symlink 逃出 repo,`Blueprint.ts:1971`-`:1998`)。**不存在 / 逃逸 → fail-closed**,不静默降级。 |
+| prompt | **只**来自 `agent_file` 的文本(沿用 40k 截断) |
+| `model` | 来自注册表 `generic` 条目,或模板 per-node override。**绝不**来自 agent.md |
+| capabilities | **由 core registry 的 `generic` 条目钉死**。MVP 保守默认:`shared_branch_writer=false` · `creates_pr=false` · `can_ship=false` · `can_land=false` · `approval_gate_holder=false` |
+| skills | 来自注册表 `generic` 条目 |
+
+**成本**:引入 `generic` 需**一次性**把 §2.3 的 5 个生产面从「三值硬编码」扩成「node-id 集合」(存的角色枚举 / phase query / 展示 / ship 收尾 / retry+启动对账)。**付一次,之后任何 agent.md 零代码可用。**
+
+### 5.5 homerail firsthand 佐证(clone 读码,非二手)
+
+我们独立 clone 了 `github.com/xiaotianfotos/homerail` 读源码。**它也是分层的**,且证据支持上面每一条:
+
+| 我们的契约 | homerail 的实现(读码所得) |
+|---|---|
+| 节点 ≠ agent,节点**引用** agent | DAG 模板中 `nodes: {draft: {agent: drafter}}` —— 按名字引用 |
+| **DAG 永不甩给模型** | `homerail_worker/src/index.ts`:`systemPrompt = agentConfig.system` —— worker **只拿到自己那个 agent 的 system**,拿不到整张 DAG |
+| **防 bias = 结构隔离** | 一 DAG node 一 Docker 容器(`createWorkerContainer`) |
+| **多 model 需要独立于角色的一层** | `runtime_profiles` / profile 文件:`default: {model_alias: local-qwen, agent_type: claude-sdk}`;`agents: {reviewer: {model_alias: kimi-main, agent_type: kimi_code}}` —— 不同 agent 绑不同模型**与不同 harness** |
+
+**⚠️ 一处我们不抄(且它正是「DAG 取代 agent.md」的反面实证)**:homerail 把 **agent 定义内嵌进每个 DAG 文件**。三个 shipped 模板中 **`agents` 数 == `nodes` 数(1/1、5/5、2/2)**,**零跨 DAG 复用**;全 repo **没有独立可复用的 agent.md 等价物**。
+→ **我们保留独立、可复用的 agent.md(一个角色写一次,任何 DAG 引用),优于 homerail。**
+
+---
+
+## 6. 动态语义:loop + skip
+
+### 6.1 loop —— MVP = 把**现有 QA loop 配置化**(R1#3 + R2#4)
 
 现有 FLY-939 loop 已具备:持久化 `three_stage_verdict` intent 供 crash replay(`:83`)· 修复轮次上限(`:993`,`:1111`)· 先 capture QA head SHA(`:1007`,`:1122`)· keep-alive 下 wake parked implement + worktree readiness + grant TURN(`:1140`,`:1156`)· ghost-guard(`:1197`)。
 
 **条件源(受限枚举,不引入自由表达式)**:
 1. `qa_fail` —— QA verdict FAIL。
-2. ⭐ `founder_feedback_kickback` —— **必须保留**(§2.6)。loop 解释器须**逐字保留其守卫**:keep-alive ON only · QA session 在 `awaiting_review` · runner-driven review evidence 存在 · gate response 已记录 · 绕过「已记录 PASS」守卫 · 路由回 implement · **QA 永不改代码**。
+2. ⭐ `founder_feedback_kickback` —— **必须保留**(§2.6),loop 解释器须**逐字保留其守卫**。
 
 **每条 loop 边必须声明/满足**:
 
 | 项 | 要求 |
 |---|---|
 | idempotency key | `(execId, edge_id, iteration)` 唯一 |
-| `max_iterations` | **必填**;达上限 → **fail-closed 升级给人**,不静默继续 |
+| `max_iterations` | **必填**;达上限 → **fail-closed 升级给人** |
 | round ledger | 每轮持久化(复用 `three_stage_verdict` intent),支持 crash replay |
 | head capture | 回边前 capture 上游 head SHA |
-| wake vs spawn | keep-alive ON → wake parked 节点(校验 worktree readiness + grant TURN);OFF → respawn |
+| wake vs spawn | keep-alive ON → wake parked 节点(worktree readiness + grant TURN);OFF → respawn |
 | TURN ownership | 单一 writer;ghost-guard 拒重复 writer |
 | startup replay | 启动对账能重放未完成轮次 |
-| wake 失败 | **fail-closed**(升级),不静默跳过 |
+| wake 失败 | **fail-closed**(升级) |
 
-**MVP 只交付 `qa -> implement` 这一条被配置化的边**(行为与今天逐字等价 + 可声明 `max_iterations`)。任意 loop 边 = 阶段 2。
+**MVP 只交付 `qa -> implement` 这一条被配置化的边**。任意 loop 边 = 阶段 2。
 
-### 5.2 skip —— 条件跳过节点
+### 6.2 skip —— 条件跳过节点
 
-- 语义:该节点**不 dispatch**,控制流跳到下游。
-- 条件域**受限枚举**:`template == <id>` 与内建 label(如 `trivial`)。不引入自由表达式。
-- **skip 不只是「不 dispatch」** —— 它必须同时写 ship-gate 证据(§7)。
+- 该节点**不 dispatch**,控制流跳到下游。
+- 条件域**受限枚举**:`template == <id>` 与内建 label(如 `trivial`)。
+- **skip 不只是「不 dispatch」** —— 必须同时写 ship-gate 证据(§8)。
 
-### 5.3 明确不做(MVP)
+### 6.3 明确不做(MVP)
 
-跑中 **node-inject** · **fork**。→ roadmap(§9)。
+跑中 **node-inject** · **fork**。→ roadmap(§10)。
 
 ---
 
-## 6. ⭐ 物化 workflow snapshot(R1#5 + R2#1)
+## 7. ⭐ 物化 workflow snapshot(R1#5 + R2#1)
 
-**问题**:`session_params` 是 **per-execution row**(`StateStore.ts:3168`);handoff **起新 execution**(`phase-orchestrator.ts:1426`);retry **派生后继 execution**(`actions.ts:840`)。仅存 `template_id + hash` 不足以让 handoff/retry/对账「一律读快照」—— canonical YAML 若在入口后变更/消失,id+hash 只能告诉你漂移发生了,**不能让 orchestrator 继续跑**。
+**问题**:`session_params` 是 **per-execution row**;handoff **起新 execution**;retry **派生后继 execution**。仅存 `template_id + hash` 不足以让 handoff/retry/对账「一律读快照」。
 
-**要求:持久化一份「物化图」而非引用。**
-
-`workflow_snapshot` payload(入口解析后物化):
+`workflow_snapshot` payload(入口解析后**物化**):
 
 | 字段 | 内容 |
 |---|---|
-| `nodes[]` | **归一化节点列表**(id + 生效的 model / capability / badge metadata) |
-| `edges[]` | **已解析的边**(含 loop 边 id + 条件源 + `max_iterations`) |
-| `skip[]` | **skip 决策**(或 skip 输入,足以重算) |
-| `overrides` | 本 run 选用的 per-run override |
+| `nodes[]` | **归一化节点实例**(id + type + 生效的 model / capability / badge;`generic` 节点含**已解析的 agent.md 内容或其不可变引用**) |
+| `edges[]` | 已解析的边(含 loop 边 id + 条件源 + `max_iterations`) |
+| `skip[]` | skip 决策(或足以重算的输入) |
+| `overrides` | 本 run 的 per-run override |
 | `loop_counters` | 每条 loop 边的 iteration ledger |
 | `current_node_id` / `edge_state` | 当前进度 |
-| ⭐ `workflow_run_id` | **本次 workflow 运行的判别符**(或 `root_execution_id` + generation)。issue-level 记录与每份 execution copy 都必须带 |
-| `template_hash` / `registry_hash` | **仅供审计/漂移检测**,不作运行依据 |
+| ⭐ `workflow_run_id` | 本次 workflow 运行的判别符(或 `root_execution_id` + generation) |
+| `template_hash` / `registry_hash` / `agent_file_hash` | **仅供审计/漂移检测**,不作运行依据 |
 
 **传播契约**:
-- **copy-forward 到每一次**:phase handoff 起的新 execution · QA loop 的 wake/spawn · retry 的后继 execution。
-- **issue-level 真相**:snapshot 以 **issue 为主键**存一份权威副本(execution row 上的是 copy),供 startup reconcile / post-ship finalization 在没有活 execution 时读取。
-- ⭐ **`workflow_run_id` 判别符(R3 注记 2)**:同一 issue 上的**旧 workflow 尝试**可能仍有事件在途;reconcile 时必须用 `workflow_run_id` 匹配,**防止旧事件误读最新的 issue-level snapshot**(串线)。
-- **handoff / retry / startup reconcile / post-ship finalization 一律读快照**,**绝不**中途按 live label/config 重解图形状。
-- **live kill-switch 仍可阻止新的 dispatch**(fail-closed),但**不改变已在跑的图**。
-- 修复 retry 的 `shareParentBranch` 传播缺口(FLY-840 遗留)。
-- 若存储成本是问题:可不存 prompt 全文,但**必须存足以脱离项目 YAML 运行的归一化图 + capability 数据**。
+- **copy-forward 到每一次**:phase handoff 新 execution · QA loop 的 wake/spawn · retry 后继 execution。
+- **issue-level 权威副本**(execution row 上是 copy),供 startup reconcile / post-ship finalization 在无活 execution 时读取。
+- **handoff / retry / startup reconcile / post-ship finalization 一律读快照**,绝不中途按 live label/config 重解图形状。
+- **live kill-switch 仍可阻止新的 dispatch**,但不改变已在跑的图。
+- ⭐ `workflow_run_id` 判别符:同 issue 上**旧 workflow 尝试**的在途事件必须被挡下,不得误读最新 snapshot。
+- 修复 retry 的 `shareParentBranch` 传播缺口(FLY-840)。
 
 ---
 
-## 7. ⭐ Ship-gate 证据模型 与 Auto-QA 边界(R2#2/#3 —— 重写)
+## 8. ⭐ Ship-gate 证据模型 与 Auto-QA 边界(R2#2/#3)
 
-### 7.1 事实约束(§2.5)
+### 8.1 事实约束(§2.5)
 
-`onMainAwaitingReview` 仅对 `main` 行生效 ⇒ templated run(可评审 phase = `implement`)**永不触发它**;`evaluateQaShipGate` 在 `qa_required=1` 时**索要 passed `auto_qa_record`**,而模板内部 QA **只写 `three_stage_verdict`** ⇒ **复用 `qa_required` 会死锁**。
+`onMainAwaitingReview` 仅对 `main` 行生效 ⇒ templated run **永不触发它**;`evaluateQaShipGate` 在 `qa_required=1` 时索要 passed `auto_qa_record`,而模板内部 QA 只写 `three_stage_verdict` ⇒ **复用 `qa_required` 会死锁**。
 
-### 7.2 决策:**ship gate 增加 workflow-aware 分支**(遗留路径逐字不变)
+### 8.2 决策:ship gate 增加 **workflow-aware 分支**(遗留路径逐字不变)
 
 ```
 evaluateShipEligibility(exec):
-  if exec 有 workflow_snapshot:            # 新分支
-      → 读 workflow QA 证据(§7.3)
-  else:                                    # 遗留分支,byte-compat 不动
-      → 现有 qa_required / auto_qa_record 逻辑
+  if exec 有 workflow_snapshot:   → 读 workflow QA 证据(§8.3)      # 新分支
+  else:                           → 现有 qa_required / auto_qa_record  # 遗留,byte-compat
 ```
 
-### 7.3 workflow QA 证据(新字段,per-execution + issue-level 权威副本)
+### 8.3 workflow QA 证据
 
 | 字段 | 写入者 | 语义 |
 |---|---|---|
-| `workflow_qa_required` | **入口**(模板选定时,由 snapshot 是否含 QA 节点决定) | 1 = 本 run 必须有内部 QA 通过证据 |
-| `workflow_qa_passed` | **QA 节点 PASS 时**(扩展 `phase-orchestrator.ts:929` 的 verdict 写点),**绑定 head SHA** | 内部 QA 已通过该 head |
-| `workflow_qa_exempt` | **入口**(模板 `skip qa` 时,如 product) | 本 run 免内部 QA;ship gate 直接放行该项 |
+| `workflow_qa_required` | **入口**(snapshot 是否含 QA 节点决定) | 1 = 必须有内部 QA 通过证据 |
+| `workflow_qa_passed` | **QA 节点 PASS 时**(扩展 `phase-orchestrator.ts:929`),**绑 head SHA** | 内部 QA 已通过该 head |
+| `workflow_qa_exempt` | **入口**(模板 `skip qa` 时) | 本 run 免内部 QA |
 
-- **eng templated**:`workflow_qa_required=1`;QA PASS 写 `workflow_qa_passed`(绑 head)→ gate 放行。head 变更 ⇒ 证据失效(与现有 head-binding 语义一致)。
-- **product templated(skip qa)**:入口写 `workflow_qa_exempt=1` → gate 放行该项。**不依赖 `onMainAwaitingReview`**(它对这条 run 永不触发)。
-- **独立 spawn 的 Auto-QA**:对 **templated run 一律 exempt**(不双重 QA)。遗留(未挂模板)路径的 Auto-QA **逐字不变**。
+- **eng templated**:`workflow_qa_required=1`;QA PASS 写 `workflow_qa_passed`(绑 head)→ 放行。head 变更 ⇒ 证据失效。
+- **product templated(skip qa)**:入口写 `workflow_qa_exempt=1` → 放行。**不依赖 `onMainAwaitingReview`**。
+- **独立 spawn 的 Auto-QA**:对 **templated run 一律 exempt**。遗留路径 Auto-QA **逐字不变**。
 
-⭐ **`workflow_qa_passed` 的 head 必须是权威 head(R3 注记 1 —— 不得信 runner 自报)**:
-- 写点(`phase-orchestrator.ts:929` 的 PASS 分支)**今天并不 capture head**;而 `qa-result` 携带的 `prHeadSha` **默认取 QA runner 自己的 git HEAD**(`qa-result.ts:41`,`:119`)——**runner 自报,不可信**。
-- 实现必须二选一:**(a)** 服务端用现有 `capturePhaseHeadSha` effect 抓 QA phase head;或 **(b)** 把 runner 上报的 `prHeadSha` 与服务端 capture 的 head **校验一致**后才写 `workflow_qa_passed`。
-- **head 缺失/不一致 → fail-closed**(不写证据)。
-- 后续 `evaluateShipEligibility` 的比对必须**对齐它本就收到的 `prHead`**(`ship-eligibility.ts:266`),避免两套 head 语义。
+⭐ **`workflow_qa_passed` 的 head 必须是权威 head(不得信 runner 自报)**:PASS 分支今天不 capture head;`qa-result` 的 `prHeadSha` 默认取 **QA runner 自己的 git HEAD**(`qa-result.ts:41`,`:119`)。实现须 **(a)** 服务端用 `capturePhaseHeadSha` 抓,或 **(b)** 校验 runner 上报值与服务端 capture 一致后才写。**缺失/不一致 → fail-closed**。后续比对对齐 `evaluateShipEligibility` 已收到的 `prHead`(`ship-eligibility.ts:266`)。
 
-### 7.4 三个独立控制面(R2#3 —— 不再混为一谈)
+### 8.4 三个正交控制面(R2#3)
 
-| 控制面 | 开关 | 管什么 | **不管什么** |
+| 控制面 | 开关 | 管什么 | 不管什么 |
 |---|---|---|---|
-| 模板层 | workflow-template enable + 其 kill-switch env | 是否启用模板、图形状 | 不改独立 Auto-QA 策略 |
-| 独立 Auto-QA | `FLYWHEEL_AUTO_QA=0` / `qa.auto` / `skip_labels` | **仅**独立 spawn 的 QA runner | **不**改变模板内部 QA 节点(不改 workflow shape) |
+| 模板层 | workflow-template enable + kill-switch env | 是否启用模板、图形状 | 不改独立 Auto-QA 策略 |
+| 独立 Auto-QA | `FLYWHEEL_AUTO_QA=0` / `qa.auto` / `skip_labels` | **仅**独立 spawn 的 QA runner | **不**改变模板内部 QA 节点 |
 | ship-gate 执行 | ship-gate QA-done 开关 | gate 是否强制 QA 证据 | 不决定谁跑 QA |
 
-- `no-qa` label:若意图是**跳过内部 QA 节点**,它是一个 **per-run workflow override**,必须走与 `skip qa` **同一条路径**(写进 snapshot + 写 `workflow_qa_exempt`),**不得**作为静默绕过。
-- `malformed` 仍 **fail-closed**(OFF)。
+`no-qa` label 若意图跳过**内部** QA 节点,它是 **per-run workflow override**,须走与 `skip qa` **同一路径**(写 snapshot + `workflow_qa_exempt`),不得静默绕过。`malformed` 仍 **fail-closed**。
 
-### 7.5 startup backfill
+### 8.5 startup backfill
 
 `auto-qa-coordinator.ts:1523` 的 backfill 必须**识别 templated run**(读 snapshot),不给它们补独立 QA。
 
 ---
 
-## 8. 配置 schema 与加载(R1#8)
+## 9. 配置 schema 与加载(R1#8)
 
 ```yaml
 pipeline:
   workflow_templates:
     enabled: false            # 默认 false(字节兼容)
     default: null             # 未匹配类别的默认模板 id(null = 裸 session)
-    files: [templates/eng.yaml, templates/product.yaml]   # canonical-root 相对路径
+    files: [templates/eng.yaml, templates/product.yaml]   # canonical-root 相对
   node_type_registry:
     file: templates/node-types.yaml
 ```
 
-- **tri-state**:absent → OFF(今天行为逐字不变)· malformed → **project fail-closed + 大声报错**(不 crash 整 Bridge)· present+valid → ON。
-- `schema_version` 必填;**unknown key → reject**;**路径逃逸拒绝**;kill-switch env(mirror `FLYWHEEL_THREE_STAGE`)。
+- **tri-state**:absent → OFF(今天行为逐字不变)· malformed → **project fail-closed + 大声报错** · present+valid → ON。
+- `schema_version` 必填;**unknown key → reject**;**路径逃逸拒绝**(含 `generic` 节点的 `agent_file`);kill-switch env。
 - **顺手修 doc drift**:`types.ts:616` 的 `qa` 注释改为反映 FLY-752 的 default-on(§2.4)。
 
 ---
 
-## 9. 分阶段
+## 10. 分阶段
 
-- **阶段 1(MVP,本 PRD 验收)**:YAML 结构 + 节点类型注册表(含 capabilities)+ **内建三节点** + `skip` + per-node model override + **现有 QA loop 配置化(含 founder-feedback kickback)** + **物化 workflow snapshot** + **workflow-aware ship gate 证据模型** + Auto-QA 边界 + core-shipped 模板(eng / product / 裸 default)+ 可覆盖。**第三层 Markdown 不动。default-off、字节兼容。**
-- **阶段 2 · 任意节点类型**:泛化 workstream(§3 右列),然后开放新节点类型 + 任意 loop 边。
-- **roadmap(post-MVP,进后续 PRD)**:**node-inject**(用例:跑中加「安全审计」节点)· **fork**(用例:并行试多方案 / A/B)。
-- **不做**:可视化编辑器(→ FLY-1038)· 用户随意自定义节点/模板 · 学历史自动调模板。
+- **阶段 1(MVP,本 PRD 验收)**:YAML 结构 + 节点类型注册表(含 capabilities)+ 内建三节点 **+ `generic` 节点(agent.md-参数化)** + `skip` + per-node model override + **现有 QA loop 配置化(含 kickback)** + **物化 workflow snapshot** + **workflow-aware ship gate** + Auto-QA 边界 + core-shipped 模板(eng / product / 裸 default)+ 可覆盖。**第三层 Markdown 不动。default-off、字节兼容。**
+- **阶段 2(大概率不必做)**:任意**具名**节点类型 + 任意 loop 边。—— `generic` 已覆盖绝大多数扩展需求(§3)。
+- **roadmap(post-MVP,进后续 PRD)**:**node-inject**(跑中加节点,用例:implement 中途加「安全审计」)· **fork**(并行试多方案 / A/B)。
+- **不做**:可视化编辑器(→ FLY-1038)· 学历史自动调模板。
 
 ---
 
-## 10. 红线守卫(可验收)
+## 11. 红线守卫(可验收)
 
-1. MVP 只提供 **core-shipped 模板**;项目只能 select / override / opt-out。
-2. **不开放任意用户自定义节点类型**(阶段 2 前)。
+1. MVP 只提供 **core-shipped 模板与节点类型**;项目只能 select / override / opt-out。
+2. **用户可通过「写 agent.md + 挂 `generic` 节点」扩展<u>角色</u>(零代码);但不能定义新<u>节点类型</u>、不能自授<u>能力</u>、不能自选<u>模型</u>** —— 这不是靠约定,是 §5.3 的**物理保证**(没有代码去读 agent.md 的 frontmatter)。
 3. 节点内部推理**不被模板约束**(第三层 Markdown + 模型决定)。
-4. 不挂模板 = **裸单 session**(永远有「不套流程」的出口)。
+4. 不挂模板 = **裸单 session**(永远留着「不套流程」的出口)。
 5. loop / skip 条件域**受限枚举**,不引入自由表达式 DSL。
+6. **DAG 永不交给 Claude**:每个节点只把**一个 agent.md 的角色文本**交给它。
+
+> **「为什么不开放任意节点类型」的准确答案**:不是不能扩展,是**成本形状**不同 —— 任意具名类型 = **per-type** 付 §2.3 那 5 个面的账;`generic` 节点 = **一次性**付账,之后任何 agent.md 零代码可用,**且天然更安全**(§5.3)。
 
 ---
 
-## 11. 超范围 / cross-ref
+## 12. 超范围 / cross-ref
 
-- **UI / dashboard → FLY-1038**(管理用:有哪些 DAG + 注册到哪个 instance;**非** runtime 监控)。本 PRD 交付的 YAML/注册表是其数据源。
+- **UI / dashboard → FLY-1038**(管理用:有哪些 DAG + 注册到哪个 instance;**非** runtime 监控)。本 PRD 的 YAML/注册表是其数据源。
 - **第二层引擎 → FLY-353**(本层模板的消费方)。
 - **Scale → FLY-1022**。
 
 ---
 
-## 12. 验收标准
+## 13. 验收标准
 
-1. 一份 YAML + 注册表可声明 eng 三段式(含配置化 `qa→implement` loop)与 product 短模板(`skip qa`),**行为与今天逐字等价**(reverse-compat sentinel)。
-2. 配置化 loop:`max_iterations` 生效、达上限 fail-closed 升级、crash replay 可重放、wake 失败 fail-closed;**`founder_feedback_kickback` 路径与今天逐字等价**(守卫全保留)。
+1. 一份 YAML + 注册表可声明 eng 三段式(含配置化 `qa→implement` loop)与 product 短模板(`skip qa`),**行为与今天逐字等价**。
+2. 配置化 loop:`max_iterations` 生效、达上限 fail-closed 升级、crash replay 可重放、wake 失败 fail-closed;**`founder_feedback_kickback` 路径与今天逐字等价**。
 3. **物化 snapshot**:handoff / QA loop wake-spawn / retry 后继 execution 均 copy-forward;issue-level 权威副本可被 startup reconcile / post-ship finalization 读取;**canonical YAML 在入口后变更/删除,已在跑的 run 仍能跑完**。
-4. **ship gate**:templated eng run 的 QA PASS 写 `workflow_qa_passed`(绑 head)→ gate 放行;**head 变更则证据失效**。
-5. **product skip-QA**:入口写 `workflow_qa_exempt=1` → gate 放行;**不依赖 `onMainAwaitingReview`**;独立 Auto-QA 不 spawn;startup backfill 不补测。
-6. **遗留路径**(未挂模板)ship gate + Auto-QA **逐字不变**(sentinel)。
-7. **三控制面正交**:`FLYWHEEL_AUTO_QA=0` **不**改变模板内部 QA 节点;模板 kill-switch **不**影响独立 Auto-QA 策略。
+4. **ship gate**:templated eng run 的 QA PASS 写 `workflow_qa_passed`(绑 head)→ 放行;head 变更则失效。
+5. **product skip-QA**:入口写 `workflow_qa_exempt=1` → 放行;**不依赖 `onMainAwaitingReview`**;不 spawn 独立 QA;startup backfill 不补测。
+6. **遗留路径**(未挂模板)ship gate + Auto-QA **逐字不变**。
+7. **三控制面正交**:`FLYWHEEL_AUTO_QA=0` **不**改变模板内部 QA 节点;模板 kill-switch **不**影响独立 Auto-QA。
 8. retry 能按快照恢复(含 `shareParentBranch` 传播修复)。
-9. 双 sink(`DirectEventSink` + `event-route`)、transition-rejected、TURN recovery、complete-marker drain 路径均正确。
+9. 双 sink、transition-rejected、TURN recovery、complete-marker drain 路径均正确。
 10. 第三层 Markdown **零改动**;`design/implement/qa` 注册表条目与今天逐字等价;零-Sonnet 不变量成立;`types.ts:616` doc drift 已修。
+11. ⭐ **`generic` 节点**:能用 `agent_file` 参数化跑一个 agent.md;其 **prompt 只来自该文件**;**model / capabilities 只来自 core registry**。
 
-### 12.1 可执行 sentinel 用例(R3 注记 3 —— 验收必须落成这些具体测试)
+### 13.1 可执行 sentinel 用例
 
 | # | 用例 | 期望 |
 |---|---|---|
-| S1 | 无 snapshot(未挂模板)的 run 走 ship gate | 遗留 `qa_required`/`auto_qa_record` 路径**逐字不变** |
-| S2 | templated eng,QA PASS | 写入**绑 head 的** `workflow_qa_passed`;gate 放行 |
+| S1 | 无 snapshot(未挂模板)走 ship gate | 遗留 `qa_required`/`auto_qa_record` 路径**逐字不变** |
+| S2 | templated eng,QA PASS | 写入**绑 head 的** `workflow_qa_passed`;放行 |
 | S3 | S2 之后 head 漂移 | 证据**失效**,gate 拒绝 |
-| S4 | templated product(skip qa) | **从不调用** `onMainAwaitingReview`;`workflow_qa_exempt=1`;gate 放行;不 spawn 独立 QA;startup backfill 不补测 |
-| S5 | `FLYWHEEL_AUTO_QA=0` | **不移除**模板内部 QA 节点(workflow shape 不变) |
+| S4 | templated product(skip qa) | **从不调用** `onMainAwaitingReview`;`workflow_qa_exempt=1`;放行;不 spawn 独立 QA;backfill 不补测 |
+| S5 | `FLYWHEEL_AUTO_QA=0` | **不移除**模板内部 QA 节点 |
 | S6 | 模板 kill-switch 关闭 | **不改变**遗留 Auto-QA 策略 |
-| S7 | 入口后删除 canonical YAML | 已在跑的 workflow **仍能跑完**(物化 snapshot 生效) |
-| S8 | founder-feedback kickback | 走**现有守卫路径**,行为与今天逐字等价 |
-| S9 | QA runner 上报伪造 `prHeadSha` | 与服务端 capture 的 head 不一致 → **fail-closed**,不写证据 |
-| S10 | 同 issue 上旧 workflow 的在途事件 | 被 `workflow_run_id` 判别符挡下,**不误读**最新 snapshot |
+| S7 | 入口后删除 canonical YAML | 已在跑的 workflow **仍能跑完** |
+| S8 | founder-feedback kickback | 走**现有守卫路径**,与今天逐字等价 |
+| S9 | QA runner 上报伪造 `prHeadSha` | 与服务端 capture 不一致 → **fail-closed** |
+| S10 | 同 issue 旧 workflow 的在途事件 | 被 `workflow_run_id` 挡下,不误读最新 snapshot |
+| S11 | ⭐ 用户 agent.md 里写 `model:` / `permissionMode:` / `skills:` | **全部无效**;实际 model/能力来自 core registry(物理安全性质) |
+| S12 | ⭐ `generic` 节点的 `agent_file` 指向 repo 外 / symlink 逃逸 / 不存在 | **fail-closed**,不静默降级 |
 
 ---
 
-## 13. build issue 拆分(交 Tadashi,按 R1#9 + R2#5 重排)
+## 14. 交付方式:**一个大 epic 交 Tadashi**(Annie 定:一个大 PRD + 一个 epic,他自己拆)
 
-> 原则:**先定 durable shape 与 ship-gate 证据契约,再迁行为** —— 否则 registry 只是包着旧硬编码的一层新配置,且 ship gate 会死锁。
+> 本 PRD 不预先拆成 N 个 build issue。交付 = **一个 epic**,由 Tadashi 按下面的**依赖正确顺序**自行拆分。
+> 顺序原则:**先定 durable shape 与 ship-gate 证据契约,再迁行为** —— 否则 registry 只是包着旧硬编码的一层新配置,且 ship gate 会死锁。
 
-1. **模板 / 注册表 config schema + canonical loader + validation**(tri-state、unknown-key reject、schema_version、路径逃逸、fail-closed 测试)。
-2. **Entry 选择模板 + 持久化物化 workflow snapshot**(§6);copy-forward 契约;修 retry `shareParentBranch` 缺口。
-3. ⭐ **Ship-gate 证据模型**(§7,R2#5:必须在 orchestrator 之前定契约):`workflow_qa_required/passed/exempt` 字段 + `evaluateShipEligibility` 的 workflow-aware 分支 + 遗留分支 sentinel + **权威 head capture/校验**(`capturePhaseHeadSha`,runner 自报 `prHeadSha` 不可信,不一致 fail-closed)。
-4. **迁 phase table 进注册表**(§4.2 全部职责 + capabilities);`design/implement/qa` 逐字兼容。
-5. **Orchestrator 按 snapshot 解释 sequence + `skip`**;再把现有 QA loop 迁成配置化 loop 边(§5.1 全 spec,含 kickback 守卫)。
-6. **Auto-QA 边界迁移**(§7.3/7.4/7.5:templated exempt、三控制面正交、startup backfill 识别)。
-7. **生命周期 workstream**(R1#6):双 sink、startup reconcile、complete-marker drain、`session_failed`/transition-rejected、TURN recovery、issue display refresh、post-ship finalization。
-8. **Blueprint prompt / capability 改读注册表**(去 `isDesignPhase/isImplementPhase/isQaPhase` 硬分支)。
-9. **core-shipped 模板**(eng / product / 裸 default)+ default-off + reverse-compat sentinels + doc-drift 修正。
+**建议实施顺序(依赖已排好)**:
+1. 模板 / 注册表 config schema + canonical loader + validation(tri-state、unknown-key reject、schema_version、路径逃逸、fail-closed)。
+2. Entry 选模板 + 持久化**物化 workflow snapshot**(§7);copy-forward 契约;修 retry `shareParentBranch` 缺口。
+3. ⭐ **Ship-gate 证据模型**(§8,必须先于 orchestrator):`workflow_qa_*` 字段 + workflow-aware 分支 + 遗留分支 sentinel + **权威 head capture/校验**。
+4. 迁 phase table 进注册表(§4.2 全部职责 + capabilities);`design/implement/qa` 逐字兼容。
+5. Orchestrator 按 snapshot 解释 sequence + `skip`;再把现有 QA loop 迁成配置化 loop 边(§6.1 全 spec,含 kickback 守卫)。
+6. ⭐ **`generic` 节点**(§5.4):把 §2.3 的 5 个生产面从三值硬编码扩成 node-id 集合(**一次性**);`agent_file` 加载 + 路径安全 + capabilities 由 core registry 钉死。
+7. Auto-QA 边界迁移(§8.3/8.4/8.5)。
+8. 生命周期 workstream(R1#6):双 sink、startup reconcile、complete-marker drain、`session_failed`/transition-rejected、TURN recovery、issue display refresh、post-ship finalization。
+9. Blueprint prompt / capability 改读注册表(去 `isDesignPhase/isImplementPhase/isQaPhase` 硬分支)。
+10. core-shipped 模板(eng / product / 裸 default)+ default-off + reverse-compat sentinels(S1–S12)+ doc-drift 修正。
 
-> **阶段 2**(任意节点类型泛化)· **roadmap**(node-inject / fork)· **UI**(FLY-1038)不在本次拆分。
+> **阶段 2**(任意具名节点类型,大概率不必)· **roadmap**(node-inject / fork)· **UI**(FLY-1038)不在本 epic。
