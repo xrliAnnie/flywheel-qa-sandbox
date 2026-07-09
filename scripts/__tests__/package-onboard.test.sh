@@ -146,6 +146,10 @@ if run_po po_assemble "$FIX" "$TREE" >/dev/null 2>&1; then
   [ "$(jq -r '.bundleDependencies | sort | join(",")' "$TREE/package.json")" = "fw-alpha,fw-beta" ] || ok=0
   [ "$(jq -r '.flywheelPackagesMirror.alpha' "$TREE/package.json")" = "fw-alpha" ] || ok=0
   [ "$(jq -r '.license' "$TREE/package.json")" = "UNLICENSED" ] || ok=0
+  # Lead guardrail (Tadashi, 2026-07-09): PR1 must NOT be publishable — a
+  # key-less public package of the payload IS the channel-A shape Annie
+  # rejected. `private: true` makes npm refuse `npm publish` outright.
+  [ "$(jq -r '.private' "$TREE/package.json")" = "true" ] || ok=0
   # embedded package.json must NOT keep its own files whitelist (npm pack
   # re-applies it to bundled deps and silently drops runtime assets)
   [ "$(jq -r 'has("files")' "$TREE/node_modules/fw-alpha/package.json")" = "false" ] || ok=0
@@ -382,6 +386,15 @@ if [ -f "$AUDIT" ]; then
   fi
 else
   fail "X1 packaged-path audit table missing at $AUDIT"
+fi
+
+# ── X2 · PR1 guardrail: the pipeline contains NO publish action ──────────────
+# Lead guardrail (Tadashi, 2026-07-09): until P3 key-gating lands, nothing in
+# this layer may publish the payload anywhere a customer could reach key-less.
+if ! grep -rn "npm publish" "$REPO_ROOT/scripts/package-onboard.sh" "$REPO_ROOT/scripts/packaged/" >/dev/null 2>&1; then
+  pass "X2 packaging layer carries zero publish actions (PR1 guardrail)"
+else
+  fail "X2 publish action found in the packaging layer: $(grep -rn 'npm publish' "$REPO_ROOT/scripts/package-onboard.sh" "$REPO_ROOT/scripts/packaged/")"
 fi
 
 echo ""
