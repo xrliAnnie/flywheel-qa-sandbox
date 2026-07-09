@@ -1,15 +1,15 @@
 ---
 issue: FLY-1023
 phase: implement
-phaseCursor: 1/9
-updated: 2026-07-09T13:03:23.630Z
-nextStep: "M0 committed (step CLI + journal v2 + string-scan + provider
-  contract, all tests green). Next: M1 bootstrap + claude provider + codex
-  placeholder + model_key orchestration"
+phaseCursor: 2/9
+updated: 2026-07-09T13:25:09.790Z
+nextStep: "M1 committed (bootstrap + claude/codex providers + model_key
+  orchestration, 5+17 tests green). Next: M2 Buddy shell (persona/copy/state
+  machine/brain) + M7 escalation ladder"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1023 progress
-**phase**: implement (1/9)
-**next**: M0 committed (step CLI + journal v2 + string-scan + provider contract, all tests green). Next: M1 bootstrap + claude provider + codex placeholder + model_key orchestration
+**phase**: implement (2/9)
+**next**: M1 committed (bootstrap + claude/codex providers + model_key orchestration, 5+17 tests green). Next: M2 Buddy shell (persona/copy/state machine/brain) + M7 escalation ladder
