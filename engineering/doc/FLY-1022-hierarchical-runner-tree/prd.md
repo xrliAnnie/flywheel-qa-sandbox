@@ -227,20 +227,20 @@ DR 相对我 web-research 新增可落的一条 = **『有界队列 + 显式 cre
 ```mermaid
 graph TB
     A["Annie (founder)<br/>每件事的 [ISSUE-ID] thread 直达(§7 树不藏)"]
-    L["<b>Lead(root)</b><br/>⑨ summary-merge:各组摘要聚一屏<br/>⑧ owner-resolution 权威(label=dept/root)<br/>消费 ③ credit → 喂 353 capacity-aware 派发"]
+    L["<b>Lead(root)</b><br/>⑨ summary-merge:各组摘要聚一屏<br/>⑧ owner-resolution:dept/root 只是 <b>label 权威</b>;<br/>runtime owner = 持久化 assignedLeadId(§8.3)<br/>消费 ③ credit → 喂 353 capacity-aware 派发"]
     SLA["<b>sub-lead A</b> = facade/压缩层<br/>① bounded fan-out ≤~5-6 · ④ bulkhead+熔断(子树=cell)<br/>⑤ soft-suspicion 第一响应 · ⑥ OTP restart supervisor<br/>⑨ merge(有界 top-K) · ③ 有界队列+credit"]
     SLB["<b>sub-lead B</b> = 同上,另一摊"]
     R1["runner<br/>⑦ health 自报"]
     R2["runner"]
     R3["runner(多机:卫星节点 · 1005)"]
-    A -->|⑤ escalation 逐层到顶 / founder fallback| L
     L -->|⑧ dispatch 落 assignedLeadId ↓| SLA
     L -->|⑧ ↓| SLB
     SLA -->|⑥ restart / 派活 ↓| R1
     SLA --> R2
     SLB --> R3
-    R1 -.⑦ health / ② typed 摘要 / ③ credit ↑.-> SLA
-    SLA -.② 摘要 + ⑨ merge + ③ credit ↑.-> L
+    R1 -.⑦ health 自报 ↑.-> SLA
+    SLA -.② typed 摘要 + ⑨ merge + ③ credit + ⑤ 未解升级 ↑.-> L
+    L -.⑤ escalation 逐层到顶 / founder fallback ↑.-> A
 ```
 
 **9 机制装在哪一层(每个标 §ref):**
