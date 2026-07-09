@@ -1,7 +1,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FLY-353 · 主动 DAG 编排 — 设计 co-eval v2</title>
+<title>FLY-353 · 主动 DAG 编排 — 设计 co-eval v5</title>
 <style>
 :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--navy:#1a365d;
   --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de}
@@ -9,7 +9,7 @@
 body{margin:0;background:var(--bg);color:var(--ink);
   font-family:-apple-system,system-ui,"SF Pro Text",Segoe UI,Roboto,sans-serif;line-height:1.6;-webkit-text-size-adjust:100%}
 .wrap{max-width:960px;margin:0 auto;padding:20px 16px 90px}
-h1{font-size:25px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+h1{font-size:24px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
 .sub{color:var(--dim);font-size:14px;margin:0 0 4px}
 .pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;background:#eef;color:var(--navy);margin:6px 6px 0 0}
 .pill.cand{background:#f3e9fb;color:#7a2fb0}
@@ -18,28 +18,22 @@ h1{font-size:25px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
 .card.blue{border-left:4px solid var(--blue)}.card.green{border-left:4px solid var(--green)}
 .card.purple{border-left:4px solid var(--purple)}.card.red{border-left:4px solid var(--red)}
 .card.amber{border-left:4px solid var(--amber)}.card.gray{border-left:4px solid var(--dim)}
-h2{font-size:20px;margin:34px 0 6px;letter-spacing:-.01em}
+h2{font-size:20px;margin:32px 0 6px;letter-spacing:-.01em}
 h3{font-size:16px;margin:2px 0 8px}
 .secnum{color:var(--dim);font-variant-numeric:tabular-nums}
 p{margin:8px 0}ul{margin:8px 0 8px 2px;padding-left:20px}li{margin:4px 0}
 code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.86em;background:#f0f0f4;padding:1px 5px;border-radius:5px}
 .tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:6px;vertical-align:middle}
-.tag.auto{background:#e3f9ea;color:#1a7a3c}.tag.human{background:#fff4e5;color:#a05a00}
-.tag.unk{background:#ececef;color:#6a6a70}.tag.new{background:#e7f0ff;color:#1a5fb4}
+.tag.unk{background:#ececef;color:#6a6a70}.tag.new{background:#e7f0ff;color:#1a5fb4}.tag.have{background:#e3f9ea;color:#1a7a3c}
 .k{color:var(--navy);font-weight:600}
 .src{font-size:12px;color:var(--dim);margin-top:8px}
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:10px 0}
-table{border-collapse:collapse;width:100%;min-width:620px;font-size:13.5px}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:13.5px}
 th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
 th{background:#fafafd;font-weight:600}
-.flow{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}
-.col{flex:1 1 260px;min-width:240px;border:1px solid var(--line);border-radius:12px;padding:12px;background:#fcfcff}
-.col h4{margin:0 0 8px;font-size:14px}
-.step{background:#fff;border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:13px;margin:6px 0}
-.step.hi{border-color:var(--purple);background:#faf5ff}
-.arrow{text-align:center;color:var(--dim);font-size:13px;margin:2px 0}
-.env{font-size:12px;color:var(--dim);margin-top:8px;border-top:1px dashed var(--line);padding-top:6px}
 .you{background:#fff8e6;border:1px solid #ffe0a3;border-radius:10px;padding:8px 11px;margin:10px 0;font-size:13.5px}
+.svgwrap{width:100%;overflow-x:auto;margin:10px 0}
+svg{max-width:100%;height:auto;display:block;margin:0 auto}
 .cmt{margin:10px 0 4px;background:#fbfbfd;border:1px dashed #d6d6de;border-radius:10px;padding:8px 10px}
 .cmt label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
 .cmt textarea{width:100%;min-height:52px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;color:var(--ink);background:#fff;resize:vertical}
@@ -56,203 +50,191 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 </head>
 <div class="wrap">
 <header>
-  <h1>主动 DAG 编排 —— 设计 co-eval v3</h1>
-  <p class="sub">FLY-353 · 2026-07-08 · v3 新增:大架构全景图 + LLM 分诊节点 = 你设计的 CoS(判断在 run 里不在派发 · 引擎要重设计 · phase 1 就要强分诊)</p>
-  <div><span class="pill cand">设计草案 · 逐节留言</span><span class="pill">收敛后 → PRD → Tadashi</span></div>
+  <h1>主动 DAG 编排 —— 设计 co-eval v5</h1>
+  <p class="sub">FLY-353 · 2026-07-08 · v5 核心:回应你「会不会过度复杂化 / 固定模板限制强模型」= <b>轻模板 + 强治理</b>;353 聚焦第二层治理引擎</p>
+  <div><span class="pill cand">设计草案 · 逐节留言</span><span class="pill">你确认 OK → 才写 PRD</span></div>
 </header>
 
 <div class="note">
-  <b>v3 新增(照你这轮批注):</b> 加了一张<b>大架构全景图</b>(下面 🗺️ 节)+ 把 <b>LLM 分诊节点明确成 = 你设计的 CoS</b>(不加新组件)。
-  <b>v2 的框架(仍成立):</b> ① 派发不留人分类 —— 默认自动派发,<b>判断挪到 runner 跑的时候</b>(简单自跑完、复杂用现有 brainstorm gate 跑中拉你);
-  ② 分流用 <b>CoS(LLM)</b>判断、非机械;③ 现有引擎老、要<b>重设计</b>;④ <b>phase 1 就带强分诊</b>。
-  每小节下有留言框,底部「复制批注」收走;每版从空白开始。<span class="tag unk">UNKNOWN</span> = 查不到实证、没瞎编。
+  <b>v5 折了什么(照你这几轮 co-eval):</b> ① 你担心的「把简单的事复杂化 / 固定模板限制越来越强的模型」→ 见 §1
+  <b>轻模板 + 强治理</b> framing(模板是轻的、可覆盖的默认,不束缚模型推理;DAG 真正的价值是治理);
+  ② 两层拆两 PRD —— <b>353 只聚焦第二层「治理引擎」</b>,第一层「轻模板」另开 issue(但两层的样子在这讲清、不丢);
+  ③ 依赖更轻(多靠 Lead/PM,可能一开始就没有);④ 频次 / cron / Discord 面板 / 引擎重删 / 4 护栏。
+  每小节下留言框,底部「复制批注」;每版从空白开始。<span class="tag unk">UNKNOWN</span> = 查不到实证、没瞎编。
 </div>
 
 <!-- 1 -->
-<h2><span class="secnum">1 ·</span> 要解决的痛(你说的)</h2>
-<div class="card gray">
-  <p>你的烦躁:<b>手动开一堆 Linear issue,再一个个跟 Lead 说「你做 1、你做 2」</b>。issue 一多,派活本身就累。</p>
-  <p><b>主动 DAG 编排给你的:</b> 你<b>只列大方向</b>(开 issue + 标依赖)→ 系统<b>自动</b>挑出能做的、派 runner 去做、做完自动推进,<b>你不用一个个 assign</b>。</p>
-  <div class="you"><b>你问:homerail 的 DAG 是做这件事吗?→ 不是,它是<u>另一个层级</u>的 DAG。</b><br>
-  澄清(有人 firsthand 读了 homerail 代码):homerail 的 DAG 是 <b>「一个 agent 一次 run <u>内部</u>的工作流图」</b> —— 一个 run 里,node 按
-  <b>port / 条件边 / loop</b> 流转(即单个 agent 干一件事时,内部的步骤编排)。<b>不是</b>我们这里要做的 <b>「issue 级、跨 fleet 的自动派发」</b>
-  (决定接下来哪个 Linear issue 派给谁跑)。<b>两个「DAG」不是一回事:homerail = run 内部工作流 · 我们要做的 = issue 级派发。</b>
-  所以「homerail 有 DAG」<b>不代表</b>它做我们这件事。<span class="tag unk">UNKNOWN</span>:homerail 没有公开架构文档,以上是直接读码得出的结论、非官方 doc。</p></div>
-</div>
-<div class="cmt"><label>💬 对「要解决的痛 / homerail」的留言(要不要我深挖 homerail?)</label><textarea data-k="pain" data-label="1 · 痛 / homerail"></textarea></div>
-
-<!-- 1.5 全景架构图 -->
-<h2><span class="secnum">🗺️ ·</span> 全景:主动 DAG 编排长什么样(你要的大架构图)</h2>
+<h2><span class="secnum">1 ·</span> 核心 framing:轻模板 + 强治理(回应你的担心)</h2>
 <div class="card purple">
-  <div class="you"><b>你说:</b>「需要你画一个大的 architecture,这东西应该长什么样?」+「那个 LLM 分诊节点,用每个项目部门的 CoS 可以吗?我一开始设计 CoS 就是想做这个。」→ <b>对,完全可以,而且就该这样。</b>下面这张图里,<b>LLM 分诊节点 = CoS</b> —— 不是新组件,就是你已有的、本来就干 triage+路由的 Chief of Staff(如 Aunt Cass)。</div>
-  <div style="max-width:560px;margin:8px auto">
-    <div class="step" style="text-align:center;background:#fff8e6;border-color:#ffe0a3"><b>你 / founder</b>:只列大方向 —— 开 Linear issue + 标依赖</div>
-    <div class="arrow">↓</div>
-    <div class="step" style="text-align:center"><b>DAG 依赖层</b>:从 Linear <code>blockedBy</code> 建图 → 挑出「没被 block、可开跑」的 issue</div>
-    <div class="arrow">↓</div>
-    <div class="step hi" style="text-align:center"><b>🧠 LLM 分诊节点 = CoS</b>(每个部门的 Chief of Staff)<br>判:这条还相关吗?派哪个部门 / 谁?优先级?<br><span style="font-size:12px;color:#7a2fb0">← 你说 CoS 本来就是设计来做这个的;不机械、有判断</span></div>
-    <div class="arrow">↓</div>
-    <div class="step" style="text-align:center"><b>自动派发</b>:起 Runner(按部门)—— 不用你一个个 assign</div>
-    <div class="arrow">↓</div>
-    <div class="step hi" style="text-align:center"><b>Runner 干活 —— 判断点在这</b><br>简单 → 自己跑完 · 复杂 → 现有 brainstorm gate 跑中拉你/Lead 一起定</div>
-    <div class="arrow">↓</div>
-    <div class="step" style="text-align:center">三段式:设计 → 实现 → QA</div>
-    <div class="arrow">↓</div>
-    <div class="step" style="text-align:center;background:#fff8e6;border-color:#ffe0a3"><b>🔒 founder gate</b>:ship 永远你点头(不变)</div>
-  </div>
-  <div class="you" style="background:#f4f9ff;border-color:#bcd9ff"><b>── 贯穿全程的监管护栏 ──</b><br>
-  · <b>看得见</b>:一个面板显示 哪些在跑 / 排队 / 被 block / 升级等你<br>
-  · <b>随时接管 / 叫停</b>:暂停自动流、把某条抽出来转人工<br>
-  · <b>出错 → 升级给人</b>(不静默 shelve 了继续)</div>
-  <p class="hint">一句话看图:<b>你列大方向 → DAG 挑能做的 → CoS(LLM)判相关性+分流 → 自动派 Runner → Runner 跑中该判断处拉你 → 三段式 → 你点头 ship;全程可看、可停、出错叫人。</b></p>
+  <div class="you"><b>你问:</b>「是不是把简单的事情复杂化了?固定模板会不会限制越来越强的模型?」—— 这个担心很对,v5 直接回应:</div>
+  <p><b>我们<u>不</u>束缚模型「怎么想」;我们提供的是<u>治理 + 编排</u>。</b>拆成两句:</p>
+  <ul>
+    <li><span class="k">模板 = 轻的、可覆盖的<u>默认起手式</u>,不是死模板 / 紧身衣。</span> 给一个「这类活一般这么起手」的默认(如 eng 常走设计→实现→QA),但<b>模型可以偏离</b> —— 简单的自己一步跑完、复杂的自己多绕几步。<b>模型越强,越能在模板之上自由发挥;模板不锁死它每一步。</b></li>
+    <li><span class="k">DAG 真正不可替代的价值 = 治理,不是限制思考。</span> 分诊(该不该做/派给谁)· founder gate(合入你点头)· 随时接管/叫停 · 成本控制(贵模型只用在难步骤)—— 这些是<b>控制 / 信任 / 成本</b>的需求,<b>模型再强都还要</b>。它们管的是「派什么、谁批、花多少」,不是「模型该怎么推理」。</li>
+  </ul>
+  <p class="hint">一句话:<b>轻模板(不锁模型)+ 强治理(可控可信可省钱)。</b>越强的模型越受益于「少束缚 + 有治理」,而不是被固定流程捆住。</p>
 </div>
-<div class="cmt"><label>💬 对全景架构图的留言(这张图对吗?CoS 当分诊节点合你的设想吗?)</label><textarea data-k="arch" data-label="🗺️ 全景架构图 + CoS=分诊节点"></textarea></div>
+<div class="cmt"><label>💬 对「轻模板 + 强治理」framing 的留言(这回应了你的担心吗?)</label><textarea data-k="framing" data-label="1 · 轻模板+强治理 framing"></textarea></div>
 
 <!-- 2 -->
-<h2><span class="secnum">2 ·</span> 三形态对照(静态 DAG / 我们现在 / 提议)</h2>
-<div class="scroll">
-<div class="flow">
-  <div class="col">
-    <h4>🅐 静态 issue 级 DAG(= 我们 dormant resolver)</h4>
-    <div class="step">整批 issue+依赖<b>预先</b>排成一张图</div>
-    <div class="arrow">↓</div>
-    <div class="step"><b>机械</b>照图走:挑没 block 的开跑</div>
-    <div class="arrow">↓</div>
-    <div class="step">做完标 done → 解锁下游</div>
-    <div class="env">适用:任务+依赖预先清楚、确定性强。<b>软肋(你点的):机械判断容易错</b> —— 比如某 issue 早不重要了,它照跑不误。注:homerail 的 DAG <b>不是这个层级</b>(它是 run 内部工作流,见 §1)。</div>
-  </div>
-  <div class="col">
-    <h4>🅑 我们现在(动态、人在环)</h4>
-    <div class="step">issue → CoS 分诊 → 部门 Lead</div>
-    <div class="arrow">↓</div>
-    <div class="step">Lead <b>现场判断</b>派谁(人肉,一个个)</div>
-    <div class="arrow">↓</div>
-    <div class="step">runner 跑,<b>跑中跟你 brainstorm</b> → founder gate ship</div>
-    <div class="env">好:判断靠人/LLM、不机械。痛:<b>派活人肉、一个个 assign 累</b>(=你的痛)。</div>
-  </div>
-  <div class="col" style="border-color:var(--purple)">
-    <h4>🅒 提议:自动派发 + LLM 分流 + 跑中判断</h4>
-    <div class="step">你开 issue+依赖</div>
-    <div class="arrow">↓</div>
-    <div class="step hi"><b>LLM 分诊节点</b>:还相关吗?派给谁?(不机械)</div>
-    <div class="arrow">↓</div>
-    <div class="step">自动挑 ready → 派 runner(默认全自动派)</div>
-    <div class="arrow">↓</div>
-    <div class="step hi">runner 跑中:简单的自己完;复杂的<b>用现有 brainstorm gate 拉你</b></div>
-    <div class="arrow">↓</div>
-    <div class="step">护栏:ship 仍你点头 · 随时接管 · 出错升级</div>
-    <div class="env">= 🅐 的「自动省心」+ 🅑 的「判断不机械、人/LLM 在环」,但把判断<b>从派发挪到 LLM 分诊 + runner 跑中</b>。</div>
+<h2><span class="secnum">2 ·</span> 全景架构图(353 = 第二层治理引擎)</h2>
+<div class="card blue">
+  <p>下面这张图:<b>浅紫 = 353 要建的第二层「治理引擎」;虚线灰 = 第一层「轻模板」(另开 issue,这里只示意)</b>。</p>
+  <div class="svgwrap">
+  <svg viewBox="0 0 640 620" role="img" aria-label="主动 DAG 编排架构图" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+        <path d="M0,0 L7,3 L0,6 z" fill="#86868b"/>
+      </marker>
+    </defs>
+    <style>
+      .b{fill:#fff;stroke:#c9c9d2;stroke-width:1.5;rx:10}
+      .t{font:13px -apple-system,system-ui,sans-serif;fill:#1d1d1f}
+      .tb{font:600 13px -apple-system,system-ui,sans-serif;fill:#1a365d}
+      .ts{font:11px -apple-system,system-ui,sans-serif;fill:#86868b}
+      .ln{stroke:#86868b;stroke-width:1.6;fill:none}
+    </style>
+    <!-- founder -->
+    <rect x="180" y="14" width="280" height="46" rx="10" fill="#fff8e6" stroke="#ffcf7a" stroke-width="1.5"/>
+    <text x="320" y="34" text-anchor="middle" class="tb">你 / founder</text>
+    <text x="320" y="50" text-anchor="middle" class="ts">只列大方向:开 issue + 偶尔标个大依赖(A→B)</text>
+    <line x1="320" y1="60" x2="320" y2="86" class="ln" marker-end="url(#ah)"/>
+
+    <!-- Layer 2 engine box -->
+    <rect x="24" y="90" width="592" height="286" rx="14" fill="#faf5ff" stroke="#c9a3e6" stroke-width="1.6"/>
+    <text x="40" y="110" class="tb" fill="#7a2fb0">第二层 · 353 治理引擎(本 issue 要建)</text>
+
+    <rect x="150" y="122" width="340" height="52" rx="10" fill="#fff" stroke="#c9a3e6" stroke-width="1.5"/>
+    <text x="320" y="142" text-anchor="middle" class="tb">🧠 CoS 分诊(LLM)= 你设计的 CoS</text>
+    <text x="320" y="160" text-anchor="middle" class="ts">判:还相关吗?派给谁?何时?更 proactive?→ 产「决策」</text>
+    <line x1="320" y1="174" x2="320" y2="196" class="ln" marker-end="url(#ah)"/>
+
+    <rect x="120" y="200" width="400" height="52" rx="10" fill="#fff" stroke="#c9a3e6" stroke-width="1.5"/>
+    <text x="320" y="220" text-anchor="middle" class="tb">受控执行层 + department 校验 → 自动派发</text>
+    <text x="320" y="238" text-anchor="middle" class="ts">CoS 产决策 ≠ spawn 权;spawn 由受控层做、仍校验 label/dept/lead</text>
+    <line x1="320" y1="252" x2="320" y2="274" class="ln" marker-end="url(#ah)"/>
+
+    <rect x="150" y="278" width="340" height="40" rx="10" fill="#fff" stroke="#c9a3e6" stroke-width="1.5"/>
+    <text x="320" y="302" text-anchor="middle" class="t">按依赖自动派 Runner(有标依赖尊重 · 没标并行/按到达序)</text>
+
+    <text x="40" y="344" class="ts">护栏(贯穿):默认 off / kill switch · 随时接管叫停 · 失败→升级给人 · Discord 面板</text>
+    <text x="40" y="362" class="ts">频次:事件驱动(新 issue 即分诊)+ 每天周期扫 · cron = 引擎里的定时节点</text>
+
+    <line x1="320" y1="376" x2="320" y2="402" class="ln" marker-end="url(#ah)"/>
+
+    <!-- Layer 1 template (dashed, separate) -->
+    <rect x="40" y="406" width="560" height="86" rx="12" fill="#fbfbfd" stroke="#b8b8c2" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <text x="56" y="426" class="tb" fill="#6a6a70">第一层 · 轻模板(另开 issue;此处示意)</text>
+    <text x="56" y="446" class="ts">一个 issue 内部怎么跑 = 一套轻/可覆盖的默认模板(模型可偏离):</text>
+    <text x="56" y="464" class="t">eng = 设计→实现→QA(其一,不是唯一)· product = 更短(1-2 节点)· 每类各一套</text>
+    <text x="56" y="482" class="ts">节点级:profile(节点绑模型,已有 three-stage)· inject/fork = 后续</text>
+    <line x1="320" y1="492" x2="320" y2="516" class="ln" marker-end="url(#ah)"/>
+
+    <!-- Runner run -->
+    <rect x="120" y="520" width="400" height="48" rx="10" fill="#fff" stroke="#c9c9d2" stroke-width="1.5"/>
+    <text x="320" y="540" text-anchor="middle" class="tb">Runner 跑 —— 判断在 run 里</text>
+    <text x="320" y="557" text-anchor="middle" class="ts">简单 → 自己跑完 · 复杂 → 现有 brainstorm gate 跑中拉你/Lead</text>
+    <line x1="320" y1="568" x2="320" y2="588" class="ln" marker-end="url(#ah)"/>
+
+    <!-- ship gate -->
+    <rect x="200" y="592" width="240" height="24" rx="8" fill="#fff8e6" stroke="#ffcf7a" stroke-width="1.5"/>
+    <text x="320" y="608" text-anchor="middle" class="tb">🔒 founder gate:ship 永远你点头</text>
+  </svg>
   </div>
 </div>
-</div>
-<div class="you"><b>你的关键洞察(v2/v3 已采纳):</b>「总得有一个 LLM 在中间做分流;LLM 节点可以是 DAG 一部分」+「这个 LLM 分诊节点用每个部门的 CoS 就行,我本来就为此设计 CoS」。→ <b>对,🅒 里那个 LLM 分诊节点 = CoS</b>:不是机械规则挑任务,是<b>你已有的 Chief of Staff</b> 判「这条还相关吗 / 派给谁 / 现在该做吗」;它本身是编排图里的一个节点,输出决定下游怎么走。<b>= 复用现有 CoS,不加新组件。</b></div>
-<div class="cmt"><label>💬 对三形态 / LLM 分流节点的留言</label><textarea data-k="compare" data-label="2 · 三形态 + LLM 分流节点"></textarea></div>
+<div class="cmt"><label>💬 对全景架构图的留言(这张图对吗?)</label><textarea data-k="arch" data-label="2 · 全景架构图 inline SVG"></textarea></div>
 
 <!-- 3 -->
-<h2><span class="secnum">3 ·</span> 主轴(v2 大改):判断不在「派发」环节,在「runner 跑的时候」</h2>
-<div class="card blue">
-  <div class="you"><b>你上轮把我上一版的脊梁纠正了,v2 照你的重写:</b>「不一定在派发环节留人。现在每个任务跑起来不是自己悄悄跑完不反馈,更多是运行过程中跟我们一起 brainstorm。简单的自己跑完,复杂的还是跟我们走 brainstorm。所以留人判断更多在 runner 跑的时候。」</div>
-  <p><b>所以新脊梁 = 两处判断,都不在派发:</b></p>
+<h2><span class="secnum">3 ·</span> 两层 DAG:353 只做第二层(第一层另开 issue)</h2>
+<div class="card gray">
+  <div class="you"><b>你定的:</b>两层 DAG 拆成两个 PRD —— <b>高层(第二层治理引擎)= 353</b>;<b>低层(第一层轻模板)= 另开一个 issue</b> track。两层内容我在这讲清、不丢。</div>
   <ul>
-    <li><span class="k">① 派发前:LLM 分诊 = CoS(不是留人、也不是机械)</span> —— 用<b>现有的 CoS</b>(部门 Chief of Staff,你本来就为此设计的)判「这条 issue 还相关吗?该现在做吗?派哪种 runner?」。这解决你说的「机械会把早就不重要的 issue 照跑」。默认<b>自动派发</b>,分诊由 CoS(LLM)做、非机械、也不是人肉一个个 assign。</li>
-    <li><span class="k">② runner 跑的时候:判断内建在 run 里(现有机制)</span> —— <b>简单的 issue:runner 自己跑完</b>;<b>复杂的:runner 用<u>现有的 brainstorm gate</u> 跑到一半把你/Lead 拉进来</b>一起定,再继续。这不是新东西 —— Flywheel 的 runner 本来就在跑中 brainstorm-gate,我们只是让「派发」自动化,把「判断」留在它本来就在的地方(run 里)。</li>
+    <li><span class="k">第一层 · 轻模板层(≈乐高,另开 issue)</span> —— 做<u>一个</u> issue 怎么跑。每类任务一套<b>轻/可覆盖的默认</b>模板(eng 三段式其一、product 更短);<b>模型可偏离,不锁每一步</b>。353 只调用它,不在 353 建。</li>
+    <li><span class="k">第二层 · 353 治理引擎(本 issue)</span> —— 决定做<u>哪些</u> issue + 派给谁 + 何时 + 怎么 proactive + 护栏。= CoS 分诊 + 自动派发 + 监管。<b>353 的全部重点在这层。</b></li>
   </ul>
-  <p class="hint">对比我上一版[已废]:上一版想「派发前就把 issue 分成 可自动 / 留人 两类」。你的意见更对 —— <b>不用在派发切,几乎都能自动派;判断该在 LLM 分诊 + runner 跑中,不在派发口留人。</b></p>
+  <p class="hint">353 PRD 会聚焦第二层;第一层轻模板挂在你要新建的那个 issue 上,353 里引用它「模板在别的 issue」。</p>
 </div>
-<div class="cmt"><label>💬 对新脊梁(判断在 run 里)的留言</label><textarea data-k="spine" data-label="3 · 新脊梁:判断在 run 里"></textarea></div>
-
-<!-- 3.5 DAG 两层 -->
-<h2><span class="secnum">🧩 ·</span> DAG 的两层含义:issue 派发图 + 每类任务的 workflow 模板</h2>
-<div class="card purple">
-  <div class="you"><b>你在 1004 里 articulate 的两层模型(比之前更清楚,采纳):</b>「DAG 是两层。<b>第一层</b> = 每类任务一套模板(像<b>乐高积木</b>:同一套底层积木,engineer issue 一种编排、designer issue 另一种,编排随任务类型变);<b>第二层</b> = 353 这个更高 level 的自动编排引擎,决定『还相关吗 / 派给谁 / 何时 / 怎么更 proactive』。」</div>
-  <p><b>两层的关系(用你的 framing):</b></p>
-  <ul>
-    <li><span class="k">第一层 · 模板层(乐高):做<u>一个</u> issue 怎么编排</span> —— 每类任务一套 DAG 模板。同一套底层「积木」(节点),eng issue 一种拼法(三段式:设计→实现→QA)、designer issue 另一种(更短/不同),<b>编排随任务类型变</b>。≈ homerail 的「活内部工作流」就在这一层。</li>
-    <li><span class="k">第二层 · 353 引擎层:决定做<u>哪些</u> issue + 怎么自动推进</span> —— 在模板<b>之上</b>,CoS 分诊判「还相关吗 / 派给谁 / 何时 / 怎么更 proactive」+ 按依赖自动派发。<b>这层就是 353 要建的。</b></li>
-  </ul>
-  <p class="hint">一句话:第一层「一个 issue <u>怎么</u>跑」(模板 / 乐高)· 第二层「做<u>哪些</u> issue、<u>怎么</u>自动推进」(353 引擎 = CoS 分诊 + 自动派发)。之前我把两层编号写反了,已按你的 framing 对齐。</p>
-  <p><b>每类任务一套 default 模板:</b></p>
-  <div class="scroll"><table>
-  <thead><tr><th>任务类别</th><th>default DAG 模板</th></tr></thead>
-  <tbody>
-    <tr><td class="k">Eng(工程)</td><td>三段式:设计 → 实现 → QA(现有,3 节点)</td></tr>
-    <tr><td class="k">Product(产品)</td><td>完全不同、更短(如 1-2 节点:调研/收敛)—— 不该套三段式</td></tr>
-    <tr><td class="k">未来别的类型</td><td>各自一套;<b>提供几种 DAG 模板让不同事件挑</b></td></tr>
-  </tbody>
-  </table></div>
-  <p><b>运行时能力(节点级):</b></p>
-  <ul>
-    <li><b>inject</b> —— 跑中插一个节点(如 implement 中途发现要改,插一步)。</li>
-    <li><b>fork</b> —— 从一个节点岔成两个方向<b>并行试</b>(如 implement 岔两方案)。</li>
-    <li><b>profile</b> —— <b>每个节点绑一个模型</b>。<span class="tag new">已在做</span> grounded:<code>three-stage-phases.ts</code> 就是「每 phase 一个模型」的单一真相 —— 设计/实现偏 Fable、<b>QA=Opus</b>。三段式已经是一张「节点绑模型」的 DAG。</li>
-  </ul>
-  <div class="you" style="background:#f4f9ff;border-color:#bcd9ff"><b>对齐你的两层 + 护栏(整个东西的分层):</b><br>
-  · <b>第一层 · 模板层(乐高)</b>:每类任务一套 DAG 模板 —— 定「一个 issue <u>怎么跑</u>」(形态)<br>
-  · <b>第二层 · 353 引擎层 = CoS 分诊 + 自动派发</b>:判相关/派给谁/何时/proactive + 按依赖派 —— 定「做<u>哪些</u> issue、<u>怎么</u>自动推进」(派发)<br>
-  · <b>(包在外面)护栏</b>:founder gate / 接管叫停 / 出错升级 —— 定「<u>怎么不失控</u>」(安全)</div>
-  <p class="src">注:本节照 Lead ffe866f5 + a89c805d 把 1004 洞察 + 你的两层 framing 融进设计源,已 grounded(three-stage-phases.ts = per-phase 模型)。将随下一版设计 / PRD 一起呈现。</p>
-</div>
-<div class="cmt"><label>💬 对「DAG 两层 / 每类任务模板 / inject·fork·profile」的留言</label><textarea data-k="templates" data-label="🧩 DAG 两层 + 任务模板 + inject/fork/profile"></textarea></div>
+<div class="cmt"><label>💬 对「两层拆两 PRD、353 只做第二层」的留言</label><textarea data-k="split" data-label="3 · 两层拆分 353=第二层"></textarea></div>
 
 <!-- 4 -->
-<h2><span class="secnum">4 ·</span> ⚠️ 监管护栏(判断点已挪,护栏随之更新)</h2>
-<div class="card amber">
+<h2><span class="secnum">4 ·</span> CoS = 分诊节点 —— 但「产决策 ≠ 有 spawn 权」</h2>
+<div class="card blue">
+  <p><b>分诊节点 = 你设计的 CoS</b>(不新造角色)。但有个安全边界要写明(我核代码时发现的):</p>
   <ul>
-    <li><b>① LLM 分诊挡「不该跑的」</b>:派发前 LLM 判相关性/优先级 —— 早不重要的 issue 不会被机械照跑(直接回应你的担心)。</li>
-    <li><b>② runner 跑中 brainstorm gate = 主判断点</b>:复杂的活跑到需要判断处,<b>停下拉你/Lead</b> 一起定,不自作主张跑偏。这是现有机制,自动派发不绕过它。</li>
-    <li><b>③ ship 仍 founder-gated(不变)</b>:自动的是「派活 + 跑」,<b>合入 main 永远你点头</b>。</li>
-    <li><b>④ 随时接管 / 叫停 + 出错升级 + 看得见</b>:你能暂停自动流、抽某条转人工;runner 卡住/报错 → <b>升级给人,不静默跳过</b>;一个面板看哪些在跑/排队/被 block/等你。</li>
+    <li><b>CoS 今天没有 spawn 权、也不该直接拿到</b> —— 现状 CoS 是 triage/路由(<code>canSpawnRunners:false</code>,派给 Tadashi 由他 spawn)。直接给 CoS 装 spawn 会破坏现有权限边界。</li>
+    <li><b>正确做法:CoS 只<u>产决策</u></b>(这条 issue:相关吗/派给谁/用哪套模板/何时)→ <b>受控执行层去 spawn,仍校验 label/dept/lead</b>。CoS 判「该做什么」,spawn 权留在受控层 + 校验里。<b>decision ≠ authority。</b></li>
   </ul>
-  <p class="hint">一句话:<b>自动的是「省掉你一个个 assign」;判断没丢 —— 挪到了 LLM 分诊 + runner 跑中 brainstorm;ship 和方向的控制一点没松。</b></p>
+  <p class="hint">对你无感(体验上就是「CoS 自动把活派下去了」),但底层把「谁能真的起 runner」这条安全线守住,不失控。</p>
 </div>
-<div class="cmt"><label>💬 对护栏的留言(判断点挪了之后,这几道够吗?)</label><textarea data-k="guard" data-label="4 · 监管护栏"></textarea></div>
+<div class="cmt"><label>💬 对「CoS 产决策 ≠ spawn 权」的留言</label><textarea data-k="cos" data-label="4 · CoS 分诊 产决策≠spawn权"></textarea></div>
 
 <!-- 5 -->
-<h2><span class="secnum">5 ·</span> 现有引擎够不够?(你怀疑它不行 —— 我诚实评估)</h2>
-<div class="card red">
-  <div class="you"><b>你说:</b>「可能要以 bug 提一下我们现在这个引擎做得怎么样。我很怀疑它做得不怎么样,需要重新设计。」</div>
-  <p><b>我核代码后的诚实评估:你的怀疑站得住。</b> 现有 <code>dag-resolver</code> 是 <b>v0.1.0 最早期</b>的东西:</p>
+<h2><span class="secnum">5 ·</span> 依赖层:轻、可选、多靠 Lead/PM(可能一开始就没有)</h2>
+<div class="card gray">
+  <div class="you"><b>你说的:</b>「我甚至不会把所有东西都标依赖,每次只讲一个大方向 A→B;大多数还是 Lead/PM 判断互相依赖;依赖层一开始不一定有,很难 rely on 人说清楚。」</div>
   <ul>
-    <li>只有基础的 Kahn 拓扑排序 + getReady/markDone/shelve + 从 Linear blockedBy 建图 + 并行/错误隔离;</li>
-    <li><b>没有</b>你要的 <b>LLM 分诊</b>(它是机械挑任务 —— 正是你担心的「会判断错」);</li>
-    <li><b>没有</b>监管护栏(出错就 <code>shelve</code> 掉继续跑别的,不升级给人);</li>
-    <li><b>没接进生产</b>(dormant),也没跟现在演进过的 Lead/三段式/founder-gate/brainstorm-gate 栈整合。</li>
+    <li>不建重度人工依赖图;<b>大多数 issue 不标依赖</b>。</li>
+    <li>founder <b>偶尔</b>给个大方向(A→B);其余<b>主要靠 Lead/PM 临时判断</b>。</li>
+    <li>CoS 推进:有标的依赖尊重;<b>没标的 → 并行 / 按到达序</b>。依赖是 emergent 的、<b>不是前置门槛</b>,<b>一开始可以基本没有</b>。</li>
   </ul>
-  <p><b>结论:现引擎 = 需重设计,不该照搬复活它</b>(依据 = 上面的诚实评估)。图逻辑(拓扑排序 + 从 Linear blockedBy 建图)这块概念可借,但整个引擎要按「LLM 分诊 + 跑中判断 + 护栏」重做。<b>「评估 + 重设计现有引擎」是 eng 活</b> —— 等这份设计收敛成 PRD、拆 build issue 时,以 bug/assessment 一起交 Tadashi;<b>现在不单开 issue</b>。</p>
 </div>
-<div class="cmt"><label>💬 对「引擎重设计 / 单开 issue」的留言</label><textarea data-k="engine" data-label="5 · 引擎评估+重设计"></textarea></div>
+<div class="cmt"><label>💬 对依赖层的留言</label><textarea data-k="dep" data-label="5 · 依赖层轻量"></textarea></div>
 
 <!-- 6 -->
-<h2><span class="secnum">6 ·</span> 分阶段(v2 改:phase 1 就带强 LLM 分诊)</h2>
+<h2><span class="secnum">6 ·</span> 频次 + cron + Discord 面板(答你两个没讲清的点)</h2>
 <div class="card green">
-  <div class="you"><b>你说:</b>「第一阶段就需要一个强有力的分诊辅助。单靠人为判断哪些能自动化,工作量更大、出错更高。」→ 采纳,v2 把 LLM 分诊放进 phase 1。</div>
+  <p><b>① 频次(你问:多久抓一次 issue 让 CoS 分诊推进?):</b></p>
   <ul>
-    <li><b>阶段 1(MVP)</b>:自动派发 + <b>强 LLM 分诊</b>(相关性/优先级/派给谁,不靠人肉分类)+ runner 跑中 brainstorm gate(现有)+ 四道护栏 + 看得见的面板。默认关、可灰度、可回退。</li>
-    <li><b>阶段 2</b>:分诊更聪明(学历史)、失败自愈更强、并行度调优、跨依赖批量。</li>
-    <li><b>不做</b>:派发口人肉分类(上一版的思路,已被你否)。</li>
+    <li><b>事件驱动(主)</b>:新 issue 一落进某 dept → CoS <b>立刻</b>分诊 → 该派就派。不用等。</li>
+    <li><b>周期扫(补)</b>:<b>每天一次</b>(cadence 可配)回扫 backlog —— 「这些还相关吗?要不要重排/重派?」防漏、防旧 issue 该清没清。</li>
+  </ul>
+  <p><b>② cron / 面板(你问:每天跑的 cron job 怎么处理?要专门面板吗?还是现在的 Discord 就是面板?):</b></p>
+  <ul>
+    <li><b>Discord 就是面板</b> —— 对,不另做 dashboard,复用现在这套。</li>
+    <li><b>CoS 每轮分诊完 → 出一个 HTML(今天谁跑谁、排队、被 block、升级等你)→ 放 core room → @ 你</b>,你就看到了(复用现有 publish-report)。</li>
+    <li><b>cron(每天跑的活)= 引擎里的一个定时节点</b>,到点自动触发;结果<b>同一个 Discord 面板 HTML</b> 露出。cron 不是另一套系统。</li>
   </ul>
 </div>
-<div class="cmt"><label>💬 对分阶段的留言(phase 1 带强分诊,对吗?)</label><textarea data-k="phase" data-label="6 · 分阶段"></textarea></div>
+<div class="cmt"><label>💬 对频次 / cron / Discord 面板的留言</label><textarea data-k="freq" data-label="6 · 频次+cron+Discord面板"></textarea></div>
 
 <!-- 7 -->
-<h2><span class="secnum">7 ·</span> session-log(backlog,不展开)</h2>
-<div class="card gray">
-  <p>上轮研究的「Flywheel 自己 own 一条 agent-agnostic 事件日志」—— 你定了 <b>backlog</b>:Claude Code 单机下现在记忆不痛;等你用 Codex 实跑发现真痛再做。这里记一笔,不丢、不展开。</p>
+<h2><span class="secnum">7 ·</span> ⚠️ 4 监管护栏(自动但不失控)</h2>
+<div class="card amber">
+  <ul>
+    <li><b>① ship 仍 founder-gated</b> —— 自动的是派活+跑,合入 main 永远你点头。</li>
+    <li><b>② 随时接管 / 叫停</b> —— 暂停自动流、把某条抽出来转人工。</li>
+    <li><b>③ 失败 → 升级给人,不静默</b> —— 卡住/报错/跑偏 → 停下 + 告诉你,不「shelve 了继续」。</li>
+    <li><b>④ 看得见</b> —— Discord 面板显示 在跑/排队/被 block/升级等你。</li>
+  </ul>
+  <p class="hint">另外(工程侧):默认 off + kill switch、首批先 dry-run 只出决策不真派、每次派发前留痕(ledger)、低置信就升级不硬派 —— 这些会写进 PRD 当硬验收。</p>
 </div>
-<div class="cmt"><label>💬 对 session-log backlog 的留言</label><textarea data-k="backlog" data-label="7 · session-log backlog"></textarea></div>
+<div class="cmt"><label>💬 对 4 护栏的留言</label><textarea data-k="guard" data-label="7 · 4 监管护栏"></textarea></div>
 
 <!-- 8 -->
-<h2><span class="secnum">8 ·</span> 留给你定的点</h2>
+<h2><span class="secnum">8 ·</span> 引擎:删没用的旧 code,按新模型重搭</h2>
+<div class="card red">
+  <div class="you"><b>你说:</b>「现有引擎 code 如果没在用的话,直接删掉就可以了。」→ 采纳。</div>
+  <p>现有 <code>dag-resolver</code> 是 v0.1.0 基础货(机械挑任务、无 LLM 分诊、无护栏、没接生产)。<b>不复活、删掉</b>,按新模型(第二层治理引擎:CoS 分诊 + 受控派发 + 4 护栏)重搭。图逻辑概念可借,引擎重做。</p>
+</div>
+<div class="cmt"><label>💬 对「删旧引擎重搭」的留言</label><textarea data-k="engine" data-label="8 · 引擎重搭"></textarea></div>
+
+<!-- 9 -->
+<h2><span class="secnum">9 ·</span> session-log(backlog,不展开)</h2>
+<div class="card gray">
+  <p>研究阶段的「自己 own 一条事件日志」—— 你定 <b>backlog</b>(Claude Code 单机不痛,等 Codex 实测真痛再做)。这里记一笔、不丢。</p>
+</div>
+<div class="cmt"><label>💬 对 session-log backlog 的留言</label><textarea data-k="backlog" data-label="9 · session-log backlog"></textarea></div>
+
+<!-- 10 -->
+<h2><span class="secnum">10 ·</span> 你确认 / 留给你定的点</h2>
 <div class="card red">
   <ul>
-    <li><b>LLM 分诊节点(§2/§3):</b>「派发前 LLM 判相关/派谁 + 跑中 brainstorm 留判断」这个模型对了吗?</li>
-    <li><b>护栏(§4):</b>判断点挪到 LLM 分诊 + 跑中之后,四道够不够?</li>
-    <li><b>引擎(§5):</b>重设计 + 单开评估 issue —— 要不要我起草那个 issue?</li>
-    <li><b>homerail(§1):</b>要不要我专门深挖一轮它到底怎么做?</li>
-    <li><b>phase 1(§6):</b>「自动派发 + 强 LLM 分诊 + 跑中 gate + 护栏」作第一刀,对吗?</li>
+    <li><b>轻模板+强治理(§1):</b>这个 framing 回应了你「会不会过度复杂化 / 限制强模型」的担心吗?</li>
+    <li><b>两层拆两 PRD(§3):</b>353 只做第二层治理引擎、第一层轻模板另开 issue —— 对吗?</li>
+    <li><b>整体:</b>这版设计你 OK 了吗?OK 我就把它写成 353 PRD(第二层治理引擎)交给 Tadashi。</li>
   </ul>
 </div>
-<div class="cmt"><label>💬 总批注 / 决定 / 下一步</label><textarea data-k="final" data-label="8 · 总批注 / 决定"></textarea></div>
+<div class="cmt"><label>💬 总批注 / 确认 / 下一步</label><textarea data-k="final" data-label="10 · 总批注 / 确认"></textarea></div>
 
 <div class="bar">
   <button class="primary" id="exportBtn" type="button">复制批注</button>
@@ -290,7 +272,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
     });
   });
   function buildMd(){
-    var lines = ["# FLY-353 主动 DAG 编排设计 v2 — Annie 的批注", "", "日期: " + new Date().toLocaleString(), ""];
+    var lines = ["# FLY-353 主动 DAG 编排设计 v5 — Annie 的批注", "", "日期: " + new Date().toLocaleString(), ""];
     var any = false;
     areas.forEach(function(t){
       var v = (t.value || "").trim(); if (!v) return; any = true;
@@ -313,7 +295,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
   });
   document.getElementById("dlBtn").addEventListener("click", function(){
     var blob = new Blob([out.value], {type:"text/markdown"}), url = URL.createObjectURL(blob);
-    var a = document.createElement("a"); a.href = url; a.download = "fly353-dag-design-v2-批注.md";
+    var a = document.createElement("a"); a.href = url; a.download = "fly353-dag-design-v5-批注.md";
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
   });
