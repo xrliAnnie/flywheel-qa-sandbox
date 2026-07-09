@@ -1,15 +1,13 @@
 ---
 issue: FLY-1062
 phase: implement
-phaseCursor: 3/6
-updated: 2026-07-09T23:00:14.497Z
-nextStep: P2 hermetic 测试(provision-prebuilt.test.sh +
-  setup-prebuilt.test.sh:prebuilt --apply 零 clone/零 pnpm + bootstrap temp-HOME +
-  无哨兵 sentinel)
+phaseCursor: 5/6
+updated: 2026-07-09T23:29:40.036Z
+nextStep: push + PR + codex code review + flywheel-land
 chunks: []
 pointers: {}
 ---
 
 # FLY-1062 progress
-**phase**: implement (3/6)
-**next**: P2 hermetic 测试(provision-prebuilt.test.sh + setup-prebuilt.test.sh:prebuilt --apply 零 clone/零 pnpm + bootstrap temp-HOME + 无哨兵 sentinel)
+**phase**: implement (5/6)
+**next**: push + PR + codex code review + flywheel-land
