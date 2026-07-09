@@ -344,7 +344,11 @@ async function processFounderMessage(
 			const gateSession = store.getSession(g.executionId);
 			const head = gateSession?.pr_head_sha;
 			if (!head) continue;
-			const binding = deps.readCurrentBinding(g.executionId, g.questionId, head);
+			const binding = deps.readCurrentBinding(
+				g.executionId,
+				g.questionId,
+				head,
+			);
 			if (binding?.gateMessageId === refMsgId) {
 				cardGate = g;
 				break;
@@ -454,7 +458,8 @@ async function processFounderMessage(
 			payload: { msgId: msg.id, emoji, outcome },
 		});
 		if (markerFresh) {
-			const react = deps.reactToFounderMessageImpl ?? defaultReactToFounderMessage;
+			const react =
+				deps.reactToFounderMessageImpl ?? defaultReactToFounderMessage;
 			const r = await react({
 				botToken: ctx.botToken,
 				channelId: ctx.threadId,

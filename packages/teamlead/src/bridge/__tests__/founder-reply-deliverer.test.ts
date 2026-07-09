@@ -756,9 +756,8 @@ describe("FLY-1041 Chunk 8: founder receipt reaction (✅/❓)", () => {
 	/** insertEvent enforcing UNIQUE(event_id) like the real StateStore. */
 	function uniqueStore(existing: string[] = []) {
 		const ids = new Set(existing);
-		const events: Array<{ event_id: string; event_type?: string }> = existing.map(
-			(event_id) => ({ event_id }),
-		);
+		const events: Array<{ event_id: string; event_type?: string }> =
+			existing.map((event_id) => ({ event_id }));
 		const store = {
 			insertEvent: vi.fn((e: { event_id: string; event_type: string }) => {
 				if (ids.has(e.event_id)) return false;
@@ -779,14 +778,20 @@ describe("FLY-1041 Chunk 8: founder receipt reaction (✅/❓)", () => {
 	}) {
 		const msgId = opts.msgId ?? snowflakeAt(Date.now() - 30 * 60_000);
 		const { store, events } = uniqueStore(opts.existingEventIds ?? []);
-		const reactImpl = vi.fn(async () => opts.reactResult ?? { ok: true, status: 204 });
+		const reactImpl = vi.fn(
+			async () => opts.reactResult ?? { ok: true, status: 204 },
+		);
 		const wakeImpl = vi.fn(async () => ({
 			ok: true,
 		})) as unknown as FounderReplyDeliverDeps["wakeImpl"];
-		const tryShip = vi.fn(async (args: { shipGates: Array<{ questionId: string }> }) =>
-			opts.handled
-				? { handled: args.shipGates.map((g) => g.questionId), retrySafe: true }
-				: null,
+		const tryShip = vi.fn(
+			async (args: { shipGates: Array<{ questionId: string }> }) =>
+				opts.handled
+					? {
+							handled: args.shipGates.map((g) => g.questionId),
+							retrySafe: true,
+						}
+					: null,
 		);
 		const msg: RawMsg = {
 			id: msgId,
@@ -835,9 +840,9 @@ describe("FLY-1041 Chunk 8: founder receipt reaction (✅/❓)", () => {
 			[q("q1", "approve_to_ship")],
 			deps,
 		);
-		expect(
-			(reactImpl.mock.calls[0]?.[0] as { emoji: string }).emoji,
-		).toBe("❓");
+		expect((reactImpl.mock.calls[0]?.[0] as { emoji: string }).emoji).toBe(
+			"❓",
+		);
 	});
 
 	it("no ship gates in matching (brainstorm only) → zero receipts (chatter untouched)", async () => {

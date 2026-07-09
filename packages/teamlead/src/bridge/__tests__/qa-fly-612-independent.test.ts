@@ -284,7 +284,7 @@ describe("FLY-612 G2: 🔴 FLY-175 — thread NL never becomes merge authority",
 			// GLOBAL fetch network spy — records EVERY outbound HTTP. The deliverer
 			// uses global fetch (no fetchImpl passed) for the thread GET.
 			const calls: Array<{ url: string; method: string }> = [];
-			const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((async (
+			vi.spyOn(globalThis, "fetch").mockImplementation((async (
 				url: unknown,
 				init?: { method?: string },
 			) => {

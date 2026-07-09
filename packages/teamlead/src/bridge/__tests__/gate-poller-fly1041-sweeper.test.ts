@@ -27,7 +27,13 @@ const NOW = "2026-07-09 10:00:10";
 const EARLIER = "2026-07-09 10:00:05";
 
 describe("isSupersededShipGate (pure judgement — FLY-1041)", () => {
-	const gate = (over: Partial<{ id: string; checkpoint: string | null; created_at: string }> = {}) => ({
+	const gate = (
+		over: Partial<{
+			id: string;
+			checkpoint: string | null;
+			created_at: string;
+		}> = {},
+	) => ({
 		id: "q-old",
 		checkpoint: "approve_to_ship" as string | null,
 		created_at: EARLIER,
@@ -65,9 +71,7 @@ describe("isSupersededShipGate (pure judgement — FLY-1041)", () => {
 	});
 
 	it("false: no binding / unbound sentinel", () => {
-		expect(
-			isSupersededShipGate(gate(), {}, { created_at: NOW }),
-		).toBe(false);
+		expect(isSupersededShipGate(gate(), {}, { created_at: NOW })).toBe(false);
 		expect(
 			isSupersededShipGate(
 				gate(),
