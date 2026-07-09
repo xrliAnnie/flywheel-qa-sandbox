@@ -104,7 +104,9 @@ if (face.ownerUserId !== CLAW_ID)
 	);
 if (face.ownerUserId === process.env.FLYWHEEL_INFRA_BOT_USER_ID?.trim())
 	fail("owner 解析成了 Codex bot — 跨援方向反了");
-console.log("[drill] preflight PASS — 恰好一个 owner mention 且 = claw,放行 POST");
+console.log(
+	"[drill] preflight PASS — 恰好一个 owner mention 且 = claw,放行 POST",
+);
 
 // --- 组合并发射(镜像 plugin.ts;Hub/rate-limiter 刻意不建,见文件头边界) ---
 const store = await StateStore.create(":memory:");

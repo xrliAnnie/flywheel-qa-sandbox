@@ -19,3 +19,9 @@
 # crash 停增对照:log 中最后一条 crash 行:
 [lead] 15:52:12 Claude crashed (exit code 1) after 7s. Crash count: 64
 # 当前时间 16:03:51 — fresh start 后无任何新 crash 行
+# W5 extended stability — 2026-07-09 16:36:12
+fresh start: 15:53:12 (session 203aa399)
+last crash line in log:
+[lead] 15:52:12 Claude crashed (exit code 1) after 7s. Crash count: 64
+new crash lines since fresh start: 0
+flywheel-claude-infra-bot-lead pane_dead=0
