@@ -2,13 +2,13 @@
 issue: FLY-1063
 phase: design
 phaseCursor: 8/8
-updated: 2026-07-09T23:31:47.198Z
-nextStep: codex design review APPROVED (2 rounds); report to HL for OK to open
-  docs PR + create eng issues
+updated: 2026-07-09T23:33:52.499Z
+nextStep: "PR #532 open (docs); parked for HL direction on eng-issue split +
+  Annie final-confirm"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1063 progress
 **phase**: design (8/8)
-**next**: codex design review APPROVED (2 rounds); report to HL for OK to open docs PR + create eng issues
+**next**: PR #532 open (docs); parked for HL direction on eng-issue split + Annie final-confirm
