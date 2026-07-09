@@ -1343,7 +1343,7 @@ export class Blueprint {
 				"",
 				"LEAD REPORT-BACK (MANDATORY — terminal output is NOT a report):",
 				`1. Whenever you receive a Lead instruction (a mailbox message from your Lead, or \`flywheel-comm inbox\` output) and finish acting on it, you MUST report back by running: ` +
-					`\`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} "DONE: <what you did> | commits: <sha(s)> | PR: <url or n/a>"\`. ` +
+					`\`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} --report "DONE: <what you did> | commits: <sha(s)> | PR: <url or n/a>"\`. ` +
 					`This applies ESPECIALLY after you have already run \`stage set completed\` — post-completion revisions MUST be reported this way; ` +
 					`the Bridge turns it into an event your Lead actually receives. There is NO other valid report channel. ` +
 					`Make the DONE report self-contained; your Lead may close it with a one-line response.`,
@@ -1451,7 +1451,7 @@ export class Blueprint {
 							// handoff so the founder isn't blind — they must NOT ship a PR whose
 							// current head hasn't passed Codex code review.
 							`a. Codex code review is REQUIRED (FLY-827). Run \`/codex-code-review\`, then \`node ${commCliPath} await-codex-gate code --exec-id ${executionId}\` (it verifies reviewedHeadSha === HEAD and reports the verdict). Only after it exits 0 is this PR eligible for the founder to ship.`,
-							`b. Tell your Lead the PR is ready + its Codex status (non-blocking): \`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} "DONE: PR <url> ready for human ship (no-transport runner). Codex code review: PASSED for head <sha> (or: NOT run — founder must NOT ship until it passes)."\``,
+							`b. Tell your Lead the PR is ready + its Codex status (non-blocking): \`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} --report "DONE: PR <url> ready for human ship (no-transport runner). Codex code review: PASSED for head <sha> (or: NOT run — founder must NOT ship until it passes)."\``,
 							`c. Record the open PR as the landing signal: \`jq -n --argjson n <NUMBER> '{status:"ready_to_merge",prNumber:$n}' > ${landSignalPath}\``,
 							`d. Complete the session: \`node ${commCliPath} complete --route pr_handoff --pr <NUMBER>\` — this terminalizes you as 'completed' with the PR recorded (it never enters the approve/ship loop).`,
 							"e. Then STOP. Your build+PR work is done; the founder reviews Codex status and ships the PR.",

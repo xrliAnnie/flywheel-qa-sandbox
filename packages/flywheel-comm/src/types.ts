@@ -20,6 +20,12 @@ export interface Message {
 	 * Null for non-artifact rows. SQL column added by the GEO-151 migration.
 	 */
 	attachments: string | null;
+	/**
+	 * FLY-1041: 'report' = runner→Lead status report (`ask --report`) —
+	 * excluded from the founder-reply binding candidate set. Null for every
+	 * pre-FLY-1041 row and every unflagged ask (byte-compat).
+	 */
+	kind?: string | null;
 }
 
 export interface CheckResult {
@@ -37,6 +43,8 @@ export interface PendingQuestion {
 	checkpoint: string | null;
 	content_type: "text" | "ref";
 	content_ref: string | null;
+	/** FLY-1041: see Message.kind — getPendingQuestions returns whole rows. */
+	kind?: string | null;
 }
 
 /** Gate response structured content (convention, not DB-enforced) */

@@ -196,3 +196,10 @@ describe("Blueprint LEAD REPORT-BACK rules (FLY-208 A1)", () => {
 		expect(prompt).toContain("Do not ask questions");
 	});
 });
+
+describe("FLY-1041 Chunk 9: DONE reports carry --report", () => {
+	it("the LEAD REPORT-BACK ask command is flagged --report (excluded from founder binding)", async () => {
+		const prompt = await buildPrompt({ leadId: "sub-lead" });
+		expect(prompt).toContain('--report "DONE: <what you did>');
+	});
+});

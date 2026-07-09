@@ -326,6 +326,8 @@ interface PendingQuestion {
 	checkpoint: string | null;
 	content_type: string;
 	content_ref: string | null;
+	/** FLY-1041: 'report' = runner status report (`ask --report`). */
+	kind?: string | null;
 }
 
 const ACTIVE_SESSION_STATUSES = new Set([
@@ -2460,6 +2462,12 @@ export class GatePoller {
 					{ ctx: FounderReplyThreadCtx; questions: PendingQuestionForThread[] }
 				>();
 				for (const q of pending) {
+					// FLY-1041 Chunk 9 (Fix D): a runner's `ask --report` status report
+					// is NEVER a founder-reply binding candidate — it neither absorbs
+					// a founder "ship" nor inflates the ambiguity denominator. This is
+					// the ONLY place reports are special-cased: relayToLead, the
+					// pending CLI, and liveness all keep treating them as questions.
+					if (q.kind === "report") continue;
 					const createdMs = parseSqliteUtcMs(q.created_at);
 					if (createdMs === null) continue;
 					const session = this.config.store.getSession(q.from_agent);

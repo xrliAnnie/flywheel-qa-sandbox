@@ -6,6 +6,15 @@ export interface AskArgs {
 	execId?: string;
 	question: string;
 	dbPath: string;
+	/**
+	 * FLY-1041: mark this ask as a fire-and-forget status REPORT (the
+	 * LEAD REPORT-BACK "DONE:" convention). The Lead still receives it via the
+	 * normal `runner_question` relay; the ONLY difference is that the founder
+	 * reply deliverer excludes it from its binding candidate set — a founder
+	 * "ship" in the thread can never be attributed to a runner's DONE report
+	 * (the FLY-910 `founder_reply_ambiguous` noise source).
+	 */
+	report?: boolean;
 	/** Injectable for tests. */
 	env?: NodeJS.ProcessEnv;
 }
@@ -24,7 +33,12 @@ export function ask(args: AskArgs): string {
 	const db = new CommDB(args.dbPath);
 	try {
 		const fromAgent = args.execId ?? "runner";
-		const questionId = db.insertQuestion(fromAgent, args.lead, args.question);
+		const questionId = db.insertQuestion(
+			fromAgent,
+			args.lead,
+			args.question,
+			args.report ? { kind: "report" } : undefined,
+		);
 
 		// FLY-142 (Option Y): mirror the FLY-123 gate-marker. When
 		// FLYWHEEL_GATE_MARKER_DIR is set (Codex runner env, injected by

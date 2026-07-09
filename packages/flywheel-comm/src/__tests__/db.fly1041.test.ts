@@ -87,3 +87,43 @@ describe("CommDB.retireShipGate (FLY-1041)", () => {
 		expect(db.retireShipGate(qid)).toBe(false);
 	});
 });
+
+describe("messages.kind column + ask --report (FLY-1041 Chunk 9)", () => {
+	let db: CommDB;
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-fly1041-kind-"));
+		db = new CommDB(join(tmpDir, "comm.db"));
+	});
+
+	afterEach(() => {
+		db.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("insertQuestion({kind:'report'}) persists kind and getPendingQuestions returns it", () => {
+		const qid = db.insertQuestion("exec-1", "lead-1", "DONE: shipped it", {
+			kind: "report",
+		});
+		const pending = db.getPendingQuestions("lead-1");
+		expect(pending.find((q) => q.id === qid)?.kind).toBe("report");
+	});
+
+	it("an unflagged ask keeps kind NULL (byte-compat — old runners unchanged)", () => {
+		const qid = db.insertQuestion("exec-1", "lead-1", "a real question");
+		expect(db.getMessageById(qid)?.kind).toBeNull();
+	});
+
+	it("a report is still a pending question for the Lead (transport semantics unchanged)", () => {
+		db.insertQuestion("exec-1", "lead-1", "DONE: report", { kind: "report" });
+		expect(db.getPendingQuestions("lead-1")).toHaveLength(1);
+		expect(db.hasPendingQuestionsFrom("exec-1")).toBe(true);
+	});
+
+	it("concurrent kind migration swallows the duplicate-column race", () => {
+		// A second opener of the SAME file re-runs migrations — must not throw.
+		const second = new CommDB(join(tmpDir, "comm.db"));
+		second.close();
+	});
+});
