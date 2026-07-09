@@ -107,12 +107,12 @@ Runner 提示词（`packages/edge-worker/src/Blueprint.ts:1459-1490` 的 approve
 
 ### B.3 身份分离的两种做法（选项 1 前置）
 
-| 做法 | 机械 :cool: 用什么身份 | founder 亲拍用什么身份 | 备注 |
-|------|------------------------|------------------------|------|
-| **专用机器账号** | 新建一个 `flywheel-bot`（或类似）GitHub 账号，Runner 用它的 token 发机械 :cool: | Annie 保留 xrliAnnie 作纯个人审批身份 | 简单直接；要给 bot 账号最小 repo 权限（能 comment + 触发 workflow，够即可） |
-| **GitHub App** | 装一个 App，Runner 经 App token 发机械 :cool:，作者显示为 `app/xxx[bot]` | Annie = xrliAnnie 个人 | 更规范、token 短期、权限细；重一点 |
+| 做法 | 机械 :cool: 用什么身份 | founder 亲拍用什么身份 | 判别式 |
+|------|------------------------|------------------------|--------|
+| **专用机器账号** | 新建一个 `flywheel-bot`（或类似）GitHub 账号，Runner 用它的 fine-grained PAT 发机械 :cool: | Annie 保留 xrliAnnie 作纯个人审批身份 | login 字符串白名单（`type` 仍是 `"User"`） |
+| **GitHub App** | 装一个 App，Runner 经 installation token 发机械 :cool:，作者显示为 `<slug>[bot]` | Annie = xrliAnnie 个人 | **结构性**：`user.type=="Bot"`（本仓 `linear[bot]` 实测证实） |
 
-两种都能让「founder 亲发的 🆒」在 workflow 里唯一可辨。具体选哪种是实现级细节，留到 Annie 拍完选项 1 之后。
+两种都能让「founder 亲发的 🆒」在 workflow 里唯一可辨，但**硬度不同**。四个维度的完整取舍、实测证据、以及两条路都绕不开的一个安全硬伤，见 **§C（身份分离深挖）**——那是 HL 点名要给 eng 拆单用的。
 
 ### B.4 把 GitHub 🆒 记进账本（选项 1 的「记账」环）
 
@@ -130,10 +130,80 @@ Runner 提示词（`packages/edge-worker/src/Blueprint.ts:1459-1490` 的 approve
 
 ---
 
-## C. 给 proposal 的关键结论
+## C. 身份分离深挖（选项 A 的 P0 前置）—— bot 账号 vs GitHub App
+
+> HL 要求：若 Annie 选 A，这条前置必须写清两条路的具体取舍，因为它直接决定 eng 怎么拆单。
+> 下面每条事实都**实测过或查过官方文档**，不凭记忆。
+
+### C.1 实测证据（本仓真实数据，2026-07-09）
+
+| 事实 | 证据 |
+|------|------|
+| **今天 100% 的真实 ship run 由 `xrliAnnie` / `type: "User"` 触发** | `gh api .../workflows/254044724/runs`：所有 conclusion≠skipped 的 run，`actor=xrliAnnie`、`triggering_actor.type=User`。**没有任何信号能区分「Annie 亲拍」与「bot 机械按」** |
+| GitHub App 发的 comment 作者是**结构性可辨**的 | 本仓 PR #524/#526/#512 的 linear comment：`user.login="linear[bot]"`、`user.type="Bot"`（对比 `xrliAnnie` 是 `type="User"`） |
+| Runner 当前 gh 认证身份 = Annie 本人账号 | `gh api user` → `{"login":"xrliAnnie","type":"User"}` |
+| 仓库是**个人账号**下的 private repo，不是 org | `gh api repos/xrliAnnie/flywheel` → `owner_type="User"`, `private=true` |
+
+**推论**：`user.type=="Bot"` 是一个**结构性判别式**，比「按 login 字符串白名单」更硬。
+
+### C.2 两条关键 GitHub 机制（查官方文档确认）
+
+1. **用 workflow 自带的 `GITHUB_TOKEN` 发的 comment 不会再触发新的 workflow run**（`workflow_dispatch`/`repository_dispatch` 除外）——这是官方的防递归设计。而 **PAT 或 GitHub App installation token 发的 comment 会触发**。
+   → 机械 `:cool:` 必须来自 PAT 或 App token，**不能**用 workflow 的 GITHUB_TOKEN。这条限制两条路都绕不开。
+2. **私有 repo 的 reusable workflow 可以跨 repo 复用**（2022-12 GA）：在该 repo 的 Settings → Actions → General → Access 选 *"Accessible from repositories owned by `<user>`"*。
+   → 个人账号（非 org）**也能**做「中央一份 + 瘦 caller」。但**没有 org 级 `.github` 模板仓、没有 org audit log**，这两条能力不存在。
+
+### C.3 取舍对照（HL 点名的四个维度）
+
+| 维度 | **专用 bot 机器账号**（如 `flywheel-bot`） | **GitHub App**（如 `Flywheel Ship Bot`） |
+|------|---------------------------------------------|------------------------------------------|
+| **安装成本** | 建一个 GitHub 账号（需独立邮箱 + 2FA）→ 邀请为各 repo collaborator(write)。个人账号 Free 版**私有仓 collaborator 无限、$0**。Runner 把 gh token 换成 bot 的 fine-grained PAT 即可 | 建 App（挂个人账号）+ 生成 private key + 逐 repo 安装。Runner 在**本机**要自己把 private key 换成 installation token（JWT → token，1h 过期、需刷新）——比 PAT 多一层机械 |
+| **能不能代表 bot 发 comment** | 能。就是个普通用户 PAT。作者显示 `flywheel-bot`、但 **`type` 仍是 `"User"`** | 能（需 `issues: write`）。作者显示 `<slug>[bot]`、**`type="Bot"`** |
+| **founder 可辨性（本题核心）** | 只能靠 **login 字符串白名单**（`login=="xrliAnnie"`）。可用，但是软判别 | **结构性判别**：`user.type=="Bot"` 一票否决机器身份，再叠 login 白名单双保险。更硬 |
+| **审计可见性** | 长期 PAT（fine-grained 可限 repo + 设过期）。个人账号无 org audit log | 权限粒度细、token 短命（1h）。安全姿态更好。个人账号**同样无 org audit log** |
+| **对 xrliAnnie 的影响** | 相同：她的账号不再被机器占用，她的 🆒 才有意义。**最小改动 = 只把 `:cool:` 那条 comment 换成 bot 身份**（`git push` / `gh pr create` 可暂留 xrliAnnie，后续再迁） | 同左 |
+
+### C.4 一条两条路都必须改的硬伤（重要）
+
+今天 `ship-on-comment.yml` 的授权判断是「commenter 有 **admin/write** 权限」（`:34-54`）。
+
+在**选项 A** 下这是**审批伪造面**：任何有 write 的 collaborator（含未来的 bot、其他 agent）发一个 🆒 就等于替 Annie 批了。
+
+→ 选项 A 落地时，审批路径的判断必须从「有 write 权限」收紧成 **「commenter 恰为 founder 本人」**，即：
+
+```
+comment.user.login == '<founder-login>'  &&  comment.user.type == 'User'
+```
+
+这不是可选优化，是选项 A 的**安全底线**。（选项 B 下 GitHub 🆒 不承载授权，此条降级为「防非-founder 误触」的普通鉴权。）
+
+### C.5 遗留的子设计（选项 A 定了之后才需要答，不在本提案 verdict 内）
+
+选了 A 之后，「Discord 批准」那条路仍然需要一个合并触发器。三种子形态，各有取舍，留到正式 PRD：
+
+- **A-i**：workflow 同时接受「founder 亲发 🆒」(= 授权+执行) 和「bot 发 :cool:」(= 仅执行，授权早已在账本里由 Discord 建立)。改动最小，但 workflow 无法自己核账本，安全性仍靠「bot 只在 verify-approval 通过后才发」这条契约。
+- **A-ii**：Discord 路不再经 comment，改由 Bridge 在 verify-approval 通过后直接调合并 API。账目最干净，但与 FLY-248「Runner 绝不自 merge / :cool: 是唯一 merge 路径」的现有契约冲突，需一并修订。
+- **A-iii**：只认 founder 亲发 🆒 为唯一合并触发器，Discord 批准仅作预备状态。最简单也最严格，但 Annie 失去「在 Discord 一句 ship 就走完」的便利。
+
+**推荐倾向 A-i**（改动最小、复用现有账本与硬闸），但这条要 Annie 拍完 A/B 之后在正式 PRD 里定。
+
+### C.6 引用来源
+
+- GitHub Docs — Trigger a workflow（GITHUB_TOKEN 防递归规则）：https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow
+- GitHub Changelog — 私有仓共享 actions / reusable workflows GA：https://github.blog/changelog/2022-12-13-github-actions-sharing-actions-and-reusable-workflows-from-private-repositories-is-now-ga/
+- GitHub Docs — Reuse workflows（Access 设置）：https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows
+- GitHub Docs — GitHub 计划（个人账号私有仓无限 collaborator）：https://docs.github.com/get-started/learning-about-github/githubs-products
+- 本仓实测：`gh api repos/xrliAnnie/flywheel/actions/workflows/254044724/runs`、`.../issues/524/comments`、`gh api user`
+
+---
+
+## D. 给 proposal 的关键结论
 
 1. 🆒 workflow **已存在**（flywheel），本题不是从零造，而是「升级 GitHub 为一等审批面 + 定 source-of-truth + 全 repo 复用」。
 2. source-of-truth 分叉（选项 1 vs 2）是 founder 决策，账本作唯一真源两者都成立。
 3. 选项 1 工程上「便宜」——审批多源架构已存在（A.4），GitHub-🆒 是自然第 3 源。
-4. 选项 1 的真前置 = **GitHub 身份分离**（A.6/B.3），不解决做不了。
-5. 通用形态 = reusable workflow（B.1）；deploy 是分开的第二条腿、per-repo（A.7）。
+4. 选项 1 的真前置 = **GitHub 身份分离**（A.6/B.3/C），不解决做不了。实测：今天 100% 真实 ship run 的 actor 都是 `xrliAnnie`/`type=User`，零区分度（C.1）。
+5. 通用形态 = reusable workflow（B.1）；deploy 是分开的第二条腿、per-repo（A.7）。个人账号（非 org）**也支持**私有仓跨 repo 复用，但没有 org 模板仓 / org audit log（C.2）。
+6. **新发现的安全硬伤**：今天 workflow 的授权闸是「commenter 有 admin/write」。选项 1 下这是**审批伪造面**（任何 write collaborator 都能替 Annie 批）。必须收紧成「commenter 恰为 founder 本人」——这是选项 1 的安全底线，不是可选优化（C.4）。
+7. 身份分离两条路里，**GitHub App 给的是结构性判别式**（`user.type=="Bot"`，本仓 `linear[bot]` 实测证实），bot 机器账号只能靠 login 白名单；代价是本机要多一层 installation-token 机械（C.3）。
+8. 一条两条路都绕不开的机制约束：**workflow 自带的 `GITHUB_TOKEN` 发的 comment 不会再触发 workflow**（官方防递归），所以机械 :cool: 必须来自 PAT 或 App token（C.2）。
