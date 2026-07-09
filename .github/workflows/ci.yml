@@ -129,6 +129,7 @@ jobs:
           bash scripts/__tests__/flywheel-buddy-github.test.sh
           bash scripts/__tests__/flywheel-buddy-captain.test.sh
           bash scripts/__tests__/flywheel-buddy-connect.test.sh
+          bash scripts/__tests__/buddy-escalate.test.sh
 
       # FLY-882: Discord bot token pool — hermetic (stub curl, fixture
       # DISCORD_BOT_POOL_HOME, no real ~/.flywheel touched, no real network).
