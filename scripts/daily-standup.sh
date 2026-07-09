@@ -70,7 +70,14 @@ if ! bridge_healthy; then
   cd "$FLYWHEEL_DIR"
 
   # Start Bridge in background (inherits our env, including sourced .env)
-  nohup npx tsx "$FLYWHEEL_DIR/scripts/run-bridge.ts" >> /tmp/flywheel-bridge.log 2>&1 &
+  # FLY-1062: packaged installs ship a compiled dist/run-bridge.js (no tsx on
+  # customer machines); monorepo checkouts keep the tsx line verbatim
+  # (reverse-compat sentinel: packaged-seams.test.sh).
+  if [ -f "$FLYWHEEL_DIR/dist/run-bridge.js" ]; then
+    nohup node "$FLYWHEEL_DIR/dist/run-bridge.js" >> /tmp/flywheel-bridge.log 2>&1 &
+  else
+    nohup npx tsx "$FLYWHEEL_DIR/scripts/run-bridge.ts" >> /tmp/flywheel-bridge.log 2>&1 &
+  fi
   BRIDGE_PID=$!
   log "Bridge starting (PID $BRIDGE_PID)..."
 

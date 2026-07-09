@@ -387,7 +387,31 @@ EOF
   #    (platform-keyed, linux mappings validated by FLY-650); minimal aux job
   #    set (linux derives units from _fleet_linux_specs, darwin narrates);
   #    NO timestamp (deterministic regeneration).
-  local deps_json='[
+  # FLY-1062: a PREBUILT tree (FS_REPO_ROOT carries .flywheel-prebuilt) needs
+  # NO pnpm (nothing is built on the customer machine) and gains a linux
+  # compiler-toolchain fallback entry (`cc` → build-essential) for the
+  # better-sqlite3 prebuilt-binary gap. The monorepo deps list below stays
+  # byte-identical (reverse-compat sentinel: setup-prebuilt.test.sh).
+  local fs_prebuilt=0
+  [ -f "$FS_REPO_ROOT/.flywheel-prebuilt" ] && fs_prebuilt=1
+  local deps_json
+  if [ "$fs_prebuilt" -eq 1 ]; then
+    deps_json='[
+    {"name":"homebrew","required":false,"platforms":{"darwin":{"channel":"installer"}}},
+    {"name":"node","required":true,"platforms":{"darwin":{"channel":"brew","formula":"node"},"linux":{"presentCheck":true}},"check":{"command":"node"}},
+    {"name":"tmux","required":true,"platforms":{"darwin":{"channel":"brew","formula":"tmux"},"linux":{"apt":"tmux","dnf":"tmux"}},"check":{"command":"tmux"}},
+    {"name":"gh","required":true,"platforms":{"darwin":{"channel":"brew","formula":"gh"},"linux":{"apt":"gh","dnf":"gh"}},"check":{"command":"gh"}},
+    {"name":"jq","required":true,"platforms":{"darwin":{"channel":"brew","formula":"jq"},"linux":{"apt":"jq","dnf":"jq"}},"check":{"command":"jq"}},
+    {"name":"git","required":true,"platforms":{"darwin":{"channel":"brew","formula":"git"},"linux":{"apt":"git","dnf":"git"}},"check":{"command":"git"}},
+    {"name":"cc","required":false,"platforms":{"linux":{"apt":"build-essential","dnf":"gcc-c++"}},"note":"prebuilt mode: native-module build fallback (better-sqlite3)"},
+    {"name":"cmux","required":false,"platforms":{"darwin":{"channel":"manual"}},"note":"darwin-only viewer; cmux app + flywheel-cmux-install.sh"},
+    {"name":"codex","required":false,"channel":"manual","note":"OpenAI Codex CLI"},
+    {"name":"claude","required":false,"channel":"manual","note":"Claude Code CLI"},
+    {"name":"kimi","required":false,"channel":"manual","note":"Kimi Code CLI (brew kimi-code)"},
+    {"name":"agy","required":false,"channel":"manual","note":"Antigravity CLI"}
+  ]'
+  else
+    deps_json='[
     {"name":"homebrew","required":false,"platforms":{"darwin":{"channel":"installer"}}},
     {"name":"node","required":true,"platforms":{"darwin":{"channel":"brew","formula":"node"},"linux":{"presentCheck":true}},"check":{"command":"node"}},
     {"name":"pnpm","required":true,"platforms":{"darwin":{"channel":"brew","formula":"pnpm"},"linux":{"presentCheck":true}},"check":{"command":"pnpm"}},
@@ -401,17 +425,24 @@ EOF
     {"name":"kimi","required":false,"channel":"manual","note":"Kimi Code CLI (brew kimi-code)"},
     {"name":"agy","required":false,"channel":"manual","note":"Antigravity CLI"}
   ]'
+  fi
+  # FLY-1062: on a prebuilt tree the flywheel runtime is the installed payload —
+  # customer manifests must NOT carry the private repo slug (zero-repo-access
+  # invariant; the provisioner skips the flywheel entry in prebuilt mode anyway).
+  local fs_flywheel_slug="xrliAnnie/flywheel"
+  [ "$fs_prebuilt" -eq 1 ] && fs_flywheel_slug=""
   jq -n \
     --arg pname "$FS_PROJECT" \
     --arg pslug "${FS_PROJECT_SLUG:-}" \
     --arg skrepo "$FS_SKILLS_REPO" \
+    --arg fslug "$fs_flywheel_slug" \
     --argjson deps "$deps_json" \
     '{
       schemaVersion: 1,
       meta: { tool: "flywheel-setup.sh" },
       deps: $deps,
       repos: [
-        { name: "flywheel", slug: "xrliAnnie/flywheel", targetDir: "Dev/flywheel" },
+        { name: "flywheel", slug: (if $fslug=="" then null else $fslug end), targetDir: "Dev/flywheel" },
         { name: $pname, slug: (if $pslug=="" then null else $pslug end), targetDir: ("Dev/" + $pname) }
       ],
       launchdJobs: [
@@ -427,8 +458,18 @@ EOF
     }' > "$out/manifest.json" || fs_die "manifest.json generation failed"
 
   # 4. host.json — portable fields only; the target derives platform from uname.
-  jq -n --arg repo "$FS_SKILLS_REPO" \
-    '{ schemaVersion: 1, skillsRepo: $repo }' > "$out/host.json" || fs_die "host.json generation failed"
+  #    FLY-1062: prebuilt installs run out of the stable runtime symlink —
+  #    flywheelDir points every wrapper/launcher at ~/.flywheel/runtime/current
+  #    (FLY-650 host.json seam; zero wrapper changes). Monorepo output is
+  #    byte-identical (no flywheelDir key).
+  if [ "$fs_prebuilt" -eq 1 ]; then
+    jq -n --arg repo "$FS_SKILLS_REPO" \
+      '{ schemaVersion: 1, skillsRepo: $repo, flywheelDir: "~/.flywheel/runtime/current" }' \
+      > "$out/host.json" || fs_die "host.json generation failed"
+  else
+    jq -n --arg repo "$FS_SKILLS_REPO" \
+      '{ schemaVersion: 1, skillsRepo: $repo }' > "$out/host.json" || fs_die "host.json generation failed"
+  fi
 
   # 5. complete-mode gates: placeholder residue, the REAL loader, secret scan.
   if [ "$complete" = "1" ]; then

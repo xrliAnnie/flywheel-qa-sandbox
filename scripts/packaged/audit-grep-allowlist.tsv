@@ -1,0 +1,10 @@
+# FLY-1062 gate④: registered repo-access references inside the release tree.
+# Format: <file-glob>	<substring>	<disposition>
+# Every `git clone` / private-org slug the gate finds in the payload MUST match
+# a row here, and every row MUST have a behavioral test proving the customer
+# path never exercises it (closure rule — packaged-path audit table §gate④).
+scripts/provision-fleet-host.sh	git clone	customer-repo-path: manifest-driven clone; the flywheel entry is skipped in prebuilt mode (provision-prebuilt test), remaining entries are the customer's own project repos
+scripts/flywheel-setup.sh	xrliAnnie/flywheel	runtime-branched: fleet-manifest template slug; prebuilt mode emits slug=null so customer manifests never carry the private slug (setup prebuilt test)
+scripts/flywheel-setup.sh	git clone	doc-only: comment text describing the monorepo flow; no executable clone on the customer path
+scripts/lib/host-config.sh	xrliAnnie/flywheel-skills	default-unused-on-customer-path: skillsRepo default; customer manifests carry skillsSyncPresent:false and no skills clone exists on the packaged path (research audit A#4)
+scripts/flywheel-setup.sh	xrliAnnie/flywheel-skills	default-unused-on-customer-path: FS_SKILLS_REPO default written into host.json skillsRepo; never fetched on the packaged path

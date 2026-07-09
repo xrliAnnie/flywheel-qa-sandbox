@@ -149,6 +149,72 @@ _sup_linux_suffix() { case "$1" in timer) echo timer ;; path) echo path ;; *) ec
 # ── DARWIN: lifecycle over launchctl (committed plists stay the install source) ─
 _sup_darwin_label() { printf 'com.flywheel.%s' "$1"; }
 
+_sup_launchd_dir() { printf '%s' "${FLYWHEEL_LAUNCHD_DIR:-$HOME/Library/LaunchAgents}"; }
+
+# _sup_darwin_install <spec> — FLY-1062: render a launchd plist from the SAME
+# service-spec JSON the linux path consumes, then bootstrap it. Only reachable
+# behind the explicit FLYWHEEL_SUPERVISOR_DARWIN_INSTALL=1 opt-in (the packaged
+# bootstrap sets it); the default darwin path stays the delegating no-op below
+# (byte-compat with FLY-650 — reverse-compat sentinel).
+_sup_darwin_install() {
+  local spec="$1"
+  local name kind exec_cmd keepalive stdout
+  name="$(_sup_spec_get "$spec" '.name')"
+  kind="$(_sup_spec_get "$spec" '.kind')"
+  exec_cmd="$(_sup_spec_get "$spec" '.exec')"
+  [ -n "$name" ] || { _sup_err "spec missing name"; return 1; }
+  [ -n "$exec_cmd" ] || { _sup_err "spec '$name' missing exec"; return 1; }
+  keepalive="$(_sup_spec_get "$spec" '.keepAlive')"
+  stdout="$(_sup_spec_get "$spec" '.stdout')"
+
+  local dir label plist
+  dir="$(_sup_launchd_dir)"; mkdir -p "$dir" || return 1
+  label="$(_sup_darwin_label "$name")"
+  plist="$dir/$label.plist"
+  {
+    echo '<?xml version="1.0" encoding="UTF-8"?>'
+    echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+    echo '<plist version="1.0">'
+    echo '<dict>'
+    echo "  <key>Label</key><string>$label</string>"
+    echo '  <key>ProgramArguments</key>'
+    echo '  <array>'
+    local word
+    for word in $exec_cmd; do
+      echo "    <string>$word</string>"
+    done
+    echo '  </array>'
+    if [ "$kind" = "service" ]; then
+      echo '  <key>RunAtLoad</key><true/>'
+      [ "$keepalive" = "true" ] && echo '  <key>KeepAlive</key><true/>'
+      echo '  <key>ThrottleInterval</key><integer>15</integer>'
+    fi
+    if [ "$(jq -r '(.schedule | length) // 0' <<<"$spec" 2>/dev/null)" -gt 0 ] 2>/dev/null; then
+      echo '  <key>StartCalendarInterval</key>'
+      echo '  <array>'
+      jq -r '.schedule[]? | "    <dict><key>Hour</key><integer>\(.hour // 0)</integer><key>Minute</key><integer>\(.minute // 0)</integer></dict>"' <<<"$spec"
+      echo '  </array>'
+    fi
+    if [ "$(jq -r '(.watch | length) // 0' <<<"$spec" 2>/dev/null)" -gt 0 ] 2>/dev/null; then
+      echo '  <key>QueueDirectories</key>'
+      echo '  <array>'
+      jq -r '.watch[]? | "    <string>\(.)</string>"' <<<"$spec"
+      echo '  </array>'
+    fi
+    if [ -n "$stdout" ]; then
+      echo "  <key>StandardOutPath</key><string>$stdout</string>"
+      echo "  <key>StandardErrorPath</key><string>$stdout</string>"
+    fi
+    echo '</dict>'
+    echo '</plist>'
+  } > "$plist" || { _sup_err "cannot write $plist"; return 1; }
+
+  local uid; uid="$(id -u)"
+  launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$uid" "$plist" || { _sup_err "bootstrap failed: $label"; return 1; }
+  return 0
+}
+
 # ── public lifecycle verbs: <name> [kind] ───────────────────────────────────
 supervisor_install() {
   local spec="$1"
@@ -156,6 +222,13 @@ supervisor_install() {
   case "$(supervisor_backend)" in
     systemd-user) _sup_linux_install "$spec" ;;
     launchd)
+      # FLY-1062: the packaged bootstrap opts into a REAL darwin install
+      # (spec-rendered plist + bootstrap). Everything else keeps the FLY-650
+      # delegating no-op verbatim (byte-compat).
+      if [ "${FLYWHEEL_SUPERVISOR_DARWIN_INSTALL:-0}" = "1" ]; then
+        _sup_darwin_install "$spec"
+        return $?
+      fi
       # macOS keeps the existing committed-plist + flywheel-daemon.sh install
       # flow (byte-compat). The provisioner's darwin path delegates there; this
       # is a no-op success so a cross-platform caller can call uniformly.
