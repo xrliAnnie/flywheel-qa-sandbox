@@ -1,15 +1,13 @@
 ---
 issue: FLY-1050
 phase: implement
-phaseCursor: 0/6
-updated: 2026-07-09T19:25:11.304Z
-nextStep: audit code sites
-  (phase-orchestrator/StateStore/sink/event-route/actions/crash-reaper) then
-  write red tests
+phaseCursor: 1/6
+updated: 2026-07-09T19:32:11.941Z
+nextStep: write red tests (fly1050 orchestrator suite + touchpoint cases)
 chunks: []
 pointers: {}
 ---
 
 # FLY-1050 progress
-**phase**: implement (0/6)
-**next**: audit code sites (phase-orchestrator/StateStore/sink/event-route/actions/crash-reaper) then write red tests
+**phase**: implement (1/6)
+**next**: write red tests (fly1050 orchestrator suite + touchpoint cases)
