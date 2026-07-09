@@ -489,14 +489,14 @@ po_assemble() {
   # 1. curated scripts (fail-closed on any missing whitelist entry).
   local f
   while IFS= read -r f; do
-    [ -z "$f" ] && continue
+    case "$f" in *[![:space:]]*) ;; *) continue ;; esac
     [ -f "$root/scripts/$f" ] || { po_err "whitelisted script missing: scripts/$f"; return 1; }
     mkdir -p "$tree/scripts/$(dirname "$f")"
     cp -p "$root/scripts/$f" "$tree/scripts/$f" || return 1
   done <<<"$PO_SCRIPT_FILES"
   local d
   while IFS= read -r d; do
-    [ -z "$d" ] && continue
+    case "$d" in *[![:space:]]*) ;; *) continue ;; esac
     [ -d "$root/scripts/$d" ] || { po_err "whitelisted script dir missing: scripts/$d"; return 1; }
     mkdir -p "$tree/scripts/$(dirname "$d")"
     cp -Rp "$root/scripts/$d" "$tree/scripts/$d" || return 1
@@ -509,7 +509,7 @@ po_assemble() {
 
   # 3. agents/ runtime prompts.
   while IFS= read -r f; do
-    [ -z "$f" ] && continue
+    case "$f" in *[![:space:]]*) ;; *) continue ;; esac
     [ -f "$root/agents/$f" ] || { po_err "agent prompt missing: agents/$f"; return 1; }
     cp -p "$root/agents/$f" "$tree/agents/$f" || return 1
   done <<<"$PO_AGENT_FILES"
@@ -533,7 +533,7 @@ po_assemble() {
   done
   local spec
   while IFS= read -r spec; do
-    [ -z "$spec" ] && continue
+    case "$spec" in *[![:space:]]*) ;; *) continue ;; esac
     dir="${spec%%:*}"; local asset="${spec#*:}"
     name="$(po_pkg_npm_name "$root" "$dir")" || return 1
     [ -d "$root/packages/$dir/$asset" ] || { po_err "package asset missing: packages/$dir/$asset"; return 1; }
@@ -542,7 +542,7 @@ po_assemble() {
     rm -rf "$tree/node_modules/$name/$asset/__tests__"
   done < <(printf '%s\n' $PO_PACKAGE_ASSETS)
   while IFS= read -r spec; do
-    [ -z "$spec" ] && continue
+    case "$spec" in *[![:space:]]*) ;; *) continue ;; esac
     dir="${spec%%:*}"; local afile="${spec#*:}"
     name="$(po_pkg_npm_name "$root" "$dir")" || return 1
     [ -f "$root/packages/$dir/$afile" ] || { po_err "package asset file missing: packages/$dir/$afile"; return 1; }
