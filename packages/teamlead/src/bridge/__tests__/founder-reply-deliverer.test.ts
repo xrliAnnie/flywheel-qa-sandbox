@@ -746,3 +746,151 @@ describe("FLY-1041 Chunk 7: reply-to-card deterministic binding", () => {
 		).toBeFalsy();
 	});
 });
+
+describe("FLY-1041 Chunk 8: founder receipt reaction (✅/❓)", () => {
+	afterEach(() => {
+		delete process.env.FLYWHEEL_FOUNDER_APPROVAL_ACK;
+		vi.restoreAllMocks();
+	});
+
+	/** insertEvent enforcing UNIQUE(event_id) like the real StateStore. */
+	function uniqueStore(existing: string[] = []) {
+		const ids = new Set(existing);
+		const events: Array<{ event_id: string; event_type?: string }> = existing.map(
+			(event_id) => ({ event_id }),
+		);
+		const store = {
+			insertEvent: vi.fn((e: { event_id: string; event_type: string }) => {
+				if (ids.has(e.event_id)) return false;
+				ids.add(e.event_id);
+				events.push({ event_id: e.event_id, event_type: e.event_type });
+				return true;
+			}),
+			getEventsByExecution: vi.fn(() => events.slice()),
+		} as unknown as FounderReplyDeliverDeps["store"];
+		return { store, events };
+	}
+
+	function ackHarness(opts: {
+		msgId?: string;
+		handled?: boolean;
+		existingEventIds?: string[];
+		reactResult?: { ok: boolean; status?: number };
+	}) {
+		const msgId = opts.msgId ?? snowflakeAt(Date.now() - 30 * 60_000);
+		const { store, events } = uniqueStore(opts.existingEventIds ?? []);
+		const reactImpl = vi.fn(async () => opts.reactResult ?? { ok: true, status: 204 });
+		const wakeImpl = vi.fn(async () => ({
+			ok: true,
+		})) as unknown as FounderReplyDeliverDeps["wakeImpl"];
+		const tryShip = vi.fn(async (args: { shipGates: Array<{ questionId: string }> }) =>
+			opts.handled
+				? { handled: args.shipGates.map((g) => g.questionId), retrySafe: true }
+				: null,
+		);
+		const msg: RawMsg = {
+			id: msgId,
+			content: "嗯ship",
+			author: { id: OWNER },
+		};
+		const deps: FounderReplyDeliverDeps = {
+			store,
+			fetchImpl: discordGet([msg]),
+			cursorStore: new InMemoryInboundCursorStore(),
+			wakeImpl,
+			commDbFactory: () => makeCommDb(["q1"]) as never,
+			tryFounderShipApproval:
+				tryShip as unknown as FounderReplyDeliverDeps["tryFounderShipApproval"],
+			reactToFounderMessageImpl:
+				reactImpl as unknown as FounderReplyDeliverDeps["reactToFounderMessageImpl"],
+		};
+		return { deps, reactImpl, events, msgId };
+	}
+
+	it("bound decision (approve written) → ✅ on the founder's message + founder_ack_reacted audit", async () => {
+		const { deps, reactImpl, events, msgId } = ackHarness({ handled: true });
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			deps,
+		);
+		expect(reactImpl).toHaveBeenCalledTimes(1);
+		const call = reactImpl.mock.calls[0]?.[0] as {
+			emoji: string;
+			messageId: string;
+			channelId: string;
+		};
+		expect(call.emoji).toBe("✅");
+		expect(call.messageId).toBe(msgId);
+		expect(call.channelId).toBe("T1");
+		expect(events.some((e) => e.event_type === "founder_ack_reacted")).toBe(
+			true,
+		);
+	});
+
+	it("unbound (unclear / null attribution) → ❓ receipt", async () => {
+		const { deps, reactImpl } = ackHarness({ handled: false });
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			deps,
+		);
+		expect(
+			(reactImpl.mock.calls[0]?.[0] as { emoji: string }).emoji,
+		).toBe("❓");
+	});
+
+	it("no ship gates in matching (brainstorm only) → zero receipts (chatter untouched)", async () => {
+		const { deps, reactImpl } = ackHarness({ handled: false });
+		const respondImpl = vi.fn(
+			async () => undefined,
+		) as unknown as FounderReplyDeliverDeps["respondImpl"];
+		await emitFounderReplyDeliveryForThread(ctx(), [q("q1", "brainstorm")], {
+			...deps,
+			respondImpl,
+		});
+		expect(reactImpl).not.toHaveBeenCalled();
+	});
+
+	it("PUT failure (403) → founder_ack_failed audit, never throws, no retry", async () => {
+		const { deps, reactImpl, events } = ackHarness({
+			handled: true,
+			reactResult: { ok: false, status: 403 },
+		});
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			deps,
+		);
+		expect(reactImpl).toHaveBeenCalledTimes(1);
+		expect(events.some((e) => e.event_type === "founder_ack_failed")).toBe(
+			true,
+		);
+	});
+
+	it("durable marker dedup: an existing founder-ack-<msgId> marker suppresses the PUT", async () => {
+		const msgId = snowflakeAt(Date.now() - 30 * 60_000);
+		const { deps, reactImpl } = ackHarness({
+			msgId,
+			handled: true,
+			existingEventIds: [`founder-ack-${msgId}`],
+		});
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			deps,
+		);
+		expect(reactImpl).not.toHaveBeenCalled();
+	});
+
+	it("FLYWHEEL_FOUNDER_APPROVAL_ACK=0 kill-switch → no receipt (byte-compat)", async () => {
+		process.env.FLYWHEEL_FOUNDER_APPROVAL_ACK = "0";
+		const { deps, reactImpl } = ackHarness({ handled: true });
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			deps,
+		);
+		expect(reactImpl).not.toHaveBeenCalled();
+	});
+});

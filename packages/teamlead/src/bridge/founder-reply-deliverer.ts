@@ -24,6 +24,7 @@ import { respond as defaultRespond } from "flywheel-comm/respond";
 import { wakeRunnerMailbox as defaultWake } from "flywheel-comm/wake";
 import type { InboundCursorStore } from "../lead-backends/codex/InboundCursorStore.js";
 import type { StateStore } from "../StateStore.js";
+import { reactToFounderMessage as defaultReactToFounderMessage } from "./approval-signal/founder-ack.js";
 import type { GateMessageBinding } from "./approval-signal/gate-message-binding.js";
 import {
 	msToSnowflakeLowerBound,
@@ -136,6 +137,8 @@ export interface FounderReplyDeliverDeps {
 		questionId: string,
 		prHeadSha: string,
 	) => GateMessageBinding | null;
+	/** FLY-1041 Chunk 8: test seam for the receipt-reaction PUT. */
+	reactToFounderMessageImpl?: typeof defaultReactToFounderMessage;
 }
 
 function audit(
@@ -274,6 +277,8 @@ export async function emitFounderReplyDeliveryForThread(
 					deliverAmbiguousToLead: deps.deliverAmbiguousToLead,
 					tryFounderShipApproval: deps.tryFounderShipApproval,
 					readCurrentBinding: deps.readCurrentBinding,
+					fetchImpl,
+					reactToFounderMessageImpl: deps.reactToFounderMessageImpl,
 				},
 				pendingNow,
 			);
@@ -303,6 +308,8 @@ async function processFounderMessage(
 		deliverAmbiguousToLead?: FounderReplyDeliverDeps["deliverAmbiguousToLead"];
 		tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
 		readCurrentBinding?: FounderReplyDeliverDeps["readCurrentBinding"];
+		fetchImpl?: typeof fetch;
+		reactToFounderMessageImpl?: FounderReplyDeliverDeps["reactToFounderMessageImpl"];
 	},
 	pendingNow: Set<string>,
 ): Promise<boolean> {
@@ -422,6 +429,53 @@ async function processFounderMessage(
 				msgId: msg.id,
 			});
 			allOk = false;
+		}
+	}
+
+	// ── FLY-1041 Chunk 8: founder receipt reaction — the ship branch's SINGLE
+	// decision spot (at most one receipt per founder message). ✅ = her decision
+	// bound (a response was written, approve OR reject); ❓ = ship gates matched
+	// but nothing bound (unclear / classifier failure / held / narrow-multi /
+	// auto-approve off) — "retry won't help, look at the card". No ship gates
+	// matched → no receipt (chatter stays untouched). The durable marker is
+	// inserted BEFORE the PUT so a pinned-cursor re-scan can never double-react;
+	// a PUT failure is audited and NOT retried (best-effort, never blocks
+	// delivery). Kill-switch FLYWHEEL_FOUNDER_APPROVAL_ACK=0.
+	if (ship.length > 0 && process.env.FLYWHEEL_FOUNDER_APPROVAL_ACK !== "0") {
+		const emoji: "✅" | "❓" = handled.size > 0 ? "✅" : "❓";
+		const outcome = handled.size > 0 ? "bound" : "unbound";
+		const markerFresh = store.insertEvent({
+			event_id: `founder-ack-${msg.id}`,
+			execution_id: ship[0]?.executionId ?? "",
+			issue_id: ctx.issueId,
+			project_name: ctx.projectName,
+			event_type: "founder_ack_marker",
+			source: "bridge.founder-reply-deliverer",
+			payload: { msgId: msg.id, emoji, outcome },
+		});
+		if (markerFresh) {
+			const react = deps.reactToFounderMessageImpl ?? defaultReactToFounderMessage;
+			const r = await react({
+				botToken: ctx.botToken,
+				channelId: ctx.threadId,
+				messageId: msg.id,
+				emoji,
+				fetchImpl: deps.fetchImpl,
+			});
+			if (r.ok) {
+				audit(store, ctx, ship[0]?.executionId ?? "", "founder_ack_reacted", {
+					msgId: msg.id,
+					emoji,
+					outcome,
+				});
+			} else {
+				audit(store, ctx, ship[0]?.executionId ?? "", "founder_ack_failed", {
+					msgId: msg.id,
+					emoji,
+					outcome,
+					...(r.status !== undefined ? { status: r.status } : {}),
+				});
+			}
 		}
 	}
 
