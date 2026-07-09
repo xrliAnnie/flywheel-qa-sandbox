@@ -188,7 +188,7 @@ graph TD
 1. **目标价值高一档**:我们做"建并养真软件产品",它**主动放弃软件**(说软件最难判断)——它让出的正是我们的空地。
 2. **交互对象 & 界面**:我们 = 非技术 founder 在**手机原生 IM(Discord)**指挥一个**常驻被协调的多部门 AI 组织**;它 = 单人 operator 跑自己 NAS 的桌面 shell + 静态 DAG。对"只带手机的非技术小生意主",我们的界面赌注更贴。
 3. **真实协作编排**:我们 issue-driven 三段式 + Lead↔Runner + founder gate,贴真实"提需求→干→验收";它是提前画好的静态 DAG 模板(更可预测但更死)。
-4. **记忆的语义维度**:我们 mem0+pgvector 是语义检索(它是结构化图谱、无 embedding)——查"相关经验"我们更强。
+4. **记忆维度(已校正)**:⚠️ 我们 mem0+pgvector **代码在但基本没接**(env-gated,主力=文件 markdown),**不是"我们语义检索更强"**;它是结构化 lesson 图谱(自动从 run 抽,可能反而更成熟)。两边都非活的语义检索。
 5. **常驻组织 + 多 Lead 协调 + 供应商中立整合**(FLY-909 定位候选):它是单机单 operator,没有"一家公司在动"的协调层。
 
 ## 6. 对"要不要折进定位"的建议(Annie 要 detail 后再定)
@@ -231,7 +231,7 @@ graph TD
 ## v5 收敛(① DAG 讲清 + eng 点各归其位 · Annie v4 批注后)
 
 - **① DAG(讲清)**:① 她的理解**对** —— Session=Design→Impl→QA 是一种 DAG。② homerail 的 DAG **同理念(节点按依赖流转)、不同粒度**:我们=任务级(issue 三段式 + issue 间 dag-resolver 谁挡谁);homerail=活内部级(一个活拆多 agent 步骤 + inject/fork/profile 跑中能力,我们没有)。③ **FLY-353** = 把这 DAG 理念系统化成主动编排引擎(CoS 分诊 + 自动派 + 每类任务一套 DAG 模板 + inject/fork/profile)—— Annie 在 1004 悟到的"Session 就是 DAG + per-category 模板"正是 353 要落的。HTML v5 配了"我们 vs homerail DAG 粒度"对比图。
-- **eng 借鉴点各归其位(Lead 路由)**:DAG 运行时 → **FLY-353**;语音双 TTS + ASR 主备 → **FLY-906 round-2 backlog**(不改现有 PRD);Docker Worker → **FLY-1005**(多机系统 PRD,接沙箱 FLY-346);经验图谱自动抽 lesson → **FLY-347**(出小应用 HTML);生成式 UI = **not-now**;凭据加密对比清楚(沙箱/多机时学,FLY-245 broker 已类似)。
+- **eng 借鉴点各归其位(以 handoff.md 为准)**:DAG **低层**(inject/fork/profile 薄模板)→ **FLY-1020** · DAG **高层**(自动编排引擎)→ **FLY-353**;语音双 TTS + ASR 主备 → **FLY-906 round-2 backlog**(不改现有 PRD);Docker Worker → **FLY-1005**(多机系统 PRD,接沙箱 FLY-346);经验图谱自动抽 lesson → **FLY-347**(出小应用 HTML);生成式 UI = **not-now**;凭据加密对比清楚(沙箱/多机时学,FLY-245 broker 已类似)。
 - **收敛**:homerail 研究到此收敛。最大抓手 = "Session 就是 DAG" + per-category 模板(→ 353)。定位:borrow eng、别 adopt positioning;两战略点当 FLY-911 外部信号。工程点折不折进 911 = Annie/911 拍。
 
 ---
@@ -240,7 +240,7 @@ graph TD
 
 **homerail = 借鉴工程,不 adopt 定位(borrow engineering · don't adopt positioning)。**
 
-- **借鉴的工程点(4 块,各归各家)**:DAG 运行时(inject/fork/profile)→ **FLY-353**;语音(双通道 + ASR 主备批量转写降级)→ **FLY-906 backlog**;Docker Worker(容器沙箱 + 凭据加密 + mount 白名单)→ **FLY-1005**(接沙箱 FLY-346);经验图谱(自动从 run 抽结构化教训)→ **FLY-347**;生成式 UI = **not-now**(commodity,Claude Code 已带)。
+- **借鉴的工程点(各归各家 · 以 handoff.md 为准)**:DAG **低层**(inject/fork/profile 薄模板)→ **FLY-1020** · DAG **高层**(自动编排引擎)→ **FLY-353**;语音(双通道 + ASR 主备批量转写降级)→ **FLY-906 backlog**;Docker Worker(容器沙箱 + 凭据加密 + mount 白名单)→ **FLY-1005**(接沙箱 FLY-346);经验图谱(自动从 run 抽结构化教训)→ **FLY-347**;生成式 UI = **not-now**(commodity,Claude Code 已带)。
 - **不 adopt 它的定位**:它单人跑自己 NAS、明确不做软件;跟我们非技术 founder 手机指挥建软件不是一个赛道。
 - **折进 FLY-911 = 只当两条外部信号,不改 911 定位主体**:
   - 信号 ①:它主动让出软件赛道(说软件最难判断)→ 印证我们"给非技术 founder 建软件"是块空地。
@@ -252,4 +252,4 @@ graph TD
 ### Annie 的两层 DAG 模型(v5 co-eval 收进结论)
 - **第一层 = 每类 issue 一套 DAG 模板(乐高)**:Eng issue 一种编排、Designer 另一种;底层积木/逻辑同,编排随任务类型变。**这层最接近 homerail**(它就是"怎么执行一个活"的工作流引擎)。
 - **第二层 = FLY-353 的自动编排引擎(更高 level)**:自动分诊 + 决定做哪些 issue + proactive 把活派给对的第一层模板。**353 = 第二层,不是第一层。**
-- → homerail 借鉴的 DAG 运行时能力(inject/fork/profile)= 喂第一层模板的跑中能力;第二层引擎归 FLY-353。
+- → homerail 借鉴的 DAG 运行时能力(inject/fork/profile)= 喂第一层薄模板的跑中能力(**归 FLY-1020**);第二层自动编排引擎归 **FLY-353**。

@@ -43,7 +43,7 @@ ROADMAP Non-goal:"**HomeRail 不造 harness**,在现成 harness(Claude Agent SDK
 ## 我们跟它:重叠 / 差异(诚实)
 - **重叠**:voice-first + 多-agent 编排 + vendor-neutral harness + SKILL.md symlink 分发 + "贵脑子便宜手"—— 骨架很像。
 - **它做得比我们好的(可借鉴,细节见 FLY-1004 eng-idea)**:**语音层成熟** —— 双 TTS 通道(commentary 边干边说 / final 答案)、3 种 ASR 实时策略、生成式 UI 卡片让朗读短、执行前 task_draft 确认。**我们 voice 还在 PRD→实现阶段(FLY-542 树,STT 收音是风险)。**
-- **我们做得比它好的**:**语义向量记忆**(mem0+pgvector,GEO-145 —— ⚠️ 修正:它**有**结构化 experience/lesson 图谱、不是没记忆,但没语义向量;查"相关经验"我们强)、**贴真实协作的 issue-driven 编排**(它是静态 DAG)、**常驻被协调的多部门组织 + 手机 IM**(它是单人跑自己 NAS)。
+- **我们做得比它好的**:**贴真实协作的 issue-driven 编排**(它是静态 DAG)、**常驻被协调的多部门组织 + 手机 IM**(它是单人跑自己 NAS)。⚠️ **记忆别当我们的优势**:我们 mem0+pgvector 基本没接、主力文件 markdown;它有结构化 experience/lesson 图谱(自动从 run 抽,可能反而更成熟)—— 两边都非活的语义检索。
 - **差异候选(喂 FLY-911,不硬下)**:领域(建并养真软件 vs 它明确不做软件)/ 常驻组织 vs 单人 operator / 手机 IM vs 桌面。
 
 ## ⚠️ 诚实边界(UNKNOWN)
@@ -52,4 +52,4 @@ ROADMAP Non-goal:"**HomeRail 不造 harness**,在现成 harness(Claude Agent SDK
 - **没实跑**:结论基于读码 + 文档,没 `hr start` 亲测运行体验。
 
 ## 一句话小结
-homerail = 一个独立开发者认真做的、跟我们高度同构的**开源语音多-agent 编排 runtime**;**最值得我们借的是语音层**(FLY-1004 eng-idea 已提炼);**两个战略点对我们都是好消息**(它让出软件赛道 + 独立验证我们 vendor-neutral 方向对);它记忆走结构化 lesson 图谱(我们语义向量更强,互补)、界面/DAG 基元不适合我们。**热度中等,不是品类领头,但因为开源可扒 + 同栈,借鉴价值高。** 详细 code-grounded 报告(功能盘点 + 架构 + 对比)见 product/doc/FLY-1004-homerail-analysis/homerail-code-report.md。
+homerail = 一个独立开发者认真做的、跟我们高度同构的**开源语音多-agent 编排 runtime**;**最值得我们借的是语音层**(FLY-1004 eng-idea 已提炼);**两个战略点对我们都是好消息**(它让出软件赛道 + 独立验证我们 vendor-neutral 方向对);它记忆走结构化 lesson 图谱(我们 pgvector 基本没接、主力 markdown,别说我们更强;两边互补)、界面/DAG 基元不适合我们。**热度中等,不是品类领头,但因为开源可扒 + 同栈,借鉴价值高。** 详细 code-grounded 报告(功能盘点 + 架构 + 对比)见 product/doc/FLY-1004-homerail-analysis/homerail-code-report.md。
