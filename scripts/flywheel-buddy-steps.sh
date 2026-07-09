@@ -48,10 +48,97 @@ source "$BS_SCRIPT_DIR/flywheel-setup.sh"
 # shellcheck source=lib/fleet-sanitize.sh
 source "$BS_SCRIPT_DIR/lib/fleet-sanitize.sh"
 
-# The buddy step order. M0 ships the base 10; later milestones insert new
-# steps (github lands after linear, M3). SINGLE POINT for the Buddy shell
-# (`steps` subcommand) and for done-step rehydration order.
-BS_STEP_IDS=(preflight skeleton model_key bots channels linear config services finish digest)
+# The buddy step order — the base 10 plus the buddy-only github step (M3,
+# after linear / before config so the config artifact can record the repo
+# binding). SINGLE POINT for the Buddy shell (`steps` subcommand) and for
+# done-step rehydration order.
+BS_STEP_IDS=(preflight skeleton model_key bots channels linear github config services finish digest)
+
+# ── buddy-only step: github (M3 / BI-3) ─────────────────────────────────────
+# gh-CLI path (§6.7 MVP): device/web login (no tokens pasted — gh keeps its
+# own credential store) → find-or-create the project repo → bind origin →
+# first push of the skeleton → ls-remote verification. Org-policy/permission
+# failures fall back to a guided path (user creates the repo in the web UI,
+# we re-verify). Evidence records the repo full name only.
+BS_GITHUB_URL_BASE="${FLYWHEEL_BUDDY_GITHUB_URL_BASE:-https://github.com/}"
+
+step_run_github() {
+  command -v gh >/dev/null 2>&1 \
+    || { fs_err "the gh command is missing (preflight should have installed it) — re-run the preflight step"; return 1; }
+  [ -d "$FS_PROJECT_ROOT/.git" ] \
+    || { fs_err "project skeleton not present at $FS_PROJECT_ROOT (skeleton step incomplete?)"; return 1; }
+
+  # (a) auth: gh's OWN web/device flow on the caller's TTY. No tokens here.
+  if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+    if [ -r /dev/tty ]; then
+      fs_log "launching the GitHub sign-in (a one-time code + browser confirm)" >&2
+      gh auth login --hostname github.com --git-protocol https --web </dev/tty >/dev/tty 2>&1 || true
+    fi
+    gh auth status --hostname github.com >/dev/null 2>&1 \
+      || { fs_err "GitHub sign-in did not complete"; return 3; }
+  fi
+
+  # (b) repo full name: explicit --project-slug wins; else <login>/<project>.
+  local repo_full owner
+  if [ -n "${FS_PROJECT_SLUG:-}" ]; then
+    repo_full="$FS_PROJECT_SLUG"
+  else
+    owner="$(gh api user -q .login 2>/dev/null)"
+    [ -n "$owner" ] || { fs_err "could not read the GitHub account name"; return 1; }
+    repo_full="$owner/$FS_PROJECT"
+  fi
+
+  # (c) find-or-create (org policy / permission → guided web-UI fallback).
+  if ! gh repo view "$repo_full" >/dev/null 2>&1; then
+    if ! gh repo create "$repo_full" --private >/dev/null 2>&1; then
+      fs_log "cannot create $repo_full from here (account/organization policy?)." >&2
+      fs_log "Create a PRIVATE repository named exactly '$repo_full' at https://github.com/new — then continue." >&2
+      fs_ask_value "GITHUB_REPO_CREATED_MANUALLY" "Press Enter once the repository exists (y)" >/dev/null || return 3
+      gh repo view "$repo_full" >/dev/null 2>&1 \
+        || { fs_err "repository $repo_full still not found"; return 3; }
+    fi
+  fi
+
+  # (d) first snapshot (skeleton only runs git init), bind origin, push,
+  # verify the remote answers. Commit identity is one-shot -c: we never touch
+  # the user's git config.
+  if ! git -C "$FS_PROJECT_ROOT" rev-parse HEAD >/dev/null 2>&1; then
+    git -C "$FS_PROJECT_ROOT" add -A >/dev/null 2>&1
+    git -C "$FS_PROJECT_ROOT" -c user.name="Flywheel Setup" -c user.email="setup@flywheel.invalid" \
+      commit -qm "Project skeleton (flywheel onboarding)" \
+      || { fs_err "could not record the first snapshot of the project files"; return 1; }
+  fi
+  local url="${BS_GITHUB_URL_BASE}${repo_full}.git"
+  if git -C "$FS_PROJECT_ROOT" remote get-url origin >/dev/null 2>&1; then
+    git -C "$FS_PROJECT_ROOT" remote set-url origin "$url"
+  else
+    git -C "$FS_PROJECT_ROOT" remote add origin "$url"
+  fi
+  git -C "$FS_PROJECT_ROOT" push -u origin HEAD >/dev/null 2>&1 \
+    || { fs_err "first push to $repo_full failed — check the repository is empty and you have write access"; return 1; }
+  git -C "$FS_PROJECT_ROOT" ls-remote origin >/dev/null 2>&1 \
+    || { fs_err "the remote did not answer after the push"; return 1; }
+
+  # downstream wiring: the config artifact records projectRepo from
+  # FS_PROJECT_SLUG — set it now, restore it on resume (step_hydrate_github).
+  FS_PROJECT_SLUG="$repo_full"
+  setup_mark_done github "$(jq -nc --arg r "$repo_full" '{repo:$r, auth:"gh"}')"
+}
+
+step_verify_github() {
+  local ev repo
+  ev="$(setup_step_evidence github)"
+  repo="$(jq -r '.repo // empty' <<<"$ev")"
+  [ -n "$repo" ] || return 1
+  git -C "$FS_PROJECT_ROOT" remote get-url origin 2>/dev/null | grep -q "$repo"
+}
+
+step_hydrate_github() {
+  local repo
+  repo="$(setup_step_evidence github | jq -r '.repo // empty')"
+  [ -n "$repo" ] || return 1
+  FS_PROJECT_SLUG="$repo"
+}
 
 # Buddy-region keys writable via `state set` — non-secret by design.
 BS_BUDDY_KEY_WHITELIST='^(cursor|first_task_summary|team_proposal|connected_systems|escalated|brain_session_id)$'
