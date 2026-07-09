@@ -50,8 +50,8 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 </head>
 <div class="wrap">
 <header>
-  <h1>主动 DAG 编排 —— 设计 co-eval v5</h1>
-  <p class="sub">FLY-353 · 2026-07-08 · v5 核心:回应你「会不会过度复杂化 / 固定模板限制强模型」= <b>轻模板 + 强治理</b>;353 聚焦第二层治理引擎</p>
+  <h1>主动 DAG 编排 —— 设计 co-eval v6</h1>
+  <p class="sub">FLY-353 · 2026-07-08 · v6 折入你 v5 批注:频次改「周期扫为主」+ CoS 输出两样(语言指令+HTML)+ §4 确认;核心仍 <b>轻模板 + 强治理</b>,353 聚焦第二层治理引擎</p>
   <div><span class="pill cand">设计草案 · 逐节留言</span><span class="pill">你确认 OK → 才写 PRD</span></div>
 </header>
 
@@ -159,10 +159,11 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 <!-- 4 -->
 <h2><span class="secnum">4 ·</span> CoS = 分诊节点 —— 但「产决策 ≠ 有 spawn 权」</h2>
 <div class="card blue">
-  <p><b>分诊节点 = 你设计的 CoS</b>(不新造角色)。但有个安全边界要写明(我核代码时发现的):</p>
+  <div class="you"><b>你 v5 确认了(采纳):</b>「对,你做的没问题。CoS 只产决策 —— 今天该做什么、派给谁;<b>还是他底下的 leader 去真正执行、去 spawn</b>。」</div>
+  <p><b>分诊节点 = 你设计的 CoS</b>(不新造角色)。安全边界(我核代码时发现的):</p>
   <ul>
     <li><b>CoS 今天没有 spawn 权、也不该直接拿到</b> —— 现状 CoS 是 triage/路由(<code>canSpawnRunners:false</code>,派给 Tadashi 由他 spawn)。直接给 CoS 装 spawn 会破坏现有权限边界。</li>
-    <li><b>正确做法:CoS 只<u>产决策</u></b>(这条 issue:相关吗/派给谁/用哪套模板/何时)→ <b>受控执行层去 spawn,仍校验 label/dept/lead</b>。CoS 判「该做什么」,spawn 权留在受控层 + 校验里。<b>decision ≠ authority。</b></li>
+    <li><b>正确做法(= 你说的):CoS 只<u>产决策</u></b>(这条 issue:相关吗/派给谁/用哪套模板/何时)→ <b>由它底下的 dept Lead 去执行 spawn,仍校验 label/dept/lead</b>。CoS 判「该做什么」,spawn 权留在 dept Lead + 校验里。<b>decision ≠ authority。</b>(派活的具体形态 = CoS 给 Lead 的语言指令,见 §6②。)</li>
   </ul>
   <p class="hint">对你无感(体验上就是「CoS 自动把活派下去了」),但底层把「谁能真的起 runner」这条安全线守住,不失控。</p>
 </div>
@@ -181,21 +182,28 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 <div class="cmt"><label>💬 对依赖层的留言</label><textarea data-k="dep" data-label="5 · 依赖层轻量"></textarea></div>
 
 <!-- 6 -->
-<h2><span class="secnum">6 ·</span> 频次 + cron + Discord 面板(答你两个没讲清的点)</h2>
+<h2><span class="secnum">6 ·</span> 频次(v6 大改:周期扫为主)+ CoS 输出两样 + Discord 面板</h2>
 <div class="card green">
-  <p><b>① 频次(你问:多久抓一次 issue 让 CoS 分诊推进?):</b></p>
+  <div class="you"><b>你上轮纠正的(v6 采纳):</b>「调度应<b>以周期扫为主</b>,不是事件驱动 —— 新建一个 issue<b>不代表马上要执行</b>,任务有 priority,得靠<b>分诊</b>决定谁先谁后。」</div>
+  <p><b>① 频次 = 周期扫为主(不是事件驱动):</b></p>
   <ul>
-    <li><b>事件驱动(主)</b>:新 issue 一落进某 dept → CoS <b>立刻</b>分诊 → 该派就派。不用等。</li>
-    <li><b>周期扫(补)</b>:<b>每天一次</b>(cadence 可配)回扫 backlog —— 「这些还相关吗?要不要重排/重派?」防漏、防旧 issue 该清没清。</li>
+    <li><b>为什么不事件驱动:</b>新 issue 一建就派 → 会把低优先级的也立刻拉起来。任务有快慢/优先级,该由 CoS 分诊<b>成批</b>判「现在做哪些、哪些先放放」,而不是来一个派一个。</li>
+    <li><b>cadence(周期设定),两条路:</b>
+      <ul>
+        <li><b>a) 固定周期(现在,简单起步):</b>每天 1-2 次扫 backlog 分诊。</li>
+        <li><b>b) 动态负载触发(更合理,北极星):</b>按<b>系统当前运行状态</b>决定何时扫 —— <b>Lead capacity 上限</b>(每个 Lead 最多同时带 N 件)+ <b>系统水位</b>(内存 / token 额度):如内存降到某阈值(如 70%→50%)或 token 额度够,就自动扫 backlog 补新任务进来,<b>保证一直有活跑又不过载</b>。</li>
+      </ul>
+      <span class="tag new">诚实</span> 动态负载(内存/token 水位)是<b>北极星</b> —— 我们现在还没有强能力监控这些指标;<b>先做固定周期,动态负载作后续目标</b>。</li>
   </ul>
-  <p><b>② cron / 面板(你问:每天跑的 cron job 怎么处理?要专门面板吗?还是现在的 Discord 就是面板?):</b></p>
+  <p><b>② CoS 每轮分诊完输出<u>两样</u>(你说的):</b></p>
   <ul>
-    <li><b>Discord 就是面板</b> —— 对,不另做 dashboard,复用现在这套。</li>
-    <li><b>CoS 每轮分诊完 → 出一个 HTML(今天谁跑谁、排队、被 block、升级等你)→ 放 core room → @ 你</b>,你就看到了(复用现有 publish-report)。</li>
-    <li><b>cron(每天跑的活)= 引擎里的一个定时节点</b>,到点自动触发;结果<b>同一个 Discord 面板 HTML</b> 露出。cron 不是另一套系统。</li>
+    <li><b>语言指令(真正派活)</b> —— 跟 Lead A 说「你去做 1/2/3/4/5」、跟 Lead B 说「你去做 6/7/8/9/10」。<b>这才是派发本身</b>(呼应 §4:CoS 产决策 → 下面 dept Lead 执行 spawn)。</li>
+    <li><b>一个 HTML(给你瞟)</b> —— 说实话主要给你看、你不一定马上看、有空瞟一眼。放 core room → @ 你。</li>
   </ul>
+  <p><b>③ 面板 / cron:</b> <b>Discord 就是面板</b>(不另做 dashboard);cron(每天跑的活)= 引擎里一个<b>定时节点</b>,到点触发,结果同一个 Discord 面板 HTML 露出。</p>
+  <p class="src">⏳ 你结尾提到「协调 / 我们做完那个语音…」那句这边收到时截断了 —— 那部分还没折进来,你把后半句发我我再补。</p>
 </div>
-<div class="cmt"><label>💬 对频次 / cron / Discord 面板的留言</label><textarea data-k="freq" data-label="6 · 频次+cron+Discord面板"></textarea></div>
+<div class="cmt"><label>💬 对频次(周期扫为主)/ CoS 输出两样 / 面板 的留言</label><textarea data-k="freq" data-label="6 · 频次周期扫为主 + CoS输出两样 + 面板"></textarea></div>
 
 <!-- 7 -->
 <h2><span class="secnum">7 ·</span> ⚠️ 4 监管护栏(自动但不失控)</h2>
