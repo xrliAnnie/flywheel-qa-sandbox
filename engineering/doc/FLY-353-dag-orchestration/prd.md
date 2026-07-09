@@ -5,8 +5,9 @@ Issue: FLY-353 (https://linear.app/geoforge3d/issue/FLY-353/架构进化-researc
 基于: research.md(3 家架构综合)、dag-orchestration-design.html(设计 co-eval v7,**Annie 已确认**)、exploration.md(现状审计)
 
 > 状态:**draft(设计 v7 Annie 已确认「353 看起来 OK,去落实成 PRD」;待 codex design review 复审 + Honey Lemon QA)。**
-> 本 PRD 只定**产品行为 + 机制 + 工程约束**;具体 eng 设计与实现 = **Tadashi**。文档位置:与本 issue 其它文档
-> 同放 `product/doc/FLY-353-architecture-evolution/`(一 issue 一文件夹)。
+> 本 PRD 只定**产品行为 + 机制 + 工程约束**;具体 eng 设计与实现 = **Tadashi**。文档位置:本 PRD 落
+> `engineering/doc/FLY-353-dag-orchestration/prd.md`(eng 树,交 Tadashi);上游 research / 设计 co-eval 文档在
+> `product/doc/FLY-353-architecture-evolution/`。
 
 ---
 
@@ -39,7 +40,7 @@ co-eval **收敛**:research 三家里,session-log 解耦只在 3 场景(Codex/ki
   互补:353 = offload session/自动派发让单 Lead 拿更多;1022 = 分 sub-lead 每个拿更少。
 - **不建「学习引擎」** —— CoS 学派发 + Lead 学替 founder 决策(拿什么 data、怎么转成自主决定)= **FLY-1034**
   (autonomy learning,已建,单独 co-eval)。353 的毕业曲线**依赖** FLY-1034,但**不 build** 它。
-- **不建第一层「轻模板」** —— 每类任务的 DAG 模板 = 另开 issue(§5),353 只**调用**它。
+- **不建第一层「轻模板」** —— 每类任务的 DAG 模板 = **FLY-1020**(§5),353 只**调用**它、不 build。
 - **不另做 dashboard** —— **Discord 就是面板**(§9)。
 - **不改 ship / merge 授权** —— ship 永远 founder-gated(§10 护栏①)。
 - **不在本 issue 实现 / 建 build issue / ship** —— 只出 PRD + 拆分方案(§16),QA + Annie 终审后再 create。
@@ -59,7 +60,7 @@ Annie 担心「把简单的事复杂化 / 固定模板限制越来越强的模�
 
 ## 5. 两层 DAG 模型（乐高；353 只做第二层）
 
-- **第一层 · 轻模板层(≈乐高,= 另开 issue)** —— 做<u>一个</u> issue 怎么跑。每类任务一套**轻/可覆盖**的默认模板:
+- **第一层 · 轻模板层(≈乐高,= FLY-1020,单独 issue)** —— 做<u>一个</u> issue 怎么跑。每类任务一套**轻/可覆盖**的默认模板:
   eng = 三段式(设计→实现→QA,**只是其一、不是唯一**;不同粒度 Runner 可用不同 DAG)· product = 更短(1-2 节点)。
   节点级能力:**profile(节点绑模型,已是现实** —— grounded:`three-stage-phases.ts` 是每 phase 一个模型的单一
   真相,QA=Opus,三段式本就是一张「节点绑模型」的 DAG)。**inject / fork 挪到后续**(§16 E6,v1 不做)。
@@ -89,10 +90,12 @@ Annie 担心「把简单的事复杂化 / 固定模板限制越来越强的模�
 - **不建重度人工依赖图。** 大多数 issue 不标依赖;founder **偶尔**给大方向(A→B);其余**主要靠 Lead/PM 临时判断**;
   依赖层**一开始可以基本没有**(Annie:很难 rely on 人把依赖说清)。
 - **CoS 推进:** 有标的依赖尊重;没标 → 并行 / 按到达序 + 负荷(§8)。依赖 emergent、**非前置门槛**。
-- **精确语义(fail-closed + visible,eng 必须定,不留给实现者猜):** canonical source(Linear relation `blocks` →
-  反推 blockedBy,过滤 completed/canceled,同旧 `LinearGraphBuilder`;或 founder 自然语言 note)· relation 方向 ·
-  **unknown / cross-project blocker → 不越过、升级** · **cycle → escalate 不死跑** · terminal state 释放下游 ·
-  **Linear fetch 失败 → 不派发** · 无依赖 = eligible,**≠ 无并发上限**(仍受 §8 capacity 限)。
+- **精确语义(fail-closed + visible,eng 必须定,不留给实现者猜):** **v1 canonical source = Linear relation `blocks`
+  权威**(反推 blockedBy,过滤 completed/canceled,同旧 `LinearGraphBuilder`)· relation 方向 · **unknown /
+  cross-project blocker → 不越过、升级** · **cycle → escalate 不死跑** · terminal state 释放下游 · **Linear fetch
+  失败 → 不派发** · 无依赖 = eligible,**≠ 无并发上限**(仍受 §8 capacity 限)。
+  > **v1 依赖来源严格(Codex R2 LOW-3):** Linear relation 是权威;founder **自然语言 note** 只生成 **proposed edge**,
+  > 需过 CoS 置信阈值 + 面板可见 / 人确认后才能 block/unblock 派发 —— 不把 NL note 直接当等价 relation,防静默造错误依赖边。
 
 ---
 
@@ -103,7 +106,10 @@ Annie 担心「把简单的事复杂化 / 固定模板限制越来越强的模�
   1. **读每个 Lead 当前负荷**(每 Lead 上限如 N=5:看各手里还有几件)。
   2. **谁不满 → 用 backlog 的 top-priority 补齐到上限**(Lead1 有 0→+5、Lead2 有 2→+3)。
   3. = **读负荷 → 抓 top-priority → 按各 Lead 余量分发。**
-- **capacity 上限关联 FLY-1022。**
+- **capacity 上限关联 FLY-1022。v1 capacity 来源(Codex R2 LOW-2):** 明确 config/env 配 per-Lead 上限;负荷 =
+  数 active session 状态 + ledger 里 `dispatching`/`queued` 行(哪些 status 算、awaiting_review/approved_to_ship 算不算,
+  eng 定);**读负荷含糊 → no-dispatch / escalate**。底座已有:`/api/triage/data` 已能合并 Linear issues + active
+  sessions + capacity(`getActiveSessions` / `filterSessionsByLead`),但现在报的是全局 admission(`max:null`)、非 per-Lead 配额。
 - **动态负载触发 = 后续北极星:** 把「读负荷」升级成按**系统水位**(内存 / token 额度)自动决定何时扫(降到某线
   就补活、满载不过载)。**诚实:现在还没能力监控内存/token,先做每 6h 固定 + capacity 补齐,水位触发作后续。**
 
@@ -112,8 +118,13 @@ Annie 担心「把简单的事复杂化 / 固定模板限制越来越强的模�
 ## 9. CoS 输出两样 + Discord 面板 + cron（publish-report = FLY-203,Codex R1 LOW-6）
 
 - **CoS 每轮分诊完输出<u>两样</u>:**
-  1. **语言指令(真正派活)** —— 跟 Lead A 说「你去做 1/2/3」、Lead B 说「你去做 4/5/6」(= §6 的 spawn 由 dept Lead 执行)。
+  1. **语言指令(给 Lead 的可读渲染 / 审计)** —— 跟 Lead A 说「你去做 1/2/3」、Lead B 说「你去做 4/5/6」。
   2. **一个 HTML(给 founder 瞟)** —— 主要给她看、不一定马上看、有空瞟一眼。
+
+  > ⚠️ **机器执行真相 = typed `DispatchDecision` + ledger,不是语言指令(Codex R2 LOW-1)。** 真正触发 spawn 的是引擎
+  > 消费 typed decision → 经 `RunDispatcher` / `/api/runs/start` + `DepartmentRegistry` 校验派发(§16 E3),**不是**让某个
+  > Lead LLM 解析 prose。语言指令只是**人可读的渲染 + 审计产物**;若由 Lead daemon 实际调 `/api/runs/start`,它消费
+  > decision id、把结果 execution id 报回 ledger。—— 否则会弱化 durable ledger / dry-run 契约。
 - **面板 = Discord**(不另做 dashboard),复用 **FLY-203 `publish-report` / reports-route**(注:是 FLY-203,非 FLY-930;
   publish-report 是 report delivery、不是 live dashboard)。**约束(防刷屏):** 每轮 sweep 发一条 summary HTML → core
   room → @founder;事件性只在 dispatched / escalated / blocked / pause 等**关键状态**发短消息或合并进下一轮 report;
@@ -130,7 +141,7 @@ runner **用现有 brainstorm gate 跑到一半拉 founder/Lead** 一起定,再�
 **4 护栏(且必须是 engine 硬验收,不是口号 —— 错误派活的 blast radius 不只在 ship:启动高成本 runner、占 session
 slot、开分支、耗模型、和三段式/FLY-1002 防撞车并发冲突):**
 
-1. **ship 仍 founder-gated**(复用 `verifyApproval`)—— 合入 main 永远 founder 点头。
+1. **ship 仍 founder-gated**(复用 `flywheel-comm verify-approval`)—— 合入 main 永远 founder 点头。
 2. **随时接管 / 叫停** —— 暂停自动流、抽某条转人工、改依赖重排。
 3. **失败 → `escalated` 态 + 升级给人,不静默** —— 启动失败 / gate 超时 / runner 卡住 / wrong-label reject / 跑偏 →
    进 escalated 态、上面板、告诉人(**弃用**旧 resolver「shelve 掉继续」的原因,§12)。
@@ -232,7 +243,7 @@ slice · 多机)。等 Codex 实测真痛再做。详见 research.md 收窄。
   语言指令 + summary HTML,dedupe/noise);cron 定时节点。
 - **E5 · 动态负载触发(北极星,后续)** —— 系统水位(内存/token)决定何时扫;capacity 对接 FLY-1022。
 - **E6 · 第一层模板泛化(后续)** —— inject/fork 等通用 template-runtime 能力(v1 不做;v1 只支持现有成熟形态:
-  single-session / 现有三段式 eng / product single-session-gate)。**第一层模板本身 = 另开 issue。**
+  single-session / 现有三段式 eng / product single-session-gate)。**第一层模板本身 = FLY-1020(单独 issue)。**
 - **依赖(353 不 build,cross-ref):** FLY-1034(学习引擎)· FLY-906(voice 早会)· FLY-1022(capacity/lead-tree)。
 
 **PM 验收 = 后续跟踪(本 issue 不做实现)。**
@@ -263,7 +274,7 @@ homerail 的 DAG 是**「一个 agent 一次 run 内部的工作流图」**(run 
 ## 19. 关联 issue
 
 - **痛/上游:** FLY-353(本 issue)· FLY-916(Lead scale,proactive 受益方)· FLY-1002(Raft 防撞车,与并发安全 cross-ref)。
-- **互补/边界(353 不覆盖):** FLY-1022(lead-tree/fleet-scaling/capacity)· FLY-1034(autonomy learning 引擎)· FLY-906(voice 早会)。
+- **互补/边界(353 不覆盖):** FLY-1020(第一层轻模板)· FLY-1022(lead-tree/fleet-scaling/capacity)· FLY-1034(autonomy learning 引擎)· FLY-906(voice 早会)。
 - **consolidated:** FLY-334(Managed Agents)· FLY-335(openclaw)· FLY-370(Raft)。
 - **backlog:** session-log(§14)。
 - **实现交接:** Tadashi(Flywheel 标签)。
