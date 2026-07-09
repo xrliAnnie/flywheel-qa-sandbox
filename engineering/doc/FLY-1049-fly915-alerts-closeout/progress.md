@@ -1,14 +1,14 @@
 ---
 issue: FLY-1049
-phase: design
-phaseCursor: 4/4
-updated: 2026-07-09T08:13:29.364Z
-nextStep: design APPROVED (codex 2 rounds, thread 019f45dd); commit docs +
-  phase_design_complete; implement phase starts at plan.md Task 1
+phase: implement
+phaseCursor: 1/4
+updated: 2026-07-09T12:51:09.890Z
+nextStep: "impl-1 done: env 2 lines landed + token report GREEN (delivered:true
+  msg 1524691268318269490); next impl-2 persona + FLY-925 Linear comment"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1049 progress
-**phase**: design (4/4)
-**next**: design APPROVED (codex 2 rounds, thread 019f45dd); commit docs + phase_design_complete; implement phase starts at plan.md Task 1
+**phase**: implement (1/4)
+**next**: impl-1 done: env 2 lines landed + token report GREEN (delivered:true msg 1524691268318269490); next impl-2 persona + FLY-925 Linear comment
