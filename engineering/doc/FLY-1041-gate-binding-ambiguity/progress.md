@@ -3,12 +3,12 @@ issue: FLY-1041
 phase: qa
 phaseCursor: 1/1
 updated: 2026-07-09
-nextStep: 529 real-Discord ②③④ via Chrome-as-Annie after her login
+nextStep: final codex rebind @ head → report Tadashi to surface founder
 chunks: []
 pointers: {}
 ---
 
 # FLY-1041 progress
-**phase**: qa (real-machine) — code-level PASS + point① retire + outbound card real-machine PASS
-**next**: ②③④ (reply-to-card / ✅ / ❓) via Chrome-as-Annie once Annie's Discord login lands (Tadashi watching); then维持 PASS → Tadashi 上报 founder
-**note**: gate held by Tadashi (not surfaced to founder yet)
+**phase**: qa — **PASS** (code-level + 529 real-machine A-D all green)
+**done**: red-line zero-diff · 291 tests · retire(①)+card real-machine · ②③④ Chrome-as-Annie real ✅/❓ · codex rebind
+**next**: final codex incremental rebind @ final head → report Tadashi → he surfaces founder (gate ceff7733)

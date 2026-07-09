@@ -102,16 +102,16 @@ Tadashi 判定 founder-approval binding = relay 类功能,Annie 标准 = 真 Dis
 |---|---|---|
 | ① 单一可绑 gate retire | 真 comm.db:re-fire 双 gate → retire → **恰 1** 可绑 gate + 真批准落幸存 gate + retire 拒改写已答复 | ✅ **真机 PASS**(harness `packages/teamlead/qa-fly1041-real.mts`) |
 | outbound approve_to_ship 卡 | 真 529 thread(`1524781215385649332`)真发卡 + 真 GET 回卡体含 Fix B 引导句 | ✅ **真机 PASS** |
-| ② reply-to-card 绑定 | founder 真回复卡 → 只绑该 gate | ⏳ **待 Annie 登录**(Chrome-as-Annie) |
-| ③ ✅ reaction | founder 短语批准 → 她消息被真点 ✅ | ⏳ **待 Annie 登录** |
-| ④ ❓ 回执 | held 场景 founder 批准 → 真点 ❓ + 不写 response | ⏳ **待 Annie 登录** |
+| ② reply-to-card 绑定 | Annie 真账号 type-19 reply「okk」→ 绑到该 gate + 真 ✅ | ✅ **真机 PASS**(Chrome-as-Annie,harness `qa-fly1041-inbound.mts`) |
+| ③ ✅ reaction | Annie 真账号「ship」→ tier2 批准 + 她消息真点 ✅ | ✅ **真机 PASS** |
+| ④ ❓ 回执 | held 下 Annie 真账号「ship」→ 不写 response + 真 ❓ | ✅ **真机 PASS** |
 
-**②③④ 的 founder 依赖(结构性)**:deliverer 硬闸 `founder-reply-deliverer.ts:245` = `author.id===ownerUserId && author.bot!==true`(handler:111 / text-source:53 同 canonicalFounderId 闸)—— 防伪,任何 bot 模拟不了 founder,需一条来自 Annie 真账号的消息。Tadashi 确认走 **Chrome-as-Annie standing rule**(FLY-612 后固化):QA 需真 founder Discord 动作时默认用 Claude-in-Chrome 驱动她登录态、在隔离 thread 做。唯一前置 = Chrome 里 discord.com 现为登出态(967 QA 实证),Annie 早上会做一次登录;登录落地后立即补跑 ②③④(纪律:只隔离 thread、只测试内容、留档)。
+**②③④ 已用 Chrome-as-Annie 真机补齐**:证据见 `qa-evidence/inbound-234-chrome-as-annie.md`。Annie 授权的 Chrome-as-Annie(FLY-612 后 standing rule + 本轮她本人在 thread 再次确认「让那个 QA 用 Claude in chrome 以我的身份去测就好了」)驱动她登录态在 3 个隔离 529 thread 发真消息;deliverer 硬闸 `founder-reply-deliverer.ts:245`(`author.id===ownerUserId && author.bot!==true`)在真机被满足(消息来自 Annie 真账号非 bot)。
 
 - Bridge 侧改动需**一次 Bridge 重启**方生效(teamlead 包);flywheel-comm CLI + Blueprint 文本 `git pull` 即生效(FLY-217 同型)。
 
 ## 7. Verdict
 
-**代码级 + 点①/卡 真机 = PASS**;**②③④ 真机待 Annie 登录后补(Chrome-as-Annie)**。
+**FLY-1041 QA = PASS(代码级 + 529 真机 A-D 全绿)。**
 
-设计契约全守、专项测试全绿(291)、回归红全部证伪为环境 flake、核心逻辑审读通过、补充端到端不变量测试通过;点① retire + outbound 卡真机往返 PASS。剩 ②③④(founder-reply 真 E2E)在 Annie Discord 登录后由本 session 用 Chrome-as-Annie 补跑,补齐后维持 PASS 交 Tadashi 上报 founder。gate 现由 Tadashi 按住,不提前上报。
+设计契约全守、专项测试全绿(291)、回归红全部证伪为环境 flake、核心逻辑审读通过、补充端到端不变量测试通过。Tadashi 要求的 529 真机 A-D **全部 PASS**:① 单一可绑 gate retire + outbound approve_to_ship 卡(founder 无关腿,真 comm.db + 真 thread);②③④ reply-to-card 绑定 / ✅ / held→❓(Chrome-as-Annie 驱动 Annie 真账号真消息,真 ✅/❓ 回执落她消息)。可交 Tadashi 上报 founder。ship 时 teamlead 包并入一次 Bridge 重启批(Tadashi 排)。
