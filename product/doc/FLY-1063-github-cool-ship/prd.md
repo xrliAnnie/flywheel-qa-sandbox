@@ -113,36 +113,52 @@ gh api repos/xrliAnnie/flywheel/branches/main/protection
 
 ### 4.4 硬要求陈述
 
-> **REQ-1（必须）**：🆒 flow 在 merge 之前，**必须独立核验「这个 PR head 存在一条 founder 批准的 gate 记录」**，复用现有 `verify-approval` 的那套判定（founder-attributed 的 `approved:true` + **绑定当前 head sha** + Codex review 硬闸）。
+> **REQ-1（必须）**：🆒 flow 在 merge 之前，**必须独立核验「这个 PR head 存在一条 founder 批准的 gate 记录」**，复用现有账本判定（founder-attributed 的 `approved:true` + **绑定 head sha** + Codex review 硬闸）。**不得**仅以「commenter 有 collaborator 写权限」作为放行依据。
 >
-> **不得**仅以「commenter 有 collaborator 写权限」作为放行依据。
+> **REQ-1a（必须，Codex R1 HIGH-1）**：现有 `verify-approval` **不能**只靠 `--pr-head <sha>` 调用。它需要 **`--exec-id`** 和一个 CommDB 路径（`--db` / `--project` / `FLYWHEEL_COMM_DB`），内部按 `sessions WHERE execution_id = ?` 查（`verify-approval.ts:222-226`；CLI 参数 `index.ts:823-851`）。而 GitHub `issue_comment` 事件只给 `(owner/repo, PR number, commenter, head sha)`，**没有** Flywheel `execution_id` 也没有 project 名。因此必须新增一个 **`cool-ship-gate` resolver**：输入 `(owner/repo, prNumber, headSha)` → 映射 repo→`projectName` → 在 StateStore 里选出**恰好一个**匹配 session：条件 = `pr_head_sha==headSha` **且 `pr_number==prNumber`**（两者都要，Codex R2 LOW —— 只靠 head sha 在极端情况可能撞车/复用）**且** `awaiting_review`/`approved_to_ship` → 用显式 `execId` + `commDbPathForProject(projectName)` + `stateDbPath` 调账本判定。**0 个或 >1 个匹配一律 fail-closed**（不 merge + PR 留言）。
+>
+> **REQ-1b（必须，Codex R1 HIGH-2）**：这个 gate job 跑在 Annie 的 Mac（账本所在机）上，**绝不能执行 PR head checkout 里的 verifier 代码**（不 `pnpm install`、不跑 PR 的 `node packages/...`、不跑 PR 的任何 package script）。它只跑**可信代码**：已部署的 main checkout 里预装的 `flywheel-comm`/gate helper，或一份 pin 到 main 的干净 checkout。**PR head 的 build/test 留在 GitHub 托管 runner（`ubuntu-latest`）上**，与本地账本 job 分离。merge job `needs: [ledger_gate, ci_gate]`。
 >
 > **REQ-2（必须）**：核验失败 ⇒ **不 merge**，并在 PR 上留下可见的失败原因。静默放行 = 违规。
 
-### 4.5 机制候选与推荐（实现细节归 eng，此处给方向与理由）
+### 4.5 机制候选与推荐（实现细节归 eng，此处给方向、约束与理由）
 
-难点：**账本在 Annie 的 Mac 上（Bridge / CommDB / StateStore 都是 localhost）；而 GitHub Actions 跑在云端 `ubuntu-latest`，够不着。**
+难点：**账本在 Annie 的 Mac 上（Bridge / CommDB / StateStore 都是 localhost）；而 GitHub 托管 Actions 跑在云端 `ubuntu-latest`，够不着。**
 
 | # | 机制 | 评价 |
 |---|------|------|
-| **M1** | **在 self-hosted runner（Annie 的 Mac）上加一个 gating job**，直接跑 `verify-approval --pr-head <sha>`；merge job `needs:` 它 | ✅ **推荐**。账本就在本地，复用**生产同一个** verify-approval 原语（HL 原话「复用 verify-approval 那套」），保真度最高。GEO-175 早已规划过 self-hosted runner |
-| M2 | Bridge 在 verify-approval 通过后，往该 head 写一条 check-run，workflow 断言其 `app.id` | 需要 GitHub App 才能做**结构性**归属断言 —— 而 App 属于 Q2 已推迟的身份分离。且无 branch protection，无法「required check」 |
-| M3 | Runner 在 🆒 里带一个 HMAC 签名的一次性 ship token，workflow 用 repo secret 验签 | 引入共享密钥 + 重放/nonce 管理；且在无 branch protection 的仓里，能改 main 的 agent 也能捞到密钥 → 并未真正收口 |
+| **M1** | **在 self-hosted runner（Annie 的 Mac）上加一个 gate job**，经 `cool-ship-gate` resolver（REQ-1a）→ 账本判定；merge job `needs:` 它 | ✅ **推荐**。账本就在本地，复用**生产同一套**判定，保真度最高。GEO-175 早已规划过 self-hosted runner。**但必须满足 REQ-1a（resolver）+ REQ-1b（只跑可信代码）才成立** |
+| M2 | Bridge 在批准通过后往该 head 写一条 check-run，workflow 断言其 `app.id` | **结构性**归属断言需要 GitHub App —— 属 Q2 已推迟的身份分离。且**不能**作 required-status-check 硬墙（无 branch protection，见下）。**可**作 workflow 内部断言，但保真度低于 M1（挡不住直接 push / 手动 merge） |
+| M3 | Runner 在 🆒 里带 HMAC 签名的一次性 ship token，workflow 用 repo secret 验签 | 引入共享密钥 + 重放/nonce 管理；且在无 branch protection 的仓里，能改 main 的 agent 也能捞到密钥 → 并未真正收口 |
 | M4 | Bridge 暴露公网 verify 端点给 workflow 调 | 引入入站攻击面。不推荐 |
 
-**推荐 M1**，并且它有一个**关键的安全性质（已查证）**：
+**推荐 M1**（满足 REQ-1a/1b 前提下），它有一个**关键安全性质（已查证）**：
 
-> `issue_comment` 事件触发的 workflow，**永远使用默认分支（main）上的那份 workflow 文件**，PR 分支**改不动**它。
+> `issue_comment` 事件触发的 workflow，**永远使用默认分支（main）上的那份 workflow 文件**，PR 分支**改不动**它（`GITHUB_REF`/`GITHUB_SHA` 都是默认分支）。
 
-所以「gating job」这道闸**无法被 PR 分支上的改动绕过**。这让 M1 在**当前无 branch protection** 的现实下依然可信。
+所以「哪个 job 编排、gate 怎么跑」这道闸**无法被 PR 分支上的 YAML 改动绕过**。但——**这只保护 YAML，不保护 job 内执行的代码**：若 gate job 去 checkout 并运行 PR head 的 verifier，仍会执行到被篡改的代码。这正是 REQ-1b 存在的原因。
 
 **M1 的已知边界（必须诚实写出，交 eng 权衡）**：
-- 依赖 Annie 的 Mac 在线；Mac 离线 ⇒ ship 停摆（可接受：Runner 本来就跑在这台机器上）。
-- 只适用于**账本在这台机器上**的 repo（flywheel、GeoForge3D 都是）。对没有 Bridge 账本的 repo（如纯内容 repo），该 gating job 应**按 gate 档位省略**（对应 §3 的「空 gate」）—— 但那类 repo 也就不存在「Discord 授权」这条链，形状仍一致。
-- 能直接 `git push` 到 main 的 agent 仍可绕过整条 flow（因为**没有 branch protection**）。→ 见 REQ-3。
+- 依赖 Annie 的 Mac 在线；Mac 离线 ⇒ ship 停摆（可接受：Runner 本来就跑在这台机器上）。离线时 UX 要明确：是「job 挂起等 runner」还是「显式 failed + PR 留言」，eng 定。
+- 只适用于**账本在这台机器上**的 repo（flywheel、GeoForge3D 都是）。没有 Bridge 账本的 repo（纯内容 repo），gate job 按档位省略（§3「空 gate」）——那类 repo 本就没有「Discord 授权」这条链，形状仍一致。
 
-> **REQ-3（应做）**：把 `xrliAnnie/flywheel`（及 GeoForge3D）升级到可用 branch protection 的方案（GitHub Pro），或将 repo 转为 org。否则 main 永远敞着，任何机械闸都只是「正门上锁、后门大开」。
-> 这条独立于 🆒 flow，但**不做它，REQ-1 的价值会被绕过**。成本很低，建议一并交 eng 评估。
+> **REQ-2a（必须，诚实边界，Codex R1 MED-5）**：M1 关掉的是**「用 gh token 发 :cool: 绕过账本」**这条路和角色混淆，**不是**「同机恶意进程直接改账本 / 直接 push main」。`verify-approval` 源码自陈：`comm.db`/`teamlead.db` **不是进程级完整性边界**（`verify-approval.ts:35-42`）；同机有写权限的进程可以伪造可信来源。PRD 不夸大 M1 的防护面。→ 交 eng 的前置检查：账本 DB 文件权限、self-hosted runner 跑在哪个用户下、FLY-175 `DECISION_MODE` 是否 `enforce`。
+>
+> **REQ-2b（建议，Codex R1 MED-3）**：Bridge 侧 finalization 用的不是裸 `verifyApproval`，而是 `evaluateShipEligibility`（= 合并批准侧 `verifyApproval` + QA 侧 `evaluateQaShipGate`，`ship-eligibility.ts`），再经 `computeShipDecision` / `merge-ship-gate.ts` 决定能否落终态。GitHub 侧的 gate **应对齐同一个 `evaluateShipEligibility` 谓词**，避免「GitHub 放行了、Bridge 却判不该 ship」的分叉。若刻意只覆盖「Discord 批准 + Codex」而把 QA 留给独立 job，需**显式写明**并证明「approval 不可能在 QA-required 状态满足前被写入」。
+
+> **REQ-3（应做）**：把 `xrliAnnie/flywheel`（及 GeoForge3D）升级到可用 branch protection 的方案（GitHub Pro），或将 repo 转为 org。否则 main 永远敞着，任何机械闸都只是「正门上锁、后门大开」。这条独立于 🆒 flow，但**不做它，REQ-1 的价值会被绕过**。成本低，建议一并交 eng 评估。
+
+### 4.6 上线次序（迁移，必须显式 —— Codex R1 MED-4）
+
+REQ-1 会**改动合并闸**。若在 self-hosted runner + resolver + 可信 helper 就位并验证**之前**就改 `ship-on-comment.yml`，会让**现有每一个 Runner 的 :cool: ship 全部 fail-closed**。所以次序必须是：
+
+1. 装/注册 self-hosted runner（Annie 的 Mac）；
+2. 从 main 部署可信 `cool-ship-gate` helper + repo→project 映射 + PR→exec resolver；
+3. 拿一个已知的「已批准 / parked」session **dry-run** resolver + 账本判定，确认判定正确；
+4. workflow 里先以 **observe / report-only** 模式挂 `ledger_gate` 跑一轮（只报告、不阻断），核对它对真实 ship 的判定；
+5. 确认无误后，才把 merge job 改成 `needs: ledger_gate`（正式阻断）。
+
+> 好消息（Codex 核实）：M1 与现有 Runner 时序**不冲突**——Discord 批准后 session 停在 `approved_to_ship`，Runner 发 :cool: 后**只有 PR 真 merged 才标 completed**；且 `verify-approval` **不自己** `git rev-parse HEAD`，而是校验调用方传入的 `--pr-head`，所以从 workflow 把 PR API 的 `head.sha` 传进去是可行的。唯一风险就是上面的**上线次序**。
 
 ---
 
@@ -212,6 +228,8 @@ Annie 决定**现在不做**，先用她自己的 GitHub 账号。但必须列�
 
 不强求一步到位做成 generic 模板；**先在 flywheel 落地，形状对了再抽 reusable workflow**。
 
+> **空 gate 语义须先说清（Codex R2 LOW）**：对**没有 Bridge 账本**的 repo（纯内容 / 素材 repo），🆒 flow 里**没有** REQ-1 的账本核验这一环 —— 因为这类 repo 本就不存在「Discord 授权」这条链。它的「空 gate」= 「🆒 → commenter 鉴权 → merge → 记账」，授权语义**退化为「commenter 是被授权者」的普通鉴权**（不是 founder 账本授权）。这个区别必须在**广泛 rollout 之前**在瘦 caller 的约定里写死，避免有人以为「空 gate repo 也有 Discord 授权保护」。
+
 ---
 
 ## 9. 风险与 open questions
@@ -228,16 +246,20 @@ Annie 决定**现在不做**，先用她自己的 GitHub 账号。但必须列�
 
 ## 10. eng 拆单建议（交 Tadashi，打 `Flywheel` label）
 
-1. **[P0] 🆒 flow 去核账本（REQ-1/REQ-2）** —— self-hosted gating job 跑 `verify-approval --pr-head`，merge job `needs:` 它；失败在 PR 留言。
-2. **[P0] 销账做成 🆒 flow 一等步骤（REQ-4/REQ-5）** —— Linear / Bridge landing / GitHub 三本账推终态，幂等 + 失败可见。
-3. **[P1] branch protection（REQ-3）** —— 升 GitHub Pro 或转 org，给 main 上锁。
-4. **[P1] 抽 reusable workflow + 瘦 caller** —— 恒定形状集中一份，gate 作为可注入 job；轻 repo 声明空 gate。
-5. **[P1] GeoForge3D 接入** —— 验证 gate 重量可变 + per-repo deploy 腿。
-6. **[follow-up] 身份分离** —— 产品化对外前的前置（§7）。
+1. **[P0] `cool-ship-gate` resolver + 可信 gate helper（REQ-1a/1b）** —— 输入 `(repo, PR#, headSha)` → repo→project 映射 → StateStore 选唯一匹配 session → 用显式 `execId`+CommDB+StateStore 调账本判定；**只跑 main 侧可信代码**，绝不跑 PR head。0/多匹配 fail-closed。
+2. **[P0] 🆒 flow 去核账本 + 阻断合并（REQ-1/REQ-2）** —— self-hosted `ledger_gate` job 调 #1 的 helper；merge job `needs: [ledger_gate, ci_gate]`（PR-head 的 build/test 留 `ubuntu-latest`）；失败在 PR 留言。**按 §4.6 次序上线**（先 observe/report-only 一轮再阻断）。
+3. **[P0] 对齐 `evaluateShipEligibility` 谓词（REQ-2b）** —— gate 用与 Bridge finalization 同一谓词，或显式写明只覆盖 Discord+Codex 并证明 QA 不可被提前满足。
+4. **[P0] 销账做成 🆒 flow 一等步骤（REQ-4/REQ-5）** —— Linear / Bridge landing / GitHub 三本账推终态，幂等 + 失败可见。
+5. **[P1] branch protection + 账本完整性前置（REQ-3/REQ-2a）** —— 升 GitHub Pro 或转 org 给 main 上锁；核账本 DB 文件权限、runner 用户、FLY-175 `DECISION_MODE` 姿态。
+6. **[P1] 抽 reusable workflow + 瘦 caller** —— 恒定形状集中一份，gate 作为可注入 job；轻 repo 声明空 gate。
+7. **[P1] GeoForge3D 接入** —— 验证 gate 重量可变 + per-repo deploy 腿。
+8. **[follow-up] 身份分离** —— 产品化对外前的前置（§7）。
 
 ---
 
 ## 附：本 PRD 引用的实测/查证清单
+
+> `gh api` 各行为 **runner 于 2026-07-09 在已认证 shell 实测**（date-stamped measurement）。Codex R1 review 环境的 gh token 失效、无法 fresh revalidate 这几行 —— 故此处以「runner 实测 + 日期」为准，非 Codex 二次确认。源码/文档行 Codex 已独立核对。
 
 | 断言 | 来源 |
 |------|------|
