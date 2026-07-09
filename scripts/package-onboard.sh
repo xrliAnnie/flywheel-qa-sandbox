@@ -566,6 +566,20 @@ po_assemble() {
     [ -z "$ndir" ] && continue
     po_vendor_nested "$root" "$tree" "$ndir" "$ndep" || return 1
   done < <(jq -r '.nested[]? | [.pkgDir, .dep] | @tsv' <<<"$union_out")
+  # FORCE-NESTED registrations (scripts/packaged/force-nested-deps.tsv):
+  # install-time peer/hoist conflicts the declared-range union cannot see —
+  # e.g. mem0ai's peer @anthropic-ai/sdk ^0.40 wins the customer prefix's flat
+  # slot and npm cannot reify the payload's own nested copy inside the bundled
+  # tree (it leaves an EMPTY dir that shadows the flat copy for ESM walk-up).
+  # Vendor the declarer's own resolved closure unconditionally.
+  local force_nest="${PO_FORCE_NESTED:-$root/scripts/packaged/force-nested-deps.tsv}"
+  if [ -f "$force_nest" ]; then
+    while IFS=$'\t' read -r ndir ndep _; do
+      case "$ndir" in \#*) continue ;; esac
+      case "$ndir" in *[![:space:]]*) ;; *) continue ;; esac
+      po_vendor_nested "$root" "$tree" "$ndir" "$ndep" || return 1
+    done < "$force_nest"
+  fi
   # Vendored PUBLIC packages ship their own sources/docs on npm (zod v3
   # includes src/*.ts; READMEs carry `git clone` doc text) — strip everything
   # the runtime doesn't load so the release gates stay strict: TypeScript of

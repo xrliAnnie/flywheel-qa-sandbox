@@ -5,7 +5,7 @@ Issue: FLY-1062 (URL 不可得,只写 issue 号)
 基于: plan.md(P0-2 审计表 + 闭包规则)
 
 > **本表是进包边界的单一真相**(Codex R1#5)。枚举 payload 白名单(`scripts/package-onboard-files.allow` ↔ `PO_SCRIPT_FILES`)内每个脚本中引用 `FLYWHEEL_DIR` / `packages/` / `git clone` / `pnpm` / `tsx` / `agents/` / `restart-services` / `flywheel-daemon` 的位点,逐行定处置。
-> **闭包规则**:① 表外脚本进包即 fail(`package-onboard.test.sh` 断言白名单全集被本表覆盖);② 兼容镜像集合 = payload package.json 的 `flywheelPackagesMirror`(由 `PO_PACKAGES` 生成);③ wrapper 拷贝到 `<state>/bin` 时必须随行的支撑 lib = `lib/host-config.sh`(bootstrap-services.sh + provision prebuilt 分支同步安置)。
+> **闭包规则**:① 表外脚本进包即 fail(`package-onboard.test.sh` 断言白名单全集被本表覆盖);② 兼容镜像集合 = payload package.json 的 `flywheelPackagesMirror`(由 `PO_PACKAGES` 生成);③ wrapper 拷贝到 `<state>/bin` 时必须随行的支撑 lib = `lib/host-config.sh`(bootstrap-services.sh + provision prebuilt 分支同步安置);④ 嵌套 vendoring 双表 = `dependency-union-exceptions.tsv`(声明冲突)+ `force-nested-deps.tsv`(装机期 peer/hoist 冲突,实测发现:mem0ai peer 把 @anthropic-ai/sdk ^0.40 顶到 prefix 顶层、npm 在 bundled 树内 reify 失败留空壳目录遮蔽平铺副本 → create-compat-mirror 安装期清空壳 + vendor 副本嵌套安置)。
 
 ## 处置类型
 
@@ -33,7 +33,7 @@ Issue: FLY-1062 (URL 不可得,只写 issue 号)
 | linux-preflight.sh | `:110 for c in node pnpm git jq tmux gh`(--check 模式 pnpm 缺失 = 非零退出,阻断 packaged linux setup);`:119 corepack` 提示;`:122-129 FLYWHEEL_DIR/.git` 检查 | **included-and-patched**(本 PR 新增):prebuilt 哨兵 → 必需命令去 pnpm、checkout 检查改认哨兵;monorepo 逐字不变 | packaged-seams.test.sh(prebuilt 下无 pnpm --check 过 + 无哨兵 sentinel) |
 | materialize-lead-manifests.sh | 无非注释命中 | included(零改动) | gate④ |
 | lib/host-config.sh | `:104/:147 FLYWHEEL_DIR` 解析(FLY-650 seam);`xrliAnnie/flywheel-skills` 默认值 | included(零改动)— flywheelDir=current 正是本设计的接入点;skills 默认值 = gate④ 注册行(customer path 不 fetch) | host-config 既有测试 + provision-prebuilt.test.sh(拷贝态解析 current) |
-| lib/supervisor.sh | `:235` darwin 叙述文案(flywheel-daemon.sh 字样) | **included-and-patched**(FLY-1062 已落):`FLYWHEEL_SUPERVISOR_DARWIN_INSTALL=1` opt-in 真 darwin 安装;默认 darwin 路径逐字保留 no-op(byte-compat) | supervisor.test.sh 扩展(opt-in 渲染+bootstrap;默认 no-op sentinel) |
+| lib/supervisor.sh | `:235` darwin 叙述文案(flywheel-daemon.sh 字样) | **included-and-patched**(FLY-1062 已落):`FLYWHEEL_SUPERVISOR_DARWIN_INSTALL=1` opt-in 真 darwin 安装;默认 darwin 路径逐字保留 no-op(byte-compat) | packaged-seams.test.sh S11/S11b/S12 |
 | lib/bridge-port.sh / lib/self-ship-queue.sh / lib/fleet-sanitize.sh / lib/platform-deps.sh / lib/script-sanity.sh | 仅注释/自身逻辑命中 | included(零改动) | gate④ |
 | packaged/create-compat-mirror.sh | `packages/` 命中 = 镜像自身逻辑 | included(FLY-1062 新增件) | package-onboard-smoke.test.sh |
 | packaged/bootstrap-services.sh | 无非注释命中 | included(FLY-1062 新增件,P2-5) | provision-prebuilt.test.sh(temp-HOME 装四类服务) |

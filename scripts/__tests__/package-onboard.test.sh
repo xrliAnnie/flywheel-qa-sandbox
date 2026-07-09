@@ -333,6 +333,39 @@ if bash "$REPO_ROOT/scripts/packaged/create-compat-mirror.sh" "$MIR/package" >/d
 else
   fail "M1b mirror re-run failed"
 fi
+# npm's unreified nested-dep husk (empty dir, no package.json) must be pruned —
+# an existing dir terminates ESM walk-up and shadows the flat-installed copy.
+mkdir -p "$MIR/package/node_modules/@husk-scope/ghost" "$MIR/package/node_modules/plain-ghost"
+if bash "$REPO_ROOT/scripts/packaged/create-compat-mirror.sh" "$MIR/package" >/dev/null 2>&1 \
+   && [ ! -e "$MIR/package/node_modules/@husk-scope" ] \
+   && [ ! -e "$MIR/package/node_modules/plain-ghost" ] \
+   && [ -f "$MIR/package/node_modules/fw-alpha/dist/index.js" ]; then
+  pass "M1c mirror prunes empty husk dirs (scoped + plain), real content untouched"
+else
+  fail "M1c husk pruning wrong: $(ls "$MIR/package/node_modules" 2>/dev/null | tr '\n' ' ')"
+fi
+
+# ── F1 · force-nested registration vendors without a declared conflict ───────
+mk_fixture
+mkdir -p "$FIX/packages/beta/node_modules/lodash-x"
+cat > "$FIX/packages/beta/node_modules/lodash-x/package.json" <<'EOF'
+{ "name": "lodash-x", "version": "1.4.2", "dependencies": {} }
+EOF
+echo 'module.exports = 1;' > "$FIX/packages/beta/node_modules/lodash-x/index.js"
+printf 'beta\tlodash-x\tfixture install-time hoist conflict\n' > "$FIX/force-nest.tsv"
+if PO_FORCE_NESTED="$FIX/force-nest.tsv" run_po po_assemble "$FIX" "$SANDBOX/tree-fn" >/dev/null 2>&1 \
+   && [ "$(jq -r '.version' "$SANDBOX/tree-fn/vendor/fw-beta/lodash-x/package.json" 2>/dev/null)" = "1.4.2" ]; then
+  pass "F1 force-nested row vendors the declarer's resolved closure (no declared conflict needed)"
+else
+  fail "F1 force-nest staging wrong"
+fi
+# a registered dir with NO resolved copy must fail the build (never silent)
+printf 'alpha\tno-such-dep\tbroken row\n' > "$FIX/force-nest.tsv"
+if PO_FORCE_NESTED="$FIX/force-nest.tsv" run_po po_assemble "$FIX" "$SANDBOX/tree-fn2" >/dev/null 2>&1; then
+  fail "F1b unresolvable force-nest row did NOT fail the build"
+else
+  pass "F1b unresolvable force-nest row fails the build"
+fi
 
 # ── X1 · audit-table closure over the REAL default whitelist ─────────────────
 AUDIT="$REPO_ROOT/engineering/doc/FLY-1062-npm-distribution/packaged-path-audit.md"

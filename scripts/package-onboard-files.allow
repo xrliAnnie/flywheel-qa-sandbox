@@ -69,6 +69,7 @@ node_modules/flywheel-teamlead/scripts/templates/codex-read-deny-profile.toml
 # (scripts/packaged/dependency-union-exceptions.tsv; installed into the
 # packages' own node_modules by create-compat-mirror.sh)
 vendor/flywheel-teamlead/*
+vendor/flywheel-claude-runner/*
 node_modules/flywheel-edge-worker/package.json
 node_modules/flywheel-edge-worker/dist/*
 node_modules/flywheel-core/package.json

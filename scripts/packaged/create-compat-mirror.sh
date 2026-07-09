@@ -39,6 +39,16 @@ PAIRS="$(node -e '
   for (const [dir, name] of Object.entries(m)) console.log(`${dir}\t${name}`);
 ' "$PKG_ROOT/package.json")" || exit 1
 
+# ── prune npm's unreified nested-dep husks ──────────────────────────────────
+# npm's tree planner may place a nested dep INSIDE the bundled payload tree
+# (peer/hoist conflict at the install prefix) and then fail to reify it there —
+# it leaves an EMPTY directory (observed with @anthropic-ai/sdk when mem0ai's
+# peer claims the flat slot). An existing dir terminates ESM walk-up
+# resolution, so the empty husk SHADOWS the flat-installed copy. Only EMPTY
+# dirs are removed — real content is never touched.
+find "$PKG_ROOT/node_modules" -mindepth 2 -maxdepth 2 -path "$PKG_ROOT/node_modules/@*/*" -type d -empty -delete 2>/dev/null
+find "$PKG_ROOT/node_modules" -mindepth 1 -maxdepth 1 -type d -empty -delete 2>/dev/null
+
 # ── vendored nested deps: vendor/<npm-name>/… → node_modules/<npm-name>/node_modules/ ──
 # npm pack cannot ship node_modules nested inside bundled deps, so the payload
 # stages the registered disjoint-version closures under vendor/ and this step
