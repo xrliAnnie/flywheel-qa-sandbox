@@ -44,8 +44,13 @@ flowchart LR
 - `zombie_session_backlog` → owner Claude bot + AlertChannelHub 侧标记 (b) 型:入队即走 escalate 文案路径(带样本清单),不经 ARC 重试循环(对齐 `runner_lead_pending_unhandled` 的「直接 ESCALATED」先例)。
 - 其余 3 kind → 默认 Claude bot(现状 default 分支已覆盖,测试锁定)。
 
-### Task 1.4 工单头 schema
-- fleet kind 的 `project` 字段 = `machine`(fleet 级没有单一 project;schema 字段齐全保 N1 可算,research §2.1)。`lead/runner id` 字段:tmux_server_lost 填受影响 Lead 列表摘要,其余填触发组件。
+### Task 1.4 工单头 schema + fleet 告警身份(Codex R1 #1)
+- **路由身份与展示字段分离**:`LeadAlertNotifier.alert()` 的 lead 解析只认 projects.json 里的 project/lead 对(`LeadAlertNotifier.ts:464-475,934-942`)——`project=machine` 会 dead-letter。引入**受校验的 fleet/system 告警身份**(sentinel:unified channel + sender token 已配置时放行),展示字段(`displayProject="machine"`、`displayTarget=受影响组件/Lead 列表摘要`)与路由身份解耦。
+- 测试:Bridge 侧发出的 `swap_pressure_high` / `tmux_server_lost` / `infra_bot_down` / `zombie_session_backlog` 四类,在无匹配 projects.json lead 的情况下,真达 unified channel 且开出工单行(字段齐,N1 可算)。
+
+### Task 1.5 kind-contract 驱动 Hub 行为(Codex R1 #6)
+- `none_escalate` / `human_by_design` 类 kind 由 **kind-contract 直接驱动 AlertChannelHub**:入队即 `ESCALATED`(带样本清单/总数/remediationRef),**绕过 ARC 重试循环**——不复用「repair 失败」的通用文案(否则 founder 看到的是「试修失败」而非「设计上不自动修,收割在 FLY-1066」)。现状只有 `runner_lead_pending_unhandled` 有这个特例(`infra-alert-wiring.ts:176-181`),把特例泛化为契约驱动。
+- 测试:`zombie_session_backlog` 的 founder 面消息快照(明确「非自动收割、by design」);存量 `runner_lead_pending_unhandled` 行为字节不变。
 
 ## 3. PR-2 — 检测与修复(传感器 + ARC 动作)
 
@@ -58,29 +63,31 @@ flowchart LR
 ### Task 2.2 pressure-hold + admission 接线 + ARC 动作
 - hold 状态:StateStore 单行(`fleet_pressure_hold`:置位者/ts/水位快照),置撤皆幂等。
 - `runner-admission.ts`:新 typed reason `pressure_hold` —— hold 在 → `AdmissionDeferredError`(429 映射沿用;测试:hold 置位拒派、撤销放行、reason 字面量)。
-- AutoRepairBot:`AUTO_ATTEMPT_EVENT_TYPES` + `swap_pressure_high` attempt 分支 = 置 hold + 通知各 Lead 降载(mailbox);水位回滞回下界 → reconcile 撤 hold + 工单安静 resolve。T2 语义:5 分钟窗内水位不回落 ≠ 立刻升级(水位是慢变量)—— 该 kind 覆写 escalation policy 的 `timeoutMs`(env,默认 30 分钟),**per-kind policy 覆写**进 `ticket-escalation.ts`(默认表不动,byte-compat)。
+- AutoRepairBot:`AUTO_ATTEMPT_EVENT_TYPES` + `swap_pressure_high` attempt 分支 = 置 hold + 通知各 Lead 降载(mailbox);水位回滞回下界 → reconcile 撤 hold + 工单安静 resolve。T2 语义:5 分钟窗内水位不回落 ≠ 立刻升级(水位是慢变量)—— **per-kind policy 需要 API 改动而非只加 env**(Codex R1 #4):现状 `decideTicketEscalation()` 只吃单一全局 policy 且 row 不含 kind(`ticket-escalation.ts:16-29`、`AlertChannelHub.ts:653-660`)。新增 `policyForKind(kind, env)` resolver(或决策输入带 `event_type`),存量 kind 默认值**字节不变**;`swap_pressure_high` 的 `timeoutMs` env 默认 30 分钟。测试:旧 kind 仍 5 分钟 / swap 30 分钟及 env 覆写 / unclaimed fallback 不变。
 - 测试:attempt 幂等(重复工单不重复置 hold)/ 回落自动 resolve / 超窗升级文案带水位曲线摘要。
 
-### Task 2.3 tmux server 探测 + 分组通知
-- tick 腿:running tmux-session ≥1 且 `tmux list-sessions` 报「no server running」→ `tmux_server_lost`(server 级判定与单 session 死亡区分,research §2.4)。
-- boot 腿:复活对账中,上一世代 running ≥ `FLYWHEEL_TMUX_MASS_LOSS_MIN`(默认 3)且全部 pane 消失 → 同 kind(聚合,不被逐个收尸掩盖;与 tick 腿同 episode 签名去重)。
-- ARC 动作(AutoRepairBot 分支):批量收尸复用 crash-reaper 腿(scrollback 取证保留)→ **按 Lead 分组通知**(各自阵亡清单 + resume 指针 `$FLYWHEEL_PROGRESS_PATH` + 当前水位);respawn 不代劳(Lead 驱动铁律)。
-- 修不掉:通知投递失败 → 升级;Lead 收到后不响应走 FLY-637-ext 既有梯子(本单不新建梯子)。
-- 测试:server-gone 判定(模拟 tmux 错误输出)/ 聚合阈值 / 通知分组正确性(3 Lead 13 runner fixture)/ 与 crash-reaper 并跑不双杀。
+### Task 2.3 tmux server 探测 + 专用 server-loss 协调器(Codex R1 #3 重写)
+- **不能复用 crash-reaper**:「no server running」时 `probeRunnerProcessLiveness()` 返回 `absent`,crash-reaper 明确跳过该形态(`crash-reaper.ts:196-199`、`tmux-lookup.ts:323-341`),随后 `HeartbeatService.reapOrphans()` 逐个 force-fail(`HeartbeatService.ts:1029-1103`)——直接复用会双迁移/丢失聚合证据。
+- 新建 **server-loss 协调器**,在 crash-reaper / reapOrphans **之前**运行:tick 检出「no server running 且 StateStore 有 running tmux session」→ 当 tick 内 **claim 全部受影响 exec id** → 发**单一** `tmux_server_lost` episode → 对每个 runner 执行与 reapOrphans 相同的终态迁移(`failed`,沿用现有 transition 语义,只是**成组、带 episode 关联**)→ 被 claim 的行对本 tick 的普通 orphan 处理**抑制**(不双迁移)。
+- boot 腿:复活对账中,上一世代 running ≥ `FLYWHEEL_TMUX_MASS_LOSS_MIN`(默认 3)且 server 空/全新 → 同 kind,与 tick 腿同 episode 签名去重。
+- 通知:按 Lead 分组(各自阵亡清单 + resume 指针 `$FLYWHEEL_PROGRESS_PATH` + 当前水位);respawn 不代劳(Lead 驱动铁律)。修不掉:通知投递失败 → 升级;Lead 不响应走 FLY-637-ext 既有梯子。
+- 测试:no-server fixture 证明**恰一个 episode、每 runner 恰一次迁移、一组分组通知**;与 crash-reaper/reapOrphans 并跑不双迁移;聚合阈值;3 Lead / 13 runner 分组正确性。
 
-### Task 2.4 bridge_abnormal_exit 双腿 + dirty-marker
-- Bridge 生命周期:boot 写 `~/.flywheel/state/bridge-running.marker`(PID+ts);SIGTERM clean shutdown 改写 clean(挂现有 shutdown 处理器,`/health` `shuttingDown` 同源)。
-- wrapper 腿:`scripts/lib/bridge-port.sh` `bp_launcher_preflight` 增 dirty-marker 检查 → exec 之前 lead-alert.sh 直发 `bridge_abnormal_exit`(severe;分钟级 signature 去重,`flywheel-bridge-wrapper.sh:89-101` 先例);连续 dirty ≥N(复用 starts-in-window 计数)→ 文案升级为 crash-loop @Annie。
-- boot 自检腿:复活后的 Bridge 读 marker → dirty 则开**工单**(生命周期版);ACK → boot 对账完成 → 安静 resolve。两腿同 episode 前缀,claims.db 去重不双响。
-- 测试:bridge-port.sh 单测(bats/sh 既有测试模式)dirty/clean/首启三态;Bridge 侧 marker 写改删;双腿去重。
+### Task 2.4 bridge_abnormal_exit 双腿 + dirty-marker(Codex R1 #5/#7 修订)
+- **marker 时序(证据先于覆写)**:boot 时**先读并 latch 上一枚 marker**(prev PID + prev boot ts + episode id),**再**写新 running marker(新 episode id);clean 标记只在现有 `startBridge().close()` 收口路径写(`scripts/run-bridge.ts:74-82`、`plugin.ts:6391-6430`,与 `/health` `shuttingDown` 同源,不另挂信号处理);**wrapper preflight 只读不清**。
+- **跨腿去重 = 显式共享 episode 签名**(Codex R1 #7):`eventId` 输入两腿完全一致 = `bridge-abnormal-exit:<prevPid>:<prevBootTs>`(shell 与 TS 同式;lead-alert.sh 的 eventId 由 project/lead/kind/signature 生成,`lead-alert.sh:286-299` —— 两腿用同一 `--project flywheel --lead bridge` 身份 + 同一 signature)。语义分工:**wrapper 腿 = 直发 page(快)**,**boot 腿 = 生命周期工单**;断言**同一次 crash 只有一条 @ 路径**(claims.db 碰撞测试)。
+- wrapper 腿:`bp_launcher_preflight` 增 dirty-marker 检查 → exec 之前 lead-alert.sh 直发(severe);连续 dirty ≥N(复用 starts-in-window 计数)→ 文案升级为 crash-loop @Annie,**保留 prev PID/start ts 证据**。
+- boot 自检腿:复活后的 Bridge 用 latch 的上一枚 marker 开工单;ACK → boot 对账完成 → 安静 resolve。
+- 测试:bridge-port.sh sh 单测(首启/clean SIGTERM/kill -9 三态);kill -9 → wrapper 直发 + boot 工单且 claims 去重只一条 @;crash-loop 文案含 prev PID/ts;跨进程 fixture 证明 shell/TS 同 crash 同 eventId。
 
-### Task 2.5 infra_bot_down 探测 + kickstart
-- tick 探针:两 bot 的 lead session/pane 存活(LeadWatchdog 视野)+ `launchctl print` job 兜底;死 → 工单,owner 交叉(Task 1.3)。
+### Task 2.5 infra_bot_down 探测 + kickstart(Codex R1 #2 修订)
+- tick 探针:两 bot 的 lead session/pane 存活(LeadWatchdog 视野)+ `launchctl print` job 兜底;死 → 工单。
+- **死者侧必须是显式事件字段**:现有 provider 派生走 `session.adapter_type` / lead backend(`infra-alert-wiring.ts:162-174`),bot-down 事件没有 runner session 可派生——新增 `metadata.infraBotDown = { provider: "claude"|"codex", jobLabel, probeSource }`,owner 解析对该 kind 改读 metadata(死 Claude → @Codex,死 Codex → @Claude)。
 - ARC 动作:`launchctl kickstart -k <job>`(幂等可逆);2 次失败(T2 默认)→ @Annie。
-- 测试:探针判定 fixture / kickstart 分支 mock / 交叉 owner 断言。
+- 测试:探针判定 fixture / kickstart 分支 mock / **死 Claude→Codex owner、死 Codex→Claude owner、owner env 未配降级** 三断言。
 
 ### Task 2.6 zombie 扫描(节流)
-- tick 顺风车节流 ~15min:CommDB↔StateStore 对账三形态(research §2.6 口径);积压 ≥`FLYWHEEL_ZOMBIE_BACKLOG_MIN`(默认 3)→ `zombie_session_backlog` 工单(样本清单 ≤10 条 + 总数),(b) 型直升。
+- tick 顺风车节流 ~15min:CommDB↔StateStore 对账三形态(research §2.6 口径);积压 ≥`FLYWHEEL_ZOMBIE_BACKLOG_MIN`(默认 3)→ `zombie_session_backlog` 工单(样本清单 ≤10 条 + 总数),(b) 型直升 —— 走 **Task 1.5 的契约驱动 ESCALATED 路径**,不进 ARC 重试循环。
 - 收割不做(FLY-1066);kind-contract `remediationRef: "FLY-1066"`。
 - 测试:三形态 fixture 各一 / 阈值下不开单 / 清单截断 / 同批签名去重(不重复开单)。
 
@@ -130,6 +137,7 @@ flowchart LR
 - 不做 bot 部署/enable(FLY-1071/928;心跳探针只交付脚本+模板)。
 - 不做 N1/N2 digest 聚合(字段已齐,聚合归 notify 侧);不做 reconcile-QA 修复(FLY-1092);不做重恢复引擎(FLY-271)。
 - 「整机全灭」(Bridge+双 bot+launchd 全死)超出本机告警能力,明确不承诺。
+- **措辞校准(Codex R1 #8)**:现行 StateStore 已是 better-sqlite3(`StateStore.ts:3-24`,FLY-663 已迁移);事故引文里的「sql.js corruption」是当晚部署形态的历史记录。本单实现与文案一律按「Bridge 进程在机器压力下 fatal exit」表述,不依赖任何 sql.js 特定行为。
 - respawn runner 永远 Lead 驱动;bot/Bridge 不碰 runner lifecycle(FLY-175)。
 
 ## 8. 风险
