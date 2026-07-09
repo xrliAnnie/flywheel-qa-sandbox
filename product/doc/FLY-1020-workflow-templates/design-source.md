@@ -112,3 +112,11 @@ MVP 只吃 `profile`;inject/fork 往后放(它俩最像「重建 homerail run �
 
 ---
 **下一步**:HTML → Lead QA → relay Annie co-eval → 收敛 → 补 exploration/research/plan + PRD → 拆 build issue 交 Tadashi。
+
+## v5 — Annie 第 4 轮 co-eval(继续收敛,大概率定稿)
+
+1. ⭐ **纠正「固定节点」**(§1):节点类型 **per-category + 可扩展** —— eng=Design/Implement/QA;创作视频=Research/生成视频(新类型)。「固定」准确含义 = ① 模板内固定(YAML 定义时定死)② 跑中不 node-inject;**≠ 全局只 3 种**(新类别在注册表定义新节点类型)。QA→Implement→QA loop 确认能实现(已跑硬编码版 FLY-939)。
+2. **node-inject / fork = 现在不做 + 用例**(§5,解决 不做/可能不做 冲突):node-inject 用例 = 跑中要模板没有、又非 loop/skip 覆盖的新步骤(如 implement 中途加『安全审计』节点),很少见;fork 用例 = 同时试多方案比较(两实现策略并行 / A/B 设计)。都现在不做、留概念+用例。
+3. ⭐⭐ **两层定义**(§6,关键):**第一层 YAML = DAG 形状**(哪些节点/顺序/loop/skip,按名字引用)· **第二层 节点类型注册表 = 每节点「是什么」**(prompt + skills + model)= 泛化 `three-stage-phases.ts`(它现在只管 model/phase → 加 skills+prompt)。YAML 管结构、注册表管行为;示例:eng.yaml 引用 design → node_types.design={model:fable, skills:[brainstorm,research,design-review], prompt}。新类别加新节点类型 = 只动注册表(= §1 可扩展的落地)。
+
+**MVP(v5 收敛,大概率定稿)**:两层定义(YAML 形状 + 节点类型注册表)+ loop + skip + profile 复用 + 几套 shipped(eng/product/未来创作类)+ 裸 session 默认 + 可覆盖;default-off 字节兼容。现在不做(留用例):node-inject / fork。不做:可视化编辑器 / 用户自定义 / 自动学。
