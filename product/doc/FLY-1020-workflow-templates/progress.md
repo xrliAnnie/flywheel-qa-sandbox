@@ -1,29 +1,27 @@
 # FLY-1020 progress ledger
 
-Phase: design (co-eval round 6 — v6 published, 大概率定稿, awaiting Annie 拍板)
-Cursor: 6/? (v6 三层定义 + inject/fork=roadmap)
+Phase: plan (PRD Codex-APPROVED, head 冻结, 待 Lead QA)
+Cursor: PRD/3 (Codex design-review 3 轮 APPROVED)
 
 ## Chunks
-- [done] onboard + 核码(three-stage-phases / three-stage-policy / auto-qa-coordinator / send / gate / phase-orchestrator FLY-939 / ~/.claude/commands Markdown skills)
-- [done] homerail grounding(loop_gateway+skip / inject=消息型 / 无随意加节点 / 模板=YAML)
-- [done] v1→v2→v3(静态→动态)→v4(固定节点+loop+skip)→v5(节点类型可扩展+两层定义)→v6(三层定义+inject/fork=roadmap)
-- [done] v6 关键:三层定义(YAML 形状 + 注册表 技能/模型 + Markdown 步骤『今天这套不变』)+ 打消『YAML 重写 brainstorm』误解;inject/fork=roadmap(post-MVP,非不做)
-- [done] v6 commit(ed519d4b)+ push + publish(current,v5 作废)+ curl 自验(真 nonce 2c025046 / 0 残留 / 10 框 / 0 dark / 三层 block)+ 发 Lead URL(Lead 等 v6 才 relay Annie)
-- [wait] Lead QA v6 + relay Annie → 若拍板『收敛,写 PRD』→ 进 PRD 阶段;若还有批注 → v7
-- [defer] Codex code review:等设计收敛、写 PRD 前跑
-- [next] 收敛 → 写 1020 PRD(exploration/research/plan 三件套)→ 拆 build issue 交 Tadashi
+- [done] onboard + 核码 + homerail grounding
+- [done] co-eval v1→v6(6 轮),v6 Annie 拍板通过(三层设计;UI 拆出 FLY-1038)
+- [done] 非 UI 详细 PRD:engineering/doc/FLY-1020-workflow-templates/prd.md
+- [done] Codex design-review R1(10 findings 全采纳)→ R2(5 findings 全采纳)→ R3 **APPROVED**(3 条非阻塞注记已折入)
+- [done] review 证据存档(codex-review-r1/r2/r3.md)+ 冻 head **f6f39c6e**
+- [wait] Lead QA PRD → 拆 build issue 交 Tadashi
+- [next] Lead QA 过 → build issue 拆分(§13 九步)
 
-## Publish artifacts (current = 最新)
-- v6 (current): https://fw-reports-a53de2.vercel.app/r/bdcfb9ead0683e0c75c05cf6a0554443/ · msg 1524618828896796802
-- v5/v4/v3/v2/v1 superseded
-
-## 收敛后的设计(v6,大概率定稿,待 Annie 拍)
-- 三层:①YAML=DAG 形状(节点/顺序/loop/skip 按名引用)②注册表=每节点带哪些技能+模型(泛化 three-stage-phases.ts)③Markdown=每技能怎么做(今天这套,不变)
-- 关键:YAML+注册表=加在现有 Markdown 之上的编排层、不替代;打消『YAML 重写 brainstorm/research』误解
-- 节点类型 per-category 可扩展(注册表加,跑中不 inject);动态=loop+skip;裸 session=不挂 YAML 默认;可覆盖
-- MVP:新增上两层 + loop + skip + profile 复用 + 几套 shipped + 裸默认 + 可覆盖;第三层 Markdown 不动;default-off 字节兼容
-- roadmap(post-MVP,进后续 PRD):node-inject / fork(留用例)。不做:编辑器/自定义/自动学
+## Codex review 逼出的实质修正(全部独立核过源码)
+1. auto-QA 是 **default-ON opt-out**(FLY-752),不是 opt-in —— 原 PRD 写反,被 types.ts:616 的 stale 注释误导(doc drift 已列入验收)
+2. **ship-gate 死锁**:evaluateQaShipGate 在 qa_required=1 时索要 passed auto_qa_record,而三段式内部 QA 只写 three_stage_verdict → 复用 qa_required 会永久挂死 ship。改为 workflow-aware 分支(workflow_qa_required/passed/exempt),遗留路径字节不变
+3. product skip-QA **不能**搭 onMainAwaitingReview(coordinator + 两个 sink 都只处理 main 行)→ 改为入口写 workflow_qa_exempt
+4. snapshot 必须**物化**(归一化 nodes/edges/skip/counters + workflow_run_id),不能只存 id/hash —— session_params 是 per-execution,handoff/retry 都起新 execution
+5. loop 条件源必须含 **founder_feedback_kickback**(保留其守卫),否则回归现有 founder 反馈修复路径
+6. MVP 收敛到内建 design/implement/qa;任意节点类型降为阶段 2(持久化/展示/finalizer/retry 全硬编码三角色)
+7. build 顺序重排:**ship-gate 证据契约先于 orchestrator**
+8. workflow_qa_passed 的 head **不得信 runner 自报**(qa-result 的 prHeadSha 默认取 runner git HEAD)→ 服务端 capture 或校验,不一致 fail-closed
 
 ## Notes
-- 遵 Lead steering:不写完整 PRD、不碰 gate、不 ship。PR #514=co-eval doc 载体不 merge。
-- 每轮 co-eval 由 Lead relay Annie 触发,非自治 loop。设计高度收敛,Lead 判『这版对了大概率就定』→ 拍板即进 PRD 阶段。
+- 遵 Lead steering:不 ship、gate 别碰。PR #514 = co-eval doc 载体不 merge。
+- UI/dashboard → FLY-1038(cross-ref,不在本 PRD)。消费方 → FLY-353。scale → FLY-1022。
