@@ -1,0 +1,263 @@
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1022 · 树/分布式成熟机制 — grounded research 过目</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--navy:#1a365d;
+  --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,system-ui,"SF Pro Text",Segoe UI,Roboto,sans-serif;line-height:1.6;-webkit-text-size-adjust:100%}
+.wrap{max-width:960px;margin:0 auto;padding:20px 16px 90px}
+h1{font-size:24px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:14px;margin:0 0 4px}
+.pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;background:#eef;color:var(--navy);margin:6px 6px 0 0}
+.pill.cand{background:#f3e9fb;color:#7a2fb0}
+.note{background:#fff;border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:12px;padding:12px 14px;margin:16px 0;font-size:14px;color:#1a3a5a}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.card.blue{border-left:4px solid var(--blue)}.card.green{border-left:4px solid var(--green)}
+.card.purple{border-left:4px solid var(--purple)}.card.red{border-left:4px solid var(--red)}
+.card.amber{border-left:4px solid var(--amber)}.card.gray{border-left:4px solid var(--dim)}
+h2{font-size:19px;margin:32px 0 6px;letter-spacing:-.01em}
+h3{font-size:15.5px;margin:2px 0 8px}
+.secnum{color:var(--dim);font-variant-numeric:tabular-nums}
+p{margin:8px 0}ul{margin:8px 0 8px 2px;padding-left:20px}li{margin:4px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.86em;background:#f0f0f4;padding:1px 5px;border-radius:5px}
+.row{margin:6px 0}.lab{display:inline-block;min-width:52px;font-size:12px;font-weight:700;color:var(--dim);vertical-align:top}
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:6px;vertical-align:middle}
+.tag.mvp{background:#e3f9ea;color:#1a7a3c}.tag.later{background:#fff4e5;color:#a05a00}.tag.tradeoff{background:#fdeaea;color:#b02a2a}
+.k{color:var(--navy);font-weight:600}
+a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}
+.src{font-size:12px;color:var(--dim);margin-top:6px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:10px 0}
+table{border-collapse:collapse;width:100%;min-width:640px;font-size:13px}
+th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+th{background:#fafafd;font-weight:600}
+.cmt{margin:10px 0 4px;background:#fbfbfd;border:1px dashed #d6d6de;border-radius:10px;padding:8px 10px}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+.cmt textarea{width:100%;min-height:50px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;color:var(--ink);background:#fff;resize:vertical}
+.cmt textarea:focus{outline:2px solid var(--blue);outline-offset:1px;border-color:transparent}
+.bar{position:sticky;bottom:0;margin-top:26px;background:rgba(245,245,247,.92);backdrop-filter:saturate(180%) blur(8px);border-top:1px solid var(--line);padding:10px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+button{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:10px;padding:9px 16px;cursor:pointer}
+button.primary{background:var(--blue);color:#fff}button.ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}
+.hint{color:var(--dim);font-size:12.5px}
+dialog{border:none;border-radius:14px;padding:0;max-width:680px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+dialog::backdrop{background:rgba(0,0,0,.35)}
+.dlg{padding:18px 20px}.dlg h3{margin-top:0}
+.dlg textarea{width:100%;min-height:240px;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px}
+</style>
+</head>
+<div class="wrap">
+<header>
+  <h1>树 / 分布式系统里可借的成熟机制 —— grounded research 过目</h1>
+  <p class="sub">FLY-1022 · 2026-07-08 · 你说 PRD 里 DDIA 那段太概念化 → 我做了一轮带<b>机制 + 权衡 + 来源</b>的落地调研,这张请你 QA「够扎实了吗」</p>
+  <div><span class="pill cand">grounded research · 逐节留言</span><span class="pill">已换进 PRD §4/§5</span></div>
+</header>
+
+<div class="note">
+  <b>你的反馈:</b> PRD 的「DDIA 树聚合」太概念。<b>这一轮:</b> 把树需要的每块能力,落到 DB/分布式里<b>几十年成熟、可直接抄的机制</b>上 ——
+  每条给 <b>机制(怎么做)+ 权衡(代价)+ 一手来源 + 映射到我们的树</b>,并标 <span class="tag mvp">MVP</span>/<span class="tag later">later</span>。<br>
+  <b>✅ 更新:ChatGPT Deep Research 已真跑</b>(8 分钟 / <b>29 citations / 521 searches</b>)—— <b>独立</b>收敛到跟下面 8 条<b>同一套判断</b>,还新增 2 条(见下方绿卡)。
+  精确一手引用 URL 待人手导出补(自动导出被跨域 iframe 挡,FLY-541,Tadashi 修根因中;substance 已先落地)。<br>
+  <b>怎么用:</b> 每小节下留言;底部「复制批注」收 markdown。全文 = <code>product/doc/FLY-1022-.../tree-patterns-research.md</code>。
+</div>
+
+<div class="card gray">
+  <h3>一句话结论</h3>
+  <p>我们要的树<b>不用发明</b> —— 是四类成熟机制的组合:<b>① 部分聚合上汇 · ② 两级调度委派 · ③ 子树故障隔离 · ④ 背压=容量信号</b>;
+  外加两条「何时加/合并/分配 sub-lead」的机制(<b>B-tree 分裂合并 + 一致性哈希</b>)作<b>设计留位、MVP 不上</b>;观测半边用 <b>SWIM「先疑再判死」</b>喂回 942。</p>
+</div>
+
+<div class="card green">
+  <h3>✅ ChatGPT Deep Research 真跑了 —— 独立印证 + 2 条新增(你要的深度)</h3>
+  <p>按你要求真跑了一轮 <b>ChatGPT Deep Research</b>(『Hierarchical Command Trees for Autonomous Coding Agents』,<b>8m / 29 citations / 521 searches</b>)。它<b>独立</b>收敛到跟我 web-research <b>一样的判断</b>:</p>
+  <ul>
+    <li><b>结论</b>:树 = <b>bounded-fan-out 聚合 + 监督层级</b>,不是加标签的平铺派发。</li>
+    <li><b>⭐ 小规模(几十 agent)最该先上 6 条</b>(= 下面的 MVP):固定小 fan-out · typed 摘要 · <b>带显式 credit 的有界队列</b> · 子树 circuit-breaker + bulkhead · <b>soft-suspicion-before-declare</b> · <b>Erlang 式 restart 策略</b>。</li>
+    <li><b>⭐ 此规模通常过早</b>(= 下面的 later):full gossip membership · heavy virtual-node hashing · LSM 后台 compaction。</li>
+    <li><b>相对我 web-research 新增 2 条</b>:①<b>有界队列 + 显式 credit</b>(比「背压」更具体的容量信号,并进 §4)②<b>Erlang/OTP supervision tree</b>(restart strategy / intensity / let-it-crash —— 给「子失败该怎么办」成熟词汇,见新增 §8b)。</li>
+  </ul>
+  <p class="hint">净意义:29 个一手引用<b>独立背书</b>了同一套 MVP-vs-later,方向可信。精确引用 URL 待人手导出补(§9 说明)。</p>
+</div>
+<div class="cmt"><label>💬 对「DR 独立印证 + 2 新增」的留言(方向够扎实了吗?)</label><textarea data-k="dr" data-label="0.5 · ChatGPT DR 背书"></textarea></div>
+
+<!-- 1 -->
+<h2><span class="secnum">1 ·</span> 部分聚合上汇 <span class="tag mvp">MVP</span></h2>
+<div class="card green">
+  <div class="row"><span class="lab">机制</span> 叶子(runner)自报 → 中间层 sub-lead <b>先做部分聚合</b>、只送聚合值 → <b>对数轮</b>到顶。抄 Spark <code>treeAggregate</code> / MapReduce combiner。</div>
+  <div class="row"><span class="lab">权衡</span> <span class="tag tradeoff">代价</span> 只对 <b>associative+commutative</b> 聚合成立(count/max)→ 顶层拿到的<b>必然是有损摘要</b>,细节留下层。</div>
+  <div class="row"><span class="lab">映射</span> sub-lead 把 N 个 runner 压成<b>可结合聚合</b>:计数 + 冒泡的少数异常。→ 直接约束 PRD §9 的摘要 schema(不能把原始明细往上堆)。</div>
+  <div class="src">来源:<a href="https://umbertogriffo.gitbook.io/apache-spark-best-practices-and-tuning/rdd/treereduce_and_treeaggregate_demystified">Spark treeAggregate</a> · <a href="https://data-flair.training/forums/topic/what-is-combiner-in-mapreduce/">MapReduce combiner</a></div>
+</div>
+<div class="cmt"><label>💬 部分聚合(有损摘要 = 树的核心代价)—— 这条落地够扎实了吗?</label><textarea data-k="agg" data-label="1 · 部分聚合上汇"></textarea></div>
+
+<!-- 2 -->
+<h2><span class="secnum">2 ·</span> 两级调度委派 <span class="tag mvp">MVP(一层)</span></h2>
+<div class="card blue">
+  <div class="row"><span class="lab">机制</span> 拆开「资源分配」与「任务放置」:上层把活 offer/派给下层独立调度器,下层自己安排。抄 Mesos 两级。</div>
+  <div class="row"><span class="lab">权衡</span> <span class="tag tradeoff">代价</span> <b>下层看不到全局放置选项 → root 失去全局细粒度视图、跨组抢占难</b>。委派 = 用全局视图换可扩展。</div>
+  <div class="row"><span class="lab">映射</span> Lead = 资源管理器,派给 sub-lead。<b>这条代价正是「为什么 MVP 只一层、跨组协调仍回 root/founder」</b> —— 是取舍不是缺陷。</div>
+  <div class="src">来源:<a href="https://www.umbrant.com/2015/05/27/mesos-omega-borg-a-survey/">Mesos / Omega / Borg: a survey</a></div>
+</div>
+<div class="cmt"><label>💬 两级委派的代价(root 失全局视图)—— 我写成 PRD 的公开取舍,你认同吗?</label><textarea data-k="sched" data-label="2 · 两级调度委派"></textarea></div>
+
+<!-- 3 -->
+<h2><span class="secnum">3 ·</span> 子树故障隔离(bulkhead / cell + circuit breaker)<span class="tag mvp">MVP</span></h2>
+<div class="card red">
+  <div class="row"><span class="lab">机制</span> <b>隔舱</b>:资源分独立池,一处失败不耗尽全局、限制爆炸半径。<b>cell</b>:blast radius=1/N。<b>熔断</b>:反复失败→跳闸停打、防级联。</div>
+  <div class="row"><span class="lab">权衡</span> <span class="tag tradeoff">代价</span> 隔离降利用率(空闲 slack 不共享)—— 对我们可接受,注意力隔离本就是目的。</div>
+  <div class="row"><span class="lab">映射</span> 每个 sub-lead 子树 = 一个隔舱/cell,一组卡住<b>不级联</b>到兄弟组/root。sub-lead 自己冻住 → root <b>跳闸</b>它、重路由或升级 founder,不干等。= 你说的「检测+隔离卡住子树」。</div>
+  <div class="src">来源:<a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/bulkhead">Azure Bulkhead pattern</a> · <a href="https://mayankraj.com/blog/cell-based-architecture-blast-radius-containment/">Cell-based / blast radius</a></div>
+</div>
+<div class="cmt"><label>💬 子树隔离(卡住不级联 + 熔断冻住的 sub-lead)—— 对吗?</label><textarea data-k="isolate" data-label="3 · 子树故障隔离"></textarea></div>
+
+<!-- 4 -->
+<h2><span class="secnum">4 ·</span> ⭐ 背压 = 353 的容量信号 <span class="tag mvp">MVP · 接 353</span></h2>
+<div class="card amber">
+  <div class="row"><span class="lab">机制</span> 下游处理不过来 → 向上游发信号减速(不让队列无界膨胀)。抄 Reactive Streams / 有界队列削峰。<b>DR 补强:带显式 credit 的有界队列</b>(sub-lead 声明「我还能收 n 个」)。</div>
+  <div class="row"><span class="lab">权衡</span> <span class="tag tradeoff">代价</span> 故意压过载吞吐换不崩;待办<b>必须有界</b>(无界缓冲会 OOM/级联)。</div>
+  <div class="row"><span class="lab">映射</span> <b>sub-lead 饱和 → 向上发背压 → root/353 停止往这个子树派新活。sub-lead 的饱和信号,就是 353 capacity-aware 派发要消费的容量信号。</b> 1022 的树和 353 的流控<b>用「背压」一个机制接上</b>,不是两套东西。</div>
+  <div class="src">来源:<a href="https://codelit.io/blog/backpressure-flow-control">Reactive Streams backpressure</a> · <a href="https://www.geeksforgeeks.org/computer-networks/back-pressure-in-distributed-systems/">Back pressure in distributed systems</a></div>
+</div>
+<div class="cmt"><label>💬 ⭐ 背压 = 353 容量信号(树和 353 的精确接缝)—— 这个接法你满意吗?</label><textarea data-k="bp" data-label="4 · ⭐ 背压=353容量信号"></textarea></div>
+
+<!-- 5 -->
+<h2><span class="secnum">5 ·</span> ⭐ SWIM「先疑再判死」<span class="tag mvp">MVP · 喂回 942</span></h2>
+<div class="card green">
+  <div class="row"><span class="lab">机制</span> SWIM(2002)= outsourced heartbeat + gossip。检测时延/误报率/每进程负载<b>与组大小无关</b>(传统 heartbeat 是 O(N²));传播随成员数<b>对数</b>增长。</div>
+  <div class="row"><span class="lab">关键</span> <b>suspect-before-declare</b>:先「怀疑」再「宣告」→ <b>降误报</b>。</div>
+  <div class="row"><span class="lab">权衡</span> <span class="tag tradeoff">代价</span> 弱一致(几轮才传到顶)—— 异步+人在环可接受。</div>
+  <div class="row"><span class="lab">映射</span> 逐层上报 = 分层故障检测。sub-lead <b>先 suspect 再升级</b>,直接治 FLY-218/220 <b>误报</b>病;O(N²)→分层 = <b>树观测能 scale 的理论依据</b>。</div>
+  <div class="src">来源:<a href="https://en.wikipedia.org/wiki/SWIM_Protocol">SWIM 协议</a> · <a href="https://www.semanticscholar.org/paper/SWIM%3A-scalable-weakly-consistent-infection-style-Das-Gupta/068f65c0271ed16a6bf4a1c2de1a962eec08edbf">SWIM paper (Das/Gupta/Motivala)</a></div>
+</div>
+<div class="cmt"><label>💬 ⭐ SWIM 先疑再判死喂回 942(治误报 + 树观测可扩展)—— 对吗?</label><textarea data-k="swim" data-label="5 · ⭐ SWIM suspect-before-declare"></textarea></div>
+
+<!-- 6 -->
+<h2><span class="secnum">6 ·</span> 何时加/合并 sub-lead(B-tree 分裂/合并)<span class="tag later">later 留位</span></h2>
+<div class="card gray">
+  <div class="row"><span class="lab">机制</span> 节点满 → 中位数分裂成两个;占用跌破阈值 → 合并/借兄弟。大 fan-out 保持树浅而快。</div>
+  <div class="row"><span class="lab">权衡</span> <span class="tag tradeoff">代价</span> 分裂/合并 churn;频繁增删会 thrash → 用<b>滞回阈值</b>(高水位分裂、低水位合并、中间留 gap)。</div>
+  <div class="row"><span class="lab">映射</span> sub-lead 超容量(≈5-6)→ 分裂新 sub-lead 挪一半;两个都低 → 合并。<b>MVP 手动/配置、不自动</b>(防 thrash + 复杂度)。</div>
+  <div class="src">来源:<a href="https://en.wikipedia.org/wiki/B-tree">B-tree</a> · <a href="https://jacobsherin.com/posts/2025-08-16-bplustree-compare-borrow-merge/">B+tree underflow: merge or borrow</a></div>
+</div>
+<div class="cmt"><label>💬 自动加/合并 sub-lead 放 later(MVP 手动)—— 认同这个克制吗?</label><textarea data-k="split" data-label="6 · B-tree 分裂合并(later)"></textarea></div>
+
+<!-- 7 -->
+<h2><span class="secnum">7 ·</span> runner 分到哪个 sub-lead(一致性哈希 + vnode)<span class="tag later">later 留位</span></h2>
+<div class="card gray">
+  <div class="row"><span class="lab">机制</span> 加/删节点只重映射 ~K/N 的 key(朴素取模要 ~99%);虚拟节点(128/节点)→ 负载均匀、加节点从多处各拿一小片。</div>
+  <div class="row"><span class="lab">权衡</span> <span class="tag tradeoff">代价</span> 环/vnode 元数据复杂;我们只有一小把 sub-lead 时是<b>过度设计</b>。</div>
+  <div class="row"><span class="lab">映射</span> 动态增删 sub-lead 又不想全体重洗时的成熟机制;<b>MVP 用简单静态/轮询分配就够</b>、留位 later。</div>
+  <div class="src">来源:<a href="https://www.systemoverflow.com/learn/partitioning-sharding/rebalancing/hash-based-assignment-strategies-consistent-and-rendezvous-hashing">Consistent hashing + virtual nodes (Dynamo)</a></div>
+</div>
+<div class="cmt"><label>💬 一致性哈希分配放 later(MVP 静态)—— 认同吗?</label><textarea data-k="hash" data-label="7 · 一致性哈希(later)"></textarea></div>
+
+<!-- 8 -->
+<h2><span class="secnum">8 ·</span> 每个 sub-lead 带多宽(fan-out 权衡,LSM 视角)</h2>
+<div class="card gray">
+  <div class="row"><span class="lab">机制</span> fan-out 越大 → 树越浅、升级跳数少、查任意 runner 状态快,但每层聚合越重;越小 → 树越深、跳数多(LSM leveled 的写/读放大权衡)。</div>
+  <div class="row"><span class="lab">映射</span> 每 sub-lead 带多少 runner = fan-out。<b>上界由「一个脑扛得住」定 ≈5-6</b>(认知瓶颈,不是磁盘)→ 我们的 fan-out 被认知容量天然钉在 ~5-6,不用调到 128。</div>
+  <div class="src">来源:<a href="https://github.com/facebook/rocksdb/wiki/Compaction">RocksDB compaction (leveled/tiered)</a> · <a href="https://fjall-rs.github.io/post/lsm-leveling/">Leveled compaction overview</a></div>
+</div>
+<div class="cmt"><label>💬 每 sub-lead ~5-6(认知容量钉死 fan-out)—— 这个数感觉对吗?</label><textarea data-k="fanout" data-label="8 · fan-out 权衡 ~5-6"></textarea></div>
+
+<!-- 8b OTP supervision (DR 新增) -->
+<h2><span class="secnum">8b ·</span> ⭐ 进程监督树(Erlang/OTP supervision tree)<span class="tag mvp">MVP 策略语言 · DR 新增</span></h2>
+<div class="card green">
+  <div class="row"><span class="lab">机制</span> supervisor 监督一组 children,按 <b>restart strategy</b>(one_for_one 只重启挂的 / one_for_all 全组重启 / rest_for_one)恢复;<b>restart intensity</b> 限流(超 max-restarts/period → supervisor 自己放弃、上报<b>它的</b>父级);<b>let-it-crash</b>(不修坏状态,重启到干净态)。</div>
+  <div class="row"><span class="lab">权衡</span> <span class="tag tradeoff">代价</span> 重启丢进程内存态(靠 progress.md / FLY-353 重建,不在本 issue);restart intensity 防「重启风暴」。</div>
+  <div class="row"><span class="lab">映射</span> <b>sub-lead = 它那摊 runner 的 supervisor</b>;runner 反复失败超 restart intensity → sub-lead 停止重试、<b>上报父级</b>(逐层),呼应 942「失败 3 次问 founder」+ 现有 retry。let-it-crash ≈ 我们「坏 worktree 清掉重派」。<b>给「子失败该怎么办」一套成熟词汇。</b></div>
+  <div class="src">来源:Erlang/OTP supervisor 官方文档(ChatGPT DR 引)</div>
+</div>
+<div class="cmt"><label>💬 对「sub-lead = supervisor + restart 策略」的留言(这套词汇有用吗?)</label><textarea data-k="otp" data-label="8b · Erlang/OTP supervision"></textarea></div>
+
+<!-- 9 收敛 -->
+<h2><span class="secnum">9 ·</span> 收敛:MVP 抄 5 条 + 2 取舍写清 + 2 条 later(DR 独立印证)</h2>
+<div class="card purple">
+  <div class="scroll"><table>
+  <thead><tr><th>机制</th><th>MVP?</th><th>落到 1022</th></tr></thead>
+  <tbody>
+    <tr><td>部分聚合上汇</td><td><span class="tag mvp">MVP</span></td><td>摘要 schema = 可结合聚合(计数+异常)</td></tr>
+    <tr><td>子树隔离 bulkhead/cell+熔断</td><td><span class="tag mvp">MVP</span></td><td>每子树一隔舱;sub-lead 冻住→root 跳闸</td></tr>
+    <tr><td>SWIM 先疑再判死</td><td><span class="tag mvp">MVP</span></td><td>喂回 942、降误报、树观测可扩展</td></tr>
+    <tr><td>背压=容量信号 + 显式 credit</td><td><span class="tag mvp">MVP</span></td><td>sub-lead 饱和/credit=0 → 353 停派该子树</td></tr>
+    <tr><td>Erlang/OTP supervision(DR 新增)</td><td><span class="tag mvp">MVP</span></td><td>sub-lead=supervisor;restart intensity 超 → 上报父级</td></tr>
+    <tr><td>两级委派代价</td><td>写进 PRD</td><td>root 失全局视图→MVP 一层、跨组回 root</td></tr>
+    <tr><td>fan-out 权衡</td><td>写进 PRD</td><td>每 sub-lead ~5-6(认知容量)</td></tr>
+    <tr><td>B-tree 分裂/合并</td><td><span class="tag later">later</span></td><td>何时加/合并;MVP 手动</td></tr>
+    <tr><td>一致性哈希+vnode</td><td><span class="tag later">later</span></td><td>动态分配;MVP 静态</td></tr>
+  </tbody>
+  </table></div>
+  <p><b>净收获:</b> PRD 的「DDIA 一句话」→ 9 条带机制+权衡+来源的具体设计,<b>MVP 抄 5 条</b>(部分聚合 / 子树隔离 / SWIM / 背压+credit / <b>OTP supervision</b>)<b>+ 2 取舍写进 PRD + 2 条 later</b> —— 既 grounded 又克制。<b>ChatGPT DR(29 引用)独立收敛到同一批。</b></p>
+  <p class="hint"><b>精确一手引用 URL:</b> DR 报告在跨域 iframe,自动导出被挡(FLY-541)。走人手 2 步 Export to Markdown 拿全文 + 29 条引用后一次性升级本卡;substance 已先落地。要更深可再跑一轮 DR。</p>
+</div>
+<div class="cmt"><label>💬 收敛判断(MVP 4 抄 + 2 later)对吗?够扎实了、还是要 Honey 用 ChatGPT Deep Research 再补一层?</label><textarea data-k="converge" data-label="9 · 收敛 + 深度是否够"></textarea></div>
+
+<div class="cmt"><label>💬 总批注 / 决定 / 下一步</label><textarea data-k="final" data-label="10 · 总批注 / 决定"></textarea></div>
+
+<div class="bar">
+  <button class="primary" id="exportBtn" type="button">复制批注</button>
+  <button class="ghost" id="clearBtn" type="button">清空</button>
+  <span class="hint" id="saveHint">每小节下都有留言框;「复制批注」收成 markdown。批注只存你这台机器,刷新不丢(新版本从空白开始)。</span>
+</div>
+</div>
+
+<dialog id="dlg">
+  <div class="dlg">
+    <h3>你的批注(Markdown)</h3>
+    <p class="hint">已自动复制到剪贴板。也可下载,或直接选中复制发给我。</p>
+    <textarea id="out" readonly></textarea>
+    <div class="bar" style="position:static;background:none;border:none;padding-top:12px">
+      <button class="primary" id="dlBtn" type="button">下载 .md</button>
+      <button class="ghost" id="closeBtn" type="button">关闭</button>
+    </div>
+  </div>
+</dialog>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var pathScope = (typeof location !== "undefined" && location.pathname) ? location.pathname : "local";
+  var KEY = "fly1022-tree-research::" + pathScope;
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ saved = {}; }
+  areas.forEach(function(t){
+    var k = t.getAttribute("data-k");
+    if (saved[k]) t.value = saved[k];
+    t.addEventListener("input", function(){
+      saved[k] = t.value;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch(e){}
+      var h = document.getElementById("saveHint"); if (h) h.textContent = "已保存 ✓ · " + new Date().toLocaleTimeString();
+    });
+  });
+  function buildMd(){
+    var lines = ["# FLY-1022 树/分布式机制 grounded research — Annie 的批注", "", "日期: " + new Date().toLocaleString(), ""];
+    var any = false;
+    areas.forEach(function(t){
+      var v = (t.value || "").trim(); if (!v) return; any = true;
+      lines.push("## " + (t.getAttribute("data-label") || t.getAttribute("data-k")), "", v, "");
+    });
+    if (!any) lines.push("> (还没有批注)");
+    return lines.join("\n");
+  }
+  var dlg = document.getElementById("dlg"), out = document.getElementById("out");
+  document.getElementById("exportBtn").addEventListener("click", function(){
+    out.value = buildMd();
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(out.value).catch(function(){});
+    if (dlg.showModal) dlg.showModal(); else alert(out.value);
+  });
+  document.getElementById("clearBtn").addEventListener("click", function(){
+    if (!confirm("清空所有批注?不可撤销。")) return;
+    areas.forEach(function(t){ t.value = ""; }); saved = {};
+    try { localStorage.removeItem(KEY); } catch(e){}
+    var h = document.getElementById("saveHint"); if (h) h.textContent = "已清空。";
+  });
+  document.getElementById("dlBtn").addEventListener("click", function(){
+    var blob = new Blob([out.value], {type:"text/markdown"}), url = URL.createObjectURL(blob);
+    var a = document.createElement("a"); a.href = url; a.download = "fly1022-tree-research-批注.md";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  });
+  document.getElementById("closeBtn").addEventListener("click", function(){ if (dlg.close) dlg.close(); });
+})();
+</script>
