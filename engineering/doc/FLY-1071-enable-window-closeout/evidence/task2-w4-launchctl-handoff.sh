@@ -19,7 +19,8 @@ PLIST="$HOME/Library/LaunchAgents/${JOB_LABEL}.plist"
 case "${1:-}" in
   stop)
     echo "[handoff] bootout ${JOB_LABEL} ..."
-    launchctl bootout "gui/$(id -u)/${JOB_LABEL}" || true
+    # 不加 || true:若被护栏/权限拒绝要让失败原样可见(Tadashi 抓的 bug)
+    launchctl bootout "gui/$(id -u)/${JOB_LABEL}"
     sleep 2
     if launchctl print "gui/$(id -u)/${JOB_LABEL}" >/dev/null 2>&1; then
       echo "[handoff] FAIL: job still present after bootout"
