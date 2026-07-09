@@ -1,0 +1,5 @@
+{
+	"ok": true,
+	"connector": "imap",
+	"recent_messages": { "since": "02-Jul-2026", "count": 18 }
+}

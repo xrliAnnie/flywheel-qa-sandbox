@@ -200,3 +200,26 @@ scan_for_secrets() {
   fi
   return 0
 }
+
+# ──────────────────────────────────────────────────────────────────────────
+# scan_string_for_secrets <string>
+#   FLY-1023 M0: single-VALUE form of scan_for_secrets for callers that hold
+#   a candidate string in memory (buddy journal keys, support summaries).
+#   Implemented by spooling the value to a 0600 temp file and running the
+#   EXACT same path-based scanner — one pattern set, zero drift. Returns the
+#   same codes: 0 = clean, 1 = secret-like, 2 = usage error.
+# ──────────────────────────────────────────────────────────────────────────
+scan_string_for_secrets() {
+  if [ "$#" -ne 1 ]; then
+    echo "scan_string_for_secrets: usage: scan_string_for_secrets <string>" >&2
+    return 2
+  fi
+  local tmp rc
+  tmp="$(mktemp "${TMPDIR:-/tmp}/fleet-scan-str.XXXXXX")" || return 2
+  chmod 600 "$tmp" || { rm -f "$tmp"; return 2; }
+  printf '%s\n' "$1" > "$tmp"
+  scan_for_secrets "$tmp"
+  rc=$?
+  rm -f "$tmp"
+  return $rc
+}

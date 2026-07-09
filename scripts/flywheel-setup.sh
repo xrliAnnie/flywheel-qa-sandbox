@@ -1019,7 +1019,44 @@ step_verify_skeleton() {
 # subscription (a CLI login, not an env key). The API-key path is explicit
 # opt-in; that key is appended to the LIVE .env only (never env.example —
 # it would trip the token gate as a required key, §3.4).
+#
+# FLY-1023 M1 (opt-in, default byte-identical): under
+# FLYWHEEL_AGENT_CLI_ORCHESTRATE=1 the guided confirmation upgrades to full
+# AgentCliProvider orchestration (detect → install → login_guide → smoke)
+# driven by the buddy layer; evidence records {provider, version} — never a
+# key. Without the env var the original guided body runs unchanged.
+_fs_model_key_orchestrated() {
+  local pid="${FLYWHEEL_AGENT_CLI:-claude}"
+  local mod="$FS_SCRIPT_DIR/lib/agent-cli-providers/${pid}.sh"
+  [ -f "$mod" ] || { fs_err "unknown agent CLI provider '$pid' (no $mod)"; return 1; }
+  # shellcheck disable=SC1090
+  source "$mod" || { fs_err "provider module failed to load: $mod"; return 1; }
+  local det ver rc
+  if ! det="$(provider_detect)"; then
+    fs_log "agent CLI '$pid' not found — installing" >&2
+    det="$(provider_install)"
+    rc=$?
+    [ "$rc" -eq 0 ] || { fs_err "provider install did not complete: $det"; return "$rc"; }
+  fi
+  ver="$(jq -r '.version // "unknown"' <<<"$det" 2>/dev/null)"
+  provider_login_guide >/dev/null || { fs_err "agent CLI login did not complete"; return 3; }
+  # a stale CLI state dir can pass the login heuristic while the real auth is
+  # broken — a failed smoke gets ONE repair pass (re-drives the login flow)
+  # before this step fails (Codex R1#5).
+  if ! provider_smoke >/dev/null; then
+    fs_log "agent CLI smoke call failed — attempting login repair" >&2
+    provider_repair >/dev/null \
+      || { fs_err "agent CLI smoke call failed and the login repair did not recover it"; return 1; }
+  fi
+  setup_mark_done model_key "$(jq -nc --arg p "$pid" --arg v "$ver" \
+    '{mode:"agent-cli", provider:$p, version:$v}')"
+}
+
 step_run_model_key() {
+  if [ "${FLYWHEEL_AGENT_CLI_ORCHESTRATE:-0}" = "1" ]; then
+    _fs_model_key_orchestrated
+    return $?
+  fi
   fs_log "── Model access ──" >&2
   fs_log "Flywheel Leads/Runners use Claude Code. Log in with YOUR subscription:" >&2
   fs_log "   run: claude   (first run opens the login flow; on WSL2 run it INSIDE the WSL shell)" >&2
