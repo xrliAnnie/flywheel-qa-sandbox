@@ -121,6 +121,7 @@ import {
 	createAlertRateLimiter,
 	rateLimitPerMinuteFromEnv,
 } from "./alert-rate-limiter.js";
+import { founderApprovalHoldGuard } from "./auto-qa-held.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
@@ -3859,11 +3860,21 @@ export async function startBridge(
 			.map((s) => s.trim())
 			.filter(Boolean),
 	);
+	// FLY-1041 Chunk 5: ONE hold guard closure injected into every founder
+	// approval source (text / ✅ reaction / voice) so they cannot drift —
+	// kill-switch FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0 (read per call) restores
+	// the pre-FLY-1041 held-writes-anyway behavior for all three at once.
+	const founderApprovalIsHeld = (executionId: string): boolean =>
+		founderApprovalHoldGuard(store, store.getSession(executionId));
+
 	const founderShipApprovalCallback = makeFounderShipApprovalCallback({
 		discordOwnerUserId: config.discordOwnerUserId,
 		founderConsentUserId: config.founderConsent?.founderUserId,
 		store,
 		denylistProjects: founderAutoApproveDenylist,
+		// FLY-1041 Chunk 4: attribution forensics; Chunk 5: hold alignment.
+		auditStore: store,
+		isHeld: founderApprovalIsHeld,
 		// The db flowing through the deliverer IS a real CommDB (GateResponseDb is
 		// its structural subset), so widening it for the wake is sound at runtime.
 		onResponseWritten: (info) =>
@@ -3887,6 +3898,9 @@ export async function startBridge(
 		founderConsentUserId: config.founderConsent?.founderUserId,
 		store,
 		denylistProjects: founderAutoApproveDenylist,
+		// FLY-1041 Chunk 4/5: same audit target + hold guard as the text source.
+		auditStore: store,
+		isHeld: founderApprovalIsHeld,
 		readBindingImpl: (executionId, questionId, prHeadSha) =>
 			readCurrentGateMessageBinding(store, executionId, questionId, prHeadSha),
 		onResponseWritten: (info) =>
@@ -3915,6 +3929,8 @@ export async function startBridge(
 			apiTokenConfigured: Boolean(config.apiToken),
 			discordOwnerUserId: config.discordOwnerUserId,
 			founderConsentUserId: config.founderConsent?.founderUserId,
+			// FLY-1041 Chunk 5: voice approvals honor the SAME hold guard.
+			isHeld: founderApprovalIsHeld,
 			roundtableChannelIds: (
 				process.env.FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS ?? ""
 			)

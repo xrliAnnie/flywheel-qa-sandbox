@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AutoQaRecord } from "../../StateStore.js";
 import {
 	type AutoQaHeldStore,
+	founderApprovalHoldGuard,
 	isQaHeld,
 	type QaHeldSession,
 } from "../auto-qa-held.js";
@@ -84,5 +85,35 @@ describe("isQaHeld", () => {
 
 	it("undefined session is never held", () => {
 		expect(isQaHeld(storeWith(rec("running")), undefined)).toBe(false);
+	});
+});
+
+describe("founderApprovalHoldGuard (FLY-1041 Chunk 5)", () => {
+	// A merge_block marker holds unconditionally in isReviewHeld — the cheapest
+	// way to construct a held session without codex/QA scaffolding.
+	const heldSession: QaHeldSession = {
+		execution_id: "main-1",
+		merge_block_reason: "merge_without_approval",
+	};
+	const guardStore = {
+		getAutoQaRecord: () => undefined,
+		isCodexCodeReviewApproved: () => true,
+	} as Parameters<typeof founderApprovalHoldGuard>[0];
+
+	it("delegates to isReviewHeld (held session → true)", () => {
+		expect(founderApprovalHoldGuard(guardStore, heldSession, {})).toBe(true);
+	});
+
+	it("un-held session → false", () => {
+		expect(founderApprovalHoldGuard(guardStore, main, {})).toBe(false);
+		expect(founderApprovalHoldGuard(guardStore, undefined, {})).toBe(false);
+	});
+
+	it("FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0 kill-switch → false even when held (byte-compat: held approvals write again)", () => {
+		expect(
+			founderApprovalHoldGuard(guardStore, heldSession, {
+				FLYWHEEL_ATTRIBUTION_HOLD_ALIGN: "0",
+			}),
+		).toBe(false);
 	});
 });

@@ -50,6 +50,15 @@ export interface ReactionApprovalHandlerDeps {
 	onResponseWritten?: Parameters<
 		typeof writeGateResponseAndRunPostWrite
 	>[0]["onResponseWritten"];
+	/**
+	 * FLY-1041 Chunk 5: shared founder-approval hold guard. Checked AFTER a
+	 * founder ✅ is detected and BEFORE the write (Codex R2 note 2 — guarding
+	 * at the poller call-site would spam held_declined every tick with no ✅).
+	 * Absent → no hold check (byte-compat).
+	 */
+	isHeld?: (executionId: string) => boolean;
+	/** FLY-1041 Chunk 4/5: attribution audit sink (see the text handler). */
+	auditSink?: (stage: string, payload?: Record<string, unknown>) => void;
 }
 
 export interface ReactionApprovalHandlerArgs {
@@ -104,6 +113,19 @@ export async function tryFounderReactionApproval(
 		fetcherImpl: deps.reactionFetcherImpl,
 	});
 	if (!signal) return null; // no ✅ yet → keep waiting, re-check next tick
+
+	// FLY-1041 Chunk 5: a founder ✅ on a HELD session (codex not green / QA
+	// running / merge_block) must not be written — same contract as the text
+	// and voice sources ("all founder surfaces hold"). Audited once per gate
+	// message (the factory's event id dedupes re-polls).
+	if (deps.isHeld?.(gate.executionId)) {
+		deps.auditSink?.("held_declined", {
+			questionId: gate.questionId,
+			executionId: gate.executionId,
+			source: "reaction",
+		});
+		return null;
+	}
 
 	const write = deps.writeGateResponseImpl ?? writeGateResponseAndRunPostWrite;
 	const res = await write({

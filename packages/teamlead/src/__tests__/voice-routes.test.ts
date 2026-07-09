@@ -551,3 +551,52 @@ describe("POST /api/voice/ship-approval — guard ladder", () => {
 		expect(responses.size).toBe(0);
 	});
 });
+
+describe("POST /api/voice/ship-approval — review-hold alignment (FLY-1041 Chunk 5)", () => {
+	it("held session → approval NOT written, kind 'held' with an explicit reason, audited held_declined", async () => {
+		const { app, responses, insertedEvents } = makeApp({
+			isHeld: () => true,
+		});
+		const res = await httpRequest(
+			app,
+			"POST",
+			"/api/voice/ship-approval",
+			SHIP_BODY,
+		);
+		expect(res.status).toBe(200);
+		expect(res.body.written).toBe(false);
+		expect(res.body.kind).toBe("held");
+		expect(responses.size).toBe(0);
+		const audit = insertedEvents.find(
+			(e) =>
+				e.event_type === "voice_approval_attempt" &&
+				(e.payload as Record<string, unknown>)?.outcome === "held_declined",
+		);
+		expect(audit).toBeDefined();
+	});
+
+	it("un-held session → write proceeds (byte-compat)", async () => {
+		const { app, responses } = makeApp({ isHeld: () => false });
+		const res = await httpRequest(
+			app,
+			"POST",
+			"/api/voice/ship-approval",
+			SHIP_BODY,
+		);
+		expect(res.status).toBe(200);
+		expect(res.body.written).toBe(true);
+		expect(responses.size).toBe(1);
+	});
+
+	it("isHeld not wired (absent dep) → write proceeds exactly as before", async () => {
+		const { app, responses } = makeApp();
+		const res = await httpRequest(
+			app,
+			"POST",
+			"/api/voice/ship-approval",
+			SHIP_BODY,
+		);
+		expect(res.status).toBe(200);
+		expect(responses.size).toBe(1);
+	});
+});

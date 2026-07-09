@@ -28,12 +28,26 @@ export interface FounderShipApprovalInput {
 	issueId: string;
 	issueIdentifier?: string;
 	prHeadSha: string;
+	/**
+	 * FLY-1041 Chunk 7: the message is a VERIFIED Discord reply to this exact
+	 * gate's ship card — the prompt may treat short affirmations as approval of
+	 * THIS gate (reject/unclear rules are NOT relaxed).
+	 */
+	replyToCard?: boolean;
 }
 
 export type ClassifierVerdict =
 	| { kind: "approve"; evidenceMessageId: string }
 	| { kind: "reject"; reason: string }
-	| { kind: "unclear" };
+	/**
+	 * FLY-1041 Chunk 4: "unclear" now distinguishes WHY. `runnerFailed` marks
+	 * an infrastructure failure (spawn/timeout/login/rate-limit — the runner
+	 * never produced a model verdict); a model "unclear" leaves it unset. The
+	 * caller still fail-closes identically on every unclear — this is pure
+	 * observability (the FLY-910 「嗯ship」 forensics were impossible because
+	 * both cases collapsed to a bare "unclear").
+	 */
+	| { kind: "unclear"; runnerFailed?: boolean; reason?: string };
 
 export type ClassifierRunnerImpl = (
 	prompt: string,
@@ -56,6 +70,12 @@ function buildPrompt(input: FounderShipApprovalInput): string {
 		input.messageContent,
 		"FOUNDER_MESSAGE",
 		"",
+		...(input.replyToCard
+			? [
+					"This message is a DIRECT Discord reply to the ship-approval card for this exact gate — treat short affirmations (ok / okk / 嗯 / 好) as approval of THIS gate unless hedged or negative.",
+					"",
+				]
+			: []),
 		`Decide whether this message CLEARLY and UNCONDITIONALLY approves shipping ${issue} RIGHT NOW.`,
 		"Rules (fail-closed — when in doubt, answer unclear):",
 		'- "approve" ONLY for an unambiguous present-tense approval of THIS issue.',
@@ -78,20 +98,29 @@ export async function classifyFounderShipApproval(
 			model: deps.model,
 			claudeBin: deps.claudeBin,
 		});
-	} catch {
-		return { kind: "unclear" }; // runner should never throw, belt-and-suspenders
+	} catch (err) {
+		// runner should never throw, belt-and-suspenders
+		return {
+			kind: "unclear",
+			runnerFailed: true,
+			reason: (err as Error).message,
+		};
 	}
-	if (!res.ok) return { kind: "unclear" };
+	if (!res.ok) {
+		return { kind: "unclear", runnerFailed: true, reason: res.reason };
+	}
 
 	const v = res.verdict;
-	if (typeof v !== "object" || v === null) return { kind: "unclear" };
+	if (typeof v !== "object" || v === null) {
+		return { kind: "unclear", reason: "malformed_verdict" };
+	}
 	const decision = (v as { decision?: unknown }).decision;
 	const evidence = (v as { evidence_message_id?: unknown }).evidence_message_id;
 
 	if (decision === "approve") {
 		// Binding: the model must have grounded on the EXACT founder message.
 		if (typeof evidence !== "string" || evidence !== input.expectedMessageId) {
-			return { kind: "unclear" };
+			return { kind: "unclear", reason: "evidence_message_id_mismatch" };
 		}
 		return { kind: "approve", evidenceMessageId: evidence };
 	}

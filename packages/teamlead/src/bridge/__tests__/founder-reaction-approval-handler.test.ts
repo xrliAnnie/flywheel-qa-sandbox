@@ -157,3 +157,44 @@ describe("tryFounderReactionApproval", () => {
 		expect(r).toEqual({ handled: [], retrySafe: false });
 	});
 });
+
+describe("tryFounderReactionApproval — hold guard (FLY-1041 Chunk 5, Codex R2 note 2)", () => {
+	it("held + founder ✅ → exactly one held_declined audit, NO write, null", async () => {
+		const auditSink = vi.fn();
+		const { deps, writeGateResponseImpl } = make({
+			isHeld: vi.fn().mockReturnValue(true),
+			auditSink,
+		});
+		const r = await tryFounderReactionApproval({ gate, ctx }, deps as never);
+		expect(r).toBeNull();
+		expect(writeGateResponseImpl).not.toHaveBeenCalled();
+		const heldCalls = auditSink.mock.calls.filter(
+			(c) => c[0] === "held_declined",
+		);
+		expect(heldCalls).toHaveLength(1);
+	});
+
+	it("held + NO ✅ (evaluator null) → ZERO held_declined audits (no noise per tick)", async () => {
+		const auditSink = vi.fn();
+		const { deps, writeGateResponseImpl } = make({
+			isHeld: vi.fn().mockReturnValue(true),
+			auditSink,
+			evaluateReactionImpl: vi.fn().mockResolvedValue(null),
+		});
+		const r = await tryFounderReactionApproval({ gate, ctx }, deps as never);
+		expect(r).toBeNull();
+		expect(writeGateResponseImpl).not.toHaveBeenCalled();
+		expect(
+			auditSink.mock.calls.filter((c) => c[0] === "held_declined"),
+		).toHaveLength(0);
+	});
+
+	it("un-held + founder ✅ → write proceeds (byte-compat)", async () => {
+		const { deps, writeGateResponseImpl } = make({
+			isHeld: vi.fn().mockReturnValue(false),
+		});
+		const r = await tryFounderReactionApproval({ gate, ctx }, deps as never);
+		expect(r).toEqual({ handled: ["Q-1"], retrySafe: true });
+		expect(writeGateResponseImpl).toHaveBeenCalledOnce();
+	});
+});

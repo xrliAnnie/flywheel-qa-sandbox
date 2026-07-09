@@ -169,3 +169,76 @@ describe("evaluateTextSource — tier2 prefix normalization wiring (FLY-1041 Fix
 		expect(classifyImpl).toHaveBeenCalledOnce();
 	});
 });
+
+describe("evaluateTextSource — attribution evidence (FLY-1041 Chunk 4)", () => {
+	it("tier2 hit carries evidence.stage=tier2_approve", async () => {
+		const sig = await evaluateTextSource(
+			{ gate: GATE, message: msg("ship") },
+			{ classifyImpl: vi.fn() },
+		);
+		expect(sig).toMatchObject({
+			kind: "approve",
+			evidence: { stage: "tier2_approve" },
+		});
+	});
+
+	it("explicit mismatched reference carries tier2_downgrade evidence", async () => {
+		const sig = await evaluateTextSource(
+			{ gate: GATE, message: msg("ship FLY-756") },
+			{ classifyImpl: vi.fn() },
+		);
+		expect(sig).toMatchObject({
+			kind: "unclear",
+			evidence: {
+				stage: "tier2_downgrade",
+				reason: "explicit_mismatched_reference",
+			},
+		});
+	});
+
+	it("tier3 runner failure surfaces as tier3_runner_failed with the runner reason", async () => {
+		const classifyImpl = vi.fn().mockResolvedValue({
+			kind: "unclear",
+			runnerFailed: true,
+			reason: "spawn ENOENT",
+		});
+		const sig = await evaluateTextSource(
+			{ gate: GATE, message: msg("maybe later then") },
+			{ classifyImpl },
+		);
+		expect(sig).toMatchObject({
+			kind: "unclear",
+			evidence: { stage: "tier3_runner_failed", reason: "spawn ENOENT" },
+		});
+	});
+
+	it("tier3 model verdicts map to tier3_approve / tier3_reject / tier3_unclear", async () => {
+		const approve = await evaluateTextSource(
+			{ gate: GATE, message: msg("sure why not") },
+			{
+				classifyImpl: vi
+					.fn()
+					.mockResolvedValue({ kind: "approve", evidenceMessageId: "MSG-1" }),
+			},
+		);
+		expect(approve).toMatchObject({ evidence: { stage: "tier3_approve" } });
+
+		const reject = await evaluateTextSource(
+			{ gate: GATE, message: msg("hold on there") },
+			{
+				classifyImpl: vi
+					.fn()
+					.mockResolvedValue({ kind: "reject", reason: "not yet" }),
+			},
+		);
+		expect(reject).toMatchObject({
+			evidence: { stage: "tier3_reject", reason: "not yet" },
+		});
+
+		const unclear = await evaluateTextSource(
+			{ gate: GATE, message: msg("how is it going") },
+			{ classifyImpl: vi.fn().mockResolvedValue({ kind: "unclear" }) },
+		);
+		expect(unclear).toMatchObject({ evidence: { stage: "tier3_unclear" } });
+	});
+});

@@ -261,3 +261,160 @@ describe("tryFounderShipApproval — image approval (default-off fast-follow)", 
 		expect(d.evaluateTextImpl).toHaveBeenCalledOnce();
 	});
 });
+
+describe("tryFounderShipApproval — attribution audit + hold guard (FLY-1041)", () => {
+	it("narrow_zero: no current gate → auditSink('narrow_zero') + null", async () => {
+		const auditSink = vi.fn();
+		const d = deps({
+			auditSink,
+			store: {
+				getSession: vi
+					.fn()
+					.mockReturnValue(session({ review_question_id: "Q-OTHER" })),
+			},
+		});
+		const r = await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+		expect(r).toBeNull();
+		expect(auditSink).toHaveBeenCalledWith(
+			"narrow_zero",
+			expect.objectContaining({ shipGateQids: ["Q-1"] }),
+		);
+	});
+
+	it("narrow_multi: two current gates → auditSink with per-gate snapshots + null", async () => {
+		const auditSink = vi.fn();
+		const d = deps({
+			auditSink,
+			store: {
+				getSession: vi
+					.fn()
+					.mockImplementation((e: string) =>
+						session({ review_question_id: e === "E-1" ? "Q-1" : "Q-2" }),
+					),
+			},
+		});
+		const two = [
+			{
+				questionId: "Q-1",
+				checkpoint: "approve_to_ship",
+				executionId: "E-1",
+				createdAtMs: 1,
+			},
+			{
+				questionId: "Q-2",
+				checkpoint: "approve_to_ship",
+				executionId: "E-2",
+				createdAtMs: 2,
+			},
+		];
+		const r = await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: two, ctx: CTX },
+			d,
+		);
+		expect(r).toBeNull();
+		expect(auditSink).toHaveBeenCalledWith(
+			"narrow_multi",
+			expect.objectContaining({
+				candidates: [
+					expect.objectContaining({ questionId: "Q-1", executionId: "E-1" }),
+					expect.objectContaining({ questionId: "Q-2", executionId: "E-2" }),
+				],
+			}),
+		);
+	});
+
+	it("held session: decline BEFORE evaluation — no evaluate, no write, held_declined audit, null (WAKE-only for approve AND reject alike)", async () => {
+		const auditSink = vi.fn();
+		const d = deps({ auditSink, isHeld: vi.fn().mockReturnValue(true) });
+		const r = await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+		expect(r).toBeNull();
+		expect(d.evaluateTextImpl).not.toHaveBeenCalled();
+		expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
+		expect(auditSink).toHaveBeenCalledWith(
+			"held_declined",
+			expect.objectContaining({ questionId: "Q-1" }),
+		);
+	});
+
+	it("un-held session: isHeld false → normal write path", async () => {
+		const d = deps({ isHeld: vi.fn().mockReturnValue(false) });
+		const r = await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+		expect(r).toEqual({ handled: ["Q-1"], retrySafe: true });
+	});
+
+	it("signal evidence stage flows into the audit (tier2_approve → response_written)", async () => {
+		const auditSink = vi.fn();
+		const d = deps({
+			auditSink,
+			evaluateTextImpl: vi.fn().mockResolvedValue({
+				source: "text",
+				kind: "approve",
+				questionId: "Q-1",
+				prHeadSha: HEAD,
+				messageId: "MSG-1",
+				authorUserId: "FOUNDER-1",
+				evidence: { stage: "tier2_approve" },
+			}),
+		});
+		await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+		expect(auditSink).toHaveBeenCalledWith(
+			"tier2_approve",
+			expect.objectContaining({ questionId: "Q-1", kind: "approve" }),
+		);
+		expect(auditSink).toHaveBeenCalledWith(
+			"response_written",
+			expect.objectContaining({ decision: "approve", written: true }),
+		);
+	});
+
+	it("tier3 runner failure surfaces its reason instead of being folded away", async () => {
+		const auditSink = vi.fn();
+		const d = deps({
+			auditSink,
+			evaluateTextImpl: vi.fn().mockResolvedValue({
+				source: "text",
+				kind: "unclear",
+				questionId: "Q-1",
+				prHeadSha: HEAD,
+				messageId: "MSG-1",
+				authorUserId: "FOUNDER-1",
+				evidence: { stage: "tier3_runner_failed", reason: "spawn ENOENT" },
+			}),
+		});
+		const r = await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+		expect(r).toBeNull(); // still WAKE-only
+		expect(auditSink).toHaveBeenCalledWith(
+			"tier3_runner_failed",
+			expect.objectContaining({ reason: "spawn ENOENT" }),
+		);
+		expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
+	});
+
+	it("reply-to-card context is audited (reply_to_card_hit)", async () => {
+		const auditSink = vi.fn();
+		const d = deps({ auditSink });
+		await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX, replyToCard: true },
+			d,
+		);
+		expect(auditSink).toHaveBeenCalledWith(
+			"reply_to_card_hit",
+			expect.objectContaining({ questionId: "Q-1" }),
+		);
+	});
+});
