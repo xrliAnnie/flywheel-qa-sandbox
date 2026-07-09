@@ -3,25 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
 <title>GitHub 🆒 ship — 给你拍方向的一页</title>
 <style>
   :root{
     --bg:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --dim:#6e6e73;
     --line:#e5e5ea; --blue:#007aff; --green:#34c759; --amber:#ff9500;
-    --purple:#af52de; --shadow:0 1px 3px rgba(0,0,0,.06),0 8px 24px rgba(0,0,0,.04);
+    --shadow:0 1px 3px rgba(0,0,0,.06),0 8px 24px rgba(0,0,0,.04);
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);
     font-family:-apple-system,system-ui,"SF Pro Text","PingFang SC",sans-serif;
-    line-height:1.62;-webkit-font-smoothing:antialiased;padding:0 0 64px}
+    line-height:1.62;-webkit-font-smoothing:antialiased;padding:0 0 72px}
   .wrap{max-width:720px;margin:0 auto;padding:0 18px}
   header{padding:40px 18px 12px;text-align:center}
   header .eyebrow{color:var(--dim);font-size:13px;letter-spacing:.04em;text-transform:uppercase;margin:0 0 8px}
   header h1{font-size:26px;line-height:1.25;margin:0 0 6px;font-weight:700}
   header p{color:var(--dim);font-size:15px;margin:6px auto 0;max-width:34em}
-  .card{background:var(--card);border-radius:16px;box-shadow:var(--shadow);
-    padding:22px 20px;margin:16px 0}
+  .card{background:var(--card);border-radius:16px;box-shadow:var(--shadow);padding:22px 20px;margin:16px 0}
   .card h2{font-size:19px;margin:0 0 10px;font-weight:700}
   .card h3{font-size:16px;margin:2px 0 6px;font-weight:650}
   .card p{margin:8px 0}
@@ -36,7 +34,7 @@
   .opt.a{border-top-color:var(--green)}
   .opt.b{border-top-color:var(--dim)}
   .opt .tag{font-size:13px;font-weight:700;letter-spacing:.02em;margin:0 0 2px}
-  .opt.a .tag{color:var(--green)}
+  .opt.a .tag{color:#1c7a37}
   .opt.b .tag{color:var(--dim)}
   .opt .rec{display:inline-block;font-size:11px;font-weight:700;color:#fff;background:var(--green);
     padding:2px 8px;border-radius:999px;margin-left:6px;vertical-align:middle}
@@ -46,13 +44,28 @@
   .warn{border-left:4px solid var(--amber);background:#fffaf2;border-radius:10px;padding:14px 16px;margin:14px 0}
   .warn strong{color:#c26a00}
   .agree{border-left:4px solid var(--green);background:#f3fcf5;border-radius:10px;padding:14px 16px;margin:12px 0}
-  .qs{counter-reset:q}
-  .qs .q{display:flex;gap:12px;align-items:flex-start;margin:14px 0}
-  .qs .q .n{flex:0 0 26px;height:26px;border-radius:50%;background:var(--blue);color:#fff;
-    font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center;margin-top:1px}
-  .qs .q .t{flex:1}
-  .qs .q .t b{display:block}
-  .qs .q .t span{color:var(--dim);font-size:14px}
+  .q{margin:22px 0 0;padding-top:18px;border-top:1px solid var(--line)}
+  .q:first-of-type{border-top:0;padding-top:4px}
+  .q .qhead{display:flex;gap:12px;align-items:flex-start}
+  .q .n{flex:0 0 26px;height:26px;border-radius:50%;background:var(--blue);color:#fff;
+    font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center;margin-top:2px}
+  .q .t b{display:block;font-size:15.5px}
+  .q .t span{color:var(--dim);font-size:14px}
+  .q textarea{width:100%;margin-top:10px;min-height:78px;resize:vertical;
+    font:inherit;font-size:15px;line-height:1.55;color:var(--ink);
+    background:#fbfbfd;border:1.5px solid var(--line);border-radius:12px;padding:11px 13px}
+  .q textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+  .actions{position:sticky;bottom:0;background:linear-gradient(180deg,rgba(245,245,247,0),var(--bg) 28%);
+    padding:18px 0 6px;margin-top:8px;text-align:center}
+  button{font:inherit;font-weight:650;font-size:15.5px;color:#fff;background:var(--blue);
+    border:0;border-radius:12px;padding:13px 22px;cursor:pointer;box-shadow:var(--shadow);width:100%;max-width:420px}
+  button:active{transform:translateY(1px)}
+  button.done{background:var(--green)}
+  .hint{color:var(--dim);font-size:13px;margin:10px 0 0}
+  #out{margin:12px 0 0;display:none;font:inherit;font-size:14px;text-align:left;
+    background:#fff;border:1.5px solid var(--line);border-radius:12px;padding:12px;white-space:pre-wrap;
+    overflow-x:auto;-webkit-user-select:text;user-select:text}
+  #out.show{display:block}
   .flow{display:flex;flex-direction:column;gap:8px;margin-top:8px}
   .flow .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
   .chip{font-size:13px;font-weight:600;padding:6px 12px;border-radius:10px;background:#eef0f4;color:var(--ink)}
@@ -147,16 +160,101 @@
 
   <div class="card">
     <span class="pill">需要你回的（越少越好）</span>
-    <h2 style="margin-bottom:14px">三个问题</h2>
-    <div class="qs">
-      <div class="q"><div class="n">1</div><div class="t"><b>方案 A 还是 B？</b><span>（我推荐 A）</span></div></div>
-      <div class="q"><div class="n">2</div><div class="t"><b>如果 A：接受「给机器人一个单独身份、把 xrliAnnie 还给你本人」这个前提吗？</b></div></div>
-      <div class="q"><div class="n">3</div><div class="t"><b>第一批要装 🆒 的 repo，除了 flywheel 还有哪些？</b><span>（先在 flywheel 跑通，再铺开）</span></div></div>
+    <h2 style="margin-bottom:6px">三个问题 — 直接写在下面框里</h2>
+    <p class="why" style="margin-top:0">写完点最底下的按钮，一键复制你的批注。</p>
+
+    <div class="q">
+      <div class="qhead"><div class="n">1</div><div class="t">
+        <b>方案 A 还是 B？</b><span>我推荐 A（GitHub 🆒 = 你的正式审批）</span>
+      </div></div>
+      <textarea id="q1" data-label="Q1 方案 A 还是 B" placeholder="例：A。或者：都不是，我其实想让 GitHub 直接取代 Discord…"></textarea>
     </div>
-    <p class="why">拍完 1（和 2），我就把它落成正式 PRD 并拆开发任务。其余细节我们边做边对，不用你操心。</p>
+
+    <div class="q">
+      <div class="qhead"><div class="n">2</div><div class="t">
+        <b>如果选 A：接受「给机器人一个单独身份、把 xrliAnnie 还给你本人」这个前提吗？</b>
+      </div></div>
+      <textarea id="q2" data-label="Q2 身份分离前提" placeholder="例：接受。或者：不想新建账号，用 GitHub App…"></textarea>
+    </div>
+
+    <div class="q">
+      <div class="qhead"><div class="n">3</div><div class="t">
+        <b>第一批要装 🆒 的 repo，除了 flywheel 还有哪些？</b><span>先在 flywheel 跑通，再铺开</span>
+      </div></div>
+      <textarea id="q3" data-label="Q3 第一批 repo" placeholder="例：GeoForge3D、flywheel-skills…"></textarea>
+    </div>
+
+    <div class="actions">
+      <button id="copy" type="button">📋 一键复制我的批注</button>
+      <p class="hint">复制后贴回 Discord 给 Honey Lemon 就行。</p>
+      <pre id="out" aria-label="批注文本"></pre>
+    </div>
   </div>
 
   <footer>Honey Lemon · Flywheel Product · 这是提案，不是最终 PRD</footer>
 </div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ids = ["q1", "q2", "q3"];
+  var btn = document.getElementById("copy");
+  var out = document.getElementById("out");
+
+  function build() {
+    var lines = ["【FLY-1063 · GitHub 🆒 ship — Annie 的批注】", ""];
+    var any = false;
+    ids.forEach(function (id) {
+      var el = document.getElementById(id);
+      var label = el.getAttribute("data-label");
+      var val = (el.value || "").trim();
+      if (val) any = true;
+      lines.push(label + "：" + (val || "（未填）"));
+      lines.push("");
+    });
+    if (!any) lines.push("（三个问题都还没填）");
+    return lines.join("\n").trim();
+  }
+
+  function flash(text) {
+    var original = "📋 一键复制我的批注";
+    btn.textContent = text;
+    btn.classList.add("done");
+    setTimeout(function () {
+      btn.textContent = original;
+      btn.classList.remove("done");
+    }, 2000);
+  }
+
+  function fallback(text) {
+    // Always reveal the text so it can be selected + copied by hand.
+    out.textContent = text;
+    out.classList.add("show");
+    // Try a scratch textarea + execCommand before giving up on auto-copy.
+    var scratch = document.createElement("textarea");
+    scratch.value = text;
+    scratch.setAttribute("readonly", "");
+    scratch.style.position = "fixed";
+    scratch.style.opacity = "0";
+    document.body.appendChild(scratch);
+    scratch.select();
+    var copied = false;
+    try { copied = document.execCommand("copy"); } catch (e) { copied = false; }
+    document.body.removeChild(scratch);
+    flash(copied ? "✓ 已复制" : "↓ 请手动复制下方文本");
+  }
+
+  btn.addEventListener("click", function () {
+    var text = build();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { flash("✓ 已复制"); },
+        function () { fallback(text); }
+      );
+    } else {
+      fallback(text);
+    }
+  });
+})();
+</script>
 </body>
 </html>
