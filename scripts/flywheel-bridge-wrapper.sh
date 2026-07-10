@@ -105,7 +105,7 @@ if [[ -f "$BRIDGE_PORT_LIB" ]]; then
     # broken, better a wrong-channel post than a lost Bridge-death signal.
     # The sender IDENTITY, however, resolves via the FLY-927 seam (indirect
     # expansion, semantics aligned with lead-alert.sh:243-247) — the old
-    # Simba/DISCORD_BOT_TOKEN fallback was the FLY-915 pain-#3 bug. Seam
+    # Simba/legacy-bot-token fallback was the FLY-915 pain-#3 bug. Seam
     # unresolvable → stderr ERROR + return 0 (the meta-alert above already
     # fired; no Discord leg is left). stdout stays EMPTY throughout — this
     # function runs inside the $(bp_launcher_preflight …) capture (Codex R2

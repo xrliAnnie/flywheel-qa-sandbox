@@ -40,7 +40,7 @@ const projects: ProjectEntry[] = [
 				chatChannel: "chat-1",
 				match: { labels: ["cos"] },
 				alertChannel: "alerts-1",
-				alertBotTokenEnv: "SIMBA_BOT_TOKEN",
+				alertBotTokenEnv: "TEST_COS_BOT_TOKEN",
 			},
 		],
 	},

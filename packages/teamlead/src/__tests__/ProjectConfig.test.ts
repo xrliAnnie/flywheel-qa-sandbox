@@ -1151,7 +1151,7 @@ describe("FLY-83 alert fields", () => {
 				leads: [
 					validLead({
 						alertChannel: "1487340532610109520",
-						alertBotTokenEnv: "SIMBA_BOT_TOKEN",
+						alertBotTokenEnv: "TEST_COS_BOT_TOKEN",
 						alertDmUserId: "999",
 						alertFallbackToCore: true,
 					}),
@@ -1160,7 +1160,7 @@ describe("FLY-83 alert fields", () => {
 		]);
 		const lead = loadProjects()[0]!.leads[0]!;
 		expect(lead.alertChannel).toBe("1487340532610109520");
-		expect(lead.alertBotTokenEnv).toBe("SIMBA_BOT_TOKEN");
+		expect(lead.alertBotTokenEnv).toBe("TEST_COS_BOT_TOKEN");
 		expect(lead.alertDmUserId).toBe("999");
 		expect(lead.alertFallbackToCore).toBe(true);
 	});

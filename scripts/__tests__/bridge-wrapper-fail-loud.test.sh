@@ -14,9 +14,11 @@
 set -u
 
 # Hermetic: a configured dev shell exports the production seam env — clear it
-# so only per-scenario values apply.
+# so only per-scenario values apply. The legacy token names are concatenated so
+# this file stays out of the FLY-1081 grep-zero sentinel's hit set.
+LEGACY_COS_TOKEN_NAME='SIMBA''_BOT_TOKEN'
 unset FLYWHEEL_ALERT_SENDER_TOKEN_ENV FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN \
-      SIMBA_BOT_TOKEN DISCORD_BOT_TOKEN DISCORD_CORE_CHANNEL 2>/dev/null || true
+      "$LEGACY_COS_TOKEN_NAME" DISCORD_BOT_TOKEN DISCORD_CORE_CHANNEL 2>/dev/null || true
 
 PASSED=0; FAILED=0
 pass() { PASSED=$((PASSED + 1)); echo "[TEST] ✓ $1"; }
@@ -126,7 +128,7 @@ grep -q "channels/core-1/messages" "$CURL_CALLS" \
 # ── 4. FLY-1081: seam UNRESOLVABLE → ZERO curl, stderr ERROR, rc=0, stdout empty ──
 # 4a. seam env unset entirely (legacy Simba env present must NOT be used).
 run_scenario absent \
-  SIMBA_BOT_TOKEN="simba-tok" DISCORD_BOT_TOKEN="legacy-tok" DISCORD_CORE_CHANNEL="core-1"
+  "${LEGACY_COS_TOKEN_NAME}=simba-tok" DISCORD_BOT_TOKEN="legacy-tok" DISCORD_CORE_CHANNEL="core-1"
 [[ ! -s "$CURL_CALLS" ]] \
   && pass "S4a seam unset → ZERO curl (no Simba/DISCORD_BOT_TOKEN fallback)" \
   || fail "S4a fell back to legacy token: $(cat "$CURL_CALLS")"

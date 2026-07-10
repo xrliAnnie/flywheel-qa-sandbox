@@ -57,7 +57,7 @@ fixture_projects() {
    {"agentId":"mufasa-lead","chatChannel":"111","alertChannel":"111","match":{"labels":["growth"]},"botTokenEnv":"MUFASA_BOT_TOKEN","canSpawnRunners":false,"companion":${companion},"department":"growth"}]},
  {"projectName":"geoforge3d","projectRoot":"${h}/proj-gf","leads":[
    {"agentId":"product-lead","chatChannel":"222","match":{"labels":["Product"]},"botTokenEnv":"PETER_BOT_TOKEN","canSpawnRunners":true},
-   {"agentId":"cos-lead","chatChannel":"333","match":{"labels":["PM"]},"botTokenEnv":"SIMBA_BOT_TOKEN","canSpawnRunners":false}]}
+   {"agentId":"cos-lead","chatChannel":"333","match":{"labels":["PM"]},"botTokenEnv":"TEST_COS_BOT_TOKEN","canSpawnRunners":false}]}
 ]
 JSON
 }

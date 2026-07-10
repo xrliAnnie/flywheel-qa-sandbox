@@ -38,7 +38,7 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [flywheel-updater] $*"; }
 # FLY-1081 (FLY-915 pain #3): 🚨 self-ship failures route via lead-alert.sh
 # (system identity --lead updater, kind deploy_failed) — the FLY-927 sender
 # seam (FLYWHEEL_ALERT_SENDER_TOKEN_ENV), claims dedup and queue/dead-letter
-# fail-loud all come for free. The old Simba/DISCORD_BOT_TOKEN direct-curl
+# fail-loud all come for free. The old Simba/bot-token direct-curl
 # fallback is deliberately GONE: an unresolvable sender dead-letters +
 # meta-alerts inside lead-alert.sh instead of posting as the wrong identity.
 # Founder ping (gate-approved hard requirement): FLYWHEEL_FOUNDER_USER_ID

@@ -28,10 +28,10 @@ const testProjects: ProjectEntry[] = [
 				forumChannel: "forum-1",
 				chatChannel: "chat-1",
 				match: { labels: ["cos"] },
-				botTokenEnv: "SIMBA_BOT_TOKEN",
+				botTokenEnv: "TEST_COS_BOT_TOKEN",
 				botToken: "resolved-bot-token",
 				alertChannel: "1487340532610109520",
-				alertBotTokenEnv: "SIMBA_BOT_TOKEN",
+				alertBotTokenEnv: "TEST_COS_BOT_TOKEN",
 				alertFallbackToCore: true,
 			},
 			{
@@ -554,10 +554,14 @@ describe("LeadAlertNotifier — FLY-368 rework: owner-attributed send chain", ()
 		store = await StateStore.create(":memory:");
 		queueDir = mkdtempSync(join(tmpdir(), "fly368rw-queue-"));
 		// Set the fleet bot tokens this suite asserts attribution against.
-		for (const k of ["SIMBA_BOT_TOKEN", "PETER_BOT_TOKEN", "CASS_BOT_TOKEN"]) {
+		for (const k of [
+			"TEST_COS_BOT_TOKEN",
+			"PETER_BOT_TOKEN",
+			"CASS_BOT_TOKEN",
+		]) {
 			saved[k] = process.env[k];
 		}
-		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.TEST_COS_BOT_TOKEN = "simba-tok";
 		process.env.PETER_BOT_TOKEN = "peter-tok";
 		process.env.CASS_BOT_TOKEN = "cass-tok";
 	});
@@ -569,7 +573,7 @@ describe("LeadAlertNotifier — FLY-368 rework: owner-attributed send chain", ()
 		}
 	});
 
-	// testProjects: cos-lead=SIMBA_BOT_TOKEN, product-lead=PETER_BOT_TOKEN,
+	// testProjects: cos-lead=TEST_COS_BOT_TOKEN, product-lead=PETER_BOT_TOKEN,
 	// ops-lead=(no botTokenEnv). Cass token env for repair/fallback = CASS_BOT_TOKEN.
 	const unified = {
 		channelId: "OPS-CHAN",
@@ -711,7 +715,11 @@ describe("LeadAlertNotifier — FLY-368 rework: owner-attributed send chain", ()
 
 	it("findUnreachableAlertLeads: unified + NO fleet bot resolves → one fleet-wide entry", () => {
 		// unset every fleet token so the whole chain resolves nothing
-		for (const k of ["SIMBA_BOT_TOKEN", "PETER_BOT_TOKEN", "CASS_BOT_TOKEN"]) {
+		for (const k of [
+			"TEST_COS_BOT_TOKEN",
+			"PETER_BOT_TOKEN",
+			"CASS_BOT_TOKEN",
+		]) {
 			delete process.env[k];
 		}
 		const out = findUnreachableAlertLeads(testProjects, {
@@ -789,10 +797,10 @@ describe("LeadAlertNotifier — FLY-927 Task 1.2: 🎫 ticket schema header", ()
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
 		queueDir = mkdtempSync(join(tmpdir(), "fly927-tickets-"));
-		for (const k of ["SIMBA_BOT_TOKEN", "CASS_BOT_TOKEN"]) {
+		for (const k of ["TEST_COS_BOT_TOKEN", "CASS_BOT_TOKEN"]) {
 			saved[k] = process.env[k];
 		}
-		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.TEST_COS_BOT_TOKEN = "simba-tok";
 		process.env.CASS_BOT_TOKEN = "cass-tok";
 	});
 	afterEach(() => {
@@ -927,14 +935,14 @@ describe("LeadAlertNotifier — FLY-927 Task 1.3: single sender identity (D2)", 
 		store = await StateStore.create(":memory:");
 		queueDir = mkdtempSync(join(tmpdir(), "fly927-sender-"));
 		for (const k of [
-			"SIMBA_BOT_TOKEN",
+			"TEST_COS_BOT_TOKEN",
 			"CASS_BOT_TOKEN",
 			"INFRA_SENDER_TOKEN",
 			"FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
 		]) {
 			saved[k] = process.env[k];
 		}
-		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.TEST_COS_BOT_TOKEN = "simba-tok";
 		process.env.CASS_BOT_TOKEN = "cass-tok";
 	});
 	afterEach(() => {
@@ -1069,13 +1077,13 @@ describe("LeadAlertNotifier — FLY-927 Task 1.4: unified-channel rate cap (T1)"
 		store = await StateStore.create(":memory:");
 		queueDir = mkdtempSync(join(tmpdir(), "fly927-rate-"));
 		for (const k of [
-			"SIMBA_BOT_TOKEN",
+			"TEST_COS_BOT_TOKEN",
 			"CASS_BOT_TOKEN",
 			"FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
 		]) {
 			saved[k] = process.env[k];
 		}
-		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.TEST_COS_BOT_TOKEN = "simba-tok";
 		process.env.CASS_BOT_TOKEN = "cass-tok";
 		delete process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;
 	});
@@ -1247,14 +1255,14 @@ describe("LeadAlertNotifier — FLY-927 Codex R1 fixes", () => {
 		store = await StateStore.create(":memory:");
 		queueDir = mkdtempSync(join(tmpdir(), "fly927-r1-"));
 		for (const k of [
-			"SIMBA_BOT_TOKEN",
+			"TEST_COS_BOT_TOKEN",
 			"CASS_BOT_TOKEN",
 			"INFRA_SENDER_TOKEN",
 			"FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
 		]) {
 			saved[k] = process.env[k];
 		}
-		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.TEST_COS_BOT_TOKEN = "simba-tok";
 		process.env.CASS_BOT_TOKEN = "cass-tok";
 		delete process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;
 	});
@@ -1330,7 +1338,7 @@ describe("LeadAlertNotifier — FLY-927 Codex R1 fixes", () => {
 		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV = "INFRA_SENDER_TOKEN";
 		process.env.INFRA_SENDER_TOKEN = "infra-tok";
 		delete process.env.CASS_BOT_TOKEN;
-		delete process.env.SIMBA_BOT_TOKEN;
+		delete process.env.TEST_COS_BOT_TOKEN;
 		expect(
 			findUnreachableAlertLeads([], {
 				channelId: "OPS-CHAN",
@@ -1370,14 +1378,14 @@ describe("LeadAlertNotifier — FLY-1081: deploy kinds + mentionUserId + drain u
 		store = await StateStore.create(":memory:");
 		queueDir = mkdtempSync(join(tmpdir(), "fly1081-queue-"));
 		for (const k of [
-			"SIMBA_BOT_TOKEN",
+			"TEST_COS_BOT_TOKEN",
 			"CASS_BOT_TOKEN",
 			"FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
 			"FLYWHEEL_ALERT_TICKETS",
 		]) {
 			saved[k] = process.env[k];
 		}
-		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.TEST_COS_BOT_TOKEN = "simba-tok";
 		process.env.CASS_BOT_TOKEN = "cass-tok";
 		// Hermetic against a dev shell that carries the production sender env.
 		delete process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;

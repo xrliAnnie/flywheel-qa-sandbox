@@ -104,7 +104,7 @@ fire_meta_alert() {
 # FLY-1081 (FLY-915 pain #3): ⚠️/🚨 deploy notices route through lead-alert.sh
 # — the FLY-927 sender seam (FLYWHEEL_ALERT_SENDER_TOKEN_ENV), claims dedup,
 # queue/dead-letter fail-loud all come for free. There is deliberately NO
-# Simba/DISCORD_BOT_TOKEN fallback anymore: an unresolvable sender is
+# Simba/legacy-bot-token fallback anymore: an unresolvable sender is
 # lead-alert.sh's dead-letter + meta-alert, never a mis-attributed post.
 #
 # stdout discipline: these helpers are reachable from command-substitution
