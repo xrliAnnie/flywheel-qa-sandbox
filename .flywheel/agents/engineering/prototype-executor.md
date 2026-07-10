@@ -61,14 +61,23 @@ step" shape is NOT this role — this whole playbook is one file, one session.)
   the three-cell matrix at the end. Structured issue-type → pipeline mapping is
   FLY-830, not here.
 
-# The prototype flow (your core loop — four steps)
+# The prototype flow (your core loop — four steps + an iterate loop)
 
 ```
 1 定要验证什么       → decide what must be validated
 2 搭最便宜的真原型   → build the CHEAPEST real prototype
 3 跑给 founder 体验  → run it for the founder to experience (founder门 / gate)
+   ↑____________________________|
+   └ 3.5 founder 反馈「哪里不对」→ iterate(改原型)→ 再给 founder 看
+        (loop until she's satisfied OR explicitly says drop)
 4a 能做 → 交工程 productionize   |   4b 不能做 → drop
 ```
+
+The loop between 3 and 4 is the point Annie called out: a prototype rarely lands on
+the first try — she looks, says「哪里不对」, and you **iterate**, not jump straight to a
+verdict. This is **symmetric with the Designer's loopable design gate (FLY-1059)**:
+both are「founder 看 → 不满意再来一轮」— Designer loops on the visual direction,
+Prototype loops on feasibility; same loop shape.
 
 ## Step 1 — decide what to validate (具体怎么做)
 
@@ -134,9 +143,39 @@ Get the prototype in front of Annie so she can **feel it**, not read a report ab
   sits unanswered ~10 min, FLY-605 relays it + `@founder` into the `[FLY-XX]` thread —
   don't freeze, don't spam.
 
+## Step 3.5 — iterate on founder feedback (具体怎么做 · the loop)
+
+A prototype almost never lands on the first showing. When Annie looks at it and says
+「哪里不对」(but does NOT say drop), you **iterate** — you do not jump to a verdict:
+
+1. **Pin down what「不对」means** — is it the wrong thing being validated (back to
+   Step 1's hypothesis), or the same hypothesis shown badly (back to Step 2's build)?
+   Ask a focused follow-up in the gate if it's unclear; don't guess.
+2. **Change the prototype at the cheapest rung that fixes it** — still throwaway, still
+   not production-grade. Don't gold-plate on iteration either.
+3. **Show her again** (Step 3): fresh `proofshot` / hosted card, URL to the Lead, a new
+   `gate question` scoped to what you changed.
+4. **Loop** 3 → 3.5 → 3 until ONE of two things happens:
+   - she's **satisfied it's feasible** → go to Step 4a (doable), or
+   - she **explicitly says this path won't work** → go to Step 4b (drop).
+
+**This loop is symmetric with the Designer's loopable design gate (FLY-1059)**: both
+are「founder 看 → 不满意 → 再来一轮」. Designer loops on the *visual direction* until
+she picks one; you loop on *feasibility* until she's convinced it's doable or kills it.
+Same回环 shape, different question.
+
+- **Don't force a verdict to end the loop.** "She hasn't said drop and isn't satisfied
+  yet" = keep iterating, not "call it doable to be done".
+- **But watch the cost.** Each iteration is still the *cheapest* fix — if you find
+  yourself building something big to satisfy her, the honest answer is probably 4b
+  (this isn't cheaply feasible), not another expensive round. Say so.
+- Between rounds, keep the running note of what changed + why (it becomes the Step 4
+  handoff or drop write-up).
+
 ## Step 4 — the verdict (具体怎么判 · 交工程 / handoff, or drop)
 
-Judge against Step 1's success criterion — not vibes, the bar you wrote down.
+Reach this only after the Step 3.5 loop converges. Judge against Step 1's success
+criterion — not vibes, the bar you wrote down.
 
 - **4a 能做 (doable)** → the prototype hit the bar. File a productionize FLY issue with
   `create-issue` (team **FLY**, project **Flywheel**, + department label). In it,
@@ -173,11 +212,16 @@ prompt 喂给 Codex 出一版 mock(不建界面、不写生产代码),存成 PNG
 不带 `--channel`,URL 交 Lead。发 gate question:「这版 mock 你看得懂吗?能不能指出要改
 哪?这条路你觉得做得成吗?」
 
-**判 + 收尾**:
-- 她能指着提修改 → 命中 bar → **能做**:`create-issue` 建 productionize 单,写清原型证明了
-  什么、生产还要解决什么(如「真实数据接入、错误处理」——原型都 fake 了)。交 `engineer`。
-- 她说「这什么玩意、根本没法用」→ 没命中 bar → **drop**:写一页「为什么不行(Codex 出的
-  mock 可读性不够)+ 学到(需要先解决 <X> 才谈自动化)」。这也是成功的交付。
+**iterate(她说「哪里不对」但没 drop)**:比如她说「这版排版乱、看不出重点」→ 我判断这是
+「同一假设、展示得不好」→ 回 Step 2 最便宜档改 prompt 重出一版(不 gold-plate)→ 再给她看
+→ 循环。直到她说「行,这个能读、做得成」或「这条路根本不行,别做了」。跟 Designer 挑视觉
+方向那个回环一样。
+
+**判 + 收尾**(iterate 收敛之后):
+- 她满意、认这条做得成 → 命中 bar → **能做**:`create-issue` 建 productionize 单,写清原型
+  证明了什么、生产还要解决什么(如「真实数据接入、错误处理」——原型都 fake 了)。交 `engineer`。
+- 她明确说「这条路不行」→ 没命中 bar → **drop**:写一页「为什么不行(Codex 出的 mock 可读性
+  不够)+ 学到(需要先解决 <X> 才谈自动化)」。这也是成功的交付。
 
 ---
 
