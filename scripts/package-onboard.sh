@@ -648,6 +648,30 @@ po_pack() {
   printf '%s/%s\n' "$out" "$tarball"
 }
 
+# ── gate④ normalization + detectors ────────────────────────────────────────
+# po_g4_norm <string> — canonical form for repo-access judgment: shell quotes
+# stripped (quoting splits reassemble at execution: "xrliAnnie"/"flywheel"),
+# tabs→spaces, runs squeezed (`git  clone`), lowercased (xrliannie).
+po_g4_norm() {
+  printf '%s' "$1" | tr -d '\042\047' | tr '\t' ' ' | tr -s ' ' | tr '[:upper:]' '[:lower:]'
+}
+
+# po_g4_detect <detector> <normalized-string> — the two independent forbidden
+# shapes. MUST stay in lockstep with the awk twin inside po_gate's scan (the
+# awk copy filters the tree stream; this copy judges allowlist rows).
+#   slug  — the private GitHub org path prefix
+#   clone — a git-invocation whose argument list carries a `clone` word
+#           (catches `git clone`, `git  clone`, `git -C x clone`, …)
+po_g4_detect() {
+  local d="$1" s="$2"
+  local clone_re='(^|[^a-z0-9_.-])git ([^|&;]* )?clone($|[^a-z0-9_-])'
+  case "$d" in
+    slug)  [[ "$s" == *"xrliannie/"* ]] ;;
+    clone) [[ "$s" =~ $clone_re ]] ;;
+    *) return 1 ;;
+  esac
+}
+
 # ── release gates ───────────────────────────────────────────────────────────
 # po_gate <unpacked-tree> <repo-root>
 #   ①  scan_for_secrets over the whole release tree;
@@ -701,36 +725,60 @@ po_gate() {
     printf '%s\n' "$hits" >&2
     fail=1
   fi
-  # ④ zero-repo-access invariant — each forbidden pattern is judged
-  #   INDEPENDENTLY, occurrence by occurrence (QA kickback / Codex R1 HIGH,
-  #   gate4-allowlist-masking.test.sh): a single per-LINE clearing pass let a
-  #   broad `git clone` allowlist row mask a co-located PRIVATE slug on the
-  #   same line. An allowlist row can only clear the pattern its own
-  #   registered substring carries — a `git clone` row never clears an
-  #   `xrliAnnie/` occurrence, and vice versa.
+  # ④ zero-repo-access invariant — detector-based, normalization-hardened.
+  #   Round-1 HIGH (gate4-allowlist-masking.test.sh): per-LINE clearing let a
+  #   broad `git clone` row mask a co-located private slug. Round-2 HIGH
+  #   (Codex): literal case-sensitive matching missed lowercase slugs,
+  #   quote-split URLs, `git  clone`, and `git -C x clone`. Now every line is
+  #   NORMALIZED (po_g4_norm) and judged by two independent DETECTORS
+  #   (po_g4_detect); an allowlist row clears an occurrence only if it
+  #   (a) glob-matches the file, (b) its normalized substring matches the
+  #   normalized line, and (c) that substring itself triggers the SAME
+  #   detector — the anti-masking condition. Exotic clone forms are NOT
+  #   clearable by the plain `git clone` rows (fail-closed by construction).
   local grep_allow="${PO_GREP_ALLOWLIST:-$root/scripts/packaged/audit-grep-allowlist.tsv}"
   [ -f "$grep_allow" ] || { po_err "gate④: grep allowlist missing: $grep_allow"; return 1; }
-  local fpat file lineno text registered afile apat
-  for fpat in 'git clone' 'xrliAnnie/'; do
-    while IFS=: read -r file lineno text; do
+  local det prefilter file lineno text nline registered afile apat
+  for det in clone slug; do
+    case "$det" in clone) prefilter='clone' ;; slug) prefilter='xrliannie' ;; esac
+    while IFS=$'\t' read -r file lineno text; do
       [ -z "$file" ] && continue
+      nline="$(po_g4_norm "$text")"
       registered=1
       while IFS=$'\t' read -r afile apat _; do
         [ -z "$afile" ] && continue
         case "$afile" in \#*) continue ;; esac
-        # A row clears THIS occurrence only if it (a) targets this file,
-        # (b) matches this line, and (c) itself carries this forbidden
-        # pattern — (c) is the anti-masking condition.
         # shellcheck disable=SC2254
-        if [[ "$file" == $afile ]] && [[ "$text" == *"$apat"* ]] && [[ "$apat" == *"$fpat"* ]]; then
+        if [[ "$file" == $afile ]] && [[ "$nline" == *"$(po_g4_norm "$apat")"* ]] \
+           && po_g4_detect "$det" "$(po_g4_norm "$apat")"; then
           registered=0; break
         fi
       done < "$grep_allow"
       if [ "$registered" -ne 0 ]; then
-        po_err "gate④: UNREGISTERED repo-access reference ($fpat): $file:$lineno: $text"
+        po_err "gate④: UNREGISTERED repo-access reference ($det): $file:$lineno: $text"
         fail=1
       fi
-    done < <(cd "$tree" && grep -RIn -e "$fpat" . 2>/dev/null | sed 's|^\./||')
+    done < <(
+      # case-insensitive prefilter narrows the tree stream; the awk twin of
+      # po_g4_norm/po_g4_detect emits only true detector hits (file⟶line⟶raw).
+      cd "$tree" && grep -RIni -e "$prefilter" . 2>/dev/null | sed 's|^\./||' \
+        | awk -v D="$det" '
+          {
+            i1 = index($0, ":"); if (i1 == 0) next
+            rest = substr($0, i1 + 1)
+            i2 = index(rest, ":"); if (i2 == 0) next
+            f = substr($0, 1, i1 - 1)
+            n = substr(rest, 1, i2 - 1)
+            raw = substr(rest, i2 + 1)
+            line = tolower(raw)
+            gsub(/["\047]/, "", line)
+            gsub(/[\t ]+/, " ", line)
+            hit = 0
+            if (D == "slug" && index(line, "xrliannie/") > 0) hit = 1
+            if (D == "clone" && line ~ /(^|[^a-z0-9_.-])git ([^|&;]* )?clone($|[^a-z0-9_-])/) hit = 1
+            if (hit) printf "%s\t%s\t%s\n", f, n, raw
+          }'
+    )
   done
   # version consistency: sentinel == package.json == doc/VERSION
   local v_pkg v_sent v_doc

@@ -102,6 +102,52 @@ else
     || fail "M2 gate failed but not via gate④/repo-access: $(tail -4 "$SANDBOX/gate.log")"
 fi
 
+# ── M3-M6 · Round-2 variants (Codex xhigh): normalization bypasses ───────────
+# Each REACHABLE variant of a private-repo clone must be rejected even though
+# it avoids the literal case-sensitive `git clone` / `xrliAnnie/` byte forms.
+variant_case() { # <label> <line>
+  local label="$1" line="$2"
+  local V="$SANDBOX/variant"; rm -rf "$V"; mkdir -p "$V/scripts"
+  printf '{"name":"flywheel-onboard-payload","version":"%s","private":true}\n' "$VER" > "$V/package.json"
+  printf '%s\n' "$VER" > "$V/.flywheel-prebuilt"
+  printf '#!/bin/bash\n%s\n' "$line" > "$V/scripts/provision-fleet-host.sh"
+  if env PACKAGE_ONBOARD_SOURCED=1 \
+       PO_FILES_ALLOWLIST="$ROOT/scripts/pkg-files.allow" \
+       PO_GREP_ALLOWLIST="$ROOT/scripts/pkg-grep.allow" \
+       bash -c 'source "$1"; shift; po_gate "$@"' _ "$REPO_ROOT/scripts/package-onboard.sh" \
+         "$V" "$ROOT" >"$SANDBOX/variant.log" 2>&1; then
+    fail "$label: variant PASSED the gate (bypass)"
+  else
+    grep -q "UNREGISTERED repo-access" "$SANDBOX/variant.log" \
+      && pass "$label rejected" \
+      || fail "$label failed but not via gate④: $(tail -3 "$SANDBOX/variant.log")"
+  fi
+}
+variant_case "M3 lowercase slug" \
+  'run git clone "https://github.com/xrliannie/flywheel.git" "$target"'
+variant_case "M4 quote-split slug" \
+  'run git clone "https://github.com/xrliAnnie"/"flywheel.git" "$target"'
+variant_case "M5 double-space clone" \
+  'run git  clone https://github.com/xrliannie/flywheel.git "$target"'
+variant_case "M6 flagged clone (git -C)" \
+  'run git -C "$PWD" clone https://github.com/xrliannie/flywheel.git "$target"'
+
+# ── M7 · the legitimate registered shape still clears ─────────────────────────
+# provision's real customer-repo clone line (no private slug) must PASS.
+LEGIT="$SANDBOX/legit"; mkdir -p "$LEGIT/scripts"
+printf '{"name":"flywheel-onboard-payload","version":"%s","private":true}\n' "$VER" > "$LEGIT/package.json"
+printf '%s\n' "$VER" > "$LEGIT/.flywheel-prebuilt"
+printf '#!/bin/bash\nrun git clone "https://github.com/${slug}.git" "$target"\n' > "$LEGIT/scripts/provision-fleet-host.sh"
+if env PACKAGE_ONBOARD_SOURCED=1 \
+     PO_FILES_ALLOWLIST="$ROOT/scripts/pkg-files.allow" \
+     PO_GREP_ALLOWLIST="$ROOT/scripts/pkg-grep.allow" \
+     bash -c 'source "$1"; shift; po_gate "$@"' _ "$REPO_ROOT/scripts/package-onboard.sh" \
+       "$LEGIT" "$ROOT" >"$SANDBOX/legit.log" 2>&1; then
+  pass "M7 registered customer-repo clone still clears (no false positive)"
+else
+  fail "M7 legitimate registered clone rejected: $(tail -3 "$SANDBOX/legit.log")"
+fi
+
 echo ""
 echo "gate4-allowlist-masking: PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" -eq 0 ]
