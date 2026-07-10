@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Release CI/CD 发布流程 — 第 3 版（真研究后的完整机制）</title>
+<title>Release CI/CD 发布流程 — 第 4 版（具体机制 + 谁来拍）</title>
 <style>
   :root{
     --bg:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --dim:#6e6e73;
@@ -14,25 +14,31 @@
   body{margin:0;background:var(--bg);color:var(--ink);
     font-family:-apple-system,system-ui,"SF Pro Text","PingFang SC",sans-serif;
     line-height:1.62;-webkit-font-smoothing:antialiased;padding:0 0 72px}
-  .wrap{max-width:780px;margin:0 auto;padding:0 18px}
+  .wrap{max-width:800px;margin:0 auto;padding:0 18px}
   header{padding:40px 18px 12px;text-align:center}
   header .eyebrow{color:var(--dim);font-size:13px;letter-spacing:.04em;text-transform:uppercase;margin:0 0 8px}
   header h1{font-size:26px;line-height:1.25;margin:0 0 6px;font-weight:700}
   header p{color:var(--dim);font-size:15px;margin:6px auto 0;max-width:38em}
   .card{background:var(--card);border-radius:16px;box-shadow:var(--shadow);padding:22px 20px;margin:16px 0}
-  .card h2{font-size:19px;margin:0 0 10px;font-weight:700}
+  .card h2{font-size:19px;margin:0 0 4px;font-weight:700}
   .card h3{font-size:16px;margin:16px 0 6px;font-weight:650}
   .card p{margin:8px 0}
   .lead{font-size:16px}
-  .pill{display:inline-block;font-size:12px;font-weight:650;padding:3px 10px;border-radius:999px;
-    background:#eef0f4;color:var(--dim);margin-bottom:10px}
+  .pill{display:inline-block;font-size:12px;font-weight:650;padding:3px 10px;border-radius:999px;background:#eef0f4;color:var(--dim);margin-bottom:10px}
   .pill.blue{background:var(--blue);color:#fff}.pill.green{background:var(--green);color:#fff}
   .pill.amber{background:var(--amber);color:#fff}.pill.purple{background:var(--purple);color:#fff}.pill.teal{background:var(--teal);color:#fff}
+  /* owner badges */
+  .own{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;vertical-align:middle;margin-left:4px}
+  .own.p{background:#e6f0ff;color:#0060cf;border:1px solid #b9d6ff}
+  .own.e{background:#fff1e0;color:#c26a00;border:1px solid #ffd9a8}
+  .own.pe{background:#efeaf9;color:#7a3fb0;border:1px solid #ddc9f2}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--dim);margin-top:8px}
   .warn{border-left:4px solid var(--amber);background:#fffaf2;border-radius:10px;padding:14px 16px;margin:14px 0}
   .warn strong{color:#c26a00}
   .agree{border-left:4px solid var(--green);background:#f3fcf5;border-radius:10px;padding:14px 16px;margin:12px 0}
   .agree strong{color:#1c7a37}
-  .note{border-left:4px solid var(--blue);background:#f2f8ff;border-radius:10px;padding:14px 16px;margin:12px 0}
+  .decided{border-left:4px solid var(--blue);background:#f2f8ff;border-radius:10px;padding:12px 15px;margin:12px 0}
+  .decided strong{color:#0060cf}
   .plain{border-left:4px solid var(--teal);background:#f0fbfb;border-radius:10px;padding:14px 16px;margin:12px 0}
   .plain strong{color:#00807f}
   .changed{background:#faf6ff;border:1px solid #e6d8f7;border-radius:12px;padding:14px 16px;margin:6px 0}
@@ -40,17 +46,14 @@
   .evi{font-size:12.5px;color:var(--dim);font-style:italic;margin:4px 0 0}
   .evi b{color:#5a2d8a;font-style:normal}
 
-  /* two-audience split */
   .aud{display:grid;grid-template-columns:1fr;gap:12px;margin:10px 0}
   @media(min-width:620px){.aud{grid-template-columns:1fr 1fr}}
   .audbox{border-radius:12px;padding:14px 15px;border-top:4px solid var(--line);background:#fbfbfd}
-  .audbox.int{border-top-color:var(--green)}
-  .audbox.ext{border-top-color:var(--blue)}
+  .audbox.int{border-top-color:var(--green)}.audbox.ext{border-top-color:var(--blue)}
   .audbox .h{font-size:14.5px;font-weight:700;margin:0 0 4px}
   .audbox.int .h{color:#1c7a37}.audbox.ext .h{color:#0060cf}
   .audbox p{font-size:13.5px;margin:4px 0}
 
-  /* flow canvas */
   .canvas{margin:14px 0 4px}
   .entry{display:flex;justify-content:center;margin-bottom:6px}
   .fork{text-align:center;color:var(--dim);font-weight:700;font-size:13px;line-height:1;margin:2px 0 10px}
@@ -67,8 +70,7 @@
   .step{display:flex;align-items:center;gap:8px}
   .step .box{flex:1;background:#fff;border:1px solid var(--line);border-radius:9px;padding:7px 10px;font-size:13.5px}
   .step .down{text-align:center;color:var(--dim);font-size:12px;line-height:.5;margin:-1px 0}
-  .lane.ship .step .box{border-left:3px solid var(--green)}
-  .lane.rel .step .box{border-left:3px solid var(--purple)}
+  .lane.ship .step .box{border-left:3px solid var(--green)}.lane.rel .step .box{border-left:3px solid var(--purple)}
   .layerlabel{font-size:11.5px;font-weight:700;letter-spacing:.02em;margin:2px 0 4px;color:#8a3fb0}
   .layerlabel.beta{color:#b06a00}
   .promote{border:1px dashed #c9b6ee;background:#f6f1fc;color:#6b3fa0;border-radius:9px;padding:6px 10px;margin:8px 0;font-size:12.5px;text-align:center;font-weight:600}
@@ -77,38 +79,28 @@
   .meshbar b{color:#5a2d8a}
   .chipbig{background:#111;color:#fff;font-size:14px;font-weight:650;padding:8px 14px;border-radius:10px;display:inline-block}
 
-  /* generic diagram */
   .diagram{background:#fbfbfd;border:1px solid var(--line);border-radius:12px;padding:16px 14px;margin:12px 0}
   .drow{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;margin:6px 0}
   .dnode{background:#fff;border:1.5px solid var(--line);border-radius:10px;padding:8px 12px;font-size:13px;font-weight:600;text-align:center;min-width:96px}
-  .dnode.src{border-color:var(--amber);background:#fffaf2}
-  .dnode.hub{border-color:#111;background:#111;color:#fff}
-  .dnode.int{border-color:var(--green);background:#f3fcf5}
-  .dnode.ext{border-color:var(--blue);background:#f2f8ff}
-  .dnode.store{border-color:var(--teal);background:#f0fbfb}
-  .dnode.fn{border-color:var(--purple);background:#faf6ff}
-  .dnode.cust{border-color:var(--dim)}
+  .dnode.src{border-color:var(--amber);background:#fffaf2}.dnode.hub{border-color:#111;background:#111;color:#fff}
+  .dnode.int{border-color:var(--green);background:#f3fcf5}.dnode.ext{border-color:var(--blue);background:#f2f8ff}
+  .dnode.store{border-color:var(--teal);background:#f0fbfb}.dnode.fn{border-color:var(--purple);background:#faf6ff}.dnode.cust{border-color:var(--dim)}
   .darr{color:var(--dim);font-weight:700;font-size:13px}
-  .darr small{display:block;font-size:11px;font-weight:600;color:var(--dim)}
   .dvert{text-align:center;color:var(--dim);font-weight:700;font-size:14px;margin:2px 0}
-  .dsplit{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px}
-  @media(max-width:560px){.dsplit{grid-template-columns:1fr}}
-  .dlabel{font-size:11.5px;color:var(--dim);text-align:center;margin:2px 0 6px;font-weight:600}
 
-  /* option cards */
   .opts{display:flex;flex-direction:column;gap:10px;margin:10px 0}
   .opt{border:1px solid var(--line);border-radius:11px;padding:12px 14px;background:#fff}
   .opt .ot{font-size:14px;font-weight:700;margin:0 0 3px}
-  .opt.rec{border-color:var(--green);background:#f7fdf9}
-  .opt.rec .ot{color:#1c7a37}
+  .opt.rec{border-color:var(--green);background:#f7fdf9}.opt.rec .ot{color:#1c7a37}
   .opt .rec-badge{display:inline-block;font-size:10.5px;font-weight:700;color:#fff;background:var(--green);padding:1px 7px;border-radius:999px;margin-left:6px}
   .opt p{font-size:13.5px;margin:3px 0}
 
   .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:10px 0}
-  table{border-collapse:collapse;width:100%;font-size:13px;min-width:520px}
+  table{border-collapse:collapse;width:100%;font-size:13px;min-width:540px}
   th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
   th{background:#f2f2f5;font-weight:650}
   tr.hi td{background:#f3fcf5}
+  td .yes{color:#1c7a37;font-weight:650}td .no{color:#c0392b;font-weight:650}
   .k{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.88em;background:#eef0f4;padding:1px 6px;border-radius:6px}
 
   .q{margin:20px 0 0;padding-top:18px;border-top:1px solid var(--line)}
@@ -131,250 +123,217 @@
 </head>
 <body>
 <header>
-  <p class="eyebrow">FLY-1098 · 第 3 版 · 真研究过别人怎么做</p>
-  <h1>发布这套，到底具体怎么跑</h1>
-  <p>你说要完整、有依据的方案，不要模糊的。这一版我真去研究了别人的 release pipeline（npm、Next.js、Docusaurus、Keygen 等），每块给<b>具体机制</b>、带<b>图</b>、promote 给几个 option。先把你最卡的那个词理清楚。</p>
+  <p class="eyebrow">FLY-1098 · 第 4 版 · 具体机制 + 谁来拍</p>
+  <h1>发布这套，落到底：<br>每一步怎么跑、每个决定谁拍</h1>
+  <p>你上轮说还太虚。这一版每块给<b>具体机制</b>（真查了别人怎么做），并且<b>每个决定点标清是「你拍」还是「Tadashi 拍」</b>，让你一眼知道哪些要你定、哪些是工程细节。</p>
+  <div class="legend" style="justify-content:center">
+    <span><span class="own p">产品定</span> 你 + HL 拍（方向/节奏/体验）</span>
+    <span><span class="own e">工程定</span> Tadashi 拍（技术选型/实现）</span>
+  </div>
 </header>
 
 <div class="wrap">
 
   <!-- changelog -->
   <div class="card">
-    <span class="pill purple">这一版按你 round-2 批注改了</span>
+    <span class="pill purple">这一版按你 round-3 批注改了</span>
     <div class="changed">
       <ul>
-        <li><b>先理清「几个产品」</b>：内部项目仓 vs 对外客户是两个受众 —— 你卡在这，我第一块讲清。</li>
-        <li><b>去黑话</b>：「内部部署」「记账」用大白话解释。</li>
-        <li><b>发布门给具体机制</b>：6h beta 到底怎么跑、publish→拉取→更新链路图、promote 给 3 个 option。</li>
-        <li><b>① 画了图</b>：「薄端点」到底长啥样（就是你猜的 S3-like + 一个验 key 的小函数）+ Keygen 真定价（查到了）。</li>
-        <li><b>并进 1063</b>：上线段（🆒 ship，已上线）作为统一 PRD 的一段画进来。</li>
+        <li><b>折进你的决定</b>：promote = Option 2（干净版本号）· 分受众节奏（内部勤/对外 ~1-2 周、可配）· 只做 flywheel 一个仓（不做通用 skill）。</li>
+        <li><b>每块标 owner</b>：<span class="own p">产品定</span> / <span class="own e">工程定</span>，你一眼知道哪些自己拍。</li>
+        <li><b>『点头』流程给具体 option</b>（你问的「到底咋走、每天来找我点？」）。</li>
+        <li><b>R2 查清了</b>：真免费额度 + auto-expire 怎么配，对比 S3。</li>
+        <li><b>去虚</b>：release 到哪、要不要每 commit、release train / golden commit —— 都给具体答 + 别人的做法。</li>
       </ul>
     </div>
   </div>
 
-  <!-- ④ two audiences (lead framing) -->
+  <!-- ④ scope narrow -->
   <div class="card">
-    <span class="pill blue">先理清你最卡的那个 —— 「我们不就一个产品吗？」</span>
-    <h2>两个不同的受众，别混</h2>
-    <p class="lead">你说得对 —— <b>对外，我们现在基本就 Flywheel 一个产品</b>。上一版我把「内部的仓」和「对外的产品」两件事搅在一起了，我的错。理清：</p>
-    <div class="aud">
-      <div class="audbox int">
-        <p class="h">① 内部的项目仓（我们自己的 repo）</p>
-        <p>flywheel 自己、GeoForge3D、Feedy…… 这些是我们<b>内部</b>管的<b>多个代码仓</b>。</p>
-        <p>它们用的是<b>上线（ship / 🆒）</b>那套（FLY-1063，已上线）—— 每个内部仓都能 🆒 上线、跑自己的内部部署。<b>这是「多个仓」，不是「多个对外产品」。</b></p>
-      </div>
-      <div class="audbox ext">
-        <p class="h">② 对外的客户</p>
-        <p>把打包好的产品发给<b>外面的客户</b>装来用。</p>
-        <p>现在对外<b>就 Flywheel 一个</b>（= FLY-1062 那条：客户 npm install）。<b>发布（release）</b>这套就是服务这个受众的。将来别的东西要卖给客户了，再接同一套。</p>
-      </div>
-    </div>
+    <span class="pill blue">范围（先收窄，按你说的）</span>
+    <h2>就做 flywheel 一个仓 <span class="own p">产品定 ✓ 你已定</span></h2>
+    <p class="lead">你说得对 —— <b>现在要「打包发给客户」的就 flywheel 一个</b>。上轮我那个「铺到所有项目」的通用抽象<b>删掉了</b>，不做通用 skill、不过度设计。</p>
     <div class="plain">
-      <strong>所以「先在 1062 跑通、以后推广」= </strong>先把<b>发布给客户</b>这套流程，在 Flywheel（我们唯一的对外产品）上做通；等以后有第二个对外产品，直接接同一套。<b>不是说我们现在有很多对外产品</b> —— 现在就一个。「多个仓」是内部上线的事，「一个对外产品」是发布的事，两回事。
+      <strong>厘清一次就够：</strong>「上线（ship / 🆒）」对我们<b>内部多个仓</b>通用（flywheel、GeoForge3D…，那是 1063 已上线的事）；「发布（release，本页）」现在<b>只服务 flywheel 这一个对外产品</b>。以后真有第二个对外产品，再说 —— 现在不预先通用化。
     </div>
     <div class="q">
       <div class="qhead"><div class="n">④</div><div class="t">
-        <b>这样分「内部多个仓 / 对外一个产品」，清楚了吗？</b>
-        <span>发布这套先只在 Flywheel（唯一对外产品）上做通，设计上留好口子、以后有新对外产品能接 —— 这个节奏你 OK 吗？</span>
+        <b>收窄到 flywheel 一个仓 —— 确认？</b>
+        <span>发布这套只按 flywheel 设计、不做通用抽象。这样对吧？</span>
       </div></div>
-      <textarea id="q4" data-label="④ 内部仓 vs 对外客户 + 节奏" placeholder="例：清楚了。先把 Flywheel 对外这套做通就行。或者：其实我已经在想第二个对外产品了…"></textarea>
+      <textarea id="q4" data-label="④ 收窄到 flywheel 一个仓" placeholder="例：对，就 flywheel。或者：其实我心里已经有第二个对外产品了…"></textarea>
     </div>
   </div>
 
-  <!-- A flow + de-jargon -->
+  <!-- A flow + release mechanism -->
   <div class="card">
-    <span class="pill purple">整套 flow（一个统一 PRD，两段）</span>
-    <h2>上线段（已定）+ 发布段（这页在收敛）</h2>
-    <p>1063 的上线段已经上线了，这一版把它作为统一 PRD 的一段画进来，跟发布段用「两扇独立门」串起来。</p>
+    <span class="pill purple">A · 发布机制落到底（你说太虚的那块）</span>
+    <h2>整套图 + release 到底跑在哪、怎么跑</h2>
 
     <div class="canvas">
-      <div class="entry"><span class="chipbig">🆒 &nbsp;你点头（授权，唯一来源）</span></div>
-      <div class="fork">┈┈ 上线门 / 发布门 = 两扇独立的门，各走各的 ┈┈</div>
+      <div class="entry"><span class="chipbig">🆒 你点头（授权，唯一来源）</span></div>
+      <div class="fork">┈┈ 上线门（内部多个仓）/ 发布门（就 flywheel）= 两扇独立的门 ┈┈</div>
       <div class="lanes">
         <div class="lane ship">
           <p class="tag">上线门 · Ship<span class="locked">已上线 · 53e940e8</span></p>
-          <p class="sub">给谁：内部项目仓 · 节奏：每个 commit</p>
+          <p class="sub">给内部仓 · 每个 commit</p>
           <div class="steps">
-            <div class="step"><div class="box">你在 Discord 点 cool（= 授权）</div></div>
-            <div class="step down">↓</div>
-            <div class="step"><div class="box">GitHub 上核验 + CI 跑（gate 重量按仓不同）</div></div>
-            <div class="step down">↓</div>
-            <div class="step"><div class="box">合并进 main → <b>内部部署</b>（见下方大白话）</div></div>
-            <div class="step down">↓</div>
-            <div class="step"><div class="box"><b>记账</b>（见下方大白话）</div></div>
+            <div class="step"><div class="box">Discord 点 cool → GitHub 核验 + CI → 合并 main → 内部部署 → 记账</div></div>
           </div>
+          <p class="evi" style="margin-top:8px">（这段 1063 已定、已上线，本页不改，只画进来。）</p>
         </div>
         <div class="lane rel">
-          <p class="tag">发布门 · Release<span class="open">这页要拍</span></p>
-          <p class="sub">给谁：对外客户（+我们自己先用）· 分两层</p>
+          <p class="tag">发布门 · Release<span class="open">这页在收敛</span></p>
+          <p class="sub">就 flywheel · 分两层</p>
           <div class="steps">
-            <div class="layerlabel beta">第 1 层 · beta（我们自己先用，自动）</div>
-            <div class="step betastep"><div class="box">每 ~6h 有新代码就打一个 beta 版本、发到 npm</div></div>
+            <div class="layerlabel beta">beta（我们自己先用）</div>
+            <div class="step betastep"><div class="box">定时任务打 beta → 发 npm(壳) + 传 R2(payload)</div></div>
             <div class="step down">↓</div>
-            <div class="step betastep"><div class="box"><b>我们自己的机器</b>定时去 npm 拉最新 beta、更新自己</div></div>
+            <div class="step betastep"><div class="box">我们自己机器定时拉最新 beta</div></div>
           </div>
-          <div class="promote">跑一段、确认稳 ↓ 你点头「提升」</div>
+          <div class="promote">每 ~1-2 周 · 你点头「发车」</div>
           <div class="steps">
-            <div class="layerlabel">第 2 层 · 正式版（给客户，你点头才提升）</div>
-            <div class="step"><div class="box">你点头：把某个 beta 提升成正式版</div></div>
-            <div class="step down">↓</div>
-            <div class="step"><div class="box"><b>客户的机器</b>去 npm 拉正式版</div></div>
+            <div class="layerlabel">正式版（给客户）</div>
+            <div class="step"><div class="box">重发一个干净版本号（Option 2）→ 客户拉</div></div>
           </div>
         </div>
       </div>
-      <div class="meshbar"><b>咬合点 = 你的点头，两扇门分开。</b> 上线（内部）和发布（对外）互不依赖：内部改动上线了，客户不一定收到新包；也能从已上线的代码单独打版本发。</div>
+      <div class="meshbar"><b>咬合点 = 你点头，两扇门分开。</b> 内部上线 ≠ 对外发布。</div>
     </div>
 
-    <h3>去黑话：这两个词到底啥意思</h3>
-    <div class="plain">
-      <strong>「内部部署」= 我们自己在用的这套系统更新了。</strong> ship 合并进 main 后，<b>我们自己这套东西</b>（Bridge + 各个 Lead 机器人，就是天天在 Discord 跟你干活的这些）自动拉到新代码、重启，跑上新版本。<b>跟发给客户完全是两回事</b> —— 这只是「我们自己用的更新了」。
+    <h3>release 到底跑在哪 <span class="own e">工程定</span></h3>
+    <div class="diagram">
+      <div class="drow">
+        <div class="dnode src">GitHub 定时 CI<br><small style="font-weight:500">打包 + 版本号</small></div>
+        <div class="darr">──▶</div>
+        <div class="dnode hub">薄壳 → npm<br><small style="font-weight:500;color:#ccc">公开、无 IP</small></div>
+      </div>
+      <div class="drow"><div class="darr">＋</div></div>
+      <div class="drow">
+        <div class="dnode src" style="visibility:hidden">.</div>
+        <div class="darr">──▶</div>
+        <div class="dnode store">payload → R2<br><small style="font-weight:500">私有、凭 key 下载</small></div>
+      </div>
+      <p class="evi" style="margin-top:8px"><b>答你「release 到哪」</b>：分两处 —— <b>薄壳发到 npm</b>（公开包，客户 <span class="k">npm install</span> 就这个）；<b>真 payload 传到 R2</b>（私有，凭 license key 才能下）。<b>不用 GitHub release</b>（那个绑仓库访问，跟我们「零仓库访问」相反）。每 6h/定时的 beta 就在 GitHub 的定时 CI 里跑。</p>
     </div>
-    <div class="plain">
-      <strong>「记账」= 收尾把三处记录对齐。</strong> 一次改动的状态记在三个地方：Linear 的任务、系统里的会话、GitHub 的 PR。ship 收尾时自动把它们对齐、标成「做完了」，不会出现「一个说做完、一个说还开着」。就是<b>收尾对账</b>，让状态一致。
+
+    <h3>要不要「每个 commit 都打 beta」？<span class="own pe">频率产品定 · 技术工程定</span></h3>
+    <div class="agree">
+      <strong>你的质疑对 —— 不用每个 commit。</strong> 查了别人：几乎没人真的「每 commit 发版」，都是<b>定时发一班</b>（Next.js 每次合并、Expo 每晚、Docusaurus 每提交但那是极小项目）。每 commit 会堆一大堆几乎一样的版本、很吵。<b>建议</b>：定时（比如每 6h 或每晚）醒一次，<b>有新代码就打一个 beta，取当时最新那条 commit</b>；没新代码就跳过。
     </div>
+
+    <h3>release 频率 + 挑哪个 commit（「release train / 发车」模型）<span class="own p">节奏产品定</span></h3>
+    <p>别人的通行做法叫「<b>release train（班车）</b>」：不是每个改动都单独发，而是<b>定点发车</b>，那一刻准备好的改动一起上车，没赶上的等下一班。</p>
+    <ul>
+      <li><b>beta 班车</b>（给我们自己）：定时（如每 6h/每晚）发一班，取当时的 main 最新 commit（= 你说的「golden commit」，就是发车那一刻的代码）。</li>
+      <li><b>正式版班车</b>（给客户）：每 ~1-2 周发一班，从近期一个跑稳的 beta 提升。<b>频率可配置</b>（你要的）—— 想快想慢改个数字就行。</li>
+    </ul>
+    <p class="evi"><b>别人怎么做</b>：release train 是 iOS/安卓/大项目的标准做法（每周/双周定点发，ready 的上车）；StackStorm 把「过了 e2e 的 master」定时提升成候选版再发布。</p>
+
     <div class="q">
       <div class="qhead"><div class="n">A</div><div class="t">
-        <b>这张图 + 两个词的解释，通了吗？</b>
-        <span>尤其：beta 我画成「自动、我们自己先用」，正式版「你点头才给客户」。对吗？</span>
+        <b>发布机制这套（不每 commit、定时班车、beta→正式版）对吗？</b>
+        <span>beta 我建议每 6h 或每晚一班（有新代码才发）；正式版每 ~1-2 周一班、可配。你觉得频率合适吗？</span>
       </div></div>
-      <textarea id="qA" data-label="A · flow + 内部部署/记账 解释" placeholder="例：通了。或者：内部部署那块我还想问…"></textarea>
+      <textarea id="qA" data-label="A · 发布机制 + beta/正式版频率" placeholder="例：对。beta 每晚一班就好，正式版两周。或者：beta 我想每 6h…"></textarea>
     </div>
   </div>
 
-  <!-- 发布门机制 (A-2 + ③) -->
+  <!-- 点头 approval flow -->
   <div class="card">
-    <span class="pill amber">发布门具体怎么跑（你 round-2 问得最细的一块）</span>
-    <h2>6h beta 机制 · 命名 · promote · publish→拉取→更新</h2>
-
-    <h3>1) 6h 自动打 beta，到底怎么跑</h3>
-    <ul>
-      <li>一个<b>定时任务</b>（每 ~6h 醒一次，GitHub 上的定时 CI）：看这 6h 内 main 有没有新代码。</li>
-      <li><b>6h 内 5 个 commit</b> → 对，拿<b>最新那条</b>（当前 main）打<b>一个</b> beta 版本，一次覆盖这 5 个改动。✓ 你理解对。</li>
-      <li><b>6h 内 0 个 commit</b> → <b>跳过，不打</b>。没新东西就不发版，省得堆一堆一模一样的版本。</li>
-    </ul>
-    <p class="evi"><b>别人怎么做</b>：Next.js 几乎每次 merge 就发一个 canary（一天好几个）；Docusaurus 每个代码 commit 自动发 canary（~10 分钟）；Expo 是每晚一个快照。所以「有新代码才打、没有就跳过」是通行做法。</p>
-
-    <h3>2) publish → 拉取 → 更新：怎么就在你/客户电脑上更新了</h3>
-    <p>关键澄清你问的：<b>是的，「发布」= 往 npm 推一个新版本包；「更新」= 机器自己定时去 npm 拉。这是两条独立的线（你 ② 说的 detached，对的）。</b></p>
-    <div class="diagram">
-      <div class="drow">
-        <div class="dnode src">我们的 CI<br><small style="font-weight:500">每 ~6h 打包+版本号</small></div>
-        <div class="darr">──推──▶</div>
-        <div class="dnode hub">npm 仓库<br><small style="font-weight:500;color:#ccc">beta 通道 / 正式版通道</small></div>
-      </div>
-      <div class="dvert">▼ 各自定时去「拉」（互相独立）</div>
-      <div class="dsplit">
-        <div>
-          <div class="dlabel">我们自己的机器</div>
-          <div class="dnode int" style="width:100%">每 ~6h 拉最新 <b>beta</b><br><small style="font-weight:500">→ 装新版本 → 重启</small></div>
-        </div>
-        <div>
-          <div class="dlabel">客户 / 别的项目的机器</div>
-          <div class="dnode ext" style="width:100%">每天/每周 拉最新 <b>正式版</b><br><small style="font-weight:500">→ 装新版本 → 重启</small></div>
-        </div>
-      </div>
-      <p class="evi" style="text-align:center;margin-top:10px"><b>怎么「拉」</b>：机器上跑 <span class="k">flywheel update</span> —— 去 npm 问「我这条通道有没有更新的版本」，有就下载、装进新目录、切过去、重启。CLI 工具自更新都这么做（查 registry 的通道 → 比版本 → 装）。</p>
-    </div>
-
-    <h3>3) 版本怎么命名 + 正式版怎么 promote（给你 3 个 option）</h3>
-    <p>「提升成正式版」上一版我说得太模糊。真去查了 —— 通行做法是<b>移一个「通道标签」</b>，不是重新做。三个 option：</p>
+    <span class="pill amber">你问的：「点头」到底咋走？ <span class="own p">产品定</span></span>
+    <h2>promote 审批流程 —— 不天天烦你，给你 3 个 option</h2>
+    <p>你原话：「你只说需要我点头，但流程到底咋样？每天来找我点？」—— 不会天天来。设计成<b>低打扰</b>，给你 3 个 option：</p>
     <div class="opts">
       <div class="opt rec">
-        <p class="ot">Option 1 · 移标签（最省、最忠实）<span class="rec-badge">别人最常用</span></p>
-        <p>beta 叫 <span class="k">v1.56.0-beta.3</span>（带 -beta.N，一眼是 beta）。提升 = 把「正式版」这个标签<b>挪到</b>你验过的那个 beta 上（<span class="k">npm dist-tag add …@1.56.0-beta.3 latest</span>）。<b>不重做、字节一模一样</b> = 你验过的那个原样变正式版。</p>
-        <p style="color:#c0392b">小缺点：客户装「正式版」拿到的版本号还写着 <span class="k">-beta.3</span>，看着像 beta，可能困惑。</p>
+        <p class="ot">Option 1 · 每周「发车日」一键 promote<span class="rec-badge">推荐</span></p>
+        <p>每周固定一天（比如周一），系统在一条消息/日报里列出「<b>本周的 beta 候选 + 有啥变化</b>」，你看一眼、点一下「发车」→ 提升成对外正式版。<b>一周一次，不烦</b>，正好贴你说的「对外 ~1-2 周」。</p>
       </div>
       <div class="opt">
-        <p class="ot">Option 2 · 重发一个干净版本号（客户看着最清楚）</p>
-        <p>beta 是 <span class="k">v1.56.0-beta.3</span>；提升 = 从同一份代码出一个<b>干净的</b> <span class="k">v1.56.0</span>（去掉后缀）发到正式版通道。客户拿到干净的 <span class="k">v1.56.0</span>。</p>
-        <p style="color:#c0392b">小缺点：多一次「重发」（新版本号），不是纯移标签。</p>
+        <p class="ot">Option 2 · 你随时手动发</p>
+        <p>没有固定节奏。你什么时候觉得某个 beta 稳了，在 Discord 说一句「把这个提成正式版」→ 就发。<b>你完全主导</b>，但要你自己记着什么时候发。</p>
       </div>
       <div class="opt">
-        <p class="ot">Option 3 · beta 不带后缀，只靠通道区分</p>
-        <p>beta 就叫 <span class="k">v1.56.0</span>（不带 -beta），发到 beta 通道；提升 = 把正式版标签移到验过的那个。版本号完全一样，<b>只有「在哪个通道」区分</b> beta / 正式。</p>
-        <p style="color:#c0392b">小缺点：光看版本号看不出是不是 beta，得看它在哪个通道。</p>
+        <p class="ot">Option 3 · 每天日报带一个「今天发不发」</p>
+        <p>每天的日报里带一个一键按钮。<b>更勤</b>，但可能太频繁（你说过不想天天点）。</p>
       </div>
     </div>
-    <p class="evi"><b>别人怎么做</b>：npm 官方文档说 promote 就是 <span class="k">npm dist-tag add pkg@版本 latest</span> 把「latest」标签挪过去，是推荐做法，不用重发。所以 Option 1 最贴通行做法；但如果你更在意「客户看到干净版本号」，Option 2 更直观。</p>
-
-    <h3>4) beta 一定要 6h 吗？</h3>
-    <p>不一定。查了别人：有的<b>每次 merge 就发</b>（Next.js，一天好几个）、有的<b>每晚一个</b>（Expo）、有的<b>每个 commit</b>（Docusaurus）。<b>6h 是个合理的中间值</b>（不会太吵、又够新）。正式版则通常<b>隔几周</b>一次（npm 官方 CLI 自己是 2-4 周一次）。</p>
-
+    <p class="evi"><b>为什么推荐 Option 1</b>：既是「你点头」（founder 授权，符合 REQ-0），又不天天打扰；跟「对外 ~1-2 周」的节奏天然对齐。发车那条消息可以顺带告诉你这周改了啥，你有依据地点。</p>
     <div class="q">
-      <div class="qhead"><div class="n">③</div><div class="t">
-        <b>发布机制 + 命名 + promote，你拍哪个？</b>
-        <span>① 6h 打 beta / 没新代码跳过 —— OK 吗，还是想改频率（每 merge？每晚？）？② promote 你选 Option 1（移标签）/ 2（干净版本号）/ 3（只靠通道）哪个？</span>
+      <div class="qhead"><div class="n">点</div><div class="t">
+        <b>promote 审批走哪个 option？</b>
+        <span>推荐 Option 1（每周发车日一键）。你选 1 / 2（随时手动）/ 3（每天问）哪个？</span>
       </div></div>
-      <textarea id="q3" data-label="③ beta 频率 + 命名 + promote option" placeholder="例：6h 挺好。promote 选 Option 2，客户要看干净版本号。或者：beta 我想每次 merge 就发…"></textarea>
+      <textarea id="qApprove" data-label="点头审批流程 option" placeholder="例：Option 1，每周一发车我点一下就行。或者：我想随时手动，别定死…"></textarea>
     </div>
   </div>
 
-  <!-- ① payload hosting + free/paid -->
+  <!-- ① payload hosting R2 -->
   <div class="card">
-    <span class="pill teal">决策块 ①</span>
-    <h2>付费 payload 放哪儿（画给你）+ 免费/付费</h2>
-    <p>薄壳去公开 npm 没争议。<b>凭 license key 才能下载的那个 payload</b> 要挂哪 —— 你问「薄端点是啥、能画个图、是不是 S3 一样的地方」。对，就是你猜的那样，画给你：</p>
+    <span class="pill teal">① payload 放哪（你点名要看 R2）</span>
+    <h2>Cloudflare R2 vs S3 —— 查清了 <span class="own e">选型工程定</span> · <span class="own p">存多久产品定</span></h2>
+    <p>你点名 R2、问「是不是最简单 + 免费额度最大」。查了真数字：</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th></th><th>Cloudflare R2</th><th>AWS S3</th></tr></thead>
+        <tbody>
+          <tr class="hi"><td>免费存储</td><td><span class="yes">10 GB 永久免费</span></td><td>旧的「5GB 永久」<b>已取消</b>；新账号只有 $200 额度用 6 个月</td></tr>
+          <tr class="hi"><td>客户下载流量（egress）</td><td><span class="yes">全免费（零 egress 费）</span></td><td>前 100GB/月免费，超了 <span class="no">$0.09/GB</span></td></tr>
+          <tr><td>自动过期删除</td><td><span class="yes">✓ lifecycle 规则</span></td><td>✓ lifecycle 规则</td></tr>
+          <tr><td>复杂度</td><td>单一存储档，最简单</td><td>多档/多概念，更复杂</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="agree"><strong>结论：R2 更适合我们。</strong> 关键是<b>零 egress</b> —— 客户下载 payload 不管多少次都不额外花钱（S3 下载要按 GB 收）；加上 10GB 永久免费（我们 payload 一个几十 MB、只留 2 周，远用不到 10GB），R2 基本<b>白嫖</b>。</p></div>
 
-    <h3>option A · 自己搭一个薄端点（就是你说的 S3-like）</h3>
+    <h3>自动过期（beta 留 ~2 周、超期自动删）<span class="own e">实现工程定</span> · <span class="own p">留多久产品定</span></h3>
+    <div class="plain">
+      <strong>明确答你：能自动做到。</strong> R2 有「object lifecycle 规则」：在 R2 后台给存 beta 的 bucket 建一条规则「<b>N 天后自动删</b>」（比如 14 天），到期它自己删、24 小时内执行，<b>不用人管</b>。所以「每次传新 beta、只留近 2 周、旧的自动清掉」= 一条规则搞定。<b>留几天由你定</b>（2 周？1 周？），怎么配是 Tadashi 的事。
+    </div>
+
+    <h3>薄端点长啥样（复习上版的图）</h3>
     <div class="diagram">
       <div class="drow">
-        <div class="dnode cust">客户</div>
-        <div class="darr">──①输 key──▶</div>
-        <div class="dnode fn">薄函数<br><small style="font-weight:500">验 key</small></div>
-        <div class="darr">──②查──▶</div>
-        <div class="dnode" style="min-width:80px">key 名单</div>
+        <div class="dnode cust">客户</div><div class="darr">①key▶</div>
+        <div class="dnode fn">薄函数<br><small style="font-weight:500">验 key</small></div><div class="darr">②▶</div>
+        <div class="dnode store">R2<br><small style="font-weight:500">存各版本 payload</small></div>
       </div>
-      <div class="dvert">③ key 有效 ▼</div>
-      <div class="drow"><div class="dnode store">私有存储（S3 / Cloudflare R2 / Vercel blob）<br><small style="font-weight:500">存 payload 各个版本</small></div></div>
-      <div class="dvert">④ 给一个「限时下载链接」▼</div>
-      <div class="drow"><div class="dnode cust">客户直接下载 payload</div></div>
-      <p class="evi" style="margin-top:10px"><b>就是你猜的</b>：一个像 S3 的私有存储放各版本 payload + 一个<b>小函数</b>当门卫（验 key → 给一个几分钟内有效的下载链接）。这叫「presigned URL（预签名链接）」模式，是业界服务私有文件的标准做法之一。我们这边可复用已经验证过的托管（FLY-203 那套私有存储 + 薄函数）。<b>成本 = 存储 + 流量</b>，没有「发多少版本」的上限。</p>
-    </div>
-
-    <h3>option B · 用现成商用平台（Keygen 这类）</h3>
-    <p>Keygen = 一个「license + 分发」的现成服务：你把 payload 传上去，它帮你管 license key、分档（免费/付费）、按客户吊销、gated 下载。<b>少写基建</b>，但 ——</p>
-    <div class="warn">
-      <strong>查到真定价了（这条你最关心）：</strong>Keygen 免费档（Dev）上限 = <b>只能有 10 个 release</b>（超了直接 402 拒绝）。<b>我们每 6h 一个 beta ≈ 一个月 120 个</b> —— <b>免费档瞬间就撞爆</b>，必须上付费档（Std）。付费档的确切月费它藏在 slider / 要联系销售后面，<span class="k">UNKNOWN</span>，我查不到具体数字。<b>结论：以我们的发版频率，Keygen 免费档用不了，一定进付费。</b>
-    </div>
-    <p style="color:#6e6e73;font-size:14px">诚实权衡：自己搭（A）没有「发多少版本」的上限、全在自己手里、便宜，但免费/付费分档、key 等级要我们自己写一点；Keygen（B）分档/吊销现成、正好贴你要做付费，但按我们频率一定花钱、且价格不透明。</p>
-
-    <h3>顺到「免费 + 付费高级版」</h3>
-    <div class="agree">
-      <strong>你选的 B 渠道（薄壳 + key + payload）本身就是免费/付费的开关。</strong>免费版 = 装了就能用的基础档；付费高级版 = 付费 key 换高级 payload。现在把这套搭起来，以后加档只是「多一个 key 等级 + 多一个 payload 档」，不用重构。<b>现在不用做计费系统</b> —— 那是以后。
+      <div class="dvert">③ 给限时下载链接 ▼</div>
+      <div class="drow"><div class="dnode cust">客户下载</div></div>
     </div>
 
     <div class="q">
       <div class="qhead"><div class="n">①</div><div class="t">
-        <b>payload 放哪 + 免费/付费方向？</b>
-        <span>看完两张：payload 托管你倾向「自己搭薄端点（A，便宜没上限、要自己写点分档）」还是「上 Keygen 类（B，现成但按我们频率一定花钱、价格不透明）」？</span>
+        <b>用 R2 + 自动过期，方向对吗？</b>
+        <span>我建议 payload 存 R2（零 egress、白嫖）+ beta 自动留 2 周删。beta 留几天你定 —— 2 周够吗？</span>
       </div></div>
-      <textarea id="q1" data-label="① payload 托管 A/B + 免费付费" placeholder="例：先自己搭薄端点（A），别一上来就花钱。或者：既然要做付费，值得看看 Keygen 具体报价…"></textarea>
+      <textarea id="q1" data-label="① R2 + beta 留几天" placeholder="例：用 R2，beta 留 2 周就行。或者：留 1 个月吧，万一要回滚…"></textarea>
     </div>
   </div>
 
-  <!-- ② detached confirm + upgrade -->
+  <!-- ② detached + upgrade + Option 2 confirm -->
   <div class="card">
-    <span class="pill green">决策块 ②</span>
-    <h2>你自己 articulate 的那套 —— 确认 + 补</h2>
-    <div class="agree">
-      <strong>你的理解基本全对，确认：</strong>
+    <span class="pill green">② 升级 + 你已定的几条</span>
+    <h2>怎么升级 + 已定项复述</h2>
+    <div class="decided">
+      <strong>你 round-3 已定的（复述，标 owner）：</strong>
       <ul>
-        <li>NPM 分发，有 Beta + 正式版两个通道。✓</li>
-        <li><b>「发版」和「拉取更新」是两条独立（detached）的线 —— 对！</b> 发版 = 我们往 npm 推（每 commit / 每 6h）；拉取 = 各家机器自己定时去 npm 取。互不绑定。</li>
-        <li>我们自己每 ~6h 拉最新 beta；别的项目/客户每天/每周拉最新正式版。✓</li>
-        <li>升级 = 直接跑 <span class="k">flywheel update</span>；坏版本也这样测（装上、发现不对、回滚）。✓ 做进方案。</li>
+        <li>promote = <b>Option 2 · 重发一个干净版本号</b>（客户看到干净 <span class="k">v1.56.0</span>，不带 beta 后缀）<span class="own p">产品定 ✓</span></li>
+        <li>发版和拉取是<b>两条独立的线</b>（发=推 npm、拉=各机器定时取）✓ 你判断对</li>
+        <li>我们自己勤拉 beta、客户 ~1-2 周拉正式版 <span class="own p">产品定 ✓</span></li>
       </ul>
     </div>
+    <h3>升级具体链路 <span class="own e">工程定</span></h3>
+    <p>机器上跑 <span class="k">flywheel update</span> → 去 npm 问「我这条通道有没有更新」→ 有就下载装进新目录 → 切过去 → 重启。旧版本留一个当回滚位，出问题自动翻回去。坏版本也这样测（装上、发现不对、回滚）。</p>
     <div class="q">
       <div class="qhead"><div class="n">②</div><div class="t">
-        <b>这套确认下来，还有要补的吗？</b>
-        <span>别的项目/客户升级，你希望「他们自己跑命令升」还是「我们推、他们自动装」？我倾向前者（更安全、他们可控）。</span>
+        <b>升级这套，最后一个问题：</b>
+        <span>客户升级你希望「他们自己跑命令升」还是「我们推、他们自动装」？我倾向前者（更安全、他们可控）。</span>
       </div></div>
-      <textarea id="q2" data-label="② detached 确认 + 升级手动/自动" placeholder="例：确认。别人升级他们自己跑命令就好。或者：正式版我想能自动推给他们…"></textarea>
+      <textarea id="q2" data-label="② 客户升级手动 vs 自动" placeholder="例：他们自己跑命令就好。或者：正式版我想能自动推给客户…"></textarea>
     </div>
   </div>
 
-  <!-- copy -->
   <div class="card" style="text-align:center">
     <div class="actions">
       <button id="copy" type="button">📋 一键复制我的批注</button>
@@ -384,18 +343,18 @@
   </div>
 
   <footer>
-    Honey Lemon · Flywheel Product · 第 3 版 · 提案，不是最终 PRD
-    <div class="srcs">依据（真查过）：npm dist-tag 官方文档（promote=移标签）· Next.js / Docusaurus / Expo canary 发布频率 · Keygen 定价（免费档 10 release 上限）· S3/R2 presigned URL 私有文件分发模式</div>
+    Honey Lemon · Flywheel Product · 第 4 版 · 提案，不是最终 PRD
+    <div class="srcs">依据（真查过）：Cloudflare R2 定价 + object lifecycle 文档（10GB 永久 / 零 egress / N 天自动删）· AWS S3 定价（egress $0.09/GB、旧免费档已取消）· release train / golden commit 通行做法（iOS/安卓/StackStorm）· Next.js / Expo canary 频率 · npm dist-tag promote</div>
   </footer>
 </div>
 
 <script nonce="__CSP_NONCE__">
 (function () {
-  var ids = ["q4", "qA", "q3", "q1", "q2"];
+  var ids = ["q4", "qA", "qApprove", "q1", "q2"];
   var btn = document.getElementById("copy");
   var out = document.getElementById("out");
   function build() {
-    var lines = ["【FLY-1098 · Release CI/CD 发布流程（第 3 版）— Annie 的批注】", ""];
+    var lines = ["【FLY-1098 · Release CI/CD 发布流程（第 4 版）— Annie 的批注】", ""];
     var any = false;
     ids.forEach(function (id) {
       var el = document.getElementById(id);
