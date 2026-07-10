@@ -299,28 +299,84 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		expect(coordinator.hasPendingMigrations()).toBe(false);
 	});
 
-	it("Bridge restart mid-partial-migration ADOPTS the durable ticket's episode — no duplicate ticket/notify (Codex R2 MED-2)", async () => {
+	it("Bridge restart mid-partial-migration resumes the DURABLE episode ledger — no duplicate ticket/notify (Codex R2 MED-2 + R3)", async () => {
 		const fleet = incidentFleet().slice(0, 4);
 		for (const s of fleet) store.upsertSession(s);
-		// The durable evidence of the pre-restart episode: an ACTIVE ticket row.
+		// The durable evidence of the pre-restart episode: the LEDGER row
+		// (signature + claimed exec ids), NOT the alert ticket.
+		store.setServerLossEpisode(
+			"tmux-server-lost:1000",
+			fleet.map((s) => s.execution_id),
+		);
+		// A FRESH coordinator (post-restart: no in-memory state at all).
+		const coordinator = makeCoordinator({ sessions: [], probe: "down" });
+		const claimed = await coordinator.check();
+		// Resumed: pending sessions migrated under the DURABLE episode
+		// signature; no new fleet ticket, no Lead notifications.
+		expect(claimed.size).toBe(4);
+		expect(alerts).toHaveLength(0);
+		expect(notifications).toHaveLength(0);
+		expect(new Set(migrations.map((m) => m.episode))).toEqual(
+			new Set(["tmux-server-lost:1000"]),
+		);
+	});
+
+	it("a stale ACTIVE ticket alone (no ledger) never swallows a NEW incident (Codex R3 HIGH-2)", async () => {
+		const fleet = incidentFleet().slice(0, 4);
+		// An old permanently-ESCALATED ticket lingers — but its episode ledger
+		// is gone (all of ITS sessions were handled long ago).
 		store.openAlertThread({
 			correlationKey: "machine|tmux-server|tmux_server_lost|",
 			eventId: "tmux-server-lost:1000",
-			threadId: "t-loss",
+			threadId: "t-old",
 			channelId: "c",
 			leadId: "tmux-server",
 			projectName: "machine",
 			eventType: "tmux_server_lost",
-			ticketStatus: "REPAIRING",
+			ticketStatus: "ESCALATED",
 		});
-		// A FRESH coordinator (post-restart: empty in-memory latch).
-		const coordinator = makeCoordinator({ sessions: [], probe: "down" });
+		const coordinator = makeCoordinator({ sessions: fleet, probe: "down" });
+		await coordinator.check();
+		// The NEW incident gets its OWN episode: a fresh fleet ticket + fresh
+		// notifications — never silently folded under the stale signature.
+		expect(alerts).toHaveLength(1);
+		expect(alerts[0]!.eventId).not.toBe("tmux-server-lost:1000");
+		expect(notifications.length).toBeGreaterThan(0);
+	});
+
+	it("an UNKNOWN probe never migrates pending sessions (suppression only) (Codex R3 HIGH-1)", async () => {
+		const fleet = incidentFleet().slice(0, 4);
+		for (const s of fleet) store.upsertSession(s);
+		store.setServerLossEpisode(
+			"tmux-server-lost:1000",
+			fleet.map((s) => s.execution_id),
+		);
+		const coordinator = makeCoordinator({
+			sessions: [],
+			probe: "unknown",
+			targetGone: async () => null, // cannot tell — must not migrate
+		});
 		const claimed = await coordinator.check();
-		// Adopted: sessions migrated under the DURABLE episode signature; no new
-		// fleet ticket, no Lead notifications.
-		expect(claimed.size).toBe(4);
+		expect(claimed.size).toBe(4); // reapers stay suppressed
+		expect(migrations).toHaveLength(0); // but NOTHING is buried on unknown
 		expect(alerts).toHaveLength(0);
-		expect(notifications).toHaveLength(0);
+	});
+
+	it("within an ongoing episode, a pending session with a PROVABLY gone target migrates even while the server probe is up", async () => {
+		const fleet = incidentFleet().slice(0, 3);
+		for (const s of fleet) store.upsertSession(s);
+		store.setServerLossEpisode(
+			"tmux-server-lost:1000",
+			fleet.map((s) => s.execution_id),
+		);
+		const coordinator = makeCoordinator({
+			sessions: [],
+			probe: "up",
+			targetGone: async () => true,
+		});
+		// Not the first check — disable the boot leg so only the episode path runs.
+		await coordinator.check();
+		expect(migrations).toHaveLength(3);
 		expect(new Set(migrations.map((m) => m.episode))).toEqual(
 			new Set(["tmux-server-lost:1000"]),
 		);

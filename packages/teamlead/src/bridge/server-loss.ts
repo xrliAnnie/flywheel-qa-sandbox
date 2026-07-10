@@ -66,18 +66,6 @@ export class ServerLossCoordinator {
 	private readonly now: () => number;
 	private readonly log: (msg: string) => void;
 	private firstCheck = true;
-	/**
-	 * Codex R1 HIGH-2: the ACTIVE loss episode. Claiming happens before the
-	 * migration succeeds (that is deliberate — a failed migration must STILL
-	 * suppress the per-runner reapers, or the runner gets buried twice), so a
-	 * partial failure leaves sessions `running`. Without this latch the next
-	 * tick would read them as a brand-new loss: a new episodeSignature, a new
-	 * fleet ticket, and re-notified Leads EVERY cycle. With it, the same
-	 * ongoing loss retries ONLY the pending migrations quietly under the same
-	 * episode; the latch clears when no claimed session is still running.
-	 */
-	private activeEpisode: { signature: string; claimed: Set<string> } | null =
-		null;
 
 	constructor(private readonly deps: ServerLossDeps) {
 		this.env = deps.env ?? process.env;
@@ -86,37 +74,49 @@ export class ServerLossCoordinator {
 	}
 
 	/**
-	 * The pre-reaper phase. Returns the exec ids this coordinator CLAIMED and
-	 * migrated this cycle — HeartbeatService feeds them into the orphan
-	 * suppression set so crash-reaper/reapOrphans never double-migrate.
-	 */
-	/**
 	 * Codex R2 HIGH: does the active episode still have UNMIGRATED casualties?
 	 * The Hub recovery probe consults this — an episode with pending
 	 * migrations must never read as recovered (quiet resolve would strand the
 	 * failed sessions in a silent retry loop with no T2 escalation).
+	 * Reads the DURABLE episode ledger (restart-safe by construction).
 	 */
 	hasPendingMigrations(): boolean {
-		if (!this.activeEpisode) return false;
-		const claimed = this.activeEpisode.claimed;
+		const episode = this.deps.store.getServerLossEpisode();
+		if (!episode) return false;
+		const claimed = new Set(episode.claimed);
 		return this.deps.store
 			.getRunningSessions()
 			.some((s) => claimed.has(s.execution_id));
 	}
 
+	/**
+	 * The pre-reaper phase. Returns the exec ids this coordinator CLAIMED and
+	 * migrated this cycle — HeartbeatService feeds them into the orphan
+	 * suppression set so crash-reaper/reapOrphans never double-migrate.
+	 *
+	 * Episode state lives in the DURABLE StateStore ledger (Codex R1 HIGH-2 +
+	 * R2 MED-2 + R3: signature AND claimed exec ids persist across restarts —
+	 * never inferred from the alert ticket row, whose ACTIVE state only means
+	 * unresolved and would let a stale ESCALATED ticket swallow a NEW
+	 * incident). Claiming happens before the migration succeeds on purpose:
+	 * a failed migration must still suppress the per-runner reapers. The
+	 * ongoing episode retries ONLY its pending migrations quietly (no new
+	 * ticket, no re-notification) and clears when nothing claimed still runs.
+	 */
 	async check(): Promise<ReadonlySet<string>> {
 		const wasFirst = this.firstCheck;
 		this.firstCheck = false;
 		const running = this.deps.store.getRunningSessions().filter(isTmuxBacked);
 
-		// Episode latch maintenance: once every claimed session has left
-		// `running` (migrations landed), the episode is over.
-		if (this.activeEpisode) {
-			const stillPending = running.filter((s) =>
-				this.activeEpisode?.claimed.has(s.execution_id),
-			);
+		// Episode ledger maintenance: once every claimed session left `running`
+		// (migrations landed), the episode is over.
+		let episode = this.deps.store.getServerLossEpisode();
+		if (episode) {
+			const claimed = new Set(episode.claimed);
+			const stillPending = running.filter((s) => claimed.has(s.execution_id));
 			if (stillPending.length === 0) {
-				this.activeEpisode = null;
+				this.deps.store.clearServerLossEpisode();
+				episode = undefined;
 			}
 		}
 
@@ -124,35 +124,20 @@ export class ServerLossCoordinator {
 
 		const probe = await this.deps.probeServer();
 
-		// Codex R2 MEDIUM-2 (restart safety): the in-memory latch dies with the
-		// Bridge, but the episode's TICKET row is durable. A fresh coordinator
-		// finding a still-ACTIVE tmux_server_lost ticket ADOPTS that episode
-		// (its event_id IS the episode signature) instead of declaring a brand
-		// new loss — no duplicate ticket, no re-notified Leads after a restart
-		// mid-partial-migration.
-		if (!this.activeEpisode && probe !== "up") {
-			const activeTicket = this.deps.store.getActiveAlertThread(
-				`${FLEET_ALERT_PROJECT}|tmux-server|tmux_server_lost|`,
-			);
-			if (activeTicket?.event_id.startsWith("tmux-server-lost:")) {
-				this.activeEpisode = {
-					signature: activeTicket.event_id,
-					claimed: new Set(running.map((s) => s.execution_id)),
-				};
-				this.log(
-					`adopted durable episode ${activeTicket.event_id} after restart (${running.length} pending)`,
-				);
-			}
-		}
-
-		// Ongoing episode: retry ONLY the pending migrations quietly — no new
-		// episode signature, no new fleet ticket, no re-notification (HIGH-2).
-		if (this.activeEpisode && probe !== "up") {
-			const episode = this.activeEpisode;
-			const pending = running.filter((s) =>
-				episode.claimed.has(s.execution_id),
-			);
+		// Ongoing episode (in-process latch AND post-restart — the ledger is
+		// durable): retry ONLY the pending migrations, quietly. A pending
+		// session is (re)migrated only on PROOF — server provably down, or its
+		// own target provably gone (Codex R3 HIGH-1: an `unknown` probe must
+		// never migrate a possibly-healthy runner). Sessions OUTSIDE the
+		// episode's claimed set are untouched here — a genuinely NEW incident
+		// falls through to fresh detection once this episode clears.
+		if (episode) {
+			const claimed = new Set(episode.claimed);
+			const pending = running.filter((s) => claimed.has(s.execution_id));
 			for (const session of pending) {
+				const provablyDead =
+					probe === "down" || (await this.deps.targetGone(session)) === true;
+				if (!provablyDead) continue;
 				try {
 					await this.deps.migrate(session, episode.signature);
 				} catch (err) {
@@ -161,7 +146,7 @@ export class ServerLossCoordinator {
 					);
 				}
 			}
-			return new Set(episode.claimed);
+			return claimed;
 		}
 
 		let casualties: Session[] | null = null;
@@ -195,10 +180,14 @@ export class ServerLossCoordinator {
 			`${shape}: ${casualties.length} running tmux session(s) lost — episode ${episodeSignature}`,
 		);
 
-		// 1. Claim + migrate every casualty (grouped, episode-tagged). The latch
-		// arms NOW so a partial migration failure retries under THIS episode.
+		// 1. Claim + migrate every casualty (grouped, episode-tagged). The
+		// DURABLE ledger arms NOW so a partial migration failure — or a Bridge
+		// restart mid-migration — retries under THIS episode, never a new one.
 		const claimed = new Set<string>();
-		this.activeEpisode = { signature: episodeSignature, claimed };
+		this.deps.store.setServerLossEpisode(
+			episodeSignature,
+			casualties.map((s) => s.execution_id),
+		);
 		let migrated = 0;
 		for (const session of casualties) {
 			claimed.add(session.execution_id);

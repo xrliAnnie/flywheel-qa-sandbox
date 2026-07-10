@@ -516,6 +516,20 @@ export class AlertChannelHub {
 				} else {
 					this.deps.store.setTicketStatus(ck, "ESCALATED");
 					await this.updateRootTicketStatus(channelId, messageId, "ESCALATED");
+					// FLY-1082 (Task 3.2, Codex R3 MED): a needs_human escalation IS
+					// an ESCALATED landing — it must feed the runbook-gap window like
+					// the T2 and by-design paths (repeated "can't auto-fix" is
+					// exactly the signal the auto-filed eng issue exists for).
+					const row = this.deps.store.getActiveAlertThread(ck);
+					if (row) {
+						try {
+							await this.deps.onTicketEscalated?.(row);
+						} catch (err) {
+							this.logger(
+								`onTicketEscalated hook failed for ${ck}: ${(err as Error).message}`,
+							);
+						}
+					}
 				}
 			}
 		}

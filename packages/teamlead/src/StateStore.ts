@@ -1453,6 +1453,20 @@ export class StateStore {
 			)
 		`);
 
+		// FLY-1082 (Task 2.3, Codex R3): the server-loss episode LEDGER — a
+		// single durable row holding the active episode's signature + claimed
+		// exec ids. The coordinator's restart adoption reads THIS (never the
+		// alert ticket row: ACTIVE only means resolved_at IS NULL — a
+		// permanently-ESCALATED old ticket must not swallow a NEW incident).
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS server_loss_episode (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				signature TEXT NOT NULL,
+				claimed_json TEXT NOT NULL,
+				created_at TEXT NOT NULL DEFAULT (datetime('now'))
+			)
+		`);
+
 		// FLY-818 M3: durable per-eventId founder-page ledger. Records whether a
 		// GENUINE founder page (an @founder message in the stuck runner's [FLY-XX]
 		// issue thread — Annie's issue-thread design) actually succeeded for a
@@ -4743,6 +4757,46 @@ export class StateStore {
 
 	clearRunbookIssue(kind: string): void {
 		this.db.run("DELETE FROM runbook_issues WHERE kind = ?", [kind]);
+		this.save();
+	}
+
+	// ── FLY-1082 (Task 2.3, Codex R3): server-loss episode ledger ──
+
+	setServerLossEpisode(signature: string, claimedIds: string[]): void {
+		this.db.run(
+			`INSERT INTO server_loss_episode (id, signature, claimed_json) VALUES (1, ?, ?)
+			 ON CONFLICT(id) DO UPDATE SET signature = excluded.signature,
+				claimed_json = excluded.claimed_json, created_at = datetime('now')`,
+			[signature, JSON.stringify(claimedIds)],
+		);
+		this.save();
+	}
+
+	getServerLossEpisode(): { signature: string; claimed: string[] } | undefined {
+		const stmt = this.db.prepare(
+			"SELECT signature, claimed_json FROM server_loss_episode WHERE id = 1",
+		);
+		let out: { signature: string; claimed: string[] } | undefined;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			try {
+				const claimed = JSON.parse(row.claimed_json as string);
+				out = {
+					signature: row.signature as string,
+					claimed: Array.isArray(claimed)
+						? claimed.filter((x): x is string => typeof x === "string")
+						: [],
+				};
+			} catch {
+				out = { signature: row.signature as string, claimed: [] };
+			}
+		}
+		stmt.free();
+		return out;
+	}
+
+	clearServerLossEpisode(): void {
+		this.db.run("DELETE FROM server_loss_episode WHERE id = 1", []);
 		this.save();
 	}
 
