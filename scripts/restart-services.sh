@@ -84,11 +84,6 @@ else
     echo "[restart] WARNING: $ENV_FILE not found"
 fi
 
-# Validate required variables
-DISCORD_CORE_CHANNEL="${DISCORD_CORE_CHANNEL:-}"
-SIMBA_BOT_TOKEN="${SIMBA_BOT_TOKEN:-${DISCORD_BOT_TOKEN:-}}"
-NOTIFY_BOT_TOKEN="${SIMBA_BOT_TOKEN}"
-
 # ════════════════════════════════════════════════════════════════
 # Utility functions
 # ════════════════════════════════════════════════════════════════
@@ -97,44 +92,76 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart] $*"
 }
 
-notify_discord() {
-    local message="$1"
-    [[ -z "$NOTIFY_BOT_TOKEN" || -z "$DISCORD_CORE_CHANNEL" ]] && return 0
-    local payload
-    payload=$(jq -n --arg content "$message" '{content: $content}')
-    curl -sf -X POST "https://discord.com/api/v10/channels/${DISCORD_CORE_CHANNEL}/messages" \
-        -H "Authorization: Bot ${NOTIFY_BOT_TOKEN}" \
-        -H "Content-Type: application/json" \
-        -d "$payload" \
-        --max-time 5 || log "WARNING: Discord notification failed"
+# Discord-INDEPENDENT trace (desktop + <state>/meta-alert file; per-reason
+# 10min debounce lives inside meta-alert.sh). Best-effort — never fails the
+# caller, never blocks the deploy.
+fire_meta_alert() {
+    # $1 = reason, $2 = title, $3 = body
+    [[ -x "${FLYWHEEL_DIR}/scripts/meta-alert.sh" ]] && \
+        "${FLYWHEEL_DIR}/scripts/meta-alert.sh" "$1" "$2" "$3" || true
 }
 
-# FLY-270: severe alert = log + Discord, for self-surgery recovery failures that
-# need a human (e.g. Eng Lead not recovered after rollback — KeepAlive can't fix
-# a bad token/manifest/config).
-severe_alert() { log "SEVERE: $1"; notify_discord "🚨 $1"; }
+# FLY-1081 (FLY-915 pain #3): ⚠️/🚨 deploy notices route through lead-alert.sh
+# — the FLY-927 sender seam (FLYWHEEL_ALERT_SENDER_TOKEN_ENV), claims dedup,
+# queue/dead-letter fail-loud all come for free. There is deliberately NO
+# Simba/DISCORD_BOT_TOKEN fallback anymore: an unresolvable sender is
+# lead-alert.sh's dead-letter + meta-alert, never a mis-attributed post.
+#
+# stdout discipline: these helpers are reachable from command-substitution
+# paths (bp_fail_loud inside the $(bp_confirm_port_released …) chain), so they
+# must NEVER write stdout — diagnostics go to stderr, and the lead-alert.sh
+# call is redirected 1>&2 (its own logs are stderr already; stdout only speaks
+# under --strict-delivery, unused here). Do NOT >/dev/null 2>&1 — that would
+# swallow lead-alert.sh's ERROR traces from the deploy log.
+# `|| true`: a failed notification must never block the deploy (FLY-739).
+alert_warning() {
+    # $1 = signature slug, $2 = title, $3 = body
+    "${FLYWHEEL_DIR}/scripts/lead-alert.sh" --project flywheel --lead deploy \
+        --kind deploy_degraded --severity warning --title "$2" --body "$3" \
+        --signature "$1-$(date -u +%Y%m%d%H%M)" 1>&2 || true
+}
+
+alert_severe() {
+    # $1 = signature slug, $2 = title, $3 = body
+    # deploy_failed must @-mention the founder (gate-approved hard requirement).
+    # FLYWHEEL_FOUNDER_USER_ID unset → WARNING trace + send WITHOUT the ping
+    # (degraded, never silent, never blocking).
+    if [[ -z "${FLYWHEEL_FOUNDER_USER_ID:-}" ]]; then
+        log "WARNING: FLYWHEEL_FOUNDER_USER_ID not set — deploy_failed alert will NOT @-mention the founder" >&2
+    fi
+    "${FLYWHEEL_DIR}/scripts/lead-alert.sh" --project flywheel --lead deploy \
+        --kind deploy_failed --severity severe --title "$2" --body "$3" \
+        --signature "$1-$(date -u +%Y%m%d%H%M)" \
+        ${FLYWHEEL_FOUNDER_USER_ID:+--mention-user "$FLYWHEEL_FOUNDER_USER_ID"} 1>&2 || true
+}
 
 # FLY-929 W3b ②: ROUTINE notices (✅/🔄/⏳ — progress/result, no human action
-# needed) migrate to the Claude Infra Bot → #flywheel-notify when BOTH
+# needed) ride the Claude Infra Bot → #flywheel-notify when BOTH
 # CLAUDE_INFRA_BOT_TOKEN and FLYWHEEL_NOTIFY_CHANNEL are set (P-identity).
-# Either missing → the exact legacy notify_discord path (byte-compat).
-# ⚠️/🚨 and everything through severe_alert stay on notify_discord
-# UNCONDITIONALLY — human-rescue signals must ride the battle-tested token
-# (FLY-929 exploration §3.6; a mis-provisioned new token must never silence a
-# deploy failure).
+# FLY-1081 (Codex R1#4): the old silent fallback to Simba is GONE — env not
+# fully set means loud refusal (stderr ERROR + meta-alert) and a failed POST
+# leaves the same trace. Both paths return 0: routine notices never block a
+# deploy.
 notify_routine() {
     local message="$1"
     if [[ -n "${CLAUDE_INFRA_BOT_TOKEN:-}" && -n "${FLYWHEEL_NOTIFY_CHANNEL:-}" ]]; then
         local payload
         payload=$(jq -n --arg content "$message" '{content: $content}')
-        curl -sf -X POST "https://discord.com/api/v10/channels/${FLYWHEEL_NOTIFY_CHANNEL}/messages" \
+        if ! curl -sf -X POST "https://discord.com/api/v10/channels/${FLYWHEEL_NOTIFY_CHANNEL}/messages" \
             -H "Authorization: Bot ${CLAUDE_INFRA_BOT_TOKEN}" \
             -H "Content-Type: application/json" \
             -d "$payload" \
-            --max-time 5 || log "WARNING: Discord notification failed"
+            --max-time 5 >/dev/null; then
+            log "ERROR: routine notify POST failed (channel=${FLYWHEEL_NOTIFY_CHANNEL})" >&2
+            fire_meta_alert "routine_notify_failed" "Flywheel routine notify failed" \
+                "notify_routine POST to FLYWHEEL_NOTIFY_CHANNEL failed; dropped notice: ${message}"
+        fi
         return 0
     fi
-    notify_discord "$message"
+    log "ERROR: routine notify unconfigured (CLAUDE_INFRA_BOT_TOKEN/FLYWHEEL_NOTIFY_CHANNEL missing) — NOT falling back" >&2
+    fire_meta_alert "notify_routine_unconfigured" "Flywheel routine notify unconfigured" \
+        "CLAUDE_INFRA_BOT_TOKEN / FLYWHEEL_NOTIFY_CHANNEL missing; dropped notice: ${message}"
+    return 0
 }
 
 # ════════════════════════════════════════════════════════════════
@@ -210,14 +237,16 @@ check_discord_plugin_fork() {
     log "Updating Discord plugin (runtime_ok=$runtime_ok fork_updated=$fork_updated)..."
     if ! bash "$DISCORD_PLUGIN_UPDATE"; then
         log "ERROR: Discord plugin update failed"
-        notify_discord "⚠️ Discord plugin 更新失败 (runtime_ok=$runtime_ok fork_updated=$fork_updated)。Lead 启动时 preflight 会重试。"
+        alert_warning "plugin-update-failed" "Discord plugin update failed" \
+            "Discord plugin 更新失败 (runtime_ok=$runtime_ok fork_updated=$fork_updated)。Lead 启动时 preflight 会重试。"
         return 2
     fi
 
     # Step 5: Verify update succeeded
     if ! bash "$DISCORD_PLUGIN_CHECK" > /dev/null 2>&1; then
         log "ERROR: Discord plugin update completed but re-check still fails"
-        notify_discord "⚠️ Discord plugin update 执行成功但 re-check 失败。请手动检查。"
+        alert_warning "plugin-update-recheck-failed" "Discord plugin re-check failed" \
+            "Discord plugin update 执行成功但 re-check 失败。请手动检查。"
         return 2
     fi
 
@@ -610,7 +639,8 @@ if [[ "$PLUGIN_ONLY_RESTART" != "true" && "$restart_bridge" == "true" && "$FORCE
     log "Waiting for idle sessions before restart..."
     if ! wait_for_idle; then
         log "Proceeding with restart after idle timeout"
-        notify_discord "⚠️ Idle 等待超时 (${MAX_WAIT_SECONDS}s)，强制重启。"
+        alert_warning "idle-timeout" "Deploy idle wait timed out" \
+            "Idle 等待超时 (${MAX_WAIT_SECONDS}s)，强制重启。"
     fi
 fi
 
@@ -627,9 +657,9 @@ bp_fail_loud() {
     local reason="$1" title="$2" body="$3"
     # >&2: never write to stdout — bp_confirm_port_released's verdict is captured
     # via `$(...)` and any stdout here would defeat the fail-closed check
-    # (Codex R2 HIGH). The lib also redirects, but keep the override clean too.
+    # (Codex R2 HIGH). alert_severe honors the same discipline (stdout empty).
     log "FAIL-LOUD [$reason] $title — $body" >&2
-    notify_discord "🚨 ${title} — ${body}"
+    alert_severe "port-fail-loud-${reason}" "$title" "$body"
     [[ -x "${FLYWHEEL_DIR}/scripts/meta-alert.sh" ]] && \
         "${FLYWHEEL_DIR}/scripts/meta-alert.sh" "$reason" "$title" "$body" || true
 }
@@ -843,7 +873,8 @@ restart_lead() {
             # Fail-fast: refuse to start new supervisor if old is still alive
             if kill -0 "$pid" 2>/dev/null; then
                 log "ERROR: Old supervisor for $lead_id (PID $pid) still alive after 60s"
-                notify_discord "⚠️ Lead $lead_id 旧 supervisor (PID $pid) 60s 后仍未退出，跳过重启避免双启动"
+                alert_warning "supervisor-stuck-${lead_id}" "Lead supervisor stuck" \
+                    "Lead $lead_id 旧 supervisor (PID $pid) 60s 后仍未退出，跳过重启避免双启动"
                 return 1
             fi
         fi
@@ -856,7 +887,8 @@ restart_lead() {
     # Fail-fast: bot token env must be defined
     if [[ -z "${!bot_token_env:-}" ]]; then
         log "ERROR: $bot_token_env is not set, cannot restart $lead_id"
-        notify_discord "⚠️ Lead $lead_id 重启失败: \`$bot_token_env\` 未定义"
+        alert_warning "lead-restart-failed-${lead_id}" "Lead restart failed" \
+            "Lead $lead_id 重启失败: \`$bot_token_env\` 未定义"
         return 1
     fi
 
@@ -907,7 +939,8 @@ restart_lead() {
     sleep 3
     if ! kill -0 "$new_pid" 2>/dev/null; then
         log "ERROR: Lead $lead_id (PID $new_pid) exited within 3s of startup — likely preflight failure"
-        notify_discord "⚠️ Lead $lead_id 启动后 3 秒内退出，请检查日志: /tmp/flywheel-lead-${lead_id}.log"
+        alert_warning "lead-exited-early-${lead_id}" "Lead exited early" \
+            "Lead $lead_id 启动后 3 秒内退出，请检查日志: /tmp/flywheel-lead-${lead_id}.log"
         return 1
     fi
     log "Lead $lead_id restarted (PID $new_pid, liveness check OK)"
@@ -1104,7 +1137,8 @@ rollback_and_restart() {
     # Guard: first run has no known-good SHA
     if [[ -z "$rollback_sha" ]]; then
         log "ERROR: No known-good SHA for rollback (first run). Manual intervention required."
-        notify_discord "🚨 Flywheel 首次部署失败且无法自动回滚（无 known-good SHA）。需要手动介入。"
+        alert_severe "deploy-failed-no-rollback" "Flywheel deploy failed" \
+            "Flywheel 首次部署失败且无法自动回滚（无 known-good SHA）。需要手动介入。"
         return 1
     fi
 
@@ -1113,7 +1147,8 @@ rollback_and_restart() {
     # Fail-closed: refuse rollback on dirty checkout
     if [[ -n "$(git -C "$FLYWHEEL_DIR" status --porcelain)" ]]; then
         log "ERROR: Working directory not clean, refusing rollback"
-        notify_discord "🚨 Flywheel rollback 被阻止: 工作区不干净。需要手动介入。"
+        alert_severe "rollback-blocked-dirty" "Flywheel rollback blocked" \
+            "Flywheel rollback 被阻止: 工作区不干净。需要手动介入。"
         return 1
     fi
 
@@ -1129,7 +1164,8 @@ rollback_and_restart() {
             # freed even during rollback, the old version can't bind either →
             # severe alert + bail (a human must SIGKILL the listener).
             if ! stop_bridge; then
-                severe_alert "Flywheel 回滚时 Bridge 端口 :$(bridge_port) 未能释放 — 无法重启旧版本。需手动 SIGKILL listener (lsof -ti:$(bridge_port))。"
+                alert_severe "rollback-port-stuck" "Flywheel deploy failed" \
+                    "Flywheel 回滚时 Bridge 端口 :$(bridge_port) 未能释放 — 无法重启旧版本。需手动 SIGKILL listener (lsof -ti:$(bridge_port))。"
                 return 1
             fi
             start_bridge
@@ -1146,12 +1182,15 @@ rollback_and_restart() {
             trigger_cmux_refresh
         fi
         if (( rb_leads_failed > 0 )); then
-            severe_alert "Flywheel 回滚到 \`${rollback_sha:0:7}\` 成功，但 ${rb_leads_failed} 个 Lead（含 Eng Lead？）未恢复——KeepAlive 重拉不了坏 token/manifest/config。需要手动开 terminal 检查。"
+            alert_severe "rollback-leads-failed" "Flywheel deploy failed" \
+                "Flywheel 回滚到 \`${rollback_sha:0:7}\` 成功，但 ${rb_leads_failed} 个 Lead（含 Eng Lead？）未恢复——KeepAlive 重拉不了坏 token/manifest/config。需要手动开 terminal 检查。"
         else
-            notify_discord "⚠️ Flywheel 更新到 \`${CURRENT_HEAD:0:7}\` 失败。已回滚到 \`${rollback_sha:0:7}\` 并重启旧版本（Lead 已恢复）。"
+            alert_warning "update-rolled-back" "Flywheel update rolled back" \
+                "Flywheel 更新到 \`${CURRENT_HEAD:0:7}\` 失败。已回滚到 \`${rollback_sha:0:7}\` 并重启旧版本（Lead 已恢复）。"
         fi
     else
-        notify_discord "🚨 Flywheel 更新失败且回滚 build 也失败。服务可能处于异常状态。需要手动介入。"
+        alert_severe "update-and-rollback-failed" "Flywheel deploy failed" \
+            "Flywheel 更新失败且回滚 build 也失败。服务可能处于异常状态。需要手动介入。"
     fi
 }
 
@@ -1172,7 +1211,8 @@ deploy_and_verify() {
     if [[ "$restart_bridge" == "true" ]]; then
         if ! stop_bridge; then
             log "ERROR: stop_bridge failed to free the port — aborting deploy (deployed-sha NOT advanced)."
-            notify_discord "🚨 Flywheel 部署中止: Bridge 端口未能释放,新 Bridge 无法 bind。需手动 SIGKILL listener (lsof -ti:$(bridge_port))。"
+            alert_severe "deploy-port-stuck" "Flywheel deploy aborted" \
+                "Flywheel 部署中止: Bridge 端口未能释放,新 Bridge 无法 bind。需手动 SIGKILL listener (lsof -ti:$(bridge_port))。"
             return 1
         fi
     fi
@@ -1223,7 +1263,8 @@ deploy_and_verify() {
     # Step 5: Update deployed-sha
     if (( leads_failed > 0 )); then
         log "ERROR: ${leads_failed} lead(s) failed to restart. deployed-sha NOT advanced."
-        notify_discord "⚠️ Flywheel 更新到 \`${CURRENT_HEAD:0:7}\` 部分失败。${leads_failed} 个 Lead 重启失败。下次运行会重试。"
+        alert_warning "leads-partial-failed" "Lead restarts partially failed" \
+            "Flywheel 更新到 \`${CURRENT_HEAD:0:7}\` 部分失败。${leads_failed} 个 Lead 重启失败。下次运行会重试。"
         return 1
     fi
 
@@ -1232,7 +1273,8 @@ deploy_and_verify() {
 
     if (( leads_skipped > 0 )); then
         log "WARNING: ${leads_skipped} lead(s) skipped (no manifest). deployed-sha NOT advanced."
-        notify_discord "⚠️ Flywheel 部分更新到 \`${CURRENT_HEAD:0:7}\`。${leads_skipped} 个 Lead 因缺少 manifest 被跳过。请手动重启这些 Lead 一次以生成 manifest。"
+        alert_warning "leads-skipped-no-manifest" "Leads skipped (no manifest)" \
+            "Flywheel 部分更新到 \`${CURRENT_HEAD:0:7}\`。${leads_skipped} 个 Lead 因缺少 manifest 被跳过。请手动重启这些 Lead 一次以生成 manifest。"
         return 0
     fi
 
@@ -1265,7 +1307,8 @@ if [[ "$PLUGIN_ONLY_RESTART" == "true" ]]; then
     if (( leads_failed > 0 )); then
         # Write retry marker — next run will retry Lead restart
         echo "failed=$leads_failed at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PLUGIN_RESTART_PENDING"
-        notify_discord "⚠️ Discord plugin 更新后 ${leads_failed} 个 Lead 重启失败。请检查日志。"
+        alert_warning "plugin-leads-failed" "Lead restarts failed after plugin update" \
+            "Discord plugin 更新后 ${leads_failed} 个 Lead 重启失败。请检查日志。"
         exit 1
     fi
     # Success (full or partial-skip) — clear retry marker
@@ -1273,7 +1316,8 @@ if [[ "$PLUGIN_ONLY_RESTART" == "true" ]]; then
     # Update project repo deployed SHAs (FLY-43)
     update_project_shas
     if (( leads_skipped > 0 )); then
-        notify_discord "⚠️ Discord plugin 更新后 ${leads_skipped} 个 Lead 跳过（无 manifest）。请手动重启。"
+        alert_warning "plugin-leads-skipped" "Leads skipped after plugin update" \
+            "Discord plugin 更新后 ${leads_skipped} 个 Lead 跳过（无 manifest）。请手动重启。"
         exit 0
     fi
     notify_routine "✅ Lead 重启完成 (plugin=$plugin_needs_restart project_lead=$project_lead_changed)。"
