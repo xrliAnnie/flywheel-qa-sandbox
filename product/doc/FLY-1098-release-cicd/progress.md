@@ -1,17 +1,16 @@
 ---
 issue: FLY-1098
 phase: design
-phaseCursor: 2/3
-updated: 2026-07-10T04:55:43.935Z
-nextStep: "PREP DONE for round 3: read+digested FLY-1063 ship-layer (Option B,
-  product/doc not engineering/doc). Round 3 = unified canvas: ship 段 (1063
-  5-step + gate 重量可变) + release 段 (v3 + Annie round-2) + REQ-0; umbrella
-  confirmed. HOLDING per HL: wait for Annie v3 annotations, do combined. Parked
-  (Monitor blzpszwtd + HL teammate-msg)."
+phaseCursor: 3/3
+updated: 2026-07-10T05:27:46.265Z
+nextStep: co-eval v4/round-3 (3adac41f) delivered to HL — real research +
+  concrete mechanisms + 2 diagrams + promote 3 options + de-jargon +
+  two-audiences + 1063 ship section folded (umbrella). Deprecate v3 efb203c0.
+  Await HL QA + Annie round-3 annotations.
 chunks: []
 pointers: {}
 ---
 
 # FLY-1098 progress
-**phase**: design (2/3)
-**next**: PREP DONE for round 3: read+digested FLY-1063 ship-layer (Option B, product/doc not engineering/doc). Round 3 = unified canvas: ship 段 (1063 5-step + gate 重量可变) + release 段 (v3 + Annie round-2) + REQ-0; umbrella confirmed. HOLDING per HL: wait for Annie v3 annotations, do combined. Parked (Monitor blzpszwtd + HL teammate-msg).
+**phase**: design (3/3)
+**next**: co-eval v4/round-3 (3adac41f) delivered to HL — real research + concrete mechanisms + 2 diagrams + promote 3 options + de-jargon + two-audiences + 1063 ship section folded (umbrella). Deprecate v3 efb203c0. Await HL QA + Annie round-3 annotations.
