@@ -27,6 +27,7 @@ import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import { finalizeRecoveredMerge } from "./merge-ship-gate.js";
+import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import { makeFinalizeThreeStagePhases } from "./post-ship-finalization.js";
 import { reconcileGatewayRetry } from "./retry-dispatch-wal.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
@@ -1288,6 +1289,13 @@ export function createActionRouter(
 	issueDisplayRefresh?: {
 		current?: { refresh(issueId: string): Promise<void> };
 	},
+	// FLY-1050: late-bound three-stage PhaseOrchestrator holder (same pattern
+	// as issueDisplayRefresh). A terminate of a three-stage QA row re-drives
+	// the implement→QA handoff (respawn) + the scoped belt reconcile —
+	// terminate previously notified the orchestrator of NOTHING (the FLY-967
+	// strand). plugin.ts must pass it at BOTH createActionRouter call sites
+	// (/actions dashboard alias + /api/actions — the FLY-175 dual-mount).
+	phaseOrchestrator?: { current?: PhaseOrchestrator },
 ): Router {
 	const router = Router();
 
@@ -1357,14 +1365,15 @@ export function createActionRouter(
 					res.status(400).json({ error: "execution_id is required" });
 					return;
 				}
-				{
-					const sess = store.getSession(eid);
-					if (sess) {
-						const scopeErr = checkLeadScope(sess, leadId, projects, action);
-						if (scopeErr) {
-							res.status(scopeErr.status).json(scopeErr.body);
-							return;
-						}
+				// FLY-1050: pre-read hoisted out of the scope-check block — the
+				// post-terminate hook below needs the ORIGINAL row (chat_thread_role /
+				// issue_id / project_name), not a post-transition re-read.
+				const sess = store.getSession(eid);
+				if (sess) {
+					const scopeErr = checkLeadScope(sess, leadId, projects, action);
+					if (scopeErr) {
+						res.status(scopeErr.status).json(scopeErr.body);
+						return;
 					}
 				}
 				const terminateResult = await handleTerminate(
@@ -1378,6 +1387,36 @@ export function createActionRouter(
 					// FLY-228: optional audit reason (e.g. close_runner --abandon).
 					typeof terminateReason === "string" ? terminateReason : undefined,
 				);
+				// FLY-1050: a terminated three-stage QA row may have stranded its
+				// implement at awaiting_review — fire the scoped QA-loss re-drive,
+				// then the scoped belt reconcile (terminate previously did NEITHER).
+				// The guard MUST include cleanupPending (Codex R1 #2): that shape is
+				// success:false + cleanupPending:true, but the FSM row is already
+				// terminal either way — a residual live tmux is caught downstream by
+				// the ghostGuard (spawn) and the liveness probe (belt). Never-throw,
+				// fire-and-forget (mirrors plugin.ts holder conventions).
+				if (
+					(terminateResult.success || terminateResult.cleanupPending) &&
+					sess?.project_name &&
+					(sess.chat_thread_role ?? "main") === "qa"
+				) {
+					const issueId = sess.issue_id;
+					const projectName = sess.project_name;
+					void phaseOrchestrator?.current
+						?.reconcileQaLoss({ issueId, terminalExecId: eid })
+						.then(() =>
+							phaseOrchestrator?.current?.reconcileTurnBelt({
+								issueId,
+								projectName,
+								terminalExecId: eid,
+							}),
+						)
+						.catch((err) =>
+							console.warn(
+								`[terminate] FLY-1050 qa-loss reconcile failed for ${eid}: ${(err as Error).message}`,
+							),
+						);
+				}
 				if (terminateResult.success) {
 					res.json({
 						success: true,

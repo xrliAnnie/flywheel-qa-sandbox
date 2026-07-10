@@ -10,6 +10,7 @@ export {
 } from "./constants.js";
 export type { DecisionMode, DecisionModeEnv } from "./decision-mode.js";
 export { resolveDecisionMode } from "./decision-mode.js";
+export { isUiDesignFlavored, UI_DESIGN_LABELS } from "./designer-labels.js";
 export type {
 	FeatureFlagSpec,
 	FlagCategory,

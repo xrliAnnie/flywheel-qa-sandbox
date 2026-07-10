@@ -484,7 +484,8 @@ describe("AgentDispatcher", () => {
 				agent_file: ".flywheel/agents/engineering/product-designer-executor.md",
 				department: "engineering",
 				departments: ["engineering", "product"],
-				match: { labels: ["doc", "design", "product", "pm", "ux", "designer"] },
+				// FLY-1059: `designer` moved OUT to the visual designer role.
+				match: { labels: ["doc", "design", "product", "pm", "ux"] },
 			},
 			general: {
 				agent_file: ".flywheel/agents/general-executor.md",

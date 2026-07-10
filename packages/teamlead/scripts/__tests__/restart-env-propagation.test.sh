@@ -60,13 +60,13 @@ launch() {
 }
 
 # Common test fixtures
-SIMBA_BOT_TOKEN="test-bot-token-xyz"
-export SIMBA_BOT_TOKEN
+TEST_COS_BOT_TOKEN="test-bot-token-xyz"
+export TEST_COS_BOT_TOKEN
 discord_state_dir="/tmp/fake-discord"
 lead_id="cos-lead"
 project_dir="/tmp/fake-project"
 project_name="test"
-bot_token_env="SIMBA_BOT_TOKEN"
+bot_token_env="TEST_COS_BOT_TOKEN"
 subdir_args=""
 
 # ════════════════════════════════════════════════════════════════

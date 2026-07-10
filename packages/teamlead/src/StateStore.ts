@@ -2555,13 +2555,15 @@ export class StateStore {
 	 * carrying a verdict intent — candidates for the stranded-pass alert
 	 * (reported PASS but never opened the ship gate; the FLY-849 §3.8 silent
 	 * break). Coarse SQL filter; the orchestrator does the precise
-	 * intent/binding checks after parsing session_params.
+	 * intent/binding checks after parsing session_params. FLY-1050:
+	 * `terminated` joins the terminal set (root cause ③ — a terminated
+	 * stranded-pass QA, the FLY-967 shape, was invisible to the boot sweep).
 	 */
 	getStrandedThreeStageQaPassSessions(): Session[] {
 		const stmt = this.db.prepare(
 			`SELECT * FROM sessions
 			 WHERE chat_thread_role = 'qa'
-			   AND status IN ('completed', 'failed')
+			   AND status IN ('completed', 'failed', 'terminated')
 			   AND session_params LIKE '%three_stage_verdict%'`,
 		);
 		const rows: Session[] = [];

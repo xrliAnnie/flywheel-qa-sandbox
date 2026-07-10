@@ -105,6 +105,15 @@ export interface CrashReaperInjectedDeps {
 	deleteCommDbSession: (executionId: string, projectName: string) => void;
 	/** Archive the issue thread (allowStatuses ["terminated"]), post-transition. */
 	archiveThread?: (session: Session) => Promise<void>;
+	/**
+	 * FLY-1050: a reaped three-stage QA row may have stranded its implement at
+	 * awaiting_review — notify the orchestrator (plugin.ts closes this over a
+	 * fire-and-forget `reconcileQaLoss`). Called after the terminated transition
+	 * commits, before archive, for `chat_thread_role === 'qa'` rows only.
+	 * Optional + best-effort: absent/throwing never affects the reap (the boot
+	 * reconcile is the backstop).
+	 */
+	onQaPhaseTerminated?: (executionId: string, issueId: string) => void;
 	/** Override crash-log writer (tests). */
 	writeCrashLog?: (
 		executionId: string,
@@ -304,6 +313,20 @@ async function reapOne(
 			return;
 		}
 		deps.deleteCommDbSession(execId, projectName);
+		// FLY-1050: a reaped three-stage QA row may have stranded its implement —
+		// hand the loss to the orchestrator (before archive; best-effort).
+		if (
+			(session.chat_thread_role ?? "main") === "qa" &&
+			deps.onQaPhaseTerminated
+		) {
+			try {
+				deps.onQaPhaseTerminated(execId, session.issue_id);
+			} catch (err) {
+				log(
+					`[crash-reaper] ${execId}: onQaPhaseTerminated threw: ${(err as Error).message}`,
+				);
+			}
+		}
 		if (deps.archiveThread) {
 			const reaped = deps.store.getSession(execId) ?? {
 				...session,

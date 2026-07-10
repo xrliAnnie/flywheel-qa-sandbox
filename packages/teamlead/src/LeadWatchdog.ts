@@ -1079,6 +1079,13 @@ function titleFor(kind: AlertEventType): string {
 		// exhaustiveness.
 		case "notify_digest_failed":
 			return "Daily token report not delivered";
+		// FLY-1081: never emitted by LeadWatchdog (restart-services.sh /
+		// update-flywheel.sh fire these via scripts/lead-alert.sh with their own
+		// titles); cases exist for switch exhaustiveness.
+		case "deploy_failed":
+			return "Flywheel deploy failed";
+		case "deploy_degraded":
+			return "Flywheel deploy degraded";
 		// FLY-1082: fleet kinds — never emitted by LeadWatchdog (the fleet
 		// sensors / server-loss coordinator / boot self-check build their own
 		// titles); cases exist for switch exhaustiveness.
@@ -1177,6 +1184,12 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// token-usage-daily.sh build their own bodies via lead-alert.sh).
 		case "notify_digest_failed":
 			return "The daily token report was not delivered (no receipt / pipeline step failed). Check launchd com.flywheel.token-usage-daily, Bridge /api/reports delivery, and /tmp/flywheel-token-usage-daily.err.";
+		// FLY-1081: never emitted by LeadWatchdog (restart-services.sh /
+		// update-flywheel.sh build their own bodies via lead-alert.sh).
+		case "deploy_failed":
+			return "A Flywheel deploy failed (restart / rollback / self-update). Shell-only kind via lead-alert.sh — see the shell alert body for specifics; check /tmp/flywheel-bridge.log and ~/.flywheel/deployed-sha.";
+		case "deploy_degraded":
+			return "A Flywheel deploy completed degraded (skipped/failed leads, plugin update problem, or idle-wait timeout). Shell-only kind via lead-alert.sh — see the shell alert body for specifics.";
 		// FLY-1082: fleet kinds — never emitted by LeadWatchdog (their sensors
 		// build their own bodies); cases exist for switch exhaustiveness.
 		case "swap_pressure_high":

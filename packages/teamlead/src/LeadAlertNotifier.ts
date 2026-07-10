@@ -159,6 +159,13 @@ export const ALERT_EVENT_TYPES = [
 	// report date → at most one alert per expected day (claims-table dedup,
 	// shared kind face with the lead-alert.sh allowlist).
 	"notify_digest_failed",
+	// FLY-1081: restart-services.sh / update-flywheel.sh deploy notices, fired
+	// ONLY via scripts/lead-alert.sh with the system identity `--lead deploy` /
+	// `--lead updater` (shell-only kinds; the Bridge never emits them). Present
+	// in the union so a queued deploy alert drains with a known eventType and
+	// the shared kind face (lead-alert.sh allowlist ↔ TS) has no drift.
+	"deploy_failed",
+	"deploy_degraded",
 	// ── FLY-1082: fleet-level failure kinds (the 2026-07-09 OOM incident gap —
 	// machine-wide failures had NO kind, so nobody owned them and the founder
 	// found out first). Every fleet kind has an owner + an explicit ARC posture
@@ -320,6 +327,14 @@ export interface AlertPayload {
 	metadata?: AlertMetadata;
 	/** FLY-927: ticket header + owner @-target context (unified+tickets mode only). */
 	ticket?: AlertTicketContext;
+	/**
+	 * FLY-1081: explicit @-target (e.g. the founder on a deploy_failed) written
+	 * by lead-alert.sh --mention-user. Serialized with the queue record so a
+	 * Bridge drain re-post still truly pings — content prefix + the unified
+	 * allowed_mentions whitelist both derive from it (validated snowflake only;
+	 * a malformed id degrades to plain text).
+	 */
+	mentionUserId?: string;
 }
 
 /**
@@ -887,33 +902,19 @@ export class LeadAlertNotifier {
 				continue;
 			}
 
-			const resolved = this.resolveLead(parsed.leadId, parsed.projectName);
-			// FLY-1082 (Task 1.4): a queued fleet payload drains through the same
-			// deliverability gate as the live path — never dead-lettered as
-			// unknown-lead while the unified channel + sender chain can carry it.
-			if (
-				!resolved &&
-				!(isFleetAlertPayload(parsed) && this.fleetIdentityDeliverable())
-			) {
-				this.moveQueueFileToDeadLetter(file, "unknown-lead");
-				deadLettered++;
-				continue;
-			}
-			const lead = resolved?.lead ?? null;
-			const project = resolved?.project ?? null;
-			const channel = this.resolveChannel(lead, project);
-			if (!channel) {
-				// Config problem — permanent. Dead-letter, don't spin.
-				this.moveQueueFileToDeadLetter(file, "no-channel");
-				deadLettered++;
-				continue;
-			}
-
 			// FLY-368 rework (Codex R1 MEDIUM-2): drain retries use the SAME
 			// owner-attributed send chain as the first send in unified mode, so a
 			// queued alert is never re-sent via stale single-token logic. Chain is
 			// recomputed here (env/config may have changed); tokens are not stored.
+			//
+			// FLY-1081 (Codex R1#1): the unified branch comes BEFORE resolveLead /
+			// resolveChannel. System-identity records written by lead-alert.sh
+			// (`--lead deploy` / `updater` / `bridge` — deliberately NO projects.json
+			// entry) would otherwise be dead-lettered as unknown-lead and never
+			// re-posted — exactly the deploy-failure alerts that most need recovery
+			// delivery. Only the legacy branch keeps the resolveLead gates.
 			if (this.unifiedAlert) {
+				const channel = this.unifiedAlert.channelId;
 				// FLY-927 (T1): each drained root message consumes a token. Refused →
 				// STOP this drain round immediately; queue files stay untouched (no
 				// rewrite, no re-enqueue) and the next round resumes oldest-first.
@@ -946,8 +947,22 @@ export class LeadAlertNotifier {
 				continue;
 			}
 
-			// Legacy branch — a fleet payload never reaches here (requires unified).
-			const token = lead ? this.resolveToken(lead) : null;
+			const resolved = this.resolveLead(parsed.leadId, parsed.projectName);
+			if (!resolved) {
+				this.moveQueueFileToDeadLetter(file, "unknown-lead");
+				deadLettered++;
+				continue;
+			}
+			const { lead, project } = resolved;
+			const channel = this.resolveChannel(lead, project);
+			if (!channel) {
+				// Config problem — permanent. Dead-letter, don't spin.
+				this.moveQueueFileToDeadLetter(file, "no-channel");
+				deadLettered++;
+				continue;
+			}
+
+			const token = this.resolveToken(lead);
 			if (!token) {
 				this.moveQueueFileToDeadLetter(file, "no-token");
 				deadLettered++;
@@ -1117,12 +1132,11 @@ export class LeadAlertNotifier {
 					// FLY-927 (Task 1.2/2.3): in unified+tickets mode with a validated
 					// owner snowflake, the ONE owner bot is whitelisted so the 🎫 header's
 					// `<@owner>` actually pings — everything else stays suppressed.
+					// FLY-1081: a validated payload.mentionUserId joins that whitelist
+					// (deduped) so a drained deploy_failed still truly pings the founder;
+					// both absent → the exact `{parse: []}` suppression contract.
 					...(this.unifiedAlert
-						? {
-								allowed_mentions: this.ticketOwnerMention(payload)
-									? { users: [this.ticketOwnerMention(payload) as string] }
-									: { parse: [] as string[] },
-							}
+						? { allowed_mentions: this.unifiedAllowedMentions(payload) }
 						: {}),
 				}),
 			});
@@ -1170,6 +1184,26 @@ export class LeadAlertNotifier {
 		if (!this.unifiedAlert || !this.ticketsEnabled()) return null;
 		const id = payload.ticket?.ownerUserId?.trim();
 		return id && /^\d{17,20}$/.test(id) ? id : null;
+	}
+
+	/**
+	 * FLY-1081: the unified-path `allowed_mentions` body — the 🎫 owner whitelist
+	 * (FLY-927) merged with the payload's explicit mentionUserId (shell deploy
+	 * alerts drained by the Bridge), deduped. Both absent → the exact FLY-368
+	 * suppression contract `{parse: []}`. The legacy path never calls this (its
+	 * POST body stays byte-identical: no allowed_mentions key at all).
+	 */
+	private unifiedAllowedMentions(
+		payload: AlertPayload,
+	): { users: string[] } | { parse: string[] } {
+		const users = [
+			...new Set(
+				[this.ticketOwnerMention(payload), validMentionUserId(payload)].filter(
+					(id): id is string => id !== null,
+				),
+			),
+		];
+		return users.length > 0 ? { users } : { parse: [] as string[] };
 	}
 
 	private async sendDm(
@@ -1314,6 +1348,18 @@ export function findUnreachableAlertLeads(
 	return out;
 }
 
+/**
+ * FLY-1081 (Codex R1#2): the ONE validated judgement for the payload's explicit
+ * @-target — same snowflake regex as `ticketOwnerMention`. Consumed by BOTH
+ * `formatContent` (the visible `<@id> ` prefix) and the unified
+ * `allowed_mentions` whitelist, so content and whitelist can never disagree.
+ * A malformed id degrades to plain text (no prefix, no whitelist entry).
+ */
+function validMentionUserId(payload: AlertPayload): string | null {
+	const id = payload.mentionUserId?.trim();
+	return id && /^\d{17,20}$/.test(id) ? id : null;
+}
+
 /** Local HH:MM for the 🎫 header's first-seen stamp (Hub `hhmm` idiom). */
 function ticketHHMM(ms: number): string {
 	const d = new Date(ms);
@@ -1338,7 +1384,15 @@ function formatContent(
 			: payload.severity === "warning"
 				? "⚠️"
 				: "ℹ️";
-	const firstLine = `${sev} **${payload.title}** (${payload.leadId} / ${payload.eventType})`;
+	// FLY-1081: the explicit mention rides at the very front of the content —
+	// Discord only truly pings an id present in BOTH content and the
+	// allowed_mentions whitelist (unifiedAllowedMentions). Absent/invalid →
+	// empty prefix, output byte-identical. ALERT_ECHO_START keys on the
+	// unanchored `(<lead> / <kind>)` token, so the prefix cannot break
+	// echo immunity.
+	const mention = validMentionUserId(payload);
+	const prefix = mention ? `<@${mention}> ` : "";
+	const firstLine = `${prefix}${sev} **${payload.title}** (${payload.leadId} / ${payload.eventType})`;
 	if (!opts?.ticketHeader) {
 		return `${firstLine}\n${payload.body}`;
 	}

@@ -19,10 +19,10 @@
 # Usage:
 #   lead-alert.sh \
 #     --lead <lead-id> --project <project-name> \
-#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bin_integrity_drift|notify_digest_failed> \
+#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded> \
 #     --severity <info|warning|severe> \
 #     --title <string> --body <string> \
-#     [--signature <string>] [--strict-delivery]
+#     [--signature <string>] [--strict-delivery] [--mention-user <snowflake>]
 #
 # Exit codes:
 #   0 — posted or already claimed (both are success: no double-alert)
@@ -53,6 +53,7 @@ TITLE=""
 BODY=""
 SIGNATURE=""
 STRICT_DELIVERY=0
+MENTION_USER=""
 
 # FLY-913: machine-readable delivery result on stdout, ONLY under
 # --strict-delivery. log() writes to stderr, so this is the sole stdout line.
@@ -72,6 +73,7 @@ while [ $# -gt 0 ]; do
     --body)      BODY="${2:?--body requires a value}"; shift 2 ;;
     --signature) SIGNATURE="${2:?--signature requires a value}"; shift 2 ;;
     --strict-delivery) STRICT_DELIVERY=1; shift ;;
+    --mention-user) MENTION_USER="${2:?--mention-user requires a value}"; shift 2 ;;
     -h|--help)   usage ;;
     *)
       log "ERROR: unknown flag '$1'"
@@ -102,11 +104,15 @@ case "$KIND" in
   # repo 源漂移(修复成功/失败/源坏拒修均响)。Same TS-union parity convention.
   # FLY-929: notify_digest_failed — the daily token report failed in place
   # (token-usage-daily.sh fail-loud) or left no receipt (Bridge expect tick).
+  # FLY-1081: deploy_failed / deploy_degraded — restart-services.sh /
+  # update-flywheel.sh 🚨/⚠️ deploy notices (system identity --lead deploy /
+  # --lead updater; shell-only kinds, the Bridge never emits them). Same
+  # TS-union parity convention (LeadAlertNotifier.ts ALERT_EVENT_TYPES).
   # FLY-1082: the 5 fleet-failure kinds. bridge_abnormal_exit is LOAD-BEARING
   # on this leg (the wrapper preflight dirty-marker page fires while the Bridge
   # is down); the other four are added for face parity with the TS union
   # (kind-contract.test.ts is the drift guard on both faces).
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|swap_pressure_high|tmux_server_lost|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog) ;;
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"
@@ -122,6 +128,14 @@ case "$SEVERITY" in
     exit 1
     ;;
 esac
+
+# FLY-1081: opt-in explicit @-mention (deploy_failed → founder). A malformed id
+# degrades to no-ping (alert still delivers) rather than failing the alert or
+# producing a Discord-rejected mentions body. Unset ⇒ byte-compat.
+if [ -n "$MENTION_USER" ] && ! printf '%s' "$MENTION_USER" | grep -Eq '^[0-9]{17,20}$'; then
+  log "WARNING: --mention-user '$MENTION_USER' invalid, ignoring"
+  MENTION_USER=""
+fi
 
 # ── Tool preflight ──────────────────────────────────────────
 for tool in jq sqlite3 curl shasum; do
@@ -338,6 +352,12 @@ if [ -n "$UNIFIED_CHANNEL" ] && [ "${FLYWHEEL_ALERT_TICKETS:-}" = "1" ]; then
   CONTENT=$(printf '%s **%s** (%s / %s)\n🎫 %s · 首见 %s · owner — · 状态 NEW\n%s' \
     "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" "$PROJECT_NAME" "$(date '+%H:%M')" "$BODY")
 fi
+# FLY-1081: explicit mention prefixes the content — Discord only truly pings an
+# id that appears in BOTH the content and allowed_mentions.users (see BODY_JSON
+# below). Applied after both content shapes so plain + 🎫 forms get it alike.
+if [ -n "$MENTION_USER" ]; then
+  CONTENT="<@${MENTION_USER}> ${CONTENT}"
+fi
 
 # Spill to queue for later drain. Keep fields aligned with LeadAlertNotifier.
 # FLY-529: FLYWHEEL_ALERT_QUEUE_DIR isolates the QA Testing Room's shell-side
@@ -345,10 +365,21 @@ fi
 # queue the live Bridge drains. Unset → production default (byte-compat).
 QUEUE_DIR="${FLYWHEEL_ALERT_QUEUE_DIR:-${HOME}/.flywheel/alert-queue}"
 mkdir -p "$QUEUE_DIR"
-QUEUE_PATH="${QUEUE_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${LEAD_ID}-${KIND}.json"
+# FLY-1081 (Codex R1#6): embed an EVENT_ID prefix so two same-second alerts with
+# DIFFERENT signatures never overwrite each other's record. Consumers
+# (drainQueue / operators) scan `*.json` and never parse the filename.
+QUEUE_PATH="${QUEUE_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${LEAD_ID}-${KIND}-${EVENT_ID:0:12}.json"
 
 write_record() {
   # $1 = target path, $2 = reason
+  # FLY-1081: mentionUserId is OPTIONAL — the key is omitted entirely when no
+  # (valid) --mention-user was passed, so pre-existing record shape is
+  # byte-compatible. Drain re-posts carry the real ping (LeadAlertNotifier).
+  local mention_args=() mention_expr=""
+  if [ -n "$MENTION_USER" ]; then
+    mention_args=(--arg mentionUserId "$MENTION_USER")
+    mention_expr=', mentionUserId: $mentionUserId'
+  fi
   jq -n \
     --arg leadId "$LEAD_ID" \
     --arg projectName "$PROJECT_NAME" \
@@ -359,9 +390,10 @@ write_record() {
     --arg severity "$SEVERITY" \
     --arg queuedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg queueReason "$2" \
-    '{leadId: $leadId, projectName: $projectName, eventId: $eventId,
-      eventType: $eventType, title: $title, body: $body,
-      severity: $severity, queuedAt: $queuedAt, queueReason: $queueReason}' \
+    ${mention_args[@]+"${mention_args[@]}"} \
+    "{leadId: \$leadId, projectName: \$projectName, eventId: \$eventId,
+      eventType: \$eventType, title: \$title, body: \$body,
+      severity: \$severity, queuedAt: \$queuedAt, queueReason: \$queueReason${mention_expr}}" \
     > "$1"
 }
 
@@ -378,7 +410,8 @@ DEAD_LETTER_DIR="${FLYWHEEL_ALERT_DEADLETTER_DIR:-${HOME}/.flywheel/alert-deadle
 dead_letter() {
   local reason="$1"
   mkdir -p "$DEAD_LETTER_DIR"
-  local dl_path="${DEAD_LETTER_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${LEAD_ID}-${KIND}.json"
+  # FLY-1081 (Codex R1#6): same EVENT_ID-suffixed shape as QUEUE_PATH.
+  local dl_path="${DEAD_LETTER_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${LEAD_ID}-${KIND}-${EVENT_ID:0:12}.json"
   write_record "$dl_path" "$reason"
   log "dead-lettered to $dl_path (reason=$reason)"
   fire_meta_alert \
@@ -420,11 +453,19 @@ if [ -n "$RATE_LIMIT" ]; then
 fi
 
 # ── POST to Discord ────────────────────────────────────────
-# FLY-927 (Codex R1 #7): mentions ALWAYS fully suppressed on the shell path
-# (content can carry ids/titles that Discord would otherwise resolve), and the
-# bot token rides a curl stdin config (`-K -`) so it never appears in argv
-# (FLY-510 notion.sh precedent).
-BODY_JSON=$(jq -n --arg c "$CONTENT" '{content: $c, allowed_mentions: {parse: []}}')
+# FLY-927 (Codex R1 #7): mentions fully suppressed on the shell path (content
+# can carry ids/titles that Discord would otherwise resolve), and the bot token
+# rides a curl stdin config (`-K -`) so it never appears in argv (FLY-510
+# notion.sh precedent).
+# FLY-1081: a validated --mention-user is the ONE explicit exception — only
+# that id is whitelisted (`users: [id]`), everything else stays suppressed
+# (keeps the FLY-927 R1#7 intent: suppress ACCIDENTAL ids, not explicit ones).
+if [ -n "$MENTION_USER" ]; then
+  BODY_JSON=$(jq -n --arg c "$CONTENT" --arg m "$MENTION_USER" \
+    '{content: $c, allowed_mentions: {users: [$m]}}')
+else
+  BODY_JSON=$(jq -n --arg c "$CONTENT" '{content: $c, allowed_mentions: {parse: []}}')
+fi
 post_discord() {
   curl -s -o "/tmp/lead-alert-$$.out" -w '%{http_code}' \
     --max-time 15 \

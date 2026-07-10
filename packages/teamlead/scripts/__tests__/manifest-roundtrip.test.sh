@@ -76,7 +76,7 @@ PROJECT_DIR="/tmp/fake-project"
 PROJECT_NAME="test"
 LEAD_SUBDIR="cos"
 LEAD_WORKSPACE="/tmp/fake-ws"
-BOT_TOKEN_ENV_NAME="SIMBA_BOT_TOKEN"
+BOT_TOKEN_ENV_NAME="TEST_COS_BOT_TOKEN"
 
 # ════════════════════════════════════════════════════════════════
 # Scenario A: pre-existing manifest with fields, env unset → preserved
@@ -90,7 +90,7 @@ cat > "$MANIFEST_FILE" <<'EOF'
   "projectName": "test",
   "subdir": "cos",
   "workspace": "/tmp/fake-ws",
-  "botTokenEnv": "SIMBA_BOT_TOKEN",
+  "botTokenEnv": "TEST_COS_BOT_TOKEN",
   "mcpExclude": "bambu-h2d,xiaohongshu-mcp,pencil",
   "chromeEnabled": true,
   "pid": 99999

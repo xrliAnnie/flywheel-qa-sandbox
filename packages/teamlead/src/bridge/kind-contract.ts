@@ -118,6 +118,11 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	bin_integrity_drift: { owner: "claude", arc: "human_by_design" },
 	external_merge_suspect: { owner: "claude", arc: "human_by_design" },
 	notify_digest_failed: { owner: "claude", arc: "human_by_design" },
+	// FLY-1081 (merged from main): shell-only deploy notices fired by
+	// restart-services.sh / update-flywheel.sh via lead-alert.sh — the Bridge
+	// never emits them; same legacy human posture as the other shell kinds.
+	deploy_failed: { owner: "claude", arc: "human_by_design" },
+	deploy_degraded: { owner: "claude", arc: "human_by_design" },
 
 	// ── FLY-1082 fleet kinds — every one has a named owner + executable ARC
 	// (or an explicit (b) posture). Fleet-level failures never fall through to

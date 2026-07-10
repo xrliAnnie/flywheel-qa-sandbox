@@ -14,6 +14,7 @@ import type {
 import {
 	DEFAULT_GATE_TIMEOUT_MS,
 	isFounderUxGateEnabled,
+	isUiDesignFlavored,
 	PONYTAIL_CONFLICT,
 	PONYTAIL_PLUGIN,
 	PONYTAIL_SELECTOR_UNAVAILABLE,
@@ -951,9 +952,21 @@ export class Blueprint {
 		// doesn't read "QA the QA issue". Falls back to its own issueId on the
 		// legacy same-issue / manual path.
 		const qaTarget = ctx.qaContext?.parentIssueIdentifier ?? hydrated.issueId;
+		// FLY-1059: a UI/design-flavored Design phase runs the mockup-first
+		// Designer workflow (concept images → founder design gate → high-fidelity)
+		// instead of the generic text design. Labels are the trusted Linear
+		// snapshot (ctx from the Bridge, or hydrated fallback), read-only here.
+		// Non-UI Design / Implement / QA / single-session are byte-identical.
+		const effectiveLabels = (ctx.issueLabels ?? hydrated.labels ?? []).map(
+			(l) => l.toLowerCase(),
+		);
+		const isDesignerPhase =
+			isDesignPhase && isUiDesignFlavored(effectiveLabels);
 		let prompt: string;
 		if (isQaRunner) {
 			prompt = `Independently QA ${qaTarget} at the reviewed commit (its own tracking issue is ${hydrated.issueId}: ${hydrated.issueTitle}).\n\n${hydrated.issueDescription}`;
+		} else if (isDesignerPhase) {
+			prompt = `Design phase (mockup-first) for ${hydrated.issueId}: ${hydrated.issueTitle}. This is a UI/design-flavored issue: do VISUAL design first — confirm the mockup type, explore concept directions A/B/C (dual-model), get the founder to pick one at a design gate, then produce a high-fidelity mockup + one-page spec. Do NOT write implementation code — the Implement phase does that on the same branch.\n\n${hydrated.issueDescription}`;
 		} else if (isDesignPhase) {
 			prompt = `Design phase for ${hydrated.issueId}: ${hydrated.issueTitle}. Produce the design (brainstorm → research → plan → design review) and commit the docs to this branch; do NOT write implementation code — the Implement phase does that on the same branch.\n\n${hydrated.issueDescription}`;
 		} else if (isImplementPhase) {
@@ -967,6 +980,21 @@ export class Blueprint {
 		let systemPromptLines: string[];
 		if (isQaRunner) {
 			systemPromptLines = [];
+		} else if (isDesignerPhase) {
+			// FLY-1059: mockup-first Designer workflow for a UI/design-flavored
+			// Design phase. Self-contained (the loaded agent role may be engineer /
+			// product-designer, not designer-executor — see designer-labels.ts).
+			systemPromptLines = [
+				"You are the DESIGN phase of a three-stage pipeline (Design → Implement → QA), all on ONE shared branch. This is a UI/design-flavored issue, so run the mockup-first Designer workflow — the founder reacts to what it LOOKS like before any code.",
+				"0. FIRST confirm the mockup TYPE with the founder — a throwaway static direction image vs a UI increment that must live on the real app — using the QUESTION GATE instructions injected in this prompt (do NOT hard-code a gate command; the injected flow gives the right blocking / non-blocking shape for this runtime). Do NOT proceed until it is answered.",
+				"1. Brief: read CLAUDE.md, the product-experience spec, and the surface you are redesigning; clarify what to design.",
+				"2. Explore 2–3 visual directions A/B/C as concept images using codex-image AND gemini-image IN PARALLEL (dual-model, so the founder compares two takes). Assemble them into ONE founder card with founder-html-delivery / publish-report — publish WITHOUT --channel and hand the URL to your Lead; a Runner never posts founder material to Discord directly.",
+				"3. DESIGN GATE (loopable): via the injected QUESTION GATE, have the founder pick ONE direction. If none fit, take the feedback, produce another round, and re-open the gate — do NOT force a pick.",
+				"4. Build the chosen direction into a high-fidelity mockup with frontend-design (real look + mock data; avoid the generic AI look).",
+				"5. Commit the approved high-fidelity artifact + a one-page spec (chosen direction, real/mock data shape, key interactions, where it lands) to this branch and push — that IS the Implement contract.",
+				"6. Then complete the design phase with `flywheel-comm complete --route phase_design_complete` — ONLY after a direction is chosen. Do NOT implement code, create a PR, or ship — the Implement phase does that on this same branch.",
+				"If a mapped skill (frontend-design / codex-image / gemini-image / …) is missing, do NOT stall: do the same workflow by hand, preserve the same artifacts, and report the missing skill to your Lead.",
+			];
 		} else if (isDesignPhase) {
 			systemPromptLines = [
 				"You are the DESIGN phase of a three-stage pipeline (Design → Implement → QA), all on ONE shared branch.",

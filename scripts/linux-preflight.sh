@@ -27,6 +27,14 @@ for _arg in "$@"; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# FLY-1062: a PACKAGED tree (this script's own tree root carries
+# .flywheel-prebuilt) builds nothing on the customer machine — pnpm is not a
+# requirement there, and requiring it would hard-fail packaged linux setup in
+# --check mode. Self-derived (like the converger's repo-root): inherited env
+# must not flip a preflight's requirements. Monorepo checkouts carry no
+# sentinel → everything below is verbatim (packaged-seams.test.sh S9/S10).
+PREBUILT_TREE=0
+[ -f "$SCRIPT_DIR/../.flywheel-prebuilt" ] && PREBUILT_TREE=1
 # host-config gives us the resolved FLYWHEEL_DIR / FLYWHEEL_STATE_DIR / backend.
 HOSTCFG_FAIL=0
 # shellcheck source=lib/host-config.sh
@@ -107,7 +115,9 @@ else
 fi
 
 h "6. Required commands + versions"
-for c in node pnpm git jq tmux gh; do
+REQUIRED_CMDS="node pnpm git jq tmux gh"
+[ "$PREBUILT_TREE" -eq 1 ] && REQUIRED_CMDS="node git jq tmux gh"
+for c in $REQUIRED_CMDS; do
   if have "$c"; then
     ver="$(_bounded 8 "$c" --version 2>/dev/null | head -1)"
     if [ -n "$ver" ]; then echo "$OK $c: $ver"; else echo "$WARN $c: present but --version timed out/empty"; fi
@@ -116,7 +126,9 @@ for c in node pnpm git jq tmux gh; do
     check_missing_cmds=$((check_missing_cmds+1))
   fi
 done
-have corepack && echo "$OK corepack present (pnpm path)" || echo "$WARN corepack not found (pnpm may need manual install)"
+if [ "$PREBUILT_TREE" -eq 0 ]; then
+  have corepack && echo "$OK corepack present (pnpm path)" || echo "$WARN corepack not found (pnpm may need manual install)"
+fi
 
 h "7. Checkout / state paths"
 echo "  FLYWHEEL_DIR=${FLYWHEEL_DIR:-?}"
@@ -126,7 +138,15 @@ case "${FLYWHEEL_DIR:-}" in
     echo "$WARN checkout is on a Windows drive (/mnt/...). Install under the LINUX filesystem (e.g. \$HOME/Dev) for performance + correct permissions."
     check_mntc=1 ;;
 esac
-[ -d "${FLYWHEEL_DIR:-/nonexistent}/.git" ] && echo "$OK flywheel checkout present" || echo "$MISS flywheel checkout not at FLYWHEEL_DIR"
+if [ "$PREBUILT_TREE" -eq 1 ]; then
+  # packaged install: no git checkout exists by design — the runtime is the
+  # installed payload this script ships inside of.
+  echo "$OK flywheel 运行程序是安装包形态(无需代码仓)"
+elif [ -d "${FLYWHEEL_DIR:-/nonexistent}/.git" ]; then
+  echo "$OK flywheel checkout present"
+else
+  echo "$MISS flywheel checkout not at FLYWHEEL_DIR"
+fi
 
 h "8. Token file (presence only — NO values)"
 ENVF="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/.env"

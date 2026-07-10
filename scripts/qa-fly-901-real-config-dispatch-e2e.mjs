@@ -61,8 +61,9 @@ check(
 );
 check("S1: department reported as 'product'", r1.department === "product", r1);
 
-// ── Scenario 1b: other labels in the real match.labels set (pm/ux/design/designer) ──
-for (const label of ["pm", "ux", "design", "designer"]) {
+// ── Scenario 1b: other labels in the real match.labels set (pm/ux/design) ──
+// FLY-1059: `designer` moved OUT of product-designer to the `designer` agent.
+for (const label of ["pm", "ux", "design"]) {
 	const r = dispatcher.dispatch({
 		issueLabels: [label],
 		owningDept: "product",
@@ -71,6 +72,63 @@ for (const label of ["pm", "ux", "design", "designer"]) {
 		`S1b: product Lead + label '${label}' -> hits product-designer`,
 		r.agentName === "product-designer",
 		r,
+	);
+}
+
+// ── Scenario 1c (FLY-1059): the new visual `designer` role, dual-registered ──
+check(
+	"S1c: designer registered with departments [engineering, product]",
+	JSON.stringify(config.agents?.designer?.departments) ===
+		JSON.stringify(["engineering", "product"]),
+	config.agents?.designer,
+);
+for (const dept of ["product", "engineering"]) {
+	for (const label of ["designer", "mockup"]) {
+		const r = dispatcher.dispatch({ issueLabels: [label], owningDept: dept });
+		check(
+			`S1c: ${dept} Lead + label '${label}' -> hits the new designer role`,
+			r.agentName === "designer" && r.matchMethod === "label",
+			r,
+		);
+	}
+}
+// UI/frontend production labels stay with engineer (the mockup-first Design PHASE
+// is a separate Blueprint mechanism, not this whole-issue route).
+const rUi = dispatcher.dispatch({
+	issueLabels: ["ui"],
+	owningDept: "engineering",
+});
+check(
+	"S1c: label 'ui' -> still hits engineer (not designer)",
+	rUi.agentName === "engineer",
+	rUi,
+);
+
+// ── Scenario 1d (FLY-1059): real-config label overlap = zero (first-match safety) ──
+{
+	const named = Object.entries(config.agents ?? {}).map(([name, cfg]) => ({
+		name,
+		labels: new Set((cfg.match?.labels ?? []).map((l) => l.toLowerCase())),
+	}));
+	let overlapFound = false;
+	for (let i = 0; i < named.length; i++) {
+		for (let j = i + 1; j < named.length; j++) {
+			const a = named[i];
+			const b = named[j];
+			const inter = [...a.labels].filter((l) => b.labels.has(l));
+			if (inter.length > 0) {
+				overlapFound = true;
+				check(
+					`S1d: label overlap between '${a.name}' and '${b.name}'`,
+					false,
+					inter,
+				);
+			}
+		}
+	}
+	check(
+		"S1d: zero label overlap across all agents (case-insensitive)",
+		!overlapFound,
 	);
 }
 

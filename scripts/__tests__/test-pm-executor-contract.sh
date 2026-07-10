@@ -39,6 +39,14 @@ assert_max_bytes() {
     FAIL=$((FAIL+1)); echo "  FAIL: $3 (${n} >= $2 bytes — past injection-truncation red line)"
   fi
 }
+assert_not_contains() {
+  # $1 file, $2 needle, $3 label
+  if grep -qF -- "$2" "$1"; then
+    FAIL=$((FAIL+1)); echo "  FAIL: $3 (should be absent but found: '$2')"
+  else
+    PASS=$((PASS+1)); echo "  PASS: $3"
+  fi
+}
 
 echo "Test: PM executor role .md contract"
 assert_file_exists "$ROLE_MD" "role .md exists"
@@ -75,6 +83,16 @@ assert_contains "$ROLE_MD" "design"          "mode B survives: docs/design label
 
 # ── critical reporting rule preserved (FLY-208 / FLY-270) ──
 assert_contains "$ROLE_MD" "flywheel-comm ask" "reporting: flywheel-comm ask (not stock SendMessage)"
+
+# ── FLY-1059: `designer` label moved to the separate visual Designer role ──
+assert_contains "$ROLE_MD" "FLY-1059"            "boundary: references FLY-1059 designer split"
+assert_contains "$ROLE_MD" "designer-executor"   "boundary: points to the separate designer-executor role"
+# the old stale text ("no separate Designer role yet") must NOT come back
+assert_not_contains "$ROLE_MD" "no separate Designer role yet" \
+                "stale text removed: 'no separate Designer role yet'"
+# `designer` must no longer be listed as one of product-designer's Mode B labels
+assert_not_contains "$ROLE_MD" "\`design\` / \`ux\` / \`designer\`" \
+                "Mode B label list no longer claims 'designer'"
 
 echo ""
 echo "RESULT: $PASS passed, $FAIL failed"

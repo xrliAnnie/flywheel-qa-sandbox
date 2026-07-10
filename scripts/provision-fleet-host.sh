@@ -268,8 +268,19 @@ phase_deps() {
 
 phase_repos() {
   log "phase: repos"
+  # FLY-1062: PREBUILT mode — REPO_ROOT is an installed npm payload (tree root
+  # carries .flywheel-prebuilt): the flywheel runtime arrives prebuilt, so the
+  # flywheel clone AND the pnpm install/build are skipped entirely. Customer
+  # project repo entries below behave verbatim. A monorepo checkout has no
+  # sentinel → this whole phase is byte-identical (reverse-compat sentinel:
+  # provision-prebuilt.test.sh).
+  local prebuilt=0
+  [ -f "$REPO_ROOT/.flywheel-prebuilt" ] && prebuilt=1
   local name slug targetRel target
   while IFS=$'\t' read -r name slug targetRel; do
+    if [ "$prebuilt" -eq 1 ] && [ "$name" = "flywheel" ]; then
+      log "repo 'flywheel': prebuilt payload — skipping clone"; continue
+    fi
     target="$targetRel"
     case "$target" in /*) ;; *) target="$HOME_DIR/$targetRel" ;; esac
     if [ -d "$target/.git" ]; then
@@ -280,6 +291,10 @@ phase_repos() {
     fi
     run git clone "https://github.com/${slug}.git" "$target"
   done < <(jq -r '.repos[] | [.name, (.slug // ""), .targetDir] | @tsv' "$MANIFEST")
+  if [ "$prebuilt" -eq 1 ]; then
+    log "prebuilt payload — skipping pnpm install/build"
+    return 0
+  fi
   # build flywheel
   local fwdir
   fwdir="$(jq -r '.repos[] | select(.name=="flywheel") | .targetDir' "$MANIFEST" | head -1)"
@@ -329,6 +344,23 @@ phase_flywheel_home() {
       fi
     fi
   done
+  # FLY-1062 (Codex R2#2): PREBUILT mode installs the wrappers' support-lib
+  # closure alongside them — a copied wrapper sources $SELF_DIR/lib/host-config.sh
+  # and would otherwise silently fall back to ~/Dev/flywheel. Monorepo mode is
+  # untouched (production wrappers keep today's resolution behavior).
+  if [ -f "$REPO_ROOT/.flywheel-prebuilt" ]; then
+    run mkdir -p "$FW/bin/lib"
+    for f in lib/host-config.sh; do
+      [ -f "$REPO_ROOT/scripts/$f" ] || die "prebuilt tree missing support lib: scripts/$f"
+      if [ "$DRY_RUN" -eq 1 ]; then
+        plan "install (sanity+atomic+555) $REPO_ROOT/scripts/$f -> $FW/bin/$f"
+      else
+        log "exec: install_script_atomic $REPO_ROOT/scripts/$f $FW/bin/$f"
+        install_script_atomic "$REPO_ROOT/scripts/$f" "$FW/bin/$f" \
+          || die "support lib failed sanity/atomic install: $f"
+      fi
+    done
+  fi
 }
 
 phase_tokens() {
@@ -400,6 +432,17 @@ phase_launchd() {
     if ! validate_tokens "$FLEET_DIR/env.example" "$FW/.env" >/dev/null 2>&1; then
       die "token gate: refusing to start launchd jobs with empty/placeholder tokens"
     fi
+  fi
+  # FLY-1062: PREBUILT mode routes first-install bring-up through the packaged
+  # bootstrap (supervisor seam on BOTH platforms) — restart-services.sh and
+  # flywheel-daemon.sh are monorepo deploy machinery and are DISABLED on the
+  # packaged path. Monorepo checkouts (no sentinel) fall through to the
+  # verbatim FLY-650 flow below (reverse-compat sentinel).
+  if [ -f "$REPO_ROOT/.flywheel-prebuilt" ]; then
+    [ -f "$REPO_ROOT/scripts/packaged/bootstrap-services.sh" ] \
+      || die "prebuilt tree missing scripts/packaged/bootstrap-services.sh"
+    run bash "$REPO_ROOT/scripts/packaged/bootstrap-services.sh" --state-dir "$FW"
+    return $?
   fi
   # FLY-650: platform-aware supervisor bring-up. The phase id stays "launchd"
   # (CLI/test surface compat) but routes through the supervisor backend resolved

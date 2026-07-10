@@ -131,6 +131,31 @@ jobs:
           bash scripts/__tests__/flywheel-buddy-connect.test.sh
           bash scripts/__tests__/buddy-escalate.test.sh
 
+      # FLY-1062: npm distribution layer — hermetic suites: the packaging
+      # pipeline over a fixture mini-monorepo (assembly / dependency union /
+      # release gates with injection negatives / compat mirror / audit-table
+      # closure), every packaged-mode runtime seam BOTH sides (packaged path +
+      # verbatim-monorepo reverse-compat sentinel), and the P2 prebuilt
+      # provisioning / setup-artifact branches. Needs the built dist +
+      # node_modules/typescript (pnpm build above).
+      - name: Test — FLY-1062 packaging pipeline + packaged-mode seams
+        run: |
+          bash scripts/__tests__/package-onboard.test.sh
+          bash scripts/__tests__/packaged-seams.test.sh
+          bash scripts/__tests__/packaged-restart.test.sh
+          bash scripts/__tests__/gate4-allowlist-masking.test.sh
+          bash scripts/__tests__/gate4-forms-probe.test.sh
+          bash scripts/__tests__/setup-prebuilt.test.sh
+          bash scripts/__tests__/provision-prebuilt.test.sh
+
+      # FLY-1062: the REAL npm full chain on the real repo — pack (gated) →
+      # npm install --prefix (registry fetch for the dependency union) →
+      # compat mirror → bare-import matrix → better-sqlite3 native load →
+      # packaged Bridge serves /health → Lead launcher dry-run. "Installs ≠
+      # boots" is the acceptance bar; SLOW + network.
+      - name: Test — FLY-1062 payload real-install smoke
+        run: bash scripts/__tests__/package-onboard-smoke.test.sh
+
       # FLY-882: Discord bot token pool — hermetic (stub curl, fixture
       # DISCORD_BOT_POOL_HOME, no real ~/.flywheel touched, no real network).
       - name: Test — FLY-882 Discord bot token pool
@@ -182,3 +207,20 @@ jobs:
       # real ~/.flywheel, no network.
       - name: Test — FLY-957 record_deployed_range best-effort
         run: bash scripts/__tests__/restart-deployed-range.test.sh
+
+      # FLY-1081: restart/update/wrapper notify-path migration off Simba —
+      # ⚠️/🚨 route via lead-alert.sh (sender seam, no legacy fallback), the
+      # routine path fail-louds instead of falling back, and a grep-zero
+      # sentinel blocks Simba-token / fallback-chain re-introduction. Hermetic —
+      # extracted real functions + fake lead-alert/curl/meta-alert, sandboxed
+      # dirs, no network. update-flywheel-queue.test.sh predates this issue but
+      # was never wired into CI — adopted here (same dep set: jq/sqlite3/git).
+      - name: Test — FLY-1081 notify-path migration
+        run: |
+          bash scripts/__tests__/restart-notify-routine.test.sh
+          bash scripts/__tests__/restart-services-notify.test.sh
+          bash scripts/__tests__/update-flywheel-queue.test.sh
+          bash scripts/__tests__/simba-grep-zero.test.sh
+          # QA (three-stage): drives the REAL lead-alert.sh in the production
+          # --lead deploy call form — infra identity used, no Simba fallback.
+          bash scripts/__tests__/qa-fly1081-notify-identity.test.sh

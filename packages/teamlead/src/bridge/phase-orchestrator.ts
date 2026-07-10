@@ -33,6 +33,7 @@ import {
 	type ThreeStagePhase,
 } from "flywheel-config";
 import { REVIEW_BINDING_UNBOUND } from "../StateStore.js";
+import { isMergeBlocked } from "./merge-ship-gate.js";
 
 /**
  * Minimal session shape this coordinator needs (subset of StateStore Session).
@@ -57,6 +58,13 @@ export interface PhaseSession {
 	chat_thread_role?: string;
 	/** FLY-859: ship-gate binding — set by a needs_review completion. */
 	review_question_id?: string;
+	/**
+	 * FLY-869: the durable merged-but-unapproved park marker (`merge_block`).
+	 * FLY-1050 F9: an implement stuck at awaiting_review whose PR already
+	 * MERGED carries this — it DELIVERED; the merge-block recovery flow owns
+	 * it, and the QA-respawn re-drive must never spawn onto a merged branch.
+	 */
+	merge_block_reason?: string;
 	/**
 	 * FLY-939 (G-C): the persisted tmux session/window target. The ghost-probe
 	 * reads this DIRECTLY (never via the CommDB registration, which is cleared for
@@ -166,7 +174,37 @@ const TURN_RECOVERY_PRIORITY: readonly ThreeStagePhase[] = [
 	"design",
 ];
 
+// TERMINAL_SESSION_STATUS stays {completed, failed} — it is the turn-belt
+// holder's "skip the liveness probe, judge stale directly" fast path.
+// `terminated` must NEVER join this set (FLY-1050, Codex R1 #1): a terminate
+// can return cleanupPending (FSM already terminal but the tmux still alive);
+// a direct stale verdict would hand the TURN back to implement while the old
+// QA process is still writing — the probe path (alive/indeterminate → no-op)
+// must keep guarding it.
 const TERMINAL_SESSION_STATUS = new Set(["completed", "failed"]);
+
+/**
+ * FLY-1050: the DEAD-QA domain for the respawn criteria and the stranded-pass
+ * alert — deliberately SEPARATE from the belt's TERMINAL_SESSION_STATUS above.
+ * A qa row in one of these statuses no longer runs; if it left the pipeline
+ * without a ship claim, the implement→QA handoff may be re-driven.
+ */
+const DEAD_QA_STATUSES = new Set(["completed", "failed", "terminated"]);
+
+/** FLY-1050: dead qa rows at/above this count refuse to respawn (fail-closed
+ * alert instead) — the dead rows themselves are the durable ledger. */
+const QA_RESPAWN_MAX = 3;
+
+/**
+ * FLY-1050 escape hatch: `FLYWHEEL_THREE_STAGE_QA_RESPAWN=0` turns the QA
+ * respawn OFF (the re-drive criteria reverts to row-exists; the scoped event
+ * sites go inert). NOTE: the terminated stranded-pass alert hardening is NOT
+ * gated by this switch (Codex R1 #4) — it fixes an independent silent-strand
+ * bug, and rolling back the respawn must not re-introduce the silence.
+ */
+function qaRespawnEnabled(): boolean {
+	return process.env.FLYWHEEL_THREE_STAGE_QA_RESPAWN !== "0";
+}
 
 export interface PhaseOrchestratorDeps {
 	/** Dispatch a new phase-session (mirrors StartRequest subset). */
@@ -507,17 +545,17 @@ export class PhaseOrchestrator {
 	}
 
 	/**
-	 * FLY-939 (G-A2): re-drive an implement→QA handoff that a crash / wake-fail
-	 * lost. A stranded implement sits at awaiting_review with its review binding
-	 * set, but no QA was ever spawned/woken — so on the next boot re-fire
-	 * `onPhaseComplete(implement)` (the existing handoff, which spawns or wakes QA
-	 * and passes through the G-C ghost guard). Guarded HARD to only re-drive a
-	 * handoff that NEVER fired: skip if the issue already has ANY qa phase row
-	 * (alive OR terminal — either way the handoff fired once: an alive QA means the
-	 * pipeline owns itself; a terminal QA's stranded-pass is covered by
-	 * checkStrandedPass) or a ship-finalization claim (already shipped). This
-	 * mirrors design's `hasProgressedPastDesign` "only complete a never-fired
-	 * handoff" philosophy. Best-effort per session; one failure never blocks the rest.
+	 * FLY-939 (G-A2) + FLY-1050: re-drive an implement→QA handoff that a crash /
+	 * wake-fail / dead QA lost. A stranded implement sits at awaiting_review with
+	 * its review binding set, but no QA is running — re-fire
+	 * `onPhaseComplete(implement)` (the existing handoff: spawns or wakes QA,
+	 * passes through the G-C ghost guard). Skips when the pipeline still owns
+	 * itself (`hasProgressedPastImplement`: alive QA / latest-FAIL fix-loop /
+	 * ship claim); FLY-1050 made dead qa rows (terminated/failed/completed, no
+	 * ship claim) STOP counting as ownership so the FLY-967 strand self-heals on
+	 * boot — the re-drive goes through `tryRedriveImplementHandoff` (respawn cap
+	 * + per-issue in-flight guard). Best-effort per session; one failure never
+	 * blocks the rest.
 	 */
 	private async reconcileStrandedImplementHandoffs(): Promise<void> {
 		let stranded: PhaseSession[];
@@ -537,39 +575,145 @@ export class PhaseOrchestrator {
 		for (const s of stranded) {
 			if (this.hasProgressedPastImplement(s.issue_id)) {
 				this.log(
-					`reconcileStrandedImplementHandoffs: ${s.execution_id} (${s.issue_id}) already has a qa row / ship claim — implement→qa handoff already fired; skip`,
+					`reconcileStrandedImplementHandoffs: ${s.execution_id} (${s.issue_id}) pipeline still owns itself (alive qa / latest-FAIL fix-loop / ship claim) — skip re-drive`,
 				);
 				continue;
 			}
 			try {
-				await this.onPhaseComplete(s);
+				await this.tryRedriveImplementHandoff(s);
 			} catch (err) {
 				this.warn(
-					`reconcileStrandedImplementHandoffs onPhaseComplete failed for ${s.execution_id}: ${(err as Error).message}`,
+					`reconcileStrandedImplementHandoffs re-drive failed for ${s.execution_id}: ${(err as Error).message}`,
 				);
 			}
 		}
 	}
 
+	/** FLY-1050: per-issue in-flight guard — concurrent triggers (terminate
+	 * action × session_failed × boot) must never double-spawn in the window
+	 * before the fresh QA's session row lands. */
+	private readonly redriveInFlight = new Set<string>();
+
 	/**
-	 * FLY-939 (G-A2): has this issue's implement→QA handoff already fired? True
-	 * when ANY qa phase-session row exists for the issue (any status — an alive QA
-	 * means the pipeline is running itself; a terminal QA means the handoff fired
-	 * and its stranded-pass is the checkStrandedPass domain), OR the issue already
-	 * shipped (ship-finalization claim). Only a stranded implement whose QA NEVER
-	 * came up is a genuine lost-handoff remnant. `listPhaseSessionRows` returns all
-	 * statuses, so this sees terminal QA rows that `getAlivePhaseSession` cannot.
+	 * FLY-1050: the single re-drive entrance (boot loop + scoped event sites).
+	 * Applies the respawn cap (dead qa rows are the durable ledger — every
+	 * failed respawn necessarily adds one), then re-fires the EXISTING
+	 * implement→QA handoff (`onPhaseComplete` re-runs all its gates: boundary,
+	 * per-project policy, review evidence, ghost guard). Posts a best-effort
+	 * issue-thread note only when this was a genuine RESPAWN (dead qa rows
+	 * existed) and the spawn actually landed (an alive qa row now exists) — a
+	 * plain G-A2 zero-row re-drive stays note-free, and a failed spawn already
+	 * fail-closed-alerted inside the handoff.
+	 */
+	private async tryRedriveImplementHandoff(impl: PhaseSession): Promise<void> {
+		// FLY-1050 F9 (merged-but-awaiting_review, e.g. FLY-1023): a merge_block
+		// marker means this implement's PR already MERGED without ship approval —
+		// it DELIVERED. The FLY-869 recovery flow owns it (and its doctrine says a
+		// parked merge_block session must never leak into QA surfaces), so never
+		// re-drive its handoff / respawn a QA onto a merged branch. No alert —
+		// the once-per-head merge_without_approval alert already fired.
+		if (isMergeBlocked(impl)) {
+			this.log(
+				`tryRedriveImplementHandoff: ${impl.execution_id} (${impl.issue_id}) is merge-blocked (PR merged without ship approval) — delivered; skip QA respawn`,
+			);
+			return;
+		}
+		if (this.redriveInFlight.has(impl.issue_id)) return;
+		this.redriveInFlight.add(impl.issue_id);
+		try {
+			const deadQa = this.deps
+				.listPhaseSessionRows(impl.issue_id, "qa")
+				.filter((r) => DEAD_QA_STATUSES.has(r.status));
+			if (deadQa.length >= QA_RESPAWN_MAX) {
+				await this.failClosed(
+					impl,
+					`three-stage QA respawn cap reached on ${impl.issue_id} (${deadQa.length} dead qa sessions; max ${QA_RESPAWN_MAX}) — NOT respawning; Lead decides how to proceed`,
+				);
+				return;
+			}
+			const hadDeadQa = deadQa.length > 0;
+			await this.onPhaseComplete(impl); // reuse every existing gate + handoff
+			if (hadDeadQa && this.deps.getAlivePhaseSession(impl.issue_id, "qa")) {
+				await this.postRespawnThreadNote(impl);
+			}
+		} finally {
+			this.redriveInFlight.delete(impl.issue_id);
+		}
+	}
+
+	/**
+	 * FLY-1050: a three-stage QA row reached a dead terminal status — if the
+	 * pipeline lost its ability to advance itself, re-drive the implement→QA
+	 * handoff (respawn a fresh QA, epoch+1 via the dispatcher pre-launch seam).
+	 * Idempotent / safe to call repeatedly: an alive QA (including the one just
+	 * respawned), a latest-FAIL fix-loop, a ship claim, a non-qa or non-terminal
+	 * row, or a missing stranded implement all no-op. Callers should fire this
+	 * BEFORE any scoped turn-belt reconcile — a successful respawn's pre-launch
+	 * grant overwrites the TURN, so guard 1 then no-ops (no stale-holder alert
+	 * noise); a refused respawn leaves the belt reconcile to recover the TURN.
+	 */
+	async reconcileQaLoss(scope: {
+		issueId: string;
+		terminalExecId: string;
+	}): Promise<void> {
+		if (!qaRespawnEnabled()) return;
+		const dead = this.deps.qaVerdicts.getSession(scope.terminalExecId); // fresh re-read
+		if ((dead?.chat_thread_role ?? "main") !== "qa") return; // three-stage qa rows only
+		if (!DEAD_QA_STATUSES.has(dead?.status ?? "")) return; // FSM-rejected zombies never enter
+		if (this.hasProgressedPastImplement(scope.issueId)) return; // same criteria as boot
+		const impl = this.deps
+			.listPhaseSessionRows(scope.issueId, "implement")
+			.find((s) => s.status === "awaiting_review");
+		if (!impl) return; // no stranded implement → nothing to re-drive
+		await this.tryRedriveImplementHandoff(impl);
+	}
+
+	/** FLY-1050: best-effort respawn visibility on the issue thread. */
+	private async postRespawnThreadNote(impl: PhaseSession): Promise<void> {
+		try {
+			await this.deps.qaVerdicts.postIssueThread(
+				impl,
+				"🧪 三段 QA 段已死(terminated/failed),已自动重生新 QA session 重验(同分支最新 head)。founder 不打扰。",
+			);
+		} catch (err) {
+			this.warn(`postIssueThread failed: ${(err as Error).message}`);
+		}
+	}
+
+	/**
+	 * FLY-1050: does this issue's pipeline still OWN ITSELF past the implement
+	 * handoff — i.e. is a re-drive unnecessary/unsafe? The pre-FLY-1050 criteria
+	 * ("ANY qa row exists = the handoff fired once = skip") wrongly counted DEAD
+	 * qa rows (terminated/failed/completed with no ship claim) as ownership —
+	 * the FLY-967 strand: a terminated QA left the implement parked at
+	 * awaiting_review with no clean path to respawn its QA. True when:
+	 *   - the issue already shipped (ship-finalization claim), or
+	 *   - an ALIVE qa phase-session is on duty (wake target exists), or
+	 *   - the LATEST qa row's verdict intent is FAIL — the fix-loop owns the
+	 *     pipeline (shapes 2/3): the implement may be mid-fix, and the FAIL flow
+	 *     has its own resume machinery (reconcileQaVerdicts). Only qaRows[0] may
+	 *     be consulted — an OLD round's legitimate FAIL (with fixExecId) must
+	 *     never permanently block a NEW dead QA's respawn (Codex R1 #3).
+	 * Everything else (dead qa rows only, or zero qa rows) → false: the
+	 * stranded implement's handoff is re-driven (respawning a fresh QA).
+	 * Escape hatch: respawn OFF reverts to the row-exists criteria.
 	 */
 	private hasProgressedPastImplement(issueId: string): boolean {
 		if (this.deps.hasShipFinalizationClaim(issueId)) return true;
 		try {
-			return this.deps.listPhaseSessionRows(issueId, "qa").length > 0;
+			const qaRows = this.deps.listPhaseSessionRows(issueId, "qa"); // newest first
+			if (!qaRespawnEnabled()) return qaRows.length > 0; // pre-FLY-1050 criteria
+			if (this.deps.getAlivePhaseSession(issueId, "qa")) return true;
+			const latest = qaRows[0];
+			if (!latest) return false; // zero qa rows — the G-A2 original scenario
+			const intent = this.deps.qaVerdicts.readIntent(latest.execution_id);
+			return intent?.status === "fail"; // fix-loop owns the pipeline
 		} catch (err) {
-			// Fail-closed: if we cannot prove there is NO qa row, do not re-drive a
-			// handoff (a duplicate QA spawn is worse than a missed re-drive, which the
-			// next boot retries once the query recovers).
+			// Fail-closed: if we cannot prove the pipeline lost itself, do not
+			// re-drive (a duplicate QA spawn is worse than a missed re-drive, which
+			// the next boot/trigger retries once the query recovers).
 			this.warn(
-				`hasProgressedPastImplement qa-row query failed for ${issueId}: ${(err as Error).message} — treating as progressed (no re-drive)`,
+				`hasProgressedPastImplement query failed for ${issueId}: ${(err as Error).message} — treating as progressed (no re-drive)`,
 			);
 			return true;
 		}
@@ -723,11 +867,10 @@ export class PhaseOrchestrator {
 		// status while its verdict said PASS but no ship gate was ever opened is
 		// the FLY-849 §3.8 silent break — alert the Lead. Checked BEFORE the
 		// live-config gate (the alert dispatches nothing; a mid-flight config
-		// flip must not mute it).
-		if (
-			role === "qa" &&
-			(session.status === "completed" || session.status === "failed")
-		) {
+		// flip must not mute it). FLY-1050: `terminated` joins the domain (root
+		// cause ③ — a terminate replayed through the event flow / crash-reaper
+		// was silently invisible here).
+		if (role === "qa" && DEAD_QA_STATUSES.has(session.status)) {
 			await this.checkStrandedPass(session.execution_id);
 			return; // qa is last — no status-driven handoff
 		}
@@ -1256,15 +1399,20 @@ export class PhaseOrchestrator {
 	 * FLY-859 stranded-pass alert: verdict says PASS, session is terminal, and
 	 * there is no REAL ship-gate binding (`review_question_id` missing or the
 	 * 'unbound' sentinel, which verify-approval rejects). Alert once.
+	 * FLY-1050: `terminated` joins the terminal domain (967's silent strand),
+	 * and a LIVE successor QA suppresses the alert — it owns the re-verify, so
+	 * the pipeline tail is not stranded (no silent window: if the successor
+	 * dies too, its own death re-enters the respawn/alert machinery).
 	 */
 	private async checkStrandedPass(executionId: string): Promise<void> {
 		const row = this.deps.qaVerdicts.getSession(executionId);
 		if (!row) return;
-		if (row.status !== "completed" && row.status !== "failed") return;
+		if (!DEAD_QA_STATUSES.has(row.status)) return;
 		const intent = this.deps.qaVerdicts.readIntent(executionId);
 		if (!intent || intent.status !== "pass" || intent.alertedAt) return;
 		const qid = row.review_question_id;
 		if (qid && qid !== REVIEW_BINDING_UNBOUND) return; // real gate — normal ship path
+		if (this.deps.getAlivePhaseSession(row.issue_id, "qa")) return; // live successor owns the re-verify
 		await this.failClosed(
 			row,
 			`three-stage QA reported PASS but reached terminal '${row.status}' WITHOUT opening the ship gate (no review binding) — the pipeline tail is stranded (FLY-849 §3.8 shape); Lead must re-drive the ship gate`,
