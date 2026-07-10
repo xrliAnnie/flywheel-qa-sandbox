@@ -207,6 +207,59 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		expect((await coordinator.check()).size).toBe(0);
 	});
 
+	it("partial migration failure: NEXT tick retries quietly under the SAME episode — no new ticket, no re-notify (Codex R1 HIGH-2)", async () => {
+		const fleet = incidentFleet();
+		for (const s of fleet) store.upsertSession(s);
+		let failFor = new Set(["exec-1", "exec-2"]);
+		const coordinator = new ServerLossCoordinator({
+			store,
+			probeServer: async () => "down",
+			targetGone: async () => true,
+			migrate: async (s, episode) => {
+				migrations.push({ execId: s.execution_id, episode });
+				if (failFor.has(s.execution_id)) throw new Error("boom");
+				store.forceStatus(s.execution_id, "failed", "2026-07-09 21:30:00", "x");
+				return true;
+			},
+			resolveLeadId: (s) => (s.summary as string) ?? null,
+			notifyLead: async (leadId, content) => {
+				notifications.push({ leadId, content });
+				return true;
+			},
+			alert: async (p) => {
+				alerts.push(p);
+				return { sent: true };
+			},
+			env: {} as NodeJS.ProcessEnv,
+			now: () => 1_720_000_000_000,
+			logger: () => {},
+		});
+
+		const first = await coordinator.check();
+		expect(first.size).toBe(13);
+		expect(alerts).toHaveLength(1);
+		expect(notifications).toHaveLength(3);
+		const episode = migrations[0]!.episode;
+
+		// Second tick: exec-1/exec-2 still running (their migration threw).
+		failFor = new Set(); // failures clear this time
+		const second = await coordinator.check();
+		// Still claimed (suppress the per-runner reapers) — but NO second
+		// episode, NO second fleet ticket, NO re-notification.
+		expect(second.size).toBe(13);
+		expect(alerts).toHaveLength(1);
+		expect(notifications).toHaveLength(3);
+		// The retries ran under the SAME episode signature.
+		const retries = migrations.slice(13);
+		expect(retries.map((m) => m.execId).sort()).toEqual(["exec-1", "exec-2"]);
+		expect(new Set(retries.map((m) => m.episode))).toEqual(new Set([episode]));
+
+		// Third tick: everything migrated → latch cleared, coordinator quiet.
+		const third = await coordinator.check();
+		expect(third.size).toBe(0);
+		expect(alerts).toHaveLength(1);
+	});
+
 	it("a migration failure still counts the runner as claimed (no double-burial by orphan reaper)", async () => {
 		const fleet = [session(1, "tadashi")];
 		for (const s of fleet) store.upsertSession(s);

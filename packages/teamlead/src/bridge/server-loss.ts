@@ -66,6 +66,18 @@ export class ServerLossCoordinator {
 	private readonly now: () => number;
 	private readonly log: (msg: string) => void;
 	private firstCheck = true;
+	/**
+	 * Codex R1 HIGH-2: the ACTIVE loss episode. Claiming happens before the
+	 * migration succeeds (that is deliberate — a failed migration must STILL
+	 * suppress the per-runner reapers, or the runner gets buried twice), so a
+	 * partial failure leaves sessions `running`. Without this latch the next
+	 * tick would read them as a brand-new loss: a new episodeSignature, a new
+	 * fleet ticket, and re-notified Leads EVERY cycle. With it, the same
+	 * ongoing loss retries ONLY the pending migrations quietly under the same
+	 * episode; the latch clears when no claimed session is still running.
+	 */
+	private activeEpisode: { signature: string; claimed: Set<string> } | null =
+		null;
 
 	constructor(private readonly deps: ServerLossDeps) {
 		this.env = deps.env ?? process.env;
@@ -82,9 +94,41 @@ export class ServerLossCoordinator {
 		const wasFirst = this.firstCheck;
 		this.firstCheck = false;
 		const running = this.deps.store.getRunningSessions().filter(isTmuxBacked);
+
+		// Episode latch maintenance: once every claimed session has left
+		// `running` (migrations landed), the episode is over.
+		if (this.activeEpisode) {
+			const stillPending = running.filter((s) =>
+				this.activeEpisode?.claimed.has(s.execution_id),
+			);
+			if (stillPending.length === 0) {
+				this.activeEpisode = null;
+			}
+		}
+
 		if (running.length === 0) return new Set();
 
 		const probe = await this.deps.probeServer();
+
+		// Ongoing episode: retry ONLY the pending migrations quietly — no new
+		// episode signature, no new fleet ticket, no re-notification (HIGH-2).
+		if (this.activeEpisode && probe !== "up") {
+			const episode = this.activeEpisode;
+			const pending = running.filter((s) =>
+				episode.claimed.has(s.execution_id),
+			);
+			for (const session of pending) {
+				try {
+					await this.deps.migrate(session, episode.signature);
+				} catch (err) {
+					this.log(
+						`retry migrate failed for ${session.execution_id}: ${(err as Error).message}`,
+					);
+				}
+			}
+			return new Set(episode.claimed);
+		}
+
 		let casualties: Session[] | null = null;
 		let shape: "server_down" | "server_fresh" | null = null;
 
@@ -116,8 +160,10 @@ export class ServerLossCoordinator {
 			`${shape}: ${casualties.length} running tmux session(s) lost — episode ${episodeSignature}`,
 		);
 
-		// 1. Claim + migrate every casualty (grouped, episode-tagged).
+		// 1. Claim + migrate every casualty (grouped, episode-tagged). The latch
+		// arms NOW so a partial migration failure retries under THIS episode.
 		const claimed = new Set<string>();
+		this.activeEpisode = { signature: episodeSignature, claimed };
 		let migrated = 0;
 		for (const session of casualties) {
 			claimed.add(session.execution_id);

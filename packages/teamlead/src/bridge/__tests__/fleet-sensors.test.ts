@@ -157,6 +157,35 @@ describe("FleetSensors — swap (Task 2.2)", () => {
 		await sensors.tick(); // cleared
 		expect(await sensors.recoveryProbe(fleetRow({}))).toBe(true);
 	});
+
+	it("Bridge restart with the watermark already fallen lifts the stranded durable hold (Codex R1 HIGH-1)", async () => {
+		// Previous generation placed the hold, then the Bridge restarted — the
+		// fresh monitor starts 'normal' and would never emit 'clear'.
+		store.setFleetPressureHold({ setBy: "swap-sensor", watermark: "90%" });
+		const sensors = makeSensors(); // fresh monitor = post-restart state
+		swapReading = usage(40); // below LOW
+		await sensors.tick();
+		expect(store.getFleetPressureHold()).toBeUndefined();
+	});
+
+	it("restart with the watermark STILL high keeps the hold (no premature lift)", async () => {
+		store.setFleetPressureHold({ setBy: "swap-sensor", watermark: "90%" });
+		const sensors = makeSensors();
+		swapReading = usage(85); // still above LOW/HIGH — first confirm tick
+		await sensors.tick();
+		expect(store.getFleetPressureHold()).toBeDefined();
+		swapReading = usage(70); // in the hysteresis band — still not below LOW
+		await sensors.tick();
+		expect(store.getFleetPressureHold()).toBeDefined();
+	});
+
+	it("a MANUAL hold is never lifted by the restart-safety path", async () => {
+		store.setFleetPressureHold({ setBy: "annie-manual" });
+		const sensors = makeSensors();
+		swapReading = usage(40);
+		await sensors.tick();
+		expect(store.getFleetPressureHold()?.set_by).toBe("annie-manual");
+	});
 });
 
 describe("FleetSensors — infra bot (Task 2.5)", () => {
@@ -234,7 +263,7 @@ describe("FleetSensors — infra bot (Task 2.5)", () => {
 		expect(alerts).toHaveLength(2); // fresh episode
 	});
 
-	it("kickstart repair: attempted on success, needs_human on failure / missing jobLabel", async () => {
+	it("kickstart repair: attempted on success AND on failure (T2 gives the 2nd try — Codex R1 MED-2); blind → needs_human", async () => {
 		const okSensors = makeSensors(async () => ({ ok: true }));
 		const payload: AlertPayload = {
 			leadId: "infra-bot:claude",
@@ -251,18 +280,20 @@ describe("FleetSensors — infra bot (Task 2.5)", () => {
 		expect((await okSensors.infraBotKickstartRepair(payload)).outcome).toBe(
 			"attempted",
 		);
+		// A FAILED restart is still an attempt — stays in the T2 loop so the
+		// contract's "2 次失败 → @Annie" gets its second try on reconcile.
 		const failSensors = makeSensors(async () => ({
 			ok: false,
 			error: "nope",
 		}));
-		expect((await failSensors.infraBotKickstartRepair(payload)).outcome).toBe(
-			"needs_human",
-		);
+		const failed = await failSensors.infraBotKickstartRepair(payload);
+		expect(failed.outcome).toBe("attempted");
+		expect(failed.detail).toContain("失败");
 		const blind = await okSensors.infraBotKickstartRepair({
 			...payload,
 			metadata: {},
 		});
-		expect(blind.outcome).toBe("needs_human"); // refuses to kickstart blind
+		expect(blind.outcome).toBe("needs_human"); // refuses to restart blind
 	});
 
 	it("recoveryProbe: bot resolves by the latest probe verdict (per provider)", async () => {
@@ -355,19 +386,43 @@ describe("FleetSensors — zombie scan (Task 2.6)", () => {
 		void sensors;
 	});
 
-	it("same batch signature never re-emits (a changed set is a new event)", async () => {
+	it("same batch with an ACTIVE ticket never re-emits; a changed set emits fresh (Codex R1 HIGH-5)", async () => {
 		const sensors = makeSensors();
 		findings = [zombie(1), zombie(2), zombie(3)];
 		await sensors.tick();
+		expect(alerts).toHaveLength(1);
+		// Simulate the Hub opening the ticket row for the emitted alert.
+		store.openAlertThread({
+			correlationKey: "machine|zombie|zombie_session_backlog|",
+			eventId: alerts[0]!.eventId,
+			threadId: "t-z",
+			channelId: "c",
+			leadId: "zombie",
+			projectName: "machine",
+			eventType: "zombie_session_backlog",
+			ticketStatus: "ESCALATED",
+		});
 		now += 16 * 60_000;
-		await sensors.tick(); // same batch
-		expect(alerts).toHaveLength(2);
-		// SAME eventId → downstream claims/lead_events dedup swallows the repeat.
-		expect(alerts[0]!.eventId).toBe(alerts[1]!.eventId);
+		await sensors.tick(); // same batch + active ticket → silent
+		expect(alerts).toHaveLength(1);
 		findings = [...findings, zombie(4)];
 		now += 16 * 60_000;
+		await sensors.tick(); // changed set → fresh event id
+		expect(alerts).toHaveLength(2);
+		expect(alerts[1]!.eventId).not.toBe(alerts[0]!.eventId);
+	});
+
+	it("same batch RE-EMITS with a fresh eventId once the ticket resolved (never claims-swallowed)", async () => {
+		const sensors = makeSensors();
+		findings = [zombie(1), zombie(2), zombie(3)];
 		await sensors.tick();
-		expect(alerts[2]!.eventId).not.toBe(alerts[0]!.eventId);
+		expect(alerts).toHaveLength(1);
+		// No active ticket row (e.g. resolved/archived) → the same backlog must
+		// re-alert, and with a DIFFERENT eventId (permanent claims dedup).
+		now += 16 * 60_000;
+		await sensors.tick();
+		expect(alerts).toHaveLength(2);
+		expect(alerts[1]!.eventId).not.toBe(alerts[0]!.eventId);
 	});
 
 	it("sample list truncates at 10 with the total", async () => {

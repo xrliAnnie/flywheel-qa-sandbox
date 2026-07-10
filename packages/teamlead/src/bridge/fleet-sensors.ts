@@ -81,6 +81,8 @@ export class FleetSensors {
 	/** Last probe verdicts — the Hub recovery probe reads these. */
 	private readonly botLastAlive = new Map<"claude" | "codex", boolean>();
 	private lastZombieScanAt = 0;
+	/** Codex R1 HIGH-5: in-process batch dedup (see zombieTick). */
+	private lastZombieSignature: string | null = null;
 	/**
 	 * FLY-1082 (Task 2.4): flipped true once Bridge startup wiring completed —
 	 * the boot self-check ticket's recovery condition ("boot 对账完成").
@@ -144,14 +146,30 @@ export class FleetSensors {
 				severity: "severe",
 			});
 		} else if (event === "clear") {
-			const hold = this.deps.store.getFleetPressureHold();
-			if (hold?.set_by === "swap-sensor") {
-				this.deps.store.clearFleetPressureHold();
-				this.log("watermark fell below LOW — pressure-hold lifted");
-			}
+			this.liftSensorHold();
 			await this.deps.resolveTicket?.(
 				fleetCorrelationKey("swap", "swap_pressure_high"),
 			);
+		} else if (!this.swapMonitor.inPressure && usage?.usedPct != null) {
+			// Codex R1 HIGH-1 (restart safety): the hold row is DURABLE but the
+			// monitor state is not — after a Bridge restart with the watermark
+			// already back below LOW, the monitor sits in "normal" and never
+			// emits "clear", stranding the hold (dispatch paused forever). Lift
+			// the sensor's own stale hold whenever we are out of pressure AND the
+			// live reading is provably below LOW. A restart with the watermark
+			// still HIGH keeps the hold (reading ≥ LOW) until the fresh episode
+			// re-triggers within 2 ticks. Probe failures (null) never lift.
+			const th = swapThresholdsFromEnv(this.env);
+			if (usage.usedPct < th.lowPct) this.liftSensorHold();
+		}
+	}
+
+	/** Lift the hold IFF the swap sensor placed it (never a manual hold). */
+	private liftSensorHold(): void {
+		const hold = this.deps.store.getFleetPressureHold();
+		if (hold?.set_by === "swap-sensor") {
+			this.deps.store.clearFleetPressureHold();
+			this.log("watermark below LOW — pressure-hold lifted");
 		}
 	}
 
@@ -252,13 +270,18 @@ export class FleetSensors {
 			return {
 				outcome: "attempted",
 				action: "launchctl_kickstart",
-				detail: `🔧 已 launchctl kickstart -k ${meta.jobLabel}（幂等可逆）。bot 探针恢复后自动标记 ✅。`,
+				detail: `🔧 已对 ${meta.jobLabel} 执行 launchd 原地重启（幂等可逆）。bot 探针恢复后自动标记 ✅。`,
 			};
 		}
+		// Codex R1 MEDIUM-2: a FAILED job-restart is still an ATTEMPT — the
+		// contract is "2 次失败 → @Annie", so the first failure must stay in the
+		// T2 retry loop (REPAIRING + attempt_count) and get its second try on
+		// reconcile; the attempts budget (2) then escalates. Only the BLIND case
+		// (no jobLabel, above) short-circuits to needs_human.
 		return {
-			outcome: "needs_human",
-			action: "none",
-			detail: `launchctl kickstart ${meta.jobLabel} 失败（${res.error ?? "unknown"}）— 需要你看一眼 launchd job。`,
+			outcome: "attempted",
+			action: "launchctl_kickstart",
+			detail: `⚠️ 对 ${meta.jobLabel} 的 launchd 原地重启失败（${res.error ?? "unknown"}）。将按 T2 预算自动再试一次;再失败升级 Annie。`,
 		};
 	}
 
@@ -273,9 +296,10 @@ export class FleetSensors {
 		const findings = await this.deps.scanZombies();
 		const rawMin = Number(this.env.FLYWHEEL_ZOMBIE_BACKLOG_MIN);
 		const min = Number.isFinite(rawMin) && rawMin > 0 ? rawMin : 3;
-		if (findings.length < min) return;
-		// Batch signature: the SAME backlog never re-opens a ticket (claims +
-		// lead_events dedup on the eventId); a changed set is a new event.
+		if (findings.length < min) {
+			this.lastZombieSignature = null; // backlog cleared — a re-growth is a new episode
+			return;
+		}
 		const signature = createHash("sha256")
 			.update(
 				findings
@@ -285,10 +309,21 @@ export class FleetSensors {
 			)
 			.digest("hex")
 			.slice(0, 16);
+		// Codex R1 HIGH-5: claims.db dedup is PERMANENT, so a set-hash-only
+		// eventId would silently swallow the SAME backlog re-appearing after its
+		// ticket resolved. Dedup here is therefore (a) in-process: an unchanged
+		// signature with a still-ACTIVE ticket emits nothing; (b) the eventId
+		// carries a timestamp so a re-emission (ticket resolved but backlog
+		// persists, or a changed set) is always a FRESH claims identity.
+		const activeTicket = this.deps.store.getActiveAlertThread(
+			fleetCorrelationKey("zombie", "zombie_session_backlog"),
+		);
+		if (signature === this.lastZombieSignature && activeTicket) return;
+		this.lastZombieSignature = signature;
 		await this.deps.alert({
 			leadId: "zombie",
 			projectName: FLEET_ALERT_PROJECT,
-			eventId: `zombie-backlog:${signature}`,
+			eventId: `zombie-backlog:${signature}:${this.now()}`,
 			eventType: "zombie_session_backlog",
 			title: `跨 Lead 僵尸 session 积压（${findings.length} 个）`,
 			body: `CommDB↔StateStore 对账发现 ${findings.length} 个僵尸 session（阈值 ${min}）：\n${formatZombieSamples(findings)}\n\n设计上不自动收割（收割机制 = FLY-1066）——直接升级请你拍板是否人工清理。`,

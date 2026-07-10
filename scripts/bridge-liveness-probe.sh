@@ -28,7 +28,9 @@
 #   FLYWHEEL_BRIDGE_DOWN_ESCALATE_MIN     (default 5)
 #   FLYWHEEL_PROBE_STATE_FILE             (default ~/.flywheel/state/bridge-liveness-probe.json)
 #   FLYWHEEL_PROBE_BOT_TOKEN_ENV          (env NAME holding the Discord bot token,
-#                                          default INFRA_BOT_TOKEN — the Codex bot)
+#                                          default CODEX_INFRA_BOT_TOKEN — the
+#                                          Codex bot's token env per the C6
+#                                          deployment contract)
 #   FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID     (the #flywheel-alerts channel)
 #   FLYWHEEL_FOUNDER_DISCORD_USER_ID      (the @Annie mention target; optional)
 set -uo pipefail
@@ -36,7 +38,9 @@ set -uo pipefail
 BRIDGE_URL="${BRIDGE_URL:-http://localhost:9876}"
 ESCALATE_MIN="${FLYWHEEL_BRIDGE_DOWN_ESCALATE_MIN:-5}"
 STATE_FILE="${FLYWHEEL_PROBE_STATE_FILE:-${HOME}/.flywheel/state/bridge-liveness-probe.json}"
-TOKEN_ENV="${FLYWHEEL_PROBE_BOT_TOKEN_ENV:-INFRA_BOT_TOKEN}"
+# Codex R1 HIGH-3: the default must match the C6 deployment contract's env
+# name (CODEX_INFRA_BOT_TOKEN) — INFRA_BOT_TOKEN would silently never page.
+TOKEN_ENV="${FLYWHEEL_PROBE_BOT_TOKEN_ENV:-CODEX_INFRA_BOT_TOKEN}"
 CHANNEL_ID="${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}"
 FOUNDER_ID="${FLYWHEEL_FOUNDER_DISCORD_USER_ID:-}"
 

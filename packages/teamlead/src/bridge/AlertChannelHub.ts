@@ -418,34 +418,39 @@ export class AlertChannelHub {
 			`🔧 Cass 收到（${payload.title}）。${ackTail}`.trimEnd(),
 		);
 
-		if (bot) {
-			// FLY-1082 (Task 1.5): (b)-type kinds (kind-contract none_escalate)
-			// NEVER enter the ARC loop — the founder-facing line is the BY-DESIGN
-			// copy, not a "repair failed" framing. Generalizes the legacy
-			// runner_lead_pending_unhandled special case (its line stays
-			// byte-identical: same 🙋 framing, same HUMAN_ONLY_REASON string).
-			if (escalatesAtEnqueue(payload.eventType)) {
-				await this.postByDesignEscalation(payload, threadId);
-				this.deps.store.setAlertRepairStatus(ck, "needs_human");
-				if (payload.ticket) {
-					this.deps.store.setTicketStatus(ck, "ESCALATED");
-					await this.updateRootTicketStatus(channelId, messageId, "ESCALATED");
-					// FLY-1082 (Task 3.2): a by-design escalation counts toward the
-					// runbook-gap window too (repeated zombie backlogs = FLY-1066 is
-					// overdue — exactly what the auto-filed issue should say).
-					const row = this.deps.store.getActiveAlertThread(ck);
-					if (row) {
-						try {
-							await this.deps.onTicketEscalated?.(row);
-						} catch (err) {
-							this.logger(
-								`onTicketEscalated hook failed for ${ck}: ${(err as Error).message}`,
-							);
-						}
+		// FLY-1082 (Task 1.5): (b)-type kinds (kind-contract none_escalate)
+		// NEVER enter the ARC loop — the founder-facing line is the BY-DESIGN
+		// copy, not a "repair failed" framing. Generalizes the legacy
+		// runner_lead_pending_unhandled special case (its bot-present line stays
+		// byte-identical: same 🙋 framing, same HUMAN_ONLY_REASON string).
+		// Codex R1 HIGH-4: deliberately OUTSIDE the auto-repair gate — a
+		// by-design escalation (founder line + ESCALATED status + runbook-gap
+		// count) must fire even with FLYWHEEL_AUTO_REPAIR off; the contract, not
+		// the bot, owns this path.
+		if (escalatesAtEnqueue(payload.eventType)) {
+			await this.postByDesignEscalation(payload, threadId);
+			if (bot) this.deps.store.setAlertRepairStatus(ck, "needs_human");
+			if (payload.ticket) {
+				this.deps.store.setTicketStatus(ck, "ESCALATED");
+				await this.updateRootTicketStatus(channelId, messageId, "ESCALATED");
+				// FLY-1082 (Task 3.2): a by-design escalation counts toward the
+				// runbook-gap window too (repeated zombie backlogs = FLY-1066 is
+				// overdue — exactly what the auto-filed issue should say).
+				const row = this.deps.store.getActiveAlertThread(ck);
+				if (row) {
+					try {
+						await this.deps.onTicketEscalated?.(row);
+					} catch (err) {
+						this.logger(
+							`onTicketEscalated hook failed for ${ck}: ${(err as Error).message}`,
+						);
 					}
 				}
-				return;
 			}
+			return;
+		}
+
+		if (bot) {
 			const repair = await bot.attempt(payload, ck);
 			if (repair.outcome === "needs_human") {
 				// FLY-929 A5: a CLAUDE account-cap needs_human (usage_limit with

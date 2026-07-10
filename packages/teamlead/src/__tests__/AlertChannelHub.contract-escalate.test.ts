@@ -156,6 +156,40 @@ describe("AlertChannelHub — FLY-1082 contract-driven escalate (Task 1.5)", () 
 		expect(row?.ticket_status).toBeNull();
 	});
 
+	it("zombie by-design escalation fires WITHOUT the auto-repair bot too (Codex R1 HIGH-4)", async () => {
+		const discord = makeDiscord();
+		const escalatedRows: string[] = [];
+		const hub = new AlertChannelHub({
+			store,
+			notifier: { alert: vi.fn(async () => ({ ...SENT })) },
+			discord,
+			// NO autoRepairBot — FLYWHEEL_AUTO_REPAIR off.
+			onTicketEscalated: async (row) => {
+				escalatedRows.push(row.event_type);
+			},
+		});
+		await hub.handle({
+			leadId: "machine",
+			projectName: "machine",
+			eventId: "evt-z-nobot",
+			eventType: "zombie_session_backlog",
+			title: "跨 Lead 僵尸 session 积压",
+			body: "3 zombies",
+			severity: "warning",
+			ticket: ticket("ESCALATED"),
+		});
+		// Founder-facing by-design line still posts; ticket lands ESCALATED;
+		// the runbook-gap counter still fires.
+		const line = discord.posts.find(([, c]) => c.includes("🙋"));
+		expect(line).toBeDefined();
+		expect(line![1]).toContain("设计上不自动收割");
+		const row = store.getActiveAlertThread(
+			"machine|machine|zombie_session_backlog|",
+		);
+		expect(row?.ticket_status).toBe("ESCALATED");
+		expect(escalatedRows).toEqual(["zombie_session_backlog"]);
+	});
+
 	it("an auto-contract kind still goes through the ARC attempt path (unchanged)", async () => {
 		const discord = makeDiscord();
 		const { bot, attempt } = makeBot();
