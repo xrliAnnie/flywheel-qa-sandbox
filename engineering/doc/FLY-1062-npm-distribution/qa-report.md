@@ -15,12 +15,21 @@ Issue: FLY-1062 (https://linear.app/geoforge3d/issue/FLY-1062)
 
 ## 结论
 
-**FAIL / KICKBACK(Round 2 更新,2026-07-09)** —— 补跑被 pipeline 跳过的 FLY-827
-codex code review 后,codex 抓到 **1 个 HIGH**,QA 已独立复现:**gate④ 零仓库访问
-不变式可被绕过**(详见下方「Round 2」)。这正是 PR1 存在的核心保证(Annie 硬要求),
-故 verdict 由 PASS 翻为 **FAIL**,踢回 implement 阶段修 gate④ 后再验。其余项(打包
-流水线、三处 seam、P2 prebuilt、真 npm 全链「装得上≠起得来」、字节兼容)Round 1
-均验过为真,见下。
+**PASS(Round 3 re-verify,2026-07-09)** —— gate④ 经 implement 阶段 4 轮收敛
+(anti-masking → normalization+detector → combo → **exact-line allowlist**)后,
+Round-2 的零仓库访问绕过已根治:Codex 逐轮构造的每种绕过形态(masking / 大小写 /
+引号分割 / 双空格 / `git -C` / 双宽行 joint-clear / 反斜杠续行分割)全部被拒,且真
+payload 仍逐字过门(无误判)。QA 另行独立构造 7 种 M1-M9 未覆盖的仓库访问拼写
+(SSH URL / `gh repo clone` / tab 分隔 / 全大写 / slug-only `git fetch` / 缩进 /
+纯注释)——全部正确拒绝,并把这 7 例落成 committed 回归测试。verdict 由 Round-2 的
+FAIL 翻回 **PASS**。详见下方「Round 3」。
+
+> **FAIL / KICKBACK(Round 2,已被 Round 3 修复推翻)** —— 补跑被 pipeline 跳过的
+> FLY-827 codex code review 后,codex 抓到 **1 个 HIGH**,QA 已独立复现:**gate④
+> 零仓库访问不变式可被绕过**(详见下方「Round 2」)。这正是 PR1 存在的核心保证
+> (Annie 硬要求),故当时 verdict 由 PASS 翻为 FAIL,踢回 implement 阶段修 gate④。
+> 其余项(打包流水线、三处 seam、P2 prebuilt、真 npm 全链「装得上≠起得来」、字节
+> 兼容)Round 1 均验过为真,见下。
 
 > **Round 1(初判 PASS,已被 Round 2 推翻)**:打包流水线、packaged-mode 三处 seam、
 > P2 prebuilt provision/setup、发布安全门都经真实行为验证;「装得上 ≠ 起得来」验收
@@ -96,6 +105,41 @@ codex 自身沙箱断网发不了 PR review,我已代发到 PR #531(标注代发
 **处置**:qa-result = **fail**(retract Round 1 的 premature PASS),踢回 implement 阶段。
 注:Round 1 我在 codex 门满足前就发了 qa-result pass + 开了 approve gate(过早),现经
 qa-result fail 纠正;head 移动后旧 gate 绑定自然失效,re-verify PASS 后再开新 gate。
+
+## Round 3 — gate④ 修复 re-verify(2026-07-09,PASS)
+
+implement 阶段在同分支上对 gate④ 做了 4 轮收敛(commits `7d780e13`→`4ded7064`),
+Codex code review 每轮独立构造新绕过、逐轮击杀,最终落到 **exact-line allowlist +
+detector** 的闭形式(`package-onboard.sh` po_gate ④ + `po_g4_norm`/`po_g4_detect` +
+`audit-grep-allowlist.tsv` 重写为 6 条精确行)。QA 在新 head(`4ded7064`)独立复验:
+
+### 1. 回归测试全绿(committed 本分支)
+| 套件 | 结果 | 覆盖 |
+|---|---|---|
+| **gate4-allowlist-masking.test.sh** | **9/9** | M1 sanity(门是活的)· M2 Round-2 masking bug 现 GREEN · M3-M6 normalization 变体(小写/引号分割/双空格/`git -C`)· M7 exact-registered 正例仍放行 · M8 Round-3 combo joint-clear · M9 Round-4 反斜杠续行分割 |
+| **gate4-forms-probe.test.sh(QA 新增)** | **8/8** | QA 独立构造、M1-M9 未覆盖的仓库访问拼写:F1 SSH URL · F2 `gh repo clone` · F3 tab 分隔 · F4 全大写 · F5 slug-only `git fetch` · F6 缩进 · F7 纯注释提及 slug —— 全拒;F8 精确注册行仍放行(正控) |
+| package-onboard.test.sh | 26/26 | 无回归 |
+| packaged-seams / packaged-restart / setup-prebuilt / provision-prebuilt | 13 / 5 / 6 / 6 | 无回归 |
+
+### 2. 真 payload 无误判(关键)
+`package-onboard-smoke.test.sh` 12/12,其中 **①a「gated tarball produced」= 真组装
+payload 逐字过 R4 exact-line gate④**。exact-line 语义最严(每条 `git clone`/slug 行
+必须归一化后与 6 条注册行之一逐字相等),若真 shipping 行与注册行有任何偏差,组装即
+在打包步 fail —— 现通过,证明 6 条注册行精确对齐真 payload,修复没引入 release 阻断。
+
+### 3. 修复正确性 — QA 独立判断(不只跑实现者的测试)
+- **闭形式方向正确**:比较键两侧都用同一个 bash `po_g4_norm`(自洽);awk twin 只决定
+  「哪些行被送审」,且 awk 探测器比 `po_g4_detect` 更宽=更多行被审(fail-safe 方向)。
+- **不变式覆盖面充分**:访问私仓 flywheel 必然在某处出现 `xrliAnnie/` slug(slug 探测器)
+  或 `git … clone`(clone 探测器);SSH host 形 `git@github.com:xrliAnnie/…`、`gh repo
+  clone xrliAnnie/…`、`codeload.github.com/xrliAnnie/…` 均含 slug 子串 → 被 slug 覆盖。
+  QA 的 F1-F7 实测印证。
+- **snapshot 纪律**:新增/改动任何带 forbidden 形态的行都会 fail 直到显式重注册——
+  这正是 Annie 硬要求想要的「未来某次改动不能悄悄重引入仓库访问」的结构性保证。
+
+**处置**:qa-result = **pass**(re-verify),QA 作为本三段流水线 ship executor 开 approve
+gate。scope 边界不变(见文末):PR1 = 分发层地基;客户可直接 `npm install` 的 P3/P4
+仍是 FLY-1023 关单前同 issue 下一圈。
 
 ## 交给 founder 的 scope 边界(非缺陷)
 PR1 是**分发层地基**:它让 monorepo 能被组装成一个自洽、能起来的 payload tarball,且
