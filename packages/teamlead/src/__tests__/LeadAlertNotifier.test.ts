@@ -1,8 +1,15 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	ALERT_EVENT_TYPES,
 	type AlertPayload,
 	findUnreachableAlertLeads,
 	LeadAlertNotifier,
@@ -1351,5 +1358,241 @@ describe("LeadAlertNotifier — FLY-927 Codex R1 fixes", () => {
 			repairBotTokenEnv: "CASS_BOT_TOKEN",
 		});
 		expect(out).toEqual([]); // CASS_BOT_TOKEN resolves in beforeEach
+	});
+});
+
+describe("LeadAlertNotifier — FLY-1081: deploy kinds + mentionUserId + drain unified-first", () => {
+	let store: StateStore;
+	let queueDir: string;
+	const saved: Record<string, string | undefined> = {};
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		queueDir = mkdtempSync(join(tmpdir(), "fly1081-queue-"));
+		for (const k of [
+			"SIMBA_BOT_TOKEN",
+			"CASS_BOT_TOKEN",
+			"FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
+			"FLYWHEEL_ALERT_TICKETS",
+		]) {
+			saved[k] = process.env[k];
+		}
+		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.CASS_BOT_TOKEN = "cass-tok";
+		// Hermetic against a dev shell that carries the production sender env.
+		delete process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;
+		delete process.env.FLYWHEEL_ALERT_TICKETS;
+	});
+	afterEach(() => {
+		rmSync(queueDir, { recursive: true, force: true });
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	});
+
+	const unified = {
+		channelId: "OPS-CHAN",
+		repairBotTokenEnv: "CASS_BOT_TOKEN",
+	};
+
+	function okFetch() {
+		return vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+			json: async () => ({ id: "root-1" }),
+		});
+	}
+
+	it("ALERT_EVENT_TYPES carries the two shell deploy kinds", () => {
+		expect(ALERT_EVENT_TYPES).toContain("deploy_failed");
+		expect(ALERT_EVENT_TYPES).toContain("deploy_degraded");
+	});
+
+	it("mentionUserId → content prefixed <@id> + allowed_mentions.users (unified, tickets off)", async () => {
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+			ticketsEnabled: () => false,
+		});
+		const result = await notifier.alert(
+			buildPayload({
+				leadId: "cos-lead",
+				title: "T",
+				body: "B",
+				mentionUserId: "222333444555666777",
+			}),
+		);
+		expect(result.sent).toBe(true);
+		const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body.content).toBe(
+			"<@222333444555666777> ⚠️ **T** (cos-lead / pane_hash_stuck)\nB",
+		);
+		expect(body.allowed_mentions).toEqual({ users: ["222333444555666777"] });
+	});
+
+	it("mentionUserId merges + dedupes with the 🎫 owner whitelist", async () => {
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+			ticketsEnabled: () => true,
+		});
+		await notifier.alert(
+			buildPayload({
+				leadId: "cos-lead",
+				mentionUserId: "222333444555666777",
+				ticket: {
+					ownerUserId: "123456789012345678",
+					ownerLabel: "claude bot",
+					status: "NEW",
+					firstSeenMs: Date.now(),
+				},
+			}),
+		);
+		const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body.allowed_mentions).toEqual({
+			users: ["123456789012345678", "222333444555666777"],
+		});
+		expect((body.content as string).startsWith("<@222333444555666777> ")).toBe(
+			true,
+		);
+		// same id in both roles → deduped to one entry
+		const fetchFn2 = okFetch();
+		const notifier2 = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: fetchFn2,
+			queueDir,
+			unifiedAlert: unified,
+			ticketsEnabled: () => true,
+		});
+		await notifier2.alert(
+			buildPayload({
+				leadId: "cos-lead",
+				eventId: "evt-dedupe",
+				mentionUserId: "123456789012345678",
+				ticket: {
+					ownerUserId: "123456789012345678",
+					ownerLabel: "claude bot",
+					status: "NEW",
+					firstSeenMs: Date.now(),
+				},
+			}),
+		);
+		const [, init2] = fetchFn2.mock.calls[0] as [string, RequestInit];
+		const body2 = JSON.parse(init2.body as string);
+		expect(body2.allowed_mentions).toEqual({ users: ["123456789012345678"] });
+	});
+
+	it("invalid mentionUserId degrades to full suppression (byte-compat body)", async () => {
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+			ticketsEnabled: () => false,
+		});
+		await notifier.alert(
+			buildPayload({
+				leadId: "cos-lead",
+				title: "T",
+				body: "B",
+				mentionUserId: "not-a-snowflake",
+			}),
+		);
+		const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body.content).toBe("⚠️ **T** (cos-lead / pane_hash_stuck)\nB");
+		expect(body.allowed_mentions).toEqual({ parse: [] });
+	});
+
+	it("drain unified-first: a shell system-identity record (NO projects.json lead) re-posts with its mention instead of unknown-lead dead-letter", async () => {
+		const dlDir = mkdtempSync(join(tmpdir(), "fly1081-dl-"));
+		// Hand-written record in the exact lead-alert.sh write_record shape —
+		// projectName=flywheel / leadId=deploy has NO entry in testProjects.
+		writeFileSync(
+			join(queueDir, "20260709T120000Z-deploy-deploy_failed-abc123def456.json"),
+			JSON.stringify({
+				leadId: "deploy",
+				projectName: "flywheel",
+				eventId: "abc123def456abc123def456abc123def456abc1",
+				eventType: "deploy_failed",
+				title: "Flywheel deploy failed",
+				body: "deploy body",
+				severity: "severe",
+				queuedAt: new Date().toISOString(),
+				queueReason: "discord-503",
+				mentionUserId: "222333444555666777",
+			}),
+		);
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			deadLetterDir: dlDir,
+			unifiedAlert: unified,
+			ticketsEnabled: () => false,
+		});
+		const result = await notifier.drainQueue();
+		expect(result.sent).toBe(1);
+		expect(result.deadLettered).toBe(0);
+		expect(result.remaining).toBe(0);
+		expect(readdirSync(queueDir).filter((f) => f.endsWith(".json"))).toEqual(
+			[],
+		);
+		const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect((body.content as string).startsWith("<@222333444555666777> ")).toBe(
+			true,
+		);
+		expect(body.allowed_mentions).toEqual({ users: ["222333444555666777"] });
+		rmSync(dlDir, { recursive: true, force: true });
+	});
+
+	it("SENTINEL: legacy (non-unified) drain still dead-letters an unknown lead", async () => {
+		const dlDir = mkdtempSync(join(tmpdir(), "fly1081-dl2-"));
+		writeFileSync(
+			join(queueDir, "20260709T120000Z-deploy-deploy_failed-abc123def456.json"),
+			JSON.stringify({
+				leadId: "deploy",
+				projectName: "flywheel",
+				eventId: "abc123def456abc123def456abc123def456abc1",
+				eventType: "deploy_failed",
+				title: "T",
+				body: "B",
+				severity: "severe",
+				queuedAt: new Date().toISOString(),
+				queueReason: "discord-503",
+			}),
+		);
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			deadLetterDir: dlDir,
+		});
+		const result = await notifier.drainQueue();
+		expect(result.sent).toBe(0);
+		expect(result.deadLettered).toBe(1);
+		expect(fetchFn).not.toHaveBeenCalled();
+		rmSync(dlDir, { recursive: true, force: true });
 	});
 });
