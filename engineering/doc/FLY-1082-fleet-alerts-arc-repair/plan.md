@@ -82,7 +82,7 @@ flowchart LR
   「不双 @」由 **page latch** 保证(boot 工单路径检测同 episode 的 page 已发 → 工单不再 @,正常走 ACK/resolve 生命周期),而不是靠 claims 碰撞。测试:wrapper page 成功并 claim 自己的 page id;同一 crash boot 恰好开一个工单行/thread;boot 路径不第二次 @Annie;wrapper 连续重启按分钟签名收敛。
 - wrapper 腿:`bp_launcher_preflight` 增 dirty-marker 检查 → exec 之前 lead-alert.sh 直发(severe);连续 dirty ≥N(复用 starts-in-window 计数)→ 文案升级为 crash-loop @Annie,**保留 prev PID/start ts 证据**。
 - boot 自检腿:复活后的 Bridge 用 latch 的上一枚 marker 开工单;ACK → boot 对账完成 → 安静 resolve。
-- 测试:bridge-port.sh sh 单测(首启/clean SIGTERM/kill -9 三态);kill -9 → wrapper 直发 + boot 工单且 claims 去重只一条 @;crash-loop 文案含 prev PID/ts;跨进程 fixture 证明 shell/TS 同 crash 同 eventId。
+- 测试:bridge-port.sh sh 单测(首启/clean SIGTERM/kill -9 三态);kill -9 → wrapper page 发出且 claim 自己的 page id、boot 恰开一个工单行/thread 且 **page latch 保证不第二次 @Annie**;crash-loop 文案含 prev PID/ts;跨进程 fixture 证明 shell/TS 对同一 crash 产生**各自的 page/ticket id + 同一 episodeSignature**(两 id 绝不碰撞、episode 可关联)。
 
 ### Task 2.5 infra_bot_down 探测 + kickstart(Codex R1 #2 修订)
 - tick 探针:两 bot 的 lead session/pane 存活(LeadWatchdog 视野)+ `launchctl print` job 兜底;死 → 工单。
