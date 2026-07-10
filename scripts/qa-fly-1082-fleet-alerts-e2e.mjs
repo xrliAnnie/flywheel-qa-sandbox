@@ -67,18 +67,26 @@ process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV = TOKEN_ENV;
 // fake owner snowflakes (cross-assignment target; never a real ping in the test ch):
 process.env.FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID = "100000000000000001";
 process.env.FLYWHEEL_CODEX_INFRA_BOT_USER_ID = "100000000000000002";
-process.env.FLYWHEEL_CLAUDE_INFRA_BOT_JOB = "gui/501/com.flywheel.qa.claude-infra";
-process.env.FLYWHEEL_CODEX_INFRA_BOT_JOB = "gui/501/com.flywheel.qa.codex-infra";
+process.env.FLYWHEEL_CLAUDE_INFRA_BOT_JOB =
+	"gui/501/com.flywheel.qa.claude-infra";
+process.env.FLYWHEEL_CODEX_INFRA_BOT_JOB =
+	"gui/501/com.flywheel.qa.codex-infra";
 
 const { StateStore } = await tl("StateStore.js");
 const { LeadAlertNotifier } = await tl("LeadAlertNotifier.js");
-const { AlertChannelHub, createDiscordOps } = await tl("bridge/AlertChannelHub.js");
+const { AlertChannelHub, createDiscordOps } = await tl(
+	"bridge/AlertChannelHub.js",
+);
 const { AutoRepairBot } = await tl("bridge/AutoRepairBot.js");
-const { FleetSensors, fleetCorrelationKey } = await tl("bridge/fleet-sensors.js");
+const { FleetSensors, fleetCorrelationKey } = await tl(
+	"bridge/fleet-sensors.js",
+);
 const { ServerLossCoordinator } = await tl("bridge/server-loss.js");
 const { RunnerAdmissionController } = await tl("bridge/runner-admission.js");
 const { buildInfraAlertRouting } = await tl("bridge/infra-alert-wiring.js");
-const { validateKindContracts, KIND_CONTRACTS } = await tl("bridge/kind-contract.js");
+const { validateKindContracts, KIND_CONTRACTS } = await tl(
+	"bridge/kind-contract.js",
+);
 const { createClaimsReader, createClaimsClaimer, resolveAlertDirsFromEnv } =
 	await tl("bridge/lead-alert-helpers.js");
 const { noteTicketEscalated } = await tl("bridge/runbook-gap.js");
@@ -156,11 +164,19 @@ const hub = new AlertChannelHub({
 			swapPressure: (p) =>
 				fleetHolder.current
 					? fleetHolder.current.swapPressureRepair(p)
-					: Promise.resolve({ outcome: "needs_human", action: "none", detail: "unwired" }),
+					: Promise.resolve({
+							outcome: "needs_human",
+							action: "none",
+							detail: "unwired",
+						}),
 			infraBotKickstart: (p) =>
 				fleetHolder.current
 					? fleetHolder.current.infraBotKickstartRepair(p)
-					: Promise.resolve({ outcome: "needs_human", action: "none", detail: "unwired" }),
+					: Promise.resolve({
+							outcome: "needs_human",
+							action: "none",
+							detail: "unwired",
+						}),
 		},
 		logger: () => {},
 	}),
@@ -241,7 +257,9 @@ admission.setPressureHoldProbe(() => {
 const activeRow = (leadId, eventType) =>
 	store.getActiveAlertThread(fleetCorrelationKey(leadId, eventType));
 
-console.log(`=== FLY-1082 fleet-alert E2E — real dist, isolated 529 channel ${MARK} ===`);
+console.log(
+	`=== FLY-1082 fleet-alert E2E — real dist, isolated 529 channel ${MARK} ===`,
+);
 console.log(`temp: ${tmp}`);
 
 // ── ⑥ fail-loud kind-contract (structural guard) ──
@@ -254,7 +272,10 @@ console.log(`temp: ${tmp}`);
 	} catch (e) {
 		threw = /tmux_server_lost/.test(e.message);
 	}
-	ok("⑥ fail-loud: a missing kind contract THROWS (Bridge refuses to start)", threw);
+	ok(
+		"⑥ fail-loud: a missing kind contract THROWS (Bridge refuses to start)",
+		threw,
+	);
 	let clean = true;
 	try {
 		validateKindContracts();
@@ -267,7 +288,10 @@ console.log(`temp: ${tmp}`);
 // ── ① swap_pressure_high — real watermark seam → hold → admission → resolve ──
 {
 	// admission admits BEFORE the fault
-	ok("① admission admits before the fault (baseline)", admission.tryAdmit().admit === true);
+	ok(
+		"① admission admits before the fault (baseline)",
+		admission.tryAdmit().admit === true,
+	);
 	// >HIGH reading (default 80%): 15000/16384 ≈ 91.6% — feed 2 ticks (2-tick confirm)
 	setSwap("vm.swapusage: total = 16384.00M  used = 15000.00M  free = 1384.00M");
 	await fleetHolder.current.tick(); // tick 1 — arms
@@ -289,13 +313,15 @@ console.log(`temp: ${tmp}`);
 	const row = activeRow("swap", "swap_pressure_high");
 	ok(
 		"① swap ticket opened + AutoRepairBot ran the reversible hold repair (REPAIRING)",
-		!!row && (row.ticket_status === "REPAIRING" || row.repair_status === "attempted"),
+		!!row &&
+			(row.ticket_status === "REPAIRING" || row.repair_status === "attempted"),
 		`status=${row?.ticket_status} repair=${row?.repair_status}`,
 	);
 	// each configured Lead got a real load-shed instruction
 	ok(
 		"① every Lead notified to shed load (ARC side-effect)",
-		seams.notifiedLeads.filter((n) => n.content.includes("pressure-hold")).length >= 2,
+		seams.notifiedLeads.filter((n) => n.content.includes("pressure-hold"))
+			.length >= 2,
 		`notified=${seams.notifiedLeads.length}`,
 	);
 	// recovery: watermark drops below LOW (65%): 10000/16384 ≈ 61%
@@ -321,14 +347,33 @@ console.log(`temp: ${tmp}`);
 	const tmuxOk = spawnSync("tmux", ["-V"], { encoding: "utf-8" }).status === 0;
 	// start a real isolated tmux server with a session, then kill the server
 	if (tmuxOk) {
-		spawnSync("tmux", ["-L", sock, "new-session", "-d", "-s", "probe", "sleep 300"]);
-		const before = spawnSync("tmux", ["-L", sock, "has-session", "-t", "probe"]);
-		ok("② isolated tmux server really came up (real probe target)", before.status === 0);
+		spawnSync("tmux", [
+			"-L",
+			sock,
+			"new-session",
+			"-d",
+			"-s",
+			"probe",
+			"sleep 300",
+		]);
+		const before = spawnSync("tmux", [
+			"-L",
+			sock,
+			"has-session",
+			"-t",
+			"probe",
+		]);
+		ok(
+			"② isolated tmux server really came up (real probe target)",
+			before.status === 0,
+		);
 		spawnSync("tmux", ["-L", sock, "kill-server"]);
 	}
 	// the coordinator's real probe reads the (now-dead) isolated server
 	seams.serverProbe = () => {
-		const r = spawnSync("tmux", ["-L", sock, "list-sessions"], { encoding: "utf-8" });
+		const r = spawnSync("tmux", ["-L", sock, "list-sessions"], {
+			encoding: "utf-8",
+		});
 		const noServer = /no server running|error connecting/i.test(
 			`${r.stderr}${r.stdout}`,
 		);
@@ -336,9 +381,33 @@ console.log(`temp: ${tmp}`);
 	};
 	// register 3 running tmux-backed sessions across 2 leads
 	const fleet = [
-		{ execution_id: "z-1", issue_id: "i-1", issue_identifier: "FLY-9001", project_name: "flywheel", status: "running", adapter_type: "claude-tmux", summary: "flywheel-test-1" },
-		{ execution_id: "z-2", issue_id: "i-2", issue_identifier: "FLY-9002", project_name: "flywheel", status: "running", adapter_type: "claude-tmux", summary: "flywheel-test-1" },
-		{ execution_id: "z-3", issue_id: "i-3", issue_identifier: "FLY-9003", project_name: "flywheel", status: "running", adapter_type: "claude-tmux", summary: "flywheel-test-2" },
+		{
+			execution_id: "z-1",
+			issue_id: "i-1",
+			issue_identifier: "FLY-9001",
+			project_name: "flywheel",
+			status: "running",
+			adapter_type: "claude-tmux",
+			summary: "flywheel-test-1",
+		},
+		{
+			execution_id: "z-2",
+			issue_id: "i-2",
+			issue_identifier: "FLY-9002",
+			project_name: "flywheel",
+			status: "running",
+			adapter_type: "claude-tmux",
+			summary: "flywheel-test-1",
+		},
+		{
+			execution_id: "z-3",
+			issue_id: "i-3",
+			issue_identifier: "FLY-9003",
+			project_name: "flywheel",
+			status: "running",
+			adapter_type: "claude-tmux",
+			summary: "flywheel-test-2",
+		},
 	];
 	for (const s of fleet) store.upsertSession(s);
 	const claimed = await serverLossHolder.current.check();
@@ -347,10 +416,17 @@ console.log(`temp: ${tmp}`);
 		claimed.size === 3,
 		`claimed=${claimed.size}`,
 	);
-	const migrated = fleet.filter((s) => store.getSession(s.execution_id)?.status === "failed");
-	ok("② every claimed runner migrated to terminal `failed` (grouped)", migrated.length === 3);
+	const migrated = fleet.filter(
+		(s) => store.getSession(s.execution_id)?.status === "failed",
+	);
+	ok(
+		"② every claimed runner migrated to terminal `failed` (grouped)",
+		migrated.length === 3,
+	);
 	const notifiedLeads = new Set(
-		seams.notifiedLeads.filter((n) => n.content.includes("tmux server")).map((n) => n.leadId),
+		seams.notifiedLeads
+			.filter((n) => n.content.includes("tmux server"))
+			.map((n) => n.leadId),
 	);
 	ok(
 		"② ONE grouped casualty notification per affected Lead (2 leads)",
@@ -358,12 +434,17 @@ console.log(`temp: ${tmp}`);
 		`leads=[${[...notifiedLeads]}]`,
 	);
 	const row = activeRow("tmux-server", "tmux_server_lost");
-	ok("② exactly ONE tmux_server_lost fleet ticket opened", !!row, `status=${row?.ticket_status}`);
+	ok(
+		"② exactly ONE tmux_server_lost fleet ticket opened",
+		!!row,
+		`status=${row?.ticket_status}`,
+	);
 	// second check with server still down + no new sessions → no double migration
 	const claimed2 = await serverLossHolder.current.check();
 	ok(
 		"② idempotent: a second pass with nothing new claims 0 (no double-burial)",
-		claimed2.size === 0 || [...claimed2].every((id) => store.getSession(id)?.status === "failed"),
+		claimed2.size === 0 ||
+			[...claimed2].every((id) => store.getSession(id)?.status === "failed"),
 	);
 }
 
@@ -390,7 +471,11 @@ console.log(`temp: ${tmp}`);
 		severity: "severe",
 	});
 	const row = activeRow("bridge", "bridge_abnormal_exit");
-	ok("③ boot self-check ticket opened for the abnormal exit", !!row, `status=${row?.ticket_status}`);
+	ok(
+		"③ boot self-check ticket opened for the abnormal exit",
+		!!row,
+		`status=${row?.ticket_status}`,
+	);
 	// recovery gate: not done until wiring completes, then resolvable
 	fleetHolder.current.bootReconcileDone = false;
 	const probeBefore = await fleetHolder.current.recoveryProbe(row);
@@ -405,18 +490,30 @@ console.log(`temp: ${tmp}`);
 	marker.writeRunningMarker(mfile, 5252, 1_700_000_100_000);
 	marker.writeCleanMarker(mfile);
 	const cleanPrev = marker.latchPreviousMarker(mfile);
-	ok("③ a CLEAN shutdown marker is NOT read as abnormal exit", cleanPrev?.state !== "running");
+	ok(
+		"③ a CLEAN shutdown marker is NOT read as abnormal exit",
+		cleanPrev?.state !== "running",
+	);
 }
 
 // ── ④ infra_bot_down — cross-owner + real kickstart ARC ──
 {
 	// codex bot dead → owner must be the CLAUDE bot ("nobody rescues their own side")
 	seams.botProbes = [
-		{ provider: "codex", alive: false, jobLabel: process.env.FLYWHEEL_CODEX_INFRA_BOT_JOB, probeSource: "qa launchctl" },
+		{
+			provider: "codex",
+			alive: false,
+			jobLabel: process.env.FLYWHEEL_CODEX_INFRA_BOT_JOB,
+			probeSource: "qa launchctl",
+		},
 	];
 	await fleetHolder.current.tick(); // botTick → alert → hub → ARC(kickstart)
 	const row = activeRow("infra-bot:codex", "infra_bot_down");
-	ok("④ infra_bot_down ticket opened for the dead codex bot", !!row, `status=${row?.ticket_status}`);
+	ok(
+		"④ infra_bot_down ticket opened for the dead codex bot",
+		!!row,
+		`status=${row?.ticket_status}`,
+	);
 	ok(
 		"④ cross-owner: dead codex → owner is the CLAUDE bot (nobody rescues own side)",
 		row?.owner_ref === "infra_bot:claude",
@@ -429,7 +526,12 @@ console.log(`temp: ${tmp}`);
 	);
 	// probe flips alive → recovery resolve
 	seams.botProbes = [
-		{ provider: "codex", alive: true, jobLabel: process.env.FLYWHEEL_CODEX_INFRA_BOT_JOB, probeSource: "qa launchctl" },
+		{
+			provider: "codex",
+			alive: true,
+			jobLabel: process.env.FLYWHEEL_CODEX_INFRA_BOT_JOB,
+			probeSource: "qa launchctl",
+		},
 	];
 	await fleetHolder.current.tick();
 	const resolved = activeRow("infra-bot:codex", "infra_bot_down");
@@ -443,16 +545,35 @@ console.log(`temp: ${tmp}`);
 // ── ⑤ zombie_session_backlog — by-design ESCALATED at enqueue (no ARC) ──
 {
 	seams.zombies = [
-		{ shape: "commdb_orphan", executionId: "zz-1", projectName: "flywheel", detail: "CommDB running, no StateStore row" },
-		{ shape: "terminal_desync", executionId: "zz-2", projectName: "flywheel", detail: "StateStore terminal, CommDB running" },
-		{ shape: "stale_target", executionId: "zz-3", projectName: "flywheel", detail: "running >24h, tmux target gone" },
+		{
+			shape: "commdb_orphan",
+			executionId: "zz-1",
+			projectName: "flywheel",
+			detail: "CommDB running, no StateStore row",
+		},
+		{
+			shape: "terminal_desync",
+			executionId: "zz-2",
+			projectName: "flywheel",
+			detail: "StateStore terminal, CommDB running",
+		},
+		{
+			shape: "stale_target",
+			executionId: "zz-3",
+			projectName: "flywheel",
+			detail: "running >24h, tmux target gone",
+		},
 	];
 	// zombie scan is throttled ~15min — force the window open by resetting the clock
 	fleetHolder.current.lastZombieScanAt = 0;
 	// advance now() past the throttle: the sensor reads deps.now(); default Date.now
 	await fleetHolder.current.tick();
 	const row = activeRow("zombie", "zombie_session_backlog");
-	ok("⑤ zombie_session_backlog ticket opened at/above the backlog threshold", !!row, `status=${row?.ticket_status}`);
+	ok(
+		"⑤ zombie_session_backlog ticket opened at/above the backlog threshold",
+		!!row,
+		`status=${row?.ticket_status}`,
+	);
 	ok(
 		"⑤ (b)-type: lands directly ESCALATED at enqueue (by design, no ARC retry loop)",
 		row?.ticket_status === "ESCALATED",
@@ -473,8 +594,10 @@ async function discordFetch() {
 			"curl",
 			[
 				"-s",
-				"-H", `Authorization: Bot ${TOKEN}`,
-				"-H", "User-Agent: FlywheelQA (https://flywheel, 1.0)",
+				"-H",
+				`Authorization: Bot ${TOKEN}`,
+				"-H",
+				"User-Agent: FlywheelQA (https://flywheel, 1.0)",
 				`https://discord.com/api/v10/channels/${CHANNEL}/messages?limit=30`,
 			],
 			{ encoding: "utf-8" },
@@ -497,7 +620,13 @@ ok(
 const landedKinds = new Set();
 for (const m of msgs) {
 	const s = JSON.stringify(m);
-	for (const k of ["swap", "tmux server", "Bridge 非正常", "infra bot", "僵尸"]) {
+	for (const k of [
+		"swap",
+		"tmux server",
+		"Bridge 非正常",
+		"infra bot",
+		"僵尸",
+	]) {
 		if (s.includes(MARK) && s.includes(k)) landedKinds.add(k);
 	}
 }
@@ -509,13 +638,24 @@ if (results.fail.length) {
 	console.log(`\nFAIL (${results.fail.length}):`);
 	for (const f of results.fail) console.log(`  ✗ ${f}`);
 }
-console.log(`\nDISCORD (real, isolated channel) — ${mine.length} msgs carrying ${MARK}:`);
+console.log(
+	`\nDISCORD (real, isolated channel) — ${mine.length} msgs carrying ${MARK}:`,
+);
 for (const m of mine.slice(0, 12)) {
-	const title = (m.content || m.embeds?.[0]?.title || m.embeds?.[0]?.description || "").replace(/\s+/g, " ").slice(0, 100);
+	const title = (
+		m.content ||
+		m.embeds?.[0]?.title ||
+		m.embeds?.[0]?.description ||
+		""
+	)
+		.replace(/\s+/g, " ")
+		.slice(0, 100);
 	console.log(`  • ${m.id}  "${title}"  @${m.timestamp}`);
 }
 console.log(`\nkinds visible in channel: [${[...landedKinds]}]`);
-console.log(`channel: https://discord.com/channels/1512577412069658634/${CHANNEL}`);
+console.log(
+	`channel: https://discord.com/channels/1512577412069658634/${CHANNEL}`,
+);
 console.log(
 	results.fail.length === 0 ? "\nE2E VERDICT: PASS" : "\nE2E VERDICT: FAIL",
 );
