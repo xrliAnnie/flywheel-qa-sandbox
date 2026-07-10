@@ -29,11 +29,12 @@ import {
 	leadPaneLiveHash,
 } from "../LeadWatchdog.js";
 import type { AlertThreadRow, StateStore } from "../StateStore.js";
-import type { AutoRepairBot } from "./AutoRepairBot.js";
+import { type AutoRepairBot, HUMAN_ONLY_REASON } from "./AutoRepairBot.js";
 import {
 	formatAccountCapOwnerAssignment,
 	resolveAccountCapOwnerId,
 } from "./infra-notify.js";
+import { escalatesAtEnqueue, KIND_CONTRACTS } from "./kind-contract.js";
 import { fingerprintOutput } from "./stuck-candidate.js";
 import {
 	decideTicketEscalation,
@@ -391,6 +392,20 @@ export class AlertChannelHub {
 		);
 
 		if (bot) {
+			// FLY-1082 (Task 1.5): (b)-type kinds (kind-contract none_escalate)
+			// NEVER enter the ARC loop — the founder-facing line is the BY-DESIGN
+			// copy, not a "repair failed" framing. Generalizes the legacy
+			// runner_lead_pending_unhandled special case (its line stays
+			// byte-identical: same 🙋 framing, same HUMAN_ONLY_REASON string).
+			if (escalatesAtEnqueue(payload.eventType)) {
+				await this.postByDesignEscalation(payload, threadId);
+				this.deps.store.setAlertRepairStatus(ck, "needs_human");
+				if (payload.ticket) {
+					this.deps.store.setTicketStatus(ck, "ESCALATED");
+					await this.updateRootTicketStatus(channelId, messageId, "ESCALATED");
+				}
+				return;
+			}
 			const repair = await bot.attempt(payload, ck);
 			if (repair.outcome === "needs_human") {
 				// FLY-929 A5: a CLAUDE account-cap needs_human (usage_limit with
@@ -484,6 +499,35 @@ export class AlertChannelHub {
 				`root ticket-status edit failed (${messageId}): ${(err as Error).message}`,
 			);
 		}
+	}
+
+	/**
+	 * FLY-1082 (Task 1.5): the by-design escalation line for a (b)-type kind
+	 * (kind-contract none_escalate). The copy states the ARC posture honestly —
+	 * "设计上不自动修" — never the generic "试修失败" framing. Legacy
+	 * runner_lead_pending_unhandled keeps its exact pre-FLY-1082 line: same 🙋
+	 * framing + the SAME HUMAN_ONLY_REASON string (sourced, not duplicated).
+	 */
+	private async postByDesignEscalation(
+		payload: AlertPayload,
+		threadId: string,
+	): Promise<void> {
+		const fid = this.founderId();
+		const mention = fid ? `<@${fid}>` : "Annie";
+		const line =
+			payload.eventType === "zombie_session_backlog"
+				? `🙋 ${mention} 跨 Lead 僵尸 session 积压 — 设计上不自动收割（收割机制落地 = ${
+						KIND_CONTRACTS.zombie_session_backlog.remediationRef
+					}），样本清单见根消息。需要你拍一个决定：是否人工清理。`
+				: `🙋 ${mention} 这个 Cass 修不了，需要你：${
+						HUMAN_ONLY_REASON[payload.eventType] ??
+						"设计上不做自动修复（by design）— 需要人看。"
+					}`;
+		await this.safePostToThread(
+			threadId,
+			line,
+			fid ? { mentionUserId: fid } : undefined,
+		);
 	}
 
 	/**

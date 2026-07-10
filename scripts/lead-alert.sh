@@ -102,7 +102,11 @@ case "$KIND" in
   # repo 源漂移(修复成功/失败/源坏拒修均响)。Same TS-union parity convention.
   # FLY-929: notify_digest_failed — the daily token report failed in place
   # (token-usage-daily.sh fail-loud) or left no receipt (Bridge expect tick).
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed) ;;
+  # FLY-1082: the 5 fleet-failure kinds. bridge_abnormal_exit is LOAD-BEARING
+  # on this leg (the wrapper preflight dirty-marker page fires while the Bridge
+  # is down); the other four are added for face parity with the TS union
+  # (kind-contract.test.ts is the drift guard on both faces).
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|swap_pressure_high|tmux_server_lost|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"

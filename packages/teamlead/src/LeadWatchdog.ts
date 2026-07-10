@@ -1079,6 +1079,19 @@ function titleFor(kind: AlertEventType): string {
 		// exhaustiveness.
 		case "notify_digest_failed":
 			return "Daily token report not delivered";
+		// FLY-1082: fleet kinds — never emitted by LeadWatchdog (the fleet
+		// sensors / server-loss coordinator / boot self-check build their own
+		// titles); cases exist for switch exhaustiveness.
+		case "swap_pressure_high":
+			return "Swap pressure high (OOM early warning)";
+		case "tmux_server_lost":
+			return "tmux server lost (fleet-level)";
+		case "bridge_abnormal_exit":
+			return "Bridge died without a clean shutdown";
+		case "infra_bot_down":
+			return "Infra bot down";
+		case "zombie_session_backlog":
+			return "Cross-Lead zombie session backlog";
 	}
 }
 
@@ -1164,5 +1177,17 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// token-usage-daily.sh build their own bodies via lead-alert.sh).
 		case "notify_digest_failed":
 			return "The daily token report was not delivered (no receipt / pipeline step failed). Check launchd com.flywheel.token-usage-daily, Bridge /api/reports delivery, and /tmp/flywheel-token-usage-daily.err.";
+		// FLY-1082: fleet kinds — never emitted by LeadWatchdog (their sensors
+		// build their own bodies); cases exist for switch exhaustiveness.
+		case "swap_pressure_high":
+			return "Machine swap usage crossed the high watermark — OOM early warning. The auto-repair bot places a reversible dispatch pressure-hold and notifies Leads to shed load; the ticket resolves when swap falls below the low watermark.";
+		case "tmux_server_lost":
+			return "The tmux server hosting the runners is gone while sessions were still running. The server-loss coordinator migrates affected runners to their terminal state and notifies each Lead with its casualty list + resume pointers.";
+		case "bridge_abnormal_exit":
+			return "The Bridge process exited without a clean shutdown (fatal exit / kill). launchd respawns it; the revived Bridge opens this ticket, runs boot reconcile, and resolves quietly when the self-check passes.";
+		case "infra_bot_down":
+			return "An infra bot (claude/codex windowed Lead) is down. The OTHER side's bot owns this ticket (nobody rescues their own side); the auto-repair action is launchctl kickstart -k of the dead job.";
+		case "zombie_session_backlog":
+			return "Cross-Lead zombie sessions (CommDB↔StateStore drift) reached the backlog threshold. No auto-reaping by design (FLY-1066 owns the reaper) — the ticket escalates directly with the sample list.";
 	}
 }

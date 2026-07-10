@@ -231,6 +231,7 @@ import {
 	IssueDisplayRefresher,
 	type IssueDisplayRefreshHolder,
 } from "./issue-display-refresher.js";
+import { validateKindContracts } from "./kind-contract.js";
 import {
 	createBlockedMarkerReader,
 	createClaimsClaimer,
@@ -2955,6 +2956,12 @@ export async function startBridge(
 			"No projects configured — check FLYWHEEL_PROJECTS or project config",
 		);
 	}
+
+	// FLY-1082 (Task 1.1): fail-loud kind-contract validation — every alert
+	// kind must have an owner + an explicit ARC posture, or the Bridge REFUSES
+	// to start (before any listen/timer). Deliberately no kill-switch: this is
+	// a code-integrity check, not a behavior.
+	validateKindContracts();
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
 

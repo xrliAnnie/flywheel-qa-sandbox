@@ -17,6 +17,7 @@ import {
 	createInfraAlertSink,
 	ISSUE_PROGRESS_KINDS,
 } from "./infra-event-router.js";
+import { escalatesAtEnqueue } from "./kind-contract.js";
 import {
 	deriveTicketProvider,
 	ownerRegistryFromEnv,
@@ -162,23 +163,30 @@ export function buildInfraAlertRouting(
 			const session = payload.sessionKey
 				? deps.store.getSession(payload.sessionKey)
 				: undefined;
-			const provider = session?.adapter_type
-				? deriveTicketProvider({ adapterType: session.adapter_type })
-				: deriveTicketProvider({
-						leadBackend:
-							deps.projects
-								.find((p) => p.projectName === payload.projectName)
-								?.leads.find((l) => l.agentId === payload.leadId)?.backend ??
-							null,
-					});
+			// FLY-1082 (Task 2.5): a bot-down event has NO runner session to derive
+			// a provider from — the dead side is an EXPLICIT event field
+			// (metadata.infraBotDown.provider) and it wins over the derivations.
+			const provider = payload.metadata?.infraBotDown
+				? payload.metadata.infraBotDown.provider
+				: session?.adapter_type
+					? deriveTicketProvider({ adapterType: session.adapter_type })
+					: deriveTicketProvider({
+							leadBackend:
+								deps.projects
+									.find((p) => p.projectName === payload.projectName)
+									?.leads.find((l) => l.agentId === payload.leadId)?.backend ??
+								null,
+						});
 			const owner = resolveTicketOwner(payload.eventType, provider, reg);
 			const face = ownerTicketFace(owner);
-			// FLY-637-ext ladder output arrives with its owner-first response spent
-			// — the ticket lands directly ESCALATED (Task 2.1 contract).
-			const status =
-				payload.eventType === "runner_lead_pending_unhandled"
-					? "ESCALATED"
-					: "NEW";
+			// FLY-1082 (Task 1.5): (b)-type kinds land directly ESCALATED at
+			// enqueue, contract-driven — the generalization of the old hardcoded
+			// runner_lead_pending_unhandled special case (which, being an
+			// issue-progress kind, never even reached this enrichment; the contract
+			// keeps its semantics on the Hub path instead).
+			const status = escalatesAtEnqueue(payload.eventType)
+				? "ESCALATED"
+				: "NEW";
 			// first-seen: a re-fire of the SAME episode keeps the original stamp.
 			const active = deps.store.getActiveAlertThread(
 				correlationKeyFor(payload),

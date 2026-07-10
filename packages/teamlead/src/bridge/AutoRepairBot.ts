@@ -86,8 +86,12 @@ const AUTO_ATTEMPT_EVENT_TYPES: ReadonlySet<AlertPayload["eventType"]> =
 		"pane_hash_stuck",
 	]);
 
-/** Account/billing/login/permission kinds the bot must NEVER touch — human-only. */
-const HUMAN_ONLY_REASON: Partial<Record<AlertPayload["eventType"], string>> = {
+/** Account/billing/login/permission kinds the bot must NEVER touch — human-only.
+ * Exported (FLY-1082 Task 1.5) so the Hub's contract-driven by-design escalate
+ * path sources the SAME reason strings instead of duplicating them. */
+export const HUMAN_ONLY_REASON: Partial<
+	Record<AlertPayload["eventType"], string>
+> = {
 	rate_limit:
 		"API rate limit reached — waits out on its own; not auto-fixable (a human can confirm it is not a tight loop).",
 	usage_limit:

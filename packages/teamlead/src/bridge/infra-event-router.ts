@@ -54,6 +54,14 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 		"auto_qa_stuck",
 		"codex_gate_blocked",
 		"bridge_wrapper_fail",
+		// FLY-1082: fleet-failure kinds — the responder is an infra bot (owner
+		// per bridge/kind-contract.ts), so they queue as tickets like the rest
+		// of the process-health family.
+		"swap_pressure_high",
+		"tmux_server_lost",
+		"bridge_abnormal_exit",
+		"infra_bot_down",
+		"zombie_session_backlog",
 	]);
 
 /**
