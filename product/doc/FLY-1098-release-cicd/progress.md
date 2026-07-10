@@ -2,15 +2,16 @@
 issue: FLY-1098
 phase: design
 phaseCursor: 2/3
-updated: 2026-07-10T04:33:36.133Z
-nextStep: "v3 (efb203c0) accepted by HL; HL render-checking two-layer release
-  lane herself, then posts to [FLY-1098] thread. v1/v2 deprecated. Parked: await
-  HL render feedback OR Annie round-2 annotations (via HL teammate-message +
-  Monitor blzpszwtd)."
+updated: 2026-07-10T04:55:43.935Z
+nextStep: "PREP DONE for round 3: read+digested FLY-1063 ship-layer (Option B,
+  product/doc not engineering/doc). Round 3 = unified canvas: ship 段 (1063
+  5-step + gate 重量可变) + release 段 (v3 + Annie round-2) + REQ-0; umbrella
+  confirmed. HOLDING per HL: wait for Annie v3 annotations, do combined. Parked
+  (Monitor blzpszwtd + HL teammate-msg)."
 chunks: []
 pointers: {}
 ---
 
 # FLY-1098 progress
 **phase**: design (2/3)
-**next**: v3 (efb203c0) accepted by HL; HL render-checking two-layer release lane herself, then posts to [FLY-1098] thread. v1/v2 deprecated. Parked: await HL render feedback OR Annie round-2 annotations (via HL teammate-message + Monitor blzpszwtd).
+**next**: PREP DONE for round 3: read+digested FLY-1063 ship-layer (Option B, product/doc not engineering/doc). Round 3 = unified canvas: ship 段 (1063 5-step + gate 重量可变) + release 段 (v3 + Annie round-2) + REQ-0; umbrella confirmed. HOLDING per HL: wait for Annie v3 annotations, do combined. Parked (Monitor blzpszwtd + HL teammate-msg).
