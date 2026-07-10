@@ -26,7 +26,7 @@ Runner 提示词（`packages/edge-worker/src/Blueprint.ts:1459-1490` 的 approve
 
 - 先 `gate approve_to_ship --no-block`（拿 questionId）→ `complete --route needs_review` → 挂起等唤醒。
 - 被唤醒后**必须先** `verify-approval --pr-head $(git rev-parse HEAD)`，只有打印 `approved: true` 才能 ship；「唤醒消息本身不携带任何权威」（`Blueprint.ts:1474-1476`）。
-- 然后 **`gh pr comment <N> --body ":cool:"`** 触发部署（`:1479`）。
+- 然后 **`gh pr comment <N> --body ":cool:"`**（Blueprint 提示词把它叫「trigger deploy」，`:1479`）—— 但**机械上该 workflow 只跑 CI + squash-merge，不含任何部署步骤**（见 A.7）；部署是分开的 self-ship 腿。
 - 「:cool: deploy workflow 是唯一 merge 路径——Runner 绝不自己 `gh pr merge`」（`:1481`，FLY-248）。
 
 即：**GitHub 上的 :cool: 是 Runner 在 Discord 审批通过之后补发的**。这条 comment 的 GitHub actor 是共享机器身份 **xrliAnnie**（见 A.6）。
@@ -39,8 +39,8 @@ Runner 提示词（`packages/edge-worker/src/Blueprint.ts:1459-1490` 的 approve
   3. `review_question_id` 必须已绑定，**无「按时间取最新」的兜底**（FLY-1041 关掉的同秒歧义洞，`:250-262`）；
   4. 绑定的 CommDB 行必须是 `type=question` + `checkpoint=approve_to_ship` + `from_agent==execId`（`:266-283`）；
   5. 必须存在一条 response，解析为结构化 JSON 且 `approved===true`（纯文字「approved!」无效，`:284-318`）；
-  6. **founder 归属**：写入者必须是 founder 的 Discord id / `bridge` / `bridge-founder-consent`（`:320-351`；`packages/flywheel-comm/src/founder-attribution.ts:28-31` 的 `TRUSTED_BRIDGE_APPROVAL_WRITERS`）。Lead 自批会被 `response_not_founder_attributed` 拒。
-  7. session `status==approved_to_ship` 且持久化的 `pr_head_sha === 当前 git HEAD`（**head-sha 绑定**：旧 head 的批准永不生效，`:353-377`）；
+  6. **founder 归属**：写入者必须是 founder 的 Discord id / `bridge` / `bridge-founder-consent`（`:320-351`；`packages/flywheel-comm/src/founder-attribution.ts:28-31` 的 `TRUSTED_BRIDGE_APPROVAL_WRITERS`）。Lead 自批会被 `response_not_founder_attributed` 拒 —— **但这条是有条件的**：归属闸开启（kill-switch `FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0` 可关）**且** founder id 能从 `~/.flywheel/.env` 解析出来时才生效；解析不到 founder id 则**跳过**这步（`verify-approval.ts:320-351` 自述）。
+  7. session `status==approved_to_ship` 且持久化的 `pr_head_sha === 调用方传入的 --pr-head`（**head-sha 绑定**：`verify-approval` **不自己** `git rev-parse HEAD`，而是比对调用方传入的 `--pr-head` 参数；Runner 恰好传的是 `git rev-parse HEAD`，但验证器本身不算它。旧 head 的批准永不生效，`:353-377`）；
   8. FLY-827 Codex code-review 硬闸：本 head 还需一条 approved/skipped 的 `codex_review_record`（`:379-395`）。
 
 - **FLY-1041 单一可绑 gate**：任一时刻只有一个 `approve_to_ship` gate 可绑（feature flag `ship_gate_retire`，`packages/config/src/feature-flags/registry.ts:1235-1260`；retire 逻辑 `packages/flywheel-comm/src/db.ts:333-360`；sweeper 兜底 `packages/teamlead/src/bridge/gate-poller.ts:349-379`）。
@@ -62,7 +62,7 @@ Runner 提示词（`packages/edge-worker/src/Blueprint.ts:1459-1490` 的 approve
 
 ### A.6 身份现状 —— 机器 actor 与 founder 个人账号都是 xrliAnnie(ADMIN)
 
-- 机器发 :cool: 用的 GitHub 身份 = **xrliAnnie**（repo clone 身份，`docs/operations/fleet-provisioning-runbook.md:223`）。
+- 机器发 :cool: 用的 GitHub 身份 = **xrliAnnie**（**硬证据**见 §C.1：100% 真实 ship run 的 actor 都是 `xrliAnnie` / `type=User`；repo 也以 xrliAnnie clone，`docs/operations/fleet-provisioning-runbook.md:223` —— 但那只是 clone 命令、单独不足以证明 ship actor，故以 run-actor 实测为准）。
 - Annie 本人的 GitHub 账号**也是 xrliAnnie**。
 - 且 `xrliAnnie` 是 repo **ADMIN**，能绕 branch protection（FLY-350 M-2，`CLAUDE.md:133`：「actor=xrliAnnie=ADMIN 能绕 branch protection，比预期更宽」；Annie 接受 admin/contract-only 信任级，「非-admin actor 结构保护 = follow-up」）。
 - 校验工具 `packages/teamlead/scripts/verify-merge-actor-denied.sh`：解析 gh 实际认证的 actor，若 mergeable/未保护/**actor 是 admin** 则 exit 1（fail-closed）。
@@ -85,7 +85,7 @@ Runner 提示词（`packages/edge-worker/src/Blueprint.ts:1459-1490` 的 approve
 
 - `.github/workflows/` 只有 `ci.yml` + `ship-on-comment.yml`，**零 `workflow_call` / composite action / org `.github` 模板**。
 - `scripts/setup-new-project.sh` **不**装 ship-on-comment.yml 进新 repo——今天它只存在于有人手工拷贝的地方（flywheel、GeoForge3D 的变体 "Deploy on :cool Comment"，见 `~/.claude/commands/ship-pr.md:165-174`）。
-- 唯一现成的跨 repo 分发机制 = **flywheel-skills**（canonical `xrliAnnie/flywheel-skills`，launchd skills-sync job，无需重启 Bridge，`CLAUDE.md:136`）。是「把文件铺到所有 repo」的现成先例。
+- 唯一现成的跨 repo 分发机制 = **flywheel-skills**（canonical `xrliAnnie/flywheel-skills`，launchd skills-sync job，无需重启 Bridge —— 见 CLAUDE.md 里程碑表 FLY-510 条目，具体行号会随表增补漂移）。是「把文件铺到所有 repo」的现成先例。
 - 注意别混：`product/doc/FLY-1020-workflow-templates/` 讲的是 Flywheel 内部 DAG/agent.md pipeline 模板，**不是** GitHub workflow。
 
 ---

@@ -117,7 +117,7 @@ gh api repos/xrliAnnie/flywheel/branches/main/protection
 
 > **REQ-1（必须）**：🆒 flow 在 merge 之前，**必须独立核验「这个 PR head 存在一条 founder 批准的 gate 记录」**，复用现有账本判定（founder-attributed 的 `approved:true` + **绑定 head sha** + Codex review 硬闸）。**不得**仅以「commenter 有 collaborator 写权限」作为放行依据。
 >
-> **REQ-1a（必须，Codex R1 HIGH-1）**：现有 `verify-approval` **不能**只靠 `--pr-head <sha>` 调用。它需要 **`--exec-id`** 和一个 CommDB 路径（`--db` / `--project` / `FLYWHEEL_COMM_DB`），内部按 `sessions WHERE execution_id = ?` 查（`verify-approval.ts:222-226`；CLI 参数 `index.ts:823-851`）。而 GitHub `issue_comment` 事件只给 `(owner/repo, PR number, commenter, head sha)`，**没有** Flywheel `execution_id` 也没有 project 名。因此必须新增一个 **`cool-ship-gate` resolver**：输入 `(owner/repo, prNumber, headSha)` → 映射 repo→`projectName` → 在 StateStore 里选出**恰好一个**匹配 session：条件 = `pr_head_sha==headSha` **且 `pr_number==prNumber`**（两者都要，Codex R2 LOW —— 只靠 head sha 在极端情况可能撞车/复用）**且** `awaiting_review`/`approved_to_ship` → 用显式 `execId` + `commDbPathForProject(projectName)` + `stateDbPath` 调账本判定。**0 个或 >1 个匹配一律 fail-closed**（不 merge + PR 留言）。
+> **REQ-1a（必须，Codex R1 HIGH-1）**：现有 `verify-approval` **不能**只靠 `--pr-head <sha>` 调用。它需要 **`--exec-id`** 和一个 CommDB 路径（`--db` / `--project` / `FLYWHEEL_COMM_DB`），内部按 `sessions WHERE execution_id = ?` 查（`verify-approval.ts:222-226`；CLI 参数 `index.ts:823-851`）。而 GitHub `issue_comment` 事件只给 `(owner/repo, PR number, commenter)` —— **PR head sha 还要再调 GitHub PR API（`pulls.get`）取**（现有 workflow 就是这么拿的，`ship-on-comment.yml:56,:86`；`issue_comment` payload 不直接带 head sha），且**没有** Flywheel `execution_id`、也没有 project 名。因此必须新增一个 **`cool-ship-gate` resolver**：输入 `(owner/repo, prNumber, headSha)` → 映射 repo→`projectName` → 在 StateStore 里选出**恰好一个**匹配 session：条件 = `pr_head_sha==headSha` **且 `pr_number==prNumber`**（两者都要，Codex R2 LOW —— 只靠 head sha 在极端情况可能撞车/复用）**且** `awaiting_review`/`approved_to_ship` → 用显式 `execId` + `commDbPathForProject(projectName)` + `stateDbPath` 调账本判定。**0 个或 >1 个匹配一律 fail-closed**（不 merge + PR 留言）。
 >
 > **REQ-1b（必须，Codex R1 HIGH-2）**：这个 gate job 跑在 Annie 的 Mac（账本所在机）上，**绝不能执行 PR head checkout 里的 verifier 代码**（不 `pnpm install`、不跑 PR 的 `node packages/...`、不跑 PR 的任何 package script）。它只跑**可信代码**：已部署的 main checkout 里预装的 `flywheel-comm`/gate helper，或一份 pin 到 main 的干净 checkout。**PR head 的 build/test 留在 GitHub 托管 runner（`ubuntu-latest`）上**，与本地账本 job 分离。merge job `needs: [ledger_gate, ci_gate]`。
 >
@@ -148,7 +148,11 @@ gh api repos/xrliAnnie/flywheel/branches/main/protection
 >
 > **REQ-2b（建议，Codex R1 MED-3）**：Bridge 侧 finalization 用的不是裸 `verifyApproval`，而是 `evaluateShipEligibility`（= 合并批准侧 `verifyApproval` + QA 侧 `evaluateQaShipGate`，`ship-eligibility.ts`），再经 `computeShipDecision` / `merge-ship-gate.ts` 决定能否落终态。GitHub 侧的 gate **应对齐同一个 `evaluateShipEligibility` 谓词**，避免「GitHub 放行了、Bridge 却判不该 ship」的分叉。若刻意只覆盖「Discord 批准 + Codex」而把 QA 留给独立 job，需**显式写明**并证明「approval 不可能在 QA-required 状态满足前被写入」。
 
-> **REQ-3（应做）**：把 `xrliAnnie/flywheel`（及 GeoForge3D）升级到可用 branch protection 的方案（GitHub Pro），或将 repo 转为 org。否则 main 永远敞着，任何机械闸都只是「正门上锁、后门大开」。这条独立于 🆒 flow，但**不做它，REQ-1 的价值会被绕过**。成本低，建议一并交 eng 评估。
+> **REQ-3（应做，Codex code R1 HIGH — 我原来写得不够）**：给 `main` 上真正管得住 admin 的保护。**两点都要，缺一不可**：
+> 1. **拿到可用的 branch protection**：个人账号私有仓的 branch protection 需 **GitHub Pro**（Free 不行）；**注意 Free org 一样没有** —— org 私有仓的 branch protection 需 **Team / Enterprise**。所以「转 Free org」并不能解决，必须是「个人 Pro」或「Team+ org」。
+> 2. **显式禁止 admin 绕过**：即便配了保护，**管理员默认可绕过**。而 `xrliAnnie` 正是 admin —— 不勾 **「Do not allow bypassing the above settings」/ `enforce_admins`**，保护对她（以及任何以她 token 行事的 agent）等于不存在。这条正是本题威胁模型的核心，必须打开。
+>
+> 否则 main 永远敞着，任何机械闸都只是「正门上锁、后门大开」。这条独立于 🆒 flow，但**不做它，REQ-1 的价值会被 admin-token 直接 push 绕过**。建议一并交 eng 评估。
 
 ### 4.6 上线次序（迁移，必须显式 —— Codex R1 MED-4）
 
@@ -252,7 +256,7 @@ Annie 决定**现在不做**，先用她自己的 GitHub 账号。但必须列�
 2. **[P0] 🆒 flow 去核账本 + 阻断合并（REQ-1/REQ-2）** —— self-hosted `ledger_gate` job 调 #1 的 helper；merge job `needs: [ledger_gate, ci_gate]`（PR-head 的 build/test 留 `ubuntu-latest`）；失败在 PR 留言。**按 §4.6 次序上线**（先 observe/report-only 一轮再阻断）。
 3. **[P0] 对齐 `evaluateShipEligibility` 谓词（REQ-2b）** —— gate 用与 Bridge finalization 同一谓词，或显式写明只覆盖 Discord+Codex 并证明 QA 不可被提前满足。
 4. **[P0] 销账做成 🆒 flow 一等步骤（REQ-4/REQ-5）** —— Linear / Bridge landing / GitHub 三本账推终态，幂等 + 失败可见。
-5. **[P1] branch protection + 账本完整性前置（REQ-3/REQ-2a）** —— 升 GitHub Pro 或转 org 给 main 上锁；核账本 DB 文件权限、runner 用户、FLY-175 `DECISION_MODE` 姿态。
+5. **[P1] branch protection + 账本完整性前置（REQ-3/REQ-2a）** —— 给 main 上锁：**个人 Pro**（或 Team+ org，Free org 无效）**且**开 `enforce_admins`/「Do not allow bypassing」（否则 admin xrliAnnie 直接绕过）；再核账本 DB 文件权限、runner 用户、FLY-175 `DECISION_MODE` 姿态。
 6. **[P1] 抽 reusable workflow + 瘦 caller** —— 恒定形状集中一份，gate 作为可注入 job；轻 repo 声明空 gate。
 7. **[P1] GeoForge3D 接入** —— 验证 gate 重量可变 + per-repo deploy 腿。
 8. **[follow-up] 身份分离** —— 产品化对外前的前置（§7）。
