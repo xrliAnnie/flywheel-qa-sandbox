@@ -1,13 +1,13 @@
 ---
 issue: FLY-1082
 phase: implement
-phaseCursor: 11/12
-updated: 2026-07-10T01:39:55.208Z
-nextStep: push + PR + codex code review
+phaseCursor: 12/12
+updated: 2026-07-10T05:00:20.120Z
+nextStep: Codex R6 re-review (R5 outbox fixes pushed 6fa27294)
 chunks: []
 pointers: {}
 ---
 
 # FLY-1082 progress
-**phase**: implement (11/12)
-**next**: push + PR + codex code review
+**phase**: implement (12/12)
+**next**: Codex R6 re-review (R5 outbox fixes pushed 6fa27294)
