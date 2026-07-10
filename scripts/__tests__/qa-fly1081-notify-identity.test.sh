@@ -20,13 +20,15 @@ bad(){ FAIL=$((FAIL+1)); echo "  FAIL - $1"; }
 
 TMP=$(mktemp -d /tmp/qa1081.XXXXXX); trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin"
-# Fake curl: records argv + `-K -` stdin; emits 200.
+# Fake curl: records argv + `-K -` stdin + the `-d` JSON body (for structural
+# jq assertions); emits 200. lead-alert.sh posts via `-d "$BODY_JSON"` (:470).
 cat > "$TMP/bin/curl" <<'FAKE'
 #!/bin/bash
 printf '%s\n' "$*" >> "$CURL_ARGS_FILE"
 prev=""; out=""
 for a in "$@"; do
   [ "$prev" = "-o" ] && out="$a"
+  [ "$prev" = "-d" ] && printf '%s' "$a" >> "${CURL_ARGS_FILE}.body"
   [ "$prev" = "-K" ] && [ "$a" = "-" ] && cat >> "${CURL_ARGS_FILE}.stdin"
   prev="$a"
 done
@@ -42,6 +44,12 @@ chmod +x "$TMP/bin/curl" "$TMP/bin/osascript"
 INFRA="INFRA-DISPATCH-TOK-$$"
 SIMBA="SIMBA-LEGACY-TOK-$$"       # must NEVER appear in any POST
 FOUNDER="123456789012345678"
+# QA-owned seam target var: deliberately NOT the production
+# FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN — so a regression that bypasses the seam and
+# reads the production var directly would make the token unresolvable here and
+# fail the test (Codex R1 MEDIUM). '' below force-clears it against inheritance.
+QA_SEAM_VAR="QA1081_SENDER_TOKEN"
+UNRESOLVABLE_VAR="QA1081_UNRESOLVABLE_SEAM_ENV"
 
 run() { # <suffix> <KEY=VAL env...> <-- flags...>  (split on '=' like the shipped test)
   local suffix="$1"; shift
@@ -66,32 +74,37 @@ echo "[]" > "$TMP/projects.json"   # deploy/updater are system-level, no registr
 
 echo "== Case A: seam resolvable → infra identity + founder ping =="
 RES=$(mkdir -p "$TMP/home-A"; run A \
-  FLYWHEEL_ALERT_SENDER_TOKEN_ENV="FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN" \
-  FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN="$INFRA" \
+  FLYWHEEL_ALERT_SENDER_TOKEN_ENV="$QA_SEAM_VAR" \
+  "$QA_SEAM_VAR=$INFRA" \
   --kind deploy_failed --severity severe --signature "port-stuck-A" \
   --mention-user "$FOUNDER")
 [ "$RES" = "sent" ] && ok "deploy_failed accepted + sent (result=sent)" || bad "expected sent, got '$RES' (err: $(cat "$TMP/err-A"))"
 grep -q "channels/555000111222333444/messages" "$TMP/curl-A" && ok "POST → unified alert channel" || bad "not posted to unified channel"
 grep -qF "Authorization: Bot ${INFRA}" "$TMP/curl-A.stdin" && ok "INFRA token used (stdin config)" || bad "infra token not in stdin config"
-grep -qF "$SIMBA" "$TMP/curl-A" "$TMP/curl-A.stdin" && bad "SIMBA token leaked into POST!" || ok "SIMBA token NEVER appears (argv+stdin)"
-grep -qF "<@${FOUNDER}>" "$TMP/curl-A" && ok "founder <@id> prefixed in content" || bad "founder ping missing from content"
-grep -q "\"users\"" "$TMP/curl-A" && grep -qF "$FOUNDER" "$TMP/curl-A" && ok "allowed_mentions.users carries founder id" || bad "allowed_mentions.users missing founder"
+grep -qF "$SIMBA" "$TMP/curl-A" "$TMP/curl-A.stdin" "$TMP/curl-A.body" && bad "SIMBA token leaked into POST!" || ok "SIMBA token NEVER appears (argv+stdin+body)"
+# Structural jq on the real POST body — a bare grep would false-pass when the
+# id is only in content and allowed_mentions.users is empty (Codex R1 MEDIUM).
+jq -e --arg f "$FOUNDER" '.content | startswith("<@" + $f + "> ")' "$TMP/curl-A.body" >/dev/null 2>&1 \
+  && ok "founder <@id> prefixes content (jq)" || bad "founder <@id> not a content prefix"
+jq -e --arg f "$FOUNDER" '(.allowed_mentions.users // []) | index($f) != null' "$TMP/curl-A.body" >/dev/null 2>&1 \
+  && ok "allowed_mentions.users carries founder id (jq)" || bad "allowed_mentions.users does NOT contain founder id"
 
 echo "== Case B: seam set-but-UNRESOLVABLE → refuse, ZERO POST, no Simba fallback =="
-# Point the seam at a var name that is GENUINELY unset (avoid inheriting the
-# runner's real FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN via env-inheritance).
+# Point the seam at a var and force-clear it ('' below) so it is unresolvable
+# regardless of any inherited value — a genuine set-but-empty seam (Codex R1 LOW).
 RES=$(mkdir -p "$TMP/home-B"; run B \
-  FLYWHEEL_ALERT_SENDER_TOKEN_ENV="FLY1081_UNRESOLVABLE_SEAM_ENV" \
+  FLYWHEEL_ALERT_SENDER_TOKEN_ENV="$UNRESOLVABLE_VAR" \
+  "$UNRESOLVABLE_VAR=" \
   --kind deploy_failed --severity severe --signature "port-stuck-B")
-[ "$RES" != "sent" ] && ok "NOT sent (result=$RES)" || bad "expected non-sent, got sent — fell back!"
+[ "$RES" = "config_error" ] && ok "result is config_error (dead-lettered, not sent)" || bad "expected config_error, got '$RES' — fell back or wrong result!"
 if [ -s "$TMP/curl-B" ]; then bad "a POST fired despite unresolvable seam (Simba fallback!)"; else ok "ZERO curl POST (no fallback)"; fi
 grep -q "refusing per-lead fallback" "$TMP/err-B" && ok "stderr states 'refusing per-lead fallback'" || bad "no refusal trace on stderr"
 grep -qF "$SIMBA" "$TMP/curl-B" 2>/dev/null && bad "SIMBA token leaked!" || ok "SIMBA token absent"
 
 echo "== Case C: deploy_degraded (warning) via --lead deploy accepted =="
 RES=$(mkdir -p "$TMP/home-C"; run C \
-  FLYWHEEL_ALERT_SENDER_TOKEN_ENV="FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN" \
-  FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN="$INFRA" \
+  FLYWHEEL_ALERT_SENDER_TOKEN_ENV="$QA_SEAM_VAR" \
+  "$QA_SEAM_VAR=$INFRA" \
   --kind deploy_degraded --severity warning --signature "degraded-C")
 [ "$RES" = "sent" ] && ok "deploy_degraded accepted by kind allowlist + sent" || bad "deploy_degraded rejected: '$RES' (err: $(cat "$TMP/err-C"))"
 
