@@ -145,13 +145,17 @@ alert_severe() {
 notify_routine() {
     local message="$1"
     if [[ -n "${CLAUDE_INFRA_BOT_TOKEN:-}" && -n "${FLYWHEEL_NOTIFY_CHANNEL:-}" ]]; then
-        local payload
+        local payload rc=0
         payload=$(jq -n --arg content "$message" '{content: $content}')
-        if ! curl -sf -X POST "https://discord.com/api/v10/channels/${FLYWHEEL_NOTIFY_CHANNEL}/messages" \
-            -H "Authorization: Bot ${CLAUDE_INFRA_BOT_TOKEN}" \
+        # Token rides a curl stdin config (`-K -`), never argv — same
+        # lead-alert.sh / FLY-510 convention (Codex code R1 MEDIUM).
+        curl -sf -X POST "https://discord.com/api/v10/channels/${FLYWHEEL_NOTIFY_CHANNEL}/messages" \
             -H "Content-Type: application/json" \
             -d "$payload" \
-            --max-time 5 >/dev/null; then
+            --max-time 5 -K - >/dev/null <<CURLCFG || rc=$?
+header = "Authorization: Bot ${CLAUDE_INFRA_BOT_TOKEN}"
+CURLCFG
+        if (( rc != 0 )); then
             log "ERROR: routine notify POST failed (channel=${FLYWHEEL_NOTIFY_CHANNEL})" >&2
             fire_meta_alert "routine_notify_failed" "Flywheel routine notify failed" \
                 "notify_routine POST to FLYWHEEL_NOTIFY_CHANNEL failed; dropped notice: ${message}"

@@ -41,13 +41,16 @@ grep -q "fire_meta_alert()" "$FUNCS" || { echo "[TEST] ✗ failed to extract fir
 mkdir -p "${ROOT}/bin" "${ROOT}/flywheel/scripts"
 cat > "${ROOT}/bin/curl" <<'FAKE'
 #!/usr/bin/env bash
+# Records the url per call; a `-K -` stdin config (the FLY-1081 token path —
+# never argv) is appended inline so the assertion can bind url ↔ auth.
 url=""; auth=""
 prev=""
 for a in "$@"; do
 	case "$a" in
 		https://*) url="$a" ;;
 	esac
-	if [[ "$prev" == "-H" && "$a" == Authorization:* ]]; then auth="$a"; fi
+	if [[ "$prev" == "-H" && "$a" == Authorization:* ]]; then auth="argv:$a"; fi
+	if [[ "$prev" == "-K" && "$a" == "-" ]]; then auth="stdin:$(cat)"; fi
 	prev="$a"
 done
 printf '%s | %s\n' "$url" "$auth" >> "$CURL_LOG"
@@ -73,10 +76,15 @@ run_routine() {
 # ── Case 1: P-identity satisfied → infra token + notify channel ──────────────
 L1="${ROOT}/c1.log"; M1="${ROOT}/c1.meta"; : > "$L1"; : > "$M1"
 run_routine "$L1" "$M1" CLAUDE_INFRA_BOT_TOKEN="infra-token" FLYWHEEL_NOTIFY_CHANNEL="notify-chan"
-if grep -q "channels/notify-chan/messages | Authorization: Bot infra-token" "$L1"; then
-	pass "P-identity satisfied → posts to FLYWHEEL_NOTIFY_CHANNEL as the infra bot"
+if grep -q "channels/notify-chan/messages | stdin:header = \"Authorization: Bot infra-token\"" "$L1"; then
+	pass "P-identity satisfied → posts to FLYWHEEL_NOTIFY_CHANNEL as the infra bot (token via stdin config)"
 else
 	fail "P-identity satisfied: unexpected curl log: $(cat "$L1")"
+fi
+if grep -q "argv:" "$L1"; then
+	fail "infra token rode curl argv (must use -K - stdin config)"
+else
+	pass "infra token never in curl argv"
 fi
 if [[ ! -s "$M1" ]]; then
 	pass "P-identity satisfied → no meta-alert on the happy path"

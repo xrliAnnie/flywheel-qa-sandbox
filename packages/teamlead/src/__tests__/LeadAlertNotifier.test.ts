@@ -66,6 +66,26 @@ function buildPayload(overrides: Partial<AlertPayload> = {}): AlertPayload {
 	};
 }
 
+// FLY-1081 (Codex code R1 HIGH): a configured dev machine exports the
+// PRODUCTION FLYWHEEL_ALERT_SENDER_TOKEN_ENV. If a unified-path test inherits
+// it, the send chain collapses to the real production sender identity and a
+// failing assertion prints the REAL Authorization header into test logs.
+// Neutralize it for EVERY test in this file (outer hooks run first/last, so
+// suites that set it explicitly inside their own beforeEach/tests still work
+// and the original value is restored at the end of each test).
+let fileSavedSenderEnv: string | undefined;
+beforeEach(() => {
+	fileSavedSenderEnv = process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;
+	delete process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;
+});
+afterEach(() => {
+	if (fileSavedSenderEnv === undefined) {
+		delete process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;
+	} else {
+		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV = fileSavedSenderEnv;
+	}
+});
+
 describe("LeadAlertNotifier", () => {
 	let store: StateStore;
 	let queueDir: string;

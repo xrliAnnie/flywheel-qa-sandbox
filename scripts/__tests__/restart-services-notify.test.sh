@@ -57,10 +57,13 @@ exit 0
 FAKE
 cat > "${ROOT}/bin/curl" <<'FAKE'
 #!/usr/bin/env bash
+# Records "url | argv-auth" per call; captures a `-K -` stdin config to
+# ${CURL_LOG}.stdin (FLY-1081: the token must ride stdin, never argv).
 url=""; auth=""; prev=""
 for a in "$@"; do
 	case "$a" in https://*) url="$a" ;; esac
 	if [[ "$prev" == "-H" && "$a" == Authorization:* ]]; then auth="$a"; fi
+	if [[ "$prev" == "-K" && "$a" == "-" ]]; then cat >> "${CURL_LOG}.stdin"; fi
 	prev="$a"
 done
 printf '%s | %s\n' "$url" "$auth" >> "$CURL_LOG"
@@ -81,7 +84,7 @@ run_fn() {
 		bash -c "set -uo pipefail; source '$FUNCS'; \"\$@\"" _ "$@" >"$out" 2>"$err"
 }
 
-reset_logs() { : > "${ROOT}/la-calls"; : > "${ROOT}/curl-log"; : > "${ROOT}/meta-calls"; }
+reset_logs() { : > "${ROOT}/la-calls"; : > "${ROOT}/curl-log"; : > "${ROOT}/curl-log.stdin"; : > "${ROOT}/meta-calls"; }
 
 # ── 1. alert_warning routes to lead-alert.sh with the right shape ────────────
 reset_logs
@@ -141,8 +144,12 @@ grep -qi "ERROR.*NOT falling back" "${ROOT}/e5" \
 reset_logs
 run_fn "${ROOT}/o6" "${ROOT}/e6" CLAUDE_INFRA_BOT_TOKEN="infra-token" FLYWHEEL_NOTIFY_CHANNEL="notify-chan" CURL_RC=22 -- \
 	notify_routine "✅ 测试消息"; rc=$?
-grep -q "channels/notify-chan/messages | Authorization: Bot infra-token" "${ROOT}/curl-log" \
-	&& pass "routine main path targeted #flywheel-notify as infra bot" || fail "routine curl wrong: $(cat "${ROOT}/curl-log")"
+grep -q "channels/notify-chan/messages" "${ROOT}/curl-log" \
+	&& pass "routine main path targeted #flywheel-notify" || fail "routine curl wrong: $(cat "${ROOT}/curl-log")"
+grep -qF "Authorization: Bot infra-token" "${ROOT}/curl-log.stdin" \
+	&& pass "routine auth = infra token via curl stdin config" || fail "stdin config auth wrong: $(cat "${ROOT}/curl-log.stdin")"
+grep -qF "infra-token" "${ROOT}/curl-log" \
+	&& fail "infra token leaked into curl argv" || pass "infra token never in curl argv (Codex R1 MEDIUM)"
 grep -q "routine_notify_failed" "${ROOT}/meta-calls" \
 	&& pass "routine POST failure → meta-alert(routine_notify_failed)" || fail "meta-alert missing on curl failure"
 grep -qi "ERROR" "${ROOT}/e6" && pass "routine POST failure → stderr ERROR" || fail "no ERROR on stderr"
