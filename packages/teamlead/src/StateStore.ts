@@ -1415,6 +1415,20 @@ export class StateStore {
 			}
 		}
 
+		// FLY-1082 (Task 2.2): the fleet pressure-hold — a SINGLE durable row
+		// (id=1 enforced). While present, runner admission defers every new
+		// dispatch (`pressure_hold`); the swap sensor sets it on a high-watermark
+		// episode and clears it when the watermark falls below the low threshold.
+		// Durable so a Bridge restart mid-episode keeps the brake on.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS fleet_pressure_hold (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				set_by TEXT NOT NULL,
+				set_at TEXT NOT NULL DEFAULT (datetime('now')),
+				watermark TEXT
+			)
+		`);
+
 		// FLY-818 M3: durable per-eventId founder-page ledger. Records whether a
 		// GENUINE founder page (an @founder message in the stuck runner's [FLY-XX]
 		// issue thread — Annie's issue-thread design) actually succeeded for a
@@ -2710,6 +2724,23 @@ export class StateStore {
 			"SELECT * FROM sessions WHERE project_name = ?",
 		);
 		stmt.bind([projectName]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/** FLY-1082 (Task 2.3): ALL running sessions — the server-loss coordinator's
+	 * candidate set (heartbeat-independent: a server death is detected the tick
+	 * it happens, not after the orphan staleness window). */
+	getRunningSessions(): Session[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE status = 'running'",
+		);
 		const rows: Session[] = [];
 		while (stmt.step()) {
 			rows.push(
@@ -4575,6 +4606,55 @@ export class StateStore {
 			[correlationKey],
 		);
 		this.save();
+	}
+
+	// ── FLY-1082 (Task 2.2): fleet pressure-hold (single durable row) ──
+
+	/**
+	 * Place the fleet pressure-hold. IDEMPOTENT: an existing hold is left
+	 * untouched (its set_at / attribution wins — first setter owns the
+	 * episode). Returns true when THIS call placed the hold.
+	 */
+	setFleetPressureHold(input: { setBy: string; watermark?: string }): boolean {
+		this.db.run(
+			"INSERT OR IGNORE INTO fleet_pressure_hold (id, set_by, watermark) VALUES (1, ?, ?)",
+			[input.setBy, input.watermark ?? null],
+		);
+		const changed = this.db.getRowsModified();
+		if (changed > 0) this.save();
+		return changed > 0;
+	}
+
+	/** The active fleet pressure-hold, if any. */
+	getFleetPressureHold():
+		| { set_by: string; set_at: string; watermark: string | null }
+		| undefined {
+		const stmt = this.db.prepare(
+			"SELECT set_by, set_at, watermark FROM fleet_pressure_hold WHERE id = 1",
+		);
+		let out:
+			| { set_by: string; set_at: string; watermark: string | null }
+			| undefined;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			out = {
+				set_by: row.set_by as string,
+				set_at: row.set_at as string,
+				watermark: (row.watermark as string) ?? null,
+			};
+		}
+		stmt.free();
+		return out;
+	}
+
+	/** Lift the fleet pressure-hold. IDEMPOTENT; true when a hold existed. */
+	clearFleetPressureHold(): boolean {
+		// NB: the params array is load-bearing — the compat shim only tracks
+		// `changes` on the prepared (params !== undefined) path.
+		this.db.run("DELETE FROM fleet_pressure_hold WHERE id = 1", []);
+		const changed = this.db.getRowsModified();
+		if (changed > 0) this.save();
+		return changed > 0;
 	}
 
 	/**

@@ -209,6 +209,15 @@ export class HeartbeatService implements ReconnectController {
 		 * retest-protection predicate. Absent → pre-FLY-867 notify-only.
 		 */
 		private staleTerminalClose?: StaleTerminalCloseConfig,
+		/**
+		 * FLY-1082 (Task 2.3): the tmux server-loss coordinator — a PRE-REAPER
+		 * phase (after monitor reconcile, before crash reaper) so a fleet-level
+		 * server loss is claimed as ONE grouped episode before the per-runner
+		 * orphan machinery buries it silently. Returns the claimed exec ids;
+		 * they join the orphan suppression set. Absent → no-op (byte-compat).
+		 * Gated on FLYWHEEL_FLEET_SENSOR_TMUX=0 at the wiring layer.
+		 */
+		private serverLoss?: { check(): Promise<ReadonlySet<string>> },
 	) {}
 
 	start(): void {
@@ -256,12 +265,28 @@ export class HeartbeatService implements ReconnectController {
 			// unconfigured Bridge keeps checkStuck's synchronous getStuckSessions call
 			// on the same tick (mirrors the monitorReconcile guard; preserves existing
 			// fake-timer test timing).
+			// FLY-1082 (Task 2.3): server-loss coordinator — the pre-reaper phase.
+			// Runs AFTER reconcileMonitorLoss (liveness sets current) and BEFORE
+			// the crash reaper / orphan reaping so a fleet-level tmux server death
+			// is claimed as ONE grouped, episode-tagged migration in this same
+			// cycle; the claimed ids suppress the per-runner paths below.
+			// Best-effort — a coordinator failure must never skip the cycle.
+			let serverLossOwned: ReadonlySet<string> = new Set();
+			if (this.serverLoss) {
+				try {
+					serverLossOwned = await this.serverLoss.check();
+				} catch (err) {
+					console.error(
+						`[server-loss] check failed (cycle continues): ${(err as Error).message}`,
+					);
+				}
+			}
 			let deadPinOwned: ReadonlySet<string> = new Set();
 			if (this.crashReaperConfig?.enabled) {
 				deadPinOwned = await this.reapCrashedRunners();
 			}
 			await this.checkStuck();
-			await this.reapOrphans(deadPinOwned);
+			await this.reapOrphans(new Set([...deadPinOwned, ...serverLossOwned]));
 			await this.checkStaleCompleted();
 			await this.checkAwaitingReviewTimeout();
 		} catch (err) {

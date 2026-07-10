@@ -265,6 +265,21 @@ export interface AlertMetadata {
 		jobLabel?: string;
 		probeSource?: string;
 	};
+	/**
+	 * FLY-1082 (Task 2.3): the server-loss coordinator's remediation summary —
+	 * the ARC action (grouped terminal migration + per-Lead notify) runs AT
+	 * DETECTION inside the HeartbeatService pre-reaper phase; this metadata is
+	 * its evidence for the AutoRepairBot (attempted iff every Lead notification
+	 * delivered) and for the QA chain.
+	 */
+	tmuxServerLost?: {
+		/** Runners migrated to their terminal state by the coordinator. */
+		migrated: number;
+		/** Leads whose grouped casualty notification was delivered. */
+		leadsNotified: number;
+		/** Leads whose notification FAILED (>0 ⇒ needs_human escalation). */
+		leadsFailed: number;
+	};
 }
 
 /**

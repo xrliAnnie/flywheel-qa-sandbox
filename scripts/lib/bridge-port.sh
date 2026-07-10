@@ -149,6 +149,49 @@ bp_ensure_port_for_start() {
   echo "stuck"; return 0
 }
 
+# ── FLY-1082 (Task 2.4): dirty-exit marker check (READ-ONLY) ────────────────
+# The Bridge writes ~/.flywheel/state/bridge-running-marker.json ("running" at
+# boot, flipped to "clean" by close()). A "running" marker at wrapper start
+# time = the previous Bridge died WITHOUT a clean shutdown. This check only
+# READS — the marker is latched+overwritten by the booting Bridge itself
+# (evidence before overwrite). Echoes exactly one verdict:
+#   "dirty <prevPid> <prevBootTs>" | "clean" | "none"
+# FAIL-OPEN by design: jq missing / unreadable / garbage → "none" (the marker
+# is an alerting aid, never a startup gate — the Bridge must always come up).
+bp_check_dirty_marker() {
+  local marker="$1"
+  [[ -f "$marker" ]] || { echo "none"; return 0; }
+  command -v jq >/dev/null 2>&1 || { echo "none"; return 0; }
+  local state pid boot_ts
+  state="$(jq -r '.state // empty' "$marker" 2>/dev/null || true)"
+  case "$state" in
+    running)
+      pid="$(jq -r '.pid // empty' "$marker" 2>/dev/null || true)"
+      boot_ts="$(jq -r '.bootTs // empty' "$marker" 2>/dev/null || true)"
+      [[ "$pid" =~ ^[0-9]+$ && "$boot_ts" =~ ^[0-9]+$ ]] || { echo "none"; return 0; }
+      echo "dirty $pid $boot_ts"
+      ;;
+    clean) echo "clean" ;;
+    *) echo "none" ;;
+  esac
+}
+
+# FLY-1082 (Task 2.4): dirty-exit streak counter — same prune-window pattern as
+# bp_record_start_and_check_crashloop, but counting DIRTY boots specifically.
+# Returns 0 = under threshold, 1 = crash-loop (>= max_dirty within window_s).
+bp_record_dirty_and_check_streak() {
+  local marker="$1" window="${2:-600}" max_dirty="${3:-3}" now
+  now="$(_bp_now)"
+  printf '%s\n' "$now" >> "$marker"
+  local recent=() ts
+  while IFS= read -r ts; do
+    [[ "$ts" =~ ^[0-9]+$ ]] || continue
+    if (( now - ts <= window )); then recent+=("$ts"); fi
+  done < "$marker"
+  printf '%s\n' "${recent[@]}" > "$marker"
+  (( ${#recent[@]} < max_dirty ))
+}
+
 # Crash-loop detector: append now to a marker, prune entries older than the
 # window, and report whether the start rate breached the threshold.
 # Returns: 0 = OK (under threshold), 1 = crash-loop (>= max_starts in window_s).

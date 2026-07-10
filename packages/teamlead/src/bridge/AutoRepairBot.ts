@@ -67,6 +67,18 @@ export interface AutoRepairBotDeps {
 	 * needs_human. Absent → usage_limit stays human-only (byte-compat).
 	 */
 	accountSwitch?: AccountSwitchRepair;
+	/**
+	 * FLY-1082: fleet-kind repairs, wired by plugin.ts (fleet-sensors module).
+	 * All REVERSIBLE by construction: the pressure-hold can be lifted, the
+	 * kickstart is idempotent. Absent → the kind degrades to needs_human
+	 * (sensor kill-switch off / tests).
+	 */
+	fleetRepair?: {
+		/** swap_pressure_high: place the hold + notify Leads to shed load. */
+		swapPressure?: (payload: AlertPayload) => Promise<RepairResult>;
+		/** infra_bot_down: `launchctl kickstart -k` the dead bot's job. */
+		infraBotKickstart?: (payload: AlertPayload) => Promise<RepairResult>;
+	};
 	logger?: (msg: string) => void;
 }
 
@@ -130,7 +142,21 @@ export class AutoRepairBot {
 		if (payload.eventType === "usage_limit") {
 			return this.deps.accountSwitch?.canAttempt(payload) ?? false;
 		}
-		return AUTO_ATTEMPT_EVENT_TYPES.has(payload.eventType);
+		// FLY-1082: fleet kinds — attemptable iff the wired repair (or, for the
+		// detection-time remediations, the evidence metadata) is present, so the
+		// Hub ack never claims a repair that won't happen.
+		switch (payload.eventType) {
+			case "swap_pressure_high":
+				return !!this.deps.fleetRepair?.swapPressure;
+			case "infra_bot_down":
+				return !!this.deps.fleetRepair?.infraBotKickstart;
+			case "tmux_server_lost":
+				return !!payload.metadata?.tmuxServerLost;
+			case "bridge_abnormal_exit":
+				return true; // launchd respawn IS the remediation; boot self-check confirms
+			default:
+				return AUTO_ATTEMPT_EVENT_TYPES.has(payload.eventType);
+		}
 	}
 
 	/**
@@ -149,6 +175,60 @@ export class AutoRepairBot {
 				return this.repairRunner(payload);
 			case "pane_hash_stuck":
 				return this.repairLeadPane(payload, correlationKey);
+			// FLY-1082: fleet kinds. swap / bot-down run the wired reversible
+			// repair; server-loss / abnormal-exit report the detection-time
+			// remediation honestly (the coordinator / launchd already acted —
+			// "attempted" here, the reconcile recovery probe decides ✅).
+			case "swap_pressure_high": {
+				const repair = this.deps.fleetRepair?.swapPressure;
+				if (repair) return repair(payload);
+				return {
+					outcome: "needs_human",
+					action: "none",
+					detail:
+						"swap 压力修复未接线（传感器 kill-switch 关闭或未配置）— 需要人工降载。",
+				};
+			}
+			case "infra_bot_down": {
+				const repair = this.deps.fleetRepair?.infraBotKickstart;
+				if (repair) return repair(payload);
+				return {
+					outcome: "needs_human",
+					action: "none",
+					detail:
+						"infra bot kickstart 未接线（传感器 kill-switch 关闭或未配置）— 需要人工重启 launchd job。",
+				};
+			}
+			case "tmux_server_lost": {
+				const m = payload.metadata?.tmuxServerLost;
+				if (!m) {
+					return {
+						outcome: "needs_human",
+						action: "none",
+						detail:
+							"tmux server 丢失但缺少协调器摘要（迁移/通知证据缺失）— 需要人工核对 runner 状态。",
+					};
+				}
+				if (m.leadsFailed > 0) {
+					return {
+						outcome: "needs_human",
+						action: "none",
+						detail: `已迁移 ${m.migrated} 个 runner 终态，但 ${m.leadsFailed} 个 Lead 的阵亡通知投递失败 — 需要你确认这些 Lead 知情并复活各自的 runner。`,
+					};
+				}
+				return {
+					outcome: "attempted",
+					action: "server_loss_coordinator",
+					detail: `🔧 已成组迁移 ${m.migrated} 个 runner 到终态，并给 ${m.leadsNotified} 个 Lead 发了各自的阵亡清单 + resume 指针。respawn 由各 Lead 驱动（铁律）。`,
+				};
+			}
+			case "bridge_abnormal_exit":
+				return {
+					outcome: "attempted",
+					action: "launchd_respawn",
+					detail:
+						"🔧 launchd 已复活 Bridge（本工单即由复活后的 Bridge 开出）。boot 对账自检完成后自动标记 ✅。",
+				};
 			case "usage_limit": {
 				// FLY-696: a real Claude quota cap → ENQUEUE a durable pending switch
 				// (a cross-provider Infra Bot claims it, else the Bridge watchdog fires

@@ -38,6 +38,7 @@ import { escalatesAtEnqueue, KIND_CONTRACTS } from "./kind-contract.js";
 import { fingerprintOutput } from "./stuck-candidate.js";
 import {
 	decideTicketEscalation,
+	policyForKind,
 	type TicketEscalationPolicy,
 	ticketOwnerConfigured,
 } from "./ticket-escalation.js";
@@ -249,11 +250,27 @@ export interface AlertChannelHubDeps {
 	 * needs_human @founder line in the alert thread.
 	 */
 	escalateToIssueThread?: (row: AlertThreadRow) => Promise<boolean>;
-	/** T2 policy override (tests); default = the locked 2-try/5-min constants. */
+	/** T2 policy override (tests); default = per-kind via `policyForKind`. */
 	ticketPolicy?: TicketEscalationPolicy;
+	/**
+	 * FLY-1082: fleet-kind recovery probe for the reconcile pass — the fleet
+	 * analog of capturePane/captureRunner. Returns true = the underlying fleet
+	 * condition cleared (resolve quietly), false = still broken, null/absent =
+	 * cannot tell (leave active; the T2 decision still runs). Wired in
+	 * plugin.ts to the fleet-sensors module.
+	 */
+	fleetRecovery?: (row: AlertThreadRow) => Promise<boolean | null>;
 	now?: () => number;
 	logger?: (msg: string) => void;
 }
+
+/** FLY-1082: kinds whose reconcile recovery runs through `fleetRecovery`. */
+const FLEET_RECOVERY_KINDS: ReadonlySet<AlertEventType> = new Set([
+	"swap_pressure_high",
+	"tmux_server_lost",
+	"bridge_abnormal_exit",
+	"infra_bot_down",
+]);
 
 const LEAD_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"rate_limit",
@@ -657,6 +674,19 @@ export class AlertChannelHub {
 					await this.reconcileTicket(row);
 					continue;
 				}
+				// FLY-1082: fleet kinds recover through the fleet probe (watermark
+				// cleared / tmux server back / boot reconcile done / bot alive).
+				if (FLEET_RECOVERY_KINDS.has(row.event_type as AlertEventType)) {
+					if (this.deps.fleetRecovery) {
+						const recovered = await this.deps.fleetRecovery(row);
+						if (recovered === true) {
+							await this.resolve(row.correlation_key);
+							continue;
+						}
+					}
+					await this.reconcileTicket(row);
+					continue;
+				}
 				if (LEAD_KINDS.has(row.event_type as AlertEventType)) {
 					if (this.deps.capturePane) {
 						const pane = await this.deps.capturePane(
@@ -700,7 +730,9 @@ export class AlertChannelHub {
 			row,
 			this.now(),
 			ticketOwnerConfigured(row.owner_ref, ownerRegistryFromEnv(process.env)),
-			this.deps.ticketPolicy,
+			// FLY-1082 (Task 2.2): per-kind policy — legacy kinds resolve to the
+			// locked T2 defaults byte-for-byte; a test-injected policy still wins.
+			this.deps.ticketPolicy ?? policyForKind(row.event_type, process.env),
 		);
 		if (decision === "none") return;
 		if (decision === "retry") {
