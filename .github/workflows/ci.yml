@@ -143,6 +143,7 @@ jobs:
           bash scripts/__tests__/package-onboard.test.sh
           bash scripts/__tests__/packaged-seams.test.sh
           bash scripts/__tests__/packaged-restart.test.sh
+          bash scripts/__tests__/gate4-allowlist-masking.test.sh
           bash scripts/__tests__/setup-prebuilt.test.sh
           bash scripts/__tests__/provision-prebuilt.test.sh
 

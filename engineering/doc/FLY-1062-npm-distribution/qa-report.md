@@ -15,10 +15,18 @@ Issue: FLY-1062 (https://linear.app/geoforge3d/issue/FLY-1062)
 
 ## 结论
 
-**PASS**(PR1 范围内)。打包流水线、packaged-mode 三处 seam、P2 prebuilt provision/
-setup、发布安全门(含 Annie 硬要求的**零仓库访问不变式**)全部经真实行为验证通过;
-「装得上 ≠ 起得来」验收线在**真 npm 全链**上过关。QA 补一个此前缺失的直测,关闭
-审计表声称却未落地的覆盖缺口。
+**FAIL / KICKBACK(Round 2 更新,2026-07-09)** —— 补跑被 pipeline 跳过的 FLY-827
+codex code review 后,codex 抓到 **1 个 HIGH**,QA 已独立复现:**gate④ 零仓库访问
+不变式可被绕过**(详见下方「Round 2」)。这正是 PR1 存在的核心保证(Annie 硬要求),
+故 verdict 由 PASS 翻为 **FAIL**,踢回 implement 阶段修 gate④ 后再验。其余项(打包
+流水线、三处 seam、P2 prebuilt、真 npm 全链「装得上≠起得来」、字节兼容)Round 1
+均验过为真,见下。
+
+> **Round 1(初判 PASS,已被 Round 2 推翻)**:打包流水线、packaged-mode 三处 seam、
+> P2 prebuilt provision/setup、发布安全门都经真实行为验证;「装得上 ≠ 起得来」验收
+> 线在真 npm 全链上过关。**但 Round 1 漏了 gate④ 的 masking 路径**(既有 G4 负例注入
+> 的是未注册引用,从没走过「私仓 slug 与已注册 git-clone 子串同行」),故 codex 补
+> review 抓到、我复现确认。教训:发布安全门的负例必须覆盖「注入到已注册文件」这条。
 
 ## 验证矩阵
 
@@ -66,6 +74,28 @@ setup、发布安全门(含 Annie 硬要求的**零仓库访问不变式**)全�
 ## QA 补测 + 修正(已提交本分支)
 1. **新增 `scripts/__tests__/packaged-restart.test.sh`(5 例)** + 接入 CI —— 关闭覆盖缺口:审计表原声称 `restart-packaged-services.sh` 由 packaged-seams.test.sh 覆盖,但该套件零引用它。新测试直测:哨兵拒绝 / bridge-only(--no-leads)/ bridge+每个 lead 经 supervisor seam / 健康门失败 exit 1 / lead restart 失败 rc 传播。
 2. **修正 `packaged-path-audit.md` 第 40 行**覆盖声明,指向新测试(诚实化)。
+
+## Round 2 — FLY-827 codex code review(补跑)+ kickback finding
+
+Pipeline 跳过了 FLY-827 codex code review(await-codex-gate 没拦住),Lead(Tadashi)
+要求补上。我用 codex companion(xhigh,前台)对 head 253673a8 跑了 Round 1,codex 也
+独立探查了 codebase + 真跑了各测试。
+
+**codex verdict: CHANGES REQUESTED** —— 1 个 HIGH(其余全绿:codex 也复跑了
+26+13+5+6+6 hermetic + 真组装/打包 tarball 过现有门 + `git diff --check` 干净)。
+codex 自身沙箱断网发不了 PR review,我已代发到 PR #531(标注代发)。
+
+### HIGH — gate④ 零仓库访问不变式可被绕过(QA 独立复现确认)
+- **位置**:`scripts/package-onboard.sh` po_gate ④ 的匹配循环(~:708–723,masking 源在 `:715` 的 `[[ "$text" == *"$apat"* ]]` **松散子串**匹配)+ `scripts/packaged/audit-grep-allowlist.tsv`。
+- **机制**:gate④ 对每个 `git clone`/`xrliAnnie/` 命中行,只要匹配**任一** allowlist 行(文件 glob + 松散子串)就放行。真 allowlist 有一条宽泛的 `provision-fleet-host.sh` + `git clone`(合法的客户仓 clone)。于是一行 `git clone https://github.com/xrliAnnie/flywheel.git` 因含 `git clone` 子串被放行,**同一行里的私仓 `xrliAnnie/` slug 再也不会独立触发失败**。
+- **复现(codex + QA 各自独立)**:干净 payload → `po_gate` PASS(应然);把真私仓 clone 注入到那条 allowlisted 行 → `po_gate` **仍 PASS**。这是 PR1 存在的核心保证被击穿。
+- **live 影响**:当前 payload **不** ship 可达私仓 clone(prebuilt 模式跳 flywheel clone + onboard clone 组装期 patch 掉),所以**今天没有真泄漏**;但守护该不变式的门可被骗过 → 未来某次改动可能悄悄重新引入仓库访问。严重度 = HIGH(门完整性 = PR1 的意义本身)。
+- **fix direction(交 implement 阶段,QA 不自改)**:让 registered-check 对每个 forbidden pattern 独立判定(`git clone` 的 allowlist 行不得放行同时含未注册 `xrliAnnie/` slug 的行),或把 allowlist 行收紧成 exact-line-shape 而非松散子串。
+- **QA 已落地(本分支,RED→GREEN 目标)**:新增 `scripts/__tests__/gate4-allowlist-masking.test.sh` + 接入 CI —— M1(sanity:未 mask 的私仓 slug 被拒,证门是活的)PASS;**M2(注入到已注册 git-clone 行的私仓 slug 必须被拒)现 FAIL**,钉住 bug。implement 修好 gate④ 后 M2 转 GREEN、CI 转绿。
+
+**处置**:qa-result = **fail**(retract Round 1 的 premature PASS),踢回 implement 阶段。
+注:Round 1 我在 codex 门满足前就发了 qa-result pass + 开了 approve gate(过早),现经
+qa-result fail 纠正;head 移动后旧 gate 绑定自然失效,re-verify PASS 后再开新 gate。
 
 ## 交给 founder 的 scope 边界(非缺陷)
 PR1 是**分发层地基**:它让 monorepo 能被组装成一个自洽、能起来的 payload tarball,且
