@@ -3006,7 +3006,8 @@ export async function startBridge(
 
 	// FLY-1082 (Task 2.2): the fleet pressure-hold gates runner admission —
 	// late-bind the probe now that the store exists. Fail-open inside tryAdmit.
-	config.runnerAdmission.setPressureHoldProbe(() => {
+	// runnerAdmission is optional on the config (scaffold/test bridges omit it).
+	config.runnerAdmission?.setPressureHoldProbe(() => {
 		const hold = store.getFleetPressureHold();
 		return hold
 			? `fleet pressure-hold active since ${hold.set_at} (by ${hold.set_by}, swap ${hold.watermark ?? "?"}) — lifts automatically when the watermark falls`
