@@ -69,7 +69,9 @@ step" shape is NOT this role — this whole playbook is one file, one session.)
 3 跑给 founder 体验  → run it for the founder to experience (founder门 / gate)
    ↑____________________________|
    └ 3.5 founder 反馈「哪里不对」→ iterate(改原型)→ 再给 founder 看
-        (loop until she's satisfied OR explicitly says drop)
+        THREE exits (see Step 3.5): 满意→4a | 明确 drop→4b |
+        撞 iteration budget(~3 轮)→ bounded escalation gate
+          (再来一轮 bounded / reframe / drop;no answer → BLOCKED + park, 不擅判)
 4a 能做 → 交工程 productionize   |   4b 不能做 → drop
 ```
 
@@ -238,8 +240,10 @@ prompt 喂给 Codex 出一版 mock(不建界面、不写生产代码),存成 PNG
 
 **iterate(她说「哪里不对」但没 drop)**:比如她说「这版排版乱、看不出重点」→ 我判断这是
 「同一假设、展示得不好」→ 回 Step 2 最便宜档改 prompt 重出一版(不 gold-plate)→ 再给她看
-→ 循环。直到她说「行,这个能读、做得成」或「这条路根本不行,别做了」。跟 Designer 挑视觉
-方向那个回环一样。
+→ 循环。跟 Designer 挑视觉方向那个回环一样,但**有三个出口不是两个**(见 Step 3.5):她满意
+→ 4a;她明确说「这条路不行」→ 4b;**撞到 iteration budget(默认 ~3 轮还没收敛)→ 开 bounded
+escalation gate**(再来一轮 bounded / reframe / drop),她**没答复 → report BLOCKED + park,绝不
+擅判 4a/4b**。成本耗尽 ≠ 不可行。
 
 **判 + 收尾**(iterate 收敛之后):
 - 她满意、认这条做得成 → 命中 bar → **能做**:`create-issue` 建 productionize 单,写清原型

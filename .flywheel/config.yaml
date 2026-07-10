@@ -224,7 +224,9 @@ agents:
     # FLY-901 dual-register: like product-designer, this serves BOTH the
     # engineering Lead and the product Lead's auto-dispatch (owningDept=product).
     departments: [engineering, product]
-    # DISJOINT from product-designer / engineer / qa (first-match order-independent).
+    # DISJOINT from product-designer / engineer / qa. (SINGLE-label routing is
+    # order-independent; a MULTI-label issue still first-matches by YAML order —
+    # precondition: one executor-family label per issue. FLY-1089.)
     match:
       labels: ["designer", "mockup"]
   # Top-level catch-all (no department). Used when the Lead passes agentName:"general"

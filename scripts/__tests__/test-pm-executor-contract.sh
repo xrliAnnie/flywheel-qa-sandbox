@@ -121,6 +121,12 @@ assert_contains "$PROTO_MD" "iterate"        "Annie's ask: founder-feedback iter
 assert_contains "$PROTO_MD" "Step 3.5"       "iterate loop is a real step (3.5) between show and verdict"
 assert_contains "$PROTO_MD" "Bounded escalation" "iterate loop has a bounded third exit (no infinite loop)"
 assert_contains "$PROTO_MD" "Cost is not evidence of infeasibility" "cost exhaustion != 4b (no false drop)"
+# ── the overview diagram + worked walkthrough must NOT keep the stale two-exit loop
+#    (Codex R2 #1: conflicting duplicate procedures) ──
+assert_not_contains "$PROTO_MD" "loop until she's satisfied OR explicitly says drop" \
+                "no stale two-exit loop text left in the overview"
+assert_contains "$PROTO_MD" "三个出口"        "walkthrough states THREE exits (not the old two)"
+assert_contains "$PROTO_MD" "iteration budget" "iteration budget named in overview/walkthrough, not only Step 3.5"
 # ── founder gate is fail-closed by discipline (Codex R1 post-rebase #2) ──
 assert_contains "$PROTO_MD" "fail-closed by discipline" "no-answer gate => BLOCKED, not a verdict"
 assert_contains "$PROTO_MD" "BLOCKED"        "reports BLOCKED on an un-answered decision gate"

@@ -74,7 +74,8 @@ Issue: FLY-1089 (https://linear.app/geoforge3d/issue/FLY-1089/建-pm-prototype-�
 | **`prototype`**(新) | **prototype** | **engineering, product** |
 | `general` | (空,catch-all) | — |
 
-**不变式:六个标签集两两不相交** → 路由与 YAML 书写顺序无关(见 research.md §2)。
+**不变式:六个标签集两两不相交** → **单-label** issue 路由与 YAML 书写顺序无关(多-label issue
+仍 first-match YAML 顺序,前提「一 issue 一 executor-family label」;见 research.md §2)。
 唯一移动:`pm` / `product` 从 `product-designer` → `pm`。新增:`prototype`。
 **没有任何标签被丢弃。**
 
@@ -190,7 +191,7 @@ Annie 亲口拍的文字**不改写**。
    `pm|product → pm`、**`prototype → prototype`**、`doc|docs|design|ux → product-designer`、
    `designer|mockup → designer`、`qa|testing → qa`、`code|feat|… → engineer`;
 3. **标签互斥不变式**:遍历所有 agent 的 `match.labels`,任意两个集合交集为空 —— 一条测试
-   永久锁住「路由与 YAML 顺序无关」;
+   永久锁住「单-label 路由与 YAML 顺序无关」(多-label 仍 first-match);
 4. **`poc` 不是 alias(Codex R2#1 HIGH)**:断言 `poc` 出现在**任何** agent 的 `match.labels`
    里 = false,且 `poc + owningDept=product → shipped-generic` —— 证明砍掉 `poc` 是真的、
    没被偷偷当别名保留;
@@ -307,7 +308,7 @@ label 重划部署 / reload 后,已打开的、带 `product` / `pm` 标签的 is
 | 风险 | 对策 |
 |---|---|
 | 40k 截断静默吃掉 role .md 尾部 | 守卫测试卡 `< 40000` 字节;PM 文件预计 ~9k,Prototype ~7k,余量充足 |
-| YAML 顺序耦合导致路由漂移 | 7.2 的「标签互斥」测试永久锁住 |
+| YAML 顺序耦合导致路由漂移 | 7.2「标签互斥」测试锁住单-label 归属;多-label 仍 first-match(前提:一 issue 一 executor-family label)|
 | 存量 `product`/`pm` issue 改路由 | 内容等价 + 净新增两步;PR 描述点名 |
 | #527 被大改导致本分支失效 | Lead 已确认顺序;若 #527 变更,rebase 后重跑全部测试 |
 | Runner 把 Prototype 做成生产级 | role .md 三条硬规则 + 守卫断言 `drop` / `不是生产级` |

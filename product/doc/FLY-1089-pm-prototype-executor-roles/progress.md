@@ -3,7 +3,7 @@ issue: FLY-1089
 phase: ship
 phaseCursor: shipping
 updated: 2026-07-10
-nextStep: Codex code review post-rebase APPROVED -> report Lead (PR# + head sha) -> Lead head-verify + :cool ship
+nextStep: Codex code review post-rebase (in loop) -> on APPROVED report Lead (PR# + head sha) -> Lead head-verify + :cool ship
 chunks: []
 pointers: {}
 ---

@@ -44,8 +44,10 @@ this.entries = Object.entries(agents);   // ← YAML 里的书写顺序
 关键事实:**首个命中即返回,遍历顺序 = YAML 书写顺序。**
 
 - 如果两个 agent 的 `match.labels` 有交集,谁在 YAML 里靠前谁赢 —— 一个隐式、脆弱的耦合。
-- 反过来,**只要标签集两两不相交,路由就与书写顺序无关**。FLY-1059 给 `designer` 加的注释
-  写的正是这句(`DISJOINT from product-designer / engineer / qa (first-match order-independent)`)。
+- 反过来,**只要标签集两两不相交,单-label issue 的路由就与书写顺序无关**。⚠️ 但这**只保证
+  「一个 label 只属于一个 agent」**;一个 issue 若**同时带两个 executor-family label**(如
+  `pm` + `prototype`)仍是 first-match(YAML 顺序)—— 前提是「一 issue 一 executor-family label」。
+  真正的多-label ambiguity 拒绝 = 引擎 follow-up,不在本 config-only scope。
 
 **本 issue 必须守住的不变式:`engineer` / `qa` / `product-designer` / `designer` / `pm` /
 `prototype` 六个 agent 的标签集两两不相交。** 这是可测的,写进 dispatch 测试。
