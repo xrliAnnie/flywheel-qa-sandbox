@@ -187,6 +187,35 @@ set_now 2000; bp_record_start_and_check_crashloop "$MARK" 60 3 && s2=ok || s2=lo
 set_now 3000; bp_record_start_and_check_crashloop "$MARK" 60 3 && s3=ok || s3=loop
 if [[ "$s1" == "ok" && "$s2" == "ok" && "$s3" == "ok" ]]; then pass "T8b spread-out starts pruned → never loops"; else fail "T8b s1=$s1 s2=$s2 s3=$s3"; fi
 
+# ── T9 (FLY-1082): bp_check_dirty_marker — the three boot shapes ────────────
+# First boot: no marker file at all → "none".
+MARKER="$TMP/bridge-running-marker.json"
+rm -f "$MARKER"
+[[ "$(bp_check_dirty_marker "$MARKER")" == "none" ]] && pass "T9 first boot (no marker) → none" || fail "T9 got '$(bp_check_dirty_marker "$MARKER")'"
+# Clean SIGTERM shutdown: state=clean → "clean" (no page).
+printf '{"pid":111,"bootTs":1000,"state":"clean"}' > "$MARKER"
+[[ "$(bp_check_dirty_marker "$MARKER")" == "clean" ]] && pass "T9b clean shutdown → clean" || fail "T9b got '$(bp_check_dirty_marker "$MARKER")'"
+# kill -9 shape: state=running survives → "dirty <pid> <bootTs>".
+printf '{"pid":111,"bootTs":1000,"state":"running"}' > "$MARKER"
+[[ "$(bp_check_dirty_marker "$MARKER")" == "dirty 111 1000" ]] && pass "T9c kill -9 (running marker) → dirty w/ prev evidence" || fail "T9c got '$(bp_check_dirty_marker "$MARKER")'"
+# Garbage marker / non-numeric fields → fail-open "none" (never a startup gate).
+printf 'not json' > "$MARKER"
+[[ "$(bp_check_dirty_marker "$MARKER")" == "none" ]] && pass "T9d garbage marker → none (fail-open)" || fail "T9d got '$(bp_check_dirty_marker "$MARKER")'"
+printf '{"pid":"x","bootTs":1000,"state":"running"}' > "$MARKER"
+[[ "$(bp_check_dirty_marker "$MARKER")" == "none" ]] && pass "T9e non-numeric pid → none (fail-open)" || fail "T9e got '$(bp_check_dirty_marker "$MARKER")'"
+
+# ── T10 (FLY-1082): bp_record_dirty_and_check_streak — crash-loop copy gate ─
+reset_seam; DMARK="$TMP/dirty-exits"; : > "$DMARK"
+set_now 1000; bp_record_dirty_and_check_streak "$DMARK" 600 3 && d1=ok || d1=loop
+set_now 1100; bp_record_dirty_and_check_streak "$DMARK" 600 3 && d2=ok || d2=loop
+set_now 1200; bp_record_dirty_and_check_streak "$DMARK" 600 3 && d3=ok || d3=loop
+if [[ "$d1" == "ok" && "$d2" == "ok" && "$d3" == "loop" ]]; then pass "T10 3 dirty boots in 10min → crash-loop copy"; else fail "T10 d1=$d1 d2=$d2 d3=$d3"; fi
+reset_seam; DMARK="$TMP/dirty-exits2"; : > "$DMARK"
+set_now 1000; bp_record_dirty_and_check_streak "$DMARK" 600 3 && e1=ok || e1=loop
+set_now 5000; bp_record_dirty_and_check_streak "$DMARK" 600 3 && e2=ok || e2=loop
+set_now 9000; bp_record_dirty_and_check_streak "$DMARK" 600 3 && e3=ok || e3=loop
+if [[ "$e1" == "ok" && "$e2" == "ok" && "$e3" == "ok" ]]; then pass "T10b spread-out dirty boots pruned → normal copy"; else fail "T10b e1=$e1 e2=$e2 e3=$e3"; fi
+
 # ── Summary ─────────────────────────────────────────────────────────────────
 echo ""
 echo "bridge-port: PASSED=$PASSED FAILED=$FAILED"

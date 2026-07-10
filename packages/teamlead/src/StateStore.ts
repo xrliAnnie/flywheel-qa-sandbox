@@ -1415,6 +1415,60 @@ export class StateStore {
 			}
 		}
 
+		// FLY-1082 (Task 2.2): the fleet pressure-hold — a SINGLE durable row
+		// (id=1 enforced). While present, runner admission defers every new
+		// dispatch (`pressure_hold`); the swap sensor sets it on a high-watermark
+		// episode and clears it when the watermark falls below the low threshold.
+		// Durable so a Bridge restart mid-episode keeps the brake on.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS fleet_pressure_hold (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				set_by TEXT NOT NULL,
+				set_at TEXT NOT NULL DEFAULT (datetime('now')),
+				watermark TEXT
+			)
+		`);
+
+		// FLY-1082 (Task 3.2): escalation-event ledger — alert_threads UPSERTs one
+		// row per correlation key, so repeated episodes overwrite their history;
+		// the runbook-gap counter ("same kind ESCALATED ≥N in 7 days ⇒ auto-file
+		// the eng issue") needs an append-only record. Plus the per-kind open
+		// runbook-issue dedup (at most ONE open issue per kind).
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS ticket_escalations (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				kind TEXT NOT NULL,
+				escalated_at TEXT NOT NULL DEFAULT (datetime('now'))
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_ticket_escalations_kind ON ticket_escalations(kind, escalated_at)",
+		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS runbook_issues (
+				kind TEXT PRIMARY KEY,
+				issue_id TEXT NOT NULL,
+				issue_identifier TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now'))
+			)
+		`);
+
+		// FLY-1082 (Task 2.3, Codex R3/R4/R5): the server-loss episode LEDGER —
+		// a single durable row holding the active episode's signature + full
+		// side-effect state (shape, claimed exec ids, per-Lead notification
+		// outbox, ticket phase). The coordinator's restart resume reads THIS
+		// (never the alert ticket row: ACTIVE only means resolved_at IS NULL —
+		// a permanently-ESCALATED old ticket must not swallow a NEW incident),
+		// and every owed side effect replays from it exactly once per target.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS server_loss_episode (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				signature TEXT NOT NULL,
+				state_json TEXT NOT NULL,
+				created_at TEXT NOT NULL DEFAULT (datetime('now'))
+			)
+		`);
+
 		// FLY-818 M3: durable per-eventId founder-page ledger. Records whether a
 		// GENUINE founder page (an @founder message in the stuck runner's [FLY-XX]
 		// issue thread — Annie's issue-thread design) actually succeeded for a
@@ -2712,6 +2766,23 @@ export class StateStore {
 			"SELECT * FROM sessions WHERE project_name = ?",
 		);
 		stmt.bind([projectName]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/** FLY-1082 (Task 2.3): ALL running sessions — the server-loss coordinator's
+	 * candidate set (heartbeat-independent: a server death is detected the tick
+	 * it happens, not after the orphan staleness window). */
+	getRunningSessions(): Session[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE status = 'running'",
+		);
 		const rows: Session[] = [];
 		while (stmt.step()) {
 			rows.push(
@@ -4579,6 +4650,186 @@ export class StateStore {
 		this.save();
 	}
 
+	// ── FLY-1082 (Task 2.2): fleet pressure-hold (single durable row) ──
+
+	/**
+	 * Place the fleet pressure-hold. IDEMPOTENT: an existing hold is left
+	 * untouched (its set_at / attribution wins — first setter owns the
+	 * episode). Returns true when THIS call placed the hold.
+	 */
+	setFleetPressureHold(input: { setBy: string; watermark?: string }): boolean {
+		this.db.run(
+			"INSERT OR IGNORE INTO fleet_pressure_hold (id, set_by, watermark) VALUES (1, ?, ?)",
+			[input.setBy, input.watermark ?? null],
+		);
+		const changed = this.db.getRowsModified();
+		if (changed > 0) this.save();
+		return changed > 0;
+	}
+
+	/** The active fleet pressure-hold, if any. */
+	getFleetPressureHold():
+		| { set_by: string; set_at: string; watermark: string | null }
+		| undefined {
+		const stmt = this.db.prepare(
+			"SELECT set_by, set_at, watermark FROM fleet_pressure_hold WHERE id = 1",
+		);
+		let out:
+			| { set_by: string; set_at: string; watermark: string | null }
+			| undefined;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			out = {
+				set_by: row.set_by as string,
+				set_at: row.set_at as string,
+				watermark: (row.watermark as string) ?? null,
+			};
+		}
+		stmt.free();
+		return out;
+	}
+
+	/** Lift the fleet pressure-hold. IDEMPOTENT; true when a hold existed. */
+	clearFleetPressureHold(): boolean {
+		// NB: the params array is load-bearing — the compat shim only tracks
+		// `changes` on the prepared (params !== undefined) path.
+		this.db.run("DELETE FROM fleet_pressure_hold WHERE id = 1", []);
+		const changed = this.db.getRowsModified();
+		if (changed > 0) this.save();
+		return changed > 0;
+	}
+
+	// ── FLY-1082 (Task 3.2): runbook-gap ledger ──
+
+	/** Append one escalation event for the kind (the 7-day window counter). */
+	recordTicketEscalation(kind: string): void {
+		this.db.run("INSERT INTO ticket_escalations (kind) VALUES (?)", [kind]);
+		this.save();
+	}
+
+	/** Escalation events for the kind within the last `days` days. */
+	countTicketEscalations(kind: string, days: number): number {
+		const stmt = this.db.prepare(
+			"SELECT COUNT(*) AS n FROM ticket_escalations WHERE kind = ? AND escalated_at >= datetime('now', ?)",
+		);
+		stmt.bind([kind, `-${days} days`]);
+		let n = 0;
+		if (stmt.step()) {
+			n = Number((stmt.getAsObject() as Record<string, unknown>).n ?? 0);
+		}
+		stmt.free();
+		return n;
+	}
+
+	/** Clear the kind's escalation window (the runbook issue was closed —
+	 * counting starts over). */
+	clearTicketEscalations(kind: string): void {
+		this.db.run("DELETE FROM ticket_escalations WHERE kind = ?", [kind]);
+		this.save();
+	}
+
+	/** The kind's open runbook issue (dedup: at most one per kind). */
+	getRunbookIssue(
+		kind: string,
+	): { issue_id: string; issue_identifier: string | null } | undefined {
+		const stmt = this.db.prepare(
+			"SELECT issue_id, issue_identifier FROM runbook_issues WHERE kind = ?",
+		);
+		stmt.bind([kind]);
+		let out: { issue_id: string; issue_identifier: string | null } | undefined;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			out = {
+				issue_id: row.issue_id as string,
+				issue_identifier: (row.issue_identifier as string) ?? null,
+			};
+		}
+		stmt.free();
+		return out;
+	}
+
+	setRunbookIssue(kind: string, issueId: string, identifier?: string): void {
+		this.db.run(
+			`INSERT INTO runbook_issues (kind, issue_id, issue_identifier) VALUES (?, ?, ?)
+			 ON CONFLICT(kind) DO UPDATE SET issue_id = excluded.issue_id,
+				issue_identifier = excluded.issue_identifier,
+				created_at = datetime('now')`,
+			[kind, issueId, identifier ?? null],
+		);
+		this.save();
+	}
+
+	clearRunbookIssue(kind: string): void {
+		this.db.run("DELETE FROM runbook_issues WHERE kind = ?", [kind]);
+		this.save();
+	}
+
+	// ── FLY-1082 (Task 2.3, Codex R3/R4/R5): server-loss episode ledger ──
+
+	/** Write (arm or update) the episode row — full side-effect state (shape,
+	 * claimed ids, per-Lead notification outbox, ticket phase). Idempotent. */
+	setServerLossEpisode(signature: string, state: ServerLossEpisodeState): void {
+		this.db.run(
+			`INSERT INTO server_loss_episode (id, signature, state_json) VALUES (1, ?, ?)
+			 ON CONFLICT(id) DO UPDATE SET signature = excluded.signature,
+				state_json = excluded.state_json`,
+			[signature, JSON.stringify(state)],
+		);
+		this.save();
+	}
+
+	getServerLossEpisode():
+		| { signature: string; state: ServerLossEpisodeState }
+		| undefined {
+		const stmt = this.db.prepare(
+			"SELECT signature, state_json FROM server_loss_episode WHERE id = 1",
+		);
+		let out: { signature: string; state: ServerLossEpisodeState } | undefined;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			const strings = (v: unknown): string[] =>
+				Array.isArray(v)
+					? v.filter((x): x is string => typeof x === "string")
+					: [];
+			let state: ServerLossEpisodeState;
+			try {
+				const parsed = JSON.parse(row.state_json as string) as Record<
+					string,
+					unknown
+				>;
+				state = {
+					shape:
+						parsed.shape === "server_fresh" ? "server_fresh" : "server_down",
+					claimed: strings(parsed.claimed),
+					ticketDone: parsed.ticketDone === true,
+					notifiedLeads: strings(parsed.notifiedLeads),
+					failedLeads: strings(parsed.failedLeads),
+					notifyAttempts:
+						parsed.notifyAttempts && typeof parsed.notifyAttempts === "object"
+							? (parsed.notifyAttempts as Record<string, number>)
+							: {},
+				};
+			} catch {
+				state = {
+					shape: "server_down",
+					claimed: [],
+					ticketDone: false,
+					notifiedLeads: [],
+					failedLeads: [],
+					notifyAttempts: {},
+				};
+			}
+			out = { signature: row.signature as string, state };
+		}
+		stmt.free();
+		return out;
+	}
+
+	clearServerLossEpisode(): void {
+		this.db.run("DELETE FROM server_loss_episode WHERE id = 1", []);
+		this.save();
+	}
+
 	/**
 	 * FLY-927 (Task 2.2): active tickets still at NEW whose first-seen is older
 	 * than `ms` — the T2 unclaimed-fallback work list. Legacy rows (NULL
@@ -5611,6 +5862,24 @@ export interface LeadEventRow {
 }
 
 /** FLY-368: a row of the alert_threads active-mapping table. */
+/**
+ * FLY-1082 (Codex R5): the server-loss episode's durable side-effect state —
+ * the per-Lead notification OUTBOX (notified / failed-after-retries / attempt
+ * counts), the ticket phase, the loss shape (replay renders the right copy),
+ * and the claimed exec ids. Every field must survive a Bridge crash so no
+ * owed side effect is lost and none is duplicated.
+ */
+export interface ServerLossEpisodeState {
+	shape: "server_down" | "server_fresh";
+	claimed: string[];
+	ticketDone: boolean;
+	notifiedLeads: string[];
+	/** Leads whose notification failed ≥3 attempts — surfaced via the ticket's
+	 * leadsFailed metadata (→ needs_human escalation); no further retries. */
+	failedLeads: string[];
+	notifyAttempts: Record<string, number>;
+}
+
 export interface AlertThreadRow {
 	correlation_key: string;
 	event_id: string;

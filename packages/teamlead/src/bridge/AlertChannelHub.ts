@@ -29,14 +29,20 @@ import {
 	leadPaneLiveHash,
 } from "../LeadWatchdog.js";
 import type { AlertThreadRow, StateStore } from "../StateStore.js";
-import type { AutoRepairBot } from "./AutoRepairBot.js";
+import { type AutoRepairBot, HUMAN_ONLY_REASON } from "./AutoRepairBot.js";
 import {
 	formatAccountCapOwnerAssignment,
 	resolveAccountCapOwnerId,
 } from "./infra-notify.js";
+import {
+	escalatesAtEnqueue,
+	FLEET_ESCALATION_COPY,
+	KIND_CONTRACTS,
+} from "./kind-contract.js";
 import { fingerprintOutput } from "./stuck-candidate.js";
 import {
 	decideTicketEscalation,
+	policyForKind,
 	type TicketEscalationPolicy,
 	ticketOwnerConfigured,
 } from "./ticket-escalation.js";
@@ -248,11 +254,33 @@ export interface AlertChannelHubDeps {
 	 * needs_human @founder line in the alert thread.
 	 */
 	escalateToIssueThread?: (row: AlertThreadRow) => Promise<boolean>;
-	/** T2 policy override (tests); default = the locked 2-try/5-min constants. */
+	/** T2 policy override (tests); default = per-kind via `policyForKind`. */
 	ticketPolicy?: TicketEscalationPolicy;
+	/**
+	 * FLY-1082: fleet-kind recovery probe for the reconcile pass — the fleet
+	 * analog of capturePane/captureRunner. Returns true = the underlying fleet
+	 * condition cleared (resolve quietly), false = still broken, null/absent =
+	 * cannot tell (leave active; the T2 decision still runs). Wired in
+	 * plugin.ts to the fleet-sensors module.
+	 */
+	fleetRecovery?: (row: AlertThreadRow) => Promise<boolean | null>;
+	/**
+	 * FLY-1082 (Task 3.2): fired after a ticket lands ESCALATED via the T2
+	 * path — the repeated-escalation runbook-gap counter hangs here. Best-
+	 * effort (failures logged, never block the escalation).
+	 */
+	onTicketEscalated?: (row: AlertThreadRow) => Promise<void>;
 	now?: () => number;
 	logger?: (msg: string) => void;
 }
+
+/** FLY-1082: kinds whose reconcile recovery runs through `fleetRecovery`. */
+const FLEET_RECOVERY_KINDS: ReadonlySet<AlertEventType> = new Set([
+	"swap_pressure_high",
+	"tmux_server_lost",
+	"bridge_abnormal_exit",
+	"infra_bot_down",
+]);
 
 const LEAD_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"rate_limit",
@@ -390,6 +418,38 @@ export class AlertChannelHub {
 			`🔧 Cass 收到（${payload.title}）。${ackTail}`.trimEnd(),
 		);
 
+		// FLY-1082 (Task 1.5): (b)-type kinds (kind-contract none_escalate)
+		// NEVER enter the ARC loop — the founder-facing line is the BY-DESIGN
+		// copy, not a "repair failed" framing. Generalizes the legacy
+		// runner_lead_pending_unhandled special case (its bot-present line stays
+		// byte-identical: same 🙋 framing, same HUMAN_ONLY_REASON string).
+		// Codex R1 HIGH-4: deliberately OUTSIDE the auto-repair gate — a
+		// by-design escalation (founder line + ESCALATED status + runbook-gap
+		// count) must fire even with FLYWHEEL_AUTO_REPAIR off; the contract, not
+		// the bot, owns this path.
+		if (escalatesAtEnqueue(payload.eventType)) {
+			await this.postByDesignEscalation(payload, threadId);
+			if (bot) this.deps.store.setAlertRepairStatus(ck, "needs_human");
+			if (payload.ticket) {
+				this.deps.store.setTicketStatus(ck, "ESCALATED");
+				await this.updateRootTicketStatus(channelId, messageId, "ESCALATED");
+				// FLY-1082 (Task 3.2): a by-design escalation counts toward the
+				// runbook-gap window too (repeated zombie backlogs = FLY-1066 is
+				// overdue — exactly what the auto-filed issue should say).
+				const row = this.deps.store.getActiveAlertThread(ck);
+				if (row) {
+					try {
+						await this.deps.onTicketEscalated?.(row);
+					} catch (err) {
+						this.logger(
+							`onTicketEscalated hook failed for ${ck}: ${(err as Error).message}`,
+						);
+					}
+				}
+			}
+			return;
+		}
+
 		if (bot) {
 			const repair = await bot.attempt(payload, ck);
 			if (repair.outcome === "needs_human") {
@@ -415,11 +475,20 @@ export class AlertChannelHub {
 					);
 				} else {
 					// Cass genuinely can't fix this → the ONE place we REALLY @Annie.
+					// FLY-1082 (Task 3.1, Codex R4 MED): fleet kinds render the
+					// four-element template with the bot's specific reason as the
+					// "为什么失败" element; legacy kinds keep the line byte-for-byte.
 					const fid = this.founderId();
 					const mention = fid ? `<@${fid}>` : "Annie";
+					const line =
+						this.fleetEscalationLine(
+							payload.eventType,
+							mention,
+							repair.detail,
+						) ?? `🙋 ${mention} 这个 Cass 修不了，需要你：${repair.detail}`;
 					await this.safePostToThread(
 						threadId,
-						`🙋 ${mention} 这个 Cass 修不了，需要你：${repair.detail}`,
+						line,
 						fid ? { mentionUserId: fid } : undefined,
 					);
 				}
@@ -456,6 +525,20 @@ export class AlertChannelHub {
 				} else {
 					this.deps.store.setTicketStatus(ck, "ESCALATED");
 					await this.updateRootTicketStatus(channelId, messageId, "ESCALATED");
+					// FLY-1082 (Task 3.2, Codex R3 MED): a needs_human escalation IS
+					// an ESCALATED landing — it must feed the runbook-gap window like
+					// the T2 and by-design paths (repeated "can't auto-fix" is
+					// exactly the signal the auto-filed eng issue exists for).
+					const row = this.deps.store.getActiveAlertThread(ck);
+					if (row) {
+						try {
+							await this.deps.onTicketEscalated?.(row);
+						} catch (err) {
+							this.logger(
+								`onTicketEscalated hook failed for ${ck}: ${(err as Error).message}`,
+							);
+						}
+					}
 				}
 			}
 		}
@@ -484,6 +567,54 @@ export class AlertChannelHub {
 				`root ticket-status edit failed (${messageId}): ${(err as Error).message}`,
 			);
 		}
+	}
+
+	/**
+	 * FLY-1082 (Task 3.1): the four-element founder escalation for a FLEET
+	 * kind — kind 人话 label · ARC 试了什么 · 为什么失败 · 你只需拍的一个决定
+	 * (plan contract: the failure reason slots in as-is; the Hub assembles the
+	 * rest). Returns null for non-fleet kinds (their legacy copy is kept
+	 * byte-for-byte by the callers).
+	 */
+	private fleetEscalationLine(
+		kind: AlertEventType,
+		mention: string,
+		failureReason: string,
+	): string | null {
+		const fleet = FLEET_ESCALATION_COPY[kind];
+		if (!fleet) return null;
+		return `🙋 ${mention} 修不掉 — ${fleet.label}。\n· ARC 试了：${
+			KIND_CONTRACTS[kind]?.remediationRef ?? "（无自动修复）"
+		}\n· 为什么失败：${failureReason}\n· 你只需拍一个决定：${fleet.decision}`;
+	}
+
+	/**
+	 * FLY-1082 (Task 1.5): the by-design escalation line for a (b)-type kind
+	 * (kind-contract none_escalate). The copy states the ARC posture honestly —
+	 * "设计上不自动修" — never the generic "试修失败" framing. Legacy
+	 * runner_lead_pending_unhandled keeps its exact pre-FLY-1082 line: same 🙋
+	 * framing + the SAME HUMAN_ONLY_REASON string (sourced, not duplicated).
+	 */
+	private async postByDesignEscalation(
+		payload: AlertPayload,
+		threadId: string,
+	): Promise<void> {
+		const fid = this.founderId();
+		const mention = fid ? `<@${fid}>` : "Annie";
+		const line =
+			payload.eventType === "zombie_session_backlog"
+				? `🙋 ${mention} 跨 Lead 僵尸 session 积压 — 设计上不自动收割（收割机制落地 = ${
+						KIND_CONTRACTS.zombie_session_backlog.remediationRef
+					}），样本清单见根消息。需要你拍一个决定：是否人工清理。`
+				: `🙋 ${mention} 这个 Cass 修不了，需要你：${
+						HUMAN_ONLY_REASON[payload.eventType] ??
+						"设计上不做自动修复（by design）— 需要人看。"
+					}`;
+		await this.safePostToThread(
+			threadId,
+			line,
+			fid ? { mentionUserId: fid } : undefined,
+		);
 	}
 
 	/**
@@ -613,6 +744,19 @@ export class AlertChannelHub {
 					await this.reconcileTicket(row);
 					continue;
 				}
+				// FLY-1082: fleet kinds recover through the fleet probe (watermark
+				// cleared / tmux server back / boot reconcile done / bot alive).
+				if (FLEET_RECOVERY_KINDS.has(row.event_type as AlertEventType)) {
+					if (this.deps.fleetRecovery) {
+						const recovered = await this.deps.fleetRecovery(row);
+						if (recovered === true) {
+							await this.resolve(row.correlation_key);
+							continue;
+						}
+					}
+					await this.reconcileTicket(row);
+					continue;
+				}
 				if (LEAD_KINDS.has(row.event_type as AlertEventType)) {
 					if (this.deps.capturePane) {
 						const pane = await this.deps.capturePane(
@@ -656,7 +800,9 @@ export class AlertChannelHub {
 			row,
 			this.now(),
 			ticketOwnerConfigured(row.owner_ref, ownerRegistryFromEnv(process.env)),
-			this.deps.ticketPolicy,
+			// FLY-1082 (Task 2.2): per-kind policy — legacy kinds resolve to the
+			// locked T2 defaults byte-for-byte; a test-injected policy still wins.
+			this.deps.ticketPolicy ?? policyForKind(row.event_type, process.env),
 		);
 		if (decision === "none") return;
 		if (decision === "retry") {
@@ -723,9 +869,21 @@ export class AlertChannelHub {
 		} else {
 			const fid = this.founderId();
 			const mention = fid ? `<@${fid}>` : "Annie";
+			// FLY-1082 (Task 3.1): fleet kinds render the FOUR-ELEMENT template
+			// (kind · ARC 试了什么 · 为什么失败 · 你只需拍的一个决定); legacy kinds
+			// keep the pre-FLY-1082 line byte-for-byte (no copy regression).
+			const line =
+				this.fleetEscalationLine(
+					row.event_type as AlertEventType,
+					mention,
+					row.attempt_count >= 2
+						? `重试预算用尽仍未恢复（尝试 ${row.attempt_count} 次）`
+						: "超时窗内没有恢复信号",
+				) ??
+				`🙋 ${mention} 修不掉(T2:重试 ${row.attempt_count} 次 / 超时)— 需要你处理。`;
 			await this.safePostToThread(
 				row.thread_id,
-				`🙋 ${mention} 修不掉(T2:重试 ${row.attempt_count} 次 / 超时)— 需要你处理。`,
+				line,
 				fid ? { mentionUserId: fid } : undefined,
 			);
 		}
@@ -735,6 +893,16 @@ export class AlertChannelHub {
 			row.root_message_id,
 			"ESCALATED",
 		);
+		// FLY-1082 (Task 3.2): repeated escalations of one kind = a runbook gap —
+		// the hook (wired in plugin.ts) counts the 7-day window and auto-files
+		// the eng issue. Best-effort: never blocks the escalation itself.
+		try {
+			await this.deps.onTicketEscalated?.(row);
+		} catch (err) {
+			this.logger(
+				`onTicketEscalated hook failed for ${row.correlation_key}: ${(err as Error).message}`,
+			);
+		}
 	}
 
 	/**

@@ -36,7 +36,14 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { cpus, freemem, loadavg } from "node:os";
 
-export type AdmissionReason = "load_pressure" | "memory_pressure";
+export type AdmissionReason =
+	| "load_pressure"
+	| "memory_pressure"
+	// FLY-1082 (Task 2.2): the fleet pressure-hold — an explicit, reversible
+	// hand brake the swap-watermark ARC places while the machine is in an
+	// OOM-warning episode. Checked before the resource math (an explicit hold
+	// beats a live probe); lifted automatically when the watermark falls.
+	| "pressure_hold";
 
 export type AdmissionDecision =
 	| { admit: true }
@@ -160,6 +167,8 @@ export class RunnerAdmissionController {
 	private readonly loadavgFn: () => number[];
 	private readonly availMemFn: () => number;
 	private readonly cpuCount: number;
+	/** FLY-1082: fleet pressure-hold probe (null = no hold). Late-bound. */
+	private pressureHoldProbe: (() => string | null) | null = null;
 
 	constructor(opts: RunnerAdmissionOptions = {}) {
 		this.loadPerCore = opts.loadPerCore ?? 8.0;
@@ -202,10 +211,34 @@ export class RunnerAdmissionController {
 		});
 	}
 
+	/**
+	 * FLY-1082 (Task 2.2): late-bind the fleet pressure-hold probe. The
+	 * controller is built at config-load time (no StateStore yet); plugin.ts
+	 * attaches `() => detail | null` once the store exists. The probe returns a
+	 * human-readable hold detail while the hold row is present, else null.
+	 */
+	setPressureHoldProbe(probe: (() => string | null) | null): void {
+		this.pressureHoldProbe = probe;
+	}
+
 	/** Decide whether to admit one more runner right now. Count-independent —
-	 * pure resource pressure (P4). Memory (when enabled) is checked first (hard
-	 * failure mode), then load. */
+	 * pure resource pressure (P4). The explicit fleet pressure-hold is checked
+	 * FIRST (an ARC-placed hand brake beats the live probes), then memory
+	 * (when enabled), then load. */
 	tryAdmit(): AdmissionDecision {
+		// FLY-1082: explicit hold — probe failures fail OPEN (a broken probe
+		// must never halt dispatch; the resource guards below still apply).
+		if (this.pressureHoldProbe) {
+			let held: string | null = null;
+			try {
+				held = this.pressureHoldProbe();
+			} catch {
+				held = null;
+			}
+			if (held !== null) {
+				return { admit: false, reason: "pressure_hold", detail: held };
+			}
+		}
 		// Memory gate is opt-in: only when an operator set a positive floor.
 		if (this.minFreeMemBytes > 0) {
 			const avail = this.availMemFn();

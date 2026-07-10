@@ -71,6 +71,7 @@ import {
 import {
 	type AlertPayload,
 	type AlertResult,
+	FLEET_ALERT_PROJECT,
 	findUnreachableAlertLeads,
 	LeadAlertNotifier,
 } from "../LeadAlertNotifier.js";
@@ -133,6 +134,15 @@ import { resolveAutoQaPolicy } from "./auto-qa-policy.js";
 import { AutoContinueArmer } from "./autocontinue-armer.js";
 import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { runBootShaCheck } from "./boot-sha-check.js";
+// FLY-927 (W1): D1 responder-based routing — ticket queue vs issue thread.
+import {
+	abnormalExitEpisodeSignature,
+	abnormalExitTicketEventId,
+	bridgeMarkerPath,
+	latchPreviousMarker,
+	writeCleanMarker,
+	writeRunningMarker,
+} from "./bridge-exit-marker.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 // FLY-927 (Task 3.3): truthful stage wording for the three-stage stuck alert.
 import { resolveChatThreadId } from "./chat-thread-utils.js";
@@ -200,6 +210,7 @@ import {
 	handleStage,
 	loopbackSelfOrigin,
 } from "./fleet-routes.js";
+import { FleetSensors } from "./fleet-sensors.js";
 import { createFocusedFrameScheduler } from "./focused-frame-scheduler.js";
 import {
 	buildFounderConsentWiring,
@@ -212,7 +223,6 @@ import { emitFounderStuckNotification } from "./founder-thread-notifier.js";
 import { mountFounderUxRoutes } from "./founder-ux/routes.js";
 import { GatePoller } from "./gate-poller.js";
 import { buildSessionKey } from "./hook-payload.js";
-// FLY-927 (W1): D1 responder-based routing — ticket queue vs issue thread.
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
 	formatAccountCapOwnerAssignment,
@@ -231,6 +241,8 @@ import {
 	IssueDisplayRefresher,
 	type IssueDisplayRefreshHolder,
 } from "./issue-display-refresher.js";
+import { validateKindContracts } from "./kind-contract.js";
+import { probeLaunchdJobAlive } from "./launchctl.js";
 import {
 	createBlockedMarkerReader,
 	createClaimsClaimer,
@@ -290,6 +302,7 @@ import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
 import { buildTopicTrigger } from "./roundtable/topic-trigger.js";
 import { setupRunInfrastructure } from "./run-infra.js";
+import { noteTicketEscalated } from "./runbook-gap.js";
 import {
 	defaultResolveLeadId,
 	makeRunnerAuthScan,
@@ -305,6 +318,7 @@ import {
 import { createStatusQuery } from "./runner-status.js";
 import { createRunsRouter } from "./runs-route.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
+import { ServerLossCoordinator } from "./server-loss.js";
 import {
 	captureSession as defaultCaptureSession,
 	defaultGetCommDbPath,
@@ -348,6 +362,7 @@ import {
 	killTmuxWindow,
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
+	probeTmuxServer,
 	sendEnterToWindow,
 	sendKeysToWindow,
 } from "./tmux-lookup.js";
@@ -366,6 +381,7 @@ import {
 	handlePostAction,
 	type XhsReviewDeps,
 } from "./xhs-review-routes.js";
+import { scanZombies } from "./zombie-scan.js";
 
 /**
  * FLY-142 PR 1.4: Backend selection — `mailbox` (default) or `commdb` (rollback).
@@ -2958,7 +2974,47 @@ export async function startBridge(
 		);
 	}
 
+	// FLY-1082 (Task 1.1): fail-loud kind-contract validation — every alert
+	// kind must have an owner + an explicit ARC posture, or the Bridge REFUSES
+	// to start (before any listen/timer). Deliberately no kill-switch: this is
+	// a code-integrity check, not a behavior.
+	validateKindContracts();
+
+	// FLY-1082 (Task 2.4): dirty-exit marker — LATCH the previous generation's
+	// marker BEFORE overwriting it (evidence before overwrite). A latched
+	// `running` marker = the previous Bridge died without a clean shutdown;
+	// the boot self-check ticket for it is emitted after the alert sink exists.
+	const bridgeMarker = bridgeMarkerPath(process.env);
+	const prevExitMarker = latchPreviousMarker(bridgeMarker);
+	try {
+		writeRunningMarker(bridgeMarker, process.pid, Date.now());
+	} catch (err) {
+		console.warn(
+			`[bridge-exit-marker] running-marker write failed (non-fatal): ${(err as Error).message}`,
+		);
+	}
+
+	// FLY-1082: late-bound fleet holders — the sensors need the routed alert
+	// sink (built late) while HeartbeatService/AutoRepairBot (built earlier)
+	// need callbacks into them. Holders break the ordering cycle.
+	const fleetSensorsHolder: { current: FleetSensors | null } = {
+		current: null,
+	};
+	const serverLossHolder: { current: ServerLossCoordinator | null } = {
+		current: null,
+	};
+
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+
+	// FLY-1082 (Task 2.2): the fleet pressure-hold gates runner admission —
+	// late-bind the probe now that the store exists. Fail-open inside tryAdmit.
+	// runnerAdmission is optional on the config (scaffold/test bridges omit it).
+	config.runnerAdmission?.setPressureHoldProbe(() => {
+		const hold = store.getFleetPressureHold();
+		return hold
+			? `fleet pressure-hold active since ${hold.set_at} (by ${hold.set_by}, swap ${hold.watermark ?? "?"}) — lifts automatically when the watermark falls`
+			: null;
+	});
 
 	// FLY-142 PR #186 amend (QA hybrid-swap, 2026-05-13): auto-deploy runtime
 	// hooks from `scripts/hooks/` to `~/.flywheel/hooks/` on Bridge boot.
@@ -3722,6 +3778,15 @@ export async function startBridge(
 				};
 			},
 		},
+		// FLY-1082 (Task 2.3): the server-loss coordinator pre-reaper phase —
+		// holder-backed (the coordinator is built later, alongside the alert
+		// sink). FLYWHEEL_FLEET_SENSOR_TMUX=0 kills the phase entirely.
+		process.env.FLYWHEEL_FLEET_SENSOR_TMUX !== "0"
+			? {
+					check: async () =>
+						(await serverLossHolder.current?.check()) ?? new Set<string>(),
+				}
+			: undefined,
 	);
 
 	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event
@@ -5827,6 +5892,61 @@ export async function startBridge(
 		};
 	}
 
+	// FLY-1082 (Task 3.2): runbook-gap Linear wiring — FLY team / Flywheel
+	// project / Flywheel label, resolved lazily per call (the auto-filed issue
+	// is rare; no caching complexity). No LINEAR_API_KEY ⇒ creation degrades to
+	// null and the escalation itself is untouched.
+	const runbookCreateIssue = async (input: {
+		title: string;
+		description: string;
+	}): Promise<{ id: string; identifier?: string } | null> => {
+		const apiKey = config.linearApiKey;
+		if (!apiKey) return null;
+		try {
+			const { LinearClient } = await import("@linear/sdk");
+			const client = new LinearClient({ apiKey });
+			const teams = await client.teams({ filter: { key: { eq: "FLY" } } });
+			const team = teams.nodes[0];
+			if (!team) return null;
+			const projects = await client.projects({
+				filter: { name: { eq: "Flywheel" } },
+			});
+			const labels = await team.labels({
+				filter: { name: { eq: "Flywheel" } },
+			});
+			const payload = await client.createIssue({
+				teamId: team.id,
+				title: input.title,
+				description: input.description,
+				...(projects.nodes[0]?.id && { projectId: projects.nodes[0].id }),
+				...(labels.nodes[0]?.id && { labelIds: [labels.nodes[0].id] }),
+			});
+			const created = await payload.issue;
+			return created?.id
+				? { id: created.id, identifier: created.identifier }
+				: null;
+		} catch (err) {
+			console.warn(
+				`[runbook-gap] Linear issue creation failed: ${(err as Error).message}`,
+			);
+			return null;
+		}
+	};
+	const runbookIsIssueOpen = async (
+		issueId: string,
+	): Promise<boolean | null> => {
+		const apiKey = config.linearApiKey;
+		if (!apiKey) return null;
+		try {
+			const { LinearClient } = await import("@linear/sdk");
+			const issue = await new LinearClient({ apiKey }).issue(issueId);
+			const state = await issue.state;
+			return state ? !["completed", "canceled"].includes(state.type) : null;
+		} catch {
+			return null; // cannot tell — keep the dedup (never double-file)
+		}
+	};
+
 	// FLY-368 rework: Hub on when unified channel + threading + a resolvable repair
 	// chain; else watchdogs route straight to the notifier (legacy / root-only).
 	const alertHub =
@@ -5866,6 +5986,27 @@ export async function startBridge(
 								// gated on FLYWHEEL_ACCOUNT_SELF_HEAL (default OFF → undefined
 								// = byte-compat, usage_limit stays needs_human).
 								accountSwitch: accountSwitchRepair,
+								// FLY-1082: fleet repairs — holder-backed (sensors built after
+								// the sink below). Unwired ⇒ needs_human, honest degradation.
+								fleetRepair: {
+									swapPressure: (p) =>
+										fleetSensorsHolder.current
+											? fleetSensorsHolder.current.swapPressureRepair(p)
+											: Promise.resolve({
+													outcome: "needs_human" as const,
+													action: "none",
+													detail: "fleet sensors 未接线 — 需要人工降载。",
+												}),
+									infraBotKickstart: (p) =>
+										fleetSensorsHolder.current
+											? fleetSensorsHolder.current.infraBotKickstartRepair(p)
+											: Promise.resolve({
+													outcome: "needs_human" as const,
+													action: "none",
+													detail:
+														"fleet sensors 未接线 — 需要人工重启 launchd job。",
+												}),
+								},
 							})
 						: undefined,
 					// Reconcile capture: locate the Lead window + grab its pane (null when
@@ -5934,6 +6075,19 @@ export async function startBridge(
 						store.recordFounderPaged(row.event_id, paged);
 						return paged;
 					},
+					// FLY-1082: fleet-kind recovery probe (watermark cleared / bot back
+					// alive / boot reconcile done) — holder-backed; null = cannot tell.
+					fleetRecovery: async (row) =>
+						(await fleetSensorsHolder.current?.recoveryProbe(row)) ?? null,
+					// FLY-1082 (Task 3.2): repeated-escalation runbook-gap counter —
+					// same kind ESCALATED ≥3 times in 7 days auto-files the eng issue.
+					onTicketEscalated: async (row) => {
+						await noteTicketEscalated(row.event_type, {
+							store,
+							createIssue: runbookCreateIssue,
+							isIssueOpen: runbookIsIssueOpen,
+						});
+					},
 				})
 			: undefined;
 	if (alertHub) {
@@ -5959,6 +6113,193 @@ export async function startBridge(
 		rawSink: alertSink,
 	});
 	routedAlertSinkHolder.current = routedAlertSink;
+
+	// ── FLY-1082: fleet sensors + server-loss coordinator wiring ─────────────
+	// Bridge → Lead instruction over the per-project CommDB inbox (the same
+	// transport CommDBLeadRuntime uses) — the fleet notifications (load-shed /
+	// casualty lists) ride it. Leads are unique per agentId across projects.
+	const leadProjectByAgentId = new Map<string, string>();
+	for (const p of projects) {
+		for (const l of p.leads) leadProjectByAgentId.set(l.agentId, p.projectName);
+	}
+	const notifyLeadInstruction = async (
+		leadId: string,
+		content: string,
+		dedupeId?: string,
+	): Promise<boolean> => {
+		const projectName = leadProjectByAgentId.get(leadId);
+		if (!projectName) return false;
+		try {
+			new CommDB(commDbPathForProject(projectName)).insertInstruction(
+				"bridge",
+				leadId,
+				content,
+				dedupeId ? { dedupeId } : undefined,
+			);
+			return true;
+		} catch (err) {
+			console.warn(
+				`[fleet-sensors] notifyLead(${leadId}) failed: ${(err as Error).message}`,
+			);
+			return false;
+		}
+	};
+	// Infra-bot probes: launchd job labels from env (FLY-927 convention —
+	// unset ⇒ that provider is simply not probed; graceful degradation until
+	// FLY-1071 arms the bots).
+	const probeInfraBots = async () => {
+		const out: import("./fleet-sensors.js").InfraBotProbe[] = [];
+		for (const [provider, envName] of [
+			["claude", "FLYWHEEL_CLAUDE_INFRA_BOT_JOB"],
+			["codex", "FLYWHEEL_CODEX_INFRA_BOT_JOB"],
+		] as const) {
+			const jobLabel = process.env[envName]?.trim();
+			if (!jobLabel) continue;
+			const alive = await probeLaunchdJobAlive(jobLabel);
+			if (alive === null) continue; // indeterminate — never a false bot-down
+			out.push({ provider, alive, jobLabel, probeSource: "launchctl print" });
+		}
+		return out;
+	};
+	// Zombie scan (Task 2.6): CommDB running rows across projects vs StateStore.
+	const scanZombiesWired = async () => {
+		const findings: import("./zombie-scan.js").ZombieFinding[] = [];
+		for (const p of projects) {
+			try {
+				const rows = new CommDB(
+					commDbPathForProject(p.projectName),
+				).listSessions(p.projectName, ["running"]);
+				findings.push(
+					...(await scanZombies({
+						commRunning: rows.map((r) => ({
+							execution_id: r.execution_id,
+							project_name: p.projectName,
+							tmux_window: r.tmux_window,
+						})),
+						storeSession: (id) => {
+							const s = store.getSession(id);
+							return s
+								? { status: s.status, heartbeat_at: s.heartbeat_at }
+								: undefined;
+						},
+						targetAlive: async (w) => {
+							const liveness = await probeRunnerProcessLiveness(w);
+							if (liveness === "alive") return true;
+							if (liveness === "absent" || liveness === "dead_pin")
+								return false;
+							return null;
+						},
+						nowMs: Date.now(),
+					})),
+				);
+			} catch (err) {
+				console.warn(
+					`[fleet-sensors] zombie scan for ${p.projectName} failed: ${(err as Error).message}`,
+				);
+			}
+		}
+		return findings;
+	};
+	fleetSensorsHolder.current = new FleetSensors({
+		store,
+		alert: (p) => routedAlertSink.alert(p),
+		resolveTicket: alertHub ? (ck) => alertHub.resolve(ck) : undefined,
+		notifyLead: notifyLeadInstruction,
+		listLeadIds: () => [...leadProjectByAgentId.keys()],
+		probeBots: probeInfraBots,
+		scanZombies: scanZombiesWired,
+		// Codex R2 HIGH: a server-loss episode with unmigrated casualties must
+		// never read as recovered — the probe consults the live coordinator.
+		serverLossPending: () =>
+			serverLossHolder.current?.hasPendingMigrations() ?? false,
+	});
+	serverLossHolder.current = new ServerLossCoordinator({
+		store,
+		probeServer: () => probeTmuxServer(),
+		targetGone: async (session) => {
+			const lookup = lookupTmuxTarget(
+				session.execution_id,
+				session.project_name,
+			);
+			if (lookup.kind === "error") return null;
+			if (lookup.kind === "gone") return true;
+			const liveness = await probeRunnerProcessLiveness(
+				lookup.target.tmuxWindow,
+			);
+			if (liveness === "alive") return false;
+			if (liveness === "absent" || liveness === "dead_pin") return true;
+			return null;
+		},
+		migrate: async (session, episodeSignature) => {
+			const now = new Date()
+				.toISOString()
+				.replace("T", " ")
+				.replace(/\.\d+Z$/, "");
+			if (transitionOpts) {
+				applyTransition(
+					transitionOpts,
+					session.execution_id,
+					"failed",
+					{
+						executionId: session.execution_id,
+						issueId: session.issue_id,
+						projectName: session.project_name,
+						trigger: "server_loss",
+					},
+					{
+						last_activity_at: now,
+						last_error: `tmux server lost (${episodeSignature})`,
+					},
+				);
+			} else {
+				store.forceStatus(
+					session.execution_id,
+					"failed",
+					now,
+					`tmux server lost (${episodeSignature})`,
+				);
+			}
+			return true;
+		},
+		resolveLeadId: (session) => {
+			try {
+				const labels = store.getSessionLabels(session.execution_id);
+				return resolveLeadForIssue(projects, session.project_name, labels).lead
+					.agentId;
+			} catch {
+				return null;
+			}
+		},
+		notifyLead: notifyLeadInstruction,
+		alert: (p) => routedAlertSink.alert(p),
+		currentWatermark: () => fleetSensorsHolder.current?.lastWatermark ?? null,
+	});
+	console.log(
+		"[Bridge] FLY-1082 fleet sensors wired (swap/bot/zombie on watchdog tick; tmux server-loss as heartbeat pre-reaper phase)",
+	);
+
+	// FLY-1082 (Task 2.4): boot self-check leg — a latched `running` marker
+	// means the previous Bridge died dirty; open the lifecycle ticket (the
+	// wrapper page already fired Bridge-independently with its OWN dedup id;
+	// both legs share the episode signature for correlation).
+	if (prevExitMarker?.state === "running") {
+		const episode = abnormalExitEpisodeSignature(prevExitMarker);
+		void routedAlertSink
+			.alert({
+				leadId: "bridge",
+				projectName: FLEET_ALERT_PROJECT,
+				eventId: abnormalExitTicketEventId(prevExitMarker),
+				eventType: "bridge_abnormal_exit",
+				title: "Bridge 非正常退出 — 复活对账中",
+				body: `上一代 Bridge (PID ${prevExitMarker.pid}, boot ${prevExitMarker.bootTs}) 没有 clean shutdown 就退出了（episode ${episode}；wrapper 直发 page 同一 episode）。launchd 已复活本进程；boot 对账完成后本工单安静 resolve。`,
+				severity: "severe",
+			})
+			.catch((err: Error) =>
+				console.warn(
+					`[bridge-exit-marker] boot ticket emission failed: ${err.message}`,
+				),
+			);
+	}
 
 	// FLY-637-ext: now that the shared alert sink exists, point the GatePoller's
 	// late-bound lead-pending page-Annie holder at it (same routing as FLY-195 Q7).
@@ -6181,6 +6522,17 @@ export async function startBridge(
 		// channel. Every sub-task is independently try/caught so one failing piece
 		// never wedges the others or the poll loop — no new timer for any of them.
 		onPollComplete: async () => {
+			// FLY-1082: fleet sensors ride the SAME piggybacked tick (zero new
+			// timers) — swap watermark, infra-bot probes, throttled zombie scan.
+			// Runs BEFORE the Hub reconcile so a fresh sensor verdict (e.g. the
+			// watermark clearing) is visible to the same tick's recovery pass.
+			try {
+				await fleetSensorsHolder.current?.tick();
+			} catch (err) {
+				console.warn(
+					`[Bridge] fleet-sensors tick failed: ${(err as Error).message}`,
+				);
+			}
 			if (alertHub) {
 				try {
 					await alertHub.reconcile();
@@ -6410,6 +6762,10 @@ export async function startBridge(
 		// timeout so the process — and thus the port — is released even if any
 		// await below hangs.
 		shutdownStateHolder.shuttingDown = true;
+		// FLY-1082 (Task 2.4): the clean-shutdown marker rides the SAME close
+		// path as /health shuttingDown (no extra signal handlers) — a boot that
+		// finds this marker still `running` knows the previous Bridge died dirty.
+		writeCleanMarker(bridgeMarker);
 		heartbeatService?.stop();
 		gatePoller.stop();
 		await roundtableThreadManager?.stop();
@@ -6443,6 +6799,13 @@ export async function startBridge(
 		});
 		store.close();
 	};
+
+	// FLY-1082 (Task 2.4): startup wiring complete = the boot reconcile the
+	// bridge_abnormal_exit ticket waits on is done — the next Hub reconcile
+	// tick resolves it quietly.
+	if (fleetSensorsHolder.current) {
+		fleetSensorsHolder.current.bootReconcileDone = true;
+	}
 
 	return { app, store, close, registry };
 }

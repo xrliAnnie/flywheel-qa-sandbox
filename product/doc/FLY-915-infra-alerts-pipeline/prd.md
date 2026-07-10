@@ -77,6 +77,11 @@ flowchart TD
 | runner 卡死 / 超时 | 超阈值无进展 | continue nudge / respawn | @Annie |
 | **529 瞬时(runner 真停)** | runner 因 529 真停 | 等待/重试/切账号(ARC) | 解不了才 @Annie |
 | three_stage_stuck / founder 通知投递失败 | 现有检测 | 现有处理 | @Annie |
+| **swap 水位越高阈(OOM 预警)**(FLY-1082) | swap 用量 ≥80%(滞回 65%,连续 2 tick 确认) | 置可逆 pressure-hold 暂停派新 runner + 通知各 Lead 降载;水位回落自动解除+安静 resolve | 30 分钟不回落 @Annie |
+| **tmux server 整个消失**(FLY-1082) | server 死/重启且 StateStore 仍有 running runner | 成组标记终态(一个 episode,不是 13 条单独告警)+ 按 Lead 分组通知(各自阵亡清单+resume 指针);respawn 由 Lead 驱动 | 通知投递失败 @Annie |
+| **Bridge 非正常退出**(FLY-1082) | dirty-exit marker(上一代没走 clean shutdown) | wrapper 直发 page(Bridge-independent 快路径)+ 复活后 boot 工单对账 → 安静 resolve;launchd respawn 即修复 | crash-loop(10 分钟 ≥3 次)@Annie;「一直没起来」由进程外心跳探针直接 @Annie |
+| **infra bot 掉线**(FLY-1082) | launchd job 死 / pane 消失 | launchd job 原地重启(幂等可逆) | 2 次失败 @Annie |
+| **跨 Lead 僵尸 session 积压**(FLY-1082) | CommDB↔StateStore 对账三形态,积压 ≥3 | (b) 型:设计上不自动收割(收割 = FLY-1066)→ 带样本清单直接升级 | 直接 @Annie(带清单+一个决定) |
 
 ### 4.2 治假冻结误判(Annie 明确要修)
 - **idle 1h ≠ 冻结**:健康 idle(等活儿)绝不能报成冻结。现有 `isIdleHealthyPane()` idle suppressor(FLY-193,default-ON)已做这件事 —— PRD 要求**确认它覆盖到位**,并把「真冻结(要人救)vs 健康 idle(别报)」的判定标准写死进 eng issue(真冻结 = 有活跃任务但 live-region 长时间无变化且无 idle 锚点)。已知盲点(frozen-mid-thinking 无 esc 提示)列为 follow-up 抓真样本。
@@ -84,6 +89,8 @@ flowchart TD
 
 ### 4.3 bot 工单生命周期(eng 状态机)
 `检测 → 入队(告警频道工单)→ bot ACK → ARC 尝试(有限次/超时)→ [成功] 安静 resolve + 留处理记录 / [失败] @Annie 升级(带完整上下文)`。**幂等**:同一问题不重复开工单(复用现有 claims.db/episode-latch);**跨 bot 不抢**(provider 归属见 C)。
+
+**进程外兜底(FLY-1082,2026-07-09 事故补)**:检测面大多活在 Bridge 进程内 —— Bridge 自己死了,整个检测→入队→修复平面一起死。所以「Bridge 死了且没活过来」由 **Codex Infra Bot 侧的独立心跳探针**兜住(确定性脚本,非 LLM loop,随 bot 的 launchd 域部署):每分钟 curl Bridge /health,**连续 down ≥5 分钟(可配)→ 直接 @Annie**,恢复后单发一条解除;每个 down episode 只 page 一次。快路径(死了但复活了)由 Bridge wrapper 的 dirty-exit marker 直发承担。**Bridge 自身死亡的检测腿(wrapper 直发 + 外部心跳)不得塞回 Bridge 进程内 —— 否则事故时同死**。
 
 ## 5. C. 两 infra bot 分工(Annie:分工 OK)
 
@@ -159,6 +166,11 @@ flowchart TD
 | runner 卡死/超时 | 超阈无进展 | **Claude bot**(provider 无关,默认) | continue nudge / respawn | @Annie |
 | 529 runner 真停 | runner 因 529 真停 | **Claude bot**(provider 无关,默认) | 等/重试/切 | @Annie |
 | three_stage_stuck / founder 通知投递失败 | 现有检测 | **Claude bot(默认)** | 现有处理 | @Annie |
+| swap 水位越高阈(OOM 预警) | ≥80% 滞回+2 tick 确认 | **Claude bot(fleet 级默认)** | pressure-hold + Lead 降载通知;回落自动解除 | 30 分钟不回落 @Annie |
+| tmux server 整个消失 | server 死且仍有 running runner | **Claude bot(fleet 级默认)** | 成组终态迁移 + 按 Lead 分组通知(respawn 归 Lead) | 通知投递失败 @Annie |
+| Bridge 非正常退出 | dirty-exit marker | **Claude bot(fleet 级默认)** | launchd respawn + boot 对账自检 → 安静 resolve | crash-loop / 没活过来(外部心跳)@Annie |
+| infra bot 掉线 | launchd job 死/pane 消失 | **对侧 bot**(交叉:死 Claude bot @ Codex、死 Codex bot @ Claude) | launchd job 原地重启 | 2 次失败 @Annie |
+| 跨 Lead 僵尸 session 积压 | 对账三形态,积压 ≥3 | **Claude bot** | (b) 型:不自动收割(FLY-1066)→ 直接升级 | 直接 @Annie(带清单) |
 
 > **@-routing 规则(Annie 2026-07-06 已锁)**:一条工单只 @ 一个 owner、无双 bot 竞争。**默认 @ Claude bot(主力)**;provider 无关问题(runner 卡死/超时/529)→ @ Claude bot;账号/auth 救援按「谁都不救自己」**交叉**:**Claude 账号/auth 问题 @ Codex bot、Codex 账号/auth 问题 @ Claude bot**。
 

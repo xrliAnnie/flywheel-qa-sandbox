@@ -257,6 +257,30 @@ function isTmuxAbsenceMessage(msg: string): boolean {
 }
 
 /**
+ * FLY-1082 (Task 2.3): SERVER-level tri-state probe — is the default tmux
+ * server (the one hosting every runner) alive at all?
+ *   - "up"      — `list-sessions` succeeded (a serving tmux server exists;
+ *                 note tmux exits when its last session closes, so "down" is
+ *                 also the NORMAL zero-runner state — the server-loss
+ *                 coordinator only treats it as a loss while StateStore still
+ *                 holds running tmux sessions);
+ *   - "down"    — tmux PROVED "no server running";
+ *   - "unknown" — timeout / ENOENT / any other error (never treated as loss).
+ */
+export async function probeTmuxServer(
+	runTmux: TmuxRunner = defaultTmuxRunner,
+): Promise<"up" | "down" | "unknown"> {
+	try {
+		await runTmux(["list-sessions"]);
+		return "up";
+	} catch (err) {
+		const msg = (err as Error).message ?? String(err);
+		if (msg.includes("no server running")) return "down";
+		return "unknown";
+	}
+}
+
+/**
  * Tri-state per-window liveness (FLY-245 D2, Codex code-review R1 HIGH-4):
  *   - `alive`         — `list-panes` succeeded;
  *   - `dead`          — tmux PROVED the window/session is absent;

@@ -53,6 +53,16 @@ const ACCOUNT_AUTH_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>(
 	["usage_limit", "login_expired", "rate_limit", "runner_login_expired"],
 );
 
+/**
+ * FLY-1082 (Task 1.3): the full cross-assignment family. `infra_bot_down`
+ * reuses the account/auth cross pattern with a different provider source: the
+ * DEAD bot's side rides `metadata.infraBotDown.provider` (an explicit event
+ * field — there is no runner session to derive from), and the OTHER side owns
+ * the ticket. Dead claude bot → @codex bot; dead codex bot → @claude bot.
+ */
+const CROSS_PROVIDER_KINDS: ReadonlySet<AlertEventType> =
+	new Set<AlertEventType>([...ACCOUNT_AUTH_KINDS, "infra_bot_down"]);
+
 /** Kinds with NO bot owner. */
 const NO_OWNER_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>([
 	// Permissions are a HUMAN decision (PRD §4.3 precedent) — straight to
@@ -75,7 +85,7 @@ export function resolveTicketOwner(
 	reg: OwnerRegistry,
 ): TicketOwner {
 	if (NO_OWNER_KINDS.has(eventType)) return { kind: "none" };
-	if (ACCOUNT_AUTH_KINDS.has(eventType)) {
+	if (CROSS_PROVIDER_KINDS.has(eventType)) {
 		// Cross assignment; unknown provider defaults to the Claude workhorse.
 		if (provider === "claude") {
 			return { kind: "infra_bot", side: "codex", userId: reg.codexBotUserId };

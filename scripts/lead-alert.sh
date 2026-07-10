@@ -108,7 +108,11 @@ case "$KIND" in
   # update-flywheel.sh 🚨/⚠️ deploy notices (system identity --lead deploy /
   # --lead updater; shell-only kinds, the Bridge never emits them). Same
   # TS-union parity convention (LeadAlertNotifier.ts ALERT_EVENT_TYPES).
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded) ;;
+  # FLY-1082: the 5 fleet-failure kinds. bridge_abnormal_exit is LOAD-BEARING
+  # on this leg (the wrapper preflight dirty-marker page fires while the Bridge
+  # is down); the other four are added for face parity with the TS union
+  # (kind-contract.test.ts is the drift guard on both faces).
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"

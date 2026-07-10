@@ -166,6 +166,44 @@ export const ALERT_EVENT_TYPES = [
 	// the shared kind face (lead-alert.sh allowlist ↔ TS) has no drift.
 	"deploy_failed",
 	"deploy_degraded",
+	// ── FLY-1082: fleet-level failure kinds (the 2026-07-09 OOM incident gap —
+	// machine-wide failures had NO kind, so nobody owned them and the founder
+	// found out first). Every fleet kind has an owner + an explicit ARC posture
+	// in bridge/kind-contract.ts (validated fail-loud at Bridge startup). ──
+	//
+	// Swap watermark crossed the high threshold (OOM EARLY WARNING — a true OOM
+	// already manifests as bridge_abnormal_exit / tmux_server_lost, so there is
+	// deliberately no "OOM happened" kind). Emitted by the machine-watermark
+	// sensor (watchdog tick piggyback) with hysteresis + 2-tick confirmation.
+	// ARC: reversible dispatch pressure-hold + per-Lead load-shed notify; the
+	// ticket resolves quietly when the watermark falls below the low threshold.
+	"swap_pressure_high",
+	// The tmux server hosting ALL runners is gone while StateStore still has
+	// running tmux sessions (server-level death — distinct from a single
+	// runner's window dying). ONE episode per loss, not 13 per-runner alerts;
+	// the server-loss coordinator (HeartbeatService pre-reaper phase) migrates
+	// every affected runner to its terminal state and notifies each Lead with
+	// its own casualty list + resume pointers. Respawn stays Lead-driven.
+	"tmux_server_lost",
+	// The Bridge process died WITHOUT a clean shutdown (fatal exit under memory
+	// pressure, kill -9, crash). Two in-machine legs share one episodeSignature:
+	// the wrapper preflight dirty-marker page (Bridge-independent fast path via
+	// lead-alert.sh — load-bearing in the shell allowlist) and the revived
+	// Bridge's boot self-check ticket (lifecycle: ACK → boot reconcile →
+	// quiet resolve). The out-of-process "never came back" backstop is the
+	// external liveness probe (scripts/bridge-liveness-probe.sh, Codex bot).
+	"bridge_abnormal_exit",
+	// One of the two infra bots (claude / codex windowed Leads) is down —
+	// launchd job dead or lead pane gone. CROSS-owned via
+	// metadata.infraBotDown.provider ("nobody rescues their own side": the dead
+	// side's ticket is owned by the OTHER bot). ARC: launchctl kickstart -k.
+	"infra_bot_down",
+	// Cross-Lead zombie session backlog (CommDB↔StateStore reconcile drift,
+	// the FLY-1066 three shapes) reached the threshold. NO ARC by design —
+	// reaping is FLY-1066's job (kind-contract remediationRef) — so the ticket
+	// lands directly ESCALATED with the sample list; never enters the ARC
+	// retry loop.
+	"zombie_session_backlog",
 ] as const;
 
 export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];
@@ -221,6 +259,37 @@ export interface AlertMetadata {
 		 */
 		executionId?: string;
 	};
+	/**
+	 * FLY-1082 (Task 2.5): which infra bot died — an EXPLICIT event field, not
+	 * derived from a session (a bot-down event has no runner session to derive
+	 * `adapter_type` from). Drives the cross owner assignment: the DEAD side's
+	 * ticket is owned by the OTHER bot (dead claude → @codex, dead codex →
+	 * @claude). `jobLabel` is the launchd job for the kickstart ARC action;
+	 * `probeSource` records which probe detected the death (pane / launchctl).
+	 */
+	infraBotDown?: {
+		provider: "claude" | "codex";
+		jobLabel?: string;
+		probeSource?: string;
+	};
+	/**
+	 * FLY-1082 (Task 2.3): the server-loss coordinator's remediation summary —
+	 * the ARC action (grouped terminal migration + per-Lead notify) runs AT
+	 * DETECTION inside the HeartbeatService pre-reaper phase; this metadata is
+	 * its evidence for the AutoRepairBot (attempted iff every Lead notification
+	 * delivered) and for the QA chain.
+	 */
+	tmuxServerLost?: {
+		/** Total casualties in the episode (Codex R2: migrated<casualties ⇒
+		 * the remediation is INCOMPLETE — must not read as attempted/recovered). */
+		casualties: number;
+		/** Runners migrated to their terminal state by the coordinator. */
+		migrated: number;
+		/** Leads whose grouped casualty notification was delivered. */
+		leadsNotified: number;
+		/** Leads whose notification FAILED (>0 ⇒ needs_human escalation). */
+		leadsFailed: number;
+	};
 }
 
 /**
@@ -266,6 +335,23 @@ export interface AlertPayload {
 	 * a malformed id degrades to plain text).
 	 */
 	mentionUserId?: string;
+}
+
+/**
+ * FLY-1082 (Task 1.4): the routing sentinel for fleet/system alerts. A payload
+ * with this projectName carries NO projects.json lead — machine-scoped
+ * failures (swap watermark / tmux server loss / bot down / zombie backlog)
+ * have no owning Lead by nature. Routing identity and display fields are
+ * DECOUPLED on this path: `projectName` is the sentinel, `leadId` is a
+ * display-only affected-target summary (e.g. "tmux-server"), and delivery
+ * rides the unified channel + sender chain. `alert()` accepts the identity
+ * ONLY when it is actually deliverable (see `fleetIdentityDeliverable`) —
+ * otherwise the fail-loud unknown-lead dead-letter is unchanged.
+ */
+export const FLEET_ALERT_PROJECT = "machine";
+
+export function isFleetAlertPayload(p: { projectName: string }): boolean {
+	return p.projectName === FLEET_ALERT_PROJECT;
 }
 
 export interface AlertResult {
@@ -476,9 +562,33 @@ export class LeadAlertNotifier {
 		);
 	}
 
+	/**
+	 * FLY-1082 (Task 1.4): can the fleet identity actually deliver right now?
+	 * Requires the unified channel AND a resolvable sender token (the D2
+	 * single-sender env when set — no fallback behind it, matching its gating
+	 * semantics — else the repair chain). Anything less keeps the fail-loud
+	 * dead-letter: better a recorded drop than a mis-attributed send.
+	 */
+	private fleetIdentityDeliverable(): boolean {
+		if (!this.unifiedAlert?.channelId) return false;
+		const senderEnv = process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV?.trim();
+		if (senderEnv) return !!process.env[senderEnv];
+		return (
+			resolveFirstAvailableBotToken(
+				buildRepairChain(this.projects, this.unifiedAlert.repairBotTokenEnv),
+			) !== null
+		);
+	}
+
 	async alert(payload: AlertPayload): Promise<AlertResult> {
 		const resolved = this.resolveLead(payload.leadId, payload.projectName);
-		if (!resolved) {
+		// FLY-1082 (Task 1.4): a deliverable fleet payload proceeds WITHOUT a
+		// projects.json lead (unified channel + send chain need none); `lead` and
+		// `project` stay null and every lead-specific step below guards on that.
+		if (
+			!resolved &&
+			!(isFleetAlertPayload(payload) && this.fleetIdentityDeliverable())
+		) {
 			this.logger(
 				`unknown lead: project=${payload.projectName} leadId=${payload.leadId}`,
 			);
@@ -488,7 +598,8 @@ export class LeadAlertNotifier {
 			await this.deadLetter(payload, "unknown-lead");
 			return { skipped: "unknown-lead", deadLettered: true };
 		}
-		const { lead, project } = resolved;
+		const lead = resolved?.lead ?? null;
+		const project = resolved?.project ?? null;
 
 		// Step 1: shell-side fast-path read. Avoids building a payload when
 		// shell has already posted an alert for this eventId. Not the
@@ -589,7 +700,9 @@ export class LeadAlertNotifier {
 			messageId = sent.messageId;
 			usedToken = sent.usedToken ?? null;
 		} else {
-			const token = this.resolveToken(lead);
+			// Legacy per-lead path — unreachable for the fleet identity (it requires
+			// unified mode), so a null lead here is a config error: dead-letter.
+			const token = lead ? this.resolveToken(lead) : null;
 			if (!token) {
 				await this.deadLetter(payload, "no-token");
 				return { skipped: "no-token", deadLettered: true };
@@ -611,7 +724,7 @@ export class LeadAlertNotifier {
 		// the WINNING root token so the DM comes from the same bot that visibly
 		// posted the root — not an independent re-resolve.
 		let dmSent = false;
-		if (payload.severity === "severe" && lead.alertDmUserId && usedToken) {
+		if (payload.severity === "severe" && lead?.alertDmUserId && usedToken) {
 			dmSent = await this.sendDm(lead.alertDmUserId, usedToken, payload);
 		}
 
@@ -966,14 +1079,16 @@ export class LeadAlertNotifier {
 	}
 
 	private resolveChannel(
-		lead: LeadConfig,
-		project: ProjectEntry,
+		lead: LeadConfig | null,
+		project: ProjectEntry | null,
 	): string | null {
 		// FLY-368: unified channel wins over per-lead routing when configured —
 		// this is what funnels every Lead/Q7-runner alert into one place.
+		// FLY-1082: the fleet identity (null lead/project) only ever reaches this
+		// in unified mode, so it always resolves on the first branch.
 		if (this.unifiedAlert?.channelId) return this.unifiedAlert.channelId;
-		if (lead.alertChannel) return lead.alertChannel;
-		if (lead.alertFallbackToCore && project.generalChannel) {
+		if (lead?.alertChannel) return lead.alertChannel;
+		if (lead?.alertFallbackToCore && project?.generalChannel) {
 			return project.generalChannel;
 		}
 		return null;

@@ -20,6 +20,15 @@ export interface TicketEscalationPolicy {
 	timeoutMs: number;
 	/** NEW-and-unclaimed age before the fallback escalation (5 min). */
 	unclaimedMs: number;
+	/**
+	 * FLY-1082 (Task 2.2): does a REPAIRING ticket under budget get a second
+	 * ARC attempt on reconcile? Default true (the legacy nudge-family loop).
+	 * FALSE for kinds whose remediation is single-shot/idempotent (pressure-
+	 * hold, server-loss coordinator, boot self-check) — a per-tick retry would
+	 * both spam the thread and burn the 2-attempt budget in ~1 minute, turning
+	 * the slow-variable timeout into a 2-tick escalation.
+	 */
+	retryOnReconcile?: boolean;
 }
 
 export const DEFAULT_TICKET_ESCALATION_POLICY: TicketEscalationPolicy = {
@@ -27,6 +36,38 @@ export const DEFAULT_TICKET_ESCALATION_POLICY: TicketEscalationPolicy = {
 	timeoutMs: 300_000,
 	unclaimedMs: 300_000,
 };
+
+/**
+ * FLY-1082 (Task 2.2): per-kind escalation policy resolver. Legacy kinds keep
+ * the locked T2 defaults byte-for-byte; the fleet kinds override where the T2
+ * semantics genuinely differ:
+ *  - swap_pressure_high: the watermark is a SLOW variable — "couldn't fix" is
+ *    "still above threshold after 30 min" (env FLYWHEEL_SWAP_PRESSURE_TIMEOUT_MIN),
+ *    not 5 minutes; the hold is single-shot so no reconcile retry.
+ *  - tmux_server_lost / bridge_abnormal_exit: the remediation ran at
+ *    detection/boot — retrying it per tick is meaningless; recovery (quiet
+ *    resolve) or the timeout escalation decides.
+ *  - infra_bot_down keeps the default (a kickstart retry IS meaningful —
+ *    2 failures → escalate, per the plan).
+ */
+export function policyForKind(
+	kind: string,
+	env: NodeJS.ProcessEnv = process.env,
+): TicketEscalationPolicy {
+	if (kind === "swap_pressure_high") {
+		const raw = Number(env.FLYWHEEL_SWAP_PRESSURE_TIMEOUT_MIN);
+		const minutes = Number.isFinite(raw) && raw > 0 ? raw : 30;
+		return {
+			...DEFAULT_TICKET_ESCALATION_POLICY,
+			timeoutMs: minutes * 60_000,
+			retryOnReconcile: false,
+		};
+	}
+	if (kind === "tmux_server_lost" || kind === "bridge_abnormal_exit") {
+		return { ...DEFAULT_TICKET_ESCALATION_POLICY, retryOnReconcile: false };
+	}
+	return DEFAULT_TICKET_ESCALATION_POLICY;
+}
 
 export type TicketEscalationDecision = "none" | "retry" | "escalate";
 
@@ -57,13 +98,16 @@ export function decideTicketEscalation(
 	const age = firstSeen === null ? 0 : nowMs - firstSeen;
 
 	if (status === "REPAIRING" || status === "ACK") {
-		// "Couldn't fix" = attempts budget burned OR the 5-minute window elapsed
+		// "Couldn't fix" = attempts budget burned OR the timeout window elapsed
 		// without a recovery resolve (the recovery check ran before us).
 		if (row.attempt_count >= policy.maxAttempts || age > policy.timeoutMs) {
 			return "escalate";
 		}
 		// A Cass-driven REPAIRING ticket under budget gets its second attempt —
 		// STILL through every safety gate (the AutoRepairBot refuses on its own).
+		// FLY-1082: unless the kind's policy disables reconcile retries
+		// (single-shot remediations — see policyForKind).
+		if (policy.retryOnReconcile === false) return "none";
 		return status === "REPAIRING" ? "retry" : "none";
 	}
 

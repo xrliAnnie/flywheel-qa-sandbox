@@ -1975,4 +1975,25 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 		note: "额外要 owner id + store 才发页；=0 关闭直达页、退回 legacy alert 语义（需重启 Bridge 生效）。",
 	},
+	{
+		name: "fleet_sensor_tmux_killswitch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_FLEET_SENSOR_TMUX",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1082: 关掉 tmux server-loss coordinator（HeartbeatService pre-reaper phase：fleet 级检测 + 成组终态迁移 + 单张 fleet ticket + 按 Lead 分组通知）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"createBridgeApp (HeartbeatService serverLoss pre-reaper phase arg)",
+				"object_construction",
+			),
+		],
+		toggleable: "readonly",
+		note: "=0 时 server-loss 整段关闭,退回 per-runner crash-reaper/reapOrphans 旧行为。HeartbeatService 构造时读一次（ternary 选 phase 对象或 undefined）,翻转需重启 Bridge。",
+	},
 ];
