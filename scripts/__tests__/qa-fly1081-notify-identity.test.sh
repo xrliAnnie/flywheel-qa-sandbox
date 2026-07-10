@@ -86,8 +86,11 @@ grep -qF "$SIMBA" "$TMP/curl-A" "$TMP/curl-A.stdin" "$TMP/curl-A.body" && bad "S
 # id is only in content and allowed_mentions.users is empty (Codex R1 MEDIUM).
 jq -e --arg f "$FOUNDER" '.content | startswith("<@" + $f + "> ")' "$TMP/curl-A.body" >/dev/null 2>&1 \
   && ok "founder <@id> prefixes content (jq)" || bad "founder <@id> not a content prefix"
-jq -e --arg f "$FOUNDER" '(.allowed_mentions.users // []) | index($f) != null' "$TMP/curl-A.body" >/dev/null 2>&1 \
-  && ok "allowed_mentions.users carries founder id (jq)" || bad "allowed_mentions.users does NOT contain founder id"
+# Exact-array assertion (Codex R2): `index` would substring-match a string
+# value; `== [$f]` locks the array TYPE, the single founder id, and the
+# single-user whitelist. lead-alert.sh:461 builds exactly {users: [$m]}.
+jq -e --arg f "$FOUNDER" '.allowed_mentions.users == [$f]' "$TMP/curl-A.body" >/dev/null 2>&1 \
+  && ok "allowed_mentions.users == [founder] exactly (jq)" || bad "allowed_mentions.users is not exactly [founder]"
 
 echo "== Case B: seam set-but-UNRESOLVABLE → refuse, ZERO POST, no Simba fallback =="
 # Point the seam at a var and force-clear it ('' below) so it is unresolvable
