@@ -186,7 +186,7 @@
   <div class="card">
     <span class="pill amber">决策块 ①</span>
     <h2>发布渠道：客户怎么拿到包，源码露多少</h2>
-    <p>你在 FLY-1062 里<b>已经拍过一次</b>渠道（选了 B）。这里把当时那张对比表原样摆出来当背景，你确认发布这层沿用它就行——真正还<b>没定</b>的是下面那个「payload 放哪」。</p>
+    <p>你在 FLY-1062 里<b>已经拍过一次</b>渠道——选了 B（来源：FLY-1062 exploration §5 的决策记录，2026-07-09，经 Tadashi 转达）。这里把当时那张对比表原样摆出来当背景，你确认发布这层沿用它就行；真正还<b>没定</b>的是下面那个「payload 放哪」。<b>当然——你要是想在发布这层重新掀一次渠道（哪怕当时记的是 B），下面留了口子，随手写。</b></p>
 
     <div class="tablewrap">
       <table>
@@ -199,7 +199,7 @@
             <td>最低（npm org + CI publish）</td>
           </tr>
           <tr class="locked-row">
-            <td>B · 公开薄壳 + license key 换 gated payload <span style="color:#1c7a37;font-weight:700">✓ 你已拍</span></td>
+            <td>B · 公开薄壳 + license key 换 gated payload <span style="color:#1c7a37;font-weight:700">✓ 已锁 · FLY-1062 §5</span></td>
             <td><span class="k">npx</span> 同上，但要输入我们发的 license key</td>
             <td><span class="yes">最小</span>：薄壳零 IP；真 payload（话术/prompts/构建产物）只有<b>持 key 客户</b>拿得到</td>
             <td>中（payload 托管 + key 签发/吊销）</td>
@@ -221,7 +221,7 @@
     </div>
 
     <div class="agree">
-      <strong>你已拍 B（2026-07-09）：</strong>公开 npm 只发<b>薄壳</b>（安装器，零话术零产物）；客户输 license key 才换到真 payload。你的红线「客户绝不接触源码」由此守住——薄壳没 IP，payload 只给持 key 客户。<b>诚实边界</b>：Node/bash 产品没有真·源码保护（bash 与编译后 JS 天然可读），B 真正保证的是——客户拿不到 TS 源码、git 历史、内部文档，且话术/prompts 只有持 key 客户可得。
+      <strong>B 的记录（FLY-1062 §5：2026-07-09，你的话经 Tadashi 转达）：</strong>当时那份设计其实<b>推荐 A</b>（全公开），你选了 <b>B</b>——要护话术/IP、接受多一个 key 里程碑。公开 npm 只发<b>薄壳</b>（安装器，零话术零产物）；客户输 license key 才换到真 payload。你的红线「客户绝不接触源码」由此守住——薄壳没 IP，payload 只给持 key 客户。<b>诚实边界</b>：Node/bash 产品没有真·源码保护（bash 与编译后 JS 天然可读），B 真正保证的是——客户拿不到 TS 源码、git 历史、内部文档，且话术/prompts 只有持 key 客户可得。<br><span style="color:#6e6e73">如果这跟你记忆不符、或你现在想重新考虑——下面 ① 的框随便写，我们照你说的来。</span>
     </div>
 
     <h3>还没定的：payload（真正的包）放哪儿？</h3>
@@ -234,9 +234,9 @@
     <div class="q">
       <div class="qhead"><div class="n">1</div><div class="t">
         <b>渠道确认 + payload 放哪？</b>
-        <span>① 发布这层沿用你已拍的 B（薄壳 + key），对吧？② payload 托管走「自己搭薄端点」还是「用现成商用平台」？</span>
+        <span>① 发布这层沿用 B（薄壳 + key）就行吗？<b>想重新掀渠道也在这写——哪怕 §5 记着 B，你都能改。</b> ② payload 托管走「自己搭薄端点（FLY-203 那套）」还是「用现成商用平台（Keygen 类）」？</span>
       </div></div>
-      <textarea id="q1" data-label="① 渠道确认 + payload 托管" placeholder="例：沿用 B。payload 先自己搭薄端点，别引外部依赖。或者：想看看 Keygen 那条…"></textarea>
+      <textarea id="q1" data-label="① 渠道确认 + payload 托管" placeholder="例：沿用 B。payload 先自己搭薄端点，别引外部依赖。或者：其实我想重新考虑渠道…"></textarea>
     </div>
   </div>
 
