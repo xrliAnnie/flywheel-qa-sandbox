@@ -125,24 +125,35 @@ founder_milestone_report:
 # are never relaxed. A folder named anything else (e.g. product/) still infers a
 # different home dept.
 #
-# FLY-604: one executor per role, zero label overlap (REPLACE, not augment):
+# FLY-604 / FLY-1059 / FLY-1089: one executor per role, zero label overlap
+# (REPLACE, not augment). Three creative work-types are now three distinct roles
+# (Annie's lock: one creative work-type = one agent.md = one Runner session):
 #   - engineer         REPLACES the former code-executor (+ merges frontend); owns
 #                      all old `code` change-type labels + technical domains +
 #                      research/plan (Flywheel's research/plan are mostly technical).
-#   - product-designer REPLACES the former docs-executor (+ adds product/UX/PM);
-#                      owns doc/docs + design (UX design) + product/pm/ux planning.
+#   - product-designer REPLACES the former docs-executor; owns doc/docs + design +
+#                      ux — docs / UX-spec / design-production for a DEFINED issue.
+#                      FLY-1089 moved PM (`product`/`pm`) OUT to the new `pm` role.
+#   - pm               FLY-1089: NEW Product Manager / product co-creation role
+#                      (understand intent → research + explainer HTML → founder
+#                      co-eval → converge PRD → split build issues). owns pm/product.
+#                      Was "Mode A" inside product-designer (FLY-880); split out.
+#   - prototype        FLY-1089: NEW feasibility-first Prototype role (decide what to
+#                      validate → cheapest real prototype → founder experience →
+#                      doable/not-doable). owns prototype. Distinct from `designer`:
+#                      prototype = "can it be done?" (throwaway, function-real);
+#                      designer = "what should it look like?" (visual high-fidelity).
 #   - designer         FLY-1059: NEW visual mockup-first role (concept images A/B/C
 #                      → founder design gate → high-fidelity, BEFORE implement).
-#                      owns designer/mockup. Distinct from product-designer
-#                      (PM/PRD/docs planning): designer = look/UX/mockup + founder
-#                      approval. The old `designer` label moved here from
-#                      product-designer (visual work, not PM planning).
+#                      owns designer/mockup.
 #   - qa               is new (independent verification).
 #   - general          is kept (top-level cross-dept catch-all).
-# Hard rule: every label the old code/docs executors routed still routes here
+# Hard rule: every label the old code/docs executors routed still routes somewhere
 # (migrated, none dropped): old code -> engineer; old docs doc/docs/design ->
-# product-designer, research/plan -> engineer. FLY-1059 moved only `designer`
-# (product-designer -> designer) and added `mockup`.
+# product-designer; research/plan -> engineer. FLY-1059 moved `designer` (+ added
+# `mockup`); FLY-1089 moved `product`/`pm` (product-designer -> pm) + added
+# `prototype`. Final split: pm owns pm/product; prototype owns prototype;
+# product-designer owns doc/docs/design/ux; designer owns designer/mockup.
 agents:
   engineer:
     agent_file: .flywheel/agents/engineering/engineer-executor.md
@@ -162,17 +173,46 @@ agents:
     agent_file: .flywheel/agents/engineering/product-designer-executor.md
     department: engineering        # home (physical file location — unchanged)
     # FLY-901 dual-register: this one role serves BOTH the engineering Lead's
-    # doc/design work AND the product Lead's product co-creation. The file stays
-    # under engineering/, but it also registers under `product` so the product
-    # Lead's auto-dispatch (owningDept=product) reaches it in step-2a instead of
-    # falling to the shipped-generic executor. Only the listed depts are relaxed.
+    # doc/design work AND the product Lead's dispatch. The file stays under
+    # engineering/, but it also registers under `product` so the product Lead's
+    # auto-dispatch (owningDept=product) reaches it in step-2a instead of falling to
+    # the shipped-generic executor. Only the listed depts are relaxed.
     departments: [engineering, product]
-    # doc/docs + design (UX design, migrated from the former docs-executor) +
-    # product/UX/PM. research/plan are NOT here — they route to `engineer`.
-    # FLY-1059: `designer` moved OUT to the new `designer` agent (visual mockup
-    # work is a distinct role from PM/PRD/docs planning).
+    # doc/docs + design (UX design) + ux — docs / UX-spec / design-production for a
+    # DEFINED issue. research/plan route to `engineer`.
+    # FLY-1059 moved `designer` OUT (visual mockup) ; FLY-1089 moved `product`/`pm`
+    # OUT to the new `pm` role (product co-creation is a distinct work-type).
     match:
-      labels: ["doc", "docs", "design", "product", "pm", "ux"]
+      labels: ["doc", "docs", "design", "ux"]
+  pm:
+    # FLY-1089: the Product Manager / product co-creation role. Understand intent →
+    # research + an explainer page → founder co-eval → converge a PRD → split build
+    # issues. One agent.md, one session (founder gate = in-session pause). Was
+    # "Mode A" inside product-designer (FLY-880); split out per Annie's one-role-
+    # per-agent.md lock. Dispatch with `no-three-stage` (or from the product channel)
+    # so the co-creation loop is not chopped by three-stage phase stops.
+    agent_file: .flywheel/agents/engineering/pm-executor.md
+    department: engineering        # home (physical file location)
+    # FLY-901 dual-register: serves BOTH the engineering Lead and the product Lead's
+    # auto-dispatch (owningDept=product).
+    departments: [engineering, product]
+    # DISJOINT from product-designer / designer / prototype / engineer / qa.
+    match:
+      labels: ["pm", "product"]
+  prototype:
+    # FLY-1089: the feasibility-first Prototype role. Decide what to validate → build
+    # the CHEAPEST real prototype → run it for the founder to experience →
+    # doable (hand to engineer to productionize) / not-doable (drop). Throwaway,
+    # function-real, NOT production-grade. Distinct from `designer` (visual look).
+    # One agent.md, one session; dispatch with `no-three-stage` (or product channel).
+    agent_file: .flywheel/agents/engineering/prototype-executor.md
+    department: engineering        # home (physical file location)
+    # FLY-901 dual-register: serves BOTH the engineering Lead and the product Lead.
+    departments: [engineering, product]
+    # DISJOINT from product-designer / designer / pm / engineer / qa. Single label
+    # only — `poc` deliberately NOT an alias (去黑话 / no-jargon, Annie).
+    match:
+      labels: ["prototype"]
   designer:
     # FLY-1059: the visual mockup-first Designer role. Dispatched by label to do
     # concept-image direction exploration (codex-image ∥ gemini-image) → founder
@@ -184,7 +224,9 @@ agents:
     # FLY-901 dual-register: like product-designer, this serves BOTH the
     # engineering Lead and the product Lead's auto-dispatch (owningDept=product).
     departments: [engineering, product]
-    # DISJOINT from product-designer / engineer / qa (first-match order-independent).
+    # DISJOINT from product-designer / engineer / qa. (SINGLE-label routing is
+    # order-independent; a MULTI-label issue still first-matches by YAML order —
+    # precondition: one executor-family label per issue. FLY-1089.)
     match:
       labels: ["designer", "mockup"]
   # Top-level catch-all (no department). Used when the Lead passes agentName:"general"

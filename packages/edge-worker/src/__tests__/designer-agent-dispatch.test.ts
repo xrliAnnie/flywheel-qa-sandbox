@@ -50,8 +50,8 @@ describe("designer agent dispatch (FLY-1059, real .flywheel/config.yaml)", () =>
 		}
 	});
 
-	it("`product` / `design` / `pm` / `ux` still route to product-designer", () => {
-		for (const label of ["product", "design", "pm", "ux"]) {
+	it("`design` / `ux` still route to product-designer (pm/product moved out — FLY-1089)", () => {
+		for (const label of ["design", "ux"]) {
 			const r = dispatcher.dispatch({
 				issueLabels: [label],
 				owningDept: "product",

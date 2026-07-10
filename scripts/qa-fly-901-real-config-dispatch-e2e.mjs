@@ -50,20 +50,25 @@ check(
 const dispatcher = new AgentDispatcher(config.agents, undefined, ROOT);
 
 // ── Scenario 1 (Honey Lemon / product Lead): Flywheel-Product issue, label "product" ──
+// The original FLY-901 bug: a product-labeled issue dispatched by the product Lead
+// fell to shipped-generic. Dual-register fixed that. FLY-1089 moved `product` from
+// product-designer to the pm role, so it now hits `pm` — but the dual-register
+// mechanism (step-2a reaching an engineering-home agent from owningDept=product) is
+// exactly what this still proves.
 const r1 = dispatcher.dispatch({
 	issueLabels: ["product"],
 	owningDept: "product",
 });
 check(
-	"S1: product Lead (owningDept=product) + label 'product' -> hits product-designer",
-	r1.agentName === "product-designer" && r1.matchMethod === "label",
+	"S1: product Lead (owningDept=product) + label 'product' -> hits pm (FLY-1089)",
+	r1.agentName === "pm" && r1.matchMethod === "label",
 	r1,
 );
 check("S1: department reported as 'product'", r1.department === "product", r1);
 
-// ── Scenario 1b: other labels in the real match.labels set (pm/ux/design) ──
-// FLY-1059: `designer` moved OUT of product-designer to the `designer` agent.
-for (const label of ["pm", "ux", "design"]) {
+// ── Scenario 1b: remaining labels on product-designer (doc/design/ux) ──
+// FLY-1059 moved `designer` OUT; FLY-1089 moved `product`/`pm` OUT to the pm role.
+for (const label of ["ux", "design", "docs"]) {
 	const r = dispatcher.dispatch({
 		issueLabels: [label],
 		owningDept: "product",
@@ -74,6 +79,40 @@ for (const label of ["pm", "ux", "design"]) {
 		r,
 	);
 }
+
+// ── Scenario 1b2 (FLY-1089): pm/product -> pm, prototype -> prototype, dual-registered ──
+for (const role of ["pm", "prototype"]) {
+	check(
+		`S1b2: ${role} registered with departments [engineering, product]`,
+		JSON.stringify(config.agents?.[role]?.departments) ===
+			JSON.stringify(["engineering", "product"]),
+		config.agents?.[role],
+	);
+}
+for (const dept of ["product", "engineering"]) {
+	for (const [label, expected] of [
+		["pm", "pm"],
+		["product", "pm"],
+		["prototype", "prototype"],
+	]) {
+		const r = dispatcher.dispatch({ issueLabels: [label], owningDept: dept });
+		check(
+			`S1b2: ${dept} Lead + label '${label}' -> hits ${expected}`,
+			r.agentName === expected && r.matchMethod === "label",
+			r,
+		);
+	}
+}
+// 去黑话 (FLY-1089): `poc` is NOT an alias — unknown label falls to shipped-generic.
+const rPoc = dispatcher.dispatch({
+	issueLabels: ["poc"],
+	owningDept: "product",
+});
+check(
+	"S1b2: label 'poc' -> shipped-generic (not an alias for prototype)",
+	rPoc.matchMethod === "shipped-generic",
+	rPoc,
+);
 
 // ── Scenario 1c (FLY-1059): the new visual `designer` role, dual-registered ──
 check(
