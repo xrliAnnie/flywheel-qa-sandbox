@@ -132,18 +132,21 @@ variant_case "M5 double-space clone" \
 variant_case "M6 flagged clone (git -C)" \
   'run git -C "$PWD" clone https://github.com/xrliannie/flywheel.git "$target"'
 
-# ── M7 · the legitimate registered shape still clears ─────────────────────────
-# provision's real customer-repo clone line (no private slug) must PASS.
+# ── M7 · the legitimate EXACT-registered shape still clears ──────────────────
+# provision's real customer-repo clone line (no private slug), registered as
+# an exact line per the R4-hardened allowlist semantics, must PASS.
+printf 'scripts/provision-fleet-host.sh\trun git clone "https://github.com/${slug}.git" "$target"\tcustomer-repo-path exact row\n' \
+  > "$ROOT/scripts/pkg-grep-exact.allow"
 LEGIT="$SANDBOX/legit"; mkdir -p "$LEGIT/scripts"
 printf '{"name":"flywheel-onboard-payload","version":"%s","private":true}\n' "$VER" > "$LEGIT/package.json"
 printf '%s\n' "$VER" > "$LEGIT/.flywheel-prebuilt"
 printf '#!/bin/bash\nrun git clone "https://github.com/${slug}.git" "$target"\n' > "$LEGIT/scripts/provision-fleet-host.sh"
 if env PACKAGE_ONBOARD_SOURCED=1 \
      PO_FILES_ALLOWLIST="$ROOT/scripts/pkg-files.allow" \
-     PO_GREP_ALLOWLIST="$ROOT/scripts/pkg-grep.allow" \
+     PO_GREP_ALLOWLIST="$ROOT/scripts/pkg-grep-exact.allow" \
      bash -c 'source "$1"; shift; po_gate "$@"' _ "$REPO_ROOT/scripts/package-onboard.sh" \
        "$LEGIT" "$ROOT" >"$SANDBOX/legit.log" 2>&1; then
-  pass "M7 registered customer-repo clone still clears (no false positive)"
+  pass "M7 exact-registered customer-repo clone still clears (no false positive)"
 else
   fail "M7 legitimate registered clone rejected: $(tail -3 "$SANDBOX/legit.log")"
 fi
@@ -171,6 +174,30 @@ else
   grep -q "UNREGISTERED repo-access reference (combo)" "$SANDBOX/combo.log" \
     && pass "M8 combined private-clone line demands a combo-registered row (both broad rows insufficient)" \
     || fail "M8 failed but not via the combo detector: $(tail -3 "$SANDBOX/combo.log")"
+fi
+
+# ── M9 · Round-4 (Codex): backslash-continuation split ────────────────────────
+# `git clone \` on one physical line + the private URL on the next: the two
+# halves must not be cleared by broad rows (each half equals no registered
+# exact line — the clone half alone triggers the clone detector unregistered).
+CONT="$SANDBOX/cont"; mkdir -p "$CONT/scripts"
+printf '{"name":"flywheel-onboard-payload","version":"%s","private":true}\n' "$VER" > "$CONT/package.json"
+printf '%s\n' "$VER" > "$CONT/.flywheel-prebuilt"
+cat > "$CONT/scripts/provision-fleet-host.sh" <<'SH'
+#!/bin/bash
+git clone \
+  https://github.com/xrliAnnie/flywheel.git "$PWD/private-flywheel"
+SH
+if env PACKAGE_ONBOARD_SOURCED=1 \
+     PO_FILES_ALLOWLIST="$ROOT/scripts/pkg-files.allow" \
+     PO_GREP_ALLOWLIST="$ROOT/scripts/pkg-grep-both.allow" \
+     bash -c 'source "$1"; shift; po_gate "$@"' _ "$REPO_ROOT/scripts/package-onboard.sh" \
+       "$CONT" "$ROOT" >"$SANDBOX/cont.log" 2>&1; then
+  fail "M9 continuation-split private clone PASSED the gate (bypass)"
+else
+  grep -q "UNREGISTERED repo-access" "$SANDBOX/cont.log" \
+    && pass "M9 continuation-split private clone rejected (each half unregistered)" \
+    || fail "M9 failed but not via gate④: $(tail -3 "$SANDBOX/cont.log")"
 fi
 
 echo ""

@@ -651,9 +651,10 @@ po_pack() {
 # ── gate④ normalization + detectors ────────────────────────────────────────
 # po_g4_norm <string> — canonical form for repo-access judgment: shell quotes
 # stripped (quoting splits reassemble at execution: "xrliAnnie"/"flywheel"),
-# tabs→spaces, runs squeezed (`git  clone`), lowercased (xrliannie).
+# tabs→spaces, runs squeezed (`git  clone`), lowercased (xrliannie), trimmed.
 po_g4_norm() {
-  printf '%s' "$1" | tr -d '\042\047' | tr '\t' ' ' | tr -s ' ' | tr '[:upper:]' '[:lower:]'
+  printf '%s' "$1" | tr -d '\042\047' | tr '\t' ' ' | tr -s ' ' | tr '[:upper:]' '[:lower:]' \
+    | sed 's/^ *//; s/ *$//'
 }
 
 # po_g4_detect <detector> <normalized-string> — the forbidden shapes. MUST
@@ -731,17 +732,21 @@ po_gate() {
     printf '%s\n' "$hits" >&2
     fail=1
   fi
-  # ④ zero-repo-access invariant — detector-based, normalization-hardened.
-  #   Round-1 HIGH (gate4-allowlist-masking.test.sh): per-LINE clearing let a
-  #   broad `git clone` row mask a co-located private slug. Round-2 HIGH
-  #   (Codex): literal case-sensitive matching missed lowercase slugs,
-  #   quote-split URLs, `git  clone`, and `git -C x clone`. Now every line is
-  #   NORMALIZED (po_g4_norm) and judged by two independent DETECTORS
-  #   (po_g4_detect); an allowlist row clears an occurrence only if it
-  #   (a) glob-matches the file, (b) its normalized substring matches the
-  #   normalized line, and (c) that substring itself triggers the SAME
-  #   detector — the anti-masking condition. Exotic clone forms are NOT
-  #   clearable by the plain `git clone` rows (fail-closed by construction).
+  # ④ zero-repo-access invariant — detector-based, EXACT-LINE allowlist.
+  #   The review rounds each killed a looser scheme: R1 per-line substring
+  #   clearing masked a co-located slug; R2 literal case-sensitive matching
+  #   missed normalization variants; R3 two broad rows in one file jointly
+  #   cleared a combined private-clone line; R4 a backslash-continuation
+  #   split the shapes across physical lines. The closed form: every line is
+  #   NORMALIZED (po_g4_norm) and judged by the DETECTORS (po_g4_detect); an
+  #   allowlist row clears an occurrence only if (a) its file glob matches,
+  #   (b) its normalized registration EXACTLY EQUALS the normalized line, and
+  #   (c) the registration itself triggers the SAME detector. Any line not
+  #   byte-registered in its canonical form fails — including each half of a
+  #   continuation split (`git clone \` alone triggers the clone detector and
+  #   equals no registered line). Registrations therefore pin the exact
+  #   shipping lines (see audit-grep-allowlist.tsv) — editing a registered
+  #   source line deliberately re-registers it (snapshot discipline).
   local grep_allow="${PO_GREP_ALLOWLIST:-$root/scripts/packaged/audit-grep-allowlist.tsv}"
   [ -f "$grep_allow" ] || { po_err "gate④: grep allowlist missing: $grep_allow"; return 1; }
   local det prefilter file lineno text nline registered afile apat
@@ -755,7 +760,7 @@ po_gate() {
         [ -z "$afile" ] && continue
         case "$afile" in \#*) continue ;; esac
         # shellcheck disable=SC2254
-        if [[ "$file" == $afile ]] && [[ "$nline" == *"$(po_g4_norm "$apat")"* ]] \
+        if [[ "$file" == $afile ]] && [ "$nline" = "$(po_g4_norm "$apat")" ] \
            && po_g4_detect "$det" "$(po_g4_norm "$apat")"; then
           registered=0; break
         fi
@@ -779,6 +784,7 @@ po_gate() {
             line = tolower(raw)
             gsub(/["\047]/, "", line)
             gsub(/[\t ]+/, " ", line)
+            sub(/^ /, "", line); sub(/ $/, "", line)
             hit = 0
             if (D == "slug" && index(line, "xrliannie/") > 0) hit = 1
             if (D == "clone" && line ~ /(^|[^a-z0-9_.-])git ([^|&;]* )?clone($|[^a-z0-9_-])/) hit = 1
