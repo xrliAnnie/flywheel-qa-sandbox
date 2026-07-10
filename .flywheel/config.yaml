@@ -134,7 +134,7 @@ founder_milestone_report:
 #   - product-designer REPLACES the former docs-executor; owns doc/docs + design +
 #                      ux — docs / UX-spec / design-production for a DEFINED issue.
 #                      FLY-1089 moved PM (`product`/`pm`) OUT to the new `pm` role.
-#   - pm               FLY-1089: NEW Program Manager / product co-creation role
+#   - pm               FLY-1089: NEW Product Manager / product co-creation role
 #                      (understand intent → research + explainer HTML → founder
 #                      co-eval → converge PRD → split build issues). owns pm/product.
 #                      Was "Mode A" inside product-designer (FLY-880); split out.
@@ -185,7 +185,7 @@ agents:
     match:
       labels: ["doc", "docs", "design", "ux"]
   pm:
-    # FLY-1089: the Program Manager / product co-creation role. Understand intent →
+    # FLY-1089: the Product Manager / product co-creation role. Understand intent →
     # research + an explainer page → founder co-eval → converge a PRD → split build
     # issues. One agent.md, one session (founder gate = in-session pause). Was
     # "Mode A" inside product-designer (FLY-880); split out per Annie's one-role-
