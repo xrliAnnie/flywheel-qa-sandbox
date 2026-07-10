@@ -1,13 +1,13 @@
 ---
 issue: FLY-1082
 phase: implement
-phaseCursor: 4/12
-updated: 2026-07-10T00:45:05.149Z
-nextStep: PR-2 Task 2.1 machine-watermark + 2.2 pressure-hold/admission/policy
+phaseCursor: 8/12
+updated: 2026-07-10T01:21:32.504Z
+nextStep: "PR-3: escalation copy + runbook auto-issue + liveness probe + PRD rows"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1082 progress
-**phase**: implement (4/12)
-**next**: PR-2 Task 2.1 machine-watermark + 2.2 pressure-hold/admission/policy
+**phase**: implement (8/12)
+**next**: PR-3: escalation copy + runbook auto-issue + liveness probe + PRD rows
