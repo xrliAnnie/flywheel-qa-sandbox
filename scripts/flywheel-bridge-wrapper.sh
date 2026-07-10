@@ -149,4 +149,11 @@ log "Starting Bridge (TEAMLEAD_CHAT_THREADS_ENABLED=${TEAMLEAD_CHAT_THREADS_ENAB
 
 # exec replaces this wrapper process so launchd directly manages the
 # Bridge process (correct PID tracking, signal delivery, KeepAlive).
+# FLY-1062: a PACKAGED install ships a compiled dist/run-bridge.js (no tsx /
+# TypeScript on customer machines) — exec node when it exists. A monorepo
+# checkout has no dist/run-bridge.js, so the tsx line below stays the verbatim
+# production path (reverse-compat sentinel: packaged-seams.test.sh).
+if [[ -f "$FLYWHEEL_DIR/dist/run-bridge.js" ]]; then
+  exec node dist/run-bridge.js
+fi
 exec npx tsx scripts/run-bridge.ts

@@ -1,0 +1,21 @@
+# FLY-1062: registered DISJOINT dependency-union conflicts.
+# Format: <dep>	<winner-range-for-top-level-union>	<comma list of packages/ dirs that get a NESTED vendored copy of their own resolved version>
+#
+# Semantics of the nest column:
+#   <comma list>  — those packages get a NESTED vendored copy of their own
+#                   resolved version (pnpm store realpath), keeping today's
+#                   runtime bits; everyone else gets the top-level winner.
+#   -             — RESOLUTION-UNIFORM: declarations are disjoint on paper but
+#                   the workspace lockfile resolves ONE version for every
+#                   declarer; the build VERIFIES each declarer's actual
+#                   resolution satisfies the winner, then unions top-level only.
+#
+# Rationale: aligning declarations by editing package.json files would CHANGE
+# what the monorepo installs (@linear/sdk 60→64 is a behavioral change) and is
+# out of scope for the distribution layer (byte-compat red line). A NEW
+# disjoint conflict NOT registered here fails the build.
+#
+# zod: manifests in teamlead/terminal-mcp still say ^3.23.0 but the pnpm store
+# holds ONLY zod@4.3.6 — production runs zod 4 everywhere today.
+zod	4.3.6	-
+@linear/sdk	^64.0.0	teamlead

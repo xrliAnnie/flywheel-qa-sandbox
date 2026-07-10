@@ -75,6 +75,77 @@ _fleet_token_is_secret() {
   return 0
 }
 
+# _fleet_vendor_re — the unambiguous vendor-token regex set (shared by
+# scan_for_secrets and scan_code_tree_for_secrets; FLY-1062 refactor — the
+# pattern list is byte-identical to the original in-function array).
+_fleet_vendor_re() {
+  local -a vendor=(
+    'mfa\.[A-Za-z0-9_-]{20,}'
+    '[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}'
+    'xox[baprs]-[A-Za-z0-9-]{10,}'
+    'sk-(proj-)?[A-Za-z0-9_-]{20,}'
+    'gh[pousr]_[A-Za-z0-9]{30,}'
+    'github_pat_[A-Za-z0-9_]{30,}'
+    'AKIA[0-9A-Z]{16}'
+    'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}'
+  )
+  (IFS='|'; printf '%s' "${vendor[*]}")
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# scan_code_tree_for_secrets <tree-dir>
+#   FLY-1062: secret net for a RELEASE CODE TREE (the packaged payload).
+#   scan_for_secrets' Layer 2 is calibrated for small config artifacts and
+#   floods on ordinary code identifiers (camelCase `tokenEnvName` etc.), so a
+#   code tree gets:
+#     • Layer 1 (vendor tokens)      — whole tree, unambiguous formats;
+#     • Layer 3 (high-entropy blobs) — whole tree;
+#     • FULL scan_for_secrets        — config-class files only (.env*, json,
+#       plist, yaml/yml, toml), where a raw KEY=value leak would live.
+#   Returns 0 clean / 1 findings / 2 usage.
+# ──────────────────────────────────────────────────────────────────────────
+scan_code_tree_for_secrets() {
+  local tree="$1"
+  [ -d "$tree" ] || { echo "scan_code_tree_for_secrets: not a dir: $tree" >&2; return 2; }
+  local hits=0
+
+  # Layer 1: vendor tokens anywhere.
+  local v1
+  v1="$(grep -rEnI "$(_fleet_vendor_re)" "$tree" 2>/dev/null || true)"
+  if [ -n "$v1" ]; then
+    hits=1
+    echo "scan_code_tree_for_secrets: [vendor-token] (redacted):" >&2
+    printf '%s\n' "$v1" | sed -E 's/([A-Za-z0-9_+/=.-]{8})[A-Za-z0-9_+/=.-]{4,}/\1…REDACTED…/g' >&2
+  fi
+
+  # Layer 3: high-entropy bare blob (>=40 chars, mixed upper+lower+digit).
+  local he row token he_hit=""
+  he="$(grep -rEnoI '[A-Za-z0-9_-]{40,}' "$tree" 2>/dev/null || true)"
+  while IFS= read -r row; do
+    [ -z "$row" ] && continue
+    token="${row#*:}"; token="${token#*:}"
+    if [[ "$token" =~ [a-z] ]] && [[ "$token" =~ [A-Z] ]] && [[ "$token" =~ [0-9] ]]; then
+      he_hit+="$row"$'\n'
+    fi
+  done <<< "$he"
+  if [ -n "$he_hit" ]; then
+    hits=1
+    echo "scan_code_tree_for_secrets: [high-entropy] (redacted):" >&2
+    printf '%s' "$he_hit" | sed -E 's/([A-Za-z0-9_+/=.-]{8})[A-Za-z0-9_+/=.-]{4,}/\1…REDACTED…/g' >&2
+  fi
+
+  # Config-class files get the full net (incl. the assignment layer).
+  local -a cfg=()
+  while IFS= read -r f; do
+    [ -n "$f" ] && cfg+=("$f")
+  done < <(find "$tree" -type f \( -name "*.env" -o -name ".env*" -o -name "*.json" -o -name "*.plist" -o -name "*.yaml" -o -name "*.yml" -o -name "*.toml" \) 2>/dev/null)
+  if [ "${#cfg[@]}" -gt 0 ]; then
+    scan_for_secrets "${cfg[@]}" || hits=1
+  fi
+
+  return "$hits"
+}
+
 # ──────────────────────────────────────────────────────────────────────────
 # scan_for_secrets <path...>
 #   Recursively scans files for secret-looking content. Returns:
@@ -111,18 +182,8 @@ scan_for_secrets() {
   local matches=""
 
   # ── Layer 1: bare vendor token patterns ─────────────────────────────────
-  local -a vendor=(
-    'mfa\.[A-Za-z0-9_-]{20,}'
-    '[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}'
-    'xox[baprs]-[A-Za-z0-9-]{10,}'
-    'sk-(proj-)?[A-Za-z0-9_-]{20,}'
-    'gh[pousr]_[A-Za-z0-9]{30,}'
-    'github_pat_[A-Za-z0-9_]{30,}'
-    'AKIA[0-9A-Z]{16}'
-    'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}'
-  )
   local vendor_re
-  vendor_re="$(IFS='|'; printf '%s' "${vendor[*]}")"
+  vendor_re="$(_fleet_vendor_re)"
   local v1
   v1="$(grep -rEnI "$vendor_re" "$@" 2>/dev/null || true)"
   if [ -n "$v1" ]; then

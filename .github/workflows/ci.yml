@@ -131,6 +131,31 @@ jobs:
           bash scripts/__tests__/flywheel-buddy-connect.test.sh
           bash scripts/__tests__/buddy-escalate.test.sh
 
+      # FLY-1062: npm distribution layer — hermetic suites: the packaging
+      # pipeline over a fixture mini-monorepo (assembly / dependency union /
+      # release gates with injection negatives / compat mirror / audit-table
+      # closure), every packaged-mode runtime seam BOTH sides (packaged path +
+      # verbatim-monorepo reverse-compat sentinel), and the P2 prebuilt
+      # provisioning / setup-artifact branches. Needs the built dist +
+      # node_modules/typescript (pnpm build above).
+      - name: Test — FLY-1062 packaging pipeline + packaged-mode seams
+        run: |
+          bash scripts/__tests__/package-onboard.test.sh
+          bash scripts/__tests__/packaged-seams.test.sh
+          bash scripts/__tests__/packaged-restart.test.sh
+          bash scripts/__tests__/gate4-allowlist-masking.test.sh
+          bash scripts/__tests__/gate4-forms-probe.test.sh
+          bash scripts/__tests__/setup-prebuilt.test.sh
+          bash scripts/__tests__/provision-prebuilt.test.sh
+
+      # FLY-1062: the REAL npm full chain on the real repo — pack (gated) →
+      # npm install --prefix (registry fetch for the dependency union) →
+      # compat mirror → bare-import matrix → better-sqlite3 native load →
+      # packaged Bridge serves /health → Lead launcher dry-run. "Installs ≠
+      # boots" is the acceptance bar; SLOW + network.
+      - name: Test — FLY-1062 payload real-install smoke
+        run: bash scripts/__tests__/package-onboard-smoke.test.sh
+
       # FLY-882: Discord bot token pool — hermetic (stub curl, fixture
       # DISCORD_BOT_POOL_HOME, no real ~/.flywheel touched, no real network).
       - name: Test — FLY-882 Discord bot token pool

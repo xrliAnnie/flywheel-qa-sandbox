@@ -19,6 +19,18 @@ set -uo pipefail
 
 FLYWHEEL_DIR="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# FLY-1062: a PACKAGED install (tree root carries .flywheel-prebuilt) has no
+# git checkout — this git-pull updater is the monorepo self-ship path and must
+# not run there. Honest plain-words refusal + pointer at the packaged update
+# command. Monorepo trees carry no sentinel, so everything below is verbatim
+# unchanged (reverse-compat sentinel: packaged-seams.test.sh). The sourced-test
+# seam (UPDATE_FLYWHEEL_SOURCED=1) is exempt so hermetic tests keep working.
+if [[ "${UPDATE_FLYWHEEL_SOURCED:-0}" != "1" ]] && [[ -f "$SCRIPT_DIR/../.flywheel-prebuilt" ]]; then
+  echo "这台机器上的 Flywheel 是安装包形态,不能用这个老的更新方式。" >&2
+  echo "要更新的话,运行你当初安装时用的那条命令,在后面加上 update 就可以了。" >&2
+  exit 3
+fi
 # Overridable so a sourced test (UPDATE_FLYWHEEL_SOURCED=1) can point it at
 # /dev/null and never pull the real bot token / core-channel into the test shell
 # (else severe_alert→notify_discord would POST to the production Discord channel
