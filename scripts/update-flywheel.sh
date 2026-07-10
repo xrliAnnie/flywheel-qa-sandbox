@@ -20,8 +20,8 @@ set -uo pipefail
 FLYWHEEL_DIR="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Overridable so a sourced test (UPDATE_FLYWHEEL_SOURCED=1) can point it at
-# /dev/null and never pull the real bot token / core-channel into the test shell
-# (else severe_alert→notify_discord would POST to the production Discord channel
+# /dev/null and never pull the real bot/sender tokens into the test shell
+# (else severe_alert→lead-alert.sh would POST to the production alert channel
 # on a configured dev machine — FLY-218/220 spam zone; qa-fly-270 finding).
 ENV_FILE="${ENV_FILE:-${HOME}/.flywheel/.env}"
 DEPLOYED_SHA_FILE="${DEPLOYED_SHA_FILE:-${HOME}/.flywheel/deployed-sha}"
@@ -35,15 +35,27 @@ source "${SCRIPT_DIR}/lib/self-ship-queue.sh"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [flywheel-updater] $*"; }
 
-DISCORD_CORE_CHANNEL="${DISCORD_CORE_CHANNEL:-1487340532610109520}"
-NOTIFY_BOT_TOKEN="${SIMBA_BOT_TOKEN:-${DISCORD_BOT_TOKEN:-}}"
-notify_discord() {
-  [[ -z "$NOTIFY_BOT_TOKEN" ]] && return 0
-  curl -sf -X POST "https://discord.com/api/v10/channels/${DISCORD_CORE_CHANNEL}/messages" \
-    -H "Authorization: Bot ${NOTIFY_BOT_TOKEN}" -H "Content-Type: application/json" \
-    -d "$(jq -n --arg c "$1" '{content:$c}')" --max-time 5 >/dev/null 2>&1 || true
+# FLY-1081 (FLY-915 pain #3): 🚨 self-ship failures route via lead-alert.sh
+# (system identity --lead updater, kind deploy_failed) — the FLY-927 sender
+# seam (FLYWHEEL_ALERT_SENDER_TOKEN_ENV), claims dedup and queue/dead-letter
+# fail-loud all come for free. The old Simba/DISCORD_BOT_TOKEN direct-curl
+# fallback is deliberately GONE: an unresolvable sender dead-letters +
+# meta-alerts inside lead-alert.sh instead of posting as the wrong identity.
+# Founder ping (gate-approved hard requirement): FLYWHEEL_FOUNDER_USER_ID
+# unset → stderr WARNING + send WITHOUT the @ (degraded, never silent).
+# 1>&2 + || true: a failed notification never wedges the self-ship queue loop
+# and never pollutes stdout.
+severe_alert() { # $1 = signature slug, $2 = body
+  log "SEVERE: $2"
+  if [[ -z "${FLYWHEEL_FOUNDER_USER_ID:-}" ]]; then
+    log "WARNING: FLYWHEEL_FOUNDER_USER_ID not set — deploy_failed alert will NOT @-mention the founder" >&2
+  fi
+  "${FLYWHEEL_DIR}/scripts/lead-alert.sh" --project flywheel --lead updater \
+    --kind deploy_failed --severity severe \
+    --title "Flywheel deploy failed" --body "$2" \
+    --signature "$1-$(date -u +%Y%m%d%H%M)" \
+    ${FLYWHEEL_FOUNDER_USER_ID:+--mention-user "$FLYWHEEL_FOUNDER_USER_ID"} 1>&2 || true
 }
-severe_alert() { log "SEVERE: $1"; notify_discord "🚨 $1"; }
 
 # ── Deploy step (injectable) ────────────────────────────────────────────────
 # Pull main to origin/main and run the real restart-services.sh. Returns:
@@ -137,7 +149,11 @@ process_due_markers() {
         # Target isn't even on origin/main → bad/foreign SHA that will NEVER ack
         # → block NOW (don't retry — code-review R1 / §2.3#8).
         ssq_block "$f" "target-not-on-origin-main"
-        severe_alert "Flywheel self-ship marker $(basename "$f") has a target SHA that is NOT on origin/main after a successful deploy — bad/foreign SHA, will never acknowledge. Blocked; needs manual attention."
+        # FLY-1081 (Codex R1#6): the slug carries the marker basename so two
+        # DIFFERENT markers blocked in the same minute are not claims-deduped
+        # into one alert (eventId embeds the signature).
+        severe_alert "marker-not-on-origin-$(basename "$f")" \
+          "Flywheel self-ship marker $(basename "$f") has a target SHA that is NOT on origin/main after a successful deploy — bad/foreign SHA, will never acknowledge. Blocked; needs manual attention."
         continue
       fi
       # Target IS on origin/main but deployed-sha did NOT advance to include it
@@ -154,7 +170,8 @@ process_due_markers() {
     ssq_record_failure "$f" "$class"; rec=$?
     if (( rec == 10 )); then
       ssq_block "$f" "deterministic-threshold"
-      severe_alert "Flywheel self-ship marker $(basename "$f") blocked after repeated deterministic failures (last class=$class). Old code still deployed; needs manual attention."
+      severe_alert "marker-det-threshold-$(basename "$f")" \
+        "Flywheel self-ship marker $(basename "$f") blocked after repeated deterministic failures (last class=$class). Old code still deployed; needs manual attention."
     fi
   done < <(ssq_due_markers)
 }

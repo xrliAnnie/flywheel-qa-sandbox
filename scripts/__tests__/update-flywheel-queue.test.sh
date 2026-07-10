@@ -37,14 +37,25 @@ stub_deploy_det()  { echo call >> "$DEPLOY_CALLS"; return 3; }
 
 export UPDATE_FLYWHEEL_SOURCED=1
 # HERMETIC GUARD (qa-fly-270 finding): keep update-flywheel.sh from sourcing the
-# real ~/.flywheel/.env — else the production bot token + core channel leak into
-# this shell and severe_alert→notify_discord would POST real 🚨 alerts to the
-# production Discord channel on a configured dev machine (FLY-218/220 spam zone).
-# Defense in depth: (c) point ENV_FILE at /dev/null; (b) sandbox HOME; + neutralize
-# the notify vars so notify_discord is a guaranteed no-op even if env leaks.
+# real ~/.flywheel/.env — else production sender/seam env leaks into this shell
+# and severe_alert→lead-alert.sh could POST real 🚨 alerts to the production
+# alert channel on a configured dev machine (FLY-218/220 spam zone).
+# Defense in depth: (c) point ENV_FILE at /dev/null; (b) sandbox HOME; +
+# neutralize the FLY-927/1081 seam family so no real token can resolve even if
+# env leaks; and (a) severe_alert hits a FAKE ${FLYWHEEL_DIR}/scripts/
+# lead-alert.sh (records argv) — the real alert pipeline never runs here.
 export ENV_FILE=/dev/null
 export HOME="${TMP}/home"; mkdir -p "$HOME"
-export DISCORD_CORE_CHANNEL="" SIMBA_BOT_TOKEN="" DISCORD_BOT_TOKEN="" NOTIFY_BOT_TOKEN=""
+export FLYWHEEL_ALERT_SENDER_TOKEN_ENV="" FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID="" \
+       FLYWHEEL_FOUNDER_USER_ID="" FLYWHEEL_ALERT_TICKETS="" FLYWHEEL_ALERT_RATE_PER_MIN=""
+mkdir -p "${FLYWHEEL_DIR}/scripts"
+export LA_CALLS="${TMP}/la-calls"; : > "$LA_CALLS"
+cat > "${FLYWHEEL_DIR}/scripts/lead-alert.sh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${LA_CALLS}"
+exit 0
+FAKE
+chmod +x "${FLYWHEEL_DIR}/scripts/lead-alert.sh"
 # FLY-954: update_main now converges <state>/bin (mount b). A runner-born
 # production FLYWHEEL_STATE_DIR would outrank the sandboxed HOME above and the
 # converger would "repair" the REAL ~/.flywheel/bin from THIS (possibly branch)
@@ -89,14 +100,29 @@ if [[ "$rc" == "0" && "$calls" == "0" ]]; then pass "T4 lock-held → update_mai
 
 # ── T5: deploy OK but target NOT on origin/main (bad/foreign SHA) → blocked NOW,
 #        not retried forever as transient (code-review R1 / §2.3#8) ──────────
-rm -rf "$SELF_SHIP_PENDING_DIR" "$SELF_SHIP_BLOCKED_DIR"; ssq_init_dirs
+rm -rf "$SELF_SHIP_PENDING_DIR" "$SELF_SHIP_BLOCKED_DIR"; ssq_init_dirs; : > "$LA_CALLS"
 mf="$(ssq_enqueue "$FOREIGN_SHA" "270" "foreign")"
-SELF_SHIP_DEPLOY_CMD=stub_deploy_ok process_due_markers >/dev/null 2>&1
+T5_ERR="${TMP}/t5.err"
+SELF_SHIP_DEPLOY_CMD=stub_deploy_ok process_due_markers >/dev/null 2>"$T5_ERR"
 if [[ "$(ssq_pending_count)" == "0" ]]; then pass "T5 deploy-ok + foreign target → blocked immediately (not transient retry)"; else
   cls="$(ssq_marker_field "$mf" lastErrorClass 2>/dev/null)"
   fail "T5 marker still pending (lastErrorClass=$cls — would retry forever)"; fi
 bn="$(find "$SELF_SHIP_BLOCKED_DIR" -name '*.json' | wc -l | tr -d ' ')"
 if [[ "$bn" == "1" ]]; then pass "T5b foreign-SHA marker landed in blocked dir"; else fail "T5b blocked count=$bn"; fi
+# FLY-1081: the blocked-marker severe_alert rides lead-alert.sh with the
+# updater system identity + a marker-scoped slug; founder env is EMPTY here →
+# no --mention-user flag + a stderr WARNING trace (Codex R2#2).
+if grep -q -- "--project flywheel --lead updater --kind deploy_failed --severity severe" "$LA_CALLS"; then
+  pass "T5c blocked marker → lead-alert.sh deploy_failed with --lead updater"
+else
+  fail "T5c lead-alert args wrong: $(cat "$LA_CALLS")"
+fi
+grep -q -- "--signature marker-not-on-origin-" "$LA_CALLS" \
+  && pass "T5d slug carries the marker basename context" || fail "T5d marker slug missing: $(cat "$LA_CALLS")"
+grep -q -- "--mention-user" "$LA_CALLS" \
+  && fail "T5e founder env empty but --mention-user passed" || pass "T5e founder env empty → no --mention-user flag"
+grep -qi "WARNING.*FLYWHEEL_FOUNDER_USER_ID" "$T5_ERR" \
+  && pass "T5f founder env empty → stderr WARNING trace" || fail "T5f no stderr WARNING: $(cat "$T5_ERR")"
 
 # ── T6: watched dir with ONLY invalid entries → update_main quarantines them,
 #        ends with pending empty + no deploy (no QueueDirectories hot-loop) ────
