@@ -20,7 +20,7 @@ flowchart LR
 ```
 
 统一原则(全 PR 适用):
-- **零新 timer**:所有传感器挂 `plugin.ts:6168` `onPollComplete` 顺风车。
+- **零新 timer**:传感器挂 `plugin.ts:6168` `onPollComplete` 顺风车;**唯一例外** = tmux server-loss 协调器(必须做成 `HeartbeatService.check()` 的 pre-reaper phase 才能先于 orphan 迁移,见 Task 2.3 —— 仍复用现有循环,无新 timer)。
 - **只做可逆动作**:AutoRepairBot 新动作全部可逆(hold 可撤 / kickstart 幂等 / 通知无副作用);§4.4 五条立刻升级在分发层落死。
 - **默认 ON + 每传感器独立 kill switch**(`FLYWHEEL_FLEET_SENSOR_<NAME>=0` 关):default-off 会复刻「enable 窗永远等不来」= 本单要治的病;kill switch 保留逃生口。**唯 fail-loud 启动校验无开关**(代码完整性检查,不是行为)。
 - TDD:每 task 先写失败测试;文件行号引用以 research.md §2 为准。
@@ -68,14 +68,18 @@ flowchart LR
 
 ### Task 2.3 tmux server 探测 + 专用 server-loss 协调器(Codex R1 #3 重写)
 - **不能复用 crash-reaper**:「no server running」时 `probeRunnerProcessLiveness()` 返回 `absent`,crash-reaper 明确跳过该形态(`crash-reaper.ts:196-199`、`tmux-lookup.ts:323-341`),随后 `HeartbeatService.reapOrphans()` 逐个 force-fail(`HeartbeatService.ts:1029-1103`)——直接复用会双迁移/丢失聚合证据。
-- 新建 **server-loss 协调器**,在 crash-reaper / reapOrphans **之前**运行:tick 检出「no server running 且 StateStore 有 running tmux session」→ 当 tick 内 **claim 全部受影响 exec id** → 发**单一** `tmux_server_lost` episode → 对每个 runner 执行与 reapOrphans 相同的终态迁移(`failed`,沿用现有 transition 语义,只是**成组、带 episode 关联**)→ 被 claim 的行对本 tick 的普通 orphan 处理**抑制**(不双迁移)。
+- 新建 **server-loss 协调器 = HeartbeatService 的新 pre-reaper phase**(Codex R2 #2:crash-reaper/reapOrphans 都在 `HeartbeatService.check()` 里跑,`HeartbeatService.ts:252-264`;LeadWatchdog 的 onPollComplete sensor 无法保证同 cycle 内先于 orphan 迁移 —— 本协调器**插在 `reapCrashedRunners()` 之前**,返回 `serverLossOwned` 集合并入该次 check 的 orphan 抑制集 `HeartbeatService.ts:1029-1055`;仍是复用现有 heartbeat 循环 = 零新 timer,但**不是** onPollComplete sensor,§1 统一原则对此 kind 例外注明):检出「no server running 且 StateStore 有 running tmux session」→ 当次 check 内 **claim 全部受影响 exec id** → 发**单一** `tmux_server_lost` episode → 对每个 runner 执行与 reapOrphans 相同的终态迁移(`failed`,沿用现有 transition 语义,只是**成组、带 episode 关联**)→ 被 claim 的行对本次 check 的普通 orphan 处理**抑制**(不双迁移)。集成测试锚 `HeartbeatService.check()` 顺序:no-server 行在 orphan reaping 前被 claim。
 - boot 腿:复活对账中,上一世代 running ≥ `FLYWHEEL_TMUX_MASS_LOSS_MIN`(默认 3)且 server 空/全新 → 同 kind,与 tick 腿同 episode 签名去重。
 - 通知:按 Lead 分组(各自阵亡清单 + resume 指针 `$FLYWHEEL_PROGRESS_PATH` + 当前水位);respawn 不代劳(Lead 驱动铁律)。修不掉:通知投递失败 → 升级;Lead 不响应走 FLY-637-ext 既有梯子。
 - 测试:no-server fixture 证明**恰一个 episode、每 runner 恰一次迁移、一组分组通知**;与 crash-reaper/reapOrphans 并跑不双迁移;聚合阈值;3 Lead / 13 runner 分组正确性。
 
 ### Task 2.4 bridge_abnormal_exit 双腿 + dirty-marker(Codex R1 #5/#7 修订)
 - **marker 时序(证据先于覆写)**:boot 时**先读并 latch 上一枚 marker**(prev PID + prev boot ts + episode id),**再**写新 running marker(新 episode id);clean 标记只在现有 `startBridge().close()` 收口路径写(`scripts/run-bridge.ts:74-82`、`plugin.ts:6391-6430`,与 `/health` `shuttingDown` 同源,不另挂信号处理);**wrapper preflight 只读不清**。
-- **跨腿去重 = 显式共享 episode 签名**(Codex R1 #7):`eventId` 输入两腿完全一致 = `bridge-abnormal-exit:<prevPid>:<prevBootTs>`(shell 与 TS 同式;lead-alert.sh 的 eventId 由 project/lead/kind/signature 生成,`lead-alert.sh:286-299` —— 两腿用同一 `--project flywheel --lead bridge` 身份 + 同一 signature)。语义分工:**wrapper 腿 = 直发 page(快)**,**boot 腿 = 生命周期工单**;断言**同一次 crash 只有一条 @ 路径**(claims.db 碰撞测试)。
+- **跨腿关联 = 共享 episode 签名;去重 id 分腿**(Codex R2 #1 修订):同一 eventId 会让后到的 boot 工单被 claims.db 直接吞掉(`LeadAlertNotifier.ts:481-508` 查 shell claims 命中即 `skipped:"duplicate"`,`AlertChannelHub.ts:290-303` 在开工单行之前就 return)。所以:
+  - wrapper page:`bridge-abnormal-exit-page:<prevPid>:<prevBootTs>`
+  - boot 生命周期工单:`bridge-abnormal-exit-ticket:<prevPid>:<prevBootTs>`
+  - 共享 `episodeSignature`:`bridge-abnormal-exit:<prevPid>:<prevBootTs>`(写进两腿的消息/metadata,供人和 QA 关联)
+  「不双 @」由 **page latch** 保证(boot 工单路径检测同 episode 的 page 已发 → 工单不再 @,正常走 ACK/resolve 生命周期),而不是靠 claims 碰撞。测试:wrapper page 成功并 claim 自己的 page id;同一 crash boot 恰好开一个工单行/thread;boot 路径不第二次 @Annie;wrapper 连续重启按分钟签名收敛。
 - wrapper 腿:`bp_launcher_preflight` 增 dirty-marker 检查 → exec 之前 lead-alert.sh 直发(severe);连续 dirty ≥N(复用 starts-in-window 计数)→ 文案升级为 crash-loop @Annie,**保留 prev PID/start ts 证据**。
 - boot 自检腿:复活后的 Bridge 用 latch 的上一枚 marker 开工单;ACK → boot 对账完成 → 安静 resolve。
 - 测试:bridge-port.sh sh 单测(首启/clean SIGTERM/kill -9 三态);kill -9 → wrapper 直发 + boot 工单且 claims 去重只一条 @;crash-loop 文案含 prev PID/ts;跨进程 fixture 证明 shell/TS 同 crash 同 eventId。
