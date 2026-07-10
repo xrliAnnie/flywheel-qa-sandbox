@@ -1,0 +1,20 @@
+ WARN  Failed to create bin at /Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/inbox-mcp/node_modules/.bin/flywheel-comm. ENOENT: no such file or directory, open '/Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/inbox-mcp/node_modules/flywheel-comm/dist/index.js'
+ WARN  Failed to create bin at /Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/terminal-mcp/node_modules/.bin/flywheel-comm. ENOENT: no such file or directory, open '/Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/terminal-mcp/node_modules/flywheel-comm/dist/index.js'
+ WARN  Failed to create bin at /Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/teamlead/node_modules/.bin/flywheel-comm. ENOENT: no such file or directory, open '/Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/teamlead/node_modules/flywheel-comm/dist/index.js'
+ WARN  Failed to create bin at /Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/teamlead/node_modules/.bin/agent-team-transport. ENOENT: no such file or directory, open '/Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/teamlead/node_modules/flywheel-agent-team-transport/dist/bin/agent-team-transport-cli.js'
+Done in 7.4s using pnpm v10.13.1
+packages/flywheel-comm build: Done
+packages/claude-runner build$ tsc
+packages/claude-runner build: Done
+packages/edge-worker build$ tsc && npm run copy-prompts
+packages/edge-worker build: npm warn Unknown env config "approve-builds-auto". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+packages/edge-worker build: npm warn Unknown env config "recursive". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+packages/edge-worker build: npm warn Unknown env config "approve-builds". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+packages/edge-worker build: npm warn Unknown env config "verify-deps-before-run". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+packages/edge-worker build: npm warn Unknown env config "_jsr-registry". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+packages/edge-worker build: npm warn Unknown env config "overrides". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+packages/edge-worker build: > flywheel-edge-worker@0.2.24 copy-prompts
+packages/edge-worker build: > mkdir -p dist/prompts/subroutines && cp -r src/prompts/subroutines/*.md dist/prompts/subroutines/ && cp label-prompt-template.md dist/ && cp -r prompts dist/
+packages/edge-worker build: Done
+packages/teamlead build$ tsc && rm -rf dist/static && cp -r static dist/static
+packages/teamlead build: Done
