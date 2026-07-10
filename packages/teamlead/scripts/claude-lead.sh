@@ -50,7 +50,7 @@
 #   # Chief of Staff (Simba) — runs in GeoForge3D/ (root, no --subdir)
 #   source ~/.flywheel/.env
 #   cd ~/Dev/flywheel/packages/teamlead && \
-#   DISCORD_BOT_TOKEN=$SIMBA_BOT_TOKEN \
+#   DISCORD_BOT_TOKEN=$YOUR_COS_BOT_TOKEN \
 #     ./scripts/claude-lead.sh cos-lead /path/to/geoforge3d geoforge3d
 #
 # The supervisor automatically restarts Claude on crash with exponential

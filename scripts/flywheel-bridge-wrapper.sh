@@ -99,11 +99,31 @@ if [[ -f "$BRIDGE_PORT_LIB" ]]; then
          --signature "${reason}-$(date -u +%Y%m%d%H%M)" >/dev/null 2>&1; then
       return 0
     fi
-    local token="${SIMBA_BOT_TOKEN:-${DISCORD_BOT_TOKEN:-}}"
-    if [[ -n "$token" && -n "${DISCORD_CORE_CHANNEL:-}" ]] && command -v jq >/dev/null 2>&1; then
+    # FLY-1081: this direct-curl leg runs ONLY when lead-alert.sh is missing/
+    # failed AND the Bridge is down. The core-channel TARGET stays — a
+    # gate-approved explicit exception: when the alert pipeline itself is
+    # broken, better a wrong-channel post than a lost Bridge-death signal.
+    # The sender IDENTITY, however, resolves via the FLY-927 seam (indirect
+    # expansion, semantics aligned with lead-alert.sh:243-247) — the old
+    # Simba/legacy-bot-token fallback was the FLY-915 pain-#3 bug. Seam
+    # unresolvable → stderr ERROR + return 0 (the meta-alert above already
+    # fired; no Discord leg is left). stdout stays EMPTY throughout — this
+    # function runs inside the $(bp_launcher_preflight …) capture (Codex R2
+    # HIGH constraint). Token rides a curl stdin config, never argv.
+    local sender_env="${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}"
+    local token=""
+    [[ -n "$sender_env" ]] && token="${!sender_env:-}"
+    if [[ -z "$token" ]]; then
+      log "ERROR: fallback curl cannot resolve FLYWHEEL_ALERT_SENDER_TOKEN_ENV='${sender_env}' — refusing legacy fallback" >&2
+      return 0
+    fi
+    if [[ -n "${DISCORD_CORE_CHANNEL:-}" ]] && command -v jq >/dev/null 2>&1; then
       curl -sf -X POST "https://discord.com/api/v10/channels/${DISCORD_CORE_CHANNEL}/messages" \
-        -H "Authorization: Bot ${token}" -H "Content-Type: application/json" \
-        -d "$(jq -n --arg c "🚨 ${title} — ${body}" '{content:$c}')" --max-time 5 >/dev/null 2>&1 || true
+        -H "Content-Type: application/json" \
+        -d "$(jq -n --arg c "🚨 ${title} — ${body}" '{content:$c}')" \
+        --max-time 5 -K - >/dev/null 2>&1 <<CURLCFG || true
+header = "Authorization: Bot ${token}"
+CURLCFG
     fi
   }
 
