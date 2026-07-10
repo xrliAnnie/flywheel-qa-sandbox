@@ -168,3 +168,21 @@ sock 没就绪(可能窗先于 sock 起,见 §7 note);4=窗死/被 stale-kill;5=
   分类照常在 Alerts 告警,Annie 与别的 Lead 都看得到)。
 - 功能兜底不依赖 bot:切换有 watchdog deadline 兜底(bot 死照样切);每日摘要缺席本身是可见信号。
 - 交叉互看终态:将来 Claude Infra Bot 反向监控 Codex Infra Bot(696 完整形态,follow-up)。
+
+## C6.1 Bridge 外部心跳探针(FLY-1082,随本 bot 的 launchd 域部署)
+
+2026-07-09 事故的静默洞:检测面全活在 Bridge 进程里,Bridge 自己死了整个平面一起死。
+「死了且没活过来」由本 bot 侧的**确定性探针脚本**兜住(不是 LLM loop —— 心跳不能指望
+对话循环记得做):
+
+- 脚本:`scripts/bridge-liveness-probe.sh`(每分钟 curl Bridge `/health`;连续 down
+  ≥ `FLYWHEEL_BRIDGE_DOWN_ESCALATE_MIN`(默认 5)分钟 → 用本 bot 的 token Discord
+  直发 @Annie;恢复后单发一条解除;每个 down episode 只 page 一次,状态文件
+  `~/.flywheel/state/bridge-liveness-probe.json` 防重复)。
+- plist 模板:`scripts/launchd/com.flywheel.bridge-liveness-probe.plist`
+  (StartInterval 60s;token 经 wrapper source `~/.flywheel/.env`,绝不进 plist)。
+- 安装(enable 窗,与 §7 同批):模板头部注释里有逐步命令(拷进
+  `~/Library/LaunchAgents/`、核对 EnvironmentVariables、bootstrap 进 gui 域)。
+- 验证:对隔离 QA bridge 注入宕机(或临时把 BRIDGE_URL 指向空端口)→ 等 N 分钟 →
+  Alerts 见 @Annie page;恢复 → 见解除消息。见 FLY-1082 QA 注入矩阵。
+- 判据出处:PRD §4.3 进程外兜底(「Bridge 自身死亡的检测腿不得塞回 Bridge 进程内」)。

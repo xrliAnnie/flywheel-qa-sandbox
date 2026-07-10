@@ -109,6 +109,8 @@ escalate 路径上(AlertChannelHub)统计:同一 kind 近 7 天 ESCALATED 次数
 
 按 §3 全套做:5 个 kind + 三层 ARC 执行 + kind-contract fail-loud 启动校验 + 反复升级自动立单 + QA Room 三注入实证。核心哲学:**检测面允许活在 Bridge 里(它有 launchd 兜底、死了会回来),但「死过」这件事必须留下不可磨灭的信号**(wrapper 腿 + dirty-exit marker),复活后的第一件事是把 fleet 事件翻译成有主的工单;**再加一条 Bridge 进程外的独立视角**(Codex bot 外部心跳)兜住「死了且没活过来」。
 
+> **架构铁律(Tadashi,2026-07-09 implement 段落定)**:fleet 级检测不得塞回 Bridge 进程内(否则事故时同死)—— 具体指「Bridge 自身死亡」的检测腿(wrapper dirty-marker 直发 + 进程外心跳探针)必须永远活在 Bridge 进程之外;以后任何重构都不许把这两条腿折回 Bridge 内(那正是 2026-07-09 零告警的结构性根因)。
+
 ## 7. Brainstorm gate 结果(Tadashi,2026-07-09)
 
 **通过**,逐条认可(kind 划分 / fail-loud 注册表含存量映射 / ARC 三层 / respawn stampede 防护 / 自动立单 / QA Room 验收),**一条硬性补充已折进 §3.1**:

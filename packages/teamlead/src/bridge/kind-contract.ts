@@ -163,6 +163,40 @@ export function escalatesAtEnqueue(kind: AlertEventType): boolean {
 }
 
 /**
+ * FLY-1082 (Task 3.1): founder-facing copy for the fleet kinds' T2
+ * escalation — the four-element template (kind · ARC 试了什么 · 为什么失败 ·
+ * Annie 只需拍的那一个决定) renders from this table. 人话 only, never a PRD
+ * number (founder-facing copy rule). Kinds absent here keep the legacy
+ * escalate line byte-for-byte (存量 kind 文案不回归重写).
+ */
+export const FLEET_ESCALATION_COPY: Partial<
+	Record<AlertEventType, { label: string; decision: string }>
+> = {
+	swap_pressure_high: {
+		label: "机器内存吃紧（OOM 预警）",
+		decision:
+			"水位一直没退：要不要人工收掉一批 runner（还是同意继续 hold 等它回落）？",
+	},
+	tmux_server_lost: {
+		label: "承载 runner 的 tmux server 丢了",
+		decision:
+			"有 Lead 没收到阵亡通知或没动手：要不要点名让它复活自己的 runner？",
+	},
+	bridge_abnormal_exit: {
+		label: "Bridge 非正常退出",
+		decision: "复活后对账一直没走完：要不要人工看一眼 Bridge 日志？",
+	},
+	infra_bot_down: {
+		label: "infra bot 掉线",
+		decision: "自动重启没救活：要不要人工重启这个 bot（或先停用它）？",
+	},
+	zombie_session_backlog: {
+		label: "跨 Lead 僵尸 session 积压",
+		decision: "要不要人工清理这批僵尸 session？",
+	},
+};
+
+/**
  * Startup validation (fail-loud, PRD §4.4): every kind must satisfy
  * (a) arc="auto" with a remediationRef and a BOT owner, or (b) an explicit
  * no-ARC posture with the owner named. Violations throw listing every

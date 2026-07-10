@@ -302,6 +302,7 @@ import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
 import { buildTopicTrigger } from "./roundtable/topic-trigger.js";
 import { setupRunInfrastructure } from "./run-infra.js";
+import { noteTicketEscalated } from "./runbook-gap.js";
 import {
 	defaultResolveLeadId,
 	makeRunnerAuthScan,
@@ -5875,6 +5876,61 @@ export async function startBridge(
 		};
 	}
 
+	// FLY-1082 (Task 3.2): runbook-gap Linear wiring — FLY team / Flywheel
+	// project / Flywheel label, resolved lazily per call (the auto-filed issue
+	// is rare; no caching complexity). No LINEAR_API_KEY ⇒ creation degrades to
+	// null and the escalation itself is untouched.
+	const runbookCreateIssue = async (input: {
+		title: string;
+		description: string;
+	}): Promise<{ id: string; identifier?: string } | null> => {
+		const apiKey = config.linearApiKey;
+		if (!apiKey) return null;
+		try {
+			const { LinearClient } = await import("@linear/sdk");
+			const client = new LinearClient({ apiKey });
+			const teams = await client.teams({ filter: { key: { eq: "FLY" } } });
+			const team = teams.nodes[0];
+			if (!team) return null;
+			const projects = await client.projects({
+				filter: { name: { eq: "Flywheel" } },
+			});
+			const labels = await team.labels({
+				filter: { name: { eq: "Flywheel" } },
+			});
+			const payload = await client.createIssue({
+				teamId: team.id,
+				title: input.title,
+				description: input.description,
+				...(projects.nodes[0]?.id && { projectId: projects.nodes[0].id }),
+				...(labels.nodes[0]?.id && { labelIds: [labels.nodes[0].id] }),
+			});
+			const created = await payload.issue;
+			return created?.id
+				? { id: created.id, identifier: created.identifier }
+				: null;
+		} catch (err) {
+			console.warn(
+				`[runbook-gap] Linear issue creation failed: ${(err as Error).message}`,
+			);
+			return null;
+		}
+	};
+	const runbookIsIssueOpen = async (
+		issueId: string,
+	): Promise<boolean | null> => {
+		const apiKey = config.linearApiKey;
+		if (!apiKey) return null;
+		try {
+			const { LinearClient } = await import("@linear/sdk");
+			const issue = await new LinearClient({ apiKey }).issue(issueId);
+			const state = await issue.state;
+			return state ? !["completed", "canceled"].includes(state.type) : null;
+		} catch {
+			return null; // cannot tell — keep the dedup (never double-file)
+		}
+	};
+
 	// FLY-368 rework: Hub on when unified channel + threading + a resolvable repair
 	// chain; else watchdogs route straight to the notifier (legacy / root-only).
 	const alertHub =
@@ -6007,6 +6063,15 @@ export async function startBridge(
 					// alive / boot reconcile done) — holder-backed; null = cannot tell.
 					fleetRecovery: async (row) =>
 						(await fleetSensorsHolder.current?.recoveryProbe(row)) ?? null,
+					// FLY-1082 (Task 3.2): repeated-escalation runbook-gap counter —
+					// same kind ESCALATED ≥3 times in 7 days auto-files the eng issue.
+					onTicketEscalated: async (row) => {
+						await noteTicketEscalated(row.event_type, {
+							store,
+							createIssue: runbookCreateIssue,
+							isIssueOpen: runbookIsIssueOpen,
+						});
+					},
 				})
 			: undefined;
 	if (alertHub) {

@@ -34,7 +34,11 @@ import {
 	formatAccountCapOwnerAssignment,
 	resolveAccountCapOwnerId,
 } from "./infra-notify.js";
-import { escalatesAtEnqueue, KIND_CONTRACTS } from "./kind-contract.js";
+import {
+	escalatesAtEnqueue,
+	FLEET_ESCALATION_COPY,
+	KIND_CONTRACTS,
+} from "./kind-contract.js";
 import { fingerprintOutput } from "./stuck-candidate.js";
 import {
 	decideTicketEscalation,
@@ -260,6 +264,12 @@ export interface AlertChannelHubDeps {
 	 * plugin.ts to the fleet-sensors module.
 	 */
 	fleetRecovery?: (row: AlertThreadRow) => Promise<boolean | null>;
+	/**
+	 * FLY-1082 (Task 3.2): fired after a ticket lands ESCALATED via the T2
+	 * path — the repeated-escalation runbook-gap counter hangs here. Best-
+	 * effort (failures logged, never block the escalation).
+	 */
+	onTicketEscalated?: (row: AlertThreadRow) => Promise<void>;
 	now?: () => number;
 	logger?: (msg: string) => void;
 }
@@ -420,6 +430,19 @@ export class AlertChannelHub {
 				if (payload.ticket) {
 					this.deps.store.setTicketStatus(ck, "ESCALATED");
 					await this.updateRootTicketStatus(channelId, messageId, "ESCALATED");
+					// FLY-1082 (Task 3.2): a by-design escalation counts toward the
+					// runbook-gap window too (repeated zombie backlogs = FLY-1066 is
+					// overdue — exactly what the auto-filed issue should say).
+					const row = this.deps.store.getActiveAlertThread(ck);
+					if (row) {
+						try {
+							await this.deps.onTicketEscalated?.(row);
+						} catch (err) {
+							this.logger(
+								`onTicketEscalated hook failed for ${ck}: ${(err as Error).message}`,
+							);
+						}
+					}
 				}
 				return;
 			}
@@ -799,9 +822,23 @@ export class AlertChannelHub {
 		} else {
 			const fid = this.founderId();
 			const mention = fid ? `<@${fid}>` : "Annie";
+			// FLY-1082 (Task 3.1): fleet kinds render the FOUR-ELEMENT template
+			// (kind · ARC 试了什么 · 为什么失败 · 你只需拍的一个决定); legacy kinds
+			// keep the pre-FLY-1082 line byte-for-byte (no copy regression).
+			const fleet = FLEET_ESCALATION_COPY[row.event_type as AlertEventType];
+			const line = fleet
+				? `🙋 ${mention} 修不掉(T2)— ${fleet.label}。\n· ARC 试了：${
+						KIND_CONTRACTS[row.event_type as AlertEventType]?.remediationRef ??
+						"（无自动修复）"
+					}（尝试 ${row.attempt_count} 次）\n· 为什么失败：${
+						row.attempt_count >= 2
+							? "重试预算用尽仍未恢复"
+							: "超时窗内没有恢复信号"
+					}\n· 你只需拍一个决定：${fleet.decision}`
+				: `🙋 ${mention} 修不掉(T2:重试 ${row.attempt_count} 次 / 超时)— 需要你处理。`;
 			await this.safePostToThread(
 				row.thread_id,
-				`🙋 ${mention} 修不掉(T2:重试 ${row.attempt_count} 次 / 超时)— 需要你处理。`,
+				line,
 				fid ? { mentionUserId: fid } : undefined,
 			);
 		}
@@ -811,6 +848,16 @@ export class AlertChannelHub {
 			row.root_message_id,
 			"ESCALATED",
 		);
+		// FLY-1082 (Task 3.2): repeated escalations of one kind = a runbook gap —
+		// the hook (wired in plugin.ts) counts the 7-day window and auto-files
+		// the eng issue. Best-effort: never blocks the escalation itself.
+		try {
+			await this.deps.onTicketEscalated?.(row);
+		} catch (err) {
+			this.logger(
+				`onTicketEscalated hook failed for ${row.correlation_key}: ${(err as Error).message}`,
+			);
+		}
 	}
 
 	/**

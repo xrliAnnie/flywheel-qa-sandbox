@@ -1429,6 +1429,30 @@ export class StateStore {
 			)
 		`);
 
+		// FLY-1082 (Task 3.2): escalation-event ledger — alert_threads UPSERTs one
+		// row per correlation key, so repeated episodes overwrite their history;
+		// the runbook-gap counter ("same kind ESCALATED ≥N in 7 days ⇒ auto-file
+		// the eng issue") needs an append-only record. Plus the per-kind open
+		// runbook-issue dedup (at most ONE open issue per kind).
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS ticket_escalations (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				kind TEXT NOT NULL,
+				escalated_at TEXT NOT NULL DEFAULT (datetime('now'))
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_ticket_escalations_kind ON ticket_escalations(kind, escalated_at)",
+		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS runbook_issues (
+				kind TEXT PRIMARY KEY,
+				issue_id TEXT NOT NULL,
+				issue_identifier TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now'))
+			)
+		`);
+
 		// FLY-818 M3: durable per-eventId founder-page ledger. Records whether a
 		// GENUINE founder page (an @founder message in the stuck runner's [FLY-XX]
 		// issue thread — Annie's issue-thread design) actually succeeded for a
@@ -4655,6 +4679,71 @@ export class StateStore {
 		const changed = this.db.getRowsModified();
 		if (changed > 0) this.save();
 		return changed > 0;
+	}
+
+	// ── FLY-1082 (Task 3.2): runbook-gap ledger ──
+
+	/** Append one escalation event for the kind (the 7-day window counter). */
+	recordTicketEscalation(kind: string): void {
+		this.db.run("INSERT INTO ticket_escalations (kind) VALUES (?)", [kind]);
+		this.save();
+	}
+
+	/** Escalation events for the kind within the last `days` days. */
+	countTicketEscalations(kind: string, days: number): number {
+		const stmt = this.db.prepare(
+			"SELECT COUNT(*) AS n FROM ticket_escalations WHERE kind = ? AND escalated_at >= datetime('now', ?)",
+		);
+		stmt.bind([kind, `-${days} days`]);
+		let n = 0;
+		if (stmt.step()) {
+			n = Number((stmt.getAsObject() as Record<string, unknown>).n ?? 0);
+		}
+		stmt.free();
+		return n;
+	}
+
+	/** Clear the kind's escalation window (the runbook issue was closed —
+	 * counting starts over). */
+	clearTicketEscalations(kind: string): void {
+		this.db.run("DELETE FROM ticket_escalations WHERE kind = ?", [kind]);
+		this.save();
+	}
+
+	/** The kind's open runbook issue (dedup: at most one per kind). */
+	getRunbookIssue(
+		kind: string,
+	): { issue_id: string; issue_identifier: string | null } | undefined {
+		const stmt = this.db.prepare(
+			"SELECT issue_id, issue_identifier FROM runbook_issues WHERE kind = ?",
+		);
+		stmt.bind([kind]);
+		let out: { issue_id: string; issue_identifier: string | null } | undefined;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			out = {
+				issue_id: row.issue_id as string,
+				issue_identifier: (row.issue_identifier as string) ?? null,
+			};
+		}
+		stmt.free();
+		return out;
+	}
+
+	setRunbookIssue(kind: string, issueId: string, identifier?: string): void {
+		this.db.run(
+			`INSERT INTO runbook_issues (kind, issue_id, issue_identifier) VALUES (?, ?, ?)
+			 ON CONFLICT(kind) DO UPDATE SET issue_id = excluded.issue_id,
+				issue_identifier = excluded.issue_identifier,
+				created_at = datetime('now')`,
+			[kind, issueId, identifier ?? null],
+		);
+		this.save();
+	}
+
+	clearRunbookIssue(kind: string): void {
+		this.db.run("DELETE FROM runbook_issues WHERE kind = ?", [kind]);
+		this.save();
 	}
 
 	/**

@@ -141,6 +141,7 @@ flowchart LR
 - 不做 bot 部署/enable(FLY-1071/928;心跳探针只交付脚本+模板)。
 - 不做 N1/N2 digest 聚合(字段已齐,聚合归 notify 侧);不做 reconcile-QA 修复(FLY-1092);不做重恢复引擎(FLY-271)。
 - 「整机全灭」(Bridge+双 bot+launchd 全死)超出本机告警能力,明确不承诺。
+- **架构铁律(Tadashi 补,防回退)**:fleet 级检测不得塞回 Bridge 进程内(否则事故时同死)—— 「Bridge 自身死亡」的两条检测腿(wrapper dirty-marker 直发、进程外心跳探针)永远活在 Bridge 进程之外,任何后续重构不得折回。
 - **措辞校准(Codex R1 #8)**:现行 StateStore 已是 better-sqlite3(`StateStore.ts:3-24`,FLY-663 已迁移);事故引文里的「sql.js corruption」是当晚部署形态的历史记录。本单实现与文案一律按「Bridge 进程在机器压力下 fatal exit」表述,不依赖任何 sql.js 特定行为。
 - respawn runner 永远 Lead 驱动;bot/Bridge 不碰 runner lifecycle(FLY-175)。
 
