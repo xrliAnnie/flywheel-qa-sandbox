@@ -1,13 +1,13 @@
 ---
 issue: FLY-1081
 phase: implement
-phaseCursor: 4/6
-updated: 2026-07-10T02:21:30.127Z
-nextStep: M5 grep-zero renames + sentinel + CI wiring + full suite
+phaseCursor: 5/6
+updated: 2026-07-10T04:54:31.711Z
+nextStep: M6 push + PR + codex code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1081 progress
-**phase**: implement (4/6)
-**next**: M5 grep-zero renames + sentinel + CI wiring + full suite
+**phase**: implement (5/6)
+**next**: M6 push + PR + codex code review
