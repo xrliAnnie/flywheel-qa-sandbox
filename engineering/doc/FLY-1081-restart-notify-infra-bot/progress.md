@@ -1,13 +1,13 @@
 ---
 issue: FLY-1081
-phase: design
-phaseCursor: 4/4
-updated: 2026-07-10T01:46:35.980Z
-nextStep: commit docs + phase_design_complete + park (design handoff to Implement phase)
+phase: implement
+phaseCursor: 0/6
+updated: 2026-07-10T01:56:03.049Z
+nextStep: "M1 lead-alert.sh: RED tests then kind+mention+filename"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1081 progress
-**phase**: design (4/4)
-**next**: commit docs + phase_design_complete + park (design handoff to Implement phase)
+**phase**: implement (0/6)
+**next**: M1 lead-alert.sh: RED tests then kind+mention+filename
