@@ -148,6 +148,31 @@ else
   fail "M7 legitimate registered clone rejected: $(tail -3 "$SANDBOX/legit.log")"
 fi
 
+# ── M8 · Round-3 (Codex): BOTH broad rows registered for one file must not ───
+# jointly clear a combined private-clone line. Production shape: flywheel-setup
+# registers a slug row (template) AND a clone row (doc comment) for DIFFERENT
+# lines; an accidental executable `git clone <private>` line in that file was
+# cleared twice — slug occurrence by the slug row, clone occurrence by the
+# clone row. The combo detector demands a single row carrying both shapes.
+printf 'scripts/provision-fleet-host.sh\tgit clone\tbroad clone row\nscripts/provision-fleet-host.sh\txrliAnnie/flywheel\tbroad slug row\n' \
+  > "$ROOT/scripts/pkg-grep-both.allow"
+COMBO="$SANDBOX/combo"; mkdir -p "$COMBO/scripts"
+printf '{"name":"flywheel-onboard-payload","version":"%s","private":true}\n' "$VER" > "$COMBO/package.json"
+printf '%s\n' "$VER" > "$COMBO/.flywheel-prebuilt"
+printf '#!/bin/bash\ngit clone https://github.com/xrliAnnie/flywheel.git "$PWD/private-flywheel"\n' \
+  > "$COMBO/scripts/provision-fleet-host.sh"
+if env PACKAGE_ONBOARD_SOURCED=1 \
+     PO_FILES_ALLOWLIST="$ROOT/scripts/pkg-files.allow" \
+     PO_GREP_ALLOWLIST="$ROOT/scripts/pkg-grep-both.allow" \
+     bash -c 'source "$1"; shift; po_gate "$@"' _ "$REPO_ROOT/scripts/package-onboard.sh" \
+       "$COMBO" "$ROOT" >"$SANDBOX/combo.log" 2>&1; then
+  fail "M8 combined private clone cleared jointly by separate slug+clone rows (bypass)"
+else
+  grep -q "UNREGISTERED repo-access reference (combo)" "$SANDBOX/combo.log" \
+    && pass "M8 combined private-clone line demands a combo-registered row (both broad rows insufficient)" \
+    || fail "M8 failed but not via the combo detector: $(tail -3 "$SANDBOX/combo.log")"
+fi
+
 echo ""
 echo "gate4-allowlist-masking: PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" -eq 0 ]

@@ -656,18 +656,24 @@ po_g4_norm() {
   printf '%s' "$1" | tr -d '\042\047' | tr '\t' ' ' | tr -s ' ' | tr '[:upper:]' '[:lower:]'
 }
 
-# po_g4_detect <detector> <normalized-string> — the two independent forbidden
-# shapes. MUST stay in lockstep with the awk twin inside po_gate's scan (the
-# awk copy filters the tree stream; this copy judges allowlist rows).
+# po_g4_detect <detector> <normalized-string> — the forbidden shapes. MUST
+# stay in lockstep with the awk twin inside po_gate's scan (the awk copy
+# filters the tree stream; this copy judges allowlist rows).
 #   slug  — the private GitHub org path prefix
 #   clone — a git-invocation whose argument list carries a `clone` word
 #           (catches `git clone`, `git  clone`, `git -C x clone`, …)
+#   combo — BOTH on one line = a private-repo clone command (Codex R3: in a
+#           file that registers a slug row AND a clone row for different
+#           lines, the two rows would otherwise clear the combined line
+#           between them; a combo occurrence demands a single row that itself
+#           carries both shapes — no production row does, deliberately).
 po_g4_detect() {
   local d="$1" s="$2"
   local clone_re='(^|[^a-z0-9_.-])git ([^|&;]* )?clone($|[^a-z0-9_-])'
   case "$d" in
     slug)  [[ "$s" == *"xrliannie/"* ]] ;;
     clone) [[ "$s" =~ $clone_re ]] ;;
+    combo) [[ "$s" == *"xrliannie/"* ]] && [[ "$s" =~ $clone_re ]] ;;
     *) return 1 ;;
   esac
 }
@@ -739,8 +745,8 @@ po_gate() {
   local grep_allow="${PO_GREP_ALLOWLIST:-$root/scripts/packaged/audit-grep-allowlist.tsv}"
   [ -f "$grep_allow" ] || { po_err "gate④: grep allowlist missing: $grep_allow"; return 1; }
   local det prefilter file lineno text nline registered afile apat
-  for det in clone slug; do
-    case "$det" in clone) prefilter='clone' ;; slug) prefilter='xrliannie' ;; esac
+  for det in clone slug combo; do
+    case "$det" in clone) prefilter='clone' ;; slug|combo) prefilter='xrliannie' ;; esac
     while IFS=$'\t' read -r file lineno text; do
       [ -z "$file" ] && continue
       nline="$(po_g4_norm "$text")"
@@ -776,6 +782,7 @@ po_gate() {
             hit = 0
             if (D == "slug" && index(line, "xrliannie/") > 0) hit = 1
             if (D == "clone" && line ~ /(^|[^a-z0-9_.-])git ([^|&;]* )?clone($|[^a-z0-9_-])/) hit = 1
+            if (D == "combo" && index(line, "xrliannie/") > 0 && line ~ /(^|[^a-z0-9_.-])git ([^|&;]* )?clone($|[^a-z0-9_-])/) hit = 1
             if (hit) printf "%s\t%s\t%s\n", f, n, raw
           }'
     )
