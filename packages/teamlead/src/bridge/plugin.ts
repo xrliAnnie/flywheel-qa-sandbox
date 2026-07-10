@@ -1056,6 +1056,7 @@ export function createBridgeApp(
 			registry,
 			onApproved,
 			opts?.issueDisplayRefresh, // FLY-907
+			opts?.phaseOrchestrator, // FLY-1050: terminate → QA-loss re-drive
 		),
 	);
 
@@ -1482,6 +1483,7 @@ export function createBridgeApp(
 			registry,
 			onApproved,
 			opts?.issueDisplayRefresh, // FLY-907
+			opts?.phaseOrchestrator, // FLY-1050: terminate → QA-loss re-drive
 		),
 	);
 
@@ -3655,6 +3657,19 @@ export async function startBridge(
 				},
 				{ allowStatuses: ["terminated"] },
 			),
+		// FLY-1050: a reaped three-stage QA row may have stranded its implement
+		// at awaiting_review — fire the scoped QA-loss re-drive (fire-and-forget;
+		// the holder is late-bound, undefined pre-wiring = no-op; boot reconcile
+		// is the backstop either way).
+		onQaPhaseTerminated: (executionId, issueId) => {
+			void phaseOrchestratorHolder.current
+				?.reconcileQaLoss({ issueId, terminalExecId: executionId })
+				.catch((err) =>
+					console.warn(
+						`[crash-reaper] FLY-1050 qa-loss reconcile failed for ${executionId}: ${(err as Error).message}`,
+					),
+				);
+		},
 	};
 
 	const heartbeatService = new HeartbeatService(

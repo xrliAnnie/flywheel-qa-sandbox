@@ -302,6 +302,53 @@ describe("reapCrashedRunners (FLY-720)", () => {
 		expect(res.reaped).toBe(0);
 		expect(store.getSession("z1")?.status).toBe("running");
 	});
+
+	// ─── FLY-1050: reaped three-stage QA rows notify the orchestrator ───
+
+	it("FLY-1050: reaping a chat_thread_role='qa' row fires onQaPhaseTerminated (post-transition)", async () => {
+		store.upsertSession({
+			execution_id: "qa-z1",
+			issue_id: "FLY-967",
+			project_name: "geo",
+			status: "running",
+			session_role: "qa",
+			chat_thread_role: "qa",
+			heartbeat_at: minutesAgoSqlite(120),
+		});
+		const onQaPhaseTerminated = vi.fn();
+		const deps = baseDeps({ onQaPhaseTerminated });
+		const res = await reapCrashedRunners(deps);
+		expect(res.reaped).toBe(1);
+		expect(store.getSession("qa-z1")?.status).toBe("terminated");
+		expect(onQaPhaseTerminated).toHaveBeenCalledOnce();
+		expect(onQaPhaseTerminated).toHaveBeenCalledWith("qa-z1", "FLY-967");
+	});
+
+	it("FLY-1050: a non-qa row never fires onQaPhaseTerminated; a throwing hook never breaks the reap", async () => {
+		seedRunning("z1", 120); // no chat_thread_role → 'main'
+		const onQaPhaseTerminated = vi.fn(() => {
+			throw new Error("hook exploded");
+		});
+		const deps = baseDeps({ onQaPhaseTerminated });
+		const res = await reapCrashedRunners(deps);
+		expect(res.reaped).toBe(1);
+		expect(onQaPhaseTerminated).not.toHaveBeenCalled();
+
+		// qa row + throwing hook → reap still completes (archive + event intact)
+		store.upsertSession({
+			execution_id: "qa-z2",
+			issue_id: "FLY-968",
+			project_name: "geo",
+			status: "running",
+			session_role: "qa",
+			chat_thread_role: "qa",
+			heartbeat_at: minutesAgoSqlite(120),
+		});
+		const res2 = await reapCrashedRunners(deps);
+		expect(res2.reaped).toBe(1);
+		expect(onQaPhaseTerminated).toHaveBeenCalledWith("qa-z2", "FLY-968");
+		expect(store.getSession("qa-z2")?.status).toBe("terminated");
+	});
 });
 
 describe("defaultWriteCrashLog (FLY-720)", () => {

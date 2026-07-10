@@ -913,6 +913,14 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
+		// FLY-1050: a three-stage QA row that just FAILED may have stranded its
+		// implement at awaiting_review — re-drive the implement→QA handoff
+		// (respawn a fresh QA) BEFORE the belt reconcile: a successful respawn's
+		// pre-launch grant overwrites the TURN (guard 1 then no-ops, no
+		// stale-holder alert noise); a refused respawn leaves the belt reconcile
+		// to recover it. Sister call: event-route.ts session_failed path.
+		await this.maybeReconcileQaLoss(env.executionId);
+
 		// FLY-921 Fix C: session_failed never reaches onPhaseComplete — a killed
 		// TURN holder (FLY-543 shape) must still release the belt. Sister call:
 		// event-route.ts session_failed path.
@@ -923,6 +931,32 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		this.notifyDisplayChanged(env.issueId);
 
 		this.pushNotification(env, "session_failed");
+	}
+
+	/**
+	 * FLY-1050: scoped QA-loss reconcile — a dead three-stage QA row may have
+	 * stranded its implement at awaiting_review; the orchestrator re-drives the
+	 * implement→QA handoff (respawn) when the pipeline lost itself. All the
+	 * precise guards (terminal status, respawn cap, alive-QA idempotency) live
+	 * inside reconcileQaLoss; this seam only pre-filters to three-stage qa rows.
+	 * Never throws.
+	 */
+	private async maybeReconcileQaLoss(executionId: string): Promise<void> {
+		const orchestrator = this.phaseOrchestrator?.current;
+		if (!orchestrator) return;
+		const session = this.store.getSession(executionId);
+		if (!session?.project_name) return;
+		if ((session.chat_thread_role ?? "main") !== "qa") return;
+		try {
+			await orchestrator.reconcileQaLoss({
+				issueId: session.issue_id,
+				terminalExecId: executionId,
+			});
+		} catch (err) {
+			console.error(
+				`[DirectEventSink] reconcileQaLoss threw for ${executionId}: ${(err as Error).message}`,
+			);
+		}
 	}
 
 	/**

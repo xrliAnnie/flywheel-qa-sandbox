@@ -2111,6 +2111,32 @@ export function createEventRouter(
 			}
 		}
 
+		// FLY-1050: a three-stage QA row that just FAILED may have stranded its
+		// implement at awaiting_review — re-drive the implement→QA handoff
+		// (respawn a fresh QA) BEFORE the belt reconcile below: a successful
+		// respawn's pre-launch grant overwrites the TURN (guard 1 then no-ops);
+		// a refused respawn leaves the belt reconcile to recover it. The
+		// FSM-rejected path deliberately has NO such call — its row never
+		// reached a terminal status, and reconcileQaLoss re-checks that anyway.
+		// Sister call: DirectEventSink.emitFailed.
+		if (
+			event.event_type === "session_failed" &&
+			phaseOrchestrator?.current &&
+			session?.project_name &&
+			(session.chat_thread_role ?? "main") === "qa"
+		) {
+			try {
+				await phaseOrchestrator.current.reconcileQaLoss({
+					issueId: session.issue_id,
+					terminalExecId: event.execution_id,
+				});
+			} catch (err) {
+				console.error(
+					`[event-route] reconcileQaLoss threw for ${event.execution_id}: ${(err as Error).message}`,
+				);
+			}
+		}
+
 		// FLY-921 Fix C: a three-stage phase session reaching a terminal signal
 		// (completed OR failed — the failed path never goes through
 		// onPhaseComplete) may be the current TURN holder. Scoped reconcile with
