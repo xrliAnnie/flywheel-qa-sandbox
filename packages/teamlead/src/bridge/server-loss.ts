@@ -108,91 +108,96 @@ export class ServerLossCoordinator {
 		this.firstCheck = false;
 		const running = this.deps.store.getRunningSessions().filter(isTmuxBacked);
 
-		// Episode ledger maintenance: once every claimed session left `running`
-		// (migrations landed), the episode is over.
+		// Ledger maintenance (Codex R4 HIGH-1): only an ANNOUNCED episode with
+		// no claimed session still running is complete. An un-announced one
+		// still OWES its ticket + Lead notifications (a crash landed between
+		// the migrations and the announcement) and is replayed below.
 		let episode = this.deps.store.getServerLossEpisode();
-		if (episode) {
+		if (episode?.announced) {
 			const claimed = new Set(episode.claimed);
-			const stillPending = running.filter((s) => claimed.has(s.execution_id));
-			if (stillPending.length === 0) {
+			if (!running.some((s) => claimed.has(s.execution_id))) {
 				this.deps.store.clearServerLossEpisode();
 				episode = undefined;
 			}
 		}
 
-		if (running.length === 0) return new Set();
+		if (!episode && running.length === 0) return new Set();
 
-		const probe = await this.deps.probeServer();
+		// The probe is only needed when sessions could be migrated/extended.
+		const probe: ServerProbe =
+			running.length > 0 ? await this.deps.probeServer() : "unknown";
 
-		// Ongoing episode (in-process latch AND post-restart — the ledger is
-		// durable): retry ONLY the pending migrations, quietly. A pending
-		// session is (re)migrated only on PROOF — server provably down, or its
-		// own target provably gone (Codex R3 HIGH-1: an `unknown` probe must
-		// never migrate a possibly-healthy runner). Sessions OUTSIDE the
-		// episode's claimed set are untouched here — a genuinely NEW incident
-		// falls through to fresh detection once this episode clears.
-		if (episode) {
-			const claimed = new Set(episode.claimed);
-			const pending = running.filter((s) => claimed.has(s.execution_id));
-			for (const session of pending) {
-				const provablyDead =
-					probe === "down" || (await this.deps.targetGone(session)) === true;
-				if (!provablyDead) continue;
-				try {
-					await this.deps.migrate(session, episode.signature);
-				} catch (err) {
-					this.log(
-						`retry migrate failed for ${session.execution_id}: ${(err as Error).message}`,
+		// Fresh detection (no active episode).
+		if (!episode) {
+			let casualties: Session[] | null = null;
+			if (probe === "down") {
+				// Tick leg: the server hosting these sessions is GONE — any count.
+				casualties = running;
+				this.lastShape = "server_down";
+			} else if (probe === "up" && wasFirst) {
+				// Boot leg: server responds but the previous generation's runners
+				// may have died with a server restart. Aggregation threshold guards
+				// against reading 1-2 naturally-drifted sessions as a fleet event.
+				const raw = Number(this.env.FLYWHEEL_TMUX_MASS_LOSS_MIN);
+				const massMin = Number.isFinite(raw) && raw > 0 ? raw : 3;
+				if (running.length >= massMin) {
+					const verdicts = await Promise.all(
+						running.map((s) => this.deps.targetGone(s)),
 					);
+					// ALL provably gone (any present/indeterminate → no mass loss).
+					if (verdicts.every((v) => v === true)) {
+						casualties = running;
+						this.lastShape = "server_fresh";
+					}
 				}
 			}
-			return claimed;
+			if (!casualties) return new Set();
+			const signature = `tmux-server-lost:${this.now()}`;
+			this.log(
+				`${this.lastShape}: ${casualties.length} running tmux session(s) lost — episode ${signature}`,
+			);
+			// The DURABLE ledger arms BEFORE any side effect (announced=0) so a
+			// crash anywhere below replays under THIS episode, never a new one.
+			this.deps.store.setServerLossEpisode(
+				signature,
+				casualties.map((s) => s.execution_id),
+			);
+			episode = {
+				signature,
+				claimed: casualties.map((s) => s.execution_id),
+				announced: false,
+			};
 		}
 
-		let casualties: Session[] | null = null;
-		let shape: "server_down" | "server_fresh" | null = null;
+		const claimed = new Set(episode.claimed);
 
+		// Codex R4 HIGH-2: NEW casualties appearing while the SAME server loss
+		// is ongoing (server still provably down) JOIN the episode — claimed +
+		// migrated under the same signature, their Leads notified with a delta
+		// message, no second fleet ticket. Without this they would be masked
+		// from both the episode and fresh detection while old migrations retry.
+		let extension: Session[] = [];
 		if (probe === "down") {
-			// Tick leg: the server hosting these sessions is GONE — any count.
-			casualties = running;
-			shape = "server_down";
-		} else if (probe === "up" && wasFirst) {
-			// Boot leg: server responds but the previous generation's runners may
-			// have died with a server restart. Aggregation threshold guards
-			// against reading 1-2 naturally-drifted sessions as a fleet event.
-			const raw = Number(this.env.FLYWHEEL_TMUX_MASS_LOSS_MIN);
-			const massMin = Number.isFinite(raw) && raw > 0 ? raw : 3;
-			if (running.length >= massMin) {
-				const verdicts = await Promise.all(
-					running.map((s) => this.deps.targetGone(s)),
+			extension = running.filter((s) => !claimed.has(s.execution_id));
+			if (extension.length > 0) {
+				for (const s of extension) claimed.add(s.execution_id);
+				this.deps.store.updateServerLossEpisodeClaimed([...claimed]);
+				this.log(
+					`episode ${episode.signature} extended by ${extension.length} new casualties`,
 				);
-				// ALL provably gone (any present/indeterminate → not a mass loss).
-				if (verdicts.every((v) => v === true)) {
-					casualties = running;
-					shape = "server_fresh";
-				}
 			}
 		}
-		if (!casualties || !shape) return new Set();
 
-		const episodeSignature = `tmux-server-lost:${this.now()}`;
-		this.log(
-			`${shape}: ${casualties.length} running tmux session(s) lost — episode ${episodeSignature}`,
-		);
-
-		// 1. Claim + migrate every casualty (grouped, episode-tagged). The
-		// DURABLE ledger arms NOW so a partial migration failure — or a Bridge
-		// restart mid-migration — retries under THIS episode, never a new one.
-		const claimed = new Set<string>();
-		this.deps.store.setServerLossEpisode(
-			episodeSignature,
-			casualties.map((s) => s.execution_id),
-		);
-		let migrated = 0;
-		for (const session of casualties) {
-			claimed.add(session.execution_id);
+		// Migrate pending sessions — PROOF-gated per session (Codex R3 HIGH-1):
+		// server provably down, or the session's own target provably gone. An
+		// `unknown` probe suppresses the reapers but buries nothing.
+		const pending = running.filter((s) => claimed.has(s.execution_id));
+		for (const session of pending) {
+			const provablyDead =
+				probe === "down" || (await this.deps.targetGone(session)) === true;
+			if (!provablyDead) continue;
 			try {
-				if (await this.deps.migrate(session, episodeSignature)) migrated++;
+				await this.deps.migrate(session, episode.signature);
 			} catch (err) {
 				this.log(
 					`migrate failed for ${session.execution_id}: ${(err as Error).message}`,
@@ -200,29 +205,109 @@ export class ServerLossCoordinator {
 			}
 		}
 
-		// 2. ONE grouped notification per Lead: its own casualty list + resume
-		// pointers + the current watermark (anti-stampede context).
+		// Announcement phase — durable, exactly-once-ish: replayed from the
+		// ledger until it RESOLVES (a throw leaves announced=0 for next tick).
+		if (!episode.announced) {
+			if (await this.announceEpisode(episode.signature, [...claimed])) {
+				this.deps.store.markServerLossEpisodeAnnounced();
+			}
+		} else if (extension.length > 0) {
+			// Already-announced episode extended: delta-notify the affected Leads
+			// (their casualty lists) — the fleet ticket stays the one episode.
+			this.notifyLeadsGrouped(episode.signature, extension);
+		}
+
+		return claimed;
+	}
+
+	/** Remembered for the announcement copy (replay defaults to server_down). */
+	private lastShape: "server_down" | "server_fresh" = "server_down";
+
+	/**
+	 * The episode's side effects: ONE grouped notification per Lead + ONE
+	 * fleet ticket, built from the ledger's claimed ids (works on replay too —
+	 * migrated sessions still have their store rows). Returns true when the
+	 * ticket emission RESOLVED (sent/queued/dead-lettered/deduped — all
+	 * recorded outcomes); only a throw reports false so the ledger replays.
+	 */
+	private async announceEpisode(
+		signature: string,
+		claimedIds: string[],
+	): Promise<boolean> {
+		const sessions = claimedIds
+			.map((id) => this.deps.store.getSession(id))
+			.filter((s): s is Session => !!s);
+		const migrated = sessions.filter((s) => s.status !== "running").length;
+		const { byLead, unresolvedCount, leadsNotified, leadsFailed } =
+			await this.notifyLeadsGrouped(signature, sessions);
+		const perLead = [...byLead.entries()]
+			.map(([leadId, group]) => `${leadId}: ${group.length}`)
+			.join(" / ");
+		try {
+			await this.deps.alert({
+				leadId: "tmux-server",
+				projectName: FLEET_ALERT_PROJECT,
+				eventId: signature,
+				eventType: "tmux_server_lost",
+				title: `tmux server 丢失 — ${claimedIds.length} 个 runner 阵亡`,
+				body: `${
+					this.lastShape === "server_down"
+						? "tmux server 整个消失（no server running）"
+						: "tmux server 重启（复活对账发现上一世代 runner 全灭）"
+				}。受影响：${perLead}${
+					unresolvedCount > 0 ? ` / 无主 ${unresolvedCount}` : ""
+				}。已成组迁移 ${migrated}/${claimedIds.length} 到终态,并按 Lead 分组通知（各自阵亡清单 + resume 指针）。respawn 由各 Lead 驱动。`,
+				severity: "severe",
+				metadata: {
+					tmuxServerLost: {
+						casualties: claimedIds.length,
+						migrated,
+						leadsNotified,
+						leadsFailed,
+					},
+				},
+			});
+			return true;
+		} catch (err) {
+			this.log(
+				`episode announcement failed (will replay): ${(err as Error).message}`,
+			);
+			return false;
+		}
+	}
+
+	/** ONE grouped notification per Lead: its own casualty list + resume
+	 * pointers + the current watermark (anti-stampede context). */
+	private async notifyLeadsGrouped(
+		signature: string,
+		sessions: Session[],
+	): Promise<{
+		byLead: Map<string, Session[]>;
+		unresolvedCount: number;
+		leadsNotified: number;
+		leadsFailed: number;
+	}> {
 		const byLead = new Map<string, Session[]>();
-		const unresolved: Session[] = [];
-		for (const session of casualties) {
+		let unresolvedCount = 0;
+		for (const session of sessions) {
 			const leadId = this.deps.resolveLeadId(session);
 			if (!leadId) {
-				unresolved.push(session);
+				unresolvedCount++;
 				continue;
 			}
-			const list = byLead.get(leadId) ?? [];
-			list.push(session);
-			byLead.set(leadId, list);
+			const group = byLead.get(leadId) ?? [];
+			group.push(session);
+			byLead.set(leadId, group);
 		}
 		let leadsNotified = 0;
 		let leadsFailed = 0;
 		const watermark = this.deps.currentWatermark?.() ?? null;
-		for (const [leadId, sessions] of byLead) {
-			const lines = sessions.map(
+		for (const [leadId, group] of byLead) {
+			const lines = group.map(
 				(s) =>
 					`- ${s.issue_identifier ?? s.issue_id} (exec ${s.execution_id})：progress ledger 在其分支上（$FLYWHEEL_PROGRESS_PATH 指向,可 resume 续跑）`,
 			);
-			const content = `[fleet-alert] tmux server 丢失（${episodeSignature}）— 你名下 ${sessions.length} 个 runner 阵亡,已标记终态：\n${lines.join(
+			const content = `[fleet-alert] tmux server 丢失（${signature}）— 你名下 ${group.length} 个 runner 阵亡,已标记终态：\n${lines.join(
 				"\n",
 			)}\n复活由你驱动（respawn 不代劳）;每个都有 restart-resilient resume（FLY-795）。${
 				watermark
@@ -236,36 +321,7 @@ export class ServerLossCoordinator {
 				leadsFailed++;
 			}
 		}
-		leadsFailed += unresolved.length > 0 ? 1 : 0; // unresolvable = a failed notify
-
-		// 3. ONE fleet ticket for the whole episode (never 13 per-runner alerts).
-		const perLead = [...byLead.entries()]
-			.map(([leadId, sessions]) => `${leadId}: ${sessions.length}`)
-			.join(" / ");
-		await this.deps.alert({
-			leadId: "tmux-server",
-			projectName: FLEET_ALERT_PROJECT,
-			eventId: episodeSignature,
-			eventType: "tmux_server_lost",
-			title: `tmux server 丢失 — ${casualties.length} 个 runner 阵亡`,
-			body: `${
-				shape === "server_down"
-					? "tmux server 整个消失（no server running）"
-					: "tmux server 重启（复活对账发现上一世代 runner 全灭）"
-			}。受影响：${perLead}${
-				unresolved.length > 0 ? ` / 无主 ${unresolved.length}` : ""
-			}。已成组迁移 ${migrated}/${casualties.length} 到终态,并按 Lead 分组通知（各自阵亡清单 + resume 指针）。respawn 由各 Lead 驱动。`,
-			severity: "severe",
-			metadata: {
-				tmuxServerLost: {
-					casualties: casualties.length,
-					migrated,
-					leadsNotified,
-					leadsFailed,
-				},
-			},
-		});
-
-		return claimed;
+		leadsFailed += unresolvedCount > 0 ? 1 : 0; // unresolvable = a failed notify
+		return { byLead, unresolvedCount, leadsNotified, leadsFailed };
 	}
 }

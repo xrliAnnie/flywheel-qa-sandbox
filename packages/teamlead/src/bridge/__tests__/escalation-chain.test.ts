@@ -101,6 +101,53 @@ describe("FLY-1082 Task 3.1 — four-element escalation copy", () => {
 		}
 	});
 
+	it("needs_human at open ALSO renders the four-element template for fleet kinds (Codex R4 MED)", async () => {
+		const discord = makeDiscord();
+		const escalated: string[] = [];
+		const hub = new AlertChannelHub({
+			store,
+			notifier: { alert: vi.fn(async () => ({ ...SENT })) },
+			discord,
+			autoRepairBot: {
+				canAttempt: () => true,
+				attempt: async () => ({
+					outcome: "needs_human" as const,
+					action: "none",
+					detail: "13 个阵亡 runner 只成功迁移了 12 个（其余在静默重试）",
+				}),
+			} as never,
+			onTicketEscalated: async (row) => {
+				escalated.push(row.event_type);
+			},
+		});
+		await hub.handle({
+			leadId: "tmux-server",
+			projectName: "machine",
+			eventId: "e-nh",
+			eventType: "tmux_server_lost",
+			title: "T",
+			body: "B",
+			severity: "severe",
+			ticket: {
+				ownerUserId: null,
+				ownerLabel: "claude bot",
+				status: "NEW",
+				firstSeenMs: Date.now(),
+				ownerRef: "infra_bot:claude",
+			},
+		});
+		const line = discord.posts.find(([, c]) => c.includes("🙋"));
+		expect(line![1]).toContain("tmux server 丢了");
+		expect(line![1]).toContain("ARC 试了：");
+		// The bot's specific reason slots into the 为什么失败 element as-is.
+		expect(line![1]).toContain(
+			"为什么失败：13 个阵亡 runner 只成功迁移了 12 个",
+		);
+		expect(line![1]).toContain("你只需拍一个决定：");
+		// needs_human landing feeds the runbook-gap window (R3 MED).
+		expect(escalated).toEqual(["tmux_server_lost"]);
+	});
+
 	it("legacy kinds keep the pre-FLY-1082 escalate line byte-for-byte", async () => {
 		const posts = await escalateOnce("rate_limit", "some-lead");
 		const line = posts.find(([, c]) => c.includes("🙋"));

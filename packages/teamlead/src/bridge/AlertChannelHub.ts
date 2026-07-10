@@ -475,11 +475,20 @@ export class AlertChannelHub {
 					);
 				} else {
 					// Cass genuinely can't fix this → the ONE place we REALLY @Annie.
+					// FLY-1082 (Task 3.1, Codex R4 MED): fleet kinds render the
+					// four-element template with the bot's specific reason as the
+					// "为什么失败" element; legacy kinds keep the line byte-for-byte.
 					const fid = this.founderId();
 					const mention = fid ? `<@${fid}>` : "Annie";
+					const line =
+						this.fleetEscalationLine(
+							payload.eventType,
+							mention,
+							repair.detail,
+						) ?? `🙋 ${mention} 这个 Cass 修不了，需要你：${repair.detail}`;
 					await this.safePostToThread(
 						threadId,
-						`🙋 ${mention} 这个 Cass 修不了，需要你：${repair.detail}`,
+						line,
 						fid ? { mentionUserId: fid } : undefined,
 					);
 				}
@@ -558,6 +567,25 @@ export class AlertChannelHub {
 				`root ticket-status edit failed (${messageId}): ${(err as Error).message}`,
 			);
 		}
+	}
+
+	/**
+	 * FLY-1082 (Task 3.1): the four-element founder escalation for a FLEET
+	 * kind — kind 人话 label · ARC 试了什么 · 为什么失败 · 你只需拍的一个决定
+	 * (plan contract: the failure reason slots in as-is; the Hub assembles the
+	 * rest). Returns null for non-fleet kinds (their legacy copy is kept
+	 * byte-for-byte by the callers).
+	 */
+	private fleetEscalationLine(
+		kind: AlertEventType,
+		mention: string,
+		failureReason: string,
+	): string | null {
+		const fleet = FLEET_ESCALATION_COPY[kind];
+		if (!fleet) return null;
+		return `🙋 ${mention} 修不掉 — ${fleet.label}。\n· ARC 试了：${
+			KIND_CONTRACTS[kind]?.remediationRef ?? "（无自动修复）"
+		}\n· 为什么失败：${failureReason}\n· 你只需拍一个决定：${fleet.decision}`;
 	}
 
 	/**
@@ -844,17 +872,15 @@ export class AlertChannelHub {
 			// FLY-1082 (Task 3.1): fleet kinds render the FOUR-ELEMENT template
 			// (kind · ARC 试了什么 · 为什么失败 · 你只需拍的一个决定); legacy kinds
 			// keep the pre-FLY-1082 line byte-for-byte (no copy regression).
-			const fleet = FLEET_ESCALATION_COPY[row.event_type as AlertEventType];
-			const line = fleet
-				? `🙋 ${mention} 修不掉(T2)— ${fleet.label}。\n· ARC 试了：${
-						KIND_CONTRACTS[row.event_type as AlertEventType]?.remediationRef ??
-						"（无自动修复）"
-					}（尝试 ${row.attempt_count} 次）\n· 为什么失败：${
-						row.attempt_count >= 2
-							? "重试预算用尽仍未恢复"
-							: "超时窗内没有恢复信号"
-					}\n· 你只需拍一个决定：${fleet.decision}`
-				: `🙋 ${mention} 修不掉(T2:重试 ${row.attempt_count} 次 / 超时)— 需要你处理。`;
+			const line =
+				this.fleetEscalationLine(
+					row.event_type as AlertEventType,
+					mention,
+					row.attempt_count >= 2
+						? `重试预算用尽仍未恢复（尝试 ${row.attempt_count} 次）`
+						: "超时窗内没有恢复信号",
+				) ??
+				`🙋 ${mention} 修不掉(T2:重试 ${row.attempt_count} 次 / 超时)— 需要你处理。`;
 			await this.safePostToThread(
 				row.thread_id,
 				line,

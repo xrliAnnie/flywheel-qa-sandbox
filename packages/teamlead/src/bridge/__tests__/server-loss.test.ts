@@ -303,11 +303,12 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		const fleet = incidentFleet().slice(0, 4);
 		for (const s of fleet) store.upsertSession(s);
 		// The durable evidence of the pre-restart episode: the LEDGER row
-		// (signature + claimed exec ids), NOT the alert ticket.
+		// (signature + claimed exec ids), announced pre-crash.
 		store.setServerLossEpisode(
 			"tmux-server-lost:1000",
 			fleet.map((s) => s.execution_id),
 		);
+		store.markServerLossEpisodeAnnounced();
 		// A FRESH coordinator (post-restart: no in-memory state at all).
 		const coordinator = makeCoordinator({ sessions: [], probe: "down" });
 		const claimed = await coordinator.check();
@@ -351,6 +352,7 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 			"tmux-server-lost:1000",
 			fleet.map((s) => s.execution_id),
 		);
+		store.markServerLossEpisodeAnnounced();
 		const coordinator = makeCoordinator({
 			sessions: [],
 			probe: "unknown",
@@ -369,17 +371,96 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 			"tmux-server-lost:1000",
 			fleet.map((s) => s.execution_id),
 		);
+		store.markServerLossEpisodeAnnounced();
 		const coordinator = makeCoordinator({
 			sessions: [],
 			probe: "up",
 			targetGone: async () => true,
 		});
-		// Not the first check — disable the boot leg so only the episode path runs.
 		await coordinator.check();
 		expect(migrations).toHaveLength(3);
 		expect(new Set(migrations.map((m) => m.episode))).toEqual(
 			new Set(["tmux-server-lost:1000"]),
 		);
+	});
+
+	it("crash BEFORE the announcement: the un-announced ledger replays ticket + notifications after restart (Codex R4 HIGH-1)", async () => {
+		const fleet = incidentFleet().slice(0, 4);
+		// Pre-crash state: sessions already migrated (terminal), ledger armed
+		// but announced=0 — the crash landed between migration and announce.
+		for (const s of fleet) {
+			store.upsertSession(s);
+			store.forceStatus(s.execution_id, "failed", "2026-07-09 21:30:00", "x");
+		}
+		store.setServerLossEpisode(
+			"tmux-server-lost:1000",
+			fleet.map((s) => s.execution_id),
+		);
+		const coordinator = makeCoordinator({ sessions: [], probe: "unknown" });
+		await coordinator.check();
+		// The owed announcement fires from the ledger: ONE ticket + grouped
+		// notifications, under the ORIGINAL signature.
+		expect(alerts).toHaveLength(1);
+		expect(alerts[0]!.eventId).toBe("tmux-server-lost:1000");
+		expect(alerts[0]!.metadata?.tmuxServerLost).toMatchObject({
+			casualties: 4,
+			migrated: 4,
+		});
+		expect(notifications.length).toBeGreaterThan(0);
+		// Announced + nothing pending → the NEXT check clears the ledger.
+		await coordinator.check();
+		expect(store.getServerLossEpisode()).toBeUndefined();
+	});
+
+	it("NEW casualties during an ongoing server-down episode JOIN it — migrated + delta-notified, no second ticket (Codex R4 HIGH-2)", async () => {
+		const fleet = incidentFleet().slice(0, 3); // tadashi ×3
+		let failFor = new Set(fleet.map((s) => s.execution_id)); // keep pending
+		const coordinator = makeCoordinator({
+			sessions: fleet,
+			probe: "down",
+			targetGone: async () => true,
+		});
+		// Override migrate to control failures.
+		const controlled = new ServerLossCoordinator({
+			store,
+			probeServer: async () => "down",
+			targetGone: async () => true,
+			migrate: async (s, episode) => {
+				migrations.push({ execId: s.execution_id, episode });
+				if (failFor.has(s.execution_id)) throw new Error("boom");
+				store.forceStatus(s.execution_id, "failed", "2026-07-09 21:30:00", "x");
+				return true;
+			},
+			resolveLeadId: (s) => (s.summary as string) ?? null,
+			notifyLead: async (leadId, content) => {
+				notifications.push({ leadId, content });
+				return true;
+			},
+			alert: async (p) => {
+				alerts.push(p);
+				return { sent: true };
+			},
+			env: {} as NodeJS.ProcessEnv,
+			now: () => 1_720_000_000_000,
+			logger: () => {},
+		});
+		await controlled.check(); // episode opens; all 3 migrations fail (pending)
+		expect(alerts).toHaveLength(1);
+		const baseNotifies = notifications.length;
+		// A NEW casualty appears while the server is still down.
+		store.upsertSession(session(99, "peter"));
+		failFor = new Set();
+		const claimed = await controlled.check();
+		// Joined the SAME episode: claimed + migrated under the original
+		// signature; its Lead got a delta notification; NO second fleet ticket.
+		expect(claimed.has("exec-99")).toBe(true);
+		expect(alerts).toHaveLength(1);
+		expect(
+			migrations.filter((m) => m.execId === "exec-99").map((m) => m.episode),
+		).toEqual([alerts[0]!.eventId]);
+		const deltaNotify = notifications.slice(baseNotifies);
+		expect(deltaNotify.some((n) => n.leadId === "peter")).toBe(true);
+		void coordinator;
 	});
 
 	it("a migration failure still counts the runner as claimed (no double-burial by orphan reaper)", async () => {

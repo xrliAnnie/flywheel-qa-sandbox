@@ -1463,6 +1463,7 @@ export class StateStore {
 				id INTEGER PRIMARY KEY CHECK (id = 1),
 				signature TEXT NOT NULL,
 				claimed_json TEXT NOT NULL,
+				announced INTEGER NOT NULL DEFAULT 0,
 				created_at TEXT NOT NULL DEFAULT (datetime('now'))
 			)
 		`);
@@ -4760,36 +4761,67 @@ export class StateStore {
 		this.save();
 	}
 
-	// ── FLY-1082 (Task 2.3, Codex R3): server-loss episode ledger ──
+	// ── FLY-1082 (Task 2.3, Codex R3/R4): server-loss episode ledger ──
 
+	/** Arm a NEW episode (announced=0: ticket + Lead notifications still owed —
+	 * a crash before they land replays them from this row on the next check). */
 	setServerLossEpisode(signature: string, claimedIds: string[]): void {
 		this.db.run(
-			`INSERT INTO server_loss_episode (id, signature, claimed_json) VALUES (1, ?, ?)
+			`INSERT INTO server_loss_episode (id, signature, claimed_json, announced) VALUES (1, ?, ?, 0)
 			 ON CONFLICT(id) DO UPDATE SET signature = excluded.signature,
-				claimed_json = excluded.claimed_json, created_at = datetime('now')`,
+				claimed_json = excluded.claimed_json, announced = 0,
+				created_at = datetime('now')`,
 			[signature, JSON.stringify(claimedIds)],
 		);
 		this.save();
 	}
 
-	getServerLossEpisode(): { signature: string; claimed: string[] } | undefined {
-		const stmt = this.db.prepare(
-			"SELECT signature, claimed_json FROM server_loss_episode WHERE id = 1",
+	/** Codex R4: EXTEND the current episode's claimed set (new casualties that
+	 * appeared while the same server loss is ongoing — same signature, no new
+	 * ticket). */
+	updateServerLossEpisodeClaimed(claimedIds: string[]): void {
+		this.db.run(
+			"UPDATE server_loss_episode SET claimed_json = ? WHERE id = 1",
+			[JSON.stringify(claimedIds)],
 		);
-		let out: { signature: string; claimed: string[] } | undefined;
+		this.save();
+	}
+
+	/** Codex R4: the episode's side effects (ONE fleet ticket + grouped Lead
+	 * notifications) landed — only an announced episode may be cleared. */
+	markServerLossEpisodeAnnounced(): void {
+		this.db.run(
+			"UPDATE server_loss_episode SET announced = 1 WHERE id = 1",
+			[],
+		);
+		this.save();
+	}
+
+	getServerLossEpisode():
+		| { signature: string; claimed: string[]; announced: boolean }
+		| undefined {
+		const stmt = this.db.prepare(
+			"SELECT signature, claimed_json, announced FROM server_loss_episode WHERE id = 1",
+		);
+		let out:
+			| { signature: string; claimed: string[]; announced: boolean }
+			| undefined;
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
+			let claimed: string[] = [];
 			try {
-				const claimed = JSON.parse(row.claimed_json as string);
-				out = {
-					signature: row.signature as string,
-					claimed: Array.isArray(claimed)
-						? claimed.filter((x): x is string => typeof x === "string")
-						: [],
-				};
+				const parsed = JSON.parse(row.claimed_json as string);
+				claimed = Array.isArray(parsed)
+					? parsed.filter((x): x is string => typeof x === "string")
+					: [];
 			} catch {
-				out = { signature: row.signature as string, claimed: [] };
+				claimed = [];
 			}
+			out = {
+				signature: row.signature as string,
+				claimed,
+				announced: Number(row.announced) === 1,
+			};
 		}
 		stmt.free();
 		return out;
