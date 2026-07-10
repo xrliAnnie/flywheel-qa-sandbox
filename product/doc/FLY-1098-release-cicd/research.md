@@ -98,3 +98,30 @@ FLY-1062 把 B 的 payload 托管/key 基建列为 **P4 follow-up**（PR #531 ou
 3. ③-触发：发布是否要 Annie 单独点一次头（哪怕代码已上线）？是否用与 🆒 不同的发布标记？
 4. ④-节奏 + 文档组织：首片 vs fleet 节奏；sibling PRD vs umbrella section？
 5. **给 HL 的 ① 框定问题**（已 ask，pending）：把渠道当 grounding 呈现（B 已锁）对不对，还是要重新给 Annie 确认整个渠道？
+
+## 8. Annie round-1 收敛 + ship 段 prep（下一版一起做）
+
+### 8.1 Annie round-1 批注已折进 v3（efb203c0）
+- **A**：release 分两层 = beta（Flywheel 自己 always-update，自动、每 ~6h）+ 对外正式版（beta 跑稳→founder 点头提升）。
+- **①**：免费/付费产品路径 —— B（薄壳+key+gated payload）天然是免费/付费开关；现在建 B 留通路径。payload 托管选择与免费/付费挂钩（Keygen 类自带分档）。
+- **③**：三频率（ship/commit · beta/~6h · 正式版=提升）+ 命名 `v1.56.0-beta.N`（next）→ `v1.56.0`（latest），机器断言。
+- **④**：去黑话（「先在 1062 一个产品跑通 / 以后铺到所有项目」）。
+- **②**：beta/正式版通道方案（我们跟 beta、别人跟正式版 + 升级路）。
+
+### 8.2 ship 段 = FLY-1063 Option B（已 ship 落 main，mergeCommit 53e940e8，PR #532）
+> **注**：1063 docs 实际在 `product/doc/FLY-1063-github-cool-ship/`（HL brief 说 engineering/doc 是笔误）。prd.md 已读。
+
+Annie 定的 ship 层（下一版作统一 PRD 的 ship 段并入）：
+- **Q1 = Option B**：Discord = 授权源（她 cool = founder 授权），GitHub = 执行 + 门禁，不是竞争授权。一句话「Discord 授权,GitHub 执行」。
+- **恒定形状**：`🆒 → 鉴权 → gate/CI → merge → 记账`（每个 repo 一样）。**变的只是 gate 重量**：重（代码 repo：门禁+全套 CI）/ 中（config/skill：lint+contract）/ 轻（内容：格式检查）/ 空（纯素材：无 gate 但照走 🆒 flow）。→ **这个「同一形状、gate 重量可变」概念天然连着 ④「推广到所有项目」**——统一画布可用它把 ship 段的 fleet 化讲清。
+- **5 步流程**（Annie 亲述）：① Discord 拍 cool（唯一授权）→ ② Runner 去 GitHub 触发门禁 → ③ 鉴权+gate+CI 全跑 → merge to main → ④ deploy（各 repo 自己方式）→ ⑤ Runner 回 Discord 报完 + 自动销账 + 清理。
+- **记账**（三本账 Linear/Bridge/GitHub 对齐）= 一等收尾步。
+- Q2 身份分离 = deferred（暂用她账号；外部产品化前置）。Q3 首批 = flywheel(=FlyView) + GeoForge3D。
+- **eng 硬 REQ**（归未来 PRD 的 eng 段，非 Annie-facing 画布）：REQ-1 GitHub 侧独立核账本（founder-approved gate 绑 head sha，非「commenter 有写权限」）；REQ-1a `cool-ship-gate` resolver；REQ-1b 不跑 PR-head 代码（self-hosted runner M1 只跑可信代码）；REQ-2b 对齐 `evaluateShipEligibility` + strict 无-bypass；REQ-3 branch protection（个人 Pro / Team org + `enforce_admins`）；REQ-4.6 上线次序（observe→阻断）。
+
+### 8.3 下一版（round 3）计划：ONE 统一 CI/CD PRD 画布
+- **sibling vs umbrella 已定 = umbrella**（Annie：1063 内容补进统一 1098）。画布重定位为「一个统一 CI/CD PRD，两段」。
+- **ship 段**（1063 Option B，已 ship）：flow 画布 ship 泳道用 1063 五步形状 + 标「已 ship · 53e940e8」+（可选）gate 重量可变概念连 ④。
+- **release 段**（beta/release 两层）：Annie round-1 已折的 v3 内容 + 她 round-2 批注。
+- **REQ-0** 串两段：ship ⊥ release 两个独立门。
+- **执行**：等 Annie 对 v3 的批注回来，与 ship 段一起做 round 3（HL 指示「别急着单独出」）。eng REQ 不进 Annie 画布（去黑话原则），留给未来写 PRD 正文时的 eng 段。
