@@ -6,12 +6,14 @@
 |--------|------|--------|
 | 0/3 | onboard: read CLAUDE.md + doc/qa notes + framework guides | done |
 | 1/3 | verify branch state; scope the round; write QA report | done |
-| 2/3 | commit report → push → PR #53 → qa-result pass → Codex code review (FLY-827 gate) | done |
-| 3/3 | approve gate open → (pending founder) verify-approval → :cool: → merge → completed | in-progress |
+| 2/3 | commit report → push → PR #53 → qa-result pass; Codex code review (FLY-827) iterating | in-progress |
+| 3/3 | codex gate APPROVED → stage approve → open approve_to_ship gate → (founder) → ship → completed | pending |
 
 **Key finding:** 本分支无上游 implement/PR（`HEAD==main==origin/main` `b5f3c16`）。真 FLY-1093 验收
 （PR #528 / FLY-529 Discord Room）超出本 sandbox 范围，未执行。本轮只做 slot pipeline harness E2E。
 
-**State:** PR #53 open；Codex code review APPROVED（round 2，收窄了 PASS 范围）；ship/merge 待 founder 拍 gate。
+**State (writing time):** PR #53 open；Codex code review 仍在迭代回路中（未断言 APPROVED）；approve gate
+未打开；ship/merge/completed 未发生。
 
-**Next:** `await-codex-gate code` → `stage set approve` → open `approve_to_ship` gate → wait for verified approval.
+**Next:** iterate Codex review to APPROVED → `await-codex-gate code` → `stage set approve` → open
+`approve_to_ship` gate → wait for verified approval → ship.
