@@ -1,13 +1,13 @@
 ---
 issue: FLY-1081
 phase: design
-phaseCursor: 1/4
-updated: 2026-07-09T22:50:02.706Z
-nextStep: brainstorm gate → research.md → plan.md → design review
+phaseCursor: 3/4
+updated: 2026-07-10T01:14:36.700Z
+nextStep: codex design review → commit → phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-1081 progress
-**phase**: design (1/4)
-**next**: brainstorm gate → research.md → plan.md → design review
+**phase**: design (3/4)
+**next**: codex design review → commit → phase_design_complete
