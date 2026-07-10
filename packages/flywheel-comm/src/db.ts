@@ -458,11 +458,17 @@ export class CommDB {
 		fromAgent: string,
 		toAgent: string,
 		content: string,
+		opts?: { dedupeId?: string },
 	): string {
-		const id = randomUUID();
+		// A caller-supplied dedupeId is a DETERMINISTIC message identity: the
+		// same logical send replayed (e.g. after a crash between this commit
+		// and the caller's own checkpoint in another database) lands on the
+		// same primary key and is ignored instead of duplicated (FLY-1082,
+		// Codex R6). Without it, behavior is byte-identical to before.
+		const id = opts?.dedupeId ?? randomUUID();
 		this.db
 			.prepare(
-				`INSERT INTO messages (id, from_agent, to_agent, type, content)
+				`INSERT ${opts?.dedupeId ? "OR IGNORE " : ""}INTO messages (id, from_agent, to_agent, type, content)
          VALUES (?, ?, ?, 'instruction', ?)`,
 			)
 			.run(id, fromAgent, toAgent, content);

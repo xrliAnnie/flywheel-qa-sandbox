@@ -26,6 +26,7 @@
  * spawns anything (FLY-175 iron law).
  */
 
+import { createHash } from "node:crypto";
 import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import { FLEET_ALERT_PROJECT } from "../LeadAlertNotifier.js";
 import type {
@@ -49,8 +50,19 @@ export interface ServerLossDeps {
 	migrate: (session: Session, episodeSignature: string) => Promise<boolean>;
 	/** The owning Lead's agent id for grouping (null = unresolvable). */
 	resolveLeadId: (session: Session) => string | null;
-	/** Bridge → Lead instruction (CommDB inbox). Returns delivered. */
-	notifyLead: (leadId: string, content: string) => Promise<boolean>;
+	/**
+	 * Bridge → Lead instruction (CommDB inbox). Returns delivered. The
+	 * dedupeId is a DETERMINISTIC downstream identity (episode + lead +
+	 * casualty generation) — the sink must treat a repeat as already-delivered
+	 * (Codex R6 MED: the CommDB commit and the StateStore checkpoint are two
+	 * databases; a crash between them replays the send, and only downstream
+	 * idempotency closes that window).
+	 */
+	notifyLead: (
+		leadId: string,
+		content: string,
+		dedupeId: string,
+	) => Promise<boolean>;
 	/** The routed alert sink (ONE fleet ticket per episode). */
 	alert: (p: AlertPayload) => Promise<AlertResult>;
 	/** Current swap watermark summary for the notification (nullable). */
@@ -253,9 +265,23 @@ export class ServerLossCoordinator {
 					? `当前 swap 水位 ${watermark} — 请按水位节奏复活,避免 stampede。`
 					: ""
 			}`;
+			// Deterministic per-(episode, lead, casualty-generation) identity:
+			// a crash-replay of the SAME list re-sends under the SAME id (the
+			// sink dedups); an extension CHANGES the list → new id → the delta
+			// goes out as a genuinely new message.
+			const generation = createHash("sha256")
+				.update(
+					group
+						.map((s) => s.execution_id)
+						.sort()
+						.join(","),
+				)
+				.digest("hex")
+				.slice(0, 16);
+			const dedupeId = `server-loss:${ledger.signature}:${leadId}:${generation}`;
 			let delivered = false;
 			try {
-				delivered = await this.deps.notifyLead(leadId, content);
+				delivered = await this.deps.notifyLead(leadId, content, dedupeId);
 			} catch {
 				delivered = false;
 			}
@@ -277,17 +303,25 @@ export class ServerLossCoordinator {
 			stateDirty = false;
 		}
 
-		// Side-effect phase B — the ONE fleet ticket. Runs AFTER the outbox so
-		// its metadata reflects real delivery; replayed until it RESOLVES (a
-		// throw leaves ticketDone=false; the per-Lead outbox above prevents the
-		// duplicate notifications Codex R5 MED-1 flagged).
-		if (!state.ticketDone) {
+		// Side-effect phase B — the ONE fleet ticket. Emitted only once the
+		// outbox is fully SETTLED (every Lead either notified or terminally
+		// failed) so its leadsNotified/leadsFailed are FINAL — a Lead still
+		// mid-retry must never be reported as failed (Codex R6 HIGH: that
+		// false leadsFailed>0 would permanently escalate the ticket to
+		// needs_human over a one-tick transient). Replayed until alert()
+		// RESOLVES; the per-Lead outbox above prevents duplicate
+		// notifications on that replay (Codex R5 MED-1).
+		const owed = [...byLead.keys()].filter(
+			(l) => !state.notifiedLeads.includes(l) && !state.failedLeads.includes(l),
+		);
+		if (!state.ticketDone && owed.length > 0) {
+			this.log(
+				`holding episode ticket: ${owed.length} lead notification(s) still retrying`,
+			);
+		}
+		if (!state.ticketDone && owed.length === 0) {
 			const migrated = state.claimed.filter(
 				(id) => this.deps.store.getSession(id)?.status !== "running",
-			).length;
-			const owed = [...byLead.keys()].filter(
-				(l) =>
-					!state.notifiedLeads.includes(l) && !state.failedLeads.includes(l),
 			).length;
 			const perLead = [...byLead.entries()]
 				.map(([leadId, group]) => `${leadId}: ${group.length}`)
@@ -312,8 +346,10 @@ export class ServerLossCoordinator {
 							casualties: state.claimed.length,
 							migrated,
 							leadsNotified: state.notifiedLeads.length,
+							// Outbox is settled here — only TERMINAL failures count
+							// (plus one slot for unresolvable-lead casualties).
 							leadsFailed:
-								state.failedLeads.length + owed + (unresolvedCount > 0 ? 1 : 0),
+								state.failedLeads.length + (unresolvedCount > 0 ? 1 : 0),
 						},
 					},
 				});

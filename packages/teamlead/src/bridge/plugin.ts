@@ -6109,6 +6109,7 @@ export async function startBridge(
 	const notifyLeadInstruction = async (
 		leadId: string,
 		content: string,
+		dedupeId?: string,
 	): Promise<boolean> => {
 		const projectName = leadProjectByAgentId.get(leadId);
 		if (!projectName) return false;
@@ -6117,6 +6118,7 @@ export async function startBridge(
 				"bridge",
 				leadId,
 				content,
+				dedupeId ? { dedupeId } : undefined,
 			);
 			return true;
 		} catch (err) {

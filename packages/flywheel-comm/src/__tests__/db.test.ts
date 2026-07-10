@@ -198,6 +198,32 @@ describe("CommDB", () => {
 			expect(db.getUnreadInstructions("exec-1")).toHaveLength(2);
 			expect(db.getUnreadInstructions("exec-2")).toHaveLength(1);
 		});
+
+		it("a dedupeId makes insertInstruction idempotent — a crash-replay lands on the same row (FLY-1082)", () => {
+			const dedupeId = "server-loss:tmux-server-lost:1000:tadashi:abcd1234";
+			const id1 = db.insertInstruction("bridge", "tadashi", "casualty list", {
+				dedupeId,
+			});
+			// The replay: the sender crashed AFTER this commit but BEFORE its own
+			// checkpoint in another database — it re-sends the same logical
+			// message. Same identity → ignored, not duplicated.
+			const id2 = db.insertInstruction("bridge", "tadashi", "casualty list", {
+				dedupeId,
+			});
+			expect(id1).toBe(dedupeId);
+			expect(id2).toBe(dedupeId);
+			expect(db.getUnreadInstructions("tadashi")).toHaveLength(1);
+		});
+
+		it("distinct dedupeIds (a changed casualty list) deliver as separate messages", () => {
+			db.insertInstruction("bridge", "tadashi", "list v1", {
+				dedupeId: "server-loss:sig:tadashi:aaaa",
+			});
+			db.insertInstruction("bridge", "tadashi", "list v1+delta", {
+				dedupeId: "server-loss:sig:tadashi:bbbb",
+			});
+			expect(db.getUnreadInstructions("tadashi")).toHaveLength(2);
+		});
 	});
 
 	describe("hasPendingQuestionsFrom", () => {

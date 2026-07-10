@@ -41,7 +41,11 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 	let store: StateStore;
 	let alerts: AlertPayload[];
 	let migrations: Array<{ execId: string; episode: string }>;
-	let notifications: Array<{ leadId: string; content: string }>;
+	let notifications: Array<{
+		leadId: string;
+		content: string;
+		dedupeId?: string;
+	}>;
 
 	beforeEach(async () => {
 		store = await RealStateStore.create(":memory:");
@@ -70,8 +74,8 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 				return true;
 			},
 			resolveLeadId: (s) => (s.summary as string) ?? null,
-			notifyLead: async (leadId, content) => {
-				notifications.push({ leadId, content });
+			notifyLead: async (leadId, content, dedupeId) => {
+				notifications.push({ leadId, content, dedupeId });
 				return opts.notifyOk ? opts.notifyOk(leadId) : true;
 			},
 			alert: async (p): Promise<AlertResult> => {
@@ -132,18 +136,45 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		expect(migrations).toHaveLength(0);
 	});
 
-	it("failed Lead notification → leadsFailed in metadata (drives needs_human escalation)", async () => {
+	it("TERMINALLY failed Lead notification → leadsFailed in the (held-until-settled) ticket", async () => {
 		const coordinator = makeCoordinator({
 			sessions: incidentFleet(),
 			probe: "down",
 			notifyOk: (leadId) => leadId !== "peter",
 		});
+		// The ticket is HELD while peter is still mid-retry (Codex R6 HIGH) —
+		// only his 3rd (terminal) failure settles the outbox and releases it.
 		await coordinator.check();
+		expect(alerts).toHaveLength(0);
+		await coordinator.check();
+		expect(alerts).toHaveLength(0);
+		await coordinator.check();
+		expect(alerts).toHaveLength(1);
 		expect(alerts[0]!.metadata?.tmuxServerLost).toEqual({
 			casualties: 13,
 			migrated: 13,
 			leadsNotified: 2,
 			leadsFailed: 1,
+		});
+	});
+
+	it("a TRANSIENT notify failure holds the ticket — never a false leadsFailed/needs_human (Codex R6 HIGH)", async () => {
+		let peterDown = true;
+		const coordinator = makeCoordinator({
+			sessions: incidentFleet(),
+			probe: "down",
+			notifyOk: (leadId) => leadId !== "peter" || !peterDown,
+		});
+		await coordinator.check(); // peter attempt 1 fails → ticket HELD
+		expect(alerts).toHaveLength(0);
+		peterDown = false; // one-tick transient — recovers
+		await coordinator.check();
+		expect(alerts).toHaveLength(1);
+		expect(alerts[0]!.metadata?.tmuxServerLost).toEqual({
+			casualties: 13,
+			migrated: 13,
+			leadsNotified: 3,
+			leadsFailed: 0, // a retrying Lead was never reported as failed
 		});
 	});
 
@@ -617,5 +648,44 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		expect(alerts).toHaveLength(1);
 		expect(alerts[0]!.body).toContain("重启"); // server_fresh wording survived
 		expect(notifications).toHaveLength(0); // outbox says tadashi is settled
+	});
+
+	it("notify dedupeId is DETERMINISTIC across crash-replay and CHANGES with the casualty list (Codex R6 MED)", async () => {
+		const fleet = incidentFleet().slice(0, 3); // tadashi ×3
+		for (const s of fleet) {
+			store.upsertSession(s);
+			store.forceStatus(s.execution_id, "failed", "2026-07-09 21:30:00", "x");
+		}
+		const seed = (claimed: string[]) =>
+			store.setServerLossEpisode("tmux-server-lost:1000", {
+				shape: "server_down",
+				claimed,
+				ticketDone: true,
+				notifiedLeads: [],
+				failedLeads: [],
+				notifyAttempts: {},
+			});
+		const ids = fleet.map((s) => s.execution_id);
+		seed(ids);
+		await makeCoordinator({ sessions: [], probe: "unknown" }).check();
+		// The crash-replay window: CommDB committed but the StateStore
+		// checkpoint was LOST — a fresh process re-runs the delivery. It must
+		// go out under the SAME downstream identity so the sink dedups it.
+		seed(ids);
+		await makeCoordinator({ sessions: [], probe: "unknown" }).check();
+		expect(notifications).toHaveLength(2);
+		expect(notifications[0]!.dedupeId).toBeDefined();
+		expect(notifications[0]!.dedupeId).toBe(notifications[1]!.dedupeId);
+		expect(notifications[0]!.dedupeId).toContain("tmux-server-lost:1000");
+		expect(notifications[0]!.dedupeId).toContain("tadashi");
+		// A CHANGED casualty list (extension delta) is a genuinely new message
+		// → different identity, never swallowed by the old one.
+		const extra = session(9, "tadashi");
+		store.upsertSession(extra);
+		store.forceStatus("exec-9", "failed", "2026-07-09 21:30:00", "x");
+		seed([...ids, "exec-9"]);
+		await makeCoordinator({ sessions: [], probe: "unknown" }).check();
+		expect(notifications).toHaveLength(3);
+		expect(notifications[2]!.dedupeId).not.toBe(notifications[0]!.dedupeId);
 	});
 });
