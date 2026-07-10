@@ -701,26 +701,37 @@ po_gate() {
     printf '%s\n' "$hits" >&2
     fail=1
   fi
-  # ④ zero-repo-access invariant
+  # ④ zero-repo-access invariant — each forbidden pattern is judged
+  #   INDEPENDENTLY, occurrence by occurrence (QA kickback / Codex R1 HIGH,
+  #   gate4-allowlist-masking.test.sh): a single per-LINE clearing pass let a
+  #   broad `git clone` allowlist row mask a co-located PRIVATE slug on the
+  #   same line. An allowlist row can only clear the pattern its own
+  #   registered substring carries — a `git clone` row never clears an
+  #   `xrliAnnie/` occurrence, and vice versa.
   local grep_allow="${PO_GREP_ALLOWLIST:-$root/scripts/packaged/audit-grep-allowlist.tsv}"
   [ -f "$grep_allow" ] || { po_err "gate④: grep allowlist missing: $grep_allow"; return 1; }
-  local line file text registered
-  while IFS=: read -r file _ text; do
-    [ -z "$file" ] && continue
-    registered=1
-    while IFS=$'\t' read -r afile apat _; do
-      [ -z "$afile" ] && continue
-      case "$afile" in \#*) continue ;; esac
-      # shellcheck disable=SC2254
-      if [[ "$file" == $afile ]] && [[ "$text" == *"$apat"* ]]; then
-        registered=0; break
+  local fpat file lineno text registered afile apat
+  for fpat in 'git clone' 'xrliAnnie/'; do
+    while IFS=: read -r file lineno text; do
+      [ -z "$file" ] && continue
+      registered=1
+      while IFS=$'\t' read -r afile apat _; do
+        [ -z "$afile" ] && continue
+        case "$afile" in \#*) continue ;; esac
+        # A row clears THIS occurrence only if it (a) targets this file,
+        # (b) matches this line, and (c) itself carries this forbidden
+        # pattern — (c) is the anti-masking condition.
+        # shellcheck disable=SC2254
+        if [[ "$file" == $afile ]] && [[ "$text" == *"$apat"* ]] && [[ "$apat" == *"$fpat"* ]]; then
+          registered=0; break
+        fi
+      done < "$grep_allow"
+      if [ "$registered" -ne 0 ]; then
+        po_err "gate④: UNREGISTERED repo-access reference ($fpat): $file:$lineno: $text"
+        fail=1
       fi
-    done < "$grep_allow"
-    if [ "$registered" -ne 0 ]; then
-      po_err "gate④: UNREGISTERED repo-access reference: $file: $text"
-      fail=1
-    fi
-  done < <(cd "$tree" && grep -RIn -e 'git clone' -e 'xrliAnnie/' . 2>/dev/null | sed 's|^\./||')
+    done < <(cd "$tree" && grep -RIn -e "$fpat" . 2>/dev/null | sed 's|^\./||')
+  done
   # version consistency: sentinel == package.json == doc/VERSION
   local v_pkg v_sent v_doc
   v_pkg="$(jq -r '.version' "$tree/package.json" 2>/dev/null)"
