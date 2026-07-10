@@ -196,3 +196,6 @@ jobs:
           bash scripts/__tests__/restart-services-notify.test.sh
           bash scripts/__tests__/update-flywheel-queue.test.sh
           bash scripts/__tests__/simba-grep-zero.test.sh
+          # QA (three-stage): drives the REAL lead-alert.sh in the production
+          # --lead deploy call form — infra identity used, no Simba fallback.
+          bash scripts/__tests__/qa-fly1081-notify-identity.test.sh
