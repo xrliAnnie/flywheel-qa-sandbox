@@ -13,15 +13,15 @@
 | Task 4.1 探针①(正向 @claw) | ✅ | msg 1524918656428019753;pane 17s 收到 inbound;claw 按防刷屏纪律用 ✅ react 应答(API 核验);task4-probe1-* |
 | Task 4.2 探针②(负向无 mention) | ✅ | msg 1524919889872031796;133s 观察:pane 零痕迹、频道零回复、零 reaction;task4-probe2-* |
 | Task 5.1-5.3 Send 收紧操作卡 | ✅ 已交付 | task5-send-tighten-card.md;Tadashi 已 relay Annie(手机可操作) |
-| Task 6.1 演练脚本 | ✅ 备好未跑 | task6-drill-fire.mjs(preflight 三道门:env 指针 / routing+tickets / owner 等效渲染必须恰好=claw);运行被 W4 前置门挡住 |
+| Task 6.1 演练脚本 | ✅ 备好(此行为历史时点状态;后续已实际运行,结果见下表 Task 6) | task6-drill-fire.mjs(preflight 三道门:env 指针 / routing+tickets / owner 等效渲染必须恰好=claw) |
 
-## 递延项最终状态(当晚全部收回:Annie 在机器窗口跑了 stop/start,W4 当晚修复)
+## 递延项最终状态(**W4 依赖链**当晚全部收回:Annie 在机器窗口跑了 stop/start;Task 5.4 回归与观察日仍在后续,见表下注)
 
 原「W4 今晚不强推」裁定在 Annie 回到机器前有效;她在场后 Tadashi relay,当晚完成全链:
 
 | 项 | 最终状态 | 证据 |
 |---|---|---|
-| Task 2 W4 fresh login + 拉起 | ✅ 当晚完成 | Annie 裸终端跑 handoff stop/start;孤儿 broker 55843 已清;fresh OAuth(不碰池);config gate PASSED、零 401、10min 单次启动;task2-w4-recovered-log.txt |
+| Task 2 W4 fresh login + 拉起 | ✅ 当晚完成 | Annie 裸终端跑 handoff stop/start;启动快照 = task2-w4-recovered-log.txt(config gate PASSED、零 401);孤儿清理 / fresh OAuth 判据 / 50min 单次启动延长核验 = task2-w4-fresh-login-evidence.txt |
 | Task 3.1 W4 verify-windowed-lead | ✅ 5/5 PASS | task3-w4-verify.txt |
 | Task 4.3 探针③ | ✅ 双侧过 | W4 pane 19s 收 inbound 并回帖;W5 pane 162s 零痕迹;task4-probe3-* |
 | Task 6 演练 | ✅ 已跑(①②③⑤ 过;④ 唤醒/claim 过、频道 ACK 挖出 2 个真实缺陷) | task6-drill-notes.md(缺陷:reply routing guard 不可用 + Alerts 帖未入 claw flywheel-inbox) |
