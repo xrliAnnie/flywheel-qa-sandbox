@@ -1959,11 +1959,11 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			envSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"HeartbeatService serverLoss pre-reaper phase",
-				"call_time",
+				"createBridgeApp (HeartbeatService serverLoss pre-reaper phase arg)",
+				"object_construction",
 			),
 		],
 		toggleable: "readonly",
-		note: "=0 时 server-loss 整段关闭,退回 per-runner crash-reaper/reapOrphans 旧行为（每个 heartbeat tick 读,翻转即时生效,无需重启）。",
+		note: "=0 时 server-loss 整段关闭,退回 per-runner crash-reaper/reapOrphans 旧行为。HeartbeatService 构造时读一次（ternary 选 phase 对象或 undefined）,翻转需重启 Bridge。",
 	},
 ];
