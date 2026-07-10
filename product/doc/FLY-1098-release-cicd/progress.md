@@ -2,15 +2,15 @@
 issue: FLY-1098
 phase: design
 phaseCursor: 3/3
-updated: 2026-07-10T05:27:46.265Z
-nextStep: co-eval v4/round-3 (3adac41f) delivered to HL — real research +
-  concrete mechanisms + 2 diagrams + promote 3 options + de-jargon +
-  two-audiences + 1063 ship section folded (umbrella). Deprecate v3 efb203c0.
-  Await HL QA + Annie round-3 annotations.
+updated: 2026-07-10T05:31:21.641Z
+nextStep: "round-3 (3adac41f) QA-passed by HL + posted to Annie (2 CSS diagrams
+  present; both browsers offline so render caveat flagged to Annie). Parked:
+  await Annie round-3 annotations via HL relay (teammate-msg + Monitor
+  blzpszwtd). Round-4 = fold her annotations; if she flags diagram render, fix."
 chunks: []
 pointers: {}
 ---
 
 # FLY-1098 progress
 **phase**: design (3/3)
-**next**: co-eval v4/round-3 (3adac41f) delivered to HL — real research + concrete mechanisms + 2 diagrams + promote 3 options + de-jargon + two-audiences + 1063 ship section folded (umbrella). Deprecate v3 efb203c0. Await HL QA + Annie round-3 annotations.
+**next**: round-3 (3adac41f) QA-passed by HL + posted to Annie (2 CSS diagrams present; both browsers offline so render caveat flagged to Annie). Parked: await Annie round-3 annotations via HL relay (teammate-msg + Monitor blzpszwtd). Round-4 = fold her annotations; if she flags diagram render, fix.
