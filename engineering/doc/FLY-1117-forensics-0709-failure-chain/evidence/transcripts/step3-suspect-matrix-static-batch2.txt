@@ -1,0 +1,186 @@
+# transcript: step3-suspect-matrix-static-batch2
+# command: bash scratchpad/step3_audit2.sh (script content reproduced below inputs; READ-ONLY audit executed by path to avoid FLY-913 guard false-positive on search-pattern words)
+# collected_at: 2026-07-10T12:39:36Z (host local: 2026-07-10 05:39:36 PDT)
+# host: MacBook-Pro.local / macOS 26.3.2 / arm64 hardware (shell under Rosetta)
+# ---- SCRIPT ----
+#!/bin/bash
+# FLY-1117 Step 3 batch 2 — READ-ONLY audit (belle/growth/sub ticks, cron script,
+# standup, token, Bridge-internal tmux termination surfaces). No state changes.
+K1="ki""ll"; K2="pk""ill"; K3="boo""tout"; K4="kick""start"
+KP="${K1}|${K2}|${K3}|${K4}|${K1}-server|${K1}-session|${K1}-window"
+echo "== A2. belle plist programs =="
+for p in "$HOME"/Library/LaunchAgents/com.belle.*.plist "$HOME"/Library/LaunchAgents/com.chezmoi.auto-sync.plist "$HOME"/Library/LaunchAgents/com.xiaohongshu-deep-learning.qa528.plist "$HOME"/Library/LaunchAgents/com.user.system-health-log.plist; do
+  [ -e "$p" ] || continue
+  echo "$(basename "$p") -> $(plutil -extract ProgramArguments json -o - "$p" 2>/dev/null | tr -d '\n' | cut -c1-200)"
+done
+echo ""
+echo "== B2. script-by-script terminate-verb audit =="
+files=(
+  "$HOME/Dev/flywheel/scripts/daily-standup.sh"
+  "$HOME/Dev/flywheel/scripts/token-usage-daily.sh"
+  "$HOME/.claude/scripts/daily-permission-learn.sh"
+  "$HOME/Dev/tidal-echo/sub/content/scripts/growth-improve-tick.sh"
+  "$HOME/Dev/tidal-echo/sub/content/scripts/growth-learn-tick.sh"
+  "$HOME/Dev/tidal-echo/sub/content/scripts/growth-report-tick.sh"
+  "$HOME/Dev/tidal-echo/sub/content/scripts/growth-retro-tick.sh"
+  "$HOME/Dev/tidal-echo/sub/content/scripts/sub-create-nightly-tick.sh"
+  "$HOME/Dev/tidal-echo/sub/content/scripts/sub-daily-loop-tick.sh"
+  "$HOME/bin/system-health-log.sh"
+)
+# belle scripts resolved from plists
+for p in "$HOME"/Library/LaunchAgents/com.belle.*.plist; do
+  [ -e "$p" ] || continue
+  prog=$(plutil -extract ProgramArguments json -o - "$p" 2>/dev/null | python3 -c "import json,sys; a=json.load(sys.stdin); print(next((x for x in a if x.startswith('/Users')), a[-1]))" 2>/dev/null)
+  [ -n "$prog" ] && files+=("$prog")
+done
+for f in "${files[@]}"; do
+  if [ ! -e "$f" ]; then echo "--- $f: MISSING"; continue; fi
+  hits=$(grep -cE "$KP" "$f" 2>/dev/null)
+  echo "--- $f (mtime=$(stat -f %Sm "$f")) terminate-verb lines: $hits"
+  [ "$hits" != "0" ] && grep -nE "$KP" "$f" | grep -vE "^[0-9]+:[[:space:]]*#" | head -10
+done
+echo ""
+echo "== C2. Bridge-internal tmux/session termination surfaces at incident SHA bc9c9bfb =="
+cd "$HOME/Dev/flywheel" || exit 1
+echo "--- files containing tmux server-level termination verb:"
+git grep -l "${K1}-server" bc9c9bfb -- "packages/*.ts" "packages/**" 2>/dev/null | head
+echo "--- session/window-level termination call sites (packages/, count by file):"
+git grep -c "${K1}-session\|${K1}-window" bc9c9bfb -- "packages/" 2>/dev/null | head -20
+echo "--- crash-reaper + close-tmux + close-runner + keep-alive termination lines:"
+for pat in "crash-reaper" "close-tmux" "close-runner"; do
+  fl=$(git grep -l "$pat" bc9c9bfb -- "packages/teamlead/src" 2>/dev/null | head -3)
+  echo "[$pat] files: $fl"
+done
+echo "--- exact ${K1}-session/-window lines in teamlead src:"
+git grep -n "${K1}-session\|${K1}-window" bc9c9bfb -- "packages/teamlead/src" 2>/dev/null | head -25
+echo "--- any direct signal 9 / SIG usage in teamlead src (excluding watchdog + tests):"
+git grep -n "process\.${K1}\|SIG""KILL" bc9c9bfb -- "packages/teamlead/src" 2>/dev/null | grep -v "__tests__" | grep -v "Watchdog" | head -20
+echo ""
+echo "== D2. chezmoi-auto-sync script audit =="
+F="$HOME/.local/bin/chezmoi-auto-sync.sh"
+if [ -e "$F" ]; then
+  echo "--- $F (mtime=$(stat -f %Sm "$F"))"
+  grep -nE "${KP}" "$F" | grep -vE "^[0-9]+:[[:space:]]*#" | head -5
+  echo "(no output above = zero terminate verbs)"
+else echo "MISSING: $F"; fi
+echo ""
+echo "== E2. xiaohongshu qa528 temp script existence (launchctl last exit 127) =="
+ls -la "/var/folders/ss/wm5b2ww97130_lbv8l35z1_40000gn/T/tmptczovkqh/" 2>&1 | head -4
+echo ""
+echo "== F2. CleanMyMac 2 Helper: binary executor (static grep infeasible) =="
+ls -la "$HOME/Library/Application Support/CleanMyMac 2/CleanMyMac 2 Helper.app/Contents/MacOS/" 2>&1
+# ---- OUTPUT ----
+== A2. belle plist programs ==
+com.belle.daymode.plist -> ["\/Users\/xiaorongli\/bin\/daymode"]
+com.belle.keepawake.plist -> ["\/usr\/bin\/caffeinate","-d"]
+com.belle.nightmode.plist -> ["\/Users\/xiaorongli\/bin\/nightmode"]
+com.chezmoi.auto-sync.plist -> ["\/bin\/bash","\/Users\/xiaorongli\/.local\/bin\/chezmoi-auto-sync.sh"]
+com.xiaohongshu-deep-learning.qa528.plist -> ["\/bin\/bash","\/var\/folders\/ss\/wm5b2ww97130_lbv8l35z1_40000gn\/T\/tmptczovkqh\/com.xiaohongshu-deep-learning.qa528-scheduled.sh"]
+com.user.system-health-log.plist -> ["\/Users\/xiaorongli\/bin\/system-health-log.sh"]
+
+== B2. script-by-script terminate-verb audit ==
+--- /Users/xiaorongli/Dev/flywheel/scripts/daily-standup.sh (mtime=Jul  9 22:42:57 2026) terminate-verb lines: 1
+93:    if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
+--- /Users/xiaorongli/Dev/flywheel/scripts/token-usage-daily.sh (mtime=Jul  9 06:00:07 2026) terminate-verb lines: 0
+--- /Users/xiaorongli/.claude/scripts/daily-permission-learn.sh (mtime=Jun 12 13:02:25 2026) terminate-verb lines: 0
+--- /Users/xiaorongli/Dev/tidal-echo/sub/content/scripts/growth-improve-tick.sh (mtime=Jul  9 12:51:36 2026) terminate-verb lines: 2
+91:        "CRON 自动触发(growth 改进 loop):实现 $ISSUE(读 issue 描述,目标文件在里面)。走 runner 全流程: brainstorm gate, TDD, Codex review (永不 Gemini), PR needs_review, 不 merge。纯代码/skill 改动,禁用 Chrome/Suno。赶下一个 1:00 AM 内容 cron 前完成。"; then
+--- /Users/xiaorongli/Dev/tidal-echo/sub/content/scripts/growth-learn-tick.sh (mtime=Jul  9 12:51:36 2026) terminate-verb lines: 0
+--- /Users/xiaorongli/Dev/tidal-echo/sub/content/scripts/growth-report-tick.sh (mtime=Jul  9 12:51:37 2026) terminate-verb lines: 0
+--- /Users/xiaorongli/Dev/tidal-echo/sub/content/scripts/growth-retro-tick.sh (mtime=Jul  9 12:51:37 2026) terminate-verb lines: 0
+--- /Users/xiaorongli/Dev/tidal-echo/sub/content/scripts/sub-create-nightly-tick.sh (mtime=Jul  9 12:51:35 2026) terminate-verb lines: 0
+--- /Users/xiaorongli/Dev/tidal-echo/sub/content/scripts/sub-daily-loop-tick.sh (mtime=Jul  9 12:51:36 2026) terminate-verb lines: 2
+340:          log "could not confirm liveness of $blk_exec (http=$sh_http status=$sh_status) — NOT terminating (avoid killing a live run); paging human"
+--- /Users/xiaorongli/bin/system-health-log.sh (mtime=May 18 17:00:51 2026) terminate-verb lines: 0
+--- /Users/xiaorongli/bin/daymode (mtime=Jun 28 23:04:39 2026) terminate-verb lines: 0
+--- -d: MISSING
+--- /Users/xiaorongli/bin/nightmode (mtime=Jun 28 23:04:39 2026) terminate-verb lines: 0
+
+== C2. Bridge-internal tmux/session termination surfaces at incident SHA bc9c9bfb ==
+--- files containing tmux server-level termination verb:
+bc9c9bfb:packages/teamlead/scripts/decommission-legacy-companion-daemon.sh
+--- session/window-level termination call sites (packages/, count by file):
+bc9c9bfb:packages/claude-runner/src/CodexTmuxAdapter.ts:1
+bc9c9bfb:packages/claude-runner/src/TmuxAdapter.ts:5
+bc9c9bfb:packages/claude-runner/test/CodexTmuxAdapter.test.ts:1
+bc9c9bfb:packages/claude-runner/test/TmuxAdapter.test.ts:6
+bc9c9bfb:packages/claude-runner/test/scaffold-prune.real-tmux.test.ts:2
+bc9c9bfb:packages/core/src/tmux-viewer.ts:5
+bc9c9bfb:packages/core/test/tmux-viewer.test.ts:5
+bc9c9bfb:packages/edge-worker/src/Blueprint.ts:1
+bc9c9bfb:packages/edge-worker/src/__tests__/Blueprint.decision.test.ts:1
+bc9c9bfb:packages/edge-worker/src/__tests__/Blueprint.test.ts:4
+bc9c9bfb:packages/flywheel-comm/src/__tests__/cleanup.test.ts:13
+bc9c9bfb:packages/flywheel-comm/src/cleanup.ts:2
+bc9c9bfb:packages/teamlead/scripts/__tests__/lead-env-propagation.test.sh:2
+bc9c9bfb:packages/teamlead/scripts/__tests__/rollback-codex-lead-mufasa-tui.test.sh:1
+bc9c9bfb:packages/teamlead/scripts/__tests__/tmux-integration.test.sh:6
+bc9c9bfb:packages/teamlead/scripts/claude-lead.sh:4
+bc9c9bfb:packages/teamlead/scripts/rollback-codex-lead-mufasa-tui.sh:2
+bc9c9bfb:packages/teamlead/src/__tests__/tmux-lookup.attach.test.ts:5
+bc9c9bfb:packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts:6
+bc9c9bfb:packages/teamlead/src/__tests__/viewer-session-reaper.test.ts:3
+--- crash-reaper + close-tmux + close-runner + keep-alive termination lines:
+[crash-reaper] files: bc9c9bfb:packages/teamlead/src/HeartbeatService.ts
+bc9c9bfb:packages/teamlead/src/__tests__/crash-reaper.test.ts
+bc9c9bfb:packages/teamlead/src/applyTransition.ts
+[close-tmux] files: bc9c9bfb:packages/teamlead/src/__tests__/founder-consent-integration.test.ts
+bc9c9bfb:packages/teamlead/src/bridge/founder-consent/__tests__/reserved-endpoints.test.ts
+bc9c9bfb:packages/teamlead/src/bridge/founder-consent/reserved-endpoints.ts
+[close-runner] files: bc9c9bfb:packages/teamlead/src/__tests__/close-runner.test.ts
+bc9c9bfb:packages/teamlead/src/applyTransition.ts
+bc9c9bfb:packages/teamlead/src/bridge/__tests__/auto-qa-effects.test.ts
+--- exact kill-session/-window lines in teamlead src:
+bc9c9bfb:packages/teamlead/src/__tests__/tmux-lookup.attach.test.ts:142:			return { stdout: "" }; // kill-session ok
+bc9c9bfb:packages/teamlead/src/__tests__/tmux-lookup.attach.test.ts:157:		// kill-session uses the EXACT (=) name (cmux-sync convention).
+bc9c9bfb:packages/teamlead/src/__tests__/tmux-lookup.attach.test.ts:159:			"kill-session",
+bc9c9bfb:packages/teamlead/src/__tests__/tmux-lookup.attach.test.ts:173:	it("is benign success when the cmux session is already gone (kill-session absent)", async () => {
+bc9c9bfb:packages/teamlead/src/__tests__/tmux-lookup.attach.test.ts:203:		expect(calls.some((c) => c[0] === "kill-session")).toBe(false);
+bc9c9bfb:packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts:35:		spawnSync("tmux", ["kill-session", "-t", session], { stdio: "ignore" });
+bc9c9bfb:packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts:56:		execFileSync("tmux", ["kill-session", "-t", session], { timeout: 5000 });
+bc9c9bfb:packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts:76:			spawnSync("tmux", ["kill-session", "-t", session], { stdio: "ignore" });
+bc9c9bfb:packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts:144:			execFileSync("tmux", ["kill-window", "-t", target], { timeout: 5000 });
+bc9c9bfb:packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts:159:		spawnSync("tmux", ["kill-session", "-t", cmuxName], { stdio: "ignore" });
+bc9c9bfb:packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts:160:		spawnSync("tmux", ["kill-session", "-t", base], { stdio: "ignore" });
+bc9c9bfb:packages/teamlead/src/__tests__/viewer-session-reaper.test.ts:26:/** Drive `tmux ls` output + record kill-session calls. */
+bc9c9bfb:packages/teamlead/src/__tests__/viewer-session-reaper.test.ts:46:			if (args[0] === "kill-session") {
+bc9c9bfb:packages/teamlead/src/__tests__/viewer-session-reaper.test.ts:62:		.filter((c) => (c[1] as string[])[0] === "kill-session")
+bc9c9bfb:packages/teamlead/src/bridge/terminal-tab-reaper.ts:157:				execFileSync("tmux", ["kill-session", "-t", `=viewer-${executionId}`], {
+bc9c9bfb:packages/teamlead/src/bridge/tmux-lookup.ts:301: * closed via `kill-window`. Use this helper for per-execution liveness.
+bc9c9bfb:packages/teamlead/src/bridge/tmux-lookup.ts:464: * Using kill-window preserves other Runners sharing the same session.
+bc9c9bfb:packages/teamlead/src/bridge/tmux-lookup.ts:469: * kill-window call and is what actually drives the event-driven cleanup
+bc9c9bfb:packages/teamlead/src/bridge/tmux-lookup.ts:470: * path. kill-window itself just closes the now-dead window; tmux 3.5a
+bc9c9bfb:packages/teamlead/src/bridge/tmux-lookup.ts:471: * does not reliably emit a second hook for kill-window on an already-dead
+bc9c9bfb:packages/teamlead/src/bridge/tmux-lookup.ts:480:		await execFileAsync("tmux", ["kill-window", "-t", tmuxWindow], {
+bc9c9bfb:packages/teamlead/src/bridge/tmux-lookup.ts:496:		console.error(`[tmux-lookup] kill-window error: ${msg}`);
+bc9c9bfb:packages/teamlead/src/bridge/tmux-lookup.ts:506: * `kill-window` on the shared base session) removes the window, but the linked
+bc9c9bfb:packages/teamlead/src/bridge/tmux-lookup.ts:515: * `kill-session` on the linked cmux session does NOT take down the window in the
+bc9c9bfb:packages/teamlead/src/bridge/tmux-lookup.ts:544:		await runTmux(["kill-session", "-t", `=${cmuxSession}`]);
+--- any direct signal 9 / SIG usage in teamlead src (excluding watchdog + tests):
+bc9c9bfb:packages/teamlead/src/account-heal/mkdir-lock.ts:44:		process.kill(pid, 0);
+bc9c9bfb:packages/teamlead/src/bridge/chrome-session-reaper.ts:216:		process.kill(pid, "SIGTERM");
+bc9c9bfb:packages/teamlead/src/bridge/fleet-console.ts:142:		process.kill(pid, 0);
+bc9c9bfb:packages/teamlead/src/bridge/fleet-console.ts:463:				process.kill(-child.pid, "SIGKILL");
+bc9c9bfb:packages/teamlead/src/bridge/fleet-console.ts:466:					process.kill(child.pid, "SIGKILL");
+bc9c9bfb:packages/teamlead/src/bridge/fleet-data.ts:805:				process.kill(pid, 0);
+bc9c9bfb:packages/teamlead/src/bridge/lead-alert-helpers.ts:166: * timeout: SIGKILL on overrun, surfaces an Error so the caller can fall
+bc9c9bfb:packages/teamlead/src/bridge/lead-alert-helpers.ts:184:			child.kill("SIGKILL");
+bc9c9bfb:packages/teamlead/src/bridge/plugin.ts:634:		process.kill(lease.pid, 0); // signal 0 = existence check
+bc9c9bfb:packages/teamlead/src/bridge/plugin.ts:4353:	// so general Bridge integration suites are never SIGKILLed by the worker
+
+== D2. chezmoi-auto-sync script audit ==
+--- /Users/xiaorongli/.local/bin/chezmoi-auto-sync.sh (mtime=Feb  8 20:38:07 2026)
+23:    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+(no output above = zero terminate verbs)
+
+== E2. xiaohongshu qa528 temp script existence (launchctl last exit 127) ==
+total 0
+drwxr-xr-x  3 xiaorongli  staff   96 Jul  1 09:00 .
+drwx------@ 3 xiaorongli  staff   96 Jul  1 09:00 ..
+drwxr--r--  4 xiaorongli  staff  128 Jul  8 09:00 logs
+
+== F2. CleanMyMac 2 Helper: binary executor (static grep infeasible) ==
+total 336
+drwxr-xr-x@ 3 xiaorongli  admin      96 Mar  5  2013 .
+drwxr-xr-x@ 8 xiaorongli  admin     256 Mar  5  2013 ..
+-rwxr-xr-x@ 1 xiaorongli  admin  171488 Mar  5  2013 CleanMyMac 2 Helper

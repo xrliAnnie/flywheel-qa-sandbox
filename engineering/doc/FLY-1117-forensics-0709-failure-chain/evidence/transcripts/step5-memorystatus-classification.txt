@@ -1,0 +1,197 @@
+# transcript: step5-memorystatus-classification
+# command: bash -c 
+SP=/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-1117/dbb16de3-9e56-487c-af58-93ff4704f8fa/scratchpad
+echo "## 5a reason-code classification (full-day export, derived from evidence/memorystatus-fullday-0709.log.gz)"
+echo "### jetsam kill lines by hour x reason (emitter: ReportSystemMemory/CoreDiagnostics)"
+grep -Ei "killed by jetsam reason" $SP/memstat.txt | sed -E "s/^2026-07-([0-9]{2}) ([0-9]{2}).*reason ([a-z-]+).*/07-\1 \2h \3/" | sort | uniq -c
+echo ""
+echo "### kill targets (all reasons) — distribution"
+grep -Ei "killed by jetsam reason" $SP/memstat.txt | sed -E "s/.*Process ([A-Za-z_]+) \[[0-9]+\].*/\1/" | sort | uniq -c | sort -rn
+echo ""
+echo "### line-emitter distribution of memorystatus/jetsam vocabulary"
+grep -Ei "memorystatus|jetsam" $SP/memstat.txt | awk "{for(i=7;i<=8;i++) if(\$i ~ /:\$/) {print \$i; break}}" | sort | uniq -c | sort -rn
+echo ""
+echo "## 5b predicate/coverage validation"
+echo "### kernel-emitted lines in export: $(grep -c \"kernel:\" $SP/memstat.txt)"
+echo "### UserEventAgent(MemoryMonitor) presence across the day (persistent daemon pid 324):"
+grep "UserEventAgent" $SP/memstat.txt | awk "{print substr(\$2,1,2)}" | sort | uniq -c
+echo "### earliest + latest MemoryMonitor lines:"
+grep "UserEventAgent" $SP/memstat.txt | head -2
+grep "UserEventAgent" $SP/memstat.txt | tail -1
+echo "### jetsam snapshot notes by hour:"
+grep "kernel jetsam snapshot note received" $SP/memstat.txt | awk "{print substr(\$2,1,2)}" | sort | uniq -c
+echo "### kill lines 14:00-15:00 count: $(grep -Ei "killed by jetsam" $SP/memstat.txt | awk "\$2 >= \"14:00:00\" && \$2 <= \"15:00:00\"" | wc -l | tr -d " ")"
+echo ""
+echo "## 5c JetsamEvent falls-to-disk conditions — LOCAL EMPIRICAL PROOF"
+echo "### 7/9 jetsam kills counted above (300+) vs JetsamEvent reports on disk for 7/9:"
+ls /Library/Logs/DiagnosticReports/ ~/Library/Logs/DiagnosticReports/ 2>/dev/null | grep -i "JetsamEvent-2026-07-09" | wc -l
+echo "### most recent JetsamEvent on disk:"
+ls /Library/Logs/DiagnosticReports/ 2>/dev/null | grep -i jetsam
+echo "### 7/6 sample header excerpt (bug_type 298):"
+head -c 300 "/Library/Logs/DiagnosticReports/JetsamEvent-2026-07-06-004042.ips" 2>/dev/null
+echo ""
+grep -o "\"reason\" : \"[^\"]*\"" "/Library/Logs/DiagnosticReports/JetsamEvent-2026-07-06-004042.ips" 2>/dev/null | head -3
+echo ""
+echo "## 5d launchd category retention (read-only probe)"
+log config --status 2>&1 | head -5
+echo ""
+echo "## host arch clarification"
+echo "uname -m (shell): $(uname -m); sysctl hw.machine: $(sysctl -n hw.machine 2>/dev/null); proc_translated (Rosetta): $(sysctl -n sysctl.proc_translated 2>/dev/null)"
+# collected_at: 2026-07-10T12:34:46Z (host local: 2026-07-10 05:34:46 PDT)
+# host: MacBook-Pro.local / 26.3.2 / x86_64
+# ----
+## 5a reason-code classification (full-day export, derived from evidence/memorystatus-fullday-0709.log.gz)
+### jetsam kill lines by hour x reason (emitter: ReportSystemMemory/CoreDiagnostics)
+  16 07-09 21h per-process-limit
+ 132 07-09 22h idle-exit
+  95 07-09 22h per-process-limit
+  53 07-09 23h per-process-limit
+  13 07-10 00h per-process-limit
+
+### kill targets (all reasons) — distribution
+ 118 spotlightknowledged
+  59 ecosystemanalyticsd
+   4 replayd
+   4 businessservicesd
+   3 syncdefaultsd
+   3 seserviced
+   3 intelligenceflowd
+   3 historicalaudiod
+   3 gamecontrollerd
+   3 feedbackd
+   3 assessmentagent
+   2 usermanagerd
+   2 smd
+   2 ospredictiond
+   2 nehelper
+   2 neagent
+   2 mobileactivationd
+   2 mdworker_shared
+   2 localspeechrecognition
+   2 keyboardservicesd
+   2 inputanalyticsd
+   2 iconservicesagent
+   2 callservicesd
+   2 ManagedSettingsAgent
+   2 CoreLocationAgent
+   2 CommCenter
+   2 AppleSpell
+   1 trustdFileHelper
+   1 trustd
+   1 triald
+   1 translationd
+   1 systemstatusd
+   1 systemsoundserverd
+   1 swtransparencyd
+   1 swcd
+   1 storagekitd
+   1 siriinferenced
+   1 securityd_system
+   1 secinitd
+   1 searchpartyuseragent
+   1 promotedcontentd
+   1 pkd
+   1 pbs
+   1 networkserviceproxy
+   1 logd_helper
+   1 liveactivitiesd
+   1 jetpackassetd
+   1 intelligencecontextd
+   1 installcoordinationd
+   1 iconservicesd
+   1 iCloudNotificationAgent
+   1 gamed
+   1 findmylocateagent
+   1 fairplaydeviceidentityd
+   1 extensionkitservice
+   1 donotdisturbd
+   1 dmd
+   1 dirhelper
+   1 diagnosticservicesd
+   1 ctkd
+   1 countryd
+   1 contentlinkingd
+   1 centaurid
+   1 bird
+   1 biometrickitd
+   1 biomesyncd
+   1 backupd
+   1 axassetsd
+   1 audioanalyticsd
+   1 appstoreagent
+   1 appleaccountd
+   1 amsengagementd
+   1 XprotectService
+   1 XProtectBridgeService
+   1 UIKitSystem
+   1 ShortcutsViewService
+   1 SafariLaunchAgent
+   1 ReportSystemMemory
+   1 PlugInLibraryService
+   1 PerfPowerTelemetryClientRegistra
+   1 GamePolicyAgent
+   1 CoreServicesUIAgent
+   1 ContextService
+   1 ContainerMetadataExtractor
+   1 CloudTelemetryService
+   1 AudioComponentRegistrar
+   1 AppPredictionIntentsHelperServic
+   1 2026-07-09 22:29:22.384131-0700 0x10d41265 Default     0x0                  91932  0    ReportSystemMemory: (CoreDiagnostics) Process Keychain Circle Notification [78662] killed by jetsam reason idle-exit
+   1 2026-07-09 22:21:19.843203-0700 0x10d12433 Default     0x0                  11232  0    ReportSystemMemory: (CoreDiagnostics) Process com.apple.geod [98911] killed by jetsam reason idle-exit
+   1 2026-07-09 22:20:45.674080-0700 0x10d0fd5a Default     0x0                  11232  0    ReportSystemMemory: (CoreDiagnostics) Process com.apple.audio.SandboxHelper [98888] killed by jetsam reason idle-exit
+   1 2026-07-09 22:20:45.674080-0700 0x10d0fd5a Default     0x0                  11232  0    ReportSystemMemory: (CoreDiagnostics) Process com.apple.audio.SandboxHelper [98884] killed by jetsam reason idle-exit
+   1 2026-07-09 22:20:45.674076-0700 0x10d0fd5a Default     0x0                  11232  0    ReportSystemMemory: (CoreDiagnostics) Process com.apple.FaceTime.FTConversatio [98719] killed by jetsam reason idle-exit
+   1 2026-07-09 22:20:45.674055-0700 0x10d0fd5a Default     0x0                  11232  0    ReportSystemMemory: (CoreDiagnostics) Process Keychain Circle Notification [84500] killed by jetsam reason idle-exit
+   1 2026-07-09 22:20:00.214510-0700 0x10d093ab Default     0x0                  11232  0    ReportSystemMemory: (CoreDiagnostics) Process com.apple.accessibility.mediaacc [78675] killed by jetsam reason idle-exit
+   1 2026-07-09 22:20:00.214483-0700 0x10d093ab Default     0x0                  11232  0    ReportSystemMemory: (CoreDiagnostics) Process com.apple.AppStoreDaemon.StorePr [69255] killed by jetsam reason idle-exit
+   1 2026-07-09 22:19:00.656494-0700 0x10d05270 Default     0x0                  11232  0    ReportSystemMemory: (CoreDiagnostics) Process Keychain Circle Notification [64200] killed by jetsam reason idle-exit
+   1 2026-07-09 22:19:00.656489-0700 0x10d05270 Default     0x0                  11232  0    ReportSystemMemory: (CoreDiagnostics) Process com.apple.quicklook.ThumbnailsAg [66651] killed by jetsam reason idle-exit
+   1 2026-07-09 22:19:00.656484-0700 0x10d05270 Default     0x0                  11232  0    ReportSystemMemory: (CoreDiagnostics) Process com.apple.audio.SandboxHelper [65074] killed by jetsam reason idle-exit
+
+### line-emitter distribution of memorystatus/jetsam vocabulary
+54190 runningboardd:
+1147 dasd:
+ 669 launchd:
+ 371 ReportSystemMemory:
+ 122 UserEventAgent:
+   4 audiomxd:
+   2 WindowServer:
+   1 PerfPowerServices:
+
+## 5b predicate/coverage validation
+### kernel-emitted lines in export: 0
+### UserEventAgent(MemoryMonitor) presence across the day (persistent daemon pid 324):
+   9 00
+  12 21
+  63 22
+  42 23
+### earliest + latest MemoryMonitor lines:
+2026-07-09 21:41:06.300733-0700 0x13b7     Default     0x0                  324    0    UserEventAgent: (MemoryMonitor) [com.apple.MemoryMonitor:plugin] kernel jetsam snapshot note received
+2026-07-09 21:43:13.177724-0700 0x13b7     Default     0x0                  324    0    UserEventAgent: (MemoryMonitor) [com.apple.MemoryMonitor:plugin] kernel jetsam snapshot note received
+2026-07-10 00:20:09.285321-0700 0x13b7     Default     0x0                  324    0    UserEventAgent: (MemoryMonitor) [com.apple.MemoryMonitor:plugin] kernel jetsam snapshot note received
+### jetsam snapshot notes by hour:
+   9 00
+  12 21
+  61 22
+  40 23
+### kill lines 14:00-15:00 count: 0
+
+## 5c JetsamEvent falls-to-disk conditions — LOCAL EMPIRICAL PROOF
+### 7/9 jetsam kills counted above (300+) vs JetsamEvent reports on disk for 7/9:
+       0
+### most recent JetsamEvent on disk:
+JetsamEvent-2026-07-06-004042.ips
+### 7/6 sample header excerpt (bug_type 298):
+{"bug_type":"298","timestamp":"2026-07-06 00:40:42.00 -0700","os_version":"macOS 26.3.2 (25D2150)","roots_installed":0,"incident_id":"33720AA6-34F0-475F-97EB-27E6EDD6149D"}
+{
+  "build" : "macOS 26.3.2 (25D2150)",
+  "product" : "Mac17,8",
+  "kernel" : "Darwin Kernel Version 25.3.0: Wed Jan 28 20:54:3
+"reason" : "per-process-limit"
+
+## 5d launchd category retention (read-only probe)
+log: Must be root to run 'config' command
+
+## host arch clarification
+uname -m (shell): x86_64; sysctl hw.machine: x86_64; proc_translated (Rosetta): 1
+# exit_code: 0

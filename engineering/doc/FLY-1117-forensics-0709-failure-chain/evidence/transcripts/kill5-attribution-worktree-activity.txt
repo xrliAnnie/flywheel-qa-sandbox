@@ -1,0 +1,70 @@
+# transcript: kill5-attribution-worktree-activity
+# command: bash -c 
+for wt in ~/Dev/flywheel-FLY-1099 ~/Dev/flywheel-FLY-1093 ~/Dev/flywheel-FLY-1098 ~/Dev/flywheel-FLY-1116 ~/Dev/flywheel-FLY-1089 ~/Dev/flywheel-FLY-1091 ~/Dev/flywheel-FLY-1082 ~/Dev/flywheel-FLY-1063 ~/Dev/flywheel-FLY-1062 ~/Dev/flywheel/worktrees/FLY-1048-pr-c; do
+  [ -d "$wt" ] || continue
+  echo "=== $wt ==="
+  git -C "$wt" log --format="%h %ci %s" --since="2026-07-09 20:00" --until="2026-07-09 23:59" 2>/dev/null | head -6
+done
+echo ""
+echo "=== which branch touches ship-approval-route / post-ship-finalization tests recently ==="
+git -C ~/Dev/flywheel log --all --format="%h %ci %d %s" --since="2026-07-08" -- "packages/teamlead/src/bridge/__tests__/ship-approval-route.test.ts" 2>/dev/null | head -10
+# collected_at: 2026-07-10T08:31:28Z (host local: 2026-07-10 01:31:28 PDT)
+# host: MacBook-Pro.local / 26.3.2 / x86_64
+# ----
+=== /Users/xiaorongli/Dev/flywheel-FLY-1099 ===
+93160e6f 2026-07-09 23:36:48 -0700 chore(progress): FLY-1099 implement 2/9
+d91e803b 2026-07-09 23:36:46 -0700 feat(founder-reply): S1 base — StateStore ledgers + explicit disposition contract (FLY-1099)
+c806d5d8 2026-07-09 23:07:48 -0700 chore(progress): FLY-1099 implement 0/9
+74bbdf94 2026-07-09 23:04:56 -0700 chore(progress): FLY-1099 design 5/5
+1529c6d0 2026-07-09 23:04:40 -0700 docs(FLY-1099): design phase — founder-reply ingest root cause + fix plan
+d3850869 2026-07-09 21:54:26 -0700 chore(progress): FLY-1099 design 3/5
+=== /Users/xiaorongli/Dev/flywheel-FLY-1093 ===
+=== /Users/xiaorongli/Dev/flywheel-FLY-1098 ===
+9efda611 2026-07-09 22:31:22 -0700 chore(progress): FLY-1098 design 3/3
+7e28bfcc 2026-07-09 22:27:46 -0700 chore(progress): FLY-1098 design 3/3
+eb19bc48 2026-07-09 22:27:16 -0700 docs(FLY-1098): co-eval v4 (round 3) — concrete mechanisms + diagrams after real research
+caa6eaa9 2026-07-09 21:55:44 -0700 chore(progress): FLY-1098 design 2/3
+2a4bafeb 2026-07-09 21:55:43 -0700 docs(FLY-1098): prep ship section from FLY-1063 Option B (research §8)
+e9c36610 2026-07-09 21:33:36 -0700 chore(progress): FLY-1098 design 2/3
+=== /Users/xiaorongli/Dev/flywheel-FLY-1116 ===
+088f960a 2026-07-09 23:51:54 -0700 chore(progress): FLY-1116 design 1/6
+5c6c14f0 2026-07-09 22:28:13 -0700 Merge pull request #531 from xrliAnnie/flywheel-FLY-1062
+d271ac36 2026-07-09 22:24:15 -0700 Merge pull request #534 from xrliAnnie/flywheel-FLY-1071
+53e940e8 2026-07-09 21:51:38 -0700 Merge pull request #532 from xrliAnnie/flywheel-FLY-1063
+826433a7 2026-07-09 21:45:45 -0700 docs(FLY-1063): Codex code review R3 — strict posture covers all bypass switches
+fe5ba643 2026-07-09 21:42:17 -0700 docs(FLY-1063): address Codex code review R2 — REQ-2b strict no-bypass posture
+=== /Users/xiaorongli/Dev/flywheel-FLY-1089 ===
+7d85998c 2026-07-09 23:07:37 -0700 feat(FLY-1089): fold Annie co-eval — PM=Product Manager + armed skills + Prototype Engineer 4-step detail
+=== /Users/xiaorongli/Dev/flywheel-FLY-1091 ===
+=== /Users/xiaorongli/Dev/flywheel-FLY-1082 ===
+2e498297 2026-07-09 23:54:22 -0700 Merge pull request #540 from xrliAnnie/flywheel-FLY-1081
+a012d831 2026-07-09 23:48:44 -0700 test(FLY-1082): QA phase — real-machine 5-fault fleet-alert E2E harness + PASS verdict
+5557f4b5 2026-07-09 23:23:01 -0700 test(FLY-1081): tighten founder assertion to exact array (Codex R2)
+19d9418f 2026-07-09 23:18:53 -0700 test(FLY-1081): harden QA notify-identity test per Codex R1
+cfe20580 2026-07-09 23:03:07 -0700 test(FLY-1081): QA phase — independent notify-identity e2e + QA report
+048360ce 2026-07-09 22:59:25 -0700 chore(progress): FLY-1082 implement 12/12
+=== /Users/xiaorongli/Dev/flywheel-FLY-1063 ===
+f56b574c 2026-07-09 21:53:34 -0700 chore(progress): FLY-1063 design 8/8
+d120544f 2026-07-09 21:49:40 -0700 chore(progress): FLY-1063 design 8/8
+826433a7 2026-07-09 21:45:45 -0700 docs(FLY-1063): Codex code review R3 — strict posture covers all bypass switches
+fe5ba643 2026-07-09 21:42:17 -0700 docs(FLY-1063): address Codex code review R2 — REQ-2b strict no-bypass posture
+8ac0b727 2026-07-09 21:33:50 -0700 docs(FLY-1063): address Codex code review R1 — accuracy fixes
+5c7de2fc 2026-07-09 21:07:25 -0700 docs(FLY-1063): finalize PRD — note relationship to unified CI/CD PRD (FLY-1098)
+=== /Users/xiaorongli/Dev/flywheel-FLY-1062 ===
+c7e70b8e 2026-07-09 23:57:30 -0700 fix(FLY-1062 PR2): address Codex R1 review + CI stat portability
+a026b6f8 2026-07-09 23:23:27 -0700 feat(FLY-1062 PR2): onboard-shell block 5 — secret matrix + publish gate + CI + README
+ed60d1a2 2026-07-09 23:17:26 -0700 feat(FLY-1062 PR2): onboard-shell blocks 3+4 — key rotation + update seam
+75432149 2026-07-09 23:11:58 -0700 feat(FLY-1062 PR2): onboard-shell block 2 — failure paths, zero half-baked
+da6ea8d6 2026-07-09 23:09:46 -0700 feat(FLY-1062 PR2): onboard-shell block 1 — install chain + key red lines
+5c6c14f0 2026-07-09 22:28:13 -0700 Merge pull request #531 from xrliAnnie/flywheel-FLY-1062
+=== /Users/xiaorongli/Dev/flywheel/worktrees/FLY-1048-pr-c ===
+67952c05 2026-07-09 22:46:29 -0700 fix(watchdog): fold Codex PR-C code review R2 findings (FLY-1048)
+78104b55 2026-07-09 22:18:34 -0700 fix(watchdog): fold Codex PR-C code review R1 findings (FLY-1048)
+
+=== which branch touches ship-approval-route / post-ship-finalization tests recently ===
+6219b990 2026-07-09 21:36:35 -0700  test: post-rebase hygiene — stack-test 30s timeout + lint unused cleanup
+166adc85 2026-07-09 21:09:25 -0700  fix(teamlead): tokenless ship-approval 503 truly BEFORE body parse (Codex R1)
+41c80d17 2026-07-09 21:09:25 -0700  feat(teamlead+gemini-agent): M1-ship-route + M1-session-cli — request-shaped ship surface + session facade
+493bab0f 2026-07-08 23:26:40 -0700  fix(teamlead): tokenless ship-approval 503 truly BEFORE body parse (Codex R1)
+2334ca1d 2026-07-08 22:34:10 -0700  feat(teamlead+gemini-agent): M1-ship-route + M1-session-cli — request-shaped ship surface + session facade
+# exit_code: 0

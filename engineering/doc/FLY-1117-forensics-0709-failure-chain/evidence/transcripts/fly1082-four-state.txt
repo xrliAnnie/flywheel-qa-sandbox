@@ -1,0 +1,28 @@
+# transcript: fly1082-four-state
+# command: bash -c 
+cd ~/Dev/flywheel
+git fetch origin main --quiet 2>&1 | head -2
+echo "--- FLY-1082 branch tip ---"
+git log --format="%h %ci %s" -1 origin/flywheel-FLY-1082 2>/dev/null || git -C ~/Dev/flywheel-FLY-1082 log --format="%h %ci %s" -1
+echo "--- is branch tip contained in origin/main? ---"
+TIP=$(git -C ~/Dev/flywheel-FLY-1082 rev-parse HEAD)
+git merge-base --is-ancestor "$TIP" origin/main && echo "MERGED into origin/main" || echo "NOT merged into origin/main"
+echo "--- FLY-1082 PR state ---"
+gh pr list --repo xrliAnnie/flywheel --head flywheel-FLY-1082 --state all --json number,state,mergedAt,title 2>&1 | head -5
+echo "--- deployed-sha now + prod checkout HEAD now ---"
+cat ~/.flywheel/deployed-sha; stat -f "deployed-sha mtime=%Sm" ~/.flywheel/deployed-sha
+git -C ~/Dev/flywheel rev-parse HEAD
+# collected_at: 2026-07-10T12:46:17Z (host local: 2026-07-10 05:46:17 PDT)
+# host: MacBook-Pro.local / 26.3.2 / x86_64
+# ----
+--- FLY-1082 branch tip ---
+f4bcd0bf 2026-07-10 00:35:14 -0700 chore(FLY-1082): biome-format the QA E2E harness (CI lint gate)
+--- is branch tip contained in origin/main? ---
+MERGED into origin/main
+--- FLY-1082 PR state ---
+[{"mergedAt":"2026-07-10T07:49:42Z","number":538,"state":"MERGED","title":"FLY-1082: fleet-level failure alerts + real ARC repairs (OOM / tmux server loss / Bridge死 / bot down / zombies)"}]
+--- deployed-sha now + prod checkout HEAD now ---
+bc9c9bfb1f690c2c64827317816f7fb46a78da35
+deployed-sha mtime=Jul  9 14:51:42 2026
+5c6c14f0ebcc4ed8d62cd7fd7df7dab3d66fc02a
+# exit_code: 0
