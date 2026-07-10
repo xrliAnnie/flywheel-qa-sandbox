@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Release CI/CD 发布流程 — 第 5 版（快收敛了）</title>
+<title>Release CI/CD 发布流程 — 第 6 版（逼近 PRD）</title>
 <style>
   :root{
     --bg:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --dim:#6e6e73;
-    --line:#e5e5ea; --blue:#007aff; --green:#34c759; --amber:#ff9500; --purple:#af52de; --teal:#00a3a3;
+    --line:#e5e5ea; --blue:#007aff; --green:#34c759; --amber:#ff9500; --purple:#af52de; --teal:#00a3a3; --red:#ff3b30;
     --shadow:0 1px 3px rgba(0,0,0,.06),0 8px 24px rgba(0,0,0,.04);
   }
   *{box-sizing:border-box}
@@ -26,7 +26,7 @@
   .lead{font-size:16px}
   .pill{display:inline-block;font-size:12px;font-weight:650;padding:3px 10px;border-radius:999px;background:#eef0f4;color:var(--dim);margin-bottom:10px}
   .pill.blue{background:var(--blue);color:#fff}.pill.green{background:var(--green);color:#fff}
-  .pill.amber{background:var(--amber);color:#fff}.pill.purple{background:var(--purple);color:#fff}.pill.teal{background:var(--teal);color:#fff}
+  .pill.amber{background:var(--amber);color:#fff}.pill.purple{background:var(--purple);color:#fff}.pill.teal{background:var(--teal);color:#fff}.pill.red{background:var(--red);color:#fff}
   .own{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;vertical-align:middle;margin-left:4px}
   .own.p{background:#e6f0ff;color:#0060cf;border:1px solid #b9d6ff}
   .own.e{background:#fff1e0;color:#c26a00;border:1px solid #ffd9a8}
@@ -40,10 +40,11 @@
   .decided strong{color:#0060cf}
   .plain{border-left:4px solid var(--teal);background:#f0fbfb;border-radius:10px;padding:14px 16px;margin:12px 0}
   .plain strong{color:#00807f}
+  .reuse{border-left:4px solid var(--purple);background:#faf6ff;border-radius:10px;padding:12px 15px;margin:12px 0}
+  .reuse strong{color:#8a3fb0}
   .changed{background:#faf6ff;border:1px solid #e6d8f7;border-radius:12px;padding:14px 16px;margin:6px 0}
   .changed b{color:#8a3fb0}.changed ul{margin:8px 0 0;padding-left:20px}.changed li{margin:4px 0;font-size:14px}
-  .evi{font-size:12.5px;color:var(--dim);font-style:italic;margin:4px 0 0}
-  .evi b{color:#5a2d8a;font-style:normal}
+  .evi{font-size:12.5px;color:var(--dim);font-style:italic;margin:4px 0 0}.evi b{color:#5a2d8a;font-style:normal}
 
   .diagram{background:#fbfbfd;border:1px solid var(--line);border-radius:12px;padding:16px 14px;margin:12px 0}
   .drow{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;margin:6px 0}
@@ -54,15 +55,16 @@
   .darr{color:var(--dim);font-weight:700;font-size:13px}
   .dvert{text-align:center;color:var(--dim);font-weight:700;font-size:14px;margin:2px 0}
 
-  /* daily report mock */
-  .report{border:1.5px solid #d8e6ff;border-radius:14px;background:#fbfdff;padding:14px 16px;margin:10px 0;max-width:460px;margin-left:auto;margin-right:auto}
+  .report{border:1.5px solid #d8e6ff;border-radius:14px;background:#fbfdff;padding:14px 16px;margin:10px 0;max-width:480px;margin-left:auto;margin-right:auto}
   .report .rh{font-size:13px;font-weight:700;color:#0060cf;margin:0 0 8px}
-  .report .rrow{font-size:13.5px;margin:5px 0;display:flex;gap:8px}
-  .report .rk{color:var(--dim);flex:0 0 96px}
+  .report .rrow{font-size:13.5px;margin:5px 0;display:flex;gap:8px;align-items:baseline}
+  .report .rk{color:var(--dim);flex:0 0 104px}
+  .report .src{font-size:11px;color:#8a3fb0;margin-left:4px}
   .report .rbtns{display:flex;gap:10px;margin-top:12px}
   .report .rbtn{flex:1;text-align:center;font-size:13.5px;font-weight:700;padding:9px;border-radius:10px}
-  .report .rbtn.go{background:var(--green);color:#fff}
-  .report .rbtn.wait{background:#eef0f4;color:var(--ink)}
+  .report .rbtn.go{background:var(--green);color:#fff}.report .rbtn.wait{background:#eef0f4;color:var(--ink)}
+  .report .rating{display:inline-flex;gap:6px}
+  .report .rating span{border:1px solid var(--line);border-radius:8px;padding:1px 8px;font-size:13px}
 
   .opts{display:flex;flex-direction:column;gap:10px;margin:10px 0}
   .opt{border:1px solid var(--line);border-radius:11px;padding:12px 14px;background:#fff}
@@ -72,11 +74,9 @@
   .opt p{font-size:13.5px;margin:3px 0}
 
   .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:10px 0}
-  table{border-collapse:collapse;width:100%;font-size:13px;min-width:560px}
+  table{border-collapse:collapse;width:100%;font-size:13px;min-width:520px}
   th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
-  th{background:#f2f2f5;font-weight:650}
-  tr.hi td{background:#f3fcf5}
-  td .yes{color:#1c7a37;font-weight:650}td .no{color:#c0392b;font-weight:650}
+  th{background:#f2f2f5;font-weight:650}tr.hi td{background:#f3fcf5}
   .k{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.88em;background:#eef0f4;padding:1px 6px;border-radius:6px}
 
   .q{margin:20px 0 0;padding-top:18px;border-top:1px solid var(--line)}
@@ -99,9 +99,9 @@
 </head>
 <body>
 <header>
-  <p class="eyebrow">FLY-1098 · 第 5 版 · 快收敛了</p>
-  <h1>发布这套 —— 收你上轮的拍板，<br>补两个你要我讲清的</h1>
-  <p>你上轮拍了好几个（点头方式、保留期、内外频率），都折进来了。这一版重点补你要我讲清的两个：<b>怎么算一个 beta「跑稳了」</b>、<b>「自动推给客户装」到底长啥样</b>。每块还是标了谁拍。</p>
+  <p class="eyebrow">FLY-1098 · 第 6 版 · 逼近能落 PRD</p>
+  <h1>发布这套 —— 收你上轮拍板，<br>重点解你那个真痛点</h1>
+  <p>你上轮拍了几个（砍到两档、自动更新器、保留期），都折了。这一版重点解你说的真痛点：<b>新版本老把系统搞崩、bug 反馈散在各处、你不知道怎么判断「今天这版稳不稳」</b> —— 给你一个把散落信号<b>汇总成一个发布参考</b>的机制。另外补了客户「降回老版本」。</p>
   <div class="legend" style="justify-content:center">
     <span><span class="own p">产品定</span> 你 + HL 拍</span>
     <span><span class="own e">工程定</span> Tadashi 拍</span>
@@ -112,138 +112,103 @@
 
   <!-- decided recap -->
   <div class="card">
-    <span class="pill green">你已经拍了的（复述，锁定）</span>
+    <span class="pill green">你已经拍了的（锁定，不再开）</span>
     <div class="decided">
-      <strong>这些当已定，不再开：</strong>
       <ul>
-        <li>promote = <b>Option 2 · 重发干净版本号</b>（客户看到 <span class="k">v1.56.0</span>，不带 beta 后缀）<span class="own p">✓</span></li>
-        <li>点头方式 = <b>Option 3 · 每天日报带一个「今天发不发」</b> <span class="own p">✓</span>（下方给你看日报长啥样）</li>
-        <li>保留期 = <b>beta 留 2 周 · 正式版留 4 周</b> <span class="own p">✓</span>（写进 R2 自动删规则）</li>
-        <li>范围 = <b>只做 flywheel 一个仓</b>，不做通用 <span class="own p">✓</span></li>
+        <li>节奏 = <b>两档</b>：Beta（内部用、每 24h 一抓）+ 对外 Release（每周）。<b>砍掉了中间那档</b> <span class="own p">✓</span></li>
+        <li>promote = Option 2（干净版本号）· 点头 = Option 3（每天日报一键）<span class="own p">✓</span></li>
+        <li>客户升级 = <b>B 自动更新器</b> <span class="own p">✓</span></li>
+        <li>保留期 = <b>beta 14 天 / 正式版 28 天</b>（写进 R2 自动删）<span class="own p">✓</span></li>
+        <li>范围 = 只做 flywheel 一个仓 <span class="own p">✓</span></li>
       </ul>
     </div>
   </div>
 
-  <!-- A: 3-tier cadence -->
+  <!-- A: 2-tier simplified -->
   <div class="card">
-    <span class="pill purple">A · 发布节奏（收你的「内外分开」）</span>
-    <h2>三档版本，内外不同频率 <span class="own p">节奏产品定</span> · <span class="own e">通道工程定</span></h2>
-    <p>你说对外周、内部可到日 —— 落成<b>三档</b>，各自频率可配：</p>
+    <span class="pill purple">A · 节奏（砍成两档，按你说的）</span>
+    <h2>就两档：Beta（内部）+ 对外 Release <span class="own p">节奏产品定</span></h2>
     <div class="tablewrap">
       <table>
-        <thead><tr><th>版本档</th><th>谁用</th><th>多久出一个</th><th>怎么来的</th></tr></thead>
+        <thead><tr><th>档</th><th>谁用</th><th>多久</th></tr></thead>
         <tbody>
-          <tr><td><b>beta</b>（最新、可能有毛病）</td><td>我们自己开发/测试的机器</td><td>每 6h 或每晚（有新代码才出）</td><td>定时自动打</td></tr>
-          <tr class="hi"><td><b>内部正式版</b></td><td>我们内部项目（GeoForge3D 等，它们跑着 flywheel）</td><td><b>最快每天</b>（你日报点「发」）</td><td>把一个跑稳的 beta 提升</td></tr>
-          <tr class="hi"><td><b>对外正式版</b></td><td>外面的客户</td><td><b>每周</b>（可配）</td><td>把内部正式版再对外放</td></tr>
+          <tr><td><b>Beta</b></td><td>我们自己（内部用）</td><td>每 24h 抓一次最新</td></tr>
+          <tr class="hi"><td><b>对外 Release</b></td><td>外面的客户</td><td>每周一次（你点头 promote）</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="evi"><b>一句话</b>：beta 我们自己先趟雷 → 稳了你点一下变「内部正式版」（内部项目每天能拿到）→ 攒一周对外放成「对外正式版」（客户每周拿到、更稳）。频率是<b>配置项</b>，想快想慢改数字。</p>
+    <p class="evi">上一版我多加了个「内部正式版」第三档，你说不用 —— <b>删了</b>。就 beta（我们趟）+ 对外 release（客户，每周）两档，清爽。</p>
     <div class="q">
       <div class="qhead"><div class="n">A</div><div class="t">
-        <b>这「三档 + 内日/外周」对吗？</b>
-        <span>尤其中间那档「内部正式版（每天）」是新加的 —— 我理解你想让内部项目比客户更快拿到稳定版。对吗？还是你其实只要两档（beta + 对外）？</span>
+        <b>两档，对了吗？</b>
+        <span>Beta 每 24h、对外每周。这就是你要的简化版？</span>
       </div></div>
-      <textarea id="qA" data-label="A · 三档节奏内日外周" placeholder="例：对，三档，内部每天、对外每周。或者：我只要两档，别搞复杂…"></textarea>
+      <textarea id="qA" data-label="A · 两档确认" placeholder="例：对，两档就好。或者：beta 我想更勤点，12h…"></textarea>
     </div>
   </div>
 
-  <!-- stable-beta criteria + Option 3 daily report -->
+  <!-- ⭐ beta readiness signal -->
   <div class="card">
-    <span class="pill amber">新开放点 ① · 怎么算 beta「跑稳了」<span class="own pe">判据产品定 · 信号工程定</span></span>
-    <h2>你每天点「发」之前，凭啥判断这个 beta 稳？</h2>
-    <p>你选了 Option 3（每天日报一键）。那日报得给你<b>看几个信号</b>，你才好判断「今天这个 beta 能不能发」。日报大概长这样：</p>
+    <span class="pill red">⭐ 你的真痛点 · 怎么判断「今天这版稳不稳」</span>
+    <h2>把散落的报错，汇总成一个发布参考信号</h2>
+    <p>你说的问题我听到了：<b>新版本老把系统搞崩，你每天『有感觉』哪版好坏，但 bug 反馈散在各 thread、口头告诉 Tadashi、他开 issue —— 没有一个地方告诉你「今天这版收到几个问题、崩没崩」。</b> 解法 = 每天那份日报里，<b>自动把散落信号聚到一起</b>：</p>
+
     <div class="report">
       <p class="rh">📮 今日发布候选 · beta v1.56.0-beta.7</p>
-      <div class="rrow"><span class="rk">跑了多久</span><span>在我们机器上跑了 <b>2 天</b>，没被回滚、没崩</span></div>
-      <div class="rrow"><span class="rk">测试</span><span><b>✓ 全绿</b></span></div>
-      <div class="rrow"><span class="rk">错误告警</span><span><b>无</b>（这 2 天没触发报警）</span></div>
-      <div class="rrow"><span class="rk">改了啥</span><span>距上个正式版：3 个改动（…摘要…）</span></div>
-      <div class="rbtns"><div class="rbtn go">发正式版</div><div class="rbtn wait">今天先不发</div></div>
+      <div class="rrow"><span class="rk">崩溃/卡死</span><span><b>这版 0 次</b><span class="src">← 看门狗自动测</span></span></div>
+      <div class="rrow"><span class="rk">报警数</span><span><b>2 天内 1 个</b><span class="src">← 看门狗</span></span></div>
+      <div class="rrow"><span class="rk">bug 报告</span><span><b>这版收到 2 个</b><span class="src">← 报 bug 时自动按当前版本归类</span></span></div>
+      <div class="rrow"><span class="rk">你的手感</span><span class="rating"><span>👍 今天顺</span><span>👎 不顺</span></span></div>
+      <div class="rrow"><span class="rk">建议</span><span><b>🟡 再观察</b>（收到 2 个 bug、你还没标顺）</span></div>
+      <div class="rbtns"><div class="rbtn go">发对外正式版</div><div class="rbtn wait">今天先不发</div></div>
     </div>
-    <p>「跑稳了」= 这几个信号。<b>要多严</b>由你定，给 3 档：</p>
+
+    <div class="reuse">
+      <strong>关键：不另造评分系统，复用现成的。</strong>
+      <ul>
+        <li><b>崩溃/卡死/报警</b> = <b>直接接 FLY-942 看门狗</b>（已上线，本来就在测崩溃/卡死/rate-limit/报警）—— 它的信号喂进这份日报就行。</li>
+        <li><b>bug 报告归类</b> = 跟 <b>FLY-1045</b>（反馈机制那条线）一路 —— 报 bug 时打上「当前运行的是哪版」，散落报错就自动汇成「这版 N 个」。</li>
+      </ul>
+    </div>
+
+    <h3>三个信号源，给你 3 种组合 <span class="own pe">用哪些+多严=产品定 · 接线=工程定</span></h3>
     <div class="opts">
-      <div class="opt">
-        <p class="ot">A · 纯给你信息，你凭感觉点</p>
-        <p>日报只摆信号，发不发完全你判断，系统不拦。</p>
-      </div>
-      <div class="opt rec">
-        <p class="ot">B · 系统给个「建议」，你可以覆盖<span class="rec-badge">推荐</span></p>
-        <p>系统按「跑够 N 天 + 测试绿 + 没报警」标「建议发 / 建议再等」，但<b>最终你说了算</b>，你想发照样能发。</p>
-      </div>
-      <div class="opt">
-        <p class="ot">C · 硬门槛，不满足不让发</p>
-        <p>必须满足条件（比如跑满 1 天 + 测试绿）「发」按钮才亮，否则灰掉。<b>最安全但最死板</b>。</p>
-      </div>
+      <div class="opt"><p class="ot">(a) 只看 bug 数</p><p>报 bug 自动打当前版本 tag → 日报显示「这版收到 N 个 bug」。<b>抓到散落报错</b>，但只有报了的才算。</p></div>
+      <div class="opt"><p class="ot">(b) 只看系统健康（看门狗）</p><p>复用 FLY-942：这版崩没崩、几个报警。<b>客观、已现成</b>，但只反映「崩没崩」，不反映「难用/别扭」。</p></div>
+      <div class="opt rec"><p class="ot">(c) 三个都要，凑成一个参考<span class="rec-badge">推荐</span></p><p><b>看门狗健康(b) + 版本化 bug 数(a) + 你每天一个 👍/👎(c)</b> 一起摆在日报，系统给个「🟢发/🟡等」建议，你最终拍。<b>兼顾客观 + 你的手感。</b></p></div>
     </div>
+    <div class="warn"><strong>诚实说：v1 会有 bias。</strong> 你的 👍/👎 是主观的、bug 数只算报上来的 —— 不是完美的「稳定度」。但比现在「散在各 thread、全靠你脑子记」<b>强太多</b>：至少一个地方、一眼看到「这版几个问题、崩没崩、我什么感觉」。你也认「先傻着来、以后再精」。</div>
+
     <div class="q">
-      <div class="qhead"><div class="n">①</div><div class="t">
-        <b>「稳」的判据 + 严格度？</b>
-        <span>① 上面那几个信号（跑几天/测试/报警/改了啥）够吗，还想加别的？② 严格度选 A（纯信息）/ B（建议可覆盖）/ C（硬门槛）？</span>
+      <div class="qhead"><div class="n">⭐</div><div class="t">
+        <b>判断「稳不稳」用哪个组合？</b>
+        <span>推荐 (c) 三个都要（看门狗 + bug 数 + 你的 👍/👎）。你选 (a)/(b)/(c)？还想加别的信号（比如「客户报的 bug」单独算）吗？</span>
       </div></div>
-      <textarea id="qStable" data-label="beta 跑稳判据 + 严格度" placeholder="例：信号够了。选 B，给建议但我能覆盖。或者：还想看『有没有客户报过 bug』…"></textarea>
+      <textarea id="qStable" data-label="⭐ beta 稳定判据组合" placeholder="例：(c) 三个都要。客户报的 bug 要单独标红。或者：先 (b) 看门狗就够，别的以后加…"></textarea>
     </div>
   </div>
 
-  <!-- auto-push upgrade -->
+  <!-- ② auto-updater B + rollback -->
   <div class="card">
-    <span class="pill teal">新开放点 ② · 「自动推给客户装」长啥样 <span class="own pe">给不给自动产品定 · 机制工程定</span></span>
-    <h2>客户升级：手动跑命令 vs 自动装</h2>
-    <p>你懂「客户自己跑 <span class="k">flywheel update</span>」那种。你要我讲清「我们推、客户自动装」到底咋做 —— 就是给客户机器装一个<b>小的自动更新器</b>，像 Chrome / VS Code 那样自己更新：</p>
+    <span class="pill teal">② 客户升级 = 自动更新器（已定）+ 你新问的「降回老版本」</span>
+    <h2>自动装新版 + 一键降回上一个好版本</h2>
+    <div class="decided"><strong>你已选 B 自动更新器：</strong>客户机器上的定时任务每天查对外 Release 通道，有新版就自动下载、装、重启（装失败自动翻回旧版）。<span class="own p">✓</span></div>
+
+    <h3>新问题：客户发现新版有问题，想降回老版本 —— 容易做到吗？<span class="own e">机制工程定</span></h3>
+    <div class="agree"><strong>容易，而且你定的保留期正好支持。</strong> 因为老版本在 R2 留着（正式版留 28 天），客户降级 = 拉回一个旧版本装上、切过去。给客户一条命令：</div>
     <div class="diagram">
-      <div class="drow">
-        <div class="dnode cust">客户机器上的<br>自动更新器<br><small style="font-weight:500">定时任务，每天醒一次</small></div>
-        <div class="darr">──每天查──▶</div>
-        <div class="dnode hub">对外正式版通道<br><small style="font-weight:500;color:#ccc">(npm)</small></div>
-      </div>
-      <div class="dvert">▼ 有新正式版</div>
-      <div class="drow"><div class="dnode int">自动下载 → 装进新目录 → 切过去 → 重启<br><small style="font-weight:500">（装失败自动翻回旧版）</small></div></div>
+      <div class="drow"><div class="dnode cust"><span class="k">flywheel rollback</span><br><small style="font-weight:500">一键降回上一个好版本</small></div></div>
+      <div class="dvert">▼</div>
+      <div class="drow"><div class="dnode int">切回上一个版本目录（本地还留着）→ 重启<br><small style="font-weight:500">秒回，因为旧版本没删</small></div></div>
+      <div class="drow" style="margin-top:8px"><div class="dnode cust"><span class="k">flywheel install v1.55.0</span><br><small style="font-weight:500">或指定装某个旧版本</small></div><div class="darr">──▶</div><div class="dnode store">从 R2 拉那个旧版<br><small style="font-weight:500">(28 天内都在)</small></div></div>
+      <p class="evi" style="margin-top:8px"><b>两种降级</b>：① <span class="k">flywheel rollback</span> = 秒回上一个版本（本地目录还留着，翻个指针就行）；② <span class="k">flywheel install &lt;旧版本号&gt;</span> = 想回更早的某版，从 R2 拉下来装（28 天保留期内都拿得到）。这套复用我们已经设计的「版本目录 + 切指针 + 留回滚位」机制，不新造。</p>
     </div>
-    <p>给你 3 个 option：</p>
-    <div class="opts">
-      <div class="opt rec">
-        <p class="ot">A · 手动 CLI（默认，推荐起步）<span class="rec-badge">推荐</span></p>
-        <p>客户想升级就自己跑 <span class="k">flywheel update</span>。<b>客户完全控制时机</b>，最安全，我们也不用管他们机器。</p>
-      </div>
-      <div class="opt">
-        <p class="ot">B · 自动更新器（上面那张图）</p>
-        <p>客户机器装个定时任务，每天自动查、有新正式版就自动装、失败自动回滚。<b>客户不用管</b>，但等于我们能动他们机器（要他们信任）。</p>
-      </div>
-      <div class="opt">
-        <p class="ot">C · 混合：自动查 + 问一声</p>
-        <p>自动发现有新版 → 通知客户「有新版，要装吗」→ 客户点一下才装。<b>又省心又不擅自动手</b>。</p>
-      </div>
-    </div>
-    <p class="evi"><b>我的建议</b>：起步用 A（手动，安全、简单），把 B 的自动更新器留作「想省心的客户可选」（FLY-1062 里已经把它列为后续件了）。<b>给不给自动 = 你定</b>；具体怎么做 = Tadashi。</p>
     <div class="q">
       <div class="qhead"><div class="n">②</div><div class="t">
-        <b>客户升级给哪种？</b>
-        <span>A 手动 CLI（起步推荐）/ B 自动更新器 / C 混合（自动查+问一声）？可以「起步 A、以后加 B/C」。</span>
+        <b>客户降级这套，对吗？</b>
+        <span>一键 <span class="k">flywheel rollback</span> 回上一个好版本 + 能指定装某旧版（28 天内）。这样够吗？自动更新器要不要「装完发现崩、自己降回去」也做进去？</span>
       </div></div>
-      <textarea id="q2" data-label="② 客户升级 手动/自动/混合" placeholder="例：起步 A 手动，以后给想省心的客户加 C。或者：我要 B 全自动…"></textarea>
-    </div>
-  </div>
-
-  <!-- R2 retention -->
-  <div class="card">
-    <span class="pill teal">① payload 托管 · 收你的保留期</span>
-    <h2>R2 + 自动删（beta 2 周 / 正式版 4 周）<span class="own e">实现工程定</span></h2>
-    <div class="agree">
-      <strong>你定的保留期已写进设计：</strong>payload 存 Cloudflare R2（10GB 永久免费 + 客户下载零流量费），在 R2 后台建两条自动删规则 ——
-      <ul>
-        <li>beta 的包：<b>14 天后自动删</b>（你定的 2 周）；</li>
-        <li>正式版的包：<b>28 天后自动删</b>（你定的 4 周）。</li>
-      </ul>
-      到期 R2 自己删、不用人管。我们 payload 一个几十 MB，这点量 10GB 免费额度<b>远用不完</b>。
-    </div>
-    <p class="evi"><b>为什么 R2 不是 S3</b>（上轮查的，复习）：R2 客户下载零流量费、10GB 永久免费；S3 旧的永久免费档已取消、下载还按 GB 收（0.09 美元/GB）。同样能自动删，R2 更省。</p>
-    <div class="q">
-      <div class="qhead"><div class="n">保</div><div class="t">
-        <b>保留期 beta 2 周 / 正式版 4 周 —— 就这样？</b>
-        <span>这个数直接进 R2 自动删规则。够用吗（够回滚、又不囤太多）？</span>
-      </div></div>
-      <textarea id="q1" data-label="① 保留期确认" placeholder="例：就 2 周 / 4 周。或者：正式版留久点，8 周吧…"></textarea>
+      <textarea id="qRollback" data-label="② 客户回滚/降级" placeholder="例：够了。自动更新器最好也能自己回滚。或者：降级要留更久，别 28 天就删…"></textarea>
     </div>
   </div>
 
@@ -256,18 +221,18 @@
   </div>
 
   <footer>
-    Honey Lemon · Flywheel Product · 第 5 版 · 提案，快收敛成 PRD
-    <div class="srcs">依据：Cloudflare R2 定价 + object lifecycle（自动删）· AWS S3 定价 · CLI 自动更新器通行做法（定时查通道→拉装，如 Chrome/VS Code）· release train / promote 判据</div>
+    Honey Lemon · Flywheel Product · 第 6 版 · 快收敛成 PRD
+    <div class="srcs">复用:FLY-942 看门狗(崩溃/卡死/报警信号,已上线)· FLY-1045 反馈机制(版本隐式打分那条线)· FLY-1062 版本目录+切指针(回滚机制)· R2 object lifecycle(保留期自动删)</div>
   </footer>
 </div>
 
 <script nonce="__CSP_NONCE__">
 (function () {
-  var ids = ["qA", "qStable", "q2", "q1"];
+  var ids = ["qA", "qStable", "qRollback"];
   var btn = document.getElementById("copy");
   var out = document.getElementById("out");
   function build() {
-    var lines = ["【FLY-1098 · Release CI/CD 发布流程（第 5 版）— Annie 的批注】", ""];
+    var lines = ["【FLY-1098 · Release CI/CD 发布流程（第 6 版）— Annie 的批注】", ""];
     var any = false;
     ids.forEach(function (id) {
       var el = document.getElementById(id);
