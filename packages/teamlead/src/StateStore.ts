@@ -1453,17 +1453,18 @@ export class StateStore {
 			)
 		`);
 
-		// FLY-1082 (Task 2.3, Codex R3): the server-loss episode LEDGER — a
-		// single durable row holding the active episode's signature + claimed
-		// exec ids. The coordinator's restart adoption reads THIS (never the
-		// alert ticket row: ACTIVE only means resolved_at IS NULL — a
-		// permanently-ESCALATED old ticket must not swallow a NEW incident).
+		// FLY-1082 (Task 2.3, Codex R3/R4/R5): the server-loss episode LEDGER —
+		// a single durable row holding the active episode's signature + full
+		// side-effect state (shape, claimed exec ids, per-Lead notification
+		// outbox, ticket phase). The coordinator's restart resume reads THIS
+		// (never the alert ticket row: ACTIVE only means resolved_at IS NULL —
+		// a permanently-ESCALATED old ticket must not swallow a NEW incident),
+		// and every owed side effect replays from it exactly once per target.
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS server_loss_episode (
 				id INTEGER PRIMARY KEY CHECK (id = 1),
 				signature TEXT NOT NULL,
-				claimed_json TEXT NOT NULL,
-				announced INTEGER NOT NULL DEFAULT 0,
+				state_json TEXT NOT NULL,
 				created_at TEXT NOT NULL DEFAULT (datetime('now'))
 			)
 		`);
@@ -4761,67 +4762,62 @@ export class StateStore {
 		this.save();
 	}
 
-	// ── FLY-1082 (Task 2.3, Codex R3/R4): server-loss episode ledger ──
+	// ── FLY-1082 (Task 2.3, Codex R3/R4/R5): server-loss episode ledger ──
 
-	/** Arm a NEW episode (announced=0: ticket + Lead notifications still owed —
-	 * a crash before they land replays them from this row on the next check). */
-	setServerLossEpisode(signature: string, claimedIds: string[]): void {
+	/** Write (arm or update) the episode row — full side-effect state (shape,
+	 * claimed ids, per-Lead notification outbox, ticket phase). Idempotent. */
+	setServerLossEpisode(signature: string, state: ServerLossEpisodeState): void {
 		this.db.run(
-			`INSERT INTO server_loss_episode (id, signature, claimed_json, announced) VALUES (1, ?, ?, 0)
+			`INSERT INTO server_loss_episode (id, signature, state_json) VALUES (1, ?, ?)
 			 ON CONFLICT(id) DO UPDATE SET signature = excluded.signature,
-				claimed_json = excluded.claimed_json, announced = 0,
-				created_at = datetime('now')`,
-			[signature, JSON.stringify(claimedIds)],
-		);
-		this.save();
-	}
-
-	/** Codex R4: EXTEND the current episode's claimed set (new casualties that
-	 * appeared while the same server loss is ongoing — same signature, no new
-	 * ticket). */
-	updateServerLossEpisodeClaimed(claimedIds: string[]): void {
-		this.db.run(
-			"UPDATE server_loss_episode SET claimed_json = ? WHERE id = 1",
-			[JSON.stringify(claimedIds)],
-		);
-		this.save();
-	}
-
-	/** Codex R4: the episode's side effects (ONE fleet ticket + grouped Lead
-	 * notifications) landed — only an announced episode may be cleared. */
-	markServerLossEpisodeAnnounced(): void {
-		this.db.run(
-			"UPDATE server_loss_episode SET announced = 1 WHERE id = 1",
-			[],
+				state_json = excluded.state_json`,
+			[signature, JSON.stringify(state)],
 		);
 		this.save();
 	}
 
 	getServerLossEpisode():
-		| { signature: string; claimed: string[]; announced: boolean }
+		| { signature: string; state: ServerLossEpisodeState }
 		| undefined {
 		const stmt = this.db.prepare(
-			"SELECT signature, claimed_json, announced FROM server_loss_episode WHERE id = 1",
+			"SELECT signature, state_json FROM server_loss_episode WHERE id = 1",
 		);
-		let out:
-			| { signature: string; claimed: string[]; announced: boolean }
-			| undefined;
+		let out: { signature: string; state: ServerLossEpisodeState } | undefined;
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
-			let claimed: string[] = [];
-			try {
-				const parsed = JSON.parse(row.claimed_json as string);
-				claimed = Array.isArray(parsed)
-					? parsed.filter((x): x is string => typeof x === "string")
+			const strings = (v: unknown): string[] =>
+				Array.isArray(v)
+					? v.filter((x): x is string => typeof x === "string")
 					: [];
+			let state: ServerLossEpisodeState;
+			try {
+				const parsed = JSON.parse(row.state_json as string) as Record<
+					string,
+					unknown
+				>;
+				state = {
+					shape:
+						parsed.shape === "server_fresh" ? "server_fresh" : "server_down",
+					claimed: strings(parsed.claimed),
+					ticketDone: parsed.ticketDone === true,
+					notifiedLeads: strings(parsed.notifiedLeads),
+					failedLeads: strings(parsed.failedLeads),
+					notifyAttempts:
+						parsed.notifyAttempts && typeof parsed.notifyAttempts === "object"
+							? (parsed.notifyAttempts as Record<string, number>)
+							: {},
+				};
 			} catch {
-				claimed = [];
+				state = {
+					shape: "server_down",
+					claimed: [],
+					ticketDone: false,
+					notifiedLeads: [],
+					failedLeads: [],
+					notifyAttempts: {},
+				};
 			}
-			out = {
-				signature: row.signature as string,
-				claimed,
-				announced: Number(row.announced) === 1,
-			};
+			out = { signature: row.signature as string, state };
 		}
 		stmt.free();
 		return out;
@@ -5864,6 +5860,24 @@ export interface LeadEventRow {
 }
 
 /** FLY-368: a row of the alert_threads active-mapping table. */
+/**
+ * FLY-1082 (Codex R5): the server-loss episode's durable side-effect state —
+ * the per-Lead notification OUTBOX (notified / failed-after-retries / attempt
+ * counts), the ticket phase, the loss shape (replay renders the right copy),
+ * and the claimed exec ids. Every field must survive a Bridge crash so no
+ * owed side effect is lost and none is duplicated.
+ */
+export interface ServerLossEpisodeState {
+	shape: "server_down" | "server_fresh";
+	claimed: string[];
+	ticketDone: boolean;
+	notifiedLeads: string[];
+	/** Leads whose notification failed ≥3 attempts — surfaced via the ticket's
+	 * leadsFailed metadata (→ needs_human escalation); no further retries. */
+	failedLeads: string[];
+	notifyAttempts: Record<string, number>;
+}
+
 export interface AlertThreadRow {
 	correlation_key: string;
 	event_id: string;

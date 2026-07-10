@@ -28,7 +28,11 @@
 
 import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import { FLEET_ALERT_PROJECT } from "../LeadAlertNotifier.js";
-import type { Session, StateStore } from "../StateStore.js";
+import type {
+	ServerLossEpisodeState,
+	Session,
+	StateStore,
+} from "../StateStore.js";
 
 export type ServerProbe = "up" | "down" | "unknown";
 
@@ -83,57 +87,54 @@ export class ServerLossCoordinator {
 	hasPendingMigrations(): boolean {
 		const episode = this.deps.store.getServerLossEpisode();
 		if (!episode) return false;
-		const claimed = new Set(episode.claimed);
+		const claimed = new Set(episode.state.claimed);
 		return this.deps.store
 			.getRunningSessions()
 			.some((s) => claimed.has(s.execution_id));
 	}
 
 	/**
-	 * The pre-reaper phase. Returns the exec ids this coordinator CLAIMED and
-	 * migrated this cycle — HeartbeatService feeds them into the orphan
-	 * suppression set so crash-reaper/reapOrphans never double-migrate.
+	 * The pre-reaper phase. Returns the exec ids this coordinator CLAIMED —
+	 * HeartbeatService feeds them into the orphan suppression set so
+	 * crash-reaper/reapOrphans never double-migrate.
 	 *
-	 * Episode state lives in the DURABLE StateStore ledger (Codex R1 HIGH-2 +
-	 * R2 MED-2 + R3: signature AND claimed exec ids persist across restarts —
-	 * never inferred from the alert ticket row, whose ACTIVE state only means
-	 * unresolved and would let a stale ESCALATED ticket swallow a NEW
-	 * incident). Claiming happens before the migration succeeds on purpose:
-	 * a failed migration must still suppress the per-runner reapers. The
-	 * ongoing episode retries ONLY its pending migrations quietly (no new
-	 * ticket, no re-notification) and clears when nothing claimed still runs.
+	 * Episode state lives in the DURABLE StateStore ledger (Codex R1→R5):
+	 * signature, loss shape, claimed exec ids, the per-Lead notification
+	 * OUTBOX, and the ticket phase all persist across restarts — never
+	 * inferred from the alert ticket row. Claiming happens before migration
+	 * succeeds on purpose (a failed migration must still suppress the
+	 * per-runner reapers); every side effect is delivered exactly once per
+	 * target: a lead is notified once (retried up to 3 attempts, then marked
+	 * failed and surfaced via the ticket's leadsFailed → needs_human), the
+	 * fleet ticket is emitted once.
 	 */
 	async check(): Promise<ReadonlySet<string>> {
 		const wasFirst = this.firstCheck;
 		this.firstCheck = false;
 		const running = this.deps.store.getRunningSessions().filter(isTmuxBacked);
 
-		// Ledger maintenance (Codex R4 HIGH-1): only an ANNOUNCED episode with
-		// no claimed session still running is complete. An un-announced one
-		// still OWES its ticket + Lead notifications (a crash landed between
-		// the migrations and the announcement) and is replayed below.
-		let episode = this.deps.store.getServerLossEpisode();
-		if (episode?.announced) {
-			const claimed = new Set(episode.claimed);
-			if (!running.some((s) => claimed.has(s.execution_id))) {
-				this.deps.store.clearServerLossEpisode();
-				episode = undefined;
-			}
+		// Completion check: the episode is over when the ticket landed, every
+		// owed Lead is either notified or terminally failed, and nothing claimed
+		// still runs. An episode still OWING side effects is kept and replayed.
+		let ledger = this.deps.store.getServerLossEpisode();
+		if (ledger && this.episodeComplete(ledger.state, running)) {
+			this.deps.store.clearServerLossEpisode();
+			ledger = undefined;
 		}
 
-		if (!episode && running.length === 0) return new Set();
+		if (!ledger && running.length === 0) return new Set();
 
 		// The probe is only needed when sessions could be migrated/extended.
 		const probe: ServerProbe =
 			running.length > 0 ? await this.deps.probeServer() : "unknown";
 
 		// Fresh detection (no active episode).
-		if (!episode) {
+		if (!ledger) {
 			let casualties: Session[] | null = null;
+			let shape: "server_down" | "server_fresh" = "server_down";
 			if (probe === "down") {
 				// Tick leg: the server hosting these sessions is GONE — any count.
 				casualties = running;
-				this.lastShape = "server_down";
 			} else if (probe === "up" && wasFirst) {
 				// Boot leg: server responds but the previous generation's runners
 				// may have died with a server restart. Aggregation threshold guards
@@ -147,43 +148,53 @@ export class ServerLossCoordinator {
 					// ALL provably gone (any present/indeterminate → no mass loss).
 					if (verdicts.every((v) => v === true)) {
 						casualties = running;
-						this.lastShape = "server_fresh";
+						shape = "server_fresh";
 					}
 				}
 			}
 			if (!casualties) return new Set();
 			const signature = `tmux-server-lost:${this.now()}`;
 			this.log(
-				`${this.lastShape}: ${casualties.length} running tmux session(s) lost — episode ${signature}`,
+				`${shape}: ${casualties.length} running tmux session(s) lost — episode ${signature}`,
 			);
-			// The DURABLE ledger arms BEFORE any side effect (announced=0) so a
-			// crash anywhere below replays under THIS episode, never a new one.
-			this.deps.store.setServerLossEpisode(
-				signature,
-				casualties.map((s) => s.execution_id),
-			);
-			episode = {
-				signature,
+			// The DURABLE ledger arms BEFORE any side effect so a crash anywhere
+			// below replays under THIS episode, never a new one.
+			const state: ServerLossEpisodeState = {
+				shape,
 				claimed: casualties.map((s) => s.execution_id),
-				announced: false,
+				ticketDone: false,
+				notifiedLeads: [],
+				failedLeads: [],
+				notifyAttempts: {},
 			};
+			this.deps.store.setServerLossEpisode(signature, state);
+			ledger = { signature, state };
 		}
 
-		const claimed = new Set(episode.claimed);
+		const state = ledger.state;
+		const claimed = new Set(state.claimed);
+		let stateDirty = false;
 
 		// Codex R4 HIGH-2: NEW casualties appearing while the SAME server loss
 		// is ongoing (server still provably down) JOIN the episode — claimed +
-		// migrated under the same signature, their Leads notified with a delta
-		// message, no second fleet ticket. Without this they would be masked
-		// from both the episode and fresh detection while old migrations retry.
-		let extension: Session[] = [];
+		// migrated under the same signature. Their Leads move back into the
+		// OWED set (durably — Codex R5 HIGH: their casualty lists changed, and a
+		// crash before the delta delivery must replay it), no second ticket.
 		if (probe === "down") {
-			extension = running.filter((s) => !claimed.has(s.execution_id));
+			const extension = running.filter((s) => !claimed.has(s.execution_id));
 			if (extension.length > 0) {
 				for (const s of extension) claimed.add(s.execution_id);
-				this.deps.store.updateServerLossEpisodeClaimed([...claimed]);
+				state.claimed = [...claimed];
+				for (const s of extension) {
+					const leadId = this.deps.resolveLeadId(s);
+					if (!leadId) continue;
+					state.notifiedLeads = state.notifiedLeads.filter((l) => l !== leadId);
+					state.failedLeads = state.failedLeads.filter((l) => l !== leadId);
+					delete state.notifyAttempts[leadId];
+				}
+				this.deps.store.setServerLossEpisode(ledger.signature, state);
 				this.log(
-					`episode ${episode.signature} extended by ${extension.length} new casualties`,
+					`episode ${ledger.signature} extended by ${extension.length} new casualties`,
 				);
 			}
 		}
@@ -197,7 +208,7 @@ export class ServerLossCoordinator {
 				probe === "down" || (await this.deps.targetGone(session)) === true;
 			if (!provablyDead) continue;
 			try {
-				await this.deps.migrate(session, episode.signature);
+				await this.deps.migrate(session, ledger.signature);
 			} catch (err) {
 				this.log(
 					`migrate failed for ${session.execution_id}: ${(err as Error).message}`,
@@ -205,88 +216,13 @@ export class ServerLossCoordinator {
 			}
 		}
 
-		// Announcement phase — durable, exactly-once-ish: replayed from the
-		// ledger until it RESOLVES (a throw leaves announced=0 for next tick).
-		if (!episode.announced) {
-			if (await this.announceEpisode(episode.signature, [...claimed])) {
-				this.deps.store.markServerLossEpisodeAnnounced();
-			}
-		} else if (extension.length > 0) {
-			// Already-announced episode extended: delta-notify the affected Leads
-			// (their casualty lists) — the fleet ticket stays the one episode.
-			this.notifyLeadsGrouped(episode.signature, extension);
-		}
-
-		return claimed;
-	}
-
-	/** Remembered for the announcement copy (replay defaults to server_down). */
-	private lastShape: "server_down" | "server_fresh" = "server_down";
-
-	/**
-	 * The episode's side effects: ONE grouped notification per Lead + ONE
-	 * fleet ticket, built from the ledger's claimed ids (works on replay too —
-	 * migrated sessions still have their store rows). Returns true when the
-	 * ticket emission RESOLVED (sent/queued/dead-lettered/deduped — all
-	 * recorded outcomes); only a throw reports false so the ledger replays.
-	 */
-	private async announceEpisode(
-		signature: string,
-		claimedIds: string[],
-	): Promise<boolean> {
-		const sessions = claimedIds
+		// Side-effect phase A — the per-Lead notification OUTBOX (Codex R5):
+		// each owed Lead is delivered its grouped casualty list exactly once;
+		// a failure increments its attempt count (retried next tick, terminal
+		// after 3 → failedLeads, surfaced via the ticket's leadsFailed).
+		const sessions = state.claimed
 			.map((id) => this.deps.store.getSession(id))
 			.filter((s): s is Session => !!s);
-		const migrated = sessions.filter((s) => s.status !== "running").length;
-		const { byLead, unresolvedCount, leadsNotified, leadsFailed } =
-			await this.notifyLeadsGrouped(signature, sessions);
-		const perLead = [...byLead.entries()]
-			.map(([leadId, group]) => `${leadId}: ${group.length}`)
-			.join(" / ");
-		try {
-			await this.deps.alert({
-				leadId: "tmux-server",
-				projectName: FLEET_ALERT_PROJECT,
-				eventId: signature,
-				eventType: "tmux_server_lost",
-				title: `tmux server 丢失 — ${claimedIds.length} 个 runner 阵亡`,
-				body: `${
-					this.lastShape === "server_down"
-						? "tmux server 整个消失（no server running）"
-						: "tmux server 重启（复活对账发现上一世代 runner 全灭）"
-				}。受影响：${perLead}${
-					unresolvedCount > 0 ? ` / 无主 ${unresolvedCount}` : ""
-				}。已成组迁移 ${migrated}/${claimedIds.length} 到终态,并按 Lead 分组通知（各自阵亡清单 + resume 指针）。respawn 由各 Lead 驱动。`,
-				severity: "severe",
-				metadata: {
-					tmuxServerLost: {
-						casualties: claimedIds.length,
-						migrated,
-						leadsNotified,
-						leadsFailed,
-					},
-				},
-			});
-			return true;
-		} catch (err) {
-			this.log(
-				`episode announcement failed (will replay): ${(err as Error).message}`,
-			);
-			return false;
-		}
-	}
-
-	/** ONE grouped notification per Lead: its own casualty list + resume
-	 * pointers + the current watermark (anti-stampede context). */
-	private async notifyLeadsGrouped(
-		signature: string,
-		sessions: Session[],
-	): Promise<{
-		byLead: Map<string, Session[]>;
-		unresolvedCount: number;
-		leadsNotified: number;
-		leadsFailed: number;
-	}> {
 		const byLead = new Map<string, Session[]>();
 		let unresolvedCount = 0;
 		for (const session of sessions) {
@@ -299,29 +235,116 @@ export class ServerLossCoordinator {
 			group.push(session);
 			byLead.set(leadId, group);
 		}
-		let leadsNotified = 0;
-		let leadsFailed = 0;
 		const watermark = this.deps.currentWatermark?.() ?? null;
 		for (const [leadId, group] of byLead) {
+			if (
+				state.notifiedLeads.includes(leadId) ||
+				state.failedLeads.includes(leadId)
+			)
+				continue;
 			const lines = group.map(
 				(s) =>
 					`- ${s.issue_identifier ?? s.issue_id} (exec ${s.execution_id})：progress ledger 在其分支上（$FLYWHEEL_PROGRESS_PATH 指向,可 resume 续跑）`,
 			);
-			const content = `[fleet-alert] tmux server 丢失（${signature}）— 你名下 ${group.length} 个 runner 阵亡,已标记终态：\n${lines.join(
+			const content = `[fleet-alert] tmux server 丢失（${ledger.signature}）— 你名下 ${group.length} 个 runner 阵亡,已标记终态：\n${lines.join(
 				"\n",
 			)}\n复活由你驱动（respawn 不代劳）;每个都有 restart-resilient resume（FLY-795）。${
 				watermark
 					? `当前 swap 水位 ${watermark} — 请按水位节奏复活,避免 stampede。`
 					: ""
 			}`;
+			let delivered = false;
 			try {
-				if (await this.deps.notifyLead(leadId, content)) leadsNotified++;
-				else leadsFailed++;
+				delivered = await this.deps.notifyLead(leadId, content);
 			} catch {
-				leadsFailed++;
+				delivered = false;
+			}
+			if (delivered) {
+				state.notifiedLeads.push(leadId);
+			} else {
+				state.notifyAttempts[leadId] = (state.notifyAttempts[leadId] ?? 0) + 1;
+				if ((state.notifyAttempts[leadId] ?? 0) >= 3) {
+					state.failedLeads.push(leadId);
+					this.log(
+						`lead ${leadId} notification failed 3 attempts — surfacing via ticket leadsFailed`,
+					);
+				}
+			}
+			stateDirty = true;
+		}
+		if (stateDirty) {
+			this.deps.store.setServerLossEpisode(ledger.signature, state);
+			stateDirty = false;
+		}
+
+		// Side-effect phase B — the ONE fleet ticket. Runs AFTER the outbox so
+		// its metadata reflects real delivery; replayed until it RESOLVES (a
+		// throw leaves ticketDone=false; the per-Lead outbox above prevents the
+		// duplicate notifications Codex R5 MED-1 flagged).
+		if (!state.ticketDone) {
+			const migrated = state.claimed.filter(
+				(id) => this.deps.store.getSession(id)?.status !== "running",
+			).length;
+			const owed = [...byLead.keys()].filter(
+				(l) =>
+					!state.notifiedLeads.includes(l) && !state.failedLeads.includes(l),
+			).length;
+			const perLead = [...byLead.entries()]
+				.map(([leadId, group]) => `${leadId}: ${group.length}`)
+				.join(" / ");
+			try {
+				await this.deps.alert({
+					leadId: "tmux-server",
+					projectName: FLEET_ALERT_PROJECT,
+					eventId: ledger.signature,
+					eventType: "tmux_server_lost",
+					title: `tmux server 丢失 — ${state.claimed.length} 个 runner 阵亡`,
+					body: `${
+						state.shape === "server_down"
+							? "tmux server 整个消失（no server running）"
+							: "tmux server 重启（复活对账发现上一世代 runner 全灭）"
+					}。受影响：${perLead}${
+						unresolvedCount > 0 ? ` / 无主 ${unresolvedCount}` : ""
+					}。已成组迁移 ${migrated}/${state.claimed.length} 到终态,并按 Lead 分组通知（各自阵亡清单 + resume 指针）。respawn 由各 Lead 驱动。`,
+					severity: "severe",
+					metadata: {
+						tmuxServerLost: {
+							casualties: state.claimed.length,
+							migrated,
+							leadsNotified: state.notifiedLeads.length,
+							leadsFailed:
+								state.failedLeads.length + owed + (unresolvedCount > 0 ? 1 : 0),
+						},
+					},
+				});
+				state.ticketDone = true;
+				this.deps.store.setServerLossEpisode(ledger.signature, state);
+			} catch (err) {
+				this.log(
+					`episode ticket emission failed (will replay): ${(err as Error).message}`,
+				);
 			}
 		}
-		leadsFailed += unresolvedCount > 0 ? 1 : 0; // unresolvable = a failed notify
-		return { byLead, unresolvedCount, leadsNotified, leadsFailed };
+
+		return claimed;
+	}
+
+	/** Over when: ticket landed, no owed Lead remains (notified or terminally
+	 * failed), and nothing claimed still runs. */
+	private episodeComplete(
+		state: ServerLossEpisodeState,
+		running: Session[],
+	): boolean {
+		if (!state.ticketDone) return false;
+		const claimed = new Set(state.claimed);
+		if (running.some((s) => claimed.has(s.execution_id))) return false;
+		const settled = new Set([...state.notifiedLeads, ...state.failedLeads]);
+		for (const id of state.claimed) {
+			const session = this.deps.store.getSession(id);
+			if (!session) continue;
+			const leadId = this.deps.resolveLeadId(session);
+			if (leadId && !settled.has(leadId)) return false;
+		}
+		return true;
 	}
 }

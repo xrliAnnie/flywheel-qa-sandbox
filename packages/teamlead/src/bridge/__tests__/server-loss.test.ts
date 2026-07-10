@@ -302,13 +302,16 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 	it("Bridge restart mid-partial-migration resumes the DURABLE episode ledger — no duplicate ticket/notify (Codex R2 MED-2 + R3)", async () => {
 		const fleet = incidentFleet().slice(0, 4);
 		for (const s of fleet) store.upsertSession(s);
-		// The durable evidence of the pre-restart episode: the LEDGER row
-		// (signature + claimed exec ids), announced pre-crash.
-		store.setServerLossEpisode(
-			"tmux-server-lost:1000",
-			fleet.map((s) => s.execution_id),
-		);
-		store.markServerLossEpisodeAnnounced();
+		// The durable evidence of the pre-restart episode: the LEDGER row —
+		// ticket emitted + tadashi notified pre-crash (all side effects done).
+		store.setServerLossEpisode("tmux-server-lost:1000", {
+			shape: "server_down",
+			claimed: fleet.map((s) => s.execution_id),
+			ticketDone: true,
+			notifiedLeads: ["tadashi"],
+			failedLeads: [],
+			notifyAttempts: {},
+		});
 		// A FRESH coordinator (post-restart: no in-memory state at all).
 		const coordinator = makeCoordinator({ sessions: [], probe: "down" });
 		const claimed = await coordinator.check();
@@ -348,11 +351,14 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 	it("an UNKNOWN probe never migrates pending sessions (suppression only) (Codex R3 HIGH-1)", async () => {
 		const fleet = incidentFleet().slice(0, 4);
 		for (const s of fleet) store.upsertSession(s);
-		store.setServerLossEpisode(
-			"tmux-server-lost:1000",
-			fleet.map((s) => s.execution_id),
-		);
-		store.markServerLossEpisodeAnnounced();
+		store.setServerLossEpisode("tmux-server-lost:1000", {
+			shape: "server_down",
+			claimed: fleet.map((s) => s.execution_id),
+			ticketDone: true,
+			notifiedLeads: ["tadashi"],
+			failedLeads: [],
+			notifyAttempts: {},
+		});
 		const coordinator = makeCoordinator({
 			sessions: [],
 			probe: "unknown",
@@ -367,11 +373,14 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 	it("within an ongoing episode, a pending session with a PROVABLY gone target migrates even while the server probe is up", async () => {
 		const fleet = incidentFleet().slice(0, 3);
 		for (const s of fleet) store.upsertSession(s);
-		store.setServerLossEpisode(
-			"tmux-server-lost:1000",
-			fleet.map((s) => s.execution_id),
-		);
-		store.markServerLossEpisodeAnnounced();
+		store.setServerLossEpisode("tmux-server-lost:1000", {
+			shape: "server_down",
+			claimed: fleet.map((s) => s.execution_id),
+			ticketDone: true,
+			notifiedLeads: ["tadashi"],
+			failedLeads: [],
+			notifyAttempts: {},
+		});
 		const coordinator = makeCoordinator({
 			sessions: [],
 			probe: "up",
@@ -387,15 +396,20 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 	it("crash BEFORE the announcement: the un-announced ledger replays ticket + notifications after restart (Codex R4 HIGH-1)", async () => {
 		const fleet = incidentFleet().slice(0, 4);
 		// Pre-crash state: sessions already migrated (terminal), ledger armed
-		// but announced=0 — the crash landed between migration and announce.
+		// but NO side effect landed — the crash hit between migration and the
+		// notify/ticket phases (outbox empty, ticketDone=false).
 		for (const s of fleet) {
 			store.upsertSession(s);
 			store.forceStatus(s.execution_id, "failed", "2026-07-09 21:30:00", "x");
 		}
-		store.setServerLossEpisode(
-			"tmux-server-lost:1000",
-			fleet.map((s) => s.execution_id),
-		);
+		store.setServerLossEpisode("tmux-server-lost:1000", {
+			shape: "server_down",
+			claimed: fleet.map((s) => s.execution_id),
+			ticketDone: false,
+			notifiedLeads: [],
+			failedLeads: [],
+			notifyAttempts: {},
+		});
 		const coordinator = makeCoordinator({ sessions: [], probe: "unknown" });
 		await coordinator.check();
 		// The owed announcement fires from the ledger: ONE ticket + grouped
@@ -485,5 +499,123 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		const claimed = await coordinator.check();
 		expect(claimed.has("exec-1")).toBe(true);
 		expect(alerts[0]!.metadata?.tmuxServerLost?.migrated).toBe(0);
+	});
+
+	it("notify-then-ticket-crash: replay emits the ticket WITHOUT duplicate Lead notifications (Codex R5 MED-1)", async () => {
+		const fleet = incidentFleet();
+		for (const s of fleet) store.upsertSession(s);
+		let alertOk = false;
+		const make = () =>
+			new ServerLossCoordinator({
+				store,
+				probeServer: async () => "down",
+				targetGone: async () => true,
+				migrate: async (s, episode) => {
+					migrations.push({ execId: s.execution_id, episode });
+					store.forceStatus(
+						s.execution_id,
+						"failed",
+						"2026-07-09 21:30:00",
+						"x",
+					);
+					return true;
+				},
+				resolveLeadId: (s) => (s.summary as string) ?? null,
+				notifyLead: async (leadId, content) => {
+					notifications.push({ leadId, content });
+					return true;
+				},
+				alert: async (p) => {
+					if (!alertOk) throw new Error("notifier down");
+					alerts.push(p);
+					return { sent: true };
+				},
+				env: {} as NodeJS.ProcessEnv,
+				now: () => 1_720_000_000_000,
+				logger: () => {},
+			});
+		await make().check(); // notifications LAND, the ticket THROWS
+		expect(notifications).toHaveLength(3);
+		expect(alerts).toHaveLength(0);
+		// Restart replay (fresh coordinator): ticket re-emitted, but the per-Lead
+		// OUTBOX remembers all 3 were already delivered — no duplicates.
+		alertOk = true;
+		await make().check();
+		expect(alerts).toHaveLength(1);
+		expect(notifications).toHaveLength(3);
+		expect(alerts[0]!.metadata?.tmuxServerLost).toEqual({
+			casualties: 13,
+			migrated: 13,
+			leadsNotified: 3,
+			leadsFailed: 0,
+		});
+	});
+
+	it("extension delta is DURABLE: a crash between joining and delta delivery re-delivers from the outbox (Codex R5 HIGH)", async () => {
+		const fleet = incidentFleet().slice(0, 3); // tadashi ×3
+		let notifyOk = true;
+		const make = () =>
+			new ServerLossCoordinator({
+				store,
+				probeServer: async () => "down",
+				targetGone: async () => true,
+				migrate: async (s, episode) => {
+					migrations.push({ execId: s.execution_id, episode });
+					throw new Error("boom"); // keep everything pending (episode open)
+				},
+				resolveLeadId: (s) => (s.summary as string) ?? null,
+				notifyLead: async (leadId, content) => {
+					if (!notifyOk) throw new Error("discord down");
+					notifications.push({ leadId, content });
+					return true;
+				},
+				alert: async (p) => {
+					alerts.push(p);
+					return { sent: true };
+				},
+				env: {} as NodeJS.ProcessEnv,
+				now: () => 1_720_000_000_000,
+				logger: () => {},
+			});
+		for (const s of fleet) store.upsertSession(s);
+		await make().check(); // episode open: tadashi notified, ticket done
+		expect(notifications).toHaveLength(1);
+		// A NEW tadashi casualty joins; the "crash" lands right after the
+		// extension persists — the delta delivery FAILS this tick.
+		store.upsertSession(session(50, "tadashi"));
+		notifyOk = false;
+		await make().check(); // fresh process: joined durably, delivery failed
+		expect(notifications).toHaveLength(1);
+		// Next restart: the outbox still OWES tadashi — the delta re-delivers
+		// with the FULL updated casualty list, under the ONE original ticket.
+		notifyOk = true;
+		await make().check();
+		expect(notifications).toHaveLength(2);
+		const delta = notifications[1]!;
+		expect(delta.leadId).toBe("tadashi");
+		expect(delta.content).toContain("4 个 runner");
+		expect(delta.content).toContain("FLY-1050");
+		expect(alerts).toHaveLength(1);
+	});
+
+	it("replay preserves the loss SHAPE — a server_fresh episode keeps its body wording after restart (Codex R5 MED-2)", async () => {
+		const fleet = incidentFleet().slice(0, 3);
+		for (const s of fleet) {
+			store.upsertSession(s);
+			store.forceStatus(s.execution_id, "failed", "2026-07-09 21:30:00", "x");
+		}
+		store.setServerLossEpisode("tmux-server-lost:1000", {
+			shape: "server_fresh",
+			claimed: fleet.map((s) => s.execution_id),
+			ticketDone: false,
+			notifiedLeads: ["tadashi"], // already delivered pre-crash
+			failedLeads: [],
+			notifyAttempts: {},
+		});
+		const coordinator = makeCoordinator({ sessions: [], probe: "unknown" });
+		await coordinator.check();
+		expect(alerts).toHaveLength(1);
+		expect(alerts[0]!.body).toContain("重启"); // server_fresh wording survived
+		expect(notifications).toHaveLength(0); // outbox says tadashi is settled
 	});
 });
