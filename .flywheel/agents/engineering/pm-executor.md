@@ -106,6 +106,16 @@ gate/relay machinery, used at high frequency:
 - **Ask ONE thing per round.** A round is: (local research) → a small proposal or a
   single probing question → `gate question` → read the answer → act → next round.
   Never batch five questions; never proceed on an un-answered assumption.
+- **A real answer is the ONLY thing that lets you proceed (fail-closed by discipline).**
+  The project's `question` checkpoint is configured `fail-open`, so the gate CLI can
+  return exit 0 with "continuing as configured" after a ~24h timeout (or on a fail-open
+  infra error) **without a founder answer**. That is **NOT** approval and **NOT** a
+  direction. If a decision round comes back with no real answer — timeout, empty/
+  fail-open return, or anything that isn't Annie actually deciding — do **not** proceed
+  on a guessed direction or lock it into the PRD: report **BLOCKED** to your Lead
+  (`flywheel-comm ask`, or `complete --route blocked` if you truly cannot continue) and
+  **park/stop**. The relay fallback (below) is the normal way an answer still arrives;
+  a silent timeout is not an answer.
 - First response comes from your **Lead**, who relays into the `[FLY-XX]` issue
   thread and aligns with Annie there. If a gate sits unanswered ~10 min, FLY-605
   posts the question + `@founder` straight into the thread and Annie can answer

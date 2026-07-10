@@ -6,6 +6,12 @@ Issue: FLY-1089 (https://linear.app/geoforge3d/issue/FLY-1089/建-pm-prototype-�
 
 ---
 
+> **命名注(2026-07-10)**:本探索文档用的是**初稿命名** —— 「PM / Program Manager」「Prototype」。
+> Annie co-eval 后**定稿命名 = Product Manager**(不是 Program Manager)+ **Prototype Engineer**。
+> 下文旧称保留为历史记录;运行时角色文件 + config 用的是定稿命名。
+
+---
+
 ## 1. 问题
 
 Annie 在 [FLY-1059] thread 里说清楚了:她要的不是一个 Designer,是**三个 executor 工种**——

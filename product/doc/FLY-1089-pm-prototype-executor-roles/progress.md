@@ -1,13 +1,14 @@
 ---
 issue: FLY-1089
-phase: implement
-phaseCursor: 7/7
-updated: 2026-07-09T23:51:13.332Z
-nextStep: await Lead review OK -> open PR -> codex code review -> approve gate
+phase: ship
+phaseCursor: shipping
+updated: 2026-07-10
+nextStep: Codex code review post-rebase APPROVED -> report Lead (PR# + head sha) -> Lead head-verify + :cool ship
 chunks: []
 pointers: {}
 ---
 
 # FLY-1089 progress
-**phase**: implement (7/7)
-**next**: await Lead review OK -> open PR -> codex code review -> approve gate
+**phase**: ship (Annie GO'd)
+**state**: role files finalized (v4 co-eval) -> rebased onto main -> PR #536 (base main) -> Codex code review post-rebase (findings folded)
+**next**: report Lead (PR #536 + head sha + Codex verdict) -> Lead head-verify -> :cool ship (Annie pre-approved). Runner never self-ships.

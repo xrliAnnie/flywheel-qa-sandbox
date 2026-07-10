@@ -142,6 +142,14 @@ Get the prototype in front of Annie so she can **feel it**, not read a report ab
   Keep gate messages plain (no backticks — FLY-372; use 「」for literals). If a gate
   sits unanswered ~10 min, FLY-605 relays it + `@founder` into the `[FLY-XX]` thread —
   don't freeze, don't spam.
+- **A real feasibility answer is the ONLY thing that lets you reach a verdict
+  (fail-closed by discipline).** The project's `question` checkpoint is configured
+  `fail-open`, so the gate CLI can return exit 0 with "continuing as configured" after a
+  ~24h timeout (or a fail-open infra error) **with no founder answer**. That is **NOT** a
+  doable verdict and **NOT** a drop. If a decision / iterate gate comes back with no real
+  answer, do **not** declare 4a or 4b: report **BLOCKED** to your Lead
+  (`flywheel-comm ask`, or `complete --route blocked`) and **park/stop** until she
+  actually decides. A silent timeout is not「做得成」and not「drop」.
 
 ## Step 3.5 — iterate on founder feedback (具体怎么做 · the loop)
 
@@ -155,9 +163,28 @@ A prototype almost never lands on the first showing. When Annie looks at it and 
    not production-grade. Don't gold-plate on iteration either.
 3. **Show her again** (Step 3): fresh `proofshot` / hosted card, URL to the Lead, a new
    `gate question` scoped to what you changed.
-4. **Loop** 3 → 3.5 → 3 until ONE of two things happens:
+4. **Loop** 3 → 3.5 → 3 until ONE of THREE things happens:
    - she's **satisfied it's feasible** → go to Step 4a (doable), or
-   - she **explicitly says this path won't work** → go to Step 4b (drop).
+   - she **explicitly says this path won't work** → go to Step 4b (drop), or
+   - you **hit the iteration budget without converging** → the bounded escalation
+     below (do NOT silently keep looping, and do NOT force a verdict).
+
+**Bounded escalation (the mandatory third exit — no infinite loop, no false verdict).**
+Set an explicit budget up front (default: **~3 non-converging rounds**, or when the
+cheapest fix stops being cheap). When you hit it, do NOT keep looping and do NOT decide
+4a/4b yourself. Open ONE focused gate offering the founder a three-way choice:
+「再来一轮(我会把范围框死在 <X>)/ 换个假设重来 / 这条 drop」. Then:
+- she picks → act on it (another bounded round, a reframe back to Step 1, or 4b drop);
+- **no answer / gate times out / fail-open empty return → this is NOT approval and NOT
+  a drop verdict**: report **BLOCKED** to your Lead (`flywheel-comm complete --route
+  blocked` or `flywheel-comm ask`) with where it stalled, and **park/stop** — never
+  declare 4a or 4b off an un-answered gate.
+
+**Cost is not evidence of infeasibility.** "This iteration got expensive" means *stop
+and escalate for a decision* (the bounded gate above) — it does **not** by itself mean
+4b. 4b is only for an explicit founder drop, or the prototype actually failing the
+Step 1 success criterion. Don't conflate "I'm spending too much" with "it can't be
+done" and force a false drop.
 
 **This loop is symmetric with the Designer's loopable design gate (FLY-1059)**: both
 are「founder 看 → 不满意 → 再来一轮」. Designer loops on the *visual direction* until
@@ -165,10 +192,7 @@ she picks one; you loop on *feasibility* until she's convinced it's doable or ki
 Same回环 shape, different question.
 
 - **Don't force a verdict to end the loop.** "She hasn't said drop and isn't satisfied
-  yet" = keep iterating, not "call it doable to be done".
-- **But watch the cost.** Each iteration is still the *cheapest* fix — if you find
-  yourself building something big to satisfy her, the honest answer is probably 4b
-  (this isn't cheaply feasible), not another expensive round. Say so.
+  yet" = keep iterating (within budget), not "call it doable to be done".
 - Between rounds, keep the running note of what changed + why (it becomes the Step 4
   handoff or drop write-up).
 

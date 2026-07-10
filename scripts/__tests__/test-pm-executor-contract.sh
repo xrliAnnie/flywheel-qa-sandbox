@@ -10,8 +10,8 @@
 # designer-agent-dispatch.test.ts + AgentDispatcher.test.ts).
 #
 # FLY-1089 split the three creative work-types into three role files:
-#   - pm-executor.md          (Program Manager / product co-creation, ex-"Mode A")
-#   - prototype-executor.md   (feasibility-first prototype)
+#   - pm-executor.md          (Product Manager / product co-creation, ex-"Mode A")
+#   - prototype-executor.md   (Prototype Engineer / feasibility-first prototype)
 #   - product-designer-executor.md (docs / UX-spec / design-production only)
 # This guard defends: (1) each file stays under the 40k byte budget; (2) each role's
 # process semantics + required section headings survive; (3) Mode A did not leak back
@@ -99,6 +99,9 @@ assert_contains "$PM_MD" "One session"     "structural: one-session heading"
 assert_contains "$PM_MD" "founder门"        "structural: founder gate heading"
 assert_contains "$PM_MD" "build issue"     "structural: output = build issues"
 assert_contains "$PM_MD" "交工程"           "structural: handoff (交工程) heading"
+# ── founder gate is fail-closed by discipline (Codex R1 post-rebase #2) ──
+assert_contains "$PM_MD" "fail-closed by discipline" "no-answer gate => BLOCKED, don't proceed on a guess"
+assert_contains "$PM_MD" "BLOCKED"         "reports BLOCKED on an un-answered decision round"
 
 # ════════════════════════════════════════════════════════════════════════════
 # prototype-executor.md — feasibility-first (new, FLY-1089)
@@ -113,6 +116,14 @@ assert_contains "$PROTO_MD" "create-issue"   "handoff (4a doable): create-issue 
 assert_contains "$PROTO_MD" "proofshot"      "founder experience: proofshot"
 # ── boundary with designer must be explicit (Annie required it) ──
 assert_contains "$PROTO_MD" "Designer"       "explicit boundary vs the visual Designer role"
+# ── iterate loop (Annie's v3 ask) + its bounded exits (Codex R1 post-rebase #3) ──
+assert_contains "$PROTO_MD" "iterate"        "Annie's ask: founder-feedback iterate loop"
+assert_contains "$PROTO_MD" "Step 3.5"       "iterate loop is a real step (3.5) between show and verdict"
+assert_contains "$PROTO_MD" "Bounded escalation" "iterate loop has a bounded third exit (no infinite loop)"
+assert_contains "$PROTO_MD" "Cost is not evidence of infeasibility" "cost exhaustion != 4b (no false drop)"
+# ── founder gate is fail-closed by discipline (Codex R1 post-rebase #2) ──
+assert_contains "$PROTO_MD" "fail-closed by discipline" "no-answer gate => BLOCKED, not a verdict"
+assert_contains "$PROTO_MD" "BLOCKED"        "reports BLOCKED on an un-answered decision gate"
 # ── structural section headings ──
 assert_contains "$PROTO_MD" "One session"    "structural: one-session heading"
 assert_contains "$PROTO_MD" "founder门"       "structural: founder gate heading"

@@ -13,8 +13,13 @@ import { AgentDispatcher } from "../AgentDispatcher.js";
  * contract and catches drift the same way Blueprint's dispatch does. Mirrors the
  * FLY-1059 designer-agent-dispatch.test.ts shape.
  *
- * The whole point of the three-role split: label sets are pairwise disjoint, so
- * first-match dispatch is order-independent (see the disjointness test below).
+ * The three-role split makes each label owned by EXACTLY ONE agent (label sets are
+ * pairwise disjoint), so a SINGLE-label issue routes deterministically regardless of
+ * YAML order. This does NOT make a MULTI-label issue order-independent: an issue
+ * carrying two executor-family labels still first-matches by YAML order (see the
+ * multi-label test below, which documents that behavior). "Exactly one executor-family
+ * label per issue" is the operational precondition; true ambiguity rejection would be
+ * an engine follow-up, out of this config-only scope.
  */
 
 const REPO_ROOT = path.resolve(
@@ -134,7 +139,22 @@ describe("pm + prototype agent dispatch (FLY-1089, real .flywheel/config.yaml)",
 		expect(r.matchMethod).toBe("shipped-generic");
 	});
 
-	it("label sets are pairwise DISJOINT across all six agents — order-independent routing", () => {
+	it("a MULTI-label issue first-matches by YAML order (NOT order-independent — precondition: one executor-family label per issue)", () => {
+		// Two executor-family labels on one issue → whichever agent is earlier in the
+		// config's YAML order wins. This is the documented operational precondition
+		// ('one executor-family label per issue'), NOT a bug. Asserting the CURRENT
+		// behavior so a future edit that changes it is caught + reviewed.
+		const order = Object.keys(agents);
+		const r = dispatcher.dispatch({
+			issueLabels: ["pm", "prototype"],
+			owningDept: "product",
+		});
+		// pm is declared before prototype in .flywheel/config.yaml → pm wins.
+		expect(order.indexOf("pm")).toBeLessThan(order.indexOf("prototype"));
+		expect(r.agentName).toBe("pm");
+	});
+
+	it("label sets are pairwise DISJOINT — no single label owned by two agents (single-label routing is order-independent)", () => {
 		const named = Object.entries(agents).map(([name, cfg]) => ({
 			name,
 			labels: new Set((cfg.match?.labels ?? []).map((l) => l.toLowerCase())),

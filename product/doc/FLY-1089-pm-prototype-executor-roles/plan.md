@@ -6,6 +6,24 @@ Issue: FLY-1089 (https://linear.app/geoforge3d/issue/FLY-1089/建-pm-prototype-�
 
 ---
 
+> ## ⛳️ Post-ship 状态更新(2026-07-10 — 计划下方部分描述的是当时的中间态)
+> 计划里「叠在 FLY-1059 上、待 rebase」「新建 role-agent-dispatch.test.ts」等是**当时**的
+> 中间设计;实际落地状态如下(以此为准):
+> - **FLY-1059 已 merge 进 main;本分支已 rebase 回 main**(去掉 1059 commit,只留 1089 净
+>   改动),PR #536 base = `main`。下方 §1「叠在 1059 上、顺序 1059 先 ship」= 已完成。
+> - **dispatch 测试实际文件名 = `pm-prototype-agent-dispatch.test.ts`**(不是计划里写的
+>   `role-agent-dispatch.test.ts`,已全文改正)。
+> - **命名按 Annie co-eval 定稿**:PM = **Product Manager**(不是 Program Manager);
+>   Prototype = **Prototype Engineer**。下方旧称保留为历史。
+> - **Prototype 加了 Annie 要的 iterate 回环**(Step 3.5,founder-feedback→iterate→re-show,
+>   带 bounded escalation 第三出口 + fail-closed 语义;对称 Designer loopable gate)。
+> - **order-independence 收窄**:pairwise-disjoint 只保证「一 label 一 agent」→ 单 label
+>   路由确定;多-label issue 仍 first-match(YAML 顺序),前提「一 issue 一 executor-family
+>   label」,真 ambiguity 拒绝 = 引擎 follow-up(不在本 scope)。测试已加 multi-label 用例。
+> - Codex code review post-rebase(xhigh)已跑,4 条 findings 全折入。
+
+---
+
 ## 0. 一句话
 
 新建 `pm-executor.md`(把 FLY-880 的 Mode A 抽出来 + 按 v5 补 research/explainer/co-eval 两步)
@@ -29,7 +47,7 @@ Issue: FLY-1089 (https://linear.app/geoforge3d/issue/FLY-1089/建-pm-prototype-�
 | 5 | `scripts/__tests__/test-pm-executor-contract.sh` | **改**。从「PM 一个文件」扩成「三个 role 文件的契约」+ 结构性检查 |
 | 6 | `packages/edge-worker/src/__tests__/designer-agent-dispatch.test.ts` | **改**。修掉「pm/product → product-designer」这条已过时的断言 |
 | 7 | `packages/edge-worker/src/__tests__/AgentDispatcher.test.ts` | **改**(Codex R1#1 HIGH)。`:469-528` 的 FLY-901 双注册 fixture 仍写死 `product-designer` 含 `product`/`pm` 并断言其路由 —— 改成最终映射 |
-| 8 | `packages/edge-worker/src/__tests__/role-agent-dispatch.test.ts` | **新建**。跑真 ConfigLoader,断言六个 agent 的标签集两两不相交 + 全映射 |
+| 8 | `packages/edge-worker/src/__tests__/pm-prototype-agent-dispatch.test.ts` | **新建**。跑真 ConfigLoader,断言六个 agent 的标签集两两不相交 + 全映射 |
 | 9 | `scripts/qa-fly-901-real-config-dispatch-e2e.mjs` | **改**。双注册 E2E 补上 pm / prototype |
 | 10 | `.flywheel/agents/general-executor.md` | **改**(Codex R1#2 MED)。`:13` 的 manual-routing pointer:PM/product 共创指 `pm-executor`,不再笼统指 `product-designer` |
 | 11 | `.flywheel/agents/engineering/engineer-executor.md` | **改**(Codex R1#2 MED)。`:18` 「product/UX 探索 + design spec 归 product-designer」→ 拆清:产品共创/PRD 归 `pm`、可行性验证归 `prototype`、文档/设计 spec 才归 `product-designer` |
@@ -163,7 +181,7 @@ Annie 亲口拍的文字**不改写**。
 
 > 断言选的是**流程语义锚点**,删掉它们等于删掉契约 —— 而不是可以随手改的措辞。
 
-### 7.2 `packages/edge-worker/src/__tests__/role-agent-dispatch.test.ts`(新)
+### 7.2 `packages/edge-worker/src/__tests__/pm-prototype-agent-dispatch.test.ts`(新)
 
 跑**真** `ConfigLoader` + 真 `.flywheel/config.yaml`(照 FLY-1059 的 `designer-agent-dispatch.test.ts` 形态):
 
@@ -204,7 +222,7 @@ FLY-901 双注册 E2E:把 `pm` / `prototype` 加进被验证的 agent 列表。
 - `pnpm lint`(全仓,push 前必跑)
 - `pnpm --filter flywheel-edge-worker --filter flywheel-config test:run`
 - 开发中针对性跑新/改的 dispatch 测试:`pnpm --filter flywheel-edge-worker exec vitest run
-  src/__tests__/role-agent-dispatch.test.ts src/__tests__/designer-agent-dispatch.test.ts
+  src/__tests__/pm-prototype-agent-dispatch.test.ts src/__tests__/designer-agent-dispatch.test.ts
   src/__tests__/AgentDispatcher.test.ts`
 - `bash scripts/__tests__/test-pm-executor-contract.sh`
 - `node scripts/qa-fly-901-real-config-dispatch-e2e.mjs`
@@ -276,7 +294,7 @@ label 重划部署 / reload 后,已打开的、带 `product` / `pm` 标签的 is
 
 可以、也**必须**先写测试的是**路由**这一半:
 
-1. **RED**:先写 7.2 的 `role-agent-dispatch.test.ts`(断言 `pm` / `prototype` 存在并路由正确)
+1. **RED**:先写 7.2 的 `pm-prototype-agent-dispatch.test.ts`(断言 `pm` / `prototype` 存在并路由正确)
    → 此时 config.yaml 还没改,测试**必须失败**;
 2. **GREEN**:改 `.flywheel/config.yaml` → 测试转绿;
 3. 守卫脚本(7.1)同理:先加断言(RED,因为文件还不存在)→ 再写 role .md(GREEN)。
