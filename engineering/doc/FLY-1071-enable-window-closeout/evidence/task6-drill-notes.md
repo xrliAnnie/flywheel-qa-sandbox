@@ -1,7 +1,7 @@
 # FLY-1071 演练结论(runbook 步6 ①)— 2026-07-09 17:45
 
 root 帖:msg 1524938174600712342(#flywheel-alerts),eventId fly1071-drill-96875-951740881737291
-脚本:task6-drill-fire.mjs(preflight 三门全过后发射;运行 log = task6-drill-run.log)
+脚本:task6-drill-fire.mjs(preflight 三门全过后发射;运行 log = task6-drill-run.txt)
 
 ## 五点验证
 
