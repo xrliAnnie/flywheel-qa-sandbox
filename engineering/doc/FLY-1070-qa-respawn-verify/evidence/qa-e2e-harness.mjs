@@ -93,6 +93,14 @@ const makeConfig = () => ({
 /** One fully-isolated environment per scenario. */
 async function makeEnv(opts = {}) {
   const envDir = mkdtempSync(join(tmpdir(), "qa1070-e2e-"));
+  // HOME isolation (hermetic terminate path, codex code review R1 MEDIUM) —
+  // lookupTmuxTarget / deleteCommDbSession resolve join(homedir(), ".flywheel",
+  // "comm", ...) at call time and do NOT honor FLYWHEEL_COMM_DIR; redirecting
+  // HOME for the scenario's lifetime guarantees a re-run can never see (kill /
+  // delete) production ~/.flywheel state even on a project/exec name collision.
+  // Restored in cleanup().
+  const savedHome = process.env.HOME;
+  process.env.HOME = envDir;
   // FLYWHEEL_COMM_DIR isolation — the code under test (lookupTmuxTarget,
   // hasGateResponse) resolves through commDbPathForProject at call time.
   process.env.FLYWHEEL_COMM_DIR = join(envDir, "comm");
@@ -280,6 +288,7 @@ async function makeEnv(opts = {}) {
     store.close();
     rmSync(envDir, { recursive: true, force: true });
     delete process.env.FLYWHEEL_COMM_DIR;
+    process.env.HOME = savedHome;
   };
   return {
     store, orch, holder, sink, calls, logs, warns, commDbPath,

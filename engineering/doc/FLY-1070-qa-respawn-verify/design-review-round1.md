@@ -1,6 +1,8 @@
-# Design Review — FLY-1070 plan.md (Round 1)
+# FLY-1070 替身 QA 设计评审 Round 1 — 评审记录
+Issue: FLY-1070 (URL 不可得,只写 issue 号)
+日期: 2026-07-09
+基于: plan.md
 
-Date: 2026-07-09
 Author: Codex
 Status: CHANGES REQUESTED
 

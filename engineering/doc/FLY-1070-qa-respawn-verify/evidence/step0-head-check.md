@@ -1,6 +1,9 @@
-# Step 0 — 环境准备与 head 校验
+# FLY-1070 Step 0 环境准备与 head 校验 — 证据记录
+Issue: FLY-1070 (URL 不可得,只写 issue 号)
+日期: 2026-07-09
+基于: plan.md
 
-日期: 2026-07-09 15:26 PT (QA session runner-3f8f8424, exec 3f8f8424-c487-43d9-a63a-fb398a886114)
+记录时间: 2026-07-09 15:26 PT (QA session runner-3f8f8424, exec 3f8f8424-c487-43d9-a63a-fb398a886114)
 
 ## Head 校验
 
