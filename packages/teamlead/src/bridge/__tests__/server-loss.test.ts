@@ -4,7 +4,7 @@
  * 3 Leads / 13 runners), boot fresh-server aggregation, and honest
  * needs_human evidence when a Lead notification fails.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { AlertPayload, AlertResult } from "../../LeadAlertNotifier.js";
 import type { Session, StateStore } from "../../StateStore.js";
 import { StateStore as RealStateStore } from "../../StateStore.js";
