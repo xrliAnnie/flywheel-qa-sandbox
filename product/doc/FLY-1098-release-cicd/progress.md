@@ -1,16 +1,15 @@
 ---
 issue: FLY-1098
 phase: design
-phaseCursor: 3/3
-updated: 2026-07-10T05:31:21.641Z
-nextStep: "round-3 (3adac41f) QA-passed by HL + posted to Annie (2 CSS diagrams
-  present; both browsers offline so render caveat flagged to Annie). Parked:
-  await Annie round-3 annotations via HL relay (teammate-msg + Monitor
-  blzpszwtd). Round-4 = fold her annotations; if she flags diagram render, fix."
+phaseCursor: 4/4
+updated: 2026-07-10T15:50:39.542Z
+nextStep: round-4 (480dd946) delivered — concrete mechanisms + owner labels +
+  real R2/release-train research + folded Annie round-3 decisions. Deprecate v4
+  3adac41f. Await HL QA + Annie round-4 annotations.
 chunks: []
 pointers: {}
 ---
 
 # FLY-1098 progress
-**phase**: design (3/3)
-**next**: round-3 (3adac41f) QA-passed by HL + posted to Annie (2 CSS diagrams present; both browsers offline so render caveat flagged to Annie). Parked: await Annie round-3 annotations via HL relay (teammate-msg + Monitor blzpszwtd). Round-4 = fold her annotations; if she flags diagram render, fix.
+**phase**: design (4/4)
+**next**: round-4 (480dd946) delivered — concrete mechanisms + owner labels + real R2/release-train research + folded Annie round-3 decisions. Deprecate v4 3adac41f. Await HL QA + Annie round-4 annotations.
