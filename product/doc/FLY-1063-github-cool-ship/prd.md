@@ -146,7 +146,9 @@ gh api repos/xrliAnnie/flywheel/branches/main/protection
 
 > **REQ-2a（必须，诚实边界，Codex R1 MED-5）**：M1 关掉的是**「用 gh token 发 :cool: 绕过账本」**这条路和角色混淆，**不是**「同机恶意进程直接改账本 / 直接 push main」。`verify-approval` 源码自陈：`comm.db`/`teamlead.db` **不是进程级完整性边界**（`verify-approval.ts:35-42`）；同机有写权限的进程可以伪造可信来源。PRD 不夸大 M1 的防护面。→ 交 eng 的前置检查：账本 DB 文件权限、self-hosted runner 跑在哪个用户下、FLY-175 `DECISION_MODE` 是否 `enforce`。
 >
-> **REQ-2b（建议，Codex R1 MED-3）**：Bridge 侧 finalization 用的不是裸 `verifyApproval`，而是 `evaluateShipEligibility`（= 合并批准侧 `verifyApproval` + QA 侧 `evaluateQaShipGate`，`ship-eligibility.ts`），再经 `computeShipDecision` / `merge-ship-gate.ts` 决定能否落终态。GitHub 侧的 gate **应对齐同一个 `evaluateShipEligibility` 谓词**，避免「GitHub 放行了、Bridge 却判不该 ship」的分叉。若刻意只覆盖「Discord 批准 + Codex」而把 QA 留给独立 job，需**显式写明**并证明「approval 不可能在 QA-required 状态满足前被写入」。
+> **REQ-2b（必须 —— 对齐谓词，且必须跑在「无 bypass」的 strict 姿态，Codex R1 MED-3 + R2 MED）**：Bridge 侧 finalization 用的不是裸 `verifyApproval`，而是 `evaluateShipEligibility`（= 合并批准侧 `verifyApproval` + QA 侧 `evaluateQaShipGate`，`ship-eligibility.ts`），再经 `computeShipDecision` / `merge-ship-gate.ts` 决定能否落终态。GitHub 侧的 gate **应对齐同一个 `evaluateShipEligibility` 谓词**，避免「GitHub 放行了、Bridge 却判不该 ship」的分叉。若刻意只覆盖「Discord 批准 + Codex」而把 QA 留给独立 job，需**显式写明**并证明「approval 不可能在 QA-required 状态满足前被写入」。
+>
+> **关键（否则 REQ-1 的「机械保证」是空的）**：这个谓词自带 bypass 开关 —— `FLYWHEEL_MERGE_APPROVAL_GATE=0` 会**整个跳过** `verifyApproval`（`ship-eligibility.ts:239`）；即便执行，`FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0` **或 founder id 解析不到**时，Lead 自己写的 approval 也能通过（`verify-approval.ts:320`）。所以 GitHub gate **不能**照搬谓词的默认姿态，**必须把这三种状态一律判为 fail-closed（不 merge）**：① merge-approval 闸关闭 ② founder-attribution 闸关闭 ③ founder id 不可解析。即要么用一个不认这些 bypass 的 strict 模式，要么在 gate 里显式前置断言这三项都「开且可解析」。不这么做，「Discord founder 授权 = 机械保证」在生产任一 bypass 打开时就不成立。
 
 > **REQ-3（应做，Codex code R1 HIGH — 我原来写得不够）**：给 `main` 上真正管得住 admin 的保护。**两点都要，缺一不可**：
 > 1. **拿到可用的 branch protection**：个人账号私有仓的 branch protection 需 **GitHub Pro**（Free 不行）；**注意 Free org 一样没有** —— org 私有仓的 branch protection 需 **Team / Enterprise**。所以「转 Free org」并不能解决，必须是「个人 Pro」或「Team+ org」。
@@ -254,7 +256,7 @@ Annie 决定**现在不做**，先用她自己的 GitHub 账号。但必须列�
 
 1. **[P0] `cool-ship-gate` resolver + 可信 gate helper（REQ-1a/1b）** —— 输入 `(repo, PR#, headSha)` → repo→project 映射 → StateStore 选唯一匹配 session → 用显式 `execId`+CommDB+StateStore 调账本判定；**只跑 main 侧可信代码**，绝不跑 PR head。0/多匹配 fail-closed。
 2. **[P0] 🆒 flow 去核账本 + 阻断合并（REQ-1/REQ-2）** —— self-hosted `ledger_gate` job 调 #1 的 helper；merge job `needs: [ledger_gate, ci_gate]`（PR-head 的 build/test 留 `ubuntu-latest`）；失败在 PR 留言。**按 §4.6 次序上线**（先 observe/report-only 一轮再阻断）。
-3. **[P0] 对齐 `evaluateShipEligibility` 谓词（REQ-2b）** —— gate 用与 Bridge finalization 同一谓词，或显式写明只覆盖 Discord+Codex 并证明 QA 不可被提前满足。
+3. **[P0] 对齐 `evaluateShipEligibility` 谓词 + 跑 strict 无-bypass 姿态（REQ-2b）** —— gate 用与 Bridge finalization 同一谓词；**且必须把「merge-approval 闸关 / attribution 闸关 / founder id 不可解析」三态一律判 fail-closed**（否则 REQ-1 的机械保证在任一 bypass 打开时就空了）。或显式写明只覆盖 Discord+Codex 并证明 QA 不可被提前满足。
 4. **[P0] 销账做成 🆒 flow 一等步骤（REQ-4/REQ-5）** —— Linear / Bridge landing / GitHub 三本账推终态，幂等 + 失败可见。
 5. **[P1] branch protection + 账本完整性前置（REQ-3/REQ-2a）** —— 给 main 上锁：**个人 Pro**（或 Team+ org，Free org 无效）**且**开 `enforce_admins`/「Do not allow bypassing」（否则 admin xrliAnnie 直接绕过）；再核账本 DB 文件权限、runner 用户、FLY-175 `DECISION_MODE` 姿态。
 6. **[P1] 抽 reusable workflow + 瘦 caller** —— 恒定形状集中一份，gate 作为可注入 job；轻 repo 声明空 gate。
