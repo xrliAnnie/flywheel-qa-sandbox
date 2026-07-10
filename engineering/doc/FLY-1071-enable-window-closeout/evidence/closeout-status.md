@@ -15,25 +15,26 @@
 | Task 5.1-5.3 Send 收紧操作卡 | ✅ 已交付 | task5-send-tighten-card.md;Tadashi 已 relay Annie(手机可操作) |
 | Task 6.1 演练脚本 | ✅ 备好未跑 | task6-drill-fire.mjs(preflight 三道门:env 指针 / routing+tickets / owner 等效渲染必须恰好=claw);运行被 W4 前置门挡住 |
 
-## 递延项(Tadashi 裁定:W4 今晚不强推,排到 Annie 下次在机器前的裸终端窗口)
+## 递延项最终状态(当晚全部收回:Annie 在机器窗口跑了 stop/start,W4 当晚修复)
 
-W4(codex-infra-bot-lead)stop/start 需 launchctl,FLY-913 护栏对 runner 和 Lead 一视同仁地拦,
-护栏指定路径 =「由人工在裸终端处理」→ 归 Annie。W5 已活着处理工单,W4 挂着不阻塞关键路径。
+原「W4 今晚不强推」裁定在 Annie 回到机器前有效;她在场后 Tadashi relay,当晚完成全链:
 
-| 项 | 前置 | 现成执行物 |
+| 项 | 最终状态 | 证据 |
 |---|---|---|
-| Task 2 W4 fresh login | Annie 跑 handoff stop | task2-w4-launchctl-handoff.sh(stop/start 两步);login 顺序纪律见 plan Task 2 |
-| Task 3.1 W4 verify-windowed-lead | Task 2 | 命令在 plan Task 3.1(5 层只读,期望 5/5 PASS) |
-| Task 4.3 探针③(@Codex 不串) | Task 2 | **TODO 待 W4 修复后跑**:同探针①的加固 curl 模式,content 带 <@1523219324561522831>;判据 = W5 pane 无处理 + W4 pane 出现 inbound(一帖双侧) |
-| Task 6.2-6.4 演练运行 | Task 2 + 探针③ | bash -c 'set -a; source ~/.flywheel/.env; set +a; node task6-drill-fire.mjs'(脚本自带拒发门);五点验证 + 硬证据边界见 plan 6.2/6.3 |
-| Task 5.4 收紧后回归探活 | Annie 完成 Send 收紧(Tadashi 会通知) | 同探针①格式,标「收紧后回归 可删」;dispatcher 200 + claw 正常收 |
+| Task 2 W4 fresh login + 拉起 | ✅ 当晚完成 | Annie 裸终端跑 handoff stop/start;孤儿 broker 55843 已清;fresh OAuth(不碰池);config gate PASSED、零 401、10min 单次启动;task2-w4-recovered-log.txt |
+| Task 3.1 W4 verify-windowed-lead | ✅ 5/5 PASS | task3-w4-verify.txt |
+| Task 4.3 探针③ | ✅ 双侧过 | W4 pane 19s 收 inbound 并回帖;W5 pane 162s 零痕迹;task4-probe3-* |
+| Task 6 演练 | ✅ 已跑(①②③⑤ 过;④ 唤醒/claim 过、频道 ACK 挖出 2 个真实缺陷) | task6-drill-notes.md(缺陷:reply routing guard 不可用 + Alerts 帖未入 claw flywheel-inbox) |
+
+**仍移交观察日/后续**:Task 5.4 收紧后回归探活(等 Annie 完成 Send 收紧,Tadashi 通知后跑);
+观察日清单(父单 runbook 步 9,归 QA/Tadashi);演练④暴露的 2 个缺陷(交 Tadashi 记 follow-up)。
 
 ## 只报不修(Tadashi 各记 follow-up,plan 已批边界)
 
 1. codex-infra 的 alertChannel=1523499324573749249(私有频道)与 C6 §4「应指统一 Alerts」偏差(FLY-871 家族遗留);
 2. FLY-513:全局 codex symlink 解析进 ~/.codex-infra-bot,updater churn 风险(wrapper 每轮 WARN,含 ln -sfn 修复指引)。
 
-## 本 PR 为何现在开(不等 W4)
+## 本 PR 为何当时开(写于 W4 递延时点;后 W4 当晚收回,上表为准)
 
 W5 修复的 durable 落点 = 本分支 identity.md 随 PR merge → 生产 git pull。在 merge 前,修复只存在于
 手补的 ~/.claude/agents/ 副本;wrapper 进程一旦重启(launchd 重拉)会用生产 main 的**旧源**覆盖手补,
