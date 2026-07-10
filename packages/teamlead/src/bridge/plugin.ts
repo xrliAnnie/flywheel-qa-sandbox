@@ -6190,6 +6190,10 @@ export async function startBridge(
 		listLeadIds: () => [...leadProjectByAgentId.keys()],
 		probeBots: probeInfraBots,
 		scanZombies: scanZombiesWired,
+		// Codex R2 HIGH: a server-loss episode with unmigrated casualties must
+		// never read as recovered — the probe consults the live coordinator.
+		serverLossPending: () =>
+			serverLossHolder.current?.hasPendingMigrations() ?? false,
 	});
 	serverLossHolder.current = new ServerLossCoordinator({
 		store,

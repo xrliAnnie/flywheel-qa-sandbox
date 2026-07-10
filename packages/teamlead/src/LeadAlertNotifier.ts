@@ -273,6 +273,9 @@ export interface AlertMetadata {
 	 * delivered) and for the QA chain.
 	 */
 	tmuxServerLost?: {
+		/** Total casualties in the episode (Codex R2: migrated<casualties ⇒
+		 * the remediation is INCOMPLETE — must not read as attempted/recovered). */
+		casualties: number;
 		/** Runners migrated to their terminal state by the coordinator. */
 		migrated: number;
 		/** Leads whose grouped casualty notification was delivered. */

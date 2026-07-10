@@ -109,42 +109,6 @@ if [[ -f "$BRIDGE_PORT_LIB" ]]; then
 
   PREFLIGHT_ACTION="$(bp_launcher_preflight "$BRIDGE_PORT" "$BRIDGE_URL" "$START_MARKER")"
 
-  # ── FLY-1082 (Task 2.4): dirty-exit marker page — the Bridge-INDEPENDENT
-  # fast path. A "running" marker here means the previous Bridge died without
-  # a clean shutdown (the 2026-07-09 fatal-exit shape). READ-ONLY: the booting
-  # Bridge latches + rewrites the marker itself. FAIL-OPEN throughout — this
-  # block must never stop the Bridge from starting (alerting aid, not a gate).
-  # Codex R1 MEDIUM-1: runs AFTER the preflight and ONLY on the "bind" verdict
-  # — a duplicate start against a HEALTHY Bridge (already-healthy) would
-  # otherwise read the live instance's own `running` marker as a death.
-  if [[ "$PREFLIGHT_ACTION" != "already-healthy" ]]; then
-    BRIDGE_RUN_MARKER="${FLYWHEEL_BRIDGE_MARKER:-${STATE_DIR}/bridge-running-marker.json}"
-    DIRTY_STREAK_MARKER="${STATE_DIR}/bridge-dirty-exits"
-    DIRTY_VERDICT="$(bp_check_dirty_marker "$BRIDGE_RUN_MARKER" || echo none)"
-    if [[ "$DIRTY_VERDICT" == dirty\ * ]]; then
-      read -r _ PREV_PID PREV_BOOT_TS <<<"$DIRTY_VERDICT"
-      EPISODE_SIG="bridge-abnormal-exit:${PREV_PID}:${PREV_BOOT_TS}"
-      # Crash-loop streak: >=3 dirty boots inside 10 min upgrades the copy —
-      # launchd is respawning into repeated deaths, a human should look now.
-      if bp_record_dirty_and_check_streak "$DIRTY_STREAK_MARKER" 600 3; then
-        DIRTY_TITLE="Bridge 非正常退出（已由 launchd 复活）"
-        DIRTY_BODY="上一个 Bridge (PID ${PREV_PID}, boot ${PREV_BOOT_TS}) 没有走 clean shutdown 就死了。本次启动即复活;复活后的 Bridge 会开生命周期工单对账（episode ${EPISODE_SIG}）。"
-      else
-        DIRTY_TITLE="Bridge crash-loop（10 分钟内 ≥3 次非正常退出）"
-        DIRTY_BODY="Bridge 反复非正常退出后被 launchd 复活（最近一枚 dirty marker: PID ${PREV_PID}, boot ${PREV_BOOT_TS}, episode ${EPISODE_SIG}）。需要人看 /tmp/flywheel-bridge.log + 机器内存水位。"
-      fi
-      # The page id is the WRAPPER leg's own dedup identity — deliberately
-      # distinct from the boot ticket id (shared episode signature correlates
-      # them; identical ids would let claims.db swallow the later leg).
-      "${FLYWHEEL_DIR}/scripts/lead-alert.sh" \
-        --project flywheel --lead bridge \
-        --kind bridge_abnormal_exit --severity severe \
-        --title "$DIRTY_TITLE" --body "$DIRTY_BODY" \
-        --signature "bridge-abnormal-exit-page:${PREV_PID}:${PREV_BOOT_TS}" \
-        >/dev/null 2>&1 || log "dirty-marker page failed (non-fatal; boot ticket leg remains)"
-    fi
-  fi
-
   case "$PREFLIGHT_ACTION" in
     already-healthy)
       log "Healthy Bridge already serving :${BRIDGE_PORT} — exit 0 (double-start guard)."
@@ -180,6 +144,46 @@ fi
 mkdir -p "$(dirname "$PID_FILE")"
 echo $$ > "$PID_FILE"
 trap 'rm -f "$PID_FILE"' EXIT
+
+# ── FLY-1082 (Task 2.4): dirty-exit marker page — the Bridge-INDEPENDENT
+# fast path. A "running" marker here means the previous Bridge died without a
+# clean shutdown (the 2026-07-09 fatal-exit shape). READ-ONLY: the booting
+# Bridge latches + rewrites the marker itself. FAIL-OPEN throughout — this
+# block must never stop the Bridge from starting (alerting aid, not a gate).
+# Placement (Codex R1 MED-1 + R2 MED-4): AFTER the port preflight AND the PID
+# lock, and ONLY on the "bind" verdict — a duplicate start against a healthy
+# Bridge (already-healthy verdict OR a live pre-bind peer holding the PID
+# lock) exits above and never reads the live instance's own `running` marker
+# as a death; a "stuck" verdict is not a respawn either (its own fail-loud
+# already fired) so it must not claim "已由 launchd 复活".
+if type bp_check_dirty_marker >/dev/null 2>&1 \
+   && [[ "${PREFLIGHT_ACTION:-}" == "bind" ]]; then
+  BRIDGE_RUN_MARKER="${FLYWHEEL_BRIDGE_MARKER:-${STATE_DIR}/bridge-running-marker.json}"
+  DIRTY_STREAK_MARKER="${STATE_DIR}/bridge-dirty-exits"
+  DIRTY_VERDICT="$(bp_check_dirty_marker "$BRIDGE_RUN_MARKER" || echo none)"
+  if [[ "$DIRTY_VERDICT" == dirty\ * ]]; then
+    read -r _ PREV_PID PREV_BOOT_TS <<<"$DIRTY_VERDICT"
+    EPISODE_SIG="bridge-abnormal-exit:${PREV_PID}:${PREV_BOOT_TS}"
+    # Crash-loop streak: >=3 dirty boots inside 10 min upgrades the copy —
+    # launchd is respawning into repeated deaths, a human should look now.
+    if bp_record_dirty_and_check_streak "$DIRTY_STREAK_MARKER" 600 3; then
+      DIRTY_TITLE="Bridge 非正常退出（已由 launchd 复活）"
+      DIRTY_BODY="上一个 Bridge (PID ${PREV_PID}, boot ${PREV_BOOT_TS}) 没有走 clean shutdown 就死了。本次启动即复活;复活后的 Bridge 会开生命周期工单对账（episode ${EPISODE_SIG}）。"
+    else
+      DIRTY_TITLE="Bridge crash-loop（10 分钟内 ≥3 次非正常退出）"
+      DIRTY_BODY="Bridge 反复非正常退出后被 launchd 复活（最近一枚 dirty marker: PID ${PREV_PID}, boot ${PREV_BOOT_TS}, episode ${EPISODE_SIG}）。需要人看 /tmp/flywheel-bridge.log + 机器内存水位。"
+    fi
+    # The page id is the WRAPPER leg's own dedup identity — deliberately
+    # distinct from the boot ticket id (shared episode signature correlates
+    # them; identical ids would let claims.db swallow the later leg).
+    "${FLYWHEEL_DIR}/scripts/lead-alert.sh" \
+      --project flywheel --lead bridge \
+      --kind bridge_abnormal_exit --severity severe \
+      --title "$DIRTY_TITLE" --body "$DIRTY_BODY" \
+      --signature "bridge-abnormal-exit-page:${PREV_PID}:${PREV_BOOT_TS}" \
+      >/dev/null 2>&1 || log "dirty-marker page failed (non-fatal; boot ticket leg remains)"
+  fi
+fi
 
 cd "$FLYWHEEL_DIR"
 log "Starting Bridge (TEAMLEAD_CHAT_THREADS_ENABLED=${TEAMLEAD_CHAT_THREADS_ENABLED:-unset})"

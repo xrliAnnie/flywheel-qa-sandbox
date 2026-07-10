@@ -209,6 +209,16 @@ export class AutoRepairBot {
 							"tmux server 丢失但缺少协调器摘要（迁移/通知证据缺失）— 需要人工核对 runner 状态。",
 					};
 				}
+				// Codex R2 HIGH: an INCOMPLETE migration must never read as
+				// attempted — the recovery probe would quietly resolve the ticket
+				// while the failed sessions loop silently with no T2 escalation.
+				if (m.migrated < m.casualties) {
+					return {
+						outcome: "needs_human",
+						action: "none",
+						detail: `${m.casualties} 个阵亡 runner 只成功迁移了 ${m.migrated} 个（其余在静默重试）— 需要你看一眼卡住的 session 迁移。`,
+					};
+				}
 				if (m.leadsFailed > 0) {
 					return {
 						outcome: "needs_human",

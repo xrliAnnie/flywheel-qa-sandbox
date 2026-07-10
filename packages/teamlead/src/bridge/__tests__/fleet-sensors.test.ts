@@ -296,6 +296,63 @@ describe("FleetSensors — infra bot (Task 2.5)", () => {
 		expect(blind.outcome).toBe("needs_human"); // refuses to restart blind
 	});
 
+	it("restart safety: a still-dead bot with an ACTIVE durable ticket re-latches instead of re-alerting (Codex R2)", async () => {
+		probes = [
+			{
+				provider: "claude",
+				alive: false,
+				jobLabel: "com.flywheel.claw-infra",
+				probeSource: "launchctl print",
+			},
+		];
+		const first = makeSensors();
+		await first.tick();
+		expect(alerts).toHaveLength(1);
+		store.openAlertThread({
+			correlationKey: "machine|infra-bot:claude|infra_bot_down|",
+			eventId: alerts[0]!.eventId,
+			threadId: "t-bot",
+			channelId: "c",
+			leadId: "infra-bot:claude",
+			projectName: "machine",
+			eventType: "infra_bot_down",
+			ticketStatus: "REPAIRING",
+		});
+		const postRestart = makeSensors(); // fresh in-memory latch
+		await postRestart.tick();
+		expect(alerts).toHaveLength(1); // no duplicate episode
+	});
+
+	it("T2 retry payload without metadata falls back to the env jobLabel (Codex R2 MED-3)", async () => {
+		const kicked: string[] = [];
+		const sensors = new FleetSensors({
+			store,
+			alert: async () => ({ sent: true }),
+			readSwap: async () => null,
+			kickstart: async (label) => {
+				kicked.push(label);
+				return { ok: true };
+			},
+			env: {
+				FLYWHEEL_CLAUDE_INFRA_BOT_JOB: "com.flywheel.claw-infra",
+			} as unknown as NodeJS.ProcessEnv,
+			now: () => 1_720_000_000_000,
+			logger: () => {},
+		});
+		// The Hub's reconcile retry reconstructs a MINIMAL payload — no metadata.
+		const result = await sensors.infraBotKickstartRepair({
+			leadId: "infra-bot:claude",
+			projectName: "machine",
+			eventId: "e",
+			eventType: "infra_bot_down",
+			title: "t",
+			body: "b",
+			severity: "severe",
+		});
+		expect(result.outcome).toBe("attempted");
+		expect(kicked).toEqual(["com.flywheel.claw-infra"]);
+	});
+
 	it("recoveryProbe: bot resolves by the latest probe verdict (per provider)", async () => {
 		const sensors = makeSensors();
 		probes = [
@@ -404,6 +461,12 @@ describe("FleetSensors — zombie scan (Task 2.6)", () => {
 		});
 		now += 16 * 60_000;
 		await sensors.tick(); // same batch + active ticket → silent
+		expect(alerts).toHaveLength(1);
+		// Codex R2 (restart safety): the dedup rides the DURABLE ticket row —
+		// a fresh post-restart sensor instance stays silent too.
+		const postRestart = makeSensors();
+		now += 16 * 60_000;
+		await postRestart.tick();
 		expect(alerts).toHaveLength(1);
 		findings = [...findings, zombie(4)];
 		now += 16 * 60_000;

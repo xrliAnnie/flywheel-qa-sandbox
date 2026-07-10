@@ -90,6 +90,20 @@ export class ServerLossCoordinator {
 	 * migrated this cycle — HeartbeatService feeds them into the orphan
 	 * suppression set so crash-reaper/reapOrphans never double-migrate.
 	 */
+	/**
+	 * Codex R2 HIGH: does the active episode still have UNMIGRATED casualties?
+	 * The Hub recovery probe consults this — an episode with pending
+	 * migrations must never read as recovered (quiet resolve would strand the
+	 * failed sessions in a silent retry loop with no T2 escalation).
+	 */
+	hasPendingMigrations(): boolean {
+		if (!this.activeEpisode) return false;
+		const claimed = this.activeEpisode.claimed;
+		return this.deps.store
+			.getRunningSessions()
+			.some((s) => claimed.has(s.execution_id));
+	}
+
 	async check(): Promise<ReadonlySet<string>> {
 		const wasFirst = this.firstCheck;
 		this.firstCheck = false;
@@ -109,6 +123,27 @@ export class ServerLossCoordinator {
 		if (running.length === 0) return new Set();
 
 		const probe = await this.deps.probeServer();
+
+		// Codex R2 MEDIUM-2 (restart safety): the in-memory latch dies with the
+		// Bridge, but the episode's TICKET row is durable. A fresh coordinator
+		// finding a still-ACTIVE tmux_server_lost ticket ADOPTS that episode
+		// (its event_id IS the episode signature) instead of declaring a brand
+		// new loss — no duplicate ticket, no re-notified Leads after a restart
+		// mid-partial-migration.
+		if (!this.activeEpisode && probe !== "up") {
+			const activeTicket = this.deps.store.getActiveAlertThread(
+				`${FLEET_ALERT_PROJECT}|tmux-server|tmux_server_lost|`,
+			);
+			if (activeTicket?.event_id.startsWith("tmux-server-lost:")) {
+				this.activeEpisode = {
+					signature: activeTicket.event_id,
+					claimed: new Set(running.map((s) => s.execution_id)),
+				};
+				this.log(
+					`adopted durable episode ${activeTicket.event_id} after restart (${running.length} pending)`,
+				);
+			}
+		}
 
 		// Ongoing episode: retry ONLY the pending migrations quietly — no new
 		// episode signature, no new fleet ticket, no re-notification (HIGH-2).
@@ -233,7 +268,12 @@ export class ServerLossCoordinator {
 			}。已成组迁移 ${migrated}/${casualties.length} 到终态,并按 Lead 分组通知（各自阵亡清单 + resume 指针）。respawn 由各 Lead 驱动。`,
 			severity: "severe",
 			metadata: {
-				tmuxServerLost: { migrated, leadsNotified, leadsFailed },
+				tmuxServerLost: {
+					casualties: casualties.length,
+					migrated,
+					leadsNotified,
+					leadsFailed,
+				},
 			},
 		});
 

@@ -102,6 +102,7 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		expect(alerts[0]!.eventType).toBe("tmux_server_lost");
 		expect(alerts[0]!.projectName).toBe("machine");
 		expect(alerts[0]!.metadata?.tmuxServerLost).toEqual({
+			casualties: 13,
 			migrated: 13,
 			leadsNotified: 3,
 			leadsFailed: 0,
@@ -139,6 +140,7 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		});
 		await coordinator.check();
 		expect(alerts[0]!.metadata?.tmuxServerLost).toEqual({
+			casualties: 13,
 			migrated: 13,
 			leadsNotified: 2,
 			leadsFailed: 1,
@@ -258,6 +260,70 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		const third = await coordinator.check();
 		expect(third.size).toBe(0);
 		expect(alerts).toHaveLength(1);
+	});
+
+	it("metadata carries the casualty total; hasPendingMigrations reflects unmigrated sessions (Codex R2 HIGH)", async () => {
+		const fleet = incidentFleet();
+		for (const s of fleet) store.upsertSession(s);
+		const failFor = new Set(["exec-1"]);
+		const coordinator = new ServerLossCoordinator({
+			store,
+			probeServer: async () => "down",
+			targetGone: async () => true,
+			migrate: async (s) => {
+				if (failFor.has(s.execution_id)) throw new Error("boom");
+				store.forceStatus(s.execution_id, "failed", "2026-07-09 21:30:00", "x");
+				return true;
+			},
+			resolveLeadId: (s) => (s.summary as string) ?? null,
+			notifyLead: async () => true,
+			alert: async (p) => {
+				alerts.push(p);
+				return { sent: true };
+			},
+			env: {} as NodeJS.ProcessEnv,
+			now: () => 1_720_000_000_000,
+			logger: () => {},
+		});
+		await coordinator.check();
+		expect(alerts[0]!.metadata?.tmuxServerLost).toEqual({
+			casualties: 13,
+			migrated: 12,
+			leadsNotified: 3,
+			leadsFailed: 0,
+		});
+		// exec-1 is still running → the episode is PENDING (recovery must wait).
+		expect(coordinator.hasPendingMigrations()).toBe(true);
+		failFor.clear();
+		await coordinator.check(); // retry lands
+		expect(coordinator.hasPendingMigrations()).toBe(false);
+	});
+
+	it("Bridge restart mid-partial-migration ADOPTS the durable ticket's episode — no duplicate ticket/notify (Codex R2 MED-2)", async () => {
+		const fleet = incidentFleet().slice(0, 4);
+		for (const s of fleet) store.upsertSession(s);
+		// The durable evidence of the pre-restart episode: an ACTIVE ticket row.
+		store.openAlertThread({
+			correlationKey: "machine|tmux-server|tmux_server_lost|",
+			eventId: "tmux-server-lost:1000",
+			threadId: "t-loss",
+			channelId: "c",
+			leadId: "tmux-server",
+			projectName: "machine",
+			eventType: "tmux_server_lost",
+			ticketStatus: "REPAIRING",
+		});
+		// A FRESH coordinator (post-restart: empty in-memory latch).
+		const coordinator = makeCoordinator({ sessions: [], probe: "down" });
+		const claimed = await coordinator.check();
+		// Adopted: sessions migrated under the DURABLE episode signature; no new
+		// fleet ticket, no Lead notifications.
+		expect(claimed.size).toBe(4);
+		expect(alerts).toHaveLength(0);
+		expect(notifications).toHaveLength(0);
+		expect(new Set(migrations.map((m) => m.episode))).toEqual(
+			new Set(["tmux-server-lost:1000"]),
+		);
 	});
 
 	it("a migration failure still counts the runner as claimed (no double-burial by orphan reaper)", async () => {

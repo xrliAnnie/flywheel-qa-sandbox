@@ -56,6 +56,12 @@ export interface FleetSensorsDeps {
 	probeBots?: () => Promise<InfraBotProbe[]>;
 	scanZombies?: () => Promise<ZombieFinding[]>;
 	kickstart?: (jobLabel: string) => Promise<{ ok: boolean; error?: string }>;
+	/**
+	 * Codex R2 HIGH: does the server-loss coordinator still hold UNMIGRATED
+	 * casualties? Consulted by the tmux_server_lost recovery probe — a pending
+	 * episode must never quietly resolve. Absent → probe stays conservative.
+	 */
+	serverLossPending?: () => boolean;
 	env?: NodeJS.ProcessEnv;
 	now?: () => number;
 	logger?: (msg: string) => void;
@@ -81,8 +87,6 @@ export class FleetSensors {
 	/** Last probe verdicts — the Hub recovery probe reads these. */
 	private readonly botLastAlive = new Map<"claude" | "codex", boolean>();
 	private lastZombieScanAt = 0;
-	/** Codex R1 HIGH-5: in-process batch dedup (see zombieTick). */
-	private lastZombieSignature: string | null = null;
 	/**
 	 * FLY-1082 (Task 2.4): flipped true once Bridge startup wiring completed —
 	 * the boot self-check ticket's recovery condition ("boot 对账完成").
@@ -224,6 +228,17 @@ export class FleetSensors {
 			this.botLastAlive.set(probe.provider, probe.alive);
 			if (!probe.alive) {
 				if (this.botDeadSince.has(probe.provider)) continue; // latched episode
+				// Codex R2 (restart safety): the in-memory latch dies with the
+				// Bridge — the durable ACTIVE ticket row is the episode's truth.
+				// A still-dead bot after a restart re-latches instead of opening a
+				// duplicate episode.
+				const activeTicket = this.deps.store.getActiveAlertThread(
+					fleetCorrelationKey(`infra-bot:${probe.provider}`, "infra_bot_down"),
+				);
+				if (activeTicket) {
+					this.botDeadSince.set(probe.provider, this.now());
+					continue;
+				}
 				const detectedAt = this.now();
 				this.botDeadSince.set(probe.provider, detectedAt);
 				await this.deps.alert({
@@ -252,25 +267,45 @@ export class FleetSensors {
 		}
 	}
 
-	/** The AutoRepairBot's infra_bot_down attempt: idempotent kickstart. */
+	/** The AutoRepairBot's infra_bot_down attempt: idempotent job restart. */
 	async infraBotKickstartRepair(payload: AlertPayload): Promise<RepairResult> {
 		const meta = payload.metadata?.infraBotDown;
-		if (!meta?.jobLabel) {
+		// Codex R2 MEDIUM-3: the T2 reconcile retry reconstructs a MINIMAL
+		// payload (no metadata) — the second contract-mandated attempt must not
+		// die on a missing jobLabel. Fall back to the SAME env source the probe
+		// used (provider from the fleet leadId "infra-bot:<provider>").
+		let jobLabel = meta?.jobLabel;
+		if (!jobLabel) {
+			const provider =
+				meta?.provider ??
+				(payload.leadId.startsWith("infra-bot:")
+					? (payload.leadId.slice("infra-bot:".length) as "claude" | "codex")
+					: null);
+			if (provider === "claude" || provider === "codex") {
+				jobLabel =
+					this.env[
+						provider === "claude"
+							? "FLYWHEEL_CLAUDE_INFRA_BOT_JOB"
+							: "FLYWHEEL_CODEX_INFRA_BOT_JOB"
+					]?.trim();
+			}
+		}
+		if (!jobLabel) {
 			return {
 				outcome: "needs_human",
 				action: "none",
 				detail:
-					"bot-down 工单缺少 launchd job label — 拒绝盲目 kickstart，需要人工确认哪个 job 死了。",
+					"bot-down 工单缺少 launchd job label（metadata 与 env 都解析不到）— 拒绝盲目重启，需要人工确认哪个 job 死了。",
 			};
 		}
 		const kick =
 			this.deps.kickstart ?? (await import("./launchctl.js")).kickstartJob;
-		const res = await kick(meta.jobLabel);
+		const res = await kick(jobLabel);
 		if (res.ok) {
 			return {
 				outcome: "attempted",
 				action: "launchctl_kickstart",
-				detail: `🔧 已对 ${meta.jobLabel} 执行 launchd 原地重启（幂等可逆）。bot 探针恢复后自动标记 ✅。`,
+				detail: `🔧 已对 ${jobLabel} 执行 launchd 原地重启（幂等可逆）。bot 探针恢复后自动标记 ✅。`,
 			};
 		}
 		// Codex R1 MEDIUM-2: a FAILED job-restart is still an ATTEMPT — the
@@ -281,7 +316,7 @@ export class FleetSensors {
 		return {
 			outcome: "attempted",
 			action: "launchctl_kickstart",
-			detail: `⚠️ 对 ${meta.jobLabel} 的 launchd 原地重启失败（${res.error ?? "unknown"}）。将按 T2 预算自动再试一次;再失败升级 Annie。`,
+			detail: `⚠️ 对 ${jobLabel} 的 launchd 原地重启失败（${res.error ?? "unknown"}）。将按 T2 预算自动再试一次;再失败升级 Annie。`,
 		};
 	}
 
@@ -296,10 +331,7 @@ export class FleetSensors {
 		const findings = await this.deps.scanZombies();
 		const rawMin = Number(this.env.FLYWHEEL_ZOMBIE_BACKLOG_MIN);
 		const min = Number.isFinite(rawMin) && rawMin > 0 ? rawMin : 3;
-		if (findings.length < min) {
-			this.lastZombieSignature = null; // backlog cleared — a re-growth is a new episode
-			return;
-		}
+		if (findings.length < min) return; // below threshold — nothing to report
 		const signature = createHash("sha256")
 			.update(
 				findings
@@ -309,17 +341,19 @@ export class FleetSensors {
 			)
 			.digest("hex")
 			.slice(0, 16);
-		// Codex R1 HIGH-5: claims.db dedup is PERMANENT, so a set-hash-only
-		// eventId would silently swallow the SAME backlog re-appearing after its
-		// ticket resolved. Dedup here is therefore (a) in-process: an unchanged
-		// signature with a still-ACTIVE ticket emits nothing; (b) the eventId
-		// carries a timestamp so a re-emission (ticket resolved but backlog
-		// persists, or a changed set) is always a FRESH claims identity.
+		// Codex R1 HIGH-5 + R2 restart safety: claims.db dedup is PERMANENT, so
+		// a set-hash-only eventId would silently swallow the SAME backlog
+		// re-appearing after its ticket resolved. Dedup is therefore DURABLE:
+		// the active ticket's event_id embeds the batch signature — an
+		// unchanged backlog with a still-ACTIVE ticket emits nothing (survives
+		// Bridge restarts, no in-memory state); the eventId carries a timestamp
+		// so any legitimate re-emission is a FRESH claims identity.
 		const activeTicket = this.deps.store.getActiveAlertThread(
 			fleetCorrelationKey("zombie", "zombie_session_backlog"),
 		);
-		if (signature === this.lastZombieSignature && activeTicket) return;
-		this.lastZombieSignature = signature;
+		if (activeTicket?.event_id.startsWith(`zombie-backlog:${signature}:`)) {
+			return;
+		}
 		await this.deps.alert({
 			leadId: "zombie",
 			projectName: FLEET_ALERT_PROJECT,
@@ -355,11 +389,14 @@ export class FleetSensors {
 				// The revived Bridge opened this ticket; boot reconcile completion
 				// is the recovery condition (plugin flips the flag post-wiring).
 				return this.bootReconcileDone ? true : null;
-			case "tmux_server_lost":
-				// The coordinator resolves/escalates through its metadata evidence
-				// (attempted iff all Leads notified) — recovery here = the ARC
-				// completed, recorded on the row by the attempt path.
+			case "tmux_server_lost": {
+				// Codex R2 HIGH: NEVER resolve while the coordinator still holds
+				// unmigrated casualties — a pending episode reads as broken even if
+				// the attempt path recorded "attempted" earlier. Only a fully-
+				// migrated episode with the attempted evidence resolves quietly.
+				if (this.deps.serverLossPending?.() === true) return false;
 				return row.repair_status === "attempted" ? true : null;
+			}
 			default:
 				return null;
 		}
