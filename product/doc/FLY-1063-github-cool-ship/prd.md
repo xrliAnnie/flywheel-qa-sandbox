@@ -4,6 +4,8 @@ Issue: FLY-1063 (https://linear.app/geoforge3d/issue/FLY-1063/prd-github-pr-comm
 日期: 2026-07-09
 基于: exploration.md + research.md + proposal.md（同文件夹）；Annie 2026-07-09 拍板（经 HL brief d0e35e21）
 
+> **与统一 CI/CD PRD（FLY-1098）的关系**：Annie 2026-07-09 定：本 PRD（Option-B ship 流程）**先 ship**，随后其内容作为 **FLY-1098 统一 CI/CD PRD 的「ship 段」输入**并入；CI/CD 其余议题（门禁 / CI / deploy 的统一设计）在 FLY-1098 推进。本文件是那条 ship 段的已定稿源。
+
 ---
 
 ## 0. Annie 拍板结论（本 PRD 的前提，不再重开）
