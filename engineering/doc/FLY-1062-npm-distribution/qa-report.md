@@ -117,7 +117,7 @@ detector** 的闭形式(`package-onboard.sh` po_gate ④ + `po_g4_norm`/`po_g4_d
 | 套件 | 结果 | 覆盖 |
 |---|---|---|
 | **gate4-allowlist-masking.test.sh** | **9/9** | M1 sanity(门是活的)· M2 Round-2 masking bug 现 GREEN · M3-M6 normalization 变体(小写/引号分割/双空格/`git -C`)· M7 exact-registered 正例仍放行 · M8 Round-3 combo joint-clear · M9 Round-4 反斜杠续行分割 |
-| **gate4-forms-probe.test.sh(QA 新增)** | **8/8** | QA 独立构造、M1-M9 未覆盖的仓库访问拼写:F1 SSH URL · F2 `gh repo clone` · F3 tab 分隔 · F4 全大写 · F5 slug-only `git fetch` · F6 缩进 · F7 纯注释提及 slug —— 全拒;F8 精确注册行仍放行(正控) |
+| **gate4-forms-probe.test.sh(QA 新增)** | **12/12** | QA 独立构造、M1-M9 未覆盖的仓库访问拼写:F1 SSH URL · F2 `gh repo clone` · F3 tab 分隔 · F4 全大写 · F5 slug-only `git fetch` · F6 缩进 · F7 纯注释提及 slug —— 全拒;**detector 隔离(Codex R1 加固)**:C1-C3 clone-only(无 slug,独立锁 clone 探测器) · S1 slug-only(无 clone,独立锁 slug 探测器);P1 精确注册行仍放行(正控)。每条负例断言拒绝确实来自 gate④ `UNREGISTERED repo-access`(防其他门误绿) |
 | package-onboard.test.sh | 26/26 | 无回归 |
 | packaged-seams / packaged-restart / setup-prebuilt / provision-prebuilt | 13 / 5 / 6 / 6 | 无回归 |
 
@@ -129,7 +129,10 @@ payload 逐字过 R4 exact-line gate④**。exact-line 语义最严(每条 `git 
 
 ### 3. 修复正确性 — QA 独立判断(不只跑实现者的测试)
 - **闭形式方向正确**:比较键两侧都用同一个 bash `po_g4_norm`(自洽);awk twin 只决定
-  「哪些行被送审」,且 awk 探测器比 `po_g4_detect` 更宽=更多行被审(fail-safe 方向)。
+  「哪些行被送审」,其归一化+探测正则与 `po_g4_detect` **逐字 in-lockstep(等价)**
+  (源码注释明写「MUST stay in lockstep with the awk twin」)。安全裕度:即便二者未来
+  漂移,唯一危险方向是 awk 漏判(该行不被送审);而 awk 若比 bash 更宽只会多送审=
+  fail-safe。QA 的 C1-C3 clone-only 探针独立锁死 clone 探测器(不被 slug 探测器遮蔽)。
 - **不变式覆盖面充分**:访问私仓 flywheel 必然在某处出现 `xrliAnnie/` slug(slug 探测器)
   或 `git … clone`(clone 探测器);SSH host 形 `git@github.com:xrliAnnie/…`、`gh repo
   clone xrliAnnie/…`、`codeload.github.com/xrliAnnie/…` 均含 slug 子串 → 被 slug 覆盖。
