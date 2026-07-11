@@ -72,37 +72,76 @@ export function buildCodexInstruction(
 	].join(" ");
 }
 
+/** FLY-1099 §3.3: result of a code-review instruction queue attempt. */
+export interface QueueCodexInstructionResult {
+	queued: boolean;
+	/** true when a stable-id redelivery hit the sink dedup (already queued). */
+	deduped?: boolean;
+	error?: string;
+}
+
+/**
+ * FLY-1099 §3.3 (Codex R1 #4/#7 + R3 #3): result-bearing code-review
+ * instruction queue. DB errors are surfaced to the caller (the ledger drain
+ * retries bounded), never swallowed. `instructionId` (when set, e.g. the
+ * ledger's action_key) makes redelivery idempotent at the sink — a crash
+ * between the CommDB write and the ledger's `delivered` mark cannot double-
+ * queue /codex-code-review.
+ */
+export function queueCodexCodeReviewInstructionResult(
+	projectName: string,
+	executionId: string,
+	opts: {
+		instructionId?: string;
+		logger?: { warn(m: string): void; log(m: string): void };
+	} = {},
+): QueueCodexInstructionResult {
+	const logger = opts.logger ?? console;
+	try {
+		const dbPath = commDbPathForProject(projectName);
+		mkdirSync(dirname(dbPath), { recursive: true });
+		const commDb = new CommDB(dbPath);
+		try {
+			const content = buildCodexInstruction("code", undefined, executionId);
+			if (opts.instructionId) {
+				const inserted = commDb.insertInstructionWithId(
+					opts.instructionId,
+					"bridge",
+					executionId,
+					content,
+				);
+				logger.log(
+					`[codex-gate] ${inserted ? "queued" : "dedup no-op for"} code review instruction ${opts.instructionId} → ${executionId}`,
+				);
+				return { queued: true, deduped: !inserted };
+			}
+			commDb.insertInstruction("bridge", executionId, content);
+			logger.log(
+				`[codex-gate] re-queued code review instruction for ${executionId}`,
+			);
+			return { queued: true };
+		} finally {
+			commDb.close();
+		}
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		logger.warn(
+			`[codex-gate] failed to queue code review instruction for ${executionId}: ${message}`,
+		);
+		return { queued: false, error: message };
+	}
+}
+
 /**
  * FLY-827: write the code-review instruction to a runner's CommDB inbox. Used by
  * the codex-hold re-queue (and mirrors event-route's happy-path write). Best-effort:
- * logs + swallows failures (never throws into the gate lifecycle).
+ * logs + swallows failures (never throws into the gate lifecycle). Legacy void
+ * face — delegates to the result-bearing implementation above (FLY-1099 §3.3).
  */
 export function queueCodexCodeReviewInstruction(
 	projectName: string,
 	executionId: string,
 	logger: { warn(m: string): void; log(m: string): void } = console,
 ): void {
-	try {
-		const dbPath = commDbPathForProject(projectName);
-		mkdirSync(dirname(dbPath), { recursive: true });
-		const commDb = new CommDB(dbPath);
-		try {
-			commDb.insertInstruction(
-				"bridge",
-				executionId,
-				buildCodexInstruction("code", undefined, executionId),
-			);
-			logger.log(
-				`[codex-gate] re-queued code review instruction for ${executionId}`,
-			);
-		} finally {
-			commDb.close();
-		}
-	} catch (err) {
-		logger.warn(
-			`[codex-gate] failed to queue code review instruction for ${executionId}: ${
-				err instanceof Error ? err.message : String(err)
-			}`,
-		);
-	}
+	queueCodexCodeReviewInstructionResult(projectName, executionId, { logger });
 }

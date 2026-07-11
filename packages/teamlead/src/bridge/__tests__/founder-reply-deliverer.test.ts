@@ -641,8 +641,12 @@ describe("FLY-1041 Chunk 7: reply-to-card deterministic binding", () => {
 		}));
 		const tryShip = vi.fn(
 			async (args: { shipGates: Array<{ questionId: string }> }) => ({
-				handled: args.shipGates.map((g) => g.questionId),
-				retrySafe: true,
+				bound: args.shipGates.map((g) => ({
+					questionId: g.questionId,
+					decision: "approve" as const,
+				})),
+				deferred: [],
+				retry: false,
 			}),
 		);
 		// Only q2's current binding points at the card message.
@@ -788,8 +792,12 @@ describe("FLY-1041 Chunk 8: founder receipt reaction (✅/❓)", () => {
 			async (args: { shipGates: Array<{ questionId: string }> }) =>
 				opts.handled
 					? {
-							handled: args.shipGates.map((g) => g.questionId),
-							retrySafe: true,
+							bound: args.shipGates.map((g) => ({
+								questionId: g.questionId,
+								decision: "approve" as const,
+							})),
+							deferred: [],
+							retry: false,
 						}
 					: null,
 		);
@@ -915,5 +923,322 @@ describe("FLY-1041 Chunk 8: founder receipt reaction (✅/❓)", () => {
 			deps,
 		);
 		expect(reactImpl).not.toHaveBeenCalled();
+	});
+});
+
+describe("FLY-1099: bounded retry + dead-letter + 🕒 receipt + scan outcomes", () => {
+	afterEach(() => {
+		delete process.env.FLYWHEEL_FOUNDER_APPROVAL_ACK;
+		vi.restoreAllMocks();
+	});
+
+	function retryLedgerFake(opts: { deadLetterOn?: number } = {}) {
+		let failures = 0;
+		const dead = new Set<string>();
+		const recordFailure = vi.fn(({ msgId }: { msgId: string }) => {
+			failures++;
+			if (opts.deadLetterOn !== undefined && failures >= opts.deadLetterOn) {
+				dead.add(msgId);
+				return { deadLettered: true };
+			}
+			return { deadLettered: false };
+		});
+		const clear = vi.fn();
+		const clearUpTo = vi.fn();
+		const deadLetterNow = vi.fn(({ msgId }: { msgId: string }) => {
+			dead.add(msgId);
+			return { deadLettered: true };
+		});
+		return {
+			ledger: {
+				recordFailure,
+				deadLetterNow,
+				isDeadLettered: (_t: string, m: string) => dead.has(m),
+				clear,
+				clearUpTo,
+			},
+			recordFailure,
+			deadLetterNow,
+			clear,
+			clearUpTo,
+			markDead: (m: string) => dead.add(m),
+		};
+	}
+
+	function shipHarness(opts: {
+		msgs: RawMsg[];
+		tryShip?: FounderReplyDeliverDeps["tryFounderShipApproval"];
+		ledger?: ReturnType<typeof retryLedgerFake>["ledger"];
+		wakeOk?: boolean;
+	}) {
+		const { store } = makeStore();
+		const cursorStore = new InMemoryInboundCursorStore();
+		const reactImpl = vi.fn(async () => ({ ok: true, status: 204 }));
+		const wakeImpl = vi.fn(async () =>
+			opts.wakeOk === false
+				? { ok: false, skippedReason: "no_session_lead" }
+				: { ok: true },
+		) as unknown as FounderReplyDeliverDeps["wakeImpl"];
+		const deps: FounderReplyDeliverDeps = {
+			store,
+			fetchImpl: discordGet(opts.msgs),
+			cursorStore,
+			wakeImpl,
+			commDbFactory: () => makeCommDb(["q1"]) as never,
+			tryFounderShipApproval: opts.tryShip,
+			retryLedger: opts.ledger,
+			reactToFounderMessageImpl:
+				reactImpl as unknown as FounderReplyDeliverDeps["reactToFounderMessageImpl"],
+		};
+		return { deps, cursorStore, reactImpl, wakeImpl };
+	}
+
+	const matureMsg = (content = "ship"): RawMsg => ({
+		id: snowflakeAt(Date.now() - 30 * 60_000),
+		content,
+		author: { id: OWNER },
+	});
+
+	it("deferred disposition → 🕒 receipt, WAKE skipped, cursor ADVANCES (message durably disposed)", async () => {
+		const msg = matureMsg();
+		const tryShip = vi.fn(async () => ({
+			bound: [],
+			deferred: [{ questionId: "q1", decision: "approve" as const }],
+			retry: false,
+		}));
+		const { deps, cursorStore, reactImpl, wakeImpl } = shipHarness({
+			msgs: [msg],
+			tryShip: tryShip as never,
+		});
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship", { checkpointGraceMs: 15_000 })],
+			deps,
+		);
+		expect(wakeImpl).not.toHaveBeenCalled();
+		expect(reactImpl).toHaveBeenCalledWith(
+			expect.objectContaining({ emoji: "🕒", messageId: msg.id }),
+		);
+		expect(cursorStore.load("T1")).toBe(msg.id);
+		expect(outcome.result).toBe("advanced");
+	});
+
+	it("handler retry disposition → recordFailure with the handler stage, cursor PINNED (process_failed)", async () => {
+		const msg = matureMsg();
+		const tryShip = vi.fn(async () => ({
+			bound: [],
+			deferred: [],
+			retry: true,
+			stage: "tier3_runner_failed",
+			reason: "spawn timeout",
+		}));
+		const rl = retryLedgerFake();
+		const { deps, cursorStore } = shipHarness({
+			msgs: [msg],
+			tryShip: tryShip as never,
+			ledger: rl.ledger,
+		});
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship", { checkpointGraceMs: 15_000 })],
+			deps,
+		);
+		expect(rl.recordFailure).toHaveBeenCalledWith(
+			expect.objectContaining({ msgId: msg.id, stage: "tier3_runner_failed" }),
+		);
+		expect(cursorStore.load("T1")).toBeUndefined();
+		expect(outcome).toMatchObject({
+			result: "process_failed",
+			pinnedMsgId: msg.id,
+			stage: "tier3_runner_failed",
+		});
+	});
+
+	it("dead-letter DISPOSES the message: cursor advances past it, scan continues (waterline rule §7.1)", async () => {
+		const msg = matureMsg();
+		const rl = retryLedgerFake({ deadLetterOn: 1 });
+		const { deps, cursorStore } = shipHarness({
+			msgs: [msg],
+			wakeOk: false, // wake_no_session_lead — tonight's FLY-1049 shape
+			ledger: rl.ledger,
+		});
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship", { checkpointGraceMs: 15_000 })],
+			deps,
+		);
+		expect(rl.recordFailure).toHaveBeenCalledOnce();
+		expect(cursorStore.load("T1")).toBe(msg.id); // disposed → cursor passed it
+		expect(outcome.result).toBe("advanced");
+	});
+
+	it("an already dead-lettered msgId is SKIPPED like a non-matching message", async () => {
+		const msg = matureMsg();
+		const rl = retryLedgerFake();
+		rl.markDead(msg.id);
+		const { deps, cursorStore, wakeImpl } = shipHarness({
+			msgs: [msg],
+			ledger: rl.ledger,
+		});
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship", { checkpointGraceMs: 15_000 })],
+			deps,
+		);
+		expect(wakeImpl).not.toHaveBeenCalled();
+		expect(cursorStore.load("T1")).toBe(msg.id);
+	});
+
+	it("cursor save triggers the waterline cleanup (clearUpTo) — Codex R2 #6", async () => {
+		const msg = matureMsg();
+		const rl = retryLedgerFake();
+		const { deps } = shipHarness({ msgs: [msg], ledger: rl.ledger });
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship", { checkpointGraceMs: 15_000 })],
+			deps,
+		);
+		expect(rl.clearUpTo).toHaveBeenCalledWith("T1", msg.id);
+	});
+
+	it("Discord GET failure → ThreadScanOutcome read_failed (a health OUTCOME, not just an audit)", async () => {
+		const { store } = makeStore();
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			{
+				store,
+				fetchImpl: vi.fn(async () => ({
+					ok: false,
+					status: 500,
+				})) as unknown as typeof fetch,
+				cursorStore: new InMemoryInboundCursorStore(),
+				commDbFactory: () => makeCommDb(["q1"]) as never,
+			},
+		);
+		expect(outcome).toMatchObject({ result: "read_failed" });
+	});
+});
+
+describe("Codex code R1 HIGH-3: a processing THROW flows into the retry ledger", () => {
+	it("tryFounderShipApproval throws → recordFailure(process_exception), scan outcome process_failed", async () => {
+		const msg: RawMsg = {
+			id: snowflakeAt(Date.now() - 30 * 60_000),
+			content: "ship",
+			author: { id: OWNER },
+		};
+		const recordFailure = vi.fn(() => ({ deadLettered: false }));
+		const { store } = makeStore();
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[
+				q("q1", "approve_to_ship", {
+					checkpointGraceMs: 15_000,
+				}),
+			],
+			{
+				store,
+				fetchImpl: discordGet([msg]),
+				cursorStore: new InMemoryInboundCursorStore(),
+				commDbFactory: () => makeCommDb(["q1"]) as never,
+				tryFounderShipApproval: vi.fn(async () => {
+					throw new Error("sql.js exploded");
+				}) as never,
+				retryLedger: {
+					recordFailure,
+					deadLetterNow: vi.fn(() => ({ deadLettered: true })),
+					isDeadLettered: () => false,
+					clear: vi.fn(),
+					clearUpTo: vi.fn(),
+				},
+			},
+		);
+		expect(recordFailure).toHaveBeenCalledWith(
+			expect.objectContaining({
+				stage: "process_exception",
+				reason: "sql.js exploded",
+			}),
+		);
+		expect(outcome).toMatchObject({
+			result: "process_failed",
+			stage: "process_exception",
+		});
+	});
+});
+
+describe("Codex code R3 HIGH: deadLetter disposition — immediate terminal, no unreachable retry", () => {
+	const matureShip = () =>
+		q("q1", "approve_to_ship", { checkpointGraceMs: 15_000 });
+
+	function dlHarness(deadLettered: boolean) {
+		const msg: RawMsg = {
+			id: snowflakeAt(Date.now() - 30 * 60_000),
+			content: "改一下",
+			author: { id: OWNER },
+		};
+		const { store } = makeStore();
+		const cursorStore = new InMemoryInboundCursorStore();
+		const deadLetterNow = vi.fn(() => ({ deadLettered }));
+		const wakeImpl = vi.fn(async () => ({
+			ok: true,
+		})) as unknown as FounderReplyDeliverDeps["wakeImpl"];
+		const tryShip = vi.fn(async () => ({
+			bound: [],
+			deferred: [],
+			retry: false,
+			deadLetter: {
+				questionId: "q1",
+				stage: "convergence_park_failed",
+				reason: "ledger down; park failed: still down",
+			},
+		}));
+		const deps: FounderReplyDeliverDeps = {
+			store,
+			fetchImpl: discordGet([msg]),
+			cursorStore,
+			wakeImpl,
+			commDbFactory: () => makeCommDb(["q1"]) as never,
+			tryFounderShipApproval: tryShip as never,
+			retryLedger: {
+				recordFailure: vi.fn(() => ({ deadLettered: false })),
+				deadLetterNow,
+				isDeadLettered: () => false,
+				clear: vi.fn(),
+				clearUpTo: vi.fn(),
+			},
+		};
+		return { msg, deps, cursorStore, deadLetterNow, wakeImpl };
+	}
+
+	it("dead-letter lands → message DISPOSED: WAKE skipped, cursor advances", async () => {
+		const { msg, deps, cursorStore, deadLetterNow, wakeImpl } = dlHarness(true);
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[matureShip()],
+			deps,
+		);
+		expect(deadLetterNow).toHaveBeenCalledWith(
+			expect.objectContaining({
+				msgId: msg.id,
+				stage: "convergence_park_failed",
+			}),
+		);
+		expect(wakeImpl).not.toHaveBeenCalled();
+		expect(cursorStore.load("T1")).toBe(msg.id);
+		expect(outcome.result).toBe("advanced");
+	});
+
+	it("dead-letter write itself fails (store broken) → cursor PINS (watchdog last resort)", async () => {
+		const { deps, cursorStore } = dlHarness(false);
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[matureShip()],
+			deps,
+		);
+		expect(cursorStore.load("T1")).toBeUndefined();
+		expect(outcome).toMatchObject({
+			result: "process_failed",
+			stage: "convergence_park_failed",
+		});
 	});
 });

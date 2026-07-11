@@ -122,6 +122,8 @@ import {
 	createAlertRateLimiter,
 	rateLimitPerMinuteFromEnv,
 } from "./alert-rate-limiter.js";
+import { deriveCanonicalFounderId } from "./approval-signal/canonical-founder-id.js";
+import { makeDeferralSupport } from "./approval-signal/deferred-approval.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
@@ -129,7 +131,7 @@ import type { GateResponseDb } from "./approval-signal/write-gate-response.js";
 import { loadQaConfigByProject } from "./auto-qa-config-source.js";
 import { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { AutoQaEffects } from "./auto-qa-effects.js";
-import { founderApprovalHoldGuard } from "./auto-qa-held.js";
+import { founderApprovalHoldGuard, reviewHoldReason } from "./auto-qa-held.js";
 import { resolveAutoQaPolicy } from "./auto-qa-policy.js";
 import { AutoContinueArmer } from "./autocontinue-armer.js";
 import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
@@ -4134,6 +4136,21 @@ export async function startBridge(
 	const founderApprovalIsHeld = (executionId: string): boolean =>
 		founderApprovalHoldGuard(store, store.getSession(executionId));
 
+	// FLY-1099 §4.1: the reason-classified hold face (same predicate order as
+	// isReviewHeld — shared implementation, cannot drift). The kill-switch
+	// FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0 keeps its FLY-1041 semantics: holds are
+	// ignored entirely (the deferral face then reports "not held" too).
+	const founderHoldReasonFor = (executionId: string) =>
+		process.env.FLYWHEEL_ATTRIBUTION_HOLD_ALIGN === "0"
+			? null
+			: reviewHoldReason(store, store.getSession(executionId));
+	// FLY-1099: current canonical founder id (same derivation the factory uses).
+	const founderCanonicalId = (): string | undefined =>
+		deriveCanonicalFounderId(
+			config.discordOwnerUserId,
+			config.founderConsent?.founderUserId,
+		) ?? undefined;
+
 	const founderShipApprovalCallback = makeFounderShipApprovalCallback({
 		discordOwnerUserId: config.discordOwnerUserId,
 		founderConsentUserId: config.founderConsent?.founderUserId,
@@ -4142,6 +4159,15 @@ export async function startBridge(
 		// FLY-1041 Chunk 4: attribution forensics; Chunk 5: hold alignment.
 		auditStore: store,
 		isHeld: founderApprovalIsHeld,
+		// FLY-1099 §4.2: held approvals are durably deferred (codex_pending /
+		// qa_not_green) instead of silently declined; merge_block gets the
+		// recovery pointer. Kill-switches read per call inside.
+		deferralSupport: (ctx) =>
+			makeDeferralSupport({
+				store,
+				holdReasonFor: founderHoldReasonFor,
+				ctx,
+			}),
 		// The db flowing through the deliverer IS a real CommDB (GateResponseDb is
 		// its structural subset), so widening it for the wake is sound at runtime.
 		onResponseWritten: (info) =>
@@ -4532,6 +4558,22 @@ export async function startBridge(
 		// FLY-799: founder-in-thread ship approval (default-ON kill-switch inside
 		// the factory). Absent (fcWiring null) → deliverer stays WAKE-only.
 		tryFounderShipApproval: founderShipApprovalCallback,
+		// FLY-1099 §4.3: the deferred-approval rebind pass — the SAME production
+		// post-write hook + canonical founder id the live text path uses (no
+		// second authorization chain).
+		deferredRebind: {
+			canonicalFounderId: founderCanonicalId,
+			onResponseWritten: (info) =>
+				founderShipPostWriteHook({
+					executionId: info.executionId,
+					questionId: info.questionId,
+					leadId: info.actor,
+					answer: info.answer,
+					db: info.db as unknown as Parameters<
+						typeof founderShipPostWriteHook
+					>[0]["db"],
+				}),
+		},
 		// FLY-799: founder ✅-reaction ship approval (per-gate reaction poll).
 		tryFounderReactionApproval: founderReactionApprovalCallback,
 		// FLY-1041 Chunk 7: the SAME durable binding reader the reaction path
@@ -4788,6 +4830,15 @@ export async function startBridge(
 				.catch((err) =>
 					console.warn(
 						`[auto-qa] reconcileStuckCodexHolds failed: ${(err as Error).message}`,
+					),
+				);
+			// FLY-1099 §6: the 30min ledger-backed nudge layer (queue+wake
+			// intents; execution + bounded retry live in the founder-action drain).
+			void autoQaCoordinatorHolder.current
+				.reconcileCodexHoldNudges()
+				.catch((err) =>
+					console.warn(
+						`[auto-qa] reconcileCodexHoldNudges failed: ${(err as Error).message}`,
 					),
 				);
 			console.log(
@@ -6547,6 +6598,14 @@ export async function startBridge(
 			} catch (err) {
 				console.warn(
 					`[auto-qa] reconcileStuckCodexHolds (poll) failed: ${(err as Error).message}`,
+				);
+			}
+			// FLY-1099 §6: the 30min ledger-backed nudge layer, same cadence.
+			try {
+				await autoQaCoordinatorHolder.current?.reconcileCodexHoldNudges();
+			} catch (err) {
+				console.warn(
+					`[auto-qa] reconcileCodexHoldNudges (poll) failed: ${(err as Error).message}`,
 				);
 			}
 			if (accountSwitchRepair && unifiedAlertChannelId) {

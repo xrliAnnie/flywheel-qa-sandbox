@@ -82,7 +82,7 @@ export class NullAudioIO implements HeadphoneIO {
 					this.opts.sender.sendMessage(item.channelId, content, item.messageId),
 			});
 			return { ok: true, sentMessageId: res.messageId };
-		} catch (err) {
+		} catch (_err) {
 			return { ok: false, sentMessageId: undefined };
 		}
 	}

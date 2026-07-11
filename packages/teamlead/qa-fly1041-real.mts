@@ -149,7 +149,7 @@ async function outboundCard(): Promise<void> {
 	);
 	const msg = (await mRes.json()) as { content?: string };
 	const body = msg.content ?? "";
-	log("  --- real posted card body ---\n" + body + "\n  ---");
+	log(`  --- real posted card body ---\n${body}\n  ---`);
 	assert(
 		body.includes("🚀 **Ship gate 等你批准**"),
 		"card has the ship-gate header",

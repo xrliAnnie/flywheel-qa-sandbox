@@ -114,3 +114,53 @@ describe("runSubscriptionClassifier — fail-closed", () => {
 		expect(res.ok).toBe(false);
 	});
 });
+
+describe("FLY-1099 §7.3: transient-failure retry", () => {
+	const okEnvelope2 = (result: string) => ({
+		stdout: JSON.stringify({
+			type: "result",
+			subtype: "success",
+			is_error: false,
+			result,
+		}),
+		stderr: "",
+	});
+
+	it("one transient exec failure → retried once → succeeds", async () => {
+		const execFileImpl = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Command failed: claude (timeout)"))
+			.mockResolvedValueOnce(okEnvelope2('{"decision":"unclear"}'));
+		const res = await runSubscriptionClassifier("p", {
+			execFileImpl,
+			retryDelayMs: 0,
+		});
+		expect(execFileImpl).toHaveBeenCalledTimes(2);
+		expect(res.ok).toBe(true);
+	});
+
+	it("both attempts fail → fail-closed exec_failed (still never throws)", async () => {
+		const execFileImpl = vi
+			.fn()
+			.mockRejectedValue(new Error("Command failed: claude"));
+		const res = await runSubscriptionClassifier("p", {
+			execFileImpl,
+			retryDelayMs: 0,
+		});
+		expect(execFileImpl).toHaveBeenCalledTimes(2);
+		expect(res).toMatchObject({ ok: false });
+	});
+
+	it("ENOENT (CLI missing) is PERMANENT — no retry", async () => {
+		const err = Object.assign(new Error("spawn claude ENOENT"), {
+			code: "ENOENT",
+		});
+		const execFileImpl = vi.fn().mockRejectedValue(err);
+		const res = await runSubscriptionClassifier("p", {
+			execFileImpl,
+			retryDelayMs: 0,
+		});
+		expect(execFileImpl).toHaveBeenCalledTimes(1);
+		expect(res.ok).toBe(false);
+	});
+});

@@ -182,8 +182,15 @@ export interface AutoQaSideEffects {
 	 * session is Codex-held (the runner never ran / never reported Codex). Closes
 	 * the loop (Lead D3): don't just block — tell the runner to go run Codex.
 	 * Best-effort (writes the runner's CommDB inbox); never throws into the gate.
+	 * FLY-1099 §3.3: may return a `{queued, error?}` result (the production
+	 * effects do); void-returning fakes stay valid.
 	 */
-	queueCodexInstruction(args: { session: Session }): Promise<void> | void;
+	queueCodexInstruction(args: {
+		session: Session;
+	}):
+		| Promise<{ queued: boolean; error?: string } | undefined>
+		| { queued: boolean; error?: string }
+		| undefined;
 	/**
 	 * FLY-827: a Lead-facing Flywheel Alert that a session is blocked on the Codex
 	 * code-review hard gate (founder NOT surfaced). Rate-limited per (exec, head)
@@ -627,6 +634,12 @@ export class AutoQaCoordinator {
 			) {
 				continue; // approved / skipped in the meantime
 			}
+			// FLY-1099 §6 (Codex code R1 MED-2): the durable queue+wake re-drive
+			// intents land BEFORE the once-only claim. They are INSERT OR IGNORE
+			// idempotent (re-running every pass is free), so a crash between the
+			// claim and any later side effect can no longer strand the re-drive
+			// forever — the claim only gates the once-only thread post + Lead alert.
+			this.queueCodexNudgeIntents(session, rec.target_pr_head_sha);
 			if (
 				!this.deps.store.claimCodexHoldStuckNotify(
 					rec.execution_id,
@@ -659,6 +672,93 @@ export class AutoQaCoordinator {
 					`reconcileStuckCodexHolds alertCodexGateBlocked failed for ${session.issue_id}: ${asErr(err)}`,
 				);
 			}
+		}
+	}
+
+	/**
+	 * FLY-1099 §6: durable queue+wake nudge intents for one codex-held head.
+	 * `codex-nudge-<exec>-<head>-queue` re-queues /codex-code-review (sink-side
+	 * dedup by this exact key); `...-wake` (depends_on queue — Codex R2 #2)
+	 * nudges the runner. Idempotent: INSERT OR IGNORE per key. Eligibility
+	 * (still awaiting_review + same head) is re-verified at drain time.
+	 */
+	private queueCodexNudgeIntents(session: Session, sha: string): void {
+		const head = sha.toLowerCase();
+		const queueKey = `codex-nudge-${session.execution_id}-${head}-queue`;
+		const wakeKey = `codex-nudge-${session.execution_id}-${head}-wake`;
+		try {
+			this.deps.store.insertFounderAction({
+				actionKey: queueKey,
+				kind: "codex_nudge_queue",
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				payload: { head },
+			});
+			this.deps.store.insertFounderAction({
+				actionKey: wakeKey,
+				kind: "codex_nudge_wake",
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				payload: {
+					head,
+					text:
+						`Codex code review 还没收敛(head ${head.slice(0, 8)})——已重新排了 /codex-code-review 指令,` +
+						"请查收 inbox 跑完 review 再继续。",
+				},
+				dependsOn: queueKey,
+			});
+		} catch (err) {
+			this.warn(
+				`queueCodexNudgeIntents failed for ${session.issue_id}: ${asErr(err)}`,
+			);
+		}
+	}
+
+	/**
+	 * FLY-1099 §6: the EARLY nudge layer — a codex_review_record pending past
+	 * `FLYWHEEL_CODEX_HOLD_NUDGE_MS` (default 30min; kill-switch
+	 * FLYWHEEL_CODEX_HOLD_NUDGE, R3 #5) gets the SAME ledger-backed
+	 * queue+wake re-drive as the 3h stuck escalation, hours earlier — no
+	 * thread post, no Lead alert (this layer is runner-facing only). Scope
+	 * identical to reconcileStuckCodexHolds: awaiting_review + same head +
+	 * gate still unsatisfied (terminal / moved-on sessions are the zombie
+	 * pass's business, never nudged).
+	 */
+	async reconcileCodexHoldNudges(): Promise<void> {
+		const env = this.deps.env ?? process.env;
+		if (!codexHardGateEnabled(env)) return;
+		if (env.FLYWHEEL_CODEX_HOLD_NUDGE === "0") return;
+		const rawThreshold = Number.parseInt(
+			env.FLYWHEEL_CODEX_HOLD_NUDGE_MS ?? "",
+			10,
+		);
+		const thresholdMs =
+			Number.isFinite(rawThreshold) && rawThreshold > 0
+				? rawThreshold
+				: 30 * 60_000;
+		const now = this.deps.now?.() ?? Date.now();
+		for (const rec of this.deps.store.listCodexHoldsPendingOlderThan(
+			now,
+			thresholdMs,
+		)) {
+			const session = this.deps.store.getSession(rec.execution_id);
+			if (!session || session.status !== "awaiting_review") continue;
+			if (session.pr_head_sha?.toLowerCase() !== rec.target_pr_head_sha) {
+				continue; // superseded by a newer head
+			}
+			if (
+				isCodexGateSatisfied(
+					this.deps.store,
+					session,
+					rec.target_pr_head_sha,
+					env,
+				)
+			) {
+				continue;
+			}
+			this.queueCodexNudgeIntents(session, rec.target_pr_head_sha);
 		}
 	}
 

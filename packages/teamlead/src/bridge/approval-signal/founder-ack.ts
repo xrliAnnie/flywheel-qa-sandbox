@@ -21,7 +21,8 @@ export interface ReactToFounderMessageArgs {
 	channelId: string;
 	/** The FOUNDER's message id — the receipt lands on her message. */
 	messageId: string;
-	emoji: "✅" | "❓";
+	/** FLY-1099 §3.2: 🕒 = durably deferred (auto-binds when the hold clears). */
+	emoji: "✅" | "🕒" | "❓";
 	fetchImpl?: typeof fetch;
 }
 

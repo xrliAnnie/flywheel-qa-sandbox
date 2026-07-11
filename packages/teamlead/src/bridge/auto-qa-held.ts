@@ -73,27 +73,51 @@ export function isReviewHeld(
 	session: QaHeldSession | undefined,
 	env: Record<string, string | undefined> = process.env,
 ): boolean {
-	if (!session) return false;
+	// FLY-1099 §4.1: isReviewHeld and reviewHoldReason share ONE implementation
+	// so the boolean and the reason classification can never drift.
+	return reviewHoldReason(store, session, env) !== null;
+}
+
+/**
+ * FLY-1099 §4.1 (Codex R1 #2): WHY the session is founder-held. Same predicate
+ * order as the historical isReviewHeld body (merge_block → role/status gates →
+ * codex → QA), pure read.
+ *   - `merge_block` — only clearable by same-head approval recovery (FLY-869);
+ *     a deferred approval waiting on it would deadlock → NEVER deferrable.
+ *   - `codex_pending` / `qa_not_green` — self-clearing holds → deferrable.
+ * null = not held.
+ */
+export type ReviewHoldReason = "merge_block" | "codex_pending" | "qa_not_green";
+
+export function reviewHoldReason(
+	store: AutoQaHeldStore & CodexGateStore,
+	session: QaHeldSession | undefined,
+	env: Record<string, string | undefined> = process.env,
+): ReviewHoldReason | null {
+	if (!session) return null;
 	// FLY-869 B (design R2 HIGH-4 + Codex guardrail #1): a merged-but-unapproved
 	// parked session (merge_block marker) is held from EVERY founder surface —
 	// GatePoller approve-relay, event-route always-deliver, HeartbeatService
 	// gate_timed_out, DirectEventSink push — until same-head approval recovery
 	// clears the marker. Centralized here so the suppression can never drift.
-	if (session.merge_block_reason) return true;
+	if (session.merge_block_reason) return "merge_block";
 	// FLY-827 + FLY-793: hold the PR-owning reviewable roles (main + implement);
 	// the qa/design roles are verifiers / pre-PR and are never founder-held here.
-	if (!isReviewableRole(session.session_role)) return false;
-	if (session.status !== "awaiting_review") return false;
+	if (!isReviewableRole(session.session_role)) return null;
+	if (session.status !== "awaiting_review") return null;
 	const sha = session.pr_head_sha?.toLowerCase();
 	if (!sha || !FULL_SHA.test(sha)) {
 		// No valid head: hold under the hard gate (unless codex_skip), else no-op.
-		return codexHardGateEnabled(env) && !session.codex_skip;
+		// A head-specific Codex review can't run without a head → codex_pending.
+		return codexHardGateEnabled(env) && !session.codex_skip
+			? "codex_pending"
+			: null;
 	}
 	// Codex gate first: not satisfied → held (independent of QA policy).
-	if (!isCodexGateSatisfied(store, session, sha, env)) return true;
+	if (!isCodexGateSatisfied(store, session, sha, env)) return "codex_pending";
 	// Codex satisfied → defer to the QA hold (QA-held is main-only; false for
 	// implement, which uses the FLY-793 phase QA rather than auto-QA).
-	return isQaHeld(store, session);
+	return isQaHeld(store, session) ? "qa_not_green" : null;
 }
 
 /**

@@ -178,6 +178,43 @@ const TERMINAL_STATUSES = new Set<string>([
 // approved_to_ship is an outcome but not terminal (Runner will transition to completed)
 TERMINAL_STATUSES.delete("approved_to_ship");
 
+/**
+ * FLY-1099 §5 (Codex R2 #4): the StateStore statuses that are IRREVERSIBLY
+ * terminal for zombie-gate hygiene — a pending gate whose session sits in one
+ * of these (AND whose CommDB registration row is gone) can never be answered
+ * through the normal flow again, so Z1 may auto-retire it.
+ *
+ * Deliberately NOT reused from TERMINAL_STATUSES (whose monotonicity set
+ * includes `awaiting_review`) nor from CommDB's completed|timeout vocabulary —
+ * the semantics differ. Enumerated value-by-value:
+ *   - completed / failed / terminated — final FSM outcomes, never resume.
+ *   - blocked / rejected / deferred / shelved — decision-layer terminal routes.
+ * Excluded on purpose:
+ *   - awaiting_review / running — live (FLY-1049 shape → Z2, never Z1).
+ *   - approved_to_ship — runner still ships (its gate is answered anyway).
+ *   - approved — legacy v1.0 auto-approve status; ambiguous → conservative skip.
+ */
+export const ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES = [
+	"completed",
+	"failed",
+	"terminated",
+	"blocked",
+	"rejected",
+	"deferred",
+	"shelved",
+] as const;
+
+export function isStateStoreIrreversibleTerminalForZombie(
+	status: string | undefined,
+): boolean {
+	return (
+		status !== undefined &&
+		(ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES as readonly string[]).includes(
+			status,
+		)
+	);
+}
+
 export interface SessionEvent {
 	event_id: string;
 	execution_id: string;
@@ -187,6 +224,91 @@ export interface SessionEvent {
 	severity?: string;
 	payload?: unknown;
 	source: string;
+}
+
+// ── FLY-1099: founder-reply ingest reliability rows ─────────────────────────
+
+/** FLY-1099 §3.1: a deferred founder ship-decision awaiting hold-clear rebind. */
+export interface FounderDeferredApproval {
+	question_id: string;
+	msg_id: string;
+	execution_id: string;
+	issue_id: string;
+	project_name: string;
+	pr_head_sha: string;
+	thread_id: string;
+	decision: "approve" | "reject";
+	/** FULL original founder text (Codex R3 #1 — a reject's feedback goes to the
+	 * runner in full; audits/alerts truncate separately). */
+	content: string;
+	author_user_id: string;
+	founder_id_at_capture: string;
+	created_at: string;
+	expires_at: string;
+	consumed_at?: string;
+	invalidated_at?: string;
+	invalidated_reason?: string;
+}
+
+export type FounderActionKind =
+	| "held_reply"
+	| "ttl_expired_notice"
+	| "head_drift_notice"
+	| "rebound_notice"
+	| "feedback_wake"
+	| "codex_nudge_queue"
+	| "codex_nudge_wake"
+	| "emit_alert";
+
+export type FounderActionStatus =
+	| "pending"
+	| "delivered"
+	| "failed"
+	| "cancelled"
+	| "superseded";
+
+/** FLY-1099 §3.1: one durable founder-facing action intent (ledger row). */
+export interface FounderActionRow {
+	action_key: string;
+	kind: FounderActionKind;
+	execution_id: string;
+	issue_id: string;
+	project_name: string;
+	thread_id?: string;
+	/** JSON-encoded parameters (text / alert payload / expected head, …). */
+	payload: string;
+	depends_on?: string;
+	status: FounderActionStatus;
+	attempts: number;
+	last_error?: string;
+	created_at: string;
+	delivered_at?: string;
+	failed_at_ms?: number;
+}
+
+/** Input shape for inserting a founder action intent. */
+export interface FounderActionIntent {
+	actionKey: string;
+	kind: FounderActionKind;
+	executionId: string;
+	issueId: string;
+	projectName: string;
+	threadId?: string;
+	payload: Record<string, unknown>;
+	dependsOn?: string;
+}
+
+/** FLY-1099 §3.1: bounded-retry row for one pinned founder message. */
+export interface FounderReplyRetryRow {
+	thread_id: string;
+	msg_id: string;
+	attempts: number;
+	first_seen: string;
+	first_seen_ms: number;
+	last_stage?: string;
+	last_error?: string;
+	dead_lettered_at?: string;
+	dead_lettered_ms?: number;
 }
 
 /**
@@ -1602,6 +1724,81 @@ export class StateStore {
 				next_eligible_at_ms INTEGER NOT NULL DEFAULT 0,
 				paged_annie         INTEGER NOT NULL DEFAULT 0,
 				PRIMARY KEY (execution_id, question_id)
+			)
+		`);
+
+		// FLY-1099 §3.1: deferred founder ship-decisions (held → 暂存 → rebind).
+		// Historical key (question_id, msg_id) — a row is NEVER re-created/updated
+		// for the same founder message (strict no-op, no TTL refresh); the single
+		// ACTIVE row per gate is enforced by the partial unique index below.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS founder_deferred_approval (
+				question_id     TEXT NOT NULL,
+				msg_id          TEXT NOT NULL,
+				execution_id    TEXT NOT NULL,
+				issue_id        TEXT NOT NULL,
+				project_name    TEXT NOT NULL,
+				pr_head_sha     TEXT NOT NULL,
+				thread_id       TEXT NOT NULL,
+				decision        TEXT NOT NULL CHECK(decision IN ('approve','reject')),
+				content         TEXT NOT NULL,
+				author_user_id  TEXT NOT NULL,
+				founder_id_at_capture TEXT NOT NULL,
+				created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+				expires_at      TEXT NOT NULL,
+				consumed_at     TEXT,
+				invalidated_at  TEXT,
+				invalidated_reason TEXT,
+				PRIMARY KEY (question_id, msg_id)
+			)
+		`);
+		this.db.run(
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_deferred_active
+			   ON founder_deferred_approval(question_id)
+			   WHERE consumed_at IS NULL AND invalidated_at IS NULL`,
+		);
+
+		// FLY-1099 §3.1: result-bearing founder action ledger — durable intent →
+		// (drain-time eligibility recheck) → execute → outcome. At-least-once:
+		// side-effect dedup is the sink's job (Codex R3 #3).
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS founder_action_ledger (
+				action_key   TEXT PRIMARY KEY,
+				kind         TEXT NOT NULL,
+				execution_id TEXT NOT NULL,
+				issue_id     TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				thread_id    TEXT,
+				payload      TEXT NOT NULL,
+				depends_on   TEXT,
+				status       TEXT NOT NULL DEFAULT 'pending'
+				             CHECK(status IN ('pending','delivered','failed','cancelled','superseded')),
+				attempts     INTEGER NOT NULL DEFAULT 0,
+				last_error   TEXT,
+				created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+				delivered_at TEXT,
+				failed_at_ms INTEGER
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_founder_action_status ON founder_action_ledger(status)",
+		);
+
+		// FLY-1099 §3.1: bounded founder-reply retry ledger — the durable source
+		// for the cursor-pin watchdog AND the dead-letter decision. first_seen_ms
+		// is the episode salt (Codex R3 #4: datetime('now') is second-resolution).
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS founder_reply_retry (
+				thread_id   TEXT NOT NULL,
+				msg_id      TEXT NOT NULL,
+				attempts    INTEGER NOT NULL DEFAULT 0,
+				first_seen  TEXT NOT NULL DEFAULT (datetime('now')),
+				first_seen_ms INTEGER NOT NULL,
+				last_stage  TEXT,
+				last_error  TEXT,
+				dead_lettered_at TEXT,
+				dead_lettered_ms INTEGER,
+				PRIMARY KEY (thread_id, msg_id)
 			)
 		`);
 
@@ -5656,6 +5853,532 @@ export class StateStore {
 			delivery_attempts: (row[8] as number) ?? 0,
 			last_delivery_error: (row[9] as string) ?? undefined,
 		}));
+	}
+
+	// ── FLY-1099: deferred founder approvals ─────────────────────────────────
+
+	private rowToDeferredApproval(
+		row: Record<string, unknown>,
+	): FounderDeferredApproval {
+		return {
+			question_id: row.question_id as string,
+			msg_id: row.msg_id as string,
+			execution_id: row.execution_id as string,
+			issue_id: row.issue_id as string,
+			project_name: row.project_name as string,
+			pr_head_sha: row.pr_head_sha as string,
+			thread_id: row.thread_id as string,
+			decision: row.decision as "approve" | "reject",
+			content: row.content as string,
+			author_user_id: row.author_user_id as string,
+			founder_id_at_capture: row.founder_id_at_capture as string,
+			created_at: row.created_at as string,
+			expires_at: row.expires_at as string,
+			consumed_at: (row.consumed_at as string) ?? undefined,
+			invalidated_at: (row.invalidated_at as string) ?? undefined,
+			invalidated_reason: (row.invalidated_reason as string) ?? undefined,
+		};
+	}
+
+	private insertFounderActionRaw(intent: FounderActionIntent): void {
+		this.db.run(
+			`INSERT OR IGNORE INTO founder_action_ledger
+			   (action_key, kind, execution_id, issue_id, project_name, thread_id, payload, depends_on)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				intent.actionKey,
+				intent.kind,
+				intent.executionId,
+				intent.issueId,
+				intent.projectName,
+				intent.threadId ?? null,
+				JSON.stringify(intent.payload),
+				intent.dependsOn ?? null,
+			],
+		);
+	}
+
+	private insertAuditEventRaw(event: SessionEvent): void {
+		this.db.run(
+			`INSERT OR IGNORE INTO session_events
+			   (event_id, execution_id, issue_id, project_name, event_type, severity, payload, source)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				event.event_id,
+				event.execution_id,
+				event.issue_id,
+				event.project_name,
+				event.event_type,
+				event.severity ?? "info",
+				event.payload ? JSON.stringify(event.payload) : null,
+				event.source,
+			],
+		);
+	}
+
+	/**
+	 * FLY-1099 §4.2: durably defer a founder ship-decision — ONE transaction:
+	 *   - same (question_id, msg_id) already exists → STRICT no-op (no TTL
+	 *     refresh, no ledger write — Codex R1 #3);
+	 *   - a different active row for the gate → invalidated `replaced`;
+	 *   - insert the new row (expires = now + ttlSeconds);
+	 *   - insert the `held_reply` thread-notice intent (only committed together
+	 *     with the durable deferral — the "已存着" text can never lie).
+	 * Throws on failure (caller maps to a transient retry disposition).
+	 */
+	deferFounderApproval(input: {
+		questionId: string;
+		msgId: string;
+		executionId: string;
+		issueId: string;
+		projectName: string;
+		prHeadSha: string;
+		threadId: string;
+		decision: "approve" | "reject";
+		content: string;
+		authorUserId: string;
+		founderIdAtCapture: string;
+		ttlSeconds: number;
+		heldReplyAction?: FounderActionIntent;
+		audit?: SessionEvent;
+	}): "inserted" | "noop_existing" {
+		let outcome: "inserted" | "noop_existing" = "inserted";
+		this.db.transaction(() => {
+			const existing = this.db.exec(
+				"SELECT 1 FROM founder_deferred_approval WHERE question_id = ? AND msg_id = ?",
+				[input.questionId, input.msgId],
+			);
+			if (existing.length > 0 && existing[0]!.values.length > 0) {
+				outcome = "noop_existing";
+				return;
+			}
+			this.db.run(
+				`UPDATE founder_deferred_approval
+				    SET invalidated_at = datetime('now'), invalidated_reason = 'replaced'
+				  WHERE question_id = ? AND msg_id != ?
+				    AND consumed_at IS NULL AND invalidated_at IS NULL`,
+				[input.questionId, input.msgId],
+			);
+			this.db.run(
+				`INSERT INTO founder_deferred_approval
+				   (question_id, msg_id, execution_id, issue_id, project_name, pr_head_sha,
+				    thread_id, decision, content, author_user_id, founder_id_at_capture, expires_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+' || ? || ' seconds'))`,
+				[
+					input.questionId,
+					input.msgId,
+					input.executionId,
+					input.issueId,
+					input.projectName,
+					input.prHeadSha.toLowerCase(),
+					input.threadId,
+					input.decision,
+					input.content,
+					input.authorUserId,
+					input.founderIdAtCapture,
+					Math.max(1, Math.floor(input.ttlSeconds)),
+				],
+			);
+			if (input.heldReplyAction)
+				this.insertFounderActionRaw(input.heldReplyAction);
+			if (input.audit) this.insertAuditEventRaw(input.audit);
+		});
+		this.save();
+		return outcome;
+	}
+
+	/** Active = neither consumed nor invalidated (at most one per gate). */
+	listActiveDeferredApprovals(): FounderDeferredApproval[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM founder_deferred_approval
+			  WHERE consumed_at IS NULL AND invalidated_at IS NULL
+			  ORDER BY created_at ASC`,
+		);
+		const rows: FounderDeferredApproval[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToDeferredApproval(
+					stmt.getAsObject() as Record<string, unknown>,
+				),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	getDeferredApproval(
+		questionId: string,
+		msgId: string,
+	): FounderDeferredApproval | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM founder_deferred_approval WHERE question_id = ? AND msg_id = ?",
+		);
+		stmt.bind([questionId, msgId]);
+		let row: FounderDeferredApproval | undefined;
+		if (stmt.step()) {
+			row = this.rowToDeferredApproval(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return row;
+	}
+
+	/**
+	 * FLY-1099 §4.3: invalidate an ACTIVE deferral — ONE transaction with:
+	 *   - superseding any still-pending `held_reply` intents for the gate
+	 *     (§3.3: an outdated "暂时绑不上" must never post after the terminal
+	 *     notice), keyed by the `held-reply-<qid>-` action-key prefix contract;
+	 *   - the optional terminal notice intent (ttl_expired / head_drift);
+	 *   - the optional idempotent audit event.
+	 * Returns false when the row was not active (already consumed/invalidated).
+	 */
+	invalidateDeferredApproval(input: {
+		questionId: string;
+		msgId: string;
+		reason: string;
+		notice?: FounderActionIntent;
+		audit?: SessionEvent;
+	}): boolean {
+		let changed = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE founder_deferred_approval
+				    SET invalidated_at = datetime('now'), invalidated_reason = ?
+				  WHERE question_id = ? AND msg_id = ?
+				    AND consumed_at IS NULL AND invalidated_at IS NULL`,
+				[input.reason, input.questionId, input.msgId],
+			);
+			changed = this.db.getRowsModified() > 0;
+			if (!changed) return;
+			this.db.run(
+				`UPDATE founder_action_ledger SET status = 'superseded'
+				  WHERE status = 'pending' AND kind = 'held_reply' AND action_key LIKE ?`,
+				[`held-reply-${input.questionId}-%`],
+			);
+			if (input.notice) this.insertFounderActionRaw(input.notice);
+			if (input.audit) this.insertAuditEventRaw(input.audit);
+		});
+		this.save();
+		return changed;
+	}
+
+	/**
+	 * FLY-1099 §4.3: consume an ACTIVE deferral after its decision's
+	 * postcondition was reached — ONE transaction with the rebound notice, the
+	 * reject-path `feedback_wake` intent (Codex R3 #1 (b'): committed together
+	 * with consumed), held-reply supersede, and the audit event.
+	 */
+	consumeDeferredApproval(input: {
+		questionId: string;
+		msgId: string;
+		notice?: FounderActionIntent;
+		feedbackWake?: FounderActionIntent;
+		audit?: SessionEvent;
+	}): boolean {
+		let changed = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE founder_deferred_approval
+				    SET consumed_at = datetime('now')
+				  WHERE question_id = ? AND msg_id = ?
+				    AND consumed_at IS NULL AND invalidated_at IS NULL`,
+				[input.questionId, input.msgId],
+			);
+			changed = this.db.getRowsModified() > 0;
+			if (!changed) return;
+			this.db.run(
+				`UPDATE founder_action_ledger SET status = 'superseded'
+				  WHERE status = 'pending' AND kind = 'held_reply' AND action_key LIKE ?`,
+				[`held-reply-${input.questionId}-%`],
+			);
+			if (input.notice) this.insertFounderActionRaw(input.notice);
+			if (input.feedbackWake) this.insertFounderActionRaw(input.feedbackWake);
+			if (input.audit) this.insertAuditEventRaw(input.audit);
+		});
+		this.save();
+		return changed;
+	}
+
+	// ── FLY-1099: founder action ledger ──────────────────────────────────────
+
+	private rowToFounderAction(row: Record<string, unknown>): FounderActionRow {
+		return {
+			action_key: row.action_key as string,
+			kind: row.kind as FounderActionKind,
+			execution_id: row.execution_id as string,
+			issue_id: row.issue_id as string,
+			project_name: row.project_name as string,
+			thread_id: (row.thread_id as string) ?? undefined,
+			payload: row.payload as string,
+			depends_on: (row.depends_on as string) ?? undefined,
+			status: row.status as FounderActionStatus,
+			attempts: (row.attempts as number) ?? 0,
+			last_error: (row.last_error as string) ?? undefined,
+			created_at: row.created_at as string,
+			delivered_at: (row.delivered_at as string) ?? undefined,
+			failed_at_ms:
+				row.failed_at_ms == null ? undefined : Number(row.failed_at_ms),
+		};
+	}
+
+	/** INSERT OR IGNORE by action_key. Returns true iff a new intent row landed. */
+	insertFounderAction(intent: FounderActionIntent): boolean {
+		this.insertFounderActionRaw(intent);
+		const inserted = this.db.getRowsModified() > 0;
+		this.save();
+		return inserted;
+	}
+
+	listPendingFounderActions(): FounderActionRow[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM founder_action_ledger WHERE status = 'pending' ORDER BY created_at ASC, action_key ASC",
+		);
+		const rows: FounderActionRow[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToFounderAction(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	getFounderAction(actionKey: string): FounderActionRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM founder_action_ledger WHERE action_key = ?",
+		);
+		stmt.bind([actionKey]);
+		let row: FounderActionRow | undefined;
+		if (stmt.step()) {
+			row = this.rowToFounderAction(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return row;
+	}
+
+	markFounderActionDelivered(actionKey: string): void {
+		this.db.run(
+			`UPDATE founder_action_ledger
+			    SET status = 'delivered', delivered_at = datetime('now')
+			  WHERE action_key = ? AND status = 'pending'`,
+			[actionKey],
+		);
+		this.save();
+	}
+
+	/** attempts+1 on a still-pending row; returns the new attempt count. */
+	recordFounderActionFailure(actionKey: string, error: string): number {
+		this.db.run(
+			`UPDATE founder_action_ledger
+			    SET attempts = attempts + 1, last_error = ?
+			  WHERE action_key = ? AND status = 'pending'`,
+			[error.slice(0, 500), actionKey],
+		);
+		this.save();
+		const row = this.getFounderAction(actionKey);
+		return row?.attempts ?? 0;
+	}
+
+	/**
+	 * FLY-1099 §3.3 + §7.1: terminal failure — ONE transaction: status='failed'
+	 * + `failed_at_ms` (the durable episode salt, Codex R4 #3) + the follow-up
+	 * `emit_alert` intent. The caller must pass NO alertIntent when the failing
+	 * row itself is `emit_alert` (bounded terminal — the alert chain never
+	 * recursively multiplies).
+	 */
+	markFounderActionFailed(input: {
+		actionKey: string;
+		error: string;
+		nowMs: number;
+		alertIntent?: FounderActionIntent;
+	}): void {
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE founder_action_ledger
+				    SET status = 'failed', last_error = ?, failed_at_ms = ?
+				  WHERE action_key = ? AND status = 'pending'`,
+				[input.error.slice(0, 500), input.nowMs, input.actionKey],
+			);
+			if (this.db.getRowsModified() > 0 && input.alertIntent) {
+				this.insertFounderActionRaw(input.alertIntent);
+			}
+		});
+		this.save();
+	}
+
+	/** Cancel a pending intent (eligibility lost / dependency terminal). */
+	cancelFounderAction(actionKey: string, reason: string): void {
+		this.db.run(
+			`UPDATE founder_action_ledger
+			    SET status = 'cancelled', last_error = ?
+			  WHERE action_key = ? AND status = 'pending'`,
+			[reason.slice(0, 500), actionKey],
+		);
+		this.save();
+	}
+
+	// ── FLY-1099: bounded founder-reply retry ledger ─────────────────────────
+
+	private rowToFounderReplyRetry(
+		row: Record<string, unknown>,
+	): FounderReplyRetryRow {
+		return {
+			thread_id: row.thread_id as string,
+			msg_id: row.msg_id as string,
+			attempts: (row.attempts as number) ?? 0,
+			first_seen: row.first_seen as string,
+			first_seen_ms: Number(row.first_seen_ms),
+			last_stage: (row.last_stage as string) ?? undefined,
+			last_error: (row.last_error as string) ?? undefined,
+			dead_lettered_at: (row.dead_lettered_at as string) ?? undefined,
+			dead_lettered_ms:
+				row.dead_lettered_ms == null ? undefined : Number(row.dead_lettered_ms),
+		};
+	}
+
+	/** Upsert attempts+1 for a transiently-failed founder message. */
+	recordFounderReplyFailure(input: {
+		threadId: string;
+		msgId: string;
+		stage: string;
+		error: string;
+		nowMs: number;
+	}): FounderReplyRetryRow {
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT OR IGNORE INTO founder_reply_retry (thread_id, msg_id, attempts, first_seen_ms)
+				 VALUES (?, ?, 0, ?)`,
+				[input.threadId, input.msgId, input.nowMs],
+			);
+			this.db.run(
+				`UPDATE founder_reply_retry
+				    SET attempts = attempts + 1, last_stage = ?, last_error = ?
+				  WHERE thread_id = ? AND msg_id = ? AND dead_lettered_at IS NULL`,
+				[input.stage, input.error.slice(0, 500), input.threadId, input.msgId],
+			);
+		});
+		this.save();
+		const row = this.getFounderReplyRetry(input.threadId, input.msgId);
+		// The row must exist (just upserted); a defensive fallback keeps callers total.
+		return (
+			row ?? {
+				thread_id: input.threadId,
+				msg_id: input.msgId,
+				attempts: 1,
+				first_seen: "",
+				first_seen_ms: input.nowMs,
+				last_stage: input.stage,
+				last_error: input.error,
+			}
+		);
+	}
+
+	getFounderReplyRetry(
+		threadId: string,
+		msgId: string,
+	): FounderReplyRetryRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM founder_reply_retry WHERE thread_id = ? AND msg_id = ?",
+		);
+		stmt.bind([threadId, msgId]);
+		let row: FounderReplyRetryRow | undefined;
+		if (stmt.step()) {
+			row = this.rowToFounderReplyRetry(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return row;
+	}
+
+	listFounderReplyRetries(): FounderReplyRetryRow[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM founder_reply_retry ORDER BY first_seen_ms ASC",
+		);
+		const rows: FounderReplyRetryRow[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToFounderReplyRetry(
+					stmt.getAsObject() as Record<string, unknown>,
+				),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-1099 §7.1: dead-letter — ONE transaction: mark the retry row
+	 * (dead_lettered_ms = durable alert salt) + the audit event + the
+	 * must-deliver `emit_alert` intent (drained at-least-once).
+	 *
+	 * Codex code R5 HIGH: a MISSING retry row is CREATED (INSERT OR IGNORE) in
+	 * the same transaction before the guarded mark — the pending-dead-letter
+	 * latch re-drive runs after a fully-broken-store episode in which the
+	 * bookkeeping upsert never landed, and a mark-only UPDATE would return
+	 * false forever (latch never clears, no audit, no alert). Returns false
+	 * ONLY when the row was already dead-lettered (no duplicate audit/alert).
+	 */
+	markFounderReplyDeadLettered(input: {
+		threadId: string;
+		msgId: string;
+		nowMs: number;
+		audit: SessionEvent;
+		alertIntent: FounderActionIntent;
+	}): boolean {
+		let changed = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT OR IGNORE INTO founder_reply_retry (thread_id, msg_id, attempts, first_seen_ms)
+				 VALUES (?, ?, 0, ?)`,
+				[input.threadId, input.msgId, input.nowMs],
+			);
+			this.db.run(
+				`UPDATE founder_reply_retry
+				    SET dead_lettered_at = datetime('now'), dead_lettered_ms = ?
+				  WHERE thread_id = ? AND msg_id = ? AND dead_lettered_at IS NULL`,
+				[input.nowMs, input.threadId, input.msgId],
+			);
+			changed = this.db.getRowsModified() > 0;
+			if (!changed) return;
+			this.insertAuditEventRaw(input.audit);
+			this.insertFounderActionRaw(input.alertIntent);
+		});
+		this.save();
+		return changed;
+	}
+
+	/** Success-path cleanup for one message. */
+	clearFounderReplyRetry(threadId: string, msgId: string): void {
+		this.db.run(
+			"DELETE FROM founder_reply_retry WHERE thread_id = ? AND msg_id = ?",
+			[threadId, msgId],
+		);
+		this.save();
+	}
+
+	/**
+	 * FLY-1099 §7.2 (Codex R2 #6): waterline cleanup — delete every retry row
+	 * the processed-through cursor has safely crossed (message answered by
+	 * another path / proven irrelevant), so the pin watchdog never false-alarms
+	 * on a message that no longer blocks anything. Snowflakes fit SQLite's
+	 * signed 64-bit INTEGER, so CAST comparison is exact.
+	 */
+	clearFounderReplyRetriesUpTo(
+		threadId: string,
+		msgIdInclusive: string,
+	): number {
+		this.db.run(
+			`DELETE FROM founder_reply_retry
+			  WHERE thread_id = ? AND CAST(msg_id AS INTEGER) <= CAST(? AS INTEGER)`,
+			[threadId, msgIdInclusive],
+		);
+		const n = this.db.getRowsModified();
+		if (n > 0) this.save();
+		return n;
 	}
 
 	/** Get delivery stats for dashboard. */

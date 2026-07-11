@@ -15,9 +15,27 @@
  */
 
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
+/**
+ * FLY-1099 §7.3: manual Promise wrapper (NOT promisify) so we hold the child
+ * handle and can `stdin.end()` IMMEDIATELY — `claude -p` sees an open stdin
+ * pipe and waits 3s for data ("Warning: no stdin data received in 3s"),
+ * which on a loaded machine ate a real chunk of the 20s budget and produced
+ * tonight's `tier3_runner_failed` exec timeouts.
+ */
+const execFileAsync = (
+	file: string,
+	args: string[],
+	options: Record<string, unknown>,
+): Promise<{ stdout: string; stderr: string }> =>
+	new Promise((resolve, reject) => {
+		const child = execFile(file, args, options, (err, stdout, stderr) =>
+			err
+				? reject(err)
+				: resolve({ stdout: String(stdout), stderr: String(stderr) }),
+		);
+		child.stdin?.end();
+	});
 
 /** Default subscription model (Haiku, model-tiers trivial, verified on-sub). */
 export const DEFAULT_CLASSIFIER_MODEL = "claude-haiku-4-5-20251001";
@@ -47,6 +65,18 @@ export interface SubscriptionClassifierOpts {
 	env?: NodeJS.ProcessEnv;
 	/** Test seam. */
 	execFileImpl?: ExecFileAsync;
+	/** FLY-1099 §7.3: delay before the single transient-failure retry (test: 0). */
+	retryDelayMs?: number;
+}
+
+const DEFAULT_RETRY_DELAY_MS = 2_000;
+
+const sleep = (ms: number): Promise<void> =>
+	new Promise((r) => setTimeout(r, ms));
+
+/** ENOENT (CLI missing) is permanent — a retry cannot help. */
+function isPermanentExecError(err: unknown): boolean {
+	return (err as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
 }
 
 /** Strip an optional ```json / ``` fence around a JSON payload. */
@@ -64,22 +94,36 @@ export async function runSubscriptionClassifier(
 	const bin = opts.claudeBin ?? "claude";
 	const model = opts.model ?? DEFAULT_CLASSIFIER_MODEL;
 
+	const execArgs: [string, string[], Record<string, unknown>] = [
+		bin,
+		["-p", prompt, "--model", model, "--output-format", "json"],
+		{
+			timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+			maxBuffer: opts.maxBuffer ?? DEFAULT_MAX_BUFFER,
+			cwd: opts.cwd,
+			env: opts.env,
+		},
+	];
 	let stdout: string;
 	try {
-		const out = await run(
-			bin,
-			["-p", prompt, "--model", model, "--output-format", "json"],
-			{
-				timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-				maxBuffer: opts.maxBuffer ?? DEFAULT_MAX_BUFFER,
-				cwd: opts.cwd,
-				env: opts.env,
-			},
-		);
-		stdout = out.stdout;
+		stdout = (await run(...execArgs)).stdout;
 	} catch (err) {
-		// timeout / nonzero exit / ENOENT (CLI missing) / login prompt / any throw
-		return { ok: false, reason: `exec_failed:${(err as Error).message}` };
+		// FLY-1099 §7.3: ONE transient retry after a short delay (tonight's 529 /
+		// swap-storm windows produced flappy spawns); ENOENT is permanent — the
+		// CLI is missing, retrying cannot help. Still fail-closed on the retry.
+		if (isPermanentExecError(err)) {
+			return { ok: false, reason: `exec_failed:${(err as Error).message}` };
+		}
+		await sleep(opts.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS);
+		try {
+			stdout = (await run(...execArgs)).stdout;
+		} catch (retryErr) {
+			// timeout / nonzero exit / login prompt / any throw — fail-closed
+			return {
+				ok: false,
+				reason: `exec_failed:${(retryErr as Error).message}`,
+			};
+		}
 	}
 
 	// Parse the Claude Code result envelope.

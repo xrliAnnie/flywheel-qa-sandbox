@@ -73,7 +73,7 @@ describe("HeadlessClaudeBrain", () => {
 			handle = h;
 			setTimeout(() => {
 				h.emitStdout(
-					JSON.stringify({ type: "system", session_id: "s-1" }) + "\n",
+					`${JSON.stringify({ type: "system", session_id: "s-1" })}\n`,
 				);
 				h.emitStdout(deltaLine("你好"));
 				h.emitStdout(deltaLine("，Annie"));
@@ -110,7 +110,7 @@ describe("HeadlessClaudeBrain", () => {
 		const runner = new FakeProcessRunner(undefined, (h) =>
 			setTimeout(() => {
 				h.emitStdout(
-					JSON.stringify({ type: "system", session_id: "sess-42" }) + "\n",
+					`${JSON.stringify({ type: "system", session_id: "sess-42" })}\n`,
 				);
 				h.emitStdout(deltaLine("ok"));
 				h.emitExit(0);

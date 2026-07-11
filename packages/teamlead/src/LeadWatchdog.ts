@@ -1079,6 +1079,19 @@ function titleFor(kind: AlertEventType): string {
 		// exhaustiveness.
 		case "notify_digest_failed":
 			return "Daily token report not delivered";
+		// FLY-1099: never emitted by LeadWatchdog (the founder-reply watchdog /
+		// action-ledger drain build their own titles); cases exist for switch
+		// exhaustiveness.
+		case "founder_reply_pass_dead":
+			return "Founder-reply ingest pass DEAD";
+		case "founder_reply_pinned":
+			return "Founder reply stuck (cursor pinned)";
+		case "founder_reply_dead_letter":
+			return "Founder reply dead-lettered";
+		case "founder_notify_dead_letter":
+			return "Founder notify dead-lettered";
+		case "founder_reply_unreachable_runner":
+			return "Runner unreachable for founder replies";
 		// FLY-1081: never emitted by LeadWatchdog (restart-services.sh /
 		// update-flywheel.sh fire these via scripts/lead-alert.sh with their own
 		// titles); cases exist for switch exhaustiveness.
@@ -1184,6 +1197,18 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// token-usage-daily.sh build their own bodies via lead-alert.sh).
 		case "notify_digest_failed":
 			return "The daily token report was not delivered (no receipt / pipeline step failed). Check launchd com.flywheel.token-usage-daily, Bridge /api/reports delivery, and /tmp/flywheel-token-usage-daily.err.";
+		// FLY-1099: never emitted by LeadWatchdog (the founder-reply watchdog /
+		// action-ledger drain build their own bodies).
+		case "founder_reply_pass_dead":
+			return "The founder-reply deliver pass has not completed successfully past the stall threshold — founder replies (incl. ship approvals) are NOT being ingested. Check the Bridge log.";
+		case "founder_reply_pinned":
+			return "A founder message has been pinning its thread's ingest cursor past the threshold — every later founder reply in that thread is blocked behind it.";
+		case "founder_reply_dead_letter":
+			return "A founder message exhausted its bounded retries and was dead-lettered. It will NOT be auto-processed — a human must act on it (durable audit: founder_reply_dead_letter).";
+		case "founder_notify_dead_letter":
+			return "A founder-facing ledger action (held notice / rebound notice / codex nudge / feedback wake) failed terminally after bounded retries — the target never received it.";
+		case "founder_reply_unreachable_runner":
+			return "A LIVE session's CommDB registration row is gone (FLY-1049 shape) — founder replies to its gate cannot be wake-delivered and will dead-letter. Re-register or close the session.";
 		// FLY-1081: never emitted by LeadWatchdog (restart-services.sh /
 		// update-flywheel.sh build their own bodies via lead-alert.sh).
 		case "deploy_failed":

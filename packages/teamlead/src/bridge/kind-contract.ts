@@ -118,6 +118,18 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	bin_integrity_drift: { owner: "claude", arc: "human_by_design" },
 	external_merge_suspect: { owner: "claude", arc: "human_by_design" },
 	notify_digest_failed: { owner: "claude", arc: "human_by_design" },
+	// FLY-1099: founder-reply ingest reliability kinds — all human-investigation
+	// alerts (a dead founder-reply pass / a pinned or dead-lettered founder
+	// message / an unreachable runner registration each need a human to look at
+	// the message or the session; no reversible auto-remediation exists).
+	founder_reply_pass_dead: { owner: "claude", arc: "human_by_design" },
+	founder_reply_pinned: { owner: "claude", arc: "human_by_design" },
+	founder_reply_dead_letter: { owner: "claude", arc: "human_by_design" },
+	founder_notify_dead_letter: { owner: "claude", arc: "human_by_design" },
+	founder_reply_unreachable_runner: {
+		owner: "claude",
+		arc: "human_by_design",
+	},
 	// FLY-1081 (merged from main): shell-only deploy notices fired by
 	// restart-services.sh / update-flywheel.sh via lead-alert.sh — the Bridge
 	// never emits them; same legacy human posture as the other shell kinds.

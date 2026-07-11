@@ -28,7 +28,7 @@ import type { AutoQaRecord, Session, StateStore } from "../StateStore.js";
 import type { AutoQaSideEffects, QaIssueRef } from "./auto-qa-coordinator.js";
 import type { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { closeRunner } from "./close-runner.js";
-import { queueCodexCodeReviewInstruction } from "./codex-instruction.js";
+import { queueCodexCodeReviewInstructionResult } from "./codex-instruction.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import {
 	editDiscordMessageInChannel,
@@ -134,12 +134,25 @@ export class AutoQaEffects implements AutoQaSideEffects {
 	}
 
 	async postThread(args: { session: Session; text: string }): Promise<void> {
+		// FLY-1099 §3.3: void face delegates to the result-bearing variant — one
+		// implementation, two signatures (existing call sites unchanged).
+		await this.postThreadResult(args);
+	}
+
+	/**
+	 * FLY-1099 §3.3 (Codex R1 #4): result-bearing thread post — the ledger
+	 * drain needs a real outcome (delivered vs retry), not fire-and-forget.
+	 */
+	async postThreadResult(args: {
+		session: Session;
+		text: string;
+	}): Promise<{ ok: boolean; messageId?: string }> {
 		const t = this.resolveThread(args.session);
 		if (!t) {
 			console.warn(
 				`[auto-qa-effects] no chat thread for ${args.session.issue_id} — skipping thread post`,
 			);
-			return;
+			return { ok: false };
 		}
 		// FLY-892 (Step 3): this is the CENTRAL auto-QA issue-thread post seam (the
 		// three-stage orchestrator posts through it too). Tag which phase is
@@ -166,7 +179,9 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			console.warn(
 				`[auto-qa-effects] thread post failed for ${args.session.issue_id}: ${res.error}`,
 			);
+			return { ok: false };
 		}
+		return { ok: true, messageId: res.messageIds[0] };
 	}
 
 	/**
@@ -436,10 +451,14 @@ export class AutoQaEffects implements AutoQaSideEffects {
 	/**
 	 * FLY-827: re-queue the `/codex-code-review` instruction to a Codex-held runner
 	 * (D3 loop closure — don't just block, tell the runner to go run Codex).
-	 * Best-effort; the shared helper swallows CommDB failures.
+	 * FLY-1099 §3.3: result-bearing — DB failures surface as `{queued:false}` so
+	 * ledger-driven callers can retry; the coordinator's legacy call site still
+	 * treats it best-effort.
 	 */
-	queueCodexInstruction(args: { session: Session }): void {
-		queueCodexCodeReviewInstruction(
+	queueCodexInstruction(args: {
+		session: Session;
+	}): ReturnType<typeof queueCodexCodeReviewInstructionResult> {
+		return queueCodexCodeReviewInstructionResult(
 			args.session.project_name,
 			args.session.execution_id,
 		);

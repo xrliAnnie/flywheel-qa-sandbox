@@ -359,6 +359,55 @@ export class CommDB {
 	}
 
 	/**
+	 * FLY-1099 §5 (Codex R1 #6): retire a NON-ship zombie gate question with the
+	 * same double-guarded WHERE discipline as `retireShipGate` — only the exact
+	 * (id, from_agent) row, only while UNANSWERED and un-expired. A concurrent
+	 * response wins (returns false, history untouched); `resolveGate`'s
+	 * unconditional UPDATE is deliberately NOT reused here. `requireUnanswered`
+	 * is structurally always true for zombie hygiene — the parameter documents
+	 * the contract rather than offering an unsafe mode.
+	 */
+	retireQuestionGuarded(
+		questionId: string,
+		opts: { expectedFromAgent: string; requireUnanswered: true },
+	): boolean {
+		const info = this.db
+			.prepare(
+				`UPDATE messages SET
+				 resolved_at = datetime('now'),
+				 read_at = COALESCE(read_at, datetime('now')),
+				 expires_at = datetime('now')
+				 WHERE id = ? AND type = 'question'
+				 AND from_agent = ?
+				 AND expires_at > datetime('now')
+				 AND NOT EXISTS (
+				   SELECT 1 FROM messages r WHERE r.parent_id = messages.id AND r.type = 'response'
+				 )`,
+			)
+			.run(questionId, opts.expectedFromAgent);
+		return info.changes > 0;
+	}
+
+	/**
+	 * FLY-1099 §4.3: is this question still answerable — exists, type=question,
+	 * no response child, not expired? (The same predicate `getPendingQuestions`
+	 * applies, point-queried for the deferred-approval rebind pass.)
+	 */
+	isQuestionPending(questionId: string): boolean {
+		const row = this.db
+			.prepare(
+				`SELECT 1 AS hit FROM messages q
+	       WHERE q.id = ? AND q.type = 'question'
+	       AND NOT EXISTS (
+	         SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+	       )
+	       AND q.expires_at > datetime('now')`,
+			)
+			.get(questionId) as { hit: number } | undefined;
+		return row !== undefined;
+	}
+
+	/**
 	 * Mark a gate question as resolved: set resolved_at, mark read,
 	 * and shorten TTL to the configured cleanup hours.
 	 */
@@ -473,6 +522,28 @@ export class CommDB {
 			)
 			.run(id, fromAgent, toAgent, content);
 		return id;
+	}
+
+	/**
+	 * FLY-1099 §3.3 (Codex R3 #3): instruction insert with a CALLER-stable id —
+	 * the at-least-once ledger drain's sink-side dedup. A redelivery after a
+	 * crash-before-mark carries the same action_key-derived id and is ignored
+	 * (INSERT OR IGNORE), so /codex-code-review is never queued twice for one
+	 * intent. Returns true iff a new row landed.
+	 */
+	insertInstructionWithId(
+		id: string,
+		fromAgent: string,
+		toAgent: string,
+		content: string,
+	): boolean {
+		const info = this.db
+			.prepare(
+				`INSERT OR IGNORE INTO messages (id, from_agent, to_agent, type, content)
+         VALUES (?, ?, ?, 'instruction', ?)`,
+			)
+			.run(id, fromAgent, toAgent, content);
+		return info.changes > 0;
 	}
 
 	/**

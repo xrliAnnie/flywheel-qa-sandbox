@@ -12,8 +12,10 @@
  * byte-compatible WAKE-only behavior.
  */
 
+import type { ShipApprovalOutcome } from "../founder-reply-deliverer.js";
 import { deriveCanonicalFounderId } from "./canonical-founder-id.js";
 import {
+	type DeferralSupport,
 	tryFounderShipApproval as defaultHandler,
 	type ShipApprovalHandlerArgs,
 	type ShipApprovalHandlerDeps,
@@ -51,6 +53,17 @@ export interface FounderShipApprovalFactoryConfig {
 	auditStore?: AttributionAuditStore;
 	/** FLY-1041 Chunk 5: shared founder-approval hold guard (plugin injects). */
 	isHeld?: ShipApprovalHandlerDeps["isHeld"];
+	/**
+	 * FLY-1099 §4.2: deferral support factory — built per call with the thread
+	 * ctx bound (the deferral transaction needs issueId/threadId/projectName for
+	 * the deferred row + held_reply notice intent). Absent → legacy
+	 * held_declined behavior.
+	 */
+	deferralSupport?: (ctx: {
+		issueId: string;
+		threadId: string;
+		projectName: string;
+	}) => DeferralSupport;
 	/**
 	 * FLY-799 image approval (default-OFF fast-follow): the production image
 	 * evaluator (download + sha256 + multimodal classify). Absent → text-only.
@@ -90,7 +103,7 @@ export function makeFounderShipApprovalCallback(
 	config: FounderShipApprovalFactoryConfig,
 ): (
 	args: FounderShipApprovalCallbackArgs,
-) => Promise<{ handled: string[]; retrySafe: boolean } | null> {
+) => Promise<ShipApprovalOutcome | null> {
 	const handler = config.handlerImpl ?? defaultHandler;
 	return async (args) => {
 		if (!autoApproveEnabled()) return null; // kill-switch
@@ -146,6 +159,12 @@ export function makeFounderShipApprovalCallback(
 				evaluateImageImpl: config.evaluateImageImpl,
 				auditSink,
 				isHeld: config.isHeld,
+				// FLY-1099 §4.2: deferral support bound to this thread's ctx.
+				deferral: config.deferralSupport?.({
+					issueId: args.ctx.issueId,
+					threadId: args.ctx.threadId,
+					projectName: args.ctx.projectName,
+				}),
 			},
 		);
 	};

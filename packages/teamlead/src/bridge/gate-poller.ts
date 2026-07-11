@@ -41,18 +41,29 @@ import {
 	type InboundCursorStore,
 	InMemoryInboundCursorStore,
 } from "../lead-backends/codex/InboundCursorStore.js";
-import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
+import {
+	type LeadConfig,
+	type ProjectEntry,
+	resolveLeadForIssue,
+} from "../ProjectConfig.js";
 import {
 	REVIEW_BINDING_UNBOUND,
 	type Session,
 	type StateStore,
 } from "../StateStore.js";
+import {
+	type DeferredRebindDeps,
+	type RebindCommDb,
+	runDeferredApprovalRebindPass,
+} from "./approval-signal/deferred-approval.js";
 import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
-import { isReviewHeld } from "./auto-qa-held.js";
+import { isReviewHeld, reviewHoldReason } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 // FLY-927 (Task 3.3): truthful park wording for the lead-pending nudge.
 import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
-import { DISCORD_API } from "./discord-utils.js";
+import { queueCodexCodeReviewInstructionResult } from "./codex-instruction.js";
+import { DISCORD_API, postDiscordMessageToChannel } from "./discord-utils.js";
+import { drainFounderActionLedger } from "./founder-action-drain.js";
 import {
 	isDiscordSnowflake,
 	parseSqliteUtcMs,
@@ -60,9 +71,11 @@ import {
 import {
 	emitFounderReplyDeliveryForThread,
 	type FounderReplyDeliverDeps,
+	type FounderReplyRetryLedger,
 	type FounderReplyThreadCtx,
 	type PendingQuestionForThread,
 } from "./founder-reply-deliverer.js";
+import { FounderReplyWatchdog } from "./founder-reply-watchdog.js";
 import {
 	emitFounderMilestoneNotification,
 	emitFounderThreadNotification,
@@ -89,6 +102,11 @@ import {
 } from "./stale-approved-ship-reconciler.js";
 import type { UnhandledAlertSink } from "./stuck-escalation.js";
 import { isTmuxSessionAlive } from "./tmux-lookup.js";
+import {
+	runZombieGateHygiene,
+	type ZombieCommDb,
+	zombieGateResolveEnabled,
+} from "./zombie-gate-hygiene.js";
 
 /**
  * FLY-208 A2: minimal structural view of the agent-team transport used by the
@@ -243,6 +261,17 @@ export interface GatePollerConfig {
 	externalMergeReconcile?: () => Promise<void>;
 
 	/**
+	 * FLY-1099 §4.3: the deferred-approval rebind pass wiring (plugin injects
+	 * the production post-write hook + canonical founder id resolver — the SAME
+	 * ones the live text path uses, so the rebind can never drift into a
+	 * different authorization chain). Absent → rebind pass disabled.
+	 */
+	deferredRebind?: {
+		canonicalFounderId(): string | undefined;
+		onResponseWritten?: DeferredRebindDeps["onResponseWritten"];
+	};
+
+	/**
 	 * FLY-799: the flag-gated founder ✅-reaction ship-approval callback (built in
 	 * plugin.ts via makeFounderReactionApprovalCallback). Called per pending
 	 * approve_to_ship gate; on a founder ✅ on the bound gate message it writes the
@@ -340,6 +369,18 @@ interface PendingQuestion {
 	kind?: string | null;
 }
 
+/** Codex code R4 HIGH: one latched/immediate founder-reply dead-letter. */
+interface FounderReplyDeadLetterArgs {
+	ctx: FounderReplyThreadCtx;
+	msgId: string;
+	executionId: string;
+	stage: string;
+	reason: string;
+	contentExcerpt: string;
+	attempts: number;
+	nowMs: number;
+}
+
 const ACTIVE_SESSION_STATUSES = new Set([
 	"running",
 	"awaiting_review",
@@ -377,11 +418,59 @@ export function isSupersededShipGate(
 	return boundMs > qMs;
 }
 
+/**
+ * Codex code R4 HIGH: founder-reply pass health (pure, testable). Unhealthy
+ * when EVERY scanned thread failed (read/process/exception — the broken-
+ * StateStore shape fails every scan as process_failed, never read_failed),
+ * OR while ANY dead-letter write is still latched (its recovery anchor is
+ * in-memory only, so the pass-dead episode must stay alive until it lands).
+ */
+export function computeFounderPassHealthy(
+	scanned: number,
+	failedScans: number,
+	pendingDeadLetters: number,
+): boolean {
+	if (pendingDeadLetters > 0) return false;
+	return scanned === 0 || failedScans < scanned;
+}
+
 export class GatePoller {
 	private timerHandle: ReturnType<typeof setInterval> | null = null;
 	private polling = false;
+	// FLY-1099 §7.2: founder-reply health watchdog + its per-thread routing map
+	// (refreshed by every deliver pass; unknown threads fall back to the infra
+	// owner route).
+	private readonly founderReplyWatchdog: FounderReplyWatchdog;
+	private readonly founderThreadRoutes = new Map<
+		string,
+		{ leadId: string; projectName: string; issueId?: string }
+	>();
 
-	constructor(private config: GatePollerConfig) {}
+	constructor(private config: GatePollerConfig) {
+		this.founderReplyWatchdog = new FounderReplyWatchdog({
+			store: config.store,
+			alertSink: config.leadAlertSink,
+			resolveThreadRoute: (threadId) => this.founderThreadRoutes.get(threadId),
+			infraRoute: () => this.infraAlertRoute(),
+		});
+	}
+
+	/**
+	 * FLY-1099 §7.2: pass-level alert routing — the unified infra alert owner:
+	 * the `flywheel` project's first lead when present, else the first
+	 * configured (project, lead) pair.
+	 */
+	private infraAlertRoute():
+		| { leadId: string; projectName: string }
+		| undefined {
+		const projects = this.config.projects;
+		const infra =
+			projects.find((p) => p.projectName === "flywheel") ??
+			projects.find((p) => p.leads.length > 0);
+		const lead = infra?.leads[0];
+		if (!infra || !lead) return undefined;
+		return { leadId: lead.agentId, projectName: infra.projectName };
+	}
 
 	start(): void {
 		if (this.timerHandle) return;
@@ -390,6 +479,15 @@ export class GatePoller {
 		// internals are already wrapped (per-lead + founder-reply try/catch), this
 		// is belt-and-suspenders for any scaffolding throw above those.
 		this.timerHandle = setInterval(() => {
+			// FLY-1099 §7.2 (Codex R1 #5): the pass-dead HANG check lives in the
+			// interval callback's OUTERMOST layer — a pass hung inside poll()
+			// leaves `polling` true forever, so poll() itself would never observe
+			// it; this cheap clock check still runs every tick.
+			try {
+				this.founderReplyWatchdog.checkHang(Date.now());
+			} catch {
+				/* the watchdog must never break the poll loop */
+			}
 			void this.poll().catch((err) => {
 				console.error(
 					"[GatePoller] unexpected poll rejection (contained, Bridge stays up):",
@@ -742,14 +840,81 @@ export class GatePoller {
 				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
 			) {
 				try {
-					await this.founderReplyDeliverPass();
+					const healthy = await this.founderReplyDeliverPass();
+					// FLY-1099 §7.2: pass health — an all-read-failed pass is NOT a
+					// success (Discord ingest is effectively down for every thread).
+					if (healthy) this.founderReplyWatchdog.notePassSuccess(Date.now());
+					else this.founderReplyWatchdog.notePassFailure(Date.now());
 				} catch (err) {
+					this.founderReplyWatchdog.notePassFailure(Date.now());
 					console.warn(
 						"[GatePoller] founder-reply deliver pass error:",
 						err instanceof Error ? err.message : String(err),
 					);
 					// FLY-639: this pass also touches StateStore (getSession /
 					// getChatThreadByIssue / appendLeadEvent) — self-heal on corruption.
+					this.maybeRecoverStore(err);
+				}
+			}
+
+			// FLY-1099 §4.3: deferred-approval rebind pass — same sub-cadence,
+			// only meaningful while ingest is on (a deferral is captured by the
+			// deliver pass; TTL still converges via this pass's own kill-switch
+			// checks inside runDeferredApprovalRebindPass).
+			if (
+				this.config.deferredRebind &&
+				this.founderReplyDeliverEnabled() &&
+				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
+			) {
+				try {
+					await this.deferredRebindPass();
+				} catch (err) {
+					console.warn(
+						"[GatePoller] deferred-approval rebind pass error:",
+						err instanceof Error ? err.message : String(err),
+					);
+					this.maybeRecoverStore(err);
+				}
+			}
+
+			// FLY-1099 §3.3 + §8: founder action-ledger drain — DELIBERATELY
+			// outside the FLYWHEEL_FOUNDER_REPLY_DELIVER ingest switch: intents
+			// already committed (held notices / nudges / feedback wakes / MUST-
+			// DELIVER alerts) still converge when ops turn ingest off.
+			if (this.tickCount % this.founderReplyDeliverEveryNTicks() === 1) {
+				try {
+					await this.founderActionDrainPass();
+				} catch (err) {
+					console.warn(
+						"[GatePoller] founder action-ledger drain error:",
+						err instanceof Error ? err.message : String(err),
+					);
+					this.maybeRecoverStore(err);
+				}
+				// FLY-1099 §7.2: watchdog detector tick (pin / unreachable / pass-dead
+				// latch maintenance) — durable-table driven, cheap.
+				try {
+					await this.founderReplyWatchdog.tick(Date.now());
+				} catch (err) {
+					console.warn(
+						"[GatePoller] founder-reply watchdog tick error:",
+						err instanceof Error ? err.message : String(err),
+					);
+					this.maybeRecoverStore(err);
+				}
+			}
+
+			// FLY-1099 §5: zombie gate hygiene on the patrol cadence — Z1 retires
+			// gates whose runner is irreversibly gone (three-phase, guarded); Z2
+			// (live session, missing CommDB row) feeds the unreachable detector.
+			if (this.tickCount % this.patrolEveryNTicks() === 1) {
+				try {
+					await this.zombieGateHygienePass();
+				} catch (err) {
+					console.warn(
+						"[GatePoller] zombie gate hygiene error:",
+						err instanceof Error ? err.message : String(err),
+					);
 					this.maybeRecoverStore(err);
 				}
 			}
@@ -2456,13 +2621,22 @@ export class GatePoller {
 	 * Per (project, lead): take the past-grace pending questions, group them by
 	 * issue thread, and let `emitFounderReplyDeliveryForThread` read each thread
 	 * once and auto-deliver / WAKE / hand off as appropriate.
+	 *
+	 * FLY-1099 §7.2: returns pass HEALTH — false when every scanned thread
+	 * failed its Discord read (ingest effectively down), so the watchdog's
+	 * pass-dead clock is not fed by hollow "successes".
 	 */
-	private async founderReplyDeliverPass(): Promise<void> {
-		if (!this.config.chatThreadsEnabled) return;
+	private async founderReplyDeliverPass(): Promise<boolean> {
+		if (!this.config.chatThreadsEnabled) return true;
 		const ownerUserId = this.config.discordOwnerUserId;
-		if (!isDiscordSnowflake(ownerUserId)) return;
+		if (!isDiscordSnowflake(ownerUserId)) return true;
 		const graceMs = this.founderReplyDeliverGraceMs();
 		const now = Date.now();
+		let scanned = 0;
+		let failedScans = 0;
+		// Codex code R4 HIGH: re-drive any dead-letters whose StateStore write
+		// failed on a prior pass BEFORE scanning (the store may have self-healed).
+		this.retryPendingDeadLetters();
 
 		for (const project of this.config.projects) {
 			for (const lead of project.leads) {
@@ -2528,6 +2702,12 @@ export class GatePoller {
 							questions: [],
 						};
 						byThread.set(thread.thread_id, group);
+						// FLY-1099 §7.2: refresh the watchdog's per-thread alert route.
+						this.founderThreadRoutes.set(thread.thread_id, {
+							leadId: lead.agentId,
+							projectName: project.projectName,
+							issueId: session.issue_identifier ?? session.issue_id,
+						});
 					}
 					group.questions.push({
 						questionId: q.id,
@@ -2553,17 +2733,35 @@ export class GatePoller {
 						continue;
 					}
 					try {
-						await emitFounderReplyDeliveryForThread(ctx, questions, {
-							store: this.config.store,
-							fetchImpl: this.config.fetchImpl,
-							cursorStore: this.config.cursorStore ?? this.defaultReplyCursor,
-							deliverAmbiguousToLead,
-							// FLY-799: founder text approval → gate write (flag-gated; absent → WAKE-only).
-							tryFounderShipApproval: this.config.tryFounderShipApproval,
-							// FLY-1041 Chunk 7: reply-to-card binding reader.
-							readCurrentBinding: this.config.readCurrentBinding,
-						});
+						scanned++;
+						const outcome = await emitFounderReplyDeliveryForThread(
+							ctx,
+							questions,
+							{
+								store: this.config.store,
+								fetchImpl: this.config.fetchImpl,
+								cursorStore: this.config.cursorStore ?? this.defaultReplyCursor,
+								deliverAmbiguousToLead,
+								// FLY-799: founder text approval → gate write (flag-gated; absent → WAKE-only).
+								tryFounderShipApproval: this.config.tryFounderShipApproval,
+								// FLY-1041 Chunk 7: reply-to-card binding reader.
+								readCurrentBinding: this.config.readCurrentBinding,
+								// FLY-1099 §7.1: bounded retry + dead-letter.
+								retryLedger: this.founderReplyRetryLedger(),
+							},
+						);
+						// Codex code R4 HIGH: process failures count against pass health
+						// too — a fully broken StateStore fails every scan as
+						// process_failed/exception (never read_failed), and that shape
+						// must reach the pass-dead detector.
+						if (
+							outcome.result === "read_failed" ||
+							outcome.result === "process_failed"
+						) {
+							failedScans++;
+						}
 					} catch (err) {
+						failedScans++;
 						console.warn(
 							`[GatePoller] founder-reply deliver error (thread=${ctx.threadId}):`,
 							err instanceof Error ? err.message : String(err),
@@ -2574,6 +2772,430 @@ export class GatePoller {
 				}
 			}
 		}
+		return computeFounderPassHealthy(
+			scanned,
+			failedScans,
+			this.pendingDeadLetters.size,
+		);
+	}
+
+	// ── FLY-1099: founder-reply reliability wiring ──────────────────────────
+
+	/** §7.1: FLYWHEEL_FOUNDER_REPLY_RETRY_MAX (default 10). */
+	private founderReplyRetryMax(): number {
+		return positiveIntEnv(process.env.FLYWHEEL_FOUNDER_REPLY_RETRY_MAX, 10);
+	}
+
+	/** §7.1: FLYWHEEL_FOUNDER_REPLY_DEADLETTER_AGE_MS (default 30min). */
+	private founderReplyDeadletterAgeMs(): number {
+		return positiveIntEnv(
+			process.env.FLYWHEEL_FOUNDER_REPLY_DEADLETTER_AGE_MS,
+			30 * 60_000,
+		);
+	}
+
+	/** Parse a session's issue_labels JSON (defensive — never throws). */
+	private static parseSessionLabels(raw: string | undefined): string[] {
+		if (!raw) return [];
+		try {
+			const parsed = JSON.parse(raw);
+			return Array.isArray(parsed)
+				? parsed.filter((x): x is string => typeof x === "string")
+				: [];
+		} catch {
+			return [];
+		}
+	}
+
+	/**
+	 * §7.2: per-session alert routing — the session's label-resolved lead;
+	 * infra owner fallback when unresolvable.
+	 */
+	private resolveAlertRoute(
+		projectName: string,
+		executionId: string,
+	): { leadId: string } | undefined {
+		try {
+			const session = this.config.store.getSession(executionId);
+			const { lead } = resolveLeadForIssue(
+				this.config.projects,
+				projectName,
+				GatePoller.parseSessionLabels(session?.issue_labels),
+			);
+			return { leadId: lead.agentId };
+		} catch {
+			const infra = this.infraAlertRoute();
+			return infra ? { leadId: infra.leadId } : undefined;
+		}
+	}
+
+	/** Bot token for a session's thread (lead token → global fallback). */
+	private resolveBotTokenFor(
+		projectName: string,
+		executionId: string,
+	): string | undefined {
+		try {
+			const session = this.config.store.getSession(executionId);
+			const { lead } = resolveLeadForIssue(
+				this.config.projects,
+				projectName,
+				GatePoller.parseSessionLabels(session?.issue_labels),
+			);
+			return lead.botToken ?? this.config.discordBotToken;
+		} catch {
+			return this.config.discordBotToken;
+		}
+	}
+
+	private retryLedgerImpl?: FounderReplyRetryLedger;
+
+	/**
+	 * Codex code R4 HIGH: the in-memory pending-dead-letter latch — the ONLY
+	 * recovery anchor for a message whose response is durable but whose
+	 * dead-letter WRITE failed (fully broken StateStore: no retry row, no gate
+	 * rematch, nothing durable to scan). Entries are re-driven at the start of
+	 * every deliver pass (the FLY-639 self-heal may have repaired the store),
+	 * and a NON-EMPTY latch keeps the pass marked UNHEALTHY so the pass-dead
+	 * watchdog escalates instead of notePassSuccess silencing the episode.
+	 * Honest floor: a Bridge crash drops the latch — with storage fully broken
+	 * nothing durable was recordable anywhere; the sustained pass-dead alert
+	 * is the human hand-off.
+	 */
+	private readonly pendingDeadLetters = new Map<
+		string,
+		FounderReplyDeadLetterArgs
+	>();
+
+	/** Re-drive latched dead-letters (the store may have self-healed). */
+	private retryPendingDeadLetters(): void {
+		if (this.pendingDeadLetters.size === 0) return;
+		for (const [key, entry] of this.pendingDeadLetters) {
+			try {
+				if (
+					this.executeFounderReplyDeadLetter({ ...entry, nowMs: Date.now() })
+				) {
+					this.pendingDeadLetters.delete(key);
+					continue;
+				}
+				// Codex code R5 HIGH: mark returns false ONLY when the row is
+				// already dead-lettered (the missing-row case now creates + marks in
+				// one transaction) — another path disposed it; the latch is done.
+				if (
+					this.config.store.getFounderReplyRetry(
+						entry.ctx.threadId,
+						entry.msgId,
+					)?.dead_lettered_at
+				) {
+					this.pendingDeadLetters.delete(key);
+				}
+			} catch {
+				// still broken — keep the latch (pass stays unhealthy)
+			}
+		}
+	}
+
+	/** The atomic dead-letter transaction (row mark + audit + alert intent). */
+	private executeFounderReplyDeadLetter(
+		args: FounderReplyDeadLetterArgs,
+	): boolean {
+		const store = this.config.store;
+		const route = this.resolveAlertRoute(
+			args.ctx.projectName,
+			args.executionId,
+		);
+		return store.markFounderReplyDeadLettered({
+			threadId: args.ctx.threadId,
+			msgId: args.msgId,
+			nowMs: args.nowMs,
+			audit: {
+				event_id: `founder-reply-dead-letter-${args.ctx.threadId}-${args.msgId}`,
+				execution_id: args.executionId,
+				issue_id: args.ctx.issueId,
+				project_name: args.ctx.projectName,
+				event_type: "founder_reply_dead_letter",
+				source: "bridge.gate-poller",
+				payload: {
+					threadId: args.ctx.threadId,
+					msgId: args.msgId,
+					stage: args.stage,
+					reason: args.reason,
+					attempts: args.attempts,
+					excerpt: args.contentExcerpt,
+				},
+			},
+			alertIntent: {
+				actionKey: `emit-alert-founder-reply-dl-${args.ctx.threadId}-${args.msgId}`,
+				kind: "emit_alert",
+				executionId: args.executionId,
+				issueId: args.ctx.issueId,
+				projectName: args.ctx.projectName,
+				threadId: args.ctx.threadId,
+				payload: {
+					alert: {
+						leadId: route?.leadId ?? "",
+						projectName: args.ctx.projectName,
+						// §7.2: durable episode salt = dead_lettered_ms (this nowMs).
+						eventId: `founder-reply-dl-${args.msgId}-${args.nowMs}`,
+						eventType: "founder_reply_dead_letter",
+						title: `Founder reply DEAD-LETTERED — ${args.ctx.issueId}`,
+						body:
+							`Founder message ${args.msgId} in thread ${args.ctx.threadId}(《${args.contentExcerpt}》)was dead-lettered ` +
+							`after ${args.attempts} attempts (last stage ${args.stage}: ${args.reason}). ` +
+							"It will NOT be auto-processed — a human must act on it.",
+						severity: "warning",
+					},
+				},
+			},
+		});
+	}
+
+	/**
+	 * §7.1: the bounded-retry / dead-letter policy the deliverer drives.
+	 * Dead-letter (attempts OR age threshold) is ONE StateStore transaction:
+	 * retry-row mark + audit event + must-deliver emit_alert intent — the
+	 * message is then DISPOSED (never silently lost: the durable trail exists
+	 * before the cursor may pass it).
+	 */
+	private founderReplyRetryLedger(): FounderReplyRetryLedger {
+		if (this.retryLedgerImpl) return this.retryLedgerImpl;
+		const store = this.config.store;
+		/** Shared atomic dead-letter transaction — see executeFounderReplyDeadLetter. */
+		const deadLetter = (args: FounderReplyDeadLetterArgs): boolean =>
+			this.executeFounderReplyDeadLetter(args);
+		this.retryLedgerImpl = {
+			recordFailure: ({
+				ctx,
+				msgId,
+				executionId,
+				stage,
+				reason,
+				contentExcerpt,
+			}) => {
+				const nowMs = Date.now();
+				const row = store.recordFounderReplyFailure({
+					threadId: ctx.threadId,
+					msgId,
+					stage,
+					error: reason,
+					nowMs,
+				});
+				if (
+					row.attempts < this.founderReplyRetryMax() &&
+					nowMs - row.first_seen_ms < this.founderReplyDeadletterAgeMs()
+				) {
+					return { deadLettered: false };
+				}
+				return {
+					deadLettered: deadLetter({
+						ctx,
+						msgId,
+						executionId,
+						stage,
+						reason,
+						contentExcerpt,
+						attempts: row.attempts,
+						nowMs,
+					}),
+				};
+			},
+			// Codex code R3 HIGH: no bounded lap — an answered gate can never
+			// re-match, so the terminal must land NOW (or the cursor pins and the
+			// watchdog is the last resort).
+			deadLetterNow: ({
+				ctx,
+				msgId,
+				executionId,
+				stage,
+				reason,
+				contentExcerpt,
+			}) => {
+				const nowMs = Date.now();
+				let attempts = 1;
+				try {
+					attempts = store.recordFounderReplyFailure({
+						threadId: ctx.threadId,
+						msgId,
+						stage,
+						error: reason,
+						nowMs,
+					}).attempts;
+				} catch {
+					/* the row is bookkeeping; the DL transaction below is the terminal */
+				}
+				const dlArgs = {
+					ctx,
+					msgId,
+					executionId,
+					stage,
+					reason,
+					contentExcerpt,
+					attempts,
+					nowMs,
+				};
+				try {
+					const deadLettered = deadLetter(dlArgs);
+					if (deadLettered) return { deadLettered: true };
+					// mark returned false: already dead-lettered → disposed; else the
+					// row could not be written → LATCH (R4 HIGH recovery anchor).
+					if (
+						store.getFounderReplyRetry(ctx.threadId, msgId)?.dead_lettered_at
+					) {
+						return { deadLettered: true };
+					}
+					this.pendingDeadLetters.set(`${ctx.threadId}:${msgId}`, dlArgs);
+					return { deadLettered: false };
+				} catch {
+					this.pendingDeadLetters.set(`${ctx.threadId}:${msgId}`, dlArgs);
+					return { deadLettered: false };
+				}
+			},
+			isDeadLettered: (threadId, msgId) =>
+				!!store.getFounderReplyRetry(threadId, msgId)?.dead_lettered_at,
+			clear: (threadId, msgId) => store.clearFounderReplyRetry(threadId, msgId),
+			clearUpTo: (threadId, msgIdInclusive) => {
+				store.clearFounderReplyRetriesUpTo(threadId, msgIdInclusive);
+			},
+		};
+		return this.retryLedgerImpl;
+	}
+
+	/** §4.3: the deferred-approval rebind pass (same authorization chain). */
+	private async deferredRebindPass(): Promise<void> {
+		const rebind = this.config.deferredRebind;
+		if (!rebind) return;
+		await runDeferredApprovalRebindPass({
+			store: this.config.store,
+			canonicalFounderId: rebind.canonicalFounderId,
+			holdReasonFor: (execId) =>
+				reviewHoldReason(
+					this.config.store,
+					this.config.store.getSession(execId),
+				),
+			openCommDb: (projectName) => {
+				try {
+					return new CommDB(
+						defaultGetCommDbPath(projectName),
+						false,
+					) as unknown as RebindCommDb;
+				} catch {
+					return null;
+				}
+			},
+			onResponseWritten: rebind.onResponseWritten,
+			resolveBotToken: (row) =>
+				this.resolveBotTokenFor(row.project_name, row.execution_id),
+			fetchImpl: this.config.fetchImpl,
+		});
+	}
+
+	/** §3.3: drain the founder action ledger (notices / nudges / wakes / alerts). */
+	private async founderActionDrainPass(): Promise<void> {
+		await drainFounderActionLedger({
+			store: this.config.store,
+			postNotice: async ({ threadId, text, projectName, executionId }) => {
+				const token = this.resolveBotTokenFor(projectName, executionId);
+				if (!token) return { ok: false, error: "no_bot_token" };
+				const res = await postDiscordMessageToChannel(
+					threadId,
+					text,
+					token,
+					{},
+					this.config.fetchImpl ?? fetch,
+				);
+				return res.ok ? { ok: true } : { ok: false, error: res.error };
+			},
+			queueCodexInstruction: ({ projectName, executionId, instructionId }) =>
+				queueCodexCodeReviewInstructionResult(projectName, executionId, {
+					instructionId,
+				}),
+			wake: async ({ projectName, executionId, content, metadata }) => {
+				let db: CommDB;
+				try {
+					db = new CommDB(defaultGetCommDbPath(projectName), false);
+				} catch (err) {
+					return { ok: false, error: (err as Error).message };
+				}
+				try {
+					const res = await wakeRunnerMailbox({
+						db,
+						execId: executionId,
+						fromAgent: "founder-bridge-auto",
+						content,
+						metadata,
+					});
+					return res.ok
+						? { ok: true }
+						: {
+								ok: false,
+								error: res.error ?? res.skippedReason ?? "wake failed",
+							};
+				} finally {
+					db.close();
+				}
+			},
+			alertSink: this.config.leadAlertSink,
+			resolveAlertRoute: (projectName, executionId) =>
+				this.resolveAlertRoute(projectName, executionId),
+		});
+	}
+
+	/** §5: zombie gate hygiene (Z1 guarded retire + Z2 unreachable detection). */
+	private async zombieGateHygienePass(): Promise<void> {
+		const watchdogOn = process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG !== "0";
+		if (!zombieGateResolveEnabled() && !watchdogOn) return;
+		this.founderReplyWatchdog.beginUnreachableSweep();
+		for (const project of this.config.projects) {
+			for (const lead of project.leads) {
+				let db: CommDB;
+				try {
+					db = new CommDB(defaultGetCommDbPath(project.projectName), false);
+				} catch {
+					continue; // CommDB not present yet
+				}
+				try {
+					// FLY-307 A contract (Case 8c): questions already tracked by the
+					// stale-gate eviction bookkeeping are being handled by that path —
+					// the zombie pass must NOT re-touch them (each getSession() on a
+					// known-stale gate is exactly the sql.js churn FLY-307 removed).
+					const pending = (
+						db.getPendingQuestions(lead.agentId) as PendingQuestion[]
+					).filter(
+						(q) =>
+							q.checkpoint != null &&
+							!this.evictedGateIds.has(q.id) &&
+							!this.evictionRetryAt.has(q.id),
+					);
+					// Codex code R8 MED-1: run the hygiene pass even with ZERO
+					// candidates — its tail reconciles dangling zombie intents
+					// (intent-without-outcome after a crash), which must converge even
+					// when every pending gate is eviction-tracked. Reconcile reads only
+					// CommDB rows + StateStore events, never getSession, so this does
+					// not reintroduce the Case 8c churn.
+					await runZombieGateHygiene({
+						store: this.config.store,
+						projectName: project.projectName,
+						pendingGateQuestions: pending.map((q) => ({
+							id: q.id,
+							from_agent: q.from_agent,
+							checkpoint: q.checkpoint,
+						})),
+						db: db as unknown as ZombieCommDb,
+						noteUnreachableRunner: watchdogOn
+							? (a) => this.founderReplyWatchdog.noteUnreachableRunner(a)
+							: undefined,
+					});
+				} catch (err) {
+					console.warn(
+						`[GatePoller] zombie hygiene error (${project.projectName}/${lead.agentId}):`,
+						err instanceof Error ? err.message : String(err),
+					);
+					this.maybeRecoverStore(err);
+				} finally {
+					db.close();
+				}
+			}
+		}
+		this.founderReplyWatchdog.endUnreachableSweep();
 	}
 
 	/** FLY-799: minimum spacing between reaction-checks for one ship gate. */

@@ -159,6 +159,28 @@ export const ALERT_EVENT_TYPES = [
 	// report date → at most one alert per expected day (claims-table dedup,
 	// shared kind face with the lead-alert.sh allowlist).
 	"notify_digest_failed",
+	// ── FLY-1099: founder-reply ingest reliability (账本诚实性 — a founder
+	// approval must never disappear silently again). All five carry a durable
+	// episode salt in the eventId (FLY-220 discipline) so the permanent
+	// claims.db dedup can never swallow a NEW episode.
+	// The founder-reply deliver pass has not completed successfully past the
+	// stall threshold (incl. a HUNG pass — the GatePoller outer-layer clock
+	// check observes it even while `polling` is stuck true).
+	"founder_reply_pass_dead",
+	// A founder message has been pinning its thread's ingest cursor past the
+	// pin threshold (per-thread routing; the durable founder_reply_retry row
+	// is the source).
+	"founder_reply_pinned",
+	// A founder message exhausted its bounded retries and was dead-lettered —
+	// durably recorded + must-deliver alert (the message will NOT be
+	// auto-processed; a human must act on it).
+	"founder_reply_dead_letter",
+	// A founder-facing ledger action (held notice / rebound notice / nudge /
+	// feedback wake) failed terminally after bounded retries.
+	"founder_notify_dead_letter",
+	// Z2 (FLY-1049 shape): a LIVE session whose CommDB registration row is
+	// gone — wake routing broken; founder replies to its gate dead-letter.
+	"founder_reply_unreachable_runner",
 	// FLY-1081: restart-services.sh / update-flywheel.sh deploy notices, fired
 	// ONLY via scripts/lead-alert.sh with the system identity `--lead deploy` /
 	// `--lead updater` (shell-only kinds; the Bridge never emits them). Present

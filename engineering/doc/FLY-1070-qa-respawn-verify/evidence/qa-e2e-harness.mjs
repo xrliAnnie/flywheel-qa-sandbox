@@ -44,14 +44,14 @@ const ISSUE = "FLY-E2E";
 const SILENCE_MS = 800; // negative-assertion silence window (recorded)
 const WAIT_MS = 5000; // positive-assertion bounded poll
 let failures = 0;
-let scenarioNo = 0;
+let _scenarioNo = 0;
 function check(label, cond, detail = "") {
 	const tag = cond ? "PASS" : "FAIL";
 	if (!cond) failures++;
 	console.log(`  [${tag}] ${label}${detail ? ` — ${detail}` : ""}`);
 }
 function scenario(name) {
-	scenarioNo++;
+	_scenarioNo++;
 	console.log(`\n═══ ${name} ═══`);
 }
 async function waitFor(fn, ms = WAIT_MS, interval = 25) {

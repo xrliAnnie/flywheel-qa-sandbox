@@ -8,7 +8,9 @@
  *  G1  R2 silent-drop END-TO-END — real StateStore (sql.js) + real
  *      GatePoller.makeAmbiguousHandoff + real FileInboundCursorStore +
  *      real emitFounderReplyDeliveryForThread. Proves: short-circuit flush()
- *      throw → propagates out of the deliverer → on-disk cursor NOT advanced →
+ *      throw → surfaces as a `process_exception` failure outcome (FLY-1099:
+ *      the deliverer converts the throw into a bounded-retry-eligible
+ *      disposition instead of propagating) → on-disk cursor NOT advanced →
  *      retry re-flushes + delivers durably → handoff never lost NOR duplicated.
  *      Plus the happy path (flush OK → cursor advances + handoff durable).
  *
@@ -211,10 +213,21 @@ describe("FLY-612 G1: R2 silent-drop end-to-end (real components)", () => {
 		});
 		const pending = [q("q1", "brainstorm"), q("q2", null)];
 
-		// PASS 1: flush throws inside the handoff → propagates out of the deliverer.
-		await expect(
-			emitFounderReplyDeliveryForThread(ctx(), pending, deps()),
-		).rejects.toThrow("disk full");
+		// PASS 1: flush throws inside the handoff. FLY-1099 (Codex code R1
+		// HIGH-3): the throw no longer escapes the deliverer — it is converted
+		// into a bounded-retry-eligible failure outcome (`process_exception`) so
+		// the retry ledger sees it. The LOAD-BEARING contract is unchanged:
+		// cursor NOT advanced, the retry pass re-delivers, no drop, no dupe.
+		const pass1 = await emitFounderReplyDeliveryForThread(
+			ctx(),
+			pending,
+			deps(),
+		);
+		expect(pass1).toMatchObject({
+			result: "process_failed",
+			stage: "process_exception",
+			reason: expect.stringContaining("disk full"),
+		});
 		// cursor NOT advanced — nothing on disk (fresh reader sees no cursor)
 		expect(new FileInboundCursorStore(cursorPath).load("T1")).toBeUndefined();
 
