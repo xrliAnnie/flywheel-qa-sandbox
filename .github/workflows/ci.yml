@@ -156,6 +156,22 @@ jobs:
       - name: Test — FLY-1062 payload real-install smoke
         run: bash scripts/__tests__/package-onboard-smoke.test.sh
 
+      # FLY-1062 PR2: public onboard-shell (@flywheel/onboard). Hermetic — a
+      # stub gated endpoint on loopback + a fixture zero-dep payload tarball +
+      # REAL npm install. Covers the full customer install chain, failure
+      # paths (zero half-baked), key rotation + update seam, the key-leak
+      # matrix, and the shell's own publish content gate. The qa-gaps suite is
+      # the QA-phase regression net for the three untested edges (protocol-error
+      # message routing, degraded update rollback, persistKey symlink refusal).
+      - name: Test — FLY-1062 PR2 onboard-shell
+        run: |
+          bash packages/onboard-shell/__tests__/onboard-shell-install.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-rotation.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-secret.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-publish-gate.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-qa-gaps.test.sh
+
       # FLY-882: Discord bot token pool — hermetic (stub curl, fixture
       # DISCORD_BOT_POOL_HOME, no real ~/.flywheel touched, no real network).
       - name: Test — FLY-882 Discord bot token pool

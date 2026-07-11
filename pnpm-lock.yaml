@@ -376,6 +376,8 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(tsx@4.20.6)(yaml@2.8.1)
 
+  packages/onboard-shell: {}
+
   packages/qa-framework:
     dependencies:
       better-sqlite3:
