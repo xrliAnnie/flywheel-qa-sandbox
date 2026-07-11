@@ -52,7 +52,16 @@ export class GeminiCommand {
 		const sessionId = randomUUID();
 		const acquired = this.opts.slot.acquire(ASSISTANT_SLOT_MODE, sessionId);
 		if (!acquired.ok) {
-			await inv.reply(acquired.message);
+			// FLY-1159 (Codex R3): /gemini and /gemini-advanced share
+			// ASSISTANT_SLOT_MODE, so the slot's per-mode copy would misname
+			// whichever assistant command is running as /gemini. Same-mode busy
+			// gets neutral assistant-session wording; a cross-mode holder
+			// (e.g. /eleven) keeps the slot's accurate message.
+			await inv.reply(
+				acquired.busy.mode === ASSISTANT_SLOT_MODE
+					? `有一场助理语音会话正在进行(${acquired.busy.holder}),先结束它再开新的。`
+					: acquired.message,
+			);
 			return;
 		}
 

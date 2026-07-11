@@ -81,6 +81,9 @@ describe("voice-bridge daemon /health", () => {
 				"flywheel-eng-lead",
 			]);
 			expect(body.earsJoined).toBe(true);
+			// FLY-1159 Codex R3: the advanced command name is part of the health
+			// contract — mode off must serialize an explicit null, not omit it.
+			expect(body.assistantAdvanced).toBeNull();
 		} finally {
 			await runtime.close();
 		}

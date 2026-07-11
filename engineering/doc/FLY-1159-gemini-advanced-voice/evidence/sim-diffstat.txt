@@ -1,0 +1,9 @@
+ .../doc/FLY-1159-gemini-advanced-voice/handoff.md  |  45 ++++
+ packages/voice-bridge/package.json                 |   1 +
+ .../src/__tests__/assistant-advanced.test.ts       | 278 +++++++++++++++++++++
+ packages/voice-bridge/src/assistant/advanced.ts    | 134 ++++++++++
+ packages/voice-bridge/src/assistant/config.ts      |  31 +++
+ packages/voice-bridge/src/assistant/wiring.ts      |  42 +++-
+ packages/voice-bridge/src/cli.ts                   |   6 +
+ pnpm-lock.yaml                                     |   3 +
+ 8 files changed, 534 insertions(+), 6 deletions(-)

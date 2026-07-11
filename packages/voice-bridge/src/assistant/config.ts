@@ -12,6 +12,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { AssistantAdvancedConfig } from "./advanced.js";
 
 export interface AssistantBriefingConfig {
 	refreshSec: number;
@@ -42,9 +43,14 @@ export interface AssistantModeConfig {
 	 * one-key escape hatch if the rendering misbehaves). Optional for
 	 * hand-constructed configs; downstream treats `!== false` as ON. */
 	captions?: boolean;
+	/** FLY-1018 voice phase: mounts the delegate_task deep-dispatch tool
+	 * (/gemini-advanced). Absent = the assistant stays byte-identical. */
+	advanced?: AssistantAdvancedConfig;
 }
 
 const DEFAULT_COMMAND = "gemini";
+/** FLY-1159 founder contract (2026-07-11): the delegate's own voice command. */
+export const DEFAULT_ADVANCED_COMMAND = "gemini-advanced";
 
 /** the SessionSlot mode key both GeminiCommand (acquire) and
  * AssistantSession (release) must agree on. */
@@ -114,6 +120,42 @@ export function resolveAssistantConfig(
 		);
 	}
 
+	// FLY-1018 voice phase: optional deep-dispatch block. leadId is required
+	// and explicit (the ship-request / dispatch target Lead is never inferred
+	// from the project — same contract as the text daemon's bindings).
+	let advanced: AssistantAdvancedConfig | undefined;
+	if (a.advanced != null) {
+		if (typeof a.advanced !== "object" || Array.isArray(a.advanced)) {
+			throw new Error(
+				"voice-bridge: huddle.assistant.advanced must be an object — { leadId, deptLabel?, identityPath? }",
+			);
+		}
+		const adv = a.advanced as Record<string, unknown>;
+		const leadId = optString(adv, "leadId");
+		if (!leadId) {
+			throw new Error(
+				"voice-bridge: huddle.assistant.advanced.leadId is required — the explicit dispatch Lead, never inferred from the project",
+			);
+		}
+		// FLY-1159 founder contract (2026-07-11): the delegate mounts on its
+		// OWN voice command — /gemini stays plain, so the two names must differ.
+		const advancedCommandName =
+			optString(adv, "commandName") ?? DEFAULT_ADVANCED_COMMAND;
+		if (advancedCommandName === commandName) {
+			throw new Error(
+				"voice-bridge: huddle.assistant.advanced.commandName must differ from huddle.assistant.commandName — the plain assistant never carries the delegate; give the advanced command its own name",
+			);
+		}
+		const deptLabel = optString(adv, "deptLabel");
+		const identityPath = optString(adv, "identityPath");
+		advanced = {
+			leadId,
+			commandName: advancedCommandName,
+			...(deptLabel && { deptLabel }),
+			...(identityPath && { identityPath }),
+		};
+	}
+
 	return {
 		commandName,
 		voice,
@@ -127,6 +169,7 @@ export function resolveAssistantConfig(
 		localBargeIn: a.localBargeIn === true,
 		bargeIn: optBoolean(a, "bargeIn") ?? true,
 		captions: optBoolean(a, "captions") ?? true,
+		...(advanced && { advanced }),
 	};
 }
 

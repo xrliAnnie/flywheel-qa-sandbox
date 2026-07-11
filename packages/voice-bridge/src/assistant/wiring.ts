@@ -39,8 +39,12 @@ import { VoiceRoomRuntime } from "../VoiceRoomRuntime.js";
 import { AssistantLanding } from "./AssistantLanding.js";
 import { AssistantSession, type ConversationLike } from "./AssistantSession.js";
 import { AssistantSpeaker } from "./AssistantSpeaker.js";
+import { buildAdvancedDelegateTool } from "./advanced.js";
 import { BriefingEngine, type IssuesPage } from "./BriefingEngine.js";
-import type { AssistantModeConfig } from "./config.js";
+import {
+	type AssistantModeConfig,
+	DEFAULT_ADVANCED_COMMAND,
+} from "./config.js";
 import { GeminiCommand } from "./GeminiCommand.js";
 import { buildAssistantTools } from "./tools.js";
 
@@ -80,10 +84,13 @@ export interface WireAssistantOptions {
 	log?: (msg: string) => void;
 	/** test seam: replaces the real Gemini conversation factory. FLY-1065: the
 	 * factory receives the assistant sessionId so the JSONL sink lands at
-	 * assistantTranscriptPath(stateDir, sessionId) — the path the landing reads. */
+	 * assistantTranscriptPath(stateDir, sessionId) — the path the landing reads.
+	 * FLY-1159: sessions started via the advanced command carry advanced=true
+	 * (the real factories ignore the flag — the plain one is built from a
+	 * config with `advanced` stripped, so /gemini can never mount the delegate). */
 	createConversation?: (
 		systemPreamble: string,
-		opts: { sessionId: string },
+		opts: { sessionId: string; advanced?: boolean },
 	) => Promise<ConversationLike>;
 	fetchImpl?: typeof fetch;
 	/** test seam: state dir override (default ~/.flywheel/voice-assistant). */
@@ -95,6 +102,9 @@ export interface WireAssistantOptions {
 
 export interface AssistantRuntime {
 	commandName: string;
+	/** FLY-1159 founder contract (2026-07-11): the separate delegate-carrying
+	 * voice command; undefined = advanced mode off (only /gemini registered). */
+	advancedCommandName?: string;
 	/** FLY-1160 §3.3 Phase 2: the shutdown landing budget's AbortSignal —
 	 * once aborted the landing performs NO further external writes and never
 	 * reports success (true cancellation, not stop-waiting). */
@@ -223,16 +233,37 @@ export async function wireAssistantMode(
 	const slot = room.slot;
 	let activeSession: AssistantSession | null = null;
 
+	const realConversationDeps = {
+		bridgeUrl,
+		apiToken,
+		projectName: config.projectName,
+		stateDir,
+		log,
+		fetchImpl,
+		// FLY-1018 voice phase (Codex R1 MEDIUM): the delegate completion's
+		// guaranteed landing surface. The spoken announce silently no-ops
+		// mid-rotation and after the meeting closes (rotator's current
+		// session is null) — Discord text into the voice channel's chat is
+		// the always-there fallback, and it is what the spoken copy's
+		// "详情见文字记录" promises.
+		advancedSendText: (content: string) =>
+			deps.sendMessage(orchestratorClient, config.voiceChannelId, content),
+	};
+	// FLY-1159 founder contract (2026-07-11): /gemini stays plain — its factory
+	// is built from a config with `advanced` STRIPPED, so the plain command can
+	// never mount the delegate by construction. The separate advanced command
+	// gets its own factory built from the full config.
 	const createConversation =
 		opts.createConversation ??
-		makeRealConversationFactory(env, assistant, {
-			bridgeUrl,
-			apiToken,
-			projectName: config.projectName,
-			stateDir,
-			log,
-			fetchImpl,
-		});
+		makeRealConversationFactory(
+			env,
+			{ ...assistant, advanced: undefined },
+			realConversationDeps,
+		);
+	const createAdvancedConversation = assistant.advanced
+		? (opts.createConversation ??
+			makeRealConversationFactory(env, assistant, realConversationDeps))
+		: null;
 
 	// FLY-1065: the 545-planned shared TivPresenter replaces the inline v1 tiv —
 	// captions render per turn in the channel (Annie's ask) and status lines
@@ -256,24 +287,24 @@ export async function wireAssistantMode(
 		log,
 	});
 
-	const command = new GeminiCommand({
-		commandName: assistant.commandName,
-		slot,
-		joinUrl: `https://discord.com/channels/${config.guildId}/${config.voiceChannelId}`,
-		createIssue: (title) => linear.createIssue(title),
-		pingFounder: (text) =>
-			deps.sendMessage(orchestratorClient, config.voiceChannelId, text),
-		moveFounderToVc: env.DISCORD_OWNER_USER_ID
-			? () =>
-					deps.moveMember(
-						orchestratorClient,
-						config.guildId,
-						env.DISCORD_OWNER_USER_ID as string,
-						config.voiceChannelId,
-					)
-			: undefined,
-		log,
-		startSession: async ({ sessionId, issueId, topic }) => {
+	type CreateConversationFn = NonNullable<
+		WireAssistantOptions["createConversation"]
+	>;
+	const makeStartSession =
+		(
+			cmdName: string | undefined,
+			create: CreateConversationFn,
+			advanced: boolean,
+		) =>
+		async ({
+			sessionId,
+			issueId,
+			topic,
+		}: {
+			sessionId: string;
+			issueId: string;
+			topic?: string;
+		}) => {
 			let orchestratorConn: unknown;
 			// the real AudioPlayer exists only after the orchestrator joins the VC.
 			// makeDeferredPlayer (round-5b) queues on() registrations until then
@@ -291,7 +322,8 @@ export async function wireAssistantMode(
 				topic,
 				slot,
 				briefing,
-				createConversation,
+				createConversation: (p: string, o: { sessionId: string }) =>
+					create(p, { ...o, advanced }),
 				speaker,
 				voice: {
 					join: async () => {
@@ -314,7 +346,7 @@ export async function wireAssistantMode(
 									log,
 									onFatal: (reason) =>
 										log(
-											`[voice-conn][orchestrator] the meeting mouth is DOWN (${reason}) — a fresh /${assistant.commandName ?? "gemini"} round is required`,
+											`[voice-conn][orchestrator] the meeting mouth is DOWN (${reason}) — a fresh /${cmdName ?? "gemini"} round is required`,
 										),
 								})
 							: undefined;
@@ -354,7 +386,7 @@ export async function wireAssistantMode(
 						comment: (id, body, o) => linear.comment(id, body, o),
 						closeIssue: (id, o) => linear.closeIssue(id, o),
 					},
-					commandName: assistant.commandName,
+					commandName: cmdName,
 					receiptPath: join(stateDir, `${sessionId}.landing-receipt.json`),
 					transcriptPath: assistantTranscriptPath(stateDir, sessionId),
 					log,
@@ -367,36 +399,82 @@ export async function wireAssistantMode(
 			});
 			activeSession = session;
 			await session.start();
-		},
-	});
+		};
 
-	try {
-		await deps.registerGuildCommand(orchestratorClient, config.guildId, {
-			name: command.name,
-			description: "纯 Gemini 语音助理 — 开一场带简报的快聊",
+	const makeCommand = (
+		name: string | undefined,
+		create: CreateConversationFn,
+		advanced: boolean,
+	) =>
+		new GeminiCommand({
+			commandName: name,
+			slot,
+			joinUrl: `https://discord.com/channels/${config.guildId}/${config.voiceChannelId}`,
+			createIssue: (title) => linear.createIssue(title),
+			pingFounder: (text) =>
+				deps.sendMessage(orchestratorClient, config.voiceChannelId, text),
+			moveFounderToVc: env.DISCORD_OWNER_USER_ID
+				? () =>
+						deps.moveMember(
+							orchestratorClient,
+							config.guildId,
+							env.DISCORD_OWNER_USER_ID as string,
+							config.voiceChannelId,
+						)
+				: undefined,
+			log,
+			startSession: makeStartSession(name, create, advanced),
 		});
-		log(`/${command.name} registered on guild ${config.guildId}`);
-	} catch (err) {
-		// a bot invited without the applications.commands scope cannot register
-		// slash commands — LOUD, and the daemon stays up (the autostart QA seam
-		// below still exercises the full meeting chain on staged rigs).
-		log(
-			`WARNING: /${command.name} slash registration failed (missing applications.commands scope on the bot invite?): ${String((err as Error).message ?? err)}`,
+
+	const command = makeCommand(assistant.commandName, createConversation, false);
+	// FLY-1159 founder contract (2026-07-11): the delegate rides its OWN voice
+	// command — /gemini never carries it. Both commands share the SessionSlot,
+	// so the huddle still runs at most one assistant voice session at a time,
+	// whichever command opened it.
+	const advancedCommand = createAdvancedConversation
+		? makeCommand(
+				assistant.advanced?.commandName ?? DEFAULT_ADVANCED_COMMAND,
+				createAdvancedConversation,
+				true,
+			)
+		: null;
+
+	const registerCommand = async (cmd: GeminiCommand, description: string) => {
+		try {
+			await deps.registerGuildCommand(orchestratorClient, config.guildId, {
+				name: cmd.name,
+				description,
+			});
+			log(`/${cmd.name} registered on guild ${config.guildId}`);
+		} catch (err) {
+			// a bot invited without the applications.commands scope cannot register
+			// slash commands — LOUD, and the daemon stays up (the autostart QA seam
+			// below still exercises the full meeting chain on staged rigs).
+			log(
+				`WARNING: /${cmd.name} slash registration failed (missing applications.commands scope on the bot invite?): ${String((err as Error).message ?? err)}`,
+			);
+		}
+		deps.onChatCommand(orchestratorClient, cmd.name, (inv) => {
+			// FLY-1160 §3.3 Phase 1: 命令下架 — no new meetings during shutdown.
+			if (opts.isShuttingDown?.()) {
+				log(`/${cmd.name} refused — daemon shutting down`);
+				void inv
+					.reply("voice-bridge 正在关闭,现在开不了新会 — 请稍后再试。")
+					.catch(() => {});
+				return;
+			}
+			void cmd
+				.handle({ topic: inv.topic, reply: inv.reply })
+				.catch((err) => log(`/${cmd.name} handle failed: ${err.message}`));
+		});
+	};
+	await registerCommand(command, "纯 Gemini 语音助理 — 开一场带简报的快聊");
+	if (advancedCommand) {
+		await registerCommand(
+			advancedCommand,
+			"Gemini Advanced 语音版 — 开会+说一句派深活,完成口播+文字落地",
 		);
 	}
-	deps.onChatCommand(orchestratorClient, command.name, (inv) => {
-		// FLY-1160 §3.3 Phase 1: 命令下架 — no new meetings during shutdown.
-		if (opts.isShuttingDown?.()) {
-			log(`/${command.name} refused — daemon shutting down`);
-			void inv
-				.reply("voice-bridge 正在关闭,现在开不了新会 — 请稍后再试。")
-				.catch(() => {});
-			return;
-		}
-		void command
-			.handle({ topic: inv.topic, reply: inv.reply })
-			.catch((err) => log(`/${command.name} handle failed: ${err.message}`));
-	});
 
 	// QA test-injection seam (allowUserIds precedent): a staged rig has no human
 	// to click the slash command, so an env-gated autostart drives the SAME
@@ -425,6 +503,7 @@ ${o.joinUrl}`
 
 	return {
 		commandName: command.name,
+		...(advancedCommand && { advancedCommandName: advancedCommand.name }),
 		close: async (closeOpts?: { signal?: AbortSignal }) => {
 			briefing.stop();
 			unsubVoiceState();
@@ -609,6 +688,10 @@ interface RealConversationDeps {
 	stateDir: string;
 	log: (msg: string) => void;
 	fetchImpl: typeof fetch;
+	/** FLY-1018 voice phase: the delegate completion's guaranteed Discord-text
+	 * landing (the spoken announce is best-effort — silent no-op mid-rotation
+	 * and after the meeting ends). */
+	advancedSendText?: (content: string) => Promise<unknown>;
 }
 
 function makeRealConversationFactory(
@@ -647,6 +730,20 @@ function makeRealConversationFactory(
 		const transcriptSink = new JsonlTranscriptSink(
 			assistantTranscriptPath(d.stateDir, opts.sessionId),
 		);
+		// FLY-1018 voice phase: assistant.advanced mounts the delegate_task
+		// deep-dispatch tool. `speak` closes over `adapter` (declared below,
+		// same hoisting pattern as the rotator's attach hook) — completion
+		// fires long after the adapter exists.
+		const advancedTool = assistant.advanced
+			? buildAdvancedDelegateTool({
+					advanced: assistant.advanced,
+					projectName: d.projectName,
+					env,
+					speak: (text) => adapter.sendText(text),
+					log: d.log,
+					sendText: d.advancedSendText,
+				})
+			: null;
 		const rotator = new TalkSessionRotator({
 			create: (resumeHandle?: ResumeHandle) =>
 				(
@@ -661,12 +758,15 @@ function makeRealConversationFactory(
 					bargeIn: assistant.bargeIn !== false,
 					transcriptSink,
 					resumeHandle,
-					extraTools: buildAssistantTools({
-						bridgeUrl: d.bridgeUrl,
-						apiToken: d.apiToken,
-						projectName: d.projectName,
-						fetchImpl: d.fetchImpl,
-					}),
+					extraTools: (() => {
+						const base = buildAssistantTools({
+							bridgeUrl: d.bridgeUrl,
+							apiToken: d.apiToken,
+							projectName: d.projectName,
+							fetchImpl: d.fetchImpl,
+						});
+						return advancedTool ? [...base, advancedTool] : base;
+					})(),
 				}),
 			attach: (session) => adapter.bind(session),
 			log: d.log,

@@ -108,6 +108,9 @@ describe("voice-bridge daemon — BrainPort assembly", () => {
 				"bots",
 				"earsJoined",
 				"assistant",
+				// FLY-1159: the advanced command name joined the health contract
+				// (mode off = explicit null) — an additive key, brain stays absent.
+				"assistantAdvanced",
 				"eleven",
 			].sort(),
 		);

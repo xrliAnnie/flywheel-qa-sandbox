@@ -12,8 +12,10 @@
  */
 import { createServer, type Server } from "node:http";
 import { ResidentBrainManager } from "flywheel-voice-core";
+import { loadAdvancedAgentConfig } from "./assistant/advanced.js";
 import {
 	type AssistantModeConfig,
+	DEFAULT_ADVANCED_COMMAND,
 	loadAssistantConfig,
 } from "./assistant/config.js";
 import {
@@ -108,6 +110,31 @@ export async function runVoiceBridge(
 			"WARNING: GEMINI_API_KEY unset — the PR-2 conversation loop will fail-fast on this",
 		);
 	}
+	// FLY-1159 (Codex R3): every enabled voice command registers its own
+	// interaction handler on the SAME orchestrator client — a duplicate name
+	// would attach two handlers to one command (double deferReply). Refuse to
+	// assemble. Checked BEFORE the advanced env preflight so a misconfigured
+	// name never hides behind an env error.
+	const voiceCommandNames = [
+		assistant ? (assistant.commandName ?? "gemini") : null,
+		assistant?.advanced
+			? (assistant.advanced.commandName ?? DEFAULT_ADVANCED_COMMAND)
+			: null,
+		eleven ? eleven.commandName : null,
+	].filter((n): n is string => n != null);
+	const dupCommandName = voiceCommandNames.find(
+		(n, i) => voiceCommandNames.indexOf(n) !== i,
+	);
+	if (dupCommandName) {
+		throw new Error(
+			`voice-bridge: duplicate voice command name "/${dupCommandName}" — assistant / assistant.advanced / eleven command names must all be unique (each registers its own interaction handler on the orchestrator bot)`,
+		);
+	}
+	// FLY-1018 voice phase: a half-configured advanced mode must kill the
+	// deploy at startup, never at the founder's first /gemini-advanced use.
+	if (assistant?.advanced && !opts.assistantWiring?.createConversation) {
+		loadAdvancedAgentConfig(process.env);
+	}
 
 	const deps = opts.deps ?? (await createDiscordDeps());
 	const registry = new BotRegistry<
@@ -123,6 +150,9 @@ export async function runVoiceBridge(
 		earsJoined: false,
 		/** FLY-967: the registered assistant command name (null = mode off). */
 		assistant: null as string | null,
+		/** FLY-1159: the separate delegate-carrying voice command
+		 * (null = advanced mode off — only the plain assistant registered). */
+		assistantAdvanced: null as string | null,
 		/** FLY-1006: the registered /eleven command name (null = mode off). */
 		eleven: null as string | null,
 		// scripts/lib/bridge-port.sh classifies health JSON WITHOUT a
@@ -144,6 +174,7 @@ export async function runVoiceBridge(
 					bots: state.bots,
 					earsJoined: state.earsJoined,
 					assistant: state.assistant,
+					assistantAdvanced: state.assistantAdvanced,
 					eleven: state.eleven,
 				}),
 			);
@@ -247,6 +278,7 @@ export async function runVoiceBridge(
 					isShuttingDown: () => state.shuttingDown,
 				});
 				state.assistant = assistantRuntime.commandName;
+				state.assistantAdvanced = assistantRuntime.advancedCommandName ?? null;
 			}
 			// FLY-1006: /eleven mode — only when the config opts in.
 			if (eleven) {

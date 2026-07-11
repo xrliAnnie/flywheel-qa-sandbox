@@ -4,7 +4,10 @@
  * (absent = /live off, byte-compat; present = fail-fast validation).
  */
 import { describe, expect, it, vi } from "vitest";
-import { resolveAssistantConfig } from "../assistant/config.js";
+import {
+	ASSISTANT_SLOT_MODE,
+	resolveAssistantConfig,
+} from "../assistant/config.js";
 import { GeminiCommand } from "../assistant/GeminiCommand.js";
 import { SessionSlot } from "../SessionSlot.js";
 
@@ -67,6 +70,27 @@ describe("GeminiCommand (FLY-967 P7)", () => {
 		);
 		// session owns the slot now
 		expect(h.slot.acquire("meet", "x").ok).toBe(false);
+	});
+
+	// FLY-1159 Codex R3 LOW-1: /gemini and /gemini-advanced share the slot mode,
+	// so the slot's per-mode copy would misname whichever command is running as
+	// /gemini. Same-mode busy must use neutral assistant-session wording; a
+	// cross-mode holder (e.g. /eleven) keeps the slot's accurate message.
+	it("same-mode busy (two assistant commands share the slot): neutral wording, no /gemini misnaming", async () => {
+		const h = makeCommand({ commandName: "gemini-advanced" });
+		h.slot.acquire(ASSISTANT_SLOT_MODE, "other-session");
+		await h.cmd.handle(h.inv);
+		expect(h.replies[0].text).toContain("助理语音会话");
+		expect(h.replies[0].text).not.toContain("/gemini 正在进行");
+		expect(h.createIssue).not.toHaveBeenCalled();
+	});
+
+	it("cross-mode busy keeps the slot's accurate per-mode message (/eleven named)", async () => {
+		const h = makeCommand();
+		h.slot.acquire("eleven", "eleven-session");
+		await h.cmd.handle(h.inv);
+		expect(h.replies[0].text).toContain("/eleven");
+		expect(h.createIssue).not.toHaveBeenCalled();
 	});
 
 	it("busy room: founder-facing rejection, nothing created", async () => {
