@@ -163,6 +163,22 @@ describe("resolveAssistantConfig (FLY-967 P7 config contract)", () => {
 		).toThrow(/bargeIn must be true or false/);
 	});
 
+	it("captions defaults ON; explicit false is honored (FLY-1065 escape hatch back to v1 log-only)", () => {
+		expect(resolveAssistantConfig(base({}), {})?.captions).toBe(true);
+		expect(
+			resolveAssistantConfig(base({ captions: false }), {})?.captions,
+		).toBe(false);
+		expect(resolveAssistantConfig(base({ captions: true }), {})?.captions).toBe(
+			true,
+		);
+	});
+
+	it("a non-boolean captions fails FAST (same trap shape as bargeIn)", () => {
+		expect(() =>
+			resolveAssistantConfig(base({ captions: "false" }), {}),
+		).toThrow(/captions must be true or false/);
+	});
+
 	it("explicit fields override defaults", () => {
 		const c = resolveAssistantConfig(
 			base({

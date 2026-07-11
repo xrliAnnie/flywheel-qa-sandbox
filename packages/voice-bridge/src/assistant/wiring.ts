@@ -16,7 +16,6 @@
  * by the staged E2E, not unit tests).
  */
 
-import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -35,6 +34,7 @@ import { EarsReceiver } from "../audio/EarsReceiver.js";
 import { superviseVoiceConnection } from "../audio/VoiceConnSupervisor.js";
 import type { DiscordDeps } from "../bots/discordWiring.js";
 import type { HuddleBridgeConfig } from "../config.js";
+import { TivPresenter } from "../discord/TivPresenter.js";
 import { SessionSlot } from "../SessionSlot.js";
 import { AssistantLanding } from "./AssistantLanding.js";
 import { AssistantSession, type ConversationLike } from "./AssistantSession.js";
@@ -74,8 +74,13 @@ export interface WireAssistantOptions {
 	earsConnection: unknown;
 	env?: NodeJS.ProcessEnv;
 	log?: (msg: string) => void;
-	/** test seam: replaces the real Gemini conversation factory. */
-	createConversation?: (systemPreamble: string) => Promise<ConversationLike>;
+	/** test seam: replaces the real Gemini conversation factory. FLY-1065: the
+	 * factory receives the assistant sessionId so the JSONL sink lands at
+	 * assistantTranscriptPath(stateDir, sessionId) — the path the landing reads. */
+	createConversation?: (
+		systemPreamble: string,
+		opts: { sessionId: string },
+	) => Promise<ConversationLike>;
 	fetchImpl?: typeof fetch;
 	/** test seam: state dir override (default ~/.flywheel/voice-assistant). */
 	stateDir?: string;
@@ -247,25 +252,27 @@ export async function wireAssistantMode(
 			fetchImpl,
 		});
 
-	const tiv = {
-		status: (line: string) =>
-			void deps
-				.sendMessage(orchestratorClient, config.voiceChannelId, line)
-				.catch((err) => log(`TIV status send failed: ${err.message}`)),
-		// v1: captions go to the daemon log, not the channel — a message per
-		// transcript line would flood the TIV (throttled captions ride with the
-		// shared TivPresenter when 545 PR-2 lands it).
-		caption: (role: "user" | "assistant", text: string) =>
-			log(`[caption:${role}] ${text}`),
-		card: (text: string) =>
-			void deps
-				.sendMessage(orchestratorClient, config.voiceChannelId, text)
-				.catch((err) => log(`TIV card send failed: ${err.message}`)),
-		error: (text: string) =>
-			void deps
-				.sendMessage(orchestratorClient, config.voiceChannelId, `⚠️ ${text}`)
-				.catch((err) => log(`TIV error send failed: ${err.message}`)),
-	};
+	// FLY-1065: the 545-planned shared TivPresenter replaces the inline v1 tiv —
+	// captions render per turn in the channel (Annie's ask) and status lines
+	// collapse into one edited anchor message (the 967 status spam fix).
+	const tiv = new TivPresenter({
+		deps: {
+			send: (text) =>
+				deps.sendMessage(orchestratorClient, config.voiceChannelId, text),
+			sendForId: (text) =>
+				deps.sendMessageForId(orchestratorClient, config.voiceChannelId, text),
+			edit: (messageId, text) =>
+				deps.editMessage(
+					orchestratorClient,
+					config.voiceChannelId,
+					messageId,
+					text,
+				),
+		},
+		captions: assistant.captions !== false,
+		assistantName: "助理",
+		log,
+	});
 
 	const command = new GeminiCommand({
 		commandName: assistant.commandName,
@@ -383,7 +390,7 @@ export async function wireAssistantMode(
 					},
 					commandName: assistant.commandName,
 					receiptPath: join(stateDir, `${sessionId}.landing-receipt.json`),
-					transcriptPath: join(stateDir, `${sessionId}.jsonl`),
+					transcriptPath: assistantTranscriptPath(stateDir, sessionId),
 					log,
 				}),
 				linearAbort: {
@@ -523,6 +530,22 @@ export function classifyVoiceDelta(
 	return "none";
 }
 
+/**
+ * The ONE place the per-meeting transcript JSONL path comes from (FLY-1065 P3
+ * — the FLY-967 broken link was the sink writing conversation-<uuid>.jsonl
+ * while the landing read <sessionId>.jsonl). Alignment contract: the file
+ * NAME is the assistant sessionId — one meeting, one file, naturally
+ * aggregating across rotator rotations. JSONL rows keep the Gemini backend
+ * session UUID in their `sessionId` field (a rotation trace; the landing
+ * reads by file only and never reconciles row ids).
+ */
+export function assistantTranscriptPath(
+	stateDir: string,
+	sessionId: string,
+): string {
+	return join(stateDir, `${sessionId}.jsonl`);
+}
+
 // ---- Bridge Linear proxy client ----
 
 interface LinearClientOpts {
@@ -607,8 +630,11 @@ function makeRealConversationFactory(
 	env: NodeJS.ProcessEnv,
 	assistant: AssistantModeConfig,
 	d: RealConversationDeps,
-): (systemPreamble: string) => Promise<ConversationLike> {
-	return async (systemPreamble: string) => {
+): (
+	systemPreamble: string,
+	opts: { sessionId: string },
+) => Promise<ConversationLike> {
+	return async (systemPreamble: string, opts: { sessionId: string }) => {
 		const vc = resolveVoiceCoreConfig({}, env);
 		const apiKey = env[vc.gemini.apiKeyEnv];
 		if (!apiKey) {
@@ -631,8 +657,10 @@ function makeRealConversationFactory(
 						yield "Lead 的深查脑子(FLYWHEEL_VOICE_IDENTITY)没配置——请用 lookup_issue / board_snapshot,或让工程配置后再问我深问题。";
 					},
 				};
+		// FLY-1065 P3: the sink file IS the file the landing reads (one meeting,
+		// one file, shared across rotator rotations — the sink outlives sessions).
 		const transcriptSink = new JsonlTranscriptSink(
-			join(d.stateDir, `conversation-${randomUUID()}.jsonl`),
+			assistantTranscriptPath(d.stateDir, opts.sessionId),
 		);
 		const rotator = new TalkSessionRotator({
 			create: (resumeHandle?: ResumeHandle) =>

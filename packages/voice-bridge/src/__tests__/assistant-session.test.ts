@@ -13,7 +13,14 @@ import { AssistantSession } from "../assistant/AssistantSession.js";
 import { SessionSlot } from "../SessionSlot.js";
 
 type ConvEvents = {
-	transcript: [{ role: "user" | "assistant"; text: string; final: boolean }];
+	transcript: [
+		{
+			role: "user" | "assistant";
+			text: string;
+			final: boolean;
+			interrupted?: boolean;
+		},
+	];
 	"response-started": [];
 	"response-audio": [chunk: Buffer, format: unknown];
 	"response-done": [];
@@ -27,6 +34,7 @@ class FakeConversation {
 	sentTexts: string[] = [];
 	sentAudio: Buffer[] = [];
 	closed = false;
+	closeCount = 0;
 	sendText(t: string): void {
 		this.sentTexts.push(t);
 	}
@@ -45,14 +53,20 @@ class FakeConversation {
 	}
 	async close(): Promise<undefined> {
 		this.closed = true;
+		this.closeCount++;
 		return undefined;
 	}
 	// test drivers
 	user(text: string): void {
 		this.emitter.emit("transcript", { role: "user", text, final: true });
 	}
-	assistant(text: string): void {
-		this.emitter.emit("transcript", { role: "assistant", text, final: true });
+	assistant(text: string, interrupted?: boolean): void {
+		this.emitter.emit("transcript", {
+			role: "assistant",
+			text,
+			final: true,
+			...(interrupted ? { interrupted: true } : {}),
+		});
 	}
 }
 
@@ -345,5 +359,135 @@ describe("AssistantSession (FLY-967 P6b)", () => {
 		expect(h.tiv.status).toHaveBeenCalledWith(
 			expect.stringContaining("简报可能滞后"),
 		);
+	});
+});
+
+/**
+ * FLY-1065 P5 — interrupted plumb-through, the landing flush ordering (Codex
+ * R1 #1 blocker: close BEFORE landing.run so the close-flush residuals are in
+ * the JSONL the landing reads), the recap accumulation guard across the state
+ * flip (Codex R2 guardrail #1), and the landing card wording.
+ */
+describe("AssistantSession (FLY-1065 P5)", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-07-09T15:00:00"));
+	});
+	afterEach(() => vi.useRealTimers());
+
+	it("an interrupted final renders its caption with the (被打断) tail note", async () => {
+		const h = harness();
+		await h.session.start();
+		h.conv.assistant("说到一半", true);
+		expect(h.tiv.caption).toHaveBeenCalledWith(
+			"assistant",
+			"说到一半 (被打断)",
+		);
+		h.conv.assistant("完整说完");
+		expect(h.tiv.caption).toHaveBeenCalledWith("assistant", "完整说完");
+	});
+
+	it("an interrupted assistant final during concluding does NOT enter recapText (a half recap she cut off is not the record)", async () => {
+		const h = harness();
+		await h.session.start();
+		h.conv.user("结束");
+		await settle();
+		expect(h.session.state).toBe("concluding");
+		h.conv.assistant("recap 完整段。对吗?");
+		h.conv.assistant("被她打断的半句", true);
+		h.conv.user("对");
+		await settle();
+		const input = h.landing.run.mock.calls[0][0] as { recapText: string };
+		expect(input.recapText).toContain("recap 完整段");
+		expect(input.recapText).not.toContain("被她打断的半句");
+	});
+
+	it("landing flush ordering: conv.close() runs BEFORE landing.run; close-flush finals reach quotes AND recap; teardown never double-closes", async () => {
+		const h = harness();
+		let convClosedWhenLandingRan = false;
+		h.landing.run.mockImplementation(async () => {
+			convClosedWhenLandingRan = h.conv.closed;
+			return { ok: true } as const;
+		});
+		// the conversation flushes its residual buffers on close (the voice-core
+		// C1 behavior) — the fake emits its tails BEFORE resolving, like the real one.
+		h.conv.close = async () => {
+			h.conv.closed = true;
+			h.conv.closeCount++;
+			h.conv.user("关门前的最后一句");
+			h.conv.assistant("recap 尾巴");
+			return undefined;
+		};
+		await h.session.start();
+		h.conv.user("正文引用");
+		h.conv.user("结束");
+		await settle();
+		h.conv.assistant("recap 主体。对吗?");
+		h.conv.user("对");
+		await settle();
+		expect(h.landing.run).toHaveBeenCalledTimes(1);
+		expect(convClosedWhenLandingRan).toBe(true); // close preceded landing.run
+		const input = h.landing.run.mock.calls[0][0] as {
+			recapText: string;
+			quotes: { text: string }[];
+		};
+		expect(input.quotes.map((q) => q.text)).toContain("关门前的最后一句");
+		expect(input.recapText).toContain("recap 主体");
+		// Codex R2 guardrail: the close-flush assistant final lands in recap even
+		// though the state already flipped to landing (closingFromConcluding).
+		expect(input.recapText).toContain("recap 尾巴");
+		expect(h.conv.closeCount).toBe(1); // teardown saw conv=null, no second close
+		expect(h.session.state).toBe("idle");
+	});
+
+	it("a close-flush assistant final on a NON-concluding landing (she left mid-live) does NOT invent a recap", async () => {
+		const h = harness();
+		h.conv.close = async () => {
+			h.conv.closed = true;
+			h.conv.closeCount++;
+			h.conv.assistant("离场时漏出的半截话");
+			return undefined;
+		};
+		await h.session.start();
+		h.conv.user("先记一下");
+		h.founderLeave();
+		await settle();
+		const input = h.landing.run.mock.calls[0][0] as { recapText: string };
+		expect(input.recapText).not.toContain("离场时漏出的半截话");
+	});
+
+	it("the success card names the verbatim record when transcript chunks landed", async () => {
+		const h = harness();
+		h.landing.run.mockResolvedValue({
+			ok: true,
+			commentUrl: "https://l/c/9",
+			transcriptChunks: 2,
+		} as never);
+		await h.session.start();
+		h.conv.user("结束");
+		await settle();
+		h.conv.assistant("recap。对吗?");
+		h.conv.user("对");
+		await settle();
+		const card = h.tiv.card.mock.calls[0][0] as string;
+		expect(card).toContain("📝 逐字对话记录");
+		expect(card).toContain("FLY-1234");
+		expect(card).toContain("https://l/c/9");
+	});
+
+	it("the success card falls back to the summary-only wording when zero transcript chunks landed (never lies)", async () => {
+		const h = harness();
+		h.landing.run.mockResolvedValue({
+			ok: true,
+			transcriptChunks: 0,
+		} as never);
+		await h.session.start();
+		h.conv.user("结束");
+		await settle();
+		h.conv.user("对");
+		await settle();
+		const card = h.tiv.card.mock.calls[0][0] as string;
+		expect(card).not.toContain("逐字对话记录");
+		expect(card).toContain("会议纪要已落");
 	});
 });

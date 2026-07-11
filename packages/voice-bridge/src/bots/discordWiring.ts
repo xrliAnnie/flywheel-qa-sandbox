@@ -45,6 +45,19 @@ export interface DiscordDeps {
 		}) => void,
 	) => void;
 	sendMessage: (client: any, channelId: string, text: string) => Promise<void>;
+	/** FLY-1065: a channel message whose id we keep (the TIV status anchor). */
+	sendMessageForId: (
+		client: any,
+		channelId: string,
+		text: string,
+	) => Promise<{ messageId: string }>;
+	/** FLY-1065: edit an existing channel message in place (status updates). */
+	editMessage: (
+		client: any,
+		channelId: string,
+		messageId: string,
+		text: string,
+	) => Promise<void>;
 	/** voice-state deltas (founder presence tracking). */
 	onVoiceStateUpdate: (
 		client: any,
@@ -204,6 +217,22 @@ export async function createDiscordDeps(): Promise<DiscordDeps> {
 		sendMessage: async (client: any, channelId: string, text: string) => {
 			const channel = await client.channels.fetch(channelId);
 			await channel.send(text);
+		},
+
+		sendMessageForId: async (client: any, channelId: string, text: string) => {
+			const channel = await client.channels.fetch(channelId);
+			const msg = await channel.send(text);
+			return { messageId: String(msg.id) };
+		},
+
+		editMessage: async (
+			client: any,
+			channelId: string,
+			messageId: string,
+			text: string,
+		) => {
+			const channel = await client.channels.fetch(channelId);
+			await channel.messages.edit(messageId, text);
 		},
 
 		onVoiceStateUpdate: (client: any, cb) => {

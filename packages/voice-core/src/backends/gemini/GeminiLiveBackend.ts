@@ -19,6 +19,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { TypedEmitter } from "../../emitter.js";
+import { scrubTranscript } from "../../scrub.js";
 import {
 	type AudioFormat,
 	type BrainAdapter,
@@ -40,6 +41,7 @@ import type {
 	LiveServerEvent,
 	LiveToolDeclaration,
 } from "./transport.js";
+import { TurnAccumulator, type TurnRole } from "./turn-accumulator.js";
 
 const ASK_LEAD_TOOL = "ask_lead";
 
@@ -157,6 +159,8 @@ class GeminiLiveSession implements ConversationSession {
 	 * the cancellation contract is identical for both). */
 	private readonly toolAborts = new Map<string, AbortController>();
 	private readonly extraTools: Map<string, LiveToolSpec["handler"]>;
+	/** FLY-1065: per-role delta buffers behind the turn-level final semantics. */
+	private readonly acc = new TurnAccumulator();
 
 	constructor(
 		private readonly backendId: string,
@@ -187,8 +191,11 @@ class GeminiLiveSession implements ConversationSession {
 		this.conn.endAudioStream();
 	}
 
-	/** manual interrupt — LOCAL suppression only (no client server-cancel exists). */
+	/** manual interrupt — LOCAL suppression only (no client server-cancel exists).
+	 * The half-said assistant turn is flushed WITH the interrupted mark first —
+	 * what she heard half of must be recorded as-said (FLY-1065). */
 	interrupt(): void {
+		this.flushFinal("assistant", { interrupted: true });
 		this.cancelCurrentTurn();
 	}
 
@@ -206,6 +213,10 @@ class GeminiLiveSession implements ConversationSession {
 	async close(): Promise<ResumeHandle | undefined> {
 		if (!this.closed) {
 			this.closed = true;
+			// flush both residual buffers BEFORE closing — a rotator rotation (or
+			// the meeting teardown) must not lose the last half-turn (FLY-1065).
+			this.flushFinal("user");
+			this.flushFinal("assistant");
 			this.abortAllTools();
 			await this.conn.close();
 		}
@@ -230,25 +241,41 @@ class GeminiLiveSession implements ConversationSession {
 	/** open the response window lazily on the FIRST model output of a turn.
 	 * FLY-967 round-4: keying response-started off user transcripts left
 	 * sendText-initiated turns (the /gemini opening) with no window — the
-	 * speaker never saw beginTurn and gate-dropped every opening chunk. */
+	 * speaker never saw beginTurn and gate-dropped every opening chunk.
+	 *
+	 * FLY-1065: the first model output of a turn is ALSO the user-side flush
+	 * signal — she finished, the model is answering, so her turn is definable
+	 * NOW (probe: input transcription lands before the first output fragment).
+	 * Without this her caption would wait for turn-complete, ~10s after the
+	 * conversation moved on. */
 	private ensureTurnStarted(): void {
 		if (this.turnActive || this.turnCancelled) return;
 		this.turnActive = true;
+		this.flushFinal("user");
 		this.emitter.emit("response-started");
 	}
 
 	private onServerEvent(e: LiveServerEvent): void {
 		switch (e.type) {
 			case "transcript":
-				// suppress assistant transcript after a cancel (contract); user always flows.
+				// suppress assistant transcript after a cancel (contract); user always
+				// flows. Suppressed fragments never enter the turn buffer either — the
+				// pre-cancel half was already flushed by the interrupted handler.
 				if (e.role === "assistant" && this.turnCancelled) return;
 				if (e.role === "assistant") this.ensureTurnStarted();
+				// FLY-1065 turn aggregation: fragments buffer per role and pass
+				// through as final:false; final:true is emitted ONLY by flushFinal
+				// (turn-level aggregate). The transport's legacy `final` field is a
+				// dead signal here.
+				this.acc.append(e.role, e.text);
 				this.emitter.emit("transcript", {
 					role: e.role,
 					text: e.text,
-					final: e.final,
+					final: false,
 				});
-				if (e.final) this.writeTranscript(e.role, e.text);
+				// fast path: the SDK's official end-of-transcription flag (probe:
+				// never sent by the current model; kept for model upgrades).
+				if (e.finished === true) this.flushFinal(e.role);
 				if (e.role === "user") {
 					// a new user turn resets a cancelled window; the response window
 					// itself opens on the first MODEL output (ensureTurnStarted).
@@ -260,7 +287,18 @@ class GeminiLiveSession implements ConversationSession {
 				this.ensureTurnStarted();
 				this.emitter.emit("response-audio", e.chunk, e.format);
 				break;
+			case "generation-complete":
+				// generation text is complete (~51ms after the last fragment; audio
+				// may still be playing). The assistant-side main flush; also the
+				// late-arriving-user backstop (FLY-1065).
+				this.flushFinal("user");
+				this.flushFinal("assistant");
+				break;
 			case "turn-complete":
+				// last-resort flush: with no finished / generation-complete signal the
+				// worst case degrades to end-of-turn aggregation (user first).
+				this.flushFinal("user");
+				this.flushFinal("assistant");
 				if (!this.turnCancelled && this.turnActive)
 					this.emitter.emit("response-done");
 				this.turnCancelled = false;
@@ -296,6 +334,12 @@ class GeminiLiveSession implements ConversationSession {
 				}
 				break;
 			case "interrupted":
+				// flush the half-said assistant turn WITH the interrupted mark BEFORE
+				// suppression kicks in — the record keeps what she actually heard. If
+				// generation-complete already flushed (she interrupted playback of a
+				// completed answer) the empty buffer makes this a no-op, honestly
+				// leaving the un-marked full text in place (FLY-1065).
+				this.flushFinal("assistant", { interrupted: true });
 				this.cancelCurrentTurn();
 				break;
 			case "resumption-update":
@@ -313,7 +357,28 @@ class GeminiLiveSession implements ConversationSession {
 		}
 	}
 
-	private writeTranscript(role: "user" | "assistant", text: string): void {
+	/** the ONE final exit (FLY-1065): aggregate → empty-buffer idempotency gate
+	 * → scrub → final event + sink row. Every flush signal funnels here, so
+	 * multi-signal arrival can never double-emit and no unscrubbed turn text
+	 * ever leaves the session. */
+	private flushFinal(role: TurnRole, opts?: { interrupted?: boolean }): void {
+		const raw = this.acc.flush(role);
+		if (raw == null) return;
+		const text = scrubTranscript(raw);
+		this.emitter.emit("transcript", {
+			role,
+			text,
+			final: true,
+			...(opts?.interrupted ? { interrupted: true } : {}),
+		});
+		this.writeTranscript(role, text, opts?.interrupted);
+	}
+
+	private writeTranscript(
+		role: "user" | "assistant",
+		text: string,
+		interrupted?: boolean,
+	): void {
 		this.transcriptSink?.append({
 			ts: new Date().toISOString(),
 			sessionId: this.sessionId,
@@ -322,6 +387,7 @@ class GeminiLiveSession implements ConversationSession {
 			role,
 			text,
 			final: true,
+			...(interrupted ? { interrupted: true } : {}),
 		});
 	}
 

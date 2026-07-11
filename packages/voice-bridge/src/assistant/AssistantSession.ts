@@ -67,7 +67,12 @@ export interface AssistantSessionOptions {
 	topic?: string;
 	slot: SessionSlot;
 	briefing: { compose(topic?: string): BriefingResult };
-	createConversation(systemPreamble: string): Promise<ConversationLike>;
+	/** FLY-1065: receives the assistant sessionId so the transcript sink lands
+	 * where the landing reads (assistantTranscriptPath alignment contract). */
+	createConversation(
+		systemPreamble: string,
+		opts: { sessionId: string },
+	): Promise<ConversationLike>;
 	speaker: SpeakerLike;
 	voice: VoicePresence;
 	ears: EarsFeed;
@@ -145,6 +150,10 @@ export class AssistantSession {
 	private readonly quotes: { ts: string; text: string }[] = [];
 	private recapText = "";
 	private awaitingConfirm = false;
+	/** FLY-1065 (Codex R2 guardrail): landing was entered FROM concluding — the
+	 * close-flush assistant finals arriving while state is already "landing"
+	 * still belong to the spoken recap and must keep accumulating. */
+	private closingFromConcluding = false;
 	private joinTimer: ReturnType<typeof setTimeout> | undefined;
 	private earsTimer: ReturnType<typeof setTimeout> | undefined;
 	private recapTimer: ReturnType<typeof setTimeout> | undefined;
@@ -186,7 +195,9 @@ export class AssistantSession {
 				);
 			}
 			this.log("connecting Gemini Live…");
-			connectPromise = this.opts.createConversation(brief.text);
+			connectPromise = this.opts.createConversation(brief.text, {
+				sessionId: this.opts.sessionId,
+			});
 			this.conv = await withTimeout(
 				connectPromise,
 				this.opts.timeouts?.connectMs ?? DEFAULT_CONNECT_MS,
@@ -361,12 +372,25 @@ export class AssistantSession {
 					role: "user" | "assistant";
 					text: string;
 					final: boolean;
+					interrupted?: boolean;
 				};
 				if (!t.final) return;
-				this.opts.tiv.caption(t.role, t.text);
+				// FLY-1065: the tail note is composed HERE — the TivSurface signature
+				// stays four plain methods; the presenter never learns the semantics.
+				this.opts.tiv.caption(
+					t.role,
+					t.interrupted ? `${t.text} (被打断)` : t.text,
+				);
 				if (t.role === "user") this.onFounderLine(t.text);
-				else if (this._state === "concluding") {
-					// the recap the model actually spoke IS the summary body
+				else if (
+					this._state === "concluding" ||
+					(this._state === "landing" && this.closingFromConcluding)
+				) {
+					// the recap the model actually spoke IS the summary body; a half
+					// recap she cut off is not the record (interrupted stays out), and
+					// the close-flush tail arriving after the state flipped to landing
+					// still counts (closingFromConcluding).
+					if (t.interrupted) return;
 					this.recapText += (this.recapText ? "\n" : "") + t.text;
 				}
 			}),
@@ -410,12 +434,31 @@ export class AssistantSession {
 
 	private async toLanding(confirmed: boolean, trigger: string): Promise<void> {
 		if (this._state === "landing" || this.done) return;
+		this.closingFromConcluding = this._state === "concluding";
 		this._state = "landing";
 		this.log(
 			`state -> landing (trigger=${trigger} confirmed=${confirmed}; ears frames forwarded=${this.earsFramesForwarded}, assistant audio chunks=${this.audioChunksTotal})`,
 		);
+		// stop new input: all three timers off; ears frame routing stops by the
+		// state guard (onFrame only forwards in live/concluding).
+		this.clearTimer("join");
+		this.clearTimer("ears");
 		this.clearTimer("recap");
 		this.opts.tiv.status("🛬 正在落纪要…");
+		// FLY-1065 P5 (Codex R1 #1): close the conversation BEFORE landing.run —
+		// the close-flush residuals (final transcripts incl. the rotator tail)
+		// must be in the JSONL before the landing reads it. The transcript
+		// handler is still subscribed, so those finals also reach caption /
+		// quotes / recap on the way out.
+		const conv = this.conv;
+		this.conv = null; // teardown must not close a second time
+		try {
+			await conv?.close();
+		} catch (err) {
+			this.log(
+				`conversation close before landing failed: ${String((err as Error).message ?? err)}`,
+			);
+		}
 		try {
 			const r = await this.opts.landing.run({
 				issueId: this.opts.issueId,
@@ -425,8 +468,14 @@ export class AssistantSession {
 				confirmed,
 			});
 			if (r.ok) {
+				// never claim a verbatim record that didn't land (0 chunks = 0-turn
+				// meeting or feature-skipped) — fall back to the summary-only wording.
+				const head =
+					(r.transcriptChunks ?? 0) > 0
+						? `✅ 会议纪要 + 📝 逐字对话记录已落 ${this.opts.issueId}`
+						: `✅ 会议纪要已落 ${this.opts.issueId}`;
 				this.opts.tiv.card(
-					`✅ 会议纪要已落 ${this.opts.issueId}${r.commentUrl ? `\n${r.commentUrl}` : ""}${confirmed ? "" : "\n(未经口头确认,见 issue 标注)"}`,
+					`${head}${r.commentUrl ? `\n${r.commentUrl}` : ""}${confirmed ? "" : "\n(未经口头确认,见 issue 标注)"}`,
 				);
 			} else {
 				this.opts.tiv.error(r.message);

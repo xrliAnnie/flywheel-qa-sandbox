@@ -181,7 +181,18 @@ export interface AnnouncerSession {
 export type ConversationEventMap = {
 	"speech-started": [];
 	"speech-stopped": [];
-	transcript: [{ role: "user" | "assistant"; text: string; final: boolean }];
+	/** FLY-1065: final:true events are TURN-LEVEL aggregates (full turn text,
+	 * scrubbed); final:false stays the raw fragment passthrough. `interrupted`
+	 * marks an assistant turn flushed half-said by a barge-in / manual
+	 * interrupt (optional, additive). */
+	transcript: [
+		{
+			role: "user" | "assistant";
+			text: string;
+			final: boolean;
+			interrupted?: boolean;
+		},
+	];
 	"response-started": [];
 	"response-audio": [chunk: Buffer, format: AudioFormat];
 	"response-done": [];
@@ -249,4 +260,6 @@ export type TranscriptEntry = {
 	role: "user" | "assistant";
 	text: string;
 	final: boolean;
+	/** FLY-1065: the turn was cut short by a barge-in (recorded as-said). */
+	interrupted?: boolean;
 };

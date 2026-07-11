@@ -37,6 +37,11 @@ export interface AssistantModeConfig {
 	 * Optional so hand-constructed configs (runVoiceBridge callers, e2e rigs)
 	 * stay compatible; unset = ON everywhere downstream (Codex R21). */
 	bargeIn?: boolean;
+	/** FLY-1065: per-turn transcript captions in the TIV channel. Default ON;
+	 * false = captions degrade to the daemon log (the 967 v1 behavior — the
+	 * one-key escape hatch if the rendering misbehaves). Optional for
+	 * hand-constructed configs; downstream treats `!== false` as ON. */
+	captions?: boolean;
 }
 
 const DEFAULT_COMMAND = "gemini";
@@ -121,6 +126,7 @@ export function resolveAssistantConfig(
 		},
 		localBargeIn: a.localBargeIn === true,
 		bargeIn: optBoolean(a, "bargeIn") ?? true,
+		captions: optBoolean(a, "captions") ?? true,
 	};
 }
 

@@ -20,9 +20,18 @@ export type LiveServerEvent =
 			role: "user" | "assistant";
 			text: string;
 			final: boolean;
+			/** FLY-1065: SDK Transcription.finished — the official end-of-transcription
+			 * flag. Probe evidence: the current production model never sends it, so
+			 * the session treats it as a fast path only (turn aggregation has its own
+			 * flush chain); kept so a model upgrade benefits automatically. */
+			finished?: boolean;
 	  }
 	| { type: "audio"; chunk: Buffer; format: AudioFormat }
 	| { type: "turn-complete" }
+	/** serverContent.generationComplete — generation text is complete (probe:
+	 * ~51ms after the last output fragment, vs turnComplete ~10s later, which
+	 * tracks audio playback). The assistant-side flush signal (FLY-1065). */
+	| { type: "generation-complete" }
 	| { type: "tool-call"; callId: string; name: string; args: unknown }
 	/** server revoked already-issued tool calls → abort in-flight ask_lead. */
 	| { type: "tool-call-cancellation"; callIds: string[] }

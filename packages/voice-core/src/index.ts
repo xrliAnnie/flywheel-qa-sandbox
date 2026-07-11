@@ -87,6 +87,8 @@ export {
 	type SpawnOptions,
 	TimeoutError,
 } from "./process.js";
+// secret red line (FLY-1065) — every transcript exit passes through this
+export { scrubTranscript } from "./scrub.js";
 export {
 	TalkSessionRotator,
 	type TalkSessionRotatorOptions,

@@ -137,3 +137,12 @@ describe("realtime input frames", () => {
 		});
 	});
 });
+
+describe("language contract sentinel (FLY-1065 — Annie: 中英混说 must both work)", () => {
+	it("input/output transcription configs stay {} — languageCodes is NEVER pinned (unset = model auto-detects the language)", async () => {
+		const { config } = await connectWith({});
+		expect(config.inputAudioTranscription).toEqual({});
+		expect(config.outputAudioTranscription).toEqual({});
+		expect(JSON.stringify(config)).not.toContain("languageCodes");
+	});
+});

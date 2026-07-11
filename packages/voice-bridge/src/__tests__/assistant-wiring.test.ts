@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationLike } from "../assistant/AssistantSession.js";
 import {
+	assistantTranscriptPath,
 	classifyVoiceDelta,
 	RotatorConversationAdapter,
 	wireAssistantMode,
@@ -47,16 +48,27 @@ const ASSISTANT = {
 class FakeConversation implements ConversationLike {
 	sentTexts: string[] = [];
 	preamble: string;
+	/** FLY-1065 P3: the factory now receives { sessionId } (sink path contract). */
+	opts?: { sessionId: string };
 	closed = false;
-	constructor(preamble: string) {
+	private readonly handlers = new Map<string, Set<(...a: unknown[]) => void>>();
+	constructor(preamble: string, opts?: { sessionId: string }) {
 		this.preamble = preamble;
+		this.opts = opts;
 	}
 	sendText(t: string): void {
 		this.sentTexts.push(t);
 	}
 	sendAudio(): void {}
-	on(): () => void {
-		return () => {};
+	endUserTurn(): void {}
+	on(event: string, h: (...a: never[]) => void): () => void {
+		const set = this.handlers.get(event) ?? new Set();
+		set.add(h as (...a: unknown[]) => void);
+		this.handlers.set(event, set);
+		return () => set.delete(h as (...a: unknown[]) => void);
+	}
+	emit(event: string, ...args: unknown[]): void {
+		for (const h of this.handlers.get(event) ?? []) h(...args);
 	}
 	async close(): Promise<undefined> {
 		this.closed = true;
@@ -75,6 +87,8 @@ function makeFakes() {
 		}) => void
 	>();
 	const messages: string[] = [];
+	const statusAnchors: string[] = [];
+	const statusEdits: { id: string; text: string }[] = [];
 	const fetchCalls: { url: string; init: RequestInit }[] = [];
 	const conversations: FakeConversation[] = [];
 
@@ -103,6 +117,13 @@ function makeFakes() {
 		},
 		sendMessage: vi.fn(async (_c, _ch, text: string) => {
 			messages.push(text);
+		}),
+		sendMessageForId: vi.fn(async (_c, _ch, text: string) => {
+			statusAnchors.push(text);
+			return { messageId: `m${statusAnchors.length}` };
+		}),
+		editMessage: vi.fn(async (_c, _ch, id: string, text: string) => {
+			statusEdits.push({ id, text });
 		}),
 		onVoiceStateUpdate: () => () => {},
 		voiceChannelHumanCount: async () => 1, // founder already in the VC
@@ -137,10 +158,15 @@ function makeFakes() {
 		registered,
 		commandHandlers,
 		messages,
+		statusAnchors,
+		statusEdits,
 		fetchCalls,
 		conversations,
-		createConversation: async (preamble: string) => {
-			const c = new FakeConversation(preamble);
+		createConversation: async (
+			preamble: string,
+			opts?: { sessionId: string },
+		) => {
+			const c = new FakeConversation(preamble, opts);
 			conversations.push(c);
 			return c;
 		},
@@ -247,6 +273,138 @@ describe("wireAssistantMode (FLY-967 QA-B1)", () => {
 				stateDir,
 			}),
 		).rejects.toThrow(/GEMINI_API_KEY/);
+	});
+});
+
+describe("FLY-1065 — TIV presenter wiring + sink path alignment", () => {
+	let stateDir: string;
+
+	beforeEach(() => {
+		stateDir = mkdtempSync(join(tmpdir(), "fly1065-wire-"));
+	});
+	afterEach(() => rmSync(stateDir, { recursive: true, force: true }));
+
+	async function driveMeeting(over: Record<string, unknown> = {}) {
+		const f = makeFakes();
+		const logs: string[] = [];
+		const runtime = await wireAssistantMode({
+			config: CONFIG,
+			assistant: ASSISTANT,
+			registry: f.registry,
+			deps: f.deps,
+			earsConnection: { conn: "ears" },
+			env: { FLYWHEEL_API_TOKEN: "bridge-token" },
+			log: (l: string) => logs.push(l),
+			createConversation: f.createConversation,
+			fetchImpl: f.fetchImpl,
+			stateDir,
+			...over,
+		});
+		f.commandHandlers.get("gemini")?.({
+			topic: undefined,
+			userId: "annie",
+			reply: async () => {},
+		});
+		await vi.waitFor(() => {
+			if (f.conversations.length === 0) throw new Error("not yet");
+			if (f.conversations[0].sentTexts.length === 0)
+				throw new Error("not live yet");
+		});
+		return { ...f, runtime, logs };
+	}
+
+	it("assistantTranscriptPath is the ONE path both the sink and the landing use", () => {
+		expect(assistantTranscriptPath("/state", "sess-1")).toBe(
+			join("/state", "sess-1.jsonl"),
+		);
+	});
+
+	it("the conversation factory receives the assistant sessionId (JSONL sink path = <sessionId>.jsonl, the FLY-967 broken link)", async () => {
+		const h = await driveMeeting();
+		expect(h.conversations[0].opts?.sessionId).toBeTruthy();
+		await h.runtime.close();
+	});
+
+	it("status lines are ONE edited anchor message, never a message per state change (967 status spam fix)", async () => {
+		const h = await driveMeeting();
+		// session start pushed at least two status lines (进场 → listening);
+		// the presenter must funnel them into one anchor.
+		await vi.waitFor(
+			() => {
+				if (h.statusAnchors.length === 0) throw new Error("no anchor yet");
+			},
+			{ timeout: 3000 },
+		);
+		await vi.waitFor(
+			() => {
+				const last = h.statusEdits.at(-1)?.text ?? h.statusAnchors.at(-1) ?? "";
+				if (!last.includes("listening")) throw new Error("not converged");
+			},
+			{ timeout: 4000 },
+		);
+		expect(h.statusAnchors).toHaveLength(1);
+		// no status line ever went out as a plain new message
+		expect(
+			h.messages.filter(
+				(m) => m.includes("正在进场") || m.includes("listening"),
+			),
+		).toEqual([]);
+		await h.runtime.close();
+	});
+
+	it("a final transcript renders a per-turn caption message in the TIV (Annie's ask: see who said what, live)", async () => {
+		const h = await driveMeeting();
+		h.conversations[0].emit("transcript", {
+			role: "user",
+			text: "今天聊转写面板",
+			final: true,
+		});
+		h.conversations[0].emit("transcript", {
+			role: "assistant",
+			text: "好的,我们逐轮显示",
+			final: true,
+		});
+		await vi.waitFor(() => {
+			if (!h.messages.some((m) => m.includes("今天聊转写面板")))
+				throw new Error("user caption not rendered yet");
+		});
+		const userCaption = h.messages.find((m) => m.includes("今天聊转写面板"));
+		const assistantCaption = h.messages.find((m) =>
+			m.includes("好的,我们逐轮显示"),
+		);
+		expect(userCaption).toContain("🗣️");
+		expect(userCaption).toContain("Annie");
+		await vi.waitFor(() => {
+			if (!h.messages.some((m) => m.includes("好的,我们逐轮显示")))
+				throw new Error("assistant caption not rendered yet");
+		});
+		expect(assistantCaption ?? h.messages.at(-1)).toContain("💬");
+		// fragments (final:false) never render
+		h.conversations[0].emit("transcript", {
+			role: "user",
+			text: "碎片不上屏",
+			final: false,
+		});
+		await new Promise((r) => setTimeout(r, 20));
+		expect(h.messages.some((m) => m.includes("碎片不上屏"))).toBe(false);
+		await h.runtime.close();
+	});
+
+	it("captions:false degrades captions to the daemon log (escape hatch = 967 v1 behavior)", async () => {
+		const h = await driveMeeting({
+			assistant: { ...ASSISTANT, captions: false },
+		});
+		h.conversations[0].emit("transcript", {
+			role: "user",
+			text: "只进日志的转写",
+			final: true,
+		});
+		await vi.waitFor(() => {
+			if (!h.logs.some((l) => l.includes("只进日志的转写")))
+				throw new Error("caption not logged yet");
+		});
+		expect(h.messages.some((m) => m.includes("只进日志的转写"))).toBe(false);
+		await h.runtime.close();
 	});
 });
 

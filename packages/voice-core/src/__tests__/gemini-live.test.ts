@@ -369,3 +369,291 @@ describe("GeminiLiveBackend converse face", () => {
 		).rejects.toMatchObject({ code: "unsupported" });
 	});
 });
+
+/**
+ * FLY-1065 P2 — turn aggregation. Transport fragments are deltas; the session
+ * aggregates per role and emits ONE final:true per turn side, flushed by a
+ * priority chain proven on the real model (evidence/finished-flag-probe.md):
+ * finished fast path (kept for model upgrades) → first assistant output
+ * flushes the user turn → generation-complete flushes the assistant turn →
+ * turn-complete is the last-resort flush. The empty-buffer gate makes any
+ * signal combination emit at most one final per side.
+ */
+describe("GeminiLiveBackend turn aggregation (FLY-1065)", () => {
+	async function makeAggSession() {
+		const sink = new MemoryTranscriptSink();
+		const transport = new FakeTransport();
+		const backend = new GeminiLiveBackend({ transport, profile: profile() });
+		const session = await (
+			backend.createConversation as NonNullable<
+				typeof backend.createConversation
+			>
+		)({ brain: new FakeBrain([]), transcriptSink: sink });
+		const finals: {
+			role: string;
+			text: string;
+			final: boolean;
+			interrupted?: boolean;
+		}[] = [];
+		const fragments: { role: string; text: string }[] = [];
+		session.on("transcript", (t) => {
+			if (t.final) finals.push(t);
+			else fragments.push({ role: t.role, text: t.text });
+		});
+		return {
+			session,
+			conn: transport.lastConnection as FakeConnection,
+			sink,
+			finals,
+			fragments,
+		};
+	}
+
+	const frag = (
+		role: "user" | "assistant",
+		text: string,
+		finished?: boolean,
+	): LiveServerEvent => ({
+		type: "transcript",
+		role,
+		text,
+		final: false,
+		...(finished === undefined ? {} : { finished }),
+	});
+
+	it("finished fast path: fragments aggregate into ONE final with the full text; sink gets one row", async () => {
+		const { conn, finals, sink } = await makeAggSession();
+		conn.emit(frag("user", "今天"));
+		conn.emit(frag("user", "聊转写"));
+		conn.emit(frag("user", "面板", true));
+		expect(finals).toEqual([
+			{ role: "user", text: "今天聊转写面板", final: true },
+		]);
+		expect(sink.entries).toHaveLength(1);
+		expect(sink.entries[0]).toMatchObject({
+			role: "user",
+			text: "今天聊转写面板",
+			final: true,
+		});
+	});
+
+	it("fragments still pass through as final:false events (consumers unchanged)", async () => {
+		const { conn, fragments } = await makeAggSession();
+		conn.emit(frag("user", "第一"));
+		conn.emit(frag("user", "第二"));
+		expect(fragments).toEqual([
+			{ role: "user", text: "第一" },
+			{ role: "user", text: "第二" },
+		]);
+	});
+
+	it("first assistant output (transcript fragment) flushes the user turn — captions must not wait ~10s for turn-complete", async () => {
+		const { conn, finals } = await makeAggSession();
+		conn.emit(frag("user", "她的整句话"));
+		conn.emit(frag("assistant", "模型开始答"));
+		expect(finals).toEqual([{ role: "user", text: "她的整句话", final: true }]);
+	});
+
+	it("first assistant AUDIO chunk also flushes the user turn", async () => {
+		const { conn, finals } = await makeAggSession();
+		conn.emit(frag("user", "audio 先到的场景"));
+		conn.emit({ type: "audio", chunk: Buffer.from("A"), format: PCM });
+		expect(finals).toEqual([
+			{ role: "user", text: "audio 先到的场景", final: true },
+		]);
+	});
+
+	it("generation-complete flushes the assistant turn; the later turn-complete adds NO second final", async () => {
+		const { conn, finals } = await makeAggSession();
+		conn.emit(frag("user", "问题"));
+		conn.emit(frag("assistant", "答案 part 1,"));
+		conn.emit(frag("assistant", "part 2"));
+		conn.emit({ type: "generation-complete" });
+		conn.emit({ type: "turn-complete" });
+		expect(finals).toEqual([
+			{ role: "user", text: "问题", final: true },
+			{ role: "assistant", text: "答案 part 1,part 2", final: true },
+		]);
+	});
+
+	it("turn-complete is the last-resort flush: no finished / generation-complete → one final per side, user first", async () => {
+		const { conn, finals } = await makeAggSession();
+		conn.emit(frag("user", "只有兜底"));
+		conn.emit({ type: "turn-complete" });
+		expect(finals).toEqual([{ role: "user", text: "只有兜底", final: true }]);
+		conn.emit(frag("user", "第二轮"));
+		conn.emit(frag("assistant", "回话"));
+		conn.emit({ type: "turn-complete" });
+		expect(finals.slice(1)).toEqual([
+			{ role: "user", text: "第二轮", final: true },
+			{ role: "assistant", text: "回话", final: true },
+		]);
+	});
+
+	it("multi-signal arrival never double-emits: finished + generation-complete + turn-complete → at most one final per side", async () => {
+		const { conn, finals } = await makeAggSession();
+		conn.emit(frag("user", "全信号", true));
+		conn.emit(frag("assistant", "答话", true));
+		conn.emit({ type: "generation-complete" });
+		conn.emit({ type: "turn-complete" });
+		expect(finals).toEqual([
+			{ role: "user", text: "全信号", final: true },
+			{ role: "assistant", text: "答话", final: true },
+		]);
+	});
+
+	it("interrupted flushes the half-said assistant turn WITH interrupted:true, before response-cancelled; sink row carries interrupted", async () => {
+		const { conn, finals, sink, session } = await makeAggSession();
+		const order: string[] = [];
+		session.on("response-cancelled", () => order.push("cancelled"));
+		session.on("transcript", (t) => {
+			if (t.final) order.push(`final:${t.role}`);
+		});
+		conn.emit(frag("user", "她问"));
+		conn.emit(frag("assistant", "说到一半"));
+		conn.emit({ type: "interrupted" });
+		const assistantFinal = finals.find((f) => f.role === "assistant");
+		expect(assistantFinal).toMatchObject({
+			text: "说到一半",
+			final: true,
+			interrupted: true,
+		});
+		expect(order.indexOf("final:assistant")).toBeLessThan(
+			order.indexOf("cancelled"),
+		);
+		const row = sink.entries.find((e) => e.role === "assistant");
+		expect(row).toMatchObject({ text: "说到一半", interrupted: true });
+		// suppression still holds after the flush
+		conn.emit(frag("assistant", "late"));
+		expect(finals.filter((f) => f.role === "assistant")).toHaveLength(1);
+	});
+
+	it("manual interrupt() also flushes the half-said assistant turn with interrupted:true", async () => {
+		const { conn, finals, session } = await makeAggSession();
+		conn.emit(frag("user", "她问"));
+		conn.emit(frag("assistant", "半句"));
+		session.interrupt();
+		expect(finals.find((f) => f.role === "assistant")).toMatchObject({
+			text: "半句",
+			interrupted: true,
+		});
+	});
+
+	it("an interrupted flush after generation-complete already flushed is a no-op (she interrupted playback; text was complete)", async () => {
+		const { conn, finals } = await makeAggSession();
+		conn.emit(frag("user", "问"));
+		conn.emit(frag("assistant", "完整答案"));
+		conn.emit({ type: "generation-complete" });
+		conn.emit({ type: "interrupted" });
+		const assistantFinals = finals.filter((f) => f.role === "assistant");
+		expect(assistantFinals).toHaveLength(1);
+		expect(assistantFinals[0].interrupted).toBeUndefined();
+	});
+
+	it("same-frame interrupted + fragment: the fragment is appended BEFORE the flush (connector emits transcript first)", async () => {
+		// session-level half of the Codex R1 #5 contract: given the connector's
+		// transcript-before-interrupted order, the flush carries the last half-line.
+		const { conn, finals } = await makeAggSession();
+		conn.emit(frag("assistant", "同帧前半"));
+		conn.emit(frag("assistant", "同帧后半"));
+		conn.emit({ type: "interrupted" });
+		expect(finals.find((f) => f.role === "assistant")).toMatchObject({
+			text: "同帧前半同帧后半",
+			interrupted: true,
+		});
+	});
+
+	it("close() flushes both residual buffers (rotator rotation must not lose tails)", async () => {
+		const { conn, finals, sink, session } = await makeAggSession();
+		conn.emit(frag("user", "user 残余"));
+		conn.emit(frag("assistant", "assistant 残余"));
+		await session.close();
+		expect(finals).toEqual([
+			{ role: "user", text: "user 残余", final: true },
+			{ role: "assistant", text: "assistant 残余", final: true },
+		]);
+		expect(sink.entries).toHaveLength(2);
+		expect(conn.closed).toBe(true);
+	});
+
+	it("scrub applies at the final exit; fragment passthrough is NOT scrubbed (documented v1 boundary)", async () => {
+		const { conn, finals, fragments, sink } = await makeAggSession();
+		conn.emit(frag("user", "key 是 sk-AbCdEfGhIjKlMnOp1234 别外传", true));
+		expect(fragments[0].text).toContain("sk-AbCdEfGhIjKlMnOp1234");
+		expect(finals[0].text).not.toContain("sk-AbCdEfGhIjKlMnOp1234");
+		expect(finals[0].text).toContain("[redacted]");
+		expect(sink.entries[0].text).toContain("[redacted]");
+	});
+
+	it("sendText control prompts never enter the aggregation or the sink", async () => {
+		const { session, conn, finals, sink } = await makeAggSession();
+		session.sendText("控制提示(她听不到):请开场。");
+		conn.emit({ type: "turn-complete" });
+		await session.close();
+		expect(finals).toEqual([]);
+		expect(sink.entries).toEqual([]);
+	});
+
+	it("barge-in with her new words in the SAME frame as interrupted: the next model answer is NOT suppressed and both finals land (delta R1 blocker)", async () => {
+		const { conn, finals } = await makeAggSession();
+		// old assistant turn in flight
+		conn.emit(frag("user", "第一问"));
+		conn.emit(frag("assistant", "旧答案说到一半"));
+		// she barges in — the connector delivers, in order: interrupted first,
+		// THEN her new words (role-aware frame ordering), with NO turn-complete
+		// in between (the cancelled generation never completes).
+		conn.emit({ type: "interrupted" });
+		conn.emit(frag("user", "等等,换个问题"));
+		// the model answers her new utterance
+		conn.emit(frag("assistant", "好,新答案"));
+		conn.emit({ type: "generation-complete" });
+		expect(finals).toEqual([
+			{ role: "user", text: "第一问", final: true },
+			{
+				role: "assistant",
+				text: "旧答案说到一半",
+				final: true,
+				interrupted: true,
+			},
+			{ role: "user", text: "等等,换个问题", final: true },
+			{ role: "assistant", text: "好,新答案", final: true },
+		]);
+	});
+
+	it("interrupted frame carrying OLD audio + her new words: the cancelled audio never plays and never opens the next window (delta R2)", async () => {
+		const { session, conn, finals } = await makeAggSession();
+		const events: string[] = [];
+		session.on("response-audio", () => events.push("audio"));
+		session.on("response-started", () => events.push("started"));
+		// old turn in flight
+		conn.emit(frag("user", "第一问"));
+		conn.emit(frag("assistant", "旧半句"));
+		events.length = 0; // only observe from the barge-in on
+		// the barge-in frame, in connector order: interrupted → old audio → her new words
+		conn.emit({ type: "interrupted" });
+		conn.emit({ type: "audio", chunk: Buffer.from("OLD"), format: PCM });
+		conn.emit(frag("user", "换个问题"));
+		expect(events).toEqual([]); // old audio dropped; no window reopened on it
+		// the REAL new answer opens the window, flushes her new turn, and lands
+		conn.emit({ type: "audio", chunk: Buffer.from("NEW"), format: PCM });
+		conn.emit(frag("assistant", "新答案"));
+		conn.emit({ type: "generation-complete" });
+		expect(events).toEqual(["started", "audio"]);
+		expect(finals.slice(-2)).toEqual([
+			{ role: "user", text: "换个问题", final: true },
+			{ role: "assistant", text: "新答案", final: true },
+		]);
+	});
+
+	it("an unexpected transport error does not flush by itself; the owner's close() is the contracted drain (connection-died sequence)", async () => {
+		const { session, conn, finals, sink } = await makeAggSession();
+		conn.emit(frag("user", "说到一半连接死了"));
+		conn.emit({ type: "error", message: "ws dropped" });
+		expect(finals).toEqual([]); // error alone never fabricates a final
+		await session.close(); // AssistantSession teardown / rotator rotation path
+		expect(finals).toEqual([
+			{ role: "user", text: "说到一半连接死了", final: true },
+		]);
+		expect(sink.entries).toHaveLength(1);
+	});
+});

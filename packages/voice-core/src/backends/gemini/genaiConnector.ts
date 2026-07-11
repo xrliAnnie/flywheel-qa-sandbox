@@ -151,26 +151,42 @@ export function createGenaiTransport(
 	};
 }
 
-/** Map one @google/genai LiveServerMessage to zero-or-more LiveServerEvents. */
+/** Map one @google/genai LiveServerMessage to zero-or-more LiveServerEvents.
+ *
+ * FLY-1065 emit-order contract, ROLE-AWARE around `interrupted` (Codex R1 #5
+ * + delta review R1): in an interrupted frame the OUTPUT transcript belongs
+ * to the OLD generation — it must be appended into the turn buffer before the
+ * interrupted flush or the half-line is swallowed by cancel suppression —
+ * while the INPUT transcript is her NEW words that caused the barge-in: it
+ * must land AFTER `interrupted`, or its cancel-window reset would be clobbered
+ * by the cancel and the next assistant answer suppressed. Frames without
+ * `interrupted` keep the input-before-output order. `final` keeps its legacy
+ * `!!turnComplete` computation (a dead signal the session no longer relies
+ * on; kept for transport type compat). */
 function mapMessage(msg: any, emit: (e: LiveServerEvent) => void): void {
 	const sc = msg?.serverContent;
-	if (sc?.interrupted) emit({ type: "interrupted" });
-	if (sc?.inputTranscription?.text) {
-		emit({
-			type: "transcript",
-			role: "user",
-			text: sc.inputTranscription.text,
-			final: !!sc.turnComplete,
-		});
-	}
+	const emitInput = () => {
+		if (sc?.inputTranscription?.text) {
+			emit({
+				type: "transcript",
+				role: "user",
+				text: sc.inputTranscription.text,
+				final: !!sc.turnComplete,
+				finished: sc.inputTranscription.finished === true,
+			});
+		}
+	};
+	if (!sc?.interrupted) emitInput();
 	if (sc?.outputTranscription?.text) {
 		emit({
 			type: "transcript",
 			role: "assistant",
 			text: sc.outputTranscription.text,
 			final: !!sc.turnComplete,
+			finished: sc.outputTranscription.finished === true,
 		});
 	}
+	if (sc?.interrupted) emit({ type: "interrupted" });
 	const parts = sc?.modelTurn?.parts ?? [];
 	for (const p of parts) {
 		if (p?.inlineData?.data) {
@@ -181,6 +197,12 @@ function mapMessage(msg: any, emit: (e: LiveServerEvent) => void): void {
 			});
 		}
 	}
+	// interrupted frame: her new words come LAST of the old-generation events —
+	// after `interrupted` (so the cancel-window reset survives the cancel) AND
+	// after the frame's audio (also the old generation's — the reset must not
+	// un-suppress it into the next turn's first output; delta review R2).
+	if (sc?.interrupted) emitInput();
+	if (sc?.generationComplete) emit({ type: "generation-complete" });
 	if (sc?.turnComplete) emit({ type: "turn-complete" });
 	if (msg?.toolCall?.functionCalls) {
 		for (const fc of msg.toolCall.functionCalls) {
