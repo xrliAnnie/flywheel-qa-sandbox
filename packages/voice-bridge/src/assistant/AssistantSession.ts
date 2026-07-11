@@ -78,13 +78,18 @@ export interface AssistantSessionOptions {
 	ears: EarsFeed;
 	tiv: TivSurface;
 	landing: {
-		run(input: {
-			issueId: string;
-			sessionId: string;
-			recapText: string;
-			quotes: { ts: string; text: string }[];
-			confirmed: boolean;
-		}): Promise<LandingResult>;
+		run(
+			input: {
+				issueId: string;
+				sessionId: string;
+				recapText: string;
+				quotes: { ts: string; text: string }[];
+				confirmed: boolean;
+			},
+			/** FLY-1160 §3.3 Phase 2: shutdown deadline — once aborted, no
+			 * further external write and never a success report. */
+			runOpts?: { signal?: AbortSignal },
+		): Promise<LandingResult>;
 	};
 	/** the "meeting never happened" path (10-min no-show). */
 	linearAbort: {
@@ -158,6 +163,11 @@ export class AssistantSession {
 	private earsTimer: ReturnType<typeof setTimeout> | undefined;
 	private recapTimer: ReturnType<typeof setTimeout> | undefined;
 	private done = false;
+	/** FLY-1160 §3.3 Phase 2: ONE shared abort for THE landing — a shutdown
+	 * deadline must reach a landing that is ALREADY in flight (natural
+	 * conclusion racing the daemon shutdown), not just one stop() starts. */
+	private readonly landingAbort = new AbortController();
+	private landingPromise?: Promise<void>;
 	private firstFrameLogged = false;
 	private firstAudioLogged = false;
 	/** live-chain observability (round-5b): both directions counted. */
@@ -258,10 +268,27 @@ export class AssistantSession {
 		}
 	}
 
-	/** external stop (daemon shutdown) — degrade honestly, release the room. */
-	async stop(): Promise<void> {
+	/** external stop (daemon shutdown) — degrade honestly, release the room.
+	 * FLY-1160 §3.3 Phase 2: the shutdown landing budget's signal — once
+	 * aborted, the landing stops before its NEXT external write and never
+	 * reports success (receipt keeps the resume cursor). */
+	async stop(opts?: { signal?: AbortSignal }): Promise<void> {
+		const sig = opts?.signal;
+		if (sig) {
+			// bridge the budget signal onto the SHARED landing controller so it
+			// also reaches a landing already in flight.
+			if (sig.aborted) this.landingAbort.abort();
+			else
+				sig.addEventListener("abort", () => this.landingAbort.abort(), {
+					once: true,
+				});
+		}
 		if (this._state === "live" || this._state === "concluding") {
 			await this.toLanding(false, "external-stop");
+		} else if (this.landingPromise) {
+			// a landing is already running — JOIN it (abortable via the shared
+			// controller); tearing down here would race the landing (Codex #550 R3).
+			await this.landingPromise;
 		} else if (!this.done) {
 			await this.teardown();
 		}
@@ -434,6 +461,14 @@ export class AssistantSession {
 
 	private async toLanding(confirmed: boolean, trigger: string): Promise<void> {
 		if (this._state === "landing" || this.done) return;
+		const work = this.runLanding(confirmed, trigger);
+		// exposed so a later stop() can JOIN this exact landing instead of
+		// racing a teardown against it.
+		this.landingPromise = work;
+		await work;
+	}
+
+	private async runLanding(confirmed: boolean, trigger: string): Promise<void> {
 		this.closingFromConcluding = this._state === "concluding";
 		this._state = "landing";
 		this.log(
@@ -460,13 +495,16 @@ export class AssistantSession {
 			);
 		}
 		try {
-			const r = await this.opts.landing.run({
-				issueId: this.opts.issueId,
-				sessionId: this.opts.sessionId,
-				recapText: this.recapText || "(无 recap——会议在收尾前结束)",
-				quotes: this.quotes,
-				confirmed,
-			});
+			const r = await this.opts.landing.run(
+				{
+					issueId: this.opts.issueId,
+					sessionId: this.opts.sessionId,
+					recapText: this.recapText || "(无 recap——会议在收尾前结束)",
+					quotes: this.quotes,
+					confirmed,
+				},
+				{ signal: this.landingAbort.signal },
+			);
 			if (r.ok) {
 				// never claim a verbatim record that didn't land (0 chunks = 0-turn
 				// meeting or feature-skipped) — fall back to the summary-only wording.

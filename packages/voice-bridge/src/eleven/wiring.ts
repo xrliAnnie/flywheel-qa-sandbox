@@ -91,6 +91,9 @@ export interface WireElevenOptions {
 	) => Promise<ElevenWsLike>;
 	/** test seam: state dir override (default ~/.flywheel/voice-eleven). */
 	stateDir?: string;
+	/** FLY-1160 §3.3 Phase 1: when true, new /eleven invocations are refused
+	 * (命令下架) — the daemon is shutting down and must not start meetings. */
+	isShuttingDown?: () => boolean;
 }
 
 export interface ElevenRuntime {
@@ -293,6 +296,14 @@ export async function wireElevenMode(
 		);
 	}
 	deps.onChatCommand(orchestratorClient, command.name, (inv) => {
+		// FLY-1160 §3.3 Phase 1: 命令下架 — no new meetings during shutdown.
+		if (opts.isShuttingDown?.()) {
+			log(`/${command.name} refused — daemon shutting down`);
+			void inv
+				.reply("voice-bridge 正在关闭,现在开不了新会 — 请稍后再试。")
+				.catch(() => {});
+			return;
+		}
 		void command
 			.handle({ topic: inv.topic, reply: inv.reply })
 			.catch((err) => log(`/${command.name} handle failed: ${err.message}`));

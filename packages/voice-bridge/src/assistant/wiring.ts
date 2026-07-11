@@ -88,11 +88,17 @@ export interface WireAssistantOptions {
 	fetchImpl?: typeof fetch;
 	/** test seam: state dir override (default ~/.flywheel/voice-assistant). */
 	stateDir?: string;
+	/** FLY-1160 §3.3 Phase 1: when true, new /gemini invocations are refused
+	 * (命令下架) — the daemon is shutting down and must not start meetings. */
+	isShuttingDown?: () => boolean;
 }
 
 export interface AssistantRuntime {
 	commandName: string;
-	close(): Promise<void>;
+	/** FLY-1160 §3.3 Phase 2: the shutdown landing budget's AbortSignal —
+	 * once aborted the landing performs NO further external writes and never
+	 * reports success (true cancellation, not stop-waiting). */
+	close(opts?: { signal?: AbortSignal }): Promise<void>;
 }
 
 export async function wireAssistantMode(
@@ -345,8 +351,8 @@ export async function wireAssistantMode(
 				tiv,
 				landing: new AssistantLanding({
 					linear: {
-						comment: (id, body) => linear.comment(id, body),
-						closeIssue: (id) => linear.closeIssue(id),
+						comment: (id, body, o) => linear.comment(id, body, o),
+						closeIssue: (id, o) => linear.closeIssue(id, o),
 					},
 					commandName: assistant.commandName,
 					receiptPath: join(stateDir, `${sessionId}.landing-receipt.json`),
@@ -379,6 +385,14 @@ export async function wireAssistantMode(
 		);
 	}
 	deps.onChatCommand(orchestratorClient, command.name, (inv) => {
+		// FLY-1160 §3.3 Phase 1: 命令下架 — no new meetings during shutdown.
+		if (opts.isShuttingDown?.()) {
+			log(`/${command.name} refused — daemon shutting down`);
+			void inv
+				.reply("voice-bridge 正在关闭,现在开不了新会 — 请稍后再试。")
+				.catch(() => {});
+			return;
+		}
 		void command
 			.handle({ topic: inv.topic, reply: inv.reply })
 			.catch((err) => log(`/${command.name} handle failed: ${err.message}`));
@@ -411,11 +425,11 @@ ${o.joinUrl}`
 
 	return {
 		commandName: command.name,
-		close: async () => {
+		close: async (closeOpts?: { signal?: AbortSignal }) => {
 			briefing.stop();
 			unsubVoiceState();
 			ownEars?.dispose();
-			await activeSession?.stop();
+			await activeSession?.stop(closeOpts);
 			activeSession = null;
 		},
 	};
@@ -518,6 +532,7 @@ function makeLinearClient(o: LinearClientOpts) {
 		path: string,
 		body?: Record<string, unknown>,
 		query?: Record<string, string>,
+		signal?: AbortSignal,
 	): Promise<unknown> => {
 		const url = new URL(path, o.bridgeUrl);
 		for (const [k, v] of Object.entries(query ?? {})) {
@@ -534,6 +549,9 @@ function makeLinearClient(o: LinearClientOpts) {
 				method === "GET"
 					? undefined
 					: JSON.stringify({ ...body, projectName: o.projectName }),
+			// FLY-1160 §3.3: the shutdown deadline aborts landing mutations
+			// mid-flight (true cancellation, not stop-waiting)
+			...(signal ? { signal } : {}),
 		});
 		if (!res.ok) {
 			const detail = await res.text().catch(() => "");
@@ -556,18 +574,28 @@ function makeLinearClient(o: LinearClientOpts) {
 			})) as { issue: { identifier: string; url?: string } };
 			return data.issue;
 		},
-		comment: async (issueId: string, body: string) => {
-			const data = (await call("POST", "/api/linear/comment", {
-				issueId,
-				body,
-			})) as { comment?: { url?: string } };
+		comment: async (
+			issueId: string,
+			body: string,
+			opts?: { signal?: AbortSignal },
+		) => {
+			const data = (await call(
+				"POST",
+				"/api/linear/comment",
+				{ issueId, body },
+				undefined,
+				opts?.signal,
+			)) as { comment?: { url?: string } };
 			return { url: data.comment?.url };
 		},
-		closeIssue: async (issueId: string) => {
-			await call("PATCH", "/api/linear/update-issue", {
-				issueId,
-				status: "Done",
-			});
+		closeIssue: async (issueId: string, opts?: { signal?: AbortSignal }) => {
+			await call(
+				"PATCH",
+				"/api/linear/update-issue",
+				{ issueId, status: "Done" },
+				undefined,
+				opts?.signal,
+			);
 		},
 	};
 }

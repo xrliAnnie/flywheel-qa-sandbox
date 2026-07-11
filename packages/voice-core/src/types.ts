@@ -35,7 +35,8 @@ export type VoiceErrorCode =
 	| "subprocess-failed" // subprocess exited non-zero
 	| "timeout" // subprocess exceeded its deadline
 	| "cancelled" // aborted via AbortSignal
-	| "backend-protocol"; // backend protocol error (ws disconnect, bad frame, ...)
+	| "backend-protocol" // backend protocol error (ws disconnect, bad frame, ...)
+	| "resource-exhausted"; // a hard capacity cap refused new work (FLY-1160: resident session limit)
 
 export class VoiceError extends Error {
 	constructor(

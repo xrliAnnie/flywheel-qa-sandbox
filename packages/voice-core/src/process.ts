@@ -36,6 +36,11 @@ export interface SpawnOptions {
 	cwd?: string;
 }
 
+export interface ProcessExitInfo {
+	code: number | null;
+	signal: NodeJS.Signals | null;
+}
+
 export interface ProcessHandle {
 	readonly pid: number | undefined;
 	kill(signal?: NodeJS.Signals): void;
@@ -44,9 +49,31 @@ export interface ProcessHandle {
 	onExit(
 		cb: (code: number | null, signal: NodeJS.Signals | null) => void,
 	): void;
-	write(data: Buffer | string): void;
+	/**
+	 * Node backpressure boolean (FLY-1160 §3.1b): false = the Writable buffered
+	 * the data but wants the caller to wait for onDrain before writing more.
+	 * Returns false without writing when stdin is already gone (post-exit).
+	 */
+	write(data: Buffer | string): boolean;
 	/** write final data (if any) and close stdin (EOF). */
 	end(data?: Buffer | string): void;
+	// ---- resident extensions (FLY-1160 §3.1b, additive) ----
+	/**
+	 * spawn ENOENT / stdin EPIPE surface here. With NO callback registered the
+	 * error is re-thrown (uncaught) — the pre-FLY-1160 loud-failure behavior
+	 * for one-shot consumers is preserved, never silently swallowed.
+	 */
+	onError(cb: (err: Error) => void): void;
+	/** stdin drained after a write() returned false. */
+	onDrain(cb: () => void): void;
+	/** close stdin (EOF) without writing — the resident clean-exit path. */
+	closeStdin(): void;
+	/**
+	 * Bounded exit observation: resolves exit info, or null when the child is
+	 * still alive after timeoutMs. No timeout = wait indefinitely. Resolves
+	 * immediately when the child already exited.
+	 */
+	awaitExit(timeoutMs?: number): Promise<ProcessExitInfo | null>;
 }
 
 export interface ProcessRunner {
@@ -55,7 +82,31 @@ export interface ProcessRunner {
 }
 
 class NodeProcessHandle implements ProcessHandle {
-	constructor(private readonly child: ChildProcess) {}
+	private exitInfo: ProcessExitInfo | null = null;
+	private readonly errorCbs: ((err: Error) => void)[] = [];
+
+	constructor(private readonly child: ChildProcess) {
+		child.on("exit", (code, signal) => {
+			this.exitInfo = { code, signal };
+		});
+		// error events must never crash the daemon once a consumer opted in via
+		// onError; with no callback the error re-throws (pre-FLY-1160 behavior).
+		child.on("error", (err) => {
+			// spawn-level failure (ENOENT/EACCES: pid never assigned): Node emits
+			// 'error' and never 'exit' — synthesize the exit so exit-driven
+			// lifecycles (awaitExit, resident respawn/watchdog) terminate instead
+			// of waiting forever (Codex #550 R1 HIGH-1).
+			if (this.exitInfo === null && this.child.pid === undefined) {
+				this.child.emit("exit", null, null);
+			}
+			this.dispatchError(err);
+		});
+		child.stdin?.on("error", (err) => this.dispatchError(err));
+	}
+	private dispatchError(err: Error): void {
+		if (this.errorCbs.length === 0) throw err;
+		for (const cb of [...this.errorCbs]) cb(err);
+	}
 	get pid(): number | undefined {
 		return this.child.pid;
 	}
@@ -75,11 +126,42 @@ class NodeProcessHandle implements ProcessHandle {
 	): void {
 		this.child.on("exit", cb);
 	}
-	write(data: Buffer | string): void {
-		this.child.stdin?.write(data);
+	write(data: Buffer | string): boolean {
+		const stdin = this.child.stdin;
+		if (!stdin || stdin.destroyed || !stdin.writable) return false;
+		return stdin.write(data);
 	}
 	end(data?: Buffer | string): void {
 		this.child.stdin?.end(data);
+	}
+	onError(cb: (err: Error) => void): void {
+		this.errorCbs.push(cb);
+	}
+	onDrain(cb: () => void): void {
+		this.child.stdin?.on("drain", cb);
+	}
+	closeStdin(): void {
+		this.child.stdin?.end();
+	}
+	awaitExit(timeoutMs?: number): Promise<ProcessExitInfo | null> {
+		if (this.exitInfo) return Promise.resolve(this.exitInfo);
+		return new Promise((resolve) => {
+			let timer: NodeJS.Timeout | undefined;
+			const onExit = (
+				code: number | null,
+				signal: NodeJS.Signals | null,
+			): void => {
+				if (timer) clearTimeout(timer);
+				resolve({ code, signal });
+			};
+			this.child.once("exit", onExit);
+			if (timeoutMs !== undefined && timeoutMs > 0) {
+				timer = setTimeout(() => {
+					this.child.removeListener("exit", onExit);
+					resolve(null);
+				}, timeoutMs);
+			}
+		});
 	}
 }
 

@@ -24,6 +24,21 @@ export interface HuddleBridgeLead {
 	chatChannel?: string;
 }
 
+/**
+ * FLY-1160: resident brain face. The token env name is HARD-PINNED to
+ * FLYWHEEL_BRAIN_PORT_TOKEN and deliberately NOT configurable (Codex R2 #4b —
+ * a configurable tokenEnv lets daemon and shim read different secrets). The
+ * BrainPort listens only when `port` is set AND that env var has a value.
+ */
+export interface HuddleBrainConfig {
+	/** loopback BrainPort port; unset = the port server never starts. */
+	port?: number;
+	/** resident claude model (founder knob; FLY-980 data: sonnet > haiku > opus). */
+	model: string;
+	/** global resident-session hard cap. */
+	maxSessions: number;
+}
+
 export interface HuddleBridgeConfig {
 	projectName: string;
 	projectRoot: string;
@@ -47,7 +62,12 @@ export interface HuddleBridgeConfig {
 	healthPort: number;
 	/** playback stack preflight target (mp3→opus transcode runs through it). */
 	ffmpegBin: string;
+	/** FLY-1160 resident brain; absent = feature fully off (byte-compat). */
+	brain?: HuddleBrainConfig;
 }
+
+const DEFAULT_BRAIN_MODEL = "sonnet";
+const DEFAULT_BRAIN_MAX_SESSIONS = 4;
 
 const DEFAULT_COMMAND = "meet";
 const DEFAULT_BACKCHANNEL_MS = 350;
@@ -175,6 +195,53 @@ export function resolveHuddleBridgeConfig(
 		);
 	}
 
+	// FLY-1160 resident brain block — present-but-invalid fails LOUD.
+	let brain: HuddleBrainConfig | undefined;
+	if (huddle.brain !== undefined) {
+		if (
+			typeof huddle.brain !== "object" ||
+			huddle.brain === null ||
+			Array.isArray(huddle.brain)
+		) {
+			throw new Error(
+				`voice-bridge: huddle.brain must be an object, got ${JSON.stringify(huddle.brain)}`,
+			);
+		}
+		const b = huddle.brain as Record<string, unknown>;
+		if (
+			b.port !== undefined &&
+			(typeof b.port !== "number" || !Number.isInteger(b.port) || b.port <= 0)
+		) {
+			throw new Error(
+				`voice-bridge: huddle.brain.port must be a positive integer, got ${JSON.stringify(b.port)}`,
+			);
+		}
+		if (
+			b.model !== undefined &&
+			(typeof b.model !== "string" || b.model.length === 0)
+		) {
+			throw new Error(
+				`voice-bridge: huddle.brain.model must be a non-empty string, got ${JSON.stringify(b.model)}`,
+			);
+		}
+		if (
+			b.maxSessions !== undefined &&
+			(typeof b.maxSessions !== "number" ||
+				!Number.isInteger(b.maxSessions) ||
+				b.maxSessions <= 0)
+		) {
+			throw new Error(
+				`voice-bridge: huddle.brain.maxSessions must be a positive integer, got ${JSON.stringify(b.maxSessions)}`,
+			);
+		}
+		brain = {
+			...(b.port !== undefined ? { port: b.port as number } : {}),
+			model: (b.model as string | undefined) ?? DEFAULT_BRAIN_MODEL,
+			maxSessions:
+				(b.maxSessions as number | undefined) ?? DEFAULT_BRAIN_MAX_SESSIONS,
+		};
+	}
+
 	return {
 		projectName: String(entry.projectName),
 		projectRoot: String(entry.projectRoot),
@@ -205,6 +272,7 @@ export function resolveHuddleBridgeConfig(
 			DEFAULT_HEALTH_PORT,
 		),
 		ffmpegBin: env.FLYWHEEL_VOICE_FFMPEG || "ffmpeg",
+		...(brain ? { brain } : {}),
 	};
 }
 

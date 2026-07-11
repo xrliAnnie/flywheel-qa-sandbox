@@ -23,6 +23,12 @@ import {
 	type ProcessRunner,
 } from "../process.js";
 import { type BrainAdapter, type Turn, VoiceError } from "../types.js";
+import { parseStreamLine } from "./stream-parse.js";
+
+// FLY-1160 §3.0: the parser moved to the shared stream-parse module (the
+// resident brain needs the kind-annotated variant); the public import path
+// from this file keeps working.
+export { parseStreamLine } from "./stream-parse.js";
 
 const DEFAULT_VOICE_CONTEXT = [
 	"You are speaking with the founder over a VOICE channel.",
@@ -268,48 +274,4 @@ class BrainStream {
 			if (result.value) yield result.value;
 		}
 	}
-}
-
-/**
- * Parse a stream-json line (S0.1 spike shape). Returns:
- *   - recognized=true if the line IS stream-json we understand,
- *   - text: assistant text_delta (empty for non-text stream lines),
- *   - sessionId: captured when present (top-level session_id).
- */
-export function parseStreamLine(line: string): {
-	recognized: boolean;
-	text?: string;
-	sessionId?: string;
-} {
-	let obj: any;
-	try {
-		obj = JSON.parse(line);
-	} catch {
-		return { recognized: false };
-	}
-	if (obj == null || typeof obj !== "object") return { recognized: false };
-	const sessionId =
-		typeof obj.session_id === "string" ? obj.session_id : undefined;
-
-	// spike shape: { type:"stream_event", event:{ type:"content_block_delta",
-	//   delta:{ type:"text_delta", text } } } — take text_delta only, ignore thinking_delta.
-	const ev = obj.event;
-	if (ev && ev.type === "content_block_delta" && ev.delta) {
-		if (ev.delta.type === "text_delta" && typeof ev.delta.text === "string") {
-			return { recognized: true, text: ev.delta.text, sessionId };
-		}
-		return { recognized: true, text: "", sessionId }; // thinking_delta etc.
-	}
-	// tolerate assistant message shape (non-partial)
-	const content = obj.message?.content ?? obj.content;
-	if (Array.isArray(content)) {
-		const text = content
-			.filter((c: any) => c?.type === "text" && typeof c.text === "string")
-			.map((c: any) => c.text)
-			.join("");
-		return { recognized: true, text, sessionId };
-	}
-	if (typeof obj.type === "string")
-		return { recognized: true, text: "", sessionId };
-	return { recognized: false, sessionId };
 }

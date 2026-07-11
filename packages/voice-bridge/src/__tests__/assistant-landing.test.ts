@@ -414,4 +414,87 @@ describe("AssistantLanding v2 — verbatim transcript comments (FLY-1065 P6)", (
 			comment.mock.calls.filter((c) => String(c[1]).includes("逐字对话记录")),
 		).toHaveLength(0);
 	});
+
+	describe("shutdown deadline = TRUE cancellation (FLY-1160 §3.3 Phase 2, Codex #550 R2)", () => {
+		it("a pre-aborted signal performs ZERO Linear writes and never reports success", async () => {
+			const ctrl = new AbortController();
+			ctrl.abort();
+			const r = await makeLanding().run(input, { signal: ctrl.signal });
+			expect(r).toMatchObject({ ok: false, stage: "comment" });
+			expect(comment).not.toHaveBeenCalled();
+			expect(closeIssue).not.toHaveBeenCalled();
+		});
+
+		it("abort after the summary: transcript/close never posted; a clean re-run RESUMES from the receipt without re-posting", async () => {
+			writeJsonl([row("user", "第一句"), row("assistant", "第二句")]);
+			const ctrl = new AbortController();
+			comment.mockImplementation(async () => {
+				if (comment.mock.calls.length === 1) ctrl.abort(); // deadline lands mid-flight
+				return { url: "https://linear.app/c/1" };
+			});
+			const r1 = await makeLanding().run(input, { signal: ctrl.signal });
+			expect(r1).toMatchObject({ ok: false, stage: "transcript" });
+			expect(comment).toHaveBeenCalledTimes(1); // summary only
+			expect(closeIssue).not.toHaveBeenCalled();
+
+			const r2 = await makeLanding().run(input); // reconciliation re-run
+			expect(r2.ok).toBe(true);
+			expect(comment).toHaveBeenCalledTimes(2); // +1 transcript chunk, NO summary re-post
+			expect(closeIssue).toHaveBeenCalledTimes(1);
+		});
+
+		it("a mutation aborted MID-FLIGHT is outcome-unknown: cursor NOT advanced, loud message, re-run retries that write", async () => {
+			writeJsonl([row("user", "第一句")]);
+			const ctrl = new AbortController();
+			comment.mockImplementation(async () => {
+				if (comment.mock.calls.length === 2) {
+					// the chunk POST gets cut by the deadline mid-flight
+					ctrl.abort();
+					throw new Error("fetch aborted");
+				}
+				return { url: "https://linear.app/c/1" };
+			});
+			const r1 = await makeLanding().run(input, { signal: ctrl.signal });
+			expect(r1).toMatchObject({ ok: false, stage: "transcript" });
+			expect((r1 as { message?: string }).message).toContain("结果未知");
+			expect(closeIssue).not.toHaveBeenCalled();
+
+			// re-run RETRIES the unknown write (explicit possible duplicate over
+			// silent loss) and completes
+			comment.mockImplementation(async () => ({
+				url: "https://linear.app/c/1",
+			}));
+			const r2 = await makeLanding().run(input);
+			expect(r2.ok).toBe(true);
+			expect(closeIssue).toHaveBeenCalledTimes(1);
+		});
+
+		it("close RESOLVES during the abort window: success is still NOT reported past the deadline (Codex #550 R4)", async () => {
+			const ctrl = new AbortController();
+			closeIssue.mockImplementation(async () => {
+				ctrl.abort(); // the deadline lands while close is in flight; close commits
+			});
+			const r = await makeLanding().run(input, { signal: ctrl.signal });
+			expect(r).toMatchObject({ ok: false, stage: "close" });
+			expect((r as { message?: string }).message).toContain("issue 已关");
+			expect(closeIssue).toHaveBeenCalledTimes(1);
+		});
+
+		it("abort before close: the issue stays open; a clean re-run only closes (no comment re-posts)", async () => {
+			writeJsonl([row("user", "第一句")]);
+			const ctrl = new AbortController();
+			comment.mockImplementation(async () => {
+				if (comment.mock.calls.length === 2) ctrl.abort(); // after the chunk POST
+				return { url: "https://linear.app/c/1" };
+			});
+			const r1 = await makeLanding().run(input, { signal: ctrl.signal });
+			expect(r1).toMatchObject({ ok: false, stage: "close" });
+			expect(closeIssue).not.toHaveBeenCalled();
+
+			const r2 = await makeLanding().run(input);
+			expect(r2.ok).toBe(true);
+			expect(comment).toHaveBeenCalledTimes(2); // nothing re-posted
+			expect(closeIssue).toHaveBeenCalledTimes(1);
+		});
+	});
 });

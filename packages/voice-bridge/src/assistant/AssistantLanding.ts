@@ -19,8 +19,14 @@ import { dirname } from "node:path";
 import { scrubTranscript } from "flywheel-voice-core";
 
 export interface LandingLinear {
-	comment(issueId: string, body: string): Promise<{ url?: string }>;
-	closeIssue(issueId: string): Promise<void>;
+	/** FLY-1160 §3.3: opts.signal (when given) must reach the underlying
+	 * fetch — the shutdown deadline aborts mutations mid-flight. */
+	comment(
+		issueId: string,
+		body: string,
+		opts?: { signal?: AbortSignal },
+	): Promise<{ url?: string }>;
+	closeIssue(issueId: string, opts?: { signal?: AbortSignal }): Promise<void>;
 }
 
 /** one verbatim turn as read from the per-meeting JSONL. */
@@ -196,7 +202,59 @@ export class AssistantLanding {
 		});
 	}
 
-	async run(input: LandingInput): Promise<LandingResult> {
+	async run(
+		input: LandingInput,
+		runOpts: { signal?: AbortSignal } = {},
+	): Promise<LandingResult> {
+		// FLY-1160 §3.3 Phase 2: the shutdown deadline is TRUE cancellation —
+		// once the signal aborts, NO further external write happens and success
+		// is never reported. The receipt (summary posted / postedChunks cursor /
+		// close-by-issue-state) is the durable stage-aware continuation: a
+		// re-run resumes exactly where the deadline cut, never re-posting.
+		const deadline = (
+			stage: "comment" | "transcript" | "close",
+		): LandingResult => {
+			this.opts.log?.(
+				`[landing] LOUD: shutdown deadline hit at stage=${stage} for ${input.sessionId} — no further Linear writes; receipt keeps the resume cursor`,
+			);
+			return {
+				ok: false,
+				stage,
+				message: `落地在 shutdown deadline 处中止(stage=${stage})——已落进度在 receipt 里,issue 保持打开,重跑从断点续发。`,
+			};
+		};
+		// the deadline aborted a mutation MID-FLIGHT: the server may or may not
+		// have committed it. Honest bookkeeping: the receipt cursor does NOT
+		// advance, so a re-run retries this one write (a possible duplicate,
+		// flagged loudly) — the marker-based read-back reconciliation that
+		// removes even that duplicate ships with the §3.3 Bridge read endpoints
+		// in the FLY-545/FLY-1006 wiring PRs.
+		const unknownOutcome = (
+			stage: "comment" | "transcript" | "close",
+		): LandingResult => {
+			this.opts.log?.(
+				`[landing] LOUD: shutdown deadline aborted an IN-FLIGHT ${stage} mutation for ${input.sessionId} — outcome unknown; re-run may duplicate this one write`,
+			);
+			return {
+				ok: false,
+				stage,
+				message: `落地的 ${stage} 写在 shutdown deadline 被中断,结果未知——issue 保持打开;重跑会重试这一步(可能出现一次重复,以显式重复换绝不静默丢)。`,
+			};
+		};
+		// no-signal callers keep the exact legacy call shape (2-arg) — the
+		// opts object appears only when a deadline signal actually exists.
+		const postComment = (
+			issueId: string,
+			body: string,
+		): Promise<{ url?: string }> =>
+			runOpts.signal
+				? this.opts.linear.comment(issueId, body, { signal: runOpts.signal })
+				: this.opts.linear.comment(issueId, body);
+		const closeIssue = (issueId: string): Promise<void> =>
+			runOpts.signal
+				? this.opts.linear.closeIssue(issueId, { signal: runOpts.signal })
+				: this.opts.linear.closeIssue(issueId);
+
 		let receipt = this.readReceipt();
 		const receiptValid =
 			receipt?.issueId === input.issueId &&
@@ -204,8 +262,9 @@ export class AssistantLanding {
 		if (!receiptValid) receipt = null;
 
 		if (!receipt) {
+			if (runOpts.signal?.aborted) return deadline("comment");
 			try {
-				const posted = await this.opts.linear.comment(
+				const posted = await postComment(
 					input.issueId,
 					AssistantLanding.buildSummary(input, this.opts.commandName),
 				);
@@ -217,12 +276,16 @@ export class AssistantLanding {
 				};
 				this.writeReceipt(receipt);
 			} catch (err) {
+				if (runOpts.signal?.aborted) return unknownOutcome("comment");
 				return {
 					ok: false,
 					stage: "comment",
 					message: `纪要没写进 issue(${String((err as Error).message ?? err)})——完整记录在 ${this.opts.transcriptPath},issue 保持打开,可重跑落地。`,
 				};
 			}
+			// post-await gate: the summary is CONFIRMED (recorded above); an
+			// abort that landed while it was in flight stops the NEXT stage.
+			if (runOpts.signal?.aborted) return deadline("transcript");
 		} else {
 			this.opts.log?.(
 				`[landing] receipt found for ${input.sessionId} — skipping the summary comment`,
@@ -277,9 +340,11 @@ export class AssistantLanding {
 			if (!t.completeAt) {
 				for (const [i, body] of chunks.entries()) {
 					if (i < t.postedChunks) continue; // already landed — never re-post
+					if (runOpts.signal?.aborted) return deadline("transcript");
 					try {
-						await this.opts.linear.comment(input.issueId, body);
+						await postComment(input.issueId, body);
 					} catch (err) {
+						if (runOpts.signal?.aborted) return unknownOutcome("transcript");
 						return {
 							ok: false,
 							stage: "transcript",
@@ -287,7 +352,9 @@ export class AssistantLanding {
 						};
 					}
 					// atomic per-chunk progress: a crash between chunks resumes exactly
-					// where the last successful POST left off.
+					// where the last successful POST left off. Progress is CONFIRMED
+					// (the POST resolved) — record it even when the deadline landed
+					// while it was in flight, THEN stop before the next write.
 					t.postedChunks = i + 1;
 					this.writeReceipt(receipt);
 				}
@@ -296,13 +363,28 @@ export class AssistantLanding {
 			}
 		}
 
+		if (runOpts.signal?.aborted) return deadline("close");
 		try {
-			await this.opts.linear.closeIssue(input.issueId);
+			await closeIssue(input.issueId);
 		} catch (err) {
+			if (runOpts.signal?.aborted) return unknownOutcome("close");
 			return {
 				ok: false,
 				stage: "close",
 				message: `纪要已写进 issue,但关闭失败(${String((err as Error).message ?? err)})——请人工关闭 ${input.issueId};重跑只会补关闭,不会重发纪要。`,
+			};
+		}
+		// post-await gate on the FINAL write too: success is never reported
+		// past the deadline, even when the close itself committed — the daemon
+		// is already tearing down and must not render a success TIV.
+		if (runOpts.signal?.aborted) {
+			this.opts.log?.(
+				`[landing] LOUD: close committed but the shutdown deadline passed for ${input.sessionId} — not reporting success past the deadline`,
+			);
+			return {
+				ok: false,
+				stage: "close",
+				message: `落地已全部完成(含关单),但确认落在 shutdown deadline 之后——按合同不报成功;issue 已关,无需重跑。`,
 			};
 		}
 		return { ok: true, commentUrl: receipt?.commentUrl, transcriptChunks };

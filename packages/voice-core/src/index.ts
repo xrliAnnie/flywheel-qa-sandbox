@@ -54,6 +54,22 @@ export {
 	type HeadlessClaudeBrainOptions,
 	parseStreamLine,
 } from "./brain/HeadlessClaudeBrain.js";
+// resident brain (FLY-1160)
+export {
+	ResidentBrainManager,
+	type ResidentBrainManagerOptions,
+} from "./brain/ResidentBrainManager.js";
+export {
+	type ResidentBrainEvent,
+	type ResidentBrainOptions,
+	type ResidentBrainState,
+	ResidentClaudeBrain,
+} from "./brain/ResidentClaudeBrain.js";
+export {
+	type ParsedStreamEvent,
+	parseStreamEvent,
+	type StreamEventKind,
+} from "./brain/stream-parse.js";
 // config
 export {
 	type ConfigOverrides,
@@ -80,6 +96,7 @@ export * from "./headphone/index.js";
 export {
 	AbortError,
 	NodeProcessRunner,
+	type ProcessExitInfo,
 	type ProcessHandle,
 	type ProcessRunner,
 	type RunOptions,

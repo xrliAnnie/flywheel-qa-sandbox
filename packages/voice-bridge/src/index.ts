@@ -86,6 +86,13 @@ export {
 	createDiscordDeps,
 	type DiscordDeps,
 } from "./bots/discordWiring.js";
+// ---- FLY-1160 resident brain loopback port ----
+export {
+	BrainPort,
+	type BrainPortBrain,
+	type BrainPortManager,
+	type BrainPortOptions,
+} from "./brain/BrainPort.js";
 export {
 	main,
 	type RunVoiceBridgeOptions,
@@ -93,6 +100,7 @@ export {
 	type VoiceBridgeRuntime,
 } from "./cli.js";
 export {
+	type HuddleBrainConfig,
 	type HuddleBridgeConfig,
 	type HuddleBridgeLead,
 	loadHuddleBridgeConfig,

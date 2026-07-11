@@ -14,17 +14,31 @@ import type { AudioFormat, BrainAdapter, TtsEngine, Turn } from "../types.js";
 export class FakeProcessHandle implements ProcessHandle {
 	pid: number | undefined = 4242;
 	killedWith?: NodeJS.Signals;
+	/** every kill() call in order (dispose sequencing assertions). */
+	kills: NodeJS.Signals[] = [];
 	written: string[] = [];
 	ended = false;
+	stdinClosed = false;
+	/** backpressure knob: write() returns true this many times, then false
+	 * until emitDrain() (FLY-1160 §3.1b). Infinity = never block. */
+	writesBeforeBlock = Number.POSITIVE_INFINITY;
+	exitInfo: { code: number | null; signal: NodeJS.Signals | null } | null =
+		null;
 	private stdoutCbs: ((c: Buffer) => void)[] = [];
 	private stderrCbs: ((c: Buffer) => void)[] = [];
 	private exitCbs: ((
 		code: number | null,
 		sig: NodeJS.Signals | null,
 	) => void)[] = [];
+	private drainCbs: (() => void)[] = [];
+	private errorCbs: ((err: Error) => void)[] = [];
+	private exitWaiters: ((
+		info: { code: number | null; signal: NodeJS.Signals | null } | null,
+	) => void)[] = [];
 
 	kill(signal: NodeJS.Signals = "SIGTERM"): void {
 		this.killedWith = signal;
+		this.kills.push(signal);
 	}
 	onStdout(cb: (chunk: Buffer) => void): void {
 		this.stdoutCbs.push(cb);
@@ -35,12 +49,47 @@ export class FakeProcessHandle implements ProcessHandle {
 	onExit(cb: (code: number | null, sig: NodeJS.Signals | null) => void): void {
 		this.exitCbs.push(cb);
 	}
-	write(data: Buffer | string): void {
+	write(data: Buffer | string): boolean {
 		this.written.push(String(data));
+		if (this.exitInfo || this.stdinClosed) return false;
+		if (this.writesBeforeBlock <= 0) return false;
+		if (Number.isFinite(this.writesBeforeBlock)) this.writesBeforeBlock--;
+		return true;
 	}
 	end(data?: Buffer | string): void {
 		if (data !== undefined) this.written.push(String(data));
 		this.ended = true;
+		this.stdinClosed = true;
+	}
+	onError(cb: (err: Error) => void): void {
+		this.errorCbs.push(cb);
+	}
+	onDrain(cb: () => void): void {
+		this.drainCbs.push(cb);
+	}
+	closeStdin(): void {
+		this.stdinClosed = true;
+	}
+	awaitExit(
+		timeoutMs?: number,
+	): Promise<{ code: number | null; signal: NodeJS.Signals | null } | null> {
+		if (this.exitInfo) return Promise.resolve(this.exitInfo);
+		return new Promise((resolve) => {
+			let timer: NodeJS.Timeout | undefined;
+			const waiter = (
+				info: { code: number | null; signal: NodeJS.Signals | null } | null,
+			): void => {
+				if (timer) clearTimeout(timer);
+				resolve(info);
+			};
+			this.exitWaiters.push(waiter);
+			if (timeoutMs !== undefined && timeoutMs > 0) {
+				timer = setTimeout(() => {
+					this.exitWaiters = this.exitWaiters.filter((w) => w !== waiter);
+					resolve(null);
+				}, timeoutMs);
+			}
+		});
 	}
 	// ---- test drivers ----
 	emitStdout(s: string | Buffer): void {
@@ -52,7 +101,18 @@ export class FakeProcessHandle implements ProcessHandle {
 		for (const cb of [...this.stderrCbs]) cb(buf);
 	}
 	emitExit(code: number | null = 0, sig: NodeJS.Signals | null = null): void {
+		this.exitInfo = { code, signal: sig };
 		for (const cb of [...this.exitCbs]) cb(code, sig);
+		const waiters = [...this.exitWaiters];
+		this.exitWaiters = [];
+		for (const w of waiters) w(this.exitInfo);
+	}
+	emitDrain(unblockWrites = Number.POSITIVE_INFINITY): void {
+		this.writesBeforeBlock = unblockWrites;
+		for (const cb of [...this.drainCbs]) cb();
+	}
+	emitError(err: Error): void {
+		for (const cb of [...this.errorCbs]) cb(err);
 	}
 }
 

@@ -11,6 +11,7 @@
  * preflight on the health port), secrets only via env (never argv/logs).
  */
 import { createServer, type Server } from "node:http";
+import { ResidentBrainManager } from "flywheel-voice-core";
 import {
 	type AssistantModeConfig,
 	loadAssistantConfig,
@@ -21,6 +22,7 @@ import {
 } from "./assistant/wiring.js";
 import { BotRegistry } from "./bots/BotRegistry.js";
 import { createDiscordDeps, type DiscordDeps } from "./bots/discordWiring.js";
+import { BrainPort } from "./brain/BrainPort.js";
 import { type HuddleBridgeConfig, loadHuddleBridgeConfig } from "./config.js";
 import { type ElevenModeConfig, loadElevenConfig } from "./eleven/config.js";
 import { type ElevenRuntime, wireElevenMode } from "./eleven/wiring.js";
@@ -31,7 +33,14 @@ import { VoiceRoomRuntime } from "./VoiceRoomRuntime.js";
 export interface VoiceBridgeRuntime {
 	config: HuddleBridgeConfig;
 	close: () => Promise<void>;
+	/** FLY-1160: synchronous SIGKILL of every resident brain child — the
+	 * outer shutdown hard-timer path (never exit with a live child behind). */
+	forceKillAll: () => void;
 }
+
+/** FLY-1160: token env name is HARD-PINNED (Codex R2 #4b) — a configurable
+ * tokenEnv would let daemon and shim read different secrets. */
+const BRAIN_PORT_TOKEN_ENV = "FLYWHEEL_BRAIN_PORT_TOKEN";
 
 export interface RunVoiceBridgeOptions {
 	config?: HuddleBridgeConfig;
@@ -61,6 +70,9 @@ export interface RunVoiceBridgeOptions {
 		stateDir?: string;
 		env?: NodeJS.ProcessEnv;
 	};
+	/** FLY-1160 test seam: Phase-2 landing budget of the two-phase shutdown
+	 * (default 10s — the pre-existing bounded-close behavior). */
+	shutdownBudgetMs?: number;
 }
 
 const NOTE_TAKER = "note-taker";
@@ -146,10 +158,41 @@ export async function runVoiceBridge(
 	});
 	log(`health endpoint on 127.0.0.1:${config.healthPort}/health`);
 
+	// FLY-1160: the daemon is the ONLY owner of resident brains — singleton
+	// manager first, then (when configured) the loopback BrainPort, then the
+	// Discord wiring. Phase A wires no consumers on main; /glaw and /eleven
+	// bind keys in their own branches.
+	const brainManager = new ResidentBrainManager({
+		maxSessions: config.brain?.maxSessions ?? 4,
+	});
+	let brainPort: BrainPort | undefined;
+
 	let assistantRuntime: AssistantRuntime | undefined;
 	let elevenRuntime: ElevenRuntime | undefined;
 	let roomEars: RoomEarsRuntime | undefined;
 	try {
+		if (config.brain?.port !== undefined) {
+			const brainToken = process.env[BRAIN_PORT_TOKEN_ENV];
+			if (brainToken) {
+				brainPort = new BrainPort({
+					manager: brainManager,
+					port: config.brain.port,
+					token: brainToken,
+					log,
+				});
+				await brainPort.listen();
+				log(
+					`brain port on 127.0.0.1:${config.brain.port}/brain (Bearer-gated)`,
+				);
+			} else {
+				// half-configured is OFF, loudly: port without secret must not
+				// open an unauthenticated brain endpoint.
+				log(
+					`huddle.brain.port configured but ${BRAIN_PORT_TOKEN_ENV} unset — BrainPort NOT started`,
+				);
+			}
+		}
+
 		const bots = [
 			{ id: ORCHESTRATOR, token: config.orchestratorToken },
 			{ id: NOTE_TAKER, token: config.earsToken },
@@ -200,6 +243,8 @@ export async function runVoiceBridge(
 					room,
 					log,
 					...opts.assistantWiring,
+					// FLY-1160 §3.3 Phase 1: 命令下架 during shutdown
+					isShuttingDown: () => state.shuttingDown,
 				});
 				state.assistant = assistantRuntime.commandName;
 			}
@@ -213,6 +258,7 @@ export async function runVoiceBridge(
 					room,
 					log,
 					...opts.elevenWiring,
+					isShuttingDown: () => state.shuttingDown,
 				});
 				state.eleven = elevenRuntime.commandName;
 			}
@@ -220,30 +266,68 @@ export async function runVoiceBridge(
 		if (!assistant) log("assistant mode off (no huddle.assistant block)");
 		if (!eleven) log("eleven mode off (no huddle.eleven block)");
 	} catch (err) {
+		// assembly-failure rollback: BrainPort down + every resident child
+		// reaped before the error propagates (FLY-1148: who spawns, reaps).
 		await new Promise<void>((resolve) => health.close(() => resolve()));
 		await registry.destroyAll();
+		if (brainPort) await brainPort.close();
+		await brainManager.closeAll();
 		throw err;
 	}
 
+	const shutdownBudgetMs = opts.shutdownBudgetMs ?? 10_000;
 	const close = async (): Promise<void> => {
-		log("shutting down (bounded)");
-		// flip BEFORE teardown so a concurrent launcher preflight sees
-		// shutting_down (waits) instead of healthy (walks away) — same
-		// zombie-vs-healthy disambiguation contract as the Bridge (FLY-516).
+		log("shutting down (two-phase, bounded)");
+		// Phase 1 (immediate): stop taking new work. Flip BEFORE teardown so a
+		// concurrent launcher preflight sees shutting_down (waits) instead of
+		// healthy (walks away) — same zombie-vs-healthy disambiguation
+		// contract as the Bridge (FLY-516). BrainPort answers 503 from here.
 		state.shuttingDown = true;
-		await Promise.race([
-			(async () => {
-				await assistantRuntime?.close();
-				await elevenRuntime?.close();
-				roomEars?.dispose();
-				await registry.destroyAll();
-				await new Promise<void>((resolve) => health.close(() => resolve()));
-			})(),
-			new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
-		]);
+		brainPort?.beginShutdown();
+		// Phase 2 (landing, bounded budget): assistant/eleven landing + Discord
+		// teardown + health close. Consumers (545/1006) hang their meeting
+		// finalizers into this same budget in their wiring PRs. A Phase-2
+		// failure must NEVER skip Phase 3 (Codex #550 R1 HIGH) — log and fall
+		// through to the reaping.
+		let phase2Timer: NodeJS.Timeout | undefined;
+		// the deadline is TRUE cancellation, not stop-waiting: once the budget
+		// expires this signal aborts, and the landing performs no further
+		// external writes and never reports success (Codex #550 R2 HIGH).
+		const phase2Abort = new AbortController();
+		try {
+			await Promise.race([
+				(async () => {
+					await assistantRuntime?.close({ signal: phase2Abort.signal });
+					await elevenRuntime?.close();
+					roomEars?.dispose();
+					await registry.destroyAll();
+					await new Promise<void>((resolve) => health.close(() => resolve()));
+				})(),
+				new Promise<void>((resolve) => {
+					phase2Timer = setTimeout(() => {
+						phase2Abort.abort();
+						resolve();
+					}, shutdownBudgetMs);
+				}),
+			]);
+		} catch (err) {
+			log(
+				`shutdown Phase 2 failed (continuing to reap): ${err instanceof Error ? err.message : String(err)}`,
+			);
+		} finally {
+			if (phase2Timer) clearTimeout(phase2Timer);
+			// Phase 3 (finally, NOT raceable/skippable): every resident child's
+			// exit is confirmed before close() resolves — never leave a live
+			// claude process behind (dispose ladder is bounded: EOF→TERM→KILL).
+			try {
+				if (brainPort) await brainPort.close();
+			} finally {
+				await brainManager.closeAll();
+			}
+		}
 	};
 
-	return { config, close };
+	return { config, close, forceKillAll: () => brainManager.forceKillAll() };
 }
 
 /** daemon main (used by scripts/run-voice-bridge.ts). */
@@ -252,8 +336,12 @@ export async function main(): Promise<void> {
 	const shutdown = (signal: string) => {
 		console.log(`[voice-bridge] ${signal} received`);
 		void runtime.close().then(() => process.exit(0));
-		// bounded: never hang the supervisor
-		setTimeout(() => process.exit(1), 12_000).unref();
+		// outer hard timer: bounded for the supervisor, and NEVER exit with a
+		// live resident child behind — synchronous SIGKILL first (FLY-1160).
+		setTimeout(() => {
+			runtime.forceKillAll();
+			process.exit(1);
+		}, 12_000).unref();
 	};
 	process.on("SIGTERM", () => shutdown("SIGTERM"));
 	process.on("SIGINT", () => shutdown("SIGINT"));

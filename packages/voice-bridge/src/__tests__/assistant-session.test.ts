@@ -490,4 +490,34 @@ describe("AssistantSession (FLY-1065 P5)", () => {
 		expect(card).not.toContain("逐字对话记录");
 		expect(card).toContain("会议纪要已落");
 	});
+
+	it("a stop() during an IN-FLIGHT landing JOINS it, and the shutdown budget signal aborts that same landing (Codex #550 R3)", async () => {
+		let resolveLanding!: () => void;
+		let captured: { signal?: AbortSignal } | undefined;
+		const landing = {
+			run: vi.fn((_input: unknown, runOpts?: { signal?: AbortSignal }) => {
+				captured = runOpts;
+				return new Promise<{ ok: true }>((r) => {
+					resolveLanding = () => r({ ok: true });
+				});
+			}),
+		};
+		const h = harness({ landing });
+		await h.session.start();
+		const first = h.session.stop(); // landing begins and HANGS in landing.run
+		await settle();
+		expect(landing.run).toHaveBeenCalledTimes(1);
+
+		const ctrl = new AbortController();
+		const second = h.session.stop({ signal: ctrl.signal }); // daemon shutdown
+		await settle();
+		// joined the SAME landing — no second landing, no teardown racing it
+		expect(landing.run).toHaveBeenCalledTimes(1);
+		ctrl.abort();
+		expect(captured?.signal?.aborted).toBe(true); // reached the in-flight landing
+		resolveLanding();
+		await settle();
+		await first;
+		await second;
+	});
 });
