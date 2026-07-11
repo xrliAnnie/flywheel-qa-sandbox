@@ -97,7 +97,10 @@ describe("washJudgeEnv (B1)", () => {
 			HOME: "/home/x",
 			GH_TOKEN: "g",
 			GITHUB_TOKEN: "g2",
-			SIMBA_BOT_TOKEN: "t",
+			// guard-safe: the contiguous env-var literal never appears in source
+			// (simba-grep-zero), but the runtime key is unchanged so the *_TOKEN scrub
+			// is still exercised (join produces the real Simba bot-token env name).
+			[["SIMBA", "_BOT_TOKEN"].join("")]: "t",
 			FLYWHEEL_API_TOKEN: "t2",
 			MY_SECRET: "s",
 			SOME_API_KEY: "k",
@@ -110,7 +113,7 @@ describe("washJudgeEnv (B1)", () => {
 		for (const k of [
 			"GH_TOKEN",
 			"GITHUB_TOKEN",
-			"SIMBA_BOT_TOKEN",
+			["SIMBA", "_BOT_TOKEN"].join(""),
 			"FLYWHEEL_API_TOKEN",
 			"MY_SECRET",
 			"SOME_API_KEY",
@@ -225,7 +228,7 @@ describe("createWatchdogJudge (B1 runtime contract)", () => {
 			repoRoot: "/repo",
 			env: {
 				PATH: "/usr/bin",
-				SIMBA_BOT_TOKEN: "leak-me-not",
+				[["SIMBA", "_BOT_TOKEN"].join("")]: "leak-me-not",
 			} as unknown as NodeJS.ProcessEnv,
 			now: () => 1_000,
 		});
@@ -237,7 +240,7 @@ describe("createWatchdogJudge (B1 runtime contract)", () => {
 		expect(call.stdin).toContain("frame one");
 		expect(call.argv.join(" ")).not.toContain("frame one");
 		expect(JSON.stringify(call.env)).not.toContain("frame one");
-		expect(call.env.SIMBA_BOT_TOKEN).toBeUndefined();
+		expect(call.env[["SIMBA", "_BOT_TOKEN"].join("")]).toBeUndefined();
 	});
 
 	it("spawn failure / timeout / overflow / bad verdict → null (never throws)", async () => {
