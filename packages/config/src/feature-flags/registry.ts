@@ -2195,4 +2195,95 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 		note: "=0 时 server-loss 整段关闭,退回 per-runner crash-reaper/reapOrphans 旧行为。HeartbeatService 构造时读一次（ternary 选 phase 对象或 undefined）,翻转需重启 Bridge。",
 	},
+	{
+		// FLY-1165: done-thread reconcile sweep (boot + periodic) — the structural
+		// backstop behind the FLY-369 close→archive cascade. Double gate (fresh
+		// Linear Done/Canceled + no live runner) + triple liveness veto; archives
+		// through the shared sink (archive-once, per-thread serialized).
+		name: "done_thread_reconcile",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DONE_THREAD_RECONCILE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1165: 关掉 done-thread reconcile sweep（Done/Canceled issue 的未归档 thread 自动归档兜底；调度器每 tick 重读 env，off→on/on→off 无需重启）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/done-thread-reconcile.ts",
+				"resolveDoneThreadReconcileConfig",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"resolve.direct-toggle.test:done_thread_reconcile live-observe",
+		note: "伴生 knobs：FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN / _DRYRUN / _MAX_PER_RUN（下方三条）。QA slot Bridge 由 test-deploy.sh 显式注入 =0 隔离（防扫真 Linear）。",
+	},
+	{
+		name: "done_thread_reconcile_interval_min",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN",
+		polarity: "default_on",
+		valueKind: "value",
+		default: "360",
+		description:
+			"FLY-1165: reconcile sweep 周期（分钟；0=只跑 boot pass；调度器每 tick 重读）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/done-thread-reconcile.ts",
+				"resolveDoneThreadReconcileConfig",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+	},
+	{
+		name: "done_thread_reconcile_dryrun",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DONE_THREAD_RECONCILE_DRYRUN",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1165: reconcile sweep 只记不归档（=1 观察模式；每 tick 重读）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/done-thread-reconcile.ts",
+				"resolveDoneThreadReconcileConfig",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+	},
+	{
+		name: "done_thread_reconcile_max_per_run",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DONE_THREAD_RECONCILE_MAX_PER_RUN",
+		polarity: "default_on",
+		valueKind: "value",
+		default: "25",
+		description:
+			"FLY-1165: 每轮 reconcile 最多归档数（Discord 429 保护；每 tick 重读）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/done-thread-reconcile.ts",
+				"resolveDoneThreadReconcileConfig",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+	},
 ];

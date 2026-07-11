@@ -186,6 +186,11 @@ import {
 	reconcileDoneButRunning,
 } from "./done-running-reconciler.js";
 import { archiveIssueThreadIfNoOtherActive } from "./done-thread-archiver.js";
+import {
+	reconcileDoneThreads,
+	resolveDoneThreadReconcileConfig,
+	startDoneThreadReconcileScheduler,
+} from "./done-thread-reconcile.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
 import { createExternalMergeReconciler } from "./external-merge-reconcile.js";
@@ -4001,6 +4006,35 @@ export async function startBridge(
 		);
 	}
 
+	// FLY-1165: done-thread reconcile — boot pass + periodic tick. The
+	// structural backstop behind the FLY-369 close cascade: threads whose issue
+	// is Done/Canceled in a FRESH per-issue Linear lookup AND provably owns no
+	// live runner get archived through the shared sink. The boot chain never
+	// awaits the sweep (async scheduler, 15s boot delay); config env vars are
+	// re-read every tick, so FLYWHEEL_DONE_THREAD_RECONCILE toggles without a
+	// restart. Teardown drains via doneThreadReconcile.stop() BEFORE
+	// store.close() (an in-flight pass exits cooperatively between candidates).
+	const doneThreadReconcile = startDoneThreadReconcileScheduler({
+		runOnce: (shouldAbort) => {
+			const reconcileCfg = resolveDoneThreadReconcileConfig();
+			return reconcileDoneThreads({
+				store,
+				projects: projects ?? [],
+				linearApiKey: config.linearApiKey,
+				globalBotToken: config.discordBotToken,
+				discordOwnerUserId: config.discordOwnerUserId,
+				transitionOpts,
+				dryRun: reconcileCfg.dryRun,
+				maxArchivesPerRun: reconcileCfg.maxArchivesPerRun,
+				maxCandidatesPerRun: reconcileCfg.maxCandidatesPerRun,
+				runDeadlineMs: reconcileCfg.runDeadlineMs,
+				shouldAbort,
+				lookupTarget: lookupTmuxTarget,
+				probeLiveness: (w) => probeRunnerProcessLiveness(w),
+			});
+		},
+	});
+
 	// FLY-754: boot sweep — kill leaked `viewer-<execId>` tmux sessions (the
 	// FLY-116 Terminal.app viewer's linked sessions that were never destroyed).
 	// The generation source is fixed in openTmuxViewer (cmux no longer opens
@@ -6985,6 +7019,10 @@ export async function startBridge(
 		// console's audit handle on shutdown.
 		if (fleetReconcileTimer) clearInterval(fleetReconcileTimer);
 		fleetConsole?.close();
+		// FLY-1165: drain the done-thread reconcile (cooperative abort + await
+		// the in-flight pass) BEFORE store.close() below — a pass writing
+		// archived_at into a closed store would throw.
+		await doneThreadReconcile.stop();
 		await registry.shutdownAll();
 		broadcaster.destroy();
 		await new Promise<void>((resolve, reject) => {

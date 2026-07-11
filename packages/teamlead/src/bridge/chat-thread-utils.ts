@@ -51,7 +51,13 @@ export type ArchiveReason =
 	| "unauthorized"
 	| "client_error"
 	| "exhausted"
-	| "error";
+	| "error"
+	/**
+	 * FLY-1165: sink-level archive-once — the thread's `archived_at` is already
+	 * set, so no Discord PATCH was attempted (a founder re-open is never
+	 * fought). Callers treat this as an idempotent no-op success.
+	 */
+	| "already_archived";
 
 export interface ArchiveChatThreadResult {
 	/** True only when Discord confirmed the thread is (or stays) archived. */

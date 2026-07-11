@@ -4477,6 +4477,109 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-1165: reconcile candidate set — main-table (`chat_threads`) rows that
+	 * are not archived, not Discord-missing, and carry an issue key. The
+	 * done-thread reconcile sweep enumerates these and double-gates each one
+	 * (fresh Linear Done/Canceled + no live runner) before archiving.
+	 */
+	getUnarchivedIssueChatThreads(): Array<{
+		thread_id: string;
+		channel_id: string;
+		issue_id: string;
+		lead_id: string | null;
+	}> {
+		const stmt = this.db.prepare(
+			`SELECT thread_id, channel_id, issue_id, lead_id FROM chat_threads
+			 WHERE (archived_at IS NULL OR archived_at = '')
+			   AND discord_missing_at IS NULL
+			   AND issue_id IS NOT NULL AND issue_id != ''
+			 ORDER BY created_at`,
+		);
+		const rows: Array<{
+			thread_id: string;
+			channel_id: string;
+			issue_id: string;
+			lead_id: string | null;
+		}> = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				thread_id: row.thread_id as string,
+				channel_id: row.channel_id as string,
+				issue_id: row.issue_id as string,
+				lead_id: (row.lead_id as string) ?? null,
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-1165: alias-aware sessions lookup — a session row matches when its
+	 * `issue_id` OR `issue_identifier` hits ANY of the given keys (issue UUID ↔
+	 * Linear identifier, both directions — the FLY-270 mixed-key reality).
+	 * Returns ALL statuses: the liveness veto must see terminal-status rows too
+	 * (a `completed` row can still own a live process). Parameterized IN
+	 * expansion; an empty key list returns [] (never a full scan).
+	 */
+	getSessionsForIssueAliases(keys: string[]): Array<{
+		execution_id: string;
+		status: string;
+		project_name: string;
+		issue_id: string;
+		issue_identifier: string | null;
+	}> {
+		if (keys.length === 0) return [];
+		const placeholders = keys.map(() => "?").join(", ");
+		const stmt = this.db.prepare(
+			`SELECT execution_id, status, project_name, issue_id, issue_identifier
+			 FROM sessions
+			 WHERE issue_id IN (${placeholders})
+			    OR issue_identifier IN (${placeholders})`,
+		);
+		stmt.bind([...keys, ...keys]);
+		const rows: Array<{
+			execution_id: string;
+			status: string;
+			project_name: string;
+			issue_id: string;
+			issue_identifier: string | null;
+		}> = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				execution_id: row.execution_id as string,
+				status: row.status as string,
+				project_name: row.project_name as string,
+				issue_id: row.issue_id as string,
+				issue_identifier: (row.issue_identifier as string) ?? null,
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-1165: fresh archive-once read (sink guard). True when the main-table
+	 * thread row has `archived_at` set — an archived thread is NEVER re-PATCHed
+	 * (a founder re-open must not be fought).
+	 */
+	isChatThreadArchived(threadId: string): boolean {
+		const stmt = this.db.prepare(
+			"SELECT archived_at FROM chat_threads WHERE thread_id = ?",
+		);
+		stmt.bind([threadId]);
+		let archived = false;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			const value = row.archived_at as string | null;
+			archived = value !== null && value !== "";
+		}
+		stmt.free();
+		return archived;
+	}
+
+	/**
 	 * FLY-560 Feature C: record the runner-attach pinned-message state for an
 	 * issue's chat thread. `pinnedAt` is set (ISO/datetime string) ONLY after a
 	 * pin is confirmed; left null when the message is posted but not yet pinned

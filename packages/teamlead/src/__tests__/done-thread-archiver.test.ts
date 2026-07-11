@@ -156,6 +156,95 @@ describe("archiveThreadAndRecord", () => {
 			expect.objectContaining({}),
 		);
 	});
+
+	// ── FLY-1165: sink-level archive-once + per-thread serialization ──────────
+
+	const INPUT = {
+		threadId: "t-1",
+		issueId: "FLY-100",
+		projectName: "Flywheel",
+		executionId: "exec-1",
+	};
+
+	it("FLY-1165: no-ops when archived_at is set — archiveFn/removeUserFn not called, reason already_archived, attempts 0", async () => {
+		store.markChatThreadArchived("t-1");
+		const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
+		const removeUserFn = vi.fn().mockResolvedValue(undefined);
+		const res = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			archiveFn,
+			removeUserFn,
+			discordOwnerUserId: "owner-9",
+		});
+		expect(res.archived).toBe(false);
+		expect(res.reason).toBe("already_archived");
+		expect(res.attempts).toBe(0);
+		expect(archiveFn).not.toHaveBeenCalled();
+		expect(removeUserFn).not.toHaveBeenCalled();
+	});
+
+	it("FLY-1165: concurrent double-call on the same thread serializes — archiveFn exactly once, loser gets already_archived", async () => {
+		let release: (v: ArchiveChatThreadResult) => void = () => {};
+		const gate = new Promise<ArchiveChatThreadResult>((resolve) => {
+			release = resolve;
+		});
+		const archiveFn = vi.fn().mockImplementation(() => gate);
+		const p1 = archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			archiveFn,
+		});
+		const p2 = archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			archiveFn,
+		});
+		// Let p1 enter its critical section, then release the in-flight PATCH.
+		await new Promise((r) => setTimeout(r, 0));
+		release(OK_ARCHIVE);
+		const [r1, r2] = await Promise.all([p1, p2]);
+		expect(archiveFn).toHaveBeenCalledTimes(1);
+		expect(r1.archived).toBe(true);
+		expect(r2.archived).toBe(false);
+		expect(r2.reason).toBe("already_archived");
+	});
+
+	it("FLY-1165: a rejected predecessor does not poison the per-thread lock (Codex R3 #1) and never-throws holds", async () => {
+		const archiveFn = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("boom"))
+			.mockResolvedValueOnce(OK_ARCHIVE);
+		const r1 = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			archiveFn,
+		});
+		expect(r1.archived).toBe(false); // never-throws: exception → structured failure
+		const r2 = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			archiveFn,
+		});
+		expect(r2.archived).toBe(true);
+		expect(archiveFn).toHaveBeenCalledTimes(2);
+	});
+
+	it("FLY-1165 (Codex code R2 LOW): a thrown null does not break never-throws", async () => {
+		const archiveFn = vi.fn().mockRejectedValue(null);
+		const res = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			archiveFn,
+		});
+		expect(res.archived).toBe(false);
+		expect(res.reason).toBe("error");
+	});
+
+	it("FLY-1165 (Codex code R1 #2): a throwing seam is AUDITED, not silently swallowed", async () => {
+		const archiveFn = vi.fn().mockRejectedValue(new Error("store exploded"));
+		const res = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			archiveFn,
+		});
+		expect(res.archived).toBe(false);
+		expect(res.error).toContain("store exploded");
+		const events = store.getEventsByExecution("exec-1");
+		const failedEvent = events.find(
+			(e) => e.event_type === "chat_thread_archive_failed",
+		);
+		expect(failedEvent).toBeTruthy();
+		expect((failedEvent?.payload as { error?: string })?.error).toContain(
+			"store exploded",
+		);
+	});
 });
 
 describe("maybeArchiveThreadOnClose (central close cascade)", () => {
@@ -246,5 +335,21 @@ describe("maybeArchiveThreadOnClose (central close cascade)", () => {
 				archiveFn,
 			}),
 		).resolves.toBeUndefined();
+	});
+
+	it("FLY-1165: close cascade respects sink-level archive-once (a re-opened thread is not re-PATCHed)", async () => {
+		seedCompleted("exec-1", "FLY-100");
+		store.upsertChatThread("t-1", "ch-eng", "FLY-100", "tadashi");
+		// Archived once already; Annie may have re-opened it in Discord since
+		// (auto-unarchive on message) — the cascade must NOT fight her.
+		store.markChatThreadArchived("t-1");
+		const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
+
+		await maybeArchiveThreadOnClose(store, store.getSession("exec-1")!, {
+			projects: [PROJECT],
+			archiveFn,
+		});
+
+		expect(archiveFn).not.toHaveBeenCalled();
 	});
 });

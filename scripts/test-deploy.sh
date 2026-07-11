@@ -572,6 +572,13 @@ fi
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0")
 LEAD_EXTRA_ENV+=("FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0")
 
+# FLY-1165: the done-thread reconcile sweep hits the REAL Linear API (fresh
+# per-issue lookups) and would archive the slot's isolated threads against
+# production Linear state. Explicitly OFF for every slot Bridge; a QA that
+# tests the sweep itself opts in by exporting FLYWHEEL_DONE_THREAD_RECONCILE=1
+# before running test-deploy.
+BRIDGE_EXTRA_ENV+=("FLYWHEEL_DONE_THREAD_RECONCILE=${FLYWHEEL_DONE_THREAD_RECONCILE:-0}")
+
 # FLY-727: --digest mounts the daily-digest route on the slot Bridge by setting
 # FLYWHEEL_DIGEST_CHANNEL. The route renders /api/digest/render from the slot's
 # ISOLATED StateStore; scripts/daily-digest.sh then delivers via publish-report to

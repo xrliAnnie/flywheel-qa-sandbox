@@ -18,19 +18,19 @@
  * errors — the orchestrator itself never throws.
  */
 
-import { randomUUID } from "node:crypto";
 import { CommDB } from "flywheel-comm/db";
 import { phaseMessageTag } from "flywheel-config";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
-import {
+import type {
 	archiveChatThread,
 	removeUserFromChatThread,
 } from "./chat-thread-utils.js";
 import { closeRunner, FINALIZE_DONE_SOURCE_STATES } from "./close-runner.js";
 import { commDbPathForProject } from "./commdb-path.js";
+import { archiveThreadAndRecord } from "./done-thread-archiver.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import { patchSessionParams } from "./proofshot-session.js";
 import { emitRunnerReadyToCloseNotification } from "./runner-ready-to-close-notifier.js";
@@ -176,6 +176,14 @@ export interface PostShipDeps {
 	 * absent → no refresh (byte-compat).
 	 */
 	refreshIssueDisplay?: (issueId: string) => Promise<void>;
+	/**
+	 * FLY-1165 test seams for the thread-teardown stage (threaded into the
+	 * shared archive sink + the ready-to-close notifier). Absent → real
+	 * implementations (byte-compat).
+	 */
+	archiveFn?: typeof archiveChatThread;
+	removeUserFn?: typeof removeUserFromChatThread;
+	fetchImpl?: typeof fetch;
 }
 
 /**
@@ -428,50 +436,33 @@ export async function runPostShipFinalization(
 				finalizedSession?.runner_model,
 			),
 		},
-		{ store },
+		{ store, fetchImpl: deps.fetchImpl },
 	);
 
 	// ── (3) thread teardown — only after notifier has landed ──
 	if (thread && botToken) {
-		if (opts.discordOwnerUserId) {
-			await removeUserFromChatThread(
-				thread.thread_id,
-				opts.discordOwnerUserId,
-				botToken,
-			);
-		}
-
-		// FLY-292: deterministic archive — bounded retry + verify + 404→missing.
-		// Never throws; returns a structured result we audit so the event log
-		// can prove (or surface the failure of) the archive on every completion.
-		const archiveResult = await archiveChatThread(thread.thread_id, botToken, {
-			markDiscordMissing: (id) => store.markChatThreadMissing(id),
-		});
-
-		// FLY-369: record archived_at so the archive-on-Done sweeper does not
-		// revisit a thread already archived by the ship path.
-		if (archiveResult.archived) {
-			store.markChatThreadArchived(thread.thread_id);
-		}
-
-		store.insertEvent({
-			event_id: archiveResult.archived
-				? `chat-thread-archived-${opts.executionId}`
-				: `chat-thread-archive-failed-${randomUUID()}`,
-			execution_id: opts.executionId,
-			issue_id: opts.issueId,
-			project_name: opts.projectName,
-			event_type: archiveResult.archived
-				? "chat_thread_archived"
-				: "chat_thread_archive_failed",
-			source: "bridge.post-ship-finalization",
-			payload: {
+		// FLY-1165: route through the shared archive sink — per-thread
+		// serialization + the sink-level archive-once guard (a founder re-open
+		// is never fought; matches the cascade + endpoint paths). The owner
+		// removal is folded into the sink (no double removal), the audit event
+		// keeps this path's source, and `reason: "already_archived"` is an
+		// idempotent no-op success — NEVER a chat_thread_archive_failed.
+		await archiveThreadAndRecord(
+			store,
+			{
 				threadId: thread.thread_id,
-				attempts: archiveResult.attempts,
-				status: archiveResult.status ?? null,
-				reason: archiveResult.reason,
-				error: archiveResult.error ?? null,
+				issueId: opts.issueId,
+				projectName: opts.projectName,
+				executionId: opts.executionId,
 			},
-		});
+			botToken,
+			{
+				discordOwnerUserId: opts.discordOwnerUserId,
+				auditSource: "bridge.post-ship-finalization",
+				archiveFn: deps.archiveFn,
+				removeUserFn: deps.removeUserFn,
+				fetchImpl: deps.fetchImpl,
+			},
+		);
 	}
 }

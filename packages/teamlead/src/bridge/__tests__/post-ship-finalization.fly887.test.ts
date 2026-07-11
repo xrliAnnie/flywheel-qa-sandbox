@@ -180,6 +180,124 @@ describe("makeFinalizeThreeStagePhases (FLY-887)", () => {
 	});
 });
 
+describe("runPostShipFinalization thread teardown via shared sink (FLY-1165)", () => {
+	const PROJECT = {
+		projectName: "flywheel",
+		projectRoot: "/tmp/fw",
+		leads: [
+			{
+				agentId: "tadashi",
+				chatChannel: "ch-eng",
+				match: { labels: ["Flywheel"] },
+				botToken: "tok-tadashi",
+			},
+		],
+	} as unknown as import("../../ProjectConfig.js").ProjectEntry;
+
+	function seedShipped(store: StateStore, execId: string, issueId: string) {
+		store.upsertSession({
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "flywheel",
+			status: "completed",
+			chat_thread_role: "main",
+			issue_labels: JSON.stringify(["Flywheel"]),
+		});
+	}
+
+	const okFetch = () =>
+		vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify({ id: "m-1" }), { status: 200 }),
+			) as unknown as typeof fetch;
+
+	it("archives a fresh thread through the sink — one PATCH, archived_at set, post-ship audit source", async () => {
+		const { store } = await makeStore();
+		seedShipped(store, "exec-s1", "FLY-10");
+		store.upsertChatThread("t-s1", "ch-eng", "FLY-10", "tadashi");
+		const archiveFn = vi.fn().mockResolvedValue({
+			archived: true,
+			attempts: 1,
+			status: 200,
+			reason: "ok",
+		});
+		const removeUserFn = vi.fn().mockResolvedValue(undefined);
+
+		await runPostShipFinalization(
+			{
+				executionId: "exec-s1",
+				issueId: "FLY-10",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				discordOwnerUserId: "owner-1",
+			},
+			{
+				store,
+				projects: [PROJECT],
+				archiveFn,
+				removeUserFn,
+				fetchImpl: okFetch(),
+			},
+		);
+
+		expect(archiveFn).toHaveBeenCalledTimes(1);
+		expect(removeUserFn).toHaveBeenCalledWith(
+			"t-s1",
+			"owner-1",
+			"tok-tadashi",
+			expect.any(Object),
+		);
+		expect(store.isChatThreadArchived("t-s1")).toBe(true);
+		const events = store.getEventsByExecution("exec-s1");
+		const archivedEvent = events.find(
+			(e) => e.event_type === "chat_thread_archived",
+		);
+		expect(archivedEvent?.source).toBe("bridge.post-ship-finalization");
+	});
+
+	it("already-archived thread: ZERO Discord PATCH + non-failure audit (idempotent no-op success)", async () => {
+		const { store } = await makeStore();
+		seedShipped(store, "exec-s2", "FLY-11");
+		store.upsertChatThread("t-s2", "ch-eng", "FLY-11", "tadashi");
+		// Archived earlier (e.g. by the close cascade); Annie may have re-opened it.
+		store.markChatThreadArchived("t-s2");
+		const archiveFn = vi.fn();
+		const removeUserFn = vi.fn();
+
+		await runPostShipFinalization(
+			{
+				executionId: "exec-s2",
+				issueId: "FLY-11",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				discordOwnerUserId: "owner-1",
+			},
+			{
+				store,
+				projects: [PROJECT],
+				archiveFn,
+				removeUserFn,
+				fetchImpl: okFetch(),
+			},
+		);
+
+		// Zero Discord PATCH / removal side effects on the re-openable thread.
+		expect(archiveFn).not.toHaveBeenCalled();
+		expect(removeUserFn).not.toHaveBeenCalled();
+		// Non-failure audit: never a chat_thread_archive_failed for this case.
+		const events = store.getEventsByExecution("exec-s2");
+		expect(
+			events.some((e) => e.event_type === "chat_thread_archive_failed"),
+		).toBe(false);
+		const noop = events.find((e) => e.event_type === "chat_thread_archived");
+		expect(noop?.source).toBe("bridge.post-ship-finalization");
+		expect((noop?.payload as { reason?: string })?.reason).toBe(
+			"already_archived",
+		);
+	});
+});
+
 describe("runPostShipFinalization ordering (FLY-887, Codex R1 #8)", () => {
 	it("calls finalizeThreeStagePhases BEFORE removeCleanWorktree", async () => {
 		const { store } = await makeStore();

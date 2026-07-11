@@ -55,6 +55,12 @@ export interface ArchiveThreadDeps {
 	discordOwnerUserId?: string;
 	/** Discord HTTP override (passed to archive + removeUser); tests inject a mock. */
 	fetchImpl?: typeof fetch;
+	/**
+	 * FLY-1165: audit attribution for the `chat_thread_archived[_failed]` event
+	 * (e.g. `"bridge.post-ship-finalization"` when the ship path archives).
+	 * Defaults to this module's source.
+	 */
+	auditSource?: string;
 }
 
 export interface ArchiveThreadInput {
@@ -66,10 +72,27 @@ export interface ArchiveThreadInput {
 }
 
 /**
- * The ONE place a chat thread is archived (besides the legacy post-ship path).
- * Goes through the Bridge-local `archiveChatThread` (Bridge holds the token),
- * marks `archived_at` on success, and writes an audit event either way.
- * Never throws.
+ * FLY-1165: per-thread archive locks. Every archive of the same thread runs
+ * through a serialized critical section so two concurrent callers (e.g. the
+ * close cascade racing the post-ship path) cannot both pass the archive-once
+ * guard and double-PATCH. The chain tail is rejection-proof (Codex R3 #1): a
+ * failed predecessor never poisons the lock for the next caller.
+ */
+const threadArchiveLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * The ONE place a chat thread is archived — the close cascade, the on-demand
+ * endpoint, the reconcile sweep, AND the post-ship path (FLY-1165 folded it
+ * in) all route here. Goes through the Bridge-local `archiveChatThread`
+ * (Bridge holds the token), marks `archived_at` on success, and writes an
+ * audit event either way. Never throws.
+ *
+ * Sink-level archive-once (FLY-1165): a FRESH `store.isChatThreadArchived`
+ * read runs INSIDE the per-thread critical section — a thread with
+ * `archived_at` set is never re-PATCHed (and its owner never re-removed), so
+ * a founder re-open (Discord auto-unarchive on a new message) is not fought
+ * by ANY caller. That case returns `reason: "already_archived"` (an
+ * idempotent no-op success, attempts 0) and records a non-failure audit event.
  */
 export async function archiveThreadAndRecord(
 	store: StateStore,
@@ -77,55 +100,136 @@ export async function archiveThreadAndRecord(
 	botToken: string,
 	deps: ArchiveThreadDeps = {},
 ): Promise<ArchiveChatThreadResult> {
-	const archiveFn = deps.archiveFn ?? archiveChatThread;
-	const removeUserFn = deps.removeUserFn ?? removeUserFromChatThread;
+	const auditSource = deps.auditSource ?? "bridge.done-thread-archiver";
 
-	if (deps.discordOwnerUserId) {
-		await removeUserFn(input.threadId, deps.discordOwnerUserId, botToken, {
+	const run = async (): Promise<ArchiveChatThreadResult> => {
+		// Archive-once guard — fresh read inside the critical section.
+		if (store.isChatThreadArchived(input.threadId)) {
+			const result: ArchiveChatThreadResult = {
+				archived: false,
+				attempts: 0,
+				reason: "already_archived",
+			};
+			store.insertEvent({
+				event_id: `chat-thread-archive-noop-fly1165-${randomUUID()}`,
+				execution_id: input.executionId,
+				issue_id: input.issueId,
+				project_name: input.projectName,
+				event_type: "chat_thread_archived",
+				source: auditSource,
+				payload: {
+					threadId: input.threadId,
+					attempts: 0,
+					status: null,
+					reason: "already_archived",
+				},
+			});
+			return result;
+		}
+
+		const archiveFn = deps.archiveFn ?? archiveChatThread;
+		const removeUserFn = deps.removeUserFn ?? removeUserFromChatThread;
+
+		if (deps.discordOwnerUserId) {
+			await removeUserFn(input.threadId, deps.discordOwnerUserId, botToken, {
+				fetchImpl: deps.fetchImpl,
+			});
+		}
+
+		const result = await archiveFn(input.threadId, botToken, {
+			markDiscordMissing: (id) => store.markChatThreadMissing(id),
 			fetchImpl: deps.fetchImpl,
 		});
+
+		if (result.archived) {
+			store.markChatThreadArchived(input.threadId);
+			store.insertEvent({
+				event_id: `chat-thread-archived-fly369-${input.threadId}`,
+				execution_id: input.executionId,
+				issue_id: input.issueId,
+				project_name: input.projectName,
+				event_type: "chat_thread_archived",
+				source: auditSource,
+				payload: {
+					threadId: input.threadId,
+					attempts: result.attempts,
+					status: result.status ?? null,
+					reason: result.reason,
+				},
+			});
+		} else {
+			store.insertEvent({
+				event_id: `chat-thread-archive-failed-fly369-${randomUUID()}`,
+				execution_id: input.executionId,
+				issue_id: input.issueId,
+				project_name: input.projectName,
+				event_type: "chat_thread_archive_failed",
+				source: auditSource,
+				payload: {
+					threadId: input.threadId,
+					attempts: result.attempts,
+					status: result.status ?? null,
+					reason: result.reason,
+					error: result.error ?? null,
+				},
+			});
+		}
+
+		return result;
+	};
+
+	// Per-thread serialization: queue behind the previous archive of this
+	// thread; a rejected predecessor is absorbed (settled tail) so the chain
+	// never wedges.
+	const prev =
+		threadArchiveLocks.get(input.threadId) ?? Promise.resolve(undefined);
+	const cur = prev.catch(() => undefined).then(run);
+	threadArchiveLocks.set(input.threadId, cur);
+	try {
+		return await cur;
+	} catch (err) {
+		// Preserve the never-throws contract even for a throwing seam/store —
+		// but NEVER silently: log + best-effort failure audit (Codex code R1 #2;
+		// the cascade/post-ship callers ignore the return value, so this catch
+		// is the only place the exception can surface).
+		// Codex code R2 LOW: a thrown null/undefined must not re-throw here
+		// (accessing .message on null would break never-throws).
+		const message = err instanceof Error ? err.message : String(err);
+		console.warn(
+			`[done-thread-archiver] archive of ${input.threadId} (${input.issueId}) threw: ${message}`,
+		);
+		try {
+			store.insertEvent({
+				event_id: `chat-thread-archive-failed-fly369-${randomUUID()}`,
+				execution_id: input.executionId,
+				issue_id: input.issueId,
+				project_name: input.projectName,
+				event_type: "chat_thread_archive_failed",
+				source: auditSource,
+				payload: {
+					threadId: input.threadId,
+					attempts: 0,
+					status: null,
+					reason: "error",
+					error: message,
+				},
+			});
+		} catch {
+			// Audit is best-effort here (the store itself may be what threw);
+			// the console.warn above already surfaced the failure.
+		}
+		return {
+			archived: false,
+			attempts: 0,
+			reason: "error",
+			error: message,
+		};
+	} finally {
+		// Identity-checked cleanup: only the tail owner clears the slot.
+		if (threadArchiveLocks.get(input.threadId) === cur) {
+			threadArchiveLocks.delete(input.threadId);
+		}
 	}
-
-	const result = await archiveFn(input.threadId, botToken, {
-		markDiscordMissing: (id) => store.markChatThreadMissing(id),
-		fetchImpl: deps.fetchImpl,
-	});
-
-	if (result.archived) {
-		store.markChatThreadArchived(input.threadId);
-		store.insertEvent({
-			event_id: `chat-thread-archived-fly369-${input.threadId}`,
-			execution_id: input.executionId,
-			issue_id: input.issueId,
-			project_name: input.projectName,
-			event_type: "chat_thread_archived",
-			source: "bridge.done-thread-archiver",
-			payload: {
-				threadId: input.threadId,
-				attempts: result.attempts,
-				status: result.status ?? null,
-				reason: result.reason,
-			},
-		});
-	} else {
-		store.insertEvent({
-			event_id: `chat-thread-archive-failed-fly369-${randomUUID()}`,
-			execution_id: input.executionId,
-			issue_id: input.issueId,
-			project_name: input.projectName,
-			event_type: "chat_thread_archive_failed",
-			source: "bridge.done-thread-archiver",
-			payload: {
-				threadId: input.threadId,
-				attempts: result.attempts,
-				status: result.status ?? null,
-				reason: result.reason,
-				error: result.error ?? null,
-			},
-		});
-	}
-
-	return result;
 }
 
 // ── Central close→archive cascade ───────────────────────────────────────────
@@ -238,7 +342,7 @@ export async function archiveIssueThreadIfNoOtherActive(
 	} catch (err) {
 		// Never let archive cascade break the close/reap path.
 		console.warn(
-			`[done-thread-archiver] archive cascade failed for ${session.execution_id} (${session.issue_id}): ${(err as Error).message}`,
+			`[done-thread-archiver] archive cascade failed for ${session.execution_id} (${session.issue_id}): ${err instanceof Error ? err.message : String(err)}`,
 		);
 	}
 }

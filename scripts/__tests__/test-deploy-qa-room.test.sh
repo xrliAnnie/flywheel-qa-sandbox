@@ -104,6 +104,34 @@ else
   fail "alerts slot2 repair passthrough" "$S2J"
 fi
 
+# ── FLY-1165: done-thread reconcile is OFF for every slot Bridge ─────────────
+# The sweep hits the REAL Linear API, so test-deploy must UNCONDITIONALLY add
+# FLYWHEEL_DONE_THREAD_RECONCILE (default 0, export-overridable opt-in) to the
+# slot Bridge env. Asserted against the script SOURCE (not a mirror) so a
+# refactor that drops or conditionalizes the line fails here.
+TD_SRC="${SCRIPT_DIR}/../test-deploy.sh"
+RECON_LINE='BRIDGE_EXTRA_ENV+=("FLYWHEEL_DONE_THREAD_RECONCILE=${FLYWHEEL_DONE_THREAD_RECONCILE:-0}")'
+if grep -qF "$RECON_LINE" "$TD_SRC"; then
+  pass "reconcile isolation: test-deploy injects FLYWHEEL_DONE_THREAD_RECONCILE (default 0) into every slot Bridge env"
+else
+  fail "reconcile isolation injection missing" "expected literal line in test-deploy.sh: $RECON_LINE"
+fi
+# The injection must NOT be nested under a mode/alerts conditional — it lives at
+# top level like the FLY-945 founder-attribution bypass right above it.
+RECON_CONTEXT=$(grep -B1 -F "$RECON_LINE" "$TD_SRC" | head -1)
+if ! grep -qE '^\s+(if|elif|while)' <<<"$RECON_CONTEXT"; then
+  pass "reconcile isolation: injection is unconditional (top-level, every slot)"
+else
+  fail "reconcile isolation conditional" "context: $RECON_CONTEXT"
+fi
+# Opt-in shell semantics: exporting the var flows through the :-0 default.
+RECON_OVERRIDE=$(FLYWHEEL_DONE_THREAD_RECONCILE=1 bash -c 'echo "FLYWHEEL_DONE_THREAD_RECONCILE=${FLYWHEEL_DONE_THREAD_RECONCILE:-0}"')
+if [[ "$RECON_OVERRIDE" == "FLYWHEEL_DONE_THREAD_RECONCILE=1" ]]; then
+  pass "reconcile isolation: explicit export opts the slot Bridge back in"
+else
+  fail "reconcile opt-in override" "$RECON_OVERRIDE"
+fi
+
 # ── roundtable wiring: host slot gets manager env; non-host gets none ────────
 RT_CH=$(jq -r '.roundtableChannel.channelId' "${ROOT}/slots.json")
 RT_HOST=$(jq -r '.roundtableChannel.hostSlot' "${ROOT}/slots.json")
