@@ -10,7 +10,12 @@
  *  - backchannel gate (Codex R1 #6 signal source = receiver.speaking
  *    start/end pairs): start arms a 350ms timer; end first → backchannel, no
  *    action; timer fires while still speaking → onBargeIn exactly once per
- *    burst; a new burst re-arms.
+ *    burst.
+ *  - barge-in holdoff (QA FLY-1006 round-3 ①): after a fire, the gate stays
+ *    LATCHED until the speaker has been continuously silent ≥ holdoff
+ *    (default 1000ms). Natural pauses/breaths inside one utterance re-start
+ *    speech within the holdoff, so a real human sentence fires AT MOST ONE
+ *    barge-in — the Annie P6 storm (8+ per utterance) is structurally gone.
  */
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -146,11 +151,12 @@ describe("backchannel gate (350ms speaking start/end pairs)", () => {
 		expect(rig.bargeIns).toEqual(["human-annie"]);
 	});
 
-	it("a new burst re-arms the gate after a barge-in burst ends", async () => {
+	it("a new burst re-arms the gate after the utterance truly ends (≥ holdoff silence)", async () => {
 		const rig = makeRig();
 		rig.speaking.fire("start", "human-annie");
 		await vi.advanceTimersByTimeAsync(350);
 		rig.speaking.fire("end", "human-annie");
+		await vi.advanceTimersByTimeAsync(1000); // default holdoff — real turn end
 		rig.speaking.fire("start", "human-annie");
 		await vi.advanceTimersByTimeAsync(350);
 		expect(rig.bargeIns).toEqual(["human-annie", "human-annie"]);
@@ -173,6 +179,83 @@ describe("backchannel gate (350ms speaking start/end pairs)", () => {
 		rig.speaking.fire("start", "bot-lead");
 		await vi.advanceTimersByTimeAsync(1000);
 		expect(rig.bargeIns).toEqual([]);
+	});
+});
+
+describe("barge-in holdoff (utterance-level debounce — QA FLY-1006 round-3 ①)", () => {
+	it("a natural pause (< holdoff) then resumed speech does NOT re-fire", async () => {
+		const rig = makeRig();
+		rig.speaking.fire("start", "human-annie");
+		await vi.advanceTimersByTimeAsync(350); // gate fires once
+		expect(rig.bargeIns).toEqual(["human-annie"]);
+		rig.speaking.fire("end", "human-annie");
+		await vi.advanceTimersByTimeAsync(500); // breath — under the 1000ms holdoff
+		rig.speaking.fire("start", "human-annie");
+		await vi.advanceTimersByTimeAsync(2_000); // long resumed speech
+		expect(rig.bargeIns).toEqual(["human-annie"]); // still exactly one
+	});
+
+	it("many pauses inside one utterance still fire exactly one barge-in (Annie P6 storm)", async () => {
+		const rig = makeRig();
+		rig.speaking.fire("start", "human-annie");
+		await vi.advanceTimersByTimeAsync(400); // fire #1
+		for (let i = 0; i < 8; i++) {
+			rig.speaking.fire("end", "human-annie");
+			await vi.advanceTimersByTimeAsync(600); // breath < holdoff
+			rig.speaking.fire("start", "human-annie");
+			await vi.advanceTimersByTimeAsync(900); // speaks on
+		}
+		expect(rig.bargeIns).toEqual(["human-annie"]);
+	});
+
+	it("holdoff silence must be CONTINUOUS — a resume mid-holdoff restarts the clock", async () => {
+		const rig = makeRig();
+		rig.speaking.fire("start", "human-annie");
+		await vi.advanceTimersByTimeAsync(350); // fire
+		rig.speaking.fire("end", "human-annie");
+		await vi.advanceTimersByTimeAsync(900); // almost unlatched…
+		rig.speaking.fire("start", "human-annie"); // …but she resumes
+		await vi.advanceTimersByTimeAsync(500);
+		rig.speaking.fire("end", "human-annie");
+		await vi.advanceTimersByTimeAsync(900); // again not continuous ≥1000ms yet
+		rig.speaking.fire("start", "human-annie");
+		await vi.advanceTimersByTimeAsync(2_000);
+		expect(rig.bargeIns).toEqual(["human-annie"]);
+	});
+
+	it("honors a configured bargeInHoldoffMs", async () => {
+		const rig = makeRig({ bargeInHoldoffMs: 2_000 });
+		rig.speaking.fire("start", "human-annie");
+		await vi.advanceTimersByTimeAsync(350); // fire
+		rig.speaking.fire("end", "human-annie");
+		await vi.advanceTimersByTimeAsync(1_500); // < 2000 — still latched
+		rig.speaking.fire("start", "human-annie");
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(rig.bargeIns).toEqual(["human-annie"]);
+		rig.speaking.fire("end", "human-annie");
+		await vi.advanceTimersByTimeAsync(2_000); // full holdoff — unlatched
+		rig.speaking.fire("start", "human-annie");
+		await vi.advanceTimersByTimeAsync(350);
+		expect(rig.bargeIns).toEqual(["human-annie", "human-annie"]);
+	});
+
+	it("the latch is per user", async () => {
+		const rig = makeRig();
+		rig.speaking.fire("start", "human-annie");
+		await vi.advanceTimersByTimeAsync(350); // annie latched
+		rig.speaking.fire("start", "human-bob");
+		await vi.advanceTimersByTimeAsync(350); // bob's own gate fires
+		expect(rig.bargeIns).toEqual(["human-annie", "human-bob"]);
+	});
+
+	it("detach() cancels pending unlatch timers", async () => {
+		const rig = makeRig();
+		rig.speaking.fire("start", "human-annie");
+		await vi.advanceTimersByTimeAsync(350);
+		rig.speaking.fire("end", "human-annie");
+		rig.receiver.detach();
+		await vi.advanceTimersByTimeAsync(5_000); // nothing pending fires
+		expect(rig.bargeIns).toEqual(["human-annie"]);
 	});
 });
 

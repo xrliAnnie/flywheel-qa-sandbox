@@ -30,12 +30,12 @@ import {
 	resolveConfig as resolveVoiceCoreConfig,
 	TalkSessionRotator,
 } from "flywheel-voice-core";
-import { EarsReceiver } from "../audio/EarsReceiver.js";
 import { superviseVoiceConnection } from "../audio/VoiceConnSupervisor.js";
 import type { DiscordDeps } from "../bots/discordWiring.js";
 import type { HuddleBridgeConfig } from "../config.js";
 import { TivPresenter } from "../discord/TivPresenter.js";
-import { SessionSlot } from "../SessionSlot.js";
+import { wireRoomEars } from "../roomEars.js";
+import { VoiceRoomRuntime } from "../VoiceRoomRuntime.js";
 import { AssistantLanding } from "./AssistantLanding.js";
 import { AssistantSession, type ConversationLike } from "./AssistantSession.js";
 import { AssistantSpeaker } from "./AssistantSpeaker.js";
@@ -72,6 +72,10 @@ export interface WireAssistantOptions {
 	deps: DiscordDeps;
 	/** the resident Note-taker voice connection (ears). */
 	earsConnection: unknown;
+	/** FLY-1006 S5b: the daemon's shared room runtime (slot + ears routing).
+	 * When passed, the daemon owns the physical ears (wireRoomEars) and this
+	 * wiring only consumes; absent = FLY-967 behavior (own room + own ears). */
+	room?: VoiceRoomRuntime;
 	env?: NodeJS.ProcessEnv;
 	log?: (msg: string) => void;
 	/** test seam: replaces the real Gemini conversation factory. FLY-1065: the
@@ -190,55 +194,27 @@ export async function wireAssistantMode(
 		}
 	});
 
-	// ---- resident ears: ONE receiver for the daemon lifetime; frames are
-	// routed to whichever meeting is live (SessionSlot enforces ≤1). ----
-	let activeFrames: ((frame: Buffer, format: unknown) => void) | null = null;
-	let activeSpeakingEnd: (() => void) | null = null;
-	const earsDownCbs = new Set<() => void>();
-	const earsUpCbs = new Set<() => void>();
-	const ears = new EarsReceiver({
-		speaking: deps.speakingEvents(opts.earsConnection),
-		subscribe: deps.subscribeManual(opts.earsConnection),
-		createDecoder: deps.createDecoder,
-		isHuman: deps.isHumanFactory(registry.client("note-taker"), config.guildId),
-		allowUserIds: config.allowUserIds,
-		backchannelMs: config.backchannelMs,
-		onFrame: (frame) =>
-			activeFrames?.(frame, {
-				encoding: "pcm16",
-				sampleRateHz: 16_000,
-				channels: 1,
-			}),
-		// FLY-967 round-6: route speaking-end to the live meeting so it can commit
-		// the founder's turn (Discord silence-suppression gives no trailing silence).
-		onSpeakingEnd: () => activeSpeakingEnd?.(),
-		// v1: Gemini server VAD is the barge-in main path (plan §6); the local
-		// pre-stop gate arrives with assistant.localBargeIn after full-chain S-A1.
-		onBargeIn: () => {},
-		onError: (err, userId) =>
-			log(`ears pipeline error (user ${userId}): ${err.message}`),
-	});
-	ears.attach();
-	const conn = deps.connectionEvents(opts.earsConnection);
-	const unsubDown = conn.onDown(() => {
-		for (const cb of earsDownCbs) cb();
-	});
-	const unsubUp = conn.onUp(() => {
-		for (const cb of earsUpCbs) cb();
-	});
-	// diagnostics only (FLY-967 round-3): the ears connection has its own
-	// EARS_LOST degradation flow; here we just want every state transition and
-	// error in the venue log.
-	const earsHandle = deps.voiceConnHandle?.(opts.earsConnection);
-	const disposeEarsWatch = earsHandle
-		? superviseVoiceConnection(earsHandle, {
-				label: "ears",
+	// ---- shared room runtime (FLY-1006 S5b): ONE slot + ONE resident-ears
+	// routing for every voice mode. The daemon passes the shared room (and
+	// wires the physical receiver itself, once); a direct caller without a
+	// room keeps the FLY-967 behavior — its own room + its own receiver.
+	// /gemini registers no barge-in consumer, so the room's barge-in route
+	// stays a no-op for it (v1 unchanged: Gemini server VAD is the main path).
+	const room = opts.room ?? new VoiceRoomRuntime();
+	const ownEars = opts.room
+		? undefined
+		: wireRoomEars({
+				room,
+				deps,
+				earsConnection: opts.earsConnection,
+				earsClient: registry.client("note-taker"),
+				guildId: config.guildId,
+				allowUserIds: config.allowUserIds,
+				backchannelMs: config.backchannelMs,
 				log,
-				mode: "observe",
-			})
-		: undefined;
+			});
 
-	const slot = new SessionSlot();
+	const slot = room.slot;
 	let activeSession: AssistantSession | null = null;
 
 	const createConversation =
@@ -361,26 +337,10 @@ export async function wireAssistantMode(
 					},
 				},
 				ears: {
-					onFrame: (cb) => {
-						activeFrames = cb;
-						return () => {
-							if (activeFrames === cb) activeFrames = null;
-						};
-					},
-					onSpeakingEnd: (cb) => {
-						activeSpeakingEnd = cb;
-						return () => {
-							if (activeSpeakingEnd === cb) activeSpeakingEnd = null;
-						};
-					},
-					onDown: (cb) => {
-						earsDownCbs.add(cb);
-						return () => earsDownCbs.delete(cb);
-					},
-					onUp: (cb) => {
-						earsUpCbs.add(cb);
-						return () => earsUpCbs.delete(cb);
-					},
+					onFrame: (cb) => room.onFrame(cb),
+					onSpeakingEnd: (cb) => room.onSpeakingEnd(cb),
+					onDown: (cb) => room.onDown(cb),
+					onUp: (cb) => room.onUp(cb),
 				},
 				tiv,
 				landing: new AssistantLanding({
@@ -454,10 +414,7 @@ ${o.joinUrl}`
 		close: async () => {
 			briefing.stop();
 			unsubVoiceState();
-			unsubDown();
-			unsubUp();
-			disposeEarsWatch?.();
-			ears.detach();
+			ownEars?.dispose();
 			await activeSession?.stop();
 			activeSession = null;
 		},

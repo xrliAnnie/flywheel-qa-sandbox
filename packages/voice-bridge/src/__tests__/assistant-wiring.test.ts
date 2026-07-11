@@ -20,6 +20,7 @@ import {
 import type { DiscordDeps } from "../bots/discordWiring.js";
 import { runVoiceBridge } from "../cli.js";
 import type { HuddleBridgeConfig } from "../config.js";
+import { VoiceRoomRuntime } from "../VoiceRoomRuntime.js";
 
 const CONFIG: HuddleBridgeConfig = {
 	projectName: "flywheel",
@@ -77,6 +78,7 @@ class FakeConversation implements ConversationLike {
 }
 
 function makeFakes() {
+	const speakingEventsCalls = { count: 0 };
 	const registered: { name: string; description: string }[] = [];
 	const commandHandlers = new Map<
 		string,
@@ -107,7 +109,10 @@ function makeFakes() {
 			({ on() {}, pipe() {}, end() {}, destroy() {} }) as never,
 		createPlayer: () => ({ play() {}, stop() {}, on() {} }),
 		createResource: (src) => src,
-		speakingEvents: () => ({ on() {} }),
+		speakingEvents: () => {
+			speakingEventsCalls.count++;
+			return { on() {} };
+		},
 		isHumanFactory: () => () => true,
 		registerGuildCommand: vi.fn(async (_c, _g, spec) => {
 			registered.push(spec);
@@ -155,6 +160,9 @@ function makeFakes() {
 		deps,
 		registry,
 		fetchImpl,
+		get speakingEventsCalls() {
+			return speakingEventsCalls.count;
+		},
 		registered,
 		commandHandlers,
 		messages,
@@ -203,6 +211,42 @@ describe("wireAssistantMode (FLY-967 QA-B1)", () => {
 		const h = await wire();
 		expect(h.registered).toEqual([expect.objectContaining({ name: "gemini" })]);
 		expect(h.runtime.commandName).toBe("gemini");
+		await h.runtime.close();
+	});
+
+	it("FLY-1006 S5b: a shared room means NO second ears — the daemon owns the receiver", async () => {
+		const room = new VoiceRoomRuntime();
+		const h = await wire({ room });
+		// wireAssistantMode must not build its own EarsReceiver when the daemon
+		// passed the shared room (double-subscription is the bug S5b prevents).
+		expect(h.speakingEventsCalls).toBe(0);
+		await h.runtime.close();
+	});
+
+	it("FLY-1006 S5b: /gemini and /eleven contend for the SHARED slot", async () => {
+		const room = new VoiceRoomRuntime();
+		const h = await wire({ room });
+		// another mode holds the room → /gemini must be rejected founder-facing
+		expect(room.slot.acquire("eleven", "vc-session-1").ok).toBe(true);
+		const replies: string[] = [];
+		h.commandHandlers.get("gemini")?.({
+			topic: undefined,
+			userId: "annie",
+			reply: async (text) => {
+				replies.push(text);
+			},
+		});
+		await vi.waitFor(() => {
+			if (replies.length === 0) throw new Error("not yet");
+		});
+		expect(replies[0]).toContain("/eleven");
+		// no kickoff issue was created for the rejected invocation
+		expect(h.fetchCalls.find((c) => c.url.includes("create-issue"))).toBe(
+			undefined,
+		);
+		// release → /gemini can acquire the same room
+		room.slot.release("eleven", "vc-session-1");
+		expect(room.slot.acquire("gemini", "s2").ok).toBe(true);
 		await h.runtime.close();
 	});
 

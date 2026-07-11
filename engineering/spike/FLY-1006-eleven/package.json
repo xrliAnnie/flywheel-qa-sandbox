@@ -1,0 +1,8 @@
+{
+	"name": "fly1006-eleven-spike",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "node --test serve.test.mjs latency-report.test.mjs"
+	}
+}

@@ -481,3 +481,171 @@ test("stream:false returns a single chat.completion JSON", async () => {
 		server.close();
 	}
 });
+
+// ---- QA FLY-1006 round-3 ① — per-conversation single-flight ----
+// Annie P6: platform retries/dupes pile concurrent claude -p runs onto one
+// conversation and latency snowballs across rounds. A NEW request for a key
+// must cleanly abort the previous in-flight run (fresh round starts from
+// zero); different conversations stay independent.
+test("single-flight: a new same-key request aborts the in-flight previous one", async () => {
+	// brain #1 hangs until aborted; later brains answer normally. resume=false
+	// gives each request its own brain instance so the order is observable.
+	let n = 0;
+	const factory = (info) => {
+		n++;
+		const brain = {
+			info,
+			n,
+			sawAbort: false,
+			async *respond(_turn, { signal }) {
+				signal.addEventListener("abort", () => {
+					brain.sawAbort = true;
+				});
+				if (brain.n === 1) {
+					await new Promise((resolve) => {
+						if (signal.aborted) return resolve();
+						signal.addEventListener("abort", () => resolve());
+					});
+					return;
+				}
+				yield "fresh answer";
+			},
+		};
+		factory.created.push(brain);
+		return brain;
+	};
+	factory.created = [];
+	const { server, url } = await startServer({
+		brainFactory: factory,
+		resume: false,
+	});
+	try {
+		const post = (id) =>
+			fetch(url, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${TOKEN}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify(
+					chatBody({ elevenlabs_extra_body: { conversation_id: id } }),
+				),
+			});
+		const p1 = post("conv-1"); // hangs on brain #1
+		await new Promise((r) => setTimeout(r, 100));
+		const res2 = await post("conv-1"); // supersedes → must abort brain #1
+		const sse2 = await readSse(res2);
+		assert.equal(
+			sse2.chunks.some(
+				(c) => c.choices?.[0]?.delta?.content === "fresh answer",
+			),
+			true,
+			"the new round streams normally",
+		);
+		const brain1 = factory.created[0];
+		for (let i = 0; i < 50 && !brain1.sawAbort; i++) {
+			await new Promise((r) => setTimeout(r, 20));
+		}
+		assert.ok(brain1.sawAbort, "the superseded in-flight brain was aborted");
+		await p1; // the aborted response terminates (no hang)
+	} finally {
+		server.close();
+	}
+});
+
+test("single-flight: different conversation keys never abort each other", async () => {
+	const factory = makeFakeBrainFactory(["ok"], { delayMs: 80 });
+	const { server, url } = await startServer({
+		brainFactory: factory,
+		resume: false,
+	});
+	try {
+		const post = (id) =>
+			fetch(url, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${TOKEN}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify(
+					chatBody({ elevenlabs_extra_body: { conversation_id: id } }),
+				),
+			});
+		const [a, b] = await Promise.all([post("conv-a"), post("conv-b")]);
+		const [sa, sb] = [await readSse(a), await readSse(b)];
+		assert.equal(sa.done && sb.done, true);
+		assert.equal(
+			factory.created.every((brain) => !brain.sawAbort),
+			true,
+			"no cross-conversation aborts",
+		);
+	} finally {
+		server.close();
+	}
+});
+
+test("single-flight: a same-key TOOL-CALL request also aborts the in-flight brain (Codex R3-fix-1)", async () => {
+	// brain #1 hangs until aborted; the follow-up same-key request takes the
+	// tool-call early-return path — it must STILL supersede the old run.
+	const factory = (info) => {
+		const brain = {
+			info,
+			sawAbort: false,
+			async *respond(_turn, { signal }) {
+				signal.addEventListener("abort", () => {
+					brain.sawAbort = true;
+				});
+				await new Promise((resolve) => {
+					if (signal.aborted) return resolve();
+					signal.addEventListener("abort", () => resolve());
+				});
+			},
+		};
+		factory.created.push(brain);
+		return brain;
+	};
+	factory.created = [];
+	const { server, url } = await startServer({
+		brainFactory: factory,
+		resume: false,
+		toolMode: "force:language_detection",
+	});
+	try {
+		const post = (body) =>
+			fetch(url, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${TOKEN}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify(body),
+			});
+		// req1: NO tools offered → brain path → hangs
+		const p1 = post(
+			chatBody({ elevenlabs_extra_body: { conversation_id: "conv-t" } }),
+		);
+		await new Promise((r) => setTimeout(r, 100));
+		// req2: same key, platform offers the tool → tool-call early return
+		const res2 = await post(
+			chatBody({
+				elevenlabs_extra_body: { conversation_id: "conv-t" },
+				tools: [{ type: "function", function: { name: "language_detection" } }],
+				messages: [{ role: "user", content: "switching to English now" }],
+			}),
+		);
+		const sse2 = await readSse(res2);
+		assert.equal(sse2.done, true, "tool-call response completes");
+		const brain1 = factory.created[0];
+		for (let i = 0; i < 50 && !brain1?.sawAbort; i++) {
+			await new Promise((r) => setTimeout(r, 20));
+		}
+		assert.ok(brain1, "brain #1 was created");
+		assert.ok(
+			brain1.sawAbort,
+			"the in-flight brain was aborted by the tool-call request",
+		);
+		await p1; // superseded response terminates (no hang)
+	} finally {
+		server.close();
+	}
+});

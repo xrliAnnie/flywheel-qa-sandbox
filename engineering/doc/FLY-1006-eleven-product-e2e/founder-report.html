@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1006 · /eleven 产品实测结论页</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, "PingFang SC", sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 16px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 22px; color: #1a365d; margin: 8px 0 4px; }
+  .sub { color: #86868b; font-size: 13px; margin-bottom: 20px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 16px 18px; margin-bottom: 16px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.navy { border-left-color: #1a365d; }
+  h2 { font-size: 16px; color: #1a365d; margin-bottom: 10px; }
+  h3 { font-size: 14px; margin: 12px 0 6px; }
+  p, li { font-size: 14px; }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 4px; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 6px; margin-right: 6px; vertical-align: middle; }
+  .badge.pass { background: #e8f8ee; color: #34c759; }
+  .badge.pending { background: #fff4e5; color: #ff9500; }
+  .badge.info { background: #e9f2ff; color: #007aff; }
+  .tbl { width: 100%; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 640px; }
+  th, td { border-bottom: 1px solid #e5e5ea; padding: 7px 8px; text-align: left; vertical-align: top; }
+  th { background: #fafafa; color: #1a365d; font-size: 12px; white-space: nowrap; }
+  td.dim1 { font-weight: 600; }
+  .mono { font-family: "SF Mono", Menlo, monospace; font-size: 12px; }
+  .good { color: #34c759; font-weight: 600; }
+  .bad { color: #ff3b30; font-weight: 600; }
+  .warn { color: #ff9500; font-weight: 600; }
+  .dim { color: #86868b; }
+  .note { font-size: 12px; color: #86868b; margin-top: 8px; }
+  .kpis { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+  .kpi { flex: 1 1 130px; background: #fafafa; border-radius: 10px; padding: 10px 12px; }
+  .kpi .n { font-size: 20px; font-weight: 700; color: #1a365d; }
+  .kpi .l { font-size: 12px; color: #86868b; }
+  blockquote { border-left: 3px solid #d2d2d7; padding-left: 10px; color: #515154; font-size: 13px; margin: 6px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>/eleven 产品实测 — 结论页</h1>
+  <div class="sub">FLY-1006 · 2026-07-09 · ElevenLabs 平台耳嘴 + Claude 脑（$0 订阅路径）· 数据全部真机实测</div>
+
+  <div class="card navy">
+    <h2>一句话</h2>
+    <p><strong>/eleven 全链已经真跑通，你已两场亲测</strong>：M1 网页版（7-08）+ M2 Discord 语音房首场（7-09，当时是 haiku 脑）。你首场的结论——「可以测，但是非常非常的慢」——已经动完手术（见下）。剩最后一步：<strong>sonnet 版再听一场</strong>（约 10 分钟）确认提速与音效，数据落表后 /eleven 去留就可以拍了。</p>
+    <p style="margin-top:6px">你首场实测反馈的<span class="warn">答案慢</span>已动手：按你拍板把脑从 haiku 换成 sonnet（07-09），机器复测（实现 + QA 两组独立数据）：<strong>低 load 3-4 秒 / 正常 load 约 5 秒——都约为换档前（8-10 秒）的一半</strong>，延迟随机器忙闲浮动。订阅形态地板约 3-5 秒；要进 1-2 秒只有付费 API 直连，花不花这个钱是你的决定。</p>
+  </div>
+
+  <div class="card green">
+    <h2>M1 · 网页版真人实测 <span class="badge pass">已完成（你已终验）</span></h2>
+    <ul>
+      <li><strong>链路</strong>：连接 / 三个 Lead 声线随选切换 / 中文听写 / 打断——全部正常（你 7-08 两场会话实测）。</li>
+      <li><strong>你的四条反馈的处理</strong>：① 声线中文口音 → 已加 3 条中文原生候选声线上试听页（终选权在你）；②③ 「在思考」提示不稳 + 垫话语言写死 → 已按你拍板改成<strong>处理中音效</strong>（语言无关，一次解决）；④ 角色/项目认知空洞 → 升格为 M2 核心需求：<strong>Claude 脑接真 Lead 记忆/人格</strong>（follow-up 主战场，与提速一起设计）。</li>
+      <li><strong>「电话音」调查</strong>：来源 = 旧版语音垫话里「嗯……」的合成哼声，已随音效方案消除（频谱取证）。</li>
+    </ul>
+  </div>
+
+  <div class="card green">
+    <h2>M2 · Discord 语音房机器验证 <span class="badge pass">全绿（2026-07-09）</span></h2>
+    <div class="kpis">
+      <div class="kpi"><div class="n">3/3</div><div class="l">验证脚本全部通过（fail-closed）</div></div>
+      <div class="kpi"><div class="n">逐字准</div><div class="l">中文听写（平台 STT）</div></div>
+      <div class="kpi"><div class="n">+0 字节</div><div class="l">打断后残播（立即闭嘴）</div></div>
+      <div class="kpi"><div class="n">3-5s</div><div class="l">说完→答案首音（sonnet：低 load 3-4s / 正常 load ~5s，都约为 haiku 8-10s 的一半）</div></div>
+    </div>
+    <ul>
+      <li>真 Discord 机器人进真语音房：注入中文语音 → 平台逐字听写 → Claude 脑作答 → 16.9 秒非静音语音回放落房间。</li>
+      <li>答到一半插话：<strong>播放立刻停</strong>（平台侧真截断），会话存活、接着答下一轮。</li>
+      <li>/eleven 与 /gemini 同房互斥：一方占用时另一方收到「有一场正在进行」的礼貌拒入。</li>
+    </ul>
+    <p class="note">延迟口径：说完话 → 真答案首音（无垫话配置）。你实测反馈太慢后已按你拍板换脑模型（haiku → sonnet，07-09）：haiku 档 n=4：8.8 / 7.1 / 7.7 / 10.3 秒；sonnet 档两组独立实测：低 load(~6) 中位 3.6 秒（3.9/9.5/3.0/3.4），正常 load(~16) 中位 5.2 秒（6.1/4.5/4.7/5.6）——<strong>低 load 3-4 秒 / 正常 load 约 5 秒，都约为 haiku（8-10 秒）的一半</strong>；延迟对机器忙闲敏感。慢的大头是脑（每轮冷启动 claude 命令；haiku 每轮先「思考」再开口），不是 ElevenLabs 平台（听写+合成合计约 1 秒）。「处理中音效」已原生修好，填掉剩余等待。订阅形态的地板约 3-5 秒/轮（随 load 浮动）；要进 1-2 秒只有付费 API 直连。</p>
+  </div>
+
+  <div class="card amber">
+    <h2>待办 · sonnet 版复听（语音房首场已完成） <span class="badge pending">等约时段（rig 随时可开）</span></h2>
+    <p>流程：你进 General 语音房 → <span class="mono">/eleven</span> → 中英文真聊几轮 + 试打断 +（可选）换个 Lead 声线再来一轮 → <span class="mono">/eleven stop</span>。全程约 10 分钟；延迟/质量/成本三维数据会当场落表。<strong>预期管理：换 sonnet 后每轮回答低 load 3-4 秒 / 正常 load 约 5 秒</strong>（见上，随机器忙闲浮动），约为你首场（7-10 秒+）的一半；处理中音效会填等待。</p>
+  </div>
+
+  <div class="card purple">
+    <h2>四线横向对比（第一行 = 你的决策主轴）</h2>
+    <div class="tbl"><table>
+      <tr><th>维度</th><th>/eleven<br><span class="dim">平台耳嘴+Claude脑</span></th><th>/glaw (545)<br><span class="dim">Gemini耳+Claude脑+edge-tts嘴</span></th><th>/gemini (967)<br><span class="dim">纯 Gemini Live</span></th><th>/gemini-advanced (997)<br><span class="dim">工具型语音助手</span></th></tr>
+      <tr><td class="dim1">跟特定 Lead 聊特定事<br>（人格+记忆注入）</td><td><span class="good">✓ 选 Lead+人设已真机</span>；真 Lead 记忆注入 = 既定 follow-up</td><td><span class="good">✓ 脑就是 Lead Claude</span>（天然带人格记忆）</td><td><span class="bad">✗ 通用助理</span>+会议简报注入</td><td><span class="bad">✗ 派活助手</span>（不是 Lead 人格）</td></tr>
+      <tr><td class="dim1">说完→首音延迟</td><td>sonnet 脑低 load 3-4s / 正常 load ~5s，都约为 haiku（8-10s）的一半；处理中音效填等待<span class="dim">（实现+QA 双实测）</span></td><td>~1.5-3s 全链<span class="dim">（968 口径，edge-tts 冷启动是卡点）</span></td><td><span class="good">0.8-1.0s</span><span class="dim">（968/967 实测）</span></td><td><span class="dim">pending（语音延迟归 build 阶段）</span></td></tr>
+      <tr><td class="dim1">成本（60 分钟）</td><td>现金 $0（订阅池内）；等值 ~$1.47/h（~177 credits/min）；脑 $0</td><td><span class="good">≈ 免费</span>（edge-tts 免费 + Gemini 耳零头）</td><td>~$0.66/h（单 session）</td><td>万级 token/次 ≈ 美分级<span class="dim">（997 实测）</span></td></tr>
+      <tr><td class="dim1">声线</td><td><span class="good">海量库+克隆</span>；中文口音要挑（原生候选已备）</td><td>edge-tts 任意分声线</td><td>30 条内置，一会话一声线</td><td>同 Gemini</td></tr>
+      <tr><td class="dim1">打断体验</td><td><span class="good">平台托管，真机停播零残播</span></td><td>自建骨架（545 已验门控 351ms）</td><td>平台有</td><td>pending</td></tr>
+      <tr><td class="dim1">工具/干活通路</td><td>Claude 脑天然有（M1 关了换速度）</td><td>Claude 脑天然有</td><td>function calling（967 建单已真机）</td><td><span class="good">100/100 可靠性矩阵</span>（997）</td></tr>
+      <tr><td class="dim1">工程量现状</td><td><span class="good">产品代码已落</span>（本单 M2）+ 运维面：shim/隧道/agent 需常驻托管（follow-up）</td><td>骨架已合入（545/546）</td><td><span class="good">已合入在跑</span>（967）</td><td>spike 完成，build 未开工</td></tr>
+    </table></div>
+    <p class="note">口径注明：/glaw、/gemini 列引 FLY-968 横评 + FLY-967 真机；/gemini-advanced 列引 FLY-997 spike（语音数据 pending build）；/eleven 列 = FLY-980 + 本单 M1/M2 实测。四线各有主场，不是单选题。</p>
+  </div>
+
+  <div class="card">
+    <h2>哪些场景用 /eleven（建议——决策权在你）</h2>
+    <ul>
+      <li><strong>适合</strong>：要「跟某个 Lead 像打电话一样聊」的场景——声线人设可选、打断顺滑、平台把耳嘴的脏活全托管；且现金成本 $0（订阅池内）。</li>
+      <li><strong>暂不适合</strong>：追求秒回的快问快答（sonnet 后低 load 3-4s / 正常 load ~5s，都约为 haiku 8-10s 的一半；进 1-2s 要付费 API 直连）；以及要 24/7 常开的场景（shim/隧道/agent 运维面还没产品化）。</li>
+      <li><strong>建议</strong>：留 /eleven 作「Lead 语音人格」路线主候选，条件是把两件事做完——① 真 Lead 记忆/人格注入（延迟侧已由换 sonnet 落地）；② 运维面托管。若你实测后觉得形态不对，数据都在，撤也干脆。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>credits 台账摘要</h2>
+    <div class="kpis">
+      <div class="kpi"><div class="n">14,717</div><div class="l">全程累计消耗（credits）</div></div>
+      <div class="kpi"><div class="n">98.1%</div><div class="l">占 1.5 万预估（月度钱包上限 159,648 内无风险）</div></div>
+      <div class="kpi"><div class="n">$0</div><div class="l">现金支出（Creator 订阅内）</div></div>
+    </div>
+    <p class="note">明细在 evidence/credits-ledger.md（每步可归因）。分钟池核查结论：官方宣传的「275 分钟池」在 API 无独立计数器，实测按 credits 直扣（M1 已坐实，evidence/m1-minutes-pool.md）。</p>
+  </div>
+
+  <div class="card">
+    <h2>Follow-up（本单不做，已列账）</h2>
+    <ul>
+      <li>真 Lead identity/记忆注入（人格收益，M2 追加要求④的另一半）。延迟侧已落地：脑换 sonnet（你拍板）后低 load 3-4s / 正常 load ~5s（约 haiku 8-10s 的一半）；「常驻 warm 脑」经 980 实测不再提速（瓶颈是模型 API 首响应，不是启动），不做；进 1-2s 只有付费 API 直连，要不要花这个钱是你的决定</li>
+      <li>shim/隧道/agent 生命周期托管（/eleven 常驻运维面）</li>
+      <li>处理中音效：语音房原生实现已修好（说完即响、循环至真答案、不掐 agent 声音——QA kickback 两缺陷已修）；剩配置正式音效 clip（waitingCuePath）+ 你在语音房的真实体验确认</li>
+      <li>声线终选（中文原生候选已上试听页）+ 8-Lead 全铺</li>
+      <li>慢答案跨轮串台（stale-answer 丢弃）、多人混流</li>
+    </ul>
+  </div>
+
+  <div class="sub" style="text-align:center; margin-top: 8px;">证据索引：engineering/doc/FLY-1006-eleven-product-e2e/evidence/ · 音频/日志留档 ~/fly1006-eleven/（QA 验收前不删）</div>
+</div>
+</body>
+</html>

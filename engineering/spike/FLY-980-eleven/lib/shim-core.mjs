@@ -239,6 +239,12 @@ export function createShimServer(opts) {
 		modelName = "flywheel-claude-brain",
 	} = opts;
 
+	// QA FLY-1006 R3 ① — per-conversation single-flight: platform retries /
+	// interruption re-sends must not pile concurrent claude -p runs onto one
+	// conversation (latency snowballs across rounds). A new request for a key
+	// cleanly aborts the previous in-flight run; each round starts from zero.
+	const inflight = new Map();
+
 	return http.createServer((req, res) => {
 		if (req.method === "GET" && req.url === "/health") {
 			res.writeHead(200, { "content-type": "application/json" });
@@ -319,6 +325,16 @@ export function createShimServer(opts) {
 			messages: body.messages,
 		});
 
+		// single-flight supersede happens BEFORE any early return (Codex
+		// R3-fix-1: a same-key tool-call request must also terminate the old
+		// run — the platform has moved on to a new round either way).
+		const prev = inflight.get(key);
+		if (prev) {
+			log({ type: "superseded_previous", requestId, key });
+			prev.abort();
+			inflight.delete(key);
+		}
+
 		const streamId = `chatcmpl-${requestId}`;
 		const created = Math.floor(tReqArrival / 1000);
 		const chunkFrame = (delta, finish = null) =>
@@ -374,8 +390,11 @@ export function createShimServer(opts) {
 		const brain = sessions.getBrain(key, identityFile);
 
 		const ac = new AbortController();
+		inflight.set(key, ac);
 		let finished = false;
 		res.on("close", () => {
+			// fires on normal finish AND client abort — the one cleanup point.
+			if (inflight.get(key) === ac) inflight.delete(key);
 			if (!finished) {
 				log({ type: "aborted", requestId, t: Date.now() - tReqArrival });
 				ac.abort();

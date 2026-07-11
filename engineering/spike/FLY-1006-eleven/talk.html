@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FLY-1006 · /eleven 真人实测</title>
+<style>
+	:root { color-scheme: light; }
+	* { box-sizing: border-box; }
+	body {
+		margin: 0; padding: 16px; background: #f5f5f7; color: #1d1d1f;
+		font-family: -apple-system, system-ui, sans-serif; max-width: 720px;
+		margin-inline: auto;
+	}
+	h1 { font-size: 20px; margin: 8px 0 4px; }
+	.sub { color: #86868b; font-size: 13px; margin-bottom: 16px; }
+	.card {
+		background: #fff; border-radius: 12px; padding: 16px;
+		box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 12px;
+	}
+	.script { font-size: 14px; line-height: 1.7; }
+	.script b { color: #1a365d; }
+	label { font-size: 14px; color: #86868b; display: block; margin-bottom: 6px; }
+	select, button {
+		font-size: 16px; padding: 10px 14px; border-radius: 10px;
+		border: 1px solid #d2d2d7; background: #fff;
+	}
+	select { width: 100%; margin-bottom: 12px; }
+	button { cursor: pointer; font-weight: 600; }
+	#startBtn { background: #007aff; color: #fff; border: none; width: 100%; }
+	#stopBtn { background: #ff3b30; color: #fff; border: none; width: 100%; display: none; }
+	.status-row {
+		display: flex; align-items: center; gap: 10px; margin-top: 12px;
+		font-size: 14px;
+	}
+	.dot {
+		width: 12px; height: 12px; border-radius: 50%; background: #d2d2d7;
+		transition: background 0.2s;
+	}
+	.dot.listening { background: #34c759; }
+	.dot.speaking { background: #ff9500; animation: pulse 1s infinite; }
+	.dot.connecting { background: #007aff; }
+	@keyframes pulse { 50% { opacity: 0.4; } }
+	.meta { font-size: 12px; color: #86868b; margin-top: 8px; word-break: break-all; }
+	.meta code { font-family: 'SF Mono', monospace; }
+	#log {
+		font-family: 'SF Mono', monospace; font-size: 11px; color: #515154;
+		background: #fafafa; border-radius: 8px; padding: 10px; max-height: 200px;
+		overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+	}
+</style>
+</head>
+<body>
+<h1>FLY-1006 · /eleven 真人实测</h1>
+<div class="sub">ElevenLabs Agents（平台耳+嘴）+ Claude 脑 · M1 真麦克风</div>
+
+<div class="card" style="border-left:4px solid #ff9500; font-size:13px; color:#515154">
+	🧠 脑当前<b>离线</b>（省资源）——开会话只会听到开场白，完整对话等 rig respin（30 秒可起）。
+	现在能做的：<a href="/audition">声线试听（零消耗）</a> + 下方「等待音本地演示」。
+</div>
+
+<div class="card script">
+	<b>建议流程（不强制）：</b><br />
+	① 中文闲聊 2-3 轮 → ② 英文 1-2 轮 → ③ 中英混 1 轮 →
+	④ 它答话答到一半时直接开口打断 1-2 次 → ⑤ 结束会话，切一个 Lead 再来一轮。<br />
+	<span style="color:#86868b">感受点：跟不跟手（延迟）、「处理中」提示音是否全程可感知、声线像不像这个角色（中文口音干不干净）、打断灵不灵。</span>
+</div>
+
+<div class="card">
+	<label for="leadSel">选 Lead（声线 + 人设随会话切换）</label>
+	<select id="leadSel">
+		<option value="tadashi">Tadashi · 工程负责人（男声 Eric）</option>
+		<option value="cass">Aunt Cass · 总管（女声 Sarah）</option>
+		<option value="belle">Belle · 生活助理（女声 Alice）</option>
+		<option value="tadashi_alt_jason">Tadashi 备选A · Jason（中文原生·北京腔）</option>
+		<option value="tadashi_alt_haoran">Tadashi 备选B · Haoran（中文原生·沉稳）</option>
+		<option value="tadashi_alt_george">Tadashi 备选C · George（英文premade对照）</option>
+		<option value="cass_alt_amy">Cass 备选 · Amy（中文原生·自然）</option>
+	</select>
+	<button id="startBtn">开始会话</button>
+	<button id="stopBtn">结束会话</button>
+	<label style="display:block; margin-top:10px; font-size:14px; color:#515154">
+		<input type="checkbox" id="fxToggle" checked />
+		等待音（你一停口就起、答案开播才停，循环呼吸感；语言无关）
+	</label>
+	<button id="demoBtn" style="margin-top:10px; background:#fff; color:#007aff; border:1px solid #007aff; width:100%">
+		▶︎ 试听等待音（本地演示 · 不建会话 · 零消耗）
+	</button>
+	<div class="meta" id="demoHint" style="display:none">
+		演示中：随便说一句话 → 停口 ~0.7s 等待音起 → 模拟 6 秒「思考」→ 播一段示例答案音频、等待音停。再点一次结束演示。
+	</div>
+	<div class="status-row">
+		<div class="dot" id="dot"></div>
+		<span id="statusText">未连接</span>
+		<span id="timer" style="margin-left:auto; font-variant-numeric: tabular-nums;"></span>
+	</div>
+	<div class="meta">
+		<div>麦克风：<span id="micName">（点开始后申请权限）</span></div>
+		<div>conversation_id：<code id="convId">—</code></div>
+	</div>
+</div>
+
+<div class="card">
+	<div class="sub" style="margin-bottom:8px">事件日志（粗时间戳，自动存档到 ~/fly1006-eleven/）</div>
+	<div id="log"></div>
+</div>
+
+<script type="module">
+import { Conversation } from "https://esm.sh/@elevenlabs/client@1.14.1";
+
+const $ = (id) => document.getElementById(id);
+let conversation = null;
+let timerHandle = null;
+let t0 = 0;
+let currentLead = null;
+let currentMode = "idle";
+let vadMicStream = null;
+
+// —— 等待音 + 客户端 VAD(ChatGPT Live 形态;Annie 反馈:声效必须从她停口
+// 即起、循环到 agent 首帧才停,全程零静默空窗) ——
+// 打点链(②延迟拆段):vad_user_stop(她停口) → msg:user(STT finalize) →
+// mode:speaking(TTS 首帧 onset 近似);脑段在 shim jsonl(同机时钟可对齐)。
+let audioCtx = null;
+let padMaster = null;
+let padOn = false;
+let vadTimer = 0;
+let vadState = "idle"; // idle | user_speaking | waiting
+let turnSeq = 0;
+
+function ensureCtx() {
+	audioCtx = audioCtx ?? new (window.AudioContext ?? window.webkitAudioContext)();
+	audioCtx.resume?.();
+	return audioCtx;
+}
+function ensurePad() {
+	if (padMaster) return padMaster;
+	const ctx = ensureCtx();
+	const master = ctx.createGain();
+	master.gain.value = 0;
+	const lp = ctx.createBiquadFilter();
+	lp.type = "lowpass";
+	lp.frequency.value = 900;
+	const oscGain = ctx.createGain();
+	oscGain.gain.value = 0.5;
+	// 双音垫(G4+C5)+ 1.1Hz 呼吸式起伏——持续、柔和、可感知
+	for (const freq of [392, 523.25]) {
+		const osc = ctx.createOscillator();
+		osc.type = "sine";
+		osc.frequency.value = freq;
+		osc.connect(oscGain);
+		osc.start();
+	}
+	const lfo = ctx.createOscillator();
+	lfo.type = "sine";
+	lfo.frequency.value = 1.1;
+	const lfoGain = ctx.createGain();
+	lfoGain.gain.value = 0.3;
+	lfo.connect(lfoGain);
+	lfoGain.connect(oscGain.gain);
+	lfo.start();
+	oscGain.connect(lp);
+	lp.connect(master);
+	master.connect(ctx.destination);
+	padMaster = master;
+	return master;
+}
+function startWaitingPad() {
+	if (!$("fxToggle").checked || padOn) return;
+	const master = ensurePad();
+	const t = audioCtx.currentTime;
+	master.gain.cancelScheduledValues(t);
+	master.gain.setValueAtTime(master.gain.value, t);
+	master.gain.linearRampToValueAtTime(0.14, t + 0.15);
+	padOn = true;
+	logLine("pad_start", { turn: turnSeq });
+}
+function stopWaitingPad(reason) {
+	if (!padOn) return;
+	const t = audioCtx.currentTime;
+	padMaster.gain.cancelScheduledValues(t);
+	padMaster.gain.setValueAtTime(padMaster.gain.value, t);
+	padMaster.gain.linearRampToValueAtTime(0, t + 0.12);
+	padOn = false;
+	logLine("pad_stop", { reason, turn: turnSeq });
+}
+
+// 客户端 VAD:并行 mic 流(echoCancellation 开,浏览器 AEC 压 agent 回声)
+const VAD_TH = 0.015;
+const VAD_ENTER_MS = 250;
+const VAD_EXIT_MS = 700;
+let vadLoudSince = 0;
+let vadLastLoud = 0;
+function startVad(stream) {
+	const ctx = ensureCtx();
+	const src = ctx.createMediaStreamSource(stream);
+	const analyser = ctx.createAnalyser();
+	analyser.fftSize = 2048;
+	src.connect(analyser);
+	const buf = new Float32Array(analyser.fftSize);
+	vadTimer = setInterval(() => {
+		analyser.getFloatTimeDomainData(buf);
+		let sum = 0;
+		for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+		const rms = Math.sqrt(sum / buf.length);
+		const now = Date.now();
+		if (rms > VAD_TH) {
+			if (!vadLoudSince) vadLoudSince = now;
+			vadLastLoud = now;
+		} else if (now - vadLastLoud > 150) {
+			vadLoudSince = 0;
+		}
+		if (currentMode === "speaking") return; // agent 在说——echo 保护,不判
+		if (vadState !== "user_speaking" && vadLoudSince && now - vadLoudSince > VAD_ENTER_MS) {
+			const from = vadState;
+			vadState = "user_speaking";
+			if (from === "waiting") {
+				stopWaitingPad("user_resumed");
+			} else {
+				turnSeq += 1;
+			}
+			logLine("vad_user_start", { turn: turnSeq });
+		} else if (vadState === "user_speaking" && now - vadLastLoud > VAD_EXIT_MS) {
+			vadState = "waiting";
+			logLine("vad_user_stop", { turn: turnSeq });
+			startWaitingPad();
+		}
+	}, 50);
+}
+function stopVad() {
+	clearInterval(vadTimer);
+	vadTimer = 0;
+	vadState = "idle";
+	vadLoudSince = 0;
+}
+
+function logLine(type, data = {}) {
+	const line = `${new Date().toISOString().slice(11, 23)} ${type} ${JSON.stringify(data)}`;
+	$("log").textContent += `${line}\n`;
+	$("log").scrollTop = $("log").scrollHeight;
+	// 粗时间戳留档(S3.3)——失败静默,不影响会话
+	fetch("/api/log", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ type, lead: currentLead, ...data }),
+	}).catch(() => {});
+}
+
+function setStatus(cls, text) {
+	$("dot").className = `dot ${cls}`;
+	$("statusText").textContent = text;
+}
+
+function startTimer() {
+	t0 = Date.now();
+	timerHandle = setInterval(() => {
+		const s = Math.floor((Date.now() - t0) / 1000);
+		$("timer").textContent = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+	}, 500);
+}
+
+async function start() {
+	$("startBtn").disabled = true;
+	currentLead = $("leadSel").value;
+	try {
+		// 显式先取麦克风权限 + 显示设备名(R5: mic default device 教训);
+		// 流保活喂客户端 VAD(echoCancellation 让浏览器 AEC 压 agent 回声)
+		const stream = await navigator.mediaDevices.getUserMedia({
+			audio: { echoCancellation: true, noiseSuppression: true },
+		});
+		$("micName").textContent = stream.getAudioTracks()[0]?.label ?? "unknown";
+		vadMicStream = stream;
+
+		setStatus("connecting", "连接中…");
+		const r = await fetch(`/api/signed-url?lead=${currentLead}`);
+		if (!r.ok) throw new Error(`signed-url ${r.status}`);
+		const { signedUrl, lead } = await r.json();
+
+		// shim 会话辨识(980 v10: 平台默认不带任何会话 id,缺了会串味)
+		const shimConvId = `m1-${currentLead}-${Date.now()}`;
+		conversation = await Conversation.startSession({
+			signedUrl,
+			overrides: {
+				agent: { prompt: { prompt: lead.prompt }, firstMessage: lead.firstMessage },
+				tts: { voiceId: lead.voiceId },
+			},
+			customLlmExtraBody: { conversation_id: shimConvId },
+			onConnect: ({ conversationId }) => {
+				$("convId").textContent = conversationId ?? "?";
+				setStatus("listening", `已连接 · ${lead.name}（${lead.voiceName}）`);
+				logLine("connect", { conversationId, shimConvId, voiceId: lead.voiceId });
+				startTimer();
+			},
+			onDisconnect: () => {
+				logLine("disconnect");
+				cleanup();
+			},
+			onModeChange: ({ mode }) => {
+				currentMode = mode;
+				if (mode === "speaking") {
+					stopWaitingPad("agent_speaking");
+					vadState = "idle";
+				}
+				setStatus(mode, mode === "speaking" ? "agent 在说话（可以直接打断）" : "在听你说");
+				logLine("mode", { mode, turn: turnSeq });
+			},
+			onMessage: ({ message, role, source }) => {
+				const who = role ?? source;
+				logLine("msg", { role: who, turn: turnSeq, text: String(message).slice(0, 120) });
+			},
+			onError: (message) => {
+				logLine("error", { message: String(message).slice(0, 200) });
+			},
+		});
+		startVad(vadMicStream);
+		$("stopBtn").style.display = "block";
+		$("startBtn").style.display = "none";
+	} catch (err) {
+		setStatus("", "启动失败");
+		logLine("start_failed", { error: String(err?.message ?? err) });
+		$("startBtn").disabled = false;
+	}
+}
+
+function cleanup() {
+	stopWaitingPad("cleanup");
+	stopVad();
+	for (const t of vadMicStream?.getTracks() ?? []) t.stop();
+	vadMicStream = null;
+	currentMode = "idle";
+	clearInterval(timerHandle);
+	setStatus("", "未连接");
+	$("stopBtn").style.display = "none";
+	$("startBtn").style.display = "block";
+	$("startBtn").disabled = false;
+	conversation = null;
+}
+
+async function stop() {
+	try {
+		logLine("stop_clicked");
+		await conversation?.endSession();
+	} finally {
+		cleanup();
+	}
+}
+
+$("startBtn").addEventListener("click", start);
+$("stopBtn").addEventListener("click", stop);
+
+// —— 等待音本地演示(零消耗:不建会话,VAD+等待音真跑,答案用本地样本模拟) ——
+let demoOn = false;
+let demoTimer = 0;
+const demoAudio = new Audio("/audition/audio/jason-zh.mp3");
+demoAudio.addEventListener("play", () => {
+	currentMode = "speaking";
+	stopWaitingPad("demo_answer");
+	setStatus("speaking", "（演示）示例答案在播");
+});
+demoAudio.addEventListener("ended", () => {
+	currentMode = "idle";
+	vadState = "idle";
+	if (demoOn) setStatus("listening", "（演示）在听你说");
+});
+async function demoToggle() {
+	if (demoOn) {
+		demoOn = false;
+		clearTimeout(demoTimer);
+		demoAudio.pause();
+		cleanup();
+		$("demoBtn").textContent = "▶︎ 试听等待音（本地演示 · 不建会话 · 零消耗）";
+		$("demoHint").style.display = "none";
+		return;
+	}
+	try {
+		const stream = await navigator.mediaDevices.getUserMedia({
+			audio: { echoCancellation: true, noiseSuppression: true },
+		});
+		$("micName").textContent = stream.getAudioTracks()[0]?.label ?? "unknown";
+		vadMicStream = stream;
+		demoOn = true;
+		currentMode = "listening";
+		startVad(stream);
+		setStatus("listening", "（演示）在听你说");
+		$("demoBtn").textContent = "■ 结束演示";
+		$("demoHint").style.display = "block";
+		logLine("demo_start");
+	} catch (err) {
+		logLine("demo_failed", { error: String(err?.message ?? err) });
+	}
+}
+// 演示模式下,进入 waiting(等待音已起)后 6s 模拟 agent 首帧
+setInterval(() => {
+	if (demoOn && vadState === "waiting" && !demoTimer) {
+		demoTimer = setTimeout(() => {
+			demoTimer = 0;
+			if (demoOn && vadState === "waiting") demoAudio.play().catch(() => {});
+		}, 6000);
+	}
+	if (vadState !== "waiting" && demoTimer) {
+		clearTimeout(demoTimer);
+		demoTimer = 0;
+	}
+}, 200);
+$("demoBtn").addEventListener("click", demoToggle);
+</script>
+</body>
+</html>

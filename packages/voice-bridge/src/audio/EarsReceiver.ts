@@ -18,6 +18,15 @@
  * (default 350ms). End first → the burst was a backchannel ("嗯/对/laugh"),
  * do nothing. Timer fires while still speaking → `onBargeIn` exactly once
  * for that burst. The caller stops playback + interrupts the session there.
+ *
+ * Barge-in holdoff (QA FLY-1006 round-3 ①): real human speech is a train of
+ * Discord speaking start/end pairs — breaths and mid-sentence pauses end one
+ * burst and start the next. Without a holdoff, EVERY resumed burst ≥350ms
+ * re-fires `onBargeIn` (Annie P6: 8+ per utterance → barge-in storm). After a
+ * fire, the gate stays LATCHED until the speaker has been CONTINUOUSLY silent
+ * for `bargeInHoldoffMs` (default 1000ms) — one utterance, at most one
+ * barge-in. A genuine new interruption starts from silence ≥ holdoff, so it
+ * still fires normally.
  */
 import { StereoDownmixDecimator } from "./resample.js";
 
@@ -37,6 +46,9 @@ export interface EarsReceiverOptions {
 	allowUserIds?: string[];
 	/** sustained-speech threshold for a real barge-in (default 350ms). */
 	backchannelMs?: number;
+	/** continuous-silence duration that ends an utterance and re-arms the
+	 * barge-in gate after a fire (default 1000ms). */
+	bargeInHoldoffMs?: number;
 	/** 16kHz mono s16le output frames. */
 	onFrame: (frame: Buffer, userId: string) => void;
 	/** sustained speech crossed the gate — stop playback + interrupt. */
@@ -48,6 +60,7 @@ export interface EarsReceiverOptions {
 }
 
 const DEFAULT_BACKCHANNEL_MS = 350;
+const DEFAULT_BARGE_HOLDOFF_MS = 1000;
 
 interface Capture {
 	opus: NodeJS.ReadableStream;
@@ -57,13 +70,19 @@ interface Capture {
 export class EarsReceiver {
 	private readonly captures = new Map<string, Capture>();
 	private readonly gates = new Map<string, NodeJS.Timeout>();
+	/** users whose current utterance already fired a barge-in (holdoff latch). */
+	private readonly latched = new Set<string>();
+	/** pending continuous-silence timers that clear the latch. */
+	private readonly unlatchTimers = new Map<string, NodeJS.Timeout>();
 	private readonly allow: Set<string>;
 	private readonly backchannelMs: number;
+	private readonly bargeInHoldoffMs: number;
 	private detached = false;
 
 	constructor(private readonly opts: EarsReceiverOptions) {
 		this.allow = new Set(opts.allowUserIds ?? []);
 		this.backchannelMs = opts.backchannelMs ?? DEFAULT_BACKCHANNEL_MS;
+		this.bargeInHoldoffMs = opts.bargeInHoldoffMs ?? DEFAULT_BARGE_HOLDOFF_MS;
 	}
 
 	/** wire speaking listeners. Call once per receiver lifetime. */
@@ -76,6 +95,9 @@ export class EarsReceiver {
 		this.detached = true;
 		for (const timer of this.gates.values()) clearTimeout(timer);
 		this.gates.clear();
+		for (const timer of this.unlatchTimers.values()) clearTimeout(timer);
+		this.unlatchTimers.clear();
+		this.latched.clear();
 		for (const cap of this.captures.values()) {
 			destroyQuietly(cap.opus);
 			destroyQuietly(cap.decoder);
@@ -90,7 +112,17 @@ export class EarsReceiver {
 	private onStart(userId: string): void {
 		if (this.detached || !this.admitted(userId)) return;
 		this.opts.onSpeakingStart?.(userId);
-		this.armGate(userId);
+		if (this.latched.has(userId)) {
+			// resumed speech within the holdoff — same utterance, no re-arm; the
+			// pending continuous-silence clock (if any) restarts from her NEXT end.
+			const unlatch = this.unlatchTimers.get(userId);
+			if (unlatch) {
+				clearTimeout(unlatch);
+				this.unlatchTimers.delete(userId);
+			}
+		} else {
+			this.armGate(userId);
+		}
 		this.ensureSubscribed(userId);
 	}
 
@@ -103,12 +135,21 @@ export class EarsReceiver {
 			clearTimeout(gate);
 			this.gates.delete(userId);
 		}
+		// latched: the utterance ends only after CONTINUOUS silence ≥ holdoff.
+		if (this.latched.has(userId) && !this.unlatchTimers.has(userId)) {
+			const timer = setTimeout(() => {
+				this.unlatchTimers.delete(userId);
+				this.latched.delete(userId);
+			}, this.bargeInHoldoffMs);
+			this.unlatchTimers.set(userId, timer);
+		}
 	}
 
 	private armGate(userId: string): void {
 		if (this.gates.has(userId)) return; // flutter re-start within one burst
 		const timer = setTimeout(() => {
 			this.gates.delete(userId);
+			this.latched.add(userId); // holdoff: one barge-in per utterance
 			this.opts.onBargeIn(userId);
 		}, this.backchannelMs);
 		this.gates.set(userId, timer);

@@ -98,10 +98,51 @@ export {
 	loadHuddleBridgeConfig,
 	resolveHuddleBridgeConfig,
 } from "./config.js";
+// ---- FLY-1006 /eleven mode (eleven/*) ----
+export {
+	ELEVEN_SLOT_MODE,
+	type ElevenModeConfig,
+	loadElevenConfig,
+	resolveElevenConfig,
+} from "./eleven/config.js";
+export {
+	ElevenCommand,
+	type ElevenCommandOptions,
+	type ElevenInvocation,
+	type ElevenPreflightResult,
+} from "./eleven/ElevenCommand.js";
+export {
+	type ElevenEars,
+	ElevenSession,
+	type ElevenSessionOptions,
+	type ElevenSessionState,
+	type ElevenSpeakerLike,
+	type ElevenTiv,
+	type ElevenWsHandlers,
+	type ElevenWsLike,
+} from "./eleven/ElevenSession.js";
+export {
+	type ElevenMetadata,
+	type ElevenOverrides,
+	ElevenWs,
+	type ElevenWsOptions,
+	type WsLike,
+} from "./eleven/ElevenWs.js";
+export {
+	type ElevenRuntime,
+	type WireElevenOptions,
+	wireElevenMode,
+} from "./eleven/wiring.js";
 export { type BinaryProbe, verifyPlaybackStack } from "./preflight.js";
+export {
+	type RoomEarsRuntime,
+	type WireRoomEarsOptions,
+	wireRoomEars,
+} from "./roomEars.js";
 export {
 	type AcquireResult,
 	SessionSlot,
 	type SessionSlotHolder,
 	type SessionSlotOptions,
 } from "./SessionSlot.js";
+export { type RoomFrameCb, VoiceRoomRuntime } from "./VoiceRoomRuntime.js";

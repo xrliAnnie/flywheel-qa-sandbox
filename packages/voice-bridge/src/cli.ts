@@ -22,7 +22,11 @@ import {
 import { BotRegistry } from "./bots/BotRegistry.js";
 import { createDiscordDeps, type DiscordDeps } from "./bots/discordWiring.js";
 import { type HuddleBridgeConfig, loadHuddleBridgeConfig } from "./config.js";
+import { type ElevenModeConfig, loadElevenConfig } from "./eleven/config.js";
+import { type ElevenRuntime, wireElevenMode } from "./eleven/wiring.js";
 import { type BinaryProbe, verifyPlaybackStack } from "./preflight.js";
+import { type RoomEarsRuntime, wireRoomEars } from "./roomEars.js";
+import { VoiceRoomRuntime } from "./VoiceRoomRuntime.js";
 
 export interface VoiceBridgeRuntime {
 	config: HuddleBridgeConfig;
@@ -47,6 +51,16 @@ export interface RunVoiceBridgeOptions {
 		stateDir?: string;
 		env?: NodeJS.ProcessEnv;
 	};
+	/** FLY-1006: /eleven sub-block; undefined = load from projects.json,
+	 * null = explicitly off (byte-compat with the pre-eleven daemon). */
+	eleven?: ElevenModeConfig | null;
+	/** FLY-1006 test seam: forwarded to wireElevenMode. */
+	elevenWiring?: {
+		connectWs?: Parameters<typeof wireElevenMode>[0]["connectWs"];
+		fetchImpl?: typeof fetch;
+		stateDir?: string;
+		env?: NodeJS.ProcessEnv;
+	};
 }
 
 const NOTE_TAKER = "note-taker";
@@ -60,6 +74,7 @@ export async function runVoiceBridge(
 	const config = opts.config ?? loadHuddleBridgeConfig();
 	const assistant =
 		opts.assistant !== undefined ? opts.assistant : loadAssistantConfig();
+	const eleven = opts.eleven !== undefined ? opts.eleven : loadElevenConfig();
 
 	// playback stack dies here, not after a bot already joined the VC.
 	await verifyPlaybackStack(config.ffmpegBin, opts.probe);
@@ -96,6 +111,8 @@ export async function runVoiceBridge(
 		earsJoined: false,
 		/** FLY-967: the registered assistant command name (null = mode off). */
 		assistant: null as string | null,
+		/** FLY-1006: the registered /eleven command name (null = mode off). */
+		eleven: null as string | null,
 		// scripts/lib/bridge-port.sh classifies health JSON WITHOUT a
 		// shuttingDown field as "legacy" and reclaims (kills) the instance —
 		// omitting it would make every duplicate launchd start kill a healthy
@@ -115,6 +132,7 @@ export async function runVoiceBridge(
 					bots: state.bots,
 					earsJoined: state.earsJoined,
 					assistant: state.assistant,
+					eleven: state.eleven,
 				}),
 			);
 			return;
@@ -129,6 +147,8 @@ export async function runVoiceBridge(
 	log(`health endpoint on 127.0.0.1:${config.healthPort}/health`);
 
 	let assistantRuntime: AssistantRuntime | undefined;
+	let elevenRuntime: ElevenRuntime | undefined;
+	let roomEars: RoomEarsRuntime | undefined;
 	try {
 		const bots = [
 			{ id: ORCHESTRATOR, token: config.orchestratorToken },
@@ -153,21 +173,52 @@ export async function runVoiceBridge(
 		state.earsJoined = true;
 		log(`Note-taker resident in VC ${config.voiceChannelId}`);
 
-		// FLY-967: /gemini assistant mode — only when the config opts in.
-		if (assistant) {
-			assistantRuntime = await wireAssistantMode({
-				config,
-				assistant,
-				registry,
+		// FLY-1006 S5b: ONE shared room runtime (slot + resident-ears routing)
+		// for every voice mode — /gemini and /eleven contend for the SAME slot
+		// and consume the SAME physical receiver.
+		if (assistant || eleven) {
+			const room = new VoiceRoomRuntime();
+			roomEars = wireRoomEars({
+				room,
 				deps,
 				earsConnection,
+				earsClient: registry.client(NOTE_TAKER),
+				guildId: config.guildId,
+				allowUserIds: config.allowUserIds,
+				backchannelMs: config.backchannelMs,
+				bargeInHoldoffMs: config.bargeInHoldoffMs,
 				log,
-				...opts.assistantWiring,
 			});
-			state.assistant = assistantRuntime.commandName;
-		} else {
-			log("assistant mode off (no huddle.assistant block)");
+			// FLY-967: /gemini assistant mode — only when the config opts in.
+			if (assistant) {
+				assistantRuntime = await wireAssistantMode({
+					config,
+					assistant,
+					registry,
+					deps,
+					earsConnection,
+					room,
+					log,
+					...opts.assistantWiring,
+				});
+				state.assistant = assistantRuntime.commandName;
+			}
+			// FLY-1006: /eleven mode — only when the config opts in.
+			if (eleven) {
+				elevenRuntime = await wireElevenMode({
+					config,
+					eleven,
+					registry,
+					deps,
+					room,
+					log,
+					...opts.elevenWiring,
+				});
+				state.eleven = elevenRuntime.commandName;
+			}
 		}
+		if (!assistant) log("assistant mode off (no huddle.assistant block)");
+		if (!eleven) log("eleven mode off (no huddle.eleven block)");
 	} catch (err) {
 		await new Promise<void>((resolve) => health.close(() => resolve()));
 		await registry.destroyAll();
@@ -183,6 +234,8 @@ export async function runVoiceBridge(
 		await Promise.race([
 			(async () => {
 				await assistantRuntime?.close();
+				await elevenRuntime?.close();
+				roomEars?.dispose();
 				await registry.destroyAll();
 				await new Promise<void>((resolve) => health.close(() => resolve()));
 			})(),

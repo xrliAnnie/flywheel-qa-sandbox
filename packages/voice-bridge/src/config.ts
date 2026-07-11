@@ -39,6 +39,9 @@ export interface HuddleBridgeConfig {
 	leads: HuddleBridgeLead[];
 	/** sustained-speech threshold for barge-in (PRD §15). */
 	backchannelMs: number;
+	/** continuous-silence duration ending an utterance — one barge-in per
+	 * utterance (QA FLY-1006 R3 ①). */
+	bargeInHoldoffMs: number;
 	/** QA test-injection: non-human user ids the Note-taker may subscribe. */
 	allowUserIds: string[];
 	healthPort: number;
@@ -48,6 +51,7 @@ export interface HuddleBridgeConfig {
 
 const DEFAULT_COMMAND = "meet";
 const DEFAULT_BACKCHANNEL_MS = 350;
+const DEFAULT_BARGE_HOLDOFF_MS = 1000;
 const DEFAULT_HEALTH_PORT = 9878;
 
 export function loadHuddleBridgeConfig(
@@ -185,6 +189,11 @@ export function resolveHuddleBridgeConfig(
 			env,
 			"FLYWHEEL_HUDDLE_BACKCHANNEL_MS",
 			DEFAULT_BACKCHANNEL_MS,
+		),
+		bargeInHoldoffMs: numericEnv(
+			env,
+			"FLYWHEEL_HUDDLE_BARGE_HOLDOFF_MS",
+			DEFAULT_BARGE_HOLDOFF_MS,
 		),
 		allowUserIds: (env.FLYWHEEL_HUDDLE_ALLOW_USER_IDS ?? "")
 			.split(",")
