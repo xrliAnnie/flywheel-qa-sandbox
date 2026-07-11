@@ -15,11 +15,15 @@
 // with the alert really landing in Discord. This harness produces exactly that
 // evidence (StateStore side-effects + a Discord re-fetch of the test channel).
 //
-// Scenarios (research §2.8 injection matrix):
-//  ① swap_pressure_high  — real readSwapUsage seam (FLYWHEEL_SWAP_SENSOR_CMD)
-//     feeds a >HIGH reading → 2-tick trigger → pressure-hold placed in StateStore
-//     → RunnerAdmission really defers with reason=pressure_hold → watermark drops
-//     below LOW → hold lifted → admission admits again + quiet resolve.
+// Scenarios (research §2.8 injection matrix; ① reworked by FLY-1142):
+//  ① swap_pressure_high  — real readMemoryPressure seam (FLYWHEEL_SWAP_SENSOR_CMD,
+//     now vm_stat-shaped) feeds low-free% readings → 2-tick trigger →
+//     pressure-hold placed in StateStore → RunnerAdmission really defers with
+//     reason=pressure_hold → free% recovers with Swapouts static → hold lifted
+//     → admission admits again + quiet resolve. Plus the FLY-1142 scar
+//     scenario: a stranded durable hold + huge-but-static Swapouts lifts on the
+//     SECOND healthy sample (first sample has no delta baseline), and a scarred
+//     swap watermark alone never re-arms the sensor.
 //  ② tmux_server_lost    — a REAL isolated tmux server (tmux -L …) is started then
 //     kill-server'd; the coordinator's real probe reads "no server" → ONE episode,
 //     every StateStore session migrated to `failed`, one grouped per-Lead notify,
@@ -141,7 +145,7 @@ const serverLossHolder = { current: null };
 
 // injectable seams captured per-scenario
 const seams = {
-	swapReading: null, // string sysctl-shaped output
+	swapReading: null, // string vm_stat-shaped output (FLY-1142)
 	botProbes: [], // InfraBotProbe[]
 	kickstartCalls: [], // recorded jobLabels
 	kickstartResult: { ok: true },
@@ -153,6 +157,26 @@ writeFileSync(join(tmp, "swap.txt"), ""); // seam file for FLYWHEEL_SWAP_SENSOR_
 const swapCmd = `cat ${join(tmp, "swap.txt")}`;
 process.env.FLYWHEEL_SWAP_SENSOR_CMD = swapCmd;
 const setSwap = (out) => writeFileSync(join(tmp, "swap.txt"), out);
+// FLY-1142: the seam now carries vm_stat output (real pressure signals), not
+// the old monotonic sysctl swap watermark. Fixture builder: 1M visible pages,
+// free% goes entirely through Pages free; Swapouts is the cumulative counter.
+const vmStatOut = (freePct, swapouts) => {
+	const total = 1_000_000;
+	const free = Math.round((freePct / 100) * total);
+	return [
+		"Mach Virtual Memory Statistics: (page size of 16384 bytes)",
+		`Pages free:                    ${free}.`,
+		`Pages active:                  ${total - free}.`,
+		"Pages inactive:                0.",
+		"Pages speculative:             0.",
+		"Pages throttled:               0.",
+		"Pages wired down:              0.",
+		"Pages occupied by compressor:  0.",
+		"Swapins:                       0.",
+		`Swapouts:                      ${swapouts}.`,
+		"",
+	].join("\n");
+};
 
 const runbookCreated = [];
 const hub = new AlertChannelHub({
@@ -250,7 +274,7 @@ const admission = RunnerAdmissionController.alwaysAdmit();
 admission.setPressureHoldProbe(() => {
 	const hold = store.getFleetPressureHold();
 	return hold
-		? `fleet pressure-hold active since ${hold.set_at} (by ${hold.set_by}, swap ${hold.watermark ?? "?"})`
+		? `fleet pressure-hold active since ${hold.set_at} (by ${hold.set_by}, memory ${hold.watermark ?? "?"})`
 		: null;
 });
 
@@ -285,15 +309,16 @@ console.log(`temp: ${tmp}`);
 	ok("⑥ the shipped contract table validates clean", clean);
 }
 
-// ── ① swap_pressure_high — real watermark seam → hold → admission → resolve ──
+// ── ① swap_pressure_high — real pressure seam → hold → admission → resolve ──
 {
 	// admission admits BEFORE the fault
 	ok(
 		"① admission admits before the fault (baseline)",
 		admission.tryAdmit().admit === true,
 	);
-	// >HIGH reading (default 80%): 15000/16384 ≈ 91.6% — feed 2 ticks (2-tick confirm)
-	setSwap("vm.swapusage: total = 16384.00M  used = 15000.00M  free = 1384.00M");
+	// Real danger: free% collapses below LOW (default 8%) — feed 2 ticks
+	// (2-tick confirm). Swapouts static so the free-low branch alone triggers.
+	setSwap(vmStatOut(5, 1_000_000));
 	await fleetHolder.current.tick(); // tick 1 — arms
 	const holdAfter1 = store.getFleetPressureHold();
 	await fleetHolder.current.tick(); // tick 2 — triggers → routed alert → hub → ARC
@@ -324,11 +349,12 @@ console.log(`temp: ${tmp}`);
 			.length >= 2,
 		`notified=${seams.notifiedLeads.length}`,
 	);
-	// recovery: watermark drops below LOW (65%): 10000/16384 ≈ 61%
-	setSwap("vm.swapusage: total = 16384.00M  used = 10000.00M  free = 6384.00M");
+	// recovery: free% back to healthy (≥ HIGH 15%) with Swapouts STATIC →
+	// delta 0 → proven healthy → immediate clear (Tadashi's "不许假绿" bar).
+	setSwap(vmStatOut(45, 1_000_000));
 	await fleetHolder.current.tick(); // clear → liftSensorHold + hub.resolve
 	const holdGone = store.getFleetPressureHold();
-	ok("① watermark below LOW → hold LIFTED (reversible)", !holdGone);
+	ok("① real pressure gone → hold LIFTED (reversible)", !holdGone);
 	ok(
 		"① admission ADMITS again once the hold lifts",
 		admission.tryAdmit().admit === true,
@@ -338,6 +364,99 @@ console.log(`temp: ${tmp}`);
 		"① swap ticket quiet-resolved on recovery",
 		!resolved || resolved.resolved_at != null,
 		`row=${resolved ? resolved.ticket_status : "gone"}`,
+	);
+}
+
+// ── ①′ FLY-1142 scar — stranded hold + monotonic Swapouts scar never wedges ──
+{
+	// Yesterday's OOM left a durable swap-sensor hold + a huge cumulative
+	// Swapouts total; the Bridge restarted (fresh sensor instance). The machine
+	// is healthy NOW (free% high, zero new swapout) — the hold must lift on the
+	// SECOND sample (first sample has no delta baseline → health unproven), and
+	// the scar alone must never open a new episode.
+	store.setFleetPressureHold({ setBy: "swap-sensor", watermark: "94.0%" });
+	const preScarAlerts = seams.notifiedLeads.length;
+	const scarSensors = new FleetSensors({
+		store,
+		alert: (p) => routedAlertSink.alert({ ...p, title: `${p.title} ${MARK}` }),
+		resolveTicket: (ck) => hub.resolve(ck),
+		notifyLead,
+		listLeadIds: () => projects[0].leads.map((l) => l.agentId),
+		env: process.env,
+		logger: () => {},
+	});
+	setSwap(vmStatOut(45, 15_351_310)); // scar: huge but STATIC Swapouts
+	await scarSensors.tick(); // sample 1 — delta unknown, no lift
+	const heldAfter1 = store.getFleetPressureHold();
+	await scarSensors.tick(); // sample 2 — delta 0 + free healthy → PROVEN → lift
+	const heldAfter2 = store.getFleetPressureHold();
+	ok(
+		"①′ stranded hold NOT lifted on the 1st post-restart sample (no delta evidence)",
+		!!heldAfter1,
+	);
+	ok(
+		"①′ stranded hold LIFTED on the 2nd static sample (health proven)",
+		!heldAfter2,
+	);
+	ok(
+		"①′ the swap-watermark scar alone never re-arms the sensor (no new ticket)",
+		!activeRow("swap", "swap_pressure_high") ||
+			activeRow("swap", "swap_pressure_high")?.resolved_at != null,
+	);
+	ok(
+		"①′ no load-shed broadcast during the scar scenario",
+		seams.notifiedLeads.length === preScarAlerts,
+	);
+	ok(
+		"①′ admission admits with the scar present",
+		admission.tryAdmit().admit === true,
+	);
+}
+
+// ── ①″ FLY-1142 swapout branch — sustained thrash triggers even with free% healthy ──
+{
+	// The OTHER trigger dimension: the machine is actively swapping out (the
+	// Swapouts counter climbs every tick) while free% still LOOKS fine.
+	// A FRESH sensor instance (no Swapouts baseline — Codex code R1 LOW), so
+	// the sequence is genuinely: baseline sample (delta unknown, never counts)
+	// + 2 increasing samples = 3 samples to hold. Recovery: counter goes
+	// static → delta 0 → immediate clear. The ARC hold repair still runs via
+	// fleetHolder.current (the hub wiring), sharing the same durable store.
+	const swapoutSensors = new FleetSensors({
+		store,
+		alert: (p) => routedAlertSink.alert({ ...p, title: `${p.title} ${MARK}` }),
+		resolveTicket: (ck) => hub.resolve(ck),
+		notifyLead,
+		listLeadIds: () => projects[0].leads.map((l) => l.agentId),
+		env: process.env,
+		logger: () => {},
+	});
+	setSwap(vmStatOut(45, 1_000_000));
+	await swapoutSensors.tick(); // baseline — delta unknown (fresh instance)
+	setSwap(vmStatOut(45, 1_400_000));
+	await swapoutSensors.tick(); // delta 400k — danger 1
+	const holdMid = store.getFleetPressureHold();
+	setSwap(vmStatOut(45, 1_800_000));
+	await swapoutSensors.tick(); // delta 400k — danger 2 → trigger → ARC hold
+	const holdSw = store.getFleetPressureHold();
+	ok(
+		"①″ sustained swapout (healthy free%) → hold after baseline + 2 delta ticks",
+		!holdMid && holdSw?.set_by === "swap-sensor",
+		`set_by=${holdSw?.set_by}`,
+	);
+	ok(
+		"①″ admission defers during the swapout episode",
+		admission.tryAdmit().admit === false,
+	);
+	setSwap(vmStatOut(45, 1_800_000)); // counter static → delta 0 → healthy
+	await swapoutSensors.tick(); // clear
+	ok(
+		"①″ swapout stops (counter static) → hold lifted immediately",
+		!store.getFleetPressureHold(),
+	);
+	ok(
+		"①″ admission admits again after the swapout episode clears",
+		admission.tryAdmit().admit === true,
 	);
 }
 

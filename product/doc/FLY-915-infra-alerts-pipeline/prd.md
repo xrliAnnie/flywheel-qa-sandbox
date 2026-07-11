@@ -77,7 +77,7 @@ flowchart TD
 | runner 卡死 / 超时 | 超阈值无进展 | continue nudge / respawn | @Annie |
 | **529 瞬时(runner 真停)** | runner 因 529 真停 | 等待/重试/切账号(ARC) | 解不了才 @Annie |
 | three_stage_stuck / founder 通知投递失败 | 现有检测 | 现有处理 | @Annie |
-| **swap 水位越高阈(OOM 预警)**(FLY-1082) | swap 用量 ≥80%(滞回 65%,连续 2 tick 确认) | 置可逆 pressure-hold 暂停派新 runner + 通知各 Lead 降载;水位回落自动解除+安静 resolve | 30 分钟不回落 @Annie |
+| **内存压力越危险阈(OOM 预警)**(FLY-1082,FLY-1142 改真实压力信号) | free% < 8 或 swapout-delta 持续 >0(vm_stat 实测,连续 2 tick 确认;弃用只涨不缩的 swap 水位) | 置可逆 pressure-hold 暂停派新 runner + 通知各 Lead 降载;真实压力被证明健康(free% ≥15 且 swapout 归零)自动解除+安静 resolve | 30 分钟不恢复 @Annie |
 | **tmux server 整个消失**(FLY-1082) | server 死/重启且 StateStore 仍有 running runner | 成组标记终态(一个 episode,不是 13 条单独告警)+ 按 Lead 分组通知(各自阵亡清单+resume 指针);respawn 由 Lead 驱动 | 通知投递失败 @Annie |
 | **Bridge 非正常退出**(FLY-1082) | dirty-exit marker(上一代没走 clean shutdown) | wrapper 直发 page(Bridge-independent 快路径)+ 复活后 boot 工单对账 → 安静 resolve;launchd respawn 即修复 | crash-loop(10 分钟 ≥3 次)@Annie;「一直没起来」由进程外心跳探针直接 @Annie |
 | **infra bot 掉线**(FLY-1082) | launchd job 死 / pane 消失 | launchd job 原地重启(幂等可逆) | 2 次失败 @Annie |
@@ -166,7 +166,7 @@ flowchart TD
 | runner 卡死/超时 | 超阈无进展 | **Claude bot**(provider 无关,默认) | continue nudge / respawn | @Annie |
 | 529 runner 真停 | runner 因 529 真停 | **Claude bot**(provider 无关,默认) | 等/重试/切 | @Annie |
 | three_stage_stuck / founder 通知投递失败 | 现有检测 | **Claude bot(默认)** | 现有处理 | @Annie |
-| swap 水位越高阈(OOM 预警) | ≥80% 滞回+2 tick 确认 | **Claude bot(fleet 级默认)** | pressure-hold + Lead 降载通知;回落自动解除 | 30 分钟不回落 @Annie |
+| 内存压力越危险阈(OOM 预警) | free%/swapout-delta 滞回+2 tick 确认(FLY-1142) | **Claude bot(fleet 级默认)** | pressure-hold + Lead 降载通知;真实压力健康自动解除 | 30 分钟不恢复 @Annie |
 | tmux server 整个消失 | server 死且仍有 running runner | **Claude bot(fleet 级默认)** | 成组终态迁移 + 按 Lead 分组通知(respawn 归 Lead) | 通知投递失败 @Annie |
 | Bridge 非正常退出 | dirty-exit marker | **Claude bot(fleet 级默认)** | launchd respawn + boot 对账自检 → 安静 resolve | crash-loop / 没活过来(外部心跳)@Annie |
 | infra bot 掉线 | launchd job 死/pane 消失 | **对侧 bot**(交叉:死 Claude bot @ Codex、死 Codex bot @ Claude) | launchd job 原地重启 | 2 次失败 @Annie |

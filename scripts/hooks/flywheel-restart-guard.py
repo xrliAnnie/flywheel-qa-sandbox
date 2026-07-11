@@ -113,6 +113,8 @@ DENY_REASON = (
     "正确做法:\n"
     "  • 重启/部署 Bridge 或 Lead:bash ~/Dev/flywheel/scripts/restart-services.sh"
     "(--force 跳过 idle-wait;--dry-run 预览)\n"
+    "  • 纯 env 改动(无代码 delta)要重启 Bridge:"
+    "bash ~/Dev/flywheel/scripts/restart-services.sh --bridge-only(FLY-1142)\n"
     "  • self-ship:走既有 ship flow(flywheel-land / :cool: 部署),不要手动 kickstart。\n"
     "  • 若 restart-services.sh 本身故障:报告 Lead/founder,由人工在裸终端处理。"
 )

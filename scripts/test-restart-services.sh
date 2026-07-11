@@ -1333,6 +1333,178 @@ fi
 BRIDGE_URL="http://localhost:9876"
 
 # ════════════════════════════════════════════════════════════════
+# FLY-1142: --bridge-only — REAL top-level execution order, hermetic.
+# The actual restart-services.sh runs end-to-end against a fake HOME
+# (fake git repo at $HOME/Dev/flywheel, PATH shims recording every
+# launchctl/pnpm invocation in $HOME/.local/bin — the FIRST dir the
+# script prepends, so shims always win). Asserts the sanctioned
+# env-reload path: Bridge bounced, zero build, zero Lead calls, both
+# SHA stores untouched, no deploy notifications, dry-run exits before
+# side effects, and no `set -u` unbound-variable death in the guarded
+# regions --bridge-only skips.
+# ════════════════════════════════════════════════════════════════
+echo "Test: FLY-1142 --bridge-only top-level order (hermetic)"
+
+REAL_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+BO_HOME="$TMPDIR_ROOT/bridge-only-home"
+BO_FLYWHEEL="$BO_HOME/Dev/flywheel"
+BO_SHIMS="$BO_HOME/.local/bin"
+BO_CALLS="$TMPDIR_ROOT/bridge-only-calls"
+mkdir -p "$BO_FLYWHEEL/scripts/lib" "$BO_HOME/.flywheel" "$BO_SHIMS" "$BO_CALLS"
+cp "$REAL_REPO_ROOT/scripts/restart-services.sh" "$BO_FLYWHEEL/scripts/"
+cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/restart-candidate.sh" "$BO_FLYWHEEL/scripts/lib/"
+git -C "$BO_FLYWHEEL" init -q
+git -C "$BO_FLYWHEEL" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+BO_HEAD_1=$(git -C "$BO_FLYWHEEL" rev-parse HEAD)
+
+cat > "$BO_SHIMS/launchctl" <<EOF
+#!/bin/bash
+echo "\$*" >> "$BO_CALLS/launchctl.calls"
+exit 0
+EOF
+cat > "$BO_SHIMS/pnpm" <<EOF
+#!/bin/bash
+echo "\$*" >> "$BO_CALLS/pnpm.calls"
+exit 0
+EOF
+cat > "$BO_SHIMS/curl" <<EOF
+#!/bin/bash
+echo "\$*" >> "$BO_CALLS/curl.calls"
+echo '{"ok":true,"sessions_count":0}'
+EOF
+cat > "$BO_SHIMS/lsof" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+chmod +x "$BO_SHIMS"/*
+
+bo_run() {
+    rm -f "$BO_CALLS"/*.calls
+    HOME="$BO_HOME" PATH="$BO_SHIMS:$PATH" \
+        CLAUDE_INFRA_BOT_TOKEN="" FLYWHEEL_NOTIFY_CHANNEL="" \
+        FLYWHEEL_FOUNDER_USER_ID="" \
+        bash "$BO_FLYWHEEL/scripts/restart-services.sh" "$@" 2>&1
+}
+bo_calls() { cat "$BO_CALLS/$1.calls" 2>/dev/null || true; }
+
+# ── 1) SHA match + nothing pending → "Already deployed", zero service calls ──
+echo "$BO_HEAD_1" > "$BO_HOME/.flywheel/deployed-sha"
+out=$(bo_run) && rc=0 || rc=$?
+if (( rc == 0 )) && echo "$out" | grep -q "Already deployed" \
+   && [[ -z "$(bo_calls launchctl)" && -z "$(bo_calls pnpm)" ]]; then
+    pass "FLY-1142 order: SHA match exits early, no service calls"
+else
+    fail "FLY-1142 order: SHA match — rc=$rc launchctl='$(bo_calls launchctl)' out tail: $(echo "$out" | tail -2)"
+fi
+
+# ── 2) SHA mismatch, doc-only diff → deployed-sha advances, no restart ──
+echo "new doc" > "$BO_FLYWHEEL/README.md"
+git -C "$BO_FLYWHEEL" add README.md
+git -C "$BO_FLYWHEEL" -c user.email=t@t -c user.name=t commit -q -m "docs: readme"
+BO_HEAD_2=$(git -C "$BO_FLYWHEEL" rev-parse HEAD)
+out=$(bo_run) && rc=0 || rc=$?
+if (( rc == 0 )) && echo "$out" | grep -q "No services affected" \
+   && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "$BO_HEAD_2" ]] \
+   && [[ -z "$(bo_calls launchctl)" ]]; then
+    pass "FLY-1142 order: doc-only mismatch advances SHA without restarting"
+else
+    fail "FLY-1142 order: doc-only mismatch — rc=$rc sha=$(cat "$BO_HOME/.flywheel/deployed-sha") out tail: $(echo "$out" | tail -2)"
+fi
+
+# ── 3) plugin-restart-pending marker + SHA match → dry-run reports Lead path ──
+echo "failed=1" > "$BO_HOME/.flywheel/plugin-restart-pending"
+out=$(bo_run --dry-run) && rc=0 || rc=$?
+if (( rc == 0 )) && echo "$out" | grep -q "DRY RUN: Would restart Leads" \
+   && [[ -f "$BO_HOME/.flywheel/plugin-restart-pending" ]]; then
+    pass "FLY-1142 order: pending marker + SHA match reports Lead-only dry-run"
+else
+    fail "FLY-1142 order: pending marker dry-run — rc=$rc out tail: $(echo "$out" | tail -2)"
+fi
+rm -f "$BO_HOME/.flywheel/plugin-restart-pending"
+
+# ── 4) --bridge-only --dry-run → exits BEFORE any service side effect ──
+echo "stale-sha-must-not-change" > "$BO_HOME/.flywheel/deployed-sha"
+out=$(bo_run --bridge-only --dry-run) && rc=0 || rc=$?
+if (( rc == 0 )) && echo "$out" | grep -q "DRY RUN: Would restart ONLY the Bridge" \
+   && [[ -z "$(bo_calls launchctl)" && -z "$(bo_calls pnpm)" && -z "$(bo_calls curl)" ]] \
+   && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "stale-sha-must-not-change" ]]; then
+    pass "FLY-1142 --bridge-only --dry-run: plan only, zero side effects"
+else
+    fail "FLY-1142 --bridge-only --dry-run: rc=$rc launchctl='$(bo_calls launchctl)' out tail: $(echo "$out" | tail -2)"
+fi
+
+# ── 5) --bridge-only real run: Bridge bounced, nothing else touched ──
+# deployed-sha is deliberately STALE garbage: bridge-only must neither read-gate
+# on it ("already deployed" early exit) nor write it. The plugin marker must
+# survive too (bridge-only never clears it). set -u would die in the skipped
+# guard regions if the flag defaults were missing — exit 0 proves it doesn't.
+echo "failed=1" > "$BO_HOME/.flywheel/plugin-restart-pending"
+mkdir -p "$BO_HOME/.flywheel/project-deployed-sha"
+echo "proj-sha-frozen" > "$BO_HOME/.flywheel/project-deployed-sha/someproj"
+out=$(bo_run --bridge-only) && rc=0 || rc=$?
+bo_ok=true
+(( rc == 0 )) || bo_ok=false
+echo "$out" | grep -q "Done (bridge-only)" || bo_ok=false
+echo "$out" | grep -q "unbound variable" && bo_ok=false
+# Bridge WAS bounced: start_bridge kickstarted the launchd job.
+bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.bridge" || bo_ok=false
+# ...and ONLY the Bridge: no Lead daemon ever touched.
+bo_calls launchctl | grep -q "com.flywheel.lead" && bo_ok=false
+# No build, no deploy/discord notifications.
+[[ -z "$(bo_calls pnpm)" ]] || bo_ok=false
+bo_calls curl | grep -q "discord.com" && bo_ok=false
+# Health check DID run against the Bridge.
+bo_calls curl | grep -q "/health" || bo_ok=false
+# Both SHA stores byte-identical; plugin marker intact.
+[[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "stale-sha-must-not-change" ]] || bo_ok=false
+[[ "$(cat "$BO_HOME/.flywheel/project-deployed-sha/someproj")" == "proj-sha-frozen" ]] || bo_ok=false
+[[ -f "$BO_HOME/.flywheel/plugin-restart-pending" ]] || bo_ok=false
+if [[ "$bo_ok" == "true" ]]; then
+    pass "FLY-1142 --bridge-only: Bridge bounced; build=0 leads=0 SHAs frozen marker intact no notify"
+else
+    fail "FLY-1142 --bridge-only: rc=$rc launchctl='$(bo_calls launchctl)' pnpm='$(bo_calls pnpm)' sha=$(cat "$BO_HOME/.flywheel/deployed-sha") out tail: $(echo "$out" | tail -3)"
+fi
+rm -f "$BO_HOME/.flywheel/plugin-restart-pending"
+
+# ── 6) --bridge-only with a BUSY first idle-poll → waits QUIETLY ──
+# FLY-1142 (Codex code R1 MEDIUM-1): wait_for_idle's busy-progress notice
+# rode notify_routine — a Discord post — violating the "no deploy
+# notifications" contract. The stateful curl shim reports 3 active sessions
+# on the FIRST /health poll and 0 afterwards, so the run exercises the busy
+# branch (one 30s poll interval) and must log locally instead of notifying.
+echo "Test: FLY-1142 --bridge-only busy idle-wait stays quiet (~35s)"
+cat > "$BO_SHIMS/curl" <<EOF
+#!/bin/bash
+echo "\$*" >> "$BO_CALLS/curl.calls"
+n=\$(cat "$BO_CALLS/health.n" 2>/dev/null || echo 0)
+n=\$((n + 1)); echo "\$n" > "$BO_CALLS/health.n"
+if (( n <= 1 )); then
+    echo '{"ok":true,"sessions_count":3}'
+else
+    echo '{"ok":true,"sessions_count":0}'
+fi
+EOF
+chmod +x "$BO_SHIMS/curl"
+rm -f "$BO_CALLS/health.n"
+out=$(bo_run --bridge-only) && rc=0 || rc=$?
+bo_ok=true
+(( rc == 0 )) || bo_ok=false
+echo "$out" | grep -q "Done (bridge-only)" || bo_ok=false
+# The busy branch REALLY ran, and quietly (local log line, not a notice):
+echo "$out" | grep -q "waiting for 3 active session(s) to idle" || bo_ok=false
+# notify_routine was never invoked: neither its unconfigured-drop trace nor
+# the Discord notice text may appear.
+echo "$out" | grep -q "dropped notice" && bo_ok=false
+echo "$out" | grep -q "等待 3 个 active session" && bo_ok=false
+bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.bridge" || bo_ok=false
+if [[ "$bo_ok" == "true" ]]; then
+    pass "FLY-1142 --bridge-only: busy idle-wait logs locally, zero routine notices"
+else
+    fail "FLY-1142 --bridge-only busy wait: rc=$rc out tail: $(echo "$out" | tail -4)"
+fi
+
+# ════════════════════════════════════════════════════════════════
 # Summary
 # ════════════════════════════════════════════════════════════════
 echo ""

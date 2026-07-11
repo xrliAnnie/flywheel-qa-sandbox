@@ -1,8 +1,9 @@
 /**
- * FLY-1082 (Tasks 2.2/2.5/2.6): the fleet sensor pack — swap episode
- * lifecycle (trigger → hold → clear → resolve), idempotent repair, bot-down
- * latch + kickstart, throttled zombie scan with batch-signature dedup, and
- * the Hub recovery probe.
+ * FLY-1082 (Tasks 2.2/2.5/2.6) + FLY-1142: the fleet sensor pack — memory
+ * pressure episode lifecycle (trigger → hold → clear → resolve) on REAL
+ * pressure signals (free% / swapout-delta, three-state health), idempotent
+ * repair, bot-down latch + kickstart, throttled zombie scan with
+ * batch-signature dedup, and the Hub recovery probe.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AlertPayload, AlertResult } from "../../LeadAlertNotifier.js";
@@ -13,13 +14,13 @@ import {
 	fleetCorrelationKey,
 	type InfraBotProbe,
 } from "../fleet-sensors.js";
-import type { SwapUsage } from "../machine-watermark.js";
+import type { MemoryPressure } from "../machine-watermark.js";
 import type { ZombieFinding } from "../zombie-scan.js";
 
-const usage = (pct: number): SwapUsage => ({
-	totalBytes: 100,
-	usedBytes: pct,
-	usedPct: pct,
+const pressure = (freePct: number, swapouts: number): MemoryPressure => ({
+	freePct,
+	swapoutsTotal: swapouts,
+	pageSize: 16384,
 });
 
 function fleetRow(over: Partial<AlertThreadRow>): AlertThreadRow {
@@ -46,12 +47,12 @@ function fleetRow(over: Partial<AlertThreadRow>): AlertThreadRow {
 	} as AlertThreadRow;
 }
 
-describe("FleetSensors — swap (Task 2.2)", () => {
+describe("FleetSensors — memory pressure (Task 2.2 / FLY-1142)", () => {
 	let store: StateStore;
 	let alerts: AlertPayload[];
 	let resolved: string[];
 	let notified: Array<{ leadId: string; content: string }>;
-	let swapReading: SwapUsage | null;
+	let reading: MemoryPressure | null;
 	let now: number;
 
 	beforeEach(async () => {
@@ -59,7 +60,7 @@ describe("FleetSensors — swap (Task 2.2)", () => {
 		alerts = [];
 		resolved = [];
 		notified = [];
-		swapReading = null;
+		reading = null;
 		now = 1_720_000_000_000;
 	});
 
@@ -78,34 +79,56 @@ describe("FleetSensors — swap (Task 2.2)", () => {
 				return true;
 			},
 			listLeadIds: () => ["tadashi", "honey-lemon", "peter"],
-			readSwap: async () => swapReading,
+			readPressure: async () => reading,
 			env: env as unknown as NodeJS.ProcessEnv,
 			now: () => now,
 			logger: () => {},
 		});
 	}
 
-	it("2 consecutive high ticks → ONE severe ticket; episode never re-fires", async () => {
+	it("2 consecutive low-free ticks → ONE severe ticket; episode never re-fires", async () => {
 		const sensors = makeSensors();
-		swapReading = usage(85);
+		reading = pressure(5, 1000);
 		await sensors.tick();
-		expect(alerts).toHaveLength(0); // 1st high tick — confirmation pending
+		expect(alerts).toHaveLength(0); // 1st danger tick — confirmation pending
 		await sensors.tick();
 		expect(alerts).toHaveLength(1);
 		expect(alerts[0]!.eventType).toBe("swap_pressure_high");
 		expect(alerts[0]!.severity).toBe("severe");
-		await sensors.tick(); // still high — same episode
+		expect(alerts[0]!.body).toContain("free");
+		await sensors.tick(); // still low — same episode
 		expect(alerts).toHaveLength(1);
 	});
 
-	it("clear (below LOW): lifts the sensor's own hold + quiet-resolves the ticket", async () => {
+	it("sustained swapout with healthy free% also triggers (OR): baseline + 2 delta ticks", async () => {
 		const sensors = makeSensors();
-		swapReading = usage(85);
+		reading = pressure(45, 1000);
+		await sensors.tick(); // baseline — delta unknown, no danger
+		reading = pressure(45, 5000);
+		await sensors.tick(); // delta 4000 — danger 1
+		expect(alerts).toHaveLength(0);
+		reading = pressure(45, 9000);
+		await sensors.tick(); // delta 4000 — danger 2 → trigger
+		expect(alerts).toHaveLength(1);
+	});
+
+	it("scar scenario: huge but STATIC Swapouts + healthy free% never alerts", async () => {
+		const sensors = makeSensors();
+		reading = pressure(45, 15_351_310);
+		await sensors.tick();
+		await sensors.tick();
+		await sensors.tick();
+		expect(alerts).toHaveLength(0);
+	});
+
+	it("recovery (free% back + swapout static): lifts the sensor's own hold + quiet-resolves the ticket", async () => {
+		const sensors = makeSensors();
+		reading = pressure(5, 1000);
 		await sensors.tick();
 		await sensors.tick(); // trigger
 		await sensors.swapPressureRepair(alerts[0]!); // places the hold
 		expect(store.getFleetPressureHold()?.set_by).toBe("swap-sensor");
-		swapReading = usage(50);
+		reading = pressure(45, 1000); // free recovered, Swapouts static → delta 0
 		await sensors.tick(); // clear
 		expect(store.getFleetPressureHold()).toBeUndefined();
 		expect(resolved).toContain(
@@ -113,24 +136,37 @@ describe("FleetSensors — swap (Task 2.2)", () => {
 		);
 	});
 
+	it("active swapout blocks the clear even with free% recovered (AND-release)", async () => {
+		const sensors = makeSensors();
+		reading = pressure(5, 1000);
+		await sensors.tick();
+		await sensors.tick(); // trigger
+		await sensors.swapPressureRepair(alerts[0]!);
+		reading = pressure(45, 9000); // free healthy but still thrashing
+		await sensors.tick();
+		expect(store.getFleetPressureHold()).toBeDefined();
+		expect(resolved).toHaveLength(0);
+	});
+
 	it("clear never lifts a hold someone ELSE placed", async () => {
 		const sensors = makeSensors();
 		store.setFleetPressureHold({ setBy: "annie-manual" });
-		swapReading = usage(85);
+		reading = pressure(5, 1000);
 		await sensors.tick();
 		await sensors.tick();
-		swapReading = usage(50);
+		reading = pressure(45, 1000);
 		await sensors.tick();
 		expect(store.getFleetPressureHold()?.set_by).toBe("annie-manual");
 	});
 
 	it("swapPressureRepair: places hold + broadcasts load-shed ONCE; repeat attempt is idempotent", async () => {
 		const sensors = makeSensors();
-		swapReading = usage(90);
+		reading = pressure(5, 1000);
 		await sensors.tick();
 		await sensors.tick();
 		const first = await sensors.swapPressureRepair(alerts[0]!);
 		expect(first.outcome).toBe("attempted");
+		expect(first.detail).toContain("% free");
 		expect(store.getFleetPressureHold()).toBeDefined();
 		expect(notified).toHaveLength(3); // one per Lead
 		const second = await sensors.swapPressureRepair(alerts[0]!);
@@ -141,40 +177,63 @@ describe("FleetSensors — swap (Task 2.2)", () => {
 
 	it("kill switch FLYWHEEL_FLEET_SENSOR_SWAP=0 disables the sensor", async () => {
 		const sensors = makeSensors({ FLYWHEEL_FLEET_SENSOR_SWAP: "0" });
-		swapReading = usage(95);
+		reading = pressure(2, 1000);
 		await sensors.tick();
 		await sensors.tick();
 		expect(alerts).toHaveLength(0);
 	});
 
-	it("recoveryProbe: swap resolves iff the monitor left pressure", async () => {
+	it("recoveryProbe is three-state: null before evidence, false in pressure, true when proven healthy", async () => {
 		const sensors = makeSensors();
-		swapReading = usage(85);
-		await sensors.tick();
-		await sensors.tick(); // in pressure
+		expect(await sensors.recoveryProbe(fleetRow({}))).toBeNull(); // no tick yet
+		reading = pressure(5, 1000);
+		await sensors.tick(); // first sample: delta unknown → still null
+		expect(await sensors.recoveryProbe(fleetRow({}))).toBeNull();
+		await sensors.tick(); // in pressure, delta 0 but free 5 < HIGH → proven not-healthy
 		expect(await sensors.recoveryProbe(fleetRow({}))).toBe(false);
-		swapReading = usage(50);
-		await sensors.tick(); // cleared
+		reading = pressure(45, 1000);
+		await sensors.tick(); // cleared + proven healthy
 		expect(await sensors.recoveryProbe(fleetRow({}))).toBe(true);
 	});
 
-	it("Bridge restart with the watermark already fallen lifts the stranded durable hold (Codex R1 HIGH-1)", async () => {
+	it("restart safety: a stranded durable hold is NOT lifted on the first post-restart sample (delta unknown)", async () => {
 		// Previous generation placed the hold, then the Bridge restarted — the
-		// fresh monitor starts 'normal' and would never emit 'clear'.
-		store.setFleetPressureHold({ setBy: "swap-sensor", watermark: "90%" });
+		// fresh monitor has no Swapouts baseline, so health is UNPROVEN.
+		store.setFleetPressureHold({ setBy: "swap-sensor", watermark: "94.0%" });
 		const sensors = makeSensors(); // fresh monitor = post-restart state
-		swapReading = usage(40); // below LOW
+		reading = pressure(45, 15_000_000); // scarred swap, healthy free%
 		await sensors.tick();
+		expect(store.getFleetPressureHold()).toBeDefined(); // no evidence yet
+		await sensors.tick(); // second static sample: delta 0 → PROVEN healthy
 		expect(store.getFleetPressureHold()).toBeUndefined();
 	});
 
-	it("restart with the watermark STILL high keeps the hold (no premature lift)", async () => {
-		store.setFleetPressureHold({ setBy: "swap-sensor", watermark: "90%" });
+	it("restart with pressure STILL real keeps the hold (and re-triggers a fresh episode)", async () => {
+		store.setFleetPressureHold({ setBy: "swap-sensor", watermark: "94.0%" });
 		const sensors = makeSensors();
-		swapReading = usage(85); // still above LOW/HIGH — first confirm tick
+		reading = pressure(5, 1_000_000); // genuinely low free
 		await sensors.tick();
 		expect(store.getFleetPressureHold()).toBeDefined();
-		swapReading = usage(70); // in the hysteresis band — still not below LOW
+		await sensors.tick(); // 2-tick confirm → fresh episode
+		expect(store.getFleetPressureHold()).toBeDefined();
+		expect(alerts).toHaveLength(1); // re-armed, not lifted
+	});
+
+	it("restart with ONGOING swapout never lifts (second sample has delta > MIN)", async () => {
+		store.setFleetPressureHold({ setBy: "swap-sensor", watermark: "94.0%" });
+		const sensors = makeSensors();
+		reading = pressure(45, 1_000_000);
+		await sensors.tick(); // baseline
+		reading = pressure(45, 1_500_000); // still swapping out
+		await sensors.tick();
+		expect(store.getFleetPressureHold()).toBeDefined();
+	});
+
+	it("probe failure (null reading) never lifts a stranded hold", async () => {
+		store.setFleetPressureHold({ setBy: "swap-sensor", watermark: "94.0%" });
+		const sensors = makeSensors();
+		reading = null;
+		await sensors.tick();
 		await sensors.tick();
 		expect(store.getFleetPressureHold()).toBeDefined();
 	});
@@ -182,9 +241,18 @@ describe("FleetSensors — swap (Task 2.2)", () => {
 	it("a MANUAL hold is never lifted by the restart-safety path", async () => {
 		store.setFleetPressureHold({ setBy: "annie-manual" });
 		const sensors = makeSensors();
-		swapReading = usage(40);
+		reading = pressure(45, 100);
 		await sensors.tick();
+		await sensors.tick(); // proven healthy — still not ours to lift
 		expect(store.getFleetPressureHold()?.set_by).toBe("annie-manual");
+	});
+
+	it("lastWatermark reports free% (rides server-loss notifications)", async () => {
+		const sensors = makeSensors();
+		expect(sensors.lastWatermark).toBeNull();
+		reading = pressure(41.26, 100);
+		await sensors.tick();
+		expect(sensors.lastWatermark).toBe("41.3% free");
 	});
 });
 
@@ -213,7 +281,7 @@ describe("FleetSensors — infra bot (Task 2.5)", () => {
 			resolveTicket: async (ck) => {
 				resolved.push(ck);
 			},
-			readSwap: async () => null,
+			readPressure: async () => null,
 			probeBots: async () => probes,
 			kickstart: kick ?? (async () => ({ ok: true })),
 			env: {} as NodeJS.ProcessEnv,
@@ -328,7 +396,7 @@ describe("FleetSensors — infra bot (Task 2.5)", () => {
 		const sensors = new FleetSensors({
 			store,
 			alert: async () => ({ sent: true }),
-			readSwap: async () => null,
+			readPressure: async () => null,
 			kickstart: async (label) => {
 				kicked.push(label);
 				return { ok: true };
@@ -396,7 +464,7 @@ describe("FleetSensors — zombie scan (Task 2.6)", () => {
 				alerts.push(p);
 				return { sent: true };
 			},
-			readSwap: async () => null,
+			readPressure: async () => null,
 			scanZombies: async () => findings,
 			env: env as unknown as NodeJS.ProcessEnv,
 			now: () => now,
@@ -431,7 +499,7 @@ describe("FleetSensors — zombie scan (Task 2.6)", () => {
 		const throttled = new FleetSensors({
 			store,
 			alert: async () => ({ sent: true }),
-			readSwap: async () => null,
+			readPressure: async () => null,
 			scanZombies: scan,
 			env: {} as NodeJS.ProcessEnv,
 			now: () => now,

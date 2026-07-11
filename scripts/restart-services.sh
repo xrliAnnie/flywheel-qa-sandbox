@@ -2,9 +2,14 @@
 # FLY-20: Auto-restart Bridge + Lead after merge.
 # Core restart script: diff analysis → idle wait → build → restart → health check → notify.
 #
-# Usage: restart-services.sh [--force] [--dry-run]
-#   --force:   skip idle wait
-#   --dry-run: print plan, don't execute
+# Usage: restart-services.sh [--force] [--dry-run] [--bridge-only]
+#   --force:       skip idle wait
+#   --dry-run:     print plan, don't execute
+#   --bridge-only: FLY-1142 sanctioned env-reload path — restart ONLY the
+#                  Bridge in place (stop → start → health check). No build,
+#                  no deployed-sha reads/writes, no Lead restarts, no plugin
+#                  update, no deploy notifications. For pure ~/.flywheel/.env
+#                  changes that a no-code-delta deploy would otherwise skip.
 #
 # Called by:
 #   1. Orchestrator/spin post-merge bookkeeping (main path)
@@ -399,14 +404,27 @@ PROJECT_SHA_UPDATES_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-project-sha-XXXXXX")
 
 FORCE=false
 DRY_RUN=false
+BRIDGE_ONLY=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --force) FORCE=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
+        --bridge-only) BRIDGE_ONLY=true; shift ;;
         *) log "ERROR: Unknown argument '$1'"; exit 1 ;;
     esac
 done
+
+# FLY-1142: every mode/impact flag gets a default BEFORE any guarded section.
+# --bridge-only skips the detection + classification blocks below, and under
+# `set -u` any later reference (idle-wait guard, Main branch selection) to a
+# variable those blocks would have set must not die on "unbound variable".
+PLUGIN_ONLY_RESTART=false
+plugin_needs_restart=false
+project_lead_changed=false
+restart_bridge=false
+restart_all_leads=false
+need_install=false
 
 # ════════════════════════════════════════════════════════════════
 # Mutual exclusion lock
@@ -435,8 +453,10 @@ acquire_lock
 # Discord plugin detection — marker + fork check
 # ════════════════════════════════════════════════════════════════
 
-PLUGIN_ONLY_RESTART=false
-plugin_needs_restart=false
+# FLY-1142: --bridge-only skips plugin fork/update, project .lead/ scanning
+# and the whole deployed-sha gate + diff classification — it is a pure
+# in-place Bridge bounce for env reloads, never a deploy.
+if [[ "$BRIDGE_ONLY" != "true" ]]; then
 
 # Check for pending plugin-only restart retry
 if [[ -f "$PLUGIN_RESTART_PENDING" ]]; then
@@ -575,6 +595,8 @@ fi
 
 fi  # end PLUGIN_ONLY_RESTART guard
 
+fi  # end BRIDGE_ONLY guard (FLY-1142)
+
 # ════════════════════════════════════════════════════════════════
 # Idle wait
 # ════════════════════════════════════════════════════════════════
@@ -628,7 +650,14 @@ wait_for_idle() {
             else
                 zero_streak=0   # any active session resets the stabilization streak
                 if (( elapsed == 0 || elapsed % 300 == 0 )); then
-                    notify_routine "⏳ 等待 ${count} 个 active session idle... (${elapsed}s/${MAX_WAIT_SECONDS}s)"
+                    # FLY-1142 (Codex code R1 MEDIUM-1): --bridge-only promises
+                    # ZERO deploy notifications — the busy-wait progress notice
+                    # must stay a local log there, not a Discord post.
+                    if [[ "$BRIDGE_ONLY" == "true" ]]; then
+                        log "waiting for ${count} active session(s) to idle... (${elapsed}s/${MAX_WAIT_SECONDS}s)"
+                    else
+                        notify_routine "⏳ 等待 ${count} 个 active session idle... (${elapsed}s/${MAX_WAIT_SECONDS}s)"
+                    fi
                 fi
             fi
         fi
@@ -639,7 +668,9 @@ wait_for_idle() {
     return 1
 }
 
-if [[ "$PLUGIN_ONLY_RESTART" != "true" && "$restart_bridge" == "true" && "$FORCE" != "true" ]]; then
+# FLY-1142: --bridge-only runs its own single wait_for_idle inside its Main
+# branch (after the dry-run early-exit), so it is excluded here.
+if [[ "$BRIDGE_ONLY" != "true" && "$PLUGIN_ONLY_RESTART" != "true" && "$restart_bridge" == "true" && "$FORCE" != "true" ]]; then
     log "Waiting for idle sessions before restart..."
     if ! wait_for_idle; then
         log "Proceeding with restart after idle timeout"
@@ -1295,6 +1326,55 @@ deploy_and_verify() {
 # ════════════════════════════════════════════════════════════════
 # Main
 # ════════════════════════════════════════════════════════════════
+
+if [[ "$BRIDGE_ONLY" == "true" ]]; then
+    # FLY-1142: sanctioned env-reload path. The 2026-07-10 stopgap removal
+    # needed a Bridge bounce with ZERO code delta, and the normal deploy path
+    # exits early on "already deployed" — the only way through was a
+    # guard-bypass manual kickstart. This branch is the sanctioned road:
+    # stop → start → health check, nothing else. It never builds, never
+    # touches deployed-sha / project SHAs / the plugin marker, never restarts
+    # Leads, never sends deploy notifications, and never reuses
+    # deploy_and_verify (no rollback machinery — there is no code change to
+    # roll back).
+    log "Bridge-only restart (env reload): no build, no SHA writes, Leads untouched"
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log "DRY RUN: Would restart ONLY the Bridge in place — wait for idle (unless --force), stop Bridge on :$(bridge_port), start via launchctl kickstart, health-check up to 60s."
+        log "DRY RUN: No build, no deployed-sha/project-sha writes, no Lead restarts, no plugin update, no deploy notifications."
+        exit 0
+    fi
+    if [[ "$FORCE" != "true" ]]; then
+        log "Waiting for idle sessions before bridge-only restart..."
+        if ! wait_for_idle; then
+            log "Proceeding with bridge-only restart after idle timeout"
+        fi
+    fi
+    if ! stop_bridge; then
+        log "ERROR: stop_bridge failed to free the port — aborting bridge-only restart."
+        alert_severe "bridge-only-port-stuck" "Flywheel bridge-only restart aborted" \
+            "bridge-only 重启中止: Bridge 端口未能释放,新 Bridge 无法 bind。需手动 SIGKILL listener (lsof -ti:$(bridge_port))。"
+        exit 1
+    fi
+    start_bridge
+    # Same-strength health check as deploy_and_verify Step 3 (up to 60s).
+    hc_ok=false
+    for _ in $(seq 1 30); do
+        if curl -sf "$BRIDGE_URL/health" | jq -e '.ok' > /dev/null 2>&1; then
+            hc_ok=true
+            break
+        fi
+        sleep 2
+    done
+    if [[ "$hc_ok" != "true" ]]; then
+        log "ERROR: Bridge health check failed after bridge-only restart."
+        alert_severe "bridge-only-health-failed" "Flywheel bridge-only restart failed" \
+            "bridge-only 重启后 Bridge health check 60s 内未通过。Bridge 可能没起来 — 请查 /tmp/flywheel-bridge.log 与 launchctl print gui/\$(id -u)/com.flywheel.bridge。"
+        exit 1
+    fi
+    log "Bridge health check: OK"
+    log "Done (bridge-only)."
+    exit 0
+fi
 
 if [[ "$PLUGIN_ONLY_RESTART" == "true" ]]; then
     # Lead-only restart path: plugin update or project .lead/ changes (no Flywheel code change)

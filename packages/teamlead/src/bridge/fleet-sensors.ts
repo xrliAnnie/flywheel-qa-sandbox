@@ -26,10 +26,10 @@ import { FLEET_ALERT_PROJECT } from "../LeadAlertNotifier.js";
 import type { AlertThreadRow, StateStore } from "../StateStore.js";
 import type { RepairResult } from "./AutoRepairBot.js";
 import {
-	readSwapUsage,
-	SwapPressureMonitor,
-	type SwapUsage,
-	swapThresholdsFromEnv,
+	type MemoryPressure,
+	MemoryPressureMonitor,
+	memPressureThresholdsFromEnv,
+	readMemoryPressure,
 } from "./machine-watermark.js";
 import { formatZombieSamples, type ZombieFinding } from "./zombie-scan.js";
 
@@ -52,7 +52,7 @@ export interface FleetSensorsDeps {
 	/** All configured Lead agent ids (the load-shed broadcast audience). */
 	listLeadIds?: () => string[];
 	/** Injection seams (defaults are the real probes). */
-	readSwap?: () => Promise<SwapUsage | null>;
+	readPressure?: () => Promise<MemoryPressure | null>;
 	probeBots?: () => Promise<InfraBotProbe[]>;
 	scanZombies?: () => Promise<ZombieFinding[]>;
 	kickstart?: (jobLabel: string) => Promise<{ ok: boolean; error?: string }>;
@@ -81,7 +81,7 @@ export class FleetSensors {
 	private readonly env: NodeJS.ProcessEnv;
 	private readonly now: () => number;
 	private readonly log: (msg: string) => void;
-	private readonly swapMonitor: SwapPressureMonitor;
+	private readonly memMonitor: MemoryPressureMonitor;
 	/** Per-provider dead latch: emit once per death episode. */
 	private readonly botDeadSince = new Map<"claude" | "codex", number>();
 	/** Last probe verdicts — the Hub recovery probe reads these. */
@@ -97,7 +97,9 @@ export class FleetSensors {
 		this.env = deps.env ?? process.env;
 		this.now = deps.now ?? (() => Date.now());
 		this.log = deps.logger ?? ((m) => console.log(`[fleet-sensors] ${m}`));
-		this.swapMonitor = new SwapPressureMonitor(swapThresholdsFromEnv(this.env));
+		this.memMonitor = new MemoryPressureMonitor(
+			memPressureThresholdsFromEnv(this.env),
+		);
 	}
 
 	/** One watchdog tick. Every sensor independently try/caught. */
@@ -119,52 +121,57 @@ export class FleetSensors {
 		}
 	}
 
-	// ── SWAP (Task 2.2) ──────────────────────────────────────────────────────
+	// ── SWAP (Task 2.2 / FLY-1142: real memory pressure) ────────────────────
 
-	private lastSwapUsage: SwapUsage | null = null;
+	private lastPressure: MemoryPressure | null = null;
 
 	/** Latest watermark summary (server-loss notifications ride it). */
 	get lastWatermark(): string | null {
-		return this.lastSwapUsage?.usedPct != null
-			? `${this.lastSwapUsage.usedPct.toFixed(1)}%`
+		return this.lastPressure != null
+			? `${this.lastPressure.freePct.toFixed(1)}% free`
 			: null;
 	}
 
 	private async swapTick(): Promise<void> {
 		if (!sensorOn(this.env, "SWAP")) return;
-		const usage = await (
-			this.deps.readSwap ?? (() => readSwapUsage(this.env))
+		const reading = await (
+			this.deps.readPressure ?? (() => readMemoryPressure(this.env))
 		)();
-		this.lastSwapUsage = usage;
-		const event = this.swapMonitor.tick(usage, this.now());
-		if (event === "trigger") {
-			const pct = usage?.usedPct?.toFixed(1) ?? "?";
-			const th = swapThresholdsFromEnv(this.env);
+		this.lastPressure = reading;
+		const ev = this.memMonitor.tick(reading, this.now());
+		if (ev.event === "trigger") {
+			const freePct = ev.freePct?.toFixed(1) ?? "?";
+			const th = memPressureThresholdsFromEnv(this.env);
+			const cause =
+				ev.swapoutDelta != null && ev.swapoutDelta > th.swapoutMinPages
+					? `正在持续 swapout（${ev.swapoutDelta} 页/tick）`
+					: `可用内存告急（free ${freePct}% < ${th.freeLowPct}%）`;
 			await this.deps.alert({
 				leadId: "swap",
 				projectName: FLEET_ALERT_PROJECT,
-				eventId: `swap-pressure:${this.swapMonitor.episodeStart}`,
+				eventId: `swap-pressure:${this.memMonitor.episodeStart}`,
 				eventType: "swap_pressure_high",
-				title: "swap 水位越过高阈（OOM 预警）",
-				body: `swap 已用 ${pct}%（阈值 ${th.highPct}%，连续 2 tick 确认）。自动动作：置 pressure-hold 暂停派新 runner + 通知各 Lead 降载；水位回落到 ${th.lowPct}% 以下自动解除并安静 resolve。`,
+				title: "内存压力越过危险阈（OOM 预警）",
+				body: `真实内存压力：${cause}，当前 free ${freePct}%（连续 2 tick 确认）。自动动作：置 pressure-hold 暂停派新 runner + 通知各 Lead 降载；free 回到 ${th.freeHighPct}% 以上且 swapout 归零后自动解除并安静 resolve。`,
 				severity: "severe",
 			});
-		} else if (event === "clear") {
+		} else if (ev.event === "clear") {
 			this.liftSensorHold();
 			await this.deps.resolveTicket?.(
 				fleetCorrelationKey("swap", "swap_pressure_high"),
 			);
-		} else if (!this.swapMonitor.inPressure && usage?.usedPct != null) {
-			// Codex R1 HIGH-1 (restart safety): the hold row is DURABLE but the
-			// monitor state is not — after a Bridge restart with the watermark
-			// already back below LOW, the monitor sits in "normal" and never
-			// emits "clear", stranding the hold (dispatch paused forever). Lift
-			// the sensor's own stale hold whenever we are out of pressure AND the
-			// live reading is provably below LOW. A restart with the watermark
-			// still HIGH keeps the hold (reading ≥ LOW) until the fresh episode
-			// re-triggers within 2 ticks. Probe failures (null) never lift.
-			const th = swapThresholdsFromEnv(this.env);
-			if (usage.usedPct < th.lowPct) this.liftSensorHold();
+		} else if (!this.memMonitor.inPressure && ev.healthy === true) {
+			// Codex R1 HIGH-1 (restart safety) + FLY-1142 three-state re-judge:
+			// the hold row is DURABLE but the monitor state is not — after a
+			// Bridge restart the fresh monitor sits in "normal" and never emits
+			// "clear", stranding the hold (the 2026-07-10 8-hour dispatch
+			// blackout). Lift the sensor's own stale hold ONLY when the live
+			// reading PROVES health (free% ≥ HIGH and swapout-delta ≤ MIN with a
+			// computable delta). The first post-restart sample has no Swapouts
+			// baseline (healthy=null) and never lifts — a restart mid-thrash
+			// cannot fail-open on one flattering free% sample. Probe failures
+			// (null) never lift either.
+			this.liftSensorHold();
 		}
 	}
 
@@ -173,7 +180,7 @@ export class FleetSensors {
 		const hold = this.deps.store.getFleetPressureHold();
 		if (hold?.set_by === "swap-sensor") {
 			this.deps.store.clearFleetPressureHold();
-			this.log("watermark below LOW — pressure-hold lifted");
+			this.log("memory pressure proven healthy — pressure-hold lifted");
 		}
 	}
 
@@ -184,8 +191,8 @@ export class FleetSensors {
 	 * load. Fully reversible: the sensor lifts the hold on watermark fall.
 	 */
 	async swapPressureRepair(_payload: AlertPayload): Promise<RepairResult> {
-		const watermark = this.lastSwapUsage?.usedPct
-			? `${this.lastSwapUsage.usedPct.toFixed(1)}%`
+		const watermark = this.lastPressure
+			? `${this.lastPressure.freePct.toFixed(1)}% free`
 			: "unknown";
 		const placed = this.deps.store.setFleetPressureHold({
 			setBy: "swap-sensor",
@@ -195,7 +202,7 @@ export class FleetSensors {
 			return {
 				outcome: "attempted",
 				action: "pressure_hold",
-				detail: `🔧 pressure-hold 已在生效中（幂等，不重复置位/广播）。当前 swap ${watermark}。`,
+				detail: `🔧 pressure-hold 已在生效中（幂等，不重复置位/广播）。当前内存 ${watermark}。`,
 			};
 		}
 		const leadIds = this.deps.listLeadIds?.() ?? [];
@@ -204,7 +211,7 @@ export class FleetSensors {
 			try {
 				const ok = await this.deps.notifyLead?.(
 					leadId,
-					`[fleet-alert] swap 水位 ${watermark} 越过高阈（OOM 预警）。新 runner 派发已暂停（pressure-hold）。请降载：暂缓新任务、考虑收掉可暂停的 runner。水位回落后 hold 自动解除。`,
+					`[fleet-alert] 内存压力越过危险阈（OOM 预警，当前 ${watermark}）。新 runner 派发已暂停（pressure-hold）。请降载：暂缓新任务、考虑收掉可暂停的 runner。真实压力解除（free% 回升 + swapout 归零）后 hold 自动解除。`,
 				);
 				if (ok) notified++;
 			} catch {
@@ -214,7 +221,7 @@ export class FleetSensors {
 		return {
 			outcome: "attempted",
 			action: "pressure_hold",
-			detail: `🔧 已置 pressure-hold（暂停派新 runner，水位回落自动解除）+ 通知 ${notified}/${leadIds.length} 个 Lead 降载。当前 swap ${watermark}。`,
+			detail: `🔧 已置 pressure-hold（暂停派新 runner，真实压力解除后自动解除）+ 通知 ${notified}/${leadIds.length} 个 Lead 降载。当前内存 ${watermark}。`,
 		};
 	}
 
@@ -374,10 +381,12 @@ export class FleetSensors {
 	async recoveryProbe(row: AlertThreadRow): Promise<boolean | null> {
 		switch (row.event_type) {
 			case "swap_pressure_high":
-				// Restart-safe: after a Bridge restart the monitor starts "normal",
-				// so a stale ticket resolves; a genuinely-still-high watermark
-				// re-triggers a fresh episode within 2 ticks.
-				return !this.swapMonitor.inPressure;
+				// FLY-1142 three-state: resolve ONLY on PROVEN health (free% ≥ HIGH
+				// and swapout-delta ≤ MIN). null = no evidence yet (fresh monitor /
+				// first sample / probe failure) → cannot tell; false = provably
+				// still unhealthy. A genuinely-still-thrashing machine re-triggers
+				// a fresh episode within 2 ticks either way.
+				return this.memMonitor.lastEvaluation?.healthy ?? null;
 			case "infra_bot_down": {
 				const provider = row.lead_id.replace(/^infra-bot:/, "") as
 					| "claude"

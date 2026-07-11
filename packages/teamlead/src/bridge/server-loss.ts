@@ -65,7 +65,7 @@ export interface ServerLossDeps {
 	) => Promise<boolean>;
 	/** The routed alert sink (ONE fleet ticket per episode). */
 	alert: (p: AlertPayload) => Promise<AlertResult>;
-	/** Current swap watermark summary for the notification (nullable). */
+	/** Current memory watermark summary (free%) for the notification. */
 	currentWatermark?: () => string | null;
 	env?: NodeJS.ProcessEnv;
 	now?: () => number;
@@ -262,7 +262,7 @@ export class ServerLossCoordinator {
 				"\n",
 			)}\n复活由你驱动（respawn 不代劳）;每个都有 restart-resilient resume（FLY-795）。${
 				watermark
-					? `当前 swap 水位 ${watermark} — 请按水位节奏复活,避免 stampede。`
+					? `当前内存水位 ${watermark} — 请按内存压力节奏复活,避免 stampede。`
 					: ""
 			}`;
 			// Deterministic per-(episode, lead, casualty-generation) identity:

@@ -1,0 +1,78 @@
+{
+  "thresholds": {
+    "freeLowPct": 8,
+    "freeHighPct": 15,
+    "swapoutMinPages": 0
+  },
+  "samples": [
+    {
+      "ts": "2026-07-11T00:36:23.263Z",
+      "freePct": "23.70",
+      "swapoutDelta": null,
+      "danger": false,
+      "healthy": null,
+      "event": "none"
+    },
+    {
+      "ts": "2026-07-11T00:36:53.375Z",
+      "freePct": "23.03",
+      "swapoutDelta": 0,
+      "danger": false,
+      "healthy": true,
+      "event": "none"
+    },
+    {
+      "ts": "2026-07-11T00:37:23.396Z",
+      "freePct": "23.33",
+      "swapoutDelta": 0,
+      "danger": false,
+      "healthy": true,
+      "event": "none"
+    },
+    {
+      "ts": "2026-07-11T00:37:53.428Z",
+      "freePct": "23.86",
+      "swapoutDelta": 0,
+      "danger": false,
+      "healthy": true,
+      "event": "none"
+    },
+    {
+      "ts": "2026-07-11T00:38:23.454Z",
+      "freePct": "23.79",
+      "swapoutDelta": 0,
+      "danger": false,
+      "healthy": true,
+      "event": "none"
+    },
+    {
+      "ts": "2026-07-11T00:38:53.481Z",
+      "freePct": "27.45",
+      "swapoutDelta": 0,
+      "danger": false,
+      "healthy": true,
+      "event": "none"
+    },
+    {
+      "ts": "2026-07-11T00:39:23.503Z",
+      "freePct": "27.10",
+      "swapoutDelta": 0,
+      "danger": false,
+      "healthy": true,
+      "event": "none"
+    },
+    {
+      "ts": "2026-07-11T00:39:53.525Z",
+      "freePct": "27.15",
+      "swapoutDelta": 0,
+      "danger": false,
+      "healthy": true,
+      "event": "none"
+    }
+  ]
+}
+✓ no trigger over the soak window
+✓ never 2 consecutive free% < LOW
+✓ never 2 consecutive swapoutDelta > MIN
+maxConsecutiveFreeLow=0 maxConsecutiveSwapout=0
+SOAK VERDICT: PASS

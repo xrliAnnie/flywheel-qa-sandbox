@@ -82,7 +82,7 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 				alerts.push(p);
 				return { sent: true };
 			},
-			currentWatermark: () => "90.4%",
+			currentWatermark: () => "41.3% free",
 			env: opts.env ?? ({} as NodeJS.ProcessEnv),
 			now: () => 1_720_000_000_000,
 			logger: () => {},
@@ -118,7 +118,7 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		expect(tadashi!.content).toContain("5 个 runner");
 		expect(tadashi!.content).toContain("FLY-1001");
 		expect(tadashi!.content).toContain("$FLYWHEEL_PROGRESS_PATH");
-		expect(tadashi!.content).toContain("90.4%");
+		expect(tadashi!.content).toContain("41.3% free"); // FLY-1142: free%, not swap%
 		expect(tadashi!.content).not.toContain("FLY-1006"); // honey-lemon's runner
 	});
 

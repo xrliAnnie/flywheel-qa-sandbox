@@ -3014,7 +3014,7 @@ export async function startBridge(
 	config.runnerAdmission?.setPressureHoldProbe(() => {
 		const hold = store.getFleetPressureHold();
 		return hold
-			? `fleet pressure-hold active since ${hold.set_at} (by ${hold.set_by}, swap ${hold.watermark ?? "?"}) — lifts automatically when the watermark falls`
+			? `fleet pressure-hold active since ${hold.set_at} (by ${hold.set_by}, memory ${hold.watermark ?? "?"}) — lifts automatically once real memory pressure is proven healthy (free% recovered + swapout quiet)`
 			: null;
 	});
 
@@ -6574,7 +6574,7 @@ export async function startBridge(
 		// never wedges the others or the poll loop — no new timer for any of them.
 		onPollComplete: async () => {
 			// FLY-1082: fleet sensors ride the SAME piggybacked tick (zero new
-			// timers) — swap watermark, infra-bot probes, throttled zombie scan.
+			// timers) — memory pressure, infra-bot probes, throttled zombie scan.
 			// Runs BEFORE the Hub reconcile so a fresh sensor verdict (e.g. the
 			// watermark clearing) is visible to the same tick's recovery pass.
 			try {
