@@ -993,6 +993,26 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "watchdog_judge",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WATCHDOG_JUDGE",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"watchdog LLM judge 层(机械快路可疑才升级,跑 Codex 不占 Claude 额度,FLY-1048 PR-B/FLY-976)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"deliverSuspicious (routeSuspiciousReport judgeEnabled)",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "detection_gap_scan",
 		category: "feature",
 		source: "env",

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
 	existsSync as ffExistsSync,
 	readFileSync as ffReadFileSync,
@@ -379,6 +379,11 @@ import { createTriageDataRouter } from "./triage-data-route.js";
 import { createTriageTemplateRouter } from "./triage-template-route.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { createVoiceRouter } from "./voice-routes.js";
+import {
+	createWatchdogJudge,
+	routeSuspiciousReport,
+	type WatchdogJudgeInput,
+} from "./watchdog-judge.js";
 import {
 	gitWorktreeClean,
 	makeBridgeWorktreeCleanup,
@@ -4518,7 +4523,7 @@ export async function startBridge(
 	const suspiciousThreadPoster: {
 		current: ((threadId: string, content: string) => Promise<void>) | null;
 	} = { current: null };
-	const deliverSuspicious = (report: SuspiciousReport): void => {
+	const deliverSuspiciousDirect = (report: SuspiciousReport): void => {
 		void deliverSuspiciousReport(
 			{
 				store,
@@ -4547,6 +4552,154 @@ export async function startBridge(
 		).catch((err) =>
 			console.warn(
 				`[detection-suspicious] delivery failed: ${(err as Error).message}`,
+			),
+		);
+	};
+
+	// FLY-1048 PR-B (B3): the LLM judge sits in FRONT of the fail-suspicious
+	// deliverer. Env checked per call (live flip); OFF or <2 frames = PR-A
+	// behavior byte-for-byte. Accepted a/b verdicts suppress the report with a
+	// durable session_events audit; c_stuck/suspicious/null still deliver
+	// (never silent). Judge runs codex (subscription — zero Claude quota).
+	const watchdogJudge = createWatchdogJudge({
+		repoRoot: projects[0]?.projectRoot ?? process.cwd(),
+	});
+	const deliverSuspicious = (report: SuspiciousReport): void => {
+		void routeSuspiciousReport(
+			{
+				judgeEnabled: () => process.env.FLYWHEEL_WATCHDOG_JUDGE === "1",
+				judge: watchdogJudge,
+				deliver: deliverSuspiciousDirect,
+				auditSuppression: (r, verdict, ttlMs) => {
+					const owner = resolveSuspiciousOwner(r);
+					store.insertEvent({
+						event_id: `watchdog-judge-suppressed-${createHash("sha256")
+							.update(
+								`${r.targetKey}|${r.episodeFingerprint}|${verdict.verdict}`,
+							)
+							.digest("hex")
+							.slice(0, 16)}`,
+						execution_id: owner?.executionId ?? r.targetKey,
+						issue_id: owner?.issueId ?? "unknown",
+						project_name: owner?.projectName ?? "unknown",
+						event_type: "watchdog_judge_suppressed",
+						severity: "info",
+						payload: {
+							target_kind: r.targetKind,
+							target_key: r.targetKey,
+							verdict: verdict.verdict,
+							attribution: verdict.attribution,
+							rationale: verdict.rationale,
+							episode_fingerprint: r.episodeFingerprint,
+							ttl_ms: ttlMs,
+						},
+						source: "watchdog-judge",
+					});
+				},
+				auditConfirmedStuck: (r, verdict) => {
+					const owner = resolveSuspiciousOwner(r);
+					store.insertEvent({
+						event_id: `watchdog-judge-confirmed-stuck-${createHash("sha256")
+							.update(`${r.targetKey}|${r.episodeFingerprint}`)
+							.digest("hex")
+							.slice(0, 16)}`,
+						execution_id: owner?.executionId ?? r.targetKey,
+						issue_id: owner?.issueId ?? "unknown",
+						project_name: owner?.projectName ?? "unknown",
+						event_type: "watchdog_judge_confirmed_stuck",
+						severity: "warning",
+						payload: {
+							target_kind: r.targetKind,
+							target_key: r.targetKey,
+							verdict: verdict.verdict,
+							attribution: verdict.attribution,
+							rationale: verdict.rationale,
+							suggested_action: verdict.suggestedAction,
+							episode_fingerprint: r.episodeFingerprint,
+						},
+						source: "watchdog-judge",
+					});
+				},
+				mechanicalParkEvidence: (r) => {
+					// Lead targets have no park semantics; runner targets: awaiting
+					// statuses or a declared park corroborate b_parked.
+					if (r.targetKind !== "runner") return false;
+					const session = store.getSession(r.targetKey);
+					if (!session) return false;
+					if (
+						session.status === "awaiting_review" ||
+						session.status === "approved_to_ship"
+					) {
+						return true;
+					}
+					const reader = openGapReader(
+						defaultGetCommDbPath(session.project_name),
+					);
+					if (!reader) return false;
+					try {
+						const ev = reader.evidenceFor(r.targetKey, null, Date.now());
+						// Codex PR-B R1 HIGH: only a BLOCKING gate corroborates b_parked —
+						// an unanswered non-blocking ask is exactly the 漏② signal and
+						// must never let the judge silence it.
+						return (
+							ev.declaredParked === true ||
+							(ev.pendingBlockingGateCount ?? 0) > 0
+						);
+					} catch {
+						return false;
+					} finally {
+						reader.close();
+					}
+				},
+				buildJudgeInput: (r): WatchdogJudgeInput | null => {
+					if (!r.frames || r.frames.length < 2) return null;
+					const session =
+						r.targetKind === "runner"
+							? store.getSession(r.targetKey)
+							: undefined;
+					let commEvents: WatchdogJudgeInput["commEvents"];
+					if (session) {
+						try {
+							const nowMs = Date.now();
+							commEvents = store
+								.getEventsByExecution(r.targetKey)
+								.slice(-10)
+								.flatMap((e) => {
+									// Codex PR-B R1 LOW / R2 MEDIUM: only truthful ages reach
+									// the judge. session_events.ts is a sqlite UTC DATETIME —
+									// parseSqliteUtcMs handles it; ISO strings fall back to
+									// Date.parse. Unparseable → the event is dropped rather
+									// than presented as "0min ago".
+									const raw = e.ts ?? "";
+									const parsed = parseSqliteUtcMs(raw) ?? Date.parse(raw);
+									if (parsed === null || !Number.isFinite(parsed)) return [];
+									return [
+										{
+											kind: e.event_type,
+											ageMs: Math.max(0, nowMs - parsed),
+											summary: String(e.event_id ?? e.event_type).slice(0, 120),
+										},
+									];
+								})
+								.slice(0, 10);
+						} catch {
+							commEvents = undefined;
+						}
+					}
+					return {
+						frames: r.frames,
+						stage: session?.session_stage ?? null,
+						fsmStatus: session?.status ?? null,
+						park: null,
+						commEvents,
+						errorSignatureKinds: [],
+					};
+				},
+			},
+			report,
+		).catch((err) =>
+			console.warn(
+				`[watchdog-judge] routing failed: ${(err as Error).message}`,
 			),
 		);
 	};
@@ -4586,6 +4739,7 @@ export async function startBridge(
 						"focused_frames_unclear: multi-frame window is neither flowing nor a clean silence/error loop — mechanical layer cannot conclude",
 					paneTail: buildPaneTail(v.latestFrame),
 					episodeFingerprint: hashPane(liveRegion(v.latestFrame)),
+					frames: v.window,
 				});
 				return;
 			}

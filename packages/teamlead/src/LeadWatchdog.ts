@@ -514,7 +514,13 @@ export class LeadWatchdog {
 					state.lastSuspiciousHash !== liveHash
 				) {
 					state.lastSuspiciousHash = liveHash;
-					this.fireSuspicious(projectName, leadId, latest.text, liveHash);
+					this.fireSuspicious(
+						projectName,
+						leadId,
+						latest.text,
+						liveHash,
+						window,
+					);
 				}
 			}
 			state.state = "Healthy";
@@ -679,6 +685,7 @@ export class LeadWatchdog {
 		leadId: string,
 		regionText: string,
 		liveHash: string,
+		frames?: Array<{ text: string; capturedAtMs: number }>,
 	): void {
 		const report: SuspiciousReport = {
 			targetKind: "lead",
@@ -687,6 +694,8 @@ export class LeadWatchdog {
 				"frozen_extended_thinking: live region static across the observation window while still showing an in-flight thinking spinner — cannot conclude idle vs hung",
 			paneTail: buildPaneTail(regionText),
 			episodeFingerprint: liveHash,
+			// PR-B: the judge consults the whole window before delivery.
+			frames,
 		};
 		if (!this.config.onSuspicious) {
 			this.logger(

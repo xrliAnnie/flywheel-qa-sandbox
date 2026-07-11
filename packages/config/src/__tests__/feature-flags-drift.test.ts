@@ -115,6 +115,16 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED:
 		"internal ops lever: opt-in reap of unattributed Chrome, default off (FLY-766)",
 	// tuning knobs (numeric)
+	FLYWHEEL_WATCHDOG_JUDGE_BIN:
+		"config value: watchdog-judge binary override (FLY-1048 PR-B)",
+	FLYWHEEL_WATCHDOG_JUDGE_MODEL:
+		"config value: watchdog-judge codex model override (FLY-1048 PR-B)",
+	FLYWHEEL_WATCHDOG_JUDGE_TIMEOUT_MS:
+		"tuning knob: watchdog-judge child timeout ms (FLY-1048 PR-B)",
+	FLYWHEEL_JUDGE_COOLDOWN_MS:
+		"tuning knob: per-target judge verdict-cache cooldown ms (FLY-1048 PR-B)",
+	FLYWHEEL_JUDGE_SUPPRESS_TTL_MS:
+		"tuning knob: judge a/b suppression TTL ms before re-evaluation (FLY-1048 PR-B)",
 	FLYWHEEL_GAP_SCAN_EVERY_N_TICKS:
 		"tuning knob: gap-scan cadence in GatePoller ticks (FLY-1048 A6)",
 	FLYWHEEL_FRAME_INTERVAL_MS:

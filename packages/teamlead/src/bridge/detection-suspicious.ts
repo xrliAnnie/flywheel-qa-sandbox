@@ -30,6 +30,12 @@ export interface SuspiciousReport {
 	paneTail: string;
 	/** Stable episode key for dedup: one report per (targetKey, fingerprint). */
 	episodeFingerprint: string;
+	/**
+	 * FLY-1048 PR-B (B3): the multi-frame window behind this report, so the
+	 * judge can be consulted before delivery. IN-PROCESS ONLY — the deliverer
+	 * builds its payload from explicit fields and never serializes frames.
+	 */
+	frames?: Array<{ text: string; capturedAtMs: number }>;
 }
 
 /** Max pane lines carried in a suspicious report (evidence.tail precedent). */

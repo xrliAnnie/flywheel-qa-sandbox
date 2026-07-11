@@ -224,6 +224,9 @@ export interface SessionEvent {
 	severity?: string;
 	payload?: unknown;
 	source: string;
+	/** FLY-1048 PR-B: row timestamp (sqlite DATETIME) — populated on reads
+	 * that need event ages (getEventsByExecution); optional/additive. */
+	ts?: string;
 }
 
 // ── FLY-1099: founder-reply ingest reliability rows ─────────────────────────
@@ -1881,6 +1884,9 @@ export class StateStore {
 				severity: row.severity as string,
 				payload: row.payload ? JSON.parse(row.payload as string) : undefined,
 				source: row.source as string,
+				// FLY-1048 PR-B: expose the row timestamp so consumers can compute
+				// truthful event ages (judge commEvents input).
+				ts: row.ts as string | undefined,
 			});
 		}
 		stmt.free();

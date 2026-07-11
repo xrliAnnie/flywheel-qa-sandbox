@@ -22,6 +22,7 @@ import {
 	createFrameWindowStore,
 	type FrameDeltas,
 	type FrameWindowStore,
+	type PaneFrame,
 } from "./pane-frames.js";
 
 export interface FocusedFrameTarget {
@@ -35,6 +36,9 @@ export interface FocusedFrameVerdict {
 	deltas: FrameDeltas;
 	/** Latest captured pane text (feeds A5 evidence / the PR-B judge). */
 	latestFrame: string;
+	/** FLY-1048 PR-B: the full frame window (chronological) so an unclear
+	 * verdict can consult the judge with ≥2 frames. */
+	window: PaneFrame[];
 }
 
 export interface FocusedFrameSchedulerDeps {
@@ -144,6 +148,7 @@ export function createFocusedFrameScheduler(
 							verdict,
 							deltas,
 							latestFrame: pane,
+							window,
 						}),
 					);
 				}

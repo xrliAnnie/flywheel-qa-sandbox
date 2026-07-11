@@ -45,6 +45,7 @@ function baseInput(over: {
 		comm: {
 			declaredParked: false,
 			pendingQuestionCount: 0,
+			pendingBlockingGateCount: 0,
 			outbound: { readable: true, latestAgeMs: 60_000 },
 			oldestUnansweredAskAgeMs: null,
 			oldestUnconsumedDeliveryAgeMs: null,
@@ -295,6 +296,11 @@ describe("openGapReader — readonly tri-state degradation", () => {
 			`INSERT INTO messages (id, from_agent, to_agent, type, content, created_at, expires_at, delivered_at)
 			 VALUES ('i1','bridge','exec-1','instruction','do x', datetime('now','-35 minutes'), datetime('now','+72 hours'), datetime('now','-35 minutes'))`,
 		).run();
+		// A BLOCKING gate from another exec (must not leak into exec-1 counts).
+		db.prepare(
+			`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, created_at, expires_at)
+			 VALUES ('g1','exec-2','eng-lead','question','approve?', 'approve_to_ship', datetime('now','-5 minutes'), datetime('now','+72 hours'))`,
+		).run();
 		db.close();
 
 		const reader = openGapReader(path);
@@ -303,6 +309,9 @@ describe("openGapReader — readonly tri-state degradation", () => {
 		reader!.close();
 		expect(ev.declaredParked).toBe(true);
 		expect(ev.pendingQuestionCount).toBe(1);
+		// PR-B (Codex R1 HIGH): the ask has checkpoint NULL — it must never
+		// count as b_parked corroboration.
+		expect(ev.pendingBlockingGateCount).toBe(0);
 		expect(ev.outbound.readable).toBe(true);
 		if (ev.outbound.readable) {
 			// The ask itself is exec→lead traffic.
@@ -341,6 +350,7 @@ describe("openGapReader — readonly tri-state degradation", () => {
 		reader!.close();
 		expect(ev.oldestUnconsumedDeliveryAgeMs).toBeNull();
 		expect(ev.oldestUnansweredAskAgeMs).toBeNull();
+		expect(ev.pendingBlockingGateCount).toBeNull();
 		// Outbound query needs no optional column → still readable.
 		expect(ev.outbound.readable).toBe(true);
 	});

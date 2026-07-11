@@ -48,6 +48,10 @@ export interface GapCommEvidence {
 	/** Live pending questions FROM this exec (any checkpoint, incl. NULL).
 	 * null = unreadable → gap1 degrades (fail-closed). */
 	pendingQuestionCount: number | null;
+	/** Live pending BLOCKING gates (checkpoint IS NOT NULL) from this exec.
+	 * The b_parked corroboration signal (PR-B): a non-blocking ask must NOT
+	 * count as park evidence — that is exactly the 漏② gap. null = unreadable. */
+	pendingBlockingGateCount: number | null;
 	outbound: OutboundSignal;
 	/** Age of the OLDEST live non-blocking ask (checkpoint IS NULL) without a
 	 * response. null = none or unreadable (identical outcome: no trigger). */
@@ -274,6 +278,18 @@ export function openGapReader(dbPath: string): GapReader | null {
 				return row.n;
 			});
 
+			const pendingBlockingGateCount = probe<number | null>(null, () => {
+				const row = db
+					.prepare(
+						`SELECT COUNT(*) AS n FROM messages q
+						 WHERE q.from_agent = ? AND q.type = 'question' AND q.checkpoint IS NOT NULL
+						   AND q.expires_at > datetime('now')
+						   AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response')`,
+					)
+					.get(execId) as { n: number };
+				return row.n;
+			});
+
 			const outbound = probe<OutboundSignal>({ readable: false }, () => {
 				const row = db
 					.prepare(
@@ -319,6 +335,7 @@ export function openGapReader(dbPath: string): GapReader | null {
 			return {
 				declaredParked,
 				pendingQuestionCount,
+				pendingBlockingGateCount,
 				outbound,
 				oldestUnansweredAskAgeMs,
 				oldestUnconsumedDeliveryAgeMs,
