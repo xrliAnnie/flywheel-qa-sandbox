@@ -78,6 +78,9 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 	};
 }
 
+/** FLY-1018 QA F1: a UUID-shaped caller label — passes through unresolved. */
+const CALLER_LABEL_UUID = "a1b2c3d4-1111-2222-3333-444455556666";
+
 // Helper: single team workspace
 function mockSingleTeam() {
 	mockTeams.mockResolvedValue({
@@ -295,7 +298,7 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 			title: "New Flywheel feature",
 			description: "Some desc",
 			priority: 2,
-			labels: ["label-id-1"],
+			labels: [CALLER_LABEL_UUID],
 			team: "FLY",
 			project: "Flywheel",
 		});
@@ -310,7 +313,7 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 			title: "New Flywheel feature",
 			description: "Some desc",
 			priority: 2,
-			labelIds: ["label-id-1"],
+			labelIds: [CALLER_LABEL_UUID],
 			projectId: "project-flywheel-id",
 		});
 	});
@@ -513,7 +516,7 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 		expect(mockProjects).not.toHaveBeenCalled();
 	});
 
-	it("merges the binding scope label with caller-supplied label ids", async () => {
+	it("merges the binding scope label with caller-supplied label ids (UUID passthrough)", async () => {
 		mockMultiTeam();
 		mockProjects.mockResolvedValue({
 			nodes: [{ id: "proj-fly", name: "Flywheel" }],
@@ -526,11 +529,13 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 		const res = await post({
 			title: "x",
 			projectName: "flywheel",
-			labels: ["explicit-1"],
+			labels: [CALLER_LABEL_UUID],
 		});
 		expect(res.status).toBe(200);
 		const call = mockCreateIssue.mock.calls[0][0];
-		expect(call.labelIds).toEqual(["explicit-1", "lbl-fly"]);
+		expect(call.labelIds).toEqual([CALLER_LABEL_UUID, "lbl-fly"]);
+		// UUID-shaped entries never hit the resolver — only the scope label did.
+		expect(mockIssueLabels).toHaveBeenCalledTimes(1);
 	});
 
 	it("returns 400 for a non-string projectName (JSON body 123)", async () => {
@@ -549,5 +554,111 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 		const res = await post({ title: "x", projectName: "no-binding-proj" });
 		expect(res.status).toBe(404);
 		expect((await res.json()).error).toMatch(/no linear binding/);
+	});
+
+	// --- FLY-1018 QA F1: caller label NAMES resolve team-scoped (name → id) ---
+	// Pre-F1 the route forwarded caller `labels` verbatim as Linear labelIds, so
+	// any label NAME (the tool-schema contract) 502'd at Linear ("labelIds must
+	// be a UUID"). Names now resolve exactly like the FLY-371 scope label;
+	// UUID-shaped entries pass through untouched (pre-F1 id-passing callers).
+
+	it("resolves caller label names to team-scoped ids", async () => {
+		mockMultiTeam();
+		mockIssueLabels.mockResolvedValueOnce({
+			nodes: [{ id: "lbl-bug", name: "bug" }],
+		});
+		mockIssueCreated("FLY-2", "fly-issue-2");
+
+		const res = await post({ title: "x", team: "FLY", labels: ["bug"] });
+		expect(res.status).toBe(200);
+		const call = mockCreateIssue.mock.calls[0][0];
+		expect(call.labelIds).toEqual(["lbl-bug"]);
+		expect(mockIssueLabels).toHaveBeenCalledWith(
+			expect.objectContaining({
+				filter: expect.objectContaining({
+					name: { eq: "bug" },
+					team: { id: { eq: "team-fly-id" } },
+				}),
+			}),
+		);
+	});
+
+	it("returns 404 with the label name when a caller label does not exist in the team", async () => {
+		mockMultiTeam();
+		mockIssueLabels.mockResolvedValueOnce({ nodes: [] });
+
+		const res = await post({ title: "x", team: "FLY", labels: ["ghost"] });
+		expect(res.status).toBe(404);
+		expect((await res.json()).error).toMatch(
+			/Label "ghost" not found in team "FLY"/,
+		);
+		expect(mockCreateIssue).not.toHaveBeenCalled();
+	});
+
+	it("returns 400 when a caller label name is ambiguous within the team", async () => {
+		mockMultiTeam();
+		mockIssueLabels.mockResolvedValueOnce({
+			nodes: [
+				{ id: "l1", name: "bug" },
+				{ id: "l2", name: "bug" },
+			],
+		});
+
+		const res = await post({ title: "x", team: "FLY", labels: ["bug"] });
+		expect(res.status).toBe(400);
+		expect((await res.json()).error).toMatch(/ambiguous/i);
+		expect(mockCreateIssue).not.toHaveBeenCalled();
+	});
+
+	it("dedupes repeated caller labels resolving to the same id", async () => {
+		mockMultiTeam();
+		mockIssueLabels
+			.mockResolvedValueOnce({ nodes: [{ id: "lbl-bug", name: "bug" }] })
+			.mockResolvedValueOnce({ nodes: [{ id: "lbl-bug", name: "bug" }] });
+		mockIssueCreated("FLY-3", "fly-issue-3");
+
+		const res = await post({ title: "x", team: "FLY", labels: ["bug", "bug"] });
+		expect(res.status).toBe(200);
+		const call = mockCreateIssue.mock.calls[0][0];
+		expect(call.labelIds).toEqual(["lbl-bug"]);
+	});
+
+	it("resolved caller names merge with the binding scope label", async () => {
+		mockMultiTeam();
+		mockProjects.mockResolvedValue({
+			nodes: [{ id: "proj-fly", name: "Flywheel" }],
+		});
+		// caller labels resolve first (in order), then the scope label
+		mockIssueLabels
+			.mockResolvedValueOnce({ nodes: [{ id: "lbl-bug", name: "bug" }] })
+			.mockResolvedValueOnce({ nodes: [{ id: "lbl-fly", name: "Flywheel" }] });
+		mockIssueCreated();
+
+		const res = await post({
+			title: "x",
+			projectName: "flywheel",
+			labels: ["bug"],
+		});
+		expect(res.status).toBe(200);
+		const call = mockCreateIssue.mock.calls[0][0];
+		expect(call.labelIds).toEqual(["lbl-bug", "lbl-fly"]);
+	});
+
+	it("mixed UUID + name list: only names hit the resolver", async () => {
+		mockMultiTeam();
+		mockIssueLabels.mockResolvedValueOnce({
+			nodes: [{ id: "lbl-bug", name: "bug" }],
+		});
+		mockIssueCreated("FLY-4", "fly-issue-4");
+
+		const res = await post({
+			title: "x",
+			team: "FLY",
+			labels: [CALLER_LABEL_UUID, "bug"],
+		});
+		expect(res.status).toBe(200);
+		const call = mockCreateIssue.mock.calls[0][0];
+		expect(call.labelIds).toEqual([CALLER_LABEL_UUID, "lbl-bug"]);
+		expect(mockIssueLabels).toHaveBeenCalledTimes(1);
 	});
 });

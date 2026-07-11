@@ -1382,6 +1382,28 @@ export class StateStore {
 		this.db.run(
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_events_dedup ON lead_events(lead_id, event_id)",
 		);
+
+		// FLY-1018: ship-approval-request outbox. Each row is the durable
+		// record of a gemini-agent ship REQUEST; it is inserted in the SAME
+		// transaction as its lead_events row (recordShipApprovalRequest), so
+		// row existence ⟺ the founder-visible event is durably queued. Zero
+		// CommDB involvement — this is NOT an approve_to_ship gate.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS ship_approval_requests (
+				request_id TEXT PRIMARY KEY,
+				pr_url TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				lead_id TEXT NOT NULL,
+				requester TEXT NOT NULL,
+				summary TEXT NOT NULL,
+				lead_event_id TEXT NOT NULL,
+				created_at TEXT NOT NULL DEFAULT (datetime('now'))
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_ship_approval_requests_pr ON ship_approval_requests(pr_url, created_at)",
+		);
+
 		// FLY-91: Chat threads for per-issue conversation in chatChannel
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS chat_threads (
@@ -5432,6 +5454,86 @@ export class StateStore {
 		if (count > 0) return false;
 		this.appendLeadEvent(leadId, eventId, eventType, payload, sessionKey);
 		return true;
+	}
+
+	/**
+	 * FLY-1018: transactional outbox pair for a ship-approval REQUEST
+	 * (plan §2.8 ②). The `ship_approval_request` lead event and its
+	 * `ship_approval_requests` row commit together or not at all — zero
+	 * orphan lead events, zero half-written request rows. Runtime delivery
+	 * must only start AFTER this returns (post-commit); redelivery of a
+	 * queued-but-undelivered event is owned by the HeartbeatService loop
+	 * via RETRYABLE_LEAD_EVENT_TYPES.
+	 *
+	 * Returns the lead_events seq of the queued event. Throws (with the
+	 * whole transaction rolled back) if either write fails.
+	 */
+	recordShipApprovalRequest(req: {
+		requestId: string;
+		prUrl: string;
+		projectName: string;
+		leadId: string;
+		requester: string;
+		summary: string;
+		eventId: string;
+		payload: string;
+	}): number {
+		let seq = 0;
+		this.db.transaction(() => {
+			seq = this.appendLeadEvent(
+				req.leadId,
+				req.eventId,
+				"ship_approval_request",
+				req.payload,
+			);
+			this.db.run(
+				`INSERT INTO ship_approval_requests
+				 (request_id, pr_url, project_name, lead_id, requester, summary, lead_event_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[
+					req.requestId,
+					req.prUrl,
+					req.projectName,
+					req.leadId,
+					req.requester,
+					req.summary,
+					req.eventId,
+				],
+			);
+		});
+		return seq;
+	}
+
+	/**
+	 * FLY-1018: idempotency lookup (plan §2.8 ①). Because the request row
+	 * commits in the same transaction as its lead event, row existence ⟺
+	 * the founder-visible event is durably queued — a row here means the
+	 * same prUrl is already pending and must not be re-queued. Rows from
+	 * attempts whose transaction failed never exist, so a retry after a
+	 * 502 is never swallowed.
+	 */
+	findRecentShipApprovalRequest(
+		prUrl: string,
+		withinMs: number,
+	): { requestId: string } | null {
+		const seconds = Math.max(1, Math.floor(withinMs / 1000));
+		const rows = this.dbQuery(
+			`SELECT request_id FROM ship_approval_requests
+			 WHERE pr_url = ? AND created_at > datetime('now', ?)
+			 ORDER BY created_at DESC LIMIT 1`,
+			[prUrl, `-${seconds} seconds`],
+		);
+		const requestId = rows[0]?.values[0]?.[0];
+		return typeof requestId === "string" ? { requestId } : null;
+	}
+
+	/** FLY-1018: test/observability helper — count ship_approval_request lead events. */
+	countLeadEvents(leadId: string, eventType: string): number {
+		const rows = this.dbQuery(
+			"SELECT COUNT(*) FROM lead_events WHERE lead_id = ? AND event_type = ?",
+			[leadId, eventType],
+		);
+		return (rows[0]?.values[0]?.[0] as number) ?? 0;
 	}
 
 	private dbQuery(

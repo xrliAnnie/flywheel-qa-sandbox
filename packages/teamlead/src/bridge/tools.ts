@@ -336,6 +336,11 @@ export function createQueryRouter(
 		res.json({
 			execution_id: session.execution_id,
 			...result,
+			// FLY-1060 QA F3: the pane heuristic (`status`) never reports
+			// "completed" — consumers needing a terminal signal read the store
+			// lifecycle here (+ pr_number once recorded). Additive fields.
+			session_status: session.status,
+			pr_number: session.pr_number ?? null,
 			checked_at: new Date().toISOString(),
 		});
 	});

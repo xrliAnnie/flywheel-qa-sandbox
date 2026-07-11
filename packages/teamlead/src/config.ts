@@ -73,6 +73,33 @@ export function loadConfig(): BridgeConfig {
 			"TEAMLEAD_REPLY_GUARD_ENABLED=true requires TEAMLEAD_API_TOKEN to be set (refusing to expose the reply-guard route unauthenticated)",
 		);
 	}
+	// FLY-1018 M4: scoped token for the gemini-agent tool surface. Two
+	// fail-closed rules (plan §4, Codex R1-2):
+	//   - scoped == master → the "scoped" credential is a full-privilege
+	//     token in disguise; boot-time refusal is the only place that
+	//     window can be closed. Error names both envs.
+	//   - scoped set but master unset → today's middleware no-ops without a
+	//     master token (everything already unauthenticated), so scoping is
+	//     meaningless; log ERROR and IGNORE rather than inventing a new
+	//     bare-token posture.
+	const geminiAgentTokenRaw = process.env.TEAMLEAD_GEMINI_AGENT_TOKEN;
+	let geminiAgentToken: string | undefined;
+	if (geminiAgentTokenRaw !== undefined && geminiAgentTokenRaw.trim() !== "") {
+		const scoped = geminiAgentTokenRaw.trim();
+		if (apiToken && scoped === apiToken.trim()) {
+			throw new Error(
+				"TEAMLEAD_GEMINI_AGENT_TOKEN must differ from TEAMLEAD_API_TOKEN — a scoped token equal to the master token is a full-privilege credential in disguise (refusing to start)",
+			);
+		}
+		if (!apiToken || apiToken.length === 0) {
+			console.error(
+				"[config] ERROR: TEAMLEAD_GEMINI_AGENT_TOKEN is set but TEAMLEAD_API_TOKEN is not — scoped token IGNORED (without a master token the /api surface is unauthenticated; configure TEAMLEAD_API_TOKEN first)",
+			);
+		} else {
+			geminiAgentToken = scoped;
+		}
+	}
+
 	// Configured team prefixes the guard counts as issue tokens (default
 	// FLY,GEO). Normalized to uppercase; empties dropped.
 	const issuePrefixes = (process.env.TEAMLEAD_ISSUE_PREFIXES ?? "FLY,GEO")
@@ -145,5 +172,8 @@ export function loadConfig(): BridgeConfig {
 		// FLYWHEEL_FOUNDER_CONSENT_* env. decisionMode defaults to "off" so a
 		// boot without explicit opt-in is byte-compatible with pre-Track-2.
 		founderConsent: parseFounderConsentConfig(process.env),
+		// FLY-1018 M4: scoped gemini-agent token (validated above; undefined
+		// when unset, invalid-without-master, or blank — byte-compatible).
+		geminiAgentToken,
 	};
 }

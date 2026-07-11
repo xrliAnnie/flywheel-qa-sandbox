@@ -110,6 +110,16 @@ export interface HookPayload {
 	file_count_cap?: number;
 	/** Markdown line appended to Discord message when any file exceeds cap. */
 	oversize_fallback_text?: string;
+
+	// FLY-1018: ship_approval_request fields (gemini-agent's request-shaped
+	// ship surface — plan §2.8). Typed, optional: event_type is the
+	// discriminator, existing call sites keep compiling.
+	/** The GitHub PR URL the requester wants approved. */
+	pr_url?: string;
+	/** Requesting agent identity (server-set, e.g. "gemini-agent"). */
+	requester?: string;
+	/** Optional short note on who asked and in what context. */
+	requester_context?: string;
 }
 
 export function buildSessionKey(session: {
@@ -352,5 +362,37 @@ export function formatDetectionSuspicious(
 		`Fingerprint: ${e.episode_fingerprint ?? "—"}`,
 		`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`,
 	);
+	return lines.join("\n");
+}
+
+// ── FLY-1018: shared ship_approval_request renderer ──
+
+/**
+ * FLY-1018 (plan §2.8, Codex R2-1 + R3-3): gemini-agent's request-shaped
+ * ship surface. The generic formatter would drop pr_url / requester /
+ * requester_context, and the Lead could not present the request to the
+ * founder — so both concrete runtimes render this first-class.
+ *
+ * SHARED between MailboxLeadRuntime and CommDBLeadRuntime on purpose —
+ * same parity-by-construction rationale as formatStuckEscalation (FLY-195
+ * lesson: payload/render drift IS the bug class).
+ *
+ * Contract: PR URL, requester and the "nothing merged" note MUST all be
+ * visible verbatim. This event creates NO approve_to_ship gate and carries
+ * NO ship authority — the real ship still goes through the owning runner's
+ * verified approve_to_ship + verify-approval chain, unchanged.
+ */
+export function formatShipApprovalRequest(
+	env: StuckEscalationEnvelopeLike,
+): string {
+	const e = env.event;
+	const context = e.requester_context ? `(${e.requester_context})` : "";
+	const lines = [
+		`[Event #${env.seq}] ship_approval_request`,
+		`Project: ${e.project_name ?? "—"}`,
+		`[ship-approval-request] requester=${e.requester ?? "unknown"} PR ${e.pr_url ?? "(missing pr_url)"} — ${e.summary ?? "(no summary)"}${context}. Nothing merged; founder approval + owning runner verified ship flow still required.`,
+		"Surface this to the founder for a decision. Do NOT merge, approve, or open any gate on the requester's behalf — this event carries no ship authority.",
+	];
+	lines.push(`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`);
 	return lines.join("\n");
 }

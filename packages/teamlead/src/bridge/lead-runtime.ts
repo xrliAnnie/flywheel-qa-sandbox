@@ -41,6 +41,10 @@ export const GUARDRAIL_EVENT_TYPES = new Set([
 export const RETRYABLE_LEAD_EVENT_TYPES = new Set<string>([
 	...GUARDRAIL_EVENT_TYPES,
 	"artifact_delivery",
+	// FLY-1018: a queued-but-undelivered ship-approval REQUEST must reach the
+	// Lead eventually — "durably queued = accepted" (the route's 200) is only
+	// true because this redelivery loop owns the tail.
+	"ship_approval_request",
 ]);
 
 /** Monotonically sequenced event envelope for lead delivery. */

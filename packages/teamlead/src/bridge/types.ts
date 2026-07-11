@@ -63,6 +63,15 @@ export interface BridgeConfig {
 	 * behavior is byte-identical to pre-Track-2.
 	 */
 	founderConsent?: FounderConsentConfig;
+	/**
+	 * FLY-1018 M4: scoped token for the gemini-agent tool surface
+	 * (`TEAMLEAD_GEMINI_AGENT_TOKEN`). When set, a Bearer of this value
+	 * reaches ONLY the 6+1 tool routes (server-side enforcement of the
+	 * client-side whitelist). Unset = byte-compatible zero change.
+	 * loadConfig() refuses to start when it equals the master apiToken and
+	 * ignores it (with an ERROR log) when apiToken is unset.
+	 */
+	geminiAgentToken?: string;
 }
 
 // ──────────────────────────────────────────────────────────────────────

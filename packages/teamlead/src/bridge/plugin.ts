@@ -326,6 +326,7 @@ import {
 	defaultGetCommDbPath,
 	isCaptureError,
 } from "./session-capture.js";
+import { createShipApprovalHandler } from "./ship-approval-route.js";
 import {
 	defaultHasGateResponse,
 	defaultIsAncestor,
@@ -677,15 +678,67 @@ function resolveReportsTtlMs(raw: string | undefined): number {
 	return DEFAULT_RETENTION_MAX_AGE_MS;
 }
 
-function tokenAuthMiddleware(token?: string): express.RequestHandler {
+/**
+ * FLY-1018 M4: the scoped gemini-agent token's reachable set — server-side
+ * enforcement of the client-side whitelist (method + exact path). Everything
+ * else answers 403 for the scoped token; the master token is unaffected.
+ * The reserved /api/actions/* surface is OUTSIDE this set by construction.
+ */
+const GEMINI_SCOPED_REACHABLE: Array<{ method: string; pattern: RegExp }> = [
+	{ method: "POST", pattern: /^\/api\/linear\/create-issue$/ },
+	{ method: "POST", pattern: /^\/api\/runs\/start$/ },
+	{ method: "GET", pattern: /^\/api\/sessions\/[^/]+\/status$/ },
+	{ method: "POST", pattern: /^\/api\/memory\/search$/ },
+	{ method: "POST", pattern: /^\/api\/memory\/add$/ },
+	{ method: "POST", pattern: /^\/api\/ship-approval-request$/ },
+];
+
+export function isGeminiScopedReachable(
+	method: string,
+	fullPath: string,
+): boolean {
+	return GEMINI_SCOPED_REACHABLE.some(
+		(r) => r.method === method && r.pattern.test(fullPath),
+	);
+}
+
+/**
+ * Bearer auth. Master token → full access (unchanged behavior). FLY-1018
+ * M4: when a scoped token is configured (second arg — only /api mounts
+ * pass it; the ingest mount does not), a Bearer of the scoped value
+ * reaches ONLY the gemini-agent tool routes; anything else is 403 with a
+ * Bridge log line (path + time, never the token). No token configured =
+ * middleware no-ops (pre-existing posture, byte-compatible).
+ */
+export function tokenAuthMiddleware(
+	token?: string,
+	geminiScopedToken?: string,
+): express.RequestHandler {
 	return (req, res, next) => {
 		if (!token) return next();
 		const header = req.headers.authorization ?? "";
-		if (!safeCompare(header, `Bearer ${token}`)) {
-			res.status(401).json({ error: "unauthorized" });
+		if (safeCompare(header, `Bearer ${token}`)) {
+			next();
 			return;
 		}
-		next();
+		if (
+			geminiScopedToken &&
+			safeCompare(header, `Bearer ${geminiScopedToken}`)
+		) {
+			// req.path is mount-relative under app.use("/api/...", ...) —
+			// baseUrl + path is the full request path in both mount styles.
+			const fullPath = `${req.baseUrl ?? ""}${req.path}`;
+			if (isGeminiScopedReachable(req.method, fullPath)) {
+				next();
+				return;
+			}
+			console.error(
+				`[scoped-token] 403 ${req.method} ${fullPath} at ${new Date().toISOString()} (gemini-agent scoped token outside its reachable set)`,
+			);
+			res.status(403).json({ error: "forbidden for scoped token" });
+			return;
+		}
+		res.status(401).json({ error: "unauthorized" });
 	};
 }
 
@@ -945,6 +998,22 @@ export function createBridgeApp(
 ): express.Application {
 	const app = express();
 	app.disable("x-powered-by");
+
+	// FLY-1018 (Codex code-review R1): the ship-approval-request tokenless
+	// guard must answer 503 BEFORE the body is parsed. Mounted ahead of the
+	// global JSON parser so a tokenless deployment 503s even for malformed
+	// or oversized bodies (which would otherwise hit the parser's 400/413
+	// first). The route handler keeps its own defensive 503 for direct
+	// mounts/tests; this early guard is what makes the "before parse"
+	// contract true in the real stack. Token configured = no-op (the guard
+	// is not even mounted — byte-compatible).
+	if (!config.apiToken) {
+		app.post("/api/ship-approval-request", (_req, res) => {
+			res
+				.status(503)
+				.json({ ok: false, error: "bridge api token not configured" });
+		});
+	}
 
 	app.use(express.json({ limit: "512kb" }));
 
@@ -1460,7 +1529,7 @@ export function createBridgeApp(
 	// /api/* — api auth
 	app.use(
 		"/api",
-		tokenAuthMiddleware(config.apiToken),
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		createQueryRouter(store, projects, {
 			retryDispatcher,
 			captureSessionFn,
@@ -1487,7 +1556,7 @@ export function createBridgeApp(
 	);
 	app.use(
 		"/api/actions",
-		tokenAuthMiddleware(config.apiToken),
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		fcMw("action_router"),
 		createActionRouter(
 			store,
@@ -1523,7 +1592,7 @@ export function createBridgeApp(
 			// approval write. The CLI side already requires TEAMLEAD_API_TOKEN
 			// (respond.ts routeThroughBridge), so this aligns Bridge with CLI.
 			config.apiToken
-				? tokenAuthMiddleware(config.apiToken)
+				? tokenAuthMiddleware(config.apiToken, config.geminiAgentToken)
 				: (((_req, res) => {
 						res.status(503).json({
 							error:
@@ -1535,7 +1604,7 @@ export function createBridgeApp(
 		if (fcWiring.debugRouter) {
 			app.use(
 				"/api/founder-consent/audit",
-				tokenAuthMiddleware(config.apiToken),
+				tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 				fcWiring.debugRouter,
 			);
 		}
@@ -1562,7 +1631,7 @@ export function createBridgeApp(
 		);
 		app.post(
 			"/api/lead-outbound/send",
-			tokenAuthMiddleware(config.apiToken),
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 			(req, res) => {
 				void codexLeadOutbound(req, res);
 			},
@@ -1571,7 +1640,7 @@ export function createBridgeApp(
 
 	app.post(
 		"/api/sessions/:executionId/close-tmux",
-		tokenAuthMiddleware(config.apiToken),
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		fcMw("close_tmux"),
 		async (req, res) => {
 			const executionId = req.params.executionId as string;
@@ -1653,7 +1722,7 @@ export function createBridgeApp(
 	// outcomes). Distinct from close-tmux (resource janitor, FLY-44 guard).
 	app.post(
 		"/api/sessions/:executionId/close-runner",
-		tokenAuthMiddleware(config.apiToken),
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		fcMw("close_runner"),
 		async (req, res) => {
 			const executionId = req.params.executionId as string;
@@ -1782,7 +1851,7 @@ export function createBridgeApp(
 			store,
 			projects: projects ?? [],
 			captureSessionFn: defaultCaptureSession,
-			auth: tokenAuthMiddleware(config.apiToken),
+			auth: tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 			// FLY-253: stable callback over the late-bound holder (Codex R2 #4);
 			// null holder / null detector ⇒ no-op, DB latch still deleted.
 			onRearm: (executionId) =>
@@ -1797,7 +1866,7 @@ export function createBridgeApp(
 	// With notify=true, groups stale sessions by Lead and sends Discord summary
 	app.post(
 		"/api/patrol/scan-stale",
-		tokenAuthMiddleware(config.apiToken),
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		async (req, res) => {
 			const { thresholdHours, notify } = (req.body ?? {}) as {
 				thresholdHours?: number;
@@ -2004,7 +2073,7 @@ export function createBridgeApp(
 	if (cipherWriter) {
 		app.post(
 			"/api/cipher-principle",
-			tokenAuthMiddleware(config.apiToken),
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 			async (req, res) => {
 				const { principleId, action } = req.body as {
 					principleId?: string;
@@ -2050,10 +2119,16 @@ export function createBridgeApp(
 		);
 	}
 
+	// FLY-1060 QA F1: discriminates caller-supplied label ids (pre-F1 contract,
+	// forwarded verbatim) from label NAMES (the tool-schema contract, resolved
+	// team-scoped). A real label name is never UUID-shaped.
+	const UUID_SHAPED_LABEL_RE =
+		/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 	// Linear API proxy — agent doesn't hold LINEAR_API_KEY directly (GEO-187)
 	app.post(
 		"/api/linear/create-issue",
-		tokenAuthMiddleware(config.apiToken),
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		async (req, res) => {
 			if (!config.linearApiKey) {
 				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
@@ -2194,34 +2269,71 @@ export function createBridgeApp(
 					}
 				}
 
-				// FLY-371: scope label resolution (name → id), TEAM-SCOPED (Codex R1
-				// HIGH-2). This is the only safety boundary between a label NAME and the
-				// id that create forwards straight to Linear as labelIds.
-				let labelIds: string[] | undefined = labels;
-				const scopeLabelName = binding.binding?.label;
-				if (scopeLabelName) {
+				// Label resolution (name → id), TEAM-SCOPED (FLY-371 Codex R1 HIGH-2).
+				// FLY-1060 QA F1: caller `labels` are NAMES per the tool contract —
+				// pre-F1 they were forwarded verbatim as Linear labelIds, so every
+				// label-bearing create 502'd ("labelIds must be a UUID"). Each name
+				// now resolves exactly like the scope label; UUID-shaped entries pass
+				// through untouched (pre-F1 id-passing callers stay byte-compatible).
+				const resolveTeamScopedLabel = async (
+					name: string,
+					kind: "Label" | "Scope label",
+				): Promise<
+					| { ok: true; id: string }
+					| { ok: false; status: number; error: string }
+				> => {
 					const matches = await client.issueLabels({
 						first: 2,
 						filter: {
-							name: { eq: scopeLabelName },
+							name: { eq: name },
 							team: { id: { eq: targetTeam.id } },
 						},
 					});
 					if (matches.nodes.length === 0) {
-						res.status(404).json({
-							error: `Scope label "${scopeLabelName}" not found in team "${targetTeam.key}"`,
-						});
-						return;
+						return {
+							ok: false,
+							status: 404,
+							error: `${kind} "${name}" not found in team "${targetTeam.key}"`,
+						};
 					}
 					if (matches.nodes.length > 1) {
-						res.status(400).json({
-							error: `Scope label "${scopeLabelName}" is ambiguous in team "${targetTeam.key}" (multiple matches)`,
-						});
+						return {
+							ok: false,
+							status: 400,
+							error: `${kind} "${name}" is ambiguous in team "${targetTeam.key}" (multiple matches)`,
+						};
+					}
+					return { ok: true, id: matches.nodes[0]!.id };
+				};
+
+				let labelIds: string[] | undefined;
+				if (Array.isArray(labels)) {
+					labelIds = [];
+					for (const label of labels as string[]) {
+						if (UUID_SHAPED_LABEL_RE.test(label)) {
+							if (!labelIds.includes(label)) labelIds.push(label);
+							continue;
+						}
+						const resolved = await resolveTeamScopedLabel(label, "Label");
+						if (!resolved.ok) {
+							res.status(resolved.status).json({ error: resolved.error });
+							return;
+						}
+						if (!labelIds.includes(resolved.id)) labelIds.push(resolved.id);
+					}
+				}
+				const scopeLabelName = binding.binding?.label;
+				if (scopeLabelName) {
+					const resolved = await resolveTeamScopedLabel(
+						scopeLabelName,
+						"Scope label",
+					);
+					if (!resolved.ok) {
+						res.status(resolved.status).json({ error: resolved.error });
 						return;
 					}
-					const scopeLabelId = matches.nodes[0]!.id;
-					const merged = Array.isArray(labels) ? [...labels] : [];
-					if (!merged.includes(scopeLabelId)) merged.push(scopeLabelId);
+					const merged = labelIds ? [...labelIds] : [];
+					if (!merged.includes(resolved.id)) merged.push(resolved.id);
 					labelIds = merged;
 				}
 
@@ -2255,7 +2367,7 @@ export function createBridgeApp(
 
 	app.patch(
 		"/api/linear/update-issue",
-		tokenAuthMiddleware(config.apiToken),
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		async (req, res) => {
 			if (!config.linearApiKey) {
 				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
@@ -2323,7 +2435,7 @@ export function createBridgeApp(
 	// Linear query proxy — list issues with filters (GEO-276, refactored GEO-294)
 	app.get(
 		"/api/linear/issues",
-		tokenAuthMiddleware(config.apiToken),
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		async (req, res) => {
 			if (!config.linearApiKey) {
 				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
@@ -2561,7 +2673,7 @@ export function createBridgeApp(
 	// FLY-21: Combined triage data endpoint — issues + sessions + capacity in one call
 	app.use(
 		"/api/triage/data",
-		tokenAuthMiddleware(config.apiToken),
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		createTriageDataRouter(
 			store,
 			projects,
@@ -2575,7 +2687,7 @@ export function createBridgeApp(
 	const templatePath = resolve(__dirname, "../../static/triage-template.html");
 	app.use(
 		"/api/triage/template",
-		tokenAuthMiddleware(config.apiToken),
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		createTriageTemplateRouter(templatePath),
 	);
 
@@ -2583,15 +2695,33 @@ export function createBridgeApp(
 	if (memoryService) {
 		app.use(
 			"/api/memory",
-			tokenAuthMiddleware(config.apiToken),
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 			createMemoryRouter(memoryService, projects),
 		);
 	}
 
+	// FLY-1018: gemini-agent's request-shaped ship surface. Files a
+	// ship_approval_request lead event (transactional outbox in StateStore);
+	// creates NO approve_to_ship gate, writes NO CommDB, and carries no ship
+	// authority — the verified approve_to_ship + verify-approval chain is
+	// untouched. Tokenless deployments answer 503 inside the handler.
+	app.post(
+		"/api/ship-approval-request",
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
+		createShipApprovalHandler({
+			store,
+			projects,
+			registry: {
+				getForLead: (agentId) => registry?.getForLead(agentId),
+			},
+			apiTokenConfigured: Boolean(config.apiToken),
+		}),
+	);
+
 	// Discord guild ID endpoint (GEO-187) — agent can query to build Discord channel/thread links
 	app.get(
 		"/api/config/discord-guild-id",
-		tokenAuthMiddleware(config.apiToken),
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		(_req, res) => {
 			if (!config.discordGuildId) {
 				res.status(404).json({ error: "DISCORD_GUILD_ID not configured" });
@@ -2604,7 +2734,7 @@ export function createBridgeApp(
 	// GEO-195: Bootstrap endpoint — crash recovery for Claude Lead sessions
 	app.post(
 		"/api/bootstrap/:leadId",
-		tokenAuthMiddleware(config.apiToken),
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		async (req, res) => {
 			const { leadId } = req.params;
 			if (!leadId || typeof leadId !== "string") {
@@ -2764,7 +2894,11 @@ export function createBridgeApp(
 			staleBlockerGuard,
 		);
 		if (config.apiToken) {
-			app.use("/api/runs", tokenAuthMiddleware(config.apiToken), runsRouter);
+			app.use(
+				"/api/runs",
+				tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
+				runsRouter,
+			);
 		} else {
 			app.use("/api/runs", runsRouter);
 		}
@@ -2779,7 +2913,7 @@ export function createBridgeApp(
 		if (config.apiToken) {
 			app.use(
 				"/api/standup",
-				tokenAuthMiddleware(config.apiToken),
+				tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 				standupRouter,
 			);
 		} else {
@@ -2792,7 +2926,7 @@ export function createBridgeApp(
 	if (config.apiToken) {
 		app.use(
 			"/api/publish-html",
-			tokenAuthMiddleware(config.apiToken),
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 			publishHtmlRouter,
 		);
 	} else {
@@ -2827,7 +2961,7 @@ export function createBridgeApp(
 	if (config.apiToken) {
 		app.use(
 			"/api/reports",
-			tokenAuthMiddleware(config.apiToken),
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 			reportsRouter,
 		);
 	} else {
@@ -2858,7 +2992,7 @@ export function createBridgeApp(
 		if (config.apiToken) {
 			app.use(
 				"/api/digest",
-				tokenAuthMiddleware(config.apiToken),
+				tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 				digestRouter,
 			);
 		} else {
@@ -2878,7 +3012,7 @@ export function createBridgeApp(
 	if (config.apiToken) {
 		app.use(
 			"/api/deployments",
-			tokenAuthMiddleware(config.apiToken),
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 			createDeploymentsRouter(store),
 		);
 	} else {
@@ -2896,7 +3030,7 @@ export function createBridgeApp(
 	if (config.apiToken) {
 		app.use(
 			"/api/account-switch",
-			tokenAuthMiddleware(config.apiToken),
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 			createAccountSwitchRouter({
 				getRuntime: () => opts?.accountSwitchRoute?.current,
 			}),
@@ -2917,7 +3051,7 @@ export function createBridgeApp(
 	if (config.apiToken) {
 		app.use(
 			"/api/rescue",
-			tokenAuthMiddleware(config.apiToken),
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 			createRescueRouter({
 				getRuntime: () => opts?.rescueRoute?.current,
 			}),
@@ -4215,7 +4349,7 @@ export async function startBridge(
 	// runs the SAME flip+wake post-write hook as the text/reaction sources.
 	app.use(
 		"/api/voice",
-		tokenAuthMiddleware(config.apiToken),
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		createVoiceRouter({
 			store,
 			projects,

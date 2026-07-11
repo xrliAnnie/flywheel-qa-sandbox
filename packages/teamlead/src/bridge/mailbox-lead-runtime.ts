@@ -28,6 +28,7 @@ import {
 	formatDurationMs,
 	formatGateQuestion,
 	formatMisroutedReport,
+	formatShipApprovalRequest,
 	formatStuckEscalation,
 } from "./hook-payload.js";
 import type {
@@ -267,6 +268,13 @@ export class MailboxLeadRuntime implements LeadRuntime {
 			];
 			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
 			return lines.join("\n");
+		}
+
+		// FLY-1018: ship_approval_request — gemini-agent's request-shaped ship
+		// surface. Shared renderer (parity-by-construction, FLY-195 lesson):
+		// PR URL / requester / "nothing merged" note must render verbatim.
+		if (e.event_type === "ship_approval_request") {
+			return formatShipApprovalRequest(env);
 		}
 
 		// FLY-195 hotfix: runner_stuck_escalation MUST render the

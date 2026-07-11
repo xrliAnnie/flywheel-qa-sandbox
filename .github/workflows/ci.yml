@@ -172,6 +172,13 @@ jobs:
       - name: Test — FLY-697 codex-log-guard
         run: bash scripts/__tests__/codex-log-guard.test.sh
 
+      # FLY-1018: gemini-agent static guard. Pure grep assertions over
+      # packages/gemini-agent/src — zero reserved endpoints, zero forbidden
+      # imports, zero privileged credentials, exactly 6 tool declarations.
+      # Widening the agent's surface must be an explicit, reviewable act.
+      - name: Test — FLY-1018 gemini-agent guard
+        run: bash scripts/gemini-agent-guard.sh
+
       # FLY-880: internal PM agent role .md contract guard. Pure text assertions
       # (no external deps) — defends the 40k injection-truncation red line and the
       # product-co-creation (mode A) + inherited docs/design (mode B) anchors
