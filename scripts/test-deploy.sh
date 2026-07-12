@@ -18,6 +18,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=lib/qa-room.sh
 source "${SCRIPT_DIR}/lib/qa-room.sh"
 
+# FLY-1189: multi-Lead (single Bridge, ≥2 real test Leads) additive extension.
+# All flags default OFF → byte-identical behavior (guarded by
+# scripts/__tests__/test-deploy-multilead.test.sh A1-A3).
+# shellcheck source=lib/qa-multilead.sh
+source "${SCRIPT_DIR}/lib/qa-multilead.sh"
+
 # ── Load environment ──────────────────────────────────
 ENV_FILE="${HOME}/.flywheel/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -63,7 +69,10 @@ if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
   else
     TEST_TEAMLEAD_API_TOKEN="$TEST_API_TOKEN"
   fi
-  log "TEST_REPLY_BY_ISSUE=1 — reply-by-issue routes will be enabled with TEAMLEAD_API_TOKEN=${TEST_TEAMLEAD_API_TOKEN:0:24}…"
+  # FLY-1189 (Codex R1 MED): do NOT log any token characters — even a 24-char
+  # prefix is a partial secret and the QA smoke persists this log to a campaign
+  # file. Report presence + length only.
+  log "TEST_REPLY_BY_ISSUE=1 — reply-by-issue routes will be enabled with TEAMLEAD_API_TOKEN=<redacted len=${#TEST_TEAMLEAD_API_TOKEN}>"
 else
   TEST_TEAMLEAD_API_TOKEN=""
 fi
@@ -126,6 +135,14 @@ ALERTS=0      # FLY-529: --alerts wires the isolated test alert channel (any mod
 DIGEST_CHANNEL=""  # FLY-727: --digest <id> mounts the daily-digest route on the slot
                    # Bridge (FLYWHEEL_DIGEST_CHANNEL) so a real staging E2E can render
                    # /api/digest/render + deliver to an isolated test channel.
+EXTRA_LEAD_SPECS=()       # FLY-1189: --extra-lead <slotId>:<deptLabel> (repeatable) —
+                          # borrow another slot's bot/channel as a SECOND real Lead on
+                          # THIS slot's single Bridge (N-to-N routing topology).
+LEAD_LABEL=""             # FLY-1189: --lead-label <deptLabel> narrows the MAIN lead's
+                          # match.labels from ["*"] to the explicit label.
+DETECTION_LEAD_GRACE_MS="" # FLY-1189: --detection-lead-grace-ms <ms> appends
+                          # detection.lead_grace_ms to the generated canonical
+                          # .flywheel/config.yaml (PR-C per-project override seam).
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from-branch)
@@ -142,6 +159,18 @@ while [[ $# -gt 0 ]]; do
       DIGEST_CHANNEL="${2:?--digest requires a channel id}"; shift 2 ;;
     --digest=*)
       DIGEST_CHANNEL="${1#*=}"; shift ;;
+    --extra-lead)
+      EXTRA_LEAD_SPECS+=("${2:?--extra-lead requires <slotId>:<deptLabel>}"); shift 2 ;;
+    --extra-lead=*)
+      EXTRA_LEAD_SPECS+=("${1#*=}"); shift ;;
+    --lead-label)
+      LEAD_LABEL="${2:?--lead-label requires a value}"; shift 2 ;;
+    --lead-label=*)
+      LEAD_LABEL="${1#*=}"; shift ;;
+    --detection-lead-grace-ms)
+      DETECTION_LEAD_GRACE_MS="${2:?--detection-lead-grace-ms requires a value}"; shift 2 ;;
+    --detection-lead-grace-ms=*)
+      DETECTION_LEAD_GRACE_MS="${1#*=}"; shift ;;
     -h|--help)
       sed -n '2,12p' "$0"; exit 0 ;;
     [0-9]*)
@@ -187,6 +216,36 @@ if [[ "$MODE" == "mirror" ]]; then
         ;;
     esac
   fi
+fi
+
+# ── FLY-1189: multi-Lead campaign validation (BEFORE expensive preflight) ──
+# Same fail-in-milliseconds discipline as the mirror-mode validation above.
+# EXTRA_LEADS_JSON carries the resolved per-slot fields (agentId / botAppId /
+# tokenEnvVar / chatChannel / role / identitySource) + slotId + deptLabel +
+# labels — the single source the projects builder, Lead startup, and
+# manifests all consume. Token VALUES are resolved lazily via indirection at
+# use points and never enter the JSON.
+EXTRA_LEADS_JSON="[]"
+if [[ -n "$DETECTION_LEAD_GRACE_MS" ]]; then
+  qa_multilead_validate_grace_ms "$DETECTION_LEAD_GRACE_MS" || exit 1
+fi
+if [[ -n "$LEAD_LABEL" && ! "$LEAD_LABEL" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "ERROR: --lead-label '${LEAD_LABEL}' invalid (charset [A-Za-z0-9._-])" >&2
+  exit 1
+fi
+if (( ${#EXTRA_LEAD_SPECS[@]} > 0 )); then
+  EXTRA_LEADS_JSON=$(qa_multilead_validate_campaign_args \
+    "$SLOTS_FILE" "$MODE" "$REQUESTED_SLOT" "${EXTRA_LEAD_SPECS[@]}") || exit 1
+  # Every extra Lead's bot token env must resolve NOW — a missing token after
+  # the main Lead is already up would strand a half-built campaign.
+  while IFS= read -r XTOKEN_ENV_NAME; do
+    [[ -z "$XTOKEN_ENV_NAME" ]] && continue
+    if [[ -z "${!XTOKEN_ENV_NAME:-}" ]]; then
+      echo "ERROR: ${XTOKEN_ENV_NAME} (extra-lead bot token env) not set in environment." >&2
+      exit 1
+    fi
+  done < <(jq -r '.[].tokenEnvVar' <<<"$EXTRA_LEADS_JSON")
+  log "Campaign validated: main slot ${REQUESTED_SLOT} + extra lead(s) $(jq -c 'map({slotId, agentId, deptLabel})' <<<"$EXTRA_LEADS_JSON")"
 fi
 
 # ── FLY-115: Pre-flight ───────────────────────────────
@@ -304,8 +363,29 @@ trap - EXIT
 
 SLOT=""
 
+# FLY-1189: stale-teardown hook for the campaign claim set (mirrors what
+# claim_slot() does inline for a single slot).
+campaign_stale_teardown() {
+  bash "${SCRIPT_DIR}/test-teardown.sh" "$1" >&2
+}
+CAMPAIGN_SLOT_IDS=()
+
 if [[ -n "$REQUESTED_SLOT" ]]; then
-  if claim_slot "$REQUESTED_SLOT"; then
+  if (( ${#EXTRA_LEAD_SPECS[@]} > 0 )); then
+    # FLY-1189: claim the FULL campaign slot set (main + extras) atomically,
+    # sorted ascending (concurrent campaigns can't deadlock on claim order).
+    # Any single failure rolls back every lock newly claimed by this call.
+    CAMPAIGN_SLOT_IDS=("$REQUESTED_SLOT")
+    while IFS= read -r XSID; do
+      [[ -n "$XSID" ]] && CAMPAIGN_SLOT_IDS+=("$XSID")
+    done < <(jq -r '.[].slotId' <<<"$EXTRA_LEADS_JSON")
+    if qa_multilead_claim_set /tmp campaign_stale_teardown "${CAMPAIGN_SLOT_IDS[@]}" >/dev/null; then
+      SLOT="$REQUESTED_SLOT"
+    else
+      echo "ERROR: campaign slot set (${CAMPAIGN_SLOT_IDS[*]}) claim failed — no locks held." >&2
+      exit 1
+    fi
+  elif claim_slot "$REQUESTED_SLOT"; then
     SLOT="$REQUESTED_SLOT"
   else
     echo "ERROR: Slot ${REQUESTED_SLOT} is in use." >&2
@@ -337,6 +417,25 @@ cleanup_on_failure() {
     log "Deploy interrupted — releasing slot ${SLOT} lock"
     rm -rf "$lock"
   fi
+  # FLY-1189: campaign rollback — extra Leads + borrowed locks still in
+  # "claiming" state (finalize flips them to the live Bridge PID; a finalized
+  # campaign is NEVER torn down here). Runs regardless of the main lock's
+  # state — some legacy failure paths rm the main lock themselves before exit.
+  local cm="/tmp/flywheel-test-slot-${SLOT}/campaign-manifest.json"
+  local xsid xlock xpid
+  for xsid in ${CAMPAIGN_SLOT_IDS[@]+"${CAMPAIGN_SLOT_IDS[@]}"}; do
+    [[ "$xsid" == "$SLOT" ]] && continue
+    xlock="/tmp/flywheel-test-slot-${xsid}.lock"
+    xpid=$(cat "$xlock/pid" 2>/dev/null || echo "")
+    if [[ "$xpid" == "claiming" ]]; then
+      if [[ -n "$cm" && -f "$cm" ]]; then
+        qa_multilead_teardown_extra_leads "$cm" 2>/dev/null || true
+        cm=""
+      fi
+      log "Deploy interrupted — releasing borrowed slot ${xsid} lock"
+      rm -rf "$xlock"
+    fi
+  done
 }
 trap cleanup_on_failure EXIT
 
@@ -462,6 +561,20 @@ mkdir -p "${SLOT_DIR}/discord-state"
 # `set -u` would otherwise abort).
 LEAD_EXTRA_ENV=()
 BRIDGE_EXTRA_ENV=()
+# FLY-1189: the single Bridge hosts multiple dept Leads. PR-C's detection /
+# founder escalation posts to each owner Lead's [FLY-XX] thread with THAT lead's
+# botToken (resolveLeadForIssue → lead.botToken), and loadProjects() resolves
+# lead.botToken from process.env[botTokenEnv] at boot. So EVERY extra lead's
+# token env must reach the Bridge — otherwise lead.botToken is empty and the post
+# falls back to config.discordBotToken (the HOST bot), which is not a member of
+# the dept channel → HTTP 403 (found in FLY-1189 QA: thread-note + founder page
+# both 403'd because only the host TEST_BOT_TOKEN_1 was in the Bridge env). The
+# host token is already passed as `${BOT_TOKEN_ENV}=…`; add the extras here.
+if [[ "${EXTRA_LEADS_JSON:-[]}" != "[]" ]]; then
+  while IFS= read -r _xtenv; do
+    [[ -n "$_xtenv" ]] && BRIDGE_EXTRA_ENV+=("${_xtenv}=${!_xtenv:-}")
+  done < <(jq -r '.[].tokenEnvVar' <<<"$EXTRA_LEADS_JSON")
+fi
 ROUNDTABLE_CHANNEL_ID=""
 ROUNDTABLE_IDENTITY_NOTE=""
 
@@ -645,38 +758,20 @@ TEST_PROJECT_NAME="test-slot-${SLOT}"
 # validation — values are inert because the sandbox never talks to real
 # Linear/Discord routing logic during the test.
 mkdir -p "${HOST_REPO}/.flywheel"
-cat > "${HOST_REPO}/.flywheel/config.yaml" <<EOF
-# Generated by scripts/test-deploy.sh (FLY-115 v1.24.3) — sandbox test config.
-# DO NOT commit to xrliAnnie/flywheel-qa-sandbox; teardown wipes HOST_REPO.
-project: ${TEST_PROJECT_NAME}
-
-linear:
-  team_id: FLY
-
-runners:
-  default: claude
-  available:
-    claude:
-      type: claude
-      model: sonnet
-
-teams:
-  - name: default
-    orchestrators:
-      - type: dag
-        runner: claude
-
-decision_layer:
-  autonomy_level: advisor
-  escalation_channel: discord
-
-checkpoints:
-  approve_to_ship:
-    enabled: true
-    timeout_ms: 14400000     # 4h (FLY-159: ConfigLoader floor; anything lower is warn+raised)
-    timeout_behavior: fail-close
-EOF
-log "Wrote ${HOST_REPO}/.flywheel/config.yaml (approve_to_ship checkpoint enabled)"
+# FLY-1189: content generation extracted to qa_multilead_config_yaml — byte-
+# identical baseline (unit-guarded, test-deploy-multilead.test.sh A3). A
+# non-empty --detection-lead-grace-ms appends the detection.lead_grace_ms
+# override: this generation point is the ONLY viable injection seam for the
+# PR-C per-project grace (deploy re-clones the sandbox, rewrites this file,
+# and starts the Bridge in one uninterruptible call; Bridge reads the config
+# once at boot).
+qa_multilead_config_yaml "${TEST_PROJECT_NAME}" "${DETECTION_LEAD_GRACE_MS}" \
+  > "${HOST_REPO}/.flywheel/config.yaml"
+if [[ -n "$DETECTION_LEAD_GRACE_MS" ]]; then
+  log "Wrote ${HOST_REPO}/.flywheel/config.yaml (approve_to_ship checkpoint enabled; detection.lead_grace_ms=${DETECTION_LEAD_GRACE_MS})"
+else
+  log "Wrote ${HOST_REPO}/.flywheel/config.yaml (approve_to_ship checkpoint enabled)"
+fi
 
 # ── Generate DISCORD_STATE_DIR files ──────────────────
 # .env with test bot token
@@ -891,39 +986,26 @@ fi
 # env var instead of falling back to DISCORD_BOT_TOKEN.
 # FLY-163: forumChannel field removed; ProjectConfig now strips any deprecated
 # forumChannel key with a warning at load time.
-FLYWHEEL_PROJECTS=$(jq -n \
-  --arg projectName "$TEST_PROJECT_NAME" \
-  --arg projectRoot "$HOST_REPO" \
-  --arg projectRepo "$SANDBOX_SLUG" \
-  --arg agentId "$AGENT_ID" \
-  --arg chatChannel "$CHAT_CHANNEL_ID" \
-  --arg botTokenEnv "$BOT_TOKEN_ENV" \
-  --arg slotRole "$SLOT_ROLE" \
-  '
-  # FLY-173: for the cos test slot the chatChannel IS the test project core
-  # channel (mirrors Simba in prod where cos-lead.chatChannel == generalChannel).
-  # Setting generalChannel here makes the Bridge route classify cos-slot core
-  # posts as core-channel (allow) and lets claude-lead.sh derive a non-empty
-  # DISCORD_CORE_CHANNEL for the test pane — needed for AC12 (Bridge-down core
-  # fail-open). Department slots leave generalChannel unset (no exemption,
-  # cross-talk guard intact).
-  [
-    ({
-      projectName: $projectName,
-      projectRoot: $projectRoot,
-      projectRepo: $projectRepo,
-      leads: [
-        {
-          agentId: $agentId,
-          chatChannel: $chatChannel,
-          botTokenEnv: $botTokenEnv,
-          match: { labels: ["*"] }
-        }
-      ]
-    })
-    | if $slotRole == "cos" then . + { generalChannel: $chatChannel } else . end
-  ]
-  ')
+# FLY-173: for the cos test slot the chatChannel IS the test project core
+# channel (mirrors Simba in prod where cos-lead.chatChannel == generalChannel).
+# Setting generalChannel makes the Bridge route classify cos-slot core posts as
+# core-channel (allow) and lets claude-lead.sh derive a non-empty
+# DISCORD_CORE_CHANNEL for the test pane — needed for AC12 (Bridge-down core
+# fail-open). Department slots leave generalChannel unset (no exemption,
+# cross-talk guard intact).
+#
+# FLY-1189: builder extracted to qa_multilead_build_projects — byte-identical
+# with defaults (["*"] labels, no extras; unit-guarded A1/A2). --lead-label
+# narrows the MAIN lead's match.labels; --extra-lead appends additional leads
+# (own bot / channel / token env / dept label) to the SAME single project.
+MAIN_LABELS_JSON='["*"]'
+if [[ -n "$LEAD_LABEL" ]]; then
+  MAIN_LABELS_JSON=$(jq -cn --arg l "$LEAD_LABEL" '[$l]')
+fi
+FLYWHEEL_PROJECTS=$(qa_multilead_build_projects \
+  "$TEST_PROJECT_NAME" "$HOST_REPO" "$SANDBOX_SLUG" "$AGENT_ID" \
+  "$CHAT_CHANNEL_ID" "$BOT_TOKEN_ENV" "$SLOT_ROLE" \
+  "$MAIN_LABELS_JSON" "$EXTRA_LEADS_JSON")
 
 # FLY-529: when --alerts is on, inject the test alert channel + token env into
 # the test lead's projects entry so the SHELL-side lead-alert.sh (which resolves
@@ -936,6 +1018,16 @@ FLYWHEEL_PROJECTS=$(jq -n \
 if [[ "$ALERTS" == "1" ]]; then
   FLYWHEEL_PROJECTS=$(printf '%s' "$FLYWHEEL_PROJECTS" \
     | qa_room_inject_alert_into_projects "$AGENT_ID" "$ALERT_CHANNEL_ID" "$BOT_TOKEN_ENV")
+  # FLY-1189: extra Leads get the same shell-side lead-alert.sh parity — each
+  # entry resolves the test alert channel + ITS OWN token env from the
+  # projects file.
+  if (( ${#EXTRA_LEAD_SPECS[@]} > 0 )); then
+    while IFS=$'\t' read -r XAGENT XTOKEN_ENV_NAME; do
+      [[ -z "$XAGENT" ]] && continue
+      FLYWHEEL_PROJECTS=$(printf '%s' "$FLYWHEEL_PROJECTS" \
+        | qa_room_inject_alert_into_projects "$XAGENT" "$ALERT_CHANNEL_ID" "$XTOKEN_ENV_NAME")
+    done < <(jq -r '.[] | [.agentId, .tokenEnvVar] | @tsv' <<<"$EXTRA_LEADS_JSON")
+  fi
 fi
 
 # FLY-153 R2 #3: persist FLYWHEEL_PROJECTS to disk so the smoke test (and any
@@ -1055,6 +1147,224 @@ if [[ "$LEAD_READY" != "true" ]]; then
   exit 1
 fi
 
+# ── FLY-1189 Step 2b: Start extra test Leads (campaign mode only) ──────────
+# Each extra Lead = another slot's bot + channel, attached to THIS slot's
+# single Bridge via the multi-lead FLYWHEEL_PROJECTS built above. All extra
+# Lead resources live under ${SLOT_DIR}/extra-leads/slot-<N>/ so the OWNER
+# slot's teardown wipes everything; the borrowed slot's own SLOT_DIR is never
+# created.
+CAMPAIGN_ID=""
+CAMPAIGN_MANIFEST_FILE=""
+
+# Dev-channels prompt confirmation for a named tmux window (same logic as the
+# main Lead's inline Step 1b block; extracted for the extra Leads only so the
+# main path stays verbatim).
+confirm_dev_channels_prompt() {
+  local win_name="$1"
+  local win_id=""
+  local i pane hit=false
+  for i in $(seq 1 30); do
+    win_id=$(tmux list-windows -t flywheel -F '#{window_id} #{window_name}' 2>/dev/null \
+      | awk -v n="$win_name" '$2==n {print $1; exit}')
+    [[ -n "$win_id" ]] && break
+    sleep 1
+  done
+  if [[ -z "$win_id" ]]; then
+    log "WARN: tmux window '${win_name}' not found after 30s"
+    return 0
+  fi
+  log "tmux window for ${win_name}: ${win_id}"
+  for i in $(seq 1 30); do
+    pane=$(tmux capture-pane -t "$win_id" -p 2>/dev/null || echo "")
+    if echo "$pane" | grep -qE "Loading development channels|am using this for local|development channels"; then
+      log "Detected dev-channels prompt on ${win_name}, sending '1' Enter"
+      tmux send-keys -t "$win_id" "1" 2>/dev/null || true
+      sleep 0.3
+      tmux send-keys -t "$win_id" Enter 2>/dev/null || true
+      hit=true
+      break
+    fi
+    sleep 1
+  done
+  [[ "$hit" == "false" ]] && log "No dev-channels prompt observed on ${win_name}"
+  return 0
+}
+
+if (( ${#EXTRA_LEAD_SPECS[@]} > 0 )); then
+  CAMPAIGN_ID="fly1189-$(date +%s)-slot${SLOT}"
+  CAMPAIGN_MANIFEST_FILE="${SLOT_DIR}/campaign-manifest.json"
+  EXTRA_LEAD_BG_PIDS=()
+
+  campaign_abort() {
+    log "ERROR: $1 — aborting campaign deploy"
+    local p
+    for p in ${EXTRA_LEAD_BG_PIDS[@]+"${EXTRA_LEAD_BG_PIDS[@]}"}; do
+      kill "$p" 2>/dev/null || true
+    done
+    kill "$LEAD_BG_PID" 2>/dev/null || true
+    if [[ -f "$CAMPAIGN_MANIFEST_FILE" ]]; then
+      qa_multilead_teardown_extra_leads "$CAMPAIGN_MANIFEST_FILE" || true
+    fi
+    local xsid
+    for xsid in ${CAMPAIGN_SLOT_IDS[@]+"${CAMPAIGN_SLOT_IDS[@]}"}; do
+      rm -rf "/tmp/flywheel-test-slot-${xsid}.lock"
+    done
+    exit 1
+  }
+
+  # Write the campaign manifest BEFORE starting anything — every resource path
+  # is deterministic, so failure paths (campaign_abort, cleanup_on_failure,
+  # test-teardown.sh) can always clean by manifest even mid-startup.
+  EXTRA_LEADS_MANIFEST=$(jq \
+    --arg home "$HOME" --arg pn "$TEST_PROJECT_NAME" --arg slotdir "$SLOT_DIR" \
+    'map({
+      slotId, agentId, deptLabel,
+      chatChannelId: .chatChannel,
+      botTokenEnv: .tokenEnvVar,
+      tmuxWindow: ($pn + "-" + .agentId),
+      stateDir: ($slotdir + "/extra-leads/slot-" + (.slotId | tostring)),
+      pidFile: ($home + "/.flywheel/pids/" + $pn + "-" + .agentId + ".pid"),
+      sessionIdFile: ($home + "/.flywheel/claude-sessions/" + $pn + "-" + .agentId + ".session-id"),
+      leadManifest: ($home + "/.flywheel/manifests/" + $pn + "-" + .agentId + ".json"),
+      leadWorkspace: ($home + "/.flywheel/lead-workspace/" + .agentId)
+    })' <<<"$EXTRA_LEADS_JSON")
+  jq -n \
+    --arg cid "$CAMPAIGN_ID" \
+    --argjson owner "$SLOT" \
+    --arg pn "$TEST_PROJECT_NAME" \
+    --argjson borrowed "$(jq -c '[.[].slotId]' <<<"$EXTRA_LEADS_JSON")" \
+    --argjson extraLeads "$EXTRA_LEADS_MANIFEST" \
+    '{campaignId: $cid, ownerSlot: $owner, projectName: $pn, borrowedSlots: $borrowed, extraLeads: $extraLeads}' \
+    > "$CAMPAIGN_MANIFEST_FILE"
+  log "Wrote ${CAMPAIGN_MANIFEST_FILE}"
+
+  while IFS= read -r XLEAD; do
+    [[ -z "$XLEAD" ]] && continue
+    XSID=$(jq -r '.slotId' <<<"$XLEAD")
+    XAGENT=$(jq -r '.agentId' <<<"$XLEAD")
+    XBOT_ID=$(jq -r '.botAppId' <<<"$XLEAD")
+    XCHANNEL=$(jq -r '.chatChannel' <<<"$XLEAD")
+    XTOKEN_ENV_NAME=$(jq -r '.tokenEnvVar' <<<"$XLEAD")
+    XROLE=$(jq -r '.role' <<<"$XLEAD")
+    XIDENTITY_SOURCE=$(jq -r '.identitySource // empty' <<<"$XLEAD")
+    XLABEL=$(jq -r '.deptLabel' <<<"$XLEAD")
+    XTOKEN="${!XTOKEN_ENV_NAME:-}"
+    [[ -n "$XTOKEN" ]] || campaign_abort "extra-lead token env ${XTOKEN_ENV_NAME} empty"
+
+    XDIR="${SLOT_DIR}/extra-leads/slot-${XSID}"
+    mkdir -p "${XDIR}/discord-state"
+    cat > "${XDIR}/discord-state/.env" <<EOF
+DISCORD_BOT_TOKEN=${XTOKEN}
+EOF
+    chmod 600 "${XDIR}/discord-state/.env"
+    XALLOWBOTS=$(jq -n --arg self "$XBOT_ID" '[$self]')
+    XGROUPS=$(jq -n --arg chat "$XCHANNEL" '{ ($chat): { requireMention: false, allowFrom: [] } }')
+    cat > "${XDIR}/discord-state/access.json" <<EOF
+{"dmPolicy":"allowlist","allowFrom":[],"allowBots":${XALLOWBOTS},"groups":${XGROUPS},"pending":{}}
+EOF
+
+    # Identity: same source-allowlist + role fallback as the main Lead.
+    if [[ -n "$XIDENTITY_SOURCE" ]]; then
+      case "$XIDENTITY_SOURCE" in
+        cos-lead|product-lead|ops-lead) XSOURCE_SUBDIR="$XIDENTITY_SOURCE" ;;
+        *) campaign_abort "extra-lead slot ${XSID} identitySource '${XIDENTITY_SOURCE}' not in allowlist (cos-lead|product-lead|ops-lead)" ;;
+      esac
+    else
+      case "$XROLE" in
+        cos)  XSOURCE_SUBDIR="cos-lead" ;;
+        lead) XSOURCE_SUBDIR="product-lead" ;;
+        *)    campaign_abort "extra-lead slot ${XSID} unknown role '${XROLE}'" ;;
+      esac
+    fi
+    XPROD_IDENTITY="${HOME}/Dev/GeoForge3D/.lead/${XSOURCE_SUBDIR}/identity.md"
+    [[ -f "$XPROD_IDENTITY" ]] || campaign_abort "production identity not found: ${XPROD_IDENTITY}"
+
+    cat > "${XDIR}/test-identity.md" <<EOF
+---
+name: ${XAGENT}
+description: Flywheel TEST slot ${XSID} (${XROLE}, mode=extra-lead) — automated QA environment (campaign owner: slot ${SLOT})
+model: opus
+disallowedTools: Write, Edit, MultiEdit, Agent, NotebookEdit
+permissionMode: bypassPermissions
+---
+
+# TEST EXTRA-LEAD (slot ${XSID} bot on the slot ${SLOT} Bridge) — OVERRIDE (READ CAREFULLY)
+
+**This is an automated QA test environment, not production.**
+All channel IDs and bot IDs mentioned later in this file refer to PRODUCTION
+resources. You MUST replace them with the TEST identity below and must NOT
+interact with any production channel.
+
+## TEST IDENTITY OVERRIDE (highest priority)
+
+- **Your Bot ID**: \`${XBOT_ID}\` (overrides any bot ID in the sections below)
+
+- **Your ONLY top-level channel**: <#${XCHANNEL}> (channel ID \`${XCHANNEL}\`)
+- **Ignore** all other production channel IDs in "Channel Isolation Rules", "Core Channel Routing", "Discord Channel IDs", etc. — those belong to production.
+- **Threads inside your channel are in-scope** (FLY-162). Channel scope = \`chat_id == ${XCHANNEL}\` OR the inbound message is in a thread whose \`parent_id == ${XCHANNEL}\` (Discord plugin exposes \`parent_id\` on thread message envelopes). If \`parent_id\` is missing or you cannot infer it, fall back to \`GET /api/chat-threads/by-thread/<chat_id>\` — a 200 with any \`issueId\` confirms the thread is yours; a 404 means it is not. Only silent-ignore when both checks say "not yours" or when \`chat_id\` is a production channel ID enumerated below.
+- **Behavior rules** (when to announce session_started / session_completed / session_failed, message format, reactions) from the sections below STILL apply — but only inside <#${XCHANNEL}> and its threads.
+
+### Lead ID for API calls (FLY-60 W6 — overrides production identity name)
+
+**In this test slot you are \`${XAGENT}\`.** The Bridge scope-checks every API call against the configured \`agentId=${XAGENT}\` and 403-rejects any call that uses a production lead name.
+
+- **Your leadId for ALL API calls**: \`${XAGENT}\` (NOT \`product-lead\` / \`cos-lead\` / \`ops-lead\` from the production template below).
+- **Override scope**: every \`leadId\` value in the sections below — literal JSON strings, CLI flags, shell variable references — MUST be substituted to \`${XAGENT}\` before you run the command.
+- **Env vars for this slot**: \`LEAD_ID=${XAGENT}\` and \`FLYWHEEL_LEAD_ID=${XAGENT}\`.
+
+---
+
+# Production identity (reference for behavior rules)
+
+EOF
+    cat "$XPROD_IDENTITY" >> "${XDIR}/test-identity.md"
+
+    XLEAD_LOG="${XDIR}/lead.log"
+    XLEAD_ENV=(${LEAD_EXTRA_ENV[@]+"${LEAD_EXTRA_ENV[@]}"} "${XTOKEN_ENV_NAME}=${XTOKEN}")
+    log "Starting extra test Lead: ${XAGENT} (slot ${XSID} bot, label ${XLABEL}, channel ${XCHANNEL})"
+    env -u DISCORD_BOT_TOKEN \
+      DISCORD_BOT_TOKEN="${XTOKEN}" \
+      DISCORD_GUILD_ID="${GUILD_ID}" \
+      BRIDGE_URL="http://localhost:${SLOT_PORT}" \
+      DISCORD_STATE_DIR="${XDIR}/discord-state" \
+      AGENT_SOURCE="${XDIR}/test-identity.md" \
+      FLYWHEEL_LEAD_ROLE="${XROLE}" \
+      TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
+      FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
+      "${XLEAD_ENV[@]}" \
+      bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh" \
+        "${XAGENT}" "${HOST_REPO}" "${TEST_PROJECT_NAME}" \
+        < /dev/null > "${XLEAD_LOG}" 2>&1 &
+    EXTRA_LEAD_BG_PIDS+=($!)
+    log "Extra Lead ${XAGENT} background PID: $!"
+
+    confirm_dev_channels_prompt "${TEST_PROJECT_NAME}-${XAGENT}"
+
+    XLEASE_FILE="${LEASE_DIR}/.inbox-ready-${XAGENT}"
+    XLEAD_READY=false
+    for i in $(seq 1 60); do
+      if [[ -f "$XLEASE_FILE" ]]; then
+        XLEASE_PID=$(jq -r '.pid' "$XLEASE_FILE" 2>/dev/null || echo "")
+        if [[ -n "$XLEASE_PID" ]] && kill -0 "$XLEASE_PID" 2>/dev/null; then
+          XLEAD_READY=true
+          break
+        fi
+      fi
+      sleep 2
+    done
+    [[ "$XLEAD_READY" == "true" ]] || campaign_abort "extra Lead ${XAGENT} did not become ready within 120s (log: ${XLEAD_LOG})"
+    log "Extra Lead ${XAGENT} ready (lease alive)"
+  done < <(jq -c '.[]' <<<"$EXTRA_LEADS_JSON")
+
+  # Bridge must resolve EVERY lead's botTokenEnv by name (ProjectConfig
+  # dereferences process.env[botTokenEnv] per lead) — pass each extra token
+  # through explicitly (never logged).
+  while IFS= read -r XTOKEN_ENV_NAME; do
+    [[ -z "$XTOKEN_ENV_NAME" ]] && continue
+    BRIDGE_EXTRA_ENV+=("${XTOKEN_ENV_NAME}=${!XTOKEN_ENV_NAME}")
+  done < <(jq -r '.[].tokenEnvVar' <<<"$EXTRA_LEADS_JSON")
+fi
+
 # ── Step 3: Start test Bridge (file-backed DB, real-Runner env) ──
 # FLY-115 §4.5: file-backed teamlead.db so FLY-108 S4 chain is visible
 # across processes; TEAMLEAD_URL so Blueprint/TmuxAdapter forward
@@ -1084,6 +1394,7 @@ log "Starting test Bridge on port ${SLOT_PORT} (from-branch=${FROM_BRANCH})"
 if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
   env \
     TEAMLEAD_PORT="${SLOT_PORT}" \
+    DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}" \
     DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
     "${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}" \
     TEAMLEAD_DB_PATH="${SLOT_DIR}/teamlead.db" \
@@ -1126,8 +1437,12 @@ BRIDGE_PID=$!
 echo "$BRIDGE_PID" > "${SLOT_DIR}/bridge.pid"
 # Update slot lock with long-lived Bridge PID (prevents stale-lock misdetection)
 echo "$BRIDGE_PID" > "/tmp/flywheel-test-slot-${SLOT}.lock/pid"
-# Bridge PID written — disable failure cleanup trap
-trap - EXIT
+# NOTE: campaign lock FINALIZE + `trap - EXIT` are DEFERRED until AFTER the
+# Bridge health check below (Codex R1 MED): finalizing the borrowed locks and
+# disarming the failure trap before the Bridge is confirmed up would leak the
+# extra Leads + borrowed locks when the Bridge dies during startup. Until then
+# the borrowed locks stay in "claiming" state so cleanup_on_failure can release
+# them, and the extra Lead supervisors are torn down via the campaign manifest.
 log "Bridge PID: ${BRIDGE_PID}"
 
 # ── Step 4: Wait for Bridge HTTP ready ────────────────
@@ -1135,6 +1450,8 @@ log "Bridge PID: ${BRIDGE_PID}"
 # machine the Bridge (node loading the full teamlead dist) can take >30s to serve
 # /health while still starting normally. The kill -0 liveness check below still
 # fast-fails a genuinely crashed Bridge, so this only adds patience for slow starts.
+# On failure we exit; the still-armed cleanup_on_failure EXIT trap releases the
+# main lock AND (for a campaign) the borrowed locks + extra Leads.
 BRIDGE_READY=false
 for i in $(seq 1 120); do
   if curl -sf "http://localhost:${SLOT_PORT}/health" >/dev/null 2>&1; then
@@ -1158,6 +1475,31 @@ if [[ "$BRIDGE_READY" != "true" ]]; then
   rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
   exit 1
 fi
+
+# ── Bridge confirmed up → NOW finalize campaign locks + disarm the failure trap ──
+# FLY-1189: write the SAME live Bridge PID + campaign sidecar into EVERY
+# campaign lock (owner + borrowed). The live PID protects borrowed locks from
+# other deploys' stale reclaim for the whole campaign; the sidecar routes any
+# direct teardown attempt to the owner slot. A finalize failure rolls the whole
+# deploy back (plan H1, Codex R2 #5).
+if (( ${#EXTRA_LEAD_SPECS[@]} > 0 )); then
+  if ! qa_multilead_finalize_locks /tmp "$BRIDGE_PID" "$SLOT" "$CAMPAIGN_ID" "${CAMPAIGN_SLOT_IDS[@]}"; then
+    log "ERROR: campaign lock finalize failed — rolling back the whole deploy"
+    kill "$BRIDGE_PID" 2>/dev/null || true
+    campaign_abort "lock finalize failure"
+  fi
+  log "Campaign locks finalized (Bridge PID ${BRIDGE_PID}, campaign ${CAMPAIGN_ID}, slots: ${CAMPAIGN_SLOT_IDS[*]})"
+fi
+# Bridge ready + locks finalized — disable the failure cleanup trap.
+trap - EXIT
+
+# FLY-1189: launch manifest — deploy-time ground truth for detection flag /
+# knob values + dist SHA (macOS SIP blocks reading another process's env, so
+# this record IS the S0 flag evidence). No secrets: token env NAMES only.
+qa_multilead_launch_manifest "$BRIDGE_PID" "$BRANCH_SHA" "$FROM_BRANCH" "$MODE" \
+  "${CAMPAIGN_ID}" "${LEAD_LABEL}" "${DETECTION_LEAD_GRACE_MS}" "$EXTRA_LEADS_JSON" \
+  > "${SLOT_DIR}/launch-manifest.json"
+log "Wrote ${SLOT_DIR}/launch-manifest.json"
 
 # ── Step 5: Record PIDs ──────────────────────────────
 # Lead supervisor PID is written by claude-lead.sh to:
@@ -1199,6 +1541,12 @@ cat <<EOF
   "dbPath": "${SLOT_DIR}/teamlead.db",
   "bridgeLog": "${SLOT_DIR}/bridge.log",
   "leadLog": "${LEAD_LOG}",
-  "flywheelProjectsFile": "${FLYWHEEL_PROJECTS_FILE}"
+  "flywheelProjectsFile": "${FLYWHEEL_PROJECTS_FILE}",
+  "launchManifest": "${SLOT_DIR}/launch-manifest.json",
+  "campaignManifest": "${CAMPAIGN_MANIFEST_FILE:-}",
+  "campaignId": "${CAMPAIGN_ID:-}",
+  "leadLabel": "${LEAD_LABEL}",
+  "detectionLeadGraceConfigMs": "${DETECTION_LEAD_GRACE_MS}",
+  "extraLeads": $(jq -c 'map({slotId, agentId, deptLabel, chatChannel, tokenEnvVar})' <<<"$EXTRA_LEADS_JSON")
 }
 EOF

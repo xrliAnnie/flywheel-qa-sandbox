@@ -131,6 +131,37 @@ jobs:
           bash scripts/__tests__/flywheel-buddy-connect.test.sh
           bash scripts/__tests__/buddy-escalate.test.sh
 
+      # FLY-1189: 529-Room multi-Lead campaign harness — hermetic suite over
+      # scripts/lib/qa-multilead.sh + the test-deploy/test-teardown wiring:
+      # byte-compat baselines (FLYWHEEL_PROJECTS builder + canonical
+      # config.yaml), campaign-arg validation, atomic slot-set claim/rollback,
+      # borrowed-lock anti-reclaim, manifest-driven extra-Lead teardown, and
+      # the secret-free launch manifest. Temp lockroots + sandboxed HOME +
+      # stubbed tmux — never touches a real slot.
+      - name: Test — FLY-1189 multi-Lead campaign harness
+        run: bash scripts/__tests__/test-deploy-multilead.test.sh
+
+      # FLY-1189: fault injector S1 SAFETY LOCK — the anchor rejection matrix
+      # (execId/tmux/path anchors + prod denylist + prefix-collision + symlink
+      # escape + TOCTOU start-time/inode drift + restore direction lock +
+      # all-in-safe-root journal invariant). Every rejection path must exit
+      # non-zero with ZERO actions performed — this is what keeps a mis-fired
+      # SIGSTOP/mv off the 19 live production runners. Fully hermetic
+      # (descriptor fixtures + action sink; never touches a real process).
+      - name: Test — FLY-1189 fault injector safety lock
+        run: bash scripts/__tests__/qa-fly-1189-fault-inject.test.sh
+
+      # FLY-1189: assertion library (episode/thread/founder-page/lead-event/
+      # no-cross keyed on the real detection schema + evidence persistence to
+      # the campaign root) and the scenario driver's TRAP-OWNER contract — a
+      # SIGINT'd driver must call the injector's recover-from-journal (real
+      # signal, stub injector). Hermetic (fixture sqlite + recorded Discord
+      # JSON + stub injector); the assert suite self-skips if sqlite3 is absent.
+      - name: Test — FLY-1189 assert library + driver trap owner
+        run: |
+          bash scripts/__tests__/qa-fly-1189-assert.test.sh
+          bash scripts/__tests__/qa-fly-1189-driver.test.sh
+
       # FLY-1062: npm distribution layer — hermetic suites: the packaging
       # pipeline over a fixture mini-monorepo (assembly / dependency union /
       # release gates with injection negatives / compat mirror / audit-table

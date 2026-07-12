@@ -15,6 +15,12 @@ set -euo pipefail
 
 log() { echo "[test-teardown] $(date +%H:%M:%S) $*" >&2; }
 
+# FLY-1189: multi-Lead campaign helpers — borrowed-lock guard + manifest-driven
+# extra-Lead cleanup. Pure lib; sourcing changes nothing for legacy slots.
+TEARDOWN_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/qa-multilead.sh
+source "${TEARDOWN_SCRIPT_DIR}/lib/qa-multilead.sh"
+
 # FLY-115 fix: mkdir(2)-based mutex matches inject-linear-issue.sh's locking
 # so teardown's prune doesn't race with a concurrent inject in another slot.
 # Parallel slot operations previously could drop in-flight trust keys. Stale
@@ -122,6 +128,17 @@ teardown_slot() {
   local SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
   local LOCK_FILE="/tmp/flywheel-test-slot-${SLOT}.lock"
 
+  # FLY-1189: a BORROWED lock belongs to another slot's multi-Lead campaign —
+  # its Lead resources live in the OWNER slot's SLOT_DIR. Tearing it down here
+  # would kill a live campaign's extra Lead out from under it. Fail loud and
+  # point at the only legal release path (owner teardown).
+  local BORROW_OWNER
+  if BORROW_OWNER=$(qa_multilead_lock_is_borrowed "$LOCK_FILE"); then
+    log "ERROR: slot ${SLOT} lock is BORROWED by campaign owner slot ${BORROW_OWNER} — refusing."
+    log "  Run: scripts/test-teardown.sh ${BORROW_OWNER}   (owner teardown releases this lock)"
+    return 1
+  fi
+
   # Read slot config for agent ID. Schema matches ~/.flywheel/test-slots.json
   # (FLY-96): AGENT_ID is derived from .botName (1:1). Fallback to a predictable
   # name if the slots file is missing/unreadable so teardown still makes progress.
@@ -142,6 +159,16 @@ teardown_slot() {
     SLOT_MODE_VAL=$(cat "/tmp/flywheel-test-slot-${SLOT}.lock/mode" 2>/dev/null || echo "unknown")
   fi
   log "Tearing down slot ${SLOT} (agent: ${AGENT_ID}, mode: ${SLOT_MODE_VAL})"
+
+  # FLY-1189: owner-slot campaign cleanup — stop the extra Leads + release the
+  # borrowed slot locks BEFORE the legacy single-Lead teardown below. Absent
+  # manifest → no-op (legacy behavior verbatim).
+  local CAMPAIGN_MANIFEST="${SLOT_DIR}/campaign-manifest.json"
+  if [[ -f "$CAMPAIGN_MANIFEST" ]]; then
+    log "Campaign manifest found — cleaning extra Leads + borrowed locks"
+    qa_multilead_teardown_extra_leads "$CAMPAIGN_MANIFEST"
+    qa_multilead_release_borrowed_locks "$CAMPAIGN_MANIFEST" "/tmp"
+  fi
 
   # ── Step 1b (FLY-115): Stop Runner tmux + its cmux linked sessions ──
   # Runner tmux is killed BEFORE Bridge so that no process is actively
@@ -463,7 +490,10 @@ if [[ "$TARGET" == "all" ]]; then
   SLOTS_FILE="${HOME}/.flywheel/test-slots.json"
   TOTAL_SLOTS=$(jq '.slots | length' "$SLOTS_FILE" 2>/dev/null || echo 4)
   for i in $(seq 1 "$TOTAL_SLOTS"); do
-    teardown_slot "$i"
+    # FLY-1189: a borrowed slot returns non-zero (guard above) — its lock is
+    # released when the loop reaches the OWNER slot's manifest. Don't let one
+    # refusal abort the sweep of the remaining slots.
+    teardown_slot "$i" || log "WARN: slot ${i} teardown returned non-zero (borrowed lock or invalid slot) — continuing"
   done
   log "All slots torn down"
 else
