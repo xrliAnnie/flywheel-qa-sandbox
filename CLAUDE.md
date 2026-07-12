@@ -96,6 +96,7 @@ Current version: see `doc/VERSION`
 | FLY-134: QA pipeline execution — milestone record | ✅ Merged |
 | FLY-133: QA pipeline execution — milestone record | ✅ Merged |
 | FLY-138: [QA-FLY-127 sandbox] Product-Test label only (S1 happy path) — milestone record | ✅ Merged |
+| FLY-139: [QA-FLY-127 sandbox] Ops-Test label only (S2 label_mismatch) — milestone record | ✅ Merged |
 
 ## Doc Structure & Lifecycle
 
