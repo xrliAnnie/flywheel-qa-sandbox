@@ -289,6 +289,7 @@ import {
 	buildProjectRunnerDefaults,
 } from "./project-runner-model-source.js";
 import { patchSessionParams } from "./proofshot-session.js";
+import { wirePublishBroker } from "./publish-broker/wire.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import {
 	DEFAULT_RETENTION_MAX_AGE_MS,
@@ -3139,6 +3140,27 @@ export async function startBridge(
 			`[bridge-exit-marker] running-marker write failed (non-fatal): ${(err as Error).message}`,
 		);
 	}
+
+	// FLY-1062 (plan §3): the publish broker. Its two outward-publish tokens are
+	// read AND SCRUBBED from process.env here — before any child spawn path can
+	// inherit them — whether or not the feature is enabled. Default OFF
+	// (FLYWHEEL_PUBLISH_BROKER=1 enables; reverse-compat sentinel): enabled, it
+	// owns the unix-socket request surface + the founder ✅-reaction approval
+	// observation. A wiring failure is fail-closed for PUBLISHING only — the
+	// Bridge still boots.
+	const publishBrokerHandle = await wirePublishBroker({
+		env: process.env,
+		stateDir: join(homedir(), ".flywheel"),
+		discordBotToken: config.discordBotToken,
+		discordOwnerUserId: config.discordOwnerUserId,
+		founderConsentUserId: config.founderConsent?.founderUserId,
+		log: (line) => console.log(line),
+	}).catch((err) => {
+		console.warn(
+			`[publish-broker] wiring failed (publishes unavailable): ${(err as Error).message}`,
+		);
+		return null;
+	});
 
 	// FLY-1082: late-bound fleet holders — the sensors need the routed alert
 	// sink (built late) while HeartbeatService/AutoRepairBot (built earlier)
@@ -7148,6 +7170,7 @@ export async function startBridge(
 		// finds this marker still `running` knows the previous Bridge died dirty.
 		writeCleanMarker(bridgeMarker);
 		heartbeatService?.stop();
+		await publishBrokerHandle?.close(); // FLY-1062: socket + observe timer
 		gatePoller.stop();
 		await roundtableThreadManager?.stop();
 		bridgeWatchdog.stop();

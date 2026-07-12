@@ -110,9 +110,16 @@ scan_code_tree_for_secrets() {
   [ -d "$tree" ] || { echo "scan_code_tree_for_secrets: not a dir: $tree" >&2; return 2; }
   local hits=0
 
-  # Layer 1: vendor tokens anywhere.
-  local v1
-  v1="$(grep -rEnI "$(_fleet_vendor_re)" "$tree" 2>/dev/null || true)"
+  # Layer 1: vendor tokens anywhere. grep exit 1 = clean no-match; exit >1 = a
+  # TOOL error (unreadable file, bad pattern) — that must return 2, never read
+  # as "clean" (FLY-1062 broker gate Codex R4: an incompletely scanned tree is
+  # not a scanned tree).
+  local v1 st1=0
+  v1="$(grep -rEnI "$(_fleet_vendor_re)" "$tree" 2>/dev/null)" || st1=$?
+  if [ "$st1" -gt 1 ]; then
+    echo "scan_code_tree_for_secrets: [scan-error] vendor grep failed (exit $st1)" >&2
+    return 2
+  fi
   if [ -n "$v1" ]; then
     hits=1
     echo "scan_code_tree_for_secrets: [vendor-token] (redacted):" >&2
@@ -120,8 +127,13 @@ scan_code_tree_for_secrets() {
   fi
 
   # Layer 3: high-entropy bare blob (>=40 chars, mixed upper+lower+digit).
-  local he row token he_hit=""
-  he="$(grep -rEnoI '[A-Za-z0-9_-]{40,}' "$tree" 2>/dev/null || true)"
+  # Same tool-error discipline as Layer 1.
+  local he row token he_hit="" st3=0
+  he="$(grep -rEnoI '[A-Za-z0-9_-]{40,}' "$tree" 2>/dev/null)" || st3=$?
+  if [ "$st3" -gt 1 ]; then
+    echo "scan_code_tree_for_secrets: [scan-error] entropy grep failed (exit $st3)" >&2
+    return 2
+  fi
   while IFS= read -r row; do
     [ -z "$row" ] && continue
     token="${row#*:}"; token="${token#*:}"
@@ -135,13 +147,27 @@ scan_code_tree_for_secrets() {
     printf '%s' "$he_hit" | sed -E 's/([A-Za-z0-9_+/=.-]{8})[A-Za-z0-9_+/=.-]{4,}/\1…REDACTED…/g' >&2
   fi
 
-  # Config-class files get the full net (incl. the assignment layer).
+  # Config-class files get the full net (incl. the assignment layer). A find
+  # failure means the enumeration is incomplete — tool error, return 2.
   local -a cfg=()
+  local find_out st4=0
+  find_out="$(find "$tree" -type f \( -name "*.env" -o -name ".env*" -o -name "*.json" -o -name "*.plist" -o -name "*.yaml" -o -name "*.yml" -o -name "*.toml" \) 2>/dev/null)" || st4=$?
+  if [ "$st4" -ne 0 ]; then
+    echo "scan_code_tree_for_secrets: [scan-error] find failed (exit $st4)" >&2
+    return 2
+  fi
   while IFS= read -r f; do
     [ -n "$f" ] && cfg+=("$f")
-  done < <(find "$tree" -type f \( -name "*.env" -o -name ".env*" -o -name "*.json" -o -name "*.plist" -o -name "*.yaml" -o -name "*.yml" -o -name "*.toml" \) 2>/dev/null)
+  done <<< "$find_out"
   if [ "${#cfg[@]}" -gt 0 ]; then
-    scan_for_secrets "${cfg[@]}" || hits=1
+    # propagate the full net's tool errors (2) distinctly from hits (1)
+    local sfs_rc=0
+    scan_for_secrets "${cfg[@]}" || sfs_rc=$?
+    if [ "$sfs_rc" -ge 2 ]; then
+      echo "scan_code_tree_for_secrets: [scan-error] config-class net failed (exit $sfs_rc)" >&2
+      return 2
+    fi
+    [ "$sfs_rc" -eq 1 ] && hits=1
   fi
 
   return "$hits"
@@ -150,7 +176,8 @@ scan_code_tree_for_secrets() {
 # ──────────────────────────────────────────────────────────────────────────
 # scan_for_secrets <path...>
 #   Recursively scans files for secret-looking content. Returns:
-#     0 = clean, 1 = secret(s) found, 2 = usage error.
+#     0 = clean, 1 = secret(s) found, 2 = usage OR scan-tool error (an input
+#     that could not be fully scanned is never reported clean — fail-closed).
 #   Found locations are printed to stderr with the value redacted.
 #
 # Three layers (defence in depth):
@@ -183,10 +210,16 @@ scan_for_secrets() {
   local matches=""
 
   # ── Layer 1: bare vendor token patterns ─────────────────────────────────
+  # grep exit 1 = clean no-match; >1 = TOOL error → return 2, never "clean"
+  # (FLY-1062 Codex R5: an incompletely scanned input is not a scanned input).
   local vendor_re
   vendor_re="$(_fleet_vendor_re)"
-  local v1
-  v1="$(grep -rEnI "$vendor_re" "$@" 2>/dev/null || true)"
+  local v1 sfs1=0
+  v1="$(grep -rEnI "$vendor_re" "$@" 2>/dev/null)" || sfs1=$?
+  if [ "$sfs1" -gt 1 ]; then
+    echo "scan_for_secrets: [scan-error] vendor grep failed (exit $sfs1)" >&2
+    return 2
+  fi
   if [ -n "$v1" ]; then
     hits=1
     matches+="[vendor-token]"$'\n'"$v1"$'\n'
@@ -204,8 +237,12 @@ scan_for_secrets() {
   # normalized to one-field-per-line by fleet-capture.sh (jq) so the common
   # path never relies on multi-field line parsing.
   local kv_keyre='[A-Za-z0-9_]*(token|secret|password|passwd|apikey|api[_-]?key|privkey|private[_-]?key|access[_-]?key|auth[_-]?token|credential|[_-]key)[A-Za-z0-9_]*'
-  local cand
-  cand="$(grep -rEnIi "${kv_keyre}[\"' ]*[:=]" "$@" 2>/dev/null || true)"
+  local cand sfs2=0
+  cand="$(grep -rEnIi "${kv_keyre}[\"' ]*[:=]" "$@" 2>/dev/null)" || sfs2=$?
+  if [ "$sfs2" -gt 1 ]; then
+    echo "scan_for_secrets: [scan-error] assignment grep failed (exit $sfs2)" >&2
+    return 2
+  fi
   if [ -n "$cand" ]; then
     local kv_hit="" row content tok
     while IFS= read -r row; do
@@ -234,8 +271,12 @@ scan_for_secrets() {
   # (e.g. projectRoot absolute paths) break at slashes and never form one long
   # run — paths are not secrets. Vendor base64 tokens with '/+=' are already
   # covered by Layer 1; the main leak vector (a raw .env value) by Layer 2.
-  local he
-  he="$(grep -rEnoI '[A-Za-z0-9_-]{40,}' "$@" 2>/dev/null || true)"
+  local he sfs3=0
+  he="$(grep -rEnoI '[A-Za-z0-9_-]{40,}' "$@" 2>/dev/null)" || sfs3=$?
+  if [ "$sfs3" -gt 1 ]; then
+    echo "scan_for_secrets: [scan-error] entropy grep failed (exit $sfs3)" >&2
+    return 2
+  fi
   if [ -n "$he" ]; then
     local he_hit=""
     local row token

@@ -2306,4 +2306,25 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "readonly",
 	},
+	{
+		name: "publish_broker",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_PUBLISH_BROKER",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1062: publish broker — 对外发布(promote-commit / 薄壳 npm publish)的唯一执行点。默认关(生产字节兼容);开启 = Bridge boot 起 unix-socket 请求面 + founder ✅-reaction 审批观察。真发布另需 token 供给 + founder 批(P5)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/publish-broker/wire.ts",
+				"wirePublishBroker",
+				"bridge_boot",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+	},
 ];

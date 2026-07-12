@@ -65,6 +65,13 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_MISROUTE_ARCHIVE_DIR: "plumbing: misroute archive dir",
 	FLYWHEEL_ALERT_QUEUE_DIR: "plumbing: alert queue dir",
 	FLYWHEEL_ALERT_DEADLETTER_DIR: "plumbing: alert deadletter dir",
+	FLYWHEEL_PUBLISH_BROKER_SOCKET:
+		"plumbing: publish-broker unix socket path (FLY-1062)",
+	FLYWHEEL_PUBLISH_AUDIT_PATH: "plumbing: publish audit JSONL path (FLY-1062)",
+	FLYWHEEL_PUBLISH_APPROVAL_CHANNEL:
+		"config value: publish-approval Discord channel id (FLY-1062)",
+	FLYWHEEL_FLEET_SANITIZE:
+		"plumbing: fleet-sanitize.sh scanner path override (FLY-1062 broker gate; tests point it at stubs)",
 	FLYWHEEL_CLAUDE_ACCOUNTS_PATH:
 		"plumbing: claude account-state json path (FLY-696)",
 	FLYWHEEL_ACCOUNT_PENDING_PATH:

@@ -21,7 +21,7 @@
    ```
    node -e "const c=require('crypto');const t=c.randomBytes(32).toString('hex');console.log('token:',t);console.log('sha256:',c.createHash('sha256').update(t).digest('hex'))"
    ```
-   custody:beta-publish → repo secret `FW_BETA_PUBLISH_TOKEN`;customer-release → **只落 Annie 本机 0600 文件**;ops-admin → 运营侧(Tadashi/runbook)。Worker 只存 **sha256**。
+   custody:beta-publish → repo secret `FW_BETA_PUBLISH_TOKEN`;customer-release → **只进 broker 父进程内存**(§7b 供给方式;同 UID 0600 文件不是 boundary,绝不落盘);ops-admin → 运营侧(Tadashi/runbook)。Worker 只存 **sha256**。
 2. Cloudflare(账号**已存在** = Annie 的,登录邮箱 **xrliannie.b@gmail.com**;Peter/GeoForge3D 核实 2026-07-11):
    - **首把 API token 需浏览器登录 bootstrap 一次**(Runner 用 Claude-in-Chrome 替她操作,需要密码/2FA/不可逆确认时才叫她),之后建 bucket / 部署 Worker / 发后续 token **全走 wrangler/API**(Cloudflare 有完整 API,不必再进浏览器)。
    - `wrangler r2 bucket create flywheel-payloads`(R2 大概率未启用,namespace 对我们干净)。
@@ -57,10 +57,12 @@ FW_ENDPOINT=… FW_BETA_PUBLISH_TOKEN=… node scripts/release/payload-release.m
 ## 3. promote(两段;审批物 = 候选 tuple 的 sha256)
 
 1. **prepare(无门,GitHub CI)**:Actions → `Payload Promote (prepare)` → 填 release-id + beta 版本号(**sourceCommit 由 workflow 从 manifest 派生,不许操作者填**)。做:checkout 派生 commit → 同 commit 重建 clean 版 → **等价证明**(与在库 beta payload 逐字节比对,只归一化版本戳;不等价 = 停,回 design review,绝无降级放行)→ 登记耐久候选 → 上传 → prepared。
-2. **commit(founder gate = Flywheel approve gate → broker;**= 1062 下一个 PR**)**:Annie 一条 Discord approve → **broker** 核内存 founder-approval 登记(绑候选 tuple 的 sha256、单次消费)过 → broker 用**内存里**的 customer-release token 跑 commit(切 customer 指针,单 CAS)+ 写 audit log。**gate 后零构建**——她批的就是候选 tuple 的 sha256。**broker 落地前不做真 commit**(硬约束)。
-3. 候选被否 → abandon(ops/customer token 发 `state→abandoned` 的 manifest CAS)→ 对象随下一次清理进 tombstone→delete。
-
-> **本 PR(#558)不含 broker**:`payload-promote.mjs commit` 脚本逻辑已 sound(测试覆盖),只是尚未由 broker 触发;broker + approve-gate 接线 = 下一个 PR。
+2. **commit(founder gate = Flywheel approve gate → broker;broker PR 已落地)**:
+   ```
+   node scripts/release/broker-request.mjs --action publish-release --release-id <id> --sha256 <候选sha256>
+   ```
+   请求本身**不带任何授权**:broker 把「发布审批请求卡」发到审批频道,**Annie 在那条卡上点 ✅**(canonical founder id 精确校验,零 AI)→ broker 内存登记该 (action, releaseId, sha256) 审批(单次消费)→ 用**内存里**的 customer-release token 跑 commit(复验 readback sha → 切 customer 指针,单 CAS)+ 写 audit log(`~/.flywheel/publish-audit.jsonl`)。**gate 后零构建**(结构测试锁死:`scripts/__tests__/publish-broker-structure.test.sh`)。执行失败审批**不消费**,修好重试;成功后残留的 ✅ 结构上无法再触发第二次发布。**真发布仍等 P5**(真 token 未供给前 broker 一律拒 `token_not_provisioned`)。
+3. 候选被否 → abandon(ops token 发 `state→abandoned` 的 manifest CAS)→ 对象随下一次清理进 tombstone→delete。
 
 ## 4. withdraw(撤版;broker 动作,= 1062 下一个 PR)
 
@@ -89,16 +91,30 @@ FW_ENDPOINT=… FW_OPS_ADMIN_TOKEN=… node scripts/release/license-key.mjs rota
 - 空态前置检查:目标 entitlement 的 channel `latest` 为 null → 拒(脚本 + 端点双重)。
 - 轮换 = 先签新再吊旧,客户零断档。吊销即时(R2 强一致,下一请求即拒)。
 
-## 7. 薄壳 npm 发布(broker 动作 + approve gate;= 1062 下一个 PR)
+## 7. 薄壳 npm 发布(broker 动作 + approve gate;broker PR 已落地)
 
 shell publish 与 payload 路径完全对称、复用同一 broker + approve gate 机制:
-1. **prepare/stage**:`npm pack` 出确切 tarball → 记 sha256 → stage。
-2. **approve**:把壳版本 + tarball sha256 给 Annie,她一条 Discord approve(绑该 sha256、单次消费)。
-3. **broker publish**:broker 核内存 founder-approval 登记过 → **发布前对 staged tarball rehash 断言 == 批准 sha256 + 内容 gate 权威版在 broker 重跑**(白名单/零 secret/零私仓 URL;prepare 段的 gate 在 compromised runner 域不可信)→ 用**内存里**的 npm **GAT(write on `@flywheel/onboard` 唯一包)** `npm publish`(staged 物,不重 pack)→ 写 audit log。
+1. **prepare/stage**:
+   ```
+   node scripts/release/shell-prepare.mjs          # npm pack → sha256 → stage,打印 broker 请求 JSON
+   node scripts/release/broker-request.mjs --json '<上一步输出>'
+   ```
+   prepare 会**拒绝** `DEFAULT_ENDPOINT` 还是 `.invalid` 占位的形态(填真 URL 前发不出去)。
+2. **approve**:broker 把「壳版本 + tarball sha256」的审批卡发给 Annie,她在卡上点 ✅(绑该 sha256、单次消费)。
+3. **broker publish**:broker 核内存 founder-approval 登记过 → **发布前对 staged tarball rehash 断言 == 批准 sha256 + 内容 gate 权威版在 broker 重跑**(白名单/零 secret/零私仓 URL/非占位 endpoint;prepare 段的 gate 在 compromised runner 域不可信)→ 用**内存里**的 npm **GAT(write on `@flywheel/onboard` 唯一包)**做**进程内 registry PUT**(GAT 绝不进任何子进程;staged 物,不重 pack)→ 写 audit log。
 4. **npm 409(版本已存在)不当然成功**:broker 从 registry 下载该版本 tarball、重算 sha256 比对 == 批准值,一致才算成功(不信 npm sha1 `dist.shasum`/sha512 `dist.integrity`)。
 
-preflight(endpoint 非占位 / 版本未用 / 内容 gate)在 broker 端跑;`scripts/release/shell-publish-preflight.sh` 供 broker 复用。壳版本 bump 必须显式走 PR。
-**broker 落地前不发真壳**(硬约束)。hardening note:将来 Enterprise/org 化可迁回 OIDC trusted publishing(无长期 token)+ environment required-reviewers,退役 broker GAT。
+registry preflight(版本未用)也在 broker 端跑;`scripts/release/shell-publish-preflight.sh` 仍是人工快检入口。壳版本 bump 必须显式走 PR。
+**真壳发布等 P5 供给真 GAT + Annie 批**(此前 broker 一律拒)。hardening note:将来 Enterprise/org 化可迁回 OIDC trusted publishing(无长期 token)+ environment required-reviewers,退役 broker GAT。
+
+## 7b. publish broker 运维(FLY-1062 broker PR)
+
+- **默认关**:Bridge env `FLYWHEEL_PUBLISH_BROKER=1` 才启动(生产字节兼容;P5 才开)。
+- **token 供给(①c)**:两把对外发布 token(`FW_CUSTOMER_RELEASE_TOKEN` / `FW_NPM_GAT_TOKEN`)由 operator 在 **Bridge 启动的进程 env** 注入(建议 macOS keychain:`security find-generic-password -w -s fw-customer-release` 喂给启动命令),Bridge boot 第一步**读入内存并从 process.env 抹除**——之后任何子进程(runner/lead/tmux)都继承不到;**绝不写进 `~/.flywheel/.env` 或任何落盘文件**(红线)。Bridge 重启 = token 与未消费审批一起消失,重新供给 + 重新 approve(对外发布本就低频 + founder-gated)。
+- **审批面**:`FLYWHEEL_PUBLISH_APPROVAL_CHANNEL`(Discord 频道 id)+ canonical founder id(既有 `discordOwnerUserId`/`founderConsent` 推导)。没配 = 请求全部 pend,不执行。
+- **请求面**:unix socket `~/.flywheel/publish-broker.sock`(0600;`FLYWHEEL_PUBLISH_BROKER_SOCKET` 可改);CLI = `scripts/release/broker-request.mjs`(exit 0=已执行 / 2=等审批 / 1=拒)。
+- **audit**:每个决定(登记/挂起/执行/失败)追加 `~/.flywheel/publish-audit.jsonl`(releaseId/ver/sha/approverRef/时间戳;永无 token)。
+- **withdraw 边界(诚实声明)**:v1 broker 只暴露 publish-release / publish-shell 两动作;withdraw 仍是 `payload-promote.mjs withdraw` 手跑(需临时供给 customer-release token 的运维动作),broker 化随 FLY-1143。
 
 ## 8. 断案手册
 
@@ -119,7 +135,8 @@ preflight(endpoint 非占位 / 版本未用 / 内容 gate)在 broker 端跑;`scr
 | 凭据 | 位置 | 能做 |
 |---|---|---|
 | beta-publish token | repo secret `FW_BETA_PUBLISH_TOKEN` | beta 全链、promote prepare;**结构上做不了** customer 面 |
-| customer-release token | Annie 本机 0600 | promote commit、withdraw、quarantine |
+| customer-release token | **broker 父进程内存**(boot 注入即从 env 抹除;永不落盘/不进 CI/不进子进程) | promote commit(broker `publish-release`,approve gate);withdraw v1 = 运维临时供给手跑 |
+| npm GAT(write on `@flywheel/onboard` 唯一包) | **broker 父进程内存**(同上) | 薄壳 publish(broker `publish-shell`,approve gate) |
 | ops-admin token | 运营侧(不进任何 workflow) | keys、expire、tombstone、DELETE、abandon |
 | Cloudflare API token | Annie 本人 | bucket/Worker 部署(runbook 动作) |
-| npm 账号(2FA) | Annie 本人 | 薄壳 publish(fallback 形态每次本地) |
+| npm 账号(2FA) | Annie 本人 | GAT 的签发/轮换(一次性配置动作) |

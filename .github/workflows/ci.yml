@@ -320,3 +320,12 @@ jobs:
 
       - name: Release workflow structure lint (founder-gate contract)
         run: bash scripts/__tests__/release-workflows-structure.test.sh
+
+      - name: Publish broker structure lint (zero-build commit + token scrub + default-off)
+        run: bash scripts/__tests__/publish-broker-structure.test.sh
+
+      - name: Shell packaging verification (pack + install + publish --dry-run)
+        run: bash scripts/__tests__/shell-pack-install-dryrun.test.sh
+
+      - name: Customer E2E acceptance (real endpoint + real release scripts + tarball-installed shell)
+        run: bash scripts/__tests__/customer-e2e-acceptance.test.sh

@@ -220,6 +220,40 @@ else
   fail "STR4-usage: rc=$STR_RC (want 2)"
 fi
 
+# ── TREE-ERR: scanner TOOL errors must return 2, never read as "clean" ───────
+# (FLY-1062 broker gate Codex R4: grep exit >1 / find failure = incompletely
+#  scanned tree — the previous `|| true` turned those into empty findings.)
+TREE_OK="$SANDBOX/tree-ok"; mkdir -p "$TREE_OK"; echo "hello" > "$TREE_OK/a.mjs"
+if scan_code_tree_for_secrets "$TREE_OK" >/dev/null 2>&1; then
+  pass "TREE-ERR0: clean readable tree still returns 0"
+else
+  fail "TREE-ERR0: clean tree no longer passes"
+fi
+TREE_ERR="$SANDBOX/tree-err"; mkdir -p "$TREE_ERR/locked"
+echo "hello" > "$TREE_ERR/locked/a.mjs"
+chmod 000 "$TREE_ERR/locked"
+scan_code_tree_for_secrets "$TREE_ERR" >/dev/null 2>&1; TREE_RC=$?
+chmod 755 "$TREE_ERR/locked"
+if [ "$TREE_RC" -eq 2 ]; then
+  pass "TREE-ERR1: unreadable subtree → return 2 (tool error, fail-closed)"
+else
+  fail "TREE-ERR1: rc=$TREE_RC (want 2 — an unscannable tree must not read as clean)"
+fi
+
+# ── SFS-ERR: scan_for_secrets itself must return 2 on an unreadable input ────
+# (FLY-1062 Codex R5: the config-class leg's inner greps previously swallowed
+#  tool errors into empty candidate sets → clean.)
+SFS_ERR="$SANDBOX/sfs-err.json"
+echo '{ "ok": true }' > "$SFS_ERR"
+chmod 000 "$SFS_ERR"
+scan_for_secrets "$SFS_ERR" >/dev/null 2>&1; SFS_RC=$?
+chmod 644 "$SFS_ERR"
+if [ "$SFS_RC" -eq 2 ]; then
+  pass "SFS-ERR1: unreadable input file → return 2 (tool error, fail-closed)"
+else
+  fail "SFS-ERR1: rc=$SFS_RC (want 2 — an unscannable input must not read as clean)"
+fi
+
 echo ""
 echo "Results: ${PASSED} passed, ${FAILED} failed"
 [ "$FAILED" -eq 0 ] || exit 1
