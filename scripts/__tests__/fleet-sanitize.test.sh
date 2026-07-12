@@ -126,6 +126,10 @@ check_flag  "S1-aws: AKIA access key id" \
   'AKIAIOSFODNN7EXAMPLE'
 check_flag  "S1-jwt: bare JWT" \
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N'
+check_flag  "S1-fwk: Flywheel license key (FLY-1062)" \
+  'fwk_0123456789abcdef0123456789abcdef'
+check_clean "S1-fwk-short: fwk_ prefix with too little entropy is not a key" \
+  'fwk_0123abcd'
 
 # ── scan_for_secrets: shell assignment of real value (S2) ─────────────────
 check_flag  "S2-realvalue: secret-named key = arbitrary non-placeholder value" \

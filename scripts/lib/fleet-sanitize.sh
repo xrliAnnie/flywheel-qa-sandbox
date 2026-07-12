@@ -88,6 +88,7 @@ _fleet_vendor_re() {
     'github_pat_[A-Za-z0-9_]{30,}'
     'AKIA[0-9A-Z]{16}'
     'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}'
+    'fwk_[0-9a-f]{32,}'
   )
   (IFS='|'; printf '%s' "${vendor[*]}")
 }

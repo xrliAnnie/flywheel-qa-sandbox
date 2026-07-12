@@ -1,0 +1,11 @@
+{
+	"name": "flywheel-payload-endpoint",
+	"version": "0.0.0",
+	"description": "FLY-1062 PR3 · gated payload distribution endpoint (Cloudflare Worker). The single trusted write choke point for the R2 bucket: customer reads (entitlement views), publish writes (manifest single-object CAS + capability diffs + releaseOps idempotency ledger), ops cleanup guards. Pure-function handler — node-testable with zero wrangler.",
+	"type": "module",
+	"private": true,
+	"license": "UNLICENSED",
+	"engines": {
+		"node": ">=20"
+	}
+}

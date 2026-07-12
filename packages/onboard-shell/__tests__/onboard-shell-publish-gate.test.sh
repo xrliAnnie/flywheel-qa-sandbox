@@ -93,11 +93,41 @@ else
   pass "G3b secret scan skipped (fleet-sanitize not found — repo layout changed)"
 fi
 
-# ── G4 · not publishable yet (PR4 flips this) ───────────────────────────────
-if [ "$(jq -r '.private' "$PKG_DIR/package.json")" = "true" ]; then
-  pass "G4 shell package.json private:true — npm refuses publish until PR4"
+# ── G4 · publish FORM (PR4 unlock: the private:true lock is replaced by the
+#    explicit publish shape — public scoped access; publishing itself remains
+#    founder-gated at the PATH level: shell-publish-preflight.sh refuses while
+#    DEFAULT_ENDPOINT is the .invalid placeholder, and the first publish is a
+#    founder-local 2FA action per the runbook) ────────────────────────────────
+if [ "$(jq -r '.private // "absent"' "$PKG_DIR/package.json")" = "absent" ] \
+   && [ "$(jq -r '.publishConfig.access' "$PKG_DIR/package.json")" = "public" ] \
+   && [ "$(jq -r '.name' "$PKG_DIR/package.json")" = "@flywheel/onboard" ]; then
+  pass "G4 publish form: scoped public package, private lock removed (PR4)"
 else
-  fail "G4 shell is publishable but PR2 must not publish"
+  fail "G4 publish form wrong: private=$(jq -r '.private' "$PKG_DIR/package.json") access=$(jq -r '.publishConfig.access' "$PKG_DIR/package.json")"
+fi
+
+# ── G5 · publish preflight refuses the placeholder endpoint ─────────────────
+# (the baked DEFAULT_ENDPOINT is what customers get — publishing with the
+# .invalid placeholder would ship a dead shell; the preflight is the shared
+# guard for BOTH the workflow and the founder-local publish path)
+PREFLIGHT="$PKG_DIR/../../scripts/release/shell-publish-preflight.sh"
+if [ -f "$PREFLIGHT" ]; then
+  if bash "$PREFLIGHT" --check-endpoint-only >/dev/null 2>&1; then
+    # endpoint already real — the guard passing is the correct outcome then
+    if grep -q 'flywheel\.invalid' "$PKG_DIR/lib/config.mjs"; then
+      fail "G5 preflight passed while DEFAULT_ENDPOINT is still the placeholder"
+    else
+      pass "G5 preflight endpoint guard consistent (real endpoint configured)"
+    fi
+  else
+    if grep -q 'flywheel\.invalid' "$PKG_DIR/lib/config.mjs"; then
+      pass "G5 preflight refuses to publish while DEFAULT_ENDPOINT is the placeholder"
+    else
+      fail "G5 preflight refused although the endpoint looks real"
+    fi
+  fi
+else
+  fail "G5 shell-publish-preflight.sh missing"
 fi
 
 echo ""

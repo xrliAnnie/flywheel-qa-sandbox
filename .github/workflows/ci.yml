@@ -247,3 +247,45 @@ jobs:
           # QA (three-stage): drives the REAL lead-alert.sh in the production
           # --lead deploy call form — infra identity used, no Simba fallback.
           bash scripts/__tests__/qa-fly1081-notify-identity.test.sh
+
+  # FLY-1062 PR3/PR4: the gated distribution layer — ISOLATED job (the
+  # build-and-test job above is byte-untouched). Hermetic: the pure endpoint
+  # handler + its in-process serve shell + the release/ops scripts + the PR2
+  # contract-consistency rerun + the workflow structure lint. Zero wrangler,
+  # zero vendor credentials, zero network beyond loopback.
+  payload-distribution:
+    name: FLY-1062 payload distribution (endpoint + release pipeline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      # only the version-injection sentinel needs node_modules (typescript for
+      # the run-bridge transpile inside the fixture packer)
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Endpoint handler unit tests (validator / views / transitions / lifecycle)
+        run: node --test packages/payload-endpoint/__tests__/*.test.mjs
+
+      - name: PO_RELEASE_VERSION injection sentinel (default path byte-stable)
+        run: bash scripts/__tests__/package-onboard-version-injection.test.sh
+
+      - name: Contract consistency — PR2 shell suites vs the REAL handler
+        run: bash packages/payload-endpoint/__tests__/contract-consistency.test.sh
+
+      - name: License key + retention cleanup scripts
+        run: bash scripts/__tests__/payload-key-cleanup.test.sh
+
+      - name: Release pipeline (beta line + two-stage promote + withdraw)
+        run: bash scripts/__tests__/payload-release-pipeline.test.sh
+
+      - name: Release workflow structure lint (founder-gate contract)
+        run: bash scripts/__tests__/release-workflows-structure.test.sh

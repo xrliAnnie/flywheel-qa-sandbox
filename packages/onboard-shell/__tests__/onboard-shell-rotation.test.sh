@@ -19,7 +19,10 @@ fail() { FAILED=$((FAILED + 1)); echo "[TEST] ✗ $1"; }
 command -v npm >/dev/null 2>&1 || { echo "ERROR: npm required"; exit 1; }
 PKG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$PKG_DIR/bin/flywheel-onboard.js"
-STUB="$PKG_DIR/__tests__/stub-endpoint.mjs"
+# FLY-1062 PR3 contract-consistency lock: ONBOARD_ENDPOINT_IMPL points this
+# suite at the REAL endpoint handler (payload-endpoint serve.mjs) — same
+# fixtures, same assertions, both implementations must stay green.
+STUB="${ONBOARD_ENDPOINT_IMPL:-$PKG_DIR/__tests__/stub-endpoint.mjs}"
 
 SANDBOX="$(mktemp -d -t fly1062-shellrot-XXXXXX)"
 STUB_PID=""

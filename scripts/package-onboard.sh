@@ -130,6 +130,36 @@ po_version() {
   printf '%s' "${v#v}"
 }
 
+# po_version_is_derivation <base> <ver> — FLY-1062 PR4 (B0-3 contract):
+# doc/VERSION holds only the base X.Y.Z; a legal payload semver is EITHER the
+# clean base itself OR a beta derivation base-beta.N. Anything else fails.
+po_version_is_derivation() {
+  local base="$1" ver="$2" n
+  [ "$ver" = "$base" ] && return 0
+  n="${ver#"$base"-beta.}"
+  [ "$n" != "$ver" ] && [[ "$n" =~ ^[0-9]+$ ]] && return 0
+  return 1
+}
+
+# po_release_version <repo-root> — the version stamped into the payload.
+# Default (PO_RELEASE_VERSION unset/empty) = po_version verbatim — today's
+# behavior byte-for-byte (reverse-compat sentinel). When the release pipeline
+# injects PO_RELEASE_VERSION it must be a legal derivation of the base
+# (fail-closed: an arbitrary version can never enter a payload).
+po_release_version() {
+  local root="$1" base
+  base="$(po_version "$root")" || return 1
+  if [ -z "${PO_RELEASE_VERSION:-}" ]; then
+    printf '%s' "$base"
+    return 0
+  fi
+  if ! po_version_is_derivation "$base" "$PO_RELEASE_VERSION"; then
+    po_err "PO_RELEASE_VERSION '$PO_RELEASE_VERSION' is not a derivation of base '$base' (expect $base or $base-beta.N)"
+    return 1
+  fi
+  printf '%s' "$PO_RELEASE_VERSION"
+}
+
 # ── onboard skin patch (packaged shape) ─────────────────────────────────────
 # The in-repo flywheel-onboard.sh keeps a curl|sh fetch skin that falls back to
 # `git clone` of the PRIVATE repo. In the packaged shape the working copy IS
@@ -481,7 +511,7 @@ po_assemble() {
   command -v jq >/dev/null 2>&1 || { po_err "jq required"; return 1; }
   command -v node >/dev/null 2>&1 || { po_err "node required"; return 1; }
   local version
-  version="$(po_version "$root")" || return 1
+  version="$(po_release_version "$root")" || return 1
 
   rm -rf "$tree"
   mkdir -p "$tree/scripts" "$tree/agents" "$tree/node_modules"
@@ -793,13 +823,16 @@ po_gate() {
           }'
     )
   done
-  # version consistency: sentinel == package.json == doc/VERSION
+  # version consistency: sentinel == package.json, and the payload semver is
+  # a LEGAL DERIVATION of doc/VERSION's base (FLY-1062 PR4, B0-3: base itself
+  # or base-beta.N — the default un-injected build still stamps the base, so
+  # the old exact-equality behavior is a strict subset of this check).
   local v_pkg v_sent v_doc
   v_pkg="$(jq -r '.version' "$tree/package.json" 2>/dev/null)"
   v_sent="$(tr -d '[:space:]' < "$tree/.flywheel-prebuilt" 2>/dev/null)"
   v_doc="$(po_version "$root")"
-  if [ -z "$v_pkg" ] || [ "$v_pkg" != "$v_sent" ] || [ "$v_pkg" != "$v_doc" ]; then
-    po_err "gate: version mismatch (package.json=$v_pkg sentinel=$v_sent doc/VERSION=$v_doc)"
+  if [ -z "$v_pkg" ] || [ "$v_pkg" != "$v_sent" ] || ! po_version_is_derivation "$v_doc" "$v_pkg"; then
+    po_err "gate: version mismatch (package.json=$v_pkg sentinel=$v_sent doc/VERSION base=$v_doc; expect base or base-beta.N)"
     fail=1
   fi
   if [ "$fail" -eq 0 ]; then

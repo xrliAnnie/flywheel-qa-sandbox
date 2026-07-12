@@ -378,6 +378,8 @@ importers:
 
   packages/onboard-shell: {}
 
+  packages/payload-endpoint: {}
+
   packages/qa-framework:
     dependencies:
       better-sqlite3:
