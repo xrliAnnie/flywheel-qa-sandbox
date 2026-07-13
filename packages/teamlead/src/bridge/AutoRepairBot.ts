@@ -74,7 +74,14 @@ export interface AutoRepairBotDeps {
 	 * (sensor kill-switch off / tests).
 	 */
 	fleetRepair?: {
-		/** swap_pressure_high: place the hold + notify Leads to shed load. */
+		/**
+		 * swap_pressure_high (FLY-1193): the sensor already places the hold at
+		 * trigger and broadcasts the Lead load-shed at the debounce due point —
+		 * this is the belt-and-suspenders "repair action" narrative that ensures
+		 * the hold (idempotent) + re-broadcasts to any Lead that was missed
+		 * (dedup per episode+lead). It NEVER re-pauses dispatch on a recovered
+		 * episode.
+		 */
 		swapPressure?: (payload: AlertPayload) => Promise<RepairResult>;
 		/** infra_bot_down: `launchctl kickstart -k` the dead bot's job. */
 		infraBotKickstart?: (payload: AlertPayload) => Promise<RepairResult>;
