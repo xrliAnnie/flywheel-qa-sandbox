@@ -3689,6 +3689,18 @@ export async function startBridge(
 		current: ((issueId: string) => Promise<void>) | undefined;
 	} = { current: undefined };
 
+	// FLY-887 + FLY-1204: single shared ship-time finalizer for the three-stage
+	// keep-alive parked phases (design/implement/qa). Constructed once so BOTH
+	// the in-process run-infra path AND the external-merge reconciler drive the
+	// same reclaim logic — an external merge is a real ship path and must not
+	// leak the parked phase sessions.
+	const finalizeThreeStagePhases = makeFinalizeThreeStagePhases(
+		store,
+		transitionOpts,
+		(issueId) =>
+			phaseStatusLineRefreshHolder.current?.(issueId) ?? Promise.resolve(),
+	);
+
 	let startDispatcher = opts?.startDispatcher;
 	let internalDispatcher: IRetryDispatcher | undefined;
 	if (!startDispatcher) {
@@ -3710,14 +3722,9 @@ export async function startBridge(
 					// FLY-793: the in-process completion path drives three-stage
 					// Design→Implement→QA phase handoffs via this same holder.
 					phaseOrchestrator: phaseOrchestratorHolder,
-					// FLY-887: ship-time finalizer for keep-alive parked design/implement.
-					finalizeThreeStagePhases: makeFinalizeThreeStagePhases(
-						store,
-						transitionOpts,
-						(issueId) =>
-							phaseStatusLineRefreshHolder.current?.(issueId) ??
-							Promise.resolve(),
-					),
+					// FLY-887: ship-time finalizer for keep-alive parked phases
+					// (FLY-1204: shared with the external-merge reconciler below).
+					finalizeThreeStagePhases,
 					// FLY-907: the in-process sink's display-refresh holder (its
 					// upsertSession writes bypass the applyTransition hook).
 					issueDisplayRefresh: issueDisplayRefreshHolder,
@@ -3881,6 +3888,21 @@ export async function startBridge(
 		);
 		return Number.isFinite(v) && v >= 1 ? v : 6 * 3_600_000;
 	})();
+	// FLY-1204: parked-phase reclaim TIME backstop (decision ② — the terminal
+	// guard is the primary trigger; time is a conservative safety net). Single
+	// env, separate from the generic 24h stale threshold. Default 24h.
+	const parkedPhaseStaleHours = (() => {
+		const v = parseInt(
+			process.env.FLYWHEEL_PARKED_PHASE_STALE_HOURS ?? "24",
+			10,
+		);
+		return Number.isFinite(v) && v >= 1 ? v : 24;
+	})();
+	// FLY-1204: late-bound orphan-parked alert sink (the routed alert sink +
+	// leadAlertNotifier are constructed AFTER HeartbeatService — Implement Note 4).
+	const orphanParkedAlertHolder: {
+		current?: (issueId: string, sessions: Session[]) => Promise<void>;
+	} = {};
 
 	// FLY-172: loopback base URL for marker replay — must match the actual
 	// listener (config.host may be 127.0.0.1 / localhost / ::1), so derive it
@@ -4034,6 +4056,50 @@ export async function startBridge(
 						(await serverLossHolder.current?.check()) ?? new Set<string>(),
 				}
 			: undefined,
+		// FLY-1204: parked-phase reclaim chokepoint — the safety net that reclaims
+		// leaked three-stage keep-alive phase sessions (design_done holders never
+		// closed after handoff; completed QA processes never torn down → OOM).
+		// closeParked goes through the SAME closeRunner teardown (finalizeDone, NO
+		// thread archive — the shared parent thread is owned by post-ship
+		// finalization). alertOrphan is late-bound (routed sink built later).
+		{
+			parkedStaleHours: parkedPhaseStaleHours,
+			commDbPathForProject,
+			closeParked: async (session, { noClaim }) => {
+				const result = await closeRunner(
+					{
+						executionId: session.execution_id,
+						issueId: session.issue_id,
+						projectName: session.project_name ?? "",
+						reason: noClaim
+							? "fly1204_orphan_completed_reclaim"
+							: "fly1204_shipped_parked_reclaim",
+						executorType: "phase",
+						finalizeDone: true,
+						transitionOpts,
+						// NO archive (Codex R1 BLOCKER-3): orphan reclaim only frees the
+						// process; a shipped issue's thread teardown is post-ship's job.
+					},
+					store,
+				);
+				return { closed: result.closed, alreadyGone: result.alreadyGone };
+			},
+			alertOrphan: async (issueId, sessions) => {
+				// Throw (do NOT silently no-op) when the late-bound sink is not yet
+				// wired — otherwise alertOrphanParkedOnce would record its durable
+				// dedupe for an alert that never went out and permanently silence it
+				// (Codex R1 MEDIUM). In practice the sink is bound synchronously below
+				// long before the first (6h-throttled) parked sweep; this guards the
+				// window regardless.
+				const sink = orphanParkedAlertHolder.current;
+				if (!sink) {
+					throw new Error(
+						"fly1204 orphan-parked alert sink not yet bound (deferred to next sweep)",
+					);
+				}
+				await sink(issueId, sessions);
+			},
+		},
 	);
 
 	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event
@@ -4550,6 +4616,9 @@ export async function startBridge(
 		config,
 		projects,
 		removeCleanWorktree: makeBridgeWorktreeCleanup(store, projects),
+		// FLY-1204: external merge is a real ship path — reclaim the parked
+		// three-stage phase sessions here too (shared finalizer, same as run-infra).
+		finalizeThreeStagePhases,
 		alertLead: async (session, title, body) => {
 			try {
 				const { lead } = resolveLeadForIssue(
@@ -6961,6 +7030,46 @@ export async function startBridge(
 		rawSink: alertSink,
 	});
 	routedAlertSinkHolder.current = routedAlertSink;
+
+	// FLY-1204: now that the routed alert sink exists, back the late-bound
+	// orphan-parked alert closure the HeartbeatService reclaim patrol calls. It
+	// reuses the `three_stage_stuck` infra kind (owner-enriched, bound to the
+	// issue's [FLY-XX] thread when routing is on; raw notifier otherwise) and is
+	// issue-level (the HeartbeatService already dedupes to once per orphan set).
+	orphanParkedAlertHolder.current = async (issueId, sessions) => {
+		const first = sessions[0];
+		if (!first?.project_name) return;
+		let leadId = config.defaultLeadAgentId;
+		try {
+			const { lead } = resolveLeadForIssue(
+				projects,
+				first.project_name,
+				parseJsonStringArray(first.issue_labels) ?? [],
+			);
+			leadId = lead.agentId;
+		} catch {
+			// unresolvable lead → fall back to the default agent id
+		}
+		const roles = sessions
+			.map((s) => `${s.chat_thread_role}/${s.execution_id}`)
+			.join(", ");
+		const fingerprint = sessions
+			.map((s) => s.execution_id)
+			.sort()
+			.join(",");
+		await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
+			leadId,
+			projectName: first.project_name,
+			eventId: `fly1204-orphan-parked:${issueId}:${fingerprint}`,
+			eventType: "three_stage_stuck",
+			title: `孤立 parked phase 段 — ${first.issue_identifier ?? issueId}`,
+			body:
+				`issue ${issueId} 有 ${sessions.length} 个孤立 parked phase 段(无 ship claim,pipeline 疑似崩溃/未 ship):${roles}` +
+				` —— 未自动回收(诚实安全边界:非终态 parked 无法证明 TOCTOU 安全)。请人工 close_runner --done 或确认 pipeline。`,
+			severity: "warning",
+			sessionKey: first.execution_id,
+		});
+	};
 
 	// ── FLY-1082: fleet sensors + server-loss coordinator wiring ─────────────
 	// Bridge → Lead instruction over the per-project CommDB inbox (the same

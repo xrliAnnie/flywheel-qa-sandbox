@@ -104,6 +104,10 @@ async function setup(opts?: {
 	trusted?: boolean;
 	env?: Record<string, string | undefined>;
 	maxCandidates?: number;
+	finalizeThreeStagePhases?: (
+		issueId: string,
+		projectName: string,
+	) => Promise<void>;
 }): Promise<Setup> {
 	const store = await StateStore.create(":memory:");
 	const alerts: { title: string }[] = [];
@@ -136,6 +140,7 @@ async function setup(opts?: {
 		maxCandidatesPerProject: opts?.maxCandidates,
 		checkPrMerge: checkPr as never,
 		hasTrustedApprovalImpl: () => opts?.trusted ?? true,
+		finalizeThreeStagePhases: opts?.finalizeThreeStagePhases,
 		alertLead: (_s, title) => {
 			alerts.push({ title });
 		},
@@ -173,6 +178,23 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 			prNumber: 478,
 			mergeCommitOid: MERGE_OID,
 		});
+	});
+
+	// FLY-1204 (Change A2): the external-merge path is a real ship path, so it
+	// must also reclaim the three-stage parked phases (design/implement/qa) — else
+	// an external merge writes the post_ship_finalization_claim but leaves the
+	// parked phase sessions leaked alive until the periodic patrol catches them.
+	// Prove the seam is threaded into runPostShipFinalization's deps.
+	it("path 1: passes finalizeThreeStagePhases through to runPostShipFinalization (FLY-1204)", async () => {
+		const finalizeThreeStagePhases = vi.fn(async () => {});
+		const s = await setup({ finalizeThreeStagePhases });
+		seedSession(s.store);
+		await s.pass();
+		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
+		const deps = runPostShipSpy.mock.calls[0]?.[1] as {
+			finalizeThreeStagePhases?: unknown;
+		};
+		expect(deps.finalizeThreeStagePhases).toBe(finalizeThreeStagePhases);
 	});
 
 	it("path 1: NOT ship-eligible (approval gate armed, no approval) → merge_block park + ONE alert, no finalize", async () => {

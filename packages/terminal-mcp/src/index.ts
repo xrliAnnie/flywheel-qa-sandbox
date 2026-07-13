@@ -455,6 +455,7 @@ server.tool(
 		"REJECTS: running, awaiting_review, approved, approved_to_ship — those must be approved/rejected first.",
 		"To CANCEL/ABANDON a parked runner (awaiting_review / approved_to_ship — founder decided NOT to ship): set abandon=true. This routes to the terminate action (FSM→terminated + tmux/viewer teardown + audit), so you don't have to raw `tmux kill`. abandon is a terminate-class reserved action (founder-consent gated, same as terminate) and REQUIRES a reason.",
 		"FLY-638 — to FINALIZE a DONE-but-stuck runner (ship SUCCEEDED so it parked at awaiting_review/approved_to_ship, or QA PASSED so it's still running, but it exited before its final `stage set completed`): set done=true. This transitions it to completed via the FSM, THEN closes (kills tmux window + cmux session + viewer tab) and archives the issue thread (the FLY-369 close→archive cascade). Use done=true (NOT abandon) when the work finished successfully — abandon=true marks it terminated (an abort) and does NOT archive. done and abandon are mutually exclusive.",
+		"FLY-1204 — a three-stage DESIGN phase-session parks at `design_done` (kept alive as the design-context holder until ship). It too is reclaimed with done=true (design_done → completed via the FSM); a normal close still rejects it on purpose, so this is the explicit way to reclaim a leaked design phase-session by hand.",
 		"Use after Annie confirms closure, or per team-lead pre-authorized rules.",
 		"Idempotent: if the tmux window is already gone, returns success.",
 	].join(" "),
@@ -486,7 +487,7 @@ server.tool(
 			.boolean()
 			.default(false)
 			.describe(
-				"FLY-638: FINALIZE a DONE-but-stuck runner (ship succeeded / QA passed but it never emitted its final `stage set completed`). Transitions running/awaiting_review/approved_to_ship → completed via the FSM, then closes + archives. Use this (NOT abandon) for successful work. Mutually exclusive with abandon. Default false.",
+				"FLY-638: FINALIZE a DONE-but-stuck runner (ship succeeded / QA passed but it never emitted its final `stage set completed`). Transitions running/awaiting_review/approved_to_ship/design_done → completed via the FSM, then closes + archives. Also reclaims a leaked three-stage design phase-session parked at design_done (FLY-1204). Use this (NOT abandon) for successful work. Mutually exclusive with abandon. Default false.",
 			),
 	},
 	async ({ issue_identifier, execution_id, reason, abandon, done }) => {
@@ -599,7 +600,7 @@ server.tool(
 								text: abandon
 									? `Error: no parked (awaiting_review / approved_to_ship) session for ${issue_identifier} in your scope. Nothing to abandon — if the runner is still running, terminate it instead; if it already finished, use a normal close.`
 									: done
-										? `Error: no done-but-stuck (running / awaiting_review / approved_to_ship) session for ${issue_identifier} in your scope. Nothing to finalize — if it already reached completed/rejected/etc, use a normal close.`
+										? `Error: no done-but-stuck (running / awaiting_review / approved_to_ship / design_done) session for ${issue_identifier} in your scope. Nothing to finalize — if it already reached completed/rejected/etc, use a normal close.`
 										: `Error: no closable session for ${issue_identifier}. If a Runner is currently running, wait for completion or pass execution_id explicitly.`,
 							},
 						],

@@ -3072,6 +3072,41 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-1204: candidate PRE-SCREEN for the periodic parked-phase reclaim patrol
+	 * (a status/role coarse filter only, NOT the reclaim decision). It returns
+	 * three-stage phase rows (chat_thread_role IN design/implement/qa) whose status
+	 * is in the keep-alive-reclaimable set:
+	 *   - `design_done` — a parked Design phase (kept as the design-context holder);
+	 *   - `awaiting_review` / `approved_to_ship` — a parked Implement/QA phase;
+	 *   - `running` — a QA FAIL fix-loop parks with status still `running`
+	 *     (the HeartbeatService verdict layer separates "parked running" from
+	 *     "actively working" via the CommDB declared_state);
+	 *   - `completed` — a shipped QA phase that leaked alive (the primary defect).
+	 * Terminal non-candidate states (failed/blocked/terminated/rejected/deferred/
+	 * shelved) are excluded. Whether a candidate is REALLY parked + safe to reclaim
+	 * is decided in HeartbeatService (declared_state + probe + ship-claim guard) —
+	 * this only narrows the set to verify (Codex R1 BLOCKER-1: status ≠ parked, and
+	 * keep-alive OFF still produces phase rows at handoff).
+	 */
+	getParkedPhaseCandidates(): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE chat_thread_role IN ('design', 'implement', 'qa')
+			   AND status IN ('design_done', 'completed', 'awaiting_review',
+			                  'approved_to_ship', 'running')
+			 ORDER BY last_activity_at DESC, rowid DESC`,
+		);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
 	 * FLY-887: durable, replay-idempotent event count for an issue + type — the
 	 * fix-round ledger source. A three-stage QA FAIL no longer spawns a NEW
 	 * implement session (the parked one is woken to fix), so the FLY-859

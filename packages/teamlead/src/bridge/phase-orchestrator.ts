@@ -116,7 +116,9 @@ const DEFAULT_MAX_FIX_ROUNDS = 3;
  * (their probe returns `absent` fast); bounding the scan keeps a stale-row pile
  * from slowing every spawn.
  */
-const GHOST_PROBE_MAX_ROWS = 3;
+// FLY-1204: exported so the HeartbeatService parked-phase reclaim patrol
+// probes the SAME "latest N rows per role" width (no drift).
+export const GHOST_PROBE_MAX_ROWS = 3;
 
 // FLY-907: the FLY-887 face-C derivation that lived here (PhaseLineState /
 // computePhaseLineStates / renderPhaseStatusLine + the local PHASE_LINE_ORDER
@@ -165,7 +167,10 @@ export interface TurnBeltRow {
  * missing-row holder younger than this window is an in-flight spawn, not a
  * remnant. Beyond it, dispatch and Bridge died together: genuine remnant.
  */
-const TURN_GRANT_GRACE_MS = 5 * 60_000;
+// FLY-1204: exported so the HeartbeatService parked-phase reclaim patrol shares
+// the SAME in-flight-spawn grace window (a fresh TURN whose holder session row
+// is not yet registered = a spawn in progress, must not be reclaimed).
+export const TURN_GRANT_GRACE_MS = 5 * 60_000;
 
 /** Recovery target priority: most-downstream parked-alive phase first. */
 const TURN_RECOVERY_PRIORITY: readonly ThreeStagePhase[] = [

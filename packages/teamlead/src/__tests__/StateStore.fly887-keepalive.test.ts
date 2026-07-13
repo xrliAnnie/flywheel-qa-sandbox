@@ -123,6 +123,76 @@ describe("getPhaseSessionsForIssue (FLY-887)", () => {
 	});
 });
 
+describe("getParkedPhaseCandidates (FLY-1204)", () => {
+	it("returns phase rows in the reclaimable status set only", async () => {
+		const store = await freshStore();
+		seedSession(store, {
+			execution_id: "d",
+			issue_id: "FLY-1",
+			chat_thread_role: "design",
+			status: "design_done",
+		});
+		seedSession(store, {
+			execution_id: "i",
+			issue_id: "FLY-1",
+			chat_thread_role: "implement",
+			status: "awaiting_review",
+		});
+		seedSession(store, {
+			execution_id: "q1",
+			issue_id: "FLY-1",
+			chat_thread_role: "qa",
+			status: "completed",
+		});
+		// running qa is a candidate too — a FAIL fix-loop parks with status still
+		// running; the HeartbeatService verdict layer distinguishes parked-running
+		// from actively-working-running via CommDB declared_state.
+		seedSession(store, {
+			execution_id: "q2",
+			issue_id: "FLY-2",
+			chat_thread_role: "qa",
+			status: "running",
+		});
+		seedSession(store, {
+			execution_id: "a",
+			issue_id: "FLY-3",
+			chat_thread_role: "implement",
+			status: "approved_to_ship",
+		});
+		const ids = store
+			.getParkedPhaseCandidates()
+			.map((s) => s.execution_id)
+			.sort();
+		expect(ids).toEqual(["a", "d", "i", "q1", "q2"]);
+	});
+
+	it("excludes non-phase (main) rows and non-candidate statuses", async () => {
+		const store = await freshStore();
+		// main role — never a phase candidate even in a candidate status
+		seedSession(store, {
+			execution_id: "main-1",
+			issue_id: "FLY-1",
+			chat_thread_role: "main",
+			status: "completed",
+		});
+		// a crashed/terminal phase (failed) is NOT in the candidate set
+		seedSession(store, {
+			execution_id: "f",
+			issue_id: "FLY-1",
+			chat_thread_role: "design",
+			status: "failed",
+		});
+		// terminated is likewise excluded
+		seedSession(store, {
+			execution_id: "t",
+			issue_id: "FLY-1",
+			chat_thread_role: "qa",
+			status: "terminated",
+		});
+		expect(store.getParkedPhaseCandidates()).toEqual([]);
+	});
+});
+
 describe("countEventsByIssueAndType (FLY-887 fix-round ledger)", () => {
 	it("counts only events of the requested type for the issue", async () => {
 		const store = await freshStore();

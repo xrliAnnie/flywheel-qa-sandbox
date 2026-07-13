@@ -16,7 +16,15 @@ import {
 /**
  * FLY-887 Step 8: ship-time finalization of the parked design + implement phases.
  * The finalizer closes them (finalizeDone → completed) BEFORE the shared worktree
- * is removed, leaves the QA (shipped) session alone, and drops the TURN row.
+ * is removed and drops the TURN row.
+ *
+ * FLY-1204: the finalizer ALSO reclaims the QA phase-session (role `qa`, incl. the
+ * `completed` terminal state a shipped QA lands in). The old design relied on
+ * `postMergeTmuxCleanup(opts.executionId)` to tear down the QA, but that trigger
+ * chain is fragile (ship via external-merge, QA advanced off `needs_review` by
+ * another path, registration already reaped) — so a `completed` QA process leaked
+ * alive and accumulated toward OOM. The finalize is idempotent (already-gone → a
+ * no-op close), so it can always attempt the QA regardless of the trigger.
  */
 
 let commDir: string;
@@ -57,7 +65,7 @@ function seed(
 }
 
 describe("makeFinalizeThreeStagePhases (FLY-887)", () => {
-	it("closes parked design + implement (→ completed), leaves qa, deletes TURN", async () => {
+	it("closes parked design + implement + qa (→ completed), deletes TURN", async () => {
 		const { store, transitionOpts } = await makeStore();
 		seed(store, {
 			execution_id: "d",
@@ -71,9 +79,12 @@ describe("makeFinalizeThreeStagePhases (FLY-887)", () => {
 			chat_thread_role: "implement",
 			session_role: "implement",
 		});
+		// FLY-1204: a QA phase parked at awaiting_review (ship arrived via a path
+		// that didn't tear it down) must now be reclaimed by finalize, not left
+		// leaked alive.
 		seed(store, {
 			execution_id: "q",
-			status: "running",
+			status: "awaiting_review",
 			chat_thread_role: "qa",
 			session_role: "qa",
 		});
@@ -87,12 +98,38 @@ describe("makeFinalizeThreeStagePhases (FLY-887)", () => {
 
 		expect(store.getSession("d")?.status).toBe("completed");
 		expect(store.getSession("i")?.status).toBe("completed");
-		// QA is the shipped session — finalized by the normal path, not here.
-		expect(store.getSession("q")?.status).toBe("running");
+		// FLY-1204: qa is now reclaimed too (awaiting_review → completed).
+		expect(store.getSession("q")?.status).toBe("completed");
 
 		const db2 = new CommDB(commDbPathForProject("flywheel"));
 		expect(db2.getTurn("FLY-1")).toBeNull();
 		db2.close();
+	});
+
+	// FLY-1204: the primary leak — a shipped QA phase-session parked at the
+	// `completed` terminal state whose tmux was never torn down. finalize must
+	// attempt to close it (idempotent when tmux is already gone).
+	it("reclaims a leaked completed qa (idempotent close on already-gone tmux)", async () => {
+		const { store, transitionOpts } = await makeStore();
+		seed(store, {
+			execution_id: "q",
+			status: "completed",
+			chat_thread_role: "qa",
+			session_role: "qa",
+		});
+		const finalize = makeFinalizeThreeStagePhases(store, transitionOpts);
+		await finalize("FLY-1", "flywheel");
+
+		// completed is terminal (no FSM transition) — the observable proof that
+		// finalize reclaimed it is the close-runner audit event.
+		expect(store.getSession("q")?.status).toBe("completed");
+		const closeEvent = store
+			.getEventsByExecution("q")
+			.find((e) => e.event_type === "lead_close_runner");
+		expect(closeEvent).toBeDefined();
+		expect(
+			(closeEvent?.payload as { alreadyGone?: boolean })?.alreadyGone,
+		).toBe(true);
 	});
 
 	it("no-op for a single-session issue (no phase sessions)", async () => {

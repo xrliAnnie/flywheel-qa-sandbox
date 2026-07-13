@@ -136,6 +136,18 @@ export interface ExternalMergeReconcileDeps {
 	checkPrMerge?: typeof checkPrMergeViaGh;
 	/** Test seam for the path-2 trusted-approval read (default: CommDB). */
 	hasTrustedApprovalImpl?: (session: Session) => boolean;
+	/**
+	 * FLY-1204: the three-stage keep-alive phase finalizer (same one the
+	 * DirectEventSink / event-route paths use). External merge is a real ship
+	 * path, so it must reclaim the parked design/implement/qa phase sessions too;
+	 * without it the external-merge finalize writes the post-ship claim but leaves
+	 * the phase sessions leaked alive until the periodic patrol catches them.
+	 * Optional → absent leaves the phases to the patrol (byte-compat).
+	 */
+	finalizeThreeStagePhases?: (
+		issueId: string,
+		projectName: string,
+	) => Promise<void>;
 	log?: (m: string) => void;
 }
 
@@ -247,6 +259,8 @@ export function createExternalMergeReconciler(
 				store: deps.store,
 				projects: deps.projects,
 				removeCleanWorktree: deps.removeCleanWorktree,
+				// FLY-1204: reclaim the parked three-stage phases on this ship path too.
+				finalizeThreeStagePhases: deps.finalizeThreeStagePhases,
 				markIssueDone: makeLinearDoneFinalizer(deps.config),
 			},
 		);

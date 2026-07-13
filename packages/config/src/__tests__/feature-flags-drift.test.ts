@@ -155,6 +155,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_LEAD_PANE_READINESS_TIMEOUT_MS:
 		"tuning knob: pane readiness timeout",
 	FLYWHEEL_CRASH_REAP_GRACE_MIN: "tuning knob: crash reap grace minutes",
+	FLYWHEEL_PARKED_PHASE_STALE_HOURS:
+		"tuning knob: parked three-stage phase reclaim time backstop hours (FLY-1204)",
 	FLYWHEEL_BRIDGE_SHUTDOWN_TIMEOUT_MS: "tuning knob: bridge shutdown timeout",
 	FLYWHEEL_FOUNDER_MILESTONE_PATROL_TICKS:
 		"tuning knob: milestone patrol cadence (FLY-725)",

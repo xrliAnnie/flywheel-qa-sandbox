@@ -204,20 +204,34 @@ export interface PostShipDeps {
  * stale at whatever it last showed pre-merge. Best-effort — swallowed on error,
  * absent → no refresh (byte-compat for callers that don't wire it).
  */
+/**
+ * FLY-1204: the phase statuses ship-finalization reclaims. The FINALIZE_DONE
+ * source states (running/awaiting_review/approved_to_ship/design_done) transition
+ * to `completed` via the FSM; `completed` is added because a shipped QA phase-session
+ * lands there and would otherwise leak alive (the primary FLY-1204 defect) — a
+ * `completed` session is already terminal, so `closeRunner` skips the FSM step and
+ * just tears down its tmux (idempotent when already gone).
+ */
+const RECLAIMABLE_PHASE_STATUSES = new Set<string>([
+	...FINALIZE_DONE_SOURCE_STATES,
+	"completed",
+]);
+
 export function makeFinalizeThreeStagePhases(
 	store: StateStore,
 	transitionOpts: ApplyTransitionOpts,
 	refreshPhaseStatusLine?: (issueId: string) => Promise<void>,
 ): (issueId: string, projectName: string) => Promise<void> {
 	return async (issueId, projectName) => {
-		const phases = store
-			.getPhaseSessionsForIssue(issueId)
-			.filter(
-				(s) =>
-					(s.chat_thread_role === "design" ||
-						s.chat_thread_role === "implement") &&
-					FINALIZE_DONE_SOURCE_STATES.has(s.status),
-			);
+		const phases = store.getPhaseSessionsForIssue(issueId).filter(
+			(s) =>
+				(s.chat_thread_role === "design" ||
+					s.chat_thread_role === "implement" ||
+					// FLY-1204: reclaim the QA phase too — the fragile
+					// postMergeTmuxCleanup trigger chain often leaves it leaked alive.
+					s.chat_thread_role === "qa") &&
+				RECLAIMABLE_PHASE_STATUSES.has(s.status),
+		);
 		for (const p of phases) {
 			try {
 				const res = await closeRunner(

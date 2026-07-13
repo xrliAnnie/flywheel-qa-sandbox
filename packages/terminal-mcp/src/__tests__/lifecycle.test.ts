@@ -163,16 +163,18 @@ describe("abandon status set", () => {
 	});
 });
 
-// FLY-638: done-mode lookup status set (running + the two parked states).
+// FLY-638 + FLY-1204: done-mode lookup status set (running + the two parked
+// states + the three-stage Design phase-session state design_done).
 describe("done status set", () => {
-	it("is running + the parked states (mirrors FINALIZE_DONE_SOURCE_STATES)", () => {
+	it("mirrors FINALIZE_DONE_SOURCE_STATES incl. design_done (FLY-1204)", () => {
 		expect([...DONE_STATUS_SET]).toEqual([
 			"running",
 			"awaiting_review",
 			"approved_to_ship",
+			"design_done",
 		]);
 		expect(DONE_STATUSES_PARAM).toBe(
-			"running,awaiting_review,approved_to_ship",
+			"running,awaiting_review,approved_to_ship,design_done",
 		);
 	});
 });

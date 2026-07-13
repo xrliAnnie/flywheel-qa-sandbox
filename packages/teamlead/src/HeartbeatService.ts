@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { CommDB } from "flywheel-comm/db";
 import { modelShortCode } from "flywheel-config";
 import {
 	type ApplyTransitionOpts,
@@ -27,6 +28,10 @@ import {
 	type LeadEventEnvelope,
 	RETRYABLE_LEAD_EVENT_TYPES,
 } from "./bridge/lead-runtime.js";
+import {
+	GHOST_PROBE_MAX_ROWS,
+	TURN_GRANT_GRACE_MS,
+} from "./bridge/phase-orchestrator.js";
 import { classifyQuiet, type QuietSignals } from "./bridge/quiet-classifier.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import { reconnectingBadge, stageBadge } from "./bridge/stage-utils.js";
@@ -52,6 +57,69 @@ export interface StaleTerminalCloseConfig {
 	closeStale(
 		session: Session,
 	): Promise<{ closed: boolean; alreadyGone?: boolean }>;
+}
+
+/**
+ * FLY-1204: the phase FSM states that are terminal — a session in one of these
+ * will never transition back to actively-working, so the reclaim patrol treats
+ * it as never-a-working-holder. Mirrors the terminal set the FSM never leaves.
+ */
+const TERMINAL_PHASE_STATUSES = new Set<string>([
+	"completed",
+	"failed",
+	"terminated",
+	"rejected",
+	"deferred",
+	"shelved",
+]);
+
+/**
+ * FLY-1204 (plan §C0 probe budget; FLY-1210 root-fix / Codex code-review R4): the
+ * max candidates the parked-phase reclaim patrol processes per sweep. It walks the
+ * candidates in a STABLE global `execution_id` order behind a single execution_id
+ * watermark, so a set larger than the cap drains over ⌈total/cap⌉ sweeps and EVERY
+ * candidate is reached — the coverage does not depend on any per-sweep issue window
+ * (which would thrash a modulo cursor and could starve a live leak spread across
+ * many issues). Each processed candidate costs at most one cleanup probe plus, the
+ * first time its issue is seen this sweep, its bounded (≤ GHOST_PROBE_MAX_ROWS/role)
+ * verdict — so the total per-sweep work is bounded by the cap. Exported so the
+ * safety-boundary test asserts the exact per-sweep cap.
+ */
+export const PARKED_SWEEP_CANDIDATE_CAP = 200;
+
+/**
+ * FLY-1204: injected chokepoint for the periodic parked-phase reclaim patrol —
+ * the safety net that reclaims three-stage keep-alive phase sessions (design/
+ * implement/qa) that leaked alive past ship or pipeline termination. Wired in
+ * production; absent (tests / not wired) → `checkStaleParkedPhases` is inert
+ * (byte-compat). The patrol NEVER kills a healthy parked context-holder — see
+ * `computeIssueReclaimVerdict` for the hard "any working phase → keep the whole
+ * issue" guard and the TOCTOU-honest auto-kill boundary.
+ */
+export interface StaleParkedCloseConfig {
+	/**
+	 * Time safety-net threshold (hours) — only the terminal-guard is the primary
+	 * reclaim trigger; time is a pure backstop for the no-ship-claim orphan path.
+	 * Env `FLYWHEEL_PARKED_PHASE_STALE_HOURS` (default 24, conservative).
+	 */
+	parkedStaleHours: number;
+	/** Per-project CommDB path resolver (declared-state + TURN reads). */
+	commDbPathForProject: (project: string) => string;
+	/**
+	 * Close a reclaimable parked/terminal phase session through the canonical
+	 * closeRunner teardown (finalizeDone, NO thread archive). `noClaim` records
+	 * the reason (shipped vs orphan-completed) in the audit.
+	 */
+	closeParked: (
+		session: Session,
+		opts: { noClaim: boolean },
+	) => Promise<{ closed: boolean; alreadyGone?: boolean }>;
+	/**
+	 * Alert (issue-level, once) about no-ship-claim orphan parked phases that the
+	 * patrol will NOT auto-kill (non-terminal parked — TOCTOU cannot be proven
+	 * safe). Operators reclaim these with `close_runner --done`.
+	 */
+	alertOrphan: (issueId: string, sessions: Session[]) => Promise<void>;
 }
 
 export interface HeartbeatNotifier {
@@ -139,6 +207,17 @@ export class HeartbeatService implements ReconnectController {
 	private notifiedOrphans = new Set<string>();
 	private notifiedStale = new Set<string>();
 	private lastStaleCheckAt = 0;
+	// FLY-1204: parked-phase reclaim patrol state — independent throttle +
+	// global re-entrancy guard (a long sweep must not be re-entered by the next
+	// tick) + per-issue in-flight set.
+	private lastParkedCheckAt = 0;
+	private parkedSweepRunning = false;
+	// FLY-1204 (FLY-1210 root-fix): a STABLE execution_id watermark. The reclaim
+	// patrol walks candidates in stable execution_id order behind this watermark,
+	// PARKED_SWEEP_CANDIDATE_CAP at a time, wrapping at the end. Stable identity +
+	// stable ordering = every candidate is reached over ⌈total/cap⌉ sweeps, with no
+	// per-sweep-window modulo that could starve a live leak. `""` restarts at head.
+	private parkedCleanupWatermark = "";
 	/**
 	 * FLY-172: execIds for which a `session_monitoring_lost` advisory was already
 	 * sent this Bridge-process lifetime (one-time advisory). Members are still
@@ -218,6 +297,14 @@ export class HeartbeatService implements ReconnectController {
 		 * Gated on FLYWHEEL_FLEET_SENSOR_TMUX=0 at the wiring layer.
 		 */
 		private serverLoss?: { check(): Promise<ReadonlySet<string>> },
+		/**
+		 * FLY-1204: injected parked-phase reclaim chokepoint (see
+		 * StaleParkedCloseConfig). Wired (production) → `checkStaleParkedPhases`
+		 * reclaims leaked three-stage phase sessions behind the same
+		 * FLYWHEEL_STALE_TERMINAL_CLOSE kill-switch (via `staleCloseEnabled`) plus
+		 * its own `FLYWHEEL_PARKED_PHASE_STALE_HOURS` threshold. Absent → inert.
+		 */
+		private staleParkedClose?: StaleParkedCloseConfig,
 	) {}
 
 	start(): void {
@@ -288,6 +375,10 @@ export class HeartbeatService implements ReconnectController {
 			await this.checkStuck();
 			await this.reapOrphans(new Set([...deadPinOwned, ...serverLossOwned]));
 			await this.checkStaleCompleted();
+			// FLY-1204: reclaim leaked three-stage keep-alive phase sessions
+			// (independent throttle; inert unless wired). Its own try/guards keep a
+			// failure best-effort — the outer catch is the belt-and-suspenders.
+			await this.checkStaleParkedPhases();
 			await this.checkAwaitingReviewTimeout();
 		} catch (err) {
 			console.error(
@@ -961,6 +1052,381 @@ export class HeartbeatService implements ReconnectController {
 		}
 
 		this.lastStaleCheckAt = Date.now();
+	}
+
+	/**
+	 * FLY-1204: periodic safety net that reclaims three-stage keep-alive phase
+	 * sessions (design/implement/qa) that leaked alive past ship or pipeline
+	 * termination — the root of the OOM incident (design_done holders never
+	 * closed after handoff; completed QA processes never torn down). Runs behind
+	 * the shared FLYWHEEL_STALE_TERMINAL_CLOSE kill-switch, its own independent
+	 * throttle, and a global re-entrancy guard. Never throws (best-effort).
+	 *
+	 * The reclaim is issue-grouped and verdict-driven (`computeIssueReclaimVerdict`)
+	 * so it NEVER kills a healthy parked context-holder: any phase still working
+	 * keeps the whole issue. Auto-kill is limited to two TOCTOU-safe cases (a
+	 * pipeline with a ship-finalization claim = terminated & will not respawn; a
+	 * `completed` terminal QA that cannot revert to working). No-ship-claim
+	 * non-terminal orphans are only ALERTED for a `close_runner --done`.
+	 */
+	async checkStaleParkedPhases(): Promise<void> {
+		if (!this.staleParkedClose) return; // feature not wired → inert
+		// Shared kill-switch with FLY-867 (the env is the switch; the parked patrol
+		// has its own wiring check above, so it does NOT also require the terminal
+		// close chokepoint to be wired).
+		if (process.env.FLYWHEEL_STALE_TERMINAL_CLOSE === "0") return;
+		if (this.parkedSweepRunning) return; // a prior long sweep is still running
+		const now = Date.now();
+		if (now - this.lastParkedCheckAt < this.staleCheckIntervalMs) return;
+		this.parkedSweepRunning = true;
+		try {
+			const candidates = this.store.getParkedPhaseCandidates();
+			const total = candidates.length;
+			if (total === 0) return;
+
+			// Group by issue — the verdict needs the WHOLE issue group, not just the
+			// candidates that fall in this sweep's window.
+			const byIssue = new Map<string, Session[]>();
+			for (const s of candidates) {
+				const g = byIssue.get(s.issue_id);
+				if (g) g.push(s);
+				else byIssue.set(s.issue_id, [s]);
+			}
+
+			// STABLE global order by execution_id (a random UUID — stable across
+			// sweeps, independent of the mutable last_activity_at). A single
+			// execution_id watermark walks this ordering CAP-at-a-time, restarting at
+			// the head after the tail. Because the ordering + identity are stable,
+			// EVERY candidate is reached within ⌈total/cap⌉ sweeps regardless of how
+			// the candidate set changes between sweeps — there is no per-sweep issue
+			// window whose varying length could thrash a modulo cursor and starve a
+			// live leak spread across many issues (FLY-1210 root-fix / Codex R4).
+			const ordered = [...candidates].sort((a, b) =>
+				a.execution_id < b.execution_id
+					? -1
+					: a.execution_id > b.execution_id
+						? 1
+						: 0,
+			);
+			let cstart = 0;
+			if (this.parkedCleanupWatermark) {
+				const idx = ordered.findIndex(
+					(c) => c.execution_id > this.parkedCleanupWatermark,
+				);
+				cstart = idx >= 0 ? idx : 0; // watermark past the end → restart at head
+			}
+			const end = Math.min(cstart + PARKED_SWEEP_CANDIDATE_CAP, total);
+			if (total > PARKED_SWEEP_CANDIDATE_CAP) {
+				console.warn(
+					`[HeartbeatService] parked-phase sweep processing candidates [${cstart}, ${end}) of ${total} this pass (cap ${PARKED_SWEEP_CANDIDATE_CAP}); the rest drain on later sweeps (stable-watermark rotation).`,
+				);
+			}
+
+			// Per-sweep memoized verdict per issue (an issue's verdict is computed at
+			// most once, the first time any of its candidates enters this window; its
+			// orphan alert fires there too, once).
+			const verdictByIssue = new Map<
+				string,
+				{ autoReclaim: Session[]; alertOnly: Session[]; noClaim: boolean }
+			>();
+			for (let k = cstart; k < end; k++) {
+				const s = ordered[k];
+				if (!s) continue;
+				try {
+					let verdict = verdictByIssue.get(s.issue_id);
+					if (!verdict) {
+						verdict = await this.computeIssueReclaimVerdict(
+							s.issue_id,
+							byIssue.get(s.issue_id) ?? [s],
+						);
+						verdictByIssue.set(s.issue_id, verdict);
+						if (verdict.alertOnly.length > 0) {
+							await this.alertOrphanParkedOnce(s.issue_id, verdict.alertOnly);
+						}
+					}
+					// Reclaim THIS candidate iff its issue's verdict marks it
+					// auto-reclaimable, then re-probe liveness right before the close
+					// (dead/defer skip — never close on doubt).
+					if (
+						verdict.autoReclaim.some((x) => x.execution_id === s.execution_id)
+					) {
+						const live = await this.probePhaseLiveness(s);
+						if (live !== "alive") continue;
+						await this.staleParkedClose.closeParked(s, {
+							noClaim: verdict.noClaim,
+						});
+					}
+				} catch (err) {
+					console.error(
+						`[HeartbeatService] parked-phase reclaim failed for ${s.execution_id}:`,
+						(err as Error).message,
+					);
+				}
+			}
+			// Reached the end → clear the watermark so the next sweep restarts at the
+			// head (full coverage); otherwise resume just after the last processed id.
+			this.parkedCleanupWatermark =
+				end >= total ? "" : (ordered[end - 1]?.execution_id ?? "");
+		} catch (err) {
+			console.error(
+				"[HeartbeatService] parked-phase sweep failed:",
+				(err as Error).message,
+			);
+		} finally {
+			this.parkedSweepRunning = false;
+			this.lastParkedCheckAt = Date.now();
+		}
+	}
+
+	/**
+	 * FLY-1204: the reclaim verdict for one issue. HARD guard against killing a
+	 * healthy parked holder.
+	 *
+	 * (1) A `post_ship_finalization_claim` exists → the pipeline is terminated and
+	 *     will never spawn a new working phase, so reclaiming its real-parked /
+	 *     terminal candidates is TOCTOU-safe. This is the automated main path (the
+	 *     shipped design_done + completed-qa zombies).
+	 * (2) No claim → first prove the issue has NO working phase and NO in-flight
+	 *     spawn (`classifyIssueWorking`); anything but `clean` keeps/defers the
+	 *     whole issue. Once clean + past the time backstop: a `completed` terminal
+	 *     candidate is auto-reclaimed (cannot revert to working); a non-terminal
+	 *     parked candidate (design_done / awaiting_review / …) is only ALERTED —
+	 *     the verdict→close window cannot prove TOCTOU-safety, so operators reclaim
+	 *     it explicitly with `close_runner --done`.
+	 */
+	private async computeIssueReclaimVerdict(
+		issueId: string,
+		group: Session[],
+	): Promise<{
+		autoReclaim: Session[];
+		alertOnly: Session[];
+		noClaim: boolean;
+	}> {
+		const projectName = group.find((s) => s.project_name)?.project_name ?? "";
+		const hasClaim =
+			this.store.countEventsByIssueAndType(
+				issueId,
+				"post_ship_finalization_claim",
+			) > 0;
+
+		if (hasClaim) {
+			const autoReclaim: Session[] = [];
+			for (const s of group) {
+				if (this.isReclaimableParkedOrTerminal(s) === "yes")
+					autoReclaim.push(s);
+			}
+			return { autoReclaim, alertOnly: [], noClaim: false };
+		}
+
+		const working = await this.classifyIssueWorking(issueId, projectName);
+		if (working !== "clean") {
+			// has_working (keep the healthy holder) / in_flight (protect the spawn
+			// window) / defer (read error → fail-closed) → reclaim nothing this pass.
+			return { autoReclaim: [], alertOnly: [], noClaim: true };
+		}
+
+		const autoReclaim: Session[] = [];
+		const alertOnly: Session[] = [];
+		for (const s of group) {
+			if (this.isReclaimableParkedOrTerminal(s) !== "yes") continue;
+			if (!this.isBeyondParkedStale(s)) continue; // time safety net (backstop)
+			if (s.status === "completed") autoReclaim.push(s);
+			else alertOnly.push(s);
+		}
+		return { autoReclaim, alertOnly, noClaim: true };
+	}
+
+	/**
+	 * FLY-1204: is the issue still working / spawning? Bounded probe: the latest
+	 * GHOST_PROBE_MAX_ROWS rows per role (≤9 total) so a "newest terminal + next
+	 * alive non-parked" shape is not missed. Any non-terminal, non-parked, alive
+	 * phase → `has_working` (keep the whole issue). A fresh in-flight TURN with no
+	 * registered holder session → `in_flight` (protect the handoff spawn window).
+	 * Any read error / indeterminate probe → `defer` (fail-closed).
+	 */
+	private async classifyIssueWorking(
+		issueId: string,
+		projectName: string,
+	): Promise<"has_working" | "in_flight" | "defer" | "clean"> {
+		const rows = this.pickLatestNPerRole(
+			this.store.getPhaseSessionsForIssue(issueId),
+			GHOST_PROBE_MAX_ROWS,
+		);
+		for (const p of rows) {
+			if (TERMINAL_PHASE_STATUSES.has(p.status)) continue;
+			const parked = this.declaredStateIsParked(p);
+			if (parked === "defer") return "defer";
+			if (parked === "yes") continue; // parked → not working
+			const live = await this.probePhaseLiveness(p);
+			if (live === "alive") return "has_working";
+			if (live === "defer") return "defer";
+			// dead → not a working holder; keep scanning
+		}
+		const turn = this.classifyTurn(issueId, projectName);
+		if (turn === "defer") return "defer";
+		if (turn === "in_flight") return "in_flight";
+		return "clean"; // stale / none TURN must NOT permanently block reclaim
+	}
+
+	/**
+	 * FLY-1204 (Codex R2 BLOCKER-1): the TURN is an untimed overwrite-style
+	 * ownership pointer that park does NOT release, so "a TURN exists" ≠ "the
+	 * pipeline is live". Only a fresh grant whose holder session row is NOT yet
+	 * registered (the pre-launch seam grants before the runner registers) inside
+	 * TURN_GRANT_GRACE_MS is an in-flight spawn worth deferring for. Holder row
+	 * present, or grace elapsed → `stale` (does NOT block reclaim). Implement
+	 * Note 1: for a reclaimed no-claim `completed`-QA orphan the leftover TURN row
+	 * is NOT swept by the turn-belt reconciler (which defers to post-ship
+	 * finalization — the very thing that never ran for an orphan); it lingers as a
+	 * tiny, harmless row (no memory leak, no block; a re-spawn overwrites it via
+	 * grantTurn's ON CONFLICT). We deliberately do not add a writable-CommDB
+	 * deleteTurn here. CommDB read error → `defer`.
+	 */
+	private classifyTurn(
+		issueId: string,
+		projectName: string,
+	): "none" | "in_flight" | "stale" | "defer" {
+		if (!this.staleParkedClose || !projectName) return "none";
+		// Structural subset of ThreeStageTurn (not re-exported from flywheel-comm/db).
+		let turn: { holder_exec_id: string; granted_at: number } | null;
+		try {
+			const db = CommDB.openReadonly(
+				this.staleParkedClose.commDbPathForProject(projectName),
+			);
+			try {
+				turn = db.getTurn(issueId);
+			} finally {
+				db.close();
+			}
+		} catch {
+			return "defer";
+		}
+		if (!turn) return "none";
+		const holder = this.store.getSession(turn.holder_exec_id);
+		if (!holder && Date.now() - turn.granted_at < TURN_GRANT_GRACE_MS) {
+			return "in_flight";
+		}
+		return "stale";
+	}
+
+	/**
+	 * FLY-1204: a candidate is reclaimable iff it is a `completed` terminal phase
+	 * (TOCTOU-safe) OR a non-terminal phase whose CommDB declared_state is
+	 * `parked`. A declared-state read error → `defer` (fail-closed, never a yes).
+	 */
+	private isReclaimableParkedOrTerminal(
+		session: Session,
+	): "yes" | "no" | "defer" {
+		if (session.status === "completed") return "yes";
+		return this.declaredStateIsParked(session);
+	}
+
+	/**
+	 * FLY-1204: does the session's CommDB declared-state read as `parked` right
+	 * now? `yes` / `no` from the effective marker; `defer` on any read error
+	 * (fail-closed) or when unwired. Readonly-tolerant per getEffectiveDeclaredState.
+	 */
+	private declaredStateIsParked(session: Session): "yes" | "no" | "defer" {
+		if (!this.staleParkedClose || !session.project_name) return "defer";
+		try {
+			const db = CommDB.openReadonly(
+				this.staleParkedClose.commDbPathForProject(session.project_name),
+			);
+			try {
+				const state = db.getEffectiveDeclaredState(
+					session.execution_id,
+					Date.now(),
+				);
+				return state?.kind === "parked" ? "yes" : "no";
+			} finally {
+				db.close();
+			}
+		} catch {
+			return "defer";
+		}
+	}
+
+	/**
+	 * FLY-1204: 3-state PROCESS liveness for a phase session — distinct from
+	 * `isSessionTmuxAlive` (which folds to a boolean for suppression). Uses the
+	 * discriminated `lookupTmuxTarget` (error ≠ gone): CommDB read error → defer;
+	 * no target → dead (gone); pane probe alive → alive; dead_pin/absent → dead;
+	 * indeterminate / throw → defer (never close on doubt).
+	 */
+	private async probePhaseLiveness(
+		session: Session,
+	): Promise<"alive" | "dead" | "defer"> {
+		if (!session.project_name) return "dead";
+		const lookup = lookupTmuxTarget(session.execution_id, session.project_name);
+		if (lookup.kind === "error") return "defer";
+		if (lookup.kind === "gone") return "dead";
+		try {
+			const liveness = await probeRunnerProcessLiveness(
+				lookup.target.tmuxWindow,
+			);
+			if (liveness === "alive") return "alive";
+			if (liveness === "indeterminate") return "defer";
+			return "dead"; // dead_pin | absent
+		} catch {
+			return "defer";
+		}
+	}
+
+	/**
+	 * FLY-1204: pure time backstop (decision ② — the terminal guard is the primary
+	 * trigger; time is a conservative safety net). True iff the session's last
+	 * activity is older than the configured parked-stale threshold.
+	 */
+	private isBeyondParkedStale(session: Session): boolean {
+		if (!this.staleParkedClose || !session.last_activity_at) return false;
+		const activityMs = new Date(
+			`${session.last_activity_at.replace(" ", "T")}Z`,
+		).getTime();
+		if (!Number.isFinite(activityMs)) return false;
+		const ageHours = (Date.now() - activityMs) / 3_600_000;
+		return ageHours >= this.staleParkedClose.parkedStaleHours;
+	}
+
+	/**
+	 * FLY-1204: the latest N rows per `chat_thread_role` from a
+	 * `last_activity_at DESC, rowid DESC`-ordered list (getPhaseSessionsForIssue
+	 * guarantees that order). Caps the working-safety probe at ≤N/role.
+	 */
+	private pickLatestNPerRole(rows: Session[], n: number): Session[] {
+		const perRole = new Map<string, number>();
+		const out: Session[] = [];
+		for (const r of rows) {
+			const role = r.chat_thread_role ?? "";
+			const seen = perRole.get(role) ?? 0;
+			if (seen >= n) continue;
+			perRole.set(role, seen + 1);
+			out.push(r);
+		}
+		return out;
+	}
+
+	/**
+	 * FLY-1204: alert (once per issue + orphan-set) about no-ship-claim orphan
+	 * parked phases the patrol will NOT auto-kill. Durable dedupe via
+	 * `quiet_wake_notified` keyed on a SYNTHETIC issue key + a stable source +
+	 * the sorted orphan exec-id fingerprint (a NEW orphan → new fingerprint →
+	 * re-alert; same set → suppressed across sweeps + Bridge restarts). Records
+	 * the dedupe ONLY after the alert is delivered (Implement Note 3 — a failed
+	 * alert must not be silenced).
+	 */
+	private async alertOrphanParkedOnce(
+		issueId: string,
+		sessions: Session[],
+	): Promise<void> {
+		if (!this.staleParkedClose) return;
+		const source = "fly1204_orphan_parked";
+		const fingerprint = sessions
+			.map((s) => s.execution_id)
+			.sort()
+			.join(",");
+		if (this.store.hasQuietWakeNotified(issueId, source, fingerprint)) return;
+		await this.staleParkedClose.alertOrphan(issueId, sessions);
+		this.store.recordQuietWakeNotified(issueId, source, fingerprint);
 	}
 
 	/**
