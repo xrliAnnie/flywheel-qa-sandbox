@@ -1,0 +1,40 @@
+# FLY-1178 QA 独立 URL 健康复测 — 2026-07-11
+# 手段: curl -L -s --max-time 25 -w '%{http_code}' (跟随重定向记录终态, 常规 UA)
+# 结果: 36/36 全 200 (零 DEAD)。由 QA 阶段从附录 B 抽 URL 从零重跑, 非 implement 自报。
+# HTTP  URL
+200  https://openai.github.io/openai-agents-python/realtime/guide/
+200  https://developers.openai.com/api/docs/guides/realtime
+200  https://adk.dev/streaming/dev-guide/part1
+200  https://adk.dev/streaming/dev-guide/part3
+200  https://adk.dev/streaming/streaming-tools/
+200  https://adk.dev/tools-custom/function-tools/
+200  https://platform.claude.com/docs/en/api/openai-sdk
+200  https://aws.amazon.com/blogs/machine-learning/building-a-multi-agent-voice-assistant-with-amazon-nova-sonic-and-amazon-bedrock-agentcore/
+200  https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live
+200  https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live-agents-quickstart
+200  https://docs.livekit.io/agents/
+200  https://docs.pipecat.ai/overview/introduction
+200  https://docs.pipecat.ai/pipecat/fundamentals/metrics
+200  https://docs.vapi.ai/faq
+200  https://vapi.ai/blog/speech-latency
+200  https://docs.vapi.ai/squads/passing-data-between-assistants
+200  https://docs.vapi.ai/squads/handoff
+200  https://docs.retellai.com/build/single-multi-prompt/transfer-agent
+200  https://www.retellai.com/blog/how-real-time-voice-ai-works-stt-llm-tts
+200  https://elevenlabs.io/docs/eleven-agents/customization/llm/custom-llm
+200  https://elevenlabs.io/docs/eleven-agents/overview
+200  https://docs.mem0.ai/cookbooks/companions/voice-companion-openai
+200  https://help.getzep.com/v2/concepts
+200  https://docs.letta.com/guides/agents/overview/
+200  https://docs.letta.com/core-concepts/
+200  https://docs.langchain.com/oss/python/langgraph/persistence
+200  https://docs.langchain.com/oss/python/langchain/multi-agent/handoffs
+200  https://docs.langchain.com/oss/python/langchain/multi-agent/subagents
+200  https://raft.build/resources/blog/is-having-agents-in-the-room-meant-to-be-chaotic/
+200  https://microsoft.github.io/autogen/dev/user-guide/agentchat-user-guide/selector-group-chat.html
+200  https://docs.crewai.com/en/concepts/collaboration
+200  https://docs.replit.com/references/agent/voice-mode
+200  https://superwhisper.com/use-cases
+200  https://wisprflow.ai/use-cases/claude
+200  https://workspace.google.com/solutions/ai/ai-note-taking/
+200  https://support.google.com/meet/answer/14754931
