@@ -149,6 +149,17 @@ describe("RetryDispatcher durable launch claim (HIGH-3 — exactly one started)"
 		claims.close();
 	});
 
+	// FLY-1188 HIGH-3 (Codex full-PR review R2/R3): a committed CODEX runner was
+	// briefly made to RE-DRIVE here, but Codex R3 showed the re-drive routes through
+	// Blueprint.run's destructive worktree setup (removeIfExists → delete worktree +
+	// force-delete branch) BEFORE the orphaned daemon is safely stopped — a data-loss
+	// risk. Per the Lead's ruling it was REVERTED: committed codex now bare-adopts
+	// like claude (above), and the SAFE recovery (persist backend + safely stop the
+	// daemon + reuse the worktree in-place) is a fast-follow issue (see
+	// doc/engineer/implementation/codex-recovery-runbook.md). The adapter-side
+	// fail-closed reap (codex-daemon-runtime) still covers the crash-BEFORE-commit
+	// redrive that an orphan socket would otherwise block.
+
 	it("R5: crash BEFORE commit (recorded-but-never-started) → re-drive, NOT adopt-to-zero", async () => {
 		const claims = new LaunchClaimStore(join(dir, "lc.db"));
 		// attempt 1 claimed but NEVER committed (crashed between window-open and the

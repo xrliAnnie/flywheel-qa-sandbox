@@ -94,6 +94,12 @@ export {
 	DEFAULT_PROOFSHOT_PATH_ALLOWLIST,
 	DEFAULT_PROOFSHOT_VISION_TOKEN_BUDGET,
 } from "./proofshot-defaults.js";
+// FLY-1188 §7.3: family-aware review authority (reviewer-inversion invariant)
+export {
+	adapterTypeToFamily,
+	type CrossFamilyReviewInput,
+	crossFamilyReviewSatisfied,
+} from "./review-family.js";
 // FLY-709 P4.3/P4.4: per-project runner-default / cron-model config writer.
 export type {
 	ApplyResult,

@@ -93,6 +93,14 @@ export class TmuxAdapter implements IAdapter {
 	 * byte-identical.
 	 */
 	protected readonly binaryName: string = "claude";
+	/**
+	 * FLY-1188: transport vendor recorded on the CommDB session row — routes
+	 * `flywheel-comm send` wakes to the right mailbox. Overridable seam: the
+	 * no-transport subclasses (AntigravityTmuxAdapter/KimiTmuxAdapter) set
+	 * "none" so a Lead `send` fails LOUD instead of writing a claude-code
+	 * mailbox nobody reads and stamping a false delivered_at.
+	 */
+	protected readonly registrationVendor: string = "claude-code";
 
 	constructor(
 		private sessionName: string = "flywheel",
@@ -581,6 +589,10 @@ export class TmuxAdapter implements IAdapter {
 					ctx.projectName ?? "unknown",
 					ctx.issueId,
 					ctx.leadId,
+					// FLY-1188: vendor routes `flywheel-comm send` wakes by the
+					// runner's REAL transport ("claude-code" here; "none" for the
+					// no-transport subclasses; NULL = legacy env path).
+					this.registrationVendor,
 				);
 				commDb.close();
 				registeredSession = true;

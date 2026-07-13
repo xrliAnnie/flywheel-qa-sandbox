@@ -270,6 +270,20 @@ function handleCodexAutoTrigger(
 		}
 	}
 
+	// FLY-1188 §7.1: codex-tmux AUTHORS do not use the legacy codex-reviewer
+	// trigger (skip.json / await-codex-gate instruction). Their review lane is
+	// event-driven: the runner opens a review gate and registers a request via
+	// `/review-requests`; the ReviewRequestCoordinator runs the cross-family
+	// Claude reviewer and answers the bound question. The durable FLY-827
+	// record registration above still applies (gate state, not a trigger).
+	// claude / NULL authors keep the path below byte-for-byte.
+	if ((refreshedSession?.adapter_type ?? "claude-tmux") === "codex-tmux") {
+		console.log(
+			`[codex-trigger] ${event.execution_id} is a codex-tmux author — ${reviewType} review is request-driven (FLY-1188 §7.1); legacy trigger skipped`,
+		);
+		return;
+	}
+
 	if (codexSkip) {
 		try {
 			const skipPath = writeCodexJsonAtomic(

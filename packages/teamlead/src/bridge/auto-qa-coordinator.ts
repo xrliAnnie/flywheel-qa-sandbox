@@ -28,6 +28,7 @@
  * touched — this coordinator only decides WHEN the founder is surfaced.
  */
 
+import { adapterTypeToFamily } from "flywheel-config";
 import {
 	type AutoQaRecord,
 	REVIEW_BINDING_UNBOUND,
@@ -842,6 +843,12 @@ export class AutoQaCoordinator {
 				typeof payload.rounds === "number"
 					? (payload.rounds as number)
 					: undefined,
+			// FLY-1188 §7.3: this event path IS the claude-author→codex-reviewer
+			// lane (`await-codex-gate code` → codex_review_result). Stamp the
+			// author family from the persisted adapter_type — payloads are
+			// runner-writable and never trusted for identity.
+			authorFamily: adapterTypeToFamily(session.adapter_type),
+			reviewerFamily: "codex",
 		});
 		this.log(
 			`codex code review APPROVED recorded for ${session.issue_id} (${targetExec}) @ ${sha.slice(0, 8)}`,

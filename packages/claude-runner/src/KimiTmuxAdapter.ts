@@ -83,6 +83,9 @@ const KIMI_PREFLIGHT_TIMEOUT_ENV = "FLYWHEEL_KIMI_PREFLIGHT_TIMEOUT_MS";
 export class KimiTmuxAdapter extends TmuxAdapter {
 	readonly type = "kimi-tmux";
 	protected readonly binaryName = "kimi";
+	// FLY-1188: no-transport backend — a `send` to this session must fail
+	// loud, never write a claude-code mailbox nobody reads (false delivery).
+	protected readonly registrationVendor = "none";
 
 	constructor(
 		sessionName: string = "flywheel",

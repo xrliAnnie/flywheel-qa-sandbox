@@ -187,6 +187,24 @@ export class CommDB {
 		this.db.exec(
 			"CREATE INDEX IF NOT EXISTS idx_messages_checkpoint ON messages(checkpoint) WHERE checkpoint IS NOT NULL",
 		);
+
+		const sessionColumns = this.db
+			.prepare("PRAGMA table_info(sessions)")
+			.all() as Array<{ name: string }>;
+		if (!sessionColumns.some((c) => c.name === "vendor")) {
+			// FLY-1188: transport vendor of the runner session ("claude-code" |
+			// "codex"), written at adapter spawn. `send` routes the mailbox wake
+			// by it; NULL = legacy/pre-registration row → process-wide env
+			// transport (byte-compat). Same race-tolerance as delivered_at.
+			try {
+				this.db.exec("ALTER TABLE sessions ADD COLUMN vendor TEXT");
+			} catch (err) {
+				const msg = (err as Error).message ?? "";
+				if (!/duplicate column name: vendor/i.test(msg)) {
+					throw err;
+				}
+			}
+		}
 	}
 
 	purgeExpired(): number {
@@ -437,6 +455,128 @@ export class CommDB {
          VALUES (?, ?, ?, 'response', ?, ?)`,
 			)
 			.run(id, fromAgent, question.from_agent, content, parentId);
+	}
+
+	/**
+	 * FLY-1188 §7.1 (Codex R16): atomically answer a gate question IFF it is
+	 * STILL the expected execution's OPEN review gate. One conditional INSERT
+	 * proves type/owner/checkpoint/unresolved/unexpired/unanswered in the same
+	 * statement — closing the check→write TOCTOU against a concurrent
+	 * `resolveGate()` / expiry from another process. Returns true only when
+	 * the response row was actually written.
+	 */
+	insertResponseIfGateOpen(input: {
+		questionId: string;
+		fromAgent: string;
+		content: string;
+		/** The question's from_agent must still equal this execution id. */
+		expectedOwner: string;
+		/** The question's checkpoint must still equal this value. */
+		expectedCheckpoint: string;
+	}): boolean {
+		const id = randomUUID();
+		const result = this.db
+			.prepare(
+				`INSERT INTO messages (id, from_agent, to_agent, type, content, parent_id)
+				 SELECT ?, ?, q.from_agent, 'response', ?, q.id
+				   FROM messages q
+				  WHERE q.id = ?
+				    AND q.type = 'question'
+				    AND q.from_agent = ?
+				    AND q.checkpoint = ?
+				    AND q.resolved_at IS NULL
+				    AND q.expires_at > datetime('now')
+				    AND NOT EXISTS (
+				      SELECT 1 FROM messages r
+				       WHERE r.parent_id = q.id AND r.type = 'response'
+				    )`,
+			)
+			.run(
+				id,
+				input.fromAgent,
+				input.content,
+				input.questionId,
+				input.expectedOwner,
+				input.expectedCheckpoint,
+			);
+		return result.changes > 0;
+	}
+
+	/**
+	 * FLY-1188 HIGH-2 (Codex full-PR review): write a SYNTHETIC gate-TIMEOUT
+	 * response that survives the runner's next `check`. Distinct from
+	 * `insertResponseIfGateOpen` in two ways that the timeout path requires:
+	 *
+	 *  1. NO `expires_at > now` guard. The gate's configured deadline ≈ the
+	 *     question's own `expires_at`, so by the time the timeout watcher fires
+	 *     the question is already expired — `insertResponseIfGateOpen` would
+	 *     refuse and the timeout would never be delivered.
+	 *  2. It then pushes the question's `expires_at` forward by `graceHours` in
+	 *     the SAME transaction. Otherwise the very next read-write open (the
+	 *     runner's `check`, or the watcher's next tick) runs `purgeExpired()`,
+	 *     which cascade-deletes the still-expired question AND its response child
+	 *     before the runner can read it.
+	 *
+	 * The race-safety of `insertResponseIfGateOpen` is preserved: a REAL Lead
+	 * answer that landed first satisfies the `NOT EXISTS (response)` guard → the
+	 * conditional INSERT writes 0 rows → returns false, never clobbering it.
+	 * `resolved_at IS NULL` likewise blocks a double-write. Returns true only
+	 * when the timeout response was actually written.
+	 */
+	insertTimeoutResponse(input: {
+		questionId: string;
+		fromAgent: string;
+		content: string;
+		/** The question's from_agent must still equal this execution id. */
+		expectedOwner: string;
+		/** The question's checkpoint must still equal this value. */
+		expectedCheckpoint: string;
+		/** How long the resolved question (and thus its response) survives the
+		 *  purge, so the runner can read it. Defaults to the resolveGate cleanup
+		 *  window (24h). */
+		graceHours?: number;
+	}): boolean {
+		const graceHours =
+			typeof input.graceHours === "number" &&
+			Number.isFinite(input.graceHours) &&
+			input.graceHours > 0
+				? Math.floor(input.graceHours)
+				: 24;
+		const insertResponse = this.db.prepare(
+			`INSERT INTO messages (id, from_agent, to_agent, type, content, parent_id)
+			 SELECT ?, ?, q.from_agent, 'response', ?, q.id
+			   FROM messages q
+			  WHERE q.id = ?
+			    AND q.type = 'question'
+			    AND q.from_agent = ?
+			    AND q.checkpoint = ?
+			    AND q.resolved_at IS NULL
+			    AND NOT EXISTS (
+			      SELECT 1 FROM messages r
+			       WHERE r.parent_id = q.id AND r.type = 'response'
+			    )`,
+		);
+		const bumpGrace = this.db.prepare(
+			`UPDATE messages SET
+			 resolved_at = datetime('now'),
+			 read_at = COALESCE(read_at, datetime('now')),
+			 expires_at = datetime('now', '+' || ? || ' hours')
+			 WHERE id = ? AND type = 'question'`,
+		);
+		const txn = this.db.transaction((): boolean => {
+			const res = insertResponse.run(
+				randomUUID(),
+				input.fromAgent,
+				input.content,
+				input.questionId,
+				input.expectedOwner,
+				input.expectedCheckpoint,
+			);
+			if (res.changes === 0) return false;
+			bumpGrace.run(graceHours, input.questionId);
+			return true;
+		});
+		return txn();
 	}
 
 	getResponse(questionId: string): Message | undefined {
@@ -868,11 +1008,13 @@ export class CommDB {
 		projectName: string,
 		issueId?: string,
 		leadId?: string,
+		/** FLY-1188: transport vendor ("claude-code" | "codex"); routes `send` wakes. */
+		vendor?: string,
 	): void {
 		this.db
 			.prepare(
-				`INSERT OR REPLACE INTO sessions (execution_id, tmux_window, project_name, issue_id, lead_id)
-         VALUES (?, ?, ?, ?, ?)`,
+				`INSERT OR REPLACE INTO sessions (execution_id, tmux_window, project_name, issue_id, lead_id, vendor)
+         VALUES (?, ?, ?, ?, ?, ?)`,
 			)
 			.run(
 				executionId,
@@ -880,6 +1022,7 @@ export class CommDB {
 				projectName,
 				issueId ?? null,
 				leadId ?? null,
+				vendor ?? null,
 			);
 	}
 

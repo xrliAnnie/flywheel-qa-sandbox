@@ -270,6 +270,22 @@ export function buildRunnerSpawnFields(
 	};
 }
 
+/**
+ * FLY-1188: transport vendor for the CommDB pre-registration row. The
+ * adapter's self-registration overwrites it, but `flywheel-comm send`
+ * consults the row from the moment `start()` returns — a NULL vendor in
+ * that window falls back to the process-wide env transport (claude-code)
+ * and a codex runner's instruction lands in a mailbox it never reads.
+ * A no-transport backend (antigravity/kimi) is marked "none" so `send`
+ * fails loud instead of faking delivery into a claude inbox.
+ */
+export function preRegistrationVendor(
+	runnerSpawn: Pick<BlueprintContext, "vendor" | "runnerTransportMode">,
+): string | undefined {
+	if (runnerSpawn.runnerTransportMode === "none") return "none";
+	return runnerSpawn.vendor;
+}
+
 export class RetryDispatcher implements IRetryDispatcher {
 	protected inflight = new Map<
 		string,
@@ -383,19 +399,13 @@ export class RetryDispatcher implements IRetryDispatcher {
 		};
 		this.inflight.set(key, entry);
 
-		// FLY-80: Pre-register in CommDB before blueprint starts
-		this.preRegisterCommDb(
-			newExecutionId,
-			runtime.tmuxSessionName,
-			req.projectName,
-			req.issueId,
-			req.leadId,
-		);
-
 		// FLY-142 PR 1.4 + FLY-123: Agent Team identity + executor backend
 		// resolution. No-op on rollback path (backend fields still set).
 		// Uses runnerAgentName/agentTeamName/vendor — distinct from
 		// FLY-137's agentName (dispatcher key) above.
+		// FLY-1188: resolved BEFORE the CommDB pre-registration so the pending
+		// row already carries the runner's transport vendor (pure function —
+		// no ordering dependency).
 		const runnerSpawn = buildRunnerSpawnFields(
 			newExecutionId,
 			req.leadId,
@@ -409,6 +419,20 @@ export class RetryDispatcher implements IRetryDispatcher {
 			// FLY-751 Codex R1 #2).
 			req.ignoreRunnerLabelSelection,
 			req.dispatchModel,
+		);
+
+		// FLY-80: Pre-register in CommDB before blueprint starts.
+		// FLY-1188: carry the resolved vendor — the adapter's self-registration
+		// overwrites this row later, but a Lead `send` inside that window would
+		// otherwise fall to the process-wide env default (claude mailbox) and a
+		// codex runner would never see the instruction.
+		this.preRegisterCommDb(
+			newExecutionId,
+			runtime.tmuxSessionName,
+			req.projectName,
+			req.issueId,
+			req.leadId,
+			preRegistrationVendor(runnerSpawn),
 		);
 		const ctx: BlueprintContext = {
 			teamName: "eng",
@@ -515,6 +539,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 		projectName: string,
 		issueId: string,
 		leadId?: string,
+		/** FLY-1188: resolved transport vendor (see preRegistrationVendor). */
+		vendor?: string,
 	): void {
 		try {
 			const dbPath = defaultGetCommDbPath(projectName);
@@ -526,6 +552,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 					projectName,
 					issueId,
 					leadId,
+					vendor,
 				);
 			} finally {
 				db.close();
@@ -689,13 +716,35 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		};
 		this.inflight.set(key, entry);
 
-		// FLY-80: Pre-register in CommDB before blueprint starts
+		// FLY-142 PR 1.4 + FLY-123: Agent Team identity + executor backend
+		// resolution (labels > roles config > env > claude).
+		// FLY-643: a QA start passes ignoreRunnerLabelSelection so the parent's
+		// vendor labels can't pick the QA backend (issueLabels still flow below
+		// for Lead/thread routing).
+		// FLY-1188: resolved BEFORE the CommDB pre-registration so the pending
+		// row already carries the runner's transport vendor (pure function —
+		// no ordering dependency on the TURN grant / resume computation below).
+		const runnerSpawn = buildRunnerSpawnFields(
+			executionId,
+			req.leadId,
+			req.issueLabels,
+			runtime.rolesConfig,
+			req.ignoreRunnerLabelSelection,
+			req.dispatchModel, // FLY-728 Part C
+			req.requireMailboxTransport, // FLY-752
+		);
+
+		// FLY-80: Pre-register in CommDB before blueprint starts.
+		// FLY-1188: see the retry path — the pending row carries the resolved
+		// vendor so a Lead `send` in the pre-self-registration window routes to
+		// the right mailbox.
 		this.preRegisterCommDb(
 			executionId,
 			runtime.tmuxSessionName,
 			req.projectName,
 			req.issueId,
 			req.leadId,
+			preRegistrationVendor(runnerSpawn),
 		);
 
 		// FLY-887: pre-launch TURN grant seam. A three-stage phase SPAWN must have
@@ -740,20 +789,6 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		const resume =
 			this.resumeComputer?.(req.issueId, role, req.projectName) ?? null;
 
-		// FLY-142 PR 1.4 + FLY-123: same as retry path — Agent Team identity
-		// + executor backend resolution (labels > roles config > env > claude).
-		// FLY-643: a QA start passes ignoreRunnerLabelSelection so the parent's
-		// vendor labels can't pick the QA backend (issueLabels still flow below
-		// for Lead/thread routing).
-		const runnerSpawn = buildRunnerSpawnFields(
-			executionId,
-			req.leadId,
-			req.issueLabels,
-			runtime.rolesConfig,
-			req.ignoreRunnerLabelSelection,
-			req.dispatchModel, // FLY-728 Part C
-			req.requireMailboxTransport, // FLY-752
-		);
 		const ctx: BlueprintContext = {
 			teamName: "eng",
 			// FLY-793 follow-up: phase runners show their phase in the cmux window.

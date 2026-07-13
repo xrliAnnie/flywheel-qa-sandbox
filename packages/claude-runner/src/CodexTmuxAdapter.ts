@@ -1,35 +1,29 @@
 /**
- * CodexTmuxAdapter — FLY-123 Phase 1: launches a Codex runner in a tmux
- * window using the Option A gate model validated by Spike-δ
- * (doc/engineer/research/new/FLY-123-spike-delta-gate-semantics.md):
- * **process boundary = gate**. `codex exec` runs to a pause point and
- * exits; the Lead's reply triggers `codex exec resume <threadId>`.
+ * CodexTmuxAdapter — FLY-1188 M4: launches a Codex runner as a RESIDENT
+ * `/goal`-driven daemon (`codex app-server --remote-control`), NOT an
+ * exec-per-cycle. `execute()` composes the M4 stack:
  *
- * ARCHITECTURE (plan §5.6, Codex design review R1 #1): `execute()` OWNS the
- * gate loop and resolves only at a true terminal state. Blueprint stays
- * untouched — it awaits one `execute()` exactly like the Claude path.
+ *   provision (FLY-793 sandbox scope / FLY-209 gh cred / FLY-123 CODEX_HOME)
+ *     → CodexDaemonGoalRuntime.runGoal(objective)         [M4c-2]
+ *         spawn daemon → connect → set the `/goal` → drive it across turns
+ *         to a terminal ThreadGoalStatus, transparently restarting+resuming
+ *         the SAME thread across a daemon death (429/usage-limit rotation);
+ *     → founder cmux window (`codex resume --remote`) opened on the first
+ *         threadId in the goal stream so Annie can WATCH it run live [M4c-3];
+ *     → terminal reclaim: kill the window, stop the daemon, CONFIRM exit.
  *
- *   spawning → running → (exit + unanswered marker) awaiting_gate
- *                      → (exit + no marker)          terminal
- *   awaiting_gate → (wake → idle-gate → inject helper) resuming → running
- *   awaiting_gate → (deadline)                         terminal (fail-close)
+ * The blocking gate LOOP is gone — the daemon's `/goal` registers gates
+ * `--no-block` and POLLS `check` across its own turns (Blueprint's codex branch
+ * teaches this; the runner has no exec-cycle resume + no mailbox wake). A
+ * CONCURRENT adapter-side gate-deadline watcher restores FLY-159 (it expires an
+ * over-deadline marker + emits `gate_timed_out`), since the resident daemon has
+ * no blocking loop to own the timeout. Blueprint still awaits one `execute()`
+ * exactly like the Claude path.
  *
- * Mechanics (uniform across cycles — the spike's empirical shape):
- * - the tmux window hosts a BARE SHELL (long-lived; pane death = crash);
- * - every codex cycle is launched by injecting the FIXED-SHAPE command
- *   `node <flywheel-comm> codex-resume --state <file> [--message <key>]`
- *   into the idle shell. ALL variable content (prompt / Lead reply) rides
- *   0600 state+prompt files → codex stdin (R2 #2 zero-interpolation);
- * - cycle completion is signalled by the helper's done-marker file (NOT
- *   pane death);
- * - injection requires the 3-gate idle check (Spike-δ reproduced the
- *   hazard: bytes typed into a busy pane execute in the shell after codex
- *   exits — §5.4 timing gate);
- * - `awaiting_gate` deadline is OWNED HERE (R2 #1 — the FLY-159 timeout
- *   loop lives inside the blocking gate process, which a Codex runner
- *   never runs): on expiry we expire the CommDB question, clear the
- *   marker, emit a `gate_timed_out` payload isomorphic to FLY-159's, and
- *   resolve fail-close.
+ * The runtime + the founder window are INJECTED (CodexDaemonAdapterDeps,
+ * default = the real ones) so the wiring is unit-testable without a real
+ * `codex app-server`; real-daemon behavior is the V5 (529) real-machine
+ * acceptance.
  */
 
 import { randomUUID } from "node:crypto";
@@ -39,6 +33,7 @@ import {
 	constants as fsConstants,
 	mkdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -62,18 +57,36 @@ import type {
 } from "flywheel-core";
 import { sanitizeTmuxName } from "flywheel-core";
 import {
+	buildDaemonSandboxWritableRoots,
+	buildGoalObjective,
+	classifyGoalOutcome,
+} from "./codex-daemon-adapter-helpers.js";
+import type { CodexDaemonEvents } from "./codex-daemon-client.js";
+import type {
+	CodexDaemonGoalRuntimeOptions,
+	RunGoalInput,
+	RunGoalOutcome,
+} from "./codex-daemon-goal-runtime.js";
+import { CodexDaemonGoalRuntime } from "./codex-daemon-goal-runtime.js";
+import {
+	assertSocketPathFitsSunLen,
+	resolveDaemonSocketPath,
+} from "./codex-daemon-runtime.js";
+import {
 	flywheelCodexBin,
 	provisionCodexHome,
+	rawCodexBin,
 	removeCodexHome,
-	SECRET_ENV_VARS,
 	scrubCodexHomeCredential,
+	stripInheritedSecretEnv,
 } from "./codex-home.js";
-import type { ExecFileFn } from "./TmuxAdapter.js";
 import {
-	defaultExecFile,
-	ensureRunnerSession,
-	pruneScaffoldWindow,
-} from "./TmuxAdapter.js";
+	ensureRunnerTuiWindow,
+	isRunnerTuiWindowAlive,
+	killRunnerTuiWindow,
+} from "./codex-runner-tui-window.js";
+import type { ExecFileFn } from "./TmuxAdapter.js";
+import { defaultExecFile } from "./TmuxAdapter.js";
 
 /**
  * Structural surface of the codex transport this executor needs. Kept
@@ -107,26 +120,33 @@ export interface CodexWakeWatcher {
 	}) => void;
 }
 
-interface CycleOutcome {
-	exitCode: number;
-	threadId?: string;
-	lastMessage?: string;
+/**
+ * FLY-1188 M4d: the resident-/goal runtime surface execute() drives — injected
+ * (default = a real CodexDaemonGoalRuntime) so the adapter's daemon-mode
+ * lifecycle is unit-testable without spawning a real `codex app-server`.
+ */
+export interface CodexDaemonGoalRuntimeLike {
+	runGoal(
+		input: RunGoalInput,
+		events?: CodexDaemonEvents,
+	): Promise<RunGoalOutcome>;
+	stop(): void;
+	drained(): Promise<void>;
 }
 
-interface DoneMarker {
-	exitCode: number;
-	ts: string;
-	mode: string;
-	threadId?: string;
+/** Injected collaborators for daemon-mode execute() (default to the real ones). */
+export interface CodexDaemonAdapterDeps {
+	/** Build the resident-/goal runtime for one execution. */
+	runtimeFactory?: (
+		opts: CodexDaemonGoalRuntimeOptions,
+	) => CodexDaemonGoalRuntimeLike;
+	/** Open the founder-facing cmux TUI window (fail-open). */
+	ensureWindow?: typeof ensureRunnerTuiWindow;
+	/** Tear the founder window down on terminal (fail-open). */
+	killWindow?: typeof killRunnerTuiWindow;
+	/** Is the founder window's pane still alive? (restart-reopen probe.) */
+	windowAlive?: (windowName: string) => boolean;
 }
-
-/** Shell-prompt sigils for the bare-shell idle gate (zsh `%`, bash `$`). */
-const PROMPT_SIGILS = ["%", "$"];
-const SHELL_COMMANDS = new Set(["zsh", "bash", "sh", "-zsh", "-bash"]);
-const IDLE_GATE_ATTEMPTS = 10;
-const IDLE_GATE_RETRY_MS = 3000;
-/** Charset for values embedded in the injected command line (paths/keys). */
-const SAFE_INJECTION_TOKEN = /^[a-zA-Z0-9/_.:@-]+$/;
 
 export function codexSessionStateDir(
 	executionId: string,
@@ -142,20 +162,39 @@ export class CodexTmuxAdapter implements IAdapter {
 	readonly type = "codex-tmux";
 	readonly supportsStreaming = false;
 	private preflightDone = false;
-	/** Window name we created — injection gate 0 (managed identity, MEDIUM-3). */
-	private managedWindowName?: string;
+	private readonly runtimeFactory: NonNullable<
+		CodexDaemonAdapterDeps["runtimeFactory"]
+	>;
+	private readonly ensureWindow: typeof ensureRunnerTuiWindow;
+	private readonly killWindow: typeof killRunnerTuiWindow;
+	private readonly windowAliveFn: (windowName: string) => boolean;
 
 	constructor(
 		private sessionName: string = "flywheel",
 		private execFileFn: ExecFileFn = defaultExecFile,
+		// The concurrent gate-deadline watcher's poll interval (FLY-159 resident
+		// replacement). Same positional slot as TmuxAdapter's factory shape.
 		private pollIntervalMs: number = 5000,
-		private defaultTimeoutMs: number = 86_400_000, // 24h active budget per cycle (mirrors TmuxAdapter)
+		private defaultTimeoutMs: number = 86_400_000, // 24h active budget (mirrors TmuxAdapter)
 		// hookServer accepted for constructor-position parity with TmuxAdapter
-		// (run-infra registers both via the same factory shape) — unused: cycle
-		// completion is done-marker based, not HTTP-callback based.
+		// (run-infra registers both via the same factory shape) — unused: the
+		// daemon /goal drives its own turns, not via HTTP callbacks.
 		_hookServer?: IHookCallbackServer,
 		private transport?: CodexRunnerTransport,
-	) {}
+		deps: CodexDaemonAdapterDeps = {},
+	) {
+		this.runtimeFactory =
+			deps.runtimeFactory ?? ((opts) => new CodexDaemonGoalRuntime(opts));
+		this.ensureWindow = deps.ensureWindow ?? ensureRunnerTuiWindow;
+		this.killWindow = deps.killWindow ?? killRunnerTuiWindow;
+		this.windowAliveFn =
+			deps.windowAlive ??
+			((windowName) =>
+				isRunnerTuiWindowAlive({
+					tmuxSession: this.sessionName,
+					windowName,
+				}));
+	}
 
 	async checkEnvironment(): Promise<AdapterHealthCheck> {
 		// PRECONDITION (QA Finding 2): `codex exec` hard-refuses a non-git cwd
@@ -250,653 +289,542 @@ export class CodexTmuxAdapter implements IAdapter {
 		}
 
 		const start = Date.now();
-		const stateDir = codexSessionStateDir(ctx.executionId);
-		mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-		const gateMarkerDir = defaultGateMarkerDir();
 
-		// FLY-209 (credentials): the Codex runner is sandboxed (Seatbelt blocks
-		// the keychain) so it cannot reach the host's gh/git auth the way the
-		// unsandboxed Claude runner does. Extract the host gh token once (the
-		// Bridge runs as the user, with keychain access) and (a) inject it into
-		// the sandbox shell env as GH_TOKEN per cycle (gh + git push), (b)
-		// configure the worktree to use gh's git credential helper so https
-		// push resolves the token. Posture A (Annie-approved): forward the
-		// existing gh token, minimal surface — no whole-keychain dump, no ssh
-		// (the agent socket is sandbox-blocked; we route push over https).
+		// FLY-1188 (sandbox scope): realpath the worktree + resolve its git
+		// metadata dirs FIRST (fail-loud — a runner that cannot commit is
+		// crippled; see resolveGitWritableDirs for the FLY-793 detail).
+		const sandboxCwd = realpathSync(ctx.cwd);
+		const gitWritableDirs = this.resolveGitWritableDirs(sandboxCwd);
+
+		// FLY-209 (credentials): host gh token + worktree git credential helper.
 		const ghToken = this.provisionGitHubCredential(ctx);
 
-		// FLY-123 WS-A + WS-C: provision a per-runner CODEX_HOME (isolated
-		// auth.json + config.toml) so concurrent Codex runners don't corrupt
-		// each other's account state, and so GH_TOKEN rides the 0600
-		// config.toml — NOT the codex argv (ps-visible) or the cycle state
-		// file. CODEX_HOME is injected into the tmux window env below so the
-		// injected helper AND every resume cycle inherit the same isolated home.
+		// FLY-123 (isolation): per-runner CODEX_HOME. From this point the home
+		// holds a LIVE GH_TOKEN, so EVERY exit must scrub it (P5) — the whole rest
+		// of execute() runs inside the try/finally below (Codex M4d HIGH-5: a
+		// throw between here and runGoal must not leak the token).
 		const codexHome = provisionCodexHome({
 			executionId: ctx.executionId,
 			ghToken,
 		});
 
-		// ── Window setup: bare shell, env injected at window level ──
-		this.ensureSession();
-		this.execFileFn("tmux", [
-			"set-option",
-			"-t",
-			`=${this.sessionName}:`,
-			"remain-on-exit",
-			"on",
-		]);
-
-		const envArgs = this.buildWindowEnvArgs(
-			ctx,
-			stateDir,
-			gateMarkerDir,
-			codexHome,
+		// Founder cmux window name (a Linear identifier, FLY-272).
+		const windowName = sanitizeTmuxName(
+			ctx.label ?? `codex-${ctx.executionId.slice(0, 8)}`,
 		);
-		const windowName = sanitizeTmuxName(ctx.label ?? `codex-${Date.now()}`);
-		this.managedWindowName = windowName;
-		const launch = this.execFileFn("tmux", [
-			"new-window",
-			"-P",
-			"-F",
-			"#{window_id}",
-			"-t",
-			`=${this.sessionName}`,
-			...envArgs,
-			"-n",
-			windowName,
-			"-c",
-			ctx.cwd,
-			// no trailing command → default shell (the long-lived injection host)
-		]);
-		const windowId = launch.stdout.trim();
+		let tmuxWindow = `${this.sessionName}:${windowName}`;
 
-		// FLY-245 R5 HIGH-3: the durable COMMIT for a Codex Runner is written at the
-		// injection point (right before the FIRST `send-keys` that launches codex,
-		// in `injectAtIdlePrompt`) — NOT here. Until then the window is just a bare
-		// shell with no codex; a crash before that injection leaves NO commit file,
-		// so the dispatcher re-drives (never adopts the idle bare shell as a started
-		// Runner). `ctx.launchCommitPath` (gateway path only) is threaded to the
-		// injection.
-
-		// FLY-758: same win0 scaffold prune as TmuxAdapter (codex has its own
-		// execute()). The codex runner window is created with `-n windowName`, so
-		// it never matches the bare-shell scaffold predicate; keepWindowId adds a
-		// second guard. Best-effort — never blocks the spawn.
-		pruneScaffoldWindow(this.execFileFn, this.sessionName, windowId);
-
-		// CommDB session registration (parity with TmuxAdapter)
+		let runtime: CodexDaemonGoalRuntimeLike | undefined;
 		let registeredSession = false;
-		if (ctx.commDbPath) {
-			try {
-				const commDb = new CommDB(ctx.commDbPath);
-				commDb.registerSession(
-					ctx.executionId,
-					`${this.sessionName}:${windowId}`,
-					ctx.projectName ?? "unknown",
-					ctx.issueId,
-					ctx.leadId,
-				);
-				commDb.close();
-				registeredSession = true;
-			} catch {
-				// non-fatal (same as TmuxAdapter)
-			}
-		}
-
-		ctx.onHeartbeat?.(ctx.executionId);
-		if (ctx.onTmuxWindowCreated) {
-			try {
-				ctx.onTmuxWindowCreated({
-					baseSessionName: this.sessionName,
-					windowId,
-				});
-			} catch (err) {
-				console.warn(
-					`[CodexTmuxAdapter] onTmuxWindowCreated failed: ${(err as Error).message}`,
-				);
-			}
-		}
-
-		// ── Wake watcher (lifecycle owner = this execute(), R1 #2) ──
-		// Any delivered mailbox message short-circuits the awaiting_gate wait
-		// tick; the loop then re-checks CommDB for answered questions. The
-		// message content itself carries NO authority (wake = hint).
-		let wakeNotify: (() => void) | null = null;
-		let watcher: CodexWakeWatcher | null = null;
-		if (this.transport && ctx.agentName && ctx.teamName) {
-			watcher = this.transport.createReceiver({
-				leadName: ctx.leadId ?? ctx.teamName,
-				runnerName: ctx.agentName,
-				teamName: ctx.teamName,
-				executionId: ctx.executionId,
-				tmuxTarget: `${this.sessionName}:${windowId}`,
-				cwd: ctx.cwd,
-			});
-			if (watcher) {
-				watcher.onDelivered = () => {
-					wakeNotify?.();
-				};
-				await watcher.start();
-			}
-		}
-
-		const waitForWakeOrTick = (ms: number): Promise<void> =>
-			new Promise((resolve) => {
-				const timer = setTimeout(() => {
-					wakeNotify = null;
-					resolve();
-				}, ms);
-				wakeNotify = () => {
-					clearTimeout(timer);
-					wakeNotify = null;
-					resolve();
-				};
-			});
-
-		// ── Gate loop (§5.6) ──
-		let cycle = 0;
-		let threadId: string | undefined =
-			typeof ctx.previousSession?.threadId === "string"
-				? (ctx.previousSession.threadId as string)
-				: undefined;
-		let timedOut = false;
-		let lastExitCode = 1;
-		let lastMessage: string | undefined;
-		let failureReason: string | undefined;
-
-		// Codex has no --append-system-prompt-file: fold the system prompt
-		// into the dynamic prompt text (plan §5.5 — AGENTS.md handles the
-		// persistent layer; the dynamic layer is per-execution).
-		// FLY-615: Codex can't load the real ponytail plugin (headless, no
-		// interactive hook-trust), so when ponytail is enabled for this run we
-		// inject the portable ponytail-style ruleset into the instruction layer.
-		// Equivalent ruleset, not the plugin's per-turn hooks (caveat for 616).
-		const systemLayer = ctx.enablePonytail
-			? ctx.appendSystemPrompt
-				? `${PONYTAIL_RULESET}\n\n---\n\n${ctx.appendSystemPrompt}`
-				: PONYTAIL_RULESET
-			: ctx.appendSystemPrompt;
-		let nextPrompt = systemLayer
-			? `${systemLayer}\n\n---\n\n${ctx.prompt}`
-			: ctx.prompt;
+		let stopGateWatcher: () => void = () => {};
+		let stopHeartbeat: () => void = () => {};
+		let tuiOpened = false;
+		let outcome: RunGoalOutcome | undefined;
+		let caughtError: unknown;
+		let teardownError: unknown;
 
 		try {
-			runLoop: while (true) {
-				// 1. Launch a cycle (fresh first time, resume afterwards).
-				const outcome = await this.runCycle(
-					ctx,
-					windowId,
-					stateDir,
-					cycle,
-					threadId,
-					nextPrompt,
-					start,
+			// M4c-1: SHORT SUN_LEN-safe control socket (fail loud on over-length).
+			const socketPath = resolveDaemonSocketPath(ctx.executionId);
+			assertSocketPathFitsSunLen(socketPath);
+
+			// CommDB session registration (vendor=codex → send routing).
+			registeredSession = this.registerCommDbSession(ctx, windowName);
+			ctx.onHeartbeat?.(ctx.executionId);
+
+			const gateMarkerDir = defaultGateMarkerDir();
+			const writableRoots = buildDaemonSandboxWritableRoots({
+				flywheelRoot: join(homedir(), ".flywheel"),
+				gateMarkerDir,
+				commDbDir: ctx.commDbPath ? dirname(ctx.commDbPath) : undefined,
+				sandboxCwd,
+				gitWritableDirs,
+			});
+
+			const systemLayer = ctx.enablePonytail
+				? ctx.appendSystemPrompt
+					? `${PONYTAIL_RULESET}\n\n---\n\n${ctx.appendSystemPrompt}`
+					: PONYTAIL_RULESET
+				: ctx.appendSystemPrompt;
+			const objective = buildGoalObjective({ systemLayer, prompt: ctx.prompt });
+
+			runtime = this.runtimeFactory({
+				executionId: ctx.executionId,
+				codexBin: flywheelCodexBin(),
+				codexHomes: [codexHome],
+				cwd: sandboxCwd,
+				socketPath,
+				sandbox: "workspace-write",
+				approvalPolicy: "never",
+				...(ctx.model ? { model: ctx.model } : {}),
+				env: this.buildDaemonEnv(ctx, gateMarkerDir),
+				sandboxWritableRoots: writableRoots,
+				networkAccess: true,
+				logger: (m) => this.log(m),
+			});
+
+			// Open the founder window (once, on SUCCESS). Reused by the
+			// authoritative onThreadReady hook AND the outcome fallback.
+			const openWindow = (threadId: string): void => {
+				if (tuiOpened) return;
+				const created = this.ensureWindow(
+					{
+						tmuxSession: this.sessionName,
+						windowName,
+						codexHome,
+						socketPath,
+						cwd: sandboxCwd,
+						threadId,
+						// QA · FLY-1188: the TUI gets the RAW codex binary, NOT the
+						// rotation shim. The shim pipes stdout through `tee` to sniff
+						// 429s, and `codex resume --remote` refuses to render without a
+						// TTY ("stdout is not a terminal", exit 1) — which is why the
+						// founder's cmux tab came up empty. The daemon above keeps the
+						// shim: `app-server` needs no TTY and does want the rotation.
+						codexBin: rawCodexBin(),
+					},
+					{ log: (m) => this.log(m) },
 				);
-				if (outcome === "active_timeout" || outcome === "pane_died") {
-					timedOut = outcome === "active_timeout";
-					failureReason =
-						outcome === "active_timeout"
-							? "codex cycle exceeded active timeout"
-							: "runner shell pane died";
-					break;
+				if (!created) return; // MEDIUM-1: only latch tuiOpened on SUCCESS
+				tuiOpened = true;
+				const windowId = this.resolveWindowId(windowName);
+				if (windowId) tmuxWindow = `${this.sessionName}:${windowId}`;
+				if (ctx.onTmuxWindowCreated) {
+					try {
+						ctx.onTmuxWindowCreated({
+							baseSessionName: this.sessionName,
+							windowId: windowId ?? windowName,
+						});
+					} catch (err) {
+						console.warn(
+							`[CodexTmuxAdapter] onTmuxWindowCreated failed: ${(err as Error).message}`,
+						);
+					}
 				}
-				cycle++;
-				lastExitCode = outcome.exitCode;
-				if (outcome.threadId) threadId = outcome.threadId;
-				if (outcome.lastMessage !== undefined)
-					lastMessage = outcome.lastMessage;
-				this.persistSessionState(stateDir, ctx, windowId, threadId);
+			};
 
-				if (outcome.exitCode !== 0) {
-					failureReason = `codex exited ${outcome.exitCode}`;
-					break;
-				}
+			// HIGH-2 (FLY-159 resident replacement): a CONCURRENT gate-deadline
+			// watcher. The exec-cycle owned gate timeouts inside its blocking
+			// loop, which the resident daemon no longer has — so an unanswered
+			// `gate --no-block` marker would otherwise hang until the overall goal
+			// budget. This expires the CommDB question at the marker's configured
+			// deadline + emits gate_timed_out for fail-close (FLY-159 parity).
+			stopGateWatcher = this.startGateDeadlineWatcher(ctx, gateMarkerDir);
 
-				// 2. Classify (code review R1 HIGH-1): ANY marker for this
-				// execution — answered or not — means the runner paused at a
-				// gate. A fast Lead response (respond marks the marker answered
-				// before we classify) must still be consumed and resumed, never
-				// misread as terminal. Terminal ONLY when no marker exists.
-				const executionMarkers = listGateMarkersForExecution(
-					gateMarkerDir,
-					ctx.executionId,
-				);
-				if (executionMarkers.length === 0) {
-					break; // terminal success
-				}
-
-				// 3. awaiting_gate — adapter-owned, MARKER-CONFIGURED deadline
-				// (R2 #1 + code review R1 HIGH-2): each marker carries its
-				// checkpoint's --timeout/--timeout-behavior; honor them exactly
-				// as the blocking gate would (FLY-159 parity). Config-less
-				// markers fall back to ctx.waitingTimeoutMs (49h per-wait).
-				const fallbackTimeoutMs = ctx.waitingTimeoutMs ?? 176_400_000;
-				const waitStart = Date.now();
-				let resumed = false;
-				while (true) {
+			// Periodic heartbeat (Codex R2 HIGH): the exec-cycle beat every poll;
+			// the resident daemon has no such loop, so without this a long task or
+			// a 48h gate wait reads as stale and the monitor may reap a LIVE
+			// daemon. Beat on every goal notification (frequent while working) AND
+			// on a periodic timer (covers quiet gate-waits).
+			const heartbeat = (): void => {
+				try {
 					ctx.onHeartbeat?.(ctx.executionId);
-
-					// (a) Answered? Checked FIRST — a response that landed
-					// before/while we classified is consumed immediately
-					// (HIGH-1 regression case). Primary signal is the watcher
-					// wake (event-driven); this CommDB read is the defense-in-
-					// depth belt at the SAME cadence the Claude path already
-					// polls CommDB (checkDynamicTimeout precedent).
-					const answered = this.findAnsweredMarker(ctx, gateMarkerDir);
-					if (answered) {
-						removeGateMarkerSafely(gateMarkerDir, answered.marker.questionId);
-						nextPrompt = `LEAD RESPONSE to your ${answered.marker.checkpoint} gate question:\n\n${answered.reply}`;
-						resumed = true;
-						break;
-					}
-
-					// (b) Per-marker deadlines.
-					const now = Date.now();
-					const currentMarkers = listGateMarkersForExecution(
-						gateMarkerDir,
-						ctx.executionId,
-					);
-					if (currentMarkers.length === 0) {
-						// Markers vanished without an answer (external cleanup) —
-						// nothing left to wait on.
-						break;
-					}
-					const isExpired = (m: GateMarker): boolean => {
-						const createdAt = Date.parse(m.createdAt);
-						const anchor = Number.isFinite(createdAt) ? createdAt : waitStart;
-						return now - anchor > (m.timeoutMs ?? fallbackTimeoutMs);
-					};
-					const behaviorOf = (m: GateMarker) =>
-						m.timeoutBehavior ?? "fail-close";
-					const expired = currentMarkers.filter(isExpired);
-					if (expired.some((m) => behaviorOf(m) === "fail-close")) {
-						// fail-close (default): expire questions, emit
-						// gate_timed_out for the fail-close ones (FLY-159 parity
-						// — fail-open never emits), terminal failure.
-						timedOut = true;
-						failureReason = "gate deadline expired (fail-close)";
-						for (const marker of expired) {
-							this.expireQuestionSafely(ctx, marker.questionId);
-							if (behaviorOf(marker) === "fail-close") {
-								await this.emitGateTimedOut(ctx, marker, now - waitStart);
-							}
-							removeGateMarkerSafely(gateMarkerDir, marker.questionId);
-						}
-						break runLoop;
-					}
-					if (expired.length > 0) {
-						// fail-open: expire + clear, NO event (FLY-159 fail-open
-						// is silent by design); resume the runner with an
-						// explicit timeout/continue prompt.
-						for (const marker of expired) {
-							this.expireQuestionSafely(ctx, marker.questionId);
-							removeGateMarkerSafely(gateMarkerDir, marker.questionId);
-						}
-						const cp = expired[0]?.checkpoint ?? "gate";
-						nextPrompt =
-							`GATE TIMEOUT (fail-open) on your ${cp} checkpoint: no Lead response arrived within the configured timeout. ` +
-							"Per fail-open semantics, CONTINUE using your best judgment.";
-						resumed = true;
-						break;
-					}
-
-					if (this.isPaneDead(windowId)) {
-						failureReason = "runner shell pane died while awaiting gate";
-						break runLoop;
-					}
-					await waitForWakeOrTick(this.pollIntervalMs);
+				} catch {
+					/* heartbeat is best-effort — never break the run */
 				}
+			};
+			const hbTimer = setInterval(heartbeat, this.pollIntervalMs);
+			(hbTimer as { unref?: () => void }).unref?.();
+			stopHeartbeat = () => clearInterval(hbTimer);
 
-				if (!resumed) {
-					// markers vanished without an answer — nothing to resume
-					break;
+			// AUTHORITATIVE own-thread hook (MEDIUM-2): NOT a raw notification (a
+			// daemon can emit foreign-thread traffic). On OUR thread becoming ready:
+			// persist the resume handle (HIGH-4) + (re)open the founder window. On a
+			// daemon RESTART (restarts > 0) the old remote TUI may have exited when
+			// its socket closed — re-open if the pane is dead (Codex R2 MEDIUM).
+			// HIGH-3: track the live daemon pid (updated on every spawn/restart via
+			// onDaemonPid) so persistSessionState records the CURRENT daemon — a
+			// resuming redrive reaps it if a Bridge crash orphaned it.
+			let latestDaemonPid: number | undefined;
+			const onThreadReady = (threadId: string, restarts: number): void => {
+				this.persistSessionState(ctx, threadId, windowName, latestDaemonPid);
+				if (restarts > 0 && tuiOpened && !this.isWindowAlive(windowName)) {
+					tuiOpened = false; // pane died with the old socket — reopen below
 				}
-				// loop → resuming → running (next cycle injects the reply)
-			}
+				openWindow(threadId);
+			};
+
+			// FLY-245 launch commit written the INSTANT the goal is actually SET
+			// (Codex R2 HIGH: onThreadReady fires BEFORE setGoal — writing the
+			// commit there could make a retry ADOPT a goal-less thread). Only latch
+			// `committed` on a SUCCESSFUL write, so a restart retries it (a swallowed
+			// failure that still set committed would let a replay collide).
+			let committed = false;
+			const onGoalActive = (): void => {
+				if (committed || !ctx.launchCommitPath) return;
+				if (this.writeLaunchCommit(ctx.launchCommitPath)) committed = true;
+			};
+
+			// HIGH-4 (Codex R2): resume the prior thread across a Bridge/adapter
+			// crash. HIGH-3 (Codex full-PR review) CORRECTS the earlier premise: the
+			// codex daemon is a child of the Bridge, but `detached:false` does NOT
+			// kill it when the Bridge dies on Unix — it is reparented to init and
+			// keeps running (orphaned). Resume still needs the persisted thread id;
+			// prefer an explicit ctx.previousSession.threadId (if the dispatcher ever
+			// provides one), else the session.json this adapter persisted (keyed by
+			// executionId), so a re-execute of the SAME execution resumes the same
+			// thread with NO Bridge-side wiring. The persisted daemon PID lets the
+			// resuming spawn REAP a prior orphan still holding our socket (see
+			// reapOrphanPid) instead of blocking on it forever.
+			const resumeThreadId =
+				(typeof ctx.previousSession?.threadId === "string"
+					? (ctx.previousSession.threadId as string)
+					: undefined) ?? this.readPersistedThreadId(ctx.executionId);
+			const reapOrphanPid = this.readPersistedDaemonPid(ctx.executionId);
+
+			outcome = await runtime.runGoal(
+				{
+					objective,
+					// MED-7 (Codex full-PR review): the ACTIVE cap applies normally; the
+					// larger gate-wait cap extends the deadline ONLY while a gate is
+					// actually open (isWaiting). The old `max(active, waiting)` gave
+					// EVERY run the 49h ceiling — a task that never opens a gate lost
+					// the 24h active-cap invariant and could run ~49h.
+					overallTimeoutMs: ctx.timeoutMs ?? this.defaultTimeoutMs,
+					waitingTimeoutMs: ctx.waitingTimeoutMs ?? 176_400_000,
+					isWaiting: () => {
+						try {
+							// An unanswered `gate --no-block` marker for this execution =
+							// a gate the runner is (possibly) blocked on. Best-effort: a
+							// read error must never extend the budget.
+							return listGateMarkersForExecution(
+								gateMarkerDir,
+								ctx.executionId,
+							).some((m) => !m.answeredAt);
+						} catch {
+							return false;
+						}
+					},
+					...(resumeThreadId ? { resumeThreadId } : {}),
+					...(reapOrphanPid !== undefined ? { reapOrphanPid } : {}),
+					onThreadReady,
+					// HIGH-3: capture each spawned daemon's pid so onThreadReady
+					// persists the CURRENT daemon for post-crash orphan reaping.
+					onDaemonPid: (pid) => {
+						latestDaemonPid = pid;
+					},
+					onGoalActive,
+				},
+				{ onNotification: () => heartbeat() },
+			);
+			// Fallback: if no threadId ever reached onThreadReady (a very fast /
+			// quiet run), open from the resolved outcome so the founder still gets
+			// the pane.
+			if (!tuiOpened && outcome?.threadId) openWindow(outcome.threadId);
+		} catch (err) {
+			caughtError = err;
 		} finally {
-			await watcher?.stop().catch(() => {});
+			stopGateWatcher();
+			stopHeartbeat();
+			this.killWindow(
+				{ tmuxSession: this.sessionName, windowName },
+				{ log: (m) => this.log(m) },
+			);
+			if (runtime) {
+				runtime.stop();
+				try {
+					await runtime.drained();
+				} catch (err) {
+					// HIGH-6: a SIGKILL-unconfirmed daemon must NOT read as a clean
+					// success — capture it and degrade the result below.
+					teardownError = err;
+					console.warn(
+						`[CodexTmuxAdapter] ${ctx.executionId} daemon teardown unconfirmed: ${(err as Error).message}`,
+					);
+				}
+			}
 			if (registeredSession && ctx.commDbPath) {
 				try {
 					const commDb = new CommDB(ctx.commDbPath);
+					const c = classifyGoalOutcome({ outcome, caughtError });
+					// Codex R2 MEDIUM: a SIGKILL-unconfirmed teardown must NOT be
+					// recorded as a clean "completed" (a still-live daemon would look
+					// finished to the cleanup/route layer).
+					const okComplete = c.success && !teardownError;
 					commDb.updateSessionStatus(
 						ctx.executionId,
-						timedOut ? "timeout" : "completed",
+						okComplete ? "completed" : "timeout",
 					);
 					commDb.close();
 				} catch {
 					// non-fatal
 				}
 			}
-			if (timedOut || failureReason === "runner shell pane died") {
-				try {
-					this.execFileFn("tmux", ["kill-window", "-t", windowId]);
-				} catch {
-					// window may already be gone
-				}
-			}
-			// FLY-123 P5 (credential-residue invariant): we are TERMINAL here —
-			// the whole gate loop (incl. every awaiting_gate wait) lives inside
-			// this execute(), so reaching finally means no further resume of this
-			// execution. Scrub the live GH_TOKEN from the retained home's
-			// config.toml so a long-lived home never hoards a credential. The
-			// home dir itself (auth shell + sessions) is removed at explicit
-			// retirement (removeCodexSessionState → removeCodexHome).
+			// FLY-123 P5 (HIGH-5): scrub the live GH_TOKEN on EVERY post-provision
+			// exit — success, failure, or a setup exception before runGoal.
 			scrubCodexHomeCredential(ctx.executionId);
 		}
 
-		const success = lastExitCode === 0 && !timedOut && !failureReason;
+		const cls = classifyGoalOutcome({ outcome, caughtError });
+		// HIGH-6: an unconfirmed daemon teardown fails the run (a live daemon +
+		// "completed" would be a lie).
+		const success = cls.success && !teardownError;
+		const threadId = outcome?.threadId;
 		const result: AdapterExecutionResult = {
 			success,
 			sessionId: threadId ?? ctx.executionId,
-			tmuxWindow: `${this.sessionName}:${windowId}`,
+			tmuxWindow,
 			durationMs: Date.now() - start,
-			timedOut,
+			timedOut: cls.timedOut,
 			sessionParams: {
 				vendor: "codex",
 				...(threadId && { threadId }),
 			},
 		};
-		if (lastMessage !== undefined) result.resultText = lastMessage;
-		if (!success && failureReason) {
-			console.error(
-				`[CodexTmuxAdapter] ${ctx.executionId} failed: ${failureReason}`,
-			);
+		if (cls.resultText !== undefined) result.resultText = cls.resultText;
+		if (!success) {
+			const reason =
+				cls.failureReason ??
+				(teardownError
+					? `daemon teardown unconfirmed: ${teardownError instanceof Error ? teardownError.message : String(teardownError)}`
+					: undefined);
+			if (reason)
+				console.error(
+					`[CodexTmuxAdapter] ${ctx.executionId} failed: ${reason}`,
+				);
 		}
 		return result;
 	}
 
-	// ── Cycle mechanics ─────────────────────────────────────────────────
-
 	/**
-	 * Launch one codex cycle via the helper and wait for its done marker.
-	 * Returns the parsed outcome, or "active_timeout" / "pane_died".
+	 * FLY-245: write the durable launch commit the INSTANT the goal is SET on our
+	 * thread (the daemon-mode analog of the exec-cycle's pre-send-keys commit) — so
+	 * a gateway retry's adopt sees a committed Runner only once codex is actually
+	 * driving the goal, and a crash BEFORE the goal is set re-drives instead of
+	 * adopting a goal-less thread (Codex R2 HIGH). Returns whether the write
+	 * SUCCEEDED so the caller only latches `committed` on success (a swallowed
+	 * failure + latched committed would let a replay collide with a live daemon).
 	 */
-	private async runCycle(
-		ctx: AdapterExecutionContext,
-		windowId: string,
-		stateDir: string,
-		cycle: number,
-		threadId: string | undefined,
-		prompt: string,
-		_executeStart: number,
-	): Promise<CycleOutcome | "active_timeout" | "pane_died"> {
-		const promptPath = join(stateDir, `prompt-${cycle}.txt`);
-		const statePath = join(stateDir, `state-${cycle}.json`);
-		const jsonlPath = join(stateDir, `out-${cycle}.jsonl`);
-		const lastMessagePath = join(stateDir, `last-${cycle}.txt`);
-		const doneMarkerPath = join(stateDir, `done-${cycle}.json`);
-
-		writeFileSync(promptPath, prompt, { encoding: "utf-8", mode: 0o600 });
-		const mode = threadId ? "resume" : "fresh";
-		const state: Record<string, unknown> = {
-			version: 1,
-			mode,
-			promptPath,
-			cwd: ctx.cwd,
-			sandbox: "workspace-write",
-			// QA Finding 1 (HIGH): bare workspace-write denies ~/.flywheel +
-			// ALL network → flywheel-comm gate/stage/complete fail inside the
-			// runner ("unable to open database file"), no marker is written,
-			// the adapter misreads the exit as terminal success, and git
-			// push / gh / Bridge POST are impossible. Grant the flywheel state
-			// roots (incl. env-redirected QA dirs) + network. Posture: still
-			// strictly tighter than the Claude runner (bypassPermissions, no
-			// OS sandbox). Sandbox params persist across exec resume —
-			// fresh-mode only.
-			writableRoots: [
-				...new Set([
-					join(homedir(), ".flywheel"),
-					defaultGateMarkerDir(),
-					...(ctx.commDbPath ? [dirname(ctx.commDbPath)] : []),
-				]),
-			],
-			networkAccess: true,
-			jsonlPath,
-			lastMessagePath,
-			doneMarkerPath,
-		};
-		// FLY-123 WS-C: GH_TOKEN is NO LONGER carried in the cycle state file or
-		// the codex argv. It lives only in the per-runner 0600
-		// $CODEX_HOME/config.toml ([shell_environment_policy.set]); codex picks
-		// it up via CODEX_HOME (window env). The state file carries paths/
-		// metadata only — never a credential.
-		if (threadId) state.threadId = threadId;
-		if (ctx.model) state.model = ctx.model;
-		writeFileSync(statePath, JSON.stringify(state, null, 2), {
-			encoding: "utf-8",
-			mode: 0o600,
-		});
-
-		await this.injectAtIdlePrompt(
-			windowId,
-			statePath,
-			undefined,
-			ctx.launchCommitPath,
-		);
-
-		// Wait for the done marker (heartbeats + active timeout + pane probe).
-		const activeBudget = ctx.timeoutMs ?? this.defaultTimeoutMs;
-		const cycleStart = Date.now();
-		while (!existsSync(doneMarkerPath)) {
-			ctx.onHeartbeat?.(ctx.executionId);
-			if (Date.now() - cycleStart > activeBudget) return "active_timeout";
-			if (this.isPaneDead(windowId)) return "pane_died";
-			await sleep(this.pollIntervalMs);
-		}
-
-		const marker = JSON.parse(
-			readFileSync(doneMarkerPath, "utf-8"),
-		) as DoneMarker;
-		const outcome: CycleOutcome = { exitCode: marker.exitCode };
-
-		const parsedThreadId = this.parseThreadId(jsonlPath);
-		if (parsedThreadId) outcome.threadId = parsedThreadId;
-		else if (marker.threadId) outcome.threadId = marker.threadId;
-
-		if (existsSync(lastMessagePath)) {
-			outcome.lastMessage = readFileSync(lastMessagePath, "utf-8").trim();
-		}
-		return outcome;
-	}
-
-	/**
-	 * §5.4 injection safety — timing gate (3 checks) + content gate (fixed
-	 * shape, validated tokens). Throws after bounded retries: a blind
-	 * injection is a shell-command-injection hazard (Spike-δ reproduced).
-	 */
-	private async injectAtIdlePrompt(
-		windowId: string,
-		statePath: string,
-		dedupeKey?: string,
-		/** FLY-245 R5: gateway-retry durable commit path. Written the INSTANT
-		 * before the codex `send-keys` (the commit point), so the dispatcher's
-		 * adopt sees a committed Runner only once codex is actually injected. */
-		commitPath?: string,
-	): Promise<void> {
-		const commCli = this.resolveCommCli();
-		for (const token of [commCli, statePath]) {
-			if (!SAFE_INJECTION_TOKEN.test(token)) {
-				throw new Error(
-					`[CodexTmuxAdapter] refusing to inject unsafe token "${token}"`,
-				);
-			}
-		}
-		if (dedupeKey && !SAFE_INJECTION_TOKEN.test(dedupeKey)) {
-			throw new Error(
-				`[CodexTmuxAdapter] refusing to inject unsafe dedupe key`,
-			);
-		}
-
-		for (let attempt = 0; attempt < IDLE_GATE_ATTEMPTS; attempt++) {
-			if (this.isPaneIdleShell(windowId)) {
-				const cmd = [
-					"node",
-					commCli,
-					"codex-resume",
-					"--state",
-					statePath,
-					...(dedupeKey ? ["--message", dedupeKey] : []),
-				].join(" ");
-				// R5 HIGH-3: write the durable commit IMMEDIATELY before send-keys (the
-				// single codex commit point). Idempotent across resume cycles. A failure
-				// here aborts before injection → no commit → the dispatcher re-drives.
-				if (commitPath) {
-					mkdirSync(dirname(commitPath), { recursive: true });
-					writeFileSync(commitPath, "");
-				}
-				this.execFileFn("tmux", ["send-keys", "-t", windowId, cmd, "Enter"]);
-				return;
-			}
-			// retry cadence follows pollIntervalMs when it's faster (tests);
-			// production default stays 3s
-			await sleep(Math.min(IDLE_GATE_RETRY_MS, this.pollIntervalMs));
-		}
-		throw new Error(
-			`[CodexTmuxAdapter] pane ${windowId} never reached idle shell prompt after ${IDLE_GATE_ATTEMPTS} attempts — refusing blind injection (FLY-169 gate)`,
-		);
-	}
-
-	/**
-	 * FLY-169-fidelity injection gates (code review R1 MEDIUM-3):
-	 * (0) MANAGED — the window is still the one we created (name matches);
-	 * (1) UNATTACHED — zero clients on the base runner session (a human
-	 *     attached directly could be mid-keystroke; FLY-116 Terminal viewers
-	 *     attach to grouped `viewer-*` sessions and are NOT counted here);
-	 * (2) ALIVE+SHELL — pane alive and foreground is a bare shell;
-	 * (3) PROMPT — visible tail line ends with a shell prompt sigil.
-	 */
-	private isPaneIdleShell(windowId: string): boolean {
+	private writeLaunchCommit(commitPath: string): boolean {
 		try {
-			// Gate 0: managed window identity.
-			if (this.managedWindowName) {
-				const name = this.execFileFn("tmux", [
-					"display-message",
-					"-p",
-					"-t",
-					windowId,
-					"#{window_name}",
-				]).stdout.trim();
-				if (name !== this.managedWindowName) return false;
-			}
-
-			// Gate 1: no clients attached to the base session.
-			const clients = this.execFileFn("tmux", [
-				"list-clients",
-				"-t",
-				`=${this.sessionName}`,
-			]).stdout.trim();
-			if (clients.length > 0) return false;
-
-			// Gate 2: pane alive + bare shell foreground.
-			const info = this.execFileFn("tmux", [
-				"list-panes",
-				"-t",
-				windowId,
-				"-F",
-				"#{pane_dead}|#{pane_current_command}",
-			]).stdout.trim();
-			const [dead, cmd] = info.split("|");
-			if (dead !== "0") return false;
-			if (!cmd || !SHELL_COMMANDS.has(cmd)) return false;
-
-			// Gate 3: prompt sigil on the visible tail.
-			const tail = this.execFileFn("tmux", [
-				"capture-pane",
-				"-t",
-				windowId,
-				"-p",
-			])
-				.stdout.split("\n")
-				.map((l) => l.trimEnd())
-				.filter((l) => l.length > 0)
-				.pop();
-			if (!tail) return false;
-			return PROMPT_SIGILS.some((sigil) => tail.trimEnd().endsWith(sigil));
-		} catch {
+			mkdirSync(dirname(commitPath), { recursive: true });
+			writeFileSync(commitPath, "");
+			return true;
+		} catch (err) {
+			console.warn(
+				`[CodexTmuxAdapter] launch-commit write failed (will retry on restart): ${(err as Error).message}`,
+			);
 			return false;
 		}
 	}
 
-	private isPaneDead(windowId: string): boolean {
+	/**
+	 * Read the thread id this execution persisted (Codex R2 HIGH-4 crash-recovery
+	 * READER — the codex adapter owns its own resume handle, so a re-execute of
+	 * the same executionId after a Bridge crash resumes the same thread without any
+	 * dispatcher-side wiring). Best-effort: absent/unreadable/corrupt → undefined
+	 * (a fresh thread is started).
+	 */
+	private readPersistedThreadId(executionId: string): string | undefined {
 		try {
-			const out = this.execFileFn("tmux", [
-				"list-panes",
-				"-t",
-				windowId,
-				"-F",
-				"#{pane_dead}",
-			]).stdout.trim();
-			return out === "1";
+			const p = join(codexSessionStateDir(executionId), "session.json");
+			if (!existsSync(p)) return undefined;
+			const state = JSON.parse(readFileSync(p, "utf-8")) as {
+				threadId?: unknown;
+			};
+			return typeof state.threadId === "string" && state.threadId
+				? state.threadId
+				: undefined;
 		} catch {
-			return true; // window gone
+			return undefined;
 		}
 	}
 
-	/** First `thread.started` event in the cycle JSONL → resume handle. */
-	private parseThreadId(jsonlPath: string): string | undefined {
-		if (!existsSync(jsonlPath)) return undefined;
+	/**
+	 * HIGH-3: read the prior daemon's pid persisted by the previous run of THIS
+	 * execution, so a resuming redrive can reap it if it was orphaned by a Bridge
+	 * crash (see spawnCodexDaemon.reapOrphanPid). Undefined when absent/malformed
+	 * → the spawn keeps its safe refuse-to-clobber behavior.
+	 */
+	private readPersistedDaemonPid(executionId: string): number | undefined {
 		try {
-			for (const line of readFileSync(jsonlPath, "utf-8").split("\n")) {
-				if (!line.trim()) continue;
-				try {
-					const evt = JSON.parse(line);
-					if (
-						evt.type === "thread.started" &&
-						typeof evt.thread_id === "string"
-					) {
-						return evt.thread_id;
-					}
-				} catch {
-					// tolerate non-JSON lines (wrapper banners)
-				}
-			}
+			const p = join(codexSessionStateDir(executionId), "session.json");
+			if (!existsSync(p)) return undefined;
+			const state = JSON.parse(readFileSync(p, "utf-8")) as {
+				daemonPid?: unknown;
+			};
+			return typeof state.daemonPid === "number" &&
+				Number.isInteger(state.daemonPid) &&
+				state.daemonPid > 0
+				? state.daemonPid
+				: undefined;
 		} catch {
-			// unreadable — resume handle unavailable this cycle
+			return undefined;
 		}
-		return undefined;
 	}
 
-	// ── awaiting_gate helpers ───────────────────────────────────────────
+	/** Is the founder TUI window's pane still alive? (used to reopen after a
+	 * daemon restart closed its old socket). Fail-open: unknown → treat as alive
+	 * so we don't churn the window. */
+	private isWindowAlive(windowName: string): boolean {
+		try {
+			return this.windowAliveFn(windowName);
+		} catch {
+			return true;
+		}
+	}
 
-	/** First pending marker whose question now has a response (+ the reply). */
-	private findAnsweredMarker(
+	/**
+	 * Crash-recovery state (FLY-172 marker pattern, Codex M4d HIGH-4): persist the
+	 * discovered thread id AT discovery so a Bridge/adapter crash + retry can
+	 * RESUME the same thread (`previousSession.threadId`) instead of starting a
+	 * new one. Written on each own-thread-ready (idempotent).
+	 */
+	private persistSessionState(
+		ctx: AdapterExecutionContext,
+		threadId: string,
+		windowName: string,
+		daemonPid: number | undefined,
+	): void {
+		try {
+			const stateDir = codexSessionStateDir(ctx.executionId);
+			mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+			writeFileSync(
+				join(stateDir, "session.json"),
+				JSON.stringify(
+					{
+						executionId: ctx.executionId,
+						issueId: ctx.issueId,
+						tmuxWindow: `${this.sessionName}:${windowName}`,
+						cwd: ctx.cwd,
+						vendor: "codex",
+						threadId,
+						// HIGH-3: the live daemon's pid, so a resuming redrive can reap
+						// this daemon if a Bridge crash orphaned it (detached:false does
+						// NOT kill the child on parent death). Omitted when unknown.
+						...(daemonPid !== undefined ? { daemonPid } : {}),
+						updatedAt: new Date().toISOString(),
+					},
+					null,
+					2,
+				),
+				{ encoding: "utf-8", mode: 0o600 },
+			);
+		} catch (err) {
+			console.warn(
+				`[CodexTmuxAdapter] session state persist failed: ${(err as Error).message}`,
+			);
+		}
+	}
+
+	/**
+	 * HIGH-2 (FLY-159 resident replacement): a concurrent watcher that expires an
+	 * unanswered `gate --no-block` marker at ITS configured deadline (not the
+	 * unrelated overall goal budget), emitting a `gate_timed_out` payload
+	 * isomorphic to FLY-159's for fail-close markers (fail-open is silent by
+	 * design — the runner's own `check` poll then sees the question resolved and
+	 * continues). Returns a stop function (cleared in the execute finally). No-op
+	 * without a CommDB. The timer is unref'd so it never keeps the process alive.
+	 */
+	private startGateDeadlineWatcher(
 		ctx: AdapterExecutionContext,
 		gateMarkerDir: string,
-	): { marker: GateMarker; reply: string } | undefined {
-		if (!ctx.commDbPath || !existsSync(ctx.commDbPath)) return undefined;
-		const markers = listGateMarkersForExecution(gateMarkerDir, ctx.executionId);
-		if (markers.length === 0) return undefined;
-		try {
-			const db = CommDB.openReadonly(ctx.commDbPath);
+	): () => void {
+		if (!ctx.commDbPath) return () => {};
+		const fallbackTimeoutMs = ctx.waitingTimeoutMs ?? 176_400_000;
+		const startedAt = Date.now();
+		const seen = new Set<string>(); // never re-emit for the same marker
+		const removeMarker = (questionId: string): void => {
 			try {
-				for (const marker of markers) {
-					const response = db.getResponse(marker.questionId);
-					if (response) return { marker, reply: response.content };
-				}
-			} finally {
-				db.close();
+				removeGateMarker(gateMarkerDir, questionId);
+			} catch {
+				// best-effort — TTL reaps eventually
 			}
-		} catch {
-			// DB unavailable this tick — retry next tick
-		}
-		return undefined;
+		};
+		const tick = (): void => {
+			try {
+				const markers = listGateMarkersForExecution(
+					gateMarkerDir,
+					ctx.executionId,
+				);
+				const now = Date.now();
+				for (const m of markers) {
+					if (seen.has(m.questionId)) continue;
+					// Already answered by the Lead (respond wrote answeredAt) — stop
+					// watching; never expire a real answer (Codex R2 HIGH). The marker's
+					// routing job is done, so clean it up (Codex R3 LOW: don't leave an
+					// answered marker to residue + re-scan on every re-execute).
+					if (m.answeredAt) {
+						seen.add(m.questionId);
+						removeMarker(m.questionId);
+						continue;
+					}
+					const createdAt = Date.parse(m.createdAt);
+					const anchor = Number.isFinite(createdAt) ? createdAt : startedAt;
+					if (now - anchor <= (m.timeoutMs ?? fallbackTimeoutMs)) continue;
+					// Deadline passed — resolve as a timeout, RACE-SAFE.
+					const outcome = this.resolveGateOnTimeout(ctx, m, now - anchor);
+					if (outcome === "retry") continue; // DB error — retry next tick (no seen)
+					// timedOut: we wrote the synthetic timeout response the runner's
+					// `check` will read. raced: a real Lead answer landed first. Either
+					// way the gate is resolved — stop watching + remove the marker so it
+					// doesn't residue (Codex R3 LOW).
+					seen.add(m.questionId);
+					removeMarker(m.questionId);
+				}
+			} catch {
+				// best-effort — retry next tick
+			}
+		};
+		const timer = setInterval(tick, this.pollIntervalMs);
+		(timer as { unref?: () => void }).unref?.();
+		return () => clearInterval(timer);
 	}
 
-	private expireQuestionSafely(
+	/**
+	 * Resolve an over-deadline gate as a TIMEOUT — RACE-SAFE (Codex R2 HIGH). It
+	 * atomically writes a synthetic timeout RESPONSE via `insertResponseIfGateOpen`
+	 * IFF the gate is still open (owner + checkpoint match, unresolved, unexpired,
+	 * unanswered) — so:
+	 *  - the polling runner's `flywheel-comm check` sees the timeout (getResponse
+	 *    returns it) and acts per fail-open (continue) / fail-close (stop) — the
+	 *    OLD `resolveGate`-only path left `check` returning "pending" forever;
+	 *  - a concurrent REAL Lead answer wins the atomic INSERT (we get `false` →
+	 *    "raced"), so we never clobber it.
+	 * Returns "timedOut" (we wrote it), "raced" (a real answer landed first), or
+	 * "retry" (DB error — try next tick).
+	 */
+	private resolveGateOnTimeout(
 		ctx: AdapterExecutionContext,
-		questionId: string,
-	): void {
-		if (!ctx.commDbPath) return;
+		marker: GateMarker,
+		waitedMs: number,
+	): "timedOut" | "raced" | "retry" {
+		if (!ctx.commDbPath) return "retry";
+		const behavior = marker.timeoutBehavior ?? "fail-close";
+		const content =
+			behavior === "fail-open"
+				? `GATE TIMEOUT (fail-open) on your ${marker.checkpoint} checkpoint — no Lead response arrived within the deadline. Per fail-open semantics, CONTINUE using your best judgment.`
+				: `GATE TIMEOUT (fail-close) on your ${marker.checkpoint} checkpoint — no Lead response arrived within the deadline. Per fail-close semantics, STOP: do not proceed; run \`flywheel-comm complete --route blocked\`.`;
 		try {
 			const db = new CommDB(ctx.commDbPath);
 			try {
-				db.resolveGate(questionId, 0); // expire NOW (FLY-159 cleanup shape)
+				// HIGH-2 (Codex full-PR review): the gate deadline ≈ the question's
+				// own expires_at, so at timeout the question is ALREADY expired.
+				// `insertResponseIfGateOpen` (unexpired guard) would refuse, and a
+				// following `resolveGate(_,0)` + the runner's next-open purge would
+				// delete the synthetic response before `check` reads it.
+				// `insertTimeoutResponse` writes without the unexpired guard AND
+				// atomically bumps the question's expires_at to a grace window so the
+				// purge cascade can't remove it — while still losing the race to a
+				// real Lead answer (NOT EXISTS response) → "raced".
+				const wrote = db.insertTimeoutResponse({
+					questionId: marker.questionId,
+					fromAgent: "codex-tmux-adapter",
+					content,
+					expectedOwner: ctx.executionId, // gate question from_agent = execId
+					expectedCheckpoint: marker.checkpoint,
+				});
+				if (!wrote) return "raced";
 			} finally {
 				db.close();
 			}
 		} catch {
-			// best-effort — TTL reaps eventually
+			return "retry"; // DB busy/error — try again next tick
 		}
+		// FLY-159 escalation is fail-close only (fail-open is silent by design).
+		if (behavior === "fail-close")
+			void this.emitGateTimedOut(ctx, marker, waitedMs);
+		return "timedOut";
 	}
 
 	/** FLY-159-isomorphic gate_timed_out payload via the Bridge /events route. */
@@ -929,8 +857,6 @@ export class CodexTmuxAdapter implements IAdapter {
 						exec_id: ctx.executionId,
 						lead_id: ctx.leadId ?? "unknown",
 						waited_ms: waitedMs,
-						// code review R1 HIGH-2: FLY-159 payload parity — carry
-						// the marker's recorded gate config, not constants.
 						original_message: marker.message ?? "(codex no-block gate)",
 						timeout_behavior: marker.timeoutBehavior ?? "fail-close",
 						timeout_behavior_source: marker.timeoutBehaviorSource ?? "default",
@@ -940,77 +866,50 @@ export class CodexTmuxAdapter implements IAdapter {
 				signal: controller.signal,
 			});
 		} catch {
-			// best-effort — we are already failing closed
+			// best-effort — the watcher already expired the question
 		} finally {
 			clearTimeout(timer);
 		}
 	}
 
-	// ── Setup helpers ───────────────────────────────────────────────────
-
-	private buildWindowEnvArgs(
+	/**
+	 * Build the daemon process env: process.env + the FLYWHEEL_* protocol vars
+	 * the runner's shell commands (flywheel-comm gate/stage/complete) need +
+	 * transport identity. GitHub-token vars are stripped in spawnCodexDaemon
+	 * (stripSecretEnv) so they never reach the codex process env; CODEX_HOME is
+	 * layered on there too.
+	 */
+	private buildDaemonEnv(
 		ctx: AdapterExecutionContext,
-		_stateDir: string,
 		gateMarkerDir: string,
-		codexHome: string,
-	): string[] {
-		const envArgs: string[] = [];
-		const push = (key: string, value: string) => {
-			envArgs.push("-e", `${key}=${value}`);
-		};
-
-		// FLY-123 WS-A: isolate the runner's codex account state + config (incl.
-		// the GH_TOKEN credential, WS-C). Set at the WINDOW level so the bare
-		// shell, the injected codex-resume helper, and every resume cycle all
-		// inherit the same per-runner home (codex reads $CODEX_HOME/{auth.json,
-		// config.toml}).
-		push("CODEX_HOME", codexHome);
-		// FLY-123 WS-B (P1=4-C): point runner traffic at the repo-owned,
-		// CODEX_HOME-aware rotation shim — Annie's global codex-with-fallback /
-		// codex-profile are never selected for runners. The shim rotates each
-		// home's OWN auth.json from the shared seed pool, so concurrent runners
-		// don't clobber each other's account state.
-		push("FLYWHEEL_CODEX_BIN", flywheelCodexBin());
-		// Propagate an explicit shared-pool override (default = ~/.codex/profiles
-		// resolves correctly inside the runner window, so only push when set).
-		if (process.env.FLYWHEEL_CODEX_PROFILES_DIR) {
-			push(
-				"FLYWHEEL_CODEX_PROFILES_DIR",
-				process.env.FLYWHEEL_CODEX_PROFILES_DIR,
-			);
-		}
-		// FLY-123 WS-C (R1 HIGH #1): BLANK any inherited GitHub-token env in the
-		// runner window so the token never reaches the node/shim/codex process
-		// env (ps-visible). Its only surface is the 0600 config.toml; codex
-		// injects it into the SANDBOX shell from there. tmux `-e KEY=` sets the
-		// var empty in the window, overriding an inherited tmux-server value.
-		for (const secret of SECRET_ENV_VARS) push(secret, "");
-
-		// Codex gate protocol env (consumed by `flywheel-comm gate --no-block`)
-		push("FLYWHEEL_GATE_MARKER_DIR", gateMarkerDir);
-		push("FLYWHEEL_RUNNER_BACKEND_ID", "codex-tmux");
-		push("FLYWHEEL_RUNNER_VENDOR_ID", "codex");
-
-		// Comm plumbing (parity with TmuxAdapter)
-		if (ctx.commDbPath) push("FLYWHEEL_COMM_DB", ctx.commDbPath);
-		push("FLYWHEEL_EXEC_ID", ctx.executionId);
-		push("FLYWHEEL_ISSUE_ID", ctx.issueId ?? "unknown");
-		if (ctx.bridgeUrl) push("FLYWHEEL_BRIDGE_URL", ctx.bridgeUrl);
+	): NodeJS.ProcessEnv {
+		// Codex full-PR review HIGH-4: wash the Bridge's third-party creds out of
+		// the INHERITED env before layering this runner's own FLYWHEEL_* values —
+		// the resident daemon runs model-driven shells and must never inherit
+		// Discord/Linear/DB/API secrets. FLYWHEEL_* (incl. the ingest token set
+		// below) is preserved by the wash.
+		const env: NodeJS.ProcessEnv = stripInheritedSecretEnv(process.env);
+		env.FLYWHEEL_GATE_MARKER_DIR = gateMarkerDir;
+		env.FLYWHEEL_RUNNER_BACKEND_ID = "codex-tmux";
+		env.FLYWHEEL_RUNNER_VENDOR_ID = "codex";
+		if (ctx.commDbPath) env.FLYWHEEL_COMM_DB = ctx.commDbPath;
+		env.FLYWHEEL_EXEC_ID = ctx.executionId;
+		env.FLYWHEEL_ISSUE_ID = ctx.issueId ?? "unknown";
+		if (ctx.bridgeUrl) env.FLYWHEEL_BRIDGE_URL = ctx.bridgeUrl;
 		if (ctx.bridgeIngestToken)
-			push("FLYWHEEL_INGEST_TOKEN", ctx.bridgeIngestToken);
-		if (ctx.stateDbPath) push("FLYWHEEL_STATE_DB_PATH", ctx.stateDbPath);
-		if (ctx.progressPath) push("FLYWHEEL_PROGRESS_PATH", ctx.progressPath); // FLY-795
-		if (ctx.projectName) push("FLYWHEEL_PROJECT_NAME", ctx.projectName);
-		if (ctx.leadId) push("FLYWHEEL_LEAD_ID", ctx.leadId);
-		if (ctx.sentinelPath) push("FLYWHEEL_LAND_STATUS_PATH", ctx.sentinelPath);
+			env.FLYWHEEL_INGEST_TOKEN = ctx.bridgeIngestToken;
+		if (ctx.stateDbPath) env.FLYWHEEL_STATE_DB_PATH = ctx.stateDbPath;
+		if (ctx.progressPath) env.FLYWHEEL_PROGRESS_PATH = ctx.progressPath; // FLY-795
+		if (ctx.projectName) env.FLYWHEEL_PROJECT_NAME = ctx.projectName;
+		if (ctx.leadId) env.FLYWHEEL_LEAD_ID = ctx.leadId;
+		if (ctx.sentinelPath) env.FLYWHEEL_LAND_STATUS_PATH = ctx.sentinelPath;
 		try {
-			push("FLYWHEEL_COMM_CLI", this.resolveCommCli());
+			env.FLYWHEEL_COMM_CLI = this.resolveCommCli();
 		} catch {
 			// gate instructions fall back to manual mode
 		}
-
-		// Transport identity env (no claude flags — R1 #9; codex argv is
-		// owned by the helper, not the transport).
+		// Transport identity env (agent-team mailbox) — no codex flags; the daemon
+		// argv is owned by spawnCodexDaemon.
 		if (this.transport && ctx.agentName && ctx.teamName) {
 			try {
 				const spawnConfig = this.transport.buildRunnerSpawnConfig({
@@ -1019,70 +918,112 @@ export class CodexTmuxAdapter implements IAdapter {
 					teamName: ctx.teamName,
 				});
 				for (const [key, value] of Object.entries(spawnConfig.env)) {
-					push(key, value);
+					env[key] = value;
 				}
 			} catch {
-				// degrade to identity-less spawn (mirrors TmuxAdapter behavior)
+				// degrade to identity-less spawn (mirrors TmuxAdapter)
 			}
 		}
-		return envArgs;
+		return env;
 	}
 
-	private persistSessionState(
-		stateDir: string,
+	/**
+	 * Register the CommDB session (vendor=codex) for send-routing + tracking. The
+	 * tmux target is name-based (the founder window is created lazily on the
+	 * first threadId). Best-effort — non-fatal, mirrors TmuxAdapter.
+	 */
+	private registerCommDbSession(
 		ctx: AdapterExecutionContext,
-		windowId: string,
-		threadId: string | undefined,
-	): void {
-		// Crash-recovery state file (FLY-172 marker pattern): thread id is
-		// persisted at discovery, NOT only at terminal completion (R1 #3/#4).
+		windowName: string,
+	): boolean {
+		if (!ctx.commDbPath) return false;
 		try {
-			writeFileSync(
-				join(stateDir, "session.json"),
-				JSON.stringify(
-					{
-						executionId: ctx.executionId,
-						issueId: ctx.issueId,
-						tmuxWindow: `${this.sessionName}:${windowId}`,
-						cwd: ctx.cwd,
-						vendor: "codex",
-						...(threadId && { threadId }),
-						updatedAt: new Date().toISOString(),
-					},
-					null,
-					2,
-				),
-				{ encoding: "utf-8", mode: 0o600 },
+			const commDb = new CommDB(ctx.commDbPath);
+			commDb.registerSession(
+				ctx.executionId,
+				`${this.sessionName}:${windowName}`,
+				ctx.projectName ?? "unknown",
+				ctx.issueId,
+				ctx.leadId,
+				// FLY-1188: vendor routes `flywheel-comm send` wakes to the codex
+				// mailbox (the claude-code env default misrouted them).
+				"codex",
 			);
+			commDb.close();
+			return true;
+		} catch {
+			return false; // non-fatal (same as TmuxAdapter)
+		}
+	}
+
+	/**
+	 * Best-effort resolve the founder window's tmux id (for onTmuxWindowCreated +
+	 * the reported tmuxWindow). Undefined if the window isn't resolvable.
+	 */
+	private resolveWindowId(windowName: string): string | undefined {
+		try {
+			const out = this.execFileFn("tmux", [
+				"display-message",
+				"-p",
+				"-t",
+				`=${this.sessionName}:=${windowName}`,
+				"#{window_id}",
+			]).stdout.trim();
+			return out || undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** Adapter log line (the daemon runtime + founder-window fns route here). */
+	private log(m: string): void {
+		console.log(`[CodexTmuxAdapter] ${m}`);
+	}
+
+	/**
+	 * FLY-1188: resolve the worktree's git metadata dirs for the sandbox
+	 * writable roots. `--git-dir` = the worktree's private metadata (a linked
+	 * worktree keeps it under <main>/.git/worktrees/<name> — index/HEAD/locks
+	 * live there); `--git-common-dir` = the shared store (<main>/.git —
+	 * objects/refs). Both must be writable or `git add/commit/push` inside
+	 * the worktree dies in the Seatbelt sandbox. `--path-format=absolute`
+	 * because rev-parse otherwise emits cwd-relative paths. Failure THROWS:
+	 * a codex runner that cannot commit is crippled — abort the spawn loudly
+	 * (mirrors GitService.getGitMetadataDirectories, which the legacy
+	 * EdgeWorker path already feeds into allowedDirectories).
+	 */
+	private resolveGitWritableDirs(cwd: string): string[] {
+		let stdout: string;
+		try {
+			stdout = this.execFileFn("git", [
+				"-C",
+				cwd,
+				"rev-parse",
+				"--path-format=absolute",
+				"--git-dir",
+				"--git-common-dir",
+			]).stdout;
 		} catch (err) {
-			console.warn(
-				`[CodexTmuxAdapter] session state persist failed: ${(err as Error).message}`,
+			throw new Error(
+				`[CodexTmuxAdapter] cannot resolve git metadata dirs for ${cwd} — a codex runner that cannot commit is crippled; refusing to spawn: ${(err as Error).message}`,
 			);
 		}
+		const lines = stdout
+			.split("\n")
+			.map((l) => l.trim())
+			.filter((l) => l.length > 0);
+		if (lines.length < 2) {
+			throw new Error(
+				`[CodexTmuxAdapter] cannot resolve git metadata dirs for ${cwd} — unexpected rev-parse output ${JSON.stringify(stdout)}; refusing to spawn`,
+			);
+		}
+		return [...new Set(lines.map((l) => realpathSync(l)))];
 	}
 
 	private resolveCommCli(): string {
 		const req = createRequire(import.meta.url);
 		return req.resolve("flywheel-comm");
 	}
-
-	private ensureSession(): void {
-		// FLY-758: shared helper names the fresh scaffold `zsh` so pruneScaffoldWindow
-		// reliably matches it at millisecond spawn time (defeats the async rename race).
-		ensureRunnerSession(this.execFileFn, this.sessionName);
-	}
-}
-
-function removeGateMarkerSafely(dir: string, questionId: string): void {
-	try {
-		removeGateMarker(dir, questionId);
-	} catch {
-		// best-effort
-	}
-}
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // re-exported for tests that need to clean state dirs

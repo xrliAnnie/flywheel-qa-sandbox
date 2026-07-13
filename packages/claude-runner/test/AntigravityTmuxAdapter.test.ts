@@ -4,6 +4,9 @@
  * poll/timeout/comm.db machinery is inherited from TmuxAdapter (covered by
  * TmuxAdapter.test.ts) and is NOT re-tested here.
  */
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AdapterExecutionContext } from "flywheel-core";
 import { describe, expect, it } from "vitest";
 import { AntigravityTmuxAdapter } from "../src/AntigravityTmuxAdapter.js";
@@ -145,5 +148,24 @@ describe("AntigravityTmuxAdapter", () => {
 		// short pointer, not the full prompt inlined
 		expect(bootstrap).toMatch(/Read the instructions in .*agy-bootstrap\.md/);
 		expect(bootstrap).not.toContain("BIG SYSTEM PROMPT");
+	});
+	// FLY-1188: a no-transport session must be registered vendor="none" so a
+	// Lead `send` fails LOUD instead of writing a claude-code mailbox nobody
+	// reads and stamping a false delivered_at.
+	it('registers the CommDB session with vendor="none" (no-transport)', async () => {
+		const tmpDb = mkdtempSync(join(tmpdir(), "fly1188-agy-vendor-"));
+		try {
+			const commDbPath = join(tmpDb, "comm.db");
+			const { fn } = makeMockExec();
+			await new AntigravityTmuxAdapter("flywheel", fn, 10).execute(
+				makeCtx({ commDbPath }),
+			);
+			const { CommDB } = await import("flywheel-comm/db");
+			const db = new CommDB(commDbPath);
+			expect(db.getSession("fly493-exec-1")?.vendor).toBe("none");
+			db.close();
+		} finally {
+			rmSync(tmpDb, { recursive: true, force: true });
+		}
 	});
 });

@@ -1070,6 +1070,25 @@ describe("TmuxAdapter", () => {
 			);
 		});
 
+		// FLY-1188: `send` routes wakes by the session row's vendor — the
+		// claude adapter must register itself explicitly as "claude-code".
+		it("execute() with commDbPath — registers the session with vendor=claude-code", async () => {
+			const tmpDb = mkdtempSync(join(tmpdir(), "fly1188-tmux-vendor-"));
+			try {
+				const commDbPath = join(tmpDb, "comm.db");
+				const { fn } = makeMockExec({ paneDead: true });
+				const adapter = new TmuxAdapter("flywheel", fn, 10);
+				await adapter.execute(makeCtx({ commDbPath }));
+
+				const { CommDB } = await import("flywheel-comm/db");
+				const db = new CommDB(commDbPath);
+				expect(db.getSession("test-exec-1")?.vendor).toBe("claude-code");
+				db.close();
+			} finally {
+				rmSync(tmpDb, { recursive: true, force: true });
+			}
+		});
+
 		it("execute() without commDbPath — no FLYWHEEL_COMM_DB env", async () => {
 			const { fn, calls } = makeMockExec({ paneDead: true });
 			const adapter = new TmuxAdapter("flywheel", fn, 10);

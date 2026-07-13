@@ -39,6 +39,7 @@ import {
 } from "./commands/publish-report.js";
 import { qaResult } from "./commands/qa-result.js";
 import { reportDeployed } from "./commands/report-deployed.js";
+import { requestReview } from "./commands/request-review.js";
 import { respond } from "./commands/respond.js";
 import { runRunnerConfig } from "./commands/runner-config.js";
 import { search } from "./commands/search.js";
@@ -92,6 +93,7 @@ Commands:
   complete  Emit session_completed terminal event to Bridge (Runner use)
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
   qa-result  Emit a QA verdict (pass|fail) that gates the founder ship notification (QA Runner use)
+  request-review  Register a codex-author review request bound to an open review gate (FLY-1188; --type design|code --question-id <id> [--plan <path>])
   codex-review-result  Emit a Codex code-review APPROVED verdict for the current head (FLY-827; await-codex-gate calls this automatically)
   cleanup   Delete read messages older than TTL (default 24h)
   visual-capture   Run ProofShot UI/3D capture, select artifacts, write manifest (GEO-151)
@@ -226,6 +228,9 @@ async function main(): Promise<void> {
 			break;
 		case "qa-result":
 			await runQaResult(commandArgs);
+			break;
+		case "request-review":
+			await runRequestReview(commandArgs);
 			break;
 		case "codex-review-result":
 			await runCodexReviewResult(commandArgs);
@@ -893,6 +898,29 @@ async function runComplete(args: string[]): Promise<void> {
 		exitReason: values["exit-reason"],
 		baseRef: values["base-ref"],
 		questionId: values["question-id"],
+	});
+}
+
+// FLY-1188 §7.1: register a codex-author review request bound to a gate.
+async function runRequestReview(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"exec-id": { type: "string" },
+			type: { type: "string" },
+			"question-id": { type: "string" },
+			plan: { type: "string" },
+			"request-id": { type: "string" },
+		},
+		allowPositionals: false,
+	});
+
+	await requestReview({
+		execId: values["exec-id"],
+		type: values.type,
+		questionId: values["question-id"],
+		planPath: values.plan,
+		requestId: values["request-id"],
 	});
 }
 

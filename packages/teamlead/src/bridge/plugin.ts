@@ -150,6 +150,7 @@ import { ChatThreadCreator } from "./ChatThreadCreator.js";
 // FLY-927 (Task 3.3): truthful stage wording for the three-stage stuck alert.
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
+import { killAllClaudeReviewChildren } from "./claude-review-runner.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
@@ -331,6 +332,7 @@ import {
 	type RescueRuntime,
 } from "./rescue-runtime.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
+import { ReviewRequestCoordinator } from "./review-request-coordinator.js";
 import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
 import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js";
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
@@ -929,6 +931,14 @@ export interface BridgeAppOptions {
 	 */
 	autoQaCoordinator?: { current: AutoQaCoordinator | undefined };
 	/**
+	 * FLY-1188 §7.1: late-bound holder for the codex-author review-request
+	 * coordinator. The /review-requests route mounts inside createBridgeApp
+	 * (pre-listen); the coordinator is built post-listen in startBridge. Absent
+	 * / `.current` undefined ⇒ the route answers 503 (fail-close — a runner's
+	 * request-review CLI retries and, on exhaustion, exits non-zero).
+	 */
+	reviewCoordinator?: { current: ReviewRequestCoordinator | undefined };
+	/**
 	 * FLY-793: late-bound holder for the three-stage PhaseOrchestrator. The
 	 * /events route mounts inside createBridgeApp (pre-listen), but the
 	 * orchestrator is built later in startBridge (it needs startDispatcher +
@@ -1225,6 +1235,40 @@ export function createBridgeApp(
 			opts?.accountRotationPost,
 			opts?.issueDisplayRefresh, // FLY-907
 		),
+	);
+
+	// FLY-1188 §7.1: codex-author review-request registration. Runner-facing
+	// like /events → same ingest-token auth. A 200 is the DURABLE-ACCEPTED ack
+	// (the job row is committed before accept() resolves); anything else means
+	// the request is NOT registered and the CLI must keep its fail-close marker.
+	app.post(
+		"/review-requests",
+		tokenAuthMiddleware(config.ingestToken),
+		(req, res) => {
+			const coordinator = opts?.reviewCoordinator?.current;
+			if (!coordinator) {
+				res.status(503).json({
+					accepted: false,
+					reason: "review coordinator not ready",
+				});
+				return;
+			}
+			coordinator
+				.accept((req.body ?? {}) as Record<string, unknown>)
+				.then((result) => {
+					if (result.accepted) {
+						res.json(result);
+					} else {
+						res.status(result.httpStatus).json(result);
+					}
+				})
+				.catch((err) => {
+					console.error(
+						`[review-requests] accept crashed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+					res.status(500).json({ accepted: false, reason: "internal error" });
+				});
+		},
 	);
 
 	// FLY-598: founder-facing UX gate routes. Mounted BEFORE the broad `/api`
@@ -3618,6 +3662,13 @@ export async function startBridge(
 		current: undefined,
 	};
 
+	// FLY-1188 §7.1: late-bound review-request coordinator holder — read by the
+	// /review-requests route (createBridgeApp). Built post-listen; until then
+	// the route answers 503 (the runner CLI retries, fail-close on exhaustion).
+	const reviewCoordinatorHolder: {
+		current: ReviewRequestCoordinator | undefined;
+	} = { current: undefined };
+
 	// FLY-793: late-bound three-stage PhaseOrchestrator holder — read by BOTH the
 	// /events router (createBridgeApp) and the in-process DirectEventSink (via
 	// setupRunInfrastructure). Built post-listen (it needs startDispatcher +
@@ -3759,6 +3810,8 @@ export async function startBridge(
 			reconnectHolder,
 			// FLY-579: event router reads this to drive the auto-QA pipeline.
 			autoQaCoordinator: autoQaCoordinatorHolder,
+			// FLY-1188 §7.1: /review-requests route reads this holder.
+			reviewCoordinator: reviewCoordinatorHolder,
 			// FLY-793: event router reads this to drive three-stage phase handoffs.
 			phaseOrchestrator: phaseOrchestratorHolder,
 			// FLY-696 M1/④: event router reads this to post account_rotation notices.
@@ -5433,6 +5486,52 @@ export async function startBridge(
 		console.log(
 			"[issue-display] FLY-907 unified refresher wired (derive-from-state, all lifecycle triggers)",
 		);
+	}
+
+	// FLY-1188 §7.1: build the codex-author review-request coordinator and
+	// redrive any jobs a dead Bridge left pending/running. The /review-requests
+	// route reads the holder at request time (503 until filled). Lead-facing
+	// failure alerts currently log via console + the durable failed job row;
+	// routing them through the FLY-927 alert funnel needs its own alert kind
+	// (follow-up — MetaAlertReason is a closed infra union).
+	{
+		const commRoot =
+			process.env.FLYWHEEL_COMM_ROOT?.trim() ||
+			join(homedir(), ".flywheel", "comm");
+		reviewCoordinatorHolder.current = new ReviewRequestCoordinator({
+			store,
+			commDbPathFor: (projectName) => join(commRoot, projectName, "comm.db"),
+			openCommDb: (path) => new CommDB(path, false),
+			wakeRunner: async (executionId, sessionInfo, questionId, summary) => {
+				const db = new CommDB(
+					join(commRoot, sessionInfo.project_name, "comm.db"),
+					false,
+				);
+				try {
+					const vendor = db.getSession(executionId)?.vendor;
+					if (vendor === "none") return; // no-transport backend (FLY-493)
+					await wakeRunnerMailbox({
+						db,
+						execId: executionId,
+						fromAgent: "bridge",
+						content:
+							`Your ${summary === "SKIPPED" ? "review request was sanctioned as SKIPPED" : `review request has been answered: ${summary}`} ` +
+							`(question ${questionId}). Read the durable answer with: ` +
+							`node <flywheel-comm> check ${questionId} --project ${sessionInfo.project_name}. ` +
+							`This wake carries NO authority.`,
+						...(vendor ? { backend: vendor } : {}),
+					});
+				} finally {
+					db.close();
+				}
+			},
+		});
+		const redriven = reviewCoordinatorHolder.current.redriveOnBoot();
+		if (redriven > 0) {
+			console.log(
+				`[review-coordinator] boot redrive: ${redriven} review job(s) re-enqueued`,
+			);
+		}
 	}
 
 	// FLY-579: build the auto-QA coordinator now that the LeadAlertNotifier exists
@@ -7526,6 +7625,16 @@ export async function startBridge(
 		heartbeatService?.stop();
 		await publishBrokerHandle?.close(); // FLY-1062: socket + observe timer
 		gatePoller.stop();
+		// FLY-1188 §7.2 (R12 HIGH): stop accepting new review jobs and reap
+		// every detached Claude reviewer child — a clean restart must not leave
+		// orphaned reviewers racing the new Bridge's boot redrive.
+		reviewCoordinatorHolder.current?.stop();
+		const reapedReviewers = killAllClaudeReviewChildren();
+		if (reapedReviewers > 0) {
+			console.log(
+				`[review-coordinator] shutdown: killed ${reapedReviewers} live reviewer child(ren)`,
+			);
+		}
 		await roundtableThreadManager?.stop();
 		bridgeWatchdog.stop();
 		idleWatchdog.stop();

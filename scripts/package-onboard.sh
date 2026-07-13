@@ -48,7 +48,12 @@ PO_PACKAGES=${PO_PACKAGES:-"teamlead edge-worker core config flywheel-comm claud
 # Extra runtime asset dirs per package (beyond package.json + dist/), colon
 # separated as <pkg-dir>:<asset-dir>. claude-lead.sh + Lead runtime read these
 # from the packages/teamlead tree at runtime.
-PO_PACKAGE_ASSETS=${PO_PACKAGE_ASSETS:-"teamlead:prompts teamlead:lead-rules-base teamlead:static"}
+# FLY-1188: claude-runner's dist resolves two runtime asset dirs as ../<dir>
+# siblings — agents/ (the codex runner contract materialized into every
+# $CODEX_HOME/AGENTS.md; a payload without it fail-louds every codex spawn)
+# and bin/ (the CODEX_HOME-aware rotation shim FLYWHEEL_CODEX_BIN defaults
+# to — same runtime-closure failure mode).
+PO_PACKAGE_ASSETS=${PO_PACKAGE_ASSETS:-"teamlead:prompts teamlead:lead-rules-base teamlead:static claude-runner:agents claude-runner:bin"}
 
 # File-level asset whitelist (<pkg-dir>:<relative-file>) — packages/teamlead/
 # scripts is a grab bag of launcher runtime AND operator/ops one-offs

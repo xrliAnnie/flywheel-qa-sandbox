@@ -55,12 +55,35 @@ export async function send(args: SendArgs): Promise<string> {
 		// shared with the approval write-sites whose wake text must stay
 		// undecorated. The CommDB row keeps the ORIGINAL content (audit without
 		// transport decoration).
+		//
+		// FLY-1188: route the wake by the TARGET runner's registered transport
+		// vendor (session row, written at spawn — dispatcher pre-registration
+		// AND adapter self-registration both carry it) so a codex runner's
+		// instruction reaches the codex mailbox — the process-wide env default
+		// is locked to claude-code and misrouted every Lead `send` to a codex
+		// runner (the /eleven "Lead couldn't wake turn-1" incident). Only a
+		// NULL vendor (legacy row) keeps the env fallback; any other string —
+		// including "" — flows through so an unknown vendor is a LOUD wake
+		// error (never a silent claude fallback), surfaced via the stderr
+		// path below.
+		const targetVendor = db.getSession(args.toAgent)?.vendor;
+		if (targetVendor === "none") {
+			// No-transport backend (antigravity/kimi): there is NO mailbox to
+			// wake. Loud skip — the CommDB row above stays the durable record,
+			// and delivered_at is NEVER set (nothing was delivered). Writing
+			// the env-default claude inbox here would fake delivery.
+			console.error(
+				`[flywheel-comm send] runner ${args.toAgent} uses a no-transport backend (vendor="none") — no mailbox wake is possible; instruction recorded in CommDB only`,
+			);
+			return id;
+		}
 		const wake = await wakeRunnerMailbox({
 			db,
 			execId: args.toAgent,
 			fromAgent: args.fromAgent,
 			content: `[lead-instruction ${id}]\n${args.content}`,
 			metadata: { flywheelId: id, execId: args.toAgent },
+			...(targetVendor != null && { backend: targetVendor }),
 		});
 		if (wake.ok) {
 			// FLY-208 B: delivered_at = "transport write returned ok" (raw

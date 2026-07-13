@@ -33,6 +33,9 @@ import { type ExecFileFn, TmuxAdapter } from "./TmuxAdapter.js";
 export class AntigravityTmuxAdapter extends TmuxAdapter {
 	readonly type = "antigravity-tmux";
 	protected readonly binaryName = "agy";
+	// FLY-1188: no-transport backend — a `send` to this session must fail
+	// loud, never write a claude-code mailbox nobody reads (false delivery).
+	protected readonly registrationVendor = "none";
 
 	constructor(
 		sessionName: string = "flywheel",

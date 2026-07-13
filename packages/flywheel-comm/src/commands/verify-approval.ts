@@ -46,6 +46,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
+import { crossFamilyReviewSatisfied } from "flywheel-config";
 import { CommDB } from "../db.js";
 import {
 	isTrustedApprovalAttribution,
@@ -208,6 +209,7 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 				pr_head_sha?: string | null;
 				review_question_id?: string | null;
 				codex_skip?: number | null;
+				adapter_type?: string | null;
 		  }
 		| undefined;
 	// FLY-827: does an approved/skipped Codex code-review record exist for the
@@ -221,19 +223,36 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 		try {
 			row = stateDb
 				.prepare(
-					"SELECT status, pr_head_sha, review_question_id, codex_skip FROM sessions WHERE execution_id = ?",
+					"SELECT status, pr_head_sha, review_question_id, codex_skip, adapter_type FROM sessions WHERE execution_id = ?",
 				)
 				.get(args.execId) as typeof row;
-			// Separate try: an un-upgraded DB may lack codex_review_record. A missing
-			// table → codexApprovedForHead stays false (fail-closed under the gate),
-			// but must NOT corrupt the authoritative row read above.
+			// Separate try: an un-upgraded DB may lack codex_review_record (or,
+			// on a version skew, the FLY-1188 family columns). A missing table/
+			// column → codexApprovedForHead stays false (fail-closed under the
+			// gate), but must NOT corrupt the authoritative row read above.
 			try {
 				const codexRow = stateDb
 					.prepare(
-						"SELECT 1 AS ok FROM codex_review_record WHERE execution_id = ? AND lower(target_pr_head_sha) = ? AND status IN ('approved','skipped')",
+						"SELECT status, author_family, reviewer_family FROM codex_review_record WHERE execution_id = ? AND lower(target_pr_head_sha) = ? AND status IN ('approved','skipped')",
 					)
-					.get(args.execId, prHead) as { ok?: number } | undefined;
-				codexApprovedForHead = codexRow?.ok === 1;
+					.get(args.execId, prHead) as
+					| {
+							status?: string;
+							author_family?: string | null;
+							reviewer_family?: string | null;
+					  }
+					| undefined;
+				// FLY-1188 §7.3: reviewer-inversion invariant — the SAME shared
+				// rule as the Bridge gate (StateStore.isCodexCodeReviewApproved),
+				// so the runner-side merge check can never drift from the server.
+				codexApprovedForHead =
+					codexRow !== undefined &&
+					crossFamilyReviewSatisfied({
+						status: codexRow.status,
+						authorFamily: codexRow.author_family ?? null,
+						reviewerFamily: codexRow.reviewer_family ?? null,
+						sessionAdapterType: row?.adapter_type ?? null,
+					});
 			} catch {
 				codexApprovedForHead = false;
 			}

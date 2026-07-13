@@ -94,6 +94,15 @@ husks="$(find "$PKG_ROOT/node_modules" -mindepth 1 -maxdepth 2 -type d -empty 2>
   && pass "③ agents/ runtime prompts at PKG_ROOT (run-infra sentinel resolvable)" \
   || fail "③ agents/ prompts missing from PKG_ROOT"
 
+# ── ③b claude-runner runtime assets (FLY-1188) ───────────────────────────────
+# codex-home.ts resolves these as ../agents / ../bin siblings of dist — a
+# payload missing them fail-louds every codex spawn (contract) or breaks the
+# rotation shim default (bin).
+CR_ROOT="$PKG_ROOT/node_modules/flywheel-claude-runner"
+[ -f "$CR_ROOT/agents/codex-runner-contract.md" ] && [ -x "$CR_ROOT/bin/flywheel-codex-with-fallback" ] \
+  && pass "③b claude-runner assets shipped (codex contract + rotation shim)" \
+  || fail "③b claude-runner assets missing (agents/codex-runner-contract.md or bin/flywheel-codex-with-fallback)"
+
 # ── ④a bare-import matrix ────────────────────────────────────────────────────
 SMOKE_HOME="$SANDBOX/home"; mkdir -p "$SMOKE_HOME/.flywheel"
 import_fail=""

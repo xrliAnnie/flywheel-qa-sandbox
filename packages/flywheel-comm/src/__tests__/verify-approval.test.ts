@@ -44,13 +44,15 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		vi.restoreAllMocks();
 	});
 
-	/** Minimal StateStore-shaped sessions table (sql.js writes standard SQLite). */
+	/** Minimal StateStore-shaped sessions table (sql.js writes standard SQLite).
+	 * FLY-1188: mirrors the production adapter_type column (family rule input). */
 	function writeStateSession(row: {
 		execution_id: string;
 		status: string;
 		pr_head_sha?: string | null;
 		review_question_id?: string | null;
 		codex_skip?: number;
+		adapter_type?: string | null;
 	}): void {
 		const db = new Database(stateDbPath);
 		db.exec(
@@ -59,26 +61,30 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				status TEXT,
 				pr_head_sha TEXT,
 				review_question_id TEXT,
-				codex_skip INTEGER NOT NULL DEFAULT 0
+				codex_skip INTEGER NOT NULL DEFAULT 0,
+				adapter_type TEXT
 			)`,
 		);
 		db.prepare(
-			"INSERT OR REPLACE INTO sessions (execution_id, status, pr_head_sha, review_question_id, codex_skip) VALUES (?, ?, ?, ?, ?)",
+			"INSERT OR REPLACE INTO sessions (execution_id, status, pr_head_sha, review_question_id, codex_skip, adapter_type) VALUES (?, ?, ?, ?, ?, ?)",
 		).run(
 			row.execution_id,
 			row.status,
 			row.pr_head_sha ?? null,
 			row.review_question_id ?? null,
 			row.codex_skip ?? 0,
+			row.adapter_type ?? null,
 		);
 		db.close();
 	}
 
-	/** FLY-827: write a codex_review_record row for (exec, head). */
+	/** FLY-827: write a codex_review_record row for (exec, head).
+	 * FLY-1188: optional family stamps (NULL = legacy pre-FLY-1188 row). */
 	function writeCodexRecord(
 		execution_id: string,
 		targetPrHeadSha: string,
 		status: "approved" | "skipped" | "pending",
+		families?: { author?: string; reviewer?: string },
 	): void {
 		const db = new Database(stateDbPath);
 		db.exec(
@@ -86,12 +92,20 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				execution_id TEXT NOT NULL,
 				target_pr_head_sha TEXT NOT NULL,
 				status TEXT NOT NULL DEFAULT 'pending',
+				author_family TEXT,
+				reviewer_family TEXT,
 				PRIMARY KEY (execution_id, target_pr_head_sha)
 			)`,
 		);
 		db.prepare(
-			"INSERT OR REPLACE INTO codex_review_record (execution_id, target_pr_head_sha, status) VALUES (?, ?, ?)",
-		).run(execution_id, targetPrHeadSha.toLowerCase(), status);
+			"INSERT OR REPLACE INTO codex_review_record (execution_id, target_pr_head_sha, status, author_family, reviewer_family) VALUES (?, ?, ?, ?, ?)",
+		).run(
+			execution_id,
+			targetPrHeadSha.toLowerCase(),
+			status,
+			families?.author ?? null,
+			families?.reviewer ?? null,
+		);
 		db.close();
 	}
 
@@ -616,6 +630,73 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 					dotenvPath: join(tmpDir, "does-not-exist.env"),
 				}),
 			).toBe(false);
+		});
+	});
+
+	// ── FLY-1188 §7.3: family-aware review authority (reviewer inversion) ──
+	// The CLI mirror of StateStore.isCodexCodeReviewApproved must apply the
+	// same crossFamilyReviewSatisfied rule: a codex-family author can only
+	// satisfy the gate with a record that PROVES a different-family reviewer.
+	describe("FLY-1188 family-aware review authority", () => {
+		/** Founder side fully approved, with the author's adapter_type set. */
+		function founderApprovedAs(adapterType: string | null): void {
+			const qid = createGateQuestion();
+			answer(qid, JSON.stringify({ approved: true }));
+			writeStateSession({
+				execution_id: EXEC,
+				status: "approved_to_ship",
+				pr_head_sha: HEAD,
+				review_question_id: qid,
+				adapter_type: adapterType,
+			});
+		}
+
+		it("codex author + UNSTAMPED approved record → fail-close (codex_review_not_approved)", () => {
+			founderApprovedAs("codex-tmux");
+			writeCodexRecord(EXEC, HEAD, "approved"); // legacy shape: no family stamps
+			const r = runGateOn();
+			expect(r.approved).toBe(false);
+			expect(r.reason).toBe("codex_review_not_approved");
+		});
+
+		it("codex author + cross-family stamped record (codex→claude) → approved", () => {
+			founderApprovedAs("codex-tmux");
+			writeCodexRecord(EXEC, HEAD, "approved", {
+				author: "codex",
+				reviewer: "claude",
+			});
+			const r = runGateOn();
+			expect(r.approved).toBe(true);
+			expect(r.reason).toBe("approved");
+		});
+
+		it("SAME-family stamped record (codex→codex) → fail-close", () => {
+			founderApprovedAs("codex-tmux");
+			writeCodexRecord(EXEC, HEAD, "approved", {
+				author: "codex",
+				reviewer: "codex",
+			});
+			const r = runGateOn();
+			expect(r.approved).toBe(false);
+			expect(r.reason).toBe("codex_review_not_approved");
+		});
+
+		it("legacy claude author (adapter_type NULL) + unstamped record → approved (historical lane)", () => {
+			founderApprovedAs(null);
+			writeCodexRecord(EXEC, HEAD, "approved");
+			expect(runGateOn().approved).toBe(true);
+		});
+
+		it("explicit claude-tmux author + unstamped record → approved", () => {
+			founderApprovedAs("claude-tmux");
+			writeCodexRecord(EXEC, HEAD, "approved");
+			expect(runGateOn().approved).toBe(true);
+		});
+
+		it("codex author + skipped record → approved (governance bypass is family-agnostic)", () => {
+			founderApprovedAs("codex-tmux");
+			writeCodexRecord(EXEC, HEAD, "skipped");
+			expect(runGateOn().approved).toBe(true);
 		});
 	});
 });

@@ -355,4 +355,24 @@ describe("KimiTmuxAdapter", () => {
 		expect(bootstrap).toMatch(/Read the instructions in .*kimi-bootstrap\.md/);
 		expect(bootstrap).not.toContain("BIG SYSTEM PROMPT");
 	});
+
+	// FLY-1188: a no-transport session must be registered vendor="none" so a
+	// Lead `send` fails LOUD instead of writing a claude-code mailbox nobody
+	// reads and stamping a false delivered_at.
+	it('registers the CommDB session with vendor="none" (no-transport)', async () => {
+		const tmpDb = mkdtempSync(join(tmpdir(), "fly1188-kimi-vendor-"));
+		try {
+			const commDbPath = join(tmpDb, "comm.db");
+			const { fn } = makeMockExec();
+			await new TestKimiAdapter(configuredDir(), "flywheel", fn, 10).execute(
+				makeCtx({ commDbPath }),
+			);
+			const { CommDB } = await import("flywheel-comm/db");
+			const db = new CommDB(commDbPath);
+			expect(db.getSession("fly494-exec-1")?.vendor).toBe("none");
+			db.close();
+		} finally {
+			rmSync(tmpDb, { recursive: true, force: true });
+		}
+	});
 });

@@ -189,6 +189,40 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 		expect(existsSync(resultPath)).toBe(false);
 	});
 
+	it("FLY-1188 §7.1: codex-tmux AUTHOR skips the legacy trigger — no instruction, no skip.json (request-driven lane)", async () => {
+		store.patchSessionMetadata(execId, { adapter_type: "codex-tmux" });
+		store.patchSessionMetadata(execId, { codex_skip: 1 }); // even with skip set
+
+		const res = await postEvent({
+			event_id: "evt-design-codex-author",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d-codex-test",
+			event_type: "stage_changed",
+			payload: {
+				stage: "design_review",
+				plan_path: "doc/engineer/plan/draft/v1.27.0-FLY-137-foo.md",
+			},
+		});
+		expect(res.status).toBe(200);
+
+		// plan_path is still persisted (audit metadata both lanes want)
+		expect(store.getSession(execId)?.plan_path).toBe(
+			"doc/engineer/plan/draft/v1.27.0-FLY-137-foo.md",
+		);
+		// but NO legacy reviewer machinery fires: no instruction, no skip.json
+		expect(readCommDbInstructions()).toHaveLength(0);
+		const skipPath = join(
+			tmpWorktree,
+			".flywheel",
+			"runs",
+			execId,
+			"codex",
+			"skip.json",
+		);
+		expect(existsSync(skipPath)).toBe(false);
+	});
+
 	it("codex_skip=true on session → writes skip.json and does NOT queue a CommDB instruction", async () => {
 		store.patchSessionMetadata(execId, { codex_skip: 1 });
 

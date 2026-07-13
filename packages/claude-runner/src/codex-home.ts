@@ -21,9 +21,11 @@
  */
 
 import {
+	accessSync,
 	chmodSync,
 	copyFileSync,
 	existsSync,
+	constants as fsConstants,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
@@ -65,6 +67,158 @@ export const SECRET_ENV_VARS = [
 /** Return a copy of `env` with GitHub-token vars removed (Fix 1). */
 export function stripSecretEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	const out: NodeJS.ProcessEnv = { ...env };
+	for (const k of SECRET_ENV_VARS) delete out[k];
+	return out;
+}
+
+/**
+ * FLY-1188 (Codex full-PR review HIGH-4 R4): the EXACT `FLYWHEEL_` variable names
+ * the resident codex daemon's model-driven shell legitimately needs. These are the
+ * SAME names the adapter's `buildDaemonEnv` sets explicitly for the daemon (comm
+ * CLI + db + ids + the scoped ingest token). An EXACT allowlist — not a
+ * `FLYWHEEL_` name/shape PATTERN — because the Bridge env carries FLYWHEEL_ handles
+ * whose names are not secret-shaped but ARE auth-capable and must NOT reach the
+ * network-enabled model shell: `FLYWHEEL_*_KEYCHAIN_SERVICE`/`_ACCOUNT` (Keychain
+ * credential coordinates), `FLYWHEEL_WRAPPER_ENV_FILE` (a secret .env path),
+ * `FLYWHEEL_GATEWAY_BROKER_SOCKET` (a permission-broker socket) (R4 HIGH). Any
+ * FLYWHEEL_ var not on this list is DROPPED.
+ */
+const RUNNER_ALLOWED_FLYWHEEL_ENV: ReadonlySet<string> = new Set([
+	"FLYWHEEL_GATE_MARKER_DIR",
+	"FLYWHEEL_RUNNER_BACKEND_ID",
+	"FLYWHEEL_RUNNER_VENDOR_ID",
+	"FLYWHEEL_COMM_DB",
+	"FLYWHEEL_COMM_CLI",
+	"FLYWHEEL_EXEC_ID",
+	"FLYWHEEL_ISSUE_ID",
+	"FLYWHEEL_BRIDGE_URL",
+	"FLYWHEEL_INGEST_TOKEN",
+	"FLYWHEEL_STATE_DB_PATH",
+	"FLYWHEEL_PROGRESS_PATH",
+	"FLYWHEEL_PROJECT_NAME",
+	"FLYWHEEL_LEAD_ID",
+	"FLYWHEEL_LAND_STATUS_PATH",
+	// Agent Team identity injected by the transport (CodexAdapter) — internal,
+	// non-secret name strings the spawn contract requires (R4 MEDIUM).
+	"FLYWHEEL_AGENT_TEAM_NAME",
+	"FLYWHEEL_AGENT_NAME",
+]);
+
+/**
+ * FLY-1188 (Codex full-PR review HIGH-4 R3): a SAFE-BASE ALLOWLIST of OS/shell
+ * environment names the daemon legitimately needs. An allowlist — not a
+ * secret-name denylist — because a denylist by name misses auth-CAPABLE vars whose
+ * names don't look secret (`SSH_AUTH_SOCK` → host SSH agent,
+ * `AWS_SHARED_CREDENTIALS_FILE`/`GOOGLE_APPLICATION_CREDENTIALS` → cloud creds,
+ * `KUBECONFIG` → cluster creds). Proxy vars are handled SEPARATELY (R4) so their
+ * `user:pass@` userinfo can be stripped. Everything not on this list, not an exact
+ * runner FLYWHEEL_ var, and not an `LC_*` locale var is DROPPED.
+ */
+const SAFE_BASE_ENV: ReadonlySet<string> = new Set([
+	"PATH",
+	"HOME",
+	"SHELL",
+	"USER",
+	"LOGNAME",
+	"LANG",
+	"LANGUAGE",
+	"TERM",
+	"TZ",
+	"TMPDIR",
+	"TMP",
+	"TEMP",
+	"PWD",
+	"HOSTNAME",
+	"COLUMNS",
+	"LINES",
+	"EDITOR",
+	"VISUAL",
+	"PAGER",
+	"XDG_RUNTIME_DIR",
+	"XDG_CACHE_HOME",
+	"XDG_CONFIG_HOME",
+	"XDG_DATA_HOME",
+]);
+
+/** Proxy env names (host network config) — kept, but with any credential
+ * userinfo stripped from the URL (R4: `HTTPS_PROXY=http://user:pass@h` leaks). */
+const PROXY_ENV_NAMES: ReadonlySet<string> = new Set([
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"ALL_PROXY",
+	"NO_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"all_proxy",
+	"no_proxy",
+]);
+
+/** Strip `user:pass@` userinfo from a proxy URL so an embedded credential never
+ * reaches the daemon's model shell; a value without a scheme/userinfo is unchanged. */
+function sanitizeProxyValue(v: string): string | undefined {
+	// Split off an optional `scheme://` OR a scheme-relative `//` marker.
+	const marker = v.match(/^(?:[a-z][a-z0-9+.-]*:)?\/\//i);
+	const scheme = marker ? marker[0] : "";
+	const afterScheme = v.slice(scheme.length);
+	// The authority ends at the first `/`, `?`, or `#` (or the whole rest).
+	const authEnd = afterScheme.search(/[/?#]/);
+	const authority =
+		authEnd === -1 ? afterScheme : afterScheme.slice(0, authEnd);
+	const rest = authEnd === -1 ? "" : afterScheme.slice(authEnd);
+	const at = authority.lastIndexOf("@"); // LAST @ — userinfo may contain `@`
+	const result =
+		at === -1
+			? v // no userinfo in the authority
+			: authority.slice(at + 1)
+				? scheme + authority.slice(at + 1) + rest
+				: ""; // userinfo but no host
+
+	// BELT-AND-SUSPENDERS (R6): a proxy value that clears MUST contain no `@`. A
+	// residual `@` means a form we could not fully normalize — e.g. redundant
+	// slashes `http:///user:pass@host`, which curl still parses as credentials, so
+	// the userinfo would land outside the parsed authority above. Fail-closed: drop
+	// the var entirely rather than pass a value with any embedded credential.
+	if (result === "" || result.includes("@")) return undefined;
+	return result;
+}
+
+/** FLY-1188 HIGH-4 R4: is `k` safe for the model-driven daemon to inherit AS-IS? */
+function keepInheritedEnv(k: string): boolean {
+	return (
+		RUNNER_ALLOWED_FLYWHEEL_ENV.has(k) ||
+		k.startsWith("LC_") || // locale
+		SAFE_BASE_ENV.has(k)
+	);
+}
+
+/**
+ * FLY-1188 (Codex full-PR review HIGH-4): the resident codex daemon runs
+ * model-driven shells/tools with the network ON, so it must NOT inherit ANYTHING
+ * that carries or points at a credential — third-party API keys/tokens, DB
+ * passwords, a FLYWHEEL_ Bridge secret (alert bot token / Keychain coords / wrapper
+ * env-file / broker socket), OR auth-CAPABLE handles whose names don't look secret
+ * (SSH_AUTH_SOCK, cloud credential-file pointers, KUBECONFIG). So the wash is a
+ * strict ALLOWLIST (R4): a var is kept ONLY if it is an EXACT runner `FLYWHEEL_`
+ * var, an `LC_*` locale var, or a name in `SAFE_BASE_ENV`; proxy vars are kept but
+ * with credential userinfo stripped. Everything else is DROPPED. Codex reads its
+ * own auth from CODEX_HOME files (re-layered by the caller), never env, so
+ * over-removal is safe. Apply on the INHERITED env BEFORE layering the runner's
+ * explicit `FLYWHEEL_*`/`CODEX_HOME`.
+ */
+export function stripInheritedSecretEnv(
+	env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+	const out: NodeJS.ProcessEnv = {};
+	for (const [k, v] of Object.entries(env)) {
+		if (v === undefined) continue;
+		if (PROXY_ENV_NAMES.has(k)) {
+			const sanitized = sanitizeProxyValue(v);
+			if (sanitized !== undefined) out[k] = sanitized; // else fail-closed drop
+			continue;
+		}
+		if (keepInheritedEnv(k)) out[k] = v;
+	}
+	// GH family is stripped even if it somehow slipped the allowlist above.
 	for (const k of SECRET_ENV_VARS) delete out[k];
 	return out;
 }
@@ -136,6 +290,54 @@ export function flywheelCodexBin(env: NodeJS.ProcessEnv = process.env): string {
 	);
 }
 
+/**
+ * QA · FLY-1188 — the RAW codex binary, for anything that must RENDER a TUI.
+ *
+ * The rotation shim above pipes codex's stdout through `tee` (it has to read
+ * the output to sniff a 429 and rotate accounts), so a process launched through
+ * it never gets a TTY on stdout. `codex app-server` does not care — it speaks
+ * JSON-RPC over a socket, so the DAEMON keeps the shim (and its rotation).
+ * `codex resume --remote` is a full-screen TUI: with a piped stdout it prints
+ * `Error: stdout is not a terminal` and exits 1. That is exactly why the
+ * founder's cmux tab was empty — real-machine QA capture in the FLY-1188 doc
+ * folder, `qa/tui-failure-diagnosis.txt`.
+ *
+ * So: the TUI gets the real binary. `FLYWHEEL_CODEX_TUI_BIN` overrides (ops /
+ * tests). Otherwise resolve an absolute path off OUR PATH — the tmux server the
+ * window is created in may not share it — falling back to the bare name, which
+ * is the verified lead-side behavior (lead-backends/codex/tui-window.ts).
+ */
+export function rawCodexBin(env: NodeJS.ProcessEnv = process.env): string {
+	const explicit = env.FLYWHEEL_CODEX_TUI_BIN?.trim();
+	if (explicit) return explicit;
+	for (const dir of (env.PATH ?? "").split(":")) {
+		if (!dir) continue;
+		const candidate = join(dir, "codex");
+		try {
+			accessSync(candidate, fsConstants.X_OK);
+			return candidate;
+		} catch {
+			/* not here — keep looking */
+		}
+	}
+	return "codex"; // last resort: let the tmux shell's own PATH resolve it
+}
+
+/**
+ * FLY-1188: the flywheel-shipped codex runner behavior contract (single
+ * source). Package-bundled at `<package>/agents/` — one level up from this
+ * module whether it runs from `src/` (vitest) or `dist/` (built), the same
+ * resolution shape as the rotation shim above. Materialized into every
+ * per-runner `$CODEX_HOME/AGENTS.md` by provisionCodexHome; the CODEX_HOME
+ * redirection means codex reads THIS instead of the host's global
+ * ~/.codex/AGENTS.md (which carries runner-irrelevant injections).
+ */
+export function codexRunnerContractSource(): string {
+	return fileURLToPath(
+		new URL("../agents/codex-runner-contract.md", import.meta.url),
+	);
+}
+
 function escapeRegExp(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -195,6 +397,8 @@ export interface ProvisionCodexHomeOptions {
 	/** Host gh token (from `gh auth token`); omitted = no credential injected. */
 	ghToken?: string;
 	env?: NodeJS.ProcessEnv;
+	/** FLY-1188: contract source override (tests). Default: the package-shipped file. */
+	contractSourcePath?: string;
 }
 
 /**
@@ -210,6 +414,16 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 			"provisionCodexHome: ghToken must match ^[A-Za-z0-9_-]{1,255}$",
 		);
 	}
+	// FLY-1188 (Codex M2 review MEDIUM-1): read + validate the contract BEFORE
+	// any home/credential write — a missing contract must abort with ZERO
+	// residue, never leave a half-provisioned home holding a live GH_TOKEN.
+	const contractSrc = opts.contractSourcePath ?? codexRunnerContractSource();
+	if (!existsSync(contractSrc)) {
+		throw new Error(
+			`provisionCodexHome: codex runner contract missing at ${contractSrc} — refusing to provision a contract-less codex home (FLY-1188)`,
+		);
+	}
+	const contract = readFileSync(contractSrc, "utf-8");
 	const home = codexHomeDir(opts.executionId, env);
 	const src = sourceCodexDir(env);
 	mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -239,6 +453,21 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 		mode: 0o600,
 	});
 	chmodSync(cfgPath, 0o600); // repair mode if the file pre-existed
+
+	// FLY-1188: materialize the runner behavior contract as the home's
+	// AGENTS.md — codex reads $CODEX_HOME/AGENTS.md on EVERY process, so this
+	// is the persistent instruction layer (the dynamic per-execution layer
+	// stays on stdin). The source was read + validated ABOVE, before any
+	// home/credential write (fail-loud with zero residue): a codex runner
+	// without its contract would silently run on whatever global AGENTS.md
+	// content leaked into the seed — worse than not spawning.
+	const agentsPath = join(home, "AGENTS.md");
+	writeFileSync(
+		agentsPath,
+		`<!-- flywheel-managed (FLY-1188): materialized from ${contractSrc} at provisioning; do not edit — changes belong in the source file -->\n${contract}`,
+		{ encoding: "utf-8", mode: 0o600 },
+	);
+	chmodSync(agentsPath, 0o600); // repair mode if the file pre-existed
 	return home;
 }
 

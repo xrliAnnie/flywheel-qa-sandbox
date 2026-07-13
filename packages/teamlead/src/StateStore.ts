@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import BetterSqlite3, { type Database as BetterDb } from "better-sqlite3";
+import { crossFamilyReviewSatisfied } from "flywheel-config";
 import type { LeadNudgeRow } from "./bridge/lead-pending-escalation.js";
 
 /**
@@ -750,6 +752,17 @@ export interface CodexReviewRecord {
 	codex_thread_id?: string;
 	rounds?: number;
 	verdict_event_id?: string;
+	/**
+	 * FLY-1188 §7.3: agent families for the reviewer-inversion invariant
+	 * (reviewer_family ≠ author_family). NULL on pre-FLY-1188 rows — those are
+	 * interpretable ONLY for claude-family authors (the historical
+	 * claude-author→codex-reviewer lane); a codex author with an unstamped
+	 * record fails closed. See `crossFamilyReviewSatisfied` (flywheel-config).
+	 */
+	author_family?: string;
+	reviewer_family?: string;
+	/** FLY-1188 §7.1: review-job binding (codex-author lane). */
+	request_id?: string;
 	created_at: string;
 	approved_at?: string;
 	/**
@@ -767,6 +780,47 @@ export interface CodexReviewRecord {
 	 * reconcile passes observe it after that.
 	 */
 	stuck_notified_at?: string;
+}
+
+/**
+ * FLY-1188 §7.1: one runner-issued review request in the codex-author lane.
+ * `request_id` is the idempotency key; `question_id` is the ONE gate this job
+ * may answer. Server-derived trust: `author_family` comes from the session's
+ * adapter_type, `frozen_head_sha` from rev-parse in the persisted worktree.
+ */
+export interface CodexReviewJob {
+	request_id: string;
+	execution_id: string;
+	issue_id?: string;
+	project_name: string;
+	review_type: "design" | "code";
+	round: number;
+	question_id: string;
+	/** design review: the plan path the reviewer reads. */
+	target_path?: string;
+	/** code review: server-frozen head at accept time. */
+	frozen_head_sha?: string;
+	status: "pending" | "running" | "done" | "failed" | "skipped";
+	/** claude reviewer session uuid — resumed across rounds per (exec, type). */
+	reviewer_session_uuid?: string;
+	verdict?: string;
+	findings_json?: string;
+	failure_reason?: string;
+	author_family?: string;
+	created_at: string;
+	updated_at?: string;
+	/**
+	 * R12 HIGH-4 outbox stamp: set only after the bound gate question was
+	 * actually answered. done/skipped rows with a NULL stamp are re-delivered
+	 * on boot (from the stored verdict/findings — the reviewer is NOT re-run).
+	 */
+	responded_at?: string;
+	/**
+	 * R17: server-generated at insert, NEVER exposed over HTTP — embedded in
+	 * the canonical gate payload so a runner cannot pre-write a predictable
+	 * "bridge" response and have it mistaken for the Bridge's delivery.
+	 */
+	delivery_nonce?: string;
 }
 
 /**
@@ -1744,6 +1798,18 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_status ON codex_review_record(status)",
 		);
+		// FLY-1188 §7.3: family-aware review authority — the reviewer-inversion
+		// invariant (reviewer family ≠ author family) is checked against these
+		// stamps; NULL = pre-FLY-1188 legacy row (claude-author→codex-reviewer
+		// lane only). request_id binds a record to its review job (codex-author
+		// lane).
+		for (const col of ["author_family", "reviewer_family", "request_id"]) {
+			try {
+				this.db.run(`ALTER TABLE codex_review_record ADD COLUMN ${col} TEXT`);
+			} catch {
+				/* exists */
+			}
+		}
 		// FLY-863: existing databases created before this column existed.
 		try {
 			this.db.run(
@@ -1752,6 +1818,60 @@ export class StateStore {
 		} catch {
 			/* exists */
 		}
+
+		// FLY-1188 §7.1: durable review-JOB registry for the codex-author lane.
+		// A row = one runner-issued review request (requestId is the idempotency
+		// key), bound to exactly one gate questionId. The Bridge derives the
+		// trusted inputs server-side (author family from sessions.adapter_type;
+		// code-review head frozen via rev-parse in the persisted worktree) —
+		// the payload is validated input, never authority. pending/running rows
+		// are redriven on Bridge boot.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS codex_review_job (
+				request_id            TEXT PRIMARY KEY,
+				execution_id          TEXT NOT NULL,
+				issue_id              TEXT,
+				project_name          TEXT NOT NULL,
+				review_type           TEXT NOT NULL CHECK(review_type IN ('design','code')),
+				round                 INTEGER NOT NULL DEFAULT 1,
+				question_id           TEXT NOT NULL,
+				target_path           TEXT,
+				frozen_head_sha       TEXT,
+				status                TEXT NOT NULL DEFAULT 'pending'
+				                      CHECK(status IN ('pending','running','done','failed','skipped')),
+				reviewer_session_uuid TEXT,
+				verdict               TEXT,
+				findings_json         TEXT,
+				failure_reason        TEXT,
+				author_family         TEXT,
+				created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at            TEXT,
+				responded_at          TEXT,
+				delivery_nonce        TEXT
+			)
+		`);
+		// R12 HIGH-4 outbox column on databases created before it existed.
+		try {
+			this.db.run("ALTER TABLE codex_review_job ADD COLUMN responded_at TEXT");
+		} catch {
+			/* exists */
+		}
+		// R17: server-generated delivery nonce (never leaves the Bridge via
+		// HTTP) — makes the canonical gate payload unforgeable by a runner
+		// pre-writing a predictable response through the legacy respond path.
+		try {
+			this.db.run(
+				"ALTER TABLE codex_review_job ADD COLUMN delivery_nonce TEXT",
+			);
+		} catch {
+			/* exists */
+		}
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_exec ON codex_review_job(execution_id)",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_status ON codex_review_job(status)",
+		);
 
 		// FLY-637 #3/#4: persistent "already-notified" dedup for the quiet-path
 		// Lead wake (direction A — report-once, NO backoff). A row means "I already
@@ -3831,6 +3951,10 @@ export class StateStore {
 						? undefined
 						: Number(row.rounds),
 			verdict_event_id: (row.verdict_event_id as string) ?? undefined,
+			// FLY-1188 §7.3: family stamps + review-job binding.
+			author_family: (row.author_family as string) ?? undefined,
+			reviewer_family: (row.reviewer_family as string) ?? undefined,
+			request_id: (row.request_id as string) ?? undefined,
 			created_at: row.created_at as string,
 			approved_at: (row.approved_at as string) ?? undefined,
 			hold_notified_at: (row.hold_notified_at as string) ?? undefined,
@@ -3938,6 +4062,22 @@ export class StateStore {
 	 *                    approved_at / overwrite verdict_event_id)
 	 *   - skipped row  → NOT overwritten (WHERE status != 'skipped'); gate already
 	 *                    satisfied. Returns whether the gate is now satisfied.
+	 *
+	 * FLY-1188 (Codex R8/R9): the evidence group (verdict_event_id, families,
+	 * request_id, review metadata) is replaced ATOMICALLY per verdict identity
+	 * — never mixed across distinct verdicts:
+	 *   - incoming carries a requestId MATCHING the row's request_id → replay
+	 *     of the same request-bound verdict: fill-gaps only (anchors preserved).
+	 *   - incoming carries a DIFFERENT (or first) requestId → a NEW
+	 *     authoritative request-bound verdict: the whole evidence group is
+	 *     replaced (incl. verdict_event_id + approved_at), so an invalid
+	 *     `approved + codex/codex` row cannot permanently block a later valid
+	 *     codex/claude review of the same head, and the surviving stamps always
+	 *     point at the verdict that actually backs the gate.
+	 *   - incoming has NO requestId (legacy codex lane) → it may create/fill a
+	 *     requestless row (pre-FLY-1188 fill-gap semantics, byte-compatible)
+	 *     but must NEVER overwrite a request-bound record: a late/replayed
+	 *     same-family event cannot downgrade a valid cross-family review.
 	 */
 	recordCodexReviewApproved(input: {
 		executionId: string;
@@ -3948,30 +4088,121 @@ export class StateStore {
 		reviewedTarget?: string;
 		codexThreadId?: string;
 		rounds?: number;
+		/** FLY-1188 §7.3: family stamps for the reviewer-inversion check. */
+		authorFamily?: string;
+		reviewerFamily?: string;
+		/** FLY-1188 §7.1: review-job binding (codex-author lane). */
+		requestId?: string;
 	}): boolean {
 		const sha = input.targetPrHeadSha.toLowerCase();
+		const existing = this.getCodexReviewRecord(input.executionId, sha);
+		if (!existing) {
+			this.db.run(
+				`INSERT INTO codex_review_record
+				   (execution_id, target_pr_head_sha, issue_id, project_name, status,
+				    reviewed_target, codex_thread_id, rounds, verdict_event_id,
+				    author_family, reviewer_family, request_id, created_at, approved_at)
+				 VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+				[
+					input.executionId,
+					sha,
+					input.issueId,
+					input.projectName,
+					input.reviewedTarget ?? null,
+					input.codexThreadId ?? null,
+					input.rounds ?? null,
+					input.verdictEventId ?? null,
+					input.authorFamily ?? null,
+					input.reviewerFamily ?? null,
+					input.requestId ?? null,
+				],
+			);
+			this.save();
+			return this.isCodexCodeReviewApproved(input.executionId, sha);
+		}
+		if (existing.status === "skipped") {
+			// gate already satisfied via sanctioned bypass; never overwritten
+			return this.isCodexCodeReviewApproved(input.executionId, sha);
+		}
+
+		const isNewAuthoritativeRequest =
+			input.requestId != null && existing.request_id !== input.requestId;
+		const isLegacyLaneOnRequestBoundRow =
+			input.requestId == null && existing.request_id != null;
+
+		if (isLegacyLaneOnRequestBoundRow) {
+			// R9/R10 MEDIUM: a requestless (legacy codex-lane) event must not
+			// touch ANY request-bound record — approved (no downgrade, no mixed
+			// evidence) OR pending (R10: filling a request-bound pending row
+			// with legacy evidence would make the real verdict for that request
+			// look like a replay and its evidence unreplaceable). Only the
+			// bound request's own verdict — or a different authoritative
+			// request — may write here.
+			return this.isCodexCodeReviewApproved(input.executionId, sha);
+		}
+
+		if (
+			isNewAuthoritativeRequest &&
+			(existing.status === "approved" || existing.request_id != null)
+		) {
+			// Atomic evidence-group replacement: the new request-bound verdict
+			// is authoritative; every stamp (incl. the verdict anchor and
+			// approved_at) now describes THAT verdict. R2 LOW-4 (replays must
+			// not restamp) is untouched — this branch is not a replay.
+			this.db.run(
+				`UPDATE codex_review_record SET
+				   status = 'approved',
+				   approved_at = datetime('now'),
+				   verdict_event_id = ?,
+				   reviewed_target = ?,
+				   codex_thread_id = ?,
+				   rounds = ?,
+				   author_family = ?,
+				   reviewer_family = ?,
+				   request_id = ?
+				 WHERE execution_id = ? AND target_pr_head_sha = ?`,
+				[
+					input.verdictEventId ?? null,
+					input.reviewedTarget ?? null,
+					input.codexThreadId ?? null,
+					input.rounds ?? null,
+					input.authorFamily ?? null,
+					input.reviewerFamily ?? null,
+					input.requestId ?? null,
+					input.executionId,
+					sha,
+				],
+			);
+			this.save();
+			return this.isCodexCodeReviewApproved(input.executionId, sha);
+		}
+
+		// pending→approved, replay of the same request-bound verdict, or a
+		// requestless verdict on a requestless row: pre-FLY-1188 fill-gap
+		// semantics (Codex R2 LOW-4: a replayed verdict must not restamp
+		// approved_at / overwrite verdict_event_id).
 		this.db.run(
-			`INSERT INTO codex_review_record
-			   (execution_id, target_pr_head_sha, issue_id, project_name, status,
-			    reviewed_target, codex_thread_id, rounds, verdict_event_id, created_at, approved_at)
-			 VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, datetime('now'), datetime('now'))
-			 ON CONFLICT(execution_id, target_pr_head_sha) DO UPDATE SET
+			`UPDATE codex_review_record SET
 			   status = 'approved',
 			   approved_at = COALESCE(approved_at, datetime('now')),
-			   verdict_event_id = COALESCE(verdict_event_id, excluded.verdict_event_id),
-			   reviewed_target = COALESCE(reviewed_target, excluded.reviewed_target),
-			   codex_thread_id = COALESCE(codex_thread_id, excluded.codex_thread_id),
-			   rounds = COALESCE(rounds, excluded.rounds)
-			 WHERE codex_review_record.status != 'skipped'`,
+			   verdict_event_id = COALESCE(verdict_event_id, ?),
+			   reviewed_target = COALESCE(reviewed_target, ?),
+			   codex_thread_id = COALESCE(codex_thread_id, ?),
+			   rounds = COALESCE(rounds, ?),
+			   author_family = COALESCE(author_family, ?),
+			   reviewer_family = COALESCE(reviewer_family, ?),
+			   request_id = COALESCE(request_id, ?)
+			 WHERE execution_id = ? AND target_pr_head_sha = ?`,
 			[
-				input.executionId,
-				sha,
-				input.issueId,
-				input.projectName,
+				input.verdictEventId ?? null,
 				input.reviewedTarget ?? null,
 				input.codexThreadId ?? null,
 				input.rounds ?? null,
-				input.verdictEventId ?? null,
+				input.authorFamily ?? null,
+				input.reviewerFamily ?? null,
+				input.requestId ?? null,
+				input.executionId,
+				sha,
 			],
 		);
 		this.save();
@@ -3999,6 +4230,276 @@ export class StateStore {
 			[input.executionId, sha, input.issueId, input.projectName],
 		);
 		this.save();
+	}
+
+	// ── FLY-1188 §7.1: codex-author review-job registry ────────────────────
+
+	private rowToCodexReviewJob(row: Record<string, unknown>): CodexReviewJob {
+		return {
+			request_id: row.request_id as string,
+			execution_id: row.execution_id as string,
+			issue_id: (row.issue_id as string) ?? undefined,
+			project_name: row.project_name as string,
+			review_type: row.review_type as CodexReviewJob["review_type"],
+			round: (row.round as number) ?? 1,
+			question_id: row.question_id as string,
+			target_path: (row.target_path as string) ?? undefined,
+			frozen_head_sha: (row.frozen_head_sha as string) ?? undefined,
+			status: row.status as CodexReviewJob["status"],
+			reviewer_session_uuid: (row.reviewer_session_uuid as string) ?? undefined,
+			verdict: (row.verdict as string) ?? undefined,
+			findings_json: (row.findings_json as string) ?? undefined,
+			failure_reason: (row.failure_reason as string) ?? undefined,
+			author_family: (row.author_family as string) ?? undefined,
+			created_at: row.created_at as string,
+			updated_at: (row.updated_at as string) ?? undefined,
+			responded_at: (row.responded_at as string) ?? undefined,
+			delivery_nonce: (row.delivery_nonce as string) ?? undefined,
+		};
+	}
+
+	getCodexReviewJob(requestId: string): CodexReviewJob | null {
+		const stmt = this.db.prepare(
+			"SELECT * FROM codex_review_job WHERE request_id = ?",
+		);
+		stmt.bind([requestId]);
+		let job: CodexReviewJob | null = null;
+		if (stmt.step()) {
+			job = this.rowToCodexReviewJob(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return job;
+	}
+
+	/**
+	 * Idempotent insert keyed by requestId (§7.1: re-POST of the same request
+	 * must return the SAME durable job, never a duplicate). Returns whether a
+	 * new row was created plus the current row either way.
+	 */
+	insertCodexReviewJob(input: {
+		requestId: string;
+		executionId: string;
+		issueId?: string;
+		projectName: string;
+		reviewType: "design" | "code";
+		round?: number;
+		questionId: string;
+		targetPath?: string;
+		frozenHeadSha?: string;
+		reviewerSessionUuid?: string;
+		authorFamily?: string;
+		/** skip lane writes the durable skipped audit row directly. */
+		status?: "pending" | "skipped";
+	}): { inserted: boolean; job: CodexReviewJob } {
+		this.db.run(
+			`INSERT OR IGNORE INTO codex_review_job
+			   (request_id, execution_id, issue_id, project_name, review_type,
+			    round, question_id, target_path, frozen_head_sha,
+			    reviewer_session_uuid, author_family, status, delivery_nonce,
+			    created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+			[
+				input.requestId,
+				input.executionId,
+				input.issueId ?? null,
+				input.projectName,
+				input.reviewType,
+				input.round ?? 1,
+				input.questionId,
+				input.targetPath ?? null,
+				input.frozenHeadSha ?? null,
+				input.reviewerSessionUuid ?? null,
+				input.authorFamily ?? null,
+				input.status ?? "pending",
+				randomUUID(), // R17 delivery nonce — server-only
+			],
+		);
+		const inserted = this.db.getRowsModified() > 0;
+		this.save();
+		const job = this.getCodexReviewJob(input.requestId);
+		if (!job) throw new Error(`review job ${input.requestId} vanished`);
+		return { inserted, job };
+	}
+
+	/**
+	 * CAS claim pending|failed → running (failed→running = the sanctioned
+	 * same-requestId retry after a reviewer failure). Returns false when the
+	 * job is already running/done/skipped — the caller must not double-run.
+	 */
+	claimCodexReviewJobRunning(requestId: string): boolean {
+		this.db.run(
+			`UPDATE codex_review_job
+			   SET status = 'running', updated_at = datetime('now')
+			 WHERE request_id = ? AND status IN ('pending','failed')`,
+			[requestId],
+		);
+		const claimed = this.db.getRowsModified() > 0;
+		this.save();
+		return claimed;
+	}
+
+	completeCodexReviewJob(
+		requestId: string,
+		verdict: string,
+		findingsJson?: string,
+	): void {
+		this.db.run(
+			`UPDATE codex_review_job
+			   SET status = 'done', verdict = ?, findings_json = ?,
+			       failure_reason = NULL, updated_at = datetime('now')
+			 WHERE request_id = ?`,
+			[verdict, findingsJson ?? null, requestId],
+		);
+		this.save();
+	}
+
+	/**
+	 * R13 HIGH-1: terminal done/skipped rows are IMMUTABLE here — a crashed
+	 * respond/stamp after the verdict landed must not downgrade the row out of
+	 * the outbox scan (which only re-delivers done/skipped).
+	 */
+	failCodexReviewJob(requestId: string, reason: string): void {
+		this.db.run(
+			`UPDATE codex_review_job
+			   SET status = 'failed', failure_reason = ?, updated_at = datetime('now')
+			 WHERE request_id = ? AND status NOT IN ('done','skipped')`,
+			[reason, requestId],
+		);
+		this.save();
+	}
+
+	/** Stamp/refresh the claude reviewer session uuid used for this job. */
+	setCodexReviewJobReviewerSession(requestId: string, uuid: string): void {
+		this.db.run(
+			"UPDATE codex_review_job SET reviewer_session_uuid = ?, updated_at = datetime('now') WHERE request_id = ?",
+			[uuid, requestId],
+		);
+		this.save();
+	}
+
+	/**
+	 * Boot redrive (§7.1): pending jobs never started; running jobs were
+	 * in-flight when the Bridge died — both re-enqueue (the reviewer round is
+	 * re-run from scratch; verdicts are only recorded on completion, so a
+	 * half-run round has no partial state to reconcile).
+	 */
+	listRedrivableCodexReviewJobs(): CodexReviewJob[] {
+		const jobs: CodexReviewJob[] = [];
+		const stmt = this.db.prepare(
+			"SELECT * FROM codex_review_job WHERE status IN ('pending','running') ORDER BY created_at ASC",
+		);
+		while (stmt.step()) {
+			jobs.push(
+				this.rowToCodexReviewJob(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return jobs;
+	}
+
+	/** R12 HIGH-4 outbox: stamp AFTER the bound question is actually answered. */
+	stampCodexReviewJobResponded(requestId: string): void {
+		this.db.run(
+			"UPDATE codex_review_job SET responded_at = datetime('now') WHERE request_id = ?",
+			[requestId],
+		);
+		this.save();
+	}
+
+	/**
+	 * R12 HIGH-4 outbox scan: terminal verdicts whose gate response never
+	 * landed (crash between the terminal write and the CommDB answer). The
+	 * response is re-delivered from the STORED verdict — never a re-review.
+	 */
+	listUndeliveredCodexReviewJobs(): CodexReviewJob[] {
+		const jobs: CodexReviewJob[] = [];
+		const stmt = this.db.prepare(
+			`SELECT * FROM codex_review_job
+			  WHERE status IN ('done','skipped') AND responded_at IS NULL
+			  ORDER BY created_at ASC`,
+		);
+		while (stmt.step()) {
+			jobs.push(
+				this.rowToCodexReviewJob(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return jobs;
+	}
+
+	/** Boot redrive prep: in-flight rows from a dead Bridge → pending again. */
+	resetRunningCodexReviewJobs(): number {
+		this.db.run(
+			"UPDATE codex_review_job SET status = 'pending', updated_at = datetime('now') WHERE status = 'running'",
+		);
+		const n = this.db.getRowsModified();
+		this.save();
+		return n;
+	}
+
+	/** Server-derived round number: prior requests for (exec, type) + 1. */
+	countCodexReviewJobs(
+		executionId: string,
+		reviewType: "design" | "code",
+	): number {
+		const stmt = this.db.prepare(
+			"SELECT COUNT(*) AS n FROM codex_review_job WHERE execution_id = ? AND review_type = ?",
+		);
+		stmt.bind([executionId, reviewType]);
+		let n = 0;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			n = Number(row.n ?? 0);
+		}
+		stmt.free();
+		return n;
+	}
+
+	/** Latest DONE job for (exec, type) — reround prompts carry its findings. */
+	latestDoneCodexReviewJob(
+		executionId: string,
+		reviewType: "design" | "code",
+	): CodexReviewJob | null {
+		const stmt = this.db.prepare(
+			`SELECT * FROM codex_review_job
+			  WHERE execution_id = ? AND review_type = ? AND status = 'done'
+			  ORDER BY created_at DESC LIMIT 1`,
+		);
+		stmt.bind([executionId, reviewType]);
+		let job: CodexReviewJob | null = null;
+		if (stmt.step()) {
+			job = this.rowToCodexReviewJob(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return job;
+	}
+
+	/**
+	 * Latest reviewer session uuid for (execution, review type) — rerounds
+	 * resume the same claude session so the reviewer keeps its codebase read.
+	 */
+	latestCodexReviewerSessionUuid(
+		executionId: string,
+		reviewType: "design" | "code",
+	): string | null {
+		const stmt = this.db.prepare(
+			`SELECT reviewer_session_uuid FROM codex_review_job
+			  WHERE execution_id = ? AND review_type = ?
+			    AND reviewer_session_uuid IS NOT NULL
+			  ORDER BY created_at DESC LIMIT 1`,
+		);
+		stmt.bind([executionId, reviewType]);
+		let uuid: string | null = null;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			uuid = (row.reviewer_session_uuid as string) ?? null;
+		}
+		stmt.free();
+		return uuid;
 	}
 
 	/**
@@ -4048,7 +4549,19 @@ export class StateStore {
 	 */
 	isCodexCodeReviewApproved(executionId: string, sha: string): boolean {
 		const rec = this.getCodexReviewRecord(executionId, sha.toLowerCase());
-		return rec?.status === "approved" || rec?.status === "skipped";
+		if (!rec) return false;
+		// FLY-1188 §7.3: the reviewer-inversion invariant — a record only
+		// satisfies the gate if the reviewer came from a DIFFERENT agent
+		// family than the author. Shared rule with the verify-approval CLI
+		// mirror (flywheel-config) so server gate and merge check never
+		// drift. Legacy unstamped rows stay valid ONLY for claude-family
+		// authors; a codex author with an unstamped record fails closed.
+		return crossFamilyReviewSatisfied({
+			status: rec.status,
+			authorFamily: rec.author_family ?? null,
+			reviewerFamily: rec.reviewer_family ?? null,
+			sessionAdapterType: this.getSession(executionId)?.adapter_type ?? null,
+		});
 	}
 
 	/**

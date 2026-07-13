@@ -21,6 +21,55 @@ export {
 	type CodexWakeWatcher,
 	codexSessionStateDir,
 } from "./CodexTmuxAdapter.js";
+export {
+	buildDaemonSandboxWritableRoots,
+	buildGoalObjective,
+	classifyGoalOutcome,
+	type GoalClassification,
+} from "./codex-daemon-adapter-helpers.js"; // FLY-1188 M4d
+export {
+	CodexDaemonClient,
+	type CodexDaemonClientOptions,
+	CodexDaemonError,
+	type CodexDaemonEvents,
+	type DaemonTransport,
+	type GoalNotification,
+	GoalRunError,
+	type GoalRunResult,
+	type GoalStatus,
+	isTerminalGoalStatus,
+	runGoalToTerminal,
+} from "./codex-daemon-client.js"; // FLY-1188 M4
+export {
+	type ApprovalPolicy,
+	CodexDaemonGoalRuntime,
+	type CodexDaemonGoalRuntimeOptions,
+	type RunGoalInput,
+	type RunGoalOutcome,
+	type Sandbox,
+} from "./codex-daemon-goal-runtime.js"; // FLY-1188 M4c-2
+export {
+	type AcquireDaemonLockFn,
+	assertSocketPathFitsSunLen,
+	buildDaemonSandboxArgs,
+	type DaemonChild,
+	type DaemonHandle,
+	type DaemonLock,
+	type DaemonSpawnFn,
+	daemonSocketDir,
+	resolveDaemonSocketPath,
+	type SpawnCodexDaemonOptions,
+	SUN_PATH_MAX,
+	spawnCodexDaemon,
+} from "./codex-daemon-runtime.js"; // FLY-1188 M4c
+export {
+	type ConnectDaemonTransportOptions,
+	connectDaemonTransport,
+	DAEMON_SOCKET_RELPATH,
+	daemonSocketPath,
+	WsDaemonTransport,
+	type WsLike,
+} from "./codex-daemon-transport.js"; // FLY-1188 M4b
 // FLY-123 WS-A/WS-B/WS-C/P5: per-runner CODEX_HOME provisioning + credential
 // lifecycle + repo-owned rotation shim resolver
 export {
@@ -29,6 +78,7 @@ export {
 	discoverAccountPool,
 	flywheelCodexBin,
 	provisionCodexHome,
+	rawCodexBin,
 	removeCodexHome,
 	renderCodexHomeConfig,
 	SECRET_ENV_VARS,
@@ -37,6 +87,14 @@ export {
 	sourceCodexDir,
 	stripSecretEnv,
 } from "./codex-home.js";
+export {
+	buildRunnerTuiCommand,
+	ensureRunnerTuiWindow,
+	isRunnerTuiWindowAlive,
+	killRunnerTuiWindow,
+	type RunnerTuiWindowDeps,
+	type RunnerTuiWindowSpec,
+} from "./codex-runner-tui-window.js"; // FLY-1188 M4c-3
 export {
 	availableTools,
 	getAllTools,

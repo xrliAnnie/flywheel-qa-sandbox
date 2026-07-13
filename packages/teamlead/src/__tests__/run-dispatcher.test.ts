@@ -3,9 +3,10 @@
  */
 
 import { buildWindowLabel } from "flywheel-core";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type ProjectRuntime,
+	preRegistrationVendor,
 	RetryDispatcher,
 	RunDispatcher,
 	runnerDisplayName,
@@ -706,5 +707,101 @@ describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () 
 		expect(
 			buildWindowLabel("FLY-801", runnerDisplayName("qa", false), title),
 		).toBe("FLY-801-claude-three-stage pipeline");
+	});
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// FLY-1188 — CommDB pre-registration carries the resolved transport vendor
+// (Codex M1 review MEDIUM-1): a Lead `send` between start() returning and
+// the adapter's self-registration must already route to the right mailbox.
+// FLYWHEEL_COMM_DIR is redirected so nothing touches the live comm.db.
+// ══════════════════════════════════════════════════════════════════════
+
+describe("FLY-1188: pre-registration vendor", () => {
+	const ORIGINAL_BACKEND = process.env.FLYWHEEL_COMM_BACKEND;
+	const ORIGINAL_COMM_DIR = process.env.FLYWHEEL_COMM_DIR;
+	let commDir: string;
+
+	beforeEach(async () => {
+		const { mkdtempSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		commDir = mkdtempSync(join(tmpdir(), "fly1188-prereg-"));
+		process.env.FLYWHEEL_COMM_DIR = commDir;
+		process.env.FLYWHEEL_COMM_BACKEND = "mailbox";
+	});
+	afterEach(async () => {
+		const { rmSync } = await import("node:fs");
+		rmSync(commDir, { recursive: true, force: true });
+		if (ORIGINAL_BACKEND === undefined)
+			delete process.env.FLYWHEEL_COMM_BACKEND;
+		else process.env.FLYWHEEL_COMM_BACKEND = ORIGINAL_BACKEND;
+		if (ORIGINAL_COMM_DIR === undefined) delete process.env.FLYWHEEL_COMM_DIR;
+		else process.env.FLYWHEEL_COMM_DIR = ORIGINAL_COMM_DIR;
+	});
+
+	async function startAndReadVendor(issueLabels?: string[]) {
+		const blueprint = { run: vi.fn().mockResolvedValue({ success: true }) };
+		const runtimes = new Map<string, ProjectRuntime>([
+			[
+				"PreRegProj",
+				{
+					// eslint-disable-next-line @typescript-eslint/no-explicit-any
+					blueprint: blueprint as any,
+					projectRoot: "/tmp/prereg",
+					tmuxSessionName: "runner-prereg",
+				},
+			],
+		]);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+		const result = await dispatcher.start({
+			issueId: "FLY-1188",
+			projectName: "PreRegProj",
+			leadId: "flywheel-eng-lead",
+			issueLabels,
+		});
+		const { CommDB } = await import("flywheel-comm/db");
+		const { join } = await import("node:path");
+		const db = new CommDB(join(commDir, "PreRegProj", "comm.db"));
+		const session = db.getSession(result.executionId);
+		db.close();
+		return session;
+	}
+
+	it("codex label → pending row already carries vendor=codex", async () => {
+		const session = await startAndReadVendor(["codex"]);
+		expect(session?.tmux_window).toContain(":pending");
+		expect(session?.vendor).toBe("codex");
+	});
+
+	it("default claude → pending row carries vendor=claude-code", async () => {
+		const session = await startAndReadVendor();
+		expect(session?.vendor).toBe("claude-code");
+	});
+
+	it('no-transport backend (antigravity) → pending row carries vendor="none"', async () => {
+		const session = await startAndReadVendor(["antigravity"]);
+		expect(session?.vendor).toBe("none");
+	});
+
+	it("commdb rollback backend → vendor NULL (legacy env fallback preserved)", async () => {
+		process.env.FLYWHEEL_COMM_BACKEND = "commdb";
+		const session = await startAndReadVendor(["codex"]);
+		expect(session?.vendor).toBeNull();
+	});
+});
+
+describe("FLY-1188: preRegistrationVendor()", () => {
+	it("maps transport mode / vendor to the pre-registration value", () => {
+		expect(preRegistrationVendor({ runnerTransportMode: "none" })).toBe("none");
+		expect(preRegistrationVendor({ vendor: "codex" })).toBe("codex");
+		expect(preRegistrationVendor({ vendor: "claude-code" })).toBe(
+			"claude-code",
+		);
+		expect(preRegistrationVendor({})).toBeUndefined();
 	});
 });

@@ -86,6 +86,9 @@ importers:
       fs-extra:
         specifier: ^11.3.2
         version: 11.3.2
+      ws:
+        specifier: ^8.19.0
+        version: 8.19.0
       zod:
         specifier: 4.3.6
         version: 4.3.6
@@ -96,6 +99,9 @@ importers:
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.21
+      '@types/ws':
+        specifier: ^8.5.13
+        version: 8.18.1
       tsx:
         specifier: ^4.19.2
         version: 4.20.6

@@ -1,0 +1,67 @@
+{
+	"issue": "FLY-1188",
+	"execId": "qa1188-mrj2taup",
+	"head": "9341ad5e58d47df297a58a1c8804eb51bbc709af",
+	"codexVersion": "codex-cli 0.144.3",
+	"codexBin": "/Users/xiaorongli/Dev/flywheel-FLY-1188/packages/claude-runner/bin/flywheel-codex-with-fallback",
+	"worktree": "/private/tmp/qa-fly1188-m3yWu8/repo-qa-wt",
+	"gitDir": "/private/tmp/qa-fly1188-m3yWu8/repo/.git/worktrees/repo-qa-wt",
+	"writableRoots": [
+		"/tmp/qa-fly1188-m3yWu8/state",
+		"/tmp/qa-fly1188-m3yWu8/state/gates",
+		"/private/tmp/qa-fly1188-m3yWu8/repo-qa-wt",
+		"/private/tmp/qa-fly1188-m3yWu8/repo/.git/worktrees/repo-qa-wt",
+		"/private/tmp/qa-fly1188-m3yWu8/repo/.git"
+	],
+	"threadId": "019f5b02-81fe-74b1-8711-b769bcd50632",
+	"elapsedSec": 141,
+	"turnsStarted": 3,
+	"turnsCompleted": 3,
+	"goalStatus": "complete",
+	"goalSucceeded": true,
+	"threw": null,
+	"gitLog": "df45ba9 qa done\na2103b3 qa step2\n44a3eb3 qa step1\n3c70031 init",
+	"orphanSocketHolders": {
+		"daemons": [],
+		"tuis": []
+	},
+	"baselineNote": "holders classified: app-server = the HIGH-2 orphan defect; resume = founder TUI",
+	"results": [
+		{
+			"id": "H1-agents-md",
+			"pass": true,
+			"detail": "$CODEX_HOME/AGENTS.md materialized (6456 bytes)"
+		},
+		{
+			"id": "H1-contract-anchors",
+			"pass": true,
+			"detail": "contract carries the comm-protocol anchors"
+		},
+		{
+			"id": "H2-resident-multi-turn",
+			"pass": true,
+			"detail": "resident /goal drove 3 turn/started + 3 turn/completed autonomously (need >=2)"
+		},
+		{
+			"id": "H2-goal-terminal",
+			"pass": true,
+			"detail": "goal terminal status=complete succeeded=true"
+		},
+		{
+			"id": "H3-founder-tui-visible",
+			"pass": true,
+			"detail": "real codex TUI rendering in tmux qa-fly1188:FLY-1188 (34 lines)"
+		},
+		{
+			"id": "H4-sandbox-linked-worktree-commit",
+			"pass": true,
+			"detail": "daemon thread landed 3 commit(s) in the LINKED worktree: [\"qa done\",\"qa step2\",\"qa step1\"]"
+		},
+		{
+			"id": "T-clean-teardown",
+			"pass": true,
+			"detail": "socket removed=true; orphan daemons=[] (the HIGH-2 defect); lingering founder TUIs=[]"
+		}
+	],
+	"verdict": "PASS"
+}

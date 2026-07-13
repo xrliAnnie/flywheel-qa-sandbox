@@ -238,3 +238,273 @@ describe("StateStore — FLY-863 codex-hold stuck escalation", () => {
 		);
 	});
 });
+
+// ══════════════════════════════════════════════════════════════════════
+// FLY-1188 §7.3 — family-aware review authority (reviewer-inversion
+// invariant: the reviewer must come from a DIFFERENT agent family than
+// the author). Legacy unstamped rows stay valid ONLY for claude-family
+// authors; a codex author with an unstamped record fails closed.
+// ══════════════════════════════════════════════════════════════════════
+
+describe("StateStore — FLY-1188 family-aware review authority", () => {
+	let store: StateStore;
+	const SHA = "c".repeat(40);
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	function registerSession(execId: string, adapterType?: string) {
+		store.upsertSession({
+			execution_id: execId,
+			issue_id: "FLY-1188",
+			project_name: "proj",
+			status: "running",
+			...(adapterType && { adapter_type: adapterType }),
+		});
+	}
+
+	function approve(
+		execId: string,
+		families?: {
+			author?: string;
+			reviewer?: string;
+			requestId?: string;
+			eventId?: string;
+		},
+	) {
+		return store.recordCodexReviewApproved({
+			executionId: execId,
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1188",
+			projectName: "proj",
+			verdictEventId: families?.eventId ?? "evt-f",
+			...(families?.author && { authorFamily: families.author }),
+			...(families?.reviewer && { reviewerFamily: families.reviewer }),
+			...(families?.requestId && { requestId: families.requestId }),
+		});
+	}
+
+	it("cross-family approval (claude author, codex reviewer) satisfies the gate + persists stamps", () => {
+		registerSession("exec-cf", "claude-tmux");
+		expect(approve("exec-cf", { author: "claude", reviewer: "codex" })).toBe(
+			true,
+		);
+		const rec = store.getCodexReviewRecord("exec-cf", SHA);
+		expect(rec?.author_family).toBe("claude");
+		expect(rec?.reviewer_family).toBe("codex");
+	});
+
+	it("cross-family approval (codex author, claude reviewer) satisfies the gate", () => {
+		registerSession("exec-inv", "codex-tmux");
+		expect(
+			approve("exec-inv", {
+				author: "codex",
+				reviewer: "claude",
+				requestId: "req-1",
+			}),
+		).toBe(true);
+		expect(store.getCodexReviewRecord("exec-inv", SHA)?.request_id).toBe(
+			"req-1",
+		);
+	});
+
+	it("SAME-family approval NEVER satisfies the gate (codex reviewed codex)", () => {
+		registerSession("exec-same", "codex-tmux");
+		expect(approve("exec-same", { author: "codex", reviewer: "codex" })).toBe(
+			false,
+		);
+		expect(store.isCodexCodeReviewApproved("exec-same", SHA)).toBe(false);
+	});
+
+	it("legacy UNSTAMPED approval stays valid for a claude-tmux author (byte-compat)", () => {
+		registerSession("exec-legacy-claude", "claude-tmux");
+		expect(approve("exec-legacy-claude")).toBe(true);
+	});
+
+	it("legacy UNSTAMPED approval stays valid when adapter_type is NULL (pre-FLY-493 session)", () => {
+		registerSession("exec-legacy-null");
+		expect(approve("exec-legacy-null")).toBe(true);
+	});
+
+	it("legacy UNSTAMPED approval FAILS CLOSED for a codex-tmux author", () => {
+		registerSession("exec-legacy-codex", "codex-tmux");
+		expect(approve("exec-legacy-codex")).toBe(false);
+		expect(store.isCodexCodeReviewApproved("exec-legacy-codex", SHA)).toBe(
+			false,
+		);
+	});
+
+	it("skipped satisfies the gate regardless of family (sanctioned governance bypass)", () => {
+		registerSession("exec-skip", "codex-tmux");
+		store.markCodexReviewSkipped({
+			executionId: "exec-skip",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1188",
+			projectName: "proj",
+		});
+		expect(store.isCodexCodeReviewApproved("exec-skip", SHA)).toBe(true);
+	});
+
+	// R8 MEDIUM recovery: an invalid same-family `approved` row for a head
+	// must NOT permanently block a later valid cross-family review of the
+	// SAME head — the later explicit stamps are authoritative.
+	it("recovery: codex/codex row is corrected by a later codex/claude verdict (same head)", () => {
+		registerSession("exec-recover", "codex-tmux");
+		expect(
+			approve("exec-recover", {
+				author: "codex",
+				reviewer: "codex",
+				requestId: "req-invalid",
+			}),
+		).toBe(false);
+		expect(
+			approve("exec-recover", {
+				author: "codex",
+				reviewer: "claude",
+				requestId: "req-valid",
+			}),
+		).toBe(true);
+		const rec = store.getCodexReviewRecord("exec-recover", SHA);
+		expect(rec?.reviewer_family).toBe("claude");
+		expect(rec?.request_id).toBe("req-valid");
+		expect(store.isCodexCodeReviewApproved("exec-recover", SHA)).toBe(true);
+	});
+
+	it("legacy caller WITHOUT families does not wipe existing stamps (NULL preserves)", () => {
+		registerSession("exec-preserve", "codex-tmux");
+		expect(
+			approve("exec-preserve", { author: "codex", reviewer: "claude" }),
+		).toBe(true);
+		// e.g. a replayed pre-FLY-1188 event shape re-records without stamps
+		expect(approve("exec-preserve")).toBe(true);
+		const rec = store.getCodexReviewRecord("exec-preserve", SHA);
+		expect(rec?.author_family).toBe("codex");
+		expect(rec?.reviewer_family).toBe("claude");
+	});
+
+	// R9 MEDIUM: the evidence group must be replaced ATOMICALLY per verdict
+	// identity — the surviving stamps must all describe the verdict that
+	// actually backs the gate, never a mix of two verdicts.
+	it("distinct-event recovery: requestless codex/codex row is FULLY replaced by a request-bound codex/claude verdict", () => {
+		registerSession("exec-atomic", "codex-tmux");
+		// production shape: today's requestless codex lane writes the invalid row
+		expect(
+			approve("exec-atomic", {
+				author: "codex",
+				reviewer: "codex",
+				eventId: "evt-invalid",
+			}),
+		).toBe(false);
+		// future request-bound claude-reviewer lane corrects it
+		expect(
+			approve("exec-atomic", {
+				author: "codex",
+				reviewer: "claude",
+				requestId: "req-valid",
+				eventId: "evt-valid",
+			}),
+		).toBe(true);
+		const rec = store.getCodexReviewRecord("exec-atomic", SHA);
+		expect(rec?.verdict_event_id).toBe("evt-valid");
+		expect(rec?.request_id).toBe("req-valid");
+		expect(rec?.author_family).toBe("codex");
+		expect(rec?.reviewer_family).toBe("claude");
+	});
+
+	it("late requestless codex/codex event does NOT downgrade a request-bound codex/claude record", () => {
+		registerSession("exec-late", "codex-tmux");
+		expect(
+			approve("exec-late", {
+				author: "codex",
+				reviewer: "claude",
+				requestId: "req-valid",
+				eventId: "evt-valid",
+			}),
+		).toBe(true);
+		// late/replayed legacy codex-lane event (requestless, same-family stamps)
+		expect(
+			approve("exec-late", {
+				author: "codex",
+				reviewer: "codex",
+				eventId: "evt-late",
+			}),
+		).toBe(true); // gate STAYS satisfied — record untouched
+		const rec = store.getCodexReviewRecord("exec-late", SHA);
+		expect(rec?.reviewer_family).toBe("claude");
+		expect(rec?.verdict_event_id).toBe("evt-valid");
+		expect(rec?.request_id).toBe("req-valid");
+		expect(store.isCodexCodeReviewApproved("exec-late", SHA)).toBe(true);
+	});
+
+	// R10 MEDIUM: a requestless legacy event must not touch a request-bound
+	// PENDING row either — filling it with legacy evidence would make the
+	// real verdict for that request look like a replay (unreplaceable).
+	it("requestless event on a request-bound PENDING row is a no-op; the bound request's verdict then lands cleanly", () => {
+		registerSession("exec-pending-bound", "codex-tmux");
+		store.claimCodexHoldNotify({
+			executionId: "exec-pending-bound",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1188",
+			projectName: "proj",
+		});
+		// bind the pending row to a review request (§7.1 lane shape)
+		(
+			store as unknown as {
+				db: { run: (sql: string, params: unknown[]) => void };
+			}
+		).db.run(
+			"UPDATE codex_review_record SET request_id = ? WHERE execution_id = ?",
+			["req-valid", "exec-pending-bound"],
+		);
+		// late requestless legacy event: must NOT approve/pollute the row
+		expect(
+			approve("exec-pending-bound", {
+				author: "codex",
+				reviewer: "codex",
+				eventId: "evt-legacy",
+			}),
+		).toBe(false);
+		const pending = store.getCodexReviewRecord("exec-pending-bound", SHA);
+		expect(pending?.status).toBe("pending");
+		expect(pending?.verdict_event_id).toBeUndefined();
+		expect(pending?.request_id).toBe("req-valid");
+		// the bound request's real cross-family verdict lands cleanly
+		expect(
+			approve("exec-pending-bound", {
+				author: "codex",
+				reviewer: "claude",
+				requestId: "req-valid",
+				eventId: "evt-valid",
+			}),
+		).toBe(true);
+		const rec = store.getCodexReviewRecord("exec-pending-bound", SHA);
+		expect(rec?.status).toBe("approved");
+		expect(rec?.verdict_event_id).toBe("evt-valid");
+		expect(rec?.reviewer_family).toBe("claude");
+	});
+
+	it("replay of the SAME request-bound verdict preserves first-write anchors (R2 LOW-4)", () => {
+		registerSession("exec-replay", "codex-tmux");
+		expect(
+			approve("exec-replay", {
+				author: "codex",
+				reviewer: "claude",
+				requestId: "req-1",
+				eventId: "evt-1",
+			}),
+		).toBe(true);
+		// re-delivered verdict for the SAME request (e.g. transport retry)
+		expect(
+			approve("exec-replay", {
+				author: "codex",
+				reviewer: "claude",
+				requestId: "req-1",
+				eventId: "evt-1-redelivered",
+			}),
+		).toBe(true);
+		const rec = store.getCodexReviewRecord("exec-replay", SHA);
+		expect(rec?.verdict_event_id).toBe("evt-1"); // anchor not restamped
+		expect(rec?.request_id).toBe("req-1");
+	});
+});
