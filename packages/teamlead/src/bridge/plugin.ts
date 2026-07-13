@@ -101,6 +101,7 @@ import {
 } from "../ProjectConfig.js";
 import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
 import {
+	OUTCOME_STATUSES,
 	REVIEW_BINDING_UNBOUND,
 	type Session,
 	StateStore,
@@ -165,13 +166,38 @@ import type { CrashReaperInjectedDeps } from "./crash-reaper.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { createDeploymentsRouter } from "./deployments-route.js";
+import { loadDetectionGraceByProject } from "./detection-config-source.js";
+import {
+	buildCaseCEscalationInput,
+	buildGapEscalationInput,
+	CASE_C_ESCALATION_KIND,
+	fallbackCaseCFingerprint,
+	GAP_ESCALATION_KINDS,
+} from "./detection-detector-wiring.js";
+import {
+	type DetectionEscalationInput,
+	type EscalationOwner,
+	formatEscalationLeadNote,
+	notifyLeadFirst,
+} from "./detection-escalation.js";
+import {
+	createFleetSink,
+	createFounderPager,
+	createSessionTargetResolver,
+} from "./detection-escalation-sinks.js";
 import {
 	createSuspicionRegistry,
 	defaultGapThresholds,
+	evaluatedGapConditions,
 	evaluateGapSuspicion,
 	openGapReader,
 	type SuspicionRecord,
 } from "./detection-gap-scan.js";
+import {
+	notifyUnlessClearing,
+	resolveClearedGapEpisodes,
+	runDetectionReconcileTick,
+} from "./detection-reconcile-tick.js";
 import {
 	buildPaneTail,
 	deliverSuspiciousReport,
@@ -4583,6 +4609,76 @@ export async function startBridge(
 	// behavior byte-for-byte. Accepted a/b verdicts suppress the report with a
 	// durable session_events audit; c_stuck/suspicious/null still deliver
 	// (never silent). Judge runs codex (subscription — zero Claude quota).
+	// FLY-1048 PR-C (C4): the unified-flow notify leg — every detection source
+	// (gap records / focused-frame case-c / judge-confirmed c / FN4) funnels
+	// through here. CLEARING targets are muted (C5), and notifyLeadFirst dedups
+	// once-per-episode on the durable detection_escalations row. Env-gated at
+	// the CALL SITES (live flip; unset = observe-only, byte-compat).
+	const detectionEscalationEnabled = (): boolean =>
+		process.env.FLYWHEEL_DETECTION_ESCALATION === "1";
+	const resolveDetectionOwner = (
+		input: DetectionEscalationInput,
+	): EscalationOwner | null => {
+		const session = store.getSession(input.targetKey);
+		if (!session?.project_name) return null;
+		const project = projects.find(
+			(p) => p.projectName === session.project_name,
+		);
+		if (!project) return null;
+		for (const lead of project.leads) {
+			try {
+				if (matchesLead(session, lead.agentId, projects)) {
+					return {
+						leadId: lead.agentId,
+						projectName: project.projectName,
+						executionId: session.execution_id,
+						issueId: session.issue_id,
+					};
+				}
+			} catch {
+				/* try the next lead */
+			}
+		}
+		return null;
+	};
+	const notifyDetectionEpisode = (
+		input: DetectionEscalationInput,
+	): Promise<void> =>
+		notifyUnlessClearing(
+			{
+				store,
+				notify: async (guarded) => {
+					await notifyLeadFirst(
+						{
+							store,
+							runtimeRegistry: registry,
+							resolveOwner: resolveDetectionOwner,
+							// Quiet issue-thread leg with the A5 pre-call guard (Codex
+							// design R1 #3): no bound thread → skip this leg silently,
+							// never call the poster with an unbound thread. The
+							// guardrail lead_event leg is the reliable channel.
+							emitThreadNote: async (r, owner) => {
+								const poster = suspiciousThreadPoster.current;
+								if (!poster) return;
+								const lead = projects
+									.find((pr) => pr.projectName === owner.projectName)
+									?.leads.find((l) => l.agentId === owner.leadId);
+								const threadId = resolveChatThreadId(
+									store,
+									r.issueId,
+									lead?.chatChannel,
+								);
+								if (!threadId) return;
+								await poster(threadId, formatEscalationLeadNote(r));
+							},
+						},
+						guarded,
+					);
+				},
+			},
+			input,
+		);
+
 	const watchdogJudge = createWatchdogJudge({
 		repoRoot: projects[0]?.projectRoot ?? process.cwd(),
 	});
@@ -4641,6 +4737,41 @@ export async function startBridge(
 						},
 						source: "watchdog-judge",
 					});
+					// FLY-1048 PR-C (C4): a judge-confirmed case-c enters the UNIFIED
+					// escalation flow (Lead-first + ~30min founder page). Runner targets
+					// only — lead-keyed targets have no session/issue to escalate into
+					// (the A5 delivery below still reaches the owner Lead either way).
+					// Keyed by the OLD detector's live episode fingerprint when it is
+					// tracking this target, so the C4a mutual exclusion matches; an
+					// already-escalated old episode owns the flow and is not double-fed.
+					if (detectionEscalationEnabled() && r.targetKind === "runner") {
+						const oldEpisode = stuckDetectorHolder.current?.episodeFor(
+							r.targetKey,
+						);
+						const session = store.getSession(r.targetKey);
+						if (session && !oldEpisode?.escalated) {
+							void notifyDetectionEpisode(
+								buildCaseCEscalationInput(
+									session,
+									oldEpisode?.fingerprint ?? r.episodeFingerprint,
+									{
+										// Codex code R1 #7: the unified reason travels to the
+										// (founder-visible) issue thread — free-text rationale is
+										// derived from RAW pane frames and may quote them. Closed
+										// enum only; the rationale stays on the Lead-face A5
+										// delivery + the durable judge audit event.
+										reason: `LLM judge 确认 case-c(attribution=${verdict.attribution})`,
+										firstDetectedAtMs:
+											oldEpisode?.firstStagnantAt ?? Date.now(),
+									},
+								),
+							).catch((err) =>
+								console.warn(
+									`[detection-escalation] judge-confirmed notify failed: ${(err as Error).message}`,
+								),
+							);
+						}
+					}
 				},
 				mechanicalParkEvidence: (r) => {
 					// Lead targets have no park semantics; runner targets: awaiting
@@ -4765,6 +4896,38 @@ export async function startBridge(
 				});
 				return;
 			}
+			// FLY-1048 PR-C (C4): a mechanical c_candidate enters the unified flow
+			// when the escalation env is ON (unset = observe-only log, PR-A
+			// behavior). Keyed by the OLD detector's live episode fingerprint when
+			// available (A7's onFrame feeds it the SAME frame just before this
+			// verdict) so the C4a mutual exclusion matches; if the old flow
+			// already escalated this episode it owns the notification.
+			if (v.verdict === "c_candidate" && detectionEscalationEnabled()) {
+				const oldEpisode = stuckDetectorHolder.current?.episodeFor(
+					v.target.targetKey,
+				);
+				const session = store.getSession(v.target.targetKey);
+				if (session && !oldEpisode?.escalated) {
+					const reason = v.deltas.repeatedErrorSig
+						? `多帧观察窗确认 case-c:同一错误签名(${v.deltas.repeatedErrorSig.kind})跨帧重现`
+						: "多帧观察窗确认 case-c:pane 静默且无 token 流";
+					void notifyDetectionEpisode(
+						buildCaseCEscalationInput(
+							session,
+							oldEpisode?.fingerprint ??
+								fallbackCaseCFingerprint(v.deltas, v.latestFrame),
+							{
+								reason,
+								firstDetectedAtMs: oldEpisode?.firstStagnantAt ?? Date.now(),
+							},
+						),
+					).catch((err) =>
+						console.warn(
+							`[detection-escalation] case-c notify failed: ${(err as Error).message}`,
+						),
+					);
+				}
+			}
 			console.log(
 				`[focused-frames] ${v.target.targetKey.slice(0, 8)} verdict=${v.verdict} (span=${Math.round(v.deltas.spanMs / 1000)}s)`,
 			);
@@ -4795,6 +4958,12 @@ export async function startBridge(
 			list.push(s);
 			byProject.set(s.project_name, list);
 		}
+		// Codex R4 #1/#2 (supersedes the R3 project-level set): the keys whose
+		// judgement COMPLETELY ran this sweep — the only keys whose absence from
+		// activeConditionKeys is durable "condition cleared" evidence. Skipped
+		// projects, degraded signals, and non-active keep-alive sessions
+		// contribute nothing here, so their episodes are conservatively held.
+		const evaluatedConditionKeys = new Set<string>();
 		for (const [projectName, projectSessions] of byProject) {
 			const reader = openGapReader(defaultGetCommDbPath(projectName));
 			// Fail-closed: unreadable/missing comm.db → skip this project's
@@ -4822,20 +4991,24 @@ export async function startBridge(
 						: rawActivity
 							? parseSqliteUtcMs(rawActivity)
 							: null;
-					records.push(
-						...evaluateGapSuspicion({
-							session: {
-								executionId: session.execution_id,
-								projectName,
-								status: session.status,
-								lastActivityAtMs,
-							},
-							comm,
-							founderNotified,
-							nowMs,
-							thresholds,
-						}),
-					);
+					const gapInput = {
+						session: {
+							executionId: session.execution_id,
+							projectName,
+							status: session.status,
+							lastActivityAtMs,
+						},
+						comm,
+						founderNotified,
+						nowMs,
+						thresholds,
+					};
+					records.push(...evaluateGapSuspicion(gapInput));
+					for (const kind of evaluatedGapConditions(gapInput)) {
+						evaluatedConditionKeys.add(
+							`${GAP_ESCALATION_KINDS[kind]}|${session.execution_id}`,
+						);
+					}
 				}
 			} finally {
 				reader.close();
@@ -4849,6 +5022,47 @@ export async function startBridge(
 					.join(", ")}`,
 			);
 		}
+		// FLY-1048 PR-C (C4): the gap notify leg — 漏①/漏②/consumed-ack enter the
+		// unified flow when the escalation env is ON (unset = observe-only, the
+		// PR-A contract). The registry preserves firstSeenMs while a condition
+		// persists, so the derived episode fingerprint is stable and
+		// notifyLeadFirst dedups to once per episode.
+		if (detectionEscalationEnabled()) {
+			const activeConditionKeys = new Set<string>();
+			for (const record of gapSuspicionRegistry.snapshot()) {
+				if (record.kind !== "pane_progress_suspect") {
+					activeConditionKeys.add(
+						`${GAP_ESCALATION_KINDS[record.kind]}|${record.targetKey}`,
+					);
+				}
+				const session = store.getSession(record.targetKey);
+				if (!session) continue;
+				const input = buildGapEscalationInput(record, session);
+				if (!input) continue; // pane_progress_suspect only feeds A7
+				try {
+					await notifyDetectionEpisode(input);
+				} catch (err) {
+					console.warn(
+						`[detection-escalation] gap notify failed for ${record.kind}:${record.targetKey.slice(0, 8)}: ${(err as Error).message}`,
+					);
+				}
+			}
+			// A gap condition ABSENT from this sweep has provably cleared — close
+			// its episode so the ~30min grace can never page the founder about an
+			// already-resolved matter (and a genuine recurrence can revive).
+			try {
+				resolveClearedGapEpisodes(
+					{ store },
+					activeConditionKeys,
+					evaluatedConditionKeys,
+					nowMs,
+				);
+			} catch (err) {
+				console.warn(
+					`[detection-escalation] gap clear pass failed: ${(err as Error).message}`,
+				);
+			}
+		}
 		// FLY-1048 (A7): focused frames for the progress suspects surfaced above.
 		await focusedFrames.tick(
 			gapSuspicionRegistry
@@ -4856,6 +5070,136 @@ export async function startBridge(
 				.filter((r) => r.kind === "pane_progress_suspect")
 				.map((r) => ({ targetKey: r.targetKey, projectName: r.projectName })),
 		);
+	};
+
+	// FLY-1048 (PR-C, C3-w): unified detection-escalation reconcile — the
+	// ~30min Lead-grace sweep + fleet guard (PRD §4.3). Env checked INSIDE the
+	// tick so a live FLYWHEEL_DETECTION_ESCALATION flip applies without a
+	// restart; unset = the tick returns immediately (byte-compat). All timing
+	// and dedup state lives in the durable detection_escalations rows, so a
+	// missed tick can only delay an escalation, never reset it.
+	//
+	// Done/gone outcomes for the recovery auto-RESOLVE. approved_to_ship is
+	// excluded (the Runner is still alive to ship) and awaiting_review is
+	// deliberately NOT terminal — a parked runner still needs its pane, so
+	// M1-style episodes on it stay live.
+	const detectionTerminalStatuses = new Set<string>(
+		OUTCOME_STATUSES.filter((s) => s !== "approved_to_ship"),
+	);
+	const detectionGraceByProject = await loadDetectionGraceByProject(projects);
+	const detectionPageFounder = createFounderPager({
+		store,
+		resolveTarget: createSessionTargetResolver({ store, projects }),
+		discordOwnerUserId: config.discordOwnerUserId,
+		discordBotToken: config.discordBotToken,
+		// NEVER silent (plan C3): an unaddressable/undeliverable founder page
+		// rides the FLY-915 ticket lane. The per-episode deterministic eventId
+		// claims-dedups across reconcile retries (no per-tick ticket spam); the
+		// row itself stays LEAD_NOTIFIED so the page keeps retrying.
+		onUndeliverable: async (row, reason) => {
+			const sink = leadPendingAlertHolder.current;
+			if (!sink) return;
+			const session = store.getSession(row.target_key);
+			await sink.alert({
+				leadId: row.owner_lead_id ?? "unassigned",
+				projectName: session?.project_name ?? "unknown",
+				eventId: `detection-page-undeliverable:${row.target_key}:${row.kind}:${row.episode_fingerprint}`,
+				eventType: "detection_page_undeliverable",
+				title: "Detection founder-page undeliverable",
+				body:
+					`无法把 detection 升级页投递进 issue thread(kind=${row.kind}, ` +
+					`target=${row.target_key}, reason=${reason})。行保持 LEAD_NOTIFIED,` +
+					`reconcile 会继续重试;请排查 thread 绑定 / bot token / 路由。`,
+				severity: "warning",
+			});
+		},
+	});
+	const detectionFleetSink = createFleetSink({
+		// Codex code R1 #3: issue_id is a Linear UUID — the project must come
+		// from the target's session row or the aggregate routes to unknown-lead.
+		resolveProject: (row) =>
+			store.getSession(row.target_key)?.project_name ?? null,
+		alertSink: {
+			// Throwing (not swallowing) keeps the C3 contract: an unsurfaced
+			// fleet aggregate leaves every row LEAD_NOTIFIED for the next pass.
+			// `skipped: "duplicate"` counts as SUCCESS — the claims table says the
+			// aggregate already surfaced, and treating it as failure would hold
+			// the group LEAD_NOTIFIED forever.
+			alert: async (p) => {
+				const sink = leadPendingAlertHolder.current;
+				if (!sink) throw new Error("alert sink not wired yet (holder empty)");
+				const result = await sink.alert(p);
+				if (result.skipped && result.skipped !== "duplicate") {
+					throw new Error(`fleet aggregate skipped: ${result.skipped}`);
+				}
+				if (result.deadLettered) {
+					throw new Error("fleet aggregate dead-lettered");
+				}
+				return result;
+			},
+		},
+	});
+	const detectionReconcileTick = async (): Promise<void> => {
+		if (process.env.FLYWHEEL_DETECTION_ESCALATION !== "1") return;
+		const graceEnv = Number.parseInt(
+			process.env.FLYWHEEL_DETECTION_LEAD_GRACE_MS ?? "",
+			10,
+		);
+		const thresholdEnv = Number.parseInt(
+			process.env.FLYWHEEL_DETECTION_FLEET_THRESHOLD ?? "",
+			10,
+		);
+		const clearingTtlEnv = Number.parseInt(
+			process.env.FLYWHEEL_CLEARING_TTL_MS ?? "",
+			10,
+		);
+		// One assembled pass (detection-reconcile-tick.ts, C4+C5): clearing-TTL
+		// rebound → recovery auto-RESOLVE → FN4 fire+clear → the ~30min grace
+		// escalation (founder page / fleet lane).
+		await runDetectionReconcileTick({
+			store,
+			pageFounder: detectionPageFounder,
+			fleetSink: detectionFleetSink,
+			notify: notifyDetectionEpisode,
+			recoveryProbe: (targetKey) => {
+				const session = store.getSession(targetKey);
+				if (!session) return null; // lead-keyed / unknown — never auto-resolve
+				const rawActivity = session.last_activity_at;
+				const parsed = rawActivity ? Date.parse(rawActivity) : NaN;
+				return {
+					terminal: detectionTerminalStatuses.has(session.status),
+					lastActivityAtMs: Number.isFinite(parsed)
+						? parsed
+						: rawActivity
+							? parseSqliteUtcMs(rawActivity)
+							: null,
+				};
+			},
+			// Progress refutes "stuck" only — an unanswered ask / unconsumed
+			// delivery / unreported park stays live on a working runner (漏②'s
+			// typical shape). Terminal still resolves every kind.
+			progressResolvableKinds: new Set([CASE_C_ESCALATION_KIND]),
+			graceMs: Number.isFinite(graceEnv) && graceEnv > 0 ? graceEnv : undefined,
+			// Per-project override (detection.lead_grace_ms in the project's
+			// CANONICAL .flywheel/config.yaml — loaded once at boot).
+			graceMsFor: (row) => {
+				const session = store.getSession(row.target_key);
+				return session
+					? detectionGraceByProject.get(session.project_name)
+					: undefined;
+			},
+			fleetThreshold:
+				Number.isFinite(thresholdEnv) && thresholdEnv > 0
+					? thresholdEnv
+					: undefined,
+			clearingTtlMs:
+				Number.isFinite(clearingTtlEnv) && clearingTtlEnv > 0
+					? clearingTtlEnv
+					: undefined,
+			// FN4 undelivered-age rides the same knob family as consumed-ack
+			// (FLYWHEEL_GAP_UNCONSUMED_MS, default 30min) — one semantic, one knob.
+			fn4OverdueMs: defaultGapThresholds(process.env).unconsumedMs,
+		});
 	};
 
 	const gatePoller = new GatePoller({
@@ -4871,6 +5215,16 @@ export async function startBridge(
 				10,
 			);
 			return Number.isFinite(n) && n > 0 ? n : undefined; // default 100
+		})(),
+		// FLY-1048 (PR-C): detection-escalation reconcile piggyback (zero new
+		// timer; env-gated inside the tick — unset flag = complete no-op).
+		onDetectionReconcileTick: detectionReconcileTick,
+		detectionReconcileEveryNTicks: (() => {
+			const n = Number.parseInt(
+				process.env.FLYWHEEL_DETECTION_RECONCILE_EVERY_N_TICKS ?? "",
+				10,
+			);
+			return Number.isFinite(n) && n >= 0 ? n : undefined; // default 20
 		})(),
 		// FLY-945 Fix D: run the sweeper on the patrol cadence (zero new timer).
 		externalMergeReconcile: () => externalMergeReconciler.pass(),

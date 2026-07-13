@@ -24,6 +24,7 @@ import type {
 } from "flywheel-agent-team-transport";
 import { MailboxTransport } from "../mailbox/MailboxTransport.js";
 import {
+	formatDetectionEscalation,
 	formatDetectionSuspicious,
 	formatDurationMs,
 	formatGateQuestion,
@@ -299,6 +300,12 @@ export class MailboxLeadRuntime implements LeadRuntime {
 		// (parity with CommDBLeadRuntime by construction).
 		if (e.event_type === "detection_suspicious") {
 			return formatDetectionSuspicious(env);
+		}
+
+		// FLY-1048 (C2): detection_escalation — Lead-first leg of the unified
+		// escalation flow. Shared renderer (parity by construction).
+		if (e.event_type === "detection_escalation") {
+			return formatDetectionEscalation(env);
 		}
 
 		const roleLabel =

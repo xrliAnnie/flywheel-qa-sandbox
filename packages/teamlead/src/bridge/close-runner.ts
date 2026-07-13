@@ -249,6 +249,10 @@ export async function closeRunner(
 		return { closed: false, error: err };
 	}
 
+	// FLY-1048 PR-C (C5): detection episodes flip to CLEARING only on the two
+	// SUCCESS paths below (already-gone / killed) — a refused close or a failed
+	// tmux kill leaves a possibly-still-alive runner, and muting its detection
+	// for the clearing TTL would blind the very watchdog this flow exists for.
 	const target = getTmuxTargetFromCommDb(opts.executionId, opts.projectName);
 
 	if (!target) {
@@ -271,6 +275,10 @@ export async function closeRunner(
 				forcedPreserved: forceClose || undefined,
 			},
 		});
+		// FLY-1048 PR-C (C5): the runner is entering cleanup — mute its detection
+		// episodes (CLEARING) so half-torn-down state cannot spam the Lead. Only
+		// on success paths; best-effort (a marking failure must not block close).
+		markDetectionClearingSafe(store, opts.executionId);
 		// FLY-369: runner is closed (already gone) → central close→archive
 		// cascade. Guarded inside to done-cleanup (completed) + no other active
 		// runner. Runs only on this success path (Codex code review R6 #1).
@@ -362,6 +370,12 @@ export async function closeRunner(
 		},
 	});
 
+	// FLY-1048 PR-C (C5): same CLEARING mark on the killed success path — a
+	// failed kill leaves the (possibly still alive) runner's episodes armed.
+	if (res.killed) {
+		markDetectionClearingSafe(store, opts.executionId);
+	}
+
 	// FLY-369: central close→archive cascade — ONLY when the close actually
 	// succeeded (Codex code review R6 #1: a kill failure must NOT archive). The
 	// cascade is itself guarded to done-cleanup (completed) + no other active
@@ -378,4 +392,30 @@ export async function closeRunner(
 	}
 
 	return { closed: res.killed, error: res.error };
+}
+
+/**
+ * FLY-1048 PR-C (C5): best-effort CLEARING mark for every active detection
+ * episode of a runner entering cleanup. Never throws — muting detection is
+ * strictly subordinate to the close itself.
+ */
+function markDetectionClearingSafe(
+	store: StateStore,
+	executionId: string,
+): void {
+	try {
+		const n = store.markDetectionEscalationsClearingForTarget(
+			executionId,
+			Date.now(),
+		);
+		if (n > 0) {
+			console.log(
+				`[close-runner] ${executionId}: ${n} detection episode(s) marked CLEARING`,
+			);
+		}
+	} catch (err) {
+		console.warn(
+			`[close-runner] detection CLEARING mark failed for ${executionId}: ${(err as Error).message}`,
+		);
+	}
 }

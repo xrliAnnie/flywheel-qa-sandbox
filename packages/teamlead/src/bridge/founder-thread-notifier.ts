@@ -271,8 +271,15 @@ async function postFounderThreadCore(
 				},
 				// FLY-162: explicitly allow ONLY the founder user mention; block
 				// @everyone/@here/role (ChatThreadCreator default blocks all mentions).
+				// FLY-1189: allowed_mentions is only a FILTER — the ping fires only if
+				// the body actually contains <@id>. The detection-escalation leg passes
+				// ownerUserId but omits the mention, so the founder never got pinged.
+				// Prepend it idempotently; callers already carrying <@id> are unchanged.
 				body: JSON.stringify({
-					content: body,
+					content:
+						ownerUserId && !body.includes(`<@${ownerUserId}>`)
+							? `<@${ownerUserId}> ${body}`
+							: body,
 					allowed_mentions: ownerUserId
 						? { users: [ownerUserId] }
 						: { parse: [] as string[] },

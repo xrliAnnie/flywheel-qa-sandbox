@@ -15,6 +15,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	createSuspicionRegistry,
+	evaluatedGapConditions,
 	evaluateGapSuspicion,
 	type GapCommEvidence,
 	type GapScanInput,
@@ -48,7 +49,9 @@ function baseInput(over: {
 			pendingBlockingGateCount: 0,
 			outbound: { readable: true, latestAgeMs: 60_000 },
 			oldestUnansweredAskAgeMs: null,
+			askSignalReadable: true,
 			oldestUnconsumedDeliveryAgeMs: null,
+			unconsumedSignalReadable: true,
 			...over.comm,
 		},
 		founderNotified:
@@ -357,5 +360,150 @@ describe("openGapReader — readonly tri-state degradation", () => {
 
 	it("missing db file → openGapReader returns null (project skipped fail-closed)", () => {
 		expect(openGapReader(join(dir, "nope", "comm.db"))).toBeNull();
+	});
+});
+
+/**
+ * Codex PR-C R4 finding 1 (HIGH): absence of a suspicion record is durable
+ * "condition cleared" evidence ONLY when the kind's judgement actually ran
+ * with every required signal readable. A degraded signal (missing schema,
+ * unreadable founder evidence) suppresses the record WITHOUT proving the
+ * condition cleared — such kinds must not appear in the evaluated set.
+ */
+describe("evaluatedGapConditions (Codex R4 #1 — signal-level observability)", () => {
+	it("all signals readable → all three escalation kinds evaluated", () => {
+		const set = evaluatedGapConditions(baseInput({}));
+		expect(set.has("gap1_parked_unreported")).toBe(true);
+		expect(set.has("gap2_ask_unanswered")).toBe(true);
+		expect(set.has("delivery_unconsumed")).toBe(true);
+	});
+
+	it("ask signal unreadable → gap2 NOT evaluated (others unaffected)", () => {
+		const set = evaluatedGapConditions(
+			baseInput({ comm: { askSignalReadable: false } }),
+		);
+		expect(set.has("gap2_ask_unanswered")).toBe(false);
+		expect(set.has("delivery_unconsumed")).toBe(true);
+	});
+
+	it("unconsumed signal unreadable → delivery_unconsumed NOT evaluated", () => {
+		const set = evaluatedGapConditions(
+			baseInput({ comm: { unconsumedSignalReadable: false } }),
+		);
+		expect(set.has("delivery_unconsumed")).toBe(false);
+		expect(set.has("gap2_ask_unanswered")).toBe(true);
+	});
+
+	it("founder evidence unreadable (null) → gap1 NOT evaluated", () => {
+		const set = evaluatedGapConditions(baseInput({ founderNotified: null }));
+		expect(set.has("gap1_parked_unreported")).toBe(false);
+	});
+
+	it("pending-question count unreadable → gap1 NOT evaluated", () => {
+		const set = evaluatedGapConditions(
+			baseInput({ comm: { pendingQuestionCount: null } }),
+		);
+		expect(set.has("gap1_parked_unreported")).toBe(false);
+	});
+
+	it("outbound unreadable → gap1 NOT evaluated", () => {
+		const set = evaluatedGapConditions(
+			baseInput({ comm: { outbound: { readable: false } } }),
+		);
+		expect(set.has("gap1_parked_unreported")).toBe(false);
+	});
+
+	it("declaredParked unreadable on a NON-awaiting session → gap1 NOT evaluated (parkedish itself unknowable)", () => {
+		const set = evaluatedGapConditions(
+			baseInput({ comm: { declaredParked: null } }),
+		);
+		expect(set.has("gap1_parked_unreported")).toBe(false);
+	});
+
+	it("declaredParked unreadable but status IS awaiting_review → gap1 still evaluated (parkedish provable from status)", () => {
+		const set = evaluatedGapConditions(
+			baseInput({
+				session: { status: "awaiting_review" },
+				comm: { declaredParked: null },
+			}),
+		);
+		expect(set.has("gap1_parked_unreported")).toBe(true);
+	});
+});
+
+/**
+ * Codex PR-C R5 finding 1 (HIGH): a successful SQL query is NOT a completed
+ * judgement when its selected timestamp cannot be parsed — collapsing that
+ * case into the "no matching row" shape (readable:true, age null) lets a
+ * PERSISTENT overdue ask/delivery be absence-cleared. Unparsable non-null
+ * timestamps must mark the signal unreadable.
+ */
+describe("openGapReader — unparsable non-null timestamps are UNREADABLE (Codex R5 #1)", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "fly1048-gap-r5-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	const SCHEMA = `
+		CREATE TABLE messages (
+			id TEXT PRIMARY KEY, from_agent TEXT NOT NULL, to_agent TEXT NOT NULL,
+			type TEXT NOT NULL, content TEXT NOT NULL, parent_id TEXT,
+			read_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			expires_at DATETIME NOT NULL DEFAULT (datetime('now', '+72 hours')),
+			checkpoint TEXT, delivered_at DATETIME, content_ref TEXT, content_type TEXT
+		);
+		CREATE TABLE runner_declared_states (
+			execution_id TEXT PRIMARY KEY, kind TEXT NOT NULL, reason TEXT,
+			created_at INTEGER NOT NULL, expires_at INTEGER, updated_at INTEGER NOT NULL
+		);
+	`;
+
+	it("a garbage created_at on the oldest unanswered ask → askSignalReadable false", () => {
+		const path = join(dir, "comm.db");
+		const db = new Database(path);
+		db.exec(SCHEMA);
+		db.prepare(
+			`INSERT INTO messages (id, from_agent, to_agent, type, content, created_at, expires_at)
+			 VALUES ('q1','exec-1','eng-lead','question','need input', 'not-a-timestamp', datetime('now','+72 hours'))`,
+		).run();
+		db.close();
+		const reader = openGapReader(path);
+		const ev = reader!.evidenceFor("exec-1", "eng-lead", Date.now());
+		reader!.close();
+		expect(ev.askSignalReadable).toBe(false);
+		expect(ev.oldestUnansweredAskAgeMs).toBeNull();
+	});
+
+	it("a garbage delivered_at on the oldest unconsumed delivery → unconsumedSignalReadable false", () => {
+		const path = join(dir, "comm.db");
+		const db = new Database(path);
+		db.exec(SCHEMA);
+		db.prepare(
+			`INSERT INTO messages (id, from_agent, to_agent, type, content, created_at, expires_at, delivered_at)
+			 VALUES ('i1','bridge','exec-1','instruction','do x', datetime('now','-35 minutes'), datetime('now','+72 hours'), 'garbage')`,
+		).run();
+		db.close();
+		const reader = openGapReader(path);
+		const ev = reader!.evidenceFor("exec-1", "eng-lead", Date.now());
+		reader!.close();
+		expect(ev.unconsumedSignalReadable).toBe(false);
+	});
+
+	it("a garbage latest outbound timestamp → outbound unreadable (gap1 judgement cannot run)", () => {
+		const path = join(dir, "comm.db");
+		const db = new Database(path);
+		db.exec(SCHEMA);
+		db.prepare(
+			`INSERT INTO messages (id, from_agent, to_agent, type, content, created_at, expires_at)
+			 VALUES ('m1','exec-1','eng-lead','response','ok', 'broken-ts', datetime('now','+72 hours'))`,
+		).run();
+		db.close();
+		const reader = openGapReader(path);
+		const ev = reader!.evidenceFor("exec-1", "eng-lead", Date.now());
+		reader!.close();
+		expect(ev.outbound.readable).toBe(false);
 	});
 });

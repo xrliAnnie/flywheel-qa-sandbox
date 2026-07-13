@@ -1033,6 +1033,26 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "detection_escalation",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DETECTION_ESCALATION",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"统一升级通知流:Lead-first → ~30min grace → founder page / fleet 聚合(FLY-1048 PR-C)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"detectionReconcileTick",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "auto_repair",
 		category: "feature",
 		source: "env",

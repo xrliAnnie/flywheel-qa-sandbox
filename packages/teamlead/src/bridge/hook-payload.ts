@@ -92,6 +92,16 @@ export interface HookPayload {
 	 * quote prefix (echo immunity) and it must NEVER reach the founder. */
 	suspicious_pane_tail?: string;
 
+	// FLY-1048 (C2): detection_escalation fields — the Lead-first leg of the
+	// unified escalation flow (PRD §4.3/§4.5). One-sentence natural language;
+	// raw pane text never travels this event type.
+	/** Detection kind (e.g. detection_stuck_confirmed / delivery_unconsumed). */
+	escalation_kind?: string;
+	/** Kind-specific one-sentence summary (no pane content). */
+	escalation_reason?: string;
+	/** Truthful next step for the Lead (formatParkAlert wording family). */
+	escalation_next_step?: string;
+
 	// GEO-151: ProofShot artifact delivery fields. Only populated when
 	// `event_type === "artifact_delivery"`. HookPayload remains a single
 	// interface (not a discriminated union) — event_type is the discriminator
@@ -338,6 +348,35 @@ export function formatGateQuestion(env: StuckEscalationEnvelopeLike): string {
  *  - The pane tail arrives ▏-quoted and MUST stay quoted (echo immunity) —
  *    the Lead is told to never repost the quoted lines (founder privacy).
  */
+/**
+ * FLY-1048 (C2): the Lead-first escalation notice the owner Lead reads.
+ * SHARED between MailboxLeadRuntime and CommDBLeadRuntime (parity-by-
+ * construction, FLY-195/FLY-208 lesson) — the generic formatter would drop
+ * escalation_kind / escalation_reason / escalation_next_step entirely.
+ *
+ * Contract: natural language (PRD §4.2 — no fixed card), names the ~30min
+ * grace so the Lead knows the founder gets paged if they do not act, and
+ * never carries pane content (the A5 suspicious leg owns quoted tails).
+ */
+export function formatDetectionEscalation(
+	env: StuckEscalationEnvelopeLike,
+): string {
+	const e = env.event;
+	const label = e.issue_identifier ?? e.issue_id ?? "—";
+	return [
+		`[Event #${env.seq}] detection_escalation`,
+		`Issue: ${label} | Target: ${e.detection_target_key ?? "—"} | Project: ${e.project_name ?? "—"}`,
+		`[ESCALATION] Watchdog detected: ${e.escalation_kind ?? "?"} — you are the first responder (PRD §4.5):`,
+		"---",
+		e.escalation_reason ?? "(no reason captured)",
+		"---",
+		`Next step: ${e.escalation_next_step ?? "排查该 target 的真实状态(第一响应人)"}`,
+		"If unresolved for ~30min the founder is paged automatically — act or hand off, never leave it silent.",
+		`Fingerprint: ${e.episode_fingerprint ?? "—"}`,
+		`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`,
+	].join("\n");
+}
+
 export function formatDetectionSuspicious(
 	env: StuckEscalationEnvelopeLike,
 ): string {

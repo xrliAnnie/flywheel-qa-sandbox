@@ -423,6 +423,43 @@ export interface StuckDispositionRow {
 	created_at: string;
 }
 
+/**
+ * FLY-1048 PR-C (C1): unified detection-escalation episode statuses.
+ * NEW → LEAD_NOTIFIED → (ACKED | ESCALATED) → RESOLVED, with CLEARING as a
+ * mute-while-cleanup state that TTL-rebounds to NEW (C5).
+ */
+export const DETECTION_ESCALATION_STATUSES = [
+	"NEW",
+	"LEAD_NOTIFIED",
+	"ACKED",
+	"RESOLVED",
+	"ESCALATED",
+	"CLEARING",
+] as const;
+export type DetectionEscalationStatus =
+	(typeof DETECTION_ESCALATION_STATUSES)[number];
+
+export interface DetectionEscalationRow {
+	target_key: string;
+	kind: string;
+	episode_fingerprint: string;
+	issue_id: string | null;
+	owner_lead_id: string | null;
+	first_detected_at_ms: number;
+	lead_notified_at_ms: number | null;
+	lead_ack_at_ms: number | null;
+	founder_paged_at_ms: number | null;
+	/** Epoch ms when the episode entered CLEARING; null otherwise (C5 TTL input). */
+	clearing_since_ms: number | null;
+	status: DetectionEscalationStatus;
+	attempts: number;
+	/** How a RESOLVED row got there: 'recovery' (machine-proven clear —
+	 * terminal/progress/evidence-gone) may revive on re-detection; 'lead'
+	 * (a human receipt) follows the legacy identical-content semantics and
+	 * never revives. NULL = pre-migration → treated as 'lead' (conservative). */
+	resolved_via: "recovery" | "lead" | null;
+}
+
 export interface SessionUpsert {
 	execution_id: string;
 	issue_id: string;
@@ -1826,6 +1863,43 @@ export class StateStore {
 				PRIMARY KEY (thread_id, msg_id)
 			)
 		`);
+
+		// FLY-1048 PR-C (C1): durable episode store for the unified escalation
+		// flow (PRD §3.3b + §4.3). Single authoritative dedup/timing record —
+		// the ~30min Lead-grace timer and the notify/page dedup must survive a
+		// Bridge restart, so no transition lives only in memory. Same episode
+		// key family as stuck_dispositions.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS detection_escalations (
+				target_key TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				episode_fingerprint TEXT NOT NULL,
+				issue_id TEXT,
+				owner_lead_id TEXT,
+				first_detected_at_ms INTEGER NOT NULL,
+				lead_notified_at_ms INTEGER,
+				lead_ack_at_ms INTEGER,
+				founder_paged_at_ms INTEGER,
+				clearing_since_ms INTEGER,
+				status TEXT NOT NULL DEFAULT 'NEW',
+				attempts INTEGER NOT NULL DEFAULT 0,
+				resolved_via TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				PRIMARY KEY (target_key, kind, episode_fingerprint)
+			)
+		`);
+		// FLY-1048 (Codex code R2 #1): idempotent migration for rows created
+		// before resolved_via existed (FLY-267 ADD COLUMN precedent).
+		try {
+			this.db.run(
+				"ALTER TABLE detection_escalations ADD COLUMN resolved_via TEXT",
+			);
+		} catch {
+			/* column already exists */
+		}
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_detection_escalations_status ON detection_escalations(status)",
+		);
 
 		// FLY-25: migration for existing tables missing new columns
 		this.migrateLeadEventsDeliveryColumns();
@@ -6024,6 +6098,443 @@ export class StateStore {
 		if (this.db.getRowsModified() > 0) this.save();
 	}
 
+	// --- FLY-1048 PR-C (C1): detection_escalations durable episode store ---
+
+	private static readonly DETECTION_ESCALATION_COLUMNS =
+		"target_key, kind, episode_fingerprint, issue_id, owner_lead_id, first_detected_at_ms, lead_notified_at_ms, lead_ack_at_ms, founder_paged_at_ms, clearing_since_ms, status, attempts, resolved_via";
+
+	private detectionEscalationFromValues(
+		row: unknown[],
+	): DetectionEscalationRow {
+		return {
+			target_key: row[0] as string,
+			kind: row[1] as string,
+			episode_fingerprint: row[2] as string,
+			issue_id: (row[3] as string | null) ?? null,
+			owner_lead_id: (row[4] as string | null) ?? null,
+			first_detected_at_ms: row[5] as number,
+			lead_notified_at_ms: (row[6] as number | null) ?? null,
+			lead_ack_at_ms: (row[7] as number | null) ?? null,
+			founder_paged_at_ms: (row[8] as number | null) ?? null,
+			clearing_since_ms: (row[9] as number | null) ?? null,
+			status: row[10] as DetectionEscalationStatus,
+			attempts: row[11] as number,
+			resolved_via: ((row[12] as string | null) ?? null) as
+				| "recovery"
+				| "lead"
+				| null,
+		};
+	}
+
+	/** Read one episode row, or undefined. */
+	getDetectionEscalation(
+		targetKey: string,
+		kind: string,
+		episodeFingerprint: string,
+	): DetectionEscalationRow | undefined {
+		const result = this.db.exec(
+			`SELECT ${StateStore.DETECTION_ESCALATION_COLUMNS}
+			 FROM detection_escalations
+			 WHERE target_key = ? AND kind = ? AND episode_fingerprint = ?`,
+			[targetKey, kind, episodeFingerprint],
+		);
+		const row = result[0]?.values[0];
+		return row ? this.detectionEscalationFromValues(row) : undefined;
+	}
+
+	/**
+	 * Insert a NEW episode, or return the existing row untouched — episode
+	 * continuity: re-observing an episode must never reset its detection clock
+	 * or status (the ~30min grace is anchored to the FIRST detection).
+	 */
+	upsertDetectionEscalation(input: {
+		targetKey: string;
+		kind: string;
+		episodeFingerprint: string;
+		issueId?: string | null;
+		ownerLeadId?: string | null;
+		firstDetectedAtMs: number;
+	}): { created: boolean; row: DetectionEscalationRow } {
+		this.db.run(
+			`INSERT OR IGNORE INTO detection_escalations
+			   (target_key, kind, episode_fingerprint, issue_id, owner_lead_id, first_detected_at_ms)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			[
+				input.targetKey,
+				input.kind,
+				input.episodeFingerprint,
+				input.issueId ?? null,
+				input.ownerLeadId ?? null,
+				input.firstDetectedAtMs,
+			],
+		);
+		let created = this.db.getRowsModified() > 0;
+		if (created) this.save();
+		let row = this.getDetectionEscalation(
+			input.targetKey,
+			input.kind,
+			input.episodeFingerprint,
+		);
+		if (!row) {
+			throw new Error(
+				"detection_escalations upsert failed to persist a row (invariant violation)",
+			);
+		}
+		// FLY-1048 PR-C (Codex code R1 #1 + R2 #1): a RESOLVED fingerprint must
+		// not permanently silence a RECURRENCE — but revival needs DURABLE clear
+		// evidence. Only a machine resolution ('recovery': terminal / progress /
+		// evidence-gone) proves the condition cleared between episodes; the
+		// detection-side timestamps are in-process and rebuild on a Bridge
+		// restart, so a Lead-dismissed but UNCHANGED condition must never
+		// re-notify just because the clock reset. Lead receipts follow the
+		// legacy identical-content semantics (the old flow's false_positive
+		// rows behave the same way).
+		if (
+			!created &&
+			row.status === "RESOLVED" &&
+			row.resolved_via === "recovery" &&
+			input.firstDetectedAtMs > (row.lead_ack_at_ms ?? row.first_detected_at_ms)
+		) {
+			this.db.run(
+				`UPDATE detection_escalations
+				 SET status = 'NEW', first_detected_at_ms = ?,
+				     lead_notified_at_ms = NULL, lead_ack_at_ms = NULL,
+				     founder_paged_at_ms = NULL, clearing_since_ms = NULL,
+				     attempts = 0, resolved_via = NULL, owner_lead_id = ?
+				 WHERE target_key = ? AND kind = ? AND episode_fingerprint = ?
+				   AND status = 'RESOLVED'`,
+				[
+					input.firstDetectedAtMs,
+					input.ownerLeadId ?? null,
+					input.targetKey,
+					input.kind,
+					input.episodeFingerprint,
+				],
+			);
+			if (this.db.getRowsModified() > 0) {
+				this.save();
+				created = true; // a genuinely new episode, reusing the row
+				row = this.getDetectionEscalation(
+					input.targetKey,
+					input.kind,
+					input.episodeFingerprint,
+				);
+				if (!row) {
+					throw new Error(
+						"detection_escalations revive failed to persist (invariant violation)",
+					);
+				}
+			}
+		}
+		return { created, row };
+	}
+
+	/**
+	 * Stamp LEAD_NOTIFIED. The FIRST notification timestamp wins on repeats so
+	 * a re-notify can never slide the founder-grace window forward. Only moves
+	 * NEW/LEAD_NOTIFIED rows (never regresses ACKED/terminal states).
+	 */
+	/**
+	 * Codex R5 #2 + R6 #1/#2: the atomic single-notifier APPEND+CLAIM. One
+	 * durability unit — the lead_event insert (idempotent per event id) and
+	 * the NEW→LEAD_NOTIFIED transition share a SINGLE save() commit point, so
+	 * the exported snapshot carries both or neither: a crash can never leave
+	 * a durable event beside a still-NEW row (the R6 restart double-delivery)
+	 * nor a claimed row without its event. Exactly ONE concurrent/retrying
+	 * caller wins the claim (status='NEW' predicate); losers get
+	 * claimed:false with the existing seq and must produce no delivery and
+	 * no thread note. The claim also BACKFILLS a null owner_lead_id (R6 #2:
+	 * a no_owner→recovered retry must not strand the fleet aggregate on
+	 * "unassigned") — an existing owner is never overwritten.
+	 */
+	appendAndClaimDetectionEscalation(opts: {
+		leadId: string;
+		eventId: string;
+		eventType: string;
+		payload: string;
+		sessionKey?: string;
+		targetKey: string;
+		kind: string;
+		episodeFingerprint: string;
+		ownerLeadId: string;
+		atMs: number;
+	}): { claimed: boolean; seq: number } {
+		// Codex R7 (R6 #1 for real this time): better-sqlite3 autocommits each
+		// statement, so the pair MUST run inside db.transaction() — commit
+		// both or neither. A throw anywhere inside rolls the append back too:
+		// heartbeat can never see an event whose episode is still NEW.
+		let seq = 0;
+		let claimed = false;
+		this.db.transaction(() => {
+			try {
+				this.db.run(
+					`INSERT INTO lead_events (lead_id, event_id, event_type, payload, session_key)
+					 VALUES (?, ?, ?, ?, ?)`,
+					[
+						opts.leadId,
+						opts.eventId,
+						opts.eventType,
+						opts.payload,
+						opts.sessionKey ?? null,
+					],
+				);
+				const inserted = this.db.exec("SELECT last_insert_rowid()");
+				seq = (inserted[0]?.values[0]?.[0] as number) ?? 0;
+			} catch (err) {
+				// Idempotent per event id: a retry of the SAME occurrence reuses
+				// its row (an in-transaction catch does not roll back).
+				if ((err as Error).message?.includes("UNIQUE")) {
+					const existing = this.db.exec(
+						"SELECT seq FROM lead_events WHERE lead_id = ? AND event_id = ?",
+						[opts.leadId, opts.eventId],
+					);
+					seq = (existing[0]?.values[0]?.[0] as number) ?? 0;
+				} else {
+					throw err;
+				}
+			}
+			this.db.run(
+				`UPDATE detection_escalations
+				 SET status = 'LEAD_NOTIFIED',
+				     lead_notified_at_ms = COALESCE(lead_notified_at_ms, ?),
+				     owner_lead_id = COALESCE(owner_lead_id, ?)
+				 WHERE target_key = ? AND kind = ? AND episode_fingerprint = ?
+				   AND status = 'NEW'`,
+				[
+					opts.atMs,
+					opts.ownerLeadId,
+					opts.targetKey,
+					opts.kind,
+					opts.episodeFingerprint,
+				],
+			);
+			claimed = this.db.getRowsModified() > 0;
+		});
+		this.save();
+		return { claimed, seq };
+	}
+
+	markDetectionEscalationLeadNotified(
+		targetKey: string,
+		kind: string,
+		episodeFingerprint: string,
+		atMs: number,
+	): boolean {
+		this.db.run(
+			`UPDATE detection_escalations
+			 SET status = 'LEAD_NOTIFIED',
+			     lead_notified_at_ms = COALESCE(lead_notified_at_ms, ?)
+			 WHERE target_key = ? AND kind = ? AND episode_fingerprint = ?
+			   AND status IN ('NEW', 'LEAD_NOTIFIED')`,
+			[atMs, targetKey, kind, episodeFingerprint],
+		);
+		const changed = this.db.getRowsModified() > 0;
+		if (changed) this.save();
+		return changed;
+	}
+
+	/**
+	 * Lead disposition: `ack` → ACKED (Lead has it, grace timer disarmed);
+	 * `resolve` / `dismiss` → RESOLVED (terminal). Missing row → false.
+	 */
+	ackDetectionEscalation(
+		targetKey: string,
+		kind: string,
+		episodeFingerprint: string,
+		opts: {
+			atMs: number;
+			disposition: "ack" | "resolve" | "dismiss";
+			/** Resolution provenance (Codex R2 #1): 'recovery' = machine-proven
+			 * clear (may revive on re-detection); default 'lead' = human receipt
+			 * (never revives — legacy identical-content semantics). */
+			via?: "recovery" | "lead";
+		},
+	): boolean {
+		const status = opts.disposition === "ack" ? "ACKED" : "RESOLVED";
+		this.db.run(
+			`UPDATE detection_escalations
+			 SET status = ?, lead_ack_at_ms = COALESCE(lead_ack_at_ms, ?),
+			     resolved_via = CASE WHEN ? = 'RESOLVED' THEN ? ELSE resolved_via END
+			 WHERE target_key = ? AND kind = ? AND episode_fingerprint = ?
+			   AND status != 'RESOLVED'`,
+			[
+				status,
+				opts.atMs,
+				status,
+				opts.via ?? "lead",
+				targetKey,
+				kind,
+				episodeFingerprint,
+			],
+		);
+		const changed = this.db.getRowsModified() > 0;
+		if (changed) this.save();
+		return changed;
+	}
+
+	/**
+	 * Stamp ESCALATED + founder_paged_at_ms. C3 contract: callers invoke this
+	 * ONLY after the founder page is CONFIRMED posted — an unposted page must
+	 * leave the row LEAD_NOTIFIED so the next reconcile retries.
+	 */
+	markDetectionEscalationEscalated(
+		targetKey: string,
+		kind: string,
+		episodeFingerprint: string,
+		atMs: number,
+	): boolean {
+		this.db.run(
+			`UPDATE detection_escalations
+			 SET status = 'ESCALATED',
+			     founder_paged_at_ms = COALESCE(founder_paged_at_ms, ?)
+			 WHERE target_key = ? AND kind = ? AND episode_fingerprint = ?
+			   AND status != 'RESOLVED'`,
+			[atMs, targetKey, kind, episodeFingerprint],
+		);
+		const changed = this.db.getRowsModified() > 0;
+		if (changed) this.save();
+		return changed;
+	}
+
+	/** Enter CLEARING (cleanup in progress → all detection muted for the target's episode). */
+	markDetectionEscalationClearing(
+		targetKey: string,
+		kind: string,
+		episodeFingerprint: string,
+		atMs: number,
+	): boolean {
+		this.db.run(
+			`UPDATE detection_escalations
+			 SET status = 'CLEARING', clearing_since_ms = ?
+			 WHERE target_key = ? AND kind = ? AND episode_fingerprint = ?
+			   AND status != 'RESOLVED'`,
+			[atMs, targetKey, kind, episodeFingerprint],
+		);
+		const changed = this.db.getRowsModified() > 0;
+		if (changed) this.save();
+		return changed;
+	}
+
+	/**
+	 * CLEARING TTL rebound (C5): a cleanup that never finished must not mute
+	 * the episode forever — revert to NEW so it can re-report. Only applies to
+	 * CLEARING rows.
+	 */
+	revertDetectionEscalationClearingToNew(
+		targetKey: string,
+		kind: string,
+		episodeFingerprint: string,
+	): boolean {
+		this.db.run(
+			`UPDATE detection_escalations
+			 SET status = 'NEW', clearing_since_ms = NULL
+			 WHERE target_key = ? AND kind = ? AND episode_fingerprint = ?
+			   AND status = 'CLEARING'`,
+			[targetKey, kind, episodeFingerprint],
+		);
+		const changed = this.db.getRowsModified() > 0;
+		if (changed) this.save();
+		return changed;
+	}
+
+	/**
+	 * Every ACTIVE (non-RESOLVED) row — the reconcile/recovery input. ESCALATED
+	 * is included (Codex code R1 #2): the founder was paged but the episode is
+	 * still live, so the recovery pass must keep probing its target (terminal/
+	 * progress closes it out) — "never re-alerts" (C5/FLY-970) is enforced by
+	 * the notify path's status!=NEW dedup and the reconcile's LEAD_NOTIFIED
+	 * filter, never by hiding the row.
+	 */
+	getDetectionEscalationsForReconcile(): DetectionEscalationRow[] {
+		const result = this.db.exec(
+			`SELECT ${StateStore.DETECTION_ESCALATION_COLUMNS}
+			 FROM detection_escalations
+			 WHERE status != 'RESOLVED'
+			 ORDER BY first_detected_at_ms ASC`,
+		);
+		const values = result[0]?.values ?? [];
+		return values.map((row) => this.detectionEscalationFromValues(row));
+	}
+
+	/**
+	 * Target recovered (session progressed / went terminal) → close out every
+	 * one of its episodes, ESCALATED included. Returns rows resolved.
+	 */
+	resolveDetectionEscalationsForTarget(targetKey: string): number {
+		this.db.run(
+			`UPDATE detection_escalations
+			 SET status = 'RESOLVED', resolved_via = 'recovery'
+			 WHERE target_key = ? AND status != 'RESOLVED'`,
+			[targetKey],
+		);
+		const n = this.db.getRowsModified();
+		if (n > 0) this.save();
+		return n;
+	}
+
+	/** Active (non-RESOLVED) episodes of one kind first-detected in the window — the C3 fleet-guard input. */
+	countActiveDetectionEscalationsByKind(kind: string, sinceMs: number): number {
+		const result = this.db.exec(
+			`SELECT COUNT(*) FROM detection_escalations
+			 WHERE kind = ? AND status != 'RESOLVED' AND first_detected_at_ms >= ?`,
+			[kind, sinceMs],
+		);
+		return (result[0]?.values[0]?.[0] as number) ?? 0;
+	}
+
+	/**
+	 * C5: the target entered cleanup (close-runner / reap / dismiss-with-
+	 * cleanup) — mute every ACTIVE episode by marking it CLEARING. ESCALATED
+	 * rows are deliberately NOT touched: a CLEARING→TTL→NEW rebound of an
+	 * already-paged episode would re-page the founder (the FLY-970 re-alert
+	 * bug C5 exists to kill). Already-CLEARING rows are not touched either —
+	 * a repeated close attempt must not refresh the TTL clock and push the
+	 * rebound out. Returns rows transitioned.
+	 */
+	markDetectionEscalationsClearingForTarget(
+		targetKey: string,
+		atMs: number,
+	): number {
+		this.db.run(
+			`UPDATE detection_escalations
+			 SET status = 'CLEARING', clearing_since_ms = ?
+			 WHERE target_key = ?
+			   AND status IN ('NEW', 'LEAD_NOTIFIED', 'ACKED')`,
+			[atMs, targetKey],
+		);
+		const n = this.db.getRowsModified();
+		if (n > 0) this.save();
+		return n;
+	}
+
+	/** C5: true while the target has any cleanup-in-progress (CLEARING) row. */
+	hasClearingDetectionEscalationForTarget(targetKey: string): boolean {
+		const result = this.db.exec(
+			`SELECT 1 FROM detection_escalations
+			 WHERE target_key = ? AND status = 'CLEARING' LIMIT 1`,
+			[targetKey],
+		);
+		return (result[0]?.values.length ?? 0) > 0;
+	}
+
+	/**
+	 * C4a: true when the unified flow holds an ACTIVE (non-RESOLVED) episode
+	 * for this (target, fingerprint) under ANY kind — the old stuck flow's
+	 * pre-emit ownership probe.
+	 */
+	hasActiveDetectionEscalationForEpisode(
+		targetKey: string,
+		episodeFingerprint: string,
+	): boolean {
+		const result = this.db.exec(
+			`SELECT 1 FROM detection_escalations
+			 WHERE target_key = ? AND episode_fingerprint = ?
+			   AND status != 'RESOLVED' LIMIT 1`,
+			[targetKey, episodeFingerprint],
+		);
+		return (result[0]?.values.length ?? 0) > 0;
+	}
+
 	// --- FLY-25: Delivery tracking ---
 
 	/** Record a delivery failure: increment attempts, store error. */
@@ -6590,6 +7101,68 @@ export class StateStore {
 		const n = this.db.getRowsModified();
 		if (n > 0) this.save();
 		return n;
+	}
+
+	/**
+	 * FLY-1048 PR-C (C4/FN4): the delivery-failure reconcile input — undelivered
+	 * lead_events whose retry budget is exhausted OR whose age crossed the
+	 * overdue cutoff. Bounded (oldest first) so a huge backlog drains across
+	 * reconcile ticks instead of flooding one pass; the reconcile re-reads
+	 * every tick, so the cap delays detection, never drops it.
+	 */
+	getUndeliveredLeadEventsForReconcile(opts: {
+		maxAttempts: number;
+		/** Absolute epoch-ms cutoff: rows created at or before it are overdue. */
+		overdueCutoffMs: number;
+		/**
+		 * Codex R3 #3: event types excluded BEFORE the LIMIT — the FN4
+		 * detection-family exclusion must not let 100 excluded rows occupy
+		 * every slot and starve later genuine delivery failures forever.
+		 */
+		excludedEventTypes?: readonly string[];
+	}): LeadEventRow[] {
+		const excluded = opts.excludedEventTypes ?? [];
+		const notIn =
+			excluded.length > 0
+				? ` AND event_type NOT IN (${excluded.map(() => "?").join(", ")})`
+				: "";
+		const result = this.db.exec(
+			`SELECT seq, lead_id, event_id, event_type, payload, session_key, delivered_at, created_at, delivery_attempts, last_delivery_error
+			 FROM lead_events
+			 WHERE delivered_at IS NULL
+			   AND (delivery_attempts >= ? OR created_at <= datetime(?, 'unixepoch'))${notIn}
+			 ORDER BY seq ASC
+			 LIMIT 100`,
+			[opts.maxAttempts, Math.floor(opts.overdueCutoffMs / 1000), ...excluded],
+		);
+		if (result.length === 0) return [];
+		return result[0]!.values.map((row) => ({
+			seq: row[0] as number,
+			lead_id: row[1] as string,
+			event_id: row[2] as string,
+			event_type: row[3] as string,
+			payload: row[4] as string,
+			session_key: (row[5] as string) ?? undefined,
+			delivered_at: (row[6] as string) ?? undefined,
+			created_at: row[7] as string,
+			delivery_attempts: (row[8] as number) ?? 0,
+			last_delivery_error: (row[9] as string) ?? undefined,
+		}));
+	}
+
+	/**
+	 * FLY-1048 PR-C (C4/FN4): per-seq delivered probe for the clear pass.
+	 * null = the row no longer exists (pruned) — the caller resolves the
+	 * episode either way (the evidence is gone).
+	 */
+	isLeadEventDeliveredBySeq(seq: number): boolean | null {
+		const result = this.db.exec(
+			"SELECT delivered_at FROM lead_events WHERE seq = ?",
+			[seq],
+		);
+		const values = result[0]?.values;
+		if (!values || values.length === 0) return null;
+		return values[0]![0] != null;
 	}
 
 	/** Get delivery stats for dashboard. */

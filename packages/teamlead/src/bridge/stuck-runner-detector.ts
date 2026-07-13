@@ -168,6 +168,23 @@ export interface StuckRunnerDetectorDeps {
 	alertUnhandled?: (payload: StuckUnhandledPayload) => Promise<boolean>;
 	/** Grace before the Q7 fallback fires (default LEAD_GRACE_MS). */
 	graceMs?: number;
+	/**
+	 * FLY-1048 PR-C (C4a): true when the UNIFIED detection-escalation flow owns
+	 * an ACTIVE episode (detection_escalations row, status != RESOLVED) for
+	 * this (executionId, episodeFingerprint) — the old emitters
+	 * (runner_stuck_escalation + Q7 runner_stuck_unhandled/runner_throttle_
+	 * stalled) skip so the Lead/founder is never double-paged for one episode.
+	 * The guard is consulted EVERY poll (a short-circuit, not a hand-over):
+	 * the moment the unified row goes inactive while the runner is STILL
+	 * frozen, the old flow resumes — "C is never missed" outranks tidiness.
+	 * A throw is treated as not-owned (fail toward alerting). Absent (env
+	 * FLYWHEEL_DETECTION_ESCALATION unset → the plugin never wires it) =
+	 * pre-PR-C behavior byte-for-byte.
+	 */
+	unifiedOwnsEpisode?: (
+		executionId: string,
+		episodeFingerprint: string,
+	) => boolean;
 	/** Injectable clock. */
 	now?: () => number;
 	/** Override the stagnation threshold (default from stuck-candidate). */
@@ -374,6 +391,19 @@ export class StuckRunnerDetector {
 		}
 
 		if (result.candidate && result.evidence && result.episode) {
+			// FLY-1048 PR-C (C4a): the unified detection-escalation flow owns an
+			// active episode for this exact fingerprint — the old Lead emit must
+			// not double-fire. Roll the escalated flag back (the emit-failure
+			// rollback posture) so EVERY next poll re-evaluates the guard: the
+			// moment the unified row resolves while the pane is still frozen,
+			// the old flow resumes.
+			if (this.unifiedOwnsSafe(execId, result.episode.fingerprint)) {
+				this.episodes.set(execId, { ...result.episode, escalated: false });
+				this.deps.log?.(
+					`[StuckDetector] ${execId} episode ${result.episode.fingerprint} owned by the unified detection flow — old emitter suppressed (C4a)`,
+				);
+				return result;
+			}
 			// Bridge-restart rebuild (Codex R1 LOW-7): a persisted disposition —
 			// exact OR execution sentinel (FLY-253 L2) — already judged this
 			// runner; do NOT re-page the Lead. The in-memory map was lost, but
@@ -464,6 +494,17 @@ export class StuckRunnerDetector {
 		const now = this.now();
 		const graceMs = this.deps.graceMs ?? LEAD_GRACE_MS;
 		if (now - episode.escalatedAt < graceMs) return;
+
+		// FLY-1048 PR-C (C4a): the unified flow owns the episode — its ~30min
+		// reconcile owns the founder page, so Q7 stays quiet. Deliberately NOT
+		// marked annieAlerted: if the unified row goes inactive while the pane
+		// is still frozen, the Q7 fallback resumes on the next poll.
+		if (this.unifiedOwnsSafe(session.execution_id, episode.fingerprint)) {
+			this.deps.log?.(
+				`[StuckDetector] ${session.execution_id} episode ${episode.fingerprint} owned by the unified detection flow — Q7 fallback suppressed (C4a)`,
+			);
+			return;
+		}
 
 		// Durable re-read at claim time (Codex R2 LOW-R2-2): the disposition is
 		// re-read from the persistent store in the same pass that claims the
@@ -563,6 +604,25 @@ export class StuckRunnerDetector {
 					err instanceof Error ? err.message : String(err)
 				} — will retry next poll`,
 			);
+		}
+	}
+
+	/**
+	 * C4a guard read. A missing dep or a throw both mean "not owned" — the
+	 * old flow stays authoritative (over-paging once is recoverable; silently
+	 * dropping a stuck runner is not).
+	 */
+	private unifiedOwnsSafe(executionId: string, fingerprint: string): boolean {
+		if (!this.deps.unifiedOwnsEpisode) return false;
+		try {
+			return this.deps.unifiedOwnsEpisode(executionId, fingerprint);
+		} catch (err) {
+			this.deps.log?.(
+				`[StuckDetector] unified-episode guard failed for ${executionId}: ${
+					err instanceof Error ? err.message : String(err)
+				} — treating as not owned`,
+			);
+			return false;
 		}
 	}
 

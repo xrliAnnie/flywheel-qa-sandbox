@@ -55,8 +55,21 @@ import type { CaptureSessionFn } from "./tools.js";
  * the shared operation so there is a single source of truth (FLY-368). */
 export const NUDGE_ALLOWLIST: readonly string[] = SHARED_NUDGE_ALLOWLIST;
 
-/** Episode fingerprints are 16 lowercase hex chars (see fingerprintOutput). */
-const FINGERPRINT_RE = /^[0-9a-f]{16}$/;
+/**
+ * FLY-1048 PR-C (C4a): the one detection kind whose episodes describe the
+ * SAME thing as a stuck receipt (a frozen runner pane, keyed by the same
+ * 16-hex pane fingerprint) — the only kind the bidirectional ACK mirror
+ * touches. Gap/delivery kinds have their own detection-ack lifecycle.
+ */
+const CASE_C_KIND = "detection_stuck_confirmed";
+
+/**
+ * Fingerprint forms a case-c episode can carry (Codex code R1 #8): the legacy
+ * full-output 16-hex AND the A3 error-signature `sig:<16hex>` — the mirror
+ * must honor both or a unified resolve leaves the error-loop detector free
+ * to re-alert the same episode.
+ */
+const MIRROR_FP_RE = /^(?:sig:)?[0-9a-f]{16}$/;
 
 const NOTE_MAX = 500;
 
@@ -194,10 +207,14 @@ export function createStuckRemanageRouter(
 		}
 
 		const fingerprint = body.episode_fingerprint;
-		if (typeof fingerprint !== "string" || !FINGERPRINT_RE.test(fingerprint)) {
+		// Codex code R2 #4: A3 error-loop episodes carry `sig:<16hex>` — the
+		// disposition entry must accept BOTH case-c forms or the Lead gets a
+		// 400 for a real escalation event and can never write a receipt (Q7
+		// keeps paging, and the old→unified mirror below never runs).
+		if (typeof fingerprint !== "string" || !MIRROR_FP_RE.test(fingerprint)) {
 			res.status(400).json({
 				error:
-					"episode_fingerprint must be the 16-hex fingerprint from the runner_stuck_escalation event",
+					"episode_fingerprint must be the fingerprint from the runner_stuck_escalation event (16-hex, or sig:<16-hex> for error-signature episodes)",
 			});
 			return;
 		}
@@ -289,6 +306,41 @@ export function createStuckRemanageRouter(
 			noted_by: leadId,
 			note,
 		});
+		// FLY-1048 PR-C (C4a): mirror the Lead's receipt into the unified flow's
+		// episodes (single source of truth = detection_escalations) so its
+		// ~30min reconcile never founder-pages an episode the Lead already
+		// judged through the OLD route. Case-c kind only — gap/delivery kinds
+		// have their own detection-ack lifecycle. Terminal receipts
+		// (false_positive) → RESOLVED; latches (legitimate_wait / snooze /
+		// needs_founder) → ACKED. An execution latch acks EVERY active case-c
+		// episode of the target (same scope the '*' sentinel latches). A mirror
+		// failure never fails the request (trace-row posture).
+		try {
+			const mirrorDisposition =
+				disposition === "false_positive" ? "resolve" : "ack";
+			if (isExecutionScoped) {
+				for (const row of store.getDetectionEscalationsForReconcile()) {
+					if (row.target_key !== executionId || row.kind !== CASE_C_KIND) {
+						continue;
+					}
+					store.ackDetectionEscalation(
+						executionId,
+						CASE_C_KIND,
+						row.episode_fingerprint,
+						{ atMs: now(), disposition: mirrorDisposition },
+					);
+				}
+			} else {
+				store.ackDetectionEscalation(executionId, CASE_C_KIND, fingerprint, {
+					atMs: now(),
+					disposition: mirrorDisposition,
+				});
+			}
+		} catch (err) {
+			console.error(
+				`[stuck-disposition] detection-escalation mirror failed for ${executionId}: ${(err as Error).message}`,
+			);
+		}
 		// Trace row is secondary — the stuck_dispositions receipt above IS the
 		// authoritative record, so a trace failure logs but does not fail the
 		// request (the Lead's judgment is already durably persisted).
@@ -323,6 +375,140 @@ export function createStuckRemanageRouter(
 			scope: isExecutionScoped ? "execution" : "episode",
 			snooze_until_ms: rowSnoozeUntilMs,
 		});
+	});
+
+	// ── FLY-1048 PR-C (C3-w): detection-escalation ACK ──
+	// The Lead's disposition receipt for a UNIFIED-flow episode:
+	// ack → ACKED (grace timer disarmed), resolve/dismiss → RESOLVED.
+	// AUTHORIZATION INVARIANT (1073 plan, Codex R1 #3): the exact
+	// stuck-disposition checks run BEFORE any detection row is written —
+	// route auth middleware, required leadId, session existence, matchesLead
+	// owner/scope. This must never become a parallel weakly-authed endpoint.
+	router.post("/:executionId/detection-ack", auth, (req, res) => {
+		const executionId = req.params.executionId as string;
+		const body = (req.body ?? {}) as {
+			leadId?: string;
+			kind?: string;
+			episode_fingerprint?: string;
+			disposition?: string;
+		};
+
+		const leadId = typeof body.leadId === "string" ? body.leadId.trim() : "";
+		if (!leadId) {
+			res.status(400).json({ error: "leadId is required in request body" });
+			return;
+		}
+		const kind = typeof body.kind === "string" ? body.kind.trim() : "";
+		if (!kind || kind.length > 100) {
+			res.status(400).json({
+				error:
+					"kind is required (the detection kind from the escalation event)",
+			});
+			return;
+		}
+		// Detection fingerprints are kind-specific opaque strings (NOT always the
+		// 16-hex pane fingerprint) — require presence + a sane bound only.
+		const fingerprint =
+			typeof body.episode_fingerprint === "string"
+				? body.episode_fingerprint.trim()
+				: "";
+		if (!fingerprint || fingerprint.length > 200) {
+			res.status(400).json({
+				error:
+					"episode_fingerprint is required (from the detection_escalation event)",
+			});
+			return;
+		}
+		const disposition = body.disposition;
+		if (
+			disposition !== "ack" &&
+			disposition !== "resolve" &&
+			disposition !== "dismiss"
+		) {
+			res.status(400).json({
+				error: "disposition must be one of: ack, resolve, dismiss",
+			});
+			return;
+		}
+
+		const session = store.getSession(executionId);
+		if (!session) {
+			res.status(404).json({ error: "Session not found" });
+			return;
+		}
+		try {
+			if (!matchesLead(session, leadId, projects)) {
+				res.status(403).json({
+					error: `Session ${executionId} is outside lead "${leadId}" scope`,
+				});
+				return;
+			}
+		} catch (err) {
+			res.status(403).json({
+				error: `Lead scope check failed: ${(err as Error).message}`,
+			});
+			return;
+		}
+
+		const row = store.getDetectionEscalation(executionId, kind, fingerprint);
+		if (!row) {
+			res.status(404).json({
+				error: `No detection episode for (${executionId}, ${kind}, ${fingerprint})`,
+			});
+			return;
+		}
+
+		store.ackDetectionEscalation(executionId, kind, fingerprint, {
+			atMs: now(),
+			disposition,
+		});
+		// FLY-1048 PR-C (C4a): mirror into the OLD receipts so the legacy flow
+		// (Bridge-restart rebuild + Q7 fallback) honors this judgment even with
+		// FLYWHEEL_DETECTION_ESCALATION off. Only the case-c kind keyed by a
+		// REAL 16-hex pane fingerprint maps onto a stuck receipt. ack → TTL'd
+		// legitimate_wait (re-observed after expiry, never a permanent mask);
+		// resolve → handled_remanaged; dismiss → false_positive. Best-effort.
+		if (kind === CASE_C_KIND && MIRROR_FP_RE.test(fingerprint)) {
+			try {
+				store.setStuckDisposition({
+					execution_id: executionId,
+					episode_fingerprint: fingerprint,
+					disposition:
+						disposition === "ack"
+							? "legitimate_wait"
+							: disposition === "resolve"
+								? "handled_remanaged"
+								: "false_positive",
+					snooze_until_ms:
+						disposition === "ack" && latchTtlMs > 0 ? now() + latchTtlMs : null,
+					noted_by: leadId,
+					note: `(mirrored from detection-ack ${disposition})`,
+				});
+			} catch (err) {
+				console.error(
+					`[detection-ack] stuck-receipt mirror failed for ${executionId}: ${(err as Error).message}`,
+				);
+			}
+		}
+		const status = disposition === "ack" ? "ACKED" : "RESOLVED";
+		// Trace row is secondary — the detection_escalations status above IS the
+		// authoritative record (same contract as the stuck-disposition trace).
+		try {
+			store.insertEvent({
+				event_id: `detection-ack-${executionId}-${kind}-${now()}-${++auditSeq}`,
+				execution_id: executionId,
+				issue_id: session.issue_id,
+				project_name: session.project_name,
+				event_type: "detection_escalation_disposition",
+				source: "bridge.stuck-remanage",
+				payload: { leadId, kind, fingerprint, disposition, status },
+			});
+		} catch (err) {
+			console.error(
+				`[detection-ack] trace event write failed for ${executionId}: ${(err as Error).message}`,
+			);
+		}
+		res.json({ ok: true, status });
 	});
 
 	// ── 2. Restricted recovery nudge (plan §3.5) ──

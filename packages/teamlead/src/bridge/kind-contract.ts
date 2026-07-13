@@ -97,6 +97,12 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		remediationRef: "lead-resume-enter (audited single Enter, FLY-368)",
 	},
 	pane_error_stalled: { owner: "claude", arc: "human_by_design" },
+	// FLY-1048 PR-C: unified detection escalation kinds. Bridge-side, provider-
+	// neutral default owner (claude); no executable auto-fix — a human decides
+	// (fleet aggregate → investigate common cause; page-undeliverable → ensure
+	// the founder is reached), mirroring the pane_error_stalled sibling contract.
+	detection_fleet_aggregate: { owner: "claude", arc: "human_by_design" },
+	detection_page_undeliverable: { owner: "claude", arc: "human_by_design" },
 	runner_stuck_unhandled: {
 		owner: "claude",
 		arc: "auto",

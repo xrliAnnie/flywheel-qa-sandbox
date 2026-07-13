@@ -56,10 +56,16 @@ export interface GapCommEvidence {
 	/** Age of the OLDEST live non-blocking ask (checkpoint IS NULL) without a
 	 * response. null = none or unreadable (identical outcome: no trigger). */
 	oldestUnansweredAskAgeMs: number | null;
+	/** Codex R4 #1: false when the ask signal could not be READ (missing
+	 * schema) — a null age then proves nothing, so gap2 is not "evaluated"
+	 * and its episodes must not be absence-cleared. */
+	askSignalReadable: boolean;
 	/** Age of the OLDEST delivered-but-unread push instruction TO this exec.
 	 * null = none or unreadable. Only the FLY-109 push path carries this
 	 * evidence today; the Lead-mailbox consumption gap is PRD-bound (D7). */
 	oldestUnconsumedDeliveryAgeMs: number | null;
+	/** Codex R4 #1: readability of the unconsumed-delivery signal (as above). */
+	unconsumedSignalReadable: boolean;
 }
 
 export interface GapScanInput {
@@ -182,6 +188,35 @@ export function evaluateGapSuspicion(input: GapScanInput): SuspicionRecord[] {
 	return out;
 }
 
+/**
+ * Codex R4 #1/#2: the kinds whose judgement COMPLETELY ran for this input —
+ * every required signal readable, so the absence of a suspicion record is
+ * durable "condition cleared" evidence. A kind outside this set was degraded
+ * (missing schema / unreadable founder evidence / unknowable parkedish), and
+ * its episodes must NOT be absence-cleared this pass. Targets that were never
+ * evaluated at all (skipped project, non-active keep-alive session) simply
+ * contribute nothing here — conservatively held, never falsely resolved.
+ */
+export function evaluatedGapConditions(
+	input: GapScanInput,
+): Set<Exclude<GapSuspicionKind, "pane_progress_suspect">> {
+	const { session, comm, founderNotified } = input;
+	const out = new Set<Exclude<GapSuspicionKind, "pane_progress_suspect">>();
+	const parkedishKnowable =
+		comm.declaredParked !== null || AWAITING_HUMAN_STATUSES.has(session.status);
+	if (
+		parkedishKnowable &&
+		comm.pendingQuestionCount !== null &&
+		comm.outbound.readable &&
+		founderNotified !== null
+	) {
+		out.add("gap1_parked_unreported");
+	}
+	if (comm.askSignalReadable) out.add("gap2_ask_unanswered");
+	if (comm.unconsumedSignalReadable) out.add("delivery_unconsumed");
+	return out;
+}
+
 // ── in-process suspicion registry ──────────────────────────────────────────
 
 export interface SuspicionRegistry {
@@ -299,46 +334,60 @@ export function openGapReader(dbPath: string): GapReader | null {
 					.get(execId, leadId, leadId) as { latest: string | null };
 				if (!row.latest) return { readable: true, latestAgeMs: null };
 				const ts = parseSqliteUtcMs(row.latest);
-				return {
-					readable: true,
-					latestAgeMs: ts === null ? null : Math.max(0, nowMs - ts),
-				};
+				// Codex R5 #1: a NON-NULL timestamp that cannot be parsed is a
+				// degraded signal, not "no traffic" — the judgement did not run.
+				if (ts === null) return { readable: false };
+				return { readable: true, latestAgeMs: Math.max(0, nowMs - ts) };
 			});
 
-			const oldestUnansweredAskAgeMs = probe<number | null>(null, () => {
-				const row = db
-					.prepare(
-						`SELECT MIN(created_at) AS oldest FROM messages q
-						 WHERE q.from_agent = ? AND q.type = 'question' AND q.checkpoint IS NULL
-						   AND q.expires_at > datetime('now')
-						   AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response')`,
-					)
-					.get(execId) as { oldest: string | null };
-				if (!row.oldest) return null;
-				const ts = parseSqliteUtcMs(row.oldest);
-				return ts === null ? null : Math.max(0, nowMs - ts);
-			});
+			// Codex R4 #1: unreadable (missing schema) is NOT the same as "none" —
+			// the readable bit records whether the judgement could actually run.
+			const ask = probe<{ readable: boolean; ageMs: number | null }>(
+				{ readable: false, ageMs: null },
+				() => {
+					const row = db
+						.prepare(
+							`SELECT MIN(created_at) AS oldest FROM messages q
+							 WHERE q.from_agent = ? AND q.type = 'question' AND q.checkpoint IS NULL
+							   AND q.expires_at > datetime('now')
+							   AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response')`,
+						)
+						.get(execId) as { oldest: string | null };
+					if (!row.oldest) return { readable: true, ageMs: null };
+					const ts = parseSqliteUtcMs(row.oldest);
+					// Codex R5 #1: non-null but unparsable = degraded, NOT "none".
+					if (ts === null) return { readable: false, ageMs: null };
+					return { readable: true, ageMs: Math.max(0, nowMs - ts) };
+				},
+			);
 
-			const oldestUnconsumedDeliveryAgeMs = probe<number | null>(null, () => {
-				const row = db
-					.prepare(
-						`SELECT MIN(delivered_at) AS oldest FROM messages
-						 WHERE to_agent = ? AND type = 'instruction'
-						   AND delivered_at IS NOT NULL AND read_at IS NULL`,
-					)
-					.get(execId) as { oldest: string | null };
-				if (!row.oldest) return null;
-				const ts = parseSqliteUtcMs(row.oldest);
-				return ts === null ? null : Math.max(0, nowMs - ts);
-			});
+			const unconsumed = probe<{ readable: boolean; ageMs: number | null }>(
+				{ readable: false, ageMs: null },
+				() => {
+					const row = db
+						.prepare(
+							`SELECT MIN(delivered_at) AS oldest FROM messages
+							 WHERE to_agent = ? AND type = 'instruction'
+							   AND delivered_at IS NOT NULL AND read_at IS NULL`,
+						)
+						.get(execId) as { oldest: string | null };
+					if (!row.oldest) return { readable: true, ageMs: null };
+					const ts = parseSqliteUtcMs(row.oldest);
+					// Codex R5 #1: non-null but unparsable = degraded, NOT "none".
+					if (ts === null) return { readable: false, ageMs: null };
+					return { readable: true, ageMs: Math.max(0, nowMs - ts) };
+				},
+			);
 
 			return {
 				declaredParked,
 				pendingQuestionCount,
 				pendingBlockingGateCount,
 				outbound,
-				oldestUnansweredAskAgeMs,
-				oldestUnconsumedDeliveryAgeMs,
+				oldestUnansweredAskAgeMs: ask.ageMs,
+				askSignalReadable: ask.readable,
+				oldestUnconsumedDeliveryAgeMs: unconsumed.ageMs,
+				unconsumedSignalReadable: unconsumed.readable,
 			};
 		},
 		close() {

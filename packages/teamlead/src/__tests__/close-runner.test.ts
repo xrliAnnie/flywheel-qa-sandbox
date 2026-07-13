@@ -559,3 +559,102 @@ describe("closeRunner — FLY-685 cmux pin marker", () => {
 		expect(result).toEqual({ closed: true });
 	});
 });
+
+/**
+ * FLY-1048 PR-C (C5): a COMMITTED close is "cleanup entered" — every active
+ * detection episode of the target flips to CLEARING so all detection kinds
+ * stay quiet while the pane churns through teardown (FLY-970 ghost spam). A
+ * REFUSED close (not eligible / preserved) never marks anything.
+ */
+describe("closeRunner C5 detection CLEARING (FLY-1048)", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		mockGetTmuxTarget.mockReset();
+		mockKillTmuxWindow.mockReset();
+	});
+
+	function seedEpisode(store: StateStore): void {
+		store.upsertDetectionEscalation({
+			targetKey: "exec-1",
+			kind: "detection_stuck_confirmed",
+			episodeFingerprint: "fp:1",
+			firstDetectedAtMs: 1,
+		});
+	}
+
+	it("an eligible close marks the target's active episodes CLEARING", async () => {
+		seedSession(store, "completed");
+		seedEpisode(store);
+		mockGetTmuxTarget.mockReturnValue(undefined); // already-gone path
+		await closeRunner(makeOpts(), store);
+		expect(
+			store.getDetectionEscalation(
+				"exec-1",
+				"detection_stuck_confirmed",
+				"fp:1",
+			)?.status,
+		).toBe("CLEARING");
+	});
+
+	it("a refused close (status_not_eligible) marks nothing", async () => {
+		seedSession(store, "running");
+		seedEpisode(store);
+		await closeRunner(makeOpts(), store);
+		expect(
+			store.getDetectionEscalation(
+				"exec-1",
+				"detection_stuck_confirmed",
+				"fp:1",
+			)?.status,
+		).toBe("NEW");
+	});
+
+	it("a crash-preserved close (failed, not forced) marks nothing", async () => {
+		seedSession(store, "failed");
+		seedEpisode(store);
+		await closeRunner(makeOpts(), store);
+		expect(
+			store.getDetectionEscalation(
+				"exec-1",
+				"detection_stuck_confirmed",
+				"fp:1",
+			)?.status,
+		).toBe("NEW");
+	});
+
+	it("marks CLEARING on the killed success path too", async () => {
+		seedSession(store, "completed");
+		seedEpisode(store);
+		mockGetTmuxTarget.mockReturnValue({ tmuxWindow: "w:@1" });
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+
+		const result = await closeRunner(makeOpts(), store);
+		expect(result.closed).toBe(true);
+		expect(
+			store.getDetectionEscalation(
+				"exec-1",
+				"detection_stuck_confirmed",
+				"fp:1",
+			)?.status,
+		).toBe("CLEARING");
+	});
+
+	it("does NOT mark CLEARING when the tmux kill failed (runner may still be alive)", async () => {
+		seedSession(store, "completed");
+		seedEpisode(store);
+		mockGetTmuxTarget.mockReturnValue({ tmuxWindow: "w:@1" });
+		mockKillTmuxWindow.mockResolvedValue({ killed: false, error: "eperm" });
+
+		const result = await closeRunner(makeOpts(), store);
+		expect(result.closed).toBe(false);
+		expect(
+			store.getDetectionEscalation(
+				"exec-1",
+				"detection_stuck_confirmed",
+				"fp:1",
+			)?.status,
+		).toBe("NEW");
+	});
+});

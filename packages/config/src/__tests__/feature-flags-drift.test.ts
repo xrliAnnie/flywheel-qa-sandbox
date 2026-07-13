@@ -134,6 +134,14 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: judge a/b suppression TTL ms before re-evaluation (FLY-1048 PR-B)",
 	FLYWHEEL_GAP_SCAN_EVERY_N_TICKS:
 		"tuning knob: gap-scan cadence in GatePoller ticks (FLY-1048 A6)",
+	FLYWHEEL_DETECTION_LEAD_GRACE_MS:
+		"tuning knob: detection-escalation Lead grace ms before the founder page (FLY-1048 PR-C; per-project override via detection.lead_grace_ms)",
+	FLYWHEEL_DETECTION_FLEET_THRESHOLD:
+		"tuning knob: same-kind overdue episode count that becomes ONE fleet aggregate instead of founder pages (FLY-1048 PR-C)",
+	FLYWHEEL_DETECTION_RECONCILE_EVERY_N_TICKS:
+		"tuning knob: detection-escalation reconcile cadence in GatePoller ticks (FLY-1048 PR-C)",
+	FLYWHEEL_CLEARING_TTL_MS:
+		"tuning knob: CLEARING mute TTL ms before an unfinished cleanup re-arms its episodes, default 2h (FLY-1048 PR-C C5)",
 	FLYWHEEL_FRAME_INTERVAL_MS:
 		"tuning knob: focused-frame capture interval ms (FLY-1048 A7)",
 	FLYWHEEL_FRAME_CAPTURES_PER_TICK:

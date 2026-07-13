@@ -806,3 +806,86 @@ describe("probeQuietSignals isDoneButRunning (FLY-637 #1)", () => {
 		expect(signals.isDoneButRunning).toBe(false);
 	});
 });
+
+/**
+ * FLY-1048 PR-C (C4a + Codex code R1 #6): the factory's unified-ownership
+ * guard — exact-fingerprint ownership OR a target-level CLEARING mute (a
+ * tearing-down pane mints fresh fingerprints every frame, so the exact check
+ * alone would let the old flow page about a corpse). Env unset = guard
+ * constant-false = byte-compat.
+ */
+describe("buildStuckRunnerDetector — unified-flow guard wiring (FLY-1048 C4a/R1#6)", () => {
+	function detectorWith(
+		env: NodeJS.ProcessEnv,
+		storeExtras: Record<string, unknown>,
+	) {
+		const store = mockStore();
+		(store as Record<string, unknown>).getSession = vi.fn(() =>
+			makeSession({ status: "running" }),
+		);
+		Object.assign(store, storeExtras);
+		const { registry } = mockRegistry();
+		const detector = buildStuckRunnerDetector({
+			store: store as never,
+			projects: testProjects,
+			runtimeRegistry: registry as never,
+			notifier: { alert: vi.fn(async () => ({ sent: true })) },
+			env: { FLYWHEEL_STUCK_THRESHOLD_MS: "1000", ...env } as NodeJS.ProcessEnv,
+			now: (() => {
+				let t = 0;
+				return () => {
+					t += 2000;
+					return t;
+				};
+			})(),
+			log: () => {},
+		});
+		return { detector: detector!, store };
+	}
+
+	async function stagnateTwice(
+		detector: NonNullable<ReturnType<typeof buildStuckRunnerDetector>>,
+	) {
+		const frame = { ok: true as const, output: "frozen frame" };
+		await detector.checkSession(makeSession({ status: "running" }), frame);
+		await detector.checkSession(makeSession({ status: "running" }), frame);
+	}
+
+	it("CLEARING target suppresses the old emit even for a NEW fingerprint", async () => {
+		const { detector, store } = detectorWith(
+			{ FLYWHEEL_DETECTION_ESCALATION: "1" },
+			{
+				hasActiveDetectionEscalationForEpisode: vi.fn(() => false),
+				hasClearingDetectionEscalationForTarget: vi.fn(() => true),
+			},
+		);
+		await stagnateTwice(detector);
+		expect(store.appendLeadEvent).not.toHaveBeenCalled();
+	});
+
+	it("exact-episode ownership suppresses too", async () => {
+		const { detector, store } = detectorWith(
+			{ FLYWHEEL_DETECTION_ESCALATION: "1" },
+			{
+				hasActiveDetectionEscalationForEpisode: vi.fn(() => true),
+				hasClearingDetectionEscalationForTarget: vi.fn(() => false),
+			},
+		);
+		await stagnateTwice(detector);
+		expect(store.appendLeadEvent).not.toHaveBeenCalled();
+	});
+
+	it("env unset → guard never consulted, old emit fires (byte-compat)", async () => {
+		const hasActive = vi.fn(() => true);
+		const { detector, store } = detectorWith(
+			{},
+			{
+				hasActiveDetectionEscalationForEpisode: hasActive,
+				hasClearingDetectionEscalationForTarget: vi.fn(() => true),
+			},
+		);
+		await stagnateTwice(detector);
+		expect(store.appendLeadEvent).toHaveBeenCalled();
+		expect(hasActive).not.toHaveBeenCalled();
+	});
+});

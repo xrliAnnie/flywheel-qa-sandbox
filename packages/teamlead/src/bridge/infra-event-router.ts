@@ -45,6 +45,15 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 		// can act on a frozen-after-error Lead pane. Owner map: provider-agnostic
 		// default (claude bot).
 		"pane_error_stalled",
+		// FLY-1048 (PR-C): the fleet-scale aggregate rides the FLY-915 ticket
+		// lane (PRD §4.3 boundary) — an infra responder acts on the shared
+		// cause. Owner map: provider-agnostic default (claude bot), same call
+		// pane_error_stalled made.
+		"detection_fleet_aggregate",
+		// FLY-1048 (PR-C): an unaddressable/undeliverable detection founder page
+		// — an infra responder fixes the thread binding / token / routing while
+		// the reconcile keeps retrying the page. Same owner default.
+		"detection_page_undeliverable",
 		"runner_stuck_unhandled",
 		"runner_login_expired",
 		"runner_throttle_stalled",

@@ -737,3 +737,346 @@ describe("FLY-253 — re_arm", () => {
 		}
 	});
 });
+
+/**
+ * FLY-1048 PR-C (C3-w): the detection-escalation ACK endpoint — the Lead's
+ * disposition receipt for a UNIFIED-flow episode. The authorization invariant
+ * (Codex R1 #3 of the 1073 continuation plan) is that this route reuses the
+ * EXACT stuck-remanage checks — route auth middleware, leadId required,
+ * session existence, matchesLead owner/scope — before any detection row is
+ * written; it must never become a parallel weakly-authenticated endpoint.
+ */
+describe("POST /:executionId/detection-ack (FLY-1048 C3-w)", () => {
+	const KIND = "detection_stuck_confirmed";
+	const FP = "fp:episode-1";
+
+	async function closeH(h2: Awaited<ReturnType<typeof boot>>) {
+		await new Promise<void>((resolve, reject) =>
+			h2.server.close((err) => (err ? reject(err) : resolve())),
+		);
+		h2.store.close();
+	}
+
+	function seedEpisode(store: StateStore, targetKey = "exec-1"): void {
+		store.upsertDetectionEscalation({
+			targetKey,
+			kind: KIND,
+			episodeFingerprint: FP,
+			issueId: "FLY-1",
+			ownerLeadId: "product-lead",
+			firstDetectedAtMs: 0,
+		});
+		store.markDetectionEscalationLeadNotified(targetKey, KIND, FP, 1_000);
+	}
+
+	const valid = {
+		leadId: "product-lead",
+		kind: KIND,
+		episode_fingerprint: FP,
+		disposition: "ack",
+	};
+
+	it("is mounted BEHIND the router auth middleware", async () => {
+		const authed = await boot({
+			auth: (_req, res) => {
+				res.status(401).json({ error: "unauthorized" });
+			},
+		});
+		try {
+			seedEpisode(authed.store);
+			const r = await post(authed, "/api/sessions/exec-1/detection-ack", valid);
+			expect(r.status).toBe(401);
+			expect(
+				authed.store.getDetectionEscalation("exec-1", KIND, FP)?.status,
+			).toBe("LEAD_NOTIFIED");
+		} finally {
+			await closeH(authed);
+		}
+	});
+
+	it("400 when leadId is missing", async () => {
+		seedEpisode(h.store);
+		const r = await post(h, "/api/sessions/exec-1/detection-ack", {
+			...valid,
+			leadId: "",
+		});
+		expect(r.status).toBe(400);
+	});
+
+	it("400 when kind is missing", async () => {
+		seedEpisode(h.store);
+		const r = await post(h, "/api/sessions/exec-1/detection-ack", {
+			...valid,
+			kind: "",
+		});
+		expect(r.status).toBe(400);
+	});
+
+	it("400 when episode_fingerprint is missing", async () => {
+		seedEpisode(h.store);
+		const r = await post(h, "/api/sessions/exec-1/detection-ack", {
+			...valid,
+			episode_fingerprint: "",
+		});
+		expect(r.status).toBe(400);
+	});
+
+	it("400 on an unknown disposition", async () => {
+		seedEpisode(h.store);
+		const r = await post(h, "/api/sessions/exec-1/detection-ack", {
+			...valid,
+			disposition: "snooze",
+		});
+		expect(r.status).toBe(400);
+	});
+
+	it("404 when the session does not exist", async () => {
+		const r = await post(h, "/api/sessions/ghost-exec/detection-ack", valid);
+		expect(r.status).toBe(404);
+	});
+
+	it("403 when the session is outside the lead's scope", async () => {
+		seedEpisode(h.store);
+		const r = await post(h, "/api/sessions/exec-1/detection-ack", {
+			...valid,
+			leadId: "some-other-lead",
+		});
+		expect(r.status).toBe(403);
+		expect(h.store.getDetectionEscalation("exec-1", KIND, FP)?.status).toBe(
+			"LEAD_NOTIFIED",
+		);
+	});
+
+	it("404 when no matching detection episode row exists", async () => {
+		const r = await post(h, "/api/sessions/exec-1/detection-ack", valid);
+		expect(r.status).toBe(404);
+	});
+
+	it("ack → ACKED with lead_ack_at_ms stamped + an audit trace row", async () => {
+		seedEpisode(h.store);
+		const r = await post(h, "/api/sessions/exec-1/detection-ack", valid);
+		expect(r.status).toBe(200);
+		expect(r.json).toMatchObject({ ok: true, status: "ACKED" });
+		const row = h.store.getDetectionEscalation("exec-1", KIND, FP)!;
+		expect(row.status).toBe("ACKED");
+		expect(row.lead_ack_at_ms).not.toBeNull();
+		const audits = h.store
+			.getEventsByExecution("exec-1")
+			.filter((e) => e.event_type === "detection_escalation_disposition");
+		expect(audits).toHaveLength(1);
+	});
+
+	it("resolve → RESOLVED", async () => {
+		seedEpisode(h.store);
+		const r = await post(h, "/api/sessions/exec-1/detection-ack", {
+			...valid,
+			disposition: "resolve",
+		});
+		expect(r.status).toBe(200);
+		expect(r.json).toMatchObject({ ok: true, status: "RESOLVED" });
+		expect(h.store.getDetectionEscalation("exec-1", KIND, FP)?.status).toBe(
+			"RESOLVED",
+		);
+	});
+
+	it("dismiss → RESOLVED", async () => {
+		seedEpisode(h.store);
+		const r = await post(h, "/api/sessions/exec-1/detection-ack", {
+			...valid,
+			disposition: "dismiss",
+		});
+		expect(r.status).toBe(200);
+		expect(r.json).toMatchObject({ ok: true, status: "RESOLVED" });
+	});
+});
+
+/**
+ * FLY-1048 PR-C (C4a): bidirectional ACK/resolution mirror between the OLD
+ * stuck_dispositions receipts and the NEW detection_escalations episodes.
+ *
+ * detection_escalations is the single source of truth; stuck_dispositions
+ * stays a compatible read/write view. The mirror is deliberately scoped to
+ * the case-c kind (detection_stuck_confirmed) — gap/delivery kinds have their
+ * own detection-ack lifecycle and are NOT what a stuck receipt describes.
+ * Mirror failures must never fail the request (trace-row posture).
+ */
+describe("C4a ACK mirror between stuck_dispositions and detection_escalations", () => {
+	const CKIND = "detection_stuck_confirmed";
+	const FP_A = STUCK_FP;
+	const FP_B = fingerprintOutput("a different frozen frame entirely");
+
+	function seedDetection(fp: string, kind = CKIND): void {
+		h.store.upsertDetectionEscalation({
+			targetKey: "exec-1",
+			kind,
+			episodeFingerprint: fp,
+			issueId: "FLY-1",
+			ownerLeadId: "product-lead",
+			firstDetectedAtMs: 0,
+		});
+		h.store.markDetectionEscalationLeadNotified("exec-1", kind, fp, 1_000);
+	}
+
+	// ── forward: stuck-disposition route → detection_escalations ──
+
+	it("false_positive (episode receipt) → the matching case-c episode is RESOLVED", async () => {
+		seedDetection(FP_A);
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			leadId: "product-lead",
+			episode_fingerprint: FP_A,
+			disposition: "false_positive",
+		});
+		expect(r.status).toBe(200);
+		expect(h.store.getDetectionEscalation("exec-1", CKIND, FP_A)?.status).toBe(
+			"RESOLVED",
+		);
+	});
+
+	it("legitimate_wait (execution latch) → EVERY active case-c episode of the target is ACKED", async () => {
+		seedDetection(FP_A);
+		seedDetection(FP_B);
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			leadId: "product-lead",
+			episode_fingerprint: FP_A,
+			disposition: "legitimate_wait",
+		});
+		expect(r.status).toBe(200);
+		expect(h.store.getDetectionEscalation("exec-1", CKIND, FP_A)?.status).toBe(
+			"ACKED",
+		);
+		expect(h.store.getDetectionEscalation("exec-1", CKIND, FP_B)?.status).toBe(
+			"ACKED",
+		);
+	});
+
+	it("needs_founder → ACKED (the Lead owns the episode, incl. the founder relay)", async () => {
+		seedDetection(FP_A);
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			leadId: "product-lead",
+			episode_fingerprint: FP_A,
+			disposition: "needs_founder",
+		});
+		expect(r.status).toBe(200);
+		expect(h.store.getDetectionEscalation("exec-1", CKIND, FP_A)?.status).toBe(
+			"ACKED",
+		);
+	});
+
+	it("non-case-c kinds are untouched by the mirror", async () => {
+		seedDetection(FP_A, "delivery_unconsumed");
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			leadId: "product-lead",
+			episode_fingerprint: FP_A,
+			disposition: "false_positive",
+		});
+		expect(r.status).toBe(200);
+		expect(
+			h.store.getDetectionEscalation("exec-1", "delivery_unconsumed", FP_A)
+				?.status,
+		).toBe("LEAD_NOTIFIED");
+	});
+
+	it("no detection row → the disposition still succeeds (mirror is a silent no-op)", async () => {
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			leadId: "product-lead",
+			episode_fingerprint: FP_A,
+			disposition: "false_positive",
+		});
+		expect(r.status).toBe(200);
+		expect(r.json).toMatchObject({ ok: true });
+	});
+
+	it("re_arm does NOT mirror — the unified episode lifecycle is unaffected", async () => {
+		seedDetection(FP_A);
+		h.store.ackDetectionEscalation("exec-1", CKIND, FP_A, {
+			atMs: 2_000,
+			disposition: "ack",
+		});
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			leadId: "product-lead",
+			disposition: "re_arm",
+		});
+		expect(r.status).toBe(200);
+		expect(h.store.getDetectionEscalation("exec-1", CKIND, FP_A)?.status).toBe(
+			"ACKED",
+		);
+	});
+
+	// ── reverse: detection-ack route → stuck_dispositions ──
+
+	function seedAndAck(
+		disposition: "ack" | "resolve" | "dismiss",
+		kind = CKIND,
+		fp = FP_A,
+	) {
+		seedDetection(fp, kind);
+		return post(h, "/api/sessions/exec-1/detection-ack", {
+			leadId: "product-lead",
+			kind,
+			episode_fingerprint: fp,
+			disposition,
+		});
+	}
+
+	it("ack (case-c, 16-hex fp) → TTL'd legitimate_wait receipt for the episode", async () => {
+		const r = await seedAndAck("ack");
+		expect(r.status).toBe(200);
+		const receipt = h.store.getStuckDisposition("exec-1", FP_A);
+		expect(receipt?.disposition).toBe("legitimate_wait");
+		expect(receipt?.noted_by).toBe("product-lead");
+		// TTL'd, never a permanent mask: the old flow re-observes after expiry.
+		expect(receipt?.snooze_until_ms).toBeGreaterThan(Date.now());
+	});
+
+	it("resolve → handled_remanaged terminal receipt", async () => {
+		const r = await seedAndAck("resolve");
+		expect(r.status).toBe(200);
+		const receipt = h.store.getStuckDisposition("exec-1", FP_A);
+		expect(receipt?.disposition).toBe("handled_remanaged");
+		expect(receipt?.snooze_until_ms ?? null).toBeNull();
+	});
+
+	it("dismiss → false_positive episode receipt", async () => {
+		const r = await seedAndAck("dismiss");
+		expect(r.status).toBe(200);
+		const receipt = h.store.getStuckDisposition("exec-1", FP_A);
+		expect(receipt?.disposition).toBe("false_positive");
+		expect(receipt?.snooze_until_ms ?? null).toBeNull();
+	});
+
+	it("non-case-c kind → NO stuck receipt is written", async () => {
+		const r = await seedAndAck("ack", "delivery_unconsumed");
+		expect(r.status).toBe(200);
+		expect(h.store.getStuckDisposition("exec-1", FP_A)).toBeUndefined();
+	});
+
+	it("stuck-disposition ENTRY accepts sig: fingerprints and forward-mirrors them (Codex R2 #4)", async () => {
+		const fp = "sig:fedcba9876543210";
+		seedDetection(fp);
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			leadId: "product-lead",
+			episode_fingerprint: fp,
+			disposition: "false_positive",
+		});
+		expect(r.status).toBe(200);
+		expect(h.store.getDetectionEscalation("exec-1", CKIND, fp)?.status).toBe(
+			"RESOLVED",
+		);
+	});
+
+	it("sig: fingerprints mirror too (A3 error-loop episodes) — Codex R1 #8", async () => {
+		const fp = "sig:0123456789abcdef";
+		const r = await seedAndAck("resolve", CKIND, fp);
+		expect(r.status).toBe(200);
+		expect(h.store.getStuckDisposition("exec-1", fp)?.disposition).toBe(
+			"handled_remanaged",
+		);
+	});
+
+	it("non-16hex detection fingerprint → NO stuck receipt is written", async () => {
+		const fp = "gap:exec-1:12345";
+		const r = await seedAndAck("ack", CKIND, fp);
+		expect(r.status).toBe(200);
+		expect(h.store.getStuckDisposition("exec-1", fp)).toBeUndefined();
+	});
+});

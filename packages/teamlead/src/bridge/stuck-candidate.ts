@@ -382,8 +382,12 @@ export function evaluateStuckCandidate(
 	};
 }
 
-/** FLY-1048 (A3): stable episode fingerprint for a tracked error signature. */
-function sigFingerprint(signature: string): string {
+/**
+ * FLY-1048 (A3): stable episode fingerprint for a tracked error signature.
+ * Exported for PR-C (C4): the unified flow's case-c episodes must key by the
+ * SAME family the old flow uses, or the C4a mutual exclusion cannot match.
+ */
+export function sigFingerprint(signature: string): string {
 	return `sig:${createHash("sha256").update(signature).digest("hex").slice(0, 16)}`;
 }
 

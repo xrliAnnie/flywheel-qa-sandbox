@@ -179,6 +179,15 @@ export interface GatePollerConfig {
 	/** FLY-513: cadence for `onHealthTick` in poll ticks (default 20 ≈ 60s at 3s). */
 	healthCheckEveryNTicks?: number;
 	/**
+	 * FLY-1048 (PR-C): the detection-escalation reconcile sweep — the ~30min
+	 * Lead-grace timer that pages the founder (or aggregates a fleet incident).
+	 * Piggybacks this same poll tick (zero new periodic timer). Error-isolated +
+	 * fire-and-forget. Absent → complete no-op; cadence 0 → disabled.
+	 */
+	onDetectionReconcileTick?: () => void | Promise<void>;
+	/** FLY-1048 (PR-C): cadence in poll ticks (default 20 ≈ 60s at 3s). */
+	detectionReconcileEveryNTicks?: number;
+	/**
 	 * FLY-907 (Step 4.5): the issue-display reconcile sweep, piggybacked on this
 	 * same poll tick (zero new periodic timers — FLY-169/172/208 discipline).
 	 * Error-isolated + fire-and-forget; MUST be cheap on a no-drift pass (the
@@ -550,6 +559,28 @@ export class GatePoller {
 							`[GatePoller] FLY-513 codex-health probe error (non-fatal): ${(err as Error).message}`,
 						),
 					);
+			}
+
+			// FLY-1048 (PR-C): detection-escalation reconcile — same piggyback
+			// pattern (zero new timer, own catch, never blocks the poll). The
+			// grace timer it advances is read from the durable
+			// detection_escalations rows, so a missed tick can only delay a page,
+			// never restart the clock. Cadence 0 → disabled.
+			{
+				const detectionCadence = this.detectionReconcileEveryNTicks();
+				if (
+					this.config.onDetectionReconcileTick &&
+					detectionCadence > 0 &&
+					(this.tickCount - 1) % detectionCadence === 0
+				) {
+					void Promise.resolve()
+						.then(() => this.config.onDetectionReconcileTick?.())
+						.catch((err) =>
+							console.warn(
+								`[GatePoller] FLY-1048 detection reconcile error (non-fatal): ${(err as Error).message}`,
+							),
+						);
+				}
 			}
 
 			// FLY-907: issue-display reconcile sweep — same piggyback pattern as
@@ -1000,6 +1031,13 @@ export class GatePoller {
 	// FLY-513: cadence for the optional global-codex drift probe (default 20 ≈ 60s).
 	private healthCheckEveryNTicks(): number {
 		return this.config.healthCheckEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS;
+	}
+
+	/** FLY-1048 (PR-C): detection-escalation reconcile cadence (default 20 ≈ 60s). */
+	private detectionReconcileEveryNTicks(): number {
+		return (
+			this.config.detectionReconcileEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS
+		);
 	}
 
 	/** FLY-907: display-reconcile sweep cadence (default 60 ≈ 3min at 3s). */

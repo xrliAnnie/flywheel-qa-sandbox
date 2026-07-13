@@ -377,6 +377,29 @@ export class ConfigLoader {
 			}
 		}
 
+		// detection (optional — FLY-1048 PR-C). Absent → no per-project override
+		// (byte-compatible: the global FLYWHEEL_DETECTION_LEAD_GRACE_MS / default
+		// applies). Shape validated whenever PRESENT so a fat-fingered tuning
+		// knob fails loudly instead of being silently reinterpreted.
+		const detection = c.detection as Record<string, unknown> | undefined;
+		if (detection != null) {
+			if (typeof detection !== "object" || Array.isArray(detection)) {
+				throw new Error(
+					"detection must be a YAML mapping (object), not an array or scalar",
+				);
+			}
+			if (
+				detection.lead_grace_ms != null &&
+				(typeof detection.lead_grace_ms !== "number" ||
+					!Number.isInteger(detection.lead_grace_ms) ||
+					detection.lead_grace_ms <= 0)
+			) {
+				throw new Error(
+					"detection.lead_grace_ms must be a positive integer (milliseconds)",
+				);
+			}
+		}
+
 		// pipeline (optional — FLY-793). Absent / three_stage:false → off
 		// (byte-compatible; single-session task as before). Shape validated
 		// whenever PRESENT so a malformed block fails loudly at load (mirrors

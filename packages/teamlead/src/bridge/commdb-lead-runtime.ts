@@ -11,6 +11,7 @@
 
 import { CommDB } from "flywheel-comm/db";
 import {
+	formatDetectionEscalation,
 	formatDetectionSuspicious,
 	formatDurationMs,
 	formatGateQuestion,
@@ -166,6 +167,12 @@ export class CommDBLeadRuntime implements LeadRuntime {
 		// (parity with MailboxLeadRuntime by construction).
 		if (e.event_type === "detection_suspicious") {
 			return formatDetectionSuspicious(env);
+		}
+
+		// FLY-1048 (C2): detection_escalation — Lead-first leg of the unified
+		// escalation flow. Shared renderer (parity by construction).
+		if (e.event_type === "detection_escalation") {
+			return formatDetectionEscalation(env);
 		}
 
 		// FLY-59: Prefix role label for non-main sessions

@@ -226,6 +226,20 @@ export const ALERT_EVENT_TYPES = [
 	// lands directly ESCALATED with the sample list; never enters the ARC
 	// retry loop.
 	"zombie_session_backlog",
+	// FLY-1048 (PR-C): ≥K same-kind detection episodes overdue at once — a
+	// fleet-scale incident, not K individual ones. The unified escalation flow
+	// routes the whole group here (PRD §4.3 boundary) INSTEAD of paging the
+	// founder K times or spamming each owner Lead. Emitted only by the
+	// detection reconcile (FLYWHEEL_DETECTION_ESCALATION=1); the aggregate body
+	// carries kind + count + a target summary and never any pane text.
+	"detection_fleet_aggregate",
+	// FLY-1048 (PR-C): a detection founder page that could not be ADDRESSED or
+	// POSTED (no session / no thread binding / POST failed). The episode row
+	// stays LEAD_NOTIFIED and the reconcile keeps retrying — this ticket is
+	// plan C3's "never silent" seam telling an infra responder WHY the page is
+	// not landing. eventId is per-episode deterministic → claims-deduped
+	// across reconcile retries (no per-tick spam).
+	"detection_page_undeliverable",
 ] as const;
 
 export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];

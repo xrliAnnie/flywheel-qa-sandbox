@@ -1023,6 +1023,12 @@ function titleFor(kind: AlertEventType): string {
 		// an otherwise idle-looking live region.
 		case "pane_error_stalled":
 			return "Lead pane error-stalled";
+		// FLY-1048 (PR-C): never emitted by LeadWatchdog (the detection reconcile
+		// builds its own title); case exists for switch exhaustiveness.
+		case "detection_fleet_aggregate":
+			return "Fleet-scale detection incident";
+		case "detection_page_undeliverable":
+			return "Detection founder-page undeliverable";
 		// FLY-195: never emitted by LeadWatchdog (the stuck-runner detector owns
 		// it and builds its own title); case exists for switch exhaustiveness.
 		case "runner_stuck_unhandled":
@@ -1160,6 +1166,12 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// (FLY-220 echo immunity) — kind + suggested action only.
 		case "pane_error_stalled":
 			return "A known error is frozen in the Lead's live pane (error visible above an idle input box across multiple polls). The Lead likely errored and stopped; open the tmux pane and nudge or recover it.";
+		// FLY-1048 (PR-C): never emitted by LeadWatchdog (the detection reconcile
+		// builds its own body carrying kind + count + target summary).
+		case "detection_fleet_aggregate":
+			return "Several detection episodes of the same kind went unhandled at once — a fleet-scale incident. The founder was NOT paged per-episode; investigate the shared cause (Bridge, transport, or a fleet-wide runner condition).";
+		case "detection_page_undeliverable":
+			return "A detection founder page could not be addressed or posted (no session, no thread binding, or the POST failed). The episode stays LEAD_NOTIFIED and keeps retrying; fix the thread binding / bot token / routing.";
 		// FLY-195: never emitted by LeadWatchdog (see titleFor).
 		case "runner_stuck_unhandled":
 			return "A stuck Runner episode received no Lead disposition within the grace window. Check the owning Lead, then the runner tmux window.";

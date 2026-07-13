@@ -692,6 +692,23 @@ export function buildStuckRunnerDetector(
 				fingerprint,
 				nowMs,
 			),
+		// FLY-1048 PR-C (C4a): while the unified detection-escalation flow owns
+		// an active episode for this exact (execId, fingerprint), the old
+		// emitters (Lead escalation + Q7 fallback) stand down — the unified
+		// ~30min reconcile owns Lead + founder paging. Env read at CALL time
+		// (process.env is live) so a flag flip applies without a rebuild;
+		// unset ⇒ constant false ⇒ pre-PR-C behavior byte-for-byte.
+		// A CLEARING target is unified-owned as a WHOLE (Codex code R1 #6):
+		// teardown churn mints new pane fingerprints every frame, so an
+		// exact-fingerprint check alone would let the old flow page about a
+		// half-torn-down corpse the unified flow deliberately muted.
+		unifiedOwnsEpisode: (executionId, fingerprint) =>
+			env.FLYWHEEL_DETECTION_ESCALATION === "1" &&
+			(opts.store.hasActiveDetectionEscalationForEpisode(
+				executionId,
+				fingerprint,
+			) ||
+				opts.store.hasClearingDetectionEscalationForTarget(executionId)),
 		alertUnhandled: createStuckUnhandledAlerter(opts.projects, opts.notifier, {
 			store: opts.store,
 			discordBotToken: opts.discordBotToken,
