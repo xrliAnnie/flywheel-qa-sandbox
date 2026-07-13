@@ -152,6 +152,7 @@ fd 表实测:一个沙箱 Bridge(FLY-1204)与生产 Bridge 同时握着两个生
   - subject 至少含:repo/workflow-run 身份、policy 版本、精确 paths、operations/renames、file modes、**每个 ship-relevant 改动的 before/after blob ID**。
   - **默认每个可 merge 文件都 ship-relevant**;豁免只能来自受信、snapshotted 的 allowlist,**绝不用 runner 分类**;`patch-id` 只当**诊断 hint**(它归一化空白 → 对 Python/YAML 不安全,不能当授权依据)。
   - **分开两件事:①「被审/被批的改动 manifest」(clean rebase 下可保持不变)· ②「required CI 实际跑在的候选 head」。** 在**卡激活 / 记批准前 / 任何 rebase 后 / merge 前**各重算并比对。最终 merge 要求:**批准 subject 未变 + required CI 在精确候选 head 上绿**。
+- **merge/ship 必须走库的 CI/CD flow,不许绕过(Annie 2026-07-13):** 最终的 merge/ship **只能经由标准 ship flow**(`:cool` → CI/CD → 合)执行;**任何人(含 Lead)都不许用 `--admin` / 直接 merge 绕过 required CI**。**绕过 CI = 绕过 ship 闸 = 本 PRD 北极星禁止的那类静默 bypass** —— 它让「required CI 绿」这个授权前提变成一个可被 admin 抄近路的替身。**docs-only 也不例外**;若某类 PR(如 docs)走 `:cool` 有问题,那是**要修的 flow wrinkle**(接 FLY-972 / CI decouple),不是 admin 抄近路的借口。(实证:本 PRD 自己的 #573 被我用 `--admin` 抄了近路 ship —— 一个活的「绕过 ship 闸」反例;这条就是把它写死禁掉,让 PRD 自洽。)
 - 数据支撑:实测 head-drift 里 4/6 是合法漂移 —— 内容锚把这大多数从「重审税」解放,只对真改生产代码的少数收税。
 - *(eng 机制 §12)* subject 的序列化 / hash 算法 / schema / 迁移列 = Tadashi(范式 in-toto/SLSA subject digest)。
 
