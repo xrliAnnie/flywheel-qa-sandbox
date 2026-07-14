@@ -43,11 +43,21 @@ Accept: application/json
 | pane 渲染 gauge（`usage-gauge.ts:47` 正则刮 `5h ██ 100% reset …`） | 同上且更糙（渲染文本） | 仅活跃账号 | FLY-696 现状，被动兜底继续用，daemon 不用 |
 | `~/.claude/usage-api-cache.json`（statusline 脚本的缓存） | 至多 10 分钟旧 | 仅活跃账号 | daemon 的**回写目标**（§2），不是读取源 |
 
-### 1.3 Rate limit 约束
+### 1.3 Rate limit 约束（真机探测定量，2026-07-14 16:41 PDT）
 
-- 响应无 rate-limit 头（真机验证 `HTTP/2 200`，无 `retry-after`/`x-ratelimit-*`）。
-- 经验值（`statusline-command.sh:6` 注释，实测得出）：**每 accessToken 突发 ~5 次即 429**。statusline 因此用 10 分钟缓存（`CACHE_MAX_AGE=600`，:72）。
-- 设计含义：daemon 默认 poll 间隔 180s（20 次/小时，远低于 statusline 曾经的安全水位 6 次/小时？——不，10min 缓存 = 6 次/小时；180s = 20 次/小时是 3 倍。**保守起见默认 300s（12 次/小时），可配下探**），429 时指数退避（上限 30 分钟）+ 尊重 `retry-after`（若出现）。目标验证是一次性调用（每候选 1 次，仅在切号时），不构成持续压力。
+**探测方法**（Annie 批注⑤触发——「每 5 分钟查」与旧猜测值「~5 次」自相矛盾，须实测；Tadashi 裁定①）：对 active 账号 token 以 1s 间隔顺发请求直到首个 429（上限 30 次），记录 429 响应头/体；再于 `retry-after` 期满后单发验证恢复。脚本存 scratchpad `probe-phase1.sh`。
+
+**结果**：
+- 连续 **5 次 200**，第 6 次 **429**；429 响应头 **`retry-after: 300`**（体：`rate_limit_error`）。
+- 即真实契约 ≈ **每 token 每 5 分钟窗口 5 次**（200 响应无任何 `x-ratelimit-*` 头，限额只在 429 时经 retry-after 暴露）。
+- **旁证隔离性**：探测打满限额期间，本机同账号的活 Claude session（本 runner 自身）推理全程正常——usage endpoint 的限流桶与推理通道相互独立，探测/轮询不影响干活。
+- 恢复验证：429 后 ~320s 单发（结果见 exploration 决策记录；恢复即 200 则契约闭合）。
+
+**设计含义**：
+- daemon 默认 poll 间隔 **120s**（= 2.5 次/5min，恰用预算一半，余量留给切号后的立即补查）；可配下限 60s（= 5 次/5min，贴限额，不推荐常开）。
+- 429 处理：读 `retry-after`（实测总是给出）按其退避；缺失时指数退避（60s 起、上限 30min）。
+- 目标验证的每候选 1 次调用打在**候选自己的 token 桶**上（per-token 限流），不消耗 active 桶。
+- statusline 缓存被 daemon 持续刷新后，statusline 自己的刷新分支（cache 永不过期）**不再发起任何调用**——active 桶的唯一常驻消费者就是 daemon，预算独占。
 
 ## 2. statusline 滞后根因（issue 调研交付②，事故①解释）
 
@@ -60,7 +70,7 @@ Accept: application/json
 
 事故①「54%→79% / 20min 且滞后于 Annie 端」完全被 1+2+3 解释：fleet 高速烧配额时，10 分钟前的缓存 + 一帧延迟 = 显示比真值低一大截；Annie 端（Anthropic 官网）是服务端真值。
 
-**修复（随本单交付，零改 statusline 脚本）**：daemon 每次 poll 把 200 响应原样原子写入 `~/.claude/usage-api-cache.json`（tmp+rename，与脚本自身写法 :108 相同）→ 缓存 mtime 永远新鲜 → 脚本自己的刷新分支（:114-119）不再触发（成为 daemon 停摆时的自然 fallback），显示值最坏落后一个 poll 间隔。两个写者都是原子 rename，last-writer-wins，无撕裂风险。
+**修复（随本单交付，零改 statusline 脚本）**：daemon 每次 poll 把 200 响应原样原子写入 `~/.claude/usage-api-cache.json`（tmp+rename，与脚本自身写法 :108 相同）→ 缓存 mtime 永远新鲜 → 脚本自己的刷新分支（:114-119）不再触发（成为 daemon 停摆时的自然 fallback），显示值最坏落后一个 poll 间隔（默认 120s，见 §1.3 实测）。两个写者都是原子 rename，last-writer-wins，无撕裂风险。
 
 ## 3. 凭证与 token 生命周期（安全约束）
 
@@ -114,16 +124,25 @@ OAuth refresh 是**轮转式**：refresh 一次，旧 refreshToken 全家作废�
 ### 5.3 监控盲区（v1 文档化边界）
 active 账号 accessToken 过期（`expiresAt` 已过）且机器上无任何活 Claude session 来刷新它时，daemon 无法读 active 用量（401），且红线 R1 禁止它自己刷。v1 行为：读 Keychain `expiresAt` 预判、跳过 API 调用、进入 blind 态并发一条（claims.db 日去重的）`quota_read_blind` 告警。本机 fleet 24/7 运转，blind 态罕见；「全员因配额假死」场景 token 仍有效（quota≠auth），**不落入盲区**。
 
-## 6. 与 FLY-1182（Bridge 被动引擎）共存性推演
+## 6. Bridge 被动引擎退役方案（Annie 2026-07-14 拍板：不保留，直接退役）
 
-两路都收敛到 `switchAccount()` → 同一把 mkdir 锁（`claude-accounts.lock`）+ 同一 store 的双重 CAS（name+generation，`switch-executor.ts:142-163`）：
+Annie 批注⑦推翻此前「保留为兜底」决定（「从来就没 work 过」）——daemon 成为**唯一**自动切号器。退役是外科手术式的，边界如下：
 
-- daemon 先切（阈值 90%）→ Bridge 稍后 pane 观察到旧账号 100%（generation 已 bump）→ CAS 失配 → `noop_already_switched`。✅
-- Bridge 先切（daemon poll 间隙撞了 100%）→ daemon 下一 poll 读到新 active，阈值未过 → 无动作。✅
-- 并发进锁 → 锁串行化，后进者 CAS 失配 noop。✅
-- 崩溃恢复：`readActiveProfile()`（真实 `.active`）优先于 stale JSON（`switch-executor.ts:136-140`），双方同享。✅
+**退（Bridge 内的自动切号触发-执行管线）**：
+- `AutoRepairBot` 的 accountSwitch 路由（`AutoRepairBot.ts:148/256-257` 的 `canAttempt`/`enqueue`）；
+- `account-switch-watchdog.ts` 的 poll-piggyback 执行 tick（`plugin.ts:8002` 挂接点）及其 `pending-store` durable 队列的**自动切号用途**；
+- FLY-1182（点火单，In Progress，PR #562）随之**停止点火**——被本单取代，处置（关闭/重定向）由 Lead 定。
 
-结论：**零 Bridge 代码改动**（除告警 kind 注册三处同步），共存结构安全。
+**留（daemon 的地基 + 与自动切号无关的功能）**：
+- 共享库：`switch-executor.ts`（switchAccount）、`account-store.ts`、`claude-profile-cli.ts`、`freshness.ts`、`mkdir-lock.ts`——daemon 直接复用，**不许删**；
+- `flywheel-claude-profile` bash 全套（手动换号 + daemon 的 applyProfile 后端）；
+- pane 配额**检测与告警**（LeadWatchdog/runner-quota-scan 的 usage_limit 告警）——退的是「检测后自动切」，不是检测本身；封顶告警仍有运维信息价值；
+- FLY-1049 rescue/login-expired 救援链（与配额切号无关）。
+
+**迁移注意**：
+- 手动 CLI（`flywheel-claude-profile use`）与 daemon 仍经同一把 mkdir 锁 + store CAS 串行化（`switch-executor.ts:142-163`），人机并发安全性不变；
+- 退役后 daemon 的可靠性要求升级（唯一切号器）：launchd KeepAlive + 健康快照（state 文件）+ 停摆告警是硬要求；
+- 退役的具体代码改动（拆 AutoRepairBot 路由/watchdog tick、相关测试处置、FLY-1182 收尾）列入 plan 的独立里程碑，与 daemon 构建同 PR 或紧邻 PR，由 implement 阶段执行。
 
 ## 7. QA 可注入面（「Claude 全员假死」场景可测性）
 

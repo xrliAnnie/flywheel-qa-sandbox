@@ -32,7 +32,8 @@ Issue: FLY-1256 (https://linear.app/geoforge3d/issue/FLY-1256/build-外部配额
 
 ### D-B：与 FLY-1182（Bridge 被动引擎）的关系？
 
-**选定：共存，daemon 为主动层，Bridge 引擎保留为被动兜底，不退役。** 两者复用同一把 mkdir 锁 + 同一个 `claude-accounts.json` CAS store：谁先切谁赢，另一方 `noop_already_switched`，结构上不可能打架。Bridge 代码近零改动（仅告警 kind 白名单加行）。退役被动层只加风险不加值。
+**终版（Annie 2026-07-14 批注⑦拍板，推翻此前「保留」）：不保留，直接退役**（她的原话：「从来就没 work 过」）。daemon 成为唯一自动切号器；FLY-1182 停止点火、被本单取代。退役是外科手术式的——只退 Bridge 内「检测后自动切」的触发-执行管线，daemon 复用的共享库（switchAccount/account-store/profile 脚本/freshness/锁）与 pane 封顶**告警**全部保留。退役边界与迁移注意详见 research.md §6。
+（历史记录：brainstorm gate 阶段 Lead 曾拍「保留为兜底」，后被 founder 批注推翻——以 founder 终版为准。）
 
 ### D-C：daemon 怎么选目标账号？
 
@@ -51,7 +52,17 @@ Issue: FLY-1256 (https://linear.app/geoforge3d/issue/FLY-1256/build-外部配额
 - Keychain 与池的一切写操作**全部委托既有 `flywheel-claude-profile`**（`security -i` 无 argv 范式、verify-before-commit、capture-back）。池文件 `~/.flywheel/claude-profiles/<name>/.credentials.json`（0600）是**既有**落盘形态，本单不新增任何落盘。
 - **红线：绝不刷新 ACTIVE 账号的 token**（外部刷新会轮转 refresh-token family，strand 全部活 session——正是事故②的机理，也是 FLY-871 的既有红线）。
 
-### D-E：statusline 滞后要不要顺手修？
+### D-E：剩余配额「花不完」怎么办？（回流模式，待 Annie v2 稿选择）
+
+Annie 批注①④的担忧：90%/95% 触发换号，剩的 5-10% 是不是永远花不完？三层回答：
+
+1. **不必然浪费**：5h 窗口每 ~5 小时滚动清零、7d 每周清零——窗口一刷新，账号回到候选池，余量重新可用。真正可能浪费的只有「7d 窗口临期时还没用掉的尾巴」。
+2. **先到期先用最小化它**：排序天然优先消耗快过期的账号，把尾巴压到最小。
+3. **可选「回流模式」**（Tadashi 裁定②，做成开关给 Annie 选）：当所有候选都不合格（全员紧张）时，daemon 不再只告警——允许**回头切到已被换下的高水位账号**，把它从触发线（90%）榨到二次上限（默认 98%，可配）。打开 = 榨干每一滴；关闭 = 保守安全垫。默认建议关闭（v2 稿她拍板）。
+
+同时说明：触发线留的余量不是纯损耗——换号后活 session 仍在旧账号上烧到各自 token 自然刷新，这段迁移期就靠这个安全垫供血。
+
+### D-F：statusline 滞后要不要顺手修？
 
 **要（低成本高回报）。** 滞后根因 = statusline 脚本自身的 10 分钟缓存 + 后台异步刷新（过期后首帧仍显示旧值）+ 只在 Claude 渲染时才跑 + usage API ~5 次/token 的 429 预算逼出的保守缓存（详见 research.md §2）。daemon 每次 poll 把新鲜响应原样写回 `~/.claude/usage-api-cache.json` → statusline 读到的缓存永远新鲜，**零额外 API 调用**，statusline 脚本一行不用改。
 
@@ -68,9 +79,9 @@ graph TB
     CACHE[~/.claude/usage-api-cache.json<br/>statusline 读的缓存]
     PROF[flywheel-claude-profile use<br/>freshness guard + capture-back<br/>+ verify-commit + 身份同步]
     DISC[Discord #flywheel-alerts<br/>via lead-alert.sh 直连 REST]
-    BRIDGE[Bridge 被动引擎 FLY-696/1182<br/>pane 100% 兜底，保留]
+    BRIDGE[Bridge 被动引擎 FLY-696/1182<br/>自动切号管线退役 — Annie 拍板<br/>仅保留封顶告警]
 
-    D -->|"poll active 用量(阈值判断)"| API
+    D -->|"poll active 用量(阈值判断, 默认 120s)"| API
     D -->|读 active token| KC
     D -->|回写新鲜数据| CACHE
     D -->|"切前验目标(池 token 查用量)"| API
@@ -78,14 +89,14 @@ graph TB
     PROF --> KC
     PROF --> POOL
     D -->|切号/无目标/盲区 告警| DISC
-    BRIDGE -.->|同一把锁+CAS 互斥| POOL
+    BRIDGE -.->|"退役(research §6); 手动 CLI 仍经同锁+CAS 串行"| POOL
 ```
 
 ## 5. Scope 边界
 
-**In**：daemon（监控 + 阈值切号 + 目标验证 + 通知）、founder 顺序配置、statusline 缓存回写、`selectNextAccount` 顺序扩展（byte-compat）、告警 kind 注册、launchd 安装物料、实时配额源调研报告（research.md）、「Claude 全员假死时独立切号」QA 支持面。
+**In**：daemon（监控 + 阈值切号 + 两段式目标验证/排序 + 通知）、水位/顺序配置、statusline 缓存回写、`selectNextAccount` 顺序扩展（byte-compat）、告警 kind 注册、launchd 安装物料、实时配额源调研 + rate-limit 真机探测报告（research.md）、**Bridge 被动切号管线退役**（Annie 批注⑦，边界见 research.md §6）、回流模式（若 Annie v2 稿选择开启）、「Claude 全员假死时独立切号」QA 支持面。
 
-**Out**：Codex 账号轮转（已有 per-runner fallback）；被动引擎退役（明确不做）；卡 quota 旧 runner 的自动恢复（FLY-1182 D2 已定 v1 不搬）；active token 过期且无活 session 时的「监控盲区」自动解除（v1 = 告警 + 文档化边界，见 research.md §5）；多机 fleet 协同（单机 v1）。
+**Out**：Codex 账号轮转（已有 per-runner fallback）；卡 quota 旧 runner 的自动恢复（FLY-1182 D2 已定 v1 不搬）；active token 过期且无活 session 时的「监控盲区」自动解除（v1 = 告警 + 文档化边界，见 research.md §5）；多机 fleet 协同（单机 v1）。
 
 ## 6. 决策记录
 
@@ -95,3 +106,10 @@ graph TB
    - 5h 终版拍板：7d reset 是主凭据；5h 降级为资格筛（不参与排序），按实现简单性落地，不过度设计。
    - 轮询节奏疑问已答：常驻轮询（非每日定时），active 每 5 分钟、池子号只在换号时验。
 3. 流程注：Annie 要求设计定稿前先看 founder-facing HTML 设计稿（`/tmp/fly1256-design-overview.html`，经 Lead publish）——plan.md 定稿与 Codex design review HOLD 至她确认/批注折入。
+4. Annie 对 v1 设计稿的 7 条批注（2026-07-14 经 Lead 原样转达）+ Tadashi 补充裁定，全部折入：
+   - ①④ 剩余配额「花不完」担忧 → D-E 三层回答 + 可选回流模式卡（她 v2 拍板开/关）。
+   - ② 先到期先用合理，但资格线语义要写成人话 + 全部数字做显式配置表 → v2 稿照做。
+   - ⑤ 「每 5 分钟查」与「~5 次限额」矛盾 → **真机探测**（Tadashi 裁定①）：实测 **5 次/5 分钟/token（429 带 retry-after: 300）**，据此定默认 poll 120s（用预算一半）；方法与数据见 research.md §1.3。
+   - ⑥ statusline 回写：赞成，保留。
+   - ⑦ **Bridge 被动引擎退役**（「从来就没 work 过」）——推翻决策记录 1 中 Lead 的「保留」，D-B/架构图/Scope/research §6 全部改写；FLY-1182 停止点火。
+   - Tadashi 裁定③：改完出 v2 稿经他重新 publish 给 Annie 确认；plan 定稿仍 HOLD。
