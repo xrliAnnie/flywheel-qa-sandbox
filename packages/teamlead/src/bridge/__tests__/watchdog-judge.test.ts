@@ -199,6 +199,104 @@ describe("parseJudgeVerdict (B2)", () => {
 	});
 });
 
+// ── FLY-1234 QA N-to-N (CONFIRMED HIGH): the REAL codex --json wire shape ──
+//
+// Real `codex exec --json` emits JSONL with the model's answer as an ESCAPED
+// string inside item.completed.agent_message.text. The old bare-object regex
+// could never match it (escaped quotes) — the fixtures below are the shape
+// real codex actually produces (verbatim sample from the QA real-machine run,
+// evidence commit ac026780a), which the pre-fix suite never exercised.
+describe("parseJudgeVerdict — real codex --json JSONL (FLY-1234 QA HIGH)", () => {
+	/** Byte-identical wire framing: answer JSON escaped into item text. */
+	function jsonlEnvelope(answer: unknown, id = "item_0"): string {
+		return JSON.stringify({
+			type: "item.completed",
+			item: {
+				id,
+				type: "agent_message",
+				text: typeof answer === "string" ? answer : JSON.stringify(answer),
+			},
+		});
+	}
+	const A_WORKING = {
+		verdict: "a_working",
+		attribution: "runner",
+		suggestedAction:
+			"Continue monitoring while the external design review completes.",
+		rationale:
+			"The design-review tail is corroborated by an external_review_started event from 0 minutes ago, indicating a healthy quiet review operation.",
+	};
+
+	it("VERBATIM QA real-machine sample (case-b) parses to the model's actual a_working answer", () => {
+		// Copied literally from e2e-evidence/case-b.json judgeRawStdout — the
+		// exact stdout the shipping dist returned null for.
+		const realStdout =
+			'{"type":"thread.started","thread_id":"019f5ef0-40cc-77a0-9a9c-6748f3e41cb2"}\n' +
+			'{"type":"turn.started"}\n' +
+			'{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\\"verdict\\":\\"a_working\\",\\"attribution\\":\\"runner\\",\\"suggestedAction\\":\\"Continue monitoring while the external design review completes.\\",\\"rationale\\":\\"The design-review tail is corroborated by an external_review_started event from 0 minutes ago, indicating a healthy quiet review operation.\\"}"}}\n' +
+			'{"type":"turn.completed","usage":{"input_tokens":16301,"cached_input_tokens":9984,"output_tokens":89,"reasoning_output_tokens":27}}\n';
+		expect(parseJudgeVerdict(realStdout)).toEqual(A_WORKING);
+	});
+
+	it("full envelope built the way codex frames it (thread/turn events around the item) parses", () => {
+		const stdout = [
+			'{"type":"thread.started","thread_id":"t1"}',
+			'{"type":"turn.started"}',
+			jsonlEnvelope(A_WORKING),
+			'{"type":"turn.completed","usage":{"input_tokens":1}}',
+			"",
+		].join("\n");
+		expect(parseJudgeVerdict(stdout)).toEqual(A_WORKING);
+	});
+
+	it("multiple agent_message items → the LAST valid verdict wins", () => {
+		const first = { ...A_WORKING, verdict: "suspicious" };
+		const stdout = `${jsonlEnvelope(first, "item_0")}\n${jsonlEnvelope(A_WORKING, "item_1")}\n`;
+		expect(parseJudgeVerdict(stdout)?.verdict).toBe("a_working");
+	});
+
+	it("a later INVALID agent_message does not mask an earlier valid one", () => {
+		const stdout = `${jsonlEnvelope(A_WORKING, "item_0")}\n${jsonlEnvelope("no json here", "item_1")}\n`;
+		expect(parseJudgeVerdict(stdout)?.verdict).toBe("a_working");
+	});
+
+	it("non-JSON log lines interleaved in stdout are tolerated", () => {
+		const stdout = `[codex] warming up\n${jsonlEnvelope(A_WORKING)}\nnot json at all\n`;
+		expect(parseJudgeVerdict(stdout)).toEqual(A_WORKING);
+	});
+
+	it("prose-wrapped answer INSIDE the agent_message text still parses via the inner scan", () => {
+		const stdout = jsonlEnvelope(
+			`Here is my verdict: ${JSON.stringify(A_WORKING)}`,
+		);
+		expect(parseJudgeVerdict(stdout)?.verdict).toBe("a_working");
+	});
+
+	it("non-agent_message item.completed entries (e.g. reasoning) are ignored", () => {
+		const stdout = [
+			'{"type":"item.completed","item":{"id":"r0","type":"reasoning","text":"thinking…"}}',
+			jsonlEnvelope(A_WORKING),
+		].join("\n");
+		expect(parseJudgeVerdict(stdout)).toEqual(A_WORKING);
+	});
+
+	it("JSONL with only invalid/off-enum answers → null (fail-closed)", () => {
+		const stdout = jsonlEnvelope({
+			verdict: "d_maybe",
+			attribution: "runner",
+			suggestedAction: "x",
+			rationale: "y",
+		});
+		expect(parseJudgeVerdict(stdout)).toBeNull();
+	});
+
+	it("legacy bare-stdout verdict still parses (fallback for non-JSONL judge bins)", () => {
+		expect(parseJudgeVerdict(`noise\n${JSON.stringify(A_WORKING)}\n`)).toEqual(
+			A_WORKING,
+		);
+	});
+});
+
 describe("createWatchdogJudge (B1 runtime contract)", () => {
 	function makeSpawn(result: Partial<JudgeSpawnResult> = {}) {
 		const calls: Array<{

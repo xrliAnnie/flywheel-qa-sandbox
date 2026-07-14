@@ -16,6 +16,11 @@ export interface HookPayload {
 	issue_labels?: string[];
 	// stuck-specific
 	minutes_since_activity?: number;
+	/** FLY-1234: session_stuck confirm-layer annotation — the bounded reason
+	 * code (CONFIRM_NOTES prose) recording WHY the confirm layer let this wake
+	 * through (dead_pin / judge c_stuck / budget exhausted / fail-open …).
+	 * Never pane text, never model rationale. Absent on the legacy path. */
+	confirm_note?: string;
 	// FLY-195: runner_stuck_escalation evidence fields (plan §3.1/§3.2).
 	// Evidence ONLY — the Lead judges; none of these are act-triggers.
 	/** Whole minutes the runner's terminal output has been unchanged. */
@@ -231,6 +236,54 @@ export function formatStuckEscalation(
 			"---",
 		);
 	}
+	if (e.stage_context) lines.push(`Note: ${e.stage_context}`);
+	if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
+	lines.push(`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`);
+	return lines.join("\n");
+}
+
+// ── FLY-1234: shared session_stuck renderer ──
+
+/**
+ * FLY-1234 (R1 #5, annotation leg 3/3): session_stuck previously rendered
+ * through each runtime's GENERIC formatter, which drops any field it does not
+ * know — the new `confirm_note` would be persisted yet invisible to the Lead.
+ * SHARED between MailboxLeadRuntime and CommDBLeadRuntime (parity-by-
+ * construction, FLY-195 lesson: payload/render drift IS the bug class).
+ *
+ * Byte-compat contract: for a payload WITHOUT `confirm_note` this renders
+ * exactly what both generic formatters render today (same fields, same
+ * order) — the kill-switch sentinel depends on it.
+ */
+export function formatSessionStuck(env: StuckEscalationEnvelopeLike): string {
+	const e = env.event;
+	const roleLabel =
+		e.session_role && e.session_role !== "main"
+			? `[${e.session_role.toUpperCase()}] `
+			: "";
+	const lines = [
+		`[Event #${env.seq}] ${roleLabel}${e.event_type}`,
+		`ID: ${e.execution_id || "—"} | Issue: ${e.issue_identifier || e.issue_id || "—"}`,
+	];
+	if (e.issue_title) lines.push(`Title: ${e.issue_title}`);
+	if (e.status) lines.push(`Status: ${e.status}`);
+	if (e.decision_route) lines.push(`Route: ${e.decision_route}`);
+	if (e.summary) lines.push(`Summary: ${e.summary.slice(0, 300)}`);
+	if (e.last_error) lines.push(`Error: ${e.last_error.slice(0, 200)}`);
+	if (e.action) {
+		lines.push(
+			`Action: ${e.action} (${e.action_source_status} → ${e.action_target_status})`,
+		);
+	}
+	if (e.commit_count) {
+		lines.push(
+			`Commits: ${e.commit_count} | +${e.lines_added ?? 0}/-${e.lines_removed ?? 0}`,
+		);
+	}
+	if (e.filter_priority) lines.push(`Priority: ${e.filter_priority}`);
+	if (e.notification_context) lines.push(`Context: ${e.notification_context}`);
+	if (e.confirm_note) lines.push(`Confirm-Note: ${e.confirm_note}`);
+	if (e.pr_number) lines.push(`PR: #${e.pr_number}`);
 	if (e.stage_context) lines.push(`Note: ${e.stage_context}`);
 	if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
 	lines.push(`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`);

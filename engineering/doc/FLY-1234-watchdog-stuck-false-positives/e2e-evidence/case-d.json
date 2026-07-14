@@ -1,0 +1,16 @@
+{
+	"scenario": "d",
+	"description": "dead pin — remain-on-exit corpse",
+	"execId": "qa1234-d",
+	"tmuxTarget": "qa-fly1234-e2e:case-d",
+	"paneDeadConfirmed": true,
+	"result": {
+		"action": "emit",
+		"reason": "dead_pin",
+		"confirmNote": "dead_pin: tmux pane process is a remain-on-exit corpse"
+	},
+	"judgeCalls": 0,
+	"framesCaptured": 0,
+	"durationMs": 34,
+	"pass": true
+}

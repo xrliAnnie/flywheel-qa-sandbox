@@ -36,6 +36,11 @@ import { classifyQuiet, type QuietSignals } from "./bridge/quiet-classifier.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import { reconnectingBadge, stageBadge } from "./bridge/stage-utils.js";
 import {
+	CONFIRM_NOTES,
+	parseStuckConfirmKnobs,
+	type StuckConfirmResult,
+} from "./bridge/stuck-pane-confirm.js";
+import {
 	getTmuxTargetFromCommDb,
 	isTmuxWindowAlive,
 	lookupTmuxTarget,
@@ -133,6 +138,12 @@ export interface HeartbeatNotifier {
 	onSessionStuck(
 		session: Session,
 		minutesSinceActivity: number,
+		/**
+		 * FLY-1234: confirm-layer annotation. ONLY passed when the confirm layer
+		 * is engaged (holder injected + kill-switch ON) — the legacy path keeps
+		 * the exact two-argument call (INV-5 arity sentinel).
+		 */
+		details?: { confirmNote?: string },
 	): Promise<boolean>;
 	onSessionOrphaned(
 		session: Session,
@@ -316,6 +327,22 @@ export class HeartbeatService implements ReconnectController {
 		 * checkStuck/reapOrphans. Absent → byte-compat no-op.
 		 */
 		private onMaintenanceTick?: (tick: number) => Promise<void>,
+		/**
+		 * FLY-1234: late-bound pane/process confirm layer for the `session_stuck`
+		 * heartbeat path (liveness probe → two-frame compare → judge). Tri-state
+		 * semantics (R2 #6):
+		 *   - `undefined`      — constructor never wired it (legacy/tests): the old
+		 *                        path runs byte-for-byte, two-arg notifier calls,
+		 *                        zero new logs (INV-5);
+		 *   - `current: null`  — production wiring fault (holder declared but never
+		 *                        bound): fail-open EMIT with a `confirm_unbound`
+		 *                        annotation + a warn log — never a silent bypass;
+		 *   - `current` bound  — the confirm layer runs (INV-1: it may only
+		 *                        suppress on positive health evidence).
+		 */
+		private stuckConfirmHolder?: {
+			current: ((session: Session) => Promise<StuckConfirmResult>) | null;
+		},
 	) {}
 
 	private maintenanceInFlight = false;
@@ -901,7 +928,47 @@ export class HeartbeatService implements ReconnectController {
 		);
 	}
 
+	/**
+	 * FLY-1234 (R1 #2): checkStuck in-flight guard. The confirm layer awaits
+	 * real time (frame gap / judge queue) inside the loop — without this a slow
+	 * pass would be re-entered by the next tick and amplify (parkedSweepRunning
+	 * precedent). `check()`'s await of checkStuck keeps its existing semantics
+	 * (later phases run after); this guard only breaks the re-entry chain.
+	 *
+	 * Codex code R1 #2 (INV-5): the guard exists ONLY while the confirm layer
+	 * is engaged — on the kill-switch / holder-undefined rollback paths the
+	 * legacy overlap behavior (and its delivery/dedup timing) is preserved
+	 * byte-for-byte, with zero new logs.
+	 */
+	private stuckCheckRunning = false;
+
 	private async checkStuck(): Promise<void> {
+		const confirmEngaged =
+			this.stuckConfirmHolder !== undefined && this.stuckConfirmEnabled();
+		if (!confirmEngaged) {
+			await this.checkStuckInner();
+			return;
+		}
+		if (this.stuckCheckRunning) {
+			console.log(
+				"[HeartbeatService] FLY-1234 checkStuck from a previous tick is still running — skipping this tick",
+			);
+			return;
+		}
+		this.stuckCheckRunning = true;
+		try {
+			await this.checkStuckInner();
+		} finally {
+			this.stuckCheckRunning = false;
+		}
+	}
+
+	/** FLY-1234: kill-switch, read per call (`=0` reverts byte-for-byte). */
+	private stuckConfirmEnabled(): boolean {
+		return process.env.FLYWHEEL_STUCK_PANE_CONFIRM !== "0";
+	}
+
+	private async checkStuckInner(): Promise<void> {
 		const stuck = this.store.getStuckSessions(this.thresholdMinutes);
 
 		// Prune notified set: remove entries for sessions no longer stuck
@@ -916,6 +983,11 @@ export class HeartbeatService implements ReconnectController {
 		if (this.quietPersistEnabled()) {
 			this.store.pruneQuietWakeNotifiedNotIn("stuck", [...stuckIds]);
 		}
+
+		// FLY-1234 (INV-2): per-tick confirm budget. Beyond-budget candidates take
+		// the LEGACY emit (annotated) — never deferral, so a dead_pin queued behind
+		// chronically-suppressed candidates can never starve.
+		let confirmBudget = parseStuckConfirmKnobs(process.env).perTick;
 
 		for (const session of stuck) {
 			// FLY-172 + FLY-623: a monitoring-lost / re-adopted (alive-but-detached)
@@ -933,6 +1005,68 @@ export class HeartbeatService implements ReconnectController {
 			// Advisory-only — reapOrphans force-fail + monitoring-lost are untouched.
 			if (this.isStuckWakeSuppressed(session)) continue;
 
+			// FLY-1234: pane/process confirm layer (tri-state — see the holder doc).
+			let confirmNote: string | undefined;
+			let confirmEngaged = false;
+			if (this.stuckConfirmHolder !== undefined && this.stuckConfirmEnabled()) {
+				confirmEngaged = true;
+				if (this.stuckConfirmHolder.current === null) {
+					// Production wiring fault — fail-open emit, loudly (INV-1).
+					confirmNote = CONFIRM_NOTES.confirm_unbound;
+					console.warn(
+						`[HeartbeatService] FLY-1234 confirm holder UNBOUND — fail-open emit for ${session.execution_id}`,
+					);
+				} else if (confirmBudget <= 0) {
+					confirmNote = CONFIRM_NOTES.confirm_budget_exhausted;
+					console.log(
+						`[HeartbeatService] FLY-1234 confirm budget exhausted — legacy emit for ${session.execution_id}`,
+					);
+				} else {
+					confirmBudget -= 1;
+					const activityBefore = session.last_activity_at;
+					let result: StuckConfirmResult;
+					try {
+						result = await this.stuckConfirmHolder.current(session);
+					} catch (err) {
+						// confirmStuckCandidate never throws by contract —
+						// belt-and-suspenders fail-open (INV-1).
+						console.warn(
+							`[HeartbeatService] FLY-1234 confirm threw for ${session.execution_id} (fail-open emit): ${(err as Error).message}`,
+						);
+						result = {
+							action: "emit",
+							reason: "confirm_error",
+							confirmNote: CONFIRM_NOTES.confirm_error,
+						};
+					}
+					// INV-3 + R2 #7: the confirm call awaited real time — re-read and
+					// replay EVERY cheap gate before emitting. Recovery is judged by
+					// snapshot string equality (no JS date parsing). Any change → this
+					// tick emits nothing and dedups nothing (re-evaluated next tick).
+					const fresh = this.store.getSession(session.execution_id);
+					if (
+						!fresh ||
+						fresh.status !== "running" ||
+						fresh.last_activity_at !== activityBefore
+					) {
+						continue;
+					}
+					if (this.isMonitorSuppressed(session.execution_id)) continue;
+					if (this.alreadyNotifiedStuck(fresh)) continue;
+					if (this.isStuckWakeSuppressed(fresh)) continue;
+					if (result.action === "suppress") {
+						// No dedup on suppress — the episode is re-evaluated next tick
+						// (the death probe catches a later real death; the judge
+						// cooldown cache bounds the cost).
+						console.log(
+							`[HeartbeatService] FLY-1234 confirm suppressed session_stuck for ${session.execution_id} (${result.reason})`,
+						);
+						continue;
+					}
+					confirmNote = result.confirmNote ?? result.reason;
+				}
+			}
+
 			let minutesSince = this.thresholdMinutes;
 			if (session.last_activity_at) {
 				const lastActivity = new Date(
@@ -944,10 +1078,14 @@ export class HeartbeatService implements ReconnectController {
 			}
 
 			try {
-				const persisted = await this.notifier.onSessionStuck(
-					session,
-					minutesSince,
-				);
+				// INV-5: the legacy path keeps the exact two-argument call — the
+				// three-argument form exists ONLY when the confirm layer is engaged
+				// (arity sentinel).
+				const persisted = confirmEngaged
+					? await this.notifier.onSessionStuck(session, minutesSince, {
+							confirmNote,
+						})
+					: await this.notifier.onSessionStuck(session, minutesSince);
 				// FLY-637 R1 #2 / R2 LOW #2: dedup (BOTH persistent + in-memory) ONLY
 				// once the wake was actually persisted to lead_events. A no-runtime /
 				// no-lead no-op (persisted=false) must NOT durably silence a wake that
@@ -1656,7 +1794,11 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		private chatThreadCreator?: ChatThreadCreator,
 	) {}
 
-	async onSessionStuck(session: Session, minutes: number): Promise<boolean> {
+	async onSessionStuck(
+		session: Session,
+		minutes: number,
+		details?: { confirmNote?: string },
+	): Promise<boolean> {
 		const hookPayload: HookPayload = {
 			event_type: "session_stuck",
 			execution_id: session.execution_id,
@@ -1668,6 +1810,9 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			minutes_since_activity: minutes,
 			session_role: session.session_role ?? "main",
 		};
+		// FLY-1234: confirm-layer annotation — only present when the confirm
+		// layer is engaged (legacy two-arg calls leave the payload unchanged).
+		if (details?.confirmNote) hookPayload.confirm_note = details.confirmNote;
 		// FLY-637 R1 #2: surface whether the event was actually persisted to
 		// lead_events so checkStuck only dedups a wake that truly happened.
 		return this.deliverHook(session, hookPayload);

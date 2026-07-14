@@ -99,6 +99,22 @@ export function buildJudgePrompt(input: WatchdogJudgeInput): string {
 		"changing spinner counters, or an idle prompt WITH a matching park/gate in",
 		"the runtime context.",
 		"",
+		// FLY-1234 few-shot: the 2026-07-13 production false-positive formations.
+		// Corroboration REQUIRED (R1 #3) — static pane text alone never earns a
+		// downgrade; "pane process alive" alone is not "a build/review child is
+		// running".
+		"Known healthy-but-quiet formations (real production cases, 2026-07-13).",
+		"IMPORTANT: these downgrades require corroboration from the runtime",
+		"context — static pane text ALONE is never sufficient:",
+		"- External code/design review wait: review-driver output at the tail AND",
+		"  a recent comm/stage event indicates the review started → a_working.",
+		"  No such corroboration → suspicious.",
+		'- Long thinking turn: a LIVE spinner line ("esc to interrupt", "✻ … Ns")',
+		"  in the CURRENT frame → a_working.",
+		"- Test suite / long build: runner/build output at the tail AND no error",
+		"  signature AND recent comm/stage corroboration → a_working.",
+		"  Stale-looking test output with no corroboration → suspicious.",
+		"",
 		`Runtime context: stage: ${input.stage ?? "(unknown)"} | fsm: ${input.fsmStatus ?? "(unknown)"} | park: ${
 			input.park
 				? `${input.park.kind}${input.park.reason ? ` (${input.park.reason})` : ""}`
@@ -114,38 +130,104 @@ export function buildJudgePrompt(input: WatchdogJudgeInput): string {
 }
 
 /**
- * Strict parse: scan stdout for JSON objects carrying a `verdict` key, take
- * the LAST valid one (codex --json emits event lines around the answer),
- * validate both enums, keep ONLY the schema fields (unknown fields dropped).
- * Anything off-contract → null (fail-closed).
+ * Validate a decoded candidate object against the verdict schema: both enums
+ * strict, keep ONLY the schema fields (unknown fields dropped). Off-contract
+ * → null (fail-closed).
  */
-export function parseJudgeVerdict(stdout: string): WatchdogJudgeVerdict | null {
-	const candidates = stdout.match(/\{[^{}]*"verdict"[^{}]*\}/g) ?? [];
+function validateVerdict(
+	raw: Record<string, unknown>,
+): WatchdogJudgeVerdict | null {
+	const verdict = raw.verdict;
+	const attribution = raw.attribution;
+	if (
+		typeof verdict === "string" &&
+		(JUDGE_VERDICTS as readonly string[]).includes(verdict) &&
+		typeof attribution === "string" &&
+		(JUDGE_ATTRIBUTIONS as readonly string[]).includes(attribution) &&
+		typeof raw.suggestedAction === "string" &&
+		typeof raw.rationale === "string"
+	) {
+		return {
+			verdict: verdict as JudgeVerdictKind,
+			attribution: attribution as JudgeAttribution,
+			suggestedAction: raw.suggestedAction,
+			rationale: raw.rationale,
+		};
+	}
+	return null;
+}
+
+/**
+ * Extract a verdict from ONE model answer text: direct JSON.parse first (the
+ * prompt demands JSON only), then a bounded object scan for prose-wrapped
+ * answers ("Here is my verdict: {...}"). Last valid object wins.
+ */
+function parseVerdictFromText(text: string): WatchdogJudgeVerdict | null {
+	try {
+		const direct = JSON.parse(text) as Record<string, unknown>;
+		const verdict = validateVerdict(direct);
+		if (verdict) return verdict;
+	} catch {
+		/* fall through to the scan */
+	}
+	const candidates = text.match(/\{[^{}]*"verdict"[^{}]*\}/g) ?? [];
 	for (let i = candidates.length - 1; i >= 0; i--) {
 		try {
-			const raw = JSON.parse(candidates[i]!) as Record<string, unknown>;
-			const verdict = raw.verdict;
-			const attribution = raw.attribution;
-			if (
-				typeof verdict === "string" &&
-				(JUDGE_VERDICTS as readonly string[]).includes(verdict) &&
-				typeof attribution === "string" &&
-				(JUDGE_ATTRIBUTIONS as readonly string[]).includes(attribution) &&
-				typeof raw.suggestedAction === "string" &&
-				typeof raw.rationale === "string"
-			) {
-				return {
-					verdict: verdict as JudgeVerdictKind,
-					attribution: attribution as JudgeAttribution,
-					suggestedAction: raw.suggestedAction,
-					rationale: raw.rationale,
-				};
-			}
+			const verdict = validateVerdict(
+				JSON.parse(candidates[i]!) as Record<string, unknown>,
+			);
+			if (verdict) return verdict;
 		} catch {
 			/* try the next candidate */
 		}
 	}
 	return null;
+}
+
+/**
+ * Parse the judge child's stdout into a verdict. Anything off-contract →
+ * null (fail-closed).
+ *
+ * FLY-1234 QA N-to-N (CONFIRMED HIGH, evidence commit ac026780a): real
+ * `codex exec --json` emits JSONL — the model's answer is an ESCAPED string
+ * inside `{"type":"item.completed","item":{"type":"agent_message","text":
+ * "{\"verdict\":…}"}}`. The old bare-object regex could NEVER match that
+ * (escaped quotes), so every real judge call failed closed to null and the
+ * confirm layer fail-opened to `judge_unavailable` — the model answered
+ * correctly and the parser threw the answer away. Contract now:
+ *  1. JSONL envelope FIRST: per line, tolerate non-JSON lines, collect every
+ *     `item.completed` agent_message text, take the LAST one that yields a
+ *     valid verdict (multi-item tolerant);
+ *  2. legacy bare scan as FALLBACK for non-JSONL runners (test doubles /
+ *     FLYWHEEL_WATCHDOG_JUDGE_BIN overrides that print the verdict directly).
+ */
+export function parseJudgeVerdict(stdout: string): WatchdogJudgeVerdict | null {
+	const agentTexts: string[] = [];
+	for (const line of stdout.split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed.startsWith("{")) continue;
+		try {
+			const event = JSON.parse(trimmed) as {
+				type?: unknown;
+				item?: { type?: unknown; text?: unknown };
+			};
+			if (
+				event.type === "item.completed" &&
+				event.item?.type === "agent_message" &&
+				typeof event.item.text === "string"
+			) {
+				agentTexts.push(event.item.text);
+			}
+		} catch {
+			/* not a JSON line — skip (codex may interleave logs) */
+		}
+	}
+	for (let i = agentTexts.length - 1; i >= 0; i--) {
+		const verdict = parseVerdictFromText(agentTexts[i]!);
+		if (verdict) return verdict;
+	}
+	// Legacy fallback: bare verdict object directly in stdout.
+	return parseVerdictFromText(stdout);
 }
 
 // ── B1: argv / env / spawn contracts ────────────────────────────────────────
@@ -427,6 +509,21 @@ export function decideJudgeOutcome(
 
 import type { SuspiciousReport } from "./detection-suspicious.js";
 
+/**
+ * FLY-1234 (R2 #2 + R3 #1): the structured per-call routing decision. A
+ * discriminated union so illegal outcome/decision combinations are
+ * unconstructible at the type level. `unavailable` covers every delivered
+ * path where the judge did not answer (env off / no frames / null verdict /
+ * routing threw); `suspicious` also covers b_parked-without-evidence (the
+ * verdict was answered but demoted by decideJudgeOutcome).
+ */
+export type JudgeDecision =
+	| { outcome: "suppressed"; decision: "a_working" | "b_parked" }
+	| {
+			outcome: "delivered";
+			decision: "c_stuck" | "suspicious" | "unavailable";
+	  };
+
 export interface SuspiciousJudgeRoutingDeps {
 	/** Read at CALL time (FLYWHEEL_WATCHDOG_JUDGE === "1") so live flips apply. */
 	judgeEnabled: () => boolean;
@@ -453,6 +550,26 @@ export interface SuspiciousJudgeRoutingDeps {
 	/** Build the judge input from the report; null = insufficient evidence
 	 * (fewer than 2 frames) → skip the judge, deliver directly. */
 	buildJudgeInput: (report: SuspiciousReport) => WatchdogJudgeInput | null;
+	/**
+	 * FLY-1234 (R3 #1): optional per-call structured decision sink. EVERY
+	 * terminal path of routeSuspiciousReport (env off / no input / a / b / c /
+	 * suspicious / null / catch) converges to an exactly-once finish(decision)
+	 * — callers must never reverse-engineer the decision from deliver/audit
+	 * callbacks. Absent → byte-compat (suspicious pipeline unchanged).
+	 */
+	onDecision?: (decision: JudgeDecision) => void;
+	/**
+	 * FLY-1234 (R2 #1 / R3 #4): optional judge cooldown-cache key derivation.
+	 * Default = `report.targetKey` (suspicious pipeline: zero change). The
+	 * heartbeat confirm layer injects an evidence-identity hash so a cached
+	 * verdict never outlives the evidence it judged. `report.targetKey` itself
+	 * ALWAYS stays the true execId — owner resolution, getSession,
+	 * mechanicalParkEvidence and audit rows must never see a derived key.
+	 */
+	judgeCacheKey?: (
+		report: SuspiciousReport,
+		input: WatchdogJudgeInput,
+	) => string;
 	logger?: (msg: string) => void;
 }
 
@@ -472,17 +589,49 @@ export async function routeSuspiciousReport(
 ): Promise<"suppressed" | "delivered"> {
 	const logger =
 		deps.logger ?? ((m: string) => console.log(`[watchdog-judge] ${m}`));
+	// FLY-1234 (R3 #1): every terminal path funnels through finish() —
+	// exactly one onDecision per call, even if a sink callback throws.
+	let decided = false;
+	const finish = (decision: JudgeDecision): "suppressed" | "delivered" => {
+		if (!decided) {
+			decided = true;
+			try {
+				deps.onDecision?.(decision);
+			} catch (err) {
+				logger(
+					`onDecision sink threw for ${report.targetKey} (ignored): ${(err as Error).message}`,
+				);
+			}
+		}
+		return decision.outcome;
+	};
+	// FLY-1234 (Codex code R1 #1): delivery is best-effort behind a
+	// non-throwing wrapper — a synchronous deliver-sink throw must neither
+	// double-deliver via the outer catch nor skip finish() (exactly-once
+	// onDecision holds regardless of sink failures).
+	const safeDeliver = (r: SuspiciousReport): void => {
+		try {
+			deps.deliver(r);
+		} catch (err) {
+			logger(
+				`deliver sink threw for ${report.targetKey} (decision unchanged): ${(err as Error).message}`,
+			);
+		}
+	};
 	try {
 		if (!deps.judgeEnabled()) {
-			deps.deliver(report);
-			return "delivered";
+			safeDeliver(report);
+			return finish({ outcome: "delivered", decision: "unavailable" });
 		}
 		const input = deps.buildJudgeInput(report);
 		if (input === null) {
-			deps.deliver(report);
-			return "delivered";
+			safeDeliver(report);
+			return finish({ outcome: "delivered", decision: "unavailable" });
 		}
-		const verdict = await deps.judge.judge(report.targetKey, input);
+		const cacheKey = deps.judgeCacheKey
+			? deps.judgeCacheKey(report, input)
+			: report.targetKey;
+		const verdict = await deps.judge.judge(cacheKey, input);
 		const outcome = decideJudgeOutcome(verdict, {
 			// Reports only exist for mechanically-UNCERTAIN windows: the
 			// high-confidence C paths (repeated signature / clean silence) alert
@@ -504,7 +653,10 @@ export async function routeSuspiciousReport(
 					`suppression audit failed for ${report.targetKey} (still suppressing): ${(err as Error).message}`,
 				);
 			}
-			return "suppressed";
+			return finish({
+				outcome: "suppressed",
+				decision: verdict.verdict === "b_parked" ? "b_parked" : "a_working",
+			});
 		}
 		if (outcome.action === "escalate" && verdict) {
 			try {
@@ -514,15 +666,15 @@ export async function routeSuspiciousReport(
 					`confirmed-stuck audit failed for ${report.targetKey} (still delivering): ${(err as Error).message}`,
 				);
 			}
-			deps.deliver({
+			safeDeliver({
 				...report,
 				reason: `${report.reason} | judge verdict c_stuck (attribution=${verdict.attribution}): ${verdict.rationale}`,
 			});
-			return "delivered";
+			return finish({ outcome: "delivered", decision: "c_stuck" });
 		}
 		// suspicious / null / b_parked-without-evidence → deliver (annotated
 		// when the judge actually answered).
-		deps.deliver(
+		safeDeliver(
 			verdict
 				? {
 						...report,
@@ -530,12 +682,15 @@ export async function routeSuspiciousReport(
 					}
 				: report,
 		);
-		return "delivered";
+		return finish({
+			outcome: "delivered",
+			decision: verdict ? "suspicious" : "unavailable",
+		});
 	} catch (err) {
 		logger(
 			`judge routing threw for ${report.targetKey} — fail-closed to delivery: ${(err as Error).message}`,
 		);
-		deps.deliver(report);
-		return "delivered";
+		safeDeliver(report);
+		return finish({ outcome: "delivered", decision: "unavailable" });
 	}
 }

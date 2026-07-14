@@ -132,6 +132,12 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: per-target judge verdict-cache cooldown ms (FLY-1048 PR-B)",
 	FLYWHEEL_JUDGE_SUPPRESS_TTL_MS:
 		"tuning knob: judge a/b suppression TTL ms before re-evaluation (FLY-1048 PR-B)",
+	FLYWHEEL_STUCK_FRAME_GAP_MS:
+		"tuning knob: stuck-confirm two-frame gap ms, bounded ≤60s, default 15s (FLY-1234)",
+	FLYWHEEL_STUCK_CONFIRM_PER_TICK:
+		"tuning knob: stuck-confirm per-tick candidate budget, bounded ≤20, default 3 — beyond-budget candidates take the legacy emit (FLY-1234)",
+	FLYWHEEL_STUCK_CONFIRM_DEADLINE_MS:
+		"tuning knob: stuck-confirm end-to-end deadline ms, bounded ≤300s, default 90s — expiry fail-opens to emit (FLY-1234)",
 	FLYWHEEL_GAP_SCAN_EVERY_N_TICKS:
 		"tuning knob: gap-scan cadence in GatePoller ticks (FLY-1048 A6)",
 	FLYWHEEL_DETECTION_LEAD_GRACE_MS:

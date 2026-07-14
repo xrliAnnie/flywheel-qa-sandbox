@@ -29,6 +29,7 @@ import {
 	formatDurationMs,
 	formatGateQuestion,
 	formatMisroutedReport,
+	formatSessionStuck,
 	formatShipApprovalRequest,
 	formatStuckEscalation,
 } from "./hook-payload.js";
@@ -306,6 +307,13 @@ export class MailboxLeadRuntime implements LeadRuntime {
 		// escalation flow. Shared renderer (parity by construction).
 		if (e.event_type === "detection_escalation") {
 			return formatDetectionEscalation(env);
+		}
+
+		// FLY-1234: session_stuck — the generic formatter would drop the
+		// confirm-layer annotation (confirm_note). Shared renderer, byte-compat
+		// with the generic branch when the annotation is absent.
+		if (e.event_type === "session_stuck") {
+			return formatSessionStuck(env);
 		}
 
 		const roleLabel =

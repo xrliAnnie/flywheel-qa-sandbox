@@ -1032,7 +1032,30 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			envSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"deliverSuspicious (routeSuspiciousReport judgeEnabled)",
+				"buildJudgeRoutingDeps (routeSuspiciousReport judgeEnabled — suspicious 管道 + FLY-1234 心跳确认层共用)",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	// FLY-1234: the heartbeat session_stuck confirm layer (liveness probe →
+	// two-frame compare → judge). Default ON kill-switch — `=0` reverts the
+	// checkStuck emit path byte-for-byte (reverse-compat sentinel).
+	{
+		name: "stuck_pane_confirm",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_STUCK_PANE_CONFIRM",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"session_stuck 心跳告警前的 pane/进程证据确认层(liveness→双帧→judge,只因明确健康证据抑制,FLY-1234)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/HeartbeatService.ts",
+				"stuckConfirmEnabled",
 				"call_time",
 			),
 		],

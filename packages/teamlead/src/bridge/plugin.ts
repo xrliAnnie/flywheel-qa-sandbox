@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
 	existsSync as ffExistsSync,
 	readFileSync as ffReadFileSync,
@@ -412,6 +412,10 @@ import {
 	stuckCommActivityMs,
 	stuckLatchTtlMs,
 } from "./stuck-escalation.js";
+import {
+	parseStuckConfirmKnobs,
+	type StuckConfirmResult,
+} from "./stuck-pane-confirm.js";
 import { createStuckRemanageRouter } from "./stuck-remanage-routes.js";
 import type { StuckRunnerDetector } from "./stuck-runner-detector.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
@@ -441,8 +445,11 @@ import { createVoiceRouter } from "./voice-routes.js";
 import {
 	createWatchdogJudge,
 	routeSuspiciousReport,
-	type WatchdogJudgeInput,
 } from "./watchdog-judge.js";
+import {
+	createJudgeRoutingDepsFactory,
+	createStuckConfirmRunner,
+} from "./watchdog-judge-assembly.js";
 import {
 	gitWorktreeClean,
 	makeBridgeWorktreeCleanup,
@@ -4425,6 +4432,17 @@ export async function startBridge(
 		},
 	};
 
+	// FLY-1234: late-bound stuck-confirm holder — declared BEFORE the
+	// HeartbeatService construction, bound after the watchdog judge is wired
+	// (further down this boot sequence). `heartbeatService.start()` is
+	// deliberately deferred until AFTER the binding (R2 #4): several awaits sit
+	// between construction and the judge wiring, so starting earlier would open
+	// a window where a tick observes `current === null` and fail-open-emits
+	// with a spurious confirm_unbound annotation.
+	const stuckConfirmHolder: {
+		current: ((session: Session) => Promise<StuckConfirmResult>) | null;
+	} = { current: null };
+
 	const heartbeatService = new HeartbeatService(
 		store,
 		notifier,
@@ -4598,6 +4616,8 @@ export async function startBridge(
 				}
 			}
 		},
+		// FLY-1234: heartbeat session_stuck confirm layer (late-bound above).
+		stuckConfirmHolder,
 	);
 
 	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event
@@ -4897,7 +4917,12 @@ export async function startBridge(
 		);
 	}
 
-	heartbeatService.start();
+	// FLY-1234 (R2 #4): `heartbeatService.start()` used to live HERE — it moved
+	// below the watchdog-judge wiring + stuckConfirmHolder binding. Multiple
+	// awaits sit between this point and that wiring (transport dynamic import,
+	// milestone-config load), so starting here would open a real window where a
+	// tick observes an unbound confirm holder. seedReconnecting (above) keeps
+	// its existing before-start ordering.
 
 	// FLY-163: CleanupService removed (forum thread cleanup gone).
 
@@ -5319,68 +5344,34 @@ export async function startBridge(
 	const watchdogJudge = createWatchdogJudge({
 		repoRoot: projects[0]?.projectRoot ?? process.cwd(),
 	});
+	// FLY-1234 (R1 #6 / R2 #2): shared judge-routing assembly — extracted to
+	// watchdog-judge-assembly.ts so the production composition is testable
+	// (Codex code R1 #3). deliver / onConfirmedStuck / onDecision /
+	// judgeCacheKey / errorSignatureKinds are the per-caller seams; the
+	// unified-escalation side effect (notifyDetectionEpisode) is ONLY ever the
+	// suspicious pipeline's injected onConfirmedStuck — the heartbeat confirm
+	// layer never notifies (single emission right, INV-4).
+	const buildJudgeRoutingDeps = createJudgeRoutingDepsFactory({
+		store,
+		judge: watchdogJudge,
+		judgeEnabled: () => process.env.FLYWHEEL_WATCHDOG_JUDGE === "1",
+		resolveOwner: resolveSuspiciousOwner,
+	});
+
 	const deliverSuspicious = (report: SuspiciousReport): void => {
 		void routeSuspiciousReport(
-			{
-				judgeEnabled: () => process.env.FLYWHEEL_WATCHDOG_JUDGE === "1",
-				judge: watchdogJudge,
+			buildJudgeRoutingDeps({
 				deliver: deliverSuspiciousDirect,
-				auditSuppression: (r, verdict, ttlMs) => {
-					const owner = resolveSuspiciousOwner(r);
-					store.insertEvent({
-						event_id: `watchdog-judge-suppressed-${createHash("sha256")
-							.update(
-								`${r.targetKey}|${r.episodeFingerprint}|${verdict.verdict}`,
-							)
-							.digest("hex")
-							.slice(0, 16)}`,
-						execution_id: owner?.executionId ?? r.targetKey,
-						issue_id: owner?.issueId ?? "unknown",
-						project_name: owner?.projectName ?? "unknown",
-						event_type: "watchdog_judge_suppressed",
-						severity: "info",
-						payload: {
-							target_kind: r.targetKind,
-							target_key: r.targetKey,
-							verdict: verdict.verdict,
-							attribution: verdict.attribution,
-							rationale: verdict.rationale,
-							episode_fingerprint: r.episodeFingerprint,
-							ttl_ms: ttlMs,
-						},
-						source: "watchdog-judge",
-					});
-				},
-				auditConfirmedStuck: (r, verdict) => {
-					const owner = resolveSuspiciousOwner(r);
-					store.insertEvent({
-						event_id: `watchdog-judge-confirmed-stuck-${createHash("sha256")
-							.update(`${r.targetKey}|${r.episodeFingerprint}`)
-							.digest("hex")
-							.slice(0, 16)}`,
-						execution_id: owner?.executionId ?? r.targetKey,
-						issue_id: owner?.issueId ?? "unknown",
-						project_name: owner?.projectName ?? "unknown",
-						event_type: "watchdog_judge_confirmed_stuck",
-						severity: "warning",
-						payload: {
-							target_kind: r.targetKind,
-							target_key: r.targetKey,
-							verdict: verdict.verdict,
-							attribution: verdict.attribution,
-							rationale: verdict.rationale,
-							suggested_action: verdict.suggestedAction,
-							episode_fingerprint: r.episodeFingerprint,
-						},
-						source: "watchdog-judge",
-					});
-					// FLY-1048 PR-C (C4): a judge-confirmed case-c enters the UNIFIED
-					// escalation flow (Lead-first + ~30min founder page). Runner targets
-					// only — lead-keyed targets have no session/issue to escalate into
-					// (the A5 delivery below still reaches the owner Lead either way).
-					// Keyed by the OLD detector's live episode fingerprint when it is
-					// tracking this target, so the C4a mutual exclusion matches; an
-					// already-escalated old episode owns the flow and is not double-fed.
+				// FLY-1048 PR-C (C4): a judge-confirmed case-c enters the UNIFIED
+				// escalation flow (Lead-first + ~30min founder page). Runner targets
+				// only — lead-keyed targets have no session/issue to escalate into
+				// (the A5 delivery still reaches the owner Lead either way).
+				// Keyed by the OLD detector's live episode fingerprint when it is
+				// tracking this target, so the C4a mutual exclusion matches; an
+				// already-escalated old episode owns the flow and is not double-fed.
+				// FLY-1234 (INV-4): this side effect belongs ONLY to the suspicious
+				// pipeline — the heartbeat confirm layer's routing never notifies.
+				onConfirmedStuck: (r, verdict) => {
 					if (detectionEscalationEnabled() && r.targetKind === "runner") {
 						const oldEpisode = stuckDetectorHolder.current?.episodeFor(
 							r.targetKey,
@@ -5410,82 +5401,7 @@ export async function startBridge(
 						}
 					}
 				},
-				mechanicalParkEvidence: (r) => {
-					// Lead targets have no park semantics; runner targets: awaiting
-					// statuses or a declared park corroborate b_parked.
-					if (r.targetKind !== "runner") return false;
-					const session = store.getSession(r.targetKey);
-					if (!session) return false;
-					if (
-						session.status === "awaiting_review" ||
-						session.status === "approved_to_ship"
-					) {
-						return true;
-					}
-					const reader = openGapReader(
-						defaultGetCommDbPath(session.project_name),
-					);
-					if (!reader) return false;
-					try {
-						const ev = reader.evidenceFor(r.targetKey, null, Date.now());
-						// Codex PR-B R1 HIGH: only a BLOCKING gate corroborates b_parked —
-						// an unanswered non-blocking ask is exactly the 漏② signal and
-						// must never let the judge silence it.
-						return (
-							ev.declaredParked === true ||
-							(ev.pendingBlockingGateCount ?? 0) > 0
-						);
-					} catch {
-						return false;
-					} finally {
-						reader.close();
-					}
-				},
-				buildJudgeInput: (r): WatchdogJudgeInput | null => {
-					if (!r.frames || r.frames.length < 2) return null;
-					const session =
-						r.targetKind === "runner"
-							? store.getSession(r.targetKey)
-							: undefined;
-					let commEvents: WatchdogJudgeInput["commEvents"];
-					if (session) {
-						try {
-							const nowMs = Date.now();
-							commEvents = store
-								.getEventsByExecution(r.targetKey)
-								.slice(-10)
-								.flatMap((e) => {
-									// Codex PR-B R1 LOW / R2 MEDIUM: only truthful ages reach
-									// the judge. session_events.ts is a sqlite UTC DATETIME —
-									// parseSqliteUtcMs handles it; ISO strings fall back to
-									// Date.parse. Unparseable → the event is dropped rather
-									// than presented as "0min ago".
-									const raw = e.ts ?? "";
-									const parsed = parseSqliteUtcMs(raw) ?? Date.parse(raw);
-									if (parsed === null || !Number.isFinite(parsed)) return [];
-									return [
-										{
-											kind: e.event_type,
-											ageMs: Math.max(0, nowMs - parsed),
-											summary: String(e.event_id ?? e.event_type).slice(0, 120),
-										},
-									];
-								})
-								.slice(0, 10);
-						} catch {
-							commEvents = undefined;
-						}
-					}
-					return {
-						frames: r.frames,
-						stage: session?.session_stage ?? null,
-						fsmStatus: session?.status ?? null,
-						park: null,
-						commEvents,
-						errorSignatureKinds: [],
-					};
-				},
-			},
+			}),
 			report,
 		).catch((err) =>
 			console.warn(
@@ -5493,6 +5409,44 @@ export async function startBridge(
 			),
 		);
 	};
+
+	// FLY-1234 (T3): bind the heartbeat stuck-confirm layer, now that the judge
+	// exists. One boot-time knob parse WITH the warn sink (a cross-field
+	// contradiction logs once here); the per-call parses inside stay quiet.
+	parseStuckConfirmKnobs(process.env, {
+		warn: (m) => console.warn(`[stuck-confirm] ${m}`),
+	});
+	stuckConfirmHolder.current = createStuckConfirmRunner({
+		buildRoutingDeps: buildJudgeRoutingDeps,
+		// R1 #7 mapping: lookup gone → "gone" (target unresolvable — the
+		// annotation never claims process death), lookup error →
+		// "indeterminate"; found → the #576 four-state process probe.
+		probeLiveness: async (s) => {
+			if (!s.project_name) return "gone";
+			const lookup = lookupTmuxTarget(s.execution_id, s.project_name);
+			if (lookup.kind === "gone") return "gone";
+			if (lookup.kind === "error") return "indeterminate";
+			return probeRunnerProcessLiveness(lookup.target.tmuxWindow);
+		},
+		captureFrame: async (s) => {
+			if (!s.project_name) return null;
+			const res = await defaultCaptureSession(
+				s.execution_id,
+				s.project_name,
+				200,
+			);
+			return "output" in res
+				? { text: res.output, capturedAtMs: Date.now() }
+				: null;
+		},
+		commCorroborationMs: () => stuckCommActivityMs(process.env),
+		logger: (m) => console.log(`[stuck-confirm] ${m}`),
+	});
+
+	// FLY-1234 (R2 #4): start the heartbeat AFTER the confirm holder is bound —
+	// no tick can ever observe the unbound-holder transient. Moved from right
+	// after seedReconnecting() (see the marker comment there).
+	heartbeatService.start();
 
 	// FLY-1048 (A6): cheap gap/state scan — OBSERVE ONLY in PR-A (in-process
 	// registry + debug log; the notification leg arrives with PR-C). Zero pane
