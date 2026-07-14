@@ -448,11 +448,11 @@ import {
 	createWatchdogJudge,
 	routeSuspiciousReport,
 } from "./watchdog-judge.js";
-import { createWorkflowShadowWriterFromEnv } from "./workflow-shadow-writer.js";
 import {
 	createJudgeRoutingDepsFactory,
 	createStuckConfirmRunner,
 } from "./watchdog-judge-assembly.js";
+import { createWorkflowShadowWriterFromEnv } from "./workflow-shadow-writer.js";
 import {
 	gitWorktreeClean,
 	makeBridgeWorktreeCleanup,
