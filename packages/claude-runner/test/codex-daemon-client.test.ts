@@ -3,6 +3,7 @@ import {
 	CodexDaemonClient,
 	CodexDaemonError,
 	type DaemonTransport,
+	GOAL_OBJECTIVE_MAX_CHARS,
 	GoalRunError,
 	type GoalStatus,
 	isTerminalGoalStatus,
@@ -130,6 +131,27 @@ describe("CodexDaemonClient — handshake + protocol", () => {
 		});
 	});
 
+	it("FLY-1236: setGoal fails closed on an oversized objective — no thread/goal/set frame reaches the daemon", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/set", () => ({}));
+		const c = makeClient(d);
+		const oversized = "x".repeat(GOAL_OBJECTIVE_MAX_CHARS + 1);
+		await expect(
+			c.setGoal({ threadId: "t", objective: oversized }),
+		).rejects.toMatchObject({ kind: "setup_failed" });
+		// the guard fires BEFORE the RPC — the daemon never sees an oversized frame
+		expect(d.sent.find((s) => s.method === "thread/goal/set")).toBeUndefined();
+	});
+
+	it("FLY-1236: setGoal at EXACTLY the max length still sends the frame (boundary, guards against >=)", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/set", () => ({}));
+		const c = makeClient(d);
+		const exactly = "x".repeat(GOAL_OBJECTIVE_MAX_CHARS);
+		await c.setGoal({ threadId: "t", objective: exactly });
+		expect(d.sent.find((s) => s.method === "thread/goal/set")).toBeDefined();
+	});
+
 	it("an rpc error rejects with CodexDaemonError(rpc_error)", async () => {
 		const d = new FakeDaemon();
 		// override send to reply with an error frame
@@ -221,6 +243,50 @@ describe("runGoalToTerminal", () => {
 		expect(d.sentMethods().slice(0, 2)).toEqual([
 			"thread/goal/set",
 			"turn/start",
+		]);
+	});
+
+	it("FLY-1236: the full kick (even > the goal cap) rides turn/start verbatim; thread/goal/set gets only the short objective", async () => {
+		// Locks the final wire hop: the working body must reach the daemon via the
+		// kick turn (unbounded by the goal cap), NOT the objective — and it must NOT
+		// silently fall back to the "Begin working…" stub (the instruction-empty bug).
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("turn/start", (_p, _id, push) => {
+			push({
+				method: "goal/updated",
+				params: {
+					threadId: "t",
+					turnId: "turn-a",
+					goal: { status: "complete", tokensUsed: 10 },
+				},
+			});
+			return {};
+		});
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: "complete", tokensUsed: 10 },
+		}));
+		const c = makeClient(d);
+		// A representative kick that is itself well OVER the goal's 4000-char cap —
+		// which is exactly why it must ride the kick turn, not the objective.
+		const bigKick = `SYS\n\n---\n\n${"z".repeat(GOAL_OBJECTIVE_MAX_CHARS + 2000)}`;
+		const shortObjective = "[FLY-1225] pointer";
+		const res = await runGoalToTerminal(c, {
+			threadId: "t",
+			objective: shortObjective,
+			kickText: bigKick,
+			sleep: noSleep,
+			now: () => 0,
+		});
+		expect(res.succeeded).toBe(true);
+		const goalSet = d.sent.find((s) => s.method === "thread/goal/set");
+		const turnStart = d.sent.find((s) => s.method === "turn/start");
+		expect((goalSet?.params as { objective: string }).objective).toBe(
+			shortObjective,
+		);
+		// the full kick delivered byte-for-byte via turn/start — not the stub
+		expect((turnStart?.params as { input: unknown }).input).toEqual([
+			{ type: "text", text: bigKick },
 		]);
 	});
 

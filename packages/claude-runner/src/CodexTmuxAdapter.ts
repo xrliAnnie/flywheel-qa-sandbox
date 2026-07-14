@@ -58,10 +58,13 @@ import type {
 import { sanitizeTmuxName } from "flywheel-core";
 import {
 	buildDaemonSandboxWritableRoots,
+	buildGoalKickText,
 	buildGoalObjective,
 	classifyGoalOutcome,
+	enforceObjectiveLimit,
 } from "./codex-daemon-adapter-helpers.js";
 import type { CodexDaemonEvents } from "./codex-daemon-client.js";
+import { GOAL_OBJECTIVE_MAX_CHARS } from "./codex-daemon-client.js";
 import type {
 	CodexDaemonGoalRuntimeOptions,
 	RunGoalInput,
@@ -378,7 +381,23 @@ export class CodexTmuxAdapter implements IAdapter {
 					? `${PONYTAIL_RULESET}\n\n---\n\n${ctx.appendSystemPrompt}`
 					: PONYTAIL_RULESET
 				: ctx.appendSystemPrompt;
-			const objective = buildGoalObjective({ systemLayer, prompt: ctx.prompt });
+			// FLY-1236: the durable /goal objective is a bounded phase-neutral
+			// north-star (issueId+label); the FULL working instructions ride the
+			// kick turn (turn/start, not subject to the goal's 4000-char cap). This
+			// removes the setup_failed the old "fold everything into the objective"
+			// form hit at real implement scale. The kick is reconstructed from ctx
+			// on every execute(), so a fresh thread (crash → new execId) is kicked
+			// with the full body again, never left goal-only.
+			const kickText = buildGoalKickText({ systemLayer, prompt: ctx.prompt });
+			const { objective, degraded } = enforceObjectiveLimit(
+				buildGoalObjective({ issueId: ctx.issueId, label: ctx.label }),
+				ctx.issueId,
+			);
+			if (degraded) {
+				this.log(
+					`[CodexTmuxAdapter] goal objective exceeded ${GOAL_OBJECTIVE_MAX_CHARS} chars — degraded to minimal pointer; full instructions ride the kick turn (issue=${ctx.issueId})`,
+				);
+			}
 
 			runtime = this.runtimeFactory({
 				executionId: ctx.executionId,
@@ -573,6 +592,9 @@ export class CodexTmuxAdapter implements IAdapter {
 			outcome = await runtime.runGoal(
 				{
 					objective,
+					// FLY-1236: the full working instructions ride the kick turn
+					// (turn/start), not the length-capped /goal objective.
+					kickText,
 					// MED-7 (Codex full-PR review): the ACTIVE cap applies normally; the
 					// larger gate-wait cap extends the deadline ONLY while a gate is
 					// actually open (isWaiting). The old `max(active, waiting)` gave

@@ -232,6 +232,37 @@ describe("CodexDaemonGoalRuntime", () => {
 		expect(h.stops).toBe(1); // the dead session was torn down
 	});
 
+	it("FLY-1236: same-thread in-run restart re-sends the exact same kick (rebuilt thread never goes goal-only)", async () => {
+		// A mid-goal daemon death resumes the SAME thread, but runGoalToTerminal
+		// re-runs setGoal + startTurn every iteration — so the full working kick is
+		// re-delivered on the restart, never leaving the (resumed) thread with only
+		// the north-star objective.
+		const h = makeHarness({
+			runGoalScript: [
+				new GoalRunError("socket died", "transport_closed"),
+				COMPLETE,
+			],
+		});
+		const kicks: Array<string | undefined> = [];
+		const orig = h.opts.runGoalFn as NonNullable<
+			CodexDaemonGoalRuntimeOptions["runGoalFn"]
+		>;
+		const rt = new CodexDaemonGoalRuntime({
+			...h.opts,
+			runGoalFn: (async (c, input, ev) => {
+				kicks.push(input.kickText);
+				return orig(c, input, ev);
+			}) as CodexDaemonGoalRuntimeOptions["runGoalFn"],
+		});
+		const KICK =
+			"SYSTEM RULES\n\n---\n\nfull working instructions for the runner";
+		await rt.runGoal({ objective: "[FLY-1225] pointer", kickText: KICK });
+		expect(kicks).toHaveLength(2); // one per attempt (initial + restart)
+		expect(kicks[0]).toBe(KICK);
+		expect(kicks[1]).toBe(KICK); // byte-identical re-kick on the restart
+		rt.stop();
+	});
+
 	it("HIGH-3: threads reapOrphanPid to the FIRST spawn only + reports each daemon pid via onDaemonPid", async () => {
 		const seenReap: Array<number | undefined> = [];
 		const h = makeHarness({

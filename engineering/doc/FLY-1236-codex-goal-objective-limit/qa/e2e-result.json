@@ -1,0 +1,52 @@
+{
+	"issue": "FLY-1236",
+	"execId": "qa1236-mrk56nno",
+	"head": "76459425928b2f2b5a3244b1dfbb5d238fd885c6",
+	"codexVersion": "codex-cli 0.144.3",
+	"objectiveLen": 297,
+	"objective": "[FLY-1225-codex-implement-real-scale] Complete the assigned runner task per the instructions delivered as a user turn in this thread. Follow that task's stated workflow, honor its gates, and take its required handoff/completion route. The persistent runner contract lives in $CODEX_HOME/AGENTS.md.",
+	"oldFoldedObjectiveLen": 16636,
+	"kickLen": 16636,
+	"token": "KICK-MRK56O0R-OK",
+	"kickMarkerContent": "KICK-MRK56O0R-OK",
+	"threadId": "019f5ed9-eaa0-78d3-b0da-0ed94a52cd19",
+	"elapsedSec": 168,
+	"goalStatus": "complete",
+	"goalSucceeded": true,
+	"threw": null,
+	"negControlThrew": "setup_failed: goal objective is 16636 chars (> 4000 limit); refusing thread/goal/set — the durable /goal must be a bounded pointer, not the task body",
+	"gitLog": "7f80874 qa done\n0eae5b5 qa kick marker\n44c7499 init",
+	"results": [
+		{
+			"id": "A0-split-shape",
+			"pass": true,
+			"detail": "objective=297<=4000; old-folded=16636 (would -32600); kick=16636 carries the full body"
+		},
+		{
+			"id": "A1-goalset-succeeds",
+			"pass": true,
+			"detail": "goal set OK, terminal=complete succeeded=true in 168s"
+		},
+		{
+			"id": "A2-kick-body-arrived",
+			"pass": true,
+			"detail": "agent committed the kick-only token KICK-MRK56O0R-OK → the full > 4000-char kick reached it"
+		},
+		{
+			"id": "A3-founder-tui-alive",
+			"pass": false,
+			"detail": "pane did NOT render a live codex TUI (opened=false, samples=0, 0 bytes)"
+		},
+		{
+			"id": "B-failclosed-guard",
+			"pass": true,
+			"detail": "oversized objective rejected LOCALLY as setup_failed before the RPC (no -32600 to daemon): goal objective is 16636 chars (> 4000 limit); refusing thread/goal/set — the durable /goal"
+		},
+		{
+			"id": "T-clean-teardown",
+			"pass": true,
+			"detail": "orphan socket holders after teardown: A=[] B=[]"
+		}
+	],
+	"verdict": "FAIL"
+}

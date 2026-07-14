@@ -7,7 +7,10 @@
  */
 
 import type { GoalRunResult } from "./codex-daemon-client.js";
-import { GoalRunError } from "./codex-daemon-client.js";
+import {
+	GOAL_OBJECTIVE_MAX_CHARS,
+	GoalRunError,
+} from "./codex-daemon-client.js";
 
 /**
  * The sandbox writable roots for the daemon's workspace-write threads — the
@@ -36,20 +39,80 @@ export function buildDaemonSandboxWritableRoots(input: {
 }
 
 /**
- * Fold the persistent system layer + the per-execution prompt into a single
- * `/goal` objective. In daemon mode the goal is the durable objective the
- * resident /goal autonomously drives across turns (the daemon's codex reads its
- * persistent contract from `$CODEX_HOME/AGENTS.md`; this is the dynamic layer,
- * exactly as the exec-cycle folded the system layer into the per-cycle prompt —
- * codex has no `--append-system-prompt-file`).
+ * FLY-1236: fold the persistent system layer + the per-execution prompt into the
+ * FIRST turn's kick text (`turn/start` input) — NOT the `/goal` objective. The
+ * daemon's `thread/goal/set` rejects an objective longer than
+ * {@link GOAL_OBJECTIVE_MAX_CHARS}; a real three-stage `implement` prompt (issue
+ * body + design handoff, Blueprint cap 40000 chars) blows past that, so the full
+ * working instructions ride the kick turn instead — which is NOT subject to the
+ * goal objective's char cap and is where codex actually reads its work. This is
+ * byte-identical to the old `buildGoalObjective` body (the `\n\n---\n\n`
+ * separator is preserved), just relocated to the kick channel.
+ *
+ * Reconstructed from `ctx` on every `execute()`, so a genuinely new thread (a
+ * crash → new executionId → fresh thread) is kicked with the full instructions
+ * again — never left with only the north-star `/goal` and no working copy.
  */
-export function buildGoalObjective(input: {
+export function buildGoalKickText(input: {
 	prompt: string;
 	systemLayer?: string;
 }): string {
 	return input.systemLayer
 		? `${input.systemLayer}\n\n---\n\n${input.prompt}`
 		: input.prompt;
+}
+
+/**
+ * FLY-1236: build the durable `/goal` objective — a bounded, PHASE-NEUTRAL
+ * north-star pointer, never the working copy. Codex runs three-stage phase
+ * prompts (Design = do not implement; QA = the implementation + PR already
+ * exist), so the objective must NOT hardcode "implement / open a PR" or it would
+ * contradict the authoritative phase instructions. It only names the task and
+ * defers to the instructions delivered as a user turn in the thread; the full
+ * body rides {@link buildGoalKickText}. The persistent runner contract lives in
+ * `$CODEX_HOME/AGENTS.md` (NOT the dynamic task body — that is the kick turn).
+ *
+ * Derived from `issueId`/`label` (both bounded, deterministic per execution) so
+ * it is stable across an in-run restart and short by construction.
+ */
+export function buildGoalObjective(input: {
+	issueId?: string;
+	label?: string;
+}): string {
+	const head =
+		input.label?.trim() || input.issueId?.trim() || "the assigned runner task";
+	return (
+		`[${head}] Complete the assigned runner task per the instructions delivered ` +
+		`as a user turn in this thread. Follow that task's stated workflow, honor its ` +
+		`gates, and take its required handoff/completion route. The persistent runner ` +
+		`contract lives in $CODEX_HOME/AGENTS.md.`
+	);
+}
+
+/**
+ * FLY-1236 graceful degradation (adapter-side, where the full kick + log context
+ * exist). The objective is bounded by construction, but a pathologically long
+ * `label` could still push {@link buildGoalObjective} over
+ * {@link GOAL_OBJECTIVE_MAX_CHARS}. Rather than silently truncate (the task body
+ * is safe in the kick turn regardless), degrade to a fixed short pointer with a
+ * code-point-safe issueId cap (never a `slice(0, N)` that can split a UTF-16
+ * surrogate pair). The client's `setGoal` guard is the hard fail-closed boundary;
+ * this keeps the normal path succeeding with a clean, in-limit pointer.
+ */
+export function enforceObjectiveLimit(
+	objective: string,
+	issueId: string,
+): { objective: string; degraded: boolean } {
+	if (objective.length <= GOAL_OBJECTIVE_MAX_CHARS) {
+		return { objective, degraded: false };
+	}
+	// Code-point-safe cap on the (untrusted) issueId; the fixed wrapper text keeps
+	// the fallback far below the limit, so no post-hoc truncation is needed.
+	const safeId = Array.from(issueId).slice(0, 80).join("") || "runner task";
+	const fallback =
+		`[${safeId}] Complete the assigned runner task per the instructions delivered ` +
+		`as a user turn in this thread; honor its gates and completion route.`;
+	return { objective: fallback, degraded: true };
 }
 
 export interface GoalClassification {

@@ -45,6 +45,18 @@ export function isTerminalGoalStatus(s: GoalStatus): boolean {
 }
 
 /**
+ * FLY-1236: the daemon's `thread/goal/set` hard-rejects an objective longer than
+ * this (observed RPC error -32600 "goal objective must be at most 4000
+ * characters"). The durable `/goal` therefore carries only a bounded north-star
+ * pointer; the full working instructions ride the kick turn (`turn/start`, which
+ * is NOT subject to this cap). Lives here in the protocol layer so both the
+ * adapter helper (graceful degrade) and `setGoal` (fail-closed guard) share one
+ * source of truth without a reverse dependency (the helper already imports this
+ * module).
+ */
+export const GOAL_OBJECTIVE_MAX_CHARS = 4000;
+
+/**
  * Minimal duplex the client needs — one JSON message per send/receive. The
  * real transport is a ws+unix socket; tests inject a fake.
  */
@@ -371,6 +383,18 @@ export class CodexDaemonClient {
 		},
 		timeoutMs?: number,
 	): Promise<void> {
+		// FLY-1236: fail closed at the final RPC boundary — never let an oversized
+		// objective reach the daemon (it would reject with -32600 "goal objective
+		// must be at most 4000 characters" → the cryptic setup_failed this fix
+		// removes). The adapter degrades gracefully upstream; this guards any other
+		// caller / future refactor that bypasses that path. The full working
+		// instructions are delivered via the kick turn, never the objective.
+		if (input.objective.length > GOAL_OBJECTIVE_MAX_CHARS) {
+			throw new GoalRunError(
+				`goal objective is ${input.objective.length} chars (> ${GOAL_OBJECTIVE_MAX_CHARS} limit); refusing thread/goal/set — the durable /goal must be a bounded pointer, not the task body`,
+				"setup_failed",
+			);
+		}
 		await this.request(
 			"thread/goal/set",
 			{

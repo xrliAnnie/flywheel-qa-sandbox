@@ -323,19 +323,96 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(env.FLYWHEEL_PROGRESS_PATH).toBe("/p");
 	});
 
-	it("folds the appendSystemPrompt into the goal objective (no --append flag)", async () => {
+	it("FLY-1236: delivers appendSystemPrompt + prompt via the KICK turn (not the /goal objective)", async () => {
 		await makeAdapter().execute(ctx({ appendSystemPrompt: "SYSTEM RULES" }));
-		const obj = runtime.runGoalInputs[0]?.objective ?? "";
-		expect(obj).toContain("SYSTEM RULES");
-		expect(obj).toContain("do the task");
-		expect(obj.indexOf("SYSTEM RULES")).toBeLessThan(
-			obj.indexOf("do the task"),
+		const inp = runtime.runGoalInputs[0];
+		const kick = inp?.kickText ?? "";
+		// full working body rides the kick turn, in order, byte-exact
+		expect(kick).toBe("SYSTEM RULES\n\n---\n\ndo the task");
+		expect(kick).toContain("SYSTEM RULES");
+		expect(kick).toContain("do the task");
+		expect(kick.indexOf("SYSTEM RULES")).toBeLessThan(
+			kick.indexOf("do the task"),
 		);
+		// the durable /goal objective is a bounded pointer — NOT the body
+		const obj = inp?.objective ?? "";
+		expect(obj).not.toContain("SYSTEM RULES");
+		expect(obj).not.toContain("do the task");
+		expect(obj).toContain("FLY-1188"); // the task head (label/issueId)
 	});
 
-	it("FLY-615: enablePonytail injects the ponytail ruleset into the objective", async () => {
+	it("FLY-615 + FLY-1236: enablePonytail injects the ponytail ruleset into the KICK, not the objective", async () => {
 		await makeAdapter().execute(ctx({ enablePonytail: true }));
-		expect(runtime.runGoalInputs[0]?.objective ?? "").toMatch(/ponytail/i);
+		const inp = runtime.runGoalInputs[0];
+		expect(inp?.kickText ?? "").toMatch(/ponytail/i);
+		expect(inp?.objective ?? "").not.toMatch(/ponytail/i);
+	});
+
+	it("FLY-1236: a real-scale prompt keeps the /goal objective under the cap and puts the full body in the kick (exact)", async () => {
+		// The original incident: folding systemLayer+prompt into the objective blew
+		// past the 4000-char thread/goal/set cap → setup_failed. Now the objective
+		// stays a short pointer and the full body rides the kick turn.
+		const bigPrompt = `TASK: ${"z".repeat(6000)}`;
+		const sys = "SYS LAYER";
+		await makeAdapter().execute(
+			ctx({ appendSystemPrompt: sys, prompt: bigPrompt }),
+		);
+		const inp = runtime.runGoalInputs[0];
+		expect((inp?.objective ?? "").length).toBeLessThanOrEqual(4000);
+		// exact equality — not toContain, which could pass after truncation/dup
+		expect(inp?.kickText).toBe(`${sys}\n\n---\n\n${bigPrompt}`);
+		expect((inp?.kickText ?? "").length).toBeGreaterThan(6000);
+		expect(inp?.objective ?? "").not.toContain(bigPrompt);
+	});
+
+	it("FLY-1236: a fresh execution on a brand-new thread (no previousSession, new execId) is kicked with the full reconstructed instructions, never goal-only", async () => {
+		const sys = "SYSTEM RULES for the runner";
+		const bigPrompt = `IMPLEMENT: ${"x".repeat(6000)}`;
+
+		// Execution A — resumes a prior thread (previousSession present).
+		const rtA = new FakeRuntime(async (input) => {
+			input.onThreadReady?.("thread-A", 0);
+			return complete("thread-A");
+		});
+		runtime = rtA;
+		await makeAdapter().execute(
+			ctx({
+				executionId: "exec-A",
+				previousSession: { threadId: "thread-A" },
+				appendSystemPrompt: sys,
+				prompt: bigPrompt,
+				issueId: "FLY-1225",
+				label: "FLY-1225-fix",
+			}),
+		);
+		expect(rtA.runGoalInputs[0]?.resumeThreadId).toBe("thread-A");
+
+		// Execution B — a GENUINELY new thread: different execId, NO previousSession,
+		// no persisted B thread, its own runtime/thread. B's kick is NOT in the old
+		// thread's history — it must be reconstructed from ctx and re-sent in full.
+		const rtB = new FakeRuntime(async (input) => {
+			input.onThreadReady?.("thread-B", 0);
+			return complete("thread-B");
+		});
+		runtime = rtB;
+		const resB = await makeAdapter().execute(
+			ctx({
+				executionId: "exec-B",
+				appendSystemPrompt: sys,
+				prompt: bigPrompt,
+				issueId: "FLY-1225",
+				label: "FLY-1225-fix",
+			}),
+		);
+		const inB = rtB.runGoalInputs[0];
+		expect(inB?.resumeThreadId).toBeUndefined(); // genuinely new thread
+		expect(resB.sessionId).toBe("thread-B"); // distinct B thread
+		// full reconstructed kick, EXACT — never left goal-only
+		expect(inB?.kickText).toBe(`${sys}\n\n---\n\n${bigPrompt}`);
+		// objective carries only the bounded pointer, not the working body
+		expect((inB?.objective ?? "").length).toBeLessThanOrEqual(4000);
+		expect(inB?.objective ?? "").not.toContain(bigPrompt);
+		expect(inB?.objective ?? "").toContain("FLY-1225-fix");
 	});
 
 	it("opens the founder window from the outcome when onThreadReady never fired", async () => {

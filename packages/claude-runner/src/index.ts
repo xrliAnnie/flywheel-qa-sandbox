@@ -25,8 +25,10 @@ export {
 } from "./CodexTmuxAdapter.js";
 export {
 	buildDaemonSandboxWritableRoots,
+	buildGoalKickText, // FLY-1236
 	buildGoalObjective,
 	classifyGoalOutcome,
+	enforceObjectiveLimit, // FLY-1236
 	type GoalClassification,
 } from "./codex-daemon-adapter-helpers.js"; // FLY-1188 M4d
 export {
@@ -35,6 +37,7 @@ export {
 	CodexDaemonError,
 	type CodexDaemonEvents,
 	type DaemonTransport,
+	GOAL_OBJECTIVE_MAX_CHARS, // FLY-1236
 	type GoalNotification,
 	GoalRunError,
 	type GoalRunResult,
