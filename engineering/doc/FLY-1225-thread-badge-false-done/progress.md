@@ -1,14 +1,14 @@
 ---
 issue: FLY-1225
 phase: implement
-phaseCursor: 1/5
-updated: 2026-07-14T15:53:41.521Z
-nextStep: write RED regression tests for title mapping, fingerprint claim drift,
-  and reconnect-clear authority
+phaseCursor: 2/5
+updated: 2026-07-14T15:57:20.524Z
+nextStep: implement minimal title derivation, claim-aware fingerprint, and
+  reconnect-clear delegation
 chunks: []
 pointers: {}
 ---
 
 # FLY-1225 progress
-**phase**: implement (1/5)
-**next**: write RED regression tests for title mapping, fingerprint claim drift, and reconnect-clear authority
+**phase**: implement (2/5)
+**next**: implement minimal title derivation, claim-aware fingerprint, and reconnect-clear delegation
