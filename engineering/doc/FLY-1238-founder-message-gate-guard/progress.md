@@ -1,14 +1,13 @@
 ---
 issue: FLY-1238
 phase: design
-phaseCursor: 2/5
-updated: 2026-07-14T23:13:26.221Z
-nextStep: Confirm the three-part design with Lead, then finish the
-  outbound-message and recovery-path evidence matrix
+phaseCursor: 3/5
+updated: 2026-07-14T23:21:41.563Z
+nextStep: Validate the executable TDD plan, then register cross-family design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1238 progress
-**phase**: design (2/5)
-**next**: Confirm the three-part design with Lead, then finish the outbound-message and recovery-path evidence matrix
+**phase**: design (3/5)
+**next**: Validate the executable TDD plan, then register cross-family design review
