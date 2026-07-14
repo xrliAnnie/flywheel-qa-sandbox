@@ -52,6 +52,10 @@ describe("resolveThreeStageEntry (FLY-793 Step 4 ENTRY)", () => {
 			env: noEnv,
 		});
 		expect(e.dispatchModel).toBe("claude-fable-5");
+		// FLY-1224 (T3, entry lane): the entry decision carries the phase
+		// table's vendor too (design = claude, no effort).
+		expect(e.dispatchVendor).toBe("claude");
+		expect(e.dispatchEffort).toBeUndefined();
 	});
 
 	it("FLY-887 R2: a NON-entry decision carries no dispatchModel (single-session path untouched)", () => {

@@ -112,7 +112,7 @@ DENY_REASON = (
     "漏 core 频道部署播报(founder 的部署审计断链)、没有健康检查回滚。\n"
     "正确做法:\n"
     "  • 重启/部署 Bridge 或 Lead:bash ~/Dev/flywheel/scripts/restart-services.sh"
-    "(--force 跳过 idle-wait;--dry-run 预览)\n"
+    "(FLY-1224 默认不等 idle;--wait-idle 恢复等待;--dry-run 预览)\n"
     "  • 纯 env 改动(无代码 delta)要重启 Bridge:"
     "bash ~/Dev/flywheel/scripts/restart-services.sh --bridge-only(FLY-1142)\n"
     "  • self-ship:走既有 ship flow(flywheel-land / :cool: 部署),不要手动 kickstart。\n"

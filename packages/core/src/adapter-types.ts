@@ -147,8 +147,10 @@ export interface AdapterExecutionContext {
 	/** AI model to use (e.g., "opus", "sonnet") */
 	model?: string;
 	/**
-	 * FLY-671: reasoning-effort level (`low|medium|high|xhigh|max`) → CLI
-	 * `--effort`. Only the claude-tmux runner consumes it; absent ⇒ no flag.
+	 * FLY-671: reasoning-effort level (`low|medium|high|xhigh|max`). Consumed by
+	 * the claude-tmux runner as CLI `--effort`, and (FLY-1224) by the codex-tmux
+	 * runner as a daemon spawn override `-c model_reasoning_effort="<effort>"`.
+	 * Absent ⇒ no flag / no override (account or CODEX_HOME config default).
 	 */
 	effort?: string;
 	/** Permission mode (e.g., "bypassPermissions", "plan") */

@@ -129,8 +129,14 @@ export {
 	resolveRunnerMcpProfile,
 } from "./runner-mcp-profile.js";
 // FLY-793: three-stage pipeline phase model tiers.
-export type { ThreeStagePhase } from "./three-stage-phases.js";
+// FLY-1224: per-phase vendor dispatch table (vendor + model + effort).
+export type {
+	PhaseDispatchSpec,
+	PhaseDispatchVendor,
+	ThreeStagePhase,
+} from "./three-stage-phases.js";
 export {
+	DEFAULT_PHASE_DISPATCH,
 	DEFAULT_PHASE_TIER,
 	isThreeStagePhaseRole,
 	nextPhase,
@@ -139,6 +145,7 @@ export {
 	phaseMessageTag,
 	phaseThreadBadge,
 	resolveCompletionSessionRole,
+	resolvePhaseDispatch,
 	resolvePhaseModel,
 	THREE_STAGE_PHASE_SEQUENCE,
 } from "./three-stage-phases.js";
@@ -165,6 +172,7 @@ export type {
 	ReactionsConfig,
 	RoleBackendConfig,
 	RoleBackendMap,
+	RoleEffort,
 	RoleName,
 	RunnerConfig,
 	SkillsConfig,

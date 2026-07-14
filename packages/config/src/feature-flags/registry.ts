@@ -316,6 +316,32 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "与 FLYWHEEL_THREE_STAGE / FLYWHEEL_THREE_STAGE_KEEPALIVE 正交；本 env=0 只关死-QA 重生路径，改后需重启 Bridge。",
 	},
 	{
+		// FLY-1224: per-phase vendor — the implement phase defaults to codex
+		// (gpt-5.6-sol, xhigh). `=0` falls the implement dispatch back to the
+		// legacy (claude, heavy) row — the operational escape hatch when the
+		// codex account quota is exhausted. Display fallbacks (phaseMessageTag /
+		// issue-display pending rows) read the same table, so they follow.
+		name: "three_stage_codex_implement_killswitch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"三段式 implement 段 codex 派发开关（=0 → implement 回落 legacy (claude, heavy)；design/qa 不受影响；改 ~/.flywheel/.env 后需 restart-services.sh --bridge-only）(FLY-1224)",
+		readSites: [
+			envSite(
+				"packages/config/src/three-stage-phases.ts",
+				"resolvePhaseDispatch",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "与 FLYWHEEL_THREE_STAGE(整体开关)/ FLYWHEEL_THREE_STAGE_KEEPALIVE 正交；本 env=0 只翻 implement 段的 vendor/model，phase 表其余行不动。",
+	},
+	{
 		// FLY-939 (G-D): Bridge boot logs its running HEAD and best-effort compares
 		// it to origin/main; a STALE checkout (HEAD strictly behind origin/main)
 		// WARNs + records a durable event + alerts the Lead. `=0` skips the whole

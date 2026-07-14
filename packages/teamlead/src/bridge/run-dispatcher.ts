@@ -12,7 +12,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { deriveRunnerMailboxIdentity } from "flywheel-agent-team-transport";
 import { CommDB } from "flywheel-comm/db";
-import type { RoleBackendMap } from "flywheel-config";
+import type {
+	PhaseDispatchVendor,
+	RoleBackendMap,
+	RoleEffort,
+} from "flywheel-config";
 import {
 	isThreeStagePhaseRole,
 	resolveRunnerMcpProfile,
@@ -84,14 +88,13 @@ export function launchCommitPath(executionId: string): string {
  * three-stage discriminator (`ctx.shareParentBranch && ctx.sessionRole`). Every
  * non-three-stage run (main + Auto-QA) stays `claude` → byte-compatible.
  *
- * SCOPE (FLY-840): the RETRY path (actions.ts `handleRetry`) does not propagate
- * `shareParentBranch`, so a RETRIED three-stage phase falls through to `claude`
- * here — the label is shown on first dispatch (start path) only. This is
- * byte-compatible with pre-cmux-PR behavior (retry runnerName was hardcoded
- * `claude`), so it is not a regression. Propagating the marker on retry also
- * changes the retry's branch behavior (shared branch B) — 793 retry-core, not a
- * window-label concern — so the retry-path label + branch-B preservation are
- * tracked together in FLY-840, deliberately out of scope here.
+ * SCOPE (FLY-840 → resolved by FLY-1224): the RETRY path (actions.ts
+ * `handleRetry`) now propagates `shareParentBranch` for PHASE rows
+ * (chat_thread_role ∈ design/implement/qa), so a retried three-stage phase
+ * shows its phase name here too — the FLY-840 label debt is settled as a
+ * deliberate side effect of the phase-row retry keeping its shared-branch
+ * identity (a codex implement retry MUST stay on branch B). Non-phase retries
+ * still pass no marker and stay `claude` (byte-compatible).
  */
 export function runnerDisplayName(
 	sessionRole: string | undefined,
@@ -179,6 +182,15 @@ export function buildRunnerSpawnFields(
 	 * byte-compatible (no forcing).
 	 */
 	requireMailboxTransport?: boolean,
+	/**
+	 * FLY-1224: the phase table's explicit vendor for this dispatch — resolves
+	 * the executor backend on the 1b dispatch layer via the ONE existing
+	 * VENDOR_TO_EXECUTOR map. Only ever set for three-stage phase dispatches
+	 * (Bridge-internal); absent → FLY-728 claude-tmux status quo.
+	 */
+	dispatchVendor?: PhaseDispatchVendor,
+	/** FLY-1224: the phase table's reasoning effort (outranks project roles). */
+	dispatchEffort?: RoleEffort,
 ): Pick<
 	BlueprintContext,
 	| "runnerAgentName"
@@ -201,6 +213,9 @@ export function buildRunnerSpawnFields(
 		role: "runner",
 		...(!ignoreRunnerLabelSelection && issueLabels && { issueLabels }),
 		...(dispatchModel && { dispatchModel }),
+		// FLY-1224: phase table vendor + effort ride the same dispatch layer.
+		...(dispatchVendor && { dispatchVendor }),
+		...(dispatchEffort && { dispatchEffort }),
 		...(rolesConfig && { projectRoles: rolesConfig }),
 	});
 	// FLY-752: force a mailbox-capable lane when required. A no-transport backend
@@ -419,6 +434,11 @@ export class RetryDispatcher implements IRetryDispatcher {
 			// FLY-751 Codex R1 #2).
 			req.ignoreRunnerLabelSelection,
 			req.dispatchModel,
+			// FLY-1224: retry has no requireMailboxTransport source (positional gap);
+			// phase-row retries re-derive vendor/effort from the table (actions.ts).
+			undefined,
+			req.dispatchVendor,
+			req.dispatchEffort,
 		);
 
 		// FLY-80: Pre-register in CommDB before blueprint starts.
@@ -732,6 +752,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			req.ignoreRunnerLabelSelection,
 			req.dispatchModel, // FLY-728 Part C
 			req.requireMailboxTransport, // FLY-752
+			req.dispatchVendor, // FLY-1224 per-phase vendor
+			req.dispatchEffort, // FLY-1224 per-phase effort
 		);
 
 		// FLY-80: Pre-register in CommDB before blueprint starts.

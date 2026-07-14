@@ -248,8 +248,36 @@ describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => 
 		const r = await postRetry({ execution_id: "phase-impl-1" });
 		expect(r.status).toBe(200);
 		expect(dispatched).toHaveLength(1);
-		expect(dispatched[0]?.dispatchModel).toBe("claude-fable-5");
+		// FLY-1224 (T4): the implement phase retries on the FULL codex triple —
+		// never the persisted claude pin, never the sonnet label.
+		expect(dispatched[0]?.dispatchModel).toBe("gpt-5.6-sol");
+		expect(dispatched[0]?.dispatchVendor).toBe("codex");
+		expect(dispatched[0]?.dispatchEffort).toBe("xhigh");
 		expect(dispatched[0]?.ignoreRunnerLabelSelection).toBe(true);
+		// FLY-1224 (R1 #1, settles FLY-840): a phase-row retry keeps its
+		// shared-branch identity + phase sessionRole.
+		expect(dispatched[0]?.shareParentBranch).toBe(true);
+		expect(dispatched[0]?.sessionRole).toBe("implement");
+	});
+
+	it("FLY-1224 (R2 #3): a POLLUTED row (chat_thread_role=implement, session_role=main) retries as a PHASE", async () => {
+		// An old/polluted row can carry the durable phase marker while its
+		// session_role drifted to main. The retry must follow the DURABLE marker
+		// for role + vendor + branch identity — otherwise the codex runner starts
+		// in a non-phase identity on an independent branch.
+		store.upsertSession({
+			execution_id: "phase-impl-drift",
+			issue_id: "issue-887",
+			project_name: "fly245-d2-route-test",
+			status: "failed",
+			chat_thread_role: "implement",
+			session_role: "main",
+		});
+		const r = await postRetry({ execution_id: "phase-impl-drift" });
+		expect(r.status).toBe(200);
+		expect(dispatched[0]?.sessionRole).toBe("implement");
+		expect(dispatched[0]?.dispatchVendor).toBe("codex");
+		expect(dispatched[0]?.shareParentBranch).toBe(true);
 	});
 
 	it("a LEGACY phase row (persisted sorter pin = sonnet) retries on the phase table, NOT the pin", async () => {
@@ -268,6 +296,8 @@ describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => 
 		const r = await postRetry({ execution_id: "phase-qa-1" });
 		expect(r.status).toBe(200);
 		expect(dispatched[0]?.dispatchModel).toBe("claude-opus-4-8"); // qa → Opus
+		expect(dispatched[0]?.dispatchVendor).toBe("claude"); // FLY-1224: qa stays claude
+		expect(dispatched[0]?.dispatchEffort).toBeUndefined();
 		expect(dispatched[0]?.ignoreRunnerLabelSelection).toBe(true);
 	});
 
@@ -298,8 +328,13 @@ describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => 
 		const r = await postRetry({ execution_id: "main-1" });
 		expect(r.status).toBe(200);
 		// Exactly the pre-FLY-887 behavior: persisted dispatch model reused,
-		// label layer NOT bypassed.
+		// label layer NOT bypassed. FLY-1224: vendor/effort/shareParentBranch
+		// stay undefined and sessionRole stays the persisted value (byte-compat).
 		expect(dispatched[0]?.dispatchModel).toBe("claude-sonnet-5");
 		expect(dispatched[0]?.ignoreRunnerLabelSelection).toBeUndefined();
+		expect(dispatched[0]?.dispatchVendor).toBeUndefined();
+		expect(dispatched[0]?.dispatchEffort).toBeUndefined();
+		expect(dispatched[0]?.shareParentBranch).toBeUndefined();
+		expect(dispatched[0]?.sessionRole).toBe("main");
 	});
 });

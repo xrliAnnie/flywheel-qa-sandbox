@@ -119,16 +119,23 @@ const SHORT_CODE_DISPLAY_NAME: Readonly<Record<"F" | "O" | "S" | "H", string>> =
 
 /**
  * FLY-892 (Codex R1 #3): the canonical model DISPLAY name (Fable / Opus / Sonnet
- * / Haiku) for a phase message tag / pipeline header. Reuses `modelShortCode`, so
- * it covers canonical ids, bare aliases, and `[1m]` variants identically. When
- * `model` maps to no known code (account default / non-Claude), fall back to the
- * `fallbackTier`'s name if given, else `undefined`. This is the single display-
- * name contract so no injection point re-derives it.
+ * / Haiku / GPT) for a phase message tag / pipeline header. Reuses
+ * `modelShortCode`, so it covers canonical ids, bare aliases, and `[1m]`
+ * variants identically. FLY-1224: the GPT family is recognized BEFORE the
+ * F/O/S/H short codes AND before the tier fallback — a codex phase session's
+ * `gpt-5.6-sol` must display "GPT-5.6", never fall back to a Claude name (the
+ * display lie C2 fixed). When `model` maps to no known family (account default
+ * / unknown), fall back to the `fallbackTier`'s name if given, else
+ * `undefined`. This is the single display-name contract so no injection point
+ * re-derives it.
  */
 export function modelDisplayName(
 	model: string | null | undefined,
 	fallbackTier?: ModelTier,
 ): string | undefined {
+	const m = model?.toLowerCase();
+	if (m?.startsWith("gpt-5.6")) return "GPT-5.6";
+	if (m?.startsWith("gpt-")) return "GPT";
 	const code = modelShortCode(model);
 	if (code) return SHORT_CODE_DISPLAY_NAME[code];
 	if (fallbackTier)

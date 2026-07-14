@@ -10,6 +10,12 @@
  * QA gate.
  */
 
+import {
+	isThreeStagePhaseRole,
+	type PhaseDispatchVendor,
+	type RoleEffort,
+	resolvePhaseDispatch,
+} from "flywheel-config";
 import type { AlertThreadRow, Session } from "../StateStore.js";
 import {
 	type PendingAlert,
@@ -196,6 +202,48 @@ export interface CloseAndDispatchDeps {
 	 */
 	startSuccessor: (session: Session) => Promise<string>;
 	log?: (msg: string) => void;
+}
+
+/**
+ * FLY-1224 (R1 #1 — the 6th dispatch lane): the phase-aware dispatch fields
+ * for a rescue SUCCESSOR. A PHASE row (durable `chat_thread_role` marker, same
+ * discriminator as actions.ts) re-derives {model, vendor, effort} from the
+ * phase table and keeps its shared-branch identity + phase sessionRole —
+ * orchestrator-spawned phase rows usually persist NO dispatch_model, so
+ * forwarding only `s.dispatch_model` would rescue a codex implement back onto
+ * claude-tmux on an independent branch. sessionRole follows the durable marker
+ * too (R2 #3): a polluted row can carry chat_thread_role=implement while
+ * session_role drifted to main. Non-phase rows: byte-compatible passthrough.
+ * Pure + exported so the REAL production derivation is unit-testable (T4b).
+ */
+export function buildRescueSuccessorDispatchFields(
+	s: Pick<Session, "chat_thread_role" | "session_role" | "dispatch_model">,
+): {
+	sessionRole?: string;
+	dispatchModel?: string;
+	dispatchVendor?: PhaseDispatchVendor;
+	dispatchEffort?: RoleEffort;
+	ignoreRunnerLabelSelection?: true;
+	shareParentBranch?: true;
+} {
+	const phaseRole = isThreeStagePhaseRole(s.chat_thread_role)
+		? s.chat_thread_role
+		: undefined;
+	if (!phaseRole) {
+		return {
+			sessionRole: s.session_role ?? undefined,
+			dispatchModel: s.dispatch_model ?? undefined,
+		};
+	}
+	const dispatch = resolvePhaseDispatch(phaseRole);
+	return {
+		sessionRole: phaseRole,
+		dispatchModel: dispatch.model,
+		dispatchVendor: dispatch.vendor,
+		dispatchEffort: dispatch.effort,
+		ignoreRunnerLabelSelection: true,
+		shareParentBranch: true,
+	};
 }
 
 export function makeCloseAndDispatchSuccessor(

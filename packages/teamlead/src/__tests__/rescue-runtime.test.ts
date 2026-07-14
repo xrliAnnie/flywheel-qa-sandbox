@@ -8,6 +8,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	buildRescueRuntime,
+	buildRescueSuccessorDispatchFields,
 	leadLaunchdLabel,
 	makeCloseAndDispatchSuccessor,
 	makeKickstart,
@@ -301,5 +302,74 @@ describe("buildRescueRuntime wiring", () => {
 		expect(kickstart).toHaveBeenCalledOnce();
 		expect(closeAndDispatchSuccessor).toHaveBeenCalledOnce();
 		expect(outcomes.every((o) => o.ok)).toBe(true);
+	});
+});
+
+// ── FLY-1224 (T4b) — phase-aware rescue-successor dispatch fields ──────────
+describe("buildRescueSuccessorDispatchFields (FLY-1224 R1 #1 — the 6th lane)", () => {
+	it("implement PHASE row with dispatch_model=NULL → full codex triple + shared-branch identity", () => {
+		// The exact pre-fix bug shape: orchestrator-spawned phase rows persist NO
+		// dispatch_model, so the old passthrough rescued a codex implement back
+		// onto claude-tmux on an independent branch.
+		const f = buildRescueSuccessorDispatchFields({
+			chat_thread_role: "implement",
+			session_role: "implement",
+			dispatch_model: null,
+		} as never);
+		expect(f).toEqual({
+			sessionRole: "implement",
+			dispatchModel: "gpt-5.6-sol",
+			dispatchVendor: "codex",
+			dispatchEffort: "xhigh",
+			ignoreRunnerLabelSelection: true,
+			shareParentBranch: true,
+		});
+	});
+
+	it("polluted row (chat_thread_role=implement, session_role=main) follows the DURABLE marker (R2 #3)", () => {
+		const f = buildRescueSuccessorDispatchFields({
+			chat_thread_role: "implement",
+			session_role: "main",
+			dispatch_model: null,
+		} as never);
+		expect(f.sessionRole).toBe("implement");
+		expect(f.dispatchVendor).toBe("codex");
+		expect(f.shareParentBranch).toBe(true);
+	});
+
+	it("qa PHASE row → claude triple (Opus, no effort) + shared-branch identity", () => {
+		const f = buildRescueSuccessorDispatchFields({
+			chat_thread_role: "qa",
+			session_role: "qa",
+			dispatch_model: null,
+		} as never);
+		expect(f.dispatchModel).toBe("claude-opus-4-8");
+		expect(f.dispatchVendor).toBe("claude");
+		expect(f.dispatchEffort).toBeUndefined();
+		expect(f.shareParentBranch).toBe(true);
+	});
+
+	it("BYTE-COMPAT sentinel: a non-phase row passes its persisted fields verbatim", () => {
+		const f = buildRescueSuccessorDispatchFields({
+			chat_thread_role: "main",
+			session_role: "main",
+			dispatch_model: "claude-fable-5",
+		} as never);
+		expect(f).toEqual({
+			sessionRole: "main",
+			dispatchModel: "claude-fable-5",
+		});
+	});
+
+	it("BYTE-COMPAT sentinel: a legacy row with NULL role/model stays all-undefined", () => {
+		const f = buildRescueSuccessorDispatchFields({
+			chat_thread_role: null,
+			session_role: null,
+			dispatch_model: null,
+		} as never);
+		expect(f).toEqual({
+			sessionRole: undefined,
+			dispatchModel: undefined,
+		});
 	});
 });

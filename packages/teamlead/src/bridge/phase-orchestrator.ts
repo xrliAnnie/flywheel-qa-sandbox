@@ -29,7 +29,9 @@
 import {
 	isThreeStagePhaseRole,
 	nextPhase,
-	resolvePhaseModel,
+	type PhaseDispatchVendor,
+	type RoleEffort,
+	resolvePhaseDispatch,
 	type ThreeStagePhase,
 } from "flywheel-config";
 import { REVIEW_BINDING_UNBOUND } from "../StateStore.js";
@@ -220,6 +222,14 @@ export interface PhaseOrchestratorDeps {
 			leadId?: string;
 			sessionRole: string;
 			dispatchModel: string;
+			/**
+			 * FLY-1224: the phase table's vendor — every phase spawn carries the
+			 * full {model, vendor, effort} triple so the resolver's 1b layer picks
+			 * the right executor backend (codex-tmux for the implement phase).
+			 */
+			dispatchVendor?: PhaseDispatchVendor;
+			/** FLY-1224: the phase table's reasoning effort. */
+			dispatchEffort?: RoleEffort;
 			startPoint: string;
 			shareParentBranch: true;
 			/**
@@ -1196,12 +1206,17 @@ export class PhaseOrchestrator {
 			);
 		}
 		try {
+			// FLY-1224: the phase table carries {model, vendor, effort} — pass the
+			// full triple so the resolver picks the phase's executor backend.
+			const dispatch = resolvePhaseDispatch("implement");
 			const res = await this.deps.startDispatcher.start({
 				issueId: session.issue_id,
 				projectName: session.project_name,
 				leadId: fixLeadId,
 				sessionRole: "implement",
-				dispatchModel: resolvePhaseModel("implement"),
+				dispatchModel: dispatch.model,
+				dispatchVendor: dispatch.vendor,
+				...(dispatch.effort && { dispatchEffort: dispatch.effort }),
 				startPoint: headSha,
 				shareParentBranch: true,
 				// FLY-887 R2: labels never outrank the phase table (see deps JSDoc).
@@ -1287,7 +1302,17 @@ export class PhaseOrchestrator {
 
 		const qaSummary = intent()?.summary ?? "(no QA summary provided)";
 		const impl = this.deps.getAlivePhaseSession(session.issue_id, "implement");
-		if (impl) {
+		// FLY-1224 (C8, probe-before-wake): a status-ALIVE row is not a
+		// process-alive runner. A codex implement completes needs_review and its
+		// process EXITS (transitional contract: no park loop) while the row stays
+		// awaiting_review — the wake below is a mailbox JSON write that always
+		// "succeeds", so waking the corpse patches fixExecId and permanently
+		// short-circuits onQaResult's resume condition (the unreplayable stall).
+		// Probe the real tmux process first; only a PROVEN-dead target falls
+		// through to the spawn fallback (which dispatches this ticket's codex
+		// backend). alive/indeterminate → the existing wake path, byte-unchanged.
+		const implDead = impl ? await this.isWakeTargetProvenDead(impl) : false;
+		if (impl && !implDead) {
 			// Alive parked implement → WAKE it (with full context). Fail-closed on a
 			// dirty / drifted worktree BEFORE granting the TURN or waking.
 			const ready = await this.deps.effects.assertPhaseWorktreeReady(
@@ -1342,8 +1367,10 @@ export class PhaseOrchestrator {
 			return;
 		}
 
-		// The implement phase died → spawn a fresh Implement-fix (dispatcher seam
-		// grants its TURN pre-launch). The QA session still parks (not closed).
+		// The implement phase died (no row, or FLY-1224: a proven-dead process
+		// behind an alive-status row) → spawn a fresh Implement-fix (dispatcher
+		// seam grants its TURN pre-launch). The QA session still parks (not
+		// closed).
 		// FLY-939 (G-C): but first ghost-probe — if a terminal-status implement row
 		// still has a live tmux window, that IS the implement (a bypass flipped its
 		// row to terminal); spawning would duplicate it + double-write branch B.
@@ -1357,12 +1384,16 @@ export class PhaseOrchestrator {
 			);
 		}
 		try {
+			// FLY-1224: full {model, vendor, effort} triple from the phase table.
+			const dispatch = resolvePhaseDispatch("implement");
 			const res = await this.deps.startDispatcher.start({
 				issueId: session.issue_id,
 				projectName,
 				leadId: fixLeadId,
 				sessionRole: "implement",
-				dispatchModel: resolvePhaseModel("implement"),
+				dispatchModel: dispatch.model,
+				dispatchVendor: dispatch.vendor,
+				...(dispatch.effort && { dispatchEffort: dispatch.effort }),
 				startPoint: headSha,
 				shareParentBranch: true,
 				// FLY-887 R2: labels never outrank the phase table (see deps JSDoc).
@@ -1502,7 +1533,14 @@ export class PhaseOrchestrator {
 
 		// wake-or-spawn the next phase.
 		const target = this.deps.getAlivePhaseSession(prev.issue_id, next);
-		if (target) {
+		// FLY-1224 (C8, probe-before-wake — second site): same decision as the
+		// fix-wake site. A proven-dead target falls to the existing spawn path
+		// below (ghostGuard still runs there); alive/indeterminate → the wake
+		// path, byte-unchanged.
+		const targetDead = target
+			? await this.isWakeTargetProvenDead(target)
+			: false;
+		if (target && !targetDead) {
 			// The parked next phase is alive → WAKE it in place (zero checkout).
 			const ready = await this.deps.effects.assertPhaseWorktreeReady(
 				target,
@@ -1545,12 +1583,42 @@ export class PhaseOrchestrator {
 			return;
 		}
 
-		// No live next phase → SPAWN it (dispatcher pre-launch seam grants its TURN).
+		// No live next phase (or FLY-1224: a proven-dead process behind an
+		// alive-status row) → SPAWN it (dispatcher pre-launch seam grants its TURN).
 		// FLY-939 (G-C): before spawning, ghost-probe — a terminal-status row with a
 		// live tmux window means a bypass polluted the state; spawning would create a
 		// duplicate + second writer. Fail-closed: ghostGuard alerts + returns false.
 		if (!(await this.ghostGuard(prev.issue_id, next))) return;
 		await this.dispatchNextPhase(prev, next, headSha);
+	}
+
+	/**
+	 * FLY-1224 (C8): is this wake target's PROCESS provably dead? Graded dead
+	 * verdict (R1 #2 + R2 #1):
+	 *   - `alive` / `indeterminate` → NOT dead (indeterminate is fail-closed:
+	 *     never treat a maybe-alive context holder as dead — existing stance);
+	 *   - `dead_pin` → dead unconditionally (a confirmed remain-on-exit corpse);
+	 *   - `absent` → `probePhaseAlive` goes through the CommDB registration
+	 *     lookup, which FOLDS "registration gone" AND "CommDB read error" into
+	 *     absent — unfalsifiable on its own (authorizing a spawn inside a CommDB
+	 *     lock/corruption window could double-write branch B). Only a DIRECT
+	 *     probe of the row's PERSISTED tmux target (`probeGhostTmux`, which
+	 *     bypasses the CommDB lookup) may confirm death; a row with no persisted
+	 *     target keeps the existing wake path (fail-closed).
+	 * NOTE: the ghostGuard inside the spawn fallback is NOT a substitute for
+	 * this in-place direct probe — it re-queries listPhaseSessionRows (a throw
+	 * there ALLOWS the spawn) and only probes the newest few rows, so it does
+	 * not guarantee THIS row was probed (R2 #1).
+	 * The dead path executes NO assertPhaseWorktreeReady, NO grantTurn, NO wake
+	 * — the spawn fallback's TURN comes from the dispatcher pre-launch seam.
+	 */
+	private async isWakeTargetProvenDead(row: PhaseSession): Promise<boolean> {
+		const liveness = await this.deps.effects.probePhaseAlive(row);
+		if (liveness === "dead_pin") return true;
+		if (liveness !== "absent") return false; // alive / indeterminate → wake path
+		if (!row.tmux_session) return false; // no persisted target → unfalsifiable
+		const direct = await this.deps.effects.probeGhostTmux(row);
+		return direct === "dead_pin" || direct === "absent";
 	}
 
 	/**
@@ -1576,12 +1644,16 @@ export class PhaseOrchestrator {
 			);
 		}
 		try {
+			// FLY-1224: full {model, vendor, effort} triple from the phase table.
+			const dispatch = resolvePhaseDispatch(next);
 			const res = await this.deps.startDispatcher.start({
 				issueId: prev.issue_id,
 				projectName: prev.project_name as string,
 				leadId,
 				sessionRole: next,
-				dispatchModel: resolvePhaseModel(next),
+				dispatchModel: dispatch.model,
+				dispatchVendor: dispatch.vendor,
+				...(dispatch.effort && { dispatchEffort: dispatch.effort }),
 				startPoint: headSha,
 				shareParentBranch: true,
 				// FLY-887 R2: labels never outrank the phase table (see deps JSDoc).

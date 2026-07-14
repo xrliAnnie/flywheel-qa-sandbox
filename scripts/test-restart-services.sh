@@ -1467,14 +1467,17 @@ else
 fi
 rm -f "$BO_HOME/.flywheel/plugin-restart-pending"
 
-# ── 6) --bridge-only with a BUSY first idle-poll → waits QUIETLY ──
+# ── 6) --bridge-only --wait-idle with a BUSY first idle-poll → waits QUIETLY ──
 # FLY-1142 (Codex code R1 MEDIUM-1): wait_for_idle's busy-progress notice
 # rode notify_routine — a Discord post — violating the "no deploy
 # notifications" contract. The stateful curl shim reports 3 active sessions
 # on the FIRST /health poll and 0 afterwards, so the run exercises the busy
 # branch (one 30s poll interval) and must log locally instead of notifying.
-echo "Test: FLY-1142 --bridge-only busy idle-wait stays quiet (~35s)"
-cat > "$BO_SHIMS/curl" <<EOF
+# FLY-1224: the idle wait is now OPT-IN — this test enters via --wait-idle
+# (the default-skip behavior has its own tests below).
+echo "Test: FLY-1142 --bridge-only --wait-idle busy idle-wait stays quiet (~35s)"
+bo_busy_curl_shim() {
+    cat > "$BO_SHIMS/curl" <<EOF
 #!/bin/bash
 echo "\$*" >> "$BO_CALLS/curl.calls"
 n=\$(cat "$BO_CALLS/health.n" 2>/dev/null || echo 0)
@@ -1485,9 +1488,11 @@ else
     echo '{"ok":true,"sessions_count":0}'
 fi
 EOF
-chmod +x "$BO_SHIMS/curl"
-rm -f "$BO_CALLS/health.n"
-out=$(bo_run --bridge-only) && rc=0 || rc=$?
+    chmod +x "$BO_SHIMS/curl"
+    rm -f "$BO_CALLS/health.n"
+}
+bo_busy_curl_shim
+out=$(bo_run --bridge-only --wait-idle) && rc=0 || rc=$?
 bo_ok=true
 (( rc == 0 )) || bo_ok=false
 echo "$out" | grep -q "Done (bridge-only)" || bo_ok=false
@@ -1499,9 +1504,99 @@ echo "$out" | grep -q "dropped notice" && bo_ok=false
 echo "$out" | grep -q "等待 3 个 active session" && bo_ok=false
 bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.bridge" || bo_ok=false
 if [[ "$bo_ok" == "true" ]]; then
-    pass "FLY-1142 --bridge-only: busy idle-wait logs locally, zero routine notices"
+    pass "FLY-1142 --bridge-only --wait-idle: busy idle-wait logs locally, zero routine notices"
 else
-    fail "FLY-1142 --bridge-only busy wait: rc=$rc out tail: $(echo "$out" | tail -4)"
+    fail "FLY-1142 --bridge-only --wait-idle busy wait: rc=$rc out tail: $(echo "$out" | tail -4)"
+fi
+
+# ════════════════════════════════════════════════════════════════
+# FLY-1224 (T12): idle-wait is DEFAULT-OFF (founder directive).
+# Behavior-level, real top-level runs against the hermetic HOME —
+# NOT dry-run text (R1 #4: both dry-runs exit before the gates, so a
+# dry-run wording assertion is a false green). The busy-once curl shim
+# means a REGRESSED gate would visibly wait ("Waiting for idle…" log)
+# — exactly what these tests assert the absence/presence of.
+# ════════════════════════════════════════════════════════════════
+echo "Test: FLY-1224 idle-wait default-off matrix"
+
+# ── 7) default --bridge-only under a busy /health → NO idle wait ──
+bo_busy_curl_shim
+out=$(bo_run --bridge-only) && rc=0 || rc=$?
+bo_ok=true
+(( rc == 0 )) || bo_ok=false
+echo "$out" | grep -q "Done (bridge-only)" || bo_ok=false
+echo "$out" | grep -q "Waiting for idle sessions" && bo_ok=false
+echo "$out" | grep -q "waiting for 3 active session(s) to idle" && bo_ok=false
+if [[ "$bo_ok" == "true" ]]; then
+    pass "FLY-1224 default --bridge-only: idle wait SKIPPED (busy /health ignored)"
+else
+    fail "FLY-1224 default --bridge-only: rc=$rc out tail: $(echo "$out" | tail -4)"
+fi
+
+# ── 8) env FLYWHEEL_RESTART_WAIT_IDLE=1 restores the wait (bridge-only) ──
+bo_busy_curl_shim
+out=$(FLYWHEEL_RESTART_WAIT_IDLE=1 bo_run --bridge-only) && rc=0 || rc=$?
+bo_ok=true
+(( rc == 0 )) || bo_ok=false
+echo "$out" | grep -q "Waiting for idle sessions before bridge-only restart" || bo_ok=false
+echo "$out" | grep -q "waiting for 3 active session(s) to idle" || bo_ok=false
+if [[ "$bo_ok" == "true" ]]; then
+    pass "FLY-1224 FLYWHEEL_RESTART_WAIT_IDLE=1: idle wait restored (~35s)"
+else
+    fail "FLY-1224 env wait restore: rc=$rc out tail: $(echo "$out" | tail -4)"
+fi
+
+# ── 9) --force --wait-idle → force wins, no wait ──
+bo_busy_curl_shim
+out=$(bo_run --bridge-only --force --wait-idle) && rc=0 || rc=$?
+bo_ok=true
+(( rc == 0 )) || bo_ok=false
+echo "$out" | grep -q -- "--force wins over --wait-idle" || bo_ok=false
+echo "$out" | grep -q "Waiting for idle sessions" && bo_ok=false
+if [[ "$bo_ok" == "true" ]]; then
+    pass "FLY-1224 --force --wait-idle: force wins, idle wait skipped"
+else
+    fail "FLY-1224 force-wins: rc=$rc out tail: $(echo "$out" | tail -4)"
+fi
+
+# ── 10) FULL restart (core diff → restart_bridge=true) default → gate skipped ──
+# A packages/teamlead diff classifies restart_bridge=true, so the run reaches
+# the FULL-restart idle gate (:673 region) — the busy shim proves the gate is
+# skipped by default (no "Waiting for idle sessions before restart" log) while
+# the run demonstrably got PAST the gate location (build via the pnpm shim).
+mkdir -p "$BO_FLYWHEEL/packages/teamlead"
+echo "export {};" > "$BO_FLYWHEEL/packages/teamlead/fly1224.ts"
+git -C "$BO_FLYWHEEL" add packages/teamlead/fly1224.ts
+git -C "$BO_FLYWHEEL" -c user.email=t@t -c user.name=t commit -q -m "feat: core delta"
+git -C "$BO_FLYWHEEL" rev-parse HEAD~1 > "$BO_HOME/.flywheel/deployed-sha"
+bo_busy_curl_shim
+out=$(bo_run) && rc=0 || rc=$?
+bo_ok=true
+echo "$out" | grep -q "Waiting for idle sessions before restart" && bo_ok=false
+# got PAST the gate: the build ran (pnpm shim recorded a call)
+[[ -n "$(bo_calls pnpm)" ]] || bo_ok=false
+if [[ "$bo_ok" == "true" ]]; then
+    pass "FLY-1224 default FULL restart: idle gate skipped, build proceeded (rc=$rc)"
+else
+    fail "FLY-1224 default FULL restart: rc=$rc pnpm='$(bo_calls pnpm)' out tail: $(echo "$out" | tail -4)"
+fi
+
+# ── 11) FULL restart --wait-idle → gate waits ──
+# NOTE: on the FULL lane the busy-progress notice rides notify_routine (a
+# Discord post, dropped when unconfigured) — the bridge-only local log line
+# does NOT appear here. The behavior evidence is the gate's own log line plus
+# the /health poll count: the busy-once shim answers 3 sessions on poll #1, so
+# a REAL wait polls /health at least twice (busy → idle).
+git -C "$BO_FLYWHEEL" rev-parse HEAD~1 > "$BO_HOME/.flywheel/deployed-sha"
+bo_busy_curl_shim
+out=$(bo_run --wait-idle) && rc=0 || rc=$?
+bo_ok=true
+echo "$out" | grep -q "Waiting for idle sessions before restart" || bo_ok=false
+(( $(cat "$BO_CALLS/health.n" 2>/dev/null || echo 0) >= 2 )) || bo_ok=false
+if [[ "$bo_ok" == "true" ]]; then
+    pass "FLY-1224 FULL restart --wait-idle: idle gate waits (~35s, rc=$rc)"
+else
+    fail "FLY-1224 FULL restart --wait-idle: rc=$rc health.n=$(cat "$BO_CALLS/health.n" 2>/dev/null || echo 0) out tail: $(echo "$out" | tail -4)"
 fi
 
 # ════════════════════════════════════════════════════════════════

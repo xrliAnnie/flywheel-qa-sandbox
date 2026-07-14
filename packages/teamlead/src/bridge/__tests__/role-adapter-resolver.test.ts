@@ -531,6 +531,104 @@ describe("resolveRoleAdapter — antigravity (transport=none, FLY-493)", () => {
 	});
 });
 
+// FLY-1224: per-phase vendor — the dispatch layer may carry an explicit vendor
+// (phase table output). T1 (mutation α target): removing the 1b vendor
+// passthrough MUST turn these red.
+describe("resolveRoleAdapter — dispatch vendor (FLY-1224 T1)", () => {
+	it("codex dispatch triple → codex-tmux + model + effort", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			dispatchModel: "gpt-5.6-sol",
+			dispatchVendor: "codex",
+			dispatchEffort: "xhigh",
+			env: EMPTY_ENV,
+		});
+		expect(resolved).toEqual({
+			backend: "codex-tmux",
+			transport: "codex",
+			vendor: "codex",
+			model: "gpt-5.6-sol",
+			effort: "xhigh",
+		});
+	});
+
+	it("claude dispatch vendor → claude-tmux (explicit form of the status quo)", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			dispatchModel: "claude-fable-5",
+			dispatchVendor: "claude",
+			env: EMPTY_ENV,
+		});
+		expect(resolved).toEqual({
+			backend: "claude-tmux",
+			transport: "claude-code",
+			vendor: "claude-code",
+			model: "claude-fable-5",
+		});
+	});
+
+	it("dispatchEffort outranks the project roles effort (dispatch > project)", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			dispatchModel: "gpt-5.6-sol",
+			dispatchVendor: "codex",
+			dispatchEffort: "xhigh",
+			projectRoles: { runner: { backend: "claude-tmux", effort: "low" } },
+			env: EMPTY_ENV,
+		});
+		expect(resolved.effort).toBe("xhigh");
+	});
+
+	it("dispatchEffort applies without a vendor too (claude dispatch lane)", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			dispatchModel: "claude-opus-4-8",
+			dispatchEffort: "medium",
+			env: EMPTY_ENV,
+		});
+		expect(resolved.backend).toBe("claude-tmux");
+		expect(resolved.effort).toBe("medium");
+	});
+
+	it("a vendor label still beats the dispatch layer entirely (label > dispatch)", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			issueLabels: ["claude"],
+			dispatchModel: "gpt-5.6-sol",
+			dispatchVendor: "codex",
+			env: EMPTY_ENV,
+		});
+		// The label layer selected the backend, so 1b never ran; the codex
+		// dispatch triple does not leak onto the label-pinned claude backend.
+		expect(resolved.backend).toBe("claude-tmux");
+		expect(resolved.model).not.toBe("gpt-5.6-sol");
+	});
+
+	// T2 (reverse-compat sentinel): the vendor-less dispatch lane is BYTE
+	// UNCHANGED — dispatchModel-only resolves exactly the FLY-728 shape, incl.
+	// the FLY-751 default-model injection with no dispatch at all.
+	it("SENTINEL: dispatchModel WITHOUT vendor → the exact FLY-728 output", () => {
+		expect(
+			resolveRoleAdapter({
+				role: "runner",
+				dispatchModel: "claude-fable-5",
+				env: EMPTY_ENV,
+			}),
+		).toEqual({
+			backend: "claude-tmux",
+			transport: "claude-code",
+			vendor: "claude-code",
+			model: "claude-fable-5",
+		});
+		expect(resolveRoleAdapter({ role: "runner", env: EMPTY_ENV })).toEqual({
+			backend: "claude-tmux",
+			transport: "claude-code",
+			vendor: "claude-code",
+			model: "claude-fable-5",
+		});
+	});
+});
+
 // FLY-494: Kimi Code is a first-class executor backend with NO transport.
 describe("resolveRoleAdapter — kimi (transport=none, FLY-494)", () => {
 	it("EXECUTOR_TO_TRANSPORT maps kimi-tmux → none", () => {

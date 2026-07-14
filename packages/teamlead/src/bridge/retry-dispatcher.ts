@@ -3,7 +3,11 @@
 // FLY-579: QaContext is defined in edge-worker (Blueprint owns the prompt
 // rendering); teamlead depends on edge-worker, so we import the type here for
 // StartRequest. Defining it in teamlead would invert the dependency.
-import type { PonytailInput } from "flywheel-config";
+import type {
+	PhaseDispatchVendor,
+	PonytailInput,
+	RoleEffort,
+} from "flywheel-config";
 import type { QaContext } from "flywheel-edge-worker/dist/Blueprint.js";
 
 export type { QaContext };
@@ -58,6 +62,15 @@ export interface RetryRequest {
 	 * override.
 	 */
 	dispatchModel?: string;
+	/**
+	 * FLY-1224: per-phase vendor (phase table output; Bridge-INTERNAL, never on
+	 * the HTTP body). Only transported vendors — a no-transport backend can
+	 * never enter phase dispatch. actions.ts re-derives it from the phase table
+	 * for PHASE rows; undefined for every non-phase retry (byte-compatible).
+	 */
+	dispatchVendor?: PhaseDispatchVendor;
+	/** FLY-1224: per-phase reasoning effort (phase table output). */
+	dispatchEffort?: RoleEffort;
 	/**
 	 * FLY-245 D2 (plan §5.2.1): gateway pre-bound successor execution id.
 	 * When present the dispatcher MUST use it instead of generating a fresh
@@ -148,6 +161,15 @@ export interface StartRequest {
 	 * dispatch override (byte-compatible).
 	 */
 	dispatchModel?: string;
+	/**
+	 * FLY-1224: per-phase vendor (phase table output; Bridge-INTERNAL — set only
+	 * by the PhaseOrchestrator / the server-side three-stage entry, never from
+	 * the public `/api/runs/start` body). Only transported vendors. Absent →
+	 * the resolver's FLY-728 claude-tmux behavior (byte-compatible).
+	 */
+	dispatchVendor?: PhaseDispatchVendor;
+	/** FLY-1224: per-phase reasoning effort (phase table output). */
+	dispatchEffort?: RoleEffort;
 	/**
 	 * FLY-579: explicit git start point for the worktree (a commit SHA / ref).
 	 * Threaded to `WorktreeManager.create({ startPoint })`. The Auto-QA

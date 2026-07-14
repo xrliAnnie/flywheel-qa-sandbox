@@ -22,6 +22,7 @@
  */
 
 import { spawn } from "node:child_process";
+import type { RoleEffort } from "flywheel-config";
 import { washJudgeEnv } from "./watchdog-judge.js";
 
 export interface ClaudeReviewFinding {
@@ -65,6 +66,12 @@ export interface ClaudeReviewInvocation {
 	/** Fixed working directory (the reviewed repo / worktree). */
 	cwd: string;
 	model?: string;
+	/**
+	 * FLY-1224 (Annie's directive): reasoning effort for the reviewer. Defaults
+	 * to `DEFAULT_REVIEW_EFFORT` ("xhigh") — the single ownership layer for the
+	 * default is HERE (the coordinator only forwards an override).
+	 */
+	effort?: RoleEffort;
 	timeoutMs?: number;
 	maxStdoutBytes?: number;
 	env?: NodeJS.ProcessEnv;
@@ -72,6 +79,12 @@ export interface ClaudeReviewInvocation {
 }
 
 const DEFAULT_MODEL = "claude-opus-4-8";
+/**
+ * FLY-1224 (Annie's directive): the cross-family Claude reviewer runs at
+ * xhigh effort — matching the codex author's own effort so the review is not
+ * weaker than the work it judges. Exported for the coordinator-layer test.
+ */
+export const DEFAULT_REVIEW_EFFORT: RoleEffort = "xhigh";
 const DEFAULT_TIMEOUT_MS = 30 * 60_000; // §7.2: 30min per round
 const DEFAULT_MAX_STDOUT_BYTES = 8 * 1_048_576; // 8MB
 
@@ -88,6 +101,7 @@ export function killAllClaudeReviewChildren(): number {
 export function buildClaudeReviewArgv(
 	inv: Pick<ClaudeReviewInvocation, "prompt" | "sessionId" | "resume"> & {
 		model?: string;
+		effort?: RoleEffort;
 	},
 ): string[] {
 	return [
@@ -99,6 +113,9 @@ export function buildClaudeReviewArgv(
 		"json",
 		"--model",
 		inv.model ?? DEFAULT_MODEL,
+		// FLY-1224: reviewer effort (FLY-671 claude CLI flag), default xhigh.
+		"--effort",
+		inv.effort ?? DEFAULT_REVIEW_EFFORT,
 	];
 }
 

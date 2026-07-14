@@ -342,3 +342,40 @@ describe("FLY-1188 M2 — claude prompt byte-snapshot (drift guard)", () => {
 		expect(normalized).toMatchSnapshot();
 	});
 });
+
+// ── FLY-1224 (T13 ①) — codex author code-review lane guidance ─────────────
+// A codex author's FLY-827 code gate is request-driven (event-route skips the
+// legacy trigger); without this prompt block NO review ever runs and the ship
+// gate deadlocks. The block must carry the coordinator's FULL state machine:
+// three terminal outcomes + the re-round loop + fail-closed failure handling.
+describe("FLY-1224 — codex author CODE REVIEW GATE guidance (T13 ①)", () => {
+	it("codex prompt carries the full code-review lane state machine", async () => {
+		const prompt = await buildCodexPrompt();
+		expect(prompt).toContain("CODE REVIEW GATE (codex author");
+		// lane mechanics: gate → request-review → poll
+		expect(prompt).toContain("gate review_code");
+		expect(prompt).toContain("request-review --type code --question-id");
+		expect(prompt).toContain("check <questionId>");
+		// all THREE terminal outcomes (R5 #1: the real coordinator state machine)
+		expect(prompt).toContain("APPROVED → the code gate is satisfied");
+		expect(prompt).toContain("SKIPPED (governance-level codex-skip");
+		expect(prompt).toContain(
+			"CHANGES_REQUESTED → the answered question is CONSUMED",
+		);
+		// the re-round loop: a NEW gate + a NEW request per round
+		expect(prompt).toContain("open a NEW `gate review_code --no-block`");
+		// fail-closed failure handling — never a same-family substitute
+		expect(prompt).toContain("FAIL-CLOSED: report it to your Lead");
+		expect(prompt).toContain("never substitute a same-family review");
+		// ordering: the code gate guidance precedes the approve gate
+		expect(prompt.indexOf("CODE REVIEW GATE (codex author")).toBeLessThan(
+			prompt.indexOf("APPROVE GATE (MANDATORY"),
+		);
+	});
+
+	it("claude prompt does NOT carry the codex code-review lane (byte-compat guard)", async () => {
+		const prompt = await buildPrompt({ ctxOverrides: {} });
+		expect(prompt).not.toContain("CODE REVIEW GATE (codex author");
+		expect(prompt).not.toContain("request-review --type code");
+	});
+});

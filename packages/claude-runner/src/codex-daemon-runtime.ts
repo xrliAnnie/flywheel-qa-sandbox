@@ -108,6 +108,29 @@ export function buildDaemonSandboxArgs(opts: {
 	return args;
 }
 
+/** FLY-1224: effort values the daemon spawn accepts (mirrors RoleEffort). */
+const DAEMON_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+
+/**
+ * FLY-1224: build the `-c model_reasoning_effort="<effort>"` daemon spawn
+ * override for a per-phase reasoning effort. The value only ever comes from
+ * the phase table (a controlled enum), but the argv builder still whitelists
+ * defensively — an unknown value is warned + ignored (the CODEX_HOME config
+ * default applies), never spliced into the config override. The quoted value
+ * is TOML string syntax (`codex -c key=value` parses the value as TOML);
+ * verified against the real codex CLI. Absent → no argv (byte-compatible).
+ */
+export function buildDaemonEffortArgs(effort?: string): string[] {
+	if (!effort) return [];
+	if (!DAEMON_EFFORTS.has(effort)) {
+		console.warn(
+			`[codex-daemon] unsupported effort "${effort}" — ignoring (daemon uses CODEX_HOME config default)`,
+		);
+		return [];
+	}
+	return ["-c", `model_reasoning_effort="${effort}"`];
+}
+
 /** Minimal spawned-child surface the lifecycle needs (injectable). */
 export interface DaemonChild {
 	readonly pid?: number;
@@ -155,6 +178,13 @@ export interface SpawnCodexDaemonOptions {
 	 * Bridge POST, `git push`, and `gh` all need it (QA Finding 1, daemon form).
 	 */
 	sandboxNetworkAccess?: boolean;
+	/**
+	 * FLY-1224: per-phase reasoning effort delivered as a daemon config
+	 * override (`-c model_reasoning_effort="<effort>"`) — the app-server's
+	 * thread/start has no effort field, so the daemon `-c` override is the
+	 * (already-proven) mechanism. Absent → CODEX_HOME config default.
+	 */
+	effort?: string;
 	/** Base env to layer CODEX_HOME onto (default process.env). */
 	env?: NodeJS.ProcessEnv;
 	/**
@@ -423,6 +453,8 @@ export async function spawnCodexDaemon(
 				// `-c/--config`). Passed as SEPARATE argv elements (no shell) so a
 				// path with a metachar can never break out — codex parses the value.
 				...buildDaemonSandboxArgs(opts),
+				// FLY-1224: per-phase reasoning effort override (whitelisted).
+				...buildDaemonEffortArgs(opts.effort),
 			],
 			{
 				// R-M4c HIGH: NEVER let a GitHub token reach the codex process env

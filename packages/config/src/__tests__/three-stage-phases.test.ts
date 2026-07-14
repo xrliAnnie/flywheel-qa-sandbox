@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+	DEFAULT_PHASE_DISPATCH,
 	DEFAULT_PHASE_TIER,
 	isThreeStagePhaseRole,
 	nextPhase,
 	resolveCompletionSessionRole,
+	resolvePhaseDispatch,
 	resolvePhaseModel,
 	THREE_STAGE_PHASE_SEQUENCE,
 } from "../three-stage-phases.js";
@@ -13,7 +15,10 @@ describe("three-stage-phases (FLY-793)", () => {
 		expect(THREE_STAGE_PHASE_SEQUENCE).toEqual(["design", "implement", "qa"]);
 	});
 
-	it("maps each phase to its default tier (Fable / Fable / Opus — Annie 2026-07-05)", () => {
+	it("keeps the legacy display-fallback tier table unchanged (values frozen)", () => {
+		// FLY-1224: DEFAULT_PHASE_TIER is demoted to the LAST-RESORT display
+		// fallback (unknown model, no dispatch table hit) — its values stay frozen
+		// so pre-1224 display fallbacks are byte-identical.
 		expect(DEFAULT_PHASE_TIER).toEqual({
 			design: "heavy",
 			implement: "heavy",
@@ -21,22 +26,70 @@ describe("three-stage-phases (FLY-793)", () => {
 		});
 	});
 
-	it("resolves canonical model ids per phase", () => {
-		// Draws from the shared MODEL_TIERS registry so it inherits fleet-wide model
-		// decisions. FLY-887 R2 (Annie's 2026-07-05 table): design AND implement run
-		// on Fable; QA runs on Opus. No phase runs on Sonnet — the QA-rework loop
-		// stalling on Sonnet was the motivating incident.
+	it("maps each phase to its dispatch spec (Annie 2026-07-13: Fable / Codex gpt-5.6-sol xhigh / Opus)", () => {
+		expect(DEFAULT_PHASE_DISPATCH).toEqual({
+			design: { vendor: "claude", model: "claude-fable-5" },
+			implement: { vendor: "codex", model: "gpt-5.6-sol", effort: "xhigh" },
+			qa: { vendor: "claude", model: "claude-opus-4-8" },
+		});
+	});
+
+	it("resolves canonical model ids per phase (implement → gpt-5.6-sol)", () => {
+		// FLY-1224 (Annie's 2026-07-13 directive): design=Fable, implement=Codex
+		// gpt-5.6-sol, qa=Opus. resolvePhaseModel keeps its signature but now
+		// draws from the dispatch table.
 		expect(resolvePhaseModel("design")).toBe("claude-fable-5");
-		expect(resolvePhaseModel("implement")).toBe("claude-fable-5");
+		expect(resolvePhaseModel("implement")).toBe("gpt-5.6-sol");
 		expect(resolvePhaseModel("qa")).toBe("claude-opus-4-8");
 	});
 
-	it("zero-Sonnet invariant: no phase in the sequence resolves to a sonnet model", () => {
+	it("zero-Sonnet invariant: no phase in the dispatch table resolves to a sonnet model", () => {
 		// FLY-887 R2 (Annie's policy): the three-stage pipeline must NEVER place a
 		// phase session on Sonnet, whatever the table says in the future.
 		for (const phase of THREE_STAGE_PHASE_SEQUENCE) {
-			expect(resolvePhaseModel(phase).toLowerCase()).not.toContain("sonnet");
+			expect(DEFAULT_PHASE_DISPATCH[phase].model.toLowerCase()).not.toContain(
+				"sonnet",
+			);
+			expect(resolvePhaseDispatch(phase).model.toLowerCase()).not.toContain(
+				"sonnet",
+			);
 		}
+	});
+
+	describe("resolvePhaseDispatch kill-switch (FLY-1224 T10)", () => {
+		it("returns the codex row for implement when the env is unset", () => {
+			expect(resolvePhaseDispatch("implement", {})).toEqual({
+				vendor: "codex",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+			});
+		});
+
+		it("FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT=0 falls implement back to (claude, heavy)", () => {
+			expect(
+				resolvePhaseDispatch("implement", {
+					FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT: "0",
+				}),
+			).toEqual({ vendor: "claude", model: "claude-fable-5" });
+		});
+
+		it("the kill-switch does NOT touch design / qa", () => {
+			const env = { FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT: "0" };
+			expect(resolvePhaseDispatch("design", env)).toEqual(
+				DEFAULT_PHASE_DISPATCH.design,
+			);
+			expect(resolvePhaseDispatch("qa", env)).toEqual(
+				DEFAULT_PHASE_DISPATCH.qa,
+			);
+		});
+
+		it("only the exact value '0' activates the fallback", () => {
+			expect(
+				resolvePhaseDispatch("implement", {
+					FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT: "false",
+				}),
+			).toEqual(DEFAULT_PHASE_DISPATCH.implement);
+		});
 	});
 
 	it("nextPhase walks the sequence and ends at QA", () => {

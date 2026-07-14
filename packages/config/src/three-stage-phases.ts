@@ -3,18 +3,34 @@
  *
  * A three-stage run is ONE Linear issue / ONE RPCI flow with three internal
  * phase-sessions handed off on one branch B: Design → Implement → QA, each with
- * its own model. This module is the single source of truth for the phase
- * sequence and each phase's model.
+ * its own vendor + model. This module is the single source of truth for the
+ * phase sequence and each phase's dispatch spec.
  *
- * Model per phase (Annie's table, updated 2026-07-05 — FLY-887 R2):
- *   design    → heavy  (Fable) — brainstorm / research / design reasoning
- *   implement → heavy  (Fable) — code
- *   qa        → medium (Opus)  — verification (QA is a write-capable phase too;
- *                                 the model choice is independent of that)
+ * Dispatch per phase (Annie's directive, 2026-07-13 — FLY-1224):
+ *   design    → claude claude-fable-5       — brainstorm / research / design
+ *   implement → codex  gpt-5.6-sol (xhigh)  — code (Annie's standard Codex config)
+ *   qa        → claude claude-opus-4-8      — verification (QA is a write-capable
+ *                                             phase too; the model choice is
+ *                                             independent of that)
  *
  * NO phase runs on Sonnet. The motivating incident: the QA↔implement rework
  * loop stalled with QA stuck on Sonnet — Annie's zero-Sonnet policy for phase
  * sessions is enforced by an explicit invariant test.
+ *
+ * CROSS-FAMILY REVIEW RULE (Annie's directive, 2026-07-13 — FLY-1224, both
+ * directions fixed BY DESIGN): the author's vendor family must never review its
+ * own work. Claude author → Codex reviews (legacy lane); Codex author → CLAUDE
+ * reviews (FLY-1188 request-review lane: Opus reviewer at effort xhigh). The
+ * gate-level enforcement is `crossFamilyReviewSatisfied` (review-family.ts) on
+ * BOTH `isCodexCodeReviewApproved` and `verify-approval`; same-family stamped
+ * records are rejected. If a future table change makes the design phase a codex
+ * author, its design review automatically flips to the Claude lane — no new
+ * decision needed.
+ *
+ * KILL-SWITCH: `FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT=0` falls the implement
+ * phase back to (claude, heavy) — the escape hatch when the codex account
+ * quota is exhausted. Env is read at process start: edit `~/.flywheel/.env`,
+ * then `restart-services.sh --bridge-only` (see the FLY-1224 plan §7 runbook).
  *
  * REVERT (7/7, after the Fable window): flip the `pipeline.three_stage` toggle
  * OFF — a task then runs as a single session exactly as before. The table here
@@ -31,6 +47,7 @@ import {
 	type ModelTier,
 	modelDisplayName,
 } from "./model-tiers.js";
+import type { RoleEffort } from "./types.js";
 
 export type ThreeStagePhase = "design" | "implement" | "qa";
 
@@ -82,7 +99,14 @@ export function resolveCompletionSessionRole(
 	return incomingRole ?? "main";
 }
 
-/** Default model tier per phase (see file header — Annie's 2026-07-05 table). */
+/**
+ * FLY-1224: LAST-RESORT display-fallback tier per phase. NOT the dispatch
+ * source anymore — dispatch (vendor + model + effort) comes from
+ * `DEFAULT_PHASE_DISPATCH` below. This table only backs `modelDisplayName`'s
+ * `fallbackTier` parameter for a model the display layer doesn't recognize
+ * (unknown family, no dispatch-table hit). Values are frozen for byte-compat
+ * with pre-1224 display fallbacks.
+ */
 export const DEFAULT_PHASE_TIER: Readonly<Record<ThreeStagePhase, ModelTier>> =
 	{
 		design: "heavy",
@@ -91,12 +115,67 @@ export const DEFAULT_PHASE_TIER: Readonly<Record<ThreeStagePhase, ModelTier>> =
 	};
 
 /**
- * Canonical model id (e.g. `claude-fable-5`) to dispatch for a three-stage
- * phase. Draws from the shared MODEL_TIERS registry so ids stay aligned with
- * the rest of the fleet (pricing / token-usage / short codes).
+ * FLY-1224: three-stage phases only ever dispatch on a TRANSPORTED vendor —
+ * a phase session must receive park/wake mailboxes and walk the gate flow.
+ * No-transport backends (antigravity/kimi) are excluded at the TYPE level so
+ * they can never enter the phase table.
+ */
+export type PhaseDispatchVendor = "claude" | "codex";
+
+export interface PhaseDispatchSpec {
+	vendor: PhaseDispatchVendor;
+	/** Model id passed to the runner CLI / codex thread (claude entries use the
+	 * canonical MODEL_TIERS ids). */
+	model: string;
+	/** Reasoning effort; absent = the account/backend default. */
+	effort?: RoleEffort;
+}
+
+/**
+ * Annie's directive (2026-07-13): design=Fable / implement=Codex gpt-5.6-sol
+ * (xhigh) / qa=Opus. The codex spelling's ground truth is the host
+ * `~/.codex/config.toml` (`model = "gpt-5.6-sol"`, `model_reasoning_effort =
+ * "xhigh"`) — a model rename is a one-line diff here.
+ */
+export const DEFAULT_PHASE_DISPATCH: Readonly<
+	Record<ThreeStagePhase, PhaseDispatchSpec>
+> = {
+	design: { vendor: "claude", model: MODEL_TIERS.heavy.id },
+	implement: { vendor: "codex", model: "gpt-5.6-sol", effort: "xhigh" },
+	qa: { vendor: "claude", model: MODEL_TIERS.medium.id },
+};
+
+/**
+ * FLY-1224: the dispatch spec for a three-stage phase, kill-switch aware.
+ * `FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT=0` → implement falls back to the
+ * legacy (claude, heavy) row — the operational escape hatch when the codex
+ * account quota is exhausted (naming follows FLYWHEEL_THREE_STAGE_QA_RESPAWN).
+ * Env is injectable for tests; defaults to process.env. NOTE the env is read
+ * at call time but the process env itself only loads at Bridge start — a
+ * `~/.flywheel/.env` edit needs `restart-services.sh --bridge-only` (§7
+ * runbook in the FLY-1224 plan).
+ */
+export function resolvePhaseDispatch(
+	phase: ThreeStagePhase,
+	env: Record<string, string | undefined> = process.env,
+): PhaseDispatchSpec {
+	if (
+		phase === "implement" &&
+		env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT === "0"
+	) {
+		return { vendor: "claude", model: MODEL_TIERS.heavy.id };
+	}
+	return DEFAULT_PHASE_DISPATCH[phase];
+}
+
+/**
+ * Canonical model id to dispatch for a three-stage phase. Kept for existing
+ * callers' signature; FLY-1224 re-bases it on the dispatch table (implement
+ * now resolves to the codex model — every dispatch site passes the full
+ * vendor/model/effort triple via `resolvePhaseDispatch`).
  */
 export function resolvePhaseModel(phase: ThreeStagePhase): string {
-	return MODEL_TIERS[DEFAULT_PHASE_TIER[phase]].id;
+	return resolvePhaseDispatch(phase).model;
 }
 
 /**
@@ -154,8 +233,12 @@ const PHASE_MESSAGE_NAME: Readonly<Record<ThreeStagePhase, string>> = {
  * FLY-892 (Step 3, founder-approved ①): the message-level phase+model tag a
  * three-stage phase session prepends to its founder-facing thread messages, e.g.
  * `[设计·Fable] `. The model name is the session's own `runner_model`; when that
- * is absent (account default) it falls back to the phase's planned tier model
- * (`DEFAULT_PHASE_TIER`). A non-phase / main role → `""` so a Lead `/send` and
+ * is absent (pending row / account default) it falls back to the phase's
+ * PLANNED DISPATCH model (`resolvePhaseDispatch`, kill-switch aware) — a
+ * pending implement row shows GPT-5.6 because that is what it will run on
+ * (FLY-1224 R1 #3: never show Fable for a row that dispatches codex). The
+ * legacy `DEFAULT_PHASE_TIER` only backs a dispatch model the display layer
+ * doesn't recognize. A non-phase / main role → `""` so a Lead `/send` and
  * every non-three-stage message are byte-unchanged. Trailing space included so
  * callers just prepend.
  */
@@ -165,6 +248,11 @@ export function phaseMessageTag(
 ): string {
 	if (!isThreeStagePhaseRole(role)) return "";
 	const name = PHASE_MESSAGE_NAME[role];
-	const model = modelDisplayName(runnerModel, DEFAULT_PHASE_TIER[role]);
+	const model =
+		modelDisplayName(runnerModel) ??
+		modelDisplayName(
+			resolvePhaseDispatch(role).model,
+			DEFAULT_PHASE_TIER[role],
+		);
 	return model ? `[${name}·${model}] ` : `[${name}] `;
 }

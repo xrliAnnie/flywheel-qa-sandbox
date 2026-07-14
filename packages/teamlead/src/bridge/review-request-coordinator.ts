@@ -23,7 +23,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
-import { adapterTypeToFamily } from "flywheel-config";
+import { adapterTypeToFamily, type RoleEffort } from "flywheel-config";
 import type { CodexReviewJob, Session, StateStore } from "../StateStore.js";
 import {
 	type ClaudeReviewOutcome,
@@ -97,6 +97,12 @@ export interface ReviewCoordinatorDeps {
 	maxConcurrent?: number;
 	reviewerBinary?: string;
 	reviewerModel?: string;
+	/**
+	 * FLY-1224: reviewer reasoning-effort OVERRIDE seam. The default ("xhigh",
+	 * Annie's directive) lives in claude-review-runner (`DEFAULT_REVIEW_EFFORT`)
+	 * — this dep only forwards an explicit override to every round's invocation.
+	 */
+	reviewerEffort?: RoleEffort;
 	reviewerTimeoutMs?: number;
 }
 
@@ -610,6 +616,9 @@ export class ReviewRequestCoordinator {
 			cwd,
 			binary: this.deps.reviewerBinary,
 			model: this.deps.reviewerModel,
+			// FLY-1224: forwarded on EVERY round; undefined → the runner's own
+			// DEFAULT_REVIEW_EFFORT ("xhigh") applies.
+			effort: this.deps.reviewerEffort,
 			timeoutMs: this.deps.reviewerTimeoutMs,
 		});
 

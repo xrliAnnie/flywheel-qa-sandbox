@@ -24,7 +24,12 @@
  * taken at run start (trusted, not worktree-derived).
  */
 
-import { type PipelineConfig, resolvePhaseModel } from "flywheel-config";
+import {
+	type PhaseDispatchVendor,
+	type PipelineConfig,
+	type RoleEffort,
+	resolvePhaseDispatch,
+} from "flywheel-config";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 
 export interface ThreeStagePolicyInput {
@@ -150,6 +155,14 @@ export interface ThreeStageEntryDecision {
 	 * label and runs single-session.
 	 */
 	dispatchModel?: string;
+	/**
+	 * FLY-1224: the phase table's vendor for the entered phase — the caller
+	 * forwards it alongside dispatchModel so the resolver's dispatch layer picks
+	 * the phase's executor backend. Present ONLY when `enteredThreeStage`.
+	 */
+	dispatchVendor?: PhaseDispatchVendor;
+	/** FLY-1224: the phase table's reasoning effort for the entered phase. */
+	dispatchEffort?: RoleEffort;
 }
 
 /**
@@ -175,13 +188,18 @@ export function resolveThreeStageEntry(
 		env: input.env,
 		dispatchChannelId: input.dispatchChannelId,
 	}).enabled;
-	return enabled
-		? {
-				role: "design",
-				enteredThreeStage: true,
-				dispatchModel: resolvePhaseModel("design"),
-			}
-		: { role: "main", enteredThreeStage: false };
+	if (!enabled) return { role: "main", enteredThreeStage: false };
+	// FLY-1224: the entry dispatches the DESIGN phase — return its full
+	// {model, vendor, effort} triple from the phase table (kill-switch aware
+	// via the same injectable env).
+	const dispatch = resolvePhaseDispatch("design", input.env);
+	return {
+		role: "design",
+		enteredThreeStage: true,
+		dispatchModel: dispatch.model,
+		dispatchVendor: dispatch.vendor,
+		...(dispatch.effort && { dispatchEffort: dispatch.effort }),
+	};
 }
 
 /**

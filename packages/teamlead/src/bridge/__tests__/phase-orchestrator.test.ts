@@ -138,7 +138,7 @@ function session(over: Partial<PhaseSession>): PhaseSession {
 describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 	beforeEach(() => vi.clearAllMocks());
 
-	it("Design done → captures SHA, closes design, starts Implement (Fable) on branch B", async () => {
+	it("Design done → captures SHA, closes design, starts Implement (Codex gpt-5.6-sol xhigh) on branch B", async () => {
 		const { deps, start, capturePhaseHeadSha, closePhaseRunner } = makeDeps();
 		await new PhaseOrchestrator(deps).onPhaseComplete(
 			session({ session_role: "design", status: "design_done" }),
@@ -149,16 +149,20 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 		expect(start.mock.calls[0]![0]).toMatchObject({
 			issueId: "FLY-793",
 			sessionRole: "implement",
-			// FLY-887 R2 (Annie's table): implement runs on Fable, and the label
-			// layer is bypassed so no issue label can override the phase model.
-			dispatchModel: "claude-fable-5",
+			// FLY-1224 (Annie's 2026-07-13 table): implement dispatches the FULL
+			// codex triple {model, vendor, effort}; the label layer stays bypassed
+			// so no issue label can override the phase table. T3 mutation target:
+			// dropping the vendor/effort passthrough at this site must turn RED.
+			dispatchModel: "gpt-5.6-sol",
+			dispatchVendor: "codex",
+			dispatchEffort: "xhigh",
 			ignoreRunnerLabelSelection: true,
 			startPoint: "deadbeefcafe1234",
 			shareParentBranch: true,
 		});
 	});
 
-	it("Implement awaiting_review → starts QA (Opus) on the same branch", async () => {
+	it("Implement awaiting_review → starts QA (Opus, claude vendor) on the same branch", async () => {
 		const { deps, start } = makeDeps();
 		await new PhaseOrchestrator(deps).onPhaseComplete(
 			// FLY-921: a genuine needs_review completion carries the review binding.
@@ -171,10 +175,13 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 		expect(start.mock.calls[0]![0]).toMatchObject({
 			sessionRole: "qa",
 			// FLY-887 R2 (Annie's table): QA runs on Opus — never Sonnet.
+			// FLY-1224: qa stays a claude phase (vendor claude, no effort).
 			dispatchModel: "claude-opus-4-8",
+			dispatchVendor: "claude",
 			ignoreRunnerLabelSelection: true,
 			shareParentBranch: true,
 		});
+		expect(start.mock.calls[0]![0].dispatchEffort).toBeUndefined();
 	});
 
 	it("QA is the last phase → no handoff (its PASS/FAIL is internal-QA, Step 8)", async () => {
@@ -385,9 +392,11 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 				expect(h.start.mock.calls[0]![0]).toMatchObject({
 					issueId: "FLY-793",
 					sessionRole: "implement",
-					// FLY-887 R2 (Annie's table): implement-fix runs on Fable, label
-					// layer bypassed.
-					dispatchModel: "claude-fable-5",
+					// FLY-1224 (T3, legacy fix lane): implement-fix carries the full
+					// codex triple from the phase table; label layer stays bypassed.
+					dispatchModel: "gpt-5.6-sol",
+					dispatchVendor: "codex",
+					dispatchEffort: "xhigh",
 					ignoreRunnerLabelSelection: true,
 					startPoint: "deadbeefcafe1234",
 					shareParentBranch: true,

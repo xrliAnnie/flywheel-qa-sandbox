@@ -18,7 +18,9 @@
 
 import type {
 	ExecutorBackend,
+	PhaseDispatchVendor,
 	RoleBackendMap,
+	RoleEffort,
 	RoleName,
 	RunnerVendorType,
 } from "flywheel-config";
@@ -92,9 +94,22 @@ export interface ResolveRoleAdapterArgs {
 	 * passes a canonical model id here (already normalized + whitelisted at the
 	 * Bridge boundary). Applied for the runner role BELOW a manual model/vendor
 	 * label (the founder's explicit choice wins) and ABOVE the project default.
-	 * All 728 tiers are Claude models → backend claude-tmux.
+	 * Without `dispatchVendor` the FLY-728 behavior holds: claude-tmux.
 	 */
 	dispatchModel?: string;
+	/**
+	 * FLY-1224: the phase table's explicit vendor for this dispatch. Consulted
+	 * ONLY on the 1b dispatch-model layer (runner role + dispatchModel present):
+	 * maps through the ONE existing VENDOR_TO_EXECUTOR table — never a second
+	 * mapping (drift risk). Absent → FLY-728 status quo (claude-tmux).
+	 */
+	dispatchVendor?: PhaseDispatchVendor;
+	/**
+	 * FLY-1224: the phase table's reasoning effort. Takes precedence over the
+	 * project roles effort (dispatch layer > project config); absent → the
+	 * FLY-671 project-roles resolution is unchanged.
+	 */
+	dispatchEffort?: RoleEffort;
 	/** Project `.flywheel/config.yaml` `roles:` block (already validated). */
 	projectRoles?: RoleBackendMap;
 	/** Process env (injectable for tests). */
@@ -187,10 +202,15 @@ export function resolveRoleAdapter(
 	// 1b. FLY-728 Part C: dispatch `model` param (the difficulty-sorter's output).
 	//     Runner-only, and only when the label layer selected NO backend (no
 	//     vendor + no model label) — so a manual model label OR a vendor label
-	//     (which would pin a non-Claude backend) both win over the sorter. All
-	//     728 tiers are Claude models → claude-tmux.
+	//     (which would pin a non-Claude backend) both win over the sorter.
+	//     FLY-1224: the phase table may carry an explicit vendor — map it via
+	//     the SAME VENDOR_TO_EXECUTOR the label layer uses (claude|codex always
+	//     resolve there), never a second table. No vendor = the FLY-728 status
+	//     quo: claude-tmux.
 	if (!backend && args.role === "runner" && args.dispatchModel) {
-		backend = "claude-tmux";
+		backend = args.dispatchVendor
+			? VENDOR_TO_EXECUTOR[args.dispatchVendor]
+			: "claude-tmux";
 		model = args.dispatchModel;
 	}
 
@@ -238,7 +258,10 @@ export function resolveRoleAdapter(
 	// cost-saving goal. v1 has NO label-level effort source, so the project role
 	// effort still applies under label-selected runners. (If label effort is ever
 	// added, give it precedence here.)
-	const effort = args.projectRoles?.[args.role]?.effort;
+	// FLY-1224: the phase table's dispatch effort outranks the project roles
+	// effort (dispatch layer > project config), preserving the FLY-671
+	// "effort resolves independently of backend" stance.
+	const effort = args.dispatchEffort ?? args.projectRoles?.[args.role]?.effort;
 
 	// FLY-493: `transport` is ALWAYS set (explicit no-transport contract);
 	// `vendor` is set only for a transported backend, so a no-transport backend

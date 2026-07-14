@@ -326,6 +326,7 @@ import { createReportsRouter } from "./reports-route.js";
 import { createRescueRouter, type RescueRouteRuntime } from "./rescue-route.js";
 import {
 	buildRescueRuntime,
+	buildRescueSuccessorDispatchFields,
 	makeCloseAndDispatchSuccessor,
 	makeKickstart,
 	makeRunnerRevalidate,
@@ -6715,17 +6716,21 @@ export async function startBridge(
 						s.doc_tier === "none"
 							? s.doc_tier
 							: undefined;
+					// FLY-1224 (R1 #1, the 6th dispatch lane): a PHASE-row rescue
+					// successor re-derives {model, vendor, effort} from the phase table
+					// and keeps its shared-branch identity + phase sessionRole; a
+					// non-phase row passes its persisted fields verbatim. The pure
+					// derivation lives in rescue-runtime (unit-tested, T4b).
 					const res = await startDispatcher.start({
 						issueId: s.issue_id,
 						projectName: s.project_name,
 						leadId: resolveRescueLeadId(s) ?? undefined,
-						sessionRole: s.session_role ?? undefined,
 						issueTitle: s.issue_title ?? undefined,
 						issueIdentifier: s.issue_identifier ?? undefined,
 						issueLabels: parseSessionLabels(s),
 						docTier,
 						issueUrl: s.issue_url ?? undefined,
-						dispatchModel: s.dispatch_model ?? undefined,
+						...buildRescueSuccessorDispatchFields(s),
 					});
 					return res.executionId;
 				},

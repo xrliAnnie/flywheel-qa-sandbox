@@ -681,6 +681,21 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 			expect(r.reason).toBe("codex_review_not_approved");
 		});
 
+		it("FLY-1224 (T13 ③, the OTHER direction): SAME-family stamped record (claude→claude) → fail-close", () => {
+			// Annie's directive fixes the rule in BOTH directions: a claude author
+			// whose record proves a CLAUDE reviewer is a self-review — the stamps
+			// win over the grandfather exemption (which only covers UNSTAMPED
+			// historical rows).
+			founderApprovedAs("claude-tmux");
+			writeCodexRecord(EXEC, HEAD, "approved", {
+				author: "claude",
+				reviewer: "claude",
+			});
+			const r = runGateOn();
+			expect(r.approved).toBe(false);
+			expect(r.reason).toBe("codex_review_not_approved");
+		});
+
 		it("legacy claude author (adapter_type NULL) + unstamped record → approved (historical lane)", () => {
 			founderApprovedAs(null);
 			writeCodexRecord(EXEC, HEAD, "approved");

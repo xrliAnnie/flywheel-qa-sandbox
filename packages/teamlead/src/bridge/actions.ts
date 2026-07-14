@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
-import { isThreeStagePhaseRole, resolvePhaseModel } from "flywheel-config";
+import { isThreeStagePhaseRole, resolvePhaseDispatch } from "flywheel-config";
 import { ACTION_DEFINITIONS, closeRunnerTerminalView } from "flywheel-core";
 import type { ActionResult, CipherWriter } from "flywheel-edge-worker";
 import { parseDocTier } from "flywheel-edge-worker/dist/Blueprint.js";
@@ -816,16 +816,17 @@ async function handleRetry(
 	// Discriminator = the durable `chat_thread_role` three-stage marker
 	// (auto-QA / single-session rows are 'main' → untouched, which is exactly
 	// the "don't touch auto-QA" boundary). For a phase row:
-	//   - the dispatch model is resolvePhaseModel(chat_thread_role)
+	//   - the dispatch {model, vendor, effort} is resolvePhaseDispatch(role)
 	//     UNCONDITIONALLY — never the persisted `dispatch_model` (a pre-fix
 	//     phase row may have persisted a sorter pin or NULL; replaying it would
-	//     put the phase back on Sonnet);
+	//     put the phase back on Sonnet, or a codex phase back on claude);
 	//   - `ignoreRunnerLabelSelection: true` is threaded through the retry
 	//     dispatcher (previously hardcoded undefined there) so a refreshed
 	//     `sonnet`/vendor label cannot bypass the table either.
 	const phaseRole = isThreeStagePhaseRole(session.chat_thread_role)
 		? session.chat_thread_role
 		: undefined;
+	const phaseDispatch = phaseRole ? resolvePhaseDispatch(phaseRole) : undefined;
 
 	// R2 MED-6: the dispatch call and the POST-dispatch bookkeeping are split into
 	// TWO try blocks. A throw from `dispatch()` itself is PRE-start (admission
@@ -850,13 +851,22 @@ async function handleRetry(
 			previousReasoning: ceoContext ?? session.decision_reasoning,
 			runAttempt,
 			leadId: retryLeadId,
-			sessionRole,
-			// FLY-840: `shareParentBranch` is intentionally NOT propagated here yet.
-			// A retried three-stage phase therefore shows the generic `claude` cmux
-			// window label (byte-compat with pre-cmux-PR behavior, not a regression).
-			// Propagating it also changes the retry's branch behavior (shared branch
-			// B) — 793 retry-core — so the retry-path phase label + branch-B
-			// preservation are handled together in FLY-840.
+			// FLY-1224 (R2 #3): sessionRole follows the SAME durable phase
+			// discriminator as the dispatch table — an old/polluted row can carry
+			// chat_thread_role=implement while session_role drifted to main;
+			// re-deriving only the vendor would start the codex runner in a
+			// non-phase identity. Non-phase rows keep the persisted role verbatim.
+			sessionRole: phaseRole ?? sessionRole,
+			// FLY-1224 (R1 #1, settles FLY-840): a PHASE-row retry keeps its
+			// shared-branch identity — without this the retried implement rebuilds
+			// an independent branch instead of branch B, making the codex-retry /
+			// kill-switch recovery path unsafe. FLY-840's worry was "propagating
+			// the marker on EVERY retry changes retry branch behavior"; the
+			// phase-row-scoped propagation is exactly the behavior a phase row
+			// should have had (FLY-887 R2 same shape). Side effect (intentional,
+			// test-locked): runnerDisplayName now labels the retry's cmux window
+			// with the phase name. Non-phase retries: undefined (byte-compatible).
+			shareParentBranch: phaseRole ? true : undefined,
 			// FLY-137 v1.27.2: dept-aware dispatch context for retry
 			issueLabels: retryIssueLabels,
 			owningDept: retryOwningDept,
@@ -880,11 +890,15 @@ async function handleRetry(
 			// removed label or a changed project default is NOT reintroduced; only a
 			// genuine sorter/dispatch choice survives. NULL (no dispatch param) →
 			// undefined → the retry re-resolves from current labels/project/account.
-			// FLY-887 R2: EXCEPT phase rows — their model comes from the phase table
-			// unconditionally (see phaseRole above).
-			dispatchModel: phaseRole
-				? resolvePhaseModel(phaseRole)
+			// FLY-887 R2: EXCEPT phase rows — their {model, vendor, effort} comes
+			// from the phase table unconditionally (see phaseDispatch above).
+			dispatchModel: phaseDispatch
+				? phaseDispatch.model
 				: (session.dispatch_model ?? undefined),
+			// FLY-1224: phase rows re-derive vendor + effort from the table (never
+			// persisted — the table is the single source); non-phase → undefined.
+			dispatchVendor: phaseDispatch?.vendor,
+			dispatchEffort: phaseDispatch?.effort,
 			// FLY-887 R2: phase rows bypass the label layer on retry too.
 			ignoreRunnerLabelSelection: phaseRole ? true : undefined,
 			// FLY-245 D2: gateway pre-bound successor id (plan §5.2.1) — the

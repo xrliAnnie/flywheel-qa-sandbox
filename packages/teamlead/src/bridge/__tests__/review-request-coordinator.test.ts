@@ -67,14 +67,22 @@ interface Harness {
 	comm: FakeCommDb;
 	coordinator: ReviewRequestCoordinator;
 	outcomes: ClaudeReviewOutcome[];
-	invocations: Array<{ sessionId: string; resume: boolean; prompt: string }>;
+	invocations: Array<{
+		sessionId: string;
+		resume: boolean;
+		prompt: string;
+		effort?: string;
+	}>;
 	wakes: Array<{ executionId: string; questionId: string; summary: string }>;
 	alerts: string[];
 	currentHead: () => string;
 	setHead: (h: string) => void;
 }
 
-async function makeHarness(): Promise<Harness> {
+async function makeHarness(
+	// FLY-1224 (T13 ②): optional reviewerEffort override seam under test.
+	harnessOpts: { reviewerEffort?: "low" | "medium" | "high" | "xhigh" } = {},
+): Promise<Harness> {
 	const store = await StateStore.create(":memory:");
 	const comm = new FakeCommDb();
 	const outcomes: ClaudeReviewOutcome[] = [];
@@ -86,11 +94,15 @@ async function makeHarness(): Promise<Harness> {
 		store,
 		commDbPathFor: (p) => `/fake/${p}/comm.db`,
 		openCommDb: () => comm,
+		...(harnessOpts.reviewerEffort && {
+			reviewerEffort: harnessOpts.reviewerEffort,
+		}),
 		reviewRound: async (inv) => {
 			invocations.push({
 				sessionId: inv.sessionId,
 				resume: inv.resume,
 				prompt: inv.prompt,
+				effort: inv.effort,
 			});
 			const next = outcomes.shift();
 			if (!next) throw new Error("no stubbed outcome");
@@ -1387,5 +1399,113 @@ describe("R17 — delivery nonce defeats predictable-payload forgery", () => {
 			h.store.getCodexReviewJob("r1")?.delivery_nonce as string,
 		);
 		await settle();
+	});
+});
+
+// ── FLY-1224 (T13 ② + ④) — reviewer effort seam + audit-anchor chain ──────
+describe("FLY-1224 — reviewer effort forwarding (T13 ②)", () => {
+	it("default deps: every round's invocation carries effort=undefined (the runner-layer xhigh default owns it)", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+		expect(h.invocations).toHaveLength(1);
+		// Single default-ownership layer (R5 #4): the coordinator forwards NO
+		// effort; claude-review-runner's DEFAULT_REVIEW_EFFORT ("xhigh") applies
+		// at spawn (locked by the argv unit test).
+		expect(h.invocations[0]?.effort).toBeUndefined();
+	});
+
+	it("reviewerEffort override reaches EVERY round's real invocation (incl. the reround)", async () => {
+		const h = await makeHarness({ reviewerEffort: "high" });
+		registerSession(h.store, "e1");
+		// Round 1: CHANGES_REQUESTED (the answered gate question is consumed).
+		openGate(h.comm, "q1");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "CHANGES_REQUESTED",
+			findings: [{ severity: "HIGH", title: "fix me" }],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+		// Round 2: a NEW gate + a NEW request (the coordinator's re-round loop).
+		openGate(h.comm, "q2");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r2",
+			reviewType: "code",
+			questionId: "q2",
+		});
+		await settle();
+		expect(h.invocations).toHaveLength(2);
+		expect(h.invocations[0]?.effort).toBe("high");
+		expect(h.invocations[1]?.effort).toBe("high");
+	});
+});
+
+describe("FLY-1224 — audit-anchor chain (T13 ④)", () => {
+	it("approved record.request_id resolves to the codex_review_job row with matching anchors", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+		// The claude lane's audit anchor: record.request_id → codex_review_job
+		// row, whose execution/head/verdict/session-uuid mutually bind the
+		// authority record — the credentials chain Annie's directive requires.
+		const rec = h.store.getCodexReviewRecord("e1", HEAD);
+		expect(rec?.status).toBe("approved");
+		expect(rec?.request_id).toBeTruthy();
+		const job = h.store.getCodexReviewJob(rec?.request_id as string);
+		expect(job).toBeTruthy();
+		expect(job?.review_type).toBe("code");
+		expect(job?.execution_id).toBe(rec?.execution_id ?? "e1");
+		expect(job?.frozen_head_sha).toBe(rec?.target_pr_head_sha);
+		expect(job?.status).toBe("done");
+		expect(job?.verdict).toBe("APPROVED");
+		// the resumable claude reviewer session uuid IS the one the real
+		// invocation ran with — a verifiable, re-openable audit handle.
+		expect(job?.reviewer_session_uuid).toBe(h.invocations[0]?.sessionId);
+		// findings_json exists and parses (an empty array is legal).
+		expect(Array.isArray(JSON.parse(job?.findings_json ?? "null"))).toBe(true);
 	});
 });

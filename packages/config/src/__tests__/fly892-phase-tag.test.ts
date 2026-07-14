@@ -27,7 +27,13 @@ describe("modelDisplayName (FLY-892)", () => {
 	it("falls back to the tier name for account-default / unknown model", () => {
 		expect(modelDisplayName(null, "heavy")).toBe("Fable");
 		expect(modelDisplayName(undefined, "medium")).toBe("Opus");
-		expect(modelDisplayName("gpt-5-codex", "light")).toBe("Sonnet");
+	});
+	it("recognizes the GPT family BEFORE the tier fallback (FLY-1224)", () => {
+		// A codex phase session's runner_model must never display as a Claude
+		// name — that was the display lie C2 fixes.
+		expect(modelDisplayName("gpt-5.6-sol")).toBe("GPT-5.6");
+		expect(modelDisplayName("gpt-5.6-sol", "heavy")).toBe("GPT-5.6");
+		expect(modelDisplayName("gpt-5-codex", "light")).toBe("GPT");
 	});
 	it("returns undefined when unknown and no fallback tier", () => {
 		expect(modelDisplayName(null)).toBeUndefined();
@@ -43,12 +49,31 @@ describe("phaseMessageTag (FLY-892)", () => {
 		);
 		expect(phaseMessageTag("qa", "claude-sonnet-5")).toBe("[QA·Sonnet] ");
 	});
-	it("falls back to the phase's planned tier when runner_model is absent", () => {
-		// FLY-887 R2 (Annie's 2026-07-05 table): design/implement → Fable, qa →
-		// Opus — the founder-visible phase tags follow the new table (ux-brief).
+	it("shows GPT for a codex phase session's runner model (FLY-1224 T9)", () => {
+		expect(phaseMessageTag("implement", "gpt-5.6-sol")).toBe("[实现·GPT-5.6] ");
+	});
+	it("falls back to the phase's PLANNED DISPATCH model when runner_model is absent", () => {
+		// FLY-1224 (Annie's 2026-07-13 table): design → Fable, implement → Codex
+		// GPT-5.6, qa → Opus. A pending/no-runner_model implement row must show the
+		// model it WILL run on, not the legacy tier (the display lie R1 #3 fixed).
 		expect(phaseMessageTag("design")).toBe("[设计·Fable] ");
-		expect(phaseMessageTag("implement", null)).toBe("[实现·Fable] ");
+		expect(phaseMessageTag("implement", null)).toBe("[实现·GPT-5.6] ");
 		expect(phaseMessageTag("qa", undefined)).toBe("[QA·Opus] ");
+	});
+	it("kill-switch: implement fallback shows Fable when codex-implement is off (FLY-1224 T9)", () => {
+		// phaseMessageTag reads the dispatch table (kill-switch aware) — flip the
+		// env for the duration of this test only.
+		const prev = process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT;
+		process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT = "0";
+		try {
+			expect(phaseMessageTag("implement")).toBe("[实现·Fable] ");
+		} finally {
+			if (prev === undefined) {
+				delete process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT;
+			} else {
+				process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT = prev;
+			}
+		}
 	});
 	it("is EMPTY for a main / non-phase role (byte-compat)", () => {
 		expect(phaseMessageTag("main")).toBe("");

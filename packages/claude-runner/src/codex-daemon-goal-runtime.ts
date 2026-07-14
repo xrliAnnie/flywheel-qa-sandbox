@@ -70,6 +70,13 @@ export interface CodexDaemonGoalRuntimeOptions {
 	sandbox?: Sandbox;
 	approvalPolicy?: ApprovalPolicy;
 	model?: string;
+	/**
+	 * FLY-1224: reasoning effort delivered as a DAEMON-level config override
+	 * (`-c model_reasoning_effort="<effort>"` on the app-server spawn — the
+	 * thread/start API has no effort field). Replayed on every rotation restart.
+	 * Absent → the CODEX_HOME config default.
+	 */
+	effort?: string;
 	baseInstructions?: string;
 	/**
 	 * FLY-1188 M4d: extra sandbox writable roots for the daemon's workspace-write
@@ -271,6 +278,8 @@ export class CodexDaemonGoalRuntime {
 			// flywheel roots) — the daemon form of the exec-cycle sandbox fix.
 			sandboxWritableRoots: this.opts.sandboxWritableRoots,
 			sandboxNetworkAccess: this.opts.networkAccess,
+			// FLY-1224: per-phase reasoning effort rides the daemon spawn argv.
+			effort: this.opts.effort,
 			env: this.opts.env,
 			// HIGH-3: reap a prior orphaned daemon of THIS execution (if any) so
 			// the resuming redrive can reclaim the socket instead of blocking.

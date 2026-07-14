@@ -1,0 +1,33 @@
+# Design Review — plan.md (FLY-1224, Round 5)
+
+Date: 2026-07-13
+Author: Codex
+Status: CHANGES REQUESTED
+
+## Summary
+
+The cross-review symmetry requirement is feasible with the existing FLY-1188 machinery, and the audit correctly identifies the two production gaps that appear when implement becomes Codex by default. C10 is directionally right, but its prompt state machine, audit-anchor test, and stated gate contract still have holes that can either strand a sanctioned run or leave the founder's hard invariant less strongly proven than the plan claims.
+
+## What's Good (Keep)
+
+- The audit's central dispatch finding is correct. `event-route.ts:273-282` deliberately skips the legacy Codex-review trigger for a `codex-tmux` author, while Blueprint currently gives Codex only the design-review request lane; without a code-lane instruction, a default Codex implement has no actor that registers its FLY-827 review.
+- Reusing the FLY-1188 request-review coordinator is the right scope. It already derives `author_family` from the persisted session, freezes the code head server-side, launches a Claude subprocess, records `reviewer_family="claude"`, and writes authority through the existing `(execution_id, target_pr_head_sha)` record.
+- The existing gate architecture is appropriately centralized. Both `StateStore.isCodexCodeReviewApproved` and `flywheel-comm verify-approval` call the same `crossFamilyReviewSatisfied` predicate, so stamped Codex→Codex and Claude→Claude approvals fail at both the Bridge gate and the runner-side merge check.
+- The Claude audit anchor is real rather than cosmetic. The coordinator persists a UUID, passes that exact value to the subprocess as `--session-id` on the first round and `--resume` on later rounds, and stores the frozen head and structured findings next to the job.
+- Opus selection is already the production default (`claude-opus-4-8`). The installed Claude Code 2.1.207 CLI advertises `--effort` with `xhigh` as a valid level, so adding `--effort xhigh` is technically valid and does not require a thread-level workaround.
+- C10 belongs in commit 1 with the Codex-default switch. Shipping the vendor flip, Codex prompt lane, and Claude reviewer effort together avoids a deployment state where Codex implement is enabled but its mandatory reviewer cannot be initiated correctly.
+- T13's proposed same-family mutation and Claude-prompt byte-compatibility assertions are the right kind of guardrails. The sanctioned `skipped` governance bypass remains separate from a review approval, which is consistent with the existing FLY-1188/FLY-827 contract.
+
+## Issues & Recommendations
+
+1. **The new Codex prompt describes only a happy-path poll, not the complete durable review state machine.** C10 says to poll for “APPROVED/CHANGES” and proceed once it passes, but the coordinator emits three legitimate terminal answers: `APPROVED`, `CHANGES_REQUESTED`, and the governance result `SKIPPED`. The `codex_skip` branch writes a head-bound skipped record and answers the question with `SKIPPED` (`review-request-coordinator.ts:307-365`); a prompt that recognizes only approval/changes can strand a sanctioned bypass. Likewise, after `CHANGES_REQUESTED`, the answered question cannot be reused: the runner must apply the findings, push, open a **new** `review_code` gate, submit a new request, and poll again; that new job is what increments the round and resumes the prior Claude reviewer UUID. Specify this loop explicitly before the approve-to-ship steps: `APPROVED` or sanctioned `SKIPPED` may proceed; `CHANGES_REQUESTED` must fix and repeat with a fresh gate/request; registration or reviewer failure stays fail-closed and is reported. Extend T13's prompt assertions to cover all three outcomes and the fresh-gate loop, including a `codex_skip` case.
+
+2. **The audit-anchor name is wrong and T13 does not yet prove the required binding end to end.** The actual table is `codex_review_job` (singular), created at `StateStore.ts:1830` and queried at `:4298`; C10, research §9, the invariant row, and T13 all say `codex_review_jobs`. More importantly, “request_id finds a row with non-null UUID/findings” does not prove reuse of the authoritative `(execution_id, target_pr_head_sha)` binding. Correct the table name and make the test assert that the approved record's `request_id` resolves to a `code` job whose `execution_id` equals the record execution, whose `frozen_head_sha` equals `target_pr_head_sha`, whose status/verdict are `done`/`APPROVED`, and whose persisted `reviewer_session_uuid` equals the UUID supplied to the Claude invocation. Assert `findings_json` is present and parseable—an empty findings array is valid for an approval. This directly demonstrates the founder's requested anchor chain rather than only field presence.
+
+3. **C10 overstates the current no-stamp behavior and T13 proves same-family rejection only in the Codex direction.** `crossFamilyReviewSatisfied` rejects stamped same-family records, but it intentionally accepts an unstamped approved record for a Claude-family author as a pre-FLY-1188 compatibility exception (`review-family.ts:43-60`; `StateStore.ts:4592-4598`). Therefore the statement that the shared predicate rejects all “无家族章” records is false. Resolve this explicitly: either the founder's hard rule is retroactive, in which case approved records must require both stamps and legacy rows need an expiry/migration plan, or the historical Claude-author exception is grandfathered, in which case document that narrow exception and state that every post-FLY-1188 production writer is server-stamped. In either case, T13 should exercise **both** stamped same-family directions (`codex/codex` and `claude/claude`) through both `isCodexCodeReviewApproved` and `verify-approval`, not rely only on the Codex case and a pure-helper test.
+
+4. **The xhigh test stops one seam short of production wiring.** An argv unit test can pass even if `ReviewRequestCoordinator` never forwards the new effort field. Make the default's ownership unambiguous—prefer a typed `RoleEffort`/`DEFAULT_EFFORT = "xhigh"` at one layer—and add a coordinator-level assertion that its real review invocation receives xhigh on every round (plus an override test if `reviewerEffort` remains a dependency seam). Update the plan's “implement-time verification” note with the already-verified local CLI evidence. Also add the operational failure mode to §8: Claude reviewer spawn/quota failure leaves the gate closed and is recovered by the existing retry/request path or an explicitly sanctioned skip, never by falling back to a same-family Codex review.
+
+## Verdict
+
+CHANGES REQUESTED — address items above

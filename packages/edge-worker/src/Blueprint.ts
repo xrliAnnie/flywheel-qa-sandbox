@@ -1639,6 +1639,29 @@ export class Blueprint {
 							"e. Then STOP. Your build+PR work is done; the founder reviews Codex status and ships the PR.",
 						);
 					} else if (cpName === "approve_to_ship") {
+						// FLY-1224 (C10, cross-family review — Annie's directive): a
+						// CODEX author's FLY-827 code gate is REQUEST-DRIVEN — the
+						// legacy Codex-review trigger is SKIPPED for codex authors
+						// (event-route), so without this instruction NO code review
+						// ever runs, crossFamilyReviewSatisfied fails closed, and the
+						// founder gate refuses forever (pipeline deadlock). Mirrors the
+						// design-lane request-review guidance, with the FULL coordinator
+						// state machine (three terminal outcomes + the re-round loop —
+						// an answered gate question is consumed, never reused).
+						if (isCodexRunner) {
+							systemPromptLines.push(
+								"",
+								"CODE REVIEW GATE (codex author — MANDATORY, run BEFORE the APPROVE GATE below):",
+								"Your code review is request-driven and CROSS-FAMILY (a Claude reviewer reviews your work); the legacy Codex review trigger is SKIPPED for you — if you do not register the review, none runs and the ship gate stays closed forever. After your PR is created and pushed:",
+								`a. Run: \`node ${commCliPath} gate review_code --lead ${ctx.leadId} --exec-id ${executionId} --no-block "Code review requested: PR <url>"\` (the message positional is REQUIRED) — capture the questionId.`,
+								`b. Run: \`node ${commCliPath} request-review --type code --question-id <questionId>\` — the server freezes your CURRENT head as the reviewed target (do NOT push again until the verdict; a moved head voids the round).`,
+								`c. POLL \`node ${commCliPath} check <questionId>\` across your turns for the verdict:`,
+								"   - APPROVED → the code gate is satisfied; proceed to the APPROVE GATE steps below.",
+								"   - SKIPPED (governance-level codex-skip, founder-sanctioned) → also proceed; the skip record is head-bound server-side.",
+								"   - CHANGES_REQUESTED → the answered question is CONSUMED and cannot be reused: fix exactly what the findings name, push the new head, then open a NEW `gate review_code --no-block` + a NEW `request-review --type code --question-id <new id>` and poll again (the server increments the round and resumes the same reviewer session).",
+								"   - registration failure / review FAILED (reviewer error, timeout) → FAIL-CLOSED: report it to your Lead and do NOT proceed to the approve gate — never ship an unreviewed head, never substitute a same-family review.",
+							);
+						}
 						// FLY-191 Phase 2: non-blocking review flow. The runner posts
 						// the review request and goes IDLE (reachable via mailbox)
 						// instead of freezing inside a 48h poll loop. Ship authority

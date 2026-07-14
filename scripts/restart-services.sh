@@ -2,8 +2,13 @@
 # FLY-20: Auto-restart Bridge + Lead after merge.
 # Core restart script: diff analysis → idle wait → build → restart → health check → notify.
 #
-# Usage: restart-services.sh [--force] [--dry-run] [--bridge-only]
-#   --force:       skip idle wait
+# Usage: restart-services.sh [--force] [--wait-idle] [--dry-run] [--bridge-only]
+#   --force:       kept for back-compat — skipping the idle wait is now the
+#                  DEFAULT (FLY-1224 founder directive). When given together
+#                  with --wait-idle, --force wins (idle wait skipped).
+#   --wait-idle:   wait for active sessions to go idle before restarting (the
+#                  pre-FLY-1224 default). Env FLYWHEEL_RESTART_WAIT_IDLE=1 is
+#                  equivalent.
 #   --dry-run:     print plan, don't execute
 #   --bridge-only: FLY-1142 sanctioned env-reload path — restart ONLY the
 #                  Bridge in place (stop → start → health check). No build,
@@ -405,15 +410,29 @@ PROJECT_SHA_UPDATES_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-project-sha-XXXXXX")
 FORCE=false
 DRY_RUN=false
 BRIDGE_ONLY=false
+# FLY-1224 (founder directive): the idle wait is DEFAULT-OFF. `--wait-idle`
+# or env FLYWHEEL_RESTART_WAIT_IDLE=1 restores the old waiting behavior;
+# `--force` is kept as an accepted flag (its old meaning — skip the wait — is
+# now the default) and WINS when given together with --wait-idle.
+WAIT_IDLE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --force) FORCE=true; shift ;;
+        --wait-idle) WAIT_IDLE=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         --bridge-only) BRIDGE_ONLY=true; shift ;;
         *) log "ERROR: Unknown argument '$1'"; exit 1 ;;
     esac
 done
+
+if [[ "${FLYWHEEL_RESTART_WAIT_IDLE:-}" == "1" ]]; then
+    WAIT_IDLE=true
+fi
+if [[ "$FORCE" == "true" && "$WAIT_IDLE" == "true" ]]; then
+    log "--force wins over --wait-idle/FLYWHEEL_RESTART_WAIT_IDLE — skipping the idle wait"
+    WAIT_IDLE=false
+fi
 
 # FLY-1142: every mode/impact flag gets a default BEFORE any guarded section.
 # --bridge-only skips the detection + classification blocks below, and under
@@ -670,7 +689,8 @@ wait_for_idle() {
 
 # FLY-1142: --bridge-only runs its own single wait_for_idle inside its Main
 # branch (after the dry-run early-exit), so it is excluded here.
-if [[ "$BRIDGE_ONLY" != "true" && "$PLUGIN_ONLY_RESTART" != "true" && "$restart_bridge" == "true" && "$FORCE" != "true" ]]; then
+# FLY-1224: the idle wait is opt-in (--wait-idle / FLYWHEEL_RESTART_WAIT_IDLE=1).
+if [[ "$BRIDGE_ONLY" != "true" && "$PLUGIN_ONLY_RESTART" != "true" && "$restart_bridge" == "true" && "$WAIT_IDLE" == "true" ]]; then
     log "Waiting for idle sessions before restart..."
     if ! wait_for_idle; then
         log "Proceeding with restart after idle timeout"
@@ -1339,11 +1359,12 @@ if [[ "$BRIDGE_ONLY" == "true" ]]; then
     # roll back).
     log "Bridge-only restart (env reload): no build, no SHA writes, Leads untouched"
     if [[ "$DRY_RUN" == "true" ]]; then
-        log "DRY RUN: Would restart ONLY the Bridge in place — wait for idle (unless --force), stop Bridge on :$(bridge_port), start via launchctl kickstart, health-check up to 60s."
+        log "DRY RUN: Would restart ONLY the Bridge in place — skip the idle wait by default (pass --wait-idle or FLYWHEEL_RESTART_WAIT_IDLE=1 to wait), stop Bridge on :$(bridge_port), start via launchctl kickstart, health-check up to 60s."
         log "DRY RUN: No build, no deployed-sha/project-sha writes, no Lead restarts, no plugin update, no deploy notifications."
         exit 0
     fi
-    if [[ "$FORCE" != "true" ]]; then
+    # FLY-1224: idle wait is opt-in.
+    if [[ "$WAIT_IDLE" == "true" ]]; then
         log "Waiting for idle sessions before bridge-only restart..."
         if ! wait_for_idle; then
             log "Proceeding with bridge-only restart after idle timeout"

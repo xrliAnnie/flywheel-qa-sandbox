@@ -28,6 +28,7 @@ import {
 	PHASE_THREAD_BADGE,
 	phaseMessageTag,
 	phaseThreadBadge,
+	resolvePhaseDispatch,
 	THREE_STAGE_PHASE_SEQUENCE,
 	type ThreeStagePhase,
 } from "flywheel-config";
@@ -287,8 +288,11 @@ export function pinRunnerAttachForSession(
 			const byRole = new Map(phaseSessions.map((s) => [s.chat_thread_role, s]));
 			const rows: PhaseHeaderRow[] = [];
 			for (const role of THREE_STAGE_PHASE_SEQUENCE) {
+				// FLY-1224 (R1 #3): a pending row's planned model comes from the
+				// DISPATCH table (kill-switch aware) — implement shows GPT-5.6, not
+				// the legacy tier's Fable. The tier stays the last-resort fallback.
 				const plannedModel = modelDisplayName(
-					undefined,
+					resolvePhaseDispatch(role).model,
 					DEFAULT_PHASE_TIER[role],
 				);
 				const ps = byRole.get(role);
@@ -719,8 +723,10 @@ export class IssueDisplayRefresher {
 			if (isThreeStage) {
 				const rows: PhaseHeaderRow[] = [];
 				for (const role of THREE_STAGE_PHASE_SEQUENCE) {
+					// FLY-1224 (R1 #3): planned model from the dispatch table (see the
+					// legacy header path above — same honesty fix, second injection point).
 					const plannedModel = modelDisplayName(
-						undefined,
+						resolvePhaseDispatch(role).model,
 						DEFAULT_PHASE_TIER[role],
 					);
 					const ps = phaseSessionByRole.get(role);

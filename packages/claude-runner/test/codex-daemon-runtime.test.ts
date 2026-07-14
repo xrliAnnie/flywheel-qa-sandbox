@@ -7,9 +7,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	assertSocketPathFitsSunLen,
+	buildDaemonEffortArgs,
 	buildDaemonSandboxArgs,
 	type DaemonChild,
 	daemonSocketDir,
@@ -104,6 +105,40 @@ describe("buildDaemonSandboxArgs", () => {
 				sandboxNetworkAccess: false,
 			}),
 		).toEqual(["-c", 'sandbox_workspace_write.writable_roots=["/only/roots"]']);
+	});
+});
+
+// FLY-1224 (T5): per-phase reasoning effort → daemon `-c` override.
+describe("buildDaemonEffortArgs", () => {
+	it("xhigh → the exact TOML-quoted override argv", () => {
+		expect(buildDaemonEffortArgs("xhigh")).toEqual([
+			"-c",
+			'model_reasoning_effort="xhigh"',
+		]);
+	});
+
+	it("every RoleEffort level is accepted", () => {
+		for (const e of ["low", "medium", "high", "xhigh", "max"]) {
+			expect(buildDaemonEffortArgs(e)).toEqual([
+				"-c",
+				`model_reasoning_effort="${e}"`,
+			]);
+		}
+	});
+
+	it("absent → no argv (byte-compatible: CODEX_HOME config default applies)", () => {
+		expect(buildDaemonEffortArgs(undefined)).toEqual([]);
+		expect(buildDaemonEffortArgs("")).toEqual([]);
+	});
+
+	it("unknown value → warn + ignore, NEVER spliced into the override", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(buildDaemonEffortArgs('bogus"; rm -rf /')).toEqual([]);
+			expect(warn).toHaveBeenCalledOnce();
+		} finally {
+			warn.mockRestore();
+		}
 	});
 });
 

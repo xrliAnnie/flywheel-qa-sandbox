@@ -14,7 +14,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Router } from "express";
-import type { PonytailInput } from "flywheel-config";
+import type {
+	PhaseDispatchVendor,
+	PonytailInput,
+	RoleEffort,
+} from "flywheel-config";
 import {
 	ACCEPTED_DISPATCH_MODELS,
 	ConfigLoader,
@@ -546,6 +550,11 @@ export function createRunsRouter(
 		// FLY-887 R2: set with shareParentBranch at entry — phase sessions bypass
 		// the runner-label backend/model layer (see the entry branch below).
 		let ignoreRunnerLabelSelection: boolean | undefined;
+		// FLY-1224: the phase table's vendor + effort for a three-stage entry
+		// (design). NEVER read from the request body — the entry decision is the
+		// only writer, so the phase table stays the single vendor source.
+		let dispatchVendor: PhaseDispatchVendor | undefined;
+		let dispatchEffort: RoleEffort | undefined;
 		if (role === "main") {
 			const proj = projects.find((p) => p.projectName === projectName);
 			const pipelineConfig = proj
@@ -596,6 +605,10 @@ export function createRunsRouter(
 				// `no-three-stage` label and runs single-session (recorded trade-off,
 				// Lead-approved).
 				dispatchModel = entry.dispatchModel;
+				// FLY-1224: forward the phase table's vendor + effort alongside the
+				// model so the resolver's dispatch layer picks the phase backend.
+				dispatchVendor = entry.dispatchVendor;
+				dispatchEffort = entry.dispatchEffort;
 				// FLY-887 R2 (Codex R1 blocker): the Linear label layer outranks
 				// dispatchModel in resolveRoleAdapter — a `sonnet` model label or a
 				// `codex`/`agy`/`kimi` vendor label would beat the phase table (and a
@@ -722,6 +735,10 @@ export function createRunsRouter(
 				issueUrl,
 				// FLY-728 Part C: difficulty-sorter's dispatch model (normalized)
 				dispatchModel,
+				// FLY-1224: phase table vendor + effort (three-stage entry only;
+				// undefined on every non-three-stage dispatch → byte-compatible)
+				dispatchVendor,
+				dispatchEffort,
 			});
 
 			// FLY-91: Poll for chatThreadId. emitStarted() awaits chat thread

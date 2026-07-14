@@ -357,6 +357,9 @@ export class CodexTmuxAdapter implements IAdapter {
 				sandbox: "workspace-write",
 				approvalPolicy: "never",
 				...(ctx.model ? { model: ctx.model } : {}),
+				// FLY-1224: per-phase reasoning effort → daemon spawn config override
+				// (-c model_reasoning_effort=). Absent → CODEX_HOME config default.
+				...(ctx.effort ? { effort: ctx.effort } : {}),
 				env: this.buildDaemonEnv(ctx, gateMarkerDir),
 				sandboxWritableRoots: writableRoots,
 				networkAccess: true,

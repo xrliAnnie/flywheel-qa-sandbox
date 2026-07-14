@@ -577,4 +577,22 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			"gpt-5.6-codex",
 		);
 	});
+
+	// FLY-1224 (T5 integration): ctx.effort rides to the runtime options — the
+	// goal runtime forwards it to the daemon spawn as
+	// `-c model_reasoning_effort="<effort>"` (argv locked by the
+	// buildDaemonEffortArgs unit tests).
+	it("passes ctx.effort through to the runtime when set (FLY-1224)", async () => {
+		await makeAdapter().execute(ctx({ model: "gpt-5.6-sol", effort: "xhigh" }));
+		const opts = capturedOpts as CodexDaemonGoalRuntimeOptions;
+		expect(opts.model).toBe("gpt-5.6-sol");
+		expect(opts.effort).toBe("xhigh");
+	});
+
+	it("no ctx.effort → runtime options carry no effort (byte-compatible)", async () => {
+		await makeAdapter().execute(ctx());
+		expect(
+			(capturedOpts as CodexDaemonGoalRuntimeOptions).effort,
+		).toBeUndefined();
+	});
 });

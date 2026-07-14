@@ -28,6 +28,10 @@ describe("buildClaudeReviewArgv", () => {
 			"json",
 			"--model",
 			"claude-opus-4-8",
+			// FLY-1224 (T13 ②, Annie's directive): the cross-family Claude
+			// reviewer defaults to Opus + effort xhigh.
+			"--effort",
+			"xhigh",
 		]);
 		const reround = buildClaudeReviewArgv({
 			prompt: "round 2 delta",
@@ -42,6 +46,19 @@ describe("buildClaudeReviewArgv", () => {
 			"uuid-1",
 		]);
 		expect(reround).toContain("custom-model");
+	});
+
+	it("FLY-1224: an explicit effort overrides the xhigh default", () => {
+		const argv = buildClaudeReviewArgv({
+			prompt: "p",
+			sessionId: "u",
+			resume: false,
+			effort: "medium",
+		});
+		const idx = argv.indexOf("--effort");
+		expect(idx).toBeGreaterThan(-1);
+		expect(argv[idx + 1]).toBe("medium");
+		expect(argv).not.toContain("xhigh");
 	});
 });
 

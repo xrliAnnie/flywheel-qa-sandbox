@@ -317,6 +317,19 @@ describe("StateStore — FLY-1188 family-aware review authority", () => {
 		expect(store.isCodexCodeReviewApproved("exec-same", SHA)).toBe(false);
 	});
 
+	it("FLY-1224 (T13 ③): SAME-family approval fails the OTHER direction too (claude reviewed claude)", () => {
+		// Annie's directive: author family ≠ reviewer family, BOTH directions.
+		// Explicit claude/claude stamps beat the grandfather exemption (which
+		// only covers UNSTAMPED historical rows).
+		registerSession("exec-same-claude", "claude-tmux");
+		expect(
+			approve("exec-same-claude", { author: "claude", reviewer: "claude" }),
+		).toBe(false);
+		expect(store.isCodexCodeReviewApproved("exec-same-claude", SHA)).toBe(
+			false,
+		);
+	});
+
 	it("legacy UNSTAMPED approval stays valid for a claude-tmux author (byte-compat)", () => {
 		registerSession("exec-legacy-claude", "claude-tmux");
 		expect(approve("exec-legacy-claude")).toBe(true);
