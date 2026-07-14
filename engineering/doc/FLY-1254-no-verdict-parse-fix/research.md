@@ -91,18 +91,20 @@ R2 first-brace context: "{p,m}` → `{p,fc,m}`) — causes a harmless one-time r
 
 ## 3. 修法设计:verdict 锚定的宽容提取
 
-替换 `extractJsonObject` 为两步候选扫描(命名建议 `extractVerdictObject`),`parseClaudeReviewOutput` 的信封校验与后置 verdict/findings/sha 校验逐字不动:
+替换 `extractJsonObject` 为两步候选扫描(命名建议 `extractVerdictObject`);`parseClaudeReviewOutput` 的信封分支按下文"信封判定先加固"段收紧(只严不松),后置 verdict/findings/sha 校验逐字不动:
 
 **第 1 步 — 顶层平衡扫描**:对(去信封后的)全文做一遍 string-aware 扫描(跟踪 JSON 字符串态与转义,配对大括号深度),收集所有**顶层**平衡 `{…}` 片段;逐个 `JSON.parse`;过滤出"对象且 `verdict` 字段为合法枚举(大小写不敏感 APPROVED/CHANGES_REQUESTED)"的候选;**取最后一个**。每字节至多属于一个顶层片段 → 总成本 O(n)。本事故场景(`{p,m}` 等 prose 片段解析失败、末尾 verdict 对象解析成功)在这一步即修复。
 
 **第 2 步 — verdict 关键字锚定回落**(仅第 1 步无命中时):定位文本中 `"verdict"` 的出现位(定量上限,如前 32 处),对每处向前回溯到最近的 `{`,从那里做 string-aware 平衡解析,过滤同上,取最后一个。覆盖"prose 有不配对 `{` 把顶层片段撑爆"与"verdict 对象被包在更大结构里"的长尾。
 
+**信封判定先加固(Codex design review R1 #1)**:现行信封分支只在 `result` 为字符串时才做 success 校验;`result` 为对象/数组的错误信封会漏过分类,pass 2 会从嵌套里捡走 verdict——宽容提取落地前必须先堵。规则:整个 stdout 若 parse 出对象——精确 success 信封(result 为字符串)→ 解包继续;带任一信封判别键(type/subtype/is_error/api_error_status/result)但非精确 success → 直接 null;顶层裸 verdict 对象 → 照常;其他整体 JSON(verdict 仅在嵌套层)→ null,不向内递归。宽容提取只作用于 prose+JSON 混排的 assistant 文本(真实事故形态)。
+
 **语义保持**:
 - 两步都无候选 → 返回 null → `no_verdict` fail-close 不变(真失约仍然失败)。
-- 错误信封在提取前就被拒(R12-R14 逐字保留)——错误文本里即使有 verdict 形状也到不了提取层(既有测试 R12 HIGH/R13 HIGH-4/R14 已钉死,必须继续全绿)。
+- 错误信封在提取前就被拒(R12-R14 语义保留并按上段加固)——错误信封里即使有 verdict 形状(含嵌套)也到不了提取层。
 - APPROVED 权威绑定不在解析层:coordinator 仍要求 reviewer 回显的 `reviewedHeadSha` 逐字等于 server 冻结 head(R12 HIGH-6),"取最后一个"最多影响挑哪个候选,伪造/误批的防线不依赖提取策略。
 - fence 特判整体删除:平衡扫描天然覆盖 fenced 与非 fenced(fence 标记不含大括号,不干扰扫描),顺带修掉 §2.4-1。既有"fenced verdict"测试样本必须在新实现下继续通过。
-- 字节兼容:现有 20 个 parser/runner 测试样本(bare/fenced/CHANGES_REQUESTED round-trip/错误信封/refusal)全部不许变绿改红或改语义。
+- 兼容基线:现有 parser/runner 测试样本(bare/fenced/CHANGES_REQUESTED round-trip/错误信封/refusal)的安全类与行为类断言不许削弱;仅两处**有意替换**——reround prompt 的 prior-findings 断言(§4.2 有意改变该行为)与 SpawnResult stub 补 stderr 字段(机械更新)。
 
 **prompt 辅助措辞**(一行,防御纵深非依赖):contract 末句 "No prose outside the JSON." 后追加明确 "Your very last line must be the JSON object itself."——降低 prose 追尾概率,不作为正确性依赖。
 
@@ -121,7 +123,7 @@ resume 链完整存在:accept 时 `priorUuid = latestCodexReviewerSessionUuid`(S
 ### 4.3 差距 B:失败观测缺口
 
 - spawner `stdio` 第 3 位 `ignore` → stderr 全丢。真机实测坏 `--resume` 的诊断文案**只在 stderr**(见 §4.4),quota 类失败的可辨识文案也在进程输出里。改为 `pipe` + 有界收集(如 16KB 上限,只留尾部)。
-- `runClaudeReviewRound` 失败 outcome 的 `raw`(stdout 前 4000)与新增 stderr 尾部要一路带回;coordinator 失败分支目前只 `failCodexReviewJob(requestId, reason)`,raw 丢弃。改:`codex_review_job` 表加一列 `failure_raw TEXT`(additive、幂等 ALTER TABLE,循既有迁移先例),`failCodexReviewJob` 加可选第三参落库(截断,如 4000 字符,stdout 尾 + stderr 尾拼接标注);alert 文案追加一段截断摘要(如前 300 字符)。
+- `runClaudeReviewRound` 失败 outcome 的 `raw` 改取 stdout **尾部** 4000(no_verdict 的关键证据——verdict 行——在末尾;现行取头 4000 会恰好丢掉它)与新增 stderr 尾部一路带回;coordinator 失败分支目前只 `failCodexReviewJob(requestId, reason)`,raw 丢弃。改:`codex_review_job` 表加一列 `failure_raw TEXT`(PRAGMA 查列缺才加,非预期迁移错误响亮失败),`failCodexReviewJob` 加可选第三参落库(截断 4000,stdout 尾 + stderr 尾拼接标注);生命周期 = 最近一次尝试的失败证据(claim 清 / fail 覆写 / complete 清);alert 文案追加消毒后的单行摘要(≤300 字符)。
 - 价值即时可验:本次取证若有此列,一条 SQL 即可定案,无需 transcript 考古;FLY-1244/1251 的 quota 失败也一眼可辨("hit your session/weekly limit")。
 
 ### 4.4 差距 C:resume session 丢失 = 永久失败循环
@@ -135,7 +137,7 @@ exit=1  stdout=(空)  stderr="No conversation found with session ID: 00000000-�
 
 秒败、不耗 token、诊断文案在 stderr。现状下该轮 fail-close 为 `nonzero_exit`,同 requestId 重试 → runJob 仍取同 uuid → 同样失败,**无限循环**,唯一出路是 codex-skip 或重派 session(事故里 FLY-1225 就是靠新 execution 才在 20:15 拿到 APPROVED)。session 文件真实可能消失:`~/.claude/projects` 清理、机器重装、CLAUDE_CONFIG_DIR 变更、跨机迁移。
 
-修(pattern-gated 单次回落,在 coordinator.runJob 内):resume 轮 outcome 为 `nonzero_exit` **且** stderr/stdout 匹配 session-not-found pattern(锚定 "No conversation found with session ID",大小写不敏感、允许前后缀)时——同一 job 内生成新 uuid、`setCodexReviewJobReviewerSession` 持久化(后续轮自然接到新链)、以 resume=false + fresh 全量 contract prompt(即 §4.2 的 fresh 分支)**重跑一次**;第二次仍失败则照旧 fail-close。非 pattern 的 nonzero_exit(quota、崩溃等)**不回落**——fresh 重试在 quota 下同样会失败,只是烧一次启动;保持 fail-close + alert。回落至多一次/Job,不引入循环风险;30min 超时对两次尝试各自独立生效(见 §5 语义,liveness bound 针对单个子进程)。
+修(pattern-gated 单次回落,在 coordinator.runJob 内):resume 轮 outcome 为 `nonzero_exit` **且** stderr/stdout 匹配 session-not-found pattern(锚定 "No conversation found with session ID",大小写不敏感、允许前后缀)时——同一 job 内生成新 uuid、`setCodexReviewJobReviewerSession` 持久化(后续轮自然接到新链)、以 resume=false + fresh 全量 contract prompt(即 §4.2 的 fresh 分支)**重跑一次**;第二次仍失败则照旧 fail-close。非 pattern 的 nonzero_exit(quota、崩溃等)**不回落**——fresh 重试在 quota 下同样会失败,只是烧一次启动;保持 fail-close + alert。回落上限的精确表述:**每次 runJob 调用至多一次**(非 durable job 终生一次,不加持久化列;新 uuid 持久化后崩溃 → boot redrive 重跑时如再命中 pattern 可再回落一次,每轮收敛);第二次 spawn 前先重验 stopped/gate/head(在生成新 uuid 之前)。30min 超时对两次尝试各自独立生效(见 §5 语义,liveness bound 针对单个子进程)。
 
 ## 5. 交付 3:30 分钟每轮上限
 
@@ -147,7 +149,7 @@ exit=1  stdout=(空)  stderr="No conversation found with session ID: 00000000-�
 | 超时含义 | 子进程挂死/失控 → 树杀 + fail-close,正确 | 把"还在等"误判成"坏了",错杀等待,应 park+retry |
 | 结论 | **保留 30min 默认**(3-5 倍实测余量) | 另单处理,与本单无关 |
 
-小改:plugin.ts 构造 coordinator 时接线 env 覆盖(如 `FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS`,parse 失败/非正数忽略回默认;下限保护如 ≥60s 防误配秒杀),透传给既有 `reviewerTimeoutMs` seam(coordinator→runner 通路已存在,纯接线)。不改默认值。
+小改:plugin.ts 构造 coordinator 时接线 env 覆盖(如 `FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS`),只接受有限安全整数且落在 [60_000, 2_147_483_647](下限防误配秒杀;上限=Node 定时器 32 位域,超过会被折成 1ms),否则警告一行回默认;透传给既有 `reviewerTimeoutMs` seam(coordinator→runner 通路已存在,纯接线)。不改默认值。
 
 ## 6. 相邻证据(定性,不入 scope)
 
