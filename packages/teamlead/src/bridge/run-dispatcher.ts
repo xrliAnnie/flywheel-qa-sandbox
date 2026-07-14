@@ -286,6 +286,60 @@ export function buildRunnerSpawnFields(
 }
 
 /**
+ * FLY-1185 §2.12 (R9#2): a founder-parked (tombstoned) issue refused a spawn.
+ * Routes map this to a 409 with the reason — never a silent respawn of a
+ * just-zeroed issue.
+ */
+/**
+ * FLY-1185 (Codex R1#5 + R2#2 + R4#1) — the dispatcher side of the
+ * park-vs-start arbitration, per plan.md:145: the claim stays `starting`
+ * until the session row + worktree binding are DURABLE, and only then
+ * advances to `active` at the emitStarted point (under the same canonical
+ * issue mutex). `commitLaunch` is therefore a mutex-guarded VERIFY (claim
+ * must still be `starting`/`active` — a park that cancelled it wins and the
+ * spawn aborts); `activateLaunch` is the ONE atomic CAS starting→active
+ * executed by DirectEventSink.emitStarted once the row is durable. A park
+ * landing between the verify and activation cancels the claim → activation
+ * refuses → the park-intent replay owns the newborn runner next tick.
+ * `onSpawnFailed` closes the claim so it never lingers.
+ */
+export interface LifecycleLaunchGuard {
+	/** R3#6: async — the production impl holds the SAME per-issue mutex as
+	 * the executor/apply snapshot guard, so a launch verify can never slide
+	 * between an apply's compare and its execution. R4#1: VERIFY-only (no
+	 * state change) — activation happens at emitStarted. */
+	commitLaunch: (executionId: string) => Promise<{
+		ok: boolean;
+		reason?: string;
+	}>;
+	/** R4#1 (plan.md:145): CAS starting→active under the issue mutex, called
+	 * from the emitStarted path AFTER the session row is durable. Refusal
+	 * (claim cancelled by a park mid-spawn) is audited by the caller; the
+	 * park-intent replay tears the newborn runner down. */
+	activateLaunch?: (executionId: string) => Promise<{
+		ok: boolean;
+		reason?: string;
+	}>;
+	onSpawnFailed: (executionId: string) => void;
+}
+
+export class LifecycleParkedError extends Error {
+	constructor(public readonly reason: string) {
+		super(`lifecycle admission denied: ${reason}`);
+		this.name = "LifecycleParkedError";
+	}
+}
+
+/** FLY-1185: the admission decorator seam (single dispatcher chokepoint). */
+export type LifecycleAdmissionFn = (input: {
+	issueKey: string;
+	issueIdentifier?: string;
+	projectName: string;
+	executionId: string;
+	role?: string;
+}) => Promise<{ admitted: boolean; reason?: string }>;
+
+/**
  * FLY-1188: transport vendor for the CommDB pre-registration row. The
  * adapter's self-registration overwrites it, but `flywheel-comm send`
  * consults the row from the moment `start()` returns — a NULL vendor in
@@ -319,7 +373,32 @@ export class RetryDispatcher implements IRetryDispatcher {
 		 * committed → adopt; else re-drive`. */
 		protected isCommitted: (execId: string) => boolean = (execId) =>
 			existsSync(launchCommitPath(execId)),
+		/**
+		 * FLY-1185 (R11#1): lifecycle admission — fresh founder-park tombstone
+		 * check + durable `starting` launch claim, executed INSIDE the per-root
+		 * issue mutex at THIS single chokepoint (every spawn surface — HTTP
+		 * start / retry / phase handoff / auto-QA / rescue — flows through
+		 * start() or dispatch()). Undefined → legacy behavior (byte-compat).
+		 */
+		protected lifecycleAdmission?: LifecycleAdmissionFn,
+		/** FLY-1185 (Codex R1#5): pre-launch recheck + claim CAS hooks. */
+		protected lifecycleLaunchGuard?: LifecycleLaunchGuard,
 	) {}
+
+	/** Shared admission gate — throws LifecycleParkedError on refusal. */
+	protected async admitLifecycle(input: {
+		issueKey: string;
+		issueIdentifier?: string;
+		projectName: string;
+		executionId: string;
+		role?: string;
+	}): Promise<void> {
+		if (!this.lifecycleAdmission) return;
+		const res = await this.lifecycleAdmission(input);
+		if (!res.admitted) {
+			throw new LifecycleParkedError(res.reason ?? "denied");
+		}
+	}
 
 	/** FLY-59: Composite inflight key for per-role dedup */
 	protected inflightKey(issueId: string, role: string): string {
@@ -371,6 +450,17 @@ export class RetryDispatcher implements IRetryDispatcher {
 		// recovery can reconcile/re-drive by a durably-bound key; legacy callers
 		// (no pre-bound id) keep the self-generated UUID byte-for-byte.
 		const newExecutionId = req.successorExecutionId ?? randomUUID();
+
+		// FLY-1185 (R11#1): lifecycle admission — a founder-parked issue must not
+		// grow a retry runner. Fresh tombstone check + durable starting claim
+		// inside the issue mutex; throws LifecycleParkedError on refusal.
+		await this.admitLifecycle({
+			issueKey: req.issueId,
+			issueIdentifier: (req as { issueIdentifier?: string }).issueIdentifier,
+			projectName: req.projectName,
+			executionId: newExecutionId,
+			role,
+		});
 
 		// FLY-245 R1/R2/R5 HIGH-3: durable cross-restart find-or-create. The
 		// in-flight map above only dedups within THIS process; after a Bridge crash
@@ -511,6 +601,23 @@ export class RetryDispatcher implements IRetryDispatcher {
 			},
 		};
 
+		// FLY-1185 (Codex R3#2 + R4#1): the retry path verifies its launch
+		// through the SAME mutex-guarded gate as start() — a park cancelling
+		// the claim between the retry admission and here wins and the spawn
+		// aborts. R4#1: refusal cleans up SYMMETRICALLY (inflight + CommDB
+		// pre-registration) so a later retry never converges on a ghost entry.
+		if (this.lifecycleLaunchGuard) {
+			const commit =
+				await this.lifecycleLaunchGuard.commitLaunch(newExecutionId);
+			if (!commit.ok) {
+				this.inflight.delete(key);
+				this.cleanupPreRegistration(newExecutionId, req.projectName);
+				throw new LifecycleParkedError(
+					commit.reason ?? "cancelled_between_admission_and_launch",
+				);
+			}
+		}
+
 		entry.promise = runtime.blueprint
 			.run({ id: req.issueId, blockedBy: [] }, runtime.projectRoot, ctx)
 			.then((result) => {
@@ -524,6 +631,12 @@ export class RetryDispatcher implements IRetryDispatcher {
 						`[RetryDispatcher] ${newExecutionId} completed for issue ${req.issueIdentifier ?? req.issueId}`,
 					);
 				} else {
+					// R4#1: close the launch claim on spawn failure (mirror start()).
+					try {
+						this.lifecycleLaunchGuard?.onSpawnFailed(newExecutionId);
+					} catch {
+						/* guard must never break the launch pipeline */
+					}
 					console.warn(
 						`[RetryDispatcher] ${newExecutionId} resolved with failure for issue ${req.issueIdentifier ?? req.issueId}: ${result.error ?? "unknown"}`,
 					);
@@ -538,6 +651,12 @@ export class RetryDispatcher implements IRetryDispatcher {
 					`[RetryDispatcher] ${newExecutionId} failed:`,
 					err instanceof Error ? err.message : err,
 				);
+				// R4#1: symmetric claim cleanup on thrown spawn failure.
+				try {
+					this.lifecycleLaunchGuard?.onSpawnFailed(newExecutionId);
+				} catch {
+					/* guard must never break the launch pipeline */
+				}
 				// FLY-80: Clean up orphan pre-registration on failed start
 				this.cleanupPreRegistration(newExecutionId, req.projectName);
 			})
@@ -652,8 +771,19 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		 * branch B are found, else null. Undefined ⇒ always fresh (byte-compatible).
 		 */
 		private resumeComputer?: ResumeComputer,
+		/** FLY-1185 (R11#1): lifecycle admission seam (see base class). */
+		lifecycleAdmission?: LifecycleAdmissionFn,
+		/** FLY-1185 (Codex R1#5): launch guard seam (see base class). */
+		lifecycleLaunchGuard?: LifecycleLaunchGuard,
 	) {
-		super(blueprintsByProject, cleanupHandles, launchClaims, isCommitted);
+		super(
+			blueprintsByProject,
+			cleanupHandles,
+			launchClaims,
+			isCommitted,
+			lifecycleAdmission,
+			lifecycleLaunchGuard,
+		);
 	}
 
 	/** FLY-59: Count all inflight entries (each issue+role combo counts separately) */
@@ -730,6 +860,20 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		// FLY-116: opener moved into BlueprintContext callback below.
 
 		const executionId = randomUUID();
+
+		// FLY-1185 (R11#1): lifecycle admission at the single spawn chokepoint —
+		// every surface (HTTP start / phase handoff / auto-QA / rescue) flows
+		// through here. Fresh founder-park tombstone check + durable `starting`
+		// launch claim inside the issue mutex; throws LifecycleParkedError on
+		// refusal (routes map to 409, never a silent respawn of a zeroed issue).
+		await this.admitLifecycle({
+			issueKey: req.issueId,
+			issueIdentifier: (req as { issueIdentifier?: string }).issueIdentifier,
+			projectName: req.projectName,
+			executionId,
+			role,
+		});
+
 		const entry = {
 			executionId,
 			promise: null! as Promise<void>,
@@ -876,6 +1020,22 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			},
 		};
 
+		// FLY-1185 (Codex R1#5 + R4#1): LAST pre-launch admission recheck — a
+		// founder park that ran between admission and here CASed our claim
+		// starting→cancelled; the spawn must abort instead of launching a
+		// runner on a zeroed issue. VERIFY-only: the claim stays `starting`
+		// until emitStarted persists the session row (plan.md:145).
+		if (this.lifecycleLaunchGuard) {
+			const commit = await this.lifecycleLaunchGuard.commitLaunch(executionId);
+			if (!commit.ok) {
+				this.inflight.delete(key);
+				this.cleanupPreRegistration(executionId, req.projectName);
+				throw new LifecycleParkedError(
+					commit.reason ?? "cancelled_between_admission_and_launch",
+				);
+			}
+		}
+
 		entry.promise = runtime.blueprint
 			.run({ id: req.issueId, blockedBy: [] }, runtime.projectRoot, ctx)
 			.then((result) => {
@@ -885,10 +1045,17 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					);
 				}
 				if (result.success) {
+					// (R4#1: the claim advanced starting→active at emitStarted, once
+					// the session row was durable — not at the pre-run verify.)
 					console.log(
 						`[RunDispatcher] ${executionId} completed for issue ${req.issueId}`,
 					);
 				} else {
+					try {
+						this.lifecycleLaunchGuard?.onSpawnFailed(executionId);
+					} catch {
+						/* guard must never break the launch pipeline */
+					}
 					console.warn(
 						`[RunDispatcher] ${executionId} resolved with failure for issue ${req.issueId}: ${result.error ?? "unknown"}`,
 					);
@@ -903,6 +1070,12 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					`[RunDispatcher] ${executionId} failed:`,
 					err instanceof Error ? err.message : err,
 				);
+				// R4#1: symmetric claim cleanup on thrown spawn failure.
+				try {
+					this.lifecycleLaunchGuard?.onSpawnFailed(executionId);
+				} catch {
+					/* guard must never break the launch pipeline */
+				}
 				// FLY-80: Clean up orphan pre-registration on failed start
 				this.cleanupPreRegistration(executionId, req.projectName);
 			})

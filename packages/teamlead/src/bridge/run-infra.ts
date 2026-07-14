@@ -59,11 +59,14 @@ import { EventFilter } from "./EventFilter.js";
 import type { IssueDisplayRefreshHolder } from "./issue-display-refresher.js";
 import { LaunchClaimStore } from "./launch-claim-store.js";
 import type { PhaseOrchestrator } from "./phase-orchestrator.js";
+import type { LifecycleShipInfra } from "./post-ship-finalization.js";
 import {
 	computeProgressResume,
 	type ProgressResumeDeps,
 } from "./progress-resume.js";
 import {
+	type LifecycleAdmissionFn,
+	type LifecycleLaunchGuard,
 	type ProjectRuntime,
 	type ResumeComputer,
 	RunDispatcher,
@@ -497,6 +500,24 @@ export interface RunInfraOptions {
 	 * hook, so the sink triggers refreshes itself). Absent → byte-compatible.
 	 */
 	issueDisplayRefresh?: IssueDisplayRefreshHolder;
+	/**
+	 * FLY-1185: the ship-entry lifecycle bundle (remote branch CAS + issue
+	 * closeout + trailing sweep), set on the DirectEventSink so the in-process
+	 * ship path drives the SAME entry-A items as the HTTP paths. Absent →
+	 * classic finalization only (byte-compat).
+	 */
+	lifecycleInfra?: LifecycleShipInfra;
+	/**
+	 * FLY-1185 (R11#1): lifecycle spawn admission (founder-park tombstone +
+	 * durable starting claim), threaded to the RunDispatcher chokepoint.
+	 * Absent → legacy admission only (byte-compat).
+	 */
+	lifecycleAdmission?: LifecycleAdmissionFn;
+	/**
+	 * FLY-1185 (Codex R1#5): the dispatcher-side park-vs-start arbitration —
+	 * last pre-launch recheck + launch-claim CAS hooks. Absent → byte-compat.
+	 */
+	lifecycleLaunchGuard?: LifecycleLaunchGuard;
 }
 
 export async function setupRunInfrastructure(
@@ -668,6 +689,8 @@ export async function setupRunInfrastructure(
 			);
 			// FLY-603 Layer A: wire the shared cleanup closure onto this sink.
 			directSink.removeCleanWorktree = runInfraOpts?.removeCleanWorktree;
+			// FLY-1185: entry-A bundle for the in-process ship path.
+			directSink.lifecycleInfra = runInfraOpts?.lifecycleInfra;
 			// FLY-579 (Codex R1 HIGH-1): give the in-process completed path the
 			// auto-QA coordinator holder so it spawns QA + holds the founder.
 			directSink.autoQaCoordinator = runInfraOpts?.autoQaCoordinator;
@@ -679,6 +702,11 @@ export async function setupRunInfrastructure(
 				runInfraOpts?.finalizeThreeStagePhases;
 			// FLY-907: display-refresh holder for the in-process status writes.
 			directSink.issueDisplayRefresh = runInfraOpts?.issueDisplayRefresh;
+			// FLY-1185 (Codex R4#1): launch-claim activation at the emitStarted
+			// point — the claim advances starting→active only once the session
+			// row is durable (plan.md:145).
+			directSink.lifecycleActivate =
+				runInfraOpts?.lifecycleLaunchGuard?.activateLaunch;
 
 			// FLY-137 v1.27.2: construct AgentDispatcher (always — empty agents map is valid,
 			// dispatcher returns shipped-generic for every issue in that case).
@@ -846,6 +874,8 @@ export async function setupRunInfrastructure(
 		launchClaims,
 		undefined, // isCommitted — production uses the default file-existence check
 		resumeComputer, // FLY-795: live restart-resilient resume
+		runInfraOpts?.lifecycleAdmission, // FLY-1185: park admission chokepoint
+		runInfraOpts?.lifecycleLaunchGuard, // FLY-1185 R1#5: pre-launch recheck
 	);
 }
 

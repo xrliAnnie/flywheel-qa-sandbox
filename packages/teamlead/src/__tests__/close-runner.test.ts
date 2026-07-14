@@ -143,6 +143,70 @@ describe("closeRunner", () => {
 		).toBe(true);
 	});
 
+	it("R4#2: authority lost after the MCP reap aborts BEFORE the tmux kill (audited)", async () => {
+		seedSession(store, "completed");
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "FLY-102:@0",
+			sessionName: "FLY-102",
+		});
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+		// A Linear reopen lands between the (awaited) MCP reap and the first
+		// destructive kill → the teardown must stop, never touching tmux.
+		const authorityCheck = vi.fn(async () => ({
+			ok: false,
+			reason: "authority_reopened",
+		}));
+
+		const result = await closeRunner(makeOpts({ authorityCheck }), store);
+
+		expect(result).toEqual({
+			closed: false,
+			error: "authority_lost:pre_cmux_kill:authority_reopened",
+		});
+		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
+		expect(authorityCheck).toHaveBeenCalled();
+		const events = store.getEventsByExecution("exec-1");
+		expect(
+			events.some((e) => e.event_type === "lead_close_runner_authority_lost"),
+		).toBe(true);
+	});
+
+	it("R4#2: a throwing authorityCheck is fail-closed (aborts the teardown)", async () => {
+		seedSession(store, "completed");
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "FLY-102:@0",
+			sessionName: "FLY-102",
+		});
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+		const authorityCheck = vi.fn(async () => {
+			throw new Error("linear boom");
+		});
+
+		const result = await closeRunner(makeOpts({ authorityCheck }), store);
+
+		expect(result.closed).toBe(false);
+		expect(result.error).toContain("authority_lost:pre_cmux_kill");
+		expect(result.error).toContain("authority_check_failed");
+		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
+	});
+
+	it("R4#2: an authorized check lets the teardown proceed to the kill (byte-compat)", async () => {
+		seedSession(store, "completed");
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "FLY-102:@0",
+			sessionName: "FLY-102",
+		});
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+		const authorityCheck = vi.fn(async () => ({ ok: true }));
+
+		const result = await closeRunner(makeOpts({ authorityCheck }), store);
+
+		expect(result).toEqual({ closed: true, error: undefined });
+		expect(mockKillTmuxWindow).toHaveBeenCalledWith("FLY-102:@0");
+		// called before EACH external boundary (pre-cmux, pre-tmux, post-kill).
+		expect(authorityCheck.mock.calls.length).toBeGreaterThanOrEqual(2);
+	});
+
 	it("FLY-369: a tmux kill failure does NOT archive (cascade only on success)", async () => {
 		// Seed a FULLY RESOLVABLE archive context (project + registered thread)
 		// so that the PRE-fix placement (cascade before the kill) WOULD have

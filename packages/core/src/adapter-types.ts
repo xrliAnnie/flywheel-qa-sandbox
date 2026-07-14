@@ -182,6 +182,14 @@ export interface AdapterExecutionContext {
 	 * exempts them). Absent/false = no change (byte-compatible spawn).
 	 */
 	disableChrome?: boolean;
+	/**
+	 * FLY-1185 §2.7: marketplace-qualified plugin keys to POSITIVELY enable
+	 * (`true` entries in the per-launch `--settings enabledPlugins` merge,
+	 * applied AFTER disabledPlugins so an explicit opt-in wins). The playwright
+	 * opt-in channel that overrides the machine-level default-off (QA role /
+	 * `playwright` label / `full-mcp` label). Absent/empty = no change.
+	 */
+	enabledPluginsExtra?: string[];
 	/** Maximum number of agentic turns */
 	maxTurns?: number;
 	/** Process-level timeout in milliseconds */

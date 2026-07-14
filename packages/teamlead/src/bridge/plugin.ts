@@ -42,6 +42,7 @@ import {
 	WorkflowFSM,
 } from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
+import { WorktreeManager } from "flywheel-edge-worker";
 import { recordAuthHealth as ledgerRecordAuthHealth } from "../account-heal/account-ledger.js";
 import type { AccountRotationNotice } from "../account-heal/account-rotation-notice.js";
 import {
@@ -137,6 +138,7 @@ import { resolveAutoQaPolicy } from "./auto-qa-policy.js";
 import { AutoContinueArmer } from "./autocontinue-armer.js";
 import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { runBootShaCheck } from "./boot-sha-check.js";
+import { makeShipRemoteBranchCleanup } from "./branch-cleanup.js";
 // FLY-927 (W1): D1 responder-based routing — ticket queue vs issue thread.
 import {
 	abnormalExitEpisodeSignature,
@@ -147,11 +149,17 @@ import {
 	writeRunningMarker,
 } from "./bridge-exit-marker.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
+import { makeCanceledPrDisposal } from "./canceled-pr-close.js";
 // FLY-927 (Task 3.3): truthful stage wording for the three-stage stuck alert.
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
 import { killAllClaudeReviewChildren } from "./claude-review-runner.js";
-import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
+import { buildCleanupPolicies } from "./cleanup-policy.js";
+import {
+	CLOSE_ELIGIBLE_STATES,
+	closeRunner,
+	registerLifecycleCloseGuard,
+} from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
@@ -288,6 +296,21 @@ import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { reconcileLegacyPhaseThreads } from "./legacy-phase-thread-sweep.js";
+import { assertIssueNotLifecycleClosed } from "./lifecycle-admission.js";
+import {
+	closeoutIssue,
+	closeoutIssueWithSnapshotGuard,
+	createIssueMutex,
+	parkIssue,
+	unparkIssue,
+} from "./lifecycle-closeout.js";
+import { isUuidKey, resolveLifecycleRootKey } from "./lifecycle-root-key.js";
+import {
+	computeIssueSnapshot,
+	createLifecycleApplyRouter,
+	createLifecycleRouter,
+} from "./lifecycle-routes.js";
+import { sweepProjectLifecycle } from "./lifecycle-sweep.js";
 import {
 	lookupLinearIssueByIdentifier,
 	queryLinearIssues,
@@ -298,6 +321,7 @@ import {
 	resolveProjectNameParam,
 } from "./linear-scope.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
+import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { notifyDigestExpectTick } from "./notify-digest-expect.js";
 import { defaultReceiptsPath } from "./notify-receipts.js";
@@ -310,7 +334,10 @@ import {
 	type TurnBeltRow,
 } from "./phase-orchestrator.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
-import { makeFinalizeThreeStagePhases } from "./post-ship-finalization.js";
+import {
+	type LifecycleShipInfra,
+	makeFinalizeThreeStagePhases,
+} from "./post-ship-finalization.js";
 import {
 	buildCronModelViews,
 	buildProjectRunnerDefaults,
@@ -318,6 +345,7 @@ import {
 import { patchSessionParams } from "./proofshot-session.js";
 import { wirePublishBroker } from "./publish-broker/wire.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
+import { createRepoMutationLock } from "./repo-mutation-lock.js";
 import {
 	DEFAULT_RETENTION_MAX_AGE_MS,
 	ReportRegistry,
@@ -353,6 +381,7 @@ import {
 	type RunnerRouteDeps,
 } from "./runner-routes.js";
 import { createStatusQuery } from "./runner-status.js";
+import { reapRunnerMcp } from "./runner-teardown.js";
 import { createRunsRouter } from "./runs-route.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
 import { ServerLossCoordinator } from "./server-loss.js";
@@ -417,6 +446,7 @@ import {
 import {
 	gitWorktreeClean,
 	makeBridgeWorktreeCleanup,
+	worktreeAutocleanEnabled,
 } from "./worktree-cleanup.js";
 import {
 	createInMemoryTokenStore,
@@ -901,6 +931,15 @@ export class SseBroadcaster {
 /** GEO-294 + FLY-91 Round 3: Options object for new Bridge dependencies. */
 export interface BridgeAppOptions {
 	vercelToken?: string;
+	/** FLY-1185: ship-entry lifecycle bundle built in startBridge. */
+	lifecycleInfra?: LifecycleShipInfra;
+	/** FLY-1185 §2.11: the shared per-repo mutation lock (startBridge-owned). */
+	withRepoLock?: <T>(mainRepoPath: string, fn: () => Promise<T>) => Promise<T>;
+	/** FLY-1185 §2.12: park/unpark + approved-manifest apply routers. */
+	lifecycleRoutes?: {
+		parkRouter: import("express").Router;
+		applyRouter: import("express").Router;
+	};
 	/** FLY-91 Round 3: Bridge-level shared ChatThreadCreator instance. */
 	chatThreadCreator?: ChatThreadCreator;
 	/** FLY-91 Round 3: Global Discord bot token for thread creation fallback. */
@@ -1195,10 +1234,19 @@ export function createBridgeApp(
 		),
 	);
 
+	// FLY-1185: the ship-entry lifecycle bundle + repo lock are BUILT in
+	// startBridge (they need its transitionOpts + reach its HeartbeatService /
+	// scheduler / setupRunInfrastructure) and arrive here via opts.
+	const lifecycleInfra = opts?.lifecycleInfra;
+
 	// FLY-603 Layer A: build the worktree-cleanup closure ONCE at the
 	// composition root (hoisted high enough to reach both /events and the
 	// DirectEventSink created later in setupRunInfrastructure).
-	const removeCleanWorktree = makeBridgeWorktreeCleanup(store, projects);
+	const removeCleanWorktree = makeBridgeWorktreeCleanup(
+		store,
+		projects,
+		opts?.withRepoLock,
+	);
 
 	// /events — ingest auth
 	//
@@ -1235,6 +1283,7 @@ export function createBridgeApp(
 			opts?.phaseOrchestrator,
 			opts?.accountRotationPost,
 			opts?.issueDisplayRefresh, // FLY-907
+			lifecycleInfra, // FLY-1185 entry A bundle
 		),
 	);
 
@@ -1608,6 +1657,22 @@ export function createBridgeApp(
 		);
 	}
 
+	// FLY-1185 §2.12: issue-lifecycle reserved endpoints (park / unpark) + the
+	// approved-manifest apply committer. api-token guarded like every /api
+	// surface AND fail-closed on their own when no apiToken is configured.
+	if (opts?.lifecycleRoutes) {
+		app.use(
+			"/api/lifecycle",
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
+			opts.lifecycleRoutes.parkRouter,
+		);
+		app.use(
+			"/api/lifecycle-apply",
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
+			opts.lifecycleRoutes.applyRouter,
+		);
+	}
+
 	// /api/* — api auth
 	app.use(
 		"/api",
@@ -1769,6 +1834,10 @@ export function createBridgeApp(
 				res.json({ closed: false, reason: "No tmux target found" });
 				return;
 			}
+
+			// FLY-1185 §2.5: reap MCP-family descendants BEFORE any kill (pane pid
+			// only resolvable while the window lives). Reap-only, best-effort.
+			await reapRunnerMcp(target.tmuxWindow).catch(() => undefined);
 
 			// FLY-638 (Codex R1 MED): this founder-gated teardown surface must also
 			// drop the per-runner cmux LINKED session, or it re-introduces the same
@@ -2894,7 +2963,13 @@ export function createBridgeApp(
 				finalizeStaleBlocker(blocker, prState, {
 					store,
 					lookupTmuxTarget,
-					killCmuxLinkedSession: (w) => killCmuxLinkedSession(w),
+					// FLY-1185 §2.5: MCP reap piggybacks the injected cmux kill —
+					// runs BEFORE it while the pane pid is still resolvable; the
+					// guard's own kill sequence stays byte-unchanged.
+					killCmuxLinkedSession: async (w) => {
+						await reapRunnerMcp(w).catch(() => undefined);
+						return killCmuxLinkedSession(w);
+					},
 					killTmuxWindow: (w) => killTmuxWindow(w),
 					closeTerminalView: async (session, tmuxWindow) => {
 						const identity = resolveTerminalViewIdentity(session, {
@@ -3702,6 +3777,198 @@ export async function startBridge(
 			phaseStatusLineRefreshHolder.current?.(issueId) ?? Promise.resolve(),
 	);
 
+	// ── FLY-1185: unified lifecycle-closeout infrastructure, built ONCE ──
+	// repo mutation lock (§2.11) + issue mutex (R10#2) + per-project cleanup
+	// policies (§2.10, built BEFORE any boot deleter runs) + the ship-entry
+	// bundle threaded to all three finalization call sites (event-route ×2 via
+	// createBridgeApp opts + the DirectEventSink below). Merge-enable by
+	// contract (Annie 直令): zero new flags — every NEW deleter hangs off the
+	// existing FLYWHEEL_WORKTREE_AUTOCLEAN escape hatch inside its module.
+	const repoMutationLock = createRepoMutationLock();
+	const issueMutex = createIssueMutex();
+	// Codex R2#3: EVERY closeRunner call (explicit close endpoint, reject/
+	// defer/shelve actions, legacy reconcile finalize) serializes through the
+	// same per-issue mutex as the unified executor — entry B folds in.
+	registerLifecycleCloseGuard({
+		withIssueMutex: issueMutex,
+		resolveLockKeys: (guardStore, issueId) => {
+			// R3#3: NEVER split-lock — even on ok:false the resolver returns the
+			// FULL related key set (that is exactly the uuid-conflict scenario
+			// where an alias could otherwise slip in under a different key).
+			const res = resolveLifecycleRootKey(guardStore, issueId, []);
+			return res.lockKeys.length > 0 ? res.lockKeys : [issueId];
+		},
+	});
+	const cleanupPolicies = buildCleanupPolicies(projects);
+	const resolveProjectRootByName = (name: string) =>
+		projects.find((p) => p.projectName === name)?.projectRoot;
+	const lifecycleWorktreeManager = new WorktreeManager({
+		withRepoLock: repoMutationLock.withRepoLock,
+	});
+	const runProjectSweep = (projectName: string): void => {
+		const project = projects.find((p) => p.projectName === projectName);
+		if (!project) return;
+		void sweepProjectLifecycle({
+			store,
+			worktreeManager: lifecycleWorktreeManager,
+			project,
+			policies: cleanupPolicies,
+			withRepoLock: repoMutationLock.withRepoLock,
+		}).catch((err) =>
+			console.warn(
+				`[lifecycle-sweep] ${projectName}: pass failed: ${(err as Error).message}`,
+			),
+		);
+	};
+	const lifecycleExecutorDeps = {
+		store,
+		transitionOpts,
+		withIssueMutex: issueMutex,
+		withRepoLock: repoMutationLock.withRepoLock,
+		openPrDisposal: makeCanceledPrDisposal({
+			store,
+			resolveProjectRoot: resolveProjectRootByName,
+			// Codex R1#12: fresh admin-marker read (same §2.1 seam as deletes).
+			readGeneration: (_mainRepoPath: string, worktreePath: string) =>
+				lifecycleWorktreeManager.readWorktreeGeneration(worktreePath),
+		}),
+	};
+	const lifecycleCloseoutFn = async (
+		input: {
+			issueKey: string;
+			projectName: string;
+			disposition: "shipped" | "canceled" | "founder_parked";
+			authority: "ship_complete" | "linear_reconcile" | "founder_park";
+			extraAliases?: string[];
+			budget?: { tryConsume: () => boolean; shouldStop?: () => boolean };
+			freshAuthority?: () => Promise<"authorized" | "reopened" | "unknown">;
+		},
+		closeoutOpts?: { alreadyLocked?: boolean },
+	) =>
+		closeoutIssue(
+			{
+				...lifecycleExecutorDeps,
+				extraAliases: input.extraAliases,
+				budget: input.budget,
+				freshAuthority: input.freshAuthority,
+			},
+			{
+				issueKey: input.issueKey,
+				projectName: input.projectName,
+				disposition: input.disposition,
+				authority: input.authority,
+			},
+			closeoutOpts,
+		);
+	const lifecycleInfra: LifecycleShipInfra = {
+		// Codex R2#8: ship pre-arbitration — an active park tombstone or a
+		// canceled disposition (fresh Linear when available, persisted
+		// observation as the durable floor) refuses the ENTIRE ship DAG
+		// before its first mutation. Short mutex hold for a consistent read;
+		// the closeout's in-mutex arbitration remains the second line.
+		preArbitrate: async (
+			issueId: string,
+			projectName: string,
+			alreadyLocked?: boolean,
+		) => {
+			const res = resolveLifecycleRootKey(store, issueId, []);
+			// R3#9: uuid_conflict is fail-closed (ambiguous identity must never
+			// authorize a destructive DAG); no_uuid_mapping = zero lifecycle
+			// history → nothing to arbitrate, the closeout's in-mutex
+			// arbitration remains the second line.
+			if (!res.ok && res.reason === "uuid_conflict") {
+				return { ok: false, reason: "root_uuid_conflict" };
+			}
+			const rootKey = res.ok ? res.rootKey : issueId;
+			const lockKeys = res.lockKeys.length > 0 ? res.lockKeys : [issueId];
+			const checks = async () => {
+				if (
+					isUuidKey(rootKey) &&
+					store.getActiveIssueDispositionIntent(rootKey)
+				) {
+					return { ok: false, reason: "founder_parked" };
+				}
+				const obs = store.getLinearStateObservation(projectName, rootKey);
+				if (obs?.lastStateType === "canceled") {
+					return { ok: false, reason: "canceled_observation" };
+				}
+				if (config.linearApiKey) {
+					try {
+						const { LinearClient } = await import("@linear/sdk");
+						const client = new LinearClient({
+							apiKey: config.linearApiKey as string,
+						});
+						const issue = await client.issue(issueId);
+						const state = await issue.state;
+						if (state?.type === "canceled") {
+							return { ok: false, reason: "canceled_fresh_linear" };
+						}
+					} catch {
+						// R3#9: a failed FRESH read is fail-closed BUT retryable —
+						// the refusal happens before the dedupe claim, so the next
+						// finalization attempt re-arbitrates from scratch.
+						return { ok: false, reason: "linear_lookup_failed_retryable" };
+					}
+				}
+				return { ok: true };
+			};
+			// R4#3: the ship DAG may already hold the canonical mutex (the
+			// keyed lock is not re-entrant).
+			return alreadyLocked ? checks() : issueMutex(lockKeys, checks);
+		},
+		remoteBranchCleanup: makeShipRemoteBranchCleanup({
+			store,
+			resolveProjectRoot: resolveProjectRootByName,
+			policies: cleanupPolicies,
+		}),
+		issueCloseout: async (input) => {
+			// exact ship-complete proof = a trusted LOCAL terminal claim (§2.12
+			// allowlist) — grants the durable closeout authority through the same
+			// observation seam the D entry consults.
+			try {
+				const res = resolveLifecycleRootKey(
+					store,
+					input.issueId,
+					input.issueIdentifier ? [input.issueIdentifier] : [],
+				);
+				if (res.ok) {
+					store.claimLocalTerminalAuthority({
+						project: input.projectName,
+						issueUuid: res.rootKey,
+						source: "ship_complete",
+					});
+				}
+			} catch {
+				/* authority claim is best-effort; the closeout below self-guards */
+			}
+			// Codex R1#3: return the report — post-ship consumes the outcome and
+			// defers thread archive + Linear Done when the closeout is blocked.
+			const report = await lifecycleCloseoutFn(
+				{
+					issueKey: input.issueId,
+					projectName: input.projectName,
+					disposition: "shipped",
+					authority: "ship_complete",
+				},
+				// R4#3: the ship DAG already holds the canonical issue mutex.
+				input.alreadyLocked ? { alreadyLocked: true } : undefined,
+			);
+			return { outcome: report.outcome };
+		},
+		postShipSweep: runProjectSweep,
+		// R4#3 (plan.md:145): ONE canonical issue-mutex hold for the ENTIRE
+		// ship DAG — arbitration, dedupe claim, teardown, closeout, archive,
+		// Linear Done. A founder park serializes strictly before or after.
+		withIssueLifecycleMutex: async <T>(
+			issueId: string,
+			fn: () => Promise<T>,
+		): Promise<T> => {
+			const res = resolveLifecycleRootKey(store, issueId, []);
+			const lockKeys = res.lockKeys.length > 0 ? res.lockKeys : [issueId];
+			return issueMutex(lockKeys, fn);
+		},
+	};
+
 	let startDispatcher = opts?.startDispatcher;
 	let internalDispatcher: IRetryDispatcher | undefined;
 	if (!startDispatcher) {
@@ -3716,7 +3983,74 @@ export async function startBridge(
 					// FLY-603: stateless cleanup closure (own instance here — the
 					// /events one at the createEventRouter call site is a different
 					// function scope; both wrap the same factory).
-					removeCleanWorktree: makeBridgeWorktreeCleanup(store, projects),
+					removeCleanWorktree: makeBridgeWorktreeCleanup(
+						store,
+						projects,
+						repoMutationLock.withRepoLock,
+					),
+					// FLY-1185 entry A bundle for the in-process (DES) ship path.
+					lifecycleInfra,
+					// FLY-1185 (R11#1): park admission at the dispatcher chokepoint.
+					lifecycleAdmission: (input) =>
+						assertIssueNotLifecycleClosed(
+							{ store, withIssueMutex: issueMutex },
+							input,
+						),
+					// FLY-1185 (Codex R1#5): dispatcher-side park-vs-start arbitration.
+					lifecycleLaunchGuard: {
+						// R4#1 (plan.md:145): commitLaunch is VERIFY-only — the claim
+						// stays `starting` until the session row is durable; the
+						// starting→active CAS moved to activateLaunch (emitStarted).
+						// cancelled → abort; still starting or already active
+						// (re-entrant retry / replay) → proceed; no claim (admission
+						// not wired for this project) → proceed.
+						// R3#6: both hooks run under the SAME per-issue mutex as the
+						// executor and the apply snapshot guard — a launch step can
+						// never slide between an apply's compare and its execution.
+						commitLaunch: async (executionId: string) => {
+							const claim = store.getLaunchClaim(executionId);
+							if (!claim) return { ok: true }; // admission not wired
+							const res = resolveLifecycleRootKey(store, claim.rootUuid, []);
+							const keys =
+								res.lockKeys.length > 0 ? res.lockKeys : [claim.rootUuid];
+							return issueMutex(keys, async () => {
+								const fresh = store.getLaunchClaim(executionId);
+								if (
+									!fresh ||
+									fresh.state === "starting" ||
+									fresh.state === "active"
+								) {
+									return { ok: true };
+								}
+								return { ok: false, reason: `claim_${fresh.state}` };
+							});
+						},
+						// R4#1: ONE atomic CAS starting→active, executed by
+						// DirectEventSink.emitStarted AFTER the session row is durable.
+						// A park that cancelled the claim mid-spawn wins here — the
+						// caller audits the refusal and the park-intent replay tears
+						// the newborn runner down next maintenance tick.
+						activateLaunch: async (executionId: string) => {
+							const claim = store.getLaunchClaim(executionId);
+							if (!claim) return { ok: true }; // admission not wired
+							const res = resolveLifecycleRootKey(store, claim.rootUuid, []);
+							const keys =
+								res.lockKeys.length > 0 ? res.lockKeys : [claim.rootUuid];
+							return issueMutex(keys, async () => {
+								if (
+									store.casLaunchClaimState(executionId, "starting", "active")
+								) {
+									return { ok: true };
+								}
+								const fresh = store.getLaunchClaim(executionId);
+								if (!fresh || fresh.state === "active") return { ok: true };
+								return { ok: false, reason: `claim_${fresh.state}` };
+							});
+						},
+						onSpawnFailed: (executionId: string) => {
+							store.setLaunchClaimState(executionId, "closed");
+						},
+					},
 					// FLY-579: the in-process completed path drives auto-QA + holds
 					// the founder via this same holder.
 					autoQaCoordinator: autoQaCoordinatorHolder,
@@ -3806,6 +4140,83 @@ export async function startBridge(
 		standupProjectName,
 		{
 			vercelToken,
+			// FLY-1185: ship-entry bundle + shared repo lock for createBridgeApp's
+			// /events router + Layer A closure.
+			lifecycleInfra,
+			withRepoLock: repoMutationLock.withRepoLock,
+			// FLY-1185 §2.12: park/unpark + approved-manifest apply endpoints.
+			lifecycleRoutes: (() => {
+				const routeDeps = {
+					store,
+					projects,
+					policies: cleanupPolicies,
+					worktreeManager: lifecycleWorktreeManager,
+					withRepoLock: repoMutationLock.withRepoLock,
+					// Codex R1#5: park executes tombstone + authority + closeout
+					// under ONE issue-mutex hold; unpark supersedes mutex-held.
+					parkFn: (input: {
+						issueUuid: string;
+						projectName: string;
+						founderDecisionId: string;
+					}) => parkIssue(lifecycleExecutorDeps, input),
+					unparkFn: (input: { issueUuid: string; supersededBy: string }) =>
+						unparkIssue({ store, withIssueMutex: issueMutex }, input),
+					// Codex R2#6: recompute + compare + fresh-Linear + closeout under
+					// ONE mutex hold. No Linear api key → issues[] are rejected
+					// fail-closed (the git-object path is unaffected).
+					applySnapshotCloseoutFn: (
+						approved: import("./lifecycle-routes.js").IssueSnapshot,
+						approvedJson: string,
+						approvedHash: string,
+						budget?: { tryConsume: () => boolean; shouldStop: () => boolean },
+					) =>
+						closeoutIssueWithSnapshotGuard(
+							// R4#8: the route's per-request budget bounds every issue of
+							// the apply batch (shared pool + deadline).
+							{ ...lifecycleExecutorDeps, budget },
+							{
+								issueKey: approved.issueUuid,
+								projectName: approved.project,
+								disposition: approved.disposition,
+								authority: "linear_reconcile",
+							},
+							{
+								approvedHash,
+								approvedJson,
+								recompute: () => {
+									const fresh = computeIssueSnapshot(store, {
+										project: approved.project,
+										issueUuid: approved.issueUuid,
+									});
+									return fresh ? JSON.stringify(fresh) : undefined;
+								},
+								freshLinear: config.linearApiKey
+									? async () => {
+											const { LinearClient } = await import("@linear/sdk");
+											const client = new LinearClient({
+												apiKey: config.linearApiKey as string,
+											});
+											const issue = await client.issue(approved.issueUuid);
+											const state = await issue.state;
+											return {
+												stateType: state?.type ?? "",
+												updatedAt:
+													issue.updatedAt instanceof Date
+														? issue.updatedAt.toISOString()
+														: String(issue.updatedAt ?? ""),
+											};
+										}
+									: undefined,
+								approvedLinear: approved.linear,
+							},
+						),
+					apiTokenConfigured: Boolean(config.apiToken),
+				};
+				return {
+					parkRouter: createLifecycleRouter(routeDeps),
+					applyRouter: createLifecycleApplyRouter(routeDeps),
+				};
+			})(),
 			chatThreadCreator,
 			globalBotToken: config.discordBotToken,
 			// FLY-253: holder filled after the detector is created post-listen.
@@ -3951,10 +4362,26 @@ export async function startBridge(
 	const crashReaperConfig: CrashReaperInjectedDeps = {
 		enabled: process.env.FLYWHEEL_CRASH_REAPER !== "0",
 		crashGraceMinutes: crashReaperGraceMinutes,
+		// Codex R2#3 (entry C): each crash reap serializes with the unified
+		// executor's per-issue mutex — never interleaved with a closeout.
+		lifecycleMutex: {
+			withIssueMutex: issueMutex,
+			resolveLockKeys: (issueId: string) => {
+				// R3#3: full related key set even on ok:false — never split-lock.
+				const res = resolveLifecycleRootKey(store, issueId, []);
+				return res.lockKeys.length > 0 ? res.lockKeys : [issueId];
+			},
+		},
 		lookupTmuxTarget,
 		probeLiveness: (w) => probeRunnerProcessLiveness(w),
 		captureScrollback: (w) => captureRunnerScrollback(w),
-		killCmuxLinkedSession: (w) => killCmuxLinkedSession(w),
+		// FLY-1185 §2.5: MCP reap piggybacks the injected cmux kill (entry C —
+		// crash reap). Reap-only, before the kill; the reaper's own teardown-
+		// first sequencing (Codex code R1 HIGH) is byte-unchanged.
+		killCmuxLinkedSession: async (w) => {
+			await reapRunnerMcp(w).catch(() => undefined);
+			return killCmuxLinkedSession(w);
+		},
 		killTmuxWindow: (w) => killTmuxWindow(w),
 		closeTerminalView: async (session, tmuxWindow) => {
 			const identity = resolveTerminalViewIdentity(session, {
@@ -4101,6 +4528,76 @@ export async function startBridge(
 				await sink(issueId, sessions);
 			},
 		},
+		// FLY-1185 §2.5: detached maintenance tick — per-tick MCP orphan reap +
+		// every-~6h-equivalent full-project sweep. Zero new timers (rides the
+		// heartbeat interval); single-flight + detached inside HeartbeatService.
+		// Tick 0 = the boot pass (orphan reap + first sweep).
+		async (tick) => {
+			// R3#1: TERM/KILL of orphan MCP processes is a NEW deletion — it
+			// hangs off the same master switch as every other new mutator.
+			if (!worktreeAutocleanEnabled()) return;
+			await reapMcpOrphans({
+				audit: (event, detail) => {
+					try {
+						store.insertEvent({
+							event_id: `mcp-orphan-${event}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+							execution_id: "mcp-orphan-reaper",
+							issue_id: "maintenance",
+							project_name: "bridge",
+							event_type: event,
+							source: "bridge.mcp-descendant-reaper",
+							payload: detail,
+						});
+					} catch {
+						/* audit only */
+					}
+				},
+			});
+			// FLY-1185 (Codex R1#2, E entry): replay PARTIAL park closeouts — a
+			// founder-park whose closeout ended partial/needs_operator (crash,
+			// blocked node) is re-driven from its durable intent until complete.
+			// The tombstone itself only ever ends via explicit unpark.
+			if (worktreeAutocleanEnabled()) {
+				try {
+					for (const intent of store.listReplayableDispositionIntents()) {
+						await lifecycleCloseoutFn({
+							issueKey: intent.issueUuid,
+							projectName: intent.project,
+							disposition: "founder_parked",
+							authority: "founder_park",
+						}).catch((err) =>
+							console.warn(
+								`[lifecycle] park replay failed for ${intent.issueUuid}: ${(err as Error).message}`,
+							),
+						);
+					}
+				} catch (err) {
+					console.warn(
+						`[lifecycle] park replay pass failed: ${(err as Error).message}`,
+					);
+				}
+				// Stale `starting` launch claims (crashed dispatcher between
+				// admission and launch, >60min old, no session row) → closed.
+				try {
+					for (const claim of store.listStaleStartingClaims(60)) {
+						if (!store.getSession(claim.executionId)) {
+							store.setLaunchClaimState(claim.executionId, "closed");
+						}
+					}
+				} catch {
+					/* best-effort */
+				}
+			}
+			const sweepEveryNTicks = Math.max(
+				1,
+				Math.round((6 * 3_600_000) / Math.max(config.stuckCheckIntervalMs, 1)),
+			);
+			if (tick % sweepEveryNTicks === 0) {
+				for (const project of projects) {
+					runProjectSweep(project.projectName);
+				}
+			}
+		},
 	);
 
 	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event
@@ -4204,6 +4701,23 @@ export async function startBridge(
 				shouldAbort,
 				lookupTarget: lookupTmuxTarget,
 				probeLiveness: (w) => probeRunnerProcessLiveness(w),
+				// FLY-1185 entry D: authorized issue closeout (episode-gated inside
+				// the reconcile) + the dual-switch contract — the NEW mutators hang
+				// off FLYWHEEL_WORKTREE_AUTOCLEAN, the original FLY-1165 behavior
+				// stays under FLYWHEEL_DONE_THREAD_RECONCILE.
+				lifecycleCloseout: (input) =>
+					lifecycleCloseoutFn({
+						issueKey: input.issueKey,
+						projectName: input.projectName,
+						disposition: input.disposition,
+						authority: "linear_reconcile",
+						extraAliases: input.extraAliases,
+						// Codex R1#14: D's per-run mutator budget, enforced per node.
+						budget: input.budget,
+						// Codex R2#5: D's fresh-Linear authority (reopen wins).
+						freshAuthority: input.freshAuthority,
+					}),
+				newMutatorsEnabled: worktreeAutocleanEnabled(),
 			});
 		},
 	});

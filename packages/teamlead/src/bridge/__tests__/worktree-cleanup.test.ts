@@ -28,6 +28,9 @@ function deps(over: Partial<WorktreeCleanupDeps> = {}): {
 				});
 				return true;
 			},
+			// FLY-1185: legacy pre-binding session → no binding (bindingVerified
+			// stays false, removal keeps the session-scoped path — R7 semantics).
+			getWorktreeBinding: () => undefined,
 		} as never,
 		worktreeManager: {
 			expectedWorktree: (_r, _p, key) => ({
@@ -48,6 +51,8 @@ function deps(over: Partial<WorktreeCleanupDeps> = {}): {
 				isBare: false,
 			}),
 			removeCleanWorktreeByPath: remove,
+			// FLY-1185: marker read only happens when a binding exists.
+			readWorktreeGeneration: async () => undefined,
 		} as never,
 		resolveProjectRoot: () => ROOT,
 		isWorktreeClean: async () => true,
@@ -69,11 +74,19 @@ const input = {
 describe("FLY-603 Layer A worktree cleanup", () => {
 	it("positive tmux close + clean → removes by persisted worktree_path", async () => {
 		const { d, events, remove } = deps();
-		await makeWorktreeCleanup(d)(input);
+		// Codex R1#9: the local ref now goes through the CAS primitive with the
+		// attested head — the worktree removal itself passes branch=null.
+		const cas = vi.fn(async () => ({ deleted: true }) as never);
+		await makeWorktreeCleanup({ ...d, casDeleteLocalBranchFn: cas as never })(
+			input,
+		);
 		expect(remove).toHaveBeenCalledWith(
 			ROOT,
 			"/Users/x/Dev/flywheel-FLY-603",
-			"flywheel-FLY-603",
+			null,
+		);
+		expect(cas).toHaveBeenCalledWith(
+			expect.objectContaining({ branch: "flywheel-FLY-603" }),
 		);
 		expect(events.map((e) => e.type)).toContain("worktree_cleanup_done");
 	});
@@ -225,14 +238,22 @@ describe("FLY-603 Layer A worktree cleanup", () => {
 			store: {
 				getSession: () => ({ session_role: "main" }) as never,
 				insertEvent: () => true,
+				getWorktreeBinding: () => undefined,
 			} as never,
 		});
-		await makeWorktreeCleanup(d)(input);
-		// derived from issueIdentifier FLY-603 → flywheel-FLY-603
+		const cas = vi.fn(async () => ({ deleted: true }) as never);
+		await makeWorktreeCleanup({ ...d, casDeleteLocalBranchFn: cas as never })(
+			input,
+		);
+		// derived from issueIdentifier FLY-603 → flywheel-FLY-603; the branch
+		// deletion itself is the CAS primitive (Codex R1#9), not `branch -D`.
 		expect(remove).toHaveBeenCalledWith(
 			ROOT,
 			"/Users/x/Dev/flywheel-FLY-603",
-			"flywheel-FLY-603",
+			null,
+		);
+		expect(cas).toHaveBeenCalledWith(
+			expect.objectContaining({ branch: "flywheel-FLY-603" }),
 		);
 	});
 });

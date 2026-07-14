@@ -773,6 +773,14 @@ export class TmuxAdapter implements IAdapter {
 		for (const plugin of ctx.disabledPlugins ?? []) {
 			enabledPlugins[plugin] = false;
 		}
+		// FLY-1185 §2.7: positive opt-ins applied AFTER the disable list — an
+		// explicit enable (QA / `playwright` label / `full-mcp`) always wins,
+		// and it is what overrides the machine-level default-off in
+		// ~/.claude/settings.json (per-launch settings are the highest
+		// non-managed precedence — FLY-615/751 measured).
+		for (const plugin of ctx.enabledPluginsExtra ?? []) {
+			enabledPlugins[plugin] = true;
+		}
 		if (Object.keys(enabledPlugins).length > 0) {
 			args.push("--settings", JSON.stringify({ enabledPlugins }));
 		}

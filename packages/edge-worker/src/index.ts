@@ -152,4 +152,9 @@ export type {
 	WorktreeExecFn,
 	WorktreeInfo,
 } from "./WorktreeManager.js";
-export { deriveWorktreeKey, WorktreeManager } from "./WorktreeManager.js";
+export {
+	canonicalizeWorktreePath,
+	deriveWorktreeKey,
+	resolveWorktreeKey,
+	WorktreeManager,
+} from "./WorktreeManager.js";

@@ -20,6 +20,7 @@
 import { closeRunnerTerminalView } from "flywheel-core";
 import type { StateStore } from "../StateStore.js";
 import { deleteCommDbSession } from "./commdb-session-prune.js";
+import { reapRunnerMcp } from "./runner-teardown.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import {
 	getTmuxTargetFromCommDb,
@@ -59,6 +60,9 @@ export async function postMergeTmuxCleanup(
 	try {
 		const target = getTmuxTargetFromCommDb(opts.executionId, opts.projectName);
 		if (target) {
+			// FLY-1185 §2.5: reap MCP-family descendants BEFORE any kill (pane
+			// pid only resolvable while the window lives). Reap-only, best-effort.
+			await reapRunnerMcp(target.tmuxWindow).catch(() => undefined);
 			// FLY-638: tear down the per-runner cmux LINKED session BEFORE the
 			// window kill (display-message needs the window alive). Best-effort.
 			await killCmuxLinkedSession(target.tmuxWindow).catch((e: Error) =>

@@ -1403,6 +1403,24 @@ export class StateStore {
 			/* exists */
 		}
 
+		// FLY-1185 §2.1: worktree authority binding — an INDEPENDENT column group
+		// written ONLY by the atomic `bindWorktreeOnce` (create-time, orchestrator
+		// side). `patchSessionMetadata` / `upsertSession` structurally cannot touch
+		// these (they are absent from both field maps) — Runner-visible event
+		// paths therefore can never create or overwrite deletion authority.
+		for (const col of [
+			"worktree_binding_path",
+			"worktree_binding_branch",
+			"worktree_binding_generation",
+			"worktree_binding_locked_at",
+		]) {
+			try {
+				this.db.run(`ALTER TABLE sessions ADD COLUMN ${col} TEXT`);
+			} catch {
+				/* exists */
+			}
+		}
+
 		// FLY-163: drop legacy conversation_threads index (table is gone).
 		this.db.run("DROP INDEX IF EXISTS idx_threads_issue");
 
@@ -1983,6 +2001,91 @@ export class StateStore {
 				PRIMARY KEY (thread_id, msg_id)
 			)
 		`);
+
+		// FLY-1185 §2.3: durable continuous-eligibility observations for cleanup
+		// candidates (branches / worktrees). A candidate must hold the SAME
+		// fingerprint across ≥3 days of sweeps before any new deletion class may
+		// touch it; any change resets the clock.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS cleanup_ref_observations (
+				project                TEXT NOT NULL,
+				kind                   TEXT NOT NULL,
+				ref_name               TEXT NOT NULL,
+				fingerprint            TEXT NOT NULL,
+				first_seen_eligible_at TEXT NOT NULL,
+				last_seen_sweep_at     TEXT NOT NULL,
+				PRIMARY KEY (project, kind, ref_name)
+			)
+		`);
+
+		// FLY-1185 §2.12 (R9#1/R10#4): Linear state observation episodes — the
+		// cutover guard. Automatic issue-terminal closeout is authorized ONLY by a
+		// durably-observed nonterminal→terminal migration; ANY first-seen-terminal
+		// (legacy episode) routes to the manual manifest, never to auto mutation.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS linear_state_observations (
+				project                 TEXT NOT NULL,
+				issue_uuid              TEXT NOT NULL,
+				last_state_type         TEXT NOT NULL,
+				last_linear_updated_at  TEXT NOT NULL,
+				observed_at             TEXT NOT NULL DEFAULT (datetime('now')),
+				legacy_terminal_episode INTEGER NOT NULL DEFAULT 0,
+				terminal_authorized     INTEGER NOT NULL DEFAULT 0,
+				PRIMARY KEY (project, issue_uuid)
+			)
+		`);
+
+		// FLY-1185 §2.12 (R9#2/R10#1): founder disposition intents — the issue
+		// TOMBSTONE dimension (persistent until explicitly unparked/superseded),
+		// with the execution dimension tracked separately in closeout_status.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS issue_disposition_intents (
+				issue_uuid          TEXT NOT NULL PRIMARY KEY,
+				project             TEXT NOT NULL,
+				disposition         TEXT NOT NULL CHECK(disposition IN ('founder_parked')),
+				founder_decision_id TEXT NOT NULL,
+				expected_project    TEXT,
+				created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+				closeout_status     TEXT NOT NULL DEFAULT 'pending'
+				                    CHECK(closeout_status IN ('pending','partial','complete','needs_operator')),
+				last_report         TEXT,
+				superseded_at       TEXT,
+				superseded_by       TEXT
+			)
+		`);
+
+		// FLY-1185 (R11#1): durable launch claims — the admission decorator writes
+		// a `starting` claim INSIDE the issue mutex before releasing it, so a
+		// concurrent park's node collection always SEES an in-flight spawn.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS lifecycle_launch_claims (
+				execution_id TEXT NOT NULL PRIMARY KEY,
+				root_uuid    TEXT NOT NULL,
+				project      TEXT NOT NULL,
+				role         TEXT,
+				state        TEXT NOT NULL DEFAULT 'starting'
+				             CHECK(state IN ('starting','active','closed','cancelled')),
+				created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+			)
+		`);
+		// FLY-1185 (Codex R3#7): durable apply-hash claims — same-approvedHash
+		// HTTP retries and post-crash replays return the persisted report
+		// instead of a spurious snapshot-drift rejection.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS lifecycle_apply_claims (
+				root_uuid     TEXT NOT NULL,
+				approved_hash TEXT NOT NULL,
+				status        TEXT NOT NULL,
+				report_json   TEXT,
+				created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+				PRIMARY KEY (root_uuid, approved_hash)
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_launch_claims_root ON lifecycle_launch_claims(root_uuid)",
+		);
 
 		// FLY-1048 PR-C (C1): durable episode store for the unified escalation
 		// flow (PRD §3.3b + §4.3). Single authoritative dedup/timing record —
@@ -2842,6 +2945,49 @@ export class StateStore {
 		}
 		stmt.free();
 		return undefined;
+	}
+
+	/** FLY-1185 (Codex R2#4) — EVERY session in a non-terminal status
+	 * (pending/design_done/blocked/failed included): the D-entry residue
+	 * union must see thread-less issues in ANY live state, not just the
+	 * running/awaiting trio. */
+	/** FLY-1185 (Codex R3#4 + R4#6) — TERMINAL sessions that still hold ANY
+	 * residue trace: git metadata (worktree path / branch) OR a live target
+	 * (tmux_session — legacy sessions that went terminal before worktree_ready
+	 * keep a window but no git columns). The D residue union must see every
+	 * "issue done但现场没归零" husk that has neither a thread nor a live
+	 * status. */
+	listTerminalSessionsWithResidue(): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions WHERE status IN
+			 ('completed','terminated','rejected','deferred','shelved','approved','timeout')
+			 AND (worktree_path IS NOT NULL AND worktree_path != ''
+			      OR branch IS NOT NULL AND branch != ''
+			      OR tmux_session IS NOT NULL AND tmux_session != '')`,
+		);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	listNonTerminalSessions(): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions WHERE status NOT IN
+			 ('completed','terminated','rejected','deferred','shelved','approved','timeout')`,
+		);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
 	}
 
 	getActiveSessions(): Session[] {
@@ -7900,6 +8046,869 @@ export class StateStore {
 		} catch {
 			// Table may not exist yet (first run) — CREATE TABLE will handle it
 		}
+	}
+
+	// ── FLY-1185: unified lifecycle closeout state ──────────────────────────
+
+	/**
+	 * FLY-1185 §2.1: atomic create-time worktree authority binding. The ONLY
+	 * writer of the `worktree_binding_*` column group. Refuses when a binding
+	 * already exists (set-once); creates a minimal `pending` session row when
+	 * none exists yet (worktree creation precedes emitStarted).
+	 */
+	bindWorktreeOnce(
+		executionId: string,
+		binding: { path: string; branch: string; generation: string },
+		context?: { issueId?: string; projectName?: string },
+	): { bound: boolean; reason?: "already_bound" } {
+		let bound = false;
+		let alreadyBound = false;
+		this.db.transaction(() => {
+			const existing = this.getSession(executionId);
+			if (!existing) {
+				this.db.run(
+					`INSERT INTO sessions (execution_id, issue_id, project_name, status,
+						worktree_binding_path, worktree_binding_branch,
+						worktree_binding_generation, worktree_binding_locked_at)
+					 VALUES (?, ?, ?, 'pending', ?, ?, ?, datetime('now'))`,
+					[
+						executionId,
+						context?.issueId ?? "",
+						context?.projectName ?? "",
+						binding.path,
+						binding.branch,
+						binding.generation,
+					],
+				);
+				bound = true;
+				return;
+			}
+			this.db.run(
+				`UPDATE sessions SET
+					worktree_binding_path = ?,
+					worktree_binding_branch = ?,
+					worktree_binding_generation = ?,
+					worktree_binding_locked_at = datetime('now')
+				 WHERE execution_id = ? AND worktree_binding_generation IS NULL`,
+				[binding.path, binding.branch, binding.generation, executionId],
+			);
+			if (this.db.getRowsModified() > 0) {
+				bound = true;
+			} else {
+				alreadyBound = true;
+			}
+		});
+		this.save();
+		if (alreadyBound) return { bound: false, reason: "already_bound" };
+		return { bound };
+	}
+
+	/** FLY-1185 §2.1: read a session's worktree authority binding (if any). */
+	getWorktreeBinding(executionId: string):
+		| {
+				path: string;
+				branch: string;
+				generation: string;
+				lockedAt: string | null;
+		  }
+		| undefined {
+		const stmt = this.db.prepare(
+			`SELECT worktree_binding_path AS p, worktree_binding_branch AS b,
+			        worktree_binding_generation AS g, worktree_binding_locked_at AS l
+			 FROM sessions WHERE execution_id = ?`,
+		);
+		stmt.bind([executionId]);
+		let out:
+			| {
+					path: string;
+					branch: string;
+					generation: string;
+					lockedAt: string | null;
+			  }
+			| undefined;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			if (row.g) {
+				out = {
+					path: row.p as string,
+					branch: row.b as string,
+					generation: row.g as string,
+					lockedAt: (row.l as string) ?? null,
+				};
+			}
+		}
+		stmt.free();
+		return out;
+	}
+
+	/**
+	 * FLY-1185 §2.1: all sessions of a project that hold a worktree binding —
+	 * the classifier's trusted-binding input (fresh read inside the repo lock).
+	 */
+	listWorktreeBindings(projectName: string): Array<{
+		execution_id: string;
+		status: string;
+		path: string;
+		branch: string;
+		generation: string;
+	}> {
+		const stmt = this.db.prepare(
+			`SELECT execution_id, status,
+			        worktree_binding_path AS p, worktree_binding_branch AS b,
+			        worktree_binding_generation AS g
+			 FROM sessions
+			 WHERE project_name = ? AND worktree_binding_generation IS NOT NULL`,
+		);
+		stmt.bind([projectName]);
+		const rows: Array<{
+			execution_id: string;
+			status: string;
+			path: string;
+			branch: string;
+			generation: string;
+		}> = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				execution_id: row.execution_id as string,
+				status: row.status as string,
+				path: row.p as string,
+				branch: row.b as string,
+				generation: row.g as string,
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-1185 §2.3: observe a cleanup candidate. Inserts / fingerprint-resets /
+	 * refreshes the observation and returns the CURRENT stability anchor.
+	 * Deleting the object (or it failing another gate) must call
+	 * `deleteCleanupRefObservation` so a re-appearing candidate restarts cold.
+	 */
+	/** FLY-1185 (Codex R2#11) — the sweep's end-of-pass inventory: every
+	 * observation for a project, so stale rows (object no longer present)
+	 * can be reset and a delete/recreate never inherits an old anchor. */
+	listCleanupRefObservations(
+		project: string,
+	): Array<{ kind: string; ref: string }> {
+		const stmt = this.db.prepare(
+			`SELECT kind, ref_name AS ref FROM cleanup_ref_observations WHERE project = ?`,
+		);
+		stmt.bind([project]);
+		const rows: Array<{ kind: string; ref: string }> = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({ kind: row.kind as string, ref: row.ref as string });
+		}
+		stmt.free();
+		return rows;
+	}
+
+	observeCleanupRef(
+		project: string,
+		kind: string,
+		refName: string,
+		fingerprint: string,
+	): { firstSeenEligibleAt: string } {
+		let firstSeen = "";
+		this.db.transaction(() => {
+			const stmt = this.db.prepare(
+				`SELECT fingerprint, first_seen_eligible_at FROM cleanup_ref_observations
+				 WHERE project = ? AND kind = ? AND ref_name = ?`,
+			);
+			stmt.bind([project, kind, refName]);
+			let existing: { fingerprint: string; first: string } | undefined;
+			if (stmt.step()) {
+				const row = stmt.getAsObject() as Record<string, unknown>;
+				existing = {
+					fingerprint: row.fingerprint as string,
+					first: row.first_seen_eligible_at as string,
+				};
+			}
+			stmt.free();
+			if (!existing || existing.fingerprint !== fingerprint) {
+				this.db.run(
+					`INSERT INTO cleanup_ref_observations
+						(project, kind, ref_name, fingerprint, first_seen_eligible_at, last_seen_sweep_at)
+					 VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+					 ON CONFLICT(project, kind, ref_name) DO UPDATE SET
+						fingerprint = excluded.fingerprint,
+						first_seen_eligible_at = excluded.first_seen_eligible_at,
+						last_seen_sweep_at = excluded.last_seen_sweep_at`,
+					[project, kind, refName, fingerprint],
+				);
+				const re = this.db.prepare(
+					`SELECT first_seen_eligible_at FROM cleanup_ref_observations
+					 WHERE project = ? AND kind = ? AND ref_name = ?`,
+				);
+				re.bind([project, kind, refName]);
+				if (re.step()) {
+					firstSeen = (re.getAsObject() as Record<string, unknown>)
+						.first_seen_eligible_at as string;
+				}
+				re.free();
+			} else {
+				this.db.run(
+					`UPDATE cleanup_ref_observations SET last_seen_sweep_at = datetime('now')
+					 WHERE project = ? AND kind = ? AND ref_name = ?`,
+					[project, kind, refName],
+				);
+				firstSeen = existing.first;
+			}
+		});
+		this.save();
+		return { firstSeenEligibleAt: firstSeen };
+	}
+
+	/** FLY-1185 §2.3: drop an observation (object deleted / gate no longer met). */
+	deleteCleanupRefObservation(
+		project: string,
+		kind: string,
+		refName: string,
+	): void {
+		this.db.run(
+			`DELETE FROM cleanup_ref_observations WHERE project = ? AND kind = ? AND ref_name = ?`,
+			[project, kind, refName],
+		);
+		this.save();
+	}
+
+	/**
+	 * FLY-1185 §2.12 (R10#4): the single-transaction Linear-state observation +
+	 * closeout-authority claim. Monotonic on `linearUpdatedAt`:
+	 *   - older-than-stored response → ignored (no regression);
+	 *   - same timestamp, different stateType → fail-closed conflict;
+	 *   - fresh NONTERMINAL → ends any legacy episode AND clears authority;
+	 *   - terminal AFTER a durable nonterminal → `terminal_authorized` (persists
+	 *     across crashes until a fresh nonterminal clears it);
+	 *   - FIRST-SEEN terminal (no prior row) → legacy episode, NO authority.
+	 */
+	observeLinearStateAndClaimCloseout(input: {
+		project: string;
+		issueUuid: string;
+		stateType: string;
+		linearUpdatedAt: string;
+	}): {
+		outcome: "recorded" | "ignored_stale" | "conflict";
+		terminalAuthorized: boolean;
+		legacyTerminalEpisode: boolean;
+	} {
+		const TERMINAL = new Set(["completed", "canceled"]);
+		const isTerminal = TERMINAL.has(input.stateType);
+		let outcome: "recorded" | "ignored_stale" | "conflict" = "recorded";
+		let authorized = false;
+		let legacy = false;
+		this.db.transaction(() => {
+			const stmt = this.db.prepare(
+				`SELECT last_state_type, last_linear_updated_at, legacy_terminal_episode, terminal_authorized
+				 FROM linear_state_observations WHERE project = ? AND issue_uuid = ?`,
+			);
+			stmt.bind([input.project, input.issueUuid]);
+			let prev:
+				| {
+						stateType: string;
+						updatedAt: string;
+						legacy: number;
+						authorized: number;
+				  }
+				| undefined;
+			if (stmt.step()) {
+				const row = stmt.getAsObject() as Record<string, unknown>;
+				prev = {
+					stateType: row.last_state_type as string,
+					updatedAt: row.last_linear_updated_at as string,
+					legacy: (row.legacy_terminal_episode as number) ?? 0,
+					authorized: (row.terminal_authorized as number) ?? 0,
+				};
+			}
+			stmt.free();
+
+			if (!prev) {
+				legacy = isTerminal;
+				authorized = false;
+				this.db.run(
+					`INSERT INTO linear_state_observations
+						(project, issue_uuid, last_state_type, last_linear_updated_at,
+						 observed_at, legacy_terminal_episode, terminal_authorized)
+					 VALUES (?, ?, ?, ?, datetime('now'), ?, 0)`,
+					[
+						input.project,
+						input.issueUuid,
+						input.stateType,
+						input.linearUpdatedAt,
+						legacy ? 1 : 0,
+					],
+				);
+				return;
+			}
+
+			// Monotonic guard — an out-of-order response must not regress state.
+			if (
+				prev.updatedAt &&
+				input.linearUpdatedAt &&
+				input.linearUpdatedAt < prev.updatedAt
+			) {
+				outcome = "ignored_stale";
+				authorized = prev.authorized === 1;
+				legacy = prev.legacy === 1;
+				return;
+			}
+			if (
+				prev.updatedAt === input.linearUpdatedAt &&
+				prev.stateType !== input.stateType
+			) {
+				outcome = "conflict";
+				authorized = false;
+				legacy = prev.legacy === 1;
+				return;
+			}
+
+			const prevWasTerminal = TERMINAL.has(prev.stateType);
+			if (!isTerminal) {
+				// Fresh nonterminal: legacy episode ends, authority clears.
+				legacy = false;
+				authorized = false;
+			} else if (!prevWasTerminal) {
+				// The real nonterminal→terminal migration — authority granted.
+				legacy = false;
+				authorized = true;
+			} else {
+				// terminal → terminal re-observation: carry episode flags forward.
+				legacy = prev.legacy === 1;
+				authorized = prev.authorized === 1;
+			}
+			this.db.run(
+				`UPDATE linear_state_observations SET
+					last_state_type = ?, last_linear_updated_at = ?, observed_at = datetime('now'),
+					legacy_terminal_episode = ?, terminal_authorized = ?
+				 WHERE project = ? AND issue_uuid = ?`,
+				[
+					input.stateType,
+					input.linearUpdatedAt,
+					legacy ? 1 : 0,
+					authorized ? 1 : 0,
+					input.project,
+					input.issueUuid,
+				],
+			);
+		});
+		this.save();
+		return {
+			outcome,
+			terminalAuthorized: authorized,
+			legacyTerminalEpisode: legacy,
+		};
+	}
+
+	/**
+	 * FLY-1185 §2.12: the trusted-LOCAL-terminal claim seam. Allowlist callers
+	 * ONLY: exact ship-complete proof + founder park intent. Grants closeout
+	 * authority through the same durable observation row — never accepted from
+	 * runner-visible `/events session_completed`.
+	 */
+	claimLocalTerminalAuthority(input: {
+		project: string;
+		issueUuid: string;
+		source: "ship_complete" | "founder_park";
+	}): void {
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT INTO linear_state_observations
+					(project, issue_uuid, last_state_type, last_linear_updated_at,
+					 observed_at, legacy_terminal_episode, terminal_authorized)
+				 VALUES (?, ?, 'completed', '', datetime('now'), 0, 1)
+				 ON CONFLICT(project, issue_uuid) DO UPDATE SET
+					legacy_terminal_episode = 0,
+					terminal_authorized = 1,
+					observed_at = datetime('now')`,
+				[input.project, input.issueUuid],
+			);
+		});
+		this.save();
+	}
+
+	/** FLY-1185 (R9#1): read the current observation episode (if any). */
+	getLinearStateObservation(
+		project: string,
+		issueUuid: string,
+	):
+		| {
+				lastStateType: string;
+				lastLinearUpdatedAt: string;
+				legacyTerminalEpisode: boolean;
+				terminalAuthorized: boolean;
+		  }
+		| undefined {
+		const stmt = this.db.prepare(
+			`SELECT last_state_type, last_linear_updated_at, legacy_terminal_episode, terminal_authorized
+			 FROM linear_state_observations WHERE project = ? AND issue_uuid = ?`,
+		);
+		stmt.bind([project, issueUuid]);
+		let out:
+			| {
+					lastStateType: string;
+					lastLinearUpdatedAt: string;
+					legacyTerminalEpisode: boolean;
+					terminalAuthorized: boolean;
+			  }
+			| undefined;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			out = {
+				lastStateType: row.last_state_type as string,
+				lastLinearUpdatedAt: row.last_linear_updated_at as string,
+				legacyTerminalEpisode: (row.legacy_terminal_episode as number) === 1,
+				terminalAuthorized: (row.terminal_authorized as number) === 1,
+			};
+		}
+		stmt.free();
+		return out;
+	}
+
+	// ── FLY-1185 R9#2: founder park intents (issue tombstones) ──────────────
+
+	/** Create/refresh the founder-park tombstone. Idempotent per issue UUID. */
+	upsertIssueDispositionIntent(input: {
+		issueUuid: string;
+		project: string;
+		founderDecisionId: string;
+		expectedProject?: string;
+	}): void {
+		this.db.run(
+			`INSERT INTO issue_disposition_intents
+				(issue_uuid, project, disposition, founder_decision_id, expected_project)
+			 VALUES (?, ?, 'founder_parked', ?, ?)
+			 ON CONFLICT(issue_uuid) DO UPDATE SET
+				project = excluded.project,
+				founder_decision_id = excluded.founder_decision_id,
+				expected_project = excluded.expected_project,
+				superseded_at = NULL,
+				superseded_by = NULL,
+				closeout_status = 'pending'`,
+			[
+				input.issueUuid,
+				input.project,
+				input.founderDecisionId,
+				input.expectedProject ?? null,
+			],
+		);
+		this.save();
+	}
+
+	/** Read the ACTIVE (non-superseded) tombstone for an issue UUID. */
+	getActiveIssueDispositionIntent(issueUuid: string):
+		| {
+				issueUuid: string;
+				project: string;
+				disposition: "founder_parked";
+				founderDecisionId: string;
+				closeoutStatus: "pending" | "partial" | "complete" | "needs_operator";
+				lastReport: string | null;
+		  }
+		| undefined {
+		const stmt = this.db.prepare(
+			`SELECT issue_uuid, project, disposition, founder_decision_id, closeout_status, last_report
+			 FROM issue_disposition_intents
+			 WHERE issue_uuid = ? AND superseded_at IS NULL`,
+		);
+		stmt.bind([issueUuid]);
+		let out:
+			| {
+					issueUuid: string;
+					project: string;
+					disposition: "founder_parked";
+					founderDecisionId: string;
+					closeoutStatus: "pending" | "partial" | "complete" | "needs_operator";
+					lastReport: string | null;
+			  }
+			| undefined;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			out = {
+				issueUuid: row.issue_uuid as string,
+				project: row.project as string,
+				disposition: "founder_parked",
+				founderDecisionId: row.founder_decision_id as string,
+				closeoutStatus: row.closeout_status as
+					| "pending"
+					| "partial"
+					| "complete"
+					| "needs_operator",
+				lastReport: (row.last_report as string) ?? null,
+			};
+		}
+		stmt.free();
+		return out;
+	}
+
+	/** List all ACTIVE tombstones whose execution is not complete (replay set). */
+	/** FLY-1185 (Codex R1#6): legacy first-seen-terminal episodes — the issue
+	 * inventory the manual-apply manifest binds (dry-run enumerates these). */
+	/** FLY-1185 (Codex R4#6) — ALL terminal Linear observations (not just the
+	 * legacy-episode ones): the D residue union's Linear-mismatch source.
+	 * Consumers intersect with local session history to bound the set. */
+	listTerminalLinearObservations(): Array<{
+		project: string;
+		issueUuid: string;
+		lastStateType: string;
+	}> {
+		const stmt = this.db.prepare(
+			`SELECT project, issue_uuid, last_state_type
+			 FROM linear_state_observations
+			 WHERE last_state_type IN ('completed', 'canceled')`,
+		);
+		const rows: Array<{
+			project: string;
+			issueUuid: string;
+			lastStateType: string;
+		}> = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				project: row.project as string,
+				issueUuid: row.issue_uuid as string,
+				lastStateType: row.last_state_type as string,
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
+	listLegacyTerminalObservations(): Array<{
+		project: string;
+		issueUuid: string;
+		lastStateType: string;
+		lastLinearUpdatedAt: string;
+	}> {
+		const stmt = this.db.prepare(
+			`SELECT project, issue_uuid, last_state_type, last_linear_updated_at
+			 FROM linear_state_observations
+			 WHERE legacy_terminal_episode = 1
+			   AND last_state_type IN ('completed', 'canceled')`,
+		);
+		const rows: Array<{
+			project: string;
+			issueUuid: string;
+			lastStateType: string;
+			lastLinearUpdatedAt: string;
+		}> = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				project: row.project as string,
+				issueUuid: row.issue_uuid as string,
+				lastStateType: row.last_state_type as string,
+				lastLinearUpdatedAt: (row.last_linear_updated_at as string) ?? "",
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
+	listReplayableDispositionIntents(): Array<{
+		issueUuid: string;
+		project: string;
+		closeoutStatus: string;
+	}> {
+		const stmt = this.db.prepare(
+			`SELECT issue_uuid, project, closeout_status FROM issue_disposition_intents
+			 WHERE superseded_at IS NULL AND closeout_status IN ('pending','partial')`,
+		);
+		const rows: Array<{
+			issueUuid: string;
+			project: string;
+			closeoutStatus: string;
+		}> = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				issueUuid: row.issue_uuid as string,
+				project: row.project as string,
+				closeoutStatus: row.closeout_status as string,
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/** Update ONLY the execution dimension — the tombstone itself stays. */
+	setIntentCloseoutStatus(
+		issueUuid: string,
+		closeoutStatus: "pending" | "partial" | "complete" | "needs_operator",
+		lastReport?: string,
+	): void {
+		this.db.run(
+			`UPDATE issue_disposition_intents
+			 SET closeout_status = ?, last_report = COALESCE(?, last_report)
+			 WHERE issue_uuid = ? AND superseded_at IS NULL`,
+			[closeoutStatus, lastReport ?? null, issueUuid],
+		);
+		this.save();
+	}
+
+	/** Founder unpark/supersede — the ONLY way a tombstone stops gating spawns. */
+	supersedeIssueDispositionIntent(
+		issueUuid: string,
+		supersededBy: string,
+	): boolean {
+		this.db.run(
+			`UPDATE issue_disposition_intents
+			 SET superseded_at = datetime('now'), superseded_by = ?
+			 WHERE issue_uuid = ? AND superseded_at IS NULL`,
+			[supersededBy, issueUuid],
+		);
+		const changed = this.db.getRowsModified() > 0;
+		this.save();
+		return changed;
+	}
+
+	// ── FLY-1185 R11#1: durable launch claims ────────────────────────────────
+
+	/** Written INSIDE the issue mutex by the admission decorator. */
+	insertLaunchClaim(input: {
+		executionId: string;
+		rootUuid: string;
+		project: string;
+		role?: string;
+	}): void {
+		this.db.run(
+			`INSERT INTO lifecycle_launch_claims (execution_id, root_uuid, project, role, state)
+			 VALUES (?, ?, ?, ?, 'starting')
+			 ON CONFLICT(execution_id) DO UPDATE SET
+				root_uuid = excluded.root_uuid, project = excluded.project,
+				role = excluded.role, state = 'starting', updated_at = datetime('now')`,
+			[input.executionId, input.rootUuid, input.project, input.role ?? null],
+		);
+		this.save();
+	}
+
+	/** starting → active (session row + binding durably visible) or → closed. */
+	setLaunchClaimState(
+		executionId: string,
+		state: "starting" | "active" | "closed" | "cancelled",
+	): void {
+		this.db.run(
+			`UPDATE lifecycle_launch_claims SET state = ?, updated_at = datetime('now')
+			 WHERE execution_id = ?`,
+			[state, executionId],
+		);
+		this.save();
+	}
+
+	/**
+	 * FLY-1185 (Codex R1#5) — atomic compare-and-set on a launch claim. The
+	 * park-vs-start arbitration: closeout CASes starting→cancelled; the
+	 * dispatcher CASes starting→active right after the session row is durable.
+	 * Exactly one side wins; the loser observes and yields.
+	 */
+	casLaunchClaimState(
+		executionId: string,
+		from: "starting" | "active",
+		to: "starting" | "active" | "closed" | "cancelled",
+	): boolean {
+		this.db.run(
+			`UPDATE lifecycle_launch_claims SET state = ?, updated_at = datetime('now')
+			 WHERE execution_id = ? AND state = ?`,
+			[to, executionId, from],
+		);
+		const changed = this.db.getRowsModified() > 0;
+		this.save();
+		return changed;
+	}
+
+	/** FLY-1185 (Codex R3#7): read a durable apply claim for (root, hash). */
+	getApplyClaim(
+		rootUuid: string,
+		approvedHash: string,
+	): { status: string; reportJson: string | null } | undefined {
+		const stmt = this.db.prepare(
+			`SELECT status, report_json FROM lifecycle_apply_claims
+			 WHERE root_uuid = ? AND approved_hash = ?`,
+		);
+		stmt.bind([rootUuid, approvedHash]);
+		let out: { status: string; reportJson: string | null } | undefined;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			out = {
+				status: row.status as string,
+				reportJson: (row.report_json as string) ?? null,
+			};
+		}
+		stmt.free();
+		return out;
+	}
+
+	/** Persist/refresh the apply claim's outcome (idempotent replay source). */
+	putApplyClaim(
+		rootUuid: string,
+		approvedHash: string,
+		status: string,
+		reportJson: string,
+	): void {
+		this.db.run(
+			`INSERT INTO lifecycle_apply_claims (root_uuid, approved_hash, status, report_json)
+			 VALUES (?, ?, ?, ?)
+			 ON CONFLICT(root_uuid, approved_hash) DO UPDATE SET
+				status = excluded.status, report_json = excluded.report_json,
+				updated_at = datetime('now')`,
+			[rootUuid, approvedHash, status, reportJson],
+		);
+		this.save();
+	}
+
+	/** Read a single launch claim (any state). */
+	getLaunchClaim(executionId: string):
+		| {
+				executionId: string;
+				rootUuid: string;
+				project: string;
+				state: string;
+		  }
+		| undefined {
+		const stmt = this.db.prepare(
+			`SELECT execution_id, root_uuid, project, state
+			 FROM lifecycle_launch_claims WHERE execution_id = ?`,
+		);
+		stmt.bind([executionId]);
+		let out:
+			| {
+					executionId: string;
+					rootUuid: string;
+					project: string;
+					state: string;
+			  }
+			| undefined;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			out = {
+				executionId: row.execution_id as string,
+				rootUuid: row.root_uuid as string,
+				project: row.project as string,
+				state: row.state as string,
+			};
+		}
+		stmt.free();
+		return out;
+	}
+
+	/** Open (non-closed) claims for a root — visible to node collection. */
+	listOpenLaunchClaims(rootUuid: string): Array<{
+		executionId: string;
+		project: string;
+		role: string | null;
+		state: "starting" | "active";
+		createdAt: string;
+	}> {
+		const stmt = this.db.prepare(
+			`SELECT execution_id, project, role, state, created_at
+			 FROM lifecycle_launch_claims
+			 WHERE root_uuid = ? AND state IN ('starting','active')`,
+		);
+		stmt.bind([rootUuid]);
+		const rows: Array<{
+			executionId: string;
+			project: string;
+			role: string | null;
+			state: "starting" | "active";
+			createdAt: string;
+		}> = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				executionId: row.execution_id as string,
+				project: row.project as string,
+				role: (row.role as string) ?? null,
+				state: row.state as "starting" | "active",
+				createdAt: row.created_at as string,
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/** All stale `starting` claims (maintenance convergence, R12 nit). */
+	listStaleStartingClaims(olderThanMinutes: number): Array<{
+		executionId: string;
+		rootUuid: string;
+		project: string;
+	}> {
+		// R3#2: `active` included — a dispatcher that CASed starting→active and
+		// crashed before the session row became durable leaves a rowless
+		// `active` claim; the maintenance recovery must see it too.
+		const stmt = this.db.prepare(
+			`SELECT execution_id, root_uuid, project FROM lifecycle_launch_claims
+			 WHERE state IN ('starting', 'active')
+			   AND updated_at <= datetime('now', ?)`,
+		);
+		stmt.bind([`-${Math.max(1, Math.floor(olderThanMinutes))} minutes`]);
+		const rows: Array<{
+			executionId: string;
+			rootUuid: string;
+			project: string;
+		}> = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				executionId: row.execution_id as string,
+				rootUuid: row.root_uuid as string,
+				project: row.project as string,
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
+	// ── FLY-1185: lifecycle-root query helpers ───────────────────────────────
+
+	/**
+	 * auto_qa_record rows whose QA-CHILD issue key matches any given key —
+	 * the lifecycle-root fold input (a QA child is never its own root).
+	 */
+	findAutoQaRecordsByQaIssueKeys(keys: string[]): Array<{
+		parent_execution_id: string;
+		issue_id: string;
+	}> {
+		const norm = [...new Set(keys.map((k) => k?.trim()).filter(Boolean))];
+		if (norm.length === 0) return [];
+		const placeholders = norm.map(() => "?").join(", ");
+		const stmt = this.db.prepare(
+			`SELECT parent_execution_id, issue_id FROM auto_qa_record
+			 WHERE qa_issue_id IN (${placeholders})
+			    OR qa_issue_identifier IN (${placeholders})`,
+		);
+		stmt.bind([...norm, ...norm]);
+		const rows: Array<{ parent_execution_id: string; issue_id: string }> = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				parent_execution_id: row.parent_execution_id as string,
+				issue_id: row.issue_id as string,
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * auto_qa_record rows whose PARENT-side issue key matches any given key —
+	 * the issue-level collector's QA-children enumeration.
+	 */
+	findAutoQaRecordsByParentIssueKeys(keys: string[]): AutoQaRecord[] {
+		const norm = [...new Set(keys.map((k) => k?.trim()).filter(Boolean))];
+		if (norm.length === 0) return [];
+		const placeholders = norm.map(() => "?").join(", ");
+		const stmt = this.db.prepare(
+			`SELECT * FROM auto_qa_record WHERE issue_id IN (${placeholders})`,
+		);
+		stmt.bind(norm);
+		const rows: AutoQaRecord[] = [];
+		while (stmt.step()) {
+			rows.push(stmt.getAsObject() as unknown as AutoQaRecord);
+		}
+		stmt.free();
+		return rows;
 	}
 }
 

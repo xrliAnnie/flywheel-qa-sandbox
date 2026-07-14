@@ -42,6 +42,15 @@ export interface RunnerMcpProfile {
 	disabledPlugins: string[];
 	/** When true the launch gets `--no-chrome` (Claude-in-Chrome off). */
 	disableChrome: boolean;
+	/**
+	 * FLY-1185 §2.7: marketplace-qualified plugin keys to POSITIVELY enable
+	 * (`true` entries in the per-launch `--settings` merge). This is how a
+	 * launch overrides the machine-level default-off (the ops step disables
+	 * playwright in `~/.claude/settings.json`; per-launch settings are the
+	 * highest non-managed precedence — FLY-615/751 measured). Applied AFTER
+	 * the disable list, so an explicit opt-in always wins.
+	 */
+	enabledPluginsExtra: string[];
 }
 
 const PLAYWRIGHT_PLUGIN = "playwright@claude-plugins-official";
@@ -88,10 +97,33 @@ export function resolveRunnerMcpProfile(
 ): RunnerMcpProfile | null {
 	const env = args.env ?? process.env;
 
+	// FLY-1185 §2.7 KNOWN LIMITATION (byte-compat trade-off, documented in the
+	// plan): FLYWHEEL_RUNNER_SLIM_MCP=0 keeps the legacy null-profile spawn, so
+	// the `playwright` label CANNOT opt back in under the kill-switch — the
+	// machine-level default-off then applies unconditionally.
 	if (env.FLYWHEEL_RUNNER_SLIM_MCP?.trim() === "0") return null;
 
 	const labels = args.issueLabels ?? [];
-	if (labels.some((label) => label.toLowerCase() === "full-mcp")) return null;
+	const lower = labels.map((l) => l.toLowerCase());
+	const isQa = args.sessionRole === "qa";
+
+	// FLY-1185 §2.7: positive opt-ins — the ONLY way playwright comes back
+	// after the machine-level default-off. QA runners keep it structurally;
+	// the `playwright` label opts a specific issue in; `full-mcp` means
+	// "everything available", which now must also carry the positive
+	// playwright entry (returning null would leave the machine default OFF).
+	const enabledPluginsExtra: string[] = [];
+	if (isQa || lower.includes("playwright") || lower.includes("full-mcp")) {
+		enabledPluginsExtra.push(PLAYWRIGHT_PLUGIN);
+	}
+
+	if (lower.includes("full-mcp")) {
+		// full-mcp: no slimming — but the positive opt-ins must NOT degenerate
+		// to a null profile (§2.7 "extra 非空不退化 null").
+		return enabledPluginsExtra.length > 0
+			? { disabledPlugins: [], disableChrome: false, enabledPluginsExtra }
+			: null;
+	}
 
 	// UNSET env → built-in default; SET (including "") is authoritative.
 	const rawList = env.FLYWHEEL_RUNNER_DISABLED_PLUGINS;
@@ -107,7 +139,6 @@ export function resolveRunnerMcpProfile(
 	// list no longer contains playwright (kept fleet-wide for geoforge3d
 	// testing), so this filter is a no-op for the built-in default and only
 	// bites when FLYWHEEL_RUNNER_DISABLED_PLUGINS explicitly lists playwright.
-	const isQa = args.sessionRole === "qa";
 	const disabledPlugins = isQa
 		? baseList.filter((plugin) => plugin !== PLAYWRIGHT_PLUGIN)
 		: baseList;
@@ -116,15 +147,30 @@ export function resolveRunnerMcpProfile(
 	// research runners). Chrome is only disabled when a runner explicitly opts
 	// out via the `no-chrome` label. Fleet memory is bounded by the FLY-766
 	// leaked-Chrome reaper + the retained plugin slim, not by killing chrome.
-	const disableChrome = labels.some(
-		(label) => label.toLowerCase() === "no-chrome",
+	const disableChrome = lower.includes("no-chrome");
+
+	// FLY-1185 §2.7: a positive opt-in must never appear in the disable list —
+	// applied disabled-first-extra-after in the adapter merge, but keeping the
+	// sets disjoint here makes the intent audit-obvious.
+	const disabledMinusExtra = disabledPlugins.filter(
+		(p) => !enabledPluginsExtra.includes(p),
 	);
 
-	// Nothing left to slim (no plugins to disable AND chrome stays on) → treat
-	// as no profile so the spawn stays byte-identical to the legacy form. An
-	// explicit `no-chrome` opt-out (disableChrome:true) still has work to do and
-	// must survive this guard even with an empty plugin list.
-	if (disabledPlugins.length === 0 && !disableChrome) return null;
+	// Nothing left to slim AND nothing to positively enable AND chrome stays on
+	// → no profile, spawn byte-identical to the legacy form. An explicit
+	// `no-chrome` opt-out OR a positive opt-in still has work to do and must
+	// survive this guard even with an empty disable list (§2.7).
+	if (
+		disabledMinusExtra.length === 0 &&
+		!disableChrome &&
+		enabledPluginsExtra.length === 0
+	) {
+		return null;
+	}
 
-	return { disabledPlugins, disableChrome };
+	return {
+		disabledPlugins: disabledMinusExtra,
+		disableChrome,
+		enabledPluginsExtra,
+	};
 }

@@ -33,6 +33,7 @@ import {
 	type CloseArchiveDeps,
 	maybeArchiveThreadOnClose,
 } from "./done-thread-archiver.js";
+import { reapRunnerMcp } from "./runner-teardown.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import {
 	getTmuxTargetFromCommDb,
@@ -117,6 +118,27 @@ export interface CloseRunnerOpts {
 	 */
 	finalizeDone?: boolean;
 	/**
+	 * FLY-1185 (Codex R1#13): issue-terminal authority override. Set ONLY by
+	 * the lifecycle-closeout executor when the ISSUE is terminal (shipped /
+	 * canceled / founder-parked): a residual live husk whose status is outside
+	 * the eligible sets (e.g. legacy `approved`) is still torn down — status
+	 * untouched, teardown only, audited. Never set by Lead/founder actions.
+	 */
+	issueTerminalOverride?: boolean;
+	/** FLY-1185 (Codex R2#3): set ONLY by the lifecycle executor, which
+	 * already holds the issue mutex (the keyed lock is not re-entrant). */
+	skipLifecycleGuard?: boolean;
+	/**
+	 * FLY-1185 (Codex R4#2): fresh-authority re-check threaded INTO the kill
+	 * sequence — closeRunner awaits several slow external boundaries (MCP
+	 * reap, cmux kill, tmux kill, terminal-view close); a Linear reopen
+	 * landing between them must stop the remaining teardown. Called before
+	 * each subsequent external mutation; `ok:false` (or a throw — fail-closed)
+	 * aborts with `authority_lost`. Absent → byte-compatible (single up-front
+	 * check by the caller only).
+	 */
+	authorityCheck?: () => Promise<{ ok: boolean; reason?: string }>;
+	/**
 	 * FLY-638: FSM transition opts, required when `finalizeDone` is set so the
 	 * done-finalize goes through the canonical `applyTransition` path. Absent →
 	 * `finalizeDone` is refused (`finalize_done_unavailable`) rather than bypassing
@@ -133,6 +155,30 @@ export interface CloseRunnerOpts {
 	archive?: CloseArchiveDeps;
 }
 
+/**
+ * FLY-1185 (Codex R2#3) — the B/C entries' unification seam. Every
+ * `closeRunner` call (explicit close endpoint, reject/defer/shelve actions,
+ * legacy reconcile finalize) serializes through the SAME per-issue mutex the
+ * unified executor uses, so an explicit close can never interleave with a
+ * ship/park/apply closeout on the same issue. Registered once at the Bridge
+ * composition root; absent (tests / non-Bridge callers) → legacy behavior.
+ * The executor itself passes `skipLifecycleGuard` (it already holds the
+ * mutex — the keyed lock is NOT re-entrant).
+ */
+export interface LifecycleCloseGuard {
+	withIssueMutex: <T>(keys: string[], fn: () => Promise<T>) => Promise<T>;
+	resolveLockKeys: (store: StateStore, issueId: string) => string[];
+}
+let lifecycleCloseGuard: LifecycleCloseGuard | undefined;
+export function registerLifecycleCloseGuard(
+	guard: LifecycleCloseGuard,
+): () => void {
+	lifecycleCloseGuard = guard;
+	return () => {
+		if (lifecycleCloseGuard === guard) lifecycleCloseGuard = undefined;
+	};
+}
+
 export interface CloseRunnerResult {
 	closed: boolean;
 	alreadyGone?: boolean;
@@ -144,6 +190,21 @@ export interface CloseRunnerResult {
 }
 
 export async function closeRunner(
+	opts: CloseRunnerOpts,
+	store: StateStore,
+): Promise<CloseRunnerResult> {
+	// Codex R2#3: serialize with the unified executor's issue mutex.
+	if (lifecycleCloseGuard && !opts.skipLifecycleGuard) {
+		const guard = lifecycleCloseGuard;
+		const keys = guard.resolveLockKeys(store, opts.issueId);
+		return guard.withIssueMutex(keys, () =>
+			closeRunnerInner({ ...opts, skipLifecycleGuard: true }, store),
+		);
+	}
+	return closeRunnerInner(opts, store);
+}
+
+async function closeRunnerInner(
 	opts: CloseRunnerOpts,
 	store: StateStore,
 ): Promise<CloseRunnerResult> {
@@ -229,8 +290,13 @@ export async function closeRunner(
 		return { closed: false, preserved: true, reason: "crash_preserve" };
 	}
 
-	// Eligibility gate: AUTO_CLOSE_STATES OR force-closing a preserve state.
-	if (!AUTO_CLOSE_STATES.has(session.status) && !forceClose) {
+	// Eligibility gate: AUTO_CLOSE_STATES OR force-closing a preserve state OR
+	// the FLY-1185 issue-terminal authority (residual husk teardown, audited).
+	if (
+		!AUTO_CLOSE_STATES.has(session.status) &&
+		!forceClose &&
+		!opts.issueTerminalOverride
+	) {
 		const err = `status_not_eligible:${session.status}`;
 		store.insertEvent({
 			event_id: `close-runner-blocked-${auditKey}`,
@@ -247,6 +313,26 @@ export async function closeRunner(
 			},
 		});
 		return { closed: false, error: err };
+	}
+
+	if (
+		opts.issueTerminalOverride &&
+		!AUTO_CLOSE_STATES.has(session.status) &&
+		!forceClose
+	) {
+		store.insertEvent({
+			event_id: `close-runner-issue-terminal-override-${auditKey}`,
+			execution_id: opts.executionId,
+			issue_id: opts.issueId,
+			project_name: opts.projectName,
+			event_type: "lead_close_runner_issue_terminal_override",
+			source: "bridge.close-runner",
+			payload: {
+				status: session.status,
+				reason: opts.reason,
+				leadId: opts.leadId,
+			},
+		});
 	}
 
 	// FLY-1048 PR-C (C5): detection episodes flip to CLEARING only on the two
@@ -291,6 +377,67 @@ export async function closeRunner(
 		return { closed: true, alreadyGone: true };
 	}
 
+	// FLY-1185 (Codex R4#2 + R7#2): fail-closed, STICKY authority re-check
+	// between the slow external boundaries of the kill sequence. A throw counts
+	// as lost, and once lost in this run it STAYS lost — a later transient
+	// success can't revive it and let the remaining teardown proceed.
+	let authorityStickyLost: string | undefined;
+	const authorityLostReason = async (): Promise<string | undefined> => {
+		if (authorityStickyLost) return authorityStickyLost;
+		if (!opts.authorityCheck) return undefined;
+		try {
+			const res = await opts.authorityCheck();
+			if (res.ok) return undefined;
+			authorityStickyLost = res.reason ?? "authority_lost";
+			return authorityStickyLost;
+		} catch (err) {
+			authorityStickyLost = `authority_check_failed:${(err as Error).message}`;
+			return authorityStickyLost;
+		}
+	};
+	const abortAuthorityLost = (
+		stage: string,
+		reason: string,
+	): CloseRunnerResult => {
+		store.insertEvent({
+			event_id: `close-runner-authority-lost-${auditKey}`,
+			execution_id: opts.executionId,
+			issue_id: opts.issueId,
+			project_name: opts.projectName,
+			event_type: "lead_close_runner_authority_lost",
+			source: "bridge.close-runner",
+			payload: { stage, reason, leadId: opts.leadId },
+		});
+		return { closed: false, error: `authority_lost:${stage}:${reason}` };
+	};
+
+	// FLY-1185 §2.5: reap the runner's MCP-family descendant processes BEFORE
+	// any kill (the pane pid is only resolvable while the window is alive).
+	// Reap-only + best-effort — the battle-tested kill sequence below is
+	// byte-unchanged. R5#2: the reaper re-verifies authority BEFORE its SIGTERM
+	// and (post-grace) SIGKILL passes, so a Linear reopen mid-reap stops the
+	// remaining signals — the internal destructive boundaries are now covered
+	// too, not just the outer kill sequence.
+	const reapRes = await reapRunnerMcp(target.tmuxWindow, {
+		authorityCheck: async () => (await authorityLostReason()) === undefined,
+	}).catch(() => undefined);
+	// R7#2: the reaper observed authority lost mid-pass — that observation is
+	// STICKY for this run; abort the whole teardown as blocked instead of
+	// letting the subsequent kill sequence proceed on a later transient success.
+	if (reapRes?.authorityLost) {
+		return abortAuthorityLost(
+			"mcp_reap",
+			authorityStickyLost ?? "authority_lost",
+		);
+	}
+
+	// R4#2: the MCP reap awaited external process state — re-verify before the
+	// first destructive kill.
+	{
+		const lost = await authorityLostReason();
+		if (lost) return abortAuthorityLost("pre_cmux_kill", lost);
+	}
+
 	// FLY-638: kill the per-runner cmux LINKED session BEFORE killTmuxWindow
 	// (display-message needs the window alive to read its name). Best-effort —
 	// a cmux-resolve/kill failure must never block the window kill or the close.
@@ -301,6 +448,12 @@ export async function closeRunner(
 		},
 	);
 
+	// R4#2: another slow boundary crossed — re-verify before the window kill.
+	{
+		const lost = await authorityLostReason();
+		if (lost) return abortAuthorityLost("pre_tmux_kill", lost);
+	}
+
 	// success path: kill tmux window
 	const res = await killTmuxWindow(target.tmuxWindow);
 
@@ -308,7 +461,30 @@ export async function closeRunner(
 	// Only do this when the tmux kill actually succeeded — if kill failed
 	// (e.g. permission), closing the tab anyway would hide a still-running
 	// runner from the user (Codex Round 1 PR review #3).
+	// R4#2: the tmux kill is done (irreversible); the remaining steps are
+	// display cleanup only — still re-verify so a reopen skips even the
+	// cosmetic mutations (audited; the close result itself stands since the
+	// window is already gone).
+	let lostPostKill: string | undefined;
 	if (res.killed) {
+		lostPostKill = await authorityLostReason();
+		if (lostPostKill) {
+			store.insertEvent({
+				event_id: `close-runner-authority-lost-post-${auditKey}`,
+				execution_id: opts.executionId,
+				issue_id: opts.issueId,
+				project_name: opts.projectName,
+				event_type: "lead_close_runner_authority_lost",
+				source: "bridge.close-runner",
+				payload: {
+					stage: "post_tmux_kill",
+					reason: lostPostKill,
+					leadId: opts.leadId,
+				},
+			});
+		}
+	}
+	if (res.killed && !lostPostKill) {
 		// FLY-685: request cmux workspace-pin (sidebar tab) removal — BEFORE the
 		// terminal-view close (Codex design R1 #1). `closeRunnerTerminalView`
 		// awaits an `osascript` call with no exec timeout; if it stalls, the tmux

@@ -82,6 +82,16 @@ function staleMinutes(heartbeatAt: string | undefined, nowMs: number): number {
 
 /** Static deps supplied once by plugin.ts (tmux / discord / fs sinks). */
 export interface CrashReaperInjectedDeps {
+	/**
+	 * FLY-1185 (Codex R2#3, entry C): serialize each crash reap with the
+	 * unified lifecycle executor's per-issue mutex — a crash teardown can
+	 * never interleave with a ship/park/apply closeout on the same issue.
+	 * Absent → legacy behavior (tests / non-Bridge assembly).
+	 */
+	lifecycleMutex?: {
+		withIssueMutex: <T>(keys: string[], fn: () => Promise<T>) => Promise<T>;
+		resolveLockKeys: (issueId: string) => string[];
+	};
 	/** FLY-720 kill-switch: whole reaper off when false → reapOrphans→failed. */
 	enabled: boolean;
 	/** Forensics grace: reap only once heartbeat is stale ≥ this (≥ orphan threshold). */
@@ -219,7 +229,14 @@ export async function reapCrashedRunners(
 			continue; // owned, waiting out the forensics window
 		}
 
-		await reapOne(session, tmuxWindow, stale, deps, result, log);
+		if (deps.lifecycleMutex) {
+			const keys = deps.lifecycleMutex.resolveLockKeys(session.issue_id);
+			await deps.lifecycleMutex.withIssueMutex(keys, () =>
+				reapOne(session, tmuxWindow, stale, deps, result, log),
+			);
+		} else {
+			await reapOne(session, tmuxWindow, stale, deps, result, log);
+		}
 	}
 
 	return result;

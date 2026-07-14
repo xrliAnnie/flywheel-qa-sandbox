@@ -8,6 +8,12 @@
  * (`isPostApproveShipComplete` requires landingStatus="merged"), so the
  * ship-success gate is structural — we never mark Done for an un-merged ship.
  *
+ * FLY-1185 (Codex R1#7): the finalizer is the plan's ⑥ executor with a
+ * MANDATORY fresh-state precheck — it re-reads the issue's CURRENT workflow
+ * state right before the write and refuses to overwrite a canceled issue
+ * (founder/Linear-side Cancel racing a merged PR must win; a canceled issue
+ * is NEVER flipped to Done by automation).
+ *
  * Best-effort: resolves the team's completed-type ("Done") workflow state and
  * updates the issue. Never throws (a Linear failure must not break finalization
  * teardown). Injected client interface so it is unit-testable without the SDK.
@@ -16,6 +22,9 @@
 /** Minimal structural subset of the Linear SDK client we use. */
 export interface LinearIssueFinalizerClient {
 	issue(id: string): Promise<{
+		state?: Promise<
+			{ id: string; name: string; type?: string } | undefined | null
+		>;
 		team: Promise<
 			| {
 					states(): Promise<{
@@ -39,12 +48,35 @@ export interface MarkDoneResult {
  * workflow state (the canonical "Done" bucket, robust to renamed states); falls
  * back to a case-insensitive name match on "done" when no completed-type state
  * exists. Returns `{ done: false }` (never throws) when nothing resolves.
+ *
+ * Fresh-state guard (Codex R1#7): the issue's CURRENT state is read in the
+ * same lookup — `canceled` type (or an already-completed state) → zero write.
  */
 export async function markLinearIssueDone(
 	client: LinearIssueFinalizerClient,
 	issueId: string,
 ): Promise<MarkDoneResult> {
+	// Codex R2#9: the state read is FAIL-CLOSED (unreadable/missing → no
+	// write) and the write is guarded by a SECOND fresh read right before the
+	// mutation — a cancel landing during the team/states awaits still wins.
+	const readStateType = async (): Promise<string | undefined> => {
+		const issue = await client.issue(issueId);
+		const current = issue.state ? await issue.state : undefined;
+		if (!current?.type) throw new Error("state_unreadable");
+		return current.type;
+	};
 	try {
+		const first = await readStateType().catch(() => undefined);
+		if (first === undefined) {
+			return { done: false, reason: "state_unreadable_fail_closed" };
+		}
+		if (first === "canceled") {
+			return { done: false, reason: "issue_canceled_never_overwritten" };
+		}
+		if (first === "completed") {
+			return { done: true, reason: "already_completed" };
+		}
+
 		const issue = await client.issue(issueId);
 		const team = await issue.team;
 		if (!team) return { done: false, reason: "no_team" };
@@ -54,6 +86,24 @@ export async function markLinearIssueDone(
 			nodes.find((s) => s.type === "completed") ??
 			nodes.find((s) => s.name.toLowerCase() === "done");
 		if (!doneState) return { done: false, reason: "no_done_state" };
+
+		// Second fresh read immediately before the write (TOCTOU guard).
+		const second = await readStateType().catch(() => undefined);
+		if (second === undefined) {
+			return { done: false, reason: "state_unreadable_fail_closed" };
+		}
+		if (second === "canceled") {
+			return { done: false, reason: "issue_canceled_never_overwritten" };
+		}
+		if (second === "completed") {
+			return { done: true, reason: "already_completed" };
+		}
+		if (second !== first) {
+			return {
+				done: false,
+				reason: `state_changed_midflight:${first}->${second}`,
+			};
+		}
 
 		await client.updateIssue(issueId, { stateId: doneState.id });
 		return { done: true };

@@ -310,6 +310,8 @@ export interface BlueprintContext {
 	runnerMcpProfile?: {
 		disabledPlugins: string[];
 		disableChrome: boolean;
+		/** FLY-1185 §2.7: positive opt-ins (playwright back-enable channel). */
+		enabledPluginsExtra?: string[];
 	} | null;
 
 	/**
@@ -800,12 +802,27 @@ export class Blueprint {
 						worktreePath: expected.path,
 					};
 				}
+				// FLY-1185 §2.1: a takeover REUSES the existing worktree — carry its
+				// existing generation marker forward (the parked phase's binding and
+				// this phase's binding then agree on the same physical worktree); a
+				// marker-less legacy worktree gets none (generation "" → this phase
+				// binds nothing, worktree stays manual-only — fail-closed).
+				let takenGeneration = "";
+				try {
+					takenGeneration =
+						(await this.worktreeManager.readWorktreeGeneration?.(
+							expected.path,
+						)) ?? "";
+				} catch {
+					takenGeneration = "";
+				}
 				worktreeInfo = {
 					projectName,
 					issueId: worktreeIssueId,
 					worktreePath: expected.path,
 					branch: expected.branch,
 					mainRepoPath: projectRoot,
+					generation: takenGeneration,
 				};
 				cwd = worktreeInfo.worktreePath;
 			} else {
@@ -843,10 +860,26 @@ export class Blueprint {
 			// gate hangs until timeout.
 			if (this.eventEmitter && worktreeInfo) {
 				try {
-					await this.eventEmitter.emitWorktreeReady(
-						env,
-						worktreeInfo.worktreePath,
-					);
+					// FLY-1185 §2.1: carry the create-time binding (branch + generation).
+					// Only the bridge-local DirectEventSink turns this into StateStore
+					// authority; the HTTP client never transmits it. Empty generation
+					// (legacy takeover without a marker) → no binding is offered and the
+					// call keeps its legacy two-argument shape (byte-compat).
+					if (worktreeInfo.generation) {
+						await this.eventEmitter.emitWorktreeReady(
+							env,
+							worktreeInfo.worktreePath,
+							{
+								branch: worktreeInfo.branch,
+								generation: worktreeInfo.generation,
+							},
+						);
+					} else {
+						await this.eventEmitter.emitWorktreeReady(
+							env,
+							worktreeInfo.worktreePath,
+						);
+					}
 				} catch (err) {
 					// Reliable post already retries internally; if it still
 					// fails we log and proceed. Downstream stage handlers
@@ -1924,6 +1957,8 @@ export class Blueprint {
 				...(ctx.runnerMcpProfile && {
 					disabledPlugins: ctx.runnerMcpProfile.disabledPlugins,
 					disableChrome: ctx.runnerMcpProfile.disableChrome,
+					// FLY-1185 §2.7: positive opt-ins ride the same profile.
+					enabledPluginsExtra: ctx.runnerMcpProfile.enabledPluginsExtra,
 				}),
 				timeoutMs,
 				sessionDisplayName: `${displayId} ${cleanIssueTitle(hydrated.issueTitle)}`,

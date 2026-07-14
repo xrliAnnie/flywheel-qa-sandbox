@@ -19,7 +19,15 @@ export type ActionKey =
 	| "defer"
 	| "shelve"
 	| "retry"
-	| "approve_to_ship_gate";
+	| "approve_to_ship_gate"
+	// FLY-1185 §2.12: issue-scoped lifecycle actions (park tombstone / unpark
+	// supersede / manual approved apply). kind `issue_lifecycle` — deliberately
+	// NOT in the gateway's runner-lifecycle enum (LIFECYCLE_ACTIONS filters
+	// kind === "lifecycle"), so the FLY-245 Codex authorization surface is
+	// unchanged.
+	| "park_issue"
+	| "unpark_issue"
+	| "lifecycle_apply";
 
 /**
  * Action keys handled by the Bridge action router (`/api/actions/:action`
@@ -94,6 +102,26 @@ export const RESERVED_ENDPOINTS: readonly ReservedEndpoint[] = [
 	{ method: "POST", path: "/actions/shelve", action: "shelve", surface: "A" },
 	{ method: "POST", path: "/api/actions/retry", action: "retry", surface: "A" },
 	{ method: "POST", path: "/actions/retry", action: "retry", surface: "A" },
+	// FLY-1185 §2.12: issue-scoped lifecycle endpoints (api-token guarded;
+	// single mount each — no dashboard alias).
+	{
+		method: "POST",
+		path: "/api/lifecycle/park",
+		action: "park_issue",
+		surface: "A",
+	},
+	{
+		method: "POST",
+		path: "/api/lifecycle/unpark",
+		action: "unpark_issue",
+		surface: "A",
+	},
+	{
+		method: "POST",
+		path: "/api/lifecycle-apply",
+		action: "lifecycle_apply",
+		surface: "A",
+	},
 	// Surface B — flywheel-comm respond wrapper
 	{
 		method: "POST",
@@ -117,7 +145,7 @@ export const RESERVED_ENDPOINTS: readonly ReservedEndpoint[] = [
 // asserts every reserved action is classified EXACTLY once, so a new reserved
 // endpoint can't silently drift out of the lifecycle authorization surface.
 
-export type ActionClassKind = "lifecycle" | "ship_gate";
+export type ActionClassKind = "lifecycle" | "ship_gate" | "issue_lifecycle";
 export type IdempotencyClass = "idempotent" | "non_idempotent";
 
 export interface ActionClassMeta {
@@ -213,6 +241,33 @@ export const ACTION_CLASS_METADATA: readonly ActionClassMeta[] = [
 		eligibleStatuses: ["awaiting_review"],
 		idempotencyClass: "idempotent",
 		postconditionVerifier: "n/a",
+	},
+	// FLY-1185 §2.12: issue-scoped actions — kind `issue_lifecycle` keeps them
+	// OUT of the gateway's runner-lifecycle enum (statuses are issue-level,
+	// not session-level, hence the sentinel "any").
+	{
+		action: "park_issue",
+		kind: "issue_lifecycle",
+		canonicalEndpoint: "/api/lifecycle/park",
+		eligibleStatuses: ["any"],
+		idempotencyClass: "idempotent",
+		postconditionVerifier: "issue_tombstone_active",
+	},
+	{
+		action: "unpark_issue",
+		kind: "issue_lifecycle",
+		canonicalEndpoint: "/api/lifecycle/unpark",
+		eligibleStatuses: ["any"],
+		idempotencyClass: "idempotent",
+		postconditionVerifier: "issue_tombstone_superseded",
+	},
+	{
+		action: "lifecycle_apply",
+		kind: "issue_lifecycle",
+		canonicalEndpoint: "/api/lifecycle-apply",
+		eligibleStatuses: ["any"],
+		idempotencyClass: "idempotent",
+		postconditionVerifier: "manifest_hash_consumed",
 	},
 ] as const;
 

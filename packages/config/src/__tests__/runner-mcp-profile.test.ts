@@ -4,6 +4,8 @@ import {
 	resolveRunnerMcpProfile,
 } from "../runner-mcp-profile.js";
 
+const PLAYWRIGHT = "playwright@claude-plugins-official";
+
 describe("resolveRunnerMcpProfile (FLY-751)", () => {
 	// FLY-812 (founder review 2026-07-03): default slim narrowed to serena ONLY.
 	// discord + playwright are kept fleet-wide (runner / geoforge3d testing need
@@ -13,44 +15,81 @@ describe("resolveRunnerMcpProfile (FLY-751)", () => {
 		expect(profile).toEqual({
 			disabledPlugins: ["serena@claude-plugins-official"],
 			disableChrome: false,
+			enabledPluginsExtra: [],
 		});
 		expect(profile?.disabledPlugins).not.toContain(
 			"discord@claude-plugins-official",
 		);
-		expect(profile?.disabledPlugins).not.toContain(
-			"playwright@claude-plugins-official",
-		);
+		expect(profile?.disabledPlugins).not.toContain(PLAYWRIGHT);
 		expect(profile?.disabledPlugins).not.toContain(
 			"context7@claude-plugins-official",
 		);
 	});
 
-	it("QA session: same serena-only slim, chrome kept", () => {
+	// FLY-1185 §2.7: QA now carries the POSITIVE playwright opt-in — the
+	// channel that overrides the machine-level default-off.
+	it("QA session: serena-only slim, chrome kept, playwright positively enabled", () => {
 		const profile = resolveRunnerMcpProfile({ sessionRole: "qa", env: {} });
 		expect(profile).toEqual({
 			disabledPlugins: ["serena@claude-plugins-official"],
 			disableChrome: false,
+			enabledPluginsExtra: [PLAYWRIGHT],
 		});
 	});
 
-	it("non-qa sessionRole values (e.g. main) get the plugin slim, chrome ON", () => {
+	it("non-qa sessionRole values (e.g. main) get the plugin slim, chrome ON, no extras", () => {
 		const profile = resolveRunnerMcpProfile({ sessionRole: "main", env: {} });
 		expect(profile?.disabledPlugins).toEqual(DEFAULT_RUNNER_DISABLED_PLUGINS);
 		expect(profile?.disableChrome).toBe(false);
+		expect(profile?.enabledPluginsExtra).toEqual([]);
 	});
 
-	it("full-mcp label opts the runner out entirely (case-insensitive)", () => {
+	// FLY-1185 §2.7: full-mcp no longer degenerates to null — with the machine
+	// default-off in place, "everything available" MUST carry the positive
+	// playwright entry or the machine default would silently win.
+	it("full-mcp label → no slimming but the playwright opt-in survives (case-insensitive)", () => {
+		const expected = {
+			disabledPlugins: [],
+			disableChrome: false,
+			enabledPluginsExtra: [PLAYWRIGHT],
+		};
 		expect(
 			resolveRunnerMcpProfile({ issueLabels: ["full-mcp"], env: {} }),
-		).toBeNull();
+		).toEqual(expected);
 		expect(
 			resolveRunnerMcpProfile({ issueLabels: ["bug", "Full-MCP"], env: {} }),
-		).toBeNull();
+		).toEqual(expected);
+	});
+
+	// FLY-1185 §2.7: the per-issue playwright opt-in label.
+	it("playwright label → default slim + positive playwright entry", () => {
+		const profile = resolveRunnerMcpProfile({
+			issueLabels: ["playwright"],
+			env: {},
+		});
+		expect(profile).toEqual({
+			disabledPlugins: ["serena@claude-plugins-official"],
+			disableChrome: false,
+			enabledPluginsExtra: [PLAYWRIGHT],
+		});
 	});
 
 	it("FLYWHEEL_RUNNER_SLIM_MCP=0 is a global kill-switch", () => {
 		expect(
 			resolveRunnerMcpProfile({ env: { FLYWHEEL_RUNNER_SLIM_MCP: "0" } }),
+		).toBeNull();
+	});
+
+	// FLY-1185 §2.7 documented limitation: under the kill-switch the label
+	// CANNOT opt back in (null profile → no --settings → machine default-off
+	// applies unconditionally). Combination test pins this.
+	it("SLIM_MCP=0 + playwright label → STILL null (label ineffective under the kill-switch)", () => {
+		expect(
+			resolveRunnerMcpProfile({
+				issueLabels: ["playwright"],
+				sessionRole: "qa",
+				env: { FLYWHEEL_RUNNER_SLIM_MCP: "0" },
+			}),
 		).toBeNull();
 	});
 
@@ -73,6 +112,7 @@ describe("resolveRunnerMcpProfile (FLY-751)", () => {
 				"serena@claude-plugins-official",
 			],
 			disableChrome: false,
+			enabledPluginsExtra: [],
 		});
 	});
 
@@ -85,15 +125,21 @@ describe("resolveRunnerMcpProfile (FLY-751)", () => {
 		expect(profile).toBeNull();
 	});
 
-	it("empty env list + QA degenerates to null (nothing to slim)", () => {
+	// FLY-1185 §2.7: QA has a positive opt-in to deliver, so it must NOT
+	// degenerate to null even with nothing to disable (extra 非空不退化 null).
+	it("empty env list + QA → profile with ONLY the playwright opt-in (not null)", () => {
 		const profile = resolveRunnerMcpProfile({
 			sessionRole: "qa",
 			env: { FLYWHEEL_RUNNER_DISABLED_PLUGINS: "" },
 		});
-		expect(profile).toBeNull();
+		expect(profile).toEqual({
+			disabledPlugins: [],
+			disableChrome: false,
+			enabledPluginsExtra: [PLAYWRIGHT],
+		});
 	});
 
-	it("QA removes playwright from a custom env list too", () => {
+	it("QA removes playwright from a custom env list too (disjoint from the opt-in)", () => {
 		const profile = resolveRunnerMcpProfile({
 			sessionRole: "qa",
 			env: {
@@ -104,6 +150,7 @@ describe("resolveRunnerMcpProfile (FLY-751)", () => {
 		expect(profile).toEqual({
 			disabledPlugins: ["serena@claude-plugins-official"],
 			disableChrome: false,
+			enabledPluginsExtra: [PLAYWRIGHT],
 		});
 	});
 
@@ -117,6 +164,7 @@ describe("resolveRunnerMcpProfile (FLY-751)", () => {
 		expect(profile).toEqual({
 			disabledPlugins: DEFAULT_RUNNER_DISABLED_PLUGINS,
 			disableChrome: true,
+			enabledPluginsExtra: [],
 		});
 	});
 
@@ -137,16 +185,23 @@ describe("resolveRunnerMcpProfile (FLY-751)", () => {
 		expect(profile).toEqual({
 			disabledPlugins: ["serena@claude-plugins-official"],
 			disableChrome: true,
+			enabledPluginsExtra: [PLAYWRIGHT],
 		});
 	});
 
-	it("FLY-812: full-mcp takes precedence over no-chrome (both present → null)", () => {
+	// FLY-1185 §2.7: full-mcp keeps its no-slim semantics but no longer nulls —
+	// no-chrome is subsumed (full-mcp means "everything available").
+	it("full-mcp + no-chrome → full-mcp shape wins (no slim, playwright opt-in)", () => {
 		expect(
 			resolveRunnerMcpProfile({
 				issueLabels: ["no-chrome", "full-mcp"],
 				env: {},
 			}),
-		).toBeNull();
+		).toEqual({
+			disabledPlugins: [],
+			disableChrome: false,
+			enabledPluginsExtra: [PLAYWRIGHT],
+		});
 	});
 
 	// Codex R1 #2: the explicit opt-out must survive the degenerate guard — an
@@ -157,6 +212,10 @@ describe("resolveRunnerMcpProfile (FLY-751)", () => {
 			issueLabels: ["no-chrome"],
 			env: { FLYWHEEL_RUNNER_DISABLED_PLUGINS: "" },
 		});
-		expect(profile).toEqual({ disabledPlugins: [], disableChrome: true });
+		expect(profile).toEqual({
+			disabledPlugins: [],
+			disableChrome: true,
+			enabledPluginsExtra: [],
+		});
 	});
 });

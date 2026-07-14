@@ -138,6 +138,21 @@ export interface PostShipOpts {
 	fallbackBotToken?: string;
 }
 
+/**
+ * FLY-1185: the ship-entry lifecycle bundle built ONCE at the Bridge
+ * composition root and threaded to all three finalization call sites
+ * (event-route ×2 + DirectEventSink) — remote branch CAS, issue-level
+ * closeout (entry A) and the fire-and-forget trailing sweep.
+ */
+export type LifecycleShipInfra = Pick<
+	PostShipDeps,
+	| "remoteBranchCleanup"
+	| "issueCloseout"
+	| "postShipSweep"
+	| "preArbitrate"
+	| "withIssueLifecycleMutex"
+>;
+
 export interface PostShipDeps {
 	store: StateStore;
 	projects: ProjectEntry[];
@@ -156,6 +171,66 @@ export interface PostShipDeps {
 	 */
 	markIssueDone?: (issueId: string, issueIdentifier?: string) => Promise<void>;
 	/**
+	 * FLY-1185 §2.4: ship-time immediate remote-branch delete — consumes the
+	 * Layer A pre-delete attestation returned by `removeCleanWorktree` (never
+	 * re-reads the destroyed admin marker). Best-effort; absent → no remote
+	 * delete (the sweep owns the remainder; byte-compat).
+	 */
+	remoteBranchCleanup?: (input: {
+		executionId: string;
+		issueId: string;
+		projectName: string;
+		attestation: import("./worktree-cleanup.js").WorktreeCleanupAttestation;
+	}) => Promise<void>;
+	/**
+	 * FLY-1185 §2.6: fire-and-forget project sweep after a ship — the moment
+	 * of highest fresh-garbage probability. Never awaited, never throws into
+	 * the orchestrator. Absent → no trailing sweep (byte-compat).
+	 */
+	postShipSweep?: (projectName: string) => void;
+	/**
+	 * FLY-1185 §2.12 (A entry): issue-level closeout — collect ALL related
+	 * nodes (phases + auto-QA children) under the `shipped` disposition and
+	 * drive the full checklist. Runs AFTER the classic per-session steps.
+	 * Best-effort; absent → classic behavior only (byte-compat).
+	 */
+	issueCloseout?: (input: {
+		executionId: string;
+		issueId: string;
+		issueIdentifier?: string;
+		projectName: string;
+		/** R4#3: the post-ship DAG already holds the canonical issue mutex. */
+		alreadyLocked?: boolean;
+	}) => Promise<{ outcome: string } | undefined | void>;
+	/**
+	 * Codex R2#8: disposition PRE-arbitration — runs BEFORE the first
+	 * destructive step (tmux close). An active founder-park tombstone or a
+	 * canceled Linear disposition (fresh lookup when available, persisted
+	 * observation as the durable floor) refuses the ENTIRE ship DAG with zero
+	 * mutation. The closeout's own in-mutex arbitration (step 1.7) remains
+	 * the second line for authority changes landing mid-DAG. Absent →
+	 * byte-compat (arbitration only inside the closeout).
+	 */
+	preArbitrate?: (
+		issueId: string,
+		projectName: string,
+		/** R4#3: the caller already holds the canonical issue mutex. */
+		alreadyLocked?: boolean,
+	) => Promise<{ ok: boolean; reason?: string }>;
+	/**
+	 * FLY-1185 (Codex R4#3): canonical issue mutex for the ENTIRE ship DAG —
+	 * arbitration, dedupe claim, tmux/worktree/branch teardown, closeout,
+	 * archive and Linear Done all run inside ONE hold, so a founder park can
+	 * never interleave between the arbitration check and a later mutation
+	 * (plan.md:145 zero-cross-mutation). When set, `preArbitrate` and
+	 * `issueCloseout` receive `alreadyLocked` (the keyed lock is not
+	 * re-entrant). Absent → legacy check-then-act (byte-compat).
+	 */
+	withIssueLifecycleMutex?: <T>(
+		issueId: string,
+		fn: () => Promise<T>,
+	) => Promise<T>;
+	/**
 	 * FLY-887: close the issue's still-alive parked design + implement phase
 	 * sessions (three-stage keep-alive) BEFORE the shared worktree is removed — the
 	 * parked phases' cwd is inside it, so they must be torn down first. No-op for a
@@ -165,6 +240,10 @@ export interface PostShipDeps {
 	finalizeThreeStagePhases?: (
 		issueId: string,
 		projectName: string,
+		/** R5#3: the post-ship DAG already holds the canonical issue mutex — the
+		 * finalizer's inner closeRunner must skip the (non-re-entrant) lifecycle
+		 * close guard or it self-deadlocks against the outer hold. */
+		alreadyLocked?: boolean,
 	) => Promise<void>;
 	/**
 	 * FLY-907 (Step 4.1c / plan §2.5 form (a)): the unified issue-display
@@ -221,8 +300,12 @@ export function makeFinalizeThreeStagePhases(
 	store: StateStore,
 	transitionOpts: ApplyTransitionOpts,
 	refreshPhaseStatusLine?: (issueId: string) => Promise<void>,
-): (issueId: string, projectName: string) => Promise<void> {
-	return async (issueId, projectName) => {
+): (
+	issueId: string,
+	projectName: string,
+	alreadyLocked?: boolean,
+) => Promise<void> {
+	return async (issueId, projectName, alreadyLocked) => {
 		const phases = store.getPhaseSessionsForIssue(issueId).filter(
 			(s) =>
 				(s.chat_thread_role === "design" ||
@@ -243,6 +326,10 @@ export function makeFinalizeThreeStagePhases(
 						executorType: "phase",
 						finalizeDone: true,
 						transitionOpts,
+						// R5#3: when the post-ship DAG already holds the issue mutex,
+						// skip the non-re-entrant lifecycle close guard (else the
+						// inner closeRunner re-acquires the SAME lock → deadlock).
+						...(alreadyLocked && { skipLifecycleGuard: true }),
 					},
 					store,
 				);
@@ -300,7 +387,53 @@ export async function runPostShipFinalization(
 	opts: PostShipOpts,
 	deps: PostShipDeps,
 ): Promise<void> {
+	// R4#3 (plan.md:145): when the canonical issue mutex is wired, the ENTIRE
+	// ship DAG — arbitration, dedupe claim, every teardown mutation, closeout,
+	// archive, Linear Done — runs inside ONE hold. A founder park serializes
+	// strictly before or after the whole DAG, never between its steps.
+	if (deps.withIssueLifecycleMutex) {
+		return deps.withIssueLifecycleMutex(opts.issueId, () =>
+			runPostShipFinalizationInner(opts, deps, true),
+		);
+	}
+	return runPostShipFinalizationInner(opts, deps, false);
+}
+
+async function runPostShipFinalizationInner(
+	opts: PostShipOpts,
+	deps: PostShipDeps,
+	dagLocked: boolean,
+): Promise<void> {
 	const { store, projects } = deps;
+
+	// ── (0.9) Codex R2#8 + R3#9: disposition pre-arbitration — BEFORE any
+	// mutation AND before the dedupe claim, so a refusal never consumes the
+	// once-only finalization claim (a later legitimate retry still runs).
+	// A founder-parked or canceled issue refuses the whole ship DAG here (the
+	// tmux close / worktree delete / branch delete below never run). ──
+	if (deps.preArbitrate) {
+		const arb = await deps
+			.preArbitrate(opts.issueId, opts.projectName, dagLocked)
+			.catch((err) => ({
+				ok: false,
+				reason: `arbitration_failed:${(err as Error).message}`,
+			}));
+		if (!arb.ok) {
+			console.warn(
+				`[post-ship] disposition pre-arbitration refused ship finalization for ${opts.issueIdentifier ?? opts.issueId}: ${arb.reason ?? "conflict"} — ZERO mutation`,
+			);
+			store.insertEvent({
+				event_id: `post-ship-arbitration-refused-${opts.executionId}`,
+				execution_id: opts.executionId,
+				issue_id: opts.issueId,
+				project_name: opts.projectName,
+				event_type: "post_ship_arbitration_refused",
+				source: "bridge.post-ship-finalization",
+				payload: { reason: arb.reason ?? "conflict" },
+			});
+			return;
+		}
+	}
 
 	// ── (0) ATOMIC ORCHESTRATOR CLAIM ──
 	// Stable event_id → UNIQUE constraint collapses concurrent callers
@@ -316,36 +449,10 @@ export async function runPostShipFinalization(
 	});
 	if (!claimed) return;
 
-	// ── (0.5) FLY-799 auto-Linear-Done — the ship is confirmed merged (the
-	// predicate that gates this whole orchestrator required landingStatus=merged),
-	// so flip the issue to Done. Best-effort AND time-bounded (Codex R1 HIGH-1):
-	// the Linear SDK call has no built-in timeout, so a network hang would stall
-	// the tmux/thread teardown below indefinitely. Race it against a bounded
-	// timeout so a hung Linear call yields to teardown (the issue stays not-Done,
-	// which the FLY-369 Done-sweep / a manual close can still resolve). ──
-	if (deps.markIssueDone) {
-		const MARK_DONE_TIMEOUT_MS = 15_000;
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		const timeout = new Promise<void>((resolve) => {
-			timer = setTimeout(() => {
-				console.warn(
-					`[post-ship] markIssueDone timed out after ${MARK_DONE_TIMEOUT_MS}ms for ${opts.issueIdentifier ?? opts.issueId} — proceeding with teardown (issue left not-Done)`,
-				);
-				resolve();
-			}, MARK_DONE_TIMEOUT_MS);
-		});
-		await Promise.race([
-			deps.markIssueDone(opts.issueId, opts.issueIdentifier).catch((err) => {
-				console.error(
-					`[post-ship] markIssueDone failed:`,
-					(err as Error).message,
-				);
-			}),
-			timeout,
-		]).finally(() => {
-			if (timer) clearTimeout(timer);
-		});
-	}
+	// (FLY-1185 Codex R1#7: the FLY-799 auto-Linear-Done step used to run HERE,
+	// FIRST — before any teardown. It now runs LAST (step 3.5 below), after the
+	// closeout confirmed every node gone, matching the plan's "Linear item runs
+	// last" DAG edge, and it is skipped entirely when the closeout is blocked.)
 
 	// ── (1) tmux cleanup — idempotent; preserved contract { tmuxClosed, errors } ──
 	const cleanup = await postMergeTmuxCleanup(
@@ -368,14 +475,18 @@ export async function runPostShipFinalization(
 	// removed below (their cwd is inside it). No-op for single-session / keep-alive
 	// OFF (no parked phases exist). Never throws. ──
 	if (deps.finalizeThreeStagePhases) {
-		await deps
-			.finalizeThreeStagePhases(opts.issueId, opts.projectName)
-			.catch((err) => {
-				console.error(
-					`[post-ship] finalizeThreeStagePhases failed:`,
-					(err as Error).message,
-				);
-			});
+		// R6#7: only pass the 3rd (alreadyLocked) arg when the DAG actually holds
+		// the mutex — non-locked callers keep the original 2-arg call (byte-compat
+		// with the existing fly887 test seam contract).
+		const finalizeCall = dagLocked
+			? deps.finalizeThreeStagePhases(opts.issueId, opts.projectName, true)
+			: deps.finalizeThreeStagePhases(opts.issueId, opts.projectName);
+		await finalizeCall.catch((err) => {
+			console.error(
+				`[post-ship] finalizeThreeStagePhases failed:`,
+				(err as Error).message,
+			);
+		});
 	}
 
 	// ── (1.3) FLY-907 final terminal-state display refresh — AFTER phase
@@ -395,7 +506,7 @@ export async function runPostShipFinalization(
 	// the worktree), BEFORE notifier. The closure self-guards on positive tmux
 	// close + clean tree + path-authority and never throws. ──
 	if (deps.removeCleanWorktree) {
-		await deps
+		const attestation = await deps
 			.removeCleanWorktree({
 				executionId: opts.executionId,
 				issueId: opts.issueId,
@@ -409,7 +520,66 @@ export async function runPostShipFinalization(
 					`[post-ship] worktree cleanup failed:`,
 					(err as Error).message,
 				);
+				return undefined;
 			});
+
+		// ── (1.6) FLY-1185 §2.4: ship-time remote-branch delete, driven ONLY by
+		// the pre-delete attestation (bindingVerified + actualBranch + headSha
+		// captured BEFORE the removal destroyed the admin marker). Ineligible
+		// attestations audit `remote_delete_skipped` inside the closure and the
+		// sweep owns the remainder. ──
+		if (attestation && deps.remoteBranchCleanup) {
+			await deps
+				.remoteBranchCleanup({
+					executionId: opts.executionId,
+					issueId: opts.issueId,
+					projectName: opts.projectName,
+					attestation,
+				})
+				.catch((err) => {
+					console.error(
+						`[post-ship] remote branch cleanup failed:`,
+						(err as Error).message,
+					);
+				});
+		}
+	}
+
+	// ── (1.7) FLY-1185 §2.12 entry A: issue-level lifecycle closeout —
+	// collect ALL related nodes (parked phases already finalized above,
+	// auto-QA children, launch claims) under the `shipped` disposition and
+	// drive the remaining checklist items. Best-effort. ──
+	// Codex R1#3: CONSUME the closure report — a blocked/conflict closeout
+	// (some node not confirmed gone, or a canceled-vs-shipped conflict) must
+	// NOT be followed by thread archive or the Linear Done write. The sweep /
+	// next finalization pass is the eventual repair.
+	let closeoutBlocked = false;
+	if (deps.issueCloseout) {
+		const closeoutRes = await deps
+			.issueCloseout({
+				executionId: opts.executionId,
+				issueId: opts.issueId,
+				issueIdentifier: opts.issueIdentifier,
+				projectName: opts.projectName,
+				// R4#3: the whole DAG already holds the canonical issue mutex.
+				alreadyLocked: dagLocked,
+			})
+			.catch((err) => {
+				console.error(
+					`[post-ship] issue closeout failed:`,
+					(err as Error).message,
+				);
+				return { outcome: "blocked" as const };
+			});
+		if (
+			closeoutRes &&
+			(closeoutRes.outcome === "blocked" || closeoutRes.outcome === "conflict")
+		) {
+			closeoutBlocked = true;
+			console.warn(
+				`[post-ship] issue closeout ${closeoutRes.outcome} for ${opts.issueIdentifier ?? opts.issueId} — thread archive + Linear Done deferred to the next pass`,
+			);
+		}
 	}
 
 	// ── Resolve lead + thread ONCE, reused by notifier AND archiver ──
@@ -453,8 +623,10 @@ export async function runPostShipFinalization(
 		{ store, fetchImpl: deps.fetchImpl },
 	);
 
-	// ── (3) thread teardown — only after notifier has landed ──
-	if (thread && botToken) {
+	// ── (3) thread teardown — only after notifier has landed AND the issue
+	// closeout confirmed every related node gone (Codex R1#3: an archive over
+	// a blocked closeout would hide a still-live runner). ──
+	if (thread && botToken && !closeoutBlocked) {
 		// FLY-1165: route through the shared archive sink — per-thread
 		// serialization + the sink-level archive-once guard (a founder re-open
 		// is never fought; matches the cascade + endpoint paths). The owner
@@ -478,5 +650,48 @@ export async function runPostShipFinalization(
 				fetchImpl: deps.fetchImpl,
 			},
 		);
+	}
+
+	// ── (3.5) FLY-799 auto-Linear-Done — moved LAST (Codex R1#7): the Linear
+	// write is the closeout DAG's final item, so it runs only after the
+	// closeout confirmed all nodes gone (never over a blocked closeout, and
+	// the finalizer itself re-reads fresh Linear state so a founder-canceled
+	// issue is never overwritten to Done). Best-effort AND time-bounded. ──
+	if (deps.markIssueDone && !closeoutBlocked) {
+		const MARK_DONE_TIMEOUT_MS = 15_000;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<void>((resolve) => {
+			timer = setTimeout(() => {
+				console.warn(
+					`[post-ship] markIssueDone timed out after ${MARK_DONE_TIMEOUT_MS}ms for ${opts.issueIdentifier ?? opts.issueId} — issue left not-Done (Done-sweep / manual close can resolve)`,
+				);
+				resolve();
+			}, MARK_DONE_TIMEOUT_MS);
+		});
+		await Promise.race([
+			deps.markIssueDone(opts.issueId, opts.issueIdentifier).catch((err) => {
+				console.error(
+					`[post-ship] markIssueDone failed:`,
+					(err as Error).message,
+				);
+			}),
+			timeout,
+		]).finally(() => {
+			if (timer) clearTimeout(timer);
+		});
+	}
+
+	// ── (4) FLY-1185 §2.6: fire-and-forget trailing project sweep — the
+	// moment right after a merge has the highest fresh-garbage probability.
+	// Never awaited; a failure to START never affects the finalization. ──
+	if (deps.postShipSweep) {
+		try {
+			deps.postShipSweep(opts.projectName);
+		} catch (err) {
+			console.warn(
+				`[post-ship] trailing sweep failed to start:`,
+				(err as Error).message,
+			);
+		}
 	}
 }

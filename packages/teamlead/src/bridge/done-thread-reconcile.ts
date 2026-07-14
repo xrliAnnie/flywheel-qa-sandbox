@@ -33,6 +33,7 @@
  * re-open is never fought).
  */
 
+import { existsSync } from "node:fs";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
@@ -114,11 +115,22 @@ export function resolveDoneThreadReconcileConfig(
 
 // ── Sweep ────────────────────────────────────────────────────────────────────
 
-/** Minimal structural shape of the fresh Linear lookup the sweep needs. */
+/** Minimal structural shape of the fresh Linear lookup the sweep needs.
+ *  FLY-1185: `updatedAt` feeds the monotonic episode observation (R10#4). */
 export type ReconcileLinearLookup = (
 	linearApiKey: string,
 	identifier: string,
-) => Promise<{ id: string; identifier: string; stateType: string } | null>;
+) => Promise<{
+	id: string;
+	identifier: string;
+	stateType: string;
+	updatedAt?: string;
+} | null>;
+
+// ── FLY-1185 §2.12 (R9#4): hardcoded per-run budgets for the D entry's NEW
+// mutator surface (issue closeouts). NOT env-configurable by contract. ──
+export const MAX_ISSUE_CLOSEOUTS_PER_RUN = 5;
+export const MAX_CLOSEOUT_MUTATORS_PER_RUN = 40;
 
 export interface DoneThreadReconcileDeps {
 	store: StateStore;
@@ -151,6 +163,36 @@ export interface DoneThreadReconcileDeps {
 	sleepImpl?: (ms: number) => Promise<void>;
 	now?: () => number;
 	log?: (msg: string) => void;
+	/**
+	 * FLY-1185 D entry: the unified issue closeout (composition wires
+	 * `closeoutIssue`). Invoked ONLY for a durably-observed nonterminal→
+	 * terminal migration (`terminal_authorized` episode) — ANY first-seen-
+	 * terminal issue goes to the manual list instead, in EVERY round (R8#1).
+	 * Returns the number of mutator-bearing nodes it drove (budget input).
+	 */
+	lifecycleCloseout?: (input: {
+		issueKey: string;
+		projectName: string;
+		disposition: "shipped" | "canceled";
+		extraAliases: string[];
+		/** Codex R1#14: per-run mutator budget/deadline, enforced per node
+		 * INSIDE the executor (before each mutation). */
+		budget?: {
+			tryConsume: () => boolean;
+			shouldStop?: () => boolean;
+		};
+		/** Codex R2#5: fresh Linear authority re-check, called by the executor
+		 * before every mutation — a reopen mid-closeout must win. */
+		freshAuthority?: () => Promise<"authorized" | "reopened" | "unknown">;
+	}) => Promise<{ nodes: unknown[]; outcome: string } | undefined>;
+	/**
+	 * FLY-1185 dual-switch contract (R9#4): the NEW mutators (closeout) hang
+	 * off FLYWHEEL_WORKTREE_AUTOCLEAN; the ORIGINAL FLY-1165 husk/archive
+	 * behavior stays under FLYWHEEL_DONE_THREAD_RECONCILE — neither switch
+	 * crosses into the other's territory. Injectable for the byte-compat
+	 * integration tests.
+	 */
+	newMutatorsEnabled?: boolean;
 }
 
 export interface DoneThreadReconcileResult {
@@ -169,15 +211,45 @@ export interface DoneThreadReconcileResult {
 	deadlineHit: boolean;
 	aborted: boolean;
 	dryRunWouldArchive: number;
+	/** FLY-1185 D entry counters. */
+	closeoutRuns: number;
+	closeoutMutators: number;
+	legacyManualCandidates: number;
+	/** Codex R1#1 residue union: extra thread-less issues D examined. */
+	residueScanned: number;
 }
 
 type SessionAliasRow = ReturnType<StateStore["getSessionsForIssueAliases"]>[0];
 
+/** Codex R2#5 + R3#5 — mutation-time fresh-Linear authority for ONE issue:
+ * EVERY call is a real uncached read (a cached terminal verdict must never
+ * authorize a mutation after a reopen). terminal → authorized; nonterminal →
+ * reopened; lookup failure → unknown (both non-authorized outcomes BLOCK). */
+function makeFreshAuthority(
+	lookup: () => Promise<{ stateType: string } | null | undefined>,
+	_now: () => number,
+): () => Promise<"authorized" | "reopened" | "unknown"> {
+	return async () => {
+		try {
+			const fresh = await lookup();
+			return !fresh
+				? "unknown"
+				: DONE_STATE_TYPES.has(fresh.stateType)
+					? "authorized"
+					: "reopened";
+		} catch {
+			return "unknown";
+		}
+	};
+}
+
 /**
  * One reconcile pass. Never throws. The per-thread pipeline order IS the
  * safety design — do not reorder:
- *   budget/abort → veto #1 → fresh Linear → veto #2 → husk finalize
- *   (fail-closed) → veto #3 + fresh archived/missing recheck → archive.
+ *   budget/abort → fresh Linear → durable observation (nonterminal included)
+ *   → [authorized: unified closeout (owns live nodes, budgeted per node)]
+ *   → [legacy: veto → husk finalize (fail-closed)]
+ *   → veto #3 + fresh archived/missing recheck → archive.
  */
 export async function reconcileDoneThreads(
 	deps: DoneThreadReconcileDeps,
@@ -198,6 +270,10 @@ export async function reconcileDoneThreads(
 		deadlineHit: false,
 		aborted: false,
 		dryRunWouldArchive: 0,
+		closeoutRuns: 0,
+		closeoutMutators: 0,
+		legacyManualCandidates: 0,
+		residueScanned: 0,
 	};
 	const log =
 		deps.log ??
@@ -211,6 +287,7 @@ export async function reconcileDoneThreads(
 			return result;
 		}
 		const { store, projects } = deps;
+		const linearApiKey = deps.linearApiKey; // narrowed by the guard above
 		const lookupIssue: ReconcileLinearLookup =
 			deps.lookupIssue ?? lookupLinearIssueByIdentifier;
 		const lookupTarget = deps.lookupTarget ?? lookupTmuxTarget;
@@ -261,6 +338,20 @@ export async function reconcileDoneThreads(
 			return { live: false, rows };
 		};
 
+		// Codex R1#14 — ONE budget across the whole run (threads + residue):
+		// the executor consumes a slot per node BEFORE each mutation; exhausted
+		// → the node blocks and the next run continues from durable state.
+		const closeoutBudget = {
+			tryConsume: () => {
+				if (result.closeoutMutators >= MAX_CLOSEOUT_MUTATORS_PER_RUN) {
+					return false;
+				}
+				result.closeoutMutators++;
+				return true;
+			},
+			shouldStop: () => shouldAbort() || now() - startedAt >= runDeadlineMs,
+		};
+
 		const candidates = store.getUnarchivedIssueChatThreads();
 		for (const thread of candidates) {
 			if (shouldAbort()) {
@@ -284,12 +375,12 @@ export async function reconcileDoneThreads(
 			result.scanned++;
 
 			try {
-				// veto #1 — cheap local liveness before spending a Linear call.
-				const veto1 = await checkLiveness([thread.issue_id]);
-				if (veto1.live) {
-					result.skippedActive++;
-					continue;
-				}
+				// (FLY-1185 Codex R1#1: the old veto #1 — skip-on-liveness BEFORE
+				// the Linear lookup — is gone. A live runner is the NORMAL state of
+				// a nonterminal issue; vetoing here meant the nonterminal
+				// observation was never persisted, so every issue aged into a
+				// first-seen-terminal legacy episode and automation was dead.
+				// Liveness vetoes remain on the legacy finalize/archive paths.)
 
 				// Fresh per-issue Linear lookup (identifier OR UUID — issue(id:)
 				// accepts both). Failure is fail-closed: skip, never guess.
@@ -304,33 +395,102 @@ export async function reconcileDoneThreads(
 					result.skippedUnresolved++;
 					continue;
 				}
-				if (!DONE_STATE_TYPES.has(linear.stateType)) {
-					result.skippedNotDone++;
-					continue;
-				}
 				const aliasKeys = [
 					...new Set(
 						[thread.issue_id, linear.id, linear.identifier].filter(Boolean),
 					),
 				];
 
-				// veto #2 — the Linear await is a TOCTOU window; recheck with the
-				// full alias set (UUID ↔ identifier both directions).
-				const veto2 = await checkLiveness(aliasKeys);
-				if (veto2.live) {
-					result.skippedActive++;
+				// ── FLY-1185 D entry: durable episode observation (R9#1/R10#4) —
+				// written on EVERY fresh Linear read, nonterminal included (Codex
+				// R1#1: a durable nonterminal observation is exactly what ends a
+				// legacy episode and authorizes the later terminal migration).
+				// Ambiguous project → no observation, no new authority. ──
+				let closeoutAuthorized = false;
+				const obsProjectNames = [
+					...new Set(
+						store
+							.getSessionsForIssueAliases(aliasKeys)
+							.map((r) => r.project_name)
+							.filter(Boolean),
+					),
+				];
+				const obsProject =
+					obsProjectNames.length === 1 ? obsProjectNames[0] : undefined;
+				const isTerminal = DONE_STATE_TYPES.has(linear.stateType);
+				if (obsProject) {
+					const obs = store.observeLinearStateAndClaimCloseout({
+						project: obsProject,
+						issueUuid: linear.id,
+						stateType: linear.stateType,
+						linearUpdatedAt: linear.updatedAt ?? "",
+					});
+					if (obs.outcome !== "conflict") {
+						closeoutAuthorized = obs.terminalAuthorized;
+					}
+					if (obs.legacyTerminalEpisode && isTerminal) {
+						result.legacyManualCandidates++;
+						store.insertEvent({
+							event_id: `lifecycle-manual-candidate-${linear.id}`,
+							execution_id: `reconcile-${obsProject}`,
+							issue_id: linear.id,
+							project_name: obsProject,
+							event_type: "lifecycle_manual_candidate",
+							source: "bridge.done-thread-reconcile",
+							payload: {
+								identifier: linear.identifier,
+								stateType: linear.stateType,
+								reason: "first_seen_terminal_legacy_episode",
+							},
+						});
+					}
+				}
+				if (!isTerminal) {
+					// Observation persisted; a nonterminal issue has nothing to
+					// reconcile — this is the durable-migration recording pass.
+					result.skippedNotDone++;
 					continue;
+				}
+				const newMutatorsOn = deps.newMutatorsEnabled ?? true;
+				const runCloseout =
+					closeoutAuthorized &&
+					newMutatorsOn &&
+					!!deps.lifecycleCloseout &&
+					!!obsProject &&
+					!dryRun &&
+					result.closeoutRuns < MAX_ISSUE_CLOSEOUTS_PER_RUN &&
+					result.closeoutMutators < MAX_CLOSEOUT_MUTATORS_PER_RUN;
+				// R9#3 + Codex R1#1: an AUTHORIZED closeout owns EVERY husk (FSM
+				// terminate for canceled, finalizeDone for shipped) — the legacy
+				// finalizeDone loop must not run beside it. Non-authorized /
+				// switched-off cases keep the original FLY-1165 behavior.
+				const skipLegacyFinalize = runCloseout;
+
+				// veto #2 — LEGACY paths only (Codex R1#1: the authorized closeout
+				// is the component that CLOSES live runners; vetoing it on
+				// liveness made the target scenario — Linear canceled, runner
+				// alive — unreachable). The executor confirms per node.
+				if (!runCloseout) {
+					const veto2 = await checkLiveness(aliasKeys);
+					if (veto2.live) {
+						result.skippedActive++;
+						continue;
+					}
 				}
 
 				// Husk finalize: dead rows stuck in FSM-finalizable states go
 				// through closeRunner({finalizeDone}) — WITHOUT archive deps (the
 				// sweep archives once, below; no double-write race). Any failure
 				// downgrades the whole thread (fail-closed).
-				const finalizable = veto2.rows.filter((r) =>
-					(RECONCILE_FINALIZABLE_STATUSES as readonly string[]).includes(
-						r.status,
-					),
-				);
+				const finalizable = skipLegacyFinalize
+					? []
+					: store
+							.getSessionsForIssueAliases(aliasKeys)
+							.filter((r) =>
+								(RECONCILE_FINALIZABLE_STATUSES as readonly string[]).includes(
+									r.status,
+								),
+							);
 				if (!dryRun && finalizable.length > 0) {
 					if (!deps.transitionOpts) {
 						// finalize unavailable = finalize failed (test/abnormal
@@ -377,6 +537,52 @@ export async function reconcileDoneThreads(
 					if (finalizeFailed) continue;
 				}
 
+				// ── FLY-1185 D entry: authorized full closeout (nodes + claims +
+				// forensics-release semantics) under the hardcoded per-run caps.
+				// Abort/deadline are re-checked here — this is a mutator boundary
+				// (R9#4: check granularity down to every mutation). ──
+				if (runCloseout && deps.lifecycleCloseout && obsProject) {
+					if (shouldAbort() || now() - startedAt >= runDeadlineMs) {
+						result.deadlineHit = now() - startedAt >= runDeadlineMs;
+						result.aborted = shouldAbort();
+						break;
+					}
+					try {
+						const closeReport = await deps.lifecycleCloseout({
+							issueKey: linear.id,
+							projectName: obsProject,
+							disposition:
+								linear.stateType === "canceled" ? "canceled" : "shipped",
+							extraAliases: aliasKeys,
+							// Codex R1#14: the per-run mutator budget is enforced
+							// INSIDE the executor, per node, before each mutation.
+							budget: closeoutBudget,
+							// Codex R2#5: reopen wins — the executor re-reads Linear
+							// before every mutation (5s TTL guards the API rate).
+							freshAuthority: makeFreshAuthority(
+								() => lookupIssue(linearApiKey, thread.issue_id),
+								now,
+							),
+						});
+						result.closeoutRuns++;
+						if (
+							closeReport &&
+							(closeReport.outcome === "blocked" ||
+								closeReport.outcome === "conflict")
+						) {
+							// Codex R1#3 family: nodes not confirmed gone → no archive
+							// this pass; the next run (or sweep) continues.
+							continue;
+						}
+					} catch (err) {
+						result.failed++;
+						log(
+							`${thread.issue_id}: lifecycle closeout failed: ${err instanceof Error ? err.message : String(err)}`,
+						);
+						continue; // fail-closed for THIS issue only
+					}
+				}
+
 				// veto #3 — closeRunner can await cmux/tmux teardown for seconds;
 				// recheck liveness AND the thread's own archived/missing state
 				// right before the PATCH (another path may have archived it, or
@@ -391,6 +597,20 @@ export async function reconcileDoneThreads(
 					!store.getChatThreadByThreadId(thread.thread_id)
 				) {
 					result.skippedAlreadyArchived++;
+					continue;
+				}
+
+				// Codex R2#5: FRESH Linear re-read right before the archive — a
+				// founder reopen during the closeout/liveness awaits must win
+				// (fail-closed on lookup failure: skip, never archive on stale).
+				try {
+					const recheck = await lookupIssue(linearApiKey, thread.issue_id);
+					if (!recheck || !DONE_STATE_TYPES.has(recheck.stateType)) {
+						result.skippedNotDone++;
+						continue;
+					}
+				} catch {
+					result.skippedUnresolved++;
 					continue;
 				}
 
@@ -478,6 +698,159 @@ export async function reconcileDoneThreads(
 				log(
 					`${thread.issue_id}: ${err instanceof Error ? err.message : String(err)}`,
 				);
+			}
+		}
+
+		// ── FLY-1185 D residue union (Codex R1#1): issues holding live/husk
+		// sessions or stale starting launch-claims but NO unarchived thread
+		// still need the observation + authorized-closeout check. Same caps,
+		// same deadline, same budget; no thread → no archive step here. ──
+		if (!result.aborted && !result.deadlineHit) {
+			const seenIssueKeys = new Set(candidates.map((c) => c.issue_id));
+			const residue = new Map<string, string>();
+			// Codex R2#4: the FULL non-terminal status set (pending/design_done/
+			// blocked/failed included) — a thread-less issue in ANY live state is
+			// residue. Terminal-status husks with a live window are owned by the
+			// per-node confirm inside the closeout (they surface whenever their
+			// issue is examined) plus the FLY-817 husk reconcile + E sweep.
+			for (const sess of store.listNonTerminalSessions()) {
+				if (!seenIssueKeys.has(sess.issue_id)) {
+					residue.set(sess.issue_id, sess.project_name);
+				}
+			}
+			// R3#4 + R6#5 + R7#3: TERMINAL-LIVE residue — a terminal session
+			// whose runner is STILL alive. `found` only proves a CommDB record;
+			// probe the actual process and count only alive/indeterminate (an
+			// error is fail-closed → kept, an absent/dead pane is dropped). A
+			// fully-zeroed issue (process gone) is not re-added → no cap
+			// starvation.
+			for (const sess of store.listTerminalSessionsWithResidue()) {
+				if (seenIssueKeys.has(sess.issue_id) || residue.has(sess.issue_id)) {
+					continue;
+				}
+				const look = lookupTarget(sess.execution_id, sess.project_name);
+				// R8#2: three-state, fail-closed. `gone` is the ONLY drop — a
+				// `error` (CommDB corruption/lock) can NOT prove the target
+				// vanished, so it is kept as a cleanup-pending residue candidate
+				// (the lookup's own fail-closed contract; deps note: error ⇒ LIVE).
+				// Only a `found` (real CommDB record) is probed for liveness.
+				if (look.kind === "gone") continue;
+				if (look.kind === "found") {
+					const live = await probeLiveness(look.target.tmuxWindow).catch(
+						() => "indeterminate" as RunnerLiveness,
+					);
+					if (live === "absent" || live === "dead_pin") continue;
+				}
+				residue.set(sess.issue_id, sess.project_name);
+			}
+			// R3#4 + R6#5 + R7#3: binding-owned residue — a SEPARATE D source
+			// (plan.md:143/156): real residue when the bound worktree still
+			// PHYSICALLY exists on disk, NOT only when a live runner remains (a
+			// dead-runner + leftover worktree/branch + open PR is exactly the
+			// residue D must reconcile — E-sweep skips git objects behind an open
+			// PR and can't run D's mechanically-bound PR close). A zeroed issue
+			// (worktree removed) → path gone → not re-added → no cap starvation.
+			for (const project of projects) {
+				for (const b of store.listWorktreeBindings(project.projectName)) {
+					const sess = store.getSession(b.execution_id);
+					if (!sess || seenIssueKeys.has(sess.issue_id)) continue;
+					if (residue.has(sess.issue_id)) continue;
+					if (b.path && existsSync(b.path)) {
+						residue.set(sess.issue_id, sess.project_name);
+					}
+				}
+			}
+			for (const claim of store.listStaleStartingClaims(30)) {
+				if (!seenIssueKeys.has(claim.rootUuid)) {
+					residue.set(claim.rootUuid, claim.project);
+				}
+			}
+			// R4#6 + R5#6: Linear-mismatch source — Linear reads terminal but a
+			// local session is STILL non-terminal (a genuine local/Linear
+			// disagreement that needs reconciling). Crucially this is gated on a
+			// TRUE mismatch: a fully-zeroed issue (every local session already
+			// terminal) is NOT re-added each round, so historical terminal issues
+			// can never starve the per-run closeout cap (Codex R5#6). The
+			// non-terminal sessions are also covered by listNonTerminalSessions
+			// above; this is the defensive Linear-authority cross-check.
+			const NONTERMINAL_GATE = (st: string): boolean =>
+				st !== "completed" &&
+				st !== "terminated" &&
+				st !== "rejected" &&
+				st !== "deferred" &&
+				st !== "shelved" &&
+				st !== "approved" &&
+				st !== "timeout";
+			for (const obs of store.listTerminalLinearObservations()) {
+				if (seenIssueKeys.has(obs.issueUuid) || residue.has(obs.issueUuid)) {
+					continue;
+				}
+				const rows = store.getSessionsForIssueAliases([obs.issueUuid]);
+				if (rows.some((r) => NONTERMINAL_GATE(r.status))) {
+					residue.set(obs.issueUuid, obs.project);
+				}
+			}
+			for (const [issueKey, residueProject] of residue) {
+				if (shouldAbort()) {
+					result.aborted = true;
+					break;
+				}
+				if (now() - startedAt >= runDeadlineMs) {
+					result.deadlineHit = true;
+					break;
+				}
+				if (result.scanned + result.residueScanned >= maxCandidates) {
+					result.capped = true;
+					break;
+				}
+				result.residueScanned++;
+				try {
+					let linear: Awaited<ReturnType<ReconcileLinearLookup>>;
+					try {
+						linear = await lookupIssue(deps.linearApiKey, issueKey);
+					} catch {
+						continue;
+					}
+					if (!linear) continue;
+					const obs = store.observeLinearStateAndClaimCloseout({
+						project: residueProject,
+						issueUuid: linear.id,
+						stateType: linear.stateType,
+						linearUpdatedAt: linear.updatedAt ?? "",
+					});
+					if (!DONE_STATE_TYPES.has(linear.stateType)) continue;
+					const authorized =
+						obs.outcome !== "conflict" && obs.terminalAuthorized;
+					const canRun =
+						authorized &&
+						(deps.newMutatorsEnabled ?? true) &&
+						!!deps.lifecycleCloseout &&
+						!dryRun &&
+						result.closeoutRuns < MAX_ISSUE_CLOSEOUTS_PER_RUN;
+					if (!canRun) continue;
+					await deps.lifecycleCloseout?.({
+						issueKey: linear.id,
+						projectName: residueProject,
+						disposition:
+							linear.stateType === "canceled" ? "canceled" : "shipped",
+						extraAliases: [
+							...new Set(
+								[issueKey, linear.id, linear.identifier].filter(Boolean),
+							),
+						],
+						budget: closeoutBudget,
+						freshAuthority: makeFreshAuthority(
+							() => lookupIssue(linearApiKey, issueKey),
+							now,
+						),
+					});
+					result.closeoutRuns++;
+				} catch (err) {
+					result.failed++;
+					log(
+						`residue ${issueKey}: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
 			}
 		}
 

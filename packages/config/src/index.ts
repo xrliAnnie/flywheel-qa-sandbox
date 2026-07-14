@@ -156,6 +156,7 @@ export type {
 	CheckpointConfig,
 	CheckpointsConfig,
 	CIConfig,
+	CleanupConfig,
 	DecisionLayerConfig,
 	DocFlowConfig,
 	ExecutorBackend,

@@ -31,6 +31,7 @@ import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import { makeFinalizeThreeStagePhases } from "./post-ship-finalization.js";
 import { reconcileGatewayRetry } from "./retry-dispatch-wal.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
+import { reapRunnerMcp } from "./runner-teardown.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { waitForSession } from "./session-wait.js";
@@ -1164,6 +1165,9 @@ export async function handleTerminate(
 		? lookupTmuxTarget(executionId, session.project_name)
 		: ({ kind: "gone" } as const);
 	if (lookup.kind === "found") {
+		// FLY-1185 §2.5: reap MCP-family descendants BEFORE any kill (pane pid
+		// only resolvable while the window lives). Reap-only, best-effort.
+		await reapRunnerMcp(lookup.target.tmuxWindow).catch(() => undefined);
 		// FLY-638: tear down the per-runner cmux LINKED session BEFORE the window
 		// kill (display-message needs the window alive). Best-effort.
 		await killCmuxLinkedSession(lookup.target.tmuxWindow).catch((e: Error) =>

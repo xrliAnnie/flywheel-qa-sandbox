@@ -47,6 +47,19 @@ export interface EventEnvelope {
 	ponytailCondition?: string;
 }
 
+/**
+ * FLY-1185 §2.1: the create-time worktree authority binding Blueprint carries
+ * alongside `worktree_ready`. ONLY the bridge-local DirectEventSink turns it
+ * into StateStore authority (`bindWorktreeOnce`); the HTTP TeamLeadClient
+ * deliberately NEVER transmits it — the shared `/events` ingest token is
+ * runner-visible, so the HTTP mode structurally has no authority channel and
+ * its worktree objects stay unowned/manual-only.
+ */
+export interface WorktreeBindingInfo {
+	branch: string;
+	generation: string;
+}
+
 export interface ExecutionEventEmitter {
 	emitStarted(env: EventEnvelope): Promise<void>;
 	/**
@@ -56,8 +69,15 @@ export interface ExecutionEventEmitter {
 	 * stage handlers downstream rely on the session row carrying the right
 	 * worktree path, otherwise `skip.json` and review markers land in a
 	 * fallback directory the Runner can't see.
+	 *
+	 * FLY-1185: `binding` (branch + creation generation) is authority input
+	 * for the bridge-local sink only — see WorktreeBindingInfo.
 	 */
-	emitWorktreeReady(env: EventEnvelope, worktreePath: string): Promise<void>;
+	emitWorktreeReady(
+		env: EventEnvelope,
+		worktreePath: string,
+		binding?: WorktreeBindingInfo,
+	): Promise<void>;
 	emitCompleted(
 		env: EventEnvelope,
 		result: BlueprintResult,
@@ -173,10 +193,16 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 	 * creation, before adapter execution. Uses the reliable post path so
 	 * the caller can rely on Bridge having persisted `worktree_path`
 	 * before any downstream stage handler runs.
+	 *
+	 * FLY-1185 §2.1 (R5#1 option a): the binding parameter is ACCEPTED but
+	 * NEVER transmitted — the shared `/events` ingest token is runner-visible,
+	 * so HTTP mode must be structurally incapable of writing deletion
+	 * authority. `worktree_ready` over HTTP stays display metadata only.
 	 */
 	async emitWorktreeReady(
 		env: EventEnvelope,
 		worktreePath: string,
+		_binding?: WorktreeBindingInfo,
 	): Promise<void> {
 		await this.postEventReliable({
 			event_id: randomUUID(),
@@ -321,6 +347,7 @@ export class NoOpEventEmitter implements ExecutionEventEmitter {
 	async emitWorktreeReady(
 		_env: EventEnvelope,
 		_worktreePath: string,
+		_binding?: WorktreeBindingInfo,
 	): Promise<void> {}
 	async emitCompleted(
 		_env: EventEnvelope,

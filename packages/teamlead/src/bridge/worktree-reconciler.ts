@@ -317,7 +317,7 @@ export async function reconcileMergedWorktrees(
 
 // ── Bridge composition: build real deps (gh/git/tmux) + run for a project ──
 
-function gitExec(
+export function gitExec(
 	args: string[],
 	cwd: string,
 ): Promise<{ code: number; stdout: string }> {
@@ -331,9 +331,16 @@ function gitExec(
 	});
 }
 
+/** FLY-1185: the gh PR evidence cache shape (shared with the sweep v2). */
+export type GhPrSets = {
+	merged: Map<string, Set<string>>;
+	open: Set<string>;
+	openTruncated: boolean;
+};
+
 /** Pull merged/open PR head sets via gh, repo-scoped to projectRoot.
  *  Failure → undefined (fail-closed: caller treats as "unknown"). */
-async function ghPrSets(projectRoot: string): Promise<
+export async function ghPrSets(projectRoot: string): Promise<
 	| {
 			merged: Map<string, Set<string>>;
 			open: Set<string>;

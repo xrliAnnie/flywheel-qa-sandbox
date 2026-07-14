@@ -11,15 +11,15 @@ import {
 } from "../reserved-endpoints.js";
 
 describe("RESERVED_ENDPOINTS table integrity (§4.3)", () => {
-	it("contains exactly 14 Surface A + 1 Surface B entries", () => {
+	it("contains exactly 17 Surface A + 1 Surface B entries (FLY-1185 adds 3 issue-lifecycle)", () => {
 		const a = RESERVED_ENDPOINTS.filter((e) => e.surface === "A");
 		const b = RESERVED_ENDPOINTS.filter((e) => e.surface === "B");
-		expect(a).toHaveLength(14);
+		expect(a).toHaveLength(17);
 		expect(b).toHaveLength(1);
-		expect(RESERVED_ENDPOINTS).toHaveLength(15);
+		expect(RESERVED_ENDPOINTS).toHaveLength(18);
 	});
 
-	it("covers all 8 action keys", () => {
+	it("covers all 12 action keys", () => {
 		const keys = new Set(RESERVED_ENDPOINTS.map((e) => e.action));
 		expect([...keys].sort()).toEqual(
 			[
@@ -28,12 +28,23 @@ describe("RESERVED_ENDPOINTS table integrity (§4.3)", () => {
 				"close_runner",
 				"close_tmux",
 				"defer",
+				"lifecycle_apply",
+				"park_issue",
 				"reject",
 				"retry",
 				"shelve",
 				"terminate",
+				"unpark_issue",
 			].sort(),
 		);
+	});
+
+	// FLY-1185: the issue-lifecycle kind must NOT expand the gateway's
+	// runner-lifecycle enum (the FLY-245 authorization surface).
+	it("issue_lifecycle actions are NOT in LIFECYCLE_ACTIONS", () => {
+		expect(LIFECYCLE_ACTIONS).not.toContain("park_issue");
+		expect(LIFECYCLE_ACTIONS).not.toContain("unpark_issue");
+		expect(LIFECYCLE_ACTIONS).not.toContain("lifecycle_apply");
 	});
 
 	it("Surface B is the gate-response endpoint", () => {

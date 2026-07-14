@@ -234,9 +234,11 @@ describe("FLY-751: runnerMcpProfile wiring", () => {
 	// FLY-812 (founder review 2026-07-03): chrome defaults ON and the default
 	// slim is serena ONLY (discord + playwright kept fleet-wide for
 	// runner/geoforge3d testing). disableChrome:false unless the runner opts out.
+	// FLY-1185 §2.7: profiles carry the positive playwright opt-in channel.
 	const DEFAULT_PROFILE = {
 		disabledPlugins: ["serena@claude-plugins-official"],
 		disableChrome: false,
+		enabledPluginsExtra: [],
 	};
 
 	function startWith(req: Record<string, unknown>) {
@@ -279,19 +281,30 @@ describe("FLY-751: runnerMcpProfile wiring", () => {
 		expect(ctxOf(runtime).runnerMcpProfile).toEqual({
 			disabledPlugins: ["serena@claude-plugins-official"],
 			disableChrome: true,
+			enabledPluginsExtra: [],
 		});
 	});
 
-	it("start(): QA run gets the serena-only slim, chrome on", async () => {
+	it("start(): QA run gets the serena-only slim, chrome on, playwright opt-in", async () => {
 		const { runtime, start } = startWith({ sessionRole: "qa" });
 		await start();
-		expect(ctxOf(runtime).runnerMcpProfile).toEqual(DEFAULT_PROFILE);
+		expect(ctxOf(runtime).runnerMcpProfile).toEqual({
+			...DEFAULT_PROFILE,
+			enabledPluginsExtra: ["playwright@claude-plugins-official"],
+		});
 	});
 
-	it("start(): full-mcp label opts out (profile null)", async () => {
+	// FLY-1185 §2.7: full-mcp no longer degenerates to null — with the machine
+	// default-off in place, "everything available" carries the positive
+	// playwright entry (or the machine default would silently win).
+	it("start(): full-mcp label → no slim + playwright opt-in survives", async () => {
 		const { runtime, start } = startWith({ issueLabels: ["full-mcp"] });
 		await start();
-		expect(ctxOf(runtime).runnerMcpProfile).toBeNull();
+		expect(ctxOf(runtime).runnerMcpProfile).toEqual({
+			disabledPlugins: [],
+			disableChrome: false,
+			enabledPluginsExtra: ["playwright@claude-plugins-official"],
+		});
 	});
 
 	it("start(): FLYWHEEL_RUNNER_SLIM_MCP=0 kill-switch (profile null)", async () => {
@@ -320,7 +333,10 @@ describe("FLY-751: runnerMcpProfile wiring", () => {
 			runAttempt: 1,
 			sessionRole: "qa",
 		});
-		expect(ctxOf(runtime).runnerMcpProfile).toEqual(DEFAULT_PROFILE);
+		expect(ctxOf(runtime).runnerMcpProfile).toEqual({
+			...DEFAULT_PROFILE,
+			enabledPluginsExtra: ["playwright@claude-plugins-official"],
+		});
 	});
 
 	it("retry: default run gets the full slim profile", async () => {

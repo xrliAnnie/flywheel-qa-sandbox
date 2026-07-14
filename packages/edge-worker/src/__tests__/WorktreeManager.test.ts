@@ -25,8 +25,17 @@ function makeMockExec(responses: Array<{ stdout: string } | Error> = []): {
 } {
 	const calls: Array<{ cmd: string; args: string[]; cwd: string }> = [];
 	let idx = 0;
+	// FLY-1185: create() now resolves the generation-marker admin path via
+	// `rev-parse --git-path flywheel.generation` and WRITES the marker file.
+	// Intercept that probe (without consuming a scripted response) and hand it
+	// a real temp path so mock-exec create() tests keep their response scripts.
+	const markerDir = fs.mkdtempSync(path.join(os.tmpdir(), "wtm-marker-"));
+	let markerN = 0;
 	const fn: WorktreeExecFn = async (cmd, args, cwd) => {
 		calls.push({ cmd, args, cwd });
+		if (cmd === "git" && args.includes("flywheel.generation")) {
+			return { stdout: path.join(markerDir, `marker-${markerN++}`) };
+		}
 		const resp = responses[idx++];
 		if (resp instanceof Error) throw resp;
 		return resp ?? { stdout: "" };
@@ -210,6 +219,9 @@ describe("WorktreeManager", () => {
 				worktreePath: "/tmp/wt/proj/repo-GEO-42",
 				branch: "repo-GEO-42",
 				mainRepoPath: "/main/repo",
+				// FLY-1185 §2.1: creation-generation nonce (UUID) — the create-time
+				// authority binding input.
+				generation: expect.stringMatching(/^[0-9a-f-]{36}$/),
 			});
 		});
 

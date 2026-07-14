@@ -232,6 +232,14 @@ export interface DocFlowConfig {
  * never on — see the policy resolver.
  */
 /**
+ * FLY-1185: lifecycle cleanup policy block (`cleanup:` in .flywheel/config.yaml).
+ */
+export interface CleanupConfig {
+	/** Exact branch names or trailing-`*` prefixes never auto-deleted. */
+	protected_branches?: string[];
+}
+
+/**
  * FLY-1048 PR-C (C3-w): per-project detection-escalation knobs (PRD §4.3:
  * the ~30min Lead grace before a founder page is "global + per-project 可配").
  * Absent block / absent field → the global env / built-in default applies.
@@ -643,6 +651,16 @@ export interface FlywheelConfig {
 	founder_ux_gate?: FounderUxGateConfig;
 	/** FLY-725: founder milestone-report push. Absent or enabled:false = off (byte-compatible). */
 	founder_milestone_report?: FounderMilestoneReportConfig;
+	/**
+	 * FLY-1185: lifecycle-closeout cleanup policy. Config, NOT a feature flag —
+	 * absent / empty list = today's behavior. `protected_branches` entries are
+	 * exact branch names or trailing-`*` prefixes; a protected branch is exempt
+	 * from EVERY automatic deletion, on both the branch and worktree side.
+	 * A malformed block disables ALL cleanup deleters for the project
+	 * (fail-closed, resolved by the Bridge's CleanupPolicy builder — the loader
+	 * itself never hard-fails on this optional key).
+	 */
+	cleanup?: CleanupConfig;
 	/**
 	 * FLY-615: per-project ponytail (code-minimalism plugin) rollout layer.
 	 * Absent or enabled:false → this project does not opt ponytail on by default

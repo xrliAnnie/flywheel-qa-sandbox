@@ -361,6 +361,19 @@ phase_flywheel_home() {
       fi
     done
   fi
+  # FLY-1185 §2.7 (prevention leg): machine-level playwright default-off. A host
+  # without a Claude settings file yet is narrated, not failed — the runbook's
+  # first Claude login creates it and the operator re-runs this script then.
+  if [ -f "$HOME_DIR/.claude/settings.json" ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      plan "setup-mcp-on-demand.sh $HOME_DIR/.claude/settings.json (playwright default-off)"
+    else
+      run bash "$REPO_ROOT/scripts/setup-mcp-on-demand.sh" "$HOME_DIR/.claude/settings.json" \
+        || die "setup-mcp-on-demand failed (settings untouched — fix and re-run)"
+    fi
+  else
+    log "no $HOME_DIR/.claude/settings.json yet — run scripts/setup-mcp-on-demand.sh after first Claude login"
+  fi
 }
 
 phase_tokens() {

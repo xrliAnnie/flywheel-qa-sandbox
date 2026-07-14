@@ -60,6 +60,7 @@ import {
 import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import {
 	isPostApproveShipComplete,
+	type LifecycleShipInfra,
 	makeFinalizeThreeStagePhases,
 	markEvidenceGapCompletion,
 	runPostShipFinalization,
@@ -425,6 +426,10 @@ export function createEventRouter(
 	// derive-from-state refresh of all three faces; unset (byte-compat /
 	// FLYWHEEL_ISSUE_DISPLAY_REFRESH=0) → the legacy per-face stamp+pin path.
 	issueDisplayRefresh?: IssueDisplayRefreshHolder,
+	// FLY-1185: the ship-entry lifecycle bundle (remote branch CAS + issue
+	// closeout + trailing sweep) built once at the composition root. Absent →
+	// classic finalization only (byte-compat).
+	lifecycleInfra?: LifecycleShipInfra,
 ): Router {
 	const router = Router();
 	const issueStatusEmojiEnabled =
@@ -749,6 +754,14 @@ export function createEventRouter(
 				// later session_started POST will UPSERT and refresh the
 				// fields it cares about (started_at, labels, etc.) via
 				// COALESCE.
+				// FLY-1185 §2.1 (R5#1 option a): the HTTP `worktree_ready` is
+				// DISPLAY METADATA ONLY — the shared /events ingest token is
+				// runner-visible, so this path can NEVER create or modify the
+				// worktree authority binding (that happens exclusively in the
+				// bridge-local DirectEventSink at create time). For a session
+				// that already holds a binding, a divergent HTTP path write is
+				// refused + audited (`worktree_binding_rejected`) instead of
+				// silently repointing the display path a deleter might consult.
 				const worktreePath =
 					typeof payload.worktreePath === "string" &&
 					payload.worktreePath.length > 0
@@ -756,7 +769,22 @@ export function createEventRouter(
 						: undefined;
 				if (worktreePath) {
 					const existing = store.getSession(event.execution_id);
-					if (!existing) {
+					const bound = store.getWorktreeBinding(event.execution_id);
+					if (bound && bound.path !== worktreePath) {
+						store.insertEvent({
+							event_id: `worktree-binding-rejected-http-${event.execution_id}-${event.event_id}`,
+							execution_id: event.execution_id,
+							issue_id: event.issue_id,
+							project_name: event.project_name,
+							event_type: "worktree_binding_rejected",
+							source: "bridge.event-route",
+							payload: {
+								attemptedPath: worktreePath,
+								boundPath: bound.path,
+								via: "http_worktree_ready",
+							},
+						});
+					} else if (!existing) {
 						// Codex R3 #1 fix: when the row is created by
 						// worktree_ready (race condition with the fire-and-
 						// forget session_started POST), keep status as
@@ -1440,6 +1468,8 @@ export function createEventRouter(
 							refreshIssueDisplay: (issueId) =>
 								issueDisplayRefresh?.current?.refresh(issueId) ??
 								Promise.resolve(),
+							// FLY-1185 entry A: remote branch CAS + issue closeout + sweep.
+							...lifecycleInfra,
 						},
 					).catch((err) => {
 						console.error(
@@ -1885,6 +1915,8 @@ export function createEventRouter(
 										refreshIssueDisplay: (issueId) =>
 											issueDisplayRefresh?.current?.refresh(issueId) ??
 											Promise.resolve(),
+										// FLY-1185 entry A: remote branch CAS + issue closeout + sweep.
+										...lifecycleInfra,
 									},
 								).catch((err) => {
 									console.error(

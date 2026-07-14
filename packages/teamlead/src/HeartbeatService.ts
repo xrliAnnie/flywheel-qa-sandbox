@@ -305,7 +305,40 @@ export class HeartbeatService implements ReconnectController {
 		 * its own `FLYWHEEL_PARKED_PHASE_STALE_HOURS` threshold. Absent → inert.
 		 */
 		private staleParkedClose?: StaleParkedCloseConfig,
+		/**
+		 * FLY-1185 §2.5 (R3#3): detached maintenance tick — the lifecycle
+		 * backstop's scheduler (per-tick MCP orphan reap; every-N-ticks project
+		 * sweep — the CALLBACK owns that policy; this service only guarantees
+		 * the dispatch contract): NEVER awaited into the core check() chain
+		 * (fire-and-forget with its own catch), single-flight (a slow pass
+		 * spanning ticks is skipped, never run concurrently), tick 0 fires on
+		 * the first cycle (the boot pass). A callback failure can never affect
+		 * checkStuck/reapOrphans. Absent → byte-compat no-op.
+		 */
+		private onMaintenanceTick?: (tick: number) => Promise<void>,
 	) {}
+
+	private maintenanceInFlight = false;
+	private maintenanceTickCount = 0;
+
+	/** FLY-1185 §2.5: detached, single-flight maintenance dispatch. */
+	private dispatchMaintenanceTick(): void {
+		if (!this.onMaintenanceTick) return;
+		if (this.maintenanceInFlight) return; // slow pass spans ticks → skip
+		this.maintenanceInFlight = true;
+		const tick = this.maintenanceTickCount++;
+		void this.onMaintenanceTick(tick)
+			.catch((err) => {
+				console.error(
+					`[maintenance-tick] pass ${tick} failed (core heartbeat unaffected): ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+			})
+			.finally(() => {
+				this.maintenanceInFlight = false;
+			});
+	}
 
 	start(): void {
 		if (this.timer) return;
@@ -324,6 +357,10 @@ export class HeartbeatService implements ReconnectController {
 	}
 
 	async check(): Promise<void> {
+		// FLY-1185 §2.5: maintenance dispatch OUTSIDE the core try — detached,
+		// so neither direction can affect the other (a core-cycle throw doesn't
+		// skip maintenance; a maintenance failure never touches the core chain).
+		this.dispatchMaintenanceTick();
 		// FLY-639: the whole cycle is wrapped so a StateStore sql.js error
 		// (getStuckSessions / getOrphanSessions / getActiveSessions / …) can NEVER
 		// crash the Bridge via this heartbeat loop. Contract: check() itself never

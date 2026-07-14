@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createLogger } from "flywheel-core";
@@ -19,6 +20,15 @@ export interface WorktreeConfig {
 	baseDir?: string;
 	/** @internal — override background delete for testing */
 	bgDeleteFn?: BgDeleteFn;
+	/**
+	 * FLY-1185 §2.11: injected repo mutation coordinator (teamlead's
+	 * repo-mutation-lock — DI so edge-worker never imports teamlead). When
+	 * present, every structural mutation (create / remove / removeIfExists /
+	 * removeCleanWorktreeByPath / pruneOrphans) runs inside the per-main-repo
+	 * critical section; the lock is re-entrant, so a sweep that already holds
+	 * it can call these without deadlock. Absent → today's unlocked behavior.
+	 */
+	withRepoLock?: <T>(mainRepoPath: string, fn: () => Promise<T>) => Promise<T>;
 }
 
 export interface WorktreeInfo {
@@ -27,6 +37,23 @@ export interface WorktreeInfo {
 	worktreePath: string;
 	branch: string;
 	mainRepoPath: string;
+	/**
+	 * FLY-1185 §2.1: creation-generation nonce, written by `create()` into the
+	 * worktree's git ADMIN area (`flywheel.generation` — creator-written, never
+	 * worktree content, porcelain-invisible). The orchestrator binds it via
+	 * `StateStore.bindWorktreeOnce`; a same-path/same-branch REBUILD gets a new
+	 * nonce, so a stale binding can never authorize deleting the rebuild (the
+	 * same-family ABA root cure).
+	 */
+	generation: string;
+}
+
+/** FLY-1185 §2.1: classification result for a candidate worktree. */
+export interface WorktreeOwnership {
+	ownership: "session_path" | "unowned";
+	key: string | null;
+	/** Present only for ownership === "session_path". */
+	executionId?: string;
 }
 
 export interface ExternalWorktree {
@@ -114,11 +141,21 @@ export class WorktreeManager {
 	private readonly baseDir: string | undefined;
 	private readonly exec: WorktreeExecFn;
 	private readonly bgDelete: BgDeleteFn;
+	private readonly repoLock?: <T>(
+		mainRepoPath: string,
+		fn: () => Promise<T>,
+	) => Promise<T>;
 
 	constructor(config?: WorktreeConfig, execFn?: WorktreeExecFn) {
 		this.baseDir = config?.baseDir;
 		this.exec = execFn ?? defaultExec;
 		this.bgDelete = config?.bgDeleteFn ?? defaultBgDelete;
+		this.repoLock = config?.withRepoLock;
+	}
+
+	/** FLY-1185 §2.11: run inside the injected repo lock (no-op when absent). */
+	private locked<T>(mainRepoPath: string, fn: () => Promise<T>): Promise<T> {
+		return this.repoLock ? this.repoLock(mainRepoPath, fn) : fn();
 	}
 
 	/** Lowercase slug derived from the repo directory name. */
@@ -165,60 +202,124 @@ export class WorktreeManager {
 		issueId: string;
 		startPoint?: string;
 	}): Promise<WorktreeInfo> {
-		const branch = this.worktreeName(opts.mainRepoPath, opts.issueId);
-		const worktreePath = this.worktreeDir(
-			opts.mainRepoPath,
-			opts.projectName,
-			opts.issueId,
-		);
-		// FLY-115: QA test-injection hook. When opts.startPoint is not supplied
-		// by the caller, fall back to the FLYWHEEL_RUNNER_START_POINT env var so
-		// test-deploy.sh can pin Runner worktrees to a PR branch on the sandbox
-		// fork. Unset in prod → falls through to origin/main (unchanged).
-		const startPoint =
-			opts.startPoint ??
-			process.env.FLYWHEEL_RUNNER_START_POINT ??
-			"origin/main";
+		return this.locked(opts.mainRepoPath, async () => {
+			const branch = this.worktreeName(opts.mainRepoPath, opts.issueId);
+			const worktreePath = this.worktreeDir(
+				opts.mainRepoPath,
+				opts.projectName,
+				opts.issueId,
+			);
+			// FLY-115: QA test-injection hook. When opts.startPoint is not supplied
+			// by the caller, fall back to the FLYWHEEL_RUNNER_START_POINT env var so
+			// test-deploy.sh can pin Runner worktrees to a PR branch on the sandbox
+			// fork. Unset in prod → falls through to origin/main (unchanged).
+			const startPoint =
+				opts.startPoint ??
+				process.env.FLYWHEEL_RUNNER_START_POINT ??
+				"origin/main";
 
-		// git worktree add
-		// FLY-99: -B (reset-or-create) replaces -b (create-only) so a stale
-		// local branch left behind by a crashed Runner is reset to startPoint
-		// instead of failing with "branch already exists". removeIfExists() still
-		// runs `branch -D` up front — -B is the belt, branch -D is the suspenders.
-		// -B still fails if the branch is currently checked out in another
-		// worktree, but that is a concurrent-scheduling concern, not FLY-99 scope.
-		await this.exec(
+			// git worktree add
+			// FLY-99: -B (reset-or-create) replaces -b (create-only) so a stale
+			// local branch left behind by a crashed Runner is reset to startPoint
+			// instead of failing with "branch already exists". removeIfExists() still
+			// runs `branch -D` up front — -B is the belt, branch -D is the suspenders.
+			// -B still fails if the branch is currently checked out in another
+			// worktree, but that is a concurrent-scheduling concern, not FLY-99 scope.
+			await this.exec(
+				"git",
+				[
+					"-C",
+					opts.mainRepoPath,
+					"worktree",
+					"add",
+					worktreePath,
+					"-B",
+					branch,
+					`${startPoint}^{commit}`,
+				],
+				opts.mainRepoPath,
+			);
+
+			// git config push.autoSetupRemote
+			await this.exec(
+				"git",
+				[
+					"-C",
+					worktreePath,
+					"config",
+					"--local",
+					"push.autoSetupRemote",
+					"true",
+				],
+				worktreePath,
+			);
+
+			// FLY-1185 §2.1: creation-generation nonce into the git ADMIN area
+			// (resolved via --git-path, never guessed from `.git/worktrees/<id>`).
+			// Creator-written, porcelain-invisible; a rebuild gets a fresh nonce.
+			// A marker-write failure fails the create (fail-closed: a worktree
+			// without a generation could never be classified as session-owned).
+			const generation = randomUUID();
+			const markerPath = await this.resolveGenerationMarkerPath(worktreePath);
+			fs.writeFileSync(markerPath, `${generation}\n`, "utf8");
+
+			return {
+				projectName: opts.projectName,
+				issueId: opts.issueId,
+				worktreePath,
+				branch,
+				mainRepoPath: opts.mainRepoPath,
+				generation,
+			};
+		});
+	}
+
+	/** FLY-1185 §2.1: absolute admin-area path of the generation marker. */
+	private async resolveGenerationMarkerPath(
+		worktreePath: string,
+	): Promise<string> {
+		const { stdout } = await this.exec(
 			"git",
 			[
 				"-C",
-				opts.mainRepoPath,
-				"worktree",
-				"add",
 				worktreePath,
-				"-B",
-				branch,
-				`${startPoint}^{commit}`,
+				"rev-parse",
+				"--path-format=absolute",
+				"--git-path",
+				"flywheel.generation",
 			],
-			opts.mainRepoPath,
-		);
-
-		// git config push.autoSetupRemote
-		await this.exec(
-			"git",
-			["-C", worktreePath, "config", "--local", "push.autoSetupRemote", "true"],
 			worktreePath,
 		);
+		return stdout.trim();
+	}
 
-		return {
-			projectName: opts.projectName,
-			issueId: opts.issueId,
-			worktreePath,
-			branch,
-			mainRepoPath: opts.mainRepoPath,
-		};
+	/**
+	 * FLY-1185 §2.1: read a worktree's admin-area generation marker.
+	 * `undefined` when missing/unreadable (pre-FLY-1185 worktree, or a
+	 * non-Flywheel worktree) — callers treat that as "no ownership proof".
+	 */
+	async readWorktreeGeneration(
+		worktreePath: string,
+	): Promise<string | undefined> {
+		try {
+			const markerPath = await this.resolveGenerationMarkerPath(worktreePath);
+			const text = fs.readFileSync(markerPath, "utf8").trim();
+			return text.length > 0 ? text : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 
 	async remove(mainRepoPath: string, worktreePath: string): Promise<void> {
+		return this.locked(mainRepoPath, () =>
+			this.removeUnlocked(mainRepoPath, worktreePath),
+		);
+	}
+
+	private async removeUnlocked(
+		mainRepoPath: string,
+		worktreePath: string,
+	): Promise<void> {
 		// Phase 1: rename to temp dir (same filesystem — avoids EXDEV)
 		const tmpPath = `${worktreePath}.removing-${Date.now()}`;
 		try {
@@ -283,6 +384,16 @@ export class WorktreeManager {
 		projectName: string,
 		issueId: string,
 	): Promise<boolean> {
+		return this.locked(mainRepoPath, () =>
+			this.removeIfExistsUnlocked(mainRepoPath, projectName, issueId),
+		);
+	}
+
+	private async removeIfExistsUnlocked(
+		mainRepoPath: string,
+		projectName: string,
+		issueId: string,
+	): Promise<boolean> {
 		const branch = this.worktreeName(mainRepoPath, issueId);
 		const worktreePath = this.worktreeDir(mainRepoPath, projectName, issueId);
 
@@ -292,8 +403,9 @@ export class WorktreeManager {
 		if (await this.isRegistered(mainRepoPath, worktreePath)) {
 			// remove() uses rename + prune + background rm — race-free because
 			// the original path is renamed first, so a follow-up create() can
-			// immediately reclaim it.
-			await this.remove(mainRepoPath, worktreePath);
+			// immediately reclaim it. (Unlocked variant — we already hold the
+			// repo lock from the public wrapper.)
+			await this.removeUnlocked(mainRepoPath, worktreePath);
 			cleaned = true;
 		} else if (fs.existsSync(worktreePath)) {
 			// Orphan directory: exists on disk but not registered as a worktree.
@@ -355,26 +467,28 @@ export class WorktreeManager {
 		mainRepoPath: string,
 		projectName: string,
 	): Promise<string[]> {
-		const worktrees = await this.list(mainRepoPath);
-		const pruned: string[] = [];
+		return this.locked(mainRepoPath, async () => {
+			const worktrees = await this.list(mainRepoPath);
+			const pruned: string[] = [];
 
-		const projectPrefix = this.worktreePrefix(mainRepoPath, projectName);
+			const projectPrefix = this.worktreePrefix(mainRepoPath, projectName);
 
-		const branchPrefix = `${this.repoSlug(mainRepoPath)}-`;
+			const branchPrefix = `${this.repoSlug(mainRepoPath)}-`;
 
-		for (const wt of worktrees) {
-			// Only prune project-scoped branches under this project's directory
-			if (!wt.branch?.startsWith(branchPrefix)) continue;
-			if (!wt.path.startsWith(projectPrefix)) continue;
-			if (fs.existsSync(wt.path)) continue;
+			for (const wt of worktrees) {
+				// Only prune project-scoped branches under this project's directory
+				if (!wt.branch?.startsWith(branchPrefix)) continue;
+				if (!wt.path.startsWith(projectPrefix)) continue;
+				if (fs.existsSync(wt.path)) continue;
 
-			// Dir missing → orphan
-			logger.info("Pruning orphan worktree", { path: wt.path });
-			await this.remove(mainRepoPath, wt.path);
-			pruned.push(wt.path);
-		}
+				// Dir missing → orphan
+				logger.info("Pruning orphan worktree", { path: wt.path });
+				await this.removeUnlocked(mainRepoPath, wt.path);
+				pruned.push(wt.path);
+			}
 
-		return pruned;
+			return pruned;
+		});
 	}
 
 	// ─── FLY-603: dirty-safe cleanup + key resolvers ──────────────
@@ -464,6 +578,20 @@ export class WorktreeManager {
 		worktreePath: string,
 		branch?: string | null,
 	): Promise<{ removed: boolean; branchDeleted: boolean; error?: string }> {
+		return this.locked(mainRepoPath, () =>
+			this.removeCleanWorktreeByPathUnlocked(
+				mainRepoPath,
+				worktreePath,
+				branch,
+			),
+		);
+	}
+
+	private async removeCleanWorktreeByPathUnlocked(
+		mainRepoPath: string,
+		worktreePath: string,
+		branch?: string | null,
+	): Promise<{ removed: boolean; branchDeleted: boolean; error?: string }> {
 		try {
 			await this.exec(
 				"git",
@@ -510,6 +638,73 @@ export class WorktreeManager {
 			wt.path,
 			opts?.deleteBranch ? wt.branch : null,
 		);
+	}
+
+	/**
+	 * FLY-1185 §2.1: classify a candidate worktree's ownership against the
+	 * TRUSTED binding set (StateStore `worktree_binding_*`, fresh-read by the
+	 * caller inside the repo lock). `session_path` requires FOUR-WAY agreement:
+	 *   canonical(binding.path) === canonical(wt.path)
+	 *   ∧ wt.branch === binding.branch
+	 *   ∧ admin-area `flywheel.generation` === binding.generation (byte-equal)
+	 *   ∧ binding complete (all three fields non-empty).
+	 * ANYTHING else — no binding, generation mismatch (same-family rebuild),
+	 * branch drift, marker missing — is `unowned` = manual-only. There is NO
+	 * shape fallback (R6#1: shape can be forged; absence of a binding is never
+	 * proof of legacy).
+	 */
+	async classifyWorktreePath(
+		mainRepoPath: string,
+		projectName: string,
+		wt: ExternalWorktree,
+		trustedBindings: Array<{
+			execution_id: string;
+			path: string;
+			branch: string;
+			generation: string;
+		}>,
+	): Promise<WorktreeOwnership> {
+		const key = this.parseWorktreeKeyFromPath(
+			mainRepoPath,
+			projectName,
+			wt.path,
+		);
+		const canonicalWt = canonicalizeWorktreePath(wt.path);
+		for (const b of trustedBindings) {
+			if (!b.path || !b.branch || !b.generation) continue; // incomplete
+			if (canonicalizeWorktreePath(b.path) !== canonicalWt) continue;
+			if (!wt.branch || wt.branch !== b.branch) continue;
+			const marker = await this.readWorktreeGeneration(wt.path);
+			if (marker !== b.generation) continue; // same-family ABA root cure
+			return { ownership: "session_path", key, executionId: b.execution_id };
+		}
+		return { ownership: "unowned", key };
+	}
+
+	/**
+	 * FLY-1185 §2.8: FORCE removal — callable ONLY after a passed
+	 * quarantine+restore-smoke (the caller enforces that contract; this
+	 * primitive stays dumb). Locked like every other structural mutation.
+	 */
+	async removeWorktreeForce(
+		mainRepoPath: string,
+		worktreePath: string,
+	): Promise<{ removed: boolean; error?: string }> {
+		return this.locked(mainRepoPath, async () => {
+			try {
+				await this.exec(
+					"git",
+					["-C", mainRepoPath, "worktree", "remove", "--force", worktreePath],
+					mainRepoPath,
+				);
+				return { removed: true };
+			} catch (err) {
+				return {
+					removed: false,
+					error: err instanceof Error ? err.message : String(err),
+				};
+			}
+		});
 	}
 }
 

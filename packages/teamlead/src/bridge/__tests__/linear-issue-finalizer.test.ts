@@ -24,7 +24,17 @@ function fakeClient(over: Record<string, unknown> = {}) {
 		],
 	};
 	const team = { states: vi.fn().mockResolvedValue(states) };
-	const issue = { team: Promise.resolve(team) };
+	// FLY-1185 (Codex R2#9): the finalizer now fail-closes on an unreadable
+	// state and double-reads before the write — happy fixtures carry a stable
+	// nonterminal state.
+	const issue = {
+		team: Promise.resolve(team),
+		state: Promise.resolve({
+			id: "s-started",
+			name: "Started",
+			type: "started",
+		}),
+	};
 	return {
 		issue: vi.fn().mockResolvedValue(issue),
 		updateIssue: vi.fn().mockResolvedValue({ success: true }),
@@ -53,6 +63,11 @@ describe("markLinearIssueDone", () => {
 						],
 					}),
 				}),
+				state: Promise.resolve({
+					id: "s-cur",
+					name: "Started",
+					type: "started",
+				}),
 			}),
 		});
 		const r = await markLinearIssueDone(client as never, "ISSUE-1");
@@ -72,6 +87,11 @@ describe("markLinearIssueDone", () => {
 							{ id: "s-done", name: "Done", type: "started" },
 						],
 					}),
+				}),
+				state: Promise.resolve({
+					id: "s-cur",
+					name: "Started",
+					type: "started",
 				}),
 			}),
 		});
@@ -134,5 +154,59 @@ describe("makeLinearDoneFinalizer — gating", () => {
 
 	it("no api key → undefined (no client, no-op)", () => {
 		expect(makeLinearDoneFinalizer({})).toBeUndefined();
+	});
+});
+
+describe("FLY-1185 Codex R2#9 — fail-closed + double-read", () => {
+	it("unreadable state → done:false (fail-closed, zero write)", async () => {
+		const client = fakeClient();
+		(client.issue as ReturnType<typeof vi.fn>).mockResolvedValue({
+			team: Promise.resolve({
+				states: vi.fn().mockResolvedValue({ nodes: [] }),
+			}),
+			// no `state` field at all → unreadable
+		});
+		const r = await markLinearIssueDone(client as never, "ISSUE-1");
+		expect(r.done).toBe(false);
+		expect(r.reason).toBe("state_unreadable_fail_closed");
+		expect(client.updateIssue).not.toHaveBeenCalled();
+	});
+
+	it("canceled state → never overwritten to Done", async () => {
+		const client = fakeClient();
+		(client.issue as ReturnType<typeof vi.fn>).mockResolvedValue({
+			team: Promise.resolve({
+				states: vi.fn().mockResolvedValue({ nodes: [] }),
+			}),
+			state: Promise.resolve({ id: "s-x", name: "Canceled", type: "canceled" }),
+		});
+		const r = await markLinearIssueDone(client as never, "ISSUE-1");
+		expect(r.done).toBe(false);
+		expect(r.reason).toBe("issue_canceled_never_overwritten");
+		expect(client.updateIssue).not.toHaveBeenCalled();
+	});
+
+	it("first read started → second read canceled → zero write (TOCTOU guard)", async () => {
+		const client = fakeClient();
+		let reads = 0;
+		(client.issue as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
+			team: Promise.resolve({
+				states: vi.fn().mockResolvedValue({
+					nodes: [{ id: "s-done", name: "Done", type: "completed" }],
+				}),
+			}),
+			get state() {
+				reads++;
+				return Promise.resolve(
+					reads <= 1
+						? { id: "s-started", name: "Started", type: "started" }
+						: { id: "s-x", name: "Canceled", type: "canceled" },
+				);
+			},
+		}));
+		const r = await markLinearIssueDone(client as never, "ISSUE-1");
+		expect(r.done).toBe(false);
+		expect(r.reason).toBe("issue_canceled_never_overwritten");
+		expect(client.updateIssue).not.toHaveBeenCalled();
 	});
 });

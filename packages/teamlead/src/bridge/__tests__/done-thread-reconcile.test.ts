@@ -163,7 +163,12 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 		expect(r.archived).toBe(1); // FLY-6 unaffected
 	});
 
-	it("5. live runner (probe alive) → skippedActive, lookupIssue NOT called (veto #1 first)", async () => {
+	// FLY-1185 (Codex R1#1): the Linear lookup now ALWAYS runs — liveness must
+	// not block the durable observation write (that starved the episode
+	// machine: nonterminal observations were never persisted while a runner
+	// lived, so every issue aged into first-seen-terminal legacy). The
+	// liveness veto still protects the LEGACY finalize/archive path.
+	it("5. live runner (probe alive) → observation pass runs, legacy path skippedActive, never archived", async () => {
 		const store = await freshStore();
 		store.upsertChatThread("t-1", "ch-eng", "FLY-7", "tadashi");
 		seedSession(store, {
@@ -180,7 +185,7 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 		});
 		const r = await reconcileDoneThreads(deps);
 		expect(r.skippedActive).toBe(1);
-		expect(deps.lookupIssue).not.toHaveBeenCalled();
+		expect(deps.lookupIssue).toHaveBeenCalled();
 		expect(deps.archiveFn).not.toHaveBeenCalled();
 	});
 

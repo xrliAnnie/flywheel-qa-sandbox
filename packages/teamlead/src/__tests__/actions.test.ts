@@ -1171,7 +1171,9 @@ describe("FLY-44: terminate from non-running states", () => {
 		});
 	}
 
-	it("terminate from pending fails", async () => {
+	// FLY-1185 (R10#5): pending is now terminable — a canceled issue closes a
+	// claimed-but-never-started session through the FSM, not a forceStatus.
+	it("terminate from pending succeeds (FLY-1185 R10#5)", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
@@ -1179,6 +1181,7 @@ describe("FLY-44: terminate from non-running states", () => {
 			status: "pending",
 		});
 		const result = await transitionSession(store, "terminate", "e1");
-		expect(result.success).toBe(false);
+		expect(result.success).toBe(true);
+		expect(store.getSession("e1")?.status).toBe("terminated");
 	});
 });

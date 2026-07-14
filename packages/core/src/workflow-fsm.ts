@@ -118,7 +118,10 @@ export class WorkflowFSM {
 // ── Flywheel workflow transition map ─────────────────────────────────
 
 export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
-	pending: ["running"],
+	// FLY-1185 §2.12 (R10#5): `terminated` added — a CANCELED issue must be
+	// able to close a never-started (admission-claimed / dispatch-crashed)
+	// session through the FSM instead of a forceStatus bypass.
+	pending: ["running", "terminated"],
 	running: [
 		"awaiting_review",
 		"completed",
@@ -225,9 +228,16 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
 	{
 		action: "terminate",
 		fromStates: [
+			// FLY-1185 (R10#5): pending + design_done added — the WORKFLOW_
+			// TRANSITIONS edges existed (design_done) / were added (pending), but
+			// the ACTION surface never allowed terminating them, so a canceled
+			// issue could not close a parked design phase or a claimed-but-
+			// never-started session without a forceStatus bypass.
+			"pending",
 			"running",
 			"awaiting_review",
 			"approved_to_ship",
+			"design_done",
 			"blocked",
 			"failed",
 			"rejected",

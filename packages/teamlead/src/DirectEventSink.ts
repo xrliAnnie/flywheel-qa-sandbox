@@ -61,6 +61,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	 * worktree cleanup on this path (byte-compat).
 	 */
 	public removeCleanWorktree?: WorktreeCleanupFn;
+	/** FLY-1185: ship-entry lifecycle bundle (remote CAS + closeout + sweep). */
+	public lifecycleInfra?: import("./bridge/post-ship-finalization.js").LifecycleShipInfra;
 
 	/**
 	 * FLY-579 (Codex R1 HIGH-1): late-bound auto-QA coordinator holder, set by
@@ -99,6 +101,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	 * the thread archive.
 	 */
 	public issueDisplayRefresh?: IssueDisplayRefreshHolder;
+
+	/**
+	 * FLY-1185 (Codex R4#1, plan.md:145): launch-claim activation hook — CAS
+	 * starting→active under the canonical issue mutex, called by emitStarted
+	 * AFTER the session row is durable. Refusal (a park cancelled the claim
+	 * mid-spawn) is audited; the park-intent replay owns the newborn runner.
+	 * Absent → byte-compatible (no launch-claim admission wired).
+	 */
+	public lifecycleActivate?: (
+		executionId: string,
+	) => Promise<{ ok: boolean; reason?: string }>;
 
 	private notifyDisplayChanged(issueId: string): void {
 		try {
@@ -185,6 +198,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// persists the same field.
 			ponytail_condition: env.ponytailCondition,
 		});
+
+		// FLY-1185 (Codex R5#1): the launch-claim starting→active CAS is NOT done
+		// here — emitStarted runs fire-and-forget BEFORE the worktree/binding are
+		// created (Blueprint.ts), so `active` here would still precede a durable
+		// binding (plan.md:145 violation). Activation moved to emitWorktreeReady,
+		// which runs AFTER bindWorktreeOnce makes the binding durable.
 
 		// GEO-151: Persist effective proofshot config into session_params so
 		// Bridge event-route handlers can read it without re-loading config.
@@ -290,6 +309,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	async emitWorktreeReady(
 		env: EventEnvelope,
 		worktreePath: string,
+		binding?: { branch: string; generation: string },
 	): Promise<void> {
 		if (!worktreePath || worktreePath.length === 0) {
 			console.warn(
@@ -311,11 +331,83 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				status: "pending",
 				worktree_path: worktreePath,
 			});
-			return;
+		} else {
+			this.store.patchSessionMetadata(env.executionId, {
+				worktree_path: worktreePath,
+			});
 		}
-		this.store.patchSessionMetadata(env.executionId, {
-			worktree_path: worktreePath,
-		});
+
+		// FLY-1185 §2.1: this bridge-local sink is the ONLY authority channel —
+		// the orchestrator-created binding (path/branch/generation) becomes
+		// StateStore deletion authority via the atomic set-once bindWorktreeOnce.
+		// A second bind attempt (retry replay / forged overwrite) is refused and
+		// audited; the HTTP /events path structurally never reaches here.
+		if (binding?.generation && binding.branch) {
+			const res = this.store.bindWorktreeOnce(
+				env.executionId,
+				{
+					path: worktreePath,
+					branch: binding.branch,
+					generation: binding.generation,
+				},
+				{ issueId: env.issueId, projectName: env.projectName },
+			);
+			if (!res.bound && res.reason === "already_bound") {
+				const current = this.store.getWorktreeBinding(env.executionId);
+				const identical =
+					current?.path === worktreePath &&
+					current?.branch === binding.branch &&
+					current?.generation === binding.generation;
+				if (!identical) {
+					this.store.insertEvent({
+						event_id: `worktree-binding-rejected-${env.executionId}-${binding.generation}`,
+						execution_id: env.executionId,
+						issue_id: env.issueId,
+						project_name: env.projectName,
+						event_type: "worktree_binding_rejected",
+						source: "direct-event-sink",
+						payload: {
+							attemptedPath: worktreePath,
+							attemptedBranch: binding.branch,
+							attemptedGeneration: binding.generation,
+						},
+					});
+				}
+			}
+
+			// FLY-1185 (Codex R5#1, plan.md:145): the binding is DURABLE now —
+			// THIS is the launch-claim's `active` commit point. A refusal means a
+			// founder park cancelled the claim in the spawn window; the runner was
+			// still born (activation only audits — it cannot unwind the already-
+			// created worktree), so the park-intent replay (which keeps its intent
+			// PARTIAL after cancelling a `starting` claim — see closeoutOneNode)
+			// owns this newborn runner's teardown next tick via its binding-owned
+			// residue. A crash between here and the next tick is covered by the
+			// stale-starting-claims maintenance reaper.
+			if (this.lifecycleActivate) {
+				try {
+					const act = await this.lifecycleActivate(env.executionId);
+					if (!act.ok) {
+						this.store.insertEvent({
+							event_id: `lifecycle-activation-refused-${env.executionId}-${binding.generation}`,
+							execution_id: env.executionId,
+							issue_id: env.issueId,
+							project_name: env.projectName,
+							event_type: "lifecycle_activation_refused",
+							source: "direct-event-sink",
+							payload: { reason: act.reason },
+						});
+						console.warn(
+							`[DirectEventSink] launch activation refused for ${env.executionId} (${act.reason}) — park replay owns this runner`,
+						);
+					}
+				} catch (err) {
+					console.warn(
+						`[DirectEventSink] launch activation threw for ${env.executionId}: ${(err as Error).message}`,
+					);
+				}
+			}
+		}
 	}
 
 	async emitCompleted(
@@ -862,6 +954,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						refreshIssueDisplay: (issueId) =>
 							this.issueDisplayRefresh?.current?.refresh(issueId) ??
 							Promise.resolve(),
+						// FLY-1185 entry A: remote branch CAS + issue closeout + sweep.
+						...this.lifecycleInfra,
 					},
 				),
 			);
