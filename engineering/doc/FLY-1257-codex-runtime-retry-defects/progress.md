@@ -1,14 +1,13 @@
 ---
 issue: FLY-1257
 phase: design
-phaseCursor: 1/5
-updated: 2026-07-14T23:42:49.624Z
-nextStep: brainstorm gate -> research.md (codex native paused RPC probe) ->
-  plan.md -> design review
+phaseCursor: 3/5
+updated: 2026-07-14T23:50:14.866Z
+nextStep: write plan.md -> design_review (codex)
 chunks: []
 pointers: {}
 ---
 
 # FLY-1257 progress
-**phase**: design (1/5)
-**next**: brainstorm gate -> research.md (codex native paused RPC probe) -> plan.md -> design review
+**phase**: design (3/5)
+**next**: write plan.md -> design_review (codex)
