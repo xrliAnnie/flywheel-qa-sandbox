@@ -1,14 +1,14 @@
 ---
 issue: FLY-1225
 phase: implement
-phaseCursor: 4/5
-updated: 2026-07-14T16:04:09.355Z
-nextStep: commit implementation, push branch, create PR, and request
-  cross-family code review
+phaseCursor: 5/5
+updated: 2026-07-14T20:14:42.254Z
+nextStep: "push rebased branch, request cross-family code review for PR #587,
+  and monitor CI"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1225 progress
-**phase**: implement (4/5)
-**next**: commit implementation, push branch, create PR, and request cross-family code review
+**phase**: implement (5/5)
+**next**: push rebased branch, request cross-family code review for PR #587, and monitor CI
