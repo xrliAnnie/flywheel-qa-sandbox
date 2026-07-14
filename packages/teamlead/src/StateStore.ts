@@ -4,6 +4,19 @@ import { dirname } from "node:path";
 import BetterSqlite3, { type Database as BetterDb } from "better-sqlite3";
 import { crossFamilyReviewSatisfied } from "flywheel-config";
 import type { LeadNudgeRow } from "./bridge/lead-pending-escalation.js";
+import {
+	canonicalSubmissionDigest,
+	generateCapabilityToken,
+	hashCapabilityToken,
+	PASSING_PREDICATES,
+	REVIEW_CLASS_PREDICATES,
+	RUNNER_CAPABILITY_FAMILIES,
+	SYSTEM_CLAIM_ALLOWLIST,
+	WORKFLOW_CLAIM_SUBJECT_KINDS,
+	WORKFLOW_DECISION_FAMILIES,
+	type WorkflowClaimPredicate,
+	type WorkflowDecisionFamily,
+} from "./workflow-claims.js";
 
 /**
  * FLY-663: a thin compatibility shim that exposes the exact sql.js surface
@@ -2123,6 +2136,16 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_detection_escalations_status ON detection_escalations(status)",
 		);
+
+		// FLY-1135 PR-1: workflow claims ledger substrate (default-off, no
+		// production path reads or writes these tables yet).
+		this.migrateWorkflowClaimsLedger();
+		// FLY-1232 module ②: shadow-run composite transaction substrate
+		// (side-effect ledger + active-run uniqueness). Runs AFTER the claims
+		// ledger migration — it indexes workflow_run. Default-off like the rest:
+		// production reaches it only via the WorkflowShadowWriter behind
+		// FLYWHEEL_WORKFLOW_CLAIMS_WRITE.
+		this.migrateWorkflowShadowLedger();
 
 		// FLY-25: migration for existing tables missing new columns
 		this.migrateLeadEventsDeliveryColumns();
@@ -8910,6 +8933,1837 @@ export class StateStore {
 		stmt.free();
 		return rows;
 	}
+
+	// ── FLY-1135 PR-1: workflow claims ledger substrate (plan §2.1/§2.2) ──────
+	// Identity: a decision is (run_id, node_id, decision_kind, attempt). Claims
+	// are append-only facts bound to a subject digest; capabilities are one-shot
+	// tickets for a node ATTEMPT (never pre-bound to an edge — the verdict picks
+	// the edge). Nothing in production reads or writes these tables yet.
+
+	private migrateWorkflowClaimsLedger(): void {
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_run (
+				run_id TEXT PRIMARY KEY,
+				issue_id TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				template_id TEXT,
+				template_revision INTEGER,
+				snapshot JSON,
+				current_node_id TEXT,
+				status TEXT NOT NULL DEFAULT 'active',
+				claims_read_enrolled INTEGER NOT NULL DEFAULT 0,
+				created_at TEXT NOT NULL DEFAULT (datetime('now'))
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_run_node (
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL,
+				state TEXT NOT NULL,
+				execution_id TEXT,
+				started_at TEXT NOT NULL DEFAULT (datetime('now')),
+				ended_at TEXT,
+				PRIMARY KEY (run_id, node_id, attempt)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_run_event (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				run_id TEXT NOT NULL,
+				seq INTEGER NOT NULL,
+				event_uid TEXT NOT NULL UNIQUE,
+				kind TEXT NOT NULL,
+				node_id TEXT,
+				edge_id TEXT,
+				execution_id TEXT,
+				payload JSON,
+				at TEXT NOT NULL DEFAULT (datetime('now')),
+				UNIQUE (run_id, seq)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_decision_capability (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				token_hash TEXT NOT NULL UNIQUE,
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				execution_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL,
+				allowed_predicate_family TEXT NOT NULL,
+				manifest_revision INTEGER,
+				evidence_schema_version INTEGER NOT NULL DEFAULT 1,
+				expected_subject_digest TEXT,
+				issued_at TEXT NOT NULL DEFAULT (datetime('now')),
+				expires_at TEXT NOT NULL,
+				absolute_deadline_at TEXT NOT NULL,
+				consumed_at TEXT,
+				consumed_claim_id INTEGER,
+				revoked INTEGER NOT NULL DEFAULT 0,
+				revoked_reason TEXT
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_claims (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				server_seq INTEGER NOT NULL UNIQUE,
+				issued_at TEXT NOT NULL DEFAULT (datetime('now')),
+				issue_id TEXT NOT NULL,
+				workflow_run_id TEXT NOT NULL,
+				node_id TEXT,
+				decision_kind TEXT NOT NULL,
+				attempt INTEGER,
+				predicate TEXT NOT NULL CHECK (predicate IN (
+					'qa_passed','qa_failed','codex_approved','design_review_approved',
+					'founder_approved','qa_exempt')),
+				issuer_kind TEXT NOT NULL CHECK (issuer_kind IN (
+					'runner_node','bridge_policy','founder_challenge')),
+				issuer_execution_id TEXT,
+				issuer_node_id TEXT,
+				issuer_vendor TEXT,
+				issuer_model TEXT,
+				subject_producer_execution_id TEXT,
+				subject_kind TEXT NOT NULL CHECK (subject_kind IN ('git_head','snapshot_digest')),
+				subject_digest TEXT NOT NULL,
+				expires_at TEXT,
+				permanent INTEGER NOT NULL DEFAULT 0,
+				submission_digest TEXT,
+				client_request_id TEXT,
+				evidence JSON,
+				authority_id TEXT NOT NULL,
+				CHECK (issuer_kind != 'runner_node' OR (
+					node_id IS NOT NULL AND attempt IS NOT NULL
+					AND issuer_execution_id IS NOT NULL AND issuer_node_id IS NOT NULL
+					AND issuer_vendor IS NOT NULL AND issuer_model IS NOT NULL
+					AND submission_digest IS NOT NULL AND client_request_id IS NOT NULL
+				)),
+				CHECK (expires_at IS NOT NULL OR permanent = 1)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_claim_revocation (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				claim_id INTEGER NOT NULL,
+				revoked_at TEXT NOT NULL DEFAULT (datetime('now')),
+				reason TEXT NOT NULL,
+				actor TEXT NOT NULL
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_workflow_claims_gate ON workflow_claims(workflow_run_id, decision_kind, subject_digest)",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_workflow_capability_node ON workflow_decision_capability(run_id, node_id)",
+		);
+		// Append-only enforcement: the ledger is history. Corrections APPEND (a
+		// revocation row, a new attempt) — rows are never rewritten, so a gate
+		// verdict can always be reconstructed from what was actually recorded.
+		for (const table of [
+			"workflow_claims",
+			"workflow_claim_revocation",
+			"workflow_run_event",
+		]) {
+			this.db.run(`
+				CREATE TRIGGER IF NOT EXISTS ${table}_no_update
+				BEFORE UPDATE ON ${table}
+				BEGIN SELECT RAISE(ABORT, '${table} is append-only'); END
+			`);
+			this.db.run(`
+				CREATE TRIGGER IF NOT EXISTS ${table}_no_delete
+				BEFORE DELETE ON ${table}
+				BEGIN SELECT RAISE(ABORT, '${table} is append-only'); END
+			`);
+		}
+	}
+
+	private workflowSelectAll(
+		sql: string,
+		params: unknown[],
+	): Record<string, unknown>[] {
+		const stmt = this.db.prepare(sql);
+		stmt.bind(params);
+		const rows: Record<string, unknown>[] = [];
+		while (stmt.step()) rows.push(stmt.getAsObject());
+		stmt.free();
+		return rows;
+	}
+
+	/** Fail-closed expiry: AT the expiry instant counts as expired. */
+	private static workflowExpired(expiresAt: string, nowIso: string): boolean {
+		return Date.parse(nowIso) >= Date.parse(expiresAt);
+	}
+
+	/**
+	 * Fail-closed timestamp boundary (research §B.6): Date.parse(garbage) is
+	 * NaN and every NaN comparison is false, which would read as "not expired".
+	 * Every timestamp entering the workflow APIs must be finite or the call is
+	 * refused — malformed time never widens a window.
+	 */
+	private static workflowFiniteTimestamp(value: string): boolean {
+		return Number.isFinite(Date.parse(value));
+	}
+
+	/**
+	 * Create a workflow run with its TYPED enrollment marker (plan §3.2):
+	 * whether this run's gates read the claims ledger is an explicit per-run
+	 * fact, never inferred from table contents or global flags.
+	 */
+	createWorkflowRun(input: {
+		runId: string;
+		issueId: string;
+		projectName: string;
+		templateId?: string;
+		templateRevision?: number;
+		snapshotJson?: string;
+		claimsReadEnrolled: boolean;
+	}): void {
+		this.db.run(
+			`INSERT INTO workflow_run
+			   (run_id, issue_id, project_name, template_id, template_revision, snapshot, claims_read_enrolled)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			[
+				input.runId,
+				input.issueId,
+				input.projectName,
+				input.templateId ?? null,
+				input.templateRevision ?? null,
+				input.snapshotJson ?? null,
+				input.claimsReadEnrolled ? 1 : 0,
+			],
+		);
+		this.save();
+	}
+
+	getWorkflowRun(runId: string): WorkflowRunRow | undefined {
+		const rows = this.workflowSelectAll(
+			"SELECT * FROM workflow_run WHERE run_id = ?",
+			[runId],
+		);
+		const r = rows[0];
+		if (!r) return undefined;
+		return {
+			run_id: r.run_id as string,
+			issue_id: r.issue_id as string,
+			project_name: r.project_name as string,
+			template_id: (r.template_id as string) ?? null,
+			template_revision:
+				r.template_revision == null ? null : Number(r.template_revision),
+			snapshot: (r.snapshot as string) ?? null,
+			current_node_id: (r.current_node_id as string) ?? null,
+			status: r.status as string,
+			claims_read_enrolled: Number(r.claims_read_enrolled ?? 0),
+			created_at: r.created_at as string,
+		};
+	}
+
+	upsertWorkflowRunNode(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		state: string;
+		executionId?: string;
+		endedAt?: string;
+	}): void {
+		this.db.run(
+			`INSERT INTO workflow_run_node (run_id, node_id, attempt, state, execution_id, ended_at)
+			 VALUES (?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(run_id, node_id, attempt) DO UPDATE SET
+				state = excluded.state,
+				execution_id = COALESCE(excluded.execution_id, workflow_run_node.execution_id),
+				ended_at = COALESCE(excluded.ended_at, workflow_run_node.ended_at)`,
+			[
+				input.runId,
+				input.nodeId,
+				input.attempt,
+				input.state,
+				input.executionId ?? null,
+				input.endedAt ?? null,
+			],
+		);
+		this.save();
+	}
+
+	getWorkflowRunNode(
+		runId: string,
+		nodeId: string,
+		attempt: number,
+	): WorkflowRunNodeRow | undefined {
+		const rows = this.workflowSelectAll(
+			"SELECT * FROM workflow_run_node WHERE run_id = ? AND node_id = ? AND attempt = ?",
+			[runId, nodeId, attempt],
+		);
+		const r = rows[0];
+		if (!r) return undefined;
+		return {
+			run_id: r.run_id as string,
+			node_id: r.node_id as string,
+			attempt: Number(r.attempt),
+			state: r.state as string,
+			execution_id: (r.execution_id as string) ?? null,
+			started_at: r.started_at as string,
+			ended_at: (r.ended_at as string) ?? null,
+		};
+	}
+
+	/** Append a run event (idempotent by event_uid; per-run monotonic seq). */
+	appendWorkflowRunEvent(input: {
+		runId: string;
+		eventUid: string;
+		kind: string;
+		nodeId?: string;
+		edgeId?: string;
+		executionId?: string;
+		payload?: unknown;
+	}): { seq: number; deduped: boolean } {
+		let result: { seq: number; deduped: boolean } | undefined;
+		this.db.transaction(() => {
+			result = this.appendWorkflowRunEventTx(input);
+		});
+		this.save();
+		if (!result) throw new Error("workflow event append produced no result");
+		return result;
+	}
+
+	/** Transaction body — callers already inside a transaction use this. */
+	private appendWorkflowRunEventTx(input: {
+		runId: string;
+		eventUid: string;
+		kind: string;
+		nodeId?: string;
+		edgeId?: string;
+		executionId?: string;
+		payload?: unknown;
+	}): { seq: number; deduped: boolean } {
+		const run = this.workflowSelectAll(
+			"SELECT run_id FROM workflow_run WHERE run_id = ?",
+			[input.runId],
+		);
+		if (run.length === 0) {
+			throw new Error(`workflow run not found: ${input.runId}`);
+		}
+		const existing = this.workflowSelectAll(
+			"SELECT seq FROM workflow_run_event WHERE event_uid = ?",
+			[input.eventUid],
+		);
+		const first = existing[0];
+		if (first) return { seq: Number(first.seq), deduped: true };
+		const next = this.workflowSelectAll(
+			"SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM workflow_run_event WHERE run_id = ?",
+			[input.runId],
+		);
+		const seq = Number(next[0]?.next ?? 1);
+		this.db.run(
+			`INSERT INTO workflow_run_event
+			   (run_id, seq, event_uid, kind, node_id, edge_id, execution_id, payload)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				input.runId,
+				seq,
+				input.eventUid,
+				input.kind,
+				input.nodeId ?? null,
+				input.edgeId ?? null,
+				input.executionId ?? null,
+				input.payload !== undefined ? JSON.stringify(input.payload) : null,
+			],
+		);
+		return { seq, deduped: false };
+	}
+
+	listWorkflowRunEvents(runId: string): WorkflowRunEventRow[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_run_event WHERE run_id = ? ORDER BY seq",
+			[runId],
+		).map((r) => ({
+			run_id: r.run_id as string,
+			seq: Number(r.seq),
+			event_uid: r.event_uid as string,
+			kind: r.kind as string,
+			node_id: (r.node_id as string) ?? null,
+			edge_id: (r.edge_id as string) ?? null,
+			execution_id: (r.execution_id as string) ?? null,
+			payload: r.payload ? JSON.parse(r.payload as string) : undefined,
+			at: r.at as string,
+		}));
+	}
+
+	/**
+	 * Issue a ONE-SHOT decision capability bound to a node ATTEMPT (plan §2.2).
+	 * The plaintext token is returned ONCE (Bridge memory only); the DB stores
+	 * its hash. Issuing attempt N revokes older unconsumed tickets for the same
+	 * node; an attempt at or below one already decided/superseded is refused.
+	 */
+	issueWorkflowDecisionCapability(input: {
+		runId: string;
+		nodeId: string;
+		executionId: string;
+		attempt: number;
+		allowedPredicateFamily: string;
+		manifestRevision?: number;
+		evidenceSchemaVersion?: number;
+		expectedSubjectDigest?: string;
+		expiresAt: string;
+		absoluteDeadlineAt: string;
+	}): WorkflowCapabilityIssueResult {
+		if (
+			!(RUNNER_CAPABILITY_FAMILIES as readonly string[]).includes(
+				input.allowedPredicateFamily,
+			)
+		) {
+			return { ok: false, reason: "invalid_family" };
+		}
+		if (
+			!StateStore.workflowFiniteTimestamp(input.expiresAt) ||
+			!StateStore.workflowFiniteTimestamp(input.absoluteDeadlineAt)
+		) {
+			return { ok: false, reason: "invalid_timestamp" };
+		}
+		// The absolute deadline caps RENEWALS — it must cap issuance too, or the
+		// initial grant could overshoot the ceiling renewals enforce.
+		if (Date.parse(input.expiresAt) > Date.parse(input.absoluteDeadlineAt)) {
+			return { ok: false, reason: "expiry_beyond_deadline" };
+		}
+		let result: WorkflowCapabilityIssueResult = {
+			ok: false,
+			reason: "run_not_found",
+		};
+		this.db.transaction(() => {
+			const run = this.workflowSelectAll(
+				"SELECT run_id FROM workflow_run WHERE run_id = ?",
+				[input.runId],
+			);
+			if (run.length === 0) {
+				result = { ok: false, reason: "run_not_found" };
+				return;
+			}
+			const siblings = this.workflowSelectAll(
+				"SELECT attempt, consumed_at, revoked FROM workflow_decision_capability WHERE run_id = ? AND node_id = ?",
+				[input.runId, input.nodeId],
+			);
+			const stale = siblings.some(
+				(s) =>
+					(s.consumed_at != null && Number(s.attempt) >= input.attempt) ||
+					(s.consumed_at == null &&
+						Number(s.revoked) === 0 &&
+						Number(s.attempt) > input.attempt),
+			);
+			if (stale) {
+				result = { ok: false, reason: "stale_attempt" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_decision_capability SET revoked = 1, revoked_reason = ?
+				  WHERE run_id = ? AND node_id = ? AND consumed_at IS NULL AND revoked = 0 AND attempt <= ?`,
+				[
+					`superseded_by_attempt_${input.attempt}`,
+					input.runId,
+					input.nodeId,
+					input.attempt,
+				],
+			);
+			const token = generateCapabilityToken();
+			const tokenHash = hashCapabilityToken(token);
+			this.db.run(
+				`INSERT INTO workflow_decision_capability
+				   (token_hash, run_id, node_id, execution_id, attempt, allowed_predicate_family,
+				    manifest_revision, evidence_schema_version, expected_subject_digest,
+				    expires_at, absolute_deadline_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					tokenHash,
+					input.runId,
+					input.nodeId,
+					input.executionId,
+					input.attempt,
+					input.allowedPredicateFamily,
+					input.manifestRevision ?? null,
+					input.evidenceSchemaVersion ?? 1,
+					input.expectedSubjectDigest ?? null,
+					input.expiresAt,
+					input.absoluteDeadlineAt,
+				],
+			);
+			const idRow = this.workflowSelectAll(
+				"SELECT id FROM workflow_decision_capability WHERE token_hash = ?",
+				[tokenHash],
+			);
+			result = { ok: true, capabilityId: Number(idRow[0]?.id), token };
+		});
+		this.save();
+		return result;
+	}
+
+	getWorkflowDecisionCapability(
+		capabilityId: number,
+	): WorkflowDecisionCapabilityRow | undefined {
+		const rows = this.workflowSelectAll(
+			"SELECT * FROM workflow_decision_capability WHERE id = ?",
+			[capabilityId],
+		);
+		const r = rows[0];
+		if (!r) return undefined;
+		return {
+			id: Number(r.id),
+			token_hash: r.token_hash as string,
+			run_id: r.run_id as string,
+			node_id: r.node_id as string,
+			execution_id: r.execution_id as string,
+			attempt: Number(r.attempt),
+			allowed_predicate_family: r.allowed_predicate_family as string,
+			manifest_revision:
+				r.manifest_revision == null ? null : Number(r.manifest_revision),
+			evidence_schema_version: Number(r.evidence_schema_version),
+			expected_subject_digest: (r.expected_subject_digest as string) ?? null,
+			issued_at: r.issued_at as string,
+			expires_at: r.expires_at as string,
+			absolute_deadline_at: r.absolute_deadline_at as string,
+			consumed_at: (r.consumed_at as string) ?? null,
+			consumed_claim_id:
+				r.consumed_claim_id == null ? null : Number(r.consumed_claim_id),
+			revoked: Number(r.revoked),
+			revoked_reason: (r.revoked_reason as string) ?? null,
+		};
+	}
+
+	/**
+	 * Heartbeat renewal (plan §2.2): extend expiry but NEVER past the absolute
+	 * deadline — a hijacked live session cannot keep itself alive forever.
+	 */
+	renewWorkflowDecisionCapability(input: {
+		capabilityId: number;
+		requestedExpiresAt: string;
+		now?: string;
+	}): WorkflowCapabilityRenewalResult {
+		const nowIso = input.now ?? new Date().toISOString();
+		if (
+			!StateStore.workflowFiniteTimestamp(input.requestedExpiresAt) ||
+			!StateStore.workflowFiniteTimestamp(nowIso)
+		) {
+			return { ok: false, reason: "invalid_timestamp" };
+		}
+		let result: WorkflowCapabilityRenewalResult = {
+			ok: false,
+			reason: "capability_not_found",
+		};
+		this.db.transaction(() => {
+			const cap = this.workflowSelectAll(
+				"SELECT * FROM workflow_decision_capability WHERE id = ?",
+				[input.capabilityId],
+			)[0];
+			if (!cap) {
+				result = { ok: false, reason: "capability_not_found" };
+				return;
+			}
+			if (cap.consumed_at != null) {
+				result = { ok: false, reason: "capability_consumed" };
+				return;
+			}
+			if (Number(cap.revoked) === 1) {
+				result = { ok: false, reason: "capability_revoked" };
+				return;
+			}
+			if (StateStore.workflowExpired(cap.expires_at as string, nowIso)) {
+				result = { ok: false, reason: "capability_expired" };
+				return;
+			}
+			const deadline = cap.absolute_deadline_at as string;
+			const chosen =
+				Date.parse(input.requestedExpiresAt) > Date.parse(deadline)
+					? deadline
+					: input.requestedExpiresAt;
+			this.db.run(
+				"UPDATE workflow_decision_capability SET expires_at = ? WHERE id = ?",
+				[chosen, input.capabilityId],
+			);
+			result = { ok: true, expiresAt: chosen };
+		});
+		this.save();
+		return result;
+	}
+
+	/**
+	 * THE single-transaction submission (plan §2.2): validate the capability →
+	 * write the claim → consume the capability → append the run event. Any
+	 * refusal leaves NOTHING behind (no "evidence-looking" partial rows).
+	 * Idempotent replay: a consumed capability + byte-identical payload returns
+	 * the already-created claim; anything else is fail-closed (E3).
+	 *
+	 * E6 CONTRACT — vendor fields are SERVER-RESOLVED families, never
+	 * self-reports (umbrella plan §3.1-3): `issuerVendor` and
+	 * `subjectProducerVendor` MUST be the family the Bridge resolved from the
+	 * session's persisted adapter_type via `adapterTypeToFamily` (the same
+	 * vocabulary `crossFamilyReviewSatisfied` consumes — FLY-1188). Passing a
+	 * manifest value or a runner's self-declared vendor here silently disarms
+	 * the cross-vendor gate. The claim-layer same-vendor check below is the
+	 * SECOND gate; admission-time family verification is the first (sub-issue
+	 * B/D wiring).
+	 */
+	submitWorkflowDecisionClaim(input: {
+		token: string;
+		clientRequestId: string;
+		predicate: string;
+		subjectKind: string;
+		/** Server-derived subject (plan §2.1 subject_resolver) — the Bridge
+		 * captures this; a runner's self-report is only ever compared. */
+		subjectDigest: string;
+		/** Server-resolved family of the CLAIMING session (see E6 CONTRACT). */
+		issuerVendor: string;
+		issuerModel: string;
+		subjectProducerExecutionId?: string;
+		/** Server-resolved family of the PRODUCING session (see E6 CONTRACT). */
+		subjectProducerVendor?: string;
+		claimExpiresAt?: string;
+		evidence?: unknown;
+		now?: string;
+	}): WorkflowClaimSubmissionResult {
+		const nowIso = input.now ?? new Date().toISOString();
+		if (
+			!StateStore.workflowFiniteTimestamp(nowIso) ||
+			(input.claimExpiresAt !== undefined &&
+				!StateStore.workflowFiniteTimestamp(input.claimExpiresAt))
+		) {
+			return { ok: false, reason: "invalid_timestamp" };
+		}
+		const digest = canonicalSubmissionDigest({
+			clientRequestId: input.clientRequestId,
+			predicate: input.predicate,
+			subjectKind: input.subjectKind,
+			subjectDigest: input.subjectDigest,
+			issuerVendor: input.issuerVendor,
+			issuerModel: input.issuerModel,
+			subjectProducerExecutionId: input.subjectProducerExecutionId ?? null,
+			subjectProducerVendor: input.subjectProducerVendor ?? null,
+			claimExpiresAt: input.claimExpiresAt ?? null,
+			evidence: input.evidence ?? null,
+		});
+		let result: WorkflowClaimSubmissionResult = {
+			ok: false,
+			reason: "capability_not_found",
+		};
+		this.db.transaction(() => {
+			const cap = this.workflowSelectAll(
+				"SELECT * FROM workflow_decision_capability WHERE token_hash = ?",
+				[hashCapabilityToken(input.token)],
+			)[0];
+			if (!cap) {
+				result = { ok: false, reason: "capability_not_found" };
+				return;
+			}
+			if (cap.consumed_at != null) {
+				const prior =
+					cap.consumed_claim_id == null
+						? undefined
+						: this.getWorkflowClaim(Number(cap.consumed_claim_id));
+				if (
+					prior &&
+					prior.submission_digest === digest &&
+					prior.client_request_id === input.clientRequestId
+				) {
+					result = {
+						ok: true,
+						claimId: prior.id,
+						serverSeq: prior.server_seq,
+						idempotentReplay: true,
+					};
+				} else {
+					result = { ok: false, reason: "replay_payload_mismatch" };
+				}
+				return;
+			}
+			if (Number(cap.revoked) === 1) {
+				result = { ok: false, reason: "capability_revoked" };
+				return;
+			}
+			if (StateStore.workflowExpired(cap.expires_at as string, nowIso)) {
+				result = { ok: false, reason: "capability_expired" };
+				return;
+			}
+			const family = cap.allowed_predicate_family as WorkflowDecisionFamily;
+			const allowed = WORKFLOW_DECISION_FAMILIES[family] as
+				| readonly string[]
+				| undefined;
+			if (!allowed || !allowed.includes(input.predicate)) {
+				result = { ok: false, reason: "predicate_not_allowed" };
+				return;
+			}
+			if (
+				!(WORKFLOW_CLAIM_SUBJECT_KINDS as readonly string[]).includes(
+					input.subjectKind,
+				)
+			) {
+				result = { ok: false, reason: "subject_kind_invalid" };
+				return;
+			}
+			if (
+				cap.expected_subject_digest != null &&
+				cap.expected_subject_digest !== input.subjectDigest
+			) {
+				result = { ok: false, reason: "subject_mismatch" };
+				return;
+			}
+			if (
+				REVIEW_CLASS_PREDICATES.has(input.predicate as WorkflowClaimPredicate)
+			) {
+				if (!input.subjectProducerExecutionId || !input.subjectProducerVendor) {
+					result = { ok: false, reason: "missing_subject_producer" };
+					return;
+				}
+				if (input.issuerVendor === input.subjectProducerVendor) {
+					result = { ok: false, reason: "same_vendor_review" };
+					return;
+				}
+			}
+			if (!input.claimExpiresAt) {
+				result = { ok: false, reason: "missing_expiry" };
+				return;
+			}
+			const run = this.getWorkflowRun(cap.run_id as string);
+			if (!run) {
+				result = { ok: false, reason: "run_not_found" };
+				return;
+			}
+			const serverSeq = this.nextWorkflowClaimSeq();
+			this.db.run(
+				`INSERT INTO workflow_claims
+				   (server_seq, issue_id, workflow_run_id, node_id, decision_kind, attempt, predicate,
+				    issuer_kind, issuer_execution_id, issuer_node_id, issuer_vendor, issuer_model,
+				    subject_producer_execution_id, subject_kind, subject_digest, expires_at, permanent,
+				    submission_digest, client_request_id, evidence, authority_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, 'runner_node', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+				[
+					serverSeq,
+					run.issue_id,
+					run.run_id,
+					cap.node_id,
+					family,
+					cap.attempt,
+					input.predicate,
+					cap.execution_id,
+					cap.node_id,
+					input.issuerVendor,
+					input.issuerModel,
+					input.subjectProducerExecutionId ?? null,
+					input.subjectKind,
+					input.subjectDigest,
+					input.claimExpiresAt,
+					digest,
+					input.clientRequestId,
+					input.evidence !== undefined ? JSON.stringify(input.evidence) : null,
+					String(cap.id),
+				],
+			);
+			const claimId = this.workflowClaimIdBySeq(serverSeq);
+			this.db.run(
+				"UPDATE workflow_decision_capability SET consumed_at = ?, consumed_claim_id = ? WHERE id = ?",
+				[nowIso, claimId, cap.id],
+			);
+			this.appendWorkflowRunEventTx({
+				runId: run.run_id,
+				eventUid: `claim_written:${cap.id}:${input.clientRequestId}`,
+				kind: "claim_written",
+				nodeId: cap.node_id as string,
+				executionId: cap.execution_id as string,
+				payload: {
+					claimId,
+					predicate: input.predicate,
+					subjectDigest: input.subjectDigest,
+				},
+			});
+			result = { ok: true, claimId, serverSeq, idempotentReplay: false };
+		});
+		this.save();
+		return result;
+	}
+
+	/**
+	 * System claims (plan §2.1/§2.3): qa_exempt is a Bridge POLICY claim bound
+	 * to the run's snapshot digest; founder_approved arrives ONLY through the
+	 * server-owned founder challenge, bound to a git head. The founder never
+	 * holds a runner capability.
+	 */
+	appendWorkflowSystemClaim(input: {
+		issuerKind: "bridge_policy" | "founder_challenge";
+		runId: string;
+		issueId: string;
+		decisionKind: string;
+		predicate: string;
+		subjectKind: string;
+		subjectDigest: string;
+		nodeId?: string;
+		attempt?: number;
+		expiresAt?: string;
+		permanent?: boolean;
+		evidence?: unknown;
+		authorityId: string;
+	}): WorkflowSystemClaimResult {
+		const allowed = SYSTEM_CLAIM_ALLOWLIST[input.issuerKind] as
+			| readonly string[]
+			| undefined;
+		if (!allowed || !allowed.includes(input.predicate)) {
+			return { ok: false, reason: "predicate_not_allowed_for_issuer" };
+		}
+		if (
+			!(WORKFLOW_CLAIM_SUBJECT_KINDS as readonly string[]).includes(
+				input.subjectKind,
+			) ||
+			(input.predicate === "founder_approved" &&
+				input.subjectKind !== "git_head") ||
+			(input.predicate === "qa_exempt" &&
+				input.subjectKind !== "snapshot_digest")
+		) {
+			return { ok: false, reason: "subject_kind_invalid" };
+		}
+		const permanent = input.permanent === true;
+		if (permanent === Boolean(input.expiresAt)) {
+			return { ok: false, reason: "expiry_or_permanent_required" };
+		}
+		if (
+			input.expiresAt !== undefined &&
+			!StateStore.workflowFiniteTimestamp(input.expiresAt)
+		) {
+			return { ok: false, reason: "invalid_timestamp" };
+		}
+		let result: WorkflowSystemClaimResult = {
+			ok: false,
+			reason: "run_not_found",
+		};
+		this.db.transaction(() => {
+			const run = this.workflowSelectAll(
+				"SELECT run_id, issue_id FROM workflow_run WHERE run_id = ?",
+				[input.runId],
+			);
+			const runRow = run[0];
+			if (!runRow) {
+				result = { ok: false, reason: "run_not_found" };
+				return;
+			}
+			// Issue identity comes from the RUN row (research §B.6): the caller's
+			// issueId is only ever CHECKED against it — a divergent claim about
+			// some other issue must not be persistable through this path.
+			const runIssueId = runRow.issue_id as string;
+			if (input.issueId !== runIssueId) {
+				result = { ok: false, reason: "issue_mismatch" };
+				return;
+			}
+			const serverSeq = this.nextWorkflowClaimSeq();
+			this.db.run(
+				`INSERT INTO workflow_claims
+				   (server_seq, issue_id, workflow_run_id, node_id, decision_kind, attempt, predicate,
+				    issuer_kind, subject_kind, subject_digest, expires_at, permanent, evidence, authority_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					serverSeq,
+					runIssueId,
+					input.runId,
+					input.nodeId ?? null,
+					input.decisionKind,
+					input.attempt ?? null,
+					input.predicate,
+					input.issuerKind,
+					input.subjectKind,
+					input.subjectDigest,
+					input.expiresAt ?? null,
+					permanent ? 1 : 0,
+					input.evidence !== undefined ? JSON.stringify(input.evidence) : null,
+					input.authorityId,
+				],
+			);
+			const claimId = this.workflowClaimIdBySeq(serverSeq);
+			this.appendWorkflowRunEventTx({
+				runId: input.runId,
+				eventUid: `system_claim:${input.issuerKind}:${input.authorityId}:${serverSeq}`,
+				kind: "claim_written",
+				nodeId: input.nodeId,
+				payload: { claimId, predicate: input.predicate },
+			});
+			result = { ok: true, claimId, serverSeq };
+		});
+		this.save();
+		return result;
+	}
+
+	/** Revocation is itself append-only (plan §2.1 workflow_claim_revocation). */
+	revokeWorkflowClaim(input: {
+		claimId: number;
+		reason: string;
+		actor: string;
+	}): void {
+		this.db.transaction(() => {
+			const claim = this.getWorkflowClaim(input.claimId);
+			if (!claim) {
+				throw new Error(`workflow claim not found: ${input.claimId}`);
+			}
+			this.db.run(
+				"INSERT INTO workflow_claim_revocation (claim_id, reason, actor) VALUES (?, ?, ?)",
+				[input.claimId, input.reason, input.actor],
+			);
+			const rev = this.workflowSelectAll(
+				"SELECT MAX(id) AS id FROM workflow_claim_revocation WHERE claim_id = ?",
+				[input.claimId],
+			);
+			this.appendWorkflowRunEventTx({
+				runId: claim.workflow_run_id,
+				eventUid: `claim_revoked:${input.claimId}:${Number(rev[0]?.id)}`,
+				kind: "claim_revoked",
+				nodeId: claim.node_id ?? undefined,
+				payload: {
+					claimId: input.claimId,
+					reason: input.reason,
+					actor: input.actor,
+				},
+			});
+		});
+		this.save();
+	}
+
+	getWorkflowClaim(claimId: number): WorkflowClaimRow | undefined {
+		const rows = this.workflowSelectAll(
+			"SELECT * FROM workflow_claims WHERE id = ?",
+			[claimId],
+		);
+		const r = rows[0];
+		if (!r) return undefined;
+		return this.workflowClaimRowFromRaw(r);
+	}
+
+	countWorkflowClaims(runId: string): number {
+		const rows = this.workflowSelectAll(
+			"SELECT COUNT(*) AS n FROM workflow_claims WHERE workflow_run_id = ?",
+			[runId],
+		);
+		return Number(rows[0]?.n ?? 0);
+	}
+
+	/**
+	 * USE-time gate resolution (plan §2.1): among claims for
+	 * (run, node, decision_kind) bound to the CURRENT subject, take the highest
+	 * attempt (then server_seq); require it unexpired, unrevoked, unconflicted
+	 * and passing. NEVER falls back to an older attempt — a superseded PASS is
+	 * not evidence.
+	 */
+	resolveWorkflowDecisionClaim(input: {
+		runId: string;
+		nodeId?: string;
+		decisionKind: string;
+		subjectKind: string;
+		subjectDigest: string;
+		now?: string;
+	}): WorkflowClaimResolution {
+		const nowIso = input.now ?? new Date().toISOString();
+		if (!StateStore.workflowFiniteTimestamp(nowIso)) {
+			return { valid: false, reason: "invalid_timestamp" };
+		}
+		const nodeClause = input.nodeId == null ? "node_id IS NULL" : "node_id = ?";
+		const params: unknown[] = [
+			input.runId,
+			input.decisionKind,
+			input.subjectKind,
+			input.subjectDigest,
+		];
+		if (input.nodeId != null) params.push(input.nodeId);
+		const rows = this.workflowSelectAll(
+			`SELECT * FROM workflow_claims
+			  WHERE workflow_run_id = ? AND decision_kind = ? AND subject_kind = ?
+			    AND subject_digest = ? AND ${nodeClause}`,
+			params,
+		);
+		if (rows.length === 0) return { valid: false, reason: "no_claim" };
+		const attemptOf = (r: Record<string, unknown>): number =>
+			r.attempt == null ? 0 : Number(r.attempt);
+		const maxAttempt = Math.max(...rows.map(attemptOf));
+		const top = rows.filter((r) => attemptOf(r) === maxAttempt);
+		const candidate = top.reduce((a, b) =>
+			Number(a.server_seq) >= Number(b.server_seq) ? a : b,
+		);
+		if (top.some((r) => r.predicate !== candidate.predicate)) {
+			return { valid: false, reason: "conflict" };
+		}
+		const revoked = this.workflowSelectAll(
+			"SELECT 1 AS x FROM workflow_claim_revocation WHERE claim_id = ?",
+			[Number(candidate.id)],
+		);
+		if (revoked.length > 0) return { valid: false, reason: "revoked" };
+		if (
+			Number(candidate.permanent) !== 1 &&
+			StateStore.workflowExpired(candidate.expires_at as string, nowIso)
+		) {
+			return { valid: false, reason: "expired" };
+		}
+		if (
+			!PASSING_PREDICATES.has(candidate.predicate as WorkflowClaimPredicate)
+		) {
+			return { valid: false, reason: "not_pass" };
+		}
+		return { valid: true, claim: this.workflowClaimRowFromRaw(candidate) };
+	}
+
+	private nextWorkflowClaimSeq(): number {
+		const rows = this.workflowSelectAll(
+			"SELECT COALESCE(MAX(server_seq), 0) + 1 AS next FROM workflow_claims",
+			[],
+		);
+		return Number(rows[0]?.next ?? 1);
+	}
+
+	private workflowClaimIdBySeq(serverSeq: number): number {
+		const rows = this.workflowSelectAll(
+			"SELECT id FROM workflow_claims WHERE server_seq = ?",
+			[serverSeq],
+		);
+		return Number(rows[0]?.id);
+	}
+
+	private workflowClaimRowFromRaw(
+		r: Record<string, unknown>,
+	): WorkflowClaimRow {
+		return {
+			id: Number(r.id),
+			server_seq: Number(r.server_seq),
+			issued_at: r.issued_at as string,
+			issue_id: r.issue_id as string,
+			workflow_run_id: r.workflow_run_id as string,
+			node_id: (r.node_id as string) ?? null,
+			decision_kind: r.decision_kind as string,
+			attempt: r.attempt == null ? null : Number(r.attempt),
+			predicate: r.predicate as string,
+			issuer_kind: r.issuer_kind as string,
+			issuer_execution_id: (r.issuer_execution_id as string) ?? null,
+			issuer_node_id: (r.issuer_node_id as string) ?? null,
+			issuer_vendor: (r.issuer_vendor as string) ?? null,
+			issuer_model: (r.issuer_model as string) ?? null,
+			subject_producer_execution_id:
+				(r.subject_producer_execution_id as string) ?? null,
+			subject_kind: r.subject_kind as string,
+			subject_digest: r.subject_digest as string,
+			expires_at: (r.expires_at as string) ?? null,
+			permanent: Number(r.permanent ?? 0),
+			submission_digest: (r.submission_digest as string) ?? null,
+			client_request_id: (r.client_request_id as string) ?? null,
+			evidence: r.evidence ? JSON.parse(r.evidence as string) : undefined,
+			authority_id: r.authority_id as string,
+		};
+	}
+
+	// ── FLY-1232 module ②: shadow-run composite transaction + dispatch outbox ──
+	// The shadow ledger observes the production pipeline (write path behind
+	// FLYWHEEL_WORKFLOW_CLAIMS_WRITE); it is NOT authoritative — gates keep
+	// reading their legacy sources until sub-issue B flips the read path.
+
+	private migrateWorkflowShadowLedger(): void {
+		// §2.4b dispatch outbox: the durable history of each PHYSICAL launch of a
+		// (run, node, attempt). Row identity = (run, node, attempt, kind, ordinal);
+		// every distinct execution_id gets its own row (writer-allocated ordinal,
+		// design R3#2/R4#1) — history is never rewritten, replacements append.
+		// kind keeps the umbrella's full CHECK vocabulary; sub-issue A only
+		// ENABLES 'dispatch' at the API layer (materialize = sub-issue B).
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_side_effect_ledger (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL,
+				kind TEXT NOT NULL CHECK (kind IN ('dispatch','materialize')),
+				launch_ordinal INTEGER NOT NULL,
+				execution_id TEXT NOT NULL,
+				state TEXT NOT NULL CHECK (state IN (
+					'intent_recorded','launch_committed','started','abandoned')),
+				reason TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+				committed_at TEXT,
+				started_at TEXT,
+				abandoned_at TEXT,
+				UNIQUE (run_id, node_id, attempt, kind, launch_ordinal)
+			)
+		`);
+		// Row identity + execution binding are immutable (B7: a committed row's
+		// execution_id is never rewritten) — only state/reason/timestamps move.
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_side_effect_identity_immutable
+			BEFORE UPDATE OF run_id, node_id, attempt, kind, launch_ordinal, execution_id, created_at
+			ON workflow_side_effect_ledger
+			BEGIN SELECT RAISE(ABORT, 'workflow_side_effect_ledger identity is immutable'); END
+		`);
+		// Exactly ONE active shadow run per (project, issue) — DB-level guarantee
+		// so "the ship left but a new workflow still appends to the old run" is
+		// structurally impossible (finalization releases the slot).
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_run_active
+			ON workflow_run(project_name, issue_id) WHERE status = 'active'
+		`);
+	}
+
+	getActiveWorkflowRun(
+		projectName: string,
+		issueId: string,
+	): WorkflowRunRow | undefined {
+		const rows = this.workflowSelectAll(
+			"SELECT run_id FROM workflow_run WHERE project_name = ? AND issue_id = ? AND status = 'active'",
+			[projectName, issueId],
+		);
+		const r = rows[0];
+		return r ? this.getWorkflowRun(r.run_id as string) : undefined;
+	}
+
+	listActiveWorkflowRuns(): WorkflowRunRow[] {
+		return this.workflowSelectAll(
+			"SELECT run_id FROM workflow_run WHERE status = 'active'",
+			[],
+		)
+			.map((r) => this.getWorkflowRun(r.run_id as string))
+			.filter((r): r is WorkflowRunRow => r !== undefined);
+	}
+
+	/** Newest ACTIVE shadow run for an issue (an issue lives in one project;
+	 * rowid tiebreak keeps the theoretical cross-project case deterministic). */
+	getActiveWorkflowRunForIssue(issueId: string): WorkflowRunRow | undefined {
+		const rows = this.workflowSelectAll(
+			"SELECT run_id FROM workflow_run WHERE issue_id = ? AND status = 'active' ORDER BY rowid DESC LIMIT 1",
+			[issueId],
+		);
+		const r = rows[0];
+		return r ? this.getWorkflowRun(r.run_id as string) : undefined;
+	}
+
+	/** loop_iteration count of ONE run — the run-scoped attempt source
+	 * (Codex code R1 #2: attempt derivation must never leak across runs). */
+	countWorkflowRunLoopIterations(runId: string): number {
+		const rows = this.workflowSelectAll(
+			"SELECT COUNT(*) AS n FROM workflow_run_event WHERE run_id = ? AND kind = 'loop_iteration'",
+			[runId],
+		);
+		return Number(rows[0]?.n ?? 0);
+	}
+
+	/**
+	 * Non-terminal side-effect ledger rows across ALL runs, each carrying its
+	 * run's project/issue identity. Evidence reconcile iterates THIS — never the
+	 * active-run list — so a run that shipped (completed) before its evidence
+	 * was read still converges (Codex code R1 #3).
+	 */
+	listNonTerminalWorkflowSideEffects(): Array<
+		WorkflowSideEffectRow & { project_name: string; issue_id: string }
+	> {
+		return this.workflowSelectAll(
+			`SELECT l.*, r.project_name AS project_name, r.issue_id AS issue_id
+			   FROM workflow_side_effect_ledger l
+			   JOIN workflow_run r ON r.run_id = l.run_id
+			  WHERE l.state IN ('intent_recorded','launch_committed')
+			  ORDER BY l.id`,
+			[],
+		).map((r) => ({
+			id: Number(r.id),
+			run_id: r.run_id as string,
+			node_id: r.node_id as string,
+			attempt: Number(r.attempt),
+			kind: r.kind as string,
+			launch_ordinal: Number(r.launch_ordinal),
+			execution_id: r.execution_id as string,
+			state: r.state as WorkflowSideEffectState,
+			reason: (r.reason as string) ?? null,
+			created_at: r.created_at as string,
+			updated_at: r.updated_at as string,
+			committed_at: (r.committed_at as string) ?? null,
+			started_at: (r.started_at as string) ?? null,
+			abandoned_at: (r.abandoned_at as string) ?? null,
+			project_name: r.project_name as string,
+			issue_id: r.issue_id as string,
+		}));
+	}
+
+	/**
+	 * three_stage_fix_round events ATTRIBUTED to one shadow run: only rounds
+	 * reported by an execution this run itself dispatched (present in its
+	 * side-effect ledger or run events). The run-scoped T8 kickback source —
+	 * execution identity, never timestamps or issue-global counts, decides
+	 * which run a durable fact belongs to (Codex code R2 #1); each backfill
+	 * uses the event's ACTUAL production round number (R1 #2).
+	 */
+	listWorkflowRunAttributedFixRounds(runId: string, issueId: string): number[] {
+		const stmt = this.db.prepare(
+			`SELECT payload FROM session_events
+			  WHERE issue_id = ? AND event_type = 'three_stage_fix_round'
+			    AND execution_id IN (
+			      SELECT execution_id FROM workflow_side_effect_ledger WHERE run_id = ?
+			      UNION
+			      SELECT execution_id FROM workflow_run_event
+			       WHERE run_id = ? AND execution_id IS NOT NULL)
+			  ORDER BY id`,
+		);
+		stmt.bind([issueId, runId, runId]);
+		const rounds: number[] = [];
+		while (stmt.step()) {
+			const raw = (stmt.getAsObject() as Record<string, unknown>).payload;
+			if (raw == null) continue;
+			try {
+				const payload = JSON.parse(raw as string) as { round?: unknown };
+				if (Number.isInteger(payload.round) && (payload.round as number) > 0) {
+					rounds.push(payload.round as number);
+				}
+			} catch {
+				// malformed payload — skip (never invent a round)
+			}
+		}
+		stmt.free();
+		return rounds;
+	}
+
+	/** True when `executionId` was dispatched by (or produced an event in)
+	 * this shadow run — THE cross-run attribution predicate (R2 #1/#2/#3). */
+	isExecutionAttributedToWorkflowRun(
+		runId: string,
+		executionId: string,
+	): boolean {
+		const rows = this.workflowSelectAll(
+			`SELECT 1 AS x FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND execution_id = ?
+			 UNION
+			 SELECT 1 AS x FROM workflow_run_event
+			  WHERE run_id = ? AND execution_id = ?
+			 LIMIT 1`,
+			[runId, executionId, runId, executionId],
+		);
+		return rows.length > 0;
+	}
+
+	/** True when a post_ship_finalization_claim exists whose execution this
+	 * run dispatched — a prior workflow's claim can never finalize a new run
+	 * on the same issue (R2 #3). */
+	hasWorkflowRunAttributedShipClaim(runId: string, issueId: string): boolean {
+		const rows = this.workflowSelectAll(
+			`SELECT 1 AS x FROM session_events
+			  WHERE issue_id = ? AND event_type = 'post_ship_finalization_claim'
+			    AND execution_id IN (
+			      SELECT execution_id FROM workflow_side_effect_ledger WHERE run_id = ?
+			      UNION
+			      SELECT execution_id FROM workflow_run_event
+			       WHERE run_id = ? AND execution_id IS NOT NULL)
+			  LIMIT 1`,
+			[issueId, runId, runId],
+		);
+		return rows.length > 0;
+	}
+
+	listWorkflowSideEffects(runId: string): WorkflowSideEffectRow[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_side_effect_ledger WHERE run_id = ? ORDER BY id",
+			[runId],
+		).map((r) => ({
+			id: Number(r.id),
+			run_id: r.run_id as string,
+			node_id: r.node_id as string,
+			attempt: Number(r.attempt),
+			kind: r.kind as string,
+			launch_ordinal: Number(r.launch_ordinal),
+			execution_id: r.execution_id as string,
+			state: r.state as WorkflowSideEffectState,
+			reason: (r.reason as string) ?? null,
+			created_at: r.created_at as string,
+			updated_at: r.updated_at as string,
+			committed_at: (r.committed_at as string) ?? null,
+			started_at: (r.started_at as string) ?? null,
+			abandoned_at: (r.abandoned_at as string) ?? null,
+		}));
+	}
+
+	/**
+	 * THE single sanctioned transaction surface for shadow writes (design R3#5):
+	 * one call = one SQLite transaction covering run getOrCreate, event-uid
+	 * dedup + per-run seq allocation, run/node projections, event appends and
+	 * side-effect intent/transitions. Any statement failing rolls the WHOLE
+	 * batch back (B6: no torn writes between events / projections / intent) and
+	 * the same batch can be replayed cleanly. Same-uid events dedupe; a
+	 * dispatch replay with the same execution id converges on its existing
+	 * ledger row (same ordinal); a NEW execution id on the same (node, attempt)
+	 * gets a NEW row + next ordinal (replacement starts append, never rewrite).
+	 *
+	 * Event-uid formulas (the transition-table contract — see
+	 * bridge/workflow-shadow-writer.ts for the full T1–T9 table):
+	 *   dispatch  run:{runId}:dispatch:{node}:{attempt}:{ordinal}
+	 *   wake      run:{runId}:wake:{node}:{attempt}
+	 *   edge      run:{runId}:edge:{from}:{to}:{attempt}
+	 *   complete  run:{runId}:complete:{node}:{attempt}:{executionId}
+	 *   kickback  run:{runId}:kickback:{round}
+	 * finalize (T9) is a PROJECTION-ONLY transition (active→completed): the
+	 * umbrella §3.1b event vocabulary has no finalize kind, and the same B9
+	 * discipline that keeps side-effect transitions out of run_event applies —
+	 * no invented kinds.
+	 */
+	applyWorkflowShadowBatch(
+		input: WorkflowShadowBatchInput,
+	): WorkflowShadowBatchResult {
+		if (!input.projectName || !input.issueId) {
+			throw new Error("workflow shadow batch requires projectName + issueId");
+		}
+		for (const op of input.ops) {
+			StateStore.validateWorkflowShadowOp(op);
+		}
+		let result: WorkflowShadowBatchResult | undefined;
+		this.db.transaction(() => {
+			let runId: string;
+			let created = false;
+			if (input.runId) {
+				// Explicit run targeting (evidence reconcile on rows whose run may
+				// already be completed — Codex code R1 #3). Never creates, and
+				// accepts ONLY side_effect ops: a finalized run's lifecycle history
+				// must not be mutable through this escape hatch (R2 #5).
+				const nonSideEffect = input.ops.find((op) => op.op !== "side_effect");
+				if (nonSideEffect) {
+					throw new Error(
+						`explicit-runId workflow shadow batch accepts only side_effect ops (got ${nonSideEffect.op})`,
+					);
+				}
+				const row = this.workflowSelectAll(
+					"SELECT run_id, project_name, issue_id FROM workflow_run WHERE run_id = ?",
+					[input.runId],
+				)[0];
+				if (!row) {
+					throw new Error(`workflow shadow run not found: ${input.runId}`);
+				}
+				// R3 #1: the caller's project/issue must MATCH the targeted run —
+				// a wrong-identity batch must never reach another run's rows.
+				if (
+					row.project_name !== input.projectName ||
+					row.issue_id !== input.issueId
+				) {
+					throw new Error(
+						`workflow shadow batch identity mismatch: run ${input.runId} belongs to ${row.project_name}/${row.issue_id}, not ${input.projectName}/${input.issueId}`,
+					);
+				}
+				runId = input.runId;
+			} else {
+				const existing = this.workflowSelectAll(
+					"SELECT run_id FROM workflow_run WHERE project_name = ? AND issue_id = ? AND status = 'active'",
+					[input.projectName, input.issueId],
+				)[0];
+				if (existing) {
+					runId = existing.run_id as string;
+				} else {
+					if (!input.newRunId) {
+						throw new Error(
+							`no active shadow run for ${input.projectName}/${input.issueId} and no newRunId supplied (fail-closed)`,
+						);
+					}
+					runId = input.newRunId;
+					this.db.run(
+						`INSERT INTO workflow_run (run_id, issue_id, project_name, claims_read_enrolled)
+						 VALUES (?, ?, ?, 0)`,
+						[runId, input.issueId, input.projectName],
+					);
+					created = true;
+				}
+			}
+			const events: WorkflowShadowBatchResult["events"] = [];
+			const dispatchOrdinals: number[] = [];
+			const appendEvent = (e: {
+				eventUid: string;
+				kind: string;
+				nodeId?: string;
+				edgeId?: string;
+				executionId?: string;
+				payload?: unknown;
+			}) => {
+				const r = this.appendWorkflowRunEventTx({ runId, ...e });
+				events.push({ eventUid: e.eventUid, seq: r.seq, deduped: r.deduped });
+			};
+			for (const op of input.ops) {
+				switch (op.op) {
+					case "edge": {
+						appendEvent({
+							eventUid: `run:${runId}:edge:${op.from}:${op.to}:${op.attempt}`,
+							kind: "edge_traversed",
+							edgeId: `${op.from}->${op.to}`,
+							executionId: op.executionId,
+							payload: { attempt: op.attempt },
+						});
+						break;
+					}
+					case "dispatch": {
+						const ordinal = this.allocateWorkflowLaunchOrdinalTx(
+							runId,
+							op.node,
+							op.attempt,
+							op.executionId,
+						);
+						dispatchOrdinals.push(ordinal);
+						appendEvent({
+							eventUid: `run:${runId}:dispatch:${op.node}:${op.attempt}:${ordinal}`,
+							kind: "node_dispatched",
+							nodeId: op.node,
+							executionId: op.executionId,
+							payload: { attempt: op.attempt, via: "spawn", ordinal },
+						});
+						this.upsertWorkflowRunNodeTx({
+							runId,
+							nodeId: op.node,
+							attempt: op.attempt,
+							state: "running",
+							executionId: op.executionId,
+						});
+						this.db.run(
+							"UPDATE workflow_run SET current_node_id = ? WHERE run_id = ?",
+							[op.node, runId],
+						);
+						break;
+					}
+					case "wake": {
+						appendEvent({
+							eventUid: `run:${runId}:wake:${op.node}:${op.attempt}`,
+							kind: "node_dispatched",
+							nodeId: op.node,
+							executionId: op.executionId,
+							payload: { attempt: op.attempt, via: "wake" },
+						});
+						this.upsertWorkflowRunNodeTx({
+							runId,
+							nodeId: op.node,
+							attempt: op.attempt,
+							state: "running",
+							executionId: op.executionId,
+						});
+						this.db.run(
+							"UPDATE workflow_run SET current_node_id = ? WHERE run_id = ?",
+							[op.node, runId],
+						);
+						break;
+					}
+					case "complete": {
+						appendEvent({
+							eventUid: `run:${runId}:complete:${op.node}:${op.attempt}:${op.executionId}`,
+							kind: "node_completed",
+							nodeId: op.node,
+							executionId: op.executionId,
+							payload: { attempt: op.attempt },
+						});
+						this.upsertWorkflowRunNodeTx({
+							runId,
+							nodeId: op.node,
+							attempt: op.attempt,
+							state: "done",
+							executionId: op.executionId,
+							endedAt: new Date().toISOString(),
+						});
+						this.db.run(
+							"UPDATE workflow_run SET current_node_id = ? WHERE run_id = ?",
+							[op.node, runId],
+						);
+						break;
+					}
+					case "kickback": {
+						appendEvent({
+							eventUid: `run:${runId}:kickback:${op.round}`,
+							kind: "loop_iteration",
+							payload: { round: op.round },
+						});
+						break;
+					}
+					case "finalize": {
+						this.db.run(
+							"UPDATE workflow_run SET status = 'completed' WHERE run_id = ? AND status = 'active'",
+							[runId],
+						);
+						break;
+					}
+					case "side_effect": {
+						this.transitionWorkflowSideEffectTx(runId, op);
+						break;
+					}
+				}
+			}
+			result = { runId, created, dispatchOrdinals, events };
+		});
+		this.save();
+		if (!result) throw new Error("workflow shadow batch produced no result");
+		return result;
+	}
+
+	private static validateWorkflowShadowOp(op: WorkflowShadowOp): void {
+		const label = (name: string, v: string) => {
+			if (!v || v.includes(":")) {
+				throw new Error(`workflow shadow ${name} label invalid: "${v}"`);
+			}
+		};
+		const positiveInt = (name: string, v: number) => {
+			if (!Number.isInteger(v) || v < 1) {
+				throw new Error(`workflow shadow ${name} must be a positive integer`);
+			}
+		};
+		switch (op.op) {
+			case "edge":
+				label("edge.from", op.from);
+				label("edge.to", op.to);
+				positiveInt("attempt", op.attempt);
+				break;
+			case "dispatch":
+			case "wake":
+			case "complete":
+				label("node", op.node);
+				positiveInt("attempt", op.attempt);
+				if (!op.executionId) {
+					throw new Error("workflow shadow op requires executionId");
+				}
+				break;
+			case "kickback":
+				positiveInt("round", op.round);
+				break;
+			case "finalize":
+				break;
+			case "side_effect":
+				label("node", op.node);
+				positiveInt("attempt", op.attempt);
+				if (!op.executionId) {
+					throw new Error("workflow shadow op requires executionId");
+				}
+				break;
+		}
+	}
+
+	/**
+	 * Writer-allocated launch ordinal (design R3#2/R4#1): inside the batch
+	 * transaction, the SAME execution id converges on its existing row (a
+	 * pre-commit re-drive of one physical launch); every DIFFERENT execution id
+	 * on the same (run, node, attempt) appends a NEW intent_recorded row with
+	 * the next ordinal (post-start replacement, crash-then-new-execution).
+	 * Callers never pre-compute ordinals.
+	 */
+	private allocateWorkflowLaunchOrdinalTx(
+		runId: string,
+		nodeId: string,
+		attempt: number,
+		executionId: string,
+	): number {
+		const rows = this.workflowSelectAll(
+			`SELECT launch_ordinal, execution_id FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'`,
+			[runId, nodeId, attempt],
+		);
+		const mine = rows.find((r) => r.execution_id === executionId);
+		if (mine) return Number(mine.launch_ordinal);
+		const next =
+			rows.reduce((max, r) => Math.max(max, Number(r.launch_ordinal)), 0) + 1;
+		this.db.run(
+			`INSERT INTO workflow_side_effect_ledger
+			   (run_id, node_id, attempt, kind, launch_ordinal, execution_id, state)
+			 VALUES (?, ?, ?, 'dispatch', ?, ?, 'intent_recorded')`,
+			[runId, nodeId, attempt, next, executionId],
+		);
+		return next;
+	}
+
+	/**
+	 * §2.4b one-way dispatch state machine:
+	 *   intent_recorded → launch_committed → started (terminal)
+	 *   intent_recorded → abandoned (pre-commit positive failure ONLY, reason
+	 *   required — a durable commit marker means the row can never abandon:
+	 *   it stops at launch_committed forever, history is not invented).
+	 * Same-state replay = idempotent no-op; forward skips are allowed (both
+	 * evidences proven at once) and stamp the intermediate timestamp; anything
+	 * else is refused. Rows record launch HISTORY, not liveness — a runner
+	 * exiting after a successful start stays `started`.
+	 */
+	private transitionWorkflowSideEffectTx(
+		runId: string,
+		op: Extract<WorkflowShadowOp, { op: "side_effect" }>,
+	): void {
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch' AND execution_id = ?`,
+			[runId, op.node, op.attempt, op.executionId],
+		)[0];
+		if (!row) {
+			throw new Error(
+				`workflow side-effect row not found: ${runId}/${op.node}/${op.attempt}/${op.executionId}`,
+			);
+		}
+		const cur = row.state as WorkflowSideEffectState;
+		if (cur === op.to) return; // idempotent same-state replay
+		const nowIso = new Date().toISOString();
+		if (op.to === "abandoned") {
+			if (!op.reason) {
+				throw new Error("workflow side-effect abandon requires a reason");
+			}
+			if (cur !== "intent_recorded") {
+				throw new Error(
+					`workflow side-effect illegal transition ${cur} → abandoned (abandon is pre-commit only)`,
+				);
+			}
+			this.db.run(
+				`UPDATE workflow_side_effect_ledger
+				    SET state = 'abandoned', reason = ?, abandoned_at = ?, updated_at = ?
+				  WHERE id = ?`,
+				[op.reason, nowIso, nowIso, Number(row.id)],
+			);
+			return;
+		}
+		const ORDER: Record<string, number> = {
+			intent_recorded: 0,
+			launch_committed: 1,
+			started: 2,
+		};
+		const from = ORDER[cur];
+		const to = ORDER[op.to];
+		if (from === undefined || to === undefined || to <= from) {
+			throw new Error(
+				`workflow side-effect illegal transition ${cur} → ${op.to}`,
+			);
+		}
+		this.db.run(
+			`UPDATE workflow_side_effect_ledger
+			    SET state = ?, updated_at = ?,
+			        committed_at = COALESCE(committed_at, ?),
+			        started_at = CASE WHEN ? = 'started' THEN COALESCE(started_at, ?) ELSE started_at END
+			  WHERE id = ?`,
+			[op.to, nowIso, nowIso, op.to, nowIso, Number(row.id)],
+		);
+	}
+
+	/** Transaction-internal node projection upsert (shared with the public API). */
+	private upsertWorkflowRunNodeTx(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		state: string;
+		executionId?: string;
+		endedAt?: string;
+	}): void {
+		this.db.run(
+			`INSERT INTO workflow_run_node (run_id, node_id, attempt, state, execution_id, ended_at)
+			 VALUES (?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(run_id, node_id, attempt) DO UPDATE SET
+				state = excluded.state,
+				execution_id = COALESCE(excluded.execution_id, workflow_run_node.execution_id),
+				ended_at = COALESCE(excluded.ended_at, workflow_run_node.ended_at)`,
+			[
+				input.runId,
+				input.nodeId,
+				input.attempt,
+				input.state,
+				input.executionId ?? null,
+				input.endedAt ?? null,
+			],
+		);
+	}
+}
+
+// ── FLY-1135 PR-1: workflow claims ledger row/result types ─────────────────
+
+export interface WorkflowRunRow {
+	run_id: string;
+	issue_id: string;
+	project_name: string;
+	template_id: string | null;
+	template_revision: number | null;
+	snapshot: string | null;
+	current_node_id: string | null;
+	status: string;
+	/** Typed cutover marker (plan §3.2) — 1 only when this run was EXPLICITLY
+	 * enrolled in the claims read path at admission. Never inferred. */
+	claims_read_enrolled: number;
+	created_at: string;
+}
+
+export interface WorkflowRunNodeRow {
+	run_id: string;
+	node_id: string;
+	attempt: number;
+	state: string;
+	execution_id: string | null;
+	started_at: string;
+	ended_at: string | null;
+}
+
+export interface WorkflowRunEventRow {
+	run_id: string;
+	seq: number;
+	event_uid: string;
+	kind: string;
+	node_id: string | null;
+	edge_id: string | null;
+	execution_id: string | null;
+	payload?: unknown;
+	at: string;
+}
+
+export interface WorkflowDecisionCapabilityRow {
+	id: number;
+	token_hash: string;
+	run_id: string;
+	node_id: string;
+	execution_id: string;
+	attempt: number;
+	allowed_predicate_family: string;
+	manifest_revision: number | null;
+	evidence_schema_version: number;
+	expected_subject_digest: string | null;
+	issued_at: string;
+	expires_at: string;
+	absolute_deadline_at: string;
+	consumed_at: string | null;
+	consumed_claim_id: number | null;
+	revoked: number;
+	revoked_reason: string | null;
+}
+
+export interface WorkflowClaimRow {
+	id: number;
+	server_seq: number;
+	issued_at: string;
+	issue_id: string;
+	workflow_run_id: string;
+	node_id: string | null;
+	decision_kind: string;
+	attempt: number | null;
+	predicate: string;
+	issuer_kind: string;
+	issuer_execution_id: string | null;
+	issuer_node_id: string | null;
+	issuer_vendor: string | null;
+	issuer_model: string | null;
+	subject_producer_execution_id: string | null;
+	subject_kind: string;
+	subject_digest: string;
+	expires_at: string | null;
+	permanent: number;
+	submission_digest: string | null;
+	client_request_id: string | null;
+	evidence?: unknown;
+	authority_id: string;
+}
+
+export type WorkflowCapabilityIssueResult =
+	| { ok: true; capabilityId: number; token: string }
+	| {
+			ok: false;
+			reason:
+				| "run_not_found"
+				| "stale_attempt"
+				| "invalid_family"
+				| "invalid_timestamp"
+				| "expiry_beyond_deadline";
+	  };
+
+export type WorkflowCapabilityRenewalResult =
+	| { ok: true; expiresAt: string }
+	| {
+			ok: false;
+			reason:
+				| "capability_not_found"
+				| "capability_consumed"
+				| "capability_revoked"
+				| "capability_expired"
+				| "invalid_timestamp";
+	  };
+
+export type WorkflowClaimSubmissionResult =
+	| { ok: true; claimId: number; serverSeq: number; idempotentReplay: boolean }
+	| {
+			ok: false;
+			reason:
+				| "capability_not_found"
+				| "capability_revoked"
+				| "capability_expired"
+				| "replay_payload_mismatch"
+				| "predicate_not_allowed"
+				| "subject_kind_invalid"
+				| "subject_mismatch"
+				| "missing_subject_producer"
+				| "same_vendor_review"
+				| "missing_expiry"
+				| "invalid_timestamp"
+				| "run_not_found";
+	  };
+
+export type WorkflowSystemClaimResult =
+	| { ok: true; claimId: number; serverSeq: number }
+	| {
+			ok: false;
+			reason:
+				| "predicate_not_allowed_for_issuer"
+				| "subject_kind_invalid"
+				| "expiry_or_permanent_required"
+				| "invalid_timestamp"
+				| "issue_mismatch"
+				| "run_not_found";
+	  };
+
+export type WorkflowClaimResolution =
+	| { valid: true; claim: WorkflowClaimRow }
+	| {
+			valid: false;
+			reason:
+				| "no_claim"
+				| "conflict"
+				| "revoked"
+				| "expired"
+				| "not_pass"
+				| "invalid_timestamp";
+	  };
+
+// ── FLY-1232 module ②: shadow batch + side-effect ledger types ─────────────
+
+export type WorkflowSideEffectState =
+	| "intent_recorded"
+	| "launch_committed"
+	| "started"
+	| "abandoned";
+
+export interface WorkflowSideEffectRow {
+	id: number;
+	run_id: string;
+	node_id: string;
+	attempt: number;
+	kind: string;
+	launch_ordinal: number;
+	execution_id: string;
+	state: WorkflowSideEffectState;
+	reason: string | null;
+	created_at: string;
+	updated_at: string;
+	committed_at: string | null;
+	started_at: string | null;
+	abandoned_at: string | null;
+}
+
+/** One operation inside a shadow batch — see applyWorkflowShadowBatch. */
+export type WorkflowShadowOp =
+	| {
+			op: "edge";
+			from: string;
+			to: string;
+			attempt: number;
+			executionId?: string;
+	  }
+	| { op: "dispatch"; node: string; attempt: number; executionId: string }
+	| { op: "wake"; node: string; attempt: number; executionId: string }
+	| { op: "complete"; node: string; attempt: number; executionId: string }
+	| { op: "kickback"; round: number }
+	| { op: "finalize" }
+	| {
+			op: "side_effect";
+			node: string;
+			attempt: number;
+			executionId: string;
+			to: "launch_committed" | "started" | "abandoned";
+			reason?: string;
+	  };
+
+export interface WorkflowShadowBatchInput {
+	projectName: string;
+	issueId: string;
+	/** Used ONLY when no active shadow run exists for (project, issue). */
+	newRunId?: string;
+	/** Explicit run targeting (ANY status; never creates) — the evidence
+	 * reconcile's path onto rows whose run already completed (R1 #3). */
+	runId?: string;
+	ops: WorkflowShadowOp[];
+}
+
+export interface WorkflowShadowBatchResult {
+	runId: string;
+	created: boolean;
+	/** Writer-allocated ordinal per "dispatch" op, in ops order. */
+	dispatchOrdinals: number[];
+	events: { eventUid: string; seq: number; deduped: boolean }[];
 }
 
 export interface LeadEventRow {

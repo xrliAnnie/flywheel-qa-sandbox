@@ -43,6 +43,31 @@ import {
 	resolveRoleAdapter,
 } from "./role-adapter-resolver.js";
 import { threeStageKeepAliveEnabled } from "./three-stage-policy.js";
+import type { WorkflowShadowContext } from "./workflow-shadow-writer.js";
+
+/**
+ * FLY-1232 module ②: the narrow seam RunDispatcher.start() drives — the
+ * T1/T2/T7 pre-launch composite shadow write and the evidence-checked
+ * dispatch-failure callback. Structurally satisfied by WorkflowShadowWriter;
+ * `undefined` (flag OFF / external injection) ⇒ the seam is inert and the
+ * fresh path keeps `launchCommitPath` undefined (the byte-compat sentinel).
+ */
+export interface WorkflowShadowSeam {
+	onSpawnDispatch(args: {
+		projectName: string;
+		issueId: string;
+		executionId: string;
+		context: WorkflowShadowContext;
+	}): void;
+	onDispatchFailed(args: {
+		projectName: string;
+		issueId: string;
+		executionId: string;
+		node: string;
+		attempt: number;
+		error: string;
+	}): void;
+}
 
 /**
  * FLY-795: compute the restart-resilient resume decision for a (re-)dispatch.
@@ -775,6 +800,13 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		lifecycleAdmission?: LifecycleAdmissionFn,
 		/** FLY-1185 (Codex R1#5): launch guard seam (see base class). */
 		lifecycleLaunchGuard?: LifecycleLaunchGuard,
+		/**
+		 * FLY-1232 module ②: optional shadow seam (constructed by plugin.ts ONLY
+		 * when FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1, threaded through run-infra).
+		 * Undefined ⇒ zero shadow writes AND the fresh path keeps
+		 * launchCommitPath undefined (byte-compatible).
+		 */
+		private workflowShadow?: WorkflowShadowSeam,
 	) {
 		super(
 			blueprintsByProject,
@@ -900,6 +932,43 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			req.dispatchEffort, // FLY-1224 per-phase effort
 		);
 
+		// FLY-1232 T1/T2/T7 pre-launch seam: ONE composite shadow transaction
+		// after execId allocation, BEFORE the CommDB pre-registration and
+		// Blueprint.run(). The orchestrator supplies shadowContext for handoff
+		// spawns (T2) and replacement starts (T7); a fresh entry synthesizes the
+		// T1 default. The writer never throws into this flow (loud warn inside).
+		const shadowContext: WorkflowShadowContext | undefined = this.workflowShadow
+			? (req.shadowContext ?? {
+					node: role.replace(/[^a-zA-Z0-9-]/g, "").toLowerCase() || "main",
+					attempt: 1,
+				})
+			: undefined;
+		if (this.workflowShadow && shadowContext) {
+			this.workflowShadow.onSpawnDispatch({
+				projectName: req.projectName,
+				issueId: req.issueId,
+				executionId,
+				context: shadowContext,
+			});
+		}
+		// Flag ON: the fresh path also passes the durable commit-marker path so
+		// the ②b evidence chain gets its launch_committed fact (BlueprintContext
+		// field + adapter write already exist — the retry path has used them
+		// since FLY-245). Flag OFF keeps undefined = the existing "normal path
+		// sets no marker" sentinel. NOTE: this makes a flag-ON fresh launch go
+		// through the commit-gate wrapper (same shape as retry) — declared in
+		// the plan's risk section; B11 real-machine QA covers it.
+		const shadowCommitDir = this.workflowShadow
+			? launchCommitPath(executionId)
+			: undefined;
+		if (shadowCommitDir) {
+			try {
+				mkdirSync(join(shadowCommitDir, ".."), { recursive: true });
+			} catch {
+				// best-effort; the adapter also mkdir's defensively
+			}
+		}
+
 		// FLY-80: Pre-register in CommDB before blueprint starts.
 		// FLY-1188: see the retry path — the pending row carries the resolved
 		// vendor so a Lead `send` in the pre-self-registration window routes to
@@ -985,6 +1054,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// rebuilds WITH the committed progress.md (never override a caller's own).
 			startPoint: req.startPoint ?? resume?.startPoint,
 			qaContext: req.qaContext,
+			// FLY-1232: durable commit marker on the fresh path — flag ON only
+			// (undefined otherwise, byte-compatible with the normal-path sentinel).
+			launchCommitPath: shadowCommitDir,
 			// FLY-795: restart-resilient resume context (Blueprint renders resume mode).
 			...(resume && {
 				progressResume: {
@@ -1062,6 +1134,19 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					// FLY-95: Clean up orphan pre-registration when Runner never self-registered
 					if (!result.sessionId) {
 						this.cleanupPreRegistration(executionId, req.projectName);
+						// FLY-1232: evidence-checked ledger outcome — abandons ONLY on
+						// positive pre-commit failure (no marker, no non-pending row);
+						// a durable marker stops the row at launch_committed instead.
+						if (shadowContext) {
+							this.workflowShadow?.onDispatchFailed({
+								projectName: req.projectName,
+								issueId: req.issueId,
+								executionId,
+								node: shadowContext.node,
+								attempt: shadowContext.attempt,
+								error: result.error ?? "blueprint resolved with failure",
+							});
+						}
 					}
 				}
 			})
@@ -1078,6 +1163,17 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				}
 				// FLY-80: Clean up orphan pre-registration on failed start
 				this.cleanupPreRegistration(executionId, req.projectName);
+				// FLY-1232: same evidence-checked outcome on the rejection path.
+				if (shadowContext) {
+					this.workflowShadow?.onDispatchFailed({
+						projectName: req.projectName,
+						issueId: req.issueId,
+						executionId,
+						node: shadowContext.node,
+						attempt: shadowContext.attempt,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
 			})
 			.finally(() => {
 				this.inflight.delete(key);

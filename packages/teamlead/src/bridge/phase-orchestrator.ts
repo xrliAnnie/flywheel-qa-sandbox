@@ -36,6 +36,10 @@ import {
 } from "flywheel-config";
 import { REVIEW_BINDING_UNBOUND } from "../StateStore.js";
 import { isMergeBlocked } from "./merge-ship-gate.js";
+import type {
+	WorkflowShadowContext,
+	WorkflowShadowHooks,
+} from "./workflow-shadow-writer.js";
 
 /**
  * Minimal session shape this coordinator needs (subset of StateStore Session).
@@ -242,6 +246,9 @@ export interface PhaseOrchestratorDeps {
 			issueIdentifier?: string;
 			issueTitle?: string;
 			phaseFixContext?: { round: number; qaSummary: string };
+			/** FLY-1232 module ②: semantic shadow context for the T2/T7 seam —
+			 * set ONLY when the workflowShadow dep is wired (never an ordinal). */
+			shadowContext?: WorkflowShadowContext;
 		}): Promise<{ executionId: string }>;
 	};
 	effects: {
@@ -459,6 +466,15 @@ export interface PhaseOrchestratorDeps {
 		/** Fix-round cap (default 3); maxImplementPhases = 1 + maxFixRounds. */
 		maxFixRounds?: number;
 	};
+	/**
+	 * FLY-1232 module ②: optional lifecycle shadow hooks (T3/T3b/T4/T5/T6 —
+	 * see the transition-table contract in workflow-shadow-writer.ts). Wired
+	 * by plugin.ts ONLY when FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1; undefined ⇒
+	 * zero shadow interaction (byte-compatible). Every hook is no-throw by
+	 * contract (the writer warns loudly instead) — the production pipeline
+	 * never depends on a shadow write succeeding.
+	 */
+	workflowShadow?: WorkflowShadowHooks;
 	logger?: { log?: (m: string) => void; warn?: (m: string) => void };
 }
 
@@ -925,6 +941,17 @@ export class PhaseOrchestrator {
 			return;
 		}
 
+		// FLY-1232 T4: shadow the node completion at its genuine handoff boundary
+		// (all gates above passed). uid is keyed by execution id, so reconcile
+		// re-drives of this same handoff dedupe instead of duplicating.
+		this.deps.workflowShadow?.onNodeComplete({
+			projectName: session.project_name ?? "",
+			issueId: session.issue_id,
+			executionId: session.execution_id,
+			node: phase,
+			attempt: this.deps.workflowShadow.currentAttempt(session.issue_id),
+		});
+
 		const next = nextPhase(phase);
 		if (!next) return; // qa is last — its PASS/FAIL is the internal-QA path (Step 8)
 
@@ -1088,6 +1115,13 @@ export class PhaseOrchestrator {
 			this.log(
 				`three-stage QA PASS for ${session.issue_id} (${execId}, target=${verdict.targetExecutionId ?? "n/a"}) — QA runner proceeds to the founder ship gate`,
 			);
+			// FLY-1232 T5: qa completes AND traverses the qa→end edge.
+			this.deps.workflowShadow?.onQaPass({
+				projectName: session.project_name ?? "",
+				issueId: session.issue_id,
+				executionId: execId,
+				attempt: this.deps.workflowShadow.currentAttempt(session.issue_id),
+			});
 			await this.deps.refreshPhaseStatusLine(session.issue_id);
 			return;
 		}
@@ -1197,6 +1231,13 @@ export class PhaseOrchestrator {
 		}
 
 		const round = implementCount; // Nth fix round (1 initial + N-1 prior fixes)
+		// FLY-1232 T6 (legacy path): the round determination point mirrors the
+		// keep-alive path's recordFixRound site — same sole-owner discipline.
+		this.deps.workflowShadow?.onKickback({
+			projectName: session.project_name,
+			issueId: session.issue_id,
+			round,
+		});
 		// FLY-856: sessions have NO lead_id column — resolve the real leadId live
 		// (project config + issue labels), exactly like the phase handoff does.
 		const fixLeadId = this.deps.resolveLeadId(session);
@@ -1227,6 +1268,9 @@ export class PhaseOrchestrator {
 					round,
 					qaSummary: intent()?.summary ?? "(no QA summary provided)",
 				},
+				...(this.deps.workflowShadow && {
+					shadowContext: { node: "implement", attempt: round + 1 },
+				}),
 			});
 			this.deps.qaVerdicts.patchIntent(execId, { fixExecId: res.executionId });
 			this.log(
@@ -1272,6 +1316,14 @@ export class PhaseOrchestrator {
 			return;
 		}
 		const round = this.deps.qaVerdicts.recordFixRound(session, verdictEventId);
+		// FLY-1232 T6: the belt round-increment point is loop_iteration's SOLE
+		// owner — the durable fix-round record just landed, mirror it (idempotent
+		// by round, so a same-verdict replay after a crash never duplicates).
+		this.deps.workflowShadow?.onKickback({
+			projectName,
+			issueId: session.issue_id,
+			round,
+		});
 		const maxFixRounds = normalizeMaxFixRounds(
 			this.deps.qaVerdicts.maxFixRounds,
 		);
@@ -1354,6 +1406,16 @@ export class PhaseOrchestrator {
 				this.deps.qaVerdicts.patchIntent(execId, {
 					fixExecId: impl.execution_id,
 				});
+				// FLY-1232 T3: fix wake = a new logical round on the SAME execution.
+				// No edge event (the loop-back is loop_iteration's job) and no
+				// ledger row (a wake is not a spawn side effect).
+				this.deps.workflowShadow?.onWake({
+					projectName,
+					issueId: session.issue_id,
+					executionId: impl.execution_id,
+					node: "implement",
+					attempt: round + 1,
+				});
 				this.log(
 					`QA FAIL → WAKE implement fix round ${round} on ${session.issue_id} @ ${headSha.slice(0, 8)} (impl ${impl.execution_id})`,
 				);
@@ -1401,6 +1463,11 @@ export class PhaseOrchestrator {
 				issueIdentifier: session.issue_identifier,
 				issueTitle: session.issue_title,
 				phaseFixContext: { round, qaSummary },
+				// FLY-1232 T2-shaped fix spawn: new logical round, NO edge — the
+				// loop-back is loop_iteration's job (T3 symmetry).
+				...(this.deps.workflowShadow && {
+					shadowContext: { node: "implement", attempt: round + 1 },
+				}),
 			});
 			this.deps.qaVerdicts.patchIntent(execId, { fixExecId: res.executionId });
 			this.log(
@@ -1567,6 +1634,17 @@ export class PhaseOrchestrator {
 				headSha,
 			});
 			if (woke.ok) {
+				// FLY-1232 T3b: a wake handoff traverses the SAME DAG edge a spawn
+				// handoff would (R3#3) — edge + wake in one composite transaction;
+				// no ledger row (a wake is not a spawn side effect).
+				this.deps.workflowShadow?.onWake({
+					projectName: prev.project_name as string,
+					issueId: prev.issue_id,
+					executionId: target.execution_id,
+					node: next,
+					attempt: this.deps.workflowShadow.currentAttempt(prev.issue_id),
+					edge: { from: prev.session_role ?? "main", to: next },
+				});
 				this.log(
 					`${prev.session_role} → ${next} WAKE on ${prev.issue_id} @ ${headSha.slice(0, 8)} (target ${target.execution_id})`,
 				);
@@ -1660,6 +1738,17 @@ export class PhaseOrchestrator {
 				ignoreRunnerLabelSelection: true,
 				issueIdentifier: prev.issue_identifier,
 				issueTitle: prev.issue_title,
+				// FLY-1232 T2/T7: SEMANTIC shadow context only (node/attempt/edge —
+				// never an ordinal). A first start and a same-attempt replacement
+				// (T7, reconcileQaLoss re-drive) carry the SAME attempt; the writer
+				// separates physical launches by allocating the ordinal itself.
+				...(this.deps.workflowShadow && {
+					shadowContext: {
+						node: next,
+						attempt: this.deps.workflowShadow.currentAttempt(prev.issue_id),
+						edge: { from: prev.session_role ?? "main", to: next },
+					},
+				}),
 			});
 			this.log(
 				`${prev.session_role} → ${next} handoff on ${prev.issue_id} @ ${headSha.slice(0, 8)} (exec ${res.executionId})`,

@@ -9,6 +9,7 @@ import type {
 	RoleEffort,
 } from "flywheel-config";
 import type { QaContext } from "flywheel-edge-worker/dist/Blueprint.js";
+import type { WorkflowShadowContext } from "./workflow-shadow-writer.js";
 
 export type { QaContext };
 
@@ -233,6 +234,15 @@ export interface StartRequest {
 	 * (byte-compatible).
 	 */
 	phaseFixContext?: { round: number; qaSummary: string };
+	/**
+	 * FLY-1232 module ②: SEMANTIC shadow context for the T2/T7 spawn moments
+	 * (node / attempt / preceding edge — NEVER an ordinal, which only the
+	 * writer allocates in-transaction). Bridge-INTERNAL — set ONLY by the
+	 * PhaseOrchestrator; runs-route does not read it. Absent → the pre-launch
+	 * seam synthesizes the T1 default ({node: role, attempt: 1}) when a shadow
+	 * writer is present, and is entirely inert when it is not.
+	 */
+	shadowContext?: WorkflowShadowContext;
 }
 
 export interface StartResult {

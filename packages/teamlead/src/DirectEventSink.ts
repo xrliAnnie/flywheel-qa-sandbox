@@ -113,6 +113,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		executionId: string,
 	) => Promise<{ ok: boolean; reason?: string }>;
 
+	/**
+	 * FLY-1232 module ② (T9): optional lifecycle shadow hook, set by run-infra
+	 * ONLY when FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1. Threaded into this sink's
+	 * runPostShipFinalization deps (the in-process ship path); external-merge
+	 * finalization paths rely on the claim-based startup repair instead.
+	 * Absent → byte-compatible. Never throws (writer contract).
+	 */
+	public workflowShadow?: {
+		onShipFinalized(args: { projectName: string; issueId: string }): void;
+	};
+
 	private notifyDisplayChanged(issueId: string): void {
 		try {
 			this.issueDisplayRefresh?.current?.enqueue(issueId);
@@ -946,6 +957,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						// FLY-887: close the parked design + implement phases before the
 						// shared worktree is removed.
 						finalizeThreeStagePhases: this.finalizeThreeStagePhases,
+						// FLY-1232 T9: shadow-run finalization (flag ON only).
+						workflowShadow: this.workflowShadow,
 						// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 						// by runPostShipFinalization's merge-evidence predicate).
 						markIssueDone: makeLinearDoneFinalizer(this.config),

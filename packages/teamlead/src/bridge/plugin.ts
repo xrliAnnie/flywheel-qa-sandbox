@@ -337,6 +337,7 @@ import { postMergeTmuxCleanup } from "./post-merge.js";
 import {
 	type LifecycleShipInfra,
 	makeFinalizeThreeStagePhases,
+	setWorkflowShadowFinalizationHook,
 } from "./post-ship-finalization.js";
 import {
 	buildCronModelViews,
@@ -366,6 +367,7 @@ import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
 import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js";
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
 import { buildTopicTrigger } from "./roundtable/topic-trigger.js";
+import { launchCommitPath } from "./run-dispatcher.js";
 import { setupRunInfrastructure } from "./run-infra.js";
 import { noteTicketEscalated } from "./runbook-gap.js";
 import {
@@ -446,6 +448,7 @@ import {
 	createWatchdogJudge,
 	routeSuspiciousReport,
 } from "./watchdog-judge.js";
+import { createWorkflowShadowWriterFromEnv } from "./workflow-shadow-writer.js";
 import {
 	createJudgeRoutingDepsFactory,
 	createStuckConfirmRunner,
@@ -3975,6 +3978,52 @@ export async function startBridge(
 			return issueMutex(lockKeys, fn);
 		},
 	};
+	// FLY-1232 module ②: THE single default-off switch point for the lifecycle
+	// shadow writer. FLYWHEEL_WORKFLOW_CLAIMS_WRITE≠1 → undefined → every seam
+	// (dispatcher pre-launch, orchestrator hooks, post-ship T9) stays undefined
+	// = byte-compatible. Evidence probes are the DURABLE facts of the ②b truth
+	// table: the adapter's commit-marker file + a non-:pending CommDB row.
+	// NOTE (plan §0 red line): an externally injected opts.startDispatcher
+	// below bypasses setupRunInfrastructure and is deliberately NOT wrapped.
+	const workflowShadowWriter = createWorkflowShadowWriterFromEnv(
+		process.env,
+		store,
+		{
+			hasCommitMarker: (executionId) =>
+				ffExistsSync(launchCommitPath(executionId)),
+			hasNonPendingCommDbRow: (projectName, executionId) => {
+				// Tri-state (research §F.3 lookup_error, Codex code R1 #1): a
+				// missing CommDB file PROVES absence (no session was ever
+				// registered for the project) → false; a failed lookup proves
+				// nothing → "unknown" (never authorizes an abandon, never
+				// completes the started dual evidence).
+				try {
+					const dbPath = defaultGetCommDbPath(projectName);
+					if (!ffExistsSync(dbPath)) return false;
+					const db = new CommDB(dbPath);
+					try {
+						const s = db.getSession(executionId) as
+							| { tmux_window?: string }
+							| undefined;
+						return !!s && !String(s.tmux_window ?? "").endsWith(":pending");
+					} finally {
+						db.close();
+					}
+				} catch {
+					return "unknown";
+				}
+			},
+		},
+	);
+	if (workflowShadowWriter) {
+		console.log(
+			"[Bridge] FLY-1232: workflow shadow writer ENABLED (FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1) — observation-only dual write",
+		);
+		// Codex code R1 #5: the T9 hook is resolved centrally inside
+		// runPostShipFinalization so EVERY in-process claim contender
+		// (DirectEventSink / event-route / merge-ship-gate) fires it.
+		setWorkflowShadowFinalizationHook(workflowShadowWriter);
+	}
 
 	let startDispatcher = opts?.startDispatcher;
 	let internalDispatcher: IRetryDispatcher | undefined;
@@ -4070,6 +4119,9 @@ export async function startBridge(
 					// FLY-907: the in-process sink's display-refresh holder (its
 					// upsertSession writes bypass the applyTransition hook).
 					issueDisplayRefresh: issueDisplayRefreshHolder,
+					// FLY-1232: dispatcher pre-launch seam + DirectEventSink T9 hook
+					// (undefined when the flag is OFF — byte-compatible).
+					workflowShadow: workflowShadowWriter,
 				},
 			);
 			startDispatcher = dispatcher;
@@ -6277,6 +6329,9 @@ export async function startBridge(
 			phaseStatusLineRefreshHolder.current = refreshPhaseStatusLineEffect;
 			phaseOrchestratorHolder.current = new PhaseOrchestrator({
 				startDispatcher: phaseStartDispatcher,
+				// FLY-1232: lifecycle shadow hooks (T3/T3b/T4/T5/T6) — undefined
+				// when FLYWHEEL_WORKFLOW_CLAIMS_WRITE is off (byte-compatible).
+				workflowShadow: workflowShadowWriter,
 				// FLY-859: the three-stage QA verdict machinery — thin store closures;
 				// the durable intent lives in session_params.three_stage_verdict via
 				// merge-style patchSessionParams (unrelated params survive).
@@ -6842,6 +6897,14 @@ export async function startBridge(
 					// granted to a still-in-flight spawn.
 					phaseOrchestratorHolder.current?.reconcileTurnBelt(),
 				)
+				.then(() => {
+					// FLY-1232 T8: the DEDICATED shadow replay — runs AFTER the
+					// orchestrator reconcile so the durable sources it reads (fix
+					// rounds, verdict intents, finalization claims) reflect the
+					// replayed state. Never piggybacks the orchestrator's skip-heavy
+					// logic, never triggers production actions. no-op when flag OFF.
+					workflowShadowWriter?.reconcileOnStartup();
+				})
 				.catch((err) =>
 					console.warn(
 						`[three-stage] reconcileOnStartup failed: ${(err as Error).message}`,

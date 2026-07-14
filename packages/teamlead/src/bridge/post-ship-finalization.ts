@@ -125,6 +125,30 @@ export function markEvidenceGapCompletion(
 	}));
 }
 
+/**
+ * FLY-1232 T9 (Codex code R1 #5): the CENTRAL late-bound shadow finalization
+ * hook. runPostShipFinalization has several in-process claim contenders
+ * (DirectEventSink, event-route, merge-ship-gate) that race the atomic claim
+ * with independently-built deps — if a contender that did not thread
+ * `deps.workflowShadow` wins, T9 must still run. plugin.ts sets this once at
+ * the single switch point (flag ON only); `deps.workflowShadow` takes
+ * precedence when present (test seam). Claim-based startup repair remains the
+ * durable backstop either way.
+ */
+const workflowShadowFinalizationHolder: {
+	current?: {
+		onShipFinalized(args: { projectName: string; issueId: string }): void;
+	};
+} = {};
+
+export function setWorkflowShadowFinalizationHook(
+	hook:
+		| { onShipFinalized(args: { projectName: string; issueId: string }): void }
+		| undefined,
+): void {
+	workflowShadowFinalizationHolder.current = hook;
+}
+
 export interface PostShipOpts {
 	executionId: string;
 	issueId: string;
@@ -263,6 +287,18 @@ export interface PostShipDeps {
 	archiveFn?: typeof archiveChatThread;
 	removeUserFn?: typeof removeUserFromChatThread;
 	fetchImpl?: typeof fetch;
+	/**
+	 * FLY-1232 module ② (T9): best-effort shadow-run finalization hook on THE
+	 * single serialized finalization path. Wired by the in-process sink when
+	 * FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1; call sites that don't wire it (external
+	 * merge reconcile, event-route) are covered by the claim-based startup
+	 * repair (reconcileOnStartup derives T9 from post_ship_finalization_claim).
+	 * The hook never throws (writer contract) — a shadow failure never blocks
+	 * teardown. Absent → byte-compatible.
+	 */
+	workflowShadow?: {
+		onShipFinalized(args: { projectName: string; issueId: string }): void;
+	};
 }
 
 /**
@@ -453,6 +489,25 @@ async function runPostShipFinalizationInner(
 	// FIRST — before any teardown. It now runs LAST (step 3.5 below), after the
 	// closeout confirmed every node gone, matching the plan's "Linear item runs
 	// last" DAG edge, and it is skipped entirely when the closeout is blocked.)
+	// ── (0.25) FLY-1232 T9 — shadow-run finalization rides the claim winner
+	// (exactly-once with the pipeline), resolved CENTRALLY so every in-process
+	// contender fires it regardless of which one built its own deps (Codex
+	// code R1 #5). Best-effort: the writer never throws, and the claim event
+	// itself is the durable repair source if the hook is absent or the
+	// process dies here. ──
+	try {
+		const shadowHook =
+			deps.workflowShadow ?? workflowShadowFinalizationHolder.current;
+		shadowHook?.onShipFinalized({
+			projectName: opts.projectName,
+			issueId: opts.issueId,
+		});
+	} catch (err) {
+		console.warn(
+			`[post-ship] workflow shadow finalization failed (non-blocking):`,
+			(err as Error).message,
+		);
+	}
 
 	// ── (1) tmux cleanup — idempotent; preserved contract { tmuxClosed, errors } ──
 	const cleanup = await postMergeTmuxCleanup(

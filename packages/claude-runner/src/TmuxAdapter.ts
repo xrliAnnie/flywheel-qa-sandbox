@@ -482,9 +482,12 @@ export class TmuxAdapter implements IAdapter {
 			envArgs.push("-e", `${key}=${value}`);
 		}
 
-		// FLY-245 R4/R5/R6 HIGH-3: TWO-PHASE gated launch for the gateway-retry path
-		// (the ONLY path that sets `launchCommitPath` + carries a durable launch
-		// claim). This adapter normally starts Claude AS PART of `tmux new-window`,
+		// FLY-245 R4/R5/R6 HIGH-3: TWO-PHASE gated launch for every path that sets
+		// `launchCommitPath`. Originally the gateway-retry path was the only one;
+		// since FLY-1232 the FRESH dispatch path also sets it when the workflow
+		// shadow write flag (FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1) is ON — flag OFF
+		// keeps the fresh path unset and byte-identical.
+		// This adapter normally starts Claude AS PART of `tmux new-window`,
 		// so a recorded-but-never-started window could be mis-adopted on replay.
 		// Instead, the gateway path opens a tiny shell that BLOCKS on the durable
 		// COMMIT file and only `exec`s Claude once the adapter writes it.

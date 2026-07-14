@@ -73,6 +73,7 @@ import {
 } from "./run-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import type { BridgeConfig } from "./types.js";
+import type { WorkflowShadowWriter } from "./workflow-shadow-writer.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 import { reconcileProjectWorktrees } from "./worktree-reconciler.js";
 
@@ -518,6 +519,16 @@ export interface RunInfraOptions {
 	 * last pre-launch recheck + launch-claim CAS hooks. Absent → byte-compat.
 	 */
 	lifecycleLaunchGuard?: LifecycleLaunchGuard;
+	/**
+	 * FLY-1232 module ②: the lifecycle shadow writer — constructed by plugin.ts
+	 * ONLY when FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1. Threaded into (a) the
+	 * RunDispatcher (T1/T2/T7 pre-launch seam + flag-ON fresh launchCommitPath)
+	 * and (b) the DirectEventSink (T9 post-ship finalization hook). Absent →
+	 * both seams undefined = byte-compatible. NOTE (plan §0 red line): an
+	 * EXTERNALLY injected startDispatcher (startBridge option) bypasses this
+	 * assembly entirely and is deliberately NOT shadow-wrapped.
+	 */
+	workflowShadow?: WorkflowShadowWriter;
 }
 
 export async function setupRunInfrastructure(
@@ -707,6 +718,9 @@ export async function setupRunInfrastructure(
 			// row is durable (plan.md:145).
 			directSink.lifecycleActivate =
 				runInfraOpts?.lifecycleLaunchGuard?.activateLaunch;
+			// FLY-1232 T9: the in-process post-ship finalization hook (external
+			// merge paths are covered by the claim-based startup repair instead).
+			directSink.workflowShadow = runInfraOpts?.workflowShadow;
 
 			// FLY-137 v1.27.2: construct AgentDispatcher (always — empty agents map is valid,
 			// dispatcher returns shipped-generic for every issue in that case).
@@ -876,6 +890,7 @@ export async function setupRunInfrastructure(
 		resumeComputer, // FLY-795: live restart-resilient resume
 		runInfraOpts?.lifecycleAdmission, // FLY-1185: park admission chokepoint
 		runInfraOpts?.lifecycleLaunchGuard, // FLY-1185 R1#5: pre-launch recheck
+		runInfraOpts?.workflowShadow, // FLY-1232: T1/T2/T7 pre-launch seam (flag ON only)
 	);
 }
 
