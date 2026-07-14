@@ -195,10 +195,10 @@ issue 标题盖 ✅，与 refresher 无先后保证。改法：
 2. `stampReconnect` 的 `mode === "clear"` 分支开头：
    ```ts
    if (mode === "clear" && this.issueDisplayRefresh?.current) {
-   	// FLY-1225: the unified refresher is the title authority — a per-session
-   	// restore here can stamp a completed PHASE's ✅ onto a still-gated issue.
-   	this.issueDisplayRefresh.current.enqueue(session.issue_id);
-   	return;
+       // FLY-1225: the unified refresher is the title authority — a per-session
+       // restore here can stamp a completed PHASE's ✅ onto a still-gated issue.
+       this.issueDisplayRefresh.current.enqueue(session.issue_id);
+       return;
    }
    ```
    `enter` 模式（⚠️重连中 直写）不动——refresher 的 `isReconnecting` guard
