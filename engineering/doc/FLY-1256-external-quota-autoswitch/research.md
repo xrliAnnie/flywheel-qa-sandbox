@@ -53,8 +53,8 @@ Accept: application/json
 - **旁证隔离性**：探测打满限额期间，本机同账号的活 Claude session（本 runner 自身）推理全程正常——usage endpoint 的限流桶与推理通道相互独立，探测/轮询不影响干活。
 - 恢复验证（phase 2，已闭环）：429（16:41:16）→ 等 retry-after 满 → **16:47:36 单发恢复 200**。契约完整实证：**5 次/5 分钟/token，429 附 retry-after: 300，窗口过后立即恢复**。
 
-**设计含义**：
-- daemon 默认 poll 间隔 **120s**（= 2.5 次/5min，恰用预算一半，余量留给切号后的立即补查）；可配下限 60s（= 5 次/5min，贴限额，不推荐常开）。
+**设计含义**（Annie 第二轮：10-20 分钟一次即可 → 分级轮询）：
+- daemon 常态 poll 间隔 **15min**（900s）；**近墙加速**：active 已用量 ≥90%（可配）时收紧到 **5min**（300s）——95% 触发线 + 分钟级间隔存在「两次 poll 之间冲过 100%」窗口（按 Annie 哲学可接受，恢复扫描兜底），近墙加速把该窗口压短。预算占用两档均远低于 5 次/5min。
 - 429 处理：读 `retry-after`（实测总是给出）按其退避；缺失时指数退避（60s 起、上限 30min）。
 - 目标验证的每候选 1 次调用打在**候选自己的 token 桶**上（per-token 限流），不消耗 active 桶。
 - statusline 缓存被 daemon 持续刷新后，statusline 自己的刷新分支（cache 永不过期）**不再发起任何调用**——active 桶的唯一常驻消费者就是 daemon，预算独占。
@@ -154,3 +154,26 @@ Annie 批注⑦推翻此前「保留为兜底」决定（「从来就没 work �
 | statusline 缓存 | 新 env `FLYWHEEL_QUOTA_STATUSLINE_CACHE`（默认 `~/.claude/usage-api-cache.json`）→ scratch 路径 |
 | Discord | `lead-alert.sh` 既有 `FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID` + `FLYWHEEL_ALERT_SENDER_TOKEN_ENV` → 529 Room 隔离频道 |
 | 「全员假死」 | 隔离环境内不起任何 claude 进程即是该场景（daemon 全链不依赖 Claude）；QA 以 ps 证明 daemon 存续期间零 claude 进程参与 |
+| 恢复扫描 | 既有 env `FLYWHEEL_QA_TMUX_*` 风格隔离 tmux server（`tmux -L <socket>`）+ 抓屏 fixture 回放 |
+
+## 8. 运行时配置契约（Annie 第二轮：阈值不许硬编码，接 dashboard）
+
+**契约 = `~/.flywheel/quota-monitor.json` 文件本身**（单一真相，不新建服务面）：
+
+- **读**：daemon 每 tick 重读 + schema 校验——改值即时生效（≤1 个轮询周期），零重启；校验失败退 monitor-only + 告警（fail-safe，不 crash-loop）。
+- **写**：任何写者（founder 手编 / dashboard 经 Bridge / setup 脚本）必须原子写（tmp+rename）——daemon 的重读因此永不见撕裂 JSON。
+- **dashboard 集成边界**：daemon 侧交付到文件契约为止（schema + 原子性 + 重读语义 + 本节文档）；Bridge 暴露该文件读写 API 给 Honey Lemon 的 dashboard 属 Bridge/dashboard 侧工作，Tadashi 与 HL 协调，**不在本单**。schema 字段即 plan 的配置表（阈值/资格线/回流/轮询两档/冷却/顺序）。
+
+## 9. 切号后恢复扫描（Annie edge case (a)——核心组件的可行性）
+
+**需求**：完全用尽才切时，在跑 runner 卡在配额 rate-limit 对话框；切号后需自动「解除 + 续跑」（替代 Tadashi 2026-07-14 的手工逐个戳）。
+
+**可复用资产**：
+- pane 签名识别：`detection-classifier.ts:65` Layer1 正则表已定义 usage_limit/rate_limit pane 形态；`usage-gauge.ts` gauge 行；FLY-193 live-region 识别（锚定底部渲染区、防 scrollback 残留误判）是同类问题的成熟方法论。daemon **移植签名模式**（同包代码直用），不依赖 Bridge 运行时。
+- tmux 操作：`tmux list-panes -a` + `capture-pane -p` + `send-keys`——任何进程可用，无 Bridge 依赖（体外前提保持）。
+
+**安全边界（FLY-313 resume-menu 误按教训）**：只对**高置信匹配配额对话框签名**的 pane 动手；识别到 resume-menu/compact/login 等其他形态一律不碰（login-expired 形态 = edge case (b)，只告警）。确切「解除 + 续跑」按键序列今天无现成 fixture——**implement 阶段第一步 = 真机抓一个卡配额对话框的 pane fixture**（FLY-193 committed-fixture 惯例），按键契约以 fixture 为准，绝不凭想象写 send-keys。
+
+**触发时机**：切号 commit 成功后立即扫一轮 + 之后每个 poll tick 复扫（本地 tmux 扫描零 API 成本），直到无卡 pane；每 pane 有界重试 + 结果入 Discord 通知。
+
+**已知 edge case (b)（Annie 实测）**：未用尽就切 profile，偶发个别窗口要 re-login。v1 边界：恢复扫描识别到 login-expired 形态 → **只告警不自动 re-login**（re-login 属 FLY-1049 救援链）。根因调查线索：live session 在 Keychain 已切换后 mid-session 刷新 token，新账号 refresh 结果与 `~/.claude.json` 身份/会话状态不一致（FLY-865 疆域）——实现阶段若能抓到复现 fixture 则记档，不阻塞 v1。

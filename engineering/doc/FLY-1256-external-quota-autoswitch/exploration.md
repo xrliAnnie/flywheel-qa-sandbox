@@ -58,9 +58,27 @@ Annie 批注①④的担忧：90%/95% 触发换号，剩的 5-10% 是不是永�
 
 1. **不必然浪费**：5h 窗口每 ~5 小时滚动清零、7d 每周清零——窗口一刷新，账号回到候选池，余量重新可用。真正可能浪费的只有「7d 窗口临期时还没用掉的尾巴」。
 2. **先到期先用最小化它**：排序天然优先消耗快过期的账号，把尾巴压到最小。
-3. **可选「回流模式」**（Tadashi 裁定②，做成开关给 Annie 选）：当所有候选都不合格（全员紧张）时，daemon 不再只告警——允许**回头切到已被换下的高水位账号**，把它从触发线（90%）榨到二次上限（默认 98%，可配）。打开 = 榨干每一滴；关闭 = 保守安全垫。默认建议关闭（v2 稿她拍板）。
+3. **可选「回流模式」**（Tadashi 裁定②，做成开关给 Annie 选）：当所有候选都不合格（全员紧张）时，daemon 不再只告警——允许**回头切到已被换下的高水位账号**，把它从触发线（默认 95%，见 D-G）榨到二次上限（默认 98%，可配）。打开 = 榨干每一滴；关闭 = 保守安全垫。默认建议关闭（v2 稿她拍板）。
 
 同时说明：触发线留的余量不是纯损耗——换号后活 session 仍在旧账号上烧到各自 token 自然刷新，这段迁移期就靠这个安全垫供血。
+
+### D-G：设计哲学（Annie 第二轮，2026-07-14）：用到接近 100%，撞墙要能自动恢复
+
+Annie 的底层动机 = **配额用到接近 100% 不浪费**（她原本设想「Codex 和 Claude 互相反查救援」就是为这个）。体外 daemon 的存在让「跑到接近 100% 再切」变得可行。落地：
+
+- **触发线默认 95%**（非 v2 的 90%），且**不许硬编码**——运行时动态可调（见 D-H）。
+- 坦率的 tradeoff：95% 触发 + 分钟级轮询间隔 = 高烧速时**可能在两次轮询之间冲过 100%**。这按她的哲学是可接受的——前提是撞墙的代价被 D-I（切号后恢复扫描）压到接近零。缓解：近墙加速轮询（已用量 ≥90% 时轮询间隔自动收紧），把卡墙窗口压短。
+- 回流模式（D-E）与此同哲学，仍待她显式拍板开/关。
+
+### D-H：运行时配置接口（Annie 拍板：阈值等参数不许硬编码，接 dashboard）
+
+**契约 = 配置文件本身**（`~/.flywheel/quota-monitor.json`）：daemon **每 tick 重读**（改了即时生效，零重启）；一切写者（founder 手编、dashboard 经 Bridge）原子写（tmp+rename）+ schema 校验。daemon 自己不开任何 HTTP 面——dashboard 集成 = Bridge 侧提供该文件的读写 API 供 dashboard 用（Honey Lemon 的 dashboard 对接由 Tadashi 与 HL 协调；本单交付文件契约的 schema 与原子性/校验语义，Bridge API 不在本单）。
+
+### D-I：切号后恢复扫描（Annie edge case (a)，核心组件——不是 nice-to-have）
+
+完全用尽才切时，在跑的 runner 会卡在 rate-limit 配额对话框，切完号还得一个个人工去戳（Tadashi 2026-07-14 手工干了一遍）。daemon 在**切号成功后**自动做这件事：扫 tmux panes → 用高置信 pane 签名识别「卡配额对话框」状态 → send-keys 解除 + 续跑。安全边界：**只碰匹配高置信签名的 pane**，绝不盲发按键（FLY-313 resume-menu 误按教训、FLY-193 live-region 识别经验直接复用）；确切解除按键序列在 implement 阶段用真实抓屏 fixture 定契约。持续性：切号后立即扫一轮 + 之后每个 poll tick 复扫（有 pane 卡着就解），直到无卡 pane。
+
+已知 edge case（Annie 实测观察 (b)，单独立此为界）：**未用尽就切 profile，个别窗口可能要 re-login**——v1 不自动 re-login（那是 FLY-1049 救援链的事），恢复扫描发现 login-expired 形态的 pane 时只告警不动手。根因方向（~/.claude.json 身份与 Keychain 中途刷新的交互，FLY-865 疆域）留调查线索于 research。
 
 ### D-F：statusline 滞后要不要顺手修？
 
@@ -81,7 +99,7 @@ graph TB
     DISC[Discord #flywheel-alerts<br/>via lead-alert.sh 直连 REST]
     BRIDGE[Bridge 被动引擎 FLY-696/1182<br/>自动切号管线退役 — Annie 拍板<br/>仅保留封顶告警]
 
-    D -->|"poll active 用量(阈值判断, 默认 120s)"| API
+    D -->|"poll active 用量(常态 15min / 近墙 5min)"| API
     D -->|读 active token| KC
     D -->|回写新鲜数据| CACHE
     D -->|"切前验目标(池 token 查用量)"| API
@@ -113,3 +131,7 @@ graph TB
    - ⑥ statusline 回写：赞成，保留。
    - ⑦ **Bridge 被动引擎退役**（「从来就没 work 过」）——推翻决策记录 1 中 Lead 的「保留」，D-B/架构图/Scope/research §6 全部改写；FLY-1182 停止点火。
    - Tadashi 裁定③：改完出 v2 稿经他重新 publish 给 Annie 确认；plan 定稿仍 HOLD。
+5. Annie 第二轮追加拍板（2026-07-14 经 Lead 转达，v2 稿评审）：
+   - **阈值默认 95%**（非 90%），**不许硬编码**——运行时动态可调、接 dashboard（HL 侧对接 Tadashi 协调）→ D-G/D-H。
+   - **轮询 10-20 分钟一次即可**（不必 5 分钟）→ 常态 15min + 近墙（≥90%）5min 分级。
+   - 设计哲学：配额用到接近 100% 不浪费；两个实测 edge case 折入设计：(a) 完全用尽再切 → runner 卡 rate-limit 对话框 → 新增**切号后恢复扫描**（D-I，核心组件）；(b) 未用尽就切偶发个别窗口 re-login → 已知 edge case 单独一节（D-I 末）。
