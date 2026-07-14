@@ -1389,25 +1389,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
-		name: "lead_pane_readiness",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_LEAD_PANE_READINESS",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description: "冷启 Lead-pane readiness 检查（opt-in）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"createBridgeApp",
-				"object_construction",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
 		name: "lead_pending_escalation",
 		category: "feature",
 		source: "env",

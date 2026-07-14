@@ -158,8 +158,6 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_MAILBOX_WRITE_TIMEOUT_MS: "tuning knob: mailbox write timeout",
 	FLYWHEEL_AUTOCONTINUE_ARM_WINDOW_MS:
 		"tuning knob: FLY-818 autocontinue arm-observe window (ms), lifecycle-bound",
-	FLYWHEEL_LEAD_PANE_READINESS_TIMEOUT_MS:
-		"tuning knob: pane readiness timeout",
 	FLYWHEEL_CRASH_REAP_GRACE_MIN: "tuning knob: crash reap grace minutes",
 	FLYWHEEL_PARKED_PHASE_STALE_HOURS:
 		"tuning knob: parked three-stage phase reclaim time backstop hours (FLY-1204)",
