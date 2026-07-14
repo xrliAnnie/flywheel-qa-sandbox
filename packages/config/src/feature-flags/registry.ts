@@ -522,27 +522,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "call_time reads (live-toggleable in principle); marked readonly pending a resolve.direct-toggle proof test (fast-follow). `=0` → deliverer falls back to WAKE-only.",
 	},
 	{
-		name: "founder_image_approval",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FOUNDER_IMAGE_APPROVAL",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-799: founder 镜像图片确认作为批准（default-off fast-follow；v1 未接生产 evaluator，即使 =1 也 inert）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/approval-signal/founder-ship-approval-factory.ts",
-				"imageApprovalEnabled",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "v1 default-off scaffold；flip-on 需接 deliverer 附件 download+sha256 + 生产多模态 classifier。",
-	},
-	{
 		name: "stale_ship_rewake",
 		category: "kill_switch",
 		source: "env",

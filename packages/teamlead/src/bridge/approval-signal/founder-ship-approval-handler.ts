@@ -5,8 +5,7 @@
  * Composes the tested primitives:
  *   identity (canonical founder) → A-2 narrow to EXACTLY ONE current ship gate
  *   (session awaiting_review && review_question_id === questionId) → TextSource
- *   (v1; ImageSource behind its own default-off flag, wired later) → shared
- *   `writeGateResponseAndRunPostWrite`.
+ *   → shared `writeGateResponseAndRunPostWrite`.
  *
  * FLY-1099 §3.2/§4: the return contract is the explicit `ShipApprovalOutcome`
  * disposition —
@@ -25,7 +24,6 @@
 
 import type { ReviewHoldReason } from "../auto-qa-held.js";
 import type { ShipApprovalOutcome } from "../founder-reply-deliverer.js";
-import type { ImageAttachment } from "./image-approval-source.js";
 import {
 	makeGuardedOnResponseWritten,
 	type ResponseGuardDb,
@@ -145,23 +143,6 @@ export interface ShipApprovalHandlerDeps {
 		typeof writeGateResponseAndRunPostWrite
 	>[0]["onResponseWritten"];
 	/**
-	 * FLY-799 (image approval, default-OFF fast-follow): when true AND an image
-	 * evaluator is injected AND the founder message carries image attachments, a
-	 * mirrored-image confirmation is evaluated BEFORE the text path (an image
-	 * approve/reject is authoritative; unclear/null falls through to text). The
-	 * production image evaluator (download + sha256 + multimodal classify) is the
-	 * flip-on step; absent here → text-only (v1 default).
-	 */
-	imageApproval?: boolean;
-	evaluateImageImpl?: (args: {
-		gate: Omit<GateBinding, "targetMessageId">;
-		message: {
-			id: string;
-			authorId: string;
-			imageAttachments: ImageAttachment[];
-		};
-	}) => Promise<ApprovalSignal | null>;
-	/**
 	 * FLY-1041 Chunk 4: attribution audit sink. Called at every decision point
 	 * (narrowing, hold, signal evaluation, write outcome) with a stage keyword
 	 * + payload; the factory turns it into an idempotent
@@ -186,9 +167,6 @@ export interface ShipApprovalHandlerArgs {
 		id: string;
 		content?: string;
 		authorId?: string;
-		/** FLY-799 image approval (fast-follow): populated only once the deliverer
-		 * downloads + hashes attachments; absent in the v1 default (text-only). */
-		imageAttachments?: ImageAttachment[];
 	};
 	shipGates: {
 		questionId: string;
@@ -277,45 +255,22 @@ export async function tryFounderShipApproval(
 		canonicalFounderId: deps.canonicalFounderId,
 	};
 
-	// ── signal evaluation (image → text), shared by the live and held paths ──
+	// ── signal evaluation (text), shared by the live and held paths ──
 	let signalAudited = false;
 	const evaluateSignal = async (): Promise<ApprovalSignal | null> => {
-		let signal: ApprovalSignal | null = null;
-		// FLY-799 image approval (default-OFF fast-follow): an image approve/reject
-		// is authoritative; unclear/null falls through to the text path below. Only
-		// active when the flag is on, an evaluator is injected, AND attachments are
-		// present — so v1 (no evaluator wired) is byte-compatibly text-only.
-		if (
-			deps.imageApproval &&
-			deps.evaluateImageImpl &&
-			args.msg.imageAttachments &&
-			args.msg.imageAttachments.length > 0
-		) {
-			const imageSignal = await deps.evaluateImageImpl({
-				gate: binding,
-				message: {
-					id: args.msg.id,
-					authorId: args.msg.authorId ?? "",
-					imageAttachments: args.msg.imageAttachments,
-				},
-			});
-			if (imageSignal && imageSignal.kind !== "unclear") signal = imageSignal;
-		}
-		if (!signal) {
-			const evaluateText = deps.evaluateTextImpl ?? evaluateTextSource;
-			signal = await evaluateText({
-				gate: binding,
-				message: {
-					id: args.msg.id,
-					content: args.msg.content ?? "",
-					authorId: args.msg.authorId ?? "",
-				},
-				replyToCard: args.replyToCard,
-			});
-		}
+		const evaluateText = deps.evaluateTextImpl ?? evaluateTextSource;
+		const signal = await evaluateText({
+			gate: binding,
+			message: {
+				id: args.msg.id,
+				content: args.msg.content ?? "",
+				authorId: args.msg.authorId ?? "",
+			},
+			replyToCard: args.replyToCard,
+		});
 		if (!signal) return null;
-		// FLY-1041 Chunk 4: audit the evaluation outcome — the evidence stage when
-		// the source provided one (text), else the bare signal kind (image).
+		// FLY-1041 Chunk 4: audit the evaluation outcome — the evidence stage the
+		// text source provided.
 		if (!signalAudited) {
 			signalAudited = true;
 			const evidence = (signal as { evidence?: ApprovalAttributionEvidence })
