@@ -186,6 +186,68 @@ FLYWHEEL_CODEX_BIN="$T/bin/codex" FLYWHEEL_CODEX_TUI_HOME="$H" /bin/bash "$SUT" 
 ! command grep -q "remote-control stop" "$MOCK_LOG" && pass "flag-off ensure-daemon: NO stop (byte-compat)" || fail "flag-off ensure-daemon: must not stop the daemon"
 
 GATE_JS="$SCRIPT_DIR/../dist/lead-backends/codex/lead-actions/mcp-config.js"
+RUNTIME_JS="$SCRIPT_DIR/../dist/lead-backends/codex/codex-lead-runtime.js"
+
+# ════════════ FLY-1243: roundtable_autocontinue_effective — resolvable-parent rule ═══════════
+# FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD is retired (固化 default-on); the shell helper now
+# mirrors parseCodexLeadRuntimeConfig's resolvable-parent rule (a roundtable channel id,
+# else the first cross-dept id) instead of the retired flag. Exercised via ensure-home's
+# full-access profile (the marker is forwarded into config.toml's lead_actions env).
+rt_marker_case() {
+  local n="$1" desc="$2" expect="$3"
+  shift 3
+  local H
+  H=$(fresh_home "rt-$n")
+  env "$@" FLYWHEEL_CODEX_LEAD_PROFILE=full-access \
+    FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
+    FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
+    FLYWHEEL_LEAD_CHAT_CHANNEL_ID="1500600400238084307" \
+    FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" \
+    FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+    /bin/bash "$SUT" ensure-home >/dev/null 2>&1 || { fail "$desc: ensure-home failed"; return; }
+  if [ "$expect" = "1" ]; then
+    command grep -q 'FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE = "1"' "$H/config.toml" \
+      && pass "$desc" || fail "$desc (marker expected, absent)"
+  else
+    ! command grep -q 'FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE' "$H/config.toml" \
+      && pass "$desc" || fail "$desc (marker NOT expected, present)"
+  fi
+}
+
+# FLY-1243: legacy flag=1 + cross-dept channel present → marker STILL expected (a
+# resolvable parent exists via cross-dept[0]; the retired flag itself is now inert).
+rt_marker_case 1 "FLY-1243: legacy REPLY_IN_THREAD=1 + cross-dept → marker present" 1 \
+  FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD=1 \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1512578695468941333
+
+# FLY-1243: flag UNSET + cross-dept channel present → marker NOW expected. This is the
+# behavior CHANGE the retirement introduces: resolvability alone drives it, not the flag.
+rt_marker_case 2 "FLY-1243: REPLY_IN_THREAD unset + cross-dept → marker present (behavior change)" 1 \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1512578695468941333
+
+# FLY-1243: no resolvable parent (no roundtable channel id, no cross-dept) → no marker.
+rt_marker_case 3 "FLY-1243: no resolvable parent → no marker" 0
+
+# FLY-1243: THREAD_AUTOCONTINUE=0 kill-switch → no marker even with a resolvable parent.
+rt_marker_case 4 "FLY-1243: THREAD_AUTOCONTINUE=0 → no marker" 0 \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1512578695468941333 \
+  FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE=0
+
+# FLY-1243 (Codex R2): empty-leading cross list (" ,<id>") → after split/trim/filter the
+# first survivor is the real id → resolvable parent → marker present.
+rt_marker_case 5 "FLY-1243: empty-leading cross list → marker present" 1 \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=" ,1512578695468941333"
+
+# FLY-1243 (Codex R2): chat id as the ONLY cross-dept entry → base-channel exclusion drops
+# it (a chat channel must NOT be mention-gated) → no resolvable parent → no marker.
+# rt_marker_case already sets FLYWHEEL_LEAD_CHAT_CHANNEL_ID=1500600400238084307.
+rt_marker_case 6 "FLY-1243: chat id as only cross-dept entry → no marker (base-channel excluded)" 0 \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1500600400238084307
+
+# FLY-1243 (Codex R3): chat id + a real cross-dept id → base-channel exclusion drops the chat
+# but the real id survives as crossDept[0] → resolvable parent → marker present.
+rt_marker_case 7 "FLY-1243: chat id + real cross-dept id → marker present (real id survives base exclusion)" 1 \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1500600400238084307,1512578695468941333
 
 # ════════════════ FLY-398 full-access (FLYWHEEL_CODEX_LEAD_PROFILE=full-access) ════════════════
 
@@ -232,17 +294,30 @@ if [ -f "$GATE_JS" ]; then
       FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/Users/x/.flywheel/state/codex-lead/mufasa" \
       FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES="$3" \
       /bin/bash "$SUT" ensure-home >/dev/null 2>&1 || { fail "shell→gate FA ($1): ensure-home failed"; return; }
-    GATE_JS="$GATE_JS" CFG="$H/config.toml" CROSS="$2" ALI="$3" node --input-type=module -e '
+    GATE_JS="$GATE_JS" RUNTIME_JS="$RUNTIME_JS" CFG="$H/config.toml" CROSS="$2" ALI="$3" node --input-type=module -e '
       import { readFileSync } from "node:fs";
       const { assertFullAccessLeadActionsConfigGate, buildFullAccessLeadActionsMcpServerConfig, assertFullAccessSandboxConfig } = await import(process.env.GATE_JS);
-      const cross = process.env.CROSS ? process.env.CROSS.split(",").map(s=>s.trim()).filter(Boolean) : [];
+      const { parseCodexLeadRuntimeConfig } = await import(process.env.RUNTIME_JS);
+      // FLY-1243 (Codex R3): derive crossDeptChannelIds + effective roundtable autoContinue
+      // through the REAL parser so the expected full-access config matches the runtime
+      // EXACTLY; the shell now writes the same normalized/base-filtered value.
+      const parsed = parseCodexLeadRuntimeConfig({
+        FLYWHEEL_LEAD_ID: "mufasa-lead", FLYWHEEL_PROJECT_NAME: "growth",
+        FLYWHEEL_LEAD_BOT_USER_ID: "999", DISCORD_BOT_TOKEN: "x",
+        FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "1500600400238084307",
+        FLYWHEEL_CODEX_LEAD_STATE_DIR: "/Users/x/.flywheel/state/codex-lead/mufasa",
+        FLYWHEEL_CODEX_BIN: "/usr/local/bin/codex", CODEX_HOME: "/tmp/codexhome",
+        FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: process.env.CROSS || "",
+      });
       const expected = buildFullAccessLeadActionsMcpServerConfig({
         nodeBin: "/usr/local/bin/node",
         mainJsPath: "/Users/x/dist/lead-actions/lead-actions-main.js",
         leadId: "mufasa-lead", projectName: "growth",
-        chatChannelId: "1500600400238084307", crossDeptChannelIds: cross,
+        chatChannelId: "1500600400238084307",
+        crossDeptChannelIds: parsed.crossDeptChannelIds,
         stateDir: "/Users/x/.flywheel/state/codex-lead/mufasa",
         explicitAliases: process.env.ALI || undefined,
+        roundtableAutoContinue: parsed.replyInThread?.autoContinue === true,
       });
       const toml = readFileSync(process.env.CFG, "utf8");
       assertFullAccessLeadActionsConfigGate(toml, expected);
@@ -254,6 +329,15 @@ if [ -f "$GATE_JS" ]; then
   }
   run_fa_xcheck "one-crossdept" "1512578695468941333" ""
   run_fa_xcheck "with-aliases" "1512578695468941333,1517226183341904032" "roundtable:1512578695468941333"
+  # FLY-1243 (Codex R3): chat id as the ONLY cross-dept entry → parser drops it → [] + no
+  # marker; the shell now WRITES "" too → gate passes.
+  run_fa_xcheck "chat-only" "1500600400238084307" ""
+  # FLY-1243 (Codex R3): chat id + a real cross-dept id → parser drops the chat, keeps the
+  # real id; the shell writes the same base-filtered single id → gate passes.
+  run_fa_xcheck "chat-overlap" "1500600400238084307,1512578695468941333" ""
+  # FLY-1243 (Codex R3): empty-leading list (" ,<id>") → parser normalizes to just <id>; the
+  # shell writes the same → gate passes.
+  run_fa_xcheck "empty-leading" " ,1512578695468941333" ""
 fi
 
 # ════════════════ FLY-694 — bash 3.2 here-doc desync re-exec guard ════════════════

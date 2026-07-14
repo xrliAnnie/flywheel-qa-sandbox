@@ -22,6 +22,7 @@
 
 import {
 	closeSync,
+	existsSync,
 	fsyncSync,
 	mkdirSync,
 	openSync,
@@ -118,6 +119,14 @@ export function defaultStorePath(): string {
 		process.env.FLYWHEEL_CLAUDE_ACCOUNTS_PATH ??
 		join(homedir(), ".flywheel", "claude-accounts.json")
 	);
+}
+
+/** FLY-1243: account self-heal is固化 default-on but gated on a provisioned pool.
+ * Presence of the pool state file (env-overridable via defaultStorePath) is the
+ * de-facto switch — production has one; QA slots / sub / joycon never provisioned
+ * one, so self-heal stays dormant there (byte-compat). */
+export function accountPoolConfigured(): boolean {
+	return existsSync(defaultStorePath());
 }
 
 /**

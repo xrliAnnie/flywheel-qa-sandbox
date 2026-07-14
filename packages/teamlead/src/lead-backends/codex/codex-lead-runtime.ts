@@ -570,16 +570,15 @@ export function parseCodexLeadRuntimeConfig(
 	// `guildId` enables active-thread discovery; without it, only the immediate
 	// @-mention path subscribes.
 	let replyInThread: ReplyInThreadConfig | undefined;
-	if (env.FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD === "1") {
-		const parentChannelId =
-			(env.FLYWHEEL_ROUNDTABLE_CHANNEL_ID ?? "").trim() ||
-			crossDeptChannelIds[0] ||
-			"";
-		if (!parentChannelId) {
-			throw new Error(
-				"codex-lead-runtime: FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD=1 requires FLYWHEEL_ROUNDTABLE_CHANNEL_ID (roundtable parent) or a cross-dept channel",
-			);
-		}
+	// FLY-1243: FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD retired (固化 default-on). A
+	// resolvable roundtable parent channel is the de-facto switch now: absent ⇒
+	// reply-in-thread simply isn't configured for this Lead (byte-compat OFF),
+	// never a throw.
+	const parentChannelId =
+		(env.FLYWHEEL_ROUNDTABLE_CHANNEL_ID ?? "").trim() ||
+		crossDeptChannelIds[0] ||
+		"";
+	if (parentChannelId) {
 		if (!crossDeptChannelIds.includes(parentChannelId)) {
 			throw new Error(
 				`codex-lead-runtime: reply-in-thread parent ${parentChannelId} must be in FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS (so it is polled + mention-gated)`,

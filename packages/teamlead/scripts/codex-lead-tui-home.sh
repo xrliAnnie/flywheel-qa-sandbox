@@ -66,15 +66,62 @@ fi
 log() { echo "[codex-lead-tui-home] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
-# FLY-676 — echo "1" when roundtable in-thread member-follow (autoContinue) is EFFECTIVELY
-# on, else "". MUST mirror parseCodexLeadRuntimeConfig exactly: reply-in-thread enabled
-# (FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD=1) AND autoContinue not explicitly disabled
-# (FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE != "0", i.e. DEFAULT-ON). The §10 config gate
-# compares the resulting config.toml env against the runtime's expectedMcp, so any drift
-# from the TS computation fail-closes the daemon (loud) rather than silently mis-gating.
+# trim leading/trailing whitespace — mirrors the TS `.trim()` calls in
+# parseCodexLeadRuntimeConfig (channel ids are plain ASCII snowflakes / comma
+# lists, so this simple idiom is sufficient).
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+# FLY-1243 — SINGLE SOURCE OF TRUTH for the effective cross-dept channel list, mirroring
+# parseCodexLeadRuntimeConfig's crossDeptChannelIds build EXACTLY (codex-lead-runtime.ts
+# :545-554): split FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS on comma, trim, drop empties, drop
+# any id equal to a BASE channel (FLYWHEEL_LEAD_CHAT_CHANNEL_ID / FLYWHEEL_LEAD_CORE_CHANNEL_ID
+# — a chat/core channel must NOT be mention-gated), dedup (first-wins), join with ",".
+# Prints the normalized comma-joined list (empty string if none).
+#
+# WHY the renderers MUST use THIS (Codex R3): the runtime builds its §10-gate expectedMcp
+# env from config.crossDeptChannelIds — ALREADY base-filtered by the parser — so the
+# config.toml the launcher writes MUST carry the SAME base-filtered value, or
+# assertFullAccessLeadActionsConfigGate fail-closes the TUI Lead at boot for any
+# chat/core-overlapping or messy list. For Mufasa's real config (one clean cross-dept id) normalized
+# == raw, so production is byte-unchanged.
+normalized_cross_dept_ids() {
+  local chat core seg t oldIFS out=""
+  chat="$(trim "${FLYWHEEL_LEAD_CHAT_CHANNEL_ID:-}")"
+  core="$(trim "${FLYWHEEL_LEAD_CORE_CHANNEL_ID:-}")"
+  oldIFS="$IFS"
+  IFS=','
+  for seg in ${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:-}; do
+    t="$(trim "$seg")"
+    [ -z "$t" ] && continue                          # drop empties
+    [ "$t" = "$chat" ] && continue                   # drop base: chat channel
+    [ -n "$core" ] && [ "$t" = "$core" ] && continue # drop base: core channel
+    case ",$out," in *",$t,"*) continue ;; esac      # dedup (first-wins)
+    if [ -z "$out" ]; then out="$t"; else out="$out,$t"; fi
+  done
+  IFS="$oldIFS"
+  printf '%s' "$out"
+}
+
+# FLY-1243 — echo "1" when roundtable in-thread member-follow (autoContinue) is
+# EFFECTIVELY on, else "". FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD is RETIRED (固化
+# default-on) — MUST mirror parseCodexLeadRuntimeConfig's new rule exactly: a
+# RESOLVABLE parent channel AND autoContinue not explicitly disabled
+# (FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE != "0", i.e. DEFAULT-ON). The parent is
+# FLYWHEEL_ROUNDTABLE_CHANNEL_ID (trimmed) if set, else crossDeptChannelIds[0] — derived
+# from normalized_cross_dept_ids() so it can never drift from the value the renderers write.
 roundtable_autocontinue_effective() {
-  if [[ "${FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD:-}" == "1" \
-        && "${FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE:-}" != "0" ]]; then
+  local parent
+  parent="$(trim "${FLYWHEEL_ROUNDTABLE_CHANNEL_ID:-}")"
+  if [ -z "$parent" ]; then
+    parent="$(normalized_cross_dept_ids)"
+    parent="${parent%%,*}"   # first survivor = crossDept[0] (already trimmed/base-filtered)
+  fi
+  if [ -n "$parent" ] && [ "${FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE:-}" != "0" ]; then
     printf '1'
   fi
 }
@@ -179,7 +226,13 @@ append_full_access_lead_actions_mcp() {
   local lead_id="${FLYWHEEL_LEAD_ID:-}"
   local project="${FLYWHEEL_PROJECT_NAME:-}"
   local chat="${FLYWHEEL_LEAD_CHAT_CHANNEL_ID:-}"
-  local cross="${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:-}"
+  # FLY-1243 (Codex R3): write the NORMALIZED (split/trim/drop-empties/drop-base/dedup)
+  # cross-dept list — the SAME value config.crossDeptChannelIds carries in the runtime's
+  # full-access §10-gate expectedMcp. The old inline python normalize (Codex R1 LOW-4) only
+  # split/trim/filter-empty and did NOT drop base channels, so a chat/core-overlapping list
+  # still diverged from the gate; the shared helper is now the single source of truth.
+  local cross
+  cross="$(normalized_cross_dept_ids)"
   local state_dir="${FLYWHEEL_LEAD_ACTIONS_STATE_DIR:-}"
   local aliases="${FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES:-}"
   for pair in "FLYWHEEL_LEAD_ACTIONS_MAIN_JS=$main_js" "FLYWHEEL_LEAD_ID=$lead_id" \
@@ -201,11 +254,8 @@ pairs = []
 for k, v in zip(keys, vals):
     if k == "FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES" and not v:
         continue  # optional
-    if k == "FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS":
-        # Codex R1 LOW-4: normalize with the same split/trim/filter the runtime uses
-        # (crossDeptChannelIds join), so a value with spaces does not diverge from the
-        # gate value and fail-close after the home is already written.
-        v = ",".join(s.strip() for s in v.split(",") if s.strip())
+    # FLY-1243: FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS is already normalized+base-filtered by
+    # the shell (normalized_cross_dept_ids) — written verbatim to match the gate exactly.
     pairs.append(f"{k} = {json.dumps(v)}")
 # FLY-676: effective roundtable autoContinue flag — ONLY when on (matches the runtime
 # full-access builder's conditional include; preserves the prior OFF env shape).

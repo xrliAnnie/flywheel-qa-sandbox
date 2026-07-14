@@ -25,22 +25,14 @@ describe("expandTilde", () => {
 describe("loadRoundtableConfig", () => {
 	beforeEach(() => vi.restoreAllMocks());
 
-	it("returns undefined when not enabled (byte-compat)", () => {
+	// FLY-1243: FLYWHEEL_ROUNDTABLE_ENABLED retired — the channel id is now the
+	// de-facto switch (absent ⇒ undefined, present ⇒ the identity fields are
+	// required and a missing one still throws).
+	it("returns undefined when the channel id is unset (byte-compat OFF)", () => {
 		expect(loadRoundtableConfig({})).toBeUndefined();
-		expect(
-			loadRoundtableConfig({ FLYWHEEL_ROUNDTABLE_ENABLED: "0" }),
-		).toBeUndefined();
-		expect(
-			loadRoundtableConfig({ FLYWHEEL_ROUNDTABLE_ENABLED: "true" }),
-		).toBeUndefined();
-	});
-
-	it("throws when enabled but channel id missing", () => {
 		const env = { ...REQUIRED } as Record<string, string | undefined>;
 		env.FLYWHEEL_ROUNDTABLE_CHANNEL_ID = "";
-		expect(() => loadRoundtableConfig(env)).toThrow(
-			/FLYWHEEL_ROUNDTABLE_CHANNEL_ID/,
-		);
+		expect(loadRoundtableConfig(env)).toBeUndefined();
 	});
 
 	it("throws when bot token env name missing", () => {

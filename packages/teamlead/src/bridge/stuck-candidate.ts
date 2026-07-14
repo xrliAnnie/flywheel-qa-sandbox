@@ -159,12 +159,6 @@ export interface StuckCandidateInput {
 	thresholdMs?: number;
 	/** Override trailing line count for evidence. */
 	tailLines?: number;
-	/**
-	 * FLY-1048 (A3): enable the repeated-error-signature path. Absent → reads
-	 * FLYWHEEL_STUCK_ERRORSIG === "1"; unset env = pre-FLY-1048 behavior
-	 * byte-for-byte (reverse-compat sentinel).
-	 */
-	errorSigEnabled?: boolean;
 }
 
 export interface StuckCandidateResult {
@@ -316,21 +310,19 @@ export function evaluateStuckCandidate(
 	// tracked by NORMALIZED SIGNATURE instead, with the episode fingerprint
 	// pinned to the signature so Lead dispositions + the Q7 grace window key
 	// stably across churning text. Runs AFTER the hard safety gates.
-	const errorSigEnabled =
-		input.errorSigEnabled ?? process.env.FLYWHEEL_STUCK_ERRORSIG === "1";
-	if (errorSigEnabled) {
-		const tailHits = scanErrorSignatures(extractTail(input.output, tailLines));
-		if (tailHits.length > 0) {
-			return evaluateErrorSignatureEpisode(
-				input,
-				tailHits,
-				thresholdMs,
-				tailLines,
-			);
-		}
-		// No signature in the tail → legacy fingerprint flow below; fresh
-		// episodes never copy sig-tracking fields, so tracking resets naturally.
+	// FLY-1243: FLYWHEEL_STUCK_ERRORSIG retired (固化 default-on) — the
+	// repeated-error-signature path always runs.
+	const tailHits = scanErrorSignatures(extractTail(input.output, tailLines));
+	if (tailHits.length > 0) {
+		return evaluateErrorSignatureEpisode(
+			input,
+			tailHits,
+			thresholdMs,
+			tailLines,
+		);
 	}
+	// No signature in the tail → legacy fingerprint flow below; fresh
+	// episodes never copy sig-tracking fields, so tracking resets naturally.
 
 	// Stagnation tracking.
 	const fp = fingerprintOutput(input.output);

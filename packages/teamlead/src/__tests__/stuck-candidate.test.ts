@@ -310,6 +310,10 @@ describe("evaluateStuckCandidate — stagnation tracking", () => {
 	});
 });
 
+// FLY-1243: FLYWHEEL_STUCK_ERRORSIG is retired — the repeated-error-signature
+// path always runs now (no more `errorSigEnabled` input field, so the setup
+// calls below no longer pass it). The "env unset (default)" off-path
+// sentinel is deleted since that off-path no longer exists.
 describe("FLY-1048 A3: repeated-error-signature path (env-gated)", () => {
 	const errorPanesDir = join(
 		__dirname,
@@ -326,9 +330,7 @@ describe("FLY-1048 A3: repeated-error-signature path (env-gated)", () => {
 	const frame2 = loadErrorPane("fn1-enoent-loop-frame2.txt");
 
 	it("FN1: rolling ENOENT loop (text churns) becomes a CANDIDATE when enabled", () => {
-		const first = evaluateStuckCandidate(
-			baseInput({ output: frame1, errorSigEnabled: true }),
-		);
+		const first = evaluateStuckCandidate(baseInput({ output: frame1 }));
 		expect(first.candidate).toBe(false);
 		expect(first.episode?.errorSig).toBeDefined();
 		const second = evaluateStuckCandidate(
@@ -336,7 +338,6 @@ describe("FLY-1048 A3: repeated-error-signature path (env-gated)", () => {
 				output: frame2,
 				now: T0 + STUCK_THRESHOLD_MS,
 				prior: first.episode ?? undefined,
-				errorSigEnabled: true,
 			}),
 		);
 		expect(second.candidate).toBe(true);
@@ -347,20 +348,11 @@ describe("FLY-1048 A3: repeated-error-signature path (env-gated)", () => {
 		expect(second.episode?.fingerprint).toBe(first.episode?.fingerprint);
 	});
 
-	it("env unset (default) keeps the pre-FLY-1048 behavior byte-for-byte", () => {
-		const first = evaluateStuckCandidate(baseInput({ output: frame1 }));
-		expect(first.exclusion).toBe("output_changing");
-		expect(first.episode?.errorSig).toBeUndefined();
-		const second = evaluateStuckCandidate(
-			baseInput({
-				output: frame2,
-				now: T0 + STUCK_THRESHOLD_MS,
-				prior: first.episode ?? undefined,
-			}),
-		);
-		expect(second.candidate).toBe(false);
-		expect(second.exclusion).toBe("output_changing");
-	});
+	// FLY-1243: the "env unset (default) keeps the pre-FLY-1048 behavior
+	// byte-for-byte" off-path sentinel is deleted — there is no more
+	// env/flag-off behavior to be byte-compatible with; the signature path
+	// always runs (see the FN1 case above, which now exercises the same
+	// scenario unconditionally).
 
 	it("reads FLYWHEEL_STUCK_ERRORSIG=1 when the input override is absent", () => {
 		process.env.FLYWHEEL_STUCK_ERRORSIG = "1";
@@ -378,31 +370,25 @@ describe("FLY-1048 A3: repeated-error-signature path (env-gated)", () => {
 			"  ⎿  Error: ENOENT: no such file or directory, open '/tmp/x.ts'",
 			...Array.from({ length: 20 }, (_, i) => `✓ processed chunk ${i}`),
 		].join("\n");
-		const first = evaluateStuckCandidate(
-			baseInput({ output: stale, errorSigEnabled: true }),
-		);
+		const first = evaluateStuckCandidate(baseInput({ output: stale }));
 		expect(first.episode?.errorSig).toBeUndefined();
 		const second = evaluateStuckCandidate(
 			baseInput({
 				output: `${stale}\n✓ processed chunk 20`,
 				now: T0 + STUCK_THRESHOLD_MS,
 				prior: first.episode ?? undefined,
-				errorSigEnabled: true,
 			}),
 		);
 		expect(second.candidate).toBe(false);
 	});
 
 	it("signature disappearing resets the tracking", () => {
-		const first = evaluateStuckCandidate(
-			baseInput({ output: frame1, errorSigEnabled: true }),
-		);
+		const first = evaluateStuckCandidate(baseInput({ output: frame1 }));
 		const healthy = evaluateStuckCandidate(
 			baseInput({
 				output: "✓ file restored\n✓ read ok\nall good",
 				now: T0 + STUCK_THRESHOLD_MS,
 				prior: first.episode ?? undefined,
-				errorSigEnabled: true,
 			}),
 		);
 		expect(healthy.candidate).toBe(false);
@@ -410,15 +396,12 @@ describe("FLY-1048 A3: repeated-error-signature path (env-gated)", () => {
 	});
 
 	it("dedup: after the signature candidate fired, the episode is already_escalated (drives Q7)", () => {
-		const first = evaluateStuckCandidate(
-			baseInput({ output: frame1, errorSigEnabled: true }),
-		);
+		const first = evaluateStuckCandidate(baseInput({ output: frame1 }));
 		const second = evaluateStuckCandidate(
 			baseInput({
 				output: frame2,
 				now: T0 + STUCK_THRESHOLD_MS,
 				prior: first.episode ?? undefined,
-				errorSigEnabled: true,
 			}),
 		);
 		expect(second.candidate).toBe(true);
@@ -427,7 +410,6 @@ describe("FLY-1048 A3: repeated-error-signature path (env-gated)", () => {
 				output: frame1,
 				now: T0 + STUCK_THRESHOLD_MS * 2,
 				prior: second.episode ?? undefined,
-				errorSigEnabled: true,
 			}),
 		);
 		expect(third.candidate).toBe(false);
@@ -436,15 +418,12 @@ describe("FLY-1048 A3: repeated-error-signature path (env-gated)", () => {
 	});
 
 	it("hard gates still win over the signature path", () => {
-		const first = evaluateStuckCandidate(
-			baseInput({ output: frame1, errorSigEnabled: true }),
-		);
+		const first = evaluateStuckCandidate(baseInput({ output: frame1 }));
 		const gated = evaluateStuckCandidate(
 			baseInput({
 				output: frame2,
 				now: T0 + STUCK_THRESHOLD_MS,
 				prior: first.episode ?? undefined,
-				errorSigEnabled: true,
 				hasPendingGate: true,
 			}),
 		);
@@ -454,15 +433,12 @@ describe("FLY-1048 A3: repeated-error-signature path (env-gated)", () => {
 
 	it("FN2: static error-then-idle pane carries the truthful errorSignature kind", () => {
 		const fn2 = loadErrorPane("fn2-server-error-then-idle.txt");
-		const first = evaluateStuckCandidate(
-			baseInput({ output: fn2, errorSigEnabled: true }),
-		);
+		const first = evaluateStuckCandidate(baseInput({ output: fn2 }));
 		const second = evaluateStuckCandidate(
 			baseInput({
 				output: fn2,
 				now: T0 + STUCK_THRESHOLD_MS,
 				prior: first.episode ?? undefined,
-				errorSigEnabled: true,
 			}),
 		);
 		expect(second.candidate).toBe(true);
@@ -481,7 +457,6 @@ describe("FLY-1048 A3: repeated-error-signature path (env-gated)", () => {
 				output: fn2,
 				now: T0 + STUCK_THRESHOLD_MS * 3,
 				prior: legacy.episode ?? undefined,
-				errorSigEnabled: true,
 			}),
 		);
 		expect(flipped.candidate).toBe(false);

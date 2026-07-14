@@ -7,8 +7,9 @@
 # repo recording its argv. Asserts:
 #   1. P-expect=1 + token-report failure → lead-alert.sh called with
 #      --kind notify_digest_failed AND the original exit code is preserved.
-#   2. P-expect unset + same failure → ZERO lead-alert calls, same exit code
-#      (byte-compat failure behavior).
+#   2. FLY-1243: FLYWHEEL_NOTIFY_DIGEST_EXPECT is retired (固化 default-on) —
+#      P-expect UNSET + same failure still fires lead-alert.sh unconditionally,
+#      same exit code preserved.
 #   3. P-expect=1 + publish failure → fail-loud fires for the publish step too.
 #   4. Happy path: report-day's date reaches publish-report as
 #      `--kind token_report --expected-date <date>`.
@@ -95,18 +96,21 @@ else
 	fail "expect=1 + daily failure: alert.log: $(cat "${H1}/alert.log" 2>/dev/null)"
 fi
 
-# ── Case 2: expect unset + same failure → NO alert, same exit code ──────────
+# ── Case 2 (FLY-1243): expect unset + same failure → alert STILL fires ──────
+# FLYWHEEL_NOTIFY_DIGEST_EXPECT is retired (固化 default-on); fail_loud() no
+# longer gates on it, so this is no longer a "byte-compat NO alert" case.
 H2="${ROOT}/h2"; mkdir -p "$H2"
 run_daily "$H2" FAIL_DAILY=1; rc=$?
 if [[ $rc -eq 3 ]]; then
-	pass "expect unset + daily failure: exit code 3 preserved (byte-compat)"
+	pass "expect unset + daily failure: exit code 3 preserved"
 else
 	fail "expect unset + daily failure: exit code was $rc (want 3)"
 fi
-if [[ ! -s "${H2}/alert.log" ]]; then
-	pass "expect unset + daily failure: zero lead-alert calls"
+if grep -q -- "--kind notify_digest_failed" "${H2}/alert.log" 2>/dev/null && \
+   grep -q -- "--lead codex-infra-bot-lead" "${H2}/alert.log"; then
+	pass "expect unset + daily failure: lead-alert fires unconditionally (FLY-1243 default-on)"
 else
-	fail "expect unset + daily failure: alert.log unexpectedly non-empty: $(cat "${H2}/alert.log")"
+	fail "expect unset + daily failure: alert.log: $(cat "${H2}/alert.log" 2>/dev/null)"
 fi
 
 # ── Case 3: expect=1 + publish fails → fail-loud for the publish step ───────

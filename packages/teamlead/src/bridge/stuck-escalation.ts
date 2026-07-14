@@ -703,12 +703,10 @@ export function buildStuckRunnerDetector(
 		// exact-fingerprint check alone would let the old flow page about a
 		// half-torn-down corpse the unified flow deliberately muted.
 		unifiedOwnsEpisode: (executionId, fingerprint) =>
-			env.FLYWHEEL_DETECTION_ESCALATION === "1" &&
-			(opts.store.hasActiveDetectionEscalationForEpisode(
+			opts.store.hasActiveDetectionEscalationForEpisode(
 				executionId,
 				fingerprint,
-			) ||
-				opts.store.hasClearingDetectionEscalationForTarget(executionId)),
+			) || opts.store.hasClearingDetectionEscalationForTarget(executionId),
 		alertUnhandled: createStuckUnhandledAlerter(opts.projects, opts.notifier, {
 			store: opts.store,
 			discordBotToken: opts.discordBotToken,
