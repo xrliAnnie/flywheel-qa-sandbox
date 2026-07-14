@@ -54,7 +54,7 @@ const {
 
 const TMUX_SESSION = "qa-fly1188";
 const WINDOW = "FLY-1188";
-const EXEC_ID = "qa1188-" + Date.now().toString(36);
+const EXEC_ID = `qa1188-${Date.now().toString(36)}`;
 
 const log = (m) => console.log(`[qa] ${m}`);
 const sh = (c, a, cwd) => execFileSync(c, a, { cwd, encoding: "utf8" }).trim();

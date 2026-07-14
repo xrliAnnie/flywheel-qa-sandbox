@@ -253,7 +253,7 @@ line(`  AFTER : worktree dir exists = ${wtExistsAfter}`);
 line(`  AFTER : local branch present = ${!!localAfter}`);
 line(`  AFTER : remote branch present = ${!!remoteAfter}`);
 line(`  sweep entry: action=${entry?.action}, family=${entry?.family}`);
-const remoteEntry = res.entries.find(
+const _remoteEntry = res.entries.find(
 	(e) => e.kind === "branch" && String(e.ref).includes(wt.branch),
 );
 line(

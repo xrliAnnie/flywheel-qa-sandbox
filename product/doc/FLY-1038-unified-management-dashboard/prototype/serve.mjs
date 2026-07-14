@@ -21,5 +21,5 @@ http
 		res.end("not found");
 	})
 	.listen(PORT, "127.0.0.1", () =>
-		console.log("[fly1038-dashboard] http://127.0.0.1:" + PORT + "/"),
+		console.log(`[fly1038-dashboard] http://127.0.0.1:${PORT}/`),
 	);

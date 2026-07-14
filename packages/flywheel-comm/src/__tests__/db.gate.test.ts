@@ -194,7 +194,7 @@ describe("CommDB gate methods", () => {
 				db as unknown as {
 					db: { prepare: (s: string) => { run: (...a: unknown[]) => unknown } };
 				}
-			)["db"]
+			).db
 				.prepare(
 					"UPDATE messages SET expires_at = datetime('now','-1 hour') WHERE id = ?",
 				)
@@ -217,7 +217,7 @@ describe("CommDB gate methods", () => {
 				db as unknown as {
 					db: { prepare: (s: string) => { run: (...a: unknown[]) => unknown } };
 				}
-			)["db"]
+			).db
 				.prepare(
 					"UPDATE messages SET expires_at = datetime('now','-1 hour') WHERE id = ?",
 				)
