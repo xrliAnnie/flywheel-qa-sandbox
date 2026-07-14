@@ -342,6 +342,34 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "与 FLYWHEEL_THREE_STAGE(整体开关)/ FLYWHEEL_THREE_STAGE_KEEPALIVE 正交；本 env=0 只翻 implement 段的 vendor/model，phase 表其余行不动。",
 	},
 	{
+		// FLY-1245: per-phase vendor — the design phase defaults to claude/Fable
+		// (heavy). `=1` flips the design dispatch to codex (gpt-5.6-sol, xhigh) —
+		// the operational escape hatch when the Fable quota is the bottleneck.
+		// MIRROR of the implement kill-switch but INVERTED activating value: design
+		// defaults to claude (=1 opts INTO codex) whereas implement defaults to
+		// codex (=0 falls back to claude). Display fallbacks (phaseMessageTag /
+		// issue-display pending rows) read the same table, so they follow.
+		name: "three_stage_codex_design_toggle",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_THREE_STAGE_CODEX_DESIGN",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"三段式 design 段 codex 派发开关（=1 → design 从 Fable 切到 codex gpt-5.6-sol xhigh；不设/≠1 → 现状 claude/heavy(Fable)，字节不变；implement/qa 不受影响；改 ~/.flywheel/.env 后需 restart-services.sh --bridge-only）(FLY-1245)",
+		readSites: [
+			envSite(
+				"packages/config/src/three-stage-phases.ts",
+				"resolvePhaseDispatch",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "与 implement 开关方向相反：implement 默认 codex(=0 关)，design 默认 Fable(=1 开)。正交于 FLYWHEEL_THREE_STAGE / FLYWHEEL_THREE_STAGE_KEEPALIVE；design=codex 后 design review 自动翻 Claude lane(FLY-1188 §7.1)。",
+	},
+	{
 		// FLY-939 (G-D): Bridge boot logs its running HEAD and best-effort compares
 		// it to origin/main; a STALE checkout (HEAD strictly behind origin/main)
 		// WARNs + records a durable event + alerts the Lead. `=0` skips the whole

@@ -92,6 +92,89 @@ describe("three-stage-phases (FLY-793)", () => {
 		});
 	});
 
+	describe("resolvePhaseDispatch design toggle (FLY-1245)", () => {
+		// The design toggle is the MIRROR of the implement kill-switch, but the
+		// direction is inverted because the two phases default to opposite vendors:
+		// implement defaults to codex (=0 falls back to claude); design defaults to
+		// claude/Fable (=1 opts INTO codex). The codex spec is Annie's standard
+		// config (gpt-5.6-sol / xhigh) — identical to implement's default row.
+		it("FLYWHEEL_THREE_STAGE_CODEX_DESIGN=1 switches design to (codex, gpt-5.6-sol, xhigh)", () => {
+			expect(
+				resolvePhaseDispatch("design", {
+					FLYWHEEL_THREE_STAGE_CODEX_DESIGN: "1",
+				}),
+			).toEqual({ vendor: "codex", model: "gpt-5.6-sol", effort: "xhigh" });
+		});
+
+		it("unset → the legacy design row (claude, Fable) — byte-compat", () => {
+			expect(resolvePhaseDispatch("design", {})).toEqual(
+				DEFAULT_PHASE_DISPATCH.design,
+			);
+			expect(resolvePhaseDispatch("design", {})).toEqual({
+				vendor: "claude",
+				model: "claude-fable-5",
+			});
+		});
+
+		it("only the exact value '1' activates codex (unlike implement's '0')", () => {
+			expect(
+				resolvePhaseDispatch("design", {
+					FLYWHEEL_THREE_STAGE_CODEX_DESIGN: "true",
+				}),
+			).toEqual(DEFAULT_PHASE_DISPATCH.design);
+			expect(
+				resolvePhaseDispatch("design", {
+					FLYWHEEL_THREE_STAGE_CODEX_DESIGN: "0",
+				}),
+			).toEqual(DEFAULT_PHASE_DISPATCH.design);
+		});
+
+		it("the design toggle does NOT touch implement / qa", () => {
+			const env = { FLYWHEEL_THREE_STAGE_CODEX_DESIGN: "1" };
+			expect(resolvePhaseDispatch("implement", env)).toEqual(
+				DEFAULT_PHASE_DISPATCH.implement,
+			);
+			expect(resolvePhaseDispatch("qa", env)).toEqual(
+				DEFAULT_PHASE_DISPATCH.qa,
+			);
+		});
+
+		it("the two toggles are independent (design=1 + implement=0 both apply)", () => {
+			const env = {
+				FLYWHEEL_THREE_STAGE_CODEX_DESIGN: "1",
+				FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT: "0",
+			};
+			// design opts INTO codex …
+			expect(resolvePhaseDispatch("design", env)).toEqual({
+				vendor: "codex",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+			});
+			// … while implement falls BACK to (claude, heavy).
+			expect(resolvePhaseDispatch("implement", env)).toEqual({
+				vendor: "claude",
+				model: "claude-fable-5",
+			});
+		});
+	});
+
+	it("PINS implement's default dispatch byte-for-byte (FLY-1245 refactor guard)", () => {
+		// Lead's hard requirement: extracting the shared CODEX_STANDARD_DISPATCH
+		// constant must NOT silently change implement's dispatch. Pin the exact
+		// {vendor, model, effort} triple so a drift in the shared constant is caught
+		// here, not in production.
+		expect(resolvePhaseDispatch("implement", {})).toEqual({
+			vendor: "codex",
+			model: "gpt-5.6-sol",
+			effort: "xhigh",
+		});
+		expect(DEFAULT_PHASE_DISPATCH.implement).toEqual({
+			vendor: "codex",
+			model: "gpt-5.6-sol",
+			effort: "xhigh",
+		});
+	});
+
 	it("nextPhase walks the sequence and ends at QA", () => {
 		expect(nextPhase("design")).toBe("implement");
 		expect(nextPhase("implement")).toBe("qa");
