@@ -20,6 +20,8 @@ export {
 	CodexTmuxAdapter,
 	type CodexWakeWatcher,
 	codexSessionStateDir,
+	TUI_OPEN_MAX_ATTEMPTS, // FLY-1239
+	TUI_OPEN_RETRY_GAP_MS, // FLY-1239
 } from "./CodexTmuxAdapter.js";
 export {
 	buildDaemonSandboxWritableRoots,
@@ -90,9 +92,11 @@ export {
 export {
 	buildRunnerTuiCommand,
 	ensureRunnerTuiWindow,
+	errMessage as runnerTuiErrMessage,
 	isRunnerTuiWindowAlive,
 	killRunnerTuiWindow,
 	type RunnerTuiWindowDeps,
+	type RunnerTuiWindowOutcome, // FLY-1239
 	type RunnerTuiWindowSpec,
 } from "./codex-runner-tui-window.js"; // FLY-1188 M4c-3
 export {

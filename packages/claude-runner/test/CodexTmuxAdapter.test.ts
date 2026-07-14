@@ -28,13 +28,17 @@ import type {
 	CodexDaemonAdapterDeps,
 	CodexDaemonGoalRuntimeLike,
 } from "../src/CodexTmuxAdapter.js";
-import { CodexTmuxAdapter } from "../src/CodexTmuxAdapter.js";
+import {
+	CodexTmuxAdapter,
+	TUI_OPEN_MAX_ATTEMPTS,
+} from "../src/CodexTmuxAdapter.js";
 import { GoalRunError } from "../src/codex-daemon-client.js";
 import type {
 	CodexDaemonGoalRuntimeOptions,
 	RunGoalInput,
 	RunGoalOutcome,
 } from "../src/codex-daemon-goal-runtime.js";
+import type { RunnerTuiWindowOutcome } from "../src/codex-runner-tui-window.js";
 
 const THREAD_ID = "019e9006-0b8e-72b0-bb80-9100d85473cf";
 const WINDOW_ID = "@7";
@@ -115,7 +119,13 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 	let runtime: FakeRuntime;
 	let ensureWindowCalls: Array<Record<string, unknown>>;
 	let killWindowCalls: Array<Record<string, unknown>>;
-	let ensureWindowReturns: boolean;
+	// FLY-1239: the injected ensureWindow now returns a RunnerTuiWindowOutcome.
+	// A queue consumed one-per-call, last value sticky.
+	let ensureWindowSeq: RunnerTuiWindowOutcome[];
+	// FLY-1239: the injected reopen scheduler. Default = synchronous-immediate so
+	// policy/outcome tests are deterministic; the ordering test overrides it with a
+	// queued scheduler to prove the "hook returns → goal advances → retry" ordering.
+	let reopenScheduler: (fn: () => void, ms: number) => () => void;
 	let windowAliveReturns: boolean;
 
 	const origMarkerEnv = process.env.FLYWHEEL_GATE_MARKER_DIR;
@@ -131,12 +141,15 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			},
 			ensureWindow: ((spec: Record<string, unknown>) => {
 				ensureWindowCalls.push(spec);
-				return ensureWindowReturns;
+				return ensureWindowSeq.length > 1
+					? (ensureWindowSeq.shift() as RunnerTuiWindowOutcome)
+					: ensureWindowSeq[0];
 			}) as CodexDaemonAdapterDeps["ensureWindow"],
 			killWindow: ((spec: Record<string, unknown>) => {
 				killWindowCalls.push(spec);
 			}) as CodexDaemonAdapterDeps["killWindow"],
 			windowAlive: () => windowAliveReturns,
+			scheduleReopen: (fn, ms) => reopenScheduler(fn, ms),
 		};
 	}
 
@@ -185,7 +198,14 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		});
 		ensureWindowCalls = [];
 		killWindowCalls = [];
-		ensureWindowReturns = true;
+		ensureWindowSeq = [{ created: true }];
+		// synchronous-immediate: the reopen chain runs to completion inside the call
+		// that scheduled it — deterministic for policy tests (the ordering test
+		// overrides this with a queued scheduler).
+		reopenScheduler = (fn) => {
+			fn();
+			return () => {};
+		};
 		windowAliveReturns = true;
 
 		vi.spyOn(console, "error").mockImplementation(() => {});
@@ -347,16 +367,312 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(ensureWindowCalls.length).toBe(2);
 	});
 
-	it("MEDIUM-1: a failing ensureWindow does NOT latch — the outcome fallback retries", async () => {
-		ensureWindowReturns = false; // every ensureWindow attempt fails
-		runtime = new FakeRuntime(async (input) => {
-			input.onThreadReady?.(THREAD_ID, 0);
-			return complete();
+	// ── FLY-1239: bounded, non-blocking founder-window retry (rollout race) ─────
+	describe("FLY-1239: bounded founder-window retry on the rollout race", () => {
+		it("retries a `died` outcome and latches once it finally opens", async () => {
+			ensureWindowSeq = [
+				{ created: false, reason: "died" },
+				{ created: false, reason: "died" },
+				{ created: true },
+			];
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				return complete();
+			});
+			const res = await makeAdapter().execute(ctx());
+			expect(res.success).toBe(true);
+			expect(ensureWindowCalls.length).toBe(3); // died, died, created
 		});
-		await makeAdapter().execute(ctx());
-		// onThreadReady attempt + outcome-fallback attempt = 2 (would be 1 if the
-		// failed attempt had latched tuiOpened)
-		expect(ensureWindowCalls.length).toBeGreaterThanOrEqual(2);
+
+		it("stops at exactly TUI_OPEN_MAX_ATTEMPTS when every attempt dies (fail-loud, not infinite)", async () => {
+			ensureWindowSeq = [{ created: false, reason: "died" }]; // sticky: always dies
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				return complete();
+			});
+			await makeAdapter().execute(ctx());
+			// bounded: exactly the cap, never a MAX+1th attempt (threadReadySeen also
+			// stops the fallback from adding one more).
+			expect(ensureWindowCalls.length).toBe(TUI_OPEN_MAX_ATTEMPTS);
+		});
+
+		it("does NOT retry a non-retryable outcome (tmux-absent / create-failed) — exactly one attempt", async () => {
+			for (const reason of ["tmux-absent", "create-failed"] as const) {
+				ensureWindowCalls = [];
+				ensureWindowSeq = [{ created: false, reason }];
+				runtime = new FakeRuntime(async (input) => {
+					input.onThreadReady?.(THREAD_ID, 0);
+					return complete();
+				});
+				await makeAdapter().execute(ctx());
+				expect(ensureWindowCalls.length).toBe(1);
+			}
+		});
+
+		it("every attempt targets the SAME windowName (so the module's same-name purge keeps ≤1 window)", async () => {
+			ensureWindowSeq = [
+				{ created: false, reason: "died" },
+				{ created: false, reason: "died" },
+				{ created: true },
+			];
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				return complete();
+			});
+			await makeAdapter().execute(ctx());
+			for (const call of ensureWindowCalls) {
+				expect(call.windowName).toBe("FLY-1188");
+			}
+		});
+
+		it("the outcome fallback fires ONLY when onThreadReady never fired (threadReadySeen)", async () => {
+			// hook DID fire but the window never opened (create-failed) → NO fallback
+			ensureWindowSeq = [{ created: false, reason: "create-failed" }];
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				return complete();
+			});
+			await makeAdapter().execute(ctx());
+			expect(ensureWindowCalls.length).toBe(1); // no extra fallback attempt
+		});
+
+		it("Codex R2 MED-2: a THROWING fallback (hook never fired) is fail-open — the run still succeeds", async () => {
+			ensureWindowSeq = [{ created: true }];
+			// make the injected ensureWindow throw on the fallback path
+			const throwingDeps = makeDeps();
+			throwingDeps.ensureWindow = (() => {
+				ensureWindowCalls.push({});
+				throw new Error("tui blew up in fallback");
+			}) as CodexDaemonAdapterDeps["ensureWindow"];
+			runtime = new FakeRuntime(async () => complete()); // never fires onThreadReady
+			const adapter = new CodexTmuxAdapter(
+				"testsess",
+				fake.exec,
+				25,
+				60_000,
+				undefined,
+				undefined,
+				throwingDeps,
+			);
+			const res = await adapter.execute(ctx());
+			expect(res.success).toBe(true); // visibility-only throw never fails the run
+			expect(runtime.drainedCalls).toBe(1); // teardown still ran
+		});
+
+		it("Codex R1 MED-5: the first attempt is DEFERRED — onThreadReady returns and the goal advances before any TUI work", async () => {
+			// queued scheduler: capture the scheduled reopen callbacks; nothing runs
+			// until we drain manually.
+			const queue: Array<() => void> = [];
+			reopenScheduler = (fn) => {
+				queue.push(fn);
+				return () => {
+					const i = queue.indexOf(fn);
+					if (i >= 0) queue.splice(i, 1);
+				};
+			};
+			const events: string[] = [];
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				events.push("hook-returned");
+				// the FIRST attempt must be queued, NOT yet run, when the hook returns
+				expect(ensureWindowCalls.length).toBe(0);
+				expect(queue.length).toBe(1);
+				input.onGoalActive?.();
+				events.push("goal-advanced");
+				// drain the queued first attempt only AFTER goal progress
+				queue.shift()?.();
+				events.push("retry-ran");
+				return complete();
+			});
+			await makeAdapter().execute(ctx());
+			expect(events).toEqual(["hook-returned", "goal-advanced", "retry-ran"]);
+			expect(ensureWindowCalls.length).toBe(1); // ran exactly once, AFTER goal progress
+		});
+
+		it("finally cancels a pending reopen and runEnded blocks a late callback from opening a window", async () => {
+			// queued scheduler that also records cancellation
+			let captured: (() => void) | undefined;
+			let cancelled = false;
+			reopenScheduler = (fn) => {
+				captured = fn;
+				return () => {
+					cancelled = true;
+				};
+			};
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0); // queues the first attempt (never drained)
+				return complete();
+			});
+			await makeAdapter().execute(ctx());
+			// the pending reopen was cancelled during teardown, before any window opened
+			expect(cancelled).toBe(true);
+			expect(ensureWindowCalls.length).toBe(0);
+			// firing the stale callback AFTER the run ended must NOT open a window
+			const before = ensureWindowCalls.length;
+			captured?.();
+			expect(ensureWindowCalls.length).toBe(before); // runEnded guard held
+		});
+
+		// ── Codex code review R1 MED-2: queued/interleaving + fail-open proofs ──
+		it("died→died→created through a QUEUED scheduler drained one callback at a time", async () => {
+			const queue: Array<() => void> = [];
+			reopenScheduler = (fn) => {
+				queue.push(fn);
+				return () => {
+					const i = queue.indexOf(fn);
+					if (i >= 0) queue.splice(i, 1);
+				};
+			};
+			const drainOne = () => queue.shift()?.();
+			ensureWindowSeq = [
+				{ created: false, reason: "died" },
+				{ created: false, reason: "died" },
+				{ created: true },
+			];
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0); // queues attempt 1 (not yet run)
+				drainOne(); // attempt 1: died → queues attempt 2
+				drainOne(); // attempt 2: died → queues attempt 3
+				drainOne(); // attempt 3: created → latched, no re-queue
+				return complete();
+			});
+			const res = await makeAdapter().execute(ctx());
+			expect(res.success).toBe(true);
+			expect(ensureWindowCalls.length).toBe(3);
+			expect(queue.length).toBe(0); // no dangling scheduled retry after success
+		});
+
+		it("died×MAX through a queued scheduler stops at exactly the cap with ONE exhaustion log", async () => {
+			const queue: Array<() => void> = [];
+			reopenScheduler = (fn) => {
+				queue.push(fn);
+				return () => {};
+			};
+			ensureWindowSeq = [{ created: false, reason: "died" }]; // sticky
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				// drain the whole queue (each died re-queues the next until the cap)
+				let guard = 0;
+				while (queue.length && guard++ < 50) queue.shift()?.();
+				return complete();
+			});
+			await makeAdapter().execute(ctx());
+			expect(ensureWindowCalls.length).toBe(TUI_OPEN_MAX_ATTEMPTS);
+			const logs = vi.mocked(console.log).mock.calls.map((c) => String(c[0]));
+			const exhaustion = logs.filter((l) =>
+				/exited immediately on every attempt/.test(l),
+			);
+			expect(exhaustion).toHaveLength(1); // exactly one fail-loud line
+			expect(exhaustion[0]).toContain(String(TUI_OPEN_MAX_ATTEMPTS)); // reports the attempt count
+		});
+
+		it("a restart fired WHILE the first chain is still opening does NOT start a second chain", async () => {
+			const queue: Array<() => void> = [];
+			reopenScheduler = (fn) => {
+				queue.push(fn);
+				return () => {};
+			};
+			ensureWindowSeq = [{ created: false, reason: "died" }, { created: true }];
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0); // chain starts; attempt 1 queued (not run)
+				input.onThreadReady?.(THREAD_ID, 1); // restart WHILE opening — must NOT queue a 2nd chain
+				expect(queue.length).toBe(1); // single-flight: still just one pending attempt
+				queue.shift()?.(); // attempt 1 → died → re-queue attempt 2
+				queue.shift()?.(); // attempt 2 → created
+				return complete();
+			});
+			await makeAdapter().execute(ctx());
+			expect(ensureWindowCalls.length).toBe(2); // one chain, not two
+		});
+
+		it("a THROWING ensureWindow on the HOOK path is fail-open — the run still succeeds", async () => {
+			const throwingDeps = makeDeps();
+			throwingDeps.ensureWindow = (() => {
+				ensureWindowCalls.push({});
+				throw new Error("ensure blew up on hook path");
+			}) as CodexDaemonAdapterDeps["ensureWindow"];
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				return complete();
+			});
+			const adapter = new CodexTmuxAdapter(
+				"testsess",
+				fake.exec,
+				25,
+				60_000,
+				undefined,
+				undefined,
+				throwingDeps,
+			);
+			const res = await adapter.execute(ctx());
+			expect(res.success).toBe(true);
+			expect(runtime.drainedCalls).toBe(1);
+		});
+
+		it("a THROWING scheduleReopen is fail-open — the run still succeeds", async () => {
+			reopenScheduler = () => {
+				throw new Error("scheduler blew up");
+			};
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				return complete();
+			});
+			const res = await makeAdapter().execute(ctx());
+			expect(res.success).toBe(true);
+		});
+
+		it("teardown order: cancel reopen BEFORE killWindow, runtime.stop, and drained", async () => {
+			const order: string[] = [];
+			reopenScheduler = () => () => order.push("cancel");
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0); // schedules a reopen (canceler recorded)
+				return complete();
+			});
+			const origStop = runtime.stop.bind(runtime);
+			runtime.stop = () => {
+				order.push("stop");
+				origStop();
+			};
+			const origDrained = runtime.drained.bind(runtime);
+			runtime.drained = async () => {
+				order.push("drained");
+				return origDrained();
+			};
+			const deps = makeDeps();
+			deps.killWindow = (() => {
+				order.push("killWindow");
+			}) as CodexDaemonAdapterDeps["killWindow"];
+			const adapter = new CodexTmuxAdapter(
+				"testsess",
+				fake.exec,
+				25,
+				60_000,
+				undefined,
+				undefined,
+				deps,
+			);
+			await adapter.execute(ctx());
+			expect(order.indexOf("cancel")).toBeGreaterThanOrEqual(0);
+			expect(order.indexOf("cancel")).toBeLessThan(order.indexOf("killWindow"));
+			expect(order.indexOf("killWindow")).toBeLessThan(order.indexOf("stop"));
+			expect(order.indexOf("stop")).toBeLessThan(order.indexOf("drained"));
+		});
+
+		it("Codex code R1 MED-1: a THROWING cancel handle does NOT abort teardown", async () => {
+			reopenScheduler = () => () => {
+				throw new Error("cancel blew up");
+			};
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				return complete();
+			});
+			const res = await makeAdapter().execute(ctx());
+			// teardown continued despite the throwing cancel handle (fail-open contract)
+			expect(res.success).toBe(true);
+			expect(killWindowCalls.length).toBe(1);
+			expect(runtime.stopped).toBe(1);
+			expect(runtime.drainedCalls).toBe(1);
+		});
 	});
 
 	it("HIGH-4: passes previousSession.threadId as resumeThreadId (crash-recovery resume)", async () => {

@@ -190,6 +190,7 @@ try {
 			onThreadReady: (tid) => {
 				threadId = tid;
 				if (tuiOpened) return;
+				// FLY-1239: ensureRunnerTuiWindow now returns { created, reason }.
 				tuiOpened = ensureRunnerTuiWindow(
 					{
 						tmuxSession: TMUX_SESSION,
@@ -205,7 +206,7 @@ try {
 						codexBin: tuiBin,
 					},
 					{ log: (m) => log(`  tui: ${m}`) },
-				);
+				).created;
 				log(`ensureRunnerTuiWindow -> ${tuiOpened}`);
 				// Sample over time. A single snapshot is NOT evidence: the TUI needs a
 				// moment to paint, and it exits when the daemon goes away at run end.

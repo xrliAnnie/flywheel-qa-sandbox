@@ -84,7 +84,22 @@ import {
 	ensureRunnerTuiWindow,
 	isRunnerTuiWindowAlive,
 	killRunnerTuiWindow,
+	errMessage as safeErr,
 } from "./codex-runner-tui-window.js";
+
+/**
+ * FLY-1239: bounded, NON-BLOCKING retry for the founder TUI window. The founder
+ * window opens on `onThreadReady`, which fires right after `thread/start` and
+ * BEFORE the first turn — so the thread's rollout may not be persisted yet and
+ * `codex resume --remote` dies with `-32600 no rollout found`. We reopen (each
+ * attempt provably purges its own stale pane first, so ≤1 window ever) on a
+ * scheduler that yields the event loop between attempts, letting the goal loop
+ * send `setGoal` (which lands the rollout) concurrently. Bounded + fail-loud:
+ * after the cap we log once and the run continues without a visible pane.
+ */
+export const TUI_OPEN_MAX_ATTEMPTS = 8; // per open-chain (includes the first attempt)
+export const TUI_OPEN_RETRY_GAP_MS = 900;
+
 import type { ExecFileFn } from "./TmuxAdapter.js";
 import { defaultExecFile } from "./TmuxAdapter.js";
 
@@ -146,6 +161,10 @@ export interface CodexDaemonAdapterDeps {
 	killWindow?: typeof killRunnerTuiWindow;
 	/** Is the founder window's pane still alive? (restart-reopen probe.) */
 	windowAlive?: (windowName: string) => boolean;
+	/** FLY-1239: schedule a founder-window reopen attempt (the rollout-race
+	 * retry). Returns a cancel handle. Default: an unref'd `setTimeout`. Injected
+	 * in tests to drive the retry chain deterministically. */
+	scheduleReopen?: (fn: () => void, ms: number) => () => void;
 }
 
 export function codexSessionStateDir(
@@ -168,6 +187,7 @@ export class CodexTmuxAdapter implements IAdapter {
 	private readonly ensureWindow: typeof ensureRunnerTuiWindow;
 	private readonly killWindow: typeof killRunnerTuiWindow;
 	private readonly windowAliveFn: (windowName: string) => boolean;
+	private readonly scheduleReopen: (fn: () => void, ms: number) => () => void;
 
 	constructor(
 		private sessionName: string = "flywheel",
@@ -194,6 +214,13 @@ export class CodexTmuxAdapter implements IAdapter {
 					tmuxSession: this.sessionName,
 					windowName,
 				}));
+		this.scheduleReopen =
+			deps.scheduleReopen ??
+			((fn, ms) => {
+				const t = setTimeout(fn, ms);
+				(t as { unref?: () => void }).unref?.();
+				return () => clearTimeout(t);
+			});
 	}
 
 	async checkEnvironment(): Promise<AdapterHealthCheck> {
@@ -319,6 +346,11 @@ export class CodexTmuxAdapter implements IAdapter {
 		let stopGateWatcher: () => void = () => {};
 		let stopHeartbeat: () => void = () => {};
 		let tuiOpened = false;
+		// FLY-1239 founder-window retry state (all scoped to this execution).
+		let tuiOpening = false; // a bounded reopen chain is in flight (single-flight)
+		let threadReadySeen = false; // did the authoritative onThreadReady hook ever fire?
+		let runEnded = false; // set in `finally` — stops any pending reopen from spawning
+		let cancelReopen: (() => void) | undefined; // cancel the latest scheduled reopen
 		let outcome: RunGoalOutcome | undefined;
 		let caughtError: unknown;
 		let teardownError: unknown;
@@ -366,29 +398,25 @@ export class CodexTmuxAdapter implements IAdapter {
 				logger: (m) => this.log(m),
 			});
 
-			// Open the founder window (once, on SUCCESS). Reused by the
-			// authoritative onThreadReady hook AND the outcome fallback.
-			const openWindow = (threadId: string): void => {
-				if (tuiOpened) return;
-				const created = this.ensureWindow(
-					{
-						tmuxSession: this.sessionName,
-						windowName,
-						codexHome,
-						socketPath,
-						cwd: sandboxCwd,
-						threadId,
-						// QA · FLY-1188: the TUI gets the RAW codex binary, NOT the
-						// rotation shim. The shim pipes stdout through `tee` to sniff
-						// 429s, and `codex resume --remote` refuses to render without a
-						// TTY ("stdout is not a terminal", exit 1) — which is why the
-						// founder's cmux tab came up empty. The daemon above keeps the
-						// shim: `app-server` needs no TTY and does want the rotation.
-						codexBin: rawCodexBin(),
-					},
-					{ log: (m) => this.log(m) },
-				);
-				if (!created) return; // MEDIUM-1: only latch tuiOpened on SUCCESS
+			const buildSpec = (threadId: string) => ({
+				tmuxSession: this.sessionName,
+				windowName,
+				codexHome,
+				socketPath,
+				cwd: sandboxCwd,
+				threadId,
+				// QA · FLY-1188: the TUI gets the RAW codex binary, NOT the
+				// rotation shim. The shim pipes stdout through `tee` to sniff
+				// 429s, and `codex resume --remote` refuses to render without a
+				// TTY ("stdout is not a terminal", exit 1) — which is why the
+				// founder's cmux tab came up empty. The daemon above keeps the
+				// shim: `app-server` needs no TTY and does want the rotation.
+				codexBin: rawCodexBin(),
+			});
+
+			// Latch the founder window ON SUCCESS (MEDIUM-1: only on success) +
+			// publish the window id.
+			const wireCreated = (): void => {
 				tuiOpened = true;
 				const windowId = this.resolveWindowId(windowName);
 				if (windowId) tmuxWindow = `${this.sessionName}:${windowId}`;
@@ -403,6 +431,72 @@ export class CodexTmuxAdapter implements IAdapter {
 							`[CodexTmuxAdapter] onTmuxWindowCreated failed: ${(err as Error).message}`,
 						);
 					}
+				}
+			};
+
+			// FLY-1239: one bounded reopen attempt. ONLY a `died` outcome (a TUI that
+			// spawned but exited during settle — the rollout-landing race) is retried;
+			// `tmux-absent` / `create-failed` stop after one attempt. Retries are
+			// scheduled (never awaited synchronously) so the goal loop keeps advancing
+			// and lands the rollout between attempts. Wrapped in a no-throw boundary:
+			// an async retry callback that threw would be an uncaught exception and
+			// could crash the process — window failure must never break the run.
+			const attemptOpen = (threadId: string, n: number): void => {
+				try {
+					if (runEnded || tuiOpened) {
+						tuiOpening = false;
+						return;
+					}
+					const result = this.ensureWindow(buildSpec(threadId), {
+						log: (m) => this.log(m),
+					});
+					if (result.created) {
+						wireCreated();
+						tuiOpening = false;
+						return;
+					}
+					if (
+						result.reason === "died" &&
+						n < TUI_OPEN_MAX_ATTEMPTS &&
+						!runEnded
+					) {
+						cancelReopen = this.scheduleReopen(
+							() => attemptOpen(threadId, n + 1),
+							TUI_OPEN_RETRY_GAP_MS,
+						);
+						return; // still opening — chain continues on the next tick
+					}
+					if (result.reason === "died") {
+						// fail-loud (bounded, not silent, not infinite). `died` proves an
+						// immediate exit, NOT specifically "no rollout found", so keep the
+						// cause soft and point at the detailed per-attempt log above.
+						this.log(
+							`runner-tui-window: founder TUI exited immediately on every attempt (${n}) — most likely the FLY-1239 rollout-landing race, but could be an auth/binary/TTY bootstrap failure; see the preceding runner-tui-window log for the exact command. The run continues (the machine client drives the goal); the founder cannot watch the pane.`,
+						);
+					}
+					// died-exhausted / tmux-absent / create-failed → stop this chain.
+					tuiOpening = false;
+				} catch (err) {
+					this.log(
+						`runner-tui-window: reopen attempt threw (non-fatal, fail-open): ${safeErr(err)}`,
+					);
+					tuiOpening = false; // stop this chain; window failure never breaks the run
+				}
+			};
+
+			// Start a single-flight reopen chain. The FIRST attempt is scheduled too
+			// (0 ms) so `onThreadReady` returns and `setGoal` is sent BEFORE any TUI
+			// settle blocks the event loop (Codex R1 MED-2).
+			const startOpenChain = (threadId: string): void => {
+				if (tuiOpened || tuiOpening || runEnded) return;
+				tuiOpening = true;
+				try {
+					cancelReopen = this.scheduleReopen(() => attemptOpen(threadId, 1), 0);
+				} catch (err) {
+					tuiOpening = false;
+					this.log(
+						`runner-tui-window: reopen schedule threw (non-fatal): ${safeErr(err)}`,
+					);
 				}
 			};
 
@@ -440,11 +534,12 @@ export class CodexTmuxAdapter implements IAdapter {
 			// resuming redrive reaps it if a Bridge crash orphaned it.
 			let latestDaemonPid: number | undefined;
 			const onThreadReady = (threadId: string, restarts: number): void => {
+				threadReadySeen = true; // authoritative hook fired → the fallback is not needed
 				this.persistSessionState(ctx, threadId, windowName, latestDaemonPid);
 				if (restarts > 0 && tuiOpened && !this.isWindowAlive(windowName)) {
 					tuiOpened = false; // pane died with the old socket — reopen below
 				}
-				openWindow(threadId);
+				startOpenChain(threadId);
 			};
 
 			// FLY-245 launch commit written the INSTANT the goal is actually SET
@@ -510,13 +605,41 @@ export class CodexTmuxAdapter implements IAdapter {
 				},
 				{ onNotification: () => heartbeat() },
 			);
-			// Fallback: if no threadId ever reached onThreadReady (a very fast /
-			// quiet run), open from the resolved outcome so the founder still gets
-			// the pane.
-			if (!tuiOpened && outcome?.threadId) openWindow(outcome.threadId);
+			// Fallback: ONLY when the authoritative onThreadReady hook NEVER fired (a
+			// very fast / quiet run) — open from the resolved outcome so the founder
+			// still gets the pane. One synchronous shot, no retry (the run has ended,
+			// the rollout exists, teardown is imminent). Its OWN no-throw boundary
+			// (Codex R2 MED-2): a visibility-only throw here must not reach the outer
+			// catch, where classifyGoalOutcome would let it override a successful goal.
+			if (!threadReadySeen && !tuiOpened && outcome?.threadId) {
+				try {
+					const o = this.ensureWindow(buildSpec(outcome.threadId), {
+						log: (m) => this.log(m),
+					});
+					if (o.created) wireCreated();
+				} catch (err) {
+					this.log(
+						`runner-tui-window: fallback open threw (non-fatal, fail-open): ${safeErr(err)}`,
+					);
+				}
+			}
 		} catch (err) {
 			caughtError = err;
 		} finally {
+			// FLY-1239: cancel any pending founder-window reopen BEFORE teardown — so a
+			// scheduled retry cannot fire during `await runtime.drained()` and spawn a
+			// window pointing at a now-dead daemon socket. In its OWN no-throw boundary
+			// (Codex code R1 MED-1): a throwing cancel handle must NEVER abort teardown
+			// (killWindow / runtime.stop / drained / CommDB closeout / credential scrub)
+			// — a visibility-only failure staying fail-open is the whole contract.
+			runEnded = true;
+			try {
+				cancelReopen?.();
+			} catch (err) {
+				this.log(
+					`runner-tui-window: reopen cancel threw (non-fatal, teardown continues): ${safeErr(err)}`,
+				);
+			}
 			stopGateWatcher();
 			stopHeartbeat();
 			this.killWindow(

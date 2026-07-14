@@ -37,6 +37,17 @@ function assertShellSafe(name: string, value: string, re: RegExp): string {
 	return value;
 }
 
+/**
+ * FLY-1239: the outcome of one `ensureRunnerTuiWindow` attempt. The reason
+ * discriminates so the caller can retry ONLY the case worth retrying — a TUI
+ * that spawned but died during settle (the rollout-landing race) — while a
+ * headless box (`tmux-absent`) or a tmux-level failure (`create-failed`) stops
+ * after one attempt.
+ */
+export type RunnerTuiWindowOutcome =
+	| { created: true }
+	| { created: false; reason: "tmux-absent" | "create-failed" | "died" };
+
 export interface RunnerTuiWindowSpec {
 	/** cmux/tmux session the runner's windows live in. */
 	tmuxSession: string;
@@ -136,8 +147,9 @@ function safeLog(log: ((m: string) => void) | undefined, m: string): void {
 /** Stringify a caught value without itself throwing — JS allows `throw null`
  * and a hostile error (a Proxy whose getPrototypeOf trap or `message` getter
  * throws), so EVERYTHING (the instanceof check + the message read + String())
- * is inside the try, or it would break the fail-open catch. */
-function errMessage(err: unknown): string {
+ * is inside the try, or it would break the fail-open catch. Exported (FLY-1239)
+ * so the adapter's async no-throw retry boundary reuses the same safe formatter. */
+export function errMessage(err: unknown): string {
 	try {
 		if (err instanceof Error) return err.message;
 		return String(err);
@@ -147,33 +159,97 @@ function errMessage(err: unknown): string {
 }
 
 /**
- * Ensure the founder-facing TUI window. Returns true when the window was
- * (re)created. Steps (each fail-open):
- *   1. `tmux -V` probe — absent → skip all (headless box: the run continues,
- *      only the terminal view is missing).
+ * FLY-1239: PROVABLE stale cleanup before creation. tmux permits DUPLICATE
+ * window names, and the old `kill-window -t =sess:=name` (result ignored)
+ * against an ambiguous match fails and leaves a corpse — so a retry would pile
+ * a second same-named window on top (the founder-facing "row of dead tabs" the
+ * Lead forbids). Instead: enumerate the session's windows, kill every EXACT-name
+ * match by IMMUTABLE window id, then re-ensure the session (killing a session's
+ * LAST window destroys it — tmux sessions cannot hold zero windows), and VERIFY
+ * no same-name window remains before the caller creates. Returns true only when
+ * the session is PROVABLY free of same-name windows. Any inability to prove that
+ * (a failed listing) returns false → the caller must NOT create (fail-open: the
+ * machine run continues, the founder just misses the pane this attempt).
+ */
+function purgeSameNameWindows(
+	spec: Pick<RunnerTuiWindowSpec, "tmuxSession" | "windowName">,
+	exec: (cmd: string, args: string[]) => { ok: boolean },
+	execOut: (cmd: string, args: string[]) => string | undefined,
+): boolean {
+	const sessionTarget = `=${spec.tmuxSession}`;
+	const listWindows = (): Array<{ id: string; name: string }> | undefined => {
+		const out = execOut("tmux", [
+			"list-windows",
+			"-t",
+			sessionTarget,
+			"-F",
+			"#{window_id} #{window_name}",
+		]);
+		if (out === undefined) return undefined; // listing failed (e.g. no server / session gone)
+		if (out === "") return [];
+		return out.split("\n").map((line) => {
+			// window_id is `@N` (no spaces); the name may contain spaces, so split
+			// on the FIRST space only and keep the remainder as the name.
+			const sp = line.indexOf(" ");
+			return sp < 0
+				? { id: line, name: "" }
+				: { id: line.slice(0, sp), name: line.slice(sp + 1) };
+		});
+	};
+
+	const before = listWindows();
+	if (before === undefined) return false; // cannot enumerate → cannot prove clean
+	for (const w of before) {
+		if (w.name === spec.windowName) {
+			exec("tmux", ["kill-window", "-t", w.id]); // kill by immutable id (no ambiguity)
+		}
+	}
+	// Killing a session's LAST window destroys the session — re-ensure it. A no-op
+	// if it survived; recreates the session (with a DIFFERENT-named scaffold window)
+	// if the purge emptied it, so the verify listing below can still run.
+	exec("tmux", ["new-session", "-Ad", "-s", spec.tmuxSession]);
+	const after = listWindows();
+	if (after === undefined) return false; // verify listing failed → cannot prove clean
+	return !after.some((w) => w.name === spec.windowName);
+}
+
+/**
+ * Ensure the founder-facing TUI window. Steps (each fail-open):
+ *   1. `tmux -V` probe — absent → `{ created:false, reason:"tmux-absent" }`
+ *      (headless box: the run continues, only the terminal view is missing).
  *   2. ensure the runner's session (idempotent attach-or-create).
- *   3. UNCONDITIONAL stale-kill of the same-named window (a previous TUI's dead
- *      pane / a leftover from a restart).
+ *   3. FLY-1239 PROVABLE purge: kill every same-named window by immutable id,
+ *      re-ensure the session, and verify none remain — else `create-failed`
+ *      (never create over a stale/ambiguous same-named window → ≤1 window).
  *   4. create the window running the real `codex resume --remote` TUI.
+ *   5. settle + liveness probe: a pane gone after settle → `{ reason:"died" }`
+ *      (the rollout-race the caller retries).
  */
 export function ensureRunnerTuiWindow(
 	spec: RunnerTuiWindowSpec,
 	deps: RunnerTuiWindowDeps = {},
-): boolean {
+): RunnerTuiWindowOutcome {
 	const exec = deps.exec ?? defaultExec;
+	const execOut = deps.execOut ?? defaultExecOut;
 	assertShellSafe("tmuxSession", spec.tmuxSession, SAFE_NAME);
 	assertShellSafe("windowName", spec.windowName, SAFE_NAME);
-	const target = `=${spec.tmuxSession}:=${spec.windowName}`;
 	try {
 		if (!exec("tmux", ["-V"]).ok) {
 			safeLog(
 				deps.log,
 				`runner-tui-window: tmux unavailable — skipping (${spec.windowName})`,
 			);
-			return false;
+			return { created: false, reason: "tmux-absent" };
 		}
 		exec("tmux", ["new-session", "-Ad", "-s", spec.tmuxSession]);
-		exec("tmux", ["kill-window", "-t", target]); // unconditional stale-kill
+		// FLY-1239: prove no stale/duplicate same-named window remains before create.
+		if (!purgeSameNameWindows(spec, exec, execOut)) {
+			safeLog(
+				deps.log,
+				`runner-tui-window: could not prove the session is free of stale '${spec.windowName}' windows — skipping create this attempt (non-fatal, run unaffected)`,
+			);
+			return { created: false, reason: "create-failed" };
+		}
 		const created = exec("tmux", [
 			"new-window",
 			"-d",
@@ -188,7 +264,7 @@ export function ensureRunnerTuiWindow(
 				deps.log,
 				`runner-tui-window: create failed (non-fatal, run unaffected): ${spec.windowName}`,
 			);
-			return false;
+			return { created: false, reason: "create-failed" };
 		}
 		// QA · FLY-1188 — PROVE it. `tmux new-window` reports success as soon as it
 		// forks the shell, so it says "ok" even for a command that dies 200ms later
@@ -200,21 +276,21 @@ export function ensureRunnerTuiWindow(
 		if (!isRunnerTuiWindowAlive(spec, { execOut: deps.execOut })) {
 			safeLog(
 				deps.log,
-				`runner-tui-window: founder TUI DIED immediately (${spec.windowName}) — the pane is gone right after tmux reported success. The run continues (the machine client drives the goal) but the founder CANNOT WATCH it. Inspect by hand: ${buildRunnerTuiCommand(spec)}`,
+				`runner-tui-window: founder TUI DIED immediately (${spec.windowName}) — the pane is gone right after tmux reported success (most likely the FLY-1239 rollout-landing race: 'no rollout found'). The run continues (the machine client drives the goal) but the founder CANNOT WATCH it. Inspect by hand: ${buildRunnerTuiCommand(spec)}`,
 			);
-			return false;
+			return { created: false, reason: "died" };
 		}
 		safeLog(
 			deps.log,
 			`runner-tui-window: founder TUI up (${spec.windowName}, thread ${spec.threadId})`,
 		);
-		return true;
+		return { created: true };
 	} catch (err) {
 		safeLog(
 			deps.log,
 			`runner-tui-window: ensure failed (non-fatal): ${errMessage(err)}`,
 		);
-		return false;
+		return { created: false, reason: "create-failed" };
 	}
 }
 

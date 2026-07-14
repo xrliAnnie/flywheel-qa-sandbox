@@ -64,44 +64,176 @@ function recorder(okFor: (args: string[]) => boolean = () => true) {
 	};
 }
 
-/** QA · FLY-1188: ensure() now PROVES the pane survived (tmux reports success
- * even for a command that dies instantly), so a live window must be simulated —
- * `deps.execOut` answers the post-create liveness probe and `sleep` skips the
- * settle. A mock without them models a window that never came up. */
-const aliveDeps = {
-	execOut: () => `${spec.windowName} 0`,
-	sleep: () => {},
-};
+/**
+ * FLY-1239 — a STATEFUL fake tmux that models the identity/lifecycle semantics
+ * that matter (Codex R1 HIGH-1 / R2 MED-1): windows keyed by IMMUTABLE id (so
+ * DUPLICATE names are representable, unlike a Set-by-name), and "killing a
+ * session's LAST window destroys the session" so a later `list-windows` fails.
+ * `exec` handles -V / new-session / kill-window / new-window; `execOut` answers
+ * list-windows and the display-message liveness probe.
+ */
+function fakeTmux(
+	opts: {
+		initial?: Array<{ id: string; name: string }>; // pre-existing windows (id → name)
+		sessionExists?: boolean; // default true
+		tmuxAvailable?: boolean; // -V result (default true)
+		createOk?: boolean; // new-window result (default true)
+		killEffective?: boolean; // whether kill-window actually removes (default true)
+		paneAlive?: boolean; // liveness of the created window (default true)
+		listFails?: boolean; // list-windows always returns undefined (default false)
+		verifyListFails?: boolean; // only the SECOND+ (verify) list returns undefined
+	} = {},
+) {
+	const WINDOW = spec.windowName;
+	let listCalls = 0;
+	let seq = 0;
+	const newId = () => `@${++seq}`;
+	const windows = new Map<string, string>(); // id → name
+	for (const w of opts.initial ?? []) windows.set(w.id, w.name);
+	let sessionExists = opts.sessionExists ?? true;
+	const execCalls: string[][] = [];
+	const outCalls: string[][] = [];
+	let pileUp = false; // set true if new-window is ever called over an existing same-name window
+	let createdOverResidual = false;
+	const sameNameCount = () =>
+		[...windows.values()].filter((n) => n === WINDOW).length;
+	// peak same-named count the CODE ever ESTABLISHES via new-window (starts at 0,
+	// NOT the pre-seeded stale count — those preloaded duplicates are the bad input
+	// the purge must clean, not a pile-up the code created).
+	let maxSameName = 0;
+
+	const exec = (cmd: string, args: string[]) => {
+		execCalls.push([cmd, ...args]);
+		const verb = args[0];
+		if (verb === "-V") return { ok: opts.tmuxAvailable ?? true };
+		if (verb === "new-session") {
+			if (!sessionExists) {
+				sessionExists = true;
+				windows.set(newId(), "zsh"); // recreated scaffold window (DIFFERENT name)
+			}
+			return { ok: true };
+		}
+		if (verb === "kill-window") {
+			const id = args[args.indexOf("-t") + 1];
+			if (opts.killEffective !== false) {
+				windows.delete(id);
+				if (windows.size === 0) sessionExists = false; // tmux: last window → session gone
+			}
+			return { ok: true };
+		}
+		if (verb === "new-window") {
+			if (opts.createOk === false) return { ok: false };
+			const name = args[args.indexOf("-n") + 1];
+			if (name === WINDOW && sameNameCount() > 0) {
+				pileUp = true; // creating a same-named window ON TOP of an existing one
+				createdOverResidual = true;
+			}
+			if (!sessionExists) sessionExists = true;
+			windows.set(newId(), name);
+			if (sameNameCount() > maxSameName) maxSameName = sameNameCount();
+			return { ok: true };
+		}
+		return { ok: true };
+	};
+
+	const execOut = (cmd: string, args: string[]): string | undefined => {
+		outCalls.push([cmd, ...args]);
+		if (args.includes("list-windows")) {
+			listCalls++;
+			if (opts.listFails) return undefined;
+			if (opts.verifyListFails && listCalls >= 2) return undefined; // the verify list fails
+			if (!sessionExists) return undefined; // "no server running" / session destroyed
+			return [...windows].map(([id, name]) => `${id} ${name}`).join("\n");
+		}
+		if (args.includes("display-message")) {
+			const present = [...windows.values()].includes(WINDOW);
+			return present && (opts.paneAlive ?? true) ? `${WINDOW} 0` : undefined;
+		}
+		return undefined;
+	};
+
+	return {
+		exec,
+		execOut,
+		sleep: () => {},
+		execCalls,
+		outCalls,
+		get pileUp() {
+			return pileUp;
+		},
+		get createdOverResidual() {
+			return createdOverResidual;
+		},
+		get maxSameName() {
+			return maxSameName;
+		},
+		get sameNameNow() {
+			return sameNameCount();
+		},
+		verbs: () => execCalls.map((c) => `${c[1]}`),
+		newWindowCalled: () => execCalls.some((c) => c[1] === "new-window"),
+	};
+}
 
 describe("ensureRunnerTuiWindow", () => {
-	it("probes tmux, ensures the session, stale-kills, then creates the window", () => {
-		const r = recorder();
-		const created = ensureRunnerTuiWindow(spec, { exec: r.exec, ...aliveDeps });
-		expect(created).toBe(true);
-		const verbs = r.calls.map((c) => `${c[1]}`);
-		expect(verbs).toEqual([
-			"-V", // tmux probe
-			"new-session", // ensure session
-			"kill-window", // stale-kill
-			"new-window", // create
+	it("probes tmux, ensures the session, purges + re-ensures + verifies, then creates the window", () => {
+		const t = fakeTmux({ initial: [{ id: "@0", name: "zsh" }] }); // clean session, no stale FLY-1188
+		const outcome = ensureRunnerTuiWindow(spec, {
+			exec: t.exec,
+			execOut: t.execOut,
+			sleep: t.sleep,
+		});
+		expect(outcome).toEqual({ created: true });
+		// No stale same-named window → no kill; the verb sequence is
+		// probe → ensure → re-ensure → create (list-windows go through execOut).
+		expect(t.verbs()).toEqual([
+			"-V",
+			"new-session",
+			"new-session",
+			"new-window",
 		]);
-		// stale-kill + create target the same identity-scoped window
-		expect(r.calls[2]).toContain("=flywheel:=FLY-1188");
-		const createCall = r.calls[3];
+		expect(t.outCalls.filter((c) => c[1] === "list-windows")).toHaveLength(2);
+		const createCall = t.execCalls.find((c) => c[1] === "new-window");
 		expect(createCall).toContain("FLY-1188");
-		expect(createCall.some((a) => a.includes("codex resume"))).toBe(true);
+		expect(createCall?.some((a) => a.includes("codex resume"))).toBe(true);
+		expect(t.pileUp).toBe(false);
 	});
 
-	it("skips (returns false) when tmux is unavailable — the run is unaffected", () => {
-		const r = recorder((args) => args[0] !== "-V"); // -V fails
-		const created = ensureRunnerTuiWindow(spec, { exec: r.exec });
-		expect(created).toBe(false);
-		expect(r.calls).toHaveLength(1); // only the probe
+	it("returns tmux-absent when tmux is unavailable — the run is unaffected", () => {
+		const t = fakeTmux({ tmuxAvailable: false });
+		expect(
+			ensureRunnerTuiWindow(spec, { exec: t.exec, execOut: t.execOut }),
+		).toEqual({ created: false, reason: "tmux-absent" });
+		expect(t.execCalls).toHaveLength(1); // only the -V probe
+		expect(t.newWindowCalled()).toBe(false);
 	});
 
-	it("returns false (non-fatal) when window creation fails", () => {
-		const r = recorder((args) => args[0] !== "new-window");
-		expect(ensureRunnerTuiWindow(spec, { exec: r.exec })).toBe(false);
+	it("returns create-failed (non-fatal) when window creation fails", () => {
+		const t = fakeTmux({
+			initial: [{ id: "@0", name: "zsh" }],
+			createOk: false,
+		});
+		expect(
+			ensureRunnerTuiWindow(spec, {
+				exec: t.exec,
+				execOut: t.execOut,
+				sleep: t.sleep,
+			}),
+		).toEqual({ created: false, reason: "create-failed" });
+	});
+
+	it("returns died when the pane dies during settle (the rollout-landing race)", () => {
+		const t = fakeTmux({
+			initial: [{ id: "@0", name: "zsh" }],
+			paneAlive: false, // window created but the TUI exited immediately
+		});
+		expect(
+			ensureRunnerTuiWindow(spec, {
+				exec: t.exec,
+				execOut: t.execOut,
+				sleep: t.sleep,
+			}),
+		).toEqual({ created: false, reason: "died" });
 	});
 
 	it("rejects a shell-unsafe session/window name up front", () => {
@@ -112,6 +244,138 @@ describe("ensureRunnerTuiWindow", () => {
 				{ exec: r.exec },
 			),
 		).toThrow(/unsafe for the tmux shell/);
+	});
+});
+
+// ── FLY-1239 — the founder must NEVER see a pile-up of same-named dead panes ──
+// (Lead hard requirement; Codex R1 HIGH-1 + R2 MED-1). These use the STATEFUL
+// fake so duplicates are representable and the "kill last window destroys the
+// session" rule is modeled — the properties a Set-by-name fake could not test.
+describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
+	it("kills a single stale same-named window by immutable id, verifies clean, then creates", () => {
+		const t = fakeTmux({
+			initial: [
+				{ id: "@0", name: "zsh" },
+				{ id: "@1", name: spec.windowName }, // a stale dead-pane leftover
+			],
+		});
+		const outcome = ensureRunnerTuiWindow(spec, {
+			exec: t.exec,
+			execOut: t.execOut,
+			sleep: t.sleep,
+		});
+		expect(outcome).toEqual({ created: true });
+		// killed by IMMUTABLE id (@1), not by ambiguous name
+		expect(t.execCalls).toContainEqual(["tmux", "kill-window", "-t", "@1"]);
+		expect(t.pileUp).toBe(false);
+		expect(t.maxSameName).toBeLessThanOrEqual(1);
+		expect(t.sameNameNow).toBe(1);
+	});
+
+	it("purges PRE-EXISTING DUPLICATES (both same-named) by id before creating", () => {
+		const t = fakeTmux({
+			initial: [
+				{ id: "@0", name: "zsh" },
+				{ id: "@1", name: spec.windowName },
+				{ id: "@2", name: spec.windowName }, // tmux permits duplicate names
+			],
+		});
+		const outcome = ensureRunnerTuiWindow(spec, {
+			exec: t.exec,
+			execOut: t.execOut,
+			sleep: t.sleep,
+		});
+		expect(outcome).toEqual({ created: true });
+		expect(t.execCalls).toContainEqual(["tmux", "kill-window", "-t", "@1"]);
+		expect(t.execCalls).toContainEqual(["tmux", "kill-window", "-t", "@2"]);
+		expect(t.pileUp).toBe(false);
+		expect(t.maxSameName).toBeLessThanOrEqual(1);
+	});
+
+	it("re-ensures the session when the stale window was the session's ONLY window (kill destroys session)", () => {
+		const t = fakeTmux({
+			initial: [{ id: "@1", name: spec.windowName }], // the ONLY window
+		});
+		const outcome = ensureRunnerTuiWindow(spec, {
+			exec: t.exec,
+			execOut: t.execOut,
+			sleep: t.sleep,
+		});
+		// killing @1 destroys the session; the re-ensure recreates it → verify finds
+		// zero FLY-1188 → create succeeds (would be a false create-failed without it).
+		expect(outcome).toEqual({ created: true });
+		expect(t.pileUp).toBe(false);
+		expect(t.maxSameName).toBeLessThanOrEqual(1);
+	});
+
+	it("refuses to create (create-failed) when a same-named window CANNOT be proven gone", () => {
+		const t = fakeTmux({
+			initial: [
+				{ id: "@0", name: "zsh" },
+				{ id: "@1", name: spec.windowName },
+			],
+			killEffective: false, // simulate a kill that does not remove the window
+		});
+		const outcome = ensureRunnerTuiWindow(spec, {
+			exec: t.exec,
+			execOut: t.execOut,
+			sleep: t.sleep,
+		});
+		expect(outcome).toEqual({ created: false, reason: "create-failed" });
+		// the crucial no-pile-up guarantee: NEVER new-window while a same-name remains
+		expect(t.newWindowCalled()).toBe(false);
+		expect(t.createdOverResidual).toBe(false);
+	});
+
+	it("refuses to create (create-failed) when the session cannot be listed", () => {
+		const t = fakeTmux({ listFails: true });
+		const outcome = ensureRunnerTuiWindow(spec, {
+			exec: t.exec,
+			execOut: t.execOut,
+			sleep: t.sleep,
+		});
+		expect(outcome).toEqual({ created: false, reason: "create-failed" });
+		expect(t.newWindowCalled()).toBe(false);
+	});
+
+	it("refuses to create when the VERIFY listing fails (first list ok, second fails) — Codex code R1 LOW-3", () => {
+		const t = fakeTmux({
+			initial: [
+				{ id: "@0", name: "zsh" },
+				{ id: "@1", name: spec.windowName },
+			],
+			verifyListFails: true, // purge succeeds, but the re-list to PROVE it fails
+		});
+		const outcome = ensureRunnerTuiWindow(spec, {
+			exec: t.exec,
+			execOut: t.execOut,
+			sleep: t.sleep,
+		});
+		expect(outcome).toEqual({ created: false, reason: "create-failed" });
+		// cannot PROVE clean → never create
+		expect(t.newWindowCalled()).toBe(false);
+	});
+
+	it("parses window names WITH SPACES and kills only the EXACT-name target id — Codex code R1 LOW-3", () => {
+		const t = fakeTmux({
+			initial: [
+				{ id: "@0", name: "zsh -l" }, // a name with a space
+				{ id: "@1", name: "my long name" }, // a name with spaces
+				{ id: "@2", name: spec.windowName }, // the ONLY exact match
+				{ id: "@3", name: `${spec.windowName}-other` }, // a prefix, NOT an exact match
+			],
+		});
+		const outcome = ensureRunnerTuiWindow(spec, {
+			exec: t.exec,
+			execOut: t.execOut,
+			sleep: t.sleep,
+		});
+		expect(outcome).toEqual({ created: true });
+		const killed = t.execCalls
+			.filter((c) => c[1] === "kill-window")
+			.map((c) => c[c.indexOf("-t") + 1]);
+		expect(killed).toEqual(["@2"]); // ONLY the exact-name match, not space-names / prefix
+		expect(t.pileUp).toBe(false);
 	});
 });
 
@@ -165,9 +429,12 @@ describe("fail-open logging + kill result", () => {
 		const boom = () => {
 			throw new Error("logger down");
 		};
+		const t = fakeTmux({ initial: [{ id: "@0", name: "zsh" }] });
 		expect(() =>
 			ensureRunnerTuiWindow(spec, {
-				exec: () => ({ ok: true }),
+				exec: t.exec,
+				execOut: t.execOut,
+				sleep: t.sleep,
 				log: boom,
 			}),
 		).not.toThrow();
@@ -254,16 +521,20 @@ describe("killRunnerTuiWindow", () => {
 // makes stdout a PIPE, and a TUI refuses to render without a real TTY. The
 // daemon may keep using the shim (`app-server` needs no TTY); the TUI may not.
 describe("QA FLY-1188: the founder TUI must actually be RUNNING, not just spawned", () => {
-	it("reports failure when the window dies immediately (tmux new-window 'succeeds' regardless)", () => {
-		// tmux accepts every command, but the window never comes up — exactly what a
-		// TUI that exits 1 on 'stdout is not a terminal' looks like from outside.
-		const alive = false;
-		const ok = ensureRunnerTuiWindow(spec, {
-			exec: () => ({ ok: true }),
-			execOut: (_cmd, args) =>
-				// display-message identity echo: a dead/absent window resolves to nothing
-				args.includes("display-message") && alive ? spec.windowName : undefined,
+	it("reports died when the window dies immediately (tmux new-window 'succeeds' regardless)", () => {
+		// tmux accepts every command and the purge/verify pass, but the window never
+		// comes up — exactly what a TUI that exits 1 on 'stdout is not a terminal' (or
+		// the FLY-1239 'no rollout found' race) looks like from outside.
+		const t = fakeTmux({
+			initial: [{ id: "@0", name: "zsh" }],
+			paneAlive: false,
 		});
-		expect(ok).toBe(false); // must NOT claim "founder TUI up" for a dead pane
+		const outcome = ensureRunnerTuiWindow(spec, {
+			exec: t.exec,
+			execOut: t.execOut,
+			sleep: t.sleep,
+		});
+		// must NOT claim "founder TUI up" for a dead pane; must classify as retryable died
+		expect(outcome).toEqual({ created: false, reason: "died" });
 	});
 });
