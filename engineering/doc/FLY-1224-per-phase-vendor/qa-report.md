@@ -77,7 +77,25 @@ Issue: FLY-1224
 
 注:仓库 MODEL_TIERS 约定 `heavy.id=claude-fable-5`(Fable)、`medium.id=claude-opus-4-8`(Opus)—— design=heavy=Fable、qa=medium=Opus 精确符合 Annie 直令「design 用 Fable、QA 用 Opus」。
 
-## 7. 未覆盖(明确边界)
+## 7. 529-B 真机验证(Tadashi 直令 d162c25a,路径 B — Annie 点名要看真 Codex 跑 implement)
 
-- **真机三段式派单验收**(design/qa=claude-tmux、implement=codex-tmux+cmux 真窗口、turn belt/handoff/QA verdict 全链)= plan §7 的**另立冒烟单**,不在本 PR QA 范围。
+Annie 在 ship gate 要求真机看到 implement 段真在 Codex 上跑。Tadashi 拍板路径 B:module-driven 驱 #576 dist 的 `CodexDaemonGoalRuntime`(= CodexTmuxAdapter 用的同一 runtime)起**一个真 codex implement 窗口**,完全隔离(/tmp 短路径、隔离 CODEX_HOME/repo/socket、不碰生产 CommDB)。harness:`scratchpad/fly1224-codex-window-harness.mjs`。证据目录:`e2e-evidence/`。
+
+| # | 证据 | ground-truth |
+|---|------|--------------|
+| B1 | **FLY-1224 effort override 到达真 daemon** | live `ps` 抓到真进程 argv:`codex app-server --remote-control --listen unix://... -c model_reasoning_effort="xhigh"`(`daemon-argv-live-ps.txt`) |
+| B2 | **模型 = gpt-5.6-sol** | codex TUI 抬头「model: gpt-5.6-sol xhigh」+ 隔离 codex home config |
+| B3 | **真 codex 真写码** | 写出 `smoke-fly1224.md`(design=Fable/implement=Codex gpt-5.6-sol/qa=Opus),`outcome.json`: status=complete、succeeded=true、18767 tokens、1 turn |
+| B4 | **founder TUI 窗口可看** | 真 tmux pane 里 `codex resume --remote` 渲染 codex TUI 并存活(`codex-tui-screenshot.txt` — Annie 观看画面) |
+
+**结论**:1224 的代码端到端让 implement 真跑在 Codex(gpt-5.6-sol + xhigh)上、真写文件、TUI 真可看 —— 已用真 codex 证实。**不需要新代码**。
+
+### Observation(记录,非 FLY-1224 缺陷):自动 harness 首发窗口秒退 `stdin is not a terminal`
+- `ensureRunnerTuiWindow` 自动建窗口(detached tmux session,从非交互父进程 fork)时,首发 `codex resume --remote` 秒退,报 `Error: stdin is not a terminal` —— 该二进制要交互式 TTY。
+- 这是 **FLY-1188/398 的 TUI opener 的边界条件,非 FLY-1224 代码**(FLY-1224 未碰 `codex-runner-tui-window.ts`)。在**正常 tmux pane**(有真 pty)里 `codex resume --remote` 完全正常渲染+存活(B4 已证)。
+- **1225 生产整机跑不会踩**:cmux 提供真 pty,窗口正常渲染(Mufasa 生产 codex Lead 窗口即活证)。留档供 FLY-1188/398 维护线参考。
+
+## 8. 未覆盖(明确边界)
+
+- **完整沙箱 Bridge 端到端流水线**(派单→design→implement→qa→ship 全链 + in-cmux live-watch)= **FLY-1225 冒烟单**(Backlog,⛔ 依赖 FLY-1224 落地后派;双重身份含 thread 状态前缀 bug 修复)。**非代码缺口** —— 是上线后的整机彩排。
 - token-usage 观测盲区(codex 用量不进日报)= plan §9 已接受的限制。
