@@ -52,10 +52,6 @@ import { McpInventoryWatcher } from "./mcp-inventory.js";
 import { buildMentionGate } from "./mention-gate.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
 import {
-	isReadDenyEnabled,
-	resolveReadDenyThread,
-} from "./read-deny-profile.js";
-import {
 	buildReplyInThreadWiring,
 	type ReplyInThreadConfig,
 } from "./roundtable-reply-in-thread-wiring.js";
@@ -122,19 +118,12 @@ export interface CodexLeadRuntimeConfig {
 	 * cannot run code / merge / ship). Write-capable modes are refused until a Codex
 	 * Lead's founder-gated action path exists (FLY-245). */
 	sandboxMode: CodexSandboxMode;
-	/** FLY-260: read-deny hardening enabled (env FLYWHEEL_CODEX_LEAD_READ_DENY=1).
-	 * Default false (byte-compat). When true (read-only only — fail-loud otherwise),
-	 * the runtime omits the legacy `sandbox` thread param so the config's
-	 * `default_permissions` read-deny profile takes effect, and a pre-gateway gate
-	 * asserts the profile is active (see read-deny-profile.ts). */
-	readDeny: boolean;
 	/** FLY-350: Codex Lead capability profile (env FLYWHEEL_CODEX_LEAD_PROFILE).
-	 * "content-coordination" enables the narrow lead-actions MCP (read-only +
-	 * proactive discord_send); "write-capable" (Z) = net-off workspace-write shell +
-	 * the gateway (git_push/open_pr/discord_send); absent = "companion" = read-only
-	 * chat. An UNKNOWN value is fail-loud at parse (R2-4) — never a silent default,
-	 * so a launcher typo can't half-enable a tier. Profile ↔ sandbox consistency is
-	 * asserted in `parseCodexLeadRuntimeConfig`. */
+	 * "write-capable" (Z) = net-off workspace-write shell + the gateway
+	 * (git_push/open_pr/discord_send); "full-access" = Claude-equal project access;
+	 * absent = "companion" = read-only chat. An UNKNOWN value is fail-loud at parse
+	 * (R2-4) — never a silent default, so a launcher typo can't half-enable a tier.
+	 * Profile ↔ sandbox consistency is asserted in `parseCodexLeadRuntimeConfig`. */
 	codexProfile: CodexLeadProfile;
 	/** FLY-245 Phase A: canonical write-capable Lead scratch workspace (plan §3.3).
 	 * Resolved + validated (realpath; no overlap with control-plane/state/CODEX_HOME)
@@ -190,16 +179,15 @@ export type CodexSandboxMode =
 	| "workspace-write"
 	| "danger-full-access";
 
-/** FLY-350: Codex Lead capability tiers. `companion` = read-only chat; `content-
- * coordination` = read-only + the lead-actions MCP; `write-capable` (Z) = net-off
- * workspace-write shell + the gateway (git_push/open_pr/discord_send); `full-access`
- * = a Claude-EQUAL Lead (workspace-write + network ON + local gh/git, NO gateway/
- * broker/release-gate; the retained control is the team-wide founder-gate rule
- * bundle, not confinement). The runtime, ProjectConfig, and fleet-capabilities
- * share this ONE enum so a typo/drift can never silently activate a tier (R2-4). */
+/** FLY-350: Codex Lead capability tiers. `companion` = read-only chat;
+ * `write-capable` (Z) = net-off workspace-write shell + the gateway
+ * (git_push/open_pr/discord_send); `full-access` = a Claude-EQUAL Lead
+ * (workspace-write + network ON + local gh/git, NO gateway/broker/release-gate;
+ * the retained control is the team-wide founder-gate rule bundle, not confinement).
+ * The runtime, ProjectConfig, and fleet-capabilities share this ONE enum so a
+ * typo/drift can never silently activate a tier (R2-4). */
 export const CODEX_LEAD_PROFILES = [
 	"companion",
-	"content-coordination",
 	"write-capable",
 	"full-access",
 ] as const;
@@ -649,17 +637,6 @@ export function parseCodexLeadRuntimeConfig(
 		);
 	}
 	const sandboxMode = sandboxRaw as CodexSandboxMode;
-
-	// FLY-260: read-deny hardening flag (default OFF = byte-compat). Only supported
-	// for a read-only Lead this PR; combining it with a write-capable sandbox is a
-	// parse-time fail-loud (write-capable read-deny would need the FLY-245
-	// confinement assertions reworked — explicitly out of scope, follow-up).
-	const readDeny = isReadDenyEnabled(env);
-	if (readDeny && sandboxMode !== "read-only") {
-		throw new Error(
-			`codex-lead-runtime: FLYWHEEL_CODEX_LEAD_READ_DENY=1 requires sandbox=read-only (got "${sandboxMode}") — write-capable read-deny is a FLY-245 follow-up`,
-		);
-	}
 	// FLY-350: capability profile. R2-4 (codex round-2 MED): an UNKNOWN profile is
 	// fail-loud — NOT a silent fall to companion. The old "anything else → companion"
 	// meant a launcher typo could run `sandbox=workspace-write` under an unrecognized
@@ -672,12 +649,6 @@ export function parseCodexLeadRuntimeConfig(
 		);
 	}
 	const codexProfile = profileRaw as CodexLeadProfile;
-	// content-coordination = read-only model exec + the lead-actions MCP (never write).
-	if (codexProfile === "content-coordination" && sandboxMode !== "read-only") {
-		throw new Error(
-			`codex-lead-runtime: FLYWHEEL_CODEX_LEAD_PROFILE=content-coordination requires sandbox=read-only (got "${sandboxMode}") — the lead-actions tier is read-only model exec + MCP, never write-capable (FLY-350)`,
-		);
-	}
 	// FLY-350 (Z): write-capable = net-off workspace-write shell + the gateway
 	// (git_push/open_pr/discord_send). The profile and the sandbox are kept in a
 	// BIDIRECTIONAL lockstep so the profile is the SSOT (plan §3.5; Codex review
@@ -685,8 +656,8 @@ export function parseCodexLeadRuntimeConfig(
 	// where fleet/config would mislabel an actually-write-capable Lead):
 	//   - write-capable REQUIRES workspace-write (a write-capable read-only shell
 	//     is a contradiction), AND
-	//   - workspace-write REQUIRES the write-capable profile (no silent
-	//     write-capability under companion/content-coordination).
+	//   - workspace-write REQUIRES an explicit write tier (no silent
+	//     write-capability under companion).
 	if (codexProfile === "write-capable" && sandboxMode !== "workspace-write") {
 		throw new Error(
 			`codex-lead-runtime: FLYWHEEL_CODEX_LEAD_PROFILE=write-capable requires sandbox=workspace-write (got "${sandboxMode}") — the (Z) write-capable Lead is a net-off workspace-write shell + gateway (FLY-350)`,
@@ -701,8 +672,8 @@ export function parseCodexLeadRuntimeConfig(
 		);
 	}
 	// workspace-write is the SSOT-tied write tier: it requires EITHER the (Z)
-	// write-capable profile OR the full-access profile — never a silent companion/
-	// content-coordination write (config/fleet/runtime drift, R2-4 / §3.5).
+	// write-capable profile OR the full-access profile — never a silent companion
+	// write (config/fleet/runtime drift, R2-4 / §3.5).
 	if (
 		sandboxMode === "workspace-write" &&
 		codexProfile !== "write-capable" &&
@@ -712,16 +683,6 @@ export function parseCodexLeadRuntimeConfig(
 			`codex-lead-runtime: sandbox=workspace-write requires FLYWHEEL_CODEX_LEAD_PROFILE=write-capable or full-access (got "${codexProfile}") — workspace-write IS a write tier; the explicit profile is the SSOT so config/fleet/runtime can never drift (FLY-350 §3.5)`,
 		);
 	}
-	// Code-review HIGH-3: content-coordination MUST run under read-deny. Without it
-	// the home script takes the legacy read-only config (writes blocked, READS not),
-	// reopening the FLY-260 model-readable-secret class for a Lead that now has
-	// proactive outbound Discord. Fail-closed (the launcher must set READ_DENY=1).
-	if (codexProfile === "content-coordination" && !readDeny) {
-		throw new Error(
-			"codex-lead-runtime: FLYWHEEL_CODEX_LEAD_PROFILE=content-coordination requires FLYWHEEL_CODEX_LEAD_READ_DENY=1 — the lead-actions tier must run under read-deny so a proactive-outbound Lead cannot read local secrets (FLY-260/FLY-350)",
-		);
-	}
-
 	// FLY-245 Phase A: for a write-capable sandbox, resolve + validate the Lead
 	// scratch workspace when configured. Purely additive — when unset, `workspace`
 	// stays undefined and the write-capable release gate (buildCodexLeadRuntime →
@@ -824,7 +785,6 @@ export function parseCodexLeadRuntimeConfig(
 		typingEnabled,
 		systemPromptFiles,
 		sandboxMode,
-		readDeny,
 		codexProfile,
 		workspace,
 		founderId,
@@ -984,22 +944,13 @@ export function buildThreadParams(
 	config: Pick<
 		CodexLeadRuntimeConfig,
 		"sandboxMode" | "workspace" | "fullAccessProjectRoot"
-	> & {
-		readDeny?: boolean;
-	},
+	>,
 	baseInstructions: string | undefined,
 ): Record<string, unknown> {
 	const params: Record<string, unknown> = {
 		approvalPolicy: "never",
+		sandbox: config.sandboxMode,
 	};
-	// FLY-260: under read-deny (read-only only), OMIT the legacy `sandbox` param — it
-	// would set activePermissionProfile=null and DISABLE the config's read-deny
-	// profile (permission profiles do not compose with legacy sandbox settings).
-	// Enforcement then comes from the CODEX_HOME config's `default_permissions`.
-	// Every other path keeps pinning `sandbox` (byte-compat).
-	if (!(config.readDeny && config.sandboxMode === "read-only")) {
-		params.sandbox = config.sandboxMode;
-	}
 	// FLY-245 Phase A (plan §3.3, R7): pin cwd to the canonical Lead scratch for a
 	// write-capable Lead — an unpinned cwd auto-becomes a writable root (= the
 	// app-server's launch dir, indeterminate). read-only companions leave `workspace`
@@ -1338,8 +1289,8 @@ export function buildCodexLeadRuntime(
 			? buildCodexLeadMcpArgv({
 					chrome: config.chrome,
 					// FLY-304: proactive discord_send for full-access (Claude-equal). The
-					// SAME audited lead-actions MCP content-coordination uses, via the SHARED
-					// helper (so the dry-run report cannot diverge). entry is existsSync-
+					// Audited lead-actions MCP via the SHARED helper (so the dry-run report
+					// cannot diverge). entry is existsSync-
 					// validated here (fail-closed); the bot token is by NAME (env_vars) —
 					// pinned into baseEnv below — never a literal. NO broker.
 					leadActions: fullAccessLeadActionsMcpConfig(
@@ -1559,17 +1510,6 @@ export function buildCodexLeadRuntime(
 				const { id, result } = await proc.startThreadWithResult(threadParams);
 				assertConfinement(extractThreadDescriptor(result), expectation);
 				writeThreadId(config.threadIdPath, id);
-				return id;
-			}
-			// FLY-260 read-deny pre-gateway enforcement gate (R2-B3). Fail-closed: a
-			// failure throws here, BEFORE wire()/startGateway, so the Discord gateway
-			// never starts on an unprotected shell. (Headless = no resume self-heal.)
-			if (config.readDeny) {
-				const { id, fresh } = await resolveReadDenyThread(proc, {
-					saved,
-					threadParams,
-				});
-				if (fresh) writeThreadId(config.threadIdPath, id);
 				return id;
 			}
 			if (saved) {
@@ -1806,7 +1746,6 @@ export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 		}`,
 		...writeCapableLines,
 		...fullAccessLines,
-		`read-deny     : ${config.readDeny ? "ON (FLY-260) — legacy sandbox param OMITTED; CODEX_HOME config default_permissions=flywheel-lead-secret-deny enforces read-deny + env exclude; boot ephemeral-start asserts the profile; flag-on cutover MUST restart the remote-control daemon so it re-reads config (brief TUI blip; liveness loop recreates)" : "off (byte-compat — legacy sandbox pin in effect)"}`,
 		`CODEX_HOME    : ${config.codexHome} (isolated per-Lead — not the host ~/.codex)`,
 		`codex bin     : ${config.codexBin}`,
 		`state dir     : ${config.stateDir}`,

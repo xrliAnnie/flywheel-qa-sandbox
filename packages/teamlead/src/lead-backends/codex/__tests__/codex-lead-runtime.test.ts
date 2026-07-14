@@ -68,30 +68,10 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		expect(c.chrome).toBeUndefined();
 	});
 
-	// FLY-350: codexProfile (content-coordination enables the lead-actions MCP).
 	it("defaults codexProfile to companion when unset", () => {
 		expect(parseCodexLeadRuntimeConfig(fullEnv()).codexProfile).toBe(
 			"companion",
 		);
-	});
-
-	it("parses codexProfile=content-coordination from the exact env value (under read-deny)", () => {
-		expect(
-			parseCodexLeadRuntimeConfig(
-				fullEnv({
-					FLYWHEEL_CODEX_LEAD_PROFILE: "content-coordination",
-					FLYWHEEL_CODEX_LEAD_READ_DENY: "1",
-				}),
-			).codexProfile,
-		).toBe("content-coordination");
-	});
-
-	it("rejects content-coordination without read-deny (FLY-260/FLY-350 fail-closed)", () => {
-		expect(() =>
-			parseCodexLeadRuntimeConfig(
-				fullEnv({ FLYWHEEL_CODEX_LEAD_PROFILE: "content-coordination" }),
-			),
-		).toThrow(/requires FLYWHEEL_CODEX_LEAD_READ_DENY=1/);
 	});
 
 	it("FAIL-LOUD on an unknown codexProfile value (R2-4: never silently default)", () => {
@@ -119,17 +99,6 @@ describe("parseCodexLeadRuntimeConfig", () => {
 				fullEnv({ FLYWHEEL_CODEX_LEAD_PROFILE: "write-capable" }),
 			),
 		).toThrow(/write-capable requires sandbox=workspace-write/);
-	});
-
-	it("rejects content-coordination paired with a write-capable sandbox (read-only only)", () => {
-		expect(() =>
-			parseCodexLeadRuntimeConfig(
-				fullEnv({
-					FLYWHEEL_CODEX_LEAD_PROFILE: "content-coordination",
-					FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
-				}),
-			),
-		).toThrow(/content-coordination requires sandbox=read-only/);
 	});
 
 	// FLY-350 (Z) M-3 (Codex review MEDIUM): the profile is the SSOT — a
@@ -525,14 +494,6 @@ describe("FLY-350 full-access profile (= Claude-equal, opt-in)", () => {
 		expect(parseCodexLeadRuntimeConfig(fullAccessEnv()).sandboxMode).toBe(
 			"workspace-write",
 		);
-	});
-
-	it("full-access + read-deny is a parse-time fail-loud (read-deny is read-only only)", () => {
-		expect(() =>
-			parseCodexLeadRuntimeConfig(
-				fullAccessEnv({ FLYWHEEL_CODEX_LEAD_READ_DENY: "1" }),
-			),
-		).toThrow(/requires sandbox=read-only/);
 	});
 
 	it("full-access REQUIRES FLYWHEEL_CODEX_LEAD_PROJECT_DIR (missing → fail-loud)", () => {
@@ -945,66 +906,6 @@ describe("buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pa
 		expect(FULL_ACCESS_ENV_ALLOWLIST as readonly string[]).not.toContain(
 			"FLYWHEEL_API_TOKEN",
 		);
-	});
-});
-
-describe("FLY-260 read-deny flag (default OFF — byte-compat)", () => {
-	it("defaults readDeny=false (flag unset)", () => {
-		expect(parseCodexLeadRuntimeConfig(fullEnv()).readDeny).toBe(false);
-	});
-
-	it("FLYWHEEL_CODEX_LEAD_READ_DENY=1 sets readDeny on a read-only Lead", () => {
-		const c = parseCodexLeadRuntimeConfig(
-			fullEnv({ FLYWHEEL_CODEX_LEAD_READ_DENY: "1" }),
-		);
-		expect(c.readDeny).toBe(true);
-		expect(c.sandboxMode).toBe("read-only");
-	});
-
-	it("readDeny + a write-capable sandbox is a parse-time fail-loud (R1-#8)", () => {
-		expect(() =>
-			parseCodexLeadRuntimeConfig(
-				fullEnv({
-					FLYWHEEL_CODEX_LEAD_READ_DENY: "1",
-					FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
-				}),
-			),
-		).toThrow(/requires sandbox=read-only/);
-	});
-
-	it("buildThreadParams OMITS the legacy sandbox param under readDeny+read-only", () => {
-		expect(
-			buildThreadParams(
-				{ sandboxMode: "read-only", readDeny: true },
-				undefined,
-			),
-		).toEqual({ approvalPolicy: "never" });
-		// persona still flows through
-		expect(
-			buildThreadParams(
-				{ sandboxMode: "read-only", readDeny: true },
-				"You are Mufasa.",
-			),
-		).toEqual({ approvalPolicy: "never", baseInstructions: "You are Mufasa." });
-	});
-
-	it("buildThreadParams KEEPS sandbox when readDeny is off (byte-compat)", () => {
-		expect(
-			buildThreadParams(
-				{ sandboxMode: "read-only", readDeny: false },
-				undefined,
-			),
-		).toEqual({ approvalPolicy: "never", sandbox: "read-only" });
-	});
-
-	it("dry-run report surfaces read-deny ON", () => {
-		const report = dryRunReport(
-			parseCodexLeadRuntimeConfig(
-				fullEnv({ FLYWHEEL_CODEX_LEAD_READ_DENY: "1" }),
-			),
-		).join("\n");
-		expect(report).toContain("read-deny     : ON");
-		expect(report).toContain("flywheel-lead-secret-deny");
 	});
 });
 

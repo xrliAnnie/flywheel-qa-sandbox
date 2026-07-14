@@ -60,16 +60,12 @@ import { LeadJournal } from "./LeadJournal.js";
 import {
 	assertFullAccessLeadActionsConfigGate,
 	assertFullAccessSandboxConfig,
-	assertLeadActionsConfigGate,
 	buildFullAccessLeadActionsMcpServerConfig,
-	buildLeadActionsMcpServerConfig,
 } from "./lead-actions/mcp-config.js";
 import { buildMentionGate } from "./mention-gate.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
-import { resolveReadDenyThread } from "./read-deny-profile.js";
 import { buildReplyInThreadWiring } from "./roundtable-reply-in-thread-wiring.js";
 import { SqliteJournalStore } from "./SqliteJournalStore.js";
-import { SecretBroker, washActionSecretEnv } from "./secret-broker.js";
 import { extractTurnId, TurnDemux } from "./TurnDemux.js";
 import {
 	ensureTuiWindow,
@@ -113,13 +109,12 @@ export function parseCodexLeadTuiRuntimeConfig(
  * (Codex R1 HIGH-1: a direct shell test that pre-sets the profile would NOT have caught
  * that the runtime path drops it).
  *
- *   - content-coordination → secret-WASHED env (broker-only token, never in daemon env).
  *   - full-access (= Claude-equal) → the H-1 POSITIVE allowlist (`buildFullAccessEnv`,
  *     Claude-pane mirror + gh auth) + the bot token by name (for the lead_actions MCP
- *     child) + the daemon-control pins `FLYWHEEL_CODEX_LEAD_PROFILE=full-access` and
- *     `FLYWHEEL_CODEX_LEAD_READ_DENY=0`. The pins are CRITICAL: `buildFullAccessEnv`
- *     STRIPS `FLYWHEEL_CODEX_LEAD_PROFILE` (not in the allowlist), so without re-pinning
- *     them the home script's `ensure_daemon` would NOT do stop-before-start and a stale
+ *     child) + the daemon-control pin `FLYWHEEL_CODEX_LEAD_PROFILE=full-access`.
+ *     The pin is CRITICAL: `buildFullAccessEnv` strips the profile (not in the
+ *     allowlist), so without re-pinning it the home script's `ensure_daemon` would
+ *     NOT do stop-before-start and a stale
  *     read-only daemon could survive the flip (pin ⑤ — Codex R1 HIGH-1). Non-secret.
  *   - companion → raw env (byte-compat; no action secrets in play).
  *
@@ -132,12 +127,6 @@ export function buildTuiDaemonEnv(opts: {
 	botToken: string;
 }): NodeJS.ProcessEnv {
 	const { profile, env, codexHome, botToken } = opts;
-	if (profile === "content-coordination") {
-		return {
-			...washActionSecretEnv(env),
-			FLYWHEEL_CODEX_TUI_HOME: codexHome,
-		};
-	}
 	if (profile === "full-access") {
 		return {
 			...buildFullAccessEnv(env),
@@ -147,7 +136,6 @@ export function buildTuiDaemonEnv(opts: {
 			// script's ensure-daemon does stop-before-start (no stale read-only daemon
 			// survives the flip — Codex R1 HIGH-1). Non-secret.
 			FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
-			FLYWHEEL_CODEX_LEAD_READ_DENY: "0",
 		};
 	}
 	return { ...env, FLYWHEEL_CODEX_TUI_HOME: codexHome };
@@ -453,9 +441,9 @@ function buildTuiGeneration(
 				proc = new CodexLeadProcess({ spawnChild: () => transport });
 				if (lostCb) proc.on("exit", () => lostCb?.());
 
-				// FLY-350 §10: the tool-surface guarantee is enforced by the CONFIG
-				// GATE in main() (assertLeadActionsConfigGate — exactly the lead_actions
-				// MCP, exact command/args/env, no secret) BEFORE the daemon starts. The
+				// The full-access tool-surface guarantee is enforced by the config gate
+				// in main() (exact lead_actions MCP, command/args/env, no literal secret)
+				// BEFORE the daemon starts. The
 				// old runtime "wait for the live MCP to report ready" watcher was removed
 				// (race-fix design review): codex 0.141 spawns the MCP EPHEMERALLY per
 				// turn with no persistent ready status, so that gate false-timed-out and
@@ -507,20 +495,6 @@ function buildTuiGeneration(
 					startProcess: () => p.start(), // initialize/initialized over WS
 					ensureThread: async (): Promise<string> => {
 						const saved = readThreadId(config.threadIdPath);
-						// FLY-260 read-deny: the pre-gateway ephemeral-start enforcement gate +
-						// resume(+assert)/fresh-start decision lives in resolveReadDenyThread
-						// (fail-closed; throws BEFORE wire()/TUI window on any profile mismatch).
-						// The TUI turnless self-heal ("no rollout") is passed through as the
-						// resume-self-heal predicate. Flag-off keeps the legacy path below.
-						if (config.readDeny) {
-							const { id, fresh } = await resolveReadDenyThread(p, {
-								saved,
-								threadParams,
-								isResumeSelfHeal: isTurnlessRolloutError,
-							});
-							if (fresh) writeThreadId(config.threadIdPath, id);
-							return id;
-						}
 						if (saved) {
 							try {
 								await p.resumeThread(saved, threadParams); // re-pin (HIGH-1)
@@ -545,8 +519,8 @@ function buildTuiGeneration(
 						return id;
 					},
 					wire: async (threadId: string): Promise<RuntimeWiring> => {
-						// FLY-350 §10: the tool-surface guarantee is enforced by the CONFIG
-						// GATE in main() (assertLeadActionsConfigGate) BEFORE the daemon
+						// The full-access tool-surface guarantee is enforced by the config
+						// gate in main() BEFORE the daemon
 						// starts — not by a runtime "wait for the live MCP to report ready"
 						// gate here. codex 0.141 spawns the MCP ephemerally per turn with no
 						// persistent ready status, so the old gate false-timed-out (30s) and
@@ -693,9 +667,6 @@ function buildTuiGeneration(
 							threadId,
 							cwd: config.tuiCwd,
 							codexBin: config.codexBin,
-							// FLY-260: omit `-s read-only` from the founder TUI resume so the
-							// read-deny profile stays active for the shared thread.
-							readDeny: config.readDeny,
 							// FLY-398 (pin ③): a full-access TUI Lead shares the thread's
 							// workspace-write sandbox → the founder resume pane passes
 							// `-s workspace-write` (buildTuiCommand), not `-s read-only`.
@@ -720,8 +691,8 @@ function buildTuiGeneration(
 						}
 						return {
 							recover: () => router.recover(),
-							// (FLY-350 §10 tool-surface guarantee is enforced by the CONFIG
-							// GATE in main() — assertLeadActionsConfigGate, before the daemon
+							// The full-access tool-surface guarantee is enforced by the config
+							// gate in main(), before the daemon
 							// starts — not by a runtime gate here. See main() / mcp-config.ts.)
 							startGateway: async () => {
 								// FLY-314 Phase 2 (Codex code review #1): gateway FIRST so the
@@ -795,7 +766,7 @@ export async function main(
 	const fullAccess = config.codexProfile === "full-access";
 	if (config.sandboxMode !== "read-only" && !fullAccess) {
 		throw new Error(
-			`codex-lead-tui-runtime: sandbox="${config.sandboxMode}" profile="${config.codexProfile}" is write-capable but not full-access — the ③ TUI Lead supports only read-only (companion/content-coordination) and full-access (Claude-equal); the (Z) write-capable gateway tier is headless-only (FLY-245). Refusing to start.`,
+			`codex-lead-tui-runtime: sandbox="${config.sandboxMode}" profile="${config.codexProfile}" is write-capable but not full-access — the ③ TUI Lead supports only read-only companion and full-access (Claude-equal); the (Z) write-capable gateway tier is headless-only (FLY-245). Refusing to start.`,
 		);
 	}
 	// Persona fail-close at boot (review MED — parity with headless). The same
@@ -826,72 +797,6 @@ export async function main(
 		"scripts",
 		"codex-lead-tui-home.sh",
 	);
-	// FLY-350 content-coordination: the runtime OWNS the broker → daemon ordering
-	// (R3#1). Start the parent SecretBroker (the lead-actions MCP child fetches the
-	// bot token over it) BEFORE the daemon, and WASH the daemon spawn env so no
-	// *TOKEN*/*SECRET*/*KEY* reaches the app-server process (R3#2). The companion
-	// path is unchanged (no broker, env as-is) → byte-compat / dormant.
-	const contentCoordination = config.codexProfile === "content-coordination";
-	const brokerSocketPath =
-		env.FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET?.trim() ||
-		join(config.stateDir, "lead-actions.sock");
-	let leadActionsBroker: SecretBroker | undefined;
-	if (contentCoordination) {
-		// FLY-350 §10 CONFIG GATE (race-fix design review, option C): BEFORE starting
-		// the broker / daemon, parse the EFFECTIVE config.toml the launcher wrote and
-		// HARD-ASSERT it contains EXACTLY the trusted lead-actions MCP and nothing else
-		// (no extra/injected MCP, exact command/args/env, no secret in config). codex
-		// 0.141 spawns the MCP ephemerally with no persistent "ready" lifecycle, so this
-		// deterministic config assertion replaces the old runtime "wait for ready" gate
-		// that false-timed-out. Fail-closed: a parse failure / missing file / any drift
-		// throws → the runtime exits before any daemon/MCP/Discord activity.
-		const mainJsPath = env.FLYWHEEL_LEAD_ACTIONS_MAIN_JS?.trim();
-		const stateDir = env.FLYWHEEL_LEAD_ACTIONS_STATE_DIR?.trim();
-		if (!mainJsPath || !stateDir) {
-			throw new Error(
-				"codex-lead-tui-runtime: content-coordination requires FLYWHEEL_LEAD_ACTIONS_MAIN_JS + FLYWHEEL_LEAD_ACTIONS_STATE_DIR (the launcher sets them) — refusing to start (fail-closed)",
-			);
-		}
-		const expectedMcp = buildLeadActionsMcpServerConfig({
-			nodeBin: env.FLYWHEEL_LEAD_ACTIONS_NODE_BIN?.trim() || "node",
-			mainJsPath,
-			brokerSocketPath,
-			leadId: config.leadId,
-			projectName: config.projectName,
-			chatChannelId: config.chatChannelId,
-			crossDeptChannelIds: config.crossDeptChannelIds,
-			stateDir,
-			explicitAliases: env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES?.trim(),
-			// FLY-676: forward the effective roundtable autoContinue so the TUI lead_actions
-			// child guards proactive roundtable sends (parity with headless). The §10 config
-			// gate asserts config.toml env EXACTLY matches this, so codex-lead-tui-home.sh must
-			// write the same FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE — any drift
-			// fail-closes the daemon (loud, not silent).
-			roundtableAutoContinue: config.replyInThread?.autoContinue === true,
-		});
-		const configTomlPath = join(config.codexHome, "config.toml");
-		let configTomlContent: string;
-		try {
-			configTomlContent = readFileSync(configTomlPath, "utf8");
-		} catch (err) {
-			throw new Error(
-				`codex-lead-tui-runtime: cannot read ${configTomlPath} for the §10 config gate (fail-closed): ${(err as Error).message}`,
-			);
-		}
-		assertLeadActionsConfigGate(configTomlContent, expectedMcp);
-		console.warn(
-			"[codex-lead-tui-runtime] §10 config gate PASSED (lead_actions MCP exact, no extra server, no secret in config)",
-		);
-
-		leadActionsBroker = new SecretBroker({
-			socketPath: brokerSocketPath,
-			secrets: { DISCORD_BOT_TOKEN: config.botToken },
-		});
-		await leadActionsBroker.listen();
-		console.warn(
-			`[codex-lead-tui-runtime] lead-actions broker listening (${brokerSocketPath})`,
-		);
-	}
 	// FLY-398 FULL-ACCESS (= Claude-equal): the lead_actions MCP (proactive
 	// discord_send) is injected via config.toml (written by ensure-home), with the
 	// bot token forwarded BY NAME (env_vars) — NO broker (Claude-equal). The §10
@@ -930,8 +835,8 @@ export async function main(
 			);
 		}
 		assertFullAccessLeadActionsConfigGate(configTomlContent, expectedMcp);
-		// Codex R1 HIGH-2: also assert the SANDBOX shape (workspace-write + network ON +
-		// NO read-deny) and pin writable_roots to the runtime-VALIDATED project root —
+		// Codex R1 HIGH-2: also assert the SANDBOX shape (workspace-write + network ON)
+		// and pin writable_roots to the runtime-VALIDATED project root —
 		// so a stale/overridden FLYWHEEL_CODEX_TUI_CWD can't point the daemon's writable
 		// root at an unvalidated path while the lead_actions block alone looks correct.
 		if (!config.fullAccessProjectRoot) {
@@ -975,9 +880,6 @@ export async function main(
 					{ log: (m) => console.warn(`[codex-lead-tui-runtime] ${m}`) },
 				);
 			})
-			// FLY-350: tear down the lead-actions broker (releases the socket) on a
-			// real shutdown. No-op for the companion path (undefined).
-			.finally(() => leadActionsBroker?.close())
 			.finally(() => process.exit(0));
 	};
 	process.on("SIGTERM", () => shutdown("SIGTERM"));
@@ -988,19 +890,13 @@ export async function main(
 		// Startup-failure path (review R2 HIGH-2): a generation may have created
 		// the TUI window before failing — tear it down so it never orphans, same
 		// as the signal handlers do.
-		// FLY-350 race-fix code-review HIGH-2: STOP the supervisor (which stops a
-		// half-started generation — the WS/process + the daemon it ensured) BEFORE
-		// closing the broker. Otherwise a generation that created a WS/process and
-		// then failed in wire() could leave the daemon/MCP side alive while the
-		// broker socket is removed (a respawn would then read an empty payload). The
-		// signal path already orders supervisor.stop() first; the startup catch must
-		// match it. Best-effort (we are failing closed regardless).
+		// Stop a half-started generation before tearing down its TUI window.
+		// Best-effort (we are failing closed regardless).
 		await supervisor.stop().catch(() => {});
 		killTuiWindow(
 			{ projectName: config.projectName, leadId: config.leadId },
 			{ log: (m) => console.warn(`[codex-lead-tui-runtime] ${m}`) },
 		);
-		await leadActionsBroker?.close().catch(() => {});
 		throw err;
 	}
 	console.warn(

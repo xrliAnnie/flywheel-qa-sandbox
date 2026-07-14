@@ -69,7 +69,6 @@ export FLYWHEEL_CODEX_LEAD_MODE=tui
 # ── full-access tier (= Claude-equal), WINDOWED via the TUI runtime ──
 export FLYWHEEL_CODEX_LEAD_PROFILE="full-access"
 export FLYWHEEL_CODEX_LEAD_SANDBOX="workspace-write"
-export FLYWHEEL_CODEX_LEAD_READ_DENY=0
 # The single writable root / cwd — the flywheel checkout the infra bot operates from.
 export FLYWHEEL_CODEX_LEAD_PROJECT_DIR="${FLYWHEEL_CODEX_LEAD_PROJECT_DIR:-${HOME}/Dev/flywheel}"
 export FLYWHEEL_CODEX_TUI_CWD="${FLYWHEEL_CODEX_LEAD_PROJECT_DIR}"

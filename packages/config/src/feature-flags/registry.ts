@@ -1823,27 +1823,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
-		name: "codex_lead_read_deny",
-		category: "governance_gate",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CODEX_LEAD_READ_DENY",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description: "Codex Lead read-deny 安全约束 profile（治理门，只读）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/lead-backends/codex/read-deny-profile.ts",
-				"read-deny gate",
-				"mixed",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-	},
-
-	{
 		name: "roundtable_enabled",
 		category: "feature",
 		source: "env",

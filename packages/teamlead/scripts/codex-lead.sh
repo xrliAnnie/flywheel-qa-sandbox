@@ -120,7 +120,7 @@ fi
 # extend it — mirrors claude-lead.sh's persona-then-append order). FAIL-CLOSED:
 # a missing REQUIRED governance file (founder-only-authority) aborts boot.
 # Gated on the explicit full-access profile only → every other tier (companion /
-# content-coordination / write-capable) is byte-compat (its launcher/plist owns
+# write-capable) is byte-compat (its launcher/plist owns
 # FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES unchanged).
 if [ "${FLYWHEEL_CODEX_LEAD_PROFILE:-}" = "full-access" ]; then
   # shellcheck source=lead-rules-bundle.sh

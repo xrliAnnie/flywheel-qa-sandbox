@@ -2,10 +2,9 @@
  * FLY-350 — lead-actions MCP config parse (pure, fail-loud).
  *
  * The lead-actions MCP child (out-of-sandbox, spawned from trusted dist) reads
- * its config from env at startup — the SAME discipline as the FLY-245 gateway
- * (`parseGatewayConfig`). NO secrets here: the Discord bot token (and, later,
- * the Linear key) arrive only over the parent broker (`brokerSocketPath`). The
- * model never sees this env (read-deny shell + separate process).
+ * its coordinates from env at startup — the SAME discipline as the FLY-245
+ * gateway (`parseGatewayConfig`). The Discord bot token is resolved separately
+ * by the entrypoint and never stored in this config object.
  */
 
 import { parseExplicitAliases } from "./alias-allowlist.js";
@@ -13,18 +12,6 @@ import { parseExplicitAliases } from "./alias-allowlist.js";
 export interface LeadActionsConfig {
 	leadId: string;
 	projectName: string;
-	/**
-	 * FLY-304: how the MCP child obtains the Discord bot token.
-	 *  - "broker": content-coordination — fetched over the parent SecretBroker unix
-	 *    socket (net-off, secretless config; UNCHANGED).
-	 *  - "env-token": full-access (Claude-equal) — read from the MCP child's own env
-	 *    (DISCORD_BOT_TOKEN), since a full-access Lead has no broker but already
-	 *    carries the token in its allowlisted env.
-	 */
-	mode: "broker" | "env-token";
-	/** Unix socket the parent runtime's SecretBroker listens on. Present iff
-	 * `mode === "broker"`. */
-	brokerSocketPath?: string;
 	/** The Lead's own chat channel (alias "chat"). */
 	chatChannelId: string;
 	/** Configured cross-department channels (alias "roundtable" when exactly one). */
@@ -73,15 +60,6 @@ export function parseLeadActionsConfig(
 			`lead-actions: missing required env: ${missing.join(", ")}`,
 		);
 	}
-	// FLY-304: broker socket is OPTIONAL now. Present → broker mode (content-
-	// coordination, unchanged). Absent → env-token mode (full-access reads
-	// DISCORD_BOT_TOKEN from its own env). The actual token read + fail-closed
-	// lives in leadActionsMain (config.ts stays a pure coordinate parser).
-	const brokerSocketPath =
-		env.FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET?.trim() || undefined;
-	const mode: "broker" | "env-token" = brokerSocketPath
-		? "broker"
-		: "env-token";
 	if (/[/\\]|\.\./.test(projectName)) {
 		throw new Error(`lead-actions: invalid project name "${projectName}"`);
 	}
@@ -92,8 +70,6 @@ export function parseLeadActionsConfig(
 	return {
 		leadId,
 		projectName,
-		mode,
-		brokerSocketPath,
 		chatChannelId,
 		crossDeptChannelIds,
 		explicitAliases: parseExplicitAliases(

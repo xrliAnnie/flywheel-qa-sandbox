@@ -1,6 +1,6 @@
 /**
  * FLY-350 (R1-4 / R3 shared core) — the ONE proactive Discord-send path shared by
- * BOTH the content-coordination lead-actions MCP (`lead-actions-main.ts`) and the
+ * BOTH the full-access lead-actions MCP (`lead-actions-main.ts`) and the
  * write-capable gateway (`gateway/gateway-main.ts`). Extracting it keeps a single
  * audited, alias-gated, loop-safe implementation (codex R1-4: don't reinvent the
  * send in the gateway; reuse `resolveChannelAlias` + `postDiscordMessageToChannel`).

@@ -125,12 +125,9 @@ export interface LeadConfig {
 	backend?: LeadBackendId;
 	/**
 	 * FLY-350: Codex Lead capability profile (only meaningful for the
-	 * `codex-app-server` backend). Expresses which read-only Codex tier this Lead
-	 * runs as, instead of overloading `companion`:
+	 * `codex-app-server` backend). Expresses which Codex tier this Lead runs as,
+	 * instead of overloading `companion`:
 	 *   - "companion"            — pure 1:1 chat companion (no model-callable MCP).
-	 *   - "content-coordination" — read-only model exec + a narrow first-party
-	 *                              lead-actions MCP (proactive Discord send +
-	 *                              scoped Linear). Still NOT write-capable.
 	 *   - "write-capable"        — FLY-350 (Z): net-off workspace-write shell + the
 	 *                              gateway (git_push/open_pr/discord_send). The
 	 *                              runtime confines it (FLY-245 net-off + GH_TOKEN in
@@ -151,11 +148,7 @@ export interface LeadConfig {
 	 * Absent = unchanged behavior (derived from `companion`); NOT normalized into
 	 * the object (FLY-231 reverse-compat pattern).
 	 */
-	codexProfile?:
-		| "companion"
-		| "content-coordination"
-		| "write-capable"
-		| "full-access";
+	codexProfile?: "companion" | "write-capable" | "full-access";
 	/**
 	 * FLY-546: per-agent voice for headphone mode (PRD §17 "换 agent 换声线").
 	 * Consumed by the voice-headphone daemon via `GET /api/voice/scope` /
@@ -712,14 +705,13 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 			if (
 				lead.codexProfile !== undefined &&
 				lead.codexProfile !== "companion" &&
-				lead.codexProfile !== "content-coordination" &&
 				lead.codexProfile !== "write-capable" &&
 				lead.codexProfile !== "full-access"
 			) {
 				throw new Error(
 					`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
-						`codexProfile must be "companion" | "content-coordination" | ` +
-						`"write-capable" | "full-access", got ${JSON.stringify(lead.codexProfile)}`,
+						`codexProfile must be "companion" | "write-capable" | "full-access", ` +
+						`got ${JSON.stringify(lead.codexProfile)}`,
 				);
 			}
 			// Cross-field invariant (FLY-245/FLY-350, runs AFTER canSpawnRunners
@@ -736,7 +728,7 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
 							`backend "codex-app-server" requires canSpawnRunners: false AND a ` +
 							`recognized Codex tier (companion: true OR codexProfile: ` +
-							`"companion"|"content-coordination"|"write-capable"). Codex ` +
+							`"companion"|"write-capable"|"full-access"). Codex ` +
 							`runner-spawn awaits FLY-251 (FLY-245 fail-close).`,
 					);
 				}

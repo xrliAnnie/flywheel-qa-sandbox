@@ -4,7 +4,6 @@ import { parseLeadActionsConfig } from "../config.js";
 const baseEnv = (): NodeJS.ProcessEnv => ({
 	FLYWHEEL_LEAD_ID: "mufasa-lead",
 	FLYWHEEL_PROJECT_NAME: "growth",
-	FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET: "/tmp/s.sock",
 	FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "1500600400238084307",
 	FLYWHEEL_LEAD_ACTIONS_STATE_DIR: "/tmp/state",
 });
@@ -71,52 +70,7 @@ describe("parseLeadActionsConfig", () => {
 	});
 });
 
-// FLY-304: token-source mode. content-coordination keeps the broker; full-access
-// (no broker) reads DISCORD_BOT_TOKEN from the MCP child env. config.ts is pure
-// parse — it exposes the MODE + optional broker socket; the actual token read /
-// fail-closed lives in lead-actions-main.
-describe("parseLeadActionsConfig — token mode (FLY-304)", () => {
-	const coreEnv = (): NodeJS.ProcessEnv => ({
-		FLYWHEEL_LEAD_ID: "mufasa-lead",
-		FLYWHEEL_PROJECT_NAME: "growth",
-		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "1500600400238084307",
-		FLYWHEEL_LEAD_ACTIONS_STATE_DIR: "/tmp/state",
-	});
-
-	it("mode=broker when a broker socket is configured (content-coordination)", () => {
-		const cfg = parseLeadActionsConfig({
-			...coreEnv(),
-			FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET: "/tmp/s.sock",
-		});
-		expect(cfg.mode).toBe("broker");
-		expect(cfg.brokerSocketPath).toBe("/tmp/s.sock");
-	});
-
-	it("mode=env-token when NO broker socket (full-access)", () => {
-		const cfg = parseLeadActionsConfig(coreEnv());
-		expect(cfg.mode).toBe("env-token");
-		expect(cfg.brokerSocketPath).toBeUndefined();
-	});
-
-	it("broker socket is no longer a required var (env-token is valid)", () => {
-		expect(() => parseLeadActionsConfig(coreEnv())).not.toThrow();
-	});
-
-	it("still fails loud on the truly-required coords (lead/project/chat/state)", () => {
-		expect(() => parseLeadActionsConfig({})).toThrow(
-			/FLYWHEEL_LEAD_ID.*FLYWHEEL_PROJECT_NAME.*FLYWHEEL_LEAD_CHAT_CHANNEL_ID.*FLYWHEEL_LEAD_ACTIONS_STATE_DIR/s,
-		);
-		// broker socket must NOT be in the missing list anymore.
-		expect(() => parseLeadActionsConfig({})).toThrow();
-		try {
-			parseLeadActionsConfig({});
-		} catch (e) {
-			expect((e as Error).message).not.toMatch(
-				/FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET/,
-			);
-		}
-	});
-
+describe("parseLeadActionsConfig — effective roundtable flag", () => {
 	it("FLY-676: roundtableAutoContinue is false unless the effective flag env is '1'", () => {
 		const off = parseLeadActionsConfig({ ...baseEnv() });
 		expect(off.roundtableAutoContinue).toBe(false);

@@ -114,8 +114,8 @@ export const DISABLED_WRITE_LEAD_CODEX =
 /**
  * Whether a Lead can legally run the Codex backend. Post-FLY-245/FLY-350 a Codex
  * Lead is no longer "companion-only": a read-only companion (`companion === true`),
- * OR a Lead that declares an EXPLICIT `codexProfile` (companion / content-
- * coordination / write-capable / full-access), is eligible — provided it does NOT
+ * OR a Lead that declares an EXPLICIT `codexProfile` (companion / write-capable /
+ * full-access), is eligible — provided it does NOT
  * spawn Runners (`canSpawnRunners === false`; Codex runner-spawn awaits FLY-251).
  * Mirrors the cross-field invariant enforced in `parseAndValidateProjects`.
  */

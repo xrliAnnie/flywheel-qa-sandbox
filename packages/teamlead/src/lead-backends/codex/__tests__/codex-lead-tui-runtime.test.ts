@@ -37,7 +37,6 @@ describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Code
 		// stop-before-start condition is false and a stale read-only daemon survives.
 		const e = buildTuiDaemonEnv({ ...base, profile: "full-access" });
 		expect(e.FLYWHEEL_CODEX_LEAD_PROFILE).toBe("full-access");
-		expect(e.FLYWHEEL_CODEX_LEAD_READ_DENY).toBe("0");
 		expect(e.FLYWHEEL_CODEX_TUI_HOME).toBe("/Users/x/.codex-mufasa");
 		// the bot token reaches the daemon (by NAME, for the lead_actions MCP child).
 		expect(e.DISCORD_BOT_TOKEN).toBe("tok-cfg");
@@ -45,13 +44,6 @@ describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Code
 		expect(e.SOME_RANDOM_SECRET).toBeUndefined();
 		// allowlisted Claude-pane env survives.
 		expect(e.TEAMLEAD_API_TOKEN).toBe("api-tok");
-	});
-
-	it("content-coordination: secret-washed (no token in daemon env)", () => {
-		const e = buildTuiDaemonEnv({ ...base, profile: "content-coordination" });
-		expect(e.DISCORD_BOT_TOKEN).toBeUndefined();
-		expect(e.SOME_RANDOM_SECRET).toBeUndefined();
-		expect(e.FLYWHEEL_CODEX_TUI_HOME).toBe("/Users/x/.codex-mufasa");
 	});
 
 	it("companion: raw env (byte-compat) + home pin", () => {

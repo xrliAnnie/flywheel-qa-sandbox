@@ -70,8 +70,7 @@ teamlead:scripts/inbox-ack-rule.md
 teamlead:scripts/screencapture-l3-skill.md
 teamlead:scripts/expect-dev-channels.exp
 teamlead:scripts/lib/mcp-inherit.sh
-teamlead:scripts/lib/reap-orphan-adapters.sh
-teamlead:scripts/templates/codex-read-deny-profile.toml"}
+teamlead:scripts/lib/reap-orphan-adapters.sh"}
 
 # Curated scripts/ whitelist — EXPLICIT file list, not an ignore list. Every
 # entry here must have a row in the packaged-path audit table
@@ -175,6 +174,7 @@ po_release_version() {
 # build (drift guard, never a silent partial patch).
 po_patch_onboard() {
   local file="$1"
+  # shellcheck disable=SC2016  # match the literal ${...} source text
   grep -q 'FO_REPO_URL="\${FLYWHEEL_ONBOARD_REPO:-' "$file" \
     || { po_err "onboard patch: FO_REPO_URL anchor missing in $file"; return 1; }
   grep -q '^# ── 2\. fetch the working copy when not already in one' "$file" \
@@ -567,6 +567,7 @@ po_assemble() {
     mirror_json="$(jq -c --arg d "$dir" --arg n "$name" '. + {($d): $n}' <<<"$mirror_json")"
   done
   local spec
+  # shellcheck disable=SC2086  # split the curated whitespace-delimited asset list
   while IFS= read -r spec; do
     case "$spec" in *[![:space:]]*) ;; *) continue ;; esac
     dir="${spec%%:*}"; local asset="${spec#*:}"
@@ -794,7 +795,7 @@ po_gate() {
       while IFS=$'\t' read -r afile apat _; do
         [ -z "$afile" ] && continue
         case "$afile" in \#*) continue ;; esac
-        # shellcheck disable=SC2254
+        # shellcheck disable=SC2053,SC2254  # afile is an allowlisted glob pattern
         if [[ "$file" == $afile ]] && [ "$nline" = "$(po_g4_norm "$apat")" ] \
            && po_g4_detect "$det" "$(po_g4_norm "$apat")"; then
           registered=0; break
