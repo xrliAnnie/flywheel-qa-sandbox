@@ -1,13 +1,13 @@
 ---
 issue: FLY-1251
 phase: design
-phaseCursor: 4/6
-updated: 2026-07-14T18:54:25.453Z
-nextStep: codex design review loop until APPROVED
+phaseCursor: 5/6
+updated: 2026-07-14T21:11:32.073Z
+nextStep: push branch + await-codex-gate + phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-1251 progress
-**phase**: design (4/6)
-**next**: codex design review loop until APPROVED
+**phase**: design (5/6)
+**next**: push branch + await-codex-gate + phase_design_complete
