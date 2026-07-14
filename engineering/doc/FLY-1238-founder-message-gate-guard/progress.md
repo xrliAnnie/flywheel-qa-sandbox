@@ -1,14 +1,14 @@
 ---
 issue: FLY-1238
 phase: design
-phaseCursor: 1/5
-updated: 2026-07-14T23:07:43.182Z
-nextStep: Audit founder-facing message exits, gate recovery, and FLY-1185
-  closeout coverage
+phaseCursor: 2/5
+updated: 2026-07-14T23:13:26.221Z
+nextStep: Confirm the three-part design with Lead, then finish the
+  outbound-message and recovery-path evidence matrix
 chunks: []
 pointers: {}
 ---
 
 # FLY-1238 progress
-**phase**: design (1/5)
-**next**: Audit founder-facing message exits, gate recovery, and FLY-1185 closeout coverage
+**phase**: design (2/5)
+**next**: Confirm the three-part design with Lead, then finish the outbound-message and recovery-path evidence matrix
