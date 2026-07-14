@@ -4273,6 +4273,7 @@ export async function startBridge(
 					process.env.FLYWHEEL_ISSUE_STATUS_EMOJI !== "0"
 						? chatThreadCreator
 						: undefined,
+					issueDisplayRefreshHolder,
 				)
 			: {
 					// FLY-637 R1 #2: no-op notifier never persists an event → false, so

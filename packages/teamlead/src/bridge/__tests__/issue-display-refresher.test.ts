@@ -339,7 +339,7 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		});
 	});
 
-	it("qa PASS (qa at awaiting_review + parked, holding the ship gate) → QA✅", async () => {
+	it("qa PASS (qa at awaiting_review + parked, holding the ship gate) → title waits for approval while phase rows stay done", async () => {
 		seedSession(store, {
 			exec: "e-design",
 			role: "design",
@@ -369,8 +369,71 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 			implement: "✅ 完成",
 			qa: "✅ 完成",
 		});
-		// All existing phases done incl. qa → issue-level ✅完成 badge.
+		expect(log.title).toEqual([{ via: "stage", stage: "approve" }]);
+	});
+
+	it("post-ship finalization claim → completed during the stale awaiting_review cleanup window", async () => {
+		seedSession(store, {
+			exec: "e-design",
+			role: "design",
+			status: "design_done",
+		});
+		seedSession(store, {
+			exec: "e-impl",
+			role: "implement",
+			status: "awaiting_review",
+		});
+		seedSession(store, { exec: "e-qa", role: "qa", status: "completed" });
+		store.insertEvent({
+			event_id: "claim-issue-907",
+			execution_id: "e-qa",
+			issue_id: ISSUE,
+			project_name: PROJECT,
+			event_type: "post_ship_finalization_claim",
+			source: "test",
+		});
+		const { refresher, log } = makeRefresher(store, {
+			park: { "e-design": "parked", "e-impl": "parked" },
+		});
+		await refresher.refresh(ISSUE);
+
 		expect(log.title).toEqual([{ via: "stage", stage: "completed" }]);
+	});
+
+	it("merge_block without a post-ship claim remains at approval, never completed", async () => {
+		seedSession(store, {
+			exec: "e-design",
+			role: "design",
+			status: "design_done",
+		});
+		seedSession(store, {
+			exec: "e-impl",
+			role: "implement",
+			status: "awaiting_review",
+		});
+		seedSession(store, {
+			exec: "e-qa",
+			role: "qa",
+			status: "awaiting_review",
+		});
+		store.insertEvent({
+			event_id: "merge-block-issue-907",
+			execution_id: "e-qa",
+			issue_id: ISSUE,
+			project_name: PROJECT,
+			event_type: "merge_block",
+			source: "test",
+		});
+		const { refresher, log } = makeRefresher(store, {
+			park: {
+				"e-design": "parked",
+				"e-impl": "parked",
+				"e-qa": "parked",
+			},
+		});
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([{ via: "stage", stage: "approve" }]);
 	});
 
 	it("kill/terminate QA → header QA 🔴, title 🔴受阻", async () => {
@@ -616,6 +679,21 @@ describe("IssueDisplayRefresher — sweep (plan Step 4.5)", () => {
 	});
 	afterEach(() => store.close());
 
+	it("single-session fingerprints do not query the three-stage ship-claim ledger", () => {
+		const countEventsByIssueAndType = vi.fn(() => 0);
+		const fingerprint = computeSessionsFingerprint(
+			{
+				countEventsByIssueAndType,
+				getLatestPhaseSessionsForIssue: () => [],
+				getSessionByIssue: () => undefined,
+			},
+			ISSUE,
+		);
+
+		expect(JSON.parse(fingerprint).fc).toBe(false);
+		expect(countEventsByIssueAndType).not.toHaveBeenCalled();
+	});
+
 	it("layer 1: a sessions-status change after the stored fingerprint re-enqueues the issue", async () => {
 		seedSession(store, { exec: "e-design", role: "design", status: "running" });
 		const { refresher, log } = makeRefresher(store, {});
@@ -636,6 +714,50 @@ describe("IssueDisplayRefresher — sweep (plan Step 4.5)", () => {
 		// drain the enqueued coalesced refresh
 		await refresher.refresh(ISSUE);
 		expect(log.title.some((t) => t.badge === "🔴受阻")).toBe(true);
+	});
+
+	it("layer 1: a post-ship claim alone invalidates the sessions fingerprint", async () => {
+		seedSession(store, {
+			exec: "e-design",
+			role: "design",
+			status: "design_done",
+		});
+		seedSession(store, {
+			exec: "e-impl",
+			role: "implement",
+			status: "awaiting_review",
+		});
+		seedSession(store, {
+			exec: "e-qa",
+			role: "qa",
+			status: "awaiting_review",
+		});
+		const { refresher } = makeRefresher(store, {
+			park: {
+				"e-design": "parked",
+				"e-impl": "parked",
+				"e-qa": "parked",
+			},
+		});
+		await refresher.refresh(ISSUE);
+		const before = computeSessionsFingerprint(store, ISSUE);
+
+		store.insertEvent({
+			event_id: "claim-fingerprint-issue-907",
+			execution_id: "e-qa",
+			issue_id: ISSUE,
+			project_name: PROJECT,
+			event_type: "post_ship_finalization_claim",
+			source: "test",
+		});
+		const after = computeSessionsFingerprint(store, ISSUE);
+		expect(after).not.toBe(before);
+
+		// Isolate layer 1: the non-terminal layer-2 rotation must not enqueue.
+		vi.spyOn(store, "listDisplaySweepActiveIssues").mockReturnValue([]);
+		const enqueue = vi.spyOn(refresher, "enqueue").mockImplementation(() => {});
+		await refresher.runSweep();
+		expect(enqueue).toHaveBeenCalledWith(ISSUE);
 	});
 
 	it("layer 2: CommDB-only drift (park marker change / late tmux registration — sessions table unchanged) still converges for a non-terminal issue", async () => {

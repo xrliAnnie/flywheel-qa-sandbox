@@ -139,6 +139,14 @@ const MAIN_BLOCKED_STATUSES: ReadonlySet<string> = new Set([
  */
 export function deriveIssueTitleBadge(args: {
 	phaseStates: ReadonlyMap<ThreeStagePhase, PhaseDisplayState>;
+	/** Raw per-phase session status. Display-state `done` also means a phase
+	 * handed off at the ship gate, so issue-level completion must inspect the
+	 * recorded status before presenting ✅. */
+	phaseStatuses: ReadonlyMap<ThreeStagePhase, string>;
+	/** Durable evidence that a validated post-ship finalization flow claimed
+	 * this issue. This covers the short window before stale phase rows are
+	 * converted from awaiting_review to a terminal status. */
+	shipFinalizationClaimed: boolean;
 	mainSessionStage?: string;
 	mainSessionStatus?: string;
 }): IssueTitleBadge {
@@ -147,6 +155,16 @@ export function deriveIssueTitleBadge(args: {
 		const status = args.mainSessionStatus;
 		if (status && MAIN_BLOCKED_STATUSES.has(status)) return { kind: "blocked" };
 		if (status === "completed") return { kind: "completed" };
+		// A runner-reported stage is a label, while status is the durable fact.
+		// Do not let a prematurely reported `completed` label impersonate ship.
+		if (args.mainSessionStage === "completed") {
+			if (status === "awaiting_review") {
+				return { kind: "stage", stage: "approve" };
+			}
+			if (status === "approved_to_ship") {
+				return { kind: "stage", stage: "ship" };
+			}
+		}
 		return { kind: "stage", stage: args.mainSessionStage };
 	}
 
@@ -158,7 +176,22 @@ export function deriveIssueTitleBadge(args: {
 	const lastPhase =
 		THREE_STAGE_PHASE_SEQUENCE[THREE_STAGE_PHASE_SEQUENCE.length - 1]!;
 	if (allExistingDone && phaseStates.get(lastPhase) === "done") {
-		return { kind: "completed" };
+		// Per-phase display `done` means "this phase handed off" and therefore
+		// includes parked ship-gate rows. Issue-level ✅ requires positive ship
+		// evidence: a validated finalization claim or terminal rows throughout.
+		if (args.shipFinalizationClaimed) return { kind: "completed" };
+		const statuses = [...args.phaseStatuses.values()];
+		if (statuses.includes("approved_to_ship")) {
+			return { kind: "stage", stage: "ship" };
+		}
+		if (statuses.includes("awaiting_review")) {
+			return { kind: "stage", stage: "approve" };
+		}
+		if (statuses.every((status) => PHASE_DONE_STATUSES.has(status))) {
+			return { kind: "completed" };
+		}
+		// Otherwise fall through to the conservative phase badge below. Parked
+		// running rows without a positive ship fact are not issue completion.
 	}
 
 	// The LAST active phase in the sequence wins (FLY-543: a woken rework
