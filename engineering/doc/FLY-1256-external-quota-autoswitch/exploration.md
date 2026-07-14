@@ -36,7 +36,14 @@ Issue: FLY-1256 (https://linear.app/geoforge3d/issue/FLY-1256/build-外部配额
 
 ### D-C：daemon 怎么选目标账号？
 
-**选定：founder 显式顺序配置（新增）+ 切前双验。** 候选按配置顺序遍历：freshness probe-refresh（**仅限非 active 账号**，FLY-871 既有机制，安全）→ 用其池 token 查 usage API → 5h/7d 都低于目标水位才选中。任何候选都不合格 → 不切 + Discord 告警（附全账号配额全景）。
+**选定（Annie 2026-07-14 经 Lead 转达拍板，替代最初的「固定顺序优先」）：两段式选号。**
+
+1. **资格筛**：候选逐个做 freshness probe-refresh（**仅限非 active 账号**，FLY-871 既有机制，安全）→ 用其池 token 查 usage API → **5h 与 7d 双水位都合格**（低于目标水位）才进入第二段。5h 只在这里出现——余量不足的账号切过去马上又死，筛掉即可，**不参与排序**（Annie 终版：7d reset 是主凭据，5h 用不用都无所谓，不过度设计）。
+2. **排序**：合格者中 **7d 窗口 reset 最早的优先**（「先到期先用」——周二 reset 优先于周三，不用就浪费），排序键 = usage API 实时返回的 seven_day.resets_at；founder 固定顺序（shopping→school→…）**降级为平手裁决**。
+
+任何候选都不合格 → 不切 + Discord 告警（附全账号配额全景）。
+
+> 巧合佐证：既有 Bridge 引擎的 weekly 启发式（`account-store.ts:10-16`「周五先用周一 reset 的」）与 Annie 的先到期先用同哲学，但它依赖本地缓存的 weeklyResetAt（常为 null）；daemon 用切号时刻的实时 API 数据排序，数据源升级。
 
 ### D-D：凭证安全边界？
 
@@ -82,4 +89,9 @@ graph TB
 
 ## 6. 决策记录
 
-Lead（Tadashi）2026-07-14 brainstorm gate APPROVED：A=保留 Bridge 被动引擎为兜底；B=纯 Node 确定性 daemon（非常驻 Codex agent）。设计要点确认保留：usage API 实时源、绝不刷新 ACTIVE token 红线、切前验目标配额（probe 仅限非 active）、新鲜数据回写 statusline 缓存、founder 显式顺序配置（当前 = shopping→school→…，写成可配）。
+1. Lead（Tadashi）2026-07-14 brainstorm gate APPROVED：A=保留 Bridge 被动引擎为兜底；B=纯 Node 确定性 daemon（非常驻 Codex agent）。设计要点确认保留：usage API 实时源、绝不刷新 ACTIVE token 红线、切前验目标配额（probe 仅限非 active）、新鲜数据回写 statusline 缓存。
+2. Annie（2026-07-14 经 Lead 转达，[FLY-1256] thread）：
+   - 选号规则改为**两段式**：先筛「余量够」（5h+7d 双水位资格线），合格者中 **7d reset 最早优先**（先到期先用）；固定顺序（shopping→school→…）降级为平手裁决。**替代**最初的固定顺序优先方案。
+   - 5h 终版拍板：7d reset 是主凭据；5h 降级为资格筛（不参与排序），按实现简单性落地，不过度设计。
+   - 轮询节奏疑问已答：常驻轮询（非每日定时），active 每 5 分钟、池子号只在换号时验。
+3. 流程注：Annie 要求设计定稿前先看 founder-facing HTML 设计稿（`/tmp/fly1256-design-overview.html`，经 Lead publish）——plan.md 定稿与 Codex design review HOLD 至她确认/批注折入。

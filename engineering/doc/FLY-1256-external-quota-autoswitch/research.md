@@ -105,11 +105,11 @@ OAuth refresh 是**轮转式**：refresh 一次，旧 refreshToken 全家作废�
 
 ## 5. 缺口与设计含义
 
-### 5.1 founder 顺序无处表达
-`selectNextAccount`（`account-store.ts:78`）现规则：5h → 字母序第一个可用；weekly → weekly reset 最近优先。「shopping→school→…」没有对应配置。→ **扩展 `SelectInput` 加可选 `preferredOrder?: string[]`**：present 时候选排序 = 在列表中的下标（未列出的账号不参与选择），既有 usability 过滤（authExpired/cooldown）保留；absent 时行为 byte-identical（既有测试全绿为证）。Bridge 被动路径不传该字段，行为零变化。
+### 5.1 选号策略无处表达（Annie 2026-07-14 拍板：两段式）
+`selectNextAccount`（`account-store.ts:78`）现规则：5h → 字母序第一个可用；weekly → 本地缓存 weeklyResetAt 最近优先（常为 null）。Annie 拍板的**两段式**（先筛 5h+7d 双水位资格 → 合格者按**实时 seven_day.resets_at 最早优先**「先到期先用」→ founder 固定顺序仅平手裁决；5h 不参与排序）没有对应实现——排序键需要切号时刻各候选的实时 API 数据，本地 store 给不了。→ **daemon 在体外完成两段式计算**（资格筛 + 实时 reset 排序 + 平手裁决），把算好的有序合格名单经 **`SelectInput` 新可选字段 `preferredOrder?: string[]`** 传进 `switchAccount`：present 时候选排序 = 在列表中的下标（未列出的账号不参与选择），既有 usability 过滤（authExpired/cooldown）保留；absent 时行为 byte-identical（既有测试全绿为证）。Bridge 被动路径不传该字段，行为零变化。既有 weekly 启发式与 Annie 规则同哲学（`account-store.ts:10-16`「周五先用周一 reset 的」），差别在数据源实时性。
 
 ### 5.2 切前不验目标配额
-`switch-executor.ts:165-207` 候选环只处理 auth freshness，`selectNextAccount` 只看本地 `quotaExhaustedUntil`（且该字段只在切号 commit 时对源账号写入，目标账号真实余量从未查过）。→ daemon 在调 `switchAccount` **之前**完成目标验证（§3.3 四步），并把 `preferredOrder` 收窄为**已通过验证的那一个候选**——这样 switchAccount 内部的 freshness 候选环不可能落到未验证配额的账号上（验证失败→`no_account`→daemon 取下一候选重试，外层有界）。
+`switch-executor.ts:165-207` 候选环只处理 auth freshness，`selectNextAccount` 只看本地 `quotaExhaustedUntil`（且该字段只在切号 commit 时对源账号写入，目标账号真实余量从未查过）。→ daemon 在调 `switchAccount` **之前**对全部候选完成验证（§3.3 四步，两段式需要每个候选的实时数据来排序），`preferredOrder` = **已通过双水位资格筛、按 7d reset 排好序的合格名单**——switchAccount 内部的 freshness 候选环只会在这份名单里走（榜首在竞态窗口内变 stale 时自动落到榜二，仍是配额已验账号），不可能落到未验证配额的账号上。
 
 ### 5.3 监控盲区（v1 文档化边界）
 active 账号 accessToken 过期（`expiresAt` 已过）且机器上无任何活 Claude session 来刷新它时，daemon 无法读 active 用量（401），且红线 R1 禁止它自己刷。v1 行为：读 Keychain `expiresAt` 预判、跳过 API 调用、进入 blind 态并发一条（claims.db 日去重的）`quota_read_blind` 告警。本机 fleet 24/7 运转，blind 态罕见；「全员因配额假死」场景 token 仍有效（quota≠auth），**不落入盲区**。
