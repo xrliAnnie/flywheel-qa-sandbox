@@ -135,6 +135,12 @@ export interface DeferralSupport {
 	}): void;
 }
 
+function isDeferrableHoldReason(
+	reason: ReviewHoldReason,
+): reason is "codex_pending" | "qa_not_green" {
+	return reason === "codex_pending" || reason === "qa_not_green";
+}
+
 export interface ShipApprovalHandlerDeps {
 	canonicalFounderId: string;
 	store: { getSession(executionId: string): HandlerSession | undefined };
@@ -359,22 +365,22 @@ export async function tryFounderShipApproval(
 			});
 			return null;
 		}
-		if (reason === "merge_block") {
+		if (!isDeferrableHoldReason(reason)) {
 			// Codex R1 #2: merge_block only clears via same-head approval recovery
-			// (FLY-869) — deferring would deadlock until TTL. Point the founder at
-			// the recovery surface instead; no classification, no deferral.
+			// (FLY-869), while FLY-1251 readiness holds require a fresh post-ready
+			// action. None may park a pre-readiness approval for later replay.
 			deps.auditSink?.("held_declined", {
 				questionId: gate.questionId,
 				executionId: gate.executionId,
-				holdReason: "merge_block",
+				holdReason: reason,
 			});
 			if (deferral.heldReplyEnabled()) {
 				deferral.queueHeldNotice({
 					questionId: gate.questionId,
 					msgId: args.msg.id,
 					executionId: gate.executionId,
-					kind: "merge_block",
-					holdReason: "merge_block",
+					kind: reason === "merge_block" ? "merge_block" : "deferred_off",
+					holdReason: reason,
 				});
 			}
 			return null;

@@ -279,6 +279,7 @@ describe("FLY-96 Integration: Session lifecycle", () => {
 	});
 
 	it("notifications are delivered for each state transition", async () => {
+		const head = "a".repeat(40);
 		await postEvent({
 			event_id: "evt-notify-1",
 			execution_id: "exec-notify",
@@ -289,6 +290,23 @@ describe("FLY-96 Integration: Session lifecycle", () => {
 				issueIdentifier: "TEST-NOTIFY-1",
 				issueTitle: "Notification test",
 			},
+		});
+		store.patchSessionMetadata("exec-notify", {
+			pr_head_sha: head,
+			pr_number: 42,
+			codex_skip: 1,
+		});
+		store.putShipRelevantDiffSnapshot({
+			execution_id: "exec-notify",
+			pr_head_sha: head,
+			repo: "test/test-proj",
+			pr_number: 42,
+			base_ref: "main",
+			base_oid: "b".repeat(40),
+			classifier_version: 1,
+			ship_relevant: 0,
+			file_count: 1,
+			sample_paths: ["engineering/doc/TEST-NOTIFY-1/plan.md"],
 		});
 
 		await new Promise((r) => setTimeout(r, 200));
@@ -310,6 +328,8 @@ describe("FLY-96 Integration: Session lifecycle", () => {
 					filesChangedCount: 1,
 					linesAdded: 10,
 					linesRemoved: 0,
+					headSha: head,
+					landingStatus: { status: "open", prNumber: 42 },
 				},
 				summary: "Done",
 			},

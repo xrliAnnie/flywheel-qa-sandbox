@@ -36,6 +36,7 @@ const main: QaHeldSession = {
 	session_role: "main",
 	status: "awaiting_review",
 	pr_head_sha: SHA,
+	pr_number: 42,
 };
 
 describe("isQaHeld", () => {
@@ -98,6 +99,11 @@ describe("founderApprovalHoldGuard (FLY-1041 Chunk 5)", () => {
 	const guardStore = {
 		getAutoQaRecord: () => undefined,
 		isCodexCodeReviewApproved: () => true,
+		getShipRelevantDiffSnapshot: () => ({
+			pr_number: 42,
+			classifier_version: 1,
+			ship_relevant: 0 as const,
+		}),
 	} as Parameters<typeof founderApprovalHoldGuard>[0];
 
 	it("delegates to isReviewHeld (held session → true)", () => {
@@ -109,11 +115,11 @@ describe("founderApprovalHoldGuard (FLY-1041 Chunk 5)", () => {
 		expect(founderApprovalHoldGuard(guardStore, undefined, {})).toBe(false);
 	});
 
-	it("FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0 kill-switch → false even when held (byte-compat: held approvals write again)", () => {
+	it("FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0 cannot bypass a live hold", () => {
 		expect(
 			founderApprovalHoldGuard(guardStore, heldSession, {
 				FLYWHEEL_ATTRIBUTION_HOLD_ALIGN: "0",
 			}),
-		).toBe(false);
+		).toBe(true);
 	});
 });

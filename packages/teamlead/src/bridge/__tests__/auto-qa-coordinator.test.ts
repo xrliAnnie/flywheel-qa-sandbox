@@ -110,6 +110,7 @@ async function setup(opts?: {
 	closeQaRunnerImpl?: () => Promise<void> | void;
 	/** FLY-863: test seam for reconcileStuckCodexHolds's "now". */
 	now?: () => number;
+	ensureShipRelevantDiff?: (session: { execution_id: string }) => Promise<void>;
 }) {
 	const store = await StateStore.create(":memory:");
 	const f = fakeEffects({
@@ -134,6 +135,7 @@ async function setup(opts?: {
 		// IS the byte-compat guarantee. Codex-gate behavior has its own test file.
 		env: opts?.env ?? { FLYWHEEL_CODEX_HARD_GATE: "0" },
 		now: opts?.now,
+		ensureShipRelevantDiff: opts?.ensureShipRelevantDiff,
 	});
 	return {
 		store,
@@ -263,6 +265,27 @@ describe("AutoQaCoordinator.onMainAwaitingReview", () => {
 		// stage — QA is running, so it is stamped to "test" (🧪QA), not left frozen
 		// on the implementer's approve stage (⏳待批).
 		expect(s.stamps).toContainEqual({ issueId: "FLY-1", stage: "test" });
+	});
+
+	it("FLY-1251: materializes the exact-head ship-diff snapshot before a policy-off run can reach the founder", async () => {
+		const ensureShipRelevantDiff = vi.fn(async () => {});
+		const s2 = await setup({
+			policy: { enabled: false, reason: "no-qa" },
+			ensureShipRelevantDiff,
+		});
+		const main = awaitingMain(s2.store);
+
+		await s2.coord.onMainAwaitingReview(main);
+
+		expect(ensureShipRelevantDiff).toHaveBeenCalledOnce();
+		expect(ensureShipRelevantDiff).toHaveBeenCalledWith(
+			expect.objectContaining({
+				execution_id: "main-1",
+				pr_head_sha: SHA,
+				pr_number: 42,
+			}),
+		);
+		expect(s2.start).not.toHaveBeenCalled();
 	});
 
 	it("FLY-643: createQaIssue failure → record stuck + Lead alert, no QA spawn (fail-closed)", async () => {
@@ -584,6 +607,123 @@ describe("AutoQaCoordinator.onQaResult", () => {
 		await s.coord.onQaResult(verdict({ status: "pass" }));
 		expect(s.counters.shipReady).toBe(0);
 		expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("running");
+	});
+});
+
+describe("AutoQaCoordinator.manualSpawnQa (FLY-1251)", () => {
+	it("bypasses auto policy but uses the standard server-owned QA spawn chain", async () => {
+		const s = await setup({ policy: { enabled: false, reason: "no-qa" } });
+		awaitingMain(s.store);
+
+		await expect(s.coord.manualSpawnQa("main-1", SHA)).resolves.toMatchObject({
+			status: "spawned",
+		});
+		expect(s.start).toHaveBeenCalledOnce();
+		expect(s.store.getAutoQaRecord("main-1", SHA)).toMatchObject({
+			status: "running",
+			enrollment_source: "manual",
+			qa_execution_id: "qa-1",
+		});
+		const audit = s.store
+			.getEventsByExecution("main-1")
+			.find((event) => event.event_type === "manual_qa_enrolled");
+		expect(audit).toMatchObject({
+			event_id: `manual-qa-enrolled-main-1-${SHA}-qa-1`,
+			source: "bridge.auto-qa-coordinator",
+		});
+	});
+
+	it("rejects a stale requested head without creating evidence", async () => {
+		const s = await setup();
+		awaitingMain(s.store);
+		await expect(s.coord.manualSpawnQa("main-1", SHA2)).resolves.toEqual({
+			status: "rejected",
+			reason: "head_mismatch",
+		});
+		expect(s.start).not.toHaveBeenCalled();
+	});
+
+	it.each(["running", "awaiting_retest", "passed"] as const)(
+		"returns an idempotent conflict for an existing %s record",
+		async (status) => {
+			const s = await setup();
+			awaitingMain(s.store);
+			s.store.claimAutoQaRecord({
+				parentExecutionId: "main-1",
+				targetPrHeadSha: SHA,
+				issueId: "FLY-1",
+				projectName: "proj",
+			});
+			s.store.setAutoQaStatus("main-1", SHA, status, {});
+
+			await expect(s.coord.manualSpawnQa("main-1", SHA)).resolves.toEqual({
+				status: "existing",
+				recordStatus: status,
+			});
+			expect(s.start).not.toHaveBeenCalled();
+		},
+	);
+
+	it("revives a stuck row only when its prior QA runner is confirmed dead", async () => {
+		const s = await setup();
+		awaitingMain(s.store);
+		s.store.claimAutoQaRecord({
+			parentExecutionId: "main-1",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		s.store.setAutoQaQaExecutionId("main-1", SHA, "qa-dead");
+		s.store.setAutoQaStatus("main-1", SHA, "stuck", {});
+
+		await expect(s.coord.manualSpawnQa("main-1", SHA)).resolves.toMatchObject({
+			status: "spawned",
+		});
+		expect(s.start).toHaveBeenCalledOnce();
+		expect(s.store.getAutoQaRecord("main-1", SHA)).toMatchObject({
+			status: "running",
+			enrollment_source: "manual",
+			qa_execution_id: "qa-1",
+		});
+	});
+
+	it("does not revive a stuck row while its QA runner is still live", async () => {
+		const s = await setup();
+		awaitingMain(s.store);
+		s.store.claimAutoQaRecord({
+			parentExecutionId: "main-1",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		s.store.setAutoQaQaExecutionId("main-1", SHA, "qa-live");
+		s.store.setAutoQaStatus("main-1", SHA, "stuck", {});
+		s.store.upsertSession({
+			execution_id: "qa-live",
+			issue_id: "qa-issue",
+			project_name: "proj",
+			status: "running",
+			session_role: "qa",
+		});
+
+		await expect(s.coord.manualSpawnQa("main-1", SHA)).resolves.toEqual({
+			status: "existing",
+			recordStatus: "stuck",
+		});
+		expect(s.start).not.toHaveBeenCalled();
+	});
+
+	it("auto-vs-manual admission races converge to one QA runner", async () => {
+		const s = await setup();
+		const main = awaitingMain(s.store);
+
+		await Promise.all([
+			s.coord.onMainAwaitingReview(main),
+			s.coord.manualSpawnQa("main-1", SHA),
+		]);
+
+		expect(s.start).toHaveBeenCalledOnce();
+		expect(s.store.listAutoQaRecordsByParent("main-1")).toHaveLength(1);
 	});
 });
 

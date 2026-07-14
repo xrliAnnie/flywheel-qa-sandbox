@@ -239,6 +239,12 @@ export interface AutoQaCoordinatorDeps {
 	env?: Record<string, string | undefined>;
 	/** FLY-863: test seam for `reconcileStuckCodexHolds`'s "now". Defaults to Date.now. */
 	now?: () => number;
+	/**
+	 * FLY-1251: materialize the server-owned docs-only/code-bearing decision for
+	 * this exact reviewed head. Failure is fail-closed in the hold predicate, so
+	 * this producer must never disable the ordinary QA path.
+	 */
+	ensureShipRelevantDiff?: (session: Session) => Promise<void> | void;
 	logger?: { log(m: string): void; warn(m: string): void };
 	/**
 	 * FLY-945 Fix B: environment probes for the ship-gate head rebind. Wired in
@@ -258,6 +264,20 @@ export interface AutoQaCoordinatorDeps {
 	};
 }
 
+export type ManualQaSpawnResult =
+	| { status: "spawned"; qaExecutionId: string }
+	| { status: "existing"; recordStatus: AutoQaRecord["status"] }
+	| {
+			status: "rejected";
+			reason:
+				| "invalid_parent"
+				| "not_awaiting_review"
+				| "missing_pr"
+				| "head_mismatch"
+				| "not_admitted"
+				| "spawn_failed";
+	  };
+
 export class AutoQaCoordinator {
 	private readonly qaAgentName: string;
 
@@ -271,6 +291,88 @@ export class AutoQaCoordinator {
 
 	private warn(m: string): void {
 		(this.deps.logger?.warn ?? this.deps.logger?.log)?.(`[auto-qa] ${m}`);
+	}
+
+	/**
+	 * FLY-1251: server-owned manual QA enrollment. The caller supplies only the
+	 * parent and exact current head; reviewer identity and qa_execution_id are
+	 * created by the coordinator through the ordinary spawn chain.
+	 */
+	async manualSpawnQa(
+		parentExecutionId: string,
+		prHeadSha: string,
+	): Promise<ManualQaSpawnResult> {
+		const requestedHead = prHeadSha.toLowerCase();
+		const parent = this.deps.store.getSession(parentExecutionId);
+		if (!parent || (parent.session_role ?? "main") !== "main") {
+			return { status: "rejected", reason: "invalid_parent" };
+		}
+		if (parent.status !== "awaiting_review") {
+			return { status: "rejected", reason: "not_awaiting_review" };
+		}
+		if (parent.pr_number == null) {
+			return { status: "rejected", reason: "missing_pr" };
+		}
+		if (
+			!FULL_SHA.test(requestedHead) ||
+			parent.pr_head_sha?.toLowerCase() !== requestedHead
+		) {
+			return { status: "rejected", reason: "head_mismatch" };
+		}
+
+		const existing = this.deps.store.getAutoQaRecord(
+			parentExecutionId,
+			requestedHead,
+		);
+		if (existing) {
+			if (existing.status !== "stuck" && existing.status !== "failed") {
+				return { status: "existing", recordStatus: existing.status };
+			}
+			const qaSession = existing.qa_execution_id
+				? this.deps.store.getSession(existing.qa_execution_id)
+				: undefined;
+			if (qaSession && !TERMINAL_STATUSES.has(qaSession.status)) {
+				return { status: "existing", recordStatus: existing.status };
+			}
+		}
+
+		await this.onMainAwaitingReview(parent, {
+			freshTransition: true,
+			manualEnrollment: true,
+		});
+		const enrolled = this.deps.store.getAutoQaRecord(
+			parentExecutionId,
+			requestedHead,
+		);
+		if (
+			enrolled?.status === "running" &&
+			enrolled.qa_execution_id &&
+			enrolled.enrollment_source === "manual"
+		) {
+			this.deps.store.insertEvent({
+				event_id: `manual-qa-enrolled-${parentExecutionId}-${requestedHead}-${enrolled.qa_execution_id}`,
+				execution_id: parentExecutionId,
+				issue_id: parent.issue_id,
+				project_name: parent.project_name,
+				event_type: "manual_qa_enrolled",
+				source: "bridge.auto-qa-coordinator",
+				payload: {
+					prHeadSha: requestedHead,
+					qaExecutionId: enrolled.qa_execution_id,
+				},
+			});
+			return {
+				status: "spawned",
+				qaExecutionId: enrolled.qa_execution_id,
+			};
+		}
+		if (enrolled?.status === "stuck") {
+			return { status: "rejected", reason: "spawn_failed" };
+		}
+		if (enrolled) {
+			return { status: "existing", recordStatus: enrolled.status };
+		}
+		return { status: "rejected", reason: "not_admitted" };
 	}
 
 	/**
@@ -309,7 +411,11 @@ export class AutoQaCoordinator {
 	 */
 	async onMainAwaitingReview(
 		sessionInput: Session,
-		opts?: { freshTransition?: boolean; codexReleased?: boolean },
+		opts?: {
+			freshTransition?: boolean;
+			codexReleased?: boolean;
+			manualEnrollment?: boolean;
+		},
 	): Promise<void> {
 		if ((sessionInput.session_role ?? "main") !== "main") return;
 		const freshTransition = opts?.freshTransition ?? true;
@@ -319,6 +425,7 @@ export class AutoQaCoordinator {
 		// before claiming any auto_qa_record), so without this override the "no
 		// owner + !freshTransition" guard below would skip QA forever.
 		const codexReleased = opts?.codexReleased ?? false;
+		const manualEnrollment = opts?.manualEnrollment ?? false;
 		const env = this.deps.env ?? process.env;
 
 		// FLY-846 gate ⓪: the coordinator RE-READS the row itself instead of
@@ -395,8 +502,19 @@ export class AutoQaCoordinator {
 			return;
 		}
 
+		// FLY-1251 R2/R3: produce the synchronous hold predicate's exact-head
+		// classification before policy can exempt auto-QA. Unknown/errors keep the
+		// founder held; they do not prevent a required QA from being admitted.
+		try {
+			await this.deps.ensureShipRelevantDiff?.(session);
+		} catch (err) {
+			this.warn(
+				`ship-diff classification failed for ${session.execution_id} @ ${sha.slice(0, 8)}: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+
 		const policy = this.deps.resolveQaPolicy(session);
-		if (!policy.enabled) {
+		if (!policy.enabled && !manualEnrollment) {
 			// FLY-869 A-1: auto-QA is not applicable for this session (no-qa label /
 			// qa.auto:false / kill-switch). Persist the IMMUTABLE qa_required=0 snapshot
 			// so the ship gate (evaluateQaShipGate) exempts it rather than fail-closing.
@@ -445,6 +563,24 @@ export class AutoQaCoordinator {
 
 		if (owner) {
 			if (owner.target_pr_head_sha === sha) {
+				if (
+					manualEnrollment &&
+					(owner.status === "stuck" || owner.status === "failed")
+				) {
+					const qaSession = owner.qa_execution_id
+						? this.deps.store.getSession(owner.qa_execution_id)
+						: undefined;
+					if (
+						(!qaSession || TERMINAL_STATUSES.has(qaSession.status)) &&
+						this.deps.store.reviveAutoQaRecordForManualSpawn(
+							session.execution_id,
+							sha,
+						)
+					) {
+						await this.spawnQa(session, sha);
+					}
+					return;
+				}
 				// Same head — parked / duplicate re-emission. No new QA, no re-test.
 				// passed → founder already surfaced; running/awaiting_retest/stuck/
 				// failed → held, Lead-driven. All no-op.
@@ -510,6 +646,7 @@ export class AutoQaCoordinator {
 			targetPrHeadSha: sha,
 			issueId: session.issue_id,
 			projectName: session.project_name,
+			enrollmentSource: manualEnrollment ? "manual" : "auto",
 		});
 		if (!claimed) {
 			// A superseded/terminal row for this exact head already exists (rare:
@@ -522,6 +659,7 @@ export class AutoQaCoordinator {
 			this.log(
 				`reopen ${session.execution_id} @ ${sha.slice(0, 8)} for re-spawn (reopened=${reopened})`,
 			);
+			if (!reopened) return;
 		}
 
 		// Gate ③ stale-QA cleanup — only AFTER the claim above is durable (Codex

@@ -67,6 +67,13 @@ const HOLD_LABELS: Record<"codex_pending" | "qa_not_green", string> = {
 	qa_not_green: "QA 还没绿",
 };
 
+const NON_DEFERRABLE_HOLD_LABELS: Partial<Record<ReviewHoldReason, string>> = {
+	merge_block: "合并被挡",
+	qa_evidence_missing: "独立 QA 证据缺失",
+	qa_evidence_unknown: "PR / head 或 QA 证据无法确认",
+	no_qualified_reviewer: "没有合格的独立 reviewer",
+};
+
 export function heldReplyText(
 	decision: "approve" | "reject",
 	holdReason: "codex_pending" | "qa_not_green",
@@ -95,9 +102,8 @@ export function mergeBlockPointerText(): string {
 
 export function deferredOffExplainerText(holdReason: ReviewHoldReason): string {
 	const label =
-		holdReason === "merge_block"
-			? "合并被挡"
-			: HOLD_LABELS[holdReason as "codex_pending" | "qa_not_green"];
+		NON_DEFERRABLE_HOLD_LABELS[holdReason] ??
+		HOLD_LABELS[holdReason as "codex_pending" | "qa_not_green"];
 	return `你的批准现在绑不上(${label}),暂存功能当前关闭——卡点清了之后请再说一次。`;
 }
 

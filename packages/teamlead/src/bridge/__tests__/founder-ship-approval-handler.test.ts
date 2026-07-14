@@ -375,6 +375,38 @@ describe("tryFounderShipApproval — attribution audit + hold guard (FLY-1041)",
 		);
 	});
 
+	it.each(["qa_evidence_missing", "qa_evidence_unknown"] as const)(
+		"FLY-1251: %s is never deferred; it rejects the click with an explicit held notice",
+		async (holdReason) => {
+			const deferral = {
+				holdReason: vi.fn(() => holdReason),
+				deferredEnabled: () => true,
+				heldReplyEnabled: () => true,
+				defer: vi.fn(() => "inserted" as const),
+				queueHeldNotice: vi.fn(),
+				parkForConvergence: vi.fn(),
+				queueFeedbackWake: vi.fn(),
+			};
+			const d = deps({ deferral });
+
+			const result = await tryFounderShipApproval(
+				{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+				d,
+			);
+
+			expect(result).toBeNull();
+			expect(deferral.defer).not.toHaveBeenCalled();
+			expect(d.evaluateTextImpl).not.toHaveBeenCalled();
+			expect(deferral.queueHeldNotice).toHaveBeenCalledWith({
+				questionId: "Q-1",
+				msgId: "MSG-1",
+				executionId: "E-1",
+				kind: "deferred_off",
+				holdReason,
+			});
+		},
+	);
+
 	it("un-held session: isHeld false → normal write path", async () => {
 		const d = deps({ isHeld: vi.fn().mockReturnValue(false) });
 		const r = await tryFounderShipApproval(

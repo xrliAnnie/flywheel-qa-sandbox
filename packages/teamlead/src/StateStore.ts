@@ -694,6 +694,7 @@ export interface AutoQaRecord {
 	/** The PARENT (implementer) issue id — what is being verified. */
 	issue_id: string;
 	project_name: string;
+	enrollment_source: "auto" | "manual";
 	qa_execution_id?: string;
 	/**
 	 * FLY-643: the SEPARATE `QA·FLY-XX` Linear issue this record's QA runner runs
@@ -734,6 +735,21 @@ export interface AutoQaRecord {
 	 * retest wake never silently strands the founder gate.
 	 */
 	retest_wake_pending_at?: string;
+}
+
+/** Bridge-owned classification of the exact PR diff for one candidate head. */
+export interface ShipRelevantDiffSnapshot {
+	execution_id: string;
+	pr_head_sha: string;
+	repo: string;
+	pr_number: number;
+	base_ref: string;
+	base_oid: string;
+	classifier_version: number;
+	ship_relevant: 0 | 1;
+	file_count: number;
+	sample_paths?: string[];
+	computed_at: string;
 }
 
 /**
@@ -1785,6 +1801,8 @@ export class StateStore {
 				target_pr_head_sha TEXT NOT NULL,
 				issue_id TEXT NOT NULL,
 				project_name TEXT NOT NULL,
+				enrollment_source TEXT NOT NULL DEFAULT 'auto'
+					CHECK (enrollment_source IN ('auto','manual')),
 				qa_execution_id TEXT,
 				qa_issue_id TEXT,
 				qa_issue_identifier TEXT,
@@ -1805,6 +1823,25 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_auto_qa_record_status ON auto_qa_record(status)",
 		);
+
+		// FLY-1251: exact-head, server-owned docs-only/code classification. A
+		// missing row is authorization-unknown and therefore founder-held.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS ship_relevant_diff_snapshot (
+				execution_id TEXT NOT NULL,
+				pr_head_sha TEXT NOT NULL,
+				repo TEXT NOT NULL,
+				pr_number INTEGER NOT NULL,
+				base_ref TEXT NOT NULL,
+				base_oid TEXT NOT NULL,
+				classifier_version INTEGER NOT NULL,
+				ship_relevant INTEGER NOT NULL CHECK (ship_relevant IN (0,1)),
+				file_count INTEGER NOT NULL,
+				sample_paths TEXT,
+				computed_at TEXT NOT NULL,
+				PRIMARY KEY (execution_id, pr_head_sha)
+			)
+		`);
 
 		// FLY-827: durable Codex code-review verdict — the authoritative gate record
 		// (keyed to the exact reviewed head, so a new head voids an older approval).
@@ -3981,6 +4018,8 @@ export class StateStore {
 			target_pr_head_sha: row.target_pr_head_sha as string,
 			issue_id: row.issue_id as string,
 			project_name: row.project_name as string,
+			enrollment_source:
+				(row.enrollment_source as AutoQaRecord["enrollment_source"]) ?? "auto",
 			qa_execution_id: (row.qa_execution_id as string) ?? undefined,
 			qa_issue_id: (row.qa_issue_id as string) ?? undefined,
 			qa_issue_identifier: (row.qa_issue_identifier as string) ?? undefined,
@@ -4007,16 +4046,18 @@ export class StateStore {
 		targetPrHeadSha: string;
 		issueId: string;
 		projectName: string;
+		enrollmentSource?: "auto" | "manual";
 	}): boolean {
 		this.db.run(
 			`INSERT OR IGNORE INTO auto_qa_record
-			   (parent_execution_id, target_pr_head_sha, issue_id, project_name, status, started_at)
-			 VALUES (?, ?, ?, ?, 'running', datetime('now'))`,
+			   (parent_execution_id, target_pr_head_sha, issue_id, project_name, enrollment_source, status, started_at)
+			 VALUES (?, ?, ?, ?, ?, 'running', datetime('now'))`,
 			[
 				input.parentExecutionId,
 				input.targetPrHeadSha,
 				input.issueId,
 				input.projectName,
+				input.enrollmentSource ?? "auto",
 			],
 		);
 		const inserted = this.db.getRowsModified() > 0;
@@ -4133,6 +4174,99 @@ export class StateStore {
 		}
 		stmt.free();
 		return rec;
+	}
+
+	putShipRelevantDiffSnapshot(
+		input: Omit<ShipRelevantDiffSnapshot, "computed_at"> & {
+			computed_at?: string;
+		},
+	): void {
+		this.db.run(
+			`INSERT INTO ship_relevant_diff_snapshot
+			   (execution_id, pr_head_sha, repo, pr_number, base_ref, base_oid,
+			    classifier_version, ship_relevant, file_count, sample_paths, computed_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(execution_id, pr_head_sha) DO UPDATE SET
+			   repo = excluded.repo,
+			   pr_number = excluded.pr_number,
+			   base_ref = excluded.base_ref,
+			   base_oid = excluded.base_oid,
+			   classifier_version = excluded.classifier_version,
+			   ship_relevant = excluded.ship_relevant,
+			   file_count = excluded.file_count,
+			   sample_paths = excluded.sample_paths,
+			   computed_at = excluded.computed_at`,
+			[
+				input.execution_id,
+				input.pr_head_sha.toLowerCase(),
+				input.repo,
+				input.pr_number,
+				input.base_ref,
+				input.base_oid.toLowerCase(),
+				input.classifier_version,
+				input.ship_relevant,
+				input.file_count,
+				input.sample_paths ? JSON.stringify(input.sample_paths) : null,
+				input.computed_at ?? new Date().toISOString(),
+			],
+		);
+		this.save();
+	}
+
+	getShipRelevantDiffSnapshot(
+		executionId: string,
+		prHeadSha: string,
+	): ShipRelevantDiffSnapshot | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM ship_relevant_diff_snapshot WHERE execution_id = ? AND lower(pr_head_sha) = ?",
+		);
+		stmt.bind([executionId, prHeadSha.toLowerCase()]);
+		let snapshot: ShipRelevantDiffSnapshot | undefined;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			let samplePaths: string[] | undefined;
+			if (typeof row.sample_paths === "string") {
+				try {
+					const parsed = JSON.parse(row.sample_paths);
+					if (
+						Array.isArray(parsed) &&
+						parsed.every((value) => typeof value === "string")
+					) {
+						samplePaths = parsed;
+					}
+				} catch {
+					// Diagnostic-only field; corruption never changes gate truth.
+				}
+			}
+			snapshot = {
+				execution_id: row.execution_id as string,
+				pr_head_sha: row.pr_head_sha as string,
+				repo: row.repo as string,
+				pr_number: Number(row.pr_number),
+				base_ref: row.base_ref as string,
+				base_oid: row.base_oid as string,
+				classifier_version: Number(row.classifier_version),
+				ship_relevant: Number(row.ship_relevant) as 0 | 1,
+				file_count: Number(row.file_count),
+				sample_paths: samplePaths,
+				computed_at: row.computed_at as string,
+			};
+		}
+		stmt.free();
+		return snapshot;
+	}
+
+	deleteShipRelevantDiffSnapshot(
+		executionId: string,
+		prHeadSha: string,
+	): boolean {
+		this.db.run(
+			"DELETE FROM ship_relevant_diff_snapshot WHERE execution_id = ? AND lower(pr_head_sha) = ?",
+			[executionId, prHeadSha.toLowerCase()],
+		);
+		const deleted = this.db.getRowsModified() > 0;
+		if (deleted) this.save();
+		return deleted;
 	}
 
 	// ─────────────────────────── FLY-827 Codex code-review gate ───────────────
@@ -5147,11 +5281,40 @@ export class StateStore {
 			        completed_at = NULL,
 			        notified_at = NULL,
 			        retest_wake_pending_at = NULL
-			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?`,
+			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?
+			    AND status IN ('superseded','failed','stuck')`,
 			[parentExecutionId, targetPrHeadSha],
 		);
 		const updated = this.db.getRowsModified() > 0;
 		this.save();
+		return updated;
+	}
+
+	/**
+	 * FLY-1251: bounded same-head manual escape hatch. Only a terminal non-pass
+	 * row can be revived; active QA and already-passed evidence are immutable.
+	 * The status predicate is the CAS against a concurrent auto/manual admission.
+	 */
+	reviveAutoQaRecordForManualSpawn(
+		parentExecutionId: string,
+		targetPrHeadSha: string,
+	): boolean {
+		this.db.run(
+			`UPDATE auto_qa_record
+			    SET status = 'running',
+			        enrollment_source = 'manual',
+			        qa_execution_id = NULL,
+			        verdict_event_id = NULL,
+			        completed_at = NULL,
+			        notified_at = NULL,
+			        retest_wake_pending_at = NULL,
+			        started_at = datetime('now')
+			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?
+			    AND status IN ('stuck','failed')`,
+			[parentExecutionId, targetPrHeadSha],
+		);
+		const updated = this.db.getRowsModified() > 0;
+		if (updated) this.save();
 		return updated;
 	}
 
@@ -8065,6 +8228,11 @@ export class StateStore {
 				if (!columns.includes(col)) {
 					this.db.run(`ALTER TABLE auto_qa_record ADD COLUMN ${col} TEXT`);
 				}
+			}
+			if (!columns.includes("enrollment_source")) {
+				this.db.run(
+					"ALTER TABLE auto_qa_record ADD COLUMN enrollment_source TEXT NOT NULL DEFAULT 'auto' CHECK (enrollment_source IN ('auto','manual'))",
+				);
 			}
 		} catch {
 			// Table may not exist yet (first run) — CREATE TABLE will handle it
