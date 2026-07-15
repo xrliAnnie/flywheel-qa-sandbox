@@ -2,7 +2,7 @@
 
 > **For Flywheel phases:** Execute through the existing Design → Implement → QA controllers on the shared branch. Do not dispatch subagents, do not add production behavior, and do not substitute static tests for the real-machine evidence gates below.
 
-**Goal:** 在 test-slot-2 真实跑通并证明 Design=Codex → Implement=Codex xhigh → QA=Opus，同时验证 Codex phase 的 paused hold、预算冻结、mailbox wake、daemon crash recovery、TURN 交接与 issue-terminal cooperative shutdown。
+**Goal:** 在 test-slot-2 以修复后的 fresh root 真实跑通并证明 Design=Codex → Implement=Codex xhigh → QA=Opus，同时验证 Codex phase 的 paused hold、预算冻结、mailbox wake、daemon crash recovery、TURN 交接与 issue-terminal cooperative shutdown。
 
 **Architecture:** 真实 phase chain 是被测系统；StateStore、CommDB、Codex session state、native goal DB、tmux/app-server 构成多平面证据。Implement 对 parked Design 做一次有前置保护的 daemon crash 与一次 Lead-routed mailbox wake；QA 独立复核；issue 外的 FLY-1269 收尾会话在终态前启动 observer，捕获会被 cleanup 删除的 shutdown request/ack 窗口。
 
@@ -12,15 +12,22 @@
 
 ## Constraints
 
+- 以下 mutable-scope 约束适用于 FLY-1286 的 Design/Implement/QA phase。Task 9 是 issue 外
+  FLY-1269 closing session 的 terminal closeout，不授权任一 phase agent 写 production
+  branch；其 Step 4–5 只能由该 external owner 在自己的 authority/worktree 下执行。
 - Mutable scope 仅限以下显式 allowlist：
   - `/tmp/flywheel-test-slot-2/**`
   - `/Users/xiaorongli/.flywheel/comm/test-slot-2/comm.db*`
   - successful FLY-1286 exec 的
-    `/Users/xiaorongli/.flywheel/state/codex-sessions/<exec>/**`
+    `$CODEX_SESSION_ROOT/<exec>/**`，其中 root 从 `FLYWHEEL_CODEX_SESSION_DIR` 解析，
+    未设置时才使用 `/Users/xiaorongli/.flywheel/state/codex-sessions`
   - successful FLY-1286 exec 的
-    `/Users/xiaorongli/.flywheel/codex-homes/<exec>/**`
+    `$CODEX_HOMES_ROOT/<exec>/**`，其中 root 从 `FLYWHEEL_CODEX_HOMES_ROOT` 解析，
+    未设置时才使用 `/Users/xiaorongli/.flywheel/codex-homes`
   - execution hash 对应的
-    `/Users/xiaorongli/.flywheel/cdx-sock/<sha1(exec)[0:16]>.sock*`
+    `$CODEX_SOCKET_ROOT/<sha1(exec)[0:16]>.sock*`，其中 root 从
+    `FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT` 解析，未设置时才使用
+    `/Users/xiaorongli/.flywheel/cdx-sock`
   - 本次 gate/review round 的
     `/Users/xiaorongli/.flywheel/state/codex-gates/<question>.json` 与
     `/Users/xiaorongli/.flywheel/state/review-requests/<request>.json`
@@ -30,7 +37,10 @@
 - 不修改 `packages/**` production source；candidate defect 必须 FAIL 回 FLY-1269 修。
 - 所有 phase 在触碰 worktree 前运行本次 prompt 给出的 `turn --exec-id`，只接受 `yours`。
 - successful chain root 固定为 Design execution
-  `c552669e-611b-47fc-98ca-63371c81cbe8`；旧 blocked/terminated attempts 只存档。
+  `464064c0-a711-4aa7-9426-5633dcef590d`；旧 Design `c552669e-…` / Implement
+  `e854cc74-…` 的 A2 FAIL 链与更早 blocked/terminated attempts 只进 `priorAttempts`。
+- production runtime candidate 固定为 PR #604 head `cad61a078`，其中 parked-boundary fix
+  为 `7d20e4a76`；shared evidence rerun baseline 固定为 `ec78d792`。
 - 缺少任一 acceptance oracle 的权威证据即 FAIL；不得用 stage label、自报、旧 unit test、
   issue title 或单一 screenshot 补洞。
 - Design/Implement 不得在 phase handoff 后自行关闭；它们必须 park 到 issue terminal。
@@ -44,12 +54,12 @@
 - `engineering/doc/FLY-1286-codex-phase-keepalive-e2e/plan.md`
 - `engineering/doc/FLY-1286-codex-phase-keepalive-e2e/progress.md`
 
-**FLY-1269 E2E evidence:**
+**FLY-1269 E2E evidence（已由首次链创建，本次只更新/复用）:**
 
-- Create: `engineering/doc/FLY-1269-codex-phase-keepalive/qa-report.md`
-- Create: `engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-e2e-chain.json`
-- Create: `engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.mjs`
-- Create: `engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs`
+- Modify: `engineering/doc/FLY-1269-codex-phase-keepalive/qa-report.md`
+- Modify: `engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-e2e-chain.json`
+- Reuse: `engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.mjs`
+- Test: `engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs`
 - Runtime output outside the disposable worktree:
   `/tmp/flywheel-test-slot-2/FLY-1286-terminal-observer.jsonl`
 
@@ -82,19 +92,47 @@ Run the exact request-driven Codex-author flow from the Design prompt:
 ```bash
 GATE_JSON=$(node "$FLYWHEEL_COMM_CLI" gate review_design \
   --lead flywheel-test-2 \
-  --exec-id c552669e-611b-47fc-98ca-63371c81cbe8 \
+  --exec-id 464064c0-a711-4aa7-9426-5633dcef590d \
   --no-block \
   "Review the FLY-1286 529 real-machine E2E plan for evidence completeness, isolation, crash/wake safety, and terminal shutdown observability")
 QUESTION_ID=$(printf '%s' "$GATE_JSON" | jq -er .questionId)
 
-node "$FLYWHEEL_COMM_CLI" request-review \
+REQUEST_JSON=$(node "$FLYWHEEL_COMM_CLI" request-review \
   --type design \
   --question-id "$QUESTION_ID" \
-  --plan engineering/doc/FLY-1286-codex-phase-keepalive-e2e/plan.md
+  --plan engineering/doc/FLY-1286-codex-phase-keepalive-e2e/plan.md)
+REQUEST_ID=$(printf '%s' "$REQUEST_JSON" | jq -er .requestId)
 ```
 
-Poll `node "$FLYWHEEL_COMM_CLI" check "$QUESTION_ID"` across turns. Expected:
-`APPROVED`. On `CHANGES_REQUESTED`, edit docs only, open a new review question, and repeat.
+Freeze the reviewed plan while this round is pending. Poll and parse the structured envelope:
+
+```bash
+CHECK_JSON=$(node "$FLYWHEEL_COMM_CLI" check "$QUESTION_ID" --json)
+test "$(printf '%s' "$CHECK_JSON" | jq -r .status)" = answered
+RESPONSE=$(printf '%s' "$CHECK_JSON" | jq -er '.content | fromjson')
+test "$(printf '%s' "$RESPONSE" | jq -r .requestId)" = "$REQUEST_ID"
+VERDICT=$(printf '%s' "$RESPONSE" | jq -r .reviewVerdict)
+case "$VERDICT" in
+  APPROVED) ;;
+  CHANGES_REQUESTED) exit 3 ;;
+  SKIPPED) exit 4 ;;
+  *) exit 5 ;;
+esac
+ROUND=$(printf '%s' "$RESPONSE" | jq -er .round)
+REVIEW_JOB=$(sqlite3 -readonly -json /tmp/flywheel-test-slot-2/teamlead.db \
+  "PRAGMA query_only=1; SELECT request_id,review_type,round,target_path,frozen_head_sha,status FROM codex_review_job WHERE request_id='$REQUEST_ID';")
+test "$(printf '%s' "$REVIEW_JOB" | jq -r '.[0].request_id')" = "$REQUEST_ID"
+test "$(printf '%s' "$REVIEW_JOB" | jq -r '.[0].review_type')" = design
+test "$(printf '%s' "$REVIEW_JOB" | jq -r '.[0].round')" = "$ROUND"
+test "$(printf '%s' "$REVIEW_JOB" | jq -r '.[0].target_path')" = \
+  engineering/doc/FLY-1286-codex-phase-keepalive-e2e/plan.md
+test "$(printf '%s' "$REVIEW_JOB" | jq -r '.[0].frozen_head_sha')" = null
+test "$(printf '%s' "$REVIEW_JOB" | jq -r '.[0].status')" = done
+```
+
+Expected: exact `APPROVED` for this request id. A Design review does not carry a frozen head SHA;
+its binding is the request id plus the unchanged plan. On `CHANGES_REQUESTED`, edit docs only, open
+a new question/request, and repeat. `SKIPPED`, unknown/malformed content, or a changed plan is FAIL.
 
 - [ ] **Step 3: Commit and push Design docs**
 
@@ -117,20 +155,20 @@ Expected: push updates only the qa-sandbox remote branch. Verify with
 ```bash
 node "$FLYWHEEL_COMM_CLI" complete --route phase_design_complete
 node "$FLYWHEEL_COMM_CLI" park \
-  --exec-id c552669e-611b-47fc-98ca-63371c81cbe8 \
+  --exec-id 464064c0-a711-4aa7-9426-5633dcef590d \
   --reason "three-stage design parked until ship"
 ```
 
 Expected: phase controller remains alive; this Design turn ends without implement/PR/ship work.
 
-### Task 2: Implement bootstrap and observer TDD
+### Task 2: Implement bootstrap, runtime attestation, and observer regression
 
 **Files:**
 
-- Create: `engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs`
-- Create: `engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.mjs`
-- Create: `engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-e2e-chain.json`
-- Create: `engineering/doc/FLY-1269-codex-phase-keepalive/qa-report.md`
+- Test: `engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs`
+- Read: `engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.mjs`
+- Modify: `engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-e2e-chain.json`
+- Modify: `engineering/doc/FLY-1269-codex-phase-keepalive/qa-report.md`
 
 - [ ] **Step 1: Acquire Implement TURN and pin safe paths**
 
@@ -139,125 +177,140 @@ Run `turn` first with the Implement execution id from its environment. Then:
 ```bash
 export STATE_DB=/tmp/flywheel-test-slot-2/teamlead.db
 export COMM_DB=/Users/xiaorongli/.flywheel/comm/test-slot-2/comm.db
-export DESIGN_EXEC=c552669e-611b-47fc-98ca-63371c81cbe8
-export DESIGN_STATE=/Users/xiaorongli/.flywheel/state/codex-sessions/$DESIGN_EXEC/session.json
-export DESIGN_HOME=/Users/xiaorongli/.flywheel/codex-homes/$DESIGN_EXEC
+export DESIGN_EXEC=464064c0-a711-4aa7-9426-5633dcef590d
+export PINNED_CANDIDATE_SHA=cad61a07894a98d808aea5b948830f12cfdcff83
+export CODEX_SESSION_ROOT="${FLYWHEEL_CODEX_SESSION_DIR:-/Users/xiaorongli/.flywheel/state/codex-sessions}"
+export CODEX_HOMES_ROOT="${FLYWHEEL_CODEX_HOMES_ROOT:-/Users/xiaorongli/.flywheel/codex-homes}"
+export CODEX_SOCKET_ROOT="${FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT:-/Users/xiaorongli/.flywheel/cdx-sock}"
+export DESIGN_STATE="$CODEX_SESSION_ROOT/$DESIGN_EXEC/session.json"
+export DESIGN_HOME="$CODEX_HOMES_ROOT/$DESIGN_EXEC"
+export DESIGN_EPOCH=$(sqlite3 -readonly "$COMM_DB" \
+  "PRAGMA query_only=1; SELECT epoch FROM turn_source_history WHERE issue_id='FLY-1286' AND to_role='design' AND source_event_id='turn:spawn:$DESIGN_EXEC' ORDER BY id DESC LIMIT 1;")
+export IMPLEMENT_EPOCH=$(sqlite3 -readonly "$COMM_DB" \
+  "PRAGMA query_only=1; SELECT epoch FROM three_stage_turn WHERE issue_id='FLY-1286' AND holder_exec_id='$FLYWHEEL_EXEC_ID' AND phase='implement';")
+test "$DESIGN_EPOCH" -ge 1
+test "$IMPLEMENT_EPOCH" -gt "$DESIGN_EPOCH"
+test -f "$DESIGN_STATE"
+test -d "$DESIGN_HOME"
+test -d "$CODEX_SOCKET_ROOT"
 test "$(gh repo view --json nameWithOwner -q .nameWithOwner)" = xrliAnnie/flywheel-qa-sandbox
 test "$FLYWHEEL_ISSUE_ID" = FLY-1286
 ```
 
-Expected: all tests exit 0. Any path/project mismatch stops the E2E before mutation.
+Expected: all tests exit 0. Record both captured epochs in the successful-chain manifest. They are
+relative chain evidence, not globally fixed numbers. Any path/project mismatch stops the E2E before
+mutation.
 
-- [ ] **Step 2: Write the failing observer tests**
+- [ ] **Step 2: Prove the current listener loaded the fixed candidate**
 
-The test must create disposable StateStore/CommDB SQLite fixtures, fake tmux/lsof/socket probes, and
-spawn the observer with `--interval-ms 10 --timeout-ms 2000`. Cover exactly:
-
-```js
-test("records requested then acked before lifecycle rows disappear", async () => {
-  // Seed design + implement successful-chain rows and a TURN.
-  // Transition both shutdown rows requested -> acked -> deleted.
-  // Delete the successful-chain StateStore/CommDB sessions and TURN.
-  // Assert exit 0 and one final verdict frame with pass=true.
-  // Assert each exec history contains requested and acked in that order.
-});
-
-test("corroborates a cadence-missed ack with the durable graceful-close event", async () => {
-  // Expose requested, then atomically delete lifecycle rows without an observable ack frame.
-  // Insert lead_close_runner with payload.phaseShutdownRequestId = observed request id.
-  // Assert graceful_corroborated rather than a false failure.
-});
-
-test("fails a live fresh cleanup without ack or matching durable event", async () => {
-  // Keep heartbeat fresh and tmux live, expose requested, then delete rows without ack/event.
-  // Assert non-zero exit and reason contains missing_shutdown_ack_corroboration.
-});
-
-test("classifies a proven direct path instead of pretending it was graceful", async () => {
-  // Make heartbeat stale and tmux target provably absent before lifecycle deletion.
-  // Assert direct_proven classification, no fabricated requested/acked history, and rerunRequired.
-});
-
-test("fails closed when direct-path liveness is indeterminate", async () => {
-  // Make tmux/lsof probe unreadable and delete lifecycle rows without a handshake.
-  // Assert non-zero exit with liveness_indeterminate.
-});
-
-test("ignores old failed FLY-1286 attempts outside the manifest", async () => {
-  // Leave an unrelated blocked/terminated row for the same issue.
-  // Assert the successful chain can still pass.
-});
-
-test("requires TURN deletion and QA successful-chain session cleanup", async () => {
-  // Ack both Codex phases but keep either TURN or QA row.
-  // Assert timeout/non-zero rather than a false PASS.
-});
-
-test("requires no socket listener or holder after cleanup", async () => {
-  // Delete lifecycle rows but keep bounded-connect success or an lsof holder.
-  // Assert orphan_socket/orphan_holder; missing or unreadable lsof is indeterminate.
-});
-
-test("opens both WAL databases readonly", async () => {
-  // Assert every sqlite child receives -readonly plus PRAGMA query_only=1.
-  // Snapshot fixture db/wal/shm metadata and assert the observer does not mutate it.
-});
-```
-
-Run:
+Read current listener cwd with `lsof`, fetch `/health`, and record source/dist mtimes plus content:
 
 ```bash
+HEALTH=$(curl -fsS http://127.0.0.1:19872/health)
+printf '%s' "$HEALTH" | jq -e '.ok == true and .uptime > 0'
+LISTENER_PID=$(lsof -nP -t -iTCP:19872 -sTCP:LISTEN)
+test -n "$LISTENER_PID"
+test "$(lsof -a -p "$LISTENER_PID" -d cwd -Fn | sed -n 's/^n//p')" = \
+  /Users/xiaorongli/Dev/flywheel-FLY-1269/worktrees/qa-e2e-1269
+NOW_S=$(date +%s)
+UPTIME_S=$(printf '%s' "$HEALTH" | jq -r .uptime)
+START_S=$(node -e 'process.stdout.write(String(Math.floor(Number(process.argv[1])-Number(process.argv[2]))))' \
+  "$NOW_S" "$UPTIME_S")
+SRC_MTIME=$(stat -f %m \
+  /Users/xiaorongli/Dev/flywheel-FLY-1269/worktrees/qa-e2e-1269/packages/claude-runner/src/codex-daemon-client.ts)
+DIST_MTIME=$(stat -f %m \
+  /Users/xiaorongli/Dev/flywheel-FLY-1269/worktrees/qa-e2e-1269/packages/claude-runner/dist/codex-daemon-client.js)
+test "$START_S" -ge "$SRC_MTIME"
+test "$START_S" -ge "$DIST_MTIME"
+stat -f '%m %N' \
+  /Users/xiaorongli/Dev/flywheel-FLY-1269/worktrees/qa-e2e-1269/packages/claude-runner/src/codex-daemon-client.ts \
+  /Users/xiaorongli/Dev/flywheel-FLY-1269/worktrees/qa-e2e-1269/packages/claude-runner/dist/codex-daemon-client.js
+export CANDIDATE_ROOT=/Users/xiaorongli/Dev/flywheel-FLY-1269/worktrees/qa-e2e-1269
+export CANDIDATE_DIST="$CANDIDATE_ROOT/packages/claude-runner/dist/codex-daemon-client.js"
+node - "$CANDIDATE_DIST" <<'NODE'
+const { readFileSync } = require("node:fs");
+const source = readFileSync(process.argv[2], "utf8");
+const boundaries = [...source.matchAll(/observeBoundary\(\)/g)].map((match) => match.index);
+const branchIsPresent = boundaries.some((start) => {
+  const branch = source.slice(start, start + 800);
+  const parked = branch.indexOf('kind === "parked"');
+  const hold = branch.indexOf("await enterPhaseHold()", parked);
+  return parked >= 0 && hold > parked;
+});
+if (!branchIsPresent) process.exit(1);
+NODE
+PROD_HEAD=$(gh pr view 604 --repo xrliAnnie/flywheel --json headRefOid -q .headRefOid)
+test "$PROD_HEAD" = "$PINNED_CANDIDATE_SHA"
+test "$(git -C "$CANDIDATE_ROOT" rev-parse HEAD)" = "$PINNED_CANDIDATE_SHA"
+git -C "$CANDIDATE_ROOT" merge-base --is-ancestor \
+  7d20e4a76d718efd6d6fbb440dec2dd8bdf66c6d "$PINNED_CANDIDATE_SHA"
+```
+
+Expected: listener cwd is the FLY-1269 QA worktree; its estimated start time from health uptime is
+later than both artifact mtimes; the bounded semantic check finds `observeBoundary()` followed by a
+`parked` branch and then `enterPhaseHold()` in the same compiled control-flow neighborhood. Design
+preflight already verified this shape against the pinned candidate dist; the run repeats it rather
+than betting on one exact TypeScript expression form. Production PR #604 and the candidate worktree
+must both still equal the manifest's pinned SHA, which must descend from `7d20e4a76`. A stale
+`bridge.log` boot line is not accepted as current-process evidence, and refreshing the candidate
+worktree after this attestation invalidates the run.
+
+- [ ] **Step 3: Re-run the already-built observer tests**
+
+The previous failed chain already created the observer under TDD. Do not rewrite it during this
+no-production-change rerun. Run:
+
+```bash
+node --check \
+  engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.mjs
 node --test \
   engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs
 ```
 
-Expected RED: module missing or assertions fail because observer behavior is not implemented.
+Expected: syntax passes and all 9 tests pass. Any failure stops the live rerun until the observer is
+fixed on FLY-1269 and reviewed; do not weaken assertions in the sandbox branch.
 
-- [ ] **Step 3: Implement the minimum observer**
+- [ ] **Step 4: Initialize the fresh manifest and validate real read-only `--once` mode**
 
-The observer CLI must accept:
+Move the immutable old chain under `priorAttempts`, set `successfulChain.design.executionId` to
+`464064c0-a711-4aa7-9426-5633dcef590d`, and leave Implement/QA ids empty until their real spawn.
+Preserve every top-level field not shown below. Use `apply_patch` so the semantic delta is reviewable;
+the resulting fields must have this minimum shape. In the same patch, write the captured numeric
+`$DESIGN_EPOCH` to `successfulChain.design.turnEpoch`; when Implement is registered, write captured
+numeric `$IMPLEMENT_EPOCH` to `successfulChain.implement.turnEpoch`. Never copy an expected literal
+epoch from this document:
 
-```text
---state-db PATH
---comm-db PATH
---issue FLY-1286
---design-exec UUID
---implement-exec UUID
---qa-exec UUID
---socket-root PATH
---out PATH
---interval-ms 50
---timeout-ms 900000
+```json
+{
+  "candidateSha": "cad61a07894a98d808aea5b948830f12cfdcff83",
+  "priorAttempts": [
+    {
+      "kind": "a2_failed_chain",
+      "evidenceCommit": "ec78d79239f3cb61916f876f58855dcfccb89679",
+      "designExecutionId": "c552669e-611b-47fc-98ca-63371c81cbe8",
+      "implementExecutionId": "e854cc74-39dc-4c75-b78b-d2e220a08cbe",
+      "failedOracle": "A2"
+    }
+  ],
+  "successfulChain": {
+    "design": {
+      "executionId": "464064c0-a711-4aa7-9426-5633dcef590d",
+      "threadId": "019f654c-e651-71c2-9ab9-c4e68bcdcfd5",
+      "goalId": "d05c8f51-0db3-4029-982d-d293e4347044",
+      "adapterType": "codex-tmux",
+      "model": "gpt-5.6-sol"
+    },
+    "implement": null,
+    "qa": null
+  },
+  "verdict": {
+    "status": "IN_PROGRESS",
+    "pendingOracles": ["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8"]
+  }
+}
 ```
 
-Implementation requirements:
-
-1. use `execFileSync("sqlite3", ["-readonly", "-json", dbPath,
-   "PRAGMA query_only=1;" + sql])`, never shell interpolation;
-2. append one JSONL frame on every changed snapshot, including UTC timestamp;
-3. retain each Codex exec's shutdown states/request id plus StateStore heartbeat age, saved tmux target,
-   and durable `session_events` rows; a missed ack is corroborated only by `lead_close_runner` with
-   the same `payload.phaseShutdownRequestId`;
-4. classify lifecycle paths: live + heartbeat-fresh requires graceful evidence; target gone/dead or
-   heartbeat stale may be `direct_proven`; indeterminate is never PASS. `direct_proven` sets
-   `rerunRequired:true` because this injected E2E still needs handshake evidence;
-5. derive each execution-private socket as `<socket-root>/<sha1(exec)[0:16]>.sock`; after cleanup,
-   bounded connect must fail and `lsof -t -- <socket>` must report no holder. Missing/unreadable lsof
-   is indeterminate, never “no orphan”;
-6. require successful-chain StateStore rows and CommDB session rows gone, QA row gone, TURN gone,
-   and saved tmux targets absent;
-7. ignore same-issue sessions not named by the three manifest execution ids;
-8. exit 0 only after all cleanup conditions and write a classified verdict; FINAL handshake PASS
-   additionally requires neither Codex exec has `rerunRequired:true`;
-9. timeout, missing/out-of-order uncorroborated handshake, live socket/holder, or indeterminate probe
-   writes `{kind:"verdict",pass:false,reason}` and exits 1;
-10. never write either database or signal any process.
-
-Run the test again. Expected GREEN: 9 tests pass.
-
-- [ ] **Step 4: Refactor and validate real read-only `--once` mode**
-
-Add `--once` to emit one snapshot without waiting or changing state. Run:
+Then run:
 
 ```bash
 node --check \
@@ -269,7 +322,7 @@ node engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.mjs
   --design-exec "$DESIGN_EXEC" \
   --implement-exec "$FLYWHEEL_EXEC_ID" \
   --qa-exec not-spawned-yet \
-  --socket-root /Users/xiaorongli/.flywheel/cdx-sock \
+  --socket-root "$CODEX_SOCKET_ROOT" \
   --out /tmp/flywheel-test-slot-2/FLY-1286-observer-once.jsonl \
   --once
 ```
@@ -288,7 +341,8 @@ StateStore/CommDB/WAL/SHM metadata before/after `--once`; any observer-caused wr
 
 For at most 120 seconds, poll every 2 seconds until the same Design execution has all of:
 `design_done`, declared `parked`, `phaseHold.state=paused`, native goal `paused`, current TURN held by
-Implement epoch 2, tmux target live, control socket connectable, and heartbeat advancing. The handoff
+the current Implement exec at captured `$IMPLEMENT_EPOCH`, tmux target live, control socket
+connectable, and heartbeat advancing. The handoff
 event and native goal completion are not ordered, so an early missing `phaseHold` is “not ready yet”,
 not an immediate FAIL. Timeout or identity drift is FAIL.
 
@@ -299,7 +353,7 @@ export DESIGN_THREAD=$(jq -r .threadId "$DESIGN_STATE")
 export DESIGN_PID=$(jq -r .daemonPid "$DESIGN_STATE")
 export DESIGN_GOAL_DB=$DESIGN_HOME/goals_1.sqlite
 export DESIGN_SOCKET_HASH=$(node -e 'const {createHash}=require("node:crypto");process.stdout.write(createHash("sha1").update(process.argv[1]).digest("hex").slice(0,16))' "$DESIGN_EXEC")
-export DESIGN_SOCKET=/Users/xiaorongli/.flywheel/cdx-sock/$DESIGN_SOCKET_HASH.sock
+export DESIGN_SOCKET="$CODEX_SOCKET_ROOT/$DESIGN_SOCKET_HASH.sock"
 export DESIGN_LSOF=$(lsof -n -Fpg -- "$DESIGN_SOCKET")
 export DESIGN_SOCKET_HOLDERS=$(printf '%s\n' "$DESIGN_LSOF" | sed -n 's/^p//p' | sort -nu)
 export DESIGN_SOCKET_PGIDS=$(printf '%s\n' "$DESIGN_LSOF" | sed -n 's/^g//p' | sort -nu)
@@ -327,7 +381,8 @@ Expected:
 - recorded shim is the detached group leader, at least one socket holder belongs to that group, and
   the socket accepts a bounded connection (`kill -0` alone is not app-server evidence). Record any
   foreign/client holder PGIDs separately; they do not invalidate ownership;
-- current TURN is Implement / epoch 2 / current Implement exec.
+- current TURN is Implement / captured `$IMPLEMENT_EPOCH` / current Implement exec, and that epoch
+  is strictly greater than `$DESIGN_EPOCH`.
 
 - [ ] **Step 2: Capture two samples at least 60 seconds apart**
 
@@ -338,7 +393,7 @@ and last sample. Expected:
 - goal id/status/token_budget/tokens_used/time_used_seconds/updated_at_ms unchanged;
 - `phaseHold.enteredAt`, `deadlineRemainingMs`, `hardDeadlineRemainingMs` unchanged;
 - shim pid/process group, socket holder group, and Design execution/thread unchanged;
-- TURN remains Implement epoch 2.
+- TURN remains Implement at the captured `$IMPLEMENT_EPOCH`.
 
 If any model/goal/budget field moves during the hold, record exact samples and stop with FAIL.
 
@@ -411,7 +466,7 @@ Every 2 seconds for at most 120 seconds, re-read `session.json`. Success require
 - `phaseHold.state` returns/remains `paused`;
 - native goal id/status/token budget remain identical and paused;
 - no new successful/live Design StateStore session appears;
-- TURN stays Implement epoch 2;
+- TURN stays Implement at the captured `$IMPLEMENT_EPOCH`;
 - no wake row was created by the crash.
 
 While the killed app-server's WAL is dirty, a read-only open of `goals_1.sqlite` may transiently
@@ -439,7 +494,7 @@ heartbeat continues. Record old/new shim pid/PGID, old/new socket holder pids, a
 Use the non-blocking Lead channel from the Implement prompt. Send exactly one request:
 
 ```text
-FLY-1286 E2E action: please send one instruction to Design execution c552669e-611b-47fc-98ca-63371c81cbe8 with this content: FLY-1286 WAKE_PROBE — run TURN first, do not touch the worktree, report the current holder, then re-park; if this stable instruction is redelivered, report only and do not repeat side effects. Please reply with the CommDB instruction id.
+FLY-1286 E2E action: please send one instruction to Design execution 464064c0-a711-4aa7-9426-5633dcef590d with this content: FLY-1286 WAKE_PROBE — run TURN first, do not touch the worktree, report the current holder, then re-park; if this stable instruction is redelivered, report only and do not repeat side effects. Please reply with the CommDB instruction id.
 ```
 
 Continue assembling passive evidence, and poll `check` for the reply. Do not impersonate the Lead by
@@ -467,7 +522,7 @@ WHERE id = '$WAKE_INSTRUCTION_ID';
 SELECT queue_seq,execution_id,message_id,source_instruction_id,state,
        queued_at,started_at,finished_at
 FROM runner_phase_wakes
-WHERE execution_id = 'c552669e-611b-47fc-98ca-63371c81cbe8'
+WHERE execution_id = '464064c0-a711-4aa7-9426-5633dcef590d'
 ORDER BY queue_seq;
 ```
 
@@ -494,7 +549,7 @@ with a new instruction until the first row is understood; duplicate sends would 
 - [ ] **Step 1: Verify no production source changed**
 
 ```bash
-git diff --name-only c833f78b552b0df54fb49d8f0d7c79331513ea28 HEAD
+git diff --name-only ec78d79239f3cb61916f876f58855dcfccb89679 HEAD
 git status --short
 ```
 
@@ -505,11 +560,17 @@ Expected: changes are limited to the FLY-1286 Design docs and FLY-1269 qa/eviden
 
 ```bash
 node --test engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs
-pnpm --filter flywheel-claude-runner exec vitest run \
+CANDIDATE_ROOT=/Users/xiaorongli/Dev/flywheel-FLY-1269/worktrees/qa-e2e-1269
+PINNED_CANDIDATE_SHA=cad61a07894a98d808aea5b948830f12cfdcff83
+PROD_HEAD=$(gh pr view 604 --repo xrliAnnie/flywheel --json headRefOid -q .headRefOid)
+test "$PROD_HEAD" = "$PINNED_CANDIDATE_SHA"
+test "$(git -C "$CANDIDATE_ROOT" rev-parse HEAD)" = "$PINNED_CANDIDATE_SHA"
+pnpm -C "$CANDIDATE_ROOT" --filter flywheel-claude-runner exec vitest run \
   test/codex-phase-lifecycle.test.ts \
   test/codex-daemon-client.test.ts \
   test/codex-daemon-goal-runtime.test.ts
-pnpm --filter flywheel-config exec vitest run src/__tests__/three-stage-phases.test.ts
+pnpm -C "$CANDIDATE_ROOT" --filter flywheel-config exec vitest run \
+  src/__tests__/three-stage-phases.test.ts
 git diff --check
 ```
 
@@ -540,8 +601,29 @@ production PR #604 through the qa-sandbox remote. Record the sandbox PR number/u
 - [ ] **Step 5: Complete mandatory cross-family code review**
 
 Run the Implement prompt's `gate review_code --no-block` and
-`request-review --type code` flow. Expected reviewer family: Claude, verdict APPROVED for the exact
-current head. On changes, fix evidence/harness only, push, and open a new review round.
+`request-review --type code` flow, retaining its `QUESTION_ID` and `REQUEST_ID`. Poll with
+`check "$QUESTION_ID" --json`, require `.status == "answered"`, decode `.content | fromjson`, and
+require its `.requestId == $REQUEST_ID`. The payload has no head field; query the head binding from
+the authoritative StateStore job row. The only passing result is:
+
+```bash
+CHECK_JSON=$(node "$FLYWHEEL_COMM_CLI" check "$QUESTION_ID" --json)
+test "$(printf '%s' "$CHECK_JSON" | jq -r .status)" = answered
+RESPONSE=$(printf '%s' "$CHECK_JSON" | jq -er '.content | fromjson')
+test "$(printf '%s' "$RESPONSE" | jq -r .requestId)" = "$REQUEST_ID"
+test "$(printf '%s' "$RESPONSE" | jq -r .reviewVerdict)" = APPROVED
+STATE_DB=${STATE_DB:-/tmp/flywheel-test-slot-2/teamlead.db}
+REVIEW_JOB=$(sqlite3 -readonly -json "$STATE_DB" \
+  "PRAGMA query_only=1; SELECT request_id,review_type,frozen_head_sha,status FROM codex_review_job WHERE request_id='$REQUEST_ID';")
+test "$(printf '%s' "$REVIEW_JOB" | jq -r '.[0].request_id')" = "$REQUEST_ID"
+test "$(printf '%s' "$REVIEW_JOB" | jq -r '.[0].review_type')" = code
+test "$(printf '%s' "$REVIEW_JOB" | jq -r '.[0].status')" = done
+test "$(printf '%s' "$REVIEW_JOB" | jq -r '.[0].frozen_head_sha')" = "$(git rev-parse HEAD)"
+```
+
+Expected reviewer family: Claude, exact verdict `APPROVED`, and reviewed head equal to the current
+head. On `CHANGES_REQUESTED`, fix evidence/harness only, push, and open a new question/request.
+`SKIPPED`, unknown/malformed content, registration failure, or head mismatch is FAIL.
 
 - [ ] **Step 6: Open the review gate, complete, and park**
 
@@ -567,10 +649,24 @@ Expected: same Implement execution/thread/goal remains alive and paused for QA t
 
 Run QA `turn` first. Query its StateStore row. Expected:
 
+```bash
+export STATE_DB="${STATE_DB:-/tmp/flywheel-test-slot-2/teamlead.db}"
+export COMM_DB="${COMM_DB:-/Users/xiaorongli/.flywheel/comm/test-slot-2/comm.db}"
+export CODEX_SESSION_ROOT="${FLYWHEEL_CODEX_SESSION_DIR:-/Users/xiaorongli/.flywheel/state/codex-sessions}"
+export CODEX_HOMES_ROOT="${FLYWHEEL_CODEX_HOMES_ROOT:-/Users/xiaorongli/.flywheel/codex-homes}"
+export CODEX_SOCKET_ROOT="${FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT:-/Users/xiaorongli/.flywheel/cdx-sock}"
+export IMPLEMENT_EPOCH=$(jq -er .successfulChain.implement.turnEpoch \
+  engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-e2e-chain.json)
+export QA_EPOCH=$(sqlite3 -readonly "$COMM_DB" \
+  "PRAGMA query_only=1; SELECT epoch FROM three_stage_turn WHERE issue_id='FLY-1286' AND holder_exec_id='$FLYWHEEL_EXEC_ID' AND phase='qa';")
+test "$QA_EPOCH" -gt "$IMPLEMENT_EPOCH"
+```
+
 - `adapter_type=claude-tmux`
 - `chat_thread_role=qa`
 - `runner_model=claude-opus-4-8`
-- current TURN holder is QA exec, phase `qa`, epoch 3
+- current TURN holder is QA exec, phase `qa`, at captured `$QA_EPOCH`; it remains unchanged during
+  QA verification and is strictly greater than the captured Implement epoch
 
 If QA is Codex, Fable, Sonnet, or any non-Opus Claude model, FAIL immediately.
 
@@ -599,7 +695,7 @@ foreign/client holders recorded, heartbeat advancing, and goal budget fields fro
 - [ ] **Step 4: Re-audit crash, wake, TURN, and isolation evidence**
 
 Independently query raw DB/session files; do not trust the Implement summary. Require all A1–A6/A8
-oracle rows from research.md. Confirm current git diff from candidate contains only Design docs and
+oracle rows from research.md. Confirm current git diff from rerun baseline `ec78d792` contains only Design docs and
 FLY-1269 qa/evidence files. Also compare the pre-run/post-run runtime path inventory: every changed
 path must be one of the manifest's exact successful exec session/CODEX_HOME/socket paths, this
 round's gate/review marker, test-slot-2 CommDB, or `/tmp/flywheel-test-slot-2/**`. Any other project
@@ -611,16 +707,22 @@ bound to this issue/exec/question/request id.
 
 ```bash
 node --test engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs
-pnpm --filter flywheel-claude-runner exec vitest run \
+CANDIDATE_ROOT=/Users/xiaorongli/Dev/flywheel-FLY-1269/worktrees/qa-e2e-1269
+PINNED_CANDIDATE_SHA=cad61a07894a98d808aea5b948830f12cfdcff83
+PROD_HEAD=$(gh pr view 604 --repo xrliAnnie/flywheel --json headRefOid -q .headRefOid)
+test "$PROD_HEAD" = "$PINNED_CANDIDATE_SHA"
+test "$(git -C "$CANDIDATE_ROOT" rev-parse HEAD)" = "$PINNED_CANDIDATE_SHA"
+pnpm -C "$CANDIDATE_ROOT" --filter flywheel-claude-runner exec vitest run \
   test/codex-phase-lifecycle.test.ts \
   test/codex-daemon-client.test.ts \
   test/codex-daemon-goal-runtime.test.ts
-pnpm --filter flywheel-teamlead exec vitest run \
+pnpm -C "$CANDIDATE_ROOT" --filter flywheel-teamlead exec vitest run \
   src/bridge/__tests__/codex-phase-shutdown.test.ts \
   src/bridge/__tests__/phase-orchestrator.fly887-keepalive.test.ts \
   src/bridge/__tests__/phase-orchestrator.fly939-wake-not-respawn.test.ts \
   src/__tests__/phase-orchestrator.fly921-adversarial.test.ts
-pnpm --filter flywheel-config exec vitest run src/__tests__/three-stage-phases.test.ts
+pnpm -C "$CANDIDATE_ROOT" --filter flywheel-config exec vitest run \
+  src/__tests__/three-stage-phases.test.ts
 ```
 
 Expected: all pass. Record command, count, duration, SHA, and UTC timestamp.
@@ -659,14 +761,15 @@ install -m 0555 \
 test "$(shasum -a 256 engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.mjs | awk '{print $1}')" = \
   "$(shasum -a 256 /tmp/flywheel-test-slot-2/529-terminal-observer.mjs | awk '{print $1}')"
 cd /tmp/flywheel-test-slot-2
+export CODEX_SOCKET_ROOT="${FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT:-/Users/xiaorongli/.flywheel/cdx-sock}"
 node ./529-terminal-observer.mjs \
   --state-db /tmp/flywheel-test-slot-2/teamlead.db \
   --comm-db /Users/xiaorongli/.flywheel/comm/test-slot-2/comm.db \
   --issue FLY-1286 \
-  --design-exec c552669e-611b-47fc-98ca-63371c81cbe8 \
+  --design-exec 464064c0-a711-4aa7-9426-5633dcef590d \
   --implement-exec "$IMPLEMENT_EXEC" \
   --qa-exec "$QA_EXEC" \
-  --socket-root /Users/xiaorongli/.flywheel/cdx-sock \
+  --socket-root "$CODEX_SOCKET_ROOT" \
   --out /tmp/flywheel-test-slot-2/FLY-1286-terminal-observer.jsonl \
   --interval-ms 50 \
   --timeout-ms 900000
@@ -686,10 +789,14 @@ this binding.
 
 ### Task 9: External terminal closeout and FINAL PASS
 
+Task 9 is executed only by the issue-external FLY-1269 closing session after the three FLY-1286
+phases have finished their evidence duties. Design/Implement/QA must not perform these production
+branch/report writes; they hand the observer artifacts and Lead report to that owner.
+
 **Files:**
 
 - Runtime read: `/tmp/flywheel-test-slot-2/FLY-1286-terminal-observer.jsonl`
-- Final production-branch update:
+- External-owner-only final production-branch update:
   `engineering/doc/FLY-1269-codex-phase-keepalive/qa-report.md`
 
 - [ ] **Step 1: Let the authorized ship workflow reach issue terminal**
@@ -751,7 +858,9 @@ observer verdict/path, and A1–A8 matrix. Terminal output alone is not a report
 
 ## Stop Conditions
 
-Stop immediately and report FAIL without broadening scope when any of these occurs:
+Within the FLY-1286 Design/Implement/QA scope, stop immediately and report FAIL without broadening
+scope when any of these occurs. Task 9's explicitly external production-branch write is governed by
+the FLY-1269 closing session's separate authority and is not an exception available to phase agents:
 
 1. TURN is not owned by the acting phase;
 2. a target path/database/repo is outside test-slot-2 or qa-sandbox;

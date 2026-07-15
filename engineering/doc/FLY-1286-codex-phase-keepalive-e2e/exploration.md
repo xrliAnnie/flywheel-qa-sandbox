@@ -2,7 +2,7 @@
 
 Issue: [FLY-1286](https://linear.app/geoforge3d/issue/FLY-1286/qa-fly-1269-codex-常驻三段式-529-room-真机-e2edesigncodex-implementcodex)
 日期: 2026-07-15
-基于: FLY-1269 candidate snapshot `c833f78b`、FLY-1269 exploration/research/plan、当前 test-slot-2 真机状态
+基于: FLY-1269 PR #604 head `cad61a078`、首次 529 FAIL 证据 `ec78d792`、当前 test-slot-2 真机状态
 
 ## Problem
 
@@ -31,17 +31,36 @@ gate/review-request marker；这些路径必须逐项 allowlist。不得触及�
 
 ## Context Audit
 
-当前成功 Design execution 是 `c552669e-611b-47fc-98ca-63371c81cbe8`，其权威状态为：
+首次链的 Design execution `c552669e-611b-47fc-98ca-63371c81cbe8` 已由 Implement
+阶段证明 **A2 FAIL**：它虽保留同一 execution/thread/socket，却没有 `phaseHold`，native
+goal 保持 `active`，5 秒内 `tokens_used +683`、`time_used_seconds +5`。原始证据已固定在
+shared branch `ec78d792`；该链永久归类为 failed attempt，不能从 crash/wake 步骤续跑，也
+不能被新结果覆盖。
+
+FLY-1269 随后在 `7d20e4a76` 增加 parked-boundary hold：当 native goal 尚未发出
+`complete`、但 CommDB 已持久化 `declared parked` 时，goal loop 也必须先
+`enterPhaseHold()`。production PR #604 当前 head 为 `cad61a078`。本次 fresh Design root
+固定为 `464064c0-a711-4aa7-9426-5633dcef590d`，其权威 baseline 为：
 
 - `StateStore.sessions`: `status=running`、`adapter_type=codex-tmux`、
   `chat_thread_role=design`、`runner_model=gpt-5.6-sol`；
-- `three_stage_turn`: FLY-1286 的 holder 为该 execution，`phase=design`、`epoch=1`；
-- Codex session state: thread `019f6506-6123-7453-9bc1-5aaaa4c32c58`，有独立
+- `three_stage_turn`: FLY-1286 的 holder 为该 execution，`phase=design`、`epoch=3`；
+- Codex session state: thread `019f654c-e651-71c2-9ab9-c4e68bcdcfd5`，有独立
   `daemonPid`；
 - native `thread_goals`: 同一 thread 的 goal 当前为 `active`；
-- worktree 起点为 candidate snapshot `c833f78b`。
+- shared branch 起点保留首次失败证据 `ec78d792`，production runtime candidate 为
+  `cad61a078`。
 
-同一 issue 在本次成功 spawn 前已有 blocked/terminated 的预检尝试。因此验收不得断言
+runtime attestation 不能只读旧 `bridge.log`：该文件保留了一次 `8c4de74de` boot，但当前
+listener 的 `/health` 在 `2026-07-15T10:29:43Z` 报告 uptime `783.36s`，推算启动于
+`10:16:39Z`；fixed source/dist 分别在 `10:15:58Z` / `10:16:00Z` 落盘，listener cwd
+指向 FLY-1269 QA worktree，live dist 同时包含 `observeBoundary()` 与 parked
+`enterPhaseHold()` 分支。Design preflight 已在 pinned `cad61a078` candidate dist 上用
+同一 control-flow 邻域的有界顺序检查验证该语义，而不是假定某一种 TypeScript 表达式
+文本。因此本次 execution 是 fix 后新 spawn；Implement 仍需把这组
+attestation 写进 manifest，不能仅用 commit label 推断运行代码。
+
+同一 issue 在本次 fresh spawn 前已有 blocked/terminated 预检和一条完整 A2 FAIL 链。因此验收不得断言
 “FLY-1286 只有三条 session”或“turn history 只有三行”；必须从当前成功 Design
 execution 建立 chain manifest，再只追踪它产生的 downstream Implement/QA execution。
 `three_stage_turn` 当前行是 worktree authority，append-only history 仅是审计证据。
@@ -93,7 +112,22 @@ fault injection 必须先用 execution-private socket、`lsof` 与 PGID 三方�
 冻结。若 group leader 未变化、socket 未恢复、thread/goal 变化或出现新的 Design session，
 立即 FAIL。
 
+### Q6: 首次 A2 FAIL 后应该续跑还是整链重跑？
+
+必须整链重跑。A2 是后续 crash、wake、Implement resident 与 terminal shutdown 的共同
+前置；旧 Design 从未进入 paused hold，后续任何通过都不能补回那段缺失事实。fresh manifest
+以 `464064c0-…` 为 root，把 `c552669e-…` 及其 Implement execution 只放进
+`priorAttempts`，再从 A1 开始重新证明 A1–A8。
+
 ## Approaches
+
+本次 rerun 额外比较了三种恢复方式：
+
+1. **续跑旧链**：省时，但 A2 的失败窗口不可逆，直接拒绝；
+2. **只重测 A2**：能验证补丁，却无法证明补丁没有破坏 wake/re-hold/shutdown，证据范围
+   小于原验收，直接拒绝；
+3. **fresh root 重跑完整矩阵**：保留旧 FAIL，使用新 execution 重跑 A1–A8。成本最高，
+   但这是唯一可形成 FINAL PASS 的方式，也是本次采用方案。
 
 ### Approach A — Passive observation only
 
@@ -145,7 +179,8 @@ FLY-1269 已有这类 unit/integration/protocol probe，再做一份不能提高
 - shutdown 的 request id 与状态时间线；
 - 每个证据帧的 UTC 时间与采集者。
 
-manifest 以当前成功 Design execution 为 root。早期失败尝试单独列为 preflight noise，
+manifest 以当前 fresh Design execution `464064c0-a711-4aa7-9426-5633dcef590d` 为 root。
+首次 A2 FAIL 与更早预检尝试单独列为 `priorAttempts`，
 不得混进 PASS chain。
 
 ### Evidence planes
@@ -168,12 +203,14 @@ Design phase 只产出 exploration/research/plan，记录成功链 baseline，�
 commit/push 后 `phase_design_complete` + `park`。它不执行自己的 hold 验收，因为这需要
 在它结束后由下游观察。
 
-Implement phase 不写生产代码。取得 epoch 2 TURN 后先验证 Design 已 paused/parked ≥60s，
+Implement phase 不写生产代码。取得 TURN 后捕获该 successful chain 的 Design/Implement
+epoch，要求 holder/phase 正确且 Implement epoch 严格大于 Design epoch；再验证 Design 已 paused/parked ≥60s，
 采集冻结样本；再在严格 socket/PGID 前置下对 Design daemon group 做一次 crash；恢复稳定后通过 Lead 请求
 一次 bounded Design wake。Implement 只整理隔离证据并推进既有三段协议，自己的阶段完成
 后同样 park，供 QA 反向验证。
 
-QA Opus 作为独立 verifier，取得 epoch 3 TURN 后核对 Design 与 Implement 两个 Codex
+QA Opus 作为独立 verifier，取得 TURN 后捕获 QA epoch，要求其严格大于已记录的 Implement
+epoch 且在复核期间不变；随后核对 Design 与 Implement 两个 Codex
 phase 都是原 execution/thread 且 parked；验证 Implement 的 xhigh argv/TUI、Design 的
 crash/wake 时间线、TURN history 与证据文件；复跑触及的窄测试。任一 claim 缺权威证据
 即 FAIL，不用“未发现问题”推导 PASS。
