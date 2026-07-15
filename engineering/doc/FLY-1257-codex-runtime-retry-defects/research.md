@@ -135,17 +135,20 @@ FLY-1255 同日反例(持续 poll、不宣 blocked、行为正确)证明这是�
   - **retry 路径:无 —— `RetryRequest` 没有字段,dispatch() ctx 不含。**
 - **副发现(数据丢失口)**:worktree 未注册(被删)时走 create 路径,
   `WorktreeManager.create` 用 `git worktree add -B <branch> <startPoint>^{commit}`
-  (`WorktreeManager.ts:228-241`),startPoint 缺省落 `origin/main` —— **`-B`
-  会把已存在的 branch B 强制重置回 origin/main,静默丢弃 phase 已提交的工作**。
+  (`WorktreeManager.ts:228-241`);显式 startPoint 缺失时先取
+  `FLYWHEEL_RUNNER_START_POINT`,env 也缺失才落 `origin/main`。**最后这个 fallback
+  会让 `-B` 把已存在的 branch B 强制重置回 origin/main,静默丢弃 phase 已提交的
+  工作**。
   retry 带上 branch-B-tip 后,`-B <branch> <tip>` = 重置到自身 tip = 无损重建,
   同时修 takeover(worktree 还在)与 recreate(worktree 被删)两条路径。
 - branch 名推导:必须复用 `resolveWorktreeKey(issueId, {sessionRole,
   shareParentBranch})` + `WorktreeManager.worktreeName`(FLY-795 的
   `branchName` deps 同款),防命名 drift。三段式 shareParentBranch 的 key
   与 role 无关(共享 branch B),phase-row retry 均可推导。
-- tip 读取:`git rev-parse <branch>`(本地 branch;FLY-795 的 `revParse` deps
-  同款)。branch 不存在(如 design 首跑即死没建过分支)→ 不设 startPoint →
-  create 落 origin/main(现状,正确:确实没有历史工作可保)。
+- tip 读取:`git rev-parse --verify --quiet refs/heads/<branch>^{commit}`(全限定本地
+  branch;FLY-795 的 `revParse` deps 同族)。branch 确认不存在(如 design 首跑即死
+  没建过分支)→不设 startPoint→沿用既有 env/origin-main fallback;其他 git/IO
+  错误不可伪装成 missing,必须 fail-close。
 - 实现位点选择:**dispatch() 内部**优于 actions.ts —— dispatch() 手里有
   `runtime.projectRoot`(git 操作要它),且 retry 的其他入口(若有)同样受益;
   actions.ts 无需知道 worktree 命名细节。

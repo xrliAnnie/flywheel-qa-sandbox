@@ -78,8 +78,9 @@ sequenceDiagram
 
 ### M1-a Blueprint codex 等门指引(edge-worker)— 单一共享文案块,五个位点
 
-等门铁律做成**一个共享构造函数**(如 `codexGateWaitLawLines()`,与既有
-`formatGateQuestion` 同级的共享 helper),内容三条(措辞一次定稿,五处引用,
+等门铁律做成**一个共享构造函数**(如 Blueprint 内的
+`codexGateWaitLawLines()` standalone helper;Bridge 侧 `formatGateQuestion` 仅作
+已有共享文案模式的类比,不与本 helper 共址),内容三条(措辞一次定稿,五处引用,
 杜绝四份手抄漂移)。**每份 prompt 只渲染一次**(Codex R2 #6):五个位点都
 *请求*注入,但经 push-once sentinel 去重——多 checkpoint 同时启用时铁律块恰好
 出现一次(组合断言锁定),单独启用任一位点时也必然出现。
@@ -108,8 +109,8 @@ blocked(CLI 会拒绝)**。以 FLY-1255 的正确行为为参照措辞。
 `complete --route blocked` 时执行 guard:
 
 - **guard 只对 marker-capable(codex)执行生效**(Codex R3 #1):
-  `defaultGateMarkerDir` 在 env 缺失时落到共享目录(~/.flywheel 下的
-  codex-gates fallback),而 Claude runner 从不注入该 env——若无条件跑 guard,
+  `defaultGateMarkerDir` 在 env 缺失时落到共享目录
+  `~/.flywheel/state/codex-gates`,而 Claude runner 从不注入该 env——若无条件跑 guard,
   共享目录里一个损坏的 codex marker 会让无关 Claude runner 的
   `complete --route blocked` 误 fail-close。判定用 **adapter 注入的 marker-dir
   env**(即 gate-marker.ts 的 defaultGateMarkerDir 所读的那个 env 变量)作
@@ -136,6 +137,10 @@ blocked(CLI 会拒绝)**。以 FLY-1255 的正确行为为参照措辞。
   respond` 答复,或等 watcher 超时解析)。**损坏 marker 的运维修复路径要单独
   文档**(Codex R2 #1:respond/watcher 都跳过损坏内容,修不了它)——运维手工
   移除/隔离该 marker 文件(guard 的拒绝 stderr 指明文件路径),移除后放行。
+  M1-d 的 `FLYWHEEL_CODEX_GATE_WAIT=0` 是 goal-runtime rollback flag,**不得**让
+  CLI guard 读取它——该变量对 runner 可见,若兼作 guard kill-switch 就重新打开
+  「等门自杀」通道。strict 扫描遇到半写/暂时读错时可安全重试;永久损坏则走上述
+  窄运维隔离路径。
 - 其他 route 一律不受影响(byte-compat)。
 
 ### M1-d(原 M1-e)goal-loop blocked 拦截 — 非暂停持有(Codex R1 #2 拆自 M-opt)
@@ -164,9 +169,11 @@ probe**(blocked 终态下 dispatcher 本就不再续跑 = 不烧回合,本地持
     `writeGateHoldLatch?: (held: boolean) => void`;
     `CodexDaemonGoalRuntime` 原样透传,所以同进程 transport 轮转复用
     同一 latch。adapter 把 latch 存进既有 per-execution `session.json` 的
-    `gateHold` 字段,读/写都采用 read-modify-write + temp-file rename,不得让
-    `persistSessionState()` 的整文件重写丢掉 latch 或让 latch 写回丢掉
-    threadId/daemonPid。覆盖 Bridge/adapter 进程重启后的 re-execute 恢复路径
+    `gateHold` 字段。把现有 `persistSessionState()` 本身改为**字段合并的原子
+    writer**:每次重读当前 JSON、只覆盖调用方拥有的字段、写同目录临时文件后
+    rename;latch writer 复用同一 helper。不得让常规 persist 的整文件重写丢掉
+    latch,也不得让 latch 写回丢掉 threadId/daemonPid。覆盖 Bridge/adapter 进程
+    重启后的 re-execute 恢复路径
     (FLY-172 marker 模式同款)。**latch 只在「active goal/set + kick 都成功」
     之后清除**;持久化失败 fail-close 保持 latch=true 并重试,不能把恢复安全降成
     best-effort。
@@ -201,6 +208,10 @@ probe**(blocked 终态下 dispatcher 本就不再续跑 = 不烧回合,本地持
   不误判终态**;**持久化恢复路径:Bridge/adapter 重启 re-execute → 持久 hold
   标记令 preflight 同样正确分派;latch 在 active+kick 成功后清除(kick 失败
   不清,下轮重试)**。
+- session writer 交错单测:`writeGateHoldLatch(true)` → 常规
+  `persistSessionState()` → 重读,断言 `gateHold=true` 且 threadId/daemonPid 正确;
+  再测常规 persist → latch write 的反向顺序,断言三字段都保留。两条都检查临时
+  文件被 rename 清理,锁死「所有 writer 共享字段合并原子 helper」而非只修 latch。
 - fixture(实战①):「design 完成 → gate pending → 模型 update_goal(blocked)
   → 15 分钟后 Lead 答复」时间线,断言会话最终 completed 而非 blocked;以及
   「模型改跑 complete --route blocked」被 CLI 闸拒绝。
@@ -256,7 +267,8 @@ fixture:实战②(design retry 后 runner turn 自检应得 yours)。
 
 - **isPhaseRetry 判定独立于 keep-alive flag**:`req.shareParentBranch === true &&
   isThreeStagePhaseRole(role)`。keep-alive=0 时 Blueprint 走 removeIfExists+create,
-  create 缺 startPoint 照样把 branch B 重置回 origin/main——正是要堵的数据丢失口,
+  create 缺 startPoint 会先尝试 runner env fallback,再退到 origin/main——后者正是
+  要堵的数据丢失口,
   所以推导对**每一个** phase retry 都执行,不挂 keep-alive。
 - 注入推导函数(run-infra.ts,与 FLY-795 resumeComputer 同族),类型固定为:
 
@@ -303,7 +315,8 @@ export type PhaseRetryStartPointComputer = (
 
 - `found` → `ctx.startPoint = sha`。
 - `missing` → 不设 startPoint(合法 fresh 场景:design 首跑即死没建过分支;
-  create 落 origin/main 是正确行为)。
+  WorktreeManager 继续既有 fallback 顺序:`FLYWHEEL_RUNNER_START_POINT` 若存在则
+  用它,否则 origin/main;只有「确认 missing」才允许走这条 fresh 路径)。
 - `indeterminate` → **fail-close:abortPreLaunch + throw**(不 grant TURN、不进
   Blueprint、不碰 worktree——瞬时 git 故障绝不能转化为 origin/main 毁分支)。
 - 非 phase retry 不调用(byte-compat)。`RetryRequest` 不加字段(Bridge 内部
@@ -322,8 +335,9 @@ export type PhaseRetryStartPointComputer = (
 真 git 仓库 fixture(扩 `Blueprint.fly887-worktree-takeover.test.ts` +
 dispatcher 测试):注册 worktree + clean + head==tip 的 phase retry → takeover
 成功;dirty → 拒;分支确认不存在(真 repo 里 --verify --quiet exit 1)→ 不设
-startPoint 走 create(origin/main);**同名 tag 哨兵:存在 tag <branch> 而无
-branch → 判 missing 而非 found**(refs/heads 限定生效);**keep-alive=0 +
+startPoint 走既有 env/origin-main fallback;**同名 tag 哨兵:存在 tag <branch> 而无
+  branch → 判 missing 而非 found**(refs/heads 限定生效);missing 分支分别覆盖
+  `FLYWHEEL_RUNNER_START_POINT` 有值与无值的既有 fallback;**keep-alive=0 +
 branch B 领先 main 两个 commit + worktree 被删 → retry 后 worktree head ==
 branch tip(工作不丢)**;**git 探针 fatal 错误(如 projectRoot 不可读)→
 dispatch 抛、Blueprint 从未启动、TURN 未转移**。fixture:实战③(1244 场景:
@@ -342,6 +356,8 @@ registered 共享 worktree 上 retry implement)。
   `messages.created_at` 同为 SQLite 服务端 UTC 字符串,字典序可比;Lead
   brainstorm 批复的时钟纪律);终态→另一终态的改写**不重复盖戳**(保留首次
   时刻);新状态 ∉ 终态集(revive)→ 清 NULL。
+- 成员判定复用现有 `ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES` **readonly array** 与
+  `isStateStoreIrreversibleTerminalForZombie()` helper;不另造 Set/第二份名单。
 - `getSession` 返回该列。
 - 收敛成一个私有 helper(如
   `applyTerminalTimestamp(executionId, previousStatus, nextStatus)`),由
@@ -462,7 +478,8 @@ git commit -m "fix(runtime): prevent Codex from abandoning pending gates"
 
 - [ ] **Step 1 — RED:** 在三个 claude-runner 测试文件先写 M1 测试矩阵,尤其
   notification/poll 共用分类器、active+objective+budget 重激活、daemon restart、
-  Bridge re-execute、停机窗口 marker 已解析、kick 失败不清 latch。
+  Bridge re-execute、停机窗口 marker 已解析、kick 失败不清 latch,以及两种 writer
+  交错顺序都保留 `gateHold`/threadId/daemonPid。
 - [ ] **Step 2 — Verify RED:** 运行:
 
 ```bash
@@ -476,14 +493,16 @@ Expected: claude-runner 新用例因缺 hold/latch 失败;config 新用例因 fl
 
 ```ts
 if (goal.status === "blocked" && isWaiting()) {
-  await writeGateHoldLatch(true);
+  writeGateHoldLatch(true);
   return holdUntilGateResolved();
 }
 // resolved + latched: setGoal(active with cached objective/tokenBudget),
 // then startTurn(wake text); clear latch only after BOTH succeed.
 ```
 
-`session.json` 的所有 writer 必须合并未知/既有字段并原子 rename,不得互相覆盖。
+`session.json` 的所有 writer 必须复用同一个 merge+atomic-rename helper,合并未知/
+既有字段而不得互相覆盖;专门跑「latch→常规 persist」与「常规 persist→latch」
+交错测试后才算 GREEN。
 - [ ] **Step 4 — Verify GREEN:** 重跑 Step 2;再跑 `pnpm --filter
   flywheel-claude-runner typecheck`,Expected: 全部 exit 0。
 - [ ] **Step 5 — Commit:**
