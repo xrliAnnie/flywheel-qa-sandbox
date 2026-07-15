@@ -15,6 +15,8 @@ import {
 import { StateStore } from "../StateStore.js";
 
 const EXEC = "exec-fly191-timeout";
+const HEAD = "a".repeat(40);
+const BASE = "b".repeat(40);
 
 function noopNotifier(): HeartbeatNotifier {
 	return {
@@ -47,10 +49,32 @@ describe("HeartbeatService.checkAwaitingReviewTimeout (FLY-191 Phase 2)", () => 
 			issue_id: "FLY-191",
 			project_name: "flywheel",
 			status: "running",
+			pr_head_sha: HEAD,
+			pr_number: 42,
+			codex_skip: 1,
 		});
 		store.persistTransition(EXEC, "awaiting_review", {
 			issue_id: "FLY-191",
 			project_name: "flywheel",
+		});
+		// persistTransition intentionally owns only lifecycle fields; bind the exact
+		// reviewed head through the metadata surface used by the real event path.
+		store.patchSessionMetadata(EXEC, {
+			pr_head_sha: HEAD,
+			pr_number: 42,
+			codex_skip: 1,
+		});
+		store.putShipRelevantDiffSnapshot({
+			execution_id: EXEC,
+			pr_head_sha: HEAD,
+			repo: "owner/flywheel",
+			pr_number: 42,
+			base_ref: "main",
+			base_oid: BASE,
+			classifier_version: 1,
+			ship_relevant: 0,
+			file_count: 1,
+			sample_paths: ["engineering/doc/FLY-191/plan.md"],
 		});
 	});
 
@@ -111,6 +135,17 @@ describe("HeartbeatService.checkAwaitingReviewTimeout (FLY-191 Phase 2)", () => 
 		const fetchFn = vi.fn() as unknown as typeof fetch;
 		await makeService(fetchFn).checkAwaitingReviewTimeout();
 		expect(fetchFn).not.toHaveBeenCalled();
+	});
+
+	it("does NOT surface a timeout while objective QA evidence is missing", async () => {
+		store.deleteShipRelevantDiffSnapshot(EXEC, HEAD);
+		backdateEnteredAt(store, EXEC, 50);
+		const fetchFn = vi.fn() as unknown as typeof fetch;
+
+		await makeService(fetchFn).checkAwaitingReviewTimeout();
+
+		expect(fetchFn).not.toHaveBeenCalled();
+		expect(store.getSession(EXEC)?.gate_timeout_notified_at).toBeUndefined();
 	});
 
 	it("retries next cycle when ingest fails (no premature dedup stamp)", async () => {

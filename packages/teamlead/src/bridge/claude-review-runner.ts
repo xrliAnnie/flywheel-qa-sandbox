@@ -4,9 +4,8 @@
  *
  * Spawns `claude -p <prompt> --session-id <uuid>|--resume <uuid>
  * --output-format json --model <model>` once per review round. Every round
- * carries its full prompt (R1 = complete contract; R2+ = delta + prior
- * findings); rerounds resume the same session so Claude keeps its read of the
- * codebase.
+ * carries its full prompt. Rerounds resume the same session so Claude keeps
+ * its read of the codebase; a fresh reround rebuilds the available context.
  *
  * Failure semantics (§7.2, fail-close): anything that is not a parseable
  * structured verdict — spawn failure, timeout, non-zero exit, refusal,
@@ -26,6 +25,8 @@ import type { RoleEffort } from "flywheel-config";
 import { washJudgeEnv } from "./watchdog-judge.js";
 
 export interface ClaudeReviewFinding {
+	id?: string;
+	disputesRuling?: string;
 	severity?: string;
 	file?: string;
 	line?: number;
@@ -54,6 +55,7 @@ export type ClaudeReviewOutcome =
 			exitCode: number | null;
 			timedOut: boolean;
 			raw?: string;
+			stderrTail?: string;
 	  };
 
 export interface ClaudeReviewInvocation {
@@ -87,6 +89,7 @@ const DEFAULT_MODEL = "claude-opus-4-8";
 export const DEFAULT_REVIEW_EFFORT: RoleEffort = "xhigh";
 const DEFAULT_TIMEOUT_MS = 30 * 60_000; // §7.2: 30min per round
 const DEFAULT_MAX_STDOUT_BYTES = 8 * 1_048_576; // 8MB
+const MAX_STDERR_BYTES = 16 * 1024;
 
 /** Live children (pid → kill fn) so Bridge shutdown can reap every reviewer. */
 const liveChildren = new Map<number, () => void>();
@@ -122,6 +125,7 @@ export function buildClaudeReviewArgv(
 interface SpawnResult {
 	code: number | null;
 	stdout: string;
+	stderr: string;
 	timedOut: boolean;
 	overflowed: boolean;
 	spawnError: string | null;
@@ -140,13 +144,14 @@ export type ClaudeReviewSpawner = (opts: {
 export const defaultClaudeReviewSpawner: ClaudeReviewSpawner = (opts) =>
 	new Promise((resolve) => {
 		let stdout = "";
+		let stderrTail = Buffer.alloc(0);
 		let done = false;
 		let timedOut = false;
 		let overflowed = false;
 		let spawnError: string | null = null;
 		const child = spawn(opts.binary, opts.argv, {
 			cwd: opts.cwd,
-			stdio: ["pipe", "pipe", "ignore"],
+			stdio: ["pipe", "pipe", "pipe"],
 			env: opts.env,
 			detached: true, // own group → tree kill reaps grandchildren
 		});
@@ -168,7 +173,14 @@ export const defaultClaudeReviewSpawner: ClaudeReviewSpawner = (opts) =>
 			done = true;
 			clearTimeout(timer);
 			if (child.pid) liveChildren.delete(child.pid);
-			resolve({ code, stdout, timedOut, overflowed, spawnError });
+			resolve({
+				code,
+				stdout,
+				stderr: stderrTail.toString("utf8"),
+				timedOut,
+				overflowed,
+				spawnError,
+			});
 		};
 		const timer = setTimeout(() => {
 			timedOut = true;
@@ -182,6 +194,21 @@ export const defaultClaudeReviewSpawner: ClaudeReviewSpawner = (opts) =>
 				overflowed = true;
 				killTree();
 			}
+		});
+		child.stderr.on("data", (chunk: Buffer) => {
+			// Keep consuming stderr so a noisy child cannot block on pipe
+			// backpressure, but retain only the diagnostic tail.
+			if (chunk.length >= MAX_STDERR_BYTES) {
+				stderrTail = Buffer.from(
+					chunk.subarray(chunk.length - MAX_STDERR_BYTES),
+				);
+				return;
+			}
+			const excess = stderrTail.length + chunk.length - MAX_STDERR_BYTES;
+			stderrTail = Buffer.concat([
+				excess > 0 ? stderrTail.subarray(excess) : stderrTail,
+				chunk,
+			]);
 		});
 		child.on("error", (err) => {
 			spawnError = err instanceof Error ? err.message : String(err);
@@ -212,41 +239,41 @@ export function parseClaudeReviewOutput(stdout: string): {
 	raw: string;
 } | null {
 	let text = stdout.trim();
-	// unwrap the CLI json envelope when present. R12/R13 HIGH: anything
-	// envelope-SHAPED (an object carrying a string `result`) must match the
-	// REAL success schema exactly — type "result", subtype "success", not
-	// is_error, no api_error_status — or it is NOT a verdict, even if the
-	// error text happens to contain verdict JSON. A bare verdict object (no
-	// `result` field) is a separate format and falls through to extraction.
+	// Unwrap the CLI json envelope when present. R12/R13 HIGH: anything carrying
+	// an envelope discriminator must match the REAL success schema exactly —
+	// type "result", subtype "success", not is_error, no api_error_status, and
+	// a string result — or it is NOT a verdict. A top-level bare verdict object
+	// remains a separate supported format; other complete JSON objects are not
+	// recursively searched for nested verdict-shaped data.
 	try {
-		const envelope = JSON.parse(text) as {
-			type?: unknown;
-			subtype?: unknown;
-			is_error?: unknown;
-			api_error_status?: unknown;
-			result?: unknown;
-		};
-		if (
-			envelope &&
-			typeof envelope === "object" &&
-			typeof envelope.result === "string"
+		const whole = JSON.parse(text) as unknown;
+		if (typeof whole !== "object" || whole === null || Array.isArray(whole)) {
+			return null;
+		}
+		const envelope = whole as Record<string, unknown>;
+		const exactSuccessEnvelope =
+			envelope.type === "result" &&
+			envelope.subtype === "success" &&
+			envelope.is_error !== true &&
+			// R14: null and undefined both mean "no API error" (matches the
+			// classifier-runner precedent); any other value is an error.
+			envelope.api_error_status == null &&
+			typeof envelope.result === "string";
+		if (exactSuccessEnvelope) {
+			text = (envelope.result as string).trim();
+		} else if (
+			["type", "subtype", "is_error", "api_error_status", "result"].some(
+				(key) => Object.hasOwn(envelope, key),
+			)
 		) {
-			if (
-				envelope.type !== "result" ||
-				envelope.subtype !== "success" ||
-				envelope.is_error === true ||
-				// R14: null and undefined both mean "no API error" (matches the
-				// classifier-runner precedent); any other value is an error.
-				envelope.api_error_status != null
-			) {
-				return null;
-			}
-			text = envelope.result.trim();
+			return null;
+		} else if (!hasRecognizedVerdict(envelope)) {
+			return null;
 		}
 	} catch {
 		/* not an envelope — treat stdout as assistant text */
 	}
-	const candidate = extractJsonObject(text);
+	const candidate = extractVerdictObject(text);
 	if (!candidate) return null;
 	let parsed: unknown;
 	try {
@@ -273,14 +300,101 @@ export function parseClaudeReviewOutput(stdout: string): {
 	return { verdict: verdictRaw, findings, reviewedHeadSha, raw: text };
 }
 
-/** Find the outermost {...} block in assistant text (handles code fences). */
-function extractJsonObject(text: string): string | null {
-	const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-	const body = fence?.[1] ?? text;
-	const start = body.indexOf("{");
-	const end = body.lastIndexOf("}");
-	if (start === -1 || end === -1 || end <= start) return null;
-	return body.slice(start, end + 1);
+const VERDICT_ANCHOR_LIMIT = 32;
+
+function hasRecognizedVerdict(obj: Record<string, unknown>): boolean {
+	if (typeof obj.verdict !== "string") return false;
+	const verdict = obj.verdict.toUpperCase();
+	return verdict === "APPROVED" || verdict === "CHANGES_REQUESTED";
+}
+
+function parseVerdictCandidate(candidate: string): boolean {
+	try {
+		const parsed = JSON.parse(candidate) as unknown;
+		return (
+			typeof parsed === "object" &&
+			parsed !== null &&
+			!Array.isArray(parsed) &&
+			hasRecognizedVerdict(parsed as Record<string, unknown>)
+		);
+	} catch {
+		return false;
+	}
+}
+
+/** Return the closing brace for a JSON-like object span, respecting strings. */
+function findBalancedObjectEnd(text: string, start: number): number | null {
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	for (let i = start; i < text.length; i += 1) {
+		const char = text[i];
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (char === "\\") escaped = true;
+			else if (char === '"') inString = false;
+			continue;
+		}
+		if (char === '"') inString = true;
+		else if (char === "{") depth += 1;
+		else if (char === "}") {
+			depth -= 1;
+			if (depth === 0) return i;
+		}
+	}
+	return null;
+}
+
+/**
+ * Extract the final structured verdict from prose-plus-JSON reviewer output.
+ * First scan balanced top-level object spans in O(n). If prose contains an
+ * unmatched opening brace, fall back to at most 32 verdict-key anchors.
+ */
+function extractVerdictObject(text: string): string | null {
+	let lastMatch: string | null = null;
+	let depth = 0;
+	let spanStart = -1;
+	let inString = false;
+	let escaped = false;
+	for (let i = 0; i < text.length; i += 1) {
+		const char = text[i];
+		if (depth > 0 && inString) {
+			if (escaped) escaped = false;
+			else if (char === "\\") escaped = true;
+			else if (char === '"') inString = false;
+			continue;
+		}
+		if (depth > 0 && char === '"') {
+			inString = true;
+			continue;
+		}
+		if (char === "{") {
+			if (depth === 0) spanStart = i;
+			depth += 1;
+		} else if (char === "}" && depth > 0) {
+			depth -= 1;
+			if (depth === 0 && spanStart >= 0) {
+				const candidate = text.slice(spanStart, i + 1);
+				if (parseVerdictCandidate(candidate)) lastMatch = candidate;
+				spanStart = -1;
+			}
+		}
+	}
+	if (lastMatch) return lastMatch;
+
+	let anchorFrom = 0;
+	for (let count = 0; count < VERDICT_ANCHOR_LIMIT; count += 1) {
+		const anchor = text.indexOf('"verdict"', anchorFrom);
+		if (anchor === -1) break;
+		anchorFrom = anchor + '"verdict"'.length;
+		const start = text.lastIndexOf("{", anchor);
+		if (start === -1) continue;
+		const end = findBalancedObjectEnd(text, start);
+		if (end === null) continue;
+		const candidate = text.slice(start, end + 1);
+		if (parseVerdictCandidate(candidate)) lastMatch = candidate;
+	}
+	return lastMatch;
 }
 
 export interface RunClaudeReviewDeps {
@@ -320,6 +434,7 @@ export async function runClaudeReviewRound(
 			detail: res.spawnError,
 			exitCode: res.code,
 			timedOut: false,
+			stderrTail: res.stderr.slice(-2000),
 		};
 	}
 	if (res.timedOut) {
@@ -330,6 +445,7 @@ export async function runClaudeReviewRound(
 			detail: `timed out after ${inv.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`,
 			exitCode: res.code,
 			timedOut: true,
+			stderrTail: res.stderr.slice(-2000),
 		};
 	}
 	if (res.overflowed) {
@@ -339,6 +455,7 @@ export async function runClaudeReviewRound(
 			detail: "reviewer stdout exceeded the bounded buffer",
 			exitCode: res.code,
 			timedOut: false,
+			stderrTail: res.stderr.slice(-2000),
 		};
 	}
 	if (res.code !== 0) {
@@ -348,7 +465,8 @@ export async function runClaudeReviewRound(
 			detail: `claude exited ${res.code}`,
 			exitCode: res.code,
 			timedOut: false,
-			raw: res.stdout.slice(0, 4000),
+			raw: res.stdout.slice(-4000),
+			stderrTail: res.stderr.slice(-2000),
 		};
 	}
 	const parsed = parseClaudeReviewOutput(res.stdout);
@@ -361,7 +479,8 @@ export async function runClaudeReviewRound(
 			detail: "no parseable structured verdict in reviewer output",
 			exitCode: res.code,
 			timedOut: false,
-			raw: res.stdout.slice(0, 4000),
+			raw: res.stdout.slice(-4000),
+			stderrTail: res.stderr.slice(-2000),
 		};
 	}
 	return { kind: "verdict", ...parsed };

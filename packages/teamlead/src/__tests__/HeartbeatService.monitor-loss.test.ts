@@ -2,8 +2,9 @@
  * FLY-172 + FLY-623: orchestration tests for HeartbeatService's monitoring-loss
  * reconcile pass. FLY-623 makes RE-ADOPT the default (FLYWHEEL_HEARTBEAT_READOPT
  * unset / ON): a detached-but-alive Runner gets its heartbeat refreshed +
- * suppressed from stuck/orphan/idle + a "⚠️重连中" title, via the `reconnecting`
- * set. `FLYWHEEL_HEARTBEAT_READOPT=0` reverts to the exact FLY-172 legacy
+ * suppressed from stuck/orphan/idle while the title is restored to the actual
+ * phase/status, via the `reconnecting` set. `FLYWHEEL_HEARTBEAT_READOPT=0`
+ * reverts to the exact FLY-172 legacy
  * (advisory-only, no refresh). The marker mechanics are covered in
  * complete-marker-reconciler.test.ts; here we mock that module + tmux-lookup to
  * test the orchestration deterministically.
@@ -278,6 +279,121 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		await service.checkStuck();
 		expect(notifier.onSessionStuck).not.toHaveBeenCalled();
 	});
+
+	it("boot seed returns only newly re-adopted execs and activates both layers", async () => {
+		store.getActiveSessions.mockReturnValue([sess()]);
+		expect(await service.seedReconnecting()).toEqual(["exec-1"]);
+		expect(service.isReconnecting("exec-1")).toBe(true);
+		expect(service.isReconnectTitleActive("exec-1")).toBe(true);
+		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledWith(
+			sess(),
+			expect.any(Number),
+			{ stampReconnectTitle: true },
+		);
+
+		// Same process, same episode: no duplicate boot candidate or title stamp.
+		expect(await service.seedReconnecting()).toEqual([]);
+		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(1);
+	});
+
+	it("FLY-1264 review R2: a runtime re-entry preserves the canonical title without spending two renames", async () => {
+		service.markReconnectTitleRefresherReady();
+		store.getOrphanSessions.mockReturnValue([sess()]);
+
+		await service.reconcileMonitorLoss();
+
+		expect(service.isReconnecting("exec-1")).toBe(true);
+		expect(service.isReconnectTitleActive("exec-1")).toBe(false);
+		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledWith(
+			sess(),
+			expect.any(Number),
+			{ stampReconnectTitle: false },
+		);
+	});
+
+	it("FLY-1264 review R2: transient boot marker retry preserves canonical title on runtime entry", async () => {
+		mockedTry
+			.mockResolvedValueOnce({ kind: "transient_failed", error: "busy" })
+			.mockResolvedValueOnce({ kind: "absent" });
+		store.getActiveSessions.mockReturnValue([sess()]);
+		expect(await service.seedReconnecting()).toEqual([]);
+
+		service.markReconnectTitleRefresherReady();
+		store.getOrphanSessions.mockReturnValue([sess()]);
+
+		await service.reconcileMonitorLoss();
+
+		expect(service.isReconnecting("exec-1")).toBe(true);
+		expect(service.isReconnectTitleActive("exec-1")).toBe(false);
+		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledWith(
+			sess(),
+			expect.any(Number),
+			{ stampReconnectTitle: false },
+		);
+	});
+
+	it("FLY-1264: no-arg settle drains an episode the explicit boot ids never captured (early heartbeat-tick safety net)", async () => {
+		// Models the production second call `restoreReconnectTitles()` (no ids):
+		// a session that entered reconnecting via an early monitor-loss tick BEFORE
+		// the refresher bound is NOT in bootReconnectExecutionIds, so only the
+		// no-arg drain-all frees its title. If this path were a no-op, that title
+		// would stay stuck at ⚠️重连中 forever — the exact FLY-1264 failure mode.
+		store.getActiveSessions.mockReturnValue([]);
+		expect(await service.seedReconnecting()).toEqual([]); // no boot ids captured
+
+		// Early tick enters reconnecting + activates the title while the refresher
+		// is still unbound (default: markReconnectTitleRefresherReady NOT yet called).
+		store.getOrphanSessions.mockReturnValue([sess()]);
+		await service.reconcileMonitorLoss();
+		expect(service.isReconnectTitleActive("exec-1")).toBe(true);
+
+		// No-arg drain-all releases every active title episode and returns its
+		// session so the caller can enqueue a canonical refresh for that issue.
+		const drained = service.settleReconnectTitles();
+		expect(drained.map((s) => s.execution_id)).toEqual(["exec-1"]);
+		expect(service.isReconnectTitleActive("exec-1")).toBe(false);
+		// Internal monitor-loss protection is untouched — only the title lifetime ended.
+		expect(service.isReconnecting("exec-1")).toBe(true);
+		expect(notifier.clearReconnectStamp).not.toHaveBeenCalled();
+
+		// Idempotent: a second no-arg drain has nothing left and enqueues nothing.
+		expect(service.settleReconnectTitles()).toEqual([]);
+	});
+
+	it("settles only the title layer and keeps monitor-loss suppression", async () => {
+		const s = sess();
+		store.getActiveSessions.mockReturnValue([s]);
+		store.getStuckSessions.mockReturnValue([s]);
+		const seeded = await service.seedReconnecting();
+
+		expect(service.settleReconnectTitles(seeded)).toEqual([s]);
+		expect(service.isReconnectTitleActive("exec-1")).toBe(false);
+		expect(service.isReconnecting("exec-1")).toBe(true);
+		await service.checkStuck();
+		expect(notifier.onSessionStuck).not.toHaveBeenCalled();
+		expect(notifier.clearReconnectStamp).not.toHaveBeenCalled();
+	});
+
+	it("accepted-event clear removes both layers but boot settle still returns its issue session", async () => {
+		store.getActiveSessions.mockReturnValue([sess()]);
+		const seeded = await service.seedReconnecting();
+
+		service.clearReconnecting("exec-1");
+		expect(service.isReconnecting("exec-1")).toBe(false);
+		expect(service.isReconnectTitleActive("exec-1")).toBe(false);
+		expect(service.settleReconnectTitles(seeded)).toEqual([sess()]);
+		expect(notifier.clearReconnectStamp).toHaveBeenCalledTimes(1);
+	});
+
+	it("event clear after boot title settle does not issue a stale legacy restamp", async () => {
+		store.getActiveSessions.mockReturnValue([sess()]);
+		const seeded = await service.seedReconnecting();
+		service.settleReconnectTitles(seeded);
+
+		service.clearReconnecting("exec-1");
+		expect(service.isReconnecting("exec-1")).toBe(false);
+		expect(notifier.clearReconnectStamp).not.toHaveBeenCalled();
+	});
 });
 
 describe("HeartbeatService legacy (FLY-623 kill-switch FLYWHEEL_HEARTBEAT_READOPT=0)", () => {
@@ -425,7 +541,7 @@ describe("HeartbeatService legacy (FLY-623 kill-switch FLYWHEEL_HEARTBEAT_READOP
 
 	it("boot-seed is a no-op under kill-switch", async () => {
 		store.getActiveSessions.mockReturnValue([sess()]);
-		await service.seedReconnecting();
+		expect(await service.seedReconnecting()).toEqual([]);
 		expect(store.updateHeartbeat).not.toHaveBeenCalled();
 		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
 	});

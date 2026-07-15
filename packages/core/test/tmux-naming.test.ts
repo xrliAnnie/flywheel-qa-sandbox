@@ -86,6 +86,26 @@ describe("buildSessionName", () => {
 });
 
 describe("buildWindowLabel", () => {
+	it("preserves capped Codex and Kimi identity through the 50-char sanitizer", () => {
+		const title = "Fix a deliberately long founder-visible issue title";
+		const codex = sanitizeTmuxName(
+			buildWindowLabel("FLY-1255", "implement-codex-G", title),
+		);
+		expect(codex).toHaveLength(50);
+		expect(codex).toMatch(/^FLY-1255-implement-codex-G-/);
+		expect(codex).toBe("FLY-1255-implement-codex-G-Fix-a-deliberately-long");
+
+		const kimi = sanitizeTmuxName(
+			buildWindowLabel("LEARN-143", "runner-kimi-K", title),
+		);
+		expect(kimi).toBe("LEARN-143-runner-kimi-K-Fix-a-deliberately-long-fo");
+
+		const maxLabel = sanitizeTmuxName(
+			buildWindowLabel("LEARN-143", `runner-vendor-${"x".repeat(25)}`, title),
+		);
+		expect(maxLabel).toBe("LEARN-143-runner-vendor-xxxxxxxxxxxxxxxxxxxxxxxxx-");
+	});
+
 	it("produces issueId-runner-cleanTitle (unsanitized)", () => {
 		expect(buildWindowLabel("GEO-101", "claude", "Issue GEO-101 title")).toBe(
 			"GEO-101-claude-Issue GEO-101 title",

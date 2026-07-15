@@ -101,6 +101,24 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 			issue_id: "FLY-191",
 			project_name: PROJECT,
 		});
+		// FLY-1251: the shared approval writer must see exact, server-owned
+		// readiness evidence. These tests exercise post-write behavior, so seed
+		// passing exact-head QA instead of bypassing the guard.
+		const head = "a".repeat(40);
+		store.patchSessionMetadata(EXEC, {
+			pr_head_sha: head,
+			pr_number: 191,
+			codex_skip: 1,
+		});
+		store.claimAutoQaRecord({
+			parentExecutionId: EXEC,
+			targetPrHeadSha: head,
+			issueId: "FLY-191",
+			projectName: PROJECT,
+		});
+		store.setAutoQaStatus(EXEC, head, "passed", {
+			verdictEventId: "qa-pass-wiring",
+		});
 
 		const transitionOpts: ApplyTransitionOpts = {
 			store,

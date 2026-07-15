@@ -892,7 +892,7 @@ export function createQueryRouter(
 			threadId,
 			text,
 			botToken,
-			replyTo ? { replyTo } : {},
+			{ origin: "lead_authored", ...(replyTo ? { replyTo } : {}) },
 			opts?.discordFetch,
 		);
 

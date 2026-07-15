@@ -667,6 +667,37 @@ describe("DirectEventSink — FLY-493: pr_handoff → terminal completed", () =>
 		expect(store.getSession("exec-1")?.runner_model ?? null).toBeNull();
 	});
 
+	it.each(["codex-tmux", undefined])(
+		"emitStarted renders GPT-5.6 in a fresh thread when backend metadata is %s",
+		async (runnerBackend) => {
+			const contexts: Array<Record<string, unknown>> = [];
+			const creator = {
+				ensureChatThread: vi.fn(async (ctx: Record<string, unknown>) => {
+					contexts.push(ctx);
+					return { created: true, threadId: "thread-1255" };
+				}),
+			};
+			const sink = new DirectEventSink(
+				store,
+				makeConfig({ chatThreadsEnabled: true }),
+				testProjects,
+				undefined,
+				undefined,
+				creator as never,
+			);
+
+			await sink.emitStarted(
+				makeEnvelope({
+					labels: ["Product"],
+					runnerBackend,
+					runnerModel: "gpt-5.6-sol",
+				}),
+			);
+
+			expect(contexts[0]?.modelMarker).toBe("G");
+		},
+	);
+
 	it("awaiting_review + route=pr_handoff → status unchanged (skipped, no strand-clear)", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",
@@ -756,10 +787,10 @@ describe("DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH
 		expect(delivered).not.toContain("session_completed");
 	});
 
-	it("byte-compat: with NO held record the review-required delivery fires", async () => {
-		// FLY-827: this pre-codex byte-compat test asserts delivery with no held
-		// record. Run gate-OFF so isReviewHeld falls back to isQaHeld (false here);
-		// under the hard gate an un-reviewed awaiting_review is intentionally held.
+	it("a server-classified docs-only PR releases the review-required delivery", async () => {
+		// FLY-1251: disabling the code-review gate does not waive QA evidence. The
+		// only no-QA release is a server-owned docs-only classification for the
+		// exact PR head.
 		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
 		try {
 			const { registry, delivered } = captureRegistry();
@@ -771,6 +802,19 @@ describe("DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH
 				registry,
 			);
 			await sink.emitStarted(makeEnvelope());
+			store.patchSessionMetadata("exec-1", { pr_number: 42 });
+			store.putShipRelevantDiffSnapshot({
+				execution_id: "exec-1",
+				pr_head_sha: SHA,
+				repo: "xrliAnnie/GeoForge3D",
+				pr_number: 42,
+				base_ref: "main",
+				base_oid: "b".repeat(40),
+				classifier_version: 1,
+				ship_relevant: 0,
+				file_count: 1,
+				sample_paths: ["engineering/doc/GEO-100/plan.md"],
+			});
 			await sink.emitCompleted(makeEnvelope(), needsReviewResult());
 			expect(delivered).toContain("session_completed");
 		} finally {

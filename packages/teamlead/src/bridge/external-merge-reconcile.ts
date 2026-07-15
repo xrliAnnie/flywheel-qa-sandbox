@@ -83,6 +83,7 @@ export interface PrMergeInfo {
 export async function checkPrMergeViaGh(
 	projectRoot: string,
 	prNumber: number,
+	timeoutMs = 10_000,
 ): Promise<PrMergeInfo> {
 	if (!Number.isInteger(prNumber) || prNumber <= 0) return { state: "unknown" };
 	try {
@@ -95,7 +96,7 @@ export async function checkPrMergeViaGh(
 				"--json",
 				"state,mergedAt,mergeCommit,headRefOid",
 			],
-			{ cwd: projectRoot, timeout: 10_000 },
+			{ cwd: projectRoot, timeout: Math.max(1, timeoutMs) },
 		);
 		const parsed = JSON.parse(stdout) as {
 			state?: string;

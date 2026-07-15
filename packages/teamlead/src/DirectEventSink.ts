@@ -5,9 +5,10 @@
 
 import { randomUUID } from "node:crypto";
 import {
+	adapterTypeToFamily,
 	DEFAULT_PROOFSHOT_CONFIG,
 	isThreeStagePhaseRole,
-	modelShortCode,
+	renderRunnerModelDisplay,
 	resolveCompletionSessionRole,
 	type SkillsConfig,
 } from "flywheel-config";
@@ -263,11 +264,16 @@ export class DirectEventSink implements ExecutionEventEmitter {
 							botToken,
 							leadId: ctLead.agentId,
 							ownerUserId: this.config.discordOwnerUserId,
-							// FLY-728 Part D: stamp the model code at thread creation so a
-							// new [FLY-XX] thread shows F/O/S/H immediately (not only after
-							// the first stage_changed). `?? null` = authoritative (no stale
-							// code carried onto a reused thread).
-							modelCode: modelShortCode(env.runnerModel) ?? null,
+							// FLY-1255: stamp the resolved runner model at thread creation.
+							// `?? null` is authoritative and clears a stale marker when no
+							// model was selected.
+							modelMarker:
+								renderRunnerModelDisplay({
+									vendor: env.runnerBackend
+										? adapterTypeToFamily(env.runnerBackend)
+										: undefined,
+									model: env.runnerModel,
+								})?.threadMarker ?? null,
 							// FLY-892 (converge): one issue = one thread — no per-phase
 							// thread role is passed; the phase session and the Lead resolve
 							// the SAME (issue, channel) thread. `chat_thread_role` is still

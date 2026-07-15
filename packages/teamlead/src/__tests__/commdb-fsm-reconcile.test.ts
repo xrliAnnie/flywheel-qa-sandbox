@@ -93,6 +93,45 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 		}
 	});
 
+	it("runner-death regression: terminal FSM finalizes its pending checkpoint gate", async () => {
+		seedRunning("dead-runner");
+		const qid = db.insertQuestion("dead-runner", "lead-a", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		const result = await reconcileCommDbRunningAgainstFsm(
+			"flywheel",
+			fsmFrom({ "dead-runner": "completed" }),
+			{ dbPath, probe: async () => "dead" },
+		);
+		expect(result.reconciled).toBe(1);
+		db.close();
+		db = new CommDB(dbPath, false);
+		expect(db.getSession("dead-runner")).toBeUndefined();
+		expect(db.isQuestionPending(qid)).toBe(false);
+	});
+
+	it("finalize failure keeps both session and gate and does not count reconciled", async () => {
+		seedRunning("dead-runner");
+		const qid = db.insertQuestion("dead-runner", "lead-a", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		const result = await reconcileCommDbRunningAgainstFsm(
+			"flywheel",
+			fsmFrom({ "dead-runner": "completed" }),
+			{
+				dbPath,
+				probe: async () => "dead",
+				finalizeSession: () => {
+					throw new Error("locked");
+				},
+			},
+		);
+		expect(result.reconciled).toBe(0);
+		expect(result.finalizeFailed).toBe(1);
+		expect(db.getSession("dead-runner")).toBeDefined();
+		expect(db.isQuestionPending(qid)).toBe(true);
+	});
+
 	it("BLOCKER 1: NEVER deletes preserve rows (failed/blocked), even with a dead tmux target", async () => {
 		seedRunning("f1");
 		seedRunning("b1");
@@ -210,6 +249,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 			keptNonTerminal: 2,
 			keptPreserve: 1,
 			keptAliveTarget: 1,
+			finalizeFailed: 0,
 		});
 		expect(db.getSession("gone")).toBeUndefined();
 		expect(db.getSession("app")).toBeUndefined();
@@ -259,6 +299,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 				keptNonTerminal: 0,
 				keptPreserve: 0,
 				keptAliveTarget: 0,
+				finalizeFailed: 0,
 			});
 		});
 

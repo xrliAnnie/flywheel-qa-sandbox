@@ -13,7 +13,7 @@ import type { ChatThreadCreator } from "../bridge/ChatThreadCreator.js";
 import { createEventRouter } from "../bridge/event-route.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import { StateStore } from "../StateStore.js";
+import { type Session, StateStore } from "../StateStore.js";
 
 const PROJECT = "fly560-test";
 const EXEC_ID = "exec-fly560-1";
@@ -68,6 +68,8 @@ describe("FLY-560: event-route stage-emoji stamping", () => {
 			status: "running",
 			started_at: new Date().toISOString(),
 			issue_labels: JSON.stringify(["Flywheel"]),
+			adapter_type: "codex-tmux",
+			runner_model: "gpt-5.6-sol",
 		});
 		stampSpy = vi.fn().mockResolvedValue(undefined);
 		fakeCreator = {
@@ -85,7 +87,9 @@ describe("FLY-560: event-route stage-emoji stamping", () => {
 		reconnectHolder?: {
 			current: {
 				isReconnecting: (id: string) => boolean;
+				isReconnectTitleActive: (id: string) => boolean;
 				clearReconnecting: (id: string) => void;
+				settleReconnectTitles: (ids: readonly string[]) => Session[];
 			} | null;
 		},
 	) {
@@ -153,6 +157,7 @@ describe("FLY-560: event-route stage-emoji stamping", () => {
 			issueIdentifier: "FLY-560",
 			issueTitle: "Discord issue status",
 			botToken: "bot-token",
+			modelMarker: "G",
 		});
 	});
 
@@ -182,7 +187,12 @@ describe("FLY-560: event-route stage-emoji stamping", () => {
 	it("FLY-623: an ACCEPTED stage_changed clears reconnecting (channel proven live)", async () => {
 		const clearReconnecting = vi.fn();
 		const holder = {
-			current: { isReconnecting: () => true, clearReconnecting },
+			current: {
+				isReconnecting: () => true,
+				isReconnectTitleActive: () => true,
+				clearReconnecting,
+				settleReconnectTitles: () => [],
+			},
 		};
 		store.upsertChatThread(THREAD_ID, CHAT_CHANNEL, ISSUE_ID);
 		const res = await postStage(
@@ -197,7 +207,12 @@ describe("FLY-560: event-route stage-emoji stamping", () => {
 	it("FLY-623 (Codex R1 HIGH): an invalid/rejected stage does NOT clear reconnecting", async () => {
 		const clearReconnecting = vi.fn();
 		const holder = {
-			current: { isReconnecting: () => true, clearReconnecting },
+			current: {
+				isReconnecting: () => true,
+				isReconnectTitleActive: () => true,
+				clearReconnecting,
+				settleReconnectTitles: () => [],
+			},
 		};
 		const res = await postStage(
 			buildApp(fakeCreator, holder),

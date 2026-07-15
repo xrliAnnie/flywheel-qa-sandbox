@@ -27,6 +27,10 @@ import {
 	type ReviewHoldReason,
 } from "../auto-qa-held.js";
 import type { ShipApprovalOutcome } from "../founder-reply-deliverer.js";
+import type {
+	MergedGateGuard,
+	MergedGateGuardResult,
+} from "../merged-gate-guard.js";
 import {
 	makeGuardedOnResponseWritten,
 	type ResponseGuardDb,
@@ -89,15 +93,15 @@ export interface DeferralSupport {
 		holdReason: "codex_pending" | "qa_not_green";
 	}): "inserted" | "noop_existing";
 	/**
-	 * Queue the held explainer thread notice (merge_block pointer / the
-	 * deferred-OFF "请再说一次" explainer — §4.4 truth table). Idempotent per
+	 * Queue the held explainer thread notice (merge_block recovery pointer,
+	 * readiness pointer, or deferred-OFF explainer). Idempotent per
 	 * (questionId, msgId); best-effort (must not throw into attribution).
 	 */
 	queueHeldNotice(args: {
 		questionId: string;
 		msgId: string;
 		executionId: string;
-		kind: "merge_block" | "deferred_off";
+		kind: "merge_block" | "readiness_hold" | "deferred_off";
 		holdReason: ReviewHoldReason;
 	}): void;
 	/**
@@ -165,6 +169,8 @@ export interface ShipApprovalHandlerDeps {
 	isHeld?: (executionId: string) => boolean;
 	/** FLY-1099 §4.2: deferral support (absent → legacy held_declined). */
 	deferral?: DeferralSupport;
+	/** FLY-1238: shared last-mile PR-state guard. */
+	mergedGateGuard?: MergedGateGuard;
 }
 
 export interface ShipApprovalHandlerArgs {
@@ -179,7 +185,12 @@ export interface ShipApprovalHandlerArgs {
 		executionId: string;
 		createdAtMs: number;
 	}[];
-	ctx: { issueId: string; threadId: string };
+	ctx: {
+		issueId: string;
+		threadId: string;
+		projectName?: string;
+		projectRoot?: string;
+	};
 	/**
 	 * FLY-1041 Chunk 7: this founder message is a VERIFIED Discord reply
 	 * (type 19 + reference in this thread) to THIS gate's ship card — the
@@ -260,6 +271,49 @@ export async function tryFounderShipApproval(
 		canonicalFounderId: deps.canonicalFounderId,
 	};
 
+	const runMergedGuard = async (): Promise<MergedGateGuardResult | null> => {
+		if (!deps.mergedGateGuard) return null;
+		return deps.mergedGateGuard({
+			executionId: gate.executionId,
+			issueId: args.ctx.issueId,
+			questionId: gate.questionId,
+			projectName: args.ctx.projectName ?? "",
+			projectRoot: args.ctx.projectRoot,
+			prNumber: session.pr_number ?? undefined,
+			source: "text",
+		});
+	};
+	const guardDisposition = (
+		result: MergedGateGuardResult,
+	): ShipApprovalOutcome | null | undefined => {
+		if (result.kind === "continue") return undefined;
+		deps.auditSink?.(`merged_gate_guard_${result.kind}`, {
+			questionId: gate.questionId,
+			...("reason" in result ? { reason: result.reason } : {}),
+		});
+		if (result.kind === "retry_later") {
+			return retryOutcome("merged_gate_guard_retry", result.reason);
+		}
+		if (result.kind === "terminal_unavailable") {
+			return {
+				bound: [],
+				deferred: [],
+				retry: false,
+				deadLetter: {
+					questionId: gate.questionId,
+					stage: "merged_gate_guard_terminal",
+					reason: result.reason,
+				},
+			};
+		}
+		return {
+			bound: [],
+			deferred: [],
+			suppressed: [{ questionId: gate.questionId }],
+			retry: false,
+		};
+	};
+
 	// ── signal evaluation (text), shared by the live and held paths ──
 	let signalAudited = false;
 	const evaluateSignal = async (): Promise<ApprovalSignal | null> => {
@@ -328,12 +382,23 @@ export async function tryFounderShipApproval(
 				executionId: gate.executionId,
 				holdReason: reason,
 			});
+			const guardResult = await runMergedGuard();
+			if (guardResult) {
+				const disposition = guardDisposition(guardResult);
+				if (disposition !== undefined) return disposition;
+			}
 			if (deferral.heldReplyEnabled()) {
 				deferral.queueHeldNotice({
 					questionId: gate.questionId,
 					msgId: args.msg.id,
 					executionId: gate.executionId,
-					kind: reason === "merge_block" ? "merge_block" : "deferred_off",
+					kind:
+						reason === "merge_block"
+							? "merge_block"
+							: reason === "qa_evidence_missing" ||
+									reason === "qa_evidence_unknown"
+								? "readiness_hold"
+								: "deferred_off",
 					holdReason: reason,
 				});
 			}
@@ -441,6 +506,11 @@ export async function tryFounderShipApproval(
 	}
 	const heldNow = heldState();
 	if (heldNow) return handleHeld(heldNow, signal);
+	const mergedGuardResult = await runMergedGuard();
+	if (mergedGuardResult) {
+		const disposition = guardDisposition(mergedGuardResult);
+		if (disposition !== undefined) return disposition;
+	}
 
 	const write = deps.writeGateResponseImpl ?? writeGateResponseAndRunPostWrite;
 	const answer =

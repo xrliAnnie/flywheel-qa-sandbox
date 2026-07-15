@@ -24,7 +24,6 @@ import Database from "better-sqlite3";
 import {
 	DEFAULT_PHASE_TIER,
 	modelDisplayName,
-	modelShortCode,
 	PHASE_THREAD_BADGE,
 	phaseMessageTag,
 	phaseThreadBadge,
@@ -54,6 +53,7 @@ import {
 	type ParkProbe,
 	type PhaseDisplayState,
 } from "./issue-display.js";
+import { sessionModelDisplay } from "./runner-model-display.js";
 import { BLOCKED_EMOJI, BLOCKED_WORD } from "./stage-utils.js";
 import {
 	type AttachTarget,
@@ -185,9 +185,9 @@ export function stampStageEmojiForSession(
 				issueTitle: session.issue_title,
 				botToken,
 				leadId,
-				// FLY-728 Part D: ride the stage rename with the model short code
-				// (F/O/S/H). `?? null` = authoritative CLEAR on account-default.
-				modelCode: modelShortCode(session.runner_model) ?? null,
+				// FLY-1255: derive the title marker from the actual runner model,
+				// falling back to the planned phase dispatch when needed.
+				modelMarker: sessionModelDisplay(session)?.threadMarker ?? null,
 			},
 			thread.thread_id,
 			stage,
@@ -368,14 +368,17 @@ const LEGACY_HEADER_DONE_STATUSES: ReadonlySet<string> = new Set([
 /**
  * FLY-907 sweep layer-1 fast hash input: the sessions-table component of the
  * display fingerprint — per-role latest {role, status, exec} + the issue's
- * latest session {status, session_stage, exec}. Cheap (StateStore only, zero
- * CommDB), and computed IDENTICALLY by the refresher's fingerprint writer so
- * layer-1 comparison is exact.
+ * latest session {status, session_stage, exec} + the three-stage issue's
+ * post-ship finalization-claim bit. Cheap (StateStore only, zero CommDB), and
+ * computed IDENTICALLY by the refresher's fingerprint writer so layer-1
+ * comparison is exact.
  */
 export function computeSessionsFingerprint(
 	store: Pick<
 		StateStore,
-		"getLatestPhaseSessionsForIssue" | "getSessionByIssue"
+		| "countEventsByIssueAndType"
+		| "getLatestPhaseSessionsForIssue"
+		| "getSessionByIssue"
 	>,
 	issueId: string,
 ): string {
@@ -387,6 +390,13 @@ export function computeSessionsFingerprint(
 	const main = store.getSessionByIssue(issueId);
 	return JSON.stringify({
 		p: phases,
+		// `getLatestPhaseSessionsForIssue` only returns design/implement/qa rows,
+		// so a non-empty result is the same three-stage guard used by derivation.
+		// Single-session issues retain the pre-FLY-1225 zero-query path.
+		fc:
+			phases.length > 0 &&
+			store.countEventsByIssueAndType(issueId, "post_ship_finalization_claim") >
+				0,
 		m: main
 			? { st: main.status, sg: main.session_stage ?? "", e: main.execution_id }
 			: null,
@@ -431,9 +441,9 @@ export interface IssueDisplayRefresherDeps {
 	/**
 	 * FLY-623 interaction guard: while a session is detached-but-alive after a
 	 * Bridge restart, HeartbeatService owns the "⚠️重连中" title — a derived
-	 * stamp would clear it prematurely. Face A defers while reconnecting.
+	 * stamp would clear it prematurely. Face A defers while the title episode is active.
 	 */
-	isReconnecting?: (execId: string) => boolean;
+	isReconnectTitleActive?: (execId: string) => boolean;
 	// ── test seams (default to the real implementations) ──
 	readParkProbe?: (projectName: string, execId: string) => ParkProbe;
 	getTmuxTarget?: (
@@ -634,19 +644,27 @@ export class IssueDisplayRefresher {
 
 		// Unified per-phase states (face A aggregation + face B rows).
 		const phaseStates = new Map<ThreeStagePhase, PhaseDisplayState>();
+		const phaseStatuses = new Map<ThreeStagePhase, string>();
 		const phaseSessionByRole = new Map<ThreeStagePhase, Session>();
 		for (const s of latestPhase) {
 			const role = s.chat_thread_role as ThreeStagePhase;
 			phaseSessionByRole.set(role, s);
+			phaseStatuses.set(role, s.status);
 			phaseStates.set(
 				role,
 				derivePhaseDisplayState({ role, status: s.status, park: parkFor(s) }),
 			);
 		}
+		const shipFinalizationClaimed =
+			isThreeStage &&
+			store.countEventsByIssueAndType(issueId, "post_ship_finalization_claim") >
+				0;
 
 		// ── Face A: title badge ──
 		let badge = deriveIssueTitleBadge({
 			phaseStates,
+			phaseStatuses,
+			shipFinalizationClaimed,
 			mainSessionStage: anySession.session_stage,
 			mainSessionStatus: anySession.status,
 		});
@@ -674,12 +692,12 @@ export class IssueDisplayRefresher {
 			issueTitle: anySession.issue_title,
 			botToken,
 			leadId,
-			modelCode: modelShortCode(badgeSession.runner_model) ?? null,
+			modelMarker: sessionModelDisplay(badgeSession)?.threadMarker ?? null,
 		};
 
 		let resultA: DisplayWriteResult = "noop";
 		if (flags.issueStatusEmojiEnabled) {
-			if (this.deps.isReconnecting?.(badgeSession.execution_id)) {
+			if (this.deps.isReconnectTitleActive?.(badgeSession.execution_id)) {
 				// HeartbeatService owns the ⚠️重连中 title right now — defer (no
 				// fingerprint) so a later refresh reconciles after reconnect ends.
 				resultA = "deferred";

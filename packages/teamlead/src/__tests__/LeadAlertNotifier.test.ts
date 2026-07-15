@@ -868,7 +868,9 @@ describe("LeadAlertNotifier — FLY-927 Task 1.2: 🎫 ticket schema header", ()
 		const body = JSON.parse(
 			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
 		);
-		expect(body.content).toBe("⚠️ **T** (cos-lead / pane_hash_stuck)\nB");
+		expect(body.content).toBe(
+			"🤖[自动] ⚠️ **T** (cos-lead / pane_hash_stuck)\nB",
+		);
 		expect(body.allowed_mentions).toEqual({ parse: [] });
 	});
 
@@ -880,7 +882,9 @@ describe("LeadAlertNotifier — FLY-927 Task 1.2: 🎫 ticket schema header", ()
 		const body = JSON.parse(
 			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
 		);
-		expect(body.content).toBe("⚠️ **T** (cos-lead / pane_hash_stuck)\nB");
+		expect(body.content).toBe(
+			"🤖[自动] ⚠️ **T** (cos-lead / pane_hash_stuck)\nB",
+		);
 		expect(body.allowed_mentions).toBeUndefined();
 	});
 
@@ -893,12 +897,51 @@ describe("LeadAlertNotifier — FLY-927 Task 1.2: 🎫 ticket schema header", ()
 			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
 		);
 		const lines = (body.content as string).split("\n");
-		expect(lines[0]).toBe("⚠️ **T** (cos-lead / pane_hash_stuck)");
+		expect(lines[0]).toBe("🤖[自动] ⚠️ **T** (cos-lead / pane_hash_stuck)");
 		expect(lines[1]).toMatch(
 			/^🎫 geoforge3d · 首见 \d{2}:\d{2} · owner — · 状态 NEW$/,
 		);
 		expect(lines[2]).toBe("B");
 		expect(body.allowed_mentions).toEqual({ parse: [] });
+	});
+
+	it("FLY-1256: informational account_switched direct POST has no 🎫 header", async () => {
+		const fetchFn = okFetch();
+		await makeNotifier(fetchFn, { tickets: true }).alert(
+			buildPayload({
+				eventType: "account_switched" as AlertPayload["eventType"],
+				title: "Account switched",
+				body: "shopping → school",
+			}),
+		);
+		const body = JSON.parse(
+			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+		);
+		expect(body.content).toBe(
+			"🤖[自动] ⚠️ **Account switched** (cos-lead / account_switched)\nshopping → school",
+		);
+	});
+
+	it("FLY-1256: informational account_switched queue replay has no 🎫 header", async () => {
+		writeFileSync(
+			join(queueDir, "20260714T120000Z-account_switched.json"),
+			JSON.stringify({
+				...buildPayload({
+					eventType: "account_switched" as AlertPayload["eventType"],
+					title: "Account switched",
+					body: "shopping → school",
+				}),
+				queuedAt: new Date().toISOString(),
+				queueReason: "discord-503",
+			}),
+		);
+		const fetchFn = okFetch();
+		const result = await makeNotifier(fetchFn, { tickets: true }).drainQueue();
+		const body = JSON.parse(
+			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+		);
+		expect(body.content).not.toContain("🎫");
+		expect(result.delivered[0]?.payload.eventType).toBe("account_switched");
 	});
 
 	it("tickets ON + owner snowflake → <@id> in 🎫 line AND allowed_mentions.users", async () => {
@@ -1461,7 +1504,7 @@ describe("LeadAlertNotifier — FLY-1081: deploy kinds + mentionUserId + drain u
 		const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
 		const body = JSON.parse(init.body as string);
 		expect(body.content).toBe(
-			"<@222333444555666777> ⚠️ **T** (cos-lead / pane_hash_stuck)\nB",
+			"🤖[自动] <@222333444555666777> ⚠️ **T** (cos-lead / pane_hash_stuck)\nB",
 		);
 		expect(body.allowed_mentions).toEqual({ users: ["222333444555666777"] });
 	});
@@ -1493,9 +1536,9 @@ describe("LeadAlertNotifier — FLY-1081: deploy kinds + mentionUserId + drain u
 		expect(body.allowed_mentions).toEqual({
 			users: ["123456789012345678", "222333444555666777"],
 		});
-		expect((body.content as string).startsWith("<@222333444555666777> ")).toBe(
-			true,
-		);
+		expect(
+			(body.content as string).startsWith("🤖[自动] <@222333444555666777> "),
+		).toBe(true);
 		// same id in both roles → deduped to one entry
 		const fetchFn2 = okFetch();
 		const notifier2 = new LeadAlertNotifier({
@@ -1544,7 +1587,9 @@ describe("LeadAlertNotifier — FLY-1081: deploy kinds + mentionUserId + drain u
 		);
 		const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
 		const body = JSON.parse(init.body as string);
-		expect(body.content).toBe("⚠️ **T** (cos-lead / pane_hash_stuck)\nB");
+		expect(body.content).toBe(
+			"🤖[自动] ⚠️ **T** (cos-lead / pane_hash_stuck)\nB",
+		);
 		expect(body.allowed_mentions).toEqual({ parse: [] });
 	});
 
@@ -1586,9 +1631,9 @@ describe("LeadAlertNotifier — FLY-1081: deploy kinds + mentionUserId + drain u
 		);
 		const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
 		const body = JSON.parse(init.body as string);
-		expect((body.content as string).startsWith("<@222333444555666777> ")).toBe(
-			true,
-		);
+		expect(
+			(body.content as string).startsWith("🤖[自动] <@222333444555666777> "),
+		).toBe(true);
 		expect(body.allowed_mentions).toEqual({ users: ["222333444555666777"] });
 		rmSync(dlDir, { recursive: true, force: true });
 	});

@@ -47,6 +47,9 @@ export interface FounderReactionApprovalFactoryConfig {
 	};
 	/** FLY-1041 Chunk 5: shared founder-approval hold guard (plugin injects). */
 	isHeld?: ReactionApprovalHandlerDeps["isHeld"];
+	/** FLY-1238 shared guard + canonical project-root resolver. */
+	mergedGateGuard?: ReactionApprovalHandlerDeps["mergedGateGuard"];
+	projectRootFor?: (projectName: string) => string | undefined;
 	/** Test seam. */
 	handlerImpl?: typeof defaultHandler;
 }
@@ -112,7 +115,12 @@ export function makeFounderReactionApprovalCallback(
 		return handler(
 			{
 				gate: args.gate,
-				ctx: { issueId: args.ctx.issueId, threadId: args.ctx.threadId },
+				ctx: {
+					issueId: args.ctx.issueId,
+					threadId: args.ctx.threadId,
+					projectName: args.ctx.projectName,
+					projectRoot: config.projectRootFor?.(args.ctx.projectName),
+				},
 			},
 			{
 				canonicalFounderId,
@@ -125,6 +133,7 @@ export function makeFounderReactionApprovalCallback(
 				writeGateResponseImpl: config.writeGateResponseImpl,
 				auditSink,
 				isHeld: config.isHeld,
+				mergedGateGuard: config.mergedGateGuard,
 			},
 		);
 	};

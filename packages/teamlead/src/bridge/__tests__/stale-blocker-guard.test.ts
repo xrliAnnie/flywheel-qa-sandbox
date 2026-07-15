@@ -160,6 +160,7 @@ function makeFinalizeDeps(over: {
 	cmuxKilled?: boolean;
 	windowKilled?: boolean;
 	transitionOk?: boolean;
+	finalizeOk?: boolean;
 }) {
 	const seq = [...over.sessions];
 	const events: string[] = [];
@@ -168,6 +169,7 @@ function makeFinalizeDeps(over: {
 	const deps = {
 		store: {
 			getSession: vi.fn(() => seq.shift()),
+			recordCommDbFinalizeOutcome: vi.fn(),
 			insertEvent: vi.fn((e: { event_type: string }) => {
 				events.push(e.event_type);
 				return true;
@@ -179,8 +181,23 @@ function makeFinalizeDeps(over: {
 		})),
 		killTmuxWindow: vi.fn(async () => ({ killed: over.windowKilled ?? true })),
 		closeTerminalView: vi.fn(async () => {}),
-		deleteCommDbSession: vi.fn((execId: string) => {
+		finalizeCommDbSession: vi.fn((execId: string) => {
+			if (over.finalizeOk === false) {
+				return {
+					ok: false as const,
+					outcome: "failed" as const,
+					retiredGateCount: 0,
+					deletedSessionCount: 0,
+					error: "sqlite busy",
+				};
+			}
 			commPrunes.push(execId);
+			return {
+				ok: true as const,
+				outcome: "finalized" as const,
+				retiredGateCount: 1,
+				deletedSessionCount: 1,
+			};
 		}),
 		applyTransition: vi.fn(() => ({ ok: over.transitionOk ?? true })),
 		archiveThread: vi.fn(async (s: Session) => {
@@ -255,6 +272,20 @@ describe("finalizeStaleBlocker (fail-closed teardown + double re-read)", () => {
 		expect(commPrunes).toContain("exec-1");
 		expect(archived).toContain("exec-1");
 		expect(events).toContain("scheduled_run_blocker_finalized");
+	});
+
+	it("FLY-1238: CommDB finalization failure blocks transition, archive, and slot release", async () => {
+		const { deps, archived } = makeFinalizeDeps({
+			sessions: [session({ status: "awaiting_review" })],
+			lookup: { kind: "gone" } as TmuxTargetLookup,
+			finalizeOk: false,
+		});
+
+		const r = await finalizeStaleBlocker(session({}), "merged", deps);
+
+		expect(r.proceed).toBe(false);
+		expect(deps.applyTransition).not.toHaveBeenCalled();
+		expect(archived).toEqual([]);
 	});
 
 	it("re-read #1 already terminal → proceed:true, no teardown", async () => {

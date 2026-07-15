@@ -19,6 +19,7 @@
  *   - error envelope instead of throws, so callers map to HTTP 502 verbatim.
  */
 
+import { markAutomatedDiscordText } from "./automated-message.js";
 import { DISCORD_API } from "./discord-utils.js";
 
 export interface DiscordFileAttachment {
@@ -44,7 +45,7 @@ export async function postDiscordMessageWithFile(
 	form.append(
 		"payload_json",
 		JSON.stringify({
-			content,
+			content: markAutomatedDiscordText(content),
 			allowed_mentions: { parse: [] },
 			attachments: [{ id: 0, filename: file.filename }],
 		}),

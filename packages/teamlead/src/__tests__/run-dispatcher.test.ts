@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { renderRunnerModelDisplay } from "flywheel-config";
 import { buildWindowLabel } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -334,6 +335,40 @@ describe("RunDispatcher", () => {
 });
 
 describe("RetryDispatcher", () => {
+	it("keeps the resolved Codex model in a retried implement-phase window", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		// FLY-1257 defect ③: a three-stage PHASE retry (shareParentBranch +
+		// design/implement/qa role) now resolves branch B's tip through the
+		// startPoint computer, and fails closed when it cannot — an indeterminate
+		// probe must never silently reset branch B to origin/main. This FLY-1255
+		// model-display test predates that dependency, so it supplies the computer
+		// the same way production wiring does; the assertion below is unchanged.
+		const dispatcher = new RetryDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			undefined, // launchClaims
+			undefined, // isCommitted (keep the real default)
+			undefined, // lifecycleAdmission
+			undefined, // lifecycleLaunchGuard
+			() => ({ kind: "found", sha: "b".repeat(40) }),
+		);
+
+		await dispatcher.dispatch({
+			oldExecutionId: "old-exec",
+			issueId: "FLY-1255",
+			projectName: "TestProject",
+			runAttempt: 1,
+			sessionRole: "implement",
+			shareParentBranch: true,
+			ignoreRunnerLabelSelection: true,
+			dispatchVendor: "codex",
+			dispatchModel: "gpt-5.6-sol",
+		});
+
+		const ctx = vi.mocked(runtime.blueprint.run).mock.calls[0]?.[2];
+		expect(ctx?.runnerName).toBe("implement-codex-G");
+	});
+
 	it("dispatch() returns old and new execution IDs", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
 		const dispatcher = new RetryDispatcher(runtimes, []);
@@ -835,6 +870,43 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 });
 
 describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () => {
+	it("includes the vendor-neutral model label when a model was resolved", () => {
+		expect(
+			runnerDisplayName("implement", true, {
+				threadMarker: "G",
+				windowLabel: "codex-G",
+			}),
+		).toBe("implement-codex-G");
+		expect(
+			runnerDisplayName("main", false, {
+				threadMarker: "K",
+				windowLabel: "kimi-K",
+			}),
+		).toBe("runner-kimi-K");
+		expect(
+			runnerDisplayName("qa", true, {
+				threadMarker: "O",
+				windowLabel: "claude-Opus",
+			}),
+		).toBe("qa-claude-Opus");
+		expect(
+			runnerDisplayName("main", false, {
+				threadMarker: "F",
+				windowLabel: "claude-Fable",
+			}),
+		).toBe("runner-claude-Fable");
+	});
+
+	it("infers Codex defensively when backend metadata is absent", () => {
+		const display = renderRunnerModelDisplay({ model: "gpt-5.6-sol" });
+		expect(runnerDisplayName("main", false, display)).toBe("runner-codex-G");
+	});
+
+	it("keeps legacy names when no model was resolved", () => {
+		expect(runnerDisplayName("implement", true, undefined)).toBe("implement");
+		expect(runnerDisplayName("main", false, undefined)).toBe("claude");
+	});
+
 	// A three-stage phase runner is (shareParentBranch === true) AND a phase role.
 	it("maps a three-stage phase role (shareParentBranch=true) to its phase name", () => {
 		expect(runnerDisplayName("design", true)).toBe("design");

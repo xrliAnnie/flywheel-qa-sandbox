@@ -124,6 +124,32 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		// FLY-1256 phase-1 migration flag: after the external daemon is healthy,
+		// setup flips this to retire the Bridge's legacy switch execution surfaces.
+		// The Bridge captures the resolved mode while wiring the plugin, so changing
+		// the env requires a restart. This row is deliberately readonly/temporary;
+		// FLY-1284 removes the flag after one week of stable daemon operation.
+		name: "quota_daemon_cutover",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_QUOTA_DAEMON_CUTOVER",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1256: daemon 健康后退役 Bridge 内旧 account-switch 执行面（迁移期临时 flag，翻转需重启）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/quota-daemon-cutover.ts",
+				"resolveQuotaDaemonCutover",
+				"object_construction",
+			),
+		],
+		toggleable: "readonly",
+		note: "临时两阶段迁移 flag；FLY-1284 在 enable 稳定 >=1 周后删除，并同步迁移 KIND_CONTRACTS.usage_limit。",
+	},
+	{
 		name: "auto_qa_killswitch",
 		category: "kill_switch",
 		source: "env",
@@ -186,6 +212,34 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		// the runner-CLI verify-approval .env bidirectional live-toggle test.
 		directToggleProof:
 			"resolve.direct-toggle.test:codex_hard_gate_killswitch live-observe + verify-approval.test:.env live-toggle",
+	},
+	{
+		// FLY-1278: default-ON convergence policy for cross-family review. It
+		// classifies MEDIUM/LOW findings as advisory and applies Lead-settled
+		// finding rulings; `=0` restores the legacy reviewer-verdict lane byte for
+		// byte. The coordinator reads this at the start of every review job, so a
+		// live mutation affects the next round without reconstructing the Bridge.
+		name: "review_severity_policy_killswitch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_REVIEW_SEVERITY_POLICY",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"全局关掉跨家族审查收敛政策（=0 回滚 legacy verdict；默认 ON=MEDIUM/LOW 不阻塞并尊重 Lead 已裁决 finding）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/review-verdict-policy.ts",
+				"severityPolicyEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"review-verdict-policy.test:FLYWHEEL_REVIEW_SEVERITY_POLICY live-observe",
 	},
 	{
 		// FLY-869 B: the merge-race ship gate kill-switch. Default-ON (决定②): a merged
@@ -1450,27 +1504,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"packages/teamlead/src/bridge/founder-reply-deliverer.ts",
 				"processFounderMessage (reply-to-card qualification)",
 				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "attribution_hold_align",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_ATTRIBUTION_HOLD_ALIGN",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1041 Fix B: held(codex 未绿/QA 未绿/merge_block)期间三个 founder 批准写入源(text/✅/voice)统一拒写(=0 回到 held 也写入的 FLY-910 现状;一个开关管三源)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/auto-qa-held.ts",
-				"founderApprovalHoldGuard",
-				"call_time",
-				"env-param",
 			),
 		],
 		toggleable: "conversational",

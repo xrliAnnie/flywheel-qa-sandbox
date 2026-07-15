@@ -36,6 +36,7 @@ import {
 	type AlertRateLimiter,
 	formatOverflowSummary,
 } from "./bridge/alert-rate-limiter.js";
+import { markAutomatedDiscordText } from "./bridge/automated-message.js";
 import type { MetaAlertReason } from "./MetaAlertNotifier.js";
 import type { LeadConfig, ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
@@ -87,6 +88,13 @@ export const ALERT_EVENT_TYPES = [
 	// held the founder. A Lead-only alert (founder never surfaced pre-Codex).
 	// eventId `codex-gate:${execution_id}:${sha}` (no timestamp → fires ONCE per head).
 	"codex_gate_blocked",
+	// FLY-1278: review convergence/audit channel. Advisories pass the hard gate;
+	// rulings are supervised Lead authority; disputes and notification failures
+	// require human visibility but have no safe automatic remediation.
+	"review_advisory_pass",
+	"review_ruling_recorded",
+	"review_ruling_disputed",
+	"review_ruling_notify_failed",
 	// FLY-793: a three-stage pipeline phase handoff (Design→Implement→QA) could
 	// not proceed — head-SHA capture failed, the previous phase runner would not
 	// close, or the next phase dispatch threw. Fail-closed: the next phase is NOT
@@ -181,6 +189,10 @@ export const ALERT_EVENT_TYPES = [
 	// Z2 (FLY-1049 shape): a LIVE session whose CommDB registration row is
 	// gone — wake routing broken; founder replies to its gate dead-letter.
 	"founder_reply_unreachable_runner",
+	// FLY-1238: internal integrity alerts. These never reuse founder-facing
+	// recovery copy; they route to the owning Lead after bounded retries.
+	"commdb_finalize_stuck",
+	"merged_gate_guard_unavailable",
 	// FLY-1081: restart-services.sh / update-flywheel.sh deploy notices, fired
 	// ONLY via scripts/lead-alert.sh with the system identity `--lead deploy` /
 	// `--lead updater` (shell-only kinds; the Bridge never emits them). Present
@@ -188,6 +200,14 @@ export const ALERT_EVENT_TYPES = [
 	// the shared kind face (lead-alert.sh allowlist ↔ TS) has no drift.
 	"deploy_failed",
 	"deploy_degraded",
+	// FLY-1256: emitted by the external quota monitor. account_switched is a
+	// successful state-change notice; the other five are actionable failures.
+	"account_switched",
+	"quota_no_target",
+	"quota_read_blind",
+	"account_switch_failed",
+	"quota_revive_stuck",
+	"quota_monitor_down",
 	// ── FLY-1082: fleet-level failure kinds (the 2026-07-09 OOM incident gap —
 	// machine-wide failures had NO kind, so nobody owned them and the founder
 	// found out first). Every fleet kind has an owner + an explicit ARC posture
@@ -243,6 +263,15 @@ export const ALERT_EVENT_TYPES = [
 ] as const;
 
 export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];
+
+/** Root-only notices that must never open a ticket/thread/ARC lifecycle. */
+export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
+	"account_switched",
+]);
+
+export function isInformationalKind(kind: AlertEventType): boolean {
+	return INFORMATIONAL_KINDS.has(kind);
+}
 
 export type AlertSeverity = "info" | "warning" | "severe";
 
@@ -1055,7 +1084,7 @@ export class LeadAlertNotifier {
 							"Content-Type": "application/json",
 						},
 						body: JSON.stringify({
-							content,
+							content: markAutomatedDiscordText(content),
 							allowed_mentions: { parse: [] as string[] },
 						}),
 					},
@@ -1158,9 +1187,14 @@ export class LeadAlertNotifier {
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify({
-					content: formatContent(payload, {
-						ticketHeader: !!this.unifiedAlert && this.ticketsEnabled(),
-					}),
+					content: markAutomatedDiscordText(
+						formatContent(payload, {
+							ticketHeader:
+								!!this.unifiedAlert &&
+								this.ticketsEnabled() &&
+								!isInformationalKind(payload.eventType),
+						}),
+					),
 					// FLY-368 (Codex code R1 MEDIUM-3): suppress all mentions on the
 					// unified-channel root alert so an issue id / title / body can never
 					// @everyone/@here/@role-ping the channel. Gated on unified mode so the
@@ -1217,7 +1251,13 @@ export class LeadAlertNotifier {
 	 * id degrades to plain text rather than a Discord-rejected mentions body.
 	 */
 	private ticketOwnerMention(payload: AlertPayload): string | null {
-		if (!this.unifiedAlert || !this.ticketsEnabled()) return null;
+		if (
+			!this.unifiedAlert ||
+			!this.ticketsEnabled() ||
+			isInformationalKind(payload.eventType)
+		) {
+			return null;
+		}
 		const id = payload.ticket?.ownerUserId?.trim();
 		return id && /^\d{17,20}$/.test(id) ? id : null;
 	}

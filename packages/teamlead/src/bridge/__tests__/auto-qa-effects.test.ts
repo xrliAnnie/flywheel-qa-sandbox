@@ -110,6 +110,61 @@ describe("buildQaIssueContent (FLY-643)", () => {
 	});
 });
 
+describe("AutoQaEffects.notifyShipGateRebound — FLY-1238 merged guard", () => {
+	function reboundEffects(guarded: Record<string, unknown>) {
+		const fetchImpl = vi.fn(async () => ({
+			ok: true,
+			json: async () => ({ id: "message-1" }),
+		})) as unknown as typeof fetch;
+		const mergedGateGuard = vi.fn().mockResolvedValue(guarded);
+		const effects = new AutoQaEffects({
+			store: {
+				getChatThreadByIssue: () => ({ thread_id: "thread-1" }),
+			} as never,
+			projects: [
+				{
+					projectName: "proj",
+					projectRoot: "/repo",
+					leads: [
+						{
+							agentId: "lead",
+							chatChannel: "channel-1",
+							botToken: "bot-token",
+							match: { labels: [] },
+						},
+					],
+				},
+			],
+			config: {} as never,
+			fetchImpl,
+			mergedGateGuard,
+		});
+		return { effects, fetchImpl, mergedGateGuard };
+	}
+
+	it.each([
+		{ kind: "suppress_merged", cleanupComplete: true },
+		{ kind: "retry_later", reason: "unknown" },
+		{ kind: "terminal_unavailable", reason: "unknown_exhausted" },
+	])("$kind creates no new rebound anchor", async (guarded) => {
+		const { effects, fetchImpl, mergedGateGuard } = reboundEffects(guarded);
+		const result = await effects.notifyShipGateRebound({
+			session: parentSession({
+				issue_labels: "[]",
+				review_question_id: "Q-1",
+				pr_number: 42,
+			}),
+			oldSha: "a".repeat(40),
+			newSha: "b".repeat(40),
+		});
+		expect(result).toEqual({ ok: false });
+		expect(mergedGateGuard).toHaveBeenCalledWith(
+			expect.objectContaining({ questionId: "Q-1", source: "rebound" }),
+		);
+		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+});
+
 describe("AutoQaEffects.createQaIssue (FLY-643)", () => {
 	it("creates the QA issue mirroring parent team / project / labels", async () => {
 		const { client, calls } = fakeClient({
@@ -228,6 +283,7 @@ describe("AutoQaEffects.stampIssueStage (FLY-630 ②)", () => {
 	];
 
 	function fakeCreator() {
+		const markers: Array<string | null | undefined> = [];
 		const calls: {
 			threadId: string;
 			stage: string;
@@ -237,11 +293,12 @@ describe("AutoQaEffects.stampIssueStage (FLY-630 ②)", () => {
 		const creator = {
 			stampStageEmoji: vi.fn(
 				async (
-					ctx: { chatChannelId: string },
+					ctx: { chatChannelId: string; modelMarker?: string | null },
 					threadId: string,
 					stage: string,
 					withWord: boolean,
 				) => {
+					markers.push(ctx.modelMarker);
 					calls.push({
 						threadId,
 						stage,
@@ -251,7 +308,7 @@ describe("AutoQaEffects.stampIssueStage (FLY-630 ②)", () => {
 				},
 			),
 		} as unknown as ChatThreadCreator;
-		return { creator, calls };
+		return { creator, calls, markers };
 	}
 
 	let store: StateStore;
@@ -300,6 +357,27 @@ describe("AutoQaEffects.stampIssueStage (FLY-630 ②)", () => {
 				channel: "chan-1",
 			},
 		]);
+	});
+
+	it("keeps a Claude parent model marker authoritative during auto-QA stamps", async () => {
+		store.upsertChatThread("thread-1", "chan-1", "FLY-1");
+		const { creator, markers } = fakeCreator();
+		const effects = new AutoQaEffects({
+			store,
+			projects,
+			config: {} as never,
+			chatThreadCreator: creator,
+		});
+
+		await effects.stampIssueStage({
+			session: session({
+				adapter_type: "claude-tmux",
+				runner_model: "claude-opus-4-8",
+			}),
+			stage: "test",
+		});
+
+		expect(markers[0]).toBe("O");
 	});
 
 	it("no-ops when the feature flag is off (FLYWHEEL_ISSUE_STATUS_EMOJI=0)", async () => {
@@ -636,6 +714,7 @@ describe("AutoQaEffects.refreshPhaseStatusLine (FLY-887 founder-visibility)", ()
 				url: "https://discord.com/api/v10/channels/thread-1/messages",
 			}),
 		]);
+		expect(JSON.parse(calls[0].body).content).toMatch(/^🤖\[自动\] /);
 		expect(store.getPhaseStatusLine("FLY-887", "chan-1")).toEqual({
 			messageId: "msg-42",
 			text: "🎨design(active)·🔨implement(pending)·🧪qa(pending)",
@@ -691,6 +770,7 @@ describe("AutoQaEffects.refreshPhaseStatusLine (FLY-887 founder-visibility)", ()
 				url: "https://discord.com/api/v10/channels/thread-1/messages/msg-1",
 			}),
 		]);
+		expect(JSON.parse(calls[0].body).content).toMatch(/^🤖\[自动\] /);
 		expect(store.getPhaseStatusLine("FLY-887", "chan-1")).toEqual({
 			messageId: "msg-1",
 			text: "🎨design(parked)·🔨implement(active)·🧪qa(pending)",

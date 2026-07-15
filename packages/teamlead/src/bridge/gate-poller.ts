@@ -57,7 +57,7 @@ import {
 	runDeferredApprovalRebindPass,
 } from "./approval-signal/deferred-approval.js";
 import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
-import { isReviewHeld, reviewHoldReason } from "./auto-qa-held.js";
+import { type ReviewHoldReason, reviewHoldReason } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 // FLY-927 (Task 3.3): truthful park wording for the lead-pending nudge.
 import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
@@ -90,6 +90,7 @@ import {
 } from "./lead-pending-escalation.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
+import type { MergedGateGuard } from "./merged-gate-guard.js";
 import { decideMilestoneReport } from "./milestone-report-policy.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
@@ -142,6 +143,8 @@ export interface GatePollerConfig {
 	projects: ProjectEntry[];
 	store: StateStore;
 	runtimeRegistry: RuntimeRegistry;
+	/** FLY-1251: async producer for the exact-head ship-diff hold snapshot. */
+	ensureShipRelevantDiff?: (session: Session) => Promise<void> | void;
 	/** FLY-91: Enable per-issue chat thread hints in gate_question payloads. */
 	chatThreadsEnabled?: boolean;
 	/**
@@ -279,6 +282,8 @@ export interface GatePollerConfig {
 		canonicalFounderId(): string | undefined;
 		onResponseWritten?: DeferredRebindDeps["onResponseWritten"];
 	};
+	/** FLY-1238: one shared last-mile guard for all recovery surfaces. */
+	mergedGateGuard?: MergedGateGuard;
 
 	/**
 	 * FLY-799: the flag-gated founder ✅-reaction ship-approval callback (built in
@@ -484,6 +489,51 @@ export class GatePoller {
 			resolveThreadRoute: (threadId) => this.founderThreadRoutes.get(threadId),
 			infraRoute: () => this.infraAlertRoute(),
 		});
+	}
+
+	/**
+	 * FLY-1251 R2: a code-bearing or unclassifiable PR stays founder-hidden.
+	 * The caller has already refreshed the server-owned classifier; emit a
+	 * Lead-only deterministic alert. LeadAlertNotifier's durable claim makes the
+	 * stable event id the once-per-(execution, head, reason) marker across restarts.
+	 */
+	private async handleHeldReviewGate(
+		lead: LeadConfig,
+		session: Session,
+		reason: ReviewHoldReason,
+	): Promise<void> {
+		if (reason !== "qa_evidence_missing" && reason !== "qa_evidence_unknown") {
+			return;
+		}
+		const head = session.pr_head_sha?.toLowerCase() ?? "unknown";
+		const issue = session.issue_identifier ?? session.issue_id;
+		const work: Promise<unknown>[] = [];
+		if (this.config.leadAlertSink) {
+			work.push(
+				this.config.leadAlertSink.alert({
+					leadId: lead.agentId,
+					projectName: session.project_name,
+					eventId: `ship-readiness-hold:${session.execution_id}:${head}:${reason}`,
+					eventType: "auto_qa_stuck",
+					title: `Ship readiness held — ${issue}`,
+					body:
+						`Founder approval remains hidden for ${issue} because ${reason}. ` +
+						"Bridge will retry the server-owned PR classification. For a code-bearing run, use the two-step same-origin flow: " +
+						"POST /api/qa/manual-spawn/stage with executionId and prHeadSha, then POST /api/qa/manual-spawn with the returned x-flywheel-confirm-token header. " +
+						"Both requests require Origin: http://127.0.0.1:<port> matching the Bridge origin.",
+					severity: "warning",
+					sessionKey: session.execution_id,
+				}),
+			);
+		}
+		const results = await Promise.allSettled(work);
+		for (const result of results) {
+			if (result.status === "rejected") {
+				console.warn(
+					`[GatePoller] ship-readiness hold handling failed for ${session.execution_id}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+				);
+			}
+		}
 	}
 
 	/**
@@ -725,11 +775,19 @@ export class GatePoller {
 							// must survive so it can be surfaced once QA passes; verify-approval
 							// remains bound to it). Same isQaHeld predicate as event-route +
 							// HeartbeatService so the three surfaces cannot drift.
-							if (
-								question.checkpoint === "approve_to_ship" &&
-								isReviewHeld(this.config.store, session)
-							) {
-								continue;
+							if (question.checkpoint === "approve_to_ship") {
+								try {
+									await this.config.ensureShipRelevantDiff?.(session);
+								} catch (err) {
+									console.warn(
+										`[GatePoller] ship-diff refresh failed for ${session.execution_id}: ${err instanceof Error ? err.message : String(err)}`,
+									);
+								}
+								const holdReason = reviewHoldReason(this.config.store, session);
+								if (holdReason !== null) {
+									await this.handleHeldReviewGate(lead, session, holdReason);
+									continue;
+								}
 							}
 							// FLY-605 Part A (Codex R2 #3): relayToLead and the founder-thread
 							// fallback get SEPARATE try/catch so a Lead-runtime throw from the
@@ -2160,6 +2218,25 @@ export class GatePoller {
 			summary = readContentRef(question.content_ref) ?? question.content;
 		}
 
+		// FLY-1238: the ship card is a recovery/reapproval side effect. Re-check
+		// GitHub immediately before POST; every non-continue verdict stays silent
+		// and deliberately writes no permanent founderNotifyDone marker.
+		if (cp === "approve_to_ship" && this.config.mergedGateGuard) {
+			const project = this.config.projects.find(
+				(candidate) => candidate.projectName === session.project_name,
+			);
+			const guarded = await this.config.mergedGateGuard({
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+				questionId: question.id,
+				projectName: session.project_name,
+				projectRoot: project?.projectRoot,
+				prNumber: session.pr_number ?? undefined,
+				source: "gate_card",
+			});
+			if (guarded.kind !== "continue") return;
+		}
+
 		const result = await emitFounderThreadNotification(
 			{
 				questionId: question.id,
@@ -3155,6 +3232,10 @@ export class GatePoller {
 			resolveBotToken: (row) =>
 				this.resolveBotTokenFor(row.project_name, row.execution_id),
 			fetchImpl: this.config.fetchImpl,
+			mergedGateGuard: this.config.mergedGateGuard,
+			resolveProjectRoot: (projectName) =>
+				this.config.projects.find((p) => p.projectName === projectName)
+					?.projectRoot,
 		});
 	}
 
@@ -3162,6 +3243,10 @@ export class GatePoller {
 	private async founderActionDrainPass(): Promise<void> {
 		await drainFounderActionLedger({
 			store: this.config.store,
+			mergedGateGuard: this.config.mergedGateGuard,
+			resolveProjectRoot: (projectName) =>
+				this.config.projects.find((p) => p.projectName === projectName)
+					?.projectRoot,
 			postNotice: async ({ threadId, text, projectName, executionId }) => {
 				const token = this.resolveBotTokenFor(projectName, executionId);
 				if (!token) return { ok: false, error: "no_bot_token" };
@@ -3169,7 +3254,7 @@ export class GatePoller {
 					threadId,
 					text,
 					token,
-					{},
+					{ origin: "automation" },
 					this.config.fetchImpl ?? fetch,
 				);
 				return res.ok ? { ok: true } : { ok: false, error: res.error };

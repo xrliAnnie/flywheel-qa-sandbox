@@ -6,7 +6,9 @@ import {
 	canonicalSubmissionDigest,
 	crossFamilyReviewSatisfied,
 } from "flywheel-config";
+import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
 import type { LeadNudgeRow } from "./bridge/lead-pending-escalation.js";
+import { findingKey as deriveReviewFindingKey } from "./bridge/review-verdict-policy.js";
 import {
 	generateCapabilityToken,
 	hashCapabilityToken,
@@ -168,6 +170,25 @@ const SQLJS_CORRUPTION_SIGNATURES = [
 	"memory access out of bounds",
 ] as const;
 
+const UUID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ISSUE_IDENTIFIER_PATTERN = /^[A-Z][A-Z0-9]*-[0-9]+$/;
+
+function parseReviewFindings(json: string | undefined): ClaudeReviewFinding[] {
+	if (!json) return [];
+	try {
+		const parsed = JSON.parse(json);
+		return Array.isArray(parsed)
+			? parsed.filter(
+					(finding): finding is ClaudeReviewFinding =>
+						typeof finding === "object" && finding !== null,
+				)
+			: [];
+	} catch {
+		return [];
+	}
+}
+
 /**
  * FLY-639: true when `err` looks like sql.js/WASM corruption that requires a DB
  * rebuild rather than continuing on a poisoned instance. Exported for tests.
@@ -323,6 +344,36 @@ export interface FounderActionIntent {
 	threadId?: string;
 	payload: Record<string, unknown>;
 	dependsOn?: string;
+}
+
+/** FLY-1238: durable bounded-failure state for the merged-PR last-mile guard. */
+export interface MergedGateGuardFailureRow {
+	question_id: string;
+	source: string;
+	execution_id: string;
+	issue_id: string;
+	project_name: string;
+	attempts: number;
+	first_seen_ms: number;
+	next_retry_ms: number;
+	last_error?: string;
+	terminal: boolean;
+	alerted: boolean;
+	resolved_at?: string;
+}
+
+/** FLY-1238: durable visibility for an atomic CommDB gate/session finalizer
+ * that keeps failing after the physical runner is gone. */
+export interface CommDbFinalizeFailureRow {
+	execution_id: string;
+	issue_id: string;
+	project_name: string;
+	attempts: number;
+	first_failure_ms: number;
+	last_failure_ms: number;
+	last_error?: string;
+	alerted: boolean;
+	resolved_at?: string;
 }
 
 /** FLY-1099 §3.1: bounded-retry row for one pinned founder message. */
@@ -706,6 +757,7 @@ export interface AutoQaRecord {
 	/** The PARENT (implementer) issue id — what is being verified. */
 	issue_id: string;
 	project_name: string;
+	enrollment_source: "auto" | "manual";
 	qa_execution_id?: string;
 	/**
 	 * FLY-643: the SEPARATE `QA·FLY-XX` Linear issue this record's QA runner runs
@@ -746,6 +798,21 @@ export interface AutoQaRecord {
 	 * retest wake never silently strands the founder gate.
 	 */
 	retest_wake_pending_at?: string;
+}
+
+/** Bridge-owned classification of the exact PR diff for one candidate head. */
+export interface ShipRelevantDiffSnapshot {
+	execution_id: string;
+	pr_head_sha: string;
+	repo: string;
+	pr_number: number;
+	base_ref: string;
+	base_oid: string;
+	classifier_version: number;
+	ship_relevant: 0 | 1;
+	file_count: number;
+	sample_paths?: string[];
+	computed_at: string;
 }
 
 /**
@@ -829,8 +896,16 @@ export interface CodexReviewJob {
 	/** claude reviewer session uuid — resumed across rounds per (exec, type). */
 	reviewer_session_uuid?: string;
 	verdict?: string;
+	/** Reviewer-emitted verdict before FLY-1278 policy processing. */
+	reviewer_verdict?: string;
 	findings_json?: string;
+	advisories_json?: string;
+	settled_json?: string;
+	/** Exact canonical gate payload frozen when the verdict is persisted. */
+	response_json?: string;
+	payload_version?: number;
 	failure_reason?: string;
+	failure_raw?: string;
 	author_family?: string;
 	created_at: string;
 	updated_at?: string;
@@ -847,6 +922,44 @@ export interface CodexReviewJob {
 	 */
 	delivery_nonce?: string;
 }
+
+export interface ReviewFindingRuling {
+	ruling_id: string;
+	project_name: string;
+	issue_id_canonical: string;
+	issue_identifier?: string;
+	finding_key: string;
+	source_request_id: string;
+	source_finding_index: number;
+	finding_title?: string;
+	finding_severity?: string;
+	review_type: "design" | "code";
+	disposition: "overruled" | "follow_up";
+	follow_up_issue?: string;
+	rationale: string;
+	ruled_by: string;
+	execution_id?: string;
+	created_at: string;
+	notified_at?: string;
+	revoked_at?: string;
+	revoked_by?: string;
+	revoke_reason?: string;
+}
+
+export type RecordReviewFindingRulingResult =
+	| {
+			status: "created" | "idempotent";
+			ruling: ReviewFindingRuling;
+	  }
+	| {
+			status:
+				| "issue_not_found"
+				| "issue_ambiguous"
+				| "finding_not_found"
+				| "finding_ambiguous"
+				| "conflict";
+			ruling?: ReviewFindingRuling;
+	  };
 
 /**
  * FLY-191 Phase 2 (Codex R2 HIGH-1): sentinel stored in
@@ -1807,6 +1920,8 @@ export class StateStore {
 				target_pr_head_sha TEXT NOT NULL,
 				issue_id TEXT NOT NULL,
 				project_name TEXT NOT NULL,
+				enrollment_source TEXT NOT NULL DEFAULT 'auto'
+					CHECK (enrollment_source IN ('auto','manual')),
 				qa_execution_id TEXT,
 				qa_issue_id TEXT,
 				qa_issue_identifier TEXT,
@@ -1827,6 +1942,25 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_auto_qa_record_status ON auto_qa_record(status)",
 		);
+
+		// FLY-1251: exact-head, server-owned docs-only/code classification. A
+		// missing row is authorization-unknown and therefore founder-held.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS ship_relevant_diff_snapshot (
+				execution_id TEXT NOT NULL,
+				pr_head_sha TEXT NOT NULL,
+				repo TEXT NOT NULL,
+				pr_number INTEGER NOT NULL,
+				base_ref TEXT NOT NULL,
+				base_oid TEXT NOT NULL,
+				classifier_version INTEGER NOT NULL,
+				ship_relevant INTEGER NOT NULL CHECK (ship_relevant IN (0,1)),
+				file_count INTEGER NOT NULL,
+				sample_paths TEXT,
+				computed_at TEXT NOT NULL,
+				PRIMARY KEY (execution_id, pr_head_sha)
+			)
+		`);
 
 		// FLY-827: durable Codex code-review verdict — the authoritative gate record
 		// (keyed to the exact reviewed head, so a new head voids an older approval).
@@ -1894,8 +2028,14 @@ export class StateStore {
 				                      CHECK(status IN ('pending','running','done','failed','skipped')),
 				reviewer_session_uuid TEXT,
 				verdict               TEXT,
+				reviewer_verdict      TEXT,
 				findings_json         TEXT,
+				advisories_json       TEXT,
+				settled_json          TEXT,
+				response_json         TEXT,
+				payload_version       INTEGER,
 				failure_reason        TEXT,
+				failure_raw           TEXT,
 				author_family         TEXT,
 				created_at            TEXT NOT NULL DEFAULT (datetime('now')),
 				updated_at            TEXT,
@@ -1919,11 +2059,68 @@ export class StateStore {
 		} catch {
 			/* exists */
 		}
+		// FLY-1254/FLY-1278: active review writes require failure diagnostics plus
+		// the frozen reviewer/effective split and canonical response. Any
+		// unexpected migration error must fail boot loudly instead of leaving a
+		// database that will reject or mis-deliver future review writes.
+		const reviewJobInfo = this.db.exec("PRAGMA table_info(codex_review_job)");
+		const reviewJobColumns =
+			reviewJobInfo[0]?.values.map((row) => row[1] as string) ?? [];
+		for (const [column, type] of [
+			["failure_raw", "TEXT"],
+			["reviewer_verdict", "TEXT"],
+			["advisories_json", "TEXT"],
+			["settled_json", "TEXT"],
+			["response_json", "TEXT"],
+			["payload_version", "INTEGER"],
+		] as const) {
+			if (!reviewJobColumns.includes(column)) {
+				this.db.run(
+					`ALTER TABLE codex_review_job ADD COLUMN ${column} ${type}`,
+				);
+			}
+		}
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_exec ON codex_review_job(execution_id)",
 		);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_status ON codex_review_job(status)",
+		);
+
+		// FLY-1278: Lead-authoritative, per-finding governance rulings. Rows are
+		// audit history (revoke stamps, never DELETE); the partial unique index is
+		// the DB boundary for one active intent per canonical issue/key/type.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS review_finding_ruling (
+				ruling_id            TEXT PRIMARY KEY,
+				project_name         TEXT NOT NULL,
+				issue_id_canonical   TEXT NOT NULL,
+				issue_identifier     TEXT,
+				finding_key          TEXT NOT NULL,
+				source_request_id    TEXT NOT NULL,
+				source_finding_index INTEGER NOT NULL,
+				finding_title        TEXT,
+				finding_severity     TEXT,
+				review_type          TEXT NOT NULL CHECK(review_type IN ('design','code')),
+				disposition          TEXT NOT NULL CHECK(disposition IN ('overruled','follow_up')),
+				follow_up_issue      TEXT,
+				rationale            TEXT NOT NULL,
+				ruled_by             TEXT NOT NULL,
+				execution_id         TEXT,
+				created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+				notified_at          TEXT,
+				revoked_at           TEXT,
+				revoked_by           TEXT,
+				revoke_reason        TEXT
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_review_ruling_issue ON review_finding_ruling(project_name, issue_id_canonical)",
+		);
+		this.db.run(
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_review_ruling_active
+			   ON review_finding_ruling(project_name, issue_id_canonical, finding_key, review_type)
+			 WHERE revoked_at IS NULL`,
 		);
 
 		// FLY-637 #3/#4: persistent "already-notified" dedup for the quiet-path
@@ -2018,6 +2215,40 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_founder_action_status ON founder_action_ledger(status)",
 		);
+
+		// FLY-1238: a gh UNKNOWN cannot retry forever or silently degrade into
+		// posting a stale founder-facing message. Persist before the first probe.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS merged_gate_guard_failure (
+				question_id   TEXT NOT NULL,
+				source        TEXT NOT NULL,
+				execution_id  TEXT NOT NULL,
+				issue_id      TEXT NOT NULL,
+				project_name  TEXT NOT NULL,
+				attempts      INTEGER NOT NULL DEFAULT 0,
+				first_seen_ms INTEGER NOT NULL,
+				next_retry_ms INTEGER NOT NULL DEFAULT 0,
+				last_error    TEXT,
+				terminal      INTEGER NOT NULL DEFAULT 0,
+				alerted       INTEGER NOT NULL DEFAULT 0,
+				resolved_at   TEXT,
+				PRIMARY KEY (question_id, source)
+			)
+		`);
+
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS commdb_finalize_failures (
+				execution_id     TEXT PRIMARY KEY,
+				issue_id         TEXT NOT NULL,
+				project_name     TEXT NOT NULL,
+				attempts         INTEGER NOT NULL DEFAULT 0,
+				first_failure_ms INTEGER NOT NULL,
+				last_failure_ms  INTEGER NOT NULL,
+				last_error       TEXT,
+				alerted          INTEGER NOT NULL DEFAULT 0,
+				resolved_at      TEXT
+			)
+		`);
 
 		// FLY-1099 §3.1: bounded founder-reply retry ledger — the durable source
 		// for the cursor-pin watchdog AND the dead-letter decision. first_seen_ms
@@ -4155,6 +4386,8 @@ export class StateStore {
 			target_pr_head_sha: row.target_pr_head_sha as string,
 			issue_id: row.issue_id as string,
 			project_name: row.project_name as string,
+			enrollment_source:
+				(row.enrollment_source as AutoQaRecord["enrollment_source"]) ?? "auto",
 			qa_execution_id: (row.qa_execution_id as string) ?? undefined,
 			qa_issue_id: (row.qa_issue_id as string) ?? undefined,
 			qa_issue_identifier: (row.qa_issue_identifier as string) ?? undefined,
@@ -4181,16 +4414,18 @@ export class StateStore {
 		targetPrHeadSha: string;
 		issueId: string;
 		projectName: string;
+		enrollmentSource?: "auto" | "manual";
 	}): boolean {
 		this.db.run(
 			`INSERT OR IGNORE INTO auto_qa_record
-			   (parent_execution_id, target_pr_head_sha, issue_id, project_name, status, started_at)
-			 VALUES (?, ?, ?, ?, 'running', datetime('now'))`,
+			   (parent_execution_id, target_pr_head_sha, issue_id, project_name, enrollment_source, status, started_at)
+			 VALUES (?, ?, ?, ?, ?, 'running', datetime('now'))`,
 			[
 				input.parentExecutionId,
 				input.targetPrHeadSha,
 				input.issueId,
 				input.projectName,
+				input.enrollmentSource ?? "auto",
 			],
 		);
 		const inserted = this.db.getRowsModified() > 0;
@@ -4307,6 +4542,116 @@ export class StateStore {
 		}
 		stmt.free();
 		return rec;
+	}
+
+	putShipRelevantDiffSnapshot(
+		input: Omit<ShipRelevantDiffSnapshot, "computed_at"> & {
+			computed_at?: string;
+		},
+	): void {
+		this.db.run(
+			`INSERT INTO ship_relevant_diff_snapshot
+			   (execution_id, pr_head_sha, repo, pr_number, base_ref, base_oid,
+			    classifier_version, ship_relevant, file_count, sample_paths, computed_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(execution_id, pr_head_sha) DO UPDATE SET
+			   repo = excluded.repo,
+			   pr_number = excluded.pr_number,
+			   base_ref = excluded.base_ref,
+			   base_oid = excluded.base_oid,
+			   classifier_version = excluded.classifier_version,
+			   ship_relevant = excluded.ship_relevant,
+			   file_count = excluded.file_count,
+			   sample_paths = excluded.sample_paths,
+			   computed_at = excluded.computed_at`,
+			[
+				input.execution_id,
+				input.pr_head_sha.toLowerCase(),
+				input.repo,
+				input.pr_number,
+				input.base_ref,
+				input.base_oid.toLowerCase(),
+				input.classifier_version,
+				input.ship_relevant,
+				input.file_count,
+				input.sample_paths ? JSON.stringify(input.sample_paths) : null,
+				input.computed_at ?? new Date().toISOString(),
+			],
+		);
+		this.save();
+	}
+
+	getShipRelevantDiffSnapshot(
+		executionId: string,
+		prHeadSha: string,
+	): ShipRelevantDiffSnapshot | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM ship_relevant_diff_snapshot WHERE execution_id = ? AND lower(pr_head_sha) = ?",
+		);
+		stmt.bind([executionId, prHeadSha.toLowerCase()]);
+		let snapshot: ShipRelevantDiffSnapshot | undefined;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			let samplePaths: string[] | undefined;
+			if (typeof row.sample_paths === "string") {
+				try {
+					const parsed = JSON.parse(row.sample_paths);
+					if (
+						Array.isArray(parsed) &&
+						parsed.every((value) => typeof value === "string")
+					) {
+						samplePaths = parsed;
+					}
+				} catch {
+					// Diagnostic-only field; corruption never changes gate truth.
+				}
+			}
+			snapshot = {
+				execution_id: row.execution_id as string,
+				pr_head_sha: row.pr_head_sha as string,
+				repo: row.repo as string,
+				pr_number: Number(row.pr_number),
+				base_ref: row.base_ref as string,
+				base_oid: row.base_oid as string,
+				classifier_version: Number(row.classifier_version),
+				ship_relevant: Number(row.ship_relevant) as 0 | 1,
+				file_count: Number(row.file_count),
+				sample_paths: samplePaths,
+				computed_at: row.computed_at as string,
+			};
+		}
+		stmt.free();
+		return snapshot;
+	}
+
+	deleteShipRelevantDiffSnapshot(
+		executionId: string,
+		prHeadSha: string,
+	): boolean {
+		this.db.run(
+			"DELETE FROM ship_relevant_diff_snapshot WHERE execution_id = ? AND lower(pr_head_sha) = ?",
+			[executionId, prHeadSha.toLowerCase()],
+		);
+		const deleted = this.db.getRowsModified() > 0;
+		if (deleted) this.save();
+		return deleted;
+	}
+
+	/** Keep only the current candidate head for an execution. Classification
+	 * snapshots are authorization caches, not an audit ledger; retaining stale
+	 * heads would grow the daemon DB forever and can never satisfy a live gate. */
+	deleteOtherShipRelevantDiffSnapshots(
+		executionId: string,
+		keepPrHeadSha: string,
+	): number {
+		this.db.run(
+			`DELETE FROM ship_relevant_diff_snapshot
+			 WHERE execution_id = ? AND lower(pr_head_sha) != ?`,
+			[executionId, keepPrHeadSha.toLowerCase()],
+		);
+		const deleted = this.db.getRowsModified();
+		if (deleted > 0) this.save();
+		return deleted;
 	}
 
 	// ─────────────────────────── FLY-827 Codex code-review gate ───────────────
@@ -4626,8 +4971,17 @@ export class StateStore {
 			status: row.status as CodexReviewJob["status"],
 			reviewer_session_uuid: (row.reviewer_session_uuid as string) ?? undefined,
 			verdict: (row.verdict as string) ?? undefined,
+			reviewer_verdict: (row.reviewer_verdict as string) ?? undefined,
 			findings_json: (row.findings_json as string) ?? undefined,
+			advisories_json: (row.advisories_json as string) ?? undefined,
+			settled_json: (row.settled_json as string) ?? undefined,
+			response_json: (row.response_json as string) ?? undefined,
+			payload_version:
+				row.payload_version === null || row.payload_version === undefined
+					? undefined
+					: Number(row.payload_version),
 			failure_reason: (row.failure_reason as string) ?? undefined,
+			failure_raw: (row.failure_raw as string) ?? undefined,
 			author_family: (row.author_family as string) ?? undefined,
 			created_at: row.created_at as string,
 			updated_at: (row.updated_at as string) ?? undefined,
@@ -4709,7 +5063,8 @@ export class StateStore {
 	claimCodexReviewJobRunning(requestId: string): boolean {
 		this.db.run(
 			`UPDATE codex_review_job
-			   SET status = 'running', updated_at = datetime('now')
+			   SET status = 'running', failure_reason = NULL, failure_raw = NULL,
+			       updated_at = datetime('now')
 			 WHERE request_id = ? AND status IN ('pending','failed')`,
 			[requestId],
 		);
@@ -4722,13 +5077,32 @@ export class StateStore {
 		requestId: string,
 		verdict: string,
 		findingsJson?: string,
+		details?: {
+			reviewerVerdict: string;
+			advisoriesJson: string;
+			settledJson: string;
+			responseJson: string;
+			payloadVersion: number;
+		},
 	): void {
 		this.db.run(
 			`UPDATE codex_review_job
-			   SET status = 'done', verdict = ?, findings_json = ?,
-			       failure_reason = NULL, updated_at = datetime('now')
+			   SET status = 'done', verdict = ?, reviewer_verdict = ?,
+			       findings_json = ?, advisories_json = ?, settled_json = ?,
+			       response_json = ?, payload_version = ?,
+			       failure_reason = NULL, failure_raw = NULL,
+			       updated_at = datetime('now')
 			 WHERE request_id = ?`,
-			[verdict, findingsJson ?? null, requestId],
+			[
+				verdict,
+				details?.reviewerVerdict ?? null,
+				findingsJson ?? null,
+				details?.advisoriesJson ?? null,
+				details?.settledJson ?? null,
+				details?.responseJson ?? null,
+				details?.payloadVersion ?? null,
+				requestId,
+			],
 		);
 		this.save();
 	}
@@ -4738,12 +5112,17 @@ export class StateStore {
 	 * respond/stamp after the verdict landed must not downgrade the row out of
 	 * the outbox scan (which only re-delivers done/skipped).
 	 */
-	failCodexReviewJob(requestId: string, reason: string): void {
+	failCodexReviewJob(
+		requestId: string,
+		reason: string,
+		failureRaw?: string,
+	): void {
 		this.db.run(
 			`UPDATE codex_review_job
-			   SET status = 'failed', failure_reason = ?, updated_at = datetime('now')
+			   SET status = 'failed', failure_reason = ?, failure_raw = ?,
+			       updated_at = datetime('now')
 			 WHERE request_id = ? AND status NOT IN ('done','skipped')`,
-			[reason, requestId],
+			[reason, failureRaw ?? null, requestId],
 		);
 		this.save();
 	}
@@ -4835,7 +5214,7 @@ export class StateStore {
 		return n;
 	}
 
-	/** Latest DONE job for (exec, type) — reround prompts carry its findings. */
+	/** Latest DONE job for fresh rerounds that must rebuild prior context. */
 	latestDoneCodexReviewJob(
 		executionId: string,
 		reviewType: "design" | "code",
@@ -4878,6 +5257,365 @@ export class StateStore {
 		}
 		stmt.free();
 		return uuid;
+	}
+
+	// ── FLY-1278: review-finding governance rulings ───────────────────────
+
+	recordReviewFindingRuling(input: {
+		projectName: string;
+		issue: string;
+		findingKey?: string;
+		requestId?: string;
+		findingIndex?: number;
+		disposition: "overruled" | "follow_up";
+		followUpIssue?: string;
+		rationale: string;
+		ruledBy: string;
+		executionId?: string;
+	}): RecordReviewFindingRulingResult {
+		const cluster = this.resolveReviewIssueAliasCluster(
+			input.projectName,
+			input.issue,
+		);
+		if (cluster.status !== "resolved") return { status: cluster.status };
+		const source = this.resolveDeliveredReviewFinding({
+			projectName: input.projectName,
+			aliases: cluster.aliases,
+			findingKey: input.findingKey,
+			requestId: input.requestId,
+			findingIndex: input.findingIndex,
+		});
+		if (source.status !== "resolved") return { status: source.status };
+
+		let result: RecordReviewFindingRulingResult | undefined;
+		this.db.transaction(() => {
+			const active = this.findActiveReviewFindingRuling(
+				input.projectName,
+				cluster.aliases,
+				source.findingKey,
+				source.reviewType,
+			);
+			if (active) {
+				const sameIntent =
+					active.disposition === input.disposition &&
+					(active.follow_up_issue ?? undefined) === input.followUpIssue &&
+					active.rationale === input.rationale;
+				result = {
+					status: sameIntent ? "idempotent" : "conflict",
+					ruling: active,
+				};
+				return;
+			}
+
+			const rulingId = randomUUID();
+			try {
+				this.db.run(
+					`INSERT INTO review_finding_ruling
+					   (ruling_id, project_name, issue_id_canonical, issue_identifier,
+					    finding_key, source_request_id, source_finding_index,
+					    finding_title, finding_severity, review_type, disposition,
+					    follow_up_issue, rationale, ruled_by, execution_id)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						rulingId,
+						input.projectName,
+						cluster.canonicalId,
+						cluster.identifier ?? null,
+						source.findingKey,
+						source.requestId,
+						source.findingIndex,
+						source.title ?? null,
+						source.severity ?? null,
+						source.reviewType,
+						input.disposition,
+						input.followUpIssue ?? null,
+						input.rationale,
+						input.ruledBy,
+						input.executionId ?? null,
+					],
+				);
+			} catch (err) {
+				// The partial unique index is the final concurrency boundary. Re-read
+				// the winner and classify semantic replay vs conflicting intent.
+				const winner = this.findActiveReviewFindingRuling(
+					input.projectName,
+					cluster.aliases,
+					source.findingKey,
+					source.reviewType,
+				);
+				if (!winner) throw err;
+				const sameIntent =
+					winner.disposition === input.disposition &&
+					(winner.follow_up_issue ?? undefined) === input.followUpIssue &&
+					winner.rationale === input.rationale;
+				result = {
+					status: sameIntent ? "idempotent" : "conflict",
+					ruling: winner,
+				};
+				return;
+			}
+			const created = this.getReviewFindingRuling(rulingId);
+			if (!created) throw new Error(`review ruling ${rulingId} vanished`);
+			result = { status: "created", ruling: created };
+		});
+		this.save();
+		if (!result)
+			throw new Error("review ruling transaction produced no result");
+		return result;
+	}
+
+	listActiveReviewFindingRulings(
+		projectName: string,
+		issue: string,
+	): ReviewFindingRuling[] {
+		const cluster = this.resolveReviewIssueAliasCluster(projectName, issue);
+		if (cluster.status !== "resolved") return [];
+		const placeholders = cluster.aliases.map(() => "?").join(", ");
+		const stmt = this.db.prepare(
+			`SELECT * FROM review_finding_ruling
+			 WHERE project_name = ? AND revoked_at IS NULL
+			   AND (issue_id_canonical IN (${placeholders})
+			        OR issue_identifier IN (${placeholders}))
+			 ORDER BY created_at DESC, rowid DESC`,
+		);
+		stmt.bind([projectName, ...cluster.aliases, ...cluster.aliases]);
+		const rows: ReviewFindingRuling[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToReviewFindingRuling(
+					stmt.getAsObject() as Record<string, unknown>,
+				),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	revokeReviewFindingRuling(input: {
+		projectName: string;
+		rulingId: string;
+		revokedBy: string;
+		reason: string;
+	}): ReviewFindingRuling | null {
+		this.db.run(
+			`UPDATE review_finding_ruling
+			   SET revoked_at = datetime('now'), revoked_by = ?, revoke_reason = ?
+			 WHERE ruling_id = ? AND project_name = ? AND revoked_at IS NULL`,
+			[input.revokedBy, input.reason, input.rulingId, input.projectName],
+		);
+		this.save();
+		return this.getReviewFindingRuling(input.rulingId, input.projectName);
+	}
+
+	listPendingReviewRulingNotifications(): ReviewFindingRuling[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM review_finding_ruling
+			 WHERE revoked_at IS NULL AND notified_at IS NULL
+			 ORDER BY created_at ASC, rowid ASC`,
+		);
+		const rows: ReviewFindingRuling[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToReviewFindingRuling(
+					stmt.getAsObject() as Record<string, unknown>,
+				),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	markReviewFindingRulingNotified(rulingId: string): void {
+		this.db.run(
+			"UPDATE review_finding_ruling SET notified_at = COALESCE(notified_at, datetime('now')) WHERE ruling_id = ?",
+			[rulingId],
+		);
+		this.save();
+	}
+
+	private getReviewFindingRuling(
+		rulingId: string,
+		projectName?: string,
+	): ReviewFindingRuling | null {
+		const stmt = this.db.prepare(
+			`SELECT * FROM review_finding_ruling WHERE ruling_id = ?${projectName ? " AND project_name = ?" : ""}`,
+		);
+		stmt.bind(projectName ? [rulingId, projectName] : [rulingId]);
+		let ruling: ReviewFindingRuling | null = null;
+		if (stmt.step()) {
+			ruling = this.rowToReviewFindingRuling(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return ruling;
+	}
+
+	private findActiveReviewFindingRuling(
+		projectName: string,
+		aliases: string[],
+		findingKey: string,
+		reviewType: "design" | "code",
+	): ReviewFindingRuling | null {
+		const placeholders = aliases.map(() => "?").join(", ");
+		const stmt = this.db.prepare(
+			`SELECT * FROM review_finding_ruling
+			 WHERE project_name = ? AND finding_key = ? AND review_type = ?
+			   AND revoked_at IS NULL
+			   AND (issue_id_canonical IN (${placeholders})
+			        OR issue_identifier IN (${placeholders}))
+			 ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+		);
+		stmt.bind([projectName, findingKey, reviewType, ...aliases, ...aliases]);
+		let ruling: ReviewFindingRuling | null = null;
+		if (stmt.step()) {
+			ruling = this.rowToReviewFindingRuling(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return ruling;
+	}
+
+	private resolveReviewIssueAliasCluster(
+		projectName: string,
+		issue: string,
+	):
+		| {
+				status: "resolved";
+				aliases: string[];
+				canonicalId: string;
+				identifier?: string;
+		  }
+		| { status: "issue_not_found" | "issue_ambiguous" } {
+		const aliases = new Set<string>([issue]);
+		let matched = false;
+		let changed = true;
+		while (changed) {
+			changed = false;
+			const sessions = this.getSessionsForIssueAliases([...aliases]).filter(
+				(session) => session.project_name === projectName,
+			);
+			if (sessions.length > 0) matched = true;
+			for (const session of sessions) {
+				for (const key of [session.issue_id, session.issue_identifier]) {
+					if (key && !aliases.has(key)) {
+						aliases.add(key);
+						changed = true;
+					}
+				}
+			}
+		}
+		if (!matched) return { status: "issue_not_found" };
+		const uuidKeys = [...aliases].filter((key) => UUID_PATTERN.test(key));
+		if (uuidKeys.length > 1) return { status: "issue_ambiguous" };
+		const identifierKeys = [...aliases]
+			.filter((key) => ISSUE_IDENTIFIER_PATTERN.test(key))
+			.sort();
+		return {
+			status: "resolved",
+			aliases: [...aliases].sort(),
+			canonicalId: uuidKeys[0] ?? identifierKeys[0] ?? issue,
+			...(identifierKeys[0] ? { identifier: identifierKeys[0] } : {}),
+		};
+	}
+
+	private resolveDeliveredReviewFinding(input: {
+		projectName: string;
+		aliases: string[];
+		findingKey?: string;
+		requestId?: string;
+		findingIndex?: number;
+	}):
+		| {
+				status: "resolved";
+				findingKey: string;
+				requestId: string;
+				findingIndex: number;
+				title?: string;
+				severity?: string;
+				reviewType: "design" | "code";
+		  }
+		| { status: "finding_not_found" | "finding_ambiguous" } {
+		const placeholders = input.aliases.map(() => "?").join(", ");
+		const stmt = this.db.prepare(
+			`SELECT * FROM codex_review_job
+			 WHERE project_name = ? AND status = 'done' AND responded_at IS NOT NULL
+			   AND issue_id IN (${placeholders})
+			 ORDER BY created_at DESC, rowid DESC`,
+		);
+		stmt.bind([input.projectName, ...input.aliases]);
+		const candidates: Array<{
+			findingKey: string;
+			requestId: string;
+			findingIndex: number;
+			title?: string;
+			severity?: string;
+			reviewType: "design" | "code";
+		}> = [];
+		while (stmt.step()) {
+			const job = this.rowToCodexReviewJob(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+			if (input.requestId && job.request_id !== input.requestId) continue;
+			const findings = parseReviewFindings(job.findings_json);
+			for (let index = 0; index < findings.length; index += 1) {
+				if (input.findingIndex !== undefined && index !== input.findingIndex) {
+					continue;
+				}
+				const finding = findings[index] as ClaudeReviewFinding;
+				const key = deriveReviewFindingKey(finding);
+				if (input.findingKey && key !== input.findingKey) continue;
+				candidates.push({
+					findingKey: key,
+					requestId: job.request_id,
+					findingIndex: index,
+					...(typeof finding.title === "string"
+						? { title: finding.title }
+						: {}),
+					...(typeof finding.severity === "string"
+						? { severity: finding.severity }
+						: {}),
+					reviewType: job.review_type,
+				});
+			}
+		}
+		stmt.free();
+		if (candidates.length === 0) return { status: "finding_not_found" };
+		if (
+			!input.requestId &&
+			new Set(candidates.map((c) => c.reviewType)).size > 1
+		) {
+			return { status: "finding_ambiguous" };
+		}
+		return { status: "resolved", ...candidates[0]! };
+	}
+
+	private rowToReviewFindingRuling(
+		row: Record<string, unknown>,
+	): ReviewFindingRuling {
+		return {
+			ruling_id: row.ruling_id as string,
+			project_name: row.project_name as string,
+			issue_id_canonical: row.issue_id_canonical as string,
+			issue_identifier: (row.issue_identifier as string) ?? undefined,
+			finding_key: row.finding_key as string,
+			source_request_id: row.source_request_id as string,
+			source_finding_index: Number(row.source_finding_index),
+			finding_title: (row.finding_title as string) ?? undefined,
+			finding_severity: (row.finding_severity as string) ?? undefined,
+			review_type: row.review_type as "design" | "code",
+			disposition: row.disposition as "overruled" | "follow_up",
+			follow_up_issue: (row.follow_up_issue as string) ?? undefined,
+			rationale: row.rationale as string,
+			ruled_by: row.ruled_by as string,
+			execution_id: (row.execution_id as string) ?? undefined,
+			created_at: row.created_at as string,
+			notified_at: (row.notified_at as string) ?? undefined,
+			revoked_at: (row.revoked_at as string) ?? undefined,
+			revoked_by: (row.revoked_by as string) ?? undefined,
+			revoke_reason: (row.revoke_reason as string) ?? undefined,
+		};
 	}
 
 	/**
@@ -5321,11 +6059,40 @@ export class StateStore {
 			        completed_at = NULL,
 			        notified_at = NULL,
 			        retest_wake_pending_at = NULL
-			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?`,
+			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?
+			    AND status IN ('superseded','failed','stuck')`,
 			[parentExecutionId, targetPrHeadSha],
 		);
 		const updated = this.db.getRowsModified() > 0;
 		this.save();
+		return updated;
+	}
+
+	/**
+	 * FLY-1251: bounded same-head manual escape hatch. Only a terminal non-pass
+	 * row can be revived; active QA and already-passed evidence are immutable.
+	 * The status predicate is the CAS against a concurrent auto/manual admission.
+	 */
+	reviveAutoQaRecordForManualSpawn(
+		parentExecutionId: string,
+		targetPrHeadSha: string,
+	): boolean {
+		this.db.run(
+			`UPDATE auto_qa_record
+			    SET status = 'running',
+			        enrollment_source = 'manual',
+			        qa_execution_id = NULL,
+			        verdict_event_id = NULL,
+			        completed_at = NULL,
+			        notified_at = NULL,
+			        retest_wake_pending_at = NULL,
+			        started_at = datetime('now')
+			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?
+			    AND status IN ('stuck','failed')`,
+			[parentExecutionId, targetPrHeadSha],
+		);
+		const updated = this.db.getRowsModified() > 0;
+		if (updated) this.save();
 		return updated;
 	}
 
@@ -7774,12 +8541,24 @@ export class StateStore {
 	}
 
 	markFounderActionDelivered(actionKey: string): void {
-		this.db.run(
-			`UPDATE founder_action_ledger
-			    SET status = 'delivered', delivered_at = datetime('now')
-			  WHERE action_key = ? AND status = 'pending'`,
-			[actionKey],
-		);
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE founder_action_ledger
+				    SET status = 'delivered', delivered_at = datetime('now')
+				  WHERE action_key = ? AND status = 'pending'`,
+				[actionKey],
+			);
+			if (
+				this.db.getRowsModified() > 0 &&
+				actionKey.startsWith("commdb-finalize-stuck-")
+			) {
+				this.db.run(
+					`UPDATE commdb_finalize_failures SET alerted = 1
+					  WHERE execution_id = ?`,
+					[actionKey.slice("commdb-finalize-stuck-".length)],
+				);
+			}
+		});
 		this.save();
 	}
 
@@ -7835,6 +8614,345 @@ export class StateStore {
 	}
 
 	// ── FLY-1099: bounded founder-reply retry ledger ─────────────────────────
+
+	// FLY-1238: durable state for the merged-PR last-mile guard.
+	private rowToMergedGateGuardFailure(
+		row: Record<string, unknown>,
+	): MergedGateGuardFailureRow {
+		return {
+			question_id: row.question_id as string,
+			source: row.source as string,
+			execution_id: row.execution_id as string,
+			issue_id: row.issue_id as string,
+			project_name: row.project_name as string,
+			attempts: Number(row.attempts ?? 0),
+			first_seen_ms: Number(row.first_seen_ms),
+			next_retry_ms: Number(row.next_retry_ms ?? 0),
+			last_error: (row.last_error as string) ?? undefined,
+			terminal: Number(row.terminal ?? 0) === 1,
+			alerted: Number(row.alerted ?? 0) === 1,
+			resolved_at: (row.resolved_at as string) ?? undefined,
+		};
+	}
+
+	ensureMergedGateGuardFailure(input: {
+		questionId: string;
+		source: string;
+		executionId: string;
+		issueId: string;
+		projectName: string;
+		nowMs: number;
+	}): MergedGateGuardFailureRow {
+		let changed = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT OR IGNORE INTO merged_gate_guard_failure
+				   (question_id, source, execution_id, issue_id, project_name, first_seen_ms)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					input.questionId,
+					input.source,
+					input.executionId,
+					input.issueId,
+					input.projectName,
+					input.nowMs,
+				],
+			);
+			changed = this.db.getRowsModified() > 0;
+
+			// OPEN/CLOSED resolves one UNKNOWN episode, but the same gate can be
+			// checked again after the short result cache expires. Re-arm a resolved
+			// row so a later outage gets its own bounded backoff and durable alert.
+			this.db.run(
+				`UPDATE merged_gate_guard_failure
+				    SET execution_id = ?, issue_id = ?, project_name = ?, attempts = 0,
+				        first_seen_ms = ?, next_retry_ms = 0, last_error = NULL,
+				        terminal = 0, alerted = 0, resolved_at = NULL
+				  WHERE question_id = ? AND source = ? AND resolved_at IS NOT NULL`,
+				[
+					input.executionId,
+					input.issueId,
+					input.projectName,
+					input.nowMs,
+					input.questionId,
+					input.source,
+				],
+			);
+			changed = this.db.getRowsModified() > 0 || changed;
+		});
+		if (changed) this.save();
+		return this.getMergedGateGuardFailure(input.questionId, input.source)!;
+	}
+
+	getMergedGateGuardFailure(
+		questionId: string,
+		source: string,
+	): MergedGateGuardFailureRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM merged_gate_guard_failure WHERE question_id = ? AND source = ?",
+		);
+		stmt.bind([questionId, source]);
+		let row: MergedGateGuardFailureRow | undefined;
+		if (stmt.step()) {
+			row = this.rowToMergedGateGuardFailure(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return row;
+	}
+
+	recordMergedGateGuardUnknown(input: {
+		questionId: string;
+		source: string;
+		nowMs: number;
+		nextRetryMs: number;
+		error: string;
+		terminal: boolean;
+	}): MergedGateGuardFailureRow {
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE merged_gate_guard_failure
+				    SET attempts = attempts + 1, next_retry_ms = ?, last_error = ?,
+				        terminal = CASE WHEN ? THEN 1 ELSE terminal END
+				  WHERE question_id = ? AND source = ? AND resolved_at IS NULL`,
+				[
+					input.nextRetryMs,
+					input.error.slice(0, 500),
+					input.terminal ? 1 : 0,
+					input.questionId,
+					input.source,
+				],
+			);
+			if (!input.terminal) return;
+			const row = this.getMergedGateGuardFailure(
+				input.questionId,
+				input.source,
+			);
+			if (!row || row.alerted) return;
+			this.insertFounderActionRaw({
+				actionKey: `merged-gate-guard-unavailable-${input.questionId}-${input.source}`,
+				kind: "emit_alert",
+				executionId: row.execution_id,
+				issueId: row.issue_id,
+				projectName: row.project_name,
+				payload: {
+					alert: {
+						leadId: "",
+						projectName: row.project_name,
+						eventId: `merged-gate-guard-unavailable-${input.questionId}-${input.source}`,
+						eventType: "merged_gate_guard_unavailable",
+						title: `Merged gate guard unavailable — ${row.issue_id}`,
+						body:
+							`Suppressed founder-facing recovery for gate ${input.questionId} after ${row.attempts} inconclusive PR-state checks. ` +
+							"Check GitHub and retire or re-drive the gate manually.",
+						severity: "warning",
+					},
+				},
+			});
+			this.db.run(
+				`UPDATE merged_gate_guard_failure SET alerted = 1
+				  WHERE question_id = ? AND source = ?`,
+				[input.questionId, input.source],
+			);
+		});
+		this.save();
+		return this.getMergedGateGuardFailure(input.questionId, input.source)!;
+	}
+
+	resolveMergedGateGuardFailure(questionId: string, source: string): void {
+		this.db.run(
+			`UPDATE merged_gate_guard_failure SET resolved_at = datetime('now')
+			  WHERE question_id = ? AND source = ? AND resolved_at IS NULL`,
+			[questionId, source],
+		);
+		if (this.db.getRowsModified() > 0) this.save();
+	}
+
+	private rowToCommDbFinalizeFailure(
+		row: Record<string, unknown>,
+	): CommDbFinalizeFailureRow {
+		return {
+			execution_id: row.execution_id as string,
+			issue_id: row.issue_id as string,
+			project_name: row.project_name as string,
+			attempts: Number(row.attempts ?? 0),
+			first_failure_ms: Number(row.first_failure_ms),
+			last_failure_ms: Number(row.last_failure_ms),
+			last_error: (row.last_error as string) ?? undefined,
+			alerted: Number(row.alerted ?? 0) === 1,
+			resolved_at: (row.resolved_at as string) ?? undefined,
+		};
+	}
+
+	getCommDbFinalizeFailure(
+		executionId: string,
+	): CommDbFinalizeFailureRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM commdb_finalize_failures WHERE execution_id = ?",
+		);
+		stmt.bind([executionId]);
+		let row: CommDbFinalizeFailureRow | undefined;
+		if (stmt.step()) {
+			row = this.rowToCommDbFinalizeFailure(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return row;
+	}
+
+	/** Record every structured finalizer outcome. The third failure or a
+	 * fifteen-minute episode queues one stable Lead-only alert; `alerted` is
+	 * deliberately set only by markFounderActionDelivered after a real receipt. */
+	recordCommDbFinalizeOutcome(input: {
+		executionId: string;
+		issueId: string;
+		projectName: string;
+		ok: boolean;
+		error?: string;
+		nowMs?: number;
+	}): CommDbFinalizeFailureRow | undefined {
+		const nowMs = input.nowMs ?? Date.now();
+		if (input.ok) {
+			this.db.run(
+				`UPDATE commdb_finalize_failures SET resolved_at = datetime('now')
+				  WHERE execution_id = ? AND resolved_at IS NULL`,
+				[input.executionId],
+			);
+			if (this.db.getRowsModified() > 0) this.save();
+			return this.getCommDbFinalizeFailure(input.executionId);
+		}
+
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT INTO commdb_finalize_failures
+				   (execution_id, issue_id, project_name, attempts,
+				    first_failure_ms, last_failure_ms, last_error)
+				 VALUES (?, ?, ?, 1, ?, ?, ?)
+				 ON CONFLICT(execution_id) DO UPDATE SET
+				   issue_id = excluded.issue_id,
+				   project_name = excluded.project_name,
+				   attempts = commdb_finalize_failures.attempts + 1,
+				   last_failure_ms = excluded.last_failure_ms,
+				   last_error = excluded.last_error`,
+				[
+					input.executionId,
+					input.issueId,
+					input.projectName,
+					nowMs,
+					nowMs,
+					(input.error ?? "unknown").slice(0, 500),
+				],
+			);
+			const row = this.getCommDbFinalizeFailure(input.executionId);
+			if (
+				!row ||
+				row.alerted ||
+				row.resolved_at ||
+				(row.attempts < 3 && nowMs - row.first_failure_ms < 15 * 60_000)
+			) {
+				return;
+			}
+			this.insertFounderActionRaw({
+				actionKey: `commdb-finalize-stuck-${input.executionId}`,
+				kind: "emit_alert",
+				executionId: input.executionId,
+				issueId: input.issueId,
+				projectName: input.projectName,
+				payload: {
+					alert: {
+						leadId: "",
+						projectName: input.projectName,
+						eventId: `commdb-finalize-stuck-${input.executionId}`,
+						eventType: "commdb_finalize_stuck",
+						title: `CommDB finalization stuck — ${input.issueId}`,
+						body:
+							`Runner ${input.executionId} is physically gone, but its gates and CommDB session could not be retired atomically after ${row.attempts} attempts. ` +
+							"Issue-level archive and Linear closeout remain fail-closed; inspect comm.db and retry cleanup.",
+						severity: "warning",
+					},
+				},
+			});
+		});
+		this.save();
+		return this.getCommDbFinalizeFailure(input.executionId);
+	}
+
+	/** A MERGED verdict already suppresses output; this only retires artifacts. */
+	invalidateMergedGateArtifacts(input: {
+		executionId: string;
+		issueId: string;
+		projectName: string;
+		questionId: string;
+		prNumber: number;
+		source: string;
+		observedMergeCommitOid?: string;
+	}): {
+		invalidatedDeferredCount: number;
+		supersededActionCount: number;
+	} {
+		let invalidatedDeferredCount = 0;
+		let supersededActionCount = 0;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE founder_deferred_approval
+				    SET invalidated_at = datetime('now'), invalidated_reason = 'pr_merged'
+				  WHERE question_id = ? AND consumed_at IS NULL AND invalidated_at IS NULL`,
+				[input.questionId],
+			);
+			invalidatedDeferredCount = this.db.getRowsModified();
+
+			const pending = this.db.prepare(
+				`SELECT action_key, payload FROM founder_action_ledger
+				  WHERE execution_id = ? AND status = 'pending'
+				    AND kind IN ('held_reply','ttl_expired_notice','head_drift_notice','rebound_notice')`,
+			);
+			pending.bind([input.executionId]);
+			const matchingKeys: string[] = [];
+			while (pending.step()) {
+				const row = pending.getAsObject() as Record<string, unknown>;
+				try {
+					const payload = JSON.parse(String(row.payload)) as Record<
+						string,
+						unknown
+					>;
+					if (payload.questionId === input.questionId) {
+						matchingKeys.push(String(row.action_key));
+					}
+				} catch {
+					// Malformed payload: do not guess-match an action to another gate.
+				}
+			}
+			pending.free();
+			for (const actionKey of matchingKeys) {
+				this.db.run(
+					`UPDATE founder_action_ledger SET status = 'superseded', last_error = 'pr_merged'
+					  WHERE action_key = ? AND status = 'pending'`,
+					[actionKey],
+				);
+				supersededActionCount += this.db.getRowsModified();
+			}
+
+			this.insertAuditEventRaw({
+				event_id: `merged-gate-suppressed-${input.questionId}-${input.source}`,
+				execution_id: input.executionId,
+				issue_id: input.issueId,
+				project_name: input.projectName,
+				event_type: "merged_gate_suppressed",
+				source: `bridge.merged-gate-guard.${input.source}`,
+				payload: {
+					questionId: input.questionId,
+					prNumber: input.prNumber,
+					observedMergeCommitOid: input.observedMergeCommitOid,
+					invalidatedDeferredCount,
+					supersededActionCount,
+				},
+			});
+		});
+		this.save();
+		return { invalidatedDeferredCount, supersededActionCount };
+	}
 
 	private rowToFounderReplyRetry(
 		row: Record<string, unknown>,
@@ -8240,6 +9358,11 @@ export class StateStore {
 				if (!columns.includes(col)) {
 					this.db.run(`ALTER TABLE auto_qa_record ADD COLUMN ${col} TEXT`);
 				}
+			}
+			if (!columns.includes("enrollment_source")) {
+				this.db.run(
+					"ALTER TABLE auto_qa_record ADD COLUMN enrollment_source TEXT NOT NULL DEFAULT 'auto' CHECK (enrollment_source IN ('auto','manual'))",
+				);
 			}
 		} catch {
 			// Table may not exist yet (first run) — CREATE TABLE will handle it
