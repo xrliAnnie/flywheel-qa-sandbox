@@ -1,0 +1,87 @@
+diff --git a/packages/voice-bridge/src/assistant/config.ts b/packages/voice-bridge/src/assistant/config.ts
+index 811dc2f6..f65f0698 100644
+--- a/packages/voice-bridge/src/assistant/config.ts
++++ b/packages/voice-bridge/src/assistant/config.ts
+@@ -12,6 +12,7 @@
+ import { readFileSync } from "node:fs";
+ import { homedir } from "node:os";
+ import { join } from "node:path";
++import type { AssistantAdvancedConfig } from "./advanced.js";
+ 
+ export interface AssistantBriefingConfig {
+ 	refreshSec: number;
+@@ -42,6 +43,9 @@ export interface AssistantModeConfig {
+ 	 * one-key escape hatch if the rendering misbehaves). Optional for
+ 	 * hand-constructed configs; downstream treats `!== false` as ON. */
+ 	captions?: boolean;
++	/** FLY-1018 voice phase: mounts the delegate_task deep-dispatch tool
++	 * (/gemini-advanced). Absent = the assistant stays byte-identical. */
++	advanced?: AssistantAdvancedConfig;
+ }
+ 
+ const DEFAULT_COMMAND = "gemini";
+@@ -114,6 +118,32 @@ export function resolveAssistantConfig(
+ 		);
+ 	}
+ 
++	// FLY-1018 voice phase: optional deep-dispatch block. leadId is required
++	// and explicit (the ship-request / dispatch target Lead is never inferred
++	// from the project — same contract as the text daemon's bindings).
++	let advanced: AssistantAdvancedConfig | undefined;
++	if (a.advanced != null) {
++		if (typeof a.advanced !== "object" || Array.isArray(a.advanced)) {
++			throw new Error(
++				"voice-bridge: huddle.assistant.advanced must be an object — { leadId, deptLabel?, identityPath? }",
++			);
++		}
++		const adv = a.advanced as Record<string, unknown>;
++		const leadId = optString(adv, "leadId");
++		if (!leadId) {
++			throw new Error(
++				"voice-bridge: huddle.assistant.advanced.leadId is required — the explicit dispatch Lead, never inferred from the project",
++			);
++		}
++		const deptLabel = optString(adv, "deptLabel");
++		const identityPath = optString(adv, "identityPath");
++		advanced = {
++			leadId,
++			...(deptLabel && { deptLabel }),
++			...(identityPath && { identityPath }),
++		};
++	}
++
+ 	return {
+ 		commandName,
+ 		voice,
+@@ -127,6 +157,7 @@ export function resolveAssistantConfig(
+ 		localBargeIn: a.localBargeIn === true,
+ 		bargeIn: optBoolean(a, "bargeIn") ?? true,
+ 		captions: optBoolean(a, "captions") ?? true,
++		...(advanced && { advanced }),
+ 	};
+ }
+ 
+diff --git a/packages/voice-bridge/src/cli.ts b/packages/voice-bridge/src/cli.ts
+index f9542384..e0ced1f4 100644
+--- a/packages/voice-bridge/src/cli.ts
++++ b/packages/voice-bridge/src/cli.ts
+@@ -12,6 +12,7 @@
+  */
+ import { createServer, type Server } from "node:http";
+ import { ResidentBrainManager } from "flywheel-voice-core";
++import { loadAdvancedAgentConfig } from "./assistant/advanced.js";
+ import {
+ 	type AssistantModeConfig,
+ 	loadAssistantConfig,
+@@ -108,6 +109,11 @@ export async function runVoiceBridge(
+ 			"WARNING: GEMINI_API_KEY unset — the PR-2 conversation loop will fail-fast on this",
+ 		);
+ 	}
++	// FLY-1018 voice phase: a half-configured advanced mode must kill the
++	// deploy at startup, never at the founder's first /gemini-advanced use.
++	if (assistant?.advanced && !opts.assistantWiring?.createConversation) {
++		loadAdvancedAgentConfig(process.env);
++	}
+ 
+ 	const deps = opts.deps ?? (await createDiscordDeps());
+ 	const registry = new BotRegistry<

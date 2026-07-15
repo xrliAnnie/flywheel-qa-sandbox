@@ -1,14 +1,26 @@
 {
 	"name": "flywheel-comm",
 	"version": "0.1.0",
-	"description": "CLI for Lead ↔ Runner bidirectional communication via SQLite",
+	"description": "CLI for Lead \u2194 Runner bidirectional communication via SQLite",
 	"type": "module",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
 	"exports": {
 		".": "./dist/index.js",
 		"./db": "./dist/lib.js",
-		"./utils": "./dist/utils/content-ref.js"
+		"./utils": "./dist/utils/content-ref.js",
+		"./wake": "./dist/wake.js",
+		"./respond": "./dist/commands/respond.js",
+		"./gate-marker": "./dist/gate-marker.js",
+		"./verify-approval": "./dist/commands/verify-approval.js",
+		"./ship-eligibility": "./dist/ship-eligibility.js",
+		"./xiaohongshu-state": "./dist/xiaohongshu-state.js",
+		"./xiaohongshu-final": "./dist/xiaohongshu-final.js",
+		"./xiaohongshu-analysis-store": "./dist/xiaohongshu-analysis-store.js",
+		"./xiaohongshu-review-locator": "./dist/xiaohongshu-review-locator.js",
+		"./xiaohongshu-review-delivery": "./dist/xiaohongshu-review-delivery.js",
+		"./verify-lifecycle-consent": "./dist/commands/verify-lifecycle-consent.js",
+		"./founder-attribution": "./dist/founder-attribution.js"
 	},
 	"bin": {
 		"flywheel-comm": "dist/index.js"
@@ -25,7 +37,10 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
-		"better-sqlite3": "^12.8.0"
+		"better-sqlite3": "^12.8.0",
+		"flywheel-agent-team-transport": "workspace:*",
+		"flywheel-config": "workspace:*",
+		"flywheel-token-usage": "workspace:*"
 	},
 	"devDependencies": {
 		"@types/better-sqlite3": "^7.6.13",

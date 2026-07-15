@@ -443,13 +443,14 @@ parallel:
 		expect(config.parallel?.session_timeout_minutes).toBe(120);
 	});
 
-	// ─── v0.6 agents config ────────────────────────
+	// ─── v0.6 agents config (FLY-137 v1.27.2 dept-aware) ────────────────────────
 
-	it("loads config with agents section", async () => {
+	it("loads config with dept-grouped agents section", async () => {
 		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
-    agent_file: .claude/agents/backend-executor.md
+    agent_file: .flywheel/agents/product/backend-executor.md
+    department: product
     domain_file: .claude/domains/backend.md
     match:
       labels:
@@ -459,27 +460,42 @@ agents:
         - "database"
         - "server"
   frontend:
-    agent_file: .claude/agents/frontend-executor.md
+    agent_file: .flywheel/agents/product/frontend-executor.md
+    department: product
     match:
       labels:
         - "frontend"
-      keywords:
-        - "ui"
-        - "react"
 default_agent: backend
 `;
 		readFile.mockResolvedValue(yaml);
 		const config = await loader.load("/p/config.yaml");
 		expect(Object.keys(config.agents!)).toEqual(["backend", "frontend"]);
 		expect(config.agents!.backend.agent_file).toBe(
-			".claude/agents/backend-executor.md",
+			".flywheel/agents/product/backend-executor.md",
 		);
+		expect(config.agents!.backend.department).toBe("product");
 		expect(config.agents!.backend.domain_file).toBe(
 			".claude/domains/backend.md",
 		);
 		expect(config.agents!.backend.match.labels).toEqual(["backend", "api"]);
 		expect(config.agents!.frontend.domain_file).toBeUndefined();
 		expect(config.default_agent).toBe("backend");
+	});
+
+	it("loads config with top-level cross-dept agent (no department field)", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  general:
+    agent_file: .flywheel/agents/general-executor.md
+    match:
+      labels: ["chore", "tooling"]
+`;
+		readFile.mockResolvedValue(yaml);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.agents!.general.agent_file).toBe(
+			".flywheel/agents/general-executor.md",
+		);
+		expect(config.agents!.general.department).toBeUndefined();
 	});
 
 	it("loads config without agents section (backward compat)", async () => {
@@ -495,7 +511,6 @@ agents:
   backend:
     match:
       labels: ["backend"]
-      keywords: ["db"]
 `;
 		readFile.mockResolvedValue(yaml);
 		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
@@ -510,7 +525,6 @@ agents:
     agent_file: /etc/passwd
     match:
       labels: ["backend"]
-      keywords: ["db"]
 `;
 		readFile.mockResolvedValue(yaml);
 		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
@@ -525,7 +539,6 @@ agents:
     agent_file: "../../secret.md"
     match:
       labels: ["backend"]
-      keywords: ["db"]
 `;
 		readFile.mockResolvedValue(yaml);
 		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
@@ -540,7 +553,6 @@ agents:
     agent_file: "foo/../../etc/passwd"
     match:
       labels: ["backend"]
-      keywords: ["db"]
 `;
 		readFile.mockResolvedValue(yaml);
 		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
@@ -548,11 +560,260 @@ agents:
 		);
 	});
 
+	// ─── FLY-137 v1.27.2: agent_file path contract (dept-aware) ────────────
+
+	it("FLY-137 v1.27.2: rejects legacy .claude/agents/ path with migration hint", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .claude/agents/backend-executor.md
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/must live under "\.flywheel\/agents\/".*migrate-agents-path/i,
+		);
+	});
+
+	it("FLY-137 v1.27.2: rejects nested subdirs (depth >= 2)", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/eng/backend-executor.md
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/nested subdirs not supported/i,
+		);
+	});
+
+	it("FLY-137 v1.27.2: rejects reserved 'generic' agent name", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  generic:
+    agent_file: .flywheel/agents/generic-executor.md
+    match:
+      labels: ["chore"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/"generic" is reserved/i,
+		);
+	});
+
+	it("FLY-137 v1.27.2: rejects explicit department on top-level (no subdir) agent_file", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/backend-executor.md
+    department: product
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/top-level.*department.*Top-level agents must omit/i,
+		);
+	});
+
+	it("FLY-137 v1.27.2: rejects mismatch between department field and agent_file dept", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    department: operations
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/department="operations" mismatches agent_file path/i,
+		);
+	});
+
+	it("FLY-137 v1.27.2: auto-derives dept when department absent + dept-subdir path", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		const config = await loader.load("/p/config.yaml");
+		// Auto-derive happens at dispatch time in AgentDispatcher (via parsedDept);
+		// ConfigLoader does not write the derived value back. It just accepts the file as-is.
+		expect(config.agents!.backend.agent_file).toBe(
+			".flywheel/agents/product/backend-executor.md",
+		);
+		expect(config.agents!.backend.department).toBeUndefined();
+	});
+
+	// ─── FLY-901: dual-register `departments` field validation ────────────
+
+	it("FLY-901: accepts a dept-owned agent with a valid departments set", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  product-designer:
+    agent_file: .flywheel/agents/engineering/product-designer-executor.md
+    department: engineering
+    departments: [engineering, product]
+    match:
+      labels: ["product", "design"]
+`;
+		readFile.mockResolvedValue(yaml);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.agents!["product-designer"].departments).toEqual([
+			"engineering",
+			"product",
+		]);
+		expect(config.agents!["product-designer"].department).toBe("engineering");
+	});
+
+	it("FLY-901 V1a: rejects departments that is not an array", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    departments: product
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/departments must be a non-empty array of strings/i,
+		);
+	});
+
+	it("FLY-901 V1b: rejects an empty departments array", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    departments: []
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/departments must be a non-empty array of strings/i,
+		);
+	});
+
+	it("FLY-901 V1c: rejects departments with a non-string element", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    departments: [product, 7]
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/departments must be a non-empty array of strings/i,
+		);
+	});
+
+	it("FLY-901 V2: rejects a departments entry with an illegal token", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    departments: [product, "Not Safe"]
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/departments entries must be lowercase directory-safe tokens/i,
+		);
+	});
+
+	it("FLY-901 V3: rejects duplicate departments entries", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    departments: [product, product]
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/departments contains duplicate entries/i,
+		);
+	});
+
+	it("FLY-901 V4: rejects departments declared on a top-level (no subdir) agent", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  general:
+    agent_file: .flywheel/agents/general-executor.md
+    departments: [engineering, product]
+    match:
+      labels: ["chore"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/top-level.*departments.*Top-level agents must omit/i,
+		);
+	});
+
+	it("FLY-901 V5: rejects departments that omit the path-derived home dept", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  product-designer:
+    agent_file: .flywheel/agents/engineering/product-designer-executor.md
+    departments: [product]
+    match:
+      labels: ["product"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/departments must include the path-derived home department/i,
+		);
+	});
+
+	it("FLY-137 v1.27.1: match.keywords is optional (no error if absent)", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    department: product
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.agents!.backend.match.keywords).toBeUndefined();
+	});
+
+	it("FLY-137 v1.27.1: match.keywords still validates when present (must be array)", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    department: product
+    match:
+      labels: ["backend"]
+      keywords: "not-an-array"
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/keywords must be an array/i,
+		);
+	});
+
 	it("throws when match field is missing", async () => {
 		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
-    agent_file: .claude/agents/backend.md
+    agent_file: .flywheel/agents/product/backend-executor.md
+    department: product
 `;
 		readFile.mockResolvedValue(yaml);
 		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
@@ -564,7 +825,8 @@ agents:
 		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
-    agent_file: .claude/agents/backend.md
+    agent_file: .flywheel/agents/product/backend-executor.md
+    department: product
     match:
       keywords: ["db"]
 `;
@@ -574,28 +836,14 @@ agents:
 		);
 	});
 
-	it("throws when match.keywords is missing", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .claude/agents/backend.md
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/keywords.*array/i,
-		);
-	});
-
 	it("throws when match.labels contains non-string elements", async () => {
 		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
-    agent_file: .claude/agents/backend.md
+    agent_file: .flywheel/agents/product/backend-executor.md
+    department: product
     match:
       labels: [123, true]
-      keywords: ["db"]
 `;
 		readFile.mockResolvedValue(yaml);
 		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
@@ -603,11 +851,12 @@ agents:
 		);
 	});
 
-	it("throws when match.keywords contains non-string elements", async () => {
+	it("throws when match.keywords contains non-string elements (when present)", async () => {
 		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
-    agent_file: .claude/agents/backend.md
+    agent_file: .flywheel/agents/product/backend-executor.md
+    department: product
     match:
       labels: ["backend"]
       keywords: [42]
@@ -622,10 +871,10 @@ agents:
 		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
-    agent_file: .claude/agents/backend.md
+    agent_file: .flywheel/agents/product/backend-executor.md
+    department: product
     match:
       labels: ["backend"]
-      keywords: ["db"]
 default_agent: nonexistent
 `;
 		readFile.mockResolvedValue(yaml);
@@ -647,10 +896,9 @@ default_agent: backend
 	it("throws when agents is a YAML array instead of object", async () => {
 		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
-  - agent_file: .claude/agents/backend.md
+  - agent_file: .flywheel/agents/product/backend.md
     match:
       labels: ["backend"]
-      keywords: ["db"]
 `;
 		readFile.mockResolvedValue(yaml);
 		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
@@ -684,13 +932,13 @@ ${MINIMAL_CONFIG_YAML}
 ${checkpointsYaml}
 `;
 
-		it("accepts valid checkpoints config", async () => {
+		it("accepts valid checkpoints config (timeout_ms ≥ floor)", async () => {
 			readFile.mockResolvedValue(
 				withCheckpoints(`
 checkpoints:
   brainstorm:
     enabled: true
-    timeout_ms: 1800000
+    timeout_ms: 172800000
     timeout_behavior: fail-close
     cleanup_ttl_hours: 24
     stage: brainstorm
@@ -701,8 +949,83 @@ checkpoints:
 			);
 			const config = await loader.load("/p/config.yaml");
 			expect(config.checkpoints?.brainstorm?.enabled).toBe(true);
-			expect(config.checkpoints?.brainstorm?.timeout_ms).toBe(1800000);
+			expect(config.checkpoints?.brainstorm?.timeout_ms).toBe(172800000);
 			expect(config.checkpoints?.question?.timeout_behavior).toBe("fail-open");
+		});
+
+		// FLY-159: timeout_ms floor at 4h (MIN_GATE_TIMEOUT_MS = 14_400_000ms).
+		// Below-floor values are warn+raised (not throw) for boot continuity.
+		it("warns + raises timeout_ms below 4h floor (was 30min, now 4h)", async () => {
+			const warnSpy = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			readFile.mockResolvedValue(
+				withCheckpoints(`
+checkpoints:
+  brainstorm:
+    enabled: true
+    timeout_ms: 1800000
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.checkpoints?.brainstorm?.timeout_ms).toBe(14_400_000);
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringMatching(
+					/checkpoints\.brainstorm\.timeout_ms=1800000ms is below floor/,
+				),
+			);
+			warnSpy.mockRestore();
+		});
+
+		it("warns + raises timeout_ms = 1h (Designer-style misconfig)", async () => {
+			const warnSpy = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			readFile.mockResolvedValue(
+				withCheckpoints(`
+checkpoints:
+  brainstorm:
+    timeout_ms: 3600000
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.checkpoints?.brainstorm?.timeout_ms).toBe(14_400_000);
+			expect(warnSpy).toHaveBeenCalledTimes(1);
+			warnSpy.mockRestore();
+		});
+
+		it("passes timeout_ms = 4h (exact floor) unchanged + no warn", async () => {
+			const warnSpy = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			readFile.mockResolvedValue(
+				withCheckpoints(`
+checkpoints:
+  brainstorm:
+    timeout_ms: 14400000
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.checkpoints?.brainstorm?.timeout_ms).toBe(14_400_000);
+			expect(warnSpy).not.toHaveBeenCalled();
+			warnSpy.mockRestore();
+		});
+
+		it("passes timeout_ms = 12h (Designer real value) unchanged + no warn", async () => {
+			const warnSpy = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			readFile.mockResolvedValue(
+				withCheckpoints(`
+checkpoints:
+  brainstorm:
+    timeout_ms: 43200000
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.checkpoints?.brainstorm?.timeout_ms).toBe(43_200_000);
+			expect(warnSpy).not.toHaveBeenCalled();
+			warnSpy.mockRestore();
 		});
 
 		it("accepts config without checkpoints", async () => {
@@ -775,5 +1098,515 @@ checkpoints:
 				/enabled.*boolean/,
 			);
 		});
+	});
+
+	// FLY-205: doc_flow validation
+	describe("doc_flow validation", () => {
+		const withDocFlow = (docFlowYaml: string) => `
+${MINIMAL_CONFIG_YAML}
+${docFlowYaml}
+`;
+
+		it("accepts valid enabled doc_flow config", async () => {
+			readFile.mockResolvedValue(
+				withDocFlow(`
+doc_flow:
+  enabled: true
+  default_department: content
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.doc_flow?.enabled).toBe(true);
+			expect(config.doc_flow?.default_department).toBe("content");
+		});
+
+		it("accepts absent doc_flow (feature off, backward compatible)", async () => {
+			readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.doc_flow).toBeUndefined();
+		});
+
+		it("rejects enabled=true without default_department", async () => {
+			readFile.mockResolvedValue(
+				withDocFlow(`
+doc_flow:
+  enabled: true
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/default_department is required when doc_flow\.enabled is true/,
+			);
+		});
+
+		it("rejects default_department with illegal characters (path safety)", async () => {
+			readFile.mockResolvedValue(
+				withDocFlow(`
+doc_flow:
+  enabled: true
+  default_department: "../escape"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/default_department must be a non-empty lowercase directory name/,
+			);
+		});
+
+		it("rejects malformed default_department even when enabled=false (fail loudly before flip-on)", async () => {
+			readFile.mockResolvedValue(
+				withDocFlow(`
+doc_flow:
+  enabled: false
+  default_department: "Has Spaces"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/default_department must be a non-empty lowercase directory name/,
+			);
+		});
+
+		it("rejects non-mapping doc_flow", async () => {
+			readFile.mockResolvedValue(
+				withDocFlow(`
+doc_flow: "yes"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/doc_flow must be a YAML mapping/,
+			);
+		});
+
+		it("rejects non-boolean doc_flow.enabled", async () => {
+			readFile.mockResolvedValue(
+				withDocFlow(`
+doc_flow:
+  enabled: "yes"
+  default_department: content
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/doc_flow\.enabled must be a boolean/,
+			);
+		});
+
+		it("accepts enabled=false with valid default_department (pre-staged config)", async () => {
+			readFile.mockResolvedValue(
+				withDocFlow(`
+doc_flow:
+  enabled: false
+  default_department: product
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.doc_flow?.enabled).toBe(false);
+			expect(config.doc_flow?.default_department).toBe("product");
+		});
+	});
+
+	// FLY-615: ponytail validation
+	describe("ponytail validation", () => {
+		const withPonytail = (ponytailYaml: string) => `
+${MINIMAL_CONFIG_YAML}
+${ponytailYaml}
+`;
+
+		it("accepts enabled ponytail config", async () => {
+			readFile.mockResolvedValue(
+				withPonytail(`
+ponytail:
+  enabled: true
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.ponytail?.enabled).toBe(true);
+		});
+
+		it("accepts absent ponytail (feature off, byte-compatible)", async () => {
+			readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.ponytail).toBeUndefined();
+		});
+
+		it("accepts enabled:false", async () => {
+			readFile.mockResolvedValue(
+				withPonytail(`
+ponytail:
+  enabled: false
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.ponytail?.enabled).toBe(false);
+		});
+
+		it("rejects non-boolean ponytail.enabled", async () => {
+			readFile.mockResolvedValue(
+				withPonytail(`
+ponytail:
+  enabled: "yes"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/ponytail\.enabled must be a boolean/,
+			);
+		});
+
+		it("rejects non-mapping ponytail", async () => {
+			readFile.mockResolvedValue(
+				withPonytail(`
+ponytail: "on"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/ponytail must be a YAML mapping/,
+			);
+		});
+	});
+
+	// FLY-598: founder_ux_gate validation
+	describe("founder_ux_gate validation", () => {
+		const withGate = (gateYaml: string) => `
+${MINIMAL_CONFIG_YAML}
+${gateYaml}
+`;
+
+		it("accepts absent founder_ux_gate (feature off, backward compatible)", async () => {
+			readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.founder_ux_gate).toBeUndefined();
+		});
+
+		it.each(["off", "audit_only", "enforce"])(
+			"accepts valid mode %s",
+			async (mode) => {
+				readFile.mockResolvedValue(
+					withGate(`
+founder_ux_gate:
+  mode: ${mode}
+`),
+				);
+				const config = await loader.load("/p/config.yaml");
+				expect(config.founder_ux_gate?.mode).toBe(mode);
+			},
+		);
+
+		it("rejects an unknown mode", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate:
+  mode: blocking
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_ux_gate\.mode must be one of/,
+			);
+		});
+
+		it("rejects a missing mode key", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate:
+  enabled: true
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_ux_gate\.mode must be one of/,
+			);
+		});
+
+		it("rejects a non-mapping founder_ux_gate", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate: "enforce"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_ux_gate must be a YAML mapping/,
+			);
+		});
+
+		// FLY-869: exempt_labels validation
+		it("accepts absent exempt_labels (resolver applies the default downstream)", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate:
+  mode: enforce
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.founder_ux_gate?.exempt_labels).toBeUndefined();
+		});
+
+		it("accepts a valid exempt_labels array and normalizes to lowercase", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate:
+  mode: enforce
+  exempt_labels:
+    - "Brainstorm-Exempt"
+    - CHORE
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.founder_ux_gate?.exempt_labels).toEqual([
+				"brainstorm-exempt",
+				"chore",
+			]);
+		});
+
+		it("accepts an empty exempt_labels array", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate:
+  mode: enforce
+  exempt_labels: []
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.founder_ux_gate?.exempt_labels).toEqual([]);
+		});
+
+		it("rejects a non-array exempt_labels", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate:
+  mode: enforce
+  exempt_labels: "brainstorm-exempt"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_ux_gate\.exempt_labels must be an array of strings/,
+			);
+		});
+
+		it("rejects an exempt_labels array with a non-string element", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate:
+  mode: enforce
+  exempt_labels:
+    - "chore"
+    - 42
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_ux_gate\.exempt_labels must be an array of strings/,
+			);
+		});
+	});
+
+	describe("founder_milestone_report validation (FLY-725)", () => {
+		const withFmr = (fmrYaml: string) => `
+${MINIMAL_CONFIG_YAML}
+${fmrYaml}
+`;
+
+		it("accepts absent founder_milestone_report (feature off, backward compatible)", async () => {
+			readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.founder_milestone_report).toBeUndefined();
+		});
+
+		it("accepts enabled with default milestones (milestones omitted)", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report:
+  enabled: true
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.founder_milestone_report?.enabled).toBe(true);
+			expect(config.founder_milestone_report?.milestones).toBeUndefined();
+		});
+
+		it("accepts a supported milestones subset", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report:
+  enabled: true
+  milestones: [failed, blocked]
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.founder_milestone_report?.milestones).toEqual([
+				"failed",
+				"blocked",
+			]);
+		});
+
+		it("rejects ship_ready in v1 (covered by FLY-605, not 725 — must fail loudly)", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report:
+  enabled: true
+  milestones: [failed, ship_ready]
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/ship_ready.*not supported in v1/,
+			);
+		});
+
+		it("rejects completed in v1 (routine completions → FLY-727 digest, not real-time)", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report:
+  enabled: true
+  milestones: [failed, completed]
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/completed.*not supported in v1/,
+			);
+		});
+
+		it("rejects an unknown milestone value", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report:
+  enabled: true
+  milestones: [merged]
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/"merged" is not supported in v1/,
+			);
+		});
+
+		it("rejects a non-boolean enabled", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report:
+  enabled: "yes"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_milestone_report\.enabled must be a boolean/,
+			);
+		});
+
+		it("rejects a non-mapping founder_milestone_report", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report: "on"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_milestone_report must be a YAML mapping/,
+			);
+		});
+
+		it("rejects milestones that is not an array", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report:
+  enabled: true
+  milestones: completed
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_milestone_report\.milestones must be an array/,
+			);
+		});
+	});
+});
+
+describe("ConfigLoader — pipeline (FLY-793 three-stage)", () => {
+	let readFile: ReturnType<typeof vi.fn>;
+	let loader: ConfigLoader;
+
+	beforeEach(() => {
+		readFile = vi.fn();
+		loader = new ConfigLoader(readFile);
+	});
+
+	it("parses pipeline.three_stage: true", async () => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: true\n`,
+		);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.pipeline?.three_stage).toBe(true);
+	});
+
+	it("parses pipeline.three_stage: false", async () => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: false\n`,
+		);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.pipeline?.three_stage).toBe(false);
+	});
+
+	it("leaves pipeline undefined when absent (byte-compat)", async () => {
+		readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.pipeline).toBeUndefined();
+	});
+
+	it("throws when pipeline is a scalar, not a mapping", async () => {
+		readFile.mockResolvedValue(`${MINIMAL_CONFIG_YAML}\npipeline: nope\n`);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/pipeline must be a YAML mapping/,
+		);
+	});
+
+	it("throws when pipeline.three_stage is not a boolean", async () => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: "yes"\n`,
+		);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/pipeline\.three_stage must be a boolean/,
+		);
+	});
+
+	// FLY-887 R2 Step 3: three_stage_channels validation matrix.
+	it("parses a valid three_stage_channels list of quoted channel-id strings", async () => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: true\n  three_stage_channels: ["1516209714097291335"]\n`,
+		);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.pipeline?.three_stage_channels).toEqual([
+			"1516209714097291335",
+		]);
+	});
+
+	it("parses an EMPTY three_stage_channels array (explicit universal OFF)", async () => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: true\n  three_stage_channels: []\n`,
+		);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.pipeline?.three_stage_channels).toEqual([]);
+	});
+
+	it("leaves three_stage_channels undefined when absent (byte-compat, no restriction)", async () => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: true\n`,
+		);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.pipeline?.three_stage_channels).toBeUndefined();
+	});
+
+	it("throws when three_stage_channels is not an array", async () => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage_channels: "1516209714097291335"\n`,
+		);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/three_stage_channels must be an array/,
+		);
+	});
+
+	it("throws with a quoting hint when an item is a bare YAML number (precision-loss footgun)", async () => {
+		// A bare 19-digit Discord snowflake exceeds Number.MAX_SAFE_INTEGER —
+		// YAML would silently mangle it and the gate would never match.
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage_channels: [1516209714097291335]\n`,
+		);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(/quote/i);
+	});
+
+	it("throws when an item is an empty string", async () => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage_channels: ["1516209714097291335", ""]\n`,
+		);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/non-empty string/,
+		);
 	});
 });

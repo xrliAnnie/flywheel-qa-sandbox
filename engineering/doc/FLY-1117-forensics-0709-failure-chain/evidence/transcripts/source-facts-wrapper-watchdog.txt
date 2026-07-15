@@ -1,0 +1,34 @@
+# transcript: source-facts-wrapper-watchdog
+# command: bash -c 
+echo "=== deployed wrapper: how it launches Bridge (last 20 lines) ==="
+tail -20 /Users/xiaorongli/Dev/flywheel-FLY-1117/engineering/doc/FLY-1117-forensics-0709-failure-chain/evidence/scripts-snapshot/flywheel-bridge-wrapper.DEPLOYED.sh
+echo ""
+echo "=== watchdog source at incident SHA bc9c9bfb (full file) ==="
+git -C ~/Dev/flywheel show bc9c9bfb:packages/teamlead/src/bridge/bridge-event-loop-watchdog.ts 2>/dev/null
+# collected_at: 2026-07-10T08:34:01Z (host local: 2026-07-10 01:34:01 PDT)
+# host: MacBook-Pro.local / 26.3.2 / x86_64
+# ----
+=== deployed wrapper: how it launches Bridge (last 20 lines) ===
+# not yet bound the port, so the port preflight above saw it "free"). The port
+# preflight is authoritative for an already-bound Bridge (it tells a healthy
+# server apart from a zombie via /health); this only covers the booting peer.
+if [[ -f "$PID_FILE" ]]; then
+  EXISTING_PID=$(cat "$PID_FILE" 2>/dev/null || true)
+  if [[ -n "${EXISTING_PID:-}" ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
+    log "Bridge already running (PID ${EXISTING_PID}). Exit 0 — launchd retries after ThrottleInterval."
+    exit 0
+  fi
+fi
+mkdir -p "$(dirname "$PID_FILE")"
+echo $$ > "$PID_FILE"
+trap 'rm -f "$PID_FILE"' EXIT
+
+cd "$FLYWHEEL_DIR"
+log "Starting Bridge (TEAMLEAD_CHAT_THREADS_ENABLED=${TEAMLEAD_CHAT_THREADS_ENABLED:-unset})"
+
+# exec replaces this wrapper process so launchd directly manages the
+# Bridge process (correct PID tracking, signal delivery, KeepAlive).
+exec npx tsx scripts/run-bridge.ts
+
+=== watchdog source at incident SHA bc9c9bfb (full file) ===
+# exit_code: 128

@@ -1,0 +1,67 @@
+# transcript: tmux-35a-fatal-path-source (plan Step 2a — tmux 3.5a 分配失败/致命退出路径源码引文)
+# method: WebFetch(GET) of the tmux/tmux GitHub repository at tag 3.5a, raw file endpoints
+# urls:
+#   https://raw.githubusercontent.com/tmux/tmux/3.5a/xmalloc.c
+#   https://raw.githubusercontent.com/tmux/tmux/3.5a/log.c
+# collected_at: 2026-07-10T12:36Z 前后（host local ~05:36 PDT；WebFetch 经会话执行，本 transcript 为逐字保存的返回引文）
+# provenance note: 本机安装的 tmux 3.5a 二进制（/usr/local/Cellar/tmux/3.5a，sha256 见 transcripts/tmux-binary-forensics.txt）
+#   对应上游 tag 3.5a；以下引文为该 tag 源码，作为「分配失败→fatalx→exit(1)、默认无日志时零输出」的机制依据。
+# ----
+
+## xmalloc.c @ tag 3.5a — 分配失败路径（三个分配包装全部走 fatalx）
+
+xmalloc:
+    if (ptr == NULL)
+        fatalx("xmalloc: allocating %zu bytes: %s",
+            size, strerror(errno));
+
+xcalloc:
+    if (ptr == NULL)
+        fatalx("xcalloc: allocating %zu * %zu bytes: %s",
+            nmemb, size, strerror(errno));
+
+xreallocarray:
+    if (new_ptr == NULL)
+        fatalx("xreallocarray: allocating %zu * %zu bytes: %s",
+            nmemb, size, strerror(errno));
+
+（注：无泛化 "out of memory" 字符串——每处报具体操作与字节数。research.md 早先的 fatal("out of memory") 措辞据此更正。）
+
+## log.c @ tag 3.5a — fatal()/fatalx() 的终止方式与无日志行为
+
+fatal():
+    __dead void
+    fatal(const char *msg, ...)
+    {
+        char     tmp[256];
+        va_list  ap;
+
+        if (snprintf(tmp, sizeof tmp, "fatal: %s: ", strerror(errno)) < 0)
+            exit(1);
+
+        va_start(ap, msg);
+        log_vwrite(msg, ap, tmp);
+        va_end(ap);
+
+        exit(1);
+    }
+
+fatalx():
+    __dead void
+    fatalx(const char *msg, ...)
+    {
+        va_list  ap;
+
+        va_start(ap, msg);
+        log_vwrite(msg, ap, "fatal: ");
+        va_end(ap);
+
+        exit(1);
+    }
+
+终止方式：两者均以 exit(1) 结束——干净退出，非信号、非 abort（因此不产生 .ips 崩溃报告）。
+无日志行为：log_level=0（默认，未加 -v）时 log_file 为 NULL；log_vwrite 开头即
+    if (log_file == NULL) return;
+即默认配置下 fatal/fatalx 什么都不写就退出——「零痕迹死亡」的直接机制依据。
+
+# exit_code: 0 (WebFetch 两次调用均成功返回)

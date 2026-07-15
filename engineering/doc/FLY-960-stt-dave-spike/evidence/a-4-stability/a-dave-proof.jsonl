@@ -1,0 +1,14 @@
+{"t":"2026-07-07T16:29:46.352Z","type":"session_description","dave_protocol_version":1,"mode":"aead_aes256_gcm_rtpsize"}
+{"t":"2026-07-07T16:34:18.110Z","type":"session_description","dave_protocol_version":1,"mode":"aead_aes256_gcm_rtpsize"}
+{"t":"2026-07-07T16:34:58.219Z","type":"dave_execute_transition","d":{"transition_id":3}}
+{"t":"2026-07-07T16:36:57.766Z","type":"dave_execute_transition","d":{"transition_id":4}}
+{"t":"2026-07-07T16:37:48.997Z","type":"dave_execute_transition","d":{"transition_id":5}}
+{"t":"2026-07-07T16:38:36.541Z","type":"dave_execute_transition","d":{"transition_id":6}}
+{"t":"2026-07-07T16:38:37.686Z","type":"dave_execute_transition","d":{"transition_id":7}}
+{"t":"2026-07-07T16:38:59.232Z","type":"dave_execute_transition","d":{"transition_id":8}}
+{"t":"2026-07-07T16:39:06.822Z","type":"dave_execute_transition","d":{"transition_id":9}}
+{"t":"2026-07-07T16:39:12.336Z","type":"dave_execute_transition","d":{"transition_id":10}}
+{"t":"2026-07-07T16:42:51.152Z","type":"dave_execute_transition","d":{"transition_id":11}}
+{"t":"2026-07-07T16:43:01.969Z","type":"dave_execute_transition","d":{"transition_id":12}}
+{"t":"2026-07-07T16:44:33.494Z","type":"dave_execute_transition","d":{"transition_id":13}}
+{"t":"2026-07-07T16:46:43.410Z","type":"dave_execute_transition","d":{"transition_id":14}}

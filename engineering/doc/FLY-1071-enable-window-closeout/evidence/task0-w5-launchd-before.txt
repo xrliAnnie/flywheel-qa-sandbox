@@ -1,0 +1,73 @@
+gui/501/com.flywheel.lead.flywheel-claude-infra-bot-lead = {
+	active count = 1
+	path = /Users/xiaorongli/Library/LaunchAgents/com.flywheel.lead.flywheel-claude-infra-bot-lead.plist
+	type = LaunchAgent
+	state = running
+
+	program = /bin/bash
+	arguments = {
+		/bin/bash
+		/Users/xiaorongli/.flywheel/bin/flywheel-lead-wrapper.sh
+		/Users/xiaorongli/.flywheel/manifests/flywheel-claude-infra-bot-lead.json
+	}
+
+	stdout path = /tmp/flywheel-lead-flywheel-claude-infra-bot-lead.log
+	stderr path = /tmp/flywheel-lead-flywheel-claude-infra-bot-lead.log
+	inherited environment = {
+		SSH_AUTH_SOCK => /private/tmp/com.apple.launchd.dJu6A6tkBS/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		FLYWHEEL_WRAPPER_ENV_FILE => /Users/xiaorongli/.flywheel/env-claude-infra-bot.env
+		XPC_SERVICE_NAME => com.flywheel.lead.flywheel-claude-infra-bot-lead
+	}
+
+	domain = gui/501 [100023]
+	asid = 100023
+	minimum runtime = 30
+	exit timeout = 5
+	runs = 3
+	pid = 89109
+	immediate reason = inefficient
+	forks = 1931
+	execs = 2
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	checked allocations = 0 (queried = 1)
+	checked allocations reason = no host
+	checked allocations flags = 0x0
+	last terminating signal = Terminated: 15
+
+	resource coalition = {
+		ID = 340488
+		type = resource
+		state = active
+		active count = 1
+		name = com.flywheel.lead.flywheel-claude-infra-bot-lead
+	}
+
+	jetsam coalition = {
+		ID = 340489
+		type = jetsam
+		state = active
+		active count = 1
+		name = com.flywheel.lead.flywheel-claude-infra-bot-lead
+	}
+
+	spawn type = daemon (3)
+	jetsam priority = 40
+	jetsam memory limit (active) = (unlimited)
+	jetsam memory limit (inactive) = (unlimited)
+	jetsamproperties category = daemon
+	jetsam thread limit = 32
+	cpumon = default
+
+	properties = keepalive | runatload | inferred program
+}

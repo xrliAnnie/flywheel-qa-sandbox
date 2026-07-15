@@ -13,10 +13,71 @@ export interface EventEnvelope {
 	labels?: string[];
 	/** FLY-59: Session role for multi-session-per-issue support */
 	sessionRole?: string;
+	/**
+	 * FLY-793 (Step 11): the chat-thread role, computed ONCE at dispatch as
+	 * `shareParentBranch ? sessionRole : 'main'`. Carried on session_started so both
+	 * started sinks persist `sessions.chat_thread_role` — the durable signal that
+	 * routes Session-based thread resolution to the phase side-table (a plain
+	 * `sessionRole==='qa'` auto-QA runner on a SEPARATE issue is NOT a phase, so it
+	 * stays 'main'). Absent → 'main' (byte-compatible).
+	 */
+	chatThreadRole?: string;
+	/**
+	 * FLY-493: the resolved executor backend ("claude-tmux" | "codex-tmux" |
+	 * "antigravity-tmux" | "kimi-tmux"). Persisted as `session.adapter_type` so
+	 * the dashboard/wake surfaces can see it — in particular so the no-transport
+	 * wake-guard recognizes a no-transport (e.g. antigravity / kimi, transport=none)
+	 * session and never routes a wake to the env-default claude mailbox.
+	 */
+	runnerBackend?: string;
+	/**
+	 * FLY-728: the resolved runner model (e.g. "claude-fable-5", "opus"). Persisted
+	 * as `session.runner_model` so the dashboard / issue surfaces show which model a
+	 * per-issue routed runner is using. Absent → no `--model` override was resolved
+	 * (account default), persisted as NULL (byte-compatible).
+	 */
+	runnerModel?: string;
+	/**
+	 * FLY-615: the resolved ponytail condition for this run (e.g. "on:label",
+	 * "off:default", "unavailable:readiness:on:project"). Persisted as
+	 * `session.ponytail_condition` — the join key for FLY-614 token accounting +
+	 * FLY-616 quality eval A/B buckets. Absent → no ponytail condition recorded
+	 * (byte-compatible).
+	 */
+	ponytailCondition?: string;
+}
+
+/**
+ * FLY-1185 §2.1: the create-time worktree authority binding Blueprint carries
+ * alongside `worktree_ready`. ONLY the bridge-local DirectEventSink turns it
+ * into StateStore authority (`bindWorktreeOnce`); the HTTP TeamLeadClient
+ * deliberately NEVER transmits it — the shared `/events` ingest token is
+ * runner-visible, so the HTTP mode structurally has no authority channel and
+ * its worktree objects stay unowned/manual-only.
+ */
+export interface WorktreeBindingInfo {
+	branch: string;
+	generation: string;
 }
 
 export interface ExecutionEventEmitter {
 	emitStarted(env: EventEnvelope): Promise<void>;
+	/**
+	 * FLY-137: Notify Bridge that the worktree has been created so it can
+	 * persist `session.worktree_path` BEFORE the Runner can fire any stage
+	 * event (design_review / pr_created). Must be awaited by the caller —
+	 * stage handlers downstream rely on the session row carrying the right
+	 * worktree path, otherwise `skip.json` and review markers land in a
+	 * fallback directory the Runner can't see.
+	 *
+	 * FLY-1185: `binding` (branch + creation generation) is authority input
+	 * for the bridge-local sink only — see WorktreeBindingInfo.
+	 */
+	emitWorktreeReady(
+		env: EventEnvelope,
+		worktreePath: string,
+		binding?: WorktreeBindingInfo,
+	): Promise<void>;
 	emitCompleted(
 		env: EventEnvelope,
 		result: BlueprintResult,
@@ -53,6 +114,17 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				issueTitle: env.issueTitle,
 				labels: env.labels,
 				sessionRole: env.sessionRole,
+				// FLY-793 (Codex full-PR R1 #4): carry the chat-thread role on the HTTP
+				// started payload too — real runners emit via this client, so without it
+				// the /events sink defaults to "main" and (INSERT-once, never updated)
+				// permanently misroutes a phase session's thread to the main table.
+				chatThreadRole: env.chatThreadRole,
+				// FLY-493: executor backend → persisted as session.adapter_type.
+				runnerBackend: env.runnerBackend,
+				// FLY-728: resolved runner model → persisted as session.runner_model.
+				runnerModel: env.runnerModel,
+				// FLY-615: ponytail condition → persisted as session.ponytail_condition.
+				ponytailCondition: env.ponytailCondition,
 			},
 		});
 		this.track(p);
@@ -81,6 +153,8 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				exitReason: result.exitReason,
 				consecutiveFailures: result.consecutiveFailures,
 				sessionRole: env.sessionRole,
+				// FLY-123 R1 #4: adapter resume params (e.g. Codex threadId)
+				sessionParams: result.sessionParams,
 			},
 		});
 	}
@@ -112,6 +186,34 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 		// Dedicated heartbeat route — lightweight, no session_events, no lead notification
 		const p = this.postHeartbeat(env.executionId);
 		this.track(p);
+	}
+
+	/**
+	 * FLY-137: Worktree_ready — awaited by Blueprint after worktree
+	 * creation, before adapter execution. Uses the reliable post path so
+	 * the caller can rely on Bridge having persisted `worktree_path`
+	 * before any downstream stage handler runs.
+	 *
+	 * FLY-1185 §2.1 (R5#1 option a): the binding parameter is ACCEPTED but
+	 * NEVER transmitted — the shared `/events` ingest token is runner-visible,
+	 * so HTTP mode must be structurally incapable of writing deletion
+	 * authority. `worktree_ready` over HTTP stays display metadata only.
+	 */
+	async emitWorktreeReady(
+		env: EventEnvelope,
+		worktreePath: string,
+		_binding?: WorktreeBindingInfo,
+	): Promise<void> {
+		await this.postEventReliable({
+			event_id: randomUUID(),
+			execution_id: env.executionId,
+			issue_id: env.issueId,
+			project_name: env.projectName,
+			event_type: "worktree_ready",
+			payload: {
+				worktreePath,
+			},
+		});
 	}
 
 	async flush(): Promise<void> {
@@ -242,6 +344,11 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 
 export class NoOpEventEmitter implements ExecutionEventEmitter {
 	async emitStarted(_env: EventEnvelope): Promise<void> {}
+	async emitWorktreeReady(
+		_env: EventEnvelope,
+		_worktreePath: string,
+		_binding?: WorktreeBindingInfo,
+	): Promise<void> {}
 	async emitCompleted(
 		_env: EventEnvelope,
 		_result: BlueprintResult,

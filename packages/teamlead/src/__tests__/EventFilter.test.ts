@@ -62,6 +62,21 @@ describe("EventFilter", () => {
 			expect(result.priority).toBe("high");
 		});
 
+		// FLY-159 (FLY-163: Forum surface removed — only verify chat priority + reason)
+		it("gate_timed_out → notify_agent (high) via chat", () => {
+			const result = filter.classify(
+				"gate_timed_out",
+				makePayload({
+					status: "running",
+					checkpoint: "brainstorm",
+					waited_ms: 172_800_000,
+					timeout_behavior: "fail-close",
+				}),
+			);
+			expect(result.priority).toBe("high");
+			expect(result.reason).toMatch(/gate timed out/);
+		});
+
 		it("session_orphaned → notify_agent (normal)", () => {
 			const result = filter.classify(
 				"session_orphaned",
@@ -89,27 +104,21 @@ describe("EventFilter", () => {
 			);
 			expect(result.priority).toBe("normal");
 		});
+
+		it("session_monitoring_lost → normal (FLY-172, advisory not Annie-emergency)", () => {
+			const result = filter.classify(
+				"session_monitoring_lost",
+				makePayload({ status: "running" }),
+			);
+			expect(result.priority).toBe("normal");
+			expect(result.reason).toContain("monitoring lost");
+		});
 	});
 
 	describe("Chat-track events — Lead MUST notify Annie in Chat (FLY-47)", () => {
-		it("session_started + thread_id exists → notify_agent (high)", () => {
-			const result = filter.classify(
-				"session_started",
-				makePayload({
-					thread_id: "thread-123",
-				}),
-			);
-			expect(result.priority).toBe("high");
-			expect(result.reason).toContain("Chat");
-		});
-
-		it("session_started + NO thread_id → notify_agent (high)", () => {
-			const result = filter.classify(
-				"session_started",
-				makePayload({
-					thread_id: undefined,
-				}),
-			);
+		it("session_started → notify_agent (high)", () => {
+			// FLY-163: single chat-only rule replaces the old forum-vs-no-forum split.
+			const result = filter.classify("session_started", makePayload());
 			expect(result.priority).toBe("high");
 			expect(result.reason).toContain("Chat");
 		});
@@ -148,7 +157,7 @@ describe("EventFilter", () => {
 			expect(result.priority).toBe("high");
 		});
 
-		it("session_completed with status=completed → ship complete (high + Forum)", () => {
+		it("session_completed with status=completed → ship complete (high)", () => {
 			// FLY-58: completed status matches the "ship complete" rule
 			const result = filter.classify(
 				"session_completed",
@@ -158,61 +167,17 @@ describe("EventFilter", () => {
 				}),
 			);
 			expect(result.priority).toBe("high");
-			expect(result.updateForum).toBe(true);
-		});
-	});
-
-	describe("Forum gating — updateForum (FLY-47)", () => {
-		it("status-changing events → updateForum: true", () => {
-			const forumEvents = [
-				{ type: "session_started", payload: makePayload() },
-				{
-					type: "session_completed",
-					payload: makePayload({
-						status: "awaiting_review",
-						decision_route: "needs_review",
-					}),
-				},
-				{
-					type: "session_failed",
-					payload: makePayload({ status: "failed" }),
-				},
-				{
-					type: "action_executed",
-					payload: makePayload({ action: "approve" }),
-				},
-			];
-			for (const { type, payload } of forumEvents) {
-				const result = filter.classify(type, payload);
-				expect(result.updateForum).toBe(true);
-			}
-		});
-
-		it("informational events → updateForum: false", () => {
-			const noForumEvents = [
-				"session_stuck",
-				"session_orphaned",
-				"session_stale_completed",
-				"cipher_principle_proposed",
-				"unknown_event",
-			];
-			for (const type of noForumEvents) {
-				const result = filter.classify(type, makePayload());
-				expect(result.updateForum).toBe(false);
-			}
 		});
 	});
 
 	describe("Edge cases", () => {
-		it("empty payload session_completed → catch-all (normal + Forum)", () => {
+		it("empty payload session_completed → catch-all (normal)", () => {
 			const result = filter.classify("session_completed", {});
 			expect(result.priority).toBe("normal");
-			expect(result.updateForum).toBe(true);
 		});
 
 		it("null-ish fields in payload → no crash", () => {
 			const result = filter.classify("session_started", {
-				thread_id: undefined,
 				status: undefined,
 			});
 			expect(result.priority).toBe("high");

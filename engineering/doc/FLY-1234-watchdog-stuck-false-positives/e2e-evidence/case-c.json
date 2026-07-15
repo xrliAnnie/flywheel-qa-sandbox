@@ -1,0 +1,43 @@
+{
+	"scenario": "c",
+	"description": "static pane + NO corroboration — driven through real HeartbeatService.checkStuck tick entry (not confirmStuckCandidate)",
+	"execId": "qa1234-c",
+	"tmuxTarget": "qa-fly1234-e2e:case-c",
+	"notifierCall": {
+		"execution_id": "qa1234-c",
+		"minutesSince": 20,
+		"details": {
+			"confirmNote": "judge_suspicious: static frames and judge could not conclude"
+		},
+		"argc": 3,
+		"atMs": 1784012934302
+	},
+	"judgeCalls": 1,
+	"judgeVerdict": {
+		"verdict": "suspicious",
+		"attribution": "runner",
+		"suggestedAction": "Check whether the design-review subprocess is still live or has emitted a recent stage event.",
+		"rationale": "The pane shows unchanged design-review text at an idle prompt, but runtime context has no recent event corroborating an active review."
+	},
+	"judgeDurationMs": 4315,
+	"judgeRawStdout": "{\"type\":\"thread.started\",\"thread_id\":\"019f5f74-fc03-7f12-a0b3-4c71fe7ecfe2\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"verdict\\\":\\\"suspicious\\\",\\\"attribution\\\":\\\"runner\\\",\\\"suggestedAction\\\":\\\"Check whether the design-review subprocess is still live or has emitted a recent stage event.\\\",\\\"rationale\\\":\\\"The pane shows unchanged design-review text at an idle prompt, but runtime context has no recent event corroborating an active review.\\\"}\"}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":15834,\"cached_input_tokens\":9984,\"output_tokens\":105,\"reasoning_output_tokens\":36}}\n",
+	"judgeRegexCandidates": null,
+	"judgeRealAgentMessages": [
+		"{\"verdict\":\"suspicious\",\"attribution\":\"runner\",\"suggestedAction\":\"Check whether the design-review subprocess is still live or has emitted a recent stage event.\",\"rationale\":\"The pane shows unchanged design-review text at an idle prompt, but runtime context has no recent event corroborating an active review.\"}"
+	],
+	"framesCaptured": 2,
+	"confirmNote": "judge_suspicious: static frames and judge could not conclude",
+	"discord": {
+		"marker": "[QA-FLY1234-c-1784012934303]",
+		"postedMessageId": "1526485634120683622",
+		"renderedText": "[Event #1] session_stuck\nID: qa1234-c | Issue: FLY-1234-QA-E2E\nTitle: FLY-1234 QA E2E — case (c) static pane, no corroboration\nStatus: running\nConfirm-Note: judge_suspicious: static frames and judge could not conclude\nTimestamp: 2026-07-14T07:08:54.303Z | Session Key: qa1234-c",
+		"readback": {
+			"id": "1526485634120683622",
+			"content": "[QA-FLY1234-c-1784012934303]\n[Event #1] session_stuck\nID: qa1234-c | Issue: FLY-1234-QA-E2E\nTitle: FLY-1234 QA E2E — case (c) static pane, no corroboration\nStatus: running\nConfirm-Note: judge_suspicious: static frames and judge could not conclude\nTimestamp: 2026-07-14T07:08:54.303Z | Session Key: qa1234-c",
+			"timestamp": "2026-07-14T07:08:55.906000+00:00",
+			"containsConfirmNoteLine": true
+		}
+	},
+	"durationMs": 19425,
+	"pass": true
+}

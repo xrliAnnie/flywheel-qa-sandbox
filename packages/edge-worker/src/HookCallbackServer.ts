@@ -71,6 +71,7 @@ export class HookCallbackServer
 		token: string,
 		eventType: string,
 		timeoutMs: number,
+		expectedSessionId?: string,
 	): Promise<HookEvent | null> {
 		return new Promise((resolve) => {
 			let settled = false;
@@ -88,6 +89,19 @@ export class HookCallbackServer
 
 			const onHook = (event: HookEvent) => {
 				if (event.token === token && event.eventType === eventType) {
+					// FLY-921: nested sessions inherit the parent's callback token via
+					// env — the sessionId is the only signal that distinguishes the
+					// runner's own SessionEnd from a nested one's. Keep waiting on
+					// mismatch; the pane_dead poller backstops a real exit.
+					if (
+						expectedSessionId !== undefined &&
+						event.sessionId !== expectedSessionId
+					) {
+						console.warn(
+							`[HookCallbackServer] ignoring hook event: sessionId mismatch (expected=${expectedSessionId} got=${event.sessionId} token=${token})`,
+						);
+						return;
+					}
 					settle(event);
 				}
 			};
@@ -109,8 +123,14 @@ export class HookCallbackServer
 	waitForCompletion(
 		callbackToken: string,
 		timeoutMs: number,
+		expectedSessionId?: string,
 	): Promise<HookEvent | null> {
-		return this.waitForEvent(callbackToken, "SessionEnd", timeoutMs);
+		return this.waitForEvent(
+			callbackToken,
+			"SessionEnd",
+			timeoutMs,
+			expectedSessionId,
+		);
 	}
 
 	// ─── Private ─────────────────────────────────────

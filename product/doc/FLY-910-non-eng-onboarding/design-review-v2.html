@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-910 onboarding · 按你的想法改好了 · 请过目</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; padding:0 16px 150px; background:#f5f5f7; color:#1d1d1f;
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif; line-height:1.6; -webkit-text-size-adjust:100%; }
+  .wrap { max-width:860px; margin:0 auto; }
+  header.top { padding:36px 0 6px; }
+  h1 { font-size:25px; margin:0 0 6px; letter-spacing:-0.02em; }
+  .sub { color:#86868b; font-size:15px; margin:0; }
+  .howto { background:#eaf3ff; border:1px solid #cfe3ff; border-radius:12px; padding:14px 18px; margin:22px 0 10px; font-size:15px; color:#1d3a5f; }
+  .block { background:#fff; border-radius:14px; padding:20px 22px 16px; margin:0 0 22px; box-shadow:0 1px 3px rgba(0,0,0,0.06); border-left:4px solid #34c759; }
+  .block h2 { font-size:18px; margin:0 0 6px; }
+  .cnum { color:#86868b; font-size:13px; font-weight:600; }
+  .was { font-size:14px; color:#86868b; margin:6px 0 2px; }
+  .now { font-size:15px; color:#1d1d1f; margin:2px 0 6px; }
+  .now b { color:#1a7f37; }
+  .quote { background:#f7f9fb; border:1px solid #e6ebf0; border-radius:10px; padding:12px 15px; margin:10px 0;
+    font-size:14.5px; color:#33404d; white-space:pre-line; line-height:1.7; }
+  .quote .who { font-weight:700; color:#1a365d; }
+  .yn { display:flex; align-items:center; flex-wrap:wrap; gap:9px 14px; margin:12px 0 6px; }
+  label.mini { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:14px; border:1px solid #e3e3e6; border-radius:999px; padding:5px 13px; }
+  label.mini input { width:17px; height:17px; margin:0; accent-color:#34c759; cursor:pointer; }
+  label.mini:has(input:checked) { border-color:#34c759; background:#eafaef; font-weight:600; }
+  textarea.cmt { width:100%; min-height:46px; resize:vertical; border:1.5px solid #ffcf5c; border-radius:10px; background:#fffdf5;
+    padding:9px 12px; font-family:inherit; font-size:15px; color:#1d1d1f; margin-top:4px; }
+  textarea.cmt:focus { outline:none; border-color:#d9a400; background:#fffef9; box-shadow:0 0 0 3px rgba(255,207,92,0.28); }
+  textarea.cmt::placeholder { color:#b8a25a; }
+  .flow { background:#fff; border-radius:12px; padding:16px 20px; box-shadow:0 1px 3px rgba(0,0,0,0.06); font-size:14.5px; color:#333; }
+  .flow b { color:#1a365d; }
+  h2.sec { font-size:20px; margin:30px 0 12px; }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:rgba(255,255,255,0.97); backdrop-filter:blur(8px); border-top:1px solid #ddd; padding:10px 16px; box-shadow:0 -2px 10px rgba(0,0,0,0.06); }
+  .barin { max-width:860px; margin:0 auto; display:flex; flex-direction:column; gap:7px; }
+  #genbtn { background:#007aff; color:#fff; border:none; border-radius:10px; padding:12px; font-size:16px; font-weight:650; cursor:pointer; }
+  #out { width:100%; border:1px solid #ccc; border-radius:8px; padding:9px; font-size:13px; font-family:'SF Mono',ui-monospace,monospace; resize:vertical; display:none; min-height:120px; background:#fff; color:#1d1d1f; }
+  #hint { font-size:12px; color:#86868b; text-align:center; }
+  .foot { margin-top:24px; font-size:13px; color:#86868b; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <h1>onboarding · 按你的想法改好了 🛠️ 请过目</h1>
+    <p class="sub">FLY-910 · 2026-07-08 · 你逐块拍的 + 关键想法都织进设计了</p>
+  </header>
+
+  <div class="howto">
+    <b>怎么用:</b> 下面是你 5 个想法改进设计后的样子(每处「改前 → 改后」+ 真实文案样例)。
+    每处你看一眼:<b>👍 就这样</b> 还是 <b>✏️ 要改</b>,想说什么写在框里。看完拉到底点「生成我的反馈」一键复制发回给我。
+    这版是草稿,还没上线;定稿我拆给工程建。
+  </div>
+
+  <!-- CHANGE 1 -->
+  <div class="block">
+    <div class="cnum">改动 1 / 5 · 起步</div>
+    <h2>加了「早聊一句」</h2>
+    <div class="was">改前:接完所有工具才见到活的团队。</div>
+    <div class="now">改后:终端一条命令进来一问一答;<b>Discord 和大脑一接好,先让你跟 Captain 打个招呼</b>(业务工具还没全接也行),让你更快看到「有个活的东西在回我」,完整的跨系统答案随后。</div>
+    <div class="quote"><span class="who">你</span>:在吗
+<span class="who">Captain</span>:在的 👋 我是你的 Captain。你那件「订单盯梢」的事我记着了,等咱把你的订单系统接上,我就带 Crew 去给你查。先接着走两步?</div>
+    <div class="yn">
+      <label class="mini"><input type="radio" name="c1" value="就这样">👍 就这样</label>
+      <label class="mini"><input type="radio" name="c1" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="cmt1" placeholder="想说什么写这儿(不写也行)…"></textarea>
+  </div>
+
+  <!-- CHANGE 2 -->
+  <div class="block">
+    <div class="cnum">改动 2 / 5 · 谁来带(重要重构)</div>
+    <h2>「Onboarding Buddy」自助 agent 带,跟 Anna 分开</h2>
+    <div class="was">改前:第一版 Anna 人肉陪着接进来。</div>
+    <div class="now">改后:onboarding 是<b>一个自助 agent「Onboarding Buddy」</b>(参照 Metric 那种一步步带你搭的),从头到尾带你走完。<b>它跟 Anna 完全分开</b>:<b>Anna = Sales</b>——聊产品、把你聊进来,进来后 Sales 就结束了(顶多把之前聊的 context 传给 Onboarding Buddy 当开场底料);之后你跟 Onboarding Buddy 搭,跟 Anna 没关系。卡住了它<b>转人工支持</b>,不是找 Anna。</div>
+    <div class="yn">
+      <label class="mini"><input type="radio" name="c2" value="就这样">👍 就这样</label>
+      <label class="mini"><input type="radio" name="c2" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="cmt2" placeholder="比如 Onboarding Buddy 起个啥名 / 有别的想法…"></textarea>
+  </div>
+
+  <!-- CHANGE 3 -->
+  <div class="block">
+    <div class="cnum">改动 3 / 5 · Discord</div>
+    <h2>主线 = 带你建你自己的 Discord,我们能帮就帮</h2>
+    <div class="was">改前:默认自建 bot + 露一个「现成 bot 一键邀请」的省事捷径。</div>
+    <div class="now">改后:<b>主线 = 手把手带你建你自己的 Discord(注册 + 建服务器 + 建机器人),我们能帮的都帮</b>(自动生成邀请链接、自动建频道、每步即时校验、配截图短视频),尽量少让你卡。<br>那个「给你个现成机器人一键邀请」的捷径 = <b>标成「理想、但大概率做不成」</b>(Discord 平台我们控制不了),当探索项、不当承诺。</div>
+    <div class="yn">
+      <label class="mini"><input type="radio" name="c3" value="就这样">👍 就这样</label>
+      <label class="mini"><input type="radio" name="c3" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="cmt3" placeholder="想说什么写这儿…"></textarea>
+  </div>
+
+  <!-- CHANGE 4 -->
+  <div class="block">
+    <div class="cnum">改动 4 / 5 · 收费</div>
+    <h2>现在不做收费(免费全试),收费当 placeholder 留后期</h2>
+    <div class="was">改前:license-key 订阅 + 按 Team 计费 + 1 个 Team 免费试 + 不许转售,写得挺细。</div>
+    <div class="now">改后:<b>现在完全不收费</b>——先给创始人自己用、免费全试。收费那套(license-key 按 Team 之类)<b>标成 placeholder、不写死</b>,等 <b>WorkBuddy / homerail 竞品分析</b>做完再一起深化。<b>隐私(数据在你自己机器)照样当显式卖点。</b></div>
+    <div class="yn">
+      <label class="mini"><input type="radio" name="c4" value="就这样">👍 就这样</label>
+      <label class="mini"><input type="radio" name="c4" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="cmt4" placeholder="想说什么写这儿…"></textarea>
+  </div>
+
+  <!-- CHANGE 5 -->
+  <div class="block">
+    <div class="cnum">改动 5 / 5 · 开场文案</div>
+    <h2>开场改得更像人说话</h2>
+    <div class="was">改前:「嗨,我是帮你把你自己的团队搭起来的向导,几分钟搞定。」(有点端着)</div>
+    <div class="now">改后(口语、像个耐心的人在带你):</div>
+    <div class="quote">嗨!我来帮你把<b>你自己的一个小团队</b>搭起来,几分钟的事,跟着我走就行。
+两句话先说清楚,你心里有底 ——
+· <b>现在完全免费</b>,随便试,不用填卡。
+· 你的团队<b>就跑在你这台电脑上</b>,你的数据一直在你这儿、从不往我们这儿传。
+· 还有个小实话:因为它们在你这台电脑上干活,<b>电脑开着它们才在岗</b>——就跟真员工上班一样,关机它们就下班了。
+行,那我先问你一句 ——</div>
+    <div class="yn">
+      <label class="mini"><input type="radio" name="c5" value="就这样">👍 就这样</label>
+      <label class="mini"><input type="radio" name="c5" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="cmt5" placeholder="语气/用词想调就写这儿…"></textarea>
+  </div>
+
+  <!-- FLOW OVERVIEW -->
+  <h2 class="sec">改后整条流程一眼看</h2>
+  <div class="flow">
+    <b>①</b> 粘一条命令进终端 → 起 <b>Onboarding Buddy</b>(自助带你)<br>
+    <b>②</b> 口语开场(免费 / 隐私 / 机器常开各一句人话)→ 问你「最想先搞定哪件事」<br>
+    <b>③</b> 从你的大白话长出一个 Team(一个 Captain + 一个 Crew)→ 你确认<br>
+    <b>④</b> 贴 Claude key(安全输入)<br>
+    <b>⑤</b> 手把手建<b>你自己的 Discord</b>(服务器 + 机器人)<br>
+    <b>⑤.5</b> <b>先跟 Captain 打个招呼</b>(工具没全接也行)<br>
+    <b>⑥</b> 点一下授权后台清单(你平时不用管它)<br>
+    <b>⑥.5</b> 接上第一件事要用的业务系统(只接这件要的,一次一个)<br>
+    <b>⑦</b> 自动安置(建工作区 / 配好团队 / 让它们常驻 / 自检)<br>
+    <b>⑧</b> 回 Discord 让 Captain 真干一件事 → 拿到第一个「它真帮到我了」的结果
+  </div>
+
+  <div class="foot">草稿 · 不上线 · 不替你定 —— 你点「就这样 / 要改」+ 留言,我照着改。<br>
+  还开着:Onboarding Buddy 正式名 · 命令具体形态 · 你说的「Draft」竞品(等你给链接)。</div>
+
+</div>
+
+<div class="bar"><div class="barin">
+  <button id="genbtn">✅ 生成我的反馈(一键复制)</button>
+  <textarea id="out" readonly></textarea>
+  <div id="hint">看完点这个 → 自动复制 → 粘贴发回给我</div>
+</div></div>
+
+<script nonce="__CSP_NONCE__">
+document.getElementById("genbtn").addEventListener("click", function () {
+  var items = [
+    { name: "c1", cmt: "cmt1", label: "改动1 早聊一句" },
+    { name: "c2", cmt: "cmt2", label: "改动2 Onboarding Buddy(Anna=Sales)" },
+    { name: "c3", cmt: "cmt3", label: "改动3 自建Discord为主线" },
+    { name: "c4", cmt: "cmt4", label: "改动4 现在不收费(placeholder)" },
+    { name: "c5", cmt: "cmt5", label: "改动5 口语开场" }
+  ];
+  var lines = ["FLY-910 onboarding v2 — 我的反馈:"];
+  items.forEach(function (it) {
+    var r = document.querySelector('input[name="' + it.name + '"]:checked');
+    var c = document.getElementById(it.cmt);
+    var s = it.label + ": " + (r ? r.value : "(没点)");
+    if (c && c.value.trim()) s += " — " + c.value.trim();
+    lines.push(s);
+  });
+  var text = lines.join("\n");
+  var out = document.getElementById("out"), hint = document.getElementById("hint");
+  out.style.display = "block"; out.value = text; out.focus(); out.select();
+  try {
+    navigator.clipboard.writeText(text);
+    hint.textContent = "✅ 已复制,直接粘贴发回给我";
+  } catch (e) {
+    hint.textContent = "选中上面这段复制,发回给我";
+  }
+});
+</script>
+</body>
+</html>

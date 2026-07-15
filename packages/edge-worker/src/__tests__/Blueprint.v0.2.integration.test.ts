@@ -245,6 +245,74 @@ describe("Blueprint v0.2 integration", () => {
 		expect(result.evidence).toBeUndefined();
 	});
 
+	// FLY-99: Blueprint must await removeIfExists() before invoking create().
+	// The bug we shipped to prod was a fire-and-forget rm inside removeIfExists
+	// letting Blueprint kick off create() against a partially-deleted tree.
+	// This test locks the orchestration contract: create() does not start
+	// until removeIfExists() has fully resolved.
+	it("FLY-99: awaits removeIfExists before calling create", async () => {
+		const mockAdapter = makeMockAdapter();
+
+		// Two deferreds: removeStarted signals that Blueprint has actually
+		// entered removeIfExists() (so we know it has reached the worktree
+		// setup step). removePromise controls when removeIfExists resolves.
+		// This makes the ordering assertion independent of how many awaits
+		// appear earlier in Blueprint.run.
+		let removeStartedResolve!: () => void;
+		const removeStarted = new Promise<void>((r) => {
+			removeStartedResolve = r;
+		});
+		let removeResolve!: () => void;
+		const removePromise = new Promise<void>((r) => {
+			removeResolve = r;
+		});
+		let createCalled = false;
+
+		const mockWorktreeManager = makeMockWorktreeManager({
+			removeIfExists: vi.fn(async () => {
+				removeStartedResolve();
+				await removePromise;
+				return true;
+			}),
+			create: vi.fn(async () => {
+				createCalled = true;
+				return {
+					projectName: "test-project",
+					issueId: "GEO-42",
+					worktreePath: "/tmp/wt/test-project/repo-GEO-42",
+					branch: "repo-GEO-42",
+					mainRepoPath: "/repo",
+				};
+			}),
+		});
+
+		const blueprint = new Blueprint(
+			makeHydrator(),
+			makeMockGitChecker({ commitCount: 1 }),
+			() => mockAdapter,
+			makeMockShell(),
+			mockWorktreeManager,
+		);
+
+		const runPromise = blueprint.run(makeNode(), "/repo", makeContext());
+
+		// Wait until Blueprint has actually invoked removeIfExists — proves
+		// execution reached the worktree setup step, not just an earlier await.
+		await removeStarted;
+		// Flush any microtask that might have immediately enqueued create()
+		// (there shouldn't be any, because removeIfExists is blocked on
+		// removePromise — this is what we're asserting).
+		await Promise.resolve();
+		expect(createCalled).toBe(false);
+
+		removeResolve();
+		await runPromise;
+
+		expect(createCalled).toBe(true);
+		expect(mockWorktreeManager.removeIfExists).toHaveBeenCalled();
+		expect(mockWorktreeManager.create).toHaveBeenCalled();
+	});
+
 	it("worktree create failure — early abort", async () => {
 		const mockAdapter = makeMockAdapter();
 		const mockWorktreeManager = makeMockWorktreeManager({

@@ -1,0 +1,60 @@
+# transcript: deployed-vs-repo-scripts
+# command: bash -c 
+echo "--- deployed wrapper (what launchd runs) ---"
+stat -f "path=%N mtime=%Sm size=%z" ~/.flywheel/bin/flywheel-bridge-wrapper.sh
+shasum -a 256 ~/.flywheel/bin/flywheel-bridge-wrapper.sh
+echo "--- repo wrapper (modified post-incident 22:42) ---"
+stat -f "path=%N mtime=%Sm size=%z" ~/Dev/flywheel/scripts/flywheel-bridge-wrapper.sh
+shasum -a 256 ~/Dev/flywheel/scripts/flywheel-bridge-wrapper.sh
+echo "--- diff deployed vs repo ---"
+diff ~/.flywheel/bin/flywheel-bridge-wrapper.sh ~/Dev/flywheel/scripts/flywheel-bridge-wrapper.sh && echo "(identical)"
+echo "--- cmux-autostart symlink + target ---"
+ls -la ~/.flywheel/bin/flywheel-cmux-autostart
+stat -f "target mtime=%Sm size=%z" ~/Dev/flywheel/scripts/flywheel-cmux-autostart.sh
+shasum -a 256 ~/Dev/flywheel/scripts/flywheel-cmux-autostart.sh
+echo "--- git log of cmux-autostart target (was it modified around 7/9?) ---"
+git -C ~/Dev/flywheel log --format="%h %ci %s" -3 -- scripts/flywheel-cmux-autostart.sh
+echo "--- git log of bridge wrapper ---"
+git -C ~/Dev/flywheel log --format="%h %ci %s" -3 -- scripts/flywheel-bridge-wrapper.sh
+echo "--- 7/9 17:38 mtime cluster in ~/.flywheel/bin (persistence-review input) ---"
+ls -la ~/.flywheel/bin/ | grep "Jul  9"
+# collected_at: 2026-07-10T08:23:14Z (host local: 2026-07-10 01:23:14 PDT)
+# host: MacBook-Pro.local / 26.3.2 / x86_64
+# ----
+--- deployed wrapper (what launchd runs) ---
+path=/Users/xiaorongli/.flywheel/bin/flywheel-bridge-wrapper.sh mtime=Jul  9 06:06:56 2026 size=7688
+a6b6bd7fce707fadaa21fb6123fb6098d8a225682f4e3a2151c6c1e4a0fa4081  /Users/xiaorongli/.flywheel/bin/flywheel-bridge-wrapper.sh
+--- repo wrapper (modified post-incident 22:42) ---
+path=/Users/xiaorongli/Dev/flywheel/scripts/flywheel-bridge-wrapper.sh mtime=Jul  9 22:42:57 2026 size=8076
+5b49374827b20ad66d912ae8970823d7784afe84c7129bbb42ddb0d030406321  /Users/xiaorongli/Dev/flywheel/scripts/flywheel-bridge-wrapper.sh
+--- diff deployed vs repo ---
+151a152,158
+> # FLY-1062: a PACKAGED install ships a compiled dist/run-bridge.js (no tsx /
+> # TypeScript on customer machines) — exec node when it exists. A monorepo
+> # checkout has no dist/run-bridge.js, so the tsx line below stays the verbatim
+> # production path (reverse-compat sentinel: packaged-seams.test.sh).
+> if [[ -f "$FLYWHEEL_DIR/dist/run-bridge.js" ]]; then
+>   exec node dist/run-bridge.js
+> fi
+--- cmux-autostart symlink + target ---
+lrwxr-xr-x@ 1 xiaorongli  staff  65 Jun  1 15:17 /Users/xiaorongli/.flywheel/bin/flywheel-cmux-autostart -> /Users/xiaorongli/Dev/flywheel/scripts/flywheel-cmux-autostart.sh
+target mtime=Jun 16 22:31:23 2026 size=1748
+a6d0f64b846c90a802385d53d7ef8344ad136df02eaeceab3210eb91f4e19cca  /Users/xiaorongli/Dev/flywheel/scripts/flywheel-cmux-autostart.sh
+--- git log of cmux-autostart target (was it modified around 7/9?) ---
+605357f9 2026-06-01 22:15:12 +0000 feat(FLY-177): launchd-supervise cmux watcher + harden window-drift select (v1.29.4) (#206)
+55e91afa 2026-05-26 00:39:56 +0000 docs(FLY-129): cmux integration overhaul brainstorm (#188)
+a0344aa0 2026-05-06 04:44:03 +0000 feat: FLY-60 — Hard Gate Enforcement E2E manual QA suite (#165)
+--- git log of bridge wrapper ---
+8796edc6 2026-07-09 15:09:19 -0700 chore(FLY-1062): checkpoint P0 packaging pipeline + packaged-mode seams (pre-rebase, untested)
+2f94fd6f 2026-07-07 11:57:23 -0700 feat(FLY-927): bridge-wrapper fail-loud Discord leg routes via lead-alert.sh (Task 1.8, D4)
+72cd5589 2026-06-29 17:16:45 -0700 feat(FLY-650): portable provisioning — Linux/WSL2 + core/project separation (extends FLY-519) (#380)
+--- 7/9 17:38 mtime cluster in ~/.flywheel/bin (persistence-review input) ---
+drwxr-xr-x@  26 xiaorongli  staff    832 Jul  9 23:30 .
+lrwxr-xr-x    1 xiaorongli  staff     97 Jul  9 23:30 agent-team-transport -> /Users/xiaorongli/Dev/flywheel/packages/agent-team-transport/dist/bin/agent-team-transport-cli.js
+-rwx--x--x    1 xiaorongli  staff  40995 Jul  9 17:38 discord-reply-enforcer.py
+-r-xr-xr-x    1 xiaorongli  staff   7688 Jul  9 06:06 flywheel-bridge-wrapper.sh
+-r-xr-xr-x    1 xiaorongli  staff   9208 Jul  9 12:51 flywheel-lead-wrapper.sh
+-rwxr-xr-x    1 xiaorongli  staff  18624 Jul  9 17:38 flywheel-restart-guard.py
+-rwx--x--x    1 xiaorongli  staff   2632 Jul  9 17:38 post-compact-bootstrap.sh
+-r-xr-xr-x    1 xiaorongli  staff  61072 Jul  9 06:06 restart-services.sh
+# exit_code: 0

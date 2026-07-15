@@ -146,16 +146,60 @@ export interface AdapterExecutionContext {
 	cwd: string;
 	/** AI model to use (e.g., "opus", "sonnet") */
 	model?: string;
+	/**
+	 * FLY-671: reasoning-effort level (`low|medium|high|xhigh|max`). Consumed by
+	 * the claude-tmux runner as CLI `--effort`, and (FLY-1224) by the codex-tmux
+	 * runner as a daemon spawn override `-c model_reasoning_effort="<effort>"`.
+	 * Absent ⇒ no flag / no override (account or CODEX_HOME config default).
+	 */
+	effort?: string;
 	/** Permission mode (e.g., "bypassPermissions", "plan") */
 	permissionMode?: string;
 	/** Additional text to append to the system prompt */
 	appendSystemPrompt?: string;
 	/** Allowed tool patterns (e.g., ["Read(**)", "Edit(**)", "Bash"]) */
 	allowedTools?: string[];
+	/**
+	 * FLY-615: enable the ponytail (code-minimalism) behavior for this run.
+	 * Resolved by Blueprint from the three-layer ladder + readiness. The
+	 * backend decides HOW: Claude (TmuxAdapter) adds `--settings enabledPlugins`
+	 * to load the real plugin; Codex (CodexTmuxAdapter) injects the portable
+	 * ponytail ruleset into the instruction layer. Absent/false = no change
+	 * (byte-compatible spawn).
+	 */
+	enablePonytail?: boolean;
+	/**
+	 * FLY-751: per-runner MCP slimming. Marketplace-qualified plugin keys to
+	 * disable for THIS launch (merged into the same `--settings enabledPlugins`
+	 * map ponytail uses, as `false` entries). Resolved by the dispatcher via
+	 * `resolveRunnerMcpProfile` (flywheel-config) — claude-tmux only. Absent or
+	 * empty = no change (byte-compatible spawn).
+	 */
+	disabledPlugins?: string[];
+	/**
+	 * FLY-751: when true the launch gets `--no-chrome` (Claude-in-Chrome
+	 * integration off). QA runners keep the browser (the profile resolver
+	 * exempts them). Absent/false = no change (byte-compatible spawn).
+	 */
+	disableChrome?: boolean;
+	/**
+	 * FLY-1185 §2.7: marketplace-qualified plugin keys to POSITIVELY enable
+	 * (`true` entries in the per-launch `--settings enabledPlugins` merge,
+	 * applied AFTER disabledPlugins so an explicit opt-in wins). The playwright
+	 * opt-in channel that overrides the machine-level default-off (QA role /
+	 * `playwright` label / `full-mcp` label). Absent/empty = no change.
+	 */
+	enabledPluginsExtra?: string[];
 	/** Maximum number of agentic turns */
 	maxTurns?: number;
 	/** Process-level timeout in milliseconds */
 	timeoutMs?: number;
+	/**
+	 * FLY-1269: explicit three-stage Codex phase lifetime. Present only for a
+	 * share-parent Design/Implement/QA execution while the keep-alive flag is on.
+	 * Adapters must not infer this identity from environment variables or labels.
+	 */
+	phaseKeepAlive?: { role: "design" | "implement" | "qa" };
 
 	// -- Session persistence --
 
@@ -198,12 +242,41 @@ export interface AdapterExecutionContext {
 
 	/** SQLite DB path for flywheel-comm CLI */
 	commDbPath?: string;
-	/** Timeout when waiting for Lead response (ms). Default: 43_200_000 (12h) */
+	/** Timeout when waiting for Lead response (ms). Default: 176_400_000 (49h, FLY-159 — 48h gate timeout + 1h buffer; was 12h pre-FLY-159, raised through 25h before settling at 49h) */
 	waitingTimeoutMs?: number;
 	/** Lead agent ID (for session registration) */
 	leadId?: string;
 	/** Project name (for session registration) */
 	projectName?: string;
+
+	// -- FLY-142 Phase 0 PR 1.2: Agent Team transport identity --
+	//
+	// These fields drive the vendor-neutral `IAgentTeamTransport` adapter
+	// (packages/agent-team-transport). When set, TmuxAdapter calls
+	// `transport.buildRunnerSpawnConfig(ctx)` to merge vendor-specific env +
+	// CLI flags into the spawn invocation. When absent (current production),
+	// transport wiring is skipped and Runner spawns the same as before.
+	//
+	// Default vendor is `claude-code` (selected by `FLYWHEEL_AGENT_BACKEND`
+	// env at AgentTeamTransportFactory.fromEnv() call site).
+
+	/** Agent name within the team (e.g. "runner-FLY-142-abc1") */
+	agentName?: string;
+	/** Lead's team this Runner joins (typically equals leadId) */
+	teamName?: string;
+	/**
+	 * Lead's claude session UUID — passed as `--parent-session-id` so the
+	 * Runner appears as a child of the Lead session in claude-code's UI.
+	 */
+	leadSessionId?: string;
+	/** UI color hint passed as `--agent-color` (e.g. "cyan", "red") */
+	agentColor?: string;
+	/**
+	 * Vendor backend selector. When set, signals Blueprint/TmuxAdapter to
+	 * activate transport wiring. When absent, no transport wiring (backward-
+	 * compat default = production today).
+	 */
+	vendor?: "claude-code" | "codex";
 
 	// -- GEO-292: Bridge connection for stage reporting --
 
@@ -211,6 +284,30 @@ export interface AdapterExecutionContext {
 	bridgeUrl?: string;
 	/** Optional ingest token for Bridge authentication */
 	bridgeIngestToken?: string;
+	/**
+	 * FLY-1244: short-lived credential bound to this exact enrolled workflow
+	 * execution. Used only by the dedicated workflow verdict endpoint; unlike the
+	 * fleet-wide ingest bearer, a leak is scoped to one execution + TTL.
+	 */
+	workflowSubmissionCredential?: string;
+	/**
+	 * FLY-191 Phase 2: the Bridge's StateStore path, propagated to the Runner
+	 * env as FLYWHEEL_STATE_DB_PATH so `flywheel-comm verify-approval` reads
+	 * the SAME StateStore the Bridge writes. Without it both sides only agree
+	 * by the ~/.flywheel/teamlead.db default-path coincidence — any deployment
+	 * with a custom TEAMLEAD_DB_PATH (test slots, future multi-Bridge) would
+	 * leave the Runner verifying against the wrong DB and fail-closed forever.
+	 */
+	stateDbPath?: string;
+
+	/**
+	 * FLY-795: the resolved `progress.md` path, propagated to the Runner env as
+	 * FLYWHEEL_PROGRESS_PATH so a RESUMED runner writes its cursor back to the
+	 * exact same branch-committed file the prior runner used (via
+	 * `flywheel-comm progress --file $FLYWHEEL_PROGRESS_PATH`). Set only for a
+	 * restart-resume; a fresh runner derives progress.md inside its own doc folder.
+	 */
+	progressPath?: string;
 
 	// -- Callbacks --
 
@@ -233,6 +330,42 @@ export interface AdapterExecutionContext {
 	 * The adapter (claude-runner) never directly depends on StateStore (teamlead).
 	 */
 	onHeartbeat?: (executionId: string) => void;
+
+	/**
+	 * FLY-116: fired by TmuxAdapter immediately after `tmux new-window` returns
+	 * a windowId, BEFORE waiting for runner completion. Used to spawn a per-runner
+	 * macOS Terminal.app viewer with a unique custom title (status-dominant close
+	 * later by closeRunner / postMergeTmuxCleanup / actions cleanup).
+	 *
+	 * Best-effort — adapter wraps in try/catch; failures non-fatal.
+	 */
+	onTmuxWindowCreated?: (info: {
+		baseSessionName: string;
+		windowId: string;
+	}) => void;
+	/**
+	 * FLY-245 R2 HIGH-3 — fired SYNCHRONOUSLY the instant `tmux new-window`
+	 * returns a windowId, BEFORE CommDB registration (which is non-fatal) and
+	 * before the agent is usable. The gateway-retry dispatcher binds this to its
+	 * durable launch claim so a post-crash replay can discover the live Runner by
+	 * execId and adopt it rather than re-driving (which would orphan it). Distinct
+	 * from `onTmuxWindowCreated` (viewer spawn, fired later). Best-effort.
+	 */
+	onTmuxWindowOpened?: (info: {
+		baseSessionName: string;
+		windowId: string;
+	}) => void;
+	/**
+	 * FLY-245 R5 HIGH — the DURABLE "this Runner is committed to start" record.
+	 * Set ONLY on the gateway-retry path. The adapter GATES the Runner on this
+	 * path (Claude/Codex cannot start until the adapter writes this file) and
+	 * writes it at the single commit point. The dispatcher's post-crash adopt
+	 * decision is `claim exists + this file exists → adopt; else re-drive`, so a
+	 * window recorded but NEVER committed (crash between window-open and commit)
+	 * is re-driven, never adopted as a started Runner. Deterministic path keyed by
+	 * executionId so a replay (new Bridge process) computes the same path.
+	 */
+	launchCommitPath?: string;
 }
 
 // ---------------------------------------------------------------------------

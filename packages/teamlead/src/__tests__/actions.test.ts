@@ -1,4 +1,8 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import type http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { approveExecution, transitionSession } from "../bridge/actions.js";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
@@ -52,6 +56,38 @@ const mockExec = vi.fn(async (_cmd: string, args: string[]) => {
 	return { stdout: "merged" };
 });
 
+// FLY-191 Phase 2 (Codex PR R1 HIGH-3): approve now REQUIRES a CommDB gate
+// response to be writable BEFORE the transition — a sandbox comm root +
+// seeded pending approve_to_ship question are part of every approve-success
+// test's arrange step.
+let commRoot: string;
+beforeEach(() => {
+	commRoot = mkdtempSync(join(tmpdir(), "fly191-actions-comm-"));
+	process.env.FLYWHEEL_COMM_ROOT = commRoot;
+});
+afterEach(() => {
+	rmSync(commRoot, { recursive: true, force: true });
+	delete process.env.FLYWHEEL_COMM_ROOT;
+});
+
+/** Seed a pending approve_to_ship gate question for the runner. */
+function seedApproveGate(
+	execId: string,
+	project = "geoforge3d",
+	lead = "product-lead",
+): string {
+	mkdirSync(join(commRoot, project), { recursive: true });
+	const db = new CommDB(join(commRoot, project, "comm.db"), true);
+	try {
+		db.registerSession(execId, "sess:win", project, undefined, lead);
+		return db.insertQuestion(execId, lead, "PR ready for review", {
+			checkpoint: "approve_to_ship",
+		});
+	} finally {
+		db.close();
+	}
+}
+
 describe("Action tools", () => {
 	let store: StateStore;
 	let server: http.Server;
@@ -84,6 +120,7 @@ describe("Action tools", () => {
 			issue_identifier: "GEO-95",
 		});
 
+		seedApproveGate("e1");
 		const result = await approveExecution(
 			store,
 			testProjects,
@@ -91,9 +128,197 @@ describe("Action tools", () => {
 			"GEO-95",
 			mockExec,
 		);
-		expect(result.success).toBe(true);
+		expect(result.success, result.message).toBe(true);
 		// FLY-58: approve no longer calls ApproveHandler (no git merge)
 		expect(mockExec).not.toHaveBeenCalled();
+	});
+
+	it("projects an enrolled founder approval through the atomic CommDB source row", async () => {
+		const head = "a".repeat(40);
+		const questionId = seedApproveGate("e-claims");
+		store.upsertSession({
+			execution_id: "e-claims",
+			issue_id: "i-claims",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		store.setReviewBinding("e-claims", {
+			questionId,
+			prHeadSha: head,
+		});
+		store.applyWorkflowShadowBatch({
+			projectName: "geoforge3d",
+			issueId: "i-claims",
+			newRunId: "run-claims",
+			ops: [
+				{
+					op: "dispatch",
+					node: "implement",
+					attempt: 1,
+					executionId: "e-claims",
+				},
+			],
+		});
+
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e-claims",
+			"GEO-CLAIMS",
+			mockExec,
+		);
+		expect(result.success, result.message).toBe(true);
+
+		const db = new CommDB(join(commRoot, "geoforge3d", "comm.db"), false);
+		try {
+			const rows = db.listWorkflowSourceEvents();
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toMatchObject({
+				project: "geoforge3d",
+				source_event_id: `founder-approval:${questionId}`,
+				kind: "founder_approval",
+			});
+			expect(JSON.parse(rows[0]!.payload)).toMatchObject({
+				run_id: "run-claims",
+				issue_id: "i-claims",
+				approved_head: head,
+				classification: "dashboard_founder_action",
+				authority_id: questionId,
+			});
+		} finally {
+			db.close();
+		}
+	});
+
+	it("dashboard approve remains the explicit merge-block recovery surface", async () => {
+		const head = "b".repeat(40);
+		store.upsertSession({
+			execution_id: "e-held",
+			issue_id: "i-held",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			session_role: "implement",
+			codex_skip: 1,
+		});
+		store.setMergeBlock({
+			executionId: "e-held",
+			reason: "merge_without_approval",
+			head,
+		});
+		const questionId = seedApproveGate("e-held");
+		store.setReviewBinding("e-held", { questionId, prHeadSha: head });
+
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e-held",
+			"GEO-HELD",
+			mockExec,
+			undefined,
+			makeConfig(),
+		);
+		expect(result.success, result.message).toBe(true);
+
+		const db = new CommDB(join(commRoot, "geoforge3d", "comm.db"), false);
+		try {
+			expect(JSON.parse(db.getResponse(questionId)?.content ?? "{}")).toEqual({
+				approved: true,
+			});
+		} finally {
+			db.close();
+		}
+	});
+
+	it("dashboard merge-block recovery still reports a downstream codex hold", async () => {
+		const head = "c".repeat(40);
+		store.upsertSession({
+			execution_id: "e-held-codex",
+			issue_id: "i-held-codex",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			session_role: "implement",
+		});
+		store.setMergeBlock({
+			executionId: "e-held-codex",
+			reason: "merge_without_approval",
+			head,
+		});
+		const questionId = seedApproveGate("e-held-codex");
+		store.setReviewBinding("e-held-codex", { questionId, prHeadSha: head });
+
+		const previousHardGate = process.env.FLYWHEEL_CODEX_HARD_GATE;
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "1";
+		let result: Awaited<ReturnType<typeof approveExecution>>;
+		try {
+			result = await approveExecution(
+				store,
+				testProjects,
+				"e-held-codex",
+				"GEO-HELD-CODEX",
+				mockExec,
+				undefined,
+				makeConfig(),
+			);
+		} finally {
+			if (previousHardGate === undefined) {
+				delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+			} else {
+				process.env.FLYWHEEL_CODEX_HARD_GATE = previousHardGate;
+			}
+		}
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("held_codex_pending");
+
+		const db = new CommDB(join(commRoot, "geoforge3d", "comm.db"), false);
+		try {
+			expect(db.getResponse(questionId)).toBeUndefined();
+		} finally {
+			db.close();
+		}
+	});
+
+	it("dashboard approve passes the actions source through the card-authority seam", async () => {
+		store.upsertSession({
+			execution_id: "e-card",
+			issue_id: "i-card",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		const questionId = seedApproveGate("e-card");
+		const cardAuthority = vi.fn().mockReturnValue({
+			ok: false,
+			reason: "inactive_card",
+		});
+
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e-card",
+			"GEO-CARD",
+			mockExec,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			cardAuthority,
+		);
+
+		expect(result.success).toBe(false);
+		expect(cardAuthority).toHaveBeenCalledWith({
+			executionId: "e-card",
+			source: "actions",
+			targetMessageId: undefined,
+		});
+		const db = new CommDB(join(commRoot, "geoforge3d", "comm.db"), false);
+		try {
+			expect(db.getResponse(questionId)).toBeUndefined();
+		} finally {
+			db.close();
+		}
 	});
 
 	it("POST /api/actions/approve without execution_id returns 400", async () => {
@@ -116,6 +341,7 @@ describe("Action tools", () => {
 			issue_identifier: "GEO-95",
 		});
 
+		seedApproveGate("e1");
 		const result = await approveExecution(
 			store,
 			testProjects,
@@ -137,6 +363,7 @@ describe("Action tools", () => {
 			status: "awaiting_review",
 		});
 
+		seedApproveGate("e1");
 		const result = await approveExecution(
 			store,
 			testProjects,
@@ -159,6 +386,7 @@ describe("Action tools", () => {
 			last_activity_at: "2026-01-01 00:00:00",
 		});
 
+		seedApproveGate("e1");
 		await approveExecution(store, testProjects, "e1", undefined, mockExec);
 
 		const session = store.getSession("e1");
@@ -177,6 +405,7 @@ describe("Action tools", () => {
 		});
 
 		expect(store.getActiveSessions()).toHaveLength(1);
+		seedApproveGate("e1");
 		await approveExecution(store, testProjects, "e1", undefined, mockExec);
 		// FLY-58: approved_to_ship is a non-terminal active state
 		expect(store.getActiveSessions()).toHaveLength(1);
@@ -187,6 +416,134 @@ describe("Action tools", () => {
 		const result = await approveExecution(store, testProjects, "nonexistent");
 		expect(result.success).toBe(false);
 		expect(result.message).toContain("No session found");
+	});
+
+	// FLY-191 Phase 2 (Codex PR R1 HIGH-3): response-before-transition contract
+	it("approve with NO pending gate FAILS and leaves the session awaiting_review (retryable)", async () => {
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		// CommDB exists (runner registered) but the gate question is
+		// missing/expired — the realistic "nothing to honor" case.
+		mkdirSync(join(commRoot, "geoforge3d"), { recursive: true });
+		const seed = new CommDB(join(commRoot, "geoforge3d", "comm.db"), true);
+		seed.registerSession(
+			"e1",
+			"sess:win",
+			"geoforge3d",
+			undefined,
+			"product-lead",
+		);
+		seed.close();
+
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e1",
+			undefined,
+			mockExec,
+		);
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("no pending approve_to_ship gate");
+		// NOT stranded in approved_to_ship: timeout keeps running, approve retryable.
+		expect(store.getSession("e1")!.status).toBe("awaiting_review");
+	});
+
+	it("approve with an UNREACHABLE CommDB also FAILS without transitioning", async () => {
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		// No comm.db at all → write path throws → fail-closed, retryable.
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e1",
+			undefined,
+			mockExec,
+		);
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("retry once CommDB is reachable");
+		expect(store.getSession("e1")!.status).toBe("awaiting_review");
+	});
+
+	it("approve REFUSES an UNBOUND-sentinel session — never strands it via the legacy fallback (Codex R2 HIGH-1)", async () => {
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		// Phase-2 completion arrived without --question-id → sentinel
+		store.setReviewBinding("e1", { questionId: null, prHeadSha: null });
+		seedApproveGate("e1"); // a pending gate EXISTS — fallback must NOT use it
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e1",
+			undefined,
+			mockExec,
+		);
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("missing its question binding");
+		expect(store.getSession("e1")!.status).toBe("awaiting_review");
+	});
+
+	it("approve binds to the session's review_question_id when set — rejects when the bound question is gone", async () => {
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		store.setReviewBinding("e1", {
+			questionId: "00000000-dead-beef-0000-000000000000",
+			prHeadSha: null,
+		});
+		seedApproveGate("e1"); // pending gate exists but is NOT the bound one
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e1",
+			undefined,
+			mockExec,
+		);
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("valid bound review question");
+		expect(store.getSession("e1")!.status).toBe("awaiting_review");
+	});
+
+	it("approve writes the response on the BOUND question and is idempotent on retry", async () => {
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		const qid = seedApproveGate("e1");
+		store.setReviewBinding("e1", {
+			questionId: qid,
+			prHeadSha: "a".repeat(40),
+		});
+
+		const r1 = await approveExecution(
+			store,
+			testProjects,
+			"e1",
+			undefined,
+			mockExec,
+		);
+		expect(r1.success).toBe(true);
+
+		const db = new CommDB(join(commRoot, "geoforge3d", "comm.db"), false);
+		const resp = db.getResponse(qid);
+		db.close();
+		expect(resp?.content).toBe(JSON.stringify({ approved: true }));
 	});
 
 	it("approve with blocked session returns error", async () => {
@@ -432,7 +789,7 @@ describe("Action tools", () => {
 		beforeEach(() => {
 			capturedEnvelopes = [];
 			const mockRuntime = {
-				type: "claude-discord" as const,
+				type: "commdb" as const,
 				deliver: vi.fn(async (env: LeadEventEnvelope) => {
 					capturedEnvelopes.push(env);
 					return { delivered: true };
@@ -462,6 +819,7 @@ describe("Action tools", () => {
 				issue_identifier: "GEO-99",
 			});
 
+			seedApproveGate("e1");
 			await approveExecution(
 				store,
 				testProjects,
@@ -546,7 +904,7 @@ describe("Action tools", () => {
 			// Create a registry with a runtime that throws on deliver
 			const failRegistry = new RuntimeRegistry();
 			const failRuntime = {
-				type: "claude-discord" as const,
+				type: "commdb" as const,
 				deliver: vi.fn(async () => {
 					return { delivered: false, error: "connection refused" };
 				}),
@@ -581,8 +939,8 @@ describe("Action tools", () => {
 			expect(store.getSession("e1")!.status).toBe("rejected");
 		});
 
-		// GEO-275: no-forum lead action hook
-		it("approve sends action_executed hook with undefined forum_channel for no-forum lead", async () => {
+		// FLY-163: dept lead with no forum still routes to chat_channel
+		it("approve sends action_executed hook routed via chat_channel", async () => {
 			const noForumProjects: ProjectEntry[] = [
 				{
 					projectName: "geoforge3d",
@@ -592,14 +950,15 @@ describe("Action tools", () => {
 							agentId: "pm-lead",
 							chatChannel: "core-channel",
 							match: { labels: ["PM"] },
-							// No forumChannel
+							// FLY-163: PM leads must explicitly opt out
+							canSpawnRunners: false,
 						},
 					],
 				},
 			];
 			const nfEnvelopes: LeadEventEnvelope[] = [];
 			const nfRuntime = {
-				type: "claude-discord" as const,
+				type: "commdb" as const,
 				deliver: vi.fn(async (env: LeadEventEnvelope) => {
 					nfEnvelopes.push(env);
 					return { delivered: true };
@@ -625,6 +984,7 @@ describe("Action tools", () => {
 				issue_identifier: "GEO-400",
 			});
 
+			seedApproveGate("e-nf");
 			await approveExecution(
 				store,
 				noForumProjects,
@@ -635,7 +995,7 @@ describe("Action tools", () => {
 				undefined,
 				undefined,
 				undefined,
-				undefined,
+				undefined, // _unusedForumTagUpdater (FLY-163)
 				nfRegistry,
 			);
 
@@ -645,7 +1005,6 @@ describe("Action tools", () => {
 			const payload = nfEnvelopes[0].event;
 			expect(payload.event_type).toBe("action_executed");
 			expect(payload.action).toBe("approve");
-			expect(payload.forum_channel).toBeUndefined();
 			expect(payload.chat_channel).toBe("core-channel");
 		});
 	});
@@ -800,6 +1159,7 @@ describe("GEO-292: approve sets session_stage", () => {
 			stage_updated_at: "2026-03-30 10:00:00",
 		});
 
+		seedApproveGate("e1");
 		const result = await approveExecution(
 			store,
 			testProjects,
@@ -827,6 +1187,7 @@ describe("GEO-292: approve sets session_stage", () => {
 			stage_updated_at: "2026-03-30 10:00:00",
 		});
 
+		seedApproveGate("e1");
 		const result = await approveExecution(
 			store,
 			testProjects,
@@ -850,6 +1211,7 @@ describe("GEO-292: approve sets session_stage", () => {
 			stage_updated_at: "2026-03-30 10:00:00",
 		});
 
+		seedApproveGate("e1");
 		const result = await approveExecution(
 			store,
 			testProjects,
@@ -869,6 +1231,7 @@ describe("GEO-292: approve sets session_stage", () => {
 			status: "awaiting_review",
 		});
 
+		seedApproveGate("e1");
 		await approveExecution(store, testProjects, "e1", undefined, mockExec);
 
 		const session = store.getSession("e1");
@@ -895,6 +1258,7 @@ describe("FLY-58: onApproved callback removed", () => {
 		});
 
 		const onApproved = vi.fn();
+		seedApproveGate("e1");
 		const result = await approveExecution(
 			store,
 			testProjects,
@@ -995,7 +1359,9 @@ describe("FLY-44: terminate from non-running states", () => {
 		});
 	}
 
-	it("terminate from pending fails", async () => {
+	// FLY-1185 (R10#5): pending is now terminable — a canceled issue closes a
+	// claimed-but-never-started session through the FSM, not a forceStatus.
+	it("terminate from pending succeeds (FLY-1185 R10#5)", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
@@ -1003,6 +1369,7 @@ describe("FLY-44: terminate from non-running states", () => {
 			status: "pending",
 		});
 		const result = await transitionSession(store, "terminate", "e1");
-		expect(result.success).toBe(false);
+		expect(result.success).toBe(true);
+		expect(store.getSession("e1")?.status).toBe("terminated");
 	});
 });

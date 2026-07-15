@@ -66,6 +66,52 @@ function makeMocks() {
 }
 
 describe("DecisionLayer", () => {
+	// FLY-493: a no-transport (antigravity) Runner cannot be woken to ship, so
+	// ready_to_merge must NOT route to the wake-dependent needs_review — it routes
+	// to the terminal pr_handoff. Without runnerTransportMode it stays needs_review.
+	it("FLY-493: runnerTransportMode=none + ready_to_merge → pr_handoff (not needs_review)", async () => {
+		const { hardRules, triage, verifier, fallback, auditLogger, diffProvider } =
+			makeMocks();
+		const layer = new DecisionLayer(
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
+		);
+		const result = await layer.decide(
+			makeCtx({
+				runnerTransportMode: "none",
+				landingStatus: { status: "ready_to_merge" },
+			}),
+			"/project",
+		);
+		expect(result.route).toBe("pr_handoff");
+		// FLY-494: the pr_handoff reasoning is a GENERIC no-transport branch (Kimi
+		// hits it too) — it must NOT name a specific vendor.
+		expect(result.reasoning.toLowerCase()).not.toContain("antigravity");
+		expect(result.reasoning.toLowerCase()).not.toContain("kimi");
+	});
+
+	it("FLY-493: ready_to_merge WITHOUT runnerTransportMode → still needs_review (regression)", async () => {
+		const { hardRules, triage, verifier, fallback, auditLogger, diffProvider } =
+			makeMocks();
+		const layer = new DecisionLayer(
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
+		);
+		const result = await layer.decide(
+			makeCtx({ landingStatus: { status: "ready_to_merge" } }),
+			"/project",
+		);
+		expect(result.route).toBe("needs_review");
+	});
+
 	it("hard rule escalate → skips LLM, returns needs_review", async () => {
 		const { hardRules, triage, verifier, fallback, auditLogger, diffProvider } =
 			makeMocks();

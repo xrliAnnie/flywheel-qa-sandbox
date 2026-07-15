@@ -1,0 +1,10 @@
+Round-2 re-review complete. The commit is byte-identical to round 1 (same HEAD, merge base, and diff); my round-1 findings were empty, so there was nothing to re-verify as "fixed." My fresh adversarial pass focused on the subtlest areas:
+
+- **`merged`/`merge_block` status interplay** in the all-done branch — conservative and correct (a `merged` qa row with an unclaimed `awaiting_review` implement correctly resolves to `approve`, never a false ✅).
+- **`approved_to_ship` priority** over `awaiting_review` and terminal rows — correct; only reachable meaningfully on the qa ship-gate holder.
+- **Fingerprint key-order change** (`{p,m}` → `{p,fc,m}`) — causes a harmless one-time re-enqueue of every issue on first post-deploy sweep (zero-churn writers make it free); `parseFingerprint` still parses the outer `{s,c}` shape. Single-session issues get `fc:false` via `&&` short-circuit with no ledger query (test-pinned).
+- **Multi-exec reconnect-clear race** — `reconnecting.delete()` runs before `clearReconnectStamp`, and the refresher's `isReconnecting(badgeSession.execution_id)` guard defers Face A if the badge-owning exec is still reconnecting; last-to-clear always produces a correct render, with the sweep as backstop. Strictly ≥ the pre-FLY-1225 per-session restore behavior.
+
+Tests 85/85 green, typecheck clean, biome clean at this HEAD. No correctness, security, or edge-case defects.
+
+{"verdict": "APPROVED", "findings": [], "reviewedHeadSha": "5f4c1165055fe901c43965af2109ec0df5b05635"}

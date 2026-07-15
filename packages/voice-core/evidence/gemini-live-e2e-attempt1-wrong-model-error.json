@@ -1,0 +1,14 @@
+{
+	"model": "gemini-live-2.5-flash-preview",
+	"events": [
+		{
+			"t": 1783392652223,
+			"type": "error",
+			"data": {
+				"message": "Gemini Live connection closed unexpectedly: models/gemini-live-2.5-flash-preview is not found for API version v1beta, or is not supported for bidiGenerateContent. Call",
+				"code": "backend-protocol"
+			}
+		}
+	],
+	"transcriptEntries": []
+}

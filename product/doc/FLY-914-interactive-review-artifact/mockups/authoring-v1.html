@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-914 · 批注创作 — 手机端方案 mockup</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b;
+    --blue:#007aff; --hl:#fff3c4; --hlborder:#ffd60a; --line:#e5e5ea;
+    --green:#34c759;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC",sans-serif;
+    -webkit-font-smoothing:antialiased;line-height:1.5}
+  .wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.02em}
+  .sub{color:var(--dim);font-size:15px;margin:0 0 20px}
+  .rec{background:#e9f7ee;border-left:4px solid var(--green);border-radius:12px;
+    padding:14px 16px;margin:0 0 26px;font-size:15px}
+  .rec b{color:#1c7a3a}
+  h2{font-size:20px;margin:34px 0 4px;letter-spacing:-.01em}
+  .tag{display:inline-block;font-size:12px;font-weight:600;color:#fff;
+    background:var(--blue);border-radius:999px;padding:2px 10px;vertical-align:middle;margin-left:8px}
+  .tag.alt{background:#8e8e93}
+  .lead{color:var(--dim);font-size:14px;margin:4px 0 18px;max-width:640px}
+  .frames{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
+  .fcol{flex:1 1 260px;min-width:250px;max-width:320px}
+  .cap{font-size:13px;color:var(--dim);margin:10px 2px 0;text-align:center}
+  .cap b{color:var(--ink)}
+  /* phone */
+  .phone{background:#fff;border:1px solid var(--line);border-radius:30px;
+    padding:10px;box-shadow:0 8px 30px rgba(0,0,0,.08)}
+  .notch{width:96px;height:5px;border-radius:3px;background:#d1d1d6;margin:2px auto 8px}
+  .screen{background:#fff;border-radius:22px;overflow:hidden;position:relative;height:430px}
+  .navbar{padding:12px 14px 8px;border-bottom:1px solid var(--line)}
+  .navbar .t{font-size:15px;font-weight:600}
+  .navbar .m{font-size:11px;color:var(--dim)}
+  .doc{padding:12px 14px;font-size:13px}
+  .doc h3{font-size:14px;margin:2px 0 8px}
+  .doc p{margin:0 0 11px;position:relative}
+  .p-tap{cursor:pointer;border-radius:6px}
+  .badge{position:absolute;right:-6px;top:-2px;background:var(--blue);color:#fff;
+    font-size:10px;font-weight:700;width:18px;height:18px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center}
+  .sel{background:var(--hl);box-shadow:0 0 0 2px var(--hlborder);border-radius:6px;padding:1px 3px}
+  .word-sel{background:var(--hl);box-shadow:0 0 0 2px var(--hlborder);border-radius:3px;padding:0 2px}
+  /* bottom sheet */
+  .sheet{position:absolute;left:0;right:0;bottom:0;background:#fff;
+    border-top:1px solid var(--line);border-radius:18px 18px 0 0;
+    box-shadow:0 -6px 24px rgba(0,0,0,.10);padding:12px 14px 16px}
+  .sheet .h{font-size:11px;color:var(--dim);margin-bottom:8px}
+  .sheet .row{display:flex;gap:8px;align-items:center}
+  .input{flex:1;border:1px solid var(--line);border-radius:18px;padding:8px 12px;
+    font-size:13px;color:var(--dim);background:#f5f5f7}
+  .send{background:var(--blue);color:#fff;border-radius:18px;padding:8px 14px;
+    font-size:13px;font-weight:600;white-space:nowrap}
+  /* comment thread */
+  .thread{position:absolute;left:0;right:0;bottom:0;background:#fff;
+    border-top:1px solid var(--line);border-radius:18px 18px 0 0;
+    box-shadow:0 -6px 24px rgba(0,0,0,.10);padding:14px}
+  .thread .qt{font-size:11px;color:var(--dim);border-left:3px solid var(--hlborder);
+    padding-left:8px;margin-bottom:10px}
+  .cmt{display:flex;gap:8px;margin-bottom:10px}
+  .av{width:24px;height:24px;border-radius:50%;background:#ffd6e0;flex:none;
+    display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#c0396b}
+  .cbody{font-size:12.5px}
+  .cbody .n{font-weight:600;font-size:11px}
+  .cbody .n span{color:var(--dim);font-weight:400;margin-left:6px}
+  .state{display:inline-block;font-size:10px;font-weight:600;border-radius:999px;
+    padding:1px 8px;margin-top:2px}
+  .state.open{background:#fff2e0;color:#b25a00}
+  .state.done{background:#e9f7ee;color:#1c7a3a}
+  /* float button (方案B) */
+  .floatbtn{position:absolute;background:#1d1d1f;color:#fff;border-radius:9px;
+    padding:6px 12px;font-size:12px;font-weight:600;box-shadow:0 4px 12px rgba(0,0,0,.25)}
+  .floatbtn:after{content:"";position:absolute;left:50%;bottom:-5px;transform:translateX(-50%);
+    border:5px solid transparent;border-top-color:#1d1d1f;border-bottom:0}
+  .card-cmt{position:absolute;right:10px;background:#fff;border:1px solid var(--line);
+    border-radius:12px;box-shadow:0 6px 20px rgba(0,0,0,.12);padding:10px 12px;width:180px;font-size:12px}
+  /* compare table */
+  table{width:100%;border-collapse:collapse;margin:14px 0 0;font-size:14px}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:600;font-size:12px}
+  td b{color:var(--ink)}
+  .note{background:var(--card);border-radius:12px;padding:16px 18px;margin-top:28px;font-size:14px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  .note h4{margin:0 0 8px;font-size:15px}
+  .note li{margin:3px 0;color:#3a3a3c}
+  .foot{color:var(--dim);font-size:13px;margin-top:26px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>批注创作 — 手机端方案</h1>
+  <p class="sub">FLY-914 · 可交互 HTML 审阅件 · Round 1 mockup · Apple 浅色</p>
+
+  <div class="rec">
+    <b>我的推荐:方案 A 做 MVP。</b> 拇指最顺、锚点=整段(内容改了也不漂)、最像手机原生 App;方案 B 的「划词到词级」留作后续增强。下面两个都画出来,你和 Annie 挑。
+  </div>
+
+  <!-- 方案 A -->
+  <h2>方案 A:点段落 → 底部评论条<span class="tag">推荐 / MVP</span></h2>
+  <p class="lead">点任意一段,该段浅黄高亮(像 Google Doc 选中),底部滑出评论条。已有评论的段落右侧一个蓝色数字气泡,点开就是该段的评论线程。整段是评论锚点 —— 简单、稳。</p>
+  <div class="frames">
+    <div class="fcol">
+      <div class="phone"><div class="notch"></div><div class="screen">
+        <div class="navbar"><div class="t">竞品扫描 · v1</div><div class="m">Honey Lemon 发给你审阅</div></div>
+        <div class="doc">
+          <h3>3. 定价对比</h3>
+          <p class="p-tap">对手 A 走 seat-based,$29/席/月,团队越大越贵。</p>
+          <p class="p-tap">对手 B 是 usage-based,免费额度低但爬坡快。<span class="badge">2</span></p>
+          <p class="p-tap">我们建议 flat team 价,主打「不按人头罚你成长」。</p>
+          <p class="p-tap">风险:flat 价在大团队会被薅,需要软上限。</p>
+        </div>
+      </div></div>
+      <p class="cap"><b>① 阅读态</b><br>有评论的段落 → 右侧蓝气泡「2」</p>
+    </div>
+
+    <div class="fcol">
+      <div class="phone"><div class="notch"></div><div class="screen">
+        <div class="navbar"><div class="t">竞品扫描 · v1</div><div class="m">选中一段</div></div>
+        <div class="doc">
+          <h3>3. 定价对比</h3>
+          <p class="p-tap">对手 A 走 seat-based,$29/席/月,团队越大越贵。</p>
+          <p class="p-tap">对手 B 是 usage-based,免费额度低但爬坡快。</p>
+          <p><span class="sel">我们建议 flat team 价,主打「不按人头罚你成长」。</span></p>
+          <p class="p-tap">风险:flat 价在大团队会被薅,需要软上限。</p>
+        </div>
+        <div class="sheet">
+          <div class="h">对这一段留评论</div>
+          <div class="row">
+            <div class="input">写评论…</div>
+            <div class="send">发送</div>
+          </div>
+        </div>
+      </div></div>
+      <p class="cap"><b>② 点中一段</b><br>整段高亮 + 底部评论条(拇指区)</p>
+    </div>
+
+    <div class="fcol">
+      <div class="phone"><div class="notch"></div><div class="screen">
+        <div class="navbar"><div class="t">竞品扫描 · v1</div><div class="m">这一段的评论</div></div>
+        <div class="doc">
+          <h3>3. 定价对比</h3>
+          <p class="p-tap" style="opacity:.45">对手 A 走 seat-based…</p>
+          <p><span class="sel">对手 B 是 usage-based,免费额度低但爬坡快。</span></p>
+        </div>
+        <div class="thread">
+          <div class="qt">「对手 B 是 usage-based,免费额度低但爬坡快。」</div>
+          <div class="cmt"><div class="av">A</div><div class="cbody">
+            <div class="n">Annie <span>刚刚</span></div>
+            这条要放最前面,是我们最大的差异点。</div></div>
+          <div class="cmt"><div class="av">A</div><div class="cbody">
+            <div class="n">Annie <span>刚刚</span></div>
+            配个数字:他们免费额度多少?</div></div>
+          <span class="state open">● 待处理 open</span>
+          <div class="row" style="margin-top:10px">
+            <div class="input">回一句…</div><div class="send">发送</div>
+          </div>
+        </div>
+      </div></div>
+      <p class="cap"><b>③ 点气泡</b><br>展开线程 · 多轮 · open/已处理 状态</p>
+    </div>
+  </div>
+
+  <!-- 方案 B -->
+  <h2>方案 B:划词选文字 → 冒泡评论<span class="tag alt">更像桌面 Google Doc</span></h2>
+  <p class="lead">长按拖选任意文字(可到词/句级),选区上方冒出黑色「评论」按钮,点它开评论卡。最还原 Google Doc,但手机上划词选区容易滑、锚点是文字偏移量(原文改动后评论会漂,需要额外校正)。</p>
+  <div class="frames">
+    <div class="fcol">
+      <div class="phone"><div class="notch"></div><div class="screen">
+        <div class="navbar"><div class="t">竞品扫描 · v1</div><div class="m">划选一句话</div></div>
+        <div class="doc">
+          <h3>3. 定价对比</h3>
+          <p class="p-tap">对手 A 走 seat-based,$29/席/月,团队越大越贵。</p>
+          <p style="margin-top:34px">对手 B 是 usage-based,<span class="word-sel">免费额度低但爬坡快</span>。</p>
+          <div class="floatbtn" style="right:66px;top:118px">💬 评论</div>
+          <p class="p-tap">我们建议 flat team 价,主打「不按人头罚你成长」。</p>
+        </div>
+      </div></div>
+      <p class="cap"><b>① 划词</b><br>选区上方冒出「评论」按钮</p>
+    </div>
+
+    <div class="fcol">
+      <div class="phone"><div class="notch"></div><div class="screen">
+        <div class="navbar"><div class="t">竞品扫描 · v1</div><div class="m">写评论</div></div>
+        <div class="doc">
+          <h3>3. 定价对比</h3>
+          <p class="p-tap">对手 A 走 seat-based,$29/席/月,团队越大越贵。</p>
+          <p>对手 B 是 usage-based,<span class="word-sel">免费额度低但爬坡快</span>。</p>
+          <div class="card-cmt" style="top:96px;right:8px">
+            <div style="font-size:11px;color:var(--dim);margin-bottom:6px">「免费额度低但爬坡快」</div>
+            <div class="input" style="width:100%">写评论…</div>
+            <div class="send" style="margin-top:8px;display:inline-block">发送</div>
+          </div>
+        </div>
+      </div></div>
+      <p class="cap"><b>② 点评论</b><br>右侧评论卡贴着选区</p>
+    </div>
+
+    <div class="fcol">
+      <div style="padding:18px 4px 0">
+        <table>
+          <tr><th>维度</th><th>A 点段落</th><th>B 划词</th></tr>
+          <tr><td>手机顺手</td><td><b>很顺</b>(点一下)</td><td>一般(要划)</td></tr>
+          <tr><td>精度</td><td>整段</td><td><b>到词</b></td></tr>
+          <tr><td>锚点稳</td><td><b>稳</b></td><td>会漂</td></tr>
+          <tr><td>工程量</td><td><b>小</b></td><td>中</td></tr>
+          <tr><td>像 GDoc</td><td>神似</td><td><b>形似</b></td></tr>
+        </table>
+      </div>
+      <p class="cap">同一份内容,两种锚点粒度</p>
+    </div>
+  </div>
+
+  <div class="note">
+    <h4>范围说明(每加一项必砍一项)</h4>
+    <ul>
+      <li>本轮只定 <b>批注创作</b>(选段 + 挂评论)。<b>回流</b>(评论怎么回到发起方)、<b>渲染</b>、<b>托管调用</b>、<b>多轮/状态</b> 是后面几块,逐块钻。</li>
+      <li>MVP 只做 A;B 的「划词到词级」= 后续增强,不进第一版。</li>
+      <li>都不加 dark-mode:固定 Apple 浅色。</li>
+    </ul>
+  </div>
+
+  <p class="foot">下一步:你和 Annie 选 A / B / 都要 → 我把选中的锁进 PRD,并并行去找 Aunt Cass 摸「回流」方案。</p>
+</div>
+</body>
+</html>

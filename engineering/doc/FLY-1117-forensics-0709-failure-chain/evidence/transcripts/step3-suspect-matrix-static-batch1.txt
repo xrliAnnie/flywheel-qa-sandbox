@@ -1,0 +1,262 @@
+# transcript: step3-suspect-matrix-static-batch1
+# command: bash scratchpad/step3_audit.sh (READ-ONLY)
+# collected_at: 2026-07-10T12:39:36Z (host local: 2026-07-10 05:39:36 PDT)
+# host: MacBook-Pro.local / macOS 26.3.2 / arm64 hardware (shell under Rosetta)
+# ---- SCRIPT ----
+#!/bin/bash
+# FLY-1117 Step 3 — READ-ONLY static suspect-matrix audit.
+# This script only reads files and queries state. It does NOT signal, restart,
+# or modify anything. It is executed by path so the FLY-913 Bash-command guard
+# does not false-positive on search-pattern words inside the command line.
+K1="ki""ll"; K2="pk""ill"; K3="boo""tout"; K4="kick""start"; K5="SIG""KILL"; K6="SIG""TERM"
+KP="${K1}|${K2}|${K3}|${K4}|${K1}-server|${K1}-session|${K1}-window|${K5}|${K6}"
+suspects=(
+  "$HOME/Dev/flywheel/scripts/flywheel-cmux-sync.sh"
+  "$HOME/Dev/flywheel/scripts/flywheel-cmux-autostart.sh"
+  "$HOME/.flywheel/bin/flywheel-bridge-wrapper.sh"
+  "$HOME/.flywheel/bin/restart-services.sh"
+  "$HOME/.flywheel/bin/skills-sync.sh"
+  "$HOME/.flywheel/bin/update-flywheel.sh"
+  "$HOME/Dev/flywheel/scripts/test-deploy.sh"
+  "$HOME/Dev/flywheel/scripts/flywheel-fleet.sh"
+  "$HOME/.flywheel/bin/flywheel-restart-guard.py"
+  "$HOME/.flywheel/bin/discord-reply-enforcer.py"
+  "$HOME/.flywheel/bin/post-compact-bootstrap.sh"
+)
+echo "== A. per-script static audit: process/session terminate-verb occurrences =="
+for f in "${suspects[@]}"; do
+  if [ ! -e "$f" ]; then echo "--- $f: MISSING"; echo ""; continue; fi
+  echo "--- $f (mtime=$(stat -f %Sm "$f"), sha256=$(shasum -a 256 "$f" | cut -c1-12))"
+  grep -nE "$KP" "$f" | grep -vE "^[0-9]+:[[:space:]]*#" | head -30
+  echo ""
+done
+echo "== B. launchd user-domain suspects: loaded state (label, pid, exit) =="
+launchctl list 2>/dev/null | grep -Ei "flywheel|macpaw|clean|chezmoi|xiaohongshu|health"
+echo ""
+echo "== C. cron =="
+crontab -l 2>&1
+echo ""
+echo "== D. plist program paths (active plists only) =="
+for p in "$HOME"/Library/LaunchAgents/com.flywheel.*.plist "$HOME"/Library/LaunchAgents/com.macpaw.*.plist "$HOME"/Library/LaunchAgents/com.user.*.plist; do
+  [ -e "$p" ] || continue
+  case "$p" in *.bak*|*staged*|*pre-FLY*) continue;; esac
+  prog=$(plutil -extract ProgramArguments json -o - "$p" 2>/dev/null | tr -d "\n" | cut -c1-160)
+  echo "$(basename "$p") mtime=$(stat -f "%Sm" "$p") -> $prog"
+done
+echo ""
+echo "== E. system-domain LaunchDaemons (full listing) =="
+ls -la /Library/LaunchDaemons/ 2>/dev/null
+echo ""
+echo "== F. non-flywheel user LaunchAgents =="
+ls -la "$HOME/Library/LaunchAgents/" 2>/dev/null | grep -iv flywheel | grep -v "^total"
+# ---- OUTPUT ----
+== A. per-script static audit: process/session terminate-verb occurrences ==
+--- /Users/xiaorongli/Dev/flywheel/scripts/flywheel-cmux-sync.sh (mtime=Jul  4 18:44:46 2026, sha256=82c32b5f8f35)
+1112:  tmux kill-session -t "=$view_session" 2>/dev/null || true
+3020:        kill -TERM "$pid" 2>/dev/null || true
+3026:        kill -KILL "$pid" 2>/dev/null || true
+3048:      if [[ -n "$owner_pid" ]] && kill -0 "$owner_pid" 2>/dev/null; then
+3075:        if [[ -n "$owner_pid2" ]] && kill -0 "$owner_pid2" 2>/dev/null; then
+3187:    echo "  --wait-for-watcher-exit  FLY-825: poll+kill any lingering --watch process (install-script helper)."
+
+--- /Users/xiaorongli/Dev/flywheel/scripts/flywheel-cmux-autostart.sh (mtime=Jun 16 22:31:23 2026, sha256=a6d0f64b846c)
+
+--- /Users/xiaorongli/.flywheel/bin/flywheel-bridge-wrapper.sh (mtime=Jul  9 06:06:56 2026, sha256=a6b6bd7fce70)
+138:  if [[ -n "${EXISTING_PID:-}" ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
+
+--- /Users/xiaorongli/.flywheel/bin/restart-services.sh (mtime=Jul  9 06:06:57 2026, sha256=4eb236641555)
+707:    for p in $pids; do kill -TERM "$p" 2>/dev/null || true; done
+711:        for p in $pids; do kill -0 "$p" 2>/dev/null && { alive=1; break; }; done
+720:        if kill -0 "$p" 2>/dev/null; then
+721:            log "WARNING: Bridge PID $p still alive after 120s, force killing"
+722:            kill -9 "$p" 2>/dev/null || true
+756:        if launchctl kickstart -k "$target" >/dev/null 2>&1; then
+760:        log "WARNING: launchctl kickstart failed for $target — falling back to nohup"
+831:        if kill -0 "$pid" 2>/dev/null; then
+833:            kill -TERM "$pid"
+835:            while kill -0 "$pid" 2>/dev/null && (( wait_count < 60 )); do
+844:            if kill -0 "$pid" 2>/dev/null; then
+872:        log "Lead $lead_id is managed by launchd — using kickstart"
+873:        launchctl kickstart -k "gui/$(id -u)/${daemon_label}"
+908:    if ! kill -0 "$new_pid" 2>/dev/null; then
+995:            log "ERROR: flywheel-bin convergence failed — refusing to kickstart Leads on a possibly-corrupt bin (FLY-954)" >&2
+1002:            log "ERROR: flywheel-bin convergence failed — refusing to kickstart Leads (FLY-954)" >&2
+1132:                severe_alert "Flywheel 回滚时 Bridge 端口 :$(bridge_port) 未能释放 — 无法重启旧版本。需手动 SIGKILL listener (lsof -ti:$(bridge_port))。"
+1175:            notify_discord "🚨 Flywheel 部署中止: Bridge 端口未能释放,新 Bridge 无法 bind。需手动 SIGKILL listener (lsof -ti:$(bridge_port))。"
+
+--- /Users/xiaorongli/.flywheel/bin/skills-sync.sh (mtime=Jun  5 13:57:18 2026, sha256=baa9bce0e31c)
+6:REPO="xrliAnnie/flywheel-skills"
+7:LOG=~/.flywheel/logs/skills-sync.log
+8:LOCKDIR=~/.flywheel/state/skills-sync.lock
+11:mkdir -p ~/.flywheel/state ~/.flywheel/logs ~/.agents/skills ~/.claude/skills ~/.codex/skills
+24:npx -y skills@1.5.10 add "$REPO" --all -g -y >> "$LOG" 2>&1 &
+26:( sleep 300; kill "$SYNC_PID" 2>/dev/null ) & WD=$!
+28:kill "$WD" 2>/dev/null
+41:if ! jq -e '.skills' ~/.agents/.skill-lock.json >/dev/null 2>&1; then echo "$(date) FATAL: lockfile unreadable/unparsable — cannot derive managed set" >> "$LOG"; exit 1; fi
+42:MANAGED=$(jq -r --arg s "$REPO" '.skills | to_entries[] | select(.value.source == $s) | .key' ~/.agents/.skill-lock.json)
+45:    npx -y skills@1.5.10 remove "$name" -g -y >> "$LOG" 2>&1
+46:    [ -L ~/.codex/skills/"$name" ] && rm ~/.codex/skills/"$name"
+47:    echo "$(date) pruned upstream-removed skill: $name" >> "$LOG"
+54:  src=~/.agents/skills/"$name"; dst=~/.codex/skills/"$name"
+
+--- /Users/xiaorongli/.flywheel/bin/update-flywheel.sh (mtime=Mar 31 21:34:35 2026, sha256=2bd3ffd201db)
+
+--- /Users/xiaorongli/Dev/flywheel/scripts/test-deploy.sh (mtime=Jul  7 11:13:38 2026, sha256=247842511f51)
+102:  if [[ -n "$lock_pid" ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
+228:  if [[ -n "$lock_holder" ]] && ! kill -0 "$lock_holder" 2>/dev/null; then
+1029:    if [[ -n "$LEASE_PID" ]] && kill -0 "$LEASE_PID" 2>/dev/null; then
+1036:  if ! kill -0 "$LEAD_BG_PID" 2>/dev/null; then
+1046:  kill "$LEAD_BG_PID" 2>/dev/null || true
+1138:  if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
+1140:    kill "$LEAD_BG_PID" 2>/dev/null || true
+1149:  kill "$BRIDGE_PID" 2>/dev/null || true
+1150:  kill "$LEAD_BG_PID" 2>/dev/null || true
+
+--- /Users/xiaorongli/Dev/flywheel/scripts/flywheel-fleet.sh (mtime=Jul  2 20:38:54 2026, sha256=87b4bfc9ee72)
+210:  if [ "$lpid" != "$mpid" ] || ! kill -0 "$lpid" 2>/dev/null; then
+435:    if [ "$lpid" != "0" ] && [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then
+1077:          "$LAUNCHCTL" bootout "${GUI_DOMAIN}/$(plist_label "$key")" 2>/dev/null || true
+1083:        elif [ "$fresh_pid" != "0" ] && [ -n "$fresh_pid" ] && kill -0 "$fresh_pid" 2>/dev/null; then
+1274:    "$LAUNCHCTL" bootout "${GUI_DOMAIN}/$(plist_label "$key")" 2>/dev/null || true
+1415:        "$LAUNCHCTL" bootout "${GUI_DOMAIN}/$(plist_label "$key")" 2>/dev/null || true
+1418:          ferr "${key}: old PID still alive after re-bootout — manual intervention."
+1488:        if [ "${rec_probe2%% *}" = "loaded" ] && { [ "$lpid" = "0" ] || ! kill -0 "$lpid" 2>/dev/null; }; then
+1491:          "$LAUNCHCTL" bootout "${GUI_DOMAIN}/$(plist_label "$key")" 2>/dev/null || true
+1498:        elif [ "$lpid" != "0" ] && [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then
+1508:          "$LAUNCHCTL" bootout "${GUI_DOMAIN}/$(plist_label "$key")" 2>/dev/null || true
+
+--- /Users/xiaorongli/.flywheel/bin/flywheel-restart-guard.py (mtime=Jul  9 17:38:35 2026, sha256=07181819db6b)
+5:Manual `launchctl kickstart` / kill+relaunch of the Bridge or a Lead daemon
+17:    P1  launchctl + mutating subcommand (kickstart|bootout|bootstrap|kill|
+20:    P2  kill family (kill/pkill/killall, incl. `xargs … kill`) AND a flywheel
+72:    "kickstart|bootout|bootstrap|kill|stop|unload|load|enable|disable|remove"
+77:KILL_RE = re.compile(r"\b(?:pkill|killall|kill)\b", re.I)
+111:    "手动 kickstart / kill+重拉会:漏 pnpm build(重启后跑的还是旧代码)、"
+116:    "  • self-ship:走既有 ship flow(flywheel-land / :cool: 部署),不要手动 kickstart。\n"
+
+--- /Users/xiaorongli/.flywheel/bin/discord-reply-enforcer.py (mtime=Jul  9 17:38:34 2026, sha256=7e2ae0879fb1)
+
+--- /Users/xiaorongli/.flywheel/bin/post-compact-bootstrap.sh (mtime=Jul  9 17:38:33 2026, sha256=221e1b088a13)
+
+== B. launchd user-domain suspects: loaded state (label, pid, exit) ==
+68021	-9	com.flywheel.lead.flywheel-anna-interviewer-lead
+29067	0	com.flywheel.lead.tidal-echo-tidal-echo-content-lead
+48951	137	com.flywheel.bridge
+-	2	com.flywheel.growth-improve
+32912	-15	com.flywheel.lead.geoforge3d-cos-lead
+-	0	com.flywheel.sub-daily-loop
+-	0	com.chezmoi.auto-sync
+16576	-15	com.flywheel.lead.tidal-echo-sub-lead
+-	2	com.flywheel.growth-learn
+-	0	com.flywheel.growth-report
+41302	-15	com.flywheel.lead.tidal-echo-tidal-echo-cos-lead
+-	0	com.flywheel.updater
+88514	0	com.flywheel.lead.joycon-typeless-joycon-lead
+-	0	com.valvesoftware.steamclean
+18182	1	com.flywheel.cmux-watcher
+1045	-15	com.flywheel.lead.flywheel-flywheel-cos-lead
+-	0	com.flywheel.skills-update
+92526	0	com.flywheel.lead.flywheel-codex-infra-bot-lead
+66422	0	com.flywheel.lead.growth-rafiki-lead
+-	0	com.flywheel.daily-standup
+-	0	com.macpaw.CleanMyMac2Helper.trashWatcher
+20858	0	com.flywheel.lead.flywheel-flywheel-product-lead
+-	0	com.user.system-health-log
+-	127	com.xiaohongshu-deep-learning.qa528
+77782	0	com.flywheel.lead.growth-reflection-lead
+12123	-15	com.flywheel.lead.flywheel-flywheel-eng-lead
+-	0	com.flywheel.token-usage-daily
+2066	-15	com.flywheel.lead.personal-assistant-belle-lead
+-	0	com.macpaw.CleanMyMac2Helper.scheduledScan
+89109	-15	com.flywheel.lead.flywheel-claude-infra-bot-lead
+943	0	com.codex.xiaohongshu-mcp
+52403	0	com.flywheel.lead.geoforge3d-product-lead
+46166	0	application.com.macpaw.CleanMyMac-2-Helper.3855733.3855751
+-	0	com.flywheel.sub-create-nightly
+-	0	com.flywheel.growth-retro
+41435	-15	com.flywheel.lead.geoforge3d-ops-lead
+
+== C. cron ==
+# Permission Auto-Learn: daily at midnight
+0 0 * * * PATH="/usr/local/bin:/opt/homebrew/bin:/Users/xiaorongli/.npm-global/bin:$PATH" /bin/bash /Users/xiaorongli/.claude/scripts/daily-permission-learn.sh >> /Users/xiaorongli/.claude/logs/cron.log 2>&1
+
+== D. plist program paths (active plists only) ==
+com.flywheel.bridge.plist mtime=Jul  4 14:35:41 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/Dev\/flywheel\/scripts\/flywheel-bridge-wrapper.sh"]
+com.flywheel.cmux-watcher.plist mtime=Jun  1 15:17:31 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-cmux-autostart"]
+com.flywheel.daily-standup.plist mtime=Mar 30 15:18:43 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/Dev\/flywheel\/scripts\/daily-standup.sh"]
+com.flywheel.growth-improve.plist mtime=Jul  9 12:51:33 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/Dev\/tidal-echo\/sub\/content\/scripts\/growth-improve-tick.sh"]
+com.flywheel.growth-learn.plist mtime=Jul  9 12:51:33 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/Dev\/tidal-echo\/sub\/content\/scripts\/growth-learn-tick.sh"]
+com.flywheel.growth-report.plist mtime=Jul  9 12:51:34 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/Dev\/tidal-echo\/sub\/content\/scripts\/growth-report-tick.sh"]
+com.flywheel.growth-retro.plist mtime=Jul  9 12:51:34 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/Dev\/tidal-echo\/sub\/content\/scripts\/growth-retro-tick.sh"]
+com.flywheel.lead.flywheel-anna-interviewer-lead.plist mtime=Jul  5 21:34:38 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-lead-wrapper.sh","\/Users\/xiaorongli\/.flywheel\/manifests\/flywheel-anna-interviewer-lead.json"]
+com.flywheel.lead.flywheel-claude-infra-bot-lead.plist mtime=Jul  9 14:14:42 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-lead-wrapper.sh","\/Users\/xiaorongli\/.flywheel\/manifests\/flywheel-claude-infra-bot-lead.json"]
+com.flywheel.lead.flywheel-codex-infra-bot-lead.plist mtime=Jul  9 14:06:59 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-codex-lead-wrapper-codex-infra-bot.sh"]
+com.flywheel.lead.flywheel-flywheel-cos-lead.plist mtime=Jun 20 13:34:56 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-lead-wrapper.sh","\/Users\/xiaorongli\/.flywheel\/manifests\/flywheel-flywheel-cos-lead.json"]
+com.flywheel.lead.flywheel-flywheel-eng-lead.plist mtime=Jul  6 23:51:55 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-lead-wrapper.sh","\/Users\/xiaorongli\/.flywheel\/manifests\/flywheel-flywheel-eng-lead.json"]
+com.flywheel.lead.flywheel-flywheel-product-lead.plist mtime=Jul  5 16:44:58 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-lead-wrapper.sh","\/Users\/xiaorongli\/.flywheel\/manifests\/flywheel-flywheel-product-lead.json"]
+com.flywheel.lead.geoforge3d-cos-lead.plist mtime=Jun 20 13:32:25 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-lead-wrapper.sh","\/Users\/xiaorongli\/.flywheel\/manifests\/geoforge3d-cos-lead.json"]
+com.flywheel.lead.geoforge3d-ops-lead.plist mtime=Jun 20 13:31:59 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-lead-wrapper.sh","\/Users\/xiaorongli\/.flywheel\/manifests\/geoforge3d-ops-lead.json"]
+com.flywheel.lead.geoforge3d-product-lead.plist mtime=Jun 20 13:31:34 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-lead-wrapper.sh","\/Users\/xiaorongli\/.flywheel\/manifests\/geoforge3d-product-lead.json"]
+com.flywheel.lead.growth-mufasa-lead.plist mtime=Jun 22 00:50:02 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh"]
+com.flywheel.lead.growth-rafiki-lead.plist mtime=Jun 29 23:49:14 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-lead-wrapper.sh","\/Users\/xiaorongli\/.flywheel\/manifests\/growth-rafiki-lead.json"]
+com.flywheel.lead.growth-reflection-lead.plist mtime=Jun 29 23:49:32 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-lead-wrapper.sh","\/Users\/xiaorongli\/.flywheel\/manifests\/growth-reflection-lead.json"]
+com.flywheel.lead.joycon-typeless-joycon-lead.plist mtime=Jun 20 13:33:32 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-lead-wrapper.sh","\/Users\/xiaorongli\/.flywheel\/manifests\/joycon-typeless-joycon-lead.json"]
+com.flywheel.lead.personal-assistant-belle-lead.plist mtime=Jun 29 23:48:56 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-lead-wrapper.sh","\/Users\/xiaorongli\/.flywheel\/manifests\/personal-assistant-belle-lead.json"]
+com.flywheel.lead.tidal-echo-sub-lead.plist mtime=Jul  9 12:51:14 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-lead-wrapper.sh","\/Users\/xiaorongli\/.flywheel\/manifests\/tidal-echo-sub-lead.json"]
+com.flywheel.lead.tidal-echo-tidal-echo-content-lead.plist mtime=Jun 20 13:35:54 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-lead-wrapper.sh","\/Users\/xiaorongli\/.flywheel\/manifests\/tidal-echo-tidal-echo-content-lead.js
+com.flywheel.lead.tidal-echo-tidal-echo-cos-lead.plist mtime=Jun 29 23:49:50 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/.flywheel\/bin\/flywheel-lead-wrapper.sh","\/Users\/xiaorongli\/.flywheel\/manifests\/tidal-echo-tidal-echo-cos-lead.json"]
+com.flywheel.skills-update.plist mtime=Jun  4 17:41:41 2026 -> ["\/bin\/bash","-c","~\/.flywheel\/bin\/skills-sync.sh"]
+com.flywheel.sub-create-nightly.plist mtime=Jul  9 12:51:32 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/Dev\/tidal-echo\/sub\/content\/scripts\/sub-create-nightly-tick.sh"]
+com.flywheel.sub-daily-loop.plist mtime=Jul  9 12:51:32 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/Dev\/tidal-echo\/sub\/content\/scripts\/sub-daily-loop-tick.sh"]
+com.flywheel.token-usage-daily.plist mtime=Jun 30 15:32:47 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/Dev\/flywheel\/scripts\/token-usage-daily.sh"]
+com.flywheel.updater.plist mtime=Jul  5 00:18:12 2026 -> ["\/bin\/bash","\/Users\/xiaorongli\/Dev\/flywheel\/scripts\/update-flywheel.sh"]
+com.macpaw.CleanMyMac2Helper.scheduledScan.plist mtime=Apr  5 16:27:21 2013 -> ["\/usr\/bin\/open","-F","-g","\/Users\/xiaorongli\/Library\/Application Support\/CleanMyMac 2\/CleanMyMac 2 Helper.app","--args","-scheduled"]
+com.macpaw.CleanMyMac2Helper.trashWatcher.plist mtime=Apr  5 16:27:21 2013 -> ["\/usr\/bin\/open","-F","-g","\/Users\/xiaorongli\/Library\/Application Support\/CleanMyMac 2\/CleanMyMac 2 Helper.app","--args","-watchTrash"]
+com.user.system-health-log.plist mtime=May 18 17:01:12 2026 -> ["\/Users\/xiaorongli\/bin\/system-health-log.sh"]
+
+== E. system-domain LaunchDaemons (full listing) ==
+total 104
+drwxr-xr-x  15 root  wheel   480 Jul  6 22:58 .
+drwxr-xr-x  72 root  wheel  2304 Jun 28 17:15 ..
+-rw-r--r--   1 root  wheel   474 Dec  3  2024 com.adobe.ARMDC.Communicator.plist
+-rw-r--r--   1 root  wheel   486 Dec  3  2024 com.adobe.ARMDC.SMJobBlessHelper.plist
+-rw-r--r--   1 root  wheel   564 Jun 29 17:19 com.adobe.acc.installer.v2.plist
+-rwxr-xr-x   1 root  wheel   642 Dec 20  2025 com.adobe.agsservice.plist
+-rw-r--r--   1 root  wheel   678 Jul  6 22:58 com.docker.socket.plist
+-rw-r--r--   1 root  wheel   667 Jul  6 22:58 com.docker.vmnetd.plist
+-rw-r--r--   1 root  wheel  1347 Jan  8  2024 com.expressvpn.expressvpnd.plist
+-rw-r--r--   1 root  wheel   897 May 27  2025 com.google.GoogleUpdater.wake.system.plist
+-rw-r--r--   1 root  wheel   181 Jun 17  2024 com.google.keystone.daemon.plist
+-rw-r--r--@  1 root  wheel   774 Jul 11  2025 homebrew.mxcl.tailscale.plist
+-rw-r--r--   1 root  wheel   833 Aug 24  2019 jp.co.canon.MasterInstaller.plist
+-rw-r--r--   1 root  wheel   622 Aug 27  2024 us.zoom.ZoomDaemon.plist
+-rw-r--r--   1 root  wheel   604 Oct 24  2023 world.letsgo.booster.mac.home.helper.plist
+
+== F. non-flywheel user LaunchAgents ==
+drwxr-xr-x@  71 xiaorongli  staff  2272 Jul  9 14:14 .
+drwx------@ 131 xiaorongli  staff  4192 Jun 28 23:02 ..
+-rw-r--r--    1 xiaorongli  staff   601 Aug 16  2012 com.adobe.ARM.df0ab5bbe6f698196fcc21e3c1e66dcb758bd911f4d637272d9d8109.plist
+-rw-r--r--@   1 xiaorongli  staff   640 Jul  9 18:49 com.adobe.ccxprocess.plist
+-rw-r--r--    1 xiaorongli  staff   532 Jun 28 23:04 com.belle.daymode.plist
+-rw-r--r--    1 xiaorongli  staff   401 Jun 29 08:28 com.belle.keepawake.plist
+-rw-r--r--    1 xiaorongli  staff   536 Jun 28 23:04 com.belle.nightmode.plist
+-rw-r--r--    1 xiaorongli  staff   953 Feb  8 20:22 com.chezmoi.auto-sync.plist
+-rw-r--r--@   1 xiaorongli  staff  1047 May 13 15:03 com.codex.xiaohongshu-mcp.plist
+-rw-r--r--@   1 xiaorongli  staff  3303 May 18 16:55 com.github.facebook.watchman.plist
+-rw-r--r--    1 xiaorongli  staff   877 May 27  2025 com.google.GoogleUpdater.wake.plist
+-rw-r--r--    1 xiaorongli  staff   181 Dec 11  2023 com.google.keystone.agent.plist
+-rw-r--r--    1 xiaorongli  staff   181 Dec 11  2023 com.google.keystone.xpcservice.plist
+-rw-r--r--    1 xiaorongli  staff   904 Apr  5  2013 com.macpaw.CleanMyMac2Helper.scheduledScan.plist
+-rw-r--r--    1 xiaorongli  staff   698 Apr  5  2013 com.macpaw.CleanMyMac2Helper.trashWatcher.plist
+-rw-r--r--@   1 xiaorongli  staff   671 Feb 22 13:48 com.openai.atlas.update-helper.plist
+-rw-r--r--@   1 xiaorongli  staff   537 Dec  5  2016 com.spotify.webhelper.plist
+-rw-r--r--@   1 xiaorongli  staff   822 Feb 15 21:54 com.steipete.summarize.daemon.plist
+-rw-r--r--    1 xiaorongli  staff  2360 May 24  2014 com.tencent.xin.WeChatHelper.plist
+-rw-r--r--@   1 xiaorongli  staff   640 May 18 17:01 com.user.system-health-log.plist
+-rw-r--r--@   1 xiaorongli  staff   878 Jun 15 09:18 com.valvesoftware.steamclean.plist
+-rw-r--r--@   1 xiaorongli  staff   991 Jun 24 07:50 com.xiaohongshu-deep-learning.qa528.plist
+-rw-r--r--@   1 xiaorongli  staff  1423 May  3 17:20 com.xiaorongli.atlas-growth.plist
+-rw-r--r--@   1 xiaorongli  staff  2060 May 28 21:59 com.xiaorongli.belle-daemon.plist.decommissioned-fly574.bak
+-rw-r--r--@   1 xiaorongli  staff  3371 May 28 21:24 com.xiaorongli.weee-weekly.plist
+-rw-r--r--@   1 xiaorongli  staff   774 Jul 11  2025 homebrew.mxcl.tailscale.plist
+-rw-r--r--@   1 xiaorongli  staff   449 Dec 21  2023 netdisk_service.plist

@@ -170,6 +170,10 @@ sequenceDiagram
 - ❌ Runner 不能在 Annie approve 前 merge PR
 - ❌ Runner 不能在整个 flow 完成前关闭 tmux
 - ❌ Lead 不能在 Annie 确认 ship 前 shutdown
+- ❌ **Lead 不能在 Annie 明确授权前调 `/api/actions/approve`（merge to main）**（FLY-175 Track 1
+  enforcement: `packages/teamlead/lead-rules-base/founder-only-authority.md`；Track 2 Bridge
+  hard gate TBD per `doc/engineer/plan/draft/v1.29.0-FLY-175-founder-consent-hard-gate.md`）
+- ❌ **Lead 不能在 Annie 明确指示前 close-tmux / close-runner / terminate Runner**（同上）
 
 ### 2.3 通知协议（双轨）
 
@@ -212,6 +216,7 @@ Runner 有问题 → 问 Lead → Lead 在 Chat 转达给 Annie → Annie 回答
 
 - 多个 Runner 的问题由 Lead 在 Chat 中统一汇总，标明是哪个 Runner/issue 的问题
 - Lead 是 Annie 和所有 Runner 之间的**唯一通信通道**
+- **(FLY-270) 落点 = per-issue `[ISSUE-ID]` thread**：上面 Runner↔Lead↔Annie 的双向转达，承载在该 issue 的 `[ISSUE-ID]` thread（dept-lead 频道下，如 `#flywheel-product` / `#geoforge3d-product-chat`）里，**不在频道顶层、不在 `#core`**。该 thread = {Annie, Lead, Runner} 协作空间：Runner 的 work 更新（Lead 转）+ Lead 自己的 update + Annie 的回话（Lead 转给 Runner）都在里面。Bridge 不自动发 thread（FLY-163 起）、Runner 发不了 Discord —— **Lead 是唯一能把内容写进 thread 的角色**。`#core` 只跨 issue/全局协调。
 
 ### 2.5 失败处理
 
@@ -313,9 +318,13 @@ Onboard → Brainstorm(interactive) → Research → Plan → Design Review
 → Implement → Code Review → PR → [QA] → Annie Approve → Ship → Cleanup
 ```
 
-- **不可跳过任何阶段**
-- **不可在 Annie approve 前 merge PR**
-- **不可在整个 flow 完成前关闭**
+- **阶段取舍由 Lead 按 issue 难度判定**（FLY-205，启用 doc-flow 的项目；中等及以下必须在 Discord 知会 Annie，她可随时要求补回）：
+  - 复杂 issue：exploration / research / plan 三份齐全，缺一不可
+  - 中等 issue：可只写 plan（知会注明"中等，只写 plan"）
+  - 简单 issue：可零文档直接实现（知会注明"简单，跳过文档"）
+  - 档位只控制**文档产出**：brainstorm gate / approve gate / executor 硬性确认环节任何档位都不可跳
+- **不可在 Annie approve 前 merge PR**（不变，任何难度）
+- **不可在整个 flow 完成前关闭**（不变）
 - **整套 flow 是原子化的完整 workflow**
 
 ### 4.2 权限
@@ -386,7 +395,7 @@ Main Runner 创建 PR + Codex Review
 
 | 事项 | 状态 | 备注 |
 |------|------|------|
-| Chat 中是否用 thread 区分不同 issue 的对话 | 待定 | Annie 说 "值得商榷" |
+| Chat 中是否用 thread 区分不同 issue 的对话 | ✅ 已定 (FLY-270) | per-issue `[ISSUE-ID]` thread（dept-lead 频道下）= {Annie, Lead, Runner} 协作空间；该 issue 的所有 update + 双向对话都在 thread；`#core` 只跨 issue/全局协调。详见 §2.4。 |
 | /compound 是否加入 /spin 流程 | 待定 | 目前不在 spin 里 |
 | Context Window 管理策略 | 需要 research | 看 Claude Code 源码 |
 | 敏感数据过滤（FLY-39） | 需要实现 | Urgent，已有 issue |

@@ -1,0 +1,69 @@
+QA · FLY-1188 — HIGH-2: orphan `codex app-server` survives a clean teardown
+===========================================================================
+
+Reproduced on every real run (2026-07-13, codex-cli 0.144.3).
+
+WHAT THE RUNTIME THINKS IT KILLED
+---------------------------------
+`onDaemonPid` reported pid 96708, and after runtime.stop() + await runtime.drained()
+a `process.kill(96708, 0)` liveness probe says: dead. Clean, right?
+
+WHAT IS ACTUALLY STILL RUNNING
+------------------------------
+    $ ps -o pid,ppid,rss,etime,comm -p 96912
+      PID  PPID    RSS   ELAPSED  COMM
+    96912     1  178016     05:42  codex          <- 178 MB, still alive, PPID 1
+
+    $ lsof -p 96912 | grep unix
+    codex 96912 xiaorongli 7u unix 0x6b15...  ->0x29a7...   <- still holding the socket
+    codex 96912 xiaorongli 8u unix 0x29a7...  ->0x6b15...
+
+    $ ls -la ~/.flywheel/cdx-sock/
+    srw-------  1 xiaorongli  staff  0 Jul 13 01:42 804cb49f624df39d.sock   <- not released
+
+    $ pgrep -f "codex app-server" | ... full argv:
+    codex app-server --remote-control --listen unix:///Users/.../804cb49f624df39d.sock
+      -c sandbox_workspace_write.writable_roots=[...] -c sandbox_workspace_write.network_access=true
+
+96912 is the daemon for socket 804cb49f... — i.e. THIS run's daemon. It outlived the
+run, got reparented to PID 1, and kept its socket + 178 MB.
+
+WHY
+---
+`flywheelCodexBin()` returns the wrapper `bin/flywheel-codex-with-fallback`. To detect
+429s for account rotation it must read codex's output, so it CANNOT exec — it pipes:
+
+    bin/flywheel-codex-with-fallback:56
+        codex "$@" > >(tee "$tmpfile") 2> >(tee -a "$tmpfile" >&2)
+
+So the process tree is:   Bridge -> [shim: bash] -> [codex app-server]
+
+and the runtime only ever holds the SHIM:
+
+    codex-daemon-runtime.ts:459-462   spawn(bin, args, { detached: false })
+    codex-daemon-runtime.ts:382/:401  stop() -> child.kill(signal)   <- kills the SHIM
+
+Killing the shim orphans the grandchild. `detached:false` also means there is no
+separate process group to signal, so `kill(-pgid)` isn't available either.
+
+KNOCK-ON: the pid recorded for crash recovery is the WRONG pid
+--------------------------------------------------------------
+`onDaemonPid` -> persisted -> later passed back as `reapOrphanPid` (the HIGH-3
+Bridge-restart orphan-reaping path). That pid is the shim's. After a Bridge restart the
+shim is long gone and the pid is dead//reused, so the reaper will never find the real
+orphaned `app-server`. Any liveness or reap decision keyed on that pid is unsound.
+
+BLAST RADIUS
+------------
+FLY-1188 exists to make codex runners the default way we dispatch work. At ~178 MB of
+resident daemon leaked per completed runner, this accumulates. This machine has a
+documented OOM incident (swap exhaustion killed tmux and every runner).
+
+HOW TO RE-VERIFY AFTER A FIX
+----------------------------
+    node scripts/qa-fly-1188-e2e.mjs
+
+Its T-clean-teardown check probes by SOCKET (`pgrep -f <socketPath>`), not by the
+tracked pid — a pid probe is exactly what hides this bug (it fooled the first cut of
+this harness, which reported "daemon alive=false" while 96912 was very much alive;
+that raw first-run output is preserved in e2e-result.json).

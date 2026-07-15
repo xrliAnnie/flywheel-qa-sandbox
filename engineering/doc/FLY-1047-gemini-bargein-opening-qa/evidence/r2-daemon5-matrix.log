@@ -1,0 +1,74 @@
+[2026-07-09T19:58:21.802Z] health endpoint on 127.0.0.1:9880/health
+[2026-07-09T19:58:22.570Z] bots online: orchestrator, note-taker
+[2026-07-09T19:58:23.002Z] Note-taker resident in VC 1485787273193853170
+[2026-07-09T19:58:23.007Z] [presence] humanCount seeded=1 (boot occupancy)
+[2026-07-09T19:58:23.157Z] /gemini registered on guild 1485787271192907816
+[2026-07-09T19:58:23.157Z] autostart QA seam armed (topic: FLY-1047 复验完整轮R2)
+[2026-07-09T19:58:23.157Z] daemon up — health :9880, assistant=/gemini
+[2026-07-09T19:58:27.345Z] [gemini-command] MOVE_MEMBERS unavailable — Join button is the path in
+[2026-07-09T19:58:27.353Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] state -> invoked
+[2026-07-09T19:58:27.454Z] [presence] voiceState user=1523230048243417178 bot=true - -> 1485787273193853170 delta=join humanCount=1 joinSubs=0
+[2026-07-09T19:58:27.957Z] [deferred-player] real player attached (orchestrator in VC)
+[2026-07-09T19:58:27.958Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] voice joined — orchestrator in the VC
+[2026-07-09T19:58:27.958Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] briefing composed (3154 chars, stale=false)
+[2026-07-09T19:58:27.958Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] connecting Gemini Live…
+[2026-07-09T19:58:28.255Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] conversation ready
+[2026-07-09T19:58:28.255Z] [presence] founderPresent()=true (humanCount=1)
+[2026-07-09T19:58:28.255Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] founderPresent()=true at post-connect check
+[2026-07-09T19:58:28.256Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] state -> live (initial-check)
+[2026-07-09T19:58:28.256Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] OPENING prompt sent to Gemini
+[2026-07-09T19:58:29.057Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] response started (ears frames forwarded so far: 0)
+[2026-07-09T19:58:29.058Z] [assistant-speaker] turn begin
+[2026-07-09T19:58:29.059Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] first response audio from Gemini
+[2026-07-09T19:58:29.059Z] [assistant-speaker] first audio chunk (7710 bytes, 24k mono)
+[2026-07-09T19:58:30.259Z] [assistant-speaker] playing turn stream on the player
+[2026-07-09T19:58:35.046Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] response done (audio chunks this turn: 24, total: 24)
+[2026-07-09T19:58:35.054Z] [assistant-speaker] turn end — chunks=24 bytes=288030 dropped=0
+[2026-07-09T20:00:33.325Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] first ears frame forwarded to Gemini (640 bytes)
+[2026-07-09T20:00:35.519Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] founder speaking-end — committing turn (105 frames this utterance)
+[2026-07-09T20:00:36.829Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] response started (ears frames forwarded so far: 105)
+[2026-07-09T20:00:36.829Z] [assistant-speaker] turn begin
+[2026-07-09T20:00:36.835Z] [assistant-speaker] first audio chunk (5310 bytes, 24k mono)
+[2026-07-09T20:00:36.841Z] [assistant-speaker] playing turn stream on the player
+[2026-07-09T20:00:42.289Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] response done (audio chunks this turn: 24, total: 48)
+[2026-07-09T20:00:42.289Z] [assistant-speaker] turn end — chunks=24 bytes=262590 dropped=0
+[2026-07-09T20:00:45.195Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] founder speaking-end — committing turn (91 frames this utterance)
+[2026-07-09T20:00:45.961Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] founder speaking-end — committing turn (38 frames this utterance)
+[2026-07-09T20:00:47.184Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] response started (ears frames forwarded so far: 234)
+[2026-07-09T20:00:47.184Z] [assistant-speaker] turn begin
+[2026-07-09T20:00:47.184Z] [assistant-speaker] first audio chunk (4350 bytes, 24k mono)
+[2026-07-09T20:00:47.186Z] [assistant-speaker] playing turn stream on the player
+[2026-07-09T20:00:51.675Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] response done (audio chunks this turn: 23, total: 71)
+[2026-07-09T20:00:51.675Z] [assistant-speaker] turn end — chunks=23 bytes=215550 dropped=0
+[2026-07-09T20:04:58.720Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] ears frames forwarded: 250
+[2026-07-09T20:05:00.692Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] founder speaking-end — committing turn (106 frames this utterance)
+[2026-07-09T20:05:03.344Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] response started (ears frames forwarded so far: 340)
+[2026-07-09T20:05:03.344Z] [assistant-speaker] turn begin
+[2026-07-09T20:05:03.344Z] [assistant-speaker] first audio chunk (11550 bytes, 24k mono)
+[2026-07-09T20:05:03.356Z] [assistant-speaker] playing turn stream on the player
+[2026-07-09T20:05:05.847Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] response cancelled (barge-in) — flushing speaker
+[2026-07-09T20:05:07.302Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] founder speaking-end — committing turn (87 frames this utterance)
+[2026-07-09T20:05:08.145Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] founder speaking-end — committing turn (42 frames this utterance)
+[2026-07-09T20:05:09.464Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] response started (ears frames forwarded so far: 469)
+[2026-07-09T20:05:09.464Z] [assistant-speaker] turn begin
+[2026-07-09T20:05:09.464Z] [assistant-speaker] first audio chunk (14910 bytes, 24k mono)
+[2026-07-09T20:05:09.464Z] [assistant-speaker] playing turn stream on the player
+[2026-07-09T20:05:14.412Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] response done (audio chunks this turn: 21, total: 125)
+[2026-07-09T20:05:14.412Z] [assistant-speaker] turn end — chunks=21 bytes=237630 dropped=0
+[2026-07-09T20:05:28.318Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] founder speaking-end — committing turn (9 frames this utterance)
+[2026-07-09T20:05:28.659Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] ears frames forwarded: 500
+[2026-07-09T20:05:28.839Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] founder speaking-end — committing turn (26 frames this utterance)
+[2026-07-09T20:05:29.442Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] founder speaking-end — committing turn (27 frames this utterance)
+[2026-07-09T20:05:30.957Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] founder speaking-end — committing turn (43 frames this utterance)
+[2026-07-09T20:05:32.089Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] founder speaking-end — committing turn (54 frames this utterance)
+[2026-07-09T20:05:34.208Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] response started (ears frames forwarded so far: 628)
+[2026-07-09T20:05:34.208Z] [assistant-speaker] turn begin
+[2026-07-09T20:05:34.208Z] [assistant-speaker] first audio chunk (2 bytes, 24k mono)
+[2026-07-09T20:05:34.209Z] [assistant-speaker] playing turn stream on the player
+[2026-07-09T20:05:45.834Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] response done (audio chunks this turn: 43, total: 168)
+[2026-07-09T20:05:45.835Z] [assistant-speaker] turn end — chunks=43 bytes=554882 dropped=0
+[2026-07-09T20:06:29.422Z] quit file seen after 486.3s
+[2026-07-09T20:06:29.423Z] shutting down (session length 486.3s)
+[2026-07-09T20:06:29.423Z] shutting down (bounded)
+[2026-07-09T20:06:29.425Z] [assistant-session][f36aa412-c0b6-46c4-9159-e6099aa8e36a] state -> landing (trigger=external-stop confirmed=false; ears frames forwarded=628, assistant audio chunks=168)
+[2026-07-09T20:06:31.038Z] daemon closed

@@ -8,14 +8,16 @@ export function getDashboardHtml(): string {
 <title>Flywheel Operations Dashboard</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
+/* FLY-709: Apple-light palette (retired the old GitHub-dark theme — Annie wants
+   the light Apple-card style everywhere; this fallback must never render dark). */
 :root{
-  --bg:#0d1117;--surface:#161b22;--border:#30363d;
-  --text:#e6edf3;--text-muted:#8b949e;
-  --green:#3fb950;--yellow:#d29922;--red:#f85149;--blue:#58a6ff;
-  --card-bg:#1c2128;
+  --bg:#f5f5f7;--surface:#fff;--border:#e5e5ea;
+  --text:#1d1d1f;--text-muted:#86868b;
+  --green:#34c759;--yellow:#ff9500;--red:#ff3b30;--blue:#007aff;
+  --card-bg:#fff;
 }
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
-  background:var(--bg);color:var(--text);line-height:1.5;padding:1.5rem}
+  background:var(--bg);color:var(--text);line-height:1.5;padding:1.5rem;max-width:1100px;margin:0 auto}
 h1{font-size:1.25rem;font-weight:600;display:flex;align-items:center;gap:.75rem}
 .live-dot{width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block;animation:pulse 2s infinite}
 .live-dot.offline{background:var(--red);animation:none}
@@ -24,7 +26,7 @@ h1{font-size:1.25rem;font-weight:600;display:flex;align-items:center;gap:.75rem}
 header{display:flex;justify-content:space-between;align-items:center;padding-bottom:1rem;border-bottom:1px solid var(--border);margin-bottom:1.5rem}
 
 .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.75rem;margin-bottom:1.5rem}
-.metric-card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:1rem;text-align:center}
+.metric-card{background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:1rem;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .metric-card .label{font-size:.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em}
 .metric-card .value{font-size:2rem;font-weight:700;font-variant-numeric:tabular-nums;margin-top:.25rem}
 .metric-card .value.green{color:var(--green)}
@@ -38,7 +40,7 @@ table{width:100%;border-collapse:collapse;font-size:.8125rem}
 th{text-align:left;padding:.5rem .75rem;color:var(--text-muted);font-weight:500;border-bottom:1px solid var(--border);white-space:nowrap}
 td{padding:.5rem .75rem;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums}
 tr:last-child td{border-bottom:none}
-tbody tr:hover{background:rgba(255,255,255,.03)}
+tbody tr:hover{background:rgba(0,0,0,.03)}
 
 .badge{display:inline-flex;align-items:center;gap:4px;font-size:.75rem;padding:2px 8px;border-radius:12px;white-space:nowrap}
 .badge-running{background:rgba(63,185,80,.15);color:var(--green)}
@@ -95,7 +97,7 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
 <section>
   <h2>Active Sessions</h2>
   <table><thead><tr>
-    <th>Issue</th><th>Status</th><th>Project</th><th>Runtime</th><th>Branch</th><th>Process</th><th>Actions</th>
+    <th>Issue</th><th>Status</th><th>Project</th><th>Model</th><th>Runtime</th><th>Branch</th><th>Process</th><th>Actions</th>
   </tr></thead><tbody id="t-active"></tbody></table>
   <div class="empty" id="e-active" style="display:none">No active sessions</div>
 </section>
@@ -113,6 +115,14 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
   <table><thead><tr>
     <th>Issue</th><th>Runtime</th><th>Last Active</th><th>Error</th><th>Actions</th>
   </tr></thead><tbody id="t-stuck"></tbody></table>
+</section>
+
+<section id="s-fleet" style="display:none">
+  <h2>Fleet <span id="fleet-config-state" style="text-transform:none;letter-spacing:0"></span></h2>
+  <table><thead><tr>
+    <th>Project</th><th>Lead</th><th>Backend</th><th>Model</th><th>Online</th><th>Drift</th>
+  </tr></thead><tbody id="t-fleet"></tbody></table>
+  <div class="empty" id="e-fleet" style="display:none">No fleet data</div>
 </section>
 
 <div class="toast" id="toast"></div>
@@ -232,6 +242,58 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
     renderActive(data.active);
     renderRecent(data.recent);
     renderStuck(data.stuck);
+    renderFleet(data.fleet);
+  }
+
+  // FLY-247: fleet section — absent payload field keeps the section hidden
+  // (default-off gate: zero-config deployments never show it).
+  var FLEET_DOTS = {
+    'ONLINE': '\u{1F7E2}', 'PARTIAL': '\u{1F7E1}', 'DEGRADED': '\u{1F7E1}',
+    'DOWN': '\u{1F534}', 'CONFLICT': '\u{1F534}', 'CONFLICT-CARRIER': '\u{1F534}',
+    'EXTERNAL': '\u{26AA}'
+  };
+  function renderFleet(fleet) {
+    var section = document.getElementById('s-fleet');
+    if (!fleet || !fleet.leads) { section.style.display = 'none'; return; }
+    section.style.display = '';
+    setText('fleet-config-state', fleet.configState === 'live' ? '' : '(' + fleet.configState + ')');
+    var tbody = document.getElementById('t-fleet');
+    var empty = document.getElementById('e-fleet');
+    if (!fleet.leads.length) { tbody.textContent = ''; empty.style.display = ''; return; }
+    empty.style.display = 'none';
+    tbody.textContent = '';
+    fleet.leads.forEach(function(l) {
+      var tr = document.createElement('tr');
+      var dot = FLEET_DOTS[l.presentation] || '\u{26AA}';
+      var model = l.configured.model || '(default)';
+      if (l.configured.backend === 'codex-app-server') {
+        model = model + ' [configured]'; // never claimed active (FLY-242 owns codex runtime)
+      }
+      var driftTxt = '-';
+      var driftRed = false;
+      if (l.drift === null) {
+        driftTxt = 'n/a (external)';
+      } else if (l.drift.model || l.drift.backend) {
+        driftTxt = (l.drift.model ? 'model ' : '') + (l.drift.backend ? 'backend' : '');
+        driftRed = true;
+      }
+      var src = l.configured.source === 'legacy' ? ' [legacy:migrate]' : '';
+      appendCell(tr, l.project);
+      appendCell(tr, l.leadId + (l.companion ? ' (companion)' : '') + ' — Runner follow: not yet wired (Increment 2)');
+      appendCell(tr, l.configured.backend + src);
+      appendCell(tr, model);
+      appendCell(tr, dot + ' ' + l.presentation);
+      var td = document.createElement('td');
+      td.textContent = driftTxt;
+      if (driftRed) td.style.color = 'var(--red, #ff3b30)';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    });
+  }
+  function appendCell(tr, text) {
+    var td = document.createElement('td');
+    td.textContent = text;
+    tr.appendChild(td);
   }
 
   function renderActive(sessions) {
@@ -246,6 +308,7 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
         + issueCell(s)
         + '<td>' + statusBadge(s.status) + '</td>'
         + '<td>' + escapeHtml(s.project_name) + '</td>'
+        + '<td class="mono">' + escapeHtml(s.runner_model || '\\u2014') + '</td>'
         + '<td class="runtime" data-started="' + escapeHtml(s.started_at || '') + '">' + escapeHtml(formatRuntime(s.started_at)) + '</td>'
         + '<td class="mono truncate">' + escapeHtml(s.branch || '-') + '</td>'
         + '<td>' + tmuxTag(s) + '</td>'

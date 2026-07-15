@@ -5,6 +5,11 @@
  * Deploys as `target: "production"` so the site is publicly accessible.
  * Returns the production alias URL (not the deployment-specific URL)
  * because Vercel SSO Protection blocks deployment URLs on Hobby plan.
+ *
+ * FLY-203: the generic multi-file deploy (`deployFilesToVercel`) is shared
+ * by the remote report pipeline. `deployToVercel` keeps its exact GEO-294
+ * behavior (triage- prefix, single index.html, deterministic alias) on top
+ * of it — guarded by a reverse-compat sentinel test.
  */
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -16,13 +21,39 @@ export interface VercelDeployResult {
 	deploymentId: string;
 }
 
-/** Deploy a single HTML file to Vercel and return the public URL. */
-export async function deployToVercel(
+export interface VercelDeployFile {
+	/** Relative POSIX path inside the deployment (e.g. "r/<token>/index.html"). */
+	file: string;
+	data: string;
+}
+
+/**
+ * FLY-203: deploy a set of inline files to a Vercel project. The
+ * `deploymentName` is used AS-IS (no triage- prefix) and determines the
+ * `{name}.vercel.app` production alias.
+ */
+export async function deployFilesToVercel(
 	vercelToken: string,
-	projectName: string,
-	html: string,
+	deploymentName: string,
+	files: VercelDeployFile[],
 	timeoutMs: number = DEFAULT_TIMEOUT_MS,
-): Promise<VercelDeployResult> {
+): Promise<{ deploymentId: string }> {
+	if (files.length === 0) {
+		throw new Error("deployFilesToVercel: files must be non-empty");
+	}
+	for (const f of files) {
+		if (
+			f.file.length === 0 ||
+			f.file.startsWith("/") ||
+			f.file.includes("\\") ||
+			f.file.split("/").includes("..")
+		) {
+			throw new Error(
+				`deployFilesToVercel: invalid file path "${f.file}" — must be a relative POSIX path without ".." segments`,
+			);
+		}
+	}
+
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -34,15 +65,13 @@ export async function deployToVercel(
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify({
-				name: `triage-${projectName.toLowerCase()}`,
+				name: deploymentName,
 				target: "production",
-				files: [
-					{
-						file: "index.html",
-						data: html,
-						encoding: "utf-8",
-					},
-				],
+				files: files.map((f) => ({
+					file: f.file,
+					data: f.data,
+					encoding: "utf-8",
+				})),
 				projectSettings: {
 					framework: null,
 				},
@@ -68,17 +97,36 @@ export async function deployToVercel(
 			await waitForReady(vercelToken, data.id, controller.signal);
 		}
 
-		// Return the deterministic production URL ({name}.vercel.app).
-		// Vercel SSO Protection blocks deployment-specific URLs and team-scoped
-		// aliases, but the {name}.vercel.app domain is publicly accessible.
-		const name = `triage-${projectName.toLowerCase()}`;
-		return {
-			url: `https://${name}.vercel.app`,
-			deploymentId: data.id,
-		};
+		return { deploymentId: data.id };
 	} finally {
 		clearTimeout(timeout);
 	}
+}
+
+/** Deploy a single HTML file to Vercel and return the public URL. */
+export async function deployToVercel(
+	vercelToken: string,
+	projectName: string,
+	html: string,
+	timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<VercelDeployResult> {
+	// GEO-294 byte-compat: deployment name is `triage-{lowercased project}`
+	// and the deterministic `{name}.vercel.app` production alias is returned.
+	const name = `triage-${projectName.toLowerCase()}`;
+	const { deploymentId } = await deployFilesToVercel(
+		vercelToken,
+		name,
+		[{ file: "index.html", data: html }],
+		timeoutMs,
+	);
+
+	// Return the deterministic production URL ({name}.vercel.app).
+	// Vercel SSO Protection blocks deployment-specific URLs and team-scoped
+	// aliases, but the {name}.vercel.app domain is publicly accessible.
+	return {
+		url: `https://${name}.vercel.app`,
+		deploymentId,
+	};
 }
 
 async function waitForReady(

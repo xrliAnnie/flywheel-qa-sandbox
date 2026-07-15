@@ -4,15 +4,17 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve as pathResolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { AnthropicLLMClient } from "../../packages/claude-runner/dist/AnthropicLLMClient.js";
 import { TmuxAdapter } from "../../packages/claude-runner/dist/TmuxAdapter.js";
 import { ConfigLoader } from "../../packages/config/dist/ConfigLoader.js";
 import type { FlywheelConfig } from "../../packages/config/dist/types.js";
 import type { LLMClient } from "../../packages/core/dist/llm-client-types.js";
-import type { ClassifyFn } from "../../packages/edge-worker/dist/AgentDispatcher.js";
+// FLY-137 v1.27.2: ClassifyFn type removed (Haiku step dropped); AgentDispatcher
+// constructor now takes (agents, defaultAgent, flywheelRepoRoot) — no classifyFn.
 import { AgentDispatcher } from "../../packages/edge-worker/dist/AgentDispatcher.js";
 import { AuditLogger } from "../../packages/edge-worker/dist/AuditLogger.js";
 import { Blueprint } from "../../packages/edge-worker/dist/Blueprint.js";
@@ -467,55 +469,19 @@ export async function setupComponents(
 			}
 		}
 
-		// ── AgentDispatcher (v0.6) ──────────────────────────
-		let agentDispatcher: AgentDispatcher | undefined;
-		if (
-			flywheelConfig?.agents &&
-			Object.keys(flywheelConfig.agents).length > 0
-		) {
-			let classifyFn: ClassifyFn | undefined;
-			if (process.env.ANTHROPIC_API_KEY) {
-				const classifyClient = new AnthropicLLMClient();
-				classifyFn = async (title, description, agentNames, agentKeywords) => {
-					const keywordList = agentNames
-						.map((n) => `- ${n}: ${agentKeywords[n]?.join(", ") ?? ""}`)
-						.join("\n");
-					const prompt = [
-						`Classify this Linear issue into exactly one of these agent names: [${agentNames.join(", ")}].`,
-						"",
-						"Each agent handles these types of work:",
-						keywordList,
-						"",
-						"<issue_context>",
-						`Title: ${title}`,
-						`Description: ${description.slice(0, 500)}`,
-						"</issue_context>",
-						"",
-						"Reply with ONLY the agent name, nothing else.",
-					].join("\n");
-
-					const response = await classifyClient.chat({
-						model: "claude-haiku-4-5-20251001",
-						messages: [{ role: "user", content: prompt }],
-						max_tokens: 64,
-					});
-					const raw = response.content.trim();
-					// Case-insensitive match: agent keys may have mixed case
-					const matched = agentNames.find(
-						(n) => n.toLowerCase() === raw.toLowerCase(),
-					);
-					return matched ?? null;
-				};
-			}
-			agentDispatcher = new AgentDispatcher(
-				flywheelConfig.agents,
-				flywheelConfig.default_agent,
-				classifyFn,
-			);
-			log(
-				`AgentDispatcher: ${Object.keys(flywheelConfig.agents).length} agents configured`,
-			);
-		}
+		// ── AgentDispatcher (FLY-137 v1.27.2) ──────────────────────────
+		// Dispatcher always constructs (even with empty agents map) so the shipped
+		// `agents/generic-executor.md` fallback always wins step 3. Haiku classify
+		// step removed in v1.27.1 — dispatcher is fully deterministic.
+		const flywheelRepoRoot = resolveFlywheelRepoRootForSetup();
+		const agentDispatcher = new AgentDispatcher(
+			flywheelConfig?.agents ?? {},
+			flywheelConfig?.default_agent,
+			flywheelRepoRoot,
+		);
+		log(
+			`AgentDispatcher: ${Object.keys(flywheelConfig?.agents ?? {}).length} agents configured (+ shipped-generic fallback at ${flywheelRepoRoot}/agents/generic-executor.md)`,
+		);
 
 		// Hydrator
 		const hydrator = new PreHydrator(fetchIssue);
@@ -557,6 +523,8 @@ export async function setupComponents(
 			eventEmitter,
 			agentDispatcher,
 			flywheelConfig?.checkpoints, // FLY-47: checkpoint gate config
+			flywheelRepoRoot, // FLY-137 v1.27.2 (Codex Track A #1): Blueprint resolves shipped-generic
+			flywheelConfig?.doc_flow, // FLY-205: LAST param by contract (Codex design R2 #5)
 		);
 
 		return {
@@ -609,4 +577,36 @@ export async function teardownComponents(c: FlywheelComponents): Promise<void> {
 	}
 	await c.auditLogger.close();
 	log("AuditLogger closed");
+}
+
+/**
+ * FLY-137 v1.27.2: resolve Flywheel repo root for the scripts/run-issue.ts /
+ * scripts/run-project.ts CLI entrypoints. Mirrors `resolveFlywheelRepoRoot` in
+ * `packages/teamlead/src/bridge/run-infra.ts` (different module = inline copy
+ * to avoid a circular import; both helpers have identical behavior).
+ *
+ * Order: `FLYWHEEL_REPO_ROOT` env var → `import.meta.url`-derived path.
+ * Sanity-checks the sentinel `agents/generic-executor.md` (logged warning, NOT
+ * fail-fast — dispatcher will surface a clearer error at agent_file read time).
+ *
+ * From `scripts/lib/setup.ts` (TypeScript source) or `scripts/lib/setup.js` (built),
+ * 2 levels up = repo root.
+ */
+function resolveFlywheelRepoRootForSetup(): string {
+	const candidate =
+		process.env.FLYWHEEL_REPO_ROOT?.trim() ||
+		(() => {
+			const here = dirname(fileURLToPath(import.meta.url));
+			return pathResolve(here, "..", "..");
+		})();
+	const sentinel = join(candidate, "agents", "generic-executor.md");
+	if (!existsSync(sentinel)) {
+		log(
+			`WARNING: FLYWHEEL_REPO_ROOT resolved to "${candidate}" but sentinel "${sentinel}" not found. ` +
+				`AgentDispatcher shipped-generic fallback will fail at dispatch.`,
+		);
+	} else {
+		log(`FLYWHEEL_REPO_ROOT="${candidate}" (sentinel found)`);
+	}
+	return candidate;
 }

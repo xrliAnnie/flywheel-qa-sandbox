@@ -1,0 +1,11 @@
+{
+	"marker": "[QA-FLY1234-c-1784012934303]",
+	"postedMessageId": "1526485634120683622",
+	"renderedText": "[Event #1] session_stuck\nID: qa1234-c | Issue: FLY-1234-QA-E2E\nTitle: FLY-1234 QA E2E — case (c) static pane, no corroboration\nStatus: running\nConfirm-Note: judge_suspicious: static frames and judge could not conclude\nTimestamp: 2026-07-14T07:08:54.303Z | Session Key: qa1234-c",
+	"readback": {
+		"id": "1526485634120683622",
+		"content": "[QA-FLY1234-c-1784012934303]\n[Event #1] session_stuck\nID: qa1234-c | Issue: FLY-1234-QA-E2E\nTitle: FLY-1234 QA E2E — case (c) static pane, no corroboration\nStatus: running\nConfirm-Note: judge_suspicious: static frames and judge could not conclude\nTimestamp: 2026-07-14T07:08:54.303Z | Session Key: qa1234-c",
+		"timestamp": "2026-07-14T07:08:55.906000+00:00",
+		"containsConfirmNoteLine": true
+	}
+}

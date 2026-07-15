@@ -6,6 +6,16 @@ on:
   pull_request:
     branches: [main]
 
+# FLY-350 (Z) R3-2: pin the GITHUB_TOKEN to the LEAST privilege CI needs
+# (read the repo to build/test — nothing else). Without an explicit block a
+# pull_request run gets the repo-DEFAULT token scope, which can include write
+# / issues / pull-requests — an INDIRECT action channel a model-authored PR
+# (opened via the gateway) could ride to comment / dispatch / merge, bypassing
+# the structural "Mufasa cannot :cool:" guarantee. default-deny + contents:read
+# closes it. (The `:cool:` ship workflow's own scope is FLY-367.)
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -14,7 +24,13 @@ jobs:
   build-and-test:
     name: Build & Test
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # FLY-889: 10 → 20. The suite runs ~750s (the single `Test` step alone is
+    # 446-467s, dominated by the teamlead package's 349 test files sitting last
+    # in the pnpm workspace topo order). 10min gave near-zero headroom, so ~half
+    # of non-superseded runs hit the wall and were force-cancelled — NOT a test
+    # failure, and it masks real failures (see FLY-882). 20min gives ~60%+
+    # headroom without shaving the suite itself (that's FLY-889-B, a follow-up).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -47,3 +63,269 @@ jobs:
 
       - name: Test
         run: pnpm test:packages:run
+
+      # FLY-889: tmux/lsof/sqlite3 are each needed by a later hermetic test step
+      # (cmux-sync / FLY-183 orphan-reaper / FLY-697 codex-log-guard). Installing
+      # all three here in one apt-get avoids repeating `apt-get update` three
+      # times for the same effect.
+      - name: Install tmux/lsof/sqlite3 for hermetic test scripts
+        run: sudo apt-get update && sudo apt-get install -y tmux lsof sqlite3
+
+      # FLY-110: cmux-sync hook integration test runs against an isolated
+      # tmux server (custom -L socket name) so it cannot interfere with
+      # other CI processes. Verifies the production-critical cleanup path:
+      # pane-died (global hook) fires when a remain-on-exit pane process
+      # exits — the bug that left cmux sidebar entries hanging for 5+
+      # minutes in production until FLY-110.
+      - name: Integration test — cmux-sync hooks
+        run: bash scripts/test-cmux-sync-hooks-integration.sh
+
+      # FLY-183: Discord adapter orphan reaper tests. Hermetic — the reaper's
+      # process-table source is injected (FLY183_PS_OVERRIDE) and all spawned
+      # processes are test-owned, so this never touches a real adapter. lsof is
+      # needed for the cwd-probe / identity-label cases (T3/T4).
+      - name: Test — Discord adapter orphan reaper (FLY-183)
+        run: bash packages/teamlead/scripts/__tests__/adapter-reap.test.sh
+
+      # FLY-519: fleet provisioning toolchain — hermetic tests for the secret
+      # sanitizer, capture, and provision scripts, PLUS the zero-secret gate at
+      # the git boundary. `scan_for_secrets fleet/` fails CI if the committed
+      # fleet/ artifact ever contains secret-like content (e.g. a hand-edited
+      # artifact bypassing fleet-capture.sh's own gate — Codex design-review).
+      - name: Test — FLY-519 fleet provisioning + zero-secret gate
+        run: |
+          bash scripts/__tests__/fleet-sanitize.test.sh
+          bash scripts/__tests__/fleet-capture.test.sh
+          bash scripts/__tests__/provision-fleet-host.test.sh
+          bash -c 'source scripts/lib/fleet-sanitize.sh; scan_for_secrets fleet/'
+
+      # FLY-648: one-command setup wizard (flywheel-setup.sh). Hermetic —
+      # fixture HOMEs + stubbed curl/systemctl/loginctl + guided inputs via
+      # the FLYWHEEL_SETUP_ANSWER_* automation seam. Needs the built teamlead
+      # dist (pnpm build above): the config gate runs the REAL loader
+      # (validate-projects CLI), and the POC drives the real provisioner's
+      # Linux APPLY path end-to-end + the linux-preflight --check contract.
+      - name: Test — FLY-648 one-command setup wizard
+        run: |
+          bash scripts/__tests__/flywheel-setup-engine.test.sh
+          bash scripts/__tests__/flywheel-setup-config.test.sh
+          bash scripts/__tests__/flywheel-setup-bot.test.sh
+          bash scripts/__tests__/flywheel-setup-channels.test.sh
+          bash scripts/__tests__/flywheel-setup-linear.test.sh
+          bash scripts/__tests__/flywheel-setup-services.test.sh
+          bash scripts/__tests__/flywheel-setup-poc.test.sh
+          bash scripts/__tests__/flywheel-setup-resume-e2e.test.sh
+
+      # FLY-1023: Buddy onboarding — step CLI over the unchanged wizard
+      # (journal v2, stdout discipline, secret-injection refusal) + the
+      # AgentCliProvider contract. Hermetic — same stub infrastructure as the
+      # FLY-648 suite; needs the built teamlead dist (real-loader gate).
+      - name: Test — FLY-1023 Buddy onboarding (step CLI + provider contract)
+        run: |
+          bash scripts/__tests__/flywheel-buddy-steps.test.sh
+          bash scripts/__tests__/agent-cli-provider-contract.test.sh
+          bash scripts/__tests__/flywheel-onboard.test.sh
+          bash scripts/__tests__/flywheel-buddy.test.sh
+          bash scripts/__tests__/flywheel-buddy-github.test.sh
+          bash scripts/__tests__/flywheel-buddy-captain.test.sh
+          bash scripts/__tests__/flywheel-buddy-connect.test.sh
+          bash scripts/__tests__/buddy-escalate.test.sh
+
+      # FLY-1189: 529-Room multi-Lead campaign harness — hermetic suite over
+      # scripts/lib/qa-multilead.sh + the test-deploy/test-teardown wiring:
+      # byte-compat baselines (FLYWHEEL_PROJECTS builder + canonical
+      # config.yaml), campaign-arg validation, atomic slot-set claim/rollback,
+      # borrowed-lock anti-reclaim, manifest-driven extra-Lead teardown, and
+      # the secret-free launch manifest. Temp lockroots + sandboxed HOME +
+      # stubbed tmux — never touches a real slot.
+      - name: Test — FLY-1189 multi-Lead campaign harness
+        run: bash scripts/__tests__/test-deploy-multilead.test.sh
+
+      # FLY-1189: fault injector S1 SAFETY LOCK — the anchor rejection matrix
+      # (execId/tmux/path anchors + prod denylist + prefix-collision + symlink
+      # escape + TOCTOU start-time/inode drift + restore direction lock +
+      # all-in-safe-root journal invariant). Every rejection path must exit
+      # non-zero with ZERO actions performed — this is what keeps a mis-fired
+      # SIGSTOP/mv off the 19 live production runners. Fully hermetic
+      # (descriptor fixtures + action sink; never touches a real process).
+      - name: Test — FLY-1189 fault injector safety lock
+        run: bash scripts/__tests__/qa-fly-1189-fault-inject.test.sh
+
+      # FLY-1189: assertion library (episode/thread/founder-page/lead-event/
+      # no-cross keyed on the real detection schema + evidence persistence to
+      # the campaign root) and the scenario driver's TRAP-OWNER contract — a
+      # SIGINT'd driver must call the injector's recover-from-journal (real
+      # signal, stub injector). Hermetic (fixture sqlite + recorded Discord
+      # JSON + stub injector); the assert suite self-skips if sqlite3 is absent.
+      - name: Test — FLY-1189 assert library + driver trap owner
+        run: |
+          bash scripts/__tests__/qa-fly-1189-assert.test.sh
+          bash scripts/__tests__/qa-fly-1189-driver.test.sh
+
+      # FLY-1062: npm distribution layer — hermetic suites: the packaging
+      # pipeline over a fixture mini-monorepo (assembly / dependency union /
+      # release gates with injection negatives / compat mirror / audit-table
+      # closure), every packaged-mode runtime seam BOTH sides (packaged path +
+      # verbatim-monorepo reverse-compat sentinel), and the P2 prebuilt
+      # provisioning / setup-artifact branches. Needs the built dist +
+      # node_modules/typescript (pnpm build above).
+      - name: Test — FLY-1062 packaging pipeline + packaged-mode seams
+        run: |
+          bash scripts/__tests__/package-onboard.test.sh
+          bash scripts/__tests__/packaged-seams.test.sh
+          bash scripts/__tests__/packaged-restart.test.sh
+          bash scripts/__tests__/gate4-allowlist-masking.test.sh
+          bash scripts/__tests__/gate4-forms-probe.test.sh
+          bash scripts/__tests__/setup-prebuilt.test.sh
+          bash scripts/__tests__/provision-prebuilt.test.sh
+
+      # FLY-1062: the REAL npm full chain on the real repo — pack (gated) →
+      # npm install --prefix (registry fetch for the dependency union) →
+      # compat mirror → bare-import matrix → better-sqlite3 native load →
+      # packaged Bridge serves /health → Lead launcher dry-run. "Installs ≠
+      # boots" is the acceptance bar; SLOW + network.
+      - name: Test — FLY-1062 payload real-install smoke
+        run: bash scripts/__tests__/package-onboard-smoke.test.sh
+
+      # FLY-1062 PR2: public onboard-shell (@flywheel/onboard). Hermetic — a
+      # stub gated endpoint on loopback + a fixture zero-dep payload tarball +
+      # REAL npm install. Covers the full customer install chain, failure
+      # paths (zero half-baked), key rotation + update seam, the key-leak
+      # matrix, and the shell's own publish content gate. The qa-gaps suite is
+      # the QA-phase regression net for the three untested edges (protocol-error
+      # message routing, degraded update rollback, persistKey symlink refusal).
+      - name: Test — FLY-1062 PR2 onboard-shell
+        run: |
+          bash packages/onboard-shell/__tests__/onboard-shell-install.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-rotation.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-secret.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-publish-gate.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-qa-gaps.test.sh
+
+      # FLY-882: Discord bot token pool — hermetic (stub curl, fixture
+      # DISCORD_BOT_POOL_HOME, no real ~/.flywheel touched, no real network).
+      - name: Test — FLY-882 Discord bot token pool
+        run: bash scripts/__tests__/discord-bot-pool.test.sh
+
+      # FLY-513: global-codex repoint apply-path (hermetic — fake HOME + fake
+      # source release + mock codex on PATH; never touches the real global symlink).
+      - name: Test — FLY-513 global-codex repoint apply-path
+        run: bash packages/teamlead/scripts/__tests__/fly-513-repoint.test.sh
+
+      # FLY-697: Codex TRACE-log SSD-wear guard. Hermetic — runs against a
+      # throwaway sqlite DB and shims lsof/osascript via PATH, so it never
+      # touches a real ~/.codex/logs_2.sqlite. Needs the sqlite3 CLI.
+      - name: Test — FLY-697 codex-log-guard
+        run: bash scripts/__tests__/codex-log-guard.test.sh
+
+      # FLY-1018: gemini-agent static guard. Pure grep assertions over
+      # packages/gemini-agent/src — zero reserved endpoints, zero forbidden
+      # imports, zero privileged credentials, exactly 6 tool declarations.
+      # Widening the agent's surface must be an explicit, reviewable act.
+      - name: Test — FLY-1018 gemini-agent guard
+        run: bash scripts/gemini-agent-guard.sh
+
+      # FLY-880: internal PM agent role .md contract guard. Pure text assertions
+      # (no external deps) — defends the 40k injection-truncation red line and the
+      # product-co-creation (mode A) + inherited docs/design (mode B) anchors
+      # against silent regression.
+      - name: Test — FLY-880 PM executor role contract
+        run: bash scripts/__tests__/test-pm-executor-contract.sh
+
+      # FLY-913: restart-guard deployment guardrail. Hermetic — the hook runs
+      # against stdin JSON fixtures with the alert seam stubbed (plus one
+      # integration case through the REAL lead-alert.sh with a fake curl); the
+      # install matrix runs against fake HOMEs; the strict-delivery matrix uses
+      # isolated FLYWHEEL_* dirs. Needs jq/sqlite3 (installed above) + python3.
+      - name: Test — FLY-913 restart-guard hook + install + strict-delivery
+        run: |
+          python3 scripts/hooks/test-flywheel-restart-guard.py
+          bash scripts/hooks/test-restart-guard-install.sh
+          bash scripts/__tests__/lead-alert-strict-delivery.test.sh
+
+      # FLY-927: infra-alert shell path (lead-alert.sh unified-channel/sender/
+      # rate/schema alignment, external-kind hygiene, bridge-wrapper fail-loud
+      # re-route). Hermetic — stub curl via PATH, isolated FLYWHEEL_* dirs, no
+      # real network or ~/.flywheel touched. Same tool set as strict-delivery
+      # above (jq/sqlite3/shasum), so CI already has the deps.
+      - name: Test — FLY-927 infra-alert shell path
+        run: |
+          bash scripts/__tests__/lead-alert-fly927.test.sh
+          bash scripts/__tests__/lead-alert-external-kind.test.sh
+          bash scripts/__tests__/bridge-wrapper-fail-loud.test.sh
+
+      # FLY-957: record_deployed_range must never kill deploy finalization.
+      # Hermetic — extracts the function from restart-services.sh, runs it under
+      # set -euo pipefail against a throwaway git repo + a PATH-shim node; no
+      # real ~/.flywheel, no network.
+      - name: Test — FLY-957 record_deployed_range best-effort
+        run: bash scripts/__tests__/restart-deployed-range.test.sh
+
+      # FLY-1081: restart/update/wrapper notify-path migration off Simba —
+      # ⚠️/🚨 route via lead-alert.sh (sender seam, no legacy fallback), the
+      # routine path fail-louds instead of falling back, and a grep-zero
+      # sentinel blocks Simba-token / fallback-chain re-introduction. Hermetic —
+      # extracted real functions + fake lead-alert/curl/meta-alert, sandboxed
+      # dirs, no network. update-flywheel-queue.test.sh predates this issue but
+      # was never wired into CI — adopted here (same dep set: jq/sqlite3/git).
+      - name: Test — FLY-1081 notify-path migration
+        run: |
+          bash scripts/__tests__/restart-notify-routine.test.sh
+          bash scripts/__tests__/restart-services-notify.test.sh
+          bash scripts/__tests__/update-flywheel-queue.test.sh
+          bash scripts/__tests__/simba-grep-zero.test.sh
+          # QA (three-stage): drives the REAL lead-alert.sh in the production
+          # --lead deploy call form — infra identity used, no Simba fallback.
+          bash scripts/__tests__/qa-fly1081-notify-identity.test.sh
+
+  # FLY-1062 PR3/PR4: the gated distribution layer — ISOLATED job (the
+  # build-and-test job above is byte-untouched). Hermetic: the pure endpoint
+  # handler + its in-process serve shell + the release/ops scripts + the PR2
+  # contract-consistency rerun + the workflow structure lint. Zero wrangler,
+  # zero vendor credentials, zero network beyond loopback.
+  payload-distribution:
+    name: FLY-1062 payload distribution (endpoint + release pipeline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      # only the version-injection sentinel needs node_modules (typescript for
+      # the run-bridge transpile inside the fixture packer)
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Endpoint handler unit tests (validator / views / transitions / lifecycle)
+        run: node --test packages/payload-endpoint/__tests__/*.test.mjs
+
+      - name: PO_RELEASE_VERSION injection sentinel (default path byte-stable)
+        run: bash scripts/__tests__/package-onboard-version-injection.test.sh
+
+      - name: Contract consistency — PR2 shell suites vs the REAL handler
+        run: bash packages/payload-endpoint/__tests__/contract-consistency.test.sh
+
+      - name: License key + retention cleanup scripts
+        run: bash scripts/__tests__/payload-key-cleanup.test.sh
+
+      - name: Release pipeline (beta line + two-stage promote + withdraw)
+        run: bash scripts/__tests__/payload-release-pipeline.test.sh
+
+      - name: Release workflow structure lint (founder-gate contract)
+        run: bash scripts/__tests__/release-workflows-structure.test.sh
+
+      - name: Publish broker structure lint (zero-build commit + token scrub + default-off)
+        run: bash scripts/__tests__/publish-broker-structure.test.sh
+
+      - name: Shell packaging verification (pack + install + publish --dry-run)
+        run: bash scripts/__tests__/shell-pack-install-dryrun.test.sh
+
+      - name: Customer E2E acceptance (real endpoint + real release scripts + tarball-installed shell)
+        run: bash scripts/__tests__/customer-e2e-acceptance.test.sh

@@ -1,0 +1,57 @@
+═══════════════════════════════════════════════════════════════
+FLY-1185 REAL-MACHINE LIFECYCLE QA — #564 built dist vs real objects
+═══════════════════════════════════════════════════════════════
+
+SCENARIO A — issue-terminal closeout (disposition=canceled)
+  real tmux window + real StateStore FSM, from dist lifecycle-closeout.js
+
+can't find session: fly1185qa
+  BEFORE: tmux windows in fly1185qa = [keeper, runner]
+  BEFORE: session e1 status = running
+  AFTER : tmux windows in fly1185qa = [keeper]
+  AFTER : session e1 status = terminated
+  closeout outcome = complete; call order = [teardown:kill-window → archiveThreads → linearConsistency]
+  node e1: transition={"state":"done","detail":"running→terminated"}, confirmedGone=true
+
+  OBSERVED RESULTS:
+  ✅ ③ runner session FSM → terminated (not completed) — status=terminated
+  ✅ ③ FSM transition legal (canceled→terminated, no forceStatus)
+  ✅ ④ real tmux window physically recycled — runner window gone from tmux list-windows
+  ✅ ④ closeout confirmed-gone via FRESH liveness probe
+  ✅ ⑤+⑥ thread archive + Linear ran AFTER node confirmed gone
+  ✅ ⑥ Linear consistency ran LAST (DAG edge #4)
+  ✅ closeout outcome = complete
+
+SCENARIO B — periodic sweep (兜底) removes a real leftover owned worktree
+  real git repo + bare origin + real worktree, from dist lifecycle-sweep.js
+
+  BEFORE: worktree dir exists = true (/Users/xiaorongli/.flywheel/runner-state/cc21f3f5-8b09-48ab-98fa-b262c4e2dfd7/browser-tmp/fly1185-qa-HiaS8E/repo-FLY-10)
+  BEFORE: local branch present = true (repo-FLY-10)
+  BEFORE: remote branch present = true
+  AFTER : worktree dir exists = false
+  AFTER : local branch present = false
+  AFTER : remote branch present = true
+  sweep entry: action=deleted, family=clean_merged
+  sweep remote-branch entries: []
+
+  OBSERVED RESULTS:
+  ✅ ② worktree directory physically removed — /Users/xiaorongli/.flywheel/runner-state/cc21f3f5-8b09-48ab-98fa-b262c4e2dfd7/browser-tmp/fly1185-qa-HiaS8E/repo-FLY-10 gone
+  ✅ ① local branch deleted (git branch --list empty) — repo-FLY-10
+  ✅ sweep classified it deleted/clean_merged
+  ℹ️  ① remote branch after sweep present=true (periodic remote pass observation — see report)
+
+SCENARIO C — real remote-branch lease-CAS delete (item ① remote / 304 远端分支)
+  real bare origin + real branch, from dist branch-cleanup.js
+
+  BEFORE: remote branch repo-FLY-99 present = true
+  AFTER : remote branch repo-FLY-99 present = false
+  delete outcome = {"deleted":true,"sha":"fc06301dd9a580f6a5118980f725323401549410"}
+
+  OBSERVED RESULTS:
+  ✅ ① remote branch physically deleted (lease-CAS) — git ls-remote empty after
+  ✅ ① delete primitive reported deleted:true
+  ✅ ① stale-lease REFUSES delete (remote moved → not deleted) — reason=remote_moved
+
+═══════════════════════════════════════════════════════════════
+RESULT: 13 PASS / 0 FAIL (real observed evidence, #564 dist)
+═══════════════════════════════════════════════════════════════

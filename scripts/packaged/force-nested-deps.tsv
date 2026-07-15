@@ -1,0 +1,19 @@
+# FLY-1062: FORCE-NESTED vendored dependencies.
+# Format: <packages/-dir>	<dep>	<reason>
+#
+# The dependency-union exceptions table only sees DECLARED-range conflicts
+# between workspace packages. This table covers install-time conflicts the
+# union cannot see: another dependency's peer/transitive requirement wins the
+# flat top-level slot at the customer prefix, npm plans a nested copy for the
+# payload — and cannot reify it inside the bundled tree (observed empirically:
+# the planned dir is created EMPTY, which then terminates ESM walk-up and
+# shadows the flat copy). Registered rows vendor the declarer's own resolved
+# closure (pnpm-store realpath) under vendor/<npm-name>/; the compat-mirror
+# step copies it into the package's own node_modules at install time, where
+# nearest-wins resolution keeps the package on its true version.
+#
+# @anthropic-ai/sdk: mem0ai declares peerDependencies @anthropic-ai/sdk ^0.40.1;
+# npm auto-installs peers and gives 0.40.1 the top-level slot, while
+# claude-runner (and its dependents teamlead/edge-worker) need their resolved
+# ^0.77 — verified by the real-install smoke (package-onboard-smoke.test.sh).
+claude-runner	@anthropic-ai/sdk	mem0ai peer ^0.40.1 wins the flat slot; claude-runner needs its own resolved ^0.77

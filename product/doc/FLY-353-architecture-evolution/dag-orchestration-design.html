@@ -1,0 +1,358 @@
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-353 · 主动 DAG 编排 — 设计 co-eval v7</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--navy:#1a365d;
+  --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,system-ui,"SF Pro Text",Segoe UI,Roboto,sans-serif;line-height:1.6;-webkit-text-size-adjust:100%}
+.wrap{max-width:960px;margin:0 auto;padding:20px 16px 90px}
+h1{font-size:24px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:14px;margin:0 0 4px}
+.pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;background:#eef;color:var(--navy);margin:6px 6px 0 0}
+.pill.cand{background:#f3e9fb;color:#7a2fb0}
+.note{background:#fff;border:1px solid var(--line);border-left:4px solid var(--amber);border-radius:12px;padding:12px 14px;margin:16px 0;font-size:14px;color:#5a4a20}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.card.blue{border-left:4px solid var(--blue)}.card.green{border-left:4px solid var(--green)}
+.card.purple{border-left:4px solid var(--purple)}.card.red{border-left:4px solid var(--red)}
+.card.amber{border-left:4px solid var(--amber)}.card.gray{border-left:4px solid var(--dim)}
+h2{font-size:20px;margin:32px 0 6px;letter-spacing:-.01em}
+h3{font-size:16px;margin:2px 0 8px}
+.secnum{color:var(--dim);font-variant-numeric:tabular-nums}
+p{margin:8px 0}ul{margin:8px 0 8px 2px;padding-left:20px}li{margin:4px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.86em;background:#f0f0f4;padding:1px 5px;border-radius:5px}
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:6px;vertical-align:middle}
+.tag.unk{background:#ececef;color:#6a6a70}.tag.new{background:#e7f0ff;color:#1a5fb4}.tag.have{background:#e3f9ea;color:#1a7a3c}
+.k{color:var(--navy);font-weight:600}
+.src{font-size:12px;color:var(--dim);margin-top:8px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:10px 0}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:13.5px}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:#fafafd;font-weight:600}
+.you{background:#fff8e6;border:1px solid #ffe0a3;border-radius:10px;padding:8px 11px;margin:10px 0;font-size:13.5px}
+.svgwrap{width:100%;overflow-x:auto;margin:10px 0}
+svg{max-width:100%;height:auto;display:block;margin:0 auto}
+.cmt{margin:10px 0 4px;background:#fbfbfd;border:1px dashed #d6d6de;border-radius:10px;padding:8px 10px}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+.cmt textarea{width:100%;min-height:52px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;color:var(--ink);background:#fff;resize:vertical}
+.cmt textarea:focus{outline:2px solid var(--blue);outline-offset:1px;border-color:transparent}
+.bar{position:sticky;bottom:0;margin-top:26px;background:rgba(245,245,247,.92);backdrop-filter:saturate(180%) blur(8px);border-top:1px solid var(--line);padding:10px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+button{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:10px;padding:9px 16px;cursor:pointer}
+button.primary{background:var(--blue);color:#fff}button.ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}
+.hint{color:var(--dim);font-size:12.5px}
+dialog{border:none;border-radius:14px;padding:0;max-width:680px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+dialog::backdrop{background:rgba(0,0,0,.35)}
+.dlg{padding:18px 20px}.dlg h3{margin-top:0}
+.dlg textarea{width:100%;min-height:240px;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px}
+</style>
+</head>
+<div class="wrap">
+<header>
+  <h1>主动 DAG 编排 —— 设计 co-eval v7</h1>
+  <p class="sub">FLY-353 · 2026-07-08 · v7 折入你 v6 批注:统一叫 CoS · §6 每 6h 扫+补齐 capacity · 🎓 学习机制=另开 issue;核心仍 轻模板+强治理,353=第二层治理引擎</p>
+  <div><span class="pill cand">设计草案 · 逐节留言</span><span class="pill">你确认 OK → 才写 PRD</span></div>
+</header>
+
+<div class="note">
+  <b>v5 折了什么(照你这几轮 co-eval):</b> ① 你担心的「把简单的事复杂化 / 固定模板限制越来越强的模型」→ 见 §1
+  <b>轻模板 + 强治理</b> framing(模板是轻的、可覆盖的默认,不束缚模型推理;DAG 真正的价值是治理);
+  ② 两层拆两 PRD —— <b>353 只聚焦第二层「治理引擎」</b>,第一层「轻模板」另开 issue(但两层的样子在这讲清、不丢);
+  ③ 依赖更轻(多靠 Lead/PM,可能一开始就没有);④ 频次 / cron / Discord 面板 / 引擎重删 / 4 护栏。
+  每小节下留言框,底部「复制批注」;每版从空白开始。<span class="tag unk">UNKNOWN</span> = 查不到实证、没瞎编。
+</div>
+
+<!-- 1 -->
+<h2><span class="secnum">1 ·</span> 核心 framing:轻模板 + 强治理(回应你的担心)</h2>
+<div class="card purple">
+  <div class="you"><b>你问:</b>「是不是把简单的事情复杂化了?固定模板会不会限制越来越强的模型?」—— 这个担心很对,v5 直接回应:</div>
+  <p><b>我们<u>不</u>束缚模型「怎么想」;我们提供的是<u>治理 + 编排</u>。</b>拆成两句:</p>
+  <ul>
+    <li><span class="k">模板 = 轻的、可覆盖的<u>默认起手式</u>,不是死模板 / 紧身衣。</span> 给一个「这类活一般这么起手」的默认(如 eng 常走设计→实现→QA),但<b>模型可以偏离</b> —— 简单的自己一步跑完、复杂的自己多绕几步。<b>模型越强,越能在模板之上自由发挥;模板不锁死它每一步。</b></li>
+    <li><span class="k">DAG 真正不可替代的价值 = 治理,不是限制思考。</span> 分诊(该不该做/派给谁)· founder gate(合入你点头)· 随时接管/叫停 · 成本控制(贵模型只用在难步骤)—— 这些是<b>控制 / 信任 / 成本</b>的需求,<b>模型再强都还要</b>。它们管的是「派什么、谁批、花多少」,不是「模型该怎么推理」。</li>
+  </ul>
+  <p class="hint">一句话:<b>轻模板(不锁模型)+ 强治理(可控可信可省钱)。</b>越强的模型越受益于「少束缚 + 有治理」,而不是被固定流程捆住。</p>
+</div>
+<div class="cmt"><label>💬 对「轻模板 + 强治理」framing 的留言(这回应了你的担心吗?)</label><textarea data-k="framing" data-label="1 · 轻模板+强治理 framing"></textarea></div>
+
+<!-- 2 -->
+<h2><span class="secnum">2 ·</span> 全景架构图(353 = 第二层治理引擎)</h2>
+<div class="card blue">
+  <p>下面这张图:<b>浅紫 = 353 要建的第二层「治理引擎」;虚线灰 = 第一层「轻模板」(另开 issue,这里只示意)</b>。</p>
+  <div class="svgwrap">
+  <svg viewBox="0 0 640 620" role="img" aria-label="主动 DAG 编排架构图" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+        <path d="M0,0 L7,3 L0,6 z" fill="#86868b"/>
+      </marker>
+    </defs>
+    <style>
+      .b{fill:#fff;stroke:#c9c9d2;stroke-width:1.5;rx:10}
+      .t{font:13px -apple-system,system-ui,sans-serif;fill:#1d1d1f}
+      .tb{font:600 13px -apple-system,system-ui,sans-serif;fill:#1a365d}
+      .ts{font:11px -apple-system,system-ui,sans-serif;fill:#86868b}
+      .ln{stroke:#86868b;stroke-width:1.6;fill:none}
+    </style>
+    <!-- founder -->
+    <rect x="180" y="14" width="280" height="46" rx="10" fill="#fff8e6" stroke="#ffcf7a" stroke-width="1.5"/>
+    <text x="320" y="34" text-anchor="middle" class="tb">你 / founder</text>
+    <text x="320" y="50" text-anchor="middle" class="ts">只列大方向:开 issue + 偶尔标个大依赖(A→B)</text>
+    <line x1="320" y1="60" x2="320" y2="86" class="ln" marker-end="url(#ah)"/>
+
+    <!-- Layer 2 engine box -->
+    <rect x="24" y="90" width="592" height="286" rx="14" fill="#faf5ff" stroke="#c9a3e6" stroke-width="1.6"/>
+    <text x="40" y="110" class="tb" fill="#7a2fb0">第二层 · 353 治理引擎(本 issue 要建)</text>
+
+    <rect x="150" y="122" width="340" height="52" rx="10" fill="#fff" stroke="#c9a3e6" stroke-width="1.5"/>
+    <text x="320" y="142" text-anchor="middle" class="tb">🧠 CoS分诊(LLM)</text>
+    <text x="320" y="160" text-anchor="middle" class="ts">判:还相关吗?派给谁?何时?更 proactive?→ 产「决策」</text>
+    <line x1="320" y1="174" x2="320" y2="196" class="ln" marker-end="url(#ah)"/>
+
+    <rect x="120" y="200" width="400" height="52" rx="10" fill="#fff" stroke="#c9a3e6" stroke-width="1.5"/>
+    <text x="320" y="220" text-anchor="middle" class="tb">受控执行层 + department 校验 → 自动派发</text>
+    <text x="320" y="238" text-anchor="middle" class="ts">CoS 产决策 ≠ spawn 权;spawn 由受控层做、仍校验 label/dept/lead</text>
+    <line x1="320" y1="252" x2="320" y2="274" class="ln" marker-end="url(#ah)"/>
+
+    <rect x="150" y="278" width="340" height="40" rx="10" fill="#fff" stroke="#c9a3e6" stroke-width="1.5"/>
+    <text x="320" y="302" text-anchor="middle" class="t">按依赖自动派 Runner(有标依赖尊重 · 没标并行/按到达序)</text>
+
+    <text x="40" y="344" class="ts">护栏(贯穿):默认 off / kill switch · 随时接管叫停 · 失败→升级给人 · Discord 面板</text>
+    <text x="40" y="362" class="ts">频次:事件驱动(新 issue 即分诊)+ 每天周期扫 · cron = 引擎里的定时节点</text>
+
+    <line x1="320" y1="376" x2="320" y2="402" class="ln" marker-end="url(#ah)"/>
+
+    <!-- Layer 1 template (dashed, separate) -->
+    <rect x="40" y="406" width="560" height="86" rx="12" fill="#fbfbfd" stroke="#b8b8c2" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <text x="56" y="426" class="tb" fill="#6a6a70">第一层 · 轻模板(另开 issue;此处示意)</text>
+    <text x="56" y="446" class="ts">一个 issue 内部怎么跑 = 一套轻/可覆盖的默认模板(模型可偏离):</text>
+    <text x="56" y="464" class="t">eng = 设计→实现→QA(其一,不是唯一)· product = 更短(1-2 节点)· 每类各一套</text>
+    <text x="56" y="482" class="ts">节点级:profile(节点绑模型,已有 three-stage)· inject/fork = 后续</text>
+    <line x1="320" y1="492" x2="320" y2="516" class="ln" marker-end="url(#ah)"/>
+
+    <!-- Runner run -->
+    <rect x="120" y="520" width="400" height="48" rx="10" fill="#fff" stroke="#c9c9d2" stroke-width="1.5"/>
+    <text x="320" y="540" text-anchor="middle" class="tb">Runner 跑 —— 判断在 run 里</text>
+    <text x="320" y="557" text-anchor="middle" class="ts">简单 → 自己跑完 · 复杂 → 现有 brainstorm gate 跑中拉你/Lead</text>
+    <line x1="320" y1="568" x2="320" y2="588" class="ln" marker-end="url(#ah)"/>
+
+    <!-- ship gate -->
+    <rect x="200" y="592" width="240" height="24" rx="8" fill="#fff8e6" stroke="#ffcf7a" stroke-width="1.5"/>
+    <text x="320" y="608" text-anchor="middle" class="tb">🔒 founder gate:ship 永远你点头</text>
+  </svg>
+  </div>
+</div>
+<div class="cmt"><label>💬 对全景架构图的留言(这张图对吗?)</label><textarea data-k="arch" data-label="2 · 全景架构图 inline SVG"></textarea></div>
+
+<!-- 2.5 毕业曲线 -->
+<h2><span class="secnum">🎓 ·</span> 怎么走到全自动:早会学偏好 → 全自动 DAG(毕业曲线)</h2>
+<div class="card purple">
+  <div class="you"><b>你 v5 结尾提到的「协调 / 我们做完那个语音…」= 早会。</b>接上:全自动不是一步到位,是<b>一条毕业曲线</b> —— 近期靠<b>早会</b>让 CoS 学你的偏好,学够了就越来越自主,早会越来越短,终点全自动。</div>
+  <div class="svgwrap">
+  <svg viewBox="0 0 640 230" role="img" aria-label="渐进自治毕业曲线" xmlns="http://www.w3.org/2000/svg">
+    <style>
+      .gt{font:600 13px -apple-system,system-ui,sans-serif;fill:#1a365d}
+      .gs{font:11px -apple-system,system-ui,sans-serif;fill:#86868b}
+      .gl{stroke:#c9a3e6;stroke-width:2;fill:none}
+    </style>
+    <line x1="40" y1="150" x2="600" y2="60" class="gl" stroke-dasharray="0"/>
+    <text x="24" y="200" class="gs">近期</text>
+    <text x="300" y="212" text-anchor="middle" class="gs">CoS 自主度 ↑ · 早会时长 ↓（随学到的偏好增多）</text>
+    <text x="600" y="200" text-anchor="end" class="gs">北极星</text>
+    <!-- stage 1 -->
+    <circle cx="80" cy="140" r="7" fill="#af52de"/>
+    <rect x="20" y="20" width="180" height="98" rx="10" fill="#faf5ff" stroke="#c9a3e6" stroke-width="1.5"/>
+    <text x="30" y="40" class="gt">① 近期:founder 早会(重)</text>
+    <text x="30" y="60" class="gs">你和 CoS 开早会</text>
+    <text x="30" y="76" class="gs">CoS 在早会里学你的偏好:</text>
+    <text x="30" y="92" class="gs">节奏 / 依赖 / 优先级</text>
+    <text x="30" y="108" class="gs">→ 你定得多、CoS 学</text>
+    <!-- stage 2 -->
+    <circle cx="330" cy="105" r="7" fill="#af52de"/>
+    <rect x="230" y="24" width="180" height="70" rx="10" fill="#fff" stroke="#c9a3e6" stroke-width="1.5"/>
+    <text x="240" y="44" class="gt">② 中期:学够了</text>
+    <text x="240" y="62" class="gs">自主 triage 升高</text>
+    <text x="240" y="78" class="gs">早会变短 · 你少管</text>
+    <!-- stage 3 -->
+    <circle cx="580" cy="62" r="7" fill="#af52de"/>
+    <rect x="440" y="16" width="196" height="70" rx="10" fill="#faf5ff" stroke="#c9a3e6" stroke-width="1.5"/>
+    <text x="450" y="36" class="gt">③ 终点(北极星):全自动 DAG</text>
+    <text x="450" y="54" class="gs">CoS 自主 triage + 派发</text>
+    <text x="450" y="70" class="gs">你只瞟 HTML + 随时介入</text>
+  </svg>
+  </div>
+  <p><b>回路 = 早会学偏好:</b>CoS 每轮分诊的决定 → 早会上你确认/纠正 → CoS 学到「你这类活喜欢什么节奏 / 谁做 / 什么先」→ 下轮更准 → 早会需要你的地方变少。<b>全自动是北极星,路径就是这条早会学偏好回路。</b>你随时能介入,越到后面越少需要。</p>
+  <p class="hint">🔊 早会以后<b>可语音化</b>(接 voice agent,<span class="tag new">FLY-906</span>):语音系统做好后,你可以每天用语音跟 CoS 开早会。—— 这是 context / 顺带,<b>不是 353 的硬依赖</b>(353 不等它)。</p>
+  <div class="you" style="background:#f4f9ff;border-color:#bcd9ff"><b>⚠️ 你 v6 点的关键(采纳):「怎么学」= 另一个 separate issue,不在 353。</b> 早会/Lead 具体<b>拿什么信号 / data 去学、怎么 convert 成能自己做决策</b> —— 这是个全新的东西(你说之前讨论过没结果)。而且<b>两处都要学</b>:① <b>早会:CoS 学「不同 issue 怎么派发」</b>;② <b>Lead:学「替你做决定」</b>(现在 Lead 常把 runner 的问题转你、或给你 options 让你选;目标是他学会帮你 decide)。<b>353 只用「早会 + 渐进自治」这个<u>运行模型/轨迹</u>,不建「学习引擎」本身。</b><br><b>依赖:<span class="tag new">FLY-1034</span> autonomy learning(单独 co-eval,已建)</b> —— 353 的毕业曲线<b>依赖</b> FLY-1034,但<b>353 不 build 它</b>(学习引擎在 1034 单独展开)。</div>
+</div>
+<div class="cmt"><label>💬 对「毕业曲线 / 早会学偏好」的留言(这就是你想的协调方式吗?)</label><textarea data-k="grad" data-label="🎓 渐进自治·早会学偏好·毕业曲线"></textarea></div>
+
+<!-- 3 -->
+<h2><span class="secnum">3 ·</span> 两层 DAG:353 只做第二层(第一层另开 issue)</h2>
+<div class="card gray">
+  <div class="you"><b>你定的:</b>两层 DAG 拆成两个 PRD —— <b>高层(第二层治理引擎)= 353</b>;<b>低层(第一层轻模板)= 另开一个 issue</b> track。两层内容我在这讲清、不丢。</div>
+  <ul>
+    <li><span class="k">第一层 · 轻模板层(≈乐高,另开 issue)</span> —— 做<u>一个</u> issue 怎么跑。每类任务一套<b>轻/可覆盖的默认</b>模板(eng 三段式其一、product 更短);<b>模型可偏离,不锁每一步</b>。353 只调用它,不在 353 建。</li>
+    <li><span class="k">第二层 · 353 治理引擎(本 issue)</span> —— 决定做<u>哪些</u> issue + 派给谁 + 何时 + 怎么 proactive + 护栏。= CoS 分诊 + 自动派发 + 监管。<b>353 的全部重点在这层。</b></li>
+  </ul>
+  <p class="hint">353 PRD 会聚焦第二层;第一层轻模板挂在你要新建的那个 issue 上,353 里引用它「模板在别的 issue」。</p>
+  <div class="you" style="background:#f4f9ff;border-color:#bcd9ff"><b>🚧 范围边界(避免和别的 issue 重叠):353 = DAG 编排(第二层治理引擎)+ session-decouple(backlog),<u>不碰 lead-tree / fleet-scaling</u>。</b>「一个 Lead 带很多 runner 的树状扩展 / 分 sub-lead」= <span class="tag new">FLY-1022</span>,不在 353。两者<b>互补</b>:353 = <b>offload session 让单个 Lead 拿更多</b>;1022 = <b>分 sub-lead 每个拿更少</b>。353 不覆盖 1022 的活。</div>
+</div>
+<div class="cmt"><label>💬 对「两层拆两 PRD、353 只做第二层」的留言</label><textarea data-k="split" data-label="3 · 两层拆分 353=第二层"></textarea></div>
+
+<!-- 4 -->
+<h2><span class="secnum">4 ·</span> CoS= 分诊节点 —— 但「产决策 ≠ 有 spawn 权」</h2>
+<div class="card blue">
+  <div class="you"><b>你 v5 确认了(采纳):</b>「对,你做的没问题。CoS 只产决策 —— 今天该做什么、派给谁;<b>还是他底下的 leader 去真正执行、去 spawn</b>。」</div>
+  <p><b>分诊节点 = 你设计的 CoS</b>(不新造角色)。安全边界(我核代码时发现的):</p>
+  <ul>
+    <li><b>CoS 今天没有 spawn 权、也不该直接拿到</b> —— 现状 CoS 是 triage/路由(<code>canSpawnRunners:false</code>,派给 Tadashi 由他 spawn)。直接给 CoS 装 spawn 会破坏现有权限边界。</li>
+    <li><b>正确做法(= 你说的):CoS 只<u>产决策</u></b>(这条 issue:相关吗/派给谁/用哪套模板/何时)→ <b>由它底下的 dept Lead 去执行 spawn,仍校验 label/dept/lead</b>。CoS 判「该做什么」,spawn 权留在 dept Lead + 校验里。<b>decision ≠ authority。</b>(派活的具体形态 = CoS 给 Lead 的语言指令,见 §6②。)</li>
+  </ul>
+  <p class="hint">对你无感(体验上就是「CoS 自动把活派下去了」),但底层把「谁能真的起 runner」这条安全线守住,不失控。</p>
+</div>
+<div class="cmt"><label>💬 对「CoS 产决策 ≠ spawn 权」的留言</label><textarea data-k="cos" data-label="4 · CoS 分诊 产决策≠spawn权"></textarea></div>
+
+<!-- 5 -->
+<h2><span class="secnum">5 ·</span> 依赖层:轻、可选、多靠 Lead/PM(可能一开始就没有)</h2>
+<div class="card gray">
+  <div class="you"><b>你说的:</b>「我甚至不会把所有东西都标依赖,每次只讲一个大方向 A→B;大多数还是 Lead/PM 判断互相依赖;依赖层一开始不一定有,很难 rely on 人说清楚。」</div>
+  <ul>
+    <li>不建重度人工依赖图;<b>大多数 issue 不标依赖</b>。</li>
+    <li>founder <b>偶尔</b>给个大方向(A→B);其余<b>主要靠 Lead/PM 临时判断</b>。</li>
+    <li>CoS 推进:有标的依赖尊重;<b>没标的 → 并行 / 按到达序</b>。依赖是 emergent 的、<b>不是前置门槛</b>,<b>一开始可以基本没有</b>。</li>
+  </ul>
+</div>
+<div class="cmt"><label>💬 对依赖层的留言</label><textarea data-k="dep" data-label="5 · 依赖层轻量"></textarea></div>
+
+<!-- 6 -->
+<h2><span class="secnum">6 ·</span> 频次(v6 大改:周期扫为主)+ CoS 输出两样 + Discord 面板</h2>
+<div class="card green">
+  <div class="you"><b>你上轮纠正的(v6 采纳):</b>「调度应<b>以周期扫为主</b>,不是事件驱动 —— 新建一个 issue<b>不代表马上要执行</b>,任务有 priority,得靠<b>分诊</b>决定谁先谁后。」</div>
+  <p><b>① 频次 = 周期扫为主(不是事件驱动):</b></p>
+  <ul>
+    <li><b>为什么不事件驱动:</b>新 issue 一建就派 → 会把低优先级的也立刻拉起来。任务有快慢/优先级,该由 CoS 分诊<b>成批</b>判「现在做哪些、哪些先放放」,而不是来一个派一个。</li>
+    <li><b>cadence — 初期(你 v6 定的具体值):每 6 小时扫一次</b>,每轮逻辑 = <b>读负荷 → 补齐到 capacity → 抓 top-priority 填</b>:
+      <ol>
+        <li>系统先<b>读每个 Lead 当前负荷</b>(假设每 Lead 一次带 N=5 件:看 Lead 1/2/3 手里各还有几件)。</li>
+        <li><b>把每个 Lead 补齐到 capacity</b>:Lead 1 手上 0 件 → 加 5 件;Lead 2 手上 2 件 → 加 3 件。</li>
+        <li>补的活 = 从 backlog 里<b>抓当前 top-priority</b> 的,<b>按每个 Lead 的余量分发</b>填进去(余 5 个就给 5 个、余 3 个就给 3 个)。</li>
+      </ol>
+    </li>
+    <li><b>动态负载触发(北极星,后续):</b>把上面的「读负荷」升级成按<b>系统水位</b>(内存 / token 额度)自动决定何时扫(如内存降到某阈值就补活、满载不过载)。<span class="tag new">诚实</span> 现在还没能力监控内存/token,<b>先做每 6h 固定 + capacity 补齐,水位触发作后续</b>。capacity 上限关联 <span class="tag new">FLY-1022</span>。</li>
+  </ul>
+  <p><b>② CoS 每轮分诊完输出<u>两样</u>(你说的):</b></p>
+  <ul>
+    <li><b>语言指令(真正派活)</b> —— 跟 Lead A 说「你去做 1/2/3/4/5」、跟 Lead B 说「你去做 6/7/8/9/10」。<b>这才是派发本身</b>(呼应 §4:CoS 产决策 → 下面 dept Lead 执行 spawn)。</li>
+    <li><b>一个 HTML(给你瞟)</b> —— 说实话主要给你看、你不一定马上看、有空瞟一眼。放 core room → @ 你。</li>
+  </ul>
+  <p><b>③ 面板 / cron:</b> <b>Discord 就是面板</b>(不另做 dashboard);cron(每天跑的活)= 引擎里一个<b>定时节点</b>,到点触发,结果同一个 Discord 面板 HTML 露出。</p>
+  <p class="src">你结尾提到的「协调 / 做完那个语音…」= 早会 —— 已折成 🎓 节「毕业曲线」(近期早会学偏好 → 全自动)。</p>
+</div>
+<div class="cmt"><label>💬 对频次(周期扫为主)/ CoS 输出两样 / 面板 的留言</label><textarea data-k="freq" data-label="6 · 频次周期扫为主 + CoS输出两样 + 面板"></textarea></div>
+
+<!-- 7 -->
+<h2><span class="secnum">7 ·</span> ⚠️ 4 监管护栏(自动但不失控)</h2>
+<div class="card amber">
+  <ul>
+    <li><b>① ship 仍 founder-gated</b> —— 自动的是派活+跑,合入 main 永远你点头。</li>
+    <li><b>② 随时接管 / 叫停</b> —— 暂停自动流、把某条抽出来转人工。</li>
+    <li><b>③ 失败 → 升级给人,不静默</b> —— 卡住/报错/跑偏 → 停下 + 告诉你,不「shelve 了继续」。</li>
+    <li><b>④ 看得见</b> —— Discord 面板显示 在跑/排队/被 block/升级等你。</li>
+  </ul>
+  <p class="hint">另外(工程侧):默认 off + kill switch、首批先 dry-run 只出决策不真派、每次派发前留痕(ledger)、低置信就升级不硬派 —— 这些会写进 PRD 当硬验收。</p>
+</div>
+<div class="cmt"><label>💬 对 4 护栏的留言</label><textarea data-k="guard" data-label="7 · 4 监管护栏"></textarea></div>
+
+<!-- 8 -->
+<h2><span class="secnum">8 ·</span> 引擎:删没用的旧 code,按新模型重搭</h2>
+<div class="card red">
+  <div class="you"><b>你说:</b>「现有引擎 code 如果没在用的话,直接删掉就可以了。」→ 采纳。</div>
+  <p>现有 <code>dag-resolver</code> 是 v0.1.0 基础货(机械挑任务、无 LLM 分诊、无护栏、没接生产)。<b>不复活、删掉</b>,按新模型(第二层治理引擎:CoS 分诊 + 受控派发 + 4 护栏)重搭。图逻辑概念可借,引擎重做。</p>
+</div>
+<div class="cmt"><label>💬 对「删旧引擎重搭」的留言</label><textarea data-k="engine" data-label="8 · 引擎重搭"></textarea></div>
+
+<!-- 9 -->
+<h2><span class="secnum">9 ·</span> session-log(backlog,不展开)</h2>
+<div class="card gray">
+  <p>研究阶段的「自己 own 一条事件日志」—— 你定 <b>backlog</b>(Claude Code 单机不痛,等 Codex 实测真痛再做)。这里记一笔、不丢。</p>
+</div>
+<div class="cmt"><label>💬 对 session-log backlog 的留言</label><textarea data-k="backlog" data-label="9 · session-log backlog"></textarea></div>
+
+<!-- 10 -->
+<h2><span class="secnum">10 ·</span> 你确认 / 留给你定的点</h2>
+<div class="card red">
+  <ul>
+    <li><b>轻模板+强治理(§1):</b>这个 framing 回应了你「会不会过度复杂化 / 限制强模型」的担心吗?</li>
+    <li><b>两层拆两 PRD(§3):</b>353 只做第二层治理引擎、第一层轻模板另开 issue —— 对吗?</li>
+    <li><b>整体:</b>这版设计你 OK 了吗?OK 我就把它写成 353 PRD(第二层治理引擎)交给 Tadashi。</li>
+  </ul>
+</div>
+<div class="cmt"><label>💬 总批注 / 确认 / 下一步</label><textarea data-k="final" data-label="10 · 总批注 / 确认"></textarea></div>
+
+<div class="bar">
+  <button class="primary" id="exportBtn" type="button">复制批注</button>
+  <button class="ghost" id="clearBtn" type="button">清空</button>
+  <span class="hint" id="saveHint">每小节下都有留言框;「复制批注」收成 markdown。批注只存你这台机器,刷新不丢(新版本从空白开始)。</span>
+</div>
+</div>
+
+<dialog id="dlg">
+  <div class="dlg">
+    <h3>你的批注(Markdown)</h3>
+    <p class="hint">已自动复制到剪贴板。也可下载,或直接选中复制发给我。</p>
+    <textarea id="out" readonly></textarea>
+    <div class="bar" style="position:static;background:none;border:none;padding-top:12px">
+      <button class="primary" id="dlBtn" type="button">下载 .md</button>
+      <button class="ghost" id="closeBtn" type="button">关闭</button>
+    </div>
+  </div>
+</dialog>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var pathScope = (typeof location !== "undefined" && location.pathname) ? location.pathname : "local";
+  var KEY = "fly353-dag-design::" + pathScope;
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ saved = {}; }
+  areas.forEach(function(t){
+    var k = t.getAttribute("data-k");
+    if (saved[k]) t.value = saved[k];
+    t.addEventListener("input", function(){
+      saved[k] = t.value;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch(e){}
+      var h = document.getElementById("saveHint"); if (h) h.textContent = "已保存 ✓ · " + new Date().toLocaleTimeString();
+    });
+  });
+  function buildMd(){
+    var lines = ["# FLY-353 主动 DAG 编排设计 v5 — Annie 的批注", "", "日期: " + new Date().toLocaleString(), ""];
+    var any = false;
+    areas.forEach(function(t){
+      var v = (t.value || "").trim(); if (!v) return; any = true;
+      lines.push("## " + (t.getAttribute("data-label") || t.getAttribute("data-k")), "", v, "");
+    });
+    if (!any) lines.push("> (还没有批注)");
+    return lines.join("\n");
+  }
+  var dlg = document.getElementById("dlg"), out = document.getElementById("out");
+  document.getElementById("exportBtn").addEventListener("click", function(){
+    out.value = buildMd();
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(out.value).catch(function(){});
+    if (dlg.showModal) dlg.showModal(); else alert(out.value);
+  });
+  document.getElementById("clearBtn").addEventListener("click", function(){
+    if (!confirm("清空所有批注?不可撤销。")) return;
+    areas.forEach(function(t){ t.value = ""; }); saved = {};
+    try { localStorage.removeItem(KEY); } catch(e){}
+    var h = document.getElementById("saveHint"); if (h) h.textContent = "已清空。";
+  });
+  document.getElementById("dlBtn").addEventListener("click", function(){
+    var blob = new Blob([out.value], {type:"text/markdown"}), url = URL.createObjectURL(blob);
+    var a = document.createElement("a"); a.href = url; a.download = "fly353-dag-design-v5-批注.md";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  });
+  document.getElementById("closeBtn").addEventListener("click", function(){ if (dlg.close) dlg.close(); });
+})();
+</script>

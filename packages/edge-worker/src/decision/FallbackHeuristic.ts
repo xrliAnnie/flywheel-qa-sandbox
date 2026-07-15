@@ -4,15 +4,34 @@ import type { DecisionResult, ExecutionContext } from "flywheel-core";
  * Conservative fallback when LLM is unavailable.
  * NEVER auto-approves — safety constraint.
  */
+/**
+ * FLY-921: progress-ledger commits (`flywheel-comm progress` auto-commits
+ * `chore(progress): …`) are bookkeeping, not delivered work. A session whose
+ * only commits are ledger updates has produced zero effective code.
+ */
+const PROGRESS_LEDGER_RE = /^chore\(progress\):/;
+
 export class FallbackHeuristic {
 	evaluate(ctx: ExecutionContext, llmError: string): DecisionResult {
-		// Rule 1: no commits → blocked
+		// Rule 1: no effective commits → blocked
 		if (ctx.commitCount === 0) {
 			return {
 				route: "blocked",
 				confidence: 0.9,
 				reasoning: `No commits produced. LLM error: ${llmError}`,
 				concerns: ["Zero commits", llmError],
+				decisionSource: "fallback_heuristic",
+			};
+		}
+		if (
+			ctx.commitMessages.length > 0 &&
+			ctx.commitMessages.every((m) => PROGRESS_LEDGER_RE.test(m))
+		) {
+			return {
+				route: "blocked",
+				confidence: 0.9,
+				reasoning: `All ${ctx.commitCount} commits are progress-ledger-only (chore(progress)) — no effective work delivered. LLM error: ${llmError}`,
+				concerns: ["Progress-ledger-only commits", llmError],
 				decisionSource: "fallback_heuristic",
 			};
 		}

@@ -1,0 +1,14 @@
+{
+	"scenario": "a",
+	"description": "actively-working pane — scrolling output",
+	"execId": "qa1234-a",
+	"tmuxTarget": "qa-fly1234-e2e:case-a",
+	"result": {
+		"action": "suppress",
+		"reason": "frames_changing"
+	},
+	"judgeCalls": 0,
+	"framesCaptured": 2,
+	"durationMs": 15081,
+	"pass": true
+}

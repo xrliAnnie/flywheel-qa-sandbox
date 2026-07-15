@@ -1,34 +1,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parseFounderConsentConfig } from "./bridge/founder-consent/config.js";
+import { RunnerAdmissionController } from "./bridge/runner-admission.js";
 import type { BridgeConfig } from "./bridge/types.js";
 
 export type { BridgeConfig };
 
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-
-/** Parse STATUS_TAG_MAP env var: JSON object mapping status → tag ID arrays. */
-function parseStatusTagMap(
-	raw: string | undefined,
-): Record<string, string[]> | undefined {
-	if (!raw) return undefined;
-	try {
-		const parsed = JSON.parse(raw);
-		if (
-			typeof parsed !== "object" ||
-			parsed === null ||
-			Array.isArray(parsed)
-		) {
-			throw new Error("must be a JSON object");
-		}
-		return parsed as Record<string, string[]>;
-	} catch (err) {
-		console.warn(
-			`[config] Invalid STATUS_TAG_MAP — ignoring:`,
-			(err as Error).message,
-		);
-		return undefined;
-	}
-}
 
 function parsePositiveInt(
 	value: string | undefined,
@@ -72,6 +50,80 @@ export function loadConfig(): BridgeConfig {
 		);
 	}
 
+	// FLY-162: reply-by-issue routes post as the Discord bot. If the feature
+	// is enabled but TEAMLEAD_API_TOKEN is missing/empty, the routes would be
+	// exposed unauthenticated — fail-startup rather than emit a warning. See
+	// plan §4.3 + Codex Round 2 issue #2.
+	const apiToken = process.env.TEAMLEAD_API_TOKEN;
+	const replyByIssueEnabled =
+		process.env.TEAMLEAD_REPLY_BY_ISSUE_ENABLED === "true";
+	if (replyByIssueEnabled && (!apiToken || apiToken.length === 0)) {
+		throw new Error(
+			"TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true requires TEAMLEAD_API_TOKEN to be set (refusing to expose Discord bot post route unauthenticated)",
+		);
+	}
+
+	// FLY-162 Layer 2: reply-guard route classifies a Lead's chat channel /
+	// threads to decide whether a plugin reply may post issue content at the
+	// top level. Like reply-by-issue, the route must not be exposed
+	// unauthenticated — fail-startup if enabled without a token.
+	const replyGuardEnabled = process.env.TEAMLEAD_REPLY_GUARD_ENABLED === "true";
+	if (replyGuardEnabled && (!apiToken || apiToken.length === 0)) {
+		throw new Error(
+			"TEAMLEAD_REPLY_GUARD_ENABLED=true requires TEAMLEAD_API_TOKEN to be set (refusing to expose the reply-guard route unauthenticated)",
+		);
+	}
+	// FLY-1018 M4: scoped token for the gemini-agent tool surface. Two
+	// fail-closed rules (plan §4, Codex R1-2):
+	//   - scoped == master → the "scoped" credential is a full-privilege
+	//     token in disguise; boot-time refusal is the only place that
+	//     window can be closed. Error names both envs.
+	//   - scoped set but master unset → today's middleware no-ops without a
+	//     master token (everything already unauthenticated), so scoping is
+	//     meaningless; log ERROR and IGNORE rather than inventing a new
+	//     bare-token posture.
+	const geminiAgentTokenRaw = process.env.TEAMLEAD_GEMINI_AGENT_TOKEN;
+	let geminiAgentToken: string | undefined;
+	if (geminiAgentTokenRaw !== undefined && geminiAgentTokenRaw.trim() !== "") {
+		const scoped = geminiAgentTokenRaw.trim();
+		if (apiToken && scoped === apiToken.trim()) {
+			throw new Error(
+				"TEAMLEAD_GEMINI_AGENT_TOKEN must differ from TEAMLEAD_API_TOKEN — a scoped token equal to the master token is a full-privilege credential in disguise (refusing to start)",
+			);
+		}
+		if (!apiToken || apiToken.length === 0) {
+			console.error(
+				"[config] ERROR: TEAMLEAD_GEMINI_AGENT_TOKEN is set but TEAMLEAD_API_TOKEN is not — scoped token IGNORED (without a master token the /api surface is unauthenticated; configure TEAMLEAD_API_TOKEN first)",
+			);
+		} else {
+			geminiAgentToken = scoped;
+		}
+	}
+
+	// Configured team prefixes the guard counts as issue tokens (default
+	// FLY,GEO). Normalized to uppercase; empties dropped.
+	const issuePrefixes = (process.env.TEAMLEAD_ISSUE_PREFIXES ?? "FLY,GEO")
+		.split(",")
+		.map((s) => s.trim().toUpperCase())
+		.filter((s) => s.length > 0);
+	// Codex code-review LOW: when the guard is enabled, an empty or
+	// unscannable prefix list silently disables enforcement (the scanner
+	// requires `[A-Za-z]{2,}` — see reply-guard.ts). Fail-startup instead of
+	// running a guard that can never match.
+	if (replyGuardEnabled) {
+		if (issuePrefixes.length === 0) {
+			throw new Error(
+				"TEAMLEAD_REPLY_GUARD_ENABLED=true but TEAMLEAD_ISSUE_PREFIXES is empty after parsing — the guard would never match any issue token",
+			);
+		}
+		const bad = issuePrefixes.filter((p) => !/^[A-Z]{2,}$/.test(p));
+		if (bad.length > 0) {
+			throw new Error(
+				`TEAMLEAD_ISSUE_PREFIXES contains prefixes the scanner can never match (need >=2 letters, A-Z only): ${bad.join(", ")}`,
+			);
+		}
+	}
+
 	return {
 		host,
 		port,
@@ -79,7 +131,7 @@ export function loadConfig(): BridgeConfig {
 			process.env.TEAMLEAD_DB_PATH ??
 			join(homedir(), ".flywheel", "teamlead.db"),
 		ingestToken: process.env.TEAMLEAD_INGEST_TOKEN,
-		apiToken: process.env.TEAMLEAD_API_TOKEN,
+		apiToken,
 		notificationChannel:
 			process.env.TEAMLEAD_NOTIFICATION_CHANNEL ?? "CD5QZVAP6",
 		defaultLeadAgentId: (() => {
@@ -102,31 +154,26 @@ export function loadConfig(): BridgeConfig {
 		discordBotToken: process.env.DISCORD_BOT_TOKEN,
 		linearApiKey: process.env.LINEAR_API_KEY,
 		discordGuildId: process.env.DISCORD_GUILD_ID,
-		statusTagMap: parseStatusTagMap(process.env.STATUS_TAG_MAP),
-		cleanupIntervalMs: parsePositiveInt(
-			process.env.TEAMLEAD_CLEANUP_INTERVAL,
-			3_600_000,
-			"TEAMLEAD_CLEANUP_INTERVAL",
-		),
-		cleanupThresholdMinutes: parsePositiveInt(
-			process.env.TEAMLEAD_CLEANUP_THRESHOLD,
-			1440,
-			"TEAMLEAD_CLEANUP_THRESHOLD",
-		),
-		maxConcurrentRunners: (() => {
-			const n = parseInt(
-				process.env.TEAMLEAD_MAX_CONCURRENT_RUNNERS ?? "3",
-				10,
-			);
-			if (!Number.isFinite(n) || n < 1 || n > 20) {
-				throw new Error(
-					`TEAMLEAD_MAX_CONCURRENT_RUNNERS must be 1-20, got ${process.env.TEAMLEAD_MAX_CONCURRENT_RUNNERS}`,
-				);
-			}
-			return n;
-		})(),
+		// FLY-123 WS-D (P4): the TEAMLEAD_MAX_CONCURRENT_RUNNERS hard cap is
+		// retired. Admission is pure resource pressure (load + memory), tunable
+		// via FLYWHEEL_RUNNER_LOAD_PER_CORE / FLYWHEEL_RUNNER_MIN_FREE_MEM_MB.
+		runnerAdmission: RunnerAdmissionController.fromEnv(),
 		// FLY-91: Chat thread feature flag (env: TEAMLEAD_CHAT_THREADS_ENABLED=true)
 		chatThreadsEnabled: process.env.TEAMLEAD_CHAT_THREADS_ENABLED === "true",
 		discordOwnerUserId: process.env.DISCORD_OWNER_USER_ID,
+		// FLY-162: Reply-by-issue routes feature flag (env: TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true).
+		// Validation (must have apiToken) happens above.
+		replyByIssueEnabled,
+		// FLY-162 Layer 2: reply-guard route feature flag + configured issue
+		// prefixes. Validation (must have apiToken) happens above.
+		replyGuardEnabled,
+		issuePrefixes,
+		// FLY-175 Track 2: founder-consent hard gate. Parsed from
+		// FLYWHEEL_FOUNDER_CONSENT_* env. decisionMode defaults to "off" so a
+		// boot without explicit opt-in is byte-compatible with pre-Track-2.
+		founderConsent: parseFounderConsentConfig(process.env),
+		// FLY-1018 M4: scoped gemini-agent token (validated above; undefined
+		// when unset, invalid-without-master, or blank — byte-compatible).
+		geminiAgentToken,
 	};
 }

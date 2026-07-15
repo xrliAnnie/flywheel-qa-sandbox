@@ -1,0 +1,4 @@
+[2026-07-09T15:26:40.169Z] ACT2B start — waiting for NEW opening turn first audio chunk
+[2026-07-09T15:26:47.877Z] saw: opening first audio chunk — sleeping 2.0s then interrupting
+[2026-07-09T15:26:50.043Z] ACT2B interrupt inject (mid-opening)
+[2026-07-09T15:26:51.456Z] saw: response cancelled — ACT2B driver done (PASS-shape)

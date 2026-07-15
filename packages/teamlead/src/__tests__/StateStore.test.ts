@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEvent, SessionUpsert } from "../StateStore.js";
-import { StateStore } from "../StateStore.js";
+import { isSqlJsCorruptionError, StateStore } from "../StateStore.js";
 
 function makeEvent(overrides: Partial<SessionEvent> = {}): SessionEvent {
 	return {
@@ -123,10 +123,81 @@ describe("StateStore", () => {
 		expect(stuckIds).not.toContain("recent-1");
 	});
 
-	it("upsertThread + getThreadIssue round-trip", () => {
-		store.upsertThread("1234.5678", "C07XXX", "GEO-95");
-		const issueId = store.getThreadIssue("1234.5678");
-		expect(issueId).toBe("GEO-95");
+	it("getRecentTerminalSessionsForNotify: project + failed/blocked + main + lookback (FLY-725 v1 = B)", () => {
+		const toSqlite = (d: Date) =>
+			d
+				.toISOString()
+				.replace("T", " ")
+				.replace(/\.\d+Z$/, "");
+		const recent = () => toSqlite(new Date(Date.now() - 60_000)); // 1 min ago
+		const old = () => toSqlite(new Date(Date.now() - 48 * 60 * 60_000)); // 48h ago
+
+		store.upsertSession(
+			makeSession({
+				execution_id: "failed-main",
+				status: "failed",
+				session_role: "main",
+				last_error: "boom",
+				last_activity_at: recent(),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "blocked-main",
+				status: "blocked",
+				session_role: "main",
+				last_activity_at: recent(),
+			}),
+		);
+		// excluded: completed is NOT a 725 milestone (→ FLY-727 digest)
+		store.upsertSession(
+			makeSession({
+				execution_id: "done-main",
+				status: "completed",
+				session_role: "main",
+				last_activity_at: recent(),
+			}),
+		);
+		// excluded: still active (not terminal)
+		store.upsertSession(
+			makeSession({
+				execution_id: "active",
+				status: "awaiting_review",
+				last_activity_at: recent(),
+			}),
+		);
+		// excluded: QA runner (not main)
+		store.upsertSession(
+			makeSession({
+				execution_id: "qa",
+				status: "failed",
+				session_role: "qa",
+				last_activity_at: recent(),
+			}),
+		);
+		// excluded: other project
+		store.upsertSession(
+			makeSession({
+				execution_id: "other-proj",
+				project_name: "flywheel",
+				status: "failed",
+				session_role: "main",
+				last_activity_at: recent(),
+			}),
+		);
+		// excluded: outside the lookback window
+		store.upsertSession(
+			makeSession({
+				execution_id: "too-old",
+				status: "blocked",
+				session_role: "main",
+				last_activity_at: old(),
+			}),
+		);
+
+		const rows = store.getRecentTerminalSessionsForNotify("geoforge3d", 24);
+		const ids = rows.map((r) => r.execution_id).sort();
+		expect(ids).toEqual(["blocked-main", "failed-main"]);
 	});
 
 	it("upsertSession ignores running after terminal (failed→running no-op)", () => {
@@ -147,96 +218,9 @@ describe("StateStore", () => {
 		expect(store.getSession("exec-1")!.status).toBe("completed");
 	});
 
-	// --- v1.0 Phase 1: thread_id ---
-
-	it("upsertSession stores and retrieves thread_id", () => {
-		store.upsertSession(makeSession({ thread_id: "1234.5678" }));
-		const s = store.getSession("exec-1");
-		expect(s!.thread_id).toBe("1234.5678");
-	});
-
-	it("upsertSession preserves thread_id via COALESCE on update", () => {
-		store.upsertSession(makeSession({ thread_id: "1234.5678" }));
-		// Update without thread_id — should preserve existing value
-		store.upsertSession(makeSession({ status: "awaiting_review" }));
-		const s = store.getSession("exec-1");
-		expect(s!.thread_id).toBe("1234.5678");
-		expect(s!.status).toBe("awaiting_review");
-	});
-
-	it("setSessionThreadId updates only the thread field", () => {
-		store.upsertSession(makeSession());
-		store.setSessionThreadId("exec-1", "9999.1111");
-		const s = store.getSession("exec-1");
-		expect(s!.thread_id).toBe("9999.1111");
-		expect(s!.status).toBe("running"); // unchanged
-	});
-
-	it("setSessionThreadId is no-op if session does not exist", () => {
-		// Should not throw
-		store.setSessionThreadId("nonexistent", "1234.5678");
-	});
-
-	// --- v1.0 Phase 1: getThreadByIssue ---
-
-	it("getThreadByIssue returns thread for known issue", () => {
-		store.upsertThread("1234.5678", "C07XXX", "GEO-42");
-		const thread = store.getThreadByIssue("GEO-42");
-		expect(thread).toBeDefined();
-		expect(thread!.thread_id).toBe("1234.5678");
-		expect(thread!.channel).toBe("C07XXX");
-	});
-
-	it("getThreadByIssue returns undefined for unknown issue", () => {
-		expect(store.getThreadByIssue("UNKNOWN-1")).toBeUndefined();
-	});
-
-	it("getThreadByIssue returns updated thread after re-upsert", () => {
-		store.upsertThread("old.1111", "C07XXX", "GEO-42");
-		store.upsertThread("new.2222", "C07YYY", "GEO-42");
-		const thread = store.getThreadByIssue("GEO-42");
-		expect(thread!.thread_id).toBe("new.2222");
-		expect(thread!.channel).toBe("C07YYY");
-	});
-
-	// --- v1.0 Phase 1: upsertThread one-issue-one-thread ---
-
-	it("upsertThread replaces old thread for same issue", () => {
-		store.upsertThread("old.1111", "C07XXX", "GEO-42");
-		store.upsertThread("new.2222", "C07XXX", "GEO-42");
-		// Old thread should be gone
-		expect(store.getThreadIssue("old.1111")).toBeUndefined();
-		// New thread maps to the issue
-		expect(store.getThreadIssue("new.2222")).toBe("GEO-42");
-	});
-
-	it("upsertThread handles same thread_id + same issue (idempotent)", () => {
-		store.upsertThread("1234.5678", "C07XXX", "GEO-42");
-		store.upsertThread("1234.5678", "C07XXX", "GEO-42");
-		expect(store.getThreadIssue("1234.5678")).toBe("GEO-42");
-	});
-
-	// --- v1.0 Phase 1: migration cleans duplicate threads ---
-
-	it("migrate cleans up duplicate issue_id entries in conversation_threads", async () => {
-		// Manually insert duplicate records bypassing upsertThread
-		store.db.run(
-			"INSERT INTO conversation_threads (thread_id, channel, issue_id) VALUES ('ts1', 'C1', 'GEO-99')",
-		);
-		// Temporarily drop the unique index so we can insert a duplicate
-		store.db.run("DROP INDEX IF EXISTS idx_threads_issue");
-		store.db.run(
-			"INSERT INTO conversation_threads (thread_id, channel, issue_id) VALUES ('ts2', 'C1', 'GEO-99')",
-		);
-		// Re-run migrate — should clean up and recreate index
-		store.migrate();
-		// Should have exactly one record for GEO-99 (the one with higher rowid = ts2)
-		const thread = store.getThreadByIssue("GEO-99");
-		expect(thread).toBeDefined();
-		expect(thread!.thread_id).toBe("ts2");
-		// Old one should be gone
-		expect(store.getThreadIssue("ts1")).toBeUndefined();
-	});
+	// FLY-163: forum thread CRUD tests (upsertThread, getThreadByIssue,
+	// getThreadIssue, setSessionThreadId, conversation_threads migration
+	// cleanup) removed — conversation_threads table dropped.
 
 	// --- v1.0 Phase 1: getLatestSessionByIssueAndStatuses ---
 
@@ -327,6 +311,60 @@ describe("StateStore", () => {
 		store.upsertSession(makeSession({ adapter_type: "claude-cli" }));
 		const s = store.getSession("exec-1");
 		expect(s!.adapter_type).toBe("claude-cli");
+	});
+
+	// FLY-728: per-issue model routing visibility — runner_model column.
+	it("FLY-728: upsertSession stores and retrieves runner_model", () => {
+		store.upsertSession(makeSession({ runner_model: "claude-fable-5" }));
+		expect(store.getSession("exec-1")!.runner_model).toBe("claude-fable-5");
+	});
+
+	it("FLY-728: runner_model absent → undefined (byte-compat, no override)", () => {
+		store.upsertSession(makeSession({}));
+		expect(store.getSession("exec-1")!.runner_model).toBeUndefined();
+	});
+
+	it("FLY-728: patchSessionMetadata updates runner_model", () => {
+		store.upsertSession(makeSession({}));
+		store.patchSessionMetadata("exec-1", { runner_model: "opus" });
+		expect(store.getSession("exec-1")!.runner_model).toBe("opus");
+	});
+
+	it("FLY-728: upsert COALESCE preserves an existing runner_model", () => {
+		store.upsertSession(makeSession({ runner_model: "claude-fable-5" }));
+		// A later upsert that omits runner_model must not blank the stored value.
+		store.upsertSession(makeSession({ status: "awaiting_review" }));
+		expect(store.getSession("exec-1")!.runner_model).toBe("claude-fable-5");
+	});
+
+	// FLY-728 Part C: dispatch_model is the source-honest retry input (the sorter's
+	// dispatch param ONLY, distinct from the resolved runner_model).
+	it("FLY-728: upsert/patch/COALESCE dispatch_model round-trips", () => {
+		store.upsertSession(makeSession({ dispatch_model: "claude-fable-5" }));
+		expect(store.getSession("exec-1")!.dispatch_model).toBe("claude-fable-5");
+		// COALESCE preserves it on a later upsert that omits it
+		store.upsertSession(makeSession({ status: "awaiting_review" }));
+		expect(store.getSession("exec-1")!.dispatch_model).toBe("claude-fable-5");
+		// patchSessionMetadata can set it
+		store.upsertSession(makeSession({ execution_id: "exec-2" }));
+		expect(store.getSession("exec-2")!.dispatch_model).toBeUndefined();
+		store.patchSessionMetadata("exec-2", { dispatch_model: "claude-sonnet-5" });
+		expect(store.getSession("exec-2")!.dispatch_model).toBe("claude-sonnet-5");
+	});
+
+	it("FLY-615: upsertSession stores and retrieves ponytail_condition", () => {
+		store.upsertSession(makeSession({ ponytail_condition: "on:label" }));
+		expect(store.getSession("exec-1")!.ponytail_condition).toBe("on:label");
+	});
+
+	it("FLY-615: patchSessionMetadata updates ponytail_condition", () => {
+		store.upsertSession(makeSession({}));
+		store.patchSessionMetadata("exec-1", {
+			ponytail_condition: "unavailable:readiness:on:project",
+		});
+		expect(store.getSession("exec-1")!.ponytail_condition).toBe(
+			"unavailable:readiness:on:project",
+		);
 	});
 
 	it("upsertSession stores and retrieves session_params", () => {
@@ -483,17 +521,16 @@ describe("StateStore", () => {
 
 	// --- GEO-163: migration tests ---
 
-	it("fresh DB creates thread_id column directly (case a)", async () => {
-		// Fresh DB — DDL has thread_id, no migration needed
+	it("fresh DB has sessions.thread_id physical column (deprecated, FLY-163)", async () => {
+		// Fresh DB — DDL keeps the thread_id column as deprecated. TS layer
+		// no longer reads/writes it; this is a schema-survival check.
 		const fresh = await StateStore.create(":memory:");
-		fresh.upsertSession(makeSession({ thread_id: "fresh-thread-123" }));
-		const s = fresh.getSession("exec-1");
-		expect(s!.thread_id).toBe("fresh-thread-123");
-
-		// conversation_threads also uses thread_id
-		fresh.upsertThread("ct-fresh-123", "C07XXX", "GEO-95");
-		const thread = fresh.getThreadByIssue("GEO-95");
-		expect(thread!.thread_id).toBe("ct-fresh-123");
+		const stmt = fresh.db.prepare(
+			"SELECT 1 FROM pragma_table_info('sessions') WHERE name='thread_id'",
+		);
+		const hasCol = stmt.step();
+		stmt.free();
+		expect(hasCol).toBe(true);
 		fresh.close();
 	});
 
@@ -617,19 +654,21 @@ describe("StateStore", () => {
 		// Run migration
 		store2.migrate();
 
-		// Verify columns were renamed and data cleared (user_version < 2)
-		const s = store2.getSession("e1");
-		expect(s).toBeDefined();
-		// thread_id should be NULL after cutover cleanup
-		expect(s!.thread_id).toBeUndefined();
-
-		// conversation_threads should be empty after cutover cleanup
-		const thread = store2.getThreadByIssue("i1");
-		expect(thread).toBeUndefined();
-
-		// Can insert new data with thread_id
-		store2.setSessionThreadId("e1", "new-discord-id");
-		expect(store2.getSession("e1")!.thread_id).toBe("new-discord-id");
+		// Verify sessions.slack_thread_ts column was renamed to thread_id
+		// (physical column kept as deprecated under FLY-163)
+		const probe = store2.db.prepare(
+			"SELECT 1 FROM pragma_table_info('sessions') WHERE name='thread_id'",
+		);
+		const hasNewCol = probe.step();
+		probe.free();
+		expect(hasNewCol).toBe(true);
+		// conversation_threads should have been dropped by FLY-163 migration
+		const tableProbe = store2.db.prepare(
+			"SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_threads'",
+		);
+		const tableExists = tableProbe.step();
+		tableProbe.free();
+		expect(tableExists).toBe(false);
 
 		store2.close();
 	});
@@ -692,165 +731,76 @@ describe("StateStore", () => {
 			"INSERT INTO sessions (execution_id, issue_id, project_name, status) VALUES ('e1', 'i1', 'p', 'running')",
 		);
 
-		// Run migration — should ADD thread_id column
+		// Run migration — should ADD thread_id column (kept as deprecated)
 		store2.migrate();
 
-		// Verify thread_id column exists and works
-		store2.setSessionThreadId("e1", "added-thread-id");
-		expect(store2.getSession("e1")!.thread_id).toBe("added-thread-id");
+		// Verify thread_id column exists (FLY-163: physical column kept)
+		const probe = store2.db.prepare(
+			"SELECT 1 FROM pragma_table_info('sessions') WHERE name='thread_id'",
+		);
+		const hasCol = probe.step();
+		probe.free();
+		expect(hasCol).toBe(true);
 
 		store2.close();
 	});
 
-	const toSqlite3 = (d: Date) =>
-		d
-			.toISOString()
-			.replace("T", " ")
-			.replace(/\.\d+Z$/, "");
-	it("getEligibleForCleanup returns completed beyond threshold", () => {
-		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
-		store.upsertSession(
-			makeSession({
-				execution_id: "e1",
-				issue_id: "GEO-100",
-				status: "completed",
-				started_at: past,
-				last_activity_at: past,
-			}),
-		);
-		store.upsertThread("thread-100", "CH1", "GEO-100");
-		expect(store.getEligibleForCleanup(1440)).toHaveLength(1);
-	});
-	it("getEligibleForCleanup excludes failed", () => {
-		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
-		store.upsertSession(
-			makeSession({
-				execution_id: "e1",
-				issue_id: "GEO-100",
-				status: "failed",
-				started_at: past,
-				last_activity_at: past,
-			}),
-		);
-		store.upsertThread("thread-100", "CH1", "GEO-100");
-		expect(store.getEligibleForCleanup(1440)).toHaveLength(0);
-	});
-	it("getEligibleForCleanup excludes archived", () => {
-		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
-		store.upsertSession(
-			makeSession({
-				execution_id: "e1",
-				issue_id: "GEO-100",
-				status: "completed",
-				started_at: past,
-				last_activity_at: past,
-			}),
-		);
-		store.upsertThread("thread-100", "CH1", "GEO-100");
-		store.markArchived("thread-100");
-		expect(store.getEligibleForCleanup(1440)).toHaveLength(0);
-	});
-	it("markArchived + clearArchived cycle", () => {
-		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
-		store.upsertSession(
-			makeSession({
-				execution_id: "e1",
-				issue_id: "GEO-100",
-				status: "completed",
-				started_at: past,
-				last_activity_at: past,
-			}),
-		);
-		store.upsertThread("thread-100", "CH1", "GEO-100");
-		store.markArchived("thread-100");
-		expect(store.getEligibleForCleanup(1440)).toHaveLength(0);
-		store.clearArchived("thread-100");
-		expect(store.getEligibleForCleanup(1440)).toHaveLength(1);
-	});
+	// FLY-163: getEligibleForCleanup / markArchived / clearArchived /
+	// markDiscordMissing / getThreadIssue tests removed — forum thread cleanup
+	// path (CleanupService + conversation_threads.discord_missing_at) deleted.
+	// The `toSqlite3` helper used only by those tests is removed with them.
 
-	// --- GEO-200: discord_missing_at + markDiscordMissing ---
+	it("FLY-163 migration drops conversation_threads from a legacy DB", async () => {
+		// Create a legacy DB with the conversation_threads table + a few rows +
+		// archived columns. Re-open through StateStore.create() and confirm the
+		// migration drops the table, leaves sessions intact (with thread_id
+		// physical column preserved as deprecated).
+		const path = "/tmp/fly163-legacy.sqlite";
+		try {
+			const fs = await import("node:fs");
+			const initSqlJs = (await import("sql.js")).default;
+			const SQL = await initSqlJs();
+			const seed = new SQL.Database();
+			seed.run(`CREATE TABLE conversation_threads (
+				thread_id TEXT PRIMARY KEY,
+				channel TEXT NOT NULL,
+				issue_id TEXT,
+				summary TEXT,
+				last_updated TEXT NOT NULL DEFAULT (datetime('now')),
+				archived_at TEXT,
+				cleanup_notified_at TEXT,
+				discord_missing_at TEXT
+			)`);
+			seed.run(
+				"INSERT INTO conversation_threads (thread_id, channel, issue_id) VALUES (?, ?, ?)",
+				["legacy-1", "CH1", "GEO-LEG-1"],
+			);
+			fs.writeFileSync(path, Buffer.from(seed.export()));
+			seed.close();
 
-	it("getThreadByIssue skips threads marked discord_missing", () => {
-		store.upsertThread("thread-200", "CH1", "GEO-200");
-		expect(store.getThreadByIssue("GEO-200")).toBeDefined();
-
-		store.markDiscordMissing("thread-200");
-		expect(store.getThreadByIssue("GEO-200")).toBeUndefined();
-	});
-
-	it("getThreadByIssue still returns archived threads (archived_at != discord_missing_at)", () => {
-		store.upsertThread("thread-201", "CH1", "GEO-201");
-		store.markArchived("thread-201");
-		// archived_at should NOT filter out
-		expect(store.getThreadByIssue("GEO-201")).toBeDefined();
-		expect(store.getThreadByIssue("GEO-201")!.thread_id).toBe("thread-201");
-	});
-
-	it("markDiscordMissing clears sessions.thread_id", () => {
-		store.upsertSession(
-			makeSession({
-				execution_id: "exec-miss-1",
-				issue_id: "GEO-202",
-				status: "running",
-			}),
-		);
-		store.upsertThread("thread-202", "CH1", "GEO-202");
-		store.setSessionThreadId("exec-miss-1", "thread-202");
-		expect(store.getSession("exec-miss-1")!.thread_id).toBe("thread-202");
-
-		store.markDiscordMissing("thread-202");
-		expect(store.getSession("exec-miss-1")!.thread_id).toBeUndefined();
-	});
-
-	it("markDiscordMissing writes timestamp", () => {
-		store.upsertThread("thread-203", "CH1", "GEO-203");
-		store.markDiscordMissing("thread-203");
-		// Verify via raw SQL that discord_missing_at is set
-		const stmt = store.db.prepare(
-			"SELECT discord_missing_at FROM conversation_threads WHERE thread_id = ?",
-		);
-		stmt.bind(["thread-203"]);
-		expect(stmt.step()).toBe(true);
-		const row = stmt.getAsObject() as Record<string, unknown>;
-		stmt.free();
-		expect(row.discord_missing_at).toBeTruthy();
-	});
-
-	it("markDiscordMissing is idempotent", () => {
-		store.upsertThread("thread-204", "CH1", "GEO-204");
-		store.markDiscordMissing("thread-204");
-		store.markDiscordMissing("thread-204");
-		expect(store.getThreadByIssue("GEO-204")).toBeUndefined();
-	});
-
-	it("getThreadIssue returns undefined for discord_missing thread", () => {
-		store.upsertThread("thread-205", "CH1", "GEO-205");
-		expect(store.getThreadIssue("thread-205")).toBe("GEO-205");
-
-		store.markDiscordMissing("thread-205");
-		expect(store.getThreadIssue("thread-205")).toBeUndefined();
-	});
-
-	it("getEligibleForCleanup excludes discord_missing threads", () => {
-		// Set up a completed session with a thread
-		store.upsertSession(
-			makeSession({
-				execution_id: "exec-cleanup-1",
-				issue_id: "GEO-206",
-				status: "completed",
-				last_activity_at: "2020-01-01 00:00:00",
-			}),
-		);
-		store.upsertThread("thread-206", "CH1", "GEO-206");
-
-		// Should be eligible before marking missing
-		const before = store.getEligibleForCleanup(1);
-		expect(before.some((c) => c.thread_id === "thread-206")).toBe(true);
-
-		// After marking missing, should be excluded
-		store.markDiscordMissing("thread-206");
-		const after = store.getEligibleForCleanup(1);
-		expect(after.some((c) => c.thread_id === "thread-206")).toBe(false);
+			const migrated = await StateStore.create(path);
+			const stmt = migrated.db.prepare(
+				"SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_threads'",
+			);
+			const dropped = !stmt.step();
+			stmt.free();
+			expect(dropped).toBe(true);
+			// chat_threads operations still work
+			migrated.upsertChatThread(
+				"thread-abc",
+				"channel-xyz",
+				"issue-1",
+				"lead-1",
+			);
+			expect(
+				migrated.getChatThreadByIssue("issue-1", "channel-xyz"),
+			).toBeDefined();
+		} finally {
+			try {
+				const fs = await import("node:fs");
+				fs.unlinkSync(path);
+			} catch {}
+		}
 	});
 
 	// --- GEO-292: pr_number, session_stage, stage_updated_at ---
@@ -971,5 +921,754 @@ describe("StateStore", () => {
 		expect(s!.pr_number).toBeUndefined();
 		expect(s!.session_stage).toBeUndefined();
 		expect(s!.stage_updated_at).toBeUndefined();
+	});
+});
+
+// ── FLY-369: chat_threads archived_at — archive-once mark + lead_id readback ──
+describe("StateStore — FLY-369 chat thread archival", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	it("getChatThreadByIssue returns lead_id + null archived_at for a fresh thread", () => {
+		store.upsertChatThread("t-1", "ch-1", "FLY-100", "lead-a");
+		expect(store.getChatThreadByIssue("FLY-100", "ch-1")).toEqual({
+			thread_id: "t-1",
+			channel_id: "ch-1",
+			lead_id: "lead-a",
+			archived_at: null,
+			// FLY-892 (converge): thread resolution is role-agnostic — no session_role.
+		});
+	});
+
+	it("markChatThreadArchived sets archived_at (archive-once record)", () => {
+		store.upsertChatThread("t-1", "ch-1", "FLY-100", "lead-a");
+		expect(
+			store.getChatThreadByIssue("FLY-100", "ch-1")?.archived_at,
+		).toBeNull();
+
+		store.markChatThreadArchived("t-1");
+		expect(
+			store.getChatThreadByIssue("FLY-100", "ch-1")?.archived_at,
+		).toBeTruthy();
+	});
+
+	it("archived_at column survives a legacy DB without it (migration)", async () => {
+		const fs = await import("node:fs");
+		const { mkdtempSync, rmSync } = fs;
+		const { tmpdir } = await import("node:os");
+		const { join: joinPath } = await import("node:path");
+		// FLY-663: use a unique temp dir so WAL sidecars (-wal/-shm) from a prior
+		// run can't replay into this one (a fixed path + unlink-main-only leaks them).
+		const dir = mkdtempSync(joinPath(tmpdir(), "fly369-"));
+		const path = joinPath(dir, "legacy-chat-threads.sqlite");
+		try {
+			const initSqlJs = (await import("sql.js")).default;
+			const SQL = await initSqlJs();
+			const seed = new SQL.Database();
+			// Legacy chat_threads WITHOUT archived_at (pre-FLY-369 schema)
+			seed.run(`CREATE TABLE chat_threads (
+				thread_id TEXT PRIMARY KEY,
+				channel_id TEXT NOT NULL,
+				issue_id TEXT,
+				lead_id TEXT,
+				created_at TEXT DEFAULT (datetime('now')),
+				discord_missing_at TEXT
+			)`);
+			seed.run(
+				"INSERT INTO chat_threads (thread_id, channel_id, issue_id, lead_id) VALUES (?, ?, ?, ?)",
+				["legacy-1", "ch-1", "FLY-99", "lead-a"],
+			);
+			fs.writeFileSync(path, Buffer.from(seed.export()));
+			seed.close();
+
+			const migrated = await StateStore.create(path);
+			// archived_at column now exists; legacy row reads back with null archived_at
+			expect(
+				migrated.getChatThreadByIssue("FLY-99", "ch-1")?.archived_at,
+			).toBeNull();
+			// and mark works on the migrated DB
+			migrated.markChatThreadArchived("legacy-1");
+			expect(
+				migrated.getChatThreadByIssue("FLY-99", "ch-1")?.archived_at,
+			).toBeTruthy();
+			migrated.close();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+// ── FLY-195: stuck-episode disposition receipts (plan §3.4) ──
+describe("StateStore — stuck dispositions (FLY-195)", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	it("returns undefined when no disposition exists", () => {
+		expect(
+			store.getStuckDisposition("exec-1", "aaaaaaaaaaaaaaaa"),
+		).toBeUndefined();
+	});
+
+	it("writes and reads back a disposition", () => {
+		store.setStuckDisposition({
+			execution_id: "exec-1",
+			episode_fingerprint: "aaaaaaaaaaaaaaaa",
+			disposition: "false_positive",
+			noted_by: "product-lead",
+			note: "runner was mid long build",
+		});
+		const row = store.getStuckDisposition("exec-1", "aaaaaaaaaaaaaaaa");
+		expect(row).toBeDefined();
+		expect(row!.disposition).toBe("false_positive");
+		expect(row!.noted_by).toBe("product-lead");
+		expect(row!.snooze_until_ms).toBeNull();
+	});
+
+	it("is keyed per (execution, fingerprint) — other episodes unaffected", () => {
+		store.setStuckDisposition({
+			execution_id: "exec-1",
+			episode_fingerprint: "aaaaaaaaaaaaaaaa",
+			disposition: "legitimate_wait",
+		});
+		expect(
+			store.getStuckDisposition("exec-1", "bbbbbbbbbbbbbbbb"),
+		).toBeUndefined();
+		expect(
+			store.getStuckDisposition("exec-2", "aaaaaaaaaaaaaaaa"),
+		).toBeUndefined();
+	});
+
+	it("upserts: a later write replaces the disposition (snooze → false_positive)", () => {
+		store.setStuckDisposition({
+			execution_id: "exec-1",
+			episode_fingerprint: "aaaaaaaaaaaaaaaa",
+			disposition: "snooze",
+			snooze_until_ms: 1_000_000,
+		});
+		expect(
+			store.getStuckDisposition("exec-1", "aaaaaaaaaaaaaaaa")!.snooze_until_ms,
+		).toBe(1_000_000);
+		store.setStuckDisposition({
+			execution_id: "exec-1",
+			episode_fingerprint: "aaaaaaaaaaaaaaaa",
+			disposition: "false_positive",
+		});
+		const row = store.getStuckDisposition("exec-1", "aaaaaaaaaaaaaaaa");
+		expect(row!.disposition).toBe("false_positive");
+		expect(row!.snooze_until_ms).toBeNull();
+	});
+
+	it("rejects an invalid disposition value", () => {
+		expect(() =>
+			store.setStuckDisposition({
+				execution_id: "exec-1",
+				episode_fingerprint: "aaaaaaaaaaaaaaaa",
+				// @ts-expect-error invalid on purpose
+				disposition: "approve_everything",
+			}),
+		).toThrow(/Invalid stuck disposition/);
+	});
+
+	it("survives a save/reload cycle (durable for Q7 re-read)", async () => {
+		const { mkdtempSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join: joinPath } = await import("node:path");
+		const dir = mkdtempSync(joinPath(tmpdir(), "fly195-"));
+		const dbPath = joinPath(dir, "state.db");
+		const s1 = await StateStore.create(dbPath);
+		s1.setStuckDisposition({
+			execution_id: "exec-9",
+			episode_fingerprint: "cccccccccccccccc",
+			disposition: "needs_founder",
+			noted_by: "ops-lead",
+		});
+		s1.close();
+		const s2 = await StateStore.create(dbPath);
+		const row = s2.getStuckDisposition("exec-9", "cccccccccccccccc");
+		expect(row?.disposition).toBe("needs_founder");
+		s2.close();
+	});
+});
+
+// ── FLY-253: execution-scoped latch storage ('*' sentinel rows) ──
+describe("StateStore — FLY-253 stuck disposition rows / latch / consume", () => {
+	let store: StateStore;
+	const FP = "aaaaaaaaaaaaaaaa";
+	const NOW = 1_000_000_000_000;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	const writeExact = (over: Record<string, unknown> = {}) =>
+		store.setStuckDisposition({
+			execution_id: "exec-1",
+			episode_fingerprint: FP,
+			disposition: "false_positive",
+			...over,
+		});
+	const writeSentinel = (over: Record<string, unknown> = {}) =>
+		store.setStuckDisposition({
+			execution_id: "exec-1",
+			episode_fingerprint: "*",
+			disposition: "legitimate_wait",
+			...over,
+		});
+
+	describe("getStuckDispositionRows", () => {
+		it("returns empty when nothing exists", () => {
+			const rows = store.getStuckDispositionRows("exec-1", FP);
+			expect(rows.exact).toBeUndefined();
+			expect(rows.sentinel).toBeUndefined();
+		});
+
+		it("returns the exact row only", () => {
+			writeExact();
+			const rows = store.getStuckDispositionRows("exec-1", FP);
+			expect(rows.exact?.disposition).toBe("false_positive");
+			expect(rows.sentinel).toBeUndefined();
+		});
+
+		it("returns the sentinel row only", () => {
+			writeSentinel();
+			const rows = store.getStuckDispositionRows("exec-1", FP);
+			expect(rows.exact).toBeUndefined();
+			expect(rows.sentinel?.disposition).toBe("legitimate_wait");
+			expect(rows.sentinel?.episode_fingerprint).toBe("*");
+		});
+
+		it("returns both when both exist; other executions unaffected", () => {
+			writeExact();
+			writeSentinel();
+			const rows = store.getStuckDispositionRows("exec-1", FP);
+			expect(rows.exact?.disposition).toBe("false_positive");
+			expect(rows.sentinel?.disposition).toBe("legitimate_wait");
+			const other = store.getStuckDispositionRows("exec-2", FP);
+			expect(other.exact).toBeUndefined();
+			expect(other.sentinel).toBeUndefined();
+		});
+
+		it("sentinel applies to ANY fingerprint of the execution", () => {
+			writeSentinel();
+			const rows = store.getStuckDispositionRows("exec-1", "bbbbbbbbbbbbbbbb");
+			expect(rows.sentinel?.disposition).toBe("legitimate_wait");
+		});
+	});
+
+	describe("clearExecutionStuckReceipts (re_arm)", () => {
+		it("deletes the sentinel AND episode rows (Codex code R1 HIGH-1: a residual effective exact row must not survive re_arm)", () => {
+			writeExact();
+			writeSentinel();
+			store.clearExecutionStuckReceipts("exec-1");
+			const rows = store.getStuckDispositionRows("exec-1", FP);
+			expect(rows.sentinel).toBeUndefined();
+			expect(rows.exact).toBeUndefined();
+		});
+
+		it("is a no-op when nothing exists, and scoped to the execution", () => {
+			store.setStuckDisposition({
+				execution_id: "exec-2",
+				episode_fingerprint: FP,
+				disposition: "false_positive",
+			});
+			expect(() => store.clearExecutionStuckReceipts("exec-1")).not.toThrow();
+			expect(store.getStuckDispositionRows("exec-2", FP).exact).toBeDefined();
+		});
+	});
+
+	describe("consumeExpiredStuckDispositions (one-shot reminder token)", () => {
+		it("deletes expired exact AND expired sentinel together", () => {
+			writeExact({ disposition: "snooze", snooze_until_ms: NOW - 1 });
+			writeSentinel({
+				disposition: "legitimate_wait",
+				snooze_until_ms: NOW - 5,
+			});
+			store.consumeExpiredStuckDispositions("exec-1", FP, NOW);
+			const rows = store.getStuckDispositionRows("exec-1", FP);
+			expect(rows.exact).toBeUndefined();
+			expect(rows.sentinel).toBeUndefined();
+		});
+
+		it("keeps future-dated rows (concurrent Lead refresh survives)", () => {
+			writeSentinel({ disposition: "snooze", snooze_until_ms: NOW + 60_000 });
+			store.consumeExpiredStuckDispositions("exec-1", FP, NOW);
+			expect(
+				store.getStuckDispositionRows("exec-1", FP).sentinel,
+			).toBeDefined();
+		});
+
+		it("keeps untimed rows (NULL snooze_until_ms is a terminal receipt, never consumed)", () => {
+			writeExact(); // false_positive, NULL
+			writeSentinel(); // legitimate_wait permanent (TTL=0)
+			store.consumeExpiredStuckDispositions("exec-1", FP, NOW);
+			const rows = store.getStuckDispositionRows("exec-1", FP);
+			expect(rows.exact).toBeDefined();
+			expect(rows.sentinel).toBeDefined();
+		});
+
+		it("boundary: snooze_until_ms == now is expired (<=) and consumed", () => {
+			writeSentinel({ disposition: "snooze", snooze_until_ms: NOW });
+			store.consumeExpiredStuckDispositions("exec-1", FP, NOW);
+			expect(
+				store.getStuckDispositionRows("exec-1", FP).sentinel,
+			).toBeUndefined();
+		});
+
+		it("does not touch other fingerprints or executions", () => {
+			store.setStuckDisposition({
+				execution_id: "exec-1",
+				episode_fingerprint: "bbbbbbbbbbbbbbbb",
+				disposition: "snooze",
+				snooze_until_ms: NOW - 1,
+			});
+			store.setStuckDisposition({
+				execution_id: "exec-2",
+				episode_fingerprint: FP,
+				disposition: "snooze",
+				snooze_until_ms: NOW - 1,
+			});
+			store.consumeExpiredStuckDispositions("exec-1", FP, NOW);
+			expect(
+				store.getStuckDispositionRows("exec-1", "bbbbbbbbbbbbbbbb").exact,
+			).toBeDefined();
+			expect(store.getStuckDispositionRows("exec-2", FP).exact).toBeDefined();
+		});
+	});
+});
+
+// FLY-205 — doc_tier + issue_url persistence: BOTH write paths must round-trip
+// (Codex design R3 #2: a column reachable from the type but missing from a
+// handwritten SQL list would silently not persist).
+describe("FLY-205 — doc_tier / issue_url persistence", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	it("upsertSession write path round-trips doc_tier + issue_url", () => {
+		store.upsertSession({
+			execution_id: "e-205-a",
+			issue_id: "LEARN-21",
+			project_name: "sub",
+			status: "running",
+			doc_tier: "plan_only",
+			issue_url: "https://linear.app/x/issue/LEARN-21",
+		});
+		const s = store.getSession("e-205-a");
+		expect(s?.doc_tier).toBe("plan_only");
+		expect(s?.issue_url).toBe("https://linear.app/x/issue/LEARN-21");
+	});
+
+	it("patchSessionMetadata write path round-trips doc_tier + issue_url", () => {
+		store.upsertSession({
+			execution_id: "e-205-b",
+			issue_id: "LEARN-22",
+			project_name: "sub",
+			status: "running",
+		});
+		store.patchSessionMetadata("e-205-b", {
+			doc_tier: "none",
+			issue_url: "https://linear.app/x/issue/LEARN-22",
+		});
+		const s = store.getSession("e-205-b");
+		expect(s?.doc_tier).toBe("none");
+		expect(s?.issue_url).toBe("https://linear.app/x/issue/LEARN-22");
+	});
+
+	it("persistTransition write path round-trips doc_tier + issue_url", () => {
+		store.persistTransition("e-205-c", "running", {
+			issue_id: "LEARN-23",
+			project_name: "sub",
+			doc_tier: "full",
+			issue_url: "https://linear.app/x/issue/LEARN-23",
+		});
+		const s = store.getSession("e-205-c");
+		expect(s?.doc_tier).toBe("full");
+		expect(s?.issue_url).toBe("https://linear.app/x/issue/LEARN-23");
+	});
+
+	it("values survive file-backed close/reopen (migration column is real)", async () => {
+		const dbPath = `/tmp/fly205-statestore-test-${Date.now()}.db`;
+		const s1 = await StateStore.create(dbPath);
+		s1.upsertSession({
+			execution_id: "e-205-d",
+			issue_id: "LEARN-24",
+			project_name: "sub",
+			status: "running",
+			doc_tier: "plan_only",
+			issue_url: "https://linear.app/x/issue/LEARN-24",
+		});
+		s1.close();
+		const s2 = await StateStore.create(dbPath);
+		const s = s2.getSession("e-205-d");
+		expect(s?.doc_tier).toBe("plan_only");
+		expect(s?.issue_url).toBe("https://linear.app/x/issue/LEARN-24");
+		s2.close();
+	});
+
+	it("COALESCE semantics: later upsert without tier does not clobber stored tier", () => {
+		store.upsertSession({
+			execution_id: "e-205-e",
+			issue_id: "LEARN-25",
+			project_name: "sub",
+			status: "running",
+			doc_tier: "none",
+		});
+		// e.g. a heartbeat-ish upsert that doesn't carry doc_tier
+		store.upsertSession({
+			execution_id: "e-205-e",
+			issue_id: "LEARN-25",
+			project_name: "sub",
+			status: "running",
+		});
+		expect(store.getSession("e-205-e")?.doc_tier).toBe("none");
+	});
+});
+
+describe("StateStore — FLY-245 D-a lifecycle_revision (monotonic freshness)", () => {
+	let store: StateStore;
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	it("a new session starts at revision 0", () => {
+		store.upsertSession(makeSession({ status: "running" }));
+		expect(store.getLifecycleRevision("exec-1")).toBe(0);
+		expect(store.getSession("exec-1")?.lifecycle_revision).toBe(0);
+	});
+
+	it("upsertSession bumps the revision on a genuine status CHANGE", () => {
+		store.upsertSession(makeSession({ status: "running" }));
+		store.upsertSession(makeSession({ status: "awaiting_review" }));
+		expect(store.getLifecycleRevision("exec-1")).toBe(1);
+		store.upsertSession(makeSession({ status: "blocked" }));
+		expect(store.getLifecycleRevision("exec-1")).toBe(2);
+	});
+
+	it("a same-status re-upsert does NOT inflate the revision", () => {
+		store.upsertSession(makeSession({ status: "running" }));
+		store.upsertSession(makeSession({ status: "running", summary: "x" }));
+		store.upsertSession(makeSession({ status: "running", summary: "y" }));
+		expect(store.getLifecycleRevision("exec-1")).toBe(0);
+	});
+
+	it("persistTransition (FSM path) bumps on a transition", () => {
+		store.upsertSession(makeSession({ status: "running" }));
+		store.persistTransition("exec-1", "awaiting_review", {
+			issue_id: "GEO-95",
+			project_name: "geoforge3d",
+		});
+		expect(store.getLifecycleRevision("exec-1")).toBe(1);
+	});
+
+	it("forceStatus (legacy path) is NOT a hole — it bumps too", () => {
+		store.upsertSession(makeSession({ status: "running" }));
+		store.forceStatus("exec-1", "blocked", new Date(0).toISOString());
+		expect(store.getLifecycleRevision("exec-1")).toBe(1);
+	});
+
+	it("status leaving and RETURNING to the same value keeps climbing (the freshness point)", () => {
+		// running → blocked → running: status returns to 'running' but revision is
+		// now 2, so a confirmation snapshotted at revision 0 is stale.
+		const f = { issue_id: "GEO-95", project_name: "geoforge3d" };
+		store.upsertSession(makeSession({ status: "running" }));
+		store.persistTransition("exec-1", "blocked", f);
+		store.persistTransition("exec-1", "running", f);
+		expect(store.getLifecycleRevision("exec-1")).toBe(2);
+	});
+
+	it("getLifecycleRevision is 0 for an absent session", () => {
+		expect(store.getLifecycleRevision("nope")).toBe(0);
+	});
+});
+
+// ── FLY-560 Feature C: runner-attach pin state ──
+describe("StateStore — runner-attach pin (FLY-560)", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	it("getChatThreadAttachPin returns undefined when no pin recorded", () => {
+		store.upsertChatThread("t-1", "ch-1", "FLY-100", "lead-a");
+		expect(store.getChatThreadAttachPin("FLY-100", "ch-1")).toBeUndefined();
+	});
+
+	it("set/get attach pin round-trips (pinnedAt null then set)", () => {
+		store.upsertChatThread("t-1", "ch-1", "FLY-100", "lead-a");
+		store.setChatThreadAttachPin("FLY-100", "ch-1", {
+			messageId: "m-1",
+			command: "tmux attach -t '=cmux-FLY-100-x'",
+			pinnedAt: null,
+		});
+		expect(store.getChatThreadAttachPin("FLY-100", "ch-1")).toEqual({
+			messageId: "m-1",
+			command: "tmux attach -t '=cmux-FLY-100-x'",
+			pinnedAt: null,
+		});
+		store.setChatThreadAttachPin("FLY-100", "ch-1", {
+			messageId: "m-1",
+			command: "tmux attach -t '=cmux-FLY-100-x'",
+			pinnedAt: "2026-06-27T12:00:00Z",
+		});
+		expect(store.getChatThreadAttachPin("FLY-100", "ch-1")?.pinnedAt).toBe(
+			"2026-06-27T12:00:00Z",
+		);
+	});
+
+	it("clearChatThreadAttachPin nulls the pin record", () => {
+		store.upsertChatThread("t-1", "ch-1", "FLY-100", "lead-a");
+		store.setChatThreadAttachPin("FLY-100", "ch-1", {
+			messageId: "m-1",
+			command: "cmd",
+			pinnedAt: "2026-06-27T12:00:00Z",
+		});
+		store.clearChatThreadAttachPin("FLY-100", "ch-1");
+		expect(store.getChatThreadAttachPin("FLY-100", "ch-1")).toBeUndefined();
+	});
+
+	it("attach-pin columns survive a legacy DB without them (migration)", async () => {
+		const fs = await import("node:fs");
+		const { mkdtempSync, rmSync } = fs;
+		const { tmpdir } = await import("node:os");
+		const { join: joinPath } = await import("node:path");
+		// FLY-663: unique temp dir so WAL sidecars don't leak across runs.
+		const dir = mkdtempSync(joinPath(tmpdir(), "fly560-"));
+		const path = joinPath(dir, "legacy-chat-threads.sqlite");
+		try {
+			const initSqlJs = (await import("sql.js")).default;
+			const SQL = await initSqlJs();
+			const seed = new SQL.Database();
+			// Legacy chat_threads WITHOUT attach_pin_* (pre-FLY-560 schema)
+			seed.run(`CREATE TABLE chat_threads (
+				thread_id TEXT PRIMARY KEY,
+				channel_id TEXT NOT NULL,
+				issue_id TEXT,
+				lead_id TEXT,
+				created_at TEXT DEFAULT (datetime('now')),
+				discord_missing_at TEXT,
+				archived_at TEXT
+			)`);
+			seed.run(
+				"INSERT INTO chat_threads (thread_id, channel_id, issue_id, lead_id) VALUES (?, ?, ?, ?)",
+				["legacy-1", "ch-1", "FLY-99", "lead-a"],
+			);
+			fs.writeFileSync(path, Buffer.from(seed.export()));
+			seed.close();
+
+			const migrated = await StateStore.create(path);
+			expect(migrated.getChatThreadAttachPin("FLY-99", "ch-1")).toBeUndefined();
+			migrated.setChatThreadAttachPin("FLY-99", "ch-1", {
+				messageId: "m-9",
+				command: "cmd",
+				pinnedAt: null,
+			});
+			expect(migrated.getChatThreadAttachPin("FLY-99", "ch-1")?.messageId).toBe(
+				"m-9",
+			);
+			migrated.close();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+// --- FLY-639: sql.js corruption self-heal + unrecoverable escalation ---
+
+describe("StateStore FLY-639 corruption recovery", () => {
+	const CORRUPTION = "no such table: sessions";
+
+	describe("isSqlJsCorruptionError", () => {
+		it("matches the production WASM + missing-table signatures", () => {
+			expect(
+				isSqlJsCorruptionError(
+					new Error(
+						"RuntimeError: null function or function signature mismatch",
+					),
+				),
+			).toBe(true);
+			expect(isSqlJsCorruptionError(new Error("no such table: sessions"))).toBe(
+				true,
+			);
+			expect(
+				isSqlJsCorruptionError(new Error("database disk image is malformed")),
+			).toBe(true);
+			expect(isSqlJsCorruptionError(new Error("Out Of Memory"))).toBe(true);
+			expect(
+				isSqlJsCorruptionError(new Error("memory access out of bounds")),
+			).toBe(true);
+			// plain string + Error both supported
+			expect(isSqlJsCorruptionError("no such table: lead_events")).toBe(true);
+		});
+
+		it("does NOT match ordinary errors", () => {
+			expect(
+				isSqlJsCorruptionError(new Error("UNIQUE constraint failed")),
+			).toBe(false);
+			expect(isSqlJsCorruptionError(new Error("boom"))).toBe(false);
+			expect(isSqlJsCorruptionError(undefined)).toBe(false);
+			expect(isSqlJsCorruptionError(null)).toBe(false);
+		});
+	});
+
+	it("ignores non-corruption errors (DB untouched, returns false)", async () => {
+		const store = await StateStore.create(":memory:");
+		store.upsertSession(makeSession({ execution_id: "keep-1" }));
+		expect(store.recoverFromCorruption(new Error("UNIQUE constraint"))).toBe(
+			false,
+		);
+		// DB still usable + unchanged
+		expect(store.getSession("keep-1")).toBeTruthy();
+		store.close();
+	});
+
+	it(":memory: recovery returns true and leaves a usable (empty) DB", async () => {
+		const store = await StateStore.create(":memory:");
+		store.upsertSession(makeSession({ execution_id: "mem-1" }));
+		const recovered = store.recoverFromCorruption(new Error(CORRUPTION));
+		expect(recovered).toBe(true);
+		// :memory: has no disk image → rebuild is an empty DB, but getActiveSessions
+		// must WORK (not throw) — that is the crash-containment contract.
+		expect(() => store.getActiveSessions()).not.toThrow();
+		expect(store.getActiveSessions()).toEqual([]);
+		store.close();
+	});
+
+	it("on-disk recovery: reopens healthy and durable data survives (FLY-663: WAL = no unflushed loss)", async () => {
+		const { mkdtempSync, rmSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join: joinPath } = await import("node:path");
+		const dir = mkdtempSync(joinPath(tmpdir(), "fly639-"));
+		const dbPath = joinPath(dir, "state.db");
+		const store = await StateStore.create(dbPath);
+		try {
+			store.upsertSession(makeSession({ execution_id: "disk-1" }));
+			// FLY-663: under WAL every write is immediately durable — appendLeadEvent
+			// no longer has the old "lost until flush()" window.
+			store.appendLeadEvent("lead-1", "evt-1", "x", "{}");
+
+			const recovered = store.recoverFromCorruption(new Error(CORRUPTION));
+			expect(recovered).toBe(true);
+
+			// Both the session AND the lead event survive (both were durable).
+			expect(store.getSession("disk-1")).toBeTruthy();
+			expect(store.tryClaimLeadEvent("lead-1", "evt-1", "x", "{}")).toBe(false);
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("escalates to onUnrecoverableCorruption after maxRecoveryFailures consecutive rebuild failures", async () => {
+		const store = await StateStore.create(":memory:");
+		const onUnrecoverable = vi.fn();
+		store.onUnrecoverableCorruption = onUnrecoverable;
+		// FLY-663: simulate a reopen that keeps failing (e.g. a malformed file that
+		// stays malformed) by forcing buildDatabaseFromDisk to throw.
+		(
+			store as unknown as { buildDatabaseFromDisk: () => unknown }
+		).buildDatabaseFromDisk = () => {
+			throw new Error("reopen failed");
+		};
+
+		const max = (store as unknown as { maxRecoveryFailures: number })
+			.maxRecoveryFailures;
+		for (let i = 0; i < max; i++) {
+			// Reset the throttle so each call is a distinct recovery episode.
+			(
+				store as unknown as { lastRecoveryAttemptAt: number }
+			).lastRecoveryAttemptAt = 0;
+			expect(store.recoverFromCorruption(new Error(CORRUPTION))).toBe(false);
+		}
+		expect(onUnrecoverable).toHaveBeenCalledTimes(1);
+		store.close();
+	});
+
+	it("throttle: a rapid second corruption call does not attempt a second rebuild", async () => {
+		const store = await StateStore.create(":memory:");
+		store.onUnrecoverableCorruption = vi.fn();
+		let builds = 0;
+		(
+			store as unknown as { buildDatabaseFromDisk: () => unknown }
+		).buildDatabaseFromDisk = () => {
+			builds++;
+			throw new Error("reopen failed");
+		};
+		// First call attempts a rebuild (fails). Second call within the throttle
+		// window is skipped — same episode, not a new attempt.
+		expect(store.recoverFromCorruption(new Error(CORRUPTION))).toBe(false);
+		expect(store.recoverFromCorruption(new Error(CORRUPTION))).toBe(false);
+		expect(builds).toBe(1);
+		expect(
+			(store as unknown as { recoveryFailures: number }).recoveryFailures,
+		).toBe(1);
+		store.close();
+	});
+
+	it("a successful recovery resets the failure counter", async () => {
+		const store = await StateStore.create(":memory:");
+		const onUnrecoverable = vi.fn();
+		store.onUnrecoverableCorruption = onUnrecoverable;
+		const realBuild = (
+			store as unknown as { buildDatabaseFromDisk: () => unknown }
+		).buildDatabaseFromDisk.bind(store);
+		// One failed attempt.
+		(
+			store as unknown as { buildDatabaseFromDisk: () => unknown }
+		).buildDatabaseFromDisk = () => {
+			throw new Error("reopen failed");
+		};
+		(
+			store as unknown as { lastRecoveryAttemptAt: number }
+		).lastRecoveryAttemptAt = 0;
+		expect(store.recoverFromCorruption(new Error(CORRUPTION))).toBe(false);
+		expect(
+			(store as unknown as { recoveryFailures: number }).recoveryFailures,
+		).toBe(1);
+		// Restore the real reopen → a real recovery resets the counter.
+		(
+			store as unknown as { buildDatabaseFromDisk: () => unknown }
+		).buildDatabaseFromDisk = realBuild;
+		(
+			store as unknown as { lastRecoveryAttemptAt: number }
+		).lastRecoveryAttemptAt = 0;
+		expect(store.recoverFromCorruption(new Error(CORRUPTION))).toBe(true);
+		expect(
+			(store as unknown as { recoveryFailures: number }).recoveryFailures,
+		).toBe(0);
+		expect(onUnrecoverable).not.toHaveBeenCalled();
+		store.close();
+	});
+
+	it("a MALFORMED on-disk file is NOT a silent empty-DB success — it counts as a rebuild failure (FLY-663 §2.5 contract)", async () => {
+		const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join: joinPath } = await import("node:path");
+		const dir = mkdtempSync(joinPath(tmpdir(), "fly639-malformed-"));
+		const malformedPath = joinPath(dir, "malformed.db");
+		// A file that EXISTS but is not a SQLite database.
+		writeFileSync(malformedPath, Buffer.from("not a valid sqlite image"));
+		const store = await StateStore.create(":memory:");
+		try {
+			// Point recovery at the malformed file: buildDatabaseFromDisk must throw
+			// on the sanity read rather than masking it as a clean empty DB.
+			(store as unknown as { dbPath: string }).dbPath = malformedPath;
+			store.onUnrecoverableCorruption = vi.fn();
+			expect(store.recoverFromCorruption(new Error(CORRUPTION))).toBe(false);
+			expect(
+				(store as unknown as { recoveryFailures: number }).recoveryFailures,
+			).toBe(1);
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

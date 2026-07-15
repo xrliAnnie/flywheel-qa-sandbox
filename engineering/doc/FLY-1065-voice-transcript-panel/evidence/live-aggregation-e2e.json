@@ -1,0 +1,446 @@
+{
+	"model": "gemini-3.1-flash-live-preview",
+	"sinkPath": "/Users/xiaorongli/.flywheel/runner-state/8ae0bc81-dddd-4768-9aee-39eb59f53142/browser-tmp/fly1065-e2e-1783637812976.jsonl",
+	"responseDoneAt": 20523,
+	"assistantFinalAt": 10326,
+	"userFinalAt": 6869,
+	"assistantFinalLeadOverTurnCompleteMs": 10197,
+	"checks": [
+		{
+			"name": "exactly ONE user final (turn aggregate, no per-fragment finals)",
+			"ok": true
+		},
+		{
+			"name": "exactly ONE assistant final (multi-signal never double-emits)",
+			"ok": true
+		},
+		{
+			"name": "user final text is the aggregated sentence (not a fragment)",
+			"ok": true
+		},
+		{
+			"name": "assistant final = concatenation of its fragments",
+			"ok": true
+		},
+		{
+			"name": "user final arrives BEFORE the assistant final (she flushes on first model output)",
+			"ok": true
+		},
+		{
+			"name": "assistant final arrives BEFORE response-done (generation-complete flush, not the ~10s turnComplete wait)",
+			"ok": true
+		},
+		{
+			"name": "JSONL sink holds exactly the two aggregated rows (final:true)",
+			"ok": true
+		},
+		{
+			"name": "sink rows carry both roles with the aggregated texts",
+			"ok": true
+		}
+	],
+	"timeline": [
+		{
+			"atMs": 264,
+			"type": "connected",
+			"model": "gemini-3.1-flash-live-preview"
+		},
+		{
+			"atMs": 5654,
+			"type": "audio-committed"
+		},
+		{
+			"atMs": 6861,
+			"type": "fragment",
+			"role": "user",
+			"text": "今 天 我 们 聊 一 聊 转 写 面 板 , 你 觉 得 这 个 功 能 怎 么 样 ?"
+		},
+		{
+			"atMs": 6869,
+			"type": "final",
+			"role": "user",
+			"text": "今 天 我 们 聊 一 聊 转 写 面 板 , 你 觉 得 这 个 功 能 怎 么 样 ?"
+		},
+		{
+			"atMs": 6873,
+			"type": "response-started"
+		},
+		{
+			"atMs": 6873,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "转写面"
+		},
+		{
+			"atMs": 6873,
+			"type": "response-audio",
+			"count": 4
+		},
+		{
+			"atMs": 6910,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "板"
+		},
+		{
+			"atMs": 6910,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 6928,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "听起"
+		},
+		{
+			"atMs": 6928,
+			"type": "response-audio",
+			"count": 2
+		},
+		{
+			"atMs": 6937,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "来"
+		},
+		{
+			"atMs": 6937,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 6943,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "挺"
+		},
+		{
+			"atMs": 6943,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 7040,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "有用的。"
+		},
+		{
+			"atMs": 7040,
+			"type": "response-audio",
+			"count": 3
+		},
+		{
+			"atMs": 7181,
+			"type": "fragment",
+			"role": "assistant",
+			"text": " 不过,"
+		},
+		{
+			"atMs": 7181,
+			"type": "response-audio",
+			"count": 3
+		},
+		{
+			"atMs": 7467,
+			"type": "fragment",
+			"role": "assistant",
+			"text": " 为了"
+		},
+		{
+			"atMs": 7467,
+			"type": "response-audio",
+			"count": 2
+		},
+		{
+			"atMs": 7532,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "能"
+		},
+		{
+			"atMs": 7532,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 7609,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "聊得"
+		},
+		{
+			"atMs": 7609,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 7710,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "更"
+		},
+		{
+			"atMs": 7710,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 7766,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "深入,"
+		},
+		{
+			"atMs": 7766,
+			"type": "response-audio",
+			"count": 2
+		},
+		{
+			"atMs": 7929,
+			"type": "fragment",
+			"role": "assistant",
+			"text": " 你能"
+		},
+		{
+			"atMs": 7929,
+			"type": "response-audio",
+			"count": 2
+		},
+		{
+			"atMs": 8029,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "多"
+		},
+		{
+			"atMs": 8029,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 8134,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "说说"
+		},
+		{
+			"atMs": 8134,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 8230,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "它是"
+		},
+		{
+			"atMs": 8230,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 8341,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "做什么"
+		},
+		{
+			"atMs": 8341,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 8438,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "用的,"
+		},
+		{
+			"atMs": 8438,
+			"type": "response-audio",
+			"count": 2
+		},
+		{
+			"atMs": 8585,
+			"type": "fragment",
+			"role": "assistant",
+			"text": " 或者"
+		},
+		{
+			"atMs": 8585,
+			"type": "response-audio",
+			"count": 2
+		},
+		{
+			"atMs": 8755,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "你想"
+		},
+		{
+			"atMs": 8755,
+			"type": "response-audio",
+			"count": 2
+		},
+		{
+			"atMs": 8867,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "了解"
+		},
+		{
+			"atMs": 8867,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 8951,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "它的"
+		},
+		{
+			"atMs": 8951,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 8976,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "哪"
+		},
+		{
+			"atMs": 8976,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 9094,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "方面"
+		},
+		{
+			"atMs": 9094,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 9155,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "吗?"
+		},
+		{
+			"atMs": 9155,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 9347,
+			"type": "fragment",
+			"role": "assistant",
+			"text": " 比如,"
+		},
+		{
+			"atMs": 9347,
+			"type": "response-audio",
+			"count": 3
+		},
+		{
+			"atMs": 9562,
+			"type": "fragment",
+			"role": "assistant",
+			"text": " 是在"
+		},
+		{
+			"atMs": 9562,
+			"type": "response-audio",
+			"count": 2
+		},
+		{
+			"atMs": 9706,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "会议"
+		},
+		{
+			"atMs": 9706,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 9835,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "记录"
+		},
+		{
+			"atMs": 9835,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 9936,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "还是"
+		},
+		{
+			"atMs": 9936,
+			"type": "response-audio",
+			"count": 2
+		},
+		{
+			"atMs": 10029,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "其他"
+		},
+		{
+			"atMs": 10029,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 10120,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "场景"
+		},
+		{
+			"atMs": 10120,
+			"type": "response-audio",
+			"count": 1
+		},
+		{
+			"atMs": 10202,
+			"type": "fragment",
+			"role": "assistant",
+			"text": "使用?"
+		},
+		{
+			"atMs": 10202,
+			"type": "response-audio",
+			"count": 2
+		},
+		{
+			"atMs": 10326,
+			"type": "final",
+			"role": "assistant",
+			"text": "转写面板听起来挺有用的。 不过, 为了能聊得更深入, 你能多说说它是做什么用的, 或者你想了解它的哪方面吗? 比如, 是在会议记录还是其他场景使用?"
+		},
+		{
+			"atMs": 20523,
+			"type": "response-done"
+		},
+		{
+			"atMs": 20704,
+			"type": "closed"
+		}
+	]
+}

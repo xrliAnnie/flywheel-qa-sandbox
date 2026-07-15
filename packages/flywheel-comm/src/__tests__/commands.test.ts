@@ -105,15 +105,16 @@ describe("commands round-trip", () => {
 		expect(pendingQs[0]!.from_agent).toBe("runner");
 	});
 
-	it("should throw when responding to non-existent question", () => {
-		expect(() =>
+	it("should throw when responding to non-existent question", async () => {
+		// FLY-175: respond() is now async (gated checkpoints route via Bridge).
+		await expect(
 			respond({
 				questionId: "non-existent",
 				fromAgent: "product-lead",
 				answer: "Answer",
 				dbPath,
 			}),
-		).toThrow("not found");
+		).rejects.toThrow("not found");
 	});
 });
 
@@ -130,8 +131,8 @@ describe("send/inbox round-trip", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	it("should complete a send → inbox round-trip", () => {
-		const instId = send({
+	it("should complete a send → inbox round-trip", async () => {
+		const instId = await send({
 			fromAgent: "product-lead",
 			toAgent: "exec-123",
 			content: "Stop current work and switch to GEO-999",
@@ -148,8 +149,8 @@ describe("send/inbox round-trip", () => {
 		expect(result.instructions[0]!.from_agent).toBe("product-lead");
 	});
 
-	it("should mark instructions as read after inbox retrieval", () => {
-		send({
+	it("should mark instructions as read after inbox retrieval", async () => {
+		await send({
 			fromAgent: "product-lead",
 			toAgent: "exec-123",
 			content: "Instruction 1",
@@ -165,14 +166,14 @@ describe("send/inbox round-trip", () => {
 		expect(second.instructions).toHaveLength(0);
 	});
 
-	it("should isolate instructions per runner", () => {
-		send({
+	it("should isolate instructions per runner", async () => {
+		await send({
 			fromAgent: "product-lead",
 			toAgent: "exec-A",
 			content: "For runner A",
 			dbPath,
 		});
-		send({
+		await send({
 			fromAgent: "product-lead",
 			toAgent: "exec-B",
 			content: "For runner B",
@@ -188,14 +189,14 @@ describe("send/inbox round-trip", () => {
 		expect(inboxB.instructions[0]!.content).toBe("For runner B");
 	});
 
-	it("should receive instructions from multiple leads", () => {
-		send({
+	it("should receive instructions from multiple leads", async () => {
+		await send({
 			fromAgent: "product-lead",
 			toAgent: "exec-123",
 			content: "From product",
 			dbPath,
 		});
-		send({
+		await send({
 			fromAgent: "ops-lead",
 			toAgent: "exec-123",
 			content: "From ops",
@@ -417,5 +418,42 @@ describe("capture command", () => {
 		expect(() => capture({ execId: "exec-tmux", dbPath })).toThrow(
 			"tmux window not found",
 		);
+	});
+});
+
+describe("ask --report (FLY-1041)", () => {
+	let tmpDir: string;
+	let dbPath: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-ask-report-"));
+		dbPath = join(tmpDir, "comm.db");
+	});
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("report:true marks the question kind='report'; default stays NULL", () => {
+		const reportId = ask({
+			lead: "lead-1",
+			execId: "exec-1",
+			question: "DONE: merged",
+			dbPath,
+			report: true,
+		});
+		const plainId = ask({
+			lead: "lead-1",
+			execId: "exec-1",
+			question: "which db should I use?",
+			dbPath,
+		});
+		const db = new CommDB(dbPath);
+		try {
+			expect(db.getMessageById(reportId)?.kind).toBe("report");
+			expect(db.getMessageById(plainId)?.kind).toBeNull();
+		} finally {
+			db.close();
+		}
 	});
 });

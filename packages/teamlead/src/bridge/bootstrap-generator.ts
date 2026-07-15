@@ -15,11 +15,12 @@ import type {
 	BootstrapDecision,
 	BootstrapFailure,
 	BootstrapGateQuestion,
+	BootstrapRunnerQuestion,
 	BootstrapSession,
 	LeadBootstrap,
 	LeadEventEnvelope,
 } from "./lead-runtime.js";
-import { filterSessionsByLead } from "./lead-scope.js";
+import { filterSessionsByLead, matchesLead } from "./lead-scope.js";
 import { defaultGetCommDbPath } from "./session-capture.js";
 
 const RECENT_EVENTS_WINDOW_MINUTES = 5;
@@ -204,14 +205,24 @@ export async function generateBootstrap(
 		}
 	}
 
-	// FLY-62: Collect pending gate questions across projects
+	// FLY-62 + FLY-161: Collect pending questions for this Lead. The CommDB
+	// query is filtered by `to_agent=leadId`, so we don't risk leaking other
+	// Leads' questions even when a project hosts multiple Leads (R2 Issue 1).
+	// We iterate only the projects containing the requested leadId.
 	const pendingGateQuestions: BootstrapGateQuestion[] = [];
-	const projectsDone = new Set<string>();
-	for (const session of activeSessions) {
-		if (projectsDone.has(session.project_name)) continue;
-		projectsDone.add(session.project_name);
-
-		const dbPath = defaultGetCommDbPath(session.project_name);
+	const pendingRunnerQuestions: BootstrapRunnerQuestion[] = [];
+	const targetProjects = projects.filter((p) =>
+		p.leads.some((l) => l.agentId === leadId),
+	);
+	for (const project of targetProjects) {
+		// FLY-161 (Codex R1 review): `targetLead` is resolved PER PROJECT, not
+		// once globally. If the same `leadId` participates in multiple projects
+		// with different `chatChannel`s, the runner_question chatThreadId hint
+		// must follow the current project's Lead config — otherwise subsequent
+		// projects would inherit the first project's chatChannel, mis-routing
+		// the chat-thread suggestion.
+		const targetLead = project.leads.find((l) => l.agentId === leadId);
+		const dbPath = defaultGetCommDbPath(project.projectName);
 		let db: CommDB;
 		try {
 			db = CommDB.openReadonly(dbPath);
@@ -219,31 +230,84 @@ export async function generateBootstrap(
 			continue; // DB doesn't exist yet
 		}
 		try {
-			const pendingQs = db
-				.getPendingQuestions(leadId)
-				.filter((q) => q.checkpoint != null);
-			const sessionByExecId = new Map(
-				activeSessions
-					.filter((s) => s.project_name === session.project_name)
-					.map((s) => [s.execution_id, s]),
-			);
+			const pendingQs = db.getPendingQuestions(leadId);
 			for (const q of pendingQs) {
-				const matchedSession = sessionByExecId.get(q.from_agent);
-				if (!matchedSession) continue;
+				// FLY-161: questions from `store.getSession` (NOT activeSessions)
+				// — runner_question must survive Runner completion. Orphan rows
+				// (no session record) are dropped with a warn for parity with
+				// GatePoller.
+				const matchedSession = store.getSession(q.from_agent);
+				if (!matchedSession) {
+					console.warn(
+						`[bootstrap] orphan question — no session for from_agent=${q.from_agent} (qid=${q.id}, lead=${leadId})`,
+					);
+					continue;
+				}
 				let content = q.content;
 				if (q.content_type === "ref" && q.content_ref) {
 					content = readContentRef(q.content_ref) ?? q.content;
 				}
-				pendingGateQuestions.push({
-					questionId: q.id,
-					checkpoint: q.checkpoint!,
-					executionId: matchedSession.execution_id,
-					issueIdentifier: matchedSession.issue_identifier,
-					content,
-					commDbPath: dbPath,
-					createdAt: q.created_at,
-					sessionRole: matchedSession.session_role,
-				});
+
+				if (q.checkpoint != null) {
+					// gate_question — preserve pre-FLY-161 gating: active session
+					// AND label-scope match (R2 Issue 3 + R3 Issue 1).
+					if (
+						matchedSession.status !== "running" &&
+						matchedSession.status !== "awaiting_review" &&
+						matchedSession.status !== "approved_to_ship"
+					) {
+						continue;
+					}
+					let scoped: boolean;
+					try {
+						scoped = matchesLead(matchedSession, leadId, projects);
+					} catch (err) {
+						console.warn(
+							`[bootstrap] gate-question lead-scope verify error for session ${matchedSession.execution_id}: ${(err as Error).message}`,
+						);
+						continue;
+					}
+					if (!scoped) continue;
+
+					const gate: BootstrapGateQuestion = {
+						questionId: q.id,
+						checkpoint: q.checkpoint!,
+						executionId: matchedSession.execution_id,
+						issueIdentifier: matchedSession.issue_identifier,
+						content,
+						commDbPath: dbPath,
+						createdAt: q.created_at,
+						sessionRole: matchedSession.session_role,
+					};
+					pendingGateQuestions.push(gate);
+				} else {
+					// runner_question — route by to_agent only. No active-session
+					// constraint and no label-scope check (the Runner explicitly
+					// named this Lead via `flywheel-comm ask --lead`).
+					const rq: BootstrapRunnerQuestion = {
+						questionId: q.id,
+						executionId: matchedSession.execution_id,
+						issueIdentifier: matchedSession.issue_identifier,
+						content,
+						commDbPath: dbPath,
+						createdAt: q.created_at,
+						sessionRole: matchedSession.session_role,
+					};
+					// FLY-91 + FLY-161 R4: chatThreadId follows the **target Lead**
+					// (the one named by the Runner), NOT the source session's
+					// label-derived Lead — otherwise a cross-label ask routes
+					// correctly by to_agent but the chat-thread hint points at
+					// the wrong Lead's chatChannel.
+					if (opts?.chatThreadsEnabled && targetLead?.chatChannel) {
+						// FLY-892 (converge): one issue = one thread.
+						const ct = store.getChatThreadByIssue(
+							matchedSession.issue_id,
+							targetLead.chatChannel,
+						);
+						if (ct) rq.chatThreadId = ct.thread_id;
+					}
+					pendingRunnerQuestions.push(rq);
+				}
 			}
 		} finally {
 			db.close();
@@ -258,6 +322,7 @@ export async function generateBootstrap(
 				const labels = store.getSessionLabels(s.execution_id);
 				const { lead } = resolveLeadForIssue(projects, s.project_name, labels);
 				if (lead.chatChannel) {
+					// FLY-892 (converge): one issue = one thread.
 					const ct = store.getChatThreadByIssue(s.issue_id, lead.chatChannel);
 					if (ct) bs.chatThreadId = ct.thread_id;
 				}
@@ -277,6 +342,8 @@ export async function generateBootstrap(
 		memoryRecall,
 		pendingGateQuestions:
 			pendingGateQuestions.length > 0 ? pendingGateQuestions : undefined,
+		pendingRunnerQuestions:
+			pendingRunnerQuestions.length > 0 ? pendingRunnerQuestions : undefined,
 	};
 }
 
@@ -289,7 +356,6 @@ function toBootstrapSession(s: Session): BootstrapSession {
 		projectName: s.project_name,
 		status: s.status,
 		startedAt: s.started_at,
-		threadId: s.thread_id,
 		sessionRole: s.session_role,
 	};
 }

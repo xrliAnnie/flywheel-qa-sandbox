@@ -7,9 +7,11 @@
 # transaction is fully exercised.
 #
 # Passes when:
-#   * `alert_claims` holds exactly 1 row (winner's claim stays — queue file is
-#     the retry record, Bridge's drainQueue() reruns POST without re-claiming)
-#   * exactly 1 worker queued a payload (sent or queued)
+#   * `alert_claims` holds exactly 1 row (winner's claim stays — the spill file
+#     is the audit/retry record)
+#   * exactly 1 worker spilled a payload — queued (transient: curl 000/5xx) OR
+#     dead-lettered (permanent: Discord 401 with the bogus token). FLY-182 made
+#     this network-independent by counting both.
 #   * the remaining workers logged "already claimed" and exited 0
 set -euo pipefail
 
@@ -46,7 +48,6 @@ cat > "$PROJECTS_FILE" <<JSON
     "leads": [
       {
         "agentId": "test-lead",
-        "forumChannel": "222222222222222222",
         "chatChannel": "333333333333333333",
         "alertChannel": "444444444444444444",
         "alertBotTokenEnv": "FLYWHEEL_TEST_BOT_TOKEN",
@@ -84,12 +85,20 @@ done
 wait
 
 CLAIM_COUNT=$(sqlite3 "$CLAIMS_DB" "SELECT COUNT(*) FROM alert_claims;" 2>/dev/null || echo "0")
-QUEUED=$(find "$TMPROOT/.flywheel/alert-queue" -maxdepth 1 -name '*.json' -type f | wc -l | tr -d ' ')
+QUEUED=$(find "$TMPROOT/.flywheel/alert-queue" -maxdepth 1 -name '*.json' -type f 2>/dev/null | wc -l | tr -d ' ')
+# FLY-182: the winner's POST fails with a bogus token. Depending on whether the
+# host has network, that is a transient failure (curl 000 / 5xx → queued) or a
+# permanent one (Discord 401 → dead-lettered). Count BOTH so the dedup
+# assertion is not network-dependent — the invariant is "exactly one spill".
+DEADLETTERED=$(find "$TMPROOT/.flywheel/alert-deadletter" -maxdepth 1 -name '*.json' -type f 2>/dev/null | wc -l | tr -d ' ')
+SPILLED=$((QUEUED + DEADLETTERED))
 SKIPPED=$(grep -l "already claimed" "${tmpout}"/*.err 2>/dev/null | wc -l | tr -d ' ')
 WINNERS=$(grep -L "already claimed" "${tmpout}"/*.err 2>/dev/null | wc -l | tr -d ' ')
 
 echo "claims.db rows: $CLAIM_COUNT"
 echo "queue files:    $QUEUED"
+echo "dead-letter files: $DEADLETTERED"
+echo "spilled (queue+dl): $SPILLED"
 echo "skipped workers: $SKIPPED"
 echo "claiming workers: $WINNERS"
 
@@ -98,8 +107,8 @@ if [ "$CLAIM_COUNT" != "1" ]; then
   echo "FAIL: expected 1 row in alert_claims, got $CLAIM_COUNT" >&2
   errors=$((errors + 1))
 fi
-if [ "$QUEUED" != "1" ]; then
-  echo "FAIL: expected exactly 1 queued payload, got $QUEUED" >&2
+if [ "$SPILLED" != "1" ]; then
+  echo "FAIL: expected exactly 1 spilled payload (queue+dead-letter), got $SPILLED (queued=$QUEUED dl=$DEADLETTERED)" >&2
   errors=$((errors + 1))
 fi
 if [ "$WINNERS" != "1" ]; then

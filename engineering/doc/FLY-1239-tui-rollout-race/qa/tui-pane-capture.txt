@@ -1,0 +1,53 @@
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The commit succeeded. I’m doing the completion audit against HEAD: exact bytes, commit message, tracked artifact, and clean worktree.
+
+• Ran test "$(git log -1 --format=%s)" = "qa 1239" && test "$(git show HEAD:ok.txt)" = "ready" && test "$(git cat-file -s HEAD:ok.txt)" = 5 && test -z "$(git status
+  │ --porcelain)" && git log -1 --oneline --decorate && git cat-file -s HEAD:ok.txt && git status --short --branch
+  └ 43a10fe (HEAD -> qa-wt) qa 1239
+    5
+    ## qa-wt
+
+• Ran env | cut -d= -f1 | rg '^FLYWHEEL_' | sort
+  └ FLYWHEEL_BRIDGE_URL
+    FLYWHEEL_COMM_CLI
+    … +7 lines (ctrl + t to view transcript)
+    FLYWHEEL_RUNNER_BACKEND_ID
+    FLYWHEEL_RUNNER_VENDOR_ID
+
+• Ran node "$FLYWHEEL_COMM_CLI" ask --report "DONE: Created ok.txt with exact content ready and committed it as 43a10fe (qa 1239); HEAD verification passed and the worktree is
+  │ clean."
+  └ Error: --lead is required
+
+• Ran node "$FLYWHEEL_COMM_CLI" ask --lead "$FLYWHEEL_LEAD_ID" --exec-id "$FLYWHEEL_EXEC_ID" --report "DONE: Created ok.txt with exact content ready and committed it as
+  │ 43a10fe (qa 1239); HEAD verification passed and the worktree is clean."
+  └ 53fcd8d7-1e81-4dcc-8ba5-35c4a86951b4
+
+• Ran node "$FLYWHEEL_COMM_CLI" complete --help
+  └ Error: Unknown option '--help'
+
+• Ran rg -n "complete|--route|route" "$FLYWHEEL_COMM_CLI" | head -80
+  └ 12:import { complete } from "./commands/complete.js";
+    70:  complete  Emit session_completed terminal event to Bridge (Runner use)
+    … +8 lines (ctrl + t to view transcript)
+    1063: * the Bridge /events; the Bridge routes it to the unified Alerts channel.
+    1191:    // Identity may come from CLI flags OR FLYWHEEL_* env (matches stage / complete).
+
+• Ran sed -n '55,82p' "$FLYWHEEL_COMM_CLI" && sed -n '770,810p' "$FLYWHEEL_COMM_CLI" && CLI_DIR=${FLYWHEEL_COMM_CLI:h}; sed -n '1,240p' "$CLI_DIR/commands/complete.js"
+  └             pr_head_sha against --pr-head $(git rev-parse HEAD). Fail-closed;
+                exit 0 only when approved. The wake message itself is NEVER authority.
+    … +305 lines (ctrl + t to view transcript)
+            diffSummary,
+            changedFilePaths,
+
+• Ran node "$FLYWHEEL_COMM_CLI" complete --route auto_approve --summary "Committed exact ready content in ok.txt as 43a10fe"
+  └ [complete] session_completed delivered (attempt 1/4)
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+◦ Working (2m 00s • esc to interrupt)
+
+
+› Improve documentation in @filename
+
+  gpt-5.6-sol xhigh · /private/tmp/qa-fly1239-wINSdB/repo-qa-wt                                                                                            Goal achieved (1m)

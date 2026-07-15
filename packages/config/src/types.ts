@@ -86,20 +86,85 @@ export interface SkillsConfig {
 	test_framework?: string;
 	/** Custom landing command (e.g. "/ship-pr"). If unset, uses default flywheel-land skill. */
 	land_command?: string;
+	/** GEO-151 ProofShot integration: browser/UI/3D visual verification */
+	proofshot?: ProofShotConfig;
 }
 
-/** Agent dispatch configuration — v0.6 Step 1 */
+/**
+ * GEO-151 ProofShot integration config — auto-trigger visual capture on stage_changed,
+ * route artifacts to Lead → Discord via reliable LeadEvent journal.
+ *
+ * Loaded from `<projectRoot>/.flywheel/config.yaml` `skills.proofshot` section.
+ * Persisted into `session_params.proofshot.config` by DirectEventSink.emitStarted()
+ * so Bridge event-route handlers can read it without re-loading project config.
+ */
+export interface ProofShotConfig {
+	/** Enable ProofShot auto-trigger. Default: false (safer rollout). */
+	enabled?: boolean;
+	/** Dev server start command (e.g., "pnpm dev"). Required for L2 web verification. */
+	dev_command?: string;
+	/** Preferred dev server port. Wrapper picks free port near this. Default: 3000. */
+	port?: number;
+	/** Pipeline stages where auto-trigger fires. Default: ["test","code_review","pr_created"]. */
+	capture_stages?: string[];
+	/** Run V1 (Runner Read selected artifacts) after capture. Default: true. */
+	vision_default?: boolean;
+	/** Vision token budget cap for selectVisionArtifacts(). Default: 10000. */
+	vision_token_budget?: number;
+	/** 3D model viewer URL template. GeoForge3D-specific (no default). */
+	model_viewer_url?: string;
+	/** 3D capture angles. Default: ["front","side","iso","top"]. */
+	model_capture_angles?: string[];
+	/** Artifact path allowlist (regex). Default: ['^/Users/.+/\\.flywheel/screens/','^/tmp/flywheel-screens/']. */
+	artifact_path_allowlist?: string[];
+}
+
+/** Agent dispatch configuration — v0.6 Step 1; FLY-137 v1.27.2 dept-aware */
 export interface AgentConfig {
-	/** Relative path to agent executor file (e.g., .claude/agents/backend-executor.md). REQUIRED. */
+	/**
+	 * Relative path to agent executor file (e.g., `.flywheel/agents/<dept>/<role>-executor.md`
+	 * for dept-owned agents, or `.flywheel/agents/<role>-executor.md` for cross-dept catch-all).
+	 * REQUIRED. Path validation enforced by ConfigLoader via parsedDept() helper.
+	 */
 	agent_file: string;
 	/** Relative path to domain config file (e.g., .claude/domains/backend.md). Optional. */
 	domain_file?: string;
+	/**
+	 * FLY-137 v1.27.2: optional explicit department. If absent, auto-derived from
+	 * agent_file's first subdir under `.flywheel/agents/` (or `undefined` for top-level
+	 * cross-dept catch-all). ConfigLoader errors on mismatch between explicit value and
+	 * path-derived value.
+	 */
+	department?: string;
+	/**
+	 * FLY-901: optional explicit owning-department SET this agent registers under for
+	 * label-based dispatch (AgentDispatcher step-2a). Enables dual-register — one role
+	 * file reachable from multiple depts' auto-dispatch (e.g. the product/design executor
+	 * lives under `engineering/` but is also reached by the product Lead's `owningDept`).
+	 * Contract (enforced by ConfigLoader):
+	 *   - Omitted → step-2a uses the single path-derived dept (BYTE-COMPAT: existing
+	 *     agents behave exactly as before).
+	 *   - Only dept-owned agents (agent_file under `.flywheel/agents/<dept>/`) may declare
+	 *     it; top-level catch-all agents must omit it.
+	 *   - Non-empty string[] of `^[a-z0-9-]+$` tokens, no duplicates.
+	 *   - MUST include the path-derived home dept (the file's physical home is always a
+	 *     member; the singular `department` field, if also present, stays pinned to it).
+	 * Does NOT relax matching for any dept not explicitly listed.
+	 */
+	departments?: string[];
 	/** Dispatch matching rules */
 	match: {
-		/** Linear labels that map to this agent (case-insensitive) */
+		/**
+		 * Linear labels that map to this agent (case-insensitive). Multiple entries =
+		 * multi-alias (e.g. `["designer", "design", "ui", "ux"]` — any label hit matches).
+		 */
 		labels: string[];
-		/** Keywords fed to Haiku classifier as hints when no label match */
-		keywords: string[];
+		/**
+		 * @deprecated FLY-137 v1.27.1: Haiku classify step removed; keywords no longer consulted.
+		 * Kept optional for backward compat with existing config files. ConfigLoader accepts
+		 * the field if present (must still be array of strings) but never reads it at dispatch.
+		 */
+		keywords?: string[];
 	};
 }
 
@@ -110,9 +175,18 @@ export type TimeoutBehavior = "fail-open" | "fail-close";
 export interface CheckpointConfig {
 	/** Whether this checkpoint is active. Default: false */
 	enabled?: boolean;
-	/** Timeout in ms before timeout_behavior kicks in. Default: 1_800_000 (30 min) */
+	/**
+	 * Timeout in ms before timeout_behavior kicks in.
+	 * Default: 172_800_000 (48h, FLY-159 `DEFAULT_GATE_TIMEOUT_MS`).
+	 * Floor: 14_400_000 (4h, FLY-159 `MIN_GATE_TIMEOUT_MS`) — values below
+	 * the floor are auto-raised by ConfigLoader (warn, not throw).
+	 */
 	timeout_ms?: number;
-	/** What happens on timeout (no response received). Default: 'fail-open' */
+	/**
+	 * What happens on timeout (no response received).
+	 * Default: 'fail-close' (FLY-159 `DEFAULT_TIMEOUT_BEHAVIOR`).
+	 * Set to 'fail-open' explicitly only when the gate is genuinely advisory.
+	 */
 	timeout_behavior?: TimeoutBehavior;
 	/** TTL in hours for cleanup after gate resolves. Default: 24 */
 	cleanup_ttl_hours?: number;
@@ -122,6 +196,327 @@ export interface CheckpointConfig {
 
 /** Checkpoint configuration map — added to FlywheelConfig */
 export type CheckpointsConfig = Record<string, CheckpointConfig>;
+
+/**
+ * FLY-205: department-first doc-flow baseline configuration.
+ *
+ * When enabled, Runners receive a DOC-FLOW system-prompt block instructing
+ * them to produce process docs (exploration/research/plan) under
+ * `<department>/doc/<ISSUE-KEY>-<slug>/` according to the Lead-judged
+ * doc tier. Absent or `enabled: false` → feature fully off (byte-compatible
+ * spawn prompt).
+ */
+export interface DocFlowConfig {
+	enabled: boolean;
+	/**
+	 * Department directory name (e.g. "content", "product"). REQUIRED when
+	 * `enabled === true` (ConfigLoader enforces). Optional in the type because
+	 * a valid disabled config may omit it — consumers must runtime-narrow
+	 * inside their `enabled === true` branch (a required type here would let
+	 * TS consumers wrongly trust a value that disabled configs don't carry).
+	 * Used as the doc-path fallback whenever the issue's owning department
+	 * cannot be resolved to a concrete string.
+	 */
+	default_department?: string;
+}
+
+/**
+ * FLY-579 / FLY-752: auto-QA pipeline policy (per project). The Bridge loads this
+ * from the project's CANONICAL / mainline root only (never an implementation PR's
+ * worktree) so a runner cannot edit its own config to skip its QA.
+ *
+ * FLY-752 flipped auto-QA to **opt-out** (fleet-wide default-on): an absent config
+ * / an absent `qa` block / a `qa` block with no `auto` key all mean auto-QA is ON.
+ * A project opts OUT by explicitly setting `auto: false` (or the `no-qa` label /
+ * the `FLYWHEEL_AUTO_QA=0` kill-switch). A MALFORMED config fails CLOSED (off),
+ * never on — see the policy resolver.
+ */
+/**
+ * FLY-1185: lifecycle cleanup policy block (`cleanup:` in .flywheel/config.yaml).
+ */
+export interface CleanupConfig {
+	/** Exact branch names or trailing-`*` prefixes never auto-deleted. */
+	protected_branches?: string[];
+}
+
+/**
+ * FLY-1048 PR-C (C3-w): per-project detection-escalation knobs (PRD §4.3:
+ * the ~30min Lead grace before a founder page is "global + per-project 可配").
+ * Absent block / absent field → the global env / built-in default applies.
+ */
+export interface DetectionConfig {
+	/**
+	 * Lead handling grace (ms) before an unacked LEAD_NOTIFIED episode
+	 * escalates to a founder page. Overrides FLYWHEEL_DETECTION_LEAD_GRACE_MS
+	 * (default 30min) for THIS project only.
+	 */
+	lead_grace_ms?: number;
+}
+
+export interface QaConfig {
+	/**
+	 * Auto-spawn an independent QA Runner after code review passes, hold the
+	 * founder until QA is green. **Optional (FLY-752):** absent → ON (opt-out
+	 * default). Set `false` to opt out. The global env `FLYWHEEL_AUTO_QA=0` is a
+	 * hard kill-switch on top of this.
+	 */
+	auto?: boolean;
+	/**
+	 * Issue labels that skip auto-QA even when `auto` is true (e.g. docs, chore).
+	 * Lowercased at load. A per-issue Linear `no-qa` label also skips.
+	 */
+	skip_labels?: string[];
+	/**
+	 * Reserved QA agent name the coordinator spawns with. Default "qa"
+	 * (AgentDispatcher resolves a project `agents.qa` override, else the shipped
+	 * `agents/qa-executor.md`).
+	 */
+	agent?: string;
+}
+
+/**
+ * FLY-793: three-stage pipeline (Design / Implement / QA internal phases) toggle.
+ *
+ * A NEW opt-in feature. Absent, an absent `three_stage` key, or `three_stage:
+ * false` all mean OFF — a task runs as a single session exactly as before
+ * (byte-compatible). A MALFORMED `pipeline` block fails loudly at config load
+ * (mirrors `doc_flow`); the enablement policy (`resolveThreeStagePolicy`) is
+ * default-OFF, so a failed/absent load is trivially fail-closed.
+ */
+export interface PipelineConfig {
+	/**
+	 * Enable the three-stage internal-phase pipeline (Design=Fable /
+	 * Implement=Fable / QA=Opus — FLY-887 R2, Annie's 2026-07-05 table).
+	 * Optional; absent → OFF.
+	 */
+	three_stage?: boolean;
+	/**
+	 * FLY-887 R2: Discord channel allowlist for three-stage ENTRY. A fresh
+	 * `main` dispatch enters three-stage only when the dispatching Lead's
+	 * `chatChannel` is in this list (resolved server-side from `leadId` →
+	 * `project.leads[].chatChannel`, NEVER from the request body).
+	 *
+	 * Absent → no restriction (byte-compatible with pre-gating behavior).
+	 * Empty array → three-stage OFF everywhere (explicit universal opt-out).
+	 * Items MUST be quoted strings — a bare YAML number would silently lose
+	 * precision on 19-digit Discord snowflakes (> Number.MAX_SAFE_INTEGER)
+	 * and the gate would never match; ConfigLoader rejects numeric items with
+	 * a quoting hint.
+	 */
+	three_stage_channels?: string[];
+}
+
+/**
+ * FLY-598: founder-facing-UX gate rollout mode.
+ * - `off`     — feature fully inert; ZERO prompt/rule/stage text change (byte-compatible).
+ * - `audit_only` — judgment prose + self-declare injection active, signoff evaluated +
+ *   audited, but plan→implement is NEVER blocked (deliberate prompt change).
+ * - `enforce` — founder-facing issues without a verified Annie UX sign-off are hard-blocked
+ *   from entering `implement`.
+ */
+export type FounderUxGateMode = "off" | "audit_only" | "enforce";
+
+/** FLY-598: valid founder_ux_gate modes (runtime guard for validation). */
+export const FOUNDER_UX_GATE_MODES: readonly FounderUxGateMode[] = [
+	"off",
+	"audit_only",
+	"enforce",
+];
+
+/**
+ * FLY-869: default mode when `founder_ux_gate` is absent — ENFORCE. Flipped
+ * from FLY-598's opt-in `off`: gate EVERY substantial issue by default, not
+ * just ones a Lead remembered to label `founder-facing-ux`. Callers MUST NOT
+ * read this constant as "the absent behavior" directly — route the raw config
+ * through `resolveEffectiveFounderUxConfig` (./founder-ux-config.ts), the one
+ * choke point that distinguishes "absent" from an explicit `mode: "off"`.
+ */
+export const FOUNDER_UX_GATE_DEFAULT_MODE: FounderUxGateMode = "enforce";
+
+/**
+ * FLY-598 / FLY-869: founder-facing UX gate — enforce "brainstorm UX with the founder
+ * before building". FLY-869 flips the default from opt-in `off` to default-on
+ * `enforce`: an ABSENT `founder_ux_gate` key now resolves to `enforce` (gating
+ * EVERY substantial issue) via `resolveEffectiveFounderUxConfig`. Only an
+ * EXPLICIT `mode: "off"` keeps the feature fully inert (byte-compatible spawn
+ * prompt + Lead rule set + stage path) — this is the project-level
+ * kill-switch. Kept deliberately separate from the FLY-175 `founderConsent`
+ * decision mode so this gate can never toggle the reserved-action consent.
+ */
+export interface FounderUxGateConfig {
+	/** Rollout mode. Absent key → resolved to `enforce` by resolveEffectiveFounderUxConfig. */
+	mode: FounderUxGateMode;
+	/**
+	 * FLY-869: labels that EXEMPT an issue from the gate (e.g. trivial / purely
+	 * mechanical work not worth a founder brainstorm). Absent →
+	 * `resolveEffectiveFounderUxConfig` defaults to `["brainstorm-exempt"]`.
+	 * Normalized to lowercase by ConfigLoader.
+	 */
+	exempt_labels?: string[];
+}
+
+/**
+ * FLY-725: founder milestone-report kinds. When a Runner reaches one of these
+ * terminal milestones the Bridge pushes an @founder-pinged report to the issue's
+ * chat thread (see gate-poller milestone patrol).
+ *
+ * v1 scope (Annie 2026-07-01, plan §B) is the two **zero-signal** terminal
+ * states — `failed` / `blocked` — the ones the founder gets NO push for today:
+ * - `completed` is deliberately NOT real-time here: routine completions are noise
+ *   and move to the FLY-727 daily digest.
+ * - `ship_ready` is already an @founder ping via the FLY-605 `approve_to_ship`
+ *   gate fallback (posted from the real gate event), so 725 does NOT duplicate it.
+ * Both remain forward-compat union members but are NOT accepted by v1 config.
+ */
+export type MilestoneKind = "completed" | "failed" | "blocked" | "ship_ready";
+
+/**
+ * FLY-725: the milestones v1 actually implements + accepts in config. ConfigLoader
+ * rejects any `milestones` value outside this set (incl. `completed` → FLY-727 and
+ * `ship_ready` → FLY-605) so an operator can never silently opt into an
+ * unimplemented / out-of-scope milestone.
+ */
+export const SUPPORTED_MILESTONE_KINDS_V1: readonly MilestoneKind[] = [
+	"failed",
+	"blocked",
+];
+
+/**
+ * FLY-725: per-project founder milestone-report policy. Absent or `enabled:false`
+ * ⇒ feature OFF (opt-in; byte-compatible — the Bridge milestone patrol no-ops).
+ * The global env `FLYWHEEL_FOUNDER_MILESTONE_NOTIFY=0` is a hard kill-switch on
+ * top of this. Loaded from the project's CANONICAL root only (never a runner's
+ * PR worktree) so a runner cannot edit its own config to change founder
+ * notifications.
+ */
+export interface FounderMilestoneReportConfig {
+	/** Turn the milestone → founder push on for this project. */
+	enabled: boolean;
+	/**
+	 * Which milestones to push. Absent ⇒ all of SUPPORTED_MILESTONE_KINDS_V1.
+	 * Every value must be ∈ SUPPORTED_MILESTONE_KINDS_V1 (ConfigLoader rejects
+	 * `ship_ready`/unknown). A subset lets the founder later move `completed` to a
+	 * digest (FLY-727) without a code change.
+	 */
+	milestones?: MilestoneKind[];
+}
+
+/**
+ * FLY-222: per-collection learning cadence.
+ */
+export type XiaohongshuCadence = "daily" | "weekly" | "biweekly" | "monthly";
+
+/** FLY-222: the set of valid cadence values (runtime guard for validation). */
+export const XIAOHONGSHU_CADENCES: readonly XiaohongshuCadence[] = [
+	"daily",
+	"weekly",
+	"biweekly",
+	"monthly",
+];
+
+/** FLY-222: hard ceiling on per-run fetch (MCP `limit` cap; collection has no cursor). */
+export const XIAOHONGSHU_MAX_FETCH_CEILING = 200;
+/** FLY-222: default per-run fetch when a collection omits `max_fetch`. */
+export const XIAOHONGSHU_DEFAULT_MAX_FETCH = 20;
+
+/**
+ * FLY-286: where the founder's post-hoc review of a learning run is delivered +
+ * collected. `web-local` = a Bridge-localhost interactive page (same-origin
+ * comment/action submit) reviewed at the computer. `web-public` (phone/public
+ * write backend) is FLY-298 and is NOT accepted by FLY-286's validation yet.
+ */
+export type XiaohongshuReviewChannel = "web-local";
+
+/** FLY-286: review channels FLY-286 accepts (FLY-298 will add "web-public"). */
+export const XIAOHONGSHU_REVIEW_CHANNELS: readonly XiaohongshuReviewChannel[] =
+	["web-local"];
+/** FLY-286: default review channel when a collection omits `review_channel`. */
+export const XIAOHONGSHU_DEFAULT_REVIEW_CHANNEL: XiaohongshuReviewChannel =
+	"web-local";
+/** FLY-286: default cap on auto-created issues during the first (baseline) run. */
+export const XIAOHONGSHU_DEFAULT_FIRST_RUN_CAP = 15;
+
+/**
+ * FLY-222: one Xiaohongshu collection a Lead periodically "studies".
+ *
+ * `lead_id` / `department_label` / `target_linear_project` are three distinct
+ * routing fields (Codex R1 plan §2.5): `department_label` is the real Linear
+ * label used to route the scheduler-created trigger issue to the right Lead;
+ * `target_linear_project` is where output ("things to do") issues land. The
+ * full routing-tuple cross-check (Lead exists + canSpawnRunners, label routes
+ * uniquely to lead_id, Linear team/project/label resolve) is a RUNTIME check
+ * the scheduler performs (graceful skip + bounded alert on failure) — NOT a
+ * config-load-time throw. ConfigLoader only validates static shape here.
+ */
+export interface XiaohongshuCollectionConfig {
+	/** MCP collection id (from `list_collections`). */
+	collection_id: string;
+	/** Human label for logs / trigger issue title (e.g. "AI-视频"). */
+	label: string;
+	/** Lead agentId that studies this collection (must exist + canSpawnRunners). */
+	lead_id: string;
+	/** Real Linear label routing the trigger issue to `lead_id` (name, not id). */
+	department_label: string;
+	/** Linear project (by name) where output "things to do" issues are created. */
+	target_linear_project: string;
+	/** Study cadence. Default: "weekly". */
+	cadence?: XiaohongshuCadence;
+	/** Max notes processed per run (1..200). Default: 20. Unseen overflow stays pending. */
+	max_fetch?: number;
+	/**
+	 * FLY-286: where the post-hoc review is delivered. Default: "web-local".
+	 * FLY-286 only accepts "web-local"; "web-public" (phone) ships in FLY-298.
+	 */
+	review_channel?: XiaohongshuReviewChannel;
+	/**
+	 * FLY-286: cap on issues AUTO-created during the first (baseline) run, so a
+	 * large historical backlog does not flood the founder's Linear. Default: 15.
+	 * Overflow useful posts become review-page candidates (not created). 0 = the
+	 * first run auto-creates nothing (all useful posts become candidates).
+	 */
+	first_run_cap?: number;
+	/**
+	 * FLY-286: max notes the first (baseline) run ANALYZES, distinct from the
+	 * steady-state `max_fetch`. Default: the MCP window cap (200). The first run
+	 * analyzes historical content rather than only baselining it.
+	 */
+	first_run_analyze_limit?: number;
+	/**
+	 * FLY-286: whether the Runner auto-creates issues for useful posts. Default:
+	 * true. When false, every useful post becomes a review-page candidate the
+	 * founder promotes — no issue is created without an explicit action.
+	 */
+	auto_create?: boolean;
+	/**
+	 * FLY-709: runner model for this collection's daily runs. Passed verbatim as
+	 * the `/api/runs/start` `model` dispatch param (FLY-728 Part C), so it must
+	 * be a recognized tier id or alias (`normalizeDispatchModel`). Absent =
+	 * today's behavior (project default / account default).
+	 */
+	model?: string;
+}
+
+/**
+ * FLY-222: department-Lead periodic Xiaohongshu-collection "study" baseline.
+ *
+ * When enabled, a thin scheduler periodically spawns a Runner (via a fixed,
+ * reused trigger Linear issue per collection) that fetches the collection,
+ * analyzes notes (incl. video body), proposes Linear-issue drafts to Annie via
+ * a prune gate, then creates the kept issues + records learnings to project
+ * memory. Absent or `enabled: false` → feature fully off (byte-compatible).
+ */
+export interface XiaohongshuLearningConfig {
+	/** Enable periodic learning. Default: false (safe rollout). */
+	enabled?: boolean;
+	/**
+	 * One-time consent to send downloaded video bodies to Google/Gemini for
+	 * analysis. Default: false. When false, video notes degrade to
+	 * caption+comments — yt-dlp/Gemini are NOT invoked.
+	 */
+	video_opt_in?: boolean;
+	/** Collections to study. Each is independently scheduled + state-tracked. */
+	collections?: XiaohongshuCollectionConfig[];
+}
 
 /** Reactions configuration (Phase 2+, interface reserved) */
 export interface ReactionsConfig {
@@ -134,6 +529,73 @@ export interface ReactionsConfig {
 		action: "notify" | "auto-merge";
 	};
 }
+
+/**
+ * FLY-123: role names recognized by the role → adapter resolver.
+ * Phase 1 implements lead + runner; reviewer/triager are reserved.
+ */
+export type RoleName = "lead" | "runner" | "reviewer" | "triager";
+
+export const ROLE_NAMES: readonly RoleName[] = [
+	"lead",
+	"runner",
+	"reviewer",
+	"triager",
+];
+
+/**
+ * Executor backends. Names match AdapterRegistry keys registered in run-infra
+ * (`claude-tmux` → TmuxAdapter, `codex-tmux` → CodexTmuxAdapter,
+ * `antigravity-tmux` → AntigravityTmuxAdapter, `kimi-tmux` → KimiTmuxAdapter).
+ *
+ * FLY-123: claude-tmux + codex-tmux. FLY-493: antigravity-tmux (Antigravity
+ * `agy` CLI, transport=none in v1). FLY-494: kimi-tmux (Kimi Code `kimi` CLI,
+ * transport=none in v1).
+ */
+export type ExecutorBackend =
+	| "claude-tmux"
+	| "codex-tmux"
+	| "antigravity-tmux"
+	| "kimi-tmux";
+
+export const EXECUTOR_BACKENDS: readonly ExecutorBackend[] = [
+	"claude-tmux",
+	"codex-tmux",
+	"antigravity-tmux",
+	"kimi-tmux",
+];
+
+/**
+ * FLY-671: per-role reasoning-effort levels — the Claude Code CLI `--effort`
+ * enum. Local copy of teamlead's `LeadEffort`/`EFFORT_LEVELS` (the FLY-123
+ * cross-package boundary forbids `config` depending on `teamlead`).
+ */
+export type RoleEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+export const ROLE_EFFORT_LEVELS: readonly RoleEffort[] = [
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+];
+
+/** FLY-123: per-role backend binding in project config. */
+export interface RoleBackendConfig {
+	/** Executor backend (AdapterRegistry key), e.g. "codex-tmux". */
+	backend: ExecutorBackend;
+	/** Optional model override for this role. */
+	model?: string;
+	/**
+	 * FLY-671: optional reasoning-effort override for this role (runner side).
+	 * Flows `resolveRoleAdapter → runnerEffort → --effort`. Absent = no
+	 * `--effort` flag (account default). Only the claude-tmux runner consumes it.
+	 */
+	effort?: RoleEffort;
+}
+
+/** FLY-123: role → backend map (`roles:` block in .flywheel/config.yaml). */
+export type RoleBackendMap = Partial<Record<RoleName, RoleBackendConfig>>;
 
 /**
  * Root Flywheel project configuration.
@@ -164,4 +626,57 @@ export interface FlywheelConfig {
 	default_agent?: string;
 	/** Checkpoint gates — human-in-the-loop confirmation points */
 	checkpoints?: CheckpointsConfig;
+	/**
+	 * FLY-123: optional per-role executor backend bindings.
+	 * Absent → built-in defaults (everything claude-tmux). Validated by
+	 * ConfigLoader: unknown role keys and unknown backends are REJECTED
+	 * (misspelled keys must not silently no-op).
+	 */
+	roles?: RoleBackendMap;
+	/** FLY-205: department-first doc-flow baseline. Absent = off. */
+	doc_flow?: DocFlowConfig;
+	/** FLY-579: auto-QA pipeline policy. Absent or auto:false = off (byte-compatible). */
+	qa?: QaConfig;
+	/** FLY-1048 PR-C: per-project detection-escalation knobs. Absent = globals apply. */
+	detection?: DetectionConfig;
+	/** FLY-793: three-stage pipeline toggle. Absent or three_stage:false = off (byte-compatible). */
+	pipeline?: PipelineConfig;
+	/** FLY-222: periodic Xiaohongshu-collection learning. Absent = off. */
+	xiaohongshu_learning?: XiaohongshuLearningConfig;
+	/**
+	 * FLY-598 / FLY-869: founder-facing UX gate. Absent = resolved to `enforce`
+	 * (default-on, FLY-869) via `resolveEffectiveFounderUxConfig`. Explicit
+	 * `mode: off` = fully off (byte-compatible kill-switch).
+	 */
+	founder_ux_gate?: FounderUxGateConfig;
+	/** FLY-725: founder milestone-report push. Absent or enabled:false = off (byte-compatible). */
+	founder_milestone_report?: FounderMilestoneReportConfig;
+	/**
+	 * FLY-1185: lifecycle-closeout cleanup policy. Config, NOT a feature flag —
+	 * absent / empty list = today's behavior. `protected_branches` entries are
+	 * exact branch names or trailing-`*` prefixes; a protected branch is exempt
+	 * from EVERY automatic deletion, on both the branch and worktree side.
+	 * A malformed block disables ALL cleanup deleters for the project
+	 * (fail-closed, resolved by the Bridge's CleanupPolicy builder — the loader
+	 * itself never hard-fails on this optional key).
+	 */
+	cleanup?: CleanupConfig;
+	/**
+	 * FLY-615: per-project ponytail (code-minimalism plugin) rollout layer.
+	 * Absent or enabled:false → this project does not opt ponytail on by default
+	 * (per-issue label / per-run flag can still turn it on). Byte-compatible.
+	 */
+	ponytail?: PonytailConfig;
+}
+
+/**
+ * FLY-615: per-project ponytail rollout config. The lowest layer of the
+ * resolution ladder (per-run flag > per-issue label > per-project config >
+ * default off). `enabled: true` means every Runner of this project gets
+ * ponytail unless a per-issue `ponytail-off` label or per-run override turns
+ * it off. No `mode` field in v1 (ponytail's built-in default `full` is used);
+ * exposing mode without wiring a real mechanism would be a false contract.
+ */
+export interface PonytailConfig {
+	enabled: boolean;
 }

@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>FLY-1230 · 多-agent 编排会不会被单 agent 取代 — 业界视角 + 我们的框架(co-eval)</title>
+<style>
+  :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#6e6e73;--navy:#1a365d;
+    --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--line:#e5e5ea}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC","SF Pro Text",Segoe UI,Roboto,sans-serif;
+    line-height:1.62;-webkit-text-size-adjust:100%}
+  .wrap{max-width:880px;margin:0 auto;padding:22px 16px 96px}
+  h1{font-size:23px;margin:.2em 0 .12em;letter-spacing:-.01em;line-height:1.3}
+  h2{font-size:16px;margin:0 0 .55em;letter-spacing:-.01em;color:var(--navy)}
+  h3{font-size:14.5px;margin:.6em 0 .2em;color:#333}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:14px}
+  .bar{background:#eef4ff;border-radius:10px;padding:11px 14px;margin:6px 0 18px;font-size:13.5px;color:var(--navy)}
+  .bar b{color:#12336b}
+  .hero{background:linear-gradient(135deg,#eef4ff,#fff);border-left:4px solid var(--purple);
+    border-radius:12px;padding:14px 16px;margin:12px 0;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  .hero .ans{font-size:14.5px;color:#2b2b2f}
+  .tag{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;
+    background:#efe4ff;color:#5b2a9e;margin:0 4px 4px 0;vertical-align:middle}
+  .sec{background:var(--card);border-radius:12px;padding:15px 17px;margin:14px 0;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--blue)}
+  .sec.red{border-left-color:var(--red)}.sec.green{border-left-color:var(--green)}
+  .sec.amber{border-left-color:var(--amber)}.sec.purple{border-left-color:var(--purple)}
+  .sec.navy{border-left-color:var(--navy)}.sec.gray{border-left-color:#c7c7cc}
+  .sec p{margin:.5em 0;font-size:14px}
+  .sec ul{padding-left:20px;margin:.4em 0}.sec li{font-size:14px;margin:.28em 0}
+  .who{font-size:12.5px;color:var(--dim);margin:.2em 0 .5em}
+  .who b{color:#555}
+  .src{color:#0a58ca;font-style:normal}
+  .quote{background:#f7f7fa;border-radius:8px;padding:8px 12px;font-size:13.5px;color:#3a3a3f;margin:8px 0;border-left:3px solid #c7c7cc}
+  .eg{background:#f4f9f4;border-radius:8px;padding:8px 11px;font-size:13px;color:#1a5a2a;margin:8px 0}
+  .eg b{color:#12602a}
+  .lens{background:#fff8ee;border-radius:8px;padding:8px 12px;font-size:13.5px;color:#7a4a00;margin:8px 0}
+  .lens b{color:#8a5200}
+  code{font-family:"SF Mono",ui-monospace,monospace;background:#f0f0f2;padding:1px 5px;border-radius:5px;font-size:.85em}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:#f0f2f6;color:var(--navy);font-weight:600}
+  .opts{margin:9px 0 4px}
+  .opt{display:block;border:1px solid #dfe3ea;border-radius:10px;padding:9px 12px;margin:6px 0;
+    font-size:13.4px;cursor:pointer;background:#fcfdff}
+  .opt:hover{border-color:#b9c6de}
+  .opt input{margin-right:8px;vertical-align:middle}
+  .opt .ol{font-weight:700;color:var(--navy)}
+  .cbox{margin:10px 0 2px}
+  .cbox .ask{font-size:13px;font-weight:600;color:var(--navy);margin-bottom:6px}
+  textarea{width:100%;min-height:58px;border:1px solid #d2d2d7;border-radius:9px;
+    padding:9px 11px;font-family:inherit;font-size:15px;resize:vertical;background:#fff;color:var(--ink)}
+  textarea:focus{outline:none;border-color:var(--blue)}
+  .btn{display:inline-block;background:var(--navy);color:#fff;border:none;border-radius:10px;
+    padding:11px 18px;font-size:15px;font-weight:600;cursor:pointer;margin-top:6px}
+  .btn.sec2{background:#e8e8ed;color:var(--navy)}
+  .muted{color:var(--dim);font-size:13px}
+  ul{padding-left:20px;margin:.3em 0}
+  hr{border:none;border-top:1px solid var(--line);margin:24px 0}
+  .foot{font-size:12px;color:var(--dim);margin-top:26px;line-height:1.6}
+  .foot a{color:#0a58ca;word-break:break-all}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>多-agent 编排会不会被单 agent 吸收掉?——业界怎么看 + 对照我们的框架</h1>
+  <div class="sub">FLY-1230 · co-eval(不下结论)· 2026-07-13 · 主来源 = ChatGPT Deep Research + 一手源核准(来源见文末)</div>
+  <div class="bar">✍️ 这页是<b>业界怎么说 + 对照我们的「拐杖 vs 地基」框架 + 把决定权留给你</b> —— <b>不是「结论是 X」</b>。每节末尾有留言框;逐块量四个 DAG 程序时你可以圈选 + 写想法。写完点最下面「一键复制我全部批注」发回给 Honey Lemon。</div>
+  <div class="quote" style="border-left-color:#c7c7cc"><b>诚实说明:</b>ChatGPT Deep Research <b>成功跑完了</b>(7 分钟 · 23 引用 · 416 次搜索,报告标题《Frontier LLMs and the Fate of Multi-Agent Orchestration in AI Coding Systems》),它的<b>结论(Bottom line)完整可读</b>、并<b>逐字全文</b>引在 §1。但这次报告<b>其余全文没能导出</b>(它渲染在跨域沙箱里,本机浏览器抽不出全文);所以我把 DR 的结论 + 对它点名的<b>关键源(Anthropic / Cognition / LangChain)自己查证真链接</b>、再加 Annie 主动问到、我单独查证的 <b>Pi</b>,两头对齐后写成这页(DR 还点名了 OpenAI / Google / Microsoft,我<b>未逐一独立复核</b>,页面不据此下断言)。<b>没有编造来源;查不到的标 UNKNOWN。</b></div>
+
+  <div class="hero">
+    <span class="tag">⭐ 你的疑问(原样)</span>
+    <div class="ans">「我们做这么多 DAG / multi-agent 编排,会不会是<b>过度设计</b> —— 到时候一个足够强的单 agent 就把活全干完了,根本不需要?」<br>本页收集业界(研究 + 头部实践者 + 产品)对「multi-agent 编排会不会被单 agent 取代」的多方视角,拿来<b>验证/挑战</b>我们已有的「拐杖 vs 地基」判断,决定权还是你 + HL 的。</div>
+  </div>
+
+  <!-- ===== §1 业界两派/三派摆事实 ===== -->
+  <div class="sec navy" data-title="§1 业界三派 — 编排持久 / 单agent吸收 / 用最简按需">
+    <h2>① 业界不是「二选一」,是三种声音在吵(摆事实,不调和)</h2>
+    <div class="quote"><b>DR 的结论(Bottom line,逐字全文):</b>「The strongest public evidence from 2024 to July 13, 2026 points to a <b>hybrid outcome</b>, not a winner-take-all one. As frontier models improved, a lot of orchestration that used to exist mainly to make weaker models usable started getting absorbed into stronger single-agent runtimes: larger context windows, better native tool use, better planning, longer autonomous loops, compaction, notes/memory, and built-in subagents-as-tools all reduce the need for brittle, hand-authored step-by-step DAGs. At the same time, the orchestration that remains important is increasingly about <b>control, not cognition</b>: independent review, security boundaries, approval gates, parallel throughput, model routing, persistence, observability, and organizational interoperability. Anthropic, OpenAI, Google, Microsoft, LangChain, and Cognition all now publish systems that reflect some version of that split, even when their rhetoric differs.」</div>
+
+    <h3>派一:编排/多-agent 是持久架构</h3>
+    <div class="who"><b>Anthropic</b>(多-agent research 系统):lead agent 并行 spawn 3-5 个 subagent、各自干净上下文当「智能过滤器」,复杂研究<b>省时最多 90%</b>。<span class="src">anthropic.com/engineering/multi-agent-research-system</span></div>
+    <p>论据:模型再强,<b>单线程也快不过 N 个并行</b>;subagent 各自隔离上下文能隔噪声。—— 但注意:这是把编排用在<b>并行广度 + 上下文隔离</b>,不是给弱模型切步。</p>
+
+    <h3>派二:别搭多-agent,一个精干 agent 自己扛</h3>
+    <div class="who"><b>Cognition</b>(Walden Yan《Don't Build Multi-Agents》):默认<b>单线程线性 agent</b>,多-agent 要过很高的门才用。<span class="src">cognition.ai/blog/dont-build-multi-agents</span></div>
+    <p>论据(逐字):<b>「Actions carry implicit decisions, and conflicting decisions carry bad results.」</b>把上下文拆给不共享全貌的子 agent,各自局部决策 → 冲突 → 坏结果。<b>「Context Engineering」= 工程师第一要务</b>。⚠️ 它反的是<b>拆认知线程</b>,不是反所有编排。<b>Pi Agent</b>(pi.dev,§4.5)是这派的活样本。</p>
+
+    <h3>派三:用能过 eval 的最简形态,编排按需加(官方 playbook)</h3>
+    <div class="who"><b>Anthropic</b>《Building Effective Agents》:分 <b>workflow</b>(走预定义代码路径 = DAG)vs <b>agent</b>(模型自主导流程)。<span class="src">anthropic.com/engineering/building-effective-agents</span> · <b>LangChain / Harrison Chase</b>:难点是「每步给 LLM 对的 context」,单 agent 扛不住复杂指令时才多 agent。<span class="src">langchain.com/blog/how-to-think-about-agent-frameworks</span></div>
+    <p>论据:<b>「用能过 eval 的最简模式 —— 常常是一个 workflow 甚至一个配好工具的 LLM 调用」</b>;能 hardcode 路径就别上 agent。→ 编排是<b>按任务复杂度加的工具,不是默认</b>。</p>
+
+    <div class="quote" style="border-left-color:#ff9500"><b>同一个 Anthropic、两篇看似打架:</b>《Building Effective Agents》劝你用最简、《multi-agent research system》又秀并行 subagent 大赢 —— <b>不矛盾</b>,因为用途不同:前者反「无脑加编排」,后者是「并行广度」这类编排的<b>正例</b>。这正是我们要分辨的:<b>为什么加编排</b>比「加不加」更重要。</div>
+
+    <div class="cbox"><div class="ask">✍️ 这三派里,哪一派最接近你的直觉?你更担心「我们无脑加了太多编排」,还是「我们该加的控制类编排还不够」?</div>
+      <textarea data-q></textarea></div>
+  </div>
+
+  <!-- ===== §2 正在被吸收的能力(拐杖侧验证)===== -->
+  <div class="sec amber" data-title="§2 正被单agent吸收的能力(= 拐杖那半)">
+    <h2>② 哪些编排正在被强单-agent「吸收」掉(验证「拐杖」侧)</h2>
+    <p>DR 与官方博客一致:随模型变强,下面这些能力让「把整块活切成一步步喂」的<b>手写死步骤 DAG</b> 变多余 ——</p>
+    <ul>
+      <li><b>更长 context window</b> —— 不必再把活切碎来塞进小窗口。</li>
+      <li><b>原生 tool use + 更好的 planning</b> —— 模型自己会规划、调工具,不用外部脚手架一步步替它导。</li>
+      <li><b>更长的自主循环(autonomous loops)</b> —— 一个 agent 能连续跑很多步不掉线。</li>
+      <li><b>compaction + notes/memory</b> —— 上下文自己压缩、记笔记,不用外部编排管记忆。</li>
+      <li><b>subagents-as-tools</b> —— 连「子 agent」都退化成<b>一个工具调用</b>,编排从架构降级成一个 function call。</li>
+    </ul>
+    <div class="lens"><b>对照我们的尺子(开放问题,不替你判):</b>DR 的原话是更强 runtime「reduce the need for brittle, hand-authored step-by-step DAGs」。那我们的三段式(design→implement→QA)死步骤,<b>有多少属于这半、模型变强就该按需化?</b>判据(供你用):「就算 agent 聪明 10 倍,这步还需要吗?不需要 = 拐杖。」—— 这道题留给你,下面留言。</div>
+    <div class="cbox"><div class="ask">✍️ 我们现在的三段式(design→implement→QA)死步骤,你觉得有多少是「拐杖」、模型变强就该砍?哪几步你反而觉得不能砍?</div>
+      <textarea data-q></textarea></div>
+  </div>
+
+  <!-- ===== §3 持久的编排(地基侧验证)===== -->
+  <div class="sec green" data-title="§3 持久的编排:control not cognition(= 地基那半)">
+    <h2>③ 哪些编排「agent 越强越重要」(验证「地基」侧)</h2>
+    <p>DR 的原话把它总结成一句:留下的编排越来越是关于 <b>control, not cognition(控制,不是思考)</b>。清单几乎和你的「地基」定义逐字重合 ——</p>
+    <ul>
+      <li><b>独立评审 / 交叉检查(reviewer ≠ doer)</b> —— 自己审自己 = 假审,再聪明也有盲区。</li>
+      <li><b>安全边界(security boundaries)</b> —— 谁能碰什么。(<b>审计/留痕</b>是我们自己的关切词;DR 清单里对得上的是 security boundaries / observability / persistence。)</li>
+      <li><b>对不可逆动作的批准闸(approval gates)</b> —— 人对 ship / merge / 删数据的最终控制。</li>
+      <li><b>并行吞吐(parallel throughput)</b> —— 多个一起跑,快。</li>
+      <li><b>模型路由 / 持久化 / 可观测(model routing / persistence / observability)</b>。</li>
+      <li><b>组织 / 信任边界 + 互操作(organizational interoperability,跨 agent / 跨组织)</b>。</li>
+    </ul>
+    <div class="lens"><b>对照我们的尺子(开放问题,不替你判):</b>业界的说法是这些「control」类不因模型变强而消失,反而 agent 越强越自治越快、越需要独立一层来约束/验证/留人对不可逆动作的控制 —— 这正对上你说的「信任地基」(ship 闸 / founder 批准 FLY-1211 是活例子)。<b>按你的判据「聪明 10 倍也依然需要 = 护城河」,你读这份清单算不算护城河?有没有例外?</b>下面留言。</div>
+    <div class="cbox"><div class="ask">✍️ 这份「control 类」清单里,有没有你觉得其实也能砍的?或者反过来 —— 有没有你觉得我们还没建、但该建的控制层?</div>
+      <textarea data-q></textarea></div>
+  </div>
+
+  <!-- ===== §4 框架检验 ===== -->
+  <div class="sec purple" data-title="§4 检验「拐杖 vs 地基」框架 — 哪里对、哪里过简">
+    <h2>④ 你的「拐杖 vs 地基」框架:业界证据说它对不对?</h2>
+    <p><b>文字上高度重合(这是事实;要不要读成「印证」由你判):</b>DR 独立得出的分界线 =「<b>control not cognition</b>」,和你的「拐杖(为弱模型切步→会消)vs 地基(为独立/安全/人控→会长)」在措辞上高度重合;DR 的落点也是 <b>hybrid</b>(非「单 agent 取代一切」、也非「编排永恒」)。<b>—— 但这是「业界的线碰巧和你的线对齐」,不等于「你的框架被盖章正确」。</b>要不要把它当印证,是你的判断。</p>
+    <p><b>可能过简的地方(业界还有二分没覆盖的第三类):</b></p>
+    <ul>
+      <li><b>并行吞吐 / 规模</b> —— Anthropic 多-agent research 省 90% 时间。这既不是「给弱模型打拐杖」,也不纯是「信任/控制」,是<b>scale</b>。模型再强,单线程也快不过 N 个并行。</li>
+      <li><b>上下文完整性 / 认知不分裂</b> —— Cognition 的反面论:拆认知线程会坏事,所以「留一个不分裂的 doer」本身是设计约束。</li>
+      <li><b>专业化 / 上下文隔离</b> —— subagent 各自干净上下文隔噪声,不是因为模型弱。</li>
+    </ul>
+    <div class="lens"><b>一个更锋利的角度(我们从 Pi 案例提出的推断,见 §4.5;当工具用,不替你定):</b>决定「拐杖 vs 地基」的,也许<b>往往不是功能本身,而是「人还在不在回路里」</b>。同一个「批准闸」,在有人在旁的本地工具里也许能砍,在人稀缺的自治 fleet 里可能更像地基 —— 这个角度你认不认?</div>
+    <div class="cbox"><div class="ask">✍️ 「拐杖 vs 地基」两分,你想不想加第三类(并行/规模、上下文完整性)?还是保持两分、把它们塞进「地基」里就行?</div>
+      <textarea data-q></textarea></div>
+  </div>
+
+  <!-- ===== §4.5 Pi Agent 实测 ===== -->
+  <div class="sec red" data-title="§4.5 极简单-agent 派实测 — Pi Agent(你主动问到的)">
+    <h2>④.5 现实测试:Pi Agent 主动砍编排,留下什么、丢了什么、代价是什么</h2>
+    <div class="who"><b>Pi Agent</b>(pi.dev,作者 Mario Zechner / libGDX 之父),就是 <b>OpenClaw</b> 里那个 minimal agent。起因:Claude Code 功能越堆越多、行为变得不可预测 → 决定「尽量少加功能」。<span class="src">mariozechner.at/posts/2025-11-30-pi-coding-agent · lucumr.pocoo.org/2026/1/31/pi</span></div>
+    <p><b>它砍了什么(赌是拐杖):</b>sub-agents(「a black box within a black box」)、plan mode、MCP、内置 todos、后台 bash、大 system prompt(它的 prompt+工具定义<b>合计 &lt;1000 token</b>)。核心就 <b>4 个工具:read / write / edit / bash</b>。理由(原话):<b>「All the frontier models have been RL-trained up the wazoo, so they inherently understand what a coding agent is. There does not appear to be a need for 10,000 tokens of system prompt.」</b></p>
+    <p><b>它也砍了一项「地基」——批准闸:</b>「full YOLO mode」,无权限检查;理由:他把前置权限检查看成 <b>security theater(安全剧场)</b> —— 一旦 read/execute/network 共存,前置闸挡不住 exfiltration(此处为<b>转述</b>,非逐字引用)。他在这段只明确建议<b>「不放心就跑在容器里(run inside a container)」</b>;此外还有全透明可观测、可读 session 文件事后审(出现在别的语境)。<b>——把这几项合起来当「前置闸的替代」是我们的读法,不是 Pi 明说的</b>(『人实时盯』更是我们对本地结对语境的推断)。</p>
+    <p><b>它保留 / 承认的代价:</b>保留全上下文透明、自我扩展、session。承认「models are still poor at finding all the context needed」(砍掉脚手架后模型漏读上下文的问题裸露)。而且 review(<code>/review</code>)和多-agent(<code>/control</code>)它<b>做成按需 opt-in 扩展,不内建</b>。</p>
+    <div class="lens"><b>一种读法(我们的,供你判、不替你定):</b>Pi 是<b>本地结对工具</b>(人就在旁边)——这<b>可能</b>是它敢砍闸的语境之一;我们更像「人注意力稀缺的自治 fleet」。<b>如果</b>把「人还在不在回路里」当判据,那同一个批准闸在 Pi 可砍、在我们这儿会更像地基 —— 这道分辨题留给你。另一个可讨论的共通做法:「不内建、按需 opt-in、且可见」(把 review/orchestration 做成显式扩展而非黑箱),你觉得值不值得借?</div>
+    <div class="quote" style="border-left-color:#af52de"><b>一道更锋利的测试(当工具用,不替你下结论):</b>别问「这个编排<b>需不需要</b>」,问 <b>「如果砍掉它,得靠什么替代 —— 而我们有没有那个替代品?」</b><br>套到批准闸:Pi 砍它后,相关做法是容器隔离 + 全透明 + 可读文件事后审(<b>把这几项合起来当「替代」是我们的读法</b>;它是本地结对、人在旁,『实时盯』也是我们的推断)。<b>那我们呢?</b>—— 我们是自治 fleet,这类「有人在看 / 能事后审」的替代品我们有没有、够不够?<b>这正是要你判的。</b>关键 nuance:Pi 砍它对不对,取决于它有没有替代;所以<b>就算 Pi 砍得对,也不自动等于我们该砍</b> —— 别读成「看 Pi 都砍了、我们也该砍」。Pi 不是「反例证明我们过度设计」,而是「<b>同一批控制在不同语境命运不同</b>」的活证。这道测试,下面 §5 逐块量四个程序时都好使。</div>
+    <div class="cbox"><div class="ask">✍️ Pi 这个「砍到只剩 4 工具 + 透明 + 人盯」的活样本,改变了你对「我们是不是过度设计」的看法吗?哪一条你最想搬过来 / 最不敢搬?</div>
+      <textarea data-q></textarea></div>
+  </div>
+
+  <hr>
+
+  <!-- ===== §5 逐块量四个 DAG 程序 ===== -->
+  <h2 style="margin:18px 0 4px">⑤ 用这把尺子,逐块量我们四个 DAG 程序</h2>
+  <div class="sub">每块 = 是什么 → 业界视角落在哪 → 开放问题。<b>我不替你判</b> —— 你圈「像拐杖 / 像地基 / 取决于」+ 写想法。(四个程序是<b>我们自己的内部 issue</b>,描述来自我们的项目上下文、不是外部研究的结论;业界视角只用来帮你判。归类以你圈的选项为准,正文里我尽量只摆证据不预判。)</div>
+  <div class="bar">🔧 <b>逐块可套 §4.5 那道测试:</b>不是问「这块需不需要」,而是问 <b>「砍了它得靠什么替代 —— 我们有没有那个替代品?」</b>有替代 = 更像拐杖(可砍/按需);没替代 = 更像地基(留)。你来套。</div>
+
+  <div class="sec gray" data-title="§5 · FLY-1020 DAG 模板(任务类别→模板)">
+    <h3>FLY-1020 — 任务类别 → DAG 模板(静态模板 = 现状)</h3>
+    <p><b>业界视角:</b>DR 明确「趋势是<b>away from explicit workflow DAGs</b> 作为主要造法」;Anthropic 也说「能 hardcode 路径的 well-defined 任务用 workflow,否则用 agent」。→ 一种读法是静态死模板可能最容易被吸收;另一面,Anthropic 说对「可预测、边界清楚」的任务 workflow 仍有「可预测性」价值。它更像哪类,你圈。</p>
+    <div class="lens"><b>开放问题:</b>模板该是<b>默认</b>(每个任务先套模板),还是<b>按需 escalation</b>(默认一个精干 agent 自己扛,只有复杂/可预测任务才套模板)?</div>
+    <div class="opts">
+      <label class="opt"><input type="radio" name="p1020"><span class="ol">像拐杖</span> —— 静态死步骤,模型变强该砍薄 / 改按需</label>
+      <label class="opt"><input type="radio" name="p1020"><span class="ol">像地基</span> —— 可预测性本身有价值,留</label>
+      <label class="opt"><input type="radio" name="p1020"><span class="ol">取决于</span> —— 看是「默认套」还是「按需套」</label>
+    </div>
+    <div class="cbox"><div class="ask">✍️ 1020 你怎么看?</div><textarea data-q></textarea></div>
+  </div>
+
+  <div class="sec gray" data-title="§5 · FLY-1135 编排引擎 + ship 闸机理">
+    <h3>FLY-1135 — 编排引擎 + ship 闸机理(required-checks 按最新 sha / stale-approval 自动作废 / in-toto digest 绑定)</h3>
+    <p><b>业界视角:</b>DR 的「control」清单点到 approval gates、security boundaries、observability。连 Pi 砍了批准闸也可作对照:一种读法是它是本地工具(人在旁 + 事后能审);我们是自治 fleet —— 这对我们意味着什么,你判。</p>
+    <div class="lens"><b>开放问题:</b>你读这块是「control 类地基」,还是也有过度工程可砍(比如某些 check 冗余、某段实现复杂度)?下面圈 + 写。</div>
+    <div class="opts">
+      <label class="opt"><input type="radio" name="p1135"><span class="ol">像地基</span> —— 控制/安全/审计,agent 越强越要,留厚</label>
+      <label class="opt"><input type="radio" name="p1135"><span class="ol">像拐杖</span> —— 其实有冗余,可砍薄</label>
+      <label class="opt"><input type="radio" name="p1135"><span class="ol">取决于</span> —— 机理留、某些实现细节可简化</label>
+    </div>
+    <div class="cbox"><div class="ask">✍️ 1135 你怎么看?</div><textarea data-q></textarea></div>
+  </div>
+
+  <div class="sec gray" data-title="§5 · FLY-1140 动态编排(派发/决策权/复盘/进化)">
+    <h3>FLY-1140 — 动态编排(Lead 派发、决策权覆盖层、record/复盘、进化阶梯)</h3>
+    <p><b>业界视角:</b>Anthropic 的 orchestrator-worker(lead 派并行 subagent)是<b>并行广度/规模</b>那类;「固定步骤/僵硬派发」是否算「给弱模型切步」,业界没直接判 —— 留给你。LangChain:单 agent 扛不住复杂指令才多 agent。Cognition:别拆认知线程(派发时保上下文完整)。</p>
+    <div class="lens"><b>开放问题:</b>1140 里哪些是「为并行/广度」、哪些是「为给弱模型切步」?一种拆法(供参考,不替你定):「决策权覆盖层 + 复盘」更像 control,「死板的谁交给谁链」更像 cognition-scaffolding —— 但怎么归、留多少,你判。</div>
+    <div class="opts">
+      <label class="opt"><input type="radio" name="p1140"><span class="ol">像地基</span> —— 派发/复盘/决策权是 control,留</label>
+      <label class="opt"><input type="radio" name="p1140"><span class="ol">像拐杖</span> —— 固定编排步骤,模型变强该砍</label>
+      <label class="opt"><input type="radio" name="p1140"><span class="ol">取决于</span> —— 拆开:并行/广度留、切步砍</label>
+    </div>
+    <div class="cbox"><div class="ask">✍️ 1140 你怎么看?</div><textarea data-q></textarea></div>
+  </div>
+
+  <div class="sec gray" data-title="§5 · FLY-1141 花名册 / 人才库">
+    <h3>FLY-1141 — 花名册 / 人才库(一堆 Agent File;谁演角色、冲突归属路由)</h3>
+    <p><b>业界视角:</b>业界有两类相关说法可套:<b>专业化 / 上下文隔离</b>(Anthropic subagent 各自干净上下文)和 <b>independent review(reviewer≠doer)</b>;另一面,「每个角色一个不同 agent」如果只是给「不够强的通才」打补丁,模型变强可能塌回「一个强 agent + 工具」。这两面哪个是主,你判。</p>
+    <div class="lens"><b>开放问题:</b>花名册混了两个动机:一是<b>独立性/隔离</b>(reviewer≠doer、干净上下文),二是<b>凑齐弱通才缺的专才</b>。哪个是主、要不要拆开对待,你判。</div>
+    <div class="opts">
+      <label class="opt"><input type="radio" name="p1141"><span class="ol">像地基</span> —— 独立身份/隔离,reviewer≠doer,留</label>
+      <label class="opt"><input type="radio" name="p1141"><span class="ol">像拐杖</span> —— 给弱通才凑专才,模型变强会塌</label>
+      <label class="opt"><input type="radio" name="p1141"><span class="ol">取决于</span> —— 独立性动机留、凑专才动机可收</label>
+    </div>
+    <div class="cbox"><div class="ask">✍️ 1141 你怎么看?</div><textarea data-q></textarea></div>
+  </div>
+
+  <hr>
+
+  <div class="sec gray" data-title="收尾 — 这页不下结论">
+    <h2>这页到此为止,不替你拍板</h2>
+    <p>上面是业界的多方声音 + 用我们的尺子对照的结果。<b>「该不该继续建这些 DAG 程序、每块留多厚」的决定是你 + HL 的。</b>我(runner)只摆事实、给视角、把你可能想追问的点标出来。</p>
+    <div class="cbox"><div class="ask">✍️ 整体看下来:业界视角有没有改变你对「是不是过度设计」的判断?最想先动/先砍哪个 DAG 程序?还有哪块想让我再深挖?</div>
+      <textarea data-q></textarea></div>
+  </div>
+
+  <button class="btn" id="collect">📋 一键复制我全部批注</button>
+  <button class="btn sec2" id="copy" style="display:none">复制到剪贴板</button>
+  <textarea id="out" style="display:none;margin-top:12px;min-height:220px"></textarea>
+  <p class="muted" id="fallback" style="display:none">若复制按钮无效:长按上面框里的文字全选复制,发给 Honey Lemon 即可。</p>
+
+  <div class="foot" id="sources">
+    <b>来源(一手源,真链接)</b><br>
+    · ChatGPT Deep Research(Pro,7m · 23 引用 · 416 搜索):《Frontier LLMs and the Fate of Multi-Agent Orchestration in AI Coding Systems》—— 结论(Bottom line)逐字引在 §1;全文因跨域沙箱本机未能导出(诚实说明见顶部)。<br>
+    · Anthropic — How we built our multi-agent research system: <a href="https://www.anthropic.com/engineering/multi-agent-research-system">anthropic.com/engineering/multi-agent-research-system</a><br>
+    · Anthropic — Building Effective Agents: <a href="https://www.anthropic.com/engineering/building-effective-agents">anthropic.com/engineering/building-effective-agents</a><br>
+    · Anthropic — When to use multi-agent systems: <a href="https://claude.com/blog/building-multi-agent-systems-when-and-how-to-use-them">claude.com/blog/building-multi-agent-systems-when-and-how-to-use-them</a><br>
+    · Cognition — Don't Build Multi-Agents(Walden Yan): <a href="https://cognition.ai/blog/dont-build-multi-agents">cognition.ai/blog/dont-build-multi-agents</a><br>
+    · LangChain / Harrison Chase — How to think about agent frameworks: <a href="https://www.langchain.com/blog/how-to-think-about-agent-frameworks">langchain.com/blog/how-to-think-about-agent-frameworks</a><br>
+    · LangChain — How and when to build multi-agent systems: <a href="https://www.langchain.com/blog/how-and-when-to-build-multi-agent-systems">langchain.com/blog/how-and-when-to-build-multi-agent-systems</a><br>
+    · Pi Agent — Mario Zechner, "What I learned building an opinionated and minimal coding agent": <a href="https://mariozechner.at/posts/2025-11-30-pi-coding-agent/">mariozechner.at/posts/2025-11-30-pi-coding-agent</a><br>
+    · Pi Agent — Armin Ronacher, "Pi: The Minimal Agent Within OpenClaw": <a href="https://lucumr.pocoo.org/2026/1/31/pi/">lucumr.pocoo.org/2026/1/31/pi</a><br>
+    · Cognition vs Anthropic 架构之争(背景):<a href="https://www.ctol.digital/news/ai-leaders-clash-agent-architecture-cognition-anthropic-strategies/">ctol.digital</a> · <a href="https://simonwillison.net/2025/Jun/14/multi-agent-research-system/">simonwillison.net</a><br>
+    <span class="muted">诚实边界:DR 的内联引用本是不可解析的内部 token,真 URL 靠 Word 导出(本机受阻)。上面链接是我们<b>独立查证过的源(Anthropic / Cognition / LangChain,加 Annie 主动问到、单独查的 Pi + 背景来源)</b>的真链接。DR 的 Bottom line 还点名了 <b>OpenAI / Google / Microsoft</b>,但那只出现在<b>不可审计的 DR 全文里、我未逐一独立复核</b>,页面不据此下断言。查不到的一律标 UNKNOWN,未编造。</span>
+  </div>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var btn=document.getElementById('collect'),copy=document.getElementById('copy'),
+      out=document.getElementById('out'),fb=document.getElementById('fallback');
+  if(!btn) return;
+  btn.addEventListener('click',function(){
+    var parts=['# FLY-1230 多-vs-单 agent — Annie 批注'];
+    document.querySelectorAll('.sec').forEach(function(sec){
+      var title=sec.getAttribute('data-title')||'';
+      var radio=sec.querySelector('input[type=radio]:checked');
+      var ta=sec.querySelector('textarea[data-q]');
+      var pick=radio?(radio.parentNode.textContent||'').trim():'';
+      var note=ta?(ta.value||'').trim():'';
+      if(pick||note){
+        var block='## '+title;
+        if(pick) block+='\n圈选: '+pick;
+        if(note) block+='\n'+note;
+        parts.push(block);
+      }
+    });
+    out.value = parts.length>1 ? parts.join('\n\n') : '(还没圈 option、也没写批注)';
+    out.style.display='block'; copy.style.display='inline-block'; fb.style.display='block';
+    out.scrollIntoView({behavior:'smooth',block:'center'});
+  });
+  copy.addEventListener('click',function(){
+    out.select();
+    var fb=function(){ try{ copy.textContent = document.execCommand('copy') ? '已复制 ✓' : '请手动全选复制'; }catch(_){ copy.textContent='请手动全选复制'; } };
+    try{
+      var p = navigator.clipboard && navigator.clipboard.writeText(out.value);
+      if(p && typeof p.then==='function'){ p.then(function(){ copy.textContent='已复制 ✓'; }).catch(fb); }
+      else { fb(); }
+    }catch(e){ fb(); }
+  });
+})();
+</script>
+</body>
+</html>

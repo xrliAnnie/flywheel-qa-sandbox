@@ -10,6 +10,13 @@ export interface ActionResult {
 	alreadyResponded?: boolean;
 	/** FLY-58: true if CommDB gate was successfully unblocked */
 	gateUnblocked?: boolean;
+	/**
+	 * FLY-228: terminate transitioned the FSM to `terminated` but tmux cleanup
+	 * failed (real kill error). `success` is false in this case — the FSM row is
+	 * terminal (no longer blocks admission), but the process may still be alive;
+	 * `close_runner` (terminated ∈ AUTO_CLOSE_STATES) is the cleanup retry.
+	 */
+	cleanupPending?: boolean;
 }
 
 export class ReactionsEngine {

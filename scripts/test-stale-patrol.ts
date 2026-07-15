@@ -125,7 +125,6 @@ async function main() {
 				leads: [
 					{
 						agentId: "product-lead",
-						forumChannel: "test-forum",
 						chatChannel: "test-chat",
 						match: { labels: ["Product"] },
 					},

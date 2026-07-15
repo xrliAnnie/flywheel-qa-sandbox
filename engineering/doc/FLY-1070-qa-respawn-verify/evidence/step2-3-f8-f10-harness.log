@@ -1,0 +1,61 @@
+
+═══ Case 1: F8a — CommDB-only orphan (issue_id=NULL in CommDB, NO StateStore row) [CommDB-only] ═══
+  [PASS] does not throw
+  [PASS] zero spawn (getSession→undefined → main-role default no-op)
+  [PASS] zero alerts
+
+═══ Case 2: F8b — dead main-role row → full no-op [real-store] ═══
+  [PASS] zero spawn
+  [PASS] zero alerts
+  [PASS] zero thread notes
+
+═══ Case 3: F8c-1 — issue_id='' dead qa row, scoped + boot → no crash, zero spawn [real-store] ═══
+  [PASS] does not throw (scoped + boot)
+  [PASS] zero spawn
+  [PASS] zero alerts
+
+═══ Case 4: F8c-2 — cross-project dead qa row (zombie form: NO stranded implement), scoped + boot → no crash, zero spawn [real-store] ═══
+  [PASS] does not throw
+  [PASS] zero spawn (no stranded implement → no-op)
+  [PASS] zero alerts
+
+═══ Case 5: F8c-3 — listPhaseSessionRows throws (qa query) → fail-closed, zero spawn, warn [fault-injected] ═══
+  [PASS] does not throw (caught inside criteria)
+  [PASS] zero spawn (fail-closed: treated as progressed)
+  [PASS] fail-closed warn logged — ["[phase-orch] hasProgressedPastImplement query failed for FLY-QA1070: injected query fault — treating as progressed (no re-drive)"]
+
+═══ Case 6: F8d — cross-project stranded implement IS traversed by boot reconcile, criteria no-ops [real-store] ═══
+  [PASS] cross-project candidate traversed (skip log names impl-other) — ["[phase-orch] reconcileStrandedImplementHandoffs: impl-other (OTHER-88) pipeline still owns itself (alive qa / latest-FAIL fix-loop / ship claim) — skip re-drive"]
+  [PASS] zero spawn (criteria no-op)
+
+═══ Case 7: FLY-1018 — impl@awaiting_review + 2 dead failed qa (no intent) → exactly 1 respawn [real-store] ═══
+  [PASS] exactly 1 spawn — start=1
+  [PASS] sessionRole=qa
+  [PASS] startPoint=implement head
+  [PASS] shareParentBranch=true
+  [PASS] ignoreRunnerLabelSelection=true
+  [PASS] respawn thread note posted (dead-qa 前科 + alive row landed)
+  [PASS] TURN granted to fresh QA via pre-launch seam
+  [PASS] zero alerts
+
+═══ Case 8: F9 — production merge_block marker string truncates respawn on BOTH paths [real-store] ═══
+  [PASS] scoped: zero spawn
+  [PASS] scoped: zero alerts
+  [PASS] boot: zero spawn
+  [PASS] boot: zero alerts
+  [PASS] zero thread notes
+  [PASS] merge-block skip logged
+
+═══ Case 9: F10-1 — FLY-1023 现状形态(生产快照重构):无 implement@awaiting_review → 零触发 [real-store] ═══
+  [PASS] zero spawn on current FLY-1023 shape
+  [PASS] zero alerts
+
+═══ Case 10: F10-2 — FLY-1047 现状形态(生产快照重构):无 implement@awaiting_review → 零触发 [real-store] ═══
+  [PASS] zero spawn on current FLY-1047 shape
+  [PASS] zero alerts
+
+═══ Case 11: F10-3 — 缺口类实证:issue 已 Done(Linear 状态,StateStore 无关联字段)+ impl@awaiting_review + 死 qa + 无 ship claim + 无 merge_block → boot 触发 spawn(判据无 Done 否决)[real-store + code-audit] ═══
+  [PASS] spawn IS triggered (gap confirmed: no issue-Done hard veto) — start=1
+
+────────────────────────────────────────────────────────────
+ALL CASES PASS

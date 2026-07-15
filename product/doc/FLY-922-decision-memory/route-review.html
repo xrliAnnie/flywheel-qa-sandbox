@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="light">
+<title>FLY-922 可执行路线 — 下一步具体做什么</title>
+<style>
+  html{color-scheme:light}
+  :root{
+    --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --navy:#1a365d;
+    --blue:#007aff; --green:#34c759; --amber:#ff9500; --red:#ff3b30; --purple:#af52de;
+    --line:#e5e5ea;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+    line-height:1.62;font-size:16px;-webkit-text-size-adjust:100%}
+  .wrap{max-width:820px;margin:0 auto;padding:20px 16px 96px}
+  header.top{padding:14px 2px 6px}
+  .kicker{color:var(--blue);font-weight:700;font-size:13px;letter-spacing:.4px;text-transform:uppercase}
+  h1{font-size:26px;line-height:1.25;margin:6px 0 8px;letter-spacing:-.3px}
+  .sub{color:var(--dim);font-size:14px;margin:0 0 4px}
+  .card{background:var(--card);border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+    padding:18px 18px;margin:16px 0;border-left:4px solid var(--line)}
+  .card.blue{border-left-color:var(--blue)} .card.green{border-left-color:var(--green)}
+  .card.amber{border-left-color:var(--amber)} .card.red{border-left-color:var(--red)}
+  .card.purple{border-left-color:var(--purple)} .card.navy{border-left-color:var(--navy)}
+  h2{font-size:20px;margin:2px 0 10px;letter-spacing:-.2px}
+  h3{font-size:16px;margin:14px 0 6px}
+  p{margin:8px 0}
+  .lead{font-size:17px}
+  .muted{color:var(--dim);font-size:14px}
+  ul{margin:8px 0 8px;padding-left:20px} li{margin:5px 0}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14.5px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:13px}
+  code{font-family:"SF Mono",ui-monospace,Menlo,monospace;background:#f0f0f3;border-radius:5px;padding:1px 5px;font-size:13px}
+  .step{display:flex;gap:12px;margin:14px 0;align-items:flex-start}
+  .stepno{flex:0 0 34px;height:34px;border-radius:50%;background:var(--navy);color:#fff;
+    font-weight:800;display:flex;align-items:center;justify-content:center;font-size:15px;margin-top:2px}
+  .stepbody{flex:1}
+  .stepbody h3{margin:2px 0 4px}
+  .tag{display:inline-block;font-size:12px;font-weight:700;padding:2px 9px;border-radius:999px;margin-left:6px;vertical-align:middle}
+  .t-out{background:#e3f0ff;color:#0a5bd3} .t-ver{background:#e3f6e8;color:#1a7a34} .t-eng{background:#f0e8fb;color:#7231a8}
+  .floor{background:#fff4f3;border:1px solid #ffd6d1;border-radius:12px;padding:12px 14px;margin:10px 0}
+  .floor b{color:var(--red)}
+  .cmt-wrap{margin-top:12px;border-top:1px dashed var(--line);padding-top:10px}
+  .cmt-wrap label{display:block;font-size:13px;font-weight:600;color:var(--navy);margin-bottom:6px}
+  textarea.cmt{width:100%;min-height:64px;border:1px solid var(--line);border-radius:10px;
+    padding:10px 12px;font:inherit;font-size:15px;background:#fcfcfd;resize:vertical;color:var(--ink)}
+  textarea.cmt:focus{outline:2px solid var(--blue);outline-offset:1px;border-color:var(--blue)}
+  .bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.92);backdrop-filter:blur(8px);
+    border-top:1px solid var(--line);padding:10px 14px;display:flex;gap:10px;justify-content:center;align-items:center;z-index:5}
+  .btn{appearance:none;border:0;border-radius:10px;padding:11px 16px;font:inherit;font-weight:700;font-size:15px;cursor:pointer}
+  .btn.primary{background:var(--blue);color:#fff} .btn.ghost{background:#ececf0;color:var(--ink)}
+  .hint{font-size:12.5px;color:var(--dim);text-align:center;margin-top:4px}
+  details{margin:8px 0} summary{cursor:pointer;font-weight:600;color:var(--navy)}
+  .fallback{background:#f0f0f3;border-radius:10px;padding:12px;font-size:13px;white-space:pre-wrap;
+    font-family:"SF Mono",ui-monospace,Menlo,monospace;overflow-x:auto}
+  @media(max-width:640px){.wrap{padding:14px 12px 96px}h1{font-size:22px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">FLY-922 · 可执行路线(历史稿,部分被取代)</div>
+  <h1>不用从零建 —— 机器已经造好了,<br>接通它、先让它真拍一类小决策</h1>
+  <p class="sub">Honey Lemon · 2026-07-06 · 这版只回答一个问题:<b>下一步具体做什么</b></p>
+</header>
+
+<div class="card red">
+  <h2>⚠️ 你后来定了新打法,这份的「接通 CIPHER」框架已被取代</h2>
+  <p>你 review 后判定 <b>CIPHER 不当骨架</b>(它是计数器、不记你为什么)——最终打法 = <b>「破例先记」规则树(RDR)+ 翻先例(CBR)</b>,见方法对比那份。本页<b>仍有效的部分</b>:CIPHER 代码审计(事实记录)、业界三个同形状系统、以及「影子跑 → 闸+解锁 → 面板/抽检」的三块节奏(套在新打法上照用)。留档备查。</p>
+</div>
+
+<div class="card navy" id="r-finding">
+  <h2>先说最大的发现:CIPHER 已经把最难的部分建好了</h2>
+  <p class="lead">你问过两次「CIPHER 做了,现在有在用吗」。这次我把它源码全读了,答案比之前更具体:</p>
+  <ul>
+    <li><b>「按场景学」——已建好</b>:每次决策自动抽维度、生成分层「场景 key」,稀疏场景还会自动向相邻场景借数据。</li>
+    <li><b>「每类场景各算把握度」——已建好</b>:贝叶斯平滑 + Wilson 90% 保守下界(样本少时故意压低把握,防瞎自信)。</li>
+    <li><b>「按数据量分成熟度」——已建好</b>:&lt;10 次=探索、&lt;20=试探、&lt;50=成型、≥50=可信 —— 这就是毕业阶梯,代码里现成的。</li>
+    <li><b>真数据在跑</b>:56 条决策快照、55 条你的 review、15 个 pattern,现在还在写。</li>
+  </ul>
+  <p><b>它为什么看着「没用」?</b>因为这台机器只干了两件小事:① 算出来的东西只当「参考」喂给内部判断,不真正拍板;② 它唯一作用的那个决策是「PR 要不要合并」——那是 ship 类地板动作,<b>本来就该永远问你</b>,所以再高的把握也被(正确地)压回「问你」。</p>
+  <p class="lead"><b>→ 结论:整台学习机器在空转。要做的不是再写一版原则,而是把它接到「可以自治的小决策」上。</b></p>
+  <div class="cmt-wrap"><label>💬 这个 reframe(不从零建、接通 CIPHER)你认吗?</label><textarea class="cmt" data-k="reframe" placeholder="…"></textarea></div>
+</div>
+
+<div class="card blue" id="r-industry">
+  <h2>业界就是这么干的(三个已上线的同形状系统)</h2>
+  <p><b>① 银行风控(Sift/SEON 这类欺诈审核平台)—— 和我们形状最像</b>:每笔交易 → 拉齐信号 → 打 0-100 风险分 → <b>三档:低分自动批 / 中间分进人工审核队列 / 高分自动拒</b> → 每个结果流回去让模型继续学。银行靠这套每天自动放行绝大多数交易,只把拿不准的交给人。我们 = 同一台机器,「交易」换成「Lead 的小决策」、「人工队列」换成「问你」。</p>
+  <p><b>② Claude Code 自己的权限系统 —— 我们天天在用</b>:每类命令第一次问你「允许一次 / 总是允许」;你点「总是允许」= 对这个类别<b>显式解锁</b>,以后不再问;还有个功能会扫历史、把你反复批的类别聚合成建议规则给你一键采纳;随时可删(收回)。→ 「按类别解锁 + 从你的历史批准里蒸馏规则 + 可撤销」这个闭环,已经每天在你手上跑。</p>
+  <p><b>③ AI code review 对照组</b>:GitHub Copilot 收 accept/dismiss 信号但还不做团队级学习;竞品 <b>CodeRabbit 已经做了「可学习偏好」</b>——从团队反馈里学口味、越用越贴。说明「agent 学老板偏好」是市场上真实出货的能力。</p>
+  <table>
+    <tr><th>它们的机制</th><th>对应我们(CIPHER 已有)</th></tr>
+    <tr><td>风险分三档:自动批 / 人审队列 / 拒</td><td>Wilson 下界 + 你的 0.80 线 → L2 / L1 / L0</td></tr>
+    <tr><td>「总是允许」按类别解锁、可收回</td><td>pattern 解锁 + 一键 revoke</td></tr>
+    <tr><td>结果回灌持续学 + 信任随用量升档(实测 20%→40% 自动)</td><td>recordOutcome 已在写 + maturity 阶梯</td></tr>
+  </table>
+  <p class="muted">全是已上线验证的机制,我们大半原语 CIPHER 已经有 —— 不用发明任何新东西。</p>
+</div>
+
+<div class="card green" id="r-route">
+  <h2>路线:三小块,每块独立能上线、能验证</h2>
+  <p class="muted">原则:先用<b>一类</b>高频小决策跑通闭环(你能亲眼看到它真的替你拍对了),再一类一类加宽。不一上来铺全套阶梯。</p>
+
+  <div class="step">
+    <div class="stepno">1</div>
+    <div class="stepbody">
+      <h3>影子跑:让它先「偷偷预测」一类小决策 <span class="tag t-out">产出:学习曲线</span></h3>
+      <p>选一类高频、纯可逆的小决策(建议:<b>issue 归类/排优先级</b>)。Lead 照常做,系统在背后记「CIPHER 会怎么拍 + 拍得像不像你」,<b>不改变任何行为、零风险</b>。</p>
+      <p><span class="tag t-ver">验证</span> 拿历史决策回放对比预测准确率;把握度随样本上升。你会看到一张「它学到几成像你」的曲线。</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="stepno">2</div>
+    <div class="stepbody">
+      <h3>接通:高把握 + 你解锁的,真自治 <span class="tag t-out">产出:第一类真自治决策</span></h3>
+      <p>给这类决策加一道闸(业界同款):<b>动作可逆(不碰 4 类地板)+ 成熟度到「可信」+ 把握 ≥0.80 + 你点头解锁了这个 pattern</b> → 自动做 + 告诉你;差任何一条 → 还是建议等你点头。</p>
+      <p><span class="tag t-ver">验证</span> 解锁一个 pattern 看它真自治;故意塞一个碰地板的 case 确认被闸挡回;你一键收回立即生效。</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="stepno">3</div>
+    <div class="stepbody">
+      <h3>面板:等级卡 + 一键收放 + 每日抽检单 <span class="tag t-out">产出:你的控制台</span></h3>
+      <p>每个 Lead 一张卡:哪些 pattern 学到几成、哪些已解锁;你在这里一键解锁/收回。自治动作进<b>每日 digest</b>,你标「对/错/特例」——标错的自动降回建议档。</p>
+      <p><span class="tag t-ver">验证</span> 面板解锁 → 块 2 生效;digest 标错 → 该 pattern 掉档。</p>
+    </div>
+  </div>
+
+  <p><b>之后:</b>同一套模子(影子→闸→解锁→抽检),<b>一次加一类</b>可逆决策,每次都独立可上线。</p>
+
+  <div class="floor">
+    <p style="margin:0"><b>🔒 贯穿全程不动的地板</b>:花钱 / 真不可逆销毁(含 retry) / 安全权限 / ship·merge·runner 生命周期 —— 4 类永远先被闸住、永远问你。PR 合并那条「永远问你」的现状<b>保持不动</b>。</p>
+  </div>
+  <div class="cmt-wrap"><label>💬 这三块的顺序和「先一类小决策跑通」的打法,OK 吗?第一类选 issue 归类/排优先级,你有更想先自治的吗?</label><textarea class="cmt" data-k="route" placeholder="…"></textarea></div>
+</div>
+
+<div class="card purple" id="r-eng">
+  <h2>标给 Tadashi 的纯工程细节(产品层不替他定)</h2>
+  <ul class="muted" style="font-size:14px">
+    <li>维度抽取(<code>SnapshotInputDto</code>/<code>extractDimensions</code>)扩到非-PR 决策类型</li>
+    <li>非-PR 决策的记录路径(复用 PR 的还是新开)</li>
+    <li><code>pattern_unlock</code> 表 + 解锁动作要不要也走 founder gate(建议要)</li>
+    <li>闸函数插桩点(在那类决策的执行处;地板 SSOT 检查必须在闸前)</li>
+    <li>cipher.db 只读面板的进程边界</li>
+  </ul>
+</div>
+
+<div class="card navy">
+  <h2>📋 你的批注</h2>
+  <p class="muted">点底部按钮把批注拷走粘回给我。按钮若被拦,展开下面模板手动填。</p>
+  <details>
+    <summary>手动模板</summary>
+    <div class="fallback">FLY-922 路线批注 ——
+reframe(接通CIPHER不从零建)认吗:
+三块顺序&第一类选什么:
+其它: </div>
+  </details>
+</div>
+
+</div>
+
+<div class="bar">
+  <button class="btn primary" id="copyBtn" type="button">复制我的全部批注</button>
+  <button class="btn ghost" id="clearBtn" type="button">清空</button>
+</div>
+<div class="hint" style="position:fixed;bottom:56px;left:0;right:0" id="hint"></div>
+
+<script>
+(function(){
+  var LS="fly922-route-cmt";
+  var areas=[].slice.call(document.querySelectorAll("textarea.cmt"));
+  var labelOf={reframe:"reframe认吗",route:"三块顺序&第一类",freeform:"其它"};
+  try{var saved=JSON.parse(localStorage.getItem(LS)||"{}");
+    areas.forEach(function(a){var k=a.getAttribute("data-k"); if(saved[k])a.value=saved[k];});}catch(e){}
+  function persist(){try{var o={};areas.forEach(function(a){o[a.getAttribute("data-k")]=a.value;});
+    localStorage.setItem(LS,JSON.stringify(o));}catch(e){}}
+  areas.forEach(function(a){a.addEventListener("input",persist);});
+  function build(){
+    var out="FLY-922 可执行路线 — Annie 批注\n\n";
+    areas.forEach(function(a){var v=a.value.trim(); if(v){var k=a.getAttribute("data-k");
+      out+="["+(labelOf[k]||k)+"] "+v+"\n";}});
+    return out.trim();
+  }
+  function flash(msg){var h=document.getElementById("hint");h.textContent=msg;
+    setTimeout(function(){h.textContent="";},2600);}
+  document.getElementById("copyBtn").addEventListener("click",function(){
+    var t=build();
+    if(t==="FLY-922 可执行路线 — Annie 批注"){flash("还没写批注哦");return;}
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(t).then(function(){flash("已复制 ✓ 粘回给我就行");},
+        function(){window.prompt("手动复制(Cmd+C):",t);});
+    }else{window.prompt("手动复制(Cmd+C):",t);}
+  });
+  document.getElementById("clearBtn").addEventListener("click",function(){
+    if(window.confirm("清空所有批注?")){areas.forEach(function(a){a.value="";});persist();flash("已清空");}
+  });
+})();
+</script>
+</body>
+</html>

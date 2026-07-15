@@ -1,0 +1,10 @@
+⏺ Calling plugin:discord:discord… (ctrl+o to expand)
+
+  ⎿  API Error: Server error mid-response. Please try again.
+
+───────────────────────────────────────────────────────────────────────────────────────────────────── @cos-lead ──
+❯
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 4.8/xhigh | ⚡cos-lead | ~/.flywheel/lead-workspace/cos-lead | ctx 34% ����������
+  5h ���������� 12% reset today 21:30  |  7d ���������� 41% reset Mon 09:00
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

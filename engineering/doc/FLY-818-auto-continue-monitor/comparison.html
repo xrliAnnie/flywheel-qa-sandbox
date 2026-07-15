@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-818 · auto-continue Monitor — /loop vs Monitor 对比</title>
+<style>
+  :root { --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --gray:#86868b; --navy:#1a365d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"SF Pro Text",sans-serif; line-height:1.6; }
+  .wrap { max-width:960px; margin:0 auto; padding:32px 20px 80px; }
+  h1 { font-size:28px; letter-spacing:-.02em; margin:0 0 6px; }
+  .sub { color:var(--gray); font-size:15px; margin:0 0 4px; }
+  .meta { color:var(--gray); font-size:13px; font-family:"SF Mono",ui-monospace,monospace; margin:0 0 28px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:20px 22px; margin:16px 0; border-left:4px solid var(--gray); }
+  .card.blue{border-left-color:var(--blue)} .card.green{border-left-color:var(--green)} .card.amber{border-left-color:var(--amber)} .card.purple{border-left-color:var(--purple)} .card.red{border-left-color:var(--red)} .card.navy{border-left-color:var(--navy)}
+  .card h2 { font-size:20px; margin:0 0 10px; letter-spacing:-.01em; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:var(--navy); }
+  .sec-title { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--gray); margin:34px 0 4px; font-weight:600; }
+  p { margin:8px 0; font-size:15px; }
+  ul { margin:8px 0; padding-left:22px; } li { margin:4px 0; font-size:15px; }
+  code { font-family:"SF Mono",ui-monospace,monospace; font-size:13px; background:#f0f0f2; padding:1px 5px; border-radius:5px; }
+  .tag { display:inline-block; font-size:12px; font-weight:600; padding:2px 9px; border-radius:20px; margin-right:6px; vertical-align:middle; }
+  .tag.rec{background:#e3f9ea;color:#1a7f37} .tag.a{background:#e3f0ff;color:#0a58ca} .tag.b{background:#fff2e0;color:#a35200}
+  table { width:100%; border-collapse:collapse; margin:10px 0; font-size:14px; overflow:hidden; }
+  .tblwrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  th,td { text-align:left; padding:10px 12px; border-bottom:1px solid #ececee; vertical-align:top; }
+  th { background:#fafafa; font-weight:600; color:var(--navy); font-size:13px; }
+  td.a { color:#0a58ca; } td.b { color:#a35200; }
+  .win { color:var(--green); font-weight:600; } .lose{ color:var(--red); } .mid{ color:var(--amber); }
+  .callout { background:#fff8ee; border-left:4px solid var(--amber); border-radius:10px; padding:14px 18px; margin:16px 0; font-size:15px; }
+  .rec-box { background:#eef9f1; border-left:4px solid var(--green); border-radius:12px; padding:18px 22px; margin:18px 0; }
+  .rec-box h2 { color:#1a7f37; }
+  .pending { color:var(--amber); font-style:italic; }
+  .foot { color:var(--gray); font-size:13px; margin-top:30px; border-top:1px solid #e5e5e7; padding-top:16px; }
+  @media (prefers-color-scheme: dark) {
+    body{background:#000;color:#f5f5f7} .card,table{background:#1c1c1e} th{background:#2c2c2e;color:#cbd5e1} .card{box-shadow:none;border:1px solid #2c2c2e;border-left-width:4px}
+    code{background:#2c2c2e} th,td{border-bottom-color:#2c2c2e} .callout{background:#2a2416} .rec-box{background:#12261a}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-818 · auto-continue Monitor</h1>
+  <p class="sub">runner 一轮做完→idle 空转,没人续跑 / 没人可靠告诉 founder — 路线对比 &amp; 推荐</p>
+  <p class="meta">Issue FLY-818 · 2026-07-03 · Flywheel Eng · 决策文档(给 Annie 确认方向)</p>
+
+  <div class="card navy">
+    <h2>问题一句话</h2>
+    <p>runner 是 <strong>turn-based</strong>:一轮回复结束就 idle 在 prompt,「我接着做」只是文字、turn 已结束。没人续跑,founder 也要自己去发现它停了。现 watchdog 是<strong>卡死检测器</strong>(≈1h 才报、只报警不续跑、绕 Lead relay 不直连 founder)。</p>
+    <p>Annie 定的方向:<strong>goal-driven 自动续跑</strong>——短阈值扫「turn 结束+idle」;有 pending question→等答;goal 没完→自动续;真卡住→升级。且 Annie 想 <strong>先试 /loop(runner 原生自循环)</strong>,好用就可能<strong>不需要自造看门狗</strong>。</p>
+  </div>
+
+  <div class="rec-box">
+    <h2>推荐 <span class="tag rec">RECOMMENDED</span></h2>
+    <p><strong>混合:/loop-native 当续跑主力 + 保留最小安全网,不自造 Bridge Monitor。</strong></p>
+    <ul>
+      <li><strong>续跑</strong> = <span class="tag a">路 A</span> /loop-native(claude runner 用 Claude 自带 <code>/loop</code>+<code>ScheduleWakeup</code> 自己续)——智能在模型里、代码最少、天然抗 Bridge 重启、对齐 Anthropic「thinnest wrapper」哲学。<strong>正是 Annie 首选。</strong></li>
+      <li><strong>安全网</strong> = 现有 <code>StuckRunnerDetector</code> 缩成纯安全网(只在「真卡住/续不动」时),经 FLY-368 alert channel <strong>可靠直达 founder</strong> = item A 的真正硬要求。<strong>不删 watchdog。</strong></li>
+      <li><strong>先跑便宜真机 spike</strong>(Phase 0)验 /loop 能不能干净套 runner = go/no-go(见下)。</li>
+    </ul>
+    <p style="margin-top:10px"><strong>「/loop 能替掉看门狗吗?」——能替掉「续跑」那半;替不掉「真卡住→可靠告诉 founder」那半(留给缩小成安全网的 stuck-detector)。都不用现在自造新 Monitor。</strong></p>
+  </div>
+
+  <p class="sec-title">两条候选路</p>
+
+  <div class="card blue">
+    <h2><span class="tag a">路 A</span> /loop-native — runner 自己续跑</h2>
+    <p>runner 的 Claude Code session 跑在「自循环到 goal、遇问题才停」模式(Claude 自带 <code>/loop</code> self-paced + <code>ScheduleWakeup</code>;codex 对应 <code>/goal</code>)。</p>
+    <h3>可行性(已核实)</h3>
+    <ul>
+      <li><span class="win">✓</span> 注入点存在:runner 启动 <code>claude [options] [prompt]</code>,<code>ctx.prompt</code> / <code>--append-system-prompt-file</code> 都能塞「自续跑契约」。</li>
+      <li><span class="win">✓</span> <code>/loop</code>+<code>ScheduleWakeup</code> 在 runner session 可用 —— <strong>本 FLY-818 runner 自己就有</strong>(活证据)。</li>
+      <li><span class="win">✓</span> 与 Flywheel gate 天然互操作(gate CLI 阻塞 turn → 不会排续跑);天然抗 Bridge 重启(session 自持,比 Bridge-side 更 robust)。</li>
+      <li><span class="mid">⚠</span> <code>ScheduleWakeup</code> 无人值守可靠 fire = 唯一没被生产证据覆盖的点 → <strong>Phase-0 spike 验</strong>。</li>
+      <li><span class="lose">✗</span> backend 分裂:只 claude(<code>/goal</code>=codex;agy/kimi 无)。</li>
+    </ul>
+    <h3>复杂度 / 是否自造</h3>
+    <p><strong>代码最少</strong>:一条 bootstrap 约定 + 保留现有 stuck-detector 当安全网。<strong>不自造续跑引擎</strong>。</p>
+  </div>
+
+  <div class="card amber">
+    <h2><span class="tag b">路 B</span> Monitor-extension — Bridge 外部检测 + 审计 nudge 续跑</h2>
+    <p>扩展 FLY-368:<code>RunnerIdleWatchdog</code> 短阈值扫 → <code>quiet_unexplained</code> → 审计 <code>continue</code> nudge(有界 budget+backoff)→ 续不动 → 经 FLY-368 升级。智能在 Bridge。</p>
+    <h3>可行性</h3>
+    <ul>
+      <li><span class="win">✓</span> 全部原语已存在(idle watchdog + quiet-classifier + 审计 nudge + AutoRepairBot + AlertChannelHub)。</li>
+      <li><span class="win">✓✓</span> <strong>唯一 backend-agnostic</strong>(nudge = tmux send-keys,claude/codex/agy/kimi 都行)。</li>
+      <li><span class="win">✓</span> 外部观察 fingerprint 能界定 runaway;全审计 + gate 互操作已内建。</li>
+    </ul>
+    <h3>复杂度 / 是否自造</h3>
+    <p><strong>中等代码</strong>:新短-idle 续跑路 + budget/backoff + escalation + 要跟 in-flight FLY-368 协调。是<strong>第二控制环</strong>(Bridge 启发式判「该不该续」,比模型自己粗)。</p>
+  </div>
+
+  <div class="callout">
+    <strong>关键 reconcile:Annie 试 /loop vs FLY-512 finding F(「有意不做 Runner 自主续跑」)矛盾吗?——不矛盾。</strong>
+    F 反对的是「自主跑到 <em>done / 合并</em>」;Annie 版是「续到<em>下一个 gate / PR</em> 就停」(gate 仍阻塞、ship 仍 founder-gated)——不碰 F 那条红线;而 F 要借的 <code>/goal</code> 契约结构(outcome / verification / blocked-stop / 无 tool-call 就停),正好是 /loop-native 要落的。两者在「续到 gate 停」这个精确定义下一致。
+  </div>
+
+  <p class="sec-title">对比总表</p>
+  <div class="tblwrap">
+  <table>
+    <tr><th>维度</th><th>路 A · /loop-native</th><th>路 B · Monitor-extension</th></tr>
+    <tr><td>续跑智能在哪</td><td class="a"><b>模型自己</b>(thin wrapper)</td><td class="b">Bridge 启发式(第二控制环)</td></tr>
+    <tr><td>是否自造续跑引擎</td><td class="a"><b>否</b>(用 Claude 自带 /loop)</td><td class="b">是</td></tr>
+    <tr><td>代码量</td><td class="a"><b>低</b></td><td class="b">中(+协调 368)</td></tr>
+    <tr><td>backend 覆盖</td><td class="a">claude only</td><td class="b"><b>全 backend</b></td></tr>
+    <tr><td>抗 Bridge 重启</td><td class="a"><b>强</b>(session 自持)</td><td class="b">中</td></tr>
+    <tr><td>抓「续不动/真卡住」</td><td class="a">靠保留的 stuck-detector</td><td class="b">内建(fingerprint)</td></tr>
+    <tr><td>失控烧 token 兜底</td><td class="a">budget/turn 上限/gate</td><td class="b">budget/backoff</td></tr>
+    <tr><td>未被证据覆盖的风险</td><td class="a">ScheduleWakeup 无人值守可靠性(spike 验)</td><td class="b">Bridge 盲 nudge 逼多余活</td></tr>
+    <tr><td>对齐 Anthropic 哲学</td><td class="a"><b>✓✓</b></td><td class="b">一般</td></tr>
+    <tr><td>对齐 Annie 偏好</td><td class="a"><b>✓✓(首选)</b></td><td class="b">—</td></tr>
+  </table>
+  </div>
+
+  <p class="sec-title">Phase-0 spike(go/no-go 闸)</p>
+  <div class="card green" id="spike">
+    <h2>真机 spike 结果 — <span class="win">全 PASS ✅</span></h2>
+    <p>1 个无人值守 claude session(隔离 tmux socket、<code>--dangerously-skip-permissions</code>),<code>/loop</code> self-paced 跑一个 tick 任务,验 4 点:</p>
+    <div class="tblwrap">
+    <table>
+      <tr><th>#</th><th>验什么</th><th>结果</th></tr>
+      <tr><td>①</td><td>自续跑:turn 结束+goal 没完+无 question → 自己排下一轮(不 idle 死在 prompt)</td><td class="win">✅ PASS — 3 次无人值守 TICK</td></tr>
+      <tr><td>②/③</td><td>停对:撞 stop-condition(模拟 gate/question)→ 停下、不盲续</td><td class="win">✅ PASS — 注入 STOP→下一轮写 STOPPED→停,无 runaway</td></tr>
+      <tr><td>④</td><td><b>ScheduleWakeup 无人值守可靠 fire</b>(整条路 go/no-go)</td><td class="win">✅ PASS — 连 fire 3 次</td></tr>
+    </table>
+    </div>
+    <p style="font-family:'SF Mono',ui-monospace,monospace;font-size:12.5px;background:#f0f0f2;padding:10px 12px;border-radius:8px;">TICK 12:49:15 → TICK 12:51:10 → TICK 12:53:09 <span style="color:#86868b">(每轮~115s=ScheduleWakeup 60s+处理,零用户输入)</span><br>12:53:22 注入 STOP → STOPPED 12:55:50 <span style="color:#86868b">(下一轮 in-flight 检测到→停,TICKs 停在 3,无 runaway)</span></p>
+    <p id="spike-verdict"><strong class="win">结论:go。</strong> /loop-native 能干净套 runner(自续跑 + gate/question 正确停 + 无 runaway),ScheduleWakeup 无人值守可靠——原先唯一没被生产证据覆盖的点已被证实。<strong>→ 走 /loop-native + 最小安全网,方向经 Annie 确认后写 implement plan。</strong></p>
+    <p style="color:var(--gray);font-size:13px;">spike 保真说明:用同一个 <code>claude</code> 二进制 + 同一 <code>~/.claude</code> 配置/插件,测的正是 harness 的自续跑原语(ScheduleWakeup),这在真 Flywheel runner 里完全一致;真 runner 的差异只是 Bridge 启动 + <code>--append-system-prompt-file</code> 注入 agent prompt,都不改变 ScheduleWakeup 是否 fire。剩下的只是「怎么把 /loop 契约注入 runner bootstrap」= plan 层细节。</p>
+  </div>
+
+  <p class="foot">来源:代码审计(TmuxAdapter 无 --max-turns + 注入点;RunnerIdleWatchdog 只 emit 不续;quiet-classifier;attemptRunnerRecoveryNudge 门控;AutoRepairBot 只对长阈值+默认 OFF;FLY-368 AlertChannelHub)· 前置研究 FLY-512(Codex /goal 蓝图 + finding F)/ FLY-400(everything is the model)· 活证据(本 818 runner 持有 /loop + ScheduleWakeup)。scope:本 session 只做 item A;C/D/E/F 拆子 issue。</p>
+</div>
+</body>
+</html>

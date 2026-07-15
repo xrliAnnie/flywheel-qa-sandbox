@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>7月9日 全天故障调查报告 — 是攻击吗？</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, "PingFang SC", sans-serif;
+    background: #f5f5f7; color: #1d1d1f;
+    max-width: 960px; margin: 0 auto; padding: 24px 16px 60px;
+    line-height: 1.65; font-size: 16px;
+  }
+  h1 { font-size: 26px; line-height: 1.3; margin-bottom: 6px; }
+  .sub { color: #86868b; font-size: 14px; margin-bottom: 24px; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 18px 20px; margin-bottom: 14px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); border-left: 4px solid #d2d2d7;
+  }
+  .card.green { border-left-color: #34c759; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.blue { border-left-color: #007aff; }
+  .card.purple { border-left-color: #af52de; }
+  .card h2 { font-size: 19px; margin-bottom: 10px; }
+  .card h3 { font-size: 16px; margin: 14px 0 6px; }
+  .badge {
+    display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 10px;
+    border-radius: 999px; vertical-align: 2px; margin-left: 6px;
+  }
+  .badge.ok { background: #e8f9ee; color: #1d804b; }
+  .badge.warn { background: #fff4e5; color: #b25000; }
+  .badge.info { background: #e9f2ff; color: #0a5dc2; }
+  .verdict { font-size: 21px; font-weight: 700; }
+  .big-answer { font-size: 17px; font-weight: 600; margin-bottom: 8px; }
+  p + p { margin-top: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #ececee; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; white-space: nowrap; }
+  td.t { white-space: nowrap; font-family: "SF Mono", ui-monospace, monospace; font-size: 13px; color: #1a365d; }
+  .dim { color: #86868b; font-size: 13px; }
+  .conf { font-size: 12px; font-weight: 600; color: #0a5dc2; white-space: nowrap; }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  .footer { color: #86868b; font-size: 12.5px; margin-top: 28px; line-height: 1.6; }
+  code { font-family: "SF Mono", ui-monospace, monospace; font-size: 13px; background: #f0f0f2; padding: 1px 5px; border-radius: 4px; }
+  .section-title { font-size: 14px; font-weight: 700; color: #86868b; text-transform: uppercase; letter-spacing: 0.4px; margin: 26px 0 10px; }
+  @media (max-width: 600px) { body { font-size: 15px; } h1 { font-size: 22px; } th, td { padding: 6px 5px; } }
+</style>
+</head>
+<body>
+
+<h1>7月9日全天故障调查报告</h1>
+<div class="sub">FLY-1117 · 深度取证 · 2026-07-10 · 每个结论都可从随附证据复查</div>
+
+<div class="card green">
+  <div class="verdict">结论：没有发现任何攻击迹象。</div>
+  <p style="margin-top:8px">把每一条能查的入侵路径都查了一遍——<strong>60 天登录记录全是你本机操作、没有任何远程来源</strong>；SSH 信任名单只有你自己的钥匙、一年没动过；开机自启动的每一项都能认领；故障时刻机器上没有任何来路不明的程序；崩溃报告里没有注入痕迹；GitHub 上的动作全部来自我们自己的工作。<span class="badge ok">全部干净</span></p>
+  <p class="dim">（诚实边界：macOS 天生不记录历史网络连接这类痕迹，报告里如实列了盲区——所以严谨说法是「没查到任何入侵迹象」，而不是数学上「证明了没有」。但每一条能查的路径都查了、全部干净。）</p>
+  <p>同时，三起故障<strong>每一起都有完整的内部解释链</strong>，原因都指向我们自己（14:27 宿舍倒塌那次是零痕迹死法，属于「最合理的解释」而非直接拍到的画面，下面会说明）。</p>
+</div>
+
+<div class="card red">
+  <h2>真正的原因：一天之内，三拨人在满负荷的机器上点了三次「全量测试」</h2>
+  <p>这台机器平时就跑着 30 多个 AI 工人（每个占 0.4–0.6GB 内存），内存长期贴着上限。7月9日，<strong>三个互不相干的工作流</strong>各自在这台机器上启动了「全量测试/构建」——一次会瞬间生出几十个进程、每个吃几百 MB：</p>
+  <table>
+    <tr><th>时间</th><th>谁</th><th>干了什么</th><th>后果</th></tr>
+    <tr><td class="t">14:23 &amp; 14:25</td><td>打包管线（FLY-1062）</td><td>安装包构建 + <strong>连续两次全量测试</strong>（50 秒内新生 ~361 个进程）</td><td>机器过载 → <strong>14:27 全体工人阵亡</strong></td></tr>
+    <tr><td class="t">21:30</td><td>一个开发工人（FLY-1018）</td><td>改完代码后跑<strong>全量测试</strong>做验证</td><td>调度中枢第 5 次死亡</td></tr>
+    <tr><td class="t">23:28</td><td>测试员（FLY-1082）</td><td>后台起<strong>全量测试</strong>（20+ 进程）</td><td>调度中枢第 6 次死亡（就是你看到的深夜那刀）</td></tr>
+  </table>
+  <p class="dim" style="margin-top:8px">同一个行为模式、三个不同的行为体 —— 说明这是<strong>制度和护栏的缺口</strong>，不是哪一个人的失误，更不是外人。</p>
+</div>
+
+<div class="section-title">你问的三个问题</div>
+
+<div class="card blue">
+  <div class="big-answer">① 到底是什么把 runner 全关掉了？</div>
+  <p>所有工人都住在同一个「宿舍」里（一个 tmux 服务进程）。14:27:13，这个宿舍在内存耗尽的风暴中倒了，一秒钟带走了名下全部 100 多个工人。<strong>最合理的解释是它自己申请内存失败、按自身设计安静退出</strong>（这是推断出的最佳解释，不是直接观测到的——这种死法零痕迹，正因如此当时才查不到「凶手」）。<strong>没有发现任何杀它的主体或证据</strong>：我们逐个审计了全机所有带「杀进程」能力的自动化脚本，没有一个够得着它；而且同机第二个小宿舍（另一个 tmux）毫发无损——如果有人扫射，它不可能幸存。（严谨说明：系统天生不记录「谁给谁发了信号」，所以无法数学上排除某个没留痕迹的程序发过信号——只是没有任何证据支持这个方向。）<span class="conf">机制置信度：中高（这种死法零痕迹，属最佳解释）</span></p>
+</div>
+
+<div class="card blue">
+  <div class="big-answer">② 是不是攻击？</div>
+  <p><strong>没有发现任何入侵迹象。</strong>逐条核查：远程登录（0 条）、屏幕共享（0 条）、SSH 钥匙（只有你的、没动过）、开机自启动项（全部认领）、定时任务（全部认领）、配置文件改动（无异常）、故障时刻新进程来源（全部已知）、崩溃报告注入检查（零）、GitHub 帐号动作（全部自家）。macOS 不记录历史网络连接这类先天盲区，报告里如实列了——但<strong>没有任何一条证据指向攻击方向</strong>。<span class="conf">置信度：高</span></p>
+</div>
+
+<div class="card blue">
+  <div class="big-answer">③ 为什么感觉不像内存问题？（你没觉得电脑变卡）</div>
+  <p>你的直觉是对的——这<strong>不是</strong>「内存越用越满、电脑越来越卡」的那种问题。急性危机只有 <strong>5 分钟</strong>（14:23 点燃 → 14:28 结束），过了就恢复；牺牲的全是后台工人，你正在用的界面是系统优先保护的那一侧。而且<strong>系统内核的「杀进程」记录里全天没有一条指向我们的进程</strong>（那些记录全是苹果自家的后台小服务）——夜里的刀是调度中枢自己的「看门狗」按设计自杀重启，14:27 最可能是宿舍自己耗尽倒下（同样是推断出的最合理解释，不是直接观测）。真正的问题是：<strong>满负荷的机器上，有人间歇性地点燃全量测试</strong>。</p>
+</div>
+
+<div class="section-title">一天发生了什么（时间线）</div>
+
+<div class="card">
+  <table>
+    <tr><th>时间</th><th>事件</th></tr>
+    <tr><td class="t">14:23–14:25</td><td>打包管线连点两次全量测试，机器负载从 24 飙到 66</td></tr>
+    <tr><td class="t">14:26:20</td><td>调度中枢卡死 61 秒 → 看门狗自杀重启（当日第 1 次）</td></tr>
+    <tr><td class="t">14:27:13</td><td><strong>工人宿舍（tmux）倒下，30+ 工人全部阵亡</strong>；23GB 内存瞬间释放</td></tr>
+    <tr><td class="t">14:27:44</td><td>自动化在 30 秒内重建宿舍，工人陆续回归</td></tr>
+    <tr><td class="t">18:17 / 18:23</td><td>晚间负载风暴（负载冲到 102），看门狗又自杀两次（第 2、3 次）——当时没人知道</td></tr>
+    <tr><td class="t">21:13</td><td>负载突升，看门狗第 4 次（同一时段切片软件在反复崩，见下）</td></tr>
+    <tr><td class="t">21:30 → 21:35</td><td>开发工人跑全量测试 → 看门狗第 5 次</td></tr>
+    <tr><td class="t">23:28 → 23:29</td><td>测试员跑全量测试 → 看门狗第 6 次（深夜那刀，退出码 137 的真相）</td></tr>
+  </table>
+  <p class="dim" style="margin-top:8px">当天调度中枢共死了 6 次、全部自动复活，但<strong>没有一次有人收到通知</strong>——这是已修复的告警盲区（见下方防复发第 1 条）。另有 3 组重启是我们自己的运维操作（改配置后重启），有明确的操作签名。</p>
+</div>
+
+<div class="card amber">
+  <h2>顺带查清：切片软件连崩 18 次是怎么回事</h2>
+  <p>OrcaSlicer 当天崩了 18 次——逐份解析后确认：全部是<strong>我们自动化的 3D 打印切片任务</strong>反复撞上<strong>软件自身的 bug</strong>（晚间 17 次崩溃聚成 3 个完全重复的签名、都在同一段换料计算代码里，另 1 次是启动早期的独立异常）。和机器稳定性无关，和攻击更无关。全天只有 1 次崩溃真正和内存压力有关（晚上 7:43 一个 node 进程内存耗尽）。</p>
+</div>
+
+<div class="section-title">防复发（已在推进）</div>
+
+<div class="card purple">
+  <ul>
+    <li><strong>让这类事再也不会无人知晓</strong>：新的机队告警系统（FLY-1082）已完成合并，下次重启调度中枢即生效——今天这两类基础设施事件（宿舍倒塌 / 中枢异常死亡）加上内存水位预警以后都会主动报警。（切片软件那种应用自身的崩溃属于另一类问题，不在这套机队告警的覆盖范围内，也不该由它管。）</li>
+    <li><strong>堵住根因</strong>：生产机器上<strong>禁止跑全量测试</strong>已定为铁律（全量归 CI 云端跑），并建议加技术闸——检测到全量测试命令直接拒绝或限速。</li>
+    <li><strong>看门狗调优</strong>：60 秒卡死就自杀的策略在风暴天一天开了 6 枪，建议改为「先报警、连续多次才重启」。</li>
+    <li><strong>补传感器</strong>：健康日志补记 swap 水位（这次取证时发现根本没有第一手 swap 数据）、修工人计数 bug。</li>
+    <li><strong>取证能力</strong>：系统关键日志只保留约 1 小时，以后关键故障发生时自动抓快照存档。</li>
+    <li><strong>小加固</strong>：远程登录开关开着但从未用过，建议关掉；两个对外监听端口收紧到本机。</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h2>对之前说法的更正</h2>
+  <ul>
+    <li>「swap 打满压死 tmux」——方向对（确实是内存危机），但「16384MB 用了 14815MB」这个数字找不到第一手测量记录，且「压死」无实证：最合理的解释是它自己耗尽退出（推断，非直接观测），不是谁压死的。</li>
+    <li>「深夜 Bridge 被内核回收」——不是内核。是它自己的看门狗自杀（有它死前 0.08 秒写下的日志行 + 系统记录双重印证）。测试员「我的全量测试是导火索」的自我报告<strong>成立</strong>，且被独立证据证实。</li>
+    <li>之前怀疑过的「工人被注入幻觉」事件：原始分析文件已被系统清理无法复查（如实记录），但该工人的完整生命周期记录正常，且全天注入类证据为零。</li>
+  </ul>
+</div>
+
+<div class="footer">
+  证据与完整技术报告（同仓库 <code>engineering/doc/FLY-1117-forensics-0709-failure-chain/</code>）：<br>
+  · 完整取证报告 <code>forensics-report.md</code>（六杀对齐表 / 嫌疑人矩阵逐项 alibi / 攻击面矩阵 14 路径）<br>
+  · 原始证据 84 件受 SHA256 逐文件锁定（<code>shasum -a 256 -c SHA256SUMS.txt</code> 可验）<br>
+  · 已知盲区：macOS 不记录历史网络连接与信号发送者；GitHub 安全日志仅网页可查。以上均不改变结论方向。<br>
+  调查执行：2026-07-10 · 只读取证，未触碰任何生产服务
+</div>
+
+</body>
+</html>
