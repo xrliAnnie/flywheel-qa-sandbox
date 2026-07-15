@@ -139,11 +139,19 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 	let service: HeartbeatService;
 
 	beforeEach(() => {
+		// FLY-1282: these tests freeze the FLY-623 LEGACY consumption (still the
+		// exact contract behind FLYWHEEL_ZOMBIE_RECONCILE=0). The zombie-ON
+		// tri-state consumption has its own suite
+		// (HeartbeatService.zombie-reconcile.test.ts).
+		process.env.FLYWHEEL_ZOMBIE_RECONCILE = "0";
 		store = makeStore();
 		notifier = makeNotifier();
 		service = makeService(store, notifier);
 	});
-	afterEach(() => service.stop());
+	afterEach(() => {
+		service.stop();
+		delete process.env.FLYWHEEL_ZOMBIE_RECONCILE;
+	});
 
 	it("no marker + tmux alive → re-adopt (updateHeartbeat) + one-time re-established advisory", async () => {
 		store.getOrphanSessions.mockReturnValue([sess()]);

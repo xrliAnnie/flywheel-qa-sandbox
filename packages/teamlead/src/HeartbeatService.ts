@@ -27,6 +27,7 @@ import type { IssueDisplayRefreshHolder } from "./bridge/issue-display-refresher
 import {
 	GUARDRAIL_EVENT_TYPES,
 	type LeadEventEnvelope,
+	type LeadRuntime,
 	RETRYABLE_LEAD_EVENT_TYPES,
 } from "./bridge/lead-runtime.js";
 import {
@@ -46,8 +47,17 @@ import {
 	isTmuxWindowAlive,
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
+	probeTmuxServer,
 } from "./bridge/tmux-lookup.js";
-import type { ProjectEntry } from "./ProjectConfig.js";
+import {
+	inspectWorktreeForUnpushedWork,
+	type WorktreeInspection,
+} from "./bridge/worktree-inspect.js";
+import {
+	formatZombieLastError,
+	type ZombieEvidence,
+} from "./bridge/zombie-evidence.js";
+import { type ProjectEntry, resolveLeadForIssue } from "./ProjectConfig.js";
 import type { Session, StateStore } from "./StateStore.js";
 
 /**
@@ -93,6 +103,25 @@ const TERMINAL_PHASE_STATUSES = new Set<string>([
  */
 export const PARKED_SWEEP_CANDIDATE_CAP = 200;
 
+/** FLY-1282: shared empty held-set for ticks that skip the liveness chain. */
+const EMPTY_SET: ReadonlySet<string> = new Set();
+
+/** FLY-1282: a collected (not yet flushed) re-established notice. */
+interface ReestablishedNoticeIntent {
+	session: Session;
+	minutesSince: number;
+	livenessProbe: { target?: string; probedAt: string };
+}
+
+/** FLY-1282: pass-local state for one zombie-ON readopt reconcile pass. */
+interface ReadoptPassCtx {
+	/** dead-verdict execIds not yet (successfully) declared — this pass's
+	 * suppression tokens, threaded into checkStuck/reapOrphans (INV-3b). */
+	held: Set<string>;
+	/** Two-step notice aggregation (R7 #1): flushed after ALL candidates. */
+	intents: ReestablishedNoticeIntent[];
+}
+
 /**
  * FLY-1204: injected chokepoint for the periodic parked-phase reclaim patrol —
  * the safety net that reclaims three-stage keep-alive phase sessions (design/
@@ -126,6 +155,45 @@ export interface StaleParkedCloseConfig {
 	 * safe). Operators reclaim these with `close_runner --done`.
 	 */
 	alertOrphan: (issueId: string, sessions: Session[]) => Promise<void>;
+}
+
+/**
+ * FLY-1282: tri-state (five-way) session liveness — the reconcile pass's
+ * replacement for the boolean `isSessionTmuxAlive` conflation. `dead` is
+ * reserved for a tmux-PROVEN absent window; `indeterminate` covers every
+ * "we learned nothing" shape (CommDB error, probe timeout/throw) and may
+ * suppress reaping (GEO-374) but never celebrate or refresh a heartbeat.
+ */
+export type SessionLivenessVerdict =
+	| "alive"
+	| "dead"
+	| "indeterminate"
+	| "dead_pin"
+	| "gone";
+
+export interface SessionLiveness {
+	verdict: SessionLivenessVerdict;
+	/** tmux window target probed (absent when CommDB had no target). */
+	target?: string;
+	/** ISO timestamp of this probe. */
+	probedAt: string;
+}
+
+/**
+ * FLY-1282 (Codex R4 #1 / R5 #1): a fully-prepared zombie alert. Everything
+ * needed to append + deliver is resolved BEFORE the FSM transition so the
+ * post-transition persist does zero resolve/classify/store reads before the
+ * lead_events append (INV-9).
+ */
+export interface PreparedZombieNotification {
+	leadId: string;
+	eventId: string;
+	eventType: "session_zombie_detected";
+	payloadJson: string;
+	sessionKey: string;
+	/** May be undefined (runtime not registered yet) — persist records an
+	 * undelivered row and the existing guardrail retry re-resolves it. */
+	runtime: LeadRuntime | undefined;
 }
 
 export interface HeartbeatNotifier {
@@ -162,6 +230,13 @@ export interface HeartbeatNotifier {
 	onSessionMonitoringLost(
 		session: Session,
 		minutesSinceHeartbeat: number,
+		/**
+		 * FLY-1282 (arity sentinel, FLY-1234 precedent): ONLY passed on the
+		 * readopt-ON indeterminate path — liveness could NOT be verified, so the
+		 * context must not claim the runner is alive. Legacy callers keep the
+		 * exact two-argument call and the current copy byte-for-byte.
+		 */
+		details?: { unverified?: boolean },
 	): Promise<void>;
 	/**
 	 * FLY-623: readopt-ON happy path — the Bridge re-adopted a live detached
@@ -174,8 +249,43 @@ export interface HeartbeatNotifier {
 	onSessionMonitoringReestablished(
 		session: Session,
 		minutesSinceHeartbeat: number,
-		details?: { stampReconnectTitle?: boolean },
+		details?: {
+			stampReconnectTitle?: boolean;
+			/**
+			 * FLY-1282 (INV-2): point-in-time pane-probe evidence. Present ONLY on
+			 * the zombie-machinery-ON path where re-adoption requires a positive
+			 * `alive` verdict; absent → the legacy payload/copy is byte-preserved.
+			 */
+			livenessProbe?: { target?: string; probedAt: string };
+			/**
+			 * FLY-1282: same-pass re-adoption cohort size, passed only when >= 3
+			 * (monitoring-side-interruption suspicion — observation, not diagnosis).
+			 */
+			concurrentCount?: number;
+		},
 	): Promise<void>;
+	/**
+	 * FLY-1282 (INV-8/INV-9, two-phase contract — Codex R4 #1): synchronous
+	 * preparation of a `session_zombie_detected` alert. Performs ALL
+	 * store/registry/filter reads and encapsulates the deterministic
+	 * `zombie-<execId>` event id; returns null when no Lead is resolvable
+	 * (caller writes the deterministic session_events audit AFTER the
+	 * transition — prepare itself must never touch the persistent layer).
+	 */
+	prepareSessionZombieDetected(
+		session: Session,
+		evidence: ZombieEvidence,
+		inspection: WorktreeInspection,
+	): PreparedZombieNotification | null;
+	/**
+	 * FLY-1282 (INV-9): persist + deliver a prepared zombie alert. The FIRST
+	 * store mutation is the lead_events append (durable enqueue); transport is
+	 * awaited only after, with failures recorded for the existing bounded
+	 * guardrail retry. Returns true once the row is durably appended.
+	 */
+	persistPreparedZombieDetected(
+		prepared: PreparedZombieNotification,
+	): Promise<boolean>;
 	/**
 	 * FLY-623: re-stamp the real/terminal status badge on a Runner's thread title
 	 * once it leaves the reconnecting state (strips the "⚠️重连中" marker). Optional
@@ -267,6 +377,22 @@ export class HeartbeatService implements ReconnectController {
 	 */
 	private reconnectTitleActive = new Set<string>();
 	private reconnectTitleRefresherReady = false;
+	/**
+	 * FLY-1282: consecutive server-up `absent` probe count per execId. Written
+	 * only inside the single-flighted liveness chain (no concurrent writers);
+	 * pruned each pass against the stale∪reconnecting union (exit-then-reenter
+	 * restarts the streak at 1 — R3 #2).
+	 */
+	private zombieDeadStreak = new Map<string, number>();
+	/** FLY-1282: per-exec declaration in-flight guard (defense in depth). */
+	private zombieDeclaring = new Set<string>();
+	/** FLY-1282 (R4 #4): liveness-chain single-flight (zombie-ON only). */
+	private livenessChainInFlight = false;
+	private livenessPassStartedAt = 0;
+	private skippedLivenessTicks = 0;
+	/** FLY-1282 (R5 #3): backfill fair-rotation watermark + single-flight. */
+	private zombieBackfillWatermark = "";
+	private backfillInFlight = false;
 
 	constructor(
 		private store: StateStore,
@@ -407,11 +533,41 @@ export class HeartbeatService implements ReconnectController {
 		// rejects — on any throw it logs, attempts a best-effort StateStore
 		// self-heal, and skips the cycle. (start() still wraps check() in a .catch()
 		// as belt-and-suspenders.)
+		// FLY-1282 (R4 #4 / R6 #1): one per-tick gate decision for the zombie
+		// machinery. When ON, the liveness-dependent chain (reconcileMonitorLoss →
+		// checkStuck → reapOrphans) is single-flighted as ONE unit — a slow/hung
+		// pass makes later ticks SKIP those three stages (observable) while
+		// maintenance, retry, server-loss, crash reaper, stale/parked/review
+		// stages keep running. OFF → no guard, current overlap semantics.
+		const zombieOn = this.zombieMachineryEnabled();
+		let livenessOwner = false;
+		if (zombieOn) {
+			if (this.livenessChainInFlight) {
+				this.skippedLivenessTicks++;
+				const inFlightMs = Date.now() - this.livenessPassStartedAt;
+				const log = inFlightMs > 10 * 60_000 ? console.warn : console.log;
+				log(
+					`[HeartbeatService] FLY-1282 liveness chain still in flight (${Math.round(inFlightMs / 1000)}s, ${this.skippedLivenessTicks} tick(s) skipped) — skipping reconcile/stuck/orphan this tick`,
+				);
+			} else {
+				this.livenessChainInFlight = true;
+				this.livenessPassStartedAt = Date.now();
+				this.skippedLivenessTicks = 0;
+				livenessOwner = true;
+			}
+		}
+		const runLivenessChain = livenessOwner || !zombieOn;
 		try {
 			// FLY-25: Retry undelivered guardrail events from PREVIOUS cycles first,
 			// before detection generates new events in this cycle.
 			if (this.notifier instanceof RegistryHeartbeatNotifier) {
 				await this.notifier.retryUndeliveredGuardrailEvents();
+			}
+			// FLY-1282 (R5 #4): recurring zombie-alert backfill — an INDEPENDENT
+			// stage outside the liveness guard (a hung liveness pass must not pause
+			// alert recovery), with its own single-flight inside.
+			if (zombieOn) {
+				await this.reconcileZombieAlertBacklog();
 			}
 			// FLY-172: reconcile monitoring loss BEFORE stuck/orphan detection so the
 			// monitor-lost / marker-retry skip sets are current. This pass is the
@@ -419,8 +575,9 @@ export class HeartbeatService implements ReconnectController {
 			// Only awaited when wired (production) — skipping the await when
 			// unconfigured keeps checkStuck's synchronous getStuckSessions call on the
 			// same tick (preserves existing fake-timer test timing).
-			if (this.monitorReconcile) {
-				await this.reconcileMonitorLoss();
+			let zombieHeld: ReadonlySet<string> = EMPTY_SET;
+			if (runLivenessChain && this.monitorReconcile) {
+				zombieHeld = await this.reconcileMonitorLoss();
 			}
 			// FLY-720: crash reaper runs BEFORE reapOrphans and claims confirmed
 			// dead-pins into deadPinOwned so reapOrphans skips them (never force-fails
@@ -449,8 +606,13 @@ export class HeartbeatService implements ReconnectController {
 			if (this.crashReaperConfig?.enabled) {
 				deadPinOwned = await this.reapCrashedRunners();
 			}
-			await this.checkStuck();
-			await this.reapOrphans(new Set([...deadPinOwned, ...serverLossOwned]));
+			if (runLivenessChain) {
+				await this.checkStuck(zombieHeld);
+				await this.reapOrphans(
+					new Set([...deadPinOwned, ...serverLossOwned]),
+					zombieHeld,
+				);
+			}
 			await this.checkStaleCompleted();
 			// FLY-1204: reclaim leaked three-stage keep-alive phase sessions
 			// (independent throttle; inert unless wired). Its own try/guards keep a
@@ -466,6 +628,9 @@ export class HeartbeatService implements ReconnectController {
 			if (typeof this.store.recoverFromCorruption === "function") {
 				this.store.recoverFromCorruption(err);
 			}
+		} finally {
+			// FLY-1282: release the liveness-chain guard only if THIS tick owned it.
+			if (livenessOwner) this.livenessChainInFlight = false;
 		}
 	}
 
@@ -564,6 +729,22 @@ export class HeartbeatService implements ReconnectController {
 		return process.env.FLYWHEEL_HEARTBEAT_READOPT !== "0";
 	}
 
+	/**
+	 * FLY-1282 unified gate (R6 #1): the zombie machinery — tri-state liveness
+	 * consumption, liveness-chain single-flight, and the alert backfill — is ON
+	 * only when the readopt path itself is ON and neither zombie kill-switch is
+	 * pulled. `READOPT=0` therefore keeps the legacy chain unguarded and
+	 * unserialized; `ZOMBIE=0` / `PANE_DEAD=0` revert the readopt consumption
+	 * to the exact pre-FLY-1282 boolean behavior (M0 goldens).
+	 */
+	private zombieMachineryEnabled(): boolean {
+		return (
+			this.readoptEnabled() &&
+			process.env.FLYWHEEL_ZOMBIE_RECONCILE !== "0" &&
+			process.env.FLYWHEEL_LIVENESS_PANE_DEAD !== "0"
+		);
+	}
+
 	/** FLY-172: marker-reconciler deps, or null when monitor-reconcile isn't wired. */
 	private buildMarkerDeps(): MarkerReconcilerDeps | null {
 		if (!this.monitorReconcile) return null;
@@ -594,15 +775,15 @@ export class HeartbeatService implements ReconnectController {
 	 * tmux dead → leave it for `reapOrphans` to force-fail at the orphan threshold.
 	 * Owns `notifiedMonitorLost`, `reconnecting`, and `markerRetryPending`.
 	 */
-	async reconcileMonitorLoss(): Promise<void> {
+	async reconcileMonitorLoss(): Promise<ReadonlySet<string>> {
 		this.markerRetryPending.clear();
 		const deps = this.buildMarkerDeps();
-		if (!deps) return; // not wired (e.g. unit tests) → no-op
+		if (!deps) return EMPTY_SET; // not wired (e.g. unit tests) → no-op
 		if (this.readoptEnabled()) {
-			await this.reconcileMonitorLossReadopt(deps);
-		} else {
-			await this.reconcileMonitorLossLegacy(deps);
+			return this.reconcileMonitorLossReadopt(deps);
 		}
+		await this.reconcileMonitorLossLegacy(deps);
+		return EMPTY_SET;
 	}
 
 	/** FLY-172 legacy path (readopt OFF): advisory-only, never refresh heartbeat. */
@@ -672,7 +853,7 @@ export class HeartbeatService implements ReconnectController {
 	 */
 	private async reconcileMonitorLossReadopt(
 		deps: MarkerReconcilerDeps,
-	): Promise<void> {
+	): Promise<ReadonlySet<string>> {
 		const byId = new Map<string, Session>();
 		for (const s of this.store.getOrphanSessions(this.thresholdMinutes)) {
 			byId.set(s.execution_id, s);
@@ -690,9 +871,26 @@ export class HeartbeatService implements ReconnectController {
 			if (!byId.has(id)) this.notifiedMonitorLost.delete(id);
 		}
 
-		for (const session of byId.values()) {
-			await this.reconcileCandidateReadopt(session, deps);
+		if (!this.zombieMachineryEnabled()) {
+			// M0 golden path: exact pre-FLY-1282 consumption.
+			for (const session of byId.values()) {
+				await this.reconcileCandidateReadopt(session, deps);
+			}
+			return EMPTY_SET;
 		}
+
+		// FLY-1282 (R3 #2): prune streaks for execs that left the candidate union
+		// — an exit-then-reenter session restarts its dead streak at 1.
+		for (const id of [...this.zombieDeadStreak.keys()]) {
+			if (!byId.has(id)) this.zombieDeadStreak.delete(id);
+		}
+
+		const ctx: ReadoptPassCtx = { held: new Set(), intents: [] };
+		for (const session of byId.values()) {
+			await this.reconcileCandidateReadoptV2(session, deps, ctx);
+		}
+		await this.flushReestablishedNotices(ctx);
+		return ctx.held;
 	}
 
 	/**
@@ -749,6 +947,411 @@ export class HeartbeatService implements ReconnectController {
 	}
 
 	/**
+	 * FLY-1282: zombie-ON candidate consumption — tri-state liveness replaces
+	 * the boolean conflation. Same marker-first / quarantine structure as the
+	 * legacy candidate, but:
+	 *   - only a POSITIVE `alive` verdict re-adopts (heartbeat refresh +
+	 *     aggregated re-established notice with probe evidence — INV-1/INV-2);
+	 *   - `indeterminate` degrades to the honest FLY-172 monitor-lost advisory
+	 *     (suppression without celebration or life-support);
+	 *   - `dead` (tmux-proven absent) builds a per-exec streak toward the
+	 *     zombie declaration (2x server-up absent + full re-proof — INV-3);
+	 *   - `dead_pin`/`gone` release the session to its existing owner
+	 *     (crash reaper / orphan aging — INV-6).
+	 */
+	private async reconcileCandidateReadoptV2(
+		session: Session,
+		deps: MarkerReconcilerDeps,
+		ctx: ReadoptPassCtx,
+	): Promise<void> {
+		const execId = session.execution_id;
+
+		if (session.status !== "running") {
+			this.clearReconnecting(execId);
+			this.zombieDeadStreak.delete(execId);
+			return;
+		}
+
+		// 1) Marker-first. A valid terminal marker proves the Runner finished.
+		const outcome = await tryReconcileComplete(execId, deps);
+		if (
+			outcome.kind === "reconciled" ||
+			outcome.kind === "duplicate_terminal"
+		) {
+			this.clearReconnecting(execId);
+			this.zombieDeadStreak.delete(execId);
+			return;
+		}
+		if (outcome.kind === "transient_failed") {
+			this.markerRetryPending.add(execId);
+			return;
+		}
+
+		const liveness = await this.probeSessionLiveness(session);
+
+		if (outcome.kind === "quarantined") {
+			applyQuarantineFallback({
+				store: this.store,
+				transitionOpts: this.transitionOpts,
+				executionId: execId,
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				// Same boolean the fallback always consumed: not-provably-dead.
+				tmuxAlive:
+					liveness.verdict === "alive" || liveness.verdict === "indeterminate",
+				routeStatus: outcome.routeStatus,
+				quarantinePath: outcome.quarantinePath,
+			});
+		}
+
+		switch (liveness.verdict) {
+			case "alive": {
+				this.zombieDeadStreak.delete(execId);
+				// A positive probe ends any prior monitor-lost episode (R1 #2).
+				this.notifiedMonitorLost.delete(execId);
+				const intent = this.bookkeepReconnecting(session, liveness);
+				if (intent) ctx.intents.push(intent);
+				break;
+			}
+			case "indeterminate": {
+				this.zombieDeadStreak.delete(execId);
+				// Honest degradation (INV-1): suppression via the FLY-172 advisory —
+				// no heartbeat refresh, no celebration; reconnecting membership (if
+				// any) is left as-is so the union keeps re-probing it.
+				await this.emitMonitorLostOnce(session, { unverified: true });
+				break;
+			}
+			case "dead": {
+				// Confirm-window suppression token for THIS pass (INV-3b) — held
+				// until the declaration actually succeeds.
+				ctx.held.add(execId);
+				// Server-up proof adjacent to THIS candidate's own probe (R2 #2):
+				// "no server running" also reads as absent, and that fleet case
+				// belongs to FLY-1082 — reset, never advance, on down/unknown.
+				let server: "up" | "down" | "unknown" = "unknown";
+				try {
+					server = await probeTmuxServer();
+				} catch {
+					server = "unknown";
+				}
+				if (server !== "up") {
+					this.zombieDeadStreak.set(execId, 0);
+					break;
+				}
+				const streak = (this.zombieDeadStreak.get(execId) ?? 0) + 1;
+				this.zombieDeadStreak.set(execId, streak);
+				if (streak < 2) break;
+				const declared = await this.declareZombie(session, streak);
+				if (declared) ctx.held.delete(execId);
+				break;
+			}
+			case "dead_pin":
+			case "gone": {
+				// INV-6: release to the existing owners (crash reaper / orphan
+				// aging) — including any suppression this machinery left behind.
+				this.clearReconnecting(execId);
+				this.zombieDeadStreak.delete(execId);
+				this.notifiedMonitorLost.delete(execId);
+				break;
+			}
+		}
+	}
+
+	/**
+	 * FLY-1282 tri-state probe — the readopt path's replacement for the boolean
+	 * `isSessionTmuxAlive` (which stays for the legacy/OFF paths). Same lookup +
+	 * pane-probe calls; the difference is that nothing is conflated: CommDB
+	 * errors and probe failures are `indeterminate`, never `alive`.
+	 */
+	private async probeSessionLiveness(session: Session): Promise<SessionLiveness> {
+		const probedAt = new Date().toISOString();
+		if (!session.project_name) return { verdict: "gone", probedAt };
+		const lookup = lookupTmuxTarget(session.execution_id, session.project_name);
+		if (lookup.kind === "gone") return { verdict: "gone", probedAt };
+		if (lookup.kind === "error") return { verdict: "indeterminate", probedAt };
+		const target = lookup.target.tmuxWindow;
+		try {
+			const liveness = await probeRunnerProcessLiveness(target);
+			if (liveness === "alive") return { verdict: "alive", target, probedAt };
+			if (liveness === "absent") return { verdict: "dead", target, probedAt };
+			if (liveness === "dead_pin")
+				return { verdict: "dead_pin", target, probedAt };
+			return { verdict: "indeterminate", target, probedAt };
+		} catch {
+			return { verdict: "indeterminate", target, probedAt };
+		}
+	}
+
+	/**
+	 * FLY-1282 (R7 #1): re-adoption bookkeeping WITHOUT immediate emission —
+	 * heartbeat refresh + reconnecting/title membership, returning a notice
+	 * intent only for a newly-entered episode. The pass flushes intents after
+	 * all candidates so every notice can carry the final same-pass cohort count.
+	 */
+	private bookkeepReconnecting(
+		session: Session,
+		liveness: SessionLiveness,
+	): ReestablishedNoticeIntent | null {
+		const execId = session.execution_id;
+		let minutesSince = this.thresholdMinutes;
+		if (session.heartbeat_at) {
+			minutesSince = Math.round(
+				(Date.now() -
+					new Date(`${session.heartbeat_at.replace(" ", "T")}Z`).getTime()) /
+					60_000,
+			);
+		}
+		this.store.updateHeartbeat(execId);
+		if (this.reconnecting.has(execId)) return null; // stay (same episode)
+		this.reconnecting.add(execId);
+		if (!this.reconnectTitleRefresherReady) {
+			this.reconnectTitleActive.add(execId);
+		}
+		return {
+			session,
+			minutesSince,
+			livenessProbe: { target: liveness.target, probedAt: liveness.probedAt },
+		};
+	}
+
+	/**
+	 * FLY-1282 (R7 #1 + R8): flush collected re-established notices. Each
+	 * notice re-verifies ownership at flush time — an episode a genuine runner
+	 * event already ended (clearReconnecting) is skipped ENTIRELY (no event, no
+	 * title re-stamp over a recovered title). Per-notice try/catch keeps a
+	 * single advisory failure from blocking the rest (best-effort, as before).
+	 */
+	private async flushReestablishedNotices(ctx: ReadoptPassCtx): Promise<void> {
+		const k = ctx.intents.length;
+		if (k >= 3) {
+			console.warn(
+				`[HeartbeatService] FLY-1282 ${k} sessions re-adopted in the same pass — suspect a monitoring-side interruption rather than runner-side`,
+			);
+		}
+		for (const intent of ctx.intents) {
+			const execId = intent.session.execution_id;
+			if (!this.reconnecting.has(execId)) continue; // episode already over
+			const stampNow = this.reconnectTitleActive.has(execId);
+			try {
+				await this.notifier.onSessionMonitoringReestablished(
+					intent.session,
+					intent.minutesSince,
+					{
+						stampReconnectTitle: stampNow,
+						livenessProbe: intent.livenessProbe,
+						...(k >= 3 ? { concurrentCount: k } : {}),
+					},
+				);
+			} catch {
+				// best-effort advisory — never blocks the pass or later notices
+			}
+		}
+	}
+
+	/**
+	 * FLY-1282 zombie declaration — the moment the system stops lying. Order
+	 * (INV-9): slow forensics FIRST → full re-proof (fresh session + fresh
+	 * CommDB lookup + pane probe + adjacent server-up) → synchronous prepared
+	 * notification → synchronous FSM transition (result.ok checked, never
+	 * force-overridden) → append-first persist. Returns true when the session
+	 * was actually transitioned.
+	 */
+	private async declareZombie(
+		session: Session,
+		streak: number,
+	): Promise<boolean> {
+		const execId = session.execution_id;
+		if (this.zombieDeclaring.has(execId)) return false;
+		this.zombieDeclaring.add(execId);
+		try {
+			// 1) Slow read-only forensics BEFORE any mutation (INV-4/INV-9).
+			const inspection = await inspectWorktreeForUnpushedWork(
+				session.worktree_path,
+			);
+
+			// 2) Re-proof (R3 #3): the world may have changed during the git
+			// budget — rescue may have remapped CommDB to a live window, the
+			// session may have terminalized, the server may have died.
+			const fresh = this.store.getSession(execId);
+			if (!fresh || fresh.status !== "running") {
+				this.zombieDeadStreak.delete(execId);
+				return false;
+			}
+			const freshLiveness = await this.probeSessionLiveness(fresh);
+			if (freshLiveness.verdict !== "dead") {
+				this.zombieDeadStreak.delete(execId);
+				return false;
+			}
+			let server: "up" | "down" | "unknown" = "unknown";
+			try {
+				server = await probeTmuxServer();
+			} catch {
+				server = "unknown";
+			}
+			if (server !== "up") {
+				this.zombieDeadStreak.set(execId, 0);
+				return false;
+			}
+
+			// 3) Prepare the alert (sync, read-only — R4 #1/R5 #1).
+			const target = freshLiveness.target ?? "unknown";
+			const evidence: ZombieEvidence = {
+				kind: "verified",
+				liveness: { verdict: "dead", target, probedAt: freshLiveness.probedAt },
+				streak,
+			};
+			const prepared = this.notifier.prepareSessionZombieDetected(
+				fresh,
+				evidence,
+				inspection,
+			);
+
+			// 4) Synchronous transition — zero awaits since the re-proof.
+			const now = new Date()
+				.toISOString()
+				.replace("T", " ")
+				.replace(/\.\d+Z$/, "");
+			const lastError = formatZombieLastError(
+				target,
+				streak,
+				freshLiveness.probedAt,
+			);
+			if (this.transitionOpts) {
+				const result = applyTransition(
+					this.transitionOpts,
+					execId,
+					"failed",
+					{
+						executionId: execId,
+						issueId: fresh.issue_id,
+						projectName: fresh.project_name,
+						trigger: "zombie_reap",
+					},
+					{ last_activity_at: now, last_error: lastError },
+				);
+				if (!result.ok) {
+					console.error(
+						`[HeartbeatService] FLY-1282 zombie transition REFUSED for ${execId} (${JSON.stringify(result)}) — no event emitted, no force override`,
+					);
+					return false;
+				}
+			} else {
+				// Legacy test seam only — production always wires transitionOpts.
+				this.store.forceStatus(execId, "failed", now, lastError);
+			}
+
+			// 5) First post-transition persist: the prepared append (INV-9), or
+			// the deterministic unroutable audit when no Lead was resolvable.
+			if (prepared) {
+				const persisted =
+					await this.notifier.persistPreparedZombieDetected(prepared);
+				if (!persisted) {
+					console.error(
+						`[HeartbeatService] FLY-1282 zombie alert append FAILED for ${execId} — backfill will retry (anti-join keeps selecting it)`,
+					);
+				}
+			} else {
+				this.recordUnroutableZombieAudit(fresh);
+			}
+
+			// 6) Cleanup — declaration owns every suppression it created.
+			this.clearReconnecting(execId);
+			this.zombieDeadStreak.delete(execId);
+			this.notifiedMonitorLost.delete(execId);
+			return true;
+		} finally {
+			this.zombieDeclaring.delete(execId);
+		}
+	}
+
+	/** FLY-1282 (R5 #1/R6 #2): deterministic, UNIQUE-deduped unroutable audit. */
+	private recordUnroutableZombieAudit(session: Session): void {
+		console.error(
+			`[HeartbeatService] FLY-1282 no Lead resolvable for zombie ${session.execution_id} (${session.issue_identifier ?? session.issue_id}) — recording session_events audit`,
+		);
+		if (typeof this.store.insertEvent !== "function") return;
+		this.store.insertEvent({
+			event_id: `zombie-alert-unroutable-${session.execution_id}`,
+			execution_id: session.execution_id,
+			issue_id: session.issue_id,
+			project_name: session.project_name ?? "",
+			event_type: "session_zombie_detected",
+			severity: "warning",
+			payload: {
+				unroutable: true,
+				last_error: session.last_error,
+				worktree_path: session.worktree_path,
+			},
+			source: "bridge.zombie-reconcile",
+		});
+	}
+
+	/**
+	 * FLY-1282 (R5 #3/#4 + R6 #2): recurring bounded zombie-alert backfill.
+	 * Scans failed sessions carrying the zombie marker whose deterministic
+	 * lead_events row is missing (SQL anti-join), oldest execution_id first
+	 * behind a wrap-around watermark; re-emits AT MOST ONE per pass via the
+	 * same prepare/persist pair (never re-transitions). Runs OUTSIDE the
+	 * liveness guard with its own single-flight; failures are loud and retried
+	 * on later wraps — never silently dropped.
+	 */
+	private async reconcileZombieAlertBacklog(): Promise<void> {
+		if (this.backfillInFlight) return;
+		if (typeof this.store.getZombieAlertBacklog !== "function") return;
+		this.backfillInFlight = true;
+		try {
+			let rows = this.store.getZombieAlertBacklog(
+				this.zombieBackfillWatermark,
+				20,
+			);
+			if (rows.length === 0 && this.zombieBackfillWatermark !== "") {
+				this.zombieBackfillWatermark = ""; // wrap to the head
+				rows = this.store.getZombieAlertBacklog("", 20);
+			}
+			if (rows.length === 0) return;
+			const session = rows[0];
+			if (!session) return;
+			// Advance PAST the attempted row regardless of outcome — fair
+			// rotation; a poison row cannot monopolize the per-pass budget.
+			this.zombieBackfillWatermark = session.execution_id;
+			const { parseZombieLastError } = await import(
+				"./bridge/zombie-evidence.js"
+			);
+			const evidence = parseZombieLastError(session.last_error ?? "");
+			if (evidence.kind === "unparseable") {
+				console.warn(
+					`[zombie-backfill] evidence marker unparseable for ${session.execution_id} — emitting degraded alert (no fabricated probe facts)`,
+				);
+			}
+			const inspection = await inspectWorktreeForUnpushedWork(
+				session.worktree_path,
+			);
+			const prepared = this.notifier.prepareSessionZombieDetected(
+				session,
+				evidence,
+				inspection,
+			);
+			if (!prepared) {
+				this.recordUnroutableZombieAudit(session);
+				return; // anti-join keeps selecting it; retried on a later wrap
+			}
+			const persisted =
+				await this.notifier.persistPreparedZombieDetected(prepared);
+			if (!persisted) {
+				console.error(
+					`[zombie-backfill] append failed for ${session.execution_id} — will retry on a later wrap`,
+				);
+			}
+		} catch (err) {
+			console.error(
+				`[zombie-backfill] pass failed (mainline unaffected): ${(err as Error).message}`,
+			);
+		} finally {
+			this.backfillInFlight = false;
+		}
+	}
+
+	/**
 	 * FLY-623 boot-seed: at Bridge boot, AFTER the FLY-172 marker drain AND the
 	 * FLY-324 done-but-running sweep, and BEFORE `start()` / RunnerIdleWatchdog,
 	 * seed reconnecting state for pre-existing `running` sessions (their in-process
@@ -766,14 +1369,22 @@ export class HeartbeatService implements ReconnectController {
 		const running = this.store
 			.getActiveSessions()
 			.filter((s) => s.status === "running");
+		// FLY-1282 (R3 #1): the public Promise<string[]> contract (FLY-1264 boot
+		// title ids) is unchanged. On the zombie-ON path the boot pass uses the
+		// same aggregated V2 consumption; its held-set is deliberately DISCARDED
+		// (the first post-boot check() re-probes and owns suppression).
+		const zombieOn = this.zombieMachineryEnabled();
+		const ctx: ReadoptPassCtx = { held: new Set(), intents: [] };
 		for (const session of running) {
 			const execId = session.execution_id;
 			const wasTitleActive = this.reconnectTitleActive.has(execId);
-			await this.reconcileCandidateReadopt(session, deps);
+			if (zombieOn) await this.reconcileCandidateReadoptV2(session, deps, ctx);
+			else await this.reconcileCandidateReadopt(session, deps);
 			if (!wasTitleActive && this.reconnectTitleActive.has(execId)) {
 				seeded.push(execId);
 			}
 		}
+		if (zombieOn) await this.flushReestablishedNotices(ctx);
 		return seeded;
 	}
 
@@ -878,7 +1489,10 @@ export class HeartbeatService implements ReconnectController {
 	 * `checkStuck()` and `reapOrphans()` skip it. Idempotent per Bridge-process
 	 * lifetime; on delivery failure it is NOT deduped (retried next cycle).
 	 */
-	private async emitMonitorLostOnce(session: Session): Promise<void> {
+	private async emitMonitorLostOnce(
+		session: Session,
+		details?: { unverified?: boolean },
+	): Promise<void> {
 		const execId = session.execution_id;
 		if (this.notifiedMonitorLost.has(execId)) return;
 		let minutesSince = this.thresholdMinutes;
@@ -890,7 +1504,17 @@ export class HeartbeatService implements ReconnectController {
 			);
 		}
 		try {
-			await this.notifier.onSessionMonitoringLost(session, minutesSince);
+			// INV-5 arity sentinel: the legacy path keeps the exact two-argument
+			// call; only the zombie-ON indeterminate path passes details.
+			if (details) {
+				await this.notifier.onSessionMonitoringLost(
+					session,
+					minutesSince,
+					details,
+				);
+			} else {
+				await this.notifier.onSessionMonitoringLost(session, minutesSince);
+			}
 			this.notifiedMonitorLost.add(execId);
 		} catch {
 			// delivery failed — retry advisory next cycle (don't dedup)
@@ -999,11 +1623,13 @@ export class HeartbeatService implements ReconnectController {
 	 */
 	private stuckCheckRunning = false;
 
-	private async checkStuck(): Promise<void> {
+	private async checkStuck(
+		zombieHeld: ReadonlySet<string> = EMPTY_SET,
+	): Promise<void> {
 		const confirmEngaged =
 			this.stuckConfirmHolder !== undefined && this.stuckConfirmEnabled();
 		if (!confirmEngaged) {
-			await this.checkStuckInner();
+			await this.checkStuckInner(zombieHeld);
 			return;
 		}
 		if (this.stuckCheckRunning) {
@@ -1014,7 +1640,7 @@ export class HeartbeatService implements ReconnectController {
 		}
 		this.stuckCheckRunning = true;
 		try {
-			await this.checkStuckInner();
+			await this.checkStuckInner(zombieHeld);
 		} finally {
 			this.stuckCheckRunning = false;
 		}
@@ -1025,7 +1651,9 @@ export class HeartbeatService implements ReconnectController {
 		return process.env.FLYWHEEL_STUCK_PANE_CONFIRM !== "0";
 	}
 
-	private async checkStuckInner(): Promise<void> {
+	private async checkStuckInner(
+		zombieHeld: ReadonlySet<string> = EMPTY_SET,
+	): Promise<void> {
 		const stuck = this.store.getStuckSessions(this.thresholdMinutes);
 
 		// Prune notified set: remove entries for sessions no longer stuck
@@ -1054,6 +1682,9 @@ export class HeartbeatService implements ReconnectController {
 			// re-adopted session would trade a false orphan for a false stuck (plan
 			// §3.4 regression guard). The reconcile pass owns both sets.
 			if (this.isMonitorSuppressed(session.execution_id)) continue;
+			// FLY-1282 (INV-3b): a dead-verdict candidate inside this pass's
+			// zombie confirm window must not fire a stale session_stuck.
+			if (zombieHeld.has(session.execution_id)) continue;
 			// FLY-637 #3/#4: in-memory OR persistent dedup — already reported this
 			// stuck episode (persistent survives a Bridge restart).
 			if (this.alreadyNotifiedStuck(session)) continue;
@@ -1109,6 +1740,7 @@ export class HeartbeatService implements ReconnectController {
 						continue;
 					}
 					if (this.isMonitorSuppressed(session.execution_id)) continue;
+					if (zombieHeld.has(session.execution_id)) continue;
 					if (this.alreadyNotifiedStuck(fresh)) continue;
 					if (this.isStuckWakeSuppressed(fresh)) continue;
 					if (result.action === "suppress") {
@@ -1752,6 +2384,7 @@ export class HeartbeatService implements ReconnectController {
 	/** Reap orphan sessions: heartbeat has gone stale beyond orphanThresholdMinutes. */
 	async reapOrphans(
 		deadPinOwned: ReadonlySet<string> = new Set(),
+		zombieHeld: ReadonlySet<string> = EMPTY_SET,
 	): Promise<void> {
 		const orphans = this.store.getOrphanSessions(this.orphanThresholdMinutes);
 
@@ -1773,6 +2406,9 @@ export class HeartbeatService implements ReconnectController {
 			// When none of the sets contains the session, it is a genuine orphan
 			// (tmux gone / no usable marker) and the existing force-fail applies.
 			if (this.isMonitorSuppressed(session.execution_id)) continue;
+			// FLY-1282 (INV-3b): the zombie confirm window owns this exec THIS
+			// cycle — a single absent probe must never be generic-orphan-reaped.
+			if (zombieHeld.has(session.execution_id)) continue;
 			if (this.markerRetryPending.has(session.execution_id)) continue;
 			if (this.notifiedOrphans.has(session.execution_id)) continue;
 
@@ -1912,8 +2548,15 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 	async onSessionMonitoringLost(
 		session: Session,
 		minutes: number,
+		details?: { unverified?: boolean },
 	): Promise<void> {
 		const label = session.issue_identifier ?? session.issue_id;
+		// FLY-1282 (INV-1): the readopt-ON indeterminate path could NOT verify
+		// liveness — its copy must not claim "alive and working". The legacy
+		// two-argument call keeps the pre-FLY-1282 copy byte-for-byte.
+		const context = details?.unverified
+			? `Runner ${label} lost Bridge monitoring and its liveness could NOT be verified (CommDB/pane probe indeterminate; heartbeat stale ${minutes}m). No heartbeat was refreshed. Please check it directly via tmux.`
+			: `Runner ${label} lost Bridge monitoring (no heartbeat for ${minutes}m, likely after a Flywheel restart) but its tmux session is still alive and working. Please keep an eye on it and drive it directly via tmux if needed.`;
 		const hookPayload: HookPayload = {
 			event_type: "session_monitoring_lost",
 			execution_id: session.execution_id,
@@ -1923,7 +2566,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			project_name: session.project_name,
 			status: session.status,
 			minutes_since_activity: minutes,
-			notification_context: `Runner ${label} lost Bridge monitoring (no heartbeat for ${minutes}m, likely after a Flywheel restart) but its tmux session is still alive and working. Please keep an eye on it and drive it directly via tmux if needed.`,
+			notification_context: context,
 			session_role: session.session_role ?? "main",
 		};
 		await this.deliverHook(session, hookPayload);
@@ -1939,9 +2582,27 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 	async onSessionMonitoringReestablished(
 		session: Session,
 		minutes: number,
-		details?: { stampReconnectTitle?: boolean },
+		details?: {
+			stampReconnectTitle?: boolean;
+			livenessProbe?: { target?: string; probedAt: string };
+			concurrentCount?: number;
+		},
 	): Promise<void> {
 		const label = session.issue_identifier ?? session.issue_id;
+		// FLY-1282 (INV-2): with probe evidence, state only point-in-time facts —
+		// no "restart" narrative (2026-07-15 16:14Z: three of these claimed a
+		// restart while the Bridge had 7.9h uptime; the trigger is heartbeat
+		// staleness, restart is just one possible cause), no forever promises.
+		// "heartbeat age" is honest even for boot-seeded fresh-heartbeat rows.
+		let context: string;
+		if (details?.livenessProbe) {
+			context = `Runner ${label} re-adopted — heartbeat age before re-adoption was ${minutes}m; liveness verified at ${details.livenessProbe.probedAt} via tmux pane probe (pane_dead=0); monitoring resumed.`;
+			if (details.concurrentCount !== undefined) {
+				context += ` NOTE: ${details.concurrentCount} sessions re-adopted in the same pass — suspect a monitoring-side interruption rather than runner-side.`;
+			}
+		} else {
+			context = `Runner ${label} was re-adopted after a Flywheel restart — monitoring re-established via tmux (heartbeat had been stale ${minutes}m). It is alive and being watched again; no action needed.`;
+		}
 		const hookPayload: HookPayload = {
 			event_type: "session_monitoring_reestablished",
 			execution_id: session.execution_id,
@@ -1951,9 +2612,20 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			project_name: session.project_name,
 			status: session.status,
 			minutes_since_activity: minutes,
-			notification_context: `Runner ${label} was re-adopted after a Flywheel restart — monitoring re-established via tmux (heartbeat had been stale ${minutes}m). It is alive and being watched again; no action needed.`,
+			notification_context: context,
 			session_role: session.session_role ?? "main",
 		};
+		if (details?.livenessProbe) {
+			hookPayload.liveness_probe = {
+				method: "tmux_pane_probe",
+				target: details.livenessProbe.target,
+				result: "alive",
+				probed_at: details.livenessProbe.probedAt,
+			};
+			if (details.concurrentCount !== undefined) {
+				hookPayload.concurrent_reestablished = details.concurrentCount;
+			}
+		}
 		// Display-A: stamp the ⚠️重连中 marker (fire-and-forget, best-effort).
 		if (details?.stampReconnectTitle !== false) {
 			this.stampReconnect(session, "enter");
@@ -2145,36 +2817,209 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 
 		const sessionKey = buildSessionKey(session);
 		const eventId = `heartbeat-${session.execution_id}-${Date.now()}`;
-		const seq = this.store.appendLeadEvent(
-			agentId,
-			eventId,
-			hookPayload.event_type,
-			JSON.stringify(hookPayload),
-			sessionKey,
-		);
-		const envelope: LeadEventEnvelope = {
-			seq,
-			event: hookPayload,
-			sessionKey,
+		// FLY-1282 (R2 #3/R3 #5): shared append→deliver lifecycle. The legacy
+		// hook keeps "propagate" — a deliver() throw escapes to the caller with
+		// the appended row left untouched (attempt=0), exactly as before.
+		await this.appendAndDeliverRow({
 			leadId: agentId,
-			timestamp: new Date().toISOString(),
-		};
-
-		const isGuardrail = GUARDRAIL_EVENT_TYPES.has(hookPayload.event_type);
-		const result = await runtime.deliver(envelope);
-
-		if (result.delivered) {
-			this.store.markLeadEventDelivered(seq);
-		} else if (isGuardrail) {
-			// Guardrail event failed — record failure for retry next cycle
-			this.store.recordDeliveryFailure(seq, result.error ?? "unknown");
-		} else {
-			// Advisory event — best-effort, mark delivered anyway
-			this.store.markLeadEventDelivered(seq);
-		}
+			eventId,
+			eventType: hookPayload.event_type,
+			payloadJson: JSON.stringify(hookPayload),
+			sessionKey,
+			payloadForEnvelope: hookPayload,
+			runtime,
+			onDeliverThrow: "propagate",
+		});
 		// FLY-637 R1 #2: the event row IS in lead_events (guardrail retry owns
 		// redelivery), so this counts as persisted regardless of the immediate
 		// transport outcome.
 		return true;
+	}
+
+	/**
+	 * FLY-1282 (R2 #3 + R3 #5 + R5 #1): the ONE append→deliver→mark/record
+	 * state machine, shared by the legacy deliverHook and the prepared zombie
+	 * path. Behavior matrix (M0 goldens freeze the "propagate" side):
+	 *   - deliver ok            → markLeadEventDelivered
+	 *   - deliver {delivered:false} → guardrail: recordDeliveryFailure;
+	 *                                 advisory: mark delivered (best-effort)
+	 *   - deliver THROWS        → "propagate": rethrow, row left attempt=0
+	 *                             (pre-FLY-1282 semantics, no record/mark);
+	 *                             "record": recordDeliveryFailure (retry row)
+	 *   - runtime undefined     → recordDeliveryFailure("no runtime registered")
+	 *                             (guardrail retry re-resolves getForLead later)
+	 * Returns after the row is durably appended — the return value is the seq.
+	 */
+	private async appendAndDeliverRow(row: {
+		leadId: string;
+		eventId: string;
+		eventType: string;
+		payloadJson: string;
+		sessionKey: string;
+		payloadForEnvelope: HookPayload;
+		runtime: LeadRuntime | undefined;
+		onDeliverThrow: "propagate" | "record";
+	}): Promise<number> {
+		const seq = this.store.appendLeadEvent(
+			row.leadId,
+			row.eventId,
+			row.eventType,
+			row.payloadJson,
+			row.sessionKey,
+		);
+		const isGuardrail = GUARDRAIL_EVENT_TYPES.has(row.eventType);
+		if (!row.runtime) {
+			this.store.recordDeliveryFailure(seq, "no runtime registered");
+			return seq;
+		}
+		const envelope: LeadEventEnvelope = {
+			seq,
+			event: row.payloadForEnvelope,
+			sessionKey: row.sessionKey,
+			leadId: row.leadId,
+			timestamp: new Date().toISOString(),
+		};
+		let result: { delivered: boolean; error?: string };
+		try {
+			result = await row.runtime.deliver(envelope);
+		} catch (err) {
+			if (row.onDeliverThrow === "propagate") throw err;
+			this.store.recordDeliveryFailure(seq, (err as Error).message);
+			return seq;
+		}
+		if (result.delivered) {
+			this.store.markLeadEventDelivered(seq);
+		} else if (isGuardrail) {
+			this.store.recordDeliveryFailure(seq, result.error ?? "unknown");
+		} else {
+			this.store.markLeadEventDelivered(seq);
+		}
+		return seq;
+	}
+
+	/**
+	 * FLY-1282 two-phase zombie alert, prepare half (R4 #1 + R5 #2): all
+	 * store/registry/filter READS happen here, before the FSM transition. No
+	 * persistent writes of any kind. Returns null when no Lead is resolvable.
+	 */
+	prepareSessionZombieDetected(
+		session: Session,
+		evidence: ZombieEvidence,
+		inspection: WorktreeInspection,
+	): PreparedZombieNotification | null {
+		let labels: string[] = [];
+		try {
+			labels = this.store.getSessionLabels(session.execution_id);
+		} catch {
+			labels = [];
+		}
+		let lead: { agentId: string; chatChannel: string };
+		try {
+			({ lead } = resolveLeadForIssue(
+				this.projects,
+				session.project_name ?? "",
+				labels,
+			));
+		} catch {
+			return null; // unroutable — caller records the deterministic audit
+		}
+		const runtime = this.registry.getForLead(lead.agentId);
+
+		const label = session.issue_identifier ?? session.issue_id;
+		const files = [
+			...(inspection.untracked ?? []),
+			...(inspection.modified ?? []),
+		];
+		const workSummary = inspection.ok
+			? `${inspection.untrackedTotal ?? 0} untracked, ${inspection.modifiedTotal ?? 0} modified, ${
+					inspection.unpushedCommits ?? "?"
+				} unpushed commit(s) (${inspection.unpushedSemantics ?? "unknown"}) on branch ${
+					inspection.branch ?? "?"
+				} at ${inspection.worktreePath ?? "?"}.${files.length > 0 ? ` Files: ${files.join(", ")}.` : ""}`
+			: `unpushed-work check FAILED (${inspection.error ?? "unknown"}) — please inspect ${session.worktree_path ?? "the worktree"} manually.`;
+		const evidenceSummary =
+			evidence.kind === "verified"
+				? `tmux window ${evidence.liveness.target} PROVEN dead (pane probe absent x${evidence.streak}, server up, verified at ${evidence.liveness.probedAt})`
+				: `declared zombie (evidence marker unparseable — see last_error)`;
+
+		const hookPayload: HookPayload = {
+			event_type: "session_zombie_detected",
+			execution_id: session.execution_id,
+			issue_id: session.issue_id,
+			issue_identifier: session.issue_identifier,
+			issue_title: session.issue_title,
+			project_name: session.project_name,
+			status: "failed",
+			notification_context: `Runner ${label}: ${evidenceSummary}. The session was force-failed (it was still reported running). Worktree check: ${workSummary} Lead decides rescue (commit/push) — NOT auto-committed.`,
+			session_role: session.session_role ?? "main",
+			unpushed_work: inspection,
+		};
+		if (evidence.kind === "verified") {
+			hookPayload.liveness_probe = {
+				method: "tmux_pane_probe",
+				target: evidence.liveness.target,
+				result: "absent",
+				probed_at: evidence.liveness.probedAt,
+				consecutive_probes: evidence.streak,
+			};
+		} else {
+			hookPayload.liveness_probe = {
+				method: "tmux_pane_probe",
+				result: "absent",
+				degraded: true,
+			};
+		}
+		hookPayload.chat_channel = lead.chatChannel;
+		if (this.chatThreadsEnabled) {
+			hookPayload.chat_thread_id = resolveChatThreadId(
+				this.store,
+				session.issue_id,
+				lead.chatChannel,
+			);
+		}
+		if (this.eventFilter) {
+			const filterResult = this.eventFilter.classify(
+				hookPayload.event_type,
+				hookPayload,
+			);
+			hookPayload.filter_priority = filterResult.priority;
+		}
+		return {
+			leadId: lead.agentId,
+			eventId: `zombie-${session.execution_id}`,
+			eventType: "session_zombie_detected",
+			payloadJson: JSON.stringify(hookPayload),
+			sessionKey: buildSessionKey(session),
+			runtime,
+		};
+	}
+
+	/**
+	 * FLY-1282 two-phase zombie alert, persist half (INV-9): the FIRST store
+	 * mutation is the lead_events append; transport is awaited after, with
+	 * throw/false/missing-runtime all recorded for the bounded guardrail retry.
+	 */
+	async persistPreparedZombieDetected(
+		prepared: PreparedZombieNotification,
+	): Promise<boolean> {
+		try {
+			await this.appendAndDeliverRow({
+				leadId: prepared.leadId,
+				eventId: prepared.eventId,
+				eventType: prepared.eventType,
+				payloadJson: prepared.payloadJson,
+				sessionKey: prepared.sessionKey,
+				payloadForEnvelope: JSON.parse(prepared.payloadJson) as HookPayload,
+				runtime: prepared.runtime,
+				onDeliverThrow: "record",
+			});
+			return true;
+		} catch (err) {
+			// append itself failed — the anti-join backfill will retry.
+			console.error(
+				`[HeartbeatService] FLY-1282 zombie alert append threw: ${(err as Error).message}`,
+			);
+			return false;
+		}
 	}
 }

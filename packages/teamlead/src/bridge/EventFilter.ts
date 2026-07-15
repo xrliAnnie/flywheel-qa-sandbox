@@ -100,6 +100,19 @@ const FILTER_RULES: FilterRule[] = [
 			reason: "session stuck — notify Annie via Chat",
 		},
 	},
+	{
+		// FLY-1282: a running session's tmux window is provably dead (zombie).
+		// High-priority LEAD action (check the unpushed-work list, decide
+		// rescue). INV-10: ops-detection events route to the Lead queue only —
+		// never a raw founder-thread post; founder escalation stays with the
+		// Lead-first chain (FLY-1048/1279).
+		match: (et) => et === "session_zombie_detected",
+		result: {
+			priority: "high",
+			reason:
+				"zombie session — tmux window dead while status=running; check unpushed work",
+		},
+	},
 	// FLY-159: Runner gate timed out (fail-close path only — fail-open never
 	// emits this event). Lead must inform Annie via Discord and offer
 	// retry/cancel options.
@@ -132,8 +145,12 @@ const FILTER_RULES: FilterRule[] = [
 		// priority normal (Codex review decision #4).
 		match: (et) => et === "session_monitoring_lost",
 		result: {
+			// FLY-1282 R1 #1: neutral wording — this annotation must not assert
+			// liveness (the event now also covers indeterminate/unverified cases).
+			// Annotation-only revision: notifier always sets notification_context
+			// explicitly, so this string never reaches the Lead as context.
 			priority: "normal",
-			reason: "monitoring lost — Runner alive, Lead should watch via tmux",
+			reason: "monitoring lost — Runner liveness unverified; Lead should check via tmux",
 		},
 	},
 	{

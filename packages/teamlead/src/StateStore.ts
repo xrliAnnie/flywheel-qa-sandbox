@@ -4017,6 +4017,38 @@ export class StateStore {
 		return rows;
 	}
 
+	/**
+	 * FLY-1282: zombie-alert backfill backlog — failed sessions carrying the
+	 * zombie declaration marker whose deterministic `zombie-<execId>` lead_event
+	 * row does NOT exist yet (hard-crash residue between transition and append).
+	 * SQL anti-join filters completed work BEFORE the LIMIT; stable
+	 * `execution_id ASC` order behind a strict `> afterExecutionId` watermark
+	 * gives fair wrap-around rotation (Codex R5 #3 / R6 #4 / R7 #4).
+	 */
+	getZombieAlertBacklog(afterExecutionId: string, limit: number): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions s
+			 WHERE s.status = 'failed'
+			   AND s.last_error LIKE 'zombie: %'
+			   AND s.execution_id > ?
+			   AND NOT EXISTS (
+			     SELECT 1 FROM lead_events le
+			     WHERE le.event_id = 'zombie-' || s.execution_id
+			   )
+			 ORDER BY s.execution_id ASC
+			 LIMIT ?`,
+		);
+		stmt.bind([afterExecutionId, limit]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
 	/** GEO-270: Get sessions in terminal state (completed/failed/blocked) with stale activity. */
 	getStaleCompletedSessions(thresholdHours: number): Session[] {
 		const stmt = this.db.prepare(

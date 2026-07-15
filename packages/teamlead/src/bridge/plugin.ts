@@ -4358,6 +4358,9 @@ export async function startBridge(
 					onSessionStale: async () => {},
 					onSessionMonitoringLost: async () => {},
 					onSessionMonitoringReestablished: async () => {},
+					// FLY-1282: no registry → no Lead to route a zombie alert to.
+					prepareSessionZombieDetected: () => null,
+					persistPreparedZombieDetected: async () => false,
 				};
 
 	// GEO-270: Stale session patrol config (local variables, not in BridgeConfig)

@@ -27,6 +27,7 @@ export const GUARDRAIL_EVENT_TYPES = new Set([
 	"scheduled_run_blocked", // FLY-742: a scheduled/cron run-start was DECLINED by a stale session — Lead/founder must reliably learn the job is silently skipping
 	"detection_suspicious", // FLY-1048 (A5): fail-suspicious is "never silent" — a dropped delivery would BE the silence it exists to prevent
 	"detection_escalation", // FLY-1048 (C2): Lead-first leg of the unified escalation flow — the ~30min founder-grace clock starts here, so the Lead must reliably receive it
+	"session_zombie_detected", // FLY-1282: a running session's tmux window is PROVABLY dead (2x server-up absent + re-proof) — the Lead must reliably get the rescue alert (unpushed-work list)
 ]);
 
 /**
