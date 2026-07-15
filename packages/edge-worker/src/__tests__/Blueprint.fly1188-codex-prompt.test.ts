@@ -366,16 +366,19 @@ describe("FLY-1257 M1-a — resident Codex gate-wait law", () => {
 		["question", { question: { enabled: true } }],
 		["generic", { security_review: { enabled: true } }],
 		["review-and-approve", { approve_to_ship: { enabled: true } }],
-	] as const)("%s-only Codex prompt still carries the shared law once", async (_name, checkpointConfig) => {
-		const wt = makeRealWorktree();
-		cleanups.push(wt);
-		const prompt = await buildPrompt({
-			worktreePath: wt,
-			ctxOverrides: { runnerBackend: "codex-tmux" },
-			checkpointConfig,
-		});
-		expect(prompt.match(new RegExp(WAIT_LAW, "g")) ?? []).toHaveLength(1);
-	});
+	] as const)(
+		"%s-only Codex prompt still carries the shared law once",
+		async (_name, checkpointConfig) => {
+			const wt = makeRealWorktree();
+			cleanups.push(wt);
+			const prompt = await buildPrompt({
+				worktreePath: wt,
+				ctxOverrides: { runnerBackend: "codex-tmux" },
+				checkpointConfig,
+			});
+			expect(prompt.match(new RegExp(WAIT_LAW, "g")) ?? []).toHaveLength(1);
+		},
+	);
 
 	it("Claude prompt remains free of the Codex-only wait law", async () => {
 		const prompt = await buildPrompt({ ctxOverrides: {} });

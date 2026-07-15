@@ -45,8 +45,8 @@ import {
 	HaikuVerifier,
 	HardRuleEngine,
 	HookCallbackServer,
-	SkillInjector,
 	resolveWorktreeKey,
+	SkillInjector,
 	WorktreeManager,
 } from "flywheel-edge-worker";
 import { Blueprint } from "flywheel-edge-worker/dist/Blueprint.js";

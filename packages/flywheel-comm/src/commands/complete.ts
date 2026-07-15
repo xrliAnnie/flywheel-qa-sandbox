@@ -157,7 +157,7 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	// marker state must fail closed rather than silently killing a waiting goal.
 	const gateMarkerDir = process.env.FLYWHEEL_GATE_MARKER_DIR?.trim();
 	if (opts.route === "blocked" && gateMarkerDir) {
-		let markers;
+		let markers: ReturnType<typeof listGateMarkersForExecutionStrict>;
 		try {
 			markers = listGateMarkersForExecutionStrict(gateMarkerDir, execId);
 		} catch (error) {

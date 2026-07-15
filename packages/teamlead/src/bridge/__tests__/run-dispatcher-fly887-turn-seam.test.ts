@@ -190,9 +190,7 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 			() => ({ kind: "indeterminate", error: "git exit 128" }),
 		);
 		await expect(
-			dispatcher.dispatch(
-				retryRequest({ successorExecutionId }),
-			),
+			dispatcher.dispatch(retryRequest({ successorExecutionId })),
 		).rejects.toThrow(/phase retry startPoint.*indeterminate.*git exit 128/i);
 		expect(runtime.blueprint.run).not.toHaveBeenCalled();
 		const db = new CommDB(commDbPathForProject("proj"));
@@ -222,9 +220,7 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 		);
 		const successorExecutionId = "retry-exec-1257";
 		await expect(
-			dispatcher.dispatch(
-				retryRequest({ successorExecutionId }),
-			),
+			dispatcher.dispatch(retryRequest({ successorExecutionId })),
 		).rejects.toThrow(/pre-launch TURN grant failed.*retry/i);
 		expect(grantSpy).toHaveBeenCalledOnce();
 		expect(dispatcher.hasInflightForRole("issue-1", "design")).toBe(false);

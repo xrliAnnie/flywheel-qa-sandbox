@@ -616,8 +616,7 @@ export class CodexTmuxAdapter implements IAdapter {
 							return false;
 						}
 					},
-					readGateHoldLatch: () =>
-						this.readPersistedGateHold(ctx.executionId),
+					readGateHoldLatch: () => this.readPersistedGateHold(ctx.executionId),
 					writeGateHoldLatch: (held) =>
 						this.mergeSessionState(ctx.executionId, { gateHold: held }),
 					...(resumeThreadId ? { resumeThreadId } : {}),
@@ -879,7 +878,11 @@ export class CodexTmuxAdapter implements IAdapter {
 		let current: Record<string, unknown> = {};
 		if (existsSync(path)) {
 			const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
-			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+			if (
+				typeof parsed !== "object" ||
+				parsed === null ||
+				Array.isArray(parsed)
+			) {
 				throw new Error(`invalid session state object in ${path}`);
 			}
 			current = parsed as Record<string, unknown>;

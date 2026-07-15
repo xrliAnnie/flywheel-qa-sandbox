@@ -629,10 +629,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 		// the shared-worktree TURN before Blueprint can start the runner's first
 		// self-check. grantTurn's upsert increments the epoch atomically, moving
 		// ownership from the predecessor to this successor.
-		if (
-			isPhaseRetry &&
-			threeStageKeepAliveEnabled()
-		) {
+		if (isPhaseRetry && threeStageKeepAliveEnabled()) {
 			try {
 				const db = new CommDB(defaultGetCommDbPath(req.projectName));
 				try {

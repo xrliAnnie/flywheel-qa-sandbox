@@ -15,8 +15,8 @@ import {
 	RunDispatcher,
 	runnerDisplayName,
 } from "../bridge/run-dispatcher.js";
-import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import * as runInfraModule from "../bridge/run-infra.js";
+import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 
 // Mock flywheel-core openTmuxViewer (no-op in tests)
 vi.mock("flywheel-core", async (importOriginal) => {

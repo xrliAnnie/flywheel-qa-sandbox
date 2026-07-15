@@ -110,18 +110,22 @@ describe("gate-marker (FLY-123)", () => {
 		// Existing adapter/watchdog callers remain tolerant and still see valid rows.
 		expect(listGateMarkersForExecution(dir, "exec-1")).toHaveLength(1);
 
-		const strict = (gateMarkerModule as unknown as {
-			listGateMarkersForExecutionStrict?: StrictMarkerLister;
-		}).listGateMarkersForExecutionStrict;
+		const strict = (
+			gateMarkerModule as unknown as {
+				listGateMarkersForExecutionStrict?: StrictMarkerLister;
+			}
+		).listGateMarkersForExecutionStrict;
 		expect(strict).toBeTypeOf("function");
 		if (!strict) return;
 		expect(() => strict(dir, "exec-1")).toThrow(corruptPath);
 	});
 
 	it("strict enumeration treats an absent marker directory as a legitimate empty set", () => {
-		const strict = (gateMarkerModule as unknown as {
-			listGateMarkersForExecutionStrict?: StrictMarkerLister;
-		}).listGateMarkersForExecutionStrict;
+		const strict = (
+			gateMarkerModule as unknown as {
+				listGateMarkersForExecutionStrict?: StrictMarkerLister;
+			}
+		).listGateMarkersForExecutionStrict;
 		expect(strict).toBeTypeOf("function");
 		if (!strict) return;
 		expect(strict(join(dir, "never-created"), "exec-1")).toEqual([]);
