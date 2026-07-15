@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	resolveCodexHardGateOn,
 	verifyApproval,
+	verifyApprovalWithBridgeHead,
 } from "../commands/verify-approval.js";
 import { CommDB } from "../db.js";
 
@@ -181,6 +182,67 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		expect(r.reason).toBe("approved");
 		expect(r.questionId).toBe(qid);
 		expect(r.exitCode).toBe(0);
+	});
+
+	describe("FLY-1244 Bridge head authority", () => {
+		it("uses the Bridge-derived head for the final local approval check", async () => {
+			setupFullyApproved();
+			const result = await verifyApprovalWithBridgeHead({
+				execId: EXEC,
+				prHead: HEAD,
+				dbPath: commDbPath,
+				stateDbPath,
+				bridgeUrl: "http://127.0.0.1:9876",
+				fetchImpl: vi.fn().mockResolvedValue({
+					ok: true,
+					json: async () => ({ ok: true, prHeadSha: HEAD }),
+				}) as never,
+				env: {
+					FLYWHEEL_CODEX_HARD_GATE: "0",
+					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+				} as NodeJS.ProcessEnv,
+				codexDotenvPath: join(tmpDir, "nonexistent.env"),
+			});
+			expect(result).toMatchObject({ approved: true, reason: "approved" });
+		});
+
+		it("refuses when caller HEAD differs from Bridge worktree authority", async () => {
+			const result = await verifyApprovalWithBridgeHead({
+				execId: EXEC,
+				prHead: OTHER_HEAD,
+				dbPath: commDbPath,
+				stateDbPath,
+				bridgeUrl: "http://127.0.0.1:9876",
+				fetchImpl: vi.fn().mockResolvedValue({
+					ok: true,
+					json: async () => ({ ok: true, prHeadSha: HEAD }),
+				}) as never,
+				env: { FLYWHEEL_WORKFLOW_CLAIMS_READ: "1" } as NodeJS.ProcessEnv,
+			});
+			expect(result).toMatchObject({
+				approved: false,
+				reason: "head_authority_mismatch",
+				expectedPrHeadSha: HEAD,
+				exitCode: 1,
+			});
+		});
+
+		it("fails closed when the Bridge authority cannot be read", async () => {
+			const result = await verifyApprovalWithBridgeHead({
+				execId: EXEC,
+				prHead: HEAD,
+				dbPath: commDbPath,
+				stateDbPath,
+				bridgeUrl: "http://127.0.0.1:9876",
+				fetchImpl: vi.fn().mockRejectedValue(new Error("offline")) as never,
+				env: { FLYWHEEL_WORKFLOW_CLAIMS_READ: "1" } as NodeJS.ProcessEnv,
+			});
+			expect(result).toMatchObject({
+				approved: false,
+				reason: "head_authority_unavailable",
+				exitCode: 1,
+			});
+		});
 	});
 
 	// ── FLY-945 Fix E: founder attribution matrix ──

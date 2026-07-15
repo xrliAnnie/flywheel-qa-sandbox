@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import BetterSqlite3, { type Database as BetterDb } from "better-sqlite3";
-import { crossFamilyReviewSatisfied } from "flywheel-config";
-import type { LeadNudgeRow } from "./bridge/lead-pending-escalation.js";
 import {
 	canonicalSubmissionDigest,
+	crossFamilyReviewSatisfied,
+} from "flywheel-config";
+import type { LeadNudgeRow } from "./bridge/lead-pending-escalation.js";
+import {
 	generateCapabilityToken,
 	hashCapabilityToken,
 	PASSING_PREDICATES,
@@ -17,6 +19,13 @@ import {
 	type WorkflowClaimPredicate,
 	type WorkflowDecisionFamily,
 } from "./workflow-claims.js";
+import {
+	applyWorkflowOverride,
+	type LoadedWorkflowSeed,
+	validateWorkflowManifest,
+	type WorkflowTemplateOverride,
+	workflowSeedContentHash,
+} from "./workflow-template.js";
 
 /**
  * FLY-663: a thin compatibility shim that exposes the exact sql.js surface
@@ -2137,6 +2146,10 @@ export class StateStore {
 			"CREATE INDEX IF NOT EXISTS idx_detection_escalations_status ON detection_escalations(status)",
 		);
 
+		// FLY-1244 PR-5: immutable workflow template revisions + publication
+		// pointer and category selection. This only materializes the catalog;
+		// execution remains default-off until a run is explicitly admitted.
+		this.migrateWorkflowTemplates();
 		// FLY-1135 PR-1: workflow claims ledger substrate (default-off, no
 		// production path reads or writes these tables yet).
 		this.migrateWorkflowClaimsLedger();
@@ -2156,6 +2169,122 @@ export class StateStore {
 		this.migrateChatThreadsDisplayFingerprintColumns();
 		// FLY-643: qa_issue_* columns on auto_qa_record (separate QA issue)
 		this.migrateAutoQaRecordQaIssueColumns();
+	}
+
+	private migrateWorkflowTemplates(): void {
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_template (
+				template_id TEXT PRIMARY KEY,
+				name TEXT NOT NULL,
+				project_scope TEXT NOT NULL CHECK (
+					project_scope = 'global' OR length(trim(project_scope)) > 0
+				),
+				current_published_revision INTEGER,
+				created_by TEXT NOT NULL,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				seed_owner TEXT NOT NULL DEFAULT 'system'
+					CHECK (seed_owner IN ('system','founder')),
+				seed_content_hash TEXT,
+				FOREIGN KEY (template_id, current_published_revision)
+					REFERENCES workflow_template_revision(template_id, revision)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_template_revision (
+				template_id TEXT NOT NULL,
+				revision INTEGER NOT NULL CHECK (revision > 0),
+				manifest JSON NOT NULL,
+				manifest_digest TEXT NOT NULL,
+				schema_version INTEGER NOT NULL,
+				created_by TEXT NOT NULL,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				PRIMARY KEY (template_id, revision),
+				FOREIGN KEY (template_id) REFERENCES workflow_template(template_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_template_publication (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				template_id TEXT NOT NULL,
+				revision INTEGER NOT NULL,
+				published_by TEXT NOT NULL,
+				published_at TEXT NOT NULL DEFAULT (datetime('now')),
+				FOREIGN KEY (template_id, revision)
+					REFERENCES workflow_template_revision(template_id, revision)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_category_binding (
+				project TEXT NOT NULL,
+				task_category TEXT NOT NULL DEFAULT '*',
+				template_id TEXT NOT NULL,
+				updated_by TEXT NOT NULL,
+				updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+				PRIMARY KEY (project, task_category),
+				FOREIGN KEY (template_id) REFERENCES workflow_template(template_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_template_audit (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				at TEXT NOT NULL DEFAULT (datetime('now')),
+				actor TEXT NOT NULL,
+				action TEXT NOT NULL CHECK (
+					action IN ('seed_import','publish','rebind','create','run_override')
+				),
+				template_id TEXT,
+				revision INTEGER,
+				run_id TEXT,
+				detail JSON
+			)
+		`);
+		for (const table of [
+			"workflow_template_revision",
+			"workflow_template_publication",
+			"workflow_template_audit",
+		]) {
+			this.db.run(`
+				CREATE TRIGGER IF NOT EXISTS ${table}_no_update
+				BEFORE UPDATE ON ${table}
+				BEGIN SELECT RAISE(ABORT, '${table} is append-only'); END
+			`);
+			this.db.run(`
+				CREATE TRIGGER IF NOT EXISTS ${table}_no_delete
+				BEFORE DELETE ON ${table}
+				BEGIN SELECT RAISE(ABORT, '${table} is append-only'); END
+			`);
+		}
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_template_revision_no_replace
+			BEFORE INSERT ON workflow_template_revision
+			WHEN EXISTS (
+				SELECT 1 FROM workflow_template_revision
+				 WHERE template_id = NEW.template_id AND revision = NEW.revision
+			)
+			BEGIN SELECT RAISE(ABORT, 'workflow_template_revision is append-only'); END
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_template_publication_no_replace
+			BEFORE INSERT ON workflow_template_publication
+			WHEN NEW.id IS NOT NULL AND EXISTS (
+				SELECT 1 FROM workflow_template_publication WHERE id = NEW.id
+			)
+			BEGIN SELECT RAISE(ABORT, 'workflow_template_publication is append-only'); END
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_template_audit_no_replace
+			BEFORE INSERT ON workflow_template_audit
+			WHEN NEW.id IS NOT NULL AND EXISTS (
+				SELECT 1 FROM workflow_template_audit WHERE id = NEW.id
+			)
+			BEGIN SELECT RAISE(ABORT, 'workflow_template_audit is append-only'); END
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_workflow_template_publication_template ON workflow_template_publication(template_id, id)",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_workflow_template_audit_template ON workflow_template_audit(template_id, id)",
+		);
 	}
 
 	insertEvent(event: SessionEvent): boolean {
@@ -8950,11 +9079,21 @@ export class StateStore {
 				template_revision INTEGER,
 				snapshot JSON,
 				current_node_id TEXT,
+				current_qa_attempt INTEGER,
 				status TEXT NOT NULL DEFAULT 'active',
 				claims_read_enrolled INTEGER NOT NULL DEFAULT 0,
 				created_at TEXT NOT NULL DEFAULT (datetime('now'))
 			)
 		`);
+		// Existing FLY-1232 databases predate the explicit current-QA authority.
+		// Scope the migration to the column itself; legacy null rows stay valid.
+		try {
+			this.db.run(
+				"ALTER TABLE workflow_run ADD COLUMN current_qa_attempt INTEGER",
+			);
+		} catch {
+			/* column already exists */
+		}
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_run_node (
 				run_id TEXT NOT NULL,
@@ -9049,6 +9188,83 @@ export class StateStore {
 				actor TEXT NOT NULL
 			)
 		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_execution_binding (
+				execution_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL CHECK (attempt > 0),
+				bound_at TEXT NOT NULL,
+				UNIQUE (execution_id, run_id, node_id, attempt)
+			)
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_execution_binding_no_update
+			BEFORE UPDATE ON workflow_execution_binding
+			BEGIN SELECT RAISE(ABORT, 'workflow_execution_binding is immutable'); END
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_execution_binding_no_delete
+			BEFORE DELETE ON workflow_execution_binding
+			BEGIN SELECT RAISE(ABORT, 'workflow_execution_binding is immutable'); END
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_submission_credential (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				credential_hash TEXT NOT NULL UNIQUE,
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				execution_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL CHECK (attempt > 0),
+				family TEXT NOT NULL CHECK (family IN ('qa_verdict','review_verdict')),
+				decision_capability_id INTEGER,
+				issued_at TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				absolute_deadline_at TEXT NOT NULL,
+				consumed_at TEXT,
+				consumed_client_request_id TEXT,
+				consumed_submission_digest TEXT,
+				claim_id INTEGER,
+				revoked INTEGER NOT NULL DEFAULT 0,
+				revoked_reason TEXT,
+				FOREIGN KEY (execution_id, run_id, node_id, attempt)
+					REFERENCES workflow_execution_binding(execution_id, run_id, node_id, attempt),
+				FOREIGN KEY (decision_capability_id) REFERENCES workflow_decision_capability(id),
+				FOREIGN KEY (claim_id) REFERENCES workflow_claims(id)
+			)
+		`);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS ux_workflow_submission_live
+			ON workflow_submission_credential(run_id, node_id, attempt)
+			WHERE consumed_at IS NULL AND revoked = 0
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_source_receipt (
+				project TEXT NOT NULL,
+				source_event_id TEXT NOT NULL,
+				payload_digest TEXT NOT NULL,
+				claim_id INTEGER,
+				applied_at TEXT NOT NULL,
+				PRIMARY KEY (project, source_event_id),
+				FOREIGN KEY (claim_id) REFERENCES workflow_claims(id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_source_deadletter (
+				project TEXT NOT NULL,
+				source_event_id TEXT NOT NULL,
+				reason TEXT NOT NULL,
+				at TEXT NOT NULL,
+				PRIMARY KEY (project, source_event_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_source_cursor (
+				project TEXT PRIMARY KEY,
+				last_row_id INTEGER NOT NULL DEFAULT 0 CHECK (last_row_id >= 0),
+				updated_at TEXT NOT NULL
+			)
+		`);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_workflow_claims_gate ON workflow_claims(workflow_run_id, decision_kind, subject_digest)",
 		);
@@ -9103,6 +9319,418 @@ export class StateStore {
 		return Number.isFinite(Date.parse(value));
 	}
 
+	listWorkflowTemplates(): WorkflowTemplateRow[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_template ORDER BY template_id",
+			[],
+		) as unknown as WorkflowTemplateRow[];
+	}
+
+	getWorkflowTemplate(templateId: string): WorkflowTemplateRow | undefined {
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_template WHERE template_id = ?",
+			[templateId],
+		)[0] as unknown as WorkflowTemplateRow | undefined;
+	}
+
+	getWorkflowTemplateRevision(
+		templateId: string,
+		revision: number,
+	): WorkflowTemplateRevisionRow | undefined {
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_template_revision
+			 WHERE template_id = ? AND revision = ?`,
+			[templateId, revision],
+		)[0] as unknown as WorkflowTemplateRevisionRow | undefined;
+	}
+
+	listWorkflowTemplateRevisions(
+		templateId: string,
+	): WorkflowTemplateRevisionRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_template_revision
+			 WHERE template_id = ? ORDER BY revision`,
+			[templateId],
+		) as unknown as WorkflowTemplateRevisionRow[];
+	}
+
+	listWorkflowTemplatePublications(
+		templateId: string,
+	): WorkflowTemplatePublicationRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_template_publication
+			 WHERE template_id = ? ORDER BY id`,
+			[templateId],
+		) as unknown as WorkflowTemplatePublicationRow[];
+	}
+
+	listWorkflowTemplateAudit(templateId?: string): WorkflowTemplateAuditRow[] {
+		return this.workflowSelectAll(
+			templateId
+				? "SELECT * FROM workflow_template_audit WHERE template_id = ? ORDER BY id"
+				: "SELECT * FROM workflow_template_audit ORDER BY id",
+			templateId ? [templateId] : [],
+		) as unknown as WorkflowTemplateAuditRow[];
+	}
+
+	/** Internal authoring API. HTTP intentionally exposes no mutation route. */
+	createWorkflowTemplateRevision(input: {
+		templateId: string;
+		manifest: unknown;
+		manifestDigest?: string;
+		schemaVersion: number;
+		createdBy: string;
+	}): number {
+		const manifest = validateWorkflowManifest(input.manifest);
+		if (input.schemaVersion !== manifest.schema_version) {
+			throw new Error("workflow template schema version mismatch");
+		}
+		const digest = canonicalSubmissionDigest(manifest);
+		if (input.manifestDigest && input.manifestDigest !== digest) {
+			throw new Error("workflow template manifest digest mismatch");
+		}
+		if (!this.getWorkflowTemplate(input.templateId)) {
+			throw new Error(`workflow template not found: ${input.templateId}`);
+		}
+		let revision = 0;
+		this.db.transaction(() => {
+			const row = this.workflowSelectAll(
+				`SELECT COALESCE(MAX(revision), 0) AS current
+				 FROM workflow_template_revision WHERE template_id = ?`,
+				[input.templateId],
+			)[0];
+			revision = Number(row?.current ?? 0) + 1;
+			this.db.run(
+				`INSERT INTO workflow_template_revision
+				 (template_id, revision, manifest, manifest_digest, schema_version, created_by)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					input.templateId,
+					revision,
+					JSON.stringify(manifest),
+					digest,
+					manifest.schema_version,
+					input.createdBy,
+				],
+			);
+			this.db.run(
+				`INSERT INTO workflow_template_audit
+				 (actor, action, template_id, revision, detail)
+				 VALUES (?, 'create', ?, ?, ?)`,
+				[
+					input.createdBy,
+					input.templateId,
+					revision,
+					JSON.stringify({ manifest_digest: digest }),
+				],
+			);
+			if (input.createdBy !== "system") {
+				this.db.run(
+					"UPDATE workflow_template SET seed_owner = 'founder' WHERE template_id = ?",
+					[input.templateId],
+				);
+			}
+		});
+		this.save();
+		return revision;
+	}
+
+	publishWorkflowTemplate(input: {
+		templateId: string;
+		revision: number;
+		expectedRevision: number | null;
+		publishedBy: string;
+	}): WorkflowTemplatePublishResult {
+		if (!this.getWorkflowTemplateRevision(input.templateId, input.revision)) {
+			return { status: "not_found" };
+		}
+		const conflict = Symbol("workflow_template_publish_conflict");
+		try {
+			this.db.transaction(() => {
+				this.db.run(
+					`INSERT INTO workflow_template_publication
+					 (template_id, revision, published_by) VALUES (?, ?, ?)`,
+					[input.templateId, input.revision, input.publishedBy],
+				);
+				this.db.run(
+					`UPDATE workflow_template
+					 SET current_published_revision = ?,
+					     seed_owner = CASE
+					       WHEN ? = 'system' THEN seed_owner ELSE 'founder' END
+					 WHERE template_id = ?
+					   AND ((current_published_revision IS NULL AND ? IS NULL)
+					        OR current_published_revision = ?)`,
+					[
+						input.revision,
+						input.publishedBy,
+						input.templateId,
+						input.expectedRevision,
+						input.expectedRevision,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) throw conflict;
+				this.db.run(
+					`INSERT INTO workflow_template_audit
+					 (actor, action, template_id, revision, detail)
+					 VALUES (?, 'publish', ?, ?, ?)`,
+					[
+						input.publishedBy,
+						input.templateId,
+						input.revision,
+						JSON.stringify({ expected_revision: input.expectedRevision }),
+					],
+				);
+			});
+		} catch (error) {
+			if (error !== conflict) throw error;
+			return {
+				status: "conflict",
+				currentRevision:
+					this.getWorkflowTemplate(input.templateId)
+						?.current_published_revision ?? null,
+			};
+		}
+		this.save();
+		return { status: "published", revision: input.revision };
+	}
+
+	/** Boot seed import: content-hash idempotent and founder-owned rows never move. */
+	importWorkflowTemplateSeed(
+		seed: LoadedWorkflowSeed,
+	): WorkflowTemplateSeedImportResult {
+		const manifest = validateWorkflowManifest(seed.manifest);
+		const digest = canonicalSubmissionDigest(manifest);
+		const seedDigest = workflowSeedContentHash({ ...seed, manifest });
+		if (seed.contentHash !== seedDigest) {
+			throw new Error(
+				`workflow seed content hash mismatch: ${seed.templateId}`,
+			);
+		}
+		const existing = this.getWorkflowTemplate(seed.templateId);
+		if (existing?.seed_content_hash === seed.contentHash) {
+			return {
+				status: "unchanged",
+				revision: existing.current_published_revision ?? 1,
+			};
+		}
+		if (existing?.seed_owner === "founder") {
+			this.db.run(
+				`INSERT INTO workflow_template_audit
+				 (actor, action, template_id, revision, detail)
+				 VALUES ('system', 'seed_import', ?, ?, ?)`,
+				[
+					seed.templateId,
+					existing.current_published_revision,
+					JSON.stringify({
+						status: "refused",
+						reason: "founder_owned_seed_mismatch",
+						incoming_content_hash: seed.contentHash,
+					}),
+				],
+			);
+			this.save();
+			return {
+				status: "refused",
+				revision: existing.current_published_revision ?? 1,
+			};
+		}
+
+		let revision = 1;
+		this.db.transaction(() => {
+			if (!existing) {
+				this.db.run(
+					`INSERT INTO workflow_template
+					 (template_id, name, project_scope, created_by, seed_owner, seed_content_hash)
+					 VALUES (?, ?, ?, 'system', 'system', ?)`,
+					[seed.templateId, seed.name, seed.projectScope, seed.contentHash],
+				);
+			} else {
+				const max = this.workflowSelectAll(
+					`SELECT COALESCE(MAX(revision), 0) AS revision
+					 FROM workflow_template_revision WHERE template_id = ?`,
+					[seed.templateId],
+				)[0];
+				revision = Number(max?.revision ?? 0) + 1;
+			}
+			this.db.run(
+				`INSERT INTO workflow_template_revision
+				 (template_id, revision, manifest, manifest_digest, schema_version, created_by)
+				 VALUES (?, ?, ?, ?, 1, 'system')`,
+				[seed.templateId, revision, JSON.stringify(manifest), digest],
+			);
+			this.db.run(
+				`INSERT INTO workflow_template_publication
+				 (template_id, revision, published_by) VALUES (?, ?, 'system')`,
+				[seed.templateId, revision],
+			);
+			this.db.run(
+				`UPDATE workflow_template
+				 SET name = ?, project_scope = ?, current_published_revision = ?,
+				     seed_content_hash = ?
+				 WHERE template_id = ?`,
+				[
+					seed.name,
+					seed.projectScope,
+					revision,
+					seed.contentHash,
+					seed.templateId,
+				],
+			);
+			this.db.run(
+				`INSERT INTO workflow_template_audit
+				 (actor, action, template_id, revision, detail)
+				 VALUES ('system', 'seed_import', ?, ?, ?)`,
+				[
+					seed.templateId,
+					revision,
+					JSON.stringify({ status: existing ? "updated" : "imported" }),
+				],
+			);
+		});
+		this.save();
+		return { status: existing ? "updated" : "imported", revision };
+	}
+
+	bindWorkflowCategory(input: {
+		project: string;
+		taskCategory?: string;
+		templateId: string;
+		updatedBy: string;
+	}): void {
+		const template = this.getWorkflowTemplate(input.templateId);
+		if (!template) {
+			throw new Error(`workflow template not found: ${input.templateId}`);
+		}
+		if (
+			template.project_scope !== "global" &&
+			template.project_scope !== input.project
+		) {
+			throw new Error(
+				`workflow template project scope ${template.project_scope} does not allow ${input.project}`,
+			);
+		}
+		const category = input.taskCategory?.trim() || "*";
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT INTO workflow_category_binding
+				 (project, task_category, template_id, updated_by)
+				 VALUES (?, ?, ?, ?)
+				 ON CONFLICT(project, task_category) DO UPDATE SET
+				   template_id = excluded.template_id,
+				   updated_by = excluded.updated_by,
+				   updated_at = datetime('now')`,
+				[input.project, category, input.templateId, input.updatedBy],
+			);
+			this.db.run(
+				`INSERT INTO workflow_template_audit
+				 (actor, action, template_id, detail)
+				 VALUES (?, 'rebind', ?, ?)`,
+				[
+					input.updatedBy,
+					input.templateId,
+					JSON.stringify({ project: input.project, task_category: category }),
+				],
+			);
+		});
+		this.save();
+	}
+
+	getWorkflowCategoryBinding(
+		project: string,
+		taskCategory: string,
+	): WorkflowCategoryBindingRow | undefined {
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_category_binding
+			 WHERE project = ? AND task_category IN (?, '*')
+			 ORDER BY CASE WHEN task_category = ? THEN 0 ELSE 1 END
+			 LIMIT 1`,
+			[project, taskCategory, taskCategory],
+		)[0] as unknown as WorkflowCategoryBindingRow | undefined;
+	}
+
+	/** Resolve once, overlay once, validate once, then pin the whole snapshot. */
+	materializeWorkflowRun(input: {
+		runId: string;
+		issueId: string;
+		projectName: string;
+		taskCategory: string;
+		claimsReadEnrolled: boolean;
+		override?: WorkflowTemplateOverride;
+		actor: string;
+	}): WorkflowRunRow {
+		const binding = this.getWorkflowCategoryBinding(
+			input.projectName,
+			input.taskCategory,
+		);
+		if (!binding)
+			throw new Error("workflow template category binding not found");
+		const template = this.getWorkflowTemplate(binding.template_id);
+		if (!template?.current_published_revision) {
+			throw new Error("workflow template has no published revision");
+		}
+		if (
+			template.project_scope !== "global" &&
+			template.project_scope !== input.projectName
+		) {
+			throw new Error(
+				`workflow template project scope ${template.project_scope} does not allow ${input.projectName}`,
+			);
+		}
+		const revision = this.getWorkflowTemplateRevision(
+			template.template_id,
+			template.current_published_revision,
+		);
+		if (!revision)
+			throw new Error("published workflow template revision not found");
+		const base = validateWorkflowManifest(JSON.parse(revision.manifest));
+		const applied = input.override
+			? applyWorkflowOverride(base, input.override)
+			: { manifest: base, override: undefined };
+		const snapshot = JSON.stringify({
+			schema_version: 1,
+			template: {
+				id: template.template_id,
+				revision: template.current_published_revision,
+			},
+			manifest_digest: canonicalSubmissionDigest(applied.manifest),
+			manifest: applied.manifest,
+			...(applied.override ? { override: applied.override } : {}),
+		});
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT INTO workflow_run
+				 (run_id, issue_id, project_name, template_id, template_revision,
+				  snapshot, claims_read_enrolled)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.runId,
+					input.issueId,
+					input.projectName,
+					template.template_id,
+					template.current_published_revision,
+					snapshot,
+					input.claimsReadEnrolled ? 1 : 0,
+				],
+			);
+			if (applied.override) {
+				this.db.run(
+					`INSERT INTO workflow_template_audit
+					 (actor, action, template_id, revision, run_id, detail)
+					 VALUES (?, 'run_override', ?, ?, ?, ?)`,
+					[
+						input.actor,
+						template.template_id,
+						template.current_published_revision,
+						input.runId,
+						JSON.stringify(applied.override),
+					],
+				);
+			}
+		});
+		this.save();
+		return this.getWorkflowRun(input.runId)!;
+	}
+
 	/**
 	 * Create a workflow run with its TYPED enrollment marker (plan §3.2):
 	 * whether this run's gates read the claims ledger is an explicit per-run
@@ -9150,10 +9778,496 @@ export class StateStore {
 				r.template_revision == null ? null : Number(r.template_revision),
 			snapshot: (r.snapshot as string) ?? null,
 			current_node_id: (r.current_node_id as string) ?? null,
+			current_qa_attempt:
+				r.current_qa_attempt == null ? null : Number(r.current_qa_attempt),
 			status: r.status as string,
 			claims_read_enrolled: Number(r.claims_read_enrolled ?? 0),
 			created_at: r.created_at as string,
 		};
+	}
+
+	/**
+	 * Fail-closed pre-spawn admission for an enrolled workflow execution. The
+	 * typed run enrollment, current QA authority, physical node projection,
+	 * immutable execution binding and short-lived submission credential commit
+	 * together. A caller must not launch the runner unless this returns `ok`.
+	 *
+	 * The plaintext credential is returned once for spawn-env delivery. The DB
+	 * stores only its SHA-256 hash. This reduces a harvested credential's blast
+	 * radius to one execution + TTL; it is not same-user process isolation.
+	 */
+	admitWorkflowExecution(input: {
+		runId: string;
+		nodeId: string;
+		executionId: string;
+		attempt: number;
+		family: string;
+		expiresAt: string;
+		absoluteDeadlineAt: string;
+		now?: string;
+	}): WorkflowExecutionAdmissionResult {
+		const nowIso = input.now ?? new Date().toISOString();
+		if (
+			!Number.isInteger(input.attempt) ||
+			input.attempt <= 0 ||
+			!input.runId ||
+			!input.nodeId ||
+			!input.executionId
+		) {
+			return { ok: false, reason: "invalid_binding" };
+		}
+		if (
+			!(RUNNER_CAPABILITY_FAMILIES as readonly string[]).includes(input.family)
+		) {
+			return { ok: false, reason: "invalid_family" };
+		}
+		if (
+			!StateStore.workflowFiniteTimestamp(nowIso) ||
+			!StateStore.workflowFiniteTimestamp(input.expiresAt) ||
+			!StateStore.workflowFiniteTimestamp(input.absoluteDeadlineAt)
+		) {
+			return { ok: false, reason: "invalid_timestamp" };
+		}
+		if (
+			Date.parse(input.expiresAt) <= Date.parse(nowIso) ||
+			Date.parse(input.expiresAt) > Date.parse(input.absoluteDeadlineAt)
+		) {
+			return { ok: false, reason: "invalid_expiry" };
+		}
+		let result: WorkflowExecutionAdmissionResult = {
+			ok: false,
+			reason: "run_not_found",
+		};
+		this.db.transaction(() => {
+			const run = this.workflowSelectAll(
+				"SELECT run_id, status, current_qa_attempt FROM workflow_run WHERE run_id = ?",
+				[input.runId],
+			)[0];
+			if (!run || run.status !== "active") {
+				result = { ok: false, reason: "run_not_found" };
+				return;
+			}
+			if (
+				input.nodeId === "qa" &&
+				run.current_qa_attempt != null &&
+				Number(run.current_qa_attempt) > input.attempt
+			) {
+				result = { ok: false, reason: "stale_attempt" };
+				return;
+			}
+			const node = this.workflowSelectAll(
+				"SELECT execution_id FROM workflow_run_node WHERE run_id = ? AND node_id = ? AND attempt = ?",
+				[input.runId, input.nodeId, input.attempt],
+			)[0];
+			if (
+				node?.execution_id != null &&
+				node.execution_id !== input.executionId
+			) {
+				result = { ok: false, reason: "attempt_execution_conflict" };
+				return;
+			}
+			const bound = this.workflowSelectAll(
+				"SELECT run_id, node_id, attempt FROM workflow_execution_binding WHERE execution_id = ?",
+				[input.executionId],
+			)[0];
+			if (
+				bound &&
+				(bound.run_id !== input.runId ||
+					bound.node_id !== input.nodeId ||
+					Number(bound.attempt) !== input.attempt)
+			) {
+				result = { ok: false, reason: "execution_already_bound" };
+				return;
+			}
+			const live = this.workflowSelectAll(
+				`SELECT id FROM workflow_submission_credential
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND consumed_at IS NULL AND revoked = 0`,
+				[input.runId, input.nodeId, input.attempt],
+			)[0];
+			if (live) {
+				result = { ok: false, reason: "credential_already_issued" };
+				return;
+			}
+
+			if (!node) {
+				this.db.run(
+					`INSERT INTO workflow_run_node
+					   (run_id, node_id, attempt, state, execution_id)
+					 VALUES (?, ?, ?, 'admitted', ?)`,
+					[input.runId, input.nodeId, input.attempt, input.executionId],
+				);
+			} else if (node.execution_id == null) {
+				this.db.run(
+					`UPDATE workflow_run_node SET execution_id = ?, state = 'admitted'
+					  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
+					[input.executionId, input.runId, input.nodeId, input.attempt],
+				);
+			}
+			if (!bound) {
+				this.db.run(
+					`INSERT INTO workflow_execution_binding
+					   (execution_id, run_id, node_id, attempt, bound_at)
+					 VALUES (?, ?, ?, ?, ?)`,
+					[input.executionId, input.runId, input.nodeId, input.attempt, nowIso],
+				);
+			}
+			this.db.run(
+				`UPDATE workflow_run
+				    SET claims_read_enrolled = 1,
+				        current_qa_attempt = CASE WHEN ? = 'qa' THEN ? ELSE current_qa_attempt END
+				  WHERE run_id = ?`,
+				[input.nodeId, input.attempt, input.runId],
+			);
+			// A new logical attempt invalidates every older unspent credential.
+			this.db.run(
+				`UPDATE workflow_submission_credential
+				    SET revoked = 1, revoked_reason = ?
+				  WHERE run_id = ? AND node_id = ? AND attempt < ?
+				    AND consumed_at IS NULL AND revoked = 0`,
+				[
+					`superseded_by_attempt_${input.attempt}`,
+					input.runId,
+					input.nodeId,
+					input.attempt,
+				],
+			);
+			const credential = generateCapabilityToken();
+			const credentialHash = hashCapabilityToken(credential);
+			this.db.run(
+				`INSERT INTO workflow_submission_credential
+				   (credential_hash, run_id, node_id, execution_id, attempt, family,
+				    issued_at, expires_at, absolute_deadline_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					credentialHash,
+					input.runId,
+					input.nodeId,
+					input.executionId,
+					input.attempt,
+					input.family,
+					nowIso,
+					input.expiresAt,
+					input.absoluteDeadlineAt,
+				],
+			);
+			const credentialRow = this.workflowSelectAll(
+				"SELECT id FROM workflow_submission_credential WHERE credential_hash = ?",
+				[credentialHash],
+			)[0];
+			this.appendWorkflowRunEventTx({
+				runId: input.runId,
+				eventUid: `execution_admitted:${input.executionId}`,
+				kind: "execution_admitted",
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				payload: { attempt: input.attempt, family: input.family },
+			});
+			result = {
+				ok: true,
+				credentialId: Number(credentialRow?.id),
+				credential,
+			};
+		});
+		this.save();
+		return result;
+	}
+
+	getWorkflowExecutionBinding(
+		executionId: string,
+	): WorkflowExecutionBindingRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_execution_binding WHERE execution_id = ?",
+			[executionId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			execution_id: row.execution_id as string,
+			run_id: row.run_id as string,
+			node_id: row.node_id as string,
+			attempt: Number(row.attempt),
+			bound_at: row.bound_at as string,
+		};
+	}
+
+	getWorkflowSubmissionCredential(
+		credentialId: number,
+	): WorkflowSubmissionCredentialRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_submission_credential WHERE id = ?",
+			[credentialId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			id: Number(row.id),
+			credential_hash: row.credential_hash as string,
+			run_id: row.run_id as string,
+			node_id: row.node_id as string,
+			execution_id: row.execution_id as string,
+			attempt: Number(row.attempt),
+			family: row.family as string,
+			decision_capability_id:
+				row.decision_capability_id == null
+					? null
+					: Number(row.decision_capability_id),
+			issued_at: row.issued_at as string,
+			expires_at: row.expires_at as string,
+			absolute_deadline_at: row.absolute_deadline_at as string,
+			consumed_at: (row.consumed_at as string) ?? null,
+			consumed_client_request_id:
+				(row.consumed_client_request_id as string) ?? null,
+			consumed_submission_digest:
+				(row.consumed_submission_digest as string) ?? null,
+			claim_id: row.claim_id == null ? null : Number(row.claim_id),
+			revoked: Number(row.revoked),
+			revoked_reason: (row.revoked_reason as string) ?? null,
+		};
+	}
+
+	/** Resolve a scoped submission credential without ever exposing its hash. */
+	getWorkflowSubmissionCredentialByToken(
+		credential: string,
+	): WorkflowSubmissionCredentialRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT id FROM workflow_submission_credential WHERE credential_hash = ?",
+			[hashCapabilityToken(credential)],
+		)[0];
+		return row
+			? this.getWorkflowSubmissionCredential(Number(row.id))
+			: undefined;
+	}
+
+	/**
+	 * Credential-authenticated verdict ingestion. Authentication, internal
+	 * decision-capability mint+consume, claim append and durable replay receipt
+	 * happen in one SQLite transaction. A consumed exact replay is answered
+	 * before expiry checks so response-loss recovery survives Bridge restarts.
+	 */
+	submitWorkflowDecisionByCredential(input: {
+		credential: string;
+		clientRequestId: string;
+		predicate: string;
+		subjectDigest: string;
+		issuerVendor: string;
+		issuerModel: string;
+		subjectProducerExecutionId?: string;
+		subjectProducerVendor?: string;
+		claimExpiresAt: string;
+		evidence?: unknown;
+		now?: string;
+	}): WorkflowCredentialSubmissionResult {
+		const nowIso = input.now ?? new Date().toISOString();
+		if (
+			!StateStore.workflowFiniteTimestamp(nowIso) ||
+			!StateStore.workflowFiniteTimestamp(input.claimExpiresAt)
+		) {
+			return { ok: false, reason: "invalid_timestamp" };
+		}
+		const digest = canonicalSubmissionDigest({
+			clientRequestId: input.clientRequestId,
+			predicate: input.predicate,
+			subjectKind: "git_head",
+			subjectDigest: input.subjectDigest,
+			issuerVendor: input.issuerVendor,
+			issuerModel: input.issuerModel,
+			subjectProducerExecutionId: input.subjectProducerExecutionId ?? null,
+			subjectProducerVendor: input.subjectProducerVendor ?? null,
+			claimExpiresAt: input.claimExpiresAt,
+			evidence: input.evidence ?? null,
+		});
+		let result: WorkflowCredentialSubmissionResult = {
+			ok: false,
+			reason: "credential_not_found",
+		};
+		this.db.transaction(() => {
+			const credential = this.workflowSelectAll(
+				"SELECT * FROM workflow_submission_credential WHERE credential_hash = ?",
+				[hashCapabilityToken(input.credential)],
+			)[0];
+			if (!credential) {
+				result = { ok: false, reason: "credential_not_found" };
+				return;
+			}
+			if (credential.consumed_at != null) {
+				if (
+					credential.consumed_client_request_id === input.clientRequestId &&
+					credential.consumed_submission_digest === digest &&
+					credential.claim_id != null
+				) {
+					const claim = this.getWorkflowClaim(Number(credential.claim_id));
+					result = claim
+						? {
+								ok: true,
+								claimId: claim.id,
+								serverSeq: claim.server_seq,
+								idempotentReplay: true,
+							}
+						: { ok: false, reason: "credential_receipt_corrupt" };
+				} else {
+					result = { ok: false, reason: "replay_payload_mismatch" };
+				}
+				return;
+			}
+			if (Number(credential.revoked) === 1) {
+				result = { ok: false, reason: "credential_revoked" };
+				return;
+			}
+			if (
+				!StateStore.workflowFiniteTimestamp(credential.expires_at as string) ||
+				StateStore.workflowExpired(credential.expires_at as string, nowIso)
+			) {
+				result = { ok: false, reason: "credential_expired" };
+				return;
+			}
+			const family = credential.family as WorkflowDecisionFamily;
+			const allowed = WORKFLOW_DECISION_FAMILIES[family] as
+				| readonly string[]
+				| undefined;
+			if (!allowed?.includes(input.predicate)) {
+				result = { ok: false, reason: "predicate_not_allowed" };
+				return;
+			}
+			const binding = this.workflowSelectAll(
+				`SELECT b.execution_id
+				   FROM workflow_execution_binding b
+				   JOIN workflow_run_node n
+				     ON n.run_id = b.run_id AND n.node_id = b.node_id
+				    AND n.attempt = b.attempt AND n.execution_id = b.execution_id
+				   JOIN workflow_run r
+				     ON r.run_id = b.run_id AND r.claims_read_enrolled = 1
+				  WHERE b.execution_id = ? AND b.run_id = ? AND b.node_id = ? AND b.attempt = ?
+				    AND (? != 'qa' OR r.current_qa_attempt = b.attempt)`,
+				[
+					credential.execution_id,
+					credential.run_id,
+					credential.node_id,
+					credential.attempt,
+					credential.node_id,
+				],
+			)[0];
+			if (!binding) {
+				result = { ok: false, reason: "binding_not_current" };
+				return;
+			}
+			if (
+				REVIEW_CLASS_PREDICATES.has(input.predicate as WorkflowClaimPredicate)
+			) {
+				if (!input.subjectProducerExecutionId || !input.subjectProducerVendor) {
+					result = { ok: false, reason: "missing_subject_producer" };
+					return;
+				}
+				if (input.issuerVendor === input.subjectProducerVendor) {
+					result = { ok: false, reason: "same_vendor_review" };
+					return;
+				}
+			}
+			const run = this.workflowSelectAll(
+				"SELECT issue_id FROM workflow_run WHERE run_id = ?",
+				[credential.run_id],
+			)[0];
+			if (!run) {
+				result = { ok: false, reason: "run_not_found" };
+				return;
+			}
+
+			// The runner never receives this capability token. It exists only to keep
+			// the ledger's authority chain explicit and is consumed in this txn.
+			const capabilityToken = generateCapabilityToken();
+			const capabilityHash = hashCapabilityToken(capabilityToken);
+			this.db.run(
+				`INSERT INTO workflow_decision_capability
+				   (token_hash, run_id, node_id, execution_id, attempt,
+				    allowed_predicate_family, expected_subject_digest, issued_at,
+				    expires_at, absolute_deadline_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					capabilityHash,
+					credential.run_id,
+					credential.node_id,
+					credential.execution_id,
+					credential.attempt,
+					family,
+					input.subjectDigest,
+					nowIso,
+					credential.expires_at,
+					credential.absolute_deadline_at,
+				],
+			);
+			const cap = this.workflowSelectAll(
+				"SELECT id FROM workflow_decision_capability WHERE token_hash = ?",
+				[capabilityHash],
+			)[0];
+			const capabilityId = Number(cap?.id);
+			const serverSeq = this.nextWorkflowClaimSeq();
+			this.db.run(
+				`INSERT INTO workflow_claims
+				   (server_seq, issue_id, workflow_run_id, node_id, decision_kind,
+				    attempt, predicate, issuer_kind, issuer_execution_id,
+				    issuer_node_id, issuer_vendor, issuer_model,
+				    subject_producer_execution_id, subject_kind, subject_digest,
+				    expires_at, permanent, submission_digest, client_request_id,
+				    evidence, authority_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, 'runner_node', ?, ?, ?, ?, ?,
+				         'git_head', ?, ?, 0, ?, ?, ?, ?)`,
+				[
+					serverSeq,
+					run.issue_id,
+					credential.run_id,
+					credential.node_id,
+					family,
+					credential.attempt,
+					input.predicate,
+					credential.execution_id,
+					credential.node_id,
+					input.issuerVendor,
+					input.issuerModel,
+					input.subjectProducerExecutionId ?? null,
+					input.subjectDigest,
+					input.claimExpiresAt,
+					digest,
+					input.clientRequestId,
+					input.evidence === undefined ? null : JSON.stringify(input.evidence),
+					String(capabilityId),
+				],
+			);
+			const claimId = this.workflowClaimIdBySeq(serverSeq);
+			this.db.run(
+				`UPDATE workflow_decision_capability
+				    SET consumed_at = ?, consumed_claim_id = ? WHERE id = ?`,
+				[nowIso, claimId, capabilityId],
+			);
+			this.db.run(
+				`UPDATE workflow_submission_credential
+				    SET decision_capability_id = ?, consumed_at = ?,
+				        consumed_client_request_id = ?, consumed_submission_digest = ?,
+				        claim_id = ?
+				  WHERE id = ?`,
+				[
+					capabilityId,
+					nowIso,
+					input.clientRequestId,
+					digest,
+					claimId,
+					credential.id,
+				],
+			);
+			this.appendWorkflowRunEventTx({
+				runId: credential.run_id as string,
+				eventUid: `credential_claim_written:${credential.id}`,
+				kind: "claim_written",
+				nodeId: credential.node_id as string,
+				executionId: credential.execution_id as string,
+				payload: { claimId, serverSeq, predicate: input.predicate },
+			});
+			result = {
+				ok: true,
+				claimId,
+				serverSeq,
+				idempotentReplay: false,
+			};
+		});
+		this.save();
+		return result;
 	}
 
 	upsertWorkflowRunNode(input: {
@@ -9202,6 +10316,44 @@ export class StateStore {
 			execution_id: (r.execution_id as string) ?? null,
 			started_at: r.started_at as string,
 			ended_at: (r.ended_at as string) ?? null,
+		};
+	}
+
+	listWorkflowRunNodes(runId: string, nodeId: string): WorkflowRunNodeRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_run_node
+			  WHERE run_id = ? AND node_id = ?
+			  ORDER BY attempt ASC`,
+			[runId, nodeId],
+		).map((row) => ({
+			run_id: row.run_id as string,
+			node_id: row.node_id as string,
+			attempt: Number(row.attempt),
+			state: row.state as string,
+			execution_id: (row.execution_id as string) ?? null,
+			started_at: row.started_at as string,
+			ended_at: (row.ended_at as string) ?? null,
+		}));
+	}
+
+	getWorkflowRunNodeForExecution(
+		executionId: string,
+	): WorkflowRunNodeRow | undefined {
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_run_node
+			  WHERE execution_id = ?
+			  ORDER BY attempt DESC LIMIT 1`,
+			[executionId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			run_id: row.run_id as string,
+			node_id: row.node_id as string,
+			attempt: Number(row.attempt),
+			state: row.state as string,
+			execution_id: (row.execution_id as string) ?? null,
+			started_at: row.started_at as string,
+			ended_at: (row.ended_at as string) ?? null,
 		};
 	}
 
@@ -9780,6 +10932,202 @@ export class StateStore {
 		});
 		this.save();
 		return result;
+	}
+
+	/**
+	 * Apply one immutable CommDB source event to the workflow ledger. Receipt
+	 * and founder claim commit together; exact replay returns the original
+	 * claim id, while a same-id/different-digest replay is terminal poison.
+	 */
+	applyWorkflowSourceEvent(
+		input: WorkflowSourceEventInput,
+	): WorkflowSourceApplyResult {
+		let payload: Record<string, unknown>;
+		try {
+			payload = JSON.parse(input.payloadJson) as Record<string, unknown>;
+		} catch {
+			throw new Error("workflow source payload malformed");
+		}
+		if (
+			input.schemaVersion !== 1 ||
+			payload.schema_version !== 1 ||
+			canonicalSubmissionDigest(payload) !== input.payloadDigest
+		) {
+			throw new Error("workflow source payload digest mismatch (poison)");
+		}
+
+		let result: WorkflowSourceApplyResult | undefined;
+		this.db.transaction(() => {
+			const existing = this.workflowSelectAll(
+				`SELECT payload_digest, claim_id FROM workflow_source_receipt
+				  WHERE project = ? AND source_event_id = ?`,
+				[input.project, input.sourceEventId],
+			)[0];
+			if (existing) {
+				if (existing.payload_digest !== input.payloadDigest) {
+					throw new Error("workflow source receipt digest mismatch (poison)");
+				}
+				result =
+					input.kind === "founder_approval"
+						? {
+								kind: "founder_claim",
+								status: "replayed",
+								claimId: Number(existing.claim_id),
+							}
+						: { kind: "turn_project_history", status: "replayed" };
+				return;
+			}
+
+			if (input.kind === "turn_grant") {
+				if (payload.target_run_id !== null) {
+					throw new Error(
+						"commit-A TURN source must remain project/issue scoped",
+					);
+				}
+				this.db.run(
+					`INSERT INTO workflow_source_receipt
+					   (project, source_event_id, payload_digest, claim_id, applied_at)
+					 VALUES (?, ?, ?, NULL, ?)`,
+					[
+						input.project,
+						input.sourceEventId,
+						input.payloadDigest,
+						new Date().toISOString(),
+					],
+				);
+				result = { kind: "turn_project_history", status: "applied" };
+				return;
+			}
+
+			const runId = typeof payload.run_id === "string" ? payload.run_id : "";
+			const issueId =
+				typeof payload.issue_id === "string" ? payload.issue_id : "";
+			const approvedHead =
+				typeof payload.approved_head === "string" ? payload.approved_head : "";
+			const authorityId =
+				typeof payload.authority_id === "string" ? payload.authority_id : "";
+			const response = payload.response as { approved?: unknown } | undefined;
+			const run = this.workflowSelectAll(
+				"SELECT issue_id, project_name FROM workflow_run WHERE run_id = ?",
+				[runId],
+			)[0];
+			if (!run) {
+				throw new Error("workflow source run unavailable");
+			}
+			if (
+				run.issue_id !== issueId ||
+				run.project_name !== input.project ||
+				response?.approved !== true ||
+				!/^[0-9a-f]{40}$/.test(approvedHead) ||
+				!authorityId
+			) {
+				throw new Error("founder approval source payload invalid");
+			}
+
+			const serverSeq = this.nextWorkflowClaimSeq();
+			this.db.run(
+				`INSERT INTO workflow_claims
+				   (server_seq, issue_id, workflow_run_id, node_id, decision_kind, attempt,
+				    predicate, issuer_kind, subject_kind, subject_digest, expires_at,
+				    permanent, evidence, authority_id)
+				 VALUES (?, ?, ?, NULL, 'founder_decision', NULL, 'founder_approved',
+				         'founder_challenge', 'git_head', ?, NULL, 1, ?, ?)`,
+				[
+					serverSeq,
+					issueId,
+					runId,
+					approvedHead,
+					JSON.stringify({
+						questionId: payload.question_id,
+						actor: payload.actor,
+						classification: payload.classification,
+					}),
+					authorityId,
+				],
+			);
+			const claimId = this.workflowClaimIdBySeq(serverSeq);
+			this.appendWorkflowRunEventTx({
+				runId,
+				eventUid: `source_claim:${input.project}:${input.sourceEventId}`,
+				kind: "claim_written",
+				payload: { claimId, predicate: "founder_approved" },
+			});
+			this.db.run(
+				`INSERT INTO workflow_source_receipt
+				   (project, source_event_id, payload_digest, claim_id, applied_at)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[
+					input.project,
+					input.sourceEventId,
+					input.payloadDigest,
+					claimId,
+					new Date().toISOString(),
+				],
+			);
+			result = { kind: "founder_claim", status: "applied", claimId };
+		});
+		this.save();
+		if (!result) throw new Error("workflow source apply produced no result");
+		return result;
+	}
+
+	recordWorkflowSourceDeadletter(input: {
+		project: string;
+		sourceEventId: string;
+		reason: string;
+	}): void {
+		this.db.run(
+			`INSERT OR IGNORE INTO workflow_source_deadletter
+			   (project, source_event_id, reason, at) VALUES (?, ?, ?, ?)`,
+			[
+				input.project,
+				input.sourceEventId,
+				input.reason,
+				new Date().toISOString(),
+			],
+		);
+		this.save();
+	}
+
+	getWorkflowSourceDeadletter(
+		project: string,
+		sourceEventId: string,
+	):
+		| { project: string; source_event_id: string; reason: string; at: string }
+		| undefined {
+		return this.workflowSelectAll(
+			`SELECT project, source_event_id, reason, at
+			   FROM workflow_source_deadletter
+			  WHERE project = ? AND source_event_id = ?`,
+			[project, sourceEventId],
+		)[0] as
+			| { project: string; source_event_id: string; reason: string; at: string }
+			| undefined;
+	}
+
+	getWorkflowSourceCursor(project: string): number {
+		const row = this.workflowSelectAll(
+			"SELECT last_row_id FROM workflow_source_cursor WHERE project = ?",
+			[project],
+		)[0];
+		return Number(row?.last_row_id ?? 0);
+	}
+
+	advanceWorkflowSourceCursor(project: string, rowId: number): void {
+		if (!Number.isInteger(rowId) || rowId < 0) {
+			throw new Error("workflow source cursor row id invalid");
+		}
+		this.db.run(
+			`INSERT INTO workflow_source_cursor (project, last_row_id, updated_at)
+			 VALUES (?, ?, ?)
+			 ON CONFLICT(project) DO UPDATE SET
+			   last_row_id = CASE
+			     WHEN excluded.last_row_id > workflow_source_cursor.last_row_id
+			     THEN excluded.last_row_id ELSE workflow_source_cursor.last_row_id END,
+			   updated_at = excluded.updated_at`,
+			[project, rowId, new Date().toISOString()],
+		);
+		this.save();
 	}
 
 	/** Revocation is itself append-only (plan §2.1 workflow_claim_revocation). */
@@ -10545,7 +11893,65 @@ export class StateStore {
 	}
 }
 
-// ── FLY-1135 PR-1: workflow claims ledger row/result types ─────────────────
+// ── FLY-1244: workflow template + claims row/result types ──────────────────
+
+export interface WorkflowTemplateRow {
+	template_id: string;
+	name: string;
+	project_scope: string;
+	current_published_revision: number | null;
+	created_by: string;
+	created_at: string;
+	seed_owner: "system" | "founder";
+	seed_content_hash: string | null;
+}
+
+export interface WorkflowTemplateRevisionRow {
+	template_id: string;
+	revision: number;
+	manifest: string;
+	manifest_digest: string;
+	schema_version: number;
+	created_by: string;
+	created_at: string;
+}
+
+export interface WorkflowTemplatePublicationRow {
+	id: number;
+	template_id: string;
+	revision: number;
+	published_by: string;
+	published_at: string;
+}
+
+export interface WorkflowCategoryBindingRow {
+	project: string;
+	task_category: string;
+	template_id: string;
+	updated_by: string;
+	updated_at: string;
+}
+
+export interface WorkflowTemplateAuditRow {
+	id: number;
+	at: string;
+	actor: string;
+	action: "seed_import" | "publish" | "rebind" | "create" | "run_override";
+	template_id: string | null;
+	revision: number | null;
+	run_id: string | null;
+	detail: string | null;
+}
+
+export type WorkflowTemplatePublishResult =
+	| { status: "published"; revision: number }
+	| { status: "conflict"; currentRevision: number | null }
+	| { status: "not_found" };
+
+export type WorkflowTemplateSeedImportResult = {
+	status: "imported" | "updated" | "unchanged" | "refused";
+	revision: number;
+};
 
 export interface WorkflowRunRow {
 	run_id: string;
@@ -10555,6 +11961,8 @@ export interface WorkflowRunRow {
 	template_revision: number | null;
 	snapshot: string | null;
 	current_node_id: string | null;
+	/** Explicit run-level authority for the QA attempt allowed to satisfy ship. */
+	current_qa_attempt: number | null;
 	status: string;
 	/** Typed cutover marker (plan §3.2) — 1 only when this run was EXPLICITLY
 	 * enrolled in the claims read path at admission. Never inferred. */
@@ -10571,6 +11979,68 @@ export interface WorkflowRunNodeRow {
 	started_at: string;
 	ended_at: string | null;
 }
+
+export interface WorkflowExecutionBindingRow {
+	execution_id: string;
+	run_id: string;
+	node_id: string;
+	attempt: number;
+	bound_at: string;
+}
+
+export interface WorkflowSubmissionCredentialRow {
+	id: number;
+	credential_hash: string;
+	run_id: string;
+	node_id: string;
+	execution_id: string;
+	attempt: number;
+	family: string;
+	decision_capability_id: number | null;
+	issued_at: string;
+	expires_at: string;
+	absolute_deadline_at: string;
+	consumed_at: string | null;
+	consumed_client_request_id: string | null;
+	consumed_submission_digest: string | null;
+	claim_id: number | null;
+	revoked: number;
+	revoked_reason: string | null;
+}
+
+export type WorkflowExecutionAdmissionResult =
+	| { ok: true; credentialId: number; credential: string }
+	| {
+			ok: false;
+			reason:
+				| "run_not_found"
+				| "stale_attempt"
+				| "invalid_binding"
+				| "invalid_family"
+				| "invalid_timestamp"
+				| "invalid_expiry"
+				| "attempt_execution_conflict"
+				| "execution_already_bound"
+				| "credential_already_issued";
+	  };
+
+export type WorkflowCredentialSubmissionResult =
+	| { ok: true; claimId: number; serverSeq: number; idempotentReplay: boolean }
+	| {
+			ok: false;
+			reason:
+				| "credential_not_found"
+				| "credential_revoked"
+				| "credential_expired"
+				| "credential_receipt_corrupt"
+				| "replay_payload_mismatch"
+				| "predicate_not_allowed"
+				| "binding_not_current"
+				| "missing_subject_producer"
+				| "same_vendor_review"
+				| "invalid_timestamp"
+				| "run_not_found";
+	  };
 
 export interface WorkflowRunEventRow {
 	run_id: string;
@@ -10697,6 +12167,26 @@ export type WorkflowClaimResolution =
 				| "expired"
 				| "not_pass"
 				| "invalid_timestamp";
+	  };
+
+export interface WorkflowSourceEventInput {
+	project: string;
+	sourceEventId: string;
+	kind: "founder_approval" | "turn_grant";
+	payloadJson: string;
+	payloadDigest: string;
+	schemaVersion: number;
+}
+
+export type WorkflowSourceApplyResult =
+	| {
+			kind: "founder_claim";
+			status: "applied" | "replayed";
+			claimId: number;
+	  }
+	| {
+			kind: "turn_project_history";
+			status: "applied" | "replayed";
 	  };
 
 // ── FLY-1232 module ②: shadow batch + side-effect ledger types ─────────────

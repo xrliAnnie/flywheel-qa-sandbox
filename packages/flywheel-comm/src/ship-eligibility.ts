@@ -35,6 +35,8 @@ const FULL_SHA_RE = /^[0-9a-f]{40}$/;
 
 const MERGE_APPROVAL_GATE_KEY = "FLYWHEEL_MERGE_APPROVAL_GATE";
 const QA_DONE_GATE_KEY = "FLYWHEEL_QA_DONE_GATE";
+const WORKFLOW_CLAIMS_READ_KEY = "FLYWHEEL_WORKFLOW_CLAIMS_READ";
+const WORKFLOW_FORCE_LEGACY_KEY = "FLYWHEEL_WORKFLOW_FORCE_LEGACY";
 
 /** Read the last uncommented `KEY=` value from a `.env` content string. */
 function readEnvValueFromContent(
@@ -78,11 +80,50 @@ function resolveDefaultOnGate(
 	}
 }
 
+/** Same live-`.env` precedence as the default-on gates, but absent means OFF. */
+function resolveDefaultOffGate(
+	key: string,
+	args: {
+		argsEnv?: NodeJS.ProcessEnv;
+		processEnv: NodeJS.ProcessEnv;
+		dotenvPath?: string;
+	},
+): boolean {
+	if (args.argsEnv && key in args.argsEnv) {
+		return args.argsEnv[key] === "1";
+	}
+	const path = args.dotenvPath ?? join(homedir(), ".flywheel", ".env");
+	try {
+		const content = readFileSync(path, "utf-8");
+		return readEnvValueFromContent(content, key) === "1";
+	} catch {
+		return args.processEnv[key] === "1";
+	}
+}
+
+/** Default-off, live-.env claims-read switch shared with Bridge ship seams. */
+export function resolveWorkflowClaimsReadEnabled(args?: {
+	env?: NodeJS.ProcessEnv;
+	dotenvPath?: string;
+}): boolean {
+	const env = args?.env ?? process.env;
+	return resolveDefaultOffGate(WORKFLOW_CLAIMS_READ_KEY, {
+		argsEnv: args?.env,
+		processEnv: env,
+		dotenvPath: args?.dotenvPath,
+	});
+}
+
 export type QaShipReason =
 	| "qa_ok"
 	| "qa_gate_off"
 	| "qa_not_required"
 	| "qa_not_passed"
+	| "qa_claim_ok"
+	| "qa_claim_missing_failclosed"
+	| "qa_claim_gate_unenrolled_failclosed"
+	| "head_authority_unavailable_failclosed"
+	| "head_authority_mismatch_failclosed"
 	| "qa_snapshot_missing_exempt"
 	| "qa_snapshot_missing_failclosed"
 	| "invalid_pr_head_format"
@@ -107,6 +148,117 @@ export interface QaShipGateResult {
 	qaRequired?: number;
 }
 
+interface QaSessionRow {
+	qa_required?: number | null;
+	decision_route?: string | null;
+	pr_number?: number | null;
+	session_role?: string | null;
+	chat_thread_role?: string | null;
+}
+
+/**
+ * Read-only mirror of StateStore's claims resolver for an explicitly admitted
+ * QA execution. flywheel-comm cannot import the higher-level teamlead package,
+ * so this exact SQL/selection contract is locked by cross-package tests.
+ */
+function resolveEnrolledQaClaim(
+	db: Database.Database,
+	execId: string,
+	prHead: string,
+	nowMs: number,
+): QaShipGateResult {
+	let binding: { run_id: string; node_id: string; attempt: number } | undefined;
+	try {
+		binding = db
+			.prepare(
+				`SELECT b.run_id, b.node_id, b.attempt
+				   FROM workflow_execution_binding b
+				   JOIN workflow_run_node n
+				     ON n.run_id = b.run_id
+				    AND n.node_id = b.node_id
+				    AND n.attempt = b.attempt
+				    AND n.execution_id = b.execution_id
+				   JOIN workflow_run r
+				     ON r.run_id = b.run_id
+				    AND r.current_qa_attempt = b.attempt
+				  WHERE b.execution_id = ?
+				    AND b.node_id = 'qa'
+				    AND r.claims_read_enrolled = 1`,
+			)
+			.get(execId) as typeof binding;
+	} catch {
+		// Missing pre-cutover tables/columns are an unenrolled durable QA, never a
+		// reason to fall back to the stale qa_required exemption.
+		return {
+			passed: false,
+			reason: "qa_claim_gate_unenrolled_failclosed",
+		};
+	}
+	if (!binding) {
+		return {
+			passed: false,
+			reason: "qa_claim_gate_unenrolled_failclosed",
+		};
+	}
+
+	let rows: Array<{
+		id: number;
+		server_seq: number;
+		predicate: string;
+		expires_at: string | null;
+		permanent: number;
+		revoked: number;
+	}>;
+	try {
+		rows = db
+			.prepare(
+				`SELECT c.id, c.server_seq, c.predicate, c.expires_at, c.permanent,
+				        EXISTS (
+				          SELECT 1 FROM workflow_claim_revocation x WHERE x.claim_id = c.id
+				        ) AS revoked
+				   FROM workflow_claims c
+				  WHERE c.workflow_run_id = ?
+				    AND c.node_id = ?
+				    AND c.decision_kind = 'qa_verdict'
+				    AND c.attempt = ?
+				    AND c.issuer_execution_id = ?
+				    AND c.subject_kind = 'git_head'
+				    AND lower(c.subject_digest) = ?
+				  ORDER BY c.server_seq DESC`,
+			)
+			.all(
+				binding.run_id,
+				binding.node_id,
+				binding.attempt,
+				execId,
+				prHead,
+			) as typeof rows;
+	} catch {
+		return { passed: false, reason: "qa_claim_missing_failclosed" };
+	}
+	const candidate = rows[0];
+	if (!candidate) {
+		return { passed: false, reason: "qa_claim_missing_failclosed" };
+	}
+	if (rows.some((row) => row.predicate !== candidate.predicate)) {
+		return { passed: false, reason: "qa_claim_missing_failclosed" };
+	}
+	if (candidate.revoked === 1) {
+		return { passed: false, reason: "qa_claim_missing_failclosed" };
+	}
+	if (
+		candidate.permanent !== 1 &&
+		(!candidate.expires_at ||
+			!Number.isFinite(Date.parse(candidate.expires_at)) ||
+			nowMs >= Date.parse(candidate.expires_at))
+	) {
+		return { passed: false, reason: "qa_claim_missing_failclosed" };
+	}
+	return candidate.predicate === "qa_passed"
+		? { passed: true, reason: "qa_claim_ok" }
+		: { passed: false, reason: "qa_claim_missing_failclosed" };
+}
+
 /** Routes that legitimately produce no mergeable PR → QA never applies. */
 const NO_QA_ROUTES = new Set(["no_code", "pr_handoff"]);
 
@@ -129,6 +281,14 @@ export function evaluateQaShipGate(args: QaShipGateArgs): QaShipGateResult {
 		dotenvPath: args.qaDotenvPath,
 	});
 	if (!gateOn) return { passed: true, reason: "qa_gate_off" };
+	// Emergency rollback must be resolved from the live dotenv BEFORE any
+	// claims-ledger query. This preserves an immediate recovery path for a
+	// long-lived runner while keeping the switch independently default-off.
+	const forceLegacy = resolveDefaultOffGate(WORKFLOW_FORCE_LEGACY_KEY, {
+		argsEnv: args.env,
+		processEnv: env,
+		dotenvPath: args.qaDotenvPath,
+	});
 
 	const prHead = args.prHead.trim().toLowerCase();
 	if (!FULL_SHA_RE.test(prHead)) {
@@ -139,22 +299,33 @@ export function evaluateQaShipGate(args: QaShipGateArgs): QaShipGateResult {
 	if (!existsSync(statePath)) {
 		return { passed: false, reason: "state_db_unreadable" };
 	}
-	let row:
-		| {
-				qa_required?: number | null;
-				decision_route?: string | null;
-				pr_number?: number | null;
-		  }
-		| undefined;
+	let row: QaSessionRow | undefined;
 	let qaPassedForHead = false;
 	try {
 		const db = new Database(statePath, { readonly: true, fileMustExist: true });
 		try {
 			row = db
 				.prepare(
-					"SELECT qa_required, decision_route, pr_number FROM sessions WHERE execution_id = ?",
+					"SELECT qa_required, decision_route, pr_number, session_role, chat_thread_role FROM sessions WHERE execution_id = ?",
 				)
 				.get(args.execId) as typeof row;
+			if (!row) return { passed: false, reason: "session_not_found" };
+			const durableQa =
+				row.session_role === "qa" && row.chat_thread_role === "qa";
+			if (durableQa && !forceLegacy) {
+				if (
+					!resolveWorkflowClaimsReadEnabled({
+						env: args.env,
+						dotenvPath: args.qaDotenvPath,
+					})
+				) {
+					return {
+						passed: false,
+						reason: "qa_claim_gate_unenrolled_failclosed",
+					};
+				}
+				return resolveEnrolledQaClaim(db, args.execId, prHead, Date.now());
+			}
 			// A missing column (pre-migration DB) or missing table must fail-closed,
 			// never crash the authoritative gate.
 			try {

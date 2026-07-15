@@ -23,6 +23,22 @@ export function adapterTypeToFamily(
 	return adapterType.replace(/-tmux$/, "");
 }
 
+/**
+ * FLY-1244: admission-time reviewer inversion for a template execution.
+ * Both values must already be resolved by the server from the selected
+ * adapters/models; a manifest's vendor preference is never review authority.
+ */
+export function manifestReviewFamilyOk(
+	authorResolvedFamily: string | null | undefined,
+	reviewerResolvedFamily: string | null | undefined,
+): boolean {
+	return Boolean(
+		authorResolvedFamily &&
+			reviewerResolvedFamily &&
+			authorResolvedFamily !== reviewerResolvedFamily,
+	);
+}
+
 export interface CrossFamilyReviewInput {
 	/** codex_review_record.status ("approved" | "skipped" | "pending" | absent). */
 	status: string | null | undefined;

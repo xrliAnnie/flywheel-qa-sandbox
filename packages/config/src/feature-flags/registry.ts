@@ -2131,4 +2131,81 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "readonly",
 	},
+	{
+		name: "workflow_claims_write",
+		category: "governance_gate",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WORKFLOW_CLAIMS_WRITE",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1232/1244: workflow claims shadow writes and enrolled execution admission. Must remain off until the pinned fresh-spawn E2E and peer-credential hardening gates pass.",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/workflow-claims.ts",
+				"isWorkflowClaimsWriteEnabled",
+				"call_time",
+				"env-param",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge / createBridgeApp workflow wiring",
+				"bridge_boot",
+			),
+		],
+		toggleable: "readonly",
+		note: "Independent from claims READ and FORCE_LEGACY; production enable is governance-gated.",
+	},
+	{
+		name: "workflow_claims_read",
+		category: "governance_gate",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WORKFLOW_CLAIMS_READ",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1244: switch explicitly enrolled durable three-stage runs to claims-backed ship eligibility and authoritative head reads.",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/workflow-claims.ts",
+				"isWorkflowClaimsReadEnabled",
+				"call_time",
+				"env-param",
+			),
+			envSite(
+				"packages/flywheel-comm/src/ship-eligibility.ts",
+				"evaluateShipEligibility",
+				"cli_invocation",
+				"dynamic",
+			),
+		],
+		toggleable: "readonly",
+		note: "Independent from claims WRITE; explicit run enrollment is still required.",
+	},
+	{
+		name: "workflow_force_legacy",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WORKFLOW_FORCE_LEGACY",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1244: emergency live-.env fallback that forces the legacy ship-eligibility reader before claims queries.",
+		readSites: [
+			envSite(
+				"packages/flywheel-comm/src/ship-eligibility.ts",
+				"evaluateShipEligibility",
+				"cli_invocation",
+				"dynamic",
+			),
+		],
+		toggleable: "readonly",
+		note: "Independent emergency fallback; resolved before any claims table access.",
+	},
 ];

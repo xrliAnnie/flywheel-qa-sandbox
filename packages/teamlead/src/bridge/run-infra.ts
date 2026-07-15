@@ -891,6 +891,39 @@ export async function setupRunInfrastructure(
 		runInfraOpts?.lifecycleAdmission, // FLY-1185: park admission chokepoint
 		runInfraOpts?.lifecycleLaunchGuard, // FLY-1185 R1#5: pre-launch recheck
 		runInfraOpts?.workflowShadow, // FLY-1232: T1/T2/T7 pre-launch seam (flag ON only)
+		// FLY-1244: admission exists only with the WRITE seam. The preceding
+		// shadow dispatch creates/locates the active run; failure here aborts the
+		// QA launch before the runner can start without a usable credential.
+		runInfraOpts?.workflowShadow
+			? {
+					admit: (input: {
+						projectName: string;
+						issueId: string;
+						executionId: string;
+						node: string;
+						attempt: number;
+					}) => {
+						const run = store.getActiveWorkflowRun(
+							input.projectName,
+							input.issueId,
+						);
+						if (!run) throw new Error("active workflow run not found");
+						const now = Date.now();
+						const admitted = store.admitWorkflowExecution({
+							runId: run.run_id,
+							nodeId: input.node,
+							executionId: input.executionId,
+							attempt: input.attempt,
+							family: "qa_verdict",
+							now: new Date(now).toISOString(),
+							expiresAt: new Date(now + 30 * 60_000).toISOString(),
+							absoluteDeadlineAt: new Date(now + 2 * 60 * 60_000).toISOString(),
+						});
+						if (!admitted.ok) throw new Error(admitted.reason);
+						return { credential: admitted.credential };
+					},
+				}
+			: undefined,
 	);
 }
 

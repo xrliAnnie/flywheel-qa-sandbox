@@ -27,7 +27,7 @@ import type { IssueDisplayRefreshHolder } from "./bridge/issue-display-refresher
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import { makeLinearDoneFinalizer } from "./bridge/linear-issue-finalizer.js";
 import {
-	computeShipDecision,
+	computeAuthoritativeShipDecision,
 	isMergeBlocked,
 	parkMergeBlock,
 } from "./bridge/merge-ship-gate.js";
@@ -514,13 +514,13 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// independent kill-switches). A missing/empty head → verifyApproval
 		// fail-closes when the gate is ON, and the kill-switch still bypasses when OFF.
 		const desDecision = desMergedLanding
-			? computeShipDecision(
+			? await computeAuthoritativeShipDecision(
 					this.store,
 					preExistingSession ?? {
 						execution_id: env.executionId,
 						project_name: env.projectName,
 					},
-					desPrHead ?? "",
+					desPrHead,
 				)
 			: undefined;
 		const desShipEligible = desMergedLanding
@@ -531,7 +531,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				const claimed = parkMergeBlock(
 					this.store,
 					preExistingSession,
-					desPrHead ?? "",
+					desDecision?.authoritativeHead ?? desPrHead ?? "",
 					desDecision ?? {
 						eligible: false,
 						mergeApprovalOk: false,

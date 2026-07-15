@@ -108,6 +108,7 @@ import {
 	type Session,
 	StateStore,
 } from "../StateStore.js";
+import { importBundledWorkflowSeeds } from "../workflow-template.js";
 import { AlertChannelHub, createDiscordOps } from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
 import {
@@ -255,6 +256,7 @@ import {
 } from "./fleet-routes.js";
 import { FleetSensors } from "./fleet-sensors.js";
 import { createFocusedFrameScheduler } from "./focused-frame-scheduler.js";
+import { startWorkflowSourceProjector } from "./founder-approval-projector.js";
 import {
 	buildFounderConsentWiring,
 	buildGateResponsePostWriteHook,
@@ -452,7 +454,9 @@ import {
 	createJudgeRoutingDepsFactory,
 	createStuckConfirmRunner,
 } from "./watchdog-judge-assembly.js";
+import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
 import { createWorkflowShadowWriterFromEnv } from "./workflow-shadow-writer.js";
+import { createWorkflowTemplateRouter } from "./workflow-template-routes.js";
 import {
 	gitWorktreeClean,
 	makeBridgeWorktreeCleanup,
@@ -1049,6 +1053,41 @@ export function createBridgeApp(
 	}
 
 	app.use(express.json({ limit: "512kb" }));
+
+	// FLY-1244: scoped workflow decisions authenticate with a per-execution
+	// credential, never the fleet ingest bearer. The head read route is a separate
+	// loopback-only fail-closed seam used by verify-approval; it is not credential
+	// authenticated and exposes only the execution's git SHA.
+	app.use(
+		"/api/workflow",
+		createWorkflowDecisionRouter({
+			store,
+			phaseOrchestrator: opts?.phaseOrchestrator,
+			...(process.env.FLYWHEEL_WORKFLOW_CLAIMS_WRITE === "1" &&
+			opts?.fleetConsole &&
+			opts.phaseOrchestrator
+				? {
+						reQa: {
+							tokens: opts.fleetConsole.tokens,
+							respawn: async (canonical, prHeadSha) => {
+								const orchestrator = opts.phaseOrchestrator?.current;
+								if (!orchestrator) {
+									throw new Error("phase_orchestrator_not_ready");
+								}
+								const source = store.getSession(canonical.sourceExecutionId);
+								if (!source) throw new Error("source_session_not_found");
+								return orchestrator.respawnUnenrolledQa(
+									source,
+									prHeadSha,
+									canonical.targetAttempt,
+								);
+							},
+						},
+					}
+				: {}),
+		}),
+	);
+	app.use("/api/workflow", createWorkflowTemplateRouter(store));
 
 	// FLY-175 Track 2: founder-consent hard gate. Returns null when
 	// decisionMode=off (default) — `fcMw()` then yields a no-op handler so the
@@ -3266,6 +3305,15 @@ export async function startBridge(
 	};
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+	// FLY-1244: deterministic boot import. Content hashes make restarts no-ops;
+	// a founder-owned seed mismatch is audited and refused by StateStore.
+	importBundledWorkflowSeeds(store);
+	const workflowSourceProjector = startWorkflowSourceProjector({
+		projects: () => loadProjects().map((project) => project.projectName),
+		openCommDb: (project) => new CommDB(commDbPathForProject(project)),
+		store,
+		log: (message) => console.warn(message),
+	});
 
 	// FLY-1082 (Task 2.2): the fleet pressure-hold gates runner admission —
 	// late-bind the probe now that the store exists. Fail-open inside tryAdmit.
@@ -6750,10 +6798,13 @@ export async function startBridge(
 				// (Finding B from the founder-visibility real-machine QA round — the
 				// line otherwise goes stale at whatever it showed pre-merge).
 				refreshPhaseStatusLine: refreshPhaseStatusLineEffect,
-				grantTurn: ({ issueId, execId, phase, projectName }) => {
+				grantTurn: ({ issueId, execId, phase, projectName, sourceEventId }) => {
 					const db = new CommDB(commDbPathForProject(projectName));
 					try {
-						db.grantTurn(issueId, execId, phase, Date.now());
+						db.grantTurn(issueId, execId, phase, Date.now(), {
+							project: projectName,
+							sourceEventId,
+						});
 					} finally {
 						db.close();
 					}
@@ -8214,6 +8265,7 @@ export async function startBridge(
 		// path as /health shuttingDown (no extra signal handlers) — a boot that
 		// finds this marker still `running` knows the previous Bridge died dirty.
 		writeCleanMarker(bridgeMarker);
+		workflowSourceProjector.stop();
 		heartbeatService?.stop();
 		await publishBrokerHandle?.close(); // FLY-1062: socket + observe timer
 		gatePoller.stop();

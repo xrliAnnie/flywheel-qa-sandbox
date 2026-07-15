@@ -5,7 +5,7 @@
  * receipt-first → 409 binding mismatch → 403 founder identity → source).
  */
 import express from "express";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	botUserIdFromToken,
 	createVoiceRouter,
@@ -479,7 +479,14 @@ describe("POST /api/voice/ship-approval — guard ladder", () => {
 	});
 
 	it("⑥ approve writes {approved:true} attributed to the founder + audits", async () => {
-		const { app, responses, insertedEvents } = makeApp();
+		const writeGateResponseImpl = vi
+			.fn()
+			.mockResolvedValue({ written: true, retrySafe: true });
+		const cardAuthority = vi.fn().mockReturnValue({ ok: true });
+		const { app, insertedEvents } = makeApp({
+			writeGateResponseImpl,
+			cardAuthority,
+		} as never);
 		const res = await httpRequest(
 			app,
 			"POST",
@@ -488,9 +495,10 @@ describe("POST /api/voice/ship-approval — guard ladder", () => {
 		);
 		expect(res.status).toBe(200);
 		expect(res.body).toMatchObject({ written: true, kind: "approve" });
-		const written = responses.get("q-1");
-		expect(written?.from_agent).toBe("annie-id");
-		expect(JSON.parse(written?.content ?? "{}")).toEqual({ approved: true });
+		const [writeArgs] = writeGateResponseImpl.mock.calls[0];
+		expect(writeArgs.actor).toBe("annie-id");
+		expect(JSON.parse(writeArgs.answer)).toEqual({ approved: true });
+		expect(writeArgs).toMatchObject({ source: "voice", cardAuthority });
 		// ⑦ audit row with modality + receipt + transcript
 		const audit = insertedEvents.find(
 			(e) => e.event_type === "voice_approval_attempt",

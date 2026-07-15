@@ -87,7 +87,8 @@ const founderMsg = { id: "MSG-1", content: "ship it", authorId: "FOUNDER-1" };
 
 describe("tryFounderShipApproval — approve path", () => {
 	it("founder approval on the one current gate → writes approval, returns handled", async () => {
-		const d = deps();
+		const cardAuthority = vi.fn().mockReturnValue({ ok: true });
+		const d = deps({ cardAuthority });
 		const r = await tryFounderShipApproval(
 			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
 			d,
@@ -102,6 +103,7 @@ describe("tryFounderShipApproval — approve path", () => {
 		expect(writeArgs.questionId).toBe("Q-1");
 		expect(writeArgs.actor).toBe("FOUNDER-1");
 		expect(JSON.parse(writeArgs.answer).approved).toBe(true);
+		expect(writeArgs).toMatchObject({ source: "text", cardAuthority });
 	});
 });
 
@@ -304,6 +306,35 @@ describe("tryFounderShipApproval — attribution audit + hold guard (FLY-1041)",
 			expect.objectContaining({ questionId: "Q-1" }),
 		);
 	});
+
+	it.each(["qa_evidence_missing", "qa_evidence_unknown"] as const)(
+		"%s is NEVER deferrable and requires a fresh founder action",
+		async (reason) => {
+			const deferral = {
+				holdReason: vi.fn().mockReturnValue(reason),
+				deferredEnabled: vi.fn().mockReturnValue(true),
+				heldReplyEnabled: vi.fn().mockReturnValue(true),
+				defer: vi.fn().mockReturnValue("inserted"),
+				queueHeldNotice: vi.fn(),
+			};
+			const d = deps({ deferral });
+
+			const r = await tryFounderShipApproval(
+				{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+				d as never,
+			);
+
+			expect(r).toBeNull();
+			expect(deferral.defer).not.toHaveBeenCalled();
+			expect(deferral.queueHeldNotice).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "deferred_off",
+					holdReason: reason,
+				}),
+			);
+			expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
+		},
+	);
 
 	it("un-held session: isHeld false → normal write path", async () => {
 		const d = deps({ isHeld: vi.fn().mockReturnValue(false) });

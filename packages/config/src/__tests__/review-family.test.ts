@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	adapterTypeToFamily,
 	crossFamilyReviewSatisfied,
+	manifestReviewFamilyOk,
 } from "../review-family.js";
 
 // ── FLY-1188 §7.3: family-aware review authority (shared pure rule) ──
@@ -163,5 +164,16 @@ describe("crossFamilyReviewSatisfied", () => {
 				sessionAdapterType: null,
 			}),
 		).toBe(true);
+	});
+});
+
+describe("manifestReviewFamilyOk", () => {
+	it("accepts only different server-resolved adapter families", () => {
+		expect(manifestReviewFamilyOk("claude", "codex")).toBe(true);
+		expect(manifestReviewFamilyOk("codex", "claude")).toBe(true);
+		expect(manifestReviewFamilyOk("claude", "claude")).toBe(false);
+		expect(manifestReviewFamilyOk("codex", "codex")).toBe(false);
+		expect(manifestReviewFamilyOk("", "claude")).toBe(false);
+		expect(manifestReviewFamilyOk("claude", undefined)).toBe(false);
 	});
 });

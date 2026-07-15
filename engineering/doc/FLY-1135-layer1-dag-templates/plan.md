@@ -96,19 +96,21 @@ subject → 写 claim → 按 snapshot 选合法出边 → 核销凭证 → 追�
   的凭证 → 拒**(与 §2.5 E3 一致,和「过期即 fail-closed」不矛盾)。
 - **heartbeat 续期有绝对上限**:续期不得超过节点的 absolute deadline —— 被攻破的活 session
   不能无限续命。
-- ⭐ **下发通道 = 同用户进程隔离,不是文件权限(R2#2,我 R1 写错了要纠正)**:所有 runner
-  (claude/codex/agy/kimi)是**同一 Unix 账户下的同居进程**,`0600`/`0700` 只挡别的 OS 用户,
-  挡不住同用户另一个 runner;不可猜文件名也能被目录枚举发现 —— 一旦 capability 明文落文件系统,
-  就等于把 shared-bearer 的跨-run 伪造类原样保留(只是多几步)。**复用 FLY-245 secret-broker
-  的原则(不只是它的目录约定)**:capability 明文只在 **Bridge/父进程内存**;授权 session 经
-  **不可导出的提交路径**拿到(继承的 fd / helper,或一个「模型 shell 的 `connect()` 被沙箱拒、
-  且调用方绑定到预留 execution」的 broker)。**claude 与 codex 沙箱/connect 行为不同 → 各自
-  独立证明路径**;任何后端无已证明路径 → admission 拒(no-transport 的 agy/kimi 属此类)。
-  CLI/marker **只存不透明的幂等请求 id 或 Bridge 持有的加密引用,绝不存明文 capability**
-  (现有 qa-result-failed marker 存了完整 body 且不设限模式 —— 迁移时必须改)。
-- **验收(R2#2 真机负测)**:runner A 已知 B 的 execution id/head、且能枚举 `~/.flywheel`,
-  **仍无法产出或重放一个有效的 B 决策**。
-- 治的靶:共享 ingest bearer + `--exec-id/--pr-head` 双双可伪(红测第 2 结构原因)。
+- **原隔离不变量（已被 FLY-1244 正式收窄）**：capability 明文只在 Bridge/父进程内存；一个知道
+  B 的 execution/head、能枚举 `~/.flywheel` 的同用户 sibling，仍不能产出或重放 B 的有效决策。
+- **为何单用户 fleet 不可达**：FLY-1244 的 macOS 26.3.2 真机证据确认 node `net` 无 peer
+  pid/credential；fd 不能穿过已运行的 tmux server；Claude/Codex shell snapshot 会持久化 spawn
+  env；同 uid 还能用 `tmux send-keys` / `capture-pane` 主动驱动 B。只要凭证必须送进同 uid runner，
+  纯 bearer 就不可能提供原隔离；恢复原目标需要原生 peer-credential broker 或独立 OS principal。
+- **收窄后的实际保证（FLY-1244 选项 B）**：enrolled verdict 退役 fleet-wide ingest bearer，改用
+  绑定单一 `(run,node,execution,attempt)`、短 TTL、server 只存 hash 的 submission credential；
+  Bridge 从真实 worktree 捕获 subject head，caller head 只比对。它保证 stale headless bool 不放行、
+  自选 head 无效、被动泄露爆炸半径从全 fleet 压到单 execution+TTL、跨 execution 自报无效；**不
+  保证**阻止同用户 snapshot harvest 或 pane 注入，TTL 内同用户可伪造该 execution PASS 是已知接受
+  残留。原生 peer-credential/独立 principal follow-up 与 fresh-spawn E2E **共同**构成 READ 上生产
+  硬前置；在它们闭合前 `FLYWHEEL_WORKFLOW_CLAIMS_READ` 保持 off。
+- CLI/marker 只存不透明 request id/digest，不存凭证或完整 verdict body。治的靶是共享 ingest bearer +
+  `--exec-id/--pr-head` 双可伪；不再声称 bearer 本身是同用户隔离。
 
 ### 2.3 founder-approval 写边界收口(FLY-1221 范围;Codex R1#8 校正事实)
 
