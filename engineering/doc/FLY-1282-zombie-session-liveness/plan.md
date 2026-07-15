@@ -237,40 +237,43 @@ PR(实现 + 单测 + 本文件夹 3 文档 + 重演脚本),Codex design review A
 
 ---
 
-# Part D: Lead 处置回执(founder 直令折入,Lead f2a70f9e)
+# Part D: Lead 处置回执(founder 直令折入,Lead f2a70f9e;R16 修订)
 
 ## D0. 直令与验收口径
 
 Annie 原话大意:告警要「先到 Lead、Lead 处理」,但不能悄悄消化——founder 侧要能看到 Lead 的**处置回执**,否则她每条 alert 都得自己再看一遍。三点:①检测/告警只路由 Lead(= 本 PR INV-10,已落地);②同一 issue thread 里必须落一条**可见的处置回执**(已接手/判定/动作),**作为管线的一部分而不是靠 Lead 自觉**;③通用能力,所有 Lead 都有。
 
-验收:Lead 对一个检测 episode 做出处置(任一路由)后,对应 issue thread 内出现**恰一条**回执(含 Lead、检测类别人话、判定人话);机器自愈(recovery)的 episode 零回执零打扰;INV-10 的「founder 面 0 条原始检测事件」验收不变——回执是处置结果,不是原始检测事件,显式豁免。
+验收(R16 #2 诚实化):Lead 对一个检测 episode 做出处置(任一路由)后,对应 issue thread 内**正常运行下恰一条**回执(含处置 Lead、检测类别人话、判定人话);投递语义 = **at-least-once,与 C3 founder page 同合同**——「confirmed posted 才 stamp」意味着进程在 Discord 2xx 后、持久化前崩溃的窄窗可能重复,不伪称 exactly-once。机器自愈(recovery)episode 零回执(理由:**无 Lead 行为就无 Lead 处置回执**——不是「founder 从未被页」:ESCALATED 行也可被 recovery 收尾,R16 #7)。INV-10 的「founder 面 0 条原始检测事件」验收不变——回执是处置结果,显式豁免。
 
-## D1. 现状审计(已核实的锚点)
+## D1. 现状审计(已核实的锚点;R16 核修)
 
-- **唯一处置数据源**:`detection_escalations`(PK `target_key/kind/episode_fingerprint`;`issue_id`、`owner_lead_id`、`lead_ack_at_ms`、`resolved_via 'lead'|'recovery'`、status `NEW→LEAD_NOTIFIED→ACKED/RESOLVED/ESCALATED`)。FLY-1048 C4a 已把老 stuck-disposition 路由**镜像**进这张表 —— 所以回执只需挂在这一张表上,两条处置路由天然全覆盖。
-- **Lead 处置面**(`stuck-remanage-routes.ts`):`POST /:executionId/detection-ack`(disposition `ack|resolve|dismiss` → `ackDetectionEscalation` via:'lead')与 `POST /:executionId/stuck-disposition`(老路由,C4a mirror → 同一 `ackDetectionEscalation`)。
-- **机器自愈**:`detection-reconcile-tick.ts` 的 recovery pass 调 `ackDetectionEscalation(..., via:'recovery')` —— 与 Lead 处置在 store 层同一入口、`via` 可区分。
-- **thread 投递管道**:`alertDiscordOps.postToThread(threadId, content)`(late-bound holder 先例 = `suspiciousThreadPoster`,plugin.ts:7225 接线);threadId = `resolveChatThreadId(store, issueId, ownerLead.chatChannel)`。行上已有 `issue_id`+`owner_lead_id`,回执定位所需信息齐备,**零 per-Lead 接线**(③通用性由 Bridge 侧统一实现直接满足)。
-- **周期兜底位点**:`runDetectionReconcileTick`(gate-poller piggyback)已是 C3 的 reconcile 面,可挂回执 backfill,零新 timer。
+- **处置数据源**:`detection_escalations`(PK `target_key/kind/episode_fingerprint`;status `NEW→LEAD_NOTIFIED→ACKED/RESOLVED/ESCALATED`)。但它**不足以重建回执**(R16 #1):`ackDetectionEscalation` 把 resolve/dismiss 都压成 RESOLVED、不存 actor Lead 与 note;普通 ack 不写 `resolved_via`(留 NULL);`owner_lead_id` 可为空。→ 回执事实必须有自己的 durable 载体(D2.1 outbox)。
+- **Lead 处置面**(`stuck-remanage-routes.ts`):`POST /:executionId/detection-ack`(ack|resolve|dismiss)与 `POST /:executionId/stuck-disposition`(老路由,C4a mirror;execution-scoped latch 会一次 ack 该 execution 的 **N 个** active case-c episode,R16 #6)。
+- **机器自愈两条路**(R16 #3):`ackDetectionEscalation(via:'recovery')` **和** terminal recovery 的 bulk `resolveDetectionEscalationsForTarget`(不经 ack 入口)。
+- **revive**(R16 #3):`upsertDetectionEscalation` 会把 recovery-RESOLVED 行复活为 NEW **复用同一 PK**(清 lead_ack_at_ms/resolved_via 等)——回执状态必须随 revive 一起清,否则新 episode 的处置被旧 stamp 永久压掉。
+- **thread 投递**:`alertDiscordOps.postToThread(threadId, content)` Discord 2xx 才 resolve、失败 throw(可作 confirmed-post 证据);threadId = `resolveChatThreadId(store, issueId, ownerLead.chatChannel)`。
+- **周期位点**:`runDetectionReconcileTick` 由 GatePoller 每 ~20 tick **fire-and-forget** 触发(慢 pass 可与下次重叠)→ 回执投递步必须自带进程内单飞闩(D2.3)。
+- **构造顺序**(R16 #5):remanage router 在 `createBridgeApp` 内建,alertDiscordOps 在 startBridge 尾部才存在 → 路由侧**不投递**(只写 outbox),投递只在 tick 侧经 late-bound holder(call-time 读,空 → 本 pass 跳过,行留 pending)——路由零 poster 依赖,构造顺序问题整体消失。
 
-## D2. 修法
+## D2. 修法(R16 全折入:durable outbox + tick 单消费者)
 
-1. **新列** `detection_escalations.receipt_posted_at_ms INTEGER`(幂等 ADD COLUMN,FLY-267/resolved_via 先例)。语义:处置回执已投出,或按规则判定无需投。
-2. **回执节流:每 episode 恰一条** —— 第一次 via:'lead' 处置触发;`receipt_posted_at_ms` 非空 → 永不再投(后续判定变化属 Lead 正常 thread 沟通,不再机器刷)。**确认后置戳**:post 成功才 stamp(C3「confirmed posted only」同族合同);失败留 NULL 交 backfill。
-3. **立即投递腿**:两个处置路由 handler 在 `ackDetectionEscalation` 持久化**之后**调共享 helper `postDispositionReceipt(row, deps)`(best-effort,失败 loud log 不 fail 请求——trace-row posture 同族)。文案(中文人话、**无 @、无 pane 内容**,privacy 合同延续):`🧾 处置回执:<leadId> 已处理「<kind 人话>」— 判定:<disposition 人话><note 截断 ≤200 字符、strip mentions>`。disposition 人话映射:ack→已接手在处理 / resolve→已解决 / dismiss→判定误报关闭。
-4. **backfill 腿(管线保证,不靠 Lead 自觉)**:`runDetectionReconcileTick` 新增独立 step(own try/catch):扫 `lead_ack_at_ms 非空 AND resolved_via != 'recovery' AND receipt_posted_at_ms IS NULL` 的行,每 pass ≤5 条重试投递,成功才 stamp。**放弃条款**:`lead_ack_at_ms` 早于 7 天 → stamp + loud log 放弃(thread 永不存在/开关长期关后的旧账不补涌;重开开关只补 7 天窗口内)。`issue_id` 空或 thread 不可解析且已超窗 → 同放弃路径 + `session_events` 审计行 `receipt-unroutable-<fingerprint hash>`。
-5. **recovery 零回执**:`ackDetectionEscalation` 当 `via:'recovery'` 时同写 `receipt_posted_at_ms = atMs`(语义=无需回执)——自愈 episode founder 从未被页,补一条「已自愈」反而是新噪音,且结构上使 backfill 扫描天然只见 Lead 处置行。
-6. **开关** `FLYWHEEL_DISPOSITION_RECEIPT`(default ON;路由/tick 每次调用时读,live 可翻):`=0` → 立即腿与 backfill 腿都不投不 stamp(via:'recovery' 的 stamp 保留——那是语义标记不是投递);重新开启 → 仅 7 天窗口内补投(见 4)。
-7. **ESCALATED 后的迟到 ack**:founder 已被页的 episode,Lead 后续 ack 照常投回执(closure——founder 看到的 page 有了下文),不特判。
+1. **新表 `disposition_receipts`(durable receipt outbox;幂等 CREATE TABLE IF NOT EXISTS)**:
+   `target_key/kind/episode_fingerprint`(episode 键,UNIQUE——每个存活 episode 恰一行)、`actor_lead_id`(来自请求的 leadId,绝不依赖可空的 owner_lead_id)、`disposition`(原始判定原样存:ack|resolve|dismiss|legitimate_wait|false_positive|handled_remanaged 等)、`content`(**prepare 时即构好的最终投递文案**:中文人话、无 @、note 截断 ≤200 + strip mentions、无 pane 内容——backfill 无需重建任何语义,R16 #1)、`issue_id`、`state`(`pending|posted|unroutable|expired`,显式状态,不复用 timestamp 一词多义)、`attempts`、`last_attempt_at_ms`、`created_at_ms`(=处置时刻)、`posted_at_ms`。
+2. **prepare 腿(两条路由,零投递)**:在 `ackDetectionEscalation` 返回 `changed=true` 且 via:'lead' 时,同一持久化边界内写 outbox 行(新 store 方法把 ack UPDATE 与 receipt INSERT 放在**同一次 `save()`** 前——sql.js 的落盘原子单位就是 save,R16 #1)。`INSERT OR IGNORE`(UNIQUE episode 键)→ 同 episode 第二次处置零新行(ACKED→RESOLVED 的后续判定属 Lead 正常 thread 沟通)。`issue_id` 为空 → 直接 `state='unroutable'` + `session_events` 审计行(**立即终态,不等 7 天**,统一口径 R16 #4)。C4a execution-scoped latch 命中 N 个 episode → **N 行独立 outbox → N 条回执**(重复请求对每行零新增;N 实际 ≤2,可接受,R16 #6 锁进 M10 N=2 fixture)。ack 在 RESOLVED 后的重复请求 → `changed=false` → 零 prepare(recovery 先赢则 Lead 迟到 ack 无回执;Lead 先 ack 后 recovery → 行已在,照常投——**唯一获胜规则 = 第一个 changed=true 的 via:'lead' 处置**,R16 #7)。
+3. **delivery 腿(tick 单消费者)**:`runDetectionReconcileTick` 新独立 step(own try/catch + **模块级进程内单飞闩**,重叠 tick 直接跳过,R16 #2):开关 OFF → 跳过;否则取 `state='pending'` 按 `(last_attempt_at_ms ASC NULLS FIRST, created_at_ms ASC)` **≤5 行/pass**(失败行 stamp `last_attempt_at_ms`+`attempts` → 自然轮转到队尾,poison 不饿死后项,R16 #4);每行:`created_at_ms` 早于 7 天 → `state='expired'` + loud log(放弃条款——thread 永不存在/开关长期关的旧账不补涌);解析 thread(late-bound poster holder,call-time 读;空 → 本 pass 全跳,行留 pending)→ `postToThread` **confirmed 后**才 `state='posted'`+`posted_at_ms`;throw → 只 stamp attempts/last_attempt。跨崩溃语义 = at-least-once(2xx 后、save 前崩 → 下 pass 重投;D0 已诚实声明)。
+4. **recovery 零接触**:via:'recovery' 与 bulk `resolveDetectionEscalationsForTarget` 都**不产生也不修改** outbox 行(结构性:回执只由 via:'lead' prepare 产生,R16 #3 的 NULL-SQL 陷阱随 `resolved_via` 判据一起整体消失——outbox 不看 resolved_via)。
+5. **revive 清账**(R16 #3):`upsertDetectionEscalation` 的 revive UPDATE 同一 save 内 `DELETE FROM disposition_receipts WHERE <episode 键>`——新 episode 可挣得自己的回执;旧回执的历史在 Discord thread 与 session_events 里,outbox 是操作状态不是审计账本。
+6. **文案**:`🧾 处置回执:<actor_lead_id> 已处理「<kind 人话>」— 判定:<disposition 人话><note>`。disposition 人话映射:ack→已接手在处理 / resolve|handled_remanaged→已解决 / dismiss|false_positive→判定误报关闭 / legitimate_wait→判定为正常等待。
+7. **开关** `FLYWHEEL_DISPOSITION_RECEIPT`(default ON,tick 每 pass 读,live 可翻):**只门投递**——prepare 恒写(处置事实的记账);`=0` → 零投递零 stamp;重开 → 7 天窗口内 pending 自然补投、窗口外 expired。
+8. **ESCALATED 不特判**:founder 已被页的 episode,Lead 后续 ack 照常 prepare+投(closure);ESCALATED→recovery 收尾 → 零回执(规则 4)。
 
 ## D3. 测试(M10)
 
-- detection-ack 路由 ack/resolve/dismiss → 恰一条回执落解析出的 thread(内容含 lead/kind 人话/判定人话;无 @;note 截断+去 mention);同 episode 第二次处置 → 零第二条;
-- 老 stuck-disposition 路由(C4a mirror)→ 同样恰一条;
-- poster 未接/thread 未绑/post throw → 不 stamp;reconcile tick backfill 投出并 stamp;持续失败 ≤5/pass 轮转;`lead_ack_at_ms` >7d → stamp 放弃 + loud;issue_id 空 → 放弃 + session_events 审计;
-- recovery auto-RESOLVE → 零投递,行带 receipt stamp(不进 backfill);
-- `FLYWHEEL_DISPOSITION_RECEIPT=0` → ack 照常持久化、零投递零 backfill;重新开启 → 窗口内补投、窗口外放弃;
-- ADD COLUMN 迁移幂等(旧库重开零 throw);
-- INV-10 回归:回执路径零原始检测事件外泄(回执文案反断言:不含 pane 文本)。
+- prepare 面:detection-ack ack/resolve/dismiss → outbox 恰一行(content 即最终文案:含 actor/kind 人话/判定人话;无 @;note 截断+去 mention;无 pane 文本);同 episode 第二次处置 → 零新行;RESOLVED 后迟到 ack(changed=false)→ 零行;老 stuck-disposition 路由 → 同样恰一行;**C4a execution-scoped latch 命中 2 个 active episode → 2 行独立 outbox(重复请求零新增)**(R16 #6);issue_id 空 → 立即 unroutable + session_events 审计;ack 与 prepare 同一 save(store 方法层断言单次落盘边界);
+- delivery 面:pending 行 + poster 就绪 → 投出 confirmed 后 posted;post throw → 留 pending、attempts/last_attempt stamp、下 pass 重试;**6 候选首项 poison → 排序轮转不饿死后项、≤5/pass**(R16 #4);poster holder 空 → 全跳、零 stamp;created_at >7d → expired + loud;重叠 tick(前一 pass 悬挂)→ 单飞闩跳过零并发投递;
+- recovery/revive 面(R16 #3/#7):`via:'recovery'` ack → 零 outbox 行;**bulk `resolveDetectionEscalationsForTarget`** → 零 outbox 行零修改;**recovery-RESOLVED → revive → Lead ack** → 旧行被 revive DELETE、新处置挣得新行新回执;**ESCALATED → recovery** → 零回执;**ESCALATED → Lead ack** → 正常回执;Lead ack 后 recovery-resolve → 行保留照常投;
+- 开关矩阵:`=0` → prepare 照写、零投递;重开 → 窗口内补投、窗口外 expired;
+- 迁移:旧库(无表)重开 → CREATE TABLE 幂等零 throw;
+- INV-10 回归:回执文案反断言不含 pane 文本;founder 面原始检测事件仍为 0。
 
-**验收补充(真机)**:重演脚本追加一步 —— zombie 告警进 Lead 队列后,以 Lead 身份调 detection-ack → issue thread 内肉眼可见回执;founder 面原始检测事件仍为 0。
+**验收补充(真机)**:重演脚本追加一步——zombie 告警进 Lead 队列后,以 Lead 身份调 detection-ack → 下一个 reconcile pass(≈1 分钟)内 issue thread 肉眼可见回执;founder 面原始检测事件仍为 0。
