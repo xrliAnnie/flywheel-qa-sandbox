@@ -88,6 +88,15 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		expect(INFORMATIONAL_KINDS).toEqual(new Set(["account_switched"]));
 	});
 
+	it("M5 migration phase one keeps legacy usage_limit ARC intact", () => {
+		expect(KIND_CONTRACTS.usage_limit).toEqual({
+			owner: "cross_by_provider",
+			arc: "auto",
+			remediationRef:
+				"account-switch repair (FLY-696, gated FLYWHEEL_ACCOUNT_SELF_HEAL)",
+		});
+	});
+
 	it("shipped table passes startup validation", () => {
 		expect(() => validateKindContracts()).not.toThrow();
 	});

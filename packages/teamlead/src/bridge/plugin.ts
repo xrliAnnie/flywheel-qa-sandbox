@@ -59,6 +59,7 @@ import {
 	classifyDetection,
 	makeSubscriptionDetectionClassifier,
 } from "../account-heal/detection-classifier.js";
+import { quarantinePendingSwitches } from "../account-heal/pending-store.js";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -347,6 +348,10 @@ import {
 import { patchSessionParams } from "./proofshot-session.js";
 import { wirePublishBroker } from "./publish-broker/wire.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
+import {
+	quotaDaemonCutoverEnabled,
+	resolveQuotaDaemonBridgeMode,
+} from "./quota-daemon-cutover.js";
 import { createRepoMutationLock } from "./repo-mutation-lock.js";
 import {
 	DEFAULT_RETENTION_MAX_AGE_MS,
@@ -987,6 +992,8 @@ export interface BridgeAppOptions {
 	 * (self-heal off = byte-compat).
 	 */
 	accountSwitchRoute?: { current?: AccountSwitchRuntime };
+	/** FLY-1256: authenticated /api/account-switch retirement gate. */
+	quotaDaemonCutover?: () => boolean;
 	/**
 	 * FLY-871 R3/C9: the /api/rescue route (mounted in createBridgeApp) reads this
 	 * holder at request time; startBridge sets `.current` only when the rescue
@@ -3138,6 +3145,7 @@ export function createBridgeApp(
 			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 			createAccountSwitchRouter({
 				getRuntime: () => opts?.accountSwitchRoute?.current,
+				cutoverEnabled: opts?.quotaDaemonCutover,
 			}),
 		);
 	} else {
@@ -4118,6 +4126,22 @@ export async function startBridge(
 	// channel). Undefined ⇒ route returns 409 needs_human (byte-compat).
 	const rescueRouteHolder: { current?: RescueRouteRuntime } = {};
 
+	// FLY-1256: freeze one startup mode for every in-process execution face.
+	// setup flips CUTOVER only after the external daemon proves healthy, then
+	// restarts Bridge; a process never straddles modes.
+	const claudeAccountPoolConfigured = accountPoolConfigured();
+	const quotaBridgeMode = resolveQuotaDaemonBridgeMode(
+		claudeAccountPoolConfigured,
+	);
+	if (quotaBridgeMode.quarantinePending) {
+		const quarantined = await quarantinePendingSwitches();
+		if (quarantined) {
+			console.warn(
+				`[Bridge] FLY-1256 quarantined legacy account-switch pending store: ${quarantined}`,
+			);
+		}
+	}
+
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -4234,6 +4258,7 @@ export async function startBridge(
 			accountRotationPost: accountRotationPostHolder,
 			// FLY-871 R2/C5: /api/account-switch route reads this holder.
 			accountSwitchRoute: accountSwitchRouteHolder,
+			quotaDaemonCutover: quotaDaemonCutoverEnabled,
 			rescueRoute: rescueRouteHolder,
 			// FLY-907: unified issue-display refresher (populated post-listen).
 			issueDisplayRefresh: issueDisplayRefreshHolder,
@@ -6985,8 +7010,8 @@ export async function startBridge(
 
 	// FLY-696: hoisted so both the Hub's repair path AND the account-switch
 	// watchdog (piggybacked on onPollComplete below, no new timer) share one
-	// DiscordOps + one accountSwitch instance. accountSwitch is gated on
-	// the account-pool presence (FLY-1243; absent = byte-compat → undefined).
+	// DiscordOps + one accountSwitch instance. accountSwitch is gated on both
+	// pool presence and FLY-1256 legacy mode (CUTOVER retires Bridge execution).
 	const alertDiscordOps = createDiscordOps(() => {
 		// FLY-927 (D2): single sender identity — when set, Hub thread operations
 		// use the SAME one identity as the root alert (no repair-chain fan-out).
@@ -7007,10 +7032,9 @@ export async function startBridge(
 		await alertDiscordOps.postToThread(threadId, content);
 	};
 	// FLY-1243: FLYWHEEL_ACCOUNT_SELF_HEAL retired (固化 default-on). The Claude
-	// account pool file is now the de-facto switch — present ⇒ self-heal wires
-	// (production); absent ⇒ undefined = byte-compat for deployments that never
-	// provisioned a pool (QA slots / sub / joycon), no quota scan, no switch.
-	const accountSwitchRepair = accountPoolConfigured()
+	// account pool file is the legacy switch signal; FLY-1256 CUTOVER supersedes
+	// it and leaves the external daemon as the only account-switch executor.
+	const accountSwitchRepair = quotaBridgeMode.attachAccountSwitch
 		? makeAccountSwitchRepair({
 				switchDeps: makeClaudeProfileSwitchDeps({
 					binPath: claudeProfileBinPath(),
@@ -7020,11 +7044,9 @@ export async function startBridge(
 
 	// FLY-696 M1/④: now that the unified-channel DiscordOps exists, late-bind the
 	// account_rotation Alerts-post the event router reads. Reuses the SAME
-	// post-to-thread path the account-switch watchdog uses. Gated on the SAME
-	// self-heal switch as the rest of FLY-696 (Codex R1 MED-2: flag off = the
-	// default MUST be byte-compatible, no new Alerts behavior); no unified
-	// channel likewise leaves the holder undefined → the event is acked, not
-	// posted.
+	// post-to-thread path the legacy account-switch watchdog uses. Manual/profile
+	// rotation notices and login rescue remain wired through CUTOVER; only the
+	// three automatic account-switch execution faces are retired.
 	// FLY-871 R3/C9: the infra self-heal rescue runtime (built inside the same
 	// self-heal gate below). Declared here so the account-switch watchdog tick
 	// (onPollComplete, later in this closure) can trigger the post-switch sweep.
@@ -7036,7 +7058,7 @@ export async function startBridge(
 	let postSwitchResult:
 		| ((detail: string, disposition?: RepairDisposition) => Promise<void>)
 		| undefined;
-	if (accountSwitchRepair && unifiedAlertChannelId) {
+	if (claudeAccountPoolConfigured && unifiedAlertChannelId) {
 		// The Alerts post is authoritative and unchanged in the dormant states;
 		// on top of it:
 		//  - needs_human (no_account / failed / not-attemptable) +
@@ -7078,34 +7100,37 @@ export async function startBridge(
 				await postInfraNotifyDigest(formatRotationDigest(rotation));
 			}
 		};
-		// FLY-871 R2/C5: bind the /api/account-switch runtime (same self-heal gate).
+		// FLY-871 R2/C5 + FLY-1256: bind the runtime only in legacy mode.
 		// The route claims a pending record + reuses accountSwitchRepair.executeSwitch,
 		// posts the result to the Alerts channel, and audits before/after to lead_events.
-		accountSwitchRouteHolder.current = {
-			repair: accountSwitchRepair,
-			postResult: postSwitchResult,
-			audit: (e) =>
-				store.appendLeadEvent(
-					e.actorBotId,
-					`account-switch:${e.phase}:${e.key}`,
-					`account_switch_${e.phase}`,
-					JSON.stringify(e),
-				),
-			// FLY-927 (Task 2.3): the atomic pending-switch claim ACKs the matching
-			// ACTIVE ticket — exact event-id correlation, so a stale episode can
-			// never be acked; legacy rows (NULL ticket_status) untouched.
-			ackTicket: (sourceAlertId) => {
-				const row = store.getActiveAlertThreadByEventId(sourceAlertId);
-				if (row?.ticket_status) {
-					store.setTicketStatus(row.correlation_key, "ACK");
-				}
-			},
-		};
+		if (accountSwitchRepair) {
+			accountSwitchRouteHolder.current = {
+				repair: accountSwitchRepair,
+				postResult: postSwitchResult,
+				audit: (e) =>
+					store.appendLeadEvent(
+						e.actorBotId,
+						`account-switch:${e.phase}:${e.key}`,
+						`account_switch_${e.phase}`,
+						JSON.stringify(e),
+					),
+				// FLY-927 (Task 2.3): the atomic pending-switch claim ACKs the matching
+				// ACTIVE ticket — exact event-id correlation, so a stale episode can
+				// never be acked; legacy rows (NULL ticket_status) untouched.
+				ackTicket: (sourceAlertId) => {
+					const row = store.getActiveAlertThreadByEventId(sourceAlertId);
+					if (row?.ticket_status) {
+						store.setTicketStatus(row.correlation_key, "ACK");
+					}
+				},
+			};
+		}
 
 		// FLY-871 R3/C9: build the infra self-heal rescue runtime — binds the pure
 		// rescue orchestration (rescue.ts) to the real Bridge primitives. Consumed
 		// by the /api/rescue route (W3) and the post-switch sweep (W5). Same
-		// self-heal gate ⇒ dormant + byte-compat when the flag is off.
+		// Pool + unified-channel gate remains independent of quota CUTOVER: login
+		// rescue is not an account-switch execution face and must stay available.
 		const resolveRescueLeadId = defaultResolveLeadId(projects);
 		// The founder's Discord id for a REAL @-ping on a rescue escalation (snowflake
 		// only; unset/malformed ⇒ undefined = degrade to no-mention, like the Hub).
@@ -7288,9 +7313,11 @@ export async function startBridge(
 		// FLY-871 R3/W5: on a successful bot-claimed switch (the /api/account-switch
 		// route), sweep the incident-window login-stuck sessions. The watchdog-fired
 		// switch wires the same sweep below (onPollComplete).
-		accountSwitchRouteHolder.current.onSwitchSuccess = async () => {
-			await rescueRuntime?.postSwitchRescueSweep();
-		};
+		if (accountSwitchRouteHolder.current) {
+			accountSwitchRouteHolder.current.onSwitchSuccess = async () => {
+				await rescueRuntime?.postSwitchRescueSweep();
+			};
+		}
 	}
 
 	// FLY-1082 (Task 3.2): runbook-gap Linear wiring — FLY team / Flywheel
@@ -7831,11 +7858,10 @@ export async function startBridge(
 		isReconnecting: (execId) =>
 			reconnectHolder.current?.isReconnecting(execId) ?? false,
 		// FLY-696 M1/③: runner-side quota scan, piggybacked on this poll's capture
-		// (no new timer). Gated on the SAME switch (accountSwitchRepair exists iff
-		// account pool provisioned; FLY-1243) — absent ⇒ undefined ⇒ byte-compat.
-		// Routes a real runner cap through the shared alert sink (Hub threading +
-		// AutoRepairBot enqueue), with the §3.3 transient-529 short-circuit inside.
-		runnerQuotaScan: accountSwitchRepair
+		// (no new timer). Legacy mode preserves the pool gate byte-for-byte; CUTOVER
+		// deliberately keeps this detector alive while omitting accountSwitchRepair,
+		// so a cap still alerts but can no longer enqueue a Bridge-side switch.
+		runnerQuotaScan: quotaBridgeMode.runRunnerQuotaScan
 			? (() => {
 					const quotaScan = makeRunnerQuotaScan({
 						projects,
@@ -7998,7 +8024,11 @@ export async function startBridge(
 					`[auto-qa] reconcileCodexHoldNudges (poll) failed: ${(err as Error).message}`,
 				);
 			}
-			if (accountSwitchRepair && unifiedAlertChannelId) {
+			if (
+				quotaBridgeMode.runAccountSwitchWatchdog &&
+				accountSwitchRepair &&
+				unifiedAlertChannelId
+			) {
 				try {
 					await accountSwitchWatchdogTick({
 						now: () => Date.now(),
