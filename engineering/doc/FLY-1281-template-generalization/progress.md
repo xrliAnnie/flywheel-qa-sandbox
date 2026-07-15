@@ -1,13 +1,13 @@
 ---
 issue: FLY-1281
 phase: design
-phaseCursor: 1/6
-updated: 2026-07-15T05:28:35.502Z
-nextStep: brainstorm gate → research.md
+phaseCursor: 2/6
+updated: 2026-07-15T05:35:36.832Z
+nextStep: write plan.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-1281 progress
-**phase**: design (1/6)
-**next**: brainstorm gate → research.md
+**phase**: design (2/6)
+**next**: write plan.md
