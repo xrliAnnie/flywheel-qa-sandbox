@@ -139,12 +139,15 @@ export function applyManagementDagEdit(
 		const effort = workflowEffort(input.desired.effort);
 		if (effort) node.effort = effort;
 		else delete node.effort;
-		const validated = validateWorkflowManifest(next);
+		const validated = validateWorkflowManifest(next, {
+			allowUnsupportedModels: true,
+		});
 		return input.store.createAndPublishWorkflowTemplateRevision({
 			templateId: target.templateId,
 			manifest: validated,
 			expectedRevision: input.expectedRevision,
 			createdBy: input.actor,
+			allowUnsupportedModels: true,
 		});
 	} catch (error) {
 		return invalid(error);

@@ -253,7 +253,9 @@ describe("management DAG writer", () => {
 		)!;
 		const retired = JSON.parse(revision.manifest);
 		retired.nodes = retired.nodes.map((node: { id: string }) =>
-			node.id === "design" ? { ...node, model: "claude-retired-model" } : node,
+			node.id === "design" || node.id === "implement"
+				? { ...node, model: "claude-retired-model" }
+				: node,
 		);
 		store.close();
 
@@ -298,7 +300,42 @@ describe("management DAG writer", () => {
 				actor: "founder-management-console",
 			}),
 		).toMatchObject({ status: "published" });
-		const repairedTemplate = store.getWorkflowTemplate(template.template_id)!;
+		let repairedTemplate = store.getWorkflowTemplate(template.template_id)!;
+		const partiallyRepaired = validateWorkflowManifest(
+			JSON.parse(
+				store.getWorkflowTemplateRevision(
+					template.template_id,
+					repairedTemplate.current_published_revision!,
+				)!.manifest,
+			),
+			{ allowUnsupportedModels: true },
+		);
+		expect(
+			partiallyRepaired.nodes.find((node) => node.id === "implement"),
+		).toMatchObject({ model: "claude-retired-model" });
+
+		const nextDag = readManagementDags({
+			reader: store,
+			projectNames: ["flywheel"],
+		}).projectDags[0]!.dags[0]!;
+		const secondTarget = nextDag.nodes.find(
+			(node) => node.name === "implement",
+		)!;
+		expect(
+			applyManagementDagEdit({
+				store,
+				targetId: secondTarget.dispatch.targetId,
+				expectedRevision: nextDag.revision,
+				expectedDigest: nextDag.digest,
+				desired: {
+					provider: "openai",
+					model: "gpt-5.6-sol",
+					effort: "xhigh",
+				},
+				actor: "founder-management-console",
+			}),
+		).toMatchObject({ status: "published" });
+		repairedTemplate = store.getWorkflowTemplate(template.template_id)!;
 		expect(() =>
 			validateWorkflowManifest(
 				JSON.parse(

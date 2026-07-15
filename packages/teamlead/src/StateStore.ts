@@ -10569,8 +10569,12 @@ export class StateStore {
 		manifest: unknown;
 		expectedRevision: number | null;
 		createdBy: string;
+		/** Repair-only: preserve unrelated retired selections after the caller validates the edited node. */
+		allowUnsupportedModels?: boolean;
 	}): WorkflowTemplatePublishResult {
-		const manifest = validateWorkflowManifest(input.manifest);
+		const manifest = validateWorkflowManifest(input.manifest, {
+			allowUnsupportedModels: input.allowUnsupportedModels === true,
+		});
 		const digest = canonicalSubmissionDigest(manifest);
 		if (!this.getWorkflowTemplate(input.templateId)) {
 			return { status: "not_found" };

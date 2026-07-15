@@ -339,6 +339,7 @@ describe("management console browser interactions", () => {
 						},
 					],
 					noOps: [],
+					acknowledgementRequired: true,
 				},
 				confirmationRequired: true,
 			},
@@ -353,8 +354,8 @@ describe("management console browser interactions", () => {
 						},
 					],
 					noOps: [],
+					acknowledgementRequired: true,
 				},
-				confirmationRequired: true,
 				confirmToken: "drifted-token",
 			},
 		);

@@ -405,7 +405,7 @@ const MANAGEMENT_CONSOLE_APP = `
   function post(path,body){return requestJson(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});}
   function canonicalKey(batch){return stableUiValue(batch.changes.map(function(change){return {targetId:change.targetId,oldValue:change.oldValue,newValue:change.newValue,consequence:change.consequence};}));}
   function showCanonical(result,message,forceAcknowledgement){
-    staged=forceAcknowledgement?Object.assign({},result,{confirmToken:null}):result;result=staged;var batch=result.batch;var html='<h2>提交确认</h2><div class="help">以下内容来自 server canonical 预检；页面草稿不是落盘权威。</div>';
+    staged=forceAcknowledgement?Object.assign({},result,{confirmationRequired:true,confirmToken:null}):result;result=staged;var batch=result.batch;var html='<h2>提交确认</h2><div class="help">以下内容来自 server canonical 预检；页面草稿不是落盘权威。</div>';
     if(message){html+='<div class="ack">'+esc(message)+'</div>';}
     batch.changes.forEach(function(change){html+='<div class="change"><strong>'+esc(change.targetId)+'</strong><div class="change-values"><div><div class="help">旧值 oldValue</div><div class="value old">'+esc(textValue(change.oldValue))+'</div></div><span>→</span><div><div class="help">新值 newValue</div><div class="value">'+esc(textValue(change.newValue))+'</div></div></div><div class="consequence">影响 consequence：'+esc(change.consequence)+'</div></div>';});
     batch.noOps.forEach(function(change){html+='<div class="change"><strong>'+esc(change.targetId)+'</strong><span class="badge">无变化</span></div>';});
@@ -424,7 +424,7 @@ const MANAGEMENT_CONSOLE_APP = `
       var previous=canonicalKey(staged.batch);var changes=Object.keys(drafts).sort().map(function(id){return drafts[id];});
       post("/api/fleet/changes/stage",{changes:changes,acknowledged:true}).then(function(result){
         if(!result.confirmToken){throw new Error("后端未签发确认令牌");}
-        if(canonicalKey(result.batch)!==previous){showCanonical(result,"真源在确认期间发生变化，请重新核对旧值与新值。",result.confirmationRequired);return;}
+        if(canonicalKey(result.batch)!==previous){showCanonical(result,"真源在确认期间发生变化，请重新核对旧值与新值。",result.batch.acknowledgementRequired);return;}
         staged=result;applyCanonical();
       }).catch(showModalError);return;
     }
