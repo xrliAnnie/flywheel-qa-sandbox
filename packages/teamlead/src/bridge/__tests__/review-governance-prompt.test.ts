@@ -20,18 +20,24 @@ function ruling(
 
 describe("FLY-1278 governance reviewer prompt", () => {
 	it("is absent when there are no active rulings", () => {
-		expect(buildGovernancePromptSegment([])).toEqual({ text: "", elided: 0 });
+		expect(buildGovernancePromptSegment([], "code")).toEqual({
+			text: "",
+			elided: 0,
+		});
 	});
 
 	it("renders fixed structured fields and the explicit dispute protocol", () => {
-		const result = buildGovernancePromptSegment([
-			ruling("metadata-lease", "2026-07-14 12:00:00", {
-				disposition: "follow_up",
-				followUpIssue: "FLY-1274",
-				findingTitle: "Add a 30s metadata lease",
-				rationale: "Correctness wins; optimize separately.",
-			}),
-		]);
+		const result = buildGovernancePromptSegment(
+			[
+				ruling("metadata-lease", "2026-07-14 12:00:00", {
+					disposition: "follow_up",
+					followUpIssue: "FLY-1274",
+					findingTitle: "Add a 30s metadata lease",
+					rationale: "Correctness wins; optimize separately.",
+				}),
+			],
+			"code",
+		);
 
 		expect(result.elided).toBe(0);
 		expect(result.text).toContain("GOVERNANCE-SETTLED FINDINGS");
@@ -40,6 +46,26 @@ describe("FLY-1278 governance reviewer prompt", () => {
 		expect(result.text).toContain("do not repeat it");
 		expect(result.text).toContain('"disputesRuling": "metadata-lease"');
 		expect(result.text).toContain("new HIGH-severity evidence");
+	});
+
+	it("isolates rulings by review lane before applying the prompt budget", () => {
+		const designRows = Array.from({ length: 20 }, (_, index) =>
+			ruling(
+				`design-${index}`,
+				`2026-07-15 12:${String(index).padStart(2, "0")}:00`,
+				{ reviewType: "design" },
+			),
+		);
+		const codeRow = ruling("code-authority", "2026-07-14 12:00:00");
+
+		const result = buildGovernancePromptSegment(
+			[...designRows, codeRow],
+			"code",
+		);
+
+		expect(result.elided).toBe(0);
+		expect(result.text).toContain('finding_key: "code-authority"');
+		expect(result.text).not.toContain("design-");
 	});
 
 	it("sorts newest-first, caps at 20, escapes controls, and truncates privileged text", () => {
@@ -53,7 +79,7 @@ describe("FLY-1278 governance reviewer prompt", () => {
 			findingTitle: `line one\n${"t".repeat(220)}TAIL`,
 			rationale: `${"r".repeat(520)}TAIL`,
 		});
-		const result = buildGovernancePromptSegment(rows);
+		const result = buildGovernancePromptSegment(rows, "code");
 
 		expect(result.elided).toBe(2);
 		expect(result.text.indexOf('finding_key: "newest"')).toBeLessThan(

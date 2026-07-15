@@ -15,9 +15,10 @@ export interface GovernancePromptSegment {
  */
 export function buildGovernancePromptSegment(
 	rulings: readonly ReviewFindingRulingSnapshot[],
+	reviewType: "design" | "code",
 ): GovernancePromptSegment {
 	const active = rulings
-		.filter((ruling) => !ruling.revokedAt)
+		.filter((ruling) => !ruling.revokedAt && ruling.reviewType === reviewType)
 		.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 	if (active.length === 0) return { text: "", elided: 0 };
 

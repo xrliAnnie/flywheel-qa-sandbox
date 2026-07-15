@@ -915,7 +915,7 @@ export class ReviewRequestCoordinator {
 				)
 			: Object.freeze([]);
 		const governancePrompt = policyEnabled
-			? buildGovernancePromptSegment(rulingSnapshot)
+			? buildGovernancePromptSegment(rulingSnapshot, job.review_type)
 			: { text: "", elided: 0 };
 		if (governancePrompt.elided > 0) {
 			await this.emitReviewAlert({
