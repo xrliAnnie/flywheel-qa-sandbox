@@ -239,6 +239,7 @@ import {
 	handleFlagApply,
 	handleFlagStage,
 } from "./flag-routes.js";
+import { ConfirmTokenStore } from "./fleet-admin.js";
 import { defaultFleetConsoleOptions, FleetConsole } from "./fleet-console.js";
 import { getFleetConsoleHtml } from "./fleet-console-html.js";
 import {
@@ -324,6 +325,10 @@ import {
 	resolveProjectNameParam,
 } from "./linear-scope.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
+import {
+	handleManualQaApply,
+	handleManualQaStage,
+} from "./manual-qa-routes.js";
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
@@ -406,6 +411,7 @@ import {
 	defaultHasGateResponse,
 	defaultIsAncestor,
 } from "./ship-gate-rebind.js";
+import { ShipRelevantDiffService } from "./ship-relevant-diff.js";
 import {
 	alertStaleBlockerToLead,
 	createStaleBlockerGuard,
@@ -913,6 +919,8 @@ export class SseBroadcaster {
 /** GEO-294 + FLY-91 Round 3: Options object for new Bridge dependencies. */
 export interface BridgeAppOptions {
 	vercelToken?: string;
+	/** FLY-1251: manual-QA confirm tokens (independent of Fleet console uptime). */
+	manualQaTokens?: ConfirmTokenStore;
 	/** FLY-1185: ship-entry lifecycle bundle built in startBridge. */
 	lifecycleInfra?: LifecycleShipInfra;
 	/** FLY-1185 §2.11: the shared per-repo mutation lock (startBridge-owned). */
@@ -1365,6 +1373,59 @@ export function createBridgeApp(
 		apiToken: config.apiToken,
 		discordBotToken: config.discordBotToken,
 	});
+
+	// FLY-1251: manual QA is a server-owned enrollment, never a client-minted
+	// verdict or executor identity. The stage endpoint issues a single-use token
+	// bound to the exact {executionId, prHeadSha}; apply carries that token in a
+	// header so its JSON body remains the strict two-field schema. The token store
+	// is independent of Fleet console availability in production.
+	const manualQaTokens = opts?.manualQaTokens ?? opts?.fleetConsole?.tokens;
+	if (manualQaTokens) {
+		const requestHeaders = (
+			req: express.Request,
+		): Record<string, string | undefined> => ({
+			origin:
+				typeof req.headers.origin === "string" ? req.headers.origin : undefined,
+			referer:
+				typeof req.headers.referer === "string"
+					? req.headers.referer
+					: undefined,
+		});
+		app.post("/api/qa/manual-spawn/stage", (req, res) => {
+			const selfOrigin = loopbackSelfOrigin(req.headers.host);
+			if (!selfOrigin) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			if (!ffIsSameOrigin(requestHeaders(req), selfOrigin)) {
+				res.status(403).json({ error: "cross-origin" });
+				return;
+			}
+			const result = handleManualQaStage(manualQaTokens, req.body);
+			res.status(result.code).json(result.body);
+		});
+		app.post("/api/qa/manual-spawn", async (req, res) => {
+			const selfOrigin = loopbackSelfOrigin(req.headers.host);
+			if (!selfOrigin) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			if (!ffIsSameOrigin(requestHeaders(req), selfOrigin)) {
+				res.status(403).json({ error: "cross-origin" });
+				return;
+			}
+			const token = req.headers["x-flywheel-confirm-token"];
+			const result = await handleManualQaApply(
+				{
+					tokens: manualQaTokens,
+					coordinator: opts?.autoQaCoordinator?.current,
+				},
+				req.body,
+				typeof token === "string" ? token : undefined,
+			);
+			res.status(result.code).json(result.body);
+		});
+	}
 
 	// FLY-247 inc2a: Fleet console founder-admin surface (§2.2). Mounted BEFORE
 	// the `/api` Bearer middleware so `/api/fleet/*` never hits it — the console
@@ -3359,6 +3420,39 @@ export async function startBridge(
 		log: (message) => console.warn(message),
 	});
 
+	const shipRelevantDiffService = new ShipRelevantDiffService(store);
+	const ensureShipRelevantDiff = async (session: Session): Promise<void> => {
+		const head = session.pr_head_sha?.toLowerCase();
+		if (!head || !/^[0-9a-f]{40}$/.test(head)) return;
+		const project = projects.find(
+			(candidate) => candidate.projectName === session.project_name,
+		);
+		if (
+			!project ||
+			!project.projectRepo ||
+			!/^[^/]+\/[^/]+$/.test(project.projectRepo) ||
+			!Number.isSafeInteger(session.pr_number) ||
+			(session.pr_number ?? 0) <= 0
+		) {
+			store.deleteShipRelevantDiffSnapshot(session.execution_id, head);
+			return;
+		}
+		await shipRelevantDiffService.ensure({
+			executionId: session.execution_id,
+			repo: project.projectRepo,
+			prNumber: session.pr_number!,
+			prHeadSha: head,
+			api: async (path) => {
+				const { stdout } = await execFileP("gh", ["api", path], {
+					cwd: project.projectRoot,
+					timeout: 15_000,
+					maxBuffer: 5 * 1024 * 1024,
+				});
+				return JSON.parse(stdout) as unknown;
+			},
+		});
+	};
+
 	// FLY-1082 (Task 2.2): the fleet pressure-hold gates runner admission —
 	// late-bind the probe now that the store exists. Fail-open inside tryAdmit.
 	// runnerAdmission is optional on the config (scaffold/test bridges omit it).
@@ -4311,6 +4405,7 @@ export async function startBridge(
 			stuckDetectorHolder,
 			stuckLatchTtlMs: stuckLatchTtlMs(),
 			fleetConsole,
+			manualQaTokens: fleetConsole?.tokens ?? new ConfirmTokenStore(),
 			// FLY-516: /health reads this; close() flips it at teardown start.
 			shutdownStateHolder,
 			// FLY-623: event router reads this to clear reconnecting on a real event.
@@ -5110,20 +5205,14 @@ export async function startBridge(
 			.filter(Boolean),
 	);
 	// FLY-1041 Chunk 5: ONE hold guard closure injected into every founder
-	// approval source (text / ✅ reaction / voice) so they cannot drift —
-	// kill-switch FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0 (read per call) restores
-	// the pre-FLY-1041 held-writes-anyway behavior for all three at once.
+	// approval source (text / ✅ reaction / voice) so they cannot drift.
 	const founderApprovalIsHeld = (executionId: string): boolean =>
 		founderApprovalHoldGuard(store, store.getSession(executionId));
 
 	// FLY-1099 §4.1: the reason-classified hold face (same predicate order as
-	// isReviewHeld — shared implementation, cannot drift). The kill-switch
-	// FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0 keeps its FLY-1041 semantics: holds are
-	// ignored entirely (the deferral face then reports "not held" too).
+	// isReviewHeld — shared implementation, cannot drift).
 	const founderHoldReasonFor = (executionId: string) =>
-		process.env.FLYWHEEL_ATTRIBUTION_HOLD_ALIGN === "0"
-			? null
-			: reviewHoldReason(store, store.getSession(executionId));
+		reviewHoldReason(store, store.getSession(executionId));
 	// FLY-1099: current canonical founder id (same derivation the factory uses).
 	const founderCanonicalId = (): string | undefined =>
 		deriveCanonicalFounderId(
@@ -5922,6 +6011,7 @@ export async function startBridge(
 		projects,
 		store,
 		runtimeRegistry: registry,
+		ensureShipRelevantDiff,
 		// FLY-1048 (A6): gap-scan piggyback (zero new timer; env-gated inside).
 		onGapScanTick: gapScanTick,
 		gapScanEveryNTicks: (() => {
@@ -6294,6 +6384,7 @@ export async function startBridge(
 						issueLabels: parseJsonStringArray(session.issue_labels),
 					}),
 				effects: autoQaEffects,
+				ensureShipRelevantDiff,
 				// FLY-827: the codex hard-gate kill-switch is read live from
 				// process.env (the direct feature-flag toggle mutates it in place).
 				env: process.env,

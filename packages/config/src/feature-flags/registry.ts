@@ -1461,27 +1461,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
-		name: "attribution_hold_align",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_ATTRIBUTION_HOLD_ALIGN",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1041 Fix B: held(codex 未绿/QA 未绿/merge_block)期间三个 founder 批准写入源(text/✅/voice)统一拒写(=0 回到 held 也写入的 FLY-910 现状;一个开关管三源)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/auto-qa-held.ts",
-				"founderApprovalHoldGuard",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
 		name: "tier2_prefix_norm",
 		category: "kill_switch",
 		source: "env",

@@ -30,6 +30,10 @@ import {
 	isCodexGateSatisfied,
 	isReviewableRole,
 } from "./codex-gate.js";
+import {
+	SHIP_RELEVANT_CLASSIFIER_VERSION,
+	SHIP_RELEVANT_SNAPSHOT_MAX_AGE_MS,
+} from "./ship-relevant-diff.js";
 
 /** Minimal read surface — keeps the predicate trivially unit-testable. */
 export interface AutoQaHeldStore {
@@ -37,6 +41,17 @@ export interface AutoQaHeldStore {
 		parentExecutionId: string,
 		targetPrHeadSha: string,
 	): AutoQaRecord | undefined;
+	getShipRelevantDiffSnapshot?(
+		parentExecutionId: string,
+		targetPrHeadSha: string,
+	):
+		| {
+				pr_number: number;
+				classifier_version: number;
+				ship_relevant: 0 | 1;
+				computed_at: string;
+		  }
+		| undefined;
 }
 
 export interface QaHeldSession {
@@ -44,6 +59,7 @@ export interface QaHeldSession {
 	session_role?: string;
 	status?: string;
 	pr_head_sha?: string;
+	pr_number?: number;
 	/** FLY-827: sanctioned codex-skip bypass (needed by isReviewHeld). DB=int, type=bool. */
 	codex_skip?: number | boolean;
 	/** FLY-869 B: merged-but-unapproved park marker — held from ALL founder surfaces. */
@@ -121,19 +137,59 @@ export function reviewHoldReason(
 	// the qa/design roles are verifiers / pre-PR and are never founder-held here.
 	if (!isReviewableRole(session.session_role)) return null;
 	if (session.status !== "awaiting_review") return null;
-	const sha = session.pr_head_sha?.toLowerCase();
-	if (!sha || !FULL_SHA.test(sha)) {
-		// No valid head: hold under the hard gate (unless codex_skip), else no-op.
-		// A head-specific Codex review can't run without a head → codex_pending.
-		return codexHardGateEnabled(env) && !session.codex_skip
-			? "codex_pending"
-			: null;
+	const mainRole = (session.session_role ?? "main") === "main";
+	try {
+		const sha = session.pr_head_sha?.toLowerCase();
+		if (!sha || !FULL_SHA.test(sha)) {
+			// FLY-1251: a main review with no objective PR head cannot be classified
+			// as docs-only or matched to QA evidence. Unknown must hold regardless of
+			// the Codex gate switch. Implement keeps its historical Codex behavior.
+			if (mainRole) return "qa_evidence_unknown";
+			return codexHardGateEnabled(env) && !session.codex_skip
+				? "codex_pending"
+				: null;
+		}
+		if (mainRole && session.pr_number == null) {
+			return "qa_evidence_unknown";
+		}
+		// Codex gate first: not satisfied → held (independent of QA policy).
+		if (!isCodexGateSatisfied(store, session, sha, env)) return "codex_pending";
+
+		const record = store.getAutoQaRecord(session.execution_id, sha);
+		if (record) return record.status === "passed" ? null : "qa_not_green";
+
+		// FLY-793 implement owns a PR but delegates its verification to the phase
+		// pipeline. FLY-1251's stopgap is intentionally main-only.
+		if (!mainRole) return null;
+
+		const snapshot = store.getShipRelevantDiffSnapshot?.(
+			session.execution_id,
+			sha,
+		);
+		if (
+			!snapshot ||
+			snapshot.pr_number !== session.pr_number ||
+			snapshot.classifier_version !== SHIP_RELEVANT_CLASSIFIER_VERSION
+		) {
+			return "qa_evidence_missing";
+		}
+		const computedAt = Date.parse(snapshot.computed_at);
+		const ageMs = Date.now() - computedAt;
+		if (
+			!Number.isFinite(computedAt) ||
+			ageMs < -SHIP_RELEVANT_SNAPSHOT_MAX_AGE_MS ||
+			ageMs > SHIP_RELEVANT_SNAPSHOT_MAX_AGE_MS
+		) {
+			return "qa_evidence_unknown";
+		}
+		return snapshot.ship_relevant === 0 ? null : "qa_evidence_missing";
+	} catch (error) {
+		// A main-session evidence read is an authorization predicate. Any read
+		// failure therefore closes the founder surface. Other roles retain their
+		// historical exception behavior.
+		if (mainRole) return "qa_evidence_unknown";
+		throw error;
 	}
-	// Codex gate first: not satisfied → held (independent of QA policy).
-	if (!isCodexGateSatisfied(store, session, sha, env)) return "codex_pending";
-	// Codex satisfied → defer to the QA hold (QA-held is main-only; false for
-	// implement, which uses the FLY-793 phase QA rather than auto-QA).
-	return isQaHeld(store, session) ? "qa_not_green" : null;
 }
 
 /**
@@ -142,9 +198,8 @@ export function reviewHoldReason(
  * `isReviewHeld` holds (codex gate unsatisfied / QA not green / merge_block),
  * NO founder approval may be written by ANY channel — the pre-FLY-1041 text
  * path silently wrote approvals on held sessions (FLY-910 05:47), producing
- * "bound but unshippable" confusion. The kill-switch
- * `FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0` restores that byte-compatible behavior
- * for all three sources at once (one switch, Codex R1 #1).
+ * "bound but unshippable" confusion. FLY-1251 removes the silent env bypass:
+ * authorization holds are fail-closed in every founder-write channel.
  * Returns true = DECLINE the write (held).
  */
 export function founderApprovalHoldGuard(
@@ -152,7 +207,6 @@ export function founderApprovalHoldGuard(
 	session: QaHeldSession | undefined,
 	env: Record<string, string | undefined> = process.env,
 ): boolean {
-	if (env.FLYWHEEL_ATTRIBUTION_HOLD_ALIGN === "0") return false;
 	return isReviewHeld(store, session, env);
 }
 
