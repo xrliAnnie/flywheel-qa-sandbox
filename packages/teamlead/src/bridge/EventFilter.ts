@@ -150,7 +150,8 @@ const FILTER_RULES: FilterRule[] = [
 			// Annotation-only revision: notifier always sets notification_context
 			// explicitly, so this string never reaches the Lead as context.
 			priority: "normal",
-			reason: "monitoring lost — Runner liveness unverified; Lead should check via tmux",
+			reason:
+				"monitoring lost — Runner liveness unverified; Lead should check via tmux",
 		},
 	},
 	{

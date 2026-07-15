@@ -13,8 +13,8 @@
  * exact branch those tests pin, so it is not re-driven end-to-end here.
  */
 import type http from "node:http";
-import type { EventEnvelope } from "flywheel-edge-worker";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
+import type { EventEnvelope } from "flywheel-edge-worker";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { createBridgeApp } from "../bridge/plugin.js";

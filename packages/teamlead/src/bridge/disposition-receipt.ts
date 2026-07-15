@@ -158,6 +158,8 @@ export interface DispositionReceiptPassDeps {
 		| "markDispositionReceiptExpired"
 		| "getChatThreadByIssue"
 		| "getSessionLabels"
+		| "getSession"
+		| "insertEvent"
 	>;
 	projects: ProjectEntry[];
 	globalBotToken?: string;
@@ -220,7 +222,32 @@ async function deliverOneReceipt(
 	log: (msg: string) => void,
 ): Promise<void> {
 	if (nowMs - row.created_at_ms > RECEIPT_EXPIRY_MS) {
-		deps.store.markDispositionReceiptExpired(row.receipt_id);
+		if (deps.store.markDispositionReceiptExpired(row.receipt_id)) {
+			// Annie 铁律(Lead 29e7508a): every suppression path must answer "who
+			// definitely sees this". Expiry is a give-up on the founder-visible
+			// leg — a durable audit row (symmetric with unroutable) keeps it
+			// accountable beyond the log line.
+			try {
+				deps.store.insertEvent({
+					event_id: `receipt-expired-${row.receipt_id}`,
+					execution_id: row.target_key,
+					issue_id: row.issue_id ?? "",
+					project_name:
+						deps.store.getSession(row.target_key)?.project_name ?? "unknown",
+					event_type: "disposition_receipt_expired",
+					source: "bridge.disposition-receipt",
+					payload: {
+						kind: row.kind,
+						episodeFingerprint: row.episode_fingerprint,
+						actorLeadId: row.actor_lead_id,
+						disposition: row.disposition,
+						attempts: row.attempts,
+					},
+				});
+			} catch {
+				/* audit is best-effort; the loud log below still fires */
+			}
+		}
 		log(
 			`RECEIPT EXPIRED (>7d) for ${row.target_key}/${row.kind} receipt_id=${row.receipt_id} — giving up (thread never resolvable or delivery switched off too long)`,
 		);
@@ -244,10 +271,7 @@ async function deliverOneReceipt(
 	for (const project of deps.projects) {
 		for (const lead of project.leads ?? []) {
 			if (lead.agentId !== row.actor_lead_id || !lead.chatChannel) continue;
-			const thread = deps.store.getChatThreadByIssue(
-				issueId,
-				lead.chatChannel,
-			);
+			const thread = deps.store.getChatThreadByIssue(issueId, lead.chatChannel);
 			if (thread) {
 				found = { thread, projectName: project.projectName };
 				break;

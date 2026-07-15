@@ -41,7 +41,9 @@ const PARSE_RE =
 	/^zombie: tmux window (.+) dead \(pane probe absent x(\d+), server up, at ([^)]+)\)$/;
 
 /** True when a `last_error` value marks a zombie declaration (any vintage). */
-export function isZombieLastError(lastError: string | undefined | null): boolean {
+export function isZombieLastError(
+	lastError: string | undefined | null,
+): boolean {
 	return !!lastError?.startsWith(ZOMBIE_LAST_ERROR_PREFIX);
 }
 

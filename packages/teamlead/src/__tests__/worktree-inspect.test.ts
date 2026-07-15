@@ -116,7 +116,8 @@ describe("inspectWorktreeForUnpushedWork", () => {
 
 	it("happy path: NUL parsing splits untracked vs modified; branch + vs_upstream count", async () => {
 		const git = happyGit({
-			statusOut: "?? new-file.md\0?? nested/dir/deep.txt\0 M changed.ts\0A  staged.ts\0",
+			statusOut:
+				"?? new-file.md\0?? nested/dir/deep.txt\0 M changed.ts\0A  staged.ts\0",
 		});
 		const r = await inspectWorktreeForUnpushedWork(process.cwd(), git as never);
 		expect(r.ok).toBe(true);
@@ -160,7 +161,9 @@ describe("inspectWorktreeForUnpushedWork", () => {
 	});
 
 	it("path caps at 10 with totals preserved", async () => {
-		const files = Array.from({ length: 14 }, (_, i) => `?? f${i}.txt\0`).join("");
+		const files = Array.from({ length: 14 }, (_, i) => `?? f${i}.txt\0`).join(
+			"",
+		);
 		const git = happyGit({ statusOut: files });
 		const r = await inspectWorktreeForUnpushedWork(process.cwd(), git as never);
 		expect(r.untracked).toHaveLength(10);

@@ -34,11 +34,11 @@
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import type { archiveChatThread } from "./chat-thread-utils.js";
-import type { ReconcileLinearLookup } from "./done-thread-reconcile.js";
 import {
 	archiveThreadAndRecord,
 	resolveBotTokenForThread,
 } from "./done-thread-archiver.js";
+import type { ReconcileLinearLookup } from "./done-thread-reconcile.js";
 import { lookupLinearIssueByIdentifier } from "./linear-query.js";
 import {
 	lookupTmuxTarget,

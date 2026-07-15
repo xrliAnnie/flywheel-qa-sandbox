@@ -21,8 +21,8 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	defaultGapThresholds,
-	evaluateGapSuspicion,
 	evaluatedGapConditions,
+	evaluateGapSuspicion,
 	type GapCommEvidence,
 	openGapReader,
 } from "../detection-gap-scan.js";
@@ -83,9 +83,7 @@ describe("M8 pure judgement — V2 status gate", () => {
 			const kinds = evaluateGapSuspicion(gapInput).map((r) => r.kind);
 			expect(kinds).not.toContain("delivery_unconsumed");
 			// evaluated mirror: gated-off targets absence-clear old episodes
-			expect(evaluatedGapConditions(gapInput)).toContain(
-				"delivery_unconsumed",
-			);
+			expect(evaluatedGapConditions(gapInput)).toContain("delivery_unconsumed");
 		});
 	}
 
@@ -163,7 +161,11 @@ describe("M8 reader — full-id consumption receipt (real sqlite)", () => {
 		db.prepare(
 			`INSERT INTO messages (id, from_agent, to_agent, type, content, created_at, expires_at, delivered_at)
 			 VALUES (?, 'bridge', 'exec-b1', 'instruction', 'do the thing', datetime('now', ?), datetime('now','+72 hours'), datetime('now', ?))`,
-		).run(id, `-${opts.deliveredAgoMin} minutes`, `-${opts.deliveredAgoMin} minutes`);
+		).run(
+			id,
+			`-${opts.deliveredAgoMin} minutes`,
+			`-${opts.deliveredAgoMin} minutes`,
+		);
 	}
 
 	function insertRunnerReport(

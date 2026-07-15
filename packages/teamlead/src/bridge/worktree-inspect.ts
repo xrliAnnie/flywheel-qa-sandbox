@@ -108,19 +108,28 @@ export async function inspectWorktreeForUnpushedWork(
 	execFileFn: ExecFileFn = defaultExecFile,
 ): Promise<WorktreeInspection> {
 	if (!worktreePath || !existsSync(worktreePath)) {
-		return { ok: false, worktreePath, error: "worktree path unknown or missing" };
+		return {
+			ok: false,
+			worktreePath,
+			error: "worktree path unknown or missing",
+		};
 	}
 
 	const startedAt = Date.now();
 	const warnings: string[] = [];
 	const warn = (label: string, err: unknown) => {
 		if (warnings.length < WARNING_CAP) {
-			warnings.push(clip(`${label}: ${(err as Error)?.message ?? String(err)}`));
+			warnings.push(
+				clip(`${label}: ${(err as Error)?.message ?? String(err)}`),
+			);
 		}
 	};
 	const overBudget = () => Date.now() - startedAt > TOTAL_BUDGET_MS;
 	const git = (args: string[]) =>
-		execFileFn("git", args, { cwd: worktreePath, timeout: PER_CALL_TIMEOUT_MS });
+		execFileFn("git", args, {
+			cwd: worktreePath,
+			timeout: PER_CALL_TIMEOUT_MS,
+		});
 
 	const out: WorktreeInspection = { ok: false, worktreePath };
 

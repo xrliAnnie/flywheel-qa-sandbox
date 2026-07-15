@@ -139,11 +139,16 @@ describe("M10 prepare — transactional ack + receipt", () => {
 
 	it("second disposition on the same generation → zero new rows (UNIQUE), even with a rolled-back wall clock", () => {
 		seedEpisode();
-		store.ackDetectionEscalationWithReceipt("exec-1", KIND, "aaaaaaaaaaaaaaaa", {
-			atMs: NOW,
-			disposition: "ack",
-			receipt: receiptInput(),
-		});
+		store.ackDetectionEscalationWithReceipt(
+			"exec-1",
+			KIND,
+			"aaaaaaaaaaaaaaaa",
+			{
+				atMs: NOW,
+				disposition: "ack",
+				receipt: receiptInput(),
+			},
+		);
 		// ACKED → RESOLVED is a real state change (changed=true), but the
 		// generation UNIQUE blocks a second receipt — including when the clock
 		// rolled BACK between the two requests (anchor-keyed, not time-keyed).
@@ -182,14 +187,19 @@ describe("M10 prepare — transactional ack + receipt", () => {
 	it("non-UNIQUE constraint failure (content NULL) THROWS and rolls the ack back too (reopen shows all-or-nothing)", async () => {
 		seedEpisode();
 		expect(() =>
-			store.ackDetectionEscalationWithReceipt("exec-1", KIND, "aaaaaaaaaaaaaaaa", {
-				atMs: NOW,
-				disposition: "ack",
-				receipt: {
-					...receiptInput(),
-					content: null as unknown as string, // NOT NULL violation
+			store.ackDetectionEscalationWithReceipt(
+				"exec-1",
+				KIND,
+				"aaaaaaaaaaaaaaaa",
+				{
+					atMs: NOW,
+					disposition: "ack",
+					receipt: {
+						...receiptInput(),
+						content: null as unknown as string, // NOT NULL violation
+					},
 				},
-			}),
+			),
 		).toThrow();
 		store.close();
 		const reopened = await StateStore.create(join(dir, "state.db"));
@@ -289,9 +299,7 @@ describe("M10 prepare — transactional ack + receipt", () => {
 		).toThrow();
 		store.close();
 		const reopened = await StateStore.create(join(dir, "state.db"));
-		expect(
-			reopened.getStuckDisposition("exec-1", "*"),
-		).toBeUndefined(); // authoritative stuck write rolled back
+		expect(reopened.getStuckDisposition("exec-1", "*")).toBeUndefined(); // authoritative stuck write rolled back
 		expect(
 			reopened.getDetectionEscalation("exec-1", KIND, "aaaaaaaaaaaaaaaa")
 				?.status,
@@ -317,11 +325,16 @@ describe("M10 recovery / revive lifecycle", () => {
 
 	it("old-generation pending receipt survives revive; the new generation earns its own row", () => {
 		const gen1 = seedEpisode({ firstDetectedAtMs: NOW - 120_000 });
-		store.ackDetectionEscalationWithReceipt("exec-1", KIND, "aaaaaaaaaaaaaaaa", {
-			atMs: NOW - 100_000,
-			disposition: "ack",
-			receipt: receiptInput(),
-		});
+		store.ackDetectionEscalationWithReceipt(
+			"exec-1",
+			KIND,
+			"aaaaaaaaaaaaaaaa",
+			{
+				atMs: NOW - 100_000,
+				disposition: "ack",
+				receipt: receiptInput(),
+			},
+		);
 		expect(allReceipts()).toHaveLength(1);
 		// recovery closes the episode, then it revives with a NEWER anchor.
 		store.ackDetectionEscalation("exec-1", KIND, "aaaaaaaaaaaaaaaa", {
@@ -381,11 +394,14 @@ describe("M10 recovery / revive lifecycle", () => {
 describe("M10 copy — formatter goldens", () => {
 	it("covers the full disposition set (incl. snooze horizon + needs_founder)", () => {
 		const base = { actorLeadId: "tadashi", kind: KIND };
+		expect(formatDispositionReceipt({ ...base, rawDisposition: "ack" })).toBe(
+			"🧾 处置回执:tadashi 已处理「会话疑似卡死」— 判定:已接手在处理",
+		);
 		expect(
-			formatDispositionReceipt({ ...base, rawDisposition: "ack" }),
-		).toBe("🧾 处置回执:tadashi 已处理「会话疑似卡死」— 判定:已接手在处理");
-		expect(
-			formatDispositionReceipt({ ...base, rawDisposition: "handled_remanaged" }),
+			formatDispositionReceipt({
+				...base,
+				rawDisposition: "handled_remanaged",
+			}),
 		).toContain("已解决(已重新接管 Runner)");
 		expect(
 			formatDispositionReceipt({ ...base, rawDisposition: "false_positive" }),
@@ -552,6 +568,10 @@ describe("M10 delivery — single consumer", () => {
 		expect(store.getPendingDispositionReceipts(10)).toHaveLength(0);
 		expect(log.mock.calls.some((c) => String(c[0]).includes("EXPIRED"))).toBe(
 			true,
+		);
+		// Annie 铁律: the give-up leaves a durable audit row, not just a log line.
+		expect(store.getEventsByType("disposition_receipt_expired")).toHaveLength(
+			1,
 		);
 	});
 

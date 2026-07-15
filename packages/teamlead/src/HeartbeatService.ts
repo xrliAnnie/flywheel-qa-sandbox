@@ -1063,7 +1063,9 @@ export class HeartbeatService implements ReconnectController {
 	 * pane-probe calls; the difference is that nothing is conflated: CommDB
 	 * errors and probe failures are `indeterminate`, never `alive`.
 	 */
-	private async probeSessionLiveness(session: Session): Promise<SessionLiveness> {
+	private async probeSessionLiveness(
+		session: Session,
+	): Promise<SessionLiveness> {
 		const probedAt = new Date().toISOString();
 		if (!session.project_name) return { verdict: "gone", probedAt };
 		const lookup = lookupTmuxTarget(session.execution_id, session.project_name);

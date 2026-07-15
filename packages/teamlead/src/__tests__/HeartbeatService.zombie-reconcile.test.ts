@@ -129,7 +129,10 @@ function makeNotifier(): MockNotifier {
 	};
 }
 
-function makeService(store: MockStore, notifier: MockNotifier): HeartbeatService {
+function makeService(
+	store: MockStore,
+	notifier: MockNotifier,
+): HeartbeatService {
 	return new HeartbeatService(
 		store as never,
 		notifier as never,
@@ -321,7 +324,10 @@ describe("M3 declaration", () => {
 		mockedInspect.mockImplementationOnce(async () => {
 			mockedLookup.mockReturnValue({
 				kind: "found",
-				target: { tmuxWindow: "runner-flywheel:@900", sessionName: "runner-flywheel" },
+				target: {
+					tmuxWindow: "runner-flywheel:@900",
+					sessionName: "runner-flywheel",
+				},
 			});
 			mockedProbe.mockResolvedValue("alive");
 			return { ok: true, worktreePath: "/tmp/wt" };
@@ -443,10 +449,12 @@ describe("M3 liveness-chain single-flight", () => {
 		const staleReadsBefore = store.getStaleCompletedSessions.mock.calls.length;
 		const p2 = service.check(); // trio skipped, other stages run
 		await new Promise((r) => setTimeout(r, 0));
-		expect(store.getOrphanSessions.mock.calls.length).toBe(reconcileReadsBefore);
-		expect(
-			store.getStaleCompletedSessions.mock.calls.length,
-		).toBeGreaterThan(staleReadsBefore);
+		expect(store.getOrphanSessions.mock.calls.length).toBe(
+			reconcileReadsBefore,
+		);
+		expect(store.getStaleCompletedSessions.mock.calls.length).toBeGreaterThan(
+			staleReadsBefore,
+		);
 		release();
 		await Promise.all([p1, p2]);
 		// next tick re-enters normally
@@ -518,13 +526,11 @@ describe("M3 backfill wiring", () => {
 				"zombie: tmux window runner-flywheel:@830 dead (pane probe absent x2, server up, at 2026-07-15T05:20:00.000Z)",
 		});
 		notifier.prepareSessionZombieDetected.mockReturnValueOnce(null);
-		store.getZombieAlertBacklog.mockImplementation(
-			(after: string) => {
-				if (after < "exec-aaa") return [poison, healthy];
-				if (after < "exec-bbb") return [healthy];
-				return [];
-			},
-		);
+		store.getZombieAlertBacklog.mockImplementation((after: string) => {
+			if (after < "exec-aaa") return [poison, healthy];
+			if (after < "exec-bbb") return [healthy];
+			return [];
+		});
 		await service.check(); // attempts poison → null → audit, watermark advances
 		expect(store.insertEvent).toHaveBeenCalledWith(
 			expect.objectContaining({

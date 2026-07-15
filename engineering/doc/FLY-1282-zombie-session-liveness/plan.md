@@ -286,3 +286,21 @@ Annie 原话大意:告警要「先到 Lead、Lead 处理」,但不能悄悄消�
 - INV-10 回归:回执文案反断言不含 pane 文本;founder 面原始检测事件仍为 0。
 
 **验收补充(真机)**:重演脚本追加一步——zombie 告警进 Lead 队列后,以 Lead 身份调 detection-ack → 下一个 **disposition-receipt tick(默认约 60 秒)**内 issue thread 肉眼可见回执(R19 #3:不是 detection reconcile 的钟);对照断言:`FLYWHEEL_DETECTION_RECONCILE_EVERY_N_TICKS=0` 时回执照发;founder 面原始检测事件仍为 0。
+
+---
+
+# 验收铁律(Annie 直令,Lead 29e7508a——全 PR 抑制路径答卷)
+
+偏好排序:①正确报(有错必报、无错不报)②过报可接受(宁可吵)③**绝对禁止有错不报**。降噪只许改**路由与展示**,不许删除或静音信号本身。本 PR 每条抑制/降噪路径的「这个信号最终谁一定会看到」:
+
+| 路径 | 性质 | 谁一定看到 |
+|---|---|---|
+| INV-10 Lead-only 路由 | 路由(非删除) | Lead(lead_events + guardrail 重投);Lead 超时 → C3 grace 升级 founder page(FLY-1048 链未动) |
+| zombie 宣告压 generic reap / session_stuck(zombieHeld) | 信号**升级**为更准信号 | Lead 收到 zombie 告警本体(确定性 event_id + recurring backfill 兜崩溃) |
+| indeterminate 不庆祝不续命 | 只压**假好消息** | 一次诚实 advisory 照发;恶化为 absent → zombie 宣告 |
+| Part B V2 parked 门 | 假阳性修正(判定「不是错」) | parked/等待态的未读指令不是故障;若投递链真断,FN4 undelivered 检测独立照报 Lead |
+| Part B 全 id 回执消费判据 | 假阳性修正 | 无回执的旧式报告**照常触发**(诚实残余,宁可吵) |
+| Part D 回执 unroutable(issue_id 空) | 终态 + **session_events 审计行** | 审计可查;episode 本体仍在 Lead 队列与 C3 链上 |
+| Part D 回执 expired(7 天) | 终态 + loud log + **session_events 审计行**(本节新增,对称 unroutable) | 审计可查;处置本体 Lead 亲手做过(Lead 知情),founder page 链不受影响 |
+| Part D kill switch =0 | 只门投递,prepare 恒记账 | 处置事实 durable 在 outbox;重开 7 天窗口补投 |
+| Part C targeted veto/留队 | 延迟(退避重试 + >24h 低频 loud,永不静默丢弃) | 队列 + periodic sweep 兜底;溢出拒收响亮点名 |

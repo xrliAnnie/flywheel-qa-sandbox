@@ -995,9 +995,7 @@ export function startDoneThreadReconcileScheduler(
 		if (inFlight) return; // single-flight (shared with targeted)
 		// Targeted items first (the minutes-not-hours path); one per tick.
 		if (opts.runTargeted) {
-			const idx = targetedQueue.findIndex(
-				(i) => i.nextEligibleAt <= now(),
-			);
+			const idx = targetedQueue.findIndex((i) => i.nextEligibleAt <= now());
 			if (idx >= 0) {
 				const item = targetedQueue.splice(idx, 1)[0];
 				if (item) {

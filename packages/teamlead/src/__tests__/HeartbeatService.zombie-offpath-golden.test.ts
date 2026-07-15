@@ -47,7 +47,10 @@ import {
 	probeRunnerProcessLiveness,
 	probeTmuxServer,
 } from "../bridge/tmux-lookup.js";
-import { HeartbeatService, RegistryHeartbeatNotifier } from "../HeartbeatService.js";
+import {
+	HeartbeatService,
+	RegistryHeartbeatNotifier,
+} from "../HeartbeatService.js";
 import type { Session } from "../StateStore.js";
 
 const mockedTry = vi.mocked(tryReconcileComplete);
@@ -101,7 +104,10 @@ function makeNotifier(): MockNotifier {
 	};
 }
 
-function makeService(store: MockStore, notifier: MockNotifier): HeartbeatService {
+function makeService(
+	store: MockStore,
+	notifier: MockNotifier,
+): HeartbeatService {
 	return new HeartbeatService(
 		store as never,
 		notifier as never,
@@ -158,7 +164,9 @@ for (const combo of SWITCH_COMBOS) {
 			store.getOrphanSessions.mockReturnValue([sess()]);
 			await service.reconcileMonitorLoss();
 			expect(store.updateHeartbeat).toHaveBeenCalledWith("exec-g1");
-			expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(1);
+			expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(
+				1,
+			);
 			// Golden: EXACT legacy details object — no livenessProbe / concurrentCount keys.
 			const call = notifier.onSessionMonitoringReestablished.mock.calls[0];
 			expect(call[0]).toEqual(sess());
@@ -173,7 +181,9 @@ for (const combo of SWITCH_COMBOS) {
 			store.getOrphanSessions.mockReturnValue([sess()]);
 			await service.reconcileMonitorLoss();
 			expect(store.updateHeartbeat).toHaveBeenCalledWith("exec-g1");
-			expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(1);
+			expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(
+				1,
+			);
 			expect(notifier.onSessionMonitoringLost).not.toHaveBeenCalled();
 		});
 
@@ -185,7 +195,9 @@ for (const combo of SWITCH_COMBOS) {
 			// boolean instead, which our mock derives as alive) — both variants land
 			// on celebrate+refresh, which is exactly the frozen conflation.
 			expect(store.updateHeartbeat).toHaveBeenCalledWith("exec-g1");
-			expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(1);
+			expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(
+				1,
+			);
 			expect(notifier.onSessionMonitoringLost).not.toHaveBeenCalled();
 		});
 
@@ -220,9 +232,9 @@ for (const combo of SWITCH_COMBOS) {
 				...notifier.onSessionMonitoringLost.mock.calls,
 			];
 			expect(emitted.length).toBeGreaterThan(0); // sanity: path exercised
-			expect(
-				Object.keys(notifier).includes("onSessionZombieDetected"),
-			).toBe(false);
+			expect(Object.keys(notifier).includes("onSessionZombieDetected")).toBe(
+				false,
+			);
 		});
 
 		it("check() has no single-flight guard: two concurrent check() calls both run to completion", async () => {
@@ -247,9 +259,9 @@ for (const combo of SWITCH_COMBOS) {
 			release();
 			await Promise.all([p1, p2]);
 			// Both passes ran reconcile (>= 2 orphan-set reads across the two checks).
-			expect(
-				store.getOrphanSessions.mock.calls.length,
-			).toBeGreaterThanOrEqual(2);
+			expect(store.getOrphanSessions.mock.calls.length).toBeGreaterThanOrEqual(
+				2,
+			);
 		});
 	});
 }
@@ -336,16 +348,13 @@ interface DeliverCall {
 	event: Record<string, unknown>;
 }
 
-function makeRegistryFixture(opts?: {
-	deliverImpl?: MockFn;
-}): {
+function makeRegistryFixture(opts?: { deliverImpl?: MockFn }): {
 	notifier: RegistryHeartbeatNotifier;
 	store: MockStore;
 	deliver: MockFn;
 	appendPayloads: string[];
 } {
-	const deliver =
-		opts?.deliverImpl ?? vi.fn(async () => ({ delivered: true }));
+	const deliver = opts?.deliverImpl ?? vi.fn(async () => ({ delivered: true }));
 	const appendPayloads: string[] = [];
 	const store: MockStore = {
 		getSessionLabels: vi.fn().mockReturnValue([]),

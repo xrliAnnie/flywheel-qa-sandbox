@@ -218,6 +218,7 @@ import {
 } from "./detection-suspicious.js";
 import { createDigestRouter } from "./digest-route.js";
 import { DigestService } from "./digest-service.js";
+import { createDispositionReceiptPass } from "./disposition-receipt.js";
 import {
 	parseSweepExcludeEnv,
 	reconcileDoneButRunning,
@@ -228,14 +229,8 @@ import {
 	resolveDoneThreadReconcileConfig,
 	startDoneThreadReconcileScheduler,
 } from "./done-thread-reconcile.js";
-import { createDispositionReceiptPass } from "./disposition-receipt.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
-import {
-	createTerminalArchiveEnqueueBuffer,
-	isRetryableOutcome,
-	runTargetedArchiveCheck,
-} from "./terminal-thread-archive.js";
 import { createExternalMergeReconciler } from "./external-merge-reconcile.js";
 import { ProjectConfigCache } from "./feature-flag-config-source.js";
 import { renderFlagReport } from "./feature-flag-report-html.js";
@@ -430,6 +425,11 @@ import {
 } from "./stuck-pane-confirm.js";
 import { createStuckRemanageRouter } from "./stuck-remanage-routes.js";
 import type { StuckRunnerDetector } from "./stuck-runner-detector.js";
+import {
+	createTerminalArchiveEnqueueBuffer,
+	isRetryableOutcome,
+	runTargetedArchiveCheck,
+} from "./terminal-thread-archive.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import { loadPipelineConfigByProject } from "./three-stage-config-source.js";
 import {
@@ -4859,7 +4859,8 @@ export async function startBridge(
 						// close guard / admission serialize on (never split-lock).
 						withIssueLock: (lockIssueId, fn) => {
 							const res = resolveLifecycleRootKey(store, lockIssueId, []);
-							const keys = res.lockKeys.length > 0 ? res.lockKeys : [lockIssueId];
+							const keys =
+								res.lockKeys.length > 0 ? res.lockKeys : [lockIssueId];
 							return issueMutex(keys, fn);
 						},
 						lookupTarget: lookupTmuxTarget,
@@ -4872,7 +4873,9 @@ export async function startBridge(
 	// FLY-1282 Part C: bind the pre-created enqueue buffer to the scheduler's
 	// targeted queue — completion enqueues that arrived before this point
 	// (bounded 64) flush now.
-	terminalArchiveBuffer?.bind((issueId) => doneThreadReconcile.enqueue(issueId));
+	terminalArchiveBuffer?.bind((issueId) =>
+		doneThreadReconcile.enqueue(issueId),
+	);
 
 	// FLY-754: boot sweep — kill leaked `viewer-<execId>` tmux sessions (the
 	// FLY-116 Terminal.app viewer's linked sessions that were never destroyed).
@@ -5739,8 +5742,8 @@ export async function startBridge(
 			try {
 				for (const session of projectSessions) {
 					const comm = reader.evidenceFor(session.execution_id, null, nowMs, {
-					deliveryUnconsumedV2,
-				});
+						deliveryUnconsumedV2,
+					});
 					let founderNotified: boolean | null = null;
 					try {
 						founderNotified = store

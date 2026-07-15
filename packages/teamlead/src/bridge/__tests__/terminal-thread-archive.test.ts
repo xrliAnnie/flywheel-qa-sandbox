@@ -389,9 +389,7 @@ describe("M9 scheduler — targeted queue lifecycle", () => {
 		for (let i = 0; i < 52; i++) {
 			await vi.advanceTimersByTimeAsync(30 * 60_000 + 1_000);
 		}
-		expect(
-			logs.some((l) => l.includes("still pending after")),
-		).toBe(true);
+		expect(logs.some((l) => l.includes("still pending after"))).toBe(true);
 		const callsAt24h = runTargeted.mock.calls.length;
 		expect(callsAt24h).toBeGreaterThan(0);
 		// Still retrying (low frequency) — not dropped.
