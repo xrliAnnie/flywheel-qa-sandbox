@@ -49,7 +49,10 @@ import {
 	applyTransition,
 } from "../applyTransition.js";
 import type { Session, StateStore } from "../StateStore.js";
-import { computeShipDecision, parkMergeBlock } from "./merge-ship-gate.js";
+import {
+	computeAuthoritativeShipDecision,
+	parkMergeBlock,
+} from "./merge-ship-gate.js";
 
 /** Default marker directory — mirrors `flywheel-comm/complete.ts` writeMarker(). */
 export function defaultMarkerDir(): string {
@@ -387,17 +390,17 @@ export async function tryReconcileComplete(
 			body.payload?.evidence?.headSha?.trim();
 		// Always route through the shared predicate so the kill-switches are honored
 		// uniformly (a missing head fail-closes only when the gate is ON).
-		const decision = computeShipDecision(
+		const decision = await computeAuthoritativeShipDecision(
 			deps.store,
 			currentSession,
-			prHead ?? "",
+			prHead,
 		);
 		const eligible = decision.eligible;
 		if (!eligible) {
 			const claimed = parkMergeBlock(
 				deps.store,
 				currentSession,
-				prHead ?? "",
+				decision.authoritativeHead || prHead || "",
 				decision ?? {
 					eligible: false,
 					mergeApprovalOk: false,

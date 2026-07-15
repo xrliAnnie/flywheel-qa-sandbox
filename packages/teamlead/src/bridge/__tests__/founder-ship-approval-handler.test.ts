@@ -18,6 +18,7 @@ import { tryFounderShipApproval } from "../approval-signal/founder-ship-approval
 const CTX = {
 	issueId: "issue-uuid",
 	projectName: "proj",
+	projectRoot: "/repo",
 	threadId: "T-1",
 	ownerUserId: "FOUNDER-1",
 	graceMs: 0,
@@ -87,7 +88,8 @@ const founderMsg = { id: "MSG-1", content: "ship it", authorId: "FOUNDER-1" };
 
 describe("tryFounderShipApproval — approve path", () => {
 	it("founder approval on the one current gate → writes approval, returns handled", async () => {
-		const d = deps();
+		const cardAuthority = vi.fn().mockReturnValue({ ok: true });
+		const d = deps({ cardAuthority });
 		const r = await tryFounderShipApproval(
 			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
 			d,
@@ -102,6 +104,7 @@ describe("tryFounderShipApproval — approve path", () => {
 		expect(writeArgs.questionId).toBe("Q-1");
 		expect(writeArgs.actor).toBe("FOUNDER-1");
 		expect(JSON.parse(writeArgs.answer).approved).toBe(true);
+		expect(writeArgs).toMatchObject({ source: "text", cardAuthority });
 	});
 });
 
@@ -304,6 +307,35 @@ describe("tryFounderShipApproval — attribution audit + hold guard (FLY-1041)",
 			expect.objectContaining({ questionId: "Q-1" }),
 		);
 	});
+
+	it.each(["qa_evidence_missing", "qa_evidence_unknown"] as const)(
+		"%s is NEVER deferrable and requires a fresh founder action",
+		async (reason) => {
+			const deferral = {
+				holdReason: vi.fn().mockReturnValue(reason),
+				deferredEnabled: vi.fn().mockReturnValue(true),
+				heldReplyEnabled: vi.fn().mockReturnValue(true),
+				defer: vi.fn().mockReturnValue("inserted"),
+				queueHeldNotice: vi.fn(),
+			};
+			const d = deps({ deferral });
+
+			const r = await tryFounderShipApproval(
+				{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+				d as never,
+			);
+
+			expect(r).toBeNull();
+			expect(deferral.defer).not.toHaveBeenCalled();
+			expect(deferral.queueHeldNotice).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "deferred_off",
+					holdReason: reason,
+				}),
+			);
+			expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
+		},
+	);
 
 	it("un-held session: isHeld false → normal write path", async () => {
 		const d = deps({ isHeld: vi.fn().mockReturnValue(false) });
@@ -565,5 +597,104 @@ describe("Codex code R3 HIGH: double failure (wake intent + park) → deadLetter
 				stage: "convergence_park_failed",
 			},
 		});
+	});
+});
+
+describe("FLY-1238 merged-PR last-mile guard", () => {
+	it("silences the exact merge_block incident before queuing the stale pointer", async () => {
+		const deferral = {
+			holdReason: vi.fn(() => "merge_block" as const),
+			deferredEnabled: () => true,
+			heldReplyEnabled: () => true,
+			defer: vi.fn(() => "inserted" as const),
+			queueHeldNotice: vi.fn(),
+			parkForConvergence: vi.fn(),
+			queueFeedbackWake: vi.fn(),
+		};
+		const mergedGateGuard = vi.fn().mockResolvedValue({
+			kind: "suppress_merged",
+			cleanupComplete: true,
+		});
+		const d = deps({ deferral, mergedGateGuard });
+		const result = await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+		expect(result).toEqual({
+			bound: [],
+			deferred: [],
+			suppressed: [{ questionId: "Q-1" }],
+			retry: false,
+		});
+		expect(mergedGateGuard).toHaveBeenCalledWith(
+			expect.objectContaining({
+				questionId: "Q-1",
+				prNumber: 799,
+				source: "text",
+			}),
+		);
+		expect(deferral.queueHeldNotice).not.toHaveBeenCalled();
+		expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
+	});
+
+	it("keeps transient UNKNOWN retryable without writing the response", async () => {
+		const mergedGateGuard = vi.fn().mockResolvedValue({
+			kind: "retry_later",
+			reason: "unknown",
+		});
+		const d = deps({ mergedGateGuard });
+		const result = await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+		expect(result).toMatchObject({
+			retry: true,
+			stage: "merged_gate_guard_retry",
+		});
+		expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
+	});
+
+	it("keeps a missing PR binding retryable instead of dead-lettering the decision", async () => {
+		const d = deps({
+			store: {
+				getSession: vi.fn().mockReturnValue(session({ pr_number: null })),
+			},
+			mergedGateGuard: vi.fn().mockResolvedValue({
+				kind: "retry_later",
+				reason: "missing_binding",
+			}),
+		});
+		const result = await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+		expect(result).toMatchObject({
+			retry: true,
+			stage: "merged_gate_guard_retry",
+			reason: "missing_binding",
+		});
+		expect(result).not.toHaveProperty("deadLetter");
+		expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
+	});
+
+	it("terminal guard failure dead-letters the input instead of retrying forever", async () => {
+		const d = deps({
+			mergedGateGuard: vi.fn().mockResolvedValue({
+				kind: "terminal_unavailable",
+				reason: "unknown_exhausted",
+			}),
+		});
+		const result = await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+		expect(result).toMatchObject({
+			retry: false,
+			deadLetter: {
+				questionId: "Q-1",
+				stage: "merged_gate_guard_terminal",
+			},
+		});
+		expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
 	});
 });

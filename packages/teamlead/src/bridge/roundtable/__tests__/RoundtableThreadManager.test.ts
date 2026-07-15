@@ -224,6 +224,10 @@ describe("RoundtableThreadManager.processMessage", () => {
 		// seed + 2 member PUTs (fire-and-forget; allow microtask drain)
 		await new Promise((r) => setTimeout(r, 0));
 		expect(calls.some((c) => c.method === "PUT")).toBe(true);
+		const seed = calls.find(
+			(c) => c.method === "POST" && /\/channels\/42\/messages$/.test(c.url),
+		);
+		expect(JSON.parse(seed?.body ?? "{}").content).toMatch(/^🤖\[自动\] /);
 	});
 
 	it("pulls the @-mentioned leads into the thread (Annie's T2 model), unioned with config members, minus the poller bot", async () => {

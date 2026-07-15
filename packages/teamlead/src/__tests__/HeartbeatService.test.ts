@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ChatThreadCreator } from "../bridge/ChatThreadCreator.js";
+import type { IssueDisplayRefreshHolder } from "../bridge/issue-display-refresher.js";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import {
@@ -334,7 +336,143 @@ function createMockRegistry() {
 	return { registry, mockRuntime, envelopes };
 }
 
+async function makeReconnectHarness(
+	issueDisplayRefresh?: IssueDisplayRefreshHolder,
+) {
+	const projects: ProjectEntry[] = [
+		{
+			projectName: "geo-reconnect",
+			projectRoot: "/tmp/geo-reconnect",
+			leads: [
+				{
+					agentId: "product-lead",
+					chatChannel: "test-chat",
+					match: { labels: [] },
+					botToken: "test-token",
+				},
+			],
+		},
+	];
+	const runtime = {
+		type: "commdb" as const,
+		deliver: vi.fn(async () => ({ delivered: true })),
+		sendBootstrap: vi.fn(async () => {}),
+		health: vi.fn(async () => ({
+			status: "healthy" as const,
+			lastDeliveryAt: null,
+			lastDeliveredSeq: 0,
+		})),
+		shutdown: vi.fn(async () => {}),
+	};
+	const registry = new RuntimeRegistry();
+	registry.register(projects[0]!.leads[0]!, runtime);
+	const store = await StateStore.create(":memory:");
+	const session: Session = {
+		execution_id: "exec-qa-completed",
+		issue_id: "issue-reconnect",
+		project_name: "geo-reconnect",
+		status: "completed",
+		issue_identifier: "FLY-1225",
+		issue_title: "thread display refresh",
+		last_activity_at: "2026-07-14 08:00:00",
+		chat_thread_role: "qa",
+		session_role: "qa",
+	};
+	store.upsertSession(session);
+	store.upsertChatThread("thread-reconnect", "test-chat", session.issue_id);
+	const stampStatusBadge = vi.fn(async () => {});
+	const chatThreadCreator = {
+		stampStatusBadge,
+	} as unknown as ChatThreadCreator;
+	const notifier = new RegistryHeartbeatNotifier(
+		registry,
+		projects,
+		store,
+		undefined,
+		true,
+		chatThreadCreator,
+		issueDisplayRefresh,
+	);
+	return { notifier, session, stampStatusBadge, store };
+}
+
 describe("RegistryHeartbeatNotifier", () => {
+	it("still delivers the runtime re-entry advisory while suppressing its reconnect title write", async () => {
+		const { registry, envelopes } = createMockRegistry();
+		const hbStore = await StateStore.create(":memory:");
+		const notifier = new RegistryHeartbeatNotifier(
+			registry,
+			testProjects,
+			hbStore,
+		);
+		const stampReconnect = vi
+			.spyOn(
+				notifier as unknown as {
+					stampReconnect: (session: Session, mode: "enter" | "clear") => void;
+				},
+				"stampReconnect",
+			)
+			.mockImplementation(() => {});
+		const session: Session = {
+			execution_id: "exec-runtime-reentry",
+			issue_id: "i-runtime",
+			project_name: "geo",
+			status: "running",
+			issue_identifier: "GEO-1264",
+		};
+
+		await notifier.onSessionMonitoringReestablished(session, 15, {
+			stampReconnectTitle: false,
+		});
+
+		expect(stampReconnect).not.toHaveBeenCalled();
+		expect(envelopes).toHaveLength(1);
+		expect(envelopes[0]?.event.event_type).toBe(
+			"session_monitoring_reestablished",
+		);
+		hbStore.close();
+	});
+
+	it("reconnect clear delegates to the issue-level refresher when available", async () => {
+		const enqueue = vi.fn();
+		const holder: IssueDisplayRefreshHolder = {
+			current: { enqueue, refresh: vi.fn(async () => {}) },
+		};
+		const { notifier, session, stampStatusBadge, store } =
+			await makeReconnectHarness(holder);
+
+		notifier.clearReconnectStamp(session);
+
+		expect(enqueue).toHaveBeenCalledWith(session.issue_id);
+		expect(stampStatusBadge).not.toHaveBeenCalled();
+		store.close();
+	});
+
+	it("reconnect enter remains owned by HeartbeatService and does not enqueue a refresh", async () => {
+		const enqueue = vi.fn();
+		const holder: IssueDisplayRefreshHolder = {
+			current: { enqueue, refresh: vi.fn(async () => {}) },
+		};
+		const { notifier, session, stampStatusBadge, store } =
+			await makeReconnectHarness(holder);
+
+		await notifier.onSessionMonitoringReestablished(session, 3);
+
+		expect(stampStatusBadge).toHaveBeenCalledTimes(1);
+		expect(enqueue).not.toHaveBeenCalled();
+		store.close();
+	});
+
+	it("reconnect clear preserves the legacy per-session restore when the refresher is disabled", async () => {
+		const { notifier, session, stampStatusBadge, store } =
+			await makeReconnectHarness();
+
+		notifier.clearReconnectStamp(session);
+
+		expect(stampStatusBadge).toHaveBeenCalledTimes(1);
+		store.close();
+	});
+
 	it("sends session_stuck envelope via registry runtime with sessionKey", async () => {
 		const { registry, envelopes } = createMockRegistry();
 		const hbStore = await StateStore.create(":memory:");

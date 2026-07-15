@@ -70,6 +70,7 @@ describe("FLY-605 emitFounderThreadNotification (Part A)", () => {
 		const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
 		expect(url).toContain("/channels/T1/messages");
 		const body = JSON.parse(init.body as string);
+		expect(body.content).toMatch(/^🤖\[自动\] /);
 		expect(body.content).toContain(`<@${OWNER}>`);
 		expect(body.allowed_mentions).toEqual({ users: [OWNER] });
 		expect(events.some((e) => e.event_type === "founder_thread_notified")).toBe(

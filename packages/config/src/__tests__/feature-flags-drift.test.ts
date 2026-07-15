@@ -121,6 +121,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: OAuth usage API base URL override (FLY-1256; local mock in QA)",
 	// secrets / token env names
 	FLYWHEEL_INGEST_TOKEN: "secret: ingest token",
+	FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL:
+		"secret: short-lived per-execution workflow submission credential",
 	FLYWHEEL_ALERT_REPAIR_BOT_TOKEN_ENV:
 		"config value: repair-bot token env NAME",
 	// value config (non-boolean)
@@ -184,6 +186,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_ALERT_DRAIN_STUCK_CYCLES: "tuning knob: alert drain cycles",
 	FLYWHEEL_ALERT_QUEUE_MAX: "tuning knob: alert queue max",
 	FLYWHEEL_MAILBOX_WRITE_TIMEOUT_MS: "tuning knob: mailbox write timeout",
+	FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS:
+		"tuning knob: active Claude review subprocess timeout (FLY-1254)",
 	FLYWHEEL_AUTOCONTINUE_ARM_WINDOW_MS:
 		"tuning knob: FLY-818 autocontinue arm-observe window (ms), lifecycle-bound",
 	FLYWHEEL_CRASH_REAP_GRACE_MIN: "tuning knob: crash reap grace minutes",

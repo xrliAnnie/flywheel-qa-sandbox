@@ -225,7 +225,7 @@ export interface PostShipDeps {
 		projectName: string;
 		/** R4#3: the post-ship DAG already holds the canonical issue mutex. */
 		alreadyLocked?: boolean;
-	}) => Promise<{ outcome: string } | undefined | void>;
+	}) => Promise<{ outcome: string } | undefined | undefined>;
 	/**
 	 * Codex R2#8: disposition PRE-arbitration — runs BEFORE the first
 	 * destructive step (tmux close). An active founder-park tombstone or a
@@ -369,9 +369,9 @@ export function makeFinalizeThreeStagePhases(
 					},
 					store,
 				);
-				if (!res.closed) {
+				if (!res.closed || !res.commDbFinalized) {
 					console.warn(
-						`[post-ship] finalize phase ${p.execution_id} not closed: ${res.error ?? "?"}`,
+						`[post-ship] finalize phase ${p.execution_id} incomplete: ${res.error ?? "?"}`,
 					);
 				}
 			} catch (err) {
@@ -522,7 +522,12 @@ async function runPostShipFinalizationInner(
 			`[post-ship] postMergeTmuxCleanup failed:`,
 			(err as Error).message,
 		);
-		return { tmuxClosed: false, errors: [(err as Error).message] };
+		return {
+			tmuxClosed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			errors: [(err as Error).message],
+		};
 	});
 
 	// ── (1.25) FLY-887 three-stage keep-alive: close the still-alive parked
@@ -608,7 +613,12 @@ async function runPostShipFinalizationInner(
 	// (some node not confirmed gone, or a canceled-vs-shipped conflict) must
 	// NOT be followed by thread archive or the Linear Done write. The sweep /
 	// next finalization pass is the eventual repair.
-	let closeoutBlocked = false;
+	let closeoutBlocked = !cleanup.commDbFinalized;
+	if (closeoutBlocked) {
+		console.warn(
+			`[post-ship] CommDB finalization incomplete for ${opts.executionId} — thread archive + Linear Done deferred`,
+		);
+	}
 	if (deps.issueCloseout) {
 		const closeoutRes = await deps
 			.issueCloseout({

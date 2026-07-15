@@ -84,8 +84,18 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 		// And it persists.
 		const db = new CommDB(commDbPathForProject("proj"));
 		const t = db.getTurn("issue-1");
+		const source = db.listWorkflowSourceEvents();
+		const history = db.listTurnSourceHistory("issue-1");
 		db.close();
 		expect(t?.holder_exec_id).toBe(res.executionId);
+		expect(source).toHaveLength(1);
+		expect(source[0]).toMatchObject({
+			project: "proj",
+			source_event_id: `turn:spawn:${res.executionId}`,
+			kind: "turn_grant",
+		});
+		expect(history).toHaveLength(1);
+		expect(history[0]?.target_run_id).toBeNull();
 	});
 
 	it("byte-compat: a non-phase (no shareParentBranch) dispatch grants NO turn", async () => {

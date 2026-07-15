@@ -69,6 +69,17 @@ export interface WorkflowShadowSeam {
 	}): void;
 }
 
+/** FLY-1244: fail-closed admission seam for durable three-stage QA spawns. */
+export interface WorkflowClaimsAdmissionSeam {
+	admit(args: {
+		projectName: string;
+		issueId: string;
+		executionId: string;
+		node: string;
+		attempt: number;
+	}): { credential: string };
+}
+
 /**
  * FLY-795: compute the restart-resilient resume decision for a (re-)dispatch.
  * Returns a ProgressResumeInfo when a prior execution + committed progress.md on
@@ -807,6 +818,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		 * launchCommitPath undefined (byte-compatible).
 		 */
 		private workflowShadow?: WorkflowShadowSeam,
+		private workflowClaimsAdmission?: WorkflowClaimsAdmissionSeam,
 	) {
 		super(
 			blueprintsByProject,
@@ -951,6 +963,28 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				context: shadowContext,
 			});
 		}
+		let workflowSubmissionCredential: string | undefined;
+		if (
+			this.workflowClaimsAdmission &&
+			req.shareParentBranch === true &&
+			role === "qa" &&
+			shadowContext
+		) {
+			try {
+				workflowSubmissionCredential = this.workflowClaimsAdmission.admit({
+					projectName: req.projectName,
+					issueId: req.issueId,
+					executionId,
+					node: shadowContext.node,
+					attempt: shadowContext.attempt,
+				}).credential;
+			} catch (err) {
+				this.inflight.delete(key);
+				throw new Error(
+					`workflow claims admission failed for ${executionId}: ${(err as Error).message}`,
+				);
+			}
+		}
 		// Flag ON: the fresh path also passes the durable commit-marker path so
 		// the ②b evidence chain gets its launch_committed fact (BlueprintContext
 		// field + adapter write already exist — the retry path has used them
@@ -1001,7 +1035,10 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				const dbPath = defaultGetCommDbPath(req.projectName);
 				const db = new CommDB(dbPath);
 				try {
-					db.grantTurn(req.issueId, executionId, role, Date.now());
+					db.grantTurn(req.issueId, executionId, role, Date.now(), {
+						project: req.projectName,
+						sourceEventId: `turn:spawn:${executionId}`,
+					});
 				} finally {
 					db.close();
 				}
@@ -1054,6 +1091,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// rebuilds WITH the committed progress.md (never override a caller's own).
 			startPoint: req.startPoint ?? resume?.startPoint,
 			qaContext: req.qaContext,
+			workflowSubmissionCredential,
 			// FLY-1232: durable commit marker on the fresh path — flag ON only
 			// (undefined otherwise, byte-compatible with the normal-path sentinel).
 			launchCommitPath: shadowCommitDir,

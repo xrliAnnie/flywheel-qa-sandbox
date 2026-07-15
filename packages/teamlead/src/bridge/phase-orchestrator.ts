@@ -393,6 +393,7 @@ export interface PhaseOrchestratorDeps {
 		execId: string;
 		phase: ThreeStagePhase;
 		projectName: string;
+		sourceEventId: string;
 	}): void;
 	/**
 	 * FLY-921 Fix C: turn-belt reconcile reads/writes. All rows are
@@ -515,6 +516,68 @@ export class PhaseOrchestrator {
 	}
 	private warn(m: string): void {
 		(this.deps.logger?.warn ?? this.deps.logger?.log)?.(`[phase-orch] ${m}`);
+	}
+
+	/**
+	 * FLY-1244: founder-confirmed recovery for an in-flight, pre-enrollment QA.
+	 * The old runner is closed through the normal dirty-safe phase teardown, then
+	 * a NEW logical attempt is spawned. Admission happens inside RunDispatcher
+	 * before Blueprint starts; the route verifies that binding before acknowledging.
+	 */
+	async respawnUnenrolledQa(
+		session: PhaseSession,
+		prHeadSha: string,
+		targetAttempt: number,
+	): Promise<{ executionId: string }> {
+		if (
+			(session.session_role ?? "main") !== "qa" ||
+			(session.chat_thread_role ?? "main") !== "qa" ||
+			!session.project_name ||
+			!Number.isInteger(targetAttempt) ||
+			targetAttempt <= 1 ||
+			!/^[0-9a-f]{40}$/i.test(prHeadSha)
+		) {
+			throw new Error("invalid_re_qa_source");
+		}
+		try {
+			await this.deps.effects.closePhaseRunner(session);
+		} catch (error) {
+			await this.failClosed(
+				session,
+				`re-QA could not safely close the unenrolled QA: ${(error as Error).message}`,
+			);
+			throw error;
+		}
+		try {
+			const dispatch = resolvePhaseDispatch("qa");
+			const result = await this.deps.startDispatcher.start({
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				leadId: this.deps.resolveLeadId(session),
+				sessionRole: "qa",
+				dispatchModel: dispatch.model,
+				dispatchVendor: dispatch.vendor,
+				...(dispatch.effort && { dispatchEffort: dispatch.effort }),
+				startPoint: prHeadSha.toLowerCase(),
+				shareParentBranch: true,
+				ignoreRunnerLabelSelection: true,
+				issueIdentifier: session.issue_identifier,
+				issueTitle: session.issue_title,
+				...(this.deps.workflowShadow && {
+					shadowContext: { node: "qa", attempt: targetAttempt },
+				}),
+			});
+			this.log(
+				`re-QA superseded ${session.execution_id} → ${result.executionId} attempt ${targetAttempt} @ ${prHeadSha.slice(0, 8)}`,
+			);
+			return result;
+		} catch (error) {
+			await this.failClosed(
+				session,
+				`re-QA replacement spawn failed after safe close: ${(error as Error).message}`,
+			);
+			throw error;
+		}
 	}
 
 	/**
@@ -1383,6 +1446,7 @@ export class PhaseOrchestrator {
 				execId: impl.execution_id,
 				phase: "implement",
 				projectName,
+				sourceEventId: `turn:qa-fail:${verdictEventId}:${impl.execution_id}`,
 			});
 			const woke = await this.deps.effects.wakePhaseRunner({
 				session: impl,
@@ -1627,6 +1691,7 @@ export class PhaseOrchestrator {
 				execId: target.execution_id,
 				phase: next,
 				projectName: prev.project_name,
+				sourceEventId: `turn:handoff:${prev.execution_id}:${next}:${target.execution_id}:${headSha}`,
 			});
 			const woke = await this.deps.effects.wakePhaseRunner({
 				session: target,
@@ -1896,6 +1961,7 @@ export class PhaseOrchestrator {
 					execId: cand.execution_id,
 					phase,
 					projectName,
+					sourceEventId: `turn:recovery:${turn.issue_id}:${turn.holder_exec_id}:${turn.epoch}:${cand.execution_id}`,
 				});
 				await this.failClosed(
 					cand,

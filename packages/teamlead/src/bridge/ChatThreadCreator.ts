@@ -5,6 +5,7 @@
  */
 
 import type { StateStore } from "../StateStore.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 import {
 	addThreadMember,
 	parseRetryAfterMs,
@@ -76,6 +77,17 @@ async function retryAfterMsFrom(res: Response): Promise<number> {
 	return DEFAULT_RETRY_AFTER_MS;
 }
 
+/** Discord rejects renames of archived threads with HTTP 400 / code 50083. */
+function isArchivedThreadError(status: number, body: string): boolean {
+	if (status !== 400) return false;
+	try {
+		const parsed = JSON.parse(body) as { code?: unknown };
+		return parsed.code === 50083;
+	} catch {
+		return false;
+	}
+}
+
 /**
  * FLY-630 ①: outcome of one GET+PATCH title write. `rate_limited` carries the
  * honored Retry-After so the coalescing drain can wait then retry the latest
@@ -85,6 +97,7 @@ type TitleWriteResult =
 	| { status: "ok" }
 	| { status: "noop" }
 	| { status: "error" }
+	| { status: "deferred" }
 	| { status: "rate_limited"; retryAfterMs: number };
 
 /**
@@ -388,7 +401,7 @@ export class ChatThreadCreator {
 					// FLY-162 Codex R3 #2: never let issue title / generated
 					// notification text trigger @everyone/@here/role pings.
 					body: JSON.stringify({
-						content: messageContent,
+						content: markAutomatedDiscordText(messageContent),
 						allowed_mentions: { parse: [] },
 					}),
 					signal: controller.signal,
@@ -624,6 +637,7 @@ export class ChatThreadCreator {
 				case "noop":
 					return "noop";
 				case "rate_limited":
+				case "deferred":
 					return "deferred";
 				default:
 					return "failed";
@@ -665,8 +679,9 @@ export class ChatThreadCreator {
 					// and the loop writes it next; otherwise the loop exits.
 					rateLimitRetries = 0;
 				}
-				// `error` / retries-exhausted: do NOT spin — loop only if a newer
-				// target was queued during the write (state.dirty set by enqueue).
+				// `error` / `deferred` / retries-exhausted: do NOT spin — loop only
+				// if a newer target was queued during the write (state.dirty set by
+				// enqueue). The issue-display sweep owns the later retry.
 				// The next stage_changed reconciles a dropped write.
 			}
 		} finally {
@@ -772,6 +787,9 @@ export class ChatThreadCreator {
 					};
 				}
 				const body = await patchRes.text().catch(() => "");
+				if (isArchivedThreadError(patchRes.status, body)) {
+					return { status: "deferred" };
+				}
 				console.warn(
 					`[ChatThreadCreator] stage-emoji PATCH failed: ${patchRes.status} ${body.slice(0, 200)}`,
 				);
@@ -979,7 +997,10 @@ export class ChatThreadCreator {
 			},
 			// allowed_mentions parse:[] — the command/title text must never trigger
 			// @everyone/@here/role pings (mirrors ensureChatThread).
-			body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+			body: JSON.stringify({
+				content: markAutomatedDiscordText(content),
+				allowed_mentions: { parse: [] },
+			}),
 			signal,
 		});
 		if (!res.ok) {
@@ -1008,7 +1029,10 @@ export class ChatThreadCreator {
 					Authorization: `Bot ${botToken}`,
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+				body: JSON.stringify({
+					content: markAutomatedDiscordText(content),
+					allowed_mentions: { parse: [] },
+				}),
 				signal,
 			},
 		);
@@ -1323,7 +1347,10 @@ export class ChatThreadCreator {
 					// FLY-162 Codex R3 #2: notification text is generated, but
 					// belt-and-suspenders — block any future label-injection
 					// path from triggering @everyone/@here/role pings.
-					body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+					body: JSON.stringify({
+						content: markAutomatedDiscordText(content),
+						allowed_mentions: { parse: [] },
+					}),
 					signal: controller.signal,
 				},
 			);

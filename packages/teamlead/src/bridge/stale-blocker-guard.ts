@@ -25,6 +25,7 @@
 
 import type { TransitionContext } from "flywheel-core";
 import type { Session } from "../StateStore.js";
+import type { FinalizeCommDbResult } from "./commdb-session-prune.js";
 import type { HookPayload } from "./hook-payload.js";
 import type { DeliveryResult, LeadEventEnvelope } from "./lead-runtime.js";
 import type { TmuxTargetLookup } from "./tmux-lookup.js";
@@ -144,6 +145,13 @@ export function classifyStaleWithPr(prState: PrState): {
 /** Minimal StateStore surface the finalize path needs (fakeable in tests). */
 export interface FinalizeStore {
 	getSession(execId: string): Session | undefined;
+	recordCommDbFinalizeOutcome(input: {
+		executionId: string;
+		issueId: string;
+		projectName: string;
+		ok: boolean;
+		error?: string;
+	}): unknown;
 	insertEvent(e: {
 		event_id: string;
 		execution_id: string;
@@ -165,7 +173,10 @@ export interface FinalizeStaleBlockerDeps {
 		tmuxWindow: string,
 	) => Promise<{ killed: boolean; error?: string }>;
 	closeTerminalView?: (session: Session, tmuxWindow: string) => Promise<void>;
-	deleteCommDbSession: (execId: string, projectName: string) => void;
+	finalizeCommDbSession: (
+		execId: string,
+		projectName: string,
+	) => FinalizeCommDbResult;
 	applyTransition: (
 		execId: string,
 		target: string,
@@ -193,11 +204,26 @@ export async function finalizeStaleBlocker(
 	const execId = blocker.execution_id;
 	const project = blocker.project_name;
 	if (!project) return { proceed: false };
+	const finalizeCommunications = (): FinalizeCommDbResult => {
+		const finalized = deps.finalizeCommDbSession(execId, project);
+		deps.store.recordCommDbFinalizeOutcome({
+			executionId: execId,
+			issueId: blocker.issue_id,
+			projectName: project,
+			ok: finalized.ok,
+			error: finalized.error,
+		});
+		return finalized;
+	};
 
 	// Re-read #1 — before any destructive teardown.
 	const cur = deps.store.getSession(execId);
-	if (!cur) return { proceed: false };
-	if (SLOT_FREE_STATES.has(cur.status)) return { proceed: true }; // already terminal → slot free
+	if (!cur) {
+		return { proceed: finalizeCommunications().ok };
+	}
+	if (SLOT_FREE_STATES.has(cur.status)) {
+		return { proceed: finalizeCommunications().ok };
+	}
 	if (!PARK_STATES.has(cur.status)) return { proceed: false }; // became running/pending → don't touch
 
 	// tmux tri-state — fail-closed on `error` (indeterminate ≠ gone).
@@ -247,6 +273,25 @@ export async function finalizeStaleBlocker(
 	}
 	// lookup.kind === "gone" → no tmux target to clean.
 
+	// FLY-1238: physical absence is not a completed teardown until unresolved
+	// founder gates and the CommDB session are retired atomically.
+	const finalized = finalizeCommunications();
+	if (!finalized.ok) {
+		deps.store.insertEvent({
+			event_id: `cron-stale-finalize-commdb-failed-${execId}`,
+			execution_id: execId,
+			issue_id: blocker.issue_id,
+			project_name: project,
+			event_type: "scheduled_run_blocker_commdb_finalize_failed",
+			source: "bridge.stale-blocker-guard",
+			payload: { error: finalized.error, prState },
+		});
+		deps.log?.(
+			`[stale-blocker] ${execId}: CommDB finalization failed (${finalized.error ?? "unknown"}) — retry next tick`,
+		);
+		return { proceed: false };
+	}
+
 	// Re-read #2 — before the transition.
 	const cur2 = deps.store.getSession(execId);
 	if (!cur2) return { proceed: toreDown };
@@ -255,7 +300,6 @@ export async function finalizeStaleBlocker(
 		// concurrent-move branch: prune the (already killed) CommDB row + audit,
 		// the concurrent terminal status owns its own archive (Codex R3 #2).
 		if (toreDown || lookup.kind === "gone") {
-			deps.deleteCommDbSession(execId, project);
 			deps.store.insertEvent({
 				event_id: `cron-stale-finalize-skip-${execId}`,
 				execution_id: execId,
@@ -289,7 +333,6 @@ export async function finalizeStaleBlocker(
 		return { proceed: false };
 	}
 
-	deps.deleteCommDbSession(execId, project);
 	deps.store.insertEvent({
 		event_id: `scheduled-run-blocker-finalized-${execId}`,
 		execution_id: execId,

@@ -25,6 +25,7 @@ import {
 	snowflakeToMs,
 	truncate,
 } from "../founder-notify-utils.js";
+import type { MergedGateGuard } from "../merged-gate-guard.js";
 import { reactToFounderMessage } from "./founder-ack.js";
 import type { DeferralSupport } from "./founder-ship-approval-handler.js";
 import {
@@ -67,6 +68,13 @@ const HOLD_LABELS: Record<"codex_pending" | "qa_not_green", string> = {
 	qa_not_green: "QA 还没绿",
 };
 
+const NON_DEFERRABLE_HOLD_LABELS: Partial<Record<ReviewHoldReason, string>> = {
+	merge_block: "合并被挡",
+	qa_evidence_missing: "独立 QA 证据缺失",
+	qa_evidence_unknown: "PR / head 或 QA 证据无法确认",
+	no_qualified_reviewer: "没有合格的独立 reviewer",
+};
+
 export function heldReplyText(
 	decision: "approve" | "reject",
 	holdReason: "codex_pending" | "qa_not_green",
@@ -95,9 +103,8 @@ export function mergeBlockPointerText(): string {
 
 export function deferredOffExplainerText(holdReason: ReviewHoldReason): string {
 	const label =
-		holdReason === "merge_block"
-			? "合并被挡"
-			: HOLD_LABELS[holdReason as "codex_pending" | "qa_not_green"];
+		NON_DEFERRABLE_HOLD_LABELS[holdReason] ??
+		HOLD_LABELS[holdReason as "codex_pending" | "qa_not_green"];
 	return `你的批准现在绑不上(${label}),暂存功能当前关闭——卡点清了之后请再说一次。`;
 }
 
@@ -342,6 +349,7 @@ export interface DeferredRebindStore {
 				status?: string;
 				review_question_id?: string | null;
 				pr_head_sha?: string | null;
+				pr_number?: number | null;
 		  }
 		| undefined;
 	consumeDeferredApproval(input: {
@@ -381,12 +389,18 @@ export interface DeferredRebindDeps {
 		typeof writeGateResponseAndRunPostWrite
 	>[0]["onResponseWritten"];
 	writeImpl?: typeof writeGateResponseAndRunPostWrite;
+	cardAuthority?: Parameters<
+		typeof writeGateResponseAndRunPostWrite
+	>[0]["cardAuthority"];
 	/** Bot token for the ✅ receipt upgrade on the founder's original message. */
 	resolveBotToken(row: FounderDeferredApproval): string | undefined;
 	reactImpl?: typeof reactToFounderMessage;
 	fetchImpl?: typeof fetch;
 	nowMs?: () => number;
 	env?: Record<string, string | undefined>;
+	/** FLY-1238: shared last-mile guard + canonical project root. */
+	mergedGateGuard?: MergedGateGuard;
+	resolveProjectRoot?: (projectName: string) => string | undefined;
 }
 
 function rebindAudit(
@@ -466,9 +480,11 @@ async function rebindOne(
 	deps: DeferredRebindDeps,
 	now: number,
 ): Promise<void> {
+	const session = deps.store.getSession(row.execution_id);
 	// 1. TTL (§4.3 step 1).
 	const expiresMs = parseSqliteUtcMs(row.expires_at);
 	if (expiresMs !== null && expiresMs <= now) {
+		if (!(await guardRebindSideEffect(row, session, deps))) return;
 		deps.store.invalidateDeferredApproval({
 			questionId: row.question_id,
 			msgId: row.msg_id,
@@ -508,7 +524,6 @@ async function rebindOne(
 	// response keeps the gate alive here; the writer's already_answered path +
 	// the guarded hook classify it (exact retry → re-run hook; conflict /
 	// foreign actor → invalidate below).
-	const session = deps.store.getSession(row.execution_id);
 	const db = deps.openCommDb(row.project_name);
 	if (!db) return; // CommDB unavailable → transient, retry next pass
 	try {
@@ -550,6 +565,7 @@ async function rebindOne(
 		// 4. Head guardrail (§4.3 step 4 — founder must re-confirm a new head).
 		const liveHead = session.pr_head_sha?.toLowerCase();
 		if (liveHead !== row.pr_head_sha.toLowerCase()) {
+			if (!(await guardRebindSideEffect(row, session, deps))) return;
 			deps.store.invalidateDeferredApproval({
 				questionId: row.question_id,
 				msgId: row.msg_id,
@@ -570,6 +586,7 @@ async function rebindOne(
 
 		// 5. Hold recheck (§4.3 step 5 — still held → wait; TTL bounds it).
 		if (deps.holdReasonFor(row.execution_id) !== null) return;
+		if (!(await guardRebindSideEffect(row, session, deps))) return;
 
 		// 6. Write — the SAME writer + guarded wrapper as the live path.
 		const answer =
@@ -602,9 +619,13 @@ async function rebindOne(
 			},
 			questionId: row.question_id,
 			executionId: row.execution_id,
+			source: "deferred",
+			cardAuthority: deps.cardAuthority,
 			actor: founderId,
+			founderId,
 			answer,
 			expectedCurrentReviewQuestionId: row.question_id,
+			holdReasonFor: deps.holdReasonFor,
 			onResponseWritten: guard.hook,
 		});
 
@@ -690,6 +711,15 @@ async function finalizeConsume(
 	row: FounderDeferredApproval,
 	deps: DeferredRebindDeps,
 ): Promise<void> {
+	if (
+		!(await guardRebindSideEffect(
+			row,
+			deps.store.getSession(row.execution_id),
+			deps,
+		))
+	) {
+		return;
+	}
 	const consumed = deps.store.consumeDeferredApproval({
 		questionId: row.question_id,
 		msgId: row.msg_id,
@@ -760,4 +790,45 @@ async function finalizeConsume(
 			);
 		}
 	}
+}
+
+/** Guard only at a would-be founder side effect or response write. */
+async function guardRebindSideEffect(
+	row: FounderDeferredApproval,
+	session:
+		| {
+				status?: string;
+				review_question_id?: string | null;
+				pr_head_sha?: string | null;
+				pr_number?: number | null;
+		  }
+		| undefined,
+	deps: DeferredRebindDeps,
+): Promise<boolean> {
+	if (!deps.mergedGateGuard) return true;
+	const guarded = await deps.mergedGateGuard({
+		executionId: row.execution_id,
+		issueId: row.issue_id,
+		questionId: row.question_id,
+		projectName: row.project_name,
+		projectRoot: deps.resolveProjectRoot?.(row.project_name),
+		prNumber: session?.pr_number ?? undefined,
+		source: "deferred_rebind",
+	});
+	if (guarded.kind === "continue") return true;
+	if (guarded.kind === "terminal_unavailable") {
+		deps.store.invalidateDeferredApproval({
+			questionId: row.question_id,
+			msgId: row.msg_id,
+			reason: "merged_guard_terminal",
+			audit: rebindAudit(
+				row,
+				"guardterminal",
+				"founder_deferral_guard_terminal",
+				{ reason: guarded.reason },
+			),
+		});
+	}
+	// retry_later remains active; suppress_merged cleanup is owned by the guard.
+	return false;
 }

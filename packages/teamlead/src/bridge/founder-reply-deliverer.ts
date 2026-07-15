@@ -98,6 +98,9 @@ export interface PendingQuestionForThread {
 export interface ShipApprovalOutcome {
 	bound: Array<{ questionId: string; decision: "approve" | "reject" }>;
 	deferred: Array<{ questionId: string; decision: "approve" | "reject" }>;
+	/** Gates retired because their bound PR is already merged. They are handled
+	 * without a wake or founder-facing receipt reaction. */
+	suppressed?: Array<{ questionId: string }>;
 	retry: boolean;
 	stage?: string;
 	reason?: string;
@@ -549,6 +552,7 @@ async function processFounderMessage(
 	const handled = new Set<string>();
 	let boundCount = 0;
 	let deferredCount = 0;
+	let suppressedCount = 0;
 	if (deps.tryFounderShipApproval && ship.length > 0) {
 		const res = await deps.tryFounderShipApproval({
 			msg: { id: msg.id, content: msg.content, authorId: msg.author?.id },
@@ -563,8 +567,10 @@ async function processFounderMessage(
 		if (res) {
 			for (const b of res.bound) handled.add(b.questionId);
 			for (const d of res.deferred) handled.add(d.questionId);
+			for (const s of res.suppressed ?? []) handled.add(s.questionId);
 			boundCount = res.bound.length;
 			deferredCount = res.deferred.length;
+			suppressedCount = res.suppressed?.length ?? 0;
 			if (res.retry) {
 				fail(
 					res.stage ?? "ship_attribution_retry",
@@ -672,7 +678,10 @@ async function processFounderMessage(
 	// deduped. Marker is inserted BEFORE the PUT so a re-scan can never
 	// double-react; a PUT failure is audited and NOT retried (best-effort,
 	// never blocks delivery). Kill-switch FLYWHEEL_FOUNDER_APPROVAL_ACK=0.
-	if (ship.length > 0 && process.env.FLYWHEEL_FOUNDER_APPROVAL_ACK !== "0") {
+	if (
+		ship.length > suppressedCount &&
+		process.env.FLYWHEEL_FOUNDER_APPROVAL_ACK !== "0"
+	) {
 		// FLY-1099 §3.2: three receipt outcomes — ✅ = her decision is BOUND
 		// (approve OR reject, FLY-1041 Chunk 8 semantics preserved); 🕒 = durably
 		// deferred (will auto-bind when the hold clears; the rebind pass upgrades

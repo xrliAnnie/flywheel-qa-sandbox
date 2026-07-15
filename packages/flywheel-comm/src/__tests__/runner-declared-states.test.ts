@@ -91,6 +91,57 @@ describe("CommDB runner_declared_states (FLY-626)", () => {
 		expect(db.getEffectiveDeclaredState("exec-2", T0)).toBeNull();
 	});
 
+	it("renews a bounded park lease without changing question or response rows", () => {
+		const questionId = db.insertQuestion("exec-1", "lead-1", "review gate", {
+			checkpoint: "review_code",
+		});
+		db.insertResponse(questionId, "lead-1", "APPROVED");
+		const raw = new Database(dbPath);
+		const snapshotMessages = () =>
+			raw
+				.prepare(
+					"SELECT id, parent_id, type, content FROM messages ORDER BY created_at, id",
+				)
+				.all();
+		const before = snapshotMessages();
+
+		db.upsertDeclaredState(
+			"exec-1",
+			"parked",
+			"awaiting review",
+			T0,
+			T0 + 10 * 60_000,
+		);
+		expect(db.getEffectiveDeclaredState("exec-1", T0 + 5 * 60_000)?.kind).toBe(
+			"parked",
+		);
+
+		db.upsertDeclaredState(
+			"exec-1",
+			"parked",
+			"awaiting review",
+			T0 + 5 * 60_000,
+			T0 + 15 * 60_000,
+		);
+		expect(
+			db.getEffectiveDeclaredState("exec-1", T0 + 10 * 60_000)?.expires_at,
+		).toBe(T0 + 15 * 60_000);
+
+		db.clearDeclaredState("exec-1");
+		expect(db.getEffectiveDeclaredState("exec-1", T0 + 10 * 60_000)).toBeNull();
+
+		db.upsertDeclaredState(
+			"exec-1",
+			"parked",
+			"crash backstop",
+			T0 + 20 * 60_000,
+			T0 + 30 * 60_000,
+		);
+		expect(db.getEffectiveDeclaredState("exec-1", T0 + 30 * 60_000)).toBeNull();
+		expect(snapshotMessages()).toEqual(before);
+		raw.close();
+	});
+
 	it("readonly reader tolerates a missing table (returns null, never throws)", () => {
 		// A DB created by a writer that never knew the table: simulate by opening a
 		// fresh DB readonly BEFORE any writer created the new table. We use a brand

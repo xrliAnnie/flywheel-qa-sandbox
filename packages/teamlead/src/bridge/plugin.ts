@@ -109,6 +109,7 @@ import {
 	type Session,
 	StateStore,
 } from "../StateStore.js";
+import { importBundledWorkflowSeeds } from "../workflow-template.js";
 import { AlertChannelHub, createDiscordOps } from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
 import {
@@ -166,7 +167,7 @@ import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
 import {
-	deleteCommDbSession,
+	finalizeCommDbSession,
 	pruneDeadTerminalCommDbSessions,
 } from "./commdb-session-prune.js";
 import {
@@ -257,6 +258,7 @@ import {
 } from "./fleet-routes.js";
 import { FleetSensors } from "./fleet-sensors.js";
 import { createFocusedFrameScheduler } from "./focused-frame-scheduler.js";
+import { startWorkflowSourceProjector } from "./founder-approval-projector.js";
 import {
 	buildFounderConsentWiring,
 	buildGateResponsePostWriteHook,
@@ -326,6 +328,7 @@ import {
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
+import { createMergedGateGuard } from "./merged-gate-guard.js";
 import { notifyDigestExpectTick } from "./notify-digest-expect.js";
 import { defaultReceiptsPath } from "./notify-receipts.js";
 import { hashPane, liveRegion } from "./pane-live-region.js";
@@ -352,6 +355,7 @@ import {
 	quotaDaemonCutoverEnabled,
 	resolveQuotaDaemonBridgeMode,
 } from "./quota-daemon-cutover.js";
+import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
 import { createRepoMutationLock } from "./repo-mutation-lock.js";
 import {
 	DEFAULT_RETENTION_MAX_AGE_MS,
@@ -458,7 +462,9 @@ import {
 	createJudgeRoutingDepsFactory,
 	createStuckConfirmRunner,
 } from "./watchdog-judge-assembly.js";
+import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
 import { createWorkflowShadowWriterFromEnv } from "./workflow-shadow-writer.js";
+import { createWorkflowTemplateRouter } from "./workflow-template-routes.js";
 import {
 	gitWorktreeClean,
 	makeBridgeWorktreeCleanup,
@@ -504,6 +510,31 @@ export function resolveMailboxWriteTimeoutMs(): number | undefined {
 	const n = Number(raw);
 	if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return undefined;
 	return n;
+}
+
+/**
+ * FLY-1254: optional liveness bound for one active Claude review subprocess.
+ * Invalid values warn and leave the runner's 30-minute default in control.
+ * The upper bound is Node's signed 32-bit timer range; larger values collapse
+ * to an effectively immediate timeout.
+ */
+export function parseReviewerTimeoutMs(
+	raw: string | undefined,
+): number | undefined {
+	if (raw === undefined || raw.trim().length === 0) return undefined;
+	const value = Number(raw);
+	if (
+		!Number.isFinite(value) ||
+		!Number.isSafeInteger(value) ||
+		value < 60_000 ||
+		value > 2_147_483_647
+	) {
+		console.warn(
+			`[review-coordinator] invalid FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS=${JSON.stringify(raw)}; using the 30-minute default`,
+		);
+		return undefined;
+	}
+	return value;
 }
 
 const execFileP = promisify(execFile);
@@ -1057,6 +1088,41 @@ export function createBridgeApp(
 	}
 
 	app.use(express.json({ limit: "512kb" }));
+
+	// FLY-1244: scoped workflow decisions authenticate with a per-execution
+	// credential, never the fleet ingest bearer. The head read route is a separate
+	// loopback-only fail-closed seam used by verify-approval; it is not credential
+	// authenticated and exposes only the execution's git SHA.
+	app.use(
+		"/api/workflow",
+		createWorkflowDecisionRouter({
+			store,
+			phaseOrchestrator: opts?.phaseOrchestrator,
+			...(process.env.FLYWHEEL_WORKFLOW_CLAIMS_WRITE === "1" &&
+			opts?.fleetConsole &&
+			opts.phaseOrchestrator
+				? {
+						reQa: {
+							tokens: opts.fleetConsole.tokens,
+							respawn: async (canonical, prHeadSha) => {
+								const orchestrator = opts.phaseOrchestrator?.current;
+								if (!orchestrator) {
+									throw new Error("phase_orchestrator_not_ready");
+								}
+								const source = store.getSession(canonical.sourceExecutionId);
+								if (!source) throw new Error("source_session_not_found");
+								return orchestrator.respawnUnenrolledQa(
+									source,
+									prHeadSha,
+									canonical.targetAttempt,
+								);
+							},
+						},
+					}
+				: {}),
+		}),
+	);
+	app.use("/api/workflow", createWorkflowTemplateRouter(store));
 
 	// FLY-175 Track 2: founder-consent hard gate. Returns null when
 	// decisionMode=off (default) — `fcMw()` then yields a no-op handler so the
@@ -2940,8 +3006,8 @@ export function createBridgeApp(
 							sessionRole: identity.sessionRole,
 						});
 					},
-					deleteCommDbSession: (execId, projectName) =>
-						deleteCommDbSession(execId, projectName),
+					finalizeCommDbSession: (execId, projectName) =>
+						finalizeCommDbSession(execId, projectName),
 					applyTransition: (execId, target, ctx, fields) => {
 						const tr = applyTransition(
 							staleGuardTransitionOpts,
@@ -3275,6 +3341,15 @@ export async function startBridge(
 	};
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+	// FLY-1244: deterministic boot import. Content hashes make restarts no-ops;
+	// a founder-owned seed mismatch is audited and refused by StateStore.
+	importBundledWorkflowSeeds(store);
+	const workflowSourceProjector = startWorkflowSourceProjector({
+		projects: () => loadProjects().map((project) => project.projectName),
+		openCommDb: (project) => new CommDB(commDbPathForProject(project)),
+		store,
+		log: (message) => console.warn(message),
+	});
 
 	// FLY-1082 (Task 2.2): the fleet pressure-hold gates runner admission —
 	// late-bind the probe now that the store exists. Fail-open inside tryAdmit.
@@ -4299,6 +4374,7 @@ export async function startBridge(
 					process.env.FLYWHEEL_ISSUE_STATUS_EMOJI !== "0"
 						? chatThreadCreator
 						: undefined,
+					issueDisplayRefreshHolder,
 				)
 			: {
 					// FLY-637 R1 #2: no-op notifier never persists an event → false, so
@@ -4371,7 +4447,7 @@ export async function startBridge(
 	// to the orphan threshold (clean handoff with reapOrphans); a larger
 	// `FLYWHEEL_CRASH_REAP_GRACE_MIN` is clamped to ≥ orphan threshold. Teardown +
 	// archive reuse the same primitives as close_runner (killCmux/window, terminal
-	// close, deleteCommDbSession, the shared archive predicate w/ allowStatuses).
+	// close, finalizeCommDbSession, the shared archive predicate w/ allowStatuses).
 	const crashReaperGraceMinutes = (() => {
 		const raw = Number.parseInt(
 			process.env.FLYWHEEL_CRASH_REAP_GRACE_MIN ?? "",
@@ -4419,8 +4495,8 @@ export async function startBridge(
 				sessionRole: identity.sessionRole,
 			});
 		},
-		deleteCommDbSession: (execId, projectName) =>
-			deleteCommDbSession(execId, projectName),
+		finalizeCommDbSession: (execId, projectName) =>
+			finalizeCommDbSession(execId, projectName),
 		archiveThread: (session) =>
 			archiveIssueThreadIfNoOtherActive(
 				store,
@@ -4852,7 +4928,7 @@ export async function startBridge(
 	// (terminal status + tmux window provably gone). These accumulate (~65 observed
 	// in production) and pollute runner_terminal_list / Lead bootstrap with
 	// class=dead entries. One pass per distinct project; the live counterpart is
-	// deleteCommDbSession on the close_runner / terminate / post-merge teardown
+	// finalizeCommDbSession on the close_runner / terminate / post-merge teardown
 	// paths (mirrors the FLY-324 live + boot shape).
 	//
 	// FIRE-AND-FORGET (Codex R1 MED): unlike the FLY-324 sweep (status-only, fast),
@@ -4872,6 +4948,20 @@ export async function startBridge(
 	{
 		const prunedProjects = new Set<string>();
 		const reconcileOn = process.env.FLYWHEEL_COMMDB_FSM_RECONCILE !== "0";
+		const recordFinalizeOutcome = (
+			executionId: string,
+			projectName: string,
+			result: ReturnType<typeof finalizeCommDbSession>,
+		) => {
+			const session = store.getSession(executionId);
+			store.recordCommDbFinalizeOutcome({
+				executionId,
+				issueId: session?.issue_id ?? executionId,
+				projectName,
+				ok: result.ok,
+				error: result.error,
+			});
+		};
 		void (async () => {
 			for (const p of projects ?? []) {
 				if (prunedProjects.has(p.projectName)) continue;
@@ -4881,6 +4971,7 @@ export async function startBridge(
 						const r = await reconcileCommDbRunningAgainstFsm(
 							p.projectName,
 							(id) => store.getSession(id)?.status,
+							{ onFinalizeOutcome: recordFinalizeOutcome },
 						);
 						if (r.reconciled > 0) {
 							console.log(
@@ -4894,7 +4985,9 @@ export async function startBridge(
 					}
 				}
 				try {
-					const pruned = await pruneDeadTerminalCommDbSessions(p.projectName);
+					const pruned = await pruneDeadTerminalCommDbSessions(p.projectName, {
+						onFinalizeOutcome: recordFinalizeOutcome,
+					});
 					if (pruned.pruned > 0) {
 						console.log(
 							`[Bridge] FLY-638 CommDB prune (${p.projectName}): scanned=${pruned.scanned} pruned=${pruned.pruned} kept=${pruned.kept} stale terminal rows removed`,
@@ -4924,8 +5017,9 @@ export async function startBridge(
 	// false-stuck/idle window and making the in-memory set restart-safe (re-seeded
 	// every boot → survives repeated restarts). No-op on the kill-switch path.
 	// Best-effort: must not block Bridge startup.
+	let bootReconnectExecutionIds: string[] = [];
 	try {
-		await heartbeatService.seedReconnecting();
+		bootReconnectExecutionIds = await heartbeatService.seedReconnecting();
 	} catch (err) {
 		console.error(
 			`[Bridge] FLY-623 reconnect boot-seed failed (non-fatal): ${(err as Error).message}`,
@@ -5045,6 +5139,24 @@ export async function startBridge(
 			config.discordOwnerUserId,
 			config.founderConsent?.founderUserId,
 		) ?? undefined;
+	const projectRootFor = (projectName: string): string | undefined =>
+		projects.find((project) => project.projectName === projectName)
+			?.projectRoot;
+	// FLY-1238: ONE composition-root instance owns cache, single-flight,
+	// backoff, and per-project network budget for all six recovery surfaces.
+	const mergedGateGuard = createMergedGateGuard({
+		store,
+		retireQuestion: (questionId, _executionId, projectName) => {
+			const db = new CommDB(commDbPathForProject(projectName), false);
+			try {
+				db.retireShipGate(questionId);
+			} finally {
+				db.close();
+			}
+		},
+		env: process.env,
+		log: (message) => console.warn(message),
+	});
 
 	const founderShipApprovalCallback = makeFounderShipApprovalCallback({
 		discordOwnerUserId: config.discordOwnerUserId,
@@ -5054,6 +5166,8 @@ export async function startBridge(
 		// FLY-1041 Chunk 4: attribution forensics; Chunk 5: hold alignment.
 		auditStore: store,
 		isHeld: founderApprovalIsHeld,
+		mergedGateGuard,
+		projectRootFor,
 		// FLY-1099 §4.2: held approvals are durably deferred (codex_pending /
 		// qa_not_green) instead of silently declined; merge_block gets the
 		// recovery pointer. Kill-switches read per call inside.
@@ -5089,6 +5203,8 @@ export async function startBridge(
 		// FLY-1041 Chunk 4/5: same audit target + hold guard as the text source.
 		auditStore: store,
 		isHeld: founderApprovalIsHeld,
+		mergedGateGuard,
+		projectRootFor,
 		readBindingImpl: (executionId, questionId, prHeadSha) =>
 			readCurrentGateMessageBinding(store, executionId, questionId, prHeadSha),
 		onResponseWritten: (info) =>
@@ -5880,6 +5996,7 @@ export async function startBridge(
 					>[0]["db"],
 				}),
 		},
+		mergedGateGuard,
 		// FLY-799: founder ✅-reaction ship approval (per-gate reaction poll).
 		tryFounderReactionApproval: founderReactionApprovalCallback,
 		// FLY-1041 Chunk 7: the SAME durable binding reader the reaction path
@@ -6024,7 +6141,7 @@ export async function startBridge(
 	// FLYWHEEL_ISSUE_DISPLAY_REFRESH=0 / chat-threads off → holder stays empty →
 	// every new trigger dormant + stage_changed keeps the legacy stamp+pin path.
 	if (issueDisplayRefreshEnabled && chatThreadCreator) {
-		issueDisplayRefreshHolder.current = new IssueDisplayRefresher({
+		const issueDisplayRefresher = new IssueDisplayRefresher({
 			store,
 			projects,
 			config,
@@ -6037,9 +6154,31 @@ export async function startBridge(
 			keepAliveEnabled: () => threeStageKeepAliveEnabled(),
 			// FLY-623 interaction: while HeartbeatService owns the ⚠️重连中 title,
 			// face A defers instead of overwriting it with a derived badge.
-			isReconnecting: (execId) =>
-				reconnectHolder.current?.isReconnecting(execId) ?? false,
+			isReconnectTitleActive: (execId) =>
+				reconnectHolder.current?.isReconnectTitleActive(execId) ?? false,
 		});
+		issueDisplayRefreshHolder.current = issueDisplayRefresher;
+		const restoreReconnectTitles = (executionIds?: readonly string[]) => {
+			const restoredIssues = settleReconnectTitlesAndRefresh(
+				heartbeatService,
+				issueDisplayRefresher,
+				executionIds,
+			);
+			if (restoredIssues.length > 0) {
+				console.log(
+					`[issue-display] queued reconnect-title restore for ${restoredIssues.length} issue(s)`,
+				);
+			}
+		};
+		// Runtime re-entries after this point keep the canonical title and cost zero
+		// Discord renames. Then drain every title episode that became active before
+		// this late-bound refresher existed (boot seed or an early heartbeat tick).
+		heartbeatService.markReconnectTitleRefresherReady();
+		// Preserve the early-accepted-event race guarantee: an explicit boot id
+		// still gets a canonical enqueue even if the event already cleared both
+		// reconnect sets before the refresher bound.
+		restoreReconnectTitles(bootReconnectExecutionIds);
+		restoreReconnectTitles();
 		console.log(
 			"[issue-display] FLY-907 unified refresher wired (derive-from-state, all lifecycle triggers)",
 		);
@@ -6059,6 +6198,9 @@ export async function startBridge(
 			store,
 			commDbPathFor: (projectName) => join(commRoot, projectName, "comm.db"),
 			openCommDb: (path) => new CommDB(path, false),
+			reviewerTimeoutMs: parseReviewerTimeoutMs(
+				process.env.FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS,
+			),
 			wakeRunner: async (executionId, sessionInfo, questionId, summary) => {
 				const db = new CommDB(
 					join(commRoot, sessionInfo.project_name, "comm.db"),
@@ -6133,6 +6275,7 @@ export async function startBridge(
 				// cascade). Same values the archive cascade uses in this boot scope.
 				transitionOpts,
 				globalBotToken: config.discordBotToken,
+				mergedGateGuard,
 			});
 			autoQaCoordinatorHolder.current = new AutoQaCoordinator({
 				store,
@@ -6235,6 +6378,7 @@ export async function startBridge(
 				chatThreadCreator,
 				transitionOpts,
 				globalBotToken: config.discordBotToken,
+				mergedGateGuard,
 			});
 			// FLY-859: fix-round cap knob. Invalid/absent → orchestrator default (3).
 			const maxFixRoundsEnv = process.env.FLYWHEEL_THREE_STAGE_MAX_FIX_ROUNDS;
@@ -6776,10 +6920,13 @@ export async function startBridge(
 				// (Finding B from the founder-visibility real-machine QA round — the
 				// line otherwise goes stale at whatever it showed pre-merge).
 				refreshPhaseStatusLine: refreshPhaseStatusLineEffect,
-				grantTurn: ({ issueId, execId, phase, projectName }) => {
+				grantTurn: ({ issueId, execId, phase, projectName, sourceEventId }) => {
 					const db = new CommDB(commDbPathForProject(projectName));
 					try {
-						db.grantTurn(issueId, execId, phase, Date.now());
+						db.grantTurn(issueId, execId, phase, Date.now(), {
+							project: projectName,
+							sourceEventId,
+						});
 					} finally {
 						db.close();
 					}
@@ -8235,6 +8382,7 @@ export async function startBridge(
 		// path as /health shuttingDown (no extra signal handlers) — a boot that
 		// finds this marker still `running` knows the previous Bridge died dirty.
 		writeCleanMarker(bridgeMarker);
+		workflowSourceProjector.stop();
 		heartbeatService?.stop();
 		await publishBrokerHandle?.close(); // FLY-1062: socket + observe timer
 		gatePoller.stop();

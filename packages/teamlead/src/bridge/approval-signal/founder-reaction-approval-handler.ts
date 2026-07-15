@@ -18,11 +18,13 @@
  */
 
 import type { ReactionFetcher } from "../../lead-backends/codex/gateway/founder-confirmation.js";
+import type { MergedGateGuard } from "../merged-gate-guard.js";
 import type { GateMessageBinding } from "./gate-message-binding.js";
 import { evaluateReactionSource } from "./reaction-approval-source.js";
 import type { GateBinding } from "./types.js";
 import {
 	type GateResponseDb,
+	type WriteGateResponseArgs,
 	writeGateResponseAndRunPostWrite,
 } from "./write-gate-response.js";
 
@@ -47,6 +49,7 @@ export interface ReactionApprovalHandlerDeps {
 	) => GateMessageBinding | null;
 	evaluateReactionImpl?: typeof evaluateReactionSource;
 	writeGateResponseImpl?: typeof writeGateResponseAndRunPostWrite;
+	cardAuthority?: WriteGateResponseArgs["cardAuthority"];
 	onResponseWritten?: Parameters<
 		typeof writeGateResponseAndRunPostWrite
 	>[0]["onResponseWritten"];
@@ -59,6 +62,8 @@ export interface ReactionApprovalHandlerDeps {
 	isHeld?: (executionId: string) => boolean;
 	/** FLY-1041 Chunk 4/5: attribution audit sink (see the text handler). */
 	auditSink?: (stage: string, payload?: Record<string, unknown>) => void;
+	/** FLY-1238: shared last-mile PR-state guard. */
+	mergedGateGuard?: MergedGateGuard;
 }
 
 export interface ReactionApprovalHandlerArgs {
@@ -68,7 +73,12 @@ export interface ReactionApprovalHandlerArgs {
 		checkpoint: string | null;
 		createdAtMs: number;
 	};
-	ctx: { issueId: string; threadId: string };
+	ctx: {
+		issueId: string;
+		threadId: string;
+		projectName?: string;
+		projectRoot?: string;
+	};
 }
 
 export async function tryFounderReactionApproval(
@@ -127,15 +137,44 @@ export async function tryFounderReactionApproval(
 		return null;
 	}
 
+	if (deps.mergedGateGuard) {
+		const guarded = await deps.mergedGateGuard({
+			executionId: gate.executionId,
+			issueId: args.ctx.issueId,
+			questionId: gate.questionId,
+			projectName: args.ctx.projectName ?? "",
+			projectRoot: args.ctx.projectRoot,
+			prNumber: session.pr_number ?? undefined,
+			source: "reaction",
+		});
+		if (guarded.kind !== "continue") {
+			deps.auditSink?.(`merged_gate_guard_${guarded.kind}`, {
+				questionId: gate.questionId,
+				...("reason" in guarded ? { reason: guarded.reason } : {}),
+			});
+			return {
+				handled: [],
+				retrySafe: guarded.kind !== "retry_later",
+			};
+		}
+	}
+
 	const write = deps.writeGateResponseImpl ?? writeGateResponseAndRunPostWrite;
 	const res = await write({
 		db: deps.db,
 		store: { getSession: (e) => deps.store.getSession(e) },
 		questionId: gate.questionId,
 		executionId: gate.executionId,
+		source: "reaction",
+		targetMessageId: binding.targetMessageId,
+		cardAuthority: deps.cardAuthority,
 		actor: deps.canonicalFounderId,
+		founderId: deps.canonicalFounderId,
 		answer: '{"approved": true}',
 		expectedCurrentReviewQuestionId: session.review_question_id ?? undefined,
+		holdReasonFor: deps.isHeld
+			? (executionId) => (deps.isHeld!(executionId) ? "qa_not_green" : null)
+			: undefined,
 		onResponseWritten: deps.onResponseWritten,
 	});
 

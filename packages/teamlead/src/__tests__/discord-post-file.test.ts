@@ -42,6 +42,7 @@ describe("postDiscordMessageWithFile", () => {
 		const form = init.body as FormData;
 		expect(form).toBeInstanceOf(FormData);
 		const payload = JSON.parse(form.get("payload_json") as string);
+		expect(payload.content).toMatch(/^🤖\[自动\] /);
 		expect(payload.content).toContain("📊 **Title**");
 		expect(payload.allowed_mentions).toEqual({ parse: [] });
 		expect(payload.attachments).toEqual([

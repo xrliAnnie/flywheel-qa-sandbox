@@ -5,6 +5,7 @@ import { join } from "node:path";
 import express from "express";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { WriteGateResponseArgs } from "../../approval-signal/write-gate-response.js";
 import type { EvaluateResult, FounderConsentEvaluator } from "../evaluator.js";
 import { createGateResponseRouter } from "../gate-response-router.js";
 
@@ -50,7 +51,10 @@ function fakeEvaluator(
 	} as unknown as FounderConsentEvaluator;
 }
 
-function mkServer(evaluator: FounderConsentEvaluator) {
+function mkServer(
+	evaluator: FounderConsentEvaluator,
+	overrides: Partial<Parameters<typeof createGateResponseRouter>[0]> = {},
+) {
 	const app = express();
 	app.use(express.json());
 	app.use(
@@ -65,6 +69,7 @@ function mkServer(evaluator: FounderConsentEvaluator) {
 				execId === "exec-1" ? { project_name: PROJECT } : undefined,
 			configuredProjects: new Set([PROJECT]),
 			commRoot: join(dir, "comm"),
+			...overrides,
 		}),
 	);
 	server = createServer(app);
@@ -91,6 +96,43 @@ afterEach(() => {
 });
 
 describe("gate-response-router (Surface B)", () => {
+	it.each([
+		["enforce", fakeEvaluator("allow", "enforce"), "bridge-founder-consent"],
+		["audit", fakeEvaluator("allow", "audit_only"), "lead-x"],
+	] as const)(
+		"routes %s writes through the shared founder boundary",
+		async (_mode, evaluator, expectedActor) => {
+			const qid = seedQuestion("approve_to_ship");
+			const cardAuthority = vi.fn().mockReturnValue({ ok: true });
+			const write = vi.fn(async () => ({
+				written: true,
+				retrySafe: true,
+				disposition: "written" as const,
+			}));
+			mkServer(evaluator, {
+				writeGateResponseImpl: write,
+				cardAuthority,
+			} as never);
+			const res = await request(
+				"POST",
+				"/api/founder-consent/runner-gate-response",
+				{
+					questionId: qid,
+					leadId: "lead-x",
+					answer: '{"approved":true}',
+					executionId: "exec-1",
+				},
+			);
+			expect(res.status).toBe(200);
+			expect(write).toHaveBeenCalledOnce();
+			expect(write.mock.calls[0]![0]).toMatchObject({
+				actor: expectedActor,
+				source: "founder-consent",
+				cardAuthority,
+			});
+		},
+	);
+
 	it("ALLOW: writes the CommDB response", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("allow"));
@@ -306,6 +348,14 @@ describe("gate-response-router (Surface B)", () => {
 
 	it("PASS-THROUGH (evaluator undefined / off): writes response without consent check", async () => {
 		const qid = seedQuestion("approve_to_ship");
+		const write = vi.fn(async (args: WriteGateResponseArgs) => {
+			args.db.insertResponse(args.questionId, args.actor, args.answer);
+			return {
+				written: true,
+				retrySafe: true,
+				disposition: "written" as const,
+			};
+		});
 		// Mount with NO evaluator — mirrors DECISION_MODE=off. The CLI still
 		// routes here, so it must write (not 404) — Codex R1 HIGH fix.
 		const app = express();
@@ -318,6 +368,7 @@ describe("gate-response-router (Surface B)", () => {
 				getSessionProject: () => ({ project_name: PROJECT }),
 				configuredProjects: new Set([PROJECT]),
 				commRoot: join(dir, "comm"),
+				writeGateResponseImpl: write,
 			}),
 		);
 		server = createServer(app);
@@ -333,6 +384,7 @@ describe("gate-response-router (Surface B)", () => {
 			},
 		);
 		expect(res.status).toBe(200);
+		expect(write).toHaveBeenCalledOnce();
 		expect((res.body as { passthrough?: boolean }).passthrough).toBe(true);
 		const db = new CommDB(commDbPath, false);
 		expect(db.getResponse(qid)?.content).toBe("approved");

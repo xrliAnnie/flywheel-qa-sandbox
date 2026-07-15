@@ -23,6 +23,7 @@ import {
 import { hasPendingCompleteMarker } from "./bridge/done-running-reconciler.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
+import type { IssueDisplayRefreshHolder } from "./bridge/issue-display-refresher.js";
 import {
 	GUARDRAIL_EVENT_TYPES,
 	type LeadEventEnvelope,
@@ -173,6 +174,7 @@ export interface HeartbeatNotifier {
 	onSessionMonitoringReestablished(
 		session: Session,
 		minutesSinceHeartbeat: number,
+		details?: { stampReconnectTitle?: boolean },
 	): Promise<void>;
 	/**
 	 * FLY-623: re-stamp the real/terminal status badge on a Runner's thread title
@@ -191,8 +193,12 @@ export interface HeartbeatNotifier {
 export interface ReconnectController {
 	/** True while a Runner is re-adopted (detached but tmux-alive) after a restart. */
 	isReconnecting(executionId: string): boolean;
+	/** True only while the founder-facing reconnect title still owns Face A. */
+	isReconnectTitleActive(executionId: string): boolean;
 	/** Drop a Runner from the reconnecting set on a genuine event / terminal / death. */
 	clearReconnecting(executionId: string): void;
+	/** End title episodes for selected execs (or every active one); keep monitor protection. */
+	settleReconnectTitles(executionIds?: readonly string[]): Session[];
 }
 
 /**
@@ -247,13 +253,20 @@ export class HeartbeatService implements ReconnectController {
 	 * tmux-alive). The single source of truth for the reconnecting lifecycle:
 	 * while a member is here we refresh its heartbeat each cycle (treating
 	 * tmux-liveness as the fallback heartbeat source for a Runner whose in-process
-	 * poll loop died with the previous Bridge), suppress stuck/orphan/idle, and
-	 * show the "⚠️重连中" title. A member leaves on a genuine runner event
+	 * poll loop died with the previous Bridge) and suppress stuck/orphan/idle. A
+	 * member leaves on a genuine runner event
 	 * (clearReconnecting), tmux death, or a terminal marker. Used only on the
 	 * readopt-ON path; stays empty when FLYWHEEL_HEARTBEAT_READOPT=0 (exact FLY-172
 	 * legacy behavior preserved).
 	 */
 	private reconnecting = new Set<string>();
+	/**
+	 * FLY-1264: founder-facing title ownership has a shorter lifetime than the
+	 * fallback-monitoring protection above. It starts with a reconnect episode and
+	 * is settled as soon as the canonical issue-display refresher is ready.
+	 */
+	private reconnectTitleActive = new Set<string>();
+	private reconnectTitleRefresherReady = false;
 
 	constructor(
 		private store: StateStore,
@@ -745,16 +758,23 @@ export class HeartbeatService implements ReconnectController {
 	 * `last_activity_at`, so `checkStuck` could fire before the first reconcile).
 	 * No-op when not wired or readopt OFF.
 	 */
-	async seedReconnecting(): Promise<void> {
+	async seedReconnecting(): Promise<string[]> {
 		const deps = this.buildMarkerDeps();
-		if (!deps || !this.readoptEnabled()) return;
+		if (!deps || !this.readoptEnabled()) return [];
 		this.markerRetryPending.clear();
+		const seeded: string[] = [];
 		const running = this.store
 			.getActiveSessions()
 			.filter((s) => s.status === "running");
 		for (const session of running) {
+			const execId = session.execution_id;
+			const wasTitleActive = this.reconnectTitleActive.has(execId);
 			await this.reconcileCandidateReadopt(session, deps);
+			if (!wasTitleActive && this.reconnectTitleActive.has(execId)) {
+				seeded.push(execId);
+			}
 		}
+		return seeded;
 	}
 
 	/**
@@ -778,16 +798,27 @@ export class HeartbeatService implements ReconnectController {
 		this.store.updateHeartbeat(execId);
 		if (this.reconnecting.has(execId)) return; // stay (already this episode)
 		this.reconnecting.add(execId);
+		// Only the startup window owns the visible ⚠️ title. Once the canonical
+		// refresher is ready, runtime re-entries keep the already-correct phase title
+		// and spend zero Discord renames (hard budget: ~2 per 10 minutes/thread).
+		const stampReconnectTitle = !this.reconnectTitleRefresherReady;
+		if (stampReconnectTitle) this.reconnectTitleActive.add(execId);
 		// Once-per-episode FYI + Display-A stamp. Best-effort — a failed FYI must
 		// not block re-adopt, and it is NOT retried (non-guardrail event type).
 		try {
 			await this.notifier.onSessionMonitoringReestablished(
 				session,
 				minutesSince,
+				{ stampReconnectTitle },
 			);
 		} catch {
 			// best-effort advisory
 		}
+	}
+
+	/** Mark the point after which runtime re-entries must preserve the canonical title. */
+	markReconnectTitleRefresherReady(): void {
+		this.reconnectTitleRefresherReady = true;
 	}
 
 	/**
@@ -799,9 +830,30 @@ export class HeartbeatService implements ReconnectController {
 	 * (terminal/dead). Synchronous + fire-and-forget for use from event handlers.
 	 */
 	clearReconnecting(executionId: string): void {
-		if (!this.reconnecting.delete(executionId)) return; // not reconnecting → no-op
+		const wasReconnecting = this.reconnecting.delete(executionId);
+		const wasTitleActive = this.reconnectTitleActive.delete(executionId);
+		if (!wasReconnecting && !wasTitleActive) return;
+		if (!wasTitleActive) return;
 		const session = this.store.getSession(executionId);
 		if (session) this.notifier.clearReconnectStamp?.(session);
+	}
+
+	/**
+	 * FLY-1264: release founder-facing title ownership for the exact boot episode
+	 * without weakening internal monitor-loss suppression. Resolve sessions even
+	 * when an early accepted event already cleared the title set so an explicit-id
+	 * caller can still enqueue a canonical issue refresh for that episode. With no
+	 * ids, drain every title episode active when the late refresher binds.
+	 */
+	settleReconnectTitles(executionIds?: readonly string[]): Session[] {
+		const affected: Session[] = [];
+		const selected = executionIds ?? [...this.reconnectTitleActive];
+		for (const executionId of selected) {
+			this.reconnectTitleActive.delete(executionId);
+			const session = this.store.getSession(executionId);
+			if (session) affected.push(session);
+		}
+		return affected;
 	}
 
 	/**
@@ -813,6 +865,11 @@ export class HeartbeatService implements ReconnectController {
 	 */
 	isReconnecting(executionId: string): boolean {
 		return this.reconnecting.has(executionId);
+	}
+
+	/** FLY-1264: title-only predicate consumed by the canonical display writer. */
+	isReconnectTitleActive(executionId: string): boolean {
+		return this.reconnectTitleActive.has(executionId);
 	}
 
 	/**
@@ -1792,6 +1849,10 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		 * Absent → Display-A no-ops (the re-adopt heartbeat fix still works).
 		 */
 		private chatThreadCreator?: ChatThreadCreator,
+		/** FLY-1225: late-bound issue-level display authority. When available,
+		 * reconnect-clear must re-derive from every phase instead of restoring a
+		 * completed phase's badge onto the shared issue thread. */
+		private issueDisplayRefresh?: IssueDisplayRefreshHolder,
 	) {}
 
 	async onSessionStuck(
@@ -1878,6 +1939,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 	async onSessionMonitoringReestablished(
 		session: Session,
 		minutes: number,
+		details?: { stampReconnectTitle?: boolean },
 	): Promise<void> {
 		const label = session.issue_identifier ?? session.issue_id;
 		const hookPayload: HookPayload = {
@@ -1893,7 +1955,9 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			session_role: session.session_role ?? "main",
 		};
 		// Display-A: stamp the ⚠️重连中 marker (fire-and-forget, best-effort).
-		this.stampReconnect(session, "enter");
+		if (details?.stampReconnectTitle !== false) {
+			this.stampReconnect(session, "enter");
+		}
 		await this.deliverHook(session, hookPayload);
 	}
 
@@ -1914,6 +1978,10 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 	 * created). Never throws into the caller.
 	 */
 	private stampReconnect(session: Session, mode: "enter" | "clear"): void {
+		if (mode === "clear" && this.issueDisplayRefresh?.current) {
+			this.issueDisplayRefresh.current.enqueue(session.issue_id);
+			return;
+		}
 		if (!this.chatThreadCreator) return; // Display-A not wired → no-op
 		let chatChannel: string;
 		let botToken: string;

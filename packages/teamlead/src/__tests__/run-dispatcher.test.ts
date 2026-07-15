@@ -38,6 +38,85 @@ function makeRuntime(projectName: string): [string, ProjectRuntime] {
 }
 
 describe("RunDispatcher", () => {
+	it("FLY-1244 admits durable QA before spawn and passes its scoped credential", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const shadow = {
+			onSpawnDispatch: vi.fn(),
+			onDispatchFailed: vi.fn(),
+		};
+		const admission = {
+			admit: vi.fn().mockReturnValue({ credential: "qa-credential" }),
+		};
+		const dispatcher = new RunDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			shadow,
+			admission,
+		);
+
+		const result = await dispatcher.start({
+			issueId: "FLY-1244",
+			projectName: "TestProject",
+			sessionRole: "qa",
+			shareParentBranch: true,
+			shadowContext: { node: "qa", attempt: 2 },
+		});
+
+		expect(admission.admit).toHaveBeenCalledWith({
+			projectName: "TestProject",
+			issueId: "FLY-1244",
+			executionId: result.executionId,
+			node: "qa",
+			attempt: 2,
+		});
+		const run = (
+			runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> }
+		).run;
+		expect(run.mock.calls[0]?.[2]).toMatchObject({
+			workflowSubmissionCredential: "qa-credential",
+		});
+	});
+
+	it("FLY-1244 fails closed before Blueprint when durable QA admission fails", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const dispatcher = new RunDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{ onSpawnDispatch: vi.fn(), onDispatchFailed: vi.fn() },
+			{
+				admit: vi.fn(() => {
+					throw new Error("binding conflict");
+				}),
+			},
+		);
+
+		await expect(
+			dispatcher.start({
+				issueId: "FLY-1244",
+				projectName: "TestProject",
+				sessionRole: "qa",
+				shareParentBranch: true,
+				shadowContext: { node: "qa", attempt: 1 },
+			}),
+		).rejects.toThrow("workflow claims admission failed");
+		expect(
+			(runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> }).run,
+		).not.toHaveBeenCalled();
+		expect(dispatcher.getInflightCount()).toBe(0);
+	});
+
 	it("start() returns executionId and issueId", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
 		const dispatcher = new RunDispatcher(

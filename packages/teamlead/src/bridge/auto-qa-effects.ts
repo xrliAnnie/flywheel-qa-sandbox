@@ -35,6 +35,7 @@ import {
 	postDiscordMessageToChannel,
 } from "./discord-utils.js";
 import { buildSessionKey } from "./hook-payload.js";
+import type { MergedGateGuard } from "./merged-gate-guard.js";
 import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import type { BridgeConfig } from "./types.js";
@@ -105,6 +106,8 @@ export interface AutoQaEffectsDeps {
 	wakeImpl?: typeof wakeRunnerMailbox;
 	/** FLY-752: test seam for closeRunner (defaults to the real primitive). */
 	closeRunnerImpl?: typeof closeRunner;
+	/** FLY-1238: shared last-mile guard for the ship-gate rebound anchor. */
+	mergedGateGuard?: MergedGateGuard;
 }
 
 export class AutoQaEffects implements AutoQaSideEffects {
@@ -172,7 +175,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			t.threadId,
 			`${prefix}${args.text}`,
 			broadcastToken,
-			{},
+			{ origin: "automation" },
 			this.deps.fetchImpl ?? fetch,
 		);
 		if (!res.ok) {
@@ -209,6 +212,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 				existing.messageId,
 				args.text,
 				t.botToken,
+				{ origin: "automation" },
 				this.deps.fetchImpl ?? fetch,
 			);
 			if (edit.ok) {
@@ -233,7 +237,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			t.threadId,
 			args.text,
 			t.botToken,
-			{},
+			{ origin: "automation" },
 			this.deps.fetchImpl ?? fetch,
 		);
 		if (post.ok && post.messageIds[0]) {
@@ -362,6 +366,21 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			);
 			return { ok: false };
 		}
+		if (this.deps.mergedGateGuard) {
+			const project = this.deps.projects.find(
+				(candidate) => candidate.projectName === args.session.project_name,
+			);
+			const guarded = await this.deps.mergedGateGuard({
+				executionId: args.session.execution_id,
+				issueId: args.session.issue_id,
+				questionId: args.session.review_question_id ?? "",
+				projectName: args.session.project_name,
+				projectRoot: project?.projectRoot,
+				prNumber: args.session.pr_number ?? undefined,
+				source: "rebound",
+			});
+			if (guarded.kind !== "continue") return { ok: false };
+		}
 		const text =
 			`⚠️ gate 更新:PR head \`${args.oldSha.slice(0, 8)}\` → \`${args.newSha.slice(0, 8)}\`` +
 			"(QA 证据 commit,QA PASS)。你的批准将绑定新 head——在这条消息上 ✅ 或直接回复批准即可。";
@@ -369,7 +388,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			t.threadId,
 			text,
 			t.botToken,
-			{},
+			{ origin: "automation" },
 			this.deps.fetchImpl ?? fetch,
 		);
 		if (!res.ok || res.messageIds.length === 0) {

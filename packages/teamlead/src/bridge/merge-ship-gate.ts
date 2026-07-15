@@ -15,11 +15,13 @@
 
 import {
 	evaluateShipEligibility,
+	resolveWorkflowClaimsReadEnabled,
 	type ShipEligibilityDecision,
 } from "flywheel-comm/ship-eligibility";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import { commDbPathForProject } from "./commdb-path.js";
+import { resolveWorkflowHeadAuthority } from "./head-authority.js";
 import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
 import { runPostShipFinalization } from "./post-ship-finalization.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
@@ -59,6 +61,60 @@ export function computeShipDecision(
 			typeof store.getDbPath === "function" ? store.getDbPath() : undefined,
 		env,
 	});
+}
+
+export interface AuthoritativeShipDecision extends ShipEligibilityDecision {
+	authoritativeHead: string;
+}
+
+/**
+ * The production ship seam. The session/evidence head is comparison-only; git
+ * HEAD in the persisted worktree is authoritative for every finalization path.
+ */
+export async function computeAuthoritativeShipDecision(
+	store: StateStore,
+	session: Pick<Session, "execution_id" | "project_name">,
+	observedHead: string | undefined,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<AuthoritativeShipDecision> {
+	// Default-off byte compatibility: until the claims read switch is explicitly
+	// enabled, every existing sink keeps its prior cached-head behavior.
+	if (!resolveWorkflowClaimsReadEnabled({ env })) {
+		return {
+			...computeShipDecision(store, session, observedHead ?? "", env),
+			authoritativeHead: observedHead?.trim().toLowerCase() ?? "",
+		};
+	}
+	let authoritativeHead = "";
+	try {
+		authoritativeHead = (
+			await resolveWorkflowHeadAuthority(store, session.execution_id)
+		).prHeadSha;
+	} catch {
+		return {
+			eligible: false,
+			mergeApprovalOk: false,
+			qaOk: false,
+			mergeReason: "head_authority_unavailable",
+			qaReason: "head_authority_unavailable_failclosed",
+			authoritativeHead,
+		};
+	}
+	const compared = observedHead?.trim().toLowerCase();
+	if (compared && compared !== authoritativeHead) {
+		return {
+			eligible: false,
+			mergeApprovalOk: false,
+			qaOk: false,
+			mergeReason: "head_authority_mismatch",
+			qaReason: "head_authority_mismatch_failclosed",
+			authoritativeHead,
+		};
+	}
+	return {
+		...computeShipDecision(store, session, authoritativeHead, env),
+		authoritativeHead,
+	};
 }
 
 /**
@@ -172,14 +228,21 @@ export async function finalizeRecoveredMerge(
 	if (!s?.merge_block_reason) return false;
 	const head = s.pr_head_sha?.trim();
 	const markerHead = s.merge_block_head?.trim();
-	// Head-bound: only THIS head's approval recovers THIS marker (a stale-head marker is left).
-	if (!head || !markerHead || head.toLowerCase() !== markerHead.toLowerCase()) {
+	if (!markerHead) {
 		return false;
 	}
 	// Eligibility BEFORE clearing (Codex R2 #2): an unmet QA / Codex gate → NOT eligible → leave
 	// the marker in place (still held). verifyApproval also requires status approved_to_ship, so
 	// a not-yet-approved row is naturally ineligible here.
-	const decision = computeShipDecision(store, s, head, env);
+	const decision = await computeAuthoritativeShipDecision(store, s, head, env);
+	// Head-bound: only THIS authoritative head recovers THIS marker. A stale
+	// cached/session head or stale marker remains parked.
+	if (
+		!decision.authoritativeHead ||
+		markerHead.toLowerCase() !== decision.authoritativeHead
+	) {
+		return false;
+	}
 	if (!decision.eligible) return false;
 
 	// Eligible → clear the durable marker (same head-matched clear), write `completed`, then

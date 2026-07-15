@@ -461,6 +461,8 @@ describe("ReviewRequestCoordinator — job execution", () => {
 			detail: "30min",
 			exitCode: null,
 			timedOut: true,
+			raw: "unsafe\u0007 `stdout` @everyone",
+			stderrTail: "stderr diagnostic",
 		});
 		await h.coordinator.accept({
 			executionId: "e1",
@@ -469,9 +471,24 @@ describe("ReviewRequestCoordinator — job execution", () => {
 			questionId: "q1",
 		});
 		await settle();
-		expect(h.store.getCodexReviewJob("r1")?.status).toBe("failed");
+		const job = h.store.getCodexReviewJob("r1");
+		expect(job?.status).toBe("failed");
+		expect(job?.failure_raw).toContain("STDOUT:");
+		expect(job?.failure_raw).toContain("unsafe\u0007 `stdout` @everyone");
+		expect(job?.failure_raw).toContain("STDERR:");
+		expect(job?.failure_raw).toContain("stderr diagnostic");
+		expect(job?.failure_raw?.length).toBeLessThanOrEqual(4000);
 		expect(h.comm.getResponse("q1")).toBeUndefined();
 		expect(h.alerts.length).toBeGreaterThan(0);
+		expect(
+			[...(h.alerts[0] ?? "")].some((character) => {
+				const code = character.charCodeAt(0);
+				return code <= 31 || code === 127;
+			}),
+		).toBe(false);
+		expect(h.alerts[0]).not.toContain("`");
+		expect(h.alerts[0]).not.toContain("@everyone");
+		expect(h.alerts[0]).toContain("stderr diagnostic");
 	});
 
 	it("round derivation + reround resumes the SAME reviewer session", async () => {
@@ -514,8 +531,402 @@ describe("ReviewRequestCoordinator — job execution", () => {
 		expect(h.invocations[1]?.resume).toBe(true);
 		expect(h.invocations[1]?.sessionId).toBe(h.invocations[0]?.sessionId);
 		expect(h.store.getCodexReviewJob("r2")?.round).toBe(2);
-		// reround prompt carries the prior findings
-		expect(h.invocations[1]?.prompt).toContain("fix me");
+		// A resumed session already owns the prior context; do not inject a
+		// possibly stale/false findings array into that live conversation.
+		expect(h.invocations[1]?.prompt).not.toContain("previous findings were");
+		expect(h.invocations[1]?.prompt).not.toContain("fix me");
+		expect(h.invocations[1]?.prompt).toContain("THIS session");
+		expect(h.invocations[1]?.prompt).toContain(
+			"Your very last line must be that JSON object itself.",
+		);
+	});
+
+	it("a fresh reround rebuilds prior findings when available", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		h.store.insertCodexReviewJob({
+			requestId: "r1",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		h.store.claimCodexReviewJobRunning("r1");
+		h.store.completeCodexReviewJob(
+			"r1",
+			"CHANGES_REQUESTED",
+			JSON.stringify([{ title: "preserved finding" }]),
+		);
+		openGate(h.comm, "q2", "e1", "review_design");
+		h.store.insertCodexReviewJob({
+			requestId: "r2",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "design",
+			round: 2,
+			questionId: "q2",
+		});
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: null,
+			raw: "",
+		});
+		h.coordinator.redriveOnBoot();
+		await settle();
+		expect(h.invocations).toHaveLength(1);
+		expect(h.invocations[0]?.resume).toBe(false);
+		expect(h.invocations[0]?.prompt).toContain("preserved finding");
+		expect(h.invocations[0]?.prompt).toContain("previous findings were");
+	});
+
+	it("a fresh reround without durable findings says so instead of inventing []", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q2", "e1", "review_design");
+		h.store.insertCodexReviewJob({
+			requestId: "r2",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "design",
+			round: 2,
+			questionId: "q2",
+		});
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: null,
+			raw: "",
+		});
+		h.coordinator.redriveOnBoot();
+		await settle();
+		expect(h.invocations[0]?.prompt).toContain("no reliable record");
+		expect(h.invocations[0]?.prompt).not.toContain("\n[]\n");
+	});
+});
+
+describe("FLY-1254 — lost reviewer session fallback", () => {
+	async function seedPriorDesignRound(h: Harness, sessionId = "lost-session") {
+		h.store.insertCodexReviewJob({
+			requestId: "r1",
+			executionId: "e1",
+			issueId: "FLY-1254",
+			projectName: "proj",
+			reviewType: "design",
+			questionId: "q1",
+			reviewerSessionUuid: sessionId,
+		});
+		h.store.claimCodexReviewJobRunning("r1");
+		h.store.completeCodexReviewJob(
+			"r1",
+			"CHANGES_REQUESTED",
+			JSON.stringify([{ title: "prior finding" }]),
+		);
+	}
+
+	it("retries a missing resumed session once as fresh and delivers through the original path", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		await seedPriorDesignRound(h);
+		openGate(h.comm, "q2", "e1", "review_design");
+		h.outcomes.push(
+			{
+				kind: "failed",
+				reason: "nonzero_exit",
+				detail: "claude exited 1",
+				exitCode: 1,
+				timedOut: false,
+				stderrTail: "No conversation found with session ID: lost-session",
+			},
+			{
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: null,
+				raw: "",
+			},
+		);
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r2",
+			reviewType: "design",
+			questionId: "q2",
+		});
+		await settle();
+		expect(h.invocations).toHaveLength(2);
+		expect(h.invocations[0]).toMatchObject({
+			resume: true,
+			sessionId: "lost-session",
+		});
+		expect(h.invocations[1]?.resume).toBe(false);
+		expect(h.invocations[1]?.sessionId).not.toBe("lost-session");
+		expect(h.invocations[1]?.prompt).toContain("prior finding");
+		expect(h.store.getCodexReviewJob("r2")?.reviewer_session_uuid).toBe(
+			h.invocations[1]?.sessionId,
+		);
+		expect(h.store.getCodexReviewJob("r2")?.status).toBe("done");
+		expect(h.comm.getResponse("q2")).toBeDefined();
+	});
+
+	it("fails closed after the one fresh retry and stores both attempts", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		await seedPriorDesignRound(h);
+		openGate(h.comm, "q2", "e1", "review_design");
+		h.outcomes.push(
+			{
+				kind: "failed",
+				reason: "nonzero_exit",
+				detail: "lost",
+				exitCode: 1,
+				timedOut: false,
+				stderrTail: "No conversation found with session ID: lost-session",
+			},
+			{
+				kind: "failed",
+				reason: "no_verdict",
+				detail: "bad fresh output",
+				exitCode: 0,
+				timedOut: false,
+				raw: "fresh attempt output",
+			},
+		);
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r2",
+			reviewType: "design",
+			questionId: "q2",
+		});
+		await settle();
+		expect(h.invocations).toHaveLength(2);
+		const job = h.store.getCodexReviewJob("r2");
+		expect(job?.status).toBe("failed");
+		expect(job?.failure_reason).toBe("no_verdict");
+		expect(job?.failure_raw).toContain("ATTEMPT 1 RESUME");
+		expect(job?.failure_raw).toContain("No conversation found");
+		expect(job?.failure_raw).toContain("ATTEMPT 2 FRESH");
+		expect(job?.failure_raw).toContain("fresh attempt output");
+	});
+
+	it("does not retry quota-like nonzero exits or a round-1 failure", async () => {
+		const resumed = await makeHarness();
+		registerSession(resumed.store, "e1");
+		await seedPriorDesignRound(resumed);
+		openGate(resumed.comm, "q2", "e1", "review_design");
+		resumed.outcomes.push({
+			kind: "failed",
+			reason: "nonzero_exit",
+			detail: "quota",
+			exitCode: 1,
+			timedOut: false,
+			stderrTail: "You've hit your weekly limit",
+		});
+		await resumed.coordinator.accept({
+			executionId: "e1",
+			requestId: "r2",
+			reviewType: "design",
+			questionId: "q2",
+		});
+		await settle();
+		expect(resumed.invocations).toHaveLength(1);
+
+		const round1 = await makeHarness();
+		registerSession(round1.store, "e1");
+		openGate(round1.comm, "q1", "e1", "review_design");
+		round1.outcomes.push({
+			kind: "failed",
+			reason: "nonzero_exit",
+			detail: "lost",
+			exitCode: 1,
+			timedOut: false,
+			stderrTail: "No conversation found with session ID: impossible-r1",
+		});
+		await round1.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		await settle();
+		expect(round1.invocations).toHaveLength(1);
+	});
+
+	it("boot redrive can recover a persisted never-spawned reviewer uuid", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q2", "e1", "review_design");
+		h.store.insertCodexReviewJob({
+			requestId: "r2",
+			executionId: "e1",
+			issueId: "FLY-1254",
+			projectName: "proj",
+			reviewType: "design",
+			round: 2,
+			questionId: "q2",
+			reviewerSessionUuid: "persisted-but-never-spawned",
+		});
+		h.outcomes.push(
+			{
+				kind: "failed",
+				reason: "nonzero_exit",
+				detail: "lost",
+				exitCode: 1,
+				timedOut: false,
+				stderrTail:
+					"No conversation found with session ID: persisted-but-never-spawned",
+			},
+			{
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: null,
+				raw: "",
+			},
+		);
+		h.coordinator.redriveOnBoot();
+		await settle();
+		expect(h.invocations.map((invocation) => invocation.resume)).toEqual([
+			true,
+			false,
+		]);
+		expect(h.store.getCodexReviewJob("r2")?.status).toBe("done");
+		expect(h.comm.getResponse("q2")).toBeDefined();
+	});
+
+	it("does not start the fresh fallback after coordinator shutdown", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		await seedPriorDesignRound(h);
+		openGate(h.comm, "q2", "e1", "review_design");
+		let calls = 0;
+		const coordinator = new ReviewRequestCoordinator({
+			store: h.store,
+			commDbPathFor: () => "/fake/proj/comm.db",
+			openCommDb: () => h.comm,
+			reviewRound: async () => {
+				calls += 1;
+				coordinator.stop();
+				return {
+					kind: "failed",
+					reason: "nonzero_exit",
+					detail: "lost",
+					exitCode: 1,
+					timedOut: false,
+					stderrTail: "No conversation found with session ID: lost-session",
+				};
+			},
+			logger: () => {},
+		});
+		await coordinator.accept({
+			executionId: "e1",
+			requestId: "r2",
+			reviewType: "design",
+			questionId: "q2",
+		});
+		await settle();
+		expect(calls).toBe(1);
+		expect(h.store.getCodexReviewJob("r2")?.failure_reason).toBe(
+			"nonzero_exit",
+		);
+		expect(h.store.getCodexReviewJob("r2")?.reviewer_session_uuid).toBe(
+			"lost-session",
+		);
+	});
+
+	it("does not start the fresh fallback after the gate is answered", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		await seedPriorDesignRound(h);
+		openGate(h.comm, "q2", "e1", "review_design");
+		let calls = 0;
+		const coordinator = new ReviewRequestCoordinator({
+			store: h.store,
+			commDbPathFor: () => "/fake/proj/comm.db",
+			openCommDb: () => h.comm,
+			reviewRound: async () => {
+				calls += 1;
+				h.comm.insertResponse("q2", "lead", "cancelled");
+				return {
+					kind: "failed",
+					reason: "nonzero_exit",
+					detail: "lost",
+					exitCode: 1,
+					timedOut: false,
+					stderrTail: "No conversation found with session ID: lost-session",
+				};
+			},
+			logger: () => {},
+		});
+		await coordinator.accept({
+			executionId: "e1",
+			requestId: "r2",
+			reviewType: "design",
+			questionId: "q2",
+		});
+		await settle();
+		expect(calls).toBe(1);
+		expect(h.store.getCodexReviewJob("r2")?.failure_reason).toBe(
+			"gate_answered_externally",
+		);
+		expect(h.store.getCodexReviewJob("r2")?.reviewer_session_uuid).toBe(
+			"lost-session",
+		);
+	});
+
+	it("does not start the fresh fallback after a code-review head move", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		h.store.insertCodexReviewJob({
+			requestId: "r1",
+			executionId: "e1",
+			issueId: "FLY-1254",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "q1",
+			frozenHeadSha: HEAD,
+			reviewerSessionUuid: "lost-session",
+		});
+		h.store.claimCodexReviewJobRunning("r1");
+		h.store.completeCodexReviewJob("r1", "CHANGES_REQUESTED", "[]");
+		openGate(h.comm, "q2");
+		let calls = 0;
+		let currentHead = HEAD;
+		const coordinator = new ReviewRequestCoordinator({
+			store: h.store,
+			commDbPathFor: () => "/fake/proj/comm.db",
+			openCommDb: () => h.comm,
+			deriveHead: async () => currentHead,
+			reviewRound: async () => {
+				calls += 1;
+				currentHead = "b".repeat(40);
+				return {
+					kind: "failed",
+					reason: "nonzero_exit",
+					detail: "lost",
+					exitCode: 1,
+					timedOut: false,
+					stderrTail: "No conversation found with session ID: lost-session",
+				};
+			},
+			logger: () => {},
+		});
+		await coordinator.accept({
+			executionId: "e1",
+			requestId: "r2",
+			reviewType: "code",
+			questionId: "q2",
+		});
+		await settle();
+		expect(calls).toBe(1);
+		expect(h.store.getCodexReviewJob("r2")?.failure_reason).toBe("head_moved");
+		expect(h.store.getCodexReviewJob("r2")?.reviewer_session_uuid).toBe(
+			"lost-session",
+		);
 	});
 });
 

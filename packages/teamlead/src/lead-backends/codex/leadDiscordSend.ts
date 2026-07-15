@@ -40,7 +40,7 @@ export function buildLeadDiscordSend(
 			channelId,
 			text,
 			token,
-			{},
+			{ origin: "lead_authored" },
 			fetchImpl,
 		);
 		if (!res.ok) {

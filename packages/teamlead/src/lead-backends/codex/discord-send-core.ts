@@ -174,7 +174,9 @@ export async function runDiscordSend(
 
 	let res: Awaited<ReturnType<typeof postDiscordMessageToChannel>>;
 	try {
-		res = await post(channelId, text, deps.botToken);
+		res = await post(channelId, text, deps.botToken, {
+			origin: "lead_authored",
+		});
 	} catch (e) {
 		return {
 			ok: false,

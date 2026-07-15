@@ -52,6 +52,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 		expect(msgUrl).toBe("https://discord.com/api/v10/channels/ch-123/messages");
 		expect(msgOpts.method).toBe("POST");
 		const msgBody = JSON.parse(msgOpts.body);
+		expect(msgBody.content).toMatch(/^🤖\[自动\] /);
 		expect(msgBody.content).toContain("FLY-91");
 
 		// Verify Step 2: POST thread from message
@@ -825,6 +826,56 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 			creator.stampStageEmoji(ctx(), "thread-1", "implement"),
 		).resolves.toBeUndefined();
 		expect(mockFetch).toHaveBeenCalledTimes(1);
+	});
+
+	it("returns deferred without warning when Discord says the thread is archived", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({
+						name: "⚠️重连中 [FLY-560] Discord issue status",
+					}),
+			})
+			.mockResolvedValueOnce({
+				ok: false,
+				status: 400,
+				text: () =>
+					Promise.resolve('{"message":"Thread is archived","code":50083}'),
+			});
+
+		await expect(
+			creator.stampStatusBadgeResult(ctx(), "thread-1", "🔨实现"),
+		).resolves.toBe("deferred");
+		expect(warn).not.toHaveBeenCalled();
+	});
+
+	it("keeps an ordinary Discord 403 visible as a failed write", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({
+						name: "⚠️重连中 [FLY-560] Discord issue status",
+					}),
+			})
+			.mockResolvedValueOnce({
+				ok: false,
+				status: 403,
+				text: () =>
+					Promise.resolve('{"message":"Missing Permissions","code":50013}'),
+			});
+
+		await expect(
+			creator.stampStatusBadgeResult(ctx(), "thread-1", "🔨实现"),
+		).resolves.toBe("failed");
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("stage-emoji PATCH failed: 403"),
+		);
 	});
 
 	// FLY-630 ①: a 429 must NOT be swallowed. The writer honors Retry-After and

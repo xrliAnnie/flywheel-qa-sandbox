@@ -36,6 +36,7 @@ import {
 	type AlertRateLimiter,
 	formatOverflowSummary,
 } from "./bridge/alert-rate-limiter.js";
+import { markAutomatedDiscordText } from "./bridge/automated-message.js";
 import type { MetaAlertReason } from "./MetaAlertNotifier.js";
 import type { LeadConfig, ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
@@ -181,6 +182,10 @@ export const ALERT_EVENT_TYPES = [
 	// Z2 (FLY-1049 shape): a LIVE session whose CommDB registration row is
 	// gone — wake routing broken; founder replies to its gate dead-letter.
 	"founder_reply_unreachable_runner",
+	// FLY-1238: internal integrity alerts. These never reuse founder-facing
+	// recovery copy; they route to the owning Lead after bounded retries.
+	"commdb_finalize_stuck",
+	"merged_gate_guard_unavailable",
 	// FLY-1081: restart-services.sh / update-flywheel.sh deploy notices, fired
 	// ONLY via scripts/lead-alert.sh with the system identity `--lead deploy` /
 	// `--lead updater` (shell-only kinds; the Bridge never emits them). Present
@@ -1072,7 +1077,7 @@ export class LeadAlertNotifier {
 							"Content-Type": "application/json",
 						},
 						body: JSON.stringify({
-							content,
+							content: markAutomatedDiscordText(content),
 							allowed_mentions: { parse: [] as string[] },
 						}),
 					},
@@ -1175,12 +1180,14 @@ export class LeadAlertNotifier {
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify({
-					content: formatContent(payload, {
-						ticketHeader:
-							!!this.unifiedAlert &&
-							this.ticketsEnabled() &&
-							!isInformationalKind(payload.eventType),
-					}),
+					content: markAutomatedDiscordText(
+						formatContent(payload, {
+							ticketHeader:
+								!!this.unifiedAlert &&
+								this.ticketsEnabled() &&
+								!isInformationalKind(payload.eventType),
+						}),
+					),
 					// FLY-368 (Codex code R1 MEDIUM-3): suppress all mentions on the
 					// unified-channel root alert so an issue id / title / body can never
 					// @everyone/@here/@role-ping the channel. Gated on unified mode so the

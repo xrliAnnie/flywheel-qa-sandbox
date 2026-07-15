@@ -4,8 +4,17 @@ import { join } from "node:path";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
-import { CLOSE_ELIGIBLE_STATES, closeRunner } from "../bridge/close-runner.js";
+import {
+	CLOSE_ELIGIBLE_STATES,
+	type CloseRunnerResult,
+	closeRunner,
+} from "../bridge/close-runner.js";
 import { StateStore } from "../StateStore.js";
+
+// FLY-1238: omission must stay a compile error; otherwise callers can silently
+// treat a physically closed runner as fully finalized.
+// @ts-expect-error commDbFinalized and retiredGateCount are required
+const _missingFinalizationContract: CloseRunnerResult = { closed: true };
 
 // ── Mock tmux-lookup ────────────────────────────────────────
 
@@ -21,10 +30,17 @@ vi.mock("../bridge/tmux-lookup.js", () => ({
 		mockKillCmuxLinkedSession(...args),
 }));
 
-// FLY-638: stub the CommDB prune so tests never touch the real comm.db on disk.
-const mockDeleteCommDbSession = vi.fn(() => true);
+// FLY-1238: stub the atomic CommDB finalizer so tests never touch the real
+// comm.db on disk. Physical teardown is not complete until this succeeds.
+const mockFinalizeCommDbSession = vi.fn(() => ({
+	ok: true as const,
+	outcome: "finalized" as const,
+	retiredGateCount: 2,
+	deletedSessionCount: 1,
+}));
 vi.mock("../bridge/commdb-session-prune.js", () => ({
-	deleteCommDbSession: (...args: unknown[]) => mockDeleteCommDbSession(...args),
+	finalizeCommDbSession: (...args: unknown[]) =>
+		mockFinalizeCommDbSession(...args),
 }));
 
 function makeOpts(overrides: Record<string, unknown> = {}) {
@@ -54,12 +70,24 @@ describe("closeRunner", () => {
 		store = await StateStore.create(":memory:");
 		mockGetTmuxTarget.mockReset();
 		mockKillTmuxWindow.mockReset();
+		mockFinalizeCommDbSession.mockReset();
+		mockFinalizeCommDbSession.mockReturnValue({
+			ok: true,
+			outcome: "finalized",
+			retiredGateCount: 2,
+			deletedSessionCount: 1,
+		});
 	});
 
 	it("returns session_not_found when session is absent (no event written)", async () => {
 		const result = await closeRunner(makeOpts(), store);
 
-		expect(result).toEqual({ closed: false, error: "session_not_found" });
+		expect(result).toEqual({
+			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: "session_not_found",
+		});
 		expect(store.getEventsByExecution("exec-1")).toEqual([]);
 	});
 
@@ -77,6 +105,8 @@ describe("closeRunner", () => {
 
 			expect(result).toEqual({
 				closed: false,
+				commDbFinalized: false,
+				retiredGateCount: 0,
 				error: `status_not_eligible:${status}`,
 			});
 			const events = store.getEventsByExecution("exec-1");
@@ -98,7 +128,12 @@ describe("closeRunner", () => {
 
 		const result = await closeRunner(makeOpts(), store);
 
-		expect(result).toEqual({ closed: true, error: undefined });
+		expect(result).toEqual({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 2,
+			error: undefined,
+		});
 		expect(mockKillTmuxWindow).toHaveBeenCalledWith("FLY-102:@0");
 		const events = store.getEventsByExecution("exec-1");
 		expect(events.some((e) => e.event_type === "lead_close_runner")).toBe(true);
@@ -112,12 +147,74 @@ describe("closeRunner", () => {
 
 		const result = await closeRunner(makeOpts(), store);
 
-		expect(result).toEqual({ closed: true, alreadyGone: true });
+		expect(result).toEqual({
+			closed: true,
+			alreadyGone: true,
+			commDbFinalized: true,
+			retiredGateCount: 2,
+		});
 		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
 		const events = store.getEventsByExecution("exec-1");
 		const evt = events.find((e) => e.event_type === "lead_close_runner");
 		expect(evt).toBeDefined();
 		expect((evt!.payload as { alreadyGone?: boolean })?.alreadyGone).toBe(true);
+	});
+
+	it("FLY-1238: fails communication finalization closed and skips archive when tmux is already gone", async () => {
+		seedSession(store, "completed");
+		mockGetTmuxTarget.mockReturnValue(undefined);
+		mockFinalizeCommDbSession.mockReturnValue({
+			ok: false,
+			outcome: "failed",
+			retiredGateCount: 0,
+			deletedSessionCount: 0,
+			error: "sqlite busy",
+		} as never);
+		const archiveFn = vi.fn();
+
+		const result = await closeRunner(
+			makeOpts({ archive: { projects: [], archiveFn } }),
+			store,
+		);
+
+		expect(result).toEqual({
+			closed: true,
+			alreadyGone: true,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: "commdb_finalize_failed:sqlite busy",
+		});
+		expect(archiveFn).not.toHaveBeenCalled();
+	});
+
+	it("FLY-1238: fails communication finalization closed and skips archive after a successful kill", async () => {
+		seedSession(store, "completed");
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "FLY-102:@0",
+			sessionName: "FLY-102",
+		});
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+		mockFinalizeCommDbSession.mockReturnValue({
+			ok: false,
+			outcome: "failed",
+			retiredGateCount: 0,
+			deletedSessionCount: 0,
+			error: "disk full",
+		} as never);
+		const archiveFn = vi.fn();
+
+		const result = await closeRunner(
+			makeOpts({ archive: { projects: [], archiveFn } }),
+			store,
+		);
+
+		expect(result).toEqual({
+			closed: true,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: "commdb_finalize_failed:disk full",
+		});
+		expect(archiveFn).not.toHaveBeenCalled();
 	});
 
 	it("records lead_close_runner_failed when killTmuxWindow errors", async () => {
@@ -136,7 +233,12 @@ describe("closeRunner", () => {
 
 		const result = await closeRunner(makeOpts(), store);
 
-		expect(result).toEqual({ closed: false, error: "permission denied" });
+		expect(result).toEqual({
+			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: "permission denied",
+		});
 		const events = store.getEventsByExecution("exec-1");
 		expect(
 			events.some((e) => e.event_type === "lead_close_runner_failed"),
@@ -161,6 +263,8 @@ describe("closeRunner", () => {
 
 		expect(result).toEqual({
 			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
 			error: "authority_lost:pre_cmux_kill:authority_reopened",
 		});
 		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
@@ -201,7 +305,12 @@ describe("closeRunner", () => {
 
 		const result = await closeRunner(makeOpts({ authorityCheck }), store);
 
-		expect(result).toEqual({ closed: true, error: undefined });
+		expect(result).toEqual({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 2,
+			error: undefined,
+		});
 		expect(mockKillTmuxWindow).toHaveBeenCalledWith("FLY-102:@0");
 		// called before EACH external boundary (pre-cmux, pre-tmux, post-kill).
 		expect(authorityCheck.mock.calls.length).toBeGreaterThanOrEqual(2);
@@ -241,7 +350,12 @@ describe("closeRunner", () => {
 		);
 
 		// Close failed → thread must NOT be archived (premature-archive guard).
-		expect(result).toEqual({ closed: false, error: "permission denied" });
+		expect(result).toEqual({
+			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: "permission denied",
+		});
 		expect(archiveFn).not.toHaveBeenCalled();
 	});
 
@@ -260,6 +374,8 @@ describe("closeRunner", () => {
 
 			expect(result).toEqual({
 				closed: false,
+				commDbFinalized: false,
+				retiredGateCount: 0,
 				preserved: true,
 				reason: "crash_preserve",
 			});
@@ -286,7 +402,12 @@ describe("closeRunner", () => {
 				store,
 			);
 
-			expect(result).toEqual({ closed: true, error: undefined });
+			expect(result).toEqual({
+				closed: true,
+				commDbFinalized: true,
+				retiredGateCount: 2,
+				error: undefined,
+			});
 			expect(mockKillTmuxWindow).toHaveBeenCalledWith("FLY-102:@0");
 			const events = store.getEventsByExecution("exec-1");
 			expect(
@@ -312,7 +433,12 @@ describe("closeRunner", () => {
 			store,
 		);
 
-		expect(result).toEqual({ closed: true, error: undefined });
+		expect(result).toEqual({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 2,
+			error: undefined,
+		});
 		const events = store.getEventsByExecution("exec-1");
 		expect(events.some((e) => e.event_type === "lead_close_runner")).toBe(true);
 		expect(
@@ -379,7 +505,12 @@ describe("closeRunner", () => {
 				store,
 			);
 
-			expect(result).toEqual({ closed: true, alreadyGone: true });
+			expect(result).toEqual({
+				closed: true,
+				alreadyGone: true,
+				commDbFinalized: true,
+				retiredGateCount: 2,
+			});
 			// Session was finalized to completed.
 			expect(store.getSession("exec-1")?.status).toBe("completed");
 			const events = store.getEventsByExecution("exec-1");
@@ -410,7 +541,12 @@ describe("closeRunner", () => {
 			store,
 		);
 
-		expect(result).toEqual({ closed: true, error: undefined });
+		expect(result).toEqual({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 2,
+			error: undefined,
+		});
 		expect(mockKillTmuxWindow).toHaveBeenCalledWith("FLY-102:@0");
 		expect(store.getSession("exec-1")?.status).toBe("completed");
 	});
@@ -456,7 +592,12 @@ describe("closeRunner", () => {
 			store,
 		);
 
-		expect(result).toEqual({ closed: true, alreadyGone: true });
+		expect(result).toEqual({
+			closed: true,
+			alreadyGone: true,
+			commDbFinalized: true,
+			retiredGateCount: 2,
+		});
 		const events = store.getEventsByExecution("exec-1");
 		// No finalize event — status was already terminal.
 		expect(
@@ -472,6 +613,8 @@ describe("closeRunner", () => {
 
 		expect(result).toEqual({
 			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
 			error: "finalize_done_unavailable",
 		});
 		expect(store.getSession("exec-1")?.status).toBe("awaiting_review");
@@ -487,6 +630,8 @@ describe("closeRunner", () => {
 
 		expect(result).toEqual({
 			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
 			error: "status_not_eligible:awaiting_review",
 		});
 		expect(store.getSession("exec-1")?.status).toBe("awaiting_review");
@@ -558,7 +703,12 @@ describe("closeRunner — FLY-685 cmux pin marker", () => {
 
 		const result = await closeRunner(makeOpts(), store);
 
-		expect(result).toEqual({ closed: true });
+		expect(result).toEqual({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 2,
+			error: undefined,
+		});
 		expect(readFileSync(markerFile, "utf8")).toBe(
 			"FLY-102-claude-close-runner-stale-pin\n",
 		);
@@ -601,7 +751,12 @@ describe("closeRunner — FLY-685 cmux pin marker", () => {
 
 		const result = await closeRunner(makeOpts(), store);
 
-		expect(result).toEqual({ closed: true });
+		expect(result).toEqual({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 2,
+			error: undefined,
+		});
 		expect(existsSync(markerFile)).toBe(false);
 	});
 
@@ -620,7 +775,12 @@ describe("closeRunner — FLY-685 cmux pin marker", () => {
 
 		const result = await closeRunner(makeOpts(), store);
 
-		expect(result).toEqual({ closed: true });
+		expect(result).toEqual({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 2,
+			error: undefined,
+		});
 	});
 });
 

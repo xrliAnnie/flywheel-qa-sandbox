@@ -146,6 +146,73 @@ describe("StateStore — FLY-827 codex_review_record", () => {
 	});
 });
 
+describe("StateStore — FLY-1254 review failure evidence", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	function insertJob(requestId: string) {
+		store.insertCodexReviewJob({
+			requestId,
+			executionId: "exec-failure-raw",
+			issueId: "FLY-1254",
+			projectName: "flywheel",
+			reviewType: "code",
+			questionId: `q-${requestId}`,
+		});
+	}
+
+	it("failure_raw is overwritten by each failure instead of retaining stale evidence", () => {
+		insertJob("raw-overwrite");
+		store.failCodexReviewJob("raw-overwrite", "no_verdict", "first raw");
+		expect(store.getCodexReviewJob("raw-overwrite")).toMatchObject({
+			status: "failed",
+			failure_reason: "no_verdict",
+			failure_raw: "first raw",
+		});
+
+		store.failCodexReviewJob("raw-overwrite", "timeout");
+		expect(store.getCodexReviewJob("raw-overwrite")).toMatchObject({
+			status: "failed",
+			failure_reason: "timeout",
+		});
+		expect(
+			store.getCodexReviewJob("raw-overwrite")?.failure_raw,
+		).toBeUndefined();
+	});
+
+	it("claiming a retry clears the previous failure reason and raw evidence", () => {
+		insertJob("raw-claim");
+		store.failCodexReviewJob("raw-claim", "nonzero_exit", "diagnostic");
+		expect(store.claimCodexReviewJobRunning("raw-claim")).toBe(true);
+		expect(store.getCodexReviewJob("raw-claim")).toMatchObject({
+			status: "running",
+		});
+		expect(
+			store.getCodexReviewJob("raw-claim")?.failure_reason,
+		).toBeUndefined();
+		expect(store.getCodexReviewJob("raw-claim")?.failure_raw).toBeUndefined();
+	});
+
+	it("completing a retried job clears failure reason and raw evidence", () => {
+		insertJob("raw-complete");
+		store.failCodexReviewJob("raw-complete", "no_verdict", "diagnostic");
+		store.completeCodexReviewJob("raw-complete", "APPROVED", "[]");
+		expect(store.getCodexReviewJob("raw-complete")).toMatchObject({
+			status: "done",
+			verdict: "APPROVED",
+		});
+		expect(
+			store.getCodexReviewJob("raw-complete")?.failure_reason,
+		).toBeUndefined();
+		expect(
+			store.getCodexReviewJob("raw-complete")?.failure_raw,
+		).toBeUndefined();
+	});
+});
+
 describe("StateStore — FLY-863 codex-hold stuck escalation", () => {
 	let store: StateStore;
 

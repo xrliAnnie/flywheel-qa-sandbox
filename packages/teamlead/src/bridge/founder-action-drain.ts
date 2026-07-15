@@ -30,6 +30,7 @@ import type {
 	FounderActionRow,
 	SessionEvent,
 } from "../StateStore.js";
+import type { MergedGateGuard } from "./merged-gate-guard.js";
 
 export interface FounderActionDrainStore {
 	listPendingFounderActions(): FounderActionRow[];
@@ -46,7 +47,9 @@ export interface FounderActionDrainStore {
 	insertEvent(event: SessionEvent): boolean;
 	getSession(
 		executionId: string,
-	): { status?: string; pr_head_sha?: string } | undefined;
+	):
+		| { status?: string; pr_head_sha?: string; pr_number?: number | null }
+		| undefined;
 }
 
 /** Real-outcome alert sink (LeadAlertNotifier satisfies it). */
@@ -99,6 +102,9 @@ export interface FounderActionDrainDeps {
 	): { leadId: string } | undefined;
 	nowMs?: () => number;
 	env?: Record<string, string | undefined>;
+	/** FLY-1238: shared last-mile guard for founder notice rows only. */
+	mergedGateGuard?: MergedGateGuard;
+	resolveProjectRoot?: (projectName: string) => string | undefined;
 }
 
 const DEFAULT_NOTIFY_RETRY_MAX = 5;
@@ -328,6 +334,36 @@ async function drainOne(
 	if (!elig.ok) {
 		deps.store.cancelFounderAction(row.action_key, elig.reason);
 		return;
+	}
+
+	// FLY-1238: notice eligibility can change between durable queueing and the
+	// actual Discord POST. Guard at this last mile; guard retries never consume
+	// the action ledger's independent delivery-attempt budget.
+	if (NOTICE_KINDS.has(row.kind) && deps.mergedGateGuard) {
+		const questionId =
+			typeof payload.questionId === "string" ? payload.questionId : "";
+		const session = deps.store.getSession(row.execution_id);
+		const guarded = await deps.mergedGateGuard({
+			executionId: row.execution_id,
+			issueId: row.issue_id,
+			questionId,
+			projectName: row.project_name,
+			projectRoot: deps.resolveProjectRoot?.(row.project_name),
+			prNumber: session?.pr_number ?? undefined,
+			source: "action_drain",
+		});
+		if (guarded.kind === "retry_later") return;
+		if (guarded.kind === "suppress_merged") {
+			deps.store.cancelFounderAction(row.action_key, "pr_merged");
+			return;
+		}
+		if (guarded.kind === "terminal_unavailable") {
+			deps.store.cancelFounderAction(
+				row.action_key,
+				`merged_guard_terminal_${guarded.reason}`,
+			);
+			return;
+		}
 	}
 
 	// 3. Execute → outcome.

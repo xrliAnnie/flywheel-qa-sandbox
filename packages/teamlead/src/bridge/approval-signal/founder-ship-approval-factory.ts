@@ -53,6 +53,9 @@ export interface FounderShipApprovalFactoryConfig {
 	auditStore?: AttributionAuditStore;
 	/** FLY-1041 Chunk 5: shared founder-approval hold guard (plugin injects). */
 	isHeld?: ShipApprovalHandlerDeps["isHeld"];
+	/** FLY-1238 shared guard + canonical project-root resolver. */
+	mergedGateGuard?: ShipApprovalHandlerDeps["mergedGateGuard"];
+	projectRootFor?: (projectName: string) => string | undefined;
 	/**
 	 * FLY-1099 §4.2: deferral support factory — built per call with the thread
 	 * ctx bound (the deferral transaction needs issueId/threadId/projectName for
@@ -131,7 +134,12 @@ export function makeFounderShipApprovalCallback(
 			{
 				msg: args.msg,
 				shipGates: args.shipGates,
-				ctx: { issueId: args.ctx.issueId, threadId: args.ctx.threadId },
+				ctx: {
+					issueId: args.ctx.issueId,
+					threadId: args.ctx.threadId,
+					projectName: args.ctx.projectName,
+					projectRoot: config.projectRootFor?.(args.ctx.projectName),
+				},
 				replyToCard: args.replyToCard,
 			},
 			{
@@ -143,6 +151,7 @@ export function makeFounderShipApprovalCallback(
 				writeGateResponseImpl: config.writeGateResponseImpl,
 				auditSink,
 				isHeld: config.isHeld,
+				mergedGateGuard: config.mergedGateGuard,
 				// FLY-1099 §4.2: deferral support bound to this thread's ctx.
 				deferral: config.deferralSupport?.({
 					issueId: args.ctx.issueId,

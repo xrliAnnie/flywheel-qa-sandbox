@@ -18,6 +18,11 @@ import path, { join, resolve } from "node:path";
 import { type Request, type Response, Router } from "express";
 import { CommDB } from "flywheel-comm/db";
 import { isReservedApprovalAttribution } from "flywheel-comm/founder-attribution";
+import {
+	type GateResponseStore,
+	writeGateResponseAndRunPostWrite,
+} from "../approval-signal/write-gate-response.js";
+import type { ReviewHoldReason } from "../auto-qa-held.js";
 import type { FounderConsentEvaluator } from "./evaluator.js";
 import type { ConsentContextResolver } from "./middleware.js";
 
@@ -48,6 +53,14 @@ export interface GateResponseRouterDeps {
 	 * unchanged (byte-compat with the default-off rollout).
 	 */
 	getCurrentReviewQuestionId?: (executionId: string) => string | undefined;
+	/** Shared founder-write boundary dependencies (production passes StateStore). */
+	writerStore?: GateResponseStore;
+	holdReasonFor?: (executionId: string) => ReviewHoldReason | null;
+	founderId?: string;
+	writeGateResponseImpl?: typeof writeGateResponseAndRunPostWrite;
+	cardAuthority?: Parameters<
+		typeof writeGateResponseAndRunPostWrite
+	>[0]["cardAuthority"];
 	/** Configured project names (validates a caller-supplied projectName). */
 	configuredProjects: ReadonlySet<string>;
 	/** Override the comm root (tests). Defaults to ~/.flywheel/comm. */
@@ -247,33 +260,66 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 				return;
 			}
 
-			// FLY-191 Phase 2 (Codex R2 HIGH-2): idempotent retry. CommDB
-			// enforces ONE response per question (idx_unique_response), so a
-			// retry after "response written, transition/wake failed" would hit
-			// the unique constraint and never re-run the recovery hook. A
-			// matching prior answer (same approval-ness) skips the write and
-			// re-runs the hook — the hook is idempotent (transition only from
-			// awaiting_review; wake re-delivery is best-effort by design). A
-			// CONFLICTING prior answer is a hard 409: the question is answered;
-			// a different decision needs a fresh review round.
+			const writerStore: GateResponseStore = deps.writerStore ?? {
+				getSession: (executionId) => {
+					const found = deps.getSessionProject(executionId);
+					return found
+						? {
+								...found,
+								status: "awaiting_review",
+								review_question_id:
+									deps.getCurrentReviewQuestionId?.(executionId) ?? null,
+							}
+						: undefined;
+				},
+			};
+			const writeThroughBoundary = async (actor: string) => {
+				const write =
+					deps.writeGateResponseImpl ?? writeGateResponseAndRunPostWrite;
+				return write({
+					db,
+					store: writerStore,
+					questionId,
+					executionId: question.from_agent,
+					source: "founder-consent",
+					cardAuthority: deps.cardAuthority,
+					actor,
+					answer,
+					expectedCurrentReviewQuestionId: currentReviewId,
+					holdReasonFor: deps.holdReasonFor,
+					founderId: deps.founderId,
+					onResponseWritten: () =>
+						runPostWriteHook(deps, {
+							executionId: question.from_agent,
+							questionId,
+							leadId,
+							answer,
+							db,
+						}),
+				});
+			};
+			const rejectBoundaryResult = (
+				result: Awaited<ReturnType<typeof writeThroughBoundary>>,
+			): boolean => {
+				if (result.written || result.disposition === "already_applied") {
+					return false;
+				}
+				res.status(409).json({
+					error:
+						result.reason === "conflicting_prior_response"
+							? "question_already_answered"
+							: "founder_approval_write_refused",
+					detail: result.reason ?? result.disposition ?? "unknown",
+				});
+				return true;
+			};
+
+			// Idempotent retries must still traverse the shared boundary so its
+			// guarded hook and conflict semantics cannot drift by route.
 			const priorResponse = db.getResponse(questionId);
 			if (priorResponse) {
-				if (
-					isApprovalAnswer(priorResponse.content) !== isApprovalAnswer(answer)
-				) {
-					res.status(409).json({
-						error: "question_already_answered",
-						detail: `question ${questionId} already has a ${isApprovalAnswer(priorResponse.content) ? "approval" : "feedback"} response; a different decision requires a new review round`,
-					});
-					return;
-				}
-				await runPostWriteHook(deps, {
-					executionId: question.from_agent,
-					questionId,
-					leadId,
-					answer: priorResponse.content,
-					db,
-				});
+				const result = await writeThroughBoundary(leadId);
+				if (rejectBoundaryResult(result)) return;
 				res.json({
 					success: true,
 					alreadyResponded: true,
@@ -286,14 +332,8 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 			// without a consent check. Keeps the CLI→Bridge ship path functional
 			// during the default-off rollout (see GateResponseRouterDeps.evaluator).
 			if (!deps.evaluator) {
-				db.insertResponse(questionId, leadId, answer);
-				await runPostWriteHook(deps, {
-					executionId: question.from_agent,
-					questionId,
-					leadId,
-					answer,
-					db,
-				});
+				const result = await writeThroughBoundary(leadId);
+				if (rejectBoundaryResult(result)) return;
 				res.json({
 					success: true,
 					passthrough: true,
@@ -364,18 +404,10 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 			const enforceVerified =
 				deps.evaluator.decisionMode !== "audit_only" &&
 				(decision.decision === "allow" || decision.decision === "bypass");
-			db.insertResponse(
-				questionId,
+			const result = await writeThroughBoundary(
 				enforceVerified ? "bridge-founder-consent" : leadId,
-				answer,
 			);
-			await runPostWriteHook(deps, {
-				executionId: question.from_agent,
-				questionId,
-				leadId,
-				answer,
-				db,
-			});
+			if (rejectBoundaryResult(result)) return;
 			res.json({
 				success: true,
 				auditId: decision.auditId,
