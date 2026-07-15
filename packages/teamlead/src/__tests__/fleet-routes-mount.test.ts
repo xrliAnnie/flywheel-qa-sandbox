@@ -377,8 +377,9 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 		const res = await fetch(`${baseUrl}/`);
 		expect(res.status).toBe(200);
 		const html = await res.text();
-		expect(html).toContain("Flywheel Fleet");
+		expect(html).toContain("<title>Flywheel 管理台</title>");
 		expect(html).toContain("/api/fleet/snapshot");
+		expect(html).toContain("/api/fleet/changes/stage");
 	});
 
 	it("legacy /sse still serves a snapshot (byte-compat, unaffected)", async () => {
