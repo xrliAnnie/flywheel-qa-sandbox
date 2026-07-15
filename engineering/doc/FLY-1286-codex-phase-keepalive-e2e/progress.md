@@ -1,9 +1,9 @@
 ---
 issue: FLY-1286
 phase: implement
-phaseCursor: 2/6
-updated: 2026-07-15T11:17:24.631Z
-nextStep: Prove Design hold identity and 60-second budget freeze
+phaseCursor: 3/6
+updated: 2026-07-15T11:21:34.259Z
+nextStep: Run guarded Design daemon crash and recovery freeze
 chunks:
   - id: onboard
     order: 1
@@ -15,8 +15,8 @@ pointers:
 ---
 
 # FLY-1286 progress
-**phase**: implement (2/6)
-**next**: Prove Design hold identity and 60-second budget freeze
+**phase**: implement (3/6)
+**next**: Run guarded Design daemon crash and recovery freeze
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
