@@ -1,13 +1,14 @@
 ---
 issue: FLY-1278
 phase: design
-phaseCursor: 1/4
-updated: 2026-07-15T05:27:51.223Z
-nextStep: brainstorm gate open to Lead; writing research.md while waiting
+phaseCursor: 2/4
+updated: 2026-07-15T05:31:50.980Z
+nextStep: write plan.md (design approved via brainstorm gate incl. FLY-1251
+  R6-R9 replay fixture requirement)
 chunks: []
 pointers: {}
 ---
 
 # FLY-1278 progress
-**phase**: design (1/4)
-**next**: brainstorm gate open to Lead; writing research.md while waiting
+**phase**: design (2/4)
+**next**: write plan.md (design approved via brainstorm gate incl. FLY-1251 R6-R9 replay fixture requirement)
