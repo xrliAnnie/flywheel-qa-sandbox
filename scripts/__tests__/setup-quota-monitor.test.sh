@@ -112,6 +112,28 @@ else
   fail "monitor-only" "config=$(cat "$ROOT/monitor/home/.flywheel/quota-monitor.json" 2>/dev/null); env=$(cat "$ROOT/monitor/home/.flywheel/.env" 2>/dev/null)"
 fi
 
+make_fixture empty_enable
+jq -n '{
+  trigger5hPct:90,
+  basePollMinutes:20,
+  acceleratePct:70,
+  acceleratedPollMinutes:10,
+  candidateSweepMinutes:60,
+  minSwitchIntervalMinutes:15,
+  order:[],
+  writeStatuslineCache:true
+}' > "$ROOT/empty_enable/home/.flywheel/quota-monitor.json"
+chmod 600 "$ROOT/empty_enable/home/.flywheel/quota-monitor.json"
+if run_setup empty_enable >/dev/null 2>&1; then
+  fail "empty enable order refuses CUTOVER" "setup exited zero"
+elif [[ ! -e "$ROOT/empty_enable/restart.log" ]] \
+  && ! grep -q '^bootstrap ' "$ROOT/empty_enable/launchctl.log" 2>/dev/null \
+  && ! grep -q '^FLYWHEEL_QUOTA_DAEMON_CUTOVER=' "$ROOT/empty_enable/home/.flywheel/.env"; then
+  pass "default enable rejects monitor-only config before bootstrap/CUTOVER"
+else
+  fail "empty enable fail-closed" "launchctl=$(cat "$ROOT/empty_enable/launchctl.log" 2>/dev/null); restart=$(cat "$ROOT/empty_enable/restart.log" 2>/dev/null)"
+fi
+
 make_fixture invalid
 rm -rf "$ROOT/invalid/pool/school"
 if run_setup invalid >/dev/null 2>&1; then

@@ -136,6 +136,11 @@ if ! jq -e '
   die "invalid_config" "quota monitor config failed schema validation: $CONFIG_PATH"
 fi
 
+if [[ "$MODE" == "enable" ]] \
+  && [[ "$(jq -r '.order | length' "$CONFIG_PATH")" == "0" ]]; then
+  die "empty_order" "enable requires at least one configured target; use --monitor-only to keep the Bridge switch path active"
+fi
+
 validate_target() { # name
   local name="$1" profile="$POOL_DIR/$1" credential="$POOL_DIR/$1/.credentials.json" perms
   case "$name" in
