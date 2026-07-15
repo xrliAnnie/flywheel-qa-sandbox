@@ -53,6 +53,11 @@ export {
 	normalizeDispatchModel,
 } from "./model-tiers.js";
 export type {
+	RunnerModelDisplay,
+	RunnerModelDisplayInput,
+} from "./model-display.js";
+export { renderRunnerModelDisplay } from "./model-display.js";
+export type {
 	PonytailCondition,
 	PonytailEffective,
 	PonytailInput,
