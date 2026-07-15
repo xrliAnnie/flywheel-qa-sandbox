@@ -17,6 +17,15 @@ const FIXTURE = join(
 	"com.xiaorongli.weee-weekly.plist",
 );
 
+const ARBITRARY_LABEL_PLIST = {
+	Label: "com.xiaorongli.weee-weekly",
+	ProgramArguments: [
+		"/bin/bash",
+		"/__FLY1262_PROJECT_ROOT__/personal-assistant/tasks/weee-grocery/scripts/run-weekly.sh",
+	],
+	StartCalendarInterval: { Weekday: 3, Hour: 9, Minute: 0 },
+};
+
 function project(name: string, root = `/projects/${name}`): ProjectEntry {
 	return { projectName: name, projectRoot: root, leads: [] };
 }
@@ -161,14 +170,13 @@ describe("weekly launchd schedule normalization", () => {
 });
 
 describe("launchd cron SSOT discovery", () => {
-	it("parses the real arbitrary-label fixture and maps bash argv1 to its project", () => {
-		const parsed = JSON.parse(
-			execFileSync("plutil", ["-convert", "json", "-o", "-", FIXTURE], {
-				encoding: "utf8",
-			}),
-		) as Record<string, unknown>;
+	it("maps an arbitrary label and bash argv1 to its project on every platform", () => {
 		const result = scan(
-			{ "com.xiaorongli.weee-weekly.plist": { plist: parsed } },
+			{
+				"com.xiaorongli.weee-weekly.plist": {
+					plist: ARBITRARY_LABEL_PLIST,
+				},
+			},
 			[
 				project(
 					"personal-assistant",
@@ -181,6 +189,18 @@ describe("launchd cron SSOT discovery", () => {
 			crons: [{ label: "com.xiaorongli.weee-weekly" }],
 		});
 	});
+
+	it.skipIf(process.platform !== "darwin")(
+		"parses the real launchd XML fixture with the macOS system plutil",
+		() => {
+			const parsed = JSON.parse(
+				execFileSync("plutil", ["-convert", "json", "-o", "-", FIXTURE], {
+					encoding: "utf8",
+				}),
+			) as Record<string, unknown>;
+			expect(parsed).toEqual(ARBITRARY_LABEL_PLIST);
+		},
+	);
 
 	it("ignores label prefixes, keeps unmatched jobs, duplicate labels, and deterministic file order", () => {
 		const result = scan({
