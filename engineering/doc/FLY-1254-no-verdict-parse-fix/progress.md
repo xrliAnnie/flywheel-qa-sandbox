@@ -1,14 +1,14 @@
 ---
 issue: FLY-1254
 phase: implement
-phaseCursor: 4/6
-updated: 2026-07-15T00:02:31.026Z
-nextStep: Run typecheck, full teamlead tests, lint, and
-  requirement-by-requirement diff audit
+phaseCursor: 5/6
+updated: 2026-07-15T00:12:05.876Z
+nextStep: Commit implementation, push branch, open PR, and request cross-family
+  code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1254 progress
-**phase**: implement (4/6)
-**next**: Run typecheck, full teamlead tests, lint, and requirement-by-requirement diff audit
+**phase**: implement (5/6)
+**next**: Commit implementation, push branch, open PR, and request cross-family code review
