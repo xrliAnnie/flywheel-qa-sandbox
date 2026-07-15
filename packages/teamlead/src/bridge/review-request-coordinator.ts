@@ -34,6 +34,7 @@ import {
 	type ClaudeReviewOutcome,
 	runClaudeReviewRound,
 } from "./claude-review-runner.js";
+import { buildGovernancePromptSegment } from "./review-governance-prompt.js";
 import {
 	computeEffectiveVerdict,
 	type EffectiveReviewVerdict,
@@ -903,18 +904,38 @@ export class ReviewRequestCoordinator {
 			this.deps.reviewSeverityPolicyEnabled ?? severityPolicyEnabled();
 		// FLY-1278 R2 #1: one immutable pre-prompt snapshot is reused after the
 		// reviewer returns. Mid-round create/revoke takes effect next round only.
-		const rulingSnapshot = policyEnabled
-			? [
-					...(this.deps.listActiveReviewFindingRulings?.({
-						projectName: job.project_name,
-						issueId: job.issue_id ?? session.issue_id,
-					}) ?? []),
-				]
-			: [];
+		const rulingSnapshot: readonly ReviewFindingRulingSnapshot[] = policyEnabled
+			? Object.freeze(
+					(
+						this.deps.listActiveReviewFindingRulings?.({
+							projectName: job.project_name,
+							issueId: job.issue_id ?? session.issue_id,
+						}) ?? []
+					).map((ruling) => Object.freeze({ ...ruling })),
+				)
+			: Object.freeze([]);
+		const governancePrompt = policyEnabled
+			? buildGovernancePromptSegment(rulingSnapshot)
+			: { text: "", elided: 0 };
+		if (governancePrompt.elided > 0) {
+			await this.emitReviewAlert({
+				kind: "review_advisory_pass",
+				eventId: `review-advisory:${requestId}:governance-elided`,
+				issueId: job.issue_id ?? session.issue_id,
+				executionId: job.execution_id,
+				requestId,
+				message: `${governancePrompt.elided} older active governance ruling(s) were elided from the bounded reviewer prompt; review whether stale rulings should be revoked.`,
+			});
+		}
 		const roundRunner = this.deps.reviewRound ?? runClaudeReviewRound;
 		const runRound = (roundResume: boolean, roundSessionUuid: string) =>
 			roundRunner({
-				prompt: this.buildPrompt(job, roundResume),
+				prompt: this.buildPrompt(
+					job,
+					roundResume,
+					policyEnabled,
+					governancePrompt.text,
+				),
 				sessionId: roundSessionUuid,
 				resume: roundResume,
 				cwd,
@@ -1175,8 +1196,10 @@ export class ReviewRequestCoordinator {
 			execution_id: string;
 		},
 		resume: boolean,
+		policyEnabled: boolean,
+		governancePrompt: string,
 	): string {
-		const contract =
+		const legacyContract =
 			`You are the CROSS-FAMILY REVIEWER for ${job.issue_id ?? job.execution_id} ` +
 			`(a codex-authored change; you are the independent Claude lane). ` +
 			`Actively explore this repository — do not rely on any diff alone. ` +
@@ -1184,17 +1207,28 @@ export class ReviewRequestCoordinator {
 			`"findings": [{"severity": "HIGH|MEDIUM|LOW", "file": "...", "line": 0, "title": "...", "detail": "..."}], ` +
 			`"reviewedHeadSha": "<the exact commit you reviewed, git rev-parse HEAD>"}. ` +
 			`No prose outside the JSON. Your very last line must be that JSON object itself.`;
+		const contract = policyEnabled
+			? legacyContract.replace(
+					`"findings": [{"severity": "HIGH|MEDIUM|LOW",`,
+					`"findings": [{"id": "stable-short-slug", "severity": "HIGH|MEDIUM|LOW",`,
+				) +
+				` Severity policy: HIGH means a ship-unsafe defect in correctness, security, data loss, or authorization. MEDIUM means a non-ship-blocking improvement; LOW means a nit. Vote CHANGES_REQUESTED ONLY when at least one HIGH finding exists. If every finding is MEDIUM/LOW, vote APPROVED and list them as non-blocking advisories. Give every finding a stable "id" and reuse the same id for the same issue in every re-review round.`
+			: legacyContract;
 		const target =
 			job.review_type === "design"
 				? `Review the DESIGN/PLAN at path: ${job.target_path ?? "engineering/doc (locate the plan for this issue)"} — read it fully, verify it against the codebase, judge soundness, completeness and risk.`
 				: `Review the CODE at commit ${job.frozen_head_sha ?? "HEAD"} on the current branch. Diff it against the merge base with the default branch (git diff), read the touched files in full, check correctness, security, edge cases and error handling. Skip style nitpicks.`;
+		const governance = governancePrompt ? `\n\n${governancePrompt}` : "";
 		if (job.round <= 1) {
-			return `${contract}\n\n${target}\n\nThis is round ${job.round}.`;
+			return `${contract}\n\n${target}${governance}\n\nThis is round ${job.round}.`;
 		}
 		if (resume) {
 			return (
 				`${contract}\n\nRound ${job.round} re-review — you reviewed this work before in THIS session and retain that context. ` +
-				`${target}\n\nFocus on whether the issues you raised were correctly fixed and on anything new the changes introduced.`
+				`${target}${governance}\n\n` +
+				(policyEnabled
+					? `Focus on whether the issues NOT marked governance-settled were correctly fixed and on anything new the changes introduced.`
+					: `Focus on whether the issues you raised were correctly fixed and on anything new the changes introduced.`)
 			);
 		}
 		const prior = this.store.latestDoneCodexReviewJob(
@@ -1206,8 +1240,10 @@ export class ReviewRequestCoordinator {
 			: "(no reliable record of your prior findings survives — treat this as a fresh, full review)";
 		return (
 			`${contract}\n\nRound ${job.round} fresh re-review (the prior reviewer session was unavailable). ` +
-			`${target}\n\n${priorContext}\n\n` +
-			`Perform a full review, using the durable prior context above when available.`
+			`${target}${governance}\n\n${priorContext}\n\n` +
+			(policyEnabled
+				? `Perform a full review, using the durable prior context above when available and without reopening governance-settled findings.`
+				: `Perform a full review, using the durable prior context above when available.`)
 		);
 	}
 

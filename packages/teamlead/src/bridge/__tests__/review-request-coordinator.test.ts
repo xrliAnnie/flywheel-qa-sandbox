@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import type { ClaudeReviewOutcome } from "../claude-review-runner.js";
+import { toReviewFindingRulingSnapshot } from "../review-governance-effects.js";
 import {
 	type ReviewCommDb,
 	ReviewRequestCoordinator,
@@ -89,6 +90,12 @@ async function makeHarness(
 		reviewerEffort?: "low" | "medium" | "high" | "xhigh";
 		reviewSeverityPolicyEnabled?: boolean;
 		postReviewRulingOk?: boolean;
+		reviewRound?: (invocation: {
+			sessionId: string;
+			resume: boolean;
+			prompt: string;
+			effort?: string;
+		}) => Promise<ClaudeReviewOutcome>;
 	} = {},
 ): Promise<Harness> {
 	const store = await StateStore.create(":memory:");
@@ -111,17 +118,25 @@ async function makeHarness(
 			reviewSeverityPolicyEnabled: harnessOpts.reviewSeverityPolicyEnabled,
 		}),
 		reviewRound: async (inv) => {
-			invocations.push({
+			const invocation = {
 				sessionId: inv.sessionId,
 				resume: inv.resume,
 				prompt: inv.prompt,
 				effort: inv.effort,
-			});
+			};
+			invocations.push(invocation);
+			if (harnessOpts.reviewRound) {
+				return harnessOpts.reviewRound(invocation);
+			}
 			const next = outcomes.shift();
 			if (!next) throw new Error("no stubbed outcome");
 			return next;
 		},
 		deriveHead: async () => head,
+		listActiveReviewFindingRulings: ({ projectName, issueId }) =>
+			store
+				.listActiveReviewFindingRulings(projectName, issueId)
+				.map(toReviewFindingRulingSnapshot),
 		wakeRunner: async (executionId, _session, questionId, summary) => {
 			wakes.push({ executionId, questionId, summary });
 		},
@@ -362,6 +377,32 @@ function registerSession(
 	}
 }
 
+function deliverSourceFindings(
+	store: StateStore,
+	input: {
+		requestId: string;
+		executionId: string;
+		findings: Record<string, unknown>[];
+		reviewType?: "design" | "code";
+	},
+): void {
+	store.insertCodexReviewJob({
+		requestId: input.requestId,
+		executionId: input.executionId,
+		issueId: "FLY-1188",
+		projectName: "proj",
+		reviewType: input.reviewType ?? "code",
+		questionId: `source-${input.requestId}`,
+	});
+	store.claimCodexReviewJobRunning(input.requestId);
+	store.completeCodexReviewJob(
+		input.requestId,
+		"CHANGES_REQUESTED",
+		JSON.stringify(input.findings),
+	);
+	store.stampCodexReviewJobResponded(input.requestId);
+}
+
 /** A well-formed OPEN review gate owned by execId (R12 HIGH-2 shape). */
 function openGate(
 	comm: FakeCommDb,
@@ -384,6 +425,17 @@ function openGate(
 /** Wait until the coordinator's in-flight chains drain. */
 async function settle() {
 	for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+}
+
+function deferred<T>(): {
+	promise: Promise<T>;
+	resolve: (value: T) => void;
+} {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((done) => {
+		resolve = done;
+	});
+	return { promise, resolve };
 }
 
 describe("ReviewRequestCoordinator.accept — validation (fail-close)", () => {
@@ -577,6 +629,300 @@ describe("ReviewRequestCoordinator — codex-skip lane", () => {
 });
 
 describe("ReviewRequestCoordinator — job execution", () => {
+	it("FLY-1278: policy-off prompt stays byte-identical while policy-on teaches severity and stable ids", async () => {
+		const legacy = await makeHarness({ reviewSeverityPolicyEnabled: false });
+		registerSession(legacy.store, "source");
+		registerSession(legacy.store, "e1");
+		deliverSourceFindings(legacy.store, {
+			requestId: "source-review",
+			executionId: "source",
+			findings: [{ id: "legacy-settled", severity: "HIGH", title: "bug" }],
+		});
+		expect(
+			legacy.store.recordReviewFindingRuling({
+				projectName: "proj",
+				issue: "FLY-1188",
+				findingKey: "legacy-settled",
+				disposition: "overruled",
+				rationale: "Must be invisible while the lane is disabled.",
+				ruledBy: "lead",
+			}).status,
+		).toBe("created");
+		openGate(legacy.comm, "q1");
+		legacy.outcomes.push({
+			kind: "verdict",
+			verdict: "CHANGES_REQUESTED",
+			findings: [{ id: "legacy-settled", severity: "HIGH", title: "bug" }],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+		await legacy.coordinator.accept({
+			executionId: "e1",
+			requestId: "legacy",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+		const legacyContract =
+			`You are the CROSS-FAMILY REVIEWER for FLY-1188 ` +
+			`(a codex-authored change; you are the independent Claude lane). ` +
+			`Actively explore this repository — do not rely on any diff alone. ` +
+			`When done, output ONLY a JSON object: {"verdict": "APPROVED" | "CHANGES_REQUESTED", ` +
+			`"findings": [{"severity": "HIGH|MEDIUM|LOW", "file": "...", "line": 0, "title": "...", "detail": "..."}], ` +
+			`"reviewedHeadSha": "<the exact commit you reviewed, git rev-parse HEAD>"}. ` +
+			`No prose outside the JSON.`;
+		const target = `Review the CODE at commit ${HEAD} on the current branch. Diff it against the merge base with the default branch (git diff), read the touched files in full, check correctness, security, edge cases and error handling. Skip style nitpicks.`;
+		expect(legacy.invocations[0]?.prompt).toBe(
+			`${legacyContract}\n\n${target}\n\nThis is round 1.`,
+		);
+		expect(legacy.store.getCodexReviewJob("legacy")?.verdict).toBe(
+			"CHANGES_REQUESTED",
+		);
+		expect(legacy.reviewAlerts).toEqual([]);
+
+		const enabled = await makeHarness();
+		registerSession(enabled.store, "e1");
+		openGate(enabled.comm, "q1");
+		enabled.outcomes.push({
+			kind: "verdict",
+			verdict: "CHANGES_REQUESTED",
+			findings: [{ severity: "HIGH", title: "bug" }],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+		await enabled.coordinator.accept({
+			executionId: "e1",
+			requestId: "enabled",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+		const prompt = enabled.invocations[0]?.prompt ?? "";
+		expect(prompt).toContain("CHANGES_REQUESTED ONLY");
+		expect(prompt).toContain(
+			"correctness, security, data loss, or authorization",
+		);
+		expect(prompt).toContain('stable "id"');
+		expect(prompt).toContain("reuse the same id");
+	});
+
+	it("FLY-1278: settled HIGH findings approve with frozen payload and deterministic dispute alerts", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "source");
+		registerSession(h.store, "e1");
+		deliverSourceFindings(h.store, {
+			requestId: "source-review",
+			executionId: "source",
+			findings: [
+				{ id: "automatic-risk", severity: "HIGH", title: "Old risk" },
+				{ id: "explicit-risk", severity: "HIGH", title: "Other risk" },
+			],
+		});
+		const rulingIds = new Map<string, string>();
+		for (const findingKey of ["automatic-risk", "explicit-risk"]) {
+			const recorded = h.store.recordReviewFindingRuling({
+				projectName: "proj",
+				issue: "FLY-1188",
+				findingKey,
+				disposition: "overruled",
+				rationale: "Lead verified external evidence.",
+				ruledBy: "flywheel-eng-lead",
+			});
+			expect(recorded.status).toBe("created");
+			rulingIds.set(findingKey, recorded.ruling?.ruling_id ?? "");
+		}
+		openGate(h.comm, "q1");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "CHANGES_REQUESTED",
+			findings: [
+				{ id: "automatic-risk", severity: "HIGH", title: "Old risk" },
+				{
+					id: "new-proof",
+					disputesRuling: "explicit-risk",
+					severity: "HIGH",
+					title: "New evidence",
+				},
+			],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+
+		const job = h.store.getCodexReviewJob("r1");
+		expect(job?.verdict).toBe("APPROVED");
+		expect(JSON.parse(job?.settled_json ?? "null")).toHaveLength(2);
+		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(true);
+		expect(h.invocations[0]?.prompt).toContain("GOVERNANCE-SETTLED FINDINGS");
+		expect(h.invocations[0]?.prompt).toContain("automatic-risk");
+		expect(
+			h.reviewAlerts.filter((event) => event.kind === "review_ruling_disputed"),
+		).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					eventId: `review-dispute:r1:${rulingIds.get("automatic-risk")}`,
+				}),
+				expect.objectContaining({
+					eventId: `review-dispute:r1:${rulingIds.get("explicit-risk")}`,
+				}),
+			]),
+		);
+	});
+
+	it("FLY-1278: a ruling created mid-round applies only to the next frozen snapshot", async () => {
+		const firstRound = deferred<ClaudeReviewOutcome>();
+		let calls = 0;
+		const highFinding = { id: "risk", severity: "HIGH", title: "Risk" };
+		const h = await makeHarness({
+			reviewRound: async () => {
+				calls += 1;
+				if (calls === 1) return firstRound.promise;
+				return {
+					kind: "verdict",
+					verdict: "CHANGES_REQUESTED",
+					findings: [highFinding],
+					reviewedHeadSha: null,
+					raw: "",
+				};
+			},
+		});
+		registerSession(h.store, "source");
+		registerSession(h.store, "e1");
+		deliverSourceFindings(h.store, {
+			requestId: "source-review",
+			executionId: "source",
+			findings: [highFinding],
+			reviewType: "design",
+		});
+		openGate(h.comm, "q1", "e1", "review_design");
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "design",
+			questionId: "q1",
+			planPath: "engineering/doc/plan.md",
+		});
+		await settle();
+		expect(h.invocations).toHaveLength(1);
+		expect(h.invocations[0]?.prompt).not.toContain(
+			"GOVERNANCE-SETTLED FINDINGS",
+		);
+
+		expect(
+			h.store.recordReviewFindingRuling({
+				projectName: "proj",
+				issue: "FLY-1188",
+				findingKey: "risk",
+				disposition: "overruled",
+				rationale: "Lead settled this while review was running.",
+				ruledBy: "lead",
+			}).status,
+		).toBe("created");
+		firstRound.resolve({
+			kind: "verdict",
+			verdict: "CHANGES_REQUESTED",
+			findings: [highFinding],
+			reviewedHeadSha: null,
+			raw: "",
+		});
+		await settle();
+		expect(h.store.getCodexReviewJob("r1")?.verdict).toBe("CHANGES_REQUESTED");
+
+		openGate(h.comm, "q2", "e1", "review_design");
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r2",
+			reviewType: "design",
+			questionId: "q2",
+			planPath: "engineering/doc/plan.md",
+		});
+		await settle();
+		expect(h.store.getCodexReviewJob("r2")?.verdict).toBe("APPROVED");
+		expect(h.invocations[1]?.prompt).toContain("GOVERNANCE-SETTLED FINDINGS");
+	});
+
+	it("FLY-1278: a ruling revoked mid-round remains frozen until the next round", async () => {
+		const firstRound = deferred<ClaudeReviewOutcome>();
+		let calls = 0;
+		const highFinding = { id: "risk", severity: "HIGH", title: "Risk" };
+		const h = await makeHarness({
+			reviewRound: async () => {
+				calls += 1;
+				if (calls === 1) return firstRound.promise;
+				return {
+					kind: "verdict",
+					verdict: "CHANGES_REQUESTED",
+					findings: [highFinding],
+					reviewedHeadSha: null,
+					raw: "",
+				};
+			},
+		});
+		registerSession(h.store, "source");
+		registerSession(h.store, "e1");
+		deliverSourceFindings(h.store, {
+			requestId: "source-review",
+			executionId: "source",
+			findings: [highFinding],
+			reviewType: "design",
+		});
+		const created = h.store.recordReviewFindingRuling({
+			projectName: "proj",
+			issue: "FLY-1188",
+			findingKey: "risk",
+			disposition: "overruled",
+			rationale: "Lead settled this before review.",
+			ruledBy: "lead",
+		});
+		openGate(h.comm, "q1", "e1", "review_design");
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "design",
+			questionId: "q1",
+			planPath: "engineering/doc/plan.md",
+		});
+		await settle();
+		expect(h.invocations[0]?.prompt).toContain("GOVERNANCE-SETTLED FINDINGS");
+
+		h.store.revokeReviewFindingRuling({
+			projectName: "proj",
+			rulingId: created.ruling?.ruling_id ?? "",
+			revokedBy: "lead",
+			reason: "New evidence reopens it.",
+		});
+		firstRound.resolve({
+			kind: "verdict",
+			verdict: "CHANGES_REQUESTED",
+			findings: [highFinding],
+			reviewedHeadSha: null,
+			raw: "",
+		});
+		await settle();
+		expect(h.store.getCodexReviewJob("r1")?.verdict).toBe("APPROVED");
+
+		openGate(h.comm, "q2", "e1", "review_design");
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r2",
+			reviewType: "design",
+			questionId: "q2",
+			planPath: "engineering/doc/plan.md",
+		});
+		await settle();
+		expect(h.store.getCodexReviewJob("r2")?.verdict).toBe("CHANGES_REQUESTED");
+		expect(h.invocations[1]?.prompt).not.toContain(
+			"GOVERNANCE-SETTLED FINDINGS",
+		);
+	});
+
 	it("FLY-1251 production R6 converges through the coordinator without codex_skip", async () => {
 		const fixturePath = fileURLToPath(
 			new URL(
