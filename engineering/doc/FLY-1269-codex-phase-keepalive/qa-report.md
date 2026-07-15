@@ -154,3 +154,26 @@ Implement head 的 fresh narrow regression：
 - structured raw evidence 在 `qa/529-e2e-chain.json`；
 - 下一步由 QA Opus 独立复核 A1–A6/A8、观察 Implement resident hold，再 arm external
   terminal observer。Issue terminal 前不得写 FINAL PASS。
+
+## QA Opus Independent Verdict — FAIL (round-3 findings unresolved)
+
+QA exec `aad2f2a7-ad02-4e34-b933-7ae539af1dfa`（phase=qa, TURN epoch 5）复核 head
+`1afa999a0cfedb3bbbb1c753130b366db7e7e098`。Lead 把 review round-3 的三条 findings 设为
+terminal approval 前的硬性 QA 验收标准（comm inbox `577c9cd7-...`）。对
+`qa/529-terminal-observer.mjs` 与 `qa/529-terminal-observer.test.mjs` 做确定性结构核查后，
+**三条全部未满足 → QA FAIL**。TURN 交回 Implement 修复 + 新一轮 code review。在解决前
+**不 arm terminal observer、不开 founder approve gate、不进入 A7 terminal closeout**。
+
+| Finding | Criterion | Status | 关键位置 | Severity |
+|---|---|---|---|---|
+| C1 indeterminate-liveness 测试 clobber lsof marker + 依赖 lastPresent 时序 | 1 | **FAIL** | test `:655-689`（`clearSockets` `:679`/`:414-421`）；observer `classifyExecution` lastPresent `:384-395` | High |
+| C2 startup arming one-poll abort（无 bounded retry window） | 2 | **FAIL** | observer arming `:587-616`（`return 1` `:613`）；test `:737-753` 锁定 fail-fast `:748` | High |
+| C3 holder evidence 无 observedAt freshness | 3 | **FAIL** | observer `probeHolders` `:233-243`、holder 缓存复用 `:529-546`、赋值 `:545`（对照 shutdown `observedAt` `:317`） | Medium |
+
+次要 reproducibility 备注：本机 `node --test` observer 回归 = **11/17 pass, 6 fail**
+（duration 45.4s，日志 `qa/qa-round3-test-run.txt`），未复现本报告上文宣称的 "17/17"。
+6 个失败多为高负载下假探针（fake `tmux`/`lsof` 皆 node 脚本）令 observer 迭代过慢的
+`observer did not exit` 超时伪影，非 FAIL 主依据，但 qa-report 的 17/17 声称在本 QA 机器上
+不成立，Implement 修复时宜一并降低每帧探针开销 / 放宽 fixture 时序假设。
+
+详见 `qa/qa-round3-verdict.md`（逐条 expected-vs-actual 与 required actions）。
