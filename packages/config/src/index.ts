@@ -42,6 +42,23 @@ export {
 	isFounderUxGateEnabled,
 	resolveEffectiveFounderUxConfig,
 } from "./founder-ux-config.js";
+export type {
+	CurrentModelView,
+	ModelCatalog,
+	ModelProviderId,
+	ModelRegistryEntry,
+	ModelRuntimeVendor,
+	ModelSurface,
+} from "./model-registry.js";
+export {
+	assertValidModelRegistry,
+	buildModelCatalog,
+	getModelRegistryEntry,
+	isModelSelectionSupported,
+	MODEL_IDS,
+	MODEL_REGISTRY,
+	resolveCurrentModel,
+} from "./model-registry.js";
 // FLY-728: per-issue model routing — tier vocabulary (dispatch whitelist +
 // tier→model default + F/O/S/H short code).
 export type { ModelTier, ModelTierSpec } from "./model-tiers.js";

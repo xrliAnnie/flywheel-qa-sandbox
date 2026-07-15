@@ -30,6 +30,8 @@
  * guess. The founder confirmed the fleet standard is Sonnet 5 (not 4.6).
  */
 
+import { MODEL_IDS } from "./model-registry.js";
+
 export type ModelTier = "heavy" | "medium" | "light" | "trivial";
 
 export interface ModelTierSpec {
@@ -43,10 +45,10 @@ export interface ModelTierSpec {
 
 /** Difficulty tier → default model. 728 built-in; FLY-709 makes it configurable. */
 export const MODEL_TIERS: Readonly<Record<ModelTier, ModelTierSpec>> = {
-	heavy: { id: "claude-fable-5", aliases: ["fable"], code: "F" },
-	medium: { id: "claude-opus-4-8", aliases: ["opus"], code: "O" },
-	light: { id: "claude-sonnet-5", aliases: ["sonnet"], code: "S" },
-	trivial: { id: "claude-haiku-4-5-20251001", aliases: ["haiku"], code: "H" },
+	heavy: { id: MODEL_IDS.FABLE, aliases: ["fable"], code: "F" },
+	medium: { id: MODEL_IDS.OPUS, aliases: ["opus"], code: "O" },
+	light: { id: MODEL_IDS.SONNET_5, aliases: ["sonnet"], code: "S" },
+	trivial: { id: MODEL_IDS.HAIKU, aliases: ["haiku"], code: "H" },
 };
 
 /**
@@ -54,10 +56,10 @@ export const MODEL_TIERS: Readonly<Record<ModelTier, ModelTierSpec>> = {
  * label) reaches for these only when a task genuinely needs the 1M window.
  */
 const ONE_M_DISPATCH_MODELS: ReadonlyMap<string, string> = new Map([
-	["opus-1m", "claude-opus-4-8[1m]"],
-	["claude-opus-4-8[1m]", "claude-opus-4-8[1m]"],
-	["fable-1m", "claude-fable-5[1m]"],
-	["claude-fable-5[1m]", "claude-fable-5[1m]"],
+	["opus-1m", MODEL_IDS.OPUS_1M],
+	[MODEL_IDS.OPUS_1M, MODEL_IDS.OPUS_1M],
+	["fable-1m", MODEL_IDS.FABLE_1M],
+	[MODEL_IDS.FABLE_1M, MODEL_IDS.FABLE_1M],
 ]);
 
 /** Lowercased id/alias → canonical id (built once from MODEL_TIERS + 1M opt-ins). */

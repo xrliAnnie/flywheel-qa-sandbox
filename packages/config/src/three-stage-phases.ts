@@ -47,6 +47,7 @@
  * per-phase model is not silently overridden.
  */
 
+import { MODEL_IDS } from "./model-registry.js";
 import {
 	MODEL_TIERS,
 	type ModelTier,
@@ -145,7 +146,7 @@ export interface PhaseDispatchSpec {
  */
 const CODEX_STANDARD_DISPATCH: PhaseDispatchSpec = {
 	vendor: "codex",
-	model: "gpt-5.6-sol",
+	model: MODEL_IDS.CODEX_STANDARD,
 	effort: "xhigh",
 };
 

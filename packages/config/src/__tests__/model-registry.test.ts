@@ -1,0 +1,111 @@
+import { describe, expect, it } from "vitest";
+import {
+	assertValidModelRegistry,
+	buildModelCatalog,
+	getModelRegistryEntry,
+	isModelSelectionSupported,
+	MODEL_REGISTRY,
+	resolveCurrentModel,
+} from "../model-registry.js";
+import { MODEL_TIERS } from "../model-tiers.js";
+import { DEFAULT_PHASE_DISPATCH } from "../three-stage-phases.js";
+
+describe("model registry invariants", () => {
+	it("has unique model ids and case-insensitive aliases", () => {
+		expect(() => assertValidModelRegistry(MODEL_REGISTRY)).not.toThrow();
+		const duplicate = [
+			...MODEL_REGISTRY,
+			{
+				...MODEL_REGISTRY[0]!,
+				id: "duplicate-model",
+				aliases: [MODEL_REGISTRY[1]!.aliases[0]!],
+			},
+		];
+		expect(() => assertValidModelRegistry(duplicate)).toThrow(/alias/i);
+	});
+
+	it("resolves every Claude tier, alias and explicit 1M selector", () => {
+		for (const tier of Object.values(MODEL_TIERS)) {
+			expect(getModelRegistryEntry(tier.id)?.id).toBe(tier.id);
+			for (const alias of tier.aliases) {
+				expect(getModelRegistryEntry(alias)?.id).toBe(tier.id);
+			}
+		}
+		expect(getModelRegistryEntry("opus-1m")?.id).toBe("claude-opus-4-8[1m]");
+		expect(getModelRegistryEntry("fable-1m")?.id).toBe("claude-fable-5[1m]");
+	});
+
+	it("registers the standard Codex model with workflow xhigh support", () => {
+		const codex = getModelRegistryEntry("gpt-5.6-sol");
+		expect(codex).toMatchObject({
+			provider: "openai",
+			runtimeVendor: "codex",
+		});
+		expect(codex?.surfaces).toContain("workflow");
+		expect(codex?.effortsBySurface.workflow).toContain("xhigh");
+	});
+
+	it("covers every built-in tier and three-stage dispatch row", () => {
+		for (const tier of Object.values(MODEL_TIERS)) {
+			expect(getModelRegistryEntry(tier.id)).not.toBeNull();
+		}
+		for (const dispatch of Object.values(DEFAULT_PHASE_DISPATCH)) {
+			expect(
+				isModelSelectionSupported({
+					surface: "workflow",
+					model: dispatch.model,
+					effort: dispatch.effort,
+					runtimeVendor: dispatch.vendor,
+				}),
+			).toBe(true);
+		}
+	});
+});
+
+describe("model registry catalog", () => {
+	it("filters provider, model and effort choices by target surface", () => {
+		const workflow = buildModelCatalog("workflow");
+		expect(workflow.providers.map((provider) => provider.id)).toEqual([
+			"anthropic",
+			"openai",
+		]);
+		expect(
+			workflow.providers
+				.flatMap((provider) => provider.models)
+				.find((model) => model.id === "gpt-5.6-sol")?.efforts,
+		).toContain("xhigh");
+		expect(
+			workflow.providers.some((provider) => provider.id === "google"),
+		).toBe(false);
+	});
+
+	it("renders an unknown current value but never makes it selectable", () => {
+		expect(resolveCurrentModel("legacy-private-model", "lead")).toEqual({
+			id: "legacy-private-model",
+			label: "legacy-private-model",
+			provider: null,
+			runtimeVendor: null,
+			legacyCurrent: true,
+			selectable: false,
+		});
+	});
+
+	it("rejects incompatible vendor, surface and effort combinations", () => {
+		expect(
+			isModelSelectionSupported({
+				surface: "workflow",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				runtimeVendor: "codex",
+			}),
+		).toBe(true);
+		expect(
+			isModelSelectionSupported({
+				surface: "lead",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				runtimeVendor: "claude",
+			}),
+		).toBe(false);
+	});
+});

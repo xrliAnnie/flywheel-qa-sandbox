@@ -1,3 +1,4 @@
+import { buildModelCatalog, ROLE_EFFORT_LEVELS } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import {
 	CLAUDE_TIER_OPTIONS,
@@ -26,20 +27,25 @@ function lead(overrides: Partial<LeadConfig> = {}): LeadConfig {
 }
 
 describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () => {
-	it("Claude tiers = Fable 5 + Opus 4.8 (1M) + Opus 4.8 (null) + Sonnet 4.6 + Haiku 4.5 + Sonnet 5 (FLY-728 appended)", () => {
+	it("projects Claude tier choices from the canonical Lead model catalog", () => {
+		const catalogModels = buildModelCatalog("lead").providers.find(
+			(provider) => provider.id === "anthropic",
+		)!.models;
+		expect(CLAUDE_TIER_OPTIONS.filter((option) => option.id !== null)).toEqual(
+			catalogModels.map((model) => ({ id: model.id, label: model.label })),
+		);
+	});
+
+	it("keeps account default as a distinct nullable Lead target", () => {
 		expect(CLAUDE_TIER_OPTIONS).toEqual([
 			{ id: "claude-fable-5", label: "Fable 5" },
-			// FLY-360: explicit 1M-context selector (Claude Code CLI `[1m]` suffix).
+			{ id: "claude-fable-5[1m]", label: "Fable 5 (1M)" },
+			{ id: "claude-opus-4-8", label: "Opus 4.8" },
 			{ id: "claude-opus-4-8[1m]", label: "Opus 4.8 (1M)" },
-			{ id: null, label: "Opus 4.8" },
-			// FLY-671: cheaper tiers appended (high→low) so cost-sensitive Leads can
-			// be downgraded from the console. Appended (not reordered) so the existing
-			// three entries keep their positions (reverse-compat for any ordinal use).
 			{ id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
-			{ id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
-			// FLY-728: Sonnet 5 = current fleet Sonnet (the simple-tier model);
-			// appended so all existing ordinals stay byte-compatible.
 			{ id: "claude-sonnet-5", label: "Sonnet 5" },
+			{ id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+			{ id: null, label: "Opus 4.8" },
 		]);
 	});
 
@@ -80,11 +86,7 @@ describe("fleet-capabilities — effort options/targets (FLY-671, backend-aware)
 	it("EFFORT_OPTIONS = 默认(null) + the five CLI levels", () => {
 		expect(EFFORT_OPTIONS.map((o) => o.id)).toEqual([
 			null,
-			"low",
-			"medium",
-			"high",
-			"xhigh",
-			"max",
+			...ROLE_EFFORT_LEVELS,
 		]);
 	});
 
