@@ -1,9 +1,10 @@
 ---
 issue: FLY-1286
 phase: design
-phaseCursor: 1/5
-updated: 2026-07-15T10:25:51.222Z
-nextStep: Audit prior A2 failure, candidate fix state, and fresh-chain acceptance deltas
+phaseCursor: 2/5
+updated: 2026-07-15T10:27:26.837Z
+nextStep: Bind rerun plan to patched runtime cad61a078 and current Design
+  execution; audit hold-entry fix and evidence oracles
 chunks:
   - id: onboard
     order: 1
@@ -15,8 +16,8 @@ pointers:
 ---
 
 # FLY-1286 progress
-**phase**: design (1/5)
-**next**: Audit prior A2 failure, candidate fix state, and fresh-chain acceptance deltas
+**phase**: design (2/5)
+**next**: Bind rerun plan to patched runtime cad61a078 and current Design execution; audit hold-entry fix and evidence oracles
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
