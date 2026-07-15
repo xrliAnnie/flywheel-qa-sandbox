@@ -4,8 +4,9 @@
 // 1. partial thread/goal/set({status:"paused"}) preserves objective + budget;
 // 2. no autonomous turns/actions start while paused;
 // 3. paused state and fields survive daemon restart + thread/resume;
-// 4. partial {status:"active"} preserves fields and work resumes (a kick is
-//    allowed because the production gate-answer path always sends one).
+// 4. partial {status:"active"} preserves fields and work resumes;
+// 5. production-shaped blocked -> paused and blocked -> active transitions
+//    are accepted, and both resume paths continue without a duplicate kick.
 //
 // Run from the Flywheel repository root:
 //   cp engineering/doc/FLY-1257-codex-runtime-retry-defects/qa/m0-paused-probe.mjs.txt \
@@ -287,6 +288,68 @@ try {
 		await waitUntil(() => turnStarts > startsBeforeResume, 90_000, "kicked resume");
 	}
 
+	// Round-2 review probe: production enters the local hold only after Codex
+	// reports blocked. Exercise those exact daemon-side transitions rather than
+	// inferring them from active -> paused -> active above.
+	const blockedForPause = await client.rpc("thread/goal/set", {
+		threadId,
+		status: "blocked",
+	});
+	assertGoal(blockedForPause?.goal, "blocked", "blocked before pause");
+	await waitUntil(() => activeTurns.size === 0, 180_000, "blocked turn completion");
+	const pausedFromBlocked = await client.rpc("thread/goal/set", {
+		threadId,
+		status: "paused",
+	});
+	assertGoal(pausedFromBlocked?.goal, "paused", "blocked -> paused");
+	const startsBeforeBlockedPauseResume = turnStarts;
+	const activeFromBlockedPause = await client.rpc("thread/goal/set", {
+		threadId,
+		status: "active",
+	});
+	assertGoal(activeFromBlockedPause?.goal, "active", "paused -> active after blocked");
+	await waitUntil(
+		() => turnStarts > startsBeforeBlockedPauseResume,
+		30_000,
+		"automatic resume after blocked -> paused",
+	);
+
+	const blockedForDirectResume = await client.rpc("thread/goal/set", {
+		threadId,
+		status: "blocked",
+	});
+	assertGoal(blockedForDirectResume?.goal, "blocked", "blocked before direct active");
+	await waitUntil(
+		() => activeTurns.size === 0,
+		180_000,
+		"direct blocked turn completion",
+	);
+	const startsBeforeBlockedDirectResume = turnStarts;
+	const activeFromBlocked = await client.rpc("thread/goal/set", {
+		threadId,
+		status: "active",
+	});
+	assertGoal(activeFromBlocked?.goal, "active", "blocked -> active");
+	let blockedDirectResumeMode = "automatic";
+	try {
+		await waitUntil(
+			() => turnStarts > startsBeforeBlockedDirectResume,
+			30_000,
+			"automatic blocked -> active resume",
+		);
+	} catch {
+		blockedDirectResumeMode = "kick-required";
+		await client.rpc("turn/start", {
+			threadId,
+			input: [{ type: "text", text: "Resume work from blocked state." }],
+		});
+		await waitUntil(
+			() => turnStarts > startsBeforeBlockedDirectResume,
+			90_000,
+			"kicked blocked -> active resume",
+		);
+	}
+
 	await client.rpc("thread/goal/set", { threadId, status: "paused" });
 	await client.rpc("thread/goal/clear", { threadId });
 	trace("probe:result", {
@@ -294,6 +357,8 @@ try {
 		version,
 		threadId,
 		resumeMode,
+		blockedPauseAccepted: true,
+		blockedDirectResumeMode,
 		quietWindowMs: 15_000,
 		turnStarts,
 		turnCompletions,

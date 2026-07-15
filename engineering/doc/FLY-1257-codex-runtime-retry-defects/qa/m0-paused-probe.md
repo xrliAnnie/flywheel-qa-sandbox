@@ -13,6 +13,9 @@ Issue: FLY-1257
 2. partial status update 保留原 `objective` 与 `tokenBudget=100000`;
 3. paused 状态、objective、budget 在 daemon 退出、重启、`thread/resume` 后完整保留;
 4. partial `{status:"active"}` 真正恢复,本次不需要补 kick,12ms 内自动发出新 turn。
+5. Round 2 真机补测确认生产形状 `blocked -> paused` 被接受,随后
+   `paused -> active` 在 44ms 内自动发出新 turn;
+6. 直接 `blocked -> active` 也被接受,并在 11ms 内自动发出新 turn,不需要 kick。
 
 因此按 plan 的条件门实现 M-opt paused overlay;主修 M1 本地 hold/latch 仍是安全边界,
 paused RPC 失败只记日志、不得破坏本地 hold。
@@ -25,6 +28,8 @@ paused RPC 失败只记日志、不得破坏本地 hold。
 - transport:两个独立临时 Unix socket,同一认证 `CODEX_HOME`
 - thread:`019f6408-a6d0-78c0-84ee-37727df10e22`
 - scratch:`/var/folders/.../T/fly1257-paused-probe-0Cpj0p`
+- Round 2 thread:`019f6470-f48a-7161-8ecd-4ea5f49b5ef5`
+- Round 2 scratch:`/var/folders/.../T/fly1257-paused-probe-9SrUHy`
 - 脚本:`m0-paused-probe.mjs.txt`
 - 公开控制面交叉验证:OpenAI Codex Manual 的 Goal mode 明确支持 pause/resume;
   App Server 文档明确其 JSON-RPC + Unix-socket transport。公开文档未承诺字段保留
@@ -49,6 +54,21 @@ paused RPC 失败只记日志、不得破坏本地 hold。
 | 50947 | turn/started | 自动恢复,无需 kick |
 | 51083 | cleanup | goal clear 成功;最终 verdict `PASS` |
 
+Round 2 针对 code review 指出的未测状态边补跑同一脚本:
+
+| t(ms) | Event | Observation |
+|---:|---|---|
+| 78567 | blocked set | 活跃 goal 成功进入 `blocked` |
+| 93238 | blocked -> paused send | in-flight turn 收尾后发送 production-shaped pause |
+| 93242 | blocked -> paused response | 接受,objective/budget 完整保留 |
+| 93242 | paused -> active send | 不发送 `turn/start` |
+| 93286 | turn/started | 44ms 内自动恢复 |
+| 93346 | blocked set | 第二次进入 `blocked`,用于隔离直恢路径 |
+| 105395 | blocked -> active send | 不经过 paused,不发送 `turn/start` |
+| 105401 | blocked -> active response | 接受,objective/budget 完整保留 |
+| 105406 | turn/started | 11ms 内自动恢复 |
+| 105892 | result | `PASS`,两条 blocked 转换均无需 kick |
+
 首个 turn 在 macOS sandbox 内尝试写 `step-01.txt` 时被拒,但不影响本 probe 的控制
 面结论:pause 前已有真实活跃 turn 与工具尝试;pause 后以不可伪造的 turn/started 计数
 验证 15 秒无新续轮;active 后又收到新的 turn/started。
@@ -68,11 +88,25 @@ paused RPC 失败只记日志、不得破坏本地 hold。
 {"tMs":51083,"kind":"probe:result","frame":{"verdict":"PASS","version":"codex-cli 0.144.4","threadId":"019f6408-a6d0-78c0-84ee-37727df10e22","resumeMode":"automatic","quietWindowMs":15000,"turnStarts":2,"turnCompletions":1,"files":[],"durationMs":51083}}
 ```
 
+Round 2 新增关键帧:
+
+```json
+{"tMs":93238,"kind":"send:b","frame":{"id":6,"method":"thread/goal/set","params":{"threadId":"019f6470-f48a-7161-8ecd-4ea5f49b5ef5","status":"paused"}}}
+{"tMs":93242,"kind":"recv:b:thread/goal/set","frame":{"id":6,"result":{"goal":{"status":"paused","tokenBudget":100000}}}}
+{"tMs":93286,"kind":"recv:b","frame":{"method":"turn/started","params":{"threadId":"019f6470-f48a-7161-8ecd-4ea5f49b5ef5"}}}
+{"tMs":105395,"kind":"send:b","frame":{"id":9,"method":"thread/goal/set","params":{"threadId":"019f6470-f48a-7161-8ecd-4ea5f49b5ef5","status":"active"}}}
+{"tMs":105401,"kind":"recv:b:thread/goal/set","frame":{"id":9,"result":{"goal":{"status":"active","tokenBudget":100000}}}}
+{"tMs":105406,"kind":"recv:b","frame":{"method":"turn/started","params":{"threadId":"019f6470-f48a-7161-8ecd-4ea5f49b5ef5"}}}
+{"tMs":105892,"kind":"probe:result","frame":{"verdict":"PASS","version":"codex-cli 0.144.4","threadId":"019f6470-f48a-7161-8ecd-4ea5f49b5ef5","resumeMode":"automatic","blockedPauseAccepted":true,"blockedDirectResumeMode":"automatic","turnStarts":4,"turnCompletions":3,"durationMs":105891}}
+```
+
 ## Implementation decision
 
 - `setGoalStatus(active|paused)` 仍显式重发 runtime 缓存的 objective + token budget;
   不依赖 probe 中已经证实的 partial-update 保留作为生产安全假设。
 - 持有进入只尝试 pause 一次;失败走 injected logger 后继续 M1 local hold。
+- 真机已确认 pause 成功时走 `blocked -> paused -> active`,pause RPC 失败后的
+  `blocked -> active` 直恢也会自动续轮;因此不恢复并发 `turn/start` fallback。
 - preflight 读到 paused + marker open 时不 set、不 kick;marker 已解析时用缓存字段
   active + wake,成功后才清 durable latch。
 - `FLYWHEEL_CODEX_GATE_WAIT=0` 同时关闭 M1 hold 与 paused overlay,保留既有回滚面。
