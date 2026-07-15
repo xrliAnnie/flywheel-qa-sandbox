@@ -2,6 +2,11 @@
  * Shared Discord utilities used by standup-service and FLY-162 reply-by-issue.
  */
 
+import {
+	markAutomatedDiscordText,
+	type DiscordMessageOrigin,
+} from "./automated-message.js";
+
 export const DISCORD_API = "https://discord.com/api/v10";
 export const MAX_DISCORD_MESSAGE_LENGTH = 1900; // Discord limit is 2000, leave margin
 
@@ -68,6 +73,8 @@ export interface PostDiscordPartial {
 export type PostDiscordResult = PostDiscordOk | PostDiscordPartial;
 
 export interface PostDiscordOptions {
+	/** Semantic author of the text; the bot token is only a transport identity. */
+	origin: DiscordMessageOrigin;
 	/** Discord `message_reference.message_id` — attached only to the FIRST chunk. */
 	replyTo?: string;
 }
@@ -90,10 +97,12 @@ export async function postDiscordMessageToChannel(
 	threadId: string,
 	text: string,
 	botToken: string,
-	options: PostDiscordOptions = {},
+	options: PostDiscordOptions,
 	fetchImpl: typeof fetch = fetch,
 ): Promise<PostDiscordResult> {
-	const chunks = splitDiscordMessage(text);
+	const chunks = splitDiscordMessage(text).map((chunk) =>
+		options.origin === "automation" ? markAutomatedDiscordText(chunk) : chunk,
+	);
 	const url = `${DISCORD_API}/channels/${threadId}/messages`;
 	const messageIds: string[] = [];
 
@@ -194,8 +203,11 @@ export async function editDiscordMessageInChannel(
 	messageId: string,
 	text: string,
 	botToken: string,
+	options: Pick<PostDiscordOptions, "origin">,
 	fetchImpl: typeof fetch = fetch,
 ): Promise<EditDiscordResult> {
+	const content =
+		options.origin === "automation" ? markAutomatedDiscordText(text) : text;
 	let res: Response;
 	try {
 		res = await fetchImpl(
@@ -207,7 +219,7 @@ export async function editDiscordMessageInChannel(
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify({
-					content: text,
+					content,
 					allowed_mentions: { parse: [] },
 				}),
 			},

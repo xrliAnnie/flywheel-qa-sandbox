@@ -8,6 +8,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import {
+	editDiscordMessageInChannel,
 	MAX_DISCORD_MESSAGE_LENGTH,
 	postDiscordMessageToChannel,
 	sendTypingToChannel,
@@ -39,7 +40,7 @@ describe("postDiscordMessageToChannel (FLY-162 P2)", () => {
 			"thread-aaa",
 			"hello world",
 			"bot-token",
-			{},
+			{ origin: "lead_authored" },
 			fetchMock as unknown as typeof fetch,
 		);
 
@@ -78,7 +79,7 @@ describe("postDiscordMessageToChannel (FLY-162 P2)", () => {
 			"thread-bbb",
 			longText,
 			"bot-token",
-			{},
+			{ origin: "lead_authored" },
 			fetchMock as unknown as typeof fetch,
 		);
 		expect(result.ok).toBe(true);
@@ -102,7 +103,7 @@ describe("postDiscordMessageToChannel (FLY-162 P2)", () => {
 			"thread-ccc",
 			"reply text",
 			"bot-token",
-			{ replyTo: "orig-msg-id" },
+			{ origin: "lead_authored", replyTo: "orig-msg-id" },
 			fetchMock as unknown as typeof fetch,
 		);
 		const body = JSON.parse(
@@ -122,7 +123,7 @@ describe("postDiscordMessageToChannel (FLY-162 P2)", () => {
 			"thread-ddd",
 			"only one chunk",
 			"bot-token",
-			{},
+			{ origin: "lead_authored" },
 			fetchMock as unknown as typeof fetch,
 		);
 		expect(result.ok).toBe(false);
@@ -153,7 +154,7 @@ describe("postDiscordMessageToChannel (FLY-162 P2)", () => {
 			"thread-eee",
 			longText,
 			"bot-token",
-			{},
+			{ origin: "lead_authored" },
 			fetchMock as unknown as typeof fetch,
 		);
 		expect(result.ok).toBe(false);
@@ -175,7 +176,7 @@ describe("postDiscordMessageToChannel (FLY-162 P2)", () => {
 			"thread-fff",
 			"text",
 			"bot-token",
-			{},
+			{ origin: "lead_authored" },
 			fetchMock as unknown as typeof fetch,
 		);
 		expect(result.ok).toBe(false);
@@ -192,12 +193,58 @@ describe("postDiscordMessageToChannel (FLY-162 P2)", () => {
 			"thread-ggg",
 			"text",
 			"bot-token",
-			{},
+			{ origin: "lead_authored" },
 			fetchMock as unknown as typeof fetch,
 		);
 		expect(result.ok).toBe(false);
 		if (result.ok) throw new Error("expected fail");
 		expect(result.error).toMatch(/missing message id/i);
+	});
+
+	it("marks every automation chunk while preserving first-chunk reply metadata", async () => {
+		const longText = `${"x".repeat(MAX_DISCORD_MESSAGE_LENGTH)}\n${"y".repeat(
+			500,
+		)}`;
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(okResponse({ id: "auto-1" }))
+			.mockResolvedValueOnce(okResponse({ id: "auto-2" }));
+
+		await postDiscordMessageToChannel(
+			"thread-auto",
+			longText,
+			"bot-token",
+			{ origin: "automation", replyTo: "source-1" },
+			fetchMock as unknown as typeof fetch,
+		);
+
+		const bodies = fetchMock.mock.calls.map((call) =>
+			JSON.parse((call[1] as RequestInit).body as string),
+		);
+		expect(bodies).toHaveLength(2);
+		for (const body of bodies) {
+			expect(body.content).toMatch(/^🤖\[自动\] /);
+			expect(body.allowed_mentions).toEqual({ parse: [] });
+		}
+		expect(bodies[0].message_reference).toEqual({ message_id: "source-1" });
+		expect(bodies[1].message_reference).toBeUndefined();
+	});
+
+	it("marks automated edits idempotently", async () => {
+		const fetchMock = vi.fn().mockResolvedValueOnce(new Response(null, { status: 204 }));
+		await editDiscordMessageInChannel(
+			"thread-auto",
+			"message-auto",
+			"🤖[自动] phase update",
+			"bot-token",
+			{ origin: "automation" },
+			fetchMock as unknown as typeof fetch,
+		);
+		const body = JSON.parse(
+			(fetchMock.mock.calls[0][1] as RequestInit).body as string,
+		);
+		expect(body.content).toBe("🤖[自动] phase update");
+		expect(body.allowed_mentions).toEqual({ parse: [] });
 	});
 });
 
