@@ -1,13 +1,13 @@
 ---
 issue: FLY-1238
 phase: implement
-phaseCursor: 6/8
-updated: 2026-07-15T00:35:31.168Z
-nextStep: "Task 7: fail-closed teardown propagation and zombie regression"
+phaseCursor: 7/8
+updated: 2026-07-15T01:01:35.903Z
+nextStep: Run full verification, self-review, commit, push, and open PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-1238 progress
-**phase**: implement (6/8)
-**next**: Task 7: fail-closed teardown propagation and zombie regression
+**phase**: implement (7/8)
+**next**: Run full verification, self-review, commit, push, and open PR
