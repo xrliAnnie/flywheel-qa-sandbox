@@ -433,6 +433,60 @@ describe("GatePoller (FLY-161)", () => {
 		resolveSpy.mockRestore();
 	});
 
+	// FLY-1257 defect ④ path-2. The FLY-307 A premise — "a gate from a terminal
+	// session can never be answered (the Runner is gone)" — does NOT hold for a
+	// review gate: it is consumed by the review-request coordinator + reviewer,
+	// never by the authoring runner. Evicting it expired the gate BEFORE
+	// `request-review` could bind it, so a blocked/completed session could never
+	// re-request review (checkGate → answered/expired → fail-close forever).
+	// Sibling of the FLY-579 approve_to_ship QA-held carve-out above.
+	for (const checkpoint of ["review_code", "review_design"] as const) {
+		it(`Case 8e (FLY-1257 path-2): ${checkpoint} gate from a terminal session is NOT evicted — the review coordinator consumes it, not the runner`, async () => {
+			insertSession(`exec-${checkpoint}`, {
+				status: "blocked",
+				labels: ["product"],
+			});
+			insertQuestion({
+				execId: `exec-${checkpoint}`,
+				leadId: "product-lead",
+				content: `${checkpoint} requested for PR #599`,
+				checkpoint,
+			});
+			expect(pendingFor("product-lead")).toHaveLength(1);
+
+			const resolveSpy = vi.spyOn(CommDB.prototype, "resolveGate");
+			await runPoll(makePoller());
+
+			// Terminal session ⇒ still no Lead delivery (unchanged). But the gate
+			// MUST survive to its natural TTL so request-review can bind it.
+			expect(runtime.captured).toHaveLength(0);
+			expect(resolveSpy).not.toHaveBeenCalled();
+			expect(pendingFor("product-lead")).toHaveLength(1);
+			resolveSpy.mockRestore();
+		});
+	}
+
+	it("Case 8f (FLY-1257 path-2 control): a NON-review gate from a blocked session is still evicted (FLY-307 A preserved)", async () => {
+		insertSession("exec-blocked-bs", {
+			status: "blocked",
+			labels: ["product"],
+		});
+		const qid = insertQuestion({
+			execId: "exec-blocked-bs",
+			leadId: "product-lead",
+			content: "Brainstorm gate on a blocked session",
+			checkpoint: "brainstorm",
+		});
+
+		await runPoll(makePoller());
+
+		expect(pendingFor("product-lead")).toHaveLength(0);
+		const warnedEvict = warnSpy.mock.calls.some((args: unknown[]) =>
+			JSON.stringify(args).includes(`evicting stale gate_question qid=${qid}`),
+		);
+		expect(warnedEvict).toBe(true);
+	});
+
 	it("Case 10 (FLY-307 B): circuit opens after N consecutive failures and skips the lead", async () => {
 		insertSession("exec-trap", { status: "running", labels: ["product"] });
 		insertQuestion({

@@ -32,7 +32,11 @@ git worktree, pnpm monorepo。
 - ② retry 不发 three_stage TURN 带 → M2:dispatch() 镜像 FLY-887 seam(原子转移)
 - ③ retry takeover 缺 ctx.startPoint → M3:phase retry 恢复 startPoint=branch B tip
   (三态推导,indeterminate fail-close)
-- ④ blocked 吞审查门 → M4:时间序判定(终态后创建的 gate = 生命迹象,永不 Z1)
+- ④ blocked 吞审查门 → **两条独立路径,都要治**:
+  - M4(zombie-gate-hygiene):时间序判定(终态后创建的 gate = 生命迹象,永不 Z1)
+  - M5(GatePoller FLY-307 A 终态驱逐):review 门免驱逐。M4 落地后实战仍复现 ——
+    关掉 zombie kill-switch 门**照样**被删,证明 M5 是独立第二条路径,且是当下
+    卡住 #599 自己 merge 的真凶
 - 优化项 M-opt(排最后,可摘除):原生 goal paused RPC(省去等待期半开 turn 的
   残余消耗)
 
@@ -48,6 +52,7 @@ git worktree, pnpm monorepo。
 | M1 kill-switch | `packages/config/src/feature-flags/registry.ts` 注册 `FLYWHEEL_CODEX_GATE_WAIT` | `packages/config/src/__tests__/feature-flags-registry.test.ts`;`feature-flags-drift.test.ts` |
 | M2/M3 retry | `packages/teamlead/src/bridge/run-dispatcher.ts` pre-launch cleanup/TURN/startPoint 消费;`run-infra.ts` branch-tip 三态 probe 注入 | `packages/teamlead/src/bridge/__tests__/run-dispatcher-fly887-turn-seam.test.ts`;`packages/teamlead/src/__tests__/run-dispatcher.test.ts`;`packages/edge-worker/src/__tests__/Blueprint.fly887-worktree-takeover.test.ts` |
 | M4 gate chronology | `packages/teamlead/src/StateStore.ts` terminal_at;`bridge/zombie-gate-hygiene.ts` 时间序;`bridge/gate-poller.ts` created_at 透传 | `packages/teamlead/src/__tests__/StateStore.test.ts`;`bridge/__tests__/zombie-gate-watchdog.test.ts`;`packages/teamlead/src/__tests__/gate-poller.test.ts` |
+| M5 review-gate 免驱逐(④ path-2) | `packages/teamlead/src/bridge/gate-poller.ts`(`isReviewGateCheckpoint` + `relayToLead` 终态分支 + `evictTerminalGateQuestion` 唯一写入口不变式) | `packages/teamlead/src/__tests__/gate-poller.test.ts`(Case 8e ×2 + 8f 控制) |
 | M-opt | `packages/claude-runner` 同 M1 runtime 文件;probe 只写 `engineering/doc/FLY-1257-codex-runtime-retry-defects/qa/m0-paused-probe.md` + `m0-paused-probe.mjs.txt` | 同 M1 runtime 测试 |
 
 ## Mermaid — ①修后的等门行为
@@ -410,6 +415,86 @@ session 不存在(StateStore 无行)                → 照今天行为退(无�
   断言,不用 sleep。
 - fixture:实战④(1244 时序:blocked → teardown 删 CommDB 行 → 新开 gate →
   hygiene tick)。
+
+## M5 — 缺陷④ **path-2**:GatePoller 终态驱逐吃掉审查门(gate-poller.ts)
+
+**背景**:M4 落地后(head `4260a818`,双 QA 过)实战仍复现 —— Tadashi 关掉
+`FLYWHEEL_ZOMBIE_GATE_RESOLVE` kill-switch(即整条 M4/zombie 路径停用)后,
+review 门**仍然**被删。证明这是一条**独立于 M4 的第二条吞门路径**,也正是
+当下卡住 #599 自己 merge 的真凶。
+
+### 根因(已在代码坐实,非推测)
+
+`gate-poller.ts` `relayToLead()`:
+
+```
+ACTIVE_SESSION_STATUSES = { running, awaiting_review, approved_to_ship }
+// blocked / completed 都不在里面
+if (!ACTIVE_SESSION_STATUSES.has(session.status)) {
+    evictTerminalGateQuestion(question, dbPath);   // → db.resolveGate(qid, 0)
+    return;
+}
+```
+
+`resolveGate(qid, 0)` = `resolved_at = now` **且** `expires_at = now`(0h TTL)。
+后果链:
+
+1. owner session 翻 `blocked`/`completed` → 下一个 poll tick(~3s)门被过期;
+2. `review-request-coordinator.checkGate()` 读到 `resolved_at` → 返回
+   `answered`(或 `expired`)→ `request-review` **fail-close**;
+3. 行随后被 CommDB 的 TTL purge 真删 → `missing` → 永久 fail-close。
+
+**FLY-307 A 的前提对 review 门不成立**。它的注释写的是「a gate from a terminal
+session can never be answered (the Runner is gone)」—— 这对 brainstorm /
+question / approve_to_ship 这些**由 runner 或 Lead 答**的门成立;但
+`review_design` / `review_code` 是 FLY-1224 非-claude-author 审查通道的**绑定
+凭据**:由 `request-review` 绑定、由 reviewer 答,**作者 runner 从不答它**。它
+按设计就该活得比作者久。驱逐它 = 在 `request-review` 绑定**之前**就把凭据烧了
+(这正是 issue 原文「在 request-review 绑定前被删除」)。
+
+### 修法
+
+`review_design` / `review_code` **免驱逐**:
+
+- 谓词 `isReviewGateCheckpoint()`(与 `ACTIVE_SESSION_STATUSES` 同处);
+- `relayToLead()` 终态分支:是 review 门 → **只 return,不驱逐**(投递行为
+  不变 —— 终态 session 本来就不投递,所以对 Lead/founder 零可见变化);
+- 不变式下沉到**唯一写入口** `evictTerminalGateQuestion()`,两个调用点(relay
+  路径 + eviction-retry 短路)都盖住,谁也绕不过。
+
+**形状上与 FLY-579 的 approve_to_ship QA-held 豁免同源**(那里的注释已写明
+「do NOT evict (the question must survive so it can be surfaced once QA
+passes)」)—— 同一类「这门不是这个 runner 答的,不能按 runner 死活来收」。
+
+### 为什么豁免按 checkpoint 判,而不是「有活跃 review job 才豁免」
+
+Tadashi 给了两个选项(「别驱逐有 open review gate 的终态 session 的门」/「给活跃
+review 的 gate 免驱逐」)。**必须按 checkpoint 判**:bug 的窗口恰恰是
+**绑定之前**(`getCodexReviewJob` 此时查无此 job),所以「有 job 才豁免」在出事
+的那一刻恒为假 —— 修不掉。
+
+### 代价与边界(诚实记账)
+
+- 免驱逐 = review 门重新回到「每 tick 被 poll 到、走一次 `getSession()`」,
+  即 FLY-307 A 想省的那点 sql.js churn 对 review 门恢复了。量级:每 issue 至多
+  几个 review 门 × 至多 48h 自然 TTL,相对正确性可忽略。**不是无界泄漏** ——
+  门自己的 48h TTL 仍然兜底,只是不再被提前烧到 0。
+- 非 review 门的驱逐行为**逐字不变**(控制用例 8f 锁死)。
+
+### 测试(全部已跑,非计划)
+
+`packages/teamlead/src/__tests__/gate-poller.test.ts`:
+
+- **Case 8e ×2**(`review_code` / `review_design`,session=`blocked`):不投递、
+  `resolveGate` **零调用**、门仍 pending;
+- **Case 8f 控制**:`brainstorm` 门 + `blocked` session → **仍然驱逐**(FLY-307 A
+  未被我改宽)。
+
+**突变验证**(不是「绿了就算」):把 `gate-poller.ts` 的修复 `git stash` 掉重跑
+→ 8e 立刻红,报错 `expected "resolveGate" to not be called at all, but actually
+been called 1 times` —— 与生产现场同一句;`stash pop` → 22/22 绿。证明测试真能
+抓这个 bug。回归:gate-poller 22 + review-request-coordinator 45 +
+zombie-gate-watchdog 25 = **92 全绿**。
 
 ## M-opt — 优化项:原生 goal paused RPC(可整体摘除)
 
