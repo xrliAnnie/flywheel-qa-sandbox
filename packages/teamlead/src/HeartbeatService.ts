@@ -549,7 +549,14 @@ export class HeartbeatService implements ReconnectController {
 			// FLY-1282 (R5 #4): recurring zombie-alert backfill — an INDEPENDENT
 			// stage outside the liveness guard (a hung liveness pass must not pause
 			// alert recovery), with its own single-flight inside.
-			if (zombieOn) {
+			// Byte-compat: legacy mock stores (StuckWatcher compat tests) lack the
+			// backfill query — skip WITHOUT an await so the pre-existing
+			// synchronous path to checkStuck's first store read is preserved
+			// under fake timers (CI caught the inserted microtask).
+			if (
+				zombieOn &&
+				typeof this.store.getZombieAlertBacklog === "function"
+			) {
 				await this.reconcileZombieAlertBacklog();
 			}
 			// FLY-1282 (code R1 #1): the single-flight guard is acquired HERE — at
