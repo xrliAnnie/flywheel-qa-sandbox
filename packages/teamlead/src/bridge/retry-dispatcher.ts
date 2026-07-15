@@ -4,6 +4,7 @@
 // rendering); teamlead depends on edge-worker, so we import the type here for
 // StartRequest. Defining it in teamlead would invert the dependency.
 import type {
+	DesignBackend,
 	PhaseDispatchVendor,
 	PonytailInput,
 	RoleEffort,
@@ -72,6 +73,8 @@ export interface RetryRequest {
 	dispatchVendor?: PhaseDispatchVendor;
 	/** FLY-1224: per-phase reasoning effort (phase table output). */
 	dispatchEffort?: RoleEffort;
+	/** FLY-1259: effective design backend locked at three-stage admission. */
+	designBackend?: DesignBackend;
 	/**
 	 * FLY-245 D2 (plan §5.2.1): gateway pre-bound successor execution id.
 	 * When present the dispatcher MUST use it instead of generating a fresh
@@ -177,6 +180,8 @@ export interface StartRequest {
 	dispatchVendor?: PhaseDispatchVendor;
 	/** FLY-1224: per-phase reasoning effort (phase table output). */
 	dispatchEffort?: RoleEffort;
+	/** FLY-1259: effective design backend locked at three-stage admission. */
+	designBackend?: DesignBackend;
 	/**
 	 * FLY-579: explicit git start point for the worktree (a commit SHA / ref).
 	 * Threaded to `WorktreeManager.create({ startPoint })`. The Auto-QA

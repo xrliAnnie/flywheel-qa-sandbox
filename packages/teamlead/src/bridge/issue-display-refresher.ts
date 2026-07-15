@@ -288,17 +288,22 @@ export function pinRunnerAttachForSession(
 			const byRole = new Map(phaseSessions.map((s) => [s.chat_thread_role, s]));
 			const rows: PhaseHeaderRow[] = [];
 			for (const role of THREE_STAGE_PHASE_SEQUENCE) {
+				const ps = byRole.get(role);
+				const override =
+					role === "design" && ps?.design_backend
+						? { vendor: ps.design_backend }
+						: undefined;
 				// FLY-1224 (R1 #3): a pending row's planned model comes from the
 				// DISPATCH table (kill-switch aware) — implement shows GPT-5.6, not
-				// the legacy tier's Fable. The tier stays the last-resort fallback.
+				// the legacy tier's Fable. FLY-1259: a persisted design lock wins over
+				// the current process-wide switch. The tier stays the last-resort fallback.
 				const plannedModel = modelDisplayName(
-					resolvePhaseDispatch(role).model,
+					resolvePhaseDispatch(role, process.env, override).model,
 					DEFAULT_PHASE_TIER[role],
 				);
-				const ps = byRole.get(role);
 				if (!ps) {
 					rows.push({
-						label: phaseMessageTag(role).trim(),
+						label: phaseMessageTag(role, undefined, undefined).trim(),
 						status: "pending",
 						plannedModel,
 					});
@@ -308,7 +313,11 @@ export function pinRunnerAttachForSession(
 				const status: PhaseHeaderRow["status"] =
 					LEGACY_HEADER_DONE_STATUSES.has(ps.status) ? "done" : "active";
 				const row: PhaseHeaderRow = {
-					label: phaseMessageTag(role, ps.runner_model).trim(),
+					label: phaseMessageTag(
+						role,
+						ps.runner_model,
+						ps.design_backend,
+					).trim(),
 					status,
 					execId: ps.execution_id.slice(0, 8),
 				};
@@ -741,24 +750,37 @@ export class IssueDisplayRefresher {
 			if (isThreeStage) {
 				const rows: PhaseHeaderRow[] = [];
 				for (const role of THREE_STAGE_PHASE_SEQUENCE) {
+					const ps = phaseSessionByRole.get(role);
+					const override =
+						role === "design" && ps?.design_backend
+							? { vendor: ps.design_backend }
+							: undefined;
 					// FLY-1224 (R1 #3): planned model from the dispatch table (see the
 					// legacy header path above — same honesty fix, second injection point).
+					// A persisted design lock wins over the current global switch.
 					const plannedModel = modelDisplayName(
-						resolvePhaseDispatch(role).model,
+						resolvePhaseDispatch(role, process.env, override).model,
 						DEFAULT_PHASE_TIER[role],
 					);
-					const ps = phaseSessionByRole.get(role);
 					const state = phaseStates.get(role) ?? "pending";
 					if (!ps || state === "pending") {
 						rows.push({
-							label: phaseMessageTag(role).trim(),
+							label: phaseMessageTag(
+								role,
+								ps?.runner_model,
+								ps?.design_backend,
+							).trim(),
 							status: "pending",
 							plannedModel,
 						});
 						continue;
 					}
 					const row: PhaseHeaderRow = {
-						label: phaseMessageTag(role, ps.runner_model).trim(),
+						label: phaseMessageTag(
+							role,
+							ps.runner_model,
+							ps.design_backend,
+						).trim(),
 						status: state,
 						execId: ps.execution_id.slice(0, 8),
 					};

@@ -5,6 +5,7 @@ import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
 import type { FounderUxGateMode } from "flywheel-config";
 import {
+	isDesignBackend,
 	isFounderUxGateEnabled,
 	isThreeStagePhaseRole,
 	resolveCompletionSessionRole,
@@ -684,6 +685,10 @@ export function createEventRouter(
 				// FLY-728: persist the resolved runner model (per-issue model routing
 				// visibility). Mirrors the DirectEventSink production path.
 				const eventRunnerModel = asString(payload.runnerModel);
+				// FLY-1259: accept only the public enum on the untrusted event wire.
+				const eventDesignBackend = isDesignBackend(payload.designBackend)
+					? payload.designBackend
+					: undefined;
 				// FLY-615: persist the resolved ponytail condition (A/B join key).
 				const eventPonytailCondition = asString(payload.ponytailCondition);
 				// FLY-793 (Step 11): persist the chat-thread role (computed at dispatch
@@ -711,6 +716,9 @@ export function createEventRouter(
 							chat_thread_role: eventChatThreadRole,
 							...(eventAdapterType && { adapter_type: eventAdapterType }),
 							...(eventRunnerModel && { runner_model: eventRunnerModel }),
+							...(eventDesignBackend && {
+								design_backend: eventDesignBackend,
+							}),
 							...(eventPonytailCondition && {
 								ponytail_condition: eventPonytailCondition,
 							}),
@@ -740,6 +748,9 @@ export function createEventRouter(
 						chat_thread_role: eventChatThreadRole,
 						...(eventAdapterType && { adapter_type: eventAdapterType }),
 						...(eventRunnerModel && { runner_model: eventRunnerModel }),
+						...(eventDesignBackend && {
+							design_backend: eventDesignBackend,
+						}),
 						...(eventPonytailCondition && {
 							ponytail_condition: eventPonytailCondition,
 						}),
@@ -2292,6 +2303,7 @@ export function createEventRouter(
 					issue_labels: labels,
 					pr_number: session.pr_number,
 					session_role: session.session_role ?? "main",
+					design_backend: session.design_backend,
 				};
 
 				// FLY-47: Add stage_context for stage_changed events to prevent Lead misinterpretation

@@ -27,6 +27,7 @@
  */
 
 import {
+	type DesignBackend,
 	isThreeStagePhaseRole,
 	nextPhase,
 	type PhaseDispatchVendor,
@@ -64,6 +65,8 @@ export interface PhaseSession {
 	chat_thread_role?: string;
 	/** FLY-859: ship-gate binding — set by a needs_review completion. */
 	review_question_id?: string;
+	/** FLY-1259: run-level effective design backend copied across phase rows. */
+	design_backend?: DesignBackend;
 	/**
 	 * FLY-869: the durable merged-but-unapproved park marker (`merge_block`).
 	 * FLY-1050 F9: an implement stuck at awaiting_review whose PR already
@@ -225,6 +228,8 @@ export interface PhaseOrchestratorDeps {
 			projectName: string;
 			leadId?: string;
 			sessionRole: string;
+			/** FLY-1259: run-level design backend lock; metadata only for non-design phases. */
+			designBackend?: DesignBackend;
 			dispatchModel: string;
 			/**
 			 * FLY-1224: the phase table's vendor — every phase spawn carries the
@@ -586,6 +591,12 @@ export class PhaseOrchestrator {
 				projectName: session.project_name,
 				leadId: this.deps.resolveLeadId(session),
 				sessionRole: "qa",
+				// FLY-1259: the run-level design lock rides every successor, including
+				// this re-QA attempt, so a later design respawn cannot fall back to the
+				// global switch.
+				...(session.design_backend && {
+					designBackend: session.design_backend,
+				}),
 				dispatchModel: dispatch.model,
 				dispatchVendor: dispatch.vendor,
 				...(dispatch.effort && { dispatchEffort: dispatch.effort }),
@@ -1349,6 +1360,9 @@ export class PhaseOrchestrator {
 				projectName: session.project_name,
 				leadId: fixLeadId,
 				sessionRole: "implement",
+				...(session.design_backend && {
+					designBackend: session.design_backend,
+				}),
 				dispatchModel: dispatch.model,
 				dispatchVendor: dispatch.vendor,
 				...(dispatch.effort && { dispatchEffort: dispatch.effort }),
@@ -1548,6 +1562,9 @@ export class PhaseOrchestrator {
 				projectName,
 				leadId: fixLeadId,
 				sessionRole: "implement",
+				...(session.design_backend && {
+					designBackend: session.design_backend,
+				}),
 				dispatchModel: dispatch.model,
 				dispatchVendor: dispatch.vendor,
 				...(dispatch.effort && { dispatchEffort: dispatch.effort }),
@@ -1825,6 +1842,9 @@ export class PhaseOrchestrator {
 				projectName: prev.project_name as string,
 				leadId,
 				sessionRole: next,
+				...(prev.design_backend && {
+					designBackend: prev.design_backend,
+				}),
 				dispatchModel: dispatch.model,
 				dispatchVendor: dispatch.vendor,
 				...(dispatch.effort && { dispatchEffort: dispatch.effort }),

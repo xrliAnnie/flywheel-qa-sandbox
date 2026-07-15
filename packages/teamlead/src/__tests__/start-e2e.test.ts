@@ -3,7 +3,10 @@
  * Exercises POST /api/runs/start and GET /api/runs/active.
  */
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { IStartDispatcher } from "../bridge/retry-dispatcher.js";
@@ -780,6 +783,286 @@ describe("Start API E2E", () => {
 			const startReq = mockDispatcher.start.mock.calls[0]![0];
 			expect(startReq.dispatchModel).toBeUndefined();
 		}, 15_000);
+	});
+
+	describe("FLY-1259 — per-dispatch design backend", () => {
+		let projectRoot: string;
+		let originalProjectRoot: string;
+		let savedDesignSwitch: string | undefined;
+		let savedThreeStageSwitch: string | undefined;
+
+		function writeThreeStageConfig(channels?: string[]): void {
+			const channelBlock = channels
+				? `\n  three_stage_channels:\n${channels.map((channel) => `    - ${channel}`).join("\n")}`
+				: "";
+			writeFileSync(
+				join(projectRoot, ".flywheel", "config.yaml"),
+				`project: TestProject
+linear:
+  team_id: TEST
+runners:
+  default: claude
+  available:
+    claude:
+      type: claude
+teams:
+  - name: dev
+    orchestrators:
+      - type: code
+        runner: claude
+        budget_per_issue: 5
+decision_layer:
+  autonomy_level: observer
+  escalation_channel: test
+pipeline:
+  three_stage: true${channelBlock}
+`,
+			);
+		}
+
+		beforeEach(() => {
+			projectRoot = mkdtempSync(join(tmpdir(), "fly1259-start-"));
+			mkdirSync(join(projectRoot, ".flywheel"), { recursive: true });
+			writeThreeStageConfig();
+			originalProjectRoot = testProjects[0]!.projectRoot;
+			testProjects[0]!.projectRoot = projectRoot;
+			savedDesignSwitch = process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
+			savedThreeStageSwitch = process.env.FLYWHEEL_THREE_STAGE;
+			delete process.env.FLYWHEEL_THREE_STAGE;
+		});
+
+		afterEach(() => {
+			testProjects[0]!.projectRoot = originalProjectRoot;
+			rmSync(projectRoot, { recursive: true, force: true });
+			if (savedDesignSwitch === undefined) {
+				delete process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
+			} else {
+				process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = savedDesignSwitch;
+			}
+			if (savedThreeStageSwitch === undefined) {
+				delete process.env.FLYWHEEL_THREE_STAGE;
+			} else {
+				process.env.FLYWHEEL_THREE_STAGE = savedThreeStageSwitch;
+			}
+		});
+
+		async function postDesignBackend(
+			designBackend: unknown,
+			extra: Record<string, unknown> = {},
+		): Promise<Response> {
+			return fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-FLY1259",
+					projectName: "TestProject",
+					...(designBackend !== undefined ? { designBackend } : {}),
+					...extra,
+				}),
+			});
+		}
+
+		it.each([42, true, "fable", "Codex", ""])(
+			"rejects invalid designBackend %# before dispatch",
+			async (designBackend) => {
+				const res = await postDesignBackend(designBackend);
+				expect(res.status).toBe(400);
+				expect(await res.json()).toEqual({
+					success: false,
+					code: "INVALID_DESIGN_BACKEND",
+					reason:
+						typeof designBackend === "string"
+							? "unknown_backend"
+							: "wrong_type",
+					allowed: ["codex", "claude"],
+					silent: false,
+				});
+				expect(mockDispatcher.start).not.toHaveBeenCalled();
+			},
+		);
+
+		it("global off + explicit codex dispatches Codex and echoes the applied override", async () => {
+			process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "0";
+			const res = await postDesignBackend("codex");
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({
+				success: true,
+				executionId: "exec-GEO-FLY1259",
+				issueId: "GEO-FLY1259",
+				message: "Runner started for GEO-FLY1259",
+				designBackend: "codex",
+			});
+			expect(mockDispatcher.start).toHaveBeenCalledWith(
+				expect.objectContaining({
+					sessionRole: "design",
+					designBackend: "codex",
+					dispatchVendor: "codex",
+					dispatchModel: "gpt-5.6-sol",
+					dispatchEffort: "xhigh",
+				}),
+			);
+		});
+
+		it("global on + explicit claude dispatches Fable and echoes the applied override", async () => {
+			process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "1";
+			const res = await postDesignBackend("claude");
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({
+				success: true,
+				executionId: "exec-GEO-FLY1259",
+				issueId: "GEO-FLY1259",
+				message: "Runner started for GEO-FLY1259",
+				designBackend: "claude",
+			});
+			expect(mockDispatcher.start).toHaveBeenCalledWith(
+				expect.objectContaining({
+					sessionRole: "design",
+					designBackend: "claude",
+					dispatchVendor: "claude",
+					dispatchModel: "claude-fable-5",
+					dispatchEffort: undefined,
+				}),
+			);
+		});
+
+		it.each([undefined, null])(
+			"keeps the legacy response shape when designBackend is %s",
+			async (designBackend) => {
+				process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "1";
+				const res = await postDesignBackend(designBackend);
+				expect(res.status).toBe(200);
+				const body = await res.json();
+				expect(body).toEqual({
+					success: true,
+					executionId: "exec-GEO-FLY1259",
+					issueId: "GEO-FLY1259",
+					message: "Runner started for GEO-FLY1259",
+				});
+				expect(Object.keys(body as object)).not.toContain("designBackend");
+				expect(mockDispatcher.start).toHaveBeenCalledWith(
+					expect.objectContaining({
+						designBackend: "codex",
+						dispatchVendor: "codex",
+					}),
+				);
+			},
+		);
+
+		it("rejects an explicit override for a non-main request before dispatch", async () => {
+			const res = await postDesignBackend("codex", { sessionRole: "qa" });
+			expect(res.status).toBe(400);
+			expect(await res.json()).toEqual({
+				success: false,
+				code: "DESIGN_BACKEND_NOT_APPLICABLE",
+				reason: "non_main_role",
+				requested: "codex",
+				silent: false,
+			});
+			expect(mockDispatcher.start).not.toHaveBeenCalled();
+		});
+
+		it("rejects an explicit override when the issue opts out of three-stage", async () => {
+			const { LinearClient } = await import("@linear/sdk");
+			(
+				LinearClient as unknown as ReturnType<typeof vi.fn>
+			).mockImplementationOnce(() => ({
+				issue: vi.fn().mockResolvedValue({
+					title: "Test Issue",
+					identifier: "GEO-FLY1259",
+					url: "https://linear.app/test/issue/GEO-FLY1259",
+					labels: vi.fn().mockResolvedValue({
+						nodes: [{ name: "Product" }, { name: "no-three-stage" }],
+					}),
+				}),
+			}));
+			const res = await postDesignBackend("codex");
+			expect(res.status).toBe(400);
+			expect(await res.json()).toEqual({
+				success: false,
+				code: "DESIGN_BACKEND_NOT_APPLICABLE",
+				reason: "no_three_stage_label",
+				requested: "codex",
+				silent: false,
+			});
+			expect(mockDispatcher.start).not.toHaveBeenCalled();
+		});
+
+		it("rejects an explicit override when the global three-stage switch is off", async () => {
+			process.env.FLYWHEEL_THREE_STAGE = "0";
+			const res = await postDesignBackend("codex");
+			expect(res.status).toBe(400);
+			expect(await res.json()).toEqual({
+				success: false,
+				code: "DESIGN_BACKEND_NOT_APPLICABLE",
+				reason: "global_disabled",
+				requested: "codex",
+				silent: false,
+			});
+			expect(mockDispatcher.start).not.toHaveBeenCalled();
+		});
+
+		// FLY-1259 (Codex code R1): a config-determined "can never enter three-stage"
+		// verdict must beat the conflict//admission lanes. Otherwise a doomed request
+		// gets a 409 (or 429) — and worse, the stale-blocker guard may finalize/alert
+		// a previous session on behalf of a request that could never have started.
+		it("config-disabled override returns 400 even when an active session would 409", async () => {
+			process.env.FLYWHEEL_THREE_STAGE = "0";
+			store.upsertSession({
+				execution_id: "blocker-1259",
+				issue_id: "GEO-FLY1259",
+				project_name: "TestProject",
+				status: "running",
+			});
+			try {
+				const res = await postDesignBackend("codex");
+				expect(res.status).toBe(400);
+				expect(await res.json()).toEqual({
+					success: false,
+					code: "DESIGN_BACKEND_NOT_APPLICABLE",
+					reason: "global_disabled",
+					requested: "codex",
+					silent: false,
+				});
+				expect(mockDispatcher.start).not.toHaveBeenCalled();
+			} finally {
+				// The store outlives each test; retire the blocker so the sibling
+				// GEO-FLY1259 cases are not silently turned into 409s.
+				store.upsertSession({
+					execution_id: "blocker-1259",
+					issue_id: "GEO-FLY1259",
+					project_name: "TestProject",
+					status: "completed",
+				});
+			}
+		});
+
+		it("returns a bounded channel reason while logging the internal policy detail", async () => {
+			writeThreeStageConfig(["other-channel"]);
+			const warn = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			try {
+				const res = await postDesignBackend("claude");
+				expect(res.status).toBe(400);
+				const body = await res.json();
+				expect(body).toEqual({
+					success: false,
+					code: "DESIGN_BACKEND_NOT_APPLICABLE",
+					reason: "channel_not_allowed",
+					requested: "claude",
+					silent: false,
+				});
+				const responseText = JSON.stringify(body);
+				expect(responseText).not.toContain("test-chat");
+				expect(responseText).not.toContain("other-channel");
+				expect(warn).toHaveBeenCalledWith(
+					expect.stringContaining("other-channel"),
+				);
+				expect(mockDispatcher.start).not.toHaveBeenCalled();
+			} finally {
+				warn.mockRestore();
+			}
+		});
 	});
 
 	// FLY-534 — projectName is case-insensitive. The configured project is

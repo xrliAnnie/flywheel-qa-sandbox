@@ -325,4 +325,15 @@ describe("feature-flag drift guard", () => {
 			`new FLYWHEEL_* env not registered or allowlisted (register it, or add to NON_FLAG_ALLOWLIST with a reason): ${unregistered.join(", ")}`,
 		).toEqual([]);
 	});
+
+	it("documents the global design switch as the fallback below a per-dispatch lock", () => {
+		const designFlag = FEATURE_FLAGS.find(
+			(flag) => flag.name === "three_stage_codex_design_toggle",
+		);
+		expect(designFlag?.description).toContain("未指定 designBackend");
+		expect(designFlag?.description).toContain("admission");
+		expect(designFlag?.description).toContain("retry/rescue 不再读");
+		expect(designFlag?.note).toContain("per-dispatch designBackend");
+		expect(designFlag?.note).toContain("新开 run");
+	});
 });

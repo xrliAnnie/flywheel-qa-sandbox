@@ -111,6 +111,67 @@ describe("MailboxLeadRuntime", () => {
 			expect(writeCall.payload.metadata?.seq).toBe("42");
 		});
 
+		it("FLY-1259: renders the locked backend for a design start", async () => {
+			const transport = makeMockTransport();
+			const runtime = new MailboxLeadRuntime({
+				leadId: "cos-lead",
+				transport,
+			});
+
+			await runtime.deliver(
+				makeEnvelope({
+					seq: 7,
+					event: {
+						event_type: "session_started",
+						execution_id: "exec-design",
+						issue_id: "issue-1",
+						session_role: "design",
+						design_backend: "codex",
+					},
+				}),
+			);
+
+			const content = (transport.write as ReturnType<typeof vi.fn>).mock
+				.calls[0][0].payload.content as string;
+			expect(content).toContain(
+				"[Event #7] [DESIGN] session_started\n" +
+					"ID: exec-design | Issue: issue-1\n" +
+					"Design Backend: codex",
+			);
+		});
+
+		it.each([
+			{
+				event_type: "session_started",
+				session_role: "main",
+				design_backend: "codex",
+			},
+			{
+				event_type: "session_started",
+				session_role: "implement",
+				design_backend: "codex",
+			},
+			{ event_type: "session_started", session_role: "design" },
+			{
+				event_type: "session_completed",
+				session_role: "design",
+				design_backend: "codex",
+			},
+		])(
+			"FLY-1259: omits the backend line outside design start %#",
+			async (event) => {
+				const transport = makeMockTransport();
+				const runtime = new MailboxLeadRuntime({
+					leadId: "cos-lead",
+					transport,
+				});
+				await runtime.deliver(makeEnvelope({ event }));
+				const content = (transport.write as ReturnType<typeof vi.fn>).mock
+					.calls[0][0].payload.content as string;
+				expect(content).not.toContain("Design Backend:");
+			},
+		);
+
 		it("uses attempt identity for dedupe and renders the backend-neutral ACK handle", async () => {
 			const transport = makeMockTransport();
 			const runtime = new MailboxLeadRuntime({ leadId: "cos-lead", transport });

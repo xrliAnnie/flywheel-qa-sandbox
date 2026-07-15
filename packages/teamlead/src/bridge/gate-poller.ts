@@ -2402,6 +2402,7 @@ export class GatePoller {
 				phasePrefix: phaseMessageTag(
 					session.chat_thread_role,
 					session.runner_model,
+					session.design_backend,
 				),
 			},
 			{ store: this.config.store, fetchImpl: this.config.fetchImpl },
@@ -2784,7 +2785,11 @@ export class GatePoller {
 					botToken: lead.botToken ?? this.config.discordBotToken,
 					ownerUserId: this.config.discordOwnerUserId,
 					// FLY-892 (Step 3): tag which phase reached the milestone; "" for main.
-					phasePrefix: phaseMessageTag(s.chat_thread_role, s.runner_model),
+					phasePrefix: phaseMessageTag(
+						s.chat_thread_role,
+						s.runner_model,
+						s.design_backend,
+					),
 				},
 				{ store: this.config.store, fetchImpl: this.config.fetchImpl },
 			);

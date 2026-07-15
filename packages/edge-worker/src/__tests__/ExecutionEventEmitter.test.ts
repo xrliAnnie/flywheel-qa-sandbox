@@ -105,6 +105,26 @@ describe("TeamLeadClient", () => {
 		expect(payload.runnerModel).toBeUndefined();
 	});
 
+	it("FLY-1259: emitStarted carries designBackend in the payload", async () => {
+		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
+		await client.emitStarted(makeEnvelope({ designBackend: "claude" }));
+		await client.flush();
+
+		const body = receivedBodies[0] as Record<string, unknown>;
+		const payload = body.payload as Record<string, unknown>;
+		expect(payload.designBackend).toBe("claude");
+	});
+
+	it("FLY-1259: emitStarted omits an absent designBackend (byte-compat)", async () => {
+		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
+		await client.emitStarted(makeEnvelope());
+		await client.flush();
+
+		const body = receivedBodies[0] as Record<string, unknown>;
+		const payload = body.payload as Record<string, unknown>;
+		expect(payload).not.toHaveProperty("designBackend");
+	});
+
 	it("emitCompleted includes evidence in payload", async () => {
 		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
 		const result = makeResult();

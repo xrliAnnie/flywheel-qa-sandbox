@@ -25,6 +25,7 @@
  */
 
 import {
+	type DesignBackend,
 	type PhaseDispatchVendor,
 	type PipelineConfig,
 	type RoleEffort,
@@ -53,25 +54,72 @@ export interface ThreeStagePolicyInput {
 
 export interface ThreeStagePolicyDecision {
 	enabled: boolean;
+	reasonCode?: ThreeStageDisabledReasonCode;
+	/** Internal diagnostic only; never expose verbatim over HTTP. */
 	reason?: string;
 }
 
+export type ThreeStageDisabledReasonCode =
+	| "global_disabled"
+	| "no_three_stage_label"
+	| "channel_not_allowed"
+	| "policy_disabled";
+
+export type ThreeStageNotEnteredReasonCode =
+	| ThreeStageDisabledReasonCode
+	| "non_main_role";
+
 const NO_THREE_STAGE_LABEL = "no-three-stage";
+
+/**
+ * FLY-1259: the ONE three-stage block that is safe to decide before the Linear
+ * pre-flight — the Bridge-global kill-switch.
+ *
+ * `runs-route` calls this early, ahead of dedup/admission, so an explicit
+ * `designBackend` sent to a Bridge where three-stage is off entirely gets its
+ * bounded 400 instead of a 409/429 — and never makes the stale-blocker guard
+ * finalize/alert a previous session on behalf of a doomed request.
+ *
+ * Deliberately global-only (Codex code R2). This is a PRECEDENCE constraint, not
+ * a convenience: `resolveThreeStagePolicy` evaluates
+ *   global_disabled → no_three_stage_label → channel_not_allowed → policy_disabled
+ * and only the FIRST of those can be decided without issue labels or a resolved
+ * leadId. Deciding `policy_disabled` here would preempt the two checks that
+ * outrank it, so the same request could report `policy_disabled` early but
+ * `no_three_stage_label` from the authoritative path. Keeping this to the
+ * top-precedence check is what makes the two resolvers unable to disagree.
+ *
+ * Returns the block when three-stage is globally off, else `undefined` — the
+ * label/channel/pipeline checks still have to decide.
+ */
+export function resolveGlobalThreeStageKillSwitch(
+	env: Record<string, string | undefined> = process.env,
+): { reasonCode: ThreeStageDisabledReasonCode; reason: string } | undefined {
+	if (env.FLYWHEEL_THREE_STAGE === "0") {
+		return {
+			reasonCode: "global_disabled",
+			reason: "FLYWHEEL_THREE_STAGE=0 global kill-switch",
+		};
+	}
+	return undefined;
+}
 
 export function resolveThreeStagePolicy(
 	input: ThreeStagePolicyInput,
 ): ThreeStagePolicyDecision {
 	const env = input.env ?? process.env;
-	if (env.FLYWHEEL_THREE_STAGE === "0") {
-		return {
-			enabled: false,
-			reason: "FLYWHEEL_THREE_STAGE=0 global kill-switch",
-		};
+	const globalBlock = resolveGlobalThreeStageKillSwitch(env);
+	if (globalBlock) {
+		return { enabled: false, ...globalBlock };
 	}
 
 	const labels = input.issueLabels.map((l) => l.toLowerCase());
 	if (labels.includes(NO_THREE_STAGE_LABEL)) {
-		return { enabled: false, reason: "issue labelled no-three-stage" };
+		return {
+			enabled: false,
+			reasonCode: "no_three_stage_label",
+			reason: "issue labelled no-three-stage",
+		};
 	}
 
 	if (input.pipelineConfig?.three_stage === true) {
@@ -85,6 +133,7 @@ export function resolveThreeStagePolicy(
 			if (!channel || !allowlist.includes(channel)) {
 				return {
 					enabled: false,
+					reasonCode: "channel_not_allowed",
 					reason: `dispatch channel ${channel ?? "(unresolved)"} not in pipeline.three_stage_channels [${allowlist.join(", ")}]`,
 				};
 			}
@@ -92,7 +141,11 @@ export function resolveThreeStagePolicy(
 		return { enabled: true };
 	}
 
-	return { enabled: false, reason: "three-stage not enabled (opt-in default)" };
+	return {
+		enabled: false,
+		reasonCode: "policy_disabled",
+		reason: "three-stage not enabled (opt-in default)",
+	};
 }
 
 /**
@@ -139,6 +192,8 @@ export interface ThreeStageEntryInput {
 	 * for the trust chain). Only consulted when the allowlist is defined.
 	 */
 	dispatchChannelId?: string;
+	/** Optional public admission override for this run's design author. */
+	designBackend?: DesignBackend;
 }
 
 export interface ThreeStageEntryDecision {
@@ -146,6 +201,12 @@ export interface ThreeStageEntryDecision {
 	role: string;
 	/** True ONLY when the fresh dispatch enters three-stage (→ start the Design phase). */
 	enteredThreeStage: boolean;
+	/** Effective backend locked at admission; present only for an entered run. */
+	designBackend?: DesignBackend;
+	/** Stable, bounded reason suitable for a public not-applicable response. */
+	notEnteredReasonCode?: ThreeStageNotEnteredReasonCode;
+	/** Internal diagnostic only; never expose verbatim over HTTP. */
+	notEnteredDetail?: string;
 	/**
 	 * FLY-887 R2: the phase-table model for the entered phase (design). Present
 	 * ONLY when `enteredThreeStage` — the caller applies it UNCONDITIONALLY,
@@ -180,22 +241,39 @@ export function resolveThreeStageEntry(
 	input: ThreeStageEntryInput,
 ): ThreeStageEntryDecision {
 	if (input.requestRole !== "main") {
-		return { role: input.requestRole, enteredThreeStage: false };
+		return {
+			role: input.requestRole,
+			enteredThreeStage: false,
+			notEnteredReasonCode: "non_main_role",
+			notEnteredDetail: "request role is not main",
+		};
 	}
-	const enabled = resolveThreeStagePolicy({
+	const policy = resolveThreeStagePolicy({
 		pipelineConfig: input.pipelineConfig,
 		issueLabels: input.issueLabels,
 		env: input.env,
 		dispatchChannelId: input.dispatchChannelId,
-	}).enabled;
-	if (!enabled) return { role: "main", enteredThreeStage: false };
+	});
+	if (!policy.enabled) {
+		return {
+			role: "main",
+			enteredThreeStage: false,
+			notEnteredReasonCode: policy.reasonCode ?? "policy_disabled",
+			notEnteredDetail: policy.reason ?? "three-stage policy disabled",
+		};
+	}
 	// FLY-1224: the entry dispatches the DESIGN phase — return its full
 	// {model, vendor, effort} triple from the phase table (kill-switch aware
 	// via the same injectable env).
-	const dispatch = resolvePhaseDispatch("design", input.env);
+	const dispatch = resolvePhaseDispatch(
+		"design",
+		input.env,
+		input.designBackend ? { vendor: input.designBackend } : undefined,
+	);
 	return {
 		role: "design",
 		enteredThreeStage: true,
+		designBackend: dispatch.vendor,
 		dispatchModel: dispatch.model,
 		dispatchVendor: dispatch.vendor,
 		...(dispatch.effort && { dispatchEffort: dispatch.effort }),

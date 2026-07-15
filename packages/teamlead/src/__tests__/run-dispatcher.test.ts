@@ -193,6 +193,26 @@ describe("RunDispatcher", () => {
 		expect(ctx.progressResume).toBeUndefined();
 	});
 
+	it("FLY-1259: start() carries designBackend into Blueprint context", async () => {
+		const runtimes = new Map([makeRuntime("TestProject")]);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+
+		await dispatcher.start({
+			issueId: "FLY-1259",
+			projectName: "TestProject",
+			designBackend: "codex",
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const blueprint = runtimes.get("TestProject")!.blueprint;
+		const ctx = vi.mocked(blueprint.run).mock.calls[0]?.[2];
+		expect(ctx?.designBackend).toBe("codex");
+	});
+
 	it("start() rejects when shutting down", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
 		const dispatcher = new RunDispatcher(
@@ -349,6 +369,24 @@ describe("RetryDispatcher", () => {
 
 		expect(result.oldExecutionId).toBe("old-exec");
 		expect(result.newExecutionId).toBeDefined();
+	});
+
+	it("FLY-1259: dispatch() carries designBackend into Blueprint context", async () => {
+		const runtimes = new Map([makeRuntime("TestProject")]);
+		const dispatcher = new RetryDispatcher(runtimes, []);
+
+		await dispatcher.dispatch({
+			oldExecutionId: "old-exec",
+			issueId: "FLY-1259",
+			projectName: "TestProject",
+			runAttempt: 1,
+			designBackend: "claude",
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const blueprint = runtimes.get("TestProject")!.blueprint;
+		const ctx = vi.mocked(blueprint.run).mock.calls[0]?.[2];
+		expect(ctx?.designBackend).toBe("claude");
 	});
 
 	it("dispatch() rejects duplicate issue", async () => {

@@ -5,6 +5,8 @@ import BetterSqlite3, { type Database as BetterDb } from "better-sqlite3";
 import {
 	canonicalSubmissionDigest,
 	crossFamilyReviewSatisfied,
+	type DesignBackend,
+	isDesignBackend,
 } from "flywheel-config";
 import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
@@ -572,6 +574,8 @@ export interface SessionUpsert {
 	runner_model?: string;
 	/** FLY-728 Part C: the difficulty-sorter's dispatch model param (retry input). */
 	dispatch_model?: string;
+	/** FLY-1259: effective design backend, locked once at dispatch. */
+	design_backend?: DesignBackend;
 	/** FLY-615: resolved ponytail condition (A/B join key for FLY-614/616). */
 	ponytail_condition?: string;
 	run_attempt?: number;
@@ -669,6 +673,8 @@ export interface Session {
 	runner_model?: string;
 	/** FLY-728 Part C: the difficulty-sorter's dispatch model param (retry input). */
 	dispatch_model?: string;
+	/** FLY-1259: effective design backend, locked once at dispatch. */
+	design_backend?: DesignBackend;
 	/** FLY-615: resolved ponytail condition (A/B join key for FLY-614/616). */
 	ponytail_condition?: string;
 	run_attempt?: number;
@@ -1262,7 +1268,8 @@ export class StateStore {
 				commit_messages TEXT,
 				changed_file_paths TEXT,
 				thread_id TEXT,
-				chat_thread_role TEXT NOT NULL DEFAULT 'main'
+				chat_thread_role TEXT NOT NULL DEFAULT 'main',
+				design_backend TEXT
 			)
 		`);
 
@@ -1332,6 +1339,14 @@ export class StateStore {
 			// resolved model from any layer). Retry re-applies it so a sorter model
 			// survives; a label/project/account model is NOT reintroduced.
 			this.db.run("ALTER TABLE sessions ADD COLUMN dispatch_model TEXT");
+		} catch {
+			// Column already exists — ignore
+		}
+		try {
+			// FLY-1259: effective design backend locked at dispatch. This is separate
+			// from model fields so the transition API can later grow into the planned
+			// per-node {vendor, model, effort} shape without parsing a model string.
+			this.db.run("ALTER TABLE sessions ADD COLUMN design_backend TEXT");
 		} catch {
 			// Column already exists — ignore
 		}
@@ -2896,11 +2911,11 @@ export class StateStore {
 				last_error, decision_route, decision_reasoning,
 				cost_usd, commit_count, files_changed, lines_added, lines_removed,
 				summary, diff_summary, commit_messages, changed_file_paths,
-				session_params, heartbeat_at, adapter_type, runner_model, dispatch_model, ponytail_condition, run_attempt,
+				session_params, heartbeat_at, adapter_type, runner_model, dispatch_model, design_backend, ponytail_condition, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
 				pr_number, session_stage, stage_updated_at, session_role,
 				doc_tier, issue_url, chat_thread_role
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				issue_id = COALESCE(excluded.issue_id, issue_id),
 				project_name = COALESCE(excluded.project_name, project_name),
@@ -2929,6 +2944,7 @@ export class StateStore {
 				adapter_type = COALESCE(excluded.adapter_type, adapter_type),
 				runner_model = COALESCE(excluded.runner_model, runner_model),
 				dispatch_model = COALESCE(excluded.dispatch_model, dispatch_model),
+				design_backend = COALESCE(design_backend, excluded.design_backend),
 				ponytail_condition = COALESCE(excluded.ponytail_condition, ponytail_condition),
 				run_attempt = COALESCE(excluded.run_attempt, run_attempt),
 				retry_predecessor = COALESCE(excluded.retry_predecessor, retry_predecessor),
@@ -2970,6 +2986,7 @@ export class StateStore {
 					session.adapter_type ?? null,
 					session.runner_model ?? null,
 					session.dispatch_model ?? null,
+					session.design_backend ?? null,
 					session.ponytail_condition ?? null,
 					session.run_attempt ?? null,
 					session.retry_predecessor ?? null,
@@ -3049,11 +3066,11 @@ export class StateStore {
 				last_error, decision_route, decision_reasoning,
 				cost_usd, commit_count, files_changed, lines_added, lines_removed,
 				summary, diff_summary, commit_messages, changed_file_paths,
-				session_params, heartbeat_at, adapter_type, runner_model, dispatch_model, ponytail_condition, run_attempt,
+				session_params, heartbeat_at, adapter_type, runner_model, dispatch_model, design_backend, ponytail_condition, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
 				pr_number, session_stage, stage_updated_at, session_role,
 				doc_tier, issue_url, chat_thread_role
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				status = excluded.status,
 				issue_id = COALESCE(excluded.issue_id, issue_id),
@@ -3082,6 +3099,7 @@ export class StateStore {
 				adapter_type = COALESCE(excluded.adapter_type, adapter_type),
 				runner_model = COALESCE(excluded.runner_model, runner_model),
 				dispatch_model = COALESCE(excluded.dispatch_model, dispatch_model),
+				design_backend = COALESCE(design_backend, excluded.design_backend),
 				ponytail_condition = COALESCE(excluded.ponytail_condition, ponytail_condition),
 				run_attempt = COALESCE(excluded.run_attempt, run_attempt),
 				retry_predecessor = COALESCE(excluded.retry_predecessor, retry_predecessor),
@@ -3123,6 +3141,7 @@ export class StateStore {
 					fields.adapter_type ?? null,
 					fields.runner_model ?? null,
 					fields.dispatch_model ?? null,
+					fields.design_backend ?? null,
 					fields.ponytail_condition ?? null,
 					fields.run_attempt ?? null,
 					fields.retry_predecessor ?? null,
@@ -3200,7 +3219,7 @@ export class StateStore {
 	 */
 	patchSessionMetadata(
 		executionId: string,
-		fields: Partial<Omit<SessionUpsert, "status">>,
+		fields: Partial<Omit<SessionUpsert, "status" | "design_backend">>,
 	): void {
 		const setClauses: string[] = [];
 		const values: (string | number | null)[] = [];
@@ -7341,6 +7360,9 @@ export class StateStore {
 			// FLY-728: resolved runner model (per-issue model routing visibility).
 			runner_model: (row.runner_model as string) ?? undefined,
 			dispatch_model: (row.dispatch_model as string) ?? undefined,
+			design_backend: isDesignBackend(row.design_backend)
+				? row.design_backend
+				: undefined,
 			ponytail_condition: (row.ponytail_condition as string) ?? undefined,
 			run_attempt: (row.run_attempt as number) ?? undefined,
 			retry_predecessor: (row.retry_predecessor as string) ?? undefined,

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { DesignBackend } from "flywheel-config";
 import type { TerminalFailureInfo } from "flywheel-core";
 import type { BlueprintResult } from "./Blueprint.js";
 
@@ -14,6 +15,8 @@ export interface EventEnvelope {
 	labels?: string[];
 	/** FLY-59: Session role for multi-session-per-issue support */
 	sessionRole?: string;
+	/** FLY-1259: effective design vendor locked at three-stage admission. */
+	designBackend?: DesignBackend;
 	/**
 	 * FLY-793 (Step 11): the chat-thread role, computed ONCE at dispatch as
 	 * `shareParentBranch ? sessionRole : 'main'`. Carried on session_started so both
@@ -116,6 +119,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				issueTitle: env.issueTitle,
 				labels: env.labels,
 				sessionRole: env.sessionRole,
+				designBackend: env.designBackend,
 				// FLY-793 (Codex full-PR R1 #4): carry the chat-thread role on the HTTP
 				// started payload too — real runners emit via this client, so without it
 				// the /events sink defaults to "main" and (INSERT-once, never updated)

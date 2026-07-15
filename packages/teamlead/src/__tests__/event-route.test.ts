@@ -147,6 +147,53 @@ describe("Event route", () => {
 		expect(store.getSession("exec-1")!.runner_model ?? null).toBeNull();
 	});
 
+	it("FLY-1259: raw-upsert started events persist and lock designBackend", async () => {
+		const postStarted = (eventId: string, designBackend: string) =>
+			fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(
+					makeEvent({
+						event_id: eventId,
+						payload: {
+							issueIdentifier: "GEO-95",
+							sessionRole: "design",
+							chatThreadRole: "design",
+							designBackend,
+						},
+					}),
+				),
+			});
+
+		expect((await postStarted("evt-design-1", "claude")).status).toBe(200);
+		expect((await postStarted("evt-design-2", "codex")).status).toBe(200);
+		expect(store.getSession("exec-1")?.design_backend).toBe("claude");
+	});
+
+	it("FLY-1259: invalid started-event designBackend is ignored", async () => {
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					payload: {
+						issueIdentifier: "GEO-95",
+						designBackend: "fable",
+					},
+				}),
+			),
+		});
+
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-1")?.design_backend).toBeUndefined();
+	});
+
 	it("POST /events with session_completed (needs_review) sets awaiting_review", async () => {
 		// First create session
 		await fetch(`${baseUrl}/events`, {
@@ -440,6 +487,34 @@ describe("Event route — structured hook payload", () => {
 		expect(env.event.execution_id).toBe("exec-1");
 		expect(env.event.issue_identifier).toBe("GEO-95");
 		// FLY-163: forum_channel field removed from HookPayload
+	});
+
+	it("FLY-1259: sends the persisted effective design backend to the Lead", async () => {
+		await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					payload: {
+						issueIdentifier: "GEO-95",
+						sessionRole: "design",
+						chatThreadRole: "design",
+						designBackend: "codex",
+					},
+				}),
+			),
+		});
+
+		await new Promise((r) => setTimeout(r, 100));
+
+		expect(capturedEnvelopes[0]?.event).toMatchObject({
+			event_type: "session_started",
+			session_role: "design",
+			design_backend: "codex",
+		});
 	});
 
 	// FLY-163: thread_id payload inheritance test removed.
@@ -830,6 +905,35 @@ describe("Event route — GEO-292 stage tracking", () => {
 		expect(session!.stage_updated_at).toMatch(
 			/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/,
 		);
+	});
+
+	it("FLY-1259: transition-wired started events persist and lock designBackend", async () => {
+		const first = await postEvent({
+			event_id: "evt-transition-design-1",
+			payload: {
+				issueIdentifier: "GEO-95",
+				sessionRole: "design",
+				chatThreadRole: "design",
+				designBackend: "codex",
+			},
+		});
+		expect(first.status).toBe(200);
+		expect(store.getSession("exec-1")?.design_backend).toBe("codex");
+
+		// Re-enter the valid pending → running edge so the opposite replay reaches
+		// persistTransition instead of being rejected as a running → running no-op.
+		store.forceStatus("exec-1", "pending", "2026-07-14 18:00:00");
+		const replay = await postEvent({
+			event_id: "evt-transition-design-2",
+			payload: {
+				issueIdentifier: "GEO-95",
+				sessionRole: "design",
+				chatThreadRole: "design",
+				designBackend: "claude",
+			},
+		});
+		expect(replay.status).toBe(200);
+		expect(store.getSession("exec-1")?.design_backend).toBe("codex");
 	});
 
 	it("stage_changed with valid stage sets session_stage", async () => {

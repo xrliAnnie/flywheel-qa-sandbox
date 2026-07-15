@@ -396,13 +396,13 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "与 FLYWHEEL_THREE_STAGE(整体开关)/ FLYWHEEL_THREE_STAGE_KEEPALIVE 正交；本 env=0 只翻 implement 段的 vendor/model，phase 表其余行不动。",
 	},
 	{
-		// FLY-1245: per-phase vendor — the design phase defaults to claude/Fable
-		// (heavy). `=1` flips the design dispatch to codex (gpt-5.6-sol, xhigh) —
-		// the operational escape hatch when the Fable quota is the bottleneck.
+		// FLY-1245 / FLY-1259: new-run admission fallback for the design phase
+		// when admission did not provide a per-dispatch designBackend. `=1` flips
+		// the fallback from claude/Fable to codex (gpt-5.6-sol, xhigh).
 		// MIRROR of the implement kill-switch but INVERTED activating value: design
 		// defaults to claude (=1 opts INTO codex) whereas implement defaults to
-		// codex (=0 falls back to claude). Display fallbacks (phaseMessageTag /
-		// issue-display pending rows) read the same table, so they follow.
+		// codex (=0 falls back to claude). New-run display fallbacks prefer the
+		// locked backend; legacy/null rows still read this table.
 		name: "three_stage_codex_design_toggle",
 		category: "kill_switch",
 		source: "env",
@@ -412,7 +412,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		valueKind: "bool",
 		default: false,
 		description:
-			"三段式 design 段 codex 派发开关（=1 → design 从 Fable 切到 codex gpt-5.6-sol xhigh；不设/≠1 → 现状 claude/heavy(Fable)，字节不变；implement/qa 不受影响；改 ~/.flywheel/.env 后需 restart-services.sh --bridge-only）(FLY-1245)",
+			"三段式 design 段新 run admission fallback（仅在 admission 时且本次 run 未指定 designBackend：=1 → codex gpt-5.6-sol xhigh；不设/≠1 → claude/Fable；一旦写入 sessions.design_backend，retry/rescue 不再读本开关；implement/qa 不受影响；改 ~/.flywheel/.env 后需 restart-services.sh --bridge-only）(FLY-1245/FLY-1259)",
 		readSites: [
 			envSite(
 				"packages/config/src/three-stage-phases.ts",
@@ -421,7 +421,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			),
 		],
 		toggleable: "readonly",
-		note: "与 implement 开关方向相反：implement 默认 codex(=0 关)，design 默认 Fable(=1 开)。正交于 FLYWHEEL_THREE_STAGE / FLYWHEEL_THREE_STAGE_KEEPALIVE；design=codex 后 design review 自动翻 Claude lane(FLY-1188 §7.1)。",
+		note: "per-dispatch designBackend 与已锁定 sessions.design_backend 优先于本全局 fallback；已锁定 run 如需换 vendor，结束旧 run 后以显式 designBackend 新开 run；display fallback 对新 run 先读 locked backend，legacy/null 才读本开关。",
 	},
 	{
 		// FLY-939 (G-D): Bridge boot logs its running HEAD and best-effort compares

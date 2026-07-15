@@ -352,6 +352,87 @@ describe("StateStore", () => {
 		expect(store.getSession("exec-2")!.dispatch_model).toBe("claude-sonnet-5");
 	});
 
+	// FLY-1259: design_backend is the effective backend locked at dispatch.
+	// It is set-once: a legacy/partial insert may leave it null, the first real
+	// dispatch fills it, and later retry/respawn writes cannot change it.
+	it("FLY-1259: upsertSession locks the first non-null design_backend", () => {
+		store.upsertSession(makeSession());
+		expect(store.getSession("exec-1")!.design_backend).toBeUndefined();
+
+		store.upsertSession(makeSession({ design_backend: "codex" }));
+		store.upsertSession(makeSession({ design_backend: "claude" }));
+
+		expect(store.getSession("exec-1")!.design_backend).toBe("codex");
+	});
+
+	it("FLY-1259: claude design_backend round-trips and invalid rows fail closed", () => {
+		store.upsertSession(
+			makeSession({ execution_id: "exec-claude", design_backend: "claude" }),
+		);
+		expect(store.getSession("exec-claude")!.design_backend).toBe("claude");
+
+		store.db.run(
+			"UPDATE sessions SET design_backend = 'unknown' WHERE execution_id = 'exec-claude'",
+		);
+		expect(store.getSession("exec-claude")!.design_backend).toBeUndefined();
+	});
+
+	it("FLY-1259: persistTransition cannot overwrite a locked design_backend", () => {
+		store.persistTransition("exec-transition", "running", {
+			issue_id: "FLY-1259",
+			project_name: "flywheel",
+			design_backend: "codex",
+		});
+		store.persistTransition("exec-transition", "awaiting_review", {
+			issue_id: "FLY-1259",
+			project_name: "flywheel",
+			design_backend: "claude",
+		});
+
+		expect(store.getSession("exec-transition")!.design_backend).toBe("codex");
+	});
+
+	it("FLY-1259: pre-column sessions DB migrates and remains writable", async () => {
+		const legacy = await StateStore.create(":memory:");
+		const internalDb = legacy.db;
+		internalDb.run("DROP TABLE sessions");
+		internalDb.run(`CREATE TABLE sessions (
+			execution_id TEXT PRIMARY KEY,
+			issue_id TEXT NOT NULL,
+			issue_identifier TEXT,
+			issue_title TEXT,
+			project_name TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			started_at TEXT,
+			last_activity_at TEXT,
+			tmux_session TEXT,
+			worktree_path TEXT,
+			branch TEXT,
+			last_error TEXT,
+			decision_route TEXT,
+			decision_reasoning TEXT,
+			cost_usd REAL DEFAULT 0,
+			commit_count INTEGER DEFAULT 0,
+			files_changed INTEGER DEFAULT 0,
+			lines_added INTEGER DEFAULT 0,
+			lines_removed INTEGER DEFAULT 0,
+			summary TEXT,
+			diff_summary TEXT,
+			commit_messages TEXT,
+			changed_file_paths TEXT,
+			thread_id TEXT,
+			chat_thread_role TEXT NOT NULL DEFAULT 'main'
+		)`);
+
+		legacy.migrate();
+		legacy.upsertSession(
+			makeSession({ execution_id: "exec-legacy", design_backend: "claude" }),
+		);
+
+		expect(legacy.getSession("exec-legacy")!.design_backend).toBe("claude");
+		legacy.close();
+	});
+
 	it("FLY-615: upsertSession stores and retrieves ponytail_condition", () => {
 		store.upsertSession(makeSession({ ponytail_condition: "on:label" }));
 		expect(store.getSession("exec-1")!.ponytail_condition).toBe("on:label");

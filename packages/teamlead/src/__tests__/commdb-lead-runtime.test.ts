@@ -59,6 +59,56 @@ describe("CommDBLeadRuntime", () => {
 			);
 		});
 
+		it("FLY-1259: renders the locked backend for a design start", async () => {
+			await runtime.deliver(
+				makeEnvelope(
+					{
+						event_type: "session_started",
+						execution_id: "exec-design",
+						issue_id: "issue-1",
+						issue_identifier: undefined,
+						issue_title: undefined,
+						session_role: "design",
+						design_backend: "codex",
+					},
+					7,
+				),
+			);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain(
+				"[Event #7] [DESIGN] session_started\n" +
+					"ID: exec-design | Issue: issue-1\n" +
+					"Design Backend: codex",
+			);
+		});
+
+		it.each([
+			{
+				event_type: "session_started",
+				session_role: "main",
+				design_backend: "codex",
+			},
+			{
+				event_type: "session_started",
+				session_role: "implement",
+				design_backend: "codex",
+			},
+			{ event_type: "session_started", session_role: "design" },
+			{
+				event_type: "session_completed",
+				session_role: "design",
+				design_backend: "codex",
+			},
+		])(
+			"FLY-1259: omits the backend line outside design start %#",
+			async (event) => {
+				await runtime.deliver(makeEnvelope(event));
+				const content = mockInsertInstruction.mock.calls[0][2] as string;
+				expect(content).not.toContain("Design Backend:");
+			},
+		);
+
 		it("dedupes crash retries by attempt id and includes ACK instructions", async () => {
 			const envelope = {
 				...makeEnvelope({}, 44),

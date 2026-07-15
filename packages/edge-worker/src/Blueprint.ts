@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
 	CheckpointsConfig,
+	DesignBackend,
 	DocFlowConfig,
 	FounderUxGateConfig,
 	PonytailConfig,
@@ -208,6 +209,8 @@ export interface BlueprintContext {
 	docTier?: DocTier;
 	// FLY-59 — Session role for multi-session-per-issue support
 	sessionRole?: string;
+	/** FLY-1259: effective design vendor locked at three-stage admission. */
+	designBackend?: DesignBackend;
 	// FLY-793 — Bridge-INTERNAL three-stage flag (PhaseOrchestrator only; never
 	// from /api/runs/start or runner payload). When set, the Design/Implement/QA
 	// phase-sessions share ONE branch B (worktree key = parent main key,
@@ -643,6 +646,9 @@ export class Blueprint {
 			runAttempt: ctx.retryContext?.attempt,
 			// FLY-59: Propagate session role from context to event envelope
 			sessionRole: ctx.sessionRole,
+			// FLY-1259: run-level design backend lock; successor phase contexts carry
+			// the same value even when this runner itself is implement or QA.
+			...(ctx.designBackend && { designBackend: ctx.designBackend }),
 			// FLY-793 (Step 11): compute the chat-thread role ONCE here (the only
 			// place shareParentBranch is known) — a three-stage phase carries its
 			// phase role; everything else (incl. auto-QA's own sessionRole==='qa' on

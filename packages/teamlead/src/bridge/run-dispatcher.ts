@@ -612,6 +612,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 			executionId: newExecutionId,
 			leadId: req.leadId,
 			sessionRole: req.sessionRole,
+			...(req.designBackend && { designBackend: req.designBackend }),
 			// FLY-793: three-stage phases share one branch B (Bridge-internal).
 			shareParentBranch: req.shareParentBranch,
 			// Forward pre-fetched metadata so EventEnvelope retains title/identifier
@@ -1108,6 +1109,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			executionId,
 			leadId: req.leadId,
 			sessionRole: req.sessionRole,
+			...(req.designBackend && { designBackend: req.designBackend }),
 			// FLY-793: three-stage phases share one branch B (Bridge-internal).
 			// FLY-795: a resume also shares branch B (reuse the same mechanism).
 			shareParentBranch: req.shareParentBranch ?? (resume ? true : undefined),

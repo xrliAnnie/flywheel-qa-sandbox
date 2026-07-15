@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Router } from "express";
 import type {
+	DesignBackend,
 	PhaseDispatchVendor,
 	PonytailInput,
 	RoleEffort,
@@ -22,6 +23,8 @@ import type {
 import {
 	ACCEPTED_DISPATCH_MODELS,
 	ConfigLoader,
+	DESIGN_BACKENDS,
+	isDesignBackend,
 	normalizeDispatchModel,
 	resolveEffectiveFounderUxConfig,
 } from "flywheel-config";
@@ -46,7 +49,10 @@ import type { IStartDispatcher } from "./retry-dispatcher.js";
 import type { RunnerAdmissionController } from "./runner-admission.js";
 import { waitForSession } from "./session-wait.js";
 import { loadPipelineConfigByProject } from "./three-stage-config-source.js";
-import { resolveThreeStageEntry } from "./three-stage-policy.js";
+import {
+	resolveGlobalThreeStageKillSwitch,
+	resolveThreeStageEntry,
+} from "./three-stage-policy.js";
 
 /** Poll interval / max wait for chat thread_id to appear on session (FLY-91). */
 const THREAD_POLL_INTERVAL_MS = 500;
@@ -242,6 +248,34 @@ export function createRunsRouter(
 			docTier = parsedTier;
 		}
 
+		// FLY-1259: optional per-dispatch design author. Validate the exact public
+		// enum before any admission, policy, or runner side effect.
+		const rawDesignBackend = req.body.designBackend;
+		let requestedDesignBackend: DesignBackend | undefined;
+		if (rawDesignBackend === undefined || rawDesignBackend === null) {
+			requestedDesignBackend = undefined;
+		} else if (typeof rawDesignBackend !== "string") {
+			res.status(400).json({
+				success: false,
+				code: "INVALID_DESIGN_BACKEND",
+				reason: "wrong_type",
+				allowed: [...DESIGN_BACKENDS],
+				silent: false,
+			});
+			return;
+		} else if (!isDesignBackend(rawDesignBackend)) {
+			res.status(400).json({
+				success: false,
+				code: "INVALID_DESIGN_BACKEND",
+				reason: "unknown_backend",
+				allowed: [...DESIGN_BACKENDS],
+				silent: false,
+			});
+			return;
+		} else {
+			requestedDesignBackend = rawDesignBackend;
+		}
+
 		// FLY-728 Part C: optional per-run `model` param — the difficulty-sorter's
 		// output (the Lead judges difficulty at dispatch and passes a tier model).
 		// Semantics mirror docTier:
@@ -288,6 +322,49 @@ export function createRunsRouter(
 		// by the worktree single-writer (git cannot check out shared branch B twice).
 		let role =
 			(typeof sessionRole === "string" ? sessionRole : undefined) ?? "main";
+		if (requestedDesignBackend && role !== "main") {
+			res.status(400).json({
+				success: false,
+				code: "DESIGN_BACKEND_NOT_APPLICABLE",
+				reason: "non_main_role",
+				requested: requestedDesignBackend,
+				silent: false,
+			});
+			return;
+		}
+		// FLY-1259 (Codex code R1/R2): settle the Bridge-global kill-switch HERE —
+		// ahead of dedup, the stale-blocker guard and admission — so an override sent
+		// to a Bridge with three-stage off entirely gets its bounded 400 instead of a
+		// 409/429, and never makes the guard finalize/alert a previous session on
+		// behalf of a doomed request.
+		//
+		// Global-only is a precedence constraint (see the helper): the remaining
+		// checks — `no-three-stage` label, channel allowlist, pipeline opt-in — all
+		// rank BELOW the label check, which needs the Linear pre-flight that runs
+		// after dedup by design. Deciding them here would report a reason code the
+		// authoritative path disagrees with. They stay below and stay authoritative;
+		// for them a conflicting/deferred request still answers 409/429 first, which
+		// is honest — nothing can start for that issue yet regardless of backend, and
+		// a retry surfaces the 400.
+		//
+		// Entered ONLY for an explicit override, so the default path — including its
+		// 409/429 ordering — is byte-identical.
+		if (requestedDesignBackend) {
+			const globalBlock = resolveGlobalThreeStageKillSwitch(process.env);
+			if (globalBlock) {
+				console.warn(
+					`[runs/start] designBackend=${requestedDesignBackend} not applicable: ${globalBlock.reason}`,
+				);
+				res.status(400).json({
+					success: false,
+					code: "DESIGN_BACKEND_NOT_APPLICABLE",
+					reason: globalBlock.reasonCode,
+					requested: requestedDesignBackend,
+					silent: false,
+				});
+				return;
+			}
+		}
 		const activeSessions = store.getActiveSessions();
 		const alreadyActive = activeSessions.find(
 			(s) =>
@@ -555,6 +632,7 @@ export function createRunsRouter(
 		// only writer, so the phase table stays the single vendor source.
 		let dispatchVendor: PhaseDispatchVendor | undefined;
 		let dispatchEffort: RoleEffort | undefined;
+		let effectiveDesignBackend: DesignBackend | undefined;
 		if (role === "main") {
 			const proj = projects.find((p) => p.projectName === projectName);
 			const pipelineConfig = proj
@@ -578,7 +656,21 @@ export function createRunsRouter(
 				issueLabels: normalizedIssueLabels,
 				env: process.env,
 				dispatchChannelId,
+				designBackend: requestedDesignBackend,
 			});
+			if (requestedDesignBackend && !entry.enteredThreeStage) {
+				console.warn(
+					`[runs/start] designBackend=${requestedDesignBackend} not applicable: ${entry.notEnteredDetail ?? entry.notEnteredReasonCode ?? "policy_disabled"}`,
+				);
+				res.status(400).json({
+					success: false,
+					code: "DESIGN_BACKEND_NOT_APPLICABLE",
+					reason: entry.notEnteredReasonCode ?? "policy_disabled",
+					requested: requestedDesignBackend,
+					silent: false,
+				});
+				return;
+			}
 			if (entry.enteredThreeStage) {
 				// FLY-793 (Codex R1 BLOCKING): the per-role dedup above keyed on the
 				// request role `main` and CANNOT see an already-active Design/Implement/
@@ -609,6 +701,7 @@ export function createRunsRouter(
 				// model so the resolver's dispatch layer picks the phase backend.
 				dispatchVendor = entry.dispatchVendor;
 				dispatchEffort = entry.dispatchEffort;
+				effectiveDesignBackend = entry.designBackend;
 				// FLY-887 R2 (Codex R1 blocker): the Linear label layer outranks
 				// dispatchModel in resolveRoleAdapter — a `sonnet` model label or a
 				// `codex`/`agy`/`kimi` vendor label would beat the phase table (and a
@@ -739,6 +832,9 @@ export function createRunsRouter(
 				// undefined on every non-three-stage dispatch → byte-compatible)
 				dispatchVendor,
 				dispatchEffort,
+				...(effectiveDesignBackend && {
+					designBackend: effectiveDesignBackend,
+				}),
 			});
 
 			// FLY-91: Poll for chatThreadId. emitStarted() awaits chat thread
@@ -833,6 +929,9 @@ export function createRunsRouter(
 				issueId: result.issueId,
 				chatThreadId,
 				message: `Runner started for ${issueId}`,
+				...(requestedDesignBackend && effectiveDesignBackend
+					? { designBackend: effectiveDesignBackend }
+					: {}),
 			});
 		} catch (err) {
 			// FLY-137 v1.27.2: InvalidAgentNameError thrown from AgentDispatcher

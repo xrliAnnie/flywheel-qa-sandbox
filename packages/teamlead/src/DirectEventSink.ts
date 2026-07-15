@@ -205,6 +205,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// is using. The HTTP /events session_started handler persists the same
 			// field for the loopback path.
 			runner_model: env.runnerModel,
+			// FLY-1259: run-level effective design backend, set-once in StateStore.
+			design_backend: env.designBackend,
 			// FLY-615: persist the resolved ponytail condition (A/B join key for
 			// FLY-614 token accounting + FLY-616 quality eval). HTTP /events path
 			// persists the same field.
@@ -1199,6 +1201,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				chat_channel: lead.chatChannel,
 				issue_labels: labels,
 				session_role: session.session_role ?? "main",
+				design_backend: session.design_backend,
 			};
 
 			// FLY-91: Fill chat_thread_id for Lead thread routing

@@ -8013,6 +8013,7 @@ export async function startBridge(
 								phasePrefix: phaseMessageTag(
 									session.chat_thread_role,
 									session.runner_model,
+									session.design_backend,
 								),
 							},
 							{ store },

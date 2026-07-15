@@ -841,7 +841,13 @@ async function handleRetry(
 	const phaseRole = isThreeStagePhaseRole(session.chat_thread_role)
 		? session.chat_thread_role
 		: undefined;
-	const phaseDispatch = phaseRole ? resolvePhaseDispatch(phaseRole) : undefined;
+	const designOverride =
+		phaseRole === "design" && session.design_backend
+			? { vendor: session.design_backend }
+			: undefined;
+	const phaseDispatch = phaseRole
+		? resolvePhaseDispatch(phaseRole, process.env, designOverride)
+		: undefined;
 
 	// R2 MED-6: the dispatch call and the POST-dispatch bookkeeping are split into
 	// TWO try blocks. A throw from `dispatch()` itself is PRE-start (admission
@@ -872,6 +878,9 @@ async function handleRetry(
 			// re-deriving only the vendor would start the codex runner in a
 			// non-phase identity. Non-phase rows keep the persisted role verbatim.
 			sessionRole: phaseRole ?? sessionRole,
+			...(phaseRole && session.design_backend
+				? { designBackend: session.design_backend }
+				: {}),
 			// FLY-1224 (R1 #1, settles FLY-840): a PHASE-row retry keeps its
 			// shared-branch identity — without this the retried implement rebuilds
 			// an independent branch instead of branch B, making the codex-retry /

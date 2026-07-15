@@ -728,6 +728,7 @@ const isStaleAlert = (r) => /stale|TURN/i.test(r) && !/respawn cap/i.test(r);
 // ─────────────────────────────────────────────────────────────────────────────
 // E7 — escape-hatch 对照(MANDATORY):FLYWHEEL_THREE_STAGE_QA_RESPAWN=0
 // ─────────────────────────────────────────────────────────────────────────────
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: intentional per-scenario grouping in this evidence harness (FLY-1259 lint pin surfaced it)
 {
 	scenario(
 		"E7 — escape hatch =0: scoped inert + boot reverts row-exists + stranded-pass hardening NOT gated",
