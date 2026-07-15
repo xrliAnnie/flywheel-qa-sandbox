@@ -648,18 +648,19 @@ for title, group in by_title.items():
 # is_managed_runner_title <title> — rc 0 iff the title is a Flywheel runner
 # window name the CURRENT producer can emit. Producer contract:
 # `buildWindowLabel(issueId, runnerName, title)` = "{issueId}-{runner}-{title}"
-# (packages/core/src/tmux-naming.ts). `runnerName` is `runnerDisplayName(sessionRole)`
-# (packages/teamlead/src/bridge/run-dispatcher.ts): non-phase runs emit "claude"
-# (every executor backend — claude/codex/antigravity/kimi — still emits "-claude-"),
-# and FLY-793 three-stage PHASE runners emit their phase ("-design-"/"-implement-"/
-# "-qa-") so the founder can see the live phase in cmux. So the producible runner
-# label is EXACTLY one of `claude|design|implement|qa`.
+# (packages/core/src/tmux-naming.ts). `runnerName` is composed by
+# `runnerDisplayName(sessionRole, shareParentBranch, modelDisplay)`
+# (packages/teamlead/src/bridge/run-dispatcher.ts): model-present non-phase runs
+# emit `runner-<family>-<model>`; model-absent legacy runs emit `claude`; and
+# FLY-793 three-stage PHASE runners keep their phase prefix (`design`/`implement`/
+# `qa`) before any model label. The fixed `runner` namespace proves a model-bearing
+# title is managed without trusting arbitrary direct vendor labels.
 # COUPLING: if runnerName ever gains another producible value, extend the
 # alternation here (and test-cmux-sync.sh) in lockstep. Deliberately excludes
-# vendor names (codex/gemini/cursor/kimi/agy — not producible today → not provably
-# managed) and Lead windows ("<project>-<lead>", never a close_runner target).
+# direct vendor names (codex/gemini/cursor/kimi/agy — not a managed namespace)
+# and Lead windows ("<project>-<lead>", never a close_runner target).
 is_managed_runner_title() {
-  local re='^[A-Z][A-Z0-9]*-[0-9]+-(claude|design|implement|qa)(-|$)'
+  local re='^[A-Z][A-Z0-9]*-[0-9]+-(claude|runner|design|implement|qa)(-|$)'
   [[ "$1" =~ $re ]]
 }
 

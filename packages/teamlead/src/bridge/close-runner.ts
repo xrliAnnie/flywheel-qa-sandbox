@@ -569,6 +569,8 @@ async function closeRunnerInner(
 		// window_name = the cmux workspace TITLE, reused from killCmuxLinkedSession's
 		// already-resolved `cmuxSession` ("cmux-<window_name>"). Absent → the window
 		// was already gone → nothing to target (FLY-293 reaper still backstops).
+		// FLY-1255: the reaper recognizes fixed `runner-<family>-<model>` names
+		// alongside legacy `claude` and three-stage phase prefixes.
 		// Best-effort: never throws, never blocks the close; the watcher still
 		// re-validates the window + linked session are gone before closing the pin.
 		const cmuxWindowName = cmuxRes?.cmuxSession?.startsWith("cmux-")

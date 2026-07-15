@@ -24,7 +24,6 @@ import Database from "better-sqlite3";
 import {
 	DEFAULT_PHASE_TIER,
 	modelDisplayName,
-	modelShortCode,
 	PHASE_THREAD_BADGE,
 	phaseMessageTag,
 	phaseThreadBadge,
@@ -54,6 +53,7 @@ import {
 	type ParkProbe,
 	type PhaseDisplayState,
 } from "./issue-display.js";
+import { sessionModelDisplay } from "./runner-model-display.js";
 import { BLOCKED_EMOJI, BLOCKED_WORD } from "./stage-utils.js";
 import {
 	type AttachTarget,
@@ -185,9 +185,9 @@ export function stampStageEmojiForSession(
 				issueTitle: session.issue_title,
 				botToken,
 				leadId,
-				// FLY-728 Part D: ride the stage rename with the model short code
-				// (F/O/S/H). `?? null` = authoritative CLEAR on account-default.
-				modelCode: modelShortCode(session.runner_model) ?? null,
+				// FLY-1255: derive the title marker from the actual runner model,
+				// falling back to the planned phase dispatch when needed.
+				modelMarker: sessionModelDisplay(session)?.threadMarker ?? null,
 			},
 			thread.thread_id,
 			stage,
@@ -692,7 +692,7 @@ export class IssueDisplayRefresher {
 			issueTitle: anySession.issue_title,
 			botToken,
 			leadId,
-			modelCode: modelShortCode(badgeSession.runner_model) ?? null,
+			modelMarker: sessionModelDisplay(badgeSession)?.threadMarker ?? null,
 		};
 
 		let resultA: DisplayWriteResult = "noop";

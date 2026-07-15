@@ -2,8 +2,9 @@
  * FLY-172 + FLY-623: orchestration tests for HeartbeatService's monitoring-loss
  * reconcile pass. FLY-623 makes RE-ADOPT the default (FLYWHEEL_HEARTBEAT_READOPT
  * unset / ON): a detached-but-alive Runner gets its heartbeat refreshed +
- * suppressed from stuck/orphan/idle + a "⚠️重连中" title, via the `reconnecting`
- * set. `FLYWHEEL_HEARTBEAT_READOPT=0` reverts to the exact FLY-172 legacy
+ * suppressed from stuck/orphan/idle while the title is restored to the actual
+ * phase/status, via the `reconnecting` set. `FLYWHEEL_HEARTBEAT_READOPT=0`
+ * reverts to the exact FLY-172 legacy
  * (advisory-only, no refresh). The marker mechanics are covered in
  * complete-marker-reconciler.test.ts; here we mock that module + tmux-lookup to
  * test the orchestration deterministically.

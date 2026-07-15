@@ -68,6 +68,8 @@ describe("FLY-560: event-route stage-emoji stamping", () => {
 			status: "running",
 			started_at: new Date().toISOString(),
 			issue_labels: JSON.stringify(["Flywheel"]),
+			adapter_type: "codex-tmux",
+			runner_model: "gpt-5.6-sol",
 		});
 		stampSpy = vi.fn().mockResolvedValue(undefined);
 		fakeCreator = {
@@ -155,6 +157,7 @@ describe("FLY-560: event-route stage-emoji stamping", () => {
 			issueIdentifier: "FLY-560",
 			issueTitle: "Discord issue status",
 			botToken: "bot-token",
+			modelMarker: "G",
 		});
 	});
 
