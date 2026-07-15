@@ -289,6 +289,33 @@ export class ManagementChangeCoordinator {
 		return this.deny(journal.batchId, origin, reason, code);
 	}
 
+	private async validateGroups(
+		changes: readonly ManagementPreparedChange[],
+	): Promise<{ ok: true } | { ok: false; code: number; reason: string }> {
+		const grouped = new Map<
+			string,
+			{ writer: ManagementWriter; changes: ManagementPreparedChange[] }
+		>();
+		for (const change of changes) {
+			const writer = this.options.registry.writerForTarget(change.targetId);
+			const group = grouped.get(writer.id) ?? { writer, changes: [] };
+			group.changes.push(change);
+			grouped.set(writer.id, group);
+		}
+		for (const { writer, changes: group } of grouped.values()) {
+			if (!writer.validateGroup) continue;
+			const result = await writer.validateGroup(group);
+			if (!result.ok) {
+				return {
+					ok: false,
+					code: result.code === "stale_source" ? 409 : 400,
+					reason: result.reason,
+				};
+			}
+		}
+		return { ok: true };
+	}
+
 	async stage(
 		input: ManagementStageInput,
 		origin: string,
@@ -342,6 +369,13 @@ export class ManagementChangeCoordinator {
 					};
 				}
 				(preflight.status === "no_op" ? noOps : changes).push(preflight.change);
+			}
+			const groupValidation = await this.validateGroups(changes);
+			if (!groupValidation.ok) {
+				return {
+					code: groupValidation.code,
+					body: { error: groupValidation.reason },
+				};
 			}
 			changes.sort(
 				(a, b) =>
@@ -523,6 +557,17 @@ export class ManagementChangeCoordinator {
 					);
 				}
 				ready.push({ writer, change: checked.change });
+			}
+			const groupValidation = await this.validateGroups(
+				ready.map((entry) => entry.change),
+			);
+			if (!groupValidation.ok) {
+				return this.rejectJournal(
+					journal,
+					origin,
+					groupValidation.reason,
+					groupValidation.code,
+				);
 			}
 			if (
 				!this.options.audit.record({

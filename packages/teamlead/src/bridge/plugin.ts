@@ -345,6 +345,7 @@ import {
 	createManagementRunnerProvider,
 	managementFlagRevision,
 } from "./management-existing-writers.js";
+import { ManagementSectionRegistry } from "./management-section-registry.js";
 import { createManagementSsotProviders } from "./management-ssot-providers.js";
 import { ManagementWriterRegistry } from "./management-writer.js";
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
@@ -3550,6 +3551,7 @@ export async function startBridge(
 				"Library",
 				"LaunchAgents",
 			);
+			const managementSections = new ManagementSectionRegistry();
 			void ffConfigCache.get(managementProjects).catch(() => {});
 			const refreshManagementSources = async () => {
 				const nextBytes = ffReadFileSync(managementProjectsPath, "utf-8");
@@ -3613,6 +3615,7 @@ export async function startBridge(
 								ffConfigCache.current().get(projectName)?.revision ??
 								"registry:config-missing",
 						}),
+						managementSections.snapshotProvider(),
 						createManagementCronProvider({
 							launchAgentsDir: managementLaunchAgentsDir,
 							projects: () => managementProjects,
@@ -3699,6 +3702,7 @@ export async function startBridge(
 							writer: cronAuthority,
 							targets: () => scanCurrentCrons().targets,
 						}),
+						managementSections.writer(),
 					]),
 					tokens: managementConsole.tokens,
 					audit: managementConsole.audit,

@@ -80,6 +80,14 @@ export interface ManagementWriter {
 	applyGroup?(
 		changes: readonly ManagementPreparedChange[],
 	): ManagementWriterResult[] | Promise<ManagementWriterResult[]>;
+	validateGroup?(
+		changes: readonly ManagementPreparedChange[],
+	):
+		| { ok: true }
+		| { ok: false; code: ManagementRejectCode; reason: string }
+		| Promise<
+				{ ok: true } | { ok: false; code: ManagementRejectCode; reason: string }
+		  >;
 	rollback?(
 		change: ManagementPreparedChange,
 		result: ManagementWriterResult,
