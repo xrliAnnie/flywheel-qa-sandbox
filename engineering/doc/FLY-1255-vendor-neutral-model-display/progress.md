@@ -1,13 +1,13 @@
 ---
 issue: FLY-1255
-phase: design
-phaseCursor: 5/5
-updated: 2026-07-15T00:11:31.452Z
-nextStep: Implement phase executes plan with TDD
+phase: implement
+phaseCursor: 0/6
+updated: 2026-07-15T00:14:51.974Z
+nextStep: Audit plan call sites and establish RED tests
 chunks: []
 pointers: {}
 ---
 
 # FLY-1255 progress
-**phase**: design (5/5)
-**next**: Implement phase executes plan with TDD
+**phase**: implement (0/6)
+**next**: Audit plan call sites and establish RED tests
