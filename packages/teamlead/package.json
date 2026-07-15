@@ -9,7 +9,8 @@
 		"teamlead": "dist/index.js",
 		"flywheel-claude-freshness": "bin/flywheel-claude-freshness",
 		"flywheel-account-summary": "bin/flywheel-account-summary",
-		"flywheel-rescue-lead": "bin/flywheel-rescue-lead"
+		"flywheel-rescue-lead": "bin/flywheel-rescue-lead",
+		"flywheel-quota-monitor": "bin/flywheel-quota-monitor"
 	},
 	"files": [
 		"dist",

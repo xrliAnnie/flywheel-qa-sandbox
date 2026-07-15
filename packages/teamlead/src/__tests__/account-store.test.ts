@@ -17,6 +17,8 @@ import {
 	type AccountEntry,
 	type AccountStore,
 	emptyStore,
+	isAuthUnusable,
+	isQuotaUsable,
 	readStore,
 	selectNextAccount,
 	writeStore,
@@ -145,6 +147,68 @@ describe("selectNextAccount", () => {
 				now: NOW,
 			}),
 		).toBeNull();
+	});
+
+	it("preferredOrder restricts eligibility to the verified list and preserves its rank", () => {
+		const s = store(
+			[acct("personal"), acct("business"), acct("school"), acct("shopping")],
+			"personal",
+		);
+		expect(
+			selectNextAccount(s, {
+				scope: "5h",
+				currentName: "personal",
+				now: NOW,
+				preferredOrder: ["school", "business"],
+			}),
+		).toBe("school");
+		expect(
+			selectNextAccount(s, {
+				scope: "5h",
+				currentName: "personal",
+				now: NOW,
+				preferredOrder: ["ghost"],
+			}),
+		).toBeNull();
+	});
+
+	it("preferredOrder never bypasses existing auth or cooldown usability guards", () => {
+		const s = store(
+			[
+				acct("personal"),
+				acct("school", { authExpired: true }),
+				acct("business", { quotaExhaustedUntil: "2026-07-04T20:00:00Z" }),
+				acct("shopping"),
+			],
+			"personal",
+		);
+		expect(
+			selectNextAccount(s, {
+				scope: "weekly",
+				currentName: "personal",
+				now: NOW,
+				preferredOrder: ["school", "business", "shopping"],
+			}),
+		).toBe("shopping");
+	});
+
+	it("exports the single usability predicates used by the daemon pre-filter", () => {
+		expect(isAuthUnusable(acct("school", { refreshTokenInvalid: true }))).toBe(
+			true,
+		);
+		expect(isAuthUnusable(acct("school"))).toBe(false);
+		expect(
+			isQuotaUsable(
+				acct("school", { quotaExhaustedUntil: "2026-07-03T18:00:00Z" }),
+				NOW.getTime(),
+			),
+		).toBe(true);
+		expect(
+			isQuotaUsable(
+				acct("school", { quotaExhaustedUntil: "2026-07-03T21:00:00Z" }),
+				NOW.getTime(),
+			),
+		).toBe(false);
 	});
 });
 

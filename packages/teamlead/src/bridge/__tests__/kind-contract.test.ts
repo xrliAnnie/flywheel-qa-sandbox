@@ -12,7 +12,10 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { ALERT_EVENT_TYPES } from "../../LeadAlertNotifier.js";
+import {
+	ALERT_EVENT_TYPES,
+	INFORMATIONAL_KINDS,
+} from "../../LeadAlertNotifier.js";
 import {
 	escalatesAtEnqueue,
 	KIND_CONTRACTS,
@@ -30,6 +33,15 @@ const FLEET_KINDS = [
 	"bridge_abnormal_exit",
 	"infra_bot_down",
 	"zombie_session_backlog",
+] as const;
+
+const QUOTA_MONITOR_KINDS = [
+	"account_switched",
+	"quota_no_target",
+	"quota_read_blind",
+	"account_switch_failed",
+	"quota_revive_stuck",
+	"quota_monitor_down",
 ] as const;
 
 const REVIEW_GOVERNANCE_KINDS = [
@@ -69,6 +81,16 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		});
 	});
 
+	it("FLY-1256 quota-monitor kinds have the exact approved no-ARC contracts", () => {
+		for (const kind of QUOTA_MONITOR_KINDS) {
+			expect(ALERT_EVENT_TYPES).toContain(kind);
+			expect(KIND_CONTRACTS[kind]).toEqual({
+				owner: "claude",
+				arc: "human_by_design",
+			});
+		}
+	});
+
 	it("routes review governance audit events to a human-owned contract", () => {
 		for (const kind of REVIEW_GOVERNANCE_KINDS) {
 			expect(ALERT_EVENT_TYPES).toContain(kind);
@@ -77,6 +99,19 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 				arc: "human_by_design",
 			});
 		}
+	});
+
+	it("FLY-1256 marks only account_switched informational", () => {
+		expect(INFORMATIONAL_KINDS).toEqual(new Set(["account_switched"]));
+	});
+
+	it("M5 migration phase one keeps legacy usage_limit ARC intact", () => {
+		expect(KIND_CONTRACTS.usage_limit).toEqual({
+			owner: "cross_by_provider",
+			arc: "auto",
+			remediationRef:
+				"account-switch repair (FLY-696, gated FLYWHEEL_ACCOUNT_SELF_HEAL)",
+		});
 	});
 
 	it("shipped table passes startup validation", () => {
@@ -186,6 +221,20 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 		return new Set((m as RegExpMatchArray)[1].replace(/\)$/, "").split("|"));
 	}
 
+	function shellInformationalKinds(): Set<string> {
+		const here = dirname(fileURLToPath(import.meta.url));
+		const script = readFileSync(
+			join(here, "../../../../../scripts/lead-alert.sh"),
+			"utf-8",
+		);
+		const m = script.match(/^INFORMATIONAL_KINDS="([a-z_ ]*)"$/m);
+		expect(
+			m,
+			"could not locate INFORMATIONAL_KINDS mirror in lead-alert.sh",
+		).not.toBeNull();
+		return new Set((m as RegExpMatchArray)[1].split(/\s+/).filter(Boolean));
+	}
+
 	it("every shell-allowlisted kind (minus grandfathered) is in the TS union", () => {
 		const union = new Set<string>(ALERT_EVENT_TYPES);
 		for (const kind of shellAllowlist()) {
@@ -202,5 +251,16 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 		for (const kind of FLEET_KINDS) {
 			expect(allow.has(kind), `shell allowlist missing "${kind}"`).toBe(true);
 		}
+	});
+
+	it("the shell leg can emit all six quota-monitor kinds", () => {
+		const allow = shellAllowlist();
+		for (const kind of QUOTA_MONITOR_KINDS) {
+			expect(allow.has(kind), `shell allowlist missing "${kind}"`).toBe(true);
+		}
+	});
+
+	it("TS and shell informational-kind mirrors stay exactly in sync", () => {
+		expect(shellInformationalKinds()).toEqual(INFORMATIONAL_KINDS);
 	});
 });

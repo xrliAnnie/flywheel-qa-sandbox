@@ -8,7 +8,13 @@
  * restart) — the record is on disk, guarded by the same flock as the account
  * state. M1-only = short deadline → watchdog fires promptly.
  */
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -17,6 +23,7 @@ import {
 	duePending,
 	type PendingSwitch,
 	pendingKey,
+	quarantinePendingSwitches,
 	readPending,
 	resolvePending,
 	upsertPending,
@@ -96,6 +103,34 @@ describe("pending-store IO", () => {
 		// already claimed → refuse (idempotent, no steal)
 		expect(claimPending(key, "claude-bot", path)).toBe(false);
 		expect(readPending(path)[0]?.claimedBy).toBe("codex-bot");
+	});
+
+	it("cutover quarantines the whole file under the pending lock", async () => {
+		writePending([rec()], path);
+		const locks: string[] = [];
+		const quarantined = await quarantinePendingSwitches({
+			path,
+			now: () => Date.parse("2026-07-14T20:00:00.000Z"),
+			withLock: async (lockPath, fn) => {
+				locks.push(lockPath);
+				return fn();
+			},
+		});
+		expect(locks).toEqual([`${path}.lock`]);
+		expect(quarantined).toContain(".quarantine-20260714T200000000Z");
+		expect(existsSync(path)).toBe(false);
+		expect(readPending(path)).toEqual([]);
+		expect(readPending(quarantined)).toEqual([rec()]);
+		expect(claimPending(rec().key, "codex-bot", path)).toBe(false);
+	});
+
+	it("cutover quarantine is a no-op when no pending file exists", async () => {
+		expect(
+			await quarantinePendingSwitches({
+				path,
+				withLock: async (_lockPath, fn) => fn(),
+			}),
+		).toBeUndefined();
 	});
 });
 

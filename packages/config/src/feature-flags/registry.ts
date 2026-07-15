@@ -102,6 +102,32 @@ function envSite(
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	// ─── env kill-switches / features, call_time → DIRECT-toggle candidates ───
 	{
+		// FLY-1256 phase-1 migration flag: after the external daemon is healthy,
+		// setup flips this to retire the Bridge's legacy switch execution surfaces.
+		// The Bridge captures the resolved mode while wiring the plugin, so changing
+		// the env requires a restart. This row is deliberately readonly/temporary;
+		// FLY-1284 removes the flag after one week of stable daemon operation.
+		name: "quota_daemon_cutover",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_QUOTA_DAEMON_CUTOVER",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1256: daemon 健康后退役 Bridge 内旧 account-switch 执行面（迁移期临时 flag，翻转需重启）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/quota-daemon-cutover.ts",
+				"resolveQuotaDaemonCutover",
+				"object_construction",
+			),
+		],
+		toggleable: "readonly",
+		note: "临时两阶段迁移 flag；FLY-1284 在 enable 稳定 >=1 周后删除，并同步迁移 KIND_CONTRACTS.usage_limit。",
+	},
+	{
 		name: "auto_qa_killswitch",
 		category: "kill_switch",
 		source: "env",

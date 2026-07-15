@@ -126,6 +126,44 @@ describe("verifyPoolCredential — red lines", () => {
 		expect(statSync(f).mode & 0o777).toBe(0o600);
 	});
 
+	it("two consecutive verifications rotate from the credential written by the prior call, never the invalidated token", async () => {
+		const f = seed("school");
+		const refreshTokensSeen: string[] = [];
+		const fetchImpl = vi.fn(async (_url: string, init?: { body?: string }) => {
+			const body = JSON.parse(String(init?.body ?? "{}"));
+			refreshTokensSeen.push(body.refresh_token);
+			const round = refreshTokensSeen.length;
+			return new Response(
+				JSON.stringify({
+					access_token: `access-${round}`,
+					refresh_token: `refresh-${round}`,
+					expires_in: 3600,
+				}),
+				{ status: 200 },
+			);
+		});
+
+		await verifyPoolCredential({
+			name: "school",
+			activeName: "personal",
+			poolDir,
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+		await verifyPoolCredential({
+			name: "school",
+			activeName: "personal",
+			poolDir,
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+
+		expect(refreshTokensSeen).toEqual(["refresh-OLD", "refresh-1"]);
+		const finalCredential = JSON.parse(readFileSync(f, "utf8"));
+		expect(finalCredential.claudeAiOauth).toMatchObject({
+			accessToken: "access-2",
+			refreshToken: "refresh-2",
+		});
+	});
+
 	it("NO static-ok: a FUTURE expiresAt does NOT bypass the probe (family may be dead)", async () => {
 		seed("school", cred({ expiresAt: 9_999_999_999_999 })); // far future
 		const fetchImpl = okFetch();
