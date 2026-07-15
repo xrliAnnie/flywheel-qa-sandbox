@@ -430,6 +430,11 @@ export function createEventRouter(
 	// closeout + trailing sweep) built once at the composition root. Absent →
 	// classic finalization only (byte-compat).
 	lifecycleInfra?: LifecycleShipInfra,
+	// FLY-1282 Part C: targeted terminal-archive enqueue (pre-binding buffer →
+	// FLY-1165 scheduler consumer). The composition root injects this ONLY when
+	// FLYWHEEL_TERMINAL_THREAD_ARCHIVE is ON (single boot-time capture);
+	// absent → zero enqueue (byte-compat).
+	terminalArchiveEnqueue?: (issueId: string) => void,
 ): Router {
 	const router = Router();
 	const issueStatusEmojiEnabled =
@@ -639,6 +644,15 @@ export function createEventRouter(
 		const now = sqliteDatetime();
 		const payload = event.payload ?? {};
 		let transitionRejected = false;
+		// FLY-1282 Part C: source-side exclusions for the targeted
+		// terminal-archive enqueue at the end of this handler. Post-ship
+		// completions (runPostShipFinalization owns the cleanup→archive order
+		// exclusively) and FLY-208 evidence-gap completions (FLY-210 / manual
+		// close owns them) never enqueue. stage_changed only enqueues via the
+		// accepted FLY-324 running→completed transition — the W2 merged branch
+		// is structurally excluded (post-ship owner).
+		let terminalArchiveExcluded = false;
+		let fly324Completed = false;
 		// FLY-752: capture the PRE-transition status so the auto-QA coordinator can
 		// tell a genuine FRESH review-pass (running/other → awaiting_review) from a
 		// re-emitted / parked-waiting-for-founder awaiting_review (never auto-QA the
@@ -1329,6 +1343,9 @@ export function createEventRouter(
 						// FLY-208 5a: evidence-gap completion — persist the marker
 						// (FLY-210 consumes it) and warn loudly.
 						if (evidenceGap) {
+							// FLY-1282 Part C: evidence-gap completions belong to
+							// FLY-210 / manual close — never the targeted archive queue.
+							terminalArchiveExcluded = true;
 							markEvidenceGapCompletion(store, event.execution_id, {
 								route,
 								landingStatus: landingStatus?.status,
@@ -1443,6 +1460,9 @@ export function createEventRouter(
 						shipEligible: erShipEligible,
 					})
 				) {
+					// FLY-1282 Part C: post-ship owner's cleanup→archive sequence is
+					// exclusive — this completion never enters the targeted queue.
+					terminalArchiveExcluded = true;
 					runPostShipFinalization(
 						{
 							executionId: event.execution_id,
@@ -1969,6 +1989,10 @@ export function createEventRouter(
 										`[event-route FLY-324] FSM rejected running→completed for ${event.execution_id}: ${r324.error}`,
 									);
 									transitionRejected = true;
+								} else {
+									// FLY-1282 Part C: an ACCEPTED FLY-324 completion is a
+									// targeted terminal-archive enqueue site.
+									fly324Completed = true;
 								}
 							}
 						}
@@ -2206,6 +2230,33 @@ export function createEventRouter(
 				console.error(
 					`[event-route] reconcileTurnBelt threw for ${event.execution_id}: ${(err as Error).message}`,
 				);
+			}
+		}
+
+		// FLY-1282 Part C: targeted terminal-archive enqueue. Runs AFTER the
+		// phase orchestration/handoff above so a three-stage successor row is
+		// durable before the targeted check reads alias state. Fresh getSession
+		// confirms the row actually landed completed (FSM-rejected / duplicate
+		// terminal → zero enqueue). Post-ship completions and FLY-208
+		// evidence-gap completions are excluded at their source sites;
+		// stage_changed only enqueues via the accepted FLY-324 transition (the
+		// W2 merged branch is post-ship-owned and structurally never enqueues).
+		// Sister call: DirectEventSink.ts.
+		if (
+			terminalArchiveEnqueue &&
+			!terminalArchiveExcluded &&
+			!transitionRejected &&
+			(event.event_type === "session_completed" || fly324Completed)
+		) {
+			const freshTerminalRow = store.getSession(event.execution_id);
+			if (freshTerminalRow?.status === "completed") {
+				try {
+					terminalArchiveEnqueue(event.issue_id);
+				} catch (err) {
+					console.error(
+						`[event-route] terminal-archive enqueue threw for ${event.issue_id}: ${(err as Error).message}`,
+					);
+				}
 			}
 		}
 

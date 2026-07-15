@@ -514,6 +514,42 @@ export interface DetectionEscalationRow {
 	resolved_via: "recovery" | "lead" | null;
 }
 
+/** FLY-1282 Part D: prepare-time receipt facts (the route builds the FINAL
+ * sanitized content here — delivery never reconstructs semantics). */
+export interface DispositionReceiptPrepareInput {
+	actorLeadId: string;
+	/** The raw disposition as the Lead expressed it (may be a stuck-route
+	 * value like legitimate_wait, not just the unified ack|resolve|dismiss). */
+	rawDisposition: string;
+	/** Final, sanitized, ready-to-post text. */
+	content: string;
+	/** Audit anchors for the unroutable path. */
+	executionId: string;
+	projectName: string;
+}
+
+/** FLY-1282 Part D: one durable disposition-receipt outbox row. */
+export interface DispositionReceiptRow {
+	receipt_id: number;
+	target_key: string;
+	kind: string;
+	episode_fingerprint: string;
+	/** Generation anchor — copied from the escalation row inside the prepare
+	 * transaction; revive resets the escalation's first_detected_at_ms, so a
+	 * revived episode earns a NEW receipt row (4-col UNIQUE). */
+	episode_first_detected_at_ms: number;
+	actor_lead_id: string;
+	disposition: string;
+	/** Final, sanitized, ready-to-post text (built at prepare time). */
+	content: string;
+	issue_id: string | null;
+	state: "pending" | "posted" | "unroutable" | "expired";
+	attempts: number;
+	last_attempt_at_ms: number | null;
+	created_at_ms: number;
+	posted_at_ms: number | null;
+}
+
 export interface SessionUpsert {
 	execution_id: string;
 	issue_id: string;
@@ -2220,6 +2256,45 @@ export class StateStore {
 		}
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_detection_escalations_status ON detection_escalations(status)",
+		);
+
+		// FLY-1282 Part D: durable disposition-receipt outbox. Rows are created
+		// ONLY by a Lead disposition (via:'lead', changed=true) inside the same
+		// transaction as the escalation ack; the reconcile-side consumer posts
+		// them into the issue thread. `receipt_id` is the immutable delivery
+		// identity (episode PKs are reused across revives); the 4-column UNIQUE
+		// is the per-episode-GENERATION dedup (anchor copied from the fresh
+		// escalation row, never inferred from wall clock). Required fields are
+		// NOT NULL + CHECKed so a malformed prepare THROWS and rolls the whole
+		// disposition transaction back — never `INSERT OR IGNORE` here (it
+		// swallows NOT NULL/CHECK failures, leaving an acked episode with a
+		// permanently missing receipt).
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS disposition_receipts (
+				receipt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+				target_key TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				episode_fingerprint TEXT NOT NULL,
+				episode_first_detected_at_ms INTEGER NOT NULL,
+				actor_lead_id TEXT NOT NULL,
+				disposition TEXT NOT NULL CHECK (disposition IN (
+					'ack','resolve','dismiss','false_positive','legitimate_wait',
+					'snooze','needs_founder','handled_remanaged'
+				)),
+				content TEXT NOT NULL,
+				issue_id TEXT,
+				state TEXT NOT NULL DEFAULT 'pending' CHECK (
+					state IN ('pending','posted','unroutable','expired')
+				),
+				attempts INTEGER NOT NULL DEFAULT 0,
+				last_attempt_at_ms INTEGER,
+				created_at_ms INTEGER NOT NULL,
+				posted_at_ms INTEGER,
+				UNIQUE (target_key, kind, episode_fingerprint, episode_first_detected_at_ms)
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_disposition_receipts_state ON disposition_receipts(state)",
 		);
 
 		// FLY-1244 PR-5: immutable workflow template revisions + publication
@@ -7328,6 +7403,260 @@ export class StateStore {
 				kind,
 				episodeFingerprint,
 			],
+		);
+		const changed = this.db.getRowsModified() > 0;
+		if (changed) this.save();
+		return changed;
+	}
+
+	/**
+	 * FLY-1282 Part D: a Lead disposition + its receipt prepare in ONE real
+	 * transaction (better-sqlite3 autocommits per statement — a committed ack
+	 * must never be missing its receipt row). `changed=false` (already
+	 * RESOLVED / no row) prepares nothing: the FIRST via:'lead' disposition
+	 * wins the receipt. Recovery never calls this method.
+	 */
+	ackDetectionEscalationWithReceipt(
+		targetKey: string,
+		kind: string,
+		episodeFingerprint: string,
+		opts: {
+			atMs: number;
+			disposition: "ack" | "resolve" | "dismiss";
+			receipt: DispositionReceiptPrepareInput;
+		},
+	): { changed: boolean; receiptPrepared: boolean } {
+		let changed = false;
+		let receiptPrepared = false;
+		this.db.transaction(() => {
+			changed = this.runDetectionAckUpdate(
+				targetKey,
+				kind,
+				episodeFingerprint,
+				opts.atMs,
+				opts.disposition,
+			);
+			if (!changed) return;
+			receiptPrepared = this.prepareDispositionReceiptInTx(
+				targetKey,
+				kind,
+				episodeFingerprint,
+				opts.atMs,
+				opts.receipt,
+			);
+		});
+		return { changed, receiptPrepared };
+	}
+
+	/**
+	 * FLY-1282 Part D (old stuck-disposition + recovery-nudge surfaces): the
+	 * authoritative stuck_dispositions write AND every hit episode's unified
+	 * ack + receipt prepare commit in ONE transaction — any failure rolls the
+	 * whole disposition back (the C4a swallow-and-200 false success is gone;
+	 * the route surfaces the error instead).
+	 */
+	applyStuckDispositionWithReceipts(opts: {
+		stuck: {
+			execution_id: string;
+			episode_fingerprint: string;
+			disposition: StuckDisposition;
+			snooze_until_ms?: number | null;
+			noted_by?: string | null;
+			note?: string | null;
+		};
+		/** Unified-flow episodes this disposition acks (0..N). */
+		episodes: Array<{
+			targetKey: string;
+			kind: string;
+			episodeFingerprint: string;
+			disposition: "ack" | "resolve" | "dismiss";
+		}>;
+		atMs: number;
+		receipt: DispositionReceiptPrepareInput;
+	}): { receiptsPrepared: number } {
+		let receiptsPrepared = 0;
+		this.db.transaction(() => {
+			this.setStuckDisposition(opts.stuck);
+			for (const ep of opts.episodes) {
+				const changed = this.runDetectionAckUpdate(
+					ep.targetKey,
+					ep.kind,
+					ep.episodeFingerprint,
+					opts.atMs,
+					ep.disposition,
+				);
+				if (!changed) continue;
+				if (
+					this.prepareDispositionReceiptInTx(
+						ep.targetKey,
+						ep.kind,
+						ep.episodeFingerprint,
+						opts.atMs,
+						opts.receipt,
+					)
+				) {
+					receiptsPrepared++;
+				}
+			}
+		});
+		return { receiptsPrepared };
+	}
+
+	/** The shared via:'lead' ack UPDATE (same SQL as ackDetectionEscalation). */
+	private runDetectionAckUpdate(
+		targetKey: string,
+		kind: string,
+		episodeFingerprint: string,
+		atMs: number,
+		disposition: "ack" | "resolve" | "dismiss",
+	): boolean {
+		const status = disposition === "ack" ? "ACKED" : "RESOLVED";
+		this.db.run(
+			`UPDATE detection_escalations
+			 SET status = ?, lead_ack_at_ms = COALESCE(lead_ack_at_ms, ?),
+			     resolved_via = CASE WHEN ? = 'RESOLVED' THEN 'lead' ELSE resolved_via END
+			 WHERE target_key = ? AND kind = ? AND episode_fingerprint = ?
+			   AND status != 'RESOLVED'`,
+			[status, atMs, status, targetKey, kind, episodeFingerprint],
+		);
+		return this.db.getRowsModified() > 0;
+	}
+
+	/**
+	 * In-transaction receipt prepare. Caller MUST hold this.db.transaction().
+	 * Precise ON CONFLICT(<4-col generation key>) DO NOTHING — ONLY a
+	 * same-generation duplicate no-ops; NOT NULL/CHECK violations THROW and
+	 * roll the whole disposition transaction back (never INSERT OR IGNORE:
+	 * it would swallow those and commit an acked episode with a permanently
+	 * missing receipt). Returns true when a NEW row was inserted.
+	 */
+	private prepareDispositionReceiptInTx(
+		targetKey: string,
+		kind: string,
+		episodeFingerprint: string,
+		atMs: number,
+		receipt: DispositionReceiptPrepareInput,
+	): boolean {
+		const row = this.getDetectionEscalation(
+			targetKey,
+			kind,
+			episodeFingerprint,
+		);
+		if (!row) return false;
+		const issueId = row.issue_id?.trim() ? row.issue_id : null;
+		this.db.run(
+			`INSERT INTO disposition_receipts (
+				target_key, kind, episode_fingerprint, episode_first_detected_at_ms,
+				actor_lead_id, disposition, content, issue_id, state, created_at_ms
+			 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(target_key, kind, episode_fingerprint, episode_first_detected_at_ms)
+			 DO NOTHING`,
+			[
+				targetKey,
+				kind,
+				episodeFingerprint,
+				row.first_detected_at_ms,
+				receipt.actorLeadId,
+				receipt.rawDisposition,
+				receipt.content,
+				issueId,
+				// issue_id empty ⇒ terminal at prepare time — nowhere to route.
+				issueId ? "pending" : "unroutable",
+				atMs,
+			],
+		);
+		const inserted = this.db.getRowsModified() > 0;
+		if (inserted && !issueId) {
+			// Audit ONLY on a real insert (a conflict means the same-generation
+			// receipt already exists — its audit already happened).
+			this.insertEvent({
+				event_id: `receipt-unroutable-${targetKey}-${kind}-${row.first_detected_at_ms}`,
+				execution_id: receipt.executionId,
+				issue_id: "",
+				project_name: receipt.projectName,
+				event_type: "disposition_receipt_unroutable",
+				source: "bridge.disposition-receipt",
+				payload: {
+					targetKey,
+					kind,
+					episodeFingerprint,
+					actorLeadId: receipt.actorLeadId,
+					disposition: receipt.rawDisposition,
+				},
+			});
+		}
+		return inserted;
+	}
+
+	/**
+	 * FLY-1282 Part D delivery queue: pending receipts, fair rotation —
+	 * failures stamp last_attempt_at_ms and fall to the back; receipt_id is
+	 * the deterministic final tie-break.
+	 */
+	getPendingDispositionReceipts(limit: number): DispositionReceiptRow[] {
+		const result = this.db.exec(
+			`SELECT receipt_id, target_key, kind, episode_fingerprint,
+			        episode_first_detected_at_ms, actor_lead_id, disposition,
+			        content, issue_id, state, attempts, last_attempt_at_ms,
+			        created_at_ms, posted_at_ms
+			 FROM disposition_receipts
+			 WHERE state = 'pending'
+			 ORDER BY last_attempt_at_ms ASC NULLS FIRST, created_at_ms ASC, receipt_id ASC
+			 LIMIT ?`,
+			[limit],
+		);
+		return (result[0]?.values ?? []).map((row) => ({
+			receipt_id: row[0] as number,
+			target_key: row[1] as string,
+			kind: row[2] as string,
+			episode_fingerprint: row[3] as string,
+			episode_first_detected_at_ms: row[4] as number,
+			actor_lead_id: row[5] as string,
+			disposition: row[6] as string,
+			content: row[7] as string,
+			issue_id: (row[8] as string) ?? null,
+			state: row[9] as DispositionReceiptRow["state"],
+			attempts: row[10] as number,
+			last_attempt_at_ms: (row[11] as number) ?? null,
+			created_at_ms: row[12] as number,
+			posted_at_ms: (row[13] as number) ?? null,
+		}));
+	}
+
+	/** Confirmed-post-only stamp. receipt_id + state guard closes the ABA
+	 * (an old consumer resuming after a revive can only touch its own row). */
+	markDispositionReceiptPosted(receiptId: number, atMs: number): boolean {
+		this.db.run(
+			`UPDATE disposition_receipts
+			 SET state = 'posted', posted_at_ms = ?
+			 WHERE receipt_id = ? AND state = 'pending'`,
+			[atMs, receiptId],
+		);
+		const changed = this.db.getRowsModified() > 0;
+		if (changed) this.save();
+		return changed;
+	}
+
+	/** Failed attempt: rotate to the back of the fair queue. */
+	markDispositionReceiptAttempt(receiptId: number, atMs: number): boolean {
+		this.db.run(
+			`UPDATE disposition_receipts
+			 SET attempts = attempts + 1, last_attempt_at_ms = ?
+			 WHERE receipt_id = ? AND state = 'pending'`,
+			[atMs, receiptId],
+		);
+		const changed = this.db.getRowsModified() > 0;
+		if (changed) this.save();
+		return changed;
+	}
+
+	/** 7-day give-up (loud log at the caller). */
+	markDispositionReceiptExpired(receiptId: number): boolean {
+		this.db.run(
+			`UPDATE disposition_receipts
+			 SET state = 'expired'
+			 WHERE receipt_id = ? AND state = 'pending'`,
+			[receiptId],
 		);
 		const changed = this.db.getRowsModified() > 0;
 		if (changed) this.save();

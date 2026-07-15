@@ -80,6 +80,14 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	public phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
 
 	/**
+	 * FLY-1282 Part C: targeted terminal-archive enqueue (pre-binding buffer →
+	 * FLY-1165 scheduler consumer). Set by the composition root ONLY when
+	 * FLYWHEEL_TERMINAL_THREAD_ARCHIVE is ON (single boot-time capture).
+	 * Absent → zero enqueue (byte-compat).
+	 */
+	public terminalArchiveEnqueue?: (issueId: string) => void;
+
+	/**
 	 * FLY-887: ship-time three-stage phase finalizer (closes the parked design +
 	 * implement sessions before the shared worktree is removed). Set by the
 	 * composition root after construction. Absent → no phase finalization
@@ -926,7 +934,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		const landingStatusForHook = result.evidence?.landingStatus as
 			| { status?: string }
 			| undefined;
-		if (
+		// FLY-1282 Part C: hoisted — the same predicate gates post-ship
+		// finalization below AND excludes this completion from the targeted
+		// terminal-archive enqueue (the post-ship owner's cleanup→archive
+		// sequence is exclusive).
+		const postShipOwned =
 			status === "completed" &&
 			isPostApproveShipComplete({
 				existingStatus: preExistingSession?.status,
@@ -935,8 +947,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				// FLY-869 B: thread the pre-transition decision (a parked session is
 				// awaiting_review, not completed, so this is also guarded above).
 				shipEligible: desShipEligible,
-			})
-		) {
+			});
+		if (postShipOwned) {
 			this.pending.push(
 				runPostShipFinalization(
 					{
@@ -972,6 +984,25 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					},
 				),
 			);
+		}
+
+		// FLY-1282 Part C: targeted terminal-archive enqueue. Runs AFTER the
+		// phase handoff above so a three-stage successor row is durable before
+		// the targeted check reads alias state. Fresh getSession confirms the
+		// row actually landed completed (a skipped / non-terminal write → zero
+		// enqueue). Post-ship (merged) completions and FLY-208 evidence-gap
+		// completions never enqueue. Sister call: event-route.ts.
+		if (this.terminalArchiveEnqueue && !postShipOwned && !evidenceGap) {
+			const freshTerminalRow = this.store.getSession(env.executionId);
+			if (freshTerminalRow?.status === "completed") {
+				try {
+					this.terminalArchiveEnqueue(env.issueId);
+				} catch (err) {
+					console.error(
+						`[DirectEventSink] terminal-archive enqueue threw for ${env.issueId}: ${(err as Error).message}`,
+					);
+				}
+			}
 		}
 	}
 

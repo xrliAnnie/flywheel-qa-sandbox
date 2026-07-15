@@ -228,8 +228,14 @@ import {
 	resolveDoneThreadReconcileConfig,
 	startDoneThreadReconcileScheduler,
 } from "./done-thread-reconcile.js";
+import { createDispositionReceiptPass } from "./disposition-receipt.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
+import {
+	createTerminalArchiveEnqueueBuffer,
+	isRetryableOutcome,
+	runTargetedArchiveCheck,
+} from "./terminal-thread-archive.js";
 import { createExternalMergeReconciler } from "./external-merge-reconcile.js";
 import { ProjectConfigCache } from "./feature-flag-config-source.js";
 import { renderFlagReport } from "./feature-flag-report-html.js";
@@ -919,6 +925,12 @@ export interface BridgeAppOptions {
 	};
 	/** FLY-91 Round 3: Bridge-level shared ChatThreadCreator instance. */
 	chatThreadCreator?: ChatThreadCreator;
+	/**
+	 * FLY-1282 Part C: targeted terminal-archive enqueue for the /events
+	 * completion sites. Passed ONLY when FLYWHEEL_TERMINAL_THREAD_ARCHIVE is ON
+	 * (single boot-time capture in startBridge). Absent → zero enqueue.
+	 */
+	terminalArchiveEnqueue?: (issueId: string) => void;
 	/** FLY-91 Round 3: Global Discord bot token for thread creation fallback. */
 	globalBotToken?: string;
 	/**
@@ -1296,6 +1308,7 @@ export function createBridgeApp(
 			opts?.accountRotationPost,
 			opts?.issueDisplayRefresh, // FLY-907
 			lifecycleInfra, // FLY-1185 entry A bundle
+			opts?.terminalArchiveEnqueue, // FLY-1282 Part C
 		),
 	);
 
@@ -4037,6 +4050,19 @@ export async function startBridge(
 		setWorkflowShadowFinalizationHook(workflowShadowWriter);
 	}
 
+	// FLY-1282 Part C: targeted terminal-archive enqueue buffer. Single
+	// boot-time switch capture — OFF (=0) means neither sink receives an
+	// enqueue function at all (byte-compat: zero enqueue, scheduler
+	// byte-identical). The buffer retains pre-binding enqueues (bounded 64)
+	// until the FLY-1165 scheduler binds as consumer further down.
+	const terminalArchiveBuffer =
+		process.env.FLYWHEEL_TERMINAL_THREAD_ARCHIVE !== "0"
+			? createTerminalArchiveEnqueueBuffer()
+			: undefined;
+	const terminalArchiveEnqueue = terminalArchiveBuffer
+		? (issueId: string) => terminalArchiveBuffer.enqueue(issueId)
+		: undefined;
+
 	let startDispatcher = opts?.startDispatcher;
 	let internalDispatcher: IRetryDispatcher | undefined;
 	if (!startDispatcher) {
@@ -4058,6 +4084,9 @@ export async function startBridge(
 					),
 					// FLY-1185 entry A bundle for the in-process (DES) ship path.
 					lifecycleInfra,
+					// FLY-1282 Part C: targeted terminal-archive enqueue for the
+					// DirectEventSink completion path (undefined when switch OFF).
+					terminalArchiveEnqueue,
 					// FLY-1185 (R11#1): park admission at the dispatcher chokepoint.
 					lifecycleAdmission: (input) =>
 						assertIssueNotLifecycleClosed(
@@ -4214,6 +4243,9 @@ export async function startBridge(
 			// FLY-1185: ship-entry bundle + shared repo lock for createBridgeApp's
 			// /events router + Layer A closure.
 			lifecycleInfra,
+			// FLY-1282 Part C: targeted terminal-archive enqueue for the /events
+			// completion sites (undefined when switch OFF).
+			terminalArchiveEnqueue,
 			withRepoLock: repoMutationLock.withRepoLock,
 			// FLY-1185 §2.12: park/unpark + approved-manifest apply endpoints.
 			lifecycleRoutes: (() => {
@@ -4808,7 +4840,39 @@ export async function startBridge(
 				newMutatorsEnabled: worktreeAutocleanEnabled(),
 			});
 		},
+		// FLY-1282 Part C: archive-only targeted consumption — same scheduler,
+		// shared single-flight with the global pass. Wired only when the
+		// terminal-archive switch was ON at boot (buffer exists); otherwise the
+		// scheduler is byte-identical to pre-FLY-1282. dryRun is re-read per
+		// invocation so a dry-run flip takes effect without restart.
+		runTargeted: terminalArchiveBuffer
+			? async (issueId) => {
+					const targetedCfg = resolveDoneThreadReconcileConfig();
+					const outcome = await runTargetedArchiveCheck(issueId, {
+						store,
+						projects: projects ?? [],
+						linearApiKey: config.linearApiKey,
+						globalBotToken: config.discordBotToken,
+						discordOwnerUserId: config.discordOwnerUserId,
+						dryRun: targetedCfg.dryRun,
+						// Canonical per-issue lock — the SAME keys the lifecycle
+						// close guard / admission serialize on (never split-lock).
+						withIssueLock: (lockIssueId, fn) => {
+							const res = resolveLifecycleRootKey(store, lockIssueId, []);
+							const keys = res.lockKeys.length > 0 ? res.lockKeys : [lockIssueId];
+							return issueMutex(keys, fn);
+						},
+						lookupTarget: lookupTmuxTarget,
+						probeLiveness: (w) => probeRunnerProcessLiveness(w),
+					});
+					return { done: !isRetryableOutcome(outcome), note: outcome.kind };
+				}
+			: undefined,
 	});
+	// FLY-1282 Part C: bind the pre-created enqueue buffer to the scheduler's
+	// targeted queue — completion enqueues that arrived before this point
+	// (bounded 64) flush now.
+	terminalArchiveBuffer?.bind((issueId) => doneThreadReconcile.enqueue(issueId));
 
 	// FLY-754: boot sweep — kill leaked `viewer-<execId>` tmux sessions (the
 	// FLY-116 Terminal.app viewer's linked sessions that were never destroyed).
@@ -5927,6 +5991,15 @@ export async function startBridge(
 		// FLY-1048 (PR-C): detection-escalation reconcile piggyback (zero new
 		// timer; env-gated inside the tick — unset flag = complete no-op).
 		onDetectionReconcileTick: detectionReconcileTick,
+		// FLY-1282 Part D: disposition-receipt delivery — its OWN stage, NOT
+		// under detectionReconcileEveryNTicks (cadence 0 must not become a
+		// hidden receipt kill switch). FLYWHEEL_DISPOSITION_RECEIPT is checked
+		// inside the pass (live-flippable); the pass has its own single-flight.
+		onDispositionReceiptTick: createDispositionReceiptPass({
+			store,
+			projects: projects ?? [],
+			globalBotToken: config.discordBotToken,
+		}),
 		detectionReconcileEveryNTicks: (() => {
 			const n = Number.parseInt(
 				process.env.FLYWHEEL_DETECTION_RECONCILE_EVERY_N_TICKS ?? "",
