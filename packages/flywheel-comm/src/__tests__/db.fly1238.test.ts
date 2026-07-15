@@ -21,6 +21,12 @@ describe("CommDB.finalizeSession (FLY-1238)", () => {
 	it("retires only unanswered checkpoint gates and deletes the session atomically", () => {
 		db.registerSession("exec-a", "window-a", "proj", "FLY-1238", "lead");
 		db.registerSession("exec-b", "window-b", "proj", "FLY-OTHER", "lead");
+		db.enqueueRunnerPhaseWake(
+			"exec-a",
+			{ id: "wake-a", to: "exec-a", content: "resume phase" },
+			1,
+		);
+		db.requestRunnerShutdown("exec-a", "shutdown-a", 2);
 		const ship = db.insertQuestion("exec-a", "lead", "ship?", {
 			checkpoint: "approve_to_ship",
 		});
@@ -42,6 +48,8 @@ describe("CommDB.finalizeSession (FLY-1238)", () => {
 		});
 		expect(db.getSession("exec-a")).toBeUndefined();
 		expect(db.getSession("exec-b")).toBeDefined();
+		expect(db.listRunnerPhaseWakes("exec-a")).toEqual([]);
+		expect(db.getRunnerShutdown("exec-a")).toBeNull();
 		for (const qid of [ship, brainstorm]) {
 			const row = db.getMessageById(qid);
 			expect(row?.expires_at).toBeTruthy();

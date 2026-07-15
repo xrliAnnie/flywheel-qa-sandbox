@@ -359,12 +359,23 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			leaveHold: vi.fn(async () => {}),
 			markWakeStarted: vi.fn(),
 			finishWake: vi.fn(),
-			ackShutdown: vi.fn(() => order.push("shutdown.ack")),
+			ackShutdown: vi.fn(() => {
+				const db = new CommDB(dbPath);
+				try {
+					expect(db.getSession(execId)?.status).toBe("completed");
+				} finally {
+					db.close();
+				}
+				order.push("shutdown.ack");
+			}),
 		};
 		const deps = {
 			...makeDeps(),
 			runtimeFactory: () => controlledRuntime,
 			phaseLifecycleFactory: () => lifecycle,
+			killWindow: vi.fn(() => order.push("tui.kill")),
+			scrubCredential: vi.fn(() => order.push("credential.scrub")),
+			startHeartbeat: vi.fn(() => () => order.push("heartbeat.stop")),
 		};
 		const adapter = new CodexTmuxAdapter(
 			"testsess",
@@ -389,8 +400,115 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			"intake.stop",
 			"runtime.stop",
 			"runtime.drained",
+			"tui.kill",
+			"credential.scrub",
 			"shutdown.ack",
+			"heartbeat.stop",
 			"controller.stop",
+		]);
+	});
+
+	it("request-bound phase shutdown writes a failed ack when daemon drain is unconfirmed", async () => {
+		let rejectGoal: ((error: Error) => void) | undefined;
+		const order: string[] = [];
+		const controlledRuntime: CodexDaemonGoalRuntimeLike = {
+			runGoal: () =>
+				new Promise((_resolve, reject) => {
+					rejectGoal = reject;
+				}),
+			stop: () => {
+				order.push("runtime.stop");
+				rejectGoal?.(new GoalRunError("controlled close", "transport_closed"));
+			},
+			drained: async () => {
+				order.push("runtime.drained");
+				throw new Error("SIGKILL unconfirmed");
+			},
+		};
+		const lifecycle = {
+			start: vi.fn(async () => {}),
+			stopIntake: vi.fn(async () => order.push("intake.stop")),
+			stop: vi.fn(async () => order.push("controller.stop")),
+			waitForShutdown: vi.fn(async () => ({ requestId: "shutdown-fail" })),
+			observe: vi.fn(() => ({
+				kind: "shutdown" as const,
+				requestId: "shutdown-fail",
+			})),
+			getPhaseHold: vi.fn(() => null),
+			enterHold: vi.fn(async () => {}),
+			confirmHoldPaused: vi.fn(async () => {}),
+			waitForActivity: vi.fn(async () => {}),
+			leaveHold: vi.fn(async () => {}),
+			markWakeStarted: vi.fn(),
+			finishWake: vi.fn(),
+			ackShutdown: vi.fn(() => order.push("shutdown.ack")),
+		};
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			{
+				...makeDeps(),
+				runtimeFactory: () => controlledRuntime,
+				phaseLifecycleFactory: () => lifecycle,
+				killWindow: vi.fn(() => order.push("tui.kill")),
+				scrubCredential: vi.fn(() => order.push("credential.scrub")),
+				startHeartbeat: vi.fn(() => () => order.push("heartbeat.stop")),
+			},
+		);
+
+		const result = await adapter.execute(
+			ctx({ phaseKeepAlive: { role: "design" } }),
+		);
+
+		expect(result.success).toBe(false);
+		expect(lifecycle.ackShutdown).toHaveBeenCalledWith("shutdown-fail", {
+			ok: false,
+			error: "SIGKILL unconfirmed",
+		});
+		expect(order.indexOf("credential.scrub")).toBeLessThan(
+			order.indexOf("shutdown.ack"),
+		);
+		expect(order.indexOf("shutdown.ack")).toBeLessThan(
+			order.indexOf("heartbeat.stop"),
+		);
+	});
+
+	it("ordinary Codex keeps terminal-window-first teardown order", async () => {
+		const order: string[] = [];
+		const ordinaryRuntime: CodexDaemonGoalRuntimeLike = {
+			runGoal: async () => complete(),
+			stop: () => order.push("runtime.stop"),
+			drained: async () => order.push("runtime.drained"),
+		};
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			{
+				...makeDeps(),
+				runtimeFactory: () => ordinaryRuntime,
+				killWindow: vi.fn(() => order.push("tui.kill")),
+				scrubCredential: vi.fn(() => order.push("credential.scrub")),
+				startHeartbeat: vi.fn(() => () => order.push("heartbeat.stop")),
+			},
+		);
+
+		const result = await adapter.execute(ctx());
+
+		expect(result.success).toBe(true);
+		expect(order).toEqual([
+			"heartbeat.stop",
+			"tui.kill",
+			"runtime.stop",
+			"runtime.drained",
+			"credential.scrub",
 		]);
 	});
 

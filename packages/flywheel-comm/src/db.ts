@@ -1603,6 +1603,12 @@ export class CommDB {
 					   )`,
 				)
 				.run(targetExecutionId).changes;
+			this.db
+				.prepare("DELETE FROM runner_phase_wakes WHERE execution_id = ?")
+				.run(targetExecutionId);
+			this.db
+				.prepare("DELETE FROM runner_shutdown_controls WHERE execution_id = ?")
+				.run(targetExecutionId);
 			const deleted = this.db
 				.prepare("DELETE FROM sessions WHERE execution_id = ?")
 				.run(targetExecutionId).changes;

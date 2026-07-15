@@ -173,6 +173,12 @@ export interface CodexDaemonAdapterDeps {
 	phaseLifecycleFactory?: (
 		options: CodexPhaseLifecycleControllerOptions,
 	) => CodexPhaseLifecycle;
+	/** FLY-1269: heartbeat lifetime seam. Controlled phase shutdown keeps this
+	 * running through drain/TUI cleanup/ack; tests pin the stop boundary. */
+	startHeartbeat?: (heartbeat: () => void, intervalMs: number) => () => void;
+	/** FLY-1269: credential retirement seam used to prove scrub precedes the
+	 * request-bound success acknowledgement. */
+	scrubCredential?: (executionId: string) => void;
 }
 
 export function codexSessionStateDir(
@@ -198,6 +204,12 @@ export class CodexTmuxAdapter implements IAdapter {
 	private readonly scheduleReopen: (fn: () => void, ms: number) => () => void;
 	private readonly phaseLifecycleFactory: NonNullable<
 		CodexDaemonAdapterDeps["phaseLifecycleFactory"]
+	>;
+	private readonly startHeartbeat: NonNullable<
+		CodexDaemonAdapterDeps["startHeartbeat"]
+	>;
+	private readonly scrubCredential: NonNullable<
+		CodexDaemonAdapterDeps["scrubCredential"]
 	>;
 
 	constructor(
@@ -235,6 +247,14 @@ export class CodexTmuxAdapter implements IAdapter {
 		this.phaseLifecycleFactory =
 			deps.phaseLifecycleFactory ??
 			((options) => new CodexPhaseLifecycleController(options));
+		this.startHeartbeat =
+			deps.startHeartbeat ??
+			((heartbeat, intervalMs) => {
+				const timer = setInterval(heartbeat, intervalMs);
+				(timer as { unref?: () => void }).unref?.();
+				return () => clearInterval(timer);
+			});
+		this.scrubCredential = deps.scrubCredential ?? scrubCodexHomeCredential;
 	}
 
 	async checkEnvironment(): Promise<AdapterHealthCheck> {
@@ -588,9 +608,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					/* heartbeat is best-effort — never break the run */
 				}
 			};
-			const hbTimer = setInterval(heartbeat, this.pollIntervalMs);
-			(hbTimer as { unref?: () => void }).unref?.();
-			stopHeartbeat = () => clearInterval(hbTimer);
+			stopHeartbeat = this.startHeartbeat(heartbeat, this.pollIntervalMs);
 
 			// AUTHORITATIVE own-thread hook (MEDIUM-2): NOT a raw notification (a
 			// daemon can emit foreign-thread traffic). On OUR thread becoming ready:
@@ -743,7 +761,6 @@ export class CodexTmuxAdapter implements IAdapter {
 				);
 			}
 			stopGateWatcher();
-			stopHeartbeat();
 			if (phaseLifecycle) {
 				try {
 					await phaseLifecycle.stopIntake();
@@ -754,24 +771,48 @@ export class CodexTmuxAdapter implements IAdapter {
 					);
 				}
 			}
-			this.killWindow(
-				{ tmuxSession: this.sessionName, windowName },
-				{ log: (m) => this.log(m) },
-			);
-			if (runtime) {
-				runtime.stop();
-				try {
-					await runtime.drained();
-				} catch (err) {
-					// HIGH-6: a SIGKILL-unconfirmed daemon must NOT read as a clean
-					// success — capture it and degrade the result below.
-					teardownError = err;
-					console.warn(
-						`[CodexTmuxAdapter] ${ctx.executionId} daemon teardown unconfirmed: ${(err as Error).message}`,
-					);
-				}
-			}
 			if (phaseLifecycle && controlledShutdownRequestId) {
+				// FLY-1269 request-bound order: keep the heartbeat advancing while
+				// daemon drain and required cleanup run. The matching ack is written
+				// only after the TUI, registry status, and credential are retired.
+				if (runtime) {
+					runtime.stop();
+					try {
+						await runtime.drained();
+					} catch (err) {
+						teardownError = err;
+						console.warn(
+							`[CodexTmuxAdapter] ${ctx.executionId} daemon teardown unconfirmed: ${(err as Error).message}`,
+						);
+					}
+				}
+				try {
+					this.killWindow(
+						{ tmuxSession: this.sessionName, windowName },
+						{ log: (m) => this.log(m) },
+					);
+				} catch (err) {
+					teardownError ??= err;
+				}
+				if (registeredSession && ctx.commDbPath) {
+					let commDb: CommDB | undefined;
+					try {
+						commDb = new CommDB(ctx.commDbPath);
+						commDb.updateSessionStatus(
+							ctx.executionId,
+							controlledShutdownSucceeded() ? "completed" : "timeout",
+						);
+					} catch (err) {
+						teardownError ??= err;
+					} finally {
+						commDb?.close();
+					}
+				}
+				try {
+					this.scrubCredential(ctx.executionId);
+				} catch (err) {
+					teardownError ??= err;
+				}
 				try {
 					phaseLifecycle.ackShutdown(
 						controlledShutdownRequestId,
@@ -790,35 +831,54 @@ export class CodexTmuxAdapter implements IAdapter {
 				} catch (err) {
 					teardownError ??= err;
 				}
-			}
-			if (phaseLifecycle) {
+				stopHeartbeat();
 				try {
 					await phaseLifecycle.stop();
 				} catch (err) {
 					teardownError ??= err;
 				}
-			}
-			if (registeredSession && ctx.commDbPath) {
-				try {
-					const commDb = new CommDB(ctx.commDbPath);
-					const c = classifyGoalOutcome({ outcome, caughtError });
-					// Codex R2 MEDIUM: a SIGKILL-unconfirmed teardown must NOT be
-					// recorded as a clean "completed" (a still-live daemon would look
-					// finished to the cleanup/route layer).
-					const okComplete =
-						(c.success || controlledShutdownSucceeded()) && !teardownError;
-					commDb.updateSessionStatus(
-						ctx.executionId,
-						okComplete ? "completed" : "timeout",
-					);
-					commDb.close();
-				} catch {
-					// non-fatal
+			} else {
+				// Ordinary/non-request-bound Codex retains terminal-window-first order.
+				stopHeartbeat();
+				this.killWindow(
+					{ tmuxSession: this.sessionName, windowName },
+					{ log: (m) => this.log(m) },
+				);
+				if (runtime) {
+					runtime.stop();
+					try {
+						await runtime.drained();
+					} catch (err) {
+						teardownError = err;
+						console.warn(
+							`[CodexTmuxAdapter] ${ctx.executionId} daemon teardown unconfirmed: ${(err as Error).message}`,
+						);
+					}
 				}
+				if (phaseLifecycle) {
+					try {
+						await phaseLifecycle.stop();
+					} catch (err) {
+						teardownError ??= err;
+					}
+				}
+				if (registeredSession && ctx.commDbPath) {
+					try {
+						const commDb = new CommDB(ctx.commDbPath);
+						const c = classifyGoalOutcome({ outcome, caughtError });
+						const okComplete =
+							(c.success || controlledShutdownSucceeded()) && !teardownError;
+						commDb.updateSessionStatus(
+							ctx.executionId,
+							okComplete ? "completed" : "timeout",
+						);
+						commDb.close();
+					} catch {
+						// non-fatal (legacy behavior)
+					}
+				}
+				this.scrubCredential(ctx.executionId);
 			}
-			// FLY-123 P5 (HIGH-5): scrub the live GH_TOKEN on EVERY post-provision
-			// exit — success, failure, or a setup exception before runGoal.
-			scrubCodexHomeCredential(ctx.executionId);
 		}
 
 		const cls = classifyGoalOutcome({ outcome, caughtError });
