@@ -176,6 +176,23 @@ function fakeTmux(
 }
 
 describe("ensureRunnerTuiWindow", () => {
+	it("routes both session ensures through the guarded rescue seam", () => {
+		const t = fakeTmux({ initial: [{ id: "@0", name: "zsh" }] });
+		let ensures = 0;
+		const outcome = ensureRunnerTuiWindow(spec, {
+			exec: t.exec,
+			execOut: t.execOut,
+			sleep: t.sleep,
+			ensureSession: () => {
+				ensures += 1;
+				return true;
+			},
+		});
+		expect(outcome).toEqual({ created: true });
+		expect(ensures).toBe(2);
+		expect(t.verbs()).not.toContain("new-session");
+	});
+
 	it("probes tmux, ensures the session, purges + re-ensures + verifies, then creates the window", () => {
 		const t = fakeTmux({ initial: [{ id: "@0", name: "zsh" }] }); // clean session, no stale FLY-1188
 		const outcome = ensureRunnerTuiWindow(spec, {

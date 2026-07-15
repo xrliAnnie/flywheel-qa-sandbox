@@ -97,11 +97,13 @@ describe("LeadAlertNotifier — FLY-1082 fleet identity (Task 1.4)", () => {
 		});
 	}
 
-	it("fleet payload delivers to the unified channel (no projects.json lead) for all 4 Bridge-side fleet kinds", async () => {
+	it("fleet payload delivers to the unified channel (no projects.json lead) for all Bridge-side fleet kinds", async () => {
 		const notifier = makeNotifier();
 		for (const eventType of [
 			"swap_pressure_high",
 			"tmux_server_lost",
+			"tmux_hold",
+			"tmux_split_brain",
 			"infra_bot_down",
 			"zombie_session_backlog",
 		] as const) {

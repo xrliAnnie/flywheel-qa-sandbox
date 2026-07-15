@@ -230,6 +230,13 @@ export const ALERT_EVENT_TYPES = [
 	// every affected runner to its terminal state and notifies each Lead with
 	// its own casualty list + resume pointers. Respawn stays Lead-driven.
 	"tmux_server_lost",
+	// A guard helper could not positively prove a safe tmux action. The Bridge
+	// durably holds affected sessions, escalates after 10 minutes, and resolves
+	// only after coordinator target reconciliation.
+	"tmux_hold",
+	// Multiple server generations/candidates referenced the same canonical
+	// socket. No automated signal/create/reap is safe; founder-directed action.
+	"tmux_split_brain",
 	// The Bridge process died WITHOUT a clean shutdown (fatal exit under memory
 	// pressure, kill -9, crash). Two in-machine legs share one episodeSignature:
 	// the wrapper preflight dirty-marker page (Bridge-independent fast path via
@@ -359,6 +366,14 @@ export interface AlertMetadata {
 		leadsNotified: number;
 		/** Leads whose notification FAILED (>0 ⇒ needs_human escalation). */
 		leadsFailed: number;
+	};
+	tmuxHold?: {
+		socketPath: string;
+		incidentId: string;
+		reason: string;
+		casualtiesHeld: number;
+		reachablePid?: number;
+		orphanPids?: number[];
 	};
 }
 

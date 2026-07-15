@@ -206,6 +206,14 @@ export FLYWHEEL_ROOT
 # path. The lib defines functions only; it does not change shell options.
 # shellcheck source=lib/reap-orphan-adapters.sh
 source "${SCRIPT_DIR}/lib/reap-orphan-adapters.sh"
+# FLY-1285: one guarded tmux-socket implementation is shared by the Lead
+# supervisor and Bridge/Runner callers. It defines functions only and never
+# installs traps or mutates shell options.
+# shellcheck source=../../../scripts/lib/tmux-server-rescue.sh
+source "${FLYWHEEL_ROOT}/scripts/lib/tmux-server-rescue.sh"
+# FLY-1285: generation-bound Lead pane archive + duplicate-process takeover.
+# shellcheck source=lib/tmux-supervisor-guard.sh
+source "${SCRIPT_DIR}/lib/tmux-supervisor-guard.sh"
 # FLY-83: Ensure all alert-path directories exist before anything can fail.
 # - blocked/  : marker files pausing supervisor until Annie clears them
 # - alert-queue/ : LeadAlertNotifier spills here when Discord POST fails
@@ -995,9 +1003,130 @@ LEAD_WINDOW_ID=""
 mkdir -p "${HOME}/.flywheel/logs" 2>/dev/null || true
 FLYWHEEL_DIALOG_TIMEOUT_SEC="${FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC:-90}"
 FLYWHEEL_STARTUP_LOG="${FLYWHEEL_EXPECT_LOG:-${HOME}/.flywheel/logs/lead-${LEAD_ID}-startup.log}"
+TMUX_SERVER_PID=""
+TMUX_HOLD_INCIDENT_ID=""
+TMUX_HOLD_BRIDGE_ACKED=0
+TMUX_HOLD_FIRST_LOCAL_TS=""
+TMUX_HOLD_FALLBACK_SENT=0
+TMUX_RELAUNCH_PROVEN=0
+ENSURE_HOLD_KIND=""
+ENSURE_HOLD_EVIDENCE=""
 
 _log_startup() {
   echo "$(date -u '+%Y-%m-%dT%H:%M:%S') $*" >> "$FLYWHEEL_STARTUP_LOG"
+}
+
+_tmux_socket_path() {
+  local requested parent
+  if [ -n "${FLYWHEEL_TMUX_SOCKET_OVERRIDE:-}" ]; then
+    requested="$FLYWHEEL_TMUX_SOCKET_OVERRIDE"
+  else
+    requested="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/default"
+  fi
+  parent="${requested%/*}"
+  if [ ! -d "$parent" ] && [ -z "${FLYWHEEL_TMUX_SOCKET_OVERRIDE:-}" ]; then
+    mkdir -p "$parent" 2>/dev/null || return 1
+    chmod 700 "$parent" 2>/dev/null || return 1
+  fi
+  _tmux_rescue_normalize_socket "$requested"
+}
+
+# Default mode remains the historical plain `tmux ...` invocation. An explicit
+# override is a QA/incident isolation seam and must cover every tmux operation.
+_tmux() {
+  if [ -n "${FLYWHEEL_TMUX_SOCKET_OVERRIDE:-}" ]; then
+    command tmux -S "$FLYWHEEL_TMUX_SOCKET_OVERRIDE" "$@"
+  else
+    command tmux "$@"
+  fi
+}
+
+_tmux_generation_is_current() {
+  local expected_pid="$1" socket_path inspection
+  socket_path="$(_tmux_socket_path)" || return 1
+  inspection="$(tmux_socket_inspect "$socket_path")" || return 1
+  [ "$(_tmux_rescue_json_field "$inspection" verdict)" = "reachable" ] \
+    && [ "$(_tmux_rescue_json_field "$inspection" reachablePid)" = "$expected_pid" ]
+}
+
+_tmux_target_matches_archive() {
+  local target="$1" require_live="${2:-false}" pane_pid
+  tmux_supervisor_archive_read "$TMUX_ARCHIVE_FILE" || return 1
+  [ "$TMUX_ARCHIVE_WINDOW_ID" = "$target" ] || return 1
+  _tmux_generation_is_current "$TMUX_ARCHIVE_SERVER_PID" || return 1
+  pane_pid="$(_tmux list-panes -t "$target" -F '#{pane_pid}' 2>/dev/null | head -1)" || return 1
+  [ "$pane_pid" = "$TMUX_ARCHIVE_PANE_PID" ] || return 1
+  if [ "$require_live" = true ]; then
+    tmux_supervisor_archived_process_alive "$TMUX_ARCHIVE_FILE" || return 1
+  fi
+}
+
+_tmux_normalize_hold_kind() {
+  case "${1:-}" in
+    saturated|split_brain|ambiguous|unknown|rescue_failed|lock_unavailable)
+      printf '%s\n' "$1"
+      ;;
+    *)
+      # Helper action details such as marker_disabled/recovery_failed are
+      # evidence, not durable correlation kinds.
+      printf '%s\n' rescue_failed
+      ;;
+  esac
+}
+
+_tmux_report_hold() {
+  local kind="$1" evidence="${2:-{}}" socket_path payload response now elapsed
+  kind="$(_tmux_normalize_hold_kind "$kind")"
+  socket_path="$(_tmux_socket_path)" || return 1
+  now="$(date +%s)"
+  [ -n "$TMUX_HOLD_FIRST_LOCAL_TS" ] || TMUX_HOLD_FIRST_LOCAL_TS="$now"
+  payload="$(jq -cn \
+    --arg leadId "$LEAD_ID" --arg projectName "$PROJECT_NAME" \
+    --arg socketPath "$socket_path" --arg kind "$kind" \
+    --arg incidentId "$TMUX_HOLD_INCIDENT_ID" --arg evidence "$evidence" \
+    --argjson heldSinceTs "$TMUX_HOLD_FIRST_LOCAL_TS" \
+    '{leadId:$leadId,projectName:$projectName,socketPath:$socketPath,kind:$kind,
+      heldSinceTs:$heldSinceTs,
+      evidence:(try ($evidence|fromjson) catch {raw:$evidence})}
+      + (if $incidentId == "" then {} else {incidentId:$incidentId} end)')" || return 1
+
+  local -a curl_args=(-sfS --max-time 5 -X POST "${BRIDGE_URL}/api/tmux-hold-observation"
+    -H "Content-Type: application/json" --data-binary "$payload")
+  [ -n "${TEAMLEAD_API_TOKEN:-}" ] \
+    && curl_args+=(-H "Authorization: Bearer ${TEAMLEAD_API_TOKEN}")
+  if response="$(curl "${curl_args[@]}" 2>/dev/null)"; then
+		local ack_incident_id
+    ack_incident_id="$(printf '%s' "$response" | jq -r '.incidentId // empty' 2>/dev/null || true)"
+		if [ -n "$ack_incident_id" ]; then
+			TMUX_HOLD_INCIDENT_ID="$ack_incident_id"
+			TMUX_HOLD_BRIDGE_ACKED=1
+			return 0
+		fi
+  fi
+
+  elapsed=$((now - TMUX_HOLD_FIRST_LOCAL_TS))
+  if [ "$elapsed" -ge 600 ] && [ "$TMUX_HOLD_FALLBACK_SENT" -eq 0 ] \
+    && [ "$TMUX_HOLD_BRIDGE_ACKED" -eq 0 ]; then
+    TMUX_HOLD_FALLBACK_SENT=1
+    if [ -x "${FLYWHEEL_ROOT}/scripts/lead-alert.sh" ]; then
+      "${FLYWHEEL_ROOT}/scripts/lead-alert.sh" \
+        --lead "$LEAD_ID" --project "$PROJECT_NAME" \
+        --kind tmux_hold --severity severe \
+        --title "Lead tmux hold could not reach Bridge" \
+        --body "The Lead supervisor has held for ${elapsed}s on ${socket_path} (${kind}), but Bridge observation is unavailable. This fallback cannot auto-resolve; inspect Bridge health and the tmux socket." \
+        || true
+    fi
+  fi
+  return 1
+}
+
+_tmux_report_hold_resolved() {
+  # Observation reporters do not own resolution. The Bridge coordinator will
+  # reconcile targets and resolve the durable incident on positive evidence.
+  TMUX_HOLD_INCIDENT_ID=""
+  TMUX_HOLD_BRIDGE_ACKED=0
+  TMUX_HOLD_FIRST_LOCAL_TS=""
+  TMUX_HOLD_FALLBACK_SENT=0
 }
 
 # Poll tmux pane for dev-channels dialog and auto-confirm.
@@ -1012,19 +1141,21 @@ _poll_dev_channels_dialog() {
 
   while [ "$elapsed" -lt "$timeout_sec" ]; do
     # Check window still exists
-    if ! tmux list-panes -t "$window_id" &>/dev/null; then
+    if ! _tmux_target_matches_archive "$window_id" true; then
       _log_startup "dialog-poller: window gone, exiting"
       return 0
     fi
 
     local pane_text
-    pane_text=$(tmux capture-pane -t "$window_id" -p 2>/dev/null || echo "")
+    pane_text=$(_tmux capture-pane -t "$window_id" -p 2>/dev/null || echo "")
 
     if echo "$pane_text" | grep -qE "Loading development channels|am using this for local development|development channels"; then
+      _tmux_target_matches_archive "$window_id" true || return 0
       _log_startup "dialog-poller: matched dev-channels dialog, sending '1' Enter"
-      tmux send-keys -t "$window_id" "1" 2>/dev/null || true
+      _tmux send-keys -t "$window_id" "1" 2>/dev/null || true
       sleep 0.3
-      tmux send-keys -t "$window_id" Enter 2>/dev/null || true
+      _tmux_target_matches_archive "$window_id" true || return 0
+      _tmux send-keys -t "$window_id" Enter 2>/dev/null || true
       _log_startup "dialog-poller: confirmed=1"
       return 0
     fi
@@ -1040,8 +1171,76 @@ _poll_dev_channels_dialog() {
 # Ensure the shared flywheel tmux session exists (race-safe, idempotent).
 # Called before every launch — handles session being killed externally.
 ensure_tmux_session() {
-  # -A: attach-or-create (atomic). -d: stay detached. -x/-y: default size.
-  tmux new-session -Ad -s flywheel -x 200 -y 50 2>/dev/null || true
+  local socket_path result rc action
+  ENSURE_HOLD_KIND=""
+  ENSURE_HOLD_EVIDENCE=""
+  socket_path="$(_tmux_socket_path)" || {
+    ENSURE_HOLD_KIND="unknown"
+    ENSURE_HOLD_EVIDENCE='{"reason":"socket_path_unavailable"}'
+    return 4
+  }
+  if result="$(tmux_socket_ensure "$socket_path" \
+    --verify tmux -S "$socket_path" has-session -t =flywheel \
+    --create tmux -S "$socket_path" new-session -Ad -s flywheel -x 200 -y 50)"; then
+    TMUX_SERVER_PID="$(_tmux_rescue_json_field "$result" reachablePid)"
+    case "$TMUX_SERVER_PID" in ''|null|*[!0-9]*) return 4 ;; esac
+    return 0
+  else
+    rc=$?
+  fi
+  action="$(_tmux_rescue_json_field "$result" action 2>/dev/null || echo hold_unknown)"
+  ENSURE_HOLD_KIND="${action#hold_}"
+  ENSURE_HOLD_EVIDENCE="$(printf '%s' "$result" | jq -c '.evidence // {}' 2>/dev/null || printf '{"reason":"invalid_helper_output"}')"
+  return "$rc"
+}
+
+_prepare_lead_launch() {
+  local window_name="${PROJECT_NAME}-${LEAD_ID}" target pane_row pane_dead
+  target="=flywheel:=${window_name}"
+  ENSURE_HOLD_KIND=""
+  ENSURE_HOLD_EVIDENCE=""
+
+  if [ -f "$TMUX_ARCHIVE_FILE" ]; then
+    if ! tmux_supervisor_archive_read "$TMUX_ARCHIVE_FILE"; then
+      rm -f "$TMUX_ARCHIVE_FILE" 2>/dev/null || true
+    elif tmux_supervisor_archived_process_alive "$TMUX_ARCHIVE_FILE"; then
+      if [ "$TMUX_RELAUNCH_PROVEN" -eq 1 ]; then
+        tmux_supervisor_reap_archived_process "$TMUX_ARCHIVE_FILE" "$LEAD_ID" || return 1
+      else
+        if [ "$TMUX_ARCHIVE_SERVER_PID" = "$TMUX_SERVER_PID" ]; then
+          ENSURE_HOLD_KIND="ambiguous"
+          ENSURE_HOLD_EVIDENCE="{\"reason\":\"existing_archived_lead_alive\",\"originalServerPid\":${TMUX_ARCHIVE_SERVER_PID}}"
+        else
+          ENSURE_HOLD_KIND="split_brain"
+          ENSURE_HOLD_EVIDENCE="{\"reason\":\"archived_lead_on_other_generation\",\"originalServerPid\":${TMUX_ARCHIVE_SERVER_PID},\"reachablePid\":${TMUX_SERVER_PID}}"
+        fi
+        return 3
+      fi
+    else
+      # The archived process is positively gone (or its PID identity changed).
+      # Clearing metadata cannot affect a live process.
+      rm -f "$TMUX_ARCHIVE_FILE" 2>/dev/null || true
+    fi
+  fi
+  TMUX_RELAUNCH_PROVEN=0
+
+  # Pre-FLY-1285 dead windows have no archive. A dead pane on the generation we
+  # just verified is safe to remove; a live pane is held for human/takeover
+  # evidence rather than killed by name.
+  if _tmux_generation_is_current "$TMUX_SERVER_PID"; then
+    pane_row="$(_tmux list-panes -t "$target" -F '#{pane_pid}	#{pane_dead}' 2>/dev/null | head -1 || true)"
+    if [ -n "$pane_row" ]; then
+      pane_dead="${pane_row#*$'\t'}"
+      if [ "$pane_dead" = "1" ] && _tmux_generation_is_current "$TMUX_SERVER_PID"; then
+        _tmux kill-window -t "$target" 2>/dev/null || true
+      else
+        ENSURE_HOLD_KIND="ambiguous"
+        ENSURE_HOLD_EVIDENCE='{"reason":"unarchived_live_lead_window"}'
+        return 3
+      fi
+    fi
+  fi
+  return 0
 }
 
 # FLY-231: structured dry-run launch plan (FLYWHEEL_LEAD_DRY_RUN=1). Emits the
@@ -1088,6 +1287,66 @@ _emit_launch_plan() {
 # Uses -e to inject per-window environment (no shell inheritance in shared session).
 _launch_claude() {
   local window_name="${PROJECT_NAME}-${LEAD_ID}"
+  local -a launch_args=("$@")
+  local _fly1285_manifest_model=""
+  local _fly1285_manifest_effort=""
+  local _fly1285_effort_valid=false
+  local _fly1285_arg _fly1285_skip
+  local -a _fly1285_filtered=()
+
+  # FLY-1285: resolve the fleet carrier on EVERY launch, including natural
+  # crash/relaunch loops under the same supervisor PID. launchd env is frozen at
+  # supervisor start, so it is fallback only; the manifest is the applied fleet
+  # transaction carrier and therefore the runtime source of truth.
+  if command -v jq >/dev/null 2>&1 && [ -f "${MANIFEST_FILE:-}" ]; then
+    _fly1285_manifest_model=$(jq -r 'if (.model | type) == "string" then .model else "" end' "$MANIFEST_FILE" 2>/dev/null || echo "")
+    _fly1285_manifest_effort=$(jq -r 'if (.effort | type) == "string" then .effort else "" end' "$MANIFEST_FILE" 2>/dev/null || echo "")
+  fi
+  _fly1285_manifest_model="${_fly1285_manifest_model#"${_fly1285_manifest_model%%[![:space:]]*}"}"
+  _fly1285_manifest_model="${_fly1285_manifest_model%"${_fly1285_manifest_model##*[![:space:]]}"}"
+  _fly1285_manifest_effort="${_fly1285_manifest_effort#"${_fly1285_manifest_effort%%[![:space:]]*}"}"
+  _fly1285_manifest_effort="${_fly1285_manifest_effort%"${_fly1285_manifest_effort##*[![:space:]]}"}"
+  case "$_fly1285_manifest_effort" in
+    low|medium|high|xhigh|max) _fly1285_effort_valid=true ;;
+    "") ;;
+    *) log "WARN: invalid manifest effort='${_fly1285_manifest_effort}' → using env fallback" ;;
+  esac
+
+  if [ -n "$_fly1285_manifest_model" ]; then
+    _fly1285_filtered=()
+    _fly1285_skip=false
+    for _fly1285_arg in "${launch_args[@]}"; do
+      if [ "$_fly1285_skip" = true ]; then _fly1285_skip=false; continue; fi
+      if [ "$_fly1285_arg" = "--model" ]; then _fly1285_skip=true; continue; fi
+      _fly1285_filtered+=("$_fly1285_arg")
+    done
+    launch_args=("${_fly1285_filtered[@]}" --model "$_fly1285_manifest_model")
+    if [ -n "${_fly241_lead_model:-}" ] && [ "$_fly241_lead_model" != "$_fly1285_manifest_model" ]; then
+      log "model drift: env=${_fly241_lead_model} manifest=${_fly1285_manifest_model} → using manifest"
+    fi
+    log "Lead model override: --model ${_fly1285_manifest_model} (using manifest)"
+  elif [ -n "${_fly241_lead_model:-}" ]; then
+    log "Lead model override: --model ${_fly241_lead_model} (using env fallback)"
+  fi
+
+  if [ "$_fly1285_effort_valid" = true ]; then
+    _fly1285_filtered=()
+    _fly1285_skip=false
+    for _fly1285_arg in "${launch_args[@]}"; do
+      if [ "$_fly1285_skip" = true ]; then _fly1285_skip=false; continue; fi
+      if [ "$_fly1285_arg" = "--effort" ]; then _fly1285_skip=true; continue; fi
+      _fly1285_filtered+=("$_fly1285_arg")
+    done
+    launch_args=("${_fly1285_filtered[@]}" --effort "$_fly1285_manifest_effort")
+    if [ -n "${_fly671_lead_effort:-}" ] && [ "$_fly671_lead_effort" != "$_fly1285_manifest_effort" ]; then
+      log "effort drift: env=${_fly671_lead_effort} manifest=${_fly1285_manifest_effort} → using manifest"
+    fi
+    log "Lead effort override: --effort ${_fly1285_manifest_effort} (using manifest)"
+  elif [ "${_fly671_effort_valid:-false}" = true ]; then
+    log "Lead effort override: --effort ${_fly671_lead_effort} (using env fallback)"
+  elif [ "${IS_COMPANION_ROLE:-false}" = true ]; then
+    log "Companion: --effort xhigh (FLY-583; leak defense is the discord-reply-enforcer hook, not effort)"
+  fi
 
   # FLY-231 dry-run: a structured launch-plan test (byte-compat sentinel + companion
   # capability assertions) must NOT touch the shared `flywheel` tmux session, which
@@ -1095,8 +1354,6 @@ _launch_claude() {
   # below so the plan captures the real pane env. The emit+return is just before
   # the actual `tmux new-window`.
   if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
-    ensure_tmux_session
-
     # FLY-183: Reap orphaned Discord adapters before launching a new Claude.
     # Sequence matters (Codex design review #3): on a supervisor restart the stale
     # window below may still hold a LIVE old Claude (ppid!=1, skipped by reap);
@@ -1106,14 +1363,9 @@ _launch_claude() {
     # `|| true` belt: reap is internally fail-open, but never let it abort launch.
     reap_orphan_adapters || true
 
-    # Kill stale window with same name (from previous crash)
-    tmux kill-window -t "=flywheel:=${window_name}" 2>/dev/null || true
-
-    # FLY-183: bounded settle for the just-killed Claude to exit and its adapter
-    # to reparent to launchd (ppid==1), then re-sweep to reap that fresh orphan
-    # before the new Claude (and its new adapter) starts. One-shot, not periodic.
-    sleep 0.5
-    reap_orphan_adapters || true
+    # Stale-window removal is generation-guarded in _prepare_lead_launch. Never
+    # kill by name here: after a server replacement the same numeric window id
+    # can belong to a different process.
   fi
 
   # Build env injection args (explicit per-window, match TmuxAdapter pattern).
@@ -1273,55 +1525,140 @@ _launch_claude() {
   # FLY-231 dry-run: env_args is now fully assembled (incl. MCP-required-env
   # propagation). Emit the structured launch-plan and return WITHOUT launching.
   if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
-    _emit_launch_plan "$@"
+    _emit_launch_plan "${launch_args[@]}"
     return 0
   fi
 
   # FLY-109: Launch claude directly (no expect wrapper). Dev-channels dialog
   # is handled by background capture-pane poller started below.
-  LEAD_WINDOW_ID=$(tmux new-window -d -P -F '#{window_id}' \
+  LEAD_WINDOW_ID=$(_tmux -N new-window -d -P -F '#{window_id}' \
     -t =flywheel \
     "${env_args[@]}" \
     -n "$window_name" \
     -c "$LEAD_WORKSPACE" \
-    claude "$@")
+    claude "${launch_args[@]}")
 
   # Enable remain-on-exit on this specific window so we can read exit code
   # (must be set-window-option on the window, not session-level, for tmux 3.5+)
-  tmux set-window-option -t "$LEAD_WINDOW_ID" remain-on-exit on 2>/dev/null || true
+  local _fly1285_inspection _fly1285_verdict _fly1285_server_pid
+  local _fly1285_pane_pid _fly1285_pane_start="" _fly1285_i=0
+  _fly1285_inspection="$(tmux_socket_inspect "$(_tmux_socket_path)")"
+  _fly1285_verdict="$(_tmux_rescue_json_field "$_fly1285_inspection" verdict)"
+  _fly1285_server_pid="$(_tmux_rescue_json_field "$_fly1285_inspection" reachablePid)"
+  if [ "$_fly1285_verdict" != "reachable" ]; then
+    # The create itself was -N, so it did not replace a server. Remove only the
+    # window we just created on the still-addressable generation, then hold.
+    if _tmux display-message -p '#{pid}' 2>/dev/null | grep -Fxq "$_fly1285_server_pid"; then
+      _tmux kill-window -t "$LEAD_WINDOW_ID" 2>/dev/null || true
+    fi
+    ENSURE_HOLD_KIND="${_fly1285_verdict:-unknown}"
+    ENSURE_HOLD_EVIDENCE="$_fly1285_inspection"
+    return 3
+  fi
+  TMUX_SERVER_PID="$_fly1285_server_pid"
+  _fly1285_pane_pid="$(_tmux list-panes -t "$LEAD_WINDOW_ID" -F '#{pane_pid}' 2>/dev/null | head -1)"
+  case "$_fly1285_pane_pid" in ''|*[!0-9]*) return 1 ;; esac
+  while [ "$_fly1285_i" -lt 20 ] && [ -z "$_fly1285_pane_start" ]; do
+    _fly1285_pane_start="$(tmux_supervisor_process_start_identity "$_fly1285_pane_pid" || true)"
+    [ -n "$_fly1285_pane_start" ] || sleep 0.05
+    _fly1285_i=$((_fly1285_i + 1))
+  done
+  if [ -z "$_fly1285_pane_start" ] \
+    || ! tmux_supervisor_archive_write "$TMUX_ARCHIVE_FILE" "$TMUX_SERVER_PID" \
+      "$_fly1285_pane_pid" "$_fly1285_pane_start" "$LEAD_WINDOW_ID"; then
+    _tmux_generation_is_current "$TMUX_SERVER_PID" \
+      && _tmux kill-window -t "$LEAD_WINDOW_ID" 2>/dev/null || true
+    return 1
+  fi
+
+  _tmux set-window-option -t "$LEAD_WINDOW_ID" remain-on-exit on 2>/dev/null || true
 
   log "Claude launched in tmux window: flywheel:${LEAD_WINDOW_ID} (name: ${window_name})"
 }
 
 # Wait for tmux window to exit (pane_dead detection).
 # Uses window_id for reliable targeting. Uses interruptible_sleep.
+_tmux_window_absence_proven() {
+  printf '%s' "$1" | grep -Eqi \
+    "can't find (window|session|pane)|no such (window|session|pane)|unknown (window|session|pane)"
+}
+
 _wait_tmux_window() {
   CLAUDE_EXIT=0
   local target="${LEAD_WINDOW_ID}"
+  local pane_row pane_pid dead status recovery recovery_rc action recovered_pid
+  local probe_err hold_backoff=3
 
   while true; do
     if [ "$SHOULD_EXIT" -ne 0 ]; then return 0; fi
 
-    # Check if window still exists (session or window killed externally)
-    if ! tmux list-panes -t "$target" &>/dev/null; then
-      # Window gone — treat as crash (unknown exit code)
+    if _tmux_target_matches_archive "$target" false; then
+      pane_row="$(_tmux list-panes -t "$target" \
+        -F '#{pane_pid}	#{pane_dead}	#{pane_dead_status}' 2>/dev/null | head -1 || true)"
+      pane_pid="${pane_row%%$'\t'*}"
+      pane_row="${pane_row#*$'\t'}"
+      dead="${pane_row%%$'\t'*}"
+      status="${pane_row#*$'\t'}"
+      if [ "$pane_pid" = "$TMUX_ARCHIVE_PANE_PID" ] \
+        && _tmux_target_matches_archive "$target" false; then
+        if [ "$dead" = "1" ]; then
+          CLAUDE_EXIT="${status:-1}"
+          _tmux_target_matches_archive "$target" false \
+            && _tmux kill-window -t "$target" 2>/dev/null || true
+          TMUX_RELAUNCH_PROVEN=1
+          tmux_supervisor_reap_archived_process "$TMUX_ARCHIVE_FILE" "$LEAD_ID" || true
+          return 0
+        fi
+        _tmux_report_hold_resolved || true
+        hold_backoff=3
+        interruptible_sleep 3
+        continue
+      fi
+    fi
+
+    # The target could not be trusted. If the archived OS process is already
+    # gone, that is positive process-level death evidence and no tmux action is
+    # needed. Otherwise classify/recover the server without ever creating one.
+    if ! tmux_supervisor_archived_process_alive "$TMUX_ARCHIVE_FILE"; then
       CLAUDE_EXIT=1
+      TMUX_RELAUNCH_PROVEN=1
       return 0
     fi
 
-    # Check pane_dead flag (requires remain-on-exit)
-    local dead
-    dead=$(tmux list-panes -t "$target" -F '#{pane_dead}' 2>/dev/null | head -1)
-    if [ "$dead" = "1" ]; then
-      # Get exit code from dead pane
-      CLAUDE_EXIT=$(tmux list-panes -t "$target" -F '#{pane_dead_status}' 2>/dev/null | head -1)
-      CLAUDE_EXIT="${CLAUDE_EXIT:-1}"
-      # Kill the dead window to prevent accumulation
-      tmux kill-window -t "$target" 2>/dev/null || true
-      return 0
+    if recovery="$(tmux_socket_recover "$(_tmux_socket_path)")"; then
+      recovered_pid="$(_tmux_rescue_json_field "$recovery" reachablePid)"
+      if tmux_supervisor_archive_read "$TMUX_ARCHIVE_FILE" \
+        && [ "$recovered_pid" = "$TMUX_ARCHIVE_SERVER_PID" ]; then
+        probe_err="$(mktemp -t fly1285-window-probe.XXXXXX)"
+        if _tmux list-panes -t "$target" >/dev/null 2>"$probe_err"; then
+          rm -f "$probe_err"
+          continue
+        elif _tmux_window_absence_proven "$(cat "$probe_err" 2>/dev/null)"; then
+          rm -f "$probe_err"
+          CLAUDE_EXIT=1
+          TMUX_RELAUNCH_PROVEN=1
+          tmux_supervisor_reap_archived_process "$TMUX_ARCHIVE_FILE" "$LEAD_ID" || true
+          return 0
+        fi
+        rm -f "$probe_err"
+        ENSURE_HOLD_KIND="unknown"
+        ENSURE_HOLD_EVIDENCE='{"reason":"window_probe_indeterminate"}'
+      else
+        ENSURE_HOLD_KIND="split_brain"
+        ENSURE_HOLD_EVIDENCE="{\"reason\":\"reachable_generation_changed\",\"reachablePid\":${recovered_pid:-null}}"
+      fi
+    else
+      recovery_rc=$?
+      action="$(_tmux_rescue_json_field "$recovery" action 2>/dev/null || echo hold_unknown)"
+      ENSURE_HOLD_KIND="${action#hold_}"
+      ENSURE_HOLD_EVIDENCE="$(printf '%s' "$recovery" | jq -c '.evidence // {}' 2>/dev/null || printf '{"reason":"invalid_helper_output"}')"
+      case "$recovery_rc" in 2|3|4|5) ;; *) ENSURE_HOLD_KIND="unknown" ;; esac
     fi
-
-    interruptible_sleep 3
+    _tmux_report_hold "$ENSURE_HOLD_KIND" "$ENSURE_HOLD_EVIDENCE" || true
+    log "tmux hold (${ENSURE_HOLD_KIND}) while waiting for ${target}; retrying in ${hold_backoff}s"
+    interruptible_sleep "$hold_backoff"
+    [ "$hold_backoff" -ge 30 ] || hold_backoff=$((hold_backoff * 2))
+    [ "$hold_backoff" -le 30 ] || hold_backoff=30
   done
 }
 
@@ -1331,21 +1668,29 @@ cleanup() {
 
   # FLY-109: expect-dev-channels.exp lives under scripts/ now — nothing to clean up.
 
-  # Graceful shutdown: send C-c to Claude in tmux
+  # Graceful shutdown is generation-bound. If the archived generation cannot be
+  # proven current, preserve the archive and never touch a same-numbered window
+  # on a replacement server.
   if [ -n "${LEAD_WINDOW_ID:-}" ]; then
-    tmux send-keys -t "$LEAD_WINDOW_ID" C-c 2>/dev/null || true
-    # Wait briefly for graceful exit (check pane_dead to avoid over-waiting)
-    local i=0
-    while [ $i -lt 5 ]; do
-      if ! tmux list-panes -t "$LEAD_WINDOW_ID" &>/dev/null; then break; fi
-      local dead
-      dead=$(tmux list-panes -t "$LEAD_WINDOW_ID" -F '#{pane_dead}' 2>/dev/null | head -1)
-      if [ "$dead" = "1" ]; then break; fi
-      sleep 1
-      i=$((i + 1))
-    done
-    # Force kill if still alive
-    tmux kill-window -t "$LEAD_WINDOW_ID" 2>/dev/null || true
+    if _tmux_target_matches_archive "$LEAD_WINDOW_ID" true; then
+      _tmux send-keys -t "$LEAD_WINDOW_ID" C-c 2>/dev/null || true
+      local i=0
+      while [ $i -lt 5 ]; do
+        _tmux_target_matches_archive "$LEAD_WINDOW_ID" false || break
+        local dead
+        dead=$(_tmux list-panes -t "$LEAD_WINDOW_ID" -F '#{pane_dead}' 2>/dev/null | head -1)
+        if [ "$dead" = "1" ]; then break; fi
+        sleep 1
+        i=$((i + 1))
+      done
+      if _tmux_target_matches_archive "$LEAD_WINDOW_ID" false; then
+        _tmux kill-window -t "$LEAD_WINDOW_ID" 2>/dev/null || true
+        TMUX_RELAUNCH_PROVEN=1
+        tmux_supervisor_reap_archived_process "$TMUX_ARCHIVE_FILE" "$LEAD_ID" || true
+      fi
+    else
+      log "tmux generation indeterminate during cleanup; preserving ${TMUX_ARCHIVE_FILE:-archive}"
+    fi
   fi
 
   # FLY-183: best-effort reap of this Lead's adapter on graceful shutdown.
@@ -1366,7 +1711,9 @@ cleanup() {
   fi
 
   # FLY-20: Remove PID file on graceful exit
-  rm -f "${PID_FILE:-}" 2>/dev/null || true
+  if [ -n "${PID_FILE:-}" ] && [ "$(cat "$PID_FILE" 2>/dev/null || true)" = "$$" ]; then
+    rm -f "$PID_FILE" 2>/dev/null || true
+  fi
   # FLY-109: Release MCP pre-seed lock only if THIS process holds it
   if [ "${_MCP_LOCK_HELD:-false}" = "true" ] && [ -n "${_SETTINGS_LOCAL_JSON:-}" ]; then
     rmdir "${_SETTINGS_LOCAL_JSON}.flywheel-lock" 2>/dev/null || true
@@ -1630,7 +1977,6 @@ _fly241_lead_model="${_fly241_lead_model#"${_fly241_lead_model%%[![:space:]]*}"}
 _fly241_lead_model="${_fly241_lead_model%"${_fly241_lead_model##*[![:space:]]}"}"
 if [ -n "$_fly241_lead_model" ]; then
   CLAUDE_ARGS+=(--model "$_fly241_lead_model")
-  log "Lead model override: --model ${_fly241_lead_model} (FLY-241)"
 fi
 
 # FLY-671: per-Lead effort override. When `FLYWHEEL_LEAD_EFFORT` is set (per-Lead
@@ -1669,10 +2015,8 @@ esac
 # `--effort` flag is appended — argv stays byte-identical to pre-FLY-671 (sentinel-asserted).
 if [ "$_fly671_effort_valid" = true ]; then
   CLAUDE_ARGS+=(--effort "$_fly671_lead_effort")
-  log "Lead effort override: --effort ${_fly671_lead_effort} (FLY-671)"
 elif [ "$IS_COMPANION_ROLE" = true ]; then
   CLAUDE_ARGS+=(--effort xhigh)
-  log "Companion: --effort xhigh (FLY-583; leak defense is the discord-reply-enforcer hook, not effort)"
 fi
 
 # FLY-143: claude-in-chrome — env-gated, default OFF.
@@ -2361,18 +2705,70 @@ RESUME_FAIL_THRESHOLD=3
 # FLY-20: Write PID file for auto-restart process management
 PID_DIR="${HOME}/.flywheel/pids"
 PID_FILE="${PID_DIR}/${PROJECT_NAME}-${LEAD_ID}.pid"
+TMUX_ARCHIVE_FILE="${PID_DIR}/${PROJECT_NAME}-${LEAD_ID}.claude.tmux"
 mkdir -p "$PID_DIR"
+
+# The launchd wrapper has the same guard, but recovery/manual paths can invoke
+# claude-lead.sh directly. Refuse a second supervisor when the PID still proves
+# to be this exact Lead; PID reuse merely clears the stale file.
+if [ -f "$PID_FILE" ]; then
+  _fly1285_existing_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+  case "$_fly1285_existing_pid" in
+    ''|*[!0-9]*) ;;
+    *)
+      if [ "$_fly1285_existing_pid" != "$$" ] \
+        && kill -0 "$_fly1285_existing_pid" 2>/dev/null; then
+        _fly1285_existing_cmd="$(ps -p "$_fly1285_existing_pid" -o command= 2>/dev/null || true)"
+        case "$_fly1285_existing_cmd" in
+          *claude-lead.sh*" ${LEAD_ID} "*|*claude-lead.sh*" ${LEAD_ID}")
+            log "Lead '${LEAD_ID}' supervisor already running (PID ${_fly1285_existing_pid}); refusing duplicate."
+            exit 0
+            ;;
+        esac
+      fi
+      ;;
+  esac
+fi
 echo $$ > "$PID_FILE"
 log "PID file written: ${PID_FILE} (PID $$)"
 
 log "Supervisor starting (recovery loop enabled)"
 log "Session ID file: ${SESSION_ID_FILE}"
+TMUX_HOLD_BACKOFF=3
 
 while true; do
   # ── Check shutdown flag ───────────────────────────────────
   if [ "$SHOULD_EXIT" -ne 0 ]; then
     log "Shutdown flag set — exiting supervisor."
     break
+  fi
+
+  if ensure_tmux_session; then
+    _tmux_report_hold_resolved || true
+  else
+    _fly1285_hold_rc=$?
+    [ -n "$ENSURE_HOLD_KIND" ] || ENSURE_HOLD_KIND="unknown"
+    [ -n "$ENSURE_HOLD_EVIDENCE" ] || ENSURE_HOLD_EVIDENCE="{\"reason\":\"ensure_failed\",\"exitCode\":${_fly1285_hold_rc}}"
+    _tmux_report_hold "$ENSURE_HOLD_KIND" "$ENSURE_HOLD_EVIDENCE" || true
+    log "tmux ensure hold (${ENSURE_HOLD_KIND}); retrying in ${TMUX_HOLD_BACKOFF}s"
+    interruptible_sleep "$TMUX_HOLD_BACKOFF"
+    [ "$TMUX_HOLD_BACKOFF" -ge 30 ] || TMUX_HOLD_BACKOFF=$((TMUX_HOLD_BACKOFF * 2))
+    [ "$TMUX_HOLD_BACKOFF" -le 30 ] || TMUX_HOLD_BACKOFF=30
+    continue
+  fi
+
+  if _prepare_lead_launch; then
+    TMUX_HOLD_BACKOFF=3
+  else
+    _fly1285_hold_rc=$?
+    [ -n "$ENSURE_HOLD_KIND" ] || ENSURE_HOLD_KIND="unknown"
+    [ -n "$ENSURE_HOLD_EVIDENCE" ] || ENSURE_HOLD_EVIDENCE="{\"reason\":\"takeover_guard_failed\",\"exitCode\":${_fly1285_hold_rc}}"
+    _tmux_report_hold "$ENSURE_HOLD_KIND" "$ENSURE_HOLD_EVIDENCE" || true
+    log "Lead takeover hold (${ENSURE_HOLD_KIND}); retrying in ${TMUX_HOLD_BACKOFF}s"
+    interruptible_sleep "$TMUX_HOLD_BACKOFF"
+    [ "$TMUX_HOLD_BACKOFF" -ge 30 ] || TMUX_HOLD_BACKOFF=$((TMUX_HOLD_BACKOFF * 2))
+    [ "$TMUX_HOLD_BACKOFF" -le 30 ] || TMUX_HOLD_BACKOFF=30
+    continue
   fi
 
   CLAUDE_EXIT=0
@@ -2389,7 +2785,16 @@ while true; do
 
     # Final SIGTERM gate — must be right before fork to close the race window
     if [ "$SHOULD_EXIT" -ne 0 ]; then break; fi
-    _launch_claude "${CLAUDE_ARGS[@]}" --resume "$SESSION_ID"
+    if _launch_claude "${CLAUDE_ARGS[@]}" --resume "$SESSION_ID"; then
+      :
+    else
+      _fly1285_launch_rc=$?
+      [ -n "$ENSURE_HOLD_KIND" ] || ENSURE_HOLD_KIND="unknown"
+      [ -n "$ENSURE_HOLD_EVIDENCE" ] || ENSURE_HOLD_EVIDENCE="{\"reason\":\"launch_guard_failed\",\"exitCode\":${_fly1285_launch_rc}}"
+      _tmux_report_hold "$ENSURE_HOLD_KIND" "$ENSURE_HOLD_EVIDENCE" || true
+      interruptible_sleep "$TMUX_HOLD_BACKOFF"
+      continue
+    fi
   else
     # ── Fresh start ───────────────────────────────────────
     SESSION_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
@@ -2420,7 +2825,16 @@ while true; do
     if [ "$SHOULD_EXIT" -ne 0 ]; then break; fi
     # Launch in tmux window, write session file after — avoids orphan session ID if
     # SIGTERM arrives between gate and launch.
-    _launch_claude "${CLAUDE_ARGS[@]}" --session-id "$SESSION_ID"
+    if _launch_claude "${CLAUDE_ARGS[@]}" --session-id "$SESSION_ID"; then
+      :
+    else
+      _fly1285_launch_rc=$?
+      [ -n "$ENSURE_HOLD_KIND" ] || ENSURE_HOLD_KIND="unknown"
+      [ -n "$ENSURE_HOLD_EVIDENCE" ] || ENSURE_HOLD_EVIDENCE="{\"reason\":\"launch_guard_failed\",\"exitCode\":${_fly1285_launch_rc}}"
+      _tmux_report_hold "$ENSURE_HOLD_KIND" "$ENSURE_HOLD_EVIDENCE" || true
+      interruptible_sleep "$TMUX_HOLD_BACKOFF"
+      continue
+    fi
     # Write session file only after successful launch — no orphan on SIGTERM
     echo "$SESSION_ID" > "$SESSION_ID_FILE"
   fi

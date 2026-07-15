@@ -100,6 +100,29 @@ PLAN=$(printf '%s' "$OUT" | plan_of)
 printf '%s' "$OUT" | grep -qF "$CANARY_BOT" && bad "T1 SECRET LEAK (bot token)" || ok "T1 no bot-token leak"
 rm -rf "$H"
 
+# ─────────────── FLY-1285: manifest carrier wins on every natural relaunch
+H=$(make_home); P=$(fixture_projects "$H")
+mkdir -p "$H/.flywheel/manifests"
+jq -n '{model:"claude-opus-4-8[1m]",effort:"high"}' \
+  > "$H/.flywheel/manifests/geoforge3d-product-lead.json"
+OUT=$(run_dry "$H" "$P" product-lead "$H/proj-gf" geoforge3d \
+  FLYWHEEL_LEAD_MODEL=claude-fable-5 FLYWHEEL_LEAD_EFFORT=low)
+PLAN=$(printf '%s' "$OUT" | plan_of)
+EFFORT_VALUE=$(printf '%s\n' "$PLAN" | awk -F'\t' '
+  prev=="--effort" && $1=="ARG" { print $2; exit }
+  $1=="ARG" { prev=$2 }
+')
+[ "$(model_arg_value "$PLAN")" = "claude-opus-4-8[1m]" ] \
+  && ok "T1c manifest model wins over frozen launcher env" \
+  || bad "T1c expected manifest model, got '$(model_arg_value "$PLAN")'"
+[ "$EFFORT_VALUE" = "high" ] \
+  && ok "T1c manifest effort wins over frozen launcher env" \
+  || bad "T1c expected manifest effort high, got '$EFFORT_VALUE'"
+printf '%s' "$OUT" | grep -qF 'model drift: env=claude-fable-5 manifest=claude-opus-4-8[1m] → using manifest' \
+  && ok "T1c model drift log matches the argv source" \
+  || bad "T1c missing model drift log"
+rm -rf "$H"
+
 # ───────────────────── T1b: FLY-360 bracketed 1M selector → exact passthrough
 # The `[1m]` suffix must reach `--model` byte-for-byte: bash array quoting must
 # not word-split it or let `[1m]` undergo glob/pathname expansion.
