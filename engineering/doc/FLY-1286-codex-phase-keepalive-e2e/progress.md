@@ -1,9 +1,9 @@
 ---
 issue: FLY-1286
 phase: implement
-phaseCursor: 1/6
-updated: 2026-07-15T11:13:59.623Z
-nextStep: Run runtime attestation and observer regression
+phaseCursor: 2/6
+updated: 2026-07-15T11:17:24.631Z
+nextStep: Prove Design hold identity and 60-second budget freeze
 chunks:
   - id: onboard
     order: 1
@@ -15,8 +15,8 @@ pointers:
 ---
 
 # FLY-1286 progress
-**phase**: implement (1/6)
-**next**: Run runtime attestation and observer regression
+**phase**: implement (2/6)
+**next**: Prove Design hold identity and 60-second budget freeze
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
