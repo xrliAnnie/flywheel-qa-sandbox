@@ -2,6 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { postMergeTmuxCleanup } from "../bridge/post-merge.js";
 import { StateStore } from "../StateStore.js";
 
+vi.mock("flywheel-core", async (importOriginal) => ({
+	...(await importOriginal<typeof import("flywheel-core")>()),
+	closeRunnerTerminalView: vi.fn(async () => ({
+		closedTab: true,
+		killedViewerSession: true,
+	})),
+}));
+
 // ── Mock tmux-lookup ────────────────────────────────────
 
 const mockGetTmuxTarget = vi.fn();
@@ -16,10 +24,16 @@ vi.mock("../bridge/tmux-lookup.js", () => ({
 		mockKillCmuxLinkedSession(...args),
 }));
 
-// FLY-638: stub the CommDB prune so tests never touch the real comm.db on disk.
-const mockDeleteCommDbSession = vi.fn(() => true);
+// FLY-1238: stub atomic gate/session finalization.
+const mockFinalizeCommDbSession = vi.fn(() => ({
+	ok: true as const,
+	outcome: "finalized" as const,
+	retiredGateCount: 1,
+	deletedSessionCount: 1,
+}));
 vi.mock("../bridge/commdb-session-prune.js", () => ({
-	deleteCommDbSession: (...args: unknown[]) => mockDeleteCommDbSession(...args),
+	finalizeCommDbSession: (...args: unknown[]) =>
+		mockFinalizeCommDbSession(...args),
 }));
 
 // ── Helpers ─────────────────────────────────────────────
@@ -47,6 +61,13 @@ describe("postMergeTmuxCleanup", () => {
 		});
 		mockGetTmuxTarget.mockReset();
 		mockKillTmuxWindow.mockReset();
+		mockFinalizeCommDbSession.mockReset();
+		mockFinalizeCommDbSession.mockReturnValue({
+			ok: true,
+			outcome: "finalized",
+			retiredGateCount: 1,
+			deletedSessionCount: 1,
+		});
 	});
 
 	it("closes tmux when CommDB has target", async () => {
@@ -59,6 +80,7 @@ describe("postMergeTmuxCleanup", () => {
 		const result = await postMergeTmuxCleanup(makeOpts(), store);
 
 		expect(result.tmuxClosed).toBe(true);
+		expect(result.commDbFinalized).toBe(true);
 		expect(result.errors).toEqual([]);
 		expect(mockKillTmuxWindow).toHaveBeenCalledWith("GEO-280:@0");
 	});
@@ -69,6 +91,7 @@ describe("postMergeTmuxCleanup", () => {
 		const result = await postMergeTmuxCleanup(makeOpts(), store);
 
 		expect(result.tmuxClosed).toBe(false);
+		expect(result.commDbFinalized).toBe(true);
 		expect(result.errors).toEqual([]);
 		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
 	});
@@ -86,6 +109,7 @@ describe("postMergeTmuxCleanup", () => {
 		const result = await postMergeTmuxCleanup(makeOpts(), store);
 
 		expect(result.tmuxClosed).toBe(false);
+		expect(result.commDbFinalized).toBe(false);
 		expect(result.errors).toContain("tmux: permission denied");
 	});
 
@@ -97,7 +121,24 @@ describe("postMergeTmuxCleanup", () => {
 		const result = await postMergeTmuxCleanup(makeOpts(), store);
 
 		expect(result.tmuxClosed).toBe(false);
+		expect(result.commDbFinalized).toBe(false);
 		expect(result.errors).toContain("tmux: CommDB corrupted");
+	});
+
+	it("FLY-1238: reports partial cleanup when atomic gate finalization fails", async () => {
+		mockGetTmuxTarget.mockReturnValue(undefined);
+		mockFinalizeCommDbSession.mockReturnValue({
+			ok: false,
+			outcome: "failed",
+			retiredGateCount: 0,
+			deletedSessionCount: 0,
+			error: "sqlite busy",
+		} as never);
+
+		const result = await postMergeTmuxCleanup(makeOpts(), store);
+
+		expect(result.commDbFinalized).toBe(false);
+		expect(result.errors).toContain("commdb finalize: sqlite busy");
 	});
 
 	it("records post_merge_completed audit event on success", async () => {

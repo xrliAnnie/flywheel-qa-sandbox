@@ -33,6 +33,7 @@ import {
 	applyTransition,
 } from "../applyTransition.js";
 import type { Session, StateStore } from "../StateStore.js";
+import type { FinalizeCommDbResult } from "./commdb-session-prune.js";
 import type { RunnerLiveness, TmuxTargetLookup } from "./tmux-lookup.js";
 import { sqliteDatetime } from "./types.js";
 
@@ -112,7 +113,10 @@ export interface CrashReaperInjectedDeps {
 	) => Promise<{ killed: boolean; error?: string }>;
 	/** Best-effort terminal-view close (does NOT gate cleanup_pending). */
 	closeTerminalView?: (session: Session, tmuxWindow: string) => Promise<void>;
-	deleteCommDbSession: (executionId: string, projectName: string) => void;
+	finalizeCommDbSession: (
+		executionId: string,
+		projectName: string,
+	) => FinalizeCommDbResult;
 	/** Archive the issue thread (allowStatuses ["terminated"]), post-transition. */
 	archiveThread?: (session: Session) => Promise<void>;
 	/**
@@ -309,6 +313,25 @@ async function reapOne(
 		}
 	}
 
+	// FLY-1238: once the physical runner is gone, retire every unresolved gate
+	// in the same transaction that deletes its CommDB session. Failure blocks
+	// terminalization and archive so the row remains eligible for retry.
+	const finalized = deps.finalizeCommDbSession(execId, projectName);
+	deps.store.recordCommDbFinalizeOutcome({
+		executionId: execId,
+		issueId: session.issue_id,
+		projectName,
+		ok: finalized.ok,
+		error: finalized.error,
+	});
+	if (!finalized.ok) {
+		result.cleanupPending++;
+		log(
+			`[crash-reaper] ${execId}: CommDB finalization failed (${finalized.error ?? "unknown"}) — retry next cycle`,
+		);
+		return;
+	}
+
 	// 3. Re-read status and branch on the post-teardown FSM race (Codex R2 MED-3).
 	const current = deps.store.getSession(execId);
 	if (current && current.status === "running") {
@@ -329,7 +352,6 @@ async function reapOne(
 			);
 			return;
 		}
-		deps.deleteCommDbSession(execId, projectName);
 		// FLY-1050: a reaped three-stage QA row may have stranded its implement —
 		// hand the loss to the orchestrator (before archive; best-effort).
 		if (
@@ -372,7 +394,6 @@ async function reapOne(
 	// Concurrent completion/event/action moved the row off `running`: do NOT force
 	// `terminated`. Prune the (already killed) CommDB row and record the skip; the
 	// concurrent terminal status owns its own archive.
-	deps.deleteCommDbSession(execId, projectName);
 	deps.store.insertEvent({
 		event_id: `crash-reap-skip-${execId}`,
 		execution_id: execId,

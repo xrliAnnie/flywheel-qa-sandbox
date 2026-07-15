@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-	deleteCommDbSession,
+	finalizeCommDbSession,
 	pruneDeadTerminalCommDbSessions,
 } from "../bridge/commdb-session-prune.js";
 
@@ -37,19 +37,45 @@ describe("commdb-session-prune (FLY-638)", () => {
 		if (status !== "running") db.updateSessionStatus(execId, status);
 	}
 
-	describe("deleteCommDbSession", () => {
-		it("deletes an existing row and returns true", () => {
+	describe("finalizeCommDbSession", () => {
+		it("retires pending gates and deletes the existing row", () => {
 			seed("e1", "completed");
-			expect(deleteCommDbSession("e1", "flywheel", dbPath)).toBe(true);
+			const qid = db.insertQuestion("e1", "lead-a", "ship?", {
+				checkpoint: "approve_to_ship",
+			});
+			expect(finalizeCommDbSession("e1", "flywheel", dbPath)).toEqual({
+				ok: true,
+				outcome: "finalized",
+				retiredGateCount: 1,
+				deletedSessionCount: 1,
+			});
 			expect(db.getSession("e1")).toBeUndefined();
+			expect(db.isQuestionPending(qid)).toBe(false);
 		});
 
-		it("is a no-op (false) when the row is absent", () => {
-			expect(deleteCommDbSession("missing", "flywheel", dbPath)).toBe(false);
+		it("is an explicit successful no-op when the DB is absent", () => {
+			expect(finalizeCommDbSession("missing", "../evil")).toEqual({
+				ok: true,
+				outcome: "no_db",
+				retiredGateCount: 0,
+				deletedSessionCount: 0,
+			});
 		});
 
-		it("refuses an unsafe project name (path traversal) without opening a db", () => {
-			expect(deleteCommDbSession("e1", "../evil")).toBe(false);
+		it("surfaces transaction failure and leaves session + gate intact", () => {
+			seed("e1", "completed");
+			const qid = db.insertQuestion("e1", "lead-a", "ship?", {
+				checkpoint: "approve_to_ship",
+			});
+			(db as unknown as { db: { exec(sql: string): void } }).db.exec(`
+				CREATE TRIGGER abort_finalize BEFORE DELETE ON sessions
+				WHEN OLD.execution_id = 'e1'
+				BEGIN SELECT RAISE(ABORT, 'forced'); END
+			`);
+			const result = finalizeCommDbSession("e1", "flywheel", dbPath);
+			expect(result).toMatchObject({ ok: false, outcome: "failed" });
+			expect(db.getSession("e1")).toBeDefined();
+			expect(db.isQuestionPending(qid)).toBe(true);
 		});
 	});
 
@@ -74,6 +100,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 			expect(res.scanned).toBe(4);
 			expect(res.pruned).toBe(2); // dead1 + dead2 (proven dead)
 			expect(res.kept).toBe(2); // parked (alive) + flaky (indeterminate)
+			expect(res.failed).toBe(0);
 			expect(db.getSession("dead1")).toBeUndefined();
 			expect(db.getSession("dead2")).toBeUndefined();
 			expect(db.getSession("parked")).toBeDefined(); // alive → kept
@@ -101,7 +128,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 				dbPath,
 				probe: async () => "dead",
 			});
-			expect(res).toEqual({ scanned: 0, pruned: 0, kept: 0 });
+			expect(res).toEqual({ scanned: 0, pruned: 0, kept: 0, failed: 0 });
 			expect(db.getSession("only-running")).toBeDefined();
 		});
 	});

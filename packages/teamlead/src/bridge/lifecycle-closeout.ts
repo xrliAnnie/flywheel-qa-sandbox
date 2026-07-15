@@ -32,6 +32,7 @@ import {
 	closeRunner,
 	FINALIZE_DONE_SOURCE_STATES,
 } from "./close-runner.js";
+import { finalizeCommDbSession } from "./commdb-session-prune.js";
 import { isUuidKey, resolveLifecycleRootKey } from "./lifecycle-root-key.js";
 import type { WithRepoLock } from "./repo-mutation-lock.js";
 import {
@@ -107,6 +108,10 @@ export interface NodeClosureReport {
 	transition: NodeOutcome;
 	teardown: NodeOutcome;
 	confirmedGone: boolean;
+	/** FLY-1238: unresolved founder gates and the CommDB session were retired
+	 * atomically. Issue-level cleanup is blocked until both this and
+	 * confirmedGone are true. */
+	communicationsFinalized: boolean;
 }
 
 export interface ClosureReport {
@@ -235,6 +240,7 @@ export interface LifecycleCloseoutDeps {
 	/** Repo lock — passed through to worktree/branch items when wired. */
 	withRepoLock?: WithRepoLock;
 	closeRunnerFn?: typeof closeRunner;
+	finalizeCommDbSessionFn?: typeof finalizeCommDbSession;
 	lookupTarget?: typeof lookupTmuxTarget;
 	probeLiveness?: (w: string) => Promise<RunnerLiveness>;
 	/** Optional fresh-Linear alias contributor (D entry supplies its lookup). */
@@ -974,6 +980,7 @@ async function closeoutIssueLocked(
 				transition: { state: "blocked", prerequisite: authorityLost },
 				teardown: { state: "skipped", reason: authorityLost },
 				confirmedGone: false,
+				communicationsFinalized: false,
 			});
 			anyBlocked = true;
 			continue;
@@ -986,6 +993,7 @@ async function closeoutIssueLocked(
 				transition: { state: "blocked", prerequisite: "budget_exhausted" },
 				teardown: { state: "skipped", reason: "budget_exhausted" },
 				confirmedGone: false,
+				communicationsFinalized: false,
 			});
 			anyBlocked = true;
 			continue;
@@ -994,7 +1002,8 @@ async function closeoutIssueLocked(
 		report.nodes.push(nodeReport);
 		if (
 			nodeReport.transition.state === "blocked" ||
-			!nodeReport.confirmedGone
+			!nodeReport.confirmedGone ||
+			!nodeReport.communicationsFinalized
 		) {
 			anyBlocked = true;
 		}
@@ -1144,6 +1153,8 @@ async function closeoutOneNode(
 ): Promise<NodeClosureReport> {
 	const { store } = deps;
 	const closeRunnerFn = deps.closeRunnerFn ?? closeRunner;
+	const finalizeCommDbSessionFn =
+		deps.finalizeCommDbSessionFn ?? finalizeCommDbSession;
 	const lookupTarget = deps.lookupTarget ?? lookupTmuxTarget;
 	const probeLiveness = deps.probeLiveness ?? probeRunnerProcessLiveness;
 
@@ -1155,6 +1166,7 @@ async function closeoutOneNode(
 		transition: { state: "skipped", reason: "no_action" },
 		teardown: { state: "skipped", reason: "not_reached" },
 		confirmedGone: false,
+		communicationsFinalized: false,
 	};
 
 	if (!fresh) {
@@ -1197,7 +1209,24 @@ async function closeoutOneNode(
 				return result;
 			}
 		}
-		result.teardown = { state: "skipped", reason: "no_session_row" };
+		const finalized = finalizeCommDbSessionFn(
+			node.executionId,
+			node.projectName,
+		);
+		store.recordCommDbFinalizeOutcome({
+			executionId: node.executionId,
+			issueId: node.issueKey,
+			projectName: node.projectName,
+			ok: finalized.ok,
+			error: finalized.error,
+		});
+		result.communicationsFinalized = finalized.ok;
+		result.teardown = finalized.ok
+			? { state: "done", detail: "no_session_row_communications_finalized" }
+			: {
+					state: "failed",
+					error: `commdb_finalize_failed:${finalized.error ?? "unknown"}`,
+				};
 		result.confirmedGone = true;
 		return result;
 	}
@@ -1350,11 +1379,17 @@ async function closeoutOneNode(
 			},
 			store,
 		);
+		result.communicationsFinalized = closeRes.commDbFinalized;
 		if (closeRes.closed || closeRes.alreadyGone) {
-			result.teardown = {
-				state: "done",
-				detail: closeRes.alreadyGone ? "already_gone" : "closed",
-			};
+			result.teardown = closeRes.commDbFinalized
+				? {
+						state: "done",
+						detail: closeRes.alreadyGone ? "already_gone" : "closed",
+					}
+				: {
+						state: "failed",
+						error: closeRes.error ?? "commdb_finalize_failed:unknown",
+					};
 		} else if (closeRes.preserved) {
 			result.teardown = { state: "skipped", reason: "crash_preserve" };
 		} else {

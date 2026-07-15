@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Router } from "express";
@@ -21,7 +20,7 @@ import {
 } from "../StateStore.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import { AUTO_CLOSE_STATES, closeRunner } from "./close-runner.js";
-import { deleteCommDbSession } from "./commdb-session-prune.js";
+import { finalizeCommDbSession } from "./commdb-session-prune.js";
 import type { EventFilter } from "./EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
@@ -1026,58 +1025,6 @@ async function postRetryComment(
 	}
 }
 
-/**
- * FLY-228: best-effort resolve a terminated session's parked `approve_to_ship`
- * gate so an abandoned review no longer shows pending. Ownership-validated
- * exactly like the approve path (a question with checkpoint `approve_to_ship`
- * from THIS runner) before expiring it — NO approval-shaped response, NO wake.
- * Only runs when the session was parked (priorStatus `awaiting_review` or a
- * `review_question_id` is bound), so running/blocked/failed callers never open
- * CommDB. All failures are swallowed (best-effort; must not affect the
- * already-committed transition).
- */
-function resolveTerminatedGate(
-	session: Session,
-	priorStatus: string,
-	executionId: string,
-): void {
-	if (priorStatus !== "awaiting_review" && !session.review_question_id) return;
-	const commDbPath = commDbPathFor(session.project_name);
-	// No CommDB for this project → nothing to resolve (don't log a scary
-	// "Database not found"; gate resolution is purely best-effort).
-	if (!existsSync(commDbPath)) return;
-	try {
-		const db = new CommDB(commDbPath, false);
-		try {
-			let questionId: string | undefined;
-			const boundId = session.review_question_id?.trim();
-			if (boundId && boundId !== REVIEW_BINDING_UNBOUND) {
-				const bound = db.getMessageById(boundId);
-				if (
-					bound &&
-					bound.type === "question" &&
-					bound.checkpoint === "approve_to_ship" &&
-					bound.from_agent === executionId
-				) {
-					questionId = bound.id;
-				}
-			} else if (!boundId) {
-				questionId = db.getPendingGateByRunner(
-					executionId,
-					"approve_to_ship",
-				)?.id;
-			}
-			if (questionId) db.resolveGate(questionId, 0);
-		} finally {
-			db.close();
-		}
-	} catch (e) {
-		console.warn(
-			`[terminate] best-effort gate resolve failed for ${executionId}: ${(e as Error).message}`,
-		);
-	}
-}
-
 /** GEO-187/FLY-44: Terminate a session by transitioning to terminated and
  * tearing down its tmux + Terminal viewer.
  *
@@ -1152,15 +1099,13 @@ export async function handleTerminate(
 		);
 	}
 
-	// 2) Best-effort: resolve a parked approve_to_ship gate (no response, no wake).
-	resolveTerminatedGate(session, priorStatus, executionId);
-
-	// 3) Cleanup (OBSERVABLE partial-failure): kill tmux via CommDB (source of
+	// 2) Cleanup (OBSERVABLE partial-failure): kill tmux via CommDB (source of
 	// truth, not StateStore.tmux_session — see tmux-lookup.ts) + close viewer.
 	// Codex code-review MED-3: a CommDB read error (corruption/lock) is NOT the
 	// same as "already gone" — we can't verify tmux liveness, so it must surface
 	// as cleanup-pending rather than a false success.
 	let cleanupError: string | undefined;
+	let physicalGone = false;
 	const lookup = session.project_name
 		? lookupTmuxTarget(executionId, session.project_name)
 		: ({ kind: "gone" } as const);
@@ -1175,9 +1120,7 @@ export async function handleTerminate(
 		);
 		const killResult = await killTmuxWindow(lookup.target.tmuxWindow);
 		if (killResult.killed) {
-			// FLY-638: terminated runner's tmux is gone → drop its CommDB session
-			// row so it doesn't linger in runner_terminal_list / bootstrap.
-			deleteCommDbSession(executionId, session.project_name);
+			physicalGone = true;
 			// FLY-116: also close per-runner Terminal viewer tab + linked viewer.
 			const identity = resolveTerminalViewIdentity(session, lookup.target);
 			if (identity) {
@@ -1197,6 +1140,21 @@ export async function handleTerminate(
 	} else if (lookup.kind === "error") {
 		// Could not read CommDB → cannot confirm the tmux window is gone.
 		cleanupError = `tmux target lookup failed: ${lookup.error}`;
+	} else {
+		physicalGone = true;
+	}
+	if (physicalGone && session.project_name) {
+		const finalized = finalizeCommDbSession(executionId, session.project_name);
+		store.recordCommDbFinalizeOutcome({
+			executionId,
+			issueId: session.issue_id,
+			projectName: session.project_name,
+			ok: finalized.ok,
+			error: finalized.error,
+		});
+		if (!finalized.ok) {
+			cleanupError = `commdb finalize failed: ${finalized.error ?? "unknown"}`;
+		}
 	}
 	if (cleanupError) {
 		console.error(
@@ -1217,7 +1175,7 @@ export async function handleTerminate(
 		});
 	}
 
-	// 4) Hook (fires regardless — the FSM transition is the authoritative outcome).
+	// 3) Hook (fires regardless — the FSM transition is the authoritative outcome).
 	sendActionHook(
 		store,
 		projects ?? [],

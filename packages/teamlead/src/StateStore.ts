@@ -332,6 +332,20 @@ export interface MergedGateGuardFailureRow {
 	resolved_at?: string;
 }
 
+/** FLY-1238: durable visibility for an atomic CommDB gate/session finalizer
+ * that keeps failing after the physical runner is gone. */
+export interface CommDbFinalizeFailureRow {
+	execution_id: string;
+	issue_id: string;
+	project_name: string;
+	attempts: number;
+	first_failure_ms: number;
+	last_failure_ms: number;
+	last_error?: string;
+	alerted: boolean;
+	resolved_at?: string;
+}
+
 /** FLY-1099 §3.1: bounded-retry row for one pinned founder message. */
 export interface FounderReplyRetryRow {
 	thread_id: string;
@@ -2030,6 +2044,20 @@ export class StateStore {
 				alerted       INTEGER NOT NULL DEFAULT 0,
 				resolved_at   TEXT,
 				PRIMARY KEY (question_id, source)
+			)
+		`);
+
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS commdb_finalize_failures (
+				execution_id     TEXT PRIMARY KEY,
+				issue_id         TEXT NOT NULL,
+				project_name     TEXT NOT NULL,
+				attempts         INTEGER NOT NULL DEFAULT 0,
+				first_failure_ms INTEGER NOT NULL,
+				last_failure_ms  INTEGER NOT NULL,
+				last_error       TEXT,
+				alerted          INTEGER NOT NULL DEFAULT 0,
+				resolved_at      TEXT
 			)
 		`);
 
@@ -7635,12 +7663,24 @@ export class StateStore {
 	}
 
 	markFounderActionDelivered(actionKey: string): void {
-		this.db.run(
-			`UPDATE founder_action_ledger
-			    SET status = 'delivered', delivered_at = datetime('now')
-			  WHERE action_key = ? AND status = 'pending'`,
-			[actionKey],
-		);
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE founder_action_ledger
+				    SET status = 'delivered', delivered_at = datetime('now')
+				  WHERE action_key = ? AND status = 'pending'`,
+				[actionKey],
+			);
+			if (
+				this.db.getRowsModified() > 0 &&
+				actionKey.startsWith("commdb-finalize-stuck-")
+			) {
+				this.db.run(
+					`UPDATE commdb_finalize_failures SET alerted = 1
+					  WHERE execution_id = ?`,
+					[actionKey.slice("commdb-finalize-stuck-".length)],
+				);
+			}
+		});
 		this.save();
 	}
 
@@ -7825,6 +7865,116 @@ export class StateStore {
 			[questionId, source],
 		);
 		if (this.db.getRowsModified() > 0) this.save();
+	}
+
+	private rowToCommDbFinalizeFailure(
+		row: Record<string, unknown>,
+	): CommDbFinalizeFailureRow {
+		return {
+			execution_id: row.execution_id as string,
+			issue_id: row.issue_id as string,
+			project_name: row.project_name as string,
+			attempts: Number(row.attempts ?? 0),
+			first_failure_ms: Number(row.first_failure_ms),
+			last_failure_ms: Number(row.last_failure_ms),
+			last_error: (row.last_error as string) ?? undefined,
+			alerted: Number(row.alerted ?? 0) === 1,
+			resolved_at: (row.resolved_at as string) ?? undefined,
+		};
+	}
+
+	getCommDbFinalizeFailure(
+		executionId: string,
+	): CommDbFinalizeFailureRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM commdb_finalize_failures WHERE execution_id = ?",
+		);
+		stmt.bind([executionId]);
+		let row: CommDbFinalizeFailureRow | undefined;
+		if (stmt.step()) {
+			row = this.rowToCommDbFinalizeFailure(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return row;
+	}
+
+	/** Record every structured finalizer outcome. The third failure or a
+	 * fifteen-minute episode queues one stable Lead-only alert; `alerted` is
+	 * deliberately set only by markFounderActionDelivered after a real receipt. */
+	recordCommDbFinalizeOutcome(input: {
+		executionId: string;
+		issueId: string;
+		projectName: string;
+		ok: boolean;
+		error?: string;
+		nowMs?: number;
+	}): CommDbFinalizeFailureRow | undefined {
+		const nowMs = input.nowMs ?? Date.now();
+		if (input.ok) {
+			this.db.run(
+				`UPDATE commdb_finalize_failures SET resolved_at = datetime('now')
+				  WHERE execution_id = ? AND resolved_at IS NULL`,
+				[input.executionId],
+			);
+			if (this.db.getRowsModified() > 0) this.save();
+			return this.getCommDbFinalizeFailure(input.executionId);
+		}
+
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT INTO commdb_finalize_failures
+				   (execution_id, issue_id, project_name, attempts,
+				    first_failure_ms, last_failure_ms, last_error)
+				 VALUES (?, ?, ?, 1, ?, ?, ?)
+				 ON CONFLICT(execution_id) DO UPDATE SET
+				   issue_id = excluded.issue_id,
+				   project_name = excluded.project_name,
+				   attempts = commdb_finalize_failures.attempts + 1,
+				   last_failure_ms = excluded.last_failure_ms,
+				   last_error = excluded.last_error`,
+				[
+					input.executionId,
+					input.issueId,
+					input.projectName,
+					nowMs,
+					nowMs,
+					(input.error ?? "unknown").slice(0, 500),
+				],
+			);
+			const row = this.getCommDbFinalizeFailure(input.executionId);
+			if (
+				!row ||
+				row.alerted ||
+				row.resolved_at ||
+				(row.attempts < 3 && nowMs - row.first_failure_ms < 15 * 60_000)
+			) {
+				return;
+			}
+			this.insertFounderActionRaw({
+				actionKey: `commdb-finalize-stuck-${input.executionId}`,
+				kind: "emit_alert",
+				executionId: input.executionId,
+				issueId: input.issueId,
+				projectName: input.projectName,
+				payload: {
+					alert: {
+						leadId: "",
+						projectName: input.projectName,
+						eventId: `commdb-finalize-stuck-${input.executionId}`,
+						eventType: "commdb_finalize_stuck",
+						title: `CommDB finalization stuck — ${input.issueId}`,
+						body:
+							`Runner ${input.executionId} is physically gone, but its gates and CommDB session could not be retired atomically after ${row.attempts} attempts. ` +
+							"Issue-level archive and Linear closeout remain fail-closed; inspect comm.db and retry cleanup.",
+						severity: "warning",
+					},
+				},
+			});
+		});
+		this.save();
+		return this.getCommDbFinalizeFailure(input.executionId);
 	}
 
 	/** A MERGED verdict already suppresses output; this only retires artifacts. */

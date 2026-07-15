@@ -125,6 +125,87 @@ describe("StateStore FLY-1238 merged gate cleanup", () => {
 			store.getMergedGateGuardFailure("q-1", "action_drain")?.resolved_at,
 		).toBeTruthy();
 	});
+
+	it("records CommDB finalizer failures, alerts after three attempts, and marks receipt exactly once", () => {
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			store.recordCommDbFinalizeOutcome({
+				executionId: "exec-finalize",
+				issueId: "FLY-1238",
+				projectName: "flywheel",
+				ok: false,
+				error: `sqlite busy ${attempt}`,
+				nowMs: 1_000 + attempt,
+			});
+		}
+		const failure = store.getCommDbFinalizeFailure("exec-finalize");
+		expect(failure).toMatchObject({
+			attempts: 3,
+			first_failure_ms: 1_001,
+			last_failure_ms: 1_003,
+			last_error: "sqlite busy 3",
+			alerted: false,
+		});
+		const alerts = store
+			.listPendingFounderActions()
+			.filter(
+				(row) => row.action_key === "commdb-finalize-stuck-exec-finalize",
+			);
+		expect(alerts).toHaveLength(1);
+
+		store.markFounderActionDelivered("commdb-finalize-stuck-exec-finalize");
+		expect(store.getCommDbFinalizeFailure("exec-finalize")?.alerted).toBe(true);
+
+		store.recordCommDbFinalizeOutcome({
+			executionId: "exec-finalize",
+			issueId: "FLY-1238",
+			projectName: "flywheel",
+			ok: false,
+			error: "still stuck",
+			nowMs: 2_000,
+		});
+		expect(
+			store
+				.listPendingFounderActions()
+				.filter(
+					(row) => row.action_key === "commdb-finalize-stuck-exec-finalize",
+				),
+		).toHaveLength(0);
+
+		store.recordCommDbFinalizeOutcome({
+			executionId: "exec-finalize",
+			issueId: "FLY-1238",
+			projectName: "flywheel",
+			ok: true,
+			nowMs: 3_000,
+		});
+		expect(
+			store.getCommDbFinalizeFailure("exec-finalize")?.resolved_at,
+		).toBeTruthy();
+	});
+
+	it("queues the same durable finalizer alert after fifteen minutes", () => {
+		store.recordCommDbFinalizeOutcome({
+			executionId: "exec-aged",
+			issueId: "FLY-1238",
+			projectName: "flywheel",
+			ok: false,
+			error: "first",
+			nowMs: 10,
+		});
+		store.recordCommDbFinalizeOutcome({
+			executionId: "exec-aged",
+			issueId: "FLY-1238",
+			projectName: "flywheel",
+			ok: false,
+			error: "aged",
+			nowMs: 15 * 60_000 + 10,
+		});
+		expect(
+			store
+				.listPendingFounderActions()
+				.some((row) => row.action_key === "commdb-finalize-stuck-exec-aged"),
+		).toBe(true);
+	});
 });
 
 function action(

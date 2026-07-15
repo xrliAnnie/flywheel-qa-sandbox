@@ -21,10 +21,16 @@ vi.mock("../bridge/tmux-lookup.js", () => ({
 		mockKillCmuxLinkedSession(...args),
 }));
 
-// FLY-638: stub the CommDB prune so tests never touch the real comm.db on disk.
-const mockDeleteCommDbSession = vi.fn(() => true);
+// FLY-1238: stub the atomic CommDB finalizer.
+const mockFinalizeCommDbSession = vi.fn(() => ({
+	ok: true as const,
+	outcome: "finalized" as const,
+	retiredGateCount: 1,
+	deletedSessionCount: 1,
+}));
 vi.mock("../bridge/commdb-session-prune.js", () => ({
-	deleteCommDbSession: (...args: unknown[]) => mockDeleteCommDbSession(...args),
+	finalizeCommDbSession: (...args: unknown[]) =>
+		mockFinalizeCommDbSession(...args),
 }));
 
 // Capture ordering of Discord-side calls via a shared spy list.
@@ -171,6 +177,13 @@ describe("runPostShipFinalization", () => {
 		callOrder.length = 0;
 		mockGetTmuxTarget.mockReset();
 		mockKillTmuxSession.mockReset();
+		mockFinalizeCommDbSession.mockReset();
+		mockFinalizeCommDbSession.mockReturnValue({
+			ok: true,
+			outcome: "finalized",
+			retiredGateCount: 1,
+			deletedSessionCount: 1,
+		});
 
 		mockGetTmuxTarget.mockImplementation(() => {
 			callOrder.push("tmux:lookup");
@@ -221,6 +234,33 @@ describe("runPostShipFinalization", () => {
 		expect(postIdx).toBeGreaterThan(killIdx);
 		expect(archiveIdx).toBeGreaterThan(postIdx);
 		expect(removeIdx).toBeGreaterThan(postIdx);
+	});
+
+	it("FLY-1238: skips archive when post-merge communication finalization fails", async () => {
+		mockFinalizeCommDbSession.mockReturnValue({
+			ok: false,
+			outcome: "failed",
+			retiredGateCount: 0,
+			deletedSessionCount: 0,
+			error: "sqlite busy",
+		} as never);
+
+		await runPostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				discordOwnerUserId: "user-annie",
+				fallbackBotToken: undefined,
+			},
+			{ store, projects: PROJECTS },
+		);
+
+		expect(callOrder).toContain("discord:post-message");
+		expect(callOrder).not.toContain("discord:archive");
+		expect(callOrder).not.toContain("discord:remove-user");
 	});
 
 	it("FLY-1232 T9: the central late-bound hook fires for a claim winner whose deps did NOT thread workflowShadow (Codex R1 #5)", async () => {

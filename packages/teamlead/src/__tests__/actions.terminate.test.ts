@@ -17,10 +17,6 @@ vi.mock("../bridge/tmux-lookup.js", () => ({
 	killTmuxWindow: vi.fn(),
 	killCmuxLinkedSession: vi.fn(async () => ({ killed: true })),
 }));
-// FLY-638: stub the CommDB prune so tests never touch the real comm.db on disk.
-vi.mock("../bridge/commdb-session-prune.js", () => ({
-	deleteCommDbSession: vi.fn(() => true),
-}));
 // Avoid real macOS Terminal automation in the kill-success path.
 vi.mock("flywheel-core", async (importOriginal) => ({
 	...(await importOriginal<typeof import("flywheel-core")>()),
@@ -166,6 +162,40 @@ describe("handleTerminate (FLY-228)", () => {
 		expect(res.cleanupPending).toBeUndefined();
 		expect(kill).not.toHaveBeenCalled();
 		expect(store.getSession("e1")!.status).toBe("terminated");
+	});
+
+	it("FLY-1238: atomic gate finalization failure is cleanup-pending and rolls back", async () => {
+		mkdirSync(join(commRoot, "geoforge3d"), { recursive: true });
+		const dbPath = join(commRoot, "geoforge3d", "comm.db");
+		const db = new CommDB(dbPath, true);
+		let qid: string;
+		try {
+			db.registerSession("e1", "sess:@9", "geoforge3d", "i1", "lead-a");
+			qid = db.insertQuestion("e1", "lead-a", "ship?", {
+				checkpoint: "approve_to_ship",
+			});
+			(db as unknown as { db: { exec(sql: string): void } }).db.exec(`
+				CREATE TRIGGER abort_finalize BEFORE DELETE ON sessions
+				WHEN OLD.execution_id = 'e1'
+				BEGIN SELECT RAISE(ABORT, 'forced'); END
+			`);
+		} finally {
+			db.close();
+		}
+		seedAwaitingReview();
+		lookup.mockReturnValue({ kind: "gone" });
+
+		const res = await handleTerminate(store, "e1", opts);
+
+		expect(res.success).toBe(false);
+		expect(res.cleanupPending).toBe(true);
+		const check = new CommDB(dbPath, false);
+		try {
+			expect(check.getSession("e1")).toBeDefined();
+			expect(check.isQuestionPending(qid)).toBe(true);
+		} finally {
+			check.close();
+		}
 	});
 
 	it("tmux-kill success with a target → success:true", async () => {

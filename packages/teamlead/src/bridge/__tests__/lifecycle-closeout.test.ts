@@ -38,7 +38,17 @@ function baseDeps(
 		store,
 		transitionOpts: transitionOpts(store),
 		withIssueMutex: createIssueMutex(),
-		closeRunnerFn: vi.fn(async () => ({ closed: true })) as never,
+		closeRunnerFn: vi.fn(async () => ({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+		})) as never,
+		finalizeCommDbSessionFn: vi.fn(() => ({
+			ok: true,
+			outcome: "finalized",
+			retiredGateCount: 1,
+			deletedSessionCount: 1,
+		})),
 		lookupTarget: (() => ({ kind: "gone" }) as const) as never,
 		probeLiveness: async () => "absent" as const,
 		log: () => {},
@@ -101,7 +111,11 @@ describe("closeoutIssue — canceled disposition", () => {
 	it("running session transitions to terminated via the FSM (never completed), teardown follows", async () => {
 		const store = await freshStore();
 		seedSession(store, "e1", "running");
-		const closeRunnerFn = vi.fn(async () => ({ closed: true }));
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+		}));
 		const report = await closeoutIssue(
 			baseDeps(store, { closeRunnerFn: closeRunnerFn as never }),
 			{
@@ -118,10 +132,74 @@ describe("closeoutIssue — canceled disposition", () => {
 		expect(nodeReport?.transition.state).toBe("done");
 	});
 
+	it("FLY-1238: physical closure without communication finalization blocks issue-level cleanup", async () => {
+		const store = await freshStore();
+		seedSession(store, "e1", "running");
+		const archiveThreads = vi.fn();
+		const linearConsistency = vi.fn();
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: true,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: "commdb_finalize_failed:sqlite busy",
+		}));
+
+		const report = await closeoutIssue(
+			baseDeps(store, {
+				closeRunnerFn: closeRunnerFn as never,
+				archiveThreads,
+				linearConsistency,
+			}),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "canceled",
+				authority: "linear_reconcile",
+			},
+		);
+
+		expect(report.outcome).toBe("blocked");
+		expect(report.nodes[0]).toMatchObject({
+			confirmedGone: true,
+			communicationsFinalized: false,
+			teardown: {
+				state: "failed",
+				error: "commdb_finalize_failed:sqlite busy",
+			},
+		});
+		expect(archiveThreads).not.toHaveBeenCalled();
+		expect(linearConsistency).not.toHaveBeenCalled();
+
+		const second = await closeoutIssue(
+			baseDeps(store, {
+				closeRunnerFn: vi.fn(async () => ({
+					closed: true,
+					commDbFinalized: true,
+					retiredGateCount: 1,
+				})) as never,
+				archiveThreads,
+				linearConsistency,
+			}),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "canceled",
+				authority: "linear_reconcile",
+			},
+		);
+		expect(second.outcome).toBe("complete");
+		expect(archiveThreads).toHaveBeenCalledTimes(1);
+		expect(linearConsistency).toHaveBeenCalledTimes(1);
+	});
+
 	it("FSM transition failure ⇒ MCP/window get ZERO signals, node blocked (plan §4 #32)", async () => {
 		const store = await freshStore();
 		seedSession(store, "e1", "running");
-		const closeRunnerFn = vi.fn(async () => ({ closed: true }));
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+		}));
 		// an FSM with no edges rejects everything → simulates the concurrent-
 		// status-change race the DAG rule pins
 		const brokenFsm = new WorkflowFSM({});
@@ -146,7 +224,11 @@ describe("closeoutIssue — canceled disposition", () => {
 	it("blocked/failed sessions preserve forensics status but tear down the live target with an explicit audit", async () => {
 		const store = await freshStore();
 		seedSession(store, "e1", "failed");
-		const closeRunnerFn = vi.fn(async () => ({ closed: true }));
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+		}));
 		await closeoutIssue(
 			baseDeps(store, { closeRunnerFn: closeRunnerFn as never }),
 			{
@@ -191,7 +273,11 @@ describe("closeoutIssue — shipped disposition", () => {
 	it("parked design_done phase finalizes via finalizeDone (existing semantics)", async () => {
 		const store = await freshStore();
 		seedSession(store, "design-e", "design_done");
-		const closeRunnerFn = vi.fn(async () => ({ closed: true }));
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+		}));
 		await closeoutIssue(
 			baseDeps(store, { closeRunnerFn: closeRunnerFn as never }),
 			{
@@ -217,7 +303,11 @@ describe("disposition arbitration (plan §4 #36/#39)", () => {
 			project: "proj",
 			founderDecisionId: "fd-1",
 		});
-		const closeRunnerFn = vi.fn(async () => ({ closed: true }));
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+		}));
 		const report = await closeoutIssue(
 			baseDeps(store, { closeRunnerFn: closeRunnerFn as never }),
 			{
@@ -381,7 +471,11 @@ describe("Codex R1 fixes", () => {
 	it("R1#4: master switch OFF ⇒ ZERO mutation — no transition, no teardown, blocked report", async () => {
 		const store = await freshStore();
 		seedSession(store, "e-run", "running");
-		const closeRunnerFn = vi.fn(async () => ({ closed: true }));
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+		}));
 		const report = await closeoutIssue(
 			baseDeps(store, {
 				closeRunnerFn: closeRunnerFn as never,
@@ -416,7 +510,11 @@ describe("Codex R1 fixes", () => {
 			stateType: "canceled",
 			linearUpdatedAt: "2026-07-02T00:00:00.000Z",
 		});
-		const closeRunnerFn = vi.fn(async () => ({ closed: true }));
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+		}));
 		const report = await closeoutIssue(
 			baseDeps(store, { closeRunnerFn: closeRunnerFn as never }),
 			{
@@ -435,7 +533,11 @@ describe("Codex R1 fixes", () => {
 	it("R1#13: a live legacy `approved` husk is torn down under the issue-terminal override (not blocked forever)", async () => {
 		const store = await freshStore();
 		seedSession(store, "e-approved", "approved");
-		const closeRunnerFn = vi.fn(async () => ({ closed: true }));
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+		}));
 		const report = await closeoutIssue(
 			baseDeps(store, { closeRunnerFn: closeRunnerFn as never }),
 			{
@@ -459,7 +561,11 @@ describe("Codex R1 fixes", () => {
 		const store = await freshStore();
 		seedSession(store, "e-1", "running");
 		seedSession(store, "e-2", "running");
-		const closeRunnerFn = vi.fn(async () => ({ closed: true }));
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+		}));
 		// R3#13: the budget is CALL-level (plan.md:156 "mutator 调用 ≤40/run") —
 		// a full node teardown costs 2 slots (fsm_transition + teardown), so 2
 		// slots let node 1 complete fully and node 2 must block pre-mutation.
@@ -667,7 +773,11 @@ describe("Codex R2 fixes", () => {
 	it("R2#5: freshAuthority=reopened blocks every node mutation (reopen wins)", async () => {
 		const store = await freshStore();
 		seedSession(store, "e-run", "running");
-		const closeRunnerFn = vi.fn(async () => ({ closed: true }));
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+		}));
 		const report = await closeoutIssue(
 			baseDeps(store, {
 				closeRunnerFn: closeRunnerFn as never,

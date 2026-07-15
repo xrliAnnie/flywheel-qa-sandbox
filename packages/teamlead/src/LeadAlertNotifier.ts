@@ -36,10 +36,10 @@ import {
 	type AlertRateLimiter,
 	formatOverflowSummary,
 } from "./bridge/alert-rate-limiter.js";
+import { markAutomatedDiscordText } from "./bridge/automated-message.js";
 import type { MetaAlertReason } from "./MetaAlertNotifier.js";
 import type { LeadConfig, ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
-import { markAutomatedDiscordText } from "./bridge/automated-message.js";
 
 /**
  * FLY-182 Track B: minimal sink so LeadAlertNotifier can fire a Discord-
@@ -182,6 +182,10 @@ export const ALERT_EVENT_TYPES = [
 	// Z2 (FLY-1049 shape): a LIVE session whose CommDB registration row is
 	// gone — wake routing broken; founder replies to its gate dead-letter.
 	"founder_reply_unreachable_runner",
+	// FLY-1238: internal integrity alerts. These never reuse founder-facing
+	// recovery copy; they route to the owning Lead after bounded retries.
+	"commdb_finalize_stuck",
+	"merged_gate_guard_unavailable",
 	// FLY-1081: restart-services.sh / update-flywheel.sh deploy notices, fired
 	// ONLY via scripts/lead-alert.sh with the system identity `--lead deploy` /
 	// `--lead updater` (shell-only kinds; the Bridge never emits them). Present
