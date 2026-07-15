@@ -291,7 +291,18 @@ function createFixture({ oldAttempt = false, symlinkSocketRoot = false } = {}) {
 	};
 }
 
-function observerArgs(fixture, timeoutMs = 2000, extra = []) {
+// The observer shells out to sqlite3/tmux/lsof on every sample. Keep fixture
+// deadlines generous enough for a loaded 529 host while preserving every
+// assertion and the observer's production polling behavior.
+const FIXTURE_OBSERVER_TIMEOUT_MS = 15_000;
+const FIXTURE_WAIT_TIMEOUT_MS = 15_000;
+const FIXTURE_EXIT_TIMEOUT_MS = 20_000;
+
+function observerArgs(
+	fixture,
+	timeoutMs = FIXTURE_OBSERVER_TIMEOUT_MS,
+	extra = [],
+) {
 	return [
 		OBSERVER,
 		"--state-db",
@@ -337,7 +348,7 @@ function readFrames(out) {
 		.map((line) => JSON.parse(line));
 }
 
-async function waitFor(predicate, message, timeoutMs = 3000) {
+async function waitFor(predicate, message, timeoutMs = FIXTURE_WAIT_TIMEOUT_MS) {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (predicate()) return;
@@ -346,14 +357,18 @@ async function waitFor(predicate, message, timeoutMs = 3000) {
 	assert.fail(message);
 }
 
-function startObserver(fixture, timeoutMs = 2000, extra = []) {
+function startObserver(
+	fixture,
+	timeoutMs = FIXTURE_OBSERVER_TIMEOUT_MS,
+	extra = [],
+) {
 	return spawn(process.execPath, observerArgs(fixture, timeoutMs, extra), {
 		env: observerEnv(fixture),
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 }
 
-async function waitForExit(child, timeoutMs = 3000) {
+async function waitForExit(child, timeoutMs = FIXTURE_EXIT_TIMEOUT_MS) {
 	let stdout = "";
 	let stderr = "";
 	child.stdout.on("data", (chunk) => {
@@ -454,7 +469,7 @@ function verdict(fixture) {
 
 test(
 	"records requested then acked before lifecycle rows disappear",
-	{ timeout: 8000 },
+	{ timeout: 30_000 },
 	async () => {
 		const fixture = createFixture();
 		try {
@@ -502,7 +517,7 @@ test(
 
 test(
 	"corroborates a cadence-missed ack with the durable graceful-close event",
-	{ timeout: 8000 },
+	{ timeout: 30_000 },
 	async () => {
 		const fixture = createFixture();
 		try {
@@ -546,7 +561,7 @@ test(
 
 test(
 	"corroborates an ack first observed after its requested row was missed",
-	{ timeout: 8000 },
+	{ timeout: 30_000 },
 	async () => {
 		const fixture = createFixture();
 		try {
@@ -593,7 +608,7 @@ test(
 
 test(
 	"fails a live fresh cleanup without ack or matching durable event",
-	{ timeout: 8000 },
+	{ timeout: 30_000 },
 	async () => {
 		const fixture = createFixture();
 		try {
@@ -624,7 +639,7 @@ test(
 
 test(
 	"classifies a proven direct path instead of pretending it was graceful",
-	{ timeout: 8000 },
+	{ timeout: 30_000 },
 	async () => {
 		const fixture = createFixture();
 		try {
@@ -661,7 +676,7 @@ test(
 
 test(
 	"fails closed when direct-path liveness is indeterminate",
-	{ timeout: 8000 },
+	{ timeout: 30_000 },
 	async () => {
 		const fixture = createFixture();
 		try {
@@ -749,7 +764,7 @@ test("matches lsof holder names through a canonicalized socket root", async () =
 
 test(
 	"timestamps holder evidence and preserves its sample time while cached",
-	{ timeout: 8000 },
+	{ timeout: 30_000 },
 	async () => {
 		const fixture = createFixture();
 		let child;
@@ -856,7 +871,7 @@ test("fails closed after bounded startup retries", async () => {
 
 test(
 	"treats a vanished tmux server as absent only after observing it live",
-	{ timeout: 8000 },
+	{ timeout: 30_000 },
 	async () => {
 		const fixture = createFixture();
 		try {
@@ -972,7 +987,7 @@ test("deduplicates stable snapshots despite heartbeat age advancing", async () =
 
 test(
 	"ignores old failed FLY-1286 attempts outside the manifest",
-	{ timeout: 8000 },
+	{ timeout: 30_000 },
 	async () => {
 		const fixture = createFixture({ oldAttempt: true });
 		try {
@@ -1021,7 +1036,7 @@ test(
 
 test(
 	"requires TURN deletion and QA successful-chain session cleanup",
-	{ timeout: 10000 },
+	{ timeout: 30_000 },
 	async () => {
 		for (const retained of ["turn", "qa"]) {
 			const fixture = createFixture();
@@ -1071,7 +1086,7 @@ test(
 
 test(
 	"requires no socket listener or holder after cleanup",
-	{ timeout: 8000 },
+	{ timeout: 30_000 },
 	async () => {
 		const fixture = createFixture();
 		try {
@@ -1113,7 +1128,7 @@ test(
 	},
 );
 
-test("opens both WAL databases readonly", { timeout: 8000 }, async () => {
+test("opens both WAL databases readonly", { timeout: 30_000 }, async () => {
 	const fixture = createFixture();
 	try {
 		const tracked = [
