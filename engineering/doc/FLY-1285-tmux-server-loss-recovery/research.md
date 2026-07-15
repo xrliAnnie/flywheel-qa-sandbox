@@ -70,6 +70,15 @@ unlink socket 后 `tmux ls` 报 "error connecting … (No such file or directory
 6. 验证：`ps -axo pid,ppid,command | awk '$2==1'` 中 default 路径的 tmux server 仅剩 93009；load 应显著回落。
 7. 时机建议：低活跃窗口执行（避免与在跑 QA/review 抢 CPU）；执行前后各存一份 ps 快照作事故档案。
 
+### 附录：锁不可用（tmux_hold kind=lock_unavailable）的人工诊断 runbook
+
+rescue 库的临界区跑在 OS advisory lock 下（锁文件 ~/.flywheel/locks/tmux-*.lockf；能力探测链 flock(1) → lockf(1) → /usr/bin/python3 fcntl 封装；进程退出内核自动释放，**不存在需要手工删除的陈旧锁**）。收到 kind=lock_unavailable 的 tmux_hold 告警时按序诊断：
+
+1. **能力缺失**：逐个探测 `command -v flock`、`command -v lockf`、`/usr/bin/python3 -c "import fcntl"`——三者全缺=探测链塌了（如系统 python 被移除），装回任一能力即自愈（下一次调用重新探测）。
+2. **锁被长期占用**：`lsof ~/.flywheel/locks/tmux-*.lockf` 找持锁 PID → `ps -p <pid> -o pid,lstart,command` 审计 liveness——持锁者是活的 rescue 调用（毫秒~秒级临界区）属正常瞬态；持锁者是**卡死的孤儿**（如 SIGSTOP/僵尸）→ 按进程处置（founder 授权后终止），锁随进程退出由内核释放。
+3. **锁文件/父目录权限异常**（被误 chmod/chown）：修正 ~/.flywheel/locks 为当前 uid 所有、非 group/world-writable。
+4. 任何情况下**不要删除锁文件来"解锁"**——advisory lock 绑定打开的 fd 不绑定路径，删文件只会造成下一个调用建新文件、与旧持有者互不可见的假解锁。
+
 ## 5. Fix B（model/effort SSOT）设计细节
 
 - 读点：`_launch_claude` 内、每次拉起前现读 `MANIFEST_FILE` 的 `.model`/`.effort`（该文件由 fleet apply 权威写入、claude-lead.sh 启动时原子重写并 preserve 两字段——见 claude-lead.sh:511-559），赋给 `_fly241_lead_model`/effort 的解析处。优先级：**manifest > env（FLYWHEEL_LEAD_MODEL/EFFORT，降级为 fallback 与测试 seam）> 不传**。空串/空白串视为未设（沿用 FLY-241 的 xargs trim 语义）。
