@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import type { ClaudeReviewOutcome } from "../claude-review-runner.js";
@@ -81,7 +83,10 @@ interface Harness {
 
 async function makeHarness(
 	// FLY-1224 (T13 ②): optional reviewerEffort override seam under test.
-	harnessOpts: { reviewerEffort?: "low" | "medium" | "high" | "xhigh" } = {},
+	harnessOpts: {
+		reviewerEffort?: "low" | "medium" | "high" | "xhigh";
+		reviewSeverityPolicyEnabled?: boolean;
+	} = {},
 ): Promise<Harness> {
 	const store = await StateStore.create(":memory:");
 	const comm = new FakeCommDb();
@@ -96,6 +101,10 @@ async function makeHarness(
 		openCommDb: () => comm,
 		...(harnessOpts.reviewerEffort && {
 			reviewerEffort: harnessOpts.reviewerEffort,
+		}),
+		...(harnessOpts.reviewSeverityPolicyEnabled !== undefined && {
+			reviewSeverityPolicyEnabled:
+				harnessOpts.reviewSeverityPolicyEnabled,
 		}),
 		reviewRound: async (inv) => {
 			invocations.push({
@@ -363,6 +372,209 @@ describe("ReviewRequestCoordinator — codex-skip lane", () => {
 });
 
 describe("ReviewRequestCoordinator — job execution", () => {
+	it("FLY-1251 production R6 converges through the coordinator without codex_skip", async () => {
+		const fixturePath = fileURLToPath(
+			new URL(
+				"../../../../../engineering/doc/FLY-1278-review-gate-convergence/fixtures/fly-1251-rounds-6-9.json",
+				import.meta.url,
+			),
+		);
+		const [round6] = JSON.parse(readFileSync(fixturePath, "utf8")) as Array<{
+			findings_json: string;
+		}>;
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "CHANGES_REQUESTED",
+			findings: JSON.parse(round6?.findings_json ?? "[]"),
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+
+		expect(h.store.getCodexReviewJob("r1")?.verdict).toBe("APPROVED");
+		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(true);
+		const payload = JSON.parse(h.comm.getResponse("q1")?.content ?? "null");
+		expect(payload.advisories).toEqual(payload.findings);
+		expect(payload.advisories[0].detail).toContain(
+			"the genuine correctness fix in this commit",
+		);
+	});
+
+	it("FLY-1278: MEDIUM-only CHANGES becomes an approved advisory with frozen v2 payload", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "CHANGES_REQUESTED",
+			findings: [
+				{
+					severity: "MEDIUM",
+					file: "slow.ts",
+					title: "optimize later",
+					detail: "This is not ship-unsafe",
+				},
+			],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+
+		const job = h.store.getCodexReviewJob("r1");
+		expect(job).toMatchObject({
+			status: "done",
+			verdict: "APPROVED",
+			reviewer_verdict: "CHANGES_REQUESTED",
+			payload_version: 2,
+		});
+		expect(JSON.parse(job?.advisories_json ?? "null")).toHaveLength(1);
+		expect(JSON.parse(job?.settled_json ?? "null")).toEqual([]);
+		const response = h.comm.getResponse("q1");
+		expect(response?.content).toBe(job?.response_json);
+		expect(JSON.parse(response?.content ?? "null")).toMatchObject({
+			reviewVerdict: "APPROVED",
+			reviewerVerdict: "CHANGES_REQUESTED",
+			requestId: "r1",
+			policyNote: "medium_low_findings_are_non_blocking_v1",
+		});
+		expect(JSON.parse(response?.content ?? "null").advisories).toHaveLength(1);
+		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(true);
+	});
+
+	it("FLY-1278: downgraded code approval still fails closed without exact reviewed-head echo", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "CHANGES_REQUESTED",
+			findings: [{ severity: "LOW", title: "nit" }],
+			reviewedHeadSha: null,
+			raw: "",
+		});
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+
+		expect(h.store.getCodexReviewJob("r1")?.failure_reason).toBe(
+			"reviewed_wrong_head",
+		);
+		expect(h.comm.getResponse("q1")).toBeUndefined();
+		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(false);
+	});
+
+	it("FLY-1278: policy-off preserves the legacy verdict, payload bytes, and columns", async () => {
+		const h = await makeHarness({ reviewSeverityPolicyEnabled: false });
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		const finding = { severity: "MEDIUM", title: "advisory" };
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "CHANGES_REQUESTED",
+			findings: [finding],
+			reviewedHeadSha: null,
+			raw: "",
+		});
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+
+		const job = h.store.getCodexReviewJob("r1");
+		expect(job?.verdict).toBe("CHANGES_REQUESTED");
+		expect(job?.payload_version).toBeUndefined();
+		expect(job?.response_json).toBeUndefined();
+		expect(h.comm.getResponse("q1")?.content).toBe(
+			JSON.stringify({
+				reviewVerdict: "CHANGES_REQUESTED",
+				requestId: "r1",
+				round: 1,
+				findings: [finding],
+				reviewedHeadSha: HEAD,
+				deliveryNonce: job?.delivery_nonce,
+			}),
+		);
+		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(false);
+	});
+
+	it("FLY-1278: design MEDIUM-only CHANGES also converges without writing code authority", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "CHANGES_REQUESTED",
+			findings: [{ severity: "MEDIUM", title: "clarify a paragraph" }],
+			reviewedHeadSha: null,
+			raw: "",
+		});
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		await settle();
+
+		expect(h.store.getCodexReviewJob("r1")?.verdict).toBe("APPROVED");
+		expect(JSON.parse(h.comm.getResponse("q1")?.content ?? "null")).toMatchObject(
+			{ reviewVerdict: "APPROVED", reviewerVerdict: "CHANGES_REQUESTED" },
+		);
+		expect(h.store.getCodexReviewRecord("e1", HEAD)).toBeUndefined();
+	});
+
+	it("FLY-1278: reviewer APPROVED still carries MEDIUM advisories in payload v2", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [{ severity: "LOW", title: "optional cleanup" }],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+
+		const payload = JSON.parse(h.comm.getResponse("q1")?.content ?? "null");
+		expect(payload.reviewVerdict).toBe("APPROVED");
+		expect(payload.advisories).toHaveLength(1);
+	});
+
 	it("code APPROVED: head recheck ok → cross-family record + response + done", async () => {
 		const h = await makeHarness();
 		registerSession(h.store, "e1");
@@ -1918,5 +2130,89 @@ describe("FLY-1224 — audit-anchor chain (T13 ④)", () => {
 		expect(job?.reviewer_session_uuid).toBe(h.invocations[0]?.sessionId);
 		// findings_json exists and parses (an empty array is legal).
 		expect(Array.isArray(JSON.parse(job?.findings_json ?? "null"))).toBe(true);
+	});
+});
+
+describe("FLY-1278 — canonical payload v2 outbox ownership", () => {
+	it("re-delivers the exact frozen response_json bytes", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design");
+		h.store.insertCodexReviewJob({
+			requestId: "r1",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		const nonce = h.store.getCodexReviewJob("r1")?.delivery_nonce;
+		const responseJson = JSON.stringify({
+			reviewVerdict: "APPROVED",
+			reviewerVerdict: "CHANGES_REQUESTED",
+			requestId: "r1",
+			round: 1,
+			findings: [],
+			advisories: [],
+			settled: [],
+			policyNote: "medium_low_findings_are_non_blocking_v1",
+			deliveryNonce: nonce,
+		});
+		h.store.completeCodexReviewJob("r1", "APPROVED", "[]", {
+			reviewerVerdict: "CHANGES_REQUESTED",
+			advisoriesJson: "[]",
+			settledJson: "[]",
+			responseJson,
+			payloadVersion: 2,
+		});
+
+		h.coordinator.redriveOnBoot();
+		await settle();
+
+		expect(h.comm.getResponse("q1")?.content).toBe(responseJson);
+		expect(h.store.getCodexReviewJob("r1")?.responded_at).toBeDefined();
+	});
+
+	it("treats an old-shape answer as FOREIGN for a payload_version=2 job", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design");
+		h.store.insertCodexReviewJob({
+			requestId: "r1",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		const job = h.store.getCodexReviewJob("r1");
+		const legacyJson = JSON.stringify({
+			reviewVerdict: "APPROVED",
+			requestId: "r1",
+			round: 1,
+			findings: [],
+			deliveryNonce: job?.delivery_nonce,
+		});
+		const responseJson = JSON.stringify({
+			...JSON.parse(legacyJson),
+			reviewerVerdict: "APPROVED",
+			advisories: [],
+			settled: [],
+			policyNote: "medium_low_findings_are_non_blocking_v1",
+		});
+		h.store.completeCodexReviewJob("r1", "APPROVED", "[]", {
+			reviewerVerdict: "APPROVED",
+			advisoriesJson: "[]",
+			settledJson: "[]",
+			responseJson,
+			payloadVersion: 2,
+		});
+		h.comm.insertResponse("q1", "bridge", legacyJson);
+
+		h.coordinator.redriveOnBoot();
+		await settle();
+
+		expect(h.store.getCodexReviewJob("r1")?.responded_at).toBeUndefined();
+		expect(h.alerts.some((message) => message.includes("FOREIGN"))).toBe(true);
 	});
 });

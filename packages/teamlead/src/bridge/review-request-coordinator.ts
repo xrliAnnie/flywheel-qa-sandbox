@@ -29,6 +29,12 @@ import {
 	type ClaudeReviewOutcome,
 	runClaudeReviewRound,
 } from "./claude-review-runner.js";
+import {
+	computeEffectiveVerdict,
+	type EffectiveReviewVerdict,
+	type ReviewFindingRulingSnapshot,
+	severityPolicyEnabled,
+} from "./review-verdict-policy.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -104,6 +110,13 @@ export interface ReviewCoordinatorDeps {
 	 */
 	reviewerEffort?: RoleEffort;
 	reviewerTimeoutMs?: number;
+	/** Test seam; production follows FLYWHEEL_REVIEW_SEVERITY_POLICY. */
+	reviewSeverityPolicyEnabled?: boolean;
+	/** Slice seam: StateStore-backed issue lookup is connected in FLY-1278/2. */
+	listActiveReviewFindingRulings?: (input: {
+		projectName: string;
+		issueId: string;
+	}) => readonly ReviewFindingRulingSnapshot[];
 }
 
 const REQUEST_ID_MAX = 128;
@@ -545,7 +558,7 @@ export class ReviewRequestCoordinator {
 		const nonceField = job.delivery_nonce
 			? { deliveryNonce: job.delivery_nonce }
 			: {};
-		const content: Record<string, unknown> =
+		const content: Record<string, unknown> | string =
 			job.status === "skipped"
 				? {
 						reviewVerdict: "SKIPPED",
@@ -553,7 +566,9 @@ export class ReviewRequestCoordinator {
 						note: "codex_skip is active for this execution — review sanctioned as skipped; proceed.",
 						...nonceField,
 					}
-				: {
+				: job.payload_version === 2 && job.response_json
+					? job.response_json
+					: {
 						reviewVerdict: job.verdict ?? "CHANGES_REQUESTED",
 						requestId: job.request_id,
 						round: job.round,
@@ -693,6 +708,18 @@ export class ReviewRequestCoordinator {
 			return;
 		}
 
+		const policyEnabled =
+			this.deps.reviewSeverityPolicyEnabled ?? severityPolicyEnabled();
+		// FLY-1278 R2 #1: one immutable pre-prompt snapshot is reused after the
+		// reviewer returns. Mid-round create/revoke takes effect next round only.
+		const rulingSnapshot = policyEnabled
+			? [
+					...(this.deps.listActiveReviewFindingRulings?.({
+						projectName: job.project_name,
+						issueId: job.issue_id ?? session.issue_id,
+					}) ?? []),
+				]
+			: [];
 		const roundRunner = this.deps.reviewRound ?? runClaudeReviewRound;
 		const runRound = (roundResume: boolean, roundSessionUuid: string) =>
 			roundRunner({
@@ -795,6 +822,14 @@ export class ReviewRequestCoordinator {
 			return;
 		}
 
+		const policyResult = computeEffectiveVerdict({
+			reviewerVerdict: outcome.verdict,
+			findings: outcome.findings,
+			reviewType: job.review_type,
+			rulings: rulingSnapshot,
+			enabled: policyEnabled,
+		});
+
 		if (job.review_type === "code") {
 			// accept-time freeze × verdict-time recheck for EVERY code verdict
 			// (R3 #2 + R12 MEDIUM: findings against a moved head are as
@@ -808,7 +843,7 @@ export class ReviewRequestCoordinator {
 				);
 				return;
 			}
-			if (outcome.verdict === "APPROVED") {
+			if (policyResult.effectiveVerdict === "APPROVED") {
 				// R12 HIGH-6: the reviewer MUST echo the exact sha it reviewed —
 				// a missing/mismatching echo can never become an authority record.
 				if (!outcome.reviewedHeadSha || outcome.reviewedHeadSha !== frozen) {
@@ -838,20 +873,28 @@ export class ReviewRequestCoordinator {
 		// `done` is re-driven by the outbox, which re-runs this same
 		// deliver-then-authority sequence from the stored verdict.
 		const findingsJson = JSON.stringify(outcome.findings ?? []);
-		this.store.completeCodexReviewJob(requestId, outcome.verdict, findingsJson);
+		const responsePayload = policyEnabled
+			? buildVerdictPayload(job, policyResult)
+			: buildLegacyVerdictPayload(job, outcome.verdict, findingsJson);
+		const responseJson = JSON.stringify(responsePayload);
+		this.store.completeCodexReviewJob(
+			requestId,
+			policyResult.effectiveVerdict,
+			findingsJson,
+			policyEnabled
+				? {
+						reviewerVerdict: outcome.verdict,
+						advisoriesJson: JSON.stringify(policyResult.advisories),
+						settledJson: JSON.stringify(policyResult.settled),
+						responseJson,
+						payloadVersion: 2,
+					}
+				: undefined,
+		);
 		const owned = await this.respond(
 			session,
 			job.question_id,
-			{
-				reviewVerdict: outcome.verdict,
-				requestId,
-				round: job.round,
-				findings: safeParseArray(findingsJson),
-				...(job.frozen_head_sha
-					? { reviewedHeadSha: job.frozen_head_sha }
-					: {}),
-				...(job.delivery_nonce ? { deliveryNonce: job.delivery_nonce } : {}),
-			},
+			responseJson,
 			{ executionId: job.execution_id, reviewType: job.review_type },
 		);
 		if (!owned) {
@@ -865,7 +908,7 @@ export class ReviewRequestCoordinator {
 		}
 		this.commitAuthorityIfApproved({
 			...job,
-			verdict: outcome.verdict,
+			verdict: policyResult.effectiveVerdict,
 		});
 		this.store.stampCodexReviewJobResponded(requestId);
 	}
@@ -1008,21 +1051,23 @@ export class ReviewRequestCoordinator {
 	private async respond(
 		session: Session,
 		questionId: string,
-		content: Record<string, unknown>,
+		content: Record<string, unknown> | string,
 		binding: { executionId: string; reviewType: "design" | "code" },
 	): Promise<boolean> {
+		const contentJson =
+			typeof content === "string" ? content : JSON.stringify(content);
 		const db = this.deps.openCommDb(
 			this.deps.commDbPathFor(session.project_name),
 		);
 		try {
 			const existing = db.getResponse(questionId);
 			if (existing) {
-				if (!isOurResponse(existing, content)) return false;
+				if (!isOurResponse(existing, contentJson)) return false;
 			} else {
 				const inserted = db.insertResponseIfGateOpen({
 					questionId,
 					fromAgent: "bridge",
-					content: JSON.stringify(content),
+					content: contentJson,
 					expectedOwner: binding.executionId,
 					expectedCheckpoint: `review_${binding.reviewType}`,
 				});
@@ -1031,7 +1076,7 @@ export class ReviewRequestCoordinator {
 					// expired, or a racing answer landed. Re-read: only our own
 					// canonical bytes count as delivered.
 					const after = db.getResponse(questionId);
-					if (!after || !isOurResponse(after, content)) return false;
+					if (!after || !isOurResponse(after, contentJson)) return false;
 				}
 			}
 		} finally {
@@ -1046,7 +1091,7 @@ export class ReviewRequestCoordinator {
 						project_name: session.project_name,
 					},
 					questionId,
-					String(content.reviewVerdict ?? "answered"),
+					reviewVerdictSummary(contentJson),
 				);
 			} catch (err) {
 				this.log(
@@ -1116,10 +1161,72 @@ function str(v: unknown): string | undefined {
  */
 function isOurResponse(
 	existing: { content: string; from_agent?: string },
-	expectedContent: Record<string, unknown>,
+	expectedContentJson: string,
 ): boolean {
 	if (existing.from_agent !== "bridge") return false;
-	return existing.content === JSON.stringify(expectedContent);
+	return existing.content === expectedContentJson;
+}
+
+export const REVIEW_POLICY_NOTE = "medium_low_findings_are_non_blocking_v1";
+
+export function buildVerdictPayload(
+	job: Pick<
+		CodexReviewJob,
+		| "request_id"
+		| "round"
+		| "frozen_head_sha"
+		| "delivery_nonce"
+	>,
+	result: EffectiveReviewVerdict,
+): Record<string, unknown> {
+	return {
+		reviewVerdict: result.effectiveVerdict,
+		reviewerVerdict: result.reviewerVerdict,
+		requestId: job.request_id,
+		round: job.round,
+		findings: result.findings,
+		advisories: result.advisories,
+		settled: result.settled,
+		policyNote: REVIEW_POLICY_NOTE,
+		...(job.frozen_head_sha
+			? { reviewedHeadSha: job.frozen_head_sha }
+			: {}),
+		...(job.delivery_nonce ? { deliveryNonce: job.delivery_nonce } : {}),
+	};
+}
+
+function buildLegacyVerdictPayload(
+	job: Pick<
+		CodexReviewJob,
+		| "request_id"
+		| "round"
+		| "frozen_head_sha"
+		| "delivery_nonce"
+	>,
+	verdict: string,
+	findingsJson: string | undefined,
+): Record<string, unknown> {
+	return {
+		reviewVerdict: verdict,
+		requestId: job.request_id,
+		round: job.round,
+		findings: safeParseArray(findingsJson),
+		...(job.frozen_head_sha
+			? { reviewedHeadSha: job.frozen_head_sha }
+			: {}),
+		...(job.delivery_nonce ? { deliveryNonce: job.delivery_nonce } : {}),
+	};
+}
+
+function reviewVerdictSummary(contentJson: string): string {
+	try {
+		const parsed = JSON.parse(contentJson) as { reviewVerdict?: unknown };
+		return typeof parsed.reviewVerdict === "string"
+			? parsed.reviewVerdict
+			: "answered";
+	} catch {
+		return "answered";
+	}
 }
 
 function safeParseArray(json: string | undefined): unknown[] {

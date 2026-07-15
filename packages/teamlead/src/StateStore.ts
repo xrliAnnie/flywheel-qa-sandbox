@@ -856,7 +856,14 @@ export interface CodexReviewJob {
 	/** claude reviewer session uuid — resumed across rounds per (exec, type). */
 	reviewer_session_uuid?: string;
 	verdict?: string;
+	/** Reviewer-emitted verdict before FLY-1278 policy processing. */
+	reviewer_verdict?: string;
 	findings_json?: string;
+	advisories_json?: string;
+	settled_json?: string;
+	/** Exact canonical gate payload frozen when the verdict is persisted. */
+	response_json?: string;
+	payload_version?: number;
 	failure_reason?: string;
 	failure_raw?: string;
 	author_family?: string;
@@ -1912,7 +1919,12 @@ export class StateStore {
 				                      CHECK(status IN ('pending','running','done','failed','skipped')),
 				reviewer_session_uuid TEXT,
 				verdict               TEXT,
+				reviewer_verdict      TEXT,
 				findings_json         TEXT,
+				advisories_json       TEXT,
+				settled_json          TEXT,
+				response_json         TEXT,
+				payload_version       INTEGER,
 				failure_reason        TEXT,
 				failure_raw           TEXT,
 				author_family         TEXT,
@@ -1938,15 +1950,26 @@ export class StateStore {
 		} catch {
 			/* exists */
 		}
-		// FLY-1254: retain the latest failed attempt's bounded diagnostic tail.
-		// Unlike the historical best-effort migrations above, failure evidence is
-		// on the active write path: any unexpected migration error must fail boot
-		// loudly instead of leaving a database that will reject future writes.
+		// FLY-1254/FLY-1278: active review writes require failure diagnostics plus
+		// the frozen reviewer/effective split and canonical response. Any
+		// unexpected migration error must fail boot loudly instead of leaving a
+		// database that will reject or mis-deliver future review writes.
 		const reviewJobInfo = this.db.exec("PRAGMA table_info(codex_review_job)");
 		const reviewJobColumns =
 			reviewJobInfo[0]?.values.map((row) => row[1] as string) ?? [];
-		if (!reviewJobColumns.includes("failure_raw")) {
-			this.db.run("ALTER TABLE codex_review_job ADD COLUMN failure_raw TEXT");
+		for (const [column, type] of [
+			["failure_raw", "TEXT"],
+			["reviewer_verdict", "TEXT"],
+			["advisories_json", "TEXT"],
+			["settled_json", "TEXT"],
+			["response_json", "TEXT"],
+			["payload_version", "INTEGER"],
+		] as const) {
+			if (!reviewJobColumns.includes(column)) {
+				this.db.run(
+					`ALTER TABLE codex_review_job ADD COLUMN ${column} ${type}`,
+				);
+			}
 		}
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_exec ON codex_review_job(execution_id)",
@@ -4657,7 +4680,15 @@ export class StateStore {
 			status: row.status as CodexReviewJob["status"],
 			reviewer_session_uuid: (row.reviewer_session_uuid as string) ?? undefined,
 			verdict: (row.verdict as string) ?? undefined,
+			reviewer_verdict: (row.reviewer_verdict as string) ?? undefined,
 			findings_json: (row.findings_json as string) ?? undefined,
+			advisories_json: (row.advisories_json as string) ?? undefined,
+			settled_json: (row.settled_json as string) ?? undefined,
+			response_json: (row.response_json as string) ?? undefined,
+			payload_version:
+				row.payload_version === null || row.payload_version === undefined
+					? undefined
+					: Number(row.payload_version),
 			failure_reason: (row.failure_reason as string) ?? undefined,
 			failure_raw: (row.failure_raw as string) ?? undefined,
 			author_family: (row.author_family as string) ?? undefined,
@@ -4755,14 +4786,32 @@ export class StateStore {
 		requestId: string,
 		verdict: string,
 		findingsJson?: string,
+		details?: {
+			reviewerVerdict: string;
+			advisoriesJson: string;
+			settledJson: string;
+			responseJson: string;
+			payloadVersion: number;
+		},
 	): void {
 		this.db.run(
 			`UPDATE codex_review_job
-			   SET status = 'done', verdict = ?, findings_json = ?,
+			   SET status = 'done', verdict = ?, reviewer_verdict = ?,
+			       findings_json = ?, advisories_json = ?, settled_json = ?,
+			       response_json = ?, payload_version = ?,
 			       failure_reason = NULL, failure_raw = NULL,
 			       updated_at = datetime('now')
 			 WHERE request_id = ?`,
-			[verdict, findingsJson ?? null, requestId],
+			[
+				verdict,
+				details?.reviewerVerdict ?? null,
+				findingsJson ?? null,
+				details?.advisoriesJson ?? null,
+				details?.settledJson ?? null,
+				details?.responseJson ?? null,
+				details?.payloadVersion ?? null,
+				requestId,
+			],
 		);
 		this.save();
 	}
