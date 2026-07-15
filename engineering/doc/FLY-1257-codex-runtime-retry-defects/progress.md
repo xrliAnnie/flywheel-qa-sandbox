@@ -1,13 +1,13 @@
 ---
 issue: FLY-1257
 phase: implement
-phaseCursor: 4/7
-updated: 2026-07-15T04:17:07.573Z
-nextStep: "Task 5 RED: terminal_at chronology and post-terminal gate preservation"
+phaseCursor: 5/7
+updated: 2026-07-15T04:24:25.670Z
+nextStep: Run bounded native paused-RPC probe and record evidence
 chunks: []
 pointers: {}
 ---
 
 # FLY-1257 progress
-**phase**: implement (4/7)
-**next**: Task 5 RED: terminal_at chronology and post-terminal gate preservation
+**phase**: implement (5/7)
+**next**: Run bounded native paused-RPC probe and record evidence
