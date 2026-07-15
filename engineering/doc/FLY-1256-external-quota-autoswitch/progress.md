@@ -2,12 +2,12 @@
 issue: FLY-1256
 phase: implement
 phaseCursor: 7/7
-updated: 2026-07-15T07:39:00.000Z
-nextStep: Push branch, open PR, request cross-family code review, and land via flywheel-land; cleanup follow-up FLY-1284 confirmed
+updated: 2026-07-15T07:50:56.688Z
+nextStep: Run M7 targeted tests, E2E, full lint/typecheck, then open PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-1256 progress
 **phase**: implement (7/7)
-**next**: Push branch, open PR, request cross-family code review, and land via flywheel-land; cleanup follow-up FLY-1284 confirmed
+**next**: Run M7 targeted tests, E2E, full lint/typecheck, then open PR
