@@ -734,6 +734,56 @@ describe("runGoalToTerminal — R20 fail-close semantics", () => {
 		expect(gets).toBe(5);
 	});
 
+	it("FLY-1253: continues one goal on the same thread after a bound review wait closes", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("turn/start", () => ({}));
+		let gets = 0;
+		d.responders.set("thread/goal/get", () => {
+			gets += 1;
+			return { goal: { status: gets >= 5 ? "complete" : "active" } };
+		});
+		let clock = 0;
+		const deadlines: number[] = [];
+		const c = makeClient(d);
+		const result = await runGoalToTerminal(c, {
+			threadId: "thread-bound-review",
+			objective: "finish the original goal",
+			sleep: noSleep,
+			now: () => {
+				clock += 1_000;
+				return clock;
+			},
+			pollIntervalMs: 1,
+			overallTimeoutMs: 10_000,
+			waitingTimeoutMs: 1_000_000,
+			isWaiting: () => gets < 3,
+			onDeadlineExtended: (deadline) => deadlines.push(deadline),
+		});
+
+		expect(result.status).toBe("complete");
+		expect(clock).toBeGreaterThan(10_000);
+		expect(
+			d.sent.filter((frame) => frame.method === "thread/goal/set"),
+		).toHaveLength(1);
+		expect(
+			d.sent.filter((frame) => frame.method === "turn/start"),
+		).toHaveLength(1);
+		const goalGets = d.sent.filter(
+			(frame) => frame.method === "thread/goal/get",
+		);
+		expect(goalGets.length).toBeGreaterThan(0);
+		expect(
+			goalGets.every(
+				(frame) =>
+					(frame.params as { threadId?: string }).threadId ===
+					"thread-bound-review",
+			),
+		).toBe(true);
+		expect(deadlines.length).toBeGreaterThan(0);
+		expect(deadlines).toEqual([...deadlines].sort((a, b) => a - b));
+	});
+
 	it("HIGH-1: a transport close mid-run REJECTS (never returns a stale status)", async () => {
 		const d = new FakeDaemon();
 		d.responders.set("thread/goal/set", () => ({}));

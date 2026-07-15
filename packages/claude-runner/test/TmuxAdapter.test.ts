@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
 import type { AdapterExecutionContext } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -1808,6 +1809,111 @@ describe("TmuxAdapter", () => {
 			const fourGateSessionMs = 4 * 48 * 3600 * 1000 + 5_400_000 * 4; // 192h waits + ~6h active
 			expect(outer).toBeGreaterThan(fourGateSessionMs);
 		});
+	});
+});
+
+describe("FLY-1253: production claude-tmux review-wait compatibility", () => {
+	function controllablePane(windowId: string) {
+		const calls: ExecCall[] = [];
+		let paneDead = false;
+		const fn: ExecFileFn = (cmd, args) => {
+			calls.push({ cmd, args });
+			if (cmd === "claude") return { stdout: "claude 2.1.63" };
+			if (cmd !== "tmux") return { stdout: "" };
+			switch (args[0]) {
+				case "-V":
+					return { stdout: "tmux 3.4" };
+				case "has-session":
+					throw new Error("not found");
+				case "new-session":
+				case "set-environment":
+				case "set-option":
+				case "list-windows":
+				case "kill-window":
+					return { stdout: "" };
+				case "new-window":
+					return { stdout: windowId };
+				case "list-panes":
+					return { stdout: paneDead ? "1|0" : "0|" };
+				default:
+					return { stdout: "" };
+			}
+		};
+		return {
+			calls,
+			fn,
+			markDead: () => {
+				paneDead = true;
+			},
+		};
+	}
+
+	it("characterizes production claude-tmux across bound review wait", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "flywheel-tmux-bound-wait-"));
+		const commDbPath = join(tmpDir, "comm.db");
+		const db = new CommDB(commDbPath);
+		const questionId = db.insertQuestion(
+			"test-exec-1",
+			"flywheel-eng-lead",
+			"review this head",
+			{ checkpoint: "review_code" },
+		);
+		const pane = controllablePane("@bound-wait");
+		const heartbeats: string[] = [];
+		let settled = false;
+
+		try {
+			const adapter = new TmuxAdapter("flywheel", pane.fn, 5, 25);
+			const run = adapter
+				.execute(
+					makeCtx({
+						commDbPath,
+						timeoutMs: 25,
+						waitingTimeoutMs: 500,
+						onHeartbeat: (id) => heartbeats.push(id),
+					}),
+				)
+				.finally(() => {
+					settled = true;
+				});
+
+			await new Promise((resolve) => setTimeout(resolve, 70));
+			expect(settled).toBe(false);
+			expect(heartbeats.length).toBeGreaterThan(2);
+			expect(killWindowTargets(pane.calls)).toEqual([]);
+
+			db.insertResponse(questionId, "flywheel-eng-lead", "APPROVED");
+			pane.markDead();
+			const result = await run;
+
+			expect(result.timedOut).toBe(false);
+			expect(result.tmuxWindow).toBe("flywheel:@bound-wait");
+			expect(
+				pane.calls.filter((call) => call.args[0] === "new-window"),
+			).toHaveLength(1);
+			expect(killWindowTargets(pane.calls)).toEqual([]);
+		} finally {
+			db.close();
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps the ordinary active timeout when no question is pending", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "flywheel-tmux-no-wait-"));
+		const commDbPath = join(tmpDir, "comm.db");
+		const db = new CommDB(commDbPath);
+		const pane = controllablePane("@no-wait");
+		try {
+			const adapter = new TmuxAdapter("flywheel", pane.fn, 5, 25);
+			const result = await adapter.execute(
+				makeCtx({ commDbPath, timeoutMs: 25, waitingTimeoutMs: 500 }),
+			);
+			expect(result.timedOut).toBe(true);
+			expect(killWindowTargets(pane.calls)).toContain("@no-wait");
+		} finally {
+			db.close();
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
 	});
 });
 
