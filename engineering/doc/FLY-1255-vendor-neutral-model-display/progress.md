@@ -1,13 +1,13 @@
 ---
 issue: FLY-1255
 phase: implement
-phaseCursor: 4/6
-updated: 2026-07-15T00:35:16.281Z
-nextStep: "Task 5 RED: vendor-neutral runner window names and cmux preservation"
+phaseCursor: 5/6
+updated: 2026-07-15T00:43:17.420Z
+nextStep: "Task 6: audit, full verification, and PR handoff"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1255 progress
-**phase**: implement (4/6)
-**next**: Task 5 RED: vendor-neutral runner window names and cmux preservation
+**phase**: implement (5/6)
+**next**: Task 6: audit, full verification, and PR handoff
