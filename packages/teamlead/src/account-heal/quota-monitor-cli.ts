@@ -56,6 +56,30 @@ function processStartTime(pid: number): string | null {
 	}
 }
 
+export interface OwnProcessStartTimeDeps {
+	readStart?: (pid: number) => string | null;
+	nowMs?: () => number;
+	uptimeSeconds?: () => number;
+}
+
+/**
+ * Resolve this process's singleton identity without making `ps` a hard runtime
+ * dependency. The uptime fallback is used only for the process claiming a new
+ * pidfile; peer validation still calls `ps` and therefore fails closed when a
+ * live existing PID cannot be identified.
+ */
+export function resolveOwnProcessStartTime(
+	deps: OwnProcessStartTimeDeps = {},
+): string {
+	const readStart = deps.readStart ?? processStartTime;
+	const observed = readStart(process.pid);
+	if (observed) return observed;
+	const nowMs = deps.nowMs ?? Date.now;
+	const uptimeSeconds = deps.uptimeSeconds ?? process.uptime;
+	const bootMs = Math.max(0, Math.floor(nowMs() - uptimeSeconds() * 1_000));
+	return `node-uptime:${bootMs}`;
+}
+
 function parsePidfile(raw: string): PidfileRecord | null {
 	try {
 		const value = JSON.parse(raw) as Partial<PidfileRecord>;
@@ -245,7 +269,9 @@ export function cleanupRunMarker(path: string, graceful: boolean): void {
 
 /** Production daemon entry. Signals interrupt the current timer, never a poll. */
 export async function main(): Promise<void> {
-	const singleton = acquireSingletonPidfile(defaultPidfilePath());
+	const singleton = acquireSingletonPidfile(defaultPidfilePath(), {
+		processStartTime: resolveOwnProcessStartTime(),
+	});
 	const runtime = makeQuotaMonitorRuntime({
 		alert: (alert) => sendQuotaMonitorAlert(alert).then(() => undefined),
 		log: (message) => structuredLog("info", message),

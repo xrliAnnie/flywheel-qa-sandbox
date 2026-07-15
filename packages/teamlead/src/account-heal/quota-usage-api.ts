@@ -80,7 +80,7 @@ async function requestUsage(
 	const fetchFn = opts.fetchFn ?? fetch;
 	const endpoint = new URL(
 		"/api/oauth/usage",
-		opts.baseUrl ?? DEFAULT_BASE_URL,
+		opts.baseUrl ?? process.env.FLYWHEEL_QUOTA_API_BASE ?? DEFAULT_BASE_URL,
 	).toString();
 	const response = await fetchFn(endpoint, {
 		method: "GET",

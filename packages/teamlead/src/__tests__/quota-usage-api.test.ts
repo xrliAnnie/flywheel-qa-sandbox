@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchAccountUsage } from "../account-heal/quota-usage-api.js";
 
 const TOKEN = "sk-ant-oat01-super-secret";
+const ORIGINAL_QUOTA_API_BASE = process.env.FLYWHEEL_QUOTA_API_BASE;
 const VALID_USAGE = {
 	five_hour: {
 		utilization: 91.5,
@@ -15,6 +16,11 @@ const VALID_USAGE = {
 };
 
 afterEach(() => {
+	if (ORIGINAL_QUOTA_API_BASE === undefined) {
+		delete process.env.FLYWHEEL_QUOTA_API_BASE;
+	} else {
+		process.env.FLYWHEEL_QUOTA_API_BASE = ORIGINAL_QUOTA_API_BASE;
+	}
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 });
@@ -54,6 +60,20 @@ describe("fetchAccountUsage", () => {
 				},
 			},
 		});
+	});
+
+	it("uses FLYWHEEL_QUOTA_API_BASE when no explicit baseUrl is supplied", async () => {
+		process.env.FLYWHEEL_QUOTA_API_BASE = "http://127.0.0.1:43210/mock/";
+		const fetchFn = vi.fn(
+			async () => new Response(JSON.stringify(VALID_USAGE), { status: 200 }),
+		);
+
+		await fetchAccountUsage(TOKEN, { fetchFn: fetchFn as typeof fetch });
+
+		expect(fetchFn).toHaveBeenCalledWith(
+			"http://127.0.0.1:43210/api/oauth/usage",
+			expect.any(Object),
+		);
 	});
 
 	it("classifies unauthorized responses without exposing response details", async () => {

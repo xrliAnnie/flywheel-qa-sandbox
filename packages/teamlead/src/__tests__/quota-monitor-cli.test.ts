@@ -13,6 +13,7 @@ import {
 	acquireSingletonPidfile,
 	cleanupRunMarker,
 	computeNextDelay,
+	resolveOwnProcessStartTime,
 	runQuotaMonitorLoop,
 } from "../account-heal/quota-monitor-cli.js";
 import { DEFAULT_QUOTA_MONITOR_CONFIG } from "../account-heal/quota-monitor-config.js";
@@ -39,6 +40,16 @@ function pidDeps(pid = 123) {
 }
 
 describe("atomic singleton pidfile", () => {
+	it("uses a stable Node-uptime identity for self when ps is unavailable", () => {
+		expect(
+			resolveOwnProcessStartTime({
+				readStart: () => null,
+				nowMs: () => 10_000,
+				uptimeSeconds: () => 2.5,
+			}),
+		).toBe("node-uptime:7500");
+	});
+
 	it("open(wx) allows exactly one owner and release removes only its own record", () => {
 		const first = acquireSingletonPidfile(path, pidDeps());
 		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
