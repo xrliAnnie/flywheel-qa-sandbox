@@ -216,7 +216,9 @@ describe("FLY-887 worktree in-place takeover", () => {
 		);
 		expect(result.success).toBe(true);
 		expect(wt.removeIfExists).toHaveBeenCalled();
-		expect(wt.create).toHaveBeenCalled();
+		expect(wt.create).toHaveBeenCalledWith(
+			expect.objectContaining({ startPoint: HEAD }),
+		);
 	});
 
 	it("byte-compat: design phase → legacy create path even if registered", async () => {
@@ -243,7 +245,9 @@ describe("FLY-887 worktree in-place takeover", () => {
 			{ sessionRole: "implement", shareParentBranch: true, startPoint: HEAD },
 		);
 		expect(result.success).toBe(true);
-		expect(wt.create).toHaveBeenCalled();
+		expect(wt.create).toHaveBeenCalledWith(
+			expect.objectContaining({ startPoint: HEAD }),
+		);
 	});
 
 	it("byte-compat: non-three-stage (no shareParentBranch) → legacy create path", async () => {

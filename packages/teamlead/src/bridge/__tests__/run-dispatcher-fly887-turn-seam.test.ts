@@ -20,6 +20,7 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 	let commDir: string;
 	/** The TURN holder observed INSIDE blueprint.run (proves happens-before). */
 	let turnAtLaunch: { holder: string; phase: string } | null;
+	let startPointAtLaunch: string | undefined;
 
 	function makeRuntime(): ProjectRuntime {
 		return {
@@ -32,6 +33,7 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 					turnAtLaunch = t
 						? { holder: t.holder_exec_id, phase: t.phase }
 						: null;
+					startPointAtLaunch = ctx.startPoint;
 					// Confirm the ctx phase role matches (the seam keys on it).
 					void ctx.sessionRole;
 					return { success: true, sessionId: "s" };
@@ -45,11 +47,27 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 		};
 	}
 
-	function makeDispatcher(): RunDispatcher {
+	function makeDispatcher(
+		phaseRetryStartPointComputer?: (
+			issueId: string,
+			role: string,
+			projectName: string,
+		) =>
+			| { kind: "found"; sha: string }
+			| { kind: "missing" }
+			| { kind: "indeterminate"; error: string },
+	): RunDispatcher {
 		return new RunDispatcher(
 			new Map([["proj", makeRuntime()]]),
 			[],
 			RunnerAdmissionController.alwaysAdmit(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			phaseRetryStartPointComputer,
 		);
 	}
 
@@ -73,6 +91,7 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 		process.env.FLYWHEEL_COMM_DIR = commDir;
 		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = undefined;
 		turnAtLaunch = null;
+		startPointAtLaunch = undefined;
 		vi.spyOn(console, "log").mockImplementation(() => {});
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 	});
@@ -130,6 +149,57 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 		db.close();
 		expect(turn?.holder_exec_id).toBe(res.newExecutionId);
 		expect(turn?.epoch).toBe((oldEpoch ?? 0) + 1);
+	});
+
+	it("FLY-1257: a found phase branch tip is injected as retry ctx.startPoint", async () => {
+		const compute = vi.fn(() => ({
+			kind: "found" as const,
+			sha: "a".repeat(40),
+		}));
+		const dispatcher = makeDispatcher(compute);
+		await dispatcher.dispatch(retryRequest({ sessionRole: "implement" }));
+		await dispatcher.drain();
+		expect(compute).toHaveBeenCalledWith("issue-1", "implement", "proj");
+		expect(startPointAtLaunch).toBe("a".repeat(40));
+	});
+
+	it("FLY-1257: a confirmed-missing phase branch leaves retry ctx.startPoint absent", async () => {
+		const dispatcher = makeDispatcher(() => ({ kind: "missing" }));
+		await dispatcher.dispatch(retryRequest());
+		await dispatcher.drain();
+		expect(startPointAtLaunch).toBeUndefined();
+	});
+
+	it("FLY-1257: indeterminate git probe aborts before TURN transfer or Blueprint launch", async () => {
+		const seed = new CommDB(commDbPathForProject("proj"));
+		seed.grantTurn("issue-1", "old-exec", "design", 100);
+		seed.close();
+		const runtime = makeRuntime();
+		const onSpawnFailed = vi.fn();
+		const successorExecutionId = "probe-failure-exec";
+		const dispatcher = new RunDispatcher(
+			new Map([["proj", runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+			undefined,
+			undefined,
+			undefined,
+			async () => ({ admitted: true }),
+			{ commitLaunch: vi.fn(async () => ({ ok: true })), onSpawnFailed },
+			undefined,
+			() => ({ kind: "indeterminate", error: "git exit 128" }),
+		);
+		await expect(
+			dispatcher.dispatch(
+				retryRequest({ successorExecutionId }),
+			),
+		).rejects.toThrow(/phase retry startPoint.*indeterminate.*git exit 128/i);
+		expect(runtime.blueprint.run).not.toHaveBeenCalled();
+		const db = new CommDB(commDbPathForProject("proj"));
+		expect(db.getTurn("issue-1")?.holder_exec_id).toBe("old-exec");
+		expect(db.getSession(successorExecutionId)).toBeUndefined();
+		db.close();
+		expect(onSpawnFailed).toHaveBeenCalledWith(successorExecutionId);
 	});
 
 	it("FLY-1257: retry TURN grant failure aborts inflight + pre-registration + launch claim", async () => {
@@ -233,9 +303,15 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 	it("FLY-1257 byte-compat: keep-alive OFF phase retry calls no TURN grant", async () => {
 		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = "0";
 		const grantSpy = vi.spyOn(CommDB.prototype, "grantTurn");
-		const dispatcher = makeDispatcher();
+		const compute = vi.fn(() => ({
+			kind: "found" as const,
+			sha: "b".repeat(40),
+		}));
+		const dispatcher = makeDispatcher(compute);
 		await dispatcher.dispatch(retryRequest());
 		await dispatcher.drain();
 		expect(grantSpy).not.toHaveBeenCalled();
+		expect(compute).toHaveBeenCalledOnce();
+		expect(startPointAtLaunch).toBe("b".repeat(40));
 	});
 });

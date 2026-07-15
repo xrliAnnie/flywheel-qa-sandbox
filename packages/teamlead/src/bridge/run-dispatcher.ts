@@ -92,6 +92,18 @@ export type ResumeComputer = (
 	projectName: string,
 ) => ProgressResumeInfo | null;
 
+/** FLY-1257 M3: machine-readable branch-tip probe result for phase retries. */
+export type PhaseRetryStartPoint =
+	| { kind: "found"; sha: string }
+	| { kind: "missing" }
+	| { kind: "indeterminate"; error: string };
+
+export type PhaseRetryStartPointComputer = (
+	issueId: string,
+	role: string,
+	projectName: string,
+) => PhaseRetryStartPoint;
+
 import {
 	AdmissionDeferredError,
 	RunnerAdmissionController,
@@ -419,6 +431,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 		protected lifecycleAdmission?: LifecycleAdmissionFn,
 		/** FLY-1185 (Codex R1#5): pre-launch recheck + claim CAS hooks. */
 		protected lifecycleLaunchGuard?: LifecycleLaunchGuard,
+		/** FLY-1257 M3: recover the shared branch tip before a phase retry. */
+		protected phaseRetryStartPointComputer?: PhaseRetryStartPointComputer,
 	) {}
 
 	/** Shared admission gate — throws LifecycleParkedError on refusal. */
@@ -581,13 +595,42 @@ export class RetryDispatcher implements IRetryDispatcher {
 			preRegistrationVendor(runnerSpawn),
 		);
 
+		// FLY-1257 M3: every phase retry (independent of keep-alive) recovers
+		// branch B's current tip before either granting TURN or touching Blueprint.
+		// Only a confirmed missing branch may use WorktreeManager's fresh fallback;
+		// an indeterminate git/IO failure must never reset branch B to origin/main.
+		const isPhaseRetry =
+			req.shareParentBranch === true && isThreeStagePhaseRole(role);
+		let retryStartPoint: string | undefined;
+		if (isPhaseRetry) {
+			const computed = this.phaseRetryStartPointComputer?.(
+				req.issueId,
+				role,
+				req.projectName,
+			) ?? { kind: "missing" as const };
+			if (computed.kind === "indeterminate") {
+				this.abortPreLaunch(key, newExecutionId, req.projectName);
+				throw new Error(
+					`phase retry startPoint is indeterminate for ${role} on ${req.issueId}: ${computed.error}`,
+				);
+			}
+			if (computed.kind === "found") {
+				retryStartPoint = computed.sha.trim();
+				if (!retryStartPoint) {
+					this.abortPreLaunch(key, newExecutionId, req.projectName);
+					throw new Error(
+						`phase retry startPoint is indeterminate for ${role} on ${req.issueId}: found probe returned an empty sha`,
+					);
+				}
+			}
+		}
+
 		// FLY-1257 M2: retry is a real three-stage launch, so it must receive
 		// the shared-worktree TURN before Blueprint can start the runner's first
 		// self-check. grantTurn's upsert increments the epoch atomically, moving
 		// ownership from the predecessor to this successor.
 		if (
-			req.shareParentBranch === true &&
-			isThreeStagePhaseRole(role) &&
+			isPhaseRetry &&
 			threeStageKeepAliveEnabled()
 		) {
 			try {
@@ -614,6 +657,9 @@ export class RetryDispatcher implements IRetryDispatcher {
 			sessionRole: req.sessionRole,
 			// FLY-793: three-stage phases share one branch B (Bridge-internal).
 			shareParentBranch: req.shareParentBranch,
+			// FLY-1257 M3: found branch B tip; absent only when branch absence was
+			// confirmed (or no computer was injected on a legacy external dispatcher).
+			...(retryStartPoint && { startPoint: retryStartPoint }),
 			// Forward pre-fetched metadata so EventEnvelope retains title/identifier
 			issueTitle: req.issueTitle,
 			issueIdentifier: req.issueIdentifier,
@@ -869,6 +915,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		 */
 		private workflowShadow?: WorkflowShadowSeam,
 		private workflowClaimsAdmission?: WorkflowClaimsAdmissionSeam,
+		/** FLY-1257 M3: retry branch-tip recovery seam (production: run-infra). */
+		phaseRetryStartPointComputer?: PhaseRetryStartPointComputer,
 	) {
 		super(
 			blueprintsByProject,
@@ -877,6 +925,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			isCommitted,
 			lifecycleAdmission,
 			lifecycleLaunchGuard,
+			phaseRetryStartPointComputer,
 		);
 	}
 
