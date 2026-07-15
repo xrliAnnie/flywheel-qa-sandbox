@@ -59,6 +59,7 @@ import {
 	classifyDetection,
 	makeSubscriptionDetectionClassifier,
 } from "../account-heal/detection-classifier.js";
+import { quarantinePendingSwitches } from "../account-heal/pending-store.js";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -229,6 +230,7 @@ import {
 	resolveDoneThreadReconcileConfig,
 	startDoneThreadReconcileScheduler,
 } from "./done-thread-reconcile.js";
+import { attachDeliveredAlertLifecycles } from "./drained-alert-routing.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
 import { createExternalMergeReconciler } from "./external-merge-reconcile.js";
@@ -240,6 +242,7 @@ import {
 	handleFlagApply,
 	handleFlagStage,
 } from "./flag-routes.js";
+import { ConfirmTokenStore } from "./fleet-admin.js";
 import {
 	defaultFleetConsoleOptions,
 	FleetConsole,
@@ -348,6 +351,10 @@ import {
 import { ManagementSectionRegistry } from "./management-section-registry.js";
 import { createManagementSsotProviders } from "./management-ssot-providers.js";
 import { ManagementWriterRegistry } from "./management-writer.js";
+import {
+	handleManualQaApply,
+	handleManualQaStage,
+} from "./manual-qa-routes.js";
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
@@ -373,6 +380,10 @@ import {
 import { patchSessionParams } from "./proofshot-session.js";
 import { wirePublishBroker } from "./publish-broker/wire.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
+import {
+	quotaDaemonCutoverEnabled,
+	resolveQuotaDaemonBridgeMode,
+} from "./quota-daemon-cutover.js";
 import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
 import { createRepoMutationLock } from "./repo-mutation-lock.js";
 import {
@@ -430,6 +441,7 @@ import {
 	defaultHasGateResponse,
 	defaultIsAncestor,
 } from "./ship-gate-rebind.js";
+import { ShipRelevantDiffService } from "./ship-relevant-diff.js";
 import {
 	alertStaleBlockerToLead,
 	createStaleBlockerGuard,
@@ -937,6 +949,8 @@ export class SseBroadcaster {
 /** GEO-294 + FLY-91 Round 3: Options object for new Bridge dependencies. */
 export interface BridgeAppOptions {
 	vercelToken?: string;
+	/** FLY-1251: manual-QA confirm tokens (independent of Fleet console uptime). */
+	manualQaTokens?: ConfirmTokenStore;
 	/** FLY-1185: ship-entry lifecycle bundle built in startBridge. */
 	lifecycleInfra?: LifecycleShipInfra;
 	/** FLY-1185 §2.11: the shared per-repo mutation lock (startBridge-owned). */
@@ -1046,6 +1060,8 @@ export interface BridgeAppOptions {
 	 * (self-heal off = byte-compat).
 	 */
 	accountSwitchRoute?: { current?: AccountSwitchRuntime };
+	/** FLY-1256: authenticated /api/account-switch retirement gate. */
+	quotaDaemonCutover?: () => boolean;
 	/**
 	 * FLY-871 R3/C9: the /api/rescue route (mounted in createBridgeApp) reads this
 	 * holder at request time; startBridge sets `.current` only when the rescue
@@ -1389,6 +1405,59 @@ export function createBridgeApp(
 		apiToken: config.apiToken,
 		discordBotToken: config.discordBotToken,
 	});
+
+	// FLY-1251: manual QA is a server-owned enrollment, never a client-minted
+	// verdict or executor identity. The stage endpoint issues a single-use token
+	// bound to the exact {executionId, prHeadSha}; apply carries that token in a
+	// header so its JSON body remains the strict two-field schema. The token store
+	// is independent of Fleet console availability in production.
+	const manualQaTokens = opts?.manualQaTokens ?? opts?.fleetConsole?.tokens;
+	if (manualQaTokens) {
+		const requestHeaders = (
+			req: express.Request,
+		): Record<string, string | undefined> => ({
+			origin:
+				typeof req.headers.origin === "string" ? req.headers.origin : undefined,
+			referer:
+				typeof req.headers.referer === "string"
+					? req.headers.referer
+					: undefined,
+		});
+		app.post("/api/qa/manual-spawn/stage", (req, res) => {
+			const selfOrigin = loopbackSelfOrigin(req.headers.host);
+			if (!selfOrigin) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			if (!ffIsSameOrigin(requestHeaders(req), selfOrigin)) {
+				res.status(403).json({ error: "cross-origin" });
+				return;
+			}
+			const result = handleManualQaStage(manualQaTokens, req.body);
+			res.status(result.code).json(result.body);
+		});
+		app.post("/api/qa/manual-spawn", async (req, res) => {
+			const selfOrigin = loopbackSelfOrigin(req.headers.host);
+			if (!selfOrigin) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			if (!ffIsSameOrigin(requestHeaders(req), selfOrigin)) {
+				res.status(403).json({ error: "cross-origin" });
+				return;
+			}
+			const token = req.headers["x-flywheel-confirm-token"];
+			const result = await handleManualQaApply(
+				{
+					tokens: manualQaTokens,
+					coordinator: opts?.autoQaCoordinator?.current,
+				},
+				req.body,
+				typeof token === "string" ? token : undefined,
+			);
+			res.status(result.code).json(result.body);
+		});
+	}
 
 	// FLY-247 inc2a: Fleet console founder-admin surface (§2.2). Mounted BEFORE
 	// the `/api` Bearer middleware so `/api/fleet/*` never hits it — the console
@@ -3286,6 +3355,7 @@ export function createBridgeApp(
 			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 			createAccountSwitchRouter({
 				getRuntime: () => opts?.accountSwitchRoute?.current,
+				cutoverEnabled: opts?.quotaDaemonCutover,
 			}),
 		);
 	} else {
@@ -3424,6 +3494,39 @@ export async function startBridge(
 		store,
 		log: (message) => console.warn(message),
 	});
+
+	const shipRelevantDiffService = new ShipRelevantDiffService(store);
+	const ensureShipRelevantDiff = async (session: Session): Promise<void> => {
+		const head = session.pr_head_sha?.toLowerCase();
+		if (!head || !/^[0-9a-f]{40}$/.test(head)) return;
+		const project = projects.find(
+			(candidate) => candidate.projectName === session.project_name,
+		);
+		if (
+			!project ||
+			!project.projectRepo ||
+			!/^[^/]+\/[^/]+$/.test(project.projectRepo) ||
+			!Number.isSafeInteger(session.pr_number) ||
+			(session.pr_number ?? 0) <= 0
+		) {
+			store.deleteShipRelevantDiffSnapshot(session.execution_id, head);
+			return;
+		}
+		await shipRelevantDiffService.ensure({
+			executionId: session.execution_id,
+			repo: project.projectRepo,
+			prNumber: session.pr_number!,
+			prHeadSha: head,
+			api: async (path) => {
+				const { stdout } = await execFileP("gh", ["api", path], {
+					cwd: project.projectRoot,
+					timeout: 15_000,
+					maxBuffer: 5 * 1024 * 1024,
+				});
+				return JSON.parse(stdout) as unknown;
+			},
+		});
+	};
 
 	// FLY-1082 (Task 2.2): the fleet pressure-hold gates runner admission —
 	// late-bind the probe now that the store exists. Fail-open inside tryAdmit.
@@ -4449,6 +4552,22 @@ export async function startBridge(
 	// channel). Undefined ⇒ route returns 409 needs_human (byte-compat).
 	const rescueRouteHolder: { current?: RescueRouteRuntime } = {};
 
+	// FLY-1256: freeze one startup mode for every in-process execution face.
+	// setup flips CUTOVER only after the external daemon proves healthy, then
+	// restarts Bridge; a process never straddles modes.
+	const claudeAccountPoolConfigured = accountPoolConfigured();
+	const quotaBridgeMode = resolveQuotaDaemonBridgeMode(
+		claudeAccountPoolConfigured,
+	);
+	if (quotaBridgeMode.quarantinePending) {
+		const quarantined = await quarantinePendingSwitches();
+		if (quarantined) {
+			console.warn(
+				`[Bridge] FLY-1256 quarantined legacy account-switch pending store: ${quarantined}`,
+			);
+		}
+	}
+
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -4551,6 +4670,7 @@ export async function startBridge(
 			stuckDetectorHolder,
 			stuckLatchTtlMs: stuckLatchTtlMs(),
 			fleetConsole,
+			manualQaTokens: fleetConsole?.tokens ?? new ConfirmTokenStore(),
 			// FLY-516: /health reads this; close() flips it at teardown start.
 			shutdownStateHolder,
 			// FLY-623: event router reads this to clear reconnecting on a real event.
@@ -4565,6 +4685,7 @@ export async function startBridge(
 			accountRotationPost: accountRotationPostHolder,
 			// FLY-871 R2/C5: /api/account-switch route reads this holder.
 			accountSwitchRoute: accountSwitchRouteHolder,
+			quotaDaemonCutover: quotaDaemonCutoverEnabled,
 			rescueRoute: rescueRouteHolder,
 			// FLY-907: unified issue-display refresher (populated post-listen).
 			issueDisplayRefresh: issueDisplayRefreshHolder,
@@ -5350,20 +5471,14 @@ export async function startBridge(
 			.filter(Boolean),
 	);
 	// FLY-1041 Chunk 5: ONE hold guard closure injected into every founder
-	// approval source (text / ✅ reaction / voice) so they cannot drift —
-	// kill-switch FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0 (read per call) restores
-	// the pre-FLY-1041 held-writes-anyway behavior for all three at once.
+	// approval source (text / ✅ reaction / voice) so they cannot drift.
 	const founderApprovalIsHeld = (executionId: string): boolean =>
 		founderApprovalHoldGuard(store, store.getSession(executionId));
 
 	// FLY-1099 §4.1: the reason-classified hold face (same predicate order as
-	// isReviewHeld — shared implementation, cannot drift). The kill-switch
-	// FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0 keeps its FLY-1041 semantics: holds are
-	// ignored entirely (the deferral face then reports "not held" too).
+	// isReviewHeld — shared implementation, cannot drift).
 	const founderHoldReasonFor = (executionId: string) =>
-		process.env.FLYWHEEL_ATTRIBUTION_HOLD_ALIGN === "0"
-			? null
-			: reviewHoldReason(store, store.getSession(executionId));
+		reviewHoldReason(store, store.getSession(executionId));
 	// FLY-1099: current canonical founder id (same derivation the factory uses).
 	const founderCanonicalId = (): string | undefined =>
 		deriveCanonicalFounderId(
@@ -6162,6 +6277,7 @@ export async function startBridge(
 		projects,
 		store,
 		runtimeRegistry: registry,
+		ensureShipRelevantDiff,
 		// FLY-1048 (A6): gap-scan piggyback (zero new timer; env-gated inside).
 		onGapScanTick: gapScanTick,
 		gapScanEveryNTicks: (() => {
@@ -6534,6 +6650,7 @@ export async function startBridge(
 						issueLabels: parseJsonStringArray(session.issue_labels),
 					}),
 				effects: autoQaEffects,
+				ensureShipRelevantDiff,
 				// FLY-827: the codex hard-gate kill-switch is read live from
 				// process.env (the direct feature-flag toggle mutates it in place).
 				env: process.env,
@@ -7405,8 +7522,8 @@ export async function startBridge(
 
 	// FLY-696: hoisted so both the Hub's repair path AND the account-switch
 	// watchdog (piggybacked on onPollComplete below, no new timer) share one
-	// DiscordOps + one accountSwitch instance. accountSwitch is gated on
-	// the account-pool presence (FLY-1243; absent = byte-compat → undefined).
+	// DiscordOps + one accountSwitch instance. accountSwitch is gated on both
+	// pool presence and FLY-1256 legacy mode (CUTOVER retires Bridge execution).
 	const alertDiscordOps = createDiscordOps(() => {
 		// FLY-927 (D2): single sender identity — when set, Hub thread operations
 		// use the SAME one identity as the root alert (no repair-chain fan-out).
@@ -7427,10 +7544,9 @@ export async function startBridge(
 		await alertDiscordOps.postToThread(threadId, content);
 	};
 	// FLY-1243: FLYWHEEL_ACCOUNT_SELF_HEAL retired (固化 default-on). The Claude
-	// account pool file is now the de-facto switch — present ⇒ self-heal wires
-	// (production); absent ⇒ undefined = byte-compat for deployments that never
-	// provisioned a pool (QA slots / sub / joycon), no quota scan, no switch.
-	const accountSwitchRepair = accountPoolConfigured()
+	// account pool file is the legacy switch signal; FLY-1256 CUTOVER supersedes
+	// it and leaves the external daemon as the only account-switch executor.
+	const accountSwitchRepair = quotaBridgeMode.attachAccountSwitch
 		? makeAccountSwitchRepair({
 				switchDeps: makeClaudeProfileSwitchDeps({
 					binPath: claudeProfileBinPath(),
@@ -7440,11 +7556,9 @@ export async function startBridge(
 
 	// FLY-696 M1/④: now that the unified-channel DiscordOps exists, late-bind the
 	// account_rotation Alerts-post the event router reads. Reuses the SAME
-	// post-to-thread path the account-switch watchdog uses. Gated on the SAME
-	// self-heal switch as the rest of FLY-696 (Codex R1 MED-2: flag off = the
-	// default MUST be byte-compatible, no new Alerts behavior); no unified
-	// channel likewise leaves the holder undefined → the event is acked, not
-	// posted.
+	// post-to-thread path the legacy account-switch watchdog uses. Manual/profile
+	// rotation notices and login rescue remain wired through CUTOVER; only the
+	// three automatic account-switch execution faces are retired.
 	// FLY-871 R3/C9: the infra self-heal rescue runtime (built inside the same
 	// self-heal gate below). Declared here so the account-switch watchdog tick
 	// (onPollComplete, later in this closure) can trigger the post-switch sweep.
@@ -7456,7 +7570,7 @@ export async function startBridge(
 	let postSwitchResult:
 		| ((detail: string, disposition?: RepairDisposition) => Promise<void>)
 		| undefined;
-	if (accountSwitchRepair && unifiedAlertChannelId) {
+	if (claudeAccountPoolConfigured && unifiedAlertChannelId) {
 		// The Alerts post is authoritative and unchanged in the dormant states;
 		// on top of it:
 		//  - needs_human (no_account / failed / not-attemptable) +
@@ -7498,34 +7612,37 @@ export async function startBridge(
 				await postInfraNotifyDigest(formatRotationDigest(rotation));
 			}
 		};
-		// FLY-871 R2/C5: bind the /api/account-switch runtime (same self-heal gate).
+		// FLY-871 R2/C5 + FLY-1256: bind the runtime only in legacy mode.
 		// The route claims a pending record + reuses accountSwitchRepair.executeSwitch,
 		// posts the result to the Alerts channel, and audits before/after to lead_events.
-		accountSwitchRouteHolder.current = {
-			repair: accountSwitchRepair,
-			postResult: postSwitchResult,
-			audit: (e) =>
-				store.appendLeadEvent(
-					e.actorBotId,
-					`account-switch:${e.phase}:${e.key}`,
-					`account_switch_${e.phase}`,
-					JSON.stringify(e),
-				),
-			// FLY-927 (Task 2.3): the atomic pending-switch claim ACKs the matching
-			// ACTIVE ticket — exact event-id correlation, so a stale episode can
-			// never be acked; legacy rows (NULL ticket_status) untouched.
-			ackTicket: (sourceAlertId) => {
-				const row = store.getActiveAlertThreadByEventId(sourceAlertId);
-				if (row?.ticket_status) {
-					store.setTicketStatus(row.correlation_key, "ACK");
-				}
-			},
-		};
+		if (accountSwitchRepair) {
+			accountSwitchRouteHolder.current = {
+				repair: accountSwitchRepair,
+				postResult: postSwitchResult,
+				audit: (e) =>
+					store.appendLeadEvent(
+						e.actorBotId,
+						`account-switch:${e.phase}:${e.key}`,
+						`account_switch_${e.phase}`,
+						JSON.stringify(e),
+					),
+				// FLY-927 (Task 2.3): the atomic pending-switch claim ACKs the matching
+				// ACTIVE ticket — exact event-id correlation, so a stale episode can
+				// never be acked; legacy rows (NULL ticket_status) untouched.
+				ackTicket: (sourceAlertId) => {
+					const row = store.getActiveAlertThreadByEventId(sourceAlertId);
+					if (row?.ticket_status) {
+						store.setTicketStatus(row.correlation_key, "ACK");
+					}
+				},
+			};
+		}
 
 		// FLY-871 R3/C9: build the infra self-heal rescue runtime — binds the pure
 		// rescue orchestration (rescue.ts) to the real Bridge primitives. Consumed
 		// by the /api/rescue route (W3) and the post-switch sweep (W5). Same
-		// self-heal gate ⇒ dormant + byte-compat when the flag is off.
+		// Pool + unified-channel gate remains independent of quota CUTOVER: login
+		// rescue is not an account-switch execution face and must stay available.
 		const resolveRescueLeadId = defaultResolveLeadId(projects);
 		// The founder's Discord id for a REAL @-ping on a rescue escalation (snowflake
 		// only; unset/malformed ⇒ undefined = degrade to no-mention, like the Hub).
@@ -7708,9 +7825,11 @@ export async function startBridge(
 		// FLY-871 R3/W5: on a successful bot-claimed switch (the /api/account-switch
 		// route), sweep the incident-window login-stuck sessions. The watchdog-fired
 		// switch wires the same sweep below (onPollComplete).
-		accountSwitchRouteHolder.current.onSwitchSuccess = async () => {
-			await rescueRuntime?.postSwitchRescueSweep();
-		};
+		if (accountSwitchRouteHolder.current) {
+			accountSwitchRouteHolder.current.onSwitchSuccess = async () => {
+				await rescueRuntime?.postSwitchRescueSweep();
+			};
+		}
 	}
 
 	// FLY-1082 (Task 3.2): runbook-gap Linear wiring — FLY team / Flywheel
@@ -8251,11 +8370,10 @@ export async function startBridge(
 		isReconnecting: (execId) =>
 			reconnectHolder.current?.isReconnecting(execId) ?? false,
 		// FLY-696 M1/③: runner-side quota scan, piggybacked on this poll's capture
-		// (no new timer). Gated on the SAME switch (accountSwitchRepair exists iff
-		// account pool provisioned; FLY-1243) — absent ⇒ undefined ⇒ byte-compat.
-		// Routes a real runner cap through the shared alert sink (Hub threading +
-		// AutoRepairBot enqueue), with the §3.3 transient-529 short-circuit inside.
-		runnerQuotaScan: accountSwitchRepair
+		// (no new timer). Legacy mode preserves the pool gate byte-for-byte; CUTOVER
+		// deliberately keeps this detector alive while omitting accountSwitchRepair,
+		// so a cap still alerts but can no longer enqueue a Bridge-side switch.
+		runnerQuotaScan: quotaBridgeMode.runRunnerQuotaScan
 			? (() => {
 					const quotaScan = makeRunnerQuotaScan({
 						projects,
@@ -8418,7 +8536,11 @@ export async function startBridge(
 					`[auto-qa] reconcileCodexHoldNudges (poll) failed: ${(err as Error).message}`,
 				);
 			}
-			if (accountSwitchRepair && unifiedAlertChannelId) {
+			if (
+				quotaBridgeMode.runAccountSwitchWatchdog &&
+				accountSwitchRepair &&
+				unifiedAlertChannelId
+			) {
 				try {
 					await accountSwitchWatchdogTick({
 						now: () => Date.now(),
@@ -8569,19 +8691,9 @@ export async function startBridge(
 				// thread + ticket lifecycle — otherwise every over-cap (rate-limited /
 				// transient-retry) alert silently bypasses the Hub. Best-effort each.
 				if (alertHub) {
-					for (const d of delivered) {
-						try {
-							await alertHub.attachThreadForDelivered(
-								d.payload,
-								d.channelId,
-								d.messageId,
-							);
-						} catch (err) {
-							console.warn(
-								`[Bridge] drained-thread attach failed: ${(err as Error).message}`,
-							);
-						}
-					}
+					await attachDeliveredAlertLifecycles(delivered, alertHub, (message) =>
+						console.warn(`[Bridge] ${message}`),
+					);
 				}
 				// Dead-letters happened → surface (Discord-independent).
 				if (deadLettered > 0) {

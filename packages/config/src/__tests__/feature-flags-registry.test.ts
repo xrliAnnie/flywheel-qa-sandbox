@@ -85,4 +85,21 @@ describe("feature-flag registry invariants", () => {
 		expect(p?.default).toBe(false);
 		expect(p?.note ?? "").toMatch(/Annie/i);
 	});
+
+	it("quota daemon cutover is a temporary readonly boot flag tied to FLY-1284", () => {
+		const cutover = FEATURE_FLAGS.find(
+			(f) => f.envVar === "FLYWHEEL_QUOTA_DAEMON_CUTOVER",
+		);
+		expect(cutover).toMatchObject({
+			name: "quota_daemon_cutover",
+			category: "feature",
+			polarity: "opt_in",
+			default: false,
+			toggleable: "readonly",
+		});
+		expect(cutover?.readSites).toEqual([
+			expect.objectContaining({ timing: "object_construction" }),
+		]);
+		expect(cutover?.note).toContain("FLY-1284");
+	});
 });

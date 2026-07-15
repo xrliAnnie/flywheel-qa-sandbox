@@ -57,7 +57,7 @@ import {
 	runDeferredApprovalRebindPass,
 } from "./approval-signal/deferred-approval.js";
 import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
-import { isReviewHeld, reviewHoldReason } from "./auto-qa-held.js";
+import { type ReviewHoldReason, reviewHoldReason } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 // FLY-927 (Task 3.3): truthful park wording for the lead-pending nudge.
 import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
@@ -143,6 +143,8 @@ export interface GatePollerConfig {
 	projects: ProjectEntry[];
 	store: StateStore;
 	runtimeRegistry: RuntimeRegistry;
+	/** FLY-1251: async producer for the exact-head ship-diff hold snapshot. */
+	ensureShipRelevantDiff?: (session: Session) => Promise<void> | void;
 	/** FLY-91: Enable per-issue chat thread hints in gate_question payloads. */
 	chatThreadsEnabled?: boolean;
 	/**
@@ -468,6 +470,51 @@ export class GatePoller {
 	}
 
 	/**
+	 * FLY-1251 R2: a code-bearing or unclassifiable PR stays founder-hidden.
+	 * The caller has already refreshed the server-owned classifier; emit a
+	 * Lead-only deterministic alert. LeadAlertNotifier's durable claim makes the
+	 * stable event id the once-per-(execution, head, reason) marker across restarts.
+	 */
+	private async handleHeldReviewGate(
+		lead: LeadConfig,
+		session: Session,
+		reason: ReviewHoldReason,
+	): Promise<void> {
+		if (reason !== "qa_evidence_missing" && reason !== "qa_evidence_unknown") {
+			return;
+		}
+		const head = session.pr_head_sha?.toLowerCase() ?? "unknown";
+		const issue = session.issue_identifier ?? session.issue_id;
+		const work: Promise<unknown>[] = [];
+		if (this.config.leadAlertSink) {
+			work.push(
+				this.config.leadAlertSink.alert({
+					leadId: lead.agentId,
+					projectName: session.project_name,
+					eventId: `ship-readiness-hold:${session.execution_id}:${head}:${reason}`,
+					eventType: "auto_qa_stuck",
+					title: `Ship readiness held — ${issue}`,
+					body:
+						`Founder approval remains hidden for ${issue} because ${reason}. ` +
+						"Bridge will retry the server-owned PR classification. For a code-bearing run, use the two-step same-origin flow: " +
+						"POST /api/qa/manual-spawn/stage with executionId and prHeadSha, then POST /api/qa/manual-spawn with the returned x-flywheel-confirm-token header. " +
+						"Both requests require Origin: http://127.0.0.1:<port> matching the Bridge origin.",
+					severity: "warning",
+					sessionKey: session.execution_id,
+				}),
+			);
+		}
+		const results = await Promise.allSettled(work);
+		for (const result of results) {
+			if (result.status === "rejected") {
+				console.warn(
+					`[GatePoller] ship-readiness hold handling failed for ${session.execution_id}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+				);
+			}
+		}
+	}
+
+	/**
 	 * FLY-1099 §7.2: pass-level alert routing — the unified infra alert owner:
 	 * the `flywheel` project's first lead when present, else the first
 	 * configured (project, lead) pair.
@@ -706,11 +753,19 @@ export class GatePoller {
 							// must survive so it can be surfaced once QA passes; verify-approval
 							// remains bound to it). Same isQaHeld predicate as event-route +
 							// HeartbeatService so the three surfaces cannot drift.
-							if (
-								question.checkpoint === "approve_to_ship" &&
-								isReviewHeld(this.config.store, session)
-							) {
-								continue;
+							if (question.checkpoint === "approve_to_ship") {
+								try {
+									await this.config.ensureShipRelevantDiff?.(session);
+								} catch (err) {
+									console.warn(
+										`[GatePoller] ship-diff refresh failed for ${session.execution_id}: ${err instanceof Error ? err.message : String(err)}`,
+									);
+								}
+								const holdReason = reviewHoldReason(this.config.store, session);
+								if (holdReason !== null) {
+									await this.handleHeldReviewGate(lead, session, holdReason);
+									continue;
+								}
 							}
 							// FLY-605 Part A (Codex R2 #3): relayToLead and the founder-thread
 							// fallback get SEPARATE try/catch so a Lead-runtime throw from the

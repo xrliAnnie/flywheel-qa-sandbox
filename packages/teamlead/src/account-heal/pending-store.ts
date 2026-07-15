@@ -13,6 +13,7 @@
 
 import {
 	closeSync,
+	existsSync,
 	fsyncSync,
 	mkdirSync,
 	openSync,
@@ -22,6 +23,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { withMkdirLock } from "./mkdir-lock.js";
 
 export interface PendingSwitch {
 	key: string;
@@ -122,6 +124,37 @@ export function claimPending(
 	rec.claimedBy = botId;
 	writePending(all, path);
 	return true;
+}
+
+export interface QuarantinePendingSwitchesOpts {
+	path?: string;
+	lockPath?: string;
+	now?: () => number;
+	withLock?: <T>(lockPath: string, fn: () => Promise<T>) => Promise<T>;
+}
+
+/**
+ * Atomically retire the entire legacy queue under its shared lock. Renaming,
+ * rather than deleting, keeps an audit trail while making every old key
+ * unclaimable by both the HTTP route and watchdog.
+ */
+export async function quarantinePendingSwitches(
+	opts: QuarantinePendingSwitchesOpts = {},
+): Promise<string | undefined> {
+	const path = opts.path ?? defaultPendingPath();
+	const lockPath = opts.lockPath ?? `${path}.lock`;
+	const withLock = opts.withLock ?? withMkdirLock;
+	const now = opts.now ?? Date.now;
+	return withLock(lockPath, async () => {
+		if (!existsSync(path)) return undefined;
+		const stamp = new Date(now()).toISOString().replace(/[-:.]/g, "");
+		const base = `${path}.quarantine-${stamp}`;
+		let target = base;
+		let suffix = 0;
+		while (existsSync(target)) target = `${base}.${++suffix}`;
+		renameSync(path, target);
+		return target;
+	});
 }
 
 /** Records past their deadline that no bot has claimed — the watchdog fires these. */

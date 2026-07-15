@@ -101,6 +101,16 @@ export function mergeBlockPointerText(): string {
 	);
 }
 
+export function readinessHoldPointerText(
+	holdReason: "qa_evidence_missing" | "qa_evidence_unknown",
+): string {
+	const label = NON_DEFERRABLE_HOLD_LABELS[holdReason];
+	return (
+		`这个 PR 现在还不能批准(${label})——这条批准没有被暂存。` +
+		"等当前 head 的独立 QA 证据确认通过后,请在新的批准卡上重新确认。"
+	);
+}
+
 export function deferredOffExplainerText(holdReason: ReviewHoldReason): string {
 	const label =
 		NON_DEFERRABLE_HOLD_LABELS[holdReason] ??
@@ -263,7 +273,11 @@ export function makeDeferralSupport(args: {
 				const text =
 					a.kind === "merge_block"
 						? mergeBlockPointerText()
-						: deferredOffExplainerText(a.holdReason);
+						: a.kind === "readiness_hold" &&
+								(a.holdReason === "qa_evidence_missing" ||
+									a.holdReason === "qa_evidence_unknown")
+							? readinessHoldPointerText(a.holdReason)
+							: deferredOffExplainerText(a.holdReason);
 				store.insertFounderAction({
 					actionKey: heldReplyActionKey(a.questionId, a.msgId),
 					kind: "held_reply",

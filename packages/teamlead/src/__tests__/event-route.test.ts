@@ -551,13 +551,34 @@ describe("Event route — EventFilter integration", () => {
 	it("session_completed + needs_review → runtime.deliver called (high priority)", async () => {
 		// Start session first
 		await postEvent();
+		const head = "a".repeat(40);
+		store.patchSessionMetadata("exec-1", {
+			pr_head_sha: head,
+			pr_number: 42,
+		});
+		store.putShipRelevantDiffSnapshot({
+			execution_id: "exec-1",
+			pr_head_sha: head,
+			repo: "xrliAnnie/GeoForge3D",
+			pr_number: 42,
+			base_ref: "main",
+			base_oid: "b".repeat(40),
+			classifier_version: 1,
+			ship_relevant: 0,
+			file_count: 1,
+			sample_paths: ["engineering/doc/GEO-95/plan.md"],
+		});
 		// Complete with needs_review
 		await postEvent({
 			event_id: "evt-c1",
 			event_type: "session_completed",
 			payload: {
 				decision: { route: "needs_review", reasoning: "has changes" },
-				evidence: { commitCount: 1 },
+				evidence: {
+					commitCount: 1,
+					headSha: head,
+					landingStatus: { status: "open", prNumber: 42 },
+				},
 				summary: "did stuff",
 			},
 		});

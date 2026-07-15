@@ -57,15 +57,17 @@ export interface SelectInput {
 	scope: "5h" | "weekly" | "both" | null;
 	currentName: string;
 	now: Date;
+	/** Authoritative quota-verified ranking. Present means unlisted accounts are ineligible. */
+	preferredOrder?: string[];
 }
 
-function isAuthUnusable(a: AccountEntry): boolean {
+export function isAuthUnusable(a: AccountEntry): boolean {
 	return Boolean(
 		a.authExpired || a.refreshTokenInvalid || a.profileVerifyFailed,
 	);
 }
 
-function isQuotaUsable(a: AccountEntry, nowMs: number): boolean {
+export function isQuotaUsable(a: AccountEntry, nowMs: number): boolean {
 	if (a.quotaExhaustedUntil === null) return true;
 	const until = Date.parse(a.quotaExhaustedUntil);
 	return Number.isNaN(until) || until <= nowMs;
@@ -87,6 +89,17 @@ export function selectNextAccount(
 			isQuotaUsable(a, nowMs),
 	);
 	if (candidates.length === 0) return null;
+	if (input.preferredOrder !== undefined) {
+		const rank = new Map(
+			input.preferredOrder.map((name, index) => [name, index]),
+		);
+		const verified = candidates
+			.filter((account) => rank.has(account.name))
+			.sort(
+				(a, b) => (rank.get(a.name) as number) - (rank.get(b.name) as number),
+			);
+		return verified[0]?.name ?? null;
+	}
 
 	if (input.scope === "weekly" || input.scope === "both") {
 		// Soonest weekly reset first; unknown (null) reset sorts last.

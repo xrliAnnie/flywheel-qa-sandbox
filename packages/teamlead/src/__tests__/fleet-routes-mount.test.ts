@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CanonicalRequest } from "../bridge/fleet-admin.js";
 import { FleetConsole } from "../bridge/fleet-console.js";
 import { ManagementChangeCoordinator } from "../bridge/management-change-coordinator.js";
@@ -84,6 +84,7 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 	let baseUrl: string;
 	let dir: string;
 	let console_: FleetConsole;
+	let manualSpawnQa: ReturnType<typeof vi.fn>;
 
 	beforeEach(async () => {
 		dir = mkdtempSync(join(tmpdir(), "fleet-mount-"));
@@ -162,6 +163,10 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 			}),
 		);
 		store = await StateStore.create(":memory:");
+		manualSpawnQa = vi.fn(async () => ({
+			status: "spawned" as const,
+			qaExecutionId: "qa-server-owned",
+		}));
 		const app = createBridgeApp(
 			store,
 			testProjects,
@@ -179,7 +184,12 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 			undefined,
 			undefined,
 			undefined,
-			{ fleetConsole: console_ },
+			{
+				fleetConsole: console_,
+				autoQaCoordinator: {
+					current: { manualSpawnQa } as never,
+				},
+			},
 		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
@@ -309,6 +319,36 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 			body: JSON.stringify({}),
 		});
 		expect(badApply.status).toBe(400);
+	});
+
+	it("FLY-1251: manual QA stage→spawn is same-origin, token-bound, and rejects executor injection", async () => {
+		const input = { executionId: "main-1", prHeadSha: "a".repeat(40) };
+		const rejected = await fetch(`${baseUrl}/api/qa/manual-spawn/stage`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Origin: baseUrl },
+			body: JSON.stringify({ ...input, qaExecutionId: "qa-attacker" }),
+		});
+		expect(rejected.status).toBe(400);
+
+		const stagedResponse = await fetch(`${baseUrl}/api/qa/manual-spawn/stage`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Origin: baseUrl },
+			body: JSON.stringify(input),
+		});
+		expect(stagedResponse.status).toBe(200);
+		const staged = (await stagedResponse.json()) as { confirmToken: string };
+
+		const applied = await fetch(`${baseUrl}/api/qa/manual-spawn`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Origin: baseUrl,
+				"x-flywheel-confirm-token": staged.confirmToken,
+			},
+			body: JSON.stringify(input),
+		});
+		expect(applied.status).toBe(202);
+		expect(manualSpawnQa).toHaveBeenCalledWith("main-1", "a".repeat(40));
 	});
 
 	it("stage→apply happy path: same-origin, confirmToken, launching+spawn (202)", async () => {
