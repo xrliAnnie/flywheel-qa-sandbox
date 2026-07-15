@@ -12,6 +12,7 @@ import {
 	type ManagementExtensionSection,
 	type ManagementFlagView,
 	type ManagementProjectView,
+	type ManagementRunnerDefaultView,
 	type ManagementSnapshotV1,
 	type ManagementSourceKind,
 	type PresentationGroupView,
@@ -26,6 +27,10 @@ export interface ManagementSnapshotFragment {
 	/** Provider-owned project sections joined after all authority reads complete. */
 	projectDags?: Array<{ projectName: string; dags: ManagementDagView[] }>;
 	projectCrons?: Array<{ projectName: string; crons: ManagementCronView[] }>;
+	projectRunnerDefaults?: Array<{
+		projectName: string;
+		runnerDefault: ManagementRunnerDefaultView;
+	}>;
 	unassignedCrons?: ManagementCronView[];
 }
 
@@ -65,6 +70,10 @@ export function composeManagementSnapshot(input: {
 		projectName: string;
 		crons: ManagementCronView[];
 	}> = [];
+	const projectRunnerDefaults: Array<{
+		projectName: string;
+		runnerDefault: ManagementRunnerDefaultView;
+	}> = [];
 	const unassignedCrons: ManagementCronView[] = [];
 
 	for (const provider of [...input.providers].sort((a, b) =>
@@ -85,6 +94,9 @@ export function composeManagementSnapshot(input: {
 			Object.assign(modelCatalog, result.fragment.modelCatalog ?? {});
 			projectDags.push(...(result.fragment.projectDags ?? []));
 			projectCrons.push(...(result.fragment.projectCrons ?? []));
+			projectRunnerDefaults.push(
+				...(result.fragment.projectRunnerDefaults ?? []),
+			);
 			unassignedCrons.push(...(result.fragment.unassignedCrons ?? []));
 		} catch (error) {
 			sources.push({
@@ -110,6 +122,11 @@ export function composeManagementSnapshot(input: {
 		if (!project) continue;
 		project.crons.push(...section.crons);
 		project.crons.sort((a, b) => a.sourceHint.localeCompare(b.sourceHint));
+	}
+	for (const section of projectRunnerDefaults) {
+		const project = projectsByName.get(section.projectName);
+		if (!project) continue;
+		project.runnerDefault = section.runnerDefault;
 	}
 	unassignedCrons.sort((a, b) => a.sourceHint.localeCompare(b.sourceHint));
 	projects.sort((a, b) => a.name.localeCompare(b.name));

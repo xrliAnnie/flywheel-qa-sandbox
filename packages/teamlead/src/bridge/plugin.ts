@@ -332,6 +332,11 @@ import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { fileSourceRevision } from "./management-console-contract.js";
 import { createManagementCronProvider } from "./management-cron-source.js";
 import { createManagementDagProvider } from "./management-dag-source.js";
+import {
+	createManagementFlagProvider,
+	createManagementRunnerProvider,
+	managementFlagRevision,
+} from "./management-existing-writers.js";
 import { createManagementSsotProviders } from "./management-ssot-providers.js";
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
@@ -3488,6 +3493,7 @@ export async function startBridge(
 			// refresh whenever the file stamp changes (runner-config CLI writes are
 			// visible on the next snapshot, no Bridge restart).
 			const ffConfigCache = new ProjectConfigCache();
+			const managementEnvPath = join(homedir(), ".flywheel", ".env");
 			void ffConfigCache.get(managementProjects).catch(() => {});
 			const refreshManagementSources = async () => {
 				const nextBytes = ffReadFileSync(managementProjectsPath, "utf-8");
@@ -3529,6 +3535,27 @@ export async function startBridge(
 							reader: store,
 							projectNames: () =>
 								managementProjects.map((project) => project.projectName),
+						}),
+						createManagementRunnerProvider({
+							projects: () => managementProjects,
+							projectConfigs: () => ffConfigCache.current(),
+						}),
+						createManagementFlagProvider({
+							views: () =>
+								resolveAllFlags({
+									env: process.env,
+									projectConfigs: ffConfigCache.current(),
+								}),
+							revision: () =>
+								managementFlagRevision(
+									ffReadFileSync(managementEnvPath, "utf-8"),
+									process.env,
+								),
+							projectNames: () =>
+								managementProjects.map((project) => project.projectName),
+							projectRevision: (projectName) =>
+								ffConfigCache.current().get(projectName)?.revision ??
+								"registry:config-missing",
 						}),
 						createManagementCronProvider({
 							launchAgentsDir: join(homedir(), "Library", "LaunchAgents"),
