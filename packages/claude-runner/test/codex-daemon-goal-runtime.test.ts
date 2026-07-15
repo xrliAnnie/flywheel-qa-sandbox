@@ -232,6 +232,49 @@ describe("CodexDaemonGoalRuntime", () => {
 		expect(h.stops).toBe(1); // the dead session was torn down
 	});
 
+	it("FLY-1257: daemon restart forwards the same durable gate-hold callbacks to the resumed goal loop", async () => {
+		const h = makeHarness({
+			runGoalScript: [
+				new GoalRunError("socket died while held", "transport_closed"),
+				COMPLETE,
+			],
+		});
+		const seen: Array<{
+			read: unknown;
+			write: unknown;
+			isWaiting: unknown;
+		}> = [];
+		const original = h.opts.runGoalFn as NonNullable<
+			CodexDaemonGoalRuntimeOptions["runGoalFn"]
+		>;
+		const rt = new CodexDaemonGoalRuntime({
+			...h.opts,
+			runGoalFn: (async (client, input, events) => {
+				seen.push({
+					read: input.readGateHoldLatch,
+					write: input.writeGateHoldLatch,
+					isWaiting: input.isWaiting,
+				});
+				return original(client, input, events);
+			}) as CodexDaemonGoalRuntimeOptions["runGoalFn"],
+		});
+		const read = () => true;
+		const write = (_held: boolean) => {};
+		const isWaiting = () => true;
+		const out = await rt.runGoal({
+			objective: "x",
+			readGateHoldLatch: read,
+			writeGateHoldLatch: write,
+			isWaiting,
+		});
+		expect(out.result.status).toBe("complete");
+		expect(seen).toEqual([
+			{ read, write, isWaiting },
+			{ read, write, isWaiting },
+		]);
+		rt.stop();
+	});
+
 	it("FLY-1236: same-thread in-run restart re-sends the exact same kick (rebuilt thread never goes goal-only)", async () => {
 		// A mid-goal daemon death resumes the SAME thread, but runGoalToTerminal
 		// re-runs setGoal + startTurn every iteration — so the full working kick is

@@ -121,6 +121,10 @@ export interface RunGoalInput {
 	waitingTimeoutMs?: number;
 	/** FLY-1188 MED-7: is this run currently blocked on an OPEN gate? */
 	isWaiting?: () => boolean;
+	/** FLY-1257: durable blocked-on-gate latch reader, forwarded across restarts. */
+	readGateHoldLatch?: () => boolean;
+	/** FLY-1257: durable blocked-on-gate latch writer, forwarded across restarts. */
+	writeGateHoldLatch?: (held: boolean) => void;
 	/**
 	 * FLY-1188 M4d: fired the moment OUR thread is confirmed ready (right after
 	 * `ensureThread` resolves the authoritative own-thread id) — NOT a raw
@@ -499,6 +503,12 @@ export class CodexDaemonGoalRuntime {
 								? { waitingTimeoutMs: input.waitingTimeoutMs }
 								: {}),
 							...(input.isWaiting ? { isWaiting: input.isWaiting } : {}),
+							...(input.readGateHoldLatch
+								? { readGateHoldLatch: input.readGateHoldLatch }
+								: {}),
+							...(input.writeGateHoldLatch
+								? { writeGateHoldLatch: input.writeGateHoldLatch }
+								: {}),
 							...(input.onGoalActive
 								? { onGoalActive: input.onGoalActive }
 								: {}),

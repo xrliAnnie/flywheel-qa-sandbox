@@ -11,6 +11,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	readdirSync,
 	realpathSync,
 	rmSync,
 	writeFileSync,
@@ -789,6 +790,65 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		);
 		expect(sessionJson.threadId).toBe(THREAD_ID);
 		expect(sessionJson.vendor).toBe("codex");
+	});
+
+	it.each(["latch-first", "session-first"] as const)(
+		"FLY-1257: atomic session writers preserve gateHold + threadId + daemonPid (%s)",
+		async (order) => {
+			runtime = new FakeRuntime(async (input) => {
+				if (order === "latch-first") input.writeGateHoldLatch?.(true);
+				input.onDaemonPid?.(4321);
+				input.onThreadReady?.(THREAD_ID, 0);
+				if (order === "session-first") input.writeGateHoldLatch?.(true);
+				return complete();
+			});
+			const res = await makeAdapter().execute(ctx());
+			expect(res.success).toBe(true);
+			const stateDir = join(dir, "codex-sessions", execId);
+			const state = JSON.parse(
+				readFileSync(join(stateDir, "session.json"), "utf-8"),
+			);
+			expect(state).toMatchObject({
+				gateHold: true,
+				threadId: THREAD_ID,
+				daemonPid: 4321,
+			});
+			expect(readdirSync(stateDir)).toEqual(["session.json"]);
+		},
+	);
+
+	it("FLY-1257: Bridge re-execute restores the durable gate-hold latch from session.json", async () => {
+		const stateDir = join(dir, "codex-sessions", execId);
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(
+			join(stateDir, "session.json"),
+			JSON.stringify({
+				executionId: execId,
+				threadId: "persisted-thread",
+				daemonPid: 4321,
+				gateHold: true,
+				unknownFutureField: "preserve-me",
+			}),
+		);
+		let restored: boolean | undefined;
+		runtime = new FakeRuntime(async (input) => {
+			restored = input.readGateHoldLatch?.();
+			input.onThreadReady?.("persisted-thread", 0);
+			input.writeGateHoldLatch?.(false);
+			return complete("persisted-thread");
+		});
+		const res = await makeAdapter().execute(ctx());
+		expect(res.success).toBe(true);
+		expect(restored).toBe(true);
+		const state = JSON.parse(
+			readFileSync(join(stateDir, "session.json"), "utf-8"),
+		);
+		expect(state).toMatchObject({
+			gateHold: false,
+			threadId: "persisted-thread",
+			daemonPid: 4321,
+			unknownFutureField: "preserve-me",
+		});
 	});
 
 	it("HIGH-6: an unconfirmed daemon teardown (drained rejects) fails the run", async () => {

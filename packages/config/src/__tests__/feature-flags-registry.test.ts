@@ -85,4 +85,23 @@ describe("feature-flag registry invariants", () => {
 		expect(p?.default).toBe(false);
 		expect(p?.note ?? "").toMatch(/Annie/i);
 	});
+
+	it("FLY-1257 registers the resident Codex gate-wait rollback switch as default-on", () => {
+		const flag = FEATURE_FLAGS.find((f) => f.name === "codex_gate_wait");
+		expect(flag).toMatchObject({
+			category: "kill_switch",
+			envVar: "FLYWHEEL_CODEX_GATE_WAIT",
+			polarity: "default_on",
+			default: true,
+		});
+		expect(flag?.readSites).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					file: "packages/claude-runner/src/codex-daemon-client.ts",
+					symbol: "runGoalToTerminal",
+					timing: "call_time",
+				}),
+			]),
+		);
+	});
 });
