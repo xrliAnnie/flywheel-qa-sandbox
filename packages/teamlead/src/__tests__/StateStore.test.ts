@@ -1389,6 +1389,69 @@ describe("StateStore — FLY-245 D-a lifecycle_revision (monotonic freshness)", 
 	});
 });
 
+describe("StateStore — FLY-1257 terminal_at chronology", () => {
+	let store: StateStore;
+	const sentinel = "2001-02-03 04:05:06";
+	const fields = { issue_id: "GEO-95", project_name: "geoforge3d" };
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	function setTerminalAt(value: string): void {
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run("UPDATE sessions SET terminal_at = ? WHERE execution_id = ?", [
+			value,
+			"exec-1",
+		]);
+	}
+
+	const paths = [
+		{
+			name: "upsertSession",
+			write(status: string) {
+				store.upsertSession(makeSession({ status }));
+			},
+		},
+		{
+			name: "persistTransition",
+			write(status: string) {
+				store.persistTransition("exec-1", status, fields);
+			},
+		},
+		{
+			name: "forceStatus",
+			write(status: string) {
+				store.forceStatus("exec-1", status, "2026-07-14T00:00:00.000Z");
+			},
+		},
+	] as const;
+
+	it.each(paths)(
+		"$name stamps first terminal entry, preserves terminal-to-terminal, and clears on revive",
+		({ write }) => {
+			store.upsertSession(makeSession({ status: "running" }));
+
+			write("blocked");
+			expect(store.getSession("exec-1")?.terminal_at).toMatch(
+				/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+			);
+
+			// SQLite datetime('now') has one-second resolution. A fixed, distinct
+			// sentinel makes a forbidden re-stamp observable without sleeping.
+			setTerminalAt(sentinel);
+			write("failed");
+			expect(store.getSession("exec-1")?.terminal_at).toBe(sentinel);
+
+			write("awaiting_review");
+			expect(store.getSession("exec-1")?.terminal_at).toBeUndefined();
+		},
+	);
+});
+
 // ── FLY-560 Feature C: runner-attach pin state ──
 describe("StateStore — runner-attach pin (FLY-560)", () => {
 	let store: StateStore;

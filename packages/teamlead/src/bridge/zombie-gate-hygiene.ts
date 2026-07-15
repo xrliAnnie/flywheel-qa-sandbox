@@ -37,16 +37,32 @@ export function zombieGateResolveEnabled(
 	return env.FLYWHEEL_ZOMBIE_GATE_RESOLVE !== "0";
 }
 
+const SQLITE_UTC_TIMESTAMP =
+	/^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]) (?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/;
+
+function isCanonicalSqliteUtc(
+	value: string | null | undefined,
+): value is string {
+	return typeof value === "string" && SQLITE_UTC_TIMESTAMP.test(value);
+}
+
 export interface ZombieCandidateQuestion {
 	id: string;
 	from_agent: string;
 	checkpoint: string | null;
+	/** CommDB SQLite UTC creation time. Nullable: the schema predates NOT NULL. */
+	created_at?: string | null;
 }
 
 export interface ZombieHygieneStore {
-	getSession(
-		executionId: string,
-	): { status?: string; issue_id?: string; project_name?: string } | undefined;
+	getSession(executionId: string):
+		| {
+				status?: string;
+				issue_id?: string;
+				project_name?: string;
+				terminal_at?: string | null;
+		  }
+		| undefined;
 	insertEvent(event: SessionEvent): boolean;
 	/** Codex code R1 MED-1: dangling-intent reconcile source (StateStore has it). */
 	getEventsByType(eventType: string): SessionEvent[];
@@ -118,6 +134,22 @@ export async function runZombieGateHygiene(
 			});
 			result.unreachable.push(q.id);
 			continue;
+		}
+
+		// FLY-1257: an existing terminal session needs chronology proof before Z1
+		// may retire its gate. A post-terminal gate is evidence that the blocked
+		// runner was intentionally reopened for review. Both clocks are immutable
+		// SQLite UTC seconds, so canonical strings compare directly; missing,
+		// malformed, and same-second values fail open permanently. Missing sessions
+		// retain the pre-existing Z1 behavior because no chronology can be recovered.
+		if (session) {
+			if (
+				!isCanonicalSqliteUtc(q.created_at) ||
+				!isCanonicalSqliteUtc(session.terminal_at) ||
+				q.created_at >= session.terminal_at
+			) {
+				continue;
+			}
 		}
 
 		// ── Z1: kill-switch BEFORE the intent write (OFF = today's byte path).

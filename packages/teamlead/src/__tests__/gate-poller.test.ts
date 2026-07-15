@@ -673,4 +673,49 @@ describe("GatePoller (FLY-161)", () => {
 		appendSpy.mockRestore();
 		recoverSpy.mockRestore();
 	});
+
+	it("FLY-1257: zombie candidate mapping preserves CommDB created_at", async () => {
+		process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE = "1";
+		process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG = "0";
+		insertSession("exec-chronology", {
+			status: "blocked",
+			labels: ["product"],
+		});
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE sessions SET terminal_at = '2099-01-01 00:00:00' WHERE execution_id = 'exec-chronology'",
+		);
+
+		const qid = insertQuestion({
+			execId: "exec-chronology",
+			leadId: "product-lead",
+			content: "review old blocked run",
+			checkpoint: "review_code",
+		});
+		const db = new CommDB(dbPath);
+		try {
+			(
+				db as unknown as {
+					db: { prepare(sql: string): { run(...args: unknown[]): unknown } };
+				}
+			).db
+				.prepare("UPDATE messages SET created_at = ? WHERE id = ?")
+				.run("2000-01-01 00:00:00", qid);
+		} finally {
+			db.close();
+		}
+
+		await (
+			makePoller() as unknown as {
+				zombieGateHygienePass: () => Promise<void>;
+			}
+		).zombieGateHygienePass();
+
+		expect(pendingFor("product-lead")).toHaveLength(0);
+		delete process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE;
+		delete process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG;
+	});
 });

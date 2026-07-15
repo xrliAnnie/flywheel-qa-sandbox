@@ -3216,6 +3216,7 @@ export class GatePoller {
 							id: q.id,
 							from_agent: q.from_agent,
 							checkpoint: q.checkpoint,
+							created_at: q.created_at,
 						})),
 						db: db as unknown as ZombieCommDb,
 						noteUnreachableRunner: watchdogOn

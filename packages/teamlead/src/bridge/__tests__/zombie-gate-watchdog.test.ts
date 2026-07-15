@@ -51,15 +51,23 @@ function fakeZombieDb(opts: {
 	return { db, retireShipGate, retireQuestionGuarded };
 }
 
-function q(id: string, checkpoint: string | null = "approve_to_ship") {
-	return { id, from_agent: "E-1", checkpoint };
+function q(
+	id: string,
+	checkpoint: string | null = "approve_to_ship",
+	createdAt: string | null = "2026-07-14 11:59:59",
+) {
+	return { id, from_agent: "E-1", checkpoint, created_at: createdAt };
 }
 
 describe("zombie gate hygiene — Z1/Z2 判定矩阵", () => {
 	it("Z1: terminal StateStore session + missing CommDB row → intent + guarded retire + resolved outcome", async () => {
 		const store = await freshStore();
 		const storeWithSession = Object.assign(store, {
-			getSession: () => ({ status: "completed", issue_id: "FLY-1" }),
+			getSession: () => ({
+				status: "completed",
+				issue_id: "FLY-1",
+				terminal_at: "2026-07-14 12:00:00",
+			}),
 		});
 		const { db, retireShipGate } = fakeZombieDb({ commSession: false });
 		const res = await runZombieGateHygiene({
@@ -98,7 +106,11 @@ describe("zombie gate hygiene — Z1/Z2 判定矩阵", () => {
 	it("Z1 uses retireQuestionGuarded for NON-ship gates (FLY-161: runner_questions excluded entirely)", async () => {
 		const store = await freshStore();
 		const s = Object.assign(store, {
-			getSession: () => ({ status: "failed", issue_id: "FLY-1" }),
+			getSession: () => ({
+				status: "failed",
+				issue_id: "FLY-1",
+				terminal_at: "2026-07-14 12:00:00",
+			}),
 		});
 		const { db, retireShipGate, retireQuestionGuarded } = fakeZombieDb({
 			commSession: false,
@@ -142,7 +154,11 @@ describe("zombie gate hygiene — Z1/Z2 判定矩阵", () => {
 	it("live CommDB row → neither branch (wake routing intact)", async () => {
 		const store = await freshStore();
 		const s = Object.assign(store, {
-			getSession: () => ({ status: "completed", issue_id: "FLY-1" }),
+			getSession: () => ({
+				status: "completed",
+				issue_id: "FLY-1",
+				terminal_at: "2026-07-14 12:00:00",
+			}),
 		});
 		const { db, retireShipGate } = fakeZombieDb({ commSession: true });
 		const res = await runZombieGateHygiene({
@@ -160,7 +176,11 @@ describe("zombie gate hygiene — Z1/Z2 判定矩阵", () => {
 		process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE = "0";
 		const store = await freshStore();
 		const s = Object.assign(store, {
-			getSession: () => ({ status: "completed", issue_id: "FLY-1" }),
+			getSession: () => ({
+				status: "completed",
+				issue_id: "FLY-1",
+				terminal_at: "2026-07-14 12:00:00",
+			}),
 		});
 		const { db, retireShipGate } = fakeZombieDb({ commSession: false });
 		await runZombieGateHygiene({
@@ -174,11 +194,97 @@ describe("zombie gate hygiene — Z1/Z2 判定矩阵", () => {
 	});
 });
 
+describe("zombie gate hygiene — FLY-1257 terminal chronology", () => {
+	async function chronologyHarness(args: {
+		createdAt: string | null;
+		terminalAt: string | null;
+		runs?: number;
+	}) {
+		const store = await freshStore();
+		const s = Object.assign(store, {
+			getSession: () => ({
+				status: "blocked",
+				issue_id: "FLY-1244",
+				terminal_at: args.terminalAt,
+			}),
+		});
+		const { db, retireQuestionGuarded } = fakeZombieDb({ commSession: false });
+		for (let i = 0; i < (args.runs ?? 1); i += 1) {
+			await runZombieGateHygiene({
+				store: s as never,
+				projectName: "proj",
+				pendingGateQuestions: [
+					q("Q-chronology", "review_code", args.createdAt),
+				],
+				db,
+			});
+		}
+		return { store, retireQuestionGuarded };
+	}
+
+	it("gate created after terminal entry is preserved before intent audit", async () => {
+		const { store, retireQuestionGuarded } = await chronologyHarness({
+			createdAt: "2026-07-14 12:00:01",
+			terminalAt: "2026-07-14 12:00:00",
+			runs: 2,
+		});
+		expect(retireQuestionGuarded).not.toHaveBeenCalled();
+		expect(store.getEventsByExecution("E-1")).toHaveLength(0);
+	});
+
+	it("gate created before terminal entry remains a true Z1 zombie", async () => {
+		const { store, retireQuestionGuarded } = await chronologyHarness({
+			createdAt: "2026-07-14 11:59:59",
+			terminalAt: "2026-07-14 12:00:00",
+		});
+		expect(retireQuestionGuarded).toHaveBeenCalledWith("Q-chronology", {
+			expectedFromAgent: "E-1",
+			requireUnanswered: true,
+		});
+		expect(
+			store
+				.getEventsByExecution("E-1")
+				.some((e) => e.event_type === "founder_gate_zombie_resolve_intent"),
+		).toBe(true);
+	});
+
+	it.each([
+		["missing terminal_at", "2026-07-14 12:00:01", null],
+		["missing created_at", null, "2026-07-14 12:00:00"],
+		["malformed created_at", "July 14", "2026-07-14 12:00:00"],
+		["malformed terminal_at", "2026-07-14 12:00:01", "not-a-time"],
+	] as const)(
+		"%s fails open without an intent audit",
+		async (_name, createdAt, terminalAt) => {
+			const { store, retireQuestionGuarded } = await chronologyHarness({
+				createdAt,
+				terminalAt,
+			});
+			expect(retireQuestionGuarded).not.toHaveBeenCalled();
+			expect(store.getEventsByExecution("E-1")).toHaveLength(0);
+		},
+	);
+
+	it("same-second tie is permanently preserved across passes", async () => {
+		const { store, retireQuestionGuarded } = await chronologyHarness({
+			createdAt: "2026-07-14 12:00:00",
+			terminalAt: "2026-07-14 12:00:00",
+			runs: 2,
+		});
+		expect(retireQuestionGuarded).not.toHaveBeenCalled();
+		expect(store.getEventsByExecution("E-1")).toHaveLength(0);
+	});
+});
+
 describe("zombie gate hygiene — R2 #4 outcome re-read (false ≠ answered)", () => {
 	async function outcomeHarness(dbOpts: Parameters<typeof fakeZombieDb>[0]) {
 		const store = await freshStore();
 		const s = Object.assign(store, {
-			getSession: () => ({ status: "completed", issue_id: "FLY-1" }),
+			getSession: () => ({
+				status: "completed",
+				issue_id: "FLY-1",
+				terminal_at: "2026-07-14 12:00:00",
+			}),
 		});
 		const { db } = fakeZombieDb(dbOpts);
 		await runZombieGateHygiene({
@@ -366,7 +472,11 @@ describe("Codex code R1 MED-1: dangling-intent reconcile", () => {
 	it("intent-without-outcome (crash between mutation and audit) → outcome reconciled by re-read next pass", async () => {
 		const store = await freshStore();
 		const s = Object.assign(store, {
-			getSession: () => ({ status: "completed", issue_id: "FLY-1" }),
+			getSession: () => ({
+				status: "completed",
+				issue_id: "FLY-1",
+				terminal_at: "2026-07-14 12:00:00",
+			}),
 		});
 		// Simulate the crash shape: intent exists, question already retired
 		// (no longer pending), NO outcome event, and the question is no longer

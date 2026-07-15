@@ -586,6 +586,9 @@ export interface Session {
 	issue_id: string;
 	project_name: string;
 	status: string;
+	/** FLY-1257: first entry into an irreversible zombie-terminal status.
+	 * SQLite canonical UTC text; cleared if the session is revived. */
+	terminal_at?: string | null;
 	issue_identifier?: string;
 	issue_title?: string;
 	started_at?: string;
@@ -1116,6 +1119,7 @@ export class StateStore {
 				issue_title TEXT,
 				project_name TEXT NOT NULL,
 				status TEXT NOT NULL DEFAULT 'pending',
+				terminal_at TEXT,
 				started_at TEXT,
 				last_activity_at TEXT,
 				tmux_session TEXT,
@@ -1421,6 +1425,15 @@ export class StateStore {
 			this.db.run(
 				"ALTER TABLE sessions ADD COLUMN lifecycle_revision INTEGER NOT NULL DEFAULT 0",
 			);
+		} catch {
+			/* exists */
+		}
+
+		// FLY-1257: chronology anchor for zombie-gate hygiene. Existing terminal
+		// rows intentionally remain NULL: without an observed entry timestamp the
+		// cleanup must fail open rather than guess whether a gate is older.
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN terminal_at TEXT");
 		} catch {
 			/* exists */
 		}
@@ -2687,6 +2700,11 @@ export class StateStore {
 					session.chat_thread_role ?? "main",
 				],
 			);
+			this.applyTerminalTimestamp(
+				session.execution_id,
+				existing?.status,
+				session.status,
+			);
 			if (enteringAwaitingReview) {
 				this.stampAwaitingReviewEntry(session.execution_id);
 			}
@@ -2708,6 +2726,31 @@ export class StateStore {
 			"UPDATE sessions SET lifecycle_revision = lifecycle_revision + 1 WHERE execution_id = ?",
 			[executionId],
 		);
+	}
+
+	/** FLY-1257: maintain the single SQLite-clock chronology anchor shared by
+	 * all status-write paths. First terminal entry stamps; terminal rewrites
+	 * preserve the first stamp; any revival clears it. Must run inside the
+	 * caller's status transaction after that status write succeeds. */
+	private applyTerminalTimestamp(
+		executionId: string,
+		previousStatus: string | undefined,
+		nextStatus: string,
+	): void {
+		const wasTerminal =
+			isStateStoreIrreversibleTerminalForZombie(previousStatus);
+		const isTerminal = isStateStoreIrreversibleTerminalForZombie(nextStatus);
+		if (isTerminal && !wasTerminal) {
+			this.db.run(
+				"UPDATE sessions SET terminal_at = datetime('now') WHERE execution_id = ?",
+				[executionId],
+			);
+		} else if (!isTerminal) {
+			this.db.run(
+				"UPDATE sessions SET terminal_at = NULL WHERE execution_id = ?",
+				[executionId],
+			);
+		}
 	}
 
 	/** FLY-245 D-a: read a session's current monotonic lifecycle revision (0 if
@@ -2839,6 +2882,7 @@ export class StateStore {
 					fields.chat_thread_role ?? "main",
 				],
 			);
+			this.applyTerminalTimestamp(executionId, preStatus, status);
 			if (enteringAwaitingReview) {
 				this.stampAwaitingReviewEntry(executionId);
 			}
@@ -3006,6 +3050,7 @@ export class StateStore {
 				`UPDATE sessions SET status = ?, last_activity_at = ?, last_error = ? WHERE execution_id = ?`,
 				[status, lastActivityAt, lastError ?? null, executionId],
 			);
+			this.applyTerminalTimestamp(executionId, preStatus, status);
 			if (enteringAwaitingReview) {
 				this.stampAwaitingReviewEntry(executionId);
 			}
@@ -6305,6 +6350,7 @@ export class StateStore {
 			issue_id: row.issue_id as string,
 			project_name: row.project_name as string,
 			status: row.status as string,
+			terminal_at: (row.terminal_at as string) ?? undefined,
 			issue_identifier: (row.issue_identifier as string) ?? undefined,
 			issue_title: (row.issue_title as string) ?? undefined,
 			started_at: (row.started_at as string) ?? undefined,
