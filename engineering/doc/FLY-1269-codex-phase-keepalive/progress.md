@@ -2,9 +2,10 @@
 issue: FLY-1269
 phase: implement
 phaseCursor: 7/8
-updated: 2026-07-15T08:33:12.766Z
-nextStep: Force-push rebased head, complete cross-family code review, monitor
-  CI, and run mandatory 529 E2E
+updated: 2026-07-15T10:15:16.685Z
+nextStep: 529 first chain exposed active-goal park gap; fixed at 7d20e4a76 with
+  587 claude-runner tests green. Rebuild isolated candidate, resume same Design
+  execution into paused hold, then continue crash/wake/QA/terminal observer.
 chunks:
   - id: task7
     order: 7
@@ -17,7 +18,7 @@ pointers:
 
 # FLY-1269 progress
 **phase**: implement (7/8)
-**next**: Force-push rebased head, complete cross-family code review, monitor CI, and run mandatory 529 E2E
+**next**: 529 first chain exposed active-goal park gap; fixed at 7d20e4a76 with 587 claude-runner tests green. Rebuild isolated candidate, resume same Design execution into paused hold, then continue crash/wake/QA/terminal observer.
 
 ## chunks
 - ✅ task7 — Implementation and local verification complete
