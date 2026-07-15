@@ -93,7 +93,8 @@ _tmux_rescue_normalize_socket() {
 }
 
 _tmux_rescue_pid_has_socket() {
-  local pid="$1" socket_path="$2" output rc
+  local pid="$1" socket_path="$2" output rc line reported normalized
+  local unresolved_path=false
   command -v lsof >/dev/null 2>&1 || return 2
   output="$(_tmux_rescue_bounded_exec "${FLYWHEEL_TMUX_RESCUE_INSPECT_TIMEOUT_SEC:-3}" \
     lsof -a -p "$pid" -U -Fn 2>/dev/null)"
@@ -105,11 +106,26 @@ _tmux_rescue_pid_has_socket() {
 		if [ "$rc" -eq 1 ] && kill -0 "$pid" 2>/dev/null; then return 1; fi
 		return 2
 	fi
-  printf '%s\n' "$output" | grep -Fqx "n${socket_path}"
+  while IFS= read -r line; do
+    case "$line" in
+      n/*)
+        reported="${line#n}"
+        normalized="$(_tmux_rescue_normalize_socket "$reported")" || {
+          unresolved_path=true
+          continue
+        }
+        [ "$normalized" = "$socket_path" ] && return 0
+        ;;
+    esac
+  done <<EOF
+$output
+EOF
+  [ "$unresolved_path" = false ] || return 2
+  return 1
 }
 
 _tmux_rescue_server_pids() {
-  local output rc current_uid
+  local output rc current_uid argv0
   command -v ps >/dev/null 2>&1 || return 1
 	current_uid="$(id -u 2>/dev/null)" || return 1
   output="$(_tmux_rescue_bounded_exec "${FLYWHEEL_TMUX_RESCUE_INSPECT_TIMEOUT_SEC:-3}" \
@@ -120,8 +136,14 @@ _tmux_rescue_server_pids() {
 		[ "$uid" = "$current_uid" ] || continue
         case "$pid" in ''|*[!0-9]*) continue ;; esac
         [ "$ppid" = "1" ] || continue
-        case "$command" in
-          *"tmux: server"*|*"tmux server"*) printf '%s\n' "$pid" ;;
+        argv0="${command%% *}"
+        case "$argv0" in
+          tmux|*/tmux) printf '%s\n' "$pid" ;;
+          *)
+            case "$command" in
+              *"tmux: server"*|*"tmux server"*) printf '%s\n' "$pid" ;;
+            esac
+            ;;
         esac
       done
 }

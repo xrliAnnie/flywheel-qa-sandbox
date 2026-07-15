@@ -66,7 +66,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 case ",${FAKE_SOCKET_PIDS:-}," in
-  *",${pid},"*) echo "n${TEST_SOCKET}" ;;
+  *",${pid},"*) echo "n${FAKE_LSOF_SOCKET_PATH:-$TEST_SOCKET}" ;;
 esac
 SH
 
@@ -88,9 +88,40 @@ export TMUX_CALL_LOG="$TMP_DIR/tmux-calls.log"
 export FAKE_STATE_FILE=""
 export FAKE_CREATE_SETS_PID=""
 export FAKE_VERIFY_SLEEP=""
+export FAKE_LSOF_SOCKET_PATH=""
+MACOS_TMUX_COMMAND='tmux -S /private/tmp/fly1285-fixture.sock new-session -Ad -s flywheel'
 
 # shellcheck source=../lib/tmux-server-rescue.sh
 source "$LIB"
+
+echo "[TEST] candidate scan recognizes real macOS argv without admitting lookalikes"
+export FAKE_PS_ROWS="9201 1 ${MACOS_TMUX_COMMAND}\n9202 1 /usr/local/bin/tmux new-session -Ad -s flywheel\n9203 1 tmux: server\n9204 99 ${MACOS_TMUX_COMMAND}\n9205 1 /bin/sh -c ${MACOS_TMUX_COMMAND}\n9206 1 tmuxinator start flywheel\n"
+CANDIDATES="$(_tmux_rescue_server_pids | paste -sd, -)"
+if [ "$CANDIDATES" = "9201,9202,9203" ]; then
+  pass "bare/absolute macOS argv and the legacy Linux title are recognized precisely"
+else
+  fail "candidate argv classification drifted: $CANDIDATES"
+fi
+
+echo "[TEST] lsof socket aliases are normalized before ownership comparison"
+export FAKE_SOCKET_PIDS=9301
+export FAKE_LSOF_SOCKET_PATH="$REQUEST_SOCKET"
+if _tmux_rescue_pid_has_socket 9301 "$TEST_SOCKET"; then
+  pass "the lsof-reported symlink path matches the normalized -S socket"
+else
+  fail "lsof alias did not match: reported=$FAKE_LSOF_SOCKET_PATH expected=$TEST_SOCKET"
+fi
+
+echo "[TEST] an unnormalizable lsof path is incomplete evidence, not proof of absence"
+export FAKE_LSOF_SOCKET_PATH="$TMP_DIR/missing-parent/socket"
+_tmux_rescue_pid_has_socket 9301 "$TEST_SOCKET"
+LSOF_PATH_RC=$?
+if [ "$LSOF_PATH_RC" -eq 2 ]; then
+  pass "an unresolved owner path makes the process scan fail closed"
+else
+  fail "unresolved lsof path was treated as definitive non-ownership: rc=$LSOF_PATH_RC"
+fi
+export FAKE_LSOF_SOCKET_PATH=""
 
 echo "[TEST] activated recover signals one revalidated orphan and proves its generation"
 export HOME="$TMP_DIR/activated-home"
@@ -102,8 +133,8 @@ rm -f "$REQUEST_SOCKET"
 export FAKE_STATE_FILE="$TMP_DIR/rescued-generation"
 : > "$FAKE_STATE_FILE"
 export FAKE_REACHABLE_PID=""
-export FAKE_PS_ROWS='5151 1 tmux: server\n'
-export FAKE_PS_AFTER_ROWS='5151 1 tmux: server\n'
+export FAKE_PS_ROWS="5151 1 ${MACOS_TMUX_COMMAND}\n"
+export FAKE_PS_AFTER_ROWS="5151 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS=5151
 SIGNAL_LOG="$TMP_DIR/signal.log"
 _tmux_rescue_signal_candidate() {
@@ -149,7 +180,7 @@ chmod 700 "$HOME" "$HOME/.flywheel" "$HOME/.flywheel/flags"
 rm -f "$REQUEST_SOCKET"
 : > "$TMUX_CALL_LOG"
 export FAKE_REACHABLE_PID=""
-export FAKE_PS_ROWS='5151 1 tmux: server\n'
+export FAKE_PS_ROWS="5151 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS=5151
 OUT="$(tmux_socket_recover "$REQUEST_SOCKET")"
 RECOVER_RC=$?
@@ -163,7 +194,7 @@ fi
 
 echo "[TEST] reachable socket reports its verified server generation"
 export FAKE_REACHABLE_PID=4242
-export FAKE_PS_ROWS='4242 1 tmux: server\n'
+export FAKE_PS_ROWS="4242 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS=4242
 OUT="$(tmux_socket_inspect "$REQUEST_SOCKET")"
 if [ "$(printf '%s' "$OUT" | jq -r '.verdict')" = "reachable" ] \
@@ -177,7 +208,7 @@ fi
 
 echo "[TEST] unreachable socket with one verified launchd-owned server is rescuable"
 export FAKE_REACHABLE_PID=""
-export FAKE_PS_ROWS='5151 1 tmux: server\n'
+export FAKE_PS_ROWS="5151 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS=5151
 rm -f "$REQUEST_SOCKET"
 OUT="$(tmux_socket_inspect "$REQUEST_SOCKET")"
@@ -192,7 +223,7 @@ fi
 
 echo "[TEST] present but unreachable socket holds as saturated"
 : > "$REQUEST_SOCKET"
-export FAKE_PS_ROWS='6161 1 tmux: server\n'
+export FAKE_PS_ROWS="6161 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS=6161
 OUT="$(tmux_socket_inspect "$REQUEST_SOCKET")"
 if [ "$(printf '%s' "$OUT" | jq -r '.verdict')" = "saturated" ] \
@@ -211,13 +242,13 @@ DEAD_OUT="$(tmux_socket_inspect "$REQUEST_SOCKET")"
 
 : > "$REQUEST_SOCKET"
 export FAKE_REACHABLE_PID=7000
-export FAKE_PS_ROWS='7000 1 tmux: server\n7001 1 tmux: server\n'
+export FAKE_PS_ROWS="7000 1 ${MACOS_TMUX_COMMAND}\n7001 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS='7000,7001'
 SPLIT_OUT="$(tmux_socket_inspect "$REQUEST_SOCKET")"
 
 rm -f "$REQUEST_SOCKET"
 export FAKE_REACHABLE_PID=""
-export FAKE_PS_ROWS='8001 1 tmux: server\n8002 1 tmux: server\n'
+export FAKE_PS_ROWS="8001 1 ${MACOS_TMUX_COMMAND}\n8002 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS='8001,8002'
 AMBIG_OUT="$(tmux_socket_inspect "$REQUEST_SOCKET")"
 
@@ -246,7 +277,7 @@ fi
 
 echo "[TEST] incomplete OS scan is always unknown"
 export FAKE_REACHABLE_PID=""
-export FAKE_PS_ROWS='9001 1 tmux: server\n'
+export FAKE_PS_ROWS="9001 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS=9001
 export FAKE_LSOF_FAIL=1
 OUT="$(tmux_socket_inspect "$REQUEST_SOCKET")"
@@ -261,7 +292,7 @@ fi
 echo "[TEST] candidate scan excludes a foreign uid"
 rm -f "$REQUEST_SOCKET"
 export FAKE_REACHABLE_PID=""
-export FAKE_PS_ROWS='uid:99999 9101 1 tmux: server\n'
+export FAKE_PS_ROWS="uid:99999 9101 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS=9101
 OUT="$(tmux_socket_inspect "$REQUEST_SOCKET")"
 if [ "$(printf '%s' "$OUT" | jq -r '.verdict')" = "dead" ] \
@@ -312,7 +343,7 @@ export HOME="$ORIGINAL_HOME"
 : > "$REQUEST_SOCKET"
 : > "$TMUX_CALL_LOG"
 export FAKE_REACHABLE_PID=4242
-export FAKE_PS_ROWS='4242 1 tmux: server\n'
+export FAKE_PS_ROWS="4242 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS=4242
 export FAKE_VERIFY_RC=0
 export FAKE_CREATE_RC=0
@@ -374,7 +405,7 @@ export FAKE_CREATE_RC=0
 export FAKE_STATE_FILE=""
 
 : > "$REQUEST_SOCKET"
-export FAKE_PS_ROWS='6161 1 tmux: server\n'
+export FAKE_PS_ROWS="6161 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS=6161
 SAT_OUT="$(tmux_socket_ensure "$REQUEST_SOCKET" \
   --verify tmux -S "$TEST_SOCKET" has-session -t =flywheel \
@@ -383,7 +414,7 @@ SAT_RC=$?
 
 : > "$REQUEST_SOCKET"
 export FAKE_REACHABLE_PID=7000
-export FAKE_PS_ROWS='7000 1 tmux: server\n7001 1 tmux: server\n'
+export FAKE_PS_ROWS="7000 1 ${MACOS_TMUX_COMMAND}\n7001 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS='7000,7001'
 SPLIT_OUT="$(tmux_socket_ensure "$REQUEST_SOCKET" \
   --verify tmux -S "$TEST_SOCKET" has-session -t =flywheel \
@@ -392,7 +423,7 @@ SPLIT_RC=$?
 
 rm -f "$REQUEST_SOCKET"
 export FAKE_REACHABLE_PID=""
-export FAKE_PS_ROWS='8001 1 tmux: server\n8002 1 tmux: server\n'
+export FAKE_PS_ROWS="8001 1 ${MACOS_TMUX_COMMAND}\n8002 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS='8001,8002'
 AMBIG_OUT="$(tmux_socket_ensure "$REQUEST_SOCKET" \
   --verify tmux -S "$TEST_SOCKET" has-session -t =flywheel \
@@ -400,7 +431,7 @@ AMBIG_OUT="$(tmux_socket_ensure "$REQUEST_SOCKET" \
 AMBIG_RC=$?
 
 : > "$REQUEST_SOCKET"
-export FAKE_PS_ROWS='9001 1 tmux: server\n'
+export FAKE_PS_ROWS="9001 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS=9001
 export FAKE_LSOF_FAIL=1
 UNKNOWN_OUT="$(tmux_socket_ensure "$REQUEST_SOCKET" \
@@ -424,7 +455,7 @@ fi
 
 echo "[TEST] ensure rejects argv that could escape the guarded socket"
 export FAKE_REACHABLE_PID=4242
-export FAKE_PS_ROWS='4242 1 tmux: server\n'
+export FAKE_PS_ROWS="4242 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS=4242
 BAD_OUT="$(tmux_socket_ensure "$REQUEST_SOCKET" \
   --verify tmux has-session -t =flywheel \
@@ -443,7 +474,7 @@ export FAKE_STATE_FILE="$TMP_DIR/server-generation"
 : > "$FAKE_STATE_FILE"
 export FAKE_REACHABLE_PID=""
 export FAKE_PS_ROWS=""
-export FAKE_PS_AFTER_ROWS='7272 1 tmux: server\n'
+export FAKE_PS_AFTER_ROWS="7272 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS=7272
 export FAKE_CREATE_SETS_PID=7272
 export FAKE_CREATE_STDOUT='@10'
@@ -491,7 +522,7 @@ mkdir -p "$HOME/.flywheel/flags"
 chmod 700 "$HOME" "$HOME/.flywheel" "$HOME/.flywheel/flags"
 rm -f "$REQUEST_SOCKET"
 export FAKE_REACHABLE_PID=""
-export FAKE_PS_ROWS='5151 1 tmux: server\n'
+export FAKE_PS_ROWS="5151 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS=5151
 OUT="$(bash "$LIB" recover "$REQUEST_SOCKET")"
 CLI_RC=$?
