@@ -58,7 +58,7 @@ Accept: application/json
 - 90% 触发 + 10-20min 间隔存在「两次 poll 之间冲过 100%」窗口——按 Annie 哲学可接受，恢复扫描（§9）兜底。全部间隔运行时可调（§8）。预算占用各档均远低于实测 5 次/5min。
 - 429 处理：读 `retry-after`（实测总是给出）按其退避；缺失时指数退避（60s 起、上限 30min）。
 - 目标验证的每候选 1 次调用打在**候选自己的 token 桶**上（per-token 限流），不消耗 active 桶。
-- statusline 缓存被 daemon 持续刷新后，statusline 自己的刷新分支（cache 永不过期）**不再发起任何调用**——active 桶的唯一常驻消费者就是 daemon，预算独占。
+- statusline 缓存交互（修正，Codex R1-12）：statusline 自身缓存年龄阈 600s < daemon 基础轮询 1200s → **statusline 的自刷新分支在 daemon 写入间隙仍会跑**（其 ~6 次/小时 + daemon 3-6 次/小时合计仍远低于 60 次/小时实测限额）。两个写者均 tmp+rename 原子写、写的都是新鲜 200 响应，last-writer-wins 无害。daemon 的回写把显示新鲜度上界从「10min 缓存 + 空闲冻结」改善为「≤max(自刷新, daemon 轮询) 且空闲期也有 daemon 供数」。
 
 ## 2. statusline 滞后根因（issue 调研交付②，事故①解释）
 
