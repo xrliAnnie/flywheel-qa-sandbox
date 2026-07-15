@@ -60,6 +60,11 @@ import {
 	buildBatchProgress,
 } from "./fleet-progress.js";
 import type { FleetRouteDeps } from "./fleet-routes.js";
+import type { ManagementSnapshotV1 } from "./management-console-contract.js";
+import {
+	composeManagementSnapshot,
+	type ManagementSnapshotProvider,
+} from "./management-console-snapshot.js";
 
 export interface FleetConsoleOptions {
 	/** The projects.json the engine operates on (HOME/.flywheel/projects.json). */
@@ -101,6 +106,8 @@ export interface FleetConsoleOptions {
 	projectRunnerDefaults?: () => ProjectRunnerDefaultView[];
 	/** FLY-709 P4.4: cron recurring-issue model rows; omitted → no section. */
 	cronModels?: () => CronModelView[];
+	/** FLY-1262: source providers for the versioned aggregate management view. */
+	managementSnapshotProviders?: () => readonly ManagementSnapshotProvider[];
 	/**
 	 * FLY-709 P4 (Codex R1 #6): stat-and-reload-on-change of the per-project
 	 * config cache, awaited by the snapshot routes so a runner-config CLI write
@@ -127,7 +134,7 @@ export function runnerCapabilities(): RunnerCapabilities {
 }
 
 /** Map the fleet presentation verdict to the console's online dot state. */
-function onlineFromPresentation(
+export function onlineFromPresentation(
 	p: FleetPresentation | undefined,
 ): ConsoleLeadOnline {
 	if (p === undefined) return "unknown";
@@ -209,6 +216,14 @@ export class FleetConsole {
 			lead.online = onlineFromPresentation(byKey.get(lead.key));
 		}
 		return snap;
+	}
+
+	/** Versioned SSOT projection. The legacy flat snapshot remains during UI migration. */
+	buildManagementSnapshot(): ManagementSnapshotV1 {
+		return composeManagementSnapshot({
+			providers: this.o.managementSnapshotProviders?.() ?? [],
+			now: () => new Date(this.o.now()),
+		});
 	}
 
 	/** SHA-256 of the live projects.json file (matches the engine's file_sha). */

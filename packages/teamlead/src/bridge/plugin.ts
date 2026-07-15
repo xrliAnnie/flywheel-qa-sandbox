@@ -99,6 +99,7 @@ import {
 	type LeadConfig,
 	loadProjects,
 	type ProjectEntry,
+	parseAndValidateProjects,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
 import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
@@ -239,7 +240,11 @@ import {
 	handleFlagApply,
 	handleFlagStage,
 } from "./flag-routes.js";
-import { defaultFleetConsoleOptions, FleetConsole } from "./fleet-console.js";
+import {
+	defaultFleetConsoleOptions,
+	FleetConsole,
+	onlineFromPresentation,
+} from "./fleet-console.js";
 import { getFleetConsoleHtml } from "./fleet-console-html.js";
 import {
 	buildDefaultFleetProbeDeps,
@@ -324,6 +329,8 @@ import {
 	resolveProjectNameParam,
 } from "./linear-scope.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
+import { fileSourceRevision } from "./management-console-contract.js";
+import { createManagementSsotProviders } from "./management-ssot-providers.js";
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { notifyDigestExpectTick } from "./notify-digest-expect.js";
@@ -1356,7 +1363,7 @@ export function createBridgeApp(
 				// runner-config CLI write is visible on the NEXT snapshot without a
 				// Bridge restart (unchanged files are stat-only, not re-parsed).
 				await fleetConsole.refreshProjectConfigs?.();
-				res.json(fleetConsole.buildSnapshot());
+				res.json(fleetConsole.buildManagementSnapshot());
 			} catch (err) {
 				res.status(500).json({ error: (err as Error).message });
 			}
@@ -3451,6 +3458,21 @@ export async function startBridge(
 			const repoRoot =
 				process.env.FLYWHEEL_REPO_ROOT?.trim() ||
 				resolve(here, "..", "..", "..", "..");
+			const managementProjectsPath = join(
+				homedir(),
+				".flywheel",
+				"projects.json",
+			);
+			const managementProjectsBytes = ffReadFileSync(
+				managementProjectsPath,
+				"utf-8",
+			);
+			let managementProjects = parseAndValidateProjects(
+				JSON.parse(managementProjectsBytes),
+			);
+			let managementProjectsRevision = fileSourceRevision(
+				Buffer.from(managementProjectsBytes),
+			);
 			const fleetScriptPath = join(repoRoot, "scripts", "flywheel-fleet.sh");
 			const commCliPath = join(
 				repoRoot,
@@ -3464,9 +3486,14 @@ export async function startBridge(
 			// refresh whenever the file stamp changes (runner-config CLI writes are
 			// visible on the next snapshot, no Bridge restart).
 			const ffConfigCache = new ProjectConfigCache();
-			void ffConfigCache
-				.get(fleetConfigProvider.snapshot().projects)
-				.catch(() => {});
+			void ffConfigCache.get(managementProjects).catch(() => {});
+			const refreshManagementSources = async () => {
+				const nextBytes = ffReadFileSync(managementProjectsPath, "utf-8");
+				const nextProjects = parseAndValidateProjects(JSON.parse(nextBytes));
+				await ffConfigCache.get(nextProjects);
+				managementProjects = nextProjects;
+				managementProjectsRevision = fileSourceRevision(Buffer.from(nextBytes));
+			};
 			fleetConsole = new FleetConsole(
 				defaultFleetConsoleOptions({
 					fleetScriptPath,
@@ -3476,11 +3503,26 @@ export async function startBridge(
 					// Online dot from the live evidence poller (null/stale → unknown).
 					fleetEvidence: () => fleetPoller.snapshot(),
 					// FLY-709 P4: stat-and-reload-on-change before a snapshot build.
-					refreshProjectConfigs: () =>
-						ffConfigCache
-							.get(fleetConfigProvider.snapshot().projects)
-							.then(() => undefined)
-							.catch(() => undefined),
+					refreshProjectConfigs: refreshManagementSources,
+					managementSnapshotProviders: () =>
+						createManagementSsotProviders({
+							projects: () => managementProjects,
+							projectsRevision: () => managementProjectsRevision,
+							projectConfigs: () => ffConfigCache.current(),
+							onlineByLead: () => {
+								const online = new Map<
+									string,
+									"online" | "offline" | "degraded" | "unknown"
+								>();
+								for (const lead of fleetPoller.snapshot()?.leads ?? []) {
+									online.set(
+										lead.key,
+										onlineFromPresentation(lead.presentation),
+									);
+								}
+								return online;
+							},
+						}),
 					// FLY-709: resolved feature-flag views (env fresh + cached configs).
 					featureFlags: () =>
 						resolveAllFlags({

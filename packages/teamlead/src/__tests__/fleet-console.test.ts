@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CanonicalRequest } from "../bridge/fleet-admin.js";
 import { FleetConsole } from "../bridge/fleet-console.js";
 import type { BatchJournal } from "../bridge/fleet-progress.js";
+import type { ManagementSnapshotProvider } from "../bridge/management-console-snapshot.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 
 const PROJECTS: ProjectEntry[] = [
@@ -101,6 +102,26 @@ afterEach(() => {
 });
 
 describe("FleetConsole — read model", () => {
+	it("builds the versioned snapshot from registered management providers", () => {
+		let reads = 0;
+		const providers: ManagementSnapshotProvider[] = [
+			{
+				id: "models",
+				sourceKind: "model_registry",
+				read: () => {
+					reads++;
+					return { revision: "registry:1", fragment: { modelCatalog: {} } };
+				},
+			},
+		];
+		const c = makeConsole(dir, {
+			managementSnapshotProviders: () => providers,
+		});
+		expect(c.buildManagementSnapshot().schemaVersion).toBe(1);
+		expect(reads).toBe(1);
+		c.close();
+	});
+
 	it("configSha matches shasum -a 256 of the projects.json bytes", () => {
 		const c = makeConsole(dir);
 		const ours = c.configSha();

@@ -152,6 +152,7 @@ export interface ManagementLeadView {
 	leadId: string;
 	displayName: string;
 	department?: string;
+	presentationGroup: string;
 	online: "online" | "offline" | "degraded" | "unknown";
 	backend: string;
 	backendWritable: false;
@@ -224,6 +225,7 @@ export interface PresentationGroupView {
 	id: string;
 	label: string;
 	projectIds: string[];
+	leadIds: string[];
 	derived: boolean;
 }
 

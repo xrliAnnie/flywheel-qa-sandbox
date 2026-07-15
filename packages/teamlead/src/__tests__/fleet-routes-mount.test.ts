@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CanonicalRequest } from "../bridge/fleet-admin.js";
 import { FleetConsole } from "../bridge/fleet-console.js";
+import { buildTopologyView } from "../bridge/management-topology-source.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -85,6 +86,25 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 			logDir: join(dir, "fleet-logs"),
 			liveProjects: () => testProjects,
 			legacyBackendOf: () => undefined,
+			managementSnapshotProviders: () => [
+				{
+					id: "topology",
+					sourceKind: "projects_json",
+					read: () => ({
+						revision: "file:test-projects",
+						fragment: buildTopologyView({
+							projects: testProjects,
+							configs: new Map(
+								testProjects.map((project) => [
+									project.projectName,
+									{ revision: `file:${project.projectName}` },
+								]),
+							),
+							projectsRevision: "file:test-projects",
+						}),
+					}),
+				},
+			],
 		});
 		store = await StateStore.create(":memory:");
 		const app = createBridgeApp(
@@ -122,13 +142,20 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("GET /api/fleet/snapshot returns the secret-free DTO with NO Bearer", async () => {
+	it("GET /api/fleet/snapshot returns the versioned secret-free aggregate with NO Bearer", async () => {
 		const res = await fetch(`${baseUrl}/api/fleet/snapshot`);
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as {
-			leads: Array<Record<string, unknown>>;
+			schemaVersion: number;
+			projects: Array<{ leads: Array<Record<string, unknown>> }>;
 		};
-		expect(body.leads.map((l) => l.leadId).sort()).toEqual(["oliver", "peter"]);
+		expect(body.schemaVersion).toBe(1);
+		expect(
+			body.projects
+				.flatMap((project) => project.leads)
+				.map((lead) => lead.leadId)
+				.sort(),
+		).toEqual(["oliver", "peter"]);
 		// Secret canary: the bot token must NEVER appear anywhere in the payload.
 		const raw = JSON.stringify(body);
 		expect(raw).not.toContain("super-secret-bot-token");

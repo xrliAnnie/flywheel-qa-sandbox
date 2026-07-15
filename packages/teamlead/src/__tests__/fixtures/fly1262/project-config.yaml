@@ -9,6 +9,14 @@ runners:
     claude:
       type: claude
 
+teams:
+  - name: default
+    orchestrators: []
+
+decision_layer:
+  autonomy_level: manual_only
+  escalation_channel: discord
+
 roles:
   runner:
     backend: claude-tmux
