@@ -1,6 +1,7 @@
 import { modelDisplayName, modelShortCode } from "./model-tiers.js";
 
-const MODEL_PAYLOAD_MAX = 24;
+/** Shared producer/consumer cap for the payload after the `Model ` namespace. */
+export const RUNNER_MODEL_MARKER_PAYLOAD_MAX = 24;
 const WINDOW_LABEL_MAX = 32;
 
 export interface RunnerModelDisplayInput {
@@ -54,7 +55,10 @@ export function renderRunnerModelDisplay(
 			: family === "codex" && lowerModel.startsWith("gpt-")
 				? modelDisplayName(model)
 				: undefined;
-	const payload = safeToken(familyDisplay ?? model, MODEL_PAYLOAD_MAX);
+	const payload = safeToken(
+		familyDisplay ?? model,
+		RUNNER_MODEL_MARKER_PAYLOAD_MAX,
+	);
 	if (!payload) return undefined;
 
 	return {

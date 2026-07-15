@@ -125,8 +125,8 @@ export function launchCommitPath(executionId: string): string {
  * the FLY-579 Auto-QA session also carries `sessionRole: "qa"` but is a standalone
  * QA runner (no `shareParentBranch`), so keying on the role alone would flip its
  * window from `-claude-` to `-qa-` and break byte-compat. Mirrors Blueprint's
- * three-stage discriminator (`ctx.shareParentBranch && ctx.sessionRole`). Every
- * When no model is resolved, every non-three-stage run (main + Auto-QA) stays
+ * three-stage discriminator (`ctx.shareParentBranch && ctx.sessionRole`). When
+ * no model is resolved, every non-three-stage run (main + Auto-QA) stays
  * `claude` → byte-compatible. With a resolved model, non-phase runs use the
  * narrow `runner-<family>-<model>` namespace consumed by cmux cleanup.
  *

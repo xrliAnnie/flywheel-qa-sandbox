@@ -792,6 +792,16 @@ Do not use `git add -A`; if verification required no edit, skip this commit.
 
 - [ ] **Step 6: Independent QA handoff requirements**
 
+Rollout ordering is mandatory because `flywheel-cmux-sync.sh` is a long-running
+launchd watcher that parses its managed-title predicate only at process start:
+
+1. install this commit and restart/reload the cmux-sync watcher first；
+2. verify the watcher is running the new fixed `runner` namespace allowlist；
+3. only then restart the Bridge so it may emit `runner-<family>-<model>` windows。
+
+Deploying the Bridge first can create pins that the old watcher cannot classify or
+reap；the close-request drain is fail-closed and must not be used as a rollout bridge。
+
 After code review/PR (Implement phase owns this), QA must verify the reviewed commit:
 
 1. dispatch a real Codex phase with `gpt-5.6-sol`；

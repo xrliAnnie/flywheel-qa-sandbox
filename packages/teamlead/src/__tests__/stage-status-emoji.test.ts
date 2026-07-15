@@ -1,3 +1,7 @@
+import {
+	RUNNER_MODEL_MARKER_PAYLOAD_MAX,
+	renderRunnerModelDisplay,
+} from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import {
 	applyModelMarker,
@@ -250,6 +254,18 @@ describe("FLY-560 UX iteration: splitStatusEmoji peels the glued word", () => {
 });
 
 describe("FLY-755: model-code front marker ([F]/[O]/[S]/[H])", () => {
+	it("round-trips the shared maximum renderer payload through the title validator", () => {
+		const display = renderRunnerModelDisplay({
+			vendor: "future",
+			model: "x".repeat(RUNNER_MODEL_MARKER_PAYLOAD_MAX + 20),
+		});
+		expect(display?.threadMarker).toBe(
+			`Model ${"x".repeat(RUNNER_MODEL_MARKER_PAYLOAD_MAX)}`,
+		);
+		expect(applyModelMarker("[FLY-1255] Title", display?.threadMarker)).toBe(
+			`[Model ${"x".repeat(RUNNER_MODEL_MARKER_PAYLOAD_MAX)}] [FLY-1255] Title`,
+		);
+	});
 	it("applyModelMarker prepends the code before the issue key — all four codes", () => {
 		expect(applyModelMarker("[FLY-728] Title", "F")).toBe(
 			"[F] [FLY-728] Title",

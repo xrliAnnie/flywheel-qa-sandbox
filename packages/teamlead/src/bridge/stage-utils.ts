@@ -10,7 +10,10 @@
  * (existing fail channel — no new error stage needed).
  */
 
-import { PHASE_THREAD_BADGE_PARTS } from "flywheel-config";
+import {
+	PHASE_THREAD_BADGE_PARTS,
+	RUNNER_MODEL_MARKER_PAYLOAD_MAX,
+} from "flywheel-config";
 
 export const VALID_STAGES = new Set([
 	"started",
@@ -295,10 +298,13 @@ export function stripStatusEmojiPrefix(name: string): string {
  * marker on their next re-stamp; no proactive mass rename.
  */
 const ISSUE_KEY_HEAD_RE = /^\[[A-Z][A-Z0-9]*-\d+\](?:\s|$)/;
-const MODEL_MARKER_VALUE_RE =
-	/^(?:[FOSH]|Model [A-Za-z0-9][A-Za-z0-9._+-]{0,23})$/;
-const MODEL_MARKER_RE =
-	/^\[((?:[FOSH]|Model [A-Za-z0-9][A-Za-z0-9._+-]{0,23}))\] (?=\[[A-Z][A-Z0-9]*-\d+\](?:\s|$))/;
+const MODEL_MARKER_PAYLOAD_RE = `[A-Za-z0-9][A-Za-z0-9._+-]{0,${RUNNER_MODEL_MARKER_PAYLOAD_MAX - 1}}`;
+const MODEL_MARKER_VALUE_RE = new RegExp(
+	`^(?:[FOSH]|Model ${MODEL_MARKER_PAYLOAD_RE})$`,
+);
+const MODEL_MARKER_RE = new RegExp(
+	`^\\[((?:[FOSH]|Model ${MODEL_MARKER_PAYLOAD_RE}))\\] (?=\\[[A-Z][A-Z0-9]*-\\d+\\](?:\\s|$))`,
+);
 const LEGACY_MODEL_SUFFIX_RE = / ·([FOSH])$/;
 
 /** True when `base` starts with a bracketed Linear issue key (`[FLY-755] …`). */

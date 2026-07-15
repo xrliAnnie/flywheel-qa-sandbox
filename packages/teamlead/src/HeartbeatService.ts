@@ -36,7 +36,7 @@ import {
 import { classifyQuiet, type QuietSignals } from "./bridge/quiet-classifier.js";
 import { sessionModelDisplay } from "./bridge/runner-model-display.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
-import { stageBadge } from "./bridge/stage-utils.js";
+import { reconnectingBadge, stageBadge } from "./bridge/stage-utils.js";
 import {
 	CONFIRM_NOTES,
 	parseStuckConfirmKnobs,
@@ -1931,7 +1931,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 
 	/**
 	 * FLY-623: readopt-ON happy path. The Bridge re-adopted a live detached Runner
-	 * after a restart. Restore Display-A to the actual phase/status title and
+	 * after a restart. Stamp the Display-A reconnecting title and
 	 * deliver a one-time, low-priority, NON-retryable FYI to the Lead. Best-effort:
 	 * `session_monitoring_reestablished` is not in GUARDRAIL/RETRYABLE sets, so
 	 * deliverHook marks it delivered regardless and it is never re-delivered.
@@ -1954,7 +1954,8 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			notification_context: `Runner ${label} was re-adopted after a Flywheel restart — monitoring re-established via tmux (heartbeat had been stale ${minutes}m). It is alive and being watched again; no action needed.`,
 			session_role: session.session_role ?? "main",
 		};
-		// Display-A: stamp the ⚠️重连中 marker (fire-and-forget, best-effort).
+		// Display-A: stamp the ⚠️重连中 marker with the resolved model marker
+		// (fire-and-forget, best-effort). Runtime re-entry may suppress this write.
 		if (details?.stampReconnectTitle !== false) {
 			this.stampReconnect(session, "enter");
 		}
@@ -2041,7 +2042,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			.stampStatusBadge(ctx, thread.thread_id, badge)
 			.catch((err: unknown) => {
 				console.warn(
-					`[heartbeat-notify] session-status stamp failed for ${session.execution_id}:`,
+					`[heartbeat-notify] reconnect ${mode} stamp failed for ${session.execution_id}:`,
 					err instanceof Error ? err.message : err,
 				);
 			});
