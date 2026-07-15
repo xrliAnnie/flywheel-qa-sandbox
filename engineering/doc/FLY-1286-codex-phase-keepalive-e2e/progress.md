@@ -2,10 +2,12 @@
 issue: FLY-1286
 phase: design
 phaseCursor: 4/5
-updated: 2026-07-15T09:28:43.217Z
-nextStep: Cross-family design review failed before verdict on reviewer HTTP 429;
-  poll Lead question cd67661d-3528-4e1b-ae83-f8a06560788f and open a fresh
-  review round only after the Claude lane is restored
+updated: 2026-07-15T09:45:04.277Z
+nextStep: "Cross-family review round 3 requested changes: correct process-group
+  crash injection, socket-based orphan oracle, conditional direct-shutdown
+  evidence, explicit isolation write set, sqlite read-only polling, durable
+  closeout corroboration, bounded hold wait, and not-yours literal; then request
+  a fresh review round"
 chunks:
   - id: onboard
     order: 1
@@ -18,7 +20,7 @@ pointers:
 
 # FLY-1286 progress
 **phase**: design (4/5)
-**next**: Cross-family design review failed before verdict on reviewer HTTP 429; poll Lead question cd67661d-3528-4e1b-ae83-f8a06560788f and open a fresh review round only after the Claude lane is restored
+**next**: Cross-family review round 3 requested changes: correct process-group crash injection, socket-based orphan oracle, conditional direct-shutdown evidence, explicit isolation write set, sqlite read-only polling, durable closeout corroboration, bounded hold wait, and not-yours literal; then request a fresh review round
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
