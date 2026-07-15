@@ -422,6 +422,14 @@ describe("M3 declaration", () => {
 				event_id: "zombie-alert-unroutable-exec-z1",
 				event_type: "session_zombie_detected",
 				source: "bridge.zombie-reconcile",
+				// Code R1 #7: the audit records the FRESH zombie last_error — the
+				// pre-transition snapshot's (stale) value must never be frozen in
+				// by the deterministic event id.
+				payload: expect.objectContaining({
+					last_error: expect.stringMatching(
+						/^zombie: tmux window .* dead \(pane probe absent x\d+, server up, at /,
+					),
+				}),
 			}),
 		);
 		expect(notifier.persistPreparedZombieDetected).not.toHaveBeenCalled();

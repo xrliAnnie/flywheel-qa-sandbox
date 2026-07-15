@@ -32,8 +32,6 @@ export interface HookPayload {
 		probed_at?: string;
 		/** Consecutive server-up absent probes behind a zombie declaration. */
 		consecutive_probes?: number;
-		/** Backfill only: evidence marker could not be parsed — no fabricated facts. */
-		degraded?: true;
 	};
 	/** FLY-1282: read-only worktree unpushed-work summary attached to
 	 * session_zombie_detected (rescue is the Lead's decision, never automated). */
