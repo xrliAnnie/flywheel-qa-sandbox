@@ -134,15 +134,31 @@ function snapshot() {
 		],
 		unassignedCrons: [],
 		flags: [],
-		extensions: [],
+		extensions: [
+			{
+				id: "runtime",
+				label: "运行参数",
+				fields: [
+					{
+						id: "polling",
+						label: "轮询间隔",
+						kind: "number",
+						help: "全局参数",
+						value: managed("extension-target", 30),
+					},
+				],
+			},
+		],
 	};
 }
 
 describe("management console browser interactions", () => {
 	let requests: Array<{ path: string; body?: unknown }>;
+	let stageResponses: unknown[];
 
 	beforeEach(async () => {
 		requests = [];
+		stageResponses = [];
 		const fetchMock = vi.fn(async (path: string, options?: RequestInit) => {
 			requests.push({
 				path,
@@ -151,7 +167,9 @@ describe("management console browser interactions", () => {
 			const body =
 				path === "/api/fleet/snapshot"
 					? snapshot()
-					: { batch: { changes: [], noOps: [] }, confirmationRequired: true };
+					: path === "/api/fleet/changes/stage" && stageResponses.length
+						? stageResponses.shift()
+						: { batch: { changes: [], noOps: [] }, confirmationRequired: true };
 			return new Response(JSON.stringify(body), {
 				status: 200,
 				headers: { "Content-Type": "application/json" },
@@ -269,5 +287,99 @@ describe("management console browser interactions", () => {
 			'[data-model-target="cron-model-target"] [data-model-part="effort"]',
 		) as HTMLSelectElement;
 		expect([...cronEffort.options].map((option) => option.value)).toEqual([""]);
+	});
+
+	it("keeps one cron time and adds a distinct row when 09:00 already exists", () => {
+		(document.querySelector('[data-tab="cron"]') as HTMLButtonElement).click();
+		const onlyRemove = document.querySelector(
+			'[data-schedule-action="remove"]',
+		) as HTMLButtonElement;
+		expect(onlyRemove.disabled).toBe(true);
+
+		(
+			document.querySelector(
+				'[data-schedule-action="add"]',
+			) as HTMLButtonElement
+		).click();
+		const hours = [
+			...document.querySelectorAll<HTMLInputElement>(
+				'[data-schedule-action="hour"]',
+			),
+		].map((input) => input.value);
+		expect(hours).toEqual(["09", "17"]);
+	});
+
+	it("renders extension targets once under an explicit global entry", () => {
+		expect(document.querySelector('[data-tab="extension-runtime"]')).toBeNull();
+		expect(document.querySelector("[data-extension-target]")).toBeNull();
+
+		(
+			document.querySelector(
+				'[data-project="__extensions__"]',
+			) as HTMLButtonElement
+		).click();
+		expect(document.getElementById("detail")?.textContent).toContain(
+			"全局运行参数",
+		);
+		expect(
+			document.querySelector('[data-extension-target="extension-target"]'),
+		).not.toBeNull();
+	});
+
+	it("requires a fresh acknowledgement after canonical values drift", async () => {
+		stageResponses.push(
+			{
+				batch: {
+					changes: [
+						{
+							targetId: "enabled-target",
+							oldValue: true,
+							newValue: false,
+							consequence: "reload-launchd",
+						},
+					],
+					noOps: [],
+				},
+				confirmationRequired: true,
+			},
+			{
+				batch: {
+					changes: [
+						{
+							targetId: "enabled-target",
+							oldValue: false,
+							newValue: true,
+							consequence: "reload-launchd",
+						},
+					],
+					noOps: [],
+				},
+				confirmationRequired: true,
+				confirmToken: "drifted-token",
+			},
+		);
+
+		(document.querySelector('[data-tab="cron"]') as HTMLButtonElement).click();
+		(
+			document.querySelector(
+				'[data-toggle-target="enabled-target"]',
+			) as HTMLButtonElement
+		).click();
+		(document.getElementById("stage") as HTMLButtonElement).click();
+		await vi.waitFor(() =>
+			expect(document.getElementById("ack")).not.toBeNull(),
+		);
+		(document.getElementById("ack") as HTMLInputElement).checked = true;
+		(document.getElementById("modalConfirm") as HTMLButtonElement).click();
+
+		await vi.waitFor(() => {
+			expect(document.getElementById("modal")?.textContent).toContain(
+				"真源在确认期间发生变化",
+			);
+		});
+		expect(document.getElementById("ack")).not.toBeNull();
+		expect(document.getElementById("modalConfirm")?.textContent).toContain(
+			"重新预检",
+		);
 	});
 });

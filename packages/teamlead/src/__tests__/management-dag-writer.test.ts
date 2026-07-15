@@ -234,4 +234,83 @@ describe("management DAG writer", () => {
 		store.close();
 		rmSync(root, { recursive: true, force: true });
 	});
+
+	it("keeps a retired persisted model visible and lets the console repair it", async () => {
+		const root = mkdtempSync(join(tmpdir(), "management-dag-retired-model-"));
+		const dbPath = join(root, "state.db");
+		let store = await StateStore.create(dbPath);
+		importBundledWorkflowSeeds(store);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "*",
+			templateId: "tpl_eng_heavy",
+			updatedBy: "test",
+		});
+		const template = store.getWorkflowTemplate("tpl_eng_heavy")!;
+		const revision = store.getWorkflowTemplateRevision(
+			template.template_id,
+			template.current_published_revision!,
+		)!;
+		const retired = JSON.parse(revision.manifest);
+		retired.nodes = retired.nodes.map((node: { id: string }) =>
+			node.id === "design" ? { ...node, model: "claude-retired-model" } : node,
+		);
+		store.close();
+
+		const raw = new BetterSqlite3(dbPath);
+		raw.exec("DROP TRIGGER workflow_template_revision_no_update");
+		raw
+			.prepare(
+				`UPDATE workflow_template_revision
+				 SET manifest = ?
+				 WHERE template_id = ? AND revision = ?`,
+			)
+			.run(JSON.stringify(retired), template.template_id, revision.revision);
+		raw.close();
+
+		store = await StateStore.create(dbPath);
+		const dag = readManagementDags({
+			reader: store,
+			projectNames: ["flywheel"],
+		}).projectDags[0]!.dags[0]!;
+		expect(dag.error).toBeUndefined();
+		expect(dag.nodes).toHaveLength(3);
+		const target = dag.nodes.find((node) => node.name === "design")!;
+		expect(target.dispatch).toMatchObject({
+			current: {
+				provider: "anthropic",
+				model: "claude-retired-model",
+			},
+			writeCapability: { writable: true },
+		});
+
+		expect(
+			applyManagementDagEdit({
+				store,
+				targetId: target.dispatch.targetId,
+				expectedRevision: dag.revision,
+				expectedDigest: dag.digest,
+				desired: {
+					provider: "openai",
+					model: "gpt-5.6-sol",
+					effort: "xhigh",
+				},
+				actor: "founder-management-console",
+			}),
+		).toMatchObject({ status: "published" });
+		const repairedTemplate = store.getWorkflowTemplate(template.template_id)!;
+		expect(() =>
+			validateWorkflowManifest(
+				JSON.parse(
+					store.getWorkflowTemplateRevision(
+						template.template_id,
+						repairedTemplate.current_published_revision!,
+					)!.manifest,
+				),
+			),
+		).not.toThrow();
+
+		store.close();
+		rmSync(root, { recursive: true, force: true });
+	});
 });

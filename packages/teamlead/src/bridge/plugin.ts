@@ -110,7 +110,10 @@ import {
 	type Session,
 	StateStore,
 } from "../StateStore.js";
-import { importBundledWorkflowSeeds } from "../workflow-template.js";
+import {
+	ensureDefaultWorkflowBindings,
+	importBundledWorkflowSeeds,
+} from "../workflow-template.js";
 import { AlertChannelHub, createDiscordOps } from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
 import {
@@ -333,7 +336,6 @@ import {
 } from "./linear-scope.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { ManagementChangeCoordinator } from "./management-change-coordinator.js";
-import { fileSourceRevision } from "./management-console-contract.js";
 import {
 	createManagementCronProvider,
 	scanManagementCrons,
@@ -348,6 +350,7 @@ import {
 	createManagementRunnerProvider,
 	managementFlagRevision,
 } from "./management-existing-writers.js";
+import { ManagementProjectSource } from "./management-project-source.js";
 import { ManagementSectionRegistry } from "./management-section-registry.js";
 import { createManagementSsotProviders } from "./management-ssot-providers.js";
 import { ManagementWriterRegistry } from "./management-writer.js";
@@ -3669,16 +3672,6 @@ export async function startBridge(
 				".flywheel",
 				"projects.json",
 			);
-			const managementProjectsBytes = ffReadFileSync(
-				managementProjectsPath,
-				"utf-8",
-			);
-			let managementProjects = parseAndValidateProjects(
-				JSON.parse(managementProjectsBytes),
-			);
-			let managementProjectsRevision = fileSourceRevision(
-				Buffer.from(managementProjectsBytes),
-			);
 			const fleetScriptPath = join(repoRoot, "scripts", "flywheel-fleet.sh");
 			const commCliPath = join(
 				repoRoot,
@@ -3692,6 +3685,21 @@ export async function startBridge(
 			// refresh whenever the file stamp changes (runner-config CLI writes are
 			// visible on the next snapshot, no Bridge restart).
 			const ffConfigCache = new ProjectConfigCache();
+			const managementProjectSource = new ManagementProjectSource({
+				path: managementProjectsPath,
+				readFile: (path) => ffReadFileSync(path, "utf-8"),
+				parse: parseAndValidateProjects,
+				warm: async (nextProjects) => {
+					await ffConfigCache.get(nextProjects);
+					ensureDefaultWorkflowBindings(
+						store,
+						nextProjects.map((project) => project.projectName),
+					);
+				},
+			});
+			await managementProjectSource.initialize();
+			let managementProjects = managementProjectSource.projects();
+			let managementProjectsRevision = managementProjectSource.revision();
 			const managementEnvPath = join(homedir(), ".flywheel", ".env");
 			const managementLaunchAgentsDir = join(
 				homedir(),
@@ -3699,13 +3707,10 @@ export async function startBridge(
 				"LaunchAgents",
 			);
 			const managementSections = new ManagementSectionRegistry();
-			void ffConfigCache.get(managementProjects).catch(() => {});
 			const refreshManagementSources = async () => {
-				const nextBytes = ffReadFileSync(managementProjectsPath, "utf-8");
-				const nextProjects = parseAndValidateProjects(JSON.parse(nextBytes));
-				await ffConfigCache.get(nextProjects);
-				managementProjects = nextProjects;
-				managementProjectsRevision = fileSourceRevision(Buffer.from(nextBytes));
+				await managementProjectSource.refresh();
+				managementProjects = managementProjectSource.projects();
+				managementProjectsRevision = managementProjectSource.revision();
 			};
 			fleetConsole = new FleetConsole(
 				defaultFleetConsoleOptions({
@@ -3718,6 +3723,7 @@ export async function startBridge(
 					// FLY-709 P4: stat-and-reload-on-change before a snapshot build.
 					refreshProjectConfigs: refreshManagementSources,
 					managementSnapshotProviders: () => [
+						managementProjectSource.healthProvider(),
 						...createManagementSsotProviders({
 							projects: () => managementProjects,
 							projectsRevision: () => managementProjectsRevision,
@@ -3833,63 +3839,63 @@ export async function startBridge(
 						projectConfigs: ffConfigCache.current(),
 					}),
 			});
-			managementConsole.setManagementCoordinator(
-				new ManagementChangeCoordinator({
-					registry: new ManagementWriterRegistry([
-						existingWriters.lead,
-						existingWriters.runner,
-						existingWriters.flag,
-						createManagementDagWriter({
-							store,
-							projectNames: () =>
-								managementProjects.map((project) => project.projectName),
-							actor: "founder-management-console",
-						}),
-						createManagementCronWriterAdapter({
-							writer: cronAuthority,
-							targets: () => scanCurrentCrons().targets,
-						}),
-						managementSections.writer(),
-					]),
-					tokens: managementConsole.tokens,
-					audit: managementConsole.audit,
-					journalDir: join(homedir(), ".flywheel", "fleet-txns"),
-					snapshotRevision: () =>
-						managementConsole.buildManagementSnapshot().snapshotRevision,
-					reconcileAccepted: (writerId, details) => {
-						if (writerId !== "existing-fleet-lead-v1") return null;
-						const batchId =
-							typeof details === "object" &&
-							details !== null &&
-							typeof (details as { batchId?: unknown }).batchId === "string"
-								? ((details as { batchId: string }).batchId as string)
-								: null;
-						if (!batchId) {
-							return {
-								status: "partial",
-								reason: "missing Fleet child batch id",
-							};
-						}
-						const progress = managementConsole.progressFor(batchId);
-						if (!progress || !progress.terminal) return null;
-						if (progress.batchStatus === "applied") {
-							return { status: "applied", details: { batchId } };
-						}
-						if (progress.batchStatus === "partially-applied") {
-							return {
-								status: "partial",
-								reason: "Fleet child batch partially applied",
-								details: { batchId },
-							};
-						}
+			const managementCoordinator = new ManagementChangeCoordinator({
+				registry: new ManagementWriterRegistry([
+					existingWriters.lead,
+					existingWriters.runner,
+					existingWriters.flag,
+					createManagementDagWriter({
+						store,
+						projectNames: () =>
+							managementProjects.map((project) => project.projectName),
+						actor: "founder-management-console",
+					}),
+					createManagementCronWriterAdapter({
+						writer: cronAuthority,
+						targets: () => scanCurrentCrons().targets,
+					}),
+					managementSections.writer(),
+				]),
+				tokens: managementConsole.tokens,
+				audit: managementConsole.audit,
+				journalDir: join(homedir(), ".flywheel", "fleet-txns"),
+				snapshotRevision: () =>
+					managementConsole.buildManagementSnapshot().snapshotRevision,
+				reconcileAccepted: (writerId, details) => {
+					if (writerId !== "existing-fleet-lead-v1") return null;
+					const batchId =
+						typeof details === "object" &&
+						details !== null &&
+						typeof (details as { batchId?: unknown }).batchId === "string"
+							? ((details as { batchId: string }).batchId as string)
+							: null;
+					if (!batchId) {
 						return {
-							status: "rejected",
-							reason: `Fleet child batch ended ${progress.batchStatus}`,
+							status: "partial",
+							reason: "missing Fleet child batch id",
+						};
+					}
+					const progress = managementConsole.progressFor(batchId);
+					if (!progress || !progress.terminal) return null;
+					if (progress.batchStatus === "applied") {
+						return { status: "applied", details: { batchId } };
+					}
+					if (progress.batchStatus === "partially-applied") {
+						return {
+							status: "partial",
+							reason: "Fleet child batch partially applied",
 							details: { batchId },
 						};
-					},
-				}),
-			);
+					}
+					return {
+						status: "rejected",
+						reason: `Fleet child batch ended ${progress.batchStatus}`,
+						details: { batchId },
+					};
+				},
+			});
+			managementConsole.setManagementCoordinator(managementCoordinator);
+			void managementCoordinator.reconcileProgress();
 			// R8 #2: on boot, reconcile any interrupted batch by engine liveness
 			// (live → observe; dead → engine's own recover) + apply-result audit.
 			fleetConsole.reconcileOnStartup();
@@ -3907,6 +3913,11 @@ export async function startBridge(
 						`[Bridge] fleet reconcile tick failed: ${(e as Error).message}`,
 					);
 				}
+				void managementCoordinator.reconcileProgress().catch((error) => {
+					console.warn(
+						`[Bridge] management reconcile tick failed: ${error.message}`,
+					);
+				});
 			}, 30_000);
 			fleetReconcileTimer.unref?.();
 			console.log(`[Bridge] Fleet console enabled (engine=${fleetScriptPath})`);

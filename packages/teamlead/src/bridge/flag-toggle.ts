@@ -71,6 +71,7 @@ export function isDirectToggleable(spec: FeatureFlagSpec): boolean {
 	return (
 		spec.source === "env" &&
 		spec.scope === "bridge_global" &&
+		spec.valueKind === "bool" &&
 		spec.toggleable === "direct" &&
 		spec.category !== "governance_gate" &&
 		spec.readSites.length > 0 &&

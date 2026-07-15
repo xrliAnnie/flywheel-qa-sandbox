@@ -53,7 +53,19 @@ function normalizeTimes(times){
     }
   });
   valid.sort(function(a,b){return a.hour-b.hour||a.minute-b.minute;});
-  return valid.length?valid:[{hour:9,minute:0}];
+  return valid;
+}
+function nextScheduleTime(times){
+  var used={};
+  normalizeTimes(times).forEach(function(time){used[time.hour+":"+time.minute]=true;});
+  var preferred=[{hour:9,minute:0},{hour:17,minute:0}];
+  for(var i=0;i<preferred.length;i++){
+    var candidate=preferred[i];if(!used[candidate.hour+":"+candidate.minute]){return candidate;}
+  }
+  for(var hour=0;hour<24;hour++){
+    for(var minute=0;minute<60;minute+=30){if(!used[hour+":"+minute]){return {hour:hour,minute:minute};}}
+  }
+  return null;
 }
 function shouldHandleScheduleEvent(action,eventType){
   return (eventType==="click"&&(action==="day"||action==="add"||action==="remove"))||
@@ -172,7 +184,7 @@ const MANAGEMENT_CONSOLE_APP = `
     return requestJson("/api/fleet/snapshot").then(function(next){
       snapshot=next;
       rebuildIndex();
-      if(!projectById(selectedProjectId)&&selectedProjectId!=="__unassigned__"){selectedProjectId=firstProjectId();}
+      if(!projectById(selectedProjectId)&&selectedProjectId!=="__unassigned__"&&selectedProjectId!=="__extensions__"){selectedProjectId=firstProjectId();}
       renderAll();
     }).catch(showGlobalError);
   }
@@ -208,6 +220,7 @@ const MANAGEMENT_CONSOLE_APP = `
       other.forEach(function(project){html+='<button class="project-button '+(project.id===selectedProjectId?'active':'')+'" data-project="'+esc(project.id)+'"><span class="project-name">'+esc(project.name)+'</span></button>';});
     }
     if(snapshot.unassignedCrons.length&&"未归属 Cron".toLowerCase().indexOf(query)>=0){html+='<div class="group-title">基础设施</div><button class="project-button '+(selectedProjectId==="__unassigned__"?'active':'')+'" data-project="__unassigned__"><span class="project-name">未归属 Cron</span><span class="badge">'+snapshot.unassignedCrons.length+'</span></button>';}
+    if(snapshot.extensions.length&&"全局运行参数".toLowerCase().indexOf(query)>=0){html+='<div class="group-title">全局</div><button class="project-button '+(selectedProjectId==="__extensions__"?'active':'')+'" data-project="__extensions__"><span class="project-name">全局运行参数</span><span class="badge">'+snapshot.extensions.length+' tab</span></button>';}
     byId("projectList").innerHTML=html||'<div class="empty">没有匹配项目</div>';
   }
   function capability(managed){
@@ -225,7 +238,7 @@ const MANAGEMENT_CONSOLE_APP = `
   }
   function selectedModel(provider,value){
     if(!provider){return null;}var id=value&&value.model;for(var i=0;i<provider.models.length;i++){if(provider.models[i].id===id){return provider.models[i];}}
-    return provider.models[0]||null;
+    return null;
   }
   function option(id,label,chosen){return '<option value="'+esc(id)+'" '+(id===chosen?'selected':'')+'>'+esc(label)+'</option>';}
   function modelControl(managed,surface,label,providerLocked,selectionNullable){
@@ -235,7 +248,8 @@ const MANAGEMENT_CONSOLE_APP = `
     var provider=value?selectedProvider(catalog,value):(providerLocked?catalog.providers[0]:null);
     var model=value&&provider?selectedModel(provider,value):null;
     var providers=(!providerLocked&&selectionNullable?'<option value="" '+(!provider?'selected':'')+'>账户默认</option>':'')+catalog.providers.map(function(item){return option(item.id,item.label,provider&&provider.id);}).join("");
-    var models=(selectionNullable?'<option value="" '+(!model?'selected':'')+'>账户默认</option>':'')+(provider?provider.models.map(function(item){return option(item.id,item.label,model&&model.id);}).join(""):"");
+    var retiredModel=value&&provider&&!model&&value.model?'<option value="'+esc(value.model)+'" selected>已退役 · '+esc(value.model)+'</option>':'';
+    var models=(selectionNullable?'<option value="" '+(!value?'selected':'')+'>账户默认</option>':'')+retiredModel+(provider?provider.models.map(function(item){return option(item.id,item.label,model&&model.id);}).join(""):"");
     var efforts='<option value="" '+(!value||value.effort==null?'selected':'')+'>账户默认</option>'+(model?model.efforts.map(function(item){return option(item,item,value&&value.effort);}).join(""):"");
     var providerDisabled=providerLocked||!writableTarget?' disabled':'';
     var modelDisabled=!writableTarget||!provider?' disabled':'';
@@ -274,7 +288,8 @@ const MANAGEMENT_CONSOLE_APP = `
     var schedule=effective(managed);if(!schedule){return '<div class="field"><label>星期与时间</label><div class="reason">launchd 真源无法解析为受管 weekly schedule</div>'+capability(managed)+'</div>';}
     var disabled=writable(managed)?"":" disabled";
     var days='<div class="day-row">'+weekNames.map(function(name,index){var day=index+1;return '<button class="day '+(schedule.days.indexOf(day)>=0?'on':'')+'" data-schedule-action="day" data-day="'+day+'" data-target="'+esc(managed.targetId)+'"'+disabled+'>周'+name+'</button>';}).join("")+'<span class="badge">'+esc(scheduleLabel(schedule.days))+'</span></div>';
-    var times='<div>'+(schedule.times||[]).map(function(time,index){return '<div class="time-row"><input type="number" min="0" max="23" value="'+esc(timePad(time.hour))+'" data-schedule-action="hour" data-index="'+index+'" data-target="'+esc(managed.targetId)+'"'+disabled+'><span>:</span><input type="number" min="0" max="59" value="'+esc(timePad(time.minute))+'" data-schedule-action="minute" data-index="'+index+'" data-target="'+esc(managed.targetId)+'"'+disabled+'><button class="mini-button" data-schedule-action="remove" data-index="'+index+'" data-target="'+esc(managed.targetId)+'"'+disabled+'>移除</button></div>';}).join("")+'</div>';
+    var removeDisabled=!writable(managed)||(schedule.times||[]).length<=1?' disabled':'';
+    var times='<div>'+(schedule.times||[]).map(function(time,index){return '<div class="time-row"><input type="number" min="0" max="23" value="'+esc(timePad(time.hour))+'" data-schedule-action="hour" data-index="'+index+'" data-target="'+esc(managed.targetId)+'"'+disabled+'><span>:</span><input type="number" min="0" max="59" value="'+esc(timePad(time.minute))+'" data-schedule-action="minute" data-index="'+index+'" data-target="'+esc(managed.targetId)+'"'+disabled+'><button class="mini-button" data-schedule-action="remove" data-index="'+index+'" data-target="'+esc(managed.targetId)+'"'+removeDisabled+'>移除</button></div>';}).join("")+'</div>';
     return '<div class="field"><label>星期与时间</label>'+days+times+'<button class="mini-button" data-schedule-action="add" data-target="'+esc(managed.targetId)+'"'+disabled+'>增加时间</button>'+capability(managed)+'</div>';
   }
   function cronCard(cron){
@@ -307,18 +322,25 @@ const MANAGEMENT_CONSOLE_APP = `
   function renderUnassigned(){
     return '<div class="topline"><div><h1>未归属 Cron</h1><div class="subtitle">从 launchd 真源自动发现，未映射到任何项目</div></div></div><div class="tabs"><button class="tab active" data-tab="cron">Cron</button></div>'+renderCronPanel(null);
   }
+  function renderGlobalExtensions(){
+    if(!snapshot.extensions.length){return '<div class="topline"><div><h1>全局运行参数</h1></div></div><div class="empty">尚未注册运行参数 provider</div>';}
+    var allowed=snapshot.extensions.map(function(section){return "extension-"+section.id;});
+    if(allowed.indexOf(activeTab)<0){activeTab=allowed[0];}
+    var html='<div class="topline"><div><h1>全局运行参数</h1><div class="subtitle">全局真源；不随左侧项目切换</div></div></div><div class="tabs">';
+    snapshot.extensions.forEach(function(section){html+='<button class="tab '+(activeTab==="extension-"+section.id?'active':'')+'" data-tab="extension-'+esc(section.id)+'">'+esc(section.label)+'</button>';});
+    html+='</div>';snapshot.extensions.forEach(function(section){html+=renderExtensionPanel(section);});return html;
+  }
   function renderDetail(){
     if(!snapshot){return;}var project=selectedProject();
     if(selectedProjectId==="__unassigned__"){activeTab="cron";byId("detail").innerHTML=renderUnassigned();return;}
+    if(selectedProjectId==="__extensions__"){byId("detail").innerHTML=renderGlobalExtensions();return;}
     if(!project){byId("detail").innerHTML='<div class="empty">没有可显示的项目</div>';return;}
-    var allowed=["model","dag","cron"].concat(snapshot.extensions.map(function(section){return "extension-"+section.id;}));
+    var allowed=["model","dag","cron"];
     if(allowed.indexOf(activeTab)<0){activeTab="model";}
     var html='<div class="topline"><div><h1>'+esc(project.name)+'</h1><div class="subtitle">'+esc(project.presentationGroup)+' · 真源 revision '+esc(project.sourceRevision)+'</div></div></div>';
     if(project.error){html+='<div class="error show">'+esc(project.error)+'</div>';}
     html+='<div class="tabs"><button class="tab '+(activeTab==="model"?'active':'')+'" data-tab="model">模型</button><button class="tab '+(activeTab==="dag"?'active':'')+'" data-tab="dag">DAG 模板</button><button class="tab '+(activeTab==="cron"?'active':'')+'" data-tab="cron">Cron</button>';
-    snapshot.extensions.forEach(function(section){html+='<button class="tab '+(activeTab==="extension-"+section.id?'active':'')+'" data-tab="extension-'+esc(section.id)+'">'+esc(section.label)+'</button>';});
     html+='</div>'+renderModelPanel(project)+renderDagPanel(project)+renderCronPanel(project);
-    snapshot.extensions.forEach(function(section){html+=renderExtensionPanel(section);});
     byId("detail").innerHTML=html;
   }
   function renderFlagValue(managed){
@@ -360,8 +382,8 @@ const MANAGEMENT_CONSOLE_APP = `
   function handleSchedule(element){
     var managed=targetIndex[element.dataset.target];if(!managed||!writable(managed)){return;}var schedule=clone(effective(managed));if(!schedule){return;}var action=element.dataset.scheduleAction;var index=Number(element.dataset.index);
     if(action==="day"){schedule.days=toggleScheduleDay(schedule.days,Number(element.dataset.day));}
-    if(action==="add"){schedule.times=normalizeTimes(schedule.times.concat([{hour:9,minute:0}]));}
-    if(action==="remove"){schedule.times.splice(index,1);schedule.times=normalizeTimes(schedule.times);}
+    if(action==="add"){var added=nextScheduleTime(schedule.times);if(!added){return;}schedule.times=normalizeTimes(schedule.times.concat([added]));}
+    if(action==="remove"){if(schedule.times.length<=1){return;}schedule.times.splice(index,1);schedule.times=normalizeTimes(schedule.times);}
     if(action==="hour"||action==="minute"){
       var next=Number(element.value);var time=schedule.times[index];var hour=action==="hour"?next:Number(time.hour);var minute=action==="minute"?next:Number(time.minute);
       if(!isValidTime(hour,minute)){element.setCustomValidity("请输入有效时间");element.reportValidity();return;}
@@ -382,8 +404,8 @@ const MANAGEMENT_CONSOLE_APP = `
 
   function post(path,body){return requestJson(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});}
   function canonicalKey(batch){return stableUiValue(batch.changes.map(function(change){return {targetId:change.targetId,oldValue:change.oldValue,newValue:change.newValue,consequence:change.consequence};}));}
-  function showCanonical(result,message){
-    staged=result;var batch=result.batch;var html='<h2>提交确认</h2><div class="help">以下内容来自 server canonical 预检；页面草稿不是落盘权威。</div>';
+  function showCanonical(result,message,forceAcknowledgement){
+    staged=forceAcknowledgement?Object.assign({},result,{confirmToken:null}):result;result=staged;var batch=result.batch;var html='<h2>提交确认</h2><div class="help">以下内容来自 server canonical 预检；页面草稿不是落盘权威。</div>';
     if(message){html+='<div class="ack">'+esc(message)+'</div>';}
     batch.changes.forEach(function(change){html+='<div class="change"><strong>'+esc(change.targetId)+'</strong><div class="change-values"><div><div class="help">旧值 oldValue</div><div class="value old">'+esc(textValue(change.oldValue))+'</div></div><span>→</span><div><div class="help">新值 newValue</div><div class="value">'+esc(textValue(change.newValue))+'</div></div></div><div class="consequence">影响 consequence：'+esc(change.consequence)+'</div></div>';});
     batch.noOps.forEach(function(change){html+='<div class="change"><strong>'+esc(change.targetId)+'</strong><span class="badge">无变化</span></div>';});
@@ -402,7 +424,7 @@ const MANAGEMENT_CONSOLE_APP = `
       var previous=canonicalKey(staged.batch);var changes=Object.keys(drafts).sort().map(function(id){return drafts[id];});
       post("/api/fleet/changes/stage",{changes:changes,acknowledged:true}).then(function(result){
         if(!result.confirmToken){throw new Error("后端未签发确认令牌");}
-        if(canonicalKey(result.batch)!==previous){showCanonical(result,"真源在确认期间发生变化，请重新核对旧值与新值。");return;}
+        if(canonicalKey(result.batch)!==previous){showCanonical(result,"真源在确认期间发生变化，请重新核对旧值与新值。",result.confirmationRequired);return;}
         staged=result;applyCanonical();
       }).catch(showModalError);return;
     }
@@ -438,7 +460,7 @@ const MANAGEMENT_CONSOLE_APP = `
 
   document.querySelectorAll(".nav-button").forEach(function(button){button.addEventListener("click",function(){document.querySelectorAll(".nav-button").forEach(function(item){item.classList.toggle("active",item===button);});byId("instancesPage").classList.toggle("active",button.dataset.nav==="instances");byId("flagsPage").classList.toggle("active",button.dataset.nav==="flags");});});
   byId("projectSearch").addEventListener("input",renderProjectList);
-  byId("projectList").addEventListener("click",function(event){var button=event.target.closest("[data-project]");if(button){selectedProjectId=button.dataset.project;activeTab=selectedProjectId==="__unassigned__"?"cron":"model";renderAll();}});
+  byId("projectList").addEventListener("click",function(event){var button=event.target.closest("[data-project]");if(button){selectedProjectId=button.dataset.project;activeTab=selectedProjectId==="__unassigned__"?"cron":selectedProjectId==="__extensions__"?"":"model";renderAll();}});
   byId("detail").addEventListener("click",function(event){var tab=event.target.closest("[data-tab]");if(tab){activeTab=tab.dataset.tab;renderDetail();return;}delegate(event);});
   byId("detail").addEventListener("change",delegate);byId("flags").addEventListener("click",delegate);byId("flags").addEventListener("change",delegate);
   byId("stage").addEventListener("click",stageChanges);byId("flagStage").addEventListener("click",stageChanges);byId("discard").addEventListener("click",discard);byId("flagDiscard").addEventListener("click",discard);

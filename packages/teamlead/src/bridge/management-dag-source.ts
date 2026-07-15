@@ -39,6 +39,10 @@ function dagId(
 		.join("/");
 }
 
+function providerForVendor(vendor: "claude" | "codex"): "anthropic" | "openai" {
+	return vendor === "claude" ? "anthropic" : "openai";
+}
+
 function errorDag(
 	projectName: string,
 	binding: WorkflowCategoryBindingRow,
@@ -78,7 +82,9 @@ function projectDag(
 				`workflow template revision not found: ${template.current_published_revision}`,
 			);
 		}
-		const manifest = validateWorkflowManifest(JSON.parse(revision.manifest));
+		const manifest = validateWorkflowManifest(JSON.parse(revision.manifest), {
+			allowUnsupportedModels: true,
+		});
 		const sourceRevision = databaseSourceRevision(
 			revision.revision,
 			revision.manifest_digest,
@@ -90,19 +96,15 @@ function projectDag(
 					throw new Error(`workflow node ${node.id} has no model binding`);
 				}
 				const registered = getModelRegistryEntry(node.model);
-				if (
-					!registered ||
-					!isModelSelectionSupported({
-						surface: "workflow",
-						model: node.model,
-						effort: node.effort,
-						runtimeVendor: node.vendor,
-					})
-				) {
-					throw new Error(
-						`workflow node ${node.id} model is not supported by registry`,
-					);
-				}
+				const supported = Boolean(
+					registered &&
+						isModelSelectionSupported({
+							surface: "workflow",
+							model: node.model,
+							effort: node.effort,
+							runtimeVendor: node.vendor,
+						}),
+				);
 				return {
 					id: `${template.template_id}/${node.id}`,
 					name: node.id,
@@ -113,8 +115,10 @@ function projectDag(
 							"dispatch",
 						]),
 						current: {
-							provider: registered.provider,
-							model: registered.id,
+							provider: supported
+								? registered!.provider
+								: providerForVendor(node.vendor),
+							model: supported ? registered!.id : node.model,
 							effort: node.effort ?? null,
 						},
 						source: {

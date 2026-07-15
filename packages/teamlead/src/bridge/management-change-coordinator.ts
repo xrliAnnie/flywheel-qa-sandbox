@@ -727,6 +727,36 @@ export class ManagementChangeCoordinator {
 		return journal;
 	}
 
+	/**
+	 * Reconcile accepted child writes under the same mutex as apply(). The
+	 * journal read and conditional write are one serialized operation, so a
+	 * progress poll cannot overwrite newer per-item apply results.
+	 */
+	async reconcileProgress(): Promise<void> {
+		await this.mutex.run(async () => {
+			let files: string[];
+			try {
+				files = readdirSync(this.options.journalDir).filter(
+					(file) =>
+						file.startsWith("management-batch-") && file.endsWith(".json"),
+				);
+			} catch {
+				return;
+			}
+			for (const file of files) {
+				try {
+					this.reconcile(
+						JSON.parse(
+							readFileSync(join(this.options.journalDir, file), "utf8"),
+						) as ManagementBatchJournal,
+					);
+				} catch {
+					// Leave malformed journals on disk for diagnosis.
+				}
+			}
+		});
+	}
+
 	listProgress(): ManagementBatchProgress[] {
 		let files: string[];
 		try {
@@ -740,11 +770,9 @@ export class ManagementChangeCoordinator {
 		const progress: ManagementBatchProgress[] = [];
 		for (const file of files) {
 			try {
-				const journal = this.reconcile(
-					JSON.parse(
-						readFileSync(join(this.options.journalDir, file), "utf8"),
-					) as ManagementBatchJournal,
-				);
+				const journal = JSON.parse(
+					readFileSync(join(this.options.journalDir, file), "utf8"),
+				) as ManagementBatchJournal;
 				progress.push({
 					batchId: journal.batchId,
 					createdAt: journal.createdAt,

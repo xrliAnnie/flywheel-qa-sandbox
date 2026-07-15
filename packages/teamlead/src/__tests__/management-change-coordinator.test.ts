@@ -115,6 +115,10 @@ describe("unified management change coordinator", () => {
 		audit?: ReturnType<typeof fakeAudit>;
 		tokens?: ConfirmTokenStore;
 		snapshotRevision?: () => string;
+		reconcileAccepted?: (
+			writerId: string,
+			details: unknown,
+		) => ManagementWriterResult | null;
 	}) {
 		const audit = input.audit ?? fakeAudit();
 		return {
@@ -128,6 +132,7 @@ describe("unified management change coordinator", () => {
 					input.snapshotRevision ?? (() => "snapshot:authoritative"),
 				newBatchId: () => `management-batch-${++batchCounter}`,
 				now: () => new Date("2026-07-14T20:00:00.000Z"),
+				reconcileAccepted: input.reconcileAccepted,
 			}),
 		};
 	}
@@ -399,6 +404,57 @@ describe("unified management change coordinator", () => {
 		});
 		expect(persisted?.items.find((item) => item.targetId === b)).toMatchObject({
 			status: "partial",
+		});
+	});
+
+	it("serializes accepted-result reconciliation behind an in-flight apply", async () => {
+		const accepted = fakeWriter("lead", [
+			{ identity: "accepted", value: "old-accepted" },
+		]);
+		const delayed = fakeWriter("runner", [
+			{ identity: "delayed", value: "old-delayed" },
+		]);
+		accepted.apply = async () => ({
+			status: "accepted",
+			details: { batchId: "child-1" },
+		});
+		let releaseDelayed!: () => void;
+		const delayedGate = new Promise<void>((resolve) => {
+			releaseDelayed = resolve;
+		});
+		delayed.apply = async (change) => {
+			await delayedGate;
+			delayed.targets.get(change.targetId)!.currentValue = change.newValue;
+			return { status: "applied" };
+		};
+		const { coordinator: c } = coordinator({
+			writers: [accepted, delayed],
+			reconcileAccepted: () => ({ status: "applied" }),
+		});
+		const changes = [
+			...accepted.targets.values(),
+			...delayed.targets.values(),
+		].map((target) => ({
+			targetId: target.targetId,
+			desiredValue: `new-${target.kind}`,
+			observedRevision: target.sourceRevision,
+		}));
+		const staged = await c.stage({ changes }, ORIGIN);
+		const applying = c.apply(staged.body as never, ORIGIN);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		let reconciled = false;
+		const reconciling = c.reconcileProgress().then(() => {
+			reconciled = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(reconciled).toBe(false);
+
+		releaseDelayed();
+		await applying;
+		await reconciling;
+		expect(c.listProgress()[0]).toMatchObject({
+			status: "applied",
+			items: [{ status: "applied" }, { status: "applied" }],
 		});
 	});
 });

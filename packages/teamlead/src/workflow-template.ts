@@ -80,6 +80,15 @@ export interface LoadedWorkflowSeed {
 	contentHash: string;
 }
 
+export interface WorkflowManifestValidationOptions {
+	/**
+	 * Persisted manifests may outlive a registry entry. Read/repair surfaces use
+	 * this mode to keep the graph editable; all authoring and run materialization
+	 * paths retain strict canonical-registry validation.
+	 */
+	allowUnsupportedModels?: boolean;
+}
+
 export function workflowSeedContentHash(
 	seed: Pick<
 		LoadedWorkflowSeed,
@@ -175,7 +184,10 @@ function assertAcyclic(nodes: string[], edges: WorkflowManifestEdge[]): void {
 }
 
 /** Strict schema + semantic graph validation. Unknown keys fail at every level. */
-export function validateWorkflowManifest(value: unknown): WorkflowManifestV1 {
+export function validateWorkflowManifest(
+	value: unknown,
+	options: WorkflowManifestValidationOptions = {},
+): WorkflowManifestV1 {
 	const root = record(value, "manifest");
 	exactKeys(
 		root,
@@ -272,7 +284,11 @@ export function validateWorkflowManifest(value: unknown): WorkflowManifestV1 {
 			throw new Error(`node ${id} effort requires a vendor and model`);
 		}
 		const canonicalModel =
-			vendor && model ? canonicalWorkflowModel(vendor, model, effort) : model;
+			vendor && model
+				? options.allowUnsupportedModels
+					? model
+					: canonicalWorkflowModel(vendor, model, effort)
+				: model;
 		return {
 			id,
 			type,
@@ -615,4 +631,31 @@ export function importBundledWorkflowSeeds(
 ): void {
 	for (const seed of loadBundledWorkflowSeeds())
 		store.importWorkflowTemplateSeed(seed);
+}
+
+export const DEFAULT_BUNDLED_WORKFLOW_TEMPLATE_ID = "tpl_eng_heavy";
+
+/**
+ * Give newly discovered projects a truthful catalog authority without
+ * overwriting any founder/category decision. The wildcard is inserted only
+ * when the project has no bindings at all; repeats and hot refreshes are no-op.
+ */
+export function ensureDefaultWorkflowBindings(
+	store: Pick<
+		StateStore,
+		"listWorkflowCategoryBindings" | "bindWorkflowCategory"
+	>,
+	projectNames: readonly string[],
+): void {
+	for (const project of [...new Set(projectNames.map((name) => name.trim()))]
+		.filter(Boolean)
+		.sort((a, b) => a.localeCompare(b))) {
+		if (store.listWorkflowCategoryBindings(project).length > 0) continue;
+		store.bindWorkflowCategory({
+			project,
+			taskCategory: "*",
+			templateId: DEFAULT_BUNDLED_WORKFLOW_TEMPLATE_ID,
+			updatedBy: "system:bundled-default",
+		});
+	}
 }

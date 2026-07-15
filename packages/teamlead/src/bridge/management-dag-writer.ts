@@ -69,7 +69,9 @@ function resolveTarget(input: ManagementDagEdit):
 				template.current_published_revision,
 			);
 			if (!revision) continue;
-			const manifest = validateWorkflowManifest(JSON.parse(revision.manifest));
+			const manifest = validateWorkflowManifest(JSON.parse(revision.manifest), {
+				allowUnsupportedModels: true,
+			});
 			for (const node of manifest.nodes) {
 				if (node.type === "gate") continue;
 				const serverTarget = buildTargetId("dag", [

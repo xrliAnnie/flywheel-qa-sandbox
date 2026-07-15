@@ -8,6 +8,9 @@ type PureUi = {
 		hour: number;
 		minute: number;
 	}>;
+	nextScheduleTime(
+		times: Array<{ hour: number; minute: number }> /* current */,
+	): { hour: number; minute: number } | null;
 	isValidTime(hour: number, minute: number): boolean;
 	updateDraft(
 		drafts: Record<string, unknown>,
@@ -20,7 +23,7 @@ type PureUi = {
 
 function pureUi(): PureUi {
 	return Function(
-		`${MANAGEMENT_CONSOLE_STATE_JS};return {scheduleLabel:scheduleLabel,toggleScheduleDay:toggleScheduleDay,normalizeTimes:normalizeTimes,isValidTime:isValidTime,updateDraft:updateDraft};`,
+		`${MANAGEMENT_CONSOLE_STATE_JS};return {scheduleLabel:scheduleLabel,toggleScheduleDay:toggleScheduleDay,normalizeTimes:normalizeTimes,nextScheduleTime:nextScheduleTime,isValidTime:isValidTime,updateDraft:updateDraft};`,
 	)() as PureUi;
 }
 
@@ -36,8 +39,8 @@ describe("management console pure interaction contract", () => {
 		expect(ui.toggleScheduleDay([1], 2)).toEqual([1, 2]);
 	});
 
-	it("normalizes time rows, keeps at least one, and validates ranges", () => {
-		expect(ui.normalizeTimes([])).toEqual([{ hour: 9, minute: 0 }]);
+	it("normalizes time rows without inventing a replacement schedule", () => {
+		expect(ui.normalizeTimes([])).toEqual([]);
 		expect(
 			ui.normalizeTimes([
 				{ hour: 18, minute: 30 },
@@ -51,6 +54,20 @@ describe("management console pure interaction contract", () => {
 		expect(ui.isValidTime(23, 59)).toBe(true);
 		expect(ui.isValidTime(24, 0)).toBe(false);
 		expect(ui.isValidTime(10, 60)).toBe(false);
+	});
+
+	it("chooses a distinct default for every added schedule row", () => {
+		expect(ui.nextScheduleTime([])).toEqual({ hour: 9, minute: 0 });
+		expect(ui.nextScheduleTime([{ hour: 9, minute: 0 }])).toEqual({
+			hour: 17,
+			minute: 0,
+		});
+		expect(
+			ui.nextScheduleTime([
+				{ hour: 9, minute: 0 },
+				{ hour: 17, minute: 0 },
+			]),
+		).toEqual({ hour: 0, minute: 0 });
 	});
 
 	it("keys drafts by targetId, replaces desired values, and removes a reverted draft", () => {

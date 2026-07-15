@@ -1,11 +1,43 @@
 import { describe, expect, it } from "vitest";
+import { StateStore } from "../StateStore.js";
 import {
 	applyWorkflowOverride,
+	ensureDefaultWorkflowBindings,
+	importBundledWorkflowSeeds,
 	loadBundledWorkflowSeeds,
 	parseWorkflowManifestYaml,
 	validateWorkflowManifest,
 	WORKFLOW_OUTCOME_VOCABULARY,
 } from "../workflow-template.js";
+
+describe("bundled workflow default bindings", () => {
+	it("binds only projects with no existing category authority and is idempotent", async () => {
+		const store = await StateStore.create(":memory:");
+		importBundledWorkflowSeeds(store);
+		store.bindWorkflowCategory({
+			project: "custom",
+			taskCategory: "light",
+			templateId: "tpl_eng_light",
+			updatedBy: "founder",
+		});
+
+		ensureDefaultWorkflowBindings(store, ["beta", "alpha", "alpha", "custom"]);
+		expect(store.listWorkflowCategoryBindings("alpha")).toMatchObject([
+			{ task_category: "*", template_id: "tpl_eng_heavy" },
+		]);
+		expect(store.listWorkflowCategoryBindings("beta")).toMatchObject([
+			{ task_category: "*", template_id: "tpl_eng_heavy" },
+		]);
+		expect(store.listWorkflowCategoryBindings("custom")).toMatchObject([
+			{ task_category: "light", template_id: "tpl_eng_light" },
+		]);
+		const auditCount = store.listWorkflowTemplateAudit().length;
+
+		ensureDefaultWorkflowBindings(store, ["alpha", "beta", "custom"]);
+		expect(store.listWorkflowTemplateAudit()).toHaveLength(auditCount);
+		store.close();
+	});
+});
 
 describe("workflow template manifest v1", () => {
 	it("loads the three founder-revised seeds with independent QA and pointer handoffs", () => {

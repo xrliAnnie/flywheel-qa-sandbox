@@ -90,7 +90,7 @@ describe("management DAG source", () => {
 		store.close();
 	});
 
-	it("surfaces missing or registry-invalid current revisions as DAG errors", () => {
+	it("surfaces missing revisions as errors but keeps retired models repairable", () => {
 		const base = loadBundledWorkflowSeeds()[0]!;
 		const binding = {
 			project: "flywheel",
@@ -141,7 +141,14 @@ describe("management DAG source", () => {
 			},
 			projectNames: ["flywheel"],
 		});
-		expect(invalid.projectDags[0]!.dags[0]!.error).toMatch(/model|registry/i);
+		const retiredDag = invalid.projectDags[0]!.dags[0]!;
+		expect(retiredDag.error).toBeUndefined();
+		expect(
+			retiredDag.nodes.find((node) => node.name === "design")?.dispatch,
+		).toMatchObject({
+			current: { provider: "anthropic", model: "claude-invented" },
+			writeCapability: { writable: true },
+		});
 	});
 
 	it("exposes a data provider for snapshot orchestration", async () => {
