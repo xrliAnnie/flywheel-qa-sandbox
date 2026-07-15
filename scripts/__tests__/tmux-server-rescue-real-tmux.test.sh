@@ -80,7 +80,12 @@ else
   # ppid==1 is the daemonized-server precondition the scan relies on
   PPID_A="$(ps -o ppid= -p "$PID_A" 2>/dev/null | tr -d ' ')"
   [ "$PPID_A" = "1" ] || echo "    (note: server ppid=$PPID_A, expected 1)"
-  if _tmux_rescue_server_pids | grep -qx "$PID_A"; then
+  # Capture the scan output BEFORE grepping. Piping the scan straight into
+  # `grep -q` makes grep exit on first match, SIGPIPEs the scan's while-loop,
+  # and `set -o pipefail` then reports the whole pipeline as rc=141 — a false
+  # "blind scan" verdict even when the pid is present.
+  SCAN_OUT="$(_tmux_rescue_server_pids)"
+  if printf '%s\n' "$SCAN_OUT" | grep -qx "$PID_A"; then
     pass "server scan sees the live server (pid=$PID_A)"
   else
     fail "server scan is BLIND to a real tmux server (pid=$PID_A, command: $(ps -p "$PID_A" -o command= 2>/dev/null))"
