@@ -1,6 +1,6 @@
 # FLY-1269 529 E2E — QA round-4 runtime evidence
 host: MacBook-Pro.local | node: v25.6.1 | updated UTC: 2026-07-15T13:46:44Z
-tested source commit: 3b183e70fc8fa520e0c4de646ed8fb67c27dad5f | branch: project-slot-2-FLY-1286
+tested source commit: 864303e2c959a3cdaf364f414524ae6ae5ac714f | branch: project-slot-2-FLY-1286
 
 ## StateStore sessions (test-slot-2 teamlead.db)
 [{"execution_id":"464064c0-a711-4aa7-9426-5633dcef590d","status":"design_done","adapter_type":"codex-tmux","chat_thread_role":"design","runner_model":"gpt-5.6-sol","heartbeat_at":"2026-07-15 13:25:04"},
@@ -40,12 +40,13 @@ TUI: gpt-5.6-sol xhigh · …project-slot-2… Goal paused (captured live)
 
 - RED evidence: the prior committed short-deadline harness produced `13/19`; the six failures were
   `cleanup_not_observed` / `observer did not exit` timeout artifacts on the loaded 529 host.
-- Fix commit `3b183e70fc8fa520e0c4de646ed8fb67c27dad5f` raises only fixture observer/wait/exit/test
-  deadlines. It does not change observer production defaults, probe behavior, or assertions.
+- Commits `3b183e70` and `864303e2c959a3cdaf364f414524ae6ae5ac714f` raise only fixture
+  observer/wait/exit/test deadlines, including the explicit lifecycle-cleanup case identified by
+  round-6 review. They do not change observer production defaults, probe behavior, or assertions.
 - Exact committed command:
   `node --test engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs`
-- Run window: `2026-07-15T13:45:54Z` → `2026-07-15T13:46:44Z`; Node duration
-  `49576.048458ms`; result `19 pass / 0 fail`.
+- Final exact-source run window: `2026-07-15T13:54:28Z` → `2026-07-15T13:55:28Z`; Node duration
+  `60139.824833ms`; result `19 pass / 0 fail`.
 - C1/C2/C3 tests (fail-closed indeterminate, transient retry / bounded fail-close, timestamped
   holder evidence) are included in those 19 committed tests and all passed.
 

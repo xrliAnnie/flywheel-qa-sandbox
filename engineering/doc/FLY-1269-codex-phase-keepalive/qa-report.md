@@ -197,11 +197,13 @@ A7 terminal request/ack/delete + FINAL PASS 仍留给 issue 外 FLY-1269 closing
 
 - RED：旧 committed short-deadline harness 在 loaded 529 host 为 **13/19**；六个失败均为
   `cleanup_not_observed` / `observer did not exit` timeout。
-- GREEN：`3b183e70fc8fa520e0c4de646ed8fb67c27dad5f` 仅放宽 fixture observer/wait/exit/test
-  deadlines，不改 production observer defaults、probe 逻辑或任何 assertion。
+- GREEN：`3b183e70` + `864303e2c959a3cdaf364f414524ae6ae5ac714f` 仅放宽 fixture
+  observer/wait/exit/test deadlines（含 round-6 指出的 lifecycle-cleanup explicit literals），
+  不改 production observer defaults、probe 逻辑或任何 assertion。
 - 在该 exact commit 运行 committed command
   `node --test engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs`：
-  `2026-07-15T13:45:54Z` → `13:46:44Z`，`49576.048458ms`，**19 pass / 0 fail**。
+  final exact-source run `2026-07-15T13:54:28Z` → `13:55:28Z`，`60139.824833ms`，
+  **19 pass / 0 fail**。
 
 ### Locked three-stage chain (runtime-attested)
 
