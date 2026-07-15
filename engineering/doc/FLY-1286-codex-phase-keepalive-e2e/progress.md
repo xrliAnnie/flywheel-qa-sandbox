@@ -1,10 +1,9 @@
 ---
 issue: FLY-1286
 phase: design
-phaseCursor: 4/5
-updated: 2026-07-15T10:35:41.210Z
-nextStep: Await current-exec brainstorm approval, then run request-driven
-  cross-family design review on the fresh-root rerun plan
+phaseCursor: 5/5
+updated: 2026-07-15T11:10:17.461Z
+nextStep: Commit and push approved Design docs, complete phase_design_complete, park
 chunks:
   - id: onboard
     order: 1
@@ -16,8 +15,8 @@ pointers:
 ---
 
 # FLY-1286 progress
-**phase**: design (4/5)
-**next**: Await current-exec brainstorm approval, then run request-driven cross-family design review on the fresh-root rerun plan
+**phase**: design (5/5)
+**next**: Commit and push approved Design docs, complete phase_design_complete, park
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
