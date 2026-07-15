@@ -69,11 +69,12 @@ describe("merged gate last-mile guard", () => {
 		store.invalidateMergedGateArtifacts = vi.fn(() => {
 			throw new Error("locked");
 		});
+		const retireQuestion = vi.fn(() => {
+			throw new Error("commdb locked");
+		});
 		const guard = createMergedGateGuard({
 			store,
-			retireQuestion: vi.fn(() => {
-				throw new Error("commdb locked");
-			}),
+			retireQuestion,
 			checkPrMerge: vi.fn(async () => ({
 				state: "merged" as const,
 				mergeCommitOid: "deadbeef",
@@ -83,6 +84,7 @@ describe("merged gate last-mile guard", () => {
 			kind: "suppress_merged",
 			cleanupComplete: false,
 		});
+		expect(retireQuestion).toHaveBeenCalledWith("q-1", "exec-1", "flywheel");
 	});
 
 	it("missing PR binding terminates silently and never probes", async () => {
@@ -145,6 +147,7 @@ describe("merged gate last-mile guard", () => {
 		expect(checkPrMerge).toHaveBeenCalledTimes(1);
 		await guard({ ...args, questionId: "q-3" });
 		expect(checkPrMerge).toHaveBeenCalledTimes(1);
+		expect(store.ensureMergedGateGuardFailure).toHaveBeenCalledTimes(2);
 		now += 15_001;
 		await guard({ ...args, questionId: "q-4" });
 		expect(checkPrMerge).toHaveBeenCalledTimes(2);

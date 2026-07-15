@@ -7765,20 +7765,44 @@ export class StateStore {
 		projectName: string;
 		nowMs: number;
 	}): MergedGateGuardFailureRow {
-		this.db.run(
-			`INSERT OR IGNORE INTO merged_gate_guard_failure
-			   (question_id, source, execution_id, issue_id, project_name, first_seen_ms)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
-			[
-				input.questionId,
-				input.source,
-				input.executionId,
-				input.issueId,
-				input.projectName,
-				input.nowMs,
-			],
-		);
-		if (this.db.getRowsModified() > 0) this.save();
+		let changed = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT OR IGNORE INTO merged_gate_guard_failure
+				   (question_id, source, execution_id, issue_id, project_name, first_seen_ms)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					input.questionId,
+					input.source,
+					input.executionId,
+					input.issueId,
+					input.projectName,
+					input.nowMs,
+				],
+			);
+			changed = this.db.getRowsModified() > 0;
+
+			// OPEN/CLOSED resolves one UNKNOWN episode, but the same gate can be
+			// checked again after the short result cache expires. Re-arm a resolved
+			// row so a later outage gets its own bounded backoff and durable alert.
+			this.db.run(
+				`UPDATE merged_gate_guard_failure
+				    SET execution_id = ?, issue_id = ?, project_name = ?, attempts = 0,
+				        first_seen_ms = ?, next_retry_ms = 0, last_error = NULL,
+				        terminal = 0, alerted = 0, resolved_at = NULL
+				  WHERE question_id = ? AND source = ? AND resolved_at IS NOT NULL`,
+				[
+					input.executionId,
+					input.issueId,
+					input.projectName,
+					input.nowMs,
+					input.questionId,
+					input.source,
+				],
+			);
+			changed = this.db.getRowsModified() > 0 || changed;
+		});
+		if (changed) this.save();
 		return this.getMergedGateGuardFailure(input.questionId, input.source)!;
 	}
 

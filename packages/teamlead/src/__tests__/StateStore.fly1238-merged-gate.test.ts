@@ -126,6 +126,44 @@ describe("StateStore FLY-1238 merged gate cleanup", () => {
 		).toBeTruthy();
 	});
 
+	it("reopens a resolved guard row as a fresh bounded-failure episode", () => {
+		store.ensureMergedGateGuardFailure({
+			questionId: "q-reopen",
+			source: "text",
+			executionId: "exec-1",
+			issueId: "FLY-1238",
+			projectName: "flywheel",
+			nowMs: 1_000,
+		});
+		store.recordMergedGateGuardUnknown({
+			questionId: "q-reopen",
+			source: "text",
+			nowMs: 1_001,
+			nextRetryMs: 31_001,
+			error: "temporary outage",
+			terminal: false,
+		});
+		store.resolveMergedGateGuardFailure("q-reopen", "text");
+
+		const reopened = store.ensureMergedGateGuardFailure({
+			questionId: "q-reopen",
+			source: "text",
+			executionId: "exec-1",
+			issueId: "FLY-1238",
+			projectName: "flywheel",
+			nowMs: 50_000,
+		});
+
+		expect(reopened).toMatchObject({
+			attempts: 0,
+			first_seen_ms: 50_000,
+			next_retry_ms: 0,
+			terminal: false,
+			alerted: false,
+		});
+		expect(reopened.resolved_at).toBeUndefined();
+	});
+
 	it("records CommDB finalizer failures, alerts after three attempts, and marks receipt exactly once", () => {
 		for (let attempt = 1; attempt <= 3; attempt++) {
 			store.recordCommDbFinalizeOutcome({

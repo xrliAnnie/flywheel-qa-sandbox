@@ -5044,10 +5044,8 @@ export async function startBridge(
 	// backoff, and per-project network budget for all six recovery surfaces.
 	const mergedGateGuard = createMergedGateGuard({
 		store,
-		retireQuestion: (questionId, executionId) => {
-			const session = store.getSession(executionId);
-			if (!session) throw new Error(`session_missing:${executionId}`);
-			const db = new CommDB(commDbPathForProject(session.project_name), false);
+		retireQuestion: (questionId, _executionId, projectName) => {
+			const db = new CommDB(commDbPathForProject(projectName), false);
 			try {
 				db.retireShipGate(questionId);
 			} finally {

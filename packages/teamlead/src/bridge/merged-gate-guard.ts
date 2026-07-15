@@ -87,7 +87,11 @@ const BACKOFF_MS = [30_000, 60_000, 120_000, 240_000, 300_000] as const;
  */
 export function createMergedGateGuard(deps: {
 	store: MergedGateGuardStore;
-	retireQuestion: (questionId: string, executionId: string) => void;
+	retireQuestion: (
+		questionId: string,
+		executionId: string,
+		projectName: string,
+	) => void;
 	checkPrMerge?: (
 		projectRoot: string,
 		prNumber: number,
@@ -132,7 +136,7 @@ export function createMergedGateGuard(deps: {
 	): Promise<MergedGateGuardResult> {
 		let cleanupComplete = true;
 		try {
-			deps.retireQuestion(args.questionId, args.executionId);
+			deps.retireQuestion(args.questionId, args.executionId, args.projectName);
 		} catch (error) {
 			cleanupComplete = false;
 			deps.log?.(
@@ -170,6 +174,28 @@ export function createMergedGateGuard(deps: {
 		if (disabled) return { kind: "continue", prState: "open" };
 
 		const nowMs = now();
+		const projectRoot = args.projectRoot;
+		const prNumber = args.prNumber;
+		const cacheKey =
+			projectRoot && prNumber && prNumber > 0
+				? `${args.projectName}:${prNumber}`
+				: undefined;
+		const cached = cacheKey ? cache.get(cacheKey) : undefined;
+		if (
+			cached &&
+			prNumber !== undefined &&
+			(cached.info.state === "merged" ||
+				nowMs - cached.observedAtMs <= CACHE_TTL_MS)
+		) {
+			if (cached.info.state === "merged") {
+				return suppressMerged({ ...args, prNumber }, cached.info);
+			}
+			if (cached.info.state === "open" || cached.info.state === "closed") {
+				deps.store.resolveMergedGateGuardFailure(args.questionId, args.source);
+				return { kind: "continue", prState: cached.info.state };
+			}
+		}
+
 		const row = deps.store.ensureMergedGateGuardFailure({
 			questionId: args.questionId,
 			source: args.source,
@@ -181,28 +207,9 @@ export function createMergedGateGuard(deps: {
 		if (row.terminal) {
 			return { kind: "terminal_unavailable", reason: "unknown_exhausted" };
 		}
-		if (!args.projectRoot || !args.prNumber || args.prNumber <= 0) {
+		if (!projectRoot || !prNumber || !cacheKey) {
 			recordTerminal(args, row, nowMs, "missing_pr_binding");
 			return { kind: "terminal_unavailable", reason: "missing_binding" };
-		}
-
-		const cacheKey = `${args.projectName}:${args.prNumber}`;
-		const cached = cache.get(cacheKey);
-		if (
-			cached &&
-			(cached.info.state === "merged" ||
-				nowMs - cached.observedAtMs <= CACHE_TTL_MS)
-		) {
-			if (cached.info.state === "merged") {
-				return suppressMerged(
-					{ ...args, prNumber: args.prNumber },
-					cached.info,
-				);
-			}
-			if (cached.info.state === "open" || cached.info.state === "closed") {
-				deps.store.resolveMergedGateGuardFailure(args.questionId, args.source);
-				return { kind: "continue", prState: cached.info.state };
-			}
 		}
 
 		if (nowMs - row.first_seen_ms >= FAILURE_DEADLINE_MS) {
@@ -224,18 +231,16 @@ export function createMergedGateGuard(deps: {
 			}
 			recent.push(nowMs);
 			projectProbeTimes.set(args.projectName, recent);
-			probe = checkPrMerge(
-				args.projectRoot,
-				args.prNumber,
-				PROBE_TIMEOUT_MS,
-			).finally(() => inFlight.delete(cacheKey));
+			probe = checkPrMerge(projectRoot, prNumber, PROBE_TIMEOUT_MS).finally(
+				() => inFlight.delete(cacheKey),
+			);
 			inFlight.set(cacheKey, probe);
 		}
 
 		const info = await probe;
 		if (info.state === "merged") {
 			cache.set(cacheKey, { info, observedAtMs: nowMs });
-			return suppressMerged({ ...args, prNumber: args.prNumber }, info);
+			return suppressMerged({ ...args, prNumber }, info);
 		}
 		if (info.state === "open" || info.state === "closed") {
 			cache.set(cacheKey, { info, observedAtMs: nowMs });
