@@ -1549,7 +1549,9 @@ export class Blueprint {
 				"",
 				"LEAD REPORT-BACK (MANDATORY — terminal output is NOT a report):",
 				`1. Whenever you receive a Lead instruction (a mailbox message from your Lead, or \`flywheel-comm inbox\` output) and finish acting on it, you MUST report back by running: ` +
-					`\`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} --report "DONE: <what you did> | commits: <sha(s)> | PR: <url or n/a>"\`. ` +
+					`\`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} --report "DONE: [lead-instruction <id>] <what you did> | commits: <sha(s)> | PR: <url or n/a>"\`. ` +
+					`The DONE report MUST quote the FULL \`[lead-instruction <id>]\` id of the instruction it answers — the watchdog uses that exact id as the consumption receipt ` +
+					`(FLY-1282: an unquoted id leaves the instruction reading as unconsumed and can page your Lead about work you already did). ` +
 					`This applies ESPECIALLY after you have already run \`stage set completed\` — post-completion revisions MUST be reported this way; ` +
 					`the Bridge turns it into an event your Lead actually receives. There is NO other valid report channel. ` +
 					`Make the DONE report self-contained; your Lead may close it with a one-line response.`,

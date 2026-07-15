@@ -5650,6 +5650,10 @@ export async function startBridge(
 		// zero-token gap/state scan always runs.
 		const nowMs = Date.now();
 		const thresholds = defaultGapThresholds(process.env);
+		// FLY-1282 Part B (Codex R10 #2): ONE per-tick V2 snapshot, threaded
+		// into the reader AND both pure judgement functions — never mixed.
+		const deliveryUnconsumedV2 =
+			process.env.FLYWHEEL_DELIVERY_UNCONSUMED_V2 !== "0";
 		const records: SuspicionRecord[] = [];
 		const byProject = new Map<string, Session[]>();
 		for (const s of store.getActiveSessions()) {
@@ -5670,7 +5674,9 @@ export async function startBridge(
 			if (!reader) continue;
 			try {
 				for (const session of projectSessions) {
-					const comm = reader.evidenceFor(session.execution_id, null, nowMs);
+					const comm = reader.evidenceFor(session.execution_id, null, nowMs, {
+					deliveryUnconsumedV2,
+				});
 					let founderNotified: boolean | null = null;
 					try {
 						founderNotified = store
@@ -5701,6 +5707,7 @@ export async function startBridge(
 						founderNotified,
 						nowMs,
 						thresholds,
+						deliveryUnconsumedV2,
 					};
 					records.push(...evaluateGapSuspicion(gapInput));
 					for (const kind of evaluatedGapConditions(gapInput)) {

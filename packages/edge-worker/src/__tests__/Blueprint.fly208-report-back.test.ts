@@ -200,6 +200,17 @@ describe("Blueprint LEAD REPORT-BACK rules (FLY-208 A1)", () => {
 describe("FLY-1041 Chunk 9: DONE reports carry --report", () => {
 	it("the LEAD REPORT-BACK ask command is flagged --report (excluded from founder binding)", async () => {
 		const prompt = await buildPrompt({ leadId: "sub-lead" });
-		expect(prompt).toContain('--report "DONE: <what you did>');
+		// FLY-1282 Part B: DONE reports now quote the FULL [lead-instruction <id>]
+		// — the watchdog's consumption receipt (producer-side protocol).
+		expect(prompt).toContain(
+			'--report "DONE: [lead-instruction <id>] <what you did>',
+		);
+	});
+
+	it("FLY-1282: the report-back rule mandates the FULL lead-instruction id as the consumption receipt", async () => {
+		const prompt = await buildPrompt({ leadId: "sub-lead" });
+		expect(prompt).toContain(
+			"MUST quote the FULL `[lead-instruction <id>]` id",
+		);
 	});
 });
