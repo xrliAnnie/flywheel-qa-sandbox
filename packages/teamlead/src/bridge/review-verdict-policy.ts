@@ -70,9 +70,13 @@ export function findingFingerprint(
 }
 
 export function findingKey(finding: ClaudeReviewFinding): string {
+	const candidate = typeof finding.id === "string" ? finding.id.trim() : "";
 	const stableId =
-		typeof finding.id === "string" && finding.id.trim().length > 0
-			? finding.id.trim()
+		candidate.length > 0 &&
+		candidate.length <= 128 &&
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: reviewer-owned ids must not cross privileged prompt and audit boundaries with controls
+		!/[\u0000-\u001f\u007f]/u.test(candidate)
+			? candidate
 			: undefined;
 	return stableId ?? findingFingerprint(finding.file, finding.title);
 }

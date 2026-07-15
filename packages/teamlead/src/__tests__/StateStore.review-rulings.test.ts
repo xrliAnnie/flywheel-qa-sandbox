@@ -89,6 +89,39 @@ describe("StateStore — FLY-1278 review finding rulings", () => {
 		);
 	});
 
+	it("exact lookup fingerprints oversized or control-bearing reviewer ids", () => {
+		const findings = [
+			{
+				id: "x".repeat(129),
+				file: "oversized.ts",
+				title: "Oversized reviewer id",
+			},
+			{
+				id: "control\u0001id",
+				file: "control.ts",
+				title: "Control-bearing reviewer id",
+			},
+		];
+		deliver("req-invalid-ids", "e1", findings);
+
+		for (const [findingIndex, finding] of findings.entries()) {
+			const result = store.recordReviewFindingRuling({
+				projectName: "proj",
+				issue: ISSUE_UUID,
+				requestId: "req-invalid-ids",
+				findingIndex,
+				disposition: "overruled",
+				rationale: "Exact locator must persist a bounded safe key.",
+				ruledBy: "lead",
+			});
+
+			expect(result.status).toBe("created");
+			expect(result.ruling?.finding_key).toBe(
+				findingFingerprint(finding.file, finding.title),
+			);
+		}
+	});
+
 	it("is idempotent for the same semantic ruling and conflicts on changed intent", () => {
 		deliver("req-1", "e1", [{ id: "same", severity: "HIGH", title: "Risk" }]);
 		const input = {

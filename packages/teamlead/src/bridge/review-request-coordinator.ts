@@ -745,6 +745,16 @@ export class ReviewRequestCoordinator {
 				projectName: job.project_name,
 			});
 		}
+		if (
+			job.status !== "skipped" &&
+			job.payload_version === 2 &&
+			!job.response_json
+		) {
+			this.alert(
+				`review ${job.request_id}: payload_version=2 is missing canonical response_json — outbox delivery and authority commit refused.`,
+			);
+			return;
+		}
 		// R17: the server-only delivery nonce makes this payload unforgeable —
 		// a runner pre-writing a "predictable" bridge response cannot know it.
 		const nonceField = job.delivery_nonce
@@ -1543,10 +1553,13 @@ function formatReviewRulingThreadPost(ruling: ReviewFindingRuling): string {
 		ruling.disposition === "follow_up"
 			? `follow-up ${ruling.follow_up_issue}`
 			: "overruled";
+	const title = ruling.finding_title
+		? ` — ${JSON.stringify(ruling.finding_title.slice(0, 200))}`
+		: "";
 	return (
 		`⚖️ Review governance ruling recorded\n` +
 		`ruling_id: ${ruling.ruling_id}\n` +
-		`finding: ${ruling.finding_key}${ruling.finding_title ? ` — ${ruling.finding_title}` : ""}\n` +
+		`finding: ${ruling.finding_key}${title}\n` +
 		`disposition: ${disposition}\n` +
 		`ruled_by: ${ruling.ruled_by}\n` +
 		`reason: ${ruling.rationale}`

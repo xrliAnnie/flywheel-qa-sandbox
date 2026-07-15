@@ -8,6 +8,7 @@ import {
 	type ReviewCommDb,
 	ReviewRequestCoordinator,
 } from "../review-request-coordinator.js";
+import { findingFingerprint } from "../review-verdict-policy.js";
 
 // ── FLY-1188 §7.1 — request↔gate binding protocol (Bridge side) ─────────
 
@@ -250,6 +251,50 @@ describe("ReviewRequestCoordinator — FLY-1278 review-ruling authority", () => 
 			h.store.listActiveReviewFindingRulings("proj", "FLY-1188")[0]
 				?.notified_at,
 		).toBeTruthy();
+	});
+
+	it("bounds reviewer-derived exact-locator keys and audit-thread text", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		const finding = {
+			id: "x".repeat(129),
+			severity: "LOW",
+			file: "review.ts",
+			title: `line one\n${"t".repeat(2_000)}`,
+		};
+		h.store.insertCodexReviewJob({
+			requestId: "source-invalid-id",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "source-q",
+		});
+		h.store.claimCodexReviewJobRunning("source-invalid-id");
+		h.store.completeCodexReviewJob(
+			"source-invalid-id",
+			"CHANGES_REQUESTED",
+			JSON.stringify([finding]),
+		);
+		h.store.stampCodexReviewJobResponded("source-invalid-id");
+
+		const result = await h.coordinator.reviewRuling({
+			projectName: "proj",
+			issue: "FLY-1188",
+			requestId: "source-invalid-id",
+			findingIndex: 0,
+			disposition: "overruled",
+			rationale: "Reviewer-derived fields stay bounded.",
+			ruledBy: "lead",
+		});
+
+		expect(result.accepted).toBe(true);
+		expect(result.ruling?.finding_key).toBe(
+			findingFingerprint(finding.file, finding.title),
+		);
+		expect(h.rulingThreadPosts[0]).toContain("line one\\n");
+		expect(h.rulingThreadPosts[0]).not.toContain(`\n${"t".repeat(500)}`);
+		expect(h.rulingThreadPosts[0]?.length).toBeLessThan(1_000);
 	});
 
 	it("keeps authority active when thread delivery fails and boot-redrives it", async () => {
@@ -2725,6 +2770,37 @@ describe("FLY-1278 — canonical payload v2 outbox ownership", () => {
 
 		expect(h.comm.getResponse("q1")?.content).toBe(responseJson);
 		expect(h.store.getCodexReviewJob("r1")?.responded_at).toBeDefined();
+	});
+
+	it("fails closed when a v2 outbox row is missing its canonical response", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		h.store.insertCodexReviewJob({
+			requestId: "r1",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "q1",
+			frozenHeadSha: HEAD,
+		});
+		h.store.completeCodexReviewJob("r1", "APPROVED", "[]", {
+			reviewerVerdict: "APPROVED",
+			advisoriesJson: "[]",
+			settledJson: "[]",
+			payloadVersion: 2,
+		});
+
+		h.coordinator.redriveOnBoot();
+		await settle();
+
+		expect(h.comm.getResponse("q1")).toBeUndefined();
+		expect(h.store.getCodexReviewJob("r1")?.responded_at).toBeUndefined();
+		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(false);
+		expect(
+			h.alerts.some((message) => message.includes("canonical response_json")),
+		).toBe(true);
 	});
 
 	it("treats an old-shape answer as FOREIGN for a payload_version=2 job", async () => {
