@@ -161,3 +161,74 @@ quarantine 分支(R1 #1):`applyQuarantineFallback` 加可选 `liveness?: "alive"
 ## 5. 交付物
 
 PR(实现 + 单测 + 本文件夹 3 文档 + 重演脚本),Codex design review APPROVED(本 plan)+ code review + CI 绿 + 独立 QA 真机 PASS 后走 approve gate。
+
+---
+
+# Part B: delivery_unconsumed 对 parked/等待态会话误报(founder 直令折入,Lead 7b0bc331;R10 修订)
+
+## B0. 实证(2026-07-15,生产 gap-scan 日志 + comm.db 直查)
+
+当前探测(`detection-gap-scan.ts` `openGapReader` unconsumed probe):`to_agent=<execId> AND type='instruction' AND delivered_at IS NOT NULL AND read_at IS NULL`,最老 ≥30min → suspicion,**完全不看 session 状态**。今日 3 个现行案例逐条核实:
+
+| execId | issue | status | 事实 |
+|---|---|---|---|
+| 212eca7e | FLY-1255 | awaiting_review | 3 条 RE-TEST instruction 已全部执行完,read_at 全 NULL |
+| f6fb5f10 | FLY-1256 | awaiting_review | 3 条 instruction 已执行,read_at 全 NULL |
+| 22094c31 | FLY-1282 | **running** | **本 runner 自身**:f53f69c0/7b0bc331 正在被执行的当下仍在报 unconsumed |
+
+**根缺陷**:消费判据只看 `read_at`,但 mailbox 投递(`send.ts`:mailbox 写成功即 stamp `delivered_at`,PostToolUse CommDB hook 在 mailbox 模式下是 no-op,且无可靠 runner 侧 ack)从不 stamp read_at——被执行≠被"读"。诚实备注:Lead 指令原话说 "type=response";审计事实是探测只查 `type='instruction'`,修复以实际探测器为准。
+
+## B1. 修法(R10 #1/#2 修订)
+
+**单次快照**:`gapScanTick` 开头捕获一次 `deliveryUnconsumedV2 = process.env.FLYWHEEL_DELIVERY_UNCONSUMED_V2 !== "0"`,同一布尔按参数线程化进 `openGapReader`(选 V2/V1 SQL)与 `evaluateGapSuspicion` / `evaluatedGapConditions`(经 GapScanInput 新字段)——OFF = 整个 sweep 逐字 V1(SQL+触发+evaluated 语义),绝无「V2 SQL 配 V1 清除」的混排(R10 #2)。
+
+1. **状态门(纯函数层,V2)**:`delivery_unconsumed` 对 `comm.declaredParked === true` 或 status ∈ {awaiting_review, approved_to_ship} 不触发;`evaluatedGapConditions` 镜像(被状态门排除仍算 evaluated——**即使 unconsumed SQL 信号不可读**,状态门本身就是完整判定,V2 下该 kind 恒 evaluated;OFF 保留今日 `unconsumedSignalReadable` 规则)→ 现存误报 episode 部署后首个 sweep absence-clear。
+2. **消费证据(SQL 层,V2)——只认相关性收据(R10 #1 + R11 #1)**:排除满足「存在 `from_agent=<execId>` 且 `instr(content, q.id) > 0` 的消息」的 instruction——**不比较 delivered_at**(R12 #1:send.ts 先插行、await mailbox wake、之后才 stamp delivered_at;runner 可在 stamp 前就回执,跨秒会得到 created_at < delivered_at 的真回执;完整随机 id 在投递前 runner 不可能获知,id 本身即因果证据;外层已限定 delivered_at IS NOT NULL 的 instruction)。**配套 producer 协议落地(R11 #1)**:现行 Blueprint LEAD REPORT-BACK 模板并不要求 DONE 报文带 instruction id——本单同时修改 `Blueprint.ts` 的 REPORT-BACK 规则文本:对 lead-instruction 的 DONE 回报**必须**在报文中带完整 `[lead-instruction <id>]`(模板文本改动是 **additive 全局协议修订**、不受 V2 开关控制;因此 `V2=0` 承诺的是 **scanner sweep 的 V1 逐字回退**,不泛称 Part B 全部字节回退——OFF 测试明确断言 prompt 仍含新 producer 文本;`Blueprint.fly208-report-back.test.ts` 锁新模板合同,R12 #1)。**去掉**「任意后续 outbound 即消费」分支(mailbox 投递下时序不构成因果;A/B 反例见 M8)。未按新协议引用 id 的已执行 instruction 保持触发 = 接受的残余误报(部署后随 runner 换代收敛,诚实记录)。
+3. **成本(R11 #2)**:外层候选集极小(delivered+unread 通常 0-5 行/会话);相关子查询无 `(from_agent, created_at)` 索引。单测锁**查询形状**(`EXPLAIN QUERY PLAN` 断言 + 正确性);wall-clock 阈值**不进单测**(CI 负载下必 flaky)——放进 QA benchmark 证据(1e4 行 messages、全 sweep 计时);`gapScanTick` 记录 pass duration 日志;容量假设写明(≤50 active sessions/项目、每会话 ≤5 未读行);生产实测超预算 → follow-up 走 `(from_agent, created_at)` writer 侧索引迁移(不在本单)。
+
+覆盖矩阵:212eca7e/f6fb5f10 被①治;22094c31 型(running 已执行)由②+新 REPORT-BACK 协议治(新协议 runner 的 DONE 报文必带全 id;旧报文不带 id 仍触发=残余,随部署收敛);真·未消费仍触发。
+
+## B2. 测试(M8)
+
+- 纯函数(V2):parked / awaiting_review / approved_to_ship → 零 suspicion + 恒 evaluated(unconsumed SQL 不可读也 evaluated);running 无 id 引用 → 照旧触发;
+- reader(真 sqlite 内存库,V2):全 id 引用 → 排除(**确定性跨秒 fixture**:runner report 12:00:00、sender 12:00:01 才 stamp delivery → 仍清除,R12 #1);**A/B 双 instruction、outbound 只引用 A → B 仍 unconsumed**;8 字符短前缀 → 不排除;**现行旧模板 DONE 报文(无 id)→ 仍触发**;**新协议模板报文(全 id)→ 清除**(R11 #1 三件套);missing schema → readable:false;EXPLAIN QUERY PLAN 形状断言(wall-clock 归 QA benchmark);
+- Blueprint 模板:REPORT-BACK 文本含「DONE 必带完整 [lead-instruction <id>]」合同(fly208 测试锁);
+- 快照一致性:同一 tick 内 reader 与两个纯函数同一布尔;OFF → V1 SQL + V1 触发 + V1 evaluated 逐字(今日 3 案例 fixture 锁旧行为)。
+
+# Part C: issue 终态自动归档 thread(founder 直令折入 = FLY-1289;R10 修订)
+
+## C0. 现状与缺口(已审计,R10 核修)
+
+- **merged landing → 归档**:已存在(`runPostShipFinalization`,owns 清理→归档顺序)——只补回归测试;
+- **close→archive 级联**:已存在(closeRunner → `maybeArchiveThreadOnClose`);tmux already-gone 的 SUCCESS 路径**已经**走级联(close-runner.ts:437-445,先 CommDB target 判 gone + finalize 成功才归档);
+- **R10 #3 核修**:原草案的「session_not_found → alreadyGone 级联」**撤销**——该分支生产不可达(HTTP close 路由在 closeRunner 之前就 404,plugin.ts:1915-1919;StateStore sessions 行无删除路径,行缺失=身份错误/损坏而非"已清理"),且绕过 CommDB finalize 前置会回归 FLY-1238。真实痛点(FLY-1289:「归档级联焊死在 close_runner 上」)由下面的终态触发覆盖,无需伪造 gone 语义。若 Lead 后续给出具体可达的报错案例,按 R10 #3 的 end-to-end 清单另行设计;
+- **缺口(唯一保留)**:「全段 completed」无事件驱动归档——要等下一次 close 动作或 FLY-1165 周期 sweep。
+
+## C1. 修法(R10 #4/#5 + R11 #3/#4/#5 修订:显式 archive-only targeted mode + 队列生命周期合同)
+
+开关 `FLYWHEEL_TERMINAL_THREAD_ARCHIVE`(default ON;每个 wiring 位点用单次捕获布尔,`=0` → 双 sink 零 enqueue)。
+
+**① archive-only targeted mode(R11 #3——不是复用现行 reconcile 分支,是同模块新增的隔离模式)**:`done-thread-reconcile.ts` 新增 `runTargetedArchiveCheck(issueId): Promise<TargetedOutcome>`,合同:
+- **只读目标 issue/thread**,不进 FLY-1185 residue union;**lifecycleCloseout / new mutators / husk finalize 一律禁止**(completion 触发的检查无权关闭或改写任何 phase——现行 sweep 的 closeout 分支会关 live runner、finalize 会把 dead design_done 改成 completed,均不属于本模式);
+- **状态前置(全段 completed 的可审计定义)**:该 issue **全部 alias 行** status ∈ {completed, terminated}(terminated = Lead 主动关闭,亦是成功终态);任何 running / awaiting_review / approved_to_ship / design_done / pending / failed / blocked 行 → veto(**比现行 sweep 更严**:failed/blocked 在此模式否决而非放行,M9 与此完全一致);
+- **并发安全的最终决策(R12 #2)**:经 `resolveLifecycleRootKey` 取完整 lock keys、在 plugin 现有 canonical `issueMutex` **持锁内**执行全部资格判定:状态前置 + **未兑现 launch-claim veto(R13 #1)**:`listOpenLaunchClaims(rootUuid)` 的 starting|active claim **仅在未兑现时 veto**——即该 claim 的 execution_id 尚无 alias session 行、或其行状态不在允许终态集(正常 completion 不会关闭 active claim,一律 veto 会让现代 runner 永久归档不了;claim 对应行已 {completed, terminated} = 已兑现,不 veto)+ fresh Linear Done/Canceled;pane 活性探测(异步)后**重新读取** alias rows/状态/claims(集合有变 → retryable veto 重跑,绝不用旧快照)+ archive sink 前**重做** fresh Linear 复核 → `archiveThreadAndRecord`(单 token sink、archive-once、dryRun 尊重);
+- thread 查找先 canonicalize(UUID + identifier 双键),**所有 alias 都查不到才** `thread_missing`(混合键不误出队);
+- 返回 typed outcome:`archived | already_archived | thread_missing | vetoed_active | vetoed_status | vetoed_claim | vetoed_linear | dry_run_would_archive | transient_error`。
+**全局 sweep 语义 byte-compatible**(原「不碰 FLY-1165」改述为:sweep 本体行为不变,模块新增隔离 targeted mode)。
+
+**② 队列由现有 scheduler 持有(R11 #4)**:`startDoneThreadReconcileScheduler` 返回 handle 从 `{stop}` 扩为 `{enqueue(issueId), stop}`;targeted 消费与 global pass **共用同一 `inFlight` 单飞**(绝不并发);outcome 驱动生命周期——`archived/already_archived/thread_missing` 终止出队;`vetoed_* / dry_run_would_archive / transient_error` **留队重试**:有上限退避(1min→2→4→…cap 30min;dry_run_would_archive 保留在队,scheduler 每 tick 重读配置,dry-run 关闭后继续,R12 #4)+ 公平轮转(重试项排队尾,poison 不饿死后项;`nextEligibleAt` 未到不消费、`inFlight.finally` 不热循环)+ **24h 后不丢弃**——降为低频重试(cap 1h)+ 每次 loud log(R12 #4:boot-only 配置下没有周期 sweep 可兜,eventual 承诺不能建立在不存在的 backstop 上);容量 cap(64,**溢出 → 拒收新项 + loud log(点名被拒 issue)**;兜底 = periodic sweep(启用时的标准后备);**boot-only 且同时 >64 issue 完成的溢出 = 文档声明的接受缺口**(loud log 点名,不假称有兜底,也不越权触发含 lifecycle mutator 的全局 pass——R14 #1:全局 pass 既不保证覆盖溢出目标又越过 archive-only 权限边界),R13 #2/R14 #1)+ shutdown drain + in-flight 结束自动继续 pending。**核心场景**:completed 事件时 pane 通常还活着(runner 正在执行完成命令)→ 首查 vetoed_active 留队 → 数分钟后 pane 消失 → 重试归档(远早于 6h sweep,M9 核心反例)。开关优先级(R12 #4:**scheduler 构造 byte-compat**——现行 plugin 无条件构造、`resolveConfig()` 每 tick 重读,动态 off→on 合同保留):`FLYWHEEL_DONE_THREAD_RECONCILE=0` → scheduler 照常构造,disabled 状态**暂停** global+targeted 消费(holder/queue 项保留,重新 enable 后无需重启继续);`FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN=0`(boot-only)不影响 targeted 消费;dryRun 对 targeted 同样生效(只报告不归档);`TERMINAL_THREAD_ARCHIVE=0` → 双 sink 不 enqueue。
+
+**③ wiring(R10 #5 + R11 #5)**:单一 post-persist helper(fresh `store.getSession` 确认 completed 后 enqueue),接线于:event-route 的 **session_completed 主转态** 与 **FLY-324 stage_changed 转态**、以及 `DirectEventSink` 的 completion 写点——均在 phase orchestration/handoff **之后**。**post-ship 单 owner 排除按谓词收口(R12 #3)**:凡 `isPostApproveShipComplete(...) === true` 的 completion——含 W2 merged、**HTTP 主 session_completed 的 merged-success 分支**(event-route.ts:1432-1480 同样调 runPostShipFinalization)、DirectEventSink 的 merged completion——**一律零 enqueue**(post-ship owner 独占 cleanup→archive 顺序);**FLY-208 evidence-gap completion 同样排除**(HTTP 与 Direct sink 都会把无 merge 证据的 approved_to_ship 写成 completed + `fly208_evidence_gap` 标记,后续归 FLY-210/manual close 所有)——且 targeted mode 的最终 preflight **veto 任一 alias 行的未解决 evidence-gap 标记**(防兄弟 phase 的 enqueue 绕过源侧过滤)。**构造顺序**:composition root 在创建 DirectEventSink(plugin.ts:4044)与 createBridgeApp(:4195)**之前**先建 late-bound enqueue holder(单次捕获的开关快照一并注入 RunInfraOptions / createBridgeApp options);FLY-1165 scheduler(:4772)建成后绑定为 holder 的消费者;**绑定前的 enqueue 缓存在 holder 内不丢**(有界 64,同容量合同)。boot 的 FLY-324 reconciler 不接(周期 sweep 覆盖,声明)。
+
+不碰:FLY-369 级联、`archiveThreadAndRecord`、close-runner.ts;FLY-1165 全局 sweep 行为 byte-compatible。
+
+## C2. 测试(M9)
+
+- enqueue 面:session_completed 主转态 / stage_changed 转态 / DirectEventSink completion → helper 恰一次入队(FSM 拒绝/终态重复 → 零入队);**W2 merged / DirectEventSink merged completion → 零入队**(post-ship 独占);双 sink parity;scheduler 绑定前 enqueue 被 holder 保留、绑定后消费;
+- targeted mode:全段 {completed,terminated} + Linear Done + 全行 pane 死 → 归档恰一次;兄弟 running / awaiting_review / approved_to_ship / design_done / pending / **failed / blocked** / completed-but-live / lookup error / indeterminate → **逐一 veto fixture**(R10 #4 + R11 #3 全清单);Linear 未 Done → vetoed_linear 留队;**禁止面断言:targeted 模式零 lifecycleCloseout / 零 finalize / 零 mutator 调用**;
+- 并发/排除面(R12 #2/#3):仅有 starting launch-claim、session row 未显形 → veto 留队;probe 期间插入 pending successor → retryable 重跑;首查 Linear Done、archive 前复核时 reopened → veto;identifier 入队、thread 以 UUID 存储 → 找到同一 thread;HTTP 主 session_completed merged-success → 零 enqueue;HTTP/DES evidence-gap completion → 零 enqueue;兄弟 completed 已入队但同 issue 有未解决 evidence-gap 标记 → targeted preflight veto;
+- 队列生命周期(R11 #4 + R12 #4 核心反例):completed 事件时 pane alive → vetoed_active 留队 → 无第二个 completion 事件 → pane 转 absent → 退避重试在远早于 6h 处归档;两个 targeted 与 global pass 绝不并发(共享 inFlight);poison target 退避轮转不饿死后项;24h 后降为低频重试(1h cap)持续 loud log(**不丢弃、不假称交 sweep**,R13 #2);容量溢出 → 拒收 + loud log 点名(periodic sweep 为标准兜底;boot-only 溢出=声明的接受缺口,零全局 pass 触发);**已兑现 claim 不 veto**(completed 行 + 残留 active claim → 照常归档)、未兑现 claim(starting 无行)→ veto(R13 #1);
+- 开关矩阵(R11 #5 + R12 #4):TERMINAL_THREAD_ARCHIVE=0 / DONE_THREAD_RECONCILE=0 / dryRun / INTERVAL_MIN=0 各自的 enqueue / targeted run / transport mutation 允许性逐格断言;dry-run outcome → 关闭 dry-run 后继续归档;boot-only 运行 >24h 低频重试仍活;disabled→enabled 无重启恢复;fake-clock 断言 nextEligibleAt 未到不热循环;
+- merged landing 归档回归(现行为锁定);全局 sweep byte-compat 哨兵。
+
+**验收补充**:真机重演附加——三段式 issue 全 phase completed + Linear Done → thread 在分钟级自动归档(不等 6h sweep);期间任一 phase 活着 → 不归档。
