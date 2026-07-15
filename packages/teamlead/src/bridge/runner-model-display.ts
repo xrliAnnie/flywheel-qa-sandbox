@@ -1,9 +1,9 @@
 import {
 	adapterTypeToFamily,
 	isThreeStagePhaseRole,
+	type RunnerModelDisplay,
 	renderRunnerModelDisplay,
 	resolvePhaseDispatch,
-	type RunnerModelDisplay,
 } from "flywheel-config";
 import type { Session } from "../StateStore.js";
 

@@ -17,9 +17,9 @@ describe("sessionModelDisplay (FLY-1255)", () => {
 	});
 
 	it("pending implement falls back to the phase dispatch plan", () => {
-		expect(sessionModelDisplay({ chat_thread_role: "implement" }, {})).toMatchObject(
-			{ threadMarker: "Model GPT-5.6" },
-		);
+		expect(
+			sessionModelDisplay({ chat_thread_role: "implement" }, {}),
+		).toMatchObject({ threadMarker: "Model GPT-5.6" });
 	});
 
 	it("phase fallback follows both kill switches", () => {

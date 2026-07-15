@@ -81,7 +81,9 @@ describe("renderRunnerModelDisplay (FLY-1255)", () => {
 	it.each([null, undefined, "", "   "])(
 		"does not guess an absent model: %s",
 		(model) => {
-			expect(renderRunnerModelDisplay({ vendor: "codex", model })).toBeUndefined();
+			expect(
+				renderRunnerModelDisplay({ vendor: "codex", model }),
+			).toBeUndefined();
 		},
 	);
 });

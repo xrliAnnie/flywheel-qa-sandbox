@@ -42,6 +42,11 @@ export {
 	isFounderUxGateEnabled,
 	resolveEffectiveFounderUxConfig,
 } from "./founder-ux-config.js";
+export type {
+	RunnerModelDisplay,
+	RunnerModelDisplayInput,
+} from "./model-display.js";
+export { renderRunnerModelDisplay } from "./model-display.js";
 // FLY-728: per-issue model routing — tier vocabulary (dispatch whitelist +
 // tier→model default + F/O/S/H short code).
 export type { ModelTier, ModelTierSpec } from "./model-tiers.js";
@@ -52,11 +57,6 @@ export {
 	modelShortCode,
 	normalizeDispatchModel,
 } from "./model-tiers.js";
-export type {
-	RunnerModelDisplay,
-	RunnerModelDisplayInput,
-} from "./model-display.js";
-export { renderRunnerModelDisplay } from "./model-display.js";
 export type {
 	PonytailCondition,
 	PonytailEffective,

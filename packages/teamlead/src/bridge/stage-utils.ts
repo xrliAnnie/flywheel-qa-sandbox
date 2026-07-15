@@ -338,9 +338,7 @@ export function applyModelMarker(
 	marker: string | undefined,
 ): string {
 	const bare = stripModelMarker(base);
-	return marker &&
-		MODEL_MARKER_VALUE_RE.test(marker) &&
-		hasIssueKeyHead(bare)
+	return marker && MODEL_MARKER_VALUE_RE.test(marker) && hasIssueKeyHead(bare)
 		? `[${marker}] ${bare}`
 		: bare;
 }

@@ -356,9 +356,9 @@ describe("FLY-755: model-code front marker ([F]/[O]/[S]/[H])", () => {
 		expect(applyModelMarker("[FLY-1255] Title", "Model GPT-5.6")).toBe(
 			"[Model GPT-5.6] [FLY-1255] Title",
 		);
-		expect(
-			modelMarkerLabel("[Model kimi-for-coding] [FLY-1255] Title"),
-		).toBe("Model kimi-for-coding");
+		expect(modelMarkerLabel("[Model kimi-for-coding] [FLY-1255] Title")).toBe(
+			"Model kimi-for-coding",
+		);
 		expect(stripModelMarker("[Model GPT-5.6] [FLY-1255] Title")).toBe(
 			"[FLY-1255] Title",
 		);
