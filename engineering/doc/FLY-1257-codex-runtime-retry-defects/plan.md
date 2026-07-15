@@ -82,13 +82,21 @@ blocked(CLI 会拒绝)**。以 FLY-1255 的正确行为为参照措辞。
 
 `complete --route blocked` 时执行 guard:
 
+- **guard 只对 marker-capable(codex)执行生效**(Codex R3 #1):
+  `defaultGateMarkerDir` 在 env 缺失时落到共享目录(~/.flywheel 下的
+  codex-gates fallback),而 Claude runner 从不注入该 env——若无条件跑 guard,
+  共享目录里一个损坏的 codex marker 会让无关 Claude runner 的
+  `complete --route blocked` 误 fail-close。判定用 **adapter 注入的 marker-dir
+  env**(即 gate-marker.ts 的 defaultGateMarkerDir 所读的那个 env 变量)作
+  discriminant:env 缺失(Claude / 非 marker 形态)→ **整个 guard 跳过,
+  byte-compat**;env 已注入但目录不存在(codex 接线坏)→ fail-close 拒绝
+  (wiring error);env 已注入且目录在 → strict 扫描。
 - **新 strict 枚举 seam**(Codex R2 #1):现有 `listGateMarkersForExecution`
   是刻意容错的(静默跳过不可读/损坏文件)——**不能全局改严格**,否则回归
   CodexTmuxAdapter 的 isWaiting/watcher 容错扫描。在 gate-marker.ts 加独立
   strict 入口(如 `listGateMarkersForExecutionStrict(dir, execId)` 或第三参
-  `{strict:true}`,默认行为字节不变):目录 ENOENT = 空(无门,放行);
-  任一文件 read/parse/permission 失败 = **unknown → 拒绝**。guard 走 strict
-  入口,目录来自 `defaultGateMarkerDir(process.env)`(真实两参调用形态)。
+  `{strict:true}`,默认行为字节不变):任一文件 read/parse/permission 失败 =
+  **unknown → 拒绝**。guard 走 strict 入口。
 - 存在**任何未答**(`!answeredAt`)checkpoint marker → 拒绝(exit 非零,
   stderr:「你有未答的 <checkpoint> gate(question <id>);等门不是 blocked——
   继续 poll check;该门被答复/被 watcher 超时解析后此路自然放行」)。
@@ -122,10 +130,19 @@ probe**(blocked 终态下 dispatcher 本就不再续跑 = 不烧回合,本地持
   transport death 后会 resume 同一 thread 重跑 `runGoalToTerminal`,而它现在
   开场就 setGoal(active)+startTurn——daemon 死在持有期时,恢复路径会把 blocked
   goal 直接复活并 kick,绕过分类器。M1-d 必须在 setGoal/startTurn **之前**
-  `thread/goal/get` preflight:读到 blocked + objective 与缓存一致 +
-  `isWaiting()` → 直接进持有态(不 setGoal 不 kick);blocked + `!isWaiting()`
-  → 合法终态,照常 RESOLVE;其余状态照原流程。M-opt 只是在同一 preflight 上
-  扩展 paused 分支。
+  `thread/goal/get` preflight。**preflight 判定带 gate-hold latch(Codex R3
+  #2)**——blocked+`!isWaiting()` 在重启后有歧义(可能是合法终态,也可能是
+  持有期间 marker 恰在 daemon 死亡窗口被解析):
+  - **latch 载体**:runGoalToTerminal 进入持有态时置 gate-hold latch,经
+    `CodexDaemonGoalRuntime` 跨轮转重启携带(runGoal 循环内存);同时经
+    adapter 既有的 per-execution 持久化(session.json 同位)落一个 hold 标记,
+    覆盖 Bridge/adapter 进程重启后的 re-execute 恢复路径(FLY-172 marker
+    模式同款)。**latch 只在「active goal/set + kick 都成功」之后清除**。
+  - preflight 分派:blocked + objective 与缓存一致 + `isWaiting()` → 进持有态
+    (不 setGoal 不 kick);blocked + `!isWaiting()` + **latched** → 门已在
+    停机窗口解析 → 重激活 + kick「跑 check」;blocked + `!isWaiting()` +
+    未 latch → 合法终态,照常 RESOLVE;其余状态照原流程。
+  M-opt 只是在同一 preflight 上扩展 paused 分支。
 - kill-switch `FLYWHEEL_CODEX_GATE_WAIT=0` → 拦截+preflight 整段关闭(blocked
   照旧终态),默认 ON,注册进 feature-flags registry。
 - 与 M-opt 的关系:M-opt 只是在本地持有期间**额外**把 goal 置 paused(清掉
@@ -146,7 +163,12 @@ probe**(blocked 终态下 dispatcher 本就不再续跑 = 不烧回合,本地持
   重发 objective+tokenBudget + kick、循环继续到 complete;blocked+!isWaiting →
   照旧终态;kill-switch=0 → 照旧终态;notification 与 poll 两路进同一分类器
   (乱序/重复通知不重复 kick);**runtime 轮转测试:daemon 死在持有期 →
-  resume 后 preflight 进持有态,marker 未解析期间零 setGoal 零 kick**。
+  resume 后 preflight 进持有态,marker 未解析期间零 setGoal 零 kick**;
+  **停机窗口解析测试(Codex R3 #2):daemon 死在持有期 + marker 在停机期间被
+  解析 → resume preflight 见 blocked+!isWaiting+latched → 重激活 + kick,
+  不误判终态**;**持久化恢复路径:Bridge/adapter 重启 re-execute → 持久 hold
+  标记令 preflight 同样正确分派;latch 在 active+kick 成功后清除(kick 失败
+  不清,下轮重试)**。
 - fixture(实战①):「design 完成 → gate pending → 模型 update_goal(blocked)
   → 15 分钟后 Lead 答复」时间线,断言会话最终 completed 而非 blocked;以及
   「模型改跑 complete --route blocked」被 CLI 闸拒绝。
@@ -305,7 +327,11 @@ session 不存在(StateStore 无行)                → 照今天行为退(无�
 - **GatePoller 层透传测试**:候选映射真的携带 created_at(直接 unit-test
   hygiene 抓不到漏映射)。
 - **StateStore 测试**:upsertSession / persistTransition / forceStatus 三处——
-  首次进终态盖戳、终态→终态不改写、revive 清空。
+  首次进终态盖戳、终态→终态不改写、revive 清空。**不改写断言必须可探测
+  (Codex R3 #4)**:SQLite datetime 1s 分辨率下,紧邻的终态→终态改写会产出
+  相同字符串造成假绿——先把 terminal_at 预置为可区分的 canonical 哨兵值
+  (或注入 SQL 时钟),再做终态→终态转换,断言哨兵原样保留;三个写入点同款
+  断言,不用 sleep。
 - fixture:实战④(1244 时序:blocked → teardown 删 CommDB 行 → 新开 gate →
   hygiene tick)。
 
@@ -323,7 +349,10 @@ paused 随 thread 持久化。
 
 ### M-opt-1 实现(probe PASS 后;Codex R1 #6 的重启态机规格)
 
-- `CodexDaemonClient.setGoalStatus(threadId, status, objective)`。
+- `CodexDaemonClient.setGoalStatus(threadId, status, {objective, tokenBudget})`
+  ——paused/active 两个 RPC 都带**完整缓存的 objective + tokenBudget**(Codex
+  R3 #3:与 M1-d 的重激活保证一致,不通过省参赌保留语义;等价方案 = 直接复用
+  完整 setGoal 入参)。probe/测试断言 budget 在 pause→resume 全程保留。
 - **重启 preflight**:`runGoalToTerminal` 目前是 setGoal → startTurn → 进 poll
   循环;M-opt 必须在 setGoal/startTurn **之前**先 `thread/goal/get` 读 resumed
   goal——读到 `paused` 且 `isWaiting()` → 直接进 M1-d 的持有态(不 setGoal 不
