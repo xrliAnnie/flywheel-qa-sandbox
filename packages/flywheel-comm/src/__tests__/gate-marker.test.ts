@@ -2,10 +2,11 @@
  * FLY-123: unanswered-gate marker module — question-bound (Codex R5 #1),
  * the awaiting_gate detection + wake-routing data source.
  */
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import * as gateMarkerModule from "../gate-marker.js";
 import {
 	defaultGateMarkerDir,
 	listGateMarkersForExecution,
@@ -14,6 +15,11 @@ import {
 	removeGateMarker,
 	writeGateMarker,
 } from "../gate-marker.js";
+
+type StrictMarkerLister = (
+	dir: string,
+	executionId: string,
+) => ReturnType<typeof listGateMarkersForExecution>;
 
 describe("gate-marker (FLY-123)", () => {
 	let dir: string;
@@ -94,5 +100,30 @@ describe("gate-marker (FLY-123)", () => {
 		expect(defaultGateMarkerDir({} as NodeJS.ProcessEnv)).toMatch(
 			/\.flywheel\/state\/codex-gates$/,
 		);
+	});
+
+	it("strict enumeration is a separate fail-closed seam while tolerant enumeration stays byte-compatible", () => {
+		writeGateMarker(dir, base);
+		const corruptPath = join(dir, "corrupt.json");
+		writeFileSync(corruptPath, "{not-json");
+
+		// Existing adapter/watchdog callers remain tolerant and still see valid rows.
+		expect(listGateMarkersForExecution(dir, "exec-1")).toHaveLength(1);
+
+		const strict = (gateMarkerModule as unknown as {
+			listGateMarkersForExecutionStrict?: StrictMarkerLister;
+		}).listGateMarkersForExecutionStrict;
+		expect(strict).toBeTypeOf("function");
+		if (!strict) return;
+		expect(() => strict(dir, "exec-1")).toThrow(corruptPath);
+	});
+
+	it("strict enumeration treats an absent marker directory as a legitimate empty set", () => {
+		const strict = (gateMarkerModule as unknown as {
+			listGateMarkersForExecutionStrict?: StrictMarkerLister;
+		}).listGateMarkersForExecutionStrict;
+		expect(strict).toBeTypeOf("function");
+		if (!strict) return;
+		expect(strict(join(dir, "never-created"), "exec-1")).toEqual([]);
 	});
 });

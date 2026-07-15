@@ -1491,6 +1491,23 @@ export class Blueprint {
 			systemPromptLines.unshift(...resumeMode.lines);
 		}
 
+		// FLY-1257 M1-a: every resident-Codex gate surface requests the same
+		// wait law, while this latch renders it exactly once per prompt. Keeping
+		// the injection at the individual gate branches protects sparse checkpoint
+		// configurations without duplicating the policy when several are enabled.
+		let codexGateWaitLawInjected = false;
+		const injectCodexGateWaitLaw = (): void => {
+			if (!isCodexRunner || codexGateWaitLawInjected) return;
+			codexGateWaitLawInjected = true;
+			systemPromptLines.push(
+				"",
+				"CODEX GATE WAIT LAW (resident goal lifecycle):",
+				"Eligibility to update a goal to blocked is NOT an instruction to do so: gate/review pending is NEVER blocked.",
+				"Poll pending gates unhurriedly across turns; a slow human response has no finite retry or turn limit.",
+				"Only an explicit fail-close timeout, rejection, or persistent command failure may justify blocked; fail-open timeout means continue.",
+			);
+		};
+
 		// GEO-206 / FLY-161: Inject flywheel-comm ask instructions when Lead is available
 		if (ctx.leadId) {
 			systemPromptLines.push(
@@ -1627,6 +1644,7 @@ export class Blueprint {
 						// RESOLVED executor backend (absent on identity-less/rollback
 						// paths).
 						if (isCodexRunner) {
+							injectCodexGateWaitLaw();
 							systemPromptLines.push(
 								"",
 								"BRAINSTORM GATE (MANDATORY — do NOT skip):",
@@ -1652,6 +1670,7 @@ export class Blueprint {
 						cpName === "approve_to_ship" &&
 						ctx.runnerTransportMode === "none"
 					) {
+						injectCodexGateWaitLaw();
 						// FLY-493: a no-transport (e.g. antigravity / kimi) Runner CANNOT be woken,
 						// so it must NOT post the non-blocking approve gate (it would
 						// strand in awaiting_review → approved_to_ship with no actor to
@@ -1674,6 +1693,7 @@ export class Blueprint {
 							"e. Then STOP. Your build+PR work is done; the founder reviews Codex status and ships the PR.",
 						);
 					} else if (cpName === "approve_to_ship") {
+						injectCodexGateWaitLaw();
 						// FLY-1224 (C10, cross-family review — Annie's directive): a
 						// CODEX author's FLY-827 code gate is REQUEST-DRIVEN — the
 						// legacy Codex-review trigger is SKIPPED for codex authors
@@ -1755,6 +1775,7 @@ export class Blueprint {
 						);
 					} else if (cpName === "question") {
 						if (isCodexRunner) {
+							injectCodexGateWaitLaw();
 							systemPromptLines.push(
 								"",
 								"QUESTION GATE (use when needed):",
@@ -1774,6 +1795,7 @@ export class Blueprint {
 						}
 					} else {
 						if (isCodexRunner) {
+							injectCodexGateWaitLaw();
 							systemPromptLines.push(
 								"",
 								`${cpName.toUpperCase()} GATE:`,

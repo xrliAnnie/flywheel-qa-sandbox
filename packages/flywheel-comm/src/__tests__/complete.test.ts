@@ -21,6 +21,11 @@ vi.mock("node:child_process", () => ({
 
 import { execFileSync } from "node:child_process";
 import { complete } from "../commands/complete.js";
+import {
+	markGateMarkerAnswered,
+	removeGateMarker,
+	writeGateMarker,
+} from "../gate-marker.js";
 
 const execFileSyncMock = vi.mocked(execFileSync);
 
@@ -41,6 +46,7 @@ describe("complete command", () => {
 		process.env.FLYWHEEL_BRIDGE_URL = "http://localhost:9292";
 		process.env.HOME = tmpHome;
 		delete process.env.FLYWHEEL_INGEST_TOKEN;
+		delete process.env.FLYWHEEL_GATE_MARKER_DIR;
 
 		mockFetch = vi
 			.fn()
@@ -209,6 +215,108 @@ describe("complete command", () => {
 			expect.stringContaining("Invalid --route"),
 		);
 		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	describe("FLY-1257 M1-c: blocked completion guard for marker-capable runners", () => {
+		const marker = {
+			questionId: "gate-q-1257",
+			executionId: "exec-108",
+			backend: "codex-tmux",
+			vendor: "codex",
+			checkpoint: "brainstorm",
+		};
+
+		function enableMarkers(): string {
+			const dir = join(tmpHome, "codex-gates");
+			process.env.FLYWHEEL_GATE_MARKER_DIR = dir;
+			return dir;
+		}
+
+		it("refuses route=blocked while this execution has an unanswered mandatory gate", async () => {
+			const dir = enableMarkers();
+			writeGateMarker(dir, marker);
+
+			await expect(
+				complete({ route: "blocked", merged: false }),
+			).rejects.toThrow("process.exit(1)");
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("gate/review pending is not blocked"),
+			);
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("gate-q-1257"),
+			);
+			expect(mockFetch).not.toHaveBeenCalled();
+		});
+
+		it("allows route=blocked after the marker is answered", async () => {
+			const dir = enableMarkers();
+			writeGateMarker(dir, marker);
+			markGateMarkerAnswered(dir, marker.questionId);
+
+			await complete({ route: "blocked", merged: false });
+			expect(mockFetch).toHaveBeenCalledOnce();
+		});
+
+		it("allows route=blocked after watcher timeout resolution removes the marker (fail-close or fail-open)", async () => {
+			const dir = enableMarkers();
+			writeGateMarker(dir, marker);
+			removeGateMarker(dir, marker.questionId);
+
+			await complete({ route: "blocked", merged: false });
+			expect(mockFetch).toHaveBeenCalledOnce();
+		});
+
+		it("allows route=blocked when the injected marker directory has never been created", async () => {
+			enableMarkers();
+			await complete({ route: "blocked", merged: false });
+			expect(mockFetch).toHaveBeenCalledOnce();
+		});
+
+		it("ignores another execution's pending marker", async () => {
+			const dir = enableMarkers();
+			writeGateMarker(dir, { ...marker, executionId: "other-exec" });
+			await complete({ route: "blocked", merged: false });
+			expect(mockFetch).toHaveBeenCalledOnce();
+		});
+
+		it("fails closed on a corrupt marker and identifies the repair path", async () => {
+			const dir = enableMarkers();
+			const corruptPath = join(dir, "corrupt.json");
+			writeGateMarker(dir, marker);
+			writeFileSync(corruptPath, "{not-json");
+
+			await expect(
+				complete({ route: "blocked", merged: false }),
+			).rejects.toThrow("process.exit(1)");
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining(corruptPath),
+			);
+			expect(mockFetch).not.toHaveBeenCalled();
+		});
+
+		it("fails closed when the injected marker path cannot be enumerated", async () => {
+			const notDirectory = join(tmpHome, "marker-path-is-a-file");
+			writeFileSync(notDirectory, "not a directory");
+			process.env.FLYWHEEL_GATE_MARKER_DIR = notDirectory;
+
+			await expect(
+				complete({ route: "blocked", merged: false }),
+			).rejects.toThrow("process.exit(1)");
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining(notDirectory),
+			);
+			expect(mockFetch).not.toHaveBeenCalled();
+		});
+
+		it("keeps Claude/non-marker executions byte-compatible even if the shared default contains corruption", async () => {
+			const defaultDir = join(tmpHome, ".flywheel", "state", "codex-gates");
+			writeGateMarker(defaultDir, marker);
+			writeFileSync(join(defaultDir, "corrupt.json"), "{not-json");
+			delete process.env.FLYWHEEL_GATE_MARKER_DIR;
+
+			await complete({ route: "blocked", merged: false });
+			expect(mockFetch).toHaveBeenCalledOnce();
+		});
 	});
 
 	it("--merged without --pr → exit 1", async () => {

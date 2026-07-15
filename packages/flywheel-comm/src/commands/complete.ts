@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { listGateMarkersForExecutionStrict } from "../gate-marker.js";
 
 // FLY-222 #1: `no_code` is the terminal route for a runner-driven no-code /
 // no-merge clean success (e.g. the scheduled learning Runner — reads, analyzes,
@@ -149,6 +150,30 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	const projectName = requireEnv("FLYWHEEL_PROJECT_NAME");
 	const bridgeUrl = requireEnv("FLYWHEEL_BRIDGE_URL");
 	const ingestToken = process.env.FLYWHEEL_INGEST_TOKEN;
+
+	// FLY-1257 M1-c: marker presence is an explicit Codex capability signal.
+	// Claude runners do not receive this env var and retain their prior behavior.
+	// A terminal blocked event is irreversible enough that ambiguous/corrupt
+	// marker state must fail closed rather than silently killing a waiting goal.
+	const gateMarkerDir = process.env.FLYWHEEL_GATE_MARKER_DIR?.trim();
+	if (opts.route === "blocked" && gateMarkerDir) {
+		let markers;
+		try {
+			markers = listGateMarkersForExecutionStrict(gateMarkerDir, execId);
+		} catch (error) {
+			console.error(
+				`[complete] cannot prove gate state from ${gateMarkerDir}; refusing route=blocked. Repair or quarantine the named marker path. ${error instanceof Error ? error.message : String(error)}`,
+			);
+			process.exit(1);
+		}
+		const pending = markers.find((marker) => !marker.answeredAt);
+		if (pending) {
+			console.error(
+				`[complete] gate/review pending is not blocked; refusing route=blocked while ${pending.checkpoint} gate ${pending.questionId} is unanswered. Continue polling with flywheel-comm check ${pending.questionId}.`,
+			);
+			process.exit(1);
+		}
+	}
 
 	const sessionRole = opts.sessionRole ?? "main";
 	const exitReason = opts.exitReason ?? "completed";

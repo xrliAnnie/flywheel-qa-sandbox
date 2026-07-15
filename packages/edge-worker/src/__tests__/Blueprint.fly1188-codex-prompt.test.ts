@@ -123,6 +123,7 @@ afterEach(() => {
 async function buildPrompt(opts: {
 	ctxOverrides?: Partial<BlueprintContext>;
 	worktreePath?: string;
+	checkpointConfig?: Record<string, { enabled: boolean }>;
 }): Promise<string> {
 	const adapter = makeMockAdapter();
 	const blueprint = new Blueprint(
@@ -137,7 +138,7 @@ async function buildPrompt(opts: {
 		undefined,
 		undefined,
 		undefined,
-		CHECKPOINTS,
+		opts.checkpointConfig ?? CHECKPOINTS,
 	);
 	const ctx: BlueprintContext = {
 		teamName: "eng",
@@ -340,6 +341,46 @@ describe("FLY-1188 M2 — claude prompt byte-snapshot (drift guard)", () => {
 				"<EXEC_ID>",
 			);
 		expect(normalized).toMatchSnapshot();
+	});
+});
+
+// ── FLY-1257 M1-a — resident Codex gate-wait law ──────────────────────────────
+// The same invariant is requested at every Codex gate surface but rendered
+// exactly once per prompt. This prevents a long-pending human gate from being
+// mistaken for permission to terminalize the durable goal as blocked.
+describe("FLY-1257 M1-a — resident Codex gate-wait law", () => {
+	const WAIT_LAW = "gate/review pending is NEVER blocked";
+
+	it("renders the shared law exactly once when all Codex checkpoints are enabled", async () => {
+		const prompt = await buildCodexPrompt();
+		expect(prompt).toContain("BRAINSTORM GATE");
+		expect(prompt).toContain("CODE REVIEW GATE (codex author");
+		expect(prompt).toContain("APPROVE GATE (MANDATORY");
+		expect(prompt).toContain("QUESTION GATE");
+		expect(prompt.match(new RegExp(WAIT_LAW, "g")) ?? []).toHaveLength(1);
+		expect(prompt).toContain("fail-open timeout means continue");
+	});
+
+	it.each([
+		["brainstorm", { brainstorm: { enabled: true } }],
+		["question", { question: { enabled: true } }],
+		["generic", { security_review: { enabled: true } }],
+		["review-and-approve", { approve_to_ship: { enabled: true } }],
+	] as const)("%s-only Codex prompt still carries the shared law once", async (_name, checkpointConfig) => {
+		const wt = makeRealWorktree();
+		cleanups.push(wt);
+		const prompt = await buildPrompt({
+			worktreePath: wt,
+			ctxOverrides: { runnerBackend: "codex-tmux" },
+			checkpointConfig,
+		});
+		expect(prompt.match(new RegExp(WAIT_LAW, "g")) ?? []).toHaveLength(1);
+	});
+
+	it("Claude prompt remains free of the Codex-only wait law", async () => {
+		const prompt = await buildPrompt({ ctxOverrides: {} });
+		expect(prompt).not.toContain(WAIT_LAW);
+		expect(prompt).not.toContain("fail-open timeout means continue");
 	});
 });
 

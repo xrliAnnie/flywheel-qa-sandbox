@@ -151,6 +151,56 @@ export function listGateMarkersForExecution(
 }
 
 /**
+ * Fail-closed marker enumeration for lifecycle decisions.
+ *
+ * The adapter/watchdog intentionally uses the tolerant function above because
+ * one damaged marker must not stop unrelated wake processing. A runner about
+ * to publish a terminal state has the opposite safety requirement: if it
+ * cannot prove that no gate is pending, it must refuse to terminalize.
+ */
+export function listGateMarkersForExecutionStrict(
+	dir: string,
+	executionId: string,
+): GateMarker[] {
+	if (!existsSync(dir)) return [];
+
+	let files: string[];
+	try {
+		files = readdirSync(dir);
+	} catch (error) {
+		throw new Error(
+			`gate-marker: cannot enumerate ${dir}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+
+	const result: GateMarker[] = [];
+	for (const file of files) {
+		if (!file.endsWith(".json")) continue;
+		const path = join(dir, file);
+		let raw: unknown;
+		try {
+			raw = JSON.parse(readFileSync(path, "utf-8"));
+		} catch (error) {
+			throw new Error(
+				`gate-marker: cannot read or parse ${path}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		if (
+			typeof raw !== "object" ||
+			raw === null ||
+			typeof (raw as Partial<GateMarker>).questionId !== "string" ||
+			typeof (raw as Partial<GateMarker>).executionId !== "string" ||
+			`${(raw as Partial<GateMarker>).questionId}.json` !== file
+		) {
+			throw new Error(`gate-marker: invalid marker shape at ${path}`);
+		}
+		const marker = raw as GateMarker;
+		if (marker.executionId === executionId) result.push(marker);
+	}
+	return result;
+}
+
+/**
  * FLY-142 (Option Y): ask-markers mirror the gate-marker mechanism for the
  * non-blocking `flywheel-comm ask`. They carry the asking runner's transport
  * vendor so a Lead `respond` can route the mailbox wake to the RIGHT backend
