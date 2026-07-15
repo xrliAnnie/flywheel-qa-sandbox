@@ -36,7 +36,10 @@
 
 import { CommDB } from "flywheel-comm/db";
 import { AUTO_CLOSE_STATES, CRASH_PRESERVE_STATES } from "./close-runner.js";
-import { resolveCommDbPath } from "./commdb-session-prune.js";
+import {
+	type FinalizeCommDbResult,
+	resolveCommDbPath,
+} from "./commdb-session-prune.js";
 import {
 	probeTmuxWindowLiveness,
 	type TmuxWindowProbe,
@@ -69,6 +72,8 @@ export interface CommDbFsmReconcileResult {
 	keptPreserve: number;
 	/** kept — deletable-terminal FSM but tmux target alive/indeterminate. */
 	keptAliveTarget: number;
+	/** proven-dead candidates whose atomic CommDB finalization failed. */
+	finalizeFailed: number;
 }
 
 /** FSM-status lookup: execution_id → status (undefined ⇒ no FSM row). */
@@ -86,6 +91,12 @@ export async function reconcileCommDbRunningAgainstFsm(
 	opts: {
 		dbPath?: string;
 		probe?: (tmuxWindow: string) => Promise<TmuxWindowProbe>;
+		finalizeSession?: (db: CommDB, executionId: string) => unknown;
+		onFinalizeOutcome?: (
+			executionId: string,
+			projectName: string,
+			result: FinalizeCommDbResult,
+		) => void;
 	} = {},
 ): Promise<CommDbFsmReconcileResult> {
 	const result: CommDbFsmReconcileResult = {
@@ -94,10 +105,14 @@ export async function reconcileCommDbRunningAgainstFsm(
 		keptNonTerminal: 0,
 		keptPreserve: 0,
 		keptAliveTarget: 0,
+		finalizeFailed: 0,
 	};
 	const dbPath = opts.dbPath ?? resolveCommDbPath(projectName);
 	if (!dbPath) return result;
 	const probe = opts.probe ?? probeTmuxWindowLiveness;
+	const finalizeSession =
+		opts.finalizeSession ??
+		((db: CommDB, executionId: string) => db.finalizeSession(executionId));
 
 	let db: CommDB | undefined;
 	try {
@@ -125,8 +140,30 @@ export async function reconcileCommDbRunningAgainstFsm(
 				result.keptAliveTarget++;
 				continue;
 			}
-			db.deleteSession(s.execution_id);
-			result.reconciled++;
+			try {
+				const raw = finalizeSession(db, s.execution_id) as
+					| { retiredQuestionCount?: number; deletedSessionCount?: number }
+					| undefined;
+				opts.onFinalizeOutcome?.(s.execution_id, projectName, {
+					ok: true,
+					outcome: "finalized",
+					retiredGateCount: raw?.retiredQuestionCount ?? 0,
+					deletedSessionCount: raw?.deletedSessionCount ?? 0,
+				});
+				result.reconciled++;
+			} catch (err) {
+				result.finalizeFailed++;
+				opts.onFinalizeOutcome?.(s.execution_id, projectName, {
+					ok: false,
+					outcome: "failed",
+					retiredGateCount: 0,
+					deletedSessionCount: 0,
+					error: (err as Error).message,
+				});
+				console.warn(
+					`[commdb-fsm-reconcile] finalize ${s.execution_id} failed: ${(err as Error).message}`,
+				);
+			}
 		}
 	} catch (err) {
 		console.warn(

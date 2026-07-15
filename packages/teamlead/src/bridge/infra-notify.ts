@@ -153,7 +153,12 @@ export async function postInfraNotifyDigest(
 	const log = deps.log ?? ((m) => console.warn(m));
 	const identity = resolveInfraNotifyIdentity(deps.env ?? process.env);
 	if (!identity) return false;
-	const post = deps.postText ?? postDiscordMessageToChannel;
+	const post =
+		deps.postText ??
+		((channelId, text, botToken) =>
+			postDiscordMessageToChannel(channelId, text, botToken, {
+				origin: "automation",
+			}));
 	try {
 		const result = await post(
 			identity.notifyChannelId,

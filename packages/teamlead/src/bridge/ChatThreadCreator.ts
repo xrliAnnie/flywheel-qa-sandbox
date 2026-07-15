@@ -5,6 +5,7 @@
  */
 
 import type { StateStore } from "../StateStore.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 import {
 	addThreadMember,
 	parseRetryAfterMs,
@@ -388,7 +389,7 @@ export class ChatThreadCreator {
 					// FLY-162 Codex R3 #2: never let issue title / generated
 					// notification text trigger @everyone/@here/role pings.
 					body: JSON.stringify({
-						content: messageContent,
+						content: markAutomatedDiscordText(messageContent),
 						allowed_mentions: { parse: [] },
 					}),
 					signal: controller.signal,
@@ -979,7 +980,10 @@ export class ChatThreadCreator {
 			},
 			// allowed_mentions parse:[] — the command/title text must never trigger
 			// @everyone/@here/role pings (mirrors ensureChatThread).
-			body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+			body: JSON.stringify({
+				content: markAutomatedDiscordText(content),
+				allowed_mentions: { parse: [] },
+			}),
 			signal,
 		});
 		if (!res.ok) {
@@ -1008,7 +1012,10 @@ export class ChatThreadCreator {
 					Authorization: `Bot ${botToken}`,
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+				body: JSON.stringify({
+					content: markAutomatedDiscordText(content),
+					allowed_mentions: { parse: [] },
+				}),
 				signal,
 			},
 		);
@@ -1323,7 +1330,10 @@ export class ChatThreadCreator {
 					// FLY-162 Codex R3 #2: notification text is generated, but
 					// belt-and-suspenders — block any future label-injection
 					// path from triggering @everyone/@here/role pings.
-					body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+					body: JSON.stringify({
+						content: markAutomatedDiscordText(content),
+						allowed_mentions: { parse: [] },
+					}),
 					signal: controller.signal,
 				},
 			);

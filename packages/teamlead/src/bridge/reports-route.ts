@@ -53,6 +53,12 @@ const MAX_TITLE_LENGTH = 200;
 const MAX_SCREENSHOT_BYTES = 25 * 1024 * 1024; // Discord verified cap
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
 
+export type ReportPostTextFn = (
+	channelId: string,
+	content: string,
+	botToken: string,
+) => Promise<PostDiscordResult>;
+
 export interface ReportsRouterOptions {
 	/** FLYWHEEL_REMOTE_REPORTS kill switch — plugin reads env and injects. */
 	enabled: boolean;
@@ -63,7 +69,7 @@ export interface ReportsRouterOptions {
 	/** Test seams. */
 	deployFiles?: typeof deployFilesToVercel;
 	postWithFile?: typeof postDiscordMessageWithFile;
-	postText?: typeof postDiscordMessageToChannel;
+	postText?: ReportPostTextFn;
 	/** FLY-929 B1 test seam — the receipt writer (P-expect gated internally). */
 	writeReceipt?: typeof writeTokenReportReceipt;
 }
@@ -177,7 +183,12 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 	const router = Router();
 	const deployFiles = opts.deployFiles ?? deployFilesToVercel;
 	const postWithFile = opts.postWithFile ?? postDiscordMessageWithFile;
-	const postText = opts.postText ?? postDiscordMessageToChannel;
+	const postText =
+		opts.postText ??
+		((channelId, content, botToken) =>
+			postDiscordMessageToChannel(channelId, content, botToken, {
+				origin: "automation",
+			}));
 
 	// Kill switch — before any handler (plugin injects env state).
 	router.use((_req, res, next) => {

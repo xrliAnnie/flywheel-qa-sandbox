@@ -34,8 +34,15 @@ function intent(over: Partial<FounderActionIntent> = {}): FounderActionIntent {
 
 async function harness(over: Partial<FounderActionDrainDeps> = {}) {
 	const store = await StateStore.create(":memory:");
-	const sessions = new Map<string, { status?: string; pr_head_sha?: string }>();
-	sessions.set("E-1", { status: "awaiting_review", pr_head_sha: SHA_A });
+	const sessions = new Map<
+		string,
+		{ status?: string; pr_head_sha?: string; pr_number?: number }
+	>();
+	sessions.set("E-1", {
+		status: "awaiting_review",
+		pr_head_sha: SHA_A,
+		pr_number: 42,
+	});
 	const postNotice = vi.fn(async () => ({ ok: true }));
 	const queueCodexInstruction = vi.fn(() => ({ queued: true }));
 	const wake = vi.fn(async () => ({ ok: true }));
@@ -64,6 +71,62 @@ async function harness(over: Partial<FounderActionDrainDeps> = {}) {
 }
 
 describe("drainFounderActionLedger — execution + outcomes", () => {
+	it("MERGED supersedes a queued notice without POST or action-attempt growth", async () => {
+		const { store, deps, postNotice } = await harness({
+			mergedGateGuard: vi.fn().mockResolvedValue({
+				kind: "suppress_merged",
+				cleanupComplete: true,
+			}),
+			resolveProjectRoot: () => "/repo",
+		});
+		store.insertFounderAction(
+			intent({ payload: { text: "stale", questionId: "Q-1" } }),
+		);
+		await drainFounderActionLedger(deps);
+		expect(postNotice).not.toHaveBeenCalled();
+		expect(store.getFounderAction("held-reply-Q-1-100")?.status).toBe(
+			"cancelled",
+		);
+		expect(store.getFounderAction("held-reply-Q-1-100")?.attempts).toBe(0);
+	});
+
+	it("UNKNOWN leaves the queued notice pending without consuming action retries", async () => {
+		const { store, deps, postNotice } = await harness({
+			mergedGateGuard: vi.fn().mockResolvedValue({
+				kind: "retry_later",
+				reason: "budget",
+			}),
+			resolveProjectRoot: () => "/repo",
+		});
+		store.insertFounderAction(
+			intent({ payload: { text: "wait", questionId: "Q-1" } }),
+		);
+		await drainFounderActionLedger(deps);
+		expect(postNotice).not.toHaveBeenCalled();
+		expect(store.getFounderAction("held-reply-Q-1-100")?.status).toBe(
+			"pending",
+		);
+		expect(store.getFounderAction("held-reply-Q-1-100")?.attempts).toBe(0);
+	});
+
+	it("terminal guard failure cancels the notice instead of spinning", async () => {
+		const { store, deps, postNotice } = await harness({
+			mergedGateGuard: vi.fn().mockResolvedValue({
+				kind: "terminal_unavailable",
+				reason: "unknown_exhausted",
+			}),
+			resolveProjectRoot: () => "/repo",
+		});
+		store.insertFounderAction(
+			intent({ payload: { text: "never", questionId: "Q-1" } }),
+		);
+		await drainFounderActionLedger(deps);
+		expect(postNotice).not.toHaveBeenCalled();
+		expect(store.getFounderAction("held-reply-Q-1-100")?.status).toBe(
+			"cancelled",
+		);
+	});
+
 	it("held_reply notice → postNotice → delivered", async () => {
 		const { store, deps, postNotice } = await harness();
 		store.insertFounderAction(intent());

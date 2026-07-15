@@ -52,6 +52,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 		expect(msgUrl).toBe("https://discord.com/api/v10/channels/ch-123/messages");
 		expect(msgOpts.method).toBe("POST");
 		const msgBody = JSON.parse(msgOpts.body);
+		expect(msgBody.content).toMatch(/^🤖\[自动\] /);
 		expect(msgBody.content).toContain("FLY-91");
 
 		// Verify Step 2: POST thread from message
