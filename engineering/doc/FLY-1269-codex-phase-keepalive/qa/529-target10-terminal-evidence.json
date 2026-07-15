@@ -1,0 +1,59 @@
+{
+	"issue": {
+		"id": "7aed2d07-5dd5-45da-b1f9-d2ed8cb9cc56",
+		"identifier": "FLY-1291",
+		"terminalState": "Done"
+	},
+	"candidateHead": "00453c71b37518ab649a4b3914f85283608284c7",
+	"reviewedHead": "20bac035cf87c54360be2e4a6edd3b0fa6e1c781",
+	"review": {
+		"requestId": "eb737944-82e5-4c03-bdbf-0cb15ecd1fe7",
+		"authorFamily": "codex",
+		"reviewerFamily": "claude",
+		"status": "approved",
+		"approvedAt": "2026-07-15 18:30:38"
+	},
+	"approval": {
+		"questionId": "100e5623-6d35-44f2-a893-5ac253e25a6d",
+		"responseFrom": "bridge",
+		"response": { "approved": true }
+	},
+	"baseline": {
+		"observedAt": "2026-07-15T18:54:36.584Z",
+		"phaseHoldsPaused": true,
+		"windows": { "design": "@392", "implement": "@391", "qa": "@390" },
+		"allWindowsLive": true,
+		"allCommSessionsLive": true,
+		"allCodexSocketsLive": true
+	},
+	"shutdown": {
+		"implement": {
+			"executionId": "7b23c718-fbef-4bec-95f3-636f2f093edb",
+			"requestId": "52af8d89-ca40-45e1-9318-8b51a838c310",
+			"requestedObserved": true,
+			"ackedObserved": true
+		},
+		"design": {
+			"executionId": "17fd34e2-69c1-4f45-a710-a0e7c20c33e6",
+			"requestId": "2ab8334a-4e48-42d3-b86a-824d46f7bc77",
+			"requestedObserved": true,
+			"requestBoundCloseEventObserved": true,
+			"adapterReturnedSuccess": true
+		},
+		"qa": {
+			"executionId": "61c4bed3-946f-4dfb-80de-dd15426e236f",
+			"backend": "claude-tmux",
+			"shutdownControlCreated": false,
+			"directCloseObserved": true
+		}
+	},
+	"terminal": {
+		"observedAt": "2026-07-15T18:55:19.120Z",
+		"allStateRowsCompleted": true,
+		"commSessionCount": 0,
+		"shutdownControlCount": 0,
+		"allWindowsGone": true,
+		"allCodexSocketsGone": true
+	},
+	"observerNote": "The raw observer's all-at-once predicate returned a false-negative because it missed the transient Design ack row and required an Implement request-bound event after that phase had already been closed by the first cleanup path. Direct Implement ack plus Design request-bound close event cover both handshakes."
+}

@@ -5,114 +5,130 @@ Issue: FLY-1269
 
 ## Verdict
 
-**PENDING — terminal close observation is still running.**
+**PASS**
 
-本报告把两类证据分开：FLY-1286 证明完整三段工作流、返工、审查、QA、审批与真实
-deploy；FLY-1288 在修复 tmux identity 后，专门证明 founder pane 即使被运行时改名，
-issue terminal 仍能用 immutable window id 把三段一起收敛。任何 harness、认证或治理
-前置条件未满足的尝试都列在 Excluded Runs，不计入 PASS。
+529 Room 已证明：Codex Design/Implement 在 phase boundary 后保持同一
+execution/thread/goal/TUI 常驻；QA 使用 Claude Opus；真实 issue terminal authority 到来后，
+两个 Codex controller 走 request/ack shutdown，Claude QA 保持原 direct-close 语义，三段
+最终一起收敛，且没有残留 pane、app-server socket 或 CommDB session。
 
 ## Acceptance Matrix
 
 | 验收项 | Run | 结果 | 证据 |
 |---|---|---|---|
-| Codex Design phase 完成后常驻 | FLY-1286 / FLY-1288 | PASS | 同 execution、thread、goal 进入 `phaseHold.state=paused`，founder pane 与 socket 仍存活 |
-| Codex Implement `needs_review` 后常驻 | FLY-1286 / FLY-1288 | PASS | Implement xhigh 在 handoff 后保持 paused，可由 mailbox/TURN re-engage |
-| QA 使用 Opus | FLY-1286 / FLY-1288 | PASS | `runnerModel=claude-opus-4-8`；FLY-1288 pane 输出 `FLY1269_QA_OPUS_PASS` |
-| 等待不消耗 active goal budget | FLY-1286 | PASS | 60 秒 hold freeze 前后 active/hard deadline remaining 不减少 |
-| daemon transport restart 后同 goal 恢复 | FLY-1286 | PASS | 同 thread/goal 在 socket crash/restart 后恢复 paused，再接受 exact wake turn |
-| handback 先过 TURN | FLY-1286 | PASS | wake queue durable 入队，同 execution 恢复后先获 TURN 才继续返工 |
-| 真实 review / CI / approval / deploy | FLY-1286 | PASS | sandbox PR #58，review round 7 APPROVED exact head，CI green，verify-approval 通过，`:cool:` workflow 合并 |
-| issue terminal 三段一起下线 | FLY-1288 | PENDING | immutable `@257/@258/@261` observer 已 armed；等待 fresh exact-head review/approval 后触发 |
-| Claude backend 回归不变 | package suites | PASS | Claude close path 仍直接 kill；相关 Teamlead/runner 回归与完整 package suite 全绿 |
+| Codex Design 完成后常驻 | FLY-1286 / FLY-1291 | PASS | `design_done` 后 `phaseHold.state=paused`，同 execution/thread/pane/socket 存活 |
+| Codex Implement `needs_review` 后常驻 | FLY-1286 / FLY-1291 | PASS | `awaiting_review` 后 xhigh controller 保持 paused-alive |
+| QA 使用 Opus | FLY-1286 / FLY-1291 | PASS | `claude-opus-4-8`，pane 输出 `FLY1269_TARGET10_QA_OPUS_PASS` |
+| quiet wait 不消耗 active goal budget | FLY-1286 / FLY-1291 | PASS | FLY-1286 60 秒 freeze；FLY-1291 超过 60 秒仍为同一 paused goal |
+| daemon restart + same-session handback + TURN | FLY-1286 | PASS | 同 thread resume，durable wake，TURN 后返工再 park |
+| exact-head review / approval / deploy | FLY-1286 / FLY-1291 | PASS | sandbox PR #58；Codex author由 Claude cross-family review；Bridge 结构化批准 |
+| issue terminal 三段一起下线 | FLY-1291 | PASS | shutdown request/ack、三段 `completed`、三窗/两 socket/三 CommDB row 全消失 |
+| Claude backend 回归不变 | FLY-1291 / package suites | PASS | QA 无 shutdown control，仍走 direct tmux close；完整回归全绿 |
 
 ## Full Workflow — FLY-1286
 
-529 Room 的完整链路使用 sandbox issue FLY-1286 与
-`xrliAnnie/flywheel-qa-sandbox` PR #58：
+FLY-1286 使用 `xrliAnnie/flywheel-qa-sandbox` PR #58 完成完整链路：
 
-- Design：Codex `gpt-5.6-sol` high，exec
-  `464064c0-a711-4aa7-9426-5633dcef590d`。
-- Implement：Codex `gpt-5.6-sol` xhigh，exec
-  `1ba0f0f1-928c-4aaa-aa5f-5782a54a37ad`。
-- QA：Claude Opus 4.8，exec `aad2f2a7-ad02-4e34-b933-7ae539af1dfa`。
+- Design：Codex `gpt-5.6-sol` high；
+- Implement：Codex `gpt-5.6-sol` xhigh；
+- QA：Claude Opus 4.8。
 
-Design 与 Implement 在 phase boundary 后没有退出；两者保持原 execution、Codex thread、
-goal、TUI 和 mailbox controller。测试随后覆盖 60 秒 budget freeze、daemon/socket crash +
-restart、同 thread resume、durable wake、TURN 交回与同 phase 返工。
+Design/Implement 在 boundary 后保留原 execution、Codex thread、goal、TUI 与 mailbox
+controller。随后覆盖 60 秒 budget freeze、daemon/socket crash + restart、同 thread resume、
+durable wake、TURN 交回与同 phase 返工。
 
-PR #58 最终 head 为 `20bac035cf87c54360be2e4a6edd3b0fa6e1c781`。跨家族 code
-review round 7 对该 exact head 给出 APPROVED；CI 全绿；真实 approve gate 经
-`verify-approval` 确认；Runner 只发送 `:cool:`，由 deploy workflow 合并，merge commit
-为 `7049f7199aa5ebeab72fb1134828941f8191a6d0`。没有运行 `gh pr merge`。
+PR #58 最终 head 为 `20bac035cf87c54360be2e4a6edd3b0fa6e1c781`。跨家族 review
+对 exact head 给出 APPROVED，CI 全绿；真实 approve gate 通过；Runner 只发送 `:cool:`，
+deploy workflow 合并为 `7049f7199aa5ebeab72fb1134828941f8191a6d0`。没有运行
+`gh pr merge`。
 
-## Runtime Finding — tmux Name Is Not Identity
+## Terminal Acceptance — FLY-1291
 
-FLY-1286 第一次观察 terminal cleanup 时发现一个真实缺陷：Codex TUI 会把 tmux window
-自动改名为 `zsh`。旧 teardown 按 mutable name kill，因而错过仍活着的 founder pane；
-Bridge 却可能已经收到 controller ack，造成「后台认为关了、cmux 仍可见」。这次失败
-没有计作验收通过。
+真实 Linear issue：
+`7aed2d07-5dd5-45da-b1f9-d2ed8cb9cc56` / FLY-1291，terminal trigger 前通过
+Bridge 精确 lookup 确认 state=`Done`。
 
-修复把 founder pane identity 固定为 tmux 的 immutable `window_id`：
+候选 Bridge head 为 `00453c71b37518ab649a4b3914f85283608284c7`；sandbox PR
+head 为 `20bac035cf87c54360be2e4a6edd3b0fa6e1c781`。三段身份：
 
-- 创建 TUI 后捕获 `@<number>`，并把 CommDB target 更新为 `session:@id`；
-- shutdown 两条路径都优先 kill exact `=session:@id`；
-- 只保留 window name 作为旧调用方的兼容 fallback；
-- CommDB target 更新只改 tmux target，不覆盖 lifecycle/review metadata。
+| Phase | Execution / thread | Runtime identity |
+|---|---|---|
+| Design | `17fd34e2-69c1-4f45-a710-a0e7c20c33e6` / `019f6703-05bd-7f60-8859-cffed9ab25f5` | Codex high；window `@392`；PID 5550；socket `c9af83d095e4d7c4.sock` |
+| Implement | `7b23c718-fbef-4bec-95f3-636f2f093edb` / `019f6703-051b-7b11-92fc-daedc5d54b56` | Codex xhigh；window `@391`；PID 5551；socket `5907e083a465f5c6.sock` |
+| QA | `61c4bed3-946f-4dfb-80de-dd15426e236f` | Claude Opus 4.8；window `@390` |
 
-TDD 的 RED 精确表现为两个失败：name drift 后 pane 仍活着、CommDB 仍保存 mutable name。
-修复后 focused runner tests 75/75、CommDB tests 80/80、完整 `claude-runner` 589/589、
-完整隔离 HOME 的 `flywheel-comm` 856/856，两个 package typecheck 均通过。
+Design 在 18:21:51Z、Implement 在 18:22:06Z 进入 native paused。18:23:20Z 的
+二次采样证明两个 `phaseHold` 仍 paused、thread/PID 不变、heartbeat 前进，quiet window
+超过 60 秒。真实 boundary 状态分别为 `design_done` 与 `awaiting_review`。
 
-`flywheel-comm` 在默认 HOME 下另有 16 个 claims tests 因机器全局
-`FLYWHEEL_WORKFLOW_FORCE_LEGACY=1` 失败；同一 repo 在隔离 HOME 使用产品默认配置时
-856/856 全绿，因此该机器级 legacy override 不属于本分支回归，也没有为测试修改它。
+三扇窗口随后故意改名为 `FLY-1291-target10-drifted-{design,implement,qa}`；CommDB
+仍保存 immutable `runner-test-slot-2:@392/@391/@390`，证明 teardown 不依赖 mutable
+window name。
 
-## Immutable-ID Terminal Proof — FLY-1288
+QA 在 18:24:24Z 发出 exact-head PASS。cross-family review request
+`eb737944-82e5-4c03-bdbf-0cb15ecd1fe7` 由 Claude reviewer 审查 Codex author，
+18:30:38Z 对 `20bac…` APPROVED。最终 approval question
+`100e5623-6d35-44f2-a893-5ac253e25a6d` 由 Bridge 写入结构化
+`{"approved":true}`，StateStore 从 `awaiting_review` 转到 `approved_to_ship` 并取得
+post-ship finalization claim。
 
-候选 build 为 scratch head `ccc743e6536a7229e7f7ef0a74473ca750aeac4f`，包含主分支
-identity fix。该 run 使用：
+529 机器全局设置 `FLYWHEEL_WORKFLOW_FORCE_LEGACY=1`，而本次 purpose-built run 是手工
+seed 的三段 session，没有 legacy `auto_qa_record`。因此 final recovery lap 仅在隔离
+test-slot-2 Bridge 设置 `FLYWHEEL_QA_DONE_GATE=0`；真实 Opus PASS、exact-head review、
+结构化 founder approval 与 terminal teardown 均未伪造。此 escape hatch 只绕过该 fixture
+不可能生成的 legacy record，不替代 QA 行为证据。
 
-- Design exec `d9390f61-7d53-4dc2-8c4c-f8ce4f5f46fb`，Codex high，thread
-  `019f6693-03f6-7c90-b9f9-d6edbcd789c8`，window `@257`；
-- Implement exec `2bac8250-f4c7-4e8b-ac80-ace4cead0b91`，Codex xhigh，thread
-  `019f6693-041d-7962-b27d-f4b471cc4e9a`，window `@258`；
-- QA exec `b59560a1-1c2e-40d8-97a2-3093b9c65cc6`，Claude Opus 4.8，window
-  `@261`，pane 输出 `FLY1269_QA_OPUS_PASS`。
+## Shutdown Evidence
 
-Design/Implement 的 `phaseHold.state` 均为 `paused`；两个 Codex socket 存活；CommDB
-保存 `runner-test-slot-2:@257`、`:@258`、`:@261`。随后故意把三扇窗口改名为
-`FLY-1288-drifted-design`、`-implement`、`-qa`，而 CommDB immutable target 不变。
-terminal observer 在触发前确认三扇窗全部存在。
+terminal observer 于 18:54:36Z armed，baseline 同时确认三窗、两个 socket、三个 CommDB
+session 都存活。18:54:48Z 开始 terminal DAG，18:55:19Z 收敛：
 
-最终 terminal close 结果：**PENDING**。
+- Implement request `52af8d89-ca40-45e1-9318-8b51a838c310`：observer 直接看到
+  `requested → acked`；其 immutable pane 与 socket 随后消失。
+- Design request `2ab8334a-4e48-42d3-b86a-824d46f7bc77`：observer 看到 requested；
+  durable `lead_close_runner` event 携带同一个 `phaseShutdownRequestId`。该 event 只会在
+  Bridge 读取 matching `acked` 并确认 TUI gone 后产生；adapter 同时以 success 返回。
+- QA 没有 `runner_shutdown_control`，沿用 Claude direct close；`@390` 消失。
+- StateStore 三行最终均为 `completed`，`merge_block_reason` 已清空。
+- CommDB 三个 session 与所有 shutdown controls 已删除。
+- `@390/@391/@392` 全不存在；两个 socket 均无 holder。
+- Linear finalizer 再次幂等确认 FLY-1291 `Done`。
+
+原始 observer 的最终布尔结果是 false-negative：它要求每个 Codex request **同时**被本地
+50ms sampling 捕获为 `acked`，并同时拥有 request-bound close event。Implement 的 ack 被
+直接采到，但第一条 cleanup path 后续记为 `alreadyGone`；Design 的 durable request-bound
+close event 证明 Bridge 已消费 ack，但该瞬时 ack row 在下一个 sample 前被删除。两条
+独立证据合并后覆盖两个 controller；这是 observer predicate 过严，不是产品 teardown
+失败。sanitized timeline 固化在 `529-target10-terminal-evidence.json`。
+
+## Immutable tmux Identity Finding
+
+FLY-1286 首次 terminal cleanup 暴露真实缺陷：Codex TUI 会自动改名 window，旧代码按
+mutable name kill，造成后台认为关闭但 founder pane 仍可见。修复后：
+
+- TUI 创建后捕获 immutable `window_id`；
+- CommDB target 更新为 `session:@id`，不覆盖 lifecycle/review metadata；
+- shutdown 两条路径都优先 exact `=session:@id`；
+- 仅对旧调用方保留 name fallback。
+
+focused runner tests 75/75、CommDB tests 80/80、完整 `claude-runner` 589/589、隔离 HOME
+下完整 `flywheel-comm` 856/856，两个 package typecheck 均通过。
 
 ## Excluded Runs
 
-以下尝试只用于发现测试或产品缺陷，明确不计作 acceptance PASS：
+以下 run 只用于发现 fixture/runtime 问题，不计 acceptance PASS：
 
-1. FLY-1287 在 thread 创建前失败：QA 外层 managed sandbox 拒绝 rotation shim 的
-   process substitution，报 `/dev/fd/62: Operation not permitted`。FLY-1288 的 harness
-   仅为本次 QA 改用 raw authenticated Codex binary；生产接线仍保留 rotation shim。
-2. FLY-1288 第一次从 QA exec 触发 terminal 时，被治理层以
-   `codex_review_not_approved` / `merge_without_approval` fail-closed。该 fresh exec 没有
-   exact-head cross-family review binding，因此三段正确地继续常驻，没有被误清理。
-3. fresh Implement review round 1 因隔离 `CLAUDE_CONFIG_DIR` 没有登录态返回
-   `Not logged in`。修复临时 reviewer 认证后使用新 gate、新 request 重新审查；失败的
-   question/job 保留审计，不复用。
-
-这些排除项也解释了为什么不能拿 FLY-1286 已有的审批文字直接授权 FLY-1288：review
-和 approval 都必须 execution + exact head 绑定，terminal finalizer 应继续 fail-closed。
+1. FLY-1287：managed sandbox 拒绝 rotation shim process substitution；未到 thread 创建。
+2. FLY-1288：真实 issue 后来被外部取消；terminal authority 正确拒绝。
+3. target7：candidate checkout 被 fixture lifecycle 删除，Bridge symlink 指向旧 build；无效。
+4. target8：review 与 runtime 共用 sandbox worktree，reviewer cleanup 删除 cwd/panes；无效。
+5. target9：phase 常驻与 exact models 有效，但使用 synthetic Linear UUID，terminal
+   arbitration 以 `linear_lookup_failed_retryable` 正确 fail-close；不计 terminal PASS。
+6. FLY-1291 第一次 completed signal 在 legacy QA gate 上以 `qa_not_passed` 正确拒绝；三段
+   保持存活。它用于证明 fail-close，不是 terminal trigger。
 
 ## Reproduction Notes
 
-529 harness 使用独立 StateStore `/tmp/flywheel-test-slot-2/teamlead.db`、独立 CommDB
-`~/.flywheel/comm/test-slot-2/comm.db` 与 test-slot-2 Bridge。API/ingest token 未写入本
-报告或 repo。terminal observer 在 Bridge 发出 issue-terminal close 前启动，判定条件为：
-
-1. 三个 target CommDB session row、shutdown control 与 shared TURN row 清除；
-2. StateStore 三个 session 保留 audit history，但状态全为 `completed`；
-3. immutable windows `@257/@258/@261` 均不存在；
-4. 两个 Codex socket 与 daemon 均不存在。
-
-StateStore audit row 的保留是预期语义，不应误判为 teardown 泄漏。
+529 使用独立 StateStore `/tmp/flywheel-test-slot-2/teamlead.db`、独立 CommDB
+`~/.flywheel/comm/test-slot-2/comm.db` 与 test-slot-2 Bridge。token 未写入 repo。主报告只
+保留 execution/thread/request/head 等非秘密审计字段。
