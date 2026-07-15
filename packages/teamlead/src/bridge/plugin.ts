@@ -330,6 +330,7 @@ import {
 } from "./linear-scope.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { fileSourceRevision } from "./management-console-contract.js";
+import { createManagementCronProvider } from "./management-cron-source.js";
 import { createManagementDagProvider } from "./management-dag-source.js";
 import { createManagementSsotProviders } from "./management-ssot-providers.js";
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
@@ -3528,6 +3529,10 @@ export async function startBridge(
 							reader: store,
 							projectNames: () =>
 								managementProjects.map((project) => project.projectName),
+						}),
+						createManagementCronProvider({
+							launchAgentsDir: join(homedir(), "Library", "LaunchAgents"),
+							projects: () => managementProjects,
 						}),
 					],
 					// FLY-709: resolved feature-flag views (env fresh + cached configs).

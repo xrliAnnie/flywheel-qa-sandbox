@@ -18,6 +18,7 @@ function snapshot(): ManagementSnapshotV1 {
 		modelCatalog: {},
 		projects: [],
 		presentationGroups: [],
+		unassignedCrons: [],
 		flags: [],
 		extensions: [],
 	};
@@ -31,6 +32,7 @@ describe("management console contract", () => {
 			schemaVersion: 1,
 			projects: [],
 			presentationGroups: [],
+			unassignedCrons: [],
 			flags: [],
 			extensions: [],
 		});

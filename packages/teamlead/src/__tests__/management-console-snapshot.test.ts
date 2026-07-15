@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	buildCronTargetId,
 	buildTargetId,
 	type ManagementFlagView,
 	type ManagementProjectView,
@@ -19,6 +20,37 @@ function topologyProject(): ManagementProjectView {
 		roles: [],
 		dags: [],
 		crons: [],
+	};
+}
+
+function cron(label: string) {
+	return {
+		id: buildTargetId("cron", [label]),
+		label,
+		projectName: label === "managed" ? "example" : null,
+		sourceHint: `${label}.plist`,
+		schedule: {
+			targetId: buildCronTargetId(`/tmp/${label}.plist`, label, "schedule"),
+			current: null,
+			source: { kind: "launchd_plist" as const, revision: "file:test" },
+			writeCapability: {
+				writable: false,
+				consequence: "governance-readonly" as const,
+				requiresAcknowledgement: true,
+			},
+		},
+		enabled: {
+			targetId: buildCronTargetId(`/tmp/${label}.plist`, label, "enabled"),
+			current: true,
+			source: { kind: "launchctl" as const, revision: "launchctl:test" },
+			writeCapability: {
+				writable: false,
+				consequence: "governance-readonly" as const,
+				requiresAcknowledgement: true,
+			},
+		},
+		loaded: null,
+		warnings: [],
 	};
 }
 
@@ -159,6 +191,25 @@ describe("management snapshot composer", () => {
 		});
 		expect(snapshot.projects[0]!.dags).toEqual([
 			expect.objectContaining({ templateId: "tpl_eng_heavy" }),
+		]);
+	});
+
+	it("joins managed crons and preserves unmatched scheduled jobs", () => {
+		const topology = provider("topology", "projects_json", "file:p", {
+			projects: [topologyProject()],
+		});
+		const launchd = provider("launchd", "launchd_plist", "launchd:test", {
+			projectCrons: [{ projectName: "example", crons: [cron("managed")] }],
+			unassignedCrons: [cron("unassigned")],
+		});
+		const snapshot = composeManagementSnapshot({
+			providers: [topology, launchd],
+		});
+		expect(snapshot.projects[0]!.crons.map((item) => item.label)).toEqual([
+			"managed",
+		]);
+		expect(snapshot.unassignedCrons.map((item) => item.label)).toEqual([
+			"unassigned",
 		]);
 	});
 });

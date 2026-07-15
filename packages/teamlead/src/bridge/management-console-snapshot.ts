@@ -7,6 +7,7 @@ import {
 import {
 	assertManagementSnapshot,
 	MANAGEMENT_SCHEMA_VERSION,
+	type ManagementCronView,
 	type ManagementDagView,
 	type ManagementExtensionSection,
 	type ManagementFlagView,
@@ -24,6 +25,8 @@ export interface ManagementSnapshotFragment {
 	modelCatalog?: Partial<Record<ModelSurface, ModelCatalog>>;
 	/** Provider-owned project sections joined after all authority reads complete. */
 	projectDags?: Array<{ projectName: string; dags: ManagementDagView[] }>;
+	projectCrons?: Array<{ projectName: string; crons: ManagementCronView[] }>;
+	unassignedCrons?: ManagementCronView[];
 }
 
 export interface ManagementSnapshotProviderResult {
@@ -58,6 +61,11 @@ export function composeManagementSnapshot(input: {
 	const modelCatalog: ManagementSnapshotV1["modelCatalog"] = {};
 	const projectDags: Array<{ projectName: string; dags: ManagementDagView[] }> =
 		[];
+	const projectCrons: Array<{
+		projectName: string;
+		crons: ManagementCronView[];
+	}> = [];
+	const unassignedCrons: ManagementCronView[] = [];
 
 	for (const provider of [...input.providers].sort((a, b) =>
 		a.id.localeCompare(b.id),
@@ -76,6 +84,8 @@ export function composeManagementSnapshot(input: {
 			extensions.push(...(result.fragment.extensions ?? []));
 			Object.assign(modelCatalog, result.fragment.modelCatalog ?? {});
 			projectDags.push(...(result.fragment.projectDags ?? []));
+			projectCrons.push(...(result.fragment.projectCrons ?? []));
+			unassignedCrons.push(...(result.fragment.unassignedCrons ?? []));
 		} catch (error) {
 			sources.push({
 				kind: provider.sourceKind,
@@ -95,6 +105,13 @@ export function composeManagementSnapshot(input: {
 		project.dags.push(...section.dags);
 		project.dags.sort((a, b) => a.title.localeCompare(b.title));
 	}
+	for (const section of projectCrons) {
+		const project = projectsByName.get(section.projectName);
+		if (!project) continue;
+		project.crons.push(...section.crons);
+		project.crons.sort((a, b) => a.sourceHint.localeCompare(b.sourceHint));
+	}
+	unassignedCrons.sort((a, b) => a.sourceHint.localeCompare(b.sourceHint));
 	projects.sort((a, b) => a.name.localeCompare(b.name));
 	presentationGroups.sort((a, b) => a.id.localeCompare(b.id));
 	flags.sort((a, b) => a.name.localeCompare(b.name));
@@ -105,6 +122,7 @@ export function composeManagementSnapshot(input: {
 		modelCatalog,
 		projects,
 		presentationGroups,
+		unassignedCrons,
 		flags,
 		extensions,
 	};

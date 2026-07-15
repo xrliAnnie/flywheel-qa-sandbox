@@ -266,6 +266,7 @@ export interface ManagementSnapshotV1 {
 	modelCatalog: Partial<Record<ModelSurface, ModelCatalog>>;
 	projects: ManagementProjectView[];
 	presentationGroups: PresentationGroupView[];
+	unassignedCrons: ManagementCronView[];
 	flags: ManagementFlagView[];
 	extensions: ManagementExtensionSection[];
 }
@@ -299,6 +300,7 @@ export function assertManagementSnapshot(
 		"sources",
 		"projects",
 		"presentationGroups",
+		"unassignedCrons",
 		"flags",
 		"extensions",
 	] as const) {
