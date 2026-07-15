@@ -436,6 +436,29 @@ describe("M3 declaration", () => {
 	});
 });
 
+describe("M2 quarantine wiring", () => {
+	it("passes the tri-state verdict to applyQuarantineFallback (mutation guard — deleting the param must fail HERE, code R3)", async () => {
+		mockedTry.mockResolvedValue({
+			kind: "quarantined",
+			routeStatus: "blocked",
+			quarantinePath: "/q/exec-z1.json",
+		});
+		mockedProbe.mockResolvedValue("indeterminate");
+		store.getOrphanSessions.mockReturnValue([sess()]);
+		await service.reconcileMonitorLoss();
+		const { applyQuarantineFallback } = await import(
+			"../bridge/complete-marker-reconciler.js"
+		);
+		expect(vi.mocked(applyQuarantineFallback)).toHaveBeenCalledWith(
+			expect.objectContaining({
+				executionId: "exec-z1",
+				tmuxAlive: true, // legacy meaning: not-provably-dead
+				livenessVerdict: "indeterminate",
+			}),
+		);
+	});
+});
+
 describe("M3 liveness-chain single-flight", () => {
 	it("slow liveness pass spanning ticks: next check() skips the trio but still runs other stages; resumes after", async () => {
 		let release: () => void = () => {};
