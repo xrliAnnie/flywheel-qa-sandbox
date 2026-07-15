@@ -92,6 +92,7 @@ import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import type { MergedGateGuard } from "./merged-gate-guard.js";
 import { decideMilestoneReport } from "./milestone-report-policy.js";
+import { isReviewGateCheckpoint } from "./review-gate-checkpoints.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { defaultGetCommDbPath } from "./session-capture.js";
@@ -411,17 +412,13 @@ const ACTIVE_SESSION_STATUSES = new Set([
  * blocked/completed session could never re-request review: checkGate saw
  * answered/expired → fail-close forever, and the row was then purged by TTL.
  * Sibling in intent to the FLY-579 approve_to_ship QA-held carve-out.
+ *
+ * The set + predicate live in `./review-gate-checkpoints.js` (single source of
+ * truth — the zombie-gate-hygiene Z1 sweep consults the same one; a drifting
+ * copy is the defect ④ bug). Imported above; re-exported here so the previously
+ * public `isReviewGateCheckpoint` API is preserved.
  */
-const REVIEW_GATE_CHECKPOINTS: ReadonlySet<string> = new Set([
-	"review_design",
-	"review_code",
-]);
-
-export function isReviewGateCheckpoint(
-	checkpoint: string | null | undefined,
-): boolean {
-	return checkpoint != null && REVIEW_GATE_CHECKPOINTS.has(checkpoint);
-}
+export { isReviewGateCheckpoint };
 
 /**
  * FLY-1041 Fix A (sweeper judgement, pure). A pending approve_to_ship gate is

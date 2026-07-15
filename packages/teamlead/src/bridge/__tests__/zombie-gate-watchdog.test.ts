@@ -5,7 +5,7 @@
  * hang detection while `polling` is stuck).
  */
 
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
@@ -213,9 +213,10 @@ describe("zombie gate hygiene — FLY-1257 terminal chronology", () => {
 			await runZombieGateHygiene({
 				store: s as never,
 				projectName: "proj",
-				pendingGateQuestions: [
-					q("Q-chronology", "review_code", args.createdAt),
-				],
+				// A NON-review gate: chronology governs it (review gates are exempt
+				// unconditionally — see the defect ④ R5 block below — so testing
+				// created_at-vs-terminal_at needs a carrier the exemption ignores).
+				pendingGateQuestions: [q("Q-chronology", "brainstorm", args.createdAt)],
 				db,
 			});
 		}
@@ -273,6 +274,133 @@ describe("zombie gate hygiene — FLY-1257 terminal chronology", () => {
 		});
 		expect(retireQuestionGuarded).not.toHaveBeenCalled();
 		expect(store.getEventsByExecution("E-1")).toHaveLength(0);
+	});
+});
+
+describe("zombie gate hygiene — FLY-1257 defect ④ (R5): review gates never retired by Z1", () => {
+	// review_design / review_code are answered by the cross-family REVIEWER after
+	// request-review BINDS them — never by the authoring runner. Z1's "gone runner
+	// ⇒ dead gate" premise is false for them, so they are exempt UNCONDITIONALLY,
+	// ahead of the chronology guard, whether or not a session row survives. Delete
+	// the `isReviewGateCheckpoint` short-circuit and every retire/intent assertion
+	// below turns red.
+	for (const reviewCheckpoint of ["review_code", "review_design"] as const) {
+		it(`${reviewCheckpoint}: terminal session + gate created BEFORE terminal (would retire a non-review gate) is exempt`, async () => {
+			const store = await freshStore();
+			const s = Object.assign(store, {
+				getSession: () => ({
+					status: "blocked",
+					issue_id: "FLY-1257",
+					terminal_at: "2026-07-14 12:00:00",
+				}),
+			});
+			const { db, retireQuestionGuarded } = fakeZombieDb({
+				commSession: false,
+			});
+			const res = await runZombieGateHygiene({
+				store: s as never,
+				projectName: "proj",
+				// created BEFORE terminal — a brainstorm gate here WOULD be retired.
+				pendingGateQuestions: [
+					q("Q-review", reviewCheckpoint, "2026-07-14 11:59:59"),
+				],
+				db,
+			});
+			expect(retireQuestionGuarded).not.toHaveBeenCalled();
+			expect(res.resolved).toEqual([]);
+			// Exempt BEFORE the intent write — zero audit side effects.
+			expect(store.getEventsByExecution("E-1")).toHaveLength(0);
+		});
+
+		it(`${reviewCheckpoint}: MISSING session (the exact R5 shape after finalize deletes the row) is exempt`, async () => {
+			const store = await freshStore();
+			const s = Object.assign(store, { getSession: () => undefined });
+			const { db, retireQuestionGuarded } = fakeZombieDb({
+				commSession: false,
+			});
+			const res = await runZombieGateHygiene({
+				store: s as never,
+				projectName: "proj",
+				pendingGateQuestions: [
+					q("Q-review", reviewCheckpoint, "2026-07-14 11:59:59"),
+				],
+				db,
+			});
+			expect(retireQuestionGuarded).not.toHaveBeenCalled();
+			expect(res.resolved).toEqual([]);
+			expect(store.getEventsByExecution("E-1")).toHaveLength(0);
+		});
+	}
+
+	it("a live-but-unreachable review gate is STILL surfaced by Z2 (exemption blocks retirement, not alerting)", async () => {
+		const store = await freshStore();
+		const s = Object.assign(store, {
+			getSession: () => ({ status: "awaiting_review", issue_id: "FLY-1257" }),
+		});
+		const { db, retireQuestionGuarded } = fakeZombieDb({ commSession: false });
+		const note = vi.fn();
+		const res = await runZombieGateHygiene({
+			store: s as never,
+			projectName: "proj",
+			pendingGateQuestions: [
+				q("Q-review", "review_code", "2026-07-14 11:59:59"),
+			],
+			db,
+			noteUnreachableRunner: note,
+		});
+		// Z2 (alert) runs before the exemption: a genuinely stuck review gate is
+		// reported to the watchdog, not silently swallowed.
+		expect(res.unreachable).toEqual(["Q-review"]);
+		expect(note).toHaveBeenCalled();
+		expect(retireQuestionGuarded).not.toHaveBeenCalled();
+	});
+
+	// The end-to-end R5 reproduction with the REAL CommDB: finalizeSession spares
+	// the review gate but deletes the session row, and the very next zombie sweep
+	// must not finish the kill. Ground truth is the real db's own pending state.
+	it("finalize→zombie combined regression: a review gate spared by finalizeSession is NOT then retired by the sweep", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "fly1257-r5-"));
+		const db = new CommDB(join(tmpDir, "comm.db"));
+		try {
+			// A blocked codex author opened a review gate the reviewer hasn't answered.
+			db.registerSession("E-r5", "win-r5", "proj", "FLY-1257", "lead");
+			const review = db.insertQuestion("E-r5", "reviewer", "review please", {
+				checkpoint: "review_code",
+			});
+
+			// Teardown: review gate spared (HIGH-2), session row deleted — the R5 setup.
+			expect(db.finalizeSession("E-r5")).toEqual({
+				retiredQuestionCount: 0,
+				deletedSessionCount: 1,
+			});
+			expect(db.isQuestionPending(review)).toBe(true);
+			expect(db.getSession("E-r5")).toBeUndefined();
+
+			// Next zombie pass: StateStore session missing + CommDB row gone → without
+			// the Z1 exemption this drops straight into retireQuestionGuarded.
+			const store = await freshStore(); // getSession("E-r5") → undefined
+			const res = await runZombieGateHygiene({
+				store: store as never,
+				projectName: "proj",
+				pendingGateQuestions: [
+					{
+						id: review,
+						from_agent: "E-r5",
+						checkpoint: "review_code",
+						created_at: "2026-07-14 11:59:59",
+					},
+				],
+				db,
+			});
+
+			// Real-db ground truth: still pending, still answerable by the reviewer.
+			expect(res.resolved).toEqual([]);
+			expect(db.isQuestionPending(review)).toBe(true);
+			expect(store.getEventsByExecution("E-r5")).toHaveLength(0);
+		} finally {
+			db.close();
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
 	});
 });
 

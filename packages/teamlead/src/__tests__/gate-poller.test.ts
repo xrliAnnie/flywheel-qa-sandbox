@@ -831,11 +831,15 @@ describe("GatePoller (FLY-161)", () => {
 			"UPDATE sessions SET terminal_at = '2099-01-01 00:00:00' WHERE execution_id = 'exec-chronology'",
 		);
 
+		// A NON-review carrier: this case asserts the wrapper hands CommDB's
+		// created_at to the zombie candidates (pre-terminal ⇒ retired). Review
+		// gates are exempt from Z1 outright (see the sibling case below), so they
+		// can no longer carry a chronology assertion.
 		const qid = insertQuestion({
 			execId: "exec-chronology",
 			leadId: "product-lead",
-			content: "review old blocked run",
-			checkpoint: "review_code",
+			content: "old blocked run — design?",
+			checkpoint: "brainstorm",
 		});
 		const db = new CommDB(dbPath);
 		try {
@@ -857,6 +861,60 @@ describe("GatePoller (FLY-161)", () => {
 		).zombieGateHygienePass();
 
 		expect(pendingFor("product-lead")).toHaveLength(0);
+		delete process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE;
+		delete process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG;
+	});
+
+	// FLY-1257 defect ④ (Codex R5 HIGH) through the REAL wrapper: same terminal
+	// session + same pre-terminal chronology that retires the brainstorm gate
+	// above, but a review gate survives the whole zombieGateHygienePass. The
+	// reviewer — not the gone author — answers it, so Z1 must never retire it.
+	// Drop the isReviewGateCheckpoint exemption and this goes red (length 0).
+	it("FLY-1257 defect ④: a review_code gate is NOT retired by the zombie pass (Z1 exemption, real wrapper)", async () => {
+		process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE = "1";
+		process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG = "0";
+		insertSession("exec-review-z1", {
+			status: "blocked",
+			labels: ["product"],
+		});
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE sessions SET terminal_at = '2099-01-01 00:00:00' WHERE execution_id = 'exec-review-z1'",
+		);
+
+		const qid = insertQuestion({
+			execId: "exec-review-z1",
+			leadId: "product-lead",
+			content: "review requested",
+			checkpoint: "review_code",
+		});
+		const db = new CommDB(dbPath);
+		try {
+			// created_at BEFORE terminal_at — the exact chronology that makes a
+			// non-review gate a "true Z1 zombie".
+			(
+				db as unknown as {
+					db: { prepare(sql: string): { run(...args: unknown[]): unknown } };
+				}
+			).db
+				.prepare("UPDATE messages SET created_at = ? WHERE id = ?")
+				.run("2000-01-01 00:00:00", qid);
+		} finally {
+			db.close();
+		}
+
+		await (
+			makePoller() as unknown as {
+				zombieGateHygienePass: () => Promise<void>;
+			}
+		).zombieGateHygienePass();
+
+		const pending = pendingFor("product-lead") as Array<{ id: string }>;
+		expect(pending).toHaveLength(1);
+		expect(pending[0]?.id).toBe(qid);
 		delete process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE;
 		delete process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG;
 	});

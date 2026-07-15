@@ -30,6 +30,7 @@ import {
 	isStateStoreIrreversibleTerminalForZombie,
 	type SessionEvent,
 } from "../StateStore.js";
+import { isReviewGateCheckpoint } from "./review-gate-checkpoints.js";
 
 export function zombieGateResolveEnabled(
 	env: Record<string, string | undefined> = process.env,
@@ -135,6 +136,20 @@ export async function runZombieGateHygiene(
 			result.unreachable.push(q.id);
 			continue;
 		}
+
+		// FLY-1257 defect ④ (Codex R5 HIGH): review gates (`review_design` /
+		// `review_code`) are NEVER answered by the authoring runner — the
+		// cross-family reviewer answers them after `request-review` BINDS them
+		// (isReviewGateCheckpoint, the same set path-2 + finalizeSession exempt).
+		// So the Z1 "gone runner ⇒ dead gate" premise is FALSE for them: retiring
+		// one expires it before re-review can bind it. finalizeSession spares the
+		// gate but DELETES the session row, so the R5 path is precisely a review
+		// gate whose session is now MISSING — which the chronology guard below
+		// (`if (session)`) skips, dropping it straight into Z1 retirement. Exempt
+		// unconditionally here, before Z1, regardless of chronology or whether a
+		// session row survives. (Z2 above still surfaces a live-but-unreachable
+		// review gate — that's an alert, not a retirement.)
+		if (isReviewGateCheckpoint(q.checkpoint)) continue;
 
 		// FLY-1257: an existing terminal session needs chronology proof before Z1
 		// may retire its gate. A post-terminal gate is evidence that the blocked
