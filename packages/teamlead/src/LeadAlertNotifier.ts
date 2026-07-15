@@ -88,6 +88,13 @@ export const ALERT_EVENT_TYPES = [
 	// held the founder. A Lead-only alert (founder never surfaced pre-Codex).
 	// eventId `codex-gate:${execution_id}:${sha}` (no timestamp → fires ONCE per head).
 	"codex_gate_blocked",
+	// FLY-1278: review convergence/audit channel. Advisories pass the hard gate;
+	// rulings are supervised Lead authority; disputes and notification failures
+	// require human visibility but have no safe automatic remediation.
+	"review_advisory_pass",
+	"review_ruling_recorded",
+	"review_ruling_disputed",
+	"review_ruling_notify_failed",
 	// FLY-793: a three-stage pipeline phase handoff (Design→Implement→QA) could
 	// not proceed — head-SHA capture failed, the previous phase runner would not
 	// close, or the next phase dispatch threw. Fail-closed: the next phase is NOT

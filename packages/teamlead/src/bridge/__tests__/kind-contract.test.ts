@@ -44,6 +44,13 @@ const QUOTA_MONITOR_KINDS = [
 	"quota_monitor_down",
 ] as const;
 
+const REVIEW_GOVERNANCE_KINDS = [
+	"review_advisory_pass",
+	"review_ruling_recorded",
+	"review_ruling_disputed",
+	"review_ruling_notify_failed",
+] as const;
+
 describe("FLY-1082 kind contract (Task 1.1)", () => {
 	it("every kind in the union has a contract entry (runtime exhaustiveness)", () => {
 		for (const kind of ALERT_EVENT_TYPES) {
@@ -76,6 +83,16 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 
 	it("FLY-1256 quota-monitor kinds have the exact approved no-ARC contracts", () => {
 		for (const kind of QUOTA_MONITOR_KINDS) {
+			expect(ALERT_EVENT_TYPES).toContain(kind);
+			expect(KIND_CONTRACTS[kind]).toEqual({
+				owner: "claude",
+				arc: "human_by_design",
+			});
+		}
+	});
+
+	it("routes review governance audit events to a human-owned contract", () => {
+		for (const kind of REVIEW_GOVERNANCE_KINDS) {
 			expect(ALERT_EVENT_TYPES).toContain(kind);
 			expect(KIND_CONTRACTS[kind]).toEqual({
 				owner: "claude",

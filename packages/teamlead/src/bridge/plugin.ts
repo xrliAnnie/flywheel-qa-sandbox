@@ -372,7 +372,12 @@ import {
 	type RescueRuntime,
 } from "./rescue-runtime.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
+import {
+	createReviewAlertEmitter,
+	toReviewFindingRulingSnapshot,
+} from "./review-governance-effects.js";
 import { ReviewRequestCoordinator } from "./review-request-coordinator.js";
+import { createReviewRulingHandler } from "./review-ruling-route.js";
 import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
 import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js";
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
@@ -1339,6 +1344,18 @@ export function createBridgeApp(
 					res.status(500).json({ accepted: false, reason: "internal error" });
 				});
 		},
+	);
+
+	// FLY-1278: supervised Lead governance for a delivered finding. This is a
+	// distinct authority channel — gate/request prose never becomes a ruling.
+	// It shares the ingest-token boundary and late-bound coordinator with review
+	// requests; the handler preserves 4xx conflict/not-found semantics.
+	app.post(
+		"/review-rulings",
+		tokenAuthMiddleware(config.ingestToken),
+		createReviewRulingHandler(
+			opts?.reviewCoordinator ?? { current: undefined },
+		),
 	);
 
 	// FLY-598: founder-facing UX gate routes. Mounted BEFORE the broad `/api`
@@ -6184,16 +6201,26 @@ export async function startBridge(
 		);
 	}
 
-	// FLY-1188 §7.1: build the codex-author review-request coordinator and
-	// redrive any jobs a dead Bridge left pending/running. The /review-requests
-	// route reads the holder at request time (503 until filled). Lead-facing
-	// failure alerts currently log via console + the durable failed job row;
-	// routing them through the FLY-927 alert funnel needs its own alert kind
-	// (follow-up — MetaAlertReason is a closed infra union).
+	// FLY-1188 §7.1 / FLY-1278: build the codex-author review coordinator and
+	// redrive jobs plus unsent governance audit posts. Both runner routes read the
+	// holder at request time (503 until filled). Review governance events use the
+	// late-bound routed sink, so the eventual AlertChannelHub owns dedup/tickets.
 	{
 		const commRoot =
 			process.env.FLYWHEEL_COMM_ROOT?.trim() ||
 			join(homedir(), ".flywheel", "comm");
+		const reviewThreadEffects = new AutoQaEffects({
+			store,
+			projects,
+			config,
+			chatThreadCreator,
+		});
+		const emitReviewAlert = createReviewAlertEmitter({
+			store,
+			projects,
+			alert: (payload) =>
+				(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(payload),
+		});
 		reviewCoordinatorHolder.current = new ReviewRequestCoordinator({
 			store,
 			commDbPathFor: (projectName) => join(commRoot, projectName, "comm.db"),
@@ -6201,6 +6228,13 @@ export async function startBridge(
 			reviewerTimeoutMs: parseReviewerTimeoutMs(
 				process.env.FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS,
 			),
+			listActiveReviewFindingRulings: ({ projectName, issueId }) =>
+				store
+					.listActiveReviewFindingRulings(projectName, issueId)
+					.map(toReviewFindingRulingSnapshot),
+			emitReviewAlert,
+			postReviewRulingThread: (input) =>
+				reviewThreadEffects.postThreadResult(input),
 			wakeRunner: async (executionId, sessionInfo, questionId, summary) => {
 				const db = new CommDB(
 					join(commRoot, sessionInfo.project_name, "comm.db"),

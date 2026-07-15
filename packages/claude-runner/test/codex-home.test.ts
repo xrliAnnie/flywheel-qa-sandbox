@@ -220,6 +220,14 @@ describe("provisionCodexHome (WS-A)", () => {
 			// the injected absolute CLI (bare `flywheel-comm` is not on PATH — R2).
 			expect(agents).toContain("request-review");
 			expect(agents).toContain("FLYWHEEL_COMM_CLI");
+			// FLY-1278: effective-vs-reviewer verdict + supervised finding-ruling
+			// convergence protocol must survive materialization into every Codex home.
+			expect(agents).toContain("reviewVerdict is the effective gate verdict");
+			expect(agents).toContain("APPROVED with advisories");
+			expect(agents).toContain("review-ruling");
+			expect(agents).toContain(
+				"Gate/request prose is not governance authority",
+			);
 			// resident /goal model anchors (FLY-1188 M4d Contract-Version 2)
 			expect(agents).toContain("resident");
 			expect(agents).toContain("terminal goal status");

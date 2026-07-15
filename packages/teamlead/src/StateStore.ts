@@ -6,7 +6,9 @@ import {
 	canonicalSubmissionDigest,
 	crossFamilyReviewSatisfied,
 } from "flywheel-config";
+import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
 import type { LeadNudgeRow } from "./bridge/lead-pending-escalation.js";
+import { findingKey as deriveReviewFindingKey } from "./bridge/review-verdict-policy.js";
 import {
 	generateCapabilityToken,
 	hashCapabilityToken,
@@ -167,6 +169,25 @@ const SQLJS_CORRUPTION_SIGNATURES = [
 	"out of memory",
 	"memory access out of bounds",
 ] as const;
+
+const UUID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ISSUE_IDENTIFIER_PATTERN = /^[A-Z][A-Z0-9]*-[0-9]+$/;
+
+function parseReviewFindings(json: string | undefined): ClaudeReviewFinding[] {
+	if (!json) return [];
+	try {
+		const parsed = JSON.parse(json);
+		return Array.isArray(parsed)
+			? parsed.filter(
+					(finding): finding is ClaudeReviewFinding =>
+						typeof finding === "object" && finding !== null,
+				)
+			: [];
+	} catch {
+		return [];
+	}
+}
 
 /**
  * FLY-639: true when `err` looks like sql.js/WASM corruption that requires a DB
@@ -856,7 +877,14 @@ export interface CodexReviewJob {
 	/** claude reviewer session uuid — resumed across rounds per (exec, type). */
 	reviewer_session_uuid?: string;
 	verdict?: string;
+	/** Reviewer-emitted verdict before FLY-1278 policy processing. */
+	reviewer_verdict?: string;
 	findings_json?: string;
+	advisories_json?: string;
+	settled_json?: string;
+	/** Exact canonical gate payload frozen when the verdict is persisted. */
+	response_json?: string;
+	payload_version?: number;
 	failure_reason?: string;
 	failure_raw?: string;
 	author_family?: string;
@@ -875,6 +903,44 @@ export interface CodexReviewJob {
 	 */
 	delivery_nonce?: string;
 }
+
+export interface ReviewFindingRuling {
+	ruling_id: string;
+	project_name: string;
+	issue_id_canonical: string;
+	issue_identifier?: string;
+	finding_key: string;
+	source_request_id: string;
+	source_finding_index: number;
+	finding_title?: string;
+	finding_severity?: string;
+	review_type: "design" | "code";
+	disposition: "overruled" | "follow_up";
+	follow_up_issue?: string;
+	rationale: string;
+	ruled_by: string;
+	execution_id?: string;
+	created_at: string;
+	notified_at?: string;
+	revoked_at?: string;
+	revoked_by?: string;
+	revoke_reason?: string;
+}
+
+export type RecordReviewFindingRulingResult =
+	| {
+			status: "created" | "idempotent";
+			ruling: ReviewFindingRuling;
+	  }
+	| {
+			status:
+				| "issue_not_found"
+				| "issue_ambiguous"
+				| "finding_not_found"
+				| "finding_ambiguous"
+				| "conflict";
+			ruling?: ReviewFindingRuling;
+	  };
 
 /**
  * FLY-191 Phase 2 (Codex R2 HIGH-1): sentinel stored in
@@ -1912,7 +1978,12 @@ export class StateStore {
 				                      CHECK(status IN ('pending','running','done','failed','skipped')),
 				reviewer_session_uuid TEXT,
 				verdict               TEXT,
+				reviewer_verdict      TEXT,
 				findings_json         TEXT,
+				advisories_json       TEXT,
+				settled_json          TEXT,
+				response_json         TEXT,
+				payload_version       INTEGER,
 				failure_reason        TEXT,
 				failure_raw           TEXT,
 				author_family         TEXT,
@@ -1938,21 +2009,68 @@ export class StateStore {
 		} catch {
 			/* exists */
 		}
-		// FLY-1254: retain the latest failed attempt's bounded diagnostic tail.
-		// Unlike the historical best-effort migrations above, failure evidence is
-		// on the active write path: any unexpected migration error must fail boot
-		// loudly instead of leaving a database that will reject future writes.
+		// FLY-1254/FLY-1278: active review writes require failure diagnostics plus
+		// the frozen reviewer/effective split and canonical response. Any
+		// unexpected migration error must fail boot loudly instead of leaving a
+		// database that will reject or mis-deliver future review writes.
 		const reviewJobInfo = this.db.exec("PRAGMA table_info(codex_review_job)");
 		const reviewJobColumns =
 			reviewJobInfo[0]?.values.map((row) => row[1] as string) ?? [];
-		if (!reviewJobColumns.includes("failure_raw")) {
-			this.db.run("ALTER TABLE codex_review_job ADD COLUMN failure_raw TEXT");
+		for (const [column, type] of [
+			["failure_raw", "TEXT"],
+			["reviewer_verdict", "TEXT"],
+			["advisories_json", "TEXT"],
+			["settled_json", "TEXT"],
+			["response_json", "TEXT"],
+			["payload_version", "INTEGER"],
+		] as const) {
+			if (!reviewJobColumns.includes(column)) {
+				this.db.run(
+					`ALTER TABLE codex_review_job ADD COLUMN ${column} ${type}`,
+				);
+			}
 		}
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_exec ON codex_review_job(execution_id)",
 		);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_status ON codex_review_job(status)",
+		);
+
+		// FLY-1278: Lead-authoritative, per-finding governance rulings. Rows are
+		// audit history (revoke stamps, never DELETE); the partial unique index is
+		// the DB boundary for one active intent per canonical issue/key/type.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS review_finding_ruling (
+				ruling_id            TEXT PRIMARY KEY,
+				project_name         TEXT NOT NULL,
+				issue_id_canonical   TEXT NOT NULL,
+				issue_identifier     TEXT,
+				finding_key          TEXT NOT NULL,
+				source_request_id    TEXT NOT NULL,
+				source_finding_index INTEGER NOT NULL,
+				finding_title        TEXT,
+				finding_severity     TEXT,
+				review_type          TEXT NOT NULL CHECK(review_type IN ('design','code')),
+				disposition          TEXT NOT NULL CHECK(disposition IN ('overruled','follow_up')),
+				follow_up_issue      TEXT,
+				rationale            TEXT NOT NULL,
+				ruled_by             TEXT NOT NULL,
+				execution_id         TEXT,
+				created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+				notified_at          TEXT,
+				revoked_at           TEXT,
+				revoked_by           TEXT,
+				revoke_reason        TEXT
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_review_ruling_issue ON review_finding_ruling(project_name, issue_id_canonical)",
+		);
+		this.db.run(
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_review_ruling_active
+			   ON review_finding_ruling(project_name, issue_id_canonical, finding_key, review_type)
+			 WHERE revoked_at IS NULL`,
 		);
 
 		// FLY-637 #3/#4: persistent "already-notified" dedup for the quiet-path
@@ -4657,7 +4775,15 @@ export class StateStore {
 			status: row.status as CodexReviewJob["status"],
 			reviewer_session_uuid: (row.reviewer_session_uuid as string) ?? undefined,
 			verdict: (row.verdict as string) ?? undefined,
+			reviewer_verdict: (row.reviewer_verdict as string) ?? undefined,
 			findings_json: (row.findings_json as string) ?? undefined,
+			advisories_json: (row.advisories_json as string) ?? undefined,
+			settled_json: (row.settled_json as string) ?? undefined,
+			response_json: (row.response_json as string) ?? undefined,
+			payload_version:
+				row.payload_version === null || row.payload_version === undefined
+					? undefined
+					: Number(row.payload_version),
 			failure_reason: (row.failure_reason as string) ?? undefined,
 			failure_raw: (row.failure_raw as string) ?? undefined,
 			author_family: (row.author_family as string) ?? undefined,
@@ -4755,14 +4881,32 @@ export class StateStore {
 		requestId: string,
 		verdict: string,
 		findingsJson?: string,
+		details?: {
+			reviewerVerdict: string;
+			advisoriesJson: string;
+			settledJson: string;
+			responseJson: string;
+			payloadVersion: number;
+		},
 	): void {
 		this.db.run(
 			`UPDATE codex_review_job
-			   SET status = 'done', verdict = ?, findings_json = ?,
+			   SET status = 'done', verdict = ?, reviewer_verdict = ?,
+			       findings_json = ?, advisories_json = ?, settled_json = ?,
+			       response_json = ?, payload_version = ?,
 			       failure_reason = NULL, failure_raw = NULL,
 			       updated_at = datetime('now')
 			 WHERE request_id = ?`,
-			[verdict, findingsJson ?? null, requestId],
+			[
+				verdict,
+				details?.reviewerVerdict ?? null,
+				findingsJson ?? null,
+				details?.advisoriesJson ?? null,
+				details?.settledJson ?? null,
+				details?.responseJson ?? null,
+				details?.payloadVersion ?? null,
+				requestId,
+			],
 		);
 		this.save();
 	}
@@ -4917,6 +5061,365 @@ export class StateStore {
 		}
 		stmt.free();
 		return uuid;
+	}
+
+	// ── FLY-1278: review-finding governance rulings ───────────────────────
+
+	recordReviewFindingRuling(input: {
+		projectName: string;
+		issue: string;
+		findingKey?: string;
+		requestId?: string;
+		findingIndex?: number;
+		disposition: "overruled" | "follow_up";
+		followUpIssue?: string;
+		rationale: string;
+		ruledBy: string;
+		executionId?: string;
+	}): RecordReviewFindingRulingResult {
+		const cluster = this.resolveReviewIssueAliasCluster(
+			input.projectName,
+			input.issue,
+		);
+		if (cluster.status !== "resolved") return { status: cluster.status };
+		const source = this.resolveDeliveredReviewFinding({
+			projectName: input.projectName,
+			aliases: cluster.aliases,
+			findingKey: input.findingKey,
+			requestId: input.requestId,
+			findingIndex: input.findingIndex,
+		});
+		if (source.status !== "resolved") return { status: source.status };
+
+		let result: RecordReviewFindingRulingResult | undefined;
+		this.db.transaction(() => {
+			const active = this.findActiveReviewFindingRuling(
+				input.projectName,
+				cluster.aliases,
+				source.findingKey,
+				source.reviewType,
+			);
+			if (active) {
+				const sameIntent =
+					active.disposition === input.disposition &&
+					(active.follow_up_issue ?? undefined) === input.followUpIssue &&
+					active.rationale === input.rationale;
+				result = {
+					status: sameIntent ? "idempotent" : "conflict",
+					ruling: active,
+				};
+				return;
+			}
+
+			const rulingId = randomUUID();
+			try {
+				this.db.run(
+					`INSERT INTO review_finding_ruling
+					   (ruling_id, project_name, issue_id_canonical, issue_identifier,
+					    finding_key, source_request_id, source_finding_index,
+					    finding_title, finding_severity, review_type, disposition,
+					    follow_up_issue, rationale, ruled_by, execution_id)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						rulingId,
+						input.projectName,
+						cluster.canonicalId,
+						cluster.identifier ?? null,
+						source.findingKey,
+						source.requestId,
+						source.findingIndex,
+						source.title ?? null,
+						source.severity ?? null,
+						source.reviewType,
+						input.disposition,
+						input.followUpIssue ?? null,
+						input.rationale,
+						input.ruledBy,
+						input.executionId ?? null,
+					],
+				);
+			} catch (err) {
+				// The partial unique index is the final concurrency boundary. Re-read
+				// the winner and classify semantic replay vs conflicting intent.
+				const winner = this.findActiveReviewFindingRuling(
+					input.projectName,
+					cluster.aliases,
+					source.findingKey,
+					source.reviewType,
+				);
+				if (!winner) throw err;
+				const sameIntent =
+					winner.disposition === input.disposition &&
+					(winner.follow_up_issue ?? undefined) === input.followUpIssue &&
+					winner.rationale === input.rationale;
+				result = {
+					status: sameIntent ? "idempotent" : "conflict",
+					ruling: winner,
+				};
+				return;
+			}
+			const created = this.getReviewFindingRuling(rulingId);
+			if (!created) throw new Error(`review ruling ${rulingId} vanished`);
+			result = { status: "created", ruling: created };
+		});
+		this.save();
+		if (!result)
+			throw new Error("review ruling transaction produced no result");
+		return result;
+	}
+
+	listActiveReviewFindingRulings(
+		projectName: string,
+		issue: string,
+	): ReviewFindingRuling[] {
+		const cluster = this.resolveReviewIssueAliasCluster(projectName, issue);
+		if (cluster.status !== "resolved") return [];
+		const placeholders = cluster.aliases.map(() => "?").join(", ");
+		const stmt = this.db.prepare(
+			`SELECT * FROM review_finding_ruling
+			 WHERE project_name = ? AND revoked_at IS NULL
+			   AND (issue_id_canonical IN (${placeholders})
+			        OR issue_identifier IN (${placeholders}))
+			 ORDER BY created_at DESC, rowid DESC`,
+		);
+		stmt.bind([projectName, ...cluster.aliases, ...cluster.aliases]);
+		const rows: ReviewFindingRuling[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToReviewFindingRuling(
+					stmt.getAsObject() as Record<string, unknown>,
+				),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	revokeReviewFindingRuling(input: {
+		projectName: string;
+		rulingId: string;
+		revokedBy: string;
+		reason: string;
+	}): ReviewFindingRuling | null {
+		this.db.run(
+			`UPDATE review_finding_ruling
+			   SET revoked_at = datetime('now'), revoked_by = ?, revoke_reason = ?
+			 WHERE ruling_id = ? AND project_name = ? AND revoked_at IS NULL`,
+			[input.revokedBy, input.reason, input.rulingId, input.projectName],
+		);
+		this.save();
+		return this.getReviewFindingRuling(input.rulingId, input.projectName);
+	}
+
+	listPendingReviewRulingNotifications(): ReviewFindingRuling[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM review_finding_ruling
+			 WHERE revoked_at IS NULL AND notified_at IS NULL
+			 ORDER BY created_at ASC, rowid ASC`,
+		);
+		const rows: ReviewFindingRuling[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToReviewFindingRuling(
+					stmt.getAsObject() as Record<string, unknown>,
+				),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	markReviewFindingRulingNotified(rulingId: string): void {
+		this.db.run(
+			"UPDATE review_finding_ruling SET notified_at = COALESCE(notified_at, datetime('now')) WHERE ruling_id = ?",
+			[rulingId],
+		);
+		this.save();
+	}
+
+	private getReviewFindingRuling(
+		rulingId: string,
+		projectName?: string,
+	): ReviewFindingRuling | null {
+		const stmt = this.db.prepare(
+			`SELECT * FROM review_finding_ruling WHERE ruling_id = ?${projectName ? " AND project_name = ?" : ""}`,
+		);
+		stmt.bind(projectName ? [rulingId, projectName] : [rulingId]);
+		let ruling: ReviewFindingRuling | null = null;
+		if (stmt.step()) {
+			ruling = this.rowToReviewFindingRuling(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return ruling;
+	}
+
+	private findActiveReviewFindingRuling(
+		projectName: string,
+		aliases: string[],
+		findingKey: string,
+		reviewType: "design" | "code",
+	): ReviewFindingRuling | null {
+		const placeholders = aliases.map(() => "?").join(", ");
+		const stmt = this.db.prepare(
+			`SELECT * FROM review_finding_ruling
+			 WHERE project_name = ? AND finding_key = ? AND review_type = ?
+			   AND revoked_at IS NULL
+			   AND (issue_id_canonical IN (${placeholders})
+			        OR issue_identifier IN (${placeholders}))
+			 ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+		);
+		stmt.bind([projectName, findingKey, reviewType, ...aliases, ...aliases]);
+		let ruling: ReviewFindingRuling | null = null;
+		if (stmt.step()) {
+			ruling = this.rowToReviewFindingRuling(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return ruling;
+	}
+
+	private resolveReviewIssueAliasCluster(
+		projectName: string,
+		issue: string,
+	):
+		| {
+				status: "resolved";
+				aliases: string[];
+				canonicalId: string;
+				identifier?: string;
+		  }
+		| { status: "issue_not_found" | "issue_ambiguous" } {
+		const aliases = new Set<string>([issue]);
+		let matched = false;
+		let changed = true;
+		while (changed) {
+			changed = false;
+			const sessions = this.getSessionsForIssueAliases([...aliases]).filter(
+				(session) => session.project_name === projectName,
+			);
+			if (sessions.length > 0) matched = true;
+			for (const session of sessions) {
+				for (const key of [session.issue_id, session.issue_identifier]) {
+					if (key && !aliases.has(key)) {
+						aliases.add(key);
+						changed = true;
+					}
+				}
+			}
+		}
+		if (!matched) return { status: "issue_not_found" };
+		const uuidKeys = [...aliases].filter((key) => UUID_PATTERN.test(key));
+		if (uuidKeys.length > 1) return { status: "issue_ambiguous" };
+		const identifierKeys = [...aliases]
+			.filter((key) => ISSUE_IDENTIFIER_PATTERN.test(key))
+			.sort();
+		return {
+			status: "resolved",
+			aliases: [...aliases].sort(),
+			canonicalId: uuidKeys[0] ?? identifierKeys[0] ?? issue,
+			...(identifierKeys[0] ? { identifier: identifierKeys[0] } : {}),
+		};
+	}
+
+	private resolveDeliveredReviewFinding(input: {
+		projectName: string;
+		aliases: string[];
+		findingKey?: string;
+		requestId?: string;
+		findingIndex?: number;
+	}):
+		| {
+				status: "resolved";
+				findingKey: string;
+				requestId: string;
+				findingIndex: number;
+				title?: string;
+				severity?: string;
+				reviewType: "design" | "code";
+		  }
+		| { status: "finding_not_found" | "finding_ambiguous" } {
+		const placeholders = input.aliases.map(() => "?").join(", ");
+		const stmt = this.db.prepare(
+			`SELECT * FROM codex_review_job
+			 WHERE project_name = ? AND status = 'done' AND responded_at IS NOT NULL
+			   AND issue_id IN (${placeholders})
+			 ORDER BY created_at DESC, rowid DESC`,
+		);
+		stmt.bind([input.projectName, ...input.aliases]);
+		const candidates: Array<{
+			findingKey: string;
+			requestId: string;
+			findingIndex: number;
+			title?: string;
+			severity?: string;
+			reviewType: "design" | "code";
+		}> = [];
+		while (stmt.step()) {
+			const job = this.rowToCodexReviewJob(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+			if (input.requestId && job.request_id !== input.requestId) continue;
+			const findings = parseReviewFindings(job.findings_json);
+			for (let index = 0; index < findings.length; index += 1) {
+				if (input.findingIndex !== undefined && index !== input.findingIndex) {
+					continue;
+				}
+				const finding = findings[index] as ClaudeReviewFinding;
+				const key = deriveReviewFindingKey(finding);
+				if (input.findingKey && key !== input.findingKey) continue;
+				candidates.push({
+					findingKey: key,
+					requestId: job.request_id,
+					findingIndex: index,
+					...(typeof finding.title === "string"
+						? { title: finding.title }
+						: {}),
+					...(typeof finding.severity === "string"
+						? { severity: finding.severity }
+						: {}),
+					reviewType: job.review_type,
+				});
+			}
+		}
+		stmt.free();
+		if (candidates.length === 0) return { status: "finding_not_found" };
+		if (
+			!input.requestId &&
+			new Set(candidates.map((c) => c.reviewType)).size > 1
+		) {
+			return { status: "finding_ambiguous" };
+		}
+		return { status: "resolved", ...candidates[0]! };
+	}
+
+	private rowToReviewFindingRuling(
+		row: Record<string, unknown>,
+	): ReviewFindingRuling {
+		return {
+			ruling_id: row.ruling_id as string,
+			project_name: row.project_name as string,
+			issue_id_canonical: row.issue_id_canonical as string,
+			issue_identifier: (row.issue_identifier as string) ?? undefined,
+			finding_key: row.finding_key as string,
+			source_request_id: row.source_request_id as string,
+			source_finding_index: Number(row.source_finding_index),
+			finding_title: (row.finding_title as string) ?? undefined,
+			finding_severity: (row.finding_severity as string) ?? undefined,
+			review_type: row.review_type as "design" | "code",
+			disposition: row.disposition as "overruled" | "follow_up",
+			follow_up_issue: (row.follow_up_issue as string) ?? undefined,
+			rationale: row.rationale as string,
+			ruled_by: row.ruled_by as string,
+			execution_id: (row.execution_id as string) ?? undefined,
+			created_at: row.created_at as string,
+			notified_at: (row.notified_at as string) ?? undefined,
+			revoked_at: (row.revoked_at as string) ?? undefined,
+			revoked_by: (row.revoked_by as string) ?? undefined,
+			revoke_reason: (row.revoke_reason as string) ?? undefined,
+		};
 	}
 
 	/**

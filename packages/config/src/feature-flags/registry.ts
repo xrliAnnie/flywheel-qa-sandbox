@@ -192,6 +192,34 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"resolve.direct-toggle.test:codex_hard_gate_killswitch live-observe + verify-approval.test:.env live-toggle",
 	},
 	{
+		// FLY-1278: default-ON convergence policy for cross-family review. It
+		// classifies MEDIUM/LOW findings as advisory and applies Lead-settled
+		// finding rulings; `=0` restores the legacy reviewer-verdict lane byte for
+		// byte. The coordinator reads this at the start of every review job, so a
+		// live mutation affects the next round without reconstructing the Bridge.
+		name: "review_severity_policy_killswitch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_REVIEW_SEVERITY_POLICY",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"全局关掉跨家族审查收敛政策（=0 回滚 legacy verdict；默认 ON=MEDIUM/LOW 不阻塞并尊重 Lead 已裁决 finding）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/review-verdict-policy.ts",
+				"severityPolicyEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"review-verdict-policy.test:FLYWHEEL_REVIEW_SEVERITY_POLICY live-observe",
+	},
+	{
 		// FLY-869 B: the merge-race ship gate kill-switch. Default-ON (决定②): a merged
 		// landing maps to completed/Done ONLY when verifyApproval confirms a bound,
 		// answered approve_to_ship for the current head (+ FLY-827 Codex gate) — else the
