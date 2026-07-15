@@ -71,6 +71,7 @@ const NON_DEFERRABLE_HOLD_LABELS: Partial<Record<ReviewHoldReason, string>> = {
 	merge_block: "合并被挡",
 	qa_evidence_missing: "独立 QA 证据缺失",
 	qa_evidence_unknown: "PR / head 或 QA 证据无法确认",
+	no_qualified_reviewer: "没有合格的独立 reviewer",
 };
 
 export function heldReplyText(
@@ -400,6 +401,9 @@ export interface DeferredRebindDeps {
 		typeof writeGateResponseAndRunPostWrite
 	>[0]["onResponseWritten"];
 	writeImpl?: typeof writeGateResponseAndRunPostWrite;
+	cardAuthority?: Parameters<
+		typeof writeGateResponseAndRunPostWrite
+	>[0]["cardAuthority"];
 	/** Bot token for the ✅ receipt upgrade on the founder's original message. */
 	resolveBotToken(row: FounderDeferredApproval): string | undefined;
 	reactImpl?: typeof reactToFounderMessage;
@@ -621,9 +625,13 @@ async function rebindOne(
 			},
 			questionId: row.question_id,
 			executionId: row.execution_id,
+			source: "deferred",
+			cardAuthority: deps.cardAuthority,
 			actor: founderId,
+			founderId,
 			answer,
 			expectedCurrentReviewQuestionId: row.question_id,
+			holdReasonFor: deps.holdReasonFor,
 			onResponseWritten: guard.hook,
 		});
 

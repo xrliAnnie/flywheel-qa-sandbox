@@ -1,5 +1,9 @@
 export type { ReadFileFn } from "./ConfigLoader.js";
 export { ConfigLoader } from "./ConfigLoader.js";
+export {
+	canonicalJsonString,
+	canonicalSubmissionDigest,
+} from "./canonical-json.js";
 export type { CommBackend } from "./comm-backend.js";
 export { resolveCommBackend } from "./comm-backend.js";
 export {
@@ -99,6 +103,7 @@ export {
 	adapterTypeToFamily,
 	type CrossFamilyReviewInput,
 	crossFamilyReviewSatisfied,
+	manifestReviewFamilyOk,
 } from "./review-family.js";
 // FLY-709 P4.3/P4.4: per-project runner-default / cron-model config writer.
 export type {

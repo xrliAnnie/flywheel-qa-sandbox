@@ -1,6 +1,6 @@
 /**
  * FLY-546 B3-1 — VoiceSource: fills the reserved `source:"voice"` slot in the
- * ApprovalSignal union (types.ts — "Annie: extensible to voice/image").
+ * ApprovalSignal union (types.ts — "Annie: extensible to voice").
  *
  * STRICTER than the text source: the §14 c-tier flow is an explicit spoken
  * readback ("你确认把 FLY-901 ship 上线?") answered by an exact confirmation

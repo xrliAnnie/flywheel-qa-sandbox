@@ -1318,20 +1318,6 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 		expect(projects[0]!.leads[0]!.backend).toBe("codex-app-server");
 	});
 
-	// FLY-350: codexProfile read-only tier (content-coordination) — capability via
-	// a narrow lead-actions MCP, NOT by opening the model shell / write-capable.
-	it("accepts codex-app-server with codexProfile:content-coordination AND canSpawnRunners:false", () => {
-		const projects = loadWith(
-			fleetLead({
-				backend: "codex-app-server",
-				codexProfile: "content-coordination",
-				canSpawnRunners: false,
-			}),
-		);
-		expect(projects[0]!.leads[0]!.backend).toBe("codex-app-server");
-		expect(projects[0]!.leads[0]!.codexProfile).toBe("content-coordination");
-	});
-
 	it("accepts codex-app-server with explicit codexProfile:companion AND canSpawnRunners:false", () => {
 		const projects = loadWith(
 			fleetLead({
@@ -1341,29 +1327,6 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 			}),
 		);
 		expect(projects[0]!.leads[0]!.codexProfile).toBe("companion");
-	});
-
-	it("rejects codex-app-server codexProfile:content-coordination when canSpawnRunners defaults true (FLY-251 not landed)", () => {
-		expect(() =>
-			loadWith(
-				fleetLead({
-					backend: "codex-app-server",
-					codexProfile: "content-coordination",
-				}),
-			),
-		).toThrow(/FLY-245/);
-	});
-
-	it("rejects codex-app-server codexProfile:content-coordination with canSpawnRunners:true", () => {
-		expect(() =>
-			loadWith(
-				fleetLead({
-					backend: "codex-app-server",
-					codexProfile: "content-coordination",
-					canSpawnRunners: true,
-				}),
-			),
-		).toThrow(/FLY-245/);
 	});
 
 	it("FLY-350 (Z): accepts codexProfile:write-capable (canSpawnRunners:false, not a companion)", () => {

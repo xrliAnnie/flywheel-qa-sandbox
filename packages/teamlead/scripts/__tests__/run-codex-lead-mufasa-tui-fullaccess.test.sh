@@ -1,11 +1,12 @@
 #!/bin/bash
+# shellcheck disable=SC2015  # test assertions intentionally use cmd && pass || fail
 # FLY-398 — run-codex-lead-mufasa-tui-fullaccess.sh tests. A PATH-injected mock `node`
 # captures the env the windowed-full-access TUI launcher composes, so we can assert the
 # cutover contract WITHOUT a real runtime/daemon. Run with /bin/bash.
 #
 # Contracts asserted:
 #   - full-access tier markers: PROFILE=full-access, SANDBOX=workspace-write,
-#     READ_DENY=0 (explicit — no stale read-deny), PROJECT_DIR set.
+#     PROJECT_DIR set.
 #   - WINDOWED: MODE=tui, outbound=direct (preserves #leads-roundtable).
 #   - MEMORY CONTINUITY: state dir pins to .../codex-lead/mufasa-lead.
 #   - GOVERNANCE: founder-only-authority appended to SYSTEM_PROMPT_FILES (after persona).
@@ -27,8 +28,8 @@ trap 'rm -rf "$T"' EXIT
 # Scrub launcher-behavior-changing vars from the ambient env (a parent Lead session
 # may carry them) so a clean baseline is seen.
 unset FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS FLYWHEEL_CODEX_LEAD_PROFILE \
-	FLYWHEEL_CODEX_LEAD_READ_DENY FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES \
-	FLYWHEEL_CODEX_LEAD_OUTBOUND FLYWHEEL_CODEX_LEAD_PROJECT_DIR \
+	FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES FLYWHEEL_CODEX_LEAD_OUTBOUND \
+	FLYWHEEL_CODEX_LEAD_PROJECT_DIR \
 	FLYWHEEL_CODEX_LEAD_SANDBOX
 
 # Fake TEAMLEAD_ROOT: stub dist runtime + lead-actions + tui-home; REAL lead-rules-base
@@ -67,7 +68,6 @@ D=$(run_dry env)
 if [ -f "$D" ]; then
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_PROFILE)" = "full-access" ] && pass "PROFILE=full-access" || fail "PROFILE not full-access"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_SANDBOX)" = "workspace-write" ] && pass "SANDBOX=workspace-write" || fail "SANDBOX wrong"
-	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_READ_DENY)" = "0" ] && pass "READ_DENY=0 (explicit; no stale read-deny path)" || fail "READ_DENY not 0"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_MODE)" = "tui" ] && pass "MODE=tui (windowed)" || fail "MODE not tui"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_OUTBOUND)" = "direct" ] && pass "outbound=direct (preserves roundtable)" || fail "outbound not direct"
 	pd=$(envval "$D" FLYWHEEL_CODEX_LEAD_PROJECT_DIR)

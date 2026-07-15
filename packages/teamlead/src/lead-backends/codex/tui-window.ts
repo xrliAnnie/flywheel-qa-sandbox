@@ -38,16 +38,10 @@ export interface TuiWindowSpec {
 	cwd: string;
 	/** codex binary (default "codex"). */
 	codexBin?: string;
-	/** FLY-260: when true, OMIT the legacy `-s read-only` flag — it would set
-	 * activePermissionProfile=null and disable the config's read-deny profile (the
-	 * founder TUI shares the thread's sandbox; the profile is the floor for both).
-	 * Default/undefined keeps the `-s read-only` pin (byte-compat). */
-	readDeny?: boolean;
 	/** FLY-398: when true (a windowed FULL-ACCESS TUI Lead, = Claude-equal), the
 	 * founder TUI must share the thread's `workspace-write` sandbox, so emit
 	 * `-s workspace-write` instead of the `-s read-only` pin (pin ③ of the five-pin
-	 * flip). Mutually exclusive with `readDeny` (full-access never runs read-deny;
-	 * the runtime config parse enforces this). Default/undefined → byte-compat. */
+	 * flip). Default/undefined keeps the `-s read-only` companion pin. */
 	fullAccess?: boolean;
 }
 
@@ -87,15 +81,7 @@ export function buildTuiCommand(spec: TuiWindowSpec): string {
 		// workspace-write sandbox → emit `-s workspace-write` so the founder TUI client
 		// matches the daemon/sidecar (a `-s read-only` here would downgrade the founder
 		// pane below the thread's actual sandbox).
-		// FLY-260: under read-deny we MUST omit `-s read-only` — passing the legacy
-		// sandbox flag sets activePermissionProfile=null and disables the read-deny
-		// profile. The config's default_permissions + approval_policy pins are the
-		// floor instead (the daemon enforces them for every client of the thread).
-		...(spec.fullAccess
-			? ["-s workspace-write"]
-			: spec.readDeny
-				? []
-				: ["-s read-only"]),
+		...(spec.fullAccess ? ["-s workspace-write"] : ["-s read-only"]),
 		`-c 'approval_policy="never"'`,
 		spec.threadId,
 	].join(" ");

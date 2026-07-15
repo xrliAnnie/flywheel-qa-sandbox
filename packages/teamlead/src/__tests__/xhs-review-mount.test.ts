@@ -2,9 +2,10 @@
  * FLY-286 PR-2: /xhs-review plugin-mount gating tests.
  *
  * Detailed handler behaviour is unit-tested in xhs-review-routes.test.ts; this
- * asserts the PLUGIN wiring: routes are registered ONLY when
- * FLYWHEEL_XHS_REVIEW=1, mounted OUTSIDE /api (no Bearer challenge), and the
- * loopback Host guard fires through the real Express stack.
+ * asserts the PLUGIN wiring: routes are mounted OUTSIDE /api (no Bearer
+ * challenge), and the loopback Host guard fires through the real Express
+ * stack. FLY-1243: FLYWHEEL_XHS_REVIEW is retired (固化 default-on) — the
+ * routes are ALWAYS mounted now, regardless of the env var.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -128,11 +129,16 @@ afterEach(() => {
 });
 
 describe("/xhs-review mount gating", () => {
-	it("FLYWHEEL_XHS_REVIEW unset → route NOT mounted (default 404, no handler)", async () => {
+	// FLY-1243: FLYWHEEL_XHS_REVIEW is retired — the route is always mounted
+	// now (固化 default-on). Rewritten (was "unset → route NOT mounted") to
+	// assert the route is mounted even with the env unset: the request
+	// reaches OUR handler (404 body "unknown report"), not Express's bare
+	// unmounted-route 404.
+	it("FLYWHEEL_XHS_REVIEW unset → route still mounted (handler runs: unknown report 404)", async () => {
 		delete process.env.FLYWHEEL_XHS_REVIEW;
 		const res = await get(makeApp(), "/xhs-review/sometoken");
 		expect(res.status).toBe(404);
-		expect(res.body).not.toContain("unknown report"); // express default, not our handler
+		expect(res.body).toContain("unknown report"); // our handler ran
 	});
 
 	it("FLYWHEEL_XHS_REVIEW=1 → route mounted (handler runs: unknown report 404)", async () => {

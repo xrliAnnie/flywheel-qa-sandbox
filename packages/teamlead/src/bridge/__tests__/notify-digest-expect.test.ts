@@ -5,7 +5,7 @@
  * 01:00 local deadline the receipt must carry date === yesterday-in-report-tz.
  * The tz boundary cases pin the UTC-vs-LA cross-day behavior both ways.
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -56,15 +56,11 @@ describe("tz helpers", () => {
 	});
 });
 
-describe("writeTokenReportReceipt (P-expect gate)", () => {
-	it("P-expect unset → ZERO filesystem side effects", () => {
-		writeTokenReportReceipt(
-			{ date: "2026-07-06", messageId: "m1" },
-			{ env: {}, path: receiptsPath },
-		);
-		expect(existsSync(receiptsPath)).toBe(false);
-	});
-
+// FLY-1243: the P-expect gate (FLYWHEEL_NOTIFY_DIGEST_EXPECT) is retired —
+// writeTokenReportReceipt always writes. The "P-expect unset → ZERO
+// filesystem side effects" off-path sentinel is deleted (no such off-path
+// exists anymore); describe block renamed accordingly.
+describe("writeTokenReportReceipt", () => {
 	it("P-expect on → atomic receipt with date/ts/messageId", () => {
 		const now = new Date("2026-07-07T07:31:00Z");
 		writeTokenReportReceipt(
@@ -130,13 +126,9 @@ describe("notifyDigestExpectTick", () => {
 		};
 	}
 
-	it("P-expect unset → inactive, zero side effects (receipts never read)", async () => {
-		const readReceipts = vi.fn();
-		const { alert, run } = tick({ env: {}, readReceipts });
-		expect(await run()).toBe("inactive");
-		expect(readReceipts).not.toHaveBeenCalled();
-		expect(alert).not.toHaveBeenCalled();
-	});
+	// FLY-1243: the P-expect gate is retired — notifyDigestExpectTick no
+	// longer has an "inactive" outcome (that union member was removed); the
+	// off-path sentinel is deleted.
 
 	it("before the 01:00 local deadline → quiet", async () => {
 		// 2026-07-07 00:30 PDT

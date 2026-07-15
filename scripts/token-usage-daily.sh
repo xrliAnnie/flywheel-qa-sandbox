@@ -68,25 +68,23 @@ if [ ! -f "$COMM" ]; then
 	exit 1
 fi
 
-# FLY-929 C2: fail-loud — a failing pipeline step raises a notify_digest_failed
-# alert via lead-alert.sh (claims-deduped, Bridge-independent) BUT ONLY under
-# P-expect (FLYWHEEL_NOTIFY_DIGEST_EXPECT=1, sourced from .env above). Unset ⇒
-# failure behavior is exactly the pre-FLY-929 exit (same code, same stderr).
-# Best-effort ('|| true'): the alert must never mask the original exit code.
+# FLY-929 C2 / FLY-1243: fail-loud — a failing pipeline step raises a
+# notify_digest_failed alert via lead-alert.sh (claims-deduped, Bridge-independent).
+# The FLYWHEEL_NOTIFY_DIGEST_EXPECT gate is retired (固化 default-on) — the alert
+# always fires on failure. Best-effort ('|| true'): the alert must never mask the
+# original exit code.
 fail_loud() {
 	local step="$1" code="$2"
-	if [ "${FLYWHEEL_NOTIFY_DIGEST_EXPECT:-}" = "1" ]; then
-		local alert_sh="${REPO}/scripts/lead-alert.sh"
-		if [ -f "$alert_sh" ]; then
-			bash "$alert_sh" \
-				--lead codex-infra-bot-lead --project flywheel \
-				--kind notify_digest_failed --severity warning \
-				--title "token report 发送失败" \
-				--body "step=${step} exit=${code} log=/tmp/flywheel-token-usage-daily.err" \
-				|| true
-		else
-			log "WARNING: lead-alert.sh not found at $alert_sh — fail-loud alert skipped"
-		fi
+	local alert_sh="${REPO}/scripts/lead-alert.sh"
+	if [ -f "$alert_sh" ]; then
+		bash "$alert_sh" \
+			--lead codex-infra-bot-lead --project flywheel \
+			--kind notify_digest_failed --severity warning \
+			--title "token report 发送失败" \
+			--body "step=${step} exit=${code} log=/tmp/flywheel-token-usage-daily.err" \
+			|| true
+	else
+		log "WARNING: lead-alert.sh not found at $alert_sh — fail-loud alert skipped"
 	fi
 	exit "$code"
 }

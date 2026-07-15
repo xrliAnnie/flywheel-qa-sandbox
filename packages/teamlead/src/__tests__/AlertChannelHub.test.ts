@@ -632,8 +632,13 @@ describe("AlertChannelHub (FLY-368)", () => {
 			});
 		});
 
-		it("self-heal off → legacy founder escalation", async () => {
-			setEnv(["FLYWHEEL_ACCOUNT_SELF_HEAL"]);
+		// FLY-1243: FLYWHEEL_ACCOUNT_SELF_HEAL no longer gates A5 owner routing
+		// (resolveAccountCapOwnerId drops that conjunct). Rewritten to cover the
+		// other half of P-identity absence not exercised below ("no notify
+		// channel" already covers a missing channel) — a missing infra bot
+		// token → still legacy founder escalation.
+		it("P-identity incomplete (no infra bot token) → legacy founder escalation", async () => {
+			setEnv(["CLAUDE_INFRA_BOT_TOKEN"]);
 			const discord = await run(capPayload("claude"));
 			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
 			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);

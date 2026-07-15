@@ -811,8 +811,9 @@ describe("probeQuietSignals isDoneButRunning (FLY-637 #1)", () => {
  * FLY-1048 PR-C (C4a + Codex code R1 #6): the factory's unified-ownership
  * guard — exact-fingerprint ownership OR a target-level CLEARING mute (a
  * tearing-down pane mints fresh fingerprints every frame, so the exact check
- * alone would let the old flow page about a corpse). Env unset = guard
- * constant-false = byte-compat.
+ * alone would let the old flow page about a corpse). FLY-1243:
+ * FLYWHEEL_DETECTION_ESCALATION is retired — the guard is now always
+ * consulted regardless of env.
  */
 describe("buildStuckRunnerDetector — unified-flow guard wiring (FLY-1048 C4a/R1#6)", () => {
 	function detectorWith(
@@ -875,17 +876,23 @@ describe("buildStuckRunnerDetector — unified-flow guard wiring (FLY-1048 C4a/R
 		expect(store.appendLeadEvent).not.toHaveBeenCalled();
 	});
 
-	it("env unset → guard never consulted, old emit fires (byte-compat)", async () => {
+	// FLY-1243: the `env.FLYWHEEL_DETECTION_ESCALATION === "1" &&` conjunct is
+	// removed from unifiedOwnsEpisode's wiring — the guard is consulted
+	// unconditionally now, so an empty/unset env no longer bypasses it.
+	// Rewritten (was "env unset → guard never consulted, old emit fires") to
+	// assert the opposite: with env EMPTY, the guard is still consulted and
+	// still suppresses the old emit.
+	it("guard is consulted regardless of env (FLY-1243: FLYWHEEL_DETECTION_ESCALATION retired)", async () => {
 		const hasActive = vi.fn(() => true);
 		const { detector, store } = detectorWith(
 			{},
 			{
 				hasActiveDetectionEscalationForEpisode: hasActive,
-				hasClearingDetectionEscalationForTarget: vi.fn(() => true),
+				hasClearingDetectionEscalationForTarget: vi.fn(() => false),
 			},
 		);
 		await stagnateTwice(detector);
-		expect(store.appendLeadEvent).toHaveBeenCalled();
-		expect(hasActive).not.toHaveBeenCalled();
+		expect(hasActive).toHaveBeenCalled();
+		expect(store.appendLeadEvent).not.toHaveBeenCalled();
 	});
 });

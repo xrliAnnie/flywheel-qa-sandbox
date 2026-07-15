@@ -418,6 +418,12 @@ export class TmuxAdapter implements IAdapter {
 		if (ctx.bridgeIngestToken) {
 			envArgs.push("-e", `FLYWHEEL_INGEST_TOKEN=${ctx.bridgeIngestToken}`);
 		}
+		if (ctx.workflowSubmissionCredential) {
+			envArgs.push(
+				"-e",
+				`FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL=${ctx.workflowSubmissionCredential}`,
+			);
+		}
 		// FLY-191 Phase 2: verify-approval must read the SAME StateStore the
 		// Bridge writes (QA-caught: custom TEAMLEAD_DB_PATH deployments left
 		// the Runner on the default-path DB → fail-closed forever).

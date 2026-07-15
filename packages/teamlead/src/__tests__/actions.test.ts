@@ -128,9 +128,197 @@ describe("Action tools", () => {
 			"GEO-95",
 			mockExec,
 		);
-		expect(result.success).toBe(true);
+		expect(result.success, result.message).toBe(true);
 		// FLY-58: approve no longer calls ApproveHandler (no git merge)
 		expect(mockExec).not.toHaveBeenCalled();
+	});
+
+	it("projects an enrolled founder approval through the atomic CommDB source row", async () => {
+		const head = "a".repeat(40);
+		const questionId = seedApproveGate("e-claims");
+		store.upsertSession({
+			execution_id: "e-claims",
+			issue_id: "i-claims",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		store.setReviewBinding("e-claims", {
+			questionId,
+			prHeadSha: head,
+		});
+		store.applyWorkflowShadowBatch({
+			projectName: "geoforge3d",
+			issueId: "i-claims",
+			newRunId: "run-claims",
+			ops: [
+				{
+					op: "dispatch",
+					node: "implement",
+					attempt: 1,
+					executionId: "e-claims",
+				},
+			],
+		});
+
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e-claims",
+			"GEO-CLAIMS",
+			mockExec,
+		);
+		expect(result.success, result.message).toBe(true);
+
+		const db = new CommDB(join(commRoot, "geoforge3d", "comm.db"), false);
+		try {
+			const rows = db.listWorkflowSourceEvents();
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toMatchObject({
+				project: "geoforge3d",
+				source_event_id: `founder-approval:${questionId}`,
+				kind: "founder_approval",
+			});
+			expect(JSON.parse(rows[0]!.payload)).toMatchObject({
+				run_id: "run-claims",
+				issue_id: "i-claims",
+				approved_head: head,
+				classification: "dashboard_founder_action",
+				authority_id: questionId,
+			});
+		} finally {
+			db.close();
+		}
+	});
+
+	it("dashboard approve remains the explicit merge-block recovery surface", async () => {
+		const head = "b".repeat(40);
+		store.upsertSession({
+			execution_id: "e-held",
+			issue_id: "i-held",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			session_role: "implement",
+			codex_skip: 1,
+		});
+		store.setMergeBlock({
+			executionId: "e-held",
+			reason: "merge_without_approval",
+			head,
+		});
+		const questionId = seedApproveGate("e-held");
+		store.setReviewBinding("e-held", { questionId, prHeadSha: head });
+
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e-held",
+			"GEO-HELD",
+			mockExec,
+			undefined,
+			makeConfig(),
+		);
+		expect(result.success, result.message).toBe(true);
+
+		const db = new CommDB(join(commRoot, "geoforge3d", "comm.db"), false);
+		try {
+			expect(JSON.parse(db.getResponse(questionId)?.content ?? "{}")).toEqual({
+				approved: true,
+			});
+		} finally {
+			db.close();
+		}
+	});
+
+	it("dashboard merge-block recovery still reports a downstream codex hold", async () => {
+		const head = "c".repeat(40);
+		store.upsertSession({
+			execution_id: "e-held-codex",
+			issue_id: "i-held-codex",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			session_role: "implement",
+		});
+		store.setMergeBlock({
+			executionId: "e-held-codex",
+			reason: "merge_without_approval",
+			head,
+		});
+		const questionId = seedApproveGate("e-held-codex");
+		store.setReviewBinding("e-held-codex", { questionId, prHeadSha: head });
+
+		const previousHardGate = process.env.FLYWHEEL_CODEX_HARD_GATE;
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "1";
+		let result: Awaited<ReturnType<typeof approveExecution>>;
+		try {
+			result = await approveExecution(
+				store,
+				testProjects,
+				"e-held-codex",
+				"GEO-HELD-CODEX",
+				mockExec,
+				undefined,
+				makeConfig(),
+			);
+		} finally {
+			if (previousHardGate === undefined) {
+				delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+			} else {
+				process.env.FLYWHEEL_CODEX_HARD_GATE = previousHardGate;
+			}
+		}
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("held_codex_pending");
+
+		const db = new CommDB(join(commRoot, "geoforge3d", "comm.db"), false);
+		try {
+			expect(db.getResponse(questionId)).toBeUndefined();
+		} finally {
+			db.close();
+		}
+	});
+
+	it("dashboard approve passes the actions source through the card-authority seam", async () => {
+		store.upsertSession({
+			execution_id: "e-card",
+			issue_id: "i-card",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		const questionId = seedApproveGate("e-card");
+		const cardAuthority = vi.fn().mockReturnValue({
+			ok: false,
+			reason: "inactive_card",
+		});
+
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e-card",
+			"GEO-CARD",
+			mockExec,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			cardAuthority,
+		);
+
+		expect(result.success).toBe(false);
+		expect(cardAuthority).toHaveBeenCalledWith({
+			executionId: "e-card",
+			source: "actions",
+			targetMessageId: undefined,
+		});
+		const db = new CommDB(join(commRoot, "geoforge3d", "comm.db"), false);
+		try {
+			expect(db.getResponse(questionId)).toBeUndefined();
+		} finally {
+			db.close();
+		}
 	});
 
 	it("POST /api/actions/approve without execution_id returns 400", async () => {

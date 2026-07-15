@@ -9,9 +9,10 @@
  * (M1-only = short deadline → prompt). This keeps the Hub ack honest ("排队中")
  * and never claims an inline repair that hasn't happened.
  *
- * Attemptable requires (all): FLYWHEEL_ACCOUNT_SELF_HEAL=1, usable accountLimit
- * metadata (provider claude — MVP Claude-only), and an available account.
- * Anything short → needs_human (never a blind switch).
+ * Attemptable requires (all): a usable accountLimit metadata (provider claude —
+ * MVP Claude-only), and an available account. Anything short → needs_human
+ * (never a blind switch). (FLY-1243: the FLYWHEEL_ACCOUNT_SELF_HEAL env flag is
+ * retired; construction is gated by the account-pool presence in plugin.ts.)
  */
 
 import type { AlertPayload } from "../LeadAlertNotifier.js";
@@ -62,7 +63,7 @@ export interface AccountSwitchRepairDeps {
 	pendingLockPath?: string;
 	/** How long a pending record waits for a bot before the watchdog fires it. */
 	deadlineMs?: number;
-	/** Defaults to the FLYWHEEL_ACCOUNT_SELF_HEAL env flag. */
+	/** Test seam; defaults to always-on (FLY-1243: env flag retired). */
 	isEnabled?: () => boolean;
 	/** Injectable for tests; defaults to the real switchAccount executor. */
 	switchImpl?: (input: SwitchInput, deps: SwitchDeps) => Promise<SwitchResult>;
@@ -86,8 +87,10 @@ export function makeAccountSwitchRepair(
 	deps: AccountSwitchRepairDeps,
 ): AccountSwitchRepair {
 	const now = deps.now ?? Date.now;
-	const isEnabled =
-		deps.isEnabled ?? (() => process.env.FLYWHEEL_ACCOUNT_SELF_HEAL === "1");
+	// FLY-1243: FLYWHEEL_ACCOUNT_SELF_HEAL retired (固化 default-on). Construction
+	// is gated by the account-pool presence upstream (plugin.ts); the default
+	// predicate is now always-on (a real switch still needs a usable gauge + pool).
+	const isEnabled = deps.isEnabled ?? (() => true);
 	const doSwitch = deps.switchImpl ?? defaultSwitchAccount;
 	const withLock = deps.withLock ?? withMkdirLock;
 	const deadlineMs = deps.deadlineMs ?? 20_000;

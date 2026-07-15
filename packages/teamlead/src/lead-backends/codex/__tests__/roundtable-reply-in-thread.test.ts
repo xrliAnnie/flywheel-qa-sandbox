@@ -22,8 +22,16 @@ function env(over: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
 }
 
 describe("parseCodexLeadRuntimeConfig — reply-in-thread (FLY-314 Phase 2)", () => {
-	it("byte-compat: flag unset → replyInThread undefined", () => {
-		expect(parseCodexLeadRuntimeConfig(env()).replyInThread).toBeUndefined();
+	// FLY-1243: FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD retired — a resolvable
+	// roundtable parent (here the sole cross-dept channel) is the switch now, so
+	// reply-in-thread activates unconditionally.
+	it("resolvable parent (cross-dept) → reply-in-thread active (固化 default-on)", () => {
+		const cfg = parseCodexLeadRuntimeConfig(env()).replyInThread;
+		expect(cfg).toEqual({
+			enabled: true,
+			parentChannelId: RT,
+			autoContinue: true,
+		});
 	});
 
 	it("flag=1 + parent in cross-dept → enabled config (with guildId; FLY-676 autoContinue default-on)", () => {
@@ -104,15 +112,12 @@ describe("parseCodexLeadRuntimeConfig — reply-in-thread (FLY-314 Phase 2)", ()
 		).toThrow(/must be in FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS/);
 	});
 
-	it("flag=1 with NO cross-dept + no parent → throws", () => {
-		expect(() =>
+	it("no resolvable parent (no cross-dept, no roundtable channel) → undefined", () => {
+		expect(
 			parseCodexLeadRuntimeConfig(
-				env({
-					FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "",
-					FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD: "1",
-				}),
-			),
-		).toThrow();
+				env({ FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "" }),
+			).replyInThread,
+		).toBeUndefined();
 	});
 });
 

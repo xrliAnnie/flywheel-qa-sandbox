@@ -88,9 +88,18 @@ describe("resolveAccountCapOwnerId (A5 predicate)", () => {
 		expect(resolveAccountCapOwnerId(ALL)).toBe(OWNER);
 	});
 
-	it("self-heal off → undefined (legacy founder routing)", () => {
-		const { FLYWHEEL_ACCOUNT_SELF_HEAL: _omit, ...rest } = ALL;
-		expect(resolveAccountCapOwnerId(rest)).toBeUndefined();
+	// FLY-1243: FLYWHEEL_ACCOUNT_SELF_HEAL no longer gates this predicate (the
+	// conjunct was removed) — resolveAccountCapOwnerId now gates ONLY on
+	// resolveInfraNotifyIdentity(env) + a valid FLYWHEEL_INFRA_BOT_USER_ID.
+	// Rewritten to cover the one identity-absence shape the other cases below
+	// don't: P-identity ENTIRELY absent (neither token nor channel set), bot
+	// user id present → still undefined (legacy founder routing).
+	it("P-identity entirely absent (neither token nor channel) → undefined (legacy founder routing)", () => {
+		expect(
+			resolveAccountCapOwnerId({
+				FLYWHEEL_INFRA_BOT_USER_ID: OWNER,
+			}),
+		).toBeUndefined();
 	});
 
 	it("P-identity incomplete (token only) → undefined", () => {

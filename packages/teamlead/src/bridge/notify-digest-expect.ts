@@ -13,16 +13,12 @@
  * expected date and the LeadAlertNotifier claims-table dedup (shared with
  * lead-alert.sh) makes repeated ticks a no-op.
  *
- * The WHOLE check hangs under P-expect (`FLYWHEEL_NOTIFY_DIGEST_EXPECT=1`):
- * unset ⇒ "inactive", zero side effects (not even a receipts read).
+ * FLY-1243: the FLYWHEEL_NOTIFY_DIGEST_EXPECT gate is retired (固化 default-on);
+ * the check always runs past the 01:00 deadline.
  */
 
 import type { AlertPayload } from "../LeadAlertNotifier.js";
-import {
-	isDigestExpectEnabled,
-	type NotifyReceipts,
-	readNotifyReceipts,
-} from "./notify-receipts.js";
+import { type NotifyReceipts, readNotifyReceipts } from "./notify-receipts.js";
 
 /** Civil date (YYYY-MM-DD) of `now` in `tz` — same semantics as token-usage's todayInTz. */
 export function localDate(now: Date, tz: string): string {
@@ -58,7 +54,6 @@ export function expectedReportDate(now: Date, tz: string): string {
 }
 
 export type NotifyDigestExpectOutcome =
-	| "inactive" // P-expect unset — the check does not exist
 	| "before-deadline" // local time < 01:00 — too early to judge
 	| "receipt-ok" // receipt present with the expected date — quiet
 	| "alerted"; // missing/wrong-date receipt → alert fired (deduped downstream)
@@ -70,7 +65,6 @@ export interface NotifyDigestExpectDeps {
 	receiptsPath: string;
 	/** The LeadAlertNotifier alert entry point (claims-deduped). */
 	alert: (payload: AlertPayload) => Promise<unknown>;
-	env?: NodeJS.ProcessEnv;
 	/** Test seam. */
 	readReceipts?: (path: string) => NotifyReceipts;
 }
@@ -94,8 +88,6 @@ export function notifyDigestFailedPayload(expectedDate: string): AlertPayload {
 export async function notifyDigestExpectTick(
 	deps: NotifyDigestExpectDeps,
 ): Promise<NotifyDigestExpectOutcome> {
-	const env = deps.env ?? process.env;
-	if (!isDigestExpectEnabled(env)) return "inactive";
 	if (localHour(deps.now, deps.tz) < 1) return "before-deadline";
 
 	const expected = expectedReportDate(deps.now, deps.tz);

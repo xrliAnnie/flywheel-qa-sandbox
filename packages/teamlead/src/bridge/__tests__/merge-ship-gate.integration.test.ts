@@ -20,13 +20,15 @@
  *      merged→completed behavior (决定②: default ON, emergency-off if problems).
  */
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import {
+	computeAuthoritativeShipDecision,
 	computeShipDecision,
 	finalizeRecoveredMerge,
 	isMergeBlocked,
@@ -52,6 +54,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 	let tmpDir: string;
 	let store: StateStore;
 	let commRoot: string;
+	let worktreePath: string;
 	let prevCommDir: string | undefined;
 
 	beforeEach(async () => {
@@ -63,6 +66,17 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		prevCommDir = process.env.FLYWHEEL_COMM_DIR;
 		process.env.FLYWHEEL_COMM_DIR = commRoot;
 		store = await StateStore.create(join(tmpDir, "teamlead.db"));
+		worktreePath = join(tmpDir, "worktree");
+		execFileSync("git", ["init", "-q", worktreePath]);
+		const headRef = execFileSync(
+			"git",
+			["-C", worktreePath, "symbolic-ref", "HEAD"],
+			{ encoding: "utf8" },
+		).trim();
+		mkdirSync(join(worktreePath, ".git", headRef, ".."), {
+			recursive: true,
+		});
+		writeFileSync(join(worktreePath, ".git", headRef), `${HEAD}\n`);
 	});
 
 	afterEach(() => {
@@ -119,6 +133,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			status,
 			session_role: "main",
 			branch: "fly-869",
+			worktree_path: worktreePath,
 		});
 		store.setReviewBinding(EXEC, {
 			questionId: reviewQuestionId ?? null,
@@ -151,6 +166,27 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 				shipEligible: d.eligible,
 			}),
 		).toBe(true);
+	});
+
+	it("claims READ makes worktree HEAD authoritative and rejects stale cached evidence", async () => {
+		upsert("awaiting_review");
+		const session = store.getSession(EXEC);
+		if (!session) throw new Error("session missing");
+		const decision = await computeAuthoritativeShipDecision(
+			store,
+			session,
+			"b".repeat(40),
+			{
+				...GATES_ON,
+				FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+			} as NodeJS.ProcessEnv,
+		);
+		expect(decision).toMatchObject({
+			eligible: false,
+			mergeReason: "head_authority_mismatch",
+			qaReason: "head_authority_mismatch_failclosed",
+			authoritativeHead: HEAD,
+		});
 	});
 
 	// ── Group ② — merged WITHOUT approval → merge_block + not Done (决定③) ──

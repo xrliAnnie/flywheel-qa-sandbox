@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2015  # test assertions intentionally use cmd && pass || fail
 # FLY-259 PR-F — run-codex-lead-mufasa-tui.sh tests. A PATH-injected mock `node`
 # captures the env the launcher composes, so we can assert the cutover contract
 # WITHOUT a real runtime/daemon. Run with /bin/bash.
@@ -28,17 +29,13 @@ trap 'rm -rf "$T"' EXIT
 # this, a parent shell carrying FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS (e.g. a Lead
 # session) flips bridge cases to the cross-dept-conflict path (Codex R2/R3 finding).
 unset FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS FLYWHEEL_CODEX_LEAD_PROFILE \
-	FLYWHEEL_CODEX_LEAD_READ_DENY FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES \
-	FLYWHEEL_CODEX_LEAD_OUTBOUND FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET
+	FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES FLYWHEEL_CODEX_LEAD_OUTBOUND
 
 # Fake worktree with the built runtime + the tui-home script (a no-op stub; ensures
 # are skipped in dry-run, but the launcher checks the file exists).
 WT="$T/wt"
-mkdir -p "$WT/packages/teamlead/dist/lead-backends/codex/lead-actions" "$WT/packages/teamlead/scripts"
+mkdir -p "$WT/packages/teamlead/dist/lead-backends/codex" "$WT/packages/teamlead/scripts"
 printf '// stub\n' > "$WT/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js"
-# FLY-350: stub the lead-actions MCP build so a content-coordination dry-run passes
-# the launcher's "lead-actions MCP not built" existence check.
-printf '// stub\n' > "$WT/packages/teamlead/dist/lead-backends/codex/lead-actions/lead-actions-main.js"
 printf '#!/bin/bash\nexit 0\n' > "$WT/packages/teamlead/scripts/codex-lead-tui-home.sh"
 chmod +x "$WT/packages/teamlead/scripts/codex-lead-tui-home.sh"
 
@@ -72,6 +69,8 @@ if [ -f "$D" ]; then
 		*) fail "state dir not pinned to mufasa-lead (got: $sd)" ;;
 	esac
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_MODE)" = "tui" ] && pass "MODE=tui" || fail "MODE not tui"
+	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_PROFILE)" = "companion" ] && pass "PROFILE=companion" || fail "PROFILE not companion"
+	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_SANDBOX)" = "read-only" ] && pass "SANDBOX=read-only" || fail "SANDBOX not read-only"
 	[ "$(envval "$D" FLYWHEEL_LEAD_ID)" = "mufasa-lead" ] && pass "LEAD_ID=mufasa-lead" || fail "LEAD_ID wrong"
 	[ "$(envval "$D" FLYWHEEL_PROJECT_NAME)" = "growth" ] && pass "PROJECT_NAME=growth" || fail "PROJECT_NAME wrong"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_OUTBOUND)" = "direct" ] && pass "outbound defaults to direct (zero-regression, preserves roundtable)" || fail "outbound not direct"
@@ -142,37 +141,7 @@ if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi "invalid — must be 'direct
 	pass "invalid outbound (typo 'bridg') → fail-loud"
 else fail "invalid outbound should fail loud (rc=$rc, out=$out)"; fi
 
-# ── 9. FLY-350: content-coordination via ENV → content contract + coords + read-deny ──
-D=$(FLYWHEEL_CODEX_LEAD_PROFILE=content-coordination FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=123 run_dry env)
-if [ -f "$D" ]; then
-	spf=$(envval "$D" FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)
-	case "$spf" in
-		*content-coordination-contract.md) pass "content-coordination (env) → loads content contract" ;;
-		*) fail "content (env) should load content contract (got: $spf)" ;;
-	esac
-	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_READ_DENY)" = "1" ] && pass "content (env) → READ_DENY enforced" || fail "content (env) READ_DENY not enforced"
-	bs=$(envval "$D" FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET)
-	case "$bs" in */lead-actions.sock) pass "content (env) → broker socket coord set" ;; *) fail "content (env) broker coord wrong (got: $bs)" ;; esac
-else fail "content (env) dry-run produced no env dump"; fi
-
-# ── 10. FLY-350: content-coordination DERIVED from projects.json → same contract ──
-# R3 MED-1: the approved cutover changes ONLY projects.json. Assert the launcher
-# derives the profile AND that the persona contract reflects it (was the bug).
-FAKEHOME="$T/home10"; mkdir -p "$FAKEHOME/.flywheel"
-cat > "$FAKEHOME/.flywheel/projects.json" <<'JSON'
-[{"projectName":"growth","projectRoot":"/x","leads":[{"agentId":"mufasa-lead","chatChannel":"1","match":{"labels":["growth"]},"codexProfile":"content-coordination","canSpawnRunners":false,"backend":"codex-app-server"}]}]
-JSON
-D=$(HOME="$FAKEHOME" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=123 run_dry env)
-if [ -f "$D" ]; then
-	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_PROFILE)" = "content-coordination" ] && pass "projects.json codexProfile → FLYWHEEL_CODEX_LEAD_PROFILE derived" || fail "profile not derived from projects.json"
-	spf=$(envval "$D" FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)
-	case "$spf" in
-		*content-coordination-contract.md) pass "projects.json-derived → loads CONTENT contract (R3 MED-1 fixed)" ;;
-		*) fail "projects.json-derived still loads wrong contract (got: $spf)" ;;
-	esac
-else fail "content (projects.json) dry-run produced no env dump"; fi
-
-# ── 11. FLY-350: default (no profile) → companion contract, no lead-actions coords ──
+# ── 9. companion contract is selected ─────────────────────────────────────
 D=$(run_dry env)
 if [ -f "$D" ]; then
 	spf=$(envval "$D" FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)
@@ -180,8 +149,21 @@ if [ -f "$D" ]; then
 		*companion-safety-contract.md) pass "default → companion contract (byte-compat)" ;;
 		*) fail "default should load companion contract (got: $spf)" ;;
 	esac
-	[ -z "$(envval "$D" FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET)" ] && pass "default → NO lead-actions coords (dormant)" || fail "default should not set lead-actions coords"
 else fail "default dry-run produced no env dump"; fi
+
+# ── 10. FLY-1241: hostile ambient profile is overridden — pure companion pin ──
+# This launcher is the rollback/companion path. It pins PROFILE=companion +
+# SANDBOX=read-only unconditionally, so an invocation from an environment carrying
+# an ambient full-access profile (e.g. a parent full-access Lead session) must NOT
+# select the wrong runtime tier or trip the full-access guards.
+D=$(FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_LEAD_SANDBOX=workspace-write run_dry env)
+if [ -f "$D" ]; then
+	p=$(envval "$D" FLYWHEEL_CODEX_LEAD_PROFILE); s=$(envval "$D" FLYWHEEL_CODEX_LEAD_SANDBOX)
+	[ "$p" = "companion" ] && pass "hostile ambient full-access → pinned back to companion" || fail "ambient full-access leaked (profile=$p)"
+	[ "$s" = "read-only" ] && pass "hostile ambient workspace-write → pinned back to read-only" || fail "ambient sandbox leaked (sandbox=$s)"
+	spf=$(envval "$D" FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)
+	case "$spf" in *companion-safety-contract.md) pass "hostile ambient still loads companion contract" ;; *) fail "wrong contract under hostile ambient ($spf)" ;; esac
+else fail "hostile-ambient dry-run produced no env dump"; fi
 
 echo ""
 echo "run-codex-lead-mufasa-tui.test.sh: $PASS passed, $FAIL failed"

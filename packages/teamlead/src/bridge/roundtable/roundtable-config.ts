@@ -1,11 +1,14 @@
 /**
  * FLY-314 — testable env parsing for the roundtable auto-thread feature.
  *
- * Default OFF: `FLYWHEEL_ROUNDTABLE_ENABLED` must be exactly "1" to enable. When
- * enabled, the identity fields (channel / bot token / bot user id) are REQUIRED —
- * a missing one throws (fail-loud, never run a half-configured poller). A bad
- * trigger mode degrades to `disabled` (warn) rather than bricking Bridge boot for
- * a typo in an optional feature.
+ * FLY-1243: `FLYWHEEL_ROUNDTABLE_ENABLED` retired (固化 default-on). The
+ * roundtable channel id (`FLYWHEEL_ROUNDTABLE_CHANNEL_ID`) is now the de-facto
+ * switch: absent ⇒ `undefined` (byte-compat OFF for deployments that never
+ * configured roundtable — QA slots / sub / joycon). Once the channel is set, the
+ * remaining identity fields (bot token / bot user id) are REQUIRED — a missing
+ * one throws (fail-loud, never run a half-configured poller). A bad trigger mode
+ * degrades to `disabled` (warn) rather than bricking Bridge boot for a typo in an
+ * optional feature.
  *
  * `cursorPath` expands a leading `~` HERE (FileInboundCursorStore does not expand it).
  */
@@ -68,22 +71,24 @@ type Env = Record<string, string | undefined>;
  * but missing a required identity field.
  */
 export function loadRoundtableConfig(env: Env): RoundtableConfig | undefined {
-	if (env.FLYWHEEL_ROUNDTABLE_ENABLED !== "1") return undefined;
-
+	// FLY-1243: the channel id is the de-facto switch now that the ENABLED flag
+	// is retired. Unset ⇒ this deployment never configured roundtable ⇒ OFF.
 	const channelId = (env.FLYWHEEL_ROUNDTABLE_CHANNEL_ID ?? "").trim();
+	if (!channelId) return undefined;
 	const botTokenEnv = (env.FLYWHEEL_ROUNDTABLE_BOT_TOKEN_ENV ?? "").trim();
 	const botToken = botTokenEnv ? (env[botTokenEnv] ?? "").trim() : "";
 	const botUserId = (env.FLYWHEEL_ROUNDTABLE_BOT_USER_ID ?? "").trim();
 
+	// channelId is guaranteed present here (the early return above is the switch);
+	// once configured, the remaining identity fields are REQUIRED — fail-loud.
 	const missing: string[] = [];
-	if (!channelId) missing.push("FLYWHEEL_ROUNDTABLE_CHANNEL_ID");
 	if (!botTokenEnv) missing.push("FLYWHEEL_ROUNDTABLE_BOT_TOKEN_ENV");
 	else if (!botToken)
 		missing.push(`${botTokenEnv} (resolved token value is empty)`);
 	if (!botUserId) missing.push("FLYWHEEL_ROUNDTABLE_BOT_USER_ID");
 	if (missing.length > 0) {
 		throw new Error(
-			`[roundtable] FLYWHEEL_ROUNDTABLE_ENABLED=1 but required config missing: ${missing.join(", ")}`,
+			`[roundtable] FLYWHEEL_ROUNDTABLE_CHANNEL_ID set but required config missing: ${missing.join(", ")}`,
 		);
 	}
 

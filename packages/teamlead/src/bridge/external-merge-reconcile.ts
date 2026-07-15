@@ -47,12 +47,19 @@ import {
 	isTrustedApprovalAttribution,
 	resolveFounderId,
 } from "flywheel-comm/founder-attribution";
-import type { ShipEligibilityDecision } from "flywheel-comm/ship-eligibility";
+import {
+	resolveWorkflowClaimsReadEnabled,
+	type ShipEligibilityDecision,
+} from "flywheel-comm/ship-eligibility";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import { commDbPathForProject } from "./commdb-path.js";
+import { resolveWorkflowHeadAuthority } from "./head-authority.js";
 import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
-import { computeShipDecision, parkMergeBlock } from "./merge-ship-gate.js";
+import {
+	computeAuthoritativeShipDecision,
+	parkMergeBlock,
+} from "./merge-ship-gate.js";
 import { runPostShipFinalization } from "./post-ship-finalization.js";
 import { classifyBlockerLocal } from "./stale-blocker-guard.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
@@ -285,14 +292,16 @@ export function createExternalMergeReconciler(
 		// predate the pr_head_sha write; the merged PR's own head is the evidence.
 		const head =
 			session.pr_head_sha?.trim().toLowerCase() || info.headRefOid || "";
-		const decision: ShipEligibilityDecision = computeShipDecision(
-			deps.store,
-			session,
-			head,
-		);
+		const decision: ShipEligibilityDecision & { authoritativeHead: string } =
+			await computeAuthoritativeShipDecision(deps.store, session, head);
 		if (!decision.eligible) {
 			// Identical semantics to the live merge-ship-gate: park + one loud alert.
-			const claimed = parkMergeBlock(deps.store, session, head, decision);
+			const claimed = parkMergeBlock(
+				deps.store,
+				session,
+				decision.authoritativeHead || head,
+				decision,
+			);
 			if (claimed) {
 				log(
 					`[external-merge] FLY-945 parked ${session.execution_id} (${session.issue_id}) — externally merged head ${head.slice(0, 8) || "(none)"} NOT ship-eligible (merge=${decision.mergeReason} qa=${decision.qaReason})`,
@@ -326,8 +335,22 @@ export function createExternalMergeReconciler(
 		info: PrMergeInfo,
 	) {
 		const boundHead = session.pr_head_sha?.trim().toLowerCase();
+		let authoritativeHead: string | undefined = boundHead;
+		if (resolveWorkflowClaimsReadEnabled({ env: process.env })) {
+			try {
+				authoritativeHead = (
+					await resolveWorkflowHeadAuthority(deps.store, session.execution_id)
+				).prHeadSha;
+			} catch {
+				authoritativeHead = undefined;
+			}
+		}
 		const headMatch =
-			!!boundHead && !!info.headRefOid && boundHead === info.headRefOid;
+			!!boundHead &&
+			!!authoritativeHead &&
+			!!info.headRefOid &&
+			boundHead === authoritativeHead &&
+			authoritativeHead === info.headRefOid;
 		const trusted = hasTrusted(session);
 		if (headMatch && trusted) {
 			log(

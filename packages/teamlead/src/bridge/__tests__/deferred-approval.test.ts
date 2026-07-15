@@ -196,6 +196,23 @@ describe("rebind pass — guard chain", () => {
 });
 
 describe("rebind pass — write outcomes (今晚场景镜像 + R2 #1/R4 #2)", () => {
+	it("passes the deferred route source and authority seam to the shared writer", async () => {
+		const { deps } = await rebindHarness({});
+		const cardAuthority = vi.fn().mockReturnValue({ ok: true });
+		const writeImpl = vi
+			.fn()
+			.mockResolvedValue({ written: true, retrySafe: true });
+		Object.assign(deps, { cardAuthority, writeImpl });
+
+		await runDeferredApprovalRebindPass(deps as never);
+
+		expect(writeImpl).toHaveBeenCalledOnce();
+		expect(writeImpl.mock.calls[0]![0]).toMatchObject({
+			source: "deferred",
+			cardAuthority,
+		});
+	});
+
 	it("硬要求③代码级: hold clear → writes {approved:true} via the REAL writer, hook flips FSM, consume + ✅ upgrade + rebound notice", async () => {
 		const { store, deps, hook, reactImpl, commState } = await rebindHarness({});
 		await runDeferredApprovalRebindPass(deps);

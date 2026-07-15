@@ -73,6 +73,8 @@ export interface VerifyApprovalArgs {
 export type VerifyApprovalReason =
 	| "approved"
 	| "invalid_pr_head_format"
+	| "head_authority_unavailable"
+	| "head_authority_mismatch"
 	| "state_db_unreadable"
 	| "session_not_found"
 	| "review_question_unbound"
@@ -103,6 +105,98 @@ export interface VerifyApprovalResult {
 }
 
 const FULL_SHA_RE = /^[0-9a-f]{40}$/;
+
+export interface VerifyApprovalWithBridgeHeadArgs extends VerifyApprovalArgs {
+	/** Loopback Bridge base URL that owns the execution worktree mapping. */
+	bridgeUrl: string;
+	/** Test seam. */
+	fetchImpl?: typeof fetch;
+	workflowDotenvPath?: string;
+}
+
+/**
+ * Resolve the head from the Bridge's persisted worktree mapping, compare the
+ * caller's local observation, then run the existing local approval proof using
+ * the authoritative head. Bridge loss or disagreement always fails closed.
+ */
+export async function verifyApprovalWithBridgeHead(
+	args: VerifyApprovalWithBridgeHeadArgs,
+): Promise<VerifyApprovalResult> {
+	const env = args.env ?? process.env;
+	const readPath =
+		args.workflowDotenvPath ?? join(homedir(), ".flywheel", ".env");
+	let claimsReadOn: boolean;
+	if (args.env && "FLYWHEEL_WORKFLOW_CLAIMS_READ" in args.env) {
+		claimsReadOn = args.env.FLYWHEEL_WORKFLOW_CLAIMS_READ === "1";
+	} else {
+		try {
+			claimsReadOn =
+				readEnvValueFromContent(
+					readFileSync(readPath, "utf8"),
+					"FLYWHEEL_WORKFLOW_CLAIMS_READ",
+				) === "1";
+		} catch {
+			claimsReadOn = env.FLYWHEEL_WORKFLOW_CLAIMS_READ === "1";
+		}
+	}
+	if (!claimsReadOn) return verifyApproval(args);
+	const callerHead = args.prHead.trim().toLowerCase();
+	if (!FULL_SHA_RE.test(callerHead)) {
+		return {
+			approved: false,
+			reason: "invalid_pr_head_format",
+			exitCode: 1,
+		};
+	}
+	const bridgeUrl = args.bridgeUrl.trim().replace(/\/$/, "");
+	if (!bridgeUrl) {
+		return {
+			approved: false,
+			reason: "head_authority_unavailable",
+			exitCode: 1,
+		};
+	}
+	try {
+		const response = await (args.fetchImpl ?? fetch)(
+			`${bridgeUrl}/api/workflow/head-authority`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ execution_id: args.execId }),
+			},
+		);
+		if (!response.ok) throw new Error(`Bridge returned ${response.status}`);
+		const payload = (await response.json()) as {
+			ok?: unknown;
+			prHeadSha?: unknown;
+		};
+		const authoritativeHead =
+			typeof payload.prHeadSha === "string"
+				? payload.prHeadSha.trim().toLowerCase()
+				: "";
+		if (payload.ok !== true || !FULL_SHA_RE.test(authoritativeHead)) {
+			throw new Error("invalid Bridge head response");
+		}
+		if (callerHead !== authoritativeHead) {
+			return {
+				approved: false,
+				reason: "head_authority_mismatch",
+				expectedPrHeadSha: authoritativeHead,
+				exitCode: 1,
+			};
+		}
+		return verifyApproval({ ...args, prHead: authoritativeHead });
+	} catch (error) {
+		console.error(
+			`[verify-approval] Bridge head authority unavailable: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return {
+			approved: false,
+			reason: "head_authority_unavailable",
+			exitCode: 1,
+		};
+	}
+}
 
 export function resolveStateDbPath(
 	override: string | undefined,

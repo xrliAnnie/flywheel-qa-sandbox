@@ -1,7 +1,7 @@
 /**
- * FLY-799 Part A — ApprovalSignal abstraction (Annie: extensible to voice/image).
+ * FLY-799 Part A — ApprovalSignal abstraction (Annie: extensible to voice).
  *
- * Every source (reaction / text / image / [future] voice) normalizes one founder
+ * Every source (reaction / text / [future] voice) normalizes one founder
  * input into a FULLY-BOUND `ApprovalSignal` (discriminated union, Codex R4 #1);
  * the gate-write path is source-agnostic once the signal is bound. Each variant
  * carries `questionId` + `prHeadSha` for audit symmetry, plus source-specific
@@ -45,16 +45,6 @@ export type ApprovalSignal =
 			authorUserId: string;
 			/** FLY-1041 Chunk 4: attribution evidence (additive — optional). */
 			evidence?: ApprovalAttributionEvidence;
-	  }
-	| {
-			source: "image";
-			kind: "approve" | "reject" | "unclear";
-			questionId: string;
-			prHeadSha: string;
-			messageId: string;
-			authorUserId: string;
-			evidenceAttachmentIds: string[];
-			imageHashes: string[];
 	  }
 	| {
 			source: "voice";

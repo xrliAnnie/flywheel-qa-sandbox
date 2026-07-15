@@ -190,7 +190,7 @@ export interface FounderReplyDeliverDeps {
 	) => Promise<boolean>;
 	/**
 	 * FLY-799: attempt to attribute a founder approval for the thread's ship
-	 * gate(s) from THIS founder message (text / image sources → shared gate-write
+	 * gate(s) from THIS founder message (text source → shared gate-write
 	 * helper). Runs BEFORE the WAKE-only fallback.
 	 *
 	 * FLY-1099 §3.2: returns the explicit `ShipApprovalOutcome` disposition —

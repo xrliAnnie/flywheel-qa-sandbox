@@ -878,7 +878,7 @@ export async function gatewayMain(
 	// passes an alias only ("chat"/"roundtable"), the channel id is resolved
 	// SERVER-SIDE (fail-closed), and the send is rate-limited + idempotent +
 	// metadata-audited. Delegates to the SHARED runDiscordSend core (the exact
-	// same path as the content-coordination lead-actions MCP), so the two
+	// same path as the full-access lead-actions MCP), so the two
 	// proactive-send surfaces can never drift.
 	server.tool(
 		"discord_send",

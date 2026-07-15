@@ -2,9 +2,9 @@
  * FLY-929 B1 — the notify delivery receipt file.
  *
  * Written by the Bridge (single writer) after a successful token-report
- * delivery; read by the P-expect watchdog (notify-digest-expect.ts). The WHOLE
- * surface hangs under P-expect (`FLYWHEEL_NOTIFY_DIGEST_EXPECT=1`): unset ⇒
- * zero filesystem side effects, byte-compat.
+ * delivery; read by the digest-expect watchdog (notify-digest-expect.ts).
+ * FLY-1243: the notify self-health check is固化 default-on (the
+ * FLYWHEEL_NOTIFY_DIGEST_EXPECT gate is retired) — the receipt is always written.
  *
  * Date contract (Codex design R1#5): the receipt `date` is the report day the
  * CLI computed under `TOKEN_USAGE_TIMEZONE` and passed through
@@ -24,13 +24,6 @@ export interface NotifyReceipts {
 		ts: string;
 		messageId?: string;
 	};
-}
-
-/** P-expect: the self-health-check activation predicate. */
-export function isDigestExpectEnabled(
-	env: NodeJS.ProcessEnv = process.env,
-): boolean {
-	return env.FLYWHEEL_NOTIFY_DIGEST_EXPECT === "1";
 }
 
 /** `FLYWHEEL_NOTIFY_RECEIPTS_PATH` override (tests) → ~/.flywheel/notify-receipts.json. */
@@ -57,10 +50,10 @@ export function readNotifyReceipts(path: string): NotifyReceipts {
 }
 
 /**
- * Record a successful token-report delivery. Gated on P-expect (unset ⇒ no fs
- * side effects at all). temp+rename atomic write; a write failure is logged
- * and never thrown — the delivery already succeeded and the HTTP response
- * must not be blocked on the receipt.
+ * Record a successful token-report delivery. FLY-1243: the notify self-health
+ * check is固化 default-on, so the receipt is always written. temp+rename atomic
+ * write; a write failure is logged and never thrown — the delivery already
+ * succeeded and the HTTP response must not be blocked on the receipt.
  */
 export function writeTokenReportReceipt(
 	entry: { date: string; messageId?: string },
@@ -72,7 +65,6 @@ export function writeTokenReportReceipt(
 	} = {},
 ): void {
 	const env = opts.env ?? process.env;
-	if (!isDigestExpectEnabled(env)) return;
 	const log = opts.log ?? ((m) => console.warn(m));
 	const path = opts.path ?? defaultReceiptsPath(env);
 	const now = opts.now ?? (() => new Date());

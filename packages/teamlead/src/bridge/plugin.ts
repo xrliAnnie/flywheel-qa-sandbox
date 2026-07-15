@@ -18,7 +18,7 @@ import { promisify } from "node:util";
 import express from "express";
 import { CommDB } from "flywheel-comm/db";
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
-// FLY-286 PR-2: web-local review route (gated on FLYWHEEL_XHS_REVIEW).
+// FLY-286 PR-2: web-local review route (固化 default-on since FLY-1243).
 import {
 	createLocalAnalysisStore,
 	createLocalFeedbackStore,
@@ -45,6 +45,7 @@ import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
 import { WorktreeManager } from "flywheel-edge-worker";
 import { recordAuthHealth as ledgerRecordAuthHealth } from "../account-heal/account-ledger.js";
 import type { AccountRotationNotice } from "../account-heal/account-rotation-notice.js";
+import { accountPoolConfigured } from "../account-heal/account-store.js";
 import {
 	makeAccountSwitchRepair,
 	type RepairDisposition,
@@ -107,6 +108,7 @@ import {
 	type Session,
 	StateStore,
 } from "../StateStore.js";
+import { importBundledWorkflowSeeds } from "../workflow-template.js";
 import { AlertChannelHub, createDiscordOps } from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
 import {
@@ -255,6 +257,7 @@ import {
 } from "./fleet-routes.js";
 import { FleetSensors } from "./fleet-sensors.js";
 import { createFocusedFrameScheduler } from "./focused-frame-scheduler.js";
+import { startWorkflowSourceProjector } from "./founder-approval-projector.js";
 import {
 	buildFounderConsentWiring,
 	buildGateResponsePostWriteHook,
@@ -331,7 +334,6 @@ import { createMemoryRouter } from "./memory-route.js";
 import { notifyDigestExpectTick } from "./notify-digest-expect.js";
 import { defaultReceiptsPath } from "./notify-receipts.js";
 import { hashPane, liveRegion } from "./pane-live-region.js";
-import { waitForPaneMarker } from "./pane-readiness.js";
 import {
 	PhaseOrchestrator,
 	type PhaseSession,
@@ -458,7 +460,9 @@ import {
 	createJudgeRoutingDepsFactory,
 	createStuckConfirmRunner,
 } from "./watchdog-judge-assembly.js";
+import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
 import { createWorkflowShadowWriterFromEnv } from "./workflow-shadow-writer.js";
+import { createWorkflowTemplateRouter } from "./workflow-template-routes.js";
 import {
 	gitWorktreeClean,
 	makeBridgeWorktreeCleanup,
@@ -662,72 +666,8 @@ export async function createLeadRuntime(
 		);
 	}
 
-	// FLY-109 cold-start hardening (Direction R): soft-wait for the Lead tmux pane
-	// to print the MCP channel-handler marker before we declare readiness. Correctness
-	// does NOT depend on this — the ack/retry state machine in inbox-mcp recovers any
-	// push that fires before the handler is installed. We keep this as defense-in-
-	// depth against a cold-start thundering herd where every queued push would hit
-	// the retry window at once. Disabled by default; enable with
-	// FLYWHEEL_LEAD_PANE_READINESS=1 once ops have validated the marker text.
-	if (process.env.FLYWHEEL_LEAD_PANE_READINESS === "1") {
-		const windowId = await lookupLeadWindowId(projectName, lead.agentId);
-		if (windowId) {
-			const timeoutMs = Number.parseInt(
-				process.env.FLYWHEEL_LEAD_PANE_READINESS_TIMEOUT_MS ?? "20000",
-				10,
-			);
-			const result = await waitForPaneMarker(
-				windowId,
-				"Listening for channel messages from:",
-				Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 20000,
-			);
-			if (result.seen) {
-				console.log(
-					`[Bridge] Lead "${lead.agentId}" pane ready after ${result.elapsedMs}ms`,
-				);
-			} else {
-				console.warn(
-					`[Bridge] Lead "${lead.agentId}" pane marker not seen within ${result.elapsedMs}ms — downgrading to lease-only readiness (ack/retry still covers correctness)`,
-				);
-			}
-		}
-	}
-
 	const { CommDBLeadRuntime } = await import("./commdb-lead-runtime.js");
 	return new CommDBLeadRuntime(commDbPath, lead.agentId);
-}
-
-/**
- * Resolve the tmux window ID for a Lead's Claude session.
- * Lead windows live in the shared `flywheel` session and are named `<project>-<lead>`.
- * Returns undefined if the session or window doesn't exist yet (cold start).
- */
-async function lookupLeadWindowId(
-	projectName: string,
-	agentId: string,
-): Promise<string | undefined> {
-	const { execFile } = await import("node:child_process");
-	const { promisify } = await import("node:util");
-	const execFileAsync = promisify(execFile);
-	const targetName = `${projectName}-${agentId}`;
-	try {
-		const { stdout } = await execFileAsync(
-			"tmux",
-			["list-windows", "-t", "flywheel", "-F", "#{window_name}:#{window_id}"],
-			{ timeout: 5000 },
-		);
-		for (const line of stdout.split("\n")) {
-			const sep = line.indexOf(":");
-			if (sep <= 0) continue;
-			const name = line.slice(0, sep);
-			const id = line.slice(sep + 1);
-			if (name === targetName && id.startsWith("@")) return id;
-		}
-	} catch {
-		// tmux may be absent or the flywheel session may not exist yet — callers
-		// treat undefined as "skip pane check, proceed with lease-only readiness".
-	}
-	return undefined;
 }
 
 /**
@@ -1054,14 +994,14 @@ export interface BridgeAppOptions {
 	 * FLY-871 R2/C5: the /api/account-switch route (mounted in createBridgeApp)
 	 * reads this holder at request time; startBridge sets `.current` only when
 	 * accountSwitchRepair + the unified Alerts channel exist
-	 * (FLYWHEEL_ACCOUNT_SELF_HEAL=1). Undefined ⇒ the route returns 409 needs_human
+	 * (the account pool is provisioned; FLY-1243). Undefined ⇒ the route returns 409 needs_human
 	 * (self-heal off = byte-compat).
 	 */
 	accountSwitchRoute?: { current?: AccountSwitchRuntime };
 	/**
 	 * FLY-871 R3/C9: the /api/rescue route (mounted in createBridgeApp) reads this
 	 * holder at request time; startBridge sets `.current` only when the rescue
-	 * runtime is built (FLYWHEEL_ACCOUNT_SELF_HEAL=1 + unified Alerts channel).
+	 * runtime is built (account pool provisioned + unified Alerts channel; FLY-1243).
 	 * Undefined ⇒ the route returns 409 needs_human (self-heal off = byte-compat).
 	 */
 	rescueRoute?: { current?: RescueRouteRuntime };
@@ -1121,6 +1061,41 @@ export function createBridgeApp(
 	}
 
 	app.use(express.json({ limit: "512kb" }));
+
+	// FLY-1244: scoped workflow decisions authenticate with a per-execution
+	// credential, never the fleet ingest bearer. The head read route is a separate
+	// loopback-only fail-closed seam used by verify-approval; it is not credential
+	// authenticated and exposes only the execution's git SHA.
+	app.use(
+		"/api/workflow",
+		createWorkflowDecisionRouter({
+			store,
+			phaseOrchestrator: opts?.phaseOrchestrator,
+			...(process.env.FLYWHEEL_WORKFLOW_CLAIMS_WRITE === "1" &&
+			opts?.fleetConsole &&
+			opts.phaseOrchestrator
+				? {
+						reQa: {
+							tokens: opts.fleetConsole.tokens,
+							respawn: async (canonical, prHeadSha) => {
+								const orchestrator = opts.phaseOrchestrator?.current;
+								if (!orchestrator) {
+									throw new Error("phase_orchestrator_not_ready");
+								}
+								const source = store.getSession(canonical.sourceExecutionId);
+								if (!source) throw new Error("source_session_not_found");
+								return orchestrator.respawnUnenrolledQa(
+									source,
+									prHeadSha,
+									canonical.targetAttempt,
+								);
+							},
+						},
+					}
+				: {}),
+		}),
+	);
+	app.use("/api/workflow", createWorkflowTemplateRouter(store));
 
 	// FLY-175 Track 2: founder-consent hard gate. Returns null when
 	// decisionMode=off (default) — `fcMw()` then yields a no-op handler so the
@@ -1669,9 +1644,10 @@ export function createBridgeApp(
 	// FLY-286 PR-2: web-local review surface. Mounted BEFORE the /api Bearer
 	// middleware (it lives OUTSIDE /api and authenticates via loopback Host +
 	// same-origin + a run-scoped session token — the browser holds no apiToken,
-	// mirroring the Fleet console). Gated on FLYWHEEL_XHS_REVIEW=1; absent/0 →
-	// routes are NOT registered at all (clean 404, byte-compat, no Bearer challenge).
-	if (process.env.FLYWHEEL_XHS_REVIEW === "1") {
+	// mirroring the Fleet console). FLY-1243: FLYWHEEL_XHS_REVIEW retired (固化
+	// default-on) — the loopback review routes are always mounted (loopback +
+	// session-token gated, so mounting them fleet-wide is harmless).
+	{
 		const xhsStateDir = xhsDefaultStateDir();
 		const xhsDeps: XhsReviewDeps = {
 			analysis: createLocalAnalysisStore(xhsStateDir),
@@ -3390,6 +3366,16 @@ export async function startBridge(
 	};
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+	// FLY-1244: deterministic boot import. Content hashes make restarts no-ops;
+	// a founder-owned seed mismatch is audited and refused by StateStore.
+	importBundledWorkflowSeeds(store);
+	const workflowSourceProjector = startWorkflowSourceProjector({
+		projects: () => loadProjects().map((project) => project.projectName),
+		openCommDb: (project) => new CommDB(commDbPathForProject(project)),
+		store,
+		log: (message) => console.warn(message),
+	});
+
 	const shipRelevantDiffService = new ShipRelevantDiffService(store);
 	const ensureShipRelevantDiff = async (session: Session): Promise<void> => {
 		const head = session.pr_head_sha?.toLowerCase();
@@ -5414,10 +5400,9 @@ export async function startBridge(
 	// FLY-1048 PR-C (C4): the unified-flow notify leg — every detection source
 	// (gap records / focused-frame case-c / judge-confirmed c / FN4) funnels
 	// through here. CLEARING targets are muted (C5), and notifyLeadFirst dedups
-	// once-per-episode on the durable detection_escalations row. Env-gated at
-	// the CALL SITES (live flip; unset = observe-only, byte-compat).
-	const detectionEscalationEnabled = (): boolean =>
-		process.env.FLYWHEEL_DETECTION_ESCALATION === "1";
+	// once-per-episode on the durable detection_escalations row. FLY-1243: the
+	// FLYWHEEL_DETECTION_ESCALATION gate is retired (固化 default-on) — the unified
+	// flow always runs.
 	const resolveDetectionOwner = (
 		input: DetectionEscalationInput,
 	): EscalationOwner | null => {
@@ -5512,7 +5497,7 @@ export async function startBridge(
 				// FLY-1234 (INV-4): this side effect belongs ONLY to the suspicious
 				// pipeline — the heartbeat confirm layer's routing never notifies.
 				onConfirmedStuck: (r, verdict) => {
-					if (detectionEscalationEnabled() && r.targetKind === "runner") {
+					if (r.targetKind === "runner") {
 						const oldEpisode = stuckDetectorHolder.current?.episodeFor(
 							r.targetKey,
 						);
@@ -5591,7 +5576,7 @@ export async function startBridge(
 	// FLY-1048 (A6): cheap gap/state scan — OBSERVE ONLY in PR-A (in-process
 	// registry + debug log; the notification leg arrives with PR-C). Zero pane
 	// capture, zero tokens: StateStore sessions + readonly per-project CommDB.
-	// Env checked INSIDE the tick so a live FLYWHEEL_DETECTION_GAP_SCAN flip
+	// FLY-1243: the gap scan is固化 default-on (the FLYWHEEL_DETECTION_GAP_SCAN flip
 	// applies without a restart; unset = the tick returns immediately.
 	const gapSuspicionRegistry = createSuspicionRegistry();
 
@@ -5633,7 +5618,7 @@ export async function startBridge(
 			// available (A7's onFrame feeds it the SAME frame just before this
 			// verdict) so the C4a mutual exclusion matches; if the old flow
 			// already escalated this episode it owns the notification.
-			if (v.verdict === "c_candidate" && detectionEscalationEnabled()) {
+			if (v.verdict === "c_candidate") {
 				const oldEpisode = stuckDetectorHolder.current?.episodeFor(
 					v.target.targetKey,
 				);
@@ -5679,7 +5664,8 @@ export async function startBridge(
 		})(),
 	});
 	const gapScanTick = async (): Promise<void> => {
-		if (process.env.FLYWHEEL_DETECTION_GAP_SCAN !== "1") return;
+		// FLY-1243: FLYWHEEL_DETECTION_GAP_SCAN retired (固化 default-on) — the
+		// zero-token gap/state scan always runs.
 		const nowMs = Date.now();
 		const thresholds = defaultGapThresholds(process.env);
 		const records: SuspicionRecord[] = [];
@@ -5757,8 +5743,9 @@ export async function startBridge(
 		// unified flow when the escalation env is ON (unset = observe-only, the
 		// PR-A contract). The registry preserves firstSeenMs while a condition
 		// persists, so the derived episode fingerprint is stable and
-		// notifyLeadFirst dedups to once per episode.
-		if (detectionEscalationEnabled()) {
+		// notifyLeadFirst dedups to once per episode. FLY-1243: unconditional now
+		// (FLYWHEEL_DETECTION_ESCALATION retired, 固化 default-on).
+		{
 			const activeConditionKeys = new Set<string>();
 			for (const record of gapSuspicionRegistry.snapshot()) {
 				if (record.kind !== "pane_progress_suspect") {
@@ -5805,7 +5792,7 @@ export async function startBridge(
 
 	// FLY-1048 (PR-C, C3-w): unified detection-escalation reconcile — the
 	// ~30min Lead-grace sweep + fleet guard (PRD §4.3). Env checked INSIDE the
-	// tick so a live FLYWHEEL_DETECTION_ESCALATION flip applies without a
+	// FLY-1243: the reconcile is固化 default-on (no FLYWHEEL_DETECTION_ESCALATION flip; runs every
 	// restart; unset = the tick returns immediately (byte-compat). All timing
 	// and dedup state lives in the durable detection_escalations rows, so a
 	// missed tick can only delay an escalation, never reset it.
@@ -5871,7 +5858,8 @@ export async function startBridge(
 		},
 	});
 	const detectionReconcileTick = async (): Promise<void> => {
-		if (process.env.FLYWHEEL_DETECTION_ESCALATION !== "1") return;
+		// FLY-1243: FLYWHEEL_DETECTION_ESCALATION retired (固化 default-on) — the
+		// ~30min Lead-grace reconcile + fleet guard always runs.
 		const graceEnv = Number.parseInt(
 			process.env.FLYWHEEL_DETECTION_LEAD_GRACE_MS ?? "",
 			10,
@@ -6034,7 +6022,7 @@ export async function startBridge(
 	}
 
 	// FLY-314: roundtable per-topic auto-thread (Phase 1). Default OFF —
-	// loadRoundtableConfig returns undefined unless FLYWHEEL_ROUNDTABLE_ENABLED=1,
+	// loadRoundtableConfig returns undefined unless the roundtable channel is set (FLY-1243),
 	// so the byte-compat path constructs no poller and changes no behavior. When
 	// enabled, this is the central Bridge listener that auto-creates a thread off a
 	// roundtable topic message + pulls configured leads in as members. Reply-in-
@@ -6108,8 +6096,10 @@ export async function startBridge(
 	const unifiedAlertChannelId = process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID;
 	const repairBotTokenEnvName =
 		process.env.FLYWHEEL_ALERT_REPAIR_BOT_TOKEN_ENV ?? "CASS_BOT_TOKEN";
-	const alertThreadsEnabled = process.env.FLYWHEEL_ALERT_THREADS === "1";
-	const autoRepairEnabled = process.env.FLYWHEEL_AUTO_REPAIR === "1";
+	// FLY-1243: FLYWHEEL_ALERT_THREADS + FLYWHEEL_AUTO_REPAIR retired (固化
+	// default-on). Both are now gated purely by their companion config — the
+	// unified alert channel + a resolvable repair chain — so an unconfigured
+	// Bridge (no channel) stays byte-compat (no hub, no auto-repair).
 	const unifiedAlert = unifiedAlertChannelId
 		? {
 				channelId: unifiedAlertChannelId,
@@ -6899,10 +6889,13 @@ export async function startBridge(
 				// (Finding B from the founder-visibility real-machine QA round — the
 				// line otherwise goes stale at whatever it showed pre-merge).
 				refreshPhaseStatusLine: refreshPhaseStatusLineEffect,
-				grantTurn: ({ issueId, execId, phase, projectName }) => {
+				grantTurn: ({ issueId, execId, phase, projectName, sourceEventId }) => {
 					const db = new CommDB(commDbPathForProject(projectName));
 					try {
-						db.grantTurn(issueId, execId, phase, Date.now());
+						db.grantTurn(issueId, execId, phase, Date.now(), {
+							project: projectName,
+							sourceEventId,
+						});
 					} finally {
 						db.close();
 					}
@@ -7116,22 +7109,25 @@ export async function startBridge(
 	// FLY-368 rework (Codex R1 HIGH-1): threading needs a RESOLVABLE repair CHAIN
 	// (any fleet bot), NOT one fixed token. Fail LOUD + disable threading ONLY when
 	// the entire repair chain is empty.
-	if (alertThreadsEnabled && !(unifiedAlertChannelId && repairChainResolves)) {
+	// FLY-1243: threading is固化 default-on, so a unified channel WITHOUT a
+	// resolvable repair chain is a genuine misconfig (fail loud). A Bridge with no
+	// unified channel at all simply doesn't use unified alerts — not an error.
+	if (unifiedAlertChannelId && !repairChainResolves) {
 		console.error(
-			"[Bridge] FLY-368: FLYWHEEL_ALERT_THREADS=1 but no usable unified channel + repair chain " +
-				"(need FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID + at least one resolvable fleet bot token) — threading DISABLED.",
+			"[Bridge] FLY-368: unified alert channel set but no resolvable repair chain " +
+				"(need at least one resolvable fleet bot token) — threading DISABLED.",
 		);
 		void metaAlertNotifier.notify({
 			reason: "alert_unreachable_config",
 			title: "FLY-368 alert threading misconfigured",
-			body: "FLYWHEEL_ALERT_THREADS=1 but no unified channel / no resolvable repair-chain bot — per-error threads will NOT be created.",
+			body: "Unified alert channel set but no resolvable repair-chain bot — per-error threads will NOT be created.",
 		});
 	}
 
 	// FLY-696: hoisted so both the Hub's repair path AND the account-switch
 	// watchdog (piggybacked on onPollComplete below, no new timer) share one
 	// DiscordOps + one accountSwitch instance. accountSwitch is gated on
-	// FLYWHEEL_ACCOUNT_SELF_HEAL (default OFF = byte-compat → undefined).
+	// the account-pool presence (FLY-1243; absent = byte-compat → undefined).
 	const alertDiscordOps = createDiscordOps(() => {
 		// FLY-927 (D2): single sender identity — when set, Hub thread operations
 		// use the SAME one identity as the root alert (no repair-chain fan-out).
@@ -7151,14 +7147,17 @@ export async function startBridge(
 	suspiciousThreadPoster.current = async (threadId, content) => {
 		await alertDiscordOps.postToThread(threadId, content);
 	};
-	const accountSwitchRepair =
-		process.env.FLYWHEEL_ACCOUNT_SELF_HEAL === "1"
-			? makeAccountSwitchRepair({
-					switchDeps: makeClaudeProfileSwitchDeps({
-						binPath: claudeProfileBinPath(),
-					}),
-				})
-			: undefined;
+	// FLY-1243: FLYWHEEL_ACCOUNT_SELF_HEAL retired (固化 default-on). The Claude
+	// account pool file is now the de-facto switch — present ⇒ self-heal wires
+	// (production); absent ⇒ undefined = byte-compat for deployments that never
+	// provisioned a pool (QA slots / sub / joycon), no quota scan, no switch.
+	const accountSwitchRepair = accountPoolConfigured()
+		? makeAccountSwitchRepair({
+				switchDeps: makeClaudeProfileSwitchDeps({
+					binPath: claudeProfileBinPath(),
+				}),
+			})
+		: undefined;
 
 	// FLY-696 M1/④: now that the unified-channel DiscordOps exists, late-bind the
 	// account_rotation Alerts-post the event router reads. Reuses the SAME
@@ -7493,65 +7492,65 @@ export async function startBridge(
 	// FLY-368 rework: Hub on when unified channel + threading + a resolvable repair
 	// chain; else watchdogs route straight to the notifier (legacy / root-only).
 	const alertHub =
-		unifiedAlert && alertThreadsEnabled && repairChainResolves
+		unifiedAlert && repairChainResolves
 			? new AlertChannelHub({
 					store,
 					notifier: leadAlertNotifier,
 					// Repair-chain DiscordOps: Cass → alphabetical, resolved per call.
 					discord: alertDiscordOps,
-					// FLY-368: conservative auto-repair, default OFF. Only the two safe
-					// actions; reuses the audited runner-nudge + lead-resume-enter ops.
-					autoRepairBot: autoRepairEnabled
-						? new AutoRepairBot({
-								runnerNudge: (input) =>
-									attemptRunnerRecoveryNudge(input, {
-										store,
-										projects,
-										captureSessionFn: defaultCaptureSession,
-										hasPendingGate: hasPendingGateFromCommDb,
-										sendKeys: sendKeysToWindow,
-										getTmuxTarget: getTmuxTargetFromCommDb,
-										now: () => Date.now(),
-										nextAuditSeq: (() => {
-											let n = 0;
-											return () => ++n;
-										})(),
-									}),
-								leadResumeEnter: (input) =>
-									attemptLeadResumeEnter(input, {
-										store,
-										locateWindowFn: locateLeadWindow,
-										captureFn: leadPaneCaptureFn,
-										sendEnter: sendEnterToWindow,
-									}),
-								// FLY-696: usage_limit → Claude account switch (enqueues a
-								// pending record; the watchdog below fires it). Hoisted +
-								// gated on FLYWHEEL_ACCOUNT_SELF_HEAL (default OFF → undefined
-								// = byte-compat, usage_limit stays needs_human).
-								accountSwitch: accountSwitchRepair,
-								// FLY-1082: fleet repairs — holder-backed (sensors built after
-								// the sink below). Unwired ⇒ needs_human, honest degradation.
-								fleetRepair: {
-									swapPressure: (p) =>
-										fleetSensorsHolder.current
-											? fleetSensorsHolder.current.swapPressureRepair(p)
-											: Promise.resolve({
-													outcome: "needs_human" as const,
-													action: "none",
-													detail: "fleet sensors 未接线 — 需要人工降载。",
-												}),
-									infraBotKickstart: (p) =>
-										fleetSensorsHolder.current
-											? fleetSensorsHolder.current.infraBotKickstartRepair(p)
-											: Promise.resolve({
-													outcome: "needs_human" as const,
-													action: "none",
-													detail:
-														"fleet sensors 未接线 — 需要人工重启 launchd job。",
-												}),
-								},
-							})
-						: undefined,
+					// FLY-1243: conservative auto-repair, 固化 default-on (always wired
+					// inside the hub, which itself needs a channel + repair chain). Only
+					// the two safe actions; reuses the audited runner-nudge +
+					// lead-resume-enter ops.
+					autoRepairBot: new AutoRepairBot({
+						runnerNudge: (input) =>
+							attemptRunnerRecoveryNudge(input, {
+								store,
+								projects,
+								captureSessionFn: defaultCaptureSession,
+								hasPendingGate: hasPendingGateFromCommDb,
+								sendKeys: sendKeysToWindow,
+								getTmuxTarget: getTmuxTargetFromCommDb,
+								now: () => Date.now(),
+								nextAuditSeq: (() => {
+									let n = 0;
+									return () => ++n;
+								})(),
+							}),
+						leadResumeEnter: (input) =>
+							attemptLeadResumeEnter(input, {
+								store,
+								locateWindowFn: locateLeadWindow,
+								captureFn: leadPaneCaptureFn,
+								sendEnter: sendEnterToWindow,
+							}),
+						// FLY-696: usage_limit → Claude account switch (enqueues a
+						// pending record; the watchdog below fires it). Hoisted +
+						// gated on the account-pool presence (FLY-1243; absent →
+						// undefined = byte-compat, usage_limit stays needs_human).
+						accountSwitch: accountSwitchRepair,
+						// FLY-1082: fleet repairs — holder-backed (sensors built after
+						// the sink below). Unwired ⇒ needs_human, honest degradation.
+						fleetRepair: {
+							swapPressure: (p) =>
+								fleetSensorsHolder.current
+									? fleetSensorsHolder.current.swapPressureRepair(p)
+									: Promise.resolve({
+											outcome: "needs_human" as const,
+											action: "none",
+											detail: "fleet sensors 未接线 — 需要人工降载。",
+										}),
+							infraBotKickstart: (p) =>
+								fleetSensorsHolder.current
+									? fleetSensorsHolder.current.infraBotKickstartRepair(p)
+									: Promise.resolve({
+											outcome: "needs_human" as const,
+											action: "none",
+											detail:
+												"fleet sensors 未接线 — 需要人工重启 launchd job。",
+										}),
+						},
+					}),
 					// Reconcile capture: locate the Lead window + grab its pane (null when
 					// no window) — the restart-safe recovery truth source.
 					capturePane: async (projectName, leadId) => {
@@ -7635,7 +7634,7 @@ export async function startBridge(
 			: undefined;
 	if (alertHub) {
 		console.log(
-			`[Bridge] FLY-368 AlertChannelHub ON (unified channel=${unifiedAlertChannelId}, auto-repair=${autoRepairEnabled ? "ON" : "OFF"})`,
+			`[Bridge] FLY-368 AlertChannelHub ON (unified channel=${unifiedAlertChannelId}, auto-repair=ON)`,
 		);
 	}
 
@@ -7974,7 +7973,7 @@ export async function startBridge(
 			reconnectHolder.current?.isReconnecting(execId) ?? false,
 		// FLY-696 M1/③: runner-side quota scan, piggybacked on this poll's capture
 		// (no new timer). Gated on the SAME switch (accountSwitchRepair exists iff
-		// FLYWHEEL_ACCOUNT_SELF_HEAL=1) — default OFF ⇒ undefined ⇒ byte-compat.
+		// account pool provisioned; FLY-1243) — absent ⇒ undefined ⇒ byte-compat.
 		// Routes a real runner cap through the shared alert sink (Hub threading +
 		// AutoRepairBot enqueue), with the §3.3 transient-529 short-circuit inside.
 		runnerQuotaScan: accountSwitchRepair
@@ -8174,7 +8173,7 @@ export async function startBridge(
 			// FLY-929 B2: notify-digest expectation check — the daily token
 			// report must leave a delivery receipt by 01:00 (report tz) or ONE
 			// deduped notify_digest_failed alert fires per expected day. The tick
-			// itself is gated on FLYWHEEL_NOTIFY_DIGEST_EXPECT=1 (unset ⇒
+			// itself is固化 default-on (FLY-1243; the check runs every tick;
 			// "inactive", zero side effects). Same piggybacked poll — no timer.
 			try {
 				await notifyDigestExpectTick({
@@ -8199,9 +8198,9 @@ export async function startBridge(
 		// Escape hatch: set FLYWHEEL_PANE_IDLE_SUPPRESS=0 to force suppression OFF
 		// and restore the legacy always-alert-on-stuck-pane behavior.
 		suppressIdleHealthy: process.env.FLYWHEEL_PANE_IDLE_SUPPRESS !== "0",
-		// FLY-1048 (A4): multi-frame overlay — default OFF; unset env keeps the
-		// single-frame behavior byte-for-byte (gray-rollout knob, plan §6).
-		multiFrame: process.env.FLYWHEEL_PANE_MULTIFRAME === "1",
+		// FLY-1048 (A4): multi-frame overlay. FLY-1243: FLYWHEEL_PANE_MULTIFRAME
+		// retired (固化 default-on) — the overlay is always on in production.
+		multiFrame: true,
 		// FLY-1048 (A5): fail-suspicious → quiet owner-Lead report (guardrail
 		// lead_event; never an alert, never founder-facing). Shared deliverer +
 		// owner resolver with the focused-frame unclear path.
@@ -8357,6 +8356,7 @@ export async function startBridge(
 		// path as /health shuttingDown (no extra signal handlers) — a boot that
 		// finds this marker still `running` knows the previous Bridge died dirty.
 		writeCleanMarker(bridgeMarker);
+		workflowSourceProjector.stop();
 		heartbeatService?.stop();
 		await publishBrokerHandle?.close(); // FLY-1062: socket + observe timer
 		gatePoller.stop();

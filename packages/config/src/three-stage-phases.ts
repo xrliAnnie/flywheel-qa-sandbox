@@ -27,10 +27,15 @@
  * author, its design review automatically flips to the Claude lane — no new
  * decision needed.
  *
- * KILL-SWITCH: `FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT=0` falls the implement
- * phase back to (claude, heavy) — the escape hatch when the codex account
- * quota is exhausted. Env is read at process start: edit `~/.flywheel/.env`,
- * then `restart-services.sh --bridge-only` (see the FLY-1224 plan §7 runbook).
+ * KILL-SWITCHES (two symmetric env toggles, see `resolvePhaseDispatch`):
+ *   - `FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT=0` falls the implement phase back to
+ *     (claude, heavy) — the escape hatch when the codex account quota is out.
+ *   - `FLYWHEEL_THREE_STAGE_CODEX_DESIGN=1` flips the design phase FROM Fable TO
+ *     codex (gpt-5.6-sol, xhigh) — for when Fable's quota is the bottleneck
+ *     (FLY-1245). Opposite activating value (=1 vs =0) because design defaults
+ *     to claude while implement defaults to codex.
+ * Env is read at process start: edit `~/.flywheel/.env`, then
+ * `restart-services.sh --bridge-only` (see the FLY-1224 plan §7 runbook).
  *
  * REVERT (7/7, after the Fable window): flip the `pipeline.three_stage` toggle
  * OFF — a task then runs as a single session exactly as before. The table here
@@ -132,28 +137,56 @@ export interface PhaseDispatchSpec {
 }
 
 /**
- * Annie's directive (2026-07-13): design=Fable / implement=Codex gpt-5.6-sol
- * (xhigh) / qa=Opus. The codex spelling's ground truth is the host
+ * Annie's standard Codex config — the ground truth is the host
  * `~/.codex/config.toml` (`model = "gpt-5.6-sol"`, `model_reasoning_effort =
- * "xhigh"`) — a model rename is a one-line diff here.
+ * "xhigh"`). SINGLE SOURCE OF TRUTH shared by BOTH the implement default row AND
+ * the FLY-1245 design kill-switch, so a model rename is ONE line here and the two
+ * codex-authored phases can never drift apart.
+ */
+const CODEX_STANDARD_DISPATCH: PhaseDispatchSpec = {
+	vendor: "codex",
+	model: "gpt-5.6-sol",
+	effort: "xhigh",
+};
+
+/**
+ * Annie's directive (2026-07-13): design=Fable / implement=Codex gpt-5.6-sol
+ * (xhigh) / qa=Opus. The implement codex spec draws from CODEX_STANDARD_DISPATCH
+ * above (single source of truth); a model rename is a one-line diff there.
  */
 export const DEFAULT_PHASE_DISPATCH: Readonly<
 	Record<ThreeStagePhase, PhaseDispatchSpec>
 > = {
 	design: { vendor: "claude", model: MODEL_TIERS.heavy.id },
-	implement: { vendor: "codex", model: "gpt-5.6-sol", effort: "xhigh" },
+	implement: CODEX_STANDARD_DISPATCH,
 	qa: { vendor: "claude", model: MODEL_TIERS.medium.id },
 };
 
 /**
- * FLY-1224: the dispatch spec for a three-stage phase, kill-switch aware.
- * `FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT=0` → implement falls back to the
- * legacy (claude, heavy) row — the operational escape hatch when the codex
- * account quota is exhausted (naming follows FLYWHEEL_THREE_STAGE_QA_RESPAWN).
- * Env is injectable for tests; defaults to process.env. NOTE the env is read
- * at call time but the process env itself only loads at Bridge start — a
- * `~/.flywheel/.env` edit needs `restart-services.sh --bridge-only` (§7
- * runbook in the FLY-1224 plan).
+ * FLY-1224 / FLY-1245: the dispatch spec for a three-stage phase, kill-switch
+ * aware. TWO env toggles let ops swap a phase's vendor with a `~/.flywheel/.env`
+ * edit + Bridge restart, no code change. They point in OPPOSITE directions
+ * because the two phases DEFAULT to opposite vendors:
+ *
+ *   - implement defaults to CODEX → `FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT=0`
+ *     falls it BACK to the legacy (claude, heavy) row — the escape hatch when
+ *     the codex account quota is exhausted (a default-on kill-switch).
+ *   - design defaults to CLAUDE/Fable → `FLYWHEEL_THREE_STAGE_CODEX_DESIGN=1`
+ *     opts it INTO codex (gpt-5.6-sol, xhigh) — for when Fable's quota is the
+ *     bottleneck (an opt-in). Naming is aligned (FLYWHEEL_THREE_STAGE_CODEX_
+ *     <PHASE>); only the activating value differs (=0 vs =1), dictated by each
+ *     phase's default vendor.
+ *
+ * When design flips to codex it becomes a codex AUTHOR, so its design review
+ * auto-routes to the Claude reviewer via the FLY-1188 §7.1 request-review lane
+ * (event-route.ts codex-tmux author detection → the request-review coordinator's
+ * hard-coded cross-family Claude reviewer) — no new decision, exactly as the
+ * file-header CROSS-FAMILY note promises.
+ *
+ * Env is injectable for tests; defaults to process.env. The env is read at call
+ * time, but process.env itself only loads at Bridge start — a `~/.flywheel/.env`
+ * edit needs `restart-services.sh --bridge-only` (§7 runbook in the FLY-1224
+ * plan).
  */
 export function resolvePhaseDispatch(
 	phase: ThreeStagePhase,
@@ -164,6 +197,9 @@ export function resolvePhaseDispatch(
 		env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT === "0"
 	) {
 		return { vendor: "claude", model: MODEL_TIERS.heavy.id };
+	}
+	if (phase === "design" && env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN === "1") {
+		return CODEX_STANDARD_DISPATCH;
 	}
 	return DEFAULT_PHASE_DISPATCH[phase];
 }

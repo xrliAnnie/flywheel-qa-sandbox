@@ -51,16 +51,17 @@ export function infraSenderTokenOr(
 /**
  * FLY-929 A5 predicate — route a Claude account-cap needs_human to the OWNER
  * BOT (Codex Infra Bot assignment mention) instead of the immediate founder
- * escalation. ALL THREE must hold, else undefined = legacy founder routing:
- *   - self-heal on (`FLYWHEEL_ACCOUNT_SELF_HEAL=1`),
+ * escalation. BOTH must hold, else undefined = legacy founder routing:
  *   - P-identity (the FLY-929 migration surface is live),
  *   - `FLYWHEEL_INFRA_BOT_USER_ID` is a valid snowflake (malformed degrades to
  *     no-mention rather than a rejected allowed_mentions body).
+ * (FLY-1243: the FLYWHEEL_ACCOUNT_SELF_HEAL gate is retired.)
  */
 export function resolveAccountCapOwnerId(
 	env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-	if (env.FLYWHEEL_ACCOUNT_SELF_HEAL !== "1") return undefined;
+	// FLY-1243: FLYWHEEL_ACCOUNT_SELF_HEAL retired — the infra-notify identity
+	// (companion config) is the remaining gate.
 	if (!resolveInfraNotifyIdentity(env)) return undefined;
 	const id = env.FLYWHEEL_INFRA_BOT_USER_ID?.trim();
 	return id && /^\d{17,20}$/.test(id) ? id : undefined;

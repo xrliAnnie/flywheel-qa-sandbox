@@ -40,6 +40,7 @@ const store = (status?: string) => ({
 const baseArgs = {
 	questionId: "Q-1",
 	executionId: "E-1",
+	source: "text" as const,
 	actor: "founder-discord",
 	answer: APPROVE,
 	expectedCurrentReviewQuestionId: "Q-1",
@@ -134,11 +135,13 @@ describe("writeGateResponseAndRunPostWrite — idempotency (Codex R2 HIGH-2)", (
 			...baseArgs,
 			db,
 			store: store("approved_to_ship"),
+			holdReasonFor: () => "merge_block",
 			onResponseWritten,
 		});
 		expect(db.insertResponse).not.toHaveBeenCalled();
 		expect(onResponseWritten).toHaveBeenCalledOnce();
 		expect(r.retrySafe).toBe(true);
+		expect(r.disposition).toBe("already_applied");
 	});
 
 	it("conflicting prior feedback → rejected (a different decision needs a new round)", async () => {
@@ -190,5 +193,139 @@ describe("writeGateResponseAndRunPostWrite — live review binding (Codex R1 HIG
 			onResponseWritten: vi.fn().mockResolvedValue({ ok: true }),
 		});
 		expect(r.written).toBe(true);
+	});
+});
+
+describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () => {
+	it("runs the route-scoped card authority hook before a fresh approval write", async () => {
+		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
+		const cardAuthority = vi.fn().mockReturnValue({
+			ok: false,
+			reason: "inactive_card",
+		});
+		const args = {
+			...baseArgs,
+			db,
+			store: store("awaiting_review"),
+			source: "reaction",
+			targetMessageId: "M-1",
+			cardAuthority,
+		} as Parameters<typeof writeGateResponseAndRunPostWrite>[0] & {
+			source: "reaction";
+			targetMessageId: string;
+			cardAuthority: (input: {
+				executionId: string;
+				source: "reaction";
+				targetMessageId?: string;
+			}) => { ok: true } | { ok: false; reason: string };
+		};
+
+		const r = await writeGateResponseAndRunPostWrite(args);
+
+		expect(cardAuthority).toHaveBeenCalledWith({
+			executionId: "E-1",
+			source: "reaction",
+			targetMessageId: "M-1",
+		});
+		expect(r).toMatchObject({
+			written: false,
+			retrySafe: true,
+			disposition: "reject",
+			reason: "card_authority_inactive_card",
+		});
+		expect(db.insertResponse).not.toHaveBeenCalled();
+	});
+
+	it("returns defer before any write while Codex or QA still holds review", async () => {
+		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
+		const r = await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			db,
+			store: store("awaiting_review"),
+			holdReasonFor: () => "qa_not_green",
+		});
+		expect(r).toMatchObject({ written: false, disposition: "defer" });
+		expect(db.insertResponse).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		"qa_evidence_missing",
+		"qa_evidence_unknown",
+		"no_qualified_reviewer",
+	] as const)("returns reject for NEVER-deferrable hold %s", async (reason) => {
+		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
+		const r = await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			db,
+			store: store("awaiting_review"),
+			holdReasonFor: () => reason as never,
+		});
+		expect(r).toMatchObject({
+			written: false,
+			disposition: "reject",
+			reason: `held_${reason}`,
+		});
+		expect(db.insertResponse).not.toHaveBeenCalled();
+	});
+
+	it("returns reject before any write for a merge-block hold", async () => {
+		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
+		const r = await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			db,
+			store: store("awaiting_review"),
+			holdReasonFor: () => "merge_block",
+		});
+		expect(r).toMatchObject({ written: false, disposition: "reject" });
+		expect(db.insertResponse).not.toHaveBeenCalled();
+	});
+
+	it("uses the atomic source writer only for trusted structured approval", async () => {
+		const db = {
+			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),
+			insertFounderApprovalResponseWithSource: vi.fn().mockReturnValue(true),
+		};
+		const r = await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			actor: "bridge",
+			db,
+			store: store("awaiting_review"),
+			founderId: "founder-discord",
+			founderSource: {
+				project: "flywheel",
+				runId: "run-1",
+				issueId: "FLY-1244",
+				approvedHead: "a".repeat(40),
+				classification: "dashboard_founder_action",
+				authorityId: "Q-1",
+			},
+		});
+		expect(r).toMatchObject({ written: true, disposition: "written" });
+		expect(db.insertFounderApprovalResponseWithSource).toHaveBeenCalledOnce();
+		expect(db.insertResponse).not.toHaveBeenCalled();
+	});
+
+	it("never emits a founder source event for feedback or an untrusted actor", async () => {
+		const db = {
+			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),
+			insertFounderApprovalResponseWithSource: vi.fn().mockReturnValue(true),
+		};
+		await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			actor: "lead",
+			db,
+			store: store("awaiting_review"),
+			founderId: "founder-discord",
+			founderSource: {
+				project: "flywheel",
+				runId: "run-1",
+				issueId: "FLY-1244",
+				approvedHead: "a".repeat(40),
+				classification: "audit_only",
+				authorityId: "Q-1",
+			},
+		});
+		expect(db.insertFounderApprovalResponseWithSource).not.toHaveBeenCalled();
+		expect(db.insertResponse).toHaveBeenCalledOnce();
 	});
 });

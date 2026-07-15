@@ -64,13 +64,6 @@ export interface FounderShipApprovalFactoryConfig {
 		threadId: string;
 		projectName: string;
 	}) => DeferralSupport;
-	/**
-	 * FLY-799 image approval (default-OFF fast-follow): the production image
-	 * evaluator (download + sha256 + multimodal classify). Absent → text-only.
-	 * The `FLYWHEEL_FOUNDER_IMAGE_APPROVAL=1` flag (opt-in, read per-call) only
-	 * takes effect when this is also wired.
-	 */
-	evaluateImageImpl?: ShipApprovalHandlerDeps["evaluateImageImpl"];
 	/** Test seam. */
 	handlerImpl?: typeof defaultHandler;
 }
@@ -92,11 +85,6 @@ export interface FounderShipApprovalCallbackArgs {
 /** Default ON — only an explicit `=0` disables (kill-switch). */
 function autoApproveEnabled(): boolean {
 	return process.env.FLYWHEEL_FOUNDER_AUTO_APPROVE !== "0";
-}
-
-/** Default OFF — image approval is opt-in (`=1`), a 799 fast-follow. */
-function imageApprovalEnabled(): boolean {
-	return process.env.FLYWHEEL_FOUNDER_IMAGE_APPROVAL === "1";
 }
 
 export function makeFounderShipApprovalCallback(
@@ -153,10 +141,6 @@ export function makeFounderShipApprovalCallback(
 				onResponseWritten: config.onResponseWritten,
 				evaluateTextImpl: config.evaluateTextImpl,
 				writeGateResponseImpl: config.writeGateResponseImpl,
-				// FLY-799 image approval (default-off; only active with a wired
-				// evaluator, which is the flip-on fast-follow).
-				imageApproval: imageApprovalEnabled(),
-				evaluateImageImpl: config.evaluateImageImpl,
 				auditSink,
 				isHeld: config.isHeld,
 				// FLY-1099 §4.2: deferral support bound to this thread's ctx.

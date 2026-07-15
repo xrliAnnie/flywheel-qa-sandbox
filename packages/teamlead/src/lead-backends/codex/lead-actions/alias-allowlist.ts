@@ -1,7 +1,7 @@
 /**
  * FLY-350 — lead-actions MCP channel-alias allowlist (pure, fail-closed).
  *
- * The content-coordination Codex Lead's `discord_send` tool takes a target
+ * The lead-actions MCP's `discord_send` tool takes a target
  * ALIAS ("chat" | "roundtable"), NEVER a raw channel id. This module resolves an
  * alias to a concrete channel id SERVER-SIDE (inside the out-of-sandbox MCP
  * child), so the model can only ever post to the channels the Lead is configured

@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2015  # test assertions intentionally use cmd && pass || fail
 # FLY-259 PR-B — codex-lead-tui-home.sh tests (PATH-injected mock codex,
 # same pattern as codex-lead-cmux-window.test.sh). Run with /bin/bash.
 
@@ -6,6 +7,11 @@ set -uo pipefail
 PASS=0; FAIL=0
 pass() { echo "  ✓ $1"; PASS=$((PASS+1)); }
 fail() { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
+
+# Hermetic baseline: a Lead/runner parent may carry full-access profile and a
+# global binary override, but the default-path cases below must exercise the
+# companion home and its isolated standalone binary.
+unset FLYWHEEL_CODEX_LEAD_PROFILE FLYWHEEL_CODEX_BIN
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SUT="$SCRIPT_DIR/codex-lead-tui-home.sh"
@@ -174,95 +180,78 @@ if FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/w" /bin/bash "$SUT" ens
 else
   pass "R4 MED-1: scalar projects fails closed"
 fi
-# ════════════════ FLY-260 read-deny mode (FLYWHEEL_CODEX_LEAD_READ_DENY=1) ════════════════
-
-# ── flag-on: rewrites to a profile config — NO sandbox_mode, deny list, env exclude, cwd trusted ──
-H=$(fresh_home 20)
-if FLYWHEEL_CODEX_LEAD_READ_DENY=1 FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" /bin/bash "$SUT" ensure-home >/dev/null 2>&1; then
-  pass "read-deny ensure-home succeeds on a provisioned home"
-else
-  fail "read-deny ensure-home should succeed"
-fi
-python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('sandbox_mode') is None else 1)" "$H/config.toml" \
-  && pass "read-deny: NO top-level sandbox_mode (Codex R2 #1)" || fail "read-deny: sandbox_mode must be absent"
-command grep -q 'default_permissions = "flywheel-lead-secret-deny"' "$H/config.toml" && pass "read-deny: default_permissions set" || fail "read-deny: default_permissions missing"
-command grep -q '"~/.codex\*\*" = "deny"' "$H/config.toml" && pass "read-deny: ~/.codex** deny present" || fail "read-deny: ~/.codex** deny missing"
-command grep -q '"~/\*\*/.env\*\*" = "deny"' "$H/config.toml" && pass "read-deny: ~/**/.env** deny present" || fail "read-deny: env-family deny missing"
-command grep -q '\[shell_environment_policy\]' "$H/config.toml" && pass "read-deny: shell_environment_policy present (env exclude)" || fail "read-deny: env exclude missing"
-! command grep -q '"~/.flywheel" = "deny"' "$H/config.toml" && pass "read-deny: ~/.flywheel NOT blanket-denied (COE Director)" || fail "read-deny: ~/.flywheel must not be blanket-denied"
-python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if (c.get('projects') or {}).get('/work/dir',{}).get('trust_level')=='trusted' else 1)" "$H/config.toml" \
-  && pass "read-deny: cwd trusted" || fail "read-deny: cwd trust missing"
-
-# ── flag-on REWRITES an OLD legacy config (sandbox_mode present) → no sandbox_mode (Codex R2 #1) ──
-H=$(fresh_home 21)
-printf 'sandbox_mode = "read-only"\napproval_policy = "never"\n[projects."/work/dir"]\ntrust_level = "trusted"\n' > "$H/config.toml"
-if FLYWHEEL_CODEX_LEAD_READ_DENY=1 FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" /bin/bash "$SUT" ensure-home >/dev/null 2>&1; then
-  python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if (c.get('sandbox_mode') is None and c.get('default_permissions')=='flywheel-lead-secret-deny') else 1)" "$H/config.toml" \
-    && pass "read-deny: old sandbox_mode config REWRITTEN (sandbox_mode gone, profile in)" || fail "read-deny: old config not rewritten cleanly"
-  python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if (c.get('projects') or {}).get('/work/dir',{}).get('trust_level')=='trusted' else 1)" "$H/config.toml" \
-    && pass "read-deny: pre-existing trusted project preserved" || fail "read-deny: trusted project not preserved"
-else
-  fail "read-deny: rewriting an old legacy config should succeed"
-fi
-
-# ── ensure-daemon flag-on: STOP then START (Codex R2 #2 — daemon re-reads config) ──
-H=$(fresh_home 22); : > "$MOCK_LOG"
-FLYWHEEL_CODEX_LEAD_READ_DENY=1 FLYWHEEL_CODEX_BIN="$T/bin/codex" FLYWHEEL_CODEX_TUI_HOME="$H" /bin/bash "$SUT" ensure-daemon >/dev/null 2>&1
-command grep -q "remote-control stop" "$MOCK_LOG" && pass "read-deny ensure-daemon: stop invoked (daemon re-reads config)" || fail "read-deny ensure-daemon: stop not invoked"
-command grep -q "remote-control start --json" "$MOCK_LOG" && pass "read-deny ensure-daemon: start invoked after stop" || fail "read-deny ensure-daemon: start not invoked"
-
-# ── ensure-daemon flag-OFF: start only, NO stop (byte-compat, no interruption) ──
+# ── companion ensure-daemon: start only, NO stop (byte-compat) ─────────────
 H=$(fresh_home 23); : > "$MOCK_LOG"
 FLYWHEEL_CODEX_BIN="$T/bin/codex" FLYWHEEL_CODEX_TUI_HOME="$H" /bin/bash "$SUT" ensure-daemon >/dev/null 2>&1
 ! command grep -q "remote-control stop" "$MOCK_LOG" && pass "flag-off ensure-daemon: NO stop (byte-compat)" || fail "flag-off ensure-daemon: must not stop the daemon"
 
-# ── FLY-350 HIGH-1: the SHELL-written content-coordination config.toml must PASS
-#    the runtime config gate (assertLeadActionsConfigGate). Highest-risk consistency
-#    contract — a key/value drift between the shell renderer and the gate would
-#    fail-close Mufasa at cutover. Runs the REAL ensure-home (read-deny + content-
-#    coordination) then the REAL gate against the result.
 GATE_JS="$SCRIPT_DIR/../dist/lead-backends/codex/lead-actions/mcp-config.js"
-if [ ! -f "$GATE_JS" ]; then
-  echo "  (skip shell→gate xcheck: dist not built — run pnpm --filter flywheel-teamlead build)"
-else
-  run_content_xcheck() {
-    local H; H=$(fresh_home "cc-$1")
+RUNTIME_JS="$SCRIPT_DIR/../dist/lead-backends/codex/codex-lead-runtime.js"
+
+# ════════════ FLY-1243: roundtable_autocontinue_effective — resolvable-parent rule ═══════════
+# FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD is retired (固化 default-on); the shell helper now
+# mirrors parseCodexLeadRuntimeConfig's resolvable-parent rule (a roundtable channel id,
+# else the first cross-dept id) instead of the retired flag. Exercised via ensure-home's
+# full-access profile (the marker is forwarded into config.toml's lead_actions env).
+rt_marker_case() {
+  local n="$1" desc="$2" expect="$3"
+  shift 3
+  local H
+  H=$(fresh_home "rt-$n")
+  env "$@" FLYWHEEL_CODEX_LEAD_PROFILE=full-access \
+    FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
+    FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
+    FLYWHEEL_LEAD_CHAT_CHANNEL_ID="1500600400238084307" \
+    FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" \
     FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
-      FLYWHEEL_CODEX_LEAD_READ_DENY=1 FLYWHEEL_CODEX_LEAD_PROFILE=content-coordination \
-      FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/Users/x/dist/lead-actions/lead-actions-main.js" \
-      FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
-      FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET="/Users/x/.flywheel/state/codex-lead/mufasa/lead-actions.sock" \
-      FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
-      FLYWHEEL_LEAD_CHAT_CHANNEL_ID="1500600400238084307" \
-      FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="$2" \
-      FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/Users/x/.flywheel/state/codex-lead/mufasa" \
-      FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES="$3" \
-      /bin/bash "$SUT" ensure-home >/dev/null 2>&1 || { fail "shell→gate ($1): ensure-home failed"; return; }
-    GATE_JS="$GATE_JS" CFG="$H/config.toml" CROSS="$2" ALI="$3" node --input-type=module -e '
-      import { readFileSync } from "node:fs";
-      const { assertLeadActionsConfigGate, buildLeadActionsMcpServerConfig } = await import(process.env.GATE_JS);
-      const cross = process.env.CROSS ? process.env.CROSS.split(",").map(s=>s.trim()).filter(Boolean) : [];
-      const expected = buildLeadActionsMcpServerConfig({
-        nodeBin: "/usr/local/bin/node",
-        mainJsPath: "/Users/x/dist/lead-actions/lead-actions-main.js",
-        brokerSocketPath: "/Users/x/.flywheel/state/codex-lead/mufasa/lead-actions.sock",
-        leadId: "mufasa-lead", projectName: "growth",
-        chatChannelId: "1500600400238084307", crossDeptChannelIds: cross,
-        stateDir: "/Users/x/.flywheel/state/codex-lead/mufasa",
-        explicitAliases: process.env.ALI || undefined,
-      });
-      assertLeadActionsConfigGate(readFileSync(process.env.CFG, "utf8"), expected);
-    ' && pass "shell→gate ($1): ensure-home config.toml passes the runtime gate" \
-       || fail "shell→gate ($1): config.toml did NOT pass the runtime gate"
-  }
-  run_content_xcheck "one-crossdept" "1512578695468941333" ""
-  run_content_xcheck "no-crossdept" "" ""
-  run_content_xcheck "with-aliases" "1512578695468941333,1517226183341904032" "roundtable:1512578695468941333"
-fi
+    /bin/bash "$SUT" ensure-home >/dev/null 2>&1 || { fail "$desc: ensure-home failed"; return; }
+  if [ "$expect" = "1" ]; then
+    command grep -q 'FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE = "1"' "$H/config.toml" \
+      && pass "$desc" || fail "$desc (marker expected, absent)"
+  else
+    ! command grep -q 'FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE' "$H/config.toml" \
+      && pass "$desc" || fail "$desc (marker NOT expected, present)"
+  fi
+}
+
+# FLY-1243: legacy flag=1 + cross-dept channel present → marker STILL expected (a
+# resolvable parent exists via cross-dept[0]; the retired flag itself is now inert).
+rt_marker_case 1 "FLY-1243: legacy REPLY_IN_THREAD=1 + cross-dept → marker present" 1 \
+  FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD=1 \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1512578695468941333
+
+# FLY-1243: flag UNSET + cross-dept channel present → marker NOW expected. This is the
+# behavior CHANGE the retirement introduces: resolvability alone drives it, not the flag.
+rt_marker_case 2 "FLY-1243: REPLY_IN_THREAD unset + cross-dept → marker present (behavior change)" 1 \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1512578695468941333
+
+# FLY-1243: no resolvable parent (no roundtable channel id, no cross-dept) → no marker.
+rt_marker_case 3 "FLY-1243: no resolvable parent → no marker" 0
+
+# FLY-1243: THREAD_AUTOCONTINUE=0 kill-switch → no marker even with a resolvable parent.
+rt_marker_case 4 "FLY-1243: THREAD_AUTOCONTINUE=0 → no marker" 0 \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1512578695468941333 \
+  FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE=0
+
+# FLY-1243 (Codex R2): empty-leading cross list (" ,<id>") → after split/trim/filter the
+# first survivor is the real id → resolvable parent → marker present.
+rt_marker_case 5 "FLY-1243: empty-leading cross list → marker present" 1 \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=" ,1512578695468941333"
+
+# FLY-1243 (Codex R2): chat id as the ONLY cross-dept entry → base-channel exclusion drops
+# it (a chat channel must NOT be mention-gated) → no resolvable parent → no marker.
+# rt_marker_case already sets FLYWHEEL_LEAD_CHAT_CHANNEL_ID=1500600400238084307.
+rt_marker_case 6 "FLY-1243: chat id as only cross-dept entry → no marker (base-channel excluded)" 0 \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1500600400238084307
+
+# FLY-1243 (Codex R3): chat id + a real cross-dept id → base-channel exclusion drops the chat
+# but the real id survives as crossDept[0] → resolvable parent → marker present.
+rt_marker_case 7 "FLY-1243: chat id + real cross-dept id → marker present (real id survives base exclusion)" 1 \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1500600400238084307,1512578695468941333
 
 # ════════════════ FLY-398 full-access (FLYWHEEL_CODEX_LEAD_PROFILE=full-access) ════════════════
 
-# ── ensure-home full-access: workspace-write + network ON + writable_roots, NOT read-deny ──
+# ── ensure-home full-access: workspace-write + network ON + writable_roots ──
 H=$(fresh_home 30)
 if FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
    FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
@@ -280,7 +269,7 @@ python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit
 python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sww=c.get('sandbox_workspace_write',{}); sys.exit(0 if (sww.get('network_access') is True and sww.get('writable_roots')==['/work/dir']) else 1)" "$H/config.toml" \
   && pass "full-access: network ON + writable_roots=[cwd]" || fail "full-access: network/writable_roots wrong"
 python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('default_permissions') is None else 1)" "$H/config.toml" \
-  && pass "full-access: NO read-deny profile (Claude-equal reads disk)" || fail "full-access: must not carry read-deny profile"
+  && pass "full-access: no default permission profile" || fail "full-access: must not carry a default permission profile"
 command grep -q 'default_tools_approval_mode = "approve"' "$H/config.toml" && pass "full-access: lead_actions approve mode written" || fail "full-access: approve mode missing"
 command grep -q 'env_vars = \["DISCORD_BOT_TOKEN"\]' "$H/config.toml" && pass "full-access: token forwarded by NAME (env_vars)" || fail "full-access: env_vars missing"
 ! command grep -q "BROKER_SOCKET" "$H/config.toml" && pass "full-access: NO broker socket in config (token by name)" || fail "full-access: broker socket must not appear"
@@ -305,17 +294,30 @@ if [ -f "$GATE_JS" ]; then
       FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/Users/x/.flywheel/state/codex-lead/mufasa" \
       FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES="$3" \
       /bin/bash "$SUT" ensure-home >/dev/null 2>&1 || { fail "shell→gate FA ($1): ensure-home failed"; return; }
-    GATE_JS="$GATE_JS" CFG="$H/config.toml" CROSS="$2" ALI="$3" node --input-type=module -e '
+    GATE_JS="$GATE_JS" RUNTIME_JS="$RUNTIME_JS" CFG="$H/config.toml" CROSS="$2" ALI="$3" node --input-type=module -e '
       import { readFileSync } from "node:fs";
       const { assertFullAccessLeadActionsConfigGate, buildFullAccessLeadActionsMcpServerConfig, assertFullAccessSandboxConfig } = await import(process.env.GATE_JS);
-      const cross = process.env.CROSS ? process.env.CROSS.split(",").map(s=>s.trim()).filter(Boolean) : [];
+      const { parseCodexLeadRuntimeConfig } = await import(process.env.RUNTIME_JS);
+      // FLY-1243 (Codex R3): derive crossDeptChannelIds + effective roundtable autoContinue
+      // through the REAL parser so the expected full-access config matches the runtime
+      // EXACTLY; the shell now writes the same normalized/base-filtered value.
+      const parsed = parseCodexLeadRuntimeConfig({
+        FLYWHEEL_LEAD_ID: "mufasa-lead", FLYWHEEL_PROJECT_NAME: "growth",
+        FLYWHEEL_LEAD_BOT_USER_ID: "999", DISCORD_BOT_TOKEN: "x",
+        FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "1500600400238084307",
+        FLYWHEEL_CODEX_LEAD_STATE_DIR: "/Users/x/.flywheel/state/codex-lead/mufasa",
+        FLYWHEEL_CODEX_BIN: "/usr/local/bin/codex", CODEX_HOME: "/tmp/codexhome",
+        FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: process.env.CROSS || "",
+      });
       const expected = buildFullAccessLeadActionsMcpServerConfig({
         nodeBin: "/usr/local/bin/node",
         mainJsPath: "/Users/x/dist/lead-actions/lead-actions-main.js",
         leadId: "mufasa-lead", projectName: "growth",
-        chatChannelId: "1500600400238084307", crossDeptChannelIds: cross,
+        chatChannelId: "1500600400238084307",
+        crossDeptChannelIds: parsed.crossDeptChannelIds,
         stateDir: "/Users/x/.flywheel/state/codex-lead/mufasa",
         explicitAliases: process.env.ALI || undefined,
+        roundtableAutoContinue: parsed.replyInThread?.autoContinue === true,
       });
       const toml = readFileSync(process.env.CFG, "utf8");
       assertFullAccessLeadActionsConfigGate(toml, expected);
@@ -327,6 +329,15 @@ if [ -f "$GATE_JS" ]; then
   }
   run_fa_xcheck "one-crossdept" "1512578695468941333" ""
   run_fa_xcheck "with-aliases" "1512578695468941333,1517226183341904032" "roundtable:1512578695468941333"
+  # FLY-1243 (Codex R3): chat id as the ONLY cross-dept entry → parser drops it → [] + no
+  # marker; the shell now WRITES "" too → gate passes.
+  run_fa_xcheck "chat-only" "1500600400238084307" ""
+  # FLY-1243 (Codex R3): chat id + a real cross-dept id → parser drops the chat, keeps the
+  # real id; the shell writes the same base-filtered single id → gate passes.
+  run_fa_xcheck "chat-overlap" "1500600400238084307,1512578695468941333" ""
+  # FLY-1243 (Codex R3): empty-leading list (" ,<id>") → parser normalizes to just <id>; the
+  # shell writes the same → gate passes.
+  run_fa_xcheck "empty-leading" " ,1512578695468941333" ""
 fi
 
 # ════════════════ FLY-694 — bash 3.2 here-doc desync re-exec guard ════════════════

@@ -143,15 +143,10 @@ describe("fleet-capabilities — isCodexEligible (FLY-245 mirror)", () => {
 		).toBe(true);
 	});
 
-	it("FLY-350: content-coordination / write-capable Codex Leads are also eligible (explicit tiers)", () => {
+	it("FLY-350: a write-capable Codex Lead is also eligible (explicit tier)", () => {
 		expect(
 			isCodexEligible(
 				lead({ codexProfile: "write-capable", canSpawnRunners: false }),
-			),
-		).toBe(true);
-		expect(
-			isCodexEligible(
-				lead({ codexProfile: "content-coordination", canSpawnRunners: false }),
 			),
 		).toBe(true);
 	});

@@ -64,7 +64,6 @@ node_modules/flywheel-teamlead/scripts/screencapture-l3-skill.md
 node_modules/flywheel-teamlead/scripts/expect-dev-channels.exp
 node_modules/flywheel-teamlead/scripts/lib/mcp-inherit.sh
 node_modules/flywheel-teamlead/scripts/lib/reap-orphan-adapters.sh
-node_modules/flywheel-teamlead/scripts/templates/codex-read-deny-profile.toml
 # staged vendored closures for registered disjoint dependency conflicts
 # (scripts/packaged/dependency-union-exceptions.tsv; installed into the
 # packages' own node_modules by create-compat-mirror.sh)

@@ -138,7 +138,7 @@ export interface LeadWatchdogConfig {
 	 * suppression gains two vetoes: an error signature frozen in the window →
 	 * `pane_error_stalled` alert; a silent window carrying frozen
 	 * extended-thinking residue → a quiet `onSuspicious` report (never an
-	 * alert, never silent). Wired from FLYWHEEL_PANE_MULTIFRAME=1 in plugin.ts;
+	 * alert, never silent). The multi-frame overlay is固化 default-on (FLY-1243);
 	 * undefined/false = single-frame behavior byte-for-byte.
 	 */
 	multiFrame?: boolean;
@@ -594,15 +594,13 @@ export class LeadWatchdog {
 		};
 
 		// FLY-696: for a REAL usage cap, attach account-switch metadata so the
-		// AutoRepairBot / Infra Bot can rotate to the next account. Flag-gated
-		// (default off = byte-compat). isTransientThrottlePane already
-		// short-circuited above (§3.3 hard boundary), so a usage_limit reaching
-		// here is a genuine 5h/weekly cap, never a transient 529. A null result
-		// (ambiguous gauge / unprovisioned pool) leaves the alert needs_human.
-		if (
-			kind === "usage_limit" &&
-			process.env.FLYWHEEL_ACCOUNT_SELF_HEAL === "1"
-		) {
+		// AutoRepairBot / Infra Bot can rotate to the next account. FLY-1243: the
+		// FLYWHEEL_ACCOUNT_SELF_HEAL gate is retired (固化 default-on).
+		// isTransientThrottlePane already short-circuited above (§3.3 hard
+		// boundary), so a usage_limit reaching here is a genuine 5h/weekly cap,
+		// never a transient 529. A null result (ambiguous gauge / unprovisioned
+		// pool) leaves the alert needs_human.
+		if (kind === "usage_limit") {
 			const accountLimit = deriveAccountLimitForAlert({
 				pane,
 				now: new Date(this.now()),

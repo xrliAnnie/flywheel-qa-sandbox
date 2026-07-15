@@ -362,6 +362,8 @@ export interface BlueprintContext {
 	 * QA runner reports its verdict via `flywheel-comm qa-result`.
 	 */
 	qaContext?: QaContext;
+	/** FLY-1244: Bridge-minted per-execution verdict submission credential. */
+	workflowSubmissionCredential?: string;
 }
 
 /**
@@ -1969,6 +1971,7 @@ export class Blueprint {
 				projectName: ctx.projectName,
 				bridgeUrl: resolveBridgeUrl(),
 				bridgeIngestToken: process.env.TEAMLEAD_INGEST_TOKEN,
+				workflowSubmissionCredential: ctx.workflowSubmissionCredential,
 				// FLY-191 Phase 2: pin the Runner's verify-approval to THIS
 				// Bridge's StateStore (mirrors the FLY-137 bridgeUrl pattern).
 				// Unset/:memory: → no injection; both sides fall back to the

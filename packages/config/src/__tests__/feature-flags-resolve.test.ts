@@ -25,16 +25,17 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 	});
 
 	it("opt_in: off unless env === '1'", () => {
-		const s = spec("auto_repair"); // FLYWHEEL_AUTO_REPAIR
+		const s = spec("lead_chrome_enabled"); // FLYWHEEL_LEAD_CHROME_ENABLED
 		expect(resolveFlag(s, { env: {} }).effective).toBe(false);
 		expect(
-			resolveFlag(s, { env: { FLYWHEEL_AUTO_REPAIR: "1" } }).effective,
+			resolveFlag(s, { env: { FLYWHEEL_LEAD_CHROME_ENABLED: "1" } }).effective,
 		).toBe(true);
 		expect(
-			resolveFlag(s, { env: { FLYWHEEL_AUTO_REPAIR: "true" } }).effective,
+			resolveFlag(s, { env: { FLYWHEEL_LEAD_CHROME_ENABLED: "true" } })
+				.effective,
 		).toBe(false);
 		expect(
-			resolveFlag(s, { env: { FLYWHEEL_AUTO_REPAIR: "0" } }).effective,
+			resolveFlag(s, { env: { FLYWHEEL_LEAD_CHROME_ENABLED: "0" } }).effective,
 		).toBe(false);
 	});
 

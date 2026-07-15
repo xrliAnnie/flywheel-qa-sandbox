@@ -342,6 +342,34 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "与 FLYWHEEL_THREE_STAGE(整体开关)/ FLYWHEEL_THREE_STAGE_KEEPALIVE 正交；本 env=0 只翻 implement 段的 vendor/model，phase 表其余行不动。",
 	},
 	{
+		// FLY-1245: per-phase vendor — the design phase defaults to claude/Fable
+		// (heavy). `=1` flips the design dispatch to codex (gpt-5.6-sol, xhigh) —
+		// the operational escape hatch when the Fable quota is the bottleneck.
+		// MIRROR of the implement kill-switch but INVERTED activating value: design
+		// defaults to claude (=1 opts INTO codex) whereas implement defaults to
+		// codex (=0 falls back to claude). Display fallbacks (phaseMessageTag /
+		// issue-display pending rows) read the same table, so they follow.
+		name: "three_stage_codex_design_toggle",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_THREE_STAGE_CODEX_DESIGN",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"三段式 design 段 codex 派发开关（=1 → design 从 Fable 切到 codex gpt-5.6-sol xhigh；不设/≠1 → 现状 claude/heavy(Fable)，字节不变；implement/qa 不受影响；改 ~/.flywheel/.env 后需 restart-services.sh --bridge-only）(FLY-1245)",
+		readSites: [
+			envSite(
+				"packages/config/src/three-stage-phases.ts",
+				"resolvePhaseDispatch",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "与 implement 开关方向相反：implement 默认 codex(=0 关)，design 默认 Fable(=1 开)。正交于 FLYWHEEL_THREE_STAGE / FLYWHEEL_THREE_STAGE_KEEPALIVE；design=codex 后 design review 自动翻 Claude lane(FLY-1188 §7.1)。",
+	},
+	{
 		// FLY-939 (G-D): Bridge boot logs its running HEAD and best-effort compares
 		// it to origin/main; a STALE checkout (HEAD strictly behind origin/main)
 		// WARNs + records a durable event + alerts the Lead. `=0` skips the whole
@@ -520,27 +548,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "readonly",
 		note: "call_time reads (live-toggleable in principle); marked readonly pending a resolve.direct-toggle proof test (fast-follow). `=0` → deliverer falls back to WAKE-only.",
-	},
-	{
-		name: "founder_image_approval",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FOUNDER_IMAGE_APPROVAL",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-799: founder 镜像图片确认作为批准（default-off fast-follow；v1 未接生产 evaluator，即使 =1 也 inert）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/approval-signal/founder-ship-approval-factory.ts",
-				"imageApprovalEnabled",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "v1 default-off scaffold；flip-on 需接 deliverer 附件 download+sha256 + 生产多模态 classifier。",
 	},
 	{
 		name: "stale_ship_rewake",
@@ -957,67 +964,9 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "conversational",
 	},
-	{
-		name: "alert_threads",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_ALERT_THREADS",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description: "统一 alert 分线程",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"createBridgeApp",
-				"object_construction",
-			),
-		],
-		toggleable: "conversational",
-	},
-	// FLY-1048 (PR-A): the three watchdog-detection opt-in gates. All default
-	// OFF = byte-compat; gray-rollout order per the FLY-1048 plan §6.
-	{
-		name: "stuck_errorsig",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_STUCK_ERRORSIG",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"stuck-candidate 重复错误签名路(滚动错误循环也判 candidate,FLY-1048 A3)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/stuck-candidate.ts",
-				"evaluateStuckCandidate",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "pane_multiframe",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_PANE_MULTIFRAME",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"LeadWatchdog 多帧观察窗叠加(pane_error_stalled + frozen-thinking fail-suspicious,FLY-1048 A4)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"createBridgeApp",
-				"object_construction",
-			),
-		],
-		toggleable: "conversational",
-	},
+	// FLY-1048 (PR-B) watchdog LLM judge — opt-in, default OFF. (Its two PR-A
+	// detection siblings, stuck_errorsig + pane_multiframe, were固化 default-on
+	// and retired in FLY-1243; watchdog_judge stays gated — it spawns Codex.)
 	{
 		name: "watchdog_judge",
 		category: "feature",
@@ -1057,140 +1006,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"packages/teamlead/src/HeartbeatService.ts",
 				"stuckConfirmEnabled",
 				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "detection_gap_scan",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DETECTION_GAP_SCAN",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"零 token gap/state 扫描 + focused frames(PR-A 只观测,FLY-1048 A6/A7)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"gapScanTick",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "detection_escalation",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DETECTION_ESCALATION",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"统一升级通知流:Lead-first → ~30min grace → founder page / fleet 聚合(FLY-1048 PR-C)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"detectionReconcileTick",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "auto_repair",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_AUTO_REPAIR",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description: "死 agent 自动修复",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"createBridgeApp",
-				"object_construction",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "account_self_heal",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_ACCOUNT_SELF_HEAL",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"Claude 账号自愈：真 5h/weekly 配额用尽 → 自动切下一个可用账号 + Alerts 通知（FLY-696；529/临时限流绝不切）",
-		readSites: [
-			// startBridge constructs accountSwitchRepair (and gates the runner
-			// quota scan + the account_rotation Alerts post) at boot → a value
-			// change needs a Bridge restart, so NOT direct-toggleable.
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge (accountSwitchRepair)",
-				"object_construction",
-			),
-			envSite(
-				"packages/teamlead/src/LeadWatchdog.ts",
-				"LeadWatchdog.emitAlert (accountLimit attach)",
-				"call_time",
-			),
-			envSite(
-				"packages/teamlead/src/account-heal/account-switch-repair.ts",
-				"makeAccountSwitchRepair (isEnabled default)",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "notify_digest_expect",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_NOTIFY_DIGEST_EXPECT",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"通知自我健康检查（FLY-929 P-expect）：token report 投递写回执 + Bridge 到点无回执发 notify_digest_failed 告警 + token-usage-daily.sh 失败就地 fail-loud；未设 = 零新文件/零新告警",
-		readSites: [
-			// Read at CALL time on every poll tick / delivery / script run (no
-			// boot-time capture), but the enable window still batches it with a
-			// Bridge restart by convention → conversational.
-			envSite(
-				"packages/teamlead/src/bridge/notify-receipts.ts",
-				"isDigestExpectEnabled (receipt write + expect tick gate)",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "xhs_review",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_XHS_REVIEW",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description: "小红书 review localhost 路由（注册与否）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"createBridgeApp (route mount)",
-				"object_construction",
 			),
 		],
 		toggleable: "conversational",
@@ -1405,25 +1220,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"packages/teamlead/src/bridge/plugin.ts",
 				"createBridgeApp",
 				"mixed",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "lead_pane_readiness",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_LEAD_PANE_READINESS",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description: "冷启 Lead-pane readiness 检查（opt-in）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"createBridgeApp",
-				"object_construction",
 			),
 		],
 		toggleable: "conversational",
@@ -1761,26 +1557,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
-		name: "roundtable_reply_in_thread",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description: "#leads-roundtable 话题 reply-in-thread（FLY-314）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts",
-				"codex-lead-runtime",
-				"mixed",
-				"env-param",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
 		name: "roundtable_thread_autocontinue",
 		category: "feature",
 		source: "env",
@@ -1835,47 +1611,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			envSite(
 				"packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts",
 				"codex-lead-runtime",
-				"mixed",
-				"env-param",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "codex_lead_read_deny",
-		category: "governance_gate",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CODEX_LEAD_READ_DENY",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description: "Codex Lead read-deny 安全约束 profile（治理门，只读）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/lead-backends/codex/read-deny-profile.ts",
-				"read-deny gate",
-				"mixed",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-	},
-
-	{
-		name: "roundtable_enabled",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_ROUNDTABLE_ENABLED",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description: "#leads-roundtable 跨部门频道功能（FLY-267/314）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/roundtable/roundtable-config.ts",
-				"loadRoundtableConfig",
 				"mixed",
 				"env-param",
 			),
@@ -2374,5 +2109,82 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			),
 		],
 		toggleable: "readonly",
+	},
+	{
+		name: "workflow_claims_write",
+		category: "governance_gate",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WORKFLOW_CLAIMS_WRITE",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1232/1244: workflow claims shadow writes and enrolled execution admission. Must remain off until the pinned fresh-spawn E2E and peer-credential hardening gates pass.",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/workflow-claims.ts",
+				"isWorkflowClaimsWriteEnabled",
+				"call_time",
+				"env-param",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge / createBridgeApp workflow wiring",
+				"bridge_boot",
+			),
+		],
+		toggleable: "readonly",
+		note: "Independent from claims READ and FORCE_LEGACY; production enable is governance-gated.",
+	},
+	{
+		name: "workflow_claims_read",
+		category: "governance_gate",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WORKFLOW_CLAIMS_READ",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1244: switch explicitly enrolled durable three-stage runs to claims-backed ship eligibility and authoritative head reads.",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/workflow-claims.ts",
+				"isWorkflowClaimsReadEnabled",
+				"call_time",
+				"env-param",
+			),
+			envSite(
+				"packages/flywheel-comm/src/ship-eligibility.ts",
+				"evaluateShipEligibility",
+				"cli_invocation",
+				"dynamic",
+			),
+		],
+		toggleable: "readonly",
+		note: "Independent from claims WRITE; explicit run enrollment is still required.",
+	},
+	{
+		name: "workflow_force_legacy",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WORKFLOW_FORCE_LEGACY",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1244: emergency live-.env fallback that forces the legacy ship-eligibility reader before claims queries.",
+		readSites: [
+			envSite(
+				"packages/flywheel-comm/src/ship-eligibility.ts",
+				"evaluateShipEligibility",
+				"cli_invocation",
+				"dynamic",
+			),
+		],
+		toggleable: "readonly",
+		note: "Independent emergency fallback; resolved before any claims table access.",
 	},
 ];

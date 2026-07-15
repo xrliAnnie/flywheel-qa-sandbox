@@ -66,10 +66,6 @@ export FLYWHEEL_CODEX_LEAD_MODE=tui
 # ── full-access tier (= Claude-equal), WINDOWED via the TUI runtime ──
 export FLYWHEEL_CODEX_LEAD_PROFILE="full-access"
 export FLYWHEEL_CODEX_LEAD_SANDBOX="workspace-write"
-# Explicitly DISABLE read-deny — a stale wrapper/.env FLYWHEEL_CODEX_LEAD_READ_DENY=1
-# must NOT silently select the read-deny config path for a full-access Lead (it would
-# fail the runtime's full-access/read-deny mutual-exclusion parse — controlled fail).
-export FLYWHEEL_CODEX_LEAD_READ_DENY=0
 # The project checkout the Lead works IN (cwd + the single writable root). Realpath-
 # validated by the runtime (resolveFullAccessProjectRoot); must NOT overlap
 # ~/.flywheel / the state dir / CODEX_HOME.

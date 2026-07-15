@@ -103,6 +103,7 @@ export interface VoiceRouterDeps {
 	openCommDb: (projectName: string) => GateResponseDb | null;
 	onResponseWritten?: WriteGateResponseArgs["onResponseWritten"];
 	writeGateResponseImpl?: typeof writeGateResponseAndRunPostWrite;
+	cardAuthority?: WriteGateResponseArgs["cardAuthority"];
 	/**
 	 * FLY-1041 Chunk 5: shared founder-approval hold guard (plugin injects
 	 * `founderApprovalHoldGuard` over the real StateStore). While held, a
@@ -452,10 +453,16 @@ export function createVoiceRouter(deps: VoiceRouterDeps): express.Router {
 				store: deps.store,
 				questionId: binding.questionId,
 				executionId: binding.executionId,
+				source: "voice",
+				cardAuthority: deps.cardAuthority,
 				actor: canonicalFounderId,
+				founderId: canonicalFounderId,
 				answer: '{"approved":true}',
 				expectedCurrentReviewQuestionId:
 					binding.session.review_question_id ?? undefined,
+				holdReasonFor: deps.isHeld
+					? (executionId) => (deps.isHeld!(executionId) ? "qa_not_green" : null)
+					: undefined,
 				onResponseWritten: deps.onResponseWritten,
 			});
 			audit(
