@@ -1,13 +1,13 @@
 ---
 issue: FLY-1257
-phase: implement
-phaseCursor: 6/7
-updated: 2026-07-15T05:53:09.688Z
-nextStep: Run full focused matrix, lint/build, commit, push, and re-request code review
+phase: qa
+phaseCursor: 1/1
+updated: 2026-07-15T07:10:00.000Z
+nextStep: QA PASS — emit qa-result + open approve_to_ship gate
 chunks: []
 pointers: {}
 ---
 
 # FLY-1257 progress
-**phase**: implement (6/7)
-**next**: Run full focused matrix, lint/build, commit, push, and re-request code review
+**phase**: qa (1/1)
+**next**: QA verified PASS (427 focused tests green + 4 defect mutation checks RED-when-broken + 1 QA regression test added). Emit qa-result pass → approve gate.

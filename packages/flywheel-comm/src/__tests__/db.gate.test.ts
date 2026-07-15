@@ -78,6 +78,33 @@ describe("CommDB gate methods", () => {
 			db.insertResponse(gateId, "lead-1", "done");
 			expect(db.getPendingGatesByRunner("exec-1")).toEqual([]);
 		});
+
+		// FLY-1257 QA (independent): a gate whose FLY-159 deadline watcher has
+		// already timed it out must NOT keep counting as pending. This is the
+		// authority `complete --route blocked` consults (M1-c): once the watcher
+		// resolves a gate by deadline, the runner has to be free to complete —
+		// the timeout resolution must never leave it permanently refused. Locks
+		// the query's `expires_at > datetime('now')` clause the M1-c guard leans on.
+		it("excludes a gate whose deadline has already passed (timeout passthrough)", () => {
+			const gateId = db.insertQuestion("exec-1", "lead-1", "review", {
+				checkpoint: "review_code",
+			});
+			expect(db.getPendingGatesByRunner("exec-1").map((q) => q.id)).toEqual([
+				gateId,
+			]);
+			// Force the deadline past without waiting — same raw rewind the other
+			// expiry tests use — to stand in for the watcher having timed it out.
+			(
+				db as unknown as {
+					db: { prepare: (s: string) => { run: (...a: unknown[]) => unknown } };
+				}
+			).db
+				.prepare(
+					"UPDATE messages SET expires_at = datetime('now','-1 hour') WHERE id = ?",
+				)
+				.run(gateId);
+			expect(db.getPendingGatesByRunner("exec-1")).toEqual([]);
+		});
 	});
 
 	describe("resolveGate", () => {
