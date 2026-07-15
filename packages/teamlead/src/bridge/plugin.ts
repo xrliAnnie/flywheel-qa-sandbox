@@ -500,6 +500,31 @@ export function resolveMailboxWriteTimeoutMs(): number | undefined {
 	return n;
 }
 
+/**
+ * FLY-1254: optional liveness bound for one active Claude review subprocess.
+ * Invalid values warn and leave the runner's 30-minute default in control.
+ * The upper bound is Node's signed 32-bit timer range; larger values collapse
+ * to an effectively immediate timeout.
+ */
+export function parseReviewerTimeoutMs(
+	raw: string | undefined,
+): number | undefined {
+	if (raw === undefined || raw.trim().length === 0) return undefined;
+	const value = Number(raw);
+	if (
+		!Number.isFinite(value) ||
+		!Number.isSafeInteger(value) ||
+		value < 60_000 ||
+		value > 2_147_483_647
+	) {
+		console.warn(
+			`[review-coordinator] invalid FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS=${JSON.stringify(raw)}; using the 30-minute default`,
+		);
+		return undefined;
+	}
+	return value;
+}
+
 const execFileP = promisify(execFile);
 
 /**
@@ -6033,6 +6058,9 @@ export async function startBridge(
 			store,
 			commDbPathFor: (projectName) => join(commRoot, projectName, "comm.db"),
 			openCommDb: (path) => new CommDB(path, false),
+			reviewerTimeoutMs: parseReviewerTimeoutMs(
+				process.env.FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS,
+			),
 			wakeRunner: async (executionId, sessionInfo, questionId, summary) => {
 				const db = new CommDB(
 					join(commRoot, sessionInfo.project_name, "comm.db"),

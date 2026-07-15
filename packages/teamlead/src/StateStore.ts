@@ -819,6 +819,7 @@ export interface CodexReviewJob {
 	verdict?: string;
 	findings_json?: string;
 	failure_reason?: string;
+	failure_raw?: string;
 	author_family?: string;
 	created_at: string;
 	updated_at?: string;
@@ -1874,6 +1875,7 @@ export class StateStore {
 				verdict               TEXT,
 				findings_json         TEXT,
 				failure_reason        TEXT,
+				failure_raw           TEXT,
 				author_family         TEXT,
 				created_at            TEXT NOT NULL DEFAULT (datetime('now')),
 				updated_at            TEXT,
@@ -1896,6 +1898,16 @@ export class StateStore {
 			);
 		} catch {
 			/* exists */
+		}
+		// FLY-1254: retain the latest failed attempt's bounded diagnostic tail.
+		// Unlike the historical best-effort migrations above, failure evidence is
+		// on the active write path: any unexpected migration error must fail boot
+		// loudly instead of leaving a database that will reject future writes.
+		const reviewJobInfo = this.db.exec("PRAGMA table_info(codex_review_job)");
+		const reviewJobColumns =
+			reviewJobInfo[0]?.values.map((row) => row[1] as string) ?? [];
+		if (!reviewJobColumns.includes("failure_raw")) {
+			this.db.run("ALTER TABLE codex_review_job ADD COLUMN failure_raw TEXT");
 		}
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_exec ON codex_review_job(execution_id)",
@@ -4454,6 +4466,7 @@ export class StateStore {
 			verdict: (row.verdict as string) ?? undefined,
 			findings_json: (row.findings_json as string) ?? undefined,
 			failure_reason: (row.failure_reason as string) ?? undefined,
+			failure_raw: (row.failure_raw as string) ?? undefined,
 			author_family: (row.author_family as string) ?? undefined,
 			created_at: row.created_at as string,
 			updated_at: (row.updated_at as string) ?? undefined,
@@ -4535,7 +4548,8 @@ export class StateStore {
 	claimCodexReviewJobRunning(requestId: string): boolean {
 		this.db.run(
 			`UPDATE codex_review_job
-			   SET status = 'running', updated_at = datetime('now')
+			   SET status = 'running', failure_reason = NULL, failure_raw = NULL,
+			       updated_at = datetime('now')
 			 WHERE request_id = ? AND status IN ('pending','failed')`,
 			[requestId],
 		);
@@ -4552,7 +4566,8 @@ export class StateStore {
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET status = 'done', verdict = ?, findings_json = ?,
-			       failure_reason = NULL, updated_at = datetime('now')
+			       failure_reason = NULL, failure_raw = NULL,
+			       updated_at = datetime('now')
 			 WHERE request_id = ?`,
 			[verdict, findingsJson ?? null, requestId],
 		);
@@ -4564,12 +4579,17 @@ export class StateStore {
 	 * respond/stamp after the verdict landed must not downgrade the row out of
 	 * the outbox scan (which only re-delivers done/skipped).
 	 */
-	failCodexReviewJob(requestId: string, reason: string): void {
+	failCodexReviewJob(
+		requestId: string,
+		reason: string,
+		failureRaw?: string,
+	): void {
 		this.db.run(
 			`UPDATE codex_review_job
-			   SET status = 'failed', failure_reason = ?, updated_at = datetime('now')
+			   SET status = 'failed', failure_reason = ?, failure_raw = ?,
+			       updated_at = datetime('now')
 			 WHERE request_id = ? AND status NOT IN ('done','skipped')`,
-			[reason, requestId],
+			[reason, failureRaw ?? null, requestId],
 		);
 		this.save();
 	}
@@ -4661,7 +4681,7 @@ export class StateStore {
 		return n;
 	}
 
-	/** Latest DONE job for (exec, type) — reround prompts carry its findings. */
+	/** Latest DONE job for fresh rerounds that must rebuild prior context. */
 	latestDoneCodexReviewJob(
 		executionId: string,
 		reviewType: "design" | "code",

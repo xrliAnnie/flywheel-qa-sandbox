@@ -67,6 +67,29 @@ describe("FLY-663 — StateStore better-sqlite3 migration", () => {
 		store.close();
 	});
 
+	it("adds failure_raw to a legacy codex_review_job table idempotently", async () => {
+		const legacy = new BetterSqlite3(dbPath);
+		legacy.exec(`
+			CREATE TABLE codex_review_job (
+				request_id TEXT PRIMARY KEY,
+				execution_id TEXT NOT NULL,
+				status TEXT NOT NULL
+			)
+		`);
+		legacy.close();
+
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			const store = await StateStore.create(dbPath);
+			const columns = (
+				store as unknown as { db: { raw: BetterSqlite3.Database } }
+			).db.raw.pragma("table_info(codex_review_job)") as Array<{
+				name: string;
+			}>;
+			expect(columns.map((column) => column.name)).toContain("failure_raw");
+			store.close();
+		}
+	});
+
 	describe("§2.8 multi-statement transaction atomicity", () => {
 		it("upsertSession rolls back the INSERT if the awaiting_review stamp throws", async () => {
 			const store = await StateStore.create(dbPath);

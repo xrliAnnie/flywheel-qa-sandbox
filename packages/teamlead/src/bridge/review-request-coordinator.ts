@@ -109,6 +109,92 @@ export interface ReviewCoordinatorDeps {
 const REQUEST_ID_MAX = 128;
 const PLAN_PATH_MAX = 512;
 const SHA40 = /^[0-9a-f]{40}$/;
+const SESSION_NOT_FOUND = /no conversation found with session id/i;
+const FAILURE_RAW_MAX = 4000;
+const ALERT_SUMMARY_MAX = 300;
+
+type FailedClaudeReviewOutcome = Extract<
+	ClaudeReviewOutcome,
+	{ kind: "failed" }
+>;
+
+interface FailedReviewAttempt {
+	label: string;
+	outcome: FailedClaudeReviewOutcome;
+}
+
+function composeAttemptEvidence(
+	attempt: FailedReviewAttempt,
+	budget: number,
+	includeAttemptLabel: boolean,
+): string {
+	const header = includeAttemptLabel ? `${attempt.label}\n` : "";
+	const sections = [
+		...(attempt.outcome.raw
+			? [{ label: "STDOUT", value: attempt.outcome.raw }]
+			: []),
+		...(attempt.outcome.stderrTail
+			? [{ label: "STDERR", value: attempt.outcome.stderrTail }]
+			: []),
+	];
+	if (sections.length === 0) return "";
+	const sectionOverhead = sections.reduce(
+		(total, section) => total + section.label.length + 2,
+		0,
+	);
+	const separators = Math.max(0, sections.length - 1);
+	const valueBudget = Math.max(
+		0,
+		Math.floor(
+			(budget - header.length - sectionOverhead - separators) / sections.length,
+		),
+	);
+	return (
+		header +
+		sections
+			.map(
+				(section) => `${section.label}:\n${section.value.slice(-valueBudget)}`,
+			)
+			.join("\n")
+	);
+}
+
+function composeFailureRaw(
+	attempts: FailedReviewAttempt[],
+): string | undefined {
+	const withEvidence = attempts.filter(
+		(attempt) => attempt.outcome.raw || attempt.outcome.stderrTail,
+	);
+	if (withEvidence.length === 0) return undefined;
+	const separatorBudget = Math.max(0, withEvidence.length - 1) * 2;
+	const attemptBudget = Math.floor(
+		(FAILURE_RAW_MAX - separatorBudget) / withEvidence.length,
+	);
+	return withEvidence
+		.map((attempt) =>
+			composeAttemptEvidence(attempt, attemptBudget, withEvidence.length > 1),
+		)
+		.join("\n\n")
+		.slice(0, FAILURE_RAW_MAX);
+}
+
+function sanitizeFailureSummary(raw: string | undefined): string | undefined {
+	if (!raw) return undefined;
+	const withoutControls = [...raw]
+		.map((character) => {
+			const code = character.charCodeAt(0);
+			return code <= 31 || code === 127 ? " " : character;
+		})
+		.join("");
+	const sanitized = withoutControls
+		// Reviewer output is untrusted Lead-facing text: flatten control chars,
+		// prevent markdown/code shaping, and neutralize mentions.
+		.replace(/[`@]/g, "")
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, ALERT_SUMMARY_MAX);
+	return sanitized || undefined;
+}
 
 /**
  * Codex full-PR review MED-6: a design review's `planPath` is persisted and
@@ -607,26 +693,85 @@ export class ReviewRequestCoordinator {
 			return;
 		}
 
-		const prompt = this.buildPrompt(job, resume);
 		const roundRunner = this.deps.reviewRound ?? runClaudeReviewRound;
-		const outcome: ClaudeReviewOutcome = await roundRunner({
-			prompt,
-			sessionId: sessionUuid,
-			resume,
-			cwd,
-			binary: this.deps.reviewerBinary,
-			model: this.deps.reviewerModel,
-			// FLY-1224: forwarded on EVERY round; undefined → the runner's own
-			// DEFAULT_REVIEW_EFFORT ("xhigh") applies.
-			effort: this.deps.reviewerEffort,
-			timeoutMs: this.deps.reviewerTimeoutMs,
-		});
+		const runRound = (roundResume: boolean, roundSessionUuid: string) =>
+			roundRunner({
+				prompt: this.buildPrompt(job, roundResume),
+				sessionId: roundSessionUuid,
+				resume: roundResume,
+				cwd,
+				binary: this.deps.reviewerBinary,
+				model: this.deps.reviewerModel,
+				// FLY-1224: forwarded on EVERY round; undefined → the runner's own
+				// DEFAULT_REVIEW_EFFORT ("xhigh") applies.
+				effort: this.deps.reviewerEffort,
+				timeoutMs: this.deps.reviewerTimeoutMs,
+			});
+		let outcome: ClaudeReviewOutcome = await runRound(resume, sessionUuid);
+		const failedAttempts: FailedReviewAttempt[] = [];
 
 		if (outcome.kind === "failed") {
-			this.store.failCodexReviewJob(requestId, outcome.reason);
-			this.alert(
-				`claude review ${requestId} (${job.issue_id ?? job.execution_id}, ${job.review_type} R${job.round}) FAILED: ${outcome.reason} — gate stays closed; retry the request or use the codex-skip governance path.`,
+			failedAttempts.push({ label: "ATTEMPT 1 RESUME", outcome });
+		}
+		if (
+			outcome.kind === "failed" &&
+			resume &&
+			outcome.reason === "nonzero_exit" &&
+			SESSION_NOT_FOUND.test(`${outcome.stderrTail ?? ""} ${outcome.raw ?? ""}`)
+		) {
+			// A fresh fallback is bounded to once per runJob invocation. The new
+			// uuid is durable, so a crash before its spawn may redrive as a resume;
+			// that later runJob can independently fall back once and still converges.
+			if (this.stopped) {
+				this.failReviewerOutcome(job, outcome, failedAttempts);
+				return;
+			}
+			if (
+				!this.gateStillOpen(
+					job.project_name,
+					job.question_id,
+					job.execution_id,
+					job.review_type,
+				)
+			) {
+				this.store.failCodexReviewJob(
+					requestId,
+					"gate_answered_externally",
+					composeFailureRaw(failedAttempts),
+				);
+				this.alert(
+					`claude review ${requestId}: gate ${job.question_id} closed before the lost-session fallback — no fresh reviewer started.`,
+				);
+				return;
+			}
+			if (job.review_type === "code") {
+				const current = await this.tryDeriveHead(session);
+				const frozen = job.frozen_head_sha?.toLowerCase();
+				if (!current || !frozen || current !== frozen) {
+					this.store.failCodexReviewJob(
+						requestId,
+						"head_moved",
+						composeFailureRaw(failedAttempts),
+					);
+					this.alert(
+						`claude review ${requestId}: head moved before the lost-session fallback (frozen ${frozen ?? "?"} vs current ${current ?? "?"}) — no fresh reviewer started.`,
+					);
+					return;
+				}
+			}
+			this.log(
+				`job ${requestId}: resume session lost — falling back to a fresh reviewer session (once)`,
 			);
+			sessionUuid = randomUUID();
+			this.store.setCodexReviewJobReviewerSession(requestId, sessionUuid);
+			outcome = await runRound(false, sessionUuid);
+			if (outcome.kind === "failed") {
+				failedAttempts.push({ label: "ATTEMPT 2 FRESH", outcome });
+			}
+		}
+
+		if (outcome.kind === "failed") {
+			this.failReviewerOutcome(job, outcome, failedAttempts);
 			return; // fail-close: no response, gate stays shut
 		}
 
@@ -725,6 +870,19 @@ export class ReviewRequestCoordinator {
 		this.store.stampCodexReviewJobResponded(requestId);
 	}
 
+	private failReviewerOutcome(
+		job: CodexReviewJob,
+		outcome: FailedClaudeReviewOutcome,
+		attempts: FailedReviewAttempt[],
+	): void {
+		const failureRaw = composeFailureRaw(attempts);
+		this.store.failCodexReviewJob(job.request_id, outcome.reason, failureRaw);
+		const summary = sanitizeFailureSummary(failureRaw);
+		this.alert(
+			`claude review ${job.request_id} (${job.issue_id ?? job.execution_id}, ${job.review_type} R${job.round}) FAILED: ${outcome.reason} — gate stays closed; retry the request or use the codex-skip governance path.${summary ? ` Evidence: ${summary}` : ""}`,
+		);
+	}
+
 	/**
 	 * R15 HIGH-2: the §7.3 authority record is committed ONLY after an owned
 	 * gate delivery. Idempotent (recordCodexReviewApproved same-request replay
@@ -769,23 +927,31 @@ export class ReviewRequestCoordinator {
 			`When done, output ONLY a JSON object: {"verdict": "APPROVED" | "CHANGES_REQUESTED", ` +
 			`"findings": [{"severity": "HIGH|MEDIUM|LOW", "file": "...", "line": 0, "title": "...", "detail": "..."}], ` +
 			`"reviewedHeadSha": "<the exact commit you reviewed, git rev-parse HEAD>"}. ` +
-			`No prose outside the JSON.`;
+			`No prose outside the JSON. Your very last line must be that JSON object itself.`;
 		const target =
 			job.review_type === "design"
 				? `Review the DESIGN/PLAN at path: ${job.target_path ?? "engineering/doc (locate the plan for this issue)"} — read it fully, verify it against the codebase, judge soundness, completeness and risk.`
 				: `Review the CODE at commit ${job.frozen_head_sha ?? "HEAD"} on the current branch. Diff it against the merge base with the default branch (git diff), read the touched files in full, check correctness, security, edge cases and error handling. Skip style nitpicks.`;
-		if (!resume || job.round <= 1) {
+		if (job.round <= 1) {
 			return `${contract}\n\n${target}\n\nThis is round ${job.round}.`;
+		}
+		if (resume) {
+			return (
+				`${contract}\n\nRound ${job.round} re-review — you reviewed this work before in THIS session and retain that context. ` +
+				`${target}\n\nFocus on whether the issues you raised were correctly fixed and on anything new the changes introduced.`
+			);
 		}
 		const prior = this.store.latestDoneCodexReviewJob(
 			job.execution_id,
 			job.review_type,
 		);
-		const priorFindings = prior?.findings_json ?? "[]";
+		const priorContext = prior?.findings_json
+			? `Your previous findings were:\n${prior.findings_json}`
+			: "(no reliable record of your prior findings survives — treat this as a fresh, full review)";
 		return (
-			`${contract}\n\nRound ${job.round} re-review (you reviewed this work before in this session). ` +
-			`${target}\n\nYour previous findings were:\n${priorFindings}\n\n` +
-			`Focus on whether they were correctly fixed and on anything new the fixes introduced.`
+			`${contract}\n\nRound ${job.round} fresh re-review (the prior reviewer session was unavailable). ` +
+			`${target}\n\n${priorContext}\n\n` +
+			`Perform a full review, using the durable prior context above when available.`
 		);
 	}
 
