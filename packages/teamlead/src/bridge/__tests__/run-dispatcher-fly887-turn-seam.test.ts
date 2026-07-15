@@ -67,6 +67,7 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 			undefined,
 			undefined,
 			undefined,
+			undefined,
 			phaseRetryStartPointComputer,
 		);
 	}
@@ -186,6 +187,7 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 			undefined,
 			async () => ({ admitted: true }),
 			{ commitLaunch: vi.fn(async () => ({ ok: true })), onSpawnFailed },
+			undefined,
 			undefined,
 			() => ({ kind: "indeterminate", error: "git exit 128" }),
 		);
