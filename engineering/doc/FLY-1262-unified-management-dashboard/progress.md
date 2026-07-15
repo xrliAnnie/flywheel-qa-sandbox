@@ -2,13 +2,13 @@
 issue: FLY-1262
 phase: implement
 phaseCursor: 13/13
-updated: 2026-07-15T18:37:19.817Z
-nextStep: TURN acquired; verify rescued round-3 fixes, remove generated .serena
-  diff, push and request incremental review
+updated: 2026-07-15T18:38:48.745Z
+nextStep: Round-3 mutation RED/GREEN verified; run focused and package-wide
+  final verification, then push frozen head
 chunks: []
 pointers: {}
 ---
 
 # FLY-1262 progress
 **phase**: implement (13/13)
-**next**: TURN acquired; verify rescued round-3 fixes, remove generated .serena diff, push and request incremental review
+**next**: Round-3 mutation RED/GREEN verified; run focused and package-wide final verification, then push frozen head
