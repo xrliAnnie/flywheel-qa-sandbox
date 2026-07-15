@@ -82,7 +82,7 @@ async function rebindHarness(opts: {
 	guardResult?:
 		| { kind: "continue"; prState: "open" }
 		| { kind: "suppress_merged"; cleanupComplete: boolean }
-		| { kind: "retry_later"; reason: "unknown" }
+		| { kind: "retry_later"; reason: "unknown" | "missing_binding" }
 		| { kind: "terminal_unavailable"; reason: "unknown_exhausted" };
 }) {
 	const store = await freshStore();
@@ -162,6 +162,24 @@ describe("rebind pass — guard chain", () => {
 		await runDeferredApprovalRebindPass(deps);
 		expect(store.listActiveDeferredApprovals()).toHaveLength(1);
 		expect(store.getFounderAction("ttl-notice-Q-1-100")).toBeUndefined();
+		expect(hook).not.toHaveBeenCalled();
+	});
+
+	it("missing PR binding preserves the captured decision for a later rebind", async () => {
+		const { store, deps, hook } = await rebindHarness({
+			session: {
+				status: "awaiting_review",
+				review_question_id: "Q-1",
+				pr_head_sha: SHA_A,
+				pr_number: null,
+			},
+			guardResult: { kind: "retry_later", reason: "missing_binding" },
+		});
+		await runDeferredApprovalRebindPass(deps);
+		expect(store.listActiveDeferredApprovals()).toHaveLength(1);
+		expect(
+			store.getDeferredApproval("Q-1", "100")?.invalidated_reason,
+		).toBeUndefined();
 		expect(hook).not.toHaveBeenCalled();
 	});
 

@@ -301,7 +301,12 @@ export async function tryFounderShipApproval(
 				},
 			};
 		}
-		return null;
+		return {
+			bound: [],
+			deferred: [],
+			suppressed: [{ questionId: gate.questionId }],
+			retry: false,
+		};
 	};
 
 	// ── signal evaluation (text), shared by the live and held paths ──

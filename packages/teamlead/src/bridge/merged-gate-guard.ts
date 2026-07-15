@@ -60,10 +60,13 @@ export interface MergedGateGuardArgs {
 export type MergedGateGuardResult =
 	| { kind: "continue"; prState: "open" | "closed" }
 	| { kind: "suppress_merged"; cleanupComplete: boolean }
-	| { kind: "retry_later"; reason: "unknown" | "backoff" | "budget" }
+	| {
+			kind: "retry_later";
+			reason: "unknown" | "backoff" | "budget" | "missing_binding";
+	  }
 	| {
 			kind: "terminal_unavailable";
-			reason: "missing_binding" | "unknown_exhausted";
+			reason: "unknown_exhausted";
 	  };
 
 export type MergedGateGuard = (
@@ -196,6 +199,16 @@ export function createMergedGateGuard(deps: {
 			}
 		}
 
+		if (!projectRoot || !prNumber || !cacheKey) {
+			// A PR number is patched independently from the reviewed head. Its
+			// absence means the guard cannot ask GitHub yet, not that GitHub stayed
+			// UNKNOWN through the bounded retry budget. Keep the founder decision
+			// parked and let a later pass probe once the binding arrives. Resolve a
+			// legacy missing-binding terminal row so that pass can re-arm it.
+			deps.store.resolveMergedGateGuardFailure(args.questionId, args.source);
+			return { kind: "retry_later", reason: "missing_binding" };
+		}
+
 		const row = deps.store.ensureMergedGateGuardFailure({
 			questionId: args.questionId,
 			source: args.source,
@@ -207,11 +220,6 @@ export function createMergedGateGuard(deps: {
 		if (row.terminal) {
 			return { kind: "terminal_unavailable", reason: "unknown_exhausted" };
 		}
-		if (!projectRoot || !prNumber || !cacheKey) {
-			recordTerminal(args, row, nowMs, "missing_pr_binding");
-			return { kind: "terminal_unavailable", reason: "missing_binding" };
-		}
-
 		if (nowMs - row.first_seen_ms >= FAILURE_DEADLINE_MS) {
 			recordTerminal(args, row, nowMs, "unknown_deadline_exhausted");
 			return { kind: "terminal_unavailable", reason: "unknown_exhausted" };

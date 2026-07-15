@@ -589,7 +589,12 @@ describe("FLY-1238 merged-PR last-mile guard", () => {
 			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
 			d,
 		);
-		expect(result).toBeNull();
+		expect(result).toEqual({
+			bound: [],
+			deferred: [],
+			suppressed: [{ questionId: "Q-1" }],
+			retry: false,
+		});
 		expect(mergedGateGuard).toHaveBeenCalledWith(
 			expect.objectContaining({
 				questionId: "Q-1",
@@ -615,6 +620,29 @@ describe("FLY-1238 merged-PR last-mile guard", () => {
 			retry: true,
 			stage: "merged_gate_guard_retry",
 		});
+		expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
+	});
+
+	it("keeps a missing PR binding retryable instead of dead-lettering the decision", async () => {
+		const d = deps({
+			store: {
+				getSession: vi.fn().mockReturnValue(session({ pr_number: null })),
+			},
+			mergedGateGuard: vi.fn().mockResolvedValue({
+				kind: "retry_later",
+				reason: "missing_binding",
+			}),
+		});
+		const result = await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+		expect(result).toMatchObject({
+			retry: true,
+			stage: "merged_gate_guard_retry",
+			reason: "missing_binding",
+		});
+		expect(result).not.toHaveProperty("deadLetter");
 		expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
 	});
 

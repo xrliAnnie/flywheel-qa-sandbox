@@ -3,14 +3,16 @@
  * Uses a REAL temp comm.db (the SQL + status filter are the whole point) with an
  * injected tmux-liveness probe so no real tmux server is needed.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { commDbPathForProject } from "../bridge/commdb-path.js";
 import {
 	finalizeCommDbSession,
 	pruneDeadTerminalCommDbSessions,
+	resolveCommDbPath,
 } from "../bridge/commdb-session-prune.js";
 
 describe("commdb-session-prune (FLY-638)", () => {
@@ -38,6 +40,28 @@ describe("commdb-session-prune (FLY-638)", () => {
 	}
 
 	describe("finalizeCommDbSession", () => {
+		it("uses the same FLYWHEEL_COMM_DIR resolver as gate retirement", () => {
+			const previousDir = process.env.FLYWHEEL_COMM_DIR;
+			const previousRoot = process.env.FLYWHEEL_COMM_ROOT;
+			const commRoot = join(dir, "comm-root");
+			const projectDir = join(commRoot, "flywheel");
+			mkdirSync(projectDir, { recursive: true });
+			const isolated = new CommDB(join(projectDir, "comm.db"));
+			isolated.close();
+			try {
+				process.env.FLYWHEEL_COMM_DIR = commRoot;
+				delete process.env.FLYWHEEL_COMM_ROOT;
+				expect(resolveCommDbPath("flywheel")).toBe(
+					commDbPathForProject("flywheel"),
+				);
+			} finally {
+				if (previousDir === undefined) delete process.env.FLYWHEEL_COMM_DIR;
+				else process.env.FLYWHEEL_COMM_DIR = previousDir;
+				if (previousRoot === undefined) delete process.env.FLYWHEEL_COMM_ROOT;
+				else process.env.FLYWHEEL_COMM_ROOT = previousRoot;
+			}
+		});
+
 		it("retires pending gates and deletes the existing row", () => {
 			seed("e1", "completed");
 			const qid = db.insertQuestion("e1", "lead-a", "ship?", {

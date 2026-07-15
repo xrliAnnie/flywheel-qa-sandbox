@@ -87,19 +87,22 @@ describe("merged gate last-mile guard", () => {
 		expect(retireQuestion).toHaveBeenCalledWith("q-1", "exec-1", "flywheel");
 	});
 
-	it("missing PR binding terminates silently and never probes", async () => {
+	it("missing PR binding stays retryable and probes once the binding appears", async () => {
 		const { store } = storeHarness();
-		const checkPrMerge = vi.fn();
+		const checkPrMerge = vi.fn(async () => ({ state: "open" as const }));
 		const guard = createMergedGateGuard({
 			store,
 			retireQuestion: vi.fn(),
 			checkPrMerge,
 		});
 		expect(await guard({ ...args, prNumber: undefined })).toEqual({
-			kind: "terminal_unavailable",
+			kind: "retry_later",
 			reason: "missing_binding",
 		});
 		expect(checkPrMerge).not.toHaveBeenCalled();
+		expect(store.recordMergedGateGuardUnknown).not.toHaveBeenCalled();
+		expect(await guard(args)).toEqual({ kind: "continue", prState: "open" });
+		expect(checkPrMerge).toHaveBeenCalledTimes(1);
 	});
 
 	it("UNKNOWN uses bounded backoff and becomes terminal on the fifth real probe", async () => {

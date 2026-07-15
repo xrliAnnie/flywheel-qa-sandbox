@@ -21,9 +21,8 @@
  */
 
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
+import { commDbPathForProject } from "./commdb-path.js";
 import {
 	probeTmuxWindowLiveness,
 	type TmuxWindowProbe,
@@ -36,10 +35,7 @@ import {
  */
 export function resolveCommDbPath(projectName: string): string | undefined {
 	if (/[/\\]|\.\./.test(projectName)) return undefined;
-	const root =
-		process.env.FLYWHEEL_COMM_ROOT?.trim() ||
-		join(homedir(), ".flywheel", "comm");
-	const dbPath = join(root, projectName, "comm.db");
+	const dbPath = commDbPathForProject(projectName);
 	return existsSync(dbPath) ? dbPath : undefined;
 }
 

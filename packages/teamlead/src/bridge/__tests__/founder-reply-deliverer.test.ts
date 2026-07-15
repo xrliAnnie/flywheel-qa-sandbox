@@ -777,6 +777,7 @@ describe("FLY-1041 Chunk 8: founder receipt reaction (✅/❓)", () => {
 	function ackHarness(opts: {
 		msgId?: string;
 		handled?: boolean;
+		suppressed?: boolean;
 		existingEventIds?: string[];
 		reactResult?: { ok: boolean; status?: number };
 	}) {
@@ -790,16 +791,25 @@ describe("FLY-1041 Chunk 8: founder receipt reaction (✅/❓)", () => {
 		})) as unknown as FounderReplyDeliverDeps["wakeImpl"];
 		const tryShip = vi.fn(
 			async (args: { shipGates: Array<{ questionId: string }> }) =>
-				opts.handled
+				opts.suppressed
 					? {
-							bound: args.shipGates.map((g) => ({
-								questionId: g.questionId,
-								decision: "approve" as const,
-							})),
+							bound: [],
 							deferred: [],
+							suppressed: args.shipGates.map((g) => ({
+								questionId: g.questionId,
+							})),
 							retry: false,
 						}
-					: null,
+					: opts.handled
+						? {
+								bound: args.shipGates.map((g) => ({
+									questionId: g.questionId,
+									decision: "approve" as const,
+								})),
+								deferred: [],
+								retry: false,
+							}
+						: null,
 		);
 		const msg: RawMsg = {
 			id: msgId,
@@ -817,7 +827,7 @@ describe("FLY-1041 Chunk 8: founder receipt reaction (✅/❓)", () => {
 			reactToFounderMessageImpl:
 				reactImpl as unknown as FounderReplyDeliverDeps["reactToFounderMessageImpl"],
 		};
-		return { deps, reactImpl, events, msgId };
+		return { deps, reactImpl, wakeImpl, events, msgId };
 	}
 
 	it("bound decision (approve written) → ✅ on the founder's message + founder_ack_reacted audit", async () => {
@@ -851,6 +861,17 @@ describe("FLY-1041 Chunk 8: founder receipt reaction (✅/❓)", () => {
 		expect((reactImpl.mock.calls[0]?.[0] as { emoji: string }).emoji).toBe(
 			"❓",
 		);
+	});
+
+	it("merged suppression is fully silent: no wake and no receipt reaction", async () => {
+		const { deps, reactImpl, wakeImpl } = ackHarness({ suppressed: true });
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			deps,
+		);
+		expect(wakeImpl).not.toHaveBeenCalled();
+		expect(reactImpl).not.toHaveBeenCalled();
 	});
 
 	it("no ship gates in matching (brainstorm only) → zero receipts (chatter untouched)", async () => {
