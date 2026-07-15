@@ -1,13 +1,13 @@
 ---
 issue: FLY-1269
 phase: implement
-phaseCursor: 2/8
-updated: 2026-07-15T06:18:50.249Z
-nextStep: "Task 2 RED: durable phase wake queue and callback-before-ack"
+phaseCursor: 3/8
+updated: 2026-07-15T06:27:12.369Z
+nextStep: "Task 3 RED: pure phase lifecycle controller and atomic phase-hold state"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1269 progress
-**phase**: implement (2/8)
-**next**: Task 2 RED: durable phase wake queue and callback-before-ack
+**phase**: implement (3/8)
+**next**: Task 3 RED: pure phase lifecycle controller and atomic phase-hold state
