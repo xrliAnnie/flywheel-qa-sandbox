@@ -571,6 +571,94 @@ describe("ShipRelevantDiffService", () => {
 		expect(fixture.paths.at(-1)).toBe("/repos/owner/repo/pulls/42");
 	});
 
+	it("bounds the docs-only retarget fail-open to the sub-lease + poll interval", async () => {
+		// Adjudicated (Eng Lead, FLY-1251): the docs-only sub-lease trades a
+		// BOUNDED retarget fail-open for lower API load. The detection latency is
+		// the sub-lease (10s) + the GatePoller poll interval (~3s) ≈ 13s, NOT
+		// <=10s. This pins that bound end-to-end at the 3s cadence: the stale
+		// exemption is served THROUGH the lease, then re-evaluated on the first
+		// tick after it expires — it can never be served indefinitely.
+		const store = await StateStore.create(":memory:");
+		let now = 0;
+		let retargeted = false; // flips true to simulate a base change (retarget)
+		const paths: string[] = [];
+		const api: ShipRelevantGitHubApi = async (path) => {
+			paths.push(path);
+			if (path === "/repos/owner/repo/pulls/42") {
+				return retargeted
+					? {
+							head: { sha: HEAD },
+							base: { ref: "release", sha: "c".repeat(40) },
+							changed_files: 1,
+						}
+					: {
+							head: { sha: HEAD },
+							base: { ref: "main", sha: BASE },
+							changed_files: 1,
+						};
+			}
+			const pageMatch = path.match(/[?&]page=(\d+)/);
+			if (path.includes("/pulls/42/files") && pageMatch) {
+				if (Number(pageMatch[1]) !== 1) return [];
+				// After the retarget the diff is a code file (ship-relevant);
+				// before, a doc-only file.
+				return [
+					retargeted
+						? { status: "modified", filename: "packages/app.ts" }
+						: docFile,
+				];
+			}
+			if (path === `/repos/owner/repo/git/trees/${HEAD}?recursive=1`) {
+				return tree(docFile.filename);
+			}
+			if (path === `/repos/owner/repo/git/trees/${BASE}?recursive=1`) {
+				return tree(docFile.filename);
+			}
+			throw new Error(`unexpected path ${path}`);
+		};
+		const service = new ShipRelevantDiffService(store, { now: () => now });
+		const ensure = () =>
+			service.ensure({
+				executionId: "exec-1",
+				repo: "owner/repo",
+				prNumber: 42,
+				prHeadSha: HEAD,
+				api,
+			});
+
+		await ensure(); // t=0 full classify → docs-only
+		now = 3_000;
+		await ensure(); // t=3 first revalidation → grant 10s lease (expires 13s)
+		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD)).toMatchObject({
+			ship_relevant: 0,
+		});
+
+		retargeted = true; // base changes (~t=4) — a retarget the exemption must catch
+
+		// Within the sub-lease the stale docs-only exemption is still served
+		// (bounded fail-open) — the 3s ticks re-fetch NOTHING.
+		const afterRevalidate = paths.length;
+		now = 6_000;
+		await ensure();
+		now = 9_000;
+		await ensure();
+		now = 12_000;
+		await ensure();
+		expect(paths).toHaveLength(afterRevalidate);
+		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD)).toMatchObject({
+			ship_relevant: 0,
+		});
+
+		// First tick AFTER the lease expires (13s) re-fetches, detects the
+		// retarget, and flips the classification away from the stale exemption —
+		// so the window is bounded to ~13s (10s lease + 3s poll), never open.
+		now = 15_000;
+		await ensure();
+		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD)).toMatchObject({
+			ship_relevant: 1,
+		});
+	});
+
 	it("prunes expired in-memory retry entries during later classifications", async () => {
 		const store = await StateStore.create(":memory:");
 		let now = 0;

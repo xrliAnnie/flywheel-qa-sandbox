@@ -400,6 +400,15 @@ export class ShipRelevantDiffService {
 		// long a retarget can go unnoticed while still cutting the per-tick /pulls
 		// load (~1200→~360 calls/hr for a 3s GatePoller tick). It is never longer
 		// than the ship-relevant lease.
+		//
+		// Bounded fail-open (Eng Lead adjudicated, FLY-1251): the actual
+		// retarget-detection latency is the sub-lease (10s) PLUS the GatePoller
+		// poll interval (~3s) ≈ 13s — NOT <=10s. A retarget is served through the
+		// current lease and re-evaluated on the first tick after it expires
+		// (see the "bounds the docs-only retarget fail-open" test). This is the
+		// accepted trade-off for the load reduction; a hard <=10s bound (the sync
+		// approval predicate enforcing the persisted deadline) is deferred to the
+		// PR-2 contract-level tightening.
 		const docsMetadataRetryMs = Math.min(
 			this.options.docsMetadataRetryMs ?? 10_000,
 			metadataRetryMs,
