@@ -348,7 +348,11 @@ function readFrames(out) {
 		.map((line) => JSON.parse(line));
 }
 
-async function waitFor(predicate, message, timeoutMs = FIXTURE_WAIT_TIMEOUT_MS) {
+async function waitFor(
+	predicate,
+	message,
+	timeoutMs = FIXTURE_WAIT_TIMEOUT_MS,
+) {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (predicate()) return;
