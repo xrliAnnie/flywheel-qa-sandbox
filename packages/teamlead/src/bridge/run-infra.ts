@@ -103,6 +103,7 @@ export function probePhaseRetryBranchTip(
 			{
 				encoding: "utf-8",
 				stdio: ["ignore", "pipe", "pipe"],
+				timeout: 20_000,
 			},
 		).trim();
 		if (!stdout) {

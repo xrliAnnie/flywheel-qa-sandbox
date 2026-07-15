@@ -602,26 +602,35 @@ export class RetryDispatcher implements IRetryDispatcher {
 		const isPhaseRetry =
 			req.shareParentBranch === true && isThreeStagePhaseRole(role);
 		let retryStartPoint: string | undefined;
-		if (isPhaseRetry) {
+		const computeRetryStartPoint = (): string | undefined => {
 			const computed = this.phaseRetryStartPointComputer?.(
 				req.issueId,
 				role,
 				req.projectName,
-			) ?? { kind: "missing" as const };
+			) ?? {
+				kind: "indeterminate" as const,
+				error: "phase retry startPoint computer unavailable",
+			};
 			if (computed.kind === "indeterminate") {
-				this.abortPreLaunch(key, newExecutionId, req.projectName);
 				throw new Error(
 					`phase retry startPoint is indeterminate for ${role} on ${req.issueId}: ${computed.error}`,
 				);
 			}
-			if (computed.kind === "found") {
-				retryStartPoint = computed.sha.trim();
-				if (!retryStartPoint) {
-					this.abortPreLaunch(key, newExecutionId, req.projectName);
-					throw new Error(
-						`phase retry startPoint is indeterminate for ${role} on ${req.issueId}: found probe returned an empty sha`,
-					);
-				}
+			if (computed.kind === "missing") return undefined;
+			const sha = computed.sha.trim();
+			if (!sha) {
+				throw new Error(
+					`phase retry startPoint is indeterminate for ${role} on ${req.issueId}: found probe returned an empty sha`,
+				);
+			}
+			return sha;
+		};
+		if (isPhaseRetry) {
+			try {
+				retryStartPoint = computeRetryStartPoint();
+			} catch (error) {
+				this.abortPreLaunch(key, newExecutionId, req.projectName);
+				throw error;
 			}
 		}
 
@@ -633,7 +642,10 @@ export class RetryDispatcher implements IRetryDispatcher {
 			try {
 				const db = new CommDB(defaultGetCommDbPath(req.projectName));
 				try {
-					db.grantTurn(req.issueId, newExecutionId, role, Date.now());
+					db.grantTurn(req.issueId, newExecutionId, role, Date.now(), {
+						project: req.projectName,
+						sourceEventId: `turn:spawn:${newExecutionId}`,
+					});
 				} finally {
 					db.close();
 				}
@@ -642,6 +654,18 @@ export class RetryDispatcher implements IRetryDispatcher {
 				throw new Error(
 					`pre-launch TURN grant failed for ${role} phase retry on ${req.issueId}: ${(err as Error).message}`,
 				);
+			}
+		}
+		// Re-probe after TURN transfer. The first read prevents an ambiguous probe
+		// from moving ownership; this second read is the authoritative branch tip
+		// under the single-writer fence. A failure leaves TURN on the successor for
+		// the normal dead-holder reconciler and never launches with a stale SHA.
+		if (isPhaseRetry) {
+			try {
+				retryStartPoint = computeRetryStartPoint();
+			} catch (error) {
+				this.abortPreLaunch(key, newExecutionId, req.projectName);
+				throw error;
 			}
 		}
 		const ctx: BlueprintContext = {
@@ -713,7 +737,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 			const commit =
 				await this.lifecycleLaunchGuard.commitLaunch(newExecutionId);
 			if (!commit.ok) {
-				this.abortPreLaunch(key, newExecutionId, req.projectName);
+				this.abortPreLaunch(key, newExecutionId, req.projectName, false);
 				throw new LifecycleParkedError(
 					commit.reason ?? "cancelled_between_admission_and_launch",
 				);
@@ -833,6 +857,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 		key: string,
 		executionId: string,
 		projectName: string,
+		notifySpawnFailed = true,
 	): void {
 		try {
 			this.inflight.delete(key);
@@ -844,10 +869,12 @@ export class RetryDispatcher implements IRetryDispatcher {
 		} catch {
 			/* best-effort; cleanupPreRegistration already contains its own guard */
 		}
-		try {
-			this.lifecycleLaunchGuard?.onSpawnFailed(executionId);
-		} catch {
-			/* lifecycle cleanup must never mask the original launch failure */
+		if (notifySpawnFailed) {
+			try {
+				this.lifecycleLaunchGuard?.onSpawnFailed(executionId);
+			} catch {
+				/* lifecycle cleanup must never mask the original launch failure */
+			}
 		}
 	}
 
@@ -1233,7 +1260,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		if (this.lifecycleLaunchGuard) {
 			const commit = await this.lifecycleLaunchGuard.commitLaunch(executionId);
 			if (!commit.ok) {
-				this.abortPreLaunch(key, executionId, req.projectName);
+				this.abortPreLaunch(key, executionId, req.projectName, false);
 				throw new LifecycleParkedError(
 					commit.reason ?? "cancelled_between_admission_and_launch",
 				);

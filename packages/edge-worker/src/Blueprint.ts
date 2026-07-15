@@ -757,7 +757,8 @@ export class Blueprint {
 				shareParentBranch: ctx.shareParentBranch,
 			});
 			// FLY-887: three-stage keep-alive in-place takeover. When a later phase
-			// (implement/qa) dispatches on the SHARED branch-B worktree and the prior
+			// (implement/qa, or a design retry carrying startPoint) dispatches on the
+			// SHARED branch-B worktree and the prior
 			// phase parked (not closed) with the worktree still registered, REUSE it
 			// in place — never removeIfExists+create, which would tear the parked
 			// phase's cwd out from under it. FAIL-CLOSED: only take over a worktree
@@ -766,7 +767,9 @@ export class Blueprint {
 			// on the keep-alive kill-switch (=0 → legacy create path, byte-compat).
 			const takeover =
 				ctx.shareParentBranch === true &&
-				(ctx.sessionRole === "implement" || ctx.sessionRole === "qa") &&
+				(ctx.sessionRole === "implement" ||
+					ctx.sessionRole === "qa" ||
+					(ctx.sessionRole === "design" && ctx.startPoint !== undefined)) &&
 				process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE !== "0" &&
 				(await this.worktreeManager
 					.isRegistered(
