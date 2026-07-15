@@ -1,10 +1,9 @@
 ---
 issue: FLY-1286
-phase: implement
-phaseCursor: 3/6
-updated: 2026-07-15T10:21:03.877Z
-nextStep: Verify narrow regressions, commit and push FAIL evidence, report
-  blocked to Lead
+phase: design
+phaseCursor: 1/5
+updated: 2026-07-15T10:25:51.222Z
+nextStep: Audit prior A2 failure, candidate fix state, and fresh-chain acceptance deltas
 chunks:
   - id: onboard
     order: 1
@@ -16,8 +15,8 @@ pointers:
 ---
 
 # FLY-1286 progress
-**phase**: implement (3/6)
-**next**: Verify narrow regressions, commit and push FAIL evidence, report blocked to Lead
+**phase**: design (1/5)
+**next**: Audit prior A2 failure, candidate fix state, and fresh-chain acceptance deltas
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
