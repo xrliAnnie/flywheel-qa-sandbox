@@ -4,7 +4,7 @@ Issue: FLY-1256 (https://linear.app/geoforge3d/issue/FLY-1256/build-外部配额
 日期: 2026-07-14
 基于: exploration.md, research.md
 
-**Status**: draft（Codex design review R1 14 + R2 7 + R3 4 + R4 3 全部采纳，本版为 R5 送审稿）
+**Status**: codex-approved（Codex design review 5 轮：R1 14 + R2 7 + R3 4 + R4 3 全部采纳 → R5 APPROVED）· 等 founder v4 终版确认后生效（Lead 更正令 5b912c3f）
 **Implement 执行体**: Codex gpt-5.6-sol xhigh（founder 批复单，勿改）· TDD（RED→GREEN→REFACTOR）
 **版本号**: ship 时取空号（FLY-494 惯例）
 **Founder 输入**: 三轮拍板全部折入（exploration §6），第三轮为终版。
