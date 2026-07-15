@@ -163,8 +163,11 @@ describe("QA FLY-1251 · E1 accident replay against the real StateStore", () => 
 		codeBearingSnapshot(store, 1);
 		const session = store.getSession("exec-1251");
 
-		// qa_required=0 (no-three-stage / qa.auto:false) is deliberately NOT set
-		// anywhere here: after FLY-1251 the card face must not consult it at all.
+		// The FLY-1251 predicate structurally never reads qa_required (it is not on
+		// QaHeldSession and is referenced nowhere in reviewHoldReason). So the accident
+		// bypass is closed by construction: with no passed QA record and a code diff,
+		// a code PR holds regardless of any qa_required=0 exemption the old ship gate
+		// would have honored.
 		expect(store.getAutoQaRecord("exec-1251", HEAD)).toBeUndefined();
 		expect(reviewHoldReason(store, session)).toBe("qa_evidence_missing");
 		expect(founderApprovalHoldGuard(store, session)).toBe(true);

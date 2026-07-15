@@ -9,13 +9,25 @@ Issue: FLY-1251 (https://linear.app/geoforge3d/issue/FLY-1251)
 
 ## 1. 结论
 
-**PASS。** PR-1 止血版把 2026-07-14 flag 批事故形状（code PR、no-three-stage、
-`qa_required=0`、零 QA record）在新闸下变成机械不可能——无 QA 证据 → founder 面全 hold
-→ approve 卡不发。最小验收（issue 原文）**达成**。行为改变边界外字节兼容有测试锚。
+**FAIL（kickback 回 implement）。** 我的独立测试（真 StateStore E1 重放 + 老库迁移，10/10 绿）
+证实止血主路径正确；但作为 QA 段必过的 **FLY-827 Codex 代码审查硬门**（head `12ebbac8`）
+返回 **CHANGES REQUESTED**，在 founder-approval **授权边界**上查出真实缺口。授权边界的
+fail-closed 一致性对本单（founder-approval 绑定根治）是核心诉求,不能带已知 fail-open 窗口上船。
+按三段式纪律,QA **不改 implement 代码** → kickback 给 implement 段修,修后我复验 + 重跑 Codex。
 
-交付范围与 plan §0 一致：本段验的是 **PR-1**（谓词止血 + docs-only server 判定 +
-manual-QA server-owned spawn + 删 `FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0` 旁路）。
-PR-2（卡生命周期 + R9）与 §5 契约级设计不在已提交代码内，本报告不为其背书。
+交付范围与 plan §0 一致:本段验的是 **PR-1**。PR-2（卡生命周期 + R9）与 §5 契约级设计不在
+已提交代码内,本报告不为其背书。
+
+## 1b. Codex R1 findings（我的 colleague 评估——非橡皮章）
+
+审查 = https://github.com/xrliAnnie/flywheel/pull/594#pullrequestreview-4700220465
+
+| # | 位置 | Codex 严重度 | 我核实后的判断 |
+|---|---|---|---|
+| 1 | `auto-qa-held.ts:145-150` | HIGH | **真·plan §3.2 顺序偏离**。谓词把「passed record → 放行」和「codex 未过 → codex_pending(可 defer)」放在 `pr_number == null → qa_evidence_unknown` **之前**。plan §3.2 明确 pr_number 检查**优先**(fail-closed)。后果:pr_number 缺失时(半失败身份)得到**可 defer** 的 codex_pending,或被 passed record 直接放行——授权边界应先 fail-closed。mitigations(deferred-replay 复检 + record 需 pr_number)缩小活体可达性,但顺序偏离本身是 auth 边界的一致性缺陷。**保留,implement 修:把 mainRole 的 pr_number==null 检查上移到 codex/record 之前**。 |
+| 2 | `ship-relevant-diff.ts:296` | HIGH | 分类末尾无 metadata 终检——force-push 期 metadata(head/base/changed_files)与 files/trees 可能取自不同提交状态。count-check + head-pin tree 取 + session rebind 提供部分护栏,属**纵深防御**;偏 MEDIUM,但 plan §3.1「head.sha != 请求 head → 放弃」意在全程 head 一致,末尾补一次 head 复核合理。**保留(纵深),implement 补末检**。 |
+| 3 | `ship-relevant-diff.ts:381` | HIGH | **真·有界 fail-open**。`metadataAfter` 节流(30s,commit `9013d0b3` 引入)使 base/head 复核不再是 plan §3.1 所述「每次」;retarget 后旧 docs-only 豁免在 ≤30s 窗口内仍放行 founder。窗口窄但落在本单核心 auth 边界上。**保留,implement 修:retarget/base 复核不受 metadata 节流影响(或缩到远小于卡交互节奏)**。 |
+| 4 | `qa-fly-1251-ship-gate.test.ts:166` | LOW | 我的测试注释暗示测了「qa_required=0 不被消费」,但谓词结构上根本不读 qa_required(不在 QaHeldSession、无引用)。注释已修正为准确表述(测试价值 = 无任何 qa_required 豁免路径存在时仍 hold)。这是 QA 段自有测试,已在本段改。 |
 
 ## 2. 我做了什么（独立验证，非重跑 implement 的自证）
 
@@ -94,5 +106,11 @@ fake 测不到、但真机部署会踩的洞：
 
 ## 6. Verdict
 
-**PASS** — PR-1 止血版实现与 plan 一致，最小验收达成，FLY-1251 全部相关测试绿，
-新增独立测试补上了「老库迁移 + 真 store E1 重放」的覆盖盲区。
+**FAIL — kickback 回 implement 段。** 止血主路径与老库迁移经我独立真机测试证实正确
+（10/10 + 206 相关断言绿）;但 FLY-827 Codex 硬门在 head `12ebbac8` 返回 CHANGES REQUESTED,
+在 founder-approval 授权边界上查出 3 项真实缺口(HIGH-1 谓词顺序偏离 plan §3.2、HIGH-3 base
+复核 30s 节流导致 retarget 后有界 fail-open、HIGH-2 分类末尾无 head 终检)+ 1 项我已在本段修的
+测试注释(LOW-1)。§1b 是我逐条核实后的判断,非橡皮章。
+
+implement 段修 §1b 的 HIGH-1/2/3(implement 代码)后,QA 复验 + 重跑 Codex code review 至 APPROVED,
+再走 founder approve gate。**在 Codex APPROVED 之前不写 code-review.json、不开 approve gate。**
