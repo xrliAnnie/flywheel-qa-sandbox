@@ -132,9 +132,20 @@ export type GoalPhaseObservation =
 	| { kind: "shutdown"; requestId: string }
 	| { kind: "unknown"; error: string };
 
+export type GoalPhaseBoundaryObservation = Extract<
+	GoalPhaseObservation,
+	{ kind: "active" | "parked" | "unknown" }
+>;
+
 /** Structural phase controller seam; this protocol layer imports no CommDB. */
 export interface GoalPhaseLifecycle {
 	getPhaseHold(): GoalPhaseHold | null;
+	/**
+	 * Read only the durable phase-boundary marker. Unlike observe(), this never
+	 * surfaces or advances wake/shutdown work, so the active goal loop can detect
+	 * a completed handoff without consuming a future wake.
+	 */
+	observeBoundary(): GoalPhaseBoundaryObservation;
 	enterHold(budget: {
 		deadlineRemainingMs: number;
 		hardDeadlineRemainingMs: number;
@@ -852,6 +863,14 @@ export async function runGoalToTerminal(
 		try {
 			if (held) {
 				await ensurePhasePaused();
+			} else if (phase?.observeBoundary().kind === "parked") {
+				// `flywheel-comm complete` and the native /goal terminal are separate
+				// control planes. The runner persists its phase handoff with `park`
+				// before ending the current turn; honor that durable boundary even if
+				// the native goal has not emitted `complete` yet. This also lets a
+				// restarted adapter reconstruct the hold before it starts a generic
+				// continuation turn.
+				await enterPhaseHold();
 			} else {
 				if (remainingBudget() <= 0) timedOut("before setGoal");
 				await setGoalStatus("active", remainingBudget());
@@ -906,6 +925,10 @@ export async function runGoalToTerminal(
 					if (await reactivateWake(observation.message)) continue;
 				}
 				await waitForPhaseActivity();
+				continue;
+			}
+			if (phase?.observeBoundary().kind === "parked") {
+				await enterPhaseHold();
 				continue;
 			}
 			// A terminal notification wins immediately, re-checked before every

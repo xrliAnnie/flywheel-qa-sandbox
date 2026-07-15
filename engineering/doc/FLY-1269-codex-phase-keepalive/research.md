@@ -144,10 +144,10 @@ Blueprint 对 Claude three-stage phase 已写明：phase 完成后 `park` 并等
 - getAlivePhaseSession：running/awaiting_review/approved_to_ship/design_done；
 - probe：读取 CommDB tmux target，并检查 pane process liveness。
 
-所以 runner 不需要知道 handoff 是否成功、下一 phase 是谁。`declared parked` 是
-phase boundary 已被 Bridge 接受的窄证据与 watchdog quiet marker；mailbox message
-是 re-engage 输入；TURN row继续是 shared branch写权威。它不应成为 lifetime gate：
-显式 phase身份的 complete即使先于 marker也必须 hold，marker缺失只触发告警/reconcile。
+所以 runner 不需要知道 handoff 是否成功、下一 phase 是谁。`declared parked` 是 durable
+phase-boundary/quiet evidence：当 native `/goal` 在当前 turn结束后仍保持 active时，它可
+独立触发 hold；真正的 eligibility仍来自 explicit phase identity。反向也成立：显式
+phase身份的 native complete即使先于 marker也必须 hold，marker缺失只触发告警/reconcile。
 
 ### F7 — Codex mailbox watcher 已实现但 adapter 未接线
 
@@ -294,7 +294,8 @@ Adapter 把 `runtime.runGoal()` 与 controller 的 durable shutdown signal 做 r
 赢时立即 `runtime.stop()`，不等待 active turn 或 15s goal poll。`runGoalToTerminal` 的
 phase classifier则在 notification 和 poll fallback 前后检查 phase park/wake：
 
-1. 显式 phase identity 的 complete 或已有 latch → 写/保留 latch、pause、进入 slow hold；
+1. 显式 phase identity 的 complete、durable declared park boundary 或已有 latch →
+   写/保留 latch、pause、进入 slow hold；
 2. hold + wake → goal仍 paused时 exact content kick，再 set active；两步成功后
    ack/清 latch（避免 active auto-turn 抢跑）；
 3. declared park缺失/observation unknown → 保持 hold并告警，绝不 terminal success；

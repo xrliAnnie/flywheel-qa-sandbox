@@ -80,8 +80,9 @@ Bridge 侧其实已经按 keep-alive 设计：`onPhaseComplete()` 在 handoff �
 ### Option A — Native paused goal + durable phase hold（推荐，Lead 已批准）
 
 Blueprint 显式把 phase keep-alive 资格和 role 传入 adapter。对这个明确身份，Codex
-goal terminal分类器把任何正常 `complete` 解释为 `phase-hold` 而非 execution
-terminal（除非 closeRunner shutdown 已先到）：先持久化 `phaseHold` latch，再把同一
+phase分类器把任何正常 `complete`，以及已持久化的 declared `parked` boundary，解释为
+`phase-hold` 而非 execution terminal（除非 closeRunner shutdown 已先到）：先持久化
+`phaseHold` latch，再把同一
 goal置为 `paused`，此时才启动 Codex mailbox watcher，并在低频控制循环里等待 wake；另用
 零 token的快速本地 control tick 等 closeRunner shutdown request。declared `parked`
 用于确认 handoff/quiet状态与抑制 watchdog，不是 session 继续存活的前置条件。
@@ -132,7 +133,7 @@ closeout authority 的窄 backend handshake。
 ```mermaid
 stateDiagram-v2
     [*] --> Active
-    Active --> PhaseHoldEntering: goal complete + phase parked
+    Active --> PhaseHoldEntering: native complete OR durable phase parked
     PhaseHoldEntering --> Paused: persist latch, set native paused
     Paused --> Paused: no message; slow poll
     Paused --> Reactivating: ordered mailbox message
@@ -179,9 +180,11 @@ issue-terminal closeout；真正 active工作与 gate wait仍受原24h/49h预算
 ### Complete 与 park 的竞态
 
 Codex goal 可能先发 complete notification，而 `PhaseOrchestrator` 的 declared park 写入
-晚几个毫秒。显式 `phaseKeepAlive` 身份已经足够让 classifier立即 latch+pause；随后
-controller等 declared park出现。若 marker长时间缺失，fail loud并交给 reconcile/Lead，
-但 session/daemon继续存活，绝不把 handoff缺口转换成 terminal reclaim。
+晚几个毫秒；也可能当前 turn结束后 native goal继续 active。显式 `phaseKeepAlive` 身份+
+任一信号（native complete 或 durable park）都足够让 classifier立即 latch+pause。若
+marker长时间缺失但 complete 已到，fail loud并交给 reconcile/Lead；若 park 先到则先 hold，
+不等待一个可能永远不来的 native terminal。两条路径都绝不把 handoff缺口转换成
+terminal reclaim或 generic continuation。
 
 ### Wake 与 closeout 的竞态
 

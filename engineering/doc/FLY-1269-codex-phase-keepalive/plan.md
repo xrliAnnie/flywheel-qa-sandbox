@@ -146,15 +146,17 @@ Adapter 层的 shutdown signal 永远先于 goal outcome：它与 `runGoal()` ra
 立即 `runtime.stop()`。其下同一个 helper供 goal notification 与 `getGoal` poll调用，
 顺序固定：
 
-1. phaseHold latch 或显式 `phaseKeepAlive` execution 的 `complete` → phase hold；
+1. phaseHold latch、显式 `phaseKeepAlive` execution 的 native `complete`，或该 execution
+   已持久化的 declared `parked` phase boundary → phase hold；
 2. FLY-1257 `blocked + gate open/gateHold` → gate hold（若该分支已合并）；
 3. declared park缺失/读取未知 → 保持 phase hold并告警，等待 reconcile或 wake；
 4. 非 phase ordinary terminal → current outcome mapping。
 
 第1条在每一次 re-engaged turn之后仍成立：wake成功会结束旧 latch，但不会移除
 `ctx.phaseKeepAlive` eligibility；下一次 goal `complete` 无论模型有没有重新调用
-`park` 都必须建立新 latch并继续常驻。declared park始终只是 handoff/quiet证据，不是
-lifetime前置条件，pending wake也绝不落入 ordinary terminal分支。
+`park` 都必须建立新 latch并继续常驻。declared park是 handoff/quiet证据，同时也是
+native goal尚未 terminalize时的充分 phase-boundary signal；它不是必要条件，因为 native
+`complete` 单独也必须 hold。pending wake绝不落入 ordinary terminal分支。
 
 任何 CommDB/latch/controller read error返回 `unknown`，保留 current hold/active并 log；
 不能把 unknown映射为 terminal success。

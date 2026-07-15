@@ -81,8 +81,10 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 	it("observes declared parked, cleared active, and DB errors as unknown", () => {
 		const lifecycle = controller();
 		db.upsertDeclaredState("exec-1", "parked", "handoff", 900, null);
+		expect(lifecycle.observeBoundary()).toMatchObject({ kind: "parked" });
 		expect(lifecycle.observe()).toMatchObject({ kind: "parked" });
 		db.clearDeclaredState("exec-1");
+		expect(lifecycle.observeBoundary()).toEqual({ kind: "active" });
 		expect(lifecycle.observe()).toEqual({ kind: "active" });
 		lifecycle.stop();
 
@@ -91,9 +93,16 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 				getRunnerShutdown: () => {
 					throw new Error("sqlite unavailable");
 				},
+				getEffectiveDeclaredState: () => {
+					throw new Error("sqlite unavailable");
+				},
 			} as never,
 		});
 		expect(broken.observe()).toEqual({
+			kind: "unknown",
+			error: "sqlite unavailable",
+		});
+		expect(broken.observeBoundary()).toEqual({
 			kind: "unknown",
 			error: "sqlite unavailable",
 		});

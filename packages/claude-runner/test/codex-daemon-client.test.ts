@@ -85,6 +85,9 @@ class FakePhaseLifecycle implements GoalPhaseLifecycle {
 	finishFailures = 0;
 	leaveFailures = 0;
 	onWait: (() => void) | undefined;
+	boundary: ReturnType<GoalPhaseLifecycle["observeBoundary"]> = {
+		kind: "active",
+	};
 
 	getPhaseHold() {
 		return this.hold;
@@ -109,6 +112,9 @@ class FakePhaseLifecycle implements GoalPhaseLifecycle {
 	observe() {
 		return this.observations.shift() ?? ({ kind: "active" } as const);
 	}
+	observeBoundary() {
+		return this.boundary;
+	}
 	async waitForActivity() {
 		this.onWait?.();
 	}
@@ -129,6 +135,7 @@ class FakePhaseLifecycle implements GoalPhaseLifecycle {
 		}
 		this.left += 1;
 		this.hold = null;
+		this.boundary = { kind: "active" };
 	}
 }
 
@@ -446,6 +453,112 @@ describe("runGoalToTerminal", () => {
 });
 
 describe("runGoalToTerminal — FLY-1269 phase hold", () => {
+	it("a durable phase park enters hold even while the native goal remains active", async () => {
+		const d = new FakeDaemon();
+		let currentStatus: GoalStatus = "active";
+		let activeSets = 0;
+		d.responders.set("thread/goal/set", (params, _id, push) => {
+			currentStatus = (params as { status: GoalStatus }).status;
+			if (currentStatus === "active") {
+				activeSets += 1;
+				if (activeSets === 2) {
+					push({
+						method: "goal/updated",
+						params: {
+							threadId: "t",
+							goal: {
+								status: "blocked",
+								objective: "phase objective",
+							},
+						},
+					});
+				}
+			}
+			return {};
+		});
+		d.responders.set("turn/start", () => ({}));
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: currentStatus, objective: "phase objective" },
+		}));
+		const phase = new FakePhaseLifecycle();
+		phase.observations.push({
+			kind: "wake",
+			message: { id: "park-wake", content: "inspect" },
+		});
+		phase.onWait = () => {
+			phase.boundary = { kind: "parked", reason: "phase handoff" };
+		};
+
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "phase objective",
+			now: () => 0,
+			sleep: async () => {
+				phase.boundary = { kind: "parked", reason: "phase handoff" };
+			},
+			pollIntervalMs: 1,
+			phaseLifecycle: phase,
+		});
+
+		expect(result.status).toBe("blocked");
+		expect(phase.entered).toHaveLength(1);
+		expect(phase.confirmed).toBe(1);
+		expect(phase.finished).toEqual(["park-wake"]);
+		const starts = d.sent.filter((frame) => frame.method === "turn/start");
+		expect(starts).toHaveLength(2);
+	});
+
+	it("a restarted phase with a persisted park pauses before any generic kick", async () => {
+		const d = new FakeDaemon();
+		let currentStatus: GoalStatus = "active";
+		d.responders.set("thread/goal/set", (params, _id, push) => {
+			currentStatus = (params as { status: GoalStatus }).status;
+			if (currentStatus === "active") {
+				push({
+					method: "goal/updated",
+					params: {
+						threadId: "t",
+						goal: {
+							status: "blocked",
+							objective: "phase objective",
+						},
+					},
+				});
+			}
+			return {};
+		});
+		d.responders.set("turn/start", () => ({}));
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: currentStatus, objective: "phase objective" },
+		}));
+		const phase = new FakePhaseLifecycle();
+		phase.boundary = { kind: "parked", reason: "persisted handoff" };
+		phase.observations.push({
+			kind: "wake",
+			message: { id: "restart-wake", content: "inspect" },
+		});
+
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "phase objective",
+			now: () => 0,
+			sleep: async () => {},
+			phaseLifecycle: phase,
+		});
+
+		expect(result.status).toBe("blocked");
+		expect(phase.entered).toHaveLength(1);
+		const statuses = d.sent
+			.filter((frame) => frame.method === "thread/goal/set")
+			.map((frame) => (frame.params as { status: GoalStatus }).status);
+		expect(statuses).toEqual(["paused", "active"]);
+		const starts = d.sent.filter((frame) => frame.method === "turn/start");
+		expect(starts).toHaveLength(1);
+		expect((starts[0]?.params as { input: unknown }).input).toEqual([
+			{ type: "text", text: "[phase-wake restart-wake] inspect" },
+		]);
+	});
+
 	it("holds notification-complete across 49h idle, then kicks exact wake before active", async () => {
 		const d = new FakeDaemon();
 		let setActiveCount = 0;
