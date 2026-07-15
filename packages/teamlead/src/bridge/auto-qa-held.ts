@@ -138,6 +138,9 @@ export function reviewHoldReason(
 				? "codex_pending"
 				: null;
 		}
+		if (mainRole && session.pr_number == null) {
+			return "qa_evidence_unknown";
+		}
 		// Codex gate first: not satisfied → held (independent of QA policy).
 		if (!isCodexGateSatisfied(store, session, sha, env)) return "codex_pending";
 
@@ -147,7 +150,6 @@ export function reviewHoldReason(
 		// FLY-793 implement owns a PR but delegates its verification to the phase
 		// pipeline. FLY-1251's stopgap is intentionally main-only.
 		if (!mainRole) return null;
-		if (session.pr_number == null) return "qa_evidence_unknown";
 
 		const snapshot = store.getShipRelevantDiffSnapshot?.(
 			session.execution_id,

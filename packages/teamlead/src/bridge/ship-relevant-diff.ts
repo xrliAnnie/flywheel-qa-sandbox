@@ -55,6 +55,7 @@ export type ShipRelevantClassification =
 			reason:
 				| "api_error"
 				| "metadata_invalid"
+				| "metadata_drift"
 				| "head_mismatch"
 				| "file_count_mismatch"
 				| "tree_incomplete";
@@ -293,6 +294,26 @@ export async function classifyShipRelevantDiff(input: {
 		}
 	}
 
+	let finalMetadata: PullMetadata | undefined;
+	try {
+		finalMetadata = parseMetadata(
+			await input.api(`/repos/${input.repo}/pulls/${input.prNumber}`),
+		);
+	} catch {
+		return { kind: "unknown", reason: "api_error" };
+	}
+	if (!finalMetadata) return { kind: "unknown", reason: "metadata_invalid" };
+	if (finalMetadata.head.sha !== metadata.head.sha) {
+		return { kind: "unknown", reason: "head_mismatch" };
+	}
+	if (
+		finalMetadata.base.ref !== metadata.base.ref ||
+		finalMetadata.base.sha !== metadata.base.sha ||
+		finalMetadata.changed_files !== metadata.changed_files
+	) {
+		return { kind: "unknown", reason: "metadata_drift" };
+	}
+
 	return {
 		kind: "snapshot",
 		snapshot: { ...snapshotBase, ship_relevant: 0 },
@@ -374,11 +395,14 @@ export class ShipRelevantDiffService {
 			Math.floor(SHIP_RELEVANT_SNAPSHOT_MAX_AGE_MS / 2),
 		);
 		const work = (async (): Promise<ShipRelevantClassification> => {
-			// Re-read PR metadata on a sub-lease, not on every GatePoller tick. A
-			// retarget can change GitHub's three-dot diff without changing head,
-			// while the half-lease cadence keeps the synchronous cache fresh.
+			// A docs-only exemption is permissive authorization evidence, so every
+			// consumer pass must revalidate its PR identity. Only the safe-side
+			// ship-relevant result may use the metadata sub-lease.
 			if (cachedMatches && cached) {
-				if ((this.metadataAfter.get(key) ?? 0) > now) {
+				if (
+					cached.ship_relevant === 1 &&
+					(this.metadataAfter.get(key) ?? 0) > now
+				) {
 					const { execution_id, computed_at, ...snapshot } = cached;
 					void execution_id;
 					void computed_at;

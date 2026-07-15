@@ -293,6 +293,80 @@ describe("classifyShipRelevantDiff", () => {
 			}),
 		).resolves.toEqual({ kind: "unknown", reason: "head_mismatch" });
 	});
+
+	it.each([
+		[
+			"head SHA",
+			{
+				head: { sha: "f".repeat(40) },
+				base: { ref: "main", sha: BASE },
+				changed_files: 1,
+			},
+			"head_mismatch",
+		],
+		[
+			"base ref",
+			{
+				head: { sha: HEAD },
+				base: { ref: "release", sha: BASE },
+				changed_files: 1,
+			},
+			"metadata_drift",
+		],
+		[
+			"base SHA",
+			{
+				head: { sha: HEAD },
+				base: { ref: "main", sha: "c".repeat(40) },
+				changed_files: 1,
+			},
+			"metadata_drift",
+		],
+		[
+			"changed-file count",
+			{
+				head: { sha: HEAD },
+				base: { ref: "main", sha: BASE },
+				changed_files: 2,
+			},
+			"metadata_drift",
+		],
+	] as const)(
+		"refuses a docs-only exemption when the final %s no longer matches the initial PR state",
+		async (_label, finalMetadata, reason) => {
+			let metadataReads = 0;
+			const api: ShipRelevantGitHubApi = async (path) => {
+				if (path === "/repos/owner/repo/pulls/42") {
+					metadataReads += 1;
+					return metadataReads === 1
+						? {
+								head: { sha: HEAD },
+								base: { ref: "main", sha: BASE },
+								changed_files: 1,
+							}
+						: finalMetadata;
+				}
+				if (path.includes("/pulls/42/files")) {
+					const page = Number(path.match(/[?&]page=(\d+)/)?.[1]);
+					return page === 1 ? [docFile] : [];
+				}
+				if (path === `/repos/owner/repo/git/trees/${HEAD}?recursive=1`) {
+					return tree(docFile.filename);
+				}
+				throw new Error(`unexpected path ${path}`);
+			};
+
+			await expect(
+				classifyShipRelevantDiff({
+					repo: "owner/repo",
+					prNumber: 42,
+					prHeadSha: HEAD,
+					api,
+				}),
+			).resolves.toEqual({ kind: "unknown", reason });
+			expect(metadataReads).toBe(2);
+		},
+	);
 });
 
 describe("ShipRelevantDiffService", () => {
@@ -342,7 +416,7 @@ describe("ShipRelevantDiffService", () => {
 		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD)).toBeUndefined();
 	});
 
-	it("throttles base revalidation below the snapshot lease and invalidates on retarget", async () => {
+	it("revalidates a docs-only exemption every time and invalidates it immediately on retarget", async () => {
 		const store = await StateStore.create(":memory:");
 		let now = 0;
 		const first = fakeApi({
@@ -367,7 +441,8 @@ describe("ShipRelevantDiffService", () => {
 			prHeadSha: HEAD,
 			api: first.api,
 		});
-		expect(first.paths).toHaveLength(before);
+		expect(first.paths).toHaveLength(before + 1);
+		expect(first.paths.at(-1)).toBe("/repos/owner/repo/pulls/42");
 
 		now = 30_000;
 		await service.ensure({
@@ -377,7 +452,7 @@ describe("ShipRelevantDiffService", () => {
 			prHeadSha: HEAD,
 			api: first.api,
 		});
-		expect(first.paths).toHaveLength(before + 1);
+		expect(first.paths).toHaveLength(before + 2);
 		expect(first.paths.at(-1)).toBe("/repos/owner/repo/pulls/42");
 
 		now = 59_000;
@@ -397,25 +472,40 @@ describe("ShipRelevantDiffService", () => {
 			prHeadSha: HEAD,
 			api: refreshed.api,
 		});
-		expect(refreshed.paths).toHaveLength(0);
-		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD)).toMatchObject({
-			base_ref: "main",
-			base_oid: BASE,
-		});
-
-		now = 60_000;
-		await service.ensure({
-			executionId: "exec-1",
-			repo: "owner/repo",
-			prNumber: 42,
-			prHeadSha: HEAD,
-			api: refreshed.api,
-		});
+		expect(refreshed.paths).toHaveLength(4);
 		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD)).toMatchObject({
 			base_ref: "release",
 			base_oid: nextBase,
 			ship_relevant: 1,
 		});
+	});
+
+	it("may throttle metadata revalidation for a cached ship-relevant result", async () => {
+		const store = await StateStore.create(":memory:");
+		let now = 0;
+		const fixture = fakeApi({
+			pages: [[{ status: "modified", filename: "packages/app.ts" }], []],
+		});
+		const service = new ShipRelevantDiffService(store, { now: () => now });
+		await service.ensure({
+			executionId: "exec-1",
+			repo: "owner/repo",
+			prNumber: 42,
+			prHeadSha: HEAD,
+			api: fixture.api,
+		});
+		const before = fixture.paths.length;
+
+		now = 3_000;
+		await service.ensure({
+			executionId: "exec-1",
+			repo: "owner/repo",
+			prNumber: 42,
+			prHeadSha: HEAD,
+			api: fixture.api,
+		});
+
+		expect(fixture.paths).toHaveLength(before);
 	});
 
 	it("prunes expired in-memory retry entries during later classifications", async () => {

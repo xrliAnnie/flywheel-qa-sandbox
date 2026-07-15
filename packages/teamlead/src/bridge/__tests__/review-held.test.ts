@@ -130,6 +130,23 @@ describe("FLY-827 isReviewHeld", () => {
 		).toBe("qa_evidence_unknown");
 	});
 
+	it("E4: missing PR identity fails closed before a Codex-pending result can defer", () => {
+		const store = fakeStore({ codexApproved: false });
+		expect(
+			reviewHoldReason(store, { ...awaitingMain, pr_number: undefined }, {}),
+		).toBe("qa_evidence_unknown");
+	});
+
+	it("E4: missing PR identity fails closed before a passed QA record can release", () => {
+		const store = fakeStore({
+			codexApproved: true,
+			qaRecord: { status: "passed" },
+		});
+		expect(
+			reviewHoldReason(store, { ...awaitingMain, pr_number: undefined }, {}),
+		).toBe("qa_evidence_unknown");
+	});
+
 	it.each(["codex", "qa", "snapshot"] as const)(
 		"E4: a %s store read failure fails closed for main",
 		(throwAt) => {
