@@ -84,6 +84,9 @@ export function codexHardGateEnabled(
  *   - session carries codex_skip       → true (sanctioned bypass; head-independent)
  *   - an approved/skipped record for (exec, sha) exists → true
  *   - otherwise                        → false (fail-closed: hold + block + alert)
+ * FLY-1278 governance rulings never add another gate-side escape hatch: they
+ * are consumed inside cross-family review, and only its delivered effective
+ * APPROVED record reaches this predicate. The codex_skip iron rule is unchanged.
  */
 export function isCodexGateSatisfied(
 	store: CodexGateStore,
