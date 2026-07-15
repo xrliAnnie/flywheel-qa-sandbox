@@ -1,14 +1,14 @@
 ---
 issue: FLY-1262
 phase: design
-phaseCursor: 2/5
-updated: 2026-07-15T02:18:16.922Z
-nextStep: Poll revised brainstorm gate 07fade7a-1095-4a76-bb87-ac4d935b560d; on
-  approval enter research
+phaseCursor: 3/5
+updated: 2026-07-15T02:24:29.811Z
+nextStep: "Write exact TDD implementation plan with PR #593 dependency gate and
+  independent QA matrix"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1262 progress
-**phase**: design (2/5)
-**next**: Poll revised brainstorm gate 07fade7a-1095-4a76-bb87-ac4d935b560d; on approval enter research
+**phase**: design (3/5)
+**next**: Write exact TDD implementation plan with PR #593 dependency gate and independent QA matrix
