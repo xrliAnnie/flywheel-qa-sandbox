@@ -21,6 +21,8 @@ import { emptyQuotaMonitorState } from "../account-heal/quota-monitor-state.js";
 
 let dir: string;
 let path: string;
+const TEST_UID = process.getuid?.() ?? 0;
+const FOREIGN_UID = TEST_UID + 1;
 
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "fly1256-pid-"));
@@ -32,7 +34,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 function pidDeps(pid = 123) {
 	return {
 		pid,
-		uid: 501,
+		uid: TEST_UID,
 		processStartTime: `start-${pid}`,
 		isProcessAlive: (candidate: number) => candidate === pid,
 		readProcessStartTime: (candidate: number) => `start-${candidate}`,
@@ -54,7 +56,7 @@ describe("atomic singleton pidfile", () => {
 		const first = acquireSingletonPidfile(path, pidDeps());
 		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
 			pid: 123,
-			uid: 501,
+			uid: TEST_UID,
 			processStartTime: "start-123",
 		});
 		expect(() =>
@@ -71,7 +73,7 @@ describe("atomic singleton pidfile", () => {
 	it("replaces a dead same-owner regular pidfile", () => {
 		writeFileSync(
 			path,
-			JSON.stringify({ pid: 999, uid: 501, processStartTime: "old" }),
+			JSON.stringify({ pid: 999, uid: TEST_UID, processStartTime: "old" }),
 			{ mode: 0o600 },
 		);
 		const owner = acquireSingletonPidfile(path, {
@@ -91,7 +93,11 @@ describe("atomic singleton pidfile", () => {
 
 		writeFileSync(
 			path,
-			JSON.stringify({ pid: 999, uid: 502, processStartTime: "start-999" }),
+			JSON.stringify({
+				pid: 999,
+				uid: FOREIGN_UID,
+				processStartTime: "start-999",
+			}),
 			{ mode: 0o600 },
 		);
 		expect(() => acquireSingletonPidfile(path, pidDeps())).toThrow(/unsafe/i);
@@ -99,7 +105,11 @@ describe("atomic singleton pidfile", () => {
 
 		writeFileSync(
 			path,
-			JSON.stringify({ pid: 999, uid: 501, processStartTime: "old-start" }),
+			JSON.stringify({
+				pid: 999,
+				uid: TEST_UID,
+				processStartTime: "old-start",
+			}),
 			{ mode: 0o600 },
 		);
 		expect(() =>
@@ -115,7 +125,7 @@ describe("atomic singleton pidfile", () => {
 		const owner = acquireSingletonPidfile(path, pidDeps());
 		writeFileSync(
 			path,
-			JSON.stringify({ pid: 777, uid: 501, processStartTime: "new" }),
+			JSON.stringify({ pid: 777, uid: TEST_UID, processStartTime: "new" }),
 			{ mode: 0o600 },
 		);
 		owner.release();
