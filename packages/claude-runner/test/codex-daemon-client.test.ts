@@ -131,6 +131,24 @@ describe("CodexDaemonClient — handshake + protocol", () => {
 		});
 	});
 
+	it("FLY-1257: setGoalStatus always carries the cached objective and budget", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/set", () => ({}));
+		const c = makeClient(d);
+		await c.setGoalStatus({
+			threadId: "t",
+			objective: "cached objective",
+			tokenBudget: 42_000,
+			status: "paused",
+		});
+		expect(d.sent.find((s) => s.method === "thread/goal/set")?.params).toEqual({
+			threadId: "t",
+			objective: "cached objective",
+			tokenBudget: 42_000,
+			status: "paused",
+		});
+	});
+
 	it("FLY-1236: setGoal fails closed on an oversized objective — no thread/goal/set frame reaches the daemon", async () => {
 		const d = new FakeDaemon();
 		d.responders.set("thread/goal/set", () => ({}));
@@ -362,8 +380,14 @@ describe("runGoalToTerminal", () => {
 		expect(res.status).toBe("complete");
 		expect(latchWrites).toEqual([true, false]);
 		const sets = d.sent.filter((frame) => frame.method === "thread/goal/set");
-		expect(sets).toHaveLength(2);
+		expect(sets).toHaveLength(3);
 		expect(sets[1]?.params).toMatchObject({
+			threadId: "t",
+			objective: "ship FLY-1257",
+			tokenBudget: 123_456,
+			status: "paused",
+		});
+		expect(sets[2]?.params).toMatchObject({
 			threadId: "t",
 			objective: "ship FLY-1257",
 			tokenBudget: 123_456,
@@ -376,11 +400,11 @@ describe("runGoalToTerminal", () => {
 
 	it("FLY-1257: the poll fallback uses the same blocked/waiting classifier without a duplicate wake", async () => {
 		const d = new FakeDaemon();
-		let setCalls = 0;
+		let activeSets = 0;
 		let getCalls = 0;
 		let starts = 0;
-		d.responders.set("thread/goal/set", () => {
-			setCalls += 1;
+		d.responders.set("thread/goal/set", (params) => {
+			if ((params as { status?: string }).status === "active") activeSets += 1;
 			return {};
 		});
 		d.responders.set("turn/start", () => {
@@ -389,8 +413,8 @@ describe("runGoalToTerminal", () => {
 		});
 		d.responders.set("thread/goal/get", () => {
 			getCalls += 1;
-			if (setCalls === 0) return { goal: null }; // restart preflight
-			if (setCalls === 1) {
+			if (activeSets === 0) return { goal: null }; // restart preflight
+			if (activeSets === 1) {
 				return {
 					goal: {
 						status: "blocked",
@@ -430,7 +454,14 @@ describe("runGoalToTerminal", () => {
 		expect(res.status).toBe("complete");
 		expect(getCalls).toBeGreaterThanOrEqual(3);
 		expect(writes).toEqual([true, false]);
-		expect(setCalls).toBe(2);
+		expect(activeSets).toBe(2);
+		expect(
+			d.sent.filter(
+				(frame) =>
+					frame.method === "thread/goal/set" &&
+					(frame.params as { status?: string }).status === "paused",
+			),
+		).toHaveLength(1);
 		expect(starts).toBe(2);
 	});
 
@@ -474,10 +505,191 @@ describe("runGoalToTerminal", () => {
 		});
 		expect(res.status).toBe("complete");
 		expect(d.sentMethods()[0]).toBe("thread/goal/get");
-		expect(d.sentMethods().filter((m) => m === "thread/goal/set")).toHaveLength(1);
+		const sets = d.sent.filter((frame) => frame.method === "thread/goal/set");
+		expect(sets).toHaveLength(2);
+		expect(sets[0]?.params).toMatchObject({
+			objective: "restart fixture",
+			tokenBudget: 777,
+			status: "paused",
+		});
+		expect(sets[1]?.params).toMatchObject({
+			objective: "restart fixture",
+			tokenBudget: 777,
+			status: "active",
+		});
 		expect(writes).toEqual([false]);
 		const wake = d.sent.find((frame) => frame.method === "turn/start");
 		expect(JSON.stringify(wake?.params)).toContain("gate result is ready");
+	});
+
+	it("FLY-1257: a pause RPC error is best-effort and the local hold still wakes", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/get", () => ({ goal: null }));
+		const originalSend = d.send.bind(d);
+		let activeSets = 0;
+		d.send = (frame) => {
+			const f = frame as { id?: number; method?: string; params?: unknown };
+			if (
+				f.method === "thread/goal/set" &&
+				(f.params as { status?: string }).status === "paused"
+			) {
+				d.sent.push(f as Record<string, unknown>);
+				queueMicrotask(() =>
+					d.push({
+						id: f.id,
+						error: { code: -1, message: "pause unavailable" },
+					}),
+				);
+				return;
+			}
+			if (
+				f.method === "thread/goal/set" &&
+				(f.params as { status?: string }).status === "active"
+			) {
+				activeSets += 1;
+			}
+			originalSend(frame);
+		};
+		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("turn/start", (_params, _id, push) => {
+			push({
+				method: "goal/updated",
+				params: {
+					threadId: "t",
+					goal: {
+						status: activeSets === 1 ? "blocked" : "complete",
+						objective: "pause error fixture",
+					},
+				},
+			});
+			return {};
+		});
+		let waiting = true;
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "pause error fixture",
+			tokenBudget: 654,
+			isWaiting: () => waiting,
+			readGateHoldLatch: () => false,
+			writeGateHoldLatch: () => {},
+			sleep: async () => {
+				waiting = false;
+			},
+			now: () => 0,
+		});
+		expect(result.status).toBe("complete");
+		expect(activeSets).toBe(2);
+		expect(
+			d.sent.some(
+				(frame) =>
+					frame.method === "thread/goal/set" &&
+					(frame.params as { status?: string }).status === "paused",
+			),
+		).toBe(true);
+	});
+
+	it("FLY-1257: restart preflight keeps an already-paused goal asleep while the gate is open", async () => {
+		const d = new FakeDaemon();
+		let goalStatus: GoalStatus = "paused";
+		d.responders.set("thread/goal/get", () => ({
+			goal: {
+				status: goalStatus,
+				objective: "paused restart fixture",
+				tokenBudget: 800,
+			},
+		}));
+		d.responders.set("thread/goal/set", (params) => {
+			goalStatus = (params as { status: GoalStatus }).status;
+			return {};
+		});
+		d.responders.set("turn/start", (_params, _id, push) => {
+			push({
+				method: "goal/updated",
+				params: {
+					threadId: "t",
+					goal: {
+						status: "complete",
+						objective: "paused restart fixture",
+					},
+				},
+			});
+			return {};
+		});
+		let waiting = true;
+		let latched = false;
+		const writes: boolean[] = [];
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "paused restart fixture",
+			tokenBudget: 800,
+			isWaiting: () => waiting,
+			readGateHoldLatch: () => latched,
+			writeGateHoldLatch: (held) => {
+				latched = held;
+				writes.push(held);
+			},
+			sleep: async () => {
+				waiting = false;
+			},
+			now: () => 0,
+		});
+		expect(result.status).toBe("complete");
+		const sets = d.sent.filter((frame) => frame.method === "thread/goal/set");
+		expect(sets).toHaveLength(1);
+		expect(sets[0]?.params).toMatchObject({
+			objective: "paused restart fixture",
+			tokenBudget: 800,
+			status: "active",
+		});
+		expect(writes).toEqual([true, false]);
+	});
+
+	it("FLY-1257: restart preflight reactivates a paused goal whose gate resolved during downtime", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/get", () => ({
+			goal: {
+				status: "paused",
+				objective: "resolved while down",
+				tokenBudget: 901,
+			},
+		}));
+		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("turn/start", (_params, _id, push) => {
+			push({
+				method: "goal/updated",
+				params: {
+					threadId: "t",
+					goal: { status: "complete", objective: "resolved while down" },
+				},
+			});
+			return {};
+		});
+		let latched = true;
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "resolved while down",
+			tokenBudget: 901,
+			isWaiting: () => false,
+			readGateHoldLatch: () => latched,
+			writeGateHoldLatch: (held) => {
+				latched = held;
+			},
+			now: () => 0,
+		});
+		expect(result.status).toBe("complete");
+		expect(latched).toBe(false);
+		expect(d.sentMethods()).toEqual([
+			"thread/goal/get",
+			"thread/goal/set",
+			"turn/start",
+		]);
+		expect(
+			d.sent.find((frame) => frame.method === "thread/goal/set")?.params,
+		).toMatchObject({
+			objective: "resolved while down",
+			tokenBudget: 901,
+			status: "active",
+		});
 	});
 
 	it("FLY-1257: an unlatched blocked preflight with no open gate remains a legitimate terminal", async () => {
