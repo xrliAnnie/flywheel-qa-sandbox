@@ -4,8 +4,10 @@
 // 1. a native complete goal accepts a full-field transition to paused;
 // 2. paused status/objective/budget survive daemon restart + thread/resume;
 // 3. one explicit turn can start while the goal is still paused;
-// 4. setting the same goal active after that accepted wake does not create a
-//    duplicate turn; and
+// 4. setting the same goal active after that accepted wake cannot create a
+//    concurrent duplicate turn; a native sequential continuation is allowed
+//    only after the exact wake turn completes and must stay in the same goal;
+//    and
 // 5. cleanup removes the isolated daemon, sockets, and temporary CODEX_HOME.
 //
 // Run from the Flywheel repository root:
@@ -66,6 +68,10 @@ let failure;
 const activeTurns = new Set();
 const startedTurnIds = [];
 const observedGoalStatuses = [];
+const turnStartedAtMs = new Map();
+const turnCompletedAtMs = new Map();
+let expectedWakeTurnId;
+let concurrentTurnDuringWake = false;
 const objective =
 	"This is an isolated protocol probe. After the initial instruction, reply " +
 	"with COMPLETE_ACK and finish the goal. Do not inspect or modify any files.";
@@ -149,13 +155,24 @@ async function connect(socketPath, label) {
 		if (frame.method === "turn/started") {
 			turnStarts += 1;
 			const id = frame.params?.turn?.id ?? `unknown-${turnStarts}`;
+			if (
+				expectedWakeTurnId &&
+				id !== expectedWakeTurnId &&
+				activeTurns.has(expectedWakeTurnId)
+			) {
+				concurrentTurnDuringWake = true;
+			}
 			activeTurns.add(id);
 			startedTurnIds.push(id);
+			turnStartedAtMs.set(id, elapsed());
 			trace(`recv:${label}`, frame);
 		} else if (frame.method === "turn/completed") {
 			turnCompletions += 1;
 			const id = frame.params?.turn?.id;
-			if (id) activeTurns.delete(id);
+			if (id) {
+				activeTurns.delete(id);
+				turnCompletedAtMs.set(id, elapsed());
+			}
 			trace(`recv:${label}`, frame);
 		} else if (
 			typeof frame.method === "string" &&
@@ -315,6 +332,8 @@ try {
 		90_000,
 		"one manual wake turn while paused",
 	);
+	expectedWakeTurnId = startedTurnIds.at(-1);
+	if (!expectedWakeTurnId) throw new Error("manual wake exposed no turn id");
 	const stillPaused = await client.rpc("thread/goal/get", { threadId });
 	assertGoal(stillPaused?.goal, "paused", "manual wake while paused");
 	if (turnStarts !== startsBeforeWake + 1) {
@@ -328,11 +347,37 @@ try {
 		tokenBudget,
 	});
 	assertGoal(activeAgain?.goal, "active", "post-wake active goal/set");
-	await sleep(10_000);
-	if (turnStarts !== startsBeforeWake + 1) {
-		throw new Error(
-			"paused-to-active transition created a duplicate turn after the accepted wake",
-		);
+	if (concurrentTurnDuringWake || turnStarts !== startsBeforeWake + 1) {
+		throw new Error("paused-to-active created a concurrent duplicate wake turn");
+	}
+	await waitUntil(
+		() => turnCompletedAtMs.has(expectedWakeTurnId),
+		90_000,
+		"manual wake turn completion",
+	);
+	await waitUntil(
+		() => turnStarts >= startsBeforeWake + 2,
+		30_000,
+		"native sequential continuation",
+	);
+	const continuationTurnId = startedTurnIds.at(-1);
+	const wakeCompletedAt = turnCompletedAtMs.get(expectedWakeTurnId);
+	const continuationStartedAt = turnStartedAtMs.get(continuationTurnId);
+	if (
+		concurrentTurnDuringWake ||
+		wakeCompletedAt === undefined ||
+		continuationStartedAt === undefined ||
+		continuationStartedAt < wakeCompletedAt
+	) {
+		throw new Error("native continuation overlapped the exact wake turn");
+	}
+	const sameGoalReadback = await client.rpc("thread/goal/get", { threadId });
+	if (!sameGoalReadback?.goal) throw new Error("same goal disappeared after wake");
+	if (
+		sameGoalReadback.goal.objective !== objective ||
+		sameGoalReadback.goal.tokenBudget !== tokenBudget
+	) {
+		throw new Error("native continuation replaced the original goal");
 	}
 	await client.rpc("thread/goal/clear", { threadId });
 
@@ -345,6 +390,11 @@ try {
 		turnCompletions,
 		turnStartRpcCount,
 		startedTurnIds,
+		expectedWakeTurnId,
+		continuationTurnId,
+		wakeCompletedAt,
+		continuationStartedAt,
+		concurrentTurnDuringWake,
 		observedGoalStatuses,
 	});
 } catch (error) {

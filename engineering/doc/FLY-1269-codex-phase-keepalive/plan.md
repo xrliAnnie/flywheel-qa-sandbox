@@ -215,18 +215,22 @@ cached objective/tokenBudget and `status:"paused"`; verify goal/get reports paus
 daemon cleanly, start a new daemon against the same temporary CODEX_HOME, `thread/resume` the
 same thread, and verify goal/get still reports paused with identical objective/tokenBudget。
 While still paused, call `turn/start` with a unique wake probe and verify exactly that manual
-turn starts, with no extra auto-turn. Then set active with the same fields and verify the same
-goal resumes after the accepted wake turn，with exactly one running/accepted wake turn and no
-second auto-start caused by the active transition。
+turn starts first，with no concurrent auto-turn。Then set active with the same fields and verify
+the same goal resumes：while the exact wake turn is running，the active transition cannot start a
+second concurrent turn；after that wake completes，native sequential continuation is allowed only
+inside the same goal。The next phase boundary must still establish a fresh `phaseHold` before any
+further continuation，so activation can never punch through the hold contract。
 
 ```bash
-node engineering/doc/FLY-1269-codex-phase-keepalive/qa/m0-complete-paused-probe.mjs.txt
+node --input-type=module < \
+  engineering/doc/FLY-1269-codex-phase-keepalive/qa/m0-complete-paused-probe.mjs.txt
 ```
 
 Expected: exit 0; evidence says PASS; same threadId throughout; complete→paused accepted;
 paused status/fields survive daemon restart + thread/resume；paused produces no automatic turn；
-manual wake while paused is accepted exactly once；active resumes only after that accepted wake；
-active transition creates no duplicate turn；cleanup removes socket/process.
+manual wake while paused is accepted exactly once and is the first resumed turn；active creates
+no concurrent duplicate；any later sequential continuation starts only after the wake completes
+and retains the same goal；cleanup removes socket/process.
 
 **Step 3 — Fail-close decision**
 
@@ -545,7 +549,11 @@ fail-loud/held until shutdown or a Lead-approved architecture change，never hot
 ordinary terminal fallthrough。
 On wake: keep goal paused，call `startTurn` with exact message id/content，persist the queue item
 as started，then set the same goal active；only after both RPCs succeed may the item become
-finished、watcher stop and latch clear。
+finished、watcher stop and latch clear。The exact wake must be the first resumed turn and active
+must not create a concurrent second turn；native goal continuation after the wake finishes is
+expected and remains inside the same goal。The next `complete` is still classified from
+`phaseKeepAlive` eligibility and must create a fresh latch，even if the prior wake cleared both the
+old latch and declared marker。
 This order is mandatory because native `paused→active` can auto-start a turn before a later kick。
 Use an injected `sleep`/poll interval so unit tests use zero time；production idle interval 15s，
 mailbox fs.watch triggers an immediate controller wake signal rather than waiting a full tick.
