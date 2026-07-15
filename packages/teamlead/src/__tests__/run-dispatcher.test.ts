@@ -808,9 +808,7 @@ describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () 
 
 	it("infers Codex defensively when backend metadata is absent", () => {
 		const display = renderRunnerModelDisplay({ model: "gpt-5.6-sol" });
-		expect(runnerDisplayName("main", false, display)).toBe(
-			"runner-codex-G",
-		);
+		expect(runnerDisplayName("main", false, display)).toBe("runner-codex-G");
 	});
 
 	it("keeps legacy names when no model was resolved", () => {

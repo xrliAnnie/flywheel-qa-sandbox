@@ -237,11 +237,7 @@ console.log(
 		{ adapter_type: null, runner_model: null, chat_thread_role: "design" },
 		{ FLYWHEEL_THREE_STAGE_CODEX_DESIGN: "1" },
 	);
-	check(
-		"design kill-switch on → codex marker",
-		designOn.threadMarker,
-		"G",
-	);
+	check("design kill-switch on → codex marker", designOn.threadMarker, "G");
 }
 
 console.log("\n=== 6. Marker safety: injection + round-trip idempotency ===");
@@ -271,11 +267,7 @@ console.log("\n=== 6. Marker safety: injection + round-trip idempotency ===");
 	const once = su.applyModelMarker("[FLY-1255] T", "G");
 	const twice = su.applyModelMarker(once, "G");
 	check("re-stamp is idempotent (no marker stacking)", twice, once);
-	check(
-		"marker round-trips through parser",
-		su.modelMarkerLabel(once),
-		"G",
-	);
+	check("marker round-trips through parser", su.modelMarkerLabel(once), "G");
 	check("strip returns bare base", su.stripModelMarker(once), "[FLY-1255] T");
 
 	// model switch: codex → claude must replace, not append.

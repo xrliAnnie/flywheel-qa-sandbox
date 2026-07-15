@@ -15,12 +15,10 @@ describe("renderRunnerModelDisplay (FLY-1255 Plan B — single-letter codes)", (
 		],
 		// Plan B: codex/GPT-5.6 folds to the single letter `G` (was `Model GPT-5.6`).
 		["codex", "gpt-5.6-sol", { threadMarker: "G", windowLabel: "codex-G" }],
+		// The code is family-wide: future GPT versions keep the same `G` marker.
+		["codex", "gpt-6", { threadMarker: "G", windowLabel: "codex-G" }],
 		// Plan B: kimi folds to the single letter `K` (was `Model kimi-for-coding`).
-		[
-			"kimi",
-			"kimi-for-coding",
-			{ threadMarker: "K", windowLabel: "kimi-K" },
-		],
+		["kimi", "kimi-for-coding", { threadMarker: "K", windowLabel: "kimi-K" }],
 	] as const)("renders %s/%s", (vendor, model, expected) => {
 		expect(renderRunnerModelDisplay({ vendor, model })).toEqual(expected);
 	});
@@ -61,13 +59,6 @@ describe("renderRunnerModelDisplay (FLY-1255 Plan B — single-letter codes)", (
 	});
 
 	it("never fabricates a letter for an unvetted vendor/model (Plan B ③)", () => {
-		// A future gpt-6 is NOT the curated gpt-5.6 signature → long fallback, not `G`.
-		expect(
-			renderRunnerModelDisplay({ vendor: "codex", model: "gpt-6" }),
-		).toEqual({
-			threadMarker: "Model gpt-6",
-			windowLabel: "codex-gpt-6",
-		});
 		// Uncurated families (gemini, antigravity) never get a letter.
 		expect(
 			renderRunnerModelDisplay({ vendor: "gemini", model: "gemini-3-pro" }),

@@ -97,9 +97,11 @@ describe("modelShortCode (F/O/S/H)", () => {
 });
 
 describe("vendorModelShortCode (FLY-1255 Plan B — non-Claude single letters)", () => {
-	it("maps the curated codex/GPT-5.6 and kimi families to G / K", () => {
+	it("maps the curated codex/GPT and kimi families to G / K", () => {
 		expect(vendorModelShortCode("codex", "gpt-5.6-sol")).toBe("G");
 		expect(vendorModelShortCode("codex", "gpt-5.6")).toBe("G");
+		expect(vendorModelShortCode("codex", "gpt-6")).toBe("G");
+		expect(vendorModelShortCode("codex", "gpt-4o")).toBe("G");
 		expect(vendorModelShortCode("kimi", "kimi-for-coding")).toBe("K");
 		// kimi is family-wide (Annie: "[K]=kimi family").
 		expect(vendorModelShortCode("kimi", "kimi-k2-next")).toBe("K");
@@ -108,9 +110,6 @@ describe("vendorModelShortCode (FLY-1255 Plan B — non-Claude single letters)",
 	});
 
 	it("never fabricates a letter for an unvetted vendor/model", () => {
-		// A future gpt-6 is NOT the curated gpt-5.6 signature → no letter.
-		expect(vendorModelShortCode("codex", "gpt-6")).toBeUndefined();
-		expect(vendorModelShortCode("codex", "gpt-4o")).toBeUndefined();
 		// Uncurated families never get a letter.
 		expect(vendorModelShortCode("gemini", "gemini-3-pro")).toBeUndefined();
 		expect(vendorModelShortCode("antigravity", "agy-1")).toBeUndefined();

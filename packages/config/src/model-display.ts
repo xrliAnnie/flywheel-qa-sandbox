@@ -55,8 +55,8 @@ export function renderRunnerModelDisplay(
 
 	// FLY-1255 (Plan B — Annie): resolve a SINGLE-LETTER short code by table
 	// lookup. Claude keeps its F/O/S/H tier codes (byte-unchanged); curated
-	// non-Claude families fold to `G` (codex/GPT-5.6) or `K` (kimi). A model with
-	// no curated code (gemini, antigravity, a future gpt-6) keeps the long
+	// non-Claude families fold to `G` (codex/GPT) or `K` (kimi). A model with no
+	// curated code (gemini, antigravity, or another unlisted family) keeps the long
 	// `Model <id>` fallback below — the letter is NEVER fabricated.
 	const claudeCode = family === "claude" ? claudeCodeCandidate : undefined;
 	const vendorCode = vendorModelShortCode(family, model);

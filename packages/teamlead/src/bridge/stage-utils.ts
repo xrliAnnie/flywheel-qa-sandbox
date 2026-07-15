@@ -285,9 +285,10 @@ export function stripStatusEmojiPrefix(name: string): string {
  *
  * FLY-1255 (Plan B — Annie): every vendor folds to a single letter — Claude
  * keeps F/O/S/H, codex/GPT-5.6 → `G`, kimi → `K`. An UNvetted vendor/model that
- * has no curated letter (gemini, antigravity, a future gpt-6) is still stamped
- * with the human-readable `Model <safe-id>` namespace rather than a fabricated
- * letter, so the grammar keeps recognizing that long form too. The FLY-728 tail
+ * has no curated letter (gemini, antigravity, or another unlisted family) is
+ * still stamped with the human-readable `Model <safe-id>` namespace rather
+ * than a fabricated letter, so the grammar keeps recognizing that long form
+ * too. The FLY-728 tail
  * suffix (` ·F`) was invisible on mobile, where long titles truncate and the
  * tail never renders. The marker still rides the SAME thread rename as the stage
  * badge (splitStatusEmoji peels only the badge, leaving the marker at the front

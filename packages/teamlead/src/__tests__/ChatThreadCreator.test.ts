@@ -1553,9 +1553,7 @@ describe("FLY-755: creation + backfill carry the front model marker", () => {
 		});
 
 		const threadBody = JSON.parse(mockFetch.mock.calls[1]![1].body);
-		expect(threadBody.name).toBe(
-			"[G] [FLY-1255] Vendor-neutral display",
-		);
+		expect(threadBody.name).toBe("[G] [FLY-1255] Vendor-neutral display");
 	});
 
 	it("does not stamp a keyless title at creation (no issue key head)", async () => {
