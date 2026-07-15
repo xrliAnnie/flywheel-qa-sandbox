@@ -129,15 +129,17 @@ native goal `updated_at_ms=1784114559736` 对应
 
 ## Observer Regression
 
-terminal observer syntax 通过，9/9 fixture tests 通过，覆盖 request→ack、durable same-id
-corroboration、missing ack fail-close、direct_proven rerun、indeterminate liveness、旧 attempt
-过滤、TURN/QA cleanup、socket orphan 与 read-only WAL 行为。real `--once` 也通过。
+terminal observer syntax 通过，13/13 fixture tests 通过，覆盖 request→ack、首次采到 ack 的
+durable same-id corroboration、missing ack fail-close、direct_proven rerun、真实 exit-1
+indeterminate liveness、dead tmux pane、单次 `lsof` 全 socket 索引、stable snapshot dedupe、
+旧 attempt 过滤、TURN/QA cleanup、socket orphan 与 read-only WAL 行为。real `--once` 也通过并解析出 Design holder
+PID `88885` 与 Implement holder PID `54044`。
 
 Implement head 的 fresh narrow regression：
 
-- terminal observer: 9/9 passed，duration `20.630s`；
-- `codex-phase-lifecycle` + daemon client/runtime: 89/89 passed，duration `0.811s`；
-- three-stage routing table: 21/21 passed，duration `0.598s`；
+- terminal observer: 13/13 passed，duration `25.783s`；
+- `codex-phase-lifecycle` + daemon client/runtime: 89/89 passed，duration `0.864s`；
+- three-stage routing/config table: 22/22 passed，duration `1.070s`；
 - production PR #604 head 与 candidate worktree 均重新核对为 pinned `cad61a078`；
 - evidence JSON parse、scope guard 与 `git diff --check` 通过。
 

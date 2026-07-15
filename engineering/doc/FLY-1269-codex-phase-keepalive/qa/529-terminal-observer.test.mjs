@@ -1,14 +1,12 @@
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	chmodSync,
-	closeSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
-	openSync,
 	readFileSync,
-	readdirSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -16,7 +14,6 @@ import {
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -31,7 +28,7 @@ const ISSUE = "FLY-1286";
 function runSql(dbPath, sql) {
 	const result = spawnSync(REAL_SQLITE, [dbPath], {
 		encoding: "utf8",
-		input: sql,
+		input: `PRAGMA busy_timeout=2000;${sql}`,
 	});
 	assert.equal(result.status, 0, result.stderr || result.stdout);
 }
@@ -102,9 +99,11 @@ function createFixture({ oldAttempt = false } = {}) {
 	const socketRoot = path.join(root, "sockets");
 	const fakeBin = path.join(root, "bin");
 	const probeDir = path.join(root, "probes");
+	const probeLog = path.join(root, "probe.log");
 	mkdirSync(socketRoot);
 	mkdirSync(fakeBin);
 	mkdirSync(probeDir);
+	writeFileSync(probeLog, "");
 
 	runSql(
 		stateDb,
@@ -218,20 +217,28 @@ function createFixture({ oldAttempt = false } = {}) {
 		const map=JSON.parse(fs.readFileSync(process.env.FAKE_PROBE_DIR+'/tmux.json','utf8'));
 		const target=process.argv[process.argv.indexOf('-t')+1];
 		const state=map[target] ?? 'absent';
-		if(state==='live'){process.stdout.write(target);process.exit(0)}
-		if(state==='absent')process.exit(1);
-		process.stderr.write('probe unreadable');process.exit(2);
+		if(state==='live'){process.stdout.write('0\\n');process.exit(0)}
+		if(state==='dead'){process.stdout.write('1\\n');process.exit(0)}
+		if(state==='absent'){process.stderr.write("can't find pane: "+target+'\\n');process.exit(1)}
+		process.stderr.write('no server running on /tmp/tmux-test/default\\n');process.exit(1);
 		`,
 	);
 	makeExecutable(
 		path.join(fakeBin, "lsof"),
 		`#!/usr/bin/env node
-		const fs=require('node:fs');const path=require('node:path');
+		const fs=require('node:fs');
+		fs.appendFileSync(process.env.FAKE_PROBE_LOG,'lsof\\n');
 		const map=JSON.parse(fs.readFileSync(process.env.FAKE_PROBE_DIR+'/lsof.json','utf8'));
-		const state=map[path.basename(process.argv.at(-1))] ?? [];
-		if(state==='indeterminate'){process.stderr.write('probe unreadable');process.exit(2)}
-		if(!Array.isArray(state)||state.length===0)process.exit(1);
-		process.stdout.write(state.join('\\n')+'\\n');process.exit(0);
+		if(Object.values(map).includes('indeterminate')){
+			process.stderr.write('lsof: status error on socket: Permission denied\\n');
+			process.exit(1);
+		}
+		let output='p99999\\nf8\\nn/unrelated.sock\\n';
+		for(const [name,holders] of Object.entries(map)){
+			if(!Array.isArray(holders))continue;
+			for(const pid of holders)output+='p'+pid+'\\nf27\\nn'+process.env.FAKE_SOCKET_ROOT+'/'+name+'\\n';
+		}
+		process.stdout.write(output);process.exit(0);
 		`,
 	);
 
@@ -264,6 +271,7 @@ function createFixture({ oldAttempt = false } = {}) {
 		out,
 		socketRoot,
 		probeDir,
+		probeLog,
 		fakeBin,
 		sqliteLog,
 		listen,
@@ -304,6 +312,8 @@ function observerEnv(fixture) {
 		...process.env,
 		PATH: `${fixture.fakeBin}:${process.env.PATH}`,
 		FAKE_PROBE_DIR: fixture.probeDir,
+		FAKE_PROBE_LOG: fixture.probeLog,
+		FAKE_SOCKET_ROOT: fixture.socketRoot,
 		SQLITE_ARG_LOG: fixture.sqliteLog,
 	};
 }
@@ -356,7 +366,10 @@ async function waitForExit(child, timeoutMs = 3000) {
 
 async function waitForSnapshot(fixture, predicate = () => true) {
 	await waitFor(
-		() => readFrames(fixture.out).some((frame) => frame.kind === "snapshot" && predicate(frame)),
+		() =>
+			readFrames(fixture.out).some(
+				(frame) => frame.kind === "snapshot" && predicate(frame),
+			),
 		"observer did not record expected snapshot",
 	);
 }
@@ -421,228 +434,483 @@ function verdict(fixture) {
 	return readFrames(fixture.out).findLast((frame) => frame.kind === "verdict");
 }
 
-test("records requested then acked before lifecycle rows disappear", { timeout: 8000 }, async () => {
-	const fixture = createFixture();
-	try {
-		await fixture.listen(DESIGN);
-		await fixture.listen(IMPLEMENT);
-		const child = startObserver(fixture);
-		await waitForSnapshot(fixture);
-		setShutdown(fixture, DESIGN, "req-design", "requested");
-		setShutdown(fixture, IMPLEMENT, "req-implement", "requested");
-		await waitForSnapshot(fixture, (frame) => frame.shutdown?.design?.state === "requested" && frame.shutdown?.implement?.state === "requested");
-		setShutdown(fixture, DESIGN, "req-design", "acked");
-		setShutdown(fixture, IMPLEMENT, "req-implement", "acked");
-		await waitForSnapshot(fixture, (frame) => frame.shutdown?.design?.state === "acked" && frame.shutdown?.implement?.state === "acked");
-		await clearSockets(fixture);
-		clearTmux(fixture);
-		deleteLifecycle(fixture);
-		const result = await waitForExit(child);
-		assert.equal(
-			result.code,
-			0,
-			JSON.stringify({ stderr: result.stderr, verdict: verdict(fixture) }),
-		);
-		assert.equal(verdict(fixture)?.pass, true);
-		for (const role of ["design", "implement"]) {
-			assert.deepEqual(verdict(fixture).executions[role].history.map((item) => item.state), ["requested", "acked"]);
-		}
-	} finally {
-		await fixture.dispose();
-	}
-});
-
-test("corroborates a cadence-missed ack with the durable graceful-close event", { timeout: 8000 }, async () => {
-	const fixture = createFixture();
-	try {
-		await fixture.listen(DESIGN);
-		await fixture.listen(IMPLEMENT);
-		const child = startObserver(fixture);
-		await waitForSnapshot(fixture);
-		setShutdown(fixture, DESIGN, "req-design", "requested");
-		setShutdown(fixture, IMPLEMENT, "req-implement", "requested");
-		await waitForSnapshot(fixture, (frame) => frame.shutdown?.design?.state === "requested" && frame.shutdown?.implement?.state === "requested");
-		insertCloseEvent(fixture, DESIGN, "req-design");
-		insertCloseEvent(fixture, IMPLEMENT, "req-implement");
-		await clearSockets(fixture);
-		clearTmux(fixture);
-		deleteLifecycle(fixture);
-		const result = await waitForExit(child);
-		assert.equal(
-			result.code,
-			0,
-			JSON.stringify({ stderr: result.stderr, verdict: verdict(fixture) }),
-		);
-		assert.equal(verdict(fixture)?.pass, true);
-		assert.equal(verdict(fixture)?.executions.design.classification, "graceful_corroborated");
-		assert.equal(verdict(fixture)?.executions.implement.classification, "graceful_corroborated");
-	} finally {
-		await fixture.dispose();
-	}
-});
-
-test("fails a live fresh cleanup without ack or matching durable event", { timeout: 8000 }, async () => {
-	const fixture = createFixture();
-	try {
-		await fixture.listen(DESIGN);
-		await fixture.listen(IMPLEMENT);
-		const child = startObserver(fixture);
-		await waitForSnapshot(fixture);
-		setShutdown(fixture, DESIGN, "req-design", "requested");
-		setShutdown(fixture, IMPLEMENT, "req-implement", "requested");
-		await waitForSnapshot(fixture, (frame) => frame.shutdown?.design?.state === "requested");
-		await clearSockets(fixture);
-		clearTmux(fixture);
-		deleteLifecycle(fixture);
-		const result = await waitForExit(child);
-		assert.notEqual(result.code, 0);
-		assert.match(verdict(fixture)?.reason ?? "", /missing_shutdown_ack_corroboration/);
-	} finally {
-		await fixture.dispose();
-	}
-});
-
-test("classifies a proven direct path instead of pretending it was graceful", { timeout: 8000 }, async () => {
-	const fixture = createFixture();
-	try {
-		await fixture.listen(DESIGN);
-		await fixture.listen(IMPLEMENT);
-		const child = startObserver(fixture);
-		await waitForSnapshot(fixture);
-		runSql(fixture.stateDb, `UPDATE sessions SET heartbeat_at='2020-01-01T00:00:00Z' WHERE execution_id IN (${sqlQuote(DESIGN)},${sqlQuote(IMPLEMENT)});`);
-		await clearSockets(fixture);
-		clearTmux(fixture);
-		await waitForSnapshot(fixture, (frame) => frame.liveness?.design?.heartbeatFresh === false && frame.liveness?.design?.tmux === "absent");
-		deleteLifecycle(fixture);
-		const result = await waitForExit(child);
-		assert.notEqual(result.code, 0);
-		assert.equal(verdict(fixture)?.executions.design.classification, "direct_proven");
-		assert.equal(verdict(fixture)?.executions.design.rerunRequired, true);
-		assert.deepEqual(verdict(fixture)?.executions.design.history, []);
-	} finally {
-		await fixture.dispose();
-	}
-});
-
-test("fails closed when direct-path liveness is indeterminate", { timeout: 8000 }, async () => {
-	const fixture = createFixture();
-	try {
-		const child = startObserver(fixture);
-		updateProbe(fixture, "tmux", (value) => {
-			value["slot:design"] = "indeterminate";
-			value["slot:implement"] = "indeterminate";
-		});
-		updateProbe(fixture, "lsof", (value) => {
-			value[path.basename(socketPath(fixture.socketRoot, DESIGN))] = "indeterminate";
-			value[path.basename(socketPath(fixture.socketRoot, IMPLEMENT))] = "indeterminate";
-		});
-		await waitForSnapshot(fixture, (frame) => frame.liveness?.design?.tmux === "indeterminate");
-		clearTmux(fixture);
-		deleteLifecycle(fixture);
-		const result = await waitForExit(child);
-		assert.notEqual(result.code, 0);
-		assert.match(verdict(fixture)?.reason ?? "", /liveness_indeterminate/);
-	} finally {
-		await fixture.dispose();
-	}
-});
-
-test("ignores old failed FLY-1286 attempts outside the manifest", { timeout: 8000 }, async () => {
-	const fixture = createFixture({ oldAttempt: true });
-	try {
-		await fixture.listen(DESIGN);
-		await fixture.listen(IMPLEMENT);
-		const child = startObserver(fixture);
-		await waitForSnapshot(fixture);
-		for (const [executionId, requestId] of [[DESIGN, "req-design"], [IMPLEMENT, "req-implement"]]) {
-			setShutdown(fixture, executionId, requestId, "requested");
-		}
-		await waitForSnapshot(fixture, (frame) => frame.shutdown?.implement?.state === "requested");
-		for (const [executionId, requestId] of [[DESIGN, "req-design"], [IMPLEMENT, "req-implement"]]) {
-			setShutdown(fixture, executionId, requestId, "acked");
-		}
-		await waitForSnapshot(fixture, (frame) => frame.shutdown?.implement?.state === "acked");
-		await clearSockets(fixture);
-		clearTmux(fixture);
-		deleteLifecycle(fixture);
-		const result = await waitForExit(child);
-		assert.equal(result.code, 0, result.stderr);
-		assert.equal(verdict(fixture)?.pass, true);
-		assert.equal(scalar(fixture.stateDb, "SELECT count(*) FROM sessions WHERE execution_id='old-blocked';"), "1");
-	} finally {
-		await fixture.dispose();
-	}
-});
-
-test("requires TURN deletion and QA successful-chain session cleanup", { timeout: 10000 }, async () => {
-	for (const retained of ["turn", "qa"]) {
+test(
+	"records requested then acked before lifecycle rows disappear",
+	{ timeout: 8000 },
+	async () => {
 		const fixture = createFixture();
 		try {
 			await fixture.listen(DESIGN);
 			await fixture.listen(IMPLEMENT);
-			const child = startObserver(fixture, 2000);
+			const child = startObserver(fixture);
 			await waitForSnapshot(fixture);
-			for (const [executionId, requestId] of [[DESIGN, "req-design"], [IMPLEMENT, "req-implement"]]) {
-				setShutdown(fixture, executionId, requestId, "requested");
-			}
-			await waitForSnapshot(fixture, (frame) => frame.shutdown?.implement?.state === "requested");
-			for (const [executionId, requestId] of [[DESIGN, "req-design"], [IMPLEMENT, "req-implement"]]) {
-				setShutdown(fixture, executionId, requestId, "acked");
-			}
-			await waitForSnapshot(fixture, (frame) => frame.shutdown?.implement?.state === "acked");
+			setShutdown(fixture, DESIGN, "req-design", "requested");
+			setShutdown(fixture, IMPLEMENT, "req-implement", "requested");
+			await waitForSnapshot(
+				fixture,
+				(frame) =>
+					frame.shutdown?.design?.state === "requested" &&
+					frame.shutdown?.implement?.state === "requested",
+			);
+			setShutdown(fixture, DESIGN, "req-design", "acked");
+			setShutdown(fixture, IMPLEMENT, "req-implement", "acked");
+			await waitForSnapshot(
+				fixture,
+				(frame) =>
+					frame.shutdown?.design?.state === "acked" &&
+					frame.shutdown?.implement?.state === "acked",
+			);
 			await clearSockets(fixture);
 			clearTmux(fixture);
-			deleteLifecycle(fixture, { keepTurn: retained === "turn", keepQa: retained === "qa" });
-			const result = await waitForExit(child, 3500);
-			assert.notEqual(result.code, 0);
-			assert.match(verdict(fixture)?.reason ?? "", retained === "turn" ? /turn_not_deleted/ : /qa_session_not_deleted/);
+			deleteLifecycle(fixture);
+			const result = await waitForExit(child);
+			assert.equal(
+				result.code,
+				0,
+				JSON.stringify({ stderr: result.stderr, verdict: verdict(fixture) }),
+			);
+			assert.equal(verdict(fixture)?.pass, true);
+			for (const role of ["design", "implement"]) {
+				assert.deepEqual(
+					verdict(fixture).executions[role].history.map((item) => item.state),
+					["requested", "acked"],
+				);
+			}
 		} finally {
 			await fixture.dispose();
 		}
-	}
-});
+	},
+);
 
-test("requires no socket listener or holder after cleanup", { timeout: 8000 }, async () => {
+test(
+	"corroborates a cadence-missed ack with the durable graceful-close event",
+	{ timeout: 8000 },
+	async () => {
+		const fixture = createFixture();
+		try {
+			await fixture.listen(DESIGN);
+			await fixture.listen(IMPLEMENT);
+			const child = startObserver(fixture);
+			await waitForSnapshot(fixture);
+			setShutdown(fixture, DESIGN, "req-design", "requested");
+			setShutdown(fixture, IMPLEMENT, "req-implement", "requested");
+			await waitForSnapshot(
+				fixture,
+				(frame) =>
+					frame.shutdown?.design?.state === "requested" &&
+					frame.shutdown?.implement?.state === "requested",
+			);
+			insertCloseEvent(fixture, DESIGN, "req-design");
+			insertCloseEvent(fixture, IMPLEMENT, "req-implement");
+			await clearSockets(fixture);
+			clearTmux(fixture);
+			deleteLifecycle(fixture);
+			const result = await waitForExit(child);
+			assert.equal(
+				result.code,
+				0,
+				JSON.stringify({ stderr: result.stderr, verdict: verdict(fixture) }),
+			);
+			assert.equal(verdict(fixture)?.pass, true);
+			assert.equal(
+				verdict(fixture)?.executions.design.classification,
+				"graceful_corroborated",
+			);
+			assert.equal(
+				verdict(fixture)?.executions.implement.classification,
+				"graceful_corroborated",
+			);
+		} finally {
+			await fixture.dispose();
+		}
+	},
+);
+
+test(
+	"corroborates an ack first observed after its requested row was missed",
+	{ timeout: 8000 },
+	async () => {
+		const fixture = createFixture();
+		try {
+			await fixture.listen(DESIGN);
+			await fixture.listen(IMPLEMENT);
+			for (const [executionId, requestId] of [
+				[DESIGN, "req-design"],
+				[IMPLEMENT, "req-implement"],
+			]) {
+				setShutdown(fixture, executionId, requestId, "acked");
+				insertCloseEvent(fixture, executionId, requestId);
+			}
+			const child = startObserver(fixture);
+			await waitForSnapshot(
+				fixture,
+				(frame) =>
+					frame.shutdown?.design?.state === "acked" &&
+					frame.shutdown?.implement?.state === "acked",
+			);
+			await clearSockets(fixture);
+			clearTmux(fixture);
+			deleteLifecycle(fixture);
+			const result = await waitForExit(child);
+			assert.equal(
+				result.code,
+				0,
+				JSON.stringify({ stderr: result.stderr, verdict: verdict(fixture) }),
+			);
+			for (const role of ["design", "implement"]) {
+				assert.equal(
+					verdict(fixture)?.executions[role].classification,
+					"graceful_corroborated",
+				);
+				assert.deepEqual(
+					verdict(fixture).executions[role].history.map((item) => item.state),
+					["acked"],
+				);
+			}
+		} finally {
+			await fixture.dispose();
+		}
+	},
+);
+
+test(
+	"fails a live fresh cleanup without ack or matching durable event",
+	{ timeout: 8000 },
+	async () => {
+		const fixture = createFixture();
+		try {
+			await fixture.listen(DESIGN);
+			await fixture.listen(IMPLEMENT);
+			const child = startObserver(fixture);
+			await waitForSnapshot(fixture);
+			setShutdown(fixture, DESIGN, "req-design", "requested");
+			setShutdown(fixture, IMPLEMENT, "req-implement", "requested");
+			await waitForSnapshot(
+				fixture,
+				(frame) => frame.shutdown?.design?.state === "requested",
+			);
+			await clearSockets(fixture);
+			clearTmux(fixture);
+			deleteLifecycle(fixture);
+			const result = await waitForExit(child);
+			assert.notEqual(result.code, 0);
+			assert.match(
+				verdict(fixture)?.reason ?? "",
+				/missing_shutdown_ack_corroboration/,
+			);
+		} finally {
+			await fixture.dispose();
+		}
+	},
+);
+
+test(
+	"classifies a proven direct path instead of pretending it was graceful",
+	{ timeout: 8000 },
+	async () => {
+		const fixture = createFixture();
+		try {
+			await fixture.listen(DESIGN);
+			await fixture.listen(IMPLEMENT);
+			const child = startObserver(fixture);
+			await waitForSnapshot(fixture);
+			runSql(
+				fixture.stateDb,
+				`UPDATE sessions SET heartbeat_at='2020-01-01T00:00:00Z' WHERE execution_id IN (${sqlQuote(DESIGN)},${sqlQuote(IMPLEMENT)});`,
+			);
+			await clearSockets(fixture);
+			clearTmux(fixture);
+			await waitForSnapshot(
+				fixture,
+				(frame) =>
+					frame.liveness?.design?.heartbeatFresh === false &&
+					frame.liveness?.design?.tmux === "absent",
+			);
+			deleteLifecycle(fixture);
+			const result = await waitForExit(child);
+			assert.notEqual(result.code, 0);
+			assert.equal(
+				verdict(fixture)?.executions.design.classification,
+				"direct_proven",
+			);
+			assert.equal(verdict(fixture)?.executions.design.rerunRequired, true);
+			assert.deepEqual(verdict(fixture)?.executions.design.history, []);
+		} finally {
+			await fixture.dispose();
+		}
+	},
+);
+
+test(
+	"fails closed when direct-path liveness is indeterminate",
+	{ timeout: 8000 },
+	async () => {
+		const fixture = createFixture();
+		try {
+			const child = startObserver(fixture);
+			updateProbe(fixture, "tmux", (value) => {
+				value["slot:design"] = "indeterminate";
+				value["slot:implement"] = "indeterminate";
+			});
+			updateProbe(fixture, "lsof", (value) => {
+				value[path.basename(socketPath(fixture.socketRoot, DESIGN))] =
+					"indeterminate";
+				value[path.basename(socketPath(fixture.socketRoot, IMPLEMENT))] =
+					"indeterminate";
+			});
+			await waitForSnapshot(
+				fixture,
+				(frame) => frame.liveness?.design?.tmux === "indeterminate",
+			);
+			clearTmux(fixture);
+			deleteLifecycle(fixture);
+			const result = await waitForExit(child);
+			assert.notEqual(result.code, 0);
+			assert.match(verdict(fixture)?.reason ?? "", /liveness_indeterminate/);
+		} finally {
+			await fixture.dispose();
+		}
+	},
+);
+
+test("reports a dead tmux pane instead of treating it as live", async () => {
 	const fixture = createFixture();
 	try {
-		await fixture.listen(DESIGN);
-		await fixture.listen(IMPLEMENT);
-		const child = startObserver(fixture);
-		await waitForSnapshot(fixture);
-		for (const [executionId, requestId] of [[DESIGN, "req-design"], [IMPLEMENT, "req-implement"]]) {
-			setShutdown(fixture, executionId, requestId, "requested");
-		}
-		await waitForSnapshot(fixture, (frame) => frame.shutdown?.implement?.state === "requested");
-		for (const [executionId, requestId] of [[DESIGN, "req-design"], [IMPLEMENT, "req-implement"]]) {
-			setShutdown(fixture, executionId, requestId, "acked");
-		}
-		await waitForSnapshot(fixture, (frame) => frame.shutdown?.implement?.state === "acked");
-		clearTmux(fixture);
-		deleteLifecycle(fixture);
-		const result = await waitForExit(child);
-		assert.notEqual(result.code, 0);
-		assert.match(verdict(fixture)?.reason ?? "", /orphan_socket|orphan_holder/);
+		updateProbe(fixture, "tmux", (value) => {
+			value["slot:design"] = "dead";
+		});
+		const result = spawnSync(
+			process.execPath,
+			observerArgs(fixture, 2000, ["--once"]),
+			{
+				encoding: "utf8",
+				env: observerEnv(fixture),
+			},
+		);
+		assert.equal(result.status, 0, result.stderr);
+		const snapshot = readFrames(fixture.out).findLast(
+			(frame) => frame.kind === "snapshot",
+		);
+		assert.equal(snapshot?.liveness.design.tmux, "dead");
 	} finally {
 		await fixture.dispose();
 	}
 });
 
+test("scans lsof once per snapshot for all Codex sockets", async () => {
+	const fixture = createFixture();
+	try {
+		const result = spawnSync(
+			process.execPath,
+			observerArgs(fixture, 2000, ["--once"]),
+			{
+				encoding: "utf8",
+				env: observerEnv(fixture),
+			},
+		);
+		assert.equal(result.status, 0, result.stderr);
+		const lsofCalls = readFileSync(fixture.probeLog, "utf8")
+			.split("\n")
+			.filter(Boolean);
+		assert.deepEqual(lsofCalls, ["lsof"]);
+	} finally {
+		await fixture.dispose();
+	}
+});
+
+test("deduplicates stable snapshots despite heartbeat age advancing", async () => {
+	const fixture = createFixture();
+	try {
+		await fixture.listen(DESIGN);
+		await fixture.listen(IMPLEMENT);
+		const child = startObserver(fixture, 1800);
+		const result = await waitForExit(child, 5000);
+		assert.notEqual(result.code, 0);
+		const snapshots = readFrames(fixture.out).filter(
+			(frame) => frame.kind === "snapshot",
+		);
+		assert.equal(snapshots.length, 1);
+		assert.equal(verdict(fixture)?.reason, "cleanup_not_observed");
+	} finally {
+		await fixture.dispose();
+	}
+});
+
+test(
+	"ignores old failed FLY-1286 attempts outside the manifest",
+	{ timeout: 8000 },
+	async () => {
+		const fixture = createFixture({ oldAttempt: true });
+		try {
+			await fixture.listen(DESIGN);
+			await fixture.listen(IMPLEMENT);
+			const child = startObserver(fixture);
+			await waitForSnapshot(fixture);
+			for (const [executionId, requestId] of [
+				[DESIGN, "req-design"],
+				[IMPLEMENT, "req-implement"],
+			]) {
+				setShutdown(fixture, executionId, requestId, "requested");
+			}
+			await waitForSnapshot(
+				fixture,
+				(frame) => frame.shutdown?.implement?.state === "requested",
+			);
+			for (const [executionId, requestId] of [
+				[DESIGN, "req-design"],
+				[IMPLEMENT, "req-implement"],
+			]) {
+				setShutdown(fixture, executionId, requestId, "acked");
+			}
+			await waitForSnapshot(
+				fixture,
+				(frame) => frame.shutdown?.implement?.state === "acked",
+			);
+			await clearSockets(fixture);
+			clearTmux(fixture);
+			deleteLifecycle(fixture);
+			const result = await waitForExit(child);
+			assert.equal(result.code, 0, result.stderr);
+			assert.equal(verdict(fixture)?.pass, true);
+			assert.equal(
+				scalar(
+					fixture.stateDb,
+					"SELECT count(*) FROM sessions WHERE execution_id='old-blocked';",
+				),
+				"1",
+			);
+		} finally {
+			await fixture.dispose();
+		}
+	},
+);
+
+test(
+	"requires TURN deletion and QA successful-chain session cleanup",
+	{ timeout: 10000 },
+	async () => {
+		for (const retained of ["turn", "qa"]) {
+			const fixture = createFixture();
+			try {
+				await fixture.listen(DESIGN);
+				await fixture.listen(IMPLEMENT);
+				const child = startObserver(fixture, 2000);
+				await waitForSnapshot(fixture);
+				for (const [executionId, requestId] of [
+					[DESIGN, "req-design"],
+					[IMPLEMENT, "req-implement"],
+				]) {
+					setShutdown(fixture, executionId, requestId, "requested");
+				}
+				await waitForSnapshot(
+					fixture,
+					(frame) => frame.shutdown?.implement?.state === "requested",
+				);
+				for (const [executionId, requestId] of [
+					[DESIGN, "req-design"],
+					[IMPLEMENT, "req-implement"],
+				]) {
+					setShutdown(fixture, executionId, requestId, "acked");
+				}
+				await waitForSnapshot(
+					fixture,
+					(frame) => frame.shutdown?.implement?.state === "acked",
+				);
+				await clearSockets(fixture);
+				clearTmux(fixture);
+				deleteLifecycle(fixture, {
+					keepTurn: retained === "turn",
+					keepQa: retained === "qa",
+				});
+				const result = await waitForExit(child, 3500);
+				assert.notEqual(result.code, 0);
+				assert.match(
+					verdict(fixture)?.reason ?? "",
+					retained === "turn" ? /turn_not_deleted/ : /qa_session_not_deleted/,
+				);
+			} finally {
+				await fixture.dispose();
+			}
+		}
+	},
+);
+
+test(
+	"requires no socket listener or holder after cleanup",
+	{ timeout: 8000 },
+	async () => {
+		const fixture = createFixture();
+		try {
+			await fixture.listen(DESIGN);
+			await fixture.listen(IMPLEMENT);
+			const child = startObserver(fixture);
+			await waitForSnapshot(fixture);
+			for (const [executionId, requestId] of [
+				[DESIGN, "req-design"],
+				[IMPLEMENT, "req-implement"],
+			]) {
+				setShutdown(fixture, executionId, requestId, "requested");
+			}
+			await waitForSnapshot(
+				fixture,
+				(frame) => frame.shutdown?.implement?.state === "requested",
+			);
+			for (const [executionId, requestId] of [
+				[DESIGN, "req-design"],
+				[IMPLEMENT, "req-implement"],
+			]) {
+				setShutdown(fixture, executionId, requestId, "acked");
+			}
+			await waitForSnapshot(
+				fixture,
+				(frame) => frame.shutdown?.implement?.state === "acked",
+			);
+			clearTmux(fixture);
+			deleteLifecycle(fixture);
+			const result = await waitForExit(child);
+			assert.notEqual(result.code, 0);
+			assert.match(
+				verdict(fixture)?.reason ?? "",
+				/orphan_socket|orphan_holder/,
+			);
+		} finally {
+			await fixture.dispose();
+		}
+	},
+);
+
 test("opens both WAL databases readonly", { timeout: 8000 }, async () => {
 	const fixture = createFixture();
 	try {
-		const tracked = [fixture.stateDb, `${fixture.stateDb}-wal`, `${fixture.stateDb}-shm`, fixture.commDb, `${fixture.commDb}-wal`, `${fixture.commDb}-shm`];
+		const tracked = [
+			fixture.stateDb,
+			`${fixture.stateDb}-wal`,
+			`${fixture.stateDb}-shm`,
+			fixture.commDb,
+			`${fixture.commDb}-wal`,
+			`${fixture.commDb}-shm`,
+		];
 		const before = metadataSnapshot(tracked);
-		const result = spawnSync(process.execPath, observerArgs(fixture, 2000, ["--once"]), {
-			encoding: "utf8",
-			env: observerEnv(fixture),
-		});
+		const result = spawnSync(
+			process.execPath,
+			observerArgs(fixture, 2000, ["--once"]),
+			{
+				encoding: "utf8",
+				env: observerEnv(fixture),
+			},
+		);
 		assert.equal(result.status, 0, result.stderr);
 		const after = metadataSnapshot(tracked);
 		assert.deepEqual(after, before);
-		const invocations = readFileSync(fixture.sqliteLog, "utf8").trim().split("\n").filter(Boolean);
+		const invocations = readFileSync(fixture.sqliteLog, "utf8")
+			.trim()
+			.split("\n")
+			.filter(Boolean);
 		assert.ok(invocations.length >= 2);
 		assert.ok(invocations.every((line) => line.startsWith("-readonly -json ")));
-		assert.ok(invocations.every((line) => line.includes("PRAGMA query_only=1")));
+		assert.ok(
+			invocations.every((line) => line.includes("PRAGMA query_only=1")),
+		);
 		assert.equal(readFrames(fixture.out).at(-1)?.kind, "snapshot");
 	} finally {
 		await fixture.dispose();

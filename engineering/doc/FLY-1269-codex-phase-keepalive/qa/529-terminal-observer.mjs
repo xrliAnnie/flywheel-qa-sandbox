@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import net from "node:net";
@@ -32,7 +32,8 @@ function parseArgs(argv) {
 		if (!arg.startsWith("--")) throw new Error(`unexpected argument: ${arg}`);
 		const name = arg.slice(2);
 		const value = argv[index + 1];
-		if (!value || value.startsWith("--")) throw new Error(`missing value for --${name}`);
+		if (!value || value.startsWith("--"))
+			throw new Error(`missing value for --${name}`);
 		options[name] = value;
 		index += 1;
 	}
@@ -40,21 +41,29 @@ function parseArgs(argv) {
 		if (!options[name]) throw new Error(`missing required --${name}`);
 	}
 	for (const name of ["state-db", "comm-db", "socket-root", "out"]) {
-		if (!path.isAbsolute(options[name])) throw new Error(`--${name} must be absolute`);
+		if (!path.isAbsolute(options[name]))
+			throw new Error(`--${name} must be absolute`);
 	}
 	for (const name of ["issue", "design-exec", "implement-exec", "qa-exec"]) {
 		if (!/^[A-Za-z0-9._:-]+$/.test(options[name])) {
 			throw new Error(`invalid --${name}`);
 		}
 	}
-	options.intervalMs = parsePositiveInt(options["interval-ms"] ?? DEFAULT_INTERVAL_MS, "interval-ms");
-	options.timeoutMs = parsePositiveInt(options["timeout-ms"] ?? DEFAULT_TIMEOUT_MS, "timeout-ms");
+	options.intervalMs = parsePositiveInt(
+		options["interval-ms"] ?? DEFAULT_INTERVAL_MS,
+		"interval-ms",
+	);
+	options.timeoutMs = parsePositiveInt(
+		options["timeout-ms"] ?? DEFAULT_TIMEOUT_MS,
+		"timeout-ms",
+	);
 	return options;
 }
 
 function parsePositiveInt(value, name) {
 	const parsed = Number(value);
-	if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`--${name} must be a positive integer`);
+	if (!Number.isInteger(parsed) || parsed <= 0)
+		throw new Error(`--${name} must be a positive integer`);
 	return parsed;
 }
 
@@ -97,35 +106,92 @@ function heartbeatMs(value) {
 
 function probeTmux(target) {
 	if (!target) return "indeterminate";
-	try {
-		execFileSync("tmux", ["display-message", "-p", "-t", target, "#{pane_dead}"], {
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-		return "live";
-	} catch (error) {
-		if (error?.status === 1) return "absent";
-		return "indeterminate";
-	}
-}
-
-function probeHolders(socket) {
-	try {
-		const output = execFileSync("lsof", ["-t", "--", socket], {
+	const result = spawnSync(
+		"tmux",
+		["display-message", "-p", "-t", target, "#{pane_dead}"],
+		{
 			encoding: "utf8",
 			stdio: ["ignore", "pipe", "pipe"],
-		}).trim();
-		const holders = output
-			.split("\n")
-			.filter(Boolean)
-			.map(Number)
-			.filter((value) => Number.isInteger(value) && value > 0);
-		return holders.length > 0
-			? { state: "present", holders }
-			: { state: "indeterminate", holders: [] };
-	} catch (error) {
-		if (error?.status === 1) return { state: "absent", holders: [] };
-		return { state: "indeterminate", holders: [] };
+		},
+	);
+	if (result.error) return "indeterminate";
+	if (result.status === 0) {
+		const paneDead = result.stdout.trim();
+		if (paneDead === "0") return "live";
+		if (paneDead === "1") return "dead";
+		return "indeterminate";
 	}
+	if (
+		result.status === 1 &&
+		/^can't find (?:pane|window|session):/m.test(result.stderr.trim())
+	) {
+		return "absent";
+	}
+	return "indeterminate";
+}
+
+function probeHolders(sockets) {
+	const uniqueSockets = [...new Set(sockets)];
+	const indeterminate = () =>
+		Object.fromEntries(
+			uniqueSockets.map((socket) => [
+				socket,
+				{ state: "indeterminate", holders: [] },
+			]),
+		);
+	const result = spawnSync("lsof", ["-nU", "-Fpn"], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	if (result.error || result.status !== 0 || result.stderr.trim()) {
+		return indeterminate();
+	}
+
+	let currentPid = null;
+	let sawPid = false;
+	let sawName = false;
+	let malformed = false;
+	const holdersBySocket = new Map(
+		uniqueSockets.map((socket) => [socket, new Set()]),
+	);
+	for (const line of result.stdout.split("\n").filter(Boolean)) {
+		if (line.startsWith("p")) {
+			const pid = Number(line.slice(1));
+			if (!Number.isInteger(pid) || pid <= 0) {
+				malformed = true;
+				currentPid = null;
+			} else {
+				currentPid = pid;
+				sawPid = true;
+			}
+			continue;
+		}
+		if (line.startsWith("f")) continue;
+		if (line.startsWith("n")) {
+			sawName = true;
+			if (currentPid === null) {
+				malformed = true;
+			} else {
+				holdersBySocket.get(line.slice(1))?.add(currentPid);
+			}
+			continue;
+		}
+		malformed = true;
+	}
+	if (malformed || !sawPid || !sawName) {
+		return indeterminate();
+	}
+	return Object.fromEntries(
+		[...holdersBySocket].map(([socket, holders]) => {
+			const holderList = [...holders].sort((left, right) => left - right);
+			return [
+				socket,
+				holderList.length > 0
+					? { state: "present", holders: holderList }
+					: { state: "absent", holders: [] },
+			];
+		}),
+	);
 }
 
 function probeSocket(socket) {
@@ -139,7 +205,10 @@ function probeSocket(socket) {
 			client.destroy();
 			resolve(state);
 		};
-		const timer = setTimeout(() => finish("indeterminate"), SOCKET_PROBE_TIMEOUT_MS);
+		const timer = setTimeout(
+			() => finish("indeterminate"),
+			SOCKET_PROBE_TIMEOUT_MS,
+		);
 		client.once("connect", () => finish("live"));
 		client.once("error", (error) => {
 			if (["ENOENT", "ECONNREFUSED", "ECONNRESET"].includes(error?.code)) {
@@ -166,6 +235,9 @@ function sleep(milliseconds) {
 function changedKey(frame) {
 	const copy = structuredClone(frame);
 	delete copy.at;
+	for (const liveness of Object.values(copy.liveness ?? {})) {
+		delete liveness.heartbeatAgeMs;
+	}
 	return JSON.stringify(copy);
 }
 
@@ -180,11 +252,14 @@ function last(array) {
 function recordShutdown(history, row, at) {
 	if (!row) return;
 	const previous = last(history);
-	if (previous?.requestId === row.request_id && previous?.state === row.state) return;
+	if (previous?.requestId === row.request_id && previous?.state === row.state)
+		return;
 	if (previous && previous.requestId !== row.request_id) {
-		throw new Error(`shutdown_request_id_changed:${previous.requestId}:${row.request_id}`);
+		throw new Error(
+			`shutdown_request_id_changed:${previous.requestId}:${row.request_id}`,
+		);
 	}
-	if (row.state === "acked" && previous?.state !== "requested") {
+	if (row.state === "acked" && previous && previous.state !== "requested") {
 		throw new Error(`shutdown_ack_out_of_order:${row.execution_id}`);
 	}
 	history.push({
@@ -199,9 +274,16 @@ function recordShutdown(history, row, at) {
 
 function matchingCloseEvent(events, executionId, requestId) {
 	return events.some((event) => {
-		if (event.execution_id !== executionId || event.event_type !== "lead_close_runner") return false;
+		if (
+			event.execution_id !== executionId ||
+			event.event_type !== "lead_close_runner"
+		)
+			return false;
 		try {
-			const payload = typeof event.payload === "string" ? JSON.parse(event.payload) : event.payload;
+			const payload =
+				typeof event.payload === "string"
+					? JSON.parse(event.payload)
+					: event.payload;
 			return payload?.phaseShutdownRequestId === requestId;
 		} catch {
 			return false;
@@ -231,6 +313,16 @@ function classifyExecution({ executionId, history, events, lastPresent }) {
 			classification: "unproven",
 			rerunRequired: false,
 			reason: `missing_shutdown_ack_corroboration:${executionId}`,
+		};
+	}
+	if (acked) {
+		if (matchingCloseEvent(events, executionId, acked.requestId)) {
+			return { classification: "graceful_corroborated", rerunRequired: false };
+		}
+		return {
+			classification: "unproven",
+			rerunRequired: false,
+			reason: `missing_shutdown_request_corroboration:${executionId}`,
 		};
 	}
 	if (!lastPresent) {
@@ -278,8 +370,16 @@ async function main() {
 	const codexRoles = ["design", "implement"];
 	const executionIds = Object.values(identities);
 	const idList = executionIds.map(sqlLiteral).join(",");
-	const codexIdList = codexRoles.map((role) => sqlLiteral(identities[role])).join(",");
+	const codexIdList = codexRoles
+		.map((role) => sqlLiteral(identities[role]))
+		.join(",");
 	const histories = { design: [], implement: [] };
+	const socketsByRole = Object.fromEntries(
+		codexRoles.map((role) => [
+			role,
+			socketFor(options["socket-root"], identities[role]),
+		]),
+	);
 	const savedTargets = {};
 	const lastPresent = {};
 	let lastKey = null;
@@ -328,27 +428,36 @@ async function main() {
 		const state = indexBy(stateRows, "execution_id");
 		const comm = indexBy(commRows, "execution_id");
 		const shutdownById = indexBy(shutdownRows, "execution_id");
+		const holdersBySocket = probeHolders(Object.values(socketsByRole));
 		const liveness = {};
 		for (const role of Object.keys(identities)) {
 			const executionId = identities[role];
 			const stateRow = state[executionId];
 			const commRow = comm[executionId];
-			const target = stateRow?.tmux_session ?? commRow?.tmux_window ?? savedTargets[role] ?? null;
+			const target =
+				stateRow?.tmux_session ??
+				commRow?.tmux_window ??
+				savedTargets[role] ??
+				null;
 			if (target) savedTargets[role] = target;
 			const heartbeat = heartbeatMs(stateRow?.heartbeat_at);
-			const socket = role === "qa" ? null : socketFor(options["socket-root"], executionId);
+			const socket = socketsByRole[role] ?? null;
 			const current = {
 				target,
 				tmux: probeTmux(target),
 				heartbeatAt: stateRow?.heartbeat_at ?? null,
-				heartbeatAgeMs: heartbeat === null ? null : Math.max(0, Date.now() - heartbeat),
-				heartbeatFresh: heartbeat === null ? null : Date.now() - heartbeat <= HEARTBEAT_FRESH_MS,
+				heartbeatAgeMs:
+					heartbeat === null ? null : Math.max(0, Date.now() - heartbeat),
+				heartbeatFresh:
+					heartbeat === null
+						? null
+						: Date.now() - heartbeat <= HEARTBEAT_FRESH_MS,
 				...(socket
 					? {
-						socketPath: socket,
-						socket: await probeSocket(socket),
-						holders: probeHolders(socket),
-					}
+							socketPath: socket,
+							socket: await probeSocket(socket),
+							holders: holdersBySocket[socket],
+						}
 					: {}),
 			};
 			liveness[role] = current;
@@ -374,7 +483,10 @@ async function main() {
 			comm,
 			turn: turnRows[0] ?? null,
 			shutdown: Object.fromEntries(
-				codexRoles.map((role) => [role, shutdownById[identities[role]] ?? null]),
+				codexRoles.map((role) => [
+					role,
+					shutdownById[identities[role]] ?? null,
+				]),
 			),
 			events: eventRows,
 			liveness,
@@ -393,10 +505,11 @@ async function main() {
 		if (stateGone && commGone) {
 			if (turnRows.length > 0) {
 				pendingReason = "turn_not_deleted";
-			} else if (state[identities.qa] || comm[identities.qa]) {
-				pendingReason = "qa_session_not_deleted";
 			} else if (liveness.qa.tmux !== "absent") {
-				pendingReason = liveness.qa.tmux === "indeterminate" ? "qa_tmux_liveness_indeterminate" : "qa_tmux_not_deleted";
+				pendingReason =
+					liveness.qa.tmux === "indeterminate"
+						? "qa_tmux_liveness_indeterminate"
+						: "qa_tmux_not_deleted";
 			} else {
 				let cleanupFailure = null;
 				for (const role of codexRoles) {
@@ -404,7 +517,7 @@ async function main() {
 						cleanupFailure = `liveness_indeterminate:${identities[role]}:tmux`;
 						break;
 					}
-					if (liveness[role].tmux === "live") {
+					if (liveness[role].tmux !== "absent") {
 						cleanupFailure = `tmux_not_deleted:${identities[role]}`;
 						break;
 					}
@@ -426,7 +539,12 @@ async function main() {
 					}
 				}
 				if (cleanupFailure) {
-					const verdict = { kind: "verdict", at, pass: false, reason: cleanupFailure };
+					const verdict = {
+						kind: "verdict",
+						at,
+						pass: false,
+						reason: cleanupFailure,
+					};
 					appendFrame(options.out, verdict);
 					return 1;
 				}
@@ -446,14 +564,18 @@ async function main() {
 				const classificationFailure = codexRoles
 					.map((role) => classifications[role].reason)
 					.find(Boolean);
-				const rerunRequired = codexRoles.some((role) => classifications[role].rerunRequired);
+				const rerunRequired = codexRoles.some(
+					(role) => classifications[role].rerunRequired,
+				);
 				const pass = !classificationFailure && !rerunRequired;
 				const verdict = {
 					kind: "verdict",
 					at,
 					pass,
 					rerunRequired,
-					reason: classificationFailure ?? (rerunRequired ? "rerun_required_direct_proven" : null),
+					reason:
+						classificationFailure ??
+						(rerunRequired ? "rerun_required_direct_proven" : null),
 					executions: classifications,
 				};
 				appendFrame(options.out, verdict);
