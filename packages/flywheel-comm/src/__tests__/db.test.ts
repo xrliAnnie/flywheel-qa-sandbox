@@ -792,6 +792,249 @@ describe("CommDB", () => {
 			expect(pending[1]!.id).toBe(id2);
 		});
 	});
+
+	describe("FLY-1269 durable runner phase lifecycle", () => {
+		const ordinaryWake = (id: string, content = id) => ({
+			id,
+			to: "runner-agent",
+			content,
+			metadata: { checkpoint: "question" },
+		});
+
+		it("queues ordinary envelopes once and preserves same-millisecond FIFO", () => {
+			const first = db.enqueueRunnerPhaseWake(
+				"exec-1",
+				ordinaryWake("vendor-1", "first"),
+				1_000,
+			);
+			const duplicate = db.enqueueRunnerPhaseWake(
+				"exec-1",
+				ordinaryWake("vendor-1", "first"),
+				1_000,
+			);
+			const second = db.enqueueRunnerPhaseWake(
+				"exec-1",
+				ordinaryWake("vendor-2", "second"),
+				1_000,
+			);
+
+			expect(first.kind).toBe("queued");
+			expect(duplicate.kind).toBe("duplicate");
+			expect(duplicate.wake.queue_seq).toBe(first.wake.queue_seq);
+			expect(second.wake.queue_seq).toBeGreaterThan(first.wake.queue_seq);
+			expect(
+				db.listRunnerPhaseWakes("exec-1").map((wake) => wake.content),
+			).toEqual(["first", "second"]);
+		});
+
+		it("atomically queues a bound send and claims only its instruction", () => {
+			const bound = db.insertInstruction("lead", "exec-1", "fix this");
+			const unrelated = db.insertInstruction("lead", "exec-1", "leave unread");
+
+			const result = db.enqueueRunnerPhaseWake(
+				"exec-1",
+				{
+					id: "vendor-send-1",
+					to: "runner-agent",
+					content: "[lead-instruction] fix this",
+					metadata: { flywheelId: bound, execId: "exec-1" },
+				},
+				2_000,
+			);
+
+			expect(result.kind).toBe("queued");
+			expect(result.wake.source_instruction_id).toBe(bound);
+			expect(db.getUnreadInstructions("exec-1").map((row) => row.id)).toEqual([
+				unrelated,
+			]);
+		});
+
+		it("dedupes different vendor ids bound to the same instruction source", () => {
+			const bound = db.insertInstruction("lead", "exec-1", "same source");
+			const envelope = (id: string) => ({
+				id,
+				to: "runner-agent",
+				content: "same source",
+				metadata: { flywheelId: bound, execId: "exec-1" },
+			});
+
+			const first = db.enqueueRunnerPhaseWake("exec-1", envelope("v-1"), 3_000);
+			const replay = db.enqueueRunnerPhaseWake(
+				"exec-1",
+				envelope("v-2"),
+				3_001,
+			);
+
+			expect(replay.kind).toBe("duplicate");
+			expect(replay.wake.message_id).toBe(first.wake.message_id);
+			expect(db.listRunnerPhaseWakes("exec-1")).toHaveLength(1);
+		});
+
+		it("returns the committed wake on callback retry", () => {
+			const input = ordinaryWake("callback-retry", "durable");
+			const committed = db.enqueueRunnerPhaseWake("exec-1", input, 4_000);
+			const retried = db.enqueueRunnerPhaseWake("exec-1", input, 4_001);
+
+			expect(retried).toEqual({ kind: "duplicate", wake: committed.wake });
+		});
+
+		it("queues a bound instruction even when CLI already marked it read", () => {
+			const bound = db.insertInstruction("lead", "exec-1", "printed only");
+			db.markInstructionRead(bound);
+
+			expect(
+				db.enqueueRunnerPhaseWake(
+					"exec-1",
+					{
+						id: "late-vendor-callback",
+						to: "runner-agent",
+						content: "printed only",
+						metadata: { flywheelId: bound, execId: "exec-1" },
+					},
+					5_000,
+				).kind,
+			).toBe("queued");
+		});
+
+		it.each([
+			{
+				name: "wrong metadata execId",
+				setup: () => db.insertInstruction("lead", "exec-1", "bound"),
+				metadata: (id: string) => ({ flywheelId: id, execId: "exec-wrong" }),
+			},
+			{
+				name: "wrong instruction recipient",
+				setup: () => db.insertInstruction("lead", "exec-other", "bound"),
+				metadata: (id: string) => ({ flywheelId: id, execId: "exec-1" }),
+			},
+			{
+				name: "missing bound instruction",
+				setup: () => "missing-instruction",
+				metadata: (id: string) => ({ flywheelId: id, execId: "exec-1" }),
+			},
+		])("fails $name without queue/read mutation", ({ setup, metadata }) => {
+			const instructionId = setup();
+			expect(() =>
+				db.enqueueRunnerPhaseWake(
+					"exec-1",
+					{
+						id: `invalid-${instructionId}`,
+						to: "runner-agent",
+						content: "invalid",
+						metadata: metadata(instructionId),
+					},
+					6_000,
+				),
+			).toThrow();
+			expect(db.listRunnerPhaseWakes("exec-1")).toEqual([]);
+			const row = (db as any).db
+				.prepare("SELECT read_at FROM messages WHERE id = ?")
+				.get(instructionId) as { read_at: string | null } | undefined;
+			expect(row?.read_at ?? null).toBeNull();
+		});
+
+		it("enforces pending to started to finished CAS for exact execution/id", () => {
+			db.enqueueRunnerPhaseWake("exec-1", ordinaryWake("stateful"), 7_000);
+
+			expect(db.finishRunnerPhaseWake("exec-1", "stateful", 7_001)).toBe(false);
+			expect(
+				db.markRunnerPhaseWakeStarted("exec-other", "stateful", 7_001),
+			).toBe(false);
+			expect(db.markRunnerPhaseWakeStarted("exec-1", "stateful", 7_001)).toBe(
+				true,
+			);
+			expect(db.markRunnerPhaseWakeStarted("exec-1", "stateful", 7_002)).toBe(
+				false,
+			);
+			expect(db.finishRunnerPhaseWake("exec-1", "wrong", 7_003)).toBe(false);
+			expect(db.finishRunnerPhaseWake("exec-1", "stateful", 7_003)).toBe(true);
+			expect(db.listRunnerPhaseWakes("exec-1")[0]).toMatchObject({
+				state: "finished",
+				started_at: 7_001,
+				finished_at: 7_003,
+			});
+		});
+
+		it("readonly missing phase table is empty while other database errors throw", () => {
+			const legacyPath = join(tmpDir, "legacy-readonly.db");
+			const legacy = new Database(legacyPath);
+			legacy.exec("CREATE TABLE legacy_only (id TEXT PRIMARY KEY)");
+			legacy.close();
+			const readonly = CommDB.openReadonly(legacyPath);
+			expect(readonly.listRunnerPhaseWakes("exec-1")).toEqual([]);
+			readonly.close();
+			expect(() => readonly.listRunnerPhaseWakes("exec-1")).toThrow();
+		});
+
+		it("uses idempotent request-bound shutdown CAS", () => {
+			const requested = db.requestRunnerShutdown("exec-1", "shutdown-1", 8_000);
+			const duplicate = db.requestRunnerShutdown("exec-1", "shutdown-2", 8_001);
+
+			expect(duplicate).toEqual(requested);
+			expect(db.getRunnerShutdown("exec-1")).toEqual(requested);
+			expect(
+				db.finishRunnerShutdown("exec-1", "wrong", { ok: true }, 8_002),
+			).toBe(false);
+			expect(
+				db.finishRunnerShutdown("exec-1", "shutdown-1", { ok: true }, 8_003),
+			).toBe(true);
+			expect(db.getRunnerShutdown("exec-1")).toMatchObject({
+				state: "acked",
+				finished_at: 8_003,
+				error: null,
+			});
+			expect(
+				db.finishRunnerShutdown("exec-1", "shutdown-1", { ok: true }, 8_004),
+			).toBe(false);
+		});
+
+		it("refuses to reuse a shutdown request id across executions", () => {
+			db.requestRunnerShutdown("exec-1", "shared-request", 8_100);
+			expect(() =>
+				db.requestRunnerShutdown("exec-2", "shared-request", 8_101),
+			).toThrow("already bound to another execution");
+			expect(db.getRunnerShutdown("exec-2")).toBeNull();
+		});
+
+		it("records a matching shutdown failure", () => {
+			db.requestRunnerShutdown("exec-2", "shutdown-fail", 9_000);
+			expect(
+				db.finishRunnerShutdown(
+					"exec-2",
+					"shutdown-fail",
+					{ ok: false, error: "drain timeout" },
+					9_001,
+				),
+			).toBe(true);
+			expect(db.getRunnerShutdown("exec-2")).toMatchObject({
+				state: "failed",
+				error: "drain timeout",
+			});
+		});
+
+		it("readonly missing shutdown table returns null", () => {
+			const legacyPath = join(tmpDir, "legacy-shutdown-readonly.db");
+			const legacy = new Database(legacyPath);
+			legacy.exec("CREATE TABLE legacy_only (id TEXT PRIMARY KEY)");
+			legacy.close();
+			const readonly = CommDB.openReadonly(legacyPath);
+			expect(readonly.getRunnerShutdown("exec-1")).toBeNull();
+			readonly.close();
+			expect(() => readonly.getRunnerShutdown("exec-1")).toThrow();
+		});
+
+		it("atomically deletes phase rows, shutdown control, and the session", () => {
+			db.registerSession("exec-1", "@1", "flywheel");
+			db.enqueueRunnerPhaseWake("exec-1", ordinaryWake("cleanup"), 10_000);
+			db.requestRunnerShutdown("exec-1", "shutdown-cleanup", 10_001);
+
+			expect(db.deleteSessionAndRunnerPhaseLifecycle("exec-1")).toBe(1);
+			expect(db.getSession("exec-1")).toBeUndefined();
+			expect(db.listRunnerPhaseWakes("exec-1")).toEqual([]);
+			expect(db.getRunnerShutdown("exec-1")).toBeNull();
+			expect(db.deleteSessionAndRunnerPhaseLifecycle("exec-1")).toBe(0);
+		});
+	});
 });
 
 describe("CommDB — FLY-245 D-b lifecycle consent (ttl + atomic claim)", () => {

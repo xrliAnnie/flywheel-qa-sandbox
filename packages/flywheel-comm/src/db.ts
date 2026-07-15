@@ -67,6 +67,27 @@ CREATE TABLE IF NOT EXISTS turn_source_history (
   source_event_id     TEXT NOT NULL UNIQUE,
   at                  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS runner_phase_wakes (
+  queue_seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+  execution_id          TEXT NOT NULL,
+  message_id            TEXT NOT NULL,
+  content               TEXT NOT NULL,
+  metadata_json         TEXT,
+  source_instruction_id TEXT,
+  state                  TEXT NOT NULL CHECK(state IN ('pending','started','finished')),
+  queued_at              INTEGER NOT NULL,
+  started_at             INTEGER,
+  finished_at            INTEGER,
+  UNIQUE (execution_id, message_id)
+);
+CREATE TABLE IF NOT EXISTS runner_shutdown_controls (
+  execution_id TEXT PRIMARY KEY,
+  request_id   TEXT NOT NULL UNIQUE,
+  state        TEXT NOT NULL CHECK(state IN ('requested','acked','failed')),
+  requested_at INTEGER NOT NULL,
+  finished_at  INTEGER,
+  error        TEXT
+);
 CREATE TRIGGER IF NOT EXISTS workflow_source_event_no_update
 BEFORE UPDATE ON workflow_source_event
 BEGIN SELECT RAISE(ABORT, 'workflow_source_event is append-only'); END;
@@ -85,6 +106,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_id);
 CREATE INDEX IF NOT EXISTS idx_messages_expires ON messages(expires_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_name);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runner_phase_wakes_source
+  ON runner_phase_wakes(execution_id, source_instruction_id)
+  WHERE source_instruction_id IS NOT NULL;
 `;
 
 /**
@@ -143,6 +167,42 @@ export interface TurnSourceHistory {
 	target_run_id: string | null;
 	source_event_id: string;
 	at: string;
+}
+
+export interface PhaseWakeInput {
+	id: string;
+	to: string;
+	content: string;
+	metadata?: Record<string, unknown>;
+}
+
+export interface RunnerPhaseWake {
+	queue_seq: number;
+	execution_id: string;
+	message_id: string;
+	content: string;
+	metadata_json: string | null;
+	source_instruction_id: string | null;
+	state: "pending" | "started" | "finished";
+	queued_at: number;
+	started_at: number | null;
+	finished_at: number | null;
+}
+
+export interface RunnerShutdownControl {
+	execution_id: string;
+	request_id: string;
+	state: "requested" | "acked" | "failed";
+	requested_at: number;
+	finished_at: number | null;
+	error: string | null;
+}
+
+function isMissingTableError(error: unknown, table: string): boolean {
+	return (
+		error instanceof Error &&
+		new RegExp(`no such table: (?:main\\.)?${table}`, "i").test(error.message)
+	);
 }
 
 export class CommDB {
@@ -897,6 +957,218 @@ export class CommDB {
 			.run(id);
 	}
 
+	/**
+	 * FLY-1269: durably accept a vendor mailbox envelope before transport ack.
+	 * A send envelope binds to its CommDB instruction through
+	 * metadata.flywheelId + metadata.execId; queue insert and instruction claim
+	 * commit in the same transaction. Existing rows win before source validation
+	 * so a callback retry remains acknowledgeable after later message cleanup.
+	 */
+	enqueueRunnerPhaseWake(
+		executionId: string,
+		message: PhaseWakeInput,
+		nowMs: number,
+	): { kind: "queued" | "duplicate"; wake: RunnerPhaseWake } {
+		if (!executionId || !message.id || !message.content) {
+			throw new Error(
+				"phase wake requires executionId, message id, and content",
+			);
+		}
+		const metadataExecId = message.metadata?.execId;
+		if (metadataExecId !== undefined && metadataExecId !== executionId) {
+			throw new Error(
+				`phase wake execId mismatch: expected ${executionId}, got ${String(metadataExecId)}`,
+			);
+		}
+		const flywheelId = message.metadata?.flywheelId;
+		const sourceInstructionId =
+			typeof flywheelId === "string" && typeof metadataExecId === "string"
+				? flywheelId
+				: null;
+		const metadataJson = message.metadata
+			? JSON.stringify(message.metadata)
+			: null;
+
+		const enqueue = this.db.transaction(() => {
+			const existing = this.db
+				.prepare(
+					`SELECT * FROM runner_phase_wakes
+					 WHERE execution_id = ?
+					   AND (message_id = ? OR (? IS NOT NULL AND source_instruction_id = ?))
+					 ORDER BY queue_seq ASC LIMIT 1`,
+				)
+				.get(
+					executionId,
+					message.id,
+					sourceInstructionId,
+					sourceInstructionId,
+				) as RunnerPhaseWake | undefined;
+			if (existing) {
+				return { kind: "duplicate" as const, wake: existing };
+			}
+
+			if (sourceInstructionId) {
+				const instruction = this.db
+					.prepare("SELECT id, to_agent, type FROM messages WHERE id = ?")
+					.get(sourceInstructionId) as
+					| { id: string; to_agent: string; type: string }
+					| undefined;
+				if (!instruction || instruction.type !== "instruction") {
+					throw new Error(`bound instruction ${sourceInstructionId} not found`);
+				}
+				if (instruction.to_agent !== executionId) {
+					throw new Error(
+						`bound instruction ${sourceInstructionId} belongs to ${instruction.to_agent}, not ${executionId}`,
+					);
+				}
+			}
+
+			this.db
+				.prepare(
+					`INSERT INTO runner_phase_wakes
+					   (execution_id, message_id, content, metadata_json,
+					    source_instruction_id, state, queued_at)
+					 VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+				)
+				.run(
+					executionId,
+					message.id,
+					message.content,
+					metadataJson,
+					sourceInstructionId,
+					nowMs,
+				);
+			if (sourceInstructionId) {
+				this.db
+					.prepare(
+						`UPDATE messages SET read_at = COALESCE(read_at, datetime('now'))
+						 WHERE id = ? AND to_agent = ? AND type = 'instruction'`,
+					)
+					.run(sourceInstructionId, executionId);
+			}
+			const wake = this.db
+				.prepare(
+					"SELECT * FROM runner_phase_wakes WHERE execution_id = ? AND message_id = ?",
+				)
+				.get(executionId, message.id) as RunnerPhaseWake;
+			return { kind: "queued" as const, wake };
+		});
+
+		return enqueue();
+	}
+
+	listRunnerPhaseWakes(executionId: string): RunnerPhaseWake[] {
+		try {
+			return this.db
+				.prepare(
+					"SELECT * FROM runner_phase_wakes WHERE execution_id = ? ORDER BY queue_seq ASC",
+				)
+				.all(executionId) as RunnerPhaseWake[];
+		} catch (error) {
+			if (isMissingTableError(error, "runner_phase_wakes")) return [];
+			throw error;
+		}
+	}
+
+	markRunnerPhaseWakeStarted(
+		executionId: string,
+		messageId: string,
+		nowMs: number,
+	): boolean {
+		return (
+			this.db
+				.prepare(
+					`UPDATE runner_phase_wakes SET state = 'started', started_at = ?
+					 WHERE execution_id = ? AND message_id = ? AND state = 'pending'`,
+				)
+				.run(nowMs, executionId, messageId).changes === 1
+		);
+	}
+
+	finishRunnerPhaseWake(
+		executionId: string,
+		messageId: string,
+		nowMs: number,
+	): boolean {
+		return (
+			this.db
+				.prepare(
+					`UPDATE runner_phase_wakes SET state = 'finished', finished_at = ?
+					 WHERE execution_id = ? AND message_id = ? AND state = 'started'`,
+				)
+				.run(nowMs, executionId, messageId).changes === 1
+		);
+	}
+
+	requestRunnerShutdown(
+		executionId: string,
+		requestId: string,
+		nowMs: number,
+	): RunnerShutdownControl {
+		if (!executionId || !requestId) {
+			throw new Error("runner shutdown requires executionId and requestId");
+		}
+		const request = this.db.transaction(() => {
+			this.db
+				.prepare(
+					`INSERT OR IGNORE INTO runner_shutdown_controls
+					   (execution_id, request_id, state, requested_at)
+					 VALUES (?, ?, 'requested', ?)`,
+				)
+				.run(executionId, requestId, nowMs);
+			const row = this.db
+				.prepare(
+					"SELECT * FROM runner_shutdown_controls WHERE execution_id = ?",
+				)
+				.get(executionId) as RunnerShutdownControl | undefined;
+			if (!row) {
+				throw new Error(
+					`shutdown request id ${requestId} is already bound to another execution`,
+				);
+			}
+			return row;
+		});
+		return request();
+	}
+
+	getRunnerShutdown(executionId: string): RunnerShutdownControl | null {
+		try {
+			return (
+				(this.db
+					.prepare(
+						"SELECT * FROM runner_shutdown_controls WHERE execution_id = ?",
+					)
+					.get(executionId) as RunnerShutdownControl | undefined) ?? null
+			);
+		} catch (error) {
+			if (isMissingTableError(error, "runner_shutdown_controls")) return null;
+			throw error;
+		}
+	}
+
+	finishRunnerShutdown(
+		executionId: string,
+		requestId: string,
+		result: { ok: true } | { ok: false; error: string },
+		nowMs: number,
+	): boolean {
+		return (
+			this.db
+				.prepare(
+					`UPDATE runner_shutdown_controls
+					 SET state = ?, finished_at = ?, error = ?
+					 WHERE execution_id = ? AND request_id = ? AND state = 'requested'`,
+				)
+				.run(
+					result.ok ? "acked" : "failed",
+					nowMs,
+					result.ok ? null : result.error,
+					executionId,
+					requestId,
+				).changes === 1
+		);
+	}
+
 	// ── FLY-109: push-path helpers (at-least-once via delivered_at + explicit ack) ──
 	//
 	// These are push-only helpers used by inbox-mcp's poll → channel notification loop.
@@ -1352,6 +1624,22 @@ export class CommDB {
 		return this.db
 			.prepare("DELETE FROM sessions WHERE execution_id = ?")
 			.run(executionId).changes;
+	}
+
+	/** FLY-1269: issue-terminal cleanup for a resident phase execution. */
+	deleteSessionAndRunnerPhaseLifecycle(executionId: string): number {
+		const remove = this.db.transaction(() => {
+			this.db
+				.prepare("DELETE FROM runner_phase_wakes WHERE execution_id = ?")
+				.run(executionId);
+			this.db
+				.prepare("DELETE FROM runner_shutdown_controls WHERE execution_id = ?")
+				.run(executionId);
+			return this.db
+				.prepare("DELETE FROM sessions WHERE execution_id = ?")
+				.run(executionId).changes;
+		});
+		return remove();
 	}
 
 	getActiveSessions(projectName?: string): Session[] {

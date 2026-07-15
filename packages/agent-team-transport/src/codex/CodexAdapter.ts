@@ -379,7 +379,7 @@ export class CodexAdapter implements IAgentTeamTransport {
  * across watcher restarts.
  */
 export class CodexMailboxWatcher implements IMailboxWatcher {
-	onDelivered?: (msg: MailboxMessage) => void;
+	onDelivered?: (msg: MailboxMessage) => void | Promise<void>;
 
 	private poller: ReturnType<typeof setInterval> | null = null;
 	private fsWatcher: ReturnType<typeof watch> | null = null;
@@ -406,6 +406,15 @@ export class CodexMailboxWatcher implements IMailboxWatcher {
 		try {
 			this.fsWatcher = watch(dir, () => {
 				void this.scan();
+			});
+			this.fsWatcher.on("error", (err) => {
+				// Some platforms report watch exhaustion asynchronously. Keep the
+				// poll fallback alive and prevent an unhandled FSWatcher error.
+				console.error(
+					`[CodexMailboxWatcher] fs.watch failed for ${this.agentName}: ${err.message}`,
+				);
+				this.fsWatcher?.close();
+				this.fsWatcher = null;
 			});
 		} catch {
 			// fs.watch is best-effort — poller below is the reliable path.
@@ -443,11 +452,13 @@ export class CodexMailboxWatcher implements IMailboxWatcher {
 			);
 			if (fresh.length === 0) return;
 
+			const acceptedIds: string[] = [];
 			for (const msg of fresh) {
-				this.delivered.add(this.adapter.dedupeKey(msg));
-				this.lastEventTs = Date.now();
 				try {
-					this.onDelivered?.(msg);
+					await this.onDelivered?.(msg);
+					this.delivered.add(this.adapter.dedupeKey(msg));
+					this.lastEventTs = Date.now();
+					acceptedIds.push(msg.id);
 				} catch (err) {
 					// Consumer callback failure must not kill the watcher loop —
 					// but it must be LOUD (silent loss = stranded runner).
@@ -456,11 +467,13 @@ export class CodexMailboxWatcher implements IMailboxWatcher {
 					);
 				}
 			}
-			await this.adapter.ack({
-				leadName: this.teamName,
-				agentName: this.agentName,
-				messageIds: fresh.map((m) => m.id),
-			});
+			if (acceptedIds.length > 0) {
+				await this.adapter.ack({
+					leadName: this.teamName,
+					agentName: this.agentName,
+					messageIds: acceptedIds,
+				});
+			}
 		} catch (err) {
 			console.error(
 				`[CodexMailboxWatcher] scan failed for ${this.agentName}: ${(err as Error).message}`,

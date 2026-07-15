@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MailboxMessage } from "../../types.js";
-import { CodexAdapter, type CodexMailboxWatcher } from "../CodexAdapter.js";
+import { CodexAdapter, CodexMailboxWatcher } from "../CodexAdapter.js";
 
 const TEAM = "product-lead";
 const AGENT = "runner-abc12345";
@@ -167,6 +167,64 @@ describe("CodexAdapter transport (FLY-123)", () => {
 	});
 
 	describe("CodexMailboxWatcher", () => {
+		it("awaits an async delivery callback before acknowledging the message", async () => {
+			await adapter.write({
+				leadName: TEAM,
+				recipient: AGENT,
+				payload: payload("durable before ack"),
+			});
+			const watcher = new CodexMailboxWatcher(adapter, TEAM, AGENT, 60_000);
+			let release: (() => void) | undefined;
+			const accepted = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			watcher.onDelivered = vi.fn(async () => accepted);
+			(watcher as any).running = true;
+
+			const scan = (watcher as any).scan() as Promise<void>;
+			await vi.waitFor(() =>
+				expect(watcher.onDelivered).toHaveBeenCalledOnce(),
+			);
+			expect(
+				await adapter.readUnread({ leadName: TEAM, agentName: AGENT }),
+			).toHaveLength(1);
+
+			release?.();
+			await scan;
+			expect(
+				await adapter.readUnread({ leadName: TEAM, agentName: AGENT }),
+			).toHaveLength(0);
+		});
+
+		it("retries the same message when the delivery callback throws", async () => {
+			await adapter.write({
+				leadName: TEAM,
+				recipient: AGENT,
+				payload: payload("retry me"),
+			});
+			const watcher = new CodexMailboxWatcher(adapter, TEAM, AGENT, 60_000);
+			const onDelivered = vi
+				.fn<(message: MailboxMessage) => void>()
+				.mockImplementationOnce(() => {
+					throw new Error("queue commit failed");
+				});
+			watcher.onDelivered = onDelivered;
+			(watcher as any).running = true;
+
+			await (watcher as any).scan();
+			expect(onDelivered).toHaveBeenCalledTimes(1);
+			expect((watcher as any).delivered.size).toBe(0);
+			expect(
+				await adapter.readUnread({ leadName: TEAM, agentName: AGENT }),
+			).toHaveLength(1);
+
+			await (watcher as any).scan();
+			expect(onDelivered).toHaveBeenCalledTimes(2);
+			expect(
+				await adapter.readUnread({ leadName: TEAM, agentName: AGENT }),
+			).toHaveLength(0);
+		});
+
 		it("delivers new unread messages once, acks them, reports health", async () => {
 			const watcher = adapter.createReceiver({
 				leadName: TEAM,
