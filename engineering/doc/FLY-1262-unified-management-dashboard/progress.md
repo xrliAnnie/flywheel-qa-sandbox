@@ -1,13 +1,13 @@
 ---
 issue: FLY-1262
 phase: implement
-phaseCursor: 5/13
-updated: 2026-07-15T06:04:38.950Z
-nextStep: "Task 5: discover and normalize launchd cron jobs"
+phaseCursor: 6/13
+updated: 2026-07-15T06:11:53.596Z
+nextStep: "Task 6: write plist schedule and launchctl state with rollback"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1262 progress
-**phase**: implement (5/13)
-**next**: Task 5: discover and normalize launchd cron jobs
+**phase**: implement (6/13)
+**next**: Task 6: write plist schedule and launchctl state with rollback
