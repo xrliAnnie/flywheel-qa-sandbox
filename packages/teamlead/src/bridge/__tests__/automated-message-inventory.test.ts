@@ -127,6 +127,8 @@ describe("automated Discord sender inventory", () => {
 			"bridge/ChatThreadCreator.ts",
 			"bridge/discord-post-file.ts",
 			"bridge/discord-utils.ts",
+			// FLY-1282 Part D: disposition-receipt delivery (bounded, marked).
+			"bridge/disposition-receipt.ts",
 			"bridge/founder-thread-notifier.ts",
 			"bridge/legacy-phase-thread-sweep.ts",
 			"bridge/publish-broker/wire.ts",

@@ -27,6 +27,9 @@
 
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { DispositionReceiptRow, StateStore } from "../StateStore.js";
+// Inventory contract (automated-message-inventory.test.ts): every direct
+// Discord text POST sender marks its content as automated.
+import { markAutomatedDiscordText } from "./automated-message.js";
 import { resolveBotTokenForThread } from "./done-thread-archiver.js";
 
 export const RECEIPT_BATCH_PER_PASS = 5;
@@ -129,7 +132,10 @@ export async function postThreadMessage(
 					Authorization: `Bot ${botToken}`,
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+				body: JSON.stringify({
+					content: markAutomatedDiscordText(content),
+					allowed_mentions: { parse: [] },
+				}),
 				signal: controller.signal,
 			},
 		);
