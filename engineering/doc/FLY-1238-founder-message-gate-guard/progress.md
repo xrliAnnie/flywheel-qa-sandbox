@@ -2,12 +2,12 @@
 issue: FLY-1238
 phase: implement
 phaseCursor: 8/8
-updated: 2026-07-15T01:16:45.621Z
-nextStep: Create PR and request cross-family review
+updated: 2026-07-15T02:10:39.941Z
+nextStep: Commit and push fixes; rerun CI and code review round 2
 chunks: []
 pointers: {}
 ---
 
 # FLY-1238 progress
 **phase**: implement (8/8)
-**next**: Create PR and request cross-family review
+**next**: Commit and push fixes; rerun CI and code review round 2
