@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "issueId": "FLY-1286",
+  "sandboxProject": "xrliAnnie/flywheel-qa-sandbox",
+  "candidateSha": "c833f78b552b0df54fb49d8f0d7c79331513ea28",
+  "implementEvidenceBaseSha": "ae7723467533fe3289bbd71d008aae3b295b6d04",
+  "capturedAt": "2026-07-15T10:19:03Z",
+  "verdict": {
+    "status": "FAIL",
+    "failedOracle": "A2",
+    "stopCondition": 4,
+    "reason": "Design was declared parked but never entered a native paused phaseHold; its native goal stayed active and consumed budget."
+  },
+  "paths": {
+    "stateDb": "/tmp/flywheel-test-slot-2/teamlead.db",
+    "commDb": "/Users/xiaorongli/.flywheel/comm/test-slot-2/comm.db",
+    "designState": "/Users/xiaorongli/.flywheel/state/codex-sessions/c552669e-611b-47fc-98ca-63371c81cbe8/session.json",
+    "designGoalDb": "/Users/xiaorongli/.flywheel/codex-homes/c552669e-611b-47fc-98ca-63371c81cbe8/goals_1.sqlite",
+    "designSocket": "/Users/xiaorongli/.flywheel/cdx-sock/407ac44945241bf9.sock"
+  },
+  "successfulChain": {
+    "design": {
+      "executionId": "c552669e-611b-47fc-98ca-63371c81cbe8",
+      "threadId": "019f6506-6123-7453-9bc1-5aaaa4c32c58",
+      "goalId": "acedce0b-ad08-47b8-adbe-0618df6caa09",
+      "adapterType": "codex-tmux",
+      "model": "gpt-5.6-sol",
+      "stateStoreStatus": "design_done",
+      "declaredState": "parked",
+      "tmuxWindow": "runner-test-slot-2:FLY-1286-design-QA-FLY-1269-Codex-529-Room-E2E-Des",
+      "tmuxPaneDead": false,
+      "daemonPid": 47673,
+      "daemonPgid": 47673,
+      "socketHolderPids": [47673],
+      "socketConnectable": true,
+      "phaseHold": null,
+      "goalStatus": "active",
+      "stateStoreHeartbeatAt": "2026-07-15 10:00:20"
+    },
+    "implement": {
+      "executionId": "e854cc74-39dc-4c75-b78b-d2e220a08cbe",
+      "threadId": "019f653c-1b30-7e93-a1c1-490684224c79",
+      "adapterType": "codex-tmux",
+      "model": "gpt-5.6-sol",
+      "stateStoreStatus": "running"
+    },
+    "qa": null
+  },
+  "turn": {
+    "holderExecId": "e854cc74-39dc-4c75-b78b-d2e220a08cbe",
+    "phase": "implement",
+    "epoch": 2,
+    "grantedAt": 1784109864507
+  },
+  "designBudgetSamples": [
+    {
+      "at": "2026-07-15T10:18:58Z",
+      "goalStatus": "active",
+      "tokensUsed": 758321,
+      "timeUsedSeconds": 4389,
+      "updatedAtMs": 1784110734993,
+      "phaseHold": null
+    },
+    {
+      "at": "2026-07-15T10:19:03Z",
+      "goalStatus": "active",
+      "tokensUsed": 759004,
+      "timeUsedSeconds": 4394,
+      "updatedAtMs": 1784110739676,
+      "phaseHold": null
+    }
+  ],
+  "observedDelta": {
+    "windowMs": 5000,
+    "tokensUsed": 683,
+    "timeUsedSeconds": 5,
+    "updatedAtMs": 4683
+  },
+  "safety": {
+    "daemonCrashInjected": false,
+    "mailboxWakeRequested": false,
+    "processSignalled": false,
+    "reason": "Stopped before fault injection on acceptance stop condition 4."
+  },
+  "acceptance": {
+    "A1": "INCOMPLETE — Design and Implement routing observed; QA intentionally not spawned after fail-fast.",
+    "A2": "FAIL — no paused phaseHold, goal active, budget advanced.",
+    "A3": "NOT RUN — destructive crash test prohibited after A2 failure.",
+    "A4": "NOT RUN — wake request prohibited after A2 failure.",
+    "A5": "NOT RUN — Implement did not complete/park after fail-fast.",
+    "A6": "PARTIAL — Design to Implement TURN handoff is epoch 2 and Implement-owned.",
+    "A7": "NOT RUN — issue-terminal observer was not armed on a failed chain.",
+    "A8": "PASS TO FAILURE POINT — writes remained within the documented test-slot-2 and evidence allowlist."
+  }
+}
