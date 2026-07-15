@@ -1,10 +1,9 @@
 ---
 issue: FLY-1286
 phase: design
-phaseCursor: 3/5
-updated: 2026-07-15T09:20:42.163Z
-nextStep: Write a stepwise plan for the real phase chain, bounded wake/crash
-  probes, QA, and external shutdown witness
+phaseCursor: 4/5
+updated: 2026-07-15T09:26:32.816Z
+nextStep: Run the mandatory cross-family design review and address every finding
 chunks:
   - id: onboard
     order: 1
@@ -15,8 +14,8 @@ pointers: {}
 ---
 
 # FLY-1286 progress
-**phase**: design (3/5)
-**next**: Write a stepwise plan for the real phase chain, bounded wake/crash probes, QA, and external shutdown witness
+**phase**: design (4/5)
+**next**: Run the mandatory cross-family design review and address every finding
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
