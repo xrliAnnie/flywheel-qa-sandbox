@@ -980,10 +980,10 @@ export class ChatThreadCreator {
 			},
 			// allowed_mentions parse:[] — the command/title text must never trigger
 			// @everyone/@here/role pings (mirrors ensureChatThread).
-		body: JSON.stringify({
-			content: markAutomatedDiscordText(content),
-			allowed_mentions: { parse: [] },
-		}),
+			body: JSON.stringify({
+				content: markAutomatedDiscordText(content),
+				allowed_mentions: { parse: [] },
+			}),
 			signal,
 		});
 		if (!res.ok) {

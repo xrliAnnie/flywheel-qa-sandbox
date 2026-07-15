@@ -32,11 +32,11 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { verifyApproval } from "flywheel-comm/verify-approval";
 import { verifyLifecycleConsent } from "flywheel-comm/verify-lifecycle-consent";
+import { markAutomatedDiscordText } from "../../../bridge/automated-message.js";
 import {
 	getActionClassMeta,
 	isLifecycleAction,
 } from "../../../bridge/founder-consent/reserved-endpoints.js";
-import { markAutomatedDiscordText } from "../../../bridge/automated-message.js";
 import { matchesLead } from "../../../bridge/lead-scope.js";
 import { checkStartedEvidence } from "../../../bridge/started-evidence.js";
 import {

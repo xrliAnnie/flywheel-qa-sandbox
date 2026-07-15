@@ -231,7 +231,9 @@ describe("postDiscordMessageToChannel (FLY-162 P2)", () => {
 	});
 
 	it("marks automated edits idempotently", async () => {
-		const fetchMock = vi.fn().mockResolvedValueOnce(new Response(null, { status: 204 }));
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(null, { status: 204 }));
 		await editDiscordMessageInChannel(
 			"thread-auto",
 			"message-auto",

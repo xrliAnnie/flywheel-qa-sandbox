@@ -25,8 +25,8 @@
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveAnnouncerBotToken } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
-import { archiveChatThread } from "./chat-thread-utils.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
+import { archiveChatThread } from "./chat-thread-utils.js";
 import { resolveBotTokenForThread } from "./done-thread-archiver.js";
 
 const DISCORD_API = "https://discord.com/api/v10";

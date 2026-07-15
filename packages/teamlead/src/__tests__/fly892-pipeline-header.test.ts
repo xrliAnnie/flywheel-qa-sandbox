@@ -4,6 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AUTOMATED_MESSAGE_PREFIX } from "../bridge/automated-message.js";
 import {
 	buildPipelineHeaderContent,
 	ChatThreadCreator,
@@ -144,7 +145,9 @@ describe("ensureRunnerPipelineHeaderPin (FLY-892 Step 4)", () => {
 		expect(rec?.command).toBe(content); // fingerprint = rendered content
 		expect(rec?.pinnedAt).toBe("2026-07-05");
 		const [, opts] = mockFetch.mock.calls[0]!;
-		expect(JSON.parse(opts.body).content).toBe(content);
+		expect(JSON.parse(opts.body).content).toBe(
+			`${AUTOMATED_MESSAGE_PREFIX}${content}`,
+		);
 	});
 
 	it("unchanged content → zero PATCH (idempotent)", async () => {
@@ -220,7 +223,9 @@ describe("ensureRunnerPipelineHeaderPin (FLY-892 Step 4)", () => {
 		});
 		const editCall = mockFetch.mock.calls.find((c) => c[1]?.method === "PATCH");
 		expect(editCall).toBeDefined();
-		expect(JSON.parse(editCall![1].body).content).toBe("📌 header v2");
+		expect(JSON.parse(editCall![1].body).content).toBe(
+			`${AUTOMATED_MESSAGE_PREFIX}📌 header v2`,
+		);
 		expect(store.getChatThreadAttachPin(ISSUE, CH)?.command).toBe(
 			"📌 header v2",
 		);

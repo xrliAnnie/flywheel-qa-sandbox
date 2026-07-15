@@ -3,8 +3,8 @@
  */
 
 import {
-	markAutomatedDiscordText,
 	type DiscordMessageOrigin,
+	markAutomatedDiscordText,
 } from "./automated-message.js";
 
 export const DISCORD_API = "https://discord.com/api/v10";

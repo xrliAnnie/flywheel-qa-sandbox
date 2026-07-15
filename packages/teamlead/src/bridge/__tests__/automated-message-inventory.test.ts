@@ -33,7 +33,8 @@ function propertyText(
 ): string | undefined {
 	const property = object.properties.find(
 		(candidate): candidate is ts.PropertyAssignment =>
-			ts.isPropertyAssignment(candidate) && candidate.name.getText(source) === name,
+			ts.isPropertyAssignment(candidate) &&
+			candidate.name.getText(source) === name,
 	);
 	return property?.initializer.getText(source);
 }
@@ -83,9 +84,7 @@ describe("automated Discord sender inventory", () => {
 		for (const file of refs) {
 			const source = readFileSync(resolve(srcRoot, file), "utf8");
 			expect(source, file).toContain(
-				authored.has(file)
-					? 'origin: "lead_authored"'
-					: 'origin: "automation"',
+				authored.has(file) ? 'origin: "lead_authored"' : 'origin: "automation"',
 			);
 		}
 		expect([...authored].sort()).toHaveLength(4);

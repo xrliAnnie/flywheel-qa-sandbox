@@ -19,8 +19,8 @@
  *   - error envelope instead of throws, so callers map to HTTP 502 verbatim.
  */
 
-import { DISCORD_API } from "./discord-utils.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
+import { DISCORD_API } from "./discord-utils.js";
 
 export interface DiscordFileAttachment {
 	data: Buffer;

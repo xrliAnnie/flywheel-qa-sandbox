@@ -29,8 +29,8 @@ import {
 	leadPaneLiveHash,
 } from "../LeadWatchdog.js";
 import type { AlertThreadRow, StateStore } from "../StateStore.js";
-import { markAutomatedDiscordText } from "./automated-message.js";
 import { type AutoRepairBot, HUMAN_ONLY_REASON } from "./AutoRepairBot.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 import {
 	formatAccountCapOwnerAssignment,
 	resolveAccountCapOwnerId,

@@ -1498,9 +1498,7 @@ describe("LeadAlertNotifier — FLY-1081: deploy kinds + mentionUserId + drain u
 			users: ["123456789012345678", "222333444555666777"],
 		});
 		expect(
-			(body.content as string).startsWith(
-				"🤖[自动] <@222333444555666777> ",
-			),
+			(body.content as string).startsWith("🤖[自动] <@222333444555666777> "),
 		).toBe(true);
 		// same id in both roles → deduped to one entry
 		const fetchFn2 = okFetch();
@@ -1595,9 +1593,7 @@ describe("LeadAlertNotifier — FLY-1081: deploy kinds + mentionUserId + drain u
 		const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
 		const body = JSON.parse(init.body as string);
 		expect(
-			(body.content as string).startsWith(
-				"🤖[自动] <@222333444555666777> ",
-			),
+			(body.content as string).startsWith("🤖[自动] <@222333444555666777> "),
 		).toBe(true);
 		expect(body.allowed_mentions).toEqual({ users: ["222333444555666777"] });
 		rmSync(dlDir, { recursive: true, force: true });

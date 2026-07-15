@@ -7,12 +7,12 @@
 
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 import {
 	DISCORD_API,
 	MAX_DISCORD_MESSAGE_LENGTH,
 	splitDiscordMessage,
 } from "./discord-utils.js";
-import { markAutomatedDiscordText } from "./automated-message.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────
 

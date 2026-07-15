@@ -7,9 +7,7 @@ import {
 describe("automated Discord message provenance", () => {
 	it("marks automation exactly once", () => {
 		expect(markAutomatedDiscordText("hello")).toBe("🤖[自动] hello");
-		expect(markAutomatedDiscordText("🤖[自动] hello")).toBe(
-			"🤖[自动] hello",
-		);
+		expect(markAutomatedDiscordText("🤖[自动] hello")).toBe("🤖[自动] hello");
 	});
 
 	it("marks empty text so automation is never anonymous", () => {
