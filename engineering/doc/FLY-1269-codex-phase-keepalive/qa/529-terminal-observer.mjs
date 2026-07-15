@@ -9,6 +9,8 @@ import path from "node:path";
 const HEARTBEAT_FRESH_MS = 120_000;
 const DEFAULT_INTERVAL_MS = 50;
 const DEFAULT_TIMEOUT_MS = 900_000;
+const DEFAULT_ARMING_ATTEMPTS = 5;
+const DEFAULT_ARMING_TIMEOUT_MS = 10_000;
 const SOCKET_PROBE_TIMEOUT_MS = 250;
 const REQUIRED = [
 	"state-db",
@@ -56,6 +58,14 @@ function parseArgs(argv) {
 	options.timeoutMs = parsePositiveInt(
 		options["timeout-ms"] ?? DEFAULT_TIMEOUT_MS,
 		"timeout-ms",
+	);
+	options.armingAttempts = parsePositiveInt(
+		options["arming-attempts"] ?? DEFAULT_ARMING_ATTEMPTS,
+		"arming-attempts",
+	);
+	options.armingTimeoutMs = parsePositiveInt(
+		options["arming-timeout-ms"] ?? DEFAULT_ARMING_TIMEOUT_MS,
+		"arming-timeout-ms",
 	);
 	return options;
 }
@@ -171,11 +181,12 @@ function benignLsofStderr(stderr) {
 
 function probeHolders(aliasesBySocket) {
 	const uniqueSockets = Object.keys(aliasesBySocket);
+	const observedAt = new Date().toISOString();
 	const indeterminate = () =>
 		Object.fromEntries(
 			uniqueSockets.map((socket) => [
 				socket,
-				{ state: "indeterminate", holders: [] },
+				{ state: "indeterminate", holders: [], observedAt },
 			]),
 		);
 	const result = spawnSync("lsof", ["-nU", "-Fpn"], {
@@ -236,8 +247,8 @@ function probeHolders(aliasesBySocket) {
 			return [
 				socket,
 				holderList.length > 0
-					? { state: "present", holders: holderList }
-					: { state: "absent", holders: [] },
+					? { state: "present", holders: holderList, observedAt }
+					: { state: "absent", holders: [], observedAt },
 			];
 		}),
 	);
@@ -444,6 +455,9 @@ async function main() {
 	let lastKey = null;
 	let pendingReason = "cleanup_not_observed";
 	const startedAt = Date.now();
+	const armingDeadlineAt =
+		startedAt + Math.min(options.armingTimeoutMs, options.timeoutMs);
+	let armingAttempts = 0;
 
 	while (true) {
 		const at = new Date().toISOString();
@@ -585,6 +599,7 @@ async function main() {
 		}
 		if (options.once) return 0;
 		if (!armed) {
+			armingAttempts += 1;
 			let initialFailure = null;
 			for (const role of Object.keys(identities)) {
 				if (liveness[role].tmux !== "live") {
@@ -603,14 +618,28 @@ async function main() {
 					break;
 				}
 			}
-			if (initialFailure) {
+			if (
+				initialFailure &&
+				(armingAttempts >= options.armingAttempts ||
+					Date.now() >= armingDeadlineAt)
+			) {
 				appendFrame(options.out, {
 					kind: "verdict",
 					at,
 					pass: false,
 					reason: initialFailure,
+					arming: {
+						attempts: armingAttempts,
+						maxAttempts: options.armingAttempts,
+						timeoutMs: options.armingTimeoutMs,
+						deadlineAt: new Date(armingDeadlineAt).toISOString(),
+					},
 				});
 				return 1;
+			}
+			if (initialFailure) {
+				await sleep(options.intervalMs);
+				continue;
 			}
 			armed = true;
 		}

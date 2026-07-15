@@ -375,6 +375,13 @@ async function waitForExit(child, timeoutMs = 3000) {
 	return result;
 }
 
+async function stopObserver(child) {
+	if (child.exitCode !== null || child.signalCode !== null) return;
+	const exited = new Promise((resolve) => child.once("exit", resolve));
+	child.kill();
+	await exited;
+}
+
 async function waitForSnapshot(fixture, predicate = () => true) {
 	await waitFor(
 		() =>
@@ -676,12 +683,18 @@ test(
 				fixture,
 				(frame) => frame.liveness?.design?.tmux === "indeterminate",
 			);
-			await clearSockets(fixture);
+			// Close the listeners without rewriting lsof.json: the cleanup frame must
+			// still carry the indeterminate holder marker under test.
+			await fixture.closeSocket(DESIGN);
+			await fixture.closeSocket(IMPLEMENT);
 			clearTmux(fixture);
 			deleteLifecycle(fixture);
 			const result = await waitForExit(child);
 			assert.notEqual(result.code, 0);
-			assert.match(verdict(fixture)?.reason ?? "", /liveness_indeterminate/);
+			assert.equal(
+				verdict(fixture)?.reason,
+				`liveness_indeterminate:${DESIGN}:lsof`,
+			);
 		} finally {
 			await fixture.dispose();
 		}
@@ -734,19 +747,108 @@ test("matches lsof holder names through a canonicalized socket root", async () =
 	}
 });
 
-test("fails fast when the initial tmux server cannot be observed", async () => {
+test(
+	"timestamps holder evidence and preserves its sample time while cached",
+	{ timeout: 8000 },
+	async () => {
+		const fixture = createFixture();
+		let child;
+		try {
+			await fixture.listen(DESIGN);
+			await fixture.listen(IMPLEMENT);
+			child = startObserver(fixture, 5000);
+			await waitForSnapshot(fixture);
+			const first = readFrames(fixture.out).find(
+				(frame) => frame.kind === "snapshot",
+			);
+			assert.match(
+				first?.liveness.design.holders.observedAt ?? "",
+				/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/,
+			);
+
+			const nextHeartbeat = new Date(Date.now() + 1000).toISOString();
+			runSql(
+				fixture.stateDb,
+				`UPDATE sessions SET heartbeat_at=${sqlQuote(nextHeartbeat)} WHERE execution_id=${sqlQuote(DESIGN)};`,
+			);
+			await waitForSnapshot(
+				fixture,
+				(frame) => frame.liveness?.design?.heartbeatAt === nextHeartbeat,
+			);
+			const second = readFrames(fixture.out).findLast(
+				(frame) =>
+					frame.kind === "snapshot" &&
+					frame.liveness?.design?.heartbeatAt === nextHeartbeat,
+			);
+			assert.equal(
+				second?.liveness.design.holders.observedAt,
+				first.liveness.design.holders.observedAt,
+			);
+			const lsofCalls = readFileSync(fixture.probeLog, "utf8")
+				.split("\n")
+				.filter(Boolean);
+			assert.deepEqual(lsofCalls, ["lsof"]);
+		} finally {
+			if (child) await stopObserver(child);
+			await fixture.dispose();
+		}
+	},
+);
+
+test("retries transient startup liveness before arming", async () => {
+	const fixture = createFixture();
+	let child;
+	try {
+		await fixture.listen(DESIGN);
+		await fixture.listen(IMPLEMENT);
+		updateProbe(fixture, "tmux", (value) => {
+			value["slot:design"] = "indeterminate";
+		});
+		child = startObserver(fixture, 5000, [
+			"--arming-attempts",
+			"4",
+			"--arming-timeout-ms",
+			"4000",
+		]);
+		await waitForSnapshot(
+			fixture,
+			(frame) => frame.liveness?.design?.tmux === "indeterminate",
+		);
+		updateProbe(fixture, "tmux", (value) => {
+			value["slot:design"] = "live";
+		});
+		await waitForSnapshot(
+			fixture,
+			(frame) => frame.liveness?.design?.tmux === "live",
+		);
+		assert.equal(verdict(fixture), undefined);
+	} finally {
+		if (child) await stopObserver(child);
+		await fixture.dispose();
+	}
+});
+
+test("fails closed after bounded startup retries", async () => {
 	const fixture = createFixture();
 	try {
 		updateProbe(fixture, "tmux", (value) => {
 			value["slot:design"] = "indeterminate";
 		});
-		const child = startObserver(fixture, 2500);
-		const result = await waitForExit(child, 5000);
+		const child = startObserver(fixture, 6000, [
+			"--arming-attempts",
+			"3",
+			"--arming-timeout-ms",
+			"5000",
+		]);
+		const result = await waitForExit(child, 8000);
 		assert.notEqual(result.code, 0);
 		assert.equal(
 			verdict(fixture)?.reason,
 			"initial_tmux_not_live:design:indeterminate",
 		);
+		assert.equal(verdict(fixture)?.arming?.attempts, 3);
+		assert.equal(verdict(fixture)?.arming?.maxAttempts, 3);
+		assert.equal(verdict(fixture)?.arming?.timeoutMs, 5000);
 	} finally {
 		await fixture.dispose();
 	}
