@@ -153,6 +153,23 @@ describe("Bridge E2E lifecycle", () => {
 		});
 		expect(completeRes.status).toBe(200);
 		expect(store.getSession("exec-e2e")!.status).toBe("awaiting_review");
+		// FLY-1251: approval fixtures may not bypass the production PR/QA
+		// evidence guard. This code-bearing lifecycle has passing exact-head QA.
+		const head = "a".repeat(40);
+		store.patchSessionMetadata("exec-e2e", {
+			pr_head_sha: head,
+			pr_number: 95,
+			codex_skip: 1,
+		});
+		store.claimAutoQaRecord({
+			parentExecutionId: "exec-e2e",
+			targetPrHeadSha: head,
+			issueId: "issue-e2e",
+			projectName: "geoforge3d",
+		});
+		store.setAutoQaStatus("exec-e2e", head, "passed", {
+			verdictEventId: "qa-pass-e2e",
+		});
 
 		// 3. GET /api/sessions → active sessions include our session
 		const activeRes = await fetch(`${baseUrl}/api/sessions`);

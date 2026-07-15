@@ -178,6 +178,23 @@ describe("FLY-96 Integration: Session lifecycle", () => {
 		});
 		expect(completeRes.status).toBe(200);
 		expect(store.getSession("exec-lc")!.status).toBe("awaiting_review");
+		// FLY-1251: approval is legal only after exact PR evidence establishes a
+		// docs-only exemption or passing QA. This code-bearing lifecycle uses QA.
+		const head = "a".repeat(40);
+		store.patchSessionMetadata("exec-lc", {
+			pr_head_sha: head,
+			pr_number: 1,
+			codex_skip: 1,
+		});
+		store.claimAutoQaRecord({
+			parentExecutionId: "exec-lc",
+			targetPrHeadSha: head,
+			issueId: "issue-lc",
+			projectName: "test-proj",
+		});
+		store.setAutoQaStatus("exec-lc", head, "passed", {
+			verdictEventId: "qa-pass-lifecycle",
+		});
 
 		// 3. Approve
 		const approveRes = await fetch(`${baseUrl}/api/actions/approve`, {
