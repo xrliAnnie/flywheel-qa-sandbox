@@ -1,11 +1,9 @@
 ---
 issue: FLY-1286
-phase: design
-phaseCursor: 5/5
-updated: 2026-07-15T10:02:59.592Z
-nextStep: Final cross-family design review round 5 APPROVED with zero findings;
-  run fresh verification, commit/push Design docs, complete
-  phase_design_complete, then park
+phase: implement
+phaseCursor: 1/6
+updated: 2026-07-15T10:06:52.185Z
+nextStep: Write observer failing tests and verify RED
 chunks:
   - id: onboard
     order: 1
@@ -17,8 +15,8 @@ pointers:
 ---
 
 # FLY-1286 progress
-**phase**: design (5/5)
-**next**: Final cross-family design review round 5 APPROVED with zero findings; run fresh verification, commit/push Design docs, complete phase_design_complete, then park
+**phase**: implement (1/6)
+**next**: Write observer failing tests and verify RED
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
