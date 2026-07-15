@@ -77,6 +77,8 @@ interface Harness {
 	}>;
 	wakes: Array<{ executionId: string; questionId: string; summary: string }>;
 	alerts: string[];
+	reviewAlerts: Array<Record<string, unknown>>;
+	rulingThreadPosts: string[];
 	currentHead: () => string;
 	setHead: (h: string) => void;
 }
@@ -86,6 +88,7 @@ async function makeHarness(
 	harnessOpts: {
 		reviewerEffort?: "low" | "medium" | "high" | "xhigh";
 		reviewSeverityPolicyEnabled?: boolean;
+		postReviewRulingOk?: boolean;
 	} = {},
 ): Promise<Harness> {
 	const store = await StateStore.create(":memory:");
@@ -94,6 +97,8 @@ async function makeHarness(
 	const invocations: Harness["invocations"] = [];
 	const wakes: Harness["wakes"] = [];
 	const alerts: string[] = [];
+	const reviewAlerts: Array<Record<string, unknown>> = [];
+	const rulingThreadPosts: string[] = [];
 	let head = HEAD;
 	const coordinator = new ReviewRequestCoordinator({
 		store,
@@ -103,8 +108,7 @@ async function makeHarness(
 			reviewerEffort: harnessOpts.reviewerEffort,
 		}),
 		...(harnessOpts.reviewSeverityPolicyEnabled !== undefined && {
-			reviewSeverityPolicyEnabled:
-				harnessOpts.reviewSeverityPolicyEnabled,
+			reviewSeverityPolicyEnabled: harnessOpts.reviewSeverityPolicyEnabled,
 		}),
 		reviewRound: async (inv) => {
 			invocations.push({
@@ -122,6 +126,13 @@ async function makeHarness(
 			wakes.push({ executionId, questionId, summary });
 		},
 		alertLead: (m) => alerts.push(m),
+		emitReviewAlert: async (event) => {
+			reviewAlerts.push(event as unknown as Record<string, unknown>);
+		},
+		postReviewRulingThread: async ({ text }) => {
+			rulingThreadPosts.push(text);
+			return { ok: harnessOpts.postReviewRulingOk !== false };
+		},
 		logger: () => {},
 	});
 	return {
@@ -132,12 +143,206 @@ async function makeHarness(
 		invocations,
 		wakes,
 		alerts,
+		reviewAlerts,
+		rulingThreadPosts,
 		currentHead: () => head,
 		setHead: (h) => {
 			head = h;
 		},
 	};
 }
+
+describe("ReviewRequestCoordinator — FLY-1278 review-ruling authority", () => {
+	it("validates field bounds and follow-up shape before touching StateStore", async () => {
+		const h = await makeHarness();
+		for (const payload of [
+			{},
+			{
+				projectName: "proj",
+				issue: "FLY-1278",
+				findingKey: "x",
+				disposition: "follow_up",
+				rationale: "missing follow-up",
+				ruledBy: "lead",
+			},
+			{
+				projectName: "proj",
+				issue: "bad issue",
+				findingKey: "x",
+				disposition: "overruled",
+				rationale: "reason",
+				ruledBy: "lead",
+			},
+			{
+				projectName: "proj",
+				issue: "FLY-1278",
+				findingKey: "x\nINJECT",
+				disposition: "overruled",
+				rationale: "reason",
+				ruledBy: "lead",
+			},
+		]) {
+			const result = await h.coordinator.reviewRuling(payload);
+			expect(result.accepted).toBe(false);
+			expect(result.httpStatus).toBe(400);
+		}
+	});
+
+	it("records a supervised ruling, posts its ruling_id, and emits deterministic audit alert", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		h.store.insertCodexReviewJob({
+			requestId: "source",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "source-q",
+		});
+		h.store.claimCodexReviewJobRunning("source");
+		h.store.completeCodexReviewJob(
+			"source",
+			"CHANGES_REQUESTED",
+			JSON.stringify([
+				{ id: "lease", severity: "MEDIUM", title: "Add a lease" },
+			]),
+		);
+		h.store.stampCodexReviewJobResponded("source");
+
+		const result = await h.coordinator.reviewRuling({
+			projectName: "proj",
+			issue: "FLY-1188",
+			findingKey: "lease",
+			disposition: "follow_up",
+			followUpIssue: "FLY-1274",
+			rationale: "Correctness wins; optimize in the follow-up.",
+			ruledBy: "flywheel-eng-lead",
+			executionId: "lead-exec",
+		});
+
+		expect(result).toMatchObject({ accepted: true, httpStatus: 201 });
+		const rulingId = result.ruling?.ruling_id;
+		expect(rulingId).toBeTruthy();
+		expect(h.rulingThreadPosts[0]).toContain(rulingId);
+		expect(h.rulingThreadPosts[0]).toContain("FLY-1274");
+		expect(h.reviewAlerts).toContainEqual(
+			expect.objectContaining({
+				kind: "review_ruling_recorded",
+				eventId: `review-ruling:${rulingId}`,
+			}),
+		);
+		expect(
+			h.store.listActiveReviewFindingRulings("proj", "FLY-1188")[0]
+				?.notified_at,
+		).toBeTruthy();
+	});
+
+	it("keeps authority active when thread delivery fails and boot-redrives it", async () => {
+		const h = await makeHarness({ postReviewRulingOk: false });
+		registerSession(h.store, "e1");
+		h.store.insertCodexReviewJob({
+			requestId: "source",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "source-q",
+		});
+		h.store.claimCodexReviewJobRunning("source");
+		h.store.completeCodexReviewJob(
+			"source",
+			"CHANGES_REQUESTED",
+			JSON.stringify([{ id: "risk", severity: "HIGH", title: "Risk" }]),
+		);
+		h.store.stampCodexReviewJobResponded("source");
+		const result = await h.coordinator.reviewRuling({
+			projectName: "proj",
+			issue: "FLY-1188",
+			findingKey: "risk",
+			disposition: "overruled",
+			rationale: "Lead reviewed external evidence.",
+			ruledBy: "lead",
+		});
+
+		expect(result.accepted).toBe(true);
+		expect(
+			h.store.listActiveReviewFindingRulings("proj", "FLY-1188"),
+		).toHaveLength(1);
+		expect(h.store.listPendingReviewRulingNotifications()).toHaveLength(1);
+		expect(h.reviewAlerts).toContainEqual(
+			expect.objectContaining({
+				kind: "review_ruling_notify_failed",
+				eventId: `review-ruling:${result.ruling?.ruling_id}:notify_failed`,
+			}),
+		);
+
+		h.coordinator = new ReviewRequestCoordinator({
+			store: h.store,
+			commDbPathFor: () => "/fake/proj/comm.db",
+			openCommDb: () => h.comm,
+			postReviewRulingThread: async ({ text }) => {
+				h.rulingThreadPosts.push(text);
+				return { ok: true };
+			},
+			logger: () => {},
+		});
+		h.coordinator.redriveOnBoot();
+		await settle();
+		expect(h.store.listPendingReviewRulingNotifications()).toEqual([]);
+		expect(h.rulingThreadPosts).toHaveLength(2);
+		expect(h.rulingThreadPosts[0]).toContain(result.ruling?.ruling_id);
+		expect(h.rulingThreadPosts[1]).toContain(result.ruling?.ruling_id);
+	});
+
+	it("maps semantic conflicts and revoke to supervised HTTP outcomes", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		h.store.insertCodexReviewJob({
+			requestId: "source",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "design",
+			questionId: "source-q",
+		});
+		h.store.claimCodexReviewJobRunning("source");
+		h.store.completeCodexReviewJob(
+			"source",
+			"CHANGES_REQUESTED",
+			JSON.stringify([{ id: "scope", severity: "LOW" }]),
+		);
+		h.store.stampCodexReviewJobResponded("source");
+		const base = {
+			projectName: "proj",
+			issue: "FLY-1188",
+			findingKey: "scope",
+			disposition: "overruled",
+			rationale: "Out of scope.",
+			ruledBy: "lead",
+		};
+		const created = await h.coordinator.reviewRuling(base);
+		expect((await h.coordinator.reviewRuling(base)).httpStatus).toBe(200);
+		expect(
+			(
+				await h.coordinator.reviewRuling({
+					...base,
+					rationale: "Conflicting reason.",
+				})
+			).httpStatus,
+		).toBe(409);
+
+		const revoked = await h.coordinator.reviewRuling({
+			projectName: "proj",
+			revokeRulingId: created.ruling?.ruling_id,
+			rationale: "Reopened after new evidence.",
+			ruledBy: "lead-2",
+		});
+		expect(revoked).toMatchObject({ accepted: true, httpStatus: 200 });
+		expect(h.store.listActiveReviewFindingRulings("proj", "FLY-1188")).toEqual(
+			[],
+		);
+	});
+});
 
 function registerSession(
 	store: StateStore,
@@ -544,9 +749,12 @@ describe("ReviewRequestCoordinator — job execution", () => {
 		await settle();
 
 		expect(h.store.getCodexReviewJob("r1")?.verdict).toBe("APPROVED");
-		expect(JSON.parse(h.comm.getResponse("q1")?.content ?? "null")).toMatchObject(
-			{ reviewVerdict: "APPROVED", reviewerVerdict: "CHANGES_REQUESTED" },
-		);
+		expect(
+			JSON.parse(h.comm.getResponse("q1")?.content ?? "null"),
+		).toMatchObject({
+			reviewVerdict: "APPROVED",
+			reviewerVerdict: "CHANGES_REQUESTED",
+		});
 		expect(h.store.getCodexReviewRecord("e1", HEAD)).toBeUndefined();
 	});
 
