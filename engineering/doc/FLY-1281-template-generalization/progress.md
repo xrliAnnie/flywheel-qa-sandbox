@@ -1,13 +1,13 @@
 ---
 issue: FLY-1281
 phase: design
-phaseCursor: 3/6
-updated: 2026-07-15T05:37:57.195Z
-nextStep: codex design review loop
+phaseCursor: 4/6
+updated: 2026-07-15T05:57:39.190Z
+nextStep: codex design R2
 chunks: []
 pointers: {}
 ---
 
 # FLY-1281 progress
-**phase**: design (3/6)
-**next**: codex design review loop
+**phase**: design (4/6)
+**next**: codex design R2
