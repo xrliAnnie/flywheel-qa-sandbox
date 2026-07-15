@@ -167,7 +167,7 @@ import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
 import {
-	deleteCommDbSession,
+	finalizeCommDbSession,
 	pruneDeadTerminalCommDbSessions,
 } from "./commdb-session-prune.js";
 import {
@@ -350,6 +350,7 @@ import { createManagementSsotProviders } from "./management-ssot-providers.js";
 import { ManagementWriterRegistry } from "./management-writer.js";
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
+import { createMergedGateGuard } from "./merged-gate-guard.js";
 import { notifyDigestExpectTick } from "./notify-digest-expect.js";
 import { defaultReceiptsPath } from "./notify-receipts.js";
 import { hashPane, liveRegion } from "./pane-live-region.js";
@@ -372,6 +373,7 @@ import {
 import { patchSessionParams } from "./proofshot-session.js";
 import { wirePublishBroker } from "./publish-broker/wire.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
+import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
 import { createRepoMutationLock } from "./repo-mutation-lock.js";
 import {
 	DEFAULT_RETENTION_MAX_AGE_MS,
@@ -388,7 +390,12 @@ import {
 	type RescueRuntime,
 } from "./rescue-runtime.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
+import {
+	createReviewAlertEmitter,
+	toReviewFindingRulingSnapshot,
+} from "./review-governance-effects.js";
 import { ReviewRequestCoordinator } from "./review-request-coordinator.js";
+import { createReviewRulingHandler } from "./review-ruling-route.js";
 import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
 import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js";
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
@@ -526,6 +533,31 @@ export function resolveMailboxWriteTimeoutMs(): number | undefined {
 	const n = Number(raw);
 	if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return undefined;
 	return n;
+}
+
+/**
+ * FLY-1254: optional liveness bound for one active Claude review subprocess.
+ * Invalid values warn and leave the runner's 30-minute default in control.
+ * The upper bound is Node's signed 32-bit timer range; larger values collapse
+ * to an effectively immediate timeout.
+ */
+export function parseReviewerTimeoutMs(
+	raw: string | undefined,
+): number | undefined {
+	if (raw === undefined || raw.trim().length === 0) return undefined;
+	const value = Number(raw);
+	if (
+		!Number.isFinite(value) ||
+		!Number.isSafeInteger(value) ||
+		value < 60_000 ||
+		value > 2_147_483_647
+	) {
+		console.warn(
+			`[review-coordinator] invalid FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS=${JSON.stringify(raw)}; using the 30-minute default`,
+		);
+		return undefined;
+	}
+	return value;
 }
 
 const execFileP = promisify(execFile);
@@ -1328,6 +1360,18 @@ export function createBridgeApp(
 					res.status(500).json({ accepted: false, reason: "internal error" });
 				});
 		},
+	);
+
+	// FLY-1278: supervised Lead governance for a delivered finding. This is a
+	// distinct authority channel — gate/request prose never becomes a ruling.
+	// It shares the ingest-token boundary and late-bound coordinator with review
+	// requests; the handler preserves 4xx conflict/not-found semantics.
+	app.post(
+		"/review-rulings",
+		tokenAuthMiddleware(config.ingestToken),
+		createReviewRulingHandler(
+			opts?.reviewCoordinator ?? { current: undefined },
+		),
 	);
 
 	// FLY-598: founder-facing UX gate routes. Mounted BEFORE the broad `/api`
@@ -3037,8 +3081,8 @@ export function createBridgeApp(
 							sessionRole: identity.sessionRole,
 						});
 					},
-					deleteCommDbSession: (execId, projectName) =>
-						deleteCommDbSession(execId, projectName),
+					finalizeCommDbSession: (execId, projectName) =>
+						finalizeCommDbSession(execId, projectName),
 					applyTransition: (execId, target, ctx, fields) => {
 						const tr = applyTransition(
 							staleGuardTransitionOpts,
@@ -4561,6 +4605,7 @@ export async function startBridge(
 					process.env.FLYWHEEL_ISSUE_STATUS_EMOJI !== "0"
 						? chatThreadCreator
 						: undefined,
+					issueDisplayRefreshHolder,
 				)
 			: {
 					// FLY-637 R1 #2: no-op notifier never persists an event → false, so
@@ -4633,7 +4678,7 @@ export async function startBridge(
 	// to the orphan threshold (clean handoff with reapOrphans); a larger
 	// `FLYWHEEL_CRASH_REAP_GRACE_MIN` is clamped to ≥ orphan threshold. Teardown +
 	// archive reuse the same primitives as close_runner (killCmux/window, terminal
-	// close, deleteCommDbSession, the shared archive predicate w/ allowStatuses).
+	// close, finalizeCommDbSession, the shared archive predicate w/ allowStatuses).
 	const crashReaperGraceMinutes = (() => {
 		const raw = Number.parseInt(
 			process.env.FLYWHEEL_CRASH_REAP_GRACE_MIN ?? "",
@@ -4681,8 +4726,8 @@ export async function startBridge(
 				sessionRole: identity.sessionRole,
 			});
 		},
-		deleteCommDbSession: (execId, projectName) =>
-			deleteCommDbSession(execId, projectName),
+		finalizeCommDbSession: (execId, projectName) =>
+			finalizeCommDbSession(execId, projectName),
 		archiveThread: (session) =>
 			archiveIssueThreadIfNoOtherActive(
 				store,
@@ -5114,7 +5159,7 @@ export async function startBridge(
 	// (terminal status + tmux window provably gone). These accumulate (~65 observed
 	// in production) and pollute runner_terminal_list / Lead bootstrap with
 	// class=dead entries. One pass per distinct project; the live counterpart is
-	// deleteCommDbSession on the close_runner / terminate / post-merge teardown
+	// finalizeCommDbSession on the close_runner / terminate / post-merge teardown
 	// paths (mirrors the FLY-324 live + boot shape).
 	//
 	// FIRE-AND-FORGET (Codex R1 MED): unlike the FLY-324 sweep (status-only, fast),
@@ -5134,6 +5179,20 @@ export async function startBridge(
 	{
 		const prunedProjects = new Set<string>();
 		const reconcileOn = process.env.FLYWHEEL_COMMDB_FSM_RECONCILE !== "0";
+		const recordFinalizeOutcome = (
+			executionId: string,
+			projectName: string,
+			result: ReturnType<typeof finalizeCommDbSession>,
+		) => {
+			const session = store.getSession(executionId);
+			store.recordCommDbFinalizeOutcome({
+				executionId,
+				issueId: session?.issue_id ?? executionId,
+				projectName,
+				ok: result.ok,
+				error: result.error,
+			});
+		};
 		void (async () => {
 			for (const p of projects ?? []) {
 				if (prunedProjects.has(p.projectName)) continue;
@@ -5143,6 +5202,7 @@ export async function startBridge(
 						const r = await reconcileCommDbRunningAgainstFsm(
 							p.projectName,
 							(id) => store.getSession(id)?.status,
+							{ onFinalizeOutcome: recordFinalizeOutcome },
 						);
 						if (r.reconciled > 0) {
 							console.log(
@@ -5156,7 +5216,9 @@ export async function startBridge(
 					}
 				}
 				try {
-					const pruned = await pruneDeadTerminalCommDbSessions(p.projectName);
+					const pruned = await pruneDeadTerminalCommDbSessions(p.projectName, {
+						onFinalizeOutcome: recordFinalizeOutcome,
+					});
 					if (pruned.pruned > 0) {
 						console.log(
 							`[Bridge] FLY-638 CommDB prune (${p.projectName}): scanned=${pruned.scanned} pruned=${pruned.pruned} kept=${pruned.kept} stale terminal rows removed`,
@@ -5186,8 +5248,9 @@ export async function startBridge(
 	// false-stuck/idle window and making the in-memory set restart-safe (re-seeded
 	// every boot → survives repeated restarts). No-op on the kill-switch path.
 	// Best-effort: must not block Bridge startup.
+	let bootReconnectExecutionIds: string[] = [];
 	try {
-		await heartbeatService.seedReconnecting();
+		bootReconnectExecutionIds = await heartbeatService.seedReconnecting();
 	} catch (err) {
 		console.error(
 			`[Bridge] FLY-623 reconnect boot-seed failed (non-fatal): ${(err as Error).message}`,
@@ -5307,6 +5370,24 @@ export async function startBridge(
 			config.discordOwnerUserId,
 			config.founderConsent?.founderUserId,
 		) ?? undefined;
+	const projectRootFor = (projectName: string): string | undefined =>
+		projects.find((project) => project.projectName === projectName)
+			?.projectRoot;
+	// FLY-1238: ONE composition-root instance owns cache, single-flight,
+	// backoff, and per-project network budget for all six recovery surfaces.
+	const mergedGateGuard = createMergedGateGuard({
+		store,
+		retireQuestion: (questionId, _executionId, projectName) => {
+			const db = new CommDB(commDbPathForProject(projectName), false);
+			try {
+				db.retireShipGate(questionId);
+			} finally {
+				db.close();
+			}
+		},
+		env: process.env,
+		log: (message) => console.warn(message),
+	});
 
 	const founderShipApprovalCallback = makeFounderShipApprovalCallback({
 		discordOwnerUserId: config.discordOwnerUserId,
@@ -5316,6 +5397,8 @@ export async function startBridge(
 		// FLY-1041 Chunk 4: attribution forensics; Chunk 5: hold alignment.
 		auditStore: store,
 		isHeld: founderApprovalIsHeld,
+		mergedGateGuard,
+		projectRootFor,
 		// FLY-1099 §4.2: held approvals are durably deferred (codex_pending /
 		// qa_not_green) instead of silently declined; merge_block gets the
 		// recovery pointer. Kill-switches read per call inside.
@@ -5351,6 +5434,8 @@ export async function startBridge(
 		// FLY-1041 Chunk 4/5: same audit target + hold guard as the text source.
 		auditStore: store,
 		isHeld: founderApprovalIsHeld,
+		mergedGateGuard,
+		projectRootFor,
 		readBindingImpl: (executionId, questionId, prHeadSha) =>
 			readCurrentGateMessageBinding(store, executionId, questionId, prHeadSha),
 		onResponseWritten: (info) =>
@@ -6142,6 +6227,7 @@ export async function startBridge(
 					>[0]["db"],
 				}),
 		},
+		mergedGateGuard,
 		// FLY-799: founder ✅-reaction ship approval (per-gate reaction poll).
 		tryFounderReactionApproval: founderReactionApprovalCallback,
 		// FLY-1041 Chunk 7: the SAME durable binding reader the reaction path
@@ -6286,7 +6372,7 @@ export async function startBridge(
 	// FLYWHEEL_ISSUE_DISPLAY_REFRESH=0 / chat-threads off → holder stays empty →
 	// every new trigger dormant + stage_changed keeps the legacy stamp+pin path.
 	if (issueDisplayRefreshEnabled && chatThreadCreator) {
-		issueDisplayRefreshHolder.current = new IssueDisplayRefresher({
+		const issueDisplayRefresher = new IssueDisplayRefresher({
 			store,
 			projects,
 			config,
@@ -6299,28 +6385,70 @@ export async function startBridge(
 			keepAliveEnabled: () => threeStageKeepAliveEnabled(),
 			// FLY-623 interaction: while HeartbeatService owns the ⚠️重连中 title,
 			// face A defers instead of overwriting it with a derived badge.
-			isReconnecting: (execId) =>
-				reconnectHolder.current?.isReconnecting(execId) ?? false,
+			isReconnectTitleActive: (execId) =>
+				reconnectHolder.current?.isReconnectTitleActive(execId) ?? false,
 		});
+		issueDisplayRefreshHolder.current = issueDisplayRefresher;
+		const restoreReconnectTitles = (executionIds?: readonly string[]) => {
+			const restoredIssues = settleReconnectTitlesAndRefresh(
+				heartbeatService,
+				issueDisplayRefresher,
+				executionIds,
+			);
+			if (restoredIssues.length > 0) {
+				console.log(
+					`[issue-display] queued reconnect-title restore for ${restoredIssues.length} issue(s)`,
+				);
+			}
+		};
+		// Runtime re-entries after this point keep the canonical title and cost zero
+		// Discord renames. Then drain every title episode that became active before
+		// this late-bound refresher existed (boot seed or an early heartbeat tick).
+		heartbeatService.markReconnectTitleRefresherReady();
+		// Preserve the early-accepted-event race guarantee: an explicit boot id
+		// still gets a canonical enqueue even if the event already cleared both
+		// reconnect sets before the refresher bound.
+		restoreReconnectTitles(bootReconnectExecutionIds);
+		restoreReconnectTitles();
 		console.log(
 			"[issue-display] FLY-907 unified refresher wired (derive-from-state, all lifecycle triggers)",
 		);
 	}
 
-	// FLY-1188 §7.1: build the codex-author review-request coordinator and
-	// redrive any jobs a dead Bridge left pending/running. The /review-requests
-	// route reads the holder at request time (503 until filled). Lead-facing
-	// failure alerts currently log via console + the durable failed job row;
-	// routing them through the FLY-927 alert funnel needs its own alert kind
-	// (follow-up — MetaAlertReason is a closed infra union).
+	// FLY-1188 §7.1 / FLY-1278: build the codex-author review coordinator and
+	// redrive jobs plus unsent governance audit posts. Both runner routes read the
+	// holder at request time (503 until filled). Review governance events use the
+	// late-bound routed sink, so the eventual AlertChannelHub owns dedup/tickets.
 	{
 		const commRoot =
 			process.env.FLYWHEEL_COMM_ROOT?.trim() ||
 			join(homedir(), ".flywheel", "comm");
+		const reviewThreadEffects = new AutoQaEffects({
+			store,
+			projects,
+			config,
+			chatThreadCreator,
+		});
+		const emitReviewAlert = createReviewAlertEmitter({
+			store,
+			projects,
+			alert: (payload) =>
+				(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(payload),
+		});
 		reviewCoordinatorHolder.current = new ReviewRequestCoordinator({
 			store,
 			commDbPathFor: (projectName) => join(commRoot, projectName, "comm.db"),
 			openCommDb: (path) => new CommDB(path, false),
+			reviewerTimeoutMs: parseReviewerTimeoutMs(
+				process.env.FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS,
+			),
+			listActiveReviewFindingRulings: ({ projectName, issueId }) =>
+				store
+					.listActiveReviewFindingRulings(projectName, issueId)
+					.map(toReviewFindingRulingSnapshot),
+			emitReviewAlert,
+			postReviewRulingThread: (input) =>
+				reviewThreadEffects.postThreadResult(input),
 			wakeRunner: async (executionId, sessionInfo, questionId, summary) => {
 				const db = new CommDB(
 					join(commRoot, sessionInfo.project_name, "comm.db"),
@@ -6395,6 +6523,7 @@ export async function startBridge(
 				// cascade). Same values the archive cascade uses in this boot scope.
 				transitionOpts,
 				globalBotToken: config.discordBotToken,
+				mergedGateGuard,
 			});
 			autoQaCoordinatorHolder.current = new AutoQaCoordinator({
 				store,
@@ -6497,6 +6626,7 @@ export async function startBridge(
 				chatThreadCreator,
 				transitionOpts,
 				globalBotToken: config.discordBotToken,
+				mergedGateGuard,
 			});
 			// FLY-859: fix-round cap knob. Invalid/absent → orchestrator default (3).
 			const maxFixRoundsEnv = process.env.FLYWHEEL_THREE_STAGE_MAX_FIX_ROUNDS;

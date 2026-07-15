@@ -115,6 +115,10 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	},
 	auto_qa_stuck: { owner: "claude", arc: "human_by_design" },
 	codex_gate_blocked: { owner: "claude", arc: "human_by_design" },
+	review_advisory_pass: { owner: "claude", arc: "human_by_design" },
+	review_ruling_recorded: { owner: "claude", arc: "human_by_design" },
+	review_ruling_disputed: { owner: "claude", arc: "human_by_design" },
+	review_ruling_notify_failed: { owner: "claude", arc: "human_by_design" },
 	three_stage_stuck: { owner: "claude", arc: "human_by_design" },
 	founder_milestone_undelivered: { owner: "claude", arc: "human_by_design" },
 	tui_window_lost: { owner: "claude", arc: "human_by_design" },
@@ -135,6 +139,17 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	founder_reply_unreachable_runner: {
 		owner: "claude",
 		arc: "human_by_design",
+	},
+	commdb_finalize_stuck: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef: "inspect comm.db and retry lifecycle closeout (FLY-1238)",
+	},
+	merged_gate_guard_unavailable: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef:
+			"verify GitHub PR state and retire or re-drive gate (FLY-1238)",
 	},
 	// FLY-1081 (merged from main): shell-only deploy notices fired by
 	// restart-services.sh / update-flywheel.sh via lead-alert.sh — the Bridge

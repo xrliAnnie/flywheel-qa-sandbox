@@ -1,11 +1,12 @@
 /**
  * FLY-892 Step 3: the message-level phase tag is injected at the founder-facing
  * Discord-post seams. A three-stage phase session's messages carry `[设计·Fable] `
- * etc.; a main / non-three-stage session's messages are byte-unchanged.
+ * etc.; the shared automation marker remains the outermost prefix.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AutoQaEffects } from "../bridge/auto-qa-effects.js";
+import { AUTOMATED_MESSAGE_PREFIX } from "../bridge/automated-message.js";
 import {
 	emitFounderMilestoneNotification,
 	emitFounderStuckNotification,
@@ -64,7 +65,9 @@ describe("FLY-892 Step 3: founder-thread-notifier phase prefix", () => {
 			},
 			{ store, fetchImpl },
 		);
-		expect(posted[0]?.startsWith("[实现·Opus] 🚀")).toBe(true);
+		expect(
+			posted[0]?.startsWith(`${AUTOMATED_MESSAGE_PREFIX}[实现·Opus] 🚀`),
+		).toBe(true);
 
 		posted.length = 0;
 		await emitFounderThreadNotification(
@@ -79,11 +82,11 @@ describe("FLY-892 Step 3: founder-thread-notifier phase prefix", () => {
 				thread,
 				botToken: "bot",
 				ownerUserId: OWNER,
-				phasePrefix: "", // main → byte-unchanged
+				phasePrefix: "",
 			},
 			{ store, fetchImpl },
 		);
-		expect(posted[0]?.startsWith("🧠")).toBe(true);
+		expect(posted[0]?.startsWith(`${AUTOMATED_MESSAGE_PREFIX}🧠`)).toBe(true);
 	});
 
 	it("milestone notification: phase session tags the header", async () => {
@@ -100,7 +103,9 @@ describe("FLY-892 Step 3: founder-thread-notifier phase prefix", () => {
 			},
 			{ store, fetchImpl },
 		);
-		expect(posted[0]?.startsWith("[QA·Sonnet] ")).toBe(true);
+		expect(
+			posted[0]?.startsWith(`${AUTOMATED_MESSAGE_PREFIX}[QA·Sonnet] `),
+		).toBe(true);
 	});
 
 	it("stuck notification: phase session tags the header", async () => {
@@ -118,7 +123,9 @@ describe("FLY-892 Step 3: founder-thread-notifier phase prefix", () => {
 			},
 			{ store, fetchImpl },
 		);
-		expect(posted[0]?.startsWith("[实现·Opus] 🚨")).toBe(true);
+		expect(
+			posted[0]?.startsWith(`${AUTOMATED_MESSAGE_PREFIX}[实现·Opus] 🚨`),
+		).toBe(true);
 	});
 });
 
@@ -182,14 +189,14 @@ describe("FLY-892 Step 3: AutoQaEffects.postThread phase prefix", () => {
 			}),
 			text: "QA PASS 🎉",
 		});
-		expect(posted[0]).toBe("[QA·Sonnet] QA PASS 🎉");
+		expect(posted[0]).toBe(`${AUTOMATED_MESSAGE_PREFIX}[QA·Sonnet] QA PASS 🎉`);
 	});
 
-	it("a main (standalone auto-QA) session is byte-unchanged", async () => {
+	it("a main (standalone auto-QA) session has no phase tag", async () => {
 		await makeEffects().postThread({
 			session: session({ chat_thread_role: "main" }),
 			text: "QA PASS 🎉",
 		});
-		expect(posted[0]).toBe("QA PASS 🎉");
+		expect(posted[0]).toBe(`${AUTOMATED_MESSAGE_PREFIX}QA PASS 🎉`);
 	});
 });

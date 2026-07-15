@@ -43,6 +43,14 @@ export {
 	resolveEffectiveFounderUxConfig,
 } from "./founder-ux-config.js";
 export type {
+	RunnerModelDisplay,
+	RunnerModelDisplayInput,
+} from "./model-display.js";
+export {
+	RUNNER_MODEL_MARKER_PAYLOAD_MAX,
+	renderRunnerModelDisplay,
+} from "./model-display.js";
+export type {
 	CurrentModelView,
 	ModelCatalog,
 	ModelProviderId,

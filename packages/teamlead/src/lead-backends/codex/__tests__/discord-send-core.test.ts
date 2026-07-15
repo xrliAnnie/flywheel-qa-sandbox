@@ -47,7 +47,9 @@ describe("runDiscordSend (FLY-350 shared core)", () => {
 		expect(r.ok).toBe(true);
 		expect(r.channelId).toBe(CHAT);
 		expect(r.messageId).toBe("msg-1");
-		expect(post).toHaveBeenCalledWith(CHAT, "hello", TOKEN);
+		expect(post).toHaveBeenCalledWith(CHAT, "hello", TOKEN, {
+			origin: "lead_authored",
+		});
 	});
 
 	it('resolves "roundtable" alias to the single cross-dept channel', async () => {
@@ -55,7 +57,9 @@ describe("runDiscordSend (FLY-350 shared core)", () => {
 		const r = await runDiscordSend("roundtable", "hi team", deps);
 		expect(r.ok).toBe(true);
 		expect(r.channelId).toBe(ROUNDTABLE);
-		expect(post).toHaveBeenCalledWith(ROUNDTABLE, "hi team", TOKEN);
+		expect(post).toHaveBeenCalledWith(ROUNDTABLE, "hi team", TOKEN, {
+			origin: "lead_authored",
+		});
 	});
 
 	it("REFUSES an unknown alias (fail-closed, no post)", async () => {
@@ -170,20 +174,26 @@ describe("FLY-676 — proactive roundtable guard (Option B; FLY-680 owns the rea
 		const r = await runDiscordSend("chat", "still works", deps);
 		expect(r.ok).toBe(true);
 		expect(post).toHaveBeenCalledTimes(1);
-		expect(post).toHaveBeenCalledWith(CHAT, "still works", TOKEN);
+		expect(post).toHaveBeenCalledWith(CHAT, "still works", TOKEN, {
+			origin: "lead_authored",
+		});
 	});
 
 	it("autoContinue ON → 'chat' is unaffected (only roundtable is guarded)", async () => {
 		const { deps, post } = makeDeps({ roundtableAutoContinue: true });
 		const r = await runDiscordSend("chat", "hello", deps);
 		expect(r.ok).toBe(true);
-		expect(post).toHaveBeenCalledWith(CHAT, "hello", TOKEN);
+		expect(post).toHaveBeenCalledWith(CHAT, "hello", TOKEN, {
+			origin: "lead_authored",
+		});
 	});
 
 	it("autoContinue OFF / unset (kill-switch / byte-compat) → roundtable proactive send still posts", async () => {
 		const { deps, post } = makeDeps(); // roundtableAutoContinue defaults undefined
 		const r = await runDiscordSend("roundtable", "hi team", deps);
 		expect(r.ok).toBe(true);
-		expect(post).toHaveBeenCalledWith(ROUNDTABLE, "hi team", TOKEN);
+		expect(post).toHaveBeenCalledWith(ROUNDTABLE, "hi team", TOKEN, {
+			origin: "lead_authored",
+		});
 	});
 });

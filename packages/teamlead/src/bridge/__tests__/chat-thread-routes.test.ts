@@ -746,6 +746,7 @@ describe("chat-thread routes (tools.ts)", () => {
 				"https://discord.com/api/v10/channels/t-reuse/messages",
 			);
 			const body = JSON.parse((postOpts as RequestInit).body as string);
+			expect(body.content).toBe("reuse text");
 			expect(body.allowed_mentions).toEqual({ parse: [] });
 		});
 

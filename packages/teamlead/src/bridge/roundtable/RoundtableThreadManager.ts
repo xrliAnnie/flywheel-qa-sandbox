@@ -26,6 +26,7 @@
 
 import type { InboundCursorStore } from "../../lead-backends/codex/InboundCursorStore.js";
 import type { StateStore } from "../../StateStore.js";
+import { markAutomatedDiscordText } from "../automated-message.js";
 import { addThreadMember } from "../chat-thread-utils.js";
 import {
 	deriveRoundtableThreadName,
@@ -489,7 +490,9 @@ export class RoundtableThreadManager {
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify({
-					content: "🧵 Topic — relevant leads, please discuss in this thread.",
+					content: markAutomatedDiscordText(
+						"🧵 Topic — relevant leads, please discuss in this thread.",
+					),
 					allowed_mentions: { parse: [] },
 				}),
 			});

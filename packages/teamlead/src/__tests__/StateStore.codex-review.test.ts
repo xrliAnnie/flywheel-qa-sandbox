@@ -16,6 +16,55 @@ import { StateStore } from "../StateStore.js";
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
 
+describe("StateStore — FLY-1278 frozen review payload", () => {
+	it("persists reviewer/effective verdict split and the exact canonical response", async () => {
+		const store = await StateStore.create(":memory:");
+		store.insertCodexReviewJob({
+			requestId: "r1",
+			executionId: "e1",
+			issueId: "FLY-1278",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		const responseJson = JSON.stringify({ reviewVerdict: "APPROVED" });
+		store.completeCodexReviewJob("r1", "APPROVED", "[]", {
+			reviewerVerdict: "CHANGES_REQUESTED",
+			advisoriesJson: "[]",
+			settledJson: "[]",
+			responseJson,
+			payloadVersion: 2,
+		});
+
+		expect(store.getCodexReviewJob("r1")).toMatchObject({
+			verdict: "APPROVED",
+			reviewer_verdict: "CHANGES_REQUESTED",
+			advisories_json: "[]",
+			settled_json: "[]",
+			response_json: responseJson,
+			payload_version: 2,
+		});
+	});
+
+	it("keeps the legacy completion call byte-compatible", async () => {
+		const store = await StateStore.create(":memory:");
+		store.insertCodexReviewJob({
+			requestId: "r1",
+			executionId: "e1",
+			projectName: "proj",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		store.completeCodexReviewJob("r1", "CHANGES_REQUESTED", "[]");
+
+		expect(store.getCodexReviewJob("r1")).toMatchObject({
+			verdict: "CHANGES_REQUESTED",
+		});
+		expect(store.getCodexReviewJob("r1")?.payload_version).toBeUndefined();
+		expect(store.getCodexReviewJob("r1")?.response_json).toBeUndefined();
+	});
+});
+
 describe("StateStore — FLY-827 codex_review_record", () => {
 	let store: StateStore;
 
@@ -143,6 +192,73 @@ describe("StateStore — FLY-827 codex_review_record", () => {
 		});
 		expect(store.isCodexCodeReviewApproved("exec1", SHA_A)).toBe(true);
 		expect(store.isCodexCodeReviewApproved("exec1", upper)).toBe(true);
+	});
+});
+
+describe("StateStore — FLY-1254 review failure evidence", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	function insertJob(requestId: string) {
+		store.insertCodexReviewJob({
+			requestId,
+			executionId: "exec-failure-raw",
+			issueId: "FLY-1254",
+			projectName: "flywheel",
+			reviewType: "code",
+			questionId: `q-${requestId}`,
+		});
+	}
+
+	it("failure_raw is overwritten by each failure instead of retaining stale evidence", () => {
+		insertJob("raw-overwrite");
+		store.failCodexReviewJob("raw-overwrite", "no_verdict", "first raw");
+		expect(store.getCodexReviewJob("raw-overwrite")).toMatchObject({
+			status: "failed",
+			failure_reason: "no_verdict",
+			failure_raw: "first raw",
+		});
+
+		store.failCodexReviewJob("raw-overwrite", "timeout");
+		expect(store.getCodexReviewJob("raw-overwrite")).toMatchObject({
+			status: "failed",
+			failure_reason: "timeout",
+		});
+		expect(
+			store.getCodexReviewJob("raw-overwrite")?.failure_raw,
+		).toBeUndefined();
+	});
+
+	it("claiming a retry clears the previous failure reason and raw evidence", () => {
+		insertJob("raw-claim");
+		store.failCodexReviewJob("raw-claim", "nonzero_exit", "diagnostic");
+		expect(store.claimCodexReviewJobRunning("raw-claim")).toBe(true);
+		expect(store.getCodexReviewJob("raw-claim")).toMatchObject({
+			status: "running",
+		});
+		expect(
+			store.getCodexReviewJob("raw-claim")?.failure_reason,
+		).toBeUndefined();
+		expect(store.getCodexReviewJob("raw-claim")?.failure_raw).toBeUndefined();
+	});
+
+	it("completing a retried job clears failure reason and raw evidence", () => {
+		insertJob("raw-complete");
+		store.failCodexReviewJob("raw-complete", "no_verdict", "diagnostic");
+		store.completeCodexReviewJob("raw-complete", "APPROVED", "[]");
+		expect(store.getCodexReviewJob("raw-complete")).toMatchObject({
+			status: "done",
+			verdict: "APPROVED",
+		});
+		expect(
+			store.getCodexReviewJob("raw-complete")?.failure_reason,
+		).toBeUndefined();
+		expect(
+			store.getCodexReviewJob("raw-complete")?.failure_raw,
+		).toBeUndefined();
 	});
 });
 

@@ -32,6 +32,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { verifyApproval } from "flywheel-comm/verify-approval";
 import { verifyLifecycleConsent } from "flywheel-comm/verify-lifecycle-consent";
+import { markAutomatedDiscordText } from "../../../bridge/automated-message.js";
 import {
 	getActionClassMeta,
 	isLifecycleAction,
@@ -369,7 +370,9 @@ function discordRest(botToken: string) {
 			const res = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
 				method: "POST",
 				headers,
-				body: JSON.stringify({ content: text }),
+				body: JSON.stringify({
+					content: markAutomatedDiscordText(text),
+				}),
 			});
 			if (!res.ok) {
 				throw new Error(`discord send failed: ${res.status}`);
@@ -380,7 +383,13 @@ function discordRest(botToken: string) {
 		async editMessage(channelId: string, messageId: string, text: string) {
 			const res = await fetch(
 				`${DISCORD_API}/channels/${channelId}/messages/${messageId}`,
-				{ method: "PATCH", headers, body: JSON.stringify({ content: text }) },
+				{
+					method: "PATCH",
+					headers,
+					body: JSON.stringify({
+						content: markAutomatedDiscordText(text),
+					}),
+				},
 			);
 			if (!res.ok) throw new Error(`discord edit failed: ${res.status}`);
 		},

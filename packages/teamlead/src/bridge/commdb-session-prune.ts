@@ -8,9 +8,8 @@
  * production) and pollute the list + bootstrap with stale entries.
  *
  * Two surfaces — mirroring the FLY-324 live-handler + boot-sweep shape:
- *   1. `deleteCommDbSession` — live cleanup. Called from the runner teardown path
- *      (close_runner / terminate / post-merge) once the tmux window is gone, so a
- *      closed runner's row never lingers.
+ *   1. `finalizeCommDbSession` — live cleanup. Atomically retires unresolved
+ *      gates and deletes the session once the tmux window is gone.
  *   2. `pruneDeadTerminalCommDbSessions` — one-shot boot sweep. Clears the
  *      EXISTING backlog: every terminal row whose tmux window is provably gone.
  *
@@ -22,9 +21,8 @@
  */
 
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
+import { commDbPathForProject } from "./commdb-path.js";
 import {
 	probeTmuxWindowLiveness,
 	type TmuxWindowProbe,
@@ -37,30 +35,56 @@ import {
  */
 export function resolveCommDbPath(projectName: string): string | undefined {
 	if (/[/\\]|\.\./.test(projectName)) return undefined;
-	const dbPath = join(homedir(), ".flywheel", "comm", projectName, "comm.db");
+	const dbPath = commDbPathForProject(projectName);
 	return existsSync(dbPath) ? dbPath : undefined;
 }
 
 /**
- * Live cleanup: drop a single CommDB session row after its runner has been torn
- * down (tmux gone). Best-effort; never throws. Returns true when a row was
- * removed. `dbPath` is injectable for tests.
+ * Live cleanup: atomically retire one runner's unresolved gates and session
+ * after teardown. Best-effort; never throws. `dbPath` is injectable for tests.
  */
-export function deleteCommDbSession(
+export interface FinalizeCommDbResult {
+	ok: boolean;
+	outcome: "finalized" | "no_db" | "failed";
+	retiredGateCount: number;
+	deletedSessionCount: number;
+	error?: string;
+}
+
+export function finalizeCommDbSession(
 	executionId: string,
 	projectName: string,
 	dbPath: string | undefined = resolveCommDbPath(projectName),
-): boolean {
-	if (!dbPath) return false;
+): FinalizeCommDbResult {
+	if (!dbPath) {
+		return {
+			ok: true,
+			outcome: "no_db",
+			retiredGateCount: 0,
+			deletedSessionCount: 0,
+		};
+	}
 	let db: CommDB | undefined;
 	try {
-		db = new CommDB(dbPath);
-		return db.deleteSession(executionId) > 0;
+		db = new CommDB(dbPath, false);
+		const result = db.finalizeSession(executionId);
+		return {
+			ok: true,
+			outcome: "finalized",
+			retiredGateCount: result.retiredQuestionCount,
+			deletedSessionCount: result.deletedSessionCount,
+		};
 	} catch (err) {
 		console.warn(
-			`[commdb-prune] delete ${executionId} (${projectName}) failed: ${(err as Error).message}`,
+			`[commdb-prune] finalize ${executionId} (${projectName}) failed: ${(err as Error).message}`,
 		);
-		return false;
+		return {
+			ok: false,
+			outcome: "failed",
+			retiredGateCount: 0,
+			deletedSessionCount: 0,
+			error: (err as Error).message,
+		};
 	} finally {
 		db?.close();
 	}
@@ -77,6 +101,8 @@ export interface CommDbPruneResult {
 	 * of death, never the absence of proof of life.
 	 */
 	kept: number;
+	/** proven-dead rows whose atomic gate+session finalization failed. */
+	failed: number;
 }
 
 /**
@@ -92,9 +118,19 @@ export async function pruneDeadTerminalCommDbSessions(
 	opts: {
 		dbPath?: string;
 		probe?: (tmuxWindow: string) => Promise<TmuxWindowProbe>;
+		onFinalizeOutcome?: (
+			executionId: string,
+			projectName: string,
+			result: FinalizeCommDbResult,
+		) => void;
 	} = {},
 ): Promise<CommDbPruneResult> {
-	const result: CommDbPruneResult = { scanned: 0, pruned: 0, kept: 0 };
+	const result: CommDbPruneResult = {
+		scanned: 0,
+		pruned: 0,
+		kept: 0,
+		failed: 0,
+	};
 	const dbPath = opts.dbPath ?? resolveCommDbPath(projectName);
 	if (!dbPath) return result;
 	const probe = opts.probe ?? probeTmuxWindowLiveness;
@@ -112,8 +148,28 @@ export async function pruneDeadTerminalCommDbSessions(
 				result.kept++;
 				continue;
 			}
-			db.deleteSession(s.execution_id);
-			result.pruned++;
+			try {
+				const finalized = db.finalizeSession(s.execution_id);
+				opts.onFinalizeOutcome?.(s.execution_id, projectName, {
+					ok: true,
+					outcome: "finalized",
+					retiredGateCount: finalized.retiredQuestionCount,
+					deletedSessionCount: finalized.deletedSessionCount,
+				});
+				result.pruned++;
+			} catch (err) {
+				result.failed++;
+				opts.onFinalizeOutcome?.(s.execution_id, projectName, {
+					ok: false,
+					outcome: "failed",
+					retiredGateCount: 0,
+					deletedSessionCount: 0,
+					error: (err as Error).message,
+				});
+				console.warn(
+					`[commdb-prune] boot finalize ${s.execution_id} (${projectName}) failed: ${(err as Error).message}`,
+				);
+			}
 		}
 	} catch (err) {
 		console.warn(

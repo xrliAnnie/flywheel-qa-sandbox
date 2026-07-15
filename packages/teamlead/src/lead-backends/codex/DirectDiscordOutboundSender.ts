@@ -93,7 +93,7 @@ export class DirectDiscordOutboundSender implements OutboundSender {
 			entry.channelId, // FLY-267: routed channel (default = chat) resolved at enqueue
 			entry.text,
 			this.botToken,
-			{},
+			{ origin: "lead_authored" },
 			this.fetchImpl,
 		);
 		if (!res.ok) {

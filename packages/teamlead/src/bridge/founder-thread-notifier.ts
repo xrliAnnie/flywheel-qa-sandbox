@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import type { MilestoneKind } from "flywheel-config";
 import type { StateStore } from "../StateStore.js";
 import { extractGateMessageId } from "./approval-signal/gate-message-binding.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 import { parseRetryAfterMs } from "./chat-thread-utils.js";
 import { isDiscordSnowflake, truncate } from "./founder-notify-utils.js";
 import { milestoneLabel } from "./milestone-report-policy.js";
@@ -276,10 +277,11 @@ async function postFounderThreadCore(
 				// ownerUserId but omits the mention, so the founder never got pinged.
 				// Prepend it idempotently; callers already carrying <@id> are unchanged.
 				body: JSON.stringify({
-					content:
+					content: markAutomatedDiscordText(
 						ownerUserId && !body.includes(`<@${ownerUserId}>`)
 							? `<@${ownerUserId}> ${body}`
 							: body,
+					),
 					allowed_mentions: ownerUserId
 						? { users: [ownerUserId] }
 						: { parse: [] as string[] },

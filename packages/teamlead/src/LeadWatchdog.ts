@@ -1051,6 +1051,15 @@ function titleFor(kind: AlertEventType): string {
 		// title); case exists for switch exhaustiveness.
 		case "codex_gate_blocked":
 			return "Codex code review not passed";
+		// FLY-1278: emitted by the review coordinator, not LeadWatchdog.
+		case "review_advisory_pass":
+			return "Review passed with non-blocking advisories";
+		case "review_ruling_recorded":
+			return "Lead review ruling recorded";
+		case "review_ruling_disputed":
+			return "Reviewer disputed a Lead ruling";
+		case "review_ruling_notify_failed":
+			return "Review ruling audit post failed";
 		// FLY-871 R2/C8: never emitted by LeadWatchdog (the runner auth scan owns
 		// it and builds its own title); case exists for switch exhaustiveness.
 		case "runner_login_expired":
@@ -1105,6 +1114,10 @@ function titleFor(kind: AlertEventType): string {
 			return "Founder notify dead-lettered";
 		case "founder_reply_unreachable_runner":
 			return "Runner unreachable for founder replies";
+		case "commdb_finalize_stuck":
+			return "CommDB finalization stuck";
+		case "merged_gate_guard_unavailable":
+			return "Merged gate guard unavailable";
 		// FLY-1081: never emitted by LeadWatchdog (restart-services.sh /
 		// update-flywheel.sh fire these via scripts/lead-alert.sh with their own
 		// titles); cases exist for switch exhaustiveness.
@@ -1188,6 +1201,16 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-827: never emitted by LeadWatchdog (AutoQaEffects builds its own body).
 		case "codex_gate_blocked":
 			return "A PR reached awaiting_review but Codex code review is not APPROVED for the current head. The hard gate blocked auto-QA + merge and held the founder; the runner was re-sent the /codex-code-review instruction.";
+		// FLY-1278: never emitted by LeadWatchdog (the review coordinator builds
+		// request/ruling-specific bodies and deterministic event ids).
+		case "review_advisory_pass":
+			return "Cross-family review approved the head with non-blocking MEDIUM/LOW advisories. The hard review gate is satisfied; triage advisories into follow-up work as appropriate.";
+		case "review_ruling_recorded":
+			return "A Lead recorded a supervised governance ruling for an already-delivered review finding. The durable ruling and issue-thread audit are the authority; gate prose is not.";
+		case "review_ruling_disputed":
+			return "A reviewer supplied new HIGH-severity evidence against a governance-settled finding. The ruling still prevents a mechanical review loop; the Lead must reassess or revoke it.";
+		case "review_ruling_notify_failed":
+			return "A durable Lead review ruling is active, but its issue-thread audit post failed. Bridge boot redrive will retry; investigate Discord thread/token routing.";
 		// FLY-871 R2/C8: never emitted by LeadWatchdog (the runner auth scan builds its own body).
 		case "runner_login_expired":
 			return "A Runner appears logged out (auth/login expired). Rescue restarts it in place so it re-reads the fresh Keychain; if that fails once, the founder is paged.";
@@ -1228,6 +1251,10 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A founder-facing ledger action (held notice / rebound notice / codex nudge / feedback wake) failed terminally after bounded retries — the target never received it.";
 		case "founder_reply_unreachable_runner":
 			return "A LIVE session's CommDB registration row is gone (FLY-1049 shape) — founder replies to its gate cannot be wake-delivered and will dead-letter. Re-register or close the session.";
+		case "commdb_finalize_stuck":
+			return "A physically gone runner still has unresolved gates or a CommDB session because atomic finalization keeps failing. Issue closeout remains fail-closed; inspect comm.db and retry cleanup.";
+		case "merged_gate_guard_unavailable":
+			return "The Bridge could not establish the bound PR's merge state after bounded checks, so it suppressed founder-facing recovery copy. Verify GitHub and retire or re-drive the gate manually.";
 		// FLY-1081: never emitted by LeadWatchdog (restart-services.sh /
 		// update-flywheel.sh build their own bodies via lead-alert.sh).
 		case "deploy_failed":

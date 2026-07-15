@@ -266,12 +266,19 @@ if [ -n "$TARBALL" ] && run_po po_gate_tarball "$TARBALL" "$FIX" >/dev/null 2>&1
 else
   fail "G0b clean tarball failed gates: $(run_po po_gate_tarball "$TARBALL" "$FIX" 2>&1 | tail -6)"
 fi
-# the vendored nested closure must ride the tarball (staged under vendor/)
-if [ -n "$TARBALL" ] && tar -tzf "$TARBALL" | grep -q "package/vendor/fw-alpha/zeta/package.json" \
-   && tar -tzf "$TARBALL" | grep -q "package/node_modules/fw-alpha/dist/index.js"; then
+# the vendored nested closure must ride the tarball (staged under vendor/).
+# Capture once so grep -q cannot close tar's stdout early under pipefail (SIGPIPE).
+TARBALL_CONTENTS=""
+TARBALL_LIST_OK=0
+if [ -n "$TARBALL" ] && TARBALL_CONTENTS="$(tar -tzf "$TARBALL" 2>/dev/null)"; then
+  TARBALL_LIST_OK=1
+fi
+if [ "$TARBALL_LIST_OK" -eq 1 ] \
+   && grep -Fqx "package/vendor/fw-alpha/zeta/package.json" <<<"$TARBALL_CONTENTS" \
+   && grep -Fqx "package/node_modules/fw-alpha/dist/index.js" <<<"$TARBALL_CONTENTS"; then
   pass "G0c tarball carries bundled packages AND the staged vendor closure"
 else
-  fail "G0c tarball contents: $(tar -tzf "$TARBALL" 2>/dev/null | head -20)"
+  fail "G0c tarball contents: $(head -20 <<<"$TARBALL_CONTENTS")"
 fi
 
 # gate-injection helper: unpack the clean tarball, mutate, gate the tree.

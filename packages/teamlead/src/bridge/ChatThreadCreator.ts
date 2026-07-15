@@ -5,6 +5,7 @@
  */
 
 import type { StateStore } from "../StateStore.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 import {
 	addThreadMember,
 	parseRetryAfterMs,
@@ -17,8 +18,8 @@ import {
 	type PhaseDisplayState,
 } from "./issue-display.js";
 import {
-	hasIssueKeyHead,
-	modelMarkerCode,
+	applyModelMarker,
+	modelMarkerLabel,
 	splitStatusEmoji,
 	stageBadge,
 	stripModelMarker,
@@ -76,6 +77,17 @@ async function retryAfterMsFrom(res: Response): Promise<number> {
 	return DEFAULT_RETRY_AFTER_MS;
 }
 
+/** Discord rejects renames of archived threads with HTTP 400 / code 50083. */
+function isArchivedThreadError(status: number, body: string): boolean {
+	if (status !== 400) return false;
+	try {
+		const parsed = JSON.parse(body) as { code?: unknown };
+		return parsed.code === 50083;
+	} catch {
+		return false;
+	}
+}
+
 /**
  * FLY-630 ①: outcome of one GET+PATCH title write. `rate_limited` carries the
  * honored Retry-After so the coalescing drain can wait then retry the latest
@@ -85,6 +97,7 @@ type TitleWriteResult =
 	| { status: "ok" }
 	| { status: "noop" }
 	| { status: "error" }
+	| { status: "deferred" }
 	| { status: "rate_limited"; retryAfterMs: number };
 
 /**
@@ -118,19 +131,18 @@ export interface ChatThreadContext {
 	/** Discord user ID to auto-add as thread member (for sidebar visibility). */
 	ownerUserId?: string;
 	/**
-	 * FLY-755 (was FLY-728 Part D): the resolved model's F/O/S/H short code,
-	 * stamped as a FRONT bracket marker (`[F] ` between the stage badge and the
-	 * issue key) that rides the same rename as the stage-emoji prefix — the old
-	 * tail suffix was invisible on mobile truncation.
+	 * FLY-755/1255: the resolved model's display marker, stamped as a FRONT
+	 * bracket marker (`[F] ` or `[Model GPT-5.6] ` between the stage badge and
+	 * issue key) that rides the same rename as the stage-emoji prefix.
 	 * Tri-state (Codex code R1 MEDIUM — an authoritative stamp must be able to
 	 * CLEAR a stale marker when a reused thread's run has no model):
-	 *   - a code ("F"…) → SET the marker to it
+	 *   - a string       → SET the validated marker to it
 	 *   - `null`        → CLEAR it (the caller KNOWS this run is account-default)
 	 *   - absent        → PRESERVE the existing marker (caller has no model context)
-	 * Every stamp caller that has the session passes `modelShortCode(runner_model)
-	 * ?? null` so account-default clears rather than preserving a prior model.
+	 * Every stamp caller that has model context passes the shared display
+	 * descriptor's thread marker, or null so account-default clears a stale one.
 	 */
-	modelCode?: "F" | "O" | "S" | "H" | null;
+	modelMarker?: string | null;
 }
 
 export interface ChatThreadResult {
@@ -162,24 +174,19 @@ function buildIssueThreadName(
 }
 
 /**
- * FLY-755: compose the final ≤100-char thread title. The model code is a FRONT
- * bracket marker (`[F] `) between the status `prefix` (e.g. "🔨实现中 ") and the
- * base, so truncation eats only the base's tail and the code stays visible on
- * mobile (the FLY-728 tail suffix + mid-truncation reservation are gone).
- * Insertion is gated on hasIssueKeyHead — the SAME issue-key anchor the marker
- * recognition uses (stage-utils paired contract), so keyless titles are never
- * stamped. `base` must be marker-free; the anchor is evaluated on the full
- * pre-truncation base (truncation never touches the key head).
+ * FLY-755/1255: compose the final ≤100-char thread title. The model marker is a
+ * FRONT bracket marker between the status prefix and base, so truncation eats
+ * only the base's tail and the model stays visible on mobile. Validation and
+ * issue-key anchoring are delegated to stage-utils' paired parser/inserter.
  */
 function composeThreadTitle(
 	prefix: string,
 	base: string,
-	modelCode: "F" | "O" | "S" | "H" | null | undefined,
+	modelMarker: string | null | undefined,
 ): string {
-	const marker = modelCode && hasIssueKeyHead(base) ? `[${modelCode}] ` : "";
-	const budget = DISCORD_THREAD_NAME_MAX - prefix.length - marker.length;
-	const cutBase = base.slice(0, Math.max(0, budget));
-	return `${prefix}${marker}${cutBase}`;
+	const markedBase = applyModelMarker(base, modelMarker ?? undefined);
+	const budget = DISCORD_THREAD_NAME_MAX - prefix.length;
+	return `${prefix}${markedBase.slice(0, Math.max(0, budget))}`;
 }
 
 function isPlaceholderThreadName(
@@ -355,13 +362,13 @@ export class ChatThreadCreator {
 		// 2. Compose thread name + initial message visible in main channel.
 		// FLY-91 UX fix: "Start Thread from Message" makes the root message
 		// appear in the channel, so users can see the thread was created.
-		// FLY-755 (was FLY-728 Part D): stamp the model code at thread creation
+		// FLY-755/1255: stamp the model marker at thread creation
 		// so a new thread shows `[F] [FLY-XX] …` immediately, not only after the
 		// first stage_changed.
 		const threadName = composeThreadTitle(
 			"",
 			buildIssueThreadName(ctx),
-			ctx.modelCode,
+			ctx.modelMarker,
 		);
 
 		const issueKey = effectiveIssueKey(ctx);
@@ -388,7 +395,7 @@ export class ChatThreadCreator {
 					// FLY-162 Codex R3 #2: never let issue title / generated
 					// notification text trigger @everyone/@here/role pings.
 					body: JSON.stringify({
-						content: messageContent,
+						content: markAutomatedDiscordText(messageContent),
 						allowed_mentions: { parse: [] },
 					}),
 					signal: controller.signal,
@@ -624,6 +631,7 @@ export class ChatThreadCreator {
 				case "noop":
 					return "noop";
 				case "rate_limited":
+				case "deferred":
 					return "deferred";
 				default:
 					return "failed";
@@ -665,8 +673,9 @@ export class ChatThreadCreator {
 					// and the loop writes it next; otherwise the loop exits.
 					rateLimitRetries = 0;
 				}
-				// `error` / retries-exhausted: do NOT spin — loop only if a newer
-				// target was queued during the write (state.dirty set by enqueue).
+				// `error` / `deferred` / retries-exhausted: do NOT spin — loop only
+				// if a newer target was queued during the write (state.dirty set by
+				// enqueue). The issue-display sweep owns the later retry.
 				// The next stage_changed reconciles a dropped write.
 			}
 		} finally {
@@ -721,7 +730,7 @@ export class ChatThreadCreator {
 			// canonical `[FLY-XX] Title` from ctx only when the current title is a
 			// placeholder (or empty) and the real title is known.
 			// FLY-560 strips the leading stage emoji; FLY-755 works on a MARKER-FREE
-			// base and re-inserts the model code via composeThreadTitle (so it rides
+			// base and re-inserts the model marker via composeThreadTitle (so it rides
 			// the same rename as the stage badge). The placeholder check uses the
 			// bare base. stripModelMarker also peels a legacy FLY-728 tail (` ·F`),
 			// so pre-755 threads migrate to the front marker on this re-stamp.
@@ -732,10 +741,10 @@ export class ChatThreadCreator {
 			// default — so a stale [F] from a prior run on a REUSED thread is
 			// removed), and ABSENT preserves whatever is there (a caller with no
 			// model context) — front marker first, legacy tail as fallback.
-			const effectiveCode =
-				ctx.modelCode === undefined
-					? modelMarkerCode(rawBase) // preserve
-					: (ctx.modelCode ?? undefined); // set (code) or clear (null → undefined)
+			const effectiveMarker =
+				ctx.modelMarker === undefined
+					? modelMarkerLabel(rawBase) // preserve
+					: (ctx.modelMarker ?? undefined); // set or clear (null → undefined)
 			let base: string | undefined;
 			if (bareBase && !isPlaceholderThreadName(bareBase, ctx)) {
 				base = bareBase;
@@ -749,7 +758,7 @@ export class ChatThreadCreator {
 			const desired = composeThreadTitle(
 				badge ? `${badge} ` : "",
 				base,
-				effectiveCode,
+				effectiveMarker,
 			);
 			if (currentName === desired) return { status: "noop" }; // already stamped
 
@@ -772,6 +781,9 @@ export class ChatThreadCreator {
 					};
 				}
 				const body = await patchRes.text().catch(() => "");
+				if (isArchivedThreadError(patchRes.status, body)) {
+					return { status: "deferred" };
+				}
 				console.warn(
 					`[ChatThreadCreator] stage-emoji PATCH failed: ${patchRes.status} ${body.slice(0, 200)}`,
 				);
@@ -979,7 +991,10 @@ export class ChatThreadCreator {
 			},
 			// allowed_mentions parse:[] — the command/title text must never trigger
 			// @everyone/@here/role pings (mirrors ensureChatThread).
-			body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+			body: JSON.stringify({
+				content: markAutomatedDiscordText(content),
+				allowed_mentions: { parse: [] },
+			}),
 			signal,
 		});
 		if (!res.ok) {
@@ -1008,7 +1023,10 @@ export class ChatThreadCreator {
 					Authorization: `Bot ${botToken}`,
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+				body: JSON.stringify({
+					content: markAutomatedDiscordText(content),
+					allowed_mentions: { parse: [] },
+				}),
 				signal,
 			},
 		);
@@ -1249,17 +1267,17 @@ export class ChatThreadCreator {
 				? stripModelMarker(currentName)
 				: undefined;
 			if (!isPlaceholderThreadName(bareCurrentName, ctx)) return;
-			// Same tri-state as the stage stamp: absent modelCode (e.g. the /send
-			// route in tools.ts) PRESERVES the code already on the placeholder —
+			// Same tri-state as the stage stamp: absent modelMarker (e.g. the /send
+			// route in tools.ts) PRESERVES the marker already on the placeholder —
 			// front marker first, legacy tail as fallback (which thereby migrates).
-			const effectiveCode =
-				ctx.modelCode === undefined
-					? modelMarkerCode(currentName ?? "")
-					: (ctx.modelCode ?? undefined);
+			const effectiveMarker =
+				ctx.modelMarker === undefined
+					? modelMarkerLabel(currentName ?? "")
+					: (ctx.modelMarker ?? undefined);
 			const desiredName = composeThreadTitle(
 				"",
 				buildIssueThreadName(ctx),
-				effectiveCode,
+				effectiveMarker,
 			);
 			if (!desiredName || desiredName === ctx.issueId) return;
 			if (currentName === desiredName) return;
@@ -1323,7 +1341,10 @@ export class ChatThreadCreator {
 					// FLY-162 Codex R3 #2: notification text is generated, but
 					// belt-and-suspenders — block any future label-injection
 					// path from triggering @everyone/@here/role pings.
-					body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+					body: JSON.stringify({
+						content: markAutomatedDiscordText(content),
+						allowed_mentions: { parse: [] },
+					}),
 					signal: controller.signal,
 				},
 			);
