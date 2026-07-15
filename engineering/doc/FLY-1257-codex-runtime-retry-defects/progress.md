@@ -1,13 +1,13 @@
 ---
 issue: FLY-1257
 phase: implement
-phaseCursor: 5/7
-updated: 2026-07-15T04:24:25.670Z
-nextStep: Run bounded native paused-RPC probe and record evidence
+phaseCursor: 6/7
+updated: 2026-07-15T04:35:33.742Z
+nextStep: Run full focused and repository verification
 chunks: []
 pointers: {}
 ---
 
 # FLY-1257 progress
-**phase**: implement (5/7)
-**next**: Run bounded native paused-RPC probe and record evidence
+**phase**: implement (6/7)
+**next**: Run full focused and repository verification
