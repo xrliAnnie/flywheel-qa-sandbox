@@ -1,14 +1,13 @@
 ---
 issue: FLY-1269
 phase: design
-phaseCursor: 4/5
-updated: 2026-07-15T05:18:57.539Z
-nextStep: Run cross-family design review for plan.md; apply findings; then
-  commit and push
+phaseCursor: 5/5
+updated: 2026-07-15T05:53:08.010Z
+nextStep: Commit and push final approved design docs; hand off to Implement
 chunks: []
 pointers: {}
 ---
 
 # FLY-1269 progress
-**phase**: design (4/5)
-**next**: Run cross-family design review for plan.md; apply findings; then commit and push
+**phase**: design (5/5)
+**next**: Commit and push final approved design docs; hand off to Implement
