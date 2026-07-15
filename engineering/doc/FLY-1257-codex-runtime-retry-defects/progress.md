@@ -1,14 +1,14 @@
 ---
 issue: FLY-1257
 phase: design
-phaseCursor: 3/5
-updated: 2026-07-15T03:27:46.750Z
-nextStep: Poll final design review 4d024375-0978-4927-84d3-0adeb61b1fa5; address
-  verdict, then verify and push
+phaseCursor: 4/5
+updated: 2026-07-15T03:31:19.976Z
+nextStep: Run final docs-only verification, push branch, report and complete
+  phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-1257 progress
-**phase**: design (3/5)
-**next**: Poll final design review 4d024375-0978-4927-84d3-0adeb61b1fa5; address verdict, then verify and push
+**phase**: design (4/5)
+**next**: Run final docs-only verification, push branch, report and complete phase_design_complete
