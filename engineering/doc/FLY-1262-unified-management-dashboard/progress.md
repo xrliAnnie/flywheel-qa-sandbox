@@ -1,13 +1,13 @@
 ---
 issue: FLY-1262
 phase: implement
-phaseCursor: 0/13
-updated: 2026-07-15T05:31:03.907Z
-nextStep: "Task 0: record focused green baseline and add SSOT discovery fixtures"
+phaseCursor: 1/13
+updated: 2026-07-15T05:33:45.612Z
+nextStep: "Task 1: canonical provider, model and effort registry"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1262 progress
-**phase**: implement (0/13)
-**next**: Task 0: record focused green baseline and add SSOT discovery fixtures
+**phase**: implement (1/13)
+**next**: Task 1: canonical provider, model and effort registry
