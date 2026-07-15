@@ -90,6 +90,7 @@ import {
 } from "./lead-pending-escalation.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
+import type { MergedGateGuard } from "./merged-gate-guard.js";
 import { decideMilestoneReport } from "./milestone-report-policy.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
@@ -279,6 +280,8 @@ export interface GatePollerConfig {
 		canonicalFounderId(): string | undefined;
 		onResponseWritten?: DeferredRebindDeps["onResponseWritten"];
 	};
+	/** FLY-1238: one shared last-mile guard for all recovery surfaces. */
+	mergedGateGuard?: MergedGateGuard;
 
 	/**
 	 * FLY-799: the flag-gated founder ✅-reaction ship-approval callback (built in
@@ -2128,6 +2131,25 @@ export class GatePoller {
 			summary = readContentRef(question.content_ref) ?? question.content;
 		}
 
+		// FLY-1238: the ship card is a recovery/reapproval side effect. Re-check
+		// GitHub immediately before POST; every non-continue verdict stays silent
+		// and deliberately writes no permanent founderNotifyDone marker.
+		if (cp === "approve_to_ship" && this.config.mergedGateGuard) {
+			const project = this.config.projects.find(
+				(candidate) => candidate.projectName === session.project_name,
+			);
+			const guarded = await this.config.mergedGateGuard({
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+				questionId: question.id,
+				projectName: session.project_name,
+				projectRoot: project?.projectRoot,
+				prNumber: session.pr_number ?? undefined,
+				source: "gate_card",
+			});
+			if (guarded.kind !== "continue") return;
+		}
+
 		const result = await emitFounderThreadNotification(
 			{
 				questionId: question.id,
@@ -3123,6 +3145,10 @@ export class GatePoller {
 			resolveBotToken: (row) =>
 				this.resolveBotTokenFor(row.project_name, row.execution_id),
 			fetchImpl: this.config.fetchImpl,
+			mergedGateGuard: this.config.mergedGateGuard,
+			resolveProjectRoot: (projectName) =>
+				this.config.projects.find((p) => p.projectName === projectName)
+					?.projectRoot,
 		});
 	}
 
@@ -3130,6 +3156,10 @@ export class GatePoller {
 	private async founderActionDrainPass(): Promise<void> {
 		await drainFounderActionLedger({
 			store: this.config.store,
+			mergedGateGuard: this.config.mergedGateGuard,
+			resolveProjectRoot: (projectName) =>
+				this.config.projects.find((p) => p.projectName === projectName)
+					?.projectRoot,
 			postNotice: async ({ threadId, text, projectName, executionId }) => {
 				const token = this.resolveBotTokenFor(projectName, executionId);
 				if (!token) return { ok: false, error: "no_bot_token" };

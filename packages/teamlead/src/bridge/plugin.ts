@@ -324,6 +324,7 @@ import {
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
+import { createMergedGateGuard } from "./merged-gate-guard.js";
 import { notifyDigestExpectTick } from "./notify-digest-expect.js";
 import { defaultReceiptsPath } from "./notify-receipts.js";
 import { hashPane, liveRegion } from "./pane-live-region.js";
@@ -5019,6 +5020,26 @@ export async function startBridge(
 			config.discordOwnerUserId,
 			config.founderConsent?.founderUserId,
 		) ?? undefined;
+	const projectRootFor = (projectName: string): string | undefined =>
+		projects.find((project) => project.projectName === projectName)
+			?.projectRoot;
+	// FLY-1238: ONE composition-root instance owns cache, single-flight,
+	// backoff, and per-project network budget for all six recovery surfaces.
+	const mergedGateGuard = createMergedGateGuard({
+		store,
+		retireQuestion: (questionId, executionId) => {
+			const session = store.getSession(executionId);
+			if (!session) throw new Error(`session_missing:${executionId}`);
+			const db = new CommDB(commDbPathForProject(session.project_name), false);
+			try {
+				db.retireShipGate(questionId);
+			} finally {
+				db.close();
+			}
+		},
+		env: process.env,
+		log: (message) => console.warn(message),
+	});
 
 	const founderShipApprovalCallback = makeFounderShipApprovalCallback({
 		discordOwnerUserId: config.discordOwnerUserId,
@@ -5028,6 +5049,8 @@ export async function startBridge(
 		// FLY-1041 Chunk 4: attribution forensics; Chunk 5: hold alignment.
 		auditStore: store,
 		isHeld: founderApprovalIsHeld,
+		mergedGateGuard,
+		projectRootFor,
 		// FLY-1099 §4.2: held approvals are durably deferred (codex_pending /
 		// qa_not_green) instead of silently declined; merge_block gets the
 		// recovery pointer. Kill-switches read per call inside.
@@ -5063,6 +5086,8 @@ export async function startBridge(
 		// FLY-1041 Chunk 4/5: same audit target + hold guard as the text source.
 		auditStore: store,
 		isHeld: founderApprovalIsHeld,
+		mergedGateGuard,
+		projectRootFor,
 		readBindingImpl: (executionId, questionId, prHeadSha) =>
 			readCurrentGateMessageBinding(store, executionId, questionId, prHeadSha),
 		onResponseWritten: (info) =>
@@ -5854,6 +5879,7 @@ export async function startBridge(
 					>[0]["db"],
 				}),
 		},
+		mergedGateGuard,
 		// FLY-799: founder ✅-reaction ship approval (per-gate reaction poll).
 		tryFounderReactionApproval: founderReactionApprovalCallback,
 		// FLY-1041 Chunk 7: the SAME durable binding reader the reaction path
@@ -6107,6 +6133,7 @@ export async function startBridge(
 				// cascade). Same values the archive cascade uses in this boot scope.
 				transitionOpts,
 				globalBotToken: config.discordBotToken,
+				mergedGateGuard,
 			});
 			autoQaCoordinatorHolder.current = new AutoQaCoordinator({
 				store,
@@ -6209,6 +6236,7 @@ export async function startBridge(
 				chatThreadCreator,
 				transitionOpts,
 				globalBotToken: config.discordBotToken,
+				mergedGateGuard,
 			});
 			// FLY-859: fix-round cap knob. Invalid/absent → orchestrator default (3).
 			const maxFixRoundsEnv = process.env.FLYWHEEL_THREE_STAGE_MAX_FIX_ROUNDS;

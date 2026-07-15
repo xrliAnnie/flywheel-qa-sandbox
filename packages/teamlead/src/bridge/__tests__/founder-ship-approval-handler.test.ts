@@ -18,6 +18,7 @@ import { tryFounderShipApproval } from "../approval-signal/founder-ship-approval
 const CTX = {
 	issueId: "issue-uuid",
 	projectName: "proj",
+	projectRoot: "/repo",
 	threadId: "T-1",
 	ownerUserId: "FOUNDER-1",
 	graceMs: 0,
@@ -565,5 +566,76 @@ describe("Codex code R3 HIGH: double failure (wake intent + park) → deadLetter
 				stage: "convergence_park_failed",
 			},
 		});
+	});
+});
+
+describe("FLY-1238 merged-PR last-mile guard", () => {
+	it("silences the exact merge_block incident before queuing the stale pointer", async () => {
+		const deferral = {
+			holdReason: vi.fn(() => "merge_block" as const),
+			deferredEnabled: () => true,
+			heldReplyEnabled: () => true,
+			defer: vi.fn(() => "inserted" as const),
+			queueHeldNotice: vi.fn(),
+			parkForConvergence: vi.fn(),
+			queueFeedbackWake: vi.fn(),
+		};
+		const mergedGateGuard = vi.fn().mockResolvedValue({
+			kind: "suppress_merged",
+			cleanupComplete: true,
+		});
+		const d = deps({ deferral, mergedGateGuard });
+		const result = await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+		expect(result).toBeNull();
+		expect(mergedGateGuard).toHaveBeenCalledWith(
+			expect.objectContaining({
+				questionId: "Q-1",
+				prNumber: 799,
+				source: "text",
+			}),
+		);
+		expect(deferral.queueHeldNotice).not.toHaveBeenCalled();
+		expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
+	});
+
+	it("keeps transient UNKNOWN retryable without writing the response", async () => {
+		const mergedGateGuard = vi.fn().mockResolvedValue({
+			kind: "retry_later",
+			reason: "unknown",
+		});
+		const d = deps({ mergedGateGuard });
+		const result = await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+		expect(result).toMatchObject({
+			retry: true,
+			stage: "merged_gate_guard_retry",
+		});
+		expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
+	});
+
+	it("terminal guard failure dead-letters the input instead of retrying forever", async () => {
+		const d = deps({
+			mergedGateGuard: vi.fn().mockResolvedValue({
+				kind: "terminal_unavailable",
+				reason: "unknown_exhausted",
+			}),
+		});
+		const result = await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+		expect(result).toMatchObject({
+			retry: false,
+			deadLetter: {
+				questionId: "Q-1",
+				stage: "merged_gate_guard_terminal",
+			},
+		});
+		expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
 	});
 });

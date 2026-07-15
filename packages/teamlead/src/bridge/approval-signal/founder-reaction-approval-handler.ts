@@ -18,6 +18,7 @@
  */
 
 import type { ReactionFetcher } from "../../lead-backends/codex/gateway/founder-confirmation.js";
+import type { MergedGateGuard } from "../merged-gate-guard.js";
 import type { GateMessageBinding } from "./gate-message-binding.js";
 import { evaluateReactionSource } from "./reaction-approval-source.js";
 import type { GateBinding } from "./types.js";
@@ -59,6 +60,8 @@ export interface ReactionApprovalHandlerDeps {
 	isHeld?: (executionId: string) => boolean;
 	/** FLY-1041 Chunk 4/5: attribution audit sink (see the text handler). */
 	auditSink?: (stage: string, payload?: Record<string, unknown>) => void;
+	/** FLY-1238: shared last-mile PR-state guard. */
+	mergedGateGuard?: MergedGateGuard;
 }
 
 export interface ReactionApprovalHandlerArgs {
@@ -68,7 +71,12 @@ export interface ReactionApprovalHandlerArgs {
 		checkpoint: string | null;
 		createdAtMs: number;
 	};
-	ctx: { issueId: string; threadId: string };
+	ctx: {
+		issueId: string;
+		threadId: string;
+		projectName?: string;
+		projectRoot?: string;
+	};
 }
 
 export async function tryFounderReactionApproval(
@@ -125,6 +133,28 @@ export async function tryFounderReactionApproval(
 			source: "reaction",
 		});
 		return null;
+	}
+
+	if (deps.mergedGateGuard) {
+		const guarded = await deps.mergedGateGuard({
+			executionId: gate.executionId,
+			issueId: args.ctx.issueId,
+			questionId: gate.questionId,
+			projectName: args.ctx.projectName ?? "",
+			projectRoot: args.ctx.projectRoot,
+			prNumber: session.pr_number ?? undefined,
+			source: "reaction",
+		});
+		if (guarded.kind !== "continue") {
+			deps.auditSink?.(`merged_gate_guard_${guarded.kind}`, {
+				questionId: gate.questionId,
+				...("reason" in guarded ? { reason: guarded.reason } : {}),
+			});
+			return {
+				handled: [],
+				retrySafe: guarded.kind !== "retry_later",
+			};
+		}
 	}
 
 	const write = deps.writeGateResponseImpl ?? writeGateResponseAndRunPostWrite;
