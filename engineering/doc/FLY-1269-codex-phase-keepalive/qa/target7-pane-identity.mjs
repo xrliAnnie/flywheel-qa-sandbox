@@ -37,10 +37,16 @@ export function parsePaneSnapshot(stdout) {
  */
 export function paneSnapshotFromResult(result) {
 	if (result.status === 0) return parsePaneSnapshot(result.stdout ?? "");
-	// A tmux server that is not running definitively holds zero panes. That is
-	// proof of absence — distinct from an unknown, and required so a fully torn
-	// down server does not read as "still live" forever.
-	if (/no server running|error connecting to/i.test(result.stderr ?? "")) {
+	// ONLY "no server running" proves the server holds zero panes (tmux emits it
+	// for ECONNREFUSED). It is required so a fully torn down server does not read
+	// as "still live" forever.
+	//
+	// "error connecting to" must NOT be treated as proof: tmux emits it for every
+	// OTHER connection failure too (e.g. Permission denied), where the server —
+	// and its panes — may be very much alive. Treating that as an empty server
+	// would read every window as dead = a false PASS. This mirrors the production
+	// probe, which classifies EACCES as indeterminate (tmux-lookup.ts).
+	if (/no server running/i.test(result.stderr ?? "")) {
 		return [];
 	}
 	return null; // never claim an absence we cannot prove
@@ -50,10 +56,30 @@ export function paneSnapshotFromResult(result) {
  * Is `windowId` present in `sessionName` per this snapshot?
  * `panes === null` (unknown) → TRUE: fail closed, so an unreadable tmux can
  * never let the observer declare a false PASS on a still-live phase.
+ *
+ * A missing `sessionName` THROWS rather than silently matching nothing: an
+ * omitted arg would make every window read dead — a false PASS, the exact
+ * failure this module exists to prevent. Fail loud, never quietly "absent".
  */
 export function windowLive(windowId, panes, sessionName) {
+	if (!sessionName) {
+		throw new Error(
+			"windowLive: sessionName is required (omitting it would read every window as dead → false PASS)",
+		);
+	}
 	if (panes === null) return true;
 	return panes.some(
 		(pane) => pane.sessionName === sessionName && pane.windowId === windowId,
+	);
+}
+
+/**
+ * Liveness for MANY windows against one snapshot — the shape the observer
+ * actually needs, so its call site cannot get `windowLive`'s arity wrong (an
+ * omitted `sessionName` there read every window as dead → false PASS).
+ */
+export function windowLivenessMap(windowIds, panes, sessionName) {
+	return Object.fromEntries(
+		windowIds.map((id) => [id, windowLive(id, panes, sessionName)]),
 	);
 }

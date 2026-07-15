@@ -17,6 +17,7 @@ import {
 	paneSnapshotFromResult,
 	parsePaneSnapshot,
 	windowLive,
+	windowLivenessMap,
 } from "../../../../../engineering/doc/FLY-1269-codex-phase-keepalive/qa/target7-pane-identity.mjs";
 
 const SESSION = "runner-test-slot-2";
@@ -79,6 +80,46 @@ describe("target7 pane identity — windowLive", () => {
 	it("treats an UNKNOWN snapshot as live (fail-closed)", () => {
 		expect(windowLive("@303", null, SESSION)).toBe(true);
 	});
+
+	// Codex R1 P1: omitting sessionName made EVERY window read dead (false PASS).
+	// It must fail loud, never silently report absence.
+	it.each([undefined, ""])("throws when sessionName is %p", (bad) => {
+		expect(() => windowLive("@303", panes, bad)).toThrow(/sessionName is required/);
+	});
+});
+
+// Codex R1 P1 regression: the unit tests above all passed sessionName correctly,
+// so they proved windowLive right while the OBSERVER's call site was passing only
+// two args — every window read dead. These cover the mapping the observer calls.
+describe("target7 pane identity — windowLivenessMap (the observer's call shape)", () => {
+	const panes = parsePaneSnapshot(
+		`${SESSION}\t@303\tdesign\t%11\n${SESSION}\t@304\timplement\t%12\n`,
+	);
+
+	it("maps live and dead windows in one snapshot", () => {
+		expect(windowLivenessMap(["@303", "@304", "@999"], panes, SESSION)).toEqual({
+			"@303": true,
+			"@304": true,
+			"@999": false,
+		});
+	});
+
+	it("reports every window live on an UNKNOWN snapshot (fail-closed)", () => {
+		expect(windowLivenessMap(["@303", "@999"], null, SESSION)).toEqual({
+			"@303": true,
+			"@999": true,
+		});
+	});
+
+	it("reports every window dead on a provably empty server", () => {
+		expect(windowLivenessMap(["@303"], [], SESSION)).toEqual({ "@303": false });
+	});
+
+	it("throws rather than silently reporting all-dead without a session", () => {
+		expect(() => windowLivenessMap(["@303"], panes, undefined)).toThrow(
+			/sessionName is required/,
+		);
+	});
 });
 
 describe("target7 pane identity — paneSnapshotFromResult", () => {
@@ -91,18 +132,26 @@ describe("target7 pane identity — paneSnapshotFromResult", () => {
 	// A dead server provably holds zero panes — proof of absence, not unknown.
 	// Without this the observer could never reach its terminal verdict after a
 	// full teardown tore the server down with it.
-	it.each(["no server running on /tmp/tmux-501/default", "error connecting to /tmp/x"])(
-		"treats %s as a provably empty server",
-		(stderr) => {
-			expect(paneSnapshotFromResult({ status: 1, stdout: "", stderr })).toEqual(
-				[],
-			);
-		},
-	);
-
-	it("returns UNKNOWN for any other failure", () => {
+	it("treats 'no server running' as a provably empty server", () => {
 		expect(
-			paneSnapshotFromResult({ status: 1, stdout: "", stderr: "permission denied" }),
-		).toBeNull();
+			paneSnapshotFromResult({
+				status: 1,
+				stdout: "",
+				stderr: "no server running on /tmp/tmux-501/default",
+			}),
+		).toEqual([]);
+	});
+
+	// Codex R1 P2: 'error connecting to' was ALSO mapped to [] — but tmux emits it
+	// for every non-ECONNREFUSED failure (e.g. Permission denied), where the server
+	// and its panes may be alive. Claiming absence there = every window reads dead
+	// = false PASS. Only 'no server running' proves an empty server.
+	it.each([
+		"error connecting to /tmp/tmux-501/default (Permission denied)",
+		"error connecting to /tmp/x",
+		"permission denied",
+		"",
+	])("returns UNKNOWN (not empty) for %p", (stderr) => {
+		expect(paneSnapshotFromResult({ status: 1, stdout: "", stderr })).toBeNull();
 	});
 });

@@ -1,11 +1,12 @@
 ---
 issue: FLY-1269
 phase: implement
-phaseCursor: 7/8
-updated: 2026-07-15T16:09:46.247Z
-nextStep: Immutable tmux-window identity fix committed at cff990409; package
-  tests and typechecks are green. Reload the 529 candidate and repeat terminal
-  three-phase shutdown observation.
+phaseCursor: 8/8
+updated: 2026-07-15T19:15:00.000Z
+nextStep: A7 defects fixed + Codex R1 findings addressed. Codex incremental
+  cross-family review on the new head, then independent QA 436dea86 (Monitor
+  auto-opens on head change). Do NOT re-run the 529 E2E; do NOT touch the 529
+  slot; do NOT pnpm install while swap is tight (CI runs the vitest specs).
 chunks:
   - id: task7
     order: 7

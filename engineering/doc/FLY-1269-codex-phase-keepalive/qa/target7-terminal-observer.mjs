@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import {
 	PANE_FORMAT,
 	paneSnapshotFromResult,
-	windowLive,
+	windowLivenessMap,
 } from "./target7-pane-identity.mjs";
 
 const require = createRequire(
@@ -99,9 +99,7 @@ function snapshot() {
 	// One atomic view per tick: every window verdict below reads the SAME
 	// snapshot, so the tuple recorded as evidence is the tuple that was judged.
 	const panes = paneSnapshot();
-	const windows = Object.fromEntries(
-		windowIds.map((id) => [id, windowLive(id, panes)]),
-	);
+	const windows = windowLivenessMap(windowIds, panes, TMUX_SESSION);
 	const sockets = Object.fromEntries(
 		socketPaths.map((path) => [path.split("/").at(-1), existsSync(path)]),
 	);
