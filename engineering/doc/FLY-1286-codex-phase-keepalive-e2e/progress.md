@@ -1,9 +1,10 @@
 ---
 issue: FLY-1286
 phase: implement
-phaseCursor: 5/6
-updated: 2026-07-15T11:29:51.000Z
-nextStep: Finalize evidence report, regressions, commit/push, sandbox PR and review
+phaseCursor: 6/6
+updated: 2026-07-15T11:34:09.724Z
+nextStep: Push sandbox PR, pass cross-family review, monitor landing readiness,
+  open approve gate, park
 chunks:
   - id: onboard
     order: 1
@@ -15,8 +16,8 @@ pointers:
 ---
 
 # FLY-1286 progress
-**phase**: implement (5/6)
-**next**: Finalize evidence report, regressions, commit/push, sandbox PR and review
+**phase**: implement (6/6)
+**next**: Push sandbox PR, pass cross-family review, monitor landing readiness, open approve gate, park
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
