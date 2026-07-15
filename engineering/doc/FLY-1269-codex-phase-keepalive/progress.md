@@ -1,13 +1,13 @@
 ---
 issue: FLY-1269
-phase: design
-phaseCursor: 5/5
-updated: 2026-07-15T05:53:08.010Z
-nextStep: Commit and push final approved design docs; hand off to Implement
+phase: implement
+phaseCursor: 0/8
+updated: 2026-07-15T05:56:09.594Z
+nextStep: Run Task 0 real Codex complete-to-paused protocol probe
 chunks: []
 pointers: {}
 ---
 
 # FLY-1269 progress
-**phase**: design (5/5)
-**next**: Commit and push final approved design docs; hand off to Implement
+**phase**: implement (0/8)
+**next**: Run Task 0 real Codex complete-to-paused protocol probe
