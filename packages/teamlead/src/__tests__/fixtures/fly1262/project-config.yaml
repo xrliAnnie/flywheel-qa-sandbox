@@ -1,0 +1,22 @@
+project: personal-assistant
+
+linear:
+  team_id: FLY
+
+runners:
+  default: claude
+  available:
+    claude:
+      type: claude
+
+roles:
+  runner:
+    backend: claude-tmux
+    model: claude-opus-4-8
+
+agents:
+  personal:
+    agent_file: .flywheel/agents/engineering/personal-executor.md
+    department: engineering
+    match:
+      labels: [personal]
