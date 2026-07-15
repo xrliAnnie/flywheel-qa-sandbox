@@ -12,6 +12,7 @@ import {
 	resolveAllFlags,
 } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
+import type { StateStore } from "../StateStore.js";
 import { computeEnvSha } from "./env-file-writer.js";
 import {
 	applyFlagToggle,
@@ -33,8 +34,13 @@ import {
 	type ModelSelection,
 } from "./management-console-contract.js";
 import type { ManagementSnapshotProvider } from "./management-console-snapshot.js";
+import type { CronSourceTarget } from "./management-cron-source.js";
+import type { ManagementCronWriter } from "./management-cron-writer.js";
+import { readManagementDags } from "./management-dag-source.js";
+import { applyManagementDagEdit } from "./management-dag-writer.js";
 import type { LoadedProjectConfig } from "./management-topology-source.js";
 import {
+	type ManagementPreparedChange,
 	type ManagementResolvedTarget,
 	type ManagementWriter,
 	type ManagementWriterResult,
@@ -86,7 +92,10 @@ export function managementFlagRevision(
 	const liveDirectValues = FEATURE_FLAGS.filter(
 		(spec) => spec.envVar && isDirectToggleable(spec),
 	)
-		.map((spec) => [spec.envVar as string, env[spec.envVar as string] ?? null])
+		.map((spec): [string, string | null] => [
+			spec.envVar as string,
+			env[spec.envVar as string] ?? null,
+		])
 		.sort(([a], [b]) => a.localeCompare(b));
 	return `flags:${createHash("sha256")
 		.update(
@@ -118,7 +127,7 @@ function exactRecord(
 
 function parseSelection(
 	value: unknown,
-	surface: "lead" | "runner",
+	surface: "lead" | "runner" | "workflow" | "cron",
 ): ModelSelection | null | { error: string } {
 	if (value === null) return null;
 	const record = exactRecord(value, ["provider", "model", "effort"]);
@@ -431,6 +440,77 @@ function leadCanonical(
 	);
 }
 
+function leadCanonicalGroup(
+	deps: ExistingManagementWriterDeps,
+	changes: readonly ManagementPreparedChange[],
+): CanonicalRequest {
+	const models = new Map<string, string | null>();
+	const efforts = new Map<string, string | null>();
+	const drafts: Array<{
+		key: string;
+		toModel: string | null;
+		toEffort: string | null;
+	}> = [];
+	for (const change of changes) {
+		const resolved = resolveLeadTarget(deps, change.targetId);
+		if (!resolved) throw new Error("Lead target disappeared");
+		const lead = deps
+			.projects()
+			.find((project) => project.projectName === resolved.projectName)
+			?.leads.find((candidate) => candidate.agentId === resolved.leadId);
+		if (!lead) throw new Error("Lead target disappeared");
+		const desired = parseSelection(change.newValue, "lead");
+		if (desired && "error" in desired) throw new Error(desired.error);
+		const key = `${resolved.projectName}-${resolved.leadId}`;
+		models.set(key, lead.model ?? null);
+		efforts.set(key, lead.effort ?? null);
+		drafts.push({
+			key,
+			toModel: desired?.model ?? null,
+			toEffort: desired?.effort ?? null,
+		});
+	}
+	return buildCanonicalRequest(
+		newBatchId(),
+		rawSha(deps.projectsRevision()),
+		models,
+		efforts,
+		drafts,
+	);
+}
+
+async function applySequentiallyAgainstCurrentAuthority(
+	writer: ManagementWriter,
+	changes: readonly ManagementPreparedChange[],
+): Promise<ManagementWriterResult[]> {
+	const results: ManagementWriterResult[] = [];
+	for (const change of changes) {
+		const current = await writer.resolve(change.targetId);
+		if (!current) {
+			results.push({ status: "rejected", reason: "target disappeared" });
+			continue;
+		}
+		if (
+			canonicalJsonString(current.currentValue) !==
+			canonicalJsonString(change.oldValue)
+		) {
+			results.push({
+				status: "rejected",
+				reason: "target value changed outside this approved batch",
+			});
+			continue;
+		}
+		results.push(
+			await writer.apply({
+				...change,
+				oldValue: current.currentValue,
+				sourceRevision: current.sourceRevision,
+			}),
+		);
+	}
+	return results;
+}
+
 function createLeadWriter(
 	deps: ExistingManagementWriterDeps,
 ): ManagementWriter {
@@ -496,6 +576,19 @@ function createLeadWriter(
 			return deps.applyLeadCanonical(
 				leadCanonical(deps, change.targetId, desired),
 			);
+		},
+		applyGroup: async (changes) => {
+			try {
+				const result = await deps.applyLeadCanonical(
+					leadCanonicalGroup(deps, changes),
+				);
+				return changes.map(() => structuredClone(result));
+			} catch (error) {
+				return changes.map(() => ({
+					status: "rejected",
+					reason: error instanceof Error ? error.message : String(error),
+				}));
+			}
 		},
 	};
 	return writer;
@@ -624,6 +717,8 @@ function createRunnerWriter(
 				};
 			}
 		},
+		applyGroup: (changes) =>
+			applySequentiallyAgainstCurrentAuthority(writer, changes),
 	};
 	return writer;
 }
@@ -758,6 +853,8 @@ function createFlagWriter(
 				? { status: "applied", details: result }
 				: { status: "rejected", reason: result.reason, details: result };
 		},
+		applyGroup: (changes) =>
+			applySequentiallyAgainstCurrentAuthority(writer, changes),
 	};
 	return writer;
 }
@@ -774,4 +871,177 @@ export function createExistingManagementWriters(
 		runner: createRunnerWriter(deps),
 		flag: createFlagWriter(deps),
 	};
+}
+
+export function createManagementDagWriter(input: {
+	store: StateStore;
+	projectNames(): readonly string[];
+	actor: string;
+}): ManagementWriter {
+	const resolve = (targetId: string): ManagementResolvedTarget | null => {
+		for (const section of readManagementDags({
+			reader: input.store,
+			projectNames: input.projectNames(),
+		}).projectDags) {
+			for (const dag of section.dags) {
+				for (const node of dag.nodes) {
+					if (node.dispatch.targetId !== targetId) continue;
+					return {
+						targetId,
+						kind: "dag",
+						currentValue: node.dispatch.current,
+						sourceRevision: node.dispatch.source.revision,
+						writeCapability: node.dispatch.writeCapability,
+					};
+				}
+			}
+		}
+		return null;
+	};
+	const writer: ManagementWriter = {
+		id: "workflow-catalog-v1",
+		kind: "dag",
+		resolve,
+		preflight: (target, desiredValue, observedRevision) => {
+			if (observedRevision !== target.sourceRevision) {
+				return rejectedPreflight("stale_source", "workflow revision changed");
+			}
+			if (!target.writeCapability.writable) {
+				return rejectedPreflight(
+					"readonly",
+					target.writeCapability.reason ?? "workflow node is readonly",
+				);
+			}
+			const desired = parseSelection(desiredValue, "workflow");
+			if (!desired || "error" in desired) {
+				return rejectedPreflight(
+					"invalid_desired_value",
+					desired && "error" in desired
+						? desired.error
+						: "workflow selection cannot be null",
+				);
+			}
+			return preparedChange({ writer, target, newValue: desired });
+		},
+		apply: async (change) => {
+			const target = resolve(change.targetId);
+			if (!target)
+				return { status: "rejected", reason: "DAG target disappeared" };
+			const checked = await writer.preflight(
+				target,
+				change.newValue,
+				change.sourceRevision,
+			);
+			if (!checked.ok) return { status: "rejected", reason: checked.reason };
+			if (checked.status === "no_op") return { status: "no_op" };
+			const match = /^db:(\d+):(.+)$/.exec(change.sourceRevision);
+			if (!match) return { status: "rejected", reason: "invalid DAG revision" };
+			const result = applyManagementDagEdit({
+				store: input.store,
+				targetId: change.targetId,
+				expectedRevision: Number(match[1]),
+				expectedDigest: match[2]!,
+				desired: change.newValue as ModelSelection,
+				actor: input.actor,
+			});
+			return result.status === "published"
+				? { status: "applied", details: result }
+				: {
+						status: "rejected",
+						reason:
+							"reason" in result
+								? result.reason
+								: `workflow write ${result.status}`,
+						details: result,
+					};
+		},
+		applyGroup: (changes) =>
+			applySequentiallyAgainstCurrentAuthority(writer, changes),
+	};
+	return writer;
+}
+
+function cronManagedTarget(
+	targets: readonly CronSourceTarget[],
+	targetId: string,
+): ManagementResolvedTarget | null {
+	for (const target of targets) {
+		for (const managed of [
+			target.view.schedule,
+			target.view.enabled,
+			target.view.model,
+		]) {
+			if (!managed || managed.targetId !== targetId) continue;
+			return {
+				targetId,
+				kind: "cron",
+				currentValue: managed.current,
+				sourceRevision: managed.source.revision,
+				writeCapability: managed.writeCapability,
+			};
+		}
+	}
+	return null;
+}
+
+export function createManagementCronWriterAdapter(input: {
+	writer: ManagementCronWriter;
+	targets(): readonly CronSourceTarget[];
+}): ManagementWriter {
+	const writer: ManagementWriter = {
+		id: "launchd-cron-v1",
+		kind: "cron",
+		resolve: (targetId) => cronManagedTarget(input.targets(), targetId),
+		preflight: (target, desiredValue, observedRevision) => {
+			const staged = input.writer.stage({
+				targetId: target.targetId,
+				desiredValue,
+				observedRevision,
+			});
+			if (staged.status === "rejected") {
+				return rejectedPreflight(
+					staged.reason.includes("stale") || staged.reason.includes("drift")
+						? "stale_source"
+						: target.writeCapability.writable
+							? "invalid_desired_value"
+							: "readonly",
+					staged.reason,
+				);
+			}
+			return preparedChange({
+				writer,
+				target,
+				newValue:
+					staged.status === "staged"
+						? staged.change.newValue
+						: target.currentValue,
+			});
+		},
+		apply: async (change) => {
+			const staged = input.writer.stage({
+				targetId: change.targetId,
+				desiredValue: change.newValue,
+				observedRevision: change.sourceRevision,
+			});
+			if (staged.status === "no_op") return { status: "no_op" };
+			if (staged.status === "rejected") {
+				return { status: "rejected", reason: staged.reason };
+			}
+			const result = input.writer.apply(staged.change);
+			if (result.status === "rolled_back") {
+				return { status: "rolled_back", reason: result.error, details: result };
+			}
+			if (result.status === "partial") {
+				return {
+					status: "partial",
+					reason: `${result.error}; rollback: ${result.rollbackError}`,
+					details: result,
+				};
+			}
+			return result;
+		},
+		applyGroup: (changes) =>
+			applySequentiallyAgainstCurrentAuthority(writer, changes),
+	};
+	return writer;
 }

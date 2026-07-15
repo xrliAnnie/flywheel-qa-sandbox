@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readManagementDags } from "../bridge/management-dag-source.js";
 import { applyManagementDagEdit } from "../bridge/management-dag-writer.js";
+import { createManagementDagWriter } from "../bridge/management-existing-writers.js";
 import { StateStore } from "../StateStore.js";
 import {
 	importBundledWorkflowSeeds,
@@ -110,6 +111,56 @@ describe("management DAG writer", () => {
 			publications: store.listWorkflowTemplatePublications(dag.templateId)
 				.length,
 		}).toEqual(before);
+		store.close();
+	});
+
+	it("applies multiple node edits from one reviewed revision without self-conflicting", async () => {
+		const { store, dag } = await setup();
+		const writer = createManagementDagWriter({
+			store,
+			projectNames: () => ["flywheel"],
+			actor: "founder",
+		});
+		const editedNodes = dag.nodes
+			.filter((node) => node.dispatch.current.provider === "anthropic")
+			.slice(0, 2);
+		const changes = [];
+		for (const node of editedNodes) {
+			const target = await writer.resolve(node.dispatch.targetId);
+			const checked = await writer.preflight(
+				target!,
+				{
+					provider: "openai",
+					model: "gpt-5.6-sol",
+					effort: "xhigh",
+				},
+				target!.sourceRevision,
+			);
+			if (!checked.ok) throw new Error(checked.reason);
+			changes.push(checked.change);
+		}
+		expect(await writer.applyGroup!(changes)).toEqual([
+			expect.objectContaining({ status: "applied" }),
+			expect.objectContaining({ status: "applied" }),
+		]);
+		const template = store.getWorkflowTemplate(dag.templateId)!;
+		const latest = validateWorkflowManifest(
+			JSON.parse(
+				store.getWorkflowTemplateRevision(
+					dag.templateId,
+					template.current_published_revision!,
+				)!.manifest,
+			),
+		);
+		for (const node of editedNodes) {
+			expect(
+				latest.nodes.find((candidate) => candidate.id === node.name),
+			).toMatchObject({
+				vendor: "codex",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+			});
+		}
 		store.close();
 	});
 });

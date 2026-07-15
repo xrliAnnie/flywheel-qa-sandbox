@@ -60,6 +60,7 @@ import {
 	buildBatchProgress,
 } from "./fleet-progress.js";
 import type { FleetRouteDeps } from "./fleet-routes.js";
+import type { ManagementChangeCoordinator } from "./management-change-coordinator.js";
 import type { ManagementSnapshotV1 } from "./management-console-contract.js";
 import {
 	composeManagementSnapshot,
@@ -161,6 +162,7 @@ export class FleetConsole {
 		Pick<FleetConsoleOptions, "now" | "pidAlive" | "logger">
 	> &
 		FleetConsoleOptions;
+	private managementCoordinator?: ManagementChangeCoordinator;
 
 	constructor(opts: FleetConsoleOptions) {
 		this.o = {
@@ -174,6 +176,17 @@ export class FleetConsole {
 		// an unused console touches nothing at boot.
 		this.audit = new FleetAdminAudit(this.o.auditDbPath);
 		this.tokens = new ConfirmTokenStore();
+	}
+
+	setManagementCoordinator(coordinator: ManagementChangeCoordinator): void {
+		if (this.managementCoordinator) {
+			throw new Error("management coordinator is already configured");
+		}
+		this.managementCoordinator = coordinator;
+	}
+
+	getManagementCoordinator(): ManagementChangeCoordinator | undefined {
+		return this.managementCoordinator;
 	}
 
 	// ── Read model (§2.4) ──────────────────────────────────────────────────

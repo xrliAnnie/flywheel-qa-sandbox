@@ -5,7 +5,14 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CanonicalRequest } from "../bridge/fleet-admin.js";
 import { FleetConsole } from "../bridge/fleet-console.js";
+import { ManagementChangeCoordinator } from "../bridge/management-change-coordinator.js";
+import { buildTargetId } from "../bridge/management-console-contract.js";
 import { buildTopologyView } from "../bridge/management-topology-source.js";
+import {
+	type ManagementWriter,
+	ManagementWriterRegistry,
+	preparedChange,
+} from "../bridge/management-writer.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -47,6 +54,12 @@ const PROJECTS_JSON = JSON.stringify([
 			{ agentId: "oliver", chatChannel: "c2", match: { labels: ["ops"] } },
 		],
 	},
+]);
+
+const MANAGEMENT_TARGET = buildTargetId("runner", [
+	"geo",
+	"default",
+	"dispatch",
 ]);
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -106,6 +119,48 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 				},
 			],
 		});
+		let managementValue = "old";
+		const managementWriter: ManagementWriter = {
+			id: "mount-test-runner",
+			kind: "runner",
+			resolve: (targetId) =>
+				targetId === MANAGEMENT_TARGET
+					? {
+							targetId,
+							kind: "runner",
+							currentValue: managementValue,
+							sourceRevision: "file:runner-v1",
+							writeCapability: {
+								writable: true,
+								consequence: "new-run",
+								requiresAcknowledgement: false,
+							},
+						}
+					: null,
+			preflight(target, desired, observed) {
+				if (observed !== target.sourceRevision || typeof desired !== "string") {
+					return { ok: false, code: "stale_source", reason: "invalid" };
+				}
+				return preparedChange({
+					writer: managementWriter,
+					target,
+					newValue: desired,
+				});
+			},
+			apply(change) {
+				managementValue = change.newValue as string;
+				return { status: "applied" };
+			},
+		};
+		console_.setManagementCoordinator(
+			new ManagementChangeCoordinator({
+				registry: new ManagementWriterRegistry([managementWriter]),
+				tokens: console_.tokens,
+				audit: console_.audit,
+				journalDir: join(dir, "fleet-txns"),
+				snapshotRevision: () => "snapshot:mount-test",
+			}),
+		);
 		store = await StateStore.create(":memory:");
 		const app = createBridgeApp(
 			store,
@@ -172,6 +227,60 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 			body: JSON.stringify({ changes: [{ key: "geo-peter", toModel: null }] }),
 		});
 		expect(res.status).toBe(403);
+	});
+
+	it("unified stage/apply routes are loopback + same-origin and persist a canonical item result", async () => {
+		const cross = await fetch(`${baseUrl}/api/fleet/changes/stage`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Origin: "http://evil" },
+			body: JSON.stringify({ changes: [] }),
+		});
+		expect(cross.status).toBe(403);
+
+		const forged = await fetch(`${baseUrl}/api/fleet/changes/stage`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Origin: baseUrl },
+			body: JSON.stringify({
+				changes: [
+					{
+						targetId: MANAGEMENT_TARGET,
+						desiredValue: "new",
+						observedRevision: "file:runner-v1",
+						projectRoot: "/forged",
+					},
+				],
+			}),
+		});
+		expect(forged.status).toBe(400);
+
+		const stagedResponse = await fetch(`${baseUrl}/api/fleet/changes/stage`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Origin: baseUrl },
+			body: JSON.stringify({
+				changes: [
+					{
+						targetId: MANAGEMENT_TARGET,
+						desiredValue: "new",
+						observedRevision: "file:runner-v1",
+					},
+				],
+			}),
+		});
+		expect(stagedResponse.status).toBe(200);
+		const staged = (await stagedResponse.json()) as {
+			batch: unknown;
+			confirmToken: string;
+		};
+		const applied = await fetch(`${baseUrl}/api/fleet/changes/apply`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Origin: baseUrl },
+			body: JSON.stringify(staged),
+		});
+		expect(applied.status).toBe(200);
+		expect(await applied.json()).toMatchObject({
+			status: "applied",
+			items: [{ targetId: MANAGEMENT_TARGET, status: "applied" }],
+		});
 	});
 
 	it("FLY-709: flag stage/apply routes are mounted (cross-origin 403; unknown flag 400)", async () => {

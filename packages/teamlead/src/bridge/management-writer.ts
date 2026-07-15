@@ -52,7 +52,13 @@ export type ManagementPreflightResult =
 	| { ok: false; code: ManagementRejectCode; reason: string };
 
 export interface ManagementWriterResult {
-	status: "applied" | "no_op" | "rejected" | "rolled_back" | "partial";
+	status:
+		| "applied"
+		| "accepted"
+		| "no_op"
+		| "rejected"
+		| "rolled_back"
+		| "partial";
 	reason?: string;
 	details?: unknown;
 }
@@ -71,6 +77,9 @@ export interface ManagementWriter {
 	apply(
 		change: ManagementPreparedChange,
 	): ManagementWriterResult | Promise<ManagementWriterResult>;
+	applyGroup?(
+		changes: readonly ManagementPreparedChange[],
+	): ManagementWriterResult[] | Promise<ManagementWriterResult[]>;
 	rollback?(
 		change: ManagementPreparedChange,
 		result: ManagementWriterResult,

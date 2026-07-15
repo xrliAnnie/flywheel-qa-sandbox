@@ -329,15 +329,24 @@ import {
 	resolveProjectNameParam,
 } from "./linear-scope.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
+import { ManagementChangeCoordinator } from "./management-change-coordinator.js";
 import { fileSourceRevision } from "./management-console-contract.js";
-import { createManagementCronProvider } from "./management-cron-source.js";
+import {
+	createManagementCronProvider,
+	scanManagementCrons,
+} from "./management-cron-source.js";
+import { ManagementCronWriter } from "./management-cron-writer.js";
 import { createManagementDagProvider } from "./management-dag-source.js";
 import {
+	createExistingManagementWriters,
+	createManagementCronWriterAdapter,
+	createManagementDagWriter,
 	createManagementFlagProvider,
 	createManagementRunnerProvider,
 	managementFlagRevision,
 } from "./management-existing-writers.js";
 import { createManagementSsotProviders } from "./management-ssot-providers.js";
+import { ManagementWriterRegistry } from "./management-writer.js";
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { notifyDigestExpectTick } from "./notify-digest-expect.js";
@@ -1438,7 +1447,11 @@ export function createBridgeApp(
 						}
 					}
 				}
-				res.write(`event: progress\ndata: ${JSON.stringify({ batches })}\n\n`);
+				const managementBatches =
+					fleetConsole.getManagementCoordinator()?.listProgress() ?? [];
+				res.write(
+					`event: progress\ndata: ${JSON.stringify({ batches, managementBatches })}\n\n`,
+				);
 			};
 			push();
 			const timer = setInterval(push, 1000);
@@ -1491,6 +1504,44 @@ export function createBridgeApp(
 				selfOrigin,
 			);
 			res.status(r.status).json(r.body);
+		});
+
+		app.post("/api/fleet/changes/stage", async (req, res) => {
+			const selfOrigin = loopbackSelfOrigin(req.headers.host);
+			if (!selfOrigin) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			if (!ffIsSameOrigin(fleetHeaders(req), selfOrigin)) {
+				res.status(403).json({ error: "cross-origin" });
+				return;
+			}
+			const coordinator = fleetConsole.getManagementCoordinator();
+			if (!coordinator) {
+				res.status(503).json({ error: "management writes unavailable" });
+				return;
+			}
+			const result = await coordinator.stage(req.body, selfOrigin);
+			res.status(result.code).json(result.body);
+		});
+
+		app.post("/api/fleet/changes/apply", async (req, res) => {
+			const selfOrigin = loopbackSelfOrigin(req.headers.host);
+			if (!selfOrigin) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			if (!ffIsSameOrigin(fleetHeaders(req), selfOrigin)) {
+				res.status(403).json({ error: "cross-origin" });
+				return;
+			}
+			const coordinator = fleetConsole.getManagementCoordinator();
+			if (!coordinator) {
+				res.status(503).json({ error: "management writes unavailable" });
+				return;
+			}
+			const result = await coordinator.apply(req.body, selfOrigin);
+			res.status(result.code).json(result.body);
 		});
 
 		// FLY-709 P2: feature-flag toggle (copy-paste-apply). Same loopback +
@@ -3494,6 +3545,11 @@ export async function startBridge(
 			// visible on the next snapshot, no Bridge restart).
 			const ffConfigCache = new ProjectConfigCache();
 			const managementEnvPath = join(homedir(), ".flywheel", ".env");
+			const managementLaunchAgentsDir = join(
+				homedir(),
+				"Library",
+				"LaunchAgents",
+			);
 			void ffConfigCache.get(managementProjects).catch(() => {});
 			const refreshManagementSources = async () => {
 				const nextBytes = ffReadFileSync(managementProjectsPath, "utf-8");
@@ -3558,7 +3614,7 @@ export async function startBridge(
 								"registry:config-missing",
 						}),
 						createManagementCronProvider({
-							launchAgentsDir: join(homedir(), "Library", "LaunchAgents"),
+							launchAgentsDir: managementLaunchAgentsDir,
 							projects: () => managementProjects,
 						}),
 					],
@@ -3582,6 +3638,105 @@ export async function startBridge(
 							ffConfigCache.current(),
 						),
 					logger: (msg) => console.log(msg),
+				}),
+			);
+			const managementConsole = fleetConsole;
+			const scanCurrentCrons = () =>
+				scanManagementCrons({
+					launchAgentsDir: managementLaunchAgentsDir,
+					projects: managementProjects,
+				});
+			const cronAuthority = new ManagementCronWriter({
+				launchAgentsDir: managementLaunchAgentsDir,
+				uid: process.getuid?.() ?? 0,
+				targets: () => scanCurrentCrons().targets,
+			});
+			const existingWriters = createExistingManagementWriters({
+				projects: () => managementProjects,
+				projectsRevision: () => managementProjectsRevision,
+				projectConfigs: () => ffConfigCache.current(),
+				readProjectConfig: (path) => ffReadFileSync(path, "utf-8"),
+				applyLeadCanonical: (request) => {
+					if (!managementConsole.createLaunching(request.batchId, request)) {
+						return {
+							status: "rejected",
+							reason: "could not create Fleet engine journal",
+						};
+					}
+					if (!managementConsole.spawnEngine(request.batchId, request)) {
+						return {
+							status: "rejected",
+							reason: "Fleet engine spawn failed",
+						};
+					}
+					return {
+						status: "accepted",
+						details: { batchId: request.batchId },
+					};
+				},
+				envPath: managementEnvPath,
+				readEnvFile: (path) => ffReadFileSync(path, "utf-8"),
+				env: process.env,
+				flagViews: () =>
+					resolveAllFlags({
+						env: process.env,
+						projectConfigs: ffConfigCache.current(),
+					}),
+			});
+			managementConsole.setManagementCoordinator(
+				new ManagementChangeCoordinator({
+					registry: new ManagementWriterRegistry([
+						existingWriters.lead,
+						existingWriters.runner,
+						existingWriters.flag,
+						createManagementDagWriter({
+							store,
+							projectNames: () =>
+								managementProjects.map((project) => project.projectName),
+							actor: "founder-management-console",
+						}),
+						createManagementCronWriterAdapter({
+							writer: cronAuthority,
+							targets: () => scanCurrentCrons().targets,
+						}),
+					]),
+					tokens: managementConsole.tokens,
+					audit: managementConsole.audit,
+					journalDir: join(homedir(), ".flywheel", "fleet-txns"),
+					snapshotRevision: () =>
+						managementConsole.buildManagementSnapshot().snapshotRevision,
+					reconcileAccepted: (writerId, details) => {
+						if (writerId !== "existing-fleet-lead-v1") return null;
+						const batchId =
+							typeof details === "object" &&
+							details !== null &&
+							typeof (details as { batchId?: unknown }).batchId === "string"
+								? ((details as { batchId: string }).batchId as string)
+								: null;
+						if (!batchId) {
+							return {
+								status: "partial",
+								reason: "missing Fleet child batch id",
+							};
+						}
+						const progress = managementConsole.progressFor(batchId);
+						if (!progress || !progress.terminal) return null;
+						if (progress.batchStatus === "applied") {
+							return { status: "applied", details: { batchId } };
+						}
+						if (progress.batchStatus === "partially-applied") {
+							return {
+								status: "partial",
+								reason: "Fleet child batch partially applied",
+								details: { batchId },
+							};
+						}
+						return {
+							status: "rejected",
+							reason: `Fleet child batch ended ${progress.batchStatus}`,
+							details: { batchId },
+						};
+					},
 				}),
 			);
 			// R8 #2: on boot, reconcile any interrupted batch by engine liveness

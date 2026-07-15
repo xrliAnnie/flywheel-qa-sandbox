@@ -361,4 +361,81 @@ describe("existing management writer adapters", () => {
 		);
 		expect(result).toMatchObject({ ok: false, code: "invalid_desired_value" });
 	});
+
+	it("groups shared-authority changes into one Fleet batch and rebases sequential .env writes", async () => {
+		const multiProjects = () => {
+			const value = projects();
+			value[0]!.leads.push({
+				agentId: "flywheel-ops-lead",
+				backend: "claude-code",
+				model: "claude-fable-5",
+				effort: "high",
+			});
+			return value;
+		};
+		const fleetBatches: unknown[] = [];
+		let envFile = "";
+		const env: Record<string, string | undefined> = {};
+		const writers = createExistingManagementWriters({
+			projects: multiProjects,
+			projectsRevision: () => PROJECTS_REVISION,
+			projectConfigs: configs,
+			readProjectConfig: () => CONFIG,
+			readEnvFile: () => envFile,
+			writeEnvFile: (_path, content) => {
+				envFile = content;
+			},
+			flagLock: (fn) => fn(),
+			envPath: "/server/.flywheel/.env",
+			env,
+			flagViews: () => resolveAllFlags({ env, projectConfigs: configs() }),
+			applyLeadCanonical: async (batch) => {
+				fleetBatches.push(batch);
+				return { status: "accepted", details: { batchId: batch.batchId } };
+			},
+		});
+		const leadChanges = [];
+		for (const leadId of ["flywheel-eng-lead", "flywheel-ops-lead"]) {
+			const target = await writers.lead.resolve(
+				buildTargetId("lead", ["flywheel", leadId, "dispatch"]),
+			);
+			const checked = await writers.lead.preflight(
+				target!,
+				{
+					provider: "anthropic",
+					model: "claude-opus-4-8",
+					effort: "xhigh",
+				},
+				PROJECTS_REVISION,
+			);
+			if (!checked.ok) throw new Error(checked.reason);
+			leadChanges.push(checked.change);
+		}
+		const leadResults = await writers.lead.applyGroup!(leadChanges);
+		expect(leadResults).toHaveLength(2);
+		expect(fleetBatches).toHaveLength(1);
+		expect(fleetBatches[0]).toMatchObject({ changes: [{}, {}] });
+
+		const flagChanges = [];
+		for (const name of ["auto_qa_killswitch", "codex_hard_gate_killswitch"]) {
+			const target = await writers.flag.resolve(
+				buildTargetId("flag", [name, "global"]),
+			);
+			const checked = await writers.flag.preflight(
+				target!,
+				false,
+				target!.sourceRevision,
+			);
+			if (!checked.ok) throw new Error(checked.reason);
+			flagChanges.push(checked.change);
+		}
+		expect(await writers.flag.applyGroup!(flagChanges)).toEqual([
+			expect.objectContaining({ status: "applied" }),
+			expect.objectContaining({ status: "applied" }),
+		]);
+		expect(env).toMatchObject({
+			FLYWHEEL_AUTO_QA: "0",
+			FLYWHEEL_CODEX_HARD_GATE: "0",
+		});
+	});
 });
