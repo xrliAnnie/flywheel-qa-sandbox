@@ -106,7 +106,7 @@ Issue: FLY-1285 (https://linear.app/geoforge3d/issue/FLY-1285/incident-2026-07-1
 - **shape 顺序无关 + 穷举定形矩阵（R7 #3 + R8 #1）**：observation 首建 shape=**provisional**（shapeSource=observation）；由 coordinator 在 hold→episode transition **之前**凭正向证据**恰一次**定形。定形矩阵（穷举）：
   - active-hold `dead(scanComplete)` verdict → server_down。
   - reconcile **all-gone** 且换代 server reachable → server_fresh。
-  - reconcile **mixed**（R8 #1 裁决）：**仅当** hold 证据中持久记录的原世代（hold 创建时 inspect 的 serverPid/档案证据）与当前 reachablePid **可证不同** → server_fresh，且只 arm gone 子集；**无该世代证据 → 不伪造 shape**——present 子集释放、gone 子集**继续 hold** 等待证据（后续 tick 的 dead verdict 或世代证据自然定形），不创建 fleet episode。
+  - reconcile **mixed**（R8 #1 裁决 + R9 #2 证据入口）：**仅当** hold evidence 中持久记录的原世代 `originalServerPid` 与当前 reachablePid **可证不同** → server_fresh，且只 arm gone 子集；**无该世代证据 → 不伪造 shape**——present 子集释放、gone 子集**继续 hold** 等待证据（后续 tick 的 dead verdict 或世代证据自然定形），不创建 fleet episode。**世代证据的生产入口（R9 #2）**：supervisor 首次 observation 可选携带 `originalServerPid`——唯一合法来源是 `_wait_tmux_window` 已验证的四元组档案；Bridge 校验正整数后把 `{originalServerPid, source:"supervisor_archive"}` **仅在首建事务**写入 evidence，后续 report 不得覆盖。coordinator 首建的 hold 只写自己 inspect 正向取得的世代证据（取不到=absent）。测试经真实 endpoint/getOrCreateActiveTmuxHold 首建路径验证：证据持久化、Bridge 重启后仍在、后续 observation 无法篡改。
   - boot-leg 首建直接带 server_fresh 证据。probe=down 的证据永不升格为 fresh。
   - **transition API 在事务内断言 `shape !== provisional`**——不满足即零写入、继续 hold（provisional 在任何路径都不可能序列化进 server_loss_episode，二值 ledger 类型不动）。ledger intent armed 后 shape 不可再改。
   - 测试补：observation-first + reachable mixed（有/无世代证据两分支）；断言 provisional 永不进 ledger。
@@ -140,7 +140,7 @@ Issue: FLY-1285 (https://linear.app/geoforge3d/issue/FLY-1285/incident-2026-07-1
 | split_brain | 刷新证据继续 hold（ticket 已在） |
 
 **hold→episode transition 的事务边界（R4 #4：尊重 singleton ledger + outbox 分工）**：现有 `server_loss_episode` 是 id=1 单行 ledger（StateStore.ts:1831-1845,6604-6665），且迁移/CommDB 通知/Discord ticket 都不能在 SQLite 事务内执行。定义：
-- 事务内**只**做两件事：写/合并 durable server-loss ledger 的 intent（signature、shape=originalShape、claimed ids）+ 删除对应 tmux_hold 行。
+- 事务内**只**做两件事（R9 #1 收口——全文无任何 tmux_hold DELETE）：先断言 shape ≠ provisional，再写/合并 durable server-loss ledger 的 intent（signature、shape、claimed ids），并对对应 active 行做**条件更新 `SET resolved_at=<server time> WHERE incidentId=? AND normalized_socket_path=? AND resolved_at IS NULL`**——受影响行数必须恰为 1，否则整个事务回滚、继续 hold。测试断言 ledger arm 与 resolve stamp 在同一 commit。
 - singleton 冲突语义（R5 #2 定案）：**归并判据 = incidentId 精确相等**（hold 与 ledger intent 共享该持久身份，重启后仍可证明同一事件）。归并时对**新增 casualty 影响到的 Lead** 按现有 extension 语义（server-loss.ts:190-207）**原子 re-arm generation-scoped outbox**——把该 Lead 移出 notifiedLeads/failedLeads 并清其 notifyAttempts（casualty 清单变了必须重新欠账），无关 Lead 的状态原样保留；**若现有 episode 已 ticketDone=true → 视为不可安全归并**，保留 hold 等旧 episode 走完（episodeComplete 清账）后下一 tick 以 hold 的 incidentId 开新 episode——绝不静默维持"已完成"。incidentId 不等 → 保留 hold 等待。
 - 事务提交后，migrate/notify/alert 全部由**既有 coordinator outbox**（check() 的重放语义）执行——transition 只制造账本状态，不直接产生副作用。
 - 测试：已有 pending episode（同 incidentId 归并/不同 id 等待/ticketDone 前后两分支）；同 Lead 新 casualty 与不同 Lead 新 casualty 的 re-arm（每个 Lead 恰好再收一次、无关 Lead 不重复）；commit 后、首个副作用前 crash（重启后 outbox 重放恰一次）；transition 幂等重放。
