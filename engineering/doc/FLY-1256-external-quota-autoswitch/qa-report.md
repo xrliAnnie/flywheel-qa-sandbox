@@ -64,7 +64,16 @@ Founder 在 ship gate 追问「有没有跑真机 Discord E2E」。诚实纠正�
 
 **隔离验证**：生产 `~/.flywheel/alert-queue` / `alert-deadletter` / `alerts/claims.db` 三者**零改动**（before/after 快照对比）——测试告警绝不污染生产告警频道/队列。
 
-**结论**：FLY-1256 的 6-kind 白名单在真 Discord 上生效、真落地；`account_switched` 的 INFORMATIONAL 去票头是 **kind-specific** 的（对照 actionable kind 带票头证明不是全局关票头）。真机通知段 PASS。
+**「隔离 sink」到底是什么（澄清 founder 疑问）**：§2 那个 hermetic daemon 测试里，为了让 daemon 完全不碰网络、不碰真频道，我用了一个**假的告警接收端**（一个只把参数写进文件、然后打印 sent 的小脚本）—— 这个假接收端就是「隔离 sink」，它是**测试替身，不是产品的一部分**，也**不发 Discord**。它只用来证明「daemon 逻辑正确地调用了告警」。**它不能回答「真 Discord 会不会收到」这个问题** —— 所以本节（§2.5）另外单独做了「真发 Discord」测试。
+
+**真发 Discord 的铁证（founder 可点开看）**：告警**真的出现在** 529 QA Room 的真 Discord 频道 `#test-flywheel-alerts`（发送者 = 测试 bot `flywheel-test-1`，真时间戳），可点链接：
+- account_switched（成功切号通知，2026-07-15 08:23 PDT 新发）: https://discord.com/channels/1485787271192907816/1519421055805165842/1526972598548824065
+- account_switch_failed（切号失败）: https://discord.com/channels/1485787271192907816/1519421055805165842/1526970466403881176
+- quota_monitor_down（监控挂了）: https://discord.com/channels/1485787271192907816/1519421055805165842/1526970375601262763
+
+**为什么这是真投递不是 stub（FLY-583 教训）**：`lead-alert.sh`（daemon 的实际告警脚本）用 `curl`（真 User-Agent `curl/8.7.1`）真发到 Discord API，返回 HTTP 200，且消息**真的出现在频道里**（我又用 Discord API 把它读回来核对了渲染）。这不是 stub —— 若有 UA/投递问题，真发会暴露它（FLY-583 里 Python urllib 无 UA 被 403 的坑，curl 天然带 UA，不适用）。
+
+**结论**：真跑的时候 **Discord 会真的收到告警消息**。FLY-1256 的 6-kind 白名单在真 Discord 上生效、真落地；`account_switched` 的 INFORMATIONAL 去票头是 **kind-specific** 的（对照 actionable kind 带票头证明不是全局关票头）。生产告警频道全程零污染（用的是隔离测试频道）。真机通知段 PASS。
 
 ## 3. plan §7 其余真机场景覆盖来源
 
