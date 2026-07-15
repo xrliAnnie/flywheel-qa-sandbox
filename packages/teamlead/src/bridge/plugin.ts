@@ -227,6 +227,7 @@ import {
 	resolveDoneThreadReconcileConfig,
 	startDoneThreadReconcileScheduler,
 } from "./done-thread-reconcile.js";
+import { attachDeliveredAlertLifecycles } from "./drained-alert-routing.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
 import { createExternalMergeReconciler } from "./external-merge-reconcile.js";
@@ -8148,19 +8149,9 @@ export async function startBridge(
 				// thread + ticket lifecycle — otherwise every over-cap (rate-limited /
 				// transient-retry) alert silently bypasses the Hub. Best-effort each.
 				if (alertHub) {
-					for (const d of delivered) {
-						try {
-							await alertHub.attachThreadForDelivered(
-								d.payload,
-								d.channelId,
-								d.messageId,
-							);
-						} catch (err) {
-							console.warn(
-								`[Bridge] drained-thread attach failed: ${(err as Error).message}`,
-							);
-						}
-					}
+					await attachDeliveredAlertLifecycles(delivered, alertHub, (message) =>
+						console.warn(`[Bridge] ${message}`),
+					);
 				}
 				// Dead-letters happened → surface (Discord-independent).
 				if (deadLettered > 0) {

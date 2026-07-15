@@ -1112,6 +1112,20 @@ function titleFor(kind: AlertEventType): string {
 			return "Flywheel deploy failed";
 		case "deploy_degraded":
 			return "Flywheel deploy degraded";
+		// FLY-1256: never emitted by LeadWatchdog; the external quota monitor
+		// supplies its own title. Cases keep the shared union exhaustive.
+		case "account_switched":
+			return "Claude account switched";
+		case "quota_no_target":
+			return "No Claude account has quota";
+		case "quota_read_blind":
+			return "Claude quota monitor is blind";
+		case "account_switch_failed":
+			return "Claude account switch failed";
+		case "quota_revive_stuck":
+			return "Claude pane revive stuck";
+		case "quota_monitor_down":
+			return "Claude quota monitor down";
 		// FLY-1082: fleet kinds — never emitted by LeadWatchdog (the fleet
 		// sensors / server-loss coordinator / boot self-check build their own
 		// titles); cases exist for switch exhaustiveness.
@@ -1234,6 +1248,20 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A Flywheel deploy failed (restart / rollback / self-update). Shell-only kind via lead-alert.sh — see the shell alert body for specifics; check /tmp/flywheel-bridge.log and ~/.flywheel/deployed-sha.";
 		case "deploy_degraded":
 			return "A Flywheel deploy completed degraded (skipped/failed leads, plugin update problem, or idle-wait timeout). Shell-only kind via lead-alert.sh — see the shell alert body for specifics.";
+		// FLY-1256: never emitted by LeadWatchdog. The external daemon supplies
+		// account/quota/reset evidence in the real alert body.
+		case "account_switched":
+			return "The external quota monitor switched Claude accounts after verifying the target account had fresh quota.";
+		case "quota_no_target":
+			return "The external quota monitor found no fresh, usable target account under the configured thresholds.";
+		case "quota_read_blind":
+			return "The external quota monitor could not obtain trustworthy quota data; automatic switching is fail-closed.";
+		case "account_switch_failed":
+			return "The external quota monitor selected a verified target but the credential switch failed.";
+		case "quota_revive_stuck":
+			return "A Claude pane remained quota-stuck after the external monitor exhausted its audited revive budget.";
+		case "quota_monitor_down":
+			return "The launchd quota monitor stopped producing healthy polling evidence; inspect its run marker and logs.";
 		// FLY-1082: fleet kinds — never emitted by LeadWatchdog (their sensors
 		// build their own bodies); cases exist for switch exhaustiveness.
 		case "swap_pressure_high":

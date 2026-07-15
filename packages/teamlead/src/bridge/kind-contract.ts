@@ -141,6 +141,14 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	// never emits them; same legacy human posture as the other shell kinds.
 	deploy_failed: { owner: "claude", arc: "human_by_design" },
 	deploy_degraded: { owner: "claude", arc: "human_by_design" },
+	// FLY-1256: the quota monitor already performed (or deliberately declined)
+	// the switch/revive. Bridge ARC would duplicate an external safety action.
+	account_switched: { owner: "claude", arc: "human_by_design" },
+	quota_no_target: { owner: "claude", arc: "human_by_design" },
+	quota_read_blind: { owner: "claude", arc: "human_by_design" },
+	account_switch_failed: { owner: "claude", arc: "human_by_design" },
+	quota_revive_stuck: { owner: "claude", arc: "human_by_design" },
+	quota_monitor_down: { owner: "claude", arc: "human_by_design" },
 
 	// ── FLY-1082 fleet kinds — every one has a named owner + executable ARC
 	// (or an explicit (b) posture). Fleet-level failures never fall through to

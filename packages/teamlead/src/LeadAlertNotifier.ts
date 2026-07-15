@@ -188,6 +188,14 @@ export const ALERT_EVENT_TYPES = [
 	// the shared kind face (lead-alert.sh allowlist ↔ TS) has no drift.
 	"deploy_failed",
 	"deploy_degraded",
+	// FLY-1256: emitted by the external quota monitor. account_switched is a
+	// successful state-change notice; the other five are actionable failures.
+	"account_switched",
+	"quota_no_target",
+	"quota_read_blind",
+	"account_switch_failed",
+	"quota_revive_stuck",
+	"quota_monitor_down",
 	// ── FLY-1082: fleet-level failure kinds (the 2026-07-09 OOM incident gap —
 	// machine-wide failures had NO kind, so nobody owned them and the founder
 	// found out first). Every fleet kind has an owner + an explicit ARC posture
@@ -243,6 +251,15 @@ export const ALERT_EVENT_TYPES = [
 ] as const;
 
 export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];
+
+/** Root-only notices that must never open a ticket/thread/ARC lifecycle. */
+export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
+	"account_switched",
+]);
+
+export function isInformationalKind(kind: AlertEventType): boolean {
+	return INFORMATIONAL_KINDS.has(kind);
+}
 
 export type AlertSeverity = "info" | "warning" | "severe";
 
@@ -1159,7 +1176,10 @@ export class LeadAlertNotifier {
 				},
 				body: JSON.stringify({
 					content: formatContent(payload, {
-						ticketHeader: !!this.unifiedAlert && this.ticketsEnabled(),
+						ticketHeader:
+							!!this.unifiedAlert &&
+							this.ticketsEnabled() &&
+							!isInformationalKind(payload.eventType),
 					}),
 					// FLY-368 (Codex code R1 MEDIUM-3): suppress all mentions on the
 					// unified-channel root alert so an issue id / title / body can never
@@ -1217,7 +1237,13 @@ export class LeadAlertNotifier {
 	 * id degrades to plain text rather than a Discord-rejected mentions body.
 	 */
 	private ticketOwnerMention(payload: AlertPayload): string | null {
-		if (!this.unifiedAlert || !this.ticketsEnabled()) return null;
+		if (
+			!this.unifiedAlert ||
+			!this.ticketsEnabled() ||
+			isInformationalKind(payload.eventType)
+		) {
+			return null;
+		}
 		const id = payload.ticket?.ownerUserId?.trim();
 		return id && /^\d{17,20}$/.test(id) ? id : null;
 	}
