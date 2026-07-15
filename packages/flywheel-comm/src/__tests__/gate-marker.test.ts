@@ -120,6 +120,27 @@ describe("gate-marker (FLY-123)", () => {
 		expect(() => strict(dir, "exec-1")).toThrow(corruptPath);
 	});
 
+	it("strict enumeration rejects a marker whose answeredAt field is not a string", () => {
+		const malformedPath = join(dir, `${base.questionId}.json`);
+		writeFileSync(
+			malformedPath,
+			JSON.stringify({
+				...base,
+				createdAt: new Date().toISOString(),
+				answeredAt: true,
+			}),
+		);
+
+		const strict = (
+			gateMarkerModule as unknown as {
+				listGateMarkersForExecutionStrict?: StrictMarkerLister;
+			}
+		).listGateMarkersForExecutionStrict;
+		expect(strict).toBeTypeOf("function");
+		if (!strict) return;
+		expect(() => strict(dir, "exec-1")).toThrow(malformedPath);
+	});
+
 	it("strict enumeration treats an absent marker directory as a legitimate empty set", () => {
 		const strict = (
 			gateMarkerModule as unknown as {

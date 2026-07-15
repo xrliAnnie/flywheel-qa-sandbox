@@ -185,17 +185,37 @@ export function listGateMarkersForExecutionStrict(
 				`gate-marker: cannot read or parse ${path}: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
+		const marker = raw as Partial<Record<keyof GateMarker, unknown>>;
 		if (
 			typeof raw !== "object" ||
 			raw === null ||
-			typeof (raw as Partial<GateMarker>).questionId !== "string" ||
-			typeof (raw as Partial<GateMarker>).executionId !== "string" ||
-			`${(raw as Partial<GateMarker>).questionId}.json` !== file
+			Array.isArray(raw) ||
+			typeof marker.questionId !== "string" ||
+			!SAFE_QUESTION_ID.test(marker.questionId) ||
+			typeof marker.executionId !== "string" ||
+			typeof marker.backend !== "string" ||
+			typeof marker.vendor !== "string" ||
+			typeof marker.checkpoint !== "string" ||
+			typeof marker.createdAt !== "string" ||
+			(marker.answeredAt !== undefined &&
+				typeof marker.answeredAt !== "string") ||
+			(marker.timeoutMs !== undefined &&
+				(typeof marker.timeoutMs !== "number" ||
+					!Number.isFinite(marker.timeoutMs))) ||
+			(marker.timeoutBehavior !== undefined &&
+				marker.timeoutBehavior !== "fail-open" &&
+				marker.timeoutBehavior !== "fail-close") ||
+			(marker.timeoutBehaviorSource !== undefined &&
+				typeof marker.timeoutBehaviorSource !== "string") ||
+			(marker.cleanupTtlHours !== undefined &&
+				(typeof marker.cleanupTtlHours !== "number" ||
+					!Number.isFinite(marker.cleanupTtlHours))) ||
+			(marker.message !== undefined && typeof marker.message !== "string") ||
+			`${marker.questionId}.json` !== file
 		) {
 			throw new Error(`gate-marker: invalid marker shape at ${path}`);
 		}
-		const marker = raw as GateMarker;
-		if (marker.executionId === executionId) result.push(marker);
+		if (marker.executionId === executionId) result.push(marker as GateMarker);
 	}
 	return result;
 }
