@@ -96,6 +96,12 @@ describe("commdb-session-prune (FLY-638)", () => {
 
 		it("surfaces transaction failure and leaves session + gate intact", () => {
 			seed("e1", "completed");
+			db.enqueueRunnerPhaseWake(
+				"e1",
+				{ id: "wake-1", to: "e1", content: "retry design" },
+				1,
+			);
+			db.requestRunnerShutdown("e1", "shutdown-1", 2);
 			const qid = db.insertQuestion("e1", "lead-a", "ship?", {
 				checkpoint: "approve_to_ship",
 			});
@@ -108,6 +114,8 @@ describe("commdb-session-prune (FLY-638)", () => {
 			expect(result).toMatchObject({ ok: false, outcome: "failed" });
 			expect(db.getSession("e1")).toBeDefined();
 			expect(db.isQuestionPending(qid)).toBe(true);
+			expect(db.listRunnerPhaseWakes("e1")).toHaveLength(1);
+			expect(db.getRunnerShutdown("e1")?.request_id).toBe("shutdown-1");
 		});
 	});
 

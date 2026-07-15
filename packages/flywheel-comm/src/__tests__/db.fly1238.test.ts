@@ -66,6 +66,12 @@ describe("CommDB.finalizeSession (FLY-1238)", () => {
 
 	it("rolls gate retirement back when session deletion aborts", () => {
 		db.registerSession("exec-a", "window-a", "proj", "FLY-1238", "lead");
+		db.enqueueRunnerPhaseWake(
+			"exec-a",
+			{ id: "wake-a", to: "exec-a", content: "resume phase" },
+			1,
+		);
+		db.requestRunnerShutdown("exec-a", "shutdown-a", 2);
 		const qid = db.insertQuestion("exec-a", "lead", "ship?", {
 			checkpoint: "approve_to_ship",
 		});
@@ -93,5 +99,7 @@ describe("CommDB.finalizeSession (FLY-1238)", () => {
 			resolved_at: before?.resolved_at,
 			read_at: before?.read_at,
 		});
+		expect(db.listRunnerPhaseWakes("exec-a")).toHaveLength(1);
+		expect(db.getRunnerShutdown("exec-a")?.request_id).toBe("shutdown-a");
 	});
 });
