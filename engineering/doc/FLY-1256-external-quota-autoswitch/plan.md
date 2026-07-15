@@ -4,7 +4,7 @@ Issue: FLY-1256 (https://linear.app/geoforge3d/issue/FLY-1256/build-外部配额
 日期: 2026-07-14
 基于: exploration.md, research.md
 
-**Status**: codex-approved（Codex design review 5 轮：R1 14 + R2 7 + R3 4 + R4 3 全部采纳 → R5 APPROVED）· 等 founder v4 终版确认后生效（Lead 更正令 5b912c3f）
+**Status**: **final**——Codex design review 5 轮 APPROVED（R1 14 + R2 7 + R3 4 + R4 3 全采纳）+ founder v5 确认（含两条 v4 批注与 §8 default-enable 批注折入，Lead 指令 b935df6a 放行完成流程）
 **Implement 执行体**: Codex gpt-5.6-sol xhigh（founder 批复单，勿改）· TDD（RED→GREEN→REFACTOR）
 **版本号**: ship 时取空号（FLY-494 惯例）
 **Founder 输入**: 三轮拍板全部折入（exploration §6），第三轮为终版。
@@ -53,7 +53,7 @@ stateDiagram-v2
 | `packages/teamlead/bin/flywheel-quota-monitor` | bash thin launcher → `node dist/account-heal/quota-monitor-cli.js`（镜像 `flywheel-claude-freshness`；dist 缺失 exit 31 + wrapper 告警）。**登记进 `packages/teamlead/package.json` 的 `bin`/`files`** |
 | `scripts/flywheel-quota-monitor-wrapper.sh` | launchd wrapper（R2 高 5 修正）：① **env 优先级**——source `~/.flywheel/.env` 前快照所有 `FLYWHEEL_QUOTA_*`/`FLYWHEEL_CLAUDE_*` 已设值、source 后恢复（进程环境优先，QA 隔离 env 不被生产 .env 顶掉）；② dist 缺失 → **exec 前**告警 `quota_monitor_down` 并退出；③ **durable 运行标记模式**（FLY-927 同款，exec 后 shell 已不存在无法观察退出）：exec 前写 start marker，cli 优雅退出时删除；**下次启动**见残留 marker → 计入窗口内 streak，超阈 → `quota_monitor_down` crash-loop 告警；④ 然后 `exec` bin（launchd 保有直接 PID/信号所有权） |
 | `scripts/com.flywheel.quota-monitor.plist.template` | label `com.flywheel.quota-monitor`，KeepAlive+ThrottleInterval 30+RunAtLoad，日志 `/tmp/flywheel-quota-monitor.log`，`__HOME__` token 化 |
-| `scripts/setup-quota-monitor.sh` | **install 与 enable 分离**。默认（install）：渲染 plist → 若无配置则写 **`order: []`**（monitor-only 是唯一生成默认）→ bootstrap（**幂等处理已装 label**：已 bootstrap → bootout 后重 bootstrap 或明确打印 already-installed，绝不把 bootstrap 失败当成功）→ 探活 = **pidfile 活 + state 文件在一个 poll 周期内出现新鲜更新**。`--enable`：校验 founder 批准的非空 order（每项都必须可切换，见 §3.6 候选全集）→ 打印解析后的完整配置请操作者确认 → 写入 order。部分/非法清单拒绝启用 |
+| `scripts/setup-quota-monitor.sh` | **单命令 install+enable**（Annie v5 批注：merge 即 enable，不留 staged/灰度，default-enable 铁律）。默认：渲染 plist → 若无配置则写**含完整默认 order 的启用态配置**（前缀 = founder 已定 shopping→school，其余池账号按字母序垫底；运行时可改）→ 校验 order 每项可切换（§3.6 候选全集，非法项拒绝启动并 fail-loud）→ bootstrap（**幂等处理已装 label**：已 bootstrap → bootout 后重 bootstrap 或明确打印 already-installed，绝不把 bootstrap 失败当成功）→ 探活 = **pidfile 活 + state 文件在一个 poll 周期内出现新鲜更新**。`--monitor-only` 可选旗标（QA/诊断用途，写 order: []） |
 | `scripts/qa-fly-1256-quota-daemon-e2e.sh` | **可运行断言脚本**（非骨架）：本地 mock usage API（env 剧本）+ scratch keychain/pool/store/lock/缓存/state/pidfile + 隔离 tmux server（`tmux -L`，env `FLYWHEEL_QUOTA_TMUX_SOCKET`）+ 真 daemon 进程。断言链：缓存更新 → 触发 → 候选锁下验证调用序 → scratch Keychain 被换 → 注入的假卡 pane 被救活 → 告警落隔离通道；**全程零 claude 进程（ps 断言）**；exit 非零即失败 |
 
 ### 修改（byte-compat 扩展，默认路径字节不变）
@@ -96,7 +96,7 @@ stateDiagram-v2
 }
 ```
 
-- `order` 生成默认 = **空数组（monitor-only）**，唯一默认；founder 批准的完整顺序经 `setup-quota-monitor.sh --enable` 写入（§1）。资格线不是配置（第三轮拍板「有余额就行」= <100% 语义）。
+- `order` 生成默认 = **完整默认顺序**（前缀 shopping→school 为 founder 已定，其余池账号字母序垫底；Annie v5 批注：merge 即 enable，不留空表仪式）——她随时可经配置文件/dashboard 改（运行时生效）。`order: []` 仍是合法状态（= monitor-only，QA/诊断与配置损坏时的 fail-safe 语义保留）。资格线不是配置（第三轮拍板「有余额就行」= <100% 语义）。
 - 校验与不变量见 §1 config 行；写者（founder/dashboard 经 Bridge/setup）必须原子写。dashboard 对接 = Bridge 侧读写此文件的 API，Tadashi 与 HL 协调，不在本单（research §8 为合同）。
 - Env：`FLYWHEEL_QUOTA_MONITOR_CONFIG` / `FLYWHEEL_QUOTA_API_BASE` / `FLYWHEEL_QUOTA_STATUSLINE_CACHE` / `FLYWHEEL_QUOTA_TMUX_SOCKET` / `FLYWHEEL_QUOTA_STATE_PATH` / `FLYWHEEL_QUOTA_PIDFILE`；Keychain/池/store/锁复用既有 `FLYWHEEL_CLAUDE_*`。
 
@@ -133,7 +133,7 @@ stateDiagram-v2
 2. **R2**：daemon 零 token 落盘/零 token 日志（state/日志/告警 schema 断言 + `grep -i token` 哨兵）。
 3. **R3**：一切 Keychain/池写委托既有机制——`switchAccount → use` 与 `verifyPoolCredential`（后者是 FLY-871 既有池写路径，daemon 只在锁下调用它）；daemon 不含任何 `security add-generic-password`。
 4. **R4**：`preferredOrder` absent → 行为字节不变（既有测试零改动 + byte-compat 哨兵）。
-5. **R5**：monitor-only 缺省安全——order 空永不切号；install 不等于 enable。
+5. **R5**（Annie v5 批注改写：default-enable 铁律显式推翻 Codex R1-3 的 fail-safe 缺省姿态——founder authority）：**部署默认即启用**；安全边界改由三件保障：① order 空 / 配置损坏 → monitor-only 永不切号（机械 fail-safe 保留）；② kill-switch 事后应急（daemon 一键停 + Bridge 旧通道经 CUTOVER 撤销一键复活），初始状态 = 开；③ 无真空切换顺序（§8）。
 6. **R6**：恢复扫描只碰高置信 `quota_stuck`；其他形态零按键（对抗测试）。
 7. **R7**：例行候选扫描绝不 probe-refresh。
 8. **R8**（R3 高 3 精确化）：一切对 `.active`/store/池凭证的读改判定在账号锁下取一致快照；**usage endpoint 调用与告警发送绝不持账号锁**；**唯一刻意例外 = 有界的非 active freshness refresh**（`verifyPoolCredential` 的 active 复核 + OAuth 轮转 + 池写必须在锁内序列化——与既有 `switchAccount → use → freshness_guard` 持锁刷新行为一致；其 10s 超时 < 锁 120s stale-break 阈，锁测试覆盖此例外）；「切号前放锁」= daemon 外层复核锁在调 `switchAccount` 前释放（switchAccount 内部自取同一把锁）；写缓存/触发前复核快照未失效（interleaving 测试：手动 A→B 切插在每个边界含锁内段不可达性）。
@@ -145,7 +145,7 @@ stateDiagram-v2
 - **M3 恢复扫描**：**第一步 = 真机抓「卡配额对话框」pane fixture**（committed；抓不到就受控真机复现一次）→ 分类签名 + 解除按键契约 → quota-revive-scan + 对抗测试（R6）+ episode 持久化测试（重启/迟到对话框/pane-id 复用）。**M3 fixture 套件 = 退役门控翻转（§8）的硬前置**。
 - **M4 通知**：6 kind **四处**同步（lead-alert.sh whitelist + LeadAlertNotifier.ts ALERT_EVENT_TYPES + kind-contract.ts KIND_CONTRACTS(owner="claude") + bridge/__tests__/kind-contract.test.ts）+ INFORMATIONAL_KINDS 注册表（**定义于 LeadAlertNotifier.ts**）及三消费点（lead-alert.sh 镜像清单渲染 + notifier 重放渲染 + plugin Hub 旁路）+ shell↔TS parity 测试 + strict-delivery 结果映射封装。
 - **M5 Bridge 退役**：三个执行面双模式接线（enqueue/watchdog/HTTP route 410）+ pending 隔离 + runnerQuotaScan 解耦 + `FLYWHEEL_QUOTA_DAEMON_CUTOVER` 门控 + 两侧字节兼容/退役哨兵测试。**本 PR 不改 `KIND_CONTRACTS.usage_limit`**（两阶段迁移阶段一）；**flag 清理 + usage_limit 契约阶段二的 follow-up issue 必须在 CUTOVER 翻转前立案**（防临时兼容态意外永久化，R3 中 4）。
-- **M6 部署物料**：wrapper（fail-loud）+ plist 模板 + setup（install/--enable 分离、幂等、探活=新鲜 state）+ e2e 可运行断言脚本。
+- **M6 部署物料**：wrapper（fail-loud）+ plist 模板 + setup（单命令 install+enable、--monitor-only 旗标、幂等、探活=新鲜 state）+ e2e 可运行断言脚本（setup 单命令 install+enable 语义 + --monitor-only 旗标）。
 - **M7 收尾**：全仓 lint + 全测 + PR → Codex code review → 独立 QA。
 
 ## 7. 测试矩阵
@@ -157,12 +157,13 @@ stateDiagram-v2
 | e2e | `qa-fly-1256-quota-daemon-e2e.sh` 可运行断言（§1）：剧本「active 5h 92% → 触发 → 锁下候选验证 → 切号 → 假卡 pane 救活 → 新 active 3% → 告警落隔离通道」，exit 非零即失败 |
 | 真机 QA（QA 阶段 = Claude Opus） | ① 「Claude 全员假死」核心场景（隔离全套 + 零 claude 进程 ps 证明）含真 tmux 恢复段；② 未触发不切；③ 候选全无余额只告警；④ 与手动 CLI 并发 CAS noop；⑤ statusline 缓存回写真机对照；⑥ CUTOVER 翻转后 Bridge 三面不再执行（哨兵行为验证）+ 未翻转字节兼容对照；⑦ enable 窗口真池 rehearsal（founder-gated） |
 
-## 8. 上线与运维（有序切换，不留真空——R1 blocker 5）
+## 8. 上线与运维（merge 即 enable——Annie v5 批注；顺序仍不留真空——R1 blocker 5）
 
-1. **merge**：交付全部代码物料；daemon 不装不跑；`FLYWHEEL_QUOTA_DAEMON_CUTOVER` 未设 → Bridge 旧 wiring 字节原样（随批次重启也不改行为）。
-2. **切换窗口（founder-gated，一次做完）**：`setup-quota-monitor.sh` install（monitor-only）→ 观察 ≥1 个基础周期：state 新鲜、缓存回写、告警通道 preflight 通过、M3 fixture 套件绿 → Annie 确认完整 order → `--enable` → 验证一次真池 rehearsal（受控）→ **daemon 健康证明后**才设 `FLYWHEEL_QUOTA_DAEMON_CUTOVER=1` + 重启 Bridge（退役生效）。
-3. **回滚**：daemon 侧 `launchctl bootout` + 删 plist 即停；**回滚不撤销已发生的副作用**——Keychain 已切的账号、已轮转的池凭证、store generation/cooldown、config/state/缓存文件、alert claims/queue 记录都留存（如实列举，R1 中 14）；Bridge 侧退回 = 撤 `CUTOVER` env + 重启（旧 wiring 复活，作为应急回退路径保留到 flag 清理 follow-up 为止）。
+1. **merge 即 enable**（Annie v5 批注：不留 staged/灰度，default-enable 铁律）：merge 后的部署窗口一次完成——`setup-quota-monitor.sh`（单命令 install+enable，含默认 order）→ 脚本内建健康探活通过（pidfile + 新鲜 state；不通过即 fail-loud 停止后续步骤）→ 同窗口设 `FLYWHEEL_QUOTA_DAEMON_CUTOVER=1` + 重启 Bridge（旧管线退役）。顺序保证任一时刻至少一个切号器在岗（daemon 先健康、Bridge 后退役），但**不再有 founder 仪式 gate**。M3 真机 fixture 套件绿仍是本步骤的硬前置（随 PR 合入 = merge 时天然满足）。
+2. **kill-switch（事后应急，初始状态 = 开）**：daemon 侧 `launchctl bootout` + 删 plist 一键停；Bridge 侧撤 `CUTOVER` env + 重启 = 旧管线一键复活（保留到 flag 清理 follow-up 为止）。
+3. **回滚不撤销已发生的副作用**——Keychain 已切的账号、已轮转的池凭证、store generation/cooldown、config/state/缓存文件、alert claims/queue 记录都留存（如实列举，R1 中 14）；停 daemon 不会撤销最后一次切号。
 4. **观测**：`/tmp/flywheel-quota-monitor.log` 每 poll 一行 util；state 文件即健康快照；KeepAlive 自愈 + wrapper fail-loud + `quota_monitor_down` 三层兜底。
+5. **设计权属注**：本节的 default-enable 姿态是 Annie v5 批注对 Codex R1-3「order 空默认 + install/enable 分离」fail-safe 建议的显式推翻（founder authority，Lead 指令 b935df6a 定序直接进完成流程）；Codex 建议中保留的部分 = 配置损坏退 monitor-only、无真空切换顺序、幂等 bootstrap、kill-switch 双侧。
 
 ## 9. 风险与开放项
 
@@ -175,4 +176,5 @@ stateDiagram-v2
 | R-5 | 恢复扫描按键契约未知 | M3 fixture-first 硬前置（且为 CUTOVER 翻转硬前置） |
 | R-6 | edge case b（切号后偶发 re-login） | v1 只告警立界；复现 fixture 留根因调查 |
 | R-7 | 封号顾虑（Annie 首要） | 分级轮询 + 候选节流 + R7 + 429 恭敬退避；statusline 脚本自身刷新仍会跑（20min 轮询 > 其 10min 缓存年龄——research §2 已修正表述），合计预算仍远低于实测限额 |
-| R-8 | `FLYWHEEL_QUOTA_DAEMON_CUTOVER` 是新增 flag | 生命周期明确：切换窗口翻转 → 稳定运行后 flag 清理 follow-up issue（FLY-1136 纪律），PR 描述注明 |
+| R-8 | `FLYWHEEL_QUOTA_DAEMON_CUTOVER` 是新增 flag | 生命周期明确：部署窗口翻转（merge 即 enable，§8.1）→ 稳定运行后 flag 清理 follow-up issue（FLY-1136 纪律），PR 描述注明 |
+| R-9 | merge 即 enable = 新 daemon 无观察期直接上岗 | founder 铁律（Annie v5 批注）；缓冲 = M3 fixture 套件与全测试矩阵为 merge 硬前置 + 部署健康探活 fail-loud + kill-switch 双侧初始可用 + 真机 QA（§7 矩阵）在 merge 前完成 |

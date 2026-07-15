@@ -145,3 +145,4 @@ graph TB
 7. Annie 对 v4 的批注（2026-07-14 经 Lead 转达，f3f7c5bf）：
    - ① 触发必须纳入 weekly 耗尽（「5h 还有量但 weekly 耗尽同样不可用，任一窗口耗尽即触发」）——与 plan §9 R-1 既有边界解读完全一致，规则转正为 founder 拍板，设计零改动只明文化。
    - ② 提问「恢复扫描谁执行」——答复：执行主体 = 体外 daemon 自己（非 Bridge、非任何 AI），tmux 直扫直按；防误按三层 = 高置信签名（真机 fixture 定死）+ 按键序列 fixture 定死 + epoch 时限授权。答案入 v5 稿卡 3。
+8. Annie 对 v5 的答复（2026-07-14 经 Lead 转达，b935df6a）= **确认** + 一条批注：§7 上线方式改为 **merge 即 enable**（不留 staged/灰度，default-enable 铁律；kill-switch 留作事后应急、初始状态 = 开）——显式推翻 Codex R1-3 的 fail-safe 缺省姿态（founder authority），plan §8/R5/setup 已改写。设计其余部分无异议。**设计定稿。**
