@@ -84,7 +84,9 @@ describe("target7 pane identity — windowLive", () => {
 	// Codex R1 P1: omitting sessionName made EVERY window read dead (false PASS).
 	// It must fail loud, never silently report absence.
 	it.each([undefined, ""])("throws when sessionName is %p", (bad) => {
-		expect(() => windowLive("@303", panes, bad)).toThrow(/sessionName is required/);
+		expect(() => windowLive("@303", panes, bad)).toThrow(
+			/sessionName is required/,
+		);
 	});
 });
 
@@ -97,11 +99,13 @@ describe("target7 pane identity — windowLivenessMap (the observer's call shape
 	);
 
 	it("maps live and dead windows in one snapshot", () => {
-		expect(windowLivenessMap(["@303", "@304", "@999"], panes, SESSION)).toEqual({
-			"@303": true,
-			"@304": true,
-			"@999": false,
-		});
+		expect(windowLivenessMap(["@303", "@304", "@999"], panes, SESSION)).toEqual(
+			{
+				"@303": true,
+				"@304": true,
+				"@999": false,
+			},
+		);
 	});
 
 	it("reports every window live on an UNKNOWN snapshot (fail-closed)", () => {
@@ -125,7 +129,12 @@ describe("target7 pane identity — windowLivenessMap (the observer's call shape
 describe("target7 pane identity — paneSnapshotFromResult", () => {
 	it("parses a successful probe", () => {
 		expect(paneSnapshotFromResult(ok(`${SESSION}\t@303\td\t%11\n`))).toEqual([
-			{ sessionName: SESSION, windowId: "@303", windowName: "d", paneId: "%11" },
+			{
+				sessionName: SESSION,
+				windowId: "@303",
+				windowName: "d",
+				paneId: "%11",
+			},
 		]);
 	});
 
@@ -152,6 +161,8 @@ describe("target7 pane identity — paneSnapshotFromResult", () => {
 		"permission denied",
 		"",
 	])("returns UNKNOWN (not empty) for %p", (stderr) => {
-		expect(paneSnapshotFromResult({ status: 1, stdout: "", stderr })).toBeNull();
+		expect(
+			paneSnapshotFromResult({ status: 1, stdout: "", stderr }),
+		).toBeNull();
 	});
 });

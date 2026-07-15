@@ -68,7 +68,9 @@ function phaseHoldsPaused() {
 	return stateFiles.every((path) => {
 		if (!existsSync(path)) return false;
 		try {
-			return JSON.parse(readFileSync(path, "utf8")).phaseHold?.state === "paused";
+			return (
+				JSON.parse(readFileSync(path, "utf8")).phaseHold?.state === "paused"
+			);
 		} catch {
 			return false;
 		}
@@ -103,7 +105,9 @@ function snapshot() {
 	const sockets = Object.fromEntries(
 		socketPaths.map((path) => [path.split("/").at(-1), existsSync(path)]),
 	);
-	const daemons = Object.fromEntries(daemonPids.map((pid) => [pid, pidLive(pid)]));
+	const daemons = Object.fromEntries(
+		daemonPids.map((pid) => [pid, pidLive(pid)]),
+	);
 	return {
 		at: new Date().toISOString(),
 		phaseHoldsPaused: phaseHoldsPaused(),
