@@ -34,6 +34,20 @@ export interface TypedCronModelBinding {
 	selection: ModelSelection | null;
 	writable: boolean;
 	reason?: string;
+	/** Optional direct ProgramArguments carrier owned by this binding. */
+	modelArgumentIndex?: number;
+}
+
+/** Server-only authority record. Never serialize paths/bytes to the browser. */
+export interface CronSourceTarget {
+	path: string;
+	canonicalPath: string;
+	label: string;
+	plist: Record<string, unknown>;
+	bytes: Buffer;
+	fileSha: string;
+	view: ManagementCronView;
+	modelArgumentIndex: number | null;
 }
 
 export interface ScanManagementCronsInput {
@@ -273,25 +287,39 @@ function disabledLabels(output: string): Set<string> {
 function directModelBinding(args: unknown): {
 	selection: ModelSelection | null;
 	reason?: string;
+	argumentIndex: number | null;
 } {
 	if (!Array.isArray(args)) {
-		return { selection: null, reason: "未声明模型载体" };
+		return {
+			selection: null,
+			reason: "未声明模型载体",
+			argumentIndex: null,
+		};
 	}
-	const hits: string[] = [];
+	const hits: Array<{ model: string; index: number }> = [];
 	for (let index = 0; index < args.length - 1; index++) {
 		if (args[index] === "--model" && typeof args[index + 1] === "string") {
-			hits.push(args[index + 1] as string);
+			hits.push({ model: args[index + 1] as string, index });
 		}
 	}
 	if (hits.length !== 1) {
-		return { selection: null, reason: "未声明模型载体" };
+		return {
+			selection: null,
+			reason: "未声明模型载体",
+			argumentIndex: null,
+		};
 	}
-	const registered = getModelRegistryEntry(hits[0]!);
+	const hit = hits[0]!;
+	const registered = getModelRegistryEntry(hit.model);
 	if (
 		!registered ||
-		!isModelSelectionSupported({ surface: "cron", model: hits[0]! })
+		!isModelSelectionSupported({ surface: "cron", model: hit.model })
 	) {
-		return { selection: null, reason: "模型载体不受 registry 支持" };
+		return {
+			selection: null,
+			reason: "模型载体不受 registry 支持",
+			argumentIndex: null,
+		};
 	}
 	return {
 		selection: {
@@ -299,6 +327,7 @@ function directModelBinding(args: unknown): {
 			model: registered.id,
 			effort: null,
 		},
+		argumentIndex: hit.index,
 	};
 }
 
@@ -328,6 +357,7 @@ function canonicalPaths(
 export function scanManagementCrons(input: ScanManagementCronsInput): {
 	projectCrons: Array<{ projectName: string; crons: ManagementCronView[] }>;
 	unassignedCrons: ManagementCronView[];
+	targets: CronSourceTarget[];
 	revision: string;
 } {
 	const deps: ManagementCronIo = { ...DEFAULT_IO, ...input.deps };
@@ -362,6 +392,7 @@ export function scanManagementCrons(input: ScanManagementCronsInput): {
 		]),
 	);
 	const unassignedCrons: ManagementCronView[] = [];
+	const targets: CronSourceTarget[] = [];
 	for (const name of deps
 		.readdir(input.launchAgentsDir)
 		.filter((entry) => entry.endsWith(".plist"))
@@ -506,6 +537,16 @@ export function scanManagementCrons(input: ScanManagementCronsInput): {
 		};
 		if (ownership.projectName) byProject.get(ownership.projectName)?.push(cron);
 		else unassignedCrons.push(cron);
+		targets.push({
+			path,
+			canonicalPath,
+			label,
+			plist,
+			bytes,
+			fileSha: sourceRevision.slice("file:".length),
+			view: cron,
+			modelArgumentIndex: typed?.modelArgumentIndex ?? direct.argumentIndex,
+		});
 	}
 	const projectCrons = [...byProject.entries()].map(([projectName, crons]) => ({
 		projectName,
@@ -515,6 +556,7 @@ export function scanManagementCrons(input: ScanManagementCronsInput): {
 	return {
 		projectCrons,
 		unassignedCrons,
+		targets,
 		revision: `launchd:${canonicalSubmissionDigest({ projectCrons, unassignedCrons })}`,
 	};
 }
