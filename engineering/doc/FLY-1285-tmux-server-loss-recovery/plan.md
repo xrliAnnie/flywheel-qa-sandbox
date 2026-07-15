@@ -4,7 +4,7 @@ Issue: FLY-1285 (https://linear.app/geoforge3d/issue/FLY-1285/incident-2026-07-1
 日期: 2026-07-15
 基于: research.md
 
-**Status**: draft（codex design review Round 7 中；R1×10 + R2×8 + R3×8 + R4×6 + R5×5 + R6×2 已全量吸收）
+**Status**: draft（codex design review Round 9 中；R1×10 + R2×8 + R3×8 + R4×6 + R5×5 + R6×2 + R7×3 + R8×2 已全量吸收）
 **裁决来源**: brainstorm gate 已过（Tadashi 批 A/B/C 全量 + 四点裁决：PR-0 最先单独出 / runbook 附 research / B 加真机验收 / C 批准）。
 
 ## 核心安全原则（贯穿全计划）
@@ -97,13 +97,19 @@ Issue: FLY-1285 (https://linear.app/geoforge3d/issue/FLY-1285/incident-2026-07-1
 
 ### 3.2 ServerLossCoordinator + HeartbeatService + StateStore（R3 #4 修正：active-hold 穷举 + recover 原语 + 事务化）
 
-**durable hold（R5 #2/#3 + R6 #1：持久 incident identity + 原子分配协议）**：StateStore `tmux_hold` = `{incidentId, currentReason(kind): saturated|split_brain|ambiguous|unknown|rescue_failed|lock_unavailable, firstReason, reasonHistory[], evidence(JSON), affectedExecutionIds[], originalShape(server_down|server_fresh), created_at, last_checked_at}`——**correlation 身份 = 归一 socketPath + incidentId，绝不含易变的诊断 kind**（同一事件 kind 演化或双端同 tick 报不同 kind，都只落同一行/同一 episode）。**持久键不含 hostKey**：StateStore 本就是单机作用域（多机部署=FLY-1005 follow-up，届时再引入持久 host UUID）。
+**durable hold（R5 #2/#3 + R6 #1 + R8 #2 定稿 schema）**：StateStore `tmux_hold` = `{incidentId, normalized_socket_path, shape: provisional|server_down|server_fresh, shapeSource(observation|coordinator), currentReason(kind): saturated|split_brain|ambiguous|unknown|rescue_failed|lock_unavailable, firstReason, reasonHistory[], evidence(JSON), affectedExecutionIds[], created_at, last_checked_at, resolved_at}`——**correlation 身份 = 归一 socketPath + incidentId，绝不含易变的诊断 kind**。**生命周期 = 保留历史、绝不 DELETE**：一切 active 查询固定 `resolved_at IS NULL`；all-present resolve 与 hold→episode transition 都在各自原子事务内 **SET resolved_at**（transition 同事务 arm ledger）。migration 测试：同 socket 可有多条 resolved 历史但最多一条 active；Bridge crash/replay 不会把已 resolved 行重新激活。**持久键不含 hostKey**（StateStore 单机作用域；多机=FLY-1005 follow-up）。
 
 **incidentId 原子分配协议（R6 #1 + R7 #1 定案——id 只由 Bridge 分配，reporter 只回显不自选）**：StateStore 新方法 `getOrCreateActiveTmuxHold(normalizedSocketPath, observation)`，单事务内按**部分唯一索引 `UNIQUE(normalized_socket_path) WHERE resolved_at IS NULL`**（保留 resolved 历史行不受限）查建 active 行。**两阶段 wire contract**：
 - 首次 POST **不带** incidentId → Bridge 原子查建：active 行存在（无论来源/kind）→ 复用其不可变 id；不存在 → Bridge 生成新 uuid 建行。响应回传 canonical `incidentId`。
 - 收到 ack 后的重试/后续上报**必须回显**该 id（reporter 永不推导/自选，只 carry/echo）。判定规则：active=A + 请求带 A → merge（更新 reason/evidence/last_seen）；active=A + 请求带 B → **stale/mismatch 拒绝**（不改任何字段）；无 active + 请求带 A → **resolved/stale 拒绝，绝不 create**（防"resolve→旧重试→重建"循环）；只有全新的无 id 首报才可能创建新 uuid（supervisor 本地退出 hold 再重新进入 = 新的无 id 首报 = 新 id）。
 - **首建同一事务内完成安全初始化（hydration，R7 #2 收窄）**：**本票 observation 只接受当前 uid 的 canonical Flywheel default socket**（其它合法 path 一律 fail-closed 拒绝——现有 Session schema 无 socket 归属字段（StateStore.ts:635-662 只有 tmux_session/adapter_type），多 socket 模型不在本票；测试 override 用隔离 StateStore/QA slot）。对该 canonical path，hydration 明确等价于 `getRunningSessions().filter(isTmuxBacked)` → 写入 `affectedExecutionIds`。由此首次进入 hold 的同一 tick 起，HeartbeatService 即按 held ids 抑制三类 reaper——无"空 affectedExecutionIds 窗口"。
-- **originalShape 顺序无关（R7 #3）**：observation 首建时 shape 为 **provisional**（记 `shapeSource=observation`）；由 coordinator 在 hold→episode transition **之前**凭正向证据**恰一次**定形——active-hold 的 `dead(scanComplete)` verdict = server_down 证据；reconcile all-gone 且换代 server reachable = server_fresh 证据；boot-leg 首建则直接带 server_fresh 证据。ledger intent armed 后 shape 不可再改。probe=down 的证据永不升格为 fresh。
+- **shape 顺序无关 + 穷举定形矩阵（R7 #3 + R8 #1）**：observation 首建 shape=**provisional**（shapeSource=observation）；由 coordinator 在 hold→episode transition **之前**凭正向证据**恰一次**定形。定形矩阵（穷举）：
+  - active-hold `dead(scanComplete)` verdict → server_down。
+  - reconcile **all-gone** 且换代 server reachable → server_fresh。
+  - reconcile **mixed**（R8 #1 裁决）：**仅当** hold 证据中持久记录的原世代（hold 创建时 inspect 的 serverPid/档案证据）与当前 reachablePid **可证不同** → server_fresh，且只 arm gone 子集；**无该世代证据 → 不伪造 shape**——present 子集释放、gone 子集**继续 hold** 等待证据（后续 tick 的 dead verdict 或世代证据自然定形），不创建 fleet episode。
+  - boot-leg 首建直接带 server_fresh 证据。probe=down 的证据永不升格为 fresh。
+  - **transition API 在事务内断言 `shape !== provisional`**——不满足即零写入、继续 hold（provisional 在任何路径都不可能序列化进 server_loss_episode，二值 ledger 类型不动）。ledger intent armed 后 shape 不可再改。
+  - 测试补：observation-first + reachable mixed（有/无世代证据两分支）；断言 provisional 永不进 ledger。
 - 测试：不同 kind 的两个首次并发请求只生成一个 id；supervisor 先于 coordinator 上报时受影响 session 当 tick 即 held；Bridge 重启后复用同一 id；resolve 后新故障获新 id；**resolve 后到达的旧重试被拒绝且不重建**；错误 incidentId 不污染 active 行；合法但非 canonical path 不会 hold default fleet；observation-before-boot 与 boot-before-observation 得到同一 server_fresh（顺序无关）+ probe=down 不误升 fresh 反例。
 
 **tick leg（probe=down 时 inspect）**：
@@ -127,7 +133,7 @@ Issue: FLY-1285 (https://linear.app/geoforge3d/issue/FLY-1285/incident-2026-07-1
 **active-hold（存在 tmux_hold 时每 tick，七态穷举）**：
 | verdict | 动作 |
 |---|---|
-| reachable | target reconcile（四态）：all-present→清 hold+resolve ticket；all-gone→**hold→episode 幂等 transition（见下）**；mixed→gone 子集并入 transition、present 子集释放，transition 提交后才清 hold+resolve；indeterminate（任一 target 探测非硬证据）→ 继续 hold |
+| reachable | target reconcile（四态）：all-present→SET resolved_at+resolve ticket；all-gone→**hold→episode 幂等 transition（见下）**；mixed→按定形矩阵的 mixed 裁决（有世代证据→server_fresh 只 arm gone 子集；无→present 释放、gone 继续 hold）；indeterminate（任一 target 探测非硬证据）→ 继续 hold |
 | missing_single_orphan | marker 开→recover 重试；成功→转 reachable 分支对账；失败→继续 hold |
 | dead（scanComplete） | 原 server 真死 → 同款事务 arm episode（shape=originalShape）→ 清 hold |
 | saturated / ambiguous / unknown | 刷新证据/时间戳继续 hold |
