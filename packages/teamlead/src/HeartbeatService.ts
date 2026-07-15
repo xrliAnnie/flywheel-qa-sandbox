@@ -553,10 +553,7 @@ export class HeartbeatService implements ReconnectController {
 			// backfill query — skip WITHOUT an await so the pre-existing
 			// synchronous path to checkStuck's first store read is preserved
 			// under fake timers (CI caught the inserted microtask).
-			if (
-				zombieOn &&
-				typeof this.store.getZombieAlertBacklog === "function"
-			) {
+			if (zombieOn && typeof this.store.getZombieAlertBacklog === "function") {
 				await this.reconcileZombieAlertBacklog();
 			}
 			// FLY-1282 (code R1 #1): the single-flight guard is acquired HERE — at
