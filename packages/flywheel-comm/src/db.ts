@@ -83,6 +83,11 @@ export interface ThreeStageTurn {
 	granted_at: number;
 }
 
+export interface FinalizeSessionResult {
+	retiredQuestionCount: number;
+	deletedSessionCount: number;
+}
+
 export class CommDB {
 	private db: Database.Database;
 
@@ -1051,6 +1056,40 @@ export class CommDB {
 		return this.db
 			.prepare("SELECT * FROM sessions WHERE execution_id = ?")
 			.get(executionId) as Session | undefined;
+	}
+
+	/**
+	 * FLY-1238: atomically retire every unanswered checkpoint gate owned by a
+	 * runner and remove its session registry row. A checkpoint-less `ask` is not
+	 * a gate; an answered question is immutable history. Errors deliberately
+	 * propagate so teardown callers fail closed and retry the whole transaction.
+	 */
+	finalizeSession(executionId: string): FinalizeSessionResult {
+		return this.db.transaction((targetExecutionId: string) => {
+			const retired = this.db
+				.prepare(
+					`UPDATE messages AS q SET
+					   resolved_at = datetime('now'),
+					   read_at = COALESCE(read_at, datetime('now')),
+					   expires_at = datetime('now')
+					 WHERE q.from_agent = ?
+					   AND q.type = 'question'
+					   AND q.checkpoint IS NOT NULL
+					   AND q.resolved_at IS NULL
+					   AND NOT EXISTS (
+					     SELECT 1 FROM messages r
+					      WHERE r.parent_id = q.id AND r.type = 'response'
+					   )`,
+				)
+				.run(targetExecutionId).changes;
+			const deleted = this.db
+				.prepare("DELETE FROM sessions WHERE execution_id = ?")
+				.run(targetExecutionId).changes;
+			return {
+				retiredQuestionCount: retired,
+				deletedSessionCount: deleted,
+			};
+		})(executionId);
 	}
 
 	/**
