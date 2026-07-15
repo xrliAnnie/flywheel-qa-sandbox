@@ -1,14 +1,13 @@
 ---
 issue: FLY-1269
 phase: implement
-phaseCursor: 0/8
-updated: 2026-07-15T06:02:13.330Z
-nextStep: Poll architecture gate 8a9aa915-28c1-4abe-b474-f5b09390ac2c; continue
-  only on explicit approval of revised wake invariant
+phaseCursor: 1/8
+updated: 2026-07-15T06:10:06.727Z
+nextStep: "Task 1 RED: phase identity matrix and Codex park prompt contract"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1269 progress
-**phase**: implement (0/8)
-**next**: Poll architecture gate 8a9aa915-28c1-4abe-b474-f5b09390ac2c; continue only on explicit approval of revised wake invariant
+**phase**: implement (1/8)
+**next**: Task 1 RED: phase identity matrix and Codex park prompt contract
