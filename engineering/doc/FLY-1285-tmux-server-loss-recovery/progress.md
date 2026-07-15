@@ -2,12 +2,12 @@
 issue: FLY-1285
 phase: implement
 phaseCursor: 0/2
-updated: 2026-07-15T19:40:32.515Z
-nextStep: Audit PR-1 seams and write first failing rescue-library test
+updated: 2026-07-15T20:06:45.388Z
+nextStep: Implement PR-1 rescue, supervisor SSOT, and process takeover
 chunks: []
 pointers: {}
 ---
 
 # FLY-1285 progress
 **phase**: implement (0/2)
-**next**: Audit PR-1 seams and write first failing rescue-library test
+**next**: Implement PR-1 rescue, supervisor SSOT, and process takeover
