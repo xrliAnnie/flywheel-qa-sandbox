@@ -4,187 +4,168 @@ Issue: FLY-1285 (https://linear.app/geoforge3d/issue/FLY-1285/incident-2026-07-1
 日期: 2026-07-15
 基于: research.md
 
-**Status**: draft（codex design review Round 3 中；R1 十项 + R2 八项已全量吸收）
+**Status**: draft（codex design review Round 4 中；R1×10 + R2×8 + R3×8 已全量吸收）
 **裁决来源**: brainstorm gate 已过（Tadashi 批 A/B/C 全量 + 四点裁决：PR-0 最先单独出 / runbook 附 research / B 加真机验收 / C 批准）。
 
 ## 核心安全原则（贯穿全计划）
 
-1. **破坏性动作只接受正向证明**：创建 server、埋葬 session、清理旧 claude 的前置必须是"完整扫描证明"；`unknown` / `ambiguous` / `saturated` / `rescue_failed` / helper 缺失 / ps·lsof 失败一律 hold/backoff，绝不 fail-open。与 probeTmuxServer 三态约定（tmux-lookup.ts:259-279）同构。
-2. **诊断→决策→动作原子**：每 socket 一把跨进程锁，受保护动作（SIGUSR1 / create）只在锁内、且紧跟锁内 re-inspect 之后执行。
-3. **hold 可持久、可解除、有界升级、告警一次**：Bridge 侧 hold 落 StateStore；launch-hold / wait-hold / Bridge durable hold 共享同一 episode 语义——超阈值（默认 10min，env 可调）告警**恰一次**，收敛时 resolve；绝不无声挂死、绝不刷屏。
-4. **代码合入 ≠ 行为激活**：auto-SIGUSR1 受 feature gate（`FLYWHEEL_TMUX_AUTO_RESCUE`，默认 0=hold-only），只有全部 creator 都受 guard 的部署批次完成后才开启（§4）。
+1. **破坏性动作只接受正向证明**：创建 server、埋葬 session、清理旧 claude 的前置必须是"完整扫描证明"；`unknown` / `ambiguous` / `saturated` / `rescue_failed` / helper 缺失 / ps·lsof 失败一律 hold/backoff，绝不 fail-open（与 tmux-lookup.ts:259-279 三态约定同构）。
+2. **诊断→决策→动作原子**：每 socket 一把跨进程锁，受保护动作（SIGUSR1 / create）只在锁内、紧跟锁内 re-inspect 之后执行。
+3. **hold 可持久、可解除、有界升级、告警一次**：`tmux_hold` episode 的**单一权威是 Bridge/StateStore**（§3.3）；计时起点持久化，supervisor/Bridge 重启都不重置；收敛自动 resolve。
+4. **代码合入 ≠ 行为激活**：auto-SIGUSR1 由**每次调用现读的原子 activation marker** 控制（§4），不依赖进程启动时冻结的 env；merge 只带来代码，安全增益从激活批次的重启开始。
+5. **世代绑定**：一切 target 级 tmux 操作（判活、判死、发键、kill-window、档案清理）之前都必须验证"当前 reachablePid == 档案 serverPid"；世代不符则 windowId 不可信。
 
 ## 0. 总览与 PR 切分
 
 | PR | 内容 | 目标文件 | 生效方式 | 依赖 |
 |---|---|---|---|---|
 | PR-0 | 健康窗可配置（FLY-1290 载体，**最先单独出、独立小分支**） | scripts/restart-services.sh、scripts/lib/health-window.sh（新）+ 测试 | 下次跑 restart-services.sh 即生效 | 无 |
-| PR-1 | inspect/rescue 库（guarded-exec + 锁）+ supervisor 三态等待 + Fix C 互斥 + Fix B model/effort SSOT + tmux_hold 告警 kind（shell 侧） | scripts/lib/tmux-server-rescue.sh（新）、packages/teamlead/scripts/claude-lead.sh、scripts/lead-alert.sh（kind allowlist）+ 测试 | **supervisor 进程重启**才生效（运行中 bash 不重读磁盘脚本）；auto-rescue 默认 gate-off | 无（与 PR-0 并行可） |
-| PR-2 | Bridge/Runner 侧：ensureRunnerSession async 守卫 + ServerLossCoordinator 穷举裁决 + durable hold 贯通 reaper + tmux_split_brain/tmux_hold 告警契约（TS 侧）+ CLI sync | packages/claude-runner/src/TmuxAdapter.ts、packages/teamlead/src/bridge/{server-loss.ts,plugin.ts,sync-flywheel-hooks.ts,kind-contract.ts,ticket-owner-map.ts}、packages/teamlead/src/{HeartbeatService.ts,StateStore.ts,LeadAlertNotifier.ts} + 各自测试 | 需 Bridge 重启（与 PR-1 激活同批，§4） | PR-1 |
+| PR-1 | inspect/recover/ensure 库（显式协议 + 原子锁）+ supervisor 三态等待与世代绑定 + Fix C + Fix B + hold observation 上报 | scripts/lib/tmux-server-rescue.sh（新）、packages/teamlead/scripts/claude-lead.sh + 测试 | **supervisor 进程重启**生效；auto-rescue 由 marker 控制（默认无 marker=hold-only） | 无（与 PR-0 并行可） |
+| PR-2 | Bridge/Runner 侧：ensureRunnerSession 全程 async 守卫 + ServerLossCoordinator 穷举裁决与 active-hold 对账 + durable hold 贯通 reaper + tmux_split_brain/tmux_hold 契约 + hold-observation 端点 + CLI sync | packages/claude-runner/src/TmuxAdapter.ts、packages/teamlead/src/bridge/{server-loss.ts,plugin.ts,sync-flywheel-hooks.ts,kind-contract.ts,ticket-owner-map.ts}、packages/teamlead/src/{HeartbeatService.ts,StateStore.ts,LeadAlertNotifier.ts} + 各自测试 | 需 Bridge 重启（激活批次，§4） | PR-1 |
 
-三阶段管线注：本分支（flywheel-FLY-1285）为共享分支；PR-0 从 main 直接开小分支速出（Tadashi 裁决），PR-1/PR-2 在本分支交付（是否再拆按 implement 时 diff 体量与 Lead 意见定）。docs 随本分支 PR 合入。
+三阶段管线注：本分支为共享分支；PR-0 从 main 开小分支速出（Tadashi 裁决），PR-1/PR-2 在本分支交付（再拆与否按 implement 时体量与 Lead 意见）。docs 随本分支 PR 合入。
 
 ## 1. PR-0 — restart-services.sh 健康窗可配置
 
-### 改动
-1. 新极小可 source 单元 `scripts/lib/health-window.sh`：`resolve_health_window_sec`（读 `FLYWHEEL_BRIDGE_HEALTH_TIMEOUT_SEC`）+ `health_window_rounds`（ceil(sec/2)，sleep 2 不变，时间预算不缩水）。restart-services.sh 在 **`.env` source 之后**（:32-95 装载完成后）调用解析。
-2. 解析规则：未设/空 → 默认 **240**（实测冷启动 ~110s ×2 余量）；非法（非正整数）→ **回默认 240** + warning；合法但 <30 → clamp 30 + warning；合法 ≥30 → 原值。
-3. 两处 60s 硬窗（deploy :1288-1301、bridge-only ~:1380-1395）都改为消费同一 `health_window_rounds`；文案（:1362 dry-run、:1392 severe 告警）引用实际配置值。
-4. abnormal-exit 面包屑砍出 PR-0（follow-up 票）。
+1. 新 `scripts/lib/health-window.sh`（可 source 极小单元）：`resolve_health_window_sec`（读 `FLYWHEEL_BRIDGE_HEALTH_TIMEOUT_SEC`）+ `health_window_rounds`（ceil(sec/2)）。restart-services.sh 在 `.env` source（:32-95）**之后**解析。
+2. 解析：未设/空→默认 **240**；非法→**回 240**+warning；合法 <30→clamp 30+warning；≥30→原值。
+3. deploy（:1288-1301）与 bridge-only（~:1380-1395）两处循环都消费同一 `health_window_rounds`；:1362 dry-run 与 :1392 告警文案引用实际值。
+4. abnormal-exit 面包屑砍出（follow-up）。
 
-### 测试
-- 新 `scripts/__tests__/restart-health-window.test.sh`：source `scripts/lib/health-window.sh` 驱动**真实解析单元**：未设→240→120 轮；`=40`→20 轮；`=41`→21 轮（ceil）；`=5`→clamp 30+警告；`=abc`/`=-1`/`=0`→240+警告；`=60`→30 轮（旧行为等价哨兵）。
-- **两条生产路径各自的静态断言（R2 #8）**：分别对 deploy 与 bridge-only 循环段做文本断言——都消费 `health_window_rounds`、全文不再残留 `seq 1 30` / 写死 "60s" 的健康窗文案（各一条独立断言，防单侧漏改）。
-- 现有 5 个 `scripts/__tests__/restart-*.test.sh` 全绿。
+测试：`scripts/__tests__/restart-health-window.test.sh` source 真实单元（未设→120 轮；40→20；41→21；5→30+警告；abc/-1/0→240+警告；60→30 旧行为哨兵）+ **两条生产路径各自独立的静态断言**（都消费 health_window_rounds、无 `seq 1 30`/写死 60s 残留）+ 现有 5 个 restart-*.test.sh 全绿。
+验收：/health 第 90s 才 ok：`=60` 判失败、默认 240 判成功。
 
-### 验收
-- 打桩 /health 第 90s 才 ok：`=60` 判失败、默认 240 判成功，两侧断言。
+## 2. PR-1 — 库 + supervisor 接入 + Fix B + Fix C
 
-## 2. PR-1 — inspect/rescue 库 + supervisor 接入 + Fix B + Fix C
+### 2.1 `scripts/lib/tmux-server-rescue.sh`
 
-### 2.1 新库 `scripts/lib/tmux-server-rescue.sh`
+**(a) inspect**：`tmux_socket_inspect <socket_path>` → 单行 JSON `{"verdict","socketPresent","socketPath"(归一 /private/tmp),"reachablePid","candidatePids":[],"scanComplete"}`；verdict ∈ reachable|missing_single_orphan|saturated|dead|split_brain|ambiguous|unknown。判定与归一化同 v3（可达性 portable 有界 ≤3s；候选=同 uid+ppid==1+lsof 引用；ps/lsof 失败→scanComplete:false→unknown；候选>1 绝不自动选）。
 
-**(a) inspect**：`tmux_socket_inspect <socket_path>` → stdout 单行 JSON（诊断走 stderr）：
+**(b) 显式协议的 guarded 原语（R3 #1 定案）**——库绝不执行 caller shell function、绝不从 argv 猜目标：
 
-```json
-{"verdict":"reachable|missing_single_orphan|saturated|dead|split_brain|ambiguous|unknown",
- "socketPresent":true,"socketPath":"/private/tmp/tmux-501/default",
- "reachablePid":93009,"candidatePids":[3738],"scanComplete":true}
-```
+- `tmux_socket_ensure <socket> --verify <probe-argv...> --create <create-argv...>`：
+  - 两段 argv 必须都是**展开后的 `tmux -S <归一化路径> …`**（库校验 -S 存在且与 socket 一致，否则拒执行）。
+  - 锁内流程：re-inspect → `reachable`：先跑 --verify（目标已存在→成功返回 action=verified）；不存在→锁内跑 --create；create 失败→锁内再跑 --verify 区分并发 duplicate（存在=成功）与真失败（上抛）。`missing_single_orphan`+marker 开：SIGUSR1（发前对候选即时 ps/lsof 重验）→ 锁内等 socket 重现 → **完整 re-inspect 必须证明 reachablePid==被 signal 候选、scanComplete、无其它候选** → 才继续 verify/create；任一不满足→hold。`dead`（scanComplete）→ verify/create。`saturated`/`ambiguous`/`split_brain`/`unknown`/marker 关→对应 hold。
+  - 成功 JSON：`{"action":"verified|created|rescued_then_verified|rescued_then_created","createStdout":"...","reachablePid":N}`——**锁内最终 reachablePid 随结果返回**，caller 用它原子写四元组档案（不许解锁后另探世代）。退出码 0=成功；2/3/4=hold（saturated / ambiguous·split_brain / unknown）。
+- `tmux_socket_recover <socket>`（R3 #4：**never-create 原语**，供 `_wait_tmux_window` 与 Bridge coordinator 用）：锁内 inspect→仅在 missing_single_orphan+marker 开时走同款 SIGUSR1+postcondition；输出 `{"action":"reachable|rescued|hold_*","reachablePid":N}`；任何路径都不 create。
 
-- 路径归一：输入与 lsof 输出都归一到 `/private/tmp` 形态。
-- 判定：可达性 `tmux -S <path> display-message -p ok`（portable 有界等待 ≤3s，无 GNU timeout 假设）；候选扫描 = 同 uid、ppid==1 的 tmux 进程 × lsof 引用该路径；ps/lsof 失败 → scanComplete:false → unknown。组合：可达+零其它候选→reachable；可达+有候选→split_brain；不可达+socket 缺+恰一候选→missing_single_orphan；不可达+socket 缺+候选>1→ambiguous（绝不自动选最老）;不可达+socket 在+≥1 候选→saturated；不可达+scanComplete+零候选→dead；其余→unknown。
+**(c) 锁（R3 #3 定案：原子发布，消灭半写窗口）**：
+- 路径 `~/.flywheel/locks/tmux-<sha256(归一路径)前16>.lock/`（父目录预建、权限受控，冷启动可用）。
+- **取锁 = 先在同目录建临时目录写全 owner 文件（pid + ps lstart 序列化 + 随机 token），再 `mv`（rename）为锁名**——rename 原子，锁目录出现即带完整 owner，"mkdir 成功但 owner 半写"窗口不存在。
+- 陈旧回收：owner 完整且 pid+start-identity 证明已死 → 回收；**owner 缺失/损坏（异常态）→ 不回收、按独立 severe hold 处置**：记录 lock path/age，进 `tmux_hold` episode（kind=corrupt_lock），解除靠人工 runbook（research §4 附录补一节：审计 liveness 后手工移除锁目录）。
+- 释放校验 token；**库不安装全局 trap**（避免覆盖 claude-lead.sh 既有 supervisor trap）：库提供 `tmux_rescue_cleanup_lock` 函数，caller 在自己的 trap/cleanup 里调用；库内部关键段用显式失败路径释放。
+- 测试：rename 协议下无半写状态可观察（注入崩溃点断言锁要么不存在要么完整）；token 校验；完整 owner+已死才回收；corrupt lock→hold+告警；caller 既有 trap 仍执行。
+- dry-run env `FLY1285_RESCUE_DRY_RUN=1`；shellcheck；风格随 reap-orphan-adapters.sh。
 
-**(b) guarded exec（R2 #1 修正——语义是"确保目标存在"，不是"server 存在"）**：`tmux_socket_ensure <socket_path> -- <cmd...>`，传入命令**必须显式带同一 `-S <归一化路径>`**（库校验：cmd 不含 -S 或路径不一致 → 直接报错拒执行，防 override 测试打到 default）。锁内流程：
+### 2.2 claude-lead.sh 接入
 
-1. 取锁（见 (d)）→ 锁内 re-inspect。
-2. `reachable` → **锁内执行 cmd**（对 new-session -Ad 即幂等 attach/建 session；对 TmuxAdapter 的 create 即真建）。
-3. `missing_single_orphan` 且 gate 开 → SIGUSR1（发前对该 PID 即时 ps/lsof 重验）→ 锁内等 socket 重现 → **完整 re-inspect 必须证明 reachablePid == 被 signal 的候选、scanComplete、无其它候选**才算 rescued → 锁内执行 cmd；任一不满足 → 返回 hold（split/ambiguous/unknown 对应码）。gate 关 → 返回 hold。
-4. `dead`（scanComplete 前提）→ 锁内执行 cmd。
-5. `saturated`/`ambiguous`/`split_brain`/`unknown` → hold，不建不发信号。
-6. cmd 失败 → 锁内重查目标（session/window 是否已被并发方建出）：已存在 → 视为成功（并发 duplicate）；否则真失败上抛。
-- 输出结构化 JSON `{"action":"executed|rescued_then_executed|hold_saturated|hold_ambiguous|hold_split_brain|hold_unknown","createStdout":"..."}`——**保留 cmd stdout**（TmuxAdapter 依赖 `-P -F '#{window_id}'` 输出做 scaffold rename）。退出码：0=executed 类；2/3/4=对应 hold。
+**(a) `_tmux()` 包装**：`FLYWHEEL_TMUX_SOCKET_OVERRIDE` 非空→所有 tmux 调用注入 `-S`；默认空=逐字节现状。传给库的 --verify/--create 用**展开后的 argv**（由一个小构造函数生成 `tmux -S <path> …` 数组，与 _tmux 同源，绝不传 shell function 名，R3 #1）。
 
-**(c) feature gate**：`FLYWHEEL_TMUX_AUTO_RESCUE`（默认 0）：关 → 步骤 3 永远 hold（inspect/hold/锁语义照常，SIGUSR1 与 rescue-then-create 被禁）；开 → 全流程。hold-only 模式本身安全可先行（只阻止破坏性动作）。
+**(b) `ensure_tmux_session`** → `tmux_socket_ensure <path> --verify "tmux -S <path> has-session -t =flywheel" --create "tmux -S <path> new-session -Ad -s flywheel -x 200 -y 50"`；成功后把返回的 reachablePid 暂存供档案写入；hold→返回非零+`ENSURE_HOLD_KIND`。
 
-**(d) 锁（R2 #3 加固）**：锁目录放 `~/.flywheel/locks/tmux-<规范化路径的稳定 key（sha256 前 16 位）>.lock`（父目录预先可建、权限可验，不依赖 tmux-<uid> 目录存在——冷启动可用）。`mkdir` 原子取锁后写 owner 文件 = `pid + ps lstart 序列化 + 随机 token`；owner 缺失/半写 → **等待/hold，绝不回收**；只有 owner 完整且 pid+start-identity 证明已死才回收；释放校验 token；shell `trap` 兜底清锁。取锁有界等待（默认 5s）→ 超时按 unknown hold。
+**(c) main loop set -e 修正 + hold 升级**：同 v3（两处 if ! 包裹；hold 不进 crash/resume 计数、独立退避；超阈值（默认 10min）→ 提交 hold observation，见 §3.3——Bridge 可用走 observation 端点归入 durable episode，不可用 fallback 走 lead-alert.sh 一条**明确标注不可自动 resolve** 的 severe（dedupe 按 lead/socket/日））。
 
-- dry-run env `FLY1285_RESCUE_DRY_RUN=1`；风格随 reap-orphan-adapters.sh；shellcheck。
-
-### 2.2 claude-lead.sh 接入（Fix A 前半）
-
-**(a) `_tmux()` 包装**：`FLYWHEEL_TMUX_SOCKET_OVERRIDE` 非空时对所有 tmux 调用注入 `-S`；`ensure_tmux_session` 经 guarded exec 传入的命令同样由包装生成（保证 -S 一致性，R2 #1 尾）。默认空=现行为逐字节不变。
-
-**(b) `ensure_tmux_session`** → `tmux_socket_ensure <path> -- _tmux new-session -Ad -s flywheel -x 200 -y 50` 的展开形态；hold → 返回非零 + `ENSURE_HOLD_KIND`。
-
-**(c) main loop set -e 修正**：两处裸调用（:2392/:2423）改 `if !` 包裹；ensure 失败 → return 1（不写 session file、不起 poller、不进 wait）；`LAUNCH_OUTCOME=hold` → 独立 hold backoff 计数（不进 crash count / resume-failure）→ 连续 hold 超阈值（默认 10min，`FLYWHEEL_TMUX_HOLD_ESCALATE_SEC`）→ 经 lead-alert.sh 发 **`tmux_hold`**（新 kind，见 §3.3）恰一次（episode 语义），继续 hold。
-
-**(d) `_wait_tmux_window` 三态化 + 身份绑定（R2 #2 修正）**：
-- launch 成功即写**身份档案**（也是 Fix C 档案，四元组）：`serverPid（锁内 inspect 的 reachablePid）+ panePid（#{pane_pid}）+ pane start-identity（ps lstart）+ windowId`。
-- `list-panes` 成功 + pane_dead=1 → proven_dead（现路径）。
-- `list-panes` 成功 + 在 → alive。
-- `list-panes` 失败 → server_indeterminate → inspect：
-  - `reachable` → **不直接判死**：做 target 级二次探测——先验 server 世代（当前 reachablePid == 档案 serverPid），再对 windowId 做明确 absence 探测（stderr 匹配 can't find window/session/pane 类硬证据；timeout/EACCES 等 → 维持 indeterminate 继续等）。世代不符（server 换代）→ 档案 windowId 不可信，**绝不对同号 window 发键/kill**；此时若档案 panePid 仍活（按 pane start-identity 验证）→ 维持等待（旧 claude 或仍活在孤儿 server 上）；panePid 确死 → proven_window_gone。
-  - `missing_single_orphan` → 经 guarded rescue（gate 开才发信号）→ rescued 后验证恢复的正是档案 serverPid → 重查 windowId：在 → 回等待循环（不 reap 不 relaunch 不二次 resume）；确不在（硬证据）→ proven_window_gone。
-  - `saturated`/`ambiguous`/`split_brain`/`unknown` → 停留等待循环（周期性降噪日志 + 超阈值并入 tmux_hold episode 告警）。
-- **graceful cleanup() 在 indeterminate 期间的行为（R2 #2 尾）**：不得向可能重号的 window 发 C-c/kill-window，**不删除身份档案**（留给下一代 supervisor rescue/takeover 用）；仅在验明世代一致时才走现有优雅关闭序列。
+**(d) `_wait_tmux_window` 三态 + 全路径世代绑定（R3 #2 修正——成功分支也验）**：
+- launch 成功即写四元组档案：`serverPid（库返回的锁内 reachablePid）+ panePid + pane start-identity + windowId`。
+- **每次接受任何 target 级结果前**（含 `list-panes` 成功分支）：先验当前 reachablePid == 档案 serverPid（轻量：inspect 的可达性探针+lsof 比对，或 `tmux -S … display-message -p '#{pid}'`），再验 pane 的 PID+start-identity。世代不符 → windowId 全体作废：判活/判死只看档案 panePid 的 OS liveness（ps + start-identity）；**dialog poller、send-keys C-c、kill-window、档案清理在动作前都做同样的 live re-check**——绝不触碰新 server 的同号 window。
+- `list-panes` 失败 → server_indeterminate → `tmux_socket_recover`：reachable/rescued（且世代==档案）→ 硬证据 absence 探测（can't find window/session/pane 类 stderr 才算证明；timeout/EACCES 维持 indeterminate）→ proven_window_gone 或回等待；hold_* → 停留等待循环（降噪日志 + 并入 hold observation 升级）。
+- graceful cleanup() 在 indeterminate/世代不符时：不发键、不 kill、**不删档案**（留给下一代 supervisor takeover）。
 
 ### 2.3 Fix C — 双实例互斥
-
-- 档案即 2.2d 的四元组文件 `${PID_DIR}/${PROJECT_NAME}-${LEAD_ID}.claude.pid`。
-- 仅在 proven_dead / proven_window_gone 后的下一次 launch 前执行 `reap_stale_lead_claude`：读档案 → panePid 存活？→ TERM 前重验（command 含 claude + 本 lead 辨识 + start-identity 与档案一致；不符=PID 复用 → 只清档案）→ SIGTERM → ≤10s 轮询 → **KILL 前再重验** → SIGKILL → log。cleanup() 只在非 indeterminate 时清档案。
+同 v3：仅 proven_dead/proven_window_gone 后 reap；TERM 前重验（command 含 claude+lead 辨识+start-identity 一致；不符=PID 复用只清档案）→ TERM → ≤10s → **KILL 前再重验** → KILL。cleanup 只在非 indeterminate 清档案。
 
 ### 2.4 Fix B — model/effort 每次 launch 现读 manifest
-
-- `_resolve_launch_model_effort`（`_launch_claude` 内，产出本地 LAUNCH_ARGS；全局 CLAUDE_ARGS 不含 --model/--effort）：
-  - model：安全 `jq -r`（失败/损坏 → warning + 降级 env，set -e 保护）；manifest 非空(trim)→用之；空→env；仍空→不传。
-  - effort：保留 :1636-1676 语义——manifest `.effort` 先过 enum(low|medium|high|xhigh|max)；非法/空 → env 过 enum；仍非法/空 → 维持现状缺省（companion xhigh 回落不动）。
-  - **drift 日志真实性（R2 #8）**：`using manifest` 只在 manifest 值**通过校验后实际被采用**时打印；manifest effort 非法回落 env 时打 `invalid manifest effort → using env`——日志必须与最终 argv 一致，测试矩阵覆盖。
-- 字节兼容：manifest 无字段 → env → 逐字节同旧；launch-plan sentinel 按 FLY-217 先例 LEGITIMATE RETARGET。
-- 测试：扩展 `fly241-lead-model-override.test.sh`（manifest×env×drift×空白×jq 损坏×effort 非法链×日志一致性）；补 `claude-lead-manifest-preserve.test.sh` 的 effort preserve 断言。
-- 真机验收（Tadashi 裁决 ③）：QA slot 隔离 lead，manifest.model 改有效备选模型 → 自然 supervisor 重启路径 → 断言新 argv 用 manifest 值、旧值 argv 消失、plist/env 未动、drift 日志一行。
+同 v3（本地 resolver、jq 失败降级 env 不退出、effort enum 链保 :1636-1676 语义、日志与最终 argv 严格一致：`using manifest` 仅在校验通过且被采用时；`invalid manifest effort → using env`）。
+**真机验收（R3 #8 修正——必须证"自然 relaunch"而非重启 supervisor）**：QA slot 隔离 lead，改 manifest.model 为有效备选值后，**保持同一 supervisor PID**，只结束其当前 claude pane 进程触发既有 crash/relaunch 路径 → 断言：supervisor PID 未变、plist/进程 env 未变、新 claude argv 用 manifest 值且恰出现一次、旧 claude 不存活、无第二次 resume、drift 日志一行。另保留"supervisor 重启后同样生效"作部署验收（不替代核心证明）。
 
 ### 2.5 PR-1 测试
+- 库：七态 inspect 桩测；ensure 协议（verify-first / create 失败后锁内 verify 判 duplicate / createStdout 与 reachablePid 透传 / argv 无 -S 或不一致拒执行）；recover never-create；锁（rename 原子发布、崩溃注入无半写、token、corrupt→hold、caller trap 保留）；marker 关→全路径拒 SIGUSR1；rescue postcondition。
+- 真 tmux 隔离段：E1 saturated→hold；E2 rescued；E3 split_brain 拒 SIGUSR1；reachable+目标缺→create；override+default decoy 零扰动。
+- 并发赛跑：终态 `verdict=reachable + candidatePids=[] + reachablePid 为预期世代`。
+- supervisor：seam 测试（hold 计数/退避/observation 一次）；三态 wait；**世代陷阱三连测**：同号 window 下 (i) wait/判活不误读 (ii) dialog poller 不误发键 (iii) cleanup/TERM/KILL 不误杀且档案保留；indeterminate 期 SIGTERM 用例；Fix C 双重验证；Fix B 矩阵（含日志-argv 一致性）。
+- E1/E2 真机断言：旧 Lead PID 存活、session file 未改写、无二次 --resume。
 
-- rescue 库：mock 桩覆盖七态 inspect（归一化、scanComplete=false→unknown、候选>1→ambiguous、可达+候选→split_brain）、guarded exec（reachable 仍执行 cmd / cmd 失败后锁内重查并发 duplicate / createStdout 透传 / cmd 无 -S 拒执行）、锁（初始化窗口不误回收、token 校验、陈旧回收需完整 owner+已死证明、超时→hold）、gate 关→拒 SIGUSR1、rescue postcondition（reachablePid==被 signal 者才算 rescued）。
-- 真 tmux 隔离段：E1 saturated→hold；E2 missing_single_orphan→rescued；E3 场景 inspect 判 split_brain + 守卫拒 SIGUSR1；**"server reachable 但目标 session 不存在"→cmd 执行建出**；**override socket 旁放 default decoy**→全程 default 无扰动。
-- **并发赛跑 fixture**：rescue×create 两进程赛跑，终态断言 = `verdict=reachable + candidatePids=[] + reachablePid 为预期世代`（不只看 inode）。
-- supervisor：seam 测试驱动真 main loop（hold 不进 crash/resume 计数、无 session file 写入、退避序列、告警恰一次）；三态 wait（含 **"新 server 同号 window"不误判/不误杀**、**indeterminate 期间 SIGTERM**→不发键不删档案两个新例）；Fix C 双重验证；Fix B 矩阵。
-- E1/E2 真机验收断言：旧 Lead PID 全程存活、session file 未改写、无第二次 --resume。
+## 3. PR-2 — Bridge/Runner 侧
 
-## 3. PR-2 — Bridge/Runner 侧接入
+### 3.1 TmuxAdapter.ensureRunnerSession（R3 #5 修正：整段 async，含首探）
+- **删除前置同步 `has-session`**（:1184-1189）：ensure 全流程改为一个 async guarded-exec 依赖 seam——Promise execFile 调 `~/.flywheel/bin` rescue CLI 的 `ensure`（--verify has-session、--create new-session），per-attempt timeout + 总 deadline（默认 90s，env 可调，含锁等待）；`execute()`（:219-237）await 之。锁内 verify-first 语义天然覆盖"已存在"路径，无需 caller 先探。
+- typed hold（`tmux_saturated` 等）**不得被现有 fallback catch 吞掉**（:1191-1212 的二次 plain create 移除/同受 guard）：deadline 耗尽或 CLI 缺失 → 抛 typed error → 既有失败面（Blueprint success:false → DagDispatcher shelve），响亮日志；端到端 retryable dispatch 为 follow-up。
+- createStdout 透传保 `-P -F '#{window_id}'`；scaffold rename 逻辑消费之。
+- 测试：fake timers 证明"首探永不返回也不卡 event loop、deadline 后抛 typed hold"专用用例；等待期 event loop 可服务；四 backend（Claude/Codex/Antigravity/Kimi）继承路径；既有 ~110 it 全绿。
 
-### 3.1 TmuxAdapter.ensureRunnerSession（R2 #5 修正：async 非阻塞）
+### 3.2 ServerLossCoordinator + HeartbeatService + StateStore（R3 #4 修正：active-hold 穷举 + recover 原语 + 事务化）
 
-- 新增 **async guarded-exec 依赖 seam**（仅此新路径 async；TmuxAdapter 其余同步命令面不动）：非阻塞 `execFile`(Promise) 调 `~/.flywheel/bin` 的 rescue CLI + timer backoff；`execute()`（:219-237）在调 ensure 处显式 `await`。**绝不 sleep/execFileSync 重试**——Bridge event loop（run-infra.ts 直接实例化 adapter）在等待期间照常服务。
-- 预算：deadline 制（默认 90s，env 可调，含每次 helper/锁耗时）；到期或 CLI 缺失 → 抛 `tmux_saturated` 类 typed error → 既有失败面（Blueprint success:false → DagDispatcher shelve）——诚实封顶 + 响亮日志；端到端 retryable dispatch 为 follow-up 票。
-- 主 create 与 fallback create（:1191-1212）都走守卫；guarded exec 的 createStdout 透传保 `-P -F '#{window_id}'` 语义。
-- 测试：fake timers/短预算证明等待期 event loop 可运行；Claude/Codex/Antigravity/Kimi 四个 adapter 继承路径都过（它们共享 ensureRunnerSession seam）；既有 ~110 it 用例全绿（claude 路径字节兼容锚）。
+**durable hold**：StateStore `tmux_hold` = `{kind: saturated|split_brain|ambiguous|unknown|rescue_failed|corrupt_lock, evidence(JSON), affectedExecutionIds[], originalShape(server_down|server_fresh), created_at, last_checked_at}`。
 
-### 3.2 ServerLossCoordinator + HeartbeatService + StateStore（R2 #4 修正：穷举 + 收敛对账）
+**tick leg（probe=down 时 inspect）**：
+| verdict | 动作 |
+|---|---|
+| reachable | **建立短期 reconcile hold**（不埋葬；下一 active-hold 轮完成 target 对账——防 first-check 证据被消费后漏成组对账，R3 #4 尾） |
+| missing_single_orphan | marker 开→`tmux_socket_recover`；rescued→零埋葬+log-only；失败/关→hold |
+| saturated / ambiguous / unknown | durable hold |
+| split_brain | durable hold + `tmux_split_brain` ticket |
+| dead（scanComplete） | 现行 server_down 埋葬 |
 
-**durable hold**：StateStore `tmux_hold` 记录 = `{kind: saturated|split_brain|ambiguous|unknown|missing_orphan_rescue_failed, evidence(JSON：双方 PID、socketPath), affectedExecutionIds[], originalShape(server_down|server_fresh), created_at, last_checked_at}`——kind 面覆盖全部 hold 原因；受影响 execution ids 与原检测形状随 hold 落库（收敛对账要用）。
+**boot leg（probe=up + wasFirst + targetGone 全 true 时 inspect）**：
+| verdict | 动作 |
+|---|---|
+| reachable（scanComplete+零候选） | 正向证明单 server 换代 → 现行 server_fresh 成组迁移 |
+| split_brain / ambiguous | durable hold（split_brain 加 ticket）+ 零迁移 |
+| missing_single_orphan | marker 开→recover；成功零迁移；失败→hold |
+| saturated / unknown | durable hold + 零迁移 |
+| dead | 与 probe=up 矛盾 → 防御性按 unknown hold |
 
-**穷举裁决表（七 verdict 全列，implement 照抄）**：
+**active-hold（存在 tmux_hold 时每 tick，七态穷举）**：
+| verdict | 动作 |
+|---|---|
+| reachable | target reconcile（四态）：all-present→清 hold+resolve ticket；all-gone→**同一 StateStore 事务/幂等 transition：先 arm 对应 originalShape 的 server-loss episode（成组迁移/通知/ticket 复用既有机制）再清 hold**；mixed→gone 子集并入 episode arm、present 子集释放，episode transition 提交后才清 hold+resolve；indeterminate（任一 target 探测非硬证据）→ 继续 hold |
+| missing_single_orphan | marker 开→recover 重试；成功→转 reachable 分支对账；失败→继续 hold |
+| dead（scanComplete） | 原 server 真死 → 同款事务 arm episode（shape=originalShape）→ 清 hold |
+| saturated / ambiguous / unknown | 刷新证据/时间戳继续 hold |
+| split_brain | 刷新证据继续 hold（ticket 已在） |
 
-- tick leg（probe=down 时 inspect）：
-  | verdict | 动作 |
-  |---|---|
-  | reachable | 本 tick 零埋葬，下 tick 重探（probe 与 inspect 打架=瞬态） |
-  | missing_single_orphan | gate 开→锁内 rescue；成功→零埋葬+log-only `socket_lost_rescued`；失败/gate 关→hold |
-  | saturated / ambiguous / unknown | durable hold + holdTmux=true |
-  | split_brain | durable hold + `tmux_split_brain` ticket + holdTmux=true |
-  | dead（scanComplete） | 现行 server_down 埋葬路径不变 |
-- boot leg（probe=up + wasFirst + targetGone 全 true 时 inspect）：
-  | verdict | 动作 |
-  |---|---|
-  | **reachable（scanComplete + 零候选）** | **正向证明"单 server 正常换代"→ 现行 server_fresh 成组迁移**（R2 #4：这才是放行条件） |
-  | split_brain / ambiguous | durable hold + ticket（split_brain）+ 零迁移 |
-  | missing_single_orphan | gate 开→rescue→成功零迁移；失败→hold |
-  | saturated / unknown | durable hold + 零迁移 |
-  | dead | 与 probe=up 矛盾 → 按 unknown hold（防御） |
-- active-hold（存在 tmux_hold 时每 tick）：重新 inspect——未收敛 → 刷新 last_checked_at 继续 hold；**收敛（reachable+scanComplete+零候选）→ 同一 tick 内重验 affectedExecutionIds 的 target**：仍在 → 安全清 hold（+resolve ticket）；全部 gone → **先原子 arm server-loss episode（复用既有 grouped migration/通知/ticket 机制，shape 取 hold 的 originalShape）再清 hold**——保证 firstCheck 已消费后仍走成组对账而非 per-runner reaper（R2 #4 核心）；split ticket 只在该 reconcile transition 完成后 resolve。
+**HeartbeatService**：`check()` 返回 `{claimed, heldExecutionIds}`；三 reaper 对并集内 session 跳过破坏性动作；crash-reaper suppression（:1719-1733）加入同一判据；helper 缺失/异常→本 tick 全部 tmux-backed running 按 held（fail-closed）+ 日志。
 
-**HeartbeatService 贯通（抑制按 claimed ids，不用全局布尔）**：`check()` 返回 `{claimed, heldExecutionIds}`；`reapCrashedRunners()`/`checkStuck()`/`reapOrphans()` 对 `claimed ∪ heldExecutionIds` 内的 session 跳过破坏性动作（非 tmux session 与无关 session 照常处理）；crash-reaper suppression（:1719-1733）加入同一判据。helper 缺失/异常 → 本 tick 对全部 tmux-backed running session 按 held 处理（fail-closed）+ 日志。
+测试：三张表逐行用例；reconcile 四态（含 mixed）；事务原子性（arm 与 clear 同 commit、幂等重放）；hold 重启幸存；resolve 时机；既有 server-loss 用例全绿。
 
-- scope/测试：HeartbeatService.ts、StateStore.ts（+__tests__）、server-loss.test.ts 扩展（每张表逐行用例 + hold 持久/重启幸存/收敛两分支（target 在/全 gone→episode arm）/ticket resolve 时机 + 既有用例全绿）。
+### 3.3 `tmux_hold` 单一权威 + 告警契约（R3 #6 定案）
 
-### 3.3 告警契约（R2 #6 修正：设计期全定死）
-
-- **`tmux_split_brain`**（Bridge 侧新 kind）：`owner: "founder_direct"` + `arc: "human_by_design"`（owner 枚举=claude|codex|cross_by_provider|founder_direct，human_by_design 是 arc 字段——kind-contract.ts:46-56）；同步把该 kind 加入 ticket-owner-map.ts:67-75 的 no-owner 面。severity: severe；dedupe = 归一化 socketPath + 排序 PID 集；resolve = active-hold 收敛对账完成后 coordinator resolveTicket；metadata = `{socketPath, reachablePid, orphanPids, casualtiesHeld}`。ALERT_EVENT_TYPES / KIND_CONTRACTS / router / Hub / dedupe 的 exhaustive 测试全部随更（漏一处 typecheck/启动失败——列入验收）。
-- **`tmux_hold`**（supervisor + Bridge 共用的持久 hold 升级 kind，**不复用 crash_loop**——避免污染其每日 dedupe/文案/恢复语义）：owner: "claude"（infra-bot 可先行诊断）+ arc 按既有自动化 arc 面选择（implement 依 kind-contract 枚举落位，语义=可自动诊断、收敛自动 resolve）；severity: severe；dedupe = lead/socket + episode；升级阈值 10min；resolve = hold 清除。shell 侧 lead-alert.sh 的 kind allowlist（PR-1）与 TS union（PR-2）同步加入。launch-hold / wait-hold / Bridge durable hold 共享 episode timer 与"告警一次"语义。
-- **`socket_lost_rescued`**：log-only，无告警 kind。
+- **单一权威 = Bridge/StateStore**：durable `tmux_hold` episode + ticket 都由 Bridge 拥有；计时起点 = hold `created_at`（持久，双端重启不重置）；收敛 resolve 走 `AlertChannelHub.resolve()`（ticket 在 StateStore active thread 内，通道成立）。
+- **supervisor 上报 = hold observation**：PR-2 新增 Bridge 端点 `POST /api/tmux-hold-observation`（body：leadId/projectName/socketPath/kind/heldSinceTs；Bearer 同现有 API），Bridge 按 correlation key（归一 socketPath+kind）合并进同一 episode（若无则创建）；**双端并发上报合并为一**。supervisor 侧调用点 = 2.2c 的阈值触发。
+- **Bridge 不可用 fallback**：supervisor 走 lead-alert.sh 发一条 severe，正文明确"人工确认，无自动 resolve"，dedupe=lead/socket/日——不承诺 episode 语义（诚实降级）。
+- **kind 契约（全定死）**：`tmux_hold`：owner `"claude"`（infra-bot 诊断）、arc `"human_by_design"`（remediation=运维介入/runbook，收敛时系统自动 resolve 不代表 remediation 自动化）、severity severe、dedupe=归一 socketPath+kind+episode、升级阈值=observation 或 Bridge 自检 created_at 起 10min、resolve=active-hold 对账完成。`tmux_split_brain`：owner `"founder_direct"` + arc `"human_by_design"`（并加入 ticket-owner-map.ts:67-75 no-owner 面）、severity severe、dedupe=归一 socketPath+排序 PID 集、resolve=reconcile transition 完成后、metadata=`{socketPath,reachablePid,orphanPids,casualtiesHeld}`。`socket_lost_rescued`=log-only。
+- ALERT_EVENT_TYPES/KIND_CONTRACTS/router/Hub/dedupe/owner-map 的 exhaustive 测试全列 PR-2 验收；shell 侧 lead-alert.sh kind allowlist 在 PR-1 加入。
+- 测试：supervisor 重启计时不重置、Bridge 重启 episode 幸存、双端并发上报合一、fallback 路径。
 
 ### 3.4 PR-2 真机段（QA）
+隔离 socket 重演 server_fresh 假埋：零埋葬、split_brain ticket 恰一、hold 落库+重启幸存、收敛三分支（present→清；gone→事务 arm episode 后清；mixed→部分 arm）+ resolve 时机。
 
-- 隔离 socket 重演 server_fresh 假埋：零埋葬、split_brain ticket 恰一、hold 落库、Bridge 重启 hold 幸存、人工收敛后（a）target 仍在→hold 清除+ticket resolve、（b）target 全 gone→成组 episode 对账后才清——两分支都验。
+## 4. 部署与激活顺序（R3 #7 修正：marker 现读，不靠冻结 env）
 
-## 4. 部署与激活顺序（R2 #7 修正：合入与激活分离）
-
-1. PR-0 独立 merge（无重启面）。
-2. PR-1、PR-2 代码先后 merge；`FLYWHEEL_TMUX_AUTO_RESCUE` 默认 0——期间全 fleet 为 hold-only（安全增益即刻可有：不误顶替、不误埋，但不自动救）。
-3. **同一批量重启窗**完成激活，顺序：先 Bridge 重启（PR-2 生效：CLI sync 落位并验证、所有 Runner creator 受 guard）→ 再 supervisor 批量重启（PR-1 生效）→ 最后置 `FLYWHEEL_TMUX_AUTO_RESCUE=1`（~/.flywheel/.env）。QA 过渡用例：gate=0 时任何路径拒发 SIGUSR1。
-4. 活体 split-brain 收敛（research §4 runbook）由 Tadashi/founder 择机执行，建议在激活批次前完成。
-5. Follow-up 票：abnormal-exit 面包屑；Blueprint/DagDispatcher 端到端 retryable dispatch；tmux arm64 原生 build + 探测洪峰减载。
+1. PR-0 独立 merge。
+2. PR-1/PR-2 代码合入——**运行中进程不受影响**（不重读脚本/不加载新 dist）；此阶段无行为变化。
+3. **激活批次（一个批量重启窗）**：Bridge 重启（PR-2 dist 生效、CLI sync 落位验证、全 Runner creator 受 guard）→ supervisor 批量重启（PR-1 脚本生效，此时 marker 不存在=全 fleet hold-only，安全增益从这里开始）→ 验证 hold-only 行为正常 → **原子创建 activation marker `~/.flywheel/flags/tmux-auto-rescue.on`**（helper 每次调用现读，权限受控；创建即全 fleet 即时开启 auto-rescue，无需第二轮重启）。`FLYWHEEL_TMUX_AUTO_RESCUE` env 仅作测试覆盖（设了 env 以 env 为准）。
+4. QA 过渡用例：marker 不存在时全路径拒 SIGUSR1；创建 marker 后**真实运行中的进程**下一次调用即生效（验行为非验文件）。
+5. 活体 split-brain 收敛（research §4 runbook）建议在激活批次前由 Tadashi/founder 执行。
+6. Follow-up：abnormal-exit 面包屑；端到端 retryable dispatch；tmux arm64 + 探测洪峰减载。
 
 ## 5. 风险与缓解
-
-- **hold 卡住合法创建**：hold 有界升级（supervisor 10min 告警一次；TmuxAdapter 90s deadline 降级 shelve；Bridge hold 只停破坏性动作、按 held ids 精准抑制）；dead 正向证明下 create 放行——冷启动零候选+扫描完整即通过；锁移到 ~/.flywheel/locks 不依赖 tmux 目录存在。
-- **锁异常**：owner 三元组+token、半写不回收、超时→hold、trap 清理；持锁段毫秒~3s 级。
-- **SIGUSR1 打错/救错**：gate 默认关；三前置+signal 前即时重验+signal 后身份 postcondition（reachablePid==被 signal 者）。
-- **event loop 阻塞**：guarded exec 为 async seam + deadline，fake-timer 测试证明等待期可服务。
-- **supervisor 主循环改动**：全部显式 if 包裹 + seam 测试驱动真代码；世代绑定防同号 window 误杀。
-- **契约面遗漏**：KIND_CONTRACTS/router/owner-map/sync allowlist 均 exhaustive 测试，验收逐项打勾。
+- hold 卡创建：有界升级（10min observation→episode 告警；TmuxAdapter 90s deadline 降级 shelve；Bridge 按 held ids 精准抑制）；dead 正向证明放行冷启动；锁在 ~/.flywheel/locks 不依赖 tmux 目录。
+- 锁异常：rename 原子发布无半写；corrupt→hold+人工 runbook；token+start-identity 回收；不装全局 trap。
+- SIGUSR1 误发：marker 默认关；三前置+signal 前重验+postcondition（reachablePid==被 signal 者）。
+- event loop：整段 ensure async+deadline，fake-timer 专用用例。
+- 同号 window 误伤：核心原则 5 全路径世代校验，三连测覆盖 poller/cleanup/TERM-KILL。
+- 契约面遗漏：exhaustive 测试逐项验收。
 
 ## 6. 验收清单（QA 阶段照单执行）
-
-1. PR-0：解析矩阵 + `=60` vs 240 慢启动对照 + 两条生产循环的独立静态断言。
-2. E1 重演（隔离 -S + default decoy）：hold 不顶替、独立退避、tmux_hold 告警恰一次、恢复自动接续；旧 Lead PID 存活、session file 未改写、无二次 --resume。
-3. E2 重演：rescue 后窗口找回→回等待零动作；或硬证据判死→正常重启。
+1. PR-0：解析矩阵 + `=60` vs 240 慢启动对照 + 两条生产循环独立静态断言。
+2. E1 重演（隔离 -S + default decoy）：hold 不顶替、独立退避、tmux_hold 告警恰一次（episode 语义）、恢复自动接续；旧 Lead PID 存活、session file 未改写、无二次 --resume。
+3. E2 重演：recover 找回窗口→回等待零动作；或硬证据判死→正常重启。
 4. 并发赛跑：终态 verdict=reachable+candidatePids=[]+预期世代。
-5. 同号 window 陷阱：server 换代后不向新 server 同号 window 发键/kill；indeterminate 期 SIGTERM 不删档案。
-6. split-brain（Bridge）：零埋葬、ticket 恰一、hold 持久+重启幸存、收敛两分支（在→清；gone→先成组 episode 再清）+ resolve 时机。
-7. B 真机：staged manifest 改有效备选 model → supervisor 重启生效、plist/env 未动、drift 日志与 argv 一致（Tadashi 裁决 ③）。
-8. C 真机：proven 判死后四元组验证收敛旧 claude；indeterminate 绝不触碰。
-9. 激活过渡：gate=0 全路径拒 SIGUSR1；激活顺序 Bridge→supervisor→gate=1。
-10. 字节兼容锚：TmuxAdapter 既有套件（~110 it）、server-loss 既有用例、fly241-lead-model-override、claude-lead-manifest-preserve、launch-plan sentinel、5 个 restart-*.test.sh 全绿。
+5. 世代陷阱三连测 + indeterminate 期 SIGTERM 档案保留。
+6. split-brain（Bridge）：零埋葬、ticket 恰一、hold 持久+重启幸存、收敛三分支+resolve 时机。
+7. B 真机：**同一 supervisor PID** 下杀 claude pane 走自然 relaunch → manifest 值生效恰一次、plist/进程 env 未变、无二次 resume、drift 日志一致（Tadashi 裁决 ③）；另附 supervisor 重启部署验收。
+8. C 真机：proven 判死后四元组收敛；indeterminate 绝不触碰。
+9. 激活过渡：marker 缺失全路径拒 SIGUSR1；marker 创建后运行中进程行为即时翻转（行为级验证）。
+10. tmux_hold 权威：supervisor 重启计时不重置、Bridge 重启 episode 幸存、双端上报合一、Bridge-down fallback 文案正确。
+11. 字节兼容锚：TmuxAdapter 既有套件（~110 it）、server-loss 既有用例、fly241-lead-model-override、claude-lead-manifest-preserve、launch-plan sentinel、5 个 restart-*.test.sh 全绿。
