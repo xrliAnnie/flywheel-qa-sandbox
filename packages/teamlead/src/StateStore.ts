@@ -316,6 +316,22 @@ export interface FounderActionIntent {
 	dependsOn?: string;
 }
 
+/** FLY-1238: durable bounded-failure state for the merged-PR last-mile guard. */
+export interface MergedGateGuardFailureRow {
+	question_id: string;
+	source: string;
+	execution_id: string;
+	issue_id: string;
+	project_name: string;
+	attempts: number;
+	first_seen_ms: number;
+	next_retry_ms: number;
+	last_error?: string;
+	terminal: boolean;
+	alerted: boolean;
+	resolved_at?: string;
+}
+
 /** FLY-1099 §3.1: bounded-retry row for one pinned founder message. */
 export interface FounderReplyRetryRow {
 	thread_id: string;
@@ -1996,6 +2012,26 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_founder_action_status ON founder_action_ledger(status)",
 		);
+
+		// FLY-1238: a gh UNKNOWN cannot retry forever or silently degrade into
+		// posting a stale founder-facing message. Persist before the first probe.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS merged_gate_guard_failure (
+				question_id   TEXT NOT NULL,
+				source        TEXT NOT NULL,
+				execution_id  TEXT NOT NULL,
+				issue_id      TEXT NOT NULL,
+				project_name  TEXT NOT NULL,
+				attempts      INTEGER NOT NULL DEFAULT 0,
+				first_seen_ms INTEGER NOT NULL,
+				next_retry_ms INTEGER NOT NULL DEFAULT 0,
+				last_error    TEXT,
+				terminal      INTEGER NOT NULL DEFAULT 0,
+				alerted       INTEGER NOT NULL DEFAULT 0,
+				resolved_at   TEXT,
+				PRIMARY KEY (question_id, source)
+			)
+		`);
 
 		// FLY-1099 §3.1: bounded founder-reply retry ledger — the durable source
 		// for the cursor-pin watchdog AND the dead-letter decision. first_seen_ms
@@ -7660,6 +7696,211 @@ export class StateStore {
 	}
 
 	// ── FLY-1099: bounded founder-reply retry ledger ─────────────────────────
+
+	// FLY-1238: durable state for the merged-PR last-mile guard.
+	private rowToMergedGateGuardFailure(
+		row: Record<string, unknown>,
+	): MergedGateGuardFailureRow {
+		return {
+			question_id: row.question_id as string,
+			source: row.source as string,
+			execution_id: row.execution_id as string,
+			issue_id: row.issue_id as string,
+			project_name: row.project_name as string,
+			attempts: Number(row.attempts ?? 0),
+			first_seen_ms: Number(row.first_seen_ms),
+			next_retry_ms: Number(row.next_retry_ms ?? 0),
+			last_error: (row.last_error as string) ?? undefined,
+			terminal: Number(row.terminal ?? 0) === 1,
+			alerted: Number(row.alerted ?? 0) === 1,
+			resolved_at: (row.resolved_at as string) ?? undefined,
+		};
+	}
+
+	ensureMergedGateGuardFailure(input: {
+		questionId: string;
+		source: string;
+		executionId: string;
+		issueId: string;
+		projectName: string;
+		nowMs: number;
+	}): MergedGateGuardFailureRow {
+		this.db.run(
+			`INSERT OR IGNORE INTO merged_gate_guard_failure
+			   (question_id, source, execution_id, issue_id, project_name, first_seen_ms)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			[
+				input.questionId,
+				input.source,
+				input.executionId,
+				input.issueId,
+				input.projectName,
+				input.nowMs,
+			],
+		);
+		if (this.db.getRowsModified() > 0) this.save();
+		return this.getMergedGateGuardFailure(input.questionId, input.source)!;
+	}
+
+	getMergedGateGuardFailure(
+		questionId: string,
+		source: string,
+	): MergedGateGuardFailureRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM merged_gate_guard_failure WHERE question_id = ? AND source = ?",
+		);
+		stmt.bind([questionId, source]);
+		let row: MergedGateGuardFailureRow | undefined;
+		if (stmt.step()) {
+			row = this.rowToMergedGateGuardFailure(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return row;
+	}
+
+	recordMergedGateGuardUnknown(input: {
+		questionId: string;
+		source: string;
+		nowMs: number;
+		nextRetryMs: number;
+		error: string;
+		terminal: boolean;
+	}): MergedGateGuardFailureRow {
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE merged_gate_guard_failure
+				    SET attempts = attempts + 1, next_retry_ms = ?, last_error = ?,
+				        terminal = CASE WHEN ? THEN 1 ELSE terminal END
+				  WHERE question_id = ? AND source = ? AND resolved_at IS NULL`,
+				[
+					input.nextRetryMs,
+					input.error.slice(0, 500),
+					input.terminal ? 1 : 0,
+					input.questionId,
+					input.source,
+				],
+			);
+			if (!input.terminal) return;
+			const row = this.getMergedGateGuardFailure(
+				input.questionId,
+				input.source,
+			);
+			if (!row || row.alerted) return;
+			this.insertFounderActionRaw({
+				actionKey: `merged-gate-guard-unavailable-${input.questionId}-${input.source}`,
+				kind: "emit_alert",
+				executionId: row.execution_id,
+				issueId: row.issue_id,
+				projectName: row.project_name,
+				payload: {
+					alert: {
+						leadId: "",
+						projectName: row.project_name,
+						eventId: `merged-gate-guard-unavailable-${input.questionId}-${input.source}`,
+						eventType: "merged_gate_guard_unavailable",
+						title: `Merged gate guard unavailable — ${row.issue_id}`,
+						body:
+							`Suppressed founder-facing recovery for gate ${input.questionId} after ${row.attempts} inconclusive PR-state checks. ` +
+							"Check GitHub and retire or re-drive the gate manually.",
+						severity: "warning",
+					},
+				},
+			});
+			this.db.run(
+				`UPDATE merged_gate_guard_failure SET alerted = 1
+				  WHERE question_id = ? AND source = ?`,
+				[input.questionId, input.source],
+			);
+		});
+		this.save();
+		return this.getMergedGateGuardFailure(input.questionId, input.source)!;
+	}
+
+	resolveMergedGateGuardFailure(questionId: string, source: string): void {
+		this.db.run(
+			`UPDATE merged_gate_guard_failure SET resolved_at = datetime('now')
+			  WHERE question_id = ? AND source = ? AND resolved_at IS NULL`,
+			[questionId, source],
+		);
+		if (this.db.getRowsModified() > 0) this.save();
+	}
+
+	/** A MERGED verdict already suppresses output; this only retires artifacts. */
+	invalidateMergedGateArtifacts(input: {
+		executionId: string;
+		issueId: string;
+		projectName: string;
+		questionId: string;
+		prNumber: number;
+		source: string;
+		observedMergeCommitOid?: string;
+	}): {
+		invalidatedDeferredCount: number;
+		supersededActionCount: number;
+	} {
+		let invalidatedDeferredCount = 0;
+		let supersededActionCount = 0;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE founder_deferred_approval
+				    SET invalidated_at = datetime('now'), invalidated_reason = 'pr_merged'
+				  WHERE question_id = ? AND consumed_at IS NULL AND invalidated_at IS NULL`,
+				[input.questionId],
+			);
+			invalidatedDeferredCount = this.db.getRowsModified();
+
+			const pending = this.db.prepare(
+				`SELECT action_key, payload FROM founder_action_ledger
+				  WHERE execution_id = ? AND status = 'pending'
+				    AND kind IN ('held_reply','ttl_expired_notice','head_drift_notice','rebound_notice')`,
+			);
+			pending.bind([input.executionId]);
+			const matchingKeys: string[] = [];
+			while (pending.step()) {
+				const row = pending.getAsObject() as Record<string, unknown>;
+				try {
+					const payload = JSON.parse(String(row.payload)) as Record<
+						string,
+						unknown
+					>;
+					if (payload.questionId === input.questionId) {
+						matchingKeys.push(String(row.action_key));
+					}
+				} catch {
+					// Malformed payload: do not guess-match an action to another gate.
+				}
+			}
+			pending.free();
+			for (const actionKey of matchingKeys) {
+				this.db.run(
+					`UPDATE founder_action_ledger SET status = 'superseded', last_error = 'pr_merged'
+					  WHERE action_key = ? AND status = 'pending'`,
+					[actionKey],
+				);
+				supersededActionCount += this.db.getRowsModified();
+			}
+
+			this.insertAuditEventRaw({
+				event_id: `merged-gate-suppressed-${input.questionId}-${input.source}`,
+				execution_id: input.executionId,
+				issue_id: input.issueId,
+				project_name: input.projectName,
+				event_type: "merged_gate_suppressed",
+				source: `bridge.merged-gate-guard.${input.source}`,
+				payload: {
+					questionId: input.questionId,
+					prNumber: input.prNumber,
+					observedMergeCommitOid: input.observedMergeCommitOid,
+					invalidatedDeferredCount,
+					supersededActionCount,
+				},
+			});
+		});
+		this.save();
+		return { invalidatedDeferredCount, supersededActionCount };
+	}
 
 	private rowToFounderReplyRetry(
 		row: Record<string, unknown>,
