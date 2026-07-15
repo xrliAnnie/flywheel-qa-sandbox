@@ -1,9 +1,9 @@
 ---
 issue: FLY-1286
-phase: design
-phaseCursor: 5/5
-updated: 2026-07-15T11:10:17.461Z
-nextStep: Commit and push approved Design docs, complete phase_design_complete, park
+phase: implement
+phaseCursor: 1/6
+updated: 2026-07-15T11:13:59.623Z
+nextStep: Run runtime attestation and observer regression
 chunks:
   - id: onboard
     order: 1
@@ -15,8 +15,8 @@ pointers:
 ---
 
 # FLY-1286 progress
-**phase**: design (5/5)
-**next**: Commit and push approved Design docs, complete phase_design_complete, park
+**phase**: implement (1/6)
+**next**: Run runtime attestation and observer regression
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
