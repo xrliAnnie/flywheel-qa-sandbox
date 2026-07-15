@@ -74,12 +74,13 @@ Issue: FLY-1257 (https://linear.app/geoforge3d/issue/FLY-1257/fix-codex-常驻�
 ### 方案(按根因更正重排)
 
 - **主修(止血,必做)= 提示词/契约写死等门纪律 + CLI 硬闸**:Blueprint 的 codex
-  等门指引(brainstorm/review/question/generic 四处 isCodexRunner 分支)+
+  等门指引(brainstorm/review/question/generic/approve_to_ship 五处
+  `isCodexRunner` 分支)+
   codex-runner-contract.md 写死三条——(a) **资格≠指令**:平台允许你标 blocked
   不等于你应该标;(b) resident 持续 poll(节奏放缓),gate pending 不是 blocked;
   (c) 仅真实 timeout / error / reject 才走 fail-close。FLY-1255 本轮的正确行为即
-  参照。辅以 **CLI 硬闸**:`complete --route blocked` 在存在未答且未过 deadline
-  的 mandatory gate marker 时拒绝——同一条纪律从软提示变成硬约束,堵住误判的
+  参照。辅以 **CLI 硬闸**:`complete --route blocked` 在存在尚未被 watcher
+  解析/移除的 mandatory gate marker 时拒绝——同一条纪律从软提示变成硬约束,堵住误判的
   第二条出口。
 - **优化项(可独立摘除)= 便宜睡眠(原生 pause/resume)**:降低持续 poll 的
   回合/token 消耗。模型无独立工作时 runtime 把原生 goal 置 `paused`(协议面

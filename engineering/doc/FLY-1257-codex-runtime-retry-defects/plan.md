@@ -4,6 +4,19 @@ Issue: FLY-1257 (https://linear.app/geoforge3d/issue/FLY-1257/fix-codex-常驻�
 日期: 2026-07-14
 基于: research.md
 
+> **For Implement runner:** REQUIRED SUB-SKILL: `superpowers:test-driven-development`。
+> 本单由 Flywheel 三段式 pipeline 编排,不得改用 subagent/executing-plans 接管流程。
+
+**Goal:** 修复四个 2026-07-14 真机缺陷,让 Codex gate 等待与 three-stage retry
+在进程/Bridge 重启及 blocked 恢复窗口中都不丢生命周期状态。
+
+**Architecture:** 在现有权威 seam 上补防线,不另造平行状态机:gate marker 驱动
+Codex hold、CommDB `grantTurn` 驱动 belt、branch B 本地 ref 驱动 startPoint、
+StateStore `terminal_at` 驱动 zombie 时间序。每项独立 TDD commit,最后组合回归。
+
+**Tech Stack:** TypeScript, Node.js, Vitest, SQLite/sql.js, Codex app-server v2 Goal RPC,
+git worktree, pnpm monorepo。
+
 ## 目标
 
 修复 2026-07-14 实战暴露的 4 个运行时/生命周期缺陷,各自带以实战场景为 fixture
@@ -25,6 +38,18 @@ Issue: FLY-1257 (https://linear.app/geoforge3d/issue/FLY-1257/fix-codex-常驻�
 
 模型分工(dispatch 锁定):Implement=Codex gpt-5.6-sol xhigh · QA=Claude Opus。
 
+## File map
+
+| 单元 | 生产文件职责 | 测试文件 |
+|---|---|---|
+| M1 prompt/contract | `packages/edge-worker/src/Blueprint.ts` 统一五处等门铁律;`packages/claude-runner/agents/codex-runner-contract.md` 固化 resident 规则 | `packages/edge-worker/src/__tests__/Blueprint.fly1188-codex-prompt.test.ts`;`Blueprint.fly1188-codex-identity.test.ts` |
+| M1 CLI guard | `packages/flywheel-comm/src/gate-marker.ts` strict 枚举;`packages/flywheel-comm/src/commands/complete.ts` blocked guard | `packages/flywheel-comm/src/__tests__/gate-marker.test.ts`;`complete.test.ts` |
+| M1 runtime hold | `packages/claude-runner/src/codex-daemon-client.ts` 分类/持有;`codex-daemon-goal-runtime.ts` 跨 transport latch;`CodexTmuxAdapter.ts` 持久 latch | `packages/claude-runner/test/codex-daemon-client.test.ts`;`codex-daemon-goal-runtime.test.ts`;`CodexTmuxAdapter.test.ts` |
+| M1 kill-switch | `packages/config/src/feature-flags/registry.ts` 注册 `FLYWHEEL_CODEX_GATE_WAIT` | `packages/config/src/__tests__/feature-flags-registry.test.ts`;`feature-flags-drift.test.ts` |
+| M2/M3 retry | `packages/teamlead/src/bridge/run-dispatcher.ts` pre-launch cleanup/TURN/startPoint 消费;`run-infra.ts` branch-tip 三态 probe 注入 | `packages/teamlead/src/bridge/__tests__/run-dispatcher-fly887-turn-seam.test.ts`;`packages/teamlead/src/__tests__/run-dispatcher.test.ts`;`packages/edge-worker/src/__tests__/Blueprint.fly887-worktree-takeover.test.ts` |
+| M4 gate chronology | `packages/teamlead/src/StateStore.ts` terminal_at;`bridge/zombie-gate-hygiene.ts` 时间序;`bridge/gate-poller.ts` created_at 透传 | `packages/teamlead/src/__tests__/StateStore.test.ts`;`bridge/__tests__/zombie-gate-watchdog.test.ts`;`packages/teamlead/src/__tests__/gate-poller.test.ts` |
+| M-opt | `packages/claude-runner` 同 M1 runtime 文件;probe 只写 `engineering/doc/FLY-1257-codex-runtime-retry-defects/qa/m0-paused-probe.md` + `m0-paused-probe.mjs.txt` | 同 M1 runtime 测试 |
+
 ## Mermaid — ①修后的等门行为
 
 ```mermaid
@@ -39,7 +64,7 @@ sequenceDiagram
         M->>DB: check <id> → pending
     end
     alt 模型仍误判 update_goal(blocked)
-        L->>L: blocked && isWaiting() → 不当终态,本地持有(M1-e)
+        L->>L: blocked && isWaiting() → 不当终态,本地持有(M1-d)
         W->>DB: marker 被答/超时 → 解析并移除
         L->>M: 重设同 objective active + kick(跑 check 按语义行动)
     else 模型误跑 complete --route blocked
@@ -89,14 +114,15 @@ blocked(CLI 会拒绝)**。以 FLY-1255 的正确行为为参照措辞。
   `complete --route blocked` 误 fail-close。判定用 **adapter 注入的 marker-dir
   env**(即 gate-marker.ts 的 defaultGateMarkerDir 所读的那个 env 变量)作
   discriminant:env 缺失(Claude / 非 marker 形态)→ **整个 guard 跳过,
-  byte-compat**;env 已注入但目录不存在(codex 接线坏)→ fail-close 拒绝
-  (wiring error);env 已注入且目录在 → strict 扫描。
+  byte-compat**;env 已注入但目录不存在→按「尚未写过 marker」的合法空集放行
+  (adapter 只注入路径,目录由第一次 `gate` 写入时创建);env 已注入且目录在 →
+  strict 扫描。
 - **新 strict 枚举 seam**(Codex R2 #1):现有 `listGateMarkersForExecution`
   是刻意容错的(静默跳过不可读/损坏文件)——**不能全局改严格**,否则回归
   CodexTmuxAdapter 的 isWaiting/watcher 容错扫描。在 gate-marker.ts 加独立
   strict 入口(如 `listGateMarkersForExecutionStrict(dir, execId)` 或第三参
-  `{strict:true}`,默认行为字节不变):任一文件 read/parse/permission 失败 =
-  **unknown → 拒绝**。guard 走 strict 入口。
+  `{strict:true}`,默认行为字节不变):目录 ENOENT = 空集;目录存在时任一文件
+  read/parse/permission 失败 = **unknown → 拒绝**。guard 走 strict 入口。
 - 存在**任何未答**(`!answeredAt`)checkpoint marker → 拒绝(exit 非零,
   stderr:「你有未答的 <checkpoint> gate(question <id>);等门不是 blocked——
   继续 poll check;该门被答复/被 watcher 超时解析后此路自然放行」)。
@@ -133,11 +159,17 @@ probe**(blocked 终态下 dispatcher 本就不再续跑 = 不烧回合,本地持
   `thread/goal/get` preflight。**preflight 判定带 gate-hold latch(Codex R3
   #2)**——blocked+`!isWaiting()` 在重启后有歧义(可能是合法终态,也可能是
   持有期间 marker 恰在 daemon 死亡窗口被解析):
-  - **latch 载体**:runGoalToTerminal 进入持有态时置 gate-hold latch,经
-    `CodexDaemonGoalRuntime` 跨轮转重启携带(runGoal 循环内存);同时经
-    adapter 既有的 per-execution 持久化(session.json 同位)落一个 hold 标记,
-    覆盖 Bridge/adapter 进程重启后的 re-execute 恢复路径(FLY-172 marker
-    模式同款)。**latch 只在「active goal/set + kick 都成功」之后清除**。
+  - **latch 载体与接口**:`runGoalToTerminal` input 增加窄回调
+    `readGateHoldLatch?: () => boolean` 与
+    `writeGateHoldLatch?: (held: boolean) => void`;
+    `CodexDaemonGoalRuntime` 原样透传,所以同进程 transport 轮转复用
+    同一 latch。adapter 把 latch 存进既有 per-execution `session.json` 的
+    `gateHold` 字段,读/写都采用 read-modify-write + temp-file rename,不得让
+    `persistSessionState()` 的整文件重写丢掉 latch 或让 latch 写回丢掉
+    threadId/daemonPid。覆盖 Bridge/adapter 进程重启后的 re-execute 恢复路径
+    (FLY-172 marker 模式同款)。**latch 只在「active goal/set + kick 都成功」
+    之后清除**;持久化失败 fail-close 保持 latch=true 并重试,不能把恢复安全降成
+    best-effort。
   - preflight 分派:blocked + objective 与缓存一致 + `isWaiting()` → 进持有态
     (不 setGoal 不 kick);blocked + `!isWaiting()` + **latched** → 门已在
     停机窗口解析 → 重激活 + kick「跑 check」;blocked + `!isWaiting()` +
@@ -226,8 +258,22 @@ fixture:实战②(design retry 后 runner turn 自检应得 yours)。
   isThreeStagePhaseRole(role)`。keep-alive=0 时 Blueprint 走 removeIfExists+create,
   create 缺 startPoint 照样把 branch B 重置回 origin/main——正是要堵的数据丢失口,
   所以推导对**每一个** phase retry 都执行,不挂 keep-alive。
-- 注入推导函数(run-infra.ts,与 FLY-795 resumeComputer 同族)
-  `phaseRetryStartPoint(issueId, role, projectName)`,返回**三态**:
+- 注入推导函数(run-infra.ts,与 FLY-795 resumeComputer 同族),类型固定为:
+
+```ts
+export type PhaseRetryStartPoint =
+  | { kind: "found"; sha: string }
+  | { kind: "missing" }
+  | { kind: "indeterminate"; error: string };
+
+export type PhaseRetryStartPointComputer = (
+  issueId: string,
+  role: string,
+  projectName: string,
+) => PhaseRetryStartPoint;
+```
+
+返回**三态**:
 
 ```
 { kind: "found", sha }          — rev-parse 成功
@@ -244,6 +290,14 @@ fixture:实战②(design retry 后 runner turn 自检应得 yours)。
   对不存在的 ref 静默 exit 1 = **missing**;exit 0 + stdout SHA = **found**;
   其余任何 spawn/exit 形态(如 exit 128 非 repo、权限、IO)= **indeterminate**。
   rev-parse-only(FLY-245 git 面纪律)。
+
+- **注入接线必须显式**:`RetryDispatcher` constructor 新增可选
+  `phaseRetryStartPointComputer` seam;`RunDispatcher` constructor 同位透传给
+  `super`。`setupRunInfrastructure` 用现有共享 `worktreeManager` +
+  `projectRuntimes` 组装 production closure:
+  `resolveWorktreeKey(issueId,{sessionRole:role,shareParentBranch:true})` →
+  `worktreeManager.expectedWorktree(projectRoot,projectName,key).branch` → 全限定
+  `rev-parse`。不在 dispatcher 内 new 第二个 WorktreeManager,不手写 branch 模板。
 
 ### M3-b dispatch() 消费(fail-close 语义)
 
@@ -279,8 +333,8 @@ registered 共享 worktree 上 retry implement)。
 
 ### M4-a StateStore:`sessions.terminal_at` 列
 
-- 幂等迁移:`ALTER TABLE sessions ADD COLUMN terminal_at TEXT`(既有 try/catch
-  模式)。
+- 新库的 `CREATE TABLE sessions` 直接含 `terminal_at TEXT`;旧库走幂等迁移
+  `ALTER TABLE sessions ADD COLUMN terminal_at TEXT`(既有 try/catch 模式)。
 - 盖戳:在 lifecycle_revision 已统一递增的同一批状态写入点(**upsertSession /
   persistTransition / forceStatus 三处都要**):新状态 ∈
   `ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES` 且旧状态 ∉ → `terminal_at =
@@ -289,6 +343,12 @@ registered 共享 worktree 上 retry implement)。
   brainstorm 批复的时钟纪律);终态→另一终态的改写**不重复盖戳**(保留首次
   时刻);新状态 ∉ 终态集(revive)→ 清 NULL。
 - `getSession` 返回该列。
+- 收敛成一个私有 helper(如
+  `applyTerminalTimestamp(executionId, previousStatus, nextStatus)`),由
+  `upsertSession` / `persistTransition` / `forceStatus` 各自在其现有 transaction
+  内、status 写成功后调用:首次进终态 SQL `terminal_at=datetime('now')`;
+  终态→终态不写;离开终态 SQL `terminal_at=NULL`。避免三份 SQL 条件漂移,也避免
+  JS 先算 wall-clock。
 
 ### M4-b hygiene 谓词(zombie-gate-hygiene.ts + gate-poller.ts)
 
@@ -343,8 +403,9 @@ review/实现风险大时整体摘到 follow-up issue,不连坐主修。
 
 ### M-opt-0 paused RPC 行为 probe(前置,~半天)
 
-产出 `qa/m0-paused-probe.md` + 一次性 probe 脚本(风格照抄 FLY-1188
-`v1-goal-probe.mjs`)。验证:RPC pause 真停 / active(带 objective 重发)真续 /
+产出 `engineering/doc/FLY-1257-codex-runtime-retry-defects/qa/m0-paused-probe.md`
++ 同目录 `m0-paused-probe.mjs.txt` 一次性脚本(风格照抄 FLY-1188
+`v1-goal-probe.mjs.txt`)。验证:RPC pause 真停 / active(带 objective 重发)真续 /
 paused 随 thread 持久化。
 
 ### M-opt-1 实现(probe PASS 后;Codex R1 #6 的重启态机规格)
@@ -369,6 +430,172 @@ paused 随 thread 持久化。
 M1-d 既有用例全部保持通过(paused 只是叠加);新增:持有进入 → pause 被调;
 pause 抛错 → 持有照常;重启 preflight 两时序(paused+waiting → 持有;
 paused+resolved → 重激活)。
+
+## TDD execution checklist
+
+### Task 1: M1 prompt + CLI hard gate
+
+- [ ] **Step 1 — RED:** 先补五个位点/单次渲染、Claude byte-compat、strict marker
+  矩阵及 `complete --route blocked` 矩阵;此时不得改生产文件。
+- [ ] **Step 2 — Verify RED:** 运行:
+
+```bash
+pnpm --filter flywheel-edge-worker exec vitest run src/__tests__/Blueprint.fly1188-codex-prompt.test.ts src/__tests__/Blueprint.fly1188-codex-identity.test.ts
+pnpm --filter flywheel-comm exec vitest run src/__tests__/gate-marker.test.ts src/__tests__/complete.test.ts
+```
+
+Expected: 新断言失败,分别指向缺少共享 wait-law block、strict 枚举及 blocked guard;
+既有断言仍绿。
+
+- [ ] **Step 3 — GREEN:** 按 M1-a/b/c 实现最小生产改动。共享 helper 返回固定行,
+  Blueprint 用 push-once sentinel;strict seam 保留旧容错函数默认行为;guard 仅在
+  `FLYWHEEL_GATE_MARKER_DIR` 存在时启用。
+- [ ] **Step 4 — Verify GREEN:** 重跑 Step 2,Expected: 两条命令 exit 0。
+- [ ] **Step 5 — Commit:**
+
+```bash
+git add packages/edge-worker/src/Blueprint.ts packages/edge-worker/src/__tests__/Blueprint.fly1188-codex-prompt.test.ts packages/edge-worker/src/__tests__/Blueprint.fly1188-codex-identity.test.ts packages/claude-runner/agents/codex-runner-contract.md packages/flywheel-comm/src/gate-marker.ts packages/flywheel-comm/src/commands/complete.ts packages/flywheel-comm/src/__tests__/gate-marker.test.ts packages/flywheel-comm/src/__tests__/complete.test.ts
+git commit -m "fix(runtime): prevent Codex from abandoning pending gates"
+```
+
+### Task 2: M1 runtime hold + restart latch
+
+- [ ] **Step 1 — RED:** 在三个 claude-runner 测试文件先写 M1 测试矩阵,尤其
+  notification/poll 共用分类器、active+objective+budget 重激活、daemon restart、
+  Bridge re-execute、停机窗口 marker 已解析、kick 失败不清 latch。
+- [ ] **Step 2 — Verify RED:** 运行:
+
+```bash
+pnpm --filter flywheel-claude-runner exec vitest run test/codex-daemon-client.test.ts test/codex-daemon-goal-runtime.test.ts test/CodexTmuxAdapter.test.ts
+pnpm --filter flywheel-config exec vitest run src/__tests__/feature-flags-registry.test.ts src/__tests__/feature-flags-drift.test.ts
+```
+
+Expected: claude-runner 新用例因缺 hold/latch 失败;config 新用例因 flag 未注册失败。
+
+- [ ] **Step 3 — GREEN:** 按 M1-d 实现。核心边界固定为:
+
+```ts
+if (goal.status === "blocked" && isWaiting()) {
+  await writeGateHoldLatch(true);
+  return holdUntilGateResolved();
+}
+// resolved + latched: setGoal(active with cached objective/tokenBudget),
+// then startTurn(wake text); clear latch only after BOTH succeed.
+```
+
+`session.json` 的所有 writer 必须合并未知/既有字段并原子 rename,不得互相覆盖。
+- [ ] **Step 4 — Verify GREEN:** 重跑 Step 2;再跑 `pnpm --filter
+  flywheel-claude-runner typecheck`,Expected: 全部 exit 0。
+- [ ] **Step 5 — Commit:**
+
+```bash
+git add packages/claude-runner/src/codex-daemon-client.ts packages/claude-runner/src/codex-daemon-goal-runtime.ts packages/claude-runner/src/CodexTmuxAdapter.ts packages/claude-runner/test/codex-daemon-client.test.ts packages/claude-runner/test/codex-daemon-goal-runtime.test.ts packages/claude-runner/test/CodexTmuxAdapter.test.ts packages/config/src/feature-flags/registry.ts packages/config/src/__tests__/feature-flags-registry.test.ts packages/config/src/__tests__/feature-flags-drift.test.ts
+git commit -m "fix(codex): hold blocked goals while mandatory gates are open"
+```
+
+### Task 3: M2 retry TURN transfer
+
+- [ ] **Step 1 — RED:** 扩 `run-dispatcher-fly887-turn-seam.test.ts`,先锁 phase retry
+  holder/epoch、grant failure 三项 cleanup、非 phase/keepalive=0 零调用,并给 start()
+  补 launch-claim cleanup 哨兵。
+- [ ] **Step 2 — Verify RED:** 运行:
+
+```bash
+pnpm --filter flywheel-teamlead exec vitest run src/bridge/__tests__/run-dispatcher-fly887-turn-seam.test.ts
+```
+
+Expected: retry holder 仍是旧 exec/no-turn,cleanup 哨兵失败。
+- [ ] **Step 3 — GREEN:** 提取 M2-a `protected abortPreLaunch`;在 pre-register 后、
+  M3 probe 成功后按 M2-b 调 `grantTurn`;start/dispatch 失败路径共用 helper。
+- [ ] **Step 4 — Verify GREEN:** 重跑 Step 2,Expected: exit 0。
+- [ ] **Step 5 — Commit:**
+
+```bash
+git add packages/teamlead/src/bridge/run-dispatcher.ts packages/teamlead/src/bridge/__tests__/run-dispatcher-fly887-turn-seam.test.ts
+git commit -m "fix(retry): transfer the three-stage turn before launch"
+```
+
+### Task 4: M3 retry startPoint recovery
+
+- [ ] **Step 1 — RED:** 先写三态 probe、同名 tag、indeterminate-before-TURN、takeover
+  clean/dirty 及 keepalive=0 recreate 保留 branch tip 的真 git fixture。
+- [ ] **Step 2 — Verify RED:** 运行:
+
+```bash
+pnpm --filter flywheel-teamlead exec vitest run src/__tests__/run-dispatcher.test.ts src/bridge/__tests__/run-dispatcher-fly887-turn-seam.test.ts
+pnpm --filter flywheel-edge-worker exec vitest run src/__tests__/Blueprint.fly887-worktree-takeover.test.ts
+```
+
+Expected: retry ctx.startPoint 缺失,registered takeover/recreate fixture 失败。
+- [ ] **Step 3 — GREEN:** 按 M3-a 注入 `PhaseRetryStartPointComputer`;dispatch 顺序必须
+  是 `probe(found/missing/indeterminate) → grantTurn → ctx → commitLaunch → run`。
+  `indeterminate` 调 `abortPreLaunch` 后抛错;`missing` 才省略 startPoint。
+- [ ] **Step 4 — Verify GREEN:** 重跑 Step 2 + `pnpm --filter flywheel-teamlead
+  typecheck`,Expected: 全部 exit 0。
+- [ ] **Step 5 — Commit:**
+
+```bash
+git add packages/teamlead/src/bridge/run-infra.ts packages/teamlead/src/bridge/run-dispatcher.ts packages/teamlead/src/__tests__/run-dispatcher.test.ts packages/teamlead/src/bridge/__tests__/run-dispatcher-fly887-turn-seam.test.ts packages/edge-worker/src/__tests__/Blueprint.fly887-worktree-takeover.test.ts
+git commit -m "fix(retry): restore the shared branch start point"
+```
+
+### Task 5: M4 blocked-session gate chronology
+
+- [ ] **Step 1 — RED:** 先写 `terminal_at` 三入口状态矩阵、Z1 时间序/null/坏格式/tie/
+  missing-session 矩阵,及 GatePoller `created_at` 透传哨兵。
+- [ ] **Step 2 — Verify RED:** 运行:
+
+```bash
+pnpm --filter flywheel-teamlead exec vitest run src/__tests__/StateStore.test.ts src/bridge/__tests__/zombie-gate-watchdog.test.ts src/__tests__/gate-poller.test.ts
+```
+
+Expected: schema/mapping 没有 terminal_at,终态后 gate 仍被退,透传字段缺失。
+- [ ] **Step 3 — GREEN:** 按 M4-a/b 实现单一 timestamp helper 与 canonical UTC
+  比较器;跳过分支必须发生在 intent audit 之前;Z2/kill-switch/reconcile 不动。
+- [ ] **Step 4 — Verify GREEN:** 重跑 Step 2 + `pnpm --filter flywheel-teamlead
+  typecheck`,Expected: 全部 exit 0。
+- [ ] **Step 5 — Commit:**
+
+```bash
+git add packages/teamlead/src/StateStore.ts packages/teamlead/src/bridge/zombie-gate-hygiene.ts packages/teamlead/src/bridge/gate-poller.ts packages/teamlead/src/__tests__/StateStore.test.ts packages/teamlead/src/bridge/__tests__/zombie-gate-watchdog.test.ts packages/teamlead/src/__tests__/gate-poller.test.ts
+git commit -m "fix(gates): preserve post-terminal blocked-session reviews"
+```
+
+### Task 6: M-opt probe and conditional implementation
+
+- [ ] **Step 1 — Probe before production code:** 运行一次性 app-server RPC probe,覆盖
+  pause、active、objective/budget 保留及 daemon restart;记录 Codex version、原始帧、
+  timing 到 `engineering/doc/FLY-1257-codex-runtime-retry-defects/qa/m0-paused-probe.md`,
+  脚本存同目录 `m0-paused-probe.mjs.txt`。
+- [ ] **Step 2 — Decide by evidence:** probe 任一关键项 FAIL → 不写 M-opt 生产代码,
+  在 PR 描述开 follow-up;全部 PASS → 先写 paused overlay 的 RED tests。
+- [ ] **Step 3 — Conditional GREEN:** 仅 PASS 时按 M-opt-1 叠加 paused RPC,完整重跑
+  Task 2 命令,Expected: M1 hold 行为不变且新增 paused 用例绿。
+- [ ] **Step 4 — Commit evidence/optional code:**
+
+```bash
+git add engineering/doc/FLY-1257-codex-runtime-retry-defects/qa/m0-paused-probe.md engineering/doc/FLY-1257-codex-runtime-retry-defects/qa/m0-paused-probe.mjs.txt packages/claude-runner/src/codex-daemon-client.ts packages/claude-runner/src/codex-daemon-goal-runtime.ts packages/claude-runner/src/CodexTmuxAdapter.ts packages/claude-runner/test/codex-daemon-client.test.ts packages/claude-runner/test/codex-daemon-goal-runtime.test.ts packages/claude-runner/test/CodexTmuxAdapter.test.ts
+git commit -m "test(codex): verify native goal pause and resume"
+```
+
+若 probe FAIL,`git add` 只包含 probe 证据/脚本,不得顺手提交未验证的 paused 路径。
+
+### Task 7: Full verification
+
+- [ ] 依次运行四个 task 的 focused commands,再运行:
+
+```bash
+pnpm --filter flywheel-config typecheck
+pnpm --filter flywheel-comm typecheck
+pnpm --filter flywheel-edge-worker typecheck
+pnpm --filter flywheel-claude-runner typecheck
+pnpm --filter flywheel-teamlead typecheck
+pnpm lint
+pnpm test
+```
+
+Expected: 全部 exit 0;只修本单导致的失败,不做无关重构。随后按动态 prompt 走
+cross-family code review、独立 Claude Opus QA 与 founder approve gate。
 
 ## 交付顺序与提交切分
 
