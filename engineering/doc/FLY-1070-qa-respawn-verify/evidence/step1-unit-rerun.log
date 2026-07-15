@@ -1,0 +1,269 @@
+===== src/bridge/__tests__/phase-orchestrator.test.ts =====
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/teamlead
+
+ ✓ src/bridge/__tests__/phase-orchestrator.test.ts (69 tests) 79ms
+
+ Test Files  1 passed (1)
+      Tests  69 passed (69)
+   Start at  15:29:34
+   Duration  1.57s (transform 433ms, setup 27ms, collect 770ms, tests 79ms, environment 0ms, prepare 65ms)
+
+EXIT=0 for src/bridge/__tests__/phase-orchestrator.test.ts
+===== src/bridge/__tests__/phase-orchestrator.fly1050-qa-respawn.test.ts =====
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/teamlead
+
+ ✓ src/bridge/__tests__/phase-orchestrator.fly1050-qa-respawn.test.ts (32 tests) 57ms
+
+ Test Files  1 passed (1)
+      Tests  32 passed (32)
+   Start at  15:29:37
+   Duration  4.71s (transform 1.53s, setup 64ms, collect 2.51s, tests 57ms, environment 0ms, prepare 407ms)
+
+EXIT=0 for src/bridge/__tests__/phase-orchestrator.fly1050-qa-respawn.test.ts
+===== src/bridge/__tests__/phase-orchestrator.fly939-wake-not-respawn.test.ts =====
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/teamlead
+
+ ✓ src/bridge/__tests__/phase-orchestrator.fly939-wake-not-respawn.test.ts (18 tests) 17ms
+
+ Test Files  1 passed (1)
+      Tests  18 passed (18)
+   Start at  15:29:44
+   Duration  1.66s (transform 413ms, setup 19ms, collect 775ms, tests 17ms, environment 0ms, prepare 121ms)
+
+EXIT=0 for src/bridge/__tests__/phase-orchestrator.fly939-wake-not-respawn.test.ts
+===== src/bridge/__tests__/phase-orchestrator.fly887-keepalive.test.ts =====
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/teamlead
+
+ ✓ src/bridge/__tests__/phase-orchestrator.fly887-keepalive.test.ts (16 tests) 29ms
+
+ Test Files  1 passed (1)
+      Tests  16 passed (16)
+   Start at  15:29:48
+   Duration  2.59s (transform 784ms, setup 17ms, collect 1.40s, tests 29ms, environment 0ms, prepare 79ms)
+
+EXIT=0 for src/bridge/__tests__/phase-orchestrator.fly887-keepalive.test.ts
+===== src/__tests__/DirectEventSink.test.ts =====
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/teamlead
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — GEO-151 ProofShot config persistence > persists effective ProofShotConfig into session_params.proofshot.config
+[DirectEventSink] chatThread guard: enabled=false hasCreator=false — skipping for issue-1
+[DirectEventSink] pushNotification: exec=exec-1 event=session_started registry=false eventFilter=false status=running
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — GEO-151 ProofShot config persistence > falls back to DEFAULT_PROOFSHOT_CONFIG (enabled=false) when skillsConfig missing
+[DirectEventSink] chatThread guard: enabled=false hasCreator=false — skipping for issue-1
+[DirectEventSink] pushNotification: exec=exec-1 event=session_started registry=false eventFilter=false status=running
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — GEO-151 ProofShot config persistence > preserves existing proofshot.runs + last_artifact on replay (read-modify-write)
+[DirectEventSink] chatThread guard: enabled=false hasCreator=false — skipping for issue-1
+[DirectEventSink] pushNotification: exec=exec-1 event=session_started registry=false eventFilter=false status=running
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-191 R4: Phase-2 binding atomicity > qid-less in-process completion must NOT re-point pr_head_sha of a Phase-2-bound session (Codex R4 CRITICAL)
+[DirectEventSink] pushNotification: exec=exec-1 event=session_completed registry=false eventFilter=false status=awaiting_review
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-191 R4: Phase-2 binding atomicity > UNBOUND-sentinel sessions are equally protected (no sha attach, no window reset)
+[DirectEventSink] pushNotification: exec=exec-1 event=session_completed registry=false eventFilter=false status=awaiting_review
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-191 R4: Phase-2 binding atomicity > pure-legacy sessions (no binding) keep the old behavior: sha contributed when valid
+[DirectEventSink] pushNotification: exec=exec-1 event=session_completed registry=false eventFilter=false status=awaiting_review
+
+stderr | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-191 R5: late qid-less emission can't regress approved_to_ship > bound + approved_to_ship + qid-less needs_review → status/binding/window all preserved
+[DirectEventSink] qid-less needs_review for Phase-2-bound exec-1 while status="approved_to_ship" — evidence-only (status/binding/window owned by the HTTP binding path)
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-191 R5: late qid-less emission can't regress approved_to_ship > bound + approved_to_ship + qid-less needs_review → status/binding/window all preserved
+[DirectEventSink] pushNotification: exec=exec-1 event=session_completed registry=false eventFilter=false status=approved_to_ship
+
+stderr | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-191 R5: late qid-less emission can't regress approved_to_ship > FLY-846 gate ⓪: the straggler must not spawn auto-QA either — the ROW is approved_to_ship even though the sink's local status says awaiting_review
+[DirectEventSink] qid-less needs_review for Phase-2-bound exec-1 while status="approved_to_ship" — evidence-only (status/binding/window owned by the HTTP binding path)
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-191 R5: late qid-less emission can't regress approved_to_ship > FLY-846 gate ⓪: the straggler must not spawn auto-QA either — the ROW is approved_to_ship even though the sink's local status says awaiting_review
+[DirectEventSink] pushNotification: exec=exec-1 event=session_completed registry=false eventFilter=false status=approved_to_ship
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-222 #1: no_code → terminal completed > running + route=no_code (no merge) → completed (NOT awaiting_review), decision_route persisted
+[DirectEventSink] pushNotification: exec=exec-1 event=session_completed registry=false eventFilter=false status=completed
+
+stderr | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-222 #1: no_code → terminal completed > awaiting_review + route=no_code → status unchanged (skipped)
+[DirectEventSink] route=no_code for non-running exec-1 (status=awaiting_review) — skipping (no_code only terminalizes a running runner)
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-222 #1: no_code → terminal completed > Finding K: completed/no_code session is terminal-immune to a spurious route=blocked re-emission (lead-close)
+[DirectEventSink] pushNotification: exec=exec-1 event=session_completed registry=false eventFilter=false status=completed
+
+stderr | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-222 #1: no_code → terminal completed > Finding K: completed/no_code session is terminal-immune to a spurious route=blocked re-emission (lead-close)
+[DirectEventSink] ignoring duplicate/spurious "blocked" completion for already-terminal exec-1 (status="completed", route="blocked") — terminal-immune (FLY-228 Finding K)
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-222 #1: no_code → terminal completed > duplicate same-status completion on a completed/no_code session is ignored (no decision_route/evidence overwrite)
+[DirectEventSink] pushNotification: exec=exec-1 event=session_completed registry=false eventFilter=false status=completed
+
+stderr | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-222 #1: no_code → terminal completed > duplicate same-status completion on a completed/no_code session is ignored (no decision_route/evidence overwrite)
+[DirectEventSink] ignoring duplicate/spurious "awaiting_review" completion for already-terminal exec-1 (status="completed", route="auto_approve") — terminal-immune (FLY-228 Finding K)
+
+stderr | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-222 #1: no_code → terminal completed > terminal completed is immune to a spurious blocked re-emission
+[DirectEventSink] ignoring duplicate/spurious "blocked" completion for already-terminal exec-1 (status="completed", route="blocked") — terminal-immune (FLY-228 Finding K)
+
+stderr | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-222 #1: no_code → terminal completed > terminal terminated is immune to a spurious blocked re-emission
+[DirectEventSink] ignoring duplicate/spurious "blocked" completion for already-terminal exec-1 (status="terminated", route="blocked") — terminal-immune (FLY-228 Finding K)
+
+stderr | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-222 #1: no_code → terminal completed > terminal shelved is immune to a spurious blocked re-emission
+[DirectEventSink] ignoring duplicate/spurious "blocked" completion for already-terminal exec-1 (status="shelved", route="blocked") — terminal-immune (FLY-228 Finding K)
+
+stderr | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-222 #1: no_code → terminal completed > terminal approved is immune to a spurious blocked re-emission
+[DirectEventSink] ignoring duplicate/spurious "blocked" completion for already-terminal exec-1 (status="approved", route="blocked") — terminal-immune (FLY-228 Finding K)
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-493: pr_handoff → terminal completed > running + route=pr_handoff → completed (NOT awaiting_review), pr_number persisted
+[DirectEventSink] pushNotification: exec=exec-1 event=session_completed registry=false eventFilter=false status=completed
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-493: pr_handoff → terminal completed > emitStarted persists runnerBackend as session.adapter_type (no-transport wake-guard input)
+[DirectEventSink] chatThread guard: enabled=false hasCreator=false — skipping for issue-1
+[DirectEventSink] pushNotification: exec=exec-1 event=session_started registry=false eventFilter=false status=running
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-493: pr_handoff → terminal completed > emitStarted persists runnerModel as session.runner_model
+[DirectEventSink] chatThread guard: enabled=false hasCreator=false — skipping for issue-1
+[DirectEventSink] pushNotification: exec=exec-1 event=session_started registry=false eventFilter=false status=running
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-493: pr_handoff → terminal completed > emitStarted without runnerModel leaves runner_model unset (byte-compat)
+[DirectEventSink] chatThread guard: enabled=false hasCreator=false — skipping for issue-1
+[DirectEventSink] pushNotification: exec=exec-1 event=session_started registry=false eventFilter=false status=running
+
+stderr | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-493: pr_handoff → terminal completed > awaiting_review + route=pr_handoff → status unchanged (skipped, no strand-clear)
+[DirectEventSink] route=pr_handoff for non-running exec-1 (status=awaiting_review) — skipping (pr_handoff only terminalizes a running runner)
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-493: pr_handoff → terminal completed > completed (via pr_handoff) is terminal-immune to a later duplicate emission
+[DirectEventSink] pushNotification: exec=exec-1 event=session_completed registry=false eventFilter=false status=completed
+
+stderr | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-493: pr_handoff → terminal completed > completed (via pr_handoff) is terminal-immune to a later duplicate emission
+[DirectEventSink] route=pr_handoff for non-running exec-1 (status=completed) — skipping (pr_handoff only terminalizes a running runner)
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH-1) > suppresses the review-required delivery when the awaiting_review main is QA-held
+[DirectEventSink] chatThread guard: enabled=false hasCreator=false — skipping for issue-1
+[DirectEventSink] pushNotification: exec=exec-1 event=session_started registry=true eventFilter=false status=running
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH-1) > suppresses the review-required delivery when the awaiting_review main is QA-held
+[DirectEventSink] FLY-827 review-held: suppressing review-required delivery for exec-1
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH-1) > byte-compat: with NO held record the review-required delivery fires
+[DirectEventSink] chatThread guard: enabled=false hasCreator=false — skipping for issue-1
+[DirectEventSink] pushNotification: exec=exec-1 event=session_started registry=true eventFilter=false status=running
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH-1) > byte-compat: with NO held record the review-required delivery fires
+[DirectEventSink] pushNotification: exec=exec-1 event=session_completed registry=true eventFilter=false status=awaiting_review
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-793: completion must not clobber a phase role (824 R2 E2E) > emitCompleted preserves a dispatched phase role even when the envelope role defaults to main
+[DirectEventSink] pushNotification: exec=exec-1 event=session_completed registry=false eventFilter=false status=awaiting_review
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-793: completion must not clobber a phase role (824 R2 E2E) > emitFailed preserves a dispatched phase role
+[DirectEventSink] pushNotification: exec=exec-1 event=session_failed registry=false eventFilter=false status=failed
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-793: completion must not clobber a phase role (824 R2 E2E) > byte-compat: a non-phase (main) session keeps role main on completion
+[DirectEventSink] pushNotification: exec=exec-1 event=session_completed registry=false eventFilter=false status=awaiting_review
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-793: completion must not clobber a phase role (824 R2 E2E) > FLY-921: emitFailed of a three-stage phase session triggers a scoped turn-belt reconcile
+[DirectEventSink] pushNotification: exec=exec-1 event=session_failed registry=false eventFilter=false status=failed
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-793: completion must not clobber a phase role (824 R2 E2E) > FLY-921: emitCompleted of a three-stage phase session reconciles AFTER onPhaseComplete
+[DirectEventSink] pushNotification: exec=exec-1 event=session_completed registry=false eventFilter=false status=awaiting_review
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-793: completion must not clobber a phase role (824 R2 E2E) > FLY-921 byte-compat: a main-role failure does NOT touch the turn belt
+[DirectEventSink] pushNotification: exec=exec-1 event=session_failed registry=false eventFilter=false status=failed
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-793: completion must not clobber a phase role (824 R2 E2E) > FLY-1050: emitFailed of a three-stage QA row fires reconcileQaLoss BEFORE the belt reconcile
+[DirectEventSink] pushNotification: exec=exec-1 event=session_failed registry=false eventFilter=false status=failed
+
+stdout | src/__tests__/DirectEventSink.test.ts > DirectEventSink — FLY-793: completion must not clobber a phase role (824 R2 E2E) > FLY-1050: emitFailed of a non-qa phase row does NOT fire reconcileQaLoss
+[DirectEventSink] pushNotification: exec=exec-1 event=session_failed registry=false eventFilter=false status=failed
+
+ ✓ src/__tests__/DirectEventSink.test.ts (32 tests) 342ms
+
+ Test Files  1 passed (1)
+      Tests  32 passed (32)
+   Start at  15:29:52
+   Duration  3.28s (transform 768ms, setup 44ms, collect 1.31s, tests 342ms, environment 0ms, prepare 186ms)
+
+EXIT=0 for src/__tests__/DirectEventSink.test.ts
+===== src/__tests__/event-route-fly921-turn-belt.test.ts =====
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/teamlead
+
+stdout | src/__tests__/event-route-fly921-turn-belt.test.ts > event-route turn-belt reconcile wiring (FLY-921 Fix C) > session_failed of a three-stage phase session → scoped reconcile with terminalExecId
+[Bridge] Daily digest configured — channel=1521630422918758472
+
+stdout | src/__tests__/event-route-fly921-turn-belt.test.ts > event-route turn-belt reconcile wiring (FLY-921 Fix C) > session_completed of a three-stage phase session → scoped reconcile (after onPhaseComplete)
+[Bridge] Daily digest configured — channel=1521630422918758472
+
+stdout | src/__tests__/event-route-fly921-turn-belt.test.ts > event-route turn-belt reconcile wiring (FLY-921 Fix C) > Codex R1 HIGH: session_failed of a PARKED (awaiting_review) holder — FSM rejects the transition, reconcile still runs
+[Bridge] Daily digest configured — channel=1521630422918758472
+
+stdout | src/__tests__/event-route-fly921-turn-belt.test.ts > event-route turn-belt reconcile wiring (FLY-921 Fix C) > byte-compat: a main-role session's failure does NOT touch the turn belt
+[Bridge] Daily digest configured — channel=1521630422918758472
+
+stdout | src/__tests__/event-route-fly921-turn-belt.test.ts > event-route turn-belt reconcile wiring (FLY-921 Fix C) > FLY-1050: session_failed of a three-stage QA row fires reconcileQaLoss BEFORE the belt reconcile
+[Bridge] Daily digest configured — channel=1521630422918758472
+
+stdout | src/__tests__/event-route-fly921-turn-belt.test.ts > event-route turn-belt reconcile wiring (FLY-921 Fix C) > FLY-1050: session_failed of a non-qa phase row does NOT fire reconcileQaLoss
+[Bridge] Daily digest configured — channel=1521630422918758472
+
+stdout | src/__tests__/event-route-fly921-turn-belt.test.ts > event-route turn-belt reconcile wiring (FLY-921 Fix C) > FLY-1050: the FSM-rejected path (parked qa killed) does NOT fire reconcileQaLoss (row never terminal)
+[Bridge] Daily digest configured — channel=1521630422918758472
+
+ ✓ src/__tests__/event-route-fly921-turn-belt.test.ts (7 tests) 72ms
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+   Start at  15:29:57
+   Duration  4.70s (transform 1.21s, setup 27ms, collect 3.74s, tests 72ms, environment 0ms, prepare 115ms)
+
+EXIT=0 for src/__tests__/event-route-fly921-turn-belt.test.ts
+===== src/__tests__/actions-fly1050-terminate-qa-loss.test.ts =====
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/teamlead
+
+stdout | src/__tests__/actions-fly1050-terminate-qa-loss.test.ts > terminate → QA-loss re-drive wiring (FLY-1050) > dashboard mount /actions: terminating a three-stage QA row fires reconcileQaLoss, then the belt
+[Bridge] Daily digest configured — channel=1521630422918758472
+
+stdout | src/__tests__/actions-fly1050-terminate-qa-loss.test.ts > terminate → QA-loss re-drive wiring (FLY-1050) > API mount /api/actions (FLY-175 dual-mount): same trigger
+[Bridge] Daily digest configured — channel=1521630422918758472
+
+stdout | src/__tests__/actions-fly1050-terminate-qa-loss.test.ts > terminate → QA-loss re-drive wiring (FLY-1050) > cleanupPending (success:false + cleanupPending:true) STILL triggers — the FSM row is terminal
+[Bridge] Daily digest configured — channel=1521630422918758472
+
+stdout | src/__tests__/actions-fly1050-terminate-qa-loss.test.ts > terminate → QA-loss re-drive wiring (FLY-1050) > terminating a non-qa phase row does NOT fire reconcileQaLoss
+[Bridge] Daily digest configured — channel=1521630422918758472
+
+stdout | src/__tests__/actions-fly1050-terminate-qa-loss.test.ts > terminate → QA-loss re-drive wiring (FLY-1050) > terminating a main-role session does NOT fire reconcileQaLoss (byte-compat)
+[Bridge] Daily digest configured — channel=1521630422918758472
+
+ ✓ src/__tests__/actions-fly1050-terminate-qa-loss.test.ts (5 tests) 170ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  15:30:03
+   Duration  5.80s (transform 2.05s, setup 10ms, collect 4.59s, tests 170ms, environment 0ms, prepare 57ms)
+
+EXIT=0 for src/__tests__/actions-fly1050-terminate-qa-loss.test.ts
+===== src/__tests__/crash-reaper.test.ts =====
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/teamlead
+
+ ✓ src/__tests__/crash-reaper.test.ts (18 tests) 225ms
+
+ Test Files  1 passed (1)
+      Tests  18 passed (18)
+   Start at  15:30:10
+   Duration  2.09s (transform 314ms, setup 42ms, collect 647ms, tests 225ms, environment 0ms, prepare 64ms)
+
+EXIT=0 for src/__tests__/crash-reaper.test.ts
+===== src/__tests__/StateStore.three-stage-qa.test.ts =====
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-1070/worktrees/qa-fly-1070/packages/teamlead
+
+ ✓ src/__tests__/StateStore.three-stage-qa.test.ts (7 tests) 184ms
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+   Start at  15:30:18
+   Duration  1.65s (transform 152ms, setup 22ms, collect 159ms, tests 184ms, environment 0ms, prepare 163ms)
+
+EXIT=0 for src/__tests__/StateStore.three-stage-qa.test.ts

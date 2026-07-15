@@ -54,6 +54,11 @@ describe("HeartbeatService", () => {
 		getOrphanSessions: ReturnType<typeof vi.fn>;
 		getStaleCompletedSessions: ReturnType<typeof vi.fn>;
 		forceStatus: ReturnType<typeof vi.fn>;
+		// FLY-637 persistent quiet-wake dedup surface
+		hasQuietWakeNotified: ReturnType<typeof vi.fn>;
+		recordQuietWakeNotified: ReturnType<typeof vi.fn>;
+		clearQuietWakeNotified: ReturnType<typeof vi.fn>;
+		pruneQuietWakeNotifiedNotIn: ReturnType<typeof vi.fn>;
 	};
 	let notifier: {
 		onSessionStuck: ReturnType<typeof vi.fn>;
@@ -63,14 +68,36 @@ describe("HeartbeatService", () => {
 	let service: HeartbeatService;
 
 	beforeEach(() => {
+		const quietNotified = new Set<string>();
+		const qk = (e: string, s: string, f: string) => `${e}|${s}|${f}`;
 		store = {
 			getStuckSessions: vi.fn().mockReturnValue([]),
 			getOrphanSessions: vi.fn().mockReturnValue([]),
 			getStaleCompletedSessions: vi.fn().mockReturnValue([]),
 			forceStatus: vi.fn(),
+			hasQuietWakeNotified: vi.fn((e: string, s: string, f: string) =>
+				quietNotified.has(qk(e, s, f)),
+			),
+			recordQuietWakeNotified: vi.fn((e: string, s: string, f: string) => {
+				quietNotified.add(qk(e, s, f));
+			}),
+			clearQuietWakeNotified: vi.fn((e: string, s?: string) => {
+				for (const k of [...quietNotified]) {
+					const [ke, ks] = k.split("|");
+					if (ke === e && (!s || ks === s)) quietNotified.delete(k);
+				}
+			}),
+			pruneQuietWakeNotifiedNotIn: vi.fn((s: string, keep: string[]) => {
+				for (const k of [...quietNotified]) {
+					const [ke, ks] = k.split("|");
+					if (ks === s && !keep.includes(ke)) quietNotified.delete(k);
+				}
+			}),
 		};
 		notifier = {
-			onSessionStuck: vi.fn().mockResolvedValue(undefined),
+			// FLY-637: onSessionStuck now returns a "persisted" boolean; true so the
+			// stuck dedup engages exactly as before.
+			onSessionStuck: vi.fn().mockResolvedValue(true),
 			onSessionOrphaned: vi.fn().mockResolvedValue(undefined),
 			onSessionStale: vi.fn().mockResolvedValue(undefined),
 		};
@@ -132,6 +159,27 @@ describe("HeartbeatService", () => {
 
 		expect(notifier.onSessionStuck).not.toHaveBeenCalled();
 		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
+	});
+
+	// --- FLY-639: StateStore corruption containment + self-heal ---
+
+	it("check() never rejects on a StateStore throw — it logs, self-heals, and skips the cycle", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const recoverSpy = vi.fn();
+		(store as { recoverFromCorruption?: unknown }).recoverFromCorruption =
+			recoverSpy;
+		store.getStuckSessions.mockImplementation(() => {
+			throw new Error("no such table: sessions");
+		});
+
+		// Contract: check() resolves (never rejects) so the timer can't crash the Bridge.
+		await expect(service.check()).resolves.toBeUndefined();
+
+		expect(errSpy).toHaveBeenCalled();
+		expect(recoverSpy).toHaveBeenCalledTimes(1);
+		expect(recoverSpy.mock.calls[0]![0]).toBeInstanceOf(Error);
+
+		errSpy.mockRestore();
 	});
 
 	// --- Orphan reaping ---
@@ -263,7 +311,7 @@ describe("HeartbeatService", () => {
 function createMockRegistry() {
 	const envelopes: LeadEventEnvelope[] = [];
 	const mockRuntime = {
-		type: "claude-discord" as const,
+		type: "commdb" as const,
 		deliver: vi.fn(async (env: LeadEventEnvelope) => {
 			envelopes.push(env);
 			return { delivered: true };
@@ -301,7 +349,6 @@ describe("RegistryHeartbeatNotifier", () => {
 			project_name: "geo",
 			status: "running",
 			issue_identifier: "GEO-100",
-			thread_id: "1234.5678",
 		};
 
 		await notifier.onSessionStuck(session, 30);
@@ -312,8 +359,7 @@ describe("RegistryHeartbeatNotifier", () => {
 		expect(env.sessionKey).toBe("flywheel:GEO-100");
 		expect(env.event.event_type).toBe("session_stuck");
 		expect(env.event.minutes_since_activity).toBe(30);
-		expect(env.event.thread_id).toBe("1234.5678");
-		expect(env.event.forum_channel).toBe("test-channel");
+		// FLY-163: thread_id + forum_channel removed from HookPayload
 
 		hbStore.close();
 	});
@@ -332,7 +378,6 @@ describe("RegistryHeartbeatNotifier", () => {
 			project_name: "geo",
 			status: "running",
 			issue_identifier: "GEO-200",
-			thread_id: "5678.1234",
 		};
 
 		await notifier.onSessionOrphaned(session, 75);
@@ -344,8 +389,7 @@ describe("RegistryHeartbeatNotifier", () => {
 		expect(env.event.event_type).toBe("session_orphaned");
 		expect(env.event.status).toBe("failed");
 		expect(env.event.minutes_since_activity).toBe(75);
-		expect(env.event.thread_id).toBe("5678.1234");
-		expect(env.event.forum_channel).toBe("test-channel");
+		// FLY-163: thread_id + forum_channel removed from HookPayload
 
 		hbStore.close();
 	});
@@ -373,8 +417,8 @@ describe("RegistryHeartbeatNotifier", () => {
 		hbStore.close();
 	});
 
-	// GEO-275: no-forum lead heartbeat notification
-	it("sends session_stuck with undefined forum_channel for no-forum lead", async () => {
+	// FLY-163: PM/triage lead heartbeat notification (formerly "no-forum")
+	it("sends session_stuck for PM lead routed via chat_channel", async () => {
 		const noForumProjects: ProjectEntry[] = [
 			{
 				projectName: "geo-nf",
@@ -384,14 +428,14 @@ describe("RegistryHeartbeatNotifier", () => {
 						agentId: "pm-lead",
 						chatChannel: "core-channel",
 						match: { labels: ["PM"] },
-						// No forumChannel
+						canSpawnRunners: false,
 					},
 				],
 			},
 		];
 		const envelopes: LeadEventEnvelope[] = [];
 		const mockRuntime = {
-			type: "claude-discord" as const,
+			type: "commdb" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				envelopes.push(env);
 				return { delivered: true };
@@ -427,7 +471,6 @@ describe("RegistryHeartbeatNotifier", () => {
 
 		expect(envelopes).toHaveLength(1);
 		expect(envelopes[0].event.event_type).toBe("session_stuck");
-		expect(envelopes[0].event.forum_channel).toBeUndefined();
 		expect(envelopes[0].event.chat_channel).toBe("core-channel");
 
 		hbStore.close();
@@ -513,12 +556,14 @@ describe("FLY-25: RegistryHeartbeatNotifier delivery contract", () => {
 			hbStore,
 		);
 
-		// Verify all three heartbeat event types are guardrail
+		// Verify all guardrail event types
 		const { GUARDRAIL_EVENT_TYPES } = await import("../bridge/lead-runtime.js");
 		expect(GUARDRAIL_EVENT_TYPES.has("session_stuck")).toBe(true);
 		expect(GUARDRAIL_EVENT_TYPES.has("session_orphaned")).toBe(true);
 		expect(GUARDRAIL_EVENT_TYPES.has("session_stale_completed")).toBe(true);
 		expect(GUARDRAIL_EVENT_TYPES.has("session_completed")).toBe(false);
+		// FLY-159: gate_timed_out must retry via HeartbeatService when Lead delivery fails
+		expect(GUARDRAIL_EVENT_TYPES.has("gate_timed_out")).toBe(true);
 
 		hbStore.close();
 	});

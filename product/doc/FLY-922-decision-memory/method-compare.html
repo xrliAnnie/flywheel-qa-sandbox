@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="light">
+<title>FLY-922 方法对比 — 用哪个打法、为什么不是 CIPHER</title>
+<style>
+  html{color-scheme:light}
+  :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--navy:#1a365d;
+    --blue:#007aff;--green:#34c759;--amber:#ff9500;--red:#ff3b30;--purple:#af52de;--line:#e5e5ea}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+    line-height:1.62;font-size:16px;-webkit-text-size-adjust:100%}
+  .wrap{max-width:820px;margin:0 auto;padding:20px 16px 96px}
+  .kicker{color:var(--blue);font-weight:700;font-size:13px;letter-spacing:.4px;text-transform:uppercase}
+  h1{font-size:25px;line-height:1.28;margin:6px 0 8px;letter-spacing:-.3px}
+  .sub{color:var(--dim);font-size:14px;margin:0 0 4px}
+  .card{background:var(--card);border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+    padding:18px;margin:16px 0;border-left:4px solid var(--line)}
+  .card.blue{border-left-color:var(--blue)} .card.green{border-left-color:var(--green)}
+  .card.amber{border-left-color:var(--amber)} .card.red{border-left-color:var(--red)}
+  .card.navy{border-left-color:var(--navy)}
+  h2{font-size:19px;margin:2px 0 10px;letter-spacing:-.2px}
+  p{margin:8px 0} .muted{color:var(--dim);font-size:14px}
+  ul{margin:8px 0;padding-left:20px} li{margin:5px 0}
+  .kv{display:grid;grid-template-columns:88px 1fr;gap:4px 10px;font-size:14.5px;margin:10px 0}
+  .kv b{color:var(--navy)}
+  .verdict{display:inline-block;font-size:12px;font-weight:800;padding:2px 10px;border-radius:999px;vertical-align:middle;margin-left:8px}
+  .v-hi{background:#e3f6e8;color:#1a7a34} .v-mid{background:#fff0dc;color:#b06400} .v-no{background:#ffe9e7;color:#c81c0f}
+  .cmt-wrap{margin-top:12px;border-top:1px dashed var(--line);padding-top:10px}
+  .cmt-wrap label{display:block;font-size:13px;font-weight:600;color:var(--navy);margin-bottom:6px}
+  textarea.cmt{width:100%;min-height:60px;border:1px solid var(--line);border-radius:10px;
+    padding:10px 12px;font:inherit;font-size:15px;background:#fcfcfd;resize:vertical;color:var(--ink)}
+  textarea.cmt:focus{outline:2px solid var(--blue);outline-offset:1px;border-color:var(--blue)}
+  .bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.92);backdrop-filter:blur(8px);
+    border-top:1px solid var(--line);padding:10px 14px;display:flex;gap:10px;justify-content:center;z-index:5}
+  .btn{border:0;border-radius:10px;padding:11px 16px;font:inherit;font-weight:700;font-size:15px;cursor:pointer}
+  .btn.primary{background:var(--blue);color:#fff} .btn.ghost{background:#ececf0;color:var(--ink)}
+  .hint{font-size:12.5px;color:var(--dim);text-align:center;position:fixed;bottom:56px;left:0;right:0}
+  details{margin:8px 0} summary{cursor:pointer;font-weight:600;color:var(--navy)}
+  .fallback{background:#f0f0f3;border-radius:10px;padding:12px;font-size:13px;white-space:pre-wrap;
+    font-family:"SF Mono",ui-monospace,Menlo,monospace;overflow-x:auto}
+  @media(max-width:640px){.wrap{padding:14px 12px 96px}h1{font-size:22px}.kv{grid-template-columns:76px 1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="kicker">FLY-922 · 方法对比(简短版)</div>
+  <h1>用哪个打法学你拍板 ——<br>为什么不是 CIPHER</h1>
+  <p class="sub">Honey Lemon · 2026-07-06 · 从 Deep Research 里挑出真能落地的,给你挑</p>
+</header>
+
+<div class="card red">
+  <h2>先认账:你说 CIPHER 不是对的打法 —— 你的直觉点中了要害</h2>
+  <p>CIPHER 本质是个 <b>「批了/没批」计数器</b>:按粗粒度类别数你批了几次,<b>完全不记你「为什么」这么拍</b>。而你给系统的真实信号恰恰是<b>带理由的纠正</b>(「不对,因为 X;以后这类要 Y」)—— 现有 120 条记录每条都有你的 Why。<b>理由才是能替你拍新决策的东西,计数器吃不下它。</b>方法得跟着你的信号形态走,「现成」不等于「对」。</p>
+</div>
+
+<div class="card green">
+  <h2>候选 A:破例先记,反复才成规则(Ripple-Down Rules)<span class="verdict v-hi">最适合</span></h2>
+  <div class="kv">
+    <b>是什么</b><span>医疗化验室<b>真实生产环境用了很多年</b>的老方法:系统按一棵规则树给结论;专家不同意时,就在出错的那条规则下面<b>挂一条例外</b>(带上这个真实案例);同类例外反复出现才升成正式规则。规则永远不用一次写全,靠日常纠正长出来。</span>
+    <b>怎么实现</b><span>零新基建:规则 = 可读的规则文件(<b>你已有的 120 条纠正记录就是雏形</b>,每条带出处);你每纠正一次,系统自动起草一条例外给你<b>一键确认</b>收进树。</span>
+    <b>为什么适合</b><span>你的纠正天然就是「破例先记」;整棵树<b>你随时能打开看、直接改、随时撤</b>;十几条数据就能跑,不怕学歪。</span>
+    <b>第一片</b><span>把 120 条记录蒸馏成一棵「issue 归类」规则树(1 个文件)→ <b>影子跑</b>:每次归类它也偷偷出答案、对比实际,不一致就起草例外 → 一致率够 + 你抽查认可 → 你解锁的类别进「做了告诉你」。</span>
+  </div>
+</div>
+
+<div class="card blue">
+  <h2>候选 B:翻先例(Case-Based Reasoning)<span class="verdict v-mid">当搭档</span></h2>
+  <div class="kv">
+    <b>是什么</b><span>新决策 → 找最像的过往案例 → 照着拍(必要时改)→ 这次又存回去。跟你平时「这像 3 月那个 case,差别是有法务风险」的思路一模一样。</span>
+    <b>怎么实现</b><span>把决策案例(背景/选择/<b>理由</b>/结果)存成可检索库;新决策捞最像的几条给模型出建议 + <b>标明引用了哪个先例</b>;<b>没有像的先例 = 自动来问你</b>。</span>
+    <b>为什么适合</b><span>解释性最好(能说清「照了哪个先例、差在哪」);「没先例就问你」是天然的安全阀。短板:「学到的规律」不显式,你想审「你到底学到我什么」时不如一棵规则树直观。</span>
+  </div>
+</div>
+
+<div class="card amber">
+  <h2>诚实淘汰的</h2>
+  <ul>
+    <li><b>CIRL</b>(合作逆强化学习):好的思维框架,<b>没有我们这个规模能落地的工程形态</b>。pass。</li>
+    <li><b>CIPHER 当骨架</b>:如上,计数器不吃理由。<b>但它已在记的决策快照留着当数据源</b>,不浪费。</li>
+    <li><b>弃权 + 渐进放权</b>(拿不准就问 / 影子→建议→自治):不是独立方法,是<b>安全壳</b> —— 谁当骨架都要套。</li>
+  </ul>
+</div>
+
+<div class="card navy">
+  <h2>我的推荐:A 当骨架 + B 当证据层(套上安全壳)</h2>
+  <p><b>规则树 = 你的「决策宪法」活版本</b>(显式、可读、你可直接改),每条规则绑着造出它的真实案例;规则没覆盖的新情况 → 翻先例给参考、没先例就问你;全程 影子→建议→做+告知 渐进;<b>4 类地板(花钱/不可逆销毁/安全权限/ship·merge·runner)照旧永远问你</b>。</p>
+  <p><b>为什么比 CIPHER 对(一句话)</b>:CIPHER 数你「批了没」,这套记你「<b>为什么</b>」—— 你的决策力值钱在理由,理由才能替你拍新的。而且你随时能打开看它学到了什么、随时改、随时收回。</p>
+  <p><b>第一片(具体到能排期)</b>:① 蒸馏 issue 归类规则树(1 文件,1-2 天)→ ② 影子跑 2-4 周记一致率(零风险、不改变任何行为)→ ③ 达标 + 你抽查认可 → 你解锁的类别进「做+告知」。每步可验证、可叫停。</p>
+  <div class="cmt-wrap"><label>💬 这个打法(规则树+先例,不用 CIPHER 当骨架)你认吗?第一片从「issue 归类」开始 OK?</label><textarea class="cmt" data-k="method" placeholder="…"></textarea></div>
+  <div class="cmt-wrap"><label>💬 其它想法</label><textarea class="cmt" data-k="freeform" placeholder="…"></textarea></div>
+  <details>
+    <summary>按钮不灵时的手动模板</summary>
+    <div class="fallback">FLY-922 方法批注 ——
+打法(规则树+先例)认吗:
+第一片从issue归类开始OK吗:
+其它: </div>
+  </details>
+</div>
+
+</div>
+
+<div class="bar">
+  <button class="btn primary" id="copyBtn" type="button">复制我的批注</button>
+  <button class="btn ghost" id="clearBtn" type="button">清空</button>
+</div>
+<div class="hint" id="hint"></div>
+
+<script>
+(function(){
+  var LS="fly922-method-cmt";
+  var areas=[].slice.call(document.querySelectorAll("textarea.cmt"));
+  var labelOf={method:"打法&第一片",freeform:"其它"};
+  try{var saved=JSON.parse(localStorage.getItem(LS)||"{}");
+    areas.forEach(function(a){var k=a.getAttribute("data-k"); if(saved[k])a.value=saved[k];});}catch(e){}
+  function persist(){try{var o={};areas.forEach(function(a){o[a.getAttribute("data-k")]=a.value;});
+    localStorage.setItem(LS,JSON.stringify(o));}catch(e){}}
+  areas.forEach(function(a){a.addEventListener("input",persist);});
+  function build(){
+    var out="FLY-922 方法对比 — Annie 批注\n\n";
+    areas.forEach(function(a){var v=a.value.trim(); if(v){var k=a.getAttribute("data-k");
+      out+="["+(labelOf[k]||k)+"] "+v+"\n";}});
+    return out.trim();
+  }
+  function flash(m){var h=document.getElementById("hint");h.textContent=m;setTimeout(function(){h.textContent="";},2600);}
+  document.getElementById("copyBtn").addEventListener("click",function(){
+    var t=build();
+    if(t==="FLY-922 方法对比 — Annie 批注"){flash("还没写批注哦");return;}
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(t).then(function(){flash("已复制 ✓");},function(){window.prompt("手动复制:",t);});
+    }else{window.prompt("手动复制:",t);}
+  });
+  document.getElementById("clearBtn").addEventListener("click",function(){
+    if(window.confirm("清空?")){areas.forEach(function(a){a.value="";});persist();flash("已清空");}
+  });
+})();
+</script>
+</body>
+</html>

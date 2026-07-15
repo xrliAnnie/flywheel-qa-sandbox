@@ -87,6 +87,8 @@ describe("session_completed route guard (FLY-108)", () => {
 	}
 
 	beforeEach(async () => {
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0"; // FLY-869: FSM tests bypass ship gate
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 		store = await StateStore.create(":memory:");
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		const executor = new DirectiveExecutor(store);
@@ -109,6 +111,8 @@ describe("session_completed route guard (FLY-108)", () => {
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -237,6 +241,32 @@ describe("session_completed route guard (FLY-108)", () => {
 		expect(store.getSession("exec-nr")!.status).toBe("awaiting_review");
 	});
 
+	// FLY-115 v1.24.5 (FLY-120): when the Lead unblocks `approve_to_ship` via
+	// `flywheel-comm respond` (production path) the Runner can resume, merge
+	// the PR itself, and emit session_completed before the Bridge's approve
+	// action has run. Status must short-circuit to "completed" — leaving it at
+	// "awaiting_review" used to make Lead notify Annie about a PR already on
+	// main (Round 5 deadlock evidence).
+	it("route=needs_review + landingStatus.merged → completed (FLY-120)", async () => {
+		await startRunning("exec-nr-merged", "issue-nr-merged");
+
+		const res = await postCompleted({
+			event_id: "evt-nr-merged",
+			execution_id: "exec-nr-merged",
+			issue_id: "issue-nr-merged",
+			project_name: "geoforge3d",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "needs_review" },
+				evidence: {
+					landingStatus: { status: "merged", prNumber: 7 },
+				},
+			},
+		});
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-nr-merged")!.status).toBe("completed");
+	});
+
 	it("route=blocked → blocked", async () => {
 		await startRunning("exec-blk", "issue-blk");
 
@@ -250,6 +280,110 @@ describe("session_completed route guard (FLY-108)", () => {
 		});
 		expect(res.status).toBe(200);
 		expect(store.getSession("exec-blk")!.status).toBe("blocked");
+	});
+
+	// FLY-222 #1: no-code/no-merge clean success → terminal completed (NOT
+	// awaiting_review). Mirrors DirectEventSink.
+	it("route=no_code (no merge) → completed, decision_route persisted", async () => {
+		await startRunning("exec-nc", "issue-nc");
+
+		const res = await postCompleted({
+			event_id: "evt-nc",
+			execution_id: "exec-nc",
+			issue_id: "issue-nc",
+			project_name: "geoforge3d",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "no_code" },
+				evidence: {},
+				summary: "2 issues created, 3 learnings recorded",
+			},
+		});
+		expect(res.status).toBe(200);
+		const s = store.getSession("exec-nc")!;
+		expect(s.status).toBe("completed");
+		expect(s.decision_route).toBe("no_code");
+	});
+
+	// FLY-493: pr_handoff (no-transport antigravity build+PR terminal) maps
+	// running→completed with PR/landing evidence, never awaiting_review.
+	it("route=pr_handoff from running → completed, pr_number + decision_route persisted, NO review binding", async () => {
+		await startRunning("exec-ph", "issue-ph");
+
+		const res = await postCompleted({
+			event_id: "evt-ph",
+			execution_id: "exec-ph",
+			issue_id: "issue-ph",
+			project_name: "geoforge3d",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "pr_handoff" },
+				evidence: {
+					landingStatus: { status: "ready_to_merge", prNumber: 77 },
+					headSha: "d".repeat(40),
+				},
+				summary: "PR #77 open — founder ship pending",
+			},
+		});
+		expect(res.status).toBe(200);
+		const s = store.getSession("exec-ph")!;
+		expect(s.status).toBe("completed");
+		expect(s.decision_route).toBe("pr_handoff");
+		expect(s.pr_number).toBe(77);
+		// Never enters the wake-dependent approve loop — no review binding written.
+		expect(s.review_question_id ?? null).toBeNull();
+	});
+
+	it("route=pr_handoff from awaiting_review → skipped, status unchanged", async () => {
+		store.upsertSession({
+			execution_id: "exec-ph2",
+			issue_id: "issue-ph2",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_identifier: "GEO-PH2",
+		});
+
+		const res = await postCompleted({
+			event_id: "evt-ph2",
+			execution_id: "exec-ph2",
+			issue_id: "issue-ph2",
+			project_name: "geoforge3d",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "pr_handoff" },
+				evidence: { landingStatus: { status: "ready_to_merge", prNumber: 5 } },
+			},
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body.warning).toBe("pr_handoff from non-running skipped");
+		expect(store.getSession("exec-ph2")!.status).toBe("awaiting_review");
+	});
+
+	// FLY-222 #1 (Codex code-review MED-2): no_code must NOT terminalize a
+	// non-running (review-gated) session — it can only complete a running one.
+	it("route=no_code from awaiting_review → skipped, status unchanged", async () => {
+		store.upsertSession({
+			execution_id: "exec-nc2",
+			issue_id: "issue-nc2",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_identifier: "GEO-NC2",
+		});
+
+		const res = await postCompleted({
+			event_id: "evt-nc2",
+			execution_id: "exec-nc2",
+			issue_id: "issue-nc2",
+			project_name: "geoforge3d",
+			event_type: "session_completed",
+			payload: { decision: { route: "no_code" }, evidence: {} },
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body.warning).toBe("no_code from non-running skipped");
+		// still parked — the review gate was NOT cleared
+		expect(store.getSession("exec-nc2")!.status).toBe("awaiting_review");
 	});
 
 	it("FSM reject logs at error level with pre-state + target + route", async () => {

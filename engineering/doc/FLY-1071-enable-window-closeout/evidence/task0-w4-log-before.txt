@@ -1,0 +1,20 @@
+    '  \x1B[2m2026-07-09T21:24:23.346993Z\x1B[0m \x1B[31mERROR\x1B[0m \x1B[2mcodex_login::auth::manager\x1B[0m\x1B[2m:\x1B[0m Failed to refresh token: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.\n' +
+    '  \x1B[2m2026-07-09T21:24:25.125099Z\x1B[0m \x1B[31mERROR\x1B[0m \x1B[2mcodex_login::auth::manager\x1B[0m\x1B[2m:\x1B[0m Failed to refresh token: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.\n' +
+    '  \x1B[2m2026-07-09T21:24:28.553498Z\x1B[0m \x1B[31mERROR\x1B[0m \x1B[2mcodex_login::auth::manager\x1B[0m\x1B[2m:\x1B[0m Failed to refresh token: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.\n' +
+    '  \x1B[2m2026-07-09T21:24:34.891697Z\x1B[0m \x1B[31mERROR\x1B[0m \x1B[2mcodex_login::auth::manager\x1B[0m\x1B[2m:\x1B[0m Failed to refresh token: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.\n' +
+    '  \x1B[2m2026-07-09T21:24:47.423200Z\x1B[0m \x1B[31mERROR\x1B[0m \x1B[2mcodex_login::auth::manager\x1B[0m\x1B[2m:\x1B[0m Failed to refresh token: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.\n' +
+    '\n' +
+    'Caused by:\n' +
+    '    0: failed to connect to /Users/xiaorongli/.codex-infra-bot/app-server-control/app-server-control.sock\n' +
+    '    1: No such file or directory (os error 2)\n' +
+    '[codex-lead-tui-home] ERROR: remote-control start failed (home: /Users/xiaorongli/.codex-infra-bot)\n'
+}
+[codex-infra-bot-wrapper] 15:46:38 Starting Codex InfraBot WINDOWED FULL-ACCESS (TUI) Lead (projectDir=/Users/xiaorongli/Dev/flywheel)
+[codex-lead-tui-home] WARNING (FLY-513): global codex /Users/xiaorongli/.local/bin/codex resolves INTO this Lead home: /Users/xiaorongli/.codex-infra-bot/packages/standalone/releases/0.144.0-aarch64-apple-darwin/bin/codex
+[codex-lead-tui-home]   → the standalone updater / Lead flips will churn it and transiently break EVERY runner's codex review gate.
+[codex-lead-tui-home]   → restore a neutral pinned global, e.g.: ln -sfn ~/.local/share/flywheel-codex/<ver>/bin/codex /Users/xiaorongli/.local/bin/codex
+[codex-lead-tui-home] config.toml written (full-access: workspace-write + network ON, writable_roots=[/Users/xiaorongli/Dev/flywheel])
+[codex-lead-tui-home] config.toml: appended [mcp_servers.lead_actions] (full-access: approve + token by name)
+[codex-lead-tui-home] home OK (full-access): /Users/xiaorongli/.codex-infra-bot
+[run-codex-infra-bot-tui] WINDOWED FULL-ACCESS Codex Infra Bot | runtime=/Users/xiaorongli/Dev/flywheel/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js projectDir=/Users/xiaorongli/Dev/flywheel outbound=direct dryRun=0
+[codex-lead-tui-runtime] full-access §10 config gate PASSED (lead_actions MCP exact + sandbox=workspace-write/network-on + writable_roots=[validated project root], approve mode, token by-name, no broker)

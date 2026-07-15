@@ -33,6 +33,25 @@ PID_DIR="${HOME}/.flywheel/pids"
 PLIST_PREFIX="com.flywheel.lead"
 GUI_DOMAIN="gui/$(id -u)"
 
+# FLY-247: test seams — external commands and timeouts are env-injectable so
+# the bash test suite can stub launchd/plutil/tmux without touching the real
+# system. Defaults are byte-identical to the previous hard-coded behavior.
+LAUNCHCTL="${FLYWHEEL_DAEMON_LAUNCHCTL:-launchctl}"
+PLUTIL="${FLYWHEEL_DAEMON_PLUTIL:-plutil}"
+TMUX_BIN="${FLYWHEEL_DAEMON_TMUX:-tmux}"
+STOP_TIMEOUT="${FLYWHEEL_DAEMON_STOP_TIMEOUT:-60}"
+VERIFY_TIMEOUT="${FLYWHEEL_DAEMON_VERIFY_TIMEOUT:-60}"
+POLL_INTERVAL="${FLYWHEEL_DAEMON_POLL_INTERVAL:-1}"
+
+# FLY-247 §2.6: distinct exit codes per failure phase — fleet picks the right
+# recovery branch from the JSON result record + these codes (never from stderr).
+EXIT_PREP_FAILED=10
+EXIT_STOP_TIMEOUT=20
+EXIT_COMMIT_FAILED=30
+EXIT_BOOTSTRAP_FAILED=40
+EXIT_VERIFY_NOT_STARTED=41
+EXIT_VERIFY_ALIVE_UNVERIFIED=42
+
 # ════════════════════════════════════════════════════════════════
 # Utility functions
 # ════════════════════════════════════════════════════════════════
@@ -44,6 +63,17 @@ log() {
 error() {
   echo "[daemon] ERROR: $*" >&2
   exit 1
+}
+
+# R4-H4: keys flow into filesystem paths (manifests, plists, txn artifacts).
+# Reject anything outside a safe identifier grammar — separators, dots-only
+# segments, control characters could escape directories or collide files.
+validate_key_grammar() {
+  local key="$1"
+  case "$key" in
+    *[!A-Za-z0-9._-]*|""|.|..|*/*) return 1 ;;
+  esac
+  return 0
 }
 
 require_jq() {
@@ -106,10 +136,36 @@ list_manifests() {
   done
 }
 
+# R4-H1: tri-state launchd probe. Echoes one of:
+#   "loaded <pid>"  — label loaded; pid 0 = loaded-without-PID (idle KeepAlive)
+#   "unloaded"      — DETERMINED not-loaded (launchctl said could-not-find)
+#   "error"         — probe failure (binary missing, transport error, unknown
+#                     non-zero) → callers must fail-close, never assume unloaded
+launchd_probe() {
+  local daemon_key="$1"
+  local label
+  label=$(plist_label "$daemon_key")
+  command -v "$LAUNCHCTL" >/dev/null 2>&1 || { echo "error"; return; }
+  local out rc
+  out=$("$LAUNCHCTL" print "${GUI_DOMAIN}/${label}" 2>&1)
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    local pid
+    pid=$(printf '%s' "$out" | grep -m1 'pid =' | awk '{print $NF}' || true)
+    echo "loaded ${pid:-0}"
+    return
+  fi
+  if printf '%s' "$out" | grep -qiE 'could not find service|no such process'; then
+    echo "unloaded"
+    return
+  fi
+  echo "error"
+}
+
 # Check if a launchd service is loaded
 is_loaded() {
   local daemon_key="$1"
-  launchctl print "${GUI_DOMAIN}/$(plist_label "$daemon_key")" &>/dev/null
+  "$LAUNCHCTL" print "${GUI_DOMAIN}/$(plist_label "$daemon_key")" &>/dev/null
 }
 
 # Get PID of a running launchd service (0 if not running)
@@ -118,7 +174,7 @@ get_launchd_pid() {
   local label
   label=$(plist_label "$daemon_key")
   local pid
-  pid=$(launchctl print "${GUI_DOMAIN}/${label}" 2>/dev/null | grep -m1 'pid =' | awk '{print $NF}' || true)
+  pid=$("$LAUNCHCTL" print "${GUI_DOMAIN}/${label}" 2>/dev/null | grep -m1 'pid =' | awk '{print $NF}' || true)
   echo "${pid:-0}"
 }
 
@@ -134,52 +190,586 @@ install_wrapper() {
     error "Wrapper source not found: ${src}"
   fi
 
-  mkdir -p "$FLYWHEEL_BIN"
-  cp "$src" "$dst"
-  chmod +x "$dst"
-  log "Wrapper installed: ${dst}"
+  # FLY-954: sanity + same-dir tmp + atomic mv + chmod 555 via the shared
+  # helper — a degenerate source (the 12-byte stub incident) must fail loudly,
+  # never become the live dispatch entrypoint for every Lead's KeepAlive.
+  # shellcheck source=lib/script-sanity.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/script-sanity.sh"
+  if ! install_script_atomic "$src" "$dst"; then
+    error "wrapper failed sanity/atomic install: ${src}"
+  fi
+  log "Wrapper installed: ${dst} (mode 555)"
 }
 
 # ════════════════════════════════════════════════════════════════
 # Generate launchd plist
 # ════════════════════════════════════════════════════════════════
 
-generate_plist() {
+# FLY-247 R1#8: XML-escape every dynamic string that flows into the plist.
+# The model value originates in projects.json (external input at a system
+# boundary); paths/labels are escaped too for uniformity.
+xml_escape() {
+  # sed (not ${var//}) on purpose: bash 5.2's patsub_replacement expands `&`
+  # in ${//} replacements to the matched text, silently corrupting entities,
+  # while macOS bash 3.2 lacks the \& opt-out. sed's \& is portable to both.
+  printf '%s' "$1" | sed \
+    -e 's/&/\&amp;/g' \
+    -e 's/</\&lt;/g' \
+    -e 's/>/\&gt;/g' \
+    -e 's/"/\&quot;/g' \
+    -e "s/'/\&apos;/g"
+}
+
+# FLY-247 R5#4: plist generation takes TWO manifest paths —
+#   manifest_source_path:  where to READ the model from (staged manifest in
+#                          staged mode; canonical manifest in legacy mode)
+#   runtime_manifest_path: what to EMBED in ProgramArguments (ALWAYS the
+#                          canonical manifest path — a staged path here would
+#                          dangle after commit renames it away → boot loop)
+# Writes to output_path via same-dir temp + plutil lint + atomic rename
+# (R1#8/R2): a lint failure or interruption never corrupts an existing plist.
+generate_plist_to() {
   local daemon_key="$1"
-  local manifest_path="$2"
-  local plist
-  plist=$(plist_path "$daemon_key")
+  local manifest_source_path="$2"
+  local runtime_manifest_path="$3"
+  local output_path="$4"
   local label
   label=$(plist_label "$daemon_key")
   local wrapper="${FLYWHEEL_BIN}/flywheel-lead-wrapper.sh"
   local logfile
   logfile=$(log_path "$daemon_key")
 
-  mkdir -p "$PLIST_DIR"
+  # Per-Lead model from the manifest carrier (absent/empty → no env block,
+  # output byte-identical to the pre-FLY-247 format).
+  local model
+  model=$(jq -r '.model // ""' "$manifest_source_path" 2>/dev/null || echo "")
+  # Defense in depth: config layer already rejects control chars; never let
+  # one that slipped through (hand-edited manifest) reach launchd.
+  if [ -n "$model" ] && LC_ALL=C printf '%s' "$model" | tr -d '[:print:]' | grep -q .; then
+    log "ERROR: manifest model contains non-printable characters; refusing to generate plist"
+    return 1
+  fi
 
-  cat > "$plist" <<EOF
+  # FLY-671: per-Lead effort carrier. Effort is a CLOSED CLI enum (unlike the
+  # free-string model), so a hand-edited manifest with a bogus value must NOT
+  # reach launchd → the CLI → crash the Lead. Validate against the enum + reject
+  # control chars; refuse to generate on a bad value (loud, not silent).
+  local effort
+  effort=$(jq -r '.effort // ""' "$manifest_source_path" 2>/dev/null || echo "")
+  if [ -n "$effort" ]; then
+    case "$effort" in
+      low|medium|high|xhigh|max) : ;;
+      *)
+        log "ERROR: manifest effort '$effort' is not a valid level (low|medium|high|xhigh|max); refusing to generate plist"
+        return 1
+        ;;
+    esac
+  fi
+
+  # Emit the EnvironmentVariables dict when model OR effort is set; each key is
+  # conditional. byte-compat: model-set/effort-unset yields the exact pre-FLY-671
+  # single-MODEL-line block. Key order is fixed model→effort.
+  local env_block=""
+  if [ -n "$model" ] || [ -n "$effort" ]; then
+    env_block="    <key>EnvironmentVariables</key>
+    <dict>
+"
+    if [ -n "$model" ]; then
+      env_block="${env_block}        <key>FLYWHEEL_LEAD_MODEL</key><string>$(xml_escape "$model")</string>
+"
+    fi
+    if [ -n "$effort" ]; then
+      env_block="${env_block}        <key>FLYWHEEL_LEAD_EFFORT</key><string>$(xml_escape "$effort")</string>
+"
+    fi
+    env_block="${env_block}    </dict>
+"
+  fi
+
+  local out_dir
+  out_dir=$(dirname "$output_path")
+  mkdir -p "$out_dir"
+  local tmp
+  tmp="${out_dir}/.$(basename "$output_path").tmp.$$"
+
+  {
+    cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key><string>${label}</string>
+    <key>Label</key><string>$(xml_escape "$label")</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>${wrapper}</string>
-        <string>${manifest_path}</string>
+        <string>$(xml_escape "$wrapper")</string>
+        <string>$(xml_escape "$runtime_manifest_path")</string>
     </array>
-    <key>KeepAlive</key><true/>
+${env_block}    <key>KeepAlive</key><true/>
     <key>ThrottleInterval</key><integer>30</integer>
     <key>RunAtLoad</key><true/>
-    <key>StandardOutPath</key><string>${logfile}</string>
-    <key>StandardErrorPath</key><string>${logfile}</string>
+    <key>StandardOutPath</key><string>$(xml_escape "$logfile")</string>
+    <key>StandardErrorPath</key><string>$(xml_escape "$logfile")</string>
 </dict>
 </plist>
 EOF
+  } > "$tmp"
+
+  # plutil lint before the atomic rename. A missing plutil (non-macOS test
+  # host) is skipped with a warning — the threat model (malformed XML) is
+  # already covered by xml_escape; lint is the belt to that suspender.
+  if command -v "$PLUTIL" >/dev/null 2>&1; then
+    if ! "$PLUTIL" -lint "$tmp" >/dev/null 2>&1; then
+      rm -f "$tmp"
+      log "ERROR: generated plist failed plutil lint; existing plist (if any) left untouched"
+      return 1
+    fi
+  else
+    log "WARNING: ${PLUTIL} not found — skipping plist lint"
+  fi
+
+  mv "$tmp" "$output_path"
+}
+
+# Legacy entry point (byte-compat shim): same signature/behavior as the
+# pre-FLY-247 generate_plist — reads model from AND embeds the same canonical
+# manifest path, writes to the canonical plist location.
+generate_plist() {
+  local daemon_key="$1"
+  local manifest_path="$2"
+  local plist
+  plist=$(plist_path "$daemon_key")
+
+  mkdir -p "$PLIST_DIR"
+  generate_plist_to "$daemon_key" "$manifest_path" "$manifest_path" "$plist" || return 1
 
   log "Plist generated: ${plist}"
+}
+
+# ════════════════════════════════════════════════════════════════
+# FLY-247 staged install machinery (§2.6)
+# ════════════════════════════════════════════════════════════════
+
+file_sha() {
+  shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+}
+
+# Atomically write the versioned JSON result record (R9#2 + R10#3): fleet
+# decides recovery ONLY from this validated record + fresh probes — exit
+# codes cannot carry PIDs and stderr regexing is forbidden.
+write_result_record() {
+  local staged_dir="$1" txn_id="$2" exact_key="$3" attempt="$4"
+  local phase="$5" outcome="$6" old_pid="$7" new_pid="$8"
+  local label_loaded="$9" runtime_state="${10}"
+  local out="${staged_dir}/result-${exact_key}.json"
+  local tmp="${out}.tmp.$$"
+  jq -n \
+    --arg txn "$txn_id" --arg key "$exact_key" --arg attempt "$attempt" \
+    --arg phase "$phase" --arg outcome "$outcome" \
+    --arg oldPid "$old_pid" --arg newPid "$new_pid" \
+    --argjson labelLoaded "$label_loaded" --arg runtimeState "$runtime_state" \
+    '{version: 1, transactionId: $txn, exactKey: $key,
+      attempt: ($attempt | tonumber), phase: $phase, outcome: $outcome,
+      oldPid: (if $oldPid == "" then null else ($oldPid | tonumber) end),
+      newPid: (if $newPid == "" then null else ($newPid | tonumber) end),
+      labelLoaded: $labelLoaded, runtimeState: $runtimeState}' \
+    > "$tmp" && mv "$tmp" "$out"
+}
+
+# Advance the per-key phase journal in transaction.json atomically, BEFORE
+# each destructive boundary (§2.6). jq write → validate → atomic rename.
+journal_phase() {
+  local txn_json="$1" exact_key="$2" phase="$3"
+  [ -f "$txn_json" ] || return 0
+  local tmp="${txn_json}.tmp.$$"
+  jq --arg key "$exact_key" --arg phase "$phase" \
+    '.leads[$key].phase = $phase' "$txn_json" > "$tmp" \
+    && jq empty "$tmp" 2>/dev/null \
+    && mv "$tmp" "$txn_json"
+}
+
+# Wait for a specific PID to fully exit. Returns 0 when gone, 1 on timeout.
+wait_pid_exit() {
+  local pid="$1" timeout="$2"
+  [ -z "$pid" ] || [ "$pid" = "0" ] && return 0
+  local waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge "$timeout" ]; then
+      return 1
+    fi
+    sleep "$POLL_INTERVAL"
+    waited=$((waited + POLL_INTERVAL))
+  done
+  return 0
+}
+
+# FLY-247 §2.4 runtime axis (R8#3): is this PID's process tree demonstrably a
+# Claude Lead? The exact tmux window name alone is NOT acceptable evidence —
+# FLY-242's Codex observer reuses the same window name, so a failed Claude
+# launch with a live observer window would fake success. Evidence accepted:
+#   (a) the launchd process or any child (2 levels) whose command mentions
+#       claude-lead / claude, or
+#   (b) a tmux pane whose #{pane_current_command} is claude-ish AND whose
+#       window matches the exact key.
+# Process-tree claude traits for a pid (2 levels). rc 0 = found, 1 = not.
+process_tree_has_claude() {
+  local pid="$1"
+  [ -n "$pid" ] && [ "$pid" != "0" ] || return 1
+  local cmds
+  cmds=$(ps -o command= -p "$pid" 2>/dev/null || true)
+  local kids
+  kids=$(pgrep -P "$pid" 2>/dev/null || true)
+  local k
+  for k in $kids; do
+    cmds="${cmds}
+$(ps -o command= -p "$k" 2>/dev/null || true)"
+    local gkids
+    gkids=$(pgrep -P "$k" 2>/dev/null || true)
+    local g
+    for g in $gkids; do
+      cmds="${cmds}
+$(ps -o command= -p "$g" 2>/dev/null || true)"
+    done
+  done
+  printf '%s' "$cmds" | grep -qiE 'claude(-lead)?'
+}
+
+# QA F-2/F-3: THE pane-evidence helper shared by daemon and fleet — one
+# implementation so the two sides can never give different answers.
+# rc 0 = a LIVE pane in a window matching the key shows Claude evidence,
+# rc 1 = determined none, rc 2 = probe error.
+# Evidence per pane: NOT dead (#{pane_dead}==0, QA F-2: a SIGTERM'd Claude
+# pane still reports its last command) AND window matches AND
+# (pane command contains claude OR the pane PID's process tree does —
+# QA F-3: healthy production Claude panes report a bare VERSION NUMBER
+# like "2.1.170" as pane_current_command; string-matching alone misses
+# every real Lead and the process tree is the reliable signal).
+claude_pane_evidence() {
+  local daemon_key="$1"
+  command -v "$TMUX_BIN" >/dev/null 2>&1 || return 2
+  local panes rc
+  panes=$("$TMUX_BIN" list-panes -a -F '#{pane_dead}	#{window_name}	#{pane_pid}	#{pane_current_command}' 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if printf '%s' "$panes" | grep -qiE 'no server running|no current client'; then
+      return 1
+    fi
+    return 2
+  fi
+  local dead window pane_pid cmd
+  while IFS=$'\t' read -r dead window pane_pid cmd; do
+    [ "$dead" = "0" ] || continue
+    case "$window" in *"$daemon_key"*) ;; *) continue ;; esac
+    if printf '%s' "$cmd" | grep -qiE 'claude'; then
+      return 0
+    fi
+    if process_tree_has_claude "$pane_pid"; then
+      return 0
+    fi
+  done <<< "$panes"
+  return 1
+}
+
+runtime_claude_confirmed() {
+  local pid="$1" daemon_key="$2"
+  # R5#5 tri-state: rc 0 = claude-confirmed, rc 1 = determined-not,
+  # rc 2 = probe error (broken tooling must never read as "no claude").
+  command -v ps >/dev/null 2>&1 || return 2
+  command -v pgrep >/dev/null 2>&1 || return 2
+  # self-probe: if ps cannot even report PID 1, the tool is broken
+  ps -o command= -p 1 >/dev/null 2>&1 || return 2
+  # (a) process-tree traits of the launchd pid
+  if process_tree_has_claude "$pid"; then
+    return 0
+  fi
+  # (b) live-pane evidence (shared helper; QA F-2/F-3)
+  claude_pane_evidence "$daemon_key"
+  case $? in
+    0) return 0 ;;
+    2) return 2 ;;
+  esac
+  return 1
+}
+
+# FLY-247 staged install (§2.6, R3#2/R4#2): commit pre-validated staged
+# artifacts for ONE exact key. FORBIDDEN from touching the shared wrapper or
+# regenerating the canonical plist — those belong to Phase W / staging.
+#
+#   flywheel-daemon.sh install <exact-key> --staged-dir <txn-dir>
+#
+# Staged layout contract (fleet writes; daemon validates):
+#   <txn-dir>/staged/<key>.manifest.json
+#   <txn-dir>/staged/<key>.plist
+#   <txn-dir>/transaction.json   (phase journal; advanced here per boundary)
+# Result record: <txn-dir>/result-<key>.json (always written, success or not).
+install_one_staged() {
+  local daemon_key="$1"
+  local staged_dir="$2"
+  local label
+  label=$(plist_label "$daemon_key")
+  local staged_manifest="${staged_dir}/staged/${daemon_key}.manifest.json"
+  local staged_plist="${staged_dir}/staged/${daemon_key}.plist"
+  local txn_json="${staged_dir}/transaction.json"
+  local canonical_manifest="${MANIFEST_DIR}/${daemon_key}.json"
+  local canonical_plist
+  canonical_plist=$(plist_path "$daemon_key")
+  local txn_id attempt
+  txn_id=$(jq -r '.transactionId // "unknown"' "$txn_json" 2>/dev/null || echo "unknown")
+  attempt=$(jq -r --arg k "$daemon_key" '(.leads[$k].attempt // 1)' "$txn_json" 2>/dev/null || echo 1)
+
+  if ! validate_key_grammar "$daemon_key"; then
+    log "ERROR: unsafe exact-key '${daemon_key}' — refusing (R4-H4)"
+    return "$EXIT_PREP_FAILED"
+  fi
+
+  fail_staged() {
+    local phase="$1" outcome="$2" old_pid="$3" new_pid="$4" loaded="$5" runtime="$6" code="$7"
+    write_result_record "$staged_dir" "$txn_id" "$daemon_key" "$attempt" \
+      "$phase" "$outcome" "$old_pid" "$new_pid" "$loaded" "$runtime"
+    log "ERROR: staged install ${daemon_key} failed at ${phase}: ${outcome}"
+    return "$code"
+  }
+
+  # ── prep (non-destructive): re-validate staged artifacts ──────────────
+  if [ ! -f "$staged_manifest" ] || [ ! -f "$staged_plist" ]; then
+    fail_staged "prepared" "prep_failed_missing_staged" "" "" false "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+  if ! jq empty "$staged_manifest" 2>/dev/null; then
+    fail_staged "prepared" "prep_failed_manifest_invalid" "" "" false "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+  # Identity binding (R5#4): staged plist must carry our exact label, the
+  # standard wrapper, and the CANONICAL manifest path (never the staged path).
+  if ! grep -qF "<string>${label}</string>" "$staged_plist"; then
+    fail_staged "prepared" "prep_failed_plist_label_mismatch" "" "" false "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+  if ! grep -qF "<string>${FLYWHEEL_BIN}/flywheel-lead-wrapper.sh</string>" "$staged_plist"; then
+    fail_staged "prepared" "prep_failed_plist_wrapper_mismatch" "" "" false "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+  if ! grep -qF "<string>${canonical_manifest}</string>" "$staged_plist"; then
+    fail_staged "prepared" "prep_failed_plist_manifest_arg_not_canonical" "" "" false "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+  local manifest_sha plist_sha
+  manifest_sha=$(file_sha "$staged_manifest")
+  plist_sha=$(file_sha "$staged_plist")
+  # R6#2: staged artifacts must match the hashes the fleet bound into the
+  # transaction at staging time — files modified after confirmation (or a
+  # crafted txn dir) must never be committed.
+  local txn_sm txn_sp
+  txn_sm=$(jq -r --arg k "$daemon_key" '.leads[$k].staged.manifestSha // ""' "$txn_json" 2>/dev/null || echo "")
+  txn_sp=$(jq -r --arg k "$daemon_key" '.leads[$k].staged.plistSha // ""' "$txn_json" 2>/dev/null || echo "")
+  if [ -z "$txn_sm" ] || [ -z "$txn_sp" ] \
+    || [ "$manifest_sha" != "$txn_sm" ] || [ "$plist_sha" != "$txn_sp" ]; then
+    fail_staged "prepared" "prep_failed_staged_unbound" "" "" false "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+
+  # ── TOCTOU revalidation AT the destructive boundary (R4-H3) ──────────
+  # fleet checked config/carriers before staging+backup, but this daemon is a
+  # separate process started afterwards — revalidate the immutable snapshot
+  # and the carrier pre-images HERE, immediately before bootout.
+  local txn_config_sha pre_m_sha pre_p_sha
+  txn_config_sha=$(jq -r '.configSha // ""' "$txn_json" 2>/dev/null || echo "")
+  pre_m_sha=$(jq -r --arg k "$daemon_key" '.leads[$k].original.manifestSha // ""' "$txn_json" 2>/dev/null || echo "")
+  pre_p_sha=$(jq -r --arg k "$daemon_key" '.leads[$k].original.plistSha // ""' "$txn_json" 2>/dev/null || echo "")
+  # R5#2: these fields are REQUIRED — a transaction that cannot be validated
+  # must never reach destructive operations (was fail-open when absent).
+  if [ -z "$txn_config_sha" ] || [ -z "$pre_m_sha" ] || [ -z "$pre_p_sha" ]; then
+    fail_staged "prepared" "prep_failed_txn_incomplete" "" "" false "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+  if [ "$(file_sha "${HOME}/.flywheel/projects.json")" != "$txn_config_sha" ]; then
+    fail_staged "prepared" "prep_failed_config_changed" "" "" false "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+  if [ "$(file_sha "$canonical_manifest")" != "$pre_m_sha" ]; then
+    fail_staged "prepared" "prep_failed_carrier_changed" "" "" false "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+  if [ "$(file_sha "$canonical_plist")" != "$pre_p_sha" ]; then
+    fail_staged "prepared" "prep_failed_carrier_changed" "" "" false "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+  # Structural evidence re-gate at the boundary (R5#2): the CANONICAL
+  # carriers must still identify as this exact key and bind to the standard
+  # wrapper — a bespoke takeover during staging must not be booted out.
+  local cm_ident
+  cm_ident=$(jq -r '(.projectName // "") + "-" + (.leadId // "")' "$canonical_manifest" 2>/dev/null || echo "")
+  if [ "$cm_ident" != "$daemon_key" ] \
+    || ! grep -qF "<string>${FLYWHEEL_BIN}/flywheel-lead-wrapper.sh</string>" "$canonical_plist" \
+    || ! grep -qF "<string>${canonical_manifest}</string>" "$canonical_plist" \
+    || ! grep -qF "<string>${label}</string>" "$canonical_plist"; then
+    fail_staged "prepared" "prep_failed_evidence_regate" "" "" false "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+
+  # ── stop (destructive boundary; journal BEFORE the call) ─────────────
+  # R4-H1: tri-state probe — a probe ERROR must fail-close BEFORE bootout.
+  # R6#1: the staged-apply contract only RESTARTS a running standard-bound
+  # Claude lead — it never installs an unloaded/missing one and never stops
+  # a process that isn't PID-bound to this canonical manifest with Claude
+  # runtime evidence.
+  local probe old_pid
+  probe=$(launchd_probe "$daemon_key")
+  if [ "$probe" = "error" ]; then
+    fail_staged "prepared" "prep_failed_probe_error" "" "" false "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+  if [ "${probe%% *}" != "loaded" ]; then
+    fail_staged "prepared" "prep_failed_not_running" "" "" false "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+  old_pid="${probe##* }"
+  local boundary_mpid
+  boundary_mpid=$(jq -r '.pid // 0' "$canonical_manifest" 2>/dev/null || echo 0)
+  if [ "$old_pid" = "0" ] || [ "$boundary_mpid" != "$old_pid" ] \
+    || ! kill -0 "$old_pid" 2>/dev/null; then
+    fail_staged "prepared" "prep_failed_evidence_regate" "$old_pid" "" true "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+  runtime_claude_confirmed "$old_pid" "$daemon_key"
+  if [ $? -ne 0 ]; then
+    fail_staged "prepared" "prep_failed_evidence_regate" "$old_pid" "" true "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+  # R3-H1: persist oldPid IN THE JOURNAL atomically with 'stopping' — a crash
+  # before the result record is written must leave recovery a trustworthy pid
+  # (defaulting to 0 would make wait_pid_exit pass instantly while the old
+  # process is still draining).
+  # R6#3: the stopping journal write is load-bearing for recovery — if it
+  # cannot be persisted, the destructive boundary must not be crossed.
+  local jp_tmp="${txn_json}.tmp.$$"
+  if ! jq --arg key "$daemon_key" --argjson pid "${old_pid:-0}" \
+    '.leads[$key].phase = "stopping" | .leads[$key].oldPid = $pid' \
+    "$txn_json" > "$jp_tmp" 2>/dev/null \
+    || ! jq empty "$jp_tmp" 2>/dev/null \
+    || ! mv "$jp_tmp" "$txn_json"; then
+    rm -f "$jp_tmp"
+    fail_staged "prepared" "prep_failed_txn_incomplete" "" "" true "unknown" "$EXIT_PREP_FAILED"
+    return $?
+  fi
+  if [ "${probe%% *}" = "loaded" ]; then
+    if ! "$LAUNCHCTL" bootout "${GUI_DOMAIN}/${label}" 2>/dev/null; then
+      # R5#1: a failed bootout is not "probably stopped" — only a fresh
+      # POSITIVE unloaded verdict lets us continue.
+      if [ "$(launchd_probe "$daemon_key")" != "unloaded" ]; then
+        fail_staged "stopping" "stop_timeout" "$old_pid" "" true "unknown" "$EXIT_STOP_TIMEOUT"
+        return $?
+      fi
+    fi
+  fi
+  if ! wait_pid_exit "$old_pid" "$STOP_TIMEOUT"; then
+    # R2#2/R8#1: old supervisor still alive — NEVER bootstrap (double
+    # instance). Report and stop; fleet escalates to manual intervention.
+    fail_staged "stopping" "stop_timeout" "$old_pid" "" true "unknown" "$EXIT_STOP_TIMEOUT"
+    return $?
+  fi
+  # R5#1: pid exit alone does not prove launchd released the label — require
+  # a positive unloaded probe before touching canonical files.
+  local post_probe
+  post_probe=$(launchd_probe "$daemon_key")
+  if [ "$post_probe" != "unloaded" ]; then
+    fail_staged "stopping" "stop_timeout" "$old_pid" "" true "unknown" "$EXIT_STOP_TIMEOUT"
+    return $?
+  fi
+  journal_phase "$txn_json" "$daemon_key" "stopped"
+
+  # ── commit (two per-file renames under the commit_state protocol) ────
+  # R6#3: committing journal is also load-bearing (recovery branches on it).
+  if ! journal_phase "$txn_json" "$daemon_key" "committing"; then
+    fail_staged "committing" "commit_failed" "$old_pid" "" false "unknown" "$EXIT_COMMIT_FAILED"
+    return $?
+  fi
+  local commit_ok=true
+  local m_tmp="${MANIFEST_DIR}/.${daemon_key}.json.tmp.$$"
+  local p_tmp
+  p_tmp="${PLIST_DIR}/.$(basename "$canonical_plist").tmp.$$"
+  mkdir -p "$MANIFEST_DIR" "$PLIST_DIR"
+  # Fixed commit order: manifest, then plist (R5#4: same-dir temp copy +
+  # hash re-verify + rename; staged originals stay in the txn dir as evidence).
+  if ! cp "$staged_manifest" "$m_tmp" \
+    || [ "$(file_sha "$m_tmp")" != "$manifest_sha" ] \
+    || ! mv "$m_tmp" "$canonical_manifest"; then
+    commit_ok=false
+  fi
+  if [ "$commit_ok" = true ]; then
+    if ! cp "$staged_plist" "$p_tmp" \
+      || [ "$(file_sha "$p_tmp")" != "$plist_sha" ] \
+      || ! mv "$p_tmp" "$canonical_plist"; then
+      commit_ok=false
+    fi
+  fi
+  rm -f "$m_tmp" "$p_tmp" 2>/dev/null || true
+  if [ "$commit_ok" != true ] \
+    || [ "$(file_sha "$canonical_manifest")" != "$manifest_sha" ] \
+    || [ "$(file_sha "$canonical_plist")" != "$plist_sha" ]; then
+    fail_staged "committing" "commit_failed" "$old_pid" "" false "unknown" "$EXIT_COMMIT_FAILED"
+    return $?
+  fi
+  journal_phase "$txn_json" "$daemon_key" "committed"
+
+  # ── bootstrap + hard verify (full runtime predicate, R8#3) ───────────
+  journal_phase "$txn_json" "$daemon_key" "bootstrapping"
+  if ! "$LAUNCHCTL" bootstrap "$GUI_DOMAIN" "$canonical_plist" 2>/dev/null; then
+    fail_staged "bootstrapping" "bootstrap_failed" "$old_pid" "" false "not_started" "$EXIT_BOOTSTRAP_FAILED"
+    return $?
+  fi
+  journal_phase "$txn_json" "$daemon_key" "verifying"
+  local waited=0 new_pid=0
+  while [ "$waited" -lt "$VERIFY_TIMEOUT" ]; do
+    new_pid=$(get_launchd_pid "$daemon_key")
+    if [ "$new_pid" != "0" ] && [ -n "$new_pid" ] && kill -0 "$new_pid" 2>/dev/null; then
+      # PID binding (R8#3/code-review H1): the new Lead must have self-written
+      # the canonical manifest with ITS pid — launchd PID alone proves only
+      # that SOMETHING started, not that the standard wrapper→claude-lead
+      # chain registered itself.
+      local rewritten_pid
+      rewritten_pid=$(jq -r '.pid // 0' "$canonical_manifest" 2>/dev/null || echo 0)
+      if [ "$rewritten_pid" = "$new_pid" ] && runtime_claude_confirmed "$new_pid" "$daemon_key"; then
+        journal_phase "$txn_json" "$daemon_key" "applied"
+        write_result_record "$staged_dir" "$txn_id" "$daemon_key" "$attempt" \
+          "applied" "applied" "$old_pid" "$new_pid" true "claude-confirmed"
+        log "Staged install ${daemon_key} applied (PID: ${new_pid})."
+        return 0
+      fi
+    fi
+    sleep "$POLL_INTERVAL"
+    waited=$((waited + POLL_INTERVAL))
+  done
+  # Distinguish "not started" from "alive but unverified" (R8#2): fleet's
+  # recovery branch differs (alive → bootout new PID first).
+  new_pid=$(get_launchd_pid "$daemon_key")
+  if [ "$new_pid" != "0" ] && [ -n "$new_pid" ] && kill -0 "$new_pid" 2>/dev/null; then
+    fail_staged "verifying" "verify_failed_alive_unverified" "$old_pid" "$new_pid" true "alive-unverified" "$EXIT_VERIFY_ALIVE_UNVERIFIED"
+    return $?
+  fi
+  # R6#4 protocol: WE bootstrapped this job — clean up our own failed
+  # bootstrap (bootout + wait for the label to positively unload) so the
+  # fleet's loaded-label guard sees a consistent world and its automatic
+  # restore path stays reachable. If the label refuses to unload, report
+  # labelLoaded=true and let fleet fail-close to manual intervention.
+  "$LAUNCHCTL" bootout "${GUI_DOMAIN}/${label}" 2>/dev/null || true
+  local cleanup_unloaded=false
+  local cleanup_waited=0
+  while [ "$cleanup_waited" -lt "$STOP_TIMEOUT" ]; do
+    if [ "$(launchd_probe "$daemon_key")" = "unloaded" ]; then
+      cleanup_unloaded=true
+      break
+    fi
+    sleep "$POLL_INTERVAL"
+    cleanup_waited=$((cleanup_waited + POLL_INTERVAL))
+  done
+  if [ "$cleanup_unloaded" = "true" ]; then
+    fail_staged "verifying" "verify_failed_not_started" "$old_pid" "" false "not_started" "$EXIT_VERIFY_NOT_STARTED"
+  else
+    fail_staged "verifying" "verify_failed_not_started" "$old_pid" "" true "not_started" "$EXIT_VERIFY_NOT_STARTED"
+  fi
+  return $?
 }
 
 # ════════════════════════════════════════════════════════════════
@@ -190,7 +780,22 @@ cmd_install() {
   local target="${1:---all}"
   require_jq
 
-  # Install wrapper (shared by all leads)
+  # FLY-247 staged mode (R4#2): `install <exact-key> --staged-dir <dir>` is
+  # a different contract from legacy install — it must NOT touch the shared
+  # wrapper (Phase W owns that, exactly once per transaction) and must NOT
+  # regenerate the canonical plist (it commits the pre-validated staged one).
+  local staged_dir=""
+  if [ "${2:-}" = "--staged-dir" ]; then
+    staged_dir="${3:-}"
+    [ -n "$staged_dir" ] || error "install --staged-dir requires a directory argument"
+    [ -d "$staged_dir" ] || error "staged dir not found: ${staged_dir}"
+    [ "$target" != "--all" ] || error "staged install requires an exact {project}-{lead} key, not --all"
+    # Exact key only — no suffix matching in the transactional path.
+    install_one_staged "$target" "$staged_dir"
+    return $?
+  fi
+
+  # Install wrapper (shared by all leads) — legacy behavior preserved.
   install_wrapper
 
   if [ "$target" = "--all" ]; then
@@ -235,28 +840,39 @@ install_one_manifest() {
   local label
   label=$(plist_label "$daemon_key")
 
-  # Unload existing if loaded (idempotent reinstall)
+  # Unload existing if loaded (idempotent reinstall).
+  # FLY-247 R1#1: record the old PID and WAIT for it to actually exit
+  # (≤STOP_TIMEOUT) instead of the old `sleep 1` guess — bootstrapping while
+  # the old supervisor is still draining risks a double instance.
   if is_loaded "$daemon_key"; then
+    local old_pid
+    old_pid=$(get_launchd_pid "$daemon_key")
     log "Unloading existing ${label}..."
-    launchctl bootout "${GUI_DOMAIN}/${label}" 2>/dev/null || true
-    sleep 1
+    "$LAUNCHCTL" bootout "${GUI_DOMAIN}/${label}" 2>/dev/null || true
+    if ! wait_pid_exit "$old_pid" "$STOP_TIMEOUT"; then
+      error "Old process (PID ${old_pid}) did not exit within ${STOP_TIMEOUT}s — NOT bootstrapping (double-instance risk). Manual intervention required."
+    fi
   fi
 
-  generate_plist "$daemon_key" "$manifest"
+  generate_plist "$daemon_key" "$manifest" || error "plist generation failed for ${daemon_key}"
 
   local plist
   plist=$(plist_path "$daemon_key")
-  launchctl bootstrap "$GUI_DOMAIN" "$plist"
+  "$LAUNCHCTL" bootstrap "$GUI_DOMAIN" "$plist"
   log "Registered: ${label}"
 
-  # Verify
+  # Verify. FLY-247 R1#1: failure paths now exit non-zero (the old
+  # WARNING-and-return-0 silently reported success on a dead Lead).
   sleep 2
   if is_loaded "$daemon_key"; then
     local pid
     pid=$(get_launchd_pid "$daemon_key")
+    if [ "$pid" = "0" ] || [ -z "$pid" ]; then
+      error "${label} loaded but no PID — Lead did not start. Check: launchctl print ${GUI_DOMAIN}/${label}"
+    fi
     log "Lead '${lead_id}' (${daemon_key}) daemon installed and running (PID: ${pid})."
   else
-    log "WARNING: ${label} registered but not yet running. Check: launchctl print ${GUI_DOMAIN}/${label}"
+    error "${label} registered but not running. Check: launchctl print ${GUI_DOMAIN}/${label}"
   fi
 }
 
@@ -280,7 +896,7 @@ cmd_uninstall() {
       local daemon_key="${label#${PLIST_PREFIX}.}"
       if [ ! -f "${MANIFEST_DIR}/${daemon_key}.json" ]; then
         log "Removing orphaned plist: ${plist}"
-        launchctl bootout "${GUI_DOMAIN}/${label}" 2>/dev/null || true
+        "$LAUNCHCTL" bootout "${GUI_DOMAIN}/${label}" 2>/dev/null || true
         rm -f "$plist"
         count=$((count + 1))
       fi
@@ -305,7 +921,7 @@ uninstall_one() {
   plist=$(plist_path "$daemon_key")
 
   if is_loaded "$daemon_key"; then
-    launchctl bootout "${GUI_DOMAIN}/${label}" 2>/dev/null || true
+    "$LAUNCHCTL" bootout "${GUI_DOMAIN}/${label}" 2>/dev/null || true
     log "Unloaded: ${label}"
   fi
 
@@ -348,7 +964,7 @@ restart_one() {
   fi
 
   log "Restarting ${daemon_key}..."
-  launchctl kickstart -k "${GUI_DOMAIN}/${label}"
+  "$LAUNCHCTL" kickstart -k "${GUI_DOMAIN}/${label}"
   sleep 2
   local pid
   pid=$(get_launchd_pid "$daemon_key")
@@ -419,7 +1035,7 @@ cmd_status() {
   printf "Other Flywheel services:\n"
   for label in com.flywheel.daily-standup com.flywheel.updater; do
     local svc_state="not loaded"
-    if launchctl print "${GUI_DOMAIN}/${label}" &>/dev/null; then
+    if "$LAUNCHCTL" print "${GUI_DOMAIN}/${label}" &>/dev/null; then
       svc_state="loaded"
     fi
     printf "  %-32s  %s\n" "$label" "$svc_state"
@@ -463,6 +1079,15 @@ Usage: flywheel-daemon.sh <command> [options]
 
 Commands:
   install [lead-id|--all]   Generate plist + register with launchd
+  install <exact-key> --staged-dir <txn-dir>
+                            FLY-247 transactional install: commit staged
+                            manifest+plist (no wrapper touch, no regenerate),
+                            stop→commit→bootstrap→verify with phase journal
+                            + JSON result record (fleet-driven recovery)
+  install-wrapper           Install ONLY the shared wrapper (fleet Phase W)
+  generate-plist-staged <exact-key> <manifest-source> <runtime-manifest> <out>
+                            Generate a staged plist (model read from source,
+                            ProgramArguments embeds the runtime/canonical path)
   uninstall [lead-id|--all] Unregister from launchd + remove plist
   restart [lead-id|--all]   Restart Lead daemon (kickstart -k)
   status                    Show all Lead daemon statuses
@@ -483,11 +1108,26 @@ Examples:
 EOF
 }
 
+# FLY-247: allow the bash test suite to source this file for unit-testing
+# individual functions without executing the command dispatch.
+if [ "${FLYWHEEL_DAEMON_SOURCED:-0}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
+
 COMMAND="${1:-}"
 shift || true
 
 case "$COMMAND" in
   install)   cmd_install "$@" ;;
+  install-wrapper) install_wrapper ;;
+  generate-plist-staged)
+    # FLY-247 R5#4: fleet staging helper —
+    #   generate-plist-staged <exact-key> <manifest-source> <runtime-manifest> <output>
+    require_jq
+    [ $# -eq 4 ] || error "generate-plist-staged requires: <exact-key> <manifest-source> <runtime-manifest> <output>"
+    generate_plist_to "$1" "$2" "$3" "$4" || exit "$EXIT_PREP_FAILED"
+    log "Staged plist generated: $4"
+    ;;
   uninstall) cmd_uninstall "$@" ;;
   restart)   cmd_restart "$@" ;;
   status)    cmd_status ;;

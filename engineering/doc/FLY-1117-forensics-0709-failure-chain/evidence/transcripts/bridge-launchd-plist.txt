@@ -1,0 +1,150 @@
+# transcript: bridge-launchd-plist
+# command: bash -c 
+PL=~/Library/LaunchAgents/com.flywheel.bridge.plist
+echo "--- plist path candidates ---"; ls -la ~/Library/LaunchAgents/ | grep -i flywheel
+echo "--- com.flywheel.bridge.plist ---"; cat $PL 2>/dev/null
+echo "--- stat ---"; stat -f "mtime=%Sm" $PL 2>/dev/null
+echo "--- launchctl print (read-only) ---"; launchctl print gui/$(id -u)/com.flywheel.bridge 2>&1 | head -60
+# collected_at: 2026-07-10T08:24:15Z (host local: 2026-07-10 01:24:15 PDT)
+# host: MacBook-Pro.local / 26.3.2 / x86_64
+# ----
+--- plist path candidates ---
+-rw-r--r--@   1 xiaorongli  staff   839 Jul  4 14:35 com.flywheel.bridge.plist
+-rw-r--r--@   1 xiaorongli  staff   691 Jul  4 14:35 com.flywheel.bridge.plist.bak-fly818-enable
+-rw-r--r--@   1 xiaorongli  staff  1195 Jun  1 15:17 com.flywheel.cmux-watcher.plist
+-rw-r--r--@   1 xiaorongli  staff   725 Mar 30 15:18 com.flywheel.daily-standup.plist
+-rw-r--r--    1 xiaorongli  staff  1653 Jul  9 12:51 com.flywheel.growth-improve.plist
+-rw-r--r--    1 xiaorongli  staff  1642 Jul  9 12:51 com.flywheel.growth-improve.plist.bak-fly886-20260709-125132
+-rw-r--r--    1 xiaorongli  staff  1619 Jul  9 12:51 com.flywheel.growth-learn.plist
+-rw-r--r--    1 xiaorongli  staff  1608 Jul  9 12:51 com.flywheel.growth-learn.plist.bak-fly886-20260709-125132
+-rw-r--r--    1 xiaorongli  staff  1651 Jul  9 12:51 com.flywheel.growth-report.plist
+-rw-r--r--    1 xiaorongli  staff  1640 Jul  9 12:51 com.flywheel.growth-report.plist.bak-fly886-20260709-125132
+-rw-r--r--    1 xiaorongli  staff  1650 Jul  9 12:51 com.flywheel.growth-retro.plist
+-rw-r--r--    1 xiaorongli  staff  1639 Jul  9 12:51 com.flywheel.growth-retro.plist.bak-fly886-20260709-125132
+-rw-r--r--    1 xiaorongli  staff  1004 Jul  5 21:34 com.flywheel.lead.flywheel-anna-interviewer-lead.plist
+-rw-r--r--    1 xiaorongli  staff  1367 Jul  9 14:14 com.flywheel.lead.flywheel-claude-infra-bot-lead.plist
+-rw-r--r--    1 xiaorongli  staff  1266 Jul  9 14:06 com.flywheel.lead.flywheel-codex-infra-bot-lead.plist
+-rw-r--r--@   1 xiaorongli  staff   988 Jun 20 13:34 com.flywheel.lead.flywheel-flywheel-cos-lead.plist
+-rw-r--r--    1 xiaorongli  staff   983 Jul  6 23:51 com.flywheel.lead.flywheel-flywheel-eng-lead.plist
+-rw-r--r--    1 xiaorongli  staff  1004 Jul  5 16:44 com.flywheel.lead.flywheel-flywheel-product-lead.plist
+-rw-r--r--@   1 xiaorongli  staff   960 Jun 20 13:32 com.flywheel.lead.geoforge3d-cos-lead.plist
+-rw-r--r--@   1 xiaorongli  staff   960 Jun 20 13:31 com.flywheel.lead.geoforge3d-ops-lead.plist
+-rw-r--r--@   1 xiaorongli  staff   976 Jun 20 13:31 com.flywheel.lead.geoforge3d-product-lead.plist
+-rw-r--r--@   1 xiaorongli  staff  1063 Jun 22 00:50 com.flywheel.lead.growth-mufasa-lead.plist
+-rw-r--r--@   1 xiaorongli  staff  1105 Jun 21 01:53 com.flywheel.lead.growth-mufasa-lead.plist.bak-pre-fly350-flip
+-rw-r--r--@   1 xiaorongli  staff  1036 Jun 22 00:48 com.flywheel.lead.growth-mufasa-lead.plist.bak-pre-fly398-tui-flip
+-rw-r--r--@   1 xiaorongli  staff  1063 Jun 22 00:46 com.flywheel.lead.growth-mufasa-lead.plist.fly398-tui-staged
+-rw-r--r--@   1 xiaorongli  staff  1036 Jun 21 01:53 com.flywheel.lead.growth-mufasa-lead.plist.fullaccess-staged
+-rw-r--r--@   1 xiaorongli  staff   795 Jun 10 00:50 com.flywheel.lead.growth-mufasa-lead.plist.pre-FLY-250.bak
+-rw-r--r--@   1 xiaorongli  staff   709 Jun 16 17:54 com.flywheel.lead.growth-mufasa-lead.plist.pre-FLY-259-tui.bak
+-rw-r--r--    1 xiaorongli  staff  1004 Jun 29 23:49 com.flywheel.lead.growth-rafiki-lead.plist
+-rw-r--r--    1 xiaorongli  staff  1020 Jun 29 23:49 com.flywheel.lead.growth-reflection-lead.plist
+-rw-r--r--@   1 xiaorongli  staff   992 Jun 20 13:33 com.flywheel.lead.joycon-typeless-joycon-lead.plist
+-rw-r--r--    1 xiaorongli  staff  1048 Jun 29 23:48 com.flywheel.lead.personal-assistant-belle-lead.plist
+-rw-r--r--    1 xiaorongli  staff   960 Jul  9 12:51 com.flywheel.lead.tidal-echo-sub-lead.plist
+-rw-r--r--@   1 xiaorongli  staff  1020 Jun 20 13:35 com.flywheel.lead.tidal-echo-tidal-echo-content-lead.plist
+-rw-r--r--    1 xiaorongli  staff  1052 Jun 29 23:49 com.flywheel.lead.tidal-echo-tidal-echo-cos-lead.plist
+-rw-r--r--@   1 xiaorongli  staff   489 Jun  4 17:41 com.flywheel.skills-update.plist
+-rw-r--r--    1 xiaorongli  staff  3268 Jul  9 12:51 com.flywheel.sub-create-nightly.plist
+-rw-r--r--@   1 xiaorongli  staff  3257 Jul  9 12:51 com.flywheel.sub-create-nightly.plist.bak-fly886-20260709-125132
+-rw-r--r--    1 xiaorongli  staff  1831 Jul  9 12:51 com.flywheel.sub-daily-loop.plist
+-rw-r--r--@   1 xiaorongli  staff  1820 Jul  9 12:51 com.flywheel.sub-daily-loop.plist.bak-fly886-20260709-125132
+-rw-r--r--    1 xiaorongli  staff  1053 Jun 30 15:32 com.flywheel.token-usage-daily.plist
+-rw-r--r--@   1 xiaorongli  staff   918 Jul  5 00:18 com.flywheel.updater.plist
+-rw-r--r--@   1 xiaorongli  staff  1026 Jul  5 00:12 com.flywheel.updater.plist.bak-restart-time-20260705
+-rw-r--r--@   1 xiaorongli  staff   892 Jun 16 21:58 com.flywheel.updater.plist.pre-FLY278-pathfix.bak
+--- com.flywheel.bridge.plist ---
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>FLYWHEEL_RUNNER_AUTOCONTINUE</key>
+		<string>1</string>
+		<key>FLYWHEEL_STUCK_FOUNDER_PAGE</key>
+		<string>1</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>com.flywheel.bridge</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/xiaorongli/Dev/flywheel/scripts/flywheel-bridge-wrapper.sh</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/tmp/flywheel-bridge.log</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/flywheel-bridge.log</string>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+</dict>
+</plist>
+--- stat ---
+mtime=Jul  4 14:35:41 2026
+--- launchctl print (read-only) ---
+gui/501/com.flywheel.bridge = {
+	active count = 1
+	path = /Users/xiaorongli/Library/LaunchAgents/com.flywheel.bridge.plist
+	type = LaunchAgent
+	state = running
+
+	program = /bin/bash
+	arguments = {
+		/bin/bash
+		/Users/xiaorongli/Dev/flywheel/scripts/flywheel-bridge-wrapper.sh
+	}
+
+	stdout path = /tmp/flywheel-bridge.log
+	stderr path = /tmp/flywheel-bridge.log
+	inherited environment = {
+		SSH_AUTH_SOCK => /private/tmp/com.apple.launchd.dJu6A6tkBS/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		FLYWHEEL_STUCK_FOUNDER_PAGE => 1
+		FLYWHEEL_RUNNER_AUTOCONTINUE => 1
+		XPC_SERVICE_NAME => com.flywheel.bridge
+	}
+
+	domain = gui/501 [100023]
+	asid = 100023
+	minimum runtime = 30
+	exit timeout = 5
+	runs = 70
+	pid = 48951
+	immediate reason = inefficient
+	forks = 37
+	execs = 3
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	checked allocations = 0 (queried = 1)
+	checked allocations reason = no host
+	checked allocations flags = 0x0
+	last exit code = 137
+
+	resource coalition = {
+		ID = 190291
+		type = resource
+		state = active
+		active count = 1
+		name = com.flywheel.bridge
+	}
+
+	jetsam coalition = {
+		ID = 190292
+		type = jetsam
+		state = active
+		active count = 1
+# exit_code: 0

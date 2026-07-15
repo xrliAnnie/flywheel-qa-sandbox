@@ -281,35 +281,8 @@ describe("Query tools", () => {
 		expect(body.identifier).toBe("GEO-95");
 	});
 
-	it("GET /api/sessions/:id does NOT fallback to conversation_threads (FLY-80)", async () => {
-		store.upsertSession({
-			execution_id: "e1",
-			issue_id: "i1",
-			project_name: "p",
-			status: "running",
-		});
-		store.upsertThread("1234.5678", "C07XXX", "i1");
-
-		const res = await fetch(`${baseUrl}/api/sessions/e1`);
-		const body = await res.json();
-		// FLY-80: No stale thread fallback — thread_id comes only from session
-		expect(body.thread_id).toBeUndefined();
-	});
-
-	it("GET /api/sessions/:id uses session thread_id when present", async () => {
-		store.upsertSession({
-			execution_id: "e1",
-			issue_id: "i1",
-			project_name: "p",
-			status: "running",
-			thread_id: "direct.9999",
-		});
-		store.upsertThread("old.1111", "C07XXX", "i1");
-
-		const res = await fetch(`${baseUrl}/api/sessions/e1`);
-		const body = await res.json();
-		expect(body.thread_id).toBe("direct.9999");
-	});
+	// FLY-163: forum thread fallback tests (FLY-80) removed —
+	// conversation_threads table dropped, session.thread_id TS field removed.
 });
 
 describe("Thread & action endpoints", () => {
@@ -334,176 +307,8 @@ describe("Thread & action endpoints", () => {
 		store.close();
 	});
 
-	// --- POST /api/threads/upsert ---
-
-	it("POST /api/threads/upsert succeeds with valid data", async () => {
-		store.upsertSession({
-			execution_id: "exec-1",
-			issue_id: "i1",
-			project_name: "p",
-			status: "running",
-		});
-		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				thread_id: "1234.5678",
-				channel: "C07XXX",
-				issue_id: "i1",
-				execution_id: "exec-1",
-			}),
-		});
-		expect(res.status).toBe(200);
-		const body = await res.json();
-		expect(body.ok).toBe(true);
-
-		// Verify thread was stored
-		expect(store.getThreadIssue("1234.5678")).toBe("i1");
-		// Verify session was updated
-		expect(store.getSession("exec-1")!.thread_id).toBe("1234.5678");
-	});
-
-	it("POST /api/threads/upsert returns 400 for missing fields", async () => {
-		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ thread_id: "1234.5678" }),
-		});
-		expect(res.status).toBe(400);
-	});
-
-	it("POST /api/threads/upsert returns 404 for unknown execution_id", async () => {
-		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				thread_id: "1234.5678",
-				channel: "C07XXX",
-				issue_id: "i1",
-				execution_id: "nonexistent",
-			}),
-		});
-		expect(res.status).toBe(404);
-	});
-
-	it("POST /api/threads/upsert returns 400 for mismatched issue_id", async () => {
-		store.upsertSession({
-			execution_id: "exec-1",
-			issue_id: "i1",
-			project_name: "p",
-			status: "running",
-		});
-		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				thread_id: "1234.5678",
-				channel: "C07XXX",
-				issue_id: "WRONG",
-				execution_id: "exec-1",
-			}),
-		});
-		expect(res.status).toBe(400);
-		const body = await res.json();
-		expect(body.error).toContain("mismatch");
-	});
-
-	it("POST /api/threads/upsert returns 409 for thread bound to different issue", async () => {
-		store.upsertSession({
-			execution_id: "exec-1",
-			issue_id: "i1",
-			project_name: "p",
-			status: "running",
-		});
-		store.upsertThread("1234.5678", "C07XXX", "OTHER-ISSUE");
-
-		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				thread_id: "1234.5678",
-				channel: "C07XXX",
-				issue_id: "i1",
-				execution_id: "exec-1",
-			}),
-		});
-		expect(res.status).toBe(409);
-		const body = await res.json();
-		expect(body.error).toContain("already bound");
-	});
-
-	it("POST /api/threads/upsert idempotent for same thread + same issue", async () => {
-		store.upsertSession({
-			execution_id: "exec-1",
-			issue_id: "i1",
-			project_name: "p",
-			status: "running",
-		});
-		store.upsertThread("1234.5678", "C07XXX", "i1");
-
-		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				thread_id: "1234.5678",
-				channel: "C07XXX",
-				issue_id: "i1",
-				execution_id: "exec-1",
-			}),
-		});
-		expect(res.status).toBe(200);
-	});
-
-	// --- GET /api/thread/:thread_id ---
-
-	it("GET /api/thread/:thread_id returns issue info for known thread", async () => {
-		store.upsertSession({
-			execution_id: "exec-1",
-			issue_id: "i1",
-			project_name: "p",
-			status: "awaiting_review",
-			issue_identifier: "GEO-42",
-		});
-		store.upsertThread("1234.5678", "C07XXX", "i1");
-
-		const res = await fetch(`${baseUrl}/api/thread/1234.5678`);
-		expect(res.status).toBe(200);
-		const body = await res.json();
-		expect(body.found).toBe(true);
-		expect(body.issue_id).toBe("i1");
-		expect(body.issue_identifier).toBe("GEO-42");
-		expect(body.latest_execution).toBeDefined();
-		expect(body.latest_execution.execution_id).toBe("exec-1");
-	});
-
-	it("GET /api/thread/:thread_id returns found:false for unknown thread", async () => {
-		const res = await fetch(`${baseUrl}/api/thread/9999.0000`);
-		expect(res.status).toBe(200);
-		const body = await res.json();
-		expect(body.found).toBe(false);
-	});
-
-	it("GET /api/thread/:thread_id returns latest execution for issue", async () => {
-		store.upsertSession({
-			execution_id: "e1",
-			issue_id: "i1",
-			project_name: "p",
-			status: "failed",
-			last_activity_at: "2024-01-01 10:00:00",
-		});
-		store.upsertSession({
-			execution_id: "e2",
-			issue_id: "i1",
-			project_name: "p",
-			status: "running",
-			last_activity_at: "2024-01-01 12:00:00",
-		});
-		store.upsertThread("1234.5678", "C07XXX", "i1");
-
-		const res = await fetch(`${baseUrl}/api/thread/1234.5678`);
-		const body = await res.json();
-		expect(body.latest_execution.execution_id).toBe("e2");
-	});
+	// FLY-163: /api/threads/upsert + /api/thread/:thread_id endpoint tests
+	// removed — forum thread concept gone.
 
 	// --- GET /api/resolve-action ---
 
@@ -884,13 +689,33 @@ describe("GEO-259: leadId filtering on query routes", () => {
 		expect(body.count).toBe(0);
 	});
 
-	it("mode=by_identifier ignores leadId", async () => {
+	// FLY-228 (Codex R2 MED-3): by_identifier now scopes by leadId WHEN provided
+	// (so close_runner --abandon's 0/>1 disambiguation runs on the in-scope set).
+	it("mode=by_identifier WITHOUT leadId returns the session (unchanged)", async () => {
 		const res = await fetch(
-			`${baseUrl}/api/sessions?mode=by_identifier&identifier=GEO-102&leadId=product-lead`,
+			`${baseUrl}/api/sessions?mode=by_identifier&identifier=GEO-102`,
 		);
 		const body = await res.json();
 		expect(body.count).toBe(1);
 		expect(body.sessions[0].execution_id).toBe("ops-1");
+	});
+
+	it("mode=by_identifier WITH leadId filters out an out-of-scope session", async () => {
+		// GEO-102 is an Operations issue; product-lead must not see it.
+		const res = await fetch(
+			`${baseUrl}/api/sessions?mode=by_identifier&identifier=GEO-102&leadId=product-lead`,
+		);
+		const body = await res.json();
+		expect(body.count).toBe(0);
+	});
+
+	it("mode=by_identifier WITH matching leadId returns the in-scope session", async () => {
+		const res = await fetch(
+			`${baseUrl}/api/sessions?mode=by_identifier&identifier=GEO-101&leadId=product-lead`,
+		);
+		const body = await res.json();
+		expect(body.count).toBe(1);
+		expect(body.sessions[0].execution_id).toBe("prod-2");
 	});
 
 	it("GET /api/sessions/:id/history?leadId filters history", async () => {
@@ -969,85 +794,6 @@ describe("GEO-259: leadId filtering on query routes", () => {
 		expect(body.execution_id).toBe("drift-old-prod");
 	});
 
-	// --- GEO-200: by_identifier thread fallback ---
-
-	it("GET /api/sessions?mode=by_identifier does NOT fallback to conversation_threads (FLY-80)", async () => {
-		store.upsertSession({
-			execution_id: "e-fallback",
-			issue_id: "i-fallback",
-			project_name: "p",
-			status: "running",
-			issue_identifier: "GEO-200",
-		});
-		// Session has no thread_id — conversation_threads is NOT consulted (FLY-80)
-		store.upsertThread("thread-fb-200", "forum-ch", "i-fallback");
-
-		const res = await fetch(
-			`${baseUrl}/api/sessions?mode=by_identifier&identifier=GEO-200`,
-		);
-		const body = await res.json();
-		expect(body.count).toBe(1);
-		expect(body.sessions[0].thread_id).toBeUndefined();
-	});
-
-	it("GET /api/sessions?mode=by_identifier skips discord_missing thread in fallback", async () => {
-		store.upsertSession({
-			execution_id: "e-missing",
-			issue_id: "i-missing",
-			project_name: "p",
-			status: "running",
-			issue_identifier: "GEO-201",
-		});
-		store.upsertThread("thread-miss", "forum-ch", "i-missing");
-		store.markDiscordMissing("thread-miss");
-
-		const res = await fetch(
-			`${baseUrl}/api/sessions?mode=by_identifier&identifier=GEO-201`,
-		);
-		const body = await res.json();
-		expect(body.count).toBe(1);
-		// thread_id should not be present (discord_missing_at filters it)
-		expect(body.sessions[0].thread_id).toBeUndefined();
-	});
-
-	it("GET /api/sessions/:id skips discord_missing thread in fallback", async () => {
-		store.upsertSession({
-			execution_id: "e-miss-id",
-			issue_id: "i-miss-id",
-			project_name: "p",
-			status: "running",
-			issue_identifier: "GEO-202",
-		});
-		store.upsertThread("thread-miss-id", "forum-ch", "i-miss-id");
-		store.markDiscordMissing("thread-miss-id");
-
-		const res = await fetch(`${baseUrl}/api/sessions/e-miss-id`);
-		const body = await res.json();
-		// thread_id should not be present
-		expect(body.thread_id).toBeUndefined();
-	});
-
-	it("session thread_id cleared after markDiscordMissing", async () => {
-		store.upsertSession({
-			execution_id: "e-stale",
-			issue_id: "i-stale",
-			project_name: "p",
-			status: "running",
-			issue_identifier: "GEO-203",
-		});
-		store.upsertThread("thread-stale", "forum-ch", "i-stale");
-		store.setSessionThreadId("e-stale", "thread-stale");
-
-		// Verify session has thread_id before cleanup
-		let res = await fetch(`${baseUrl}/api/sessions/e-stale`);
-		let body = await res.json();
-		expect(body.thread_id).toBe("thread-stale");
-
-		// Mark as missing — clears sessions.thread_id
-		store.markDiscordMissing("thread-stale");
-
-		res = await fetch(`${baseUrl}/api/sessions/e-stale`);
-		body = await res.json();
-		expect(body.thread_id).toBeUndefined();
-	});
+	// FLY-163: GEO-200/FLY-80 conversation_threads fallback + markDiscordMissing
+	// tests removed — forum thread concept gone.
 });

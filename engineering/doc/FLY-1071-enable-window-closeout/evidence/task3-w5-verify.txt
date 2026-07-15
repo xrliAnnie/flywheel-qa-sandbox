@@ -1,0 +1,16 @@
+# W5 (claude-infra-bot-lead) 逐层等效验证 — 2026-07-09 16:05:22
+## 层1: launchd job 有活 pid
+	state = running
+	pid = 89109
+		state = active
+		state = active
+## 层2/4: tmux window 存在且 pane_dead=0
+flywheel-claude-infra-bot-lead pane_dead=0
+## 层5: pane_current_command (期望 node/claude,非裸壳)
+2.1.205
+## 层3 等效: supervisor log 末尾无新 crash 行
+[lead] 15:52:12 Waiting 60s before restart...
+[lead] 15:53:12 [restart #65] Fresh start with session 203aa399-bcee-4dab-bf46-0208e012945f
+[lead] 15:53:12 Sending bootstrap for claude-infra-bot-lead...
+[lead] 15:53:16 MCP env propagation: forwarded 1 required env var(s) to tmux pane
+[lead] 15:53:17 Claude launched in tmux window: flywheel:@185 (name: flywheel-claude-infra-bot-lead)

@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-964 状态显示 PRD · 给 Annie 过目</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d;
+    --mono:'SF Mono',ui-monospace,Menlo,monospace;
+    --font:-apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC',system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:var(--font);-webkit-font-smoothing:antialiased}
+  body{line-height:1.55;font-size:16px}
+  .wrap{max-width:900px;margin:0 auto;padding:30px 20px 80px}
+
+  .hero{margin:6px 0 22px}
+  .hero .eyebrow{font-size:13px;font-weight:700;color:var(--blue);letter-spacing:.02em}
+  .hero h1{font-size:28px;line-height:1.2;margin:8px 0 8px;font-weight:800;letter-spacing:-.01em}
+  .hero p{font-size:16px;color:#3a3a3c;margin:0;max-width:680px}
+  .hero .meta{margin-top:12px;font-size:12.5px;color:var(--dim)}
+
+  .cta{display:block;margin:16px 0 4px;background:#fff;border:1px solid var(--line);border-left:4px solid var(--purple);border-radius:12px;padding:14px 18px;box-shadow:0 1px 3px rgba(0,0,0,.06);text-decoration:none;color:var(--ink)}
+  .cta b{color:var(--purple)}
+  .cta .u{display:block;font-family:var(--mono);font-size:12px;color:var(--blue);margin-top:4px;word-break:break-all}
+
+  .section{margin:30px 0 0}
+  .section h2{font-size:20px;font-weight:800;margin:0 0 4px;letter-spacing:-.01em}
+  .section .sub{font-size:13.5px;color:var(--dim);margin:0 0 14px}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px 18px;margin-bottom:12px}
+  .card.blue{border-left:4px solid var(--blue)}
+  .card.green{border-left:4px solid var(--green)}
+  .card.amber{border-left:4px solid var(--amber)}
+  .card.red{border-left:4px solid var(--red)}
+  .card.navy{border-left:4px solid var(--navy)}
+  .card h3{margin:0 0 8px;font-size:15.5px;font-weight:800}
+  .card p{margin:0 0 6px;font-size:14px;color:#2c2c2e}
+  .card p:last-child{margin-bottom:0}
+  .card ul{margin:4px 0 0;padding-left:20px}
+  .card li{font-size:13.5px;color:#2c2c2e;margin:0 0 5px}
+  .card li b{color:var(--ink)}
+  code{font-family:var(--mono);font-size:12.5px;background:#f0f0f3;border:1px solid #e6e6eb;border-radius:5px;padding:1px 6px;color:#1d1d1f}
+
+  table{width:100%;border-collapse:collapse;margin:6px 0 2px;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-weight:800;color:var(--navy);font-size:12px;background:#fafafd}
+  td .own{font-weight:700}
+  .own-t{color:var(--red)} .own-p{color:var(--blue)} .own-x{color:var(--dim)}
+  .ic{font-size:15px}
+
+  .kv{display:grid;grid-template-columns:110px 1fr;gap:6px 12px;font-size:13.5px;margin-top:4px}
+  .kv .k{color:var(--dim);font-weight:600}
+  .kv .v{color:#2c2c2e}
+
+  .pin-demo{font-family:var(--mono);font-size:12px;background:#1d1d1f;color:#e5e5ea;border-radius:8px;padding:12px 14px;overflow-x:auto;margin:8px 0 2px;line-height:1.7}
+  .pin-demo .g{color:#7ee787}.pin-demo .b{color:#79c0ff}.pin-demo .y{color:#f0b232}.pin-demo .d{color:#8b949e}
+
+  .tag{display:inline-block;font-size:11px;font-weight:800;padding:2px 8px;border-radius:6px;margin-right:5px}
+  .t-lock{background:#e7f7ec;color:#1a7a34}.t-tbd{background:#fff3e0;color:#b25e00}.t-978{background:#f3e8fd;color:#8324c9}
+
+  .note{font-size:12.5px;color:var(--dim);margin-top:10px;border-left:3px solid var(--blue);padding-left:10px}
+  .note b{color:var(--ink)}
+  .footer{margin-top:32px;text-align:center;font-size:12.5px;color:var(--dim)}
+  @media (max-width:640px){.hero h1{font-size:23px}.kv{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <div class="eyebrow">FLY-964 · 产品需求 PRD(draft)· 给 Annie 过目</div>
+    <h1>三段式状态显示 —— 收口 PRD</h1>
+    <p>设计跟你逐块共创定稿了(v5)。这份 PRD 把它锁下来、加上「正确性」硬指标 + 交给 Tadashi 的 build 拆分。看完你拍,我们就交工程。</p>
+    <div class="meta">日期 2026-07-07 · 验收 = 你 + 我(无 QA)· 不 create-issue、不 ship</div>
+    <a class="cta" href="https://fw-reports-a53de2.vercel.app/r/fdeec5dde207639ab1a2fbca7d9fe896/" target="_blank">
+      📱 <b>v5 定稿 mockup</b>(真实 Discord 深色,还原你实际界面)—— 点开看显示长啥样
+      <span class="u">https://fw-reports-a53de2.vercel.app/r/fdeec5dde207639ab1a2fbca7d9fe896/</span>
+    </a>
+  </div>
+
+  <!-- 1 设计锁定 -->
+  <div class="section">
+    <h2>① 设计锁定(v5)</h2>
+    <p class="sub">显示形态 —— 你逐块拍过的都在这。</p>
+
+    <div class="card blue">
+      <h3>标题 = 只显「在哪一段」<span class="tag t-lock" style="margin-left:8px">已锁</span></h3>
+      <p>只显当前段徽章:<b>🎨设计 / 🔨实现 / 🧪QA</b>(带 [FLY-XX] + 标题)。没开始就没这条 thread(没有「未开始」标题态)。只在跨段时改名 → 侧边栏一眼扫、永不卡。</p>
+    </div>
+
+    <div class="card blue">
+      <h3>置顶 = 每段一行(状态 + exec + 它的 cmux session)<span class="tag t-lock" style="margin-left:8px">已锁</span></h3>
+      <div class="pin-demo"><span class="d">📌 [FLY-964] 三段流水线</span>
+<b>[设计·Fable]</b> <span class="g">✅ 已完成</span> · exec a1b2c3
+<span class="d">env -u TMUX tmux attach -t '=cmux-fly-964-design'</span>
+<b>[实现·Fable]</b> <span class="b">▶ 进行中</span> · exec d4e5f6
+<span class="d">env -u TMUX tmux attach -t '=cmux-fly-964-implement'</span>
+<b>[QA·Opus]</b> <span class="d">◻ 未开始（计划 Opus）</span></div>
+      <p class="note">砍掉了早先「球在谁 / 下一步」两行 —— 你说越复杂越显得不对,越简越不容易错。有 session 的段才带下面那条 cmux attach 引用。</p>
+    </div>
+
+    <div class="card blue">
+      <h3>状态就 4 个词<span class="tag t-lock" style="margin-left:8px">已锁</span></h3>
+      <table>
+        <tr><th>图标</th><th>词</th><th>含义</th></tr>
+        <tr><td class="ic">◻</td><td><b>未开始</b></td><td>还没轮到这段</td></tr>
+        <tr><td class="ic">▶</td><td><b>进行中</b></td><td>正在做（正在返工那段也算进行中）</td></tr>
+        <tr><td class="ic">✅</td><td><b>已完成</b></td><td>这段过了</td></tr>
+        <tr><td class="ic">🔁</td><td><b>等待中</b></td><td>做完过一轮、因为在返工在等下一轮</td></tr>
+      </table>
+      <p class="note"><b>返工看得见:</b>QA 验过没过 → 打回实现。实现回 <b>▶ 进行中</b>、QA 显 <b>🔁 等待中</b>。怎么区分返工 vs 首次实现?看 QA:首次是 ◻ 未开始,返工是 🔁 等待中。</p>
+    </div>
+
+    <div class="card blue">
+      <h3>侧边栏 = 每条 thread 带当前段徽章<span class="tag t-lock" style="margin-left:8px">已锁</span></h3>
+      <p>扫一眼左侧就知道每个 issue 在哪段。<b>返工不进侧边栏</b>(你定):返工时标题按方案 A 显当前段 🔨实现、和首次实现同徽章;返工可见性放置顶(QA 🔁 等待中),侧边栏保持干净。</p>
+    </div>
+
+    <div class="card blue">
+      <h3>模式范围:本次锁三段式</h3>
+      <p><b>本次 964 = 三段式显示</b>(设计 / 实现 / QA)。<b>两段式</b>(设计+实现合一 / QA)仅作方向说明保留,<b>不进本次 build</b>、不纠结合并段徽章。<span class="tag t-tbd">两段式待 FLY-830 定义后再实现</span></p>
+    </div>
+  </div>
+
+  <!-- 2 CMux -->
+  <div class="section">
+    <h2>② CMux 导航</h2>
+    <div class="card green">
+      <p><b>跳转 = cmux 内置 ⌘P(零开发)</b> —— 按 ⌘P 搜/切到任意 session。一句 doc,不用写代码。</p>
+      <p>置顶保留每段的 cmux attach 引用(让你知道每段是哪个 session、可复制),和 ⌘P 并存不冲突。</p>
+    </div>
+  </div>
+
+  <!-- 3 正确性 -->
+  <div class="section">
+    <h2>③ 正确性 —— 头号硬指标</h2>
+    <p class="sub">你的第一验收标准:状态骗你一次你就再也懒得看。</p>
+
+    <div class="card red">
+      <h3>硬指标</h3>
+      <p><b>显示永远反映真实 + 自愈</b>:任何一次写失败都被 sweep 补回,<b>绝不永久停在错误状态</b>。</p>
+    </div>
+
+    <div class="card green">
+      <h3>好消息:已经修了一半根(FLY-907)</h3>
+      <p>标题/置顶/状态行现在是<b>同一个状态机</b>从真实状态算出的,<b>每个动作(park/wake/kill/finalize…)都触发重算刷新</b>;写失败不落「已同步」指纹 → 被 sweep 自动重试补回。「同源不打架 + 自愈」的地基已在。</p>
+    </div>
+
+    <div class="card amber">
+      <h3>归档策略约束(喂 FLY-962)</h3>
+      <p><b>只有 issue 真 done / shipped 才归档;活跃线程绝不归档(重启也不碰)。</b></p>
+      <p class="note">根因:重启曾把活跃线程误归档 → Discord 拒绝改归档线程标题 → 今早改名失败 6060 次 → 状态卡旧。这是「显示不准」的头号来源,必须堵死。</p>
+    </div>
+
+    <div class="card navy">
+      <h3>根治机制 → <span class="tag t-978">FLY-978</span></h3>
+      <p>「done → 清桩 + 归档、解耦重启」的根治在 FLY-978 单独 co-create;本 PRD 只把正确性需求指过去。</p>
+    </div>
+
+    <div class="card">
+      <h3>Edge case / 边界(标 owner)</h3>
+      <table>
+        <tr><th>#</th><th>场景</th><th>处理</th><th>Owner</th></tr>
+        <tr><td>①</td><td>phase terminated / 取消</td><td><b>归档清桩,不显受阻</b></td><td class="own own-p">产品已定</td></tr>
+        <tr><td>②</td><td>park-probe 探不到</td><td>保守推导,不当「已唤醒」</td><td class="own own-t">Tadashi</td></tr>
+        <tr><td>③</td><td>显示写失败</td><td>sweep 补回</td><td class="own own-t">Tadashi</td></tr>
+        <tr><td>④</td><td>误归档</td><td>次要(主路径堵住后的边角)</td><td class="own own-x">Tadashi·低</td></tr>
+        <tr><td>⑤</td><td>逃生开关</td><td>可一键回退、不硬故障</td><td class="own own-t">Tadashi</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- 4 build -->
+  <div class="section">
+    <h2>④ 拆 build 方案(只提议,不建 issue)</h2>
+    <p class="sub">你过目后交 Tadashi 决定建几个 eng issue、怎么排。</p>
+
+    <div class="card navy">
+      <h3>(a) 显示层 —— v5 设计落到代码 <span class="own own-t" style="font-size:12px">Tadashi</span></h3>
+      <ul>
+        <li><b>4 态词表</b>:现有代码是 pending/active/done/blocked → 重映射成 ◻/▶/✅,<b>新增 🔁 等待中</b>;终态失败改走归档清桩(edge ①)不显受阻。</li>
+        <li><b>置顶每段一行</b> + cmux attach 引用;去掉球在谁/下一步。</li>
+        <li><b>标题方案 A</b>(只当前段徽章)· <b>侧边栏徽章</b>(返工不进)。</li>
+        <li><b>本次不含两段式渲染</b> —— deferred → FLY-830(scope 外)。</li>
+      </ul>
+    </div>
+    <div class="card green">
+      <h3>(b) CMux ⌘P —— 零开发 <span class="own own-x" style="font-size:12px">doc only</span></h3>
+      <p>cmux 内置 ⌘P + 置顶保留 attach 引用。一句 doc,无代码。</p>
+    </div>
+    <div class="card amber">
+      <h3>(c) 正确性 —— 自愈 + 归档约束 <span class="own own-t" style="font-size:12px">Tadashi</span></h3>
+      <ul>
+        <li>收紧 sweep 自愈(edge ②③⑤ 机制)。</li>
+        <li>归档约束(只真 done/shipped 归档、活跃绝不归、重启不碰)—— 喂 FLY-962。</li>
+        <li>根治(清桩/解耦重启)指向 <span class="tag t-978">FLY-978</span>,不在本 issue 重做。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- 5 落地补充 -->
+  <div class="section">
+    <h2>⑤ 落地补充(给工程 · codex 挑的 5 处)</h2>
+    <p class="sub">照 issue-display 状态机如实补的 buildability 细节 —— 设计不变,只是写死怎么落地。</p>
+
+    <div class="card blue">
+      <h3>状态行(face C)= 置顶顶部一览摘要行</h3>
+      <p>紧凑单行 <code>🎨设计✅·🔨实现▶·🧪QA◻</code>(现有 renderPhaseStatusLine),4 态图标和置顶明细同一套;和标题+置顶<b>同源刷新</b>(refresher+sweep),不是特例。v5 已批的 per-phase 明细不动。</p>
+    </div>
+
+    <div class="card green">
+      <h3>964 独立可验收(不 block 在 978/962)</h3>
+      <p>964=显示层,验收=显示永远反映真实+自愈,<b>独立达标可 ship</b>。978/962 是并行降噪(让要显示的错变少),不是 964 的门槛。</p>
+    </div>
+
+    <div class="card amber">
+      <h3>两段式 = 本次 scope 外</h3>
+      <p>两段式显示<b>不纳入本次验收</b>,待 <span class="tag t-tbd">FLY-830</span> 定义;不实现、不纠结合并段徽章。</p>
+    </div>
+
+    <div class="card navy">
+      <h3>4 态完整转移表(照状态机)</h3>
+      <table>
+        <tr><th>#</th><th>场景</th><th>设计</th><th>实现</th><th>QA</th><th>标题</th></tr>
+        <tr><td>1</td><td>设计中</td><td>▶</td><td>◻</td><td>◻</td><td>🎨设计</td></tr>
+        <tr><td>2</td><td>实现中(首次)</td><td>✅</td><td>▶</td><td>◻</td><td>🔨实现</td></tr>
+        <tr><td>3</td><td>实现完、等 QA</td><td>✅</td><td>✅</td><td>◻</td><td>🔨实现</td></tr>
+        <tr><td>4</td><td>QA 中(首次)</td><td>✅</td><td>✅</td><td>▶</td><td>🧪QA</td></tr>
+        <tr><td>5</td><td><b>QA 打回 → 返工</b></td><td>✅</td><td>▶</td><td>🔁</td><td>🔨实现</td></tr>
+        <tr><td>6</td><td>多轮返工(第 N 轮)</td><td>✅</td><td>▶</td><td>🔁</td><td>🔨实现</td></tr>
+        <tr><td>7</td><td>返工完、QA 重开</td><td>✅</td><td>✅</td><td>▶</td><td>🧪QA</td></tr>
+        <tr><td>8</td><td>设计被打回</td><td>▶</td><td>🔁</td><td>🔁</td><td>🎨设计</td></tr>
+        <tr><td>9</td><td>三段全绿</td><td>✅</td><td>✅</td><td>✅</td><td>🧪QA</td></tr>
+        <tr><td>10</td><td>人工 kill / 取消</td><td colspan="3" style="text-align:center">归档清桩</td><td>不显受阻</td></tr>
+      </table>
+      <p class="note"><b>新增 🔁 等待中规则:</b>某段本轮做完/parked、但更早的段又 ▶进行中(返工回退)→ 显 🔁 不显 ✅。这修的正是现状 bug —— 现在 parked QA 会错显「已过」。终态失败(kill/取消)→ 归档清桩,不显 🔴。</p>
+    </div>
+
+    <div class="card">
+      <h3>exec / attach 行最小生命周期</h3>
+      <p>有 live/parked session 的段带 exec+attach;完成段 session 还在则留、结束则去掉 attach 留 exec;未开始段无;清桩交互→FLY-978,置顶随 thread 到真 done/shipped 才归档。</p>
+    </div>
+  </div>
+
+  <div class="footer">
+    FLY-964 收口 PRD · draft · 验收 = Annie + HL · 拿来一起改<br>
+    落地边界:显示层 + 正确性 = Tadashi · 根治机制 = FLY-978 · 两段式结构 = FLY-830
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommDB } from "../db.js";
 
@@ -197,6 +198,32 @@ describe("CommDB", () => {
 			expect(db.getUnreadInstructions("exec-1")).toHaveLength(2);
 			expect(db.getUnreadInstructions("exec-2")).toHaveLength(1);
 		});
+
+		it("a dedupeId makes insertInstruction idempotent — a crash-replay lands on the same row (FLY-1082)", () => {
+			const dedupeId = "server-loss:tmux-server-lost:1000:tadashi:abcd1234";
+			const id1 = db.insertInstruction("bridge", "tadashi", "casualty list", {
+				dedupeId,
+			});
+			// The replay: the sender crashed AFTER this commit but BEFORE its own
+			// checkpoint in another database — it re-sends the same logical
+			// message. Same identity → ignored, not duplicated.
+			const id2 = db.insertInstruction("bridge", "tadashi", "casualty list", {
+				dedupeId,
+			});
+			expect(id1).toBe(dedupeId);
+			expect(id2).toBe(dedupeId);
+			expect(db.getUnreadInstructions("tadashi")).toHaveLength(1);
+		});
+
+		it("distinct dedupeIds (a changed casualty list) deliver as separate messages", () => {
+			db.insertInstruction("bridge", "tadashi", "list v1", {
+				dedupeId: "server-loss:sig:tadashi:aaaa",
+			});
+			db.insertInstruction("bridge", "tadashi", "list v1+delta", {
+				dedupeId: "server-loss:sig:tadashi:bbbb",
+			});
+			expect(db.getUnreadInstructions("tadashi")).toHaveLength(2);
+		});
 	});
 
 	describe("hasPendingQuestionsFrom", () => {
@@ -214,6 +241,61 @@ describe("CommDB", () => {
 		it("should not be affected by other runners questions", () => {
 			db.insertQuestion("other-exec", "product-lead", "Q from other?");
 			expect(db.hasPendingQuestionsFrom("my-exec")).toBe(false);
+		});
+	});
+
+	// FLY-253: liveness signal for the Bridge stuck-runner detector (L1).
+	describe("hasRecentMessagesFrom", () => {
+		/** Backdate every message from an exec via a second raw connection. */
+		const backdate = (execId: string, seconds: number) => {
+			const raw = new Database(join(tmpDir, "comm.db"));
+			raw
+				.prepare(
+					`UPDATE messages SET created_at = datetime('now', '-' || ? || ' seconds')
+					 WHERE from_agent = ?`,
+				)
+				.run(seconds, execId);
+			raw.close();
+		};
+
+		it("returns true for a message sent just now within the window", () => {
+			db.insertQuestion("exec-live", "sub-lead", "DONE: report");
+			expect(db.hasRecentMessagesFrom("exec-live", 60)).toBe(true);
+		});
+
+		it("returns false when the exec has no messages at all", () => {
+			db.insertQuestion("other-exec", "sub-lead", "Q?");
+			expect(db.hasRecentMessagesFrom("exec-quiet", 60)).toBe(false);
+		});
+
+		it("returns false when the only message is older than the window", () => {
+			db.insertQuestion("exec-old", "sub-lead", "Q?");
+			backdate("exec-old", 120);
+			expect(db.hasRecentMessagesFrom("exec-old", 60)).toBe(false);
+		});
+
+		it("uses a strict > boundary (message exactly at window edge is outside)", () => {
+			db.insertQuestion("exec-edge", "sub-lead", "Q?");
+			backdate("exec-edge", 60);
+			expect(db.hasRecentMessagesFrom("exec-edge", 60)).toBe(false);
+		});
+
+		it("keeps a message comfortably inside the window", () => {
+			db.insertQuestion("exec-in", "sub-lead", "Q?");
+			backdate("exec-in", 10);
+			expect(db.hasRecentMessagesFrom("exec-in", 60)).toBe(true);
+		});
+
+		it("counts ANY message type from the exec (responses too)", () => {
+			const qId = db.insertQuestion("sub-lead", "exec-resp", "instruction?");
+			db.insertResponse(qId, "exec-resp", "receipt");
+			expect(db.hasRecentMessagesFrom("exec-resp", 60)).toBe(true);
+		});
+
+		it("returns false for a zero window (only future rows could match)", () => {
+			db.insertQuestion("exec-zero", "sub-lead", "Q?");
+			backdate("exec-zero", 1);
+			expect(db.hasRecentMessagesFrom("exec-zero", 0)).toBe(false);
 		});
 	});
 
@@ -259,6 +341,18 @@ describe("CommDB", () => {
 			expect(db.getActiveSessions()).toHaveLength(0);
 		});
 
+		// FLY-638: deleteSession
+		it("should delete a session row and return the change count", () => {
+			db.registerSession("exec-1", "@42", "geoforge3d");
+			db.updateSessionStatus("exec-1", "completed");
+
+			expect(db.deleteSession("exec-1")).toBe(1);
+			expect(db.getSession("exec-1")).toBeUndefined();
+			// Idempotent — deleting a missing row is a no-op (0 changes).
+			expect(db.deleteSession("exec-1")).toBe(0);
+			expect(db.deleteSession("never-existed")).toBe(0);
+		});
+
 		it("should list sessions with filters", () => {
 			db.registerSession("exec-1", "@42", "geoforge3d");
 			db.registerSession("exec-2", "@43", "geoforge3d");
@@ -273,6 +367,87 @@ describe("CommDB", () => {
 			expect(
 				db.listSessions("geoforge3d", ["running", "timeout"]),
 			).toHaveLength(2);
+		});
+
+		// FLY-229: parked-alive detection helpers
+		describe("getRecentTerminalSessions / countTerminalSessions", () => {
+			it("returns only completed/timeout rows for the project (not running)", () => {
+				db.registerSession(
+					"run-1",
+					"@1",
+					"geoforge3d",
+					"GEO-1",
+					"product-lead",
+				);
+				db.registerSession(
+					"done-1",
+					"@2",
+					"geoforge3d",
+					"GEO-2",
+					"product-lead",
+				);
+				db.registerSession("to-1", "@3", "geoforge3d", "GEO-3", "product-lead");
+				db.registerSession(
+					"other-1",
+					"@4",
+					"other-proj",
+					"GEO-4",
+					"product-lead",
+				);
+				db.updateSessionStatus("done-1", "completed");
+				db.updateSessionStatus("to-1", "timeout");
+				db.updateSessionStatus("other-1", "completed");
+
+				const rows = db.getRecentTerminalSessions("geoforge3d", undefined, 50);
+				expect(rows.map((r) => r.execution_id).sort()).toEqual([
+					"done-1",
+					"to-1",
+				]);
+				expect(db.countTerminalSessions("geoforge3d")).toBe(2);
+			});
+
+			it("Lead-scopes in SQL (lead_id = leadId OR NULL) BEFORE limit", () => {
+				// Other lead's row is NEWER (registered+completed last) so it sorts
+				// first; without SQL scoping a limit=1 would drop the in-scope row.
+				db.registerSession("mine", "@1", "geoforge3d", "GEO-1", "product-lead");
+				db.registerSession("legacy", "@2", "geoforge3d", "GEO-2"); // lead_id NULL
+				db.registerSession("theirs", "@3", "geoforge3d", "GEO-3", "ops-lead");
+				db.updateSessionStatus("mine", "completed");
+				db.updateSessionStatus("legacy", "completed");
+				db.updateSessionStatus("theirs", "completed");
+
+				const scoped = db.getRecentTerminalSessions(
+					"geoforge3d",
+					"product-lead",
+					50,
+				);
+				expect(scoped.map((r) => r.execution_id).sort()).toEqual([
+					"legacy", // NULL lead_id visible to everyone
+					"mine",
+				]);
+				expect(scoped.some((r) => r.execution_id === "theirs")).toBe(false);
+				expect(db.countTerminalSessions("geoforge3d", "product-lead")).toBe(2);
+
+				// in-scope row survives even when out-of-scope rows fill a tight limit
+				const limited = db.getRecentTerminalSessions(
+					"geoforge3d",
+					"product-lead",
+					1,
+				);
+				expect(limited).toHaveLength(1);
+				expect(["mine", "legacy"]).toContain(limited[0]!.execution_id);
+			});
+
+			it("respects the limit", () => {
+				for (let i = 0; i < 5; i++) {
+					db.registerSession(`e${i}`, `@${i}`, "geoforge3d", `GEO-${i}`);
+					db.updateSessionStatus(`e${i}`, "completed");
+				}
+				expect(
+					db.getRecentTerminalSessions("geoforge3d", undefined, 3),
+				).toHaveLength(3);
+				expect(db.countTerminalSessions("geoforge3d")).toBe(5);
+			});
 		});
 	});
 
@@ -616,5 +791,379 @@ describe("CommDB", () => {
 			expect(pending[0]!.id).toBe(id1);
 			expect(pending[1]!.id).toBe(id2);
 		});
+	});
+
+	describe("FLY-1269 durable runner phase lifecycle", () => {
+		const ordinaryWake = (id: string, content = id) => ({
+			id,
+			to: "runner-agent",
+			content,
+			metadata: { checkpoint: "question" },
+		});
+
+		it("queues ordinary envelopes once and preserves same-millisecond FIFO", () => {
+			const first = db.enqueueRunnerPhaseWake(
+				"exec-1",
+				ordinaryWake("vendor-1", "first"),
+				1_000,
+			);
+			const duplicate = db.enqueueRunnerPhaseWake(
+				"exec-1",
+				ordinaryWake("vendor-1", "first"),
+				1_000,
+			);
+			const second = db.enqueueRunnerPhaseWake(
+				"exec-1",
+				ordinaryWake("vendor-2", "second"),
+				1_000,
+			);
+
+			expect(first.kind).toBe("queued");
+			expect(duplicate.kind).toBe("duplicate");
+			expect(duplicate.wake.queue_seq).toBe(first.wake.queue_seq);
+			expect(second.wake.queue_seq).toBeGreaterThan(first.wake.queue_seq);
+			expect(
+				db.listRunnerPhaseWakes("exec-1").map((wake) => wake.content),
+			).toEqual(["first", "second"]);
+		});
+
+		it("atomically queues a bound send and claims only its instruction", () => {
+			const bound = db.insertInstruction("lead", "exec-1", "fix this");
+			const unrelated = db.insertInstruction("lead", "exec-1", "leave unread");
+
+			const result = db.enqueueRunnerPhaseWake(
+				"exec-1",
+				{
+					id: "vendor-send-1",
+					to: "runner-agent",
+					content: "[lead-instruction] fix this",
+					metadata: { flywheelId: bound, execId: "exec-1" },
+				},
+				2_000,
+			);
+
+			expect(result.kind).toBe("queued");
+			expect(result.wake.source_instruction_id).toBe(bound);
+			expect(db.getUnreadInstructions("exec-1").map((row) => row.id)).toEqual([
+				unrelated,
+			]);
+		});
+
+		it("dedupes different vendor ids bound to the same instruction source", () => {
+			const bound = db.insertInstruction("lead", "exec-1", "same source");
+			const envelope = (id: string) => ({
+				id,
+				to: "runner-agent",
+				content: "same source",
+				metadata: { flywheelId: bound, execId: "exec-1" },
+			});
+
+			const first = db.enqueueRunnerPhaseWake("exec-1", envelope("v-1"), 3_000);
+			const replay = db.enqueueRunnerPhaseWake(
+				"exec-1",
+				envelope("v-2"),
+				3_001,
+			);
+
+			expect(replay.kind).toBe("duplicate");
+			expect(replay.wake.message_id).toBe(first.wake.message_id);
+			expect(db.listRunnerPhaseWakes("exec-1")).toHaveLength(1);
+		});
+
+		it("returns the committed wake on callback retry", () => {
+			const input = ordinaryWake("callback-retry", "durable");
+			const committed = db.enqueueRunnerPhaseWake("exec-1", input, 4_000);
+			const retried = db.enqueueRunnerPhaseWake("exec-1", input, 4_001);
+
+			expect(retried).toEqual({ kind: "duplicate", wake: committed.wake });
+		});
+
+		it("queues a bound instruction even when CLI already marked it read", () => {
+			const bound = db.insertInstruction("lead", "exec-1", "printed only");
+			db.markInstructionRead(bound);
+
+			expect(
+				db.enqueueRunnerPhaseWake(
+					"exec-1",
+					{
+						id: "late-vendor-callback",
+						to: "runner-agent",
+						content: "printed only",
+						metadata: { flywheelId: bound, execId: "exec-1" },
+					},
+					5_000,
+				).kind,
+			).toBe("queued");
+		});
+
+		it.each([
+			{
+				name: "wrong metadata execId",
+				setup: () => db.insertInstruction("lead", "exec-1", "bound"),
+				metadata: (id: string) => ({ flywheelId: id, execId: "exec-wrong" }),
+			},
+			{
+				name: "wrong instruction recipient",
+				setup: () => db.insertInstruction("lead", "exec-other", "bound"),
+				metadata: (id: string) => ({ flywheelId: id, execId: "exec-1" }),
+			},
+			{
+				name: "missing bound instruction",
+				setup: () => "missing-instruction",
+				metadata: (id: string) => ({ flywheelId: id, execId: "exec-1" }),
+			},
+		])("fails $name without queue/read mutation", ({ setup, metadata }) => {
+			const instructionId = setup();
+			expect(() =>
+				db.enqueueRunnerPhaseWake(
+					"exec-1",
+					{
+						id: `invalid-${instructionId}`,
+						to: "runner-agent",
+						content: "invalid",
+						metadata: metadata(instructionId),
+					},
+					6_000,
+				),
+			).toThrow();
+			expect(db.listRunnerPhaseWakes("exec-1")).toEqual([]);
+			const row = (db as any).db
+				.prepare("SELECT read_at FROM messages WHERE id = ?")
+				.get(instructionId) as { read_at: string | null } | undefined;
+			expect(row?.read_at ?? null).toBeNull();
+		});
+
+		it("enforces pending to started to finished CAS for exact execution/id", () => {
+			db.enqueueRunnerPhaseWake("exec-1", ordinaryWake("stateful"), 7_000);
+
+			expect(db.finishRunnerPhaseWake("exec-1", "stateful", 7_001)).toBe(false);
+			expect(
+				db.markRunnerPhaseWakeStarted("exec-other", "stateful", 7_001),
+			).toBe(false);
+			expect(db.markRunnerPhaseWakeStarted("exec-1", "stateful", 7_001)).toBe(
+				true,
+			);
+			expect(db.markRunnerPhaseWakeStarted("exec-1", "stateful", 7_002)).toBe(
+				false,
+			);
+			expect(db.finishRunnerPhaseWake("exec-1", "wrong", 7_003)).toBe(false);
+			expect(db.finishRunnerPhaseWake("exec-1", "stateful", 7_003)).toBe(true);
+			expect(db.listRunnerPhaseWakes("exec-1")[0]).toMatchObject({
+				state: "finished",
+				started_at: 7_001,
+				finished_at: 7_003,
+			});
+		});
+
+		it("readonly missing phase table is empty while other database errors throw", () => {
+			const legacyPath = join(tmpDir, "legacy-readonly.db");
+			const legacy = new Database(legacyPath);
+			legacy.exec("CREATE TABLE legacy_only (id TEXT PRIMARY KEY)");
+			legacy.close();
+			const readonly = CommDB.openReadonly(legacyPath);
+			expect(readonly.listRunnerPhaseWakes("exec-1")).toEqual([]);
+			readonly.close();
+			expect(() => readonly.listRunnerPhaseWakes("exec-1")).toThrow();
+		});
+
+		it("uses idempotent request-bound shutdown CAS", () => {
+			const requested = db.requestRunnerShutdown("exec-1", "shutdown-1", 8_000);
+			const duplicate = db.requestRunnerShutdown("exec-1", "shutdown-2", 8_001);
+
+			expect(duplicate).toEqual(requested);
+			expect(db.getRunnerShutdown("exec-1")).toEqual(requested);
+			expect(
+				db.finishRunnerShutdown("exec-1", "wrong", { ok: true }, 8_002),
+			).toBe(false);
+			expect(
+				db.finishRunnerShutdown("exec-1", "shutdown-1", { ok: true }, 8_003),
+			).toBe(true);
+			expect(db.getRunnerShutdown("exec-1")).toMatchObject({
+				state: "acked",
+				finished_at: 8_003,
+				error: null,
+			});
+			expect(
+				db.finishRunnerShutdown("exec-1", "shutdown-1", { ok: true }, 8_004),
+			).toBe(false);
+		});
+
+		it("refuses to reuse a shutdown request id across executions", () => {
+			db.requestRunnerShutdown("exec-1", "shared-request", 8_100);
+			expect(() =>
+				db.requestRunnerShutdown("exec-2", "shared-request", 8_101),
+			).toThrow("already bound to another execution");
+			expect(db.getRunnerShutdown("exec-2")).toBeNull();
+		});
+
+		it("records a matching shutdown failure", () => {
+			db.requestRunnerShutdown("exec-2", "shutdown-fail", 9_000);
+			expect(
+				db.finishRunnerShutdown(
+					"exec-2",
+					"shutdown-fail",
+					{ ok: false, error: "drain timeout" },
+					9_001,
+				),
+			).toBe(true);
+			expect(db.getRunnerShutdown("exec-2")).toMatchObject({
+				state: "failed",
+				error: "drain timeout",
+			});
+		});
+
+		it("readonly missing shutdown table returns null", () => {
+			const legacyPath = join(tmpDir, "legacy-shutdown-readonly.db");
+			const legacy = new Database(legacyPath);
+			legacy.exec("CREATE TABLE legacy_only (id TEXT PRIMARY KEY)");
+			legacy.close();
+			const readonly = CommDB.openReadonly(legacyPath);
+			expect(readonly.getRunnerShutdown("exec-1")).toBeNull();
+			readonly.close();
+			expect(() => readonly.getRunnerShutdown("exec-1")).toThrow();
+		});
+
+		it("atomically deletes phase rows, shutdown control, and the session", () => {
+			db.registerSession("exec-1", "@1", "flywheel");
+			db.enqueueRunnerPhaseWake("exec-1", ordinaryWake("cleanup"), 10_000);
+			db.requestRunnerShutdown("exec-1", "shutdown-cleanup", 10_001);
+
+			expect(db.deleteSessionAndRunnerPhaseLifecycle("exec-1")).toBe(1);
+			expect(db.getSession("exec-1")).toBeUndefined();
+			expect(db.listRunnerPhaseWakes("exec-1")).toEqual([]);
+			expect(db.getRunnerShutdown("exec-1")).toBeNull();
+			expect(db.deleteSessionAndRunnerPhaseLifecycle("exec-1")).toBe(0);
+		});
+	});
+});
+
+describe("CommDB — FLY-245 D-b lifecycle consent (ttl + atomic claim)", () => {
+	let db: CommDB;
+	let tmpDir: string;
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-comm-d-b-"));
+		db = new CommDB(join(tmpDir, "comm.db"));
+	});
+	afterEach(() => {
+		db.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("insertQuestion default TTL is far future (byte-compat ~72h)", () => {
+		const id = db.insertQuestion("lead", "founder", "q");
+		const m = db.getMessageById(id);
+		expect(m).toBeDefined();
+		// default +72h → well beyond 1h from now
+		expect(new Date(`${m?.expires_at}Z`).getTime()).toBeGreaterThan(
+			Date.now() + 60 * 60 * 1000,
+		);
+	});
+
+	it("insertQuestion ttlSeconds sets a short expiry", () => {
+		const id = db.insertQuestion("lead", "founder", "q", {
+			checkpoint: "runner_lifecycle:terminate",
+			ttlSeconds: 120,
+		});
+		const m = db.getMessageById(id);
+		const exp = new Date(`${m?.expires_at}Z`).getTime();
+		// ~2 minutes out, definitely under 1h
+		expect(exp).toBeLessThan(Date.now() + 60 * 60 * 1000);
+		expect(exp).toBeGreaterThan(Date.now());
+	});
+
+	it("a non-positive ttlSeconds falls back to the default", () => {
+		const id = db.insertQuestion("lead", "founder", "q", { ttlSeconds: 0 });
+		const m = db.getMessageById(id);
+		expect(new Date(`${m?.expires_at}Z`).getTime()).toBeGreaterThan(
+			Date.now() + 60 * 60 * 1000,
+		);
+	});
+
+	it("claimLifecycleConsent succeeds ONCE (at-most-once consumption)", () => {
+		const id = db.insertQuestion("lead", "founder", "stop FLY-1", {
+			checkpoint: "runner_lifecycle:terminate",
+			ttlSeconds: 300,
+		});
+		expect(db.claimLifecycleConsent(id, "runner_lifecycle:terminate")).toBe(
+			true,
+		);
+		// second claim loses — irreversible action authorized exactly once
+		expect(db.claimLifecycleConsent(id, "runner_lifecycle:terminate")).toBe(
+			false,
+		);
+	});
+
+	it("atomic claim across two INDEPENDENT connections — exactly one wins (Codex R1 LOW-11)", () => {
+		const dbPath = join(tmpDir, "comm.db");
+		const checkpoint = "runner_lifecycle:terminate";
+		// Two separately-opened handles on the same file — NOT the same CommDB
+		// instance called twice. The conditional UPDATE (`resolved_at IS NULL AND
+		// expires_at > now` + changes===1) is what serializes the race.
+		const a = new CommDB(dbPath);
+		const b = new CommDB(dbPath);
+		try {
+			const q1 = db.insertQuestion("lead", "founder", "q-race-1", {
+				checkpoint,
+				ttlSeconds: 300,
+			});
+			const wins1 = [
+				a.claimLifecycleConsent(q1, checkpoint),
+				b.claimLifecycleConsent(q1, checkpoint),
+			];
+			expect(wins1.filter(Boolean)).toHaveLength(1);
+
+			// Reverse arrival order on a fresh question — still exactly one winner.
+			const q2 = db.insertQuestion("lead", "founder", "q-race-2", {
+				checkpoint,
+				ttlSeconds: 300,
+			});
+			const wins2 = [
+				b.claimLifecycleConsent(q2, checkpoint),
+				a.claimLifecycleConsent(q2, checkpoint),
+			];
+			expect(wins2.filter(Boolean)).toHaveLength(1);
+
+			// The original handle (third independent connection) also sees them consumed.
+			expect(db.claimLifecycleConsent(q1, checkpoint)).toBe(false);
+			expect(db.claimLifecycleConsent(q2, checkpoint)).toBe(false);
+		} finally {
+			a.close();
+			b.close();
+		}
+	});
+
+	it("claim fails on a checkpoint mismatch (wrong action)", () => {
+		const id = db.insertQuestion("lead", "founder", "q", {
+			checkpoint: "runner_lifecycle:terminate",
+			ttlSeconds: 300,
+		});
+		expect(db.claimLifecycleConsent(id, "runner_lifecycle:defer")).toBe(false);
+		// still claimable under the correct checkpoint
+		expect(db.claimLifecycleConsent(id, "runner_lifecycle:terminate")).toBe(
+			true,
+		);
+	});
+
+	it("claim fails on an unknown question id (fail-closed)", () => {
+		expect(
+			db.claimLifecycleConsent("no-such-id", "runner_lifecycle:terminate"),
+		).toBe(false);
+	});
+
+	it("claim fails on an already-expired question (forced past expiry)", () => {
+		const id = db.insertQuestion("lead", "founder", "q", {
+			checkpoint: "runner_lifecycle:terminate",
+			ttlSeconds: 300,
+		});
+		// Force the expiry into the past (same raw-access pattern as the "expiry"
+		// suite above) — the `expires_at > now` guard must reject the claim.
+		(db as unknown as { db: import("better-sqlite3").Database }).db
+			.prepare(
+				"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+			)
+			.run(id);
+		expect(db.claimLifecycleConsent(id, "runner_lifecycle:terminate")).toBe(
+			false,
+		);
 	});
 });

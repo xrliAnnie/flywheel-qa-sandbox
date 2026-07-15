@@ -245,6 +245,12 @@ export type {
 	ISimpleAgentRunner,
 	ISimpleAgentRunnerConfig,
 } from "./simple-agent-runner-types.js";
+// Terminal view identity helpers (FLY-116)
+export type { ViewTitleParts } from "./terminal-view-identity.js";
+export {
+	formatViewTitle,
+	parseViewTitle,
+} from "./terminal-view-identity.js";
 // Tmux naming utilities (GEO-269)
 export {
 	buildSessionName,
@@ -252,8 +258,23 @@ export {
 	cleanIssueTitle,
 	sanitizeTmuxName,
 } from "./tmux-naming.js";
-// Tmux viewer utility (GEO-277)
-export { openTmuxViewer } from "./tmux-viewer.js";
+// Tmux viewer utility (GEO-277 + FLY-116)
+export type {
+	CloseTerminalViewOpts,
+	CloseTerminalViewResult,
+	TmuxViewerOpts,
+	ViewerBackend,
+} from "./tmux-viewer.js";
+export {
+	cancelOpener,
+	closeRunnerTerminalView,
+	escapeAppleScript,
+	openTmuxViewer,
+	openTmuxViewerLegacy,
+	posixEscape,
+	resolveViewerBackend,
+	viewerUsesTerminalApp,
+} from "./tmux-viewer.js";
 export type {
 	ActionDefinition,
 	GuardFn,

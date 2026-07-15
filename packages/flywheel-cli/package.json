@@ -1,0 +1,30 @@
+{
+	"name": "flywheel-cli",
+	"version": "0.1.0",
+	"description": "Flywheel project setup CLI: init / doctor / migrate-agents-path",
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"bin": {
+		"flywheel": "dist/index.js"
+	},
+	"files": [
+		"dist",
+		"src/templates"
+	],
+	"scripts": {
+		"build": "tsc && cp -r src/templates dist/templates",
+		"dev": "tsc --watch",
+		"test": "vitest run",
+		"test:watch": "vitest --watch",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@linear/sdk": "60.0.0"
+	},
+	"devDependencies": {
+		"@types/node": "^20.0.0",
+		"typescript": "^5.3.3",
+		"vitest": "^3.1.4"
+	}
+}

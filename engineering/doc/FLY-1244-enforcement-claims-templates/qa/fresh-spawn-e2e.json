@@ -1,0 +1,39 @@
+{
+	"issue": "FLY-1244",
+	"generated_at": "2026-07-15T00:57:07.768Z",
+	"observed_key_names": [
+		"FLYWHEEL_WORKFLOW_CLAIMS_WRITE",
+		"FLYWHEEL_WORKFLOW_CLAIMS_READ",
+		"FLYWHEEL_WORKFLOW_FORCE_LEGACY",
+		"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL"
+	],
+	"known_accepted_residuals": {
+		"same_uid_shell_snapshot_can_expose_execution_scoped_credential": true,
+		"same_uid_active_tmux_injection_not_prevented": true,
+		"per_execution_bearer_is_not_os_isolation": true
+	},
+	"checks": {
+		"platform_macos_26_3_2": true,
+		"runner_claude_2_1_210": true,
+		"runner_codex_0_144_4": true,
+		"tmux_3_5a": true,
+		"shell_snapshot_persists_runner_env_keys": true,
+		"same_uid_ps_hides_spawn_env_value": true,
+		"node_net_has_no_peer_pid_credential": true,
+		"three_phase_real_tmux_fresh_spawn": true,
+		"submission_uses_scoped_credential_key": true,
+		"submission_omits_shared_ingest_token": true,
+		"qa_claim_written_from_fresh_spawn": true,
+		"server_selected_real_head_and_ignored_target": true,
+		"claims_ship_gate_accepts_current_head": true,
+		"exact_replay_is_idempotent": true,
+		"mismatched_replay_is_rejected": true,
+		"missing_credential_is_rejected": true,
+		"head_advance_invalidates_old_claim": true,
+		"caller_selected_head_is_rejected": true,
+		"new_qa_attempt_restores_ship_eligibility": true,
+		"tmux_session_environment_hides_credential": true,
+		"tmux_pane_argv_hides_credential_value": true
+	},
+	"pass": true
+}

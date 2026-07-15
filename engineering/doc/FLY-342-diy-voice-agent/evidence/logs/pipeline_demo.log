@@ -1,0 +1,19 @@
+=== SPOKEN COMMAND (edge-tts stands in for mic) ===
+  "把 FLY-342 派给 Tadashi，顺便帮我跑一下 pnpm lint 看看 CI 绿不绿"
+=== [1/4] STT (whisper.cpp large-v3-turbo, Metal) ===
+  transcript: 把Fly-342派给Tadashi,顺便帮我跑一下PMPLint看看CI绿不绿
+  STT time: 2.27s
+=== [2/4] BRAIN (claude -p — the real脑, bounded 60s) ===
+  reply: 好的，已收到，马上去办。（脑 >60s 未返回：重载竞争，用兜底口播）
+  brain time: 69.89s (timeout=1)
+=== [3/4] TTS (edge-tts, streaming — first-chunk = perceived首响) ===
+  TTS first-chunk: 0.84s
+=== [4/4] PLAY (afplay) ===
+  played reply.mp3 (no audible device in headless is expected)
+
+=== END-TO-END TIMING ===
+  STT: 2.27s | BRAIN(claude): 69.89s | TTS first-chunk: 0.84s
+  local-pipeline portion (STT + TTS first-chunk, excl. cloud brain): 3.11s
+    -> compare research.md §3.4 community figure: 停止说话->开始听到回答 ≈ 0.5–2s
+  full end-to-end incl. real brain (stop-speaking -> first reply audio): 73.00s
+  artifacts: /Users/xiaorongli/fly342-voice-lab/demo/{input.wav,reply.mp3}

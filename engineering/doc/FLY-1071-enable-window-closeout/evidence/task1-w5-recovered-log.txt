@@ -1,0 +1,27 @@
+# W5 recovered — log evidence (2026-07-09 16:03:51)
+# 对照:修复前 crash count 一路涨到 64(60s/轮);修复后 fresh start 15:53:12 起 10+min 零新 crash 行
+
+[lead] 15:51:05 Waiting 60s before restart...
+[lead] 15:52:05 [restart #64] Resuming session 26846ae8-a222-4a10-aab3-fb0562262871...
+[lead] 15:52:05 (To force fresh start: rm /Users/xiaorongli/.flywheel/claude-sessions/flywheel-claude-infra-bot-lead.session-id)
+[lead] 15:52:06 MCP env propagation: forwarded 1 required env var(s) to tmux pane
+[lead] 15:52:07 Claude launched in tmux window: flywheel:@182 (name: flywheel-claude-infra-bot-lead)
+[lead] 15:52:12 Claude crashed (exit code 1) after 7s. Crash count: 64
+[lead] 15:52:12 Quick exit on resume (7s) — possible failure (2/3).
+[lead] 15:52:12 WARNING: 64 consecutive crashes. Check Claude CLI health.
+[lead-alert] 15:52:12 already claimed event_id=71954bbfa409ac02c28e2c2cff95a5c9ab9a2a30 lead=claude-infra-bot-lead kind=crash_loop signature=20260709, skipping
+[lead] 15:52:12 Waiting 60s before restart...
+[lead] 15:53:12 [restart #65] Fresh start with session 203aa399-bcee-4dab-bf46-0208e012945f
+[lead] 15:53:12 Sending bootstrap for claude-infra-bot-lead...
+[lead] 15:53:16 MCP env propagation: forwarded 1 required env var(s) to tmux pane
+[lead] 15:53:17 Claude launched in tmux window: flywheel:@185 (name: flywheel-claude-infra-bot-lead)
+
+# crash 停增对照:log 中最后一条 crash 行:
+[lead] 15:52:12 Claude crashed (exit code 1) after 7s. Crash count: 64
+# 当前时间 16:03:51 — fresh start 后无任何新 crash 行
+# W5 extended stability — 2026-07-09 16:36:12
+fresh start: 15:53:12 (session 203aa399)
+last crash line in log:
+[lead] 15:52:12 Claude crashed (exit code 1) after 7s. Crash count: 64
+new crash lines since fresh start: 0
+flywheel-claude-infra-bot-lead pane_dead=0

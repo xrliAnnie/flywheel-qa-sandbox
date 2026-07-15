@@ -1,4 +1,8 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import type http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
@@ -52,7 +56,35 @@ describe("Bridge E2E lifecycle", () => {
 		Authorization: "Bearer ingest-secret",
 	};
 
+	// FLY-191 Phase 2 (Codex PR R1 HIGH-3): approve requires a writable CommDB
+	// gate — sandbox comm root + seeded pending gate question. The completion
+	// event must carry the questionId (R2 HIGH-1: a Phase-2 needs_review
+	// without it gets the UNBOUND sentinel and approve refuses).
+	let commRoot: string;
+	let seededGateQid: string;
+
 	beforeEach(async () => {
+		commRoot = mkdtempSync(join(tmpdir(), "fly191-e2e-comm-"));
+		process.env.FLYWHEEL_COMM_ROOT = commRoot;
+		mkdirSync(join(commRoot, "geoforge3d"), { recursive: true });
+		const commDb = new CommDB(join(commRoot, "geoforge3d", "comm.db"), true);
+		commDb.registerSession(
+			"exec-e2e",
+			"sess:win",
+			"geoforge3d",
+			undefined,
+			"product-lead",
+		);
+		seededGateQid = commDb.insertQuestion(
+			"exec-e2e",
+			"product-lead",
+			"PR ready",
+			{
+				checkpoint: "approve_to_ship",
+			},
+		);
+		commDb.close();
+
 		store = await StateStore.create(":memory:");
 		const app = createBridgeApp(store, testProjects, makeConfig());
 		server = app.listen(0, "127.0.0.1");
@@ -67,6 +99,8 @@ describe("Bridge E2E lifecycle", () => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
 		store.close();
+		rmSync(commRoot, { recursive: true, force: true });
+		delete process.env.FLYWHEEL_COMM_ROOT;
 	});
 
 	it("full lifecycle: start → complete → query → approve", async () => {
@@ -113,6 +147,7 @@ describe("Bridge E2E lifecycle", () => {
 						linesRemoved: 45,
 					},
 					summary: "Refactored auth module",
+					reviewQuestionId: seededGateQid,
 				},
 			}),
 		});
@@ -211,7 +246,7 @@ describe("Bridge E2E lifecycle", () => {
 	it("notification is delivered via registry when configured", async () => {
 		const capturedEnvelopes: LeadEventEnvelope[] = [];
 		const mockRuntime = {
-			type: "claude-discord" as const,
+			type: "commdb" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
 				return { delivered: true };
@@ -332,8 +367,8 @@ describe("Bridge E2E lifecycle", () => {
 		expect(body.count).toBe(2);
 	});
 
-	// GEO-275: full lifecycle with a no-forum PM lead
-	it("full lifecycle works for lead without forumChannel", async () => {
+	// FLY-163: full lifecycle for a PM lead (formerly "no forum")
+	it("full lifecycle works for PM lead routed via chat_channel", async () => {
 		const noForumProjects: ProjectEntry[] = [
 			{
 				projectName: "geoforge3d",
@@ -342,15 +377,14 @@ describe("Bridge E2E lifecycle", () => {
 				leads: [
 					{
 						agentId: "product-lead",
-						forumChannel: "test-channel",
 						chatChannel: "test-chat",
 						match: { labels: ["Product"] },
 					},
 					{
 						agentId: "pm-lead",
-						// No forumChannel — PM lead
 						chatChannel: "core-channel",
 						match: { labels: ["PM"] },
+						canSpawnRunners: false,
 					},
 				],
 			},
@@ -358,7 +392,7 @@ describe("Bridge E2E lifecycle", () => {
 
 		const capturedEnvelopes: LeadEventEnvelope[] = [];
 		const mockRuntime = {
-			type: "claude-discord" as const,
+			type: "commdb" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
 				return { delivered: true };
@@ -456,9 +490,8 @@ describe("Bridge E2E lifecycle", () => {
 			);
 			expect(pmEnvelopes.length).toBeGreaterThanOrEqual(1);
 
-			// 4. Verify forum_channel is undefined in pm-lead envelopes
+			// 4. Verify chat_channel routing in pm-lead envelopes (FLY-163: forum_channel removed)
 			for (const env of pmEnvelopes) {
-				expect(env.event.forum_channel).toBeUndefined();
 				expect(env.event.chat_channel).toBe("core-channel");
 			}
 
@@ -487,9 +520,9 @@ describe("Bridge E2E lifecycle", () => {
 			);
 			expect(prodEnvelopes.length).toBeGreaterThanOrEqual(1);
 
-			// Product lead envelopes SHOULD have forum_channel
+			// FLY-163: forum_channel field removed; product lead envelopes route via chat_channel.
 			const prodEnv = prodEnvelopes[prodEnvelopes.length - 1]!;
-			expect(prodEnv.event.forum_channel).toBe("test-channel");
+			expect(prodEnv.event.chat_channel).toBe("test-chat");
 		} finally {
 			await new Promise<void>((resolve, reject) => {
 				server2.close((err) => (err ? reject(err) : resolve()));

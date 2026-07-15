@@ -1,0 +1,278 @@
+<title>FLY-912 Hooves & Paws 痛点梳理 · Annie review</title>
+<style>
+  /* Apple 浅色 · light-only（刻意不做深色自动切换,保证投递给 Annie 恒定浅色) */
+  :root{
+    color-scheme:light;
+    --paper:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --muted:#6e6e73;
+    --line:#e4e7ec; --line-soft:#eef1f4;
+    --accent:#2f5fd0; --accent-soft:#eaf0fd;
+    --warnc:#c77d2a; --warn-soft:#fbf1e3;
+    --us:#2f9e6b; --us-soft:#e7f5ee;
+    --shadow:0 1px 3px rgba(20,26,34,.06),0 8px 24px rgba(20,26,34,.05);
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:-apple-system,system-ui,"Segoe UI",Roboto,sans-serif;
+    line-height:1.6;-webkit-text-size-adjust:100%;
+  }
+  .wrap{max-width:780px;margin:0 auto;padding:0 18px 120px}
+  code,.mono{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.86em}
+
+  .bar{position:sticky;top:0;z-index:40;background:color-mix(in srgb,var(--paper) 88%,transparent);
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--line);}
+  .bar-in{max-width:780px;margin:0 auto;padding:10px 18px;display:flex;align-items:center;gap:12px}
+  .bar b{font-size:14px;letter-spacing:.01em}
+  .bar .sp{flex:1}
+  .btn{border:1px solid var(--accent);background:var(--accent);color:#fff;font:inherit;
+    font-size:13px;font-weight:600;padding:7px 13px;border-radius:9px;cursor:pointer;white-space:nowrap}
+  .btn.ghost{background:transparent;color:var(--accent)}
+  .btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  header.hero{padding:30px 0 6px}
+  .eyebrow{font-size:12px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--accent)}
+  h1{font-size:27px;line-height:1.22;margin:.32em 0 .3em;text-wrap:balance;letter-spacing:-.01em}
+  .lede{color:var(--muted);font-size:15px;margin:0}
+  .meta{margin-top:14px;font-size:12.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 14px}
+  .howto{margin:18px 0 6px;background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 25%,transparent);
+    border-radius:12px;padding:13px 15px;font-size:13.5px}
+  .howto b{color:var(--accent)}
+
+  section.card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);
+    border-radius:var(--radius);box-shadow:var(--shadow);padding:20px 20px 8px;margin:18px 0}
+  section.card.us{border-left-color:var(--us)}
+  section.card.warn{border-left-color:var(--warnc)}
+  .kicker{font-size:11.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+  h2{font-size:20px;margin:.15em 0 .5em;letter-spacing:-.01em;text-wrap:balance}
+  h3{font-size:15.5px;margin:1.1em 0 .3em}
+  p{margin:.55em 0}
+  ul,ol{margin:.5em 0;padding-left:1.15em}li{margin:.34em 0}
+  .small{font-size:13px;color:var(--muted)}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;vertical-align:middle}
+  .tag.a{background:var(--accent-soft);color:var(--accent)}
+  .tag.u{background:var(--us-soft);color:var(--us)}
+  .tag.w{background:var(--warn-soft);color:var(--warnc)}
+  .pri{font-weight:800;font-size:13px}
+  mark{background:color-mix(in srgb,var(--accent) 18%,transparent);color:inherit;padding:0 3px;border-radius:3px}
+  .warnbox{background:var(--warn-soft);border-radius:9px;padding:9px 12px;font-size:13px;margin:.6em 0}
+
+  .scroll{overflow-x:auto;margin:.6em -4px;padding:0 4px;-webkit-overflow-scrolling:touch}
+  table{border-collapse:collapse;font-size:12.5px;min-width:520px;width:100%}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--line-soft);font-weight:700}
+
+  .theme{border:1px solid var(--line);border-radius:11px;padding:11px 13px;margin:10px 0;background:var(--paper)}
+  .theme .th-h{font-weight:700;font-size:15px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+  .theme .job{font-size:13.5px;margin:.35em 0}
+  .theme .ev{font-size:12.5px;color:var(--muted)}
+  .theme .sig{font-size:13px;margin-top:.4em}
+  .theme .sig b{color:var(--us)}
+
+  .cmt{margin:16px 0 4px;border-top:1px dashed var(--line);padding-top:12px}
+  .cmt label{display:block;font-size:12px;font-weight:700;color:var(--accent);margin-bottom:6px}
+  .cmt label::before{content:"✍️ ";}
+  textarea{width:100%;min-height:52px;resize:vertical;background:var(--paper);color:var(--ink);
+    border:1px solid var(--line);border-radius:9px;padding:9px 11px;font:inherit;font-size:14px}
+  textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+  .saved{font-size:11px;color:var(--us);margin-top:4px;height:14px}
+
+  .modal{position:fixed;inset:0;background:rgba(10,14,20,.55);display:none;align-items:center;
+    justify-content:center;z-index:60;padding:18px}
+  .modal.on{display:flex}
+  .modal-in{background:var(--card);border:1px solid var(--line);border-radius:14px;max-width:640px;
+    width:100%;max-height:82vh;overflow:auto;padding:18px;box-shadow:var(--shadow)}
+  .modal-in h3{margin-top:0}
+  .modal-in textarea{min-height:240px;font-size:12.5px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+  footer{margin-top:26px;font-size:12px;color:var(--muted);text-align:center}
+  @media(max-width:480px){h1{font-size:23px}h2{font-size:18px}.wrap{padding:0 14px 120px}}
+</style>
+
+<div class="bar">
+  <div class="bar-in">
+    <b>FLY-912 · Hooves &amp; Paws 痛点梳理</b>
+    <span class="sp"></span>
+    <button class="btn" onclick="openExport()">导出我的批注</button>
+  </div>
+</div>
+
+<div class="wrap">
+  <header class="hero">
+    <div class="eyebrow">对外定位线 · 喂 FLY-908 / FLY-911</div>
+    <h1>第一个真实客户想要什么 —— 痛点 &amp; 需求主题梳理</h1>
+    <p class="lede">把 Anna 对 Hooves &amp; Paws 的采访,提炼成 <b>problem 层 / 底层 job</b>。客户提的具体做法只当方向信号,逐条标「方向 vs 太具体先不做」—— 喂产品定位。</p>
+    <div class="meta">
+      <span>日期 2026-07-06</span><span>草稿 / WIP · 不 ship</span><span>基于 Anna Session-1(PR #6)</span><span>给 Annie review</span>
+    </div>
+    <div class="howto">
+      <b>怎么用这一页 →</b> 每一节下面有个「✍️ 留言框」,意见写在对应位置就行(自动暂存)。写完点右上角 <b>「导出我的批注」</b>,把汇总复制发回来,我照着改。手机上看也顺。
+    </div>
+  </header>
+
+  <!-- TLDR -->
+  <section class="card">
+    <div class="kicker">先看结论</div>
+    <h2>一句话</h2>
+    <p>第一个客户的痛,底层<b>不是「缺某个 dashboard」</b>,而是 <mark>「我这套多系统的生意到底在发生什么、哪里在悄悄漏钱/漏单,我没有可信的可见性」</mark>。</p>
+    <p>他们<b>已经能自己造工具</b>(而且造了),缺的不是能力 —— 是<b>「造对那一半」+ 把散落信号接成『为什么 / 值多少钱』</b>。</p>
+    <p>→ 对定位最大的启发:Flywheel 的楔子是 <b>「让这类操盘手自己把可信可见性 / 根因诊断立起来」</b>,不是「替他们建个 app」;而且这个客户<b>比『非工程』框架假设的更技术</b> —— 这是定位要正视的信号,不是缺陷。</p>
+    <div class="cmt"><label for="c_tldr">这个结论戳到你了吗?哪句你不同意 / 想改?</label>
+      <textarea id="c_tldr" placeholder="比如:我更想强调 ___ / 「更技术」这点我怎么看…"></textarea><div class="saved" id="s_c_tldr"></div></div>
+  </section>
+
+  <!-- 客户是谁 -->
+  <section class="card warn">
+    <div class="kicker">一个被低估的定位信号</div>
+    <h2>第一个客户,坐在「技术娴熟」这一端</h2>
+    <p>Hooves &amp; Paws:30 年老店、多渠道电商(Shopify + Amazon + eBay + Target)、~2,800 SKU,今由 Daniel 精简 + <b>高度自动化</b>运营。他们有 ——</p>
+    <ul>
+      <li>自建 dropship 自动化栈(Cloudflare Workers、Veeqo/Ordoro 同步、KV logs);</li>
+      <li>自建统一层 <code>hp-order-dashboard</code>(自带数据库、登录/角色、1,344+ 单);</li>
+      <li>一个直接接进所有系统的 AI 助手 djw(需求短而具体)。</li>
+    </ul>
+    <div class="warnbox"><b>定位含义</b>:EPIC 框架是「<b>非工程</b>小企业也能用」,但第一个真实客户缺的是 <b>时间/注意力 + 造对方向</b>,不是编码能力。这直接撞上 FLY-909 悬着的开放问题:目标客户到底是「<b>有技术直觉、缺时间的经营者</b>」还是「完全非技术」?第一个客户指向<b>前者</b>。别把「非工程」读成「不会技术」—— 更准也许是「<b>没空当技术侦探的经营者</b>」。</div>
+    <div class="warnbox" style="background:var(--us-soft)"><b>✅ 已定(2026-07-06)</b>:Annie 拍板 beachhead = <b>甲(时间紧、有技术直觉的经营者)</b>,接受现阶段一个客户先为它定位。此问已收 —— 下面留言框留给你补充画像细节 / 随时改。</div>
+    <div class="cmt"><label for="c_customer">目标客户要不要显式选边?你心里的第一个客户画像是哪种?</label>
+      <textarea id="c_customer" placeholder="比如:我想主打 ___ / 「非工程」这个词要不要换…"></textarea><div class="saved" id="s_c_customer"></div></div>
+  </section>
+
+  <!-- Problem 主题 -->
+  <section class="card">
+    <div class="kicker">核心 · 底层 job 排序</div>
+    <h2>5 个 problem 主题(把客户的具体解法剥开后)</h2>
+    <p class="small">排序:客户<b>按压力</b>把 T1 排第一(未知成本);<b>按频率/耗时</b> T2 最重。T3 是 Daniel 亲口的价值锚。三者是同一个「可信可见性」母 job 的三个面。</p>
+
+    <div class="theme">
+      <div class="th-h"><span class="pri" style="color:var(--warnc)">🥇 T1</span> 未知风险的可见性(silent-failure)<span class="tag w">客户排第一</span></div>
+      <div class="job"><b>Job:</b>「我不要求它永不出错,我要求<b>它出错时我知道</b>」—— 把「不知道有没有事」的焦虑变成可见状态。</div>
+      <div class="ev">证据:30 天 125 单发供应商只 25% 有确认;94 单挂 pending;stale-alert 30 天一次没响。真风险 = 万一真卡一单,藏在同一盲区直到客户来问。<b>未知成本 &gt; 已知成本</b>,压力不成比例于频率。</div>
+      <div class="sig"><b>定位启发:</b>诊断类产品的核心价值 = 如实反映真实状态,别让静默失败伪装成正常。「把未知变可见」的价值感 <b>远超</b>「把已知琐事做快」。</div>
+    </div>
+
+    <div class="theme">
+      <div class="th-h"><span class="pri" style="color:var(--accent)">🥈 T2</span> 跨系统根因诊断劳动 <span class="tag a">最高频/最耗时</span></div>
+      <div class="job"><b>Job:</b>「信号已经散在各系统里了,别让我手动串 —— 给我<b>一个『这单为什么卡』的答案</b>」。</div>
+      <div class="ev">证据:出问题时「没有任何单一视图告诉你为什么」,得手动串 Veeqo notes + Ordoro + KV logs(有时翻发票)。每个 case 不一样、<b>无法固化成 checklist,每次都是真诊断</b>。客户原话:「that's the multi-system-detective task.」</div>
+      <div class="sig"><b>定位启发:</b>痛不在单个工具,在信号散落、没有统一根因视图。「让用户<b>自己把多源数据接起来、看到为什么</b>」是会被真用起来的系统能力 —— 是<b>给能力</b>,不是替他建个死 dashboard。</div>
+    </div>
+
+    <div class="theme">
+      <div class="th-h"><span class="pri" style="color:var(--us)">🥉 T3</span> 成本/利润可见性(clean P&amp;L)<span class="tag u">底层价值锚</span></div>
+      <div class="job"><b>Job:</b>「诊断的尽头是<b>钱</b> —— 让我把成本接回订单,看清真实 P&amp;L」。</div>
+      <div class="ev">Daniel 原话:「the real value add would be able to tie invoices of dropships to order so we can get clear PL」。排障是「nag(持续累积的烦)」不是「fire(救火)」—— 真正想要的不是分钟数,是<b>成本清晰度</b>。</div>
+      <div class="sig"><b>定位启发:</b><b>痛点的底层货币往往是钱/风险的可见性,不是任务本身</b>。价值主张要往下追一层:用户要的不是「这个视图」,是「这个视图让我看清的<b>钱/风险</b>」。→ 说结果,别列功能。</div>
+    </div>
+
+    <div class="theme">
+      <div class="th-h"><span class="pri" style="color:var(--muted)">T4</span> 诊断需求天然要分领域建模 <span class="tag a">问题形状即洞察</span></div>
+      <div class="job"><b>洞察:</b>CheckDS(仅仓内自履约)与 confirmation gap(仅 dropship)是<b>两个不重叠的订单集</b>,只是都长着「要人工判断」的形状。客户明确警告别一把梭进一个 dashboard。</div>
+      <div class="sig"><b>定位启发:</b>诊断类需求<b>天然按领域分开建模</b>,别把不同问题硬塞一个视图。这是「产品该怎么想」的洞察,不是给这家客户的交付。</div>
+    </div>
+
+    <div class="theme">
+      <div class="th-h"><span class="pri" style="color:var(--muted)">T5</span> happy-path 已经 fine <span class="tag a">反向信号</span></div>
+      <div class="job"><b>观察:</b>product copy、campaign edits、analytics pulls「usually one clean tool call」—— <b>已经不痛</b>。</div>
+      <div class="sig"><b>定位启发:</b>别把投资砸在已经顺的单次 tool-call 上;价值集中在「跨系统调查」这类高摩擦场景。「一次干净 tool call」vs「多系统调查」本身是条优先级判据。</div>
+    </div>
+
+    <div class="cmt"><label for="c_themes">这 5 个主题 + 排序,你同意吗?哪个最戳你 / 哪个你觉得排错了?</label>
+      <textarea id="c_themes" placeholder="比如:我觉得 T3 才该排第一 / T4 这个洞察对我最有用…"></textarea><div class="saved" id="s_c_themes"></div></div>
+  </section>
+
+  <!-- 方向 vs 太具体 -->
+  <section class="card">
+    <div class="kicker">硬原则落地</div>
+    <h2>方向 vs 太具体先不做(逐条)</h2>
+    <p class="small">客户的每个具体方案都标清「当方向 / 太具体不做」,防被 solution 带偏。</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>客户具体项</th><th>判定</th><th>理由</th></tr></thead>
+        <tbody>
+          <tr><td>统一 dropship 根因 dashboard</td><td>🧭 <b>方向</b>(能力)/ ❌ 形态不做</td><td>底层 job(跨系统诊断)是方向;「替他建的 dashboard」违背「给客户自己用」</td></tr>
+          <tr><td>invoice ↔ order 关联</td><td>🧭 <b>方向</b>(价值锚)/ ❌ 实现不做</td><td>指向 T3 成本可见性,有定位价值;怎么 join 是他系统的细节</td></tr>
+          <tr><td>CheckDS 根因视图</td><td>❌ <b>太具体先不做</b></td><td>单客户单系统功能;只作 T2/T4 证据</td></tr>
+          <tr><td>修 stale-alert / 解析</td><td>❌ 不做(是<b>他系统的 bug</b>)</td><td>我们不碰客户系统;但它暴露的 T1 是强方向</td></tr>
+          <tr><td>拆两套数据模型</td><td>❌ 实现不做 / 🧭 <b>形状是方向</b></td><td>「分领域建模」作原则保留(T4);具体两 model 不做</td></tr>
+          <tr><td>先查 pending 75% 发没发货</td><td>❌ 不做(客户侧行动)</td><td>给客户自己的第一步,不是我方交付</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="cmt"><label for="c_tag">这些「方向 vs 不做」的判定,有哪条你觉得判错了?</label>
+      <textarea id="c_tag" placeholder="比如:invoice↔order 我其实想做 / 某条我不同意…"></textarea><div class="saved" id="s_c_tag"></div></div>
+  </section>
+
+  <!-- 定位输入 -->
+  <section class="card us">
+    <div class="kicker">🎯 最重要 · 直接喂定位</div>
+    <h2>收敛成 5 条定位输入(喂 FLY-908 / FLY-911)</h2>
+    <ol>
+      <li><b>楔子 = 可信可见性 / 跨系统根因诊断,不是「替你建 app」。</b> 即便一个能自己造工具的操盘手,未满足的也是「把散落信号接成『为什么/值多少钱』」。Flywheel 的价值 = 让客户<b>自己</b>把这套可见性立起来。</li>
+      <li><b>第一个真实客户在「技术娴熟」端</b>,不是完全非技术。定位要选边:「有技术直觉、缺时间的经营者」vs「完全非技术小白」—— 客户指向前者。</li>
+      <li><b>「给客户自己用的系统」被行为验证</b> —— 他们已经自建。缺口是 ①造对那一半 ②时间/注意力。Flywheel「先对齐再动手、持续养 codebase 的 AI 团队」正补这个:他们「built the wrong half」正因注意力在别处。</li>
+      <li><b>价值主张说结果,不说功能。</b> 底层货币是钱/风险可见性(干净 P&amp;L、不静默漏单),不是 dashboard 数量。</li>
+      <li><b>「如实反映真实状态」= 可与差异化对齐的产品美德。</b> T1 静默失败 + FLY-909 的「工程级可信交付 / 独立质检」是同一种诚实,可作定位「可信度」轴的具体例证。</li>
+    </ol>
+    <div class="cmt"><label for="c_positioning">这 5 条,哪条你最认?哪条要改 / 补?(这是给定位的核心输入)</label>
+      <textarea id="c_positioning" placeholder="比如:第 1 条就是我要的主线 / 第 2 条选边我选 ___…"></textarea><div class="saved" id="s_c_positioning"></div></div>
+  </section>
+
+  <!-- 开放问题 -->
+  <section class="card">
+    <div class="kicker">等你定 / 喂下一轮采访</div>
+    <h2>开放问题</h2>
+    <ol>
+      <li><s><b>目标客户收窄</b>:定位要不要显式选边?</s> → <b>✅ 已定</b>:beachhead = 甲(时间紧、有技术直觉的经营者),现阶段一个客户先为它定位。与 FLY-909/FLY-910 合并后拍板。</li>
+      <li><b>「给能力」还是「给成品」</b>:客户想要「答案/视图」,但我们定位是「给系统让他自己建」。中间的体验(他怎么用 Flywheel 立起自己的诊断视图)是 FLY-908 下「非工程 onboarding 体验」要接的。</li>
+      <li><b>单点样本</b>:n=1、快照数据。建议下一轮 Anna 问:除了 dropship,还有哪些「多系统当侦探」场景?「造对那一半」当时是怎么判断的?</li>
+    </ol>
+    <div class="cmt"><label for="c_open">这几个开放问题的答复 / 你想让 Anna 下一轮重点问什么:</label>
+      <textarea id="c_open" placeholder="1. … 2. … 3. …"></textarea><div class="saved" id="s_c_open"></div></div>
+  </section>
+
+  <footer>Flywheel · FLY-912 · 草稿,任何东西都不会在你批准前 ship · source of truth = synthesis.md</footer>
+</div>
+
+<div class="modal" id="modal" onclick="if(event.target===this)closeExport()">
+  <div class="modal-in">
+    <h3>你的批注汇总</h3>
+    <p class="small">下面是你写的所有意见。已尝试自动复制到剪贴板;没成功的话,长按/全选下面文字手动复制,发回给团队即可。</p>
+    <textarea id="exportBox" readonly></textarea>
+    <div class="row">
+      <button class="btn" onclick="copyExport()">复制</button>
+      <button class="btn ghost" onclick="closeExport()">关闭</button>
+      <span class="saved" id="copyMsg" style="align-self:center"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+  var KEY="fly912_cmt_v1";
+  var FIELDS={c_tldr:"一句话结论",c_customer:"客户画像 / 目标客户选边",c_themes:"5 个 problem 主题 + 排序",
+    c_tag:"方向 vs 太具体判定",c_positioning:"5 条定位输入(核心)",c_open:"开放问题 / 下一轮采访"};
+  function load(){try{return JSON.parse(localStorage.getItem(KEY)||"{}")}catch(e){return{}}}
+  function save(d){try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}}
+  var data=load();
+  Object.keys(FIELDS).forEach(function(id){
+    var el=document.getElementById(id);if(!el)return;
+    if(data[id]){el.value=data[id]}
+    el.addEventListener("input",function(){
+      data[id]=el.value;save(data);
+      var s=document.getElementById("s_"+id);if(s){s.textContent="已暂存 ✓";clearTimeout(el._t);el._t=setTimeout(function(){s.textContent=""},1200)}
+    });
+  });
+  function compile(){
+    var out="【Annie 对 FLY-912 Hooves & Paws 痛点梳理的批注】\n";var any=false;
+    Object.keys(FIELDS).forEach(function(id){
+      var v=(data[id]||"").trim();if(v){any=true;out+="\n■ "+FIELDS[id]+"\n"+v+"\n"}
+    });
+    return any?out:"(还没写任何批注)";
+  }
+  function openExport(){document.getElementById("exportBox").value=compile();document.getElementById("modal").classList.add("on");
+    try{navigator.clipboard.writeText(compile()).then(function(){msg("已复制到剪贴板 ✓")},function(){})}catch(e){}}
+  function copyExport(){var t=document.getElementById("exportBox");t.select();
+    try{navigator.clipboard.writeText(t.value).then(function(){msg("已复制 ✓")},fallback)}catch(e){fallback()}
+    function fallback(){try{document.execCommand("copy");msg("已复制 ✓")}catch(e){msg("请手动全选复制")}}}
+  function msg(m){document.getElementById("copyMsg").textContent=m;}
+  function closeExport(){document.getElementById("modal").classList.remove("on")}
+</script>

@@ -6,6 +6,7 @@
 import type http from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
+import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
@@ -42,7 +43,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 		stuckThresholdMinutes: 15,
 		stuckCheckIntervalMs: 300000,
 		orphanThresholdMinutes: 60,
-		maxConcurrentRunners: 2,
+		runnerAdmission: RunnerAdmissionController.alwaysAdmit(),
 		...overrides,
 	};
 }

@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GitHub 🆒 ship — 给你拍方向的一页</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --dim:#6e6e73;
+    --line:#e5e5ea; --blue:#007aff; --green:#34c759; --amber:#ff9500;
+    --shadow:0 1px 3px rgba(0,0,0,.06),0 8px 24px rgba(0,0,0,.04);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"SF Pro Text","PingFang SC",sans-serif;
+    line-height:1.62;-webkit-font-smoothing:antialiased;padding:0 0 72px}
+  .wrap{max-width:720px;margin:0 auto;padding:0 18px}
+  header{padding:40px 18px 12px;text-align:center}
+  header .eyebrow{color:var(--dim);font-size:13px;letter-spacing:.04em;text-transform:uppercase;margin:0 0 8px}
+  header h1{font-size:26px;line-height:1.25;margin:0 0 6px;font-weight:700}
+  header p{color:var(--dim);font-size:15px;margin:6px auto 0;max-width:34em}
+  .card{background:var(--card);border-radius:16px;box-shadow:var(--shadow);padding:22px 20px;margin:16px 0}
+  .card h2{font-size:19px;margin:0 0 10px;font-weight:700}
+  .card h3{font-size:16px;margin:2px 0 6px;font-weight:650}
+  .card p{margin:8px 0}
+  .lead{font-size:16px}
+  .pill{display:inline-block;font-size:12px;font-weight:650;padding:3px 10px;border-radius:999px;
+    background:#eef0f4;color:var(--dim);margin-bottom:10px}
+  .ask{background:linear-gradient(180deg,#fff,#fbfbfd);border:1.5px solid var(--blue)}
+  .ask .pill{background:var(--blue);color:#fff}
+  .opts{display:grid;grid-template-columns:1fr;gap:14px}
+  @media(min-width:640px){.opts{grid-template-columns:1fr 1fr}}
+  .opt{border-radius:16px;padding:20px;background:var(--card);box-shadow:var(--shadow);border-top:4px solid var(--line)}
+  .opt.a{border-top-color:var(--green)}
+  .opt.b{border-top-color:var(--dim)}
+  .opt .tag{font-size:13px;font-weight:700;letter-spacing:.02em;margin:0 0 2px}
+  .opt.a .tag{color:#1c7a37}
+  .opt.b .tag{color:var(--dim)}
+  .opt .rec{display:inline-block;font-size:11px;font-weight:700;color:#fff;background:var(--green);
+    padding:2px 8px;border-radius:999px;margin-left:6px;vertical-align:middle}
+  .opt ul{margin:10px 0 0;padding-left:18px}
+  .opt li{margin:6px 0;font-size:14.5px}
+  .why{margin-top:12px;font-size:14px;color:var(--dim)}
+  .warn{border-left:4px solid var(--amber);background:#fffaf2;border-radius:10px;padding:14px 16px;margin:14px 0}
+  .warn strong{color:#c26a00}
+  .agree{border-left:4px solid var(--green);background:#f3fcf5;border-radius:10px;padding:14px 16px;margin:12px 0}
+  .q{margin:22px 0 0;padding-top:18px;border-top:1px solid var(--line)}
+  .q:first-of-type{border-top:0;padding-top:4px}
+  .q .qhead{display:flex;gap:12px;align-items:flex-start}
+  .q .n{flex:0 0 26px;height:26px;border-radius:50%;background:var(--blue);color:#fff;
+    font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center;margin-top:2px}
+  .q .t b{display:block;font-size:15.5px}
+  .q .t span{color:var(--dim);font-size:14px}
+  .q textarea{width:100%;margin-top:10px;min-height:78px;resize:vertical;
+    font:inherit;font-size:15px;line-height:1.55;color:var(--ink);
+    background:#fbfbfd;border:1.5px solid var(--line);border-radius:12px;padding:11px 13px}
+  .q textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+  .actions{position:sticky;bottom:0;background:linear-gradient(180deg,rgba(245,245,247,0),var(--bg) 28%);
+    padding:18px 0 6px;margin-top:8px;text-align:center}
+  button{font:inherit;font-weight:650;font-size:15.5px;color:#fff;background:var(--blue);
+    border:0;border-radius:12px;padding:13px 22px;cursor:pointer;box-shadow:var(--shadow);width:100%;max-width:420px}
+  button:active{transform:translateY(1px)}
+  button.done{background:var(--green)}
+  .hint{color:var(--dim);font-size:13px;margin:10px 0 0}
+  #out{margin:12px 0 0;display:none;font:inherit;font-size:14px;text-align:left;
+    background:#fff;border:1.5px solid var(--line);border-radius:12px;padding:12px;white-space:pre-wrap;
+    overflow-x:auto;-webkit-user-select:text;user-select:text}
+  #out.show{display:block}
+  .flow{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+  .flow .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .chip{font-size:13px;font-weight:600;padding:6px 12px;border-radius:10px;background:#eef0f4;color:var(--ink)}
+  .chip.g{background:#e7f9ec;color:#1c7a37}
+  .chip.d{background:#eef0f4;color:var(--dim)}
+  .arrow{color:var(--dim);font-weight:700}
+  .ledger{background:#f0ecfa;color:#6b3fa0;border:1px dashed #c9b6ee}
+  footer{color:var(--dim);text-align:center;font-size:13px;margin-top:28px}
+  .k{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.9em;background:#eef0f4;padding:1px 6px;border-radius:6px}
+</style>
+</head>
+<body>
+<header>
+  <p class="eyebrow">FLY-1063 · 给你拍方向，不是最终 PRD</p>
+  <h1>在 GitHub 上，你亲自发的 🆒<br>算不算一次审批？</h1>
+  <p>这一页只想让你拍一个方向。别的（怎么装到每个 repo、部署怎么接）都想清了，作推荐给你确认。拍完，我们才拆开发任务。</p>
+</header>
+
+<div class="wrap">
+
+  <div class="card">
+    <span class="pill">先说个意外</span>
+    <h2>其实 flywheel 上已经有一个 🆒 了</h2>
+    <p class="lead">在 PR 里发 🆒，就会自动跑测试、通过后合并。但它今天的真实样子是——</p>
+    <p>真正拍板发生在 <b>Discord</b>（你在 thread 里说 ship）；GitHub 上那条 🆒，是<b>机器人在你 Discord 拍板之后、替你补按的一个执行按钮</b>。<b>你本人根本没碰 GitHub。</b></p>
+    <p>所以你说的「Discord 和 GitHub 不等价」——<b>你完全说对了</b>。今天的 GitHub 🆒 不是「你看着代码拍板的地方」，只是「机器人替你按的开关」。</p>
+    <p>你真正想要的，我理解是：<b>你能亲自到 GitHub 看真实代码改动，自己发个 🆒，它就 ship。</b>所以这件事不是「从零造 🆒」，而是把 GitHub 从「机器人的按钮」升级成「你亲自的审批面」，并让每个 repo 都有。</p>
+  </div>
+
+  <div class="card ask">
+    <span class="pill">要你拍的那一个问题</span>
+    <h2>两扇门，还是一扇门？</h2>
+    <p class="lead">你的话里有两种可能的意思，我都摆出来。两个方案有个<b>共同底座</b>：账本永远只有一本，不会出现「Discord 批了、GitHub 没记」的账目分裂。区别只在下面这点——</p>
+
+    <div class="opts">
+      <div class="opt a">
+        <p class="tag">方案 A<span class="rec">我推荐</span></p>
+        <h3>GitHub 的 🆒 = 你的正式审批</h3>
+        <ul>
+          <li>你亲自到 GitHub，看真 diff / 文件 / 测试状态，<b>自己发 🆒</b></li>
+          <li>系统认得出「这是 Annie 本人拍的」，当作一次<b>正式审批</b>记账，然后自动合并 + 部署</li>
+          <li>GitHub 和 Discord = <b>同一个决定的两扇门</b>，哪扇拍都算数、都记账、都一样安全</li>
+        </ul>
+        <p class="why">为什么推荐：这才真正回应「不等价」——只有把 GitHub 做成你能亲自拍板的一等入口，两个入口才真正等价可选；也最贴你最早说的「想亲自看真 diff 再拍」。</p>
+      </div>
+      <div class="opt b">
+        <p class="tag">方案 B</p>
+        <h3>GitHub 🆒 只是执行，Discord 才拍板</h3>
+        <ul>
+          <li>保持今天的样子：你在 <b>Discord</b> 拍板 → 机器人去 GitHub 发 🆒 → 合并</li>
+          <li>GitHub 的 🆒 不代表你的授权，只是执行</li>
+          <li>「全 repo 通用」= 把「测试+合并+记账」铺到每个 repo，但<b>拍板永远只在 Discord</b></li>
+        </ul>
+        <p class="why">代价：你还是不能「亲自在 GitHub 上拍板」，那个「不等价」的痛点没被解决。B 更像把现状铺开，而不是给你新入口。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <span class="pill">如果选 A，有个前提要先办</span>
+    <h2>今天机器人和你，用的是同一个 GitHub 账号</h2>
+    <div class="warn">
+      <p style="margin-top:0">机器人和你本人，在 GitHub 上都叫 <span class="k">xrliAnnie</span>。系统看到「一条 🆒 来自 xrliAnnie」，<strong>分不清</strong>这是你<b>亲自</b>按的（真审批），还是机器人<b>机械</b>补发的（只是执行）。</p>
+    </div>
+    <p>方案 A 的整个安全性，就靠「能可靠认出这是你本人拍的」。所以前提是：<b>给机器人一个单独的身份去发那些机械 🆒，把 <span class="k">xrliAnnie</span> 还给你本人</b>。这样系统一看是谁发的，就分得清「人拍的」还是「机器按的」。</p>
+    <p class="why">（方案 B 不强依赖这个前提。具体用「新建机器人账号」还是「GitHub App」是落地细节，等你拍完 A 再定。）</p>
+  </div>
+
+  <div class="card">
+    <span class="pill">这两点已经想清，给你确认</span>
+    <h2>怎么让每个 repo 都有 + 部署怎么接</h2>
+    <div class="agree">
+      <h3 style="margin-top:0">① 每个 repo 都有 → 一份中央模板 + 每 repo 挂个瘦接口</h3>
+      <p style="margin-bottom:0">中央放一份「🆒 → 认人 → 测试 → 合并 → 记账」的标准流程；每个 repo 只挂一个几行的小接口指向它。以后要改只改中央一份，全体一起升级。</p>
+    </div>
+    <div class="agree">
+      <h3 style="margin-top:0">② 部署怎么接 → 合并和部署是分开的两条腿</h3>
+      <p style="margin-bottom:0">合并（🆒→测试→合到 main）是通用的；部署每个 repo 不一样（flywheel 本机自更新、GeoForge3D 走 Vercel…）。所以<b>通用只做到「合并 + 记账」</b>，部署由每个 repo 接自己的方式。</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <span class="pill">一图看懂</span>
+    <h2>两个方案的差别</h2>
+    <div class="flow">
+      <div class="row"><span class="chip g">方案 A：你在 Discord 拍 ✅</span><span class="arrow">→</span><span class="chip ledger">账本（唯一真源）</span></div>
+      <div class="row"><span class="chip g">方案 A：你在 GitHub 亲发 🆒（看真 diff）</span><span class="arrow">→</span><span class="chip ledger">账本</span></div>
+      <div class="row" style="opacity:.75"><span class="chip d">方案 B：你在 Discord 拍</span><span class="arrow">→</span><span class="chip ledger">账本</span><span class="arrow">→</span><span class="chip d">机器人 GitHub 🆒（只执行）</span></div>
+      <div class="row" style="margin-top:4px"><span class="chip ledger">账本</span><span class="arrow">→</span><span class="chip">跑测试 → 合并 → 记账</span><span class="arrow">→</span><span class="chip">部署（各 repo 自己接）</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <span class="pill">需要你回的（越少越好）</span>
+    <h2 style="margin-bottom:6px">三个问题 — 直接写在下面框里</h2>
+    <p class="why" style="margin-top:0">写完点最底下的按钮，一键复制你的批注。</p>
+
+    <div class="q">
+      <div class="qhead"><div class="n">1</div><div class="t">
+        <b>方案 A 还是 B？</b><span>我推荐 A（GitHub 🆒 = 你的正式审批）</span>
+      </div></div>
+      <textarea id="q1" data-label="Q1 方案 A 还是 B" placeholder="例：A。或者：都不是，我其实想让 GitHub 直接取代 Discord…"></textarea>
+    </div>
+
+    <div class="q">
+      <div class="qhead"><div class="n">2</div><div class="t">
+        <b>如果选 A：接受「给机器人一个单独身份、把 xrliAnnie 还给你本人」这个前提吗？</b>
+      </div></div>
+      <textarea id="q2" data-label="Q2 身份分离前提" placeholder="例：接受。或者：不想新建账号，用 GitHub App…"></textarea>
+    </div>
+
+    <div class="q">
+      <div class="qhead"><div class="n">3</div><div class="t">
+        <b>第一批要装 🆒 的 repo，除了 flywheel 还有哪些？</b><span>先在 flywheel 跑通，再铺开</span>
+      </div></div>
+      <textarea id="q3" data-label="Q3 第一批 repo" placeholder="例：GeoForge3D、flywheel-skills…"></textarea>
+    </div>
+
+    <div class="actions">
+      <button id="copy" type="button">📋 一键复制我的批注</button>
+      <p class="hint">复制后贴回 Discord 给 Honey Lemon 就行。</p>
+      <pre id="out" aria-label="批注文本"></pre>
+    </div>
+  </div>
+
+  <footer>Honey Lemon · Flywheel Product · 这是提案，不是最终 PRD</footer>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ids = ["q1", "q2", "q3"];
+  var btn = document.getElementById("copy");
+  var out = document.getElementById("out");
+
+  function build() {
+    var lines = ["【FLY-1063 · GitHub 🆒 ship — Annie 的批注】", ""];
+    var any = false;
+    ids.forEach(function (id) {
+      var el = document.getElementById(id);
+      var label = el.getAttribute("data-label");
+      var val = (el.value || "").trim();
+      if (val) any = true;
+      lines.push(label + "：" + (val || "（未填）"));
+      lines.push("");
+    });
+    if (!any) lines.push("（三个问题都还没填）");
+    return lines.join("\n").trim();
+  }
+
+  function flash(text) {
+    var original = "📋 一键复制我的批注";
+    btn.textContent = text;
+    btn.classList.add("done");
+    setTimeout(function () {
+      btn.textContent = original;
+      btn.classList.remove("done");
+    }, 2000);
+  }
+
+  function fallback(text) {
+    // Always reveal the text so it can be selected + copied by hand.
+    out.textContent = text;
+    out.classList.add("show");
+    // Try a scratch textarea + execCommand before giving up on auto-copy.
+    var scratch = document.createElement("textarea");
+    scratch.value = text;
+    scratch.setAttribute("readonly", "");
+    scratch.style.position = "fixed";
+    scratch.style.opacity = "0";
+    document.body.appendChild(scratch);
+    scratch.select();
+    var copied = false;
+    try { copied = document.execCommand("copy"); } catch (e) { copied = false; }
+    document.body.removeChild(scratch);
+    flash(copied ? "✓ 已复制" : "↓ 请手动复制下方文本");
+  }
+
+  btn.addEventListener("click", function () {
+    var text = build();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { flash("✓ 已复制"); },
+        function () { fallback(text); }
+      );
+    } else {
+      fallback(text);
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-910 PRD · 请过目(逐小节)</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; padding:0 16px 160px; background:#f5f5f7; color:#1d1d1f;
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif; line-height:1.6; -webkit-text-size-adjust:100%; }
+  .wrap { max-width:860px; margin:0 auto; }
+  header.top { padding:36px 0 6px; }
+  h1 { font-size:23px; margin:0 0 6px; letter-spacing:-0.02em; }
+  .sub { color:#86868b; font-size:15px; margin:0; }
+  .howto { background:#eaf3ff; border:1px solid #cfe3ff; border-radius:12px; padding:14px 18px; margin:22px 0 16px; font-size:15px; color:#1d3a5f; }
+  .locked { background:#f2fbf5; border:1px solid #cdead6; border-radius:12px; padding:12px 16px; margin:0 0 16px; font-size:14px; color:#1a7f37; }
+  .sec { background:#fff; border-radius:14px; padding:16px 18px 14px; margin:0 0 16px; box-shadow:0 1px 3px rgba(0,0,0,0.06); border-left:4px solid #af52de; }
+  .sec h2 { font-size:16.5px; margin:0 0 4px; }
+  .sec .d { font-size:14.5px; color:#333; margin:4px 0 0; }
+  .sec .d b { color:#1d1d1f; }
+  ul.pl { margin:6px 0; padding-left:20px; font-size:14px; color:#333; }
+  ul.pl li { margin:2px 0; }
+  .yn { display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px; margin:11px 0 6px; }
+  label.mini { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:13.5px; border:1px solid #e3e3e6; border-radius:999px; padding:4px 12px; }
+  label.mini input { width:16px; height:16px; margin:0; accent-color:#af52de; cursor:pointer; }
+  label.mini:has(input:checked) { border-color:#af52de; background:#f7edfc; font-weight:600; }
+  textarea.cmt { width:100%; min-height:40px; resize:vertical; border:1.5px solid #ffcf5c; border-radius:10px; background:#fffdf5;
+    padding:8px 11px; font-family:inherit; font-size:14.5px; color:#1d1d1f; margin-top:2px; }
+  textarea.cmt:focus { outline:none; border-color:#d9a400; background:#fffef9; box-shadow:0 0 0 3px rgba(255,207,92,0.28); }
+  textarea.cmt::placeholder { color:#c2ad63; }
+  .overall { background:#fff8e6; border:1px solid #ffcf5c; border-radius:14px; padding:16px 18px; margin:8px 0 0; }
+  .overall h2 { font-size:16.5px; margin:0 0 6px; color:#6b4e00; }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:rgba(255,255,255,0.97); backdrop-filter:blur(8px); border-top:1px solid #ddd; padding:10px 16px; box-shadow:0 -2px 10px rgba(0,0,0,0.06); }
+  .barin { max-width:860px; margin:0 auto; display:flex; flex-direction:column; gap:7px; }
+  #genbtn { background:#007aff; color:#fff; border:none; border-radius:10px; padding:12px; font-size:16px; font-weight:650; cursor:pointer; }
+  #out { width:100%; border:1px solid #ccc; border-radius:8px; padding:9px; font-size:13px; font-family:'SF Mono',ui-monospace,monospace; resize:vertical; display:none; min-height:130px; background:#fff; color:#1d1d1f; }
+  #hint { font-size:12px; color:#86868b; text-align:center; }
+  .foot { margin-top:22px; font-size:13px; color:#86868b; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <h1>FLY-910 PRD · 请过目 📋</h1>
+    <p class="sub">非工程 onboarding(Onboarding Buddy)· 2026-07-08 · 设计定稿后的 PRD(交 eng 建)</p>
+  </header>
+
+  <div class="howto">
+    <b>怎么用:</b> 你上次已经把整条流程 11 小节逐一过了 = 设计定稿。这份是把它写成 <b>eng 照着能建的 PRD</b>。
+    下面只让你再看 <b>PRD 层面的几件事</b>(目标 / 范围 / 成功怎么算 / 怎么拆给工程 / 还没定的),每节自己一个留言框,逐节 👍/✏️。看完拉到底一键复制发回。
+  </div>
+
+  <div class="locked">✅ 整条流程(step0 地基 → 欢迎 → Discord/Linear/GitHub → 问做什么 → 长 Team → 早聊 → 接任务 → 安置 → 第一个产出)你已逐节过、已定稿,PRD 里原样写细了,这里不重复让你看。</div>
+
+  <div class="sec">
+    <h2>① 问题 + 给谁用</h2>
+    <div class="d">问题:非技术小企业现在 onboard 要手动搞一天、强耦合工程。给谁:<b>第一版 = 时间紧、懂点电脑但非程序员的经营者</b>(电商/social),跑在他自己机器上(自托管)。</div>
+    <div class="yn"><label class="mini"><input type="radio" name="s1" value="就这样">👍</label><label class="mini"><input type="radio" name="s1" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="t1" placeholder="这节想说什么…"></textarea>
+  </div>
+
+  <div class="sec">
+    <h2>② 目标 / 不做的</h2>
+    <div class="d"><b>做</b>:一条命令 → Onboarding Buddy 自助带 → 有个能跑的 system + 第一个真产出;非技术看得懂、不用懂工程。<br>
+    <b>这版不做</b>:managed 云托管(=V2)· 收费(=placeholder,待竞品分析)· 工程实现本身(交 Tadashi)· PM 验收(未来 FLY-830)。</div>
+    <div class="yn"><label class="mini"><input type="radio" name="s2" value="就这样">👍</label><label class="mini"><input type="radio" name="s2" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="t2" placeholder="这节想说什么…"></textarea>
+  </div>
+
+  <div class="sec">
+    <h2>③ MVP 范围 + 已知取舍</h2>
+    <div class="d">MVP = 自托管(半技术经营者、上线快);managed = V2(接更广非技术那群)。<b>已知取舍</b>:自托管要一台常开机器、会挡掉纯非技术小白 —— 现在诚实接受、换 ship 速度,V2 managed 来补。<b>现在免费全试。</b></div>
+    <div class="yn"><label class="mini"><input type="radio" name="s3" value="就这样">👍</label><label class="mini"><input type="radio" name="s3" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="t3" placeholder="这节想说什么…"></textarea>
+  </div>
+
+  <div class="sec">
+    <h2>④ 成功怎么算(北极星)</h2>
+    <div class="d">北极星 = <b>拿到第一个真产出的时间</b>(首个结果 ≤60s;整个 onboarding 理想一个 session 内)。<b>成功 = 客户拿到第一个成品,不是「环境装好了」。</b>次级:完成率、卡点转人工率、首周留存。</div>
+    <div class="yn"><label class="mini"><input type="radio" name="s4" value="就这样">👍</label><label class="mini"><input type="radio" name="s4" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="t4" placeholder="这节想说什么…"></textarea>
+  </div>
+
+  <div class="sec">
+    <h2>⑤ 怎么拆给工程(8 个 build 块)</h2>
+    <div class="d">收敛后按这 8 块拆成 issue 挂给 Tadashi 的工程队列(你不用管细节,眼熟一下就行):</div>
+    <ul class="pl">
+      <li>一条命令 + 装 agent CLI 地基 + 起 Buddy</li>
+      <li>Onboarding Buddy 本体(话术 + 记忆续传 + 决策)</li>
+      <li>基础工具接入(Discord / Linear / GitHub)</li>
+      <li>业务系统连接器 + 按需接入</li>
+      <li>自动安置(建工作区 / 推 GitHub / 常驻上线)</li>
+      <li>早聊一句 + 第一个产出编排</li>
+      <li>卡住转人工支持通道</li>
+      <li>Discord 4 步截图/短视频素材</li>
+    </ul>
+    <div class="yn"><label class="mini"><input type="radio" name="s5" value="就这样">👍</label><label class="mini"><input type="radio" name="s5" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="t5" placeholder="这节想说什么…"></textarea>
+  </div>
+
+  <div class="sec">
+    <h2>⑥ 还没定的(我没替你填)</h2>
+    <div class="d">这几个我留着等你/后续,没自己拍:</div>
+    <ul class="pl">
+      <li>agent CLI 默认装哪个(vendor-agnostic,要不要给默认/让用户选)</li>
+      <li>Onboarding Buddy 正式名(暂名)</li>
+      <li>那条命令具体长啥样(curl 一行 vs npx)</li>
+      <li>收费(等 WorkBuddy / homerail 竞品分析)</li>
+      <li>你说的「Draft」竞品(等你给链接/截图)</li>
+    </ul>
+    <div class="yn"><label class="mini"><input type="radio" name="s6" value="就这样">👍 先这样留着</label><label class="mini"><input type="radio" name="s6" value="要改">✏️ 我现在就定几个</label></div>
+    <textarea class="cmt" id="t6" placeholder="想现在拍哪个 / 补哪个,写这儿…"></textarea>
+  </div>
+
+  <div class="overall">
+    <h2>整体 / 其它想说的</h2>
+    <textarea class="cmt" id="tall" placeholder="对整份 PRD / 别的想法,写这儿…"></textarea>
+  </div>
+
+  <div class="foot">草稿 · 不上线 · 不替你定。PRD 全文:engineering/doc/FLY-910-onboarding/prd.md。<br>
+  你过目收敛后,再拆 build issues 挂 Tadashi 工程队列;交工程前我会先跑一轮 Codex 设计 review 把关工程可建性。</div>
+
+</div>
+
+<div class="bar"><div class="barin">
+  <button id="genbtn">✅ 生成我的反馈(一键复制)</button>
+  <textarea id="out" readonly></textarea>
+  <div id="hint">看完点这个 → 自动复制 → 粘贴发回给我</div>
+</div></div>
+
+<script nonce="__CSP_NONCE__">
+document.getElementById("genbtn").addEventListener("click", function () {
+  var secs = [
+    { s: "s1", t: "t1", label: "① 问题+给谁用" },
+    { s: "s2", t: "t2", label: "② 目标/不做的" },
+    { s: "s3", t: "t3", label: "③ MVP范围+取舍" },
+    { s: "s4", t: "t4", label: "④ 北极星指标" },
+    { s: "s5", t: "t5", label: "⑤ 怎么拆给工程" },
+    { s: "s6", t: "t6", label: "⑥ 还没定的" }
+  ];
+  var lines = ["FLY-910 PRD — 我的反馈(逐小节):"];
+  secs.forEach(function (it) {
+    var r = document.querySelector('input[name="' + it.s + '"]:checked');
+    var c = document.getElementById(it.t);
+    var picked = r ? r.value : "(没点)";
+    var note = (c && c.value.trim()) ? " — " + c.value.trim() : "";
+    if (r || note) lines.push(it.label + ": " + picked + note);
+  });
+  var all = document.getElementById("tall");
+  if (all && all.value.trim()) lines.push("整体: " + all.value.trim());
+  if (lines.length === 1) lines.push("(还没点/写任何一节)");
+  var text = lines.join("\n");
+  var out = document.getElementById("out"), hint = document.getElementById("hint");
+  out.style.display = "block"; out.value = text; out.focus(); out.select();
+  try {
+    navigator.clipboard.writeText(text);
+    hint.textContent = "✅ 已复制,直接粘贴发回给我";
+  } catch (e) {
+    hint.textContent = "选中上面这段复制,发回给我";
+  }
+});
+</script>
+</body>
+</html>

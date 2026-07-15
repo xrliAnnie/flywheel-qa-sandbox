@@ -1,0 +1,33 @@
+{
+	"name": "flywheel-voice-core",
+	"version": "0.1.0",
+	"description": "FLY-543 pluggable voice skill core — dual-face voice abstraction (announce = speech-out via Edge TTS; converse = speech-in+out via Gemini Live with built-in ASR) behind one VoiceBackend contract with capability flags. The Lead's reasoning + memory stays in-repo (BrainAdapter, read-only zero-tool claude -p for the POC). POC CLI: flywheel-voice-poc say / talk.",
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"bin": {
+		"flywheel-voice-poc": "dist/cli.js"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc",
+		"dev": "tsc --watch",
+		"test": "vitest run",
+		"test:watch": "vitest --watch",
+		"test:run": "vitest run",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@google/genai": "^1.16.0"
+	},
+	"devDependencies": {
+		"@types/node": "^20.0.0",
+		"typescript": "^5.3.3",
+		"vitest": "^3.1.4"
+	},
+	"publishConfig": {
+		"access": "public"
+	}
+}

@@ -1,0 +1,36 @@
+{
+	"E3_suppression": {
+		"verdict": "CONFIRMED",
+		"detail": "12eb161e ESCALATED + gap-scan kept firing (gap2_ask_unanswered:12eb161e repeatedly) → founder_page_ledger stayed at exactly 1 (no re-page). Monotonic getFounderPaged guard + ESCALATED state suppress re-alert."
+	},
+	"E4_nton": {
+		"verdict": "CONFIRMED (routing + isolation + no-bombardment, real Discord)",
+		"concurrent": "2 stuck runners x 2 owner Leads, both episodes live at once",
+		"product_test": {
+			"exec": "12eb161e-2843-40c6-8451-25f420d8351d",
+			"owner_lead_id": "flywheel-test-2",
+			"page_msg": "1525862173694496850",
+			"posted_by": "product-lead-test (test-2 bot)",
+			"thread": "1525861024711053336(FLY-145, test-2 channel 1493080993173737583)",
+			"pages": 1
+		},
+		"ops_test": {
+			"exec": "2a52ed27-8d04-4d45-ac30-31a8212e91cb",
+			"owner_lead_id": "flywheel-test-3",
+			"page_msg": "1525865447147307200",
+			"posted_by": "ops-lead-test (test-3 bot)",
+			"thread": "1525864110355386431(FLY-139, test-3 channel 1493080995862413439)",
+			"pages": 1
+		},
+		"no_cross": {
+			"A_thread_refs_to_B": 0,
+			"B_thread_refs_to_A": 0,
+			"A_page_target": "12eb161e",
+			"B_page_target": "2a52ed27"
+		}
+	},
+	"E5_zero_prod": {
+		"verdict": "CONFIRMED (structural + per-inject)",
+		"detail": "每次 gap 注入后 prod commdb (~/.flywheel/comm/flywheel/comm.db) questions from test exec = 0; slot uses isolated TEAMLEAD_DB_PATH + --alerts isolated queue/claims/deadletter; gap injected via --db pointing ONLY at slot commdb with env -u FLYWHEEL_COMM_DB."
+	}
+}

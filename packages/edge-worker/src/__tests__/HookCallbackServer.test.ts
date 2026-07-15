@@ -1,5 +1,5 @@
 import http from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HookEvent } from "../HookCallbackServer.js";
 import { HookCallbackServer } from "../HookCallbackServer.js";
 
@@ -265,5 +265,69 @@ describe("HookCallbackServer", () => {
 		expect(event).not.toBeNull();
 		expect(event!.token).toBe(UUID);
 		expect(event!.eventType).toBe("SessionEnd");
+	});
+
+	// ─── FLY-921 Fix A: sessionId filtering ──────────
+
+	describe("expectedSessionId filtering (FLY-921)", () => {
+		const NESTED_SESSION = "deadbeef-dead-beef-dead-beefdeadbeef";
+		const NESTED_PATH = `/hook/complete?token=${UUID}&sessionId=${NESTED_SESSION}&issueId=GEO-42&eventType=SessionEnd`;
+
+		it("waitForCompletion with expectedSessionId ignores same-token different-sessionId callback, then settles on match", async () => {
+			const server = await createServer();
+			let settled = false;
+			const promise = server
+				.waitForCompletion(UUID, 2000, SESSION)
+				.then((e) => {
+					settled = true;
+					return e;
+				});
+
+			// Nested session posts with the inherited token but its own sessionId
+			await post(server.getPort(), NESTED_PATH);
+			await new Promise((r) => setTimeout(r, 50));
+			expect(settled).toBe(false);
+
+			// The real runner session posts with the matching sessionId
+			await post(server.getPort(), VALID_PATH);
+			const event = await promise;
+			expect(event).not.toBeNull();
+			expect(event!.sessionId).toBe(SESSION);
+		});
+
+		it("waitForCompletion without expectedSessionId settles on any sessionId (byte-compat)", async () => {
+			const server = await createServer();
+			const promise = server.waitForCompletion(UUID, 2000);
+
+			await post(server.getPort(), NESTED_PATH);
+
+			const event = await promise;
+			expect(event).not.toBeNull();
+			expect(event!.sessionId).toBe(NESTED_SESSION);
+		});
+
+		it("sessionId mismatch logs a warn containing both ids", async () => {
+			const server = await createServer();
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+			try {
+				const promise = server.waitForCompletion(UUID, 300, SESSION);
+				await post(server.getPort(), NESTED_PATH);
+				await promise; // times out → null
+
+				const calls = warnSpy.mock.calls.map((c) => c.join(" "));
+				const mismatchLog = calls.find((c) => c.includes("sessionId mismatch"));
+				expect(mismatchLog).toBeDefined();
+				expect(mismatchLog).toContain(SESSION);
+				expect(mismatchLog).toContain(NESTED_SESSION);
+			} finally {
+				warnSpy.mockRestore();
+			}
+		});
+
+		it("waitForEvent with expectedSessionId still returns null on timeout", async () => {
+			const server = await createServer();
+			const event = await server.waitForEvent(UUID, "SessionEnd", 50, SESSION);
+			expect(event).toBeNull();
+		});
 	});
 });

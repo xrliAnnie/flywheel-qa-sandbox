@@ -2,15 +2,14 @@
 
 **Source**: Product Spec SS2.2 + SS2.3
 **Scope**: FLY-47 + FLY-62
-**Related components**: gate-poller, event-route, ForumPostCreator, ForumTagUpdater, claude-discord-runtime
+**Related components**: gate-poller, event-route, ForumPostCreator, ForumTagUpdater, commdb-lead-runtime, flywheel-inbox-mcp
 
 ## Prerequisites
 
 - [ ] Bridge running (`node dist/index.js --bridge --port 9876`)
-- [ ] `source ~/.flywheel/.env` (CLAUDEBOT_TOKEN, PETER_BOT_TOKEN, TEAMLEAD_INGEST_TOKEN, TEAMLEAD_API_TOKEN)
+- [ ] `source ~/.flywheel/.env` (PETER_BOT_TOKEN, TEAMLEAD_INGEST_TOKEN, TEAMLEAD_API_TOKEN)
 - [ ] CommDB path accessible: `~/.flywheel/comm/geoforge3d/comm.db`
-- [ ] **Peter Lead running** (L1, L3, L5, L10 — all Chat verifications)
-- [ ] **access.json** contains `allowBots` with ClaudeBot user ID (L5)
+- [ ] **Peter Lead running** (L1, L3, L10 — all Chat verifications)
 - [ ] Chrome open with Discord (Chrome MCP verification)
 
 ## Test Steps
@@ -88,8 +87,8 @@ Wait 3-6s for GatePoller to detect and relay.
 
 > PASS = Peter spoke. "No ClaudeBot message" alone is NOT a pass.
 
-**Verify (Discord - #product-lead-control)**:
-- [ ] ClaudeBot posted gate_question JSON envelope (machine-to-machine event)
+**Verify (CommDB inbox)**:
+- [ ] Bridge wrote gate_question to CommDB inbox (machine-to-machine, no Discord post)
 - [ ] Envelope contains: checkpoint=brainstorm, question content, CommDB path
 
 **Verify (DB - CommDB)**:
@@ -118,33 +117,15 @@ node packages/flywheel-comm/dist/index.js respond \
 - [ ] `pending --json` no longer includes this question
 - [ ] `resolved_at IS NOT NULL`, `read_at IS NOT NULL`
 
-### L5: Lead Receives Control Channel Event
-
-**Status**: Needs Lead + allowBots
-
-| # | Step | Notes |
-|---|------|-------|
-| 1 | Confirm Peter Lead tmux running | `tmux has-session -t peter-lead` |
-| 2 | Confirm access.json has allowBots | `jq '.allowBots' ~/.claude/channels/discord/access.json` |
-| 3 | Trigger new gate question (or reuse L3) | |
-| 4 | Check Peter Lead tmux output | `tmux capture-pane -t peter-lead -p \| grep gate_question` |
-
-**Verify (Discord - #product-lead-control)**:
-- [ ] ClaudeBot posted gate_question JSON envelope
-- [ ] Sender is ClaudeBot (control channel is machine-to-machine, this is correct)
-
-**Verify (Lead tmux)**:
-- [ ] Peter Lead processed the event (visible in tmux output)
-
-### L6-L8: Blocked Steps
+### L5-L7: Blocked Steps
 
 | Step | Annie Expects | Blocked By |
 |------|--------------|------------|
-| L6: PR notification | Chat: "PR ready for review" | Lead autonomous notification |
-| L7: QA notification | Chat: "QA passed" | FLY-62 Phase 2 (QA->Lead relay) |
-| L8: Approve -> Ship | Chat: "Shipped!" + Forum update | FLY-58 (Approve/Ship state machine) |
+| L5: PR notification | Chat: "PR ready for review" | Lead autonomous notification |
+| L6: QA notification | Chat: "QA passed" | FLY-62 Phase 2 (QA->Lead relay) |
+| L7: Approve -> Ship | Chat: "Shipped!" + Forum update | FLY-58 (Approve/Ship state machine) |
 
-### L9: Session Completed -> Forum Tag Update
+### L8: Session Completed -> Forum Tag Update
 
 **Status**: Can test without Lead
 
@@ -175,7 +156,7 @@ curl http://127.0.0.1:9876/api/sessions | jq '.[] | select(.execution_id=="e2e-r
 # Expect: "completed"
 ```
 
-### L10: Dedup - No Duplicate Messages
+### L9: Dedup - No Duplicate Messages
 
 **Status**: Needs Lead
 
@@ -190,5 +171,5 @@ curl http://127.0.0.1:9876/api/sessions | jq '.[] | select(.execution_id=="e2e-r
 - [ ] Peter relayed the gate question **exactly once**
 - [ ] No duplicate messages after 5+ poll cycles
 
-**Verify (Discord - #product-lead-control)**:
-- [ ] Control channel event appears only once (markLeadEventDelivered works)
+**Verify (CommDB inbox)**:
+- [ ] Bridge wrote inbox event only once (markLeadEventDelivered works; no duplicate inbox writes)

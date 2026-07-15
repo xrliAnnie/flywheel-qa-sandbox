@@ -264,6 +264,29 @@ preventing Runner from merging before approve.
 
 **Spec reference**: §2.2 Hard Gates, §4.1
 
+**Status update (FLY-175)**: the related governance gap — Lead self-approving a merge into `main`
+or auto-closing a Runner without founder consent — has a two-track fix in progress:
+
+- **Track 1 (rule, prompt-side)**: `packages/teamlead/lead-rules-base/founder-only-authority.md`
+  loaded by every Lead role. Reserved actions (cover **every callable path** that can merge
+  `main` or end a Runner's life):
+  - **R1 (merge / ship)**: `POST /api/actions/approve` and the no-auth dashboard alias
+    `POST /actions/approve` (same handler via `createActionRouter()`).
+  - **R2 (Runner lifecycle)** — direct close: `POST /api/sessions/:exec/close-tmux`,
+    `POST /api/sessions/:exec/close-runner`.
+  - **R2 — action endpoints that cascade-close via `AUTO_CLOSE_STATES`**:
+    `POST /api/actions/{terminate,reject,defer,shelve}` and their `/actions/{...}` aliases.
+  - **R2 — action endpoint that force-closes on retry**:
+    `POST /api/actions/retry` and `/actions/retry` (`handleRetry()` calls
+    `closeRunner({ forcePreserved: true })` before re-dispatching).
+  - **R2 catch-all**: any future Bridge endpoint, MCP wrapper, CLI tool, or helper script that
+    ends, replaces, or force-closes a Runner's tmux session.
+
+  Lead self-judgment ("low risk", "pure docs", "CI green") is explicitly not consent.
+- **Track 2 (Bridge hard gate)**: `FounderConsentEvaluator` — small-LLM semantic check of the
+  issue's chat thread before any of the above passes. Plan doc:
+  `doc/engineer/plan/draft/v1.29.x-FLY-175-founder-consent-hard-gate.md` (TBD).
+
 ### 4. Runner Question Auto-Relay (FLY-62)
 
 **Impact**: flywheel-comm infrastructure exists (ask/pending/respond), but Lead doesn't

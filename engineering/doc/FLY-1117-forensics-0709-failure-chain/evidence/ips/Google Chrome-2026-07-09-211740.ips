@@ -1,0 +1,241 @@
+{"app_name":"Google Chrome","timestamp":"2026-07-09 21:17:40.00 -0700","app_version":"150.0.7871.114","slice_uuid":"4c4c446d-5555-3144-a181-924a239f32d9","build_version":"7871.114","platform":1,"bundleID":"com.google.Chrome","share_with_app_devs":0,"is_first_party":0,"bug_type":"309","os_version":"macOS 26.3.2 (25D2150)","roots_installed":0,"name":"Google Chrome","incident_id":"3A16FD8D-5564-4F73-9AD0-20D6D5605A33"}
+{
+  "uptime" : 950000,
+  "procRole" : "Unspecified",
+  "version" : 2,
+  "userID" : 501,
+  "deployVersion" : 210,
+  "modelCode" : "Mac17,8",
+  "coalitionID" : 1180,
+  "osVersion" : {
+    "train" : "macOS 26.3.2",
+    "build" : "25D2150",
+    "releaseType" : "User"
+  },
+  "captureTime" : "2026-07-09 21:16:47.3885 -0700",
+  "codeSigningMonitor" : 2,
+  "incident" : "3A16FD8D-5564-4F73-9AD0-20D6D5605A33",
+  "pid" : 59757,
+  "translated" : true,
+  "cpuType" : "X86-64",
+  "procLaunch" : "2026-07-09 21:16:47.0487 -0700",
+  "procStartAbsTime" : 23010574988394,
+  "procExitAbsTime" : 23010583128155,
+  "procName" : "Google Chrome",
+  "procPath" : "\/Applications\/Google Chrome.app\/Contents\/MacOS\/Google Chrome",
+  "bundleInfo" : {"CFBundleShortVersionString":"150.0.7871.114","CFBundleVersion":"7871.114","CFBundleIdentifier":"com.google.Chrome"},
+  "storeInfo" : {"deviceIdentifierForVendor":"5E19E6FC-168E-5A73-A4D0-8A21F0C4BBCA","thirdParty":true},
+  "parentProc" : "Exited process",
+  "parentPid" : 59355,
+  "coalitionName" : "com.flywheel.lead.flywheel-flywheel-cos-lead",
+  "crashReporterKey" : "7CF376A6-1A3F-F76A-0C4C-AEDC4D11A640",
+  "appleIntelligenceStatus" : {"state":"available"},
+  "developerMode" : 1,
+  "responsiblePid" : 69586,
+  "codeSigningID" : "com.google.Chrome",
+  "codeSigningTeamID" : "EQHXZ8M8AV",
+  "codeSigningFlags" : 570522369,
+  "codeSigningValidationCategory" : 6,
+  "codeSigningTrustLevel" : 4294967295,
+  "codeSigningAuxiliaryInfo" : 0,
+  "bootSessionUUID" : "F9D974D1-87A6-4E60-84CF-4B141AA2B3A2",
+  "wakeTime" : 366287,
+  "sleepWakeUUID" : "8A9883E5-DEFB-4EC3-84E4-DF4BF38CB247",
+  "sip" : "enabled",
+  "exception" : {"codes":"0x0000000000000000, 0x0000000000000000","rawCodes":[0,0],"type":"EXC_CRASH","signal":"SIGABRT"},
+  "termination" : {"flags":0,"code":6,"namespace":"SIGNAL","indicator":"Abort trap: 6","byProc":"Google Chrome","byPid":59757},
+  "asi" : {"libsystem_c.dylib":["abort() called"]},
+  "extMods" : {"caller":{"thread_create":0,"thread_set_state":0,"task_for_pid":0},"system":{"thread_create":0,"thread_set_state":0,"task_for_pid":0},"targeted":{"thread_create":0,"thread_set_state":0,"task_for_pid":0},"warnings":0},
+  "faultingThread" : 0,
+  "threads" : [{"triggered":true,"id":280512566,"threadState":{"flavor":"x86_THREAD_STATE","rbp":{"value":0},"r12":{"value":0},"rosetta":{"tmp2":{"value":140703467558948},"tmp1":{"value":140705814293332},"tmp0":{"value":18446744073709551615}},"rbx":{"value":140704554863024,"symbolLocation":0,"symbol":"_os_xbs_chrooted"},"r8":{"value":13036819912},"r15":{"value":22},"r10":{"value":140704554863024,"symbolLocation":0,"symbol":"_os_xbs_chrooted"},"rdx":{"value":0},"rdi":{"value":0},"r9":{"value":0},"r13":{"value":0},"rflags":{"value":647},"rax":{"value":0},"rsp":{"value":140704552508352,"symbolLocation":448,"symbol":"__sFX"},"r11":{"value":0},"rcx":{"value":0},"r14":{"value":259},"rsi":{"value":8632974912,"symbolLocation":0,"symbol":"_main_thread"}},"queue":"com.apple.main-thread","frames":[{"imageOffset":140705814293376,"imageIndex":5},{"imageOffset":30766,"symbol":"__pthread_kill","symbolLocation":10,"imageIndex":6},{"imageOffset":23386,"symbol":"pthread_kill","symbolLocation":259,"imageIndex":7},{"imageOffset":529318,"symbol":"abort","symbolLocation":126,"imageIndex":8},{"imageOffset":186016,"symbol":"___RegisterApplication_block_invoke","symbolLocation":14413,"imageIndex":9},{"imageOffset":97262,"symbol":"_dispatch_client_callout","symbolLocation":6,"imageIndex":10},{"imageOffset":14573,"symbol":"_dispatch_once_callout","symbolLocation":20,"imageIndex":10},{"imageOffset":5761,"symbol":"_RegisterApplication","symbolLocation":107,"imageIndex":9},{"imageOffset":26079,"symbol":"TransformProcessType","symbolLocation":138,"imageIndex":9},{"imageOffset":133115568,"symbol":"ChromeMain","symbolLocation":133101152,"imageIndex":4},{"imageOffset":133114755,"symbol":"ChromeMain","symbolLocation":133100339,"imageIndex":4},{"imageOffset":15635,"symbol":"ChromeMain","symbolLocation":1219,"imageIndex":4},{"imageOffset":2061,"symbol":"main","symbolLocation":205,"imageIndex":3},{"imageOffset":26497,"symbol":"start","symbolLocation":3457,"imageIndex":0}]},{"id":280512567,"name":"com.apple.rosetta.exceptionserver","threadState":{"flavor":"x86_THREAD_STATE","rbp":{"value":9908489551872},"r12":{"value":0},"rosetta":{"tmp2":{"value":0},"tmp1":{"value":0},"tmp0":{"value":0}},"rbx":{"value":0},"r8":{"value":2307},"r15":{"value":0},"r10":{"value":0},"rdx":{"value":0},"rdi":{"value":0},"r9":{"value":1},"r13":{"value":0},"rflags":{"value":515},"rax":{"value":268451845},"rsp":{"value":0},"r11":{"value":0},"rcx":{"value":17314086914},"r14":{"value":0},"rsi":{"value":2616}},"frames":[]},{"id":280512676,"frames":[],"threadState":{"flavor":"x86_THREAD_STATE","rbp":{"value":18446744073709551615},"r12":{"value":0},"rosetta":{"tmp2":{"value":0},"tmp1":{"value":0},"tmp0":{"value":0}},"rbx":{"value":0},"r8":{"value":0},"r15":{"value":0},"r10":{"value":0},"rdx":{"value":13036851200},"rdi":{"value":0},"r9":{"value":0},"r13":{"value":0},"rflags":{"value":531},"rax":{"value":13037387776},"rsp":{"value":409604},"r11":{"value":0},"rcx":{"value":4867},"r14":{"value":0},"rsi":{"value":0}}},{"id":280512685,"threadState":{"flavor":"x86_THREAD_STATE","rbp":{"value":37396280246273},"r12":{"value":37396280249859},"rosetta":{"tmp2":{"value":140703467589452},"tmp1":{"value":140705814293616},"tmp0":{"value":18446744073709551615}},"rbx":{"value":37396280249859},"r8":{"value":0},"r15":{"value":248},"r10":{"value":37396280249859},"rdx":{"value":1067300623635},"rdi":{"value":0},"r9":{"value":37396280246273},"r13":{"value":17231331847},"rflags":{"value":643},"rax":{"value":0},"rsp":{"value":4611686907485620227},"r11":{"value":248},"rcx":{"value":17231331847},"r14":{"value":37396280246273},"rsi":{"value":248}},"queue":"com.apple.root.utility-qos.overcommit","frames":[{"imageOffset":140705814293376,"imageIndex":5},{"imageOffset":2894,"symbol":"mach_msg2_trap","symbolLocation":10,"imageIndex":6},{"imageOffset":61260,"symbol":"mach_msg2_internal","symbolLocation":83,"imageIndex":6},{"imageOffset":31651,"symbol":"mach_msg_overwrite","symbolLocation":574,"imageIndex":6},{"imageOffset":3655,"symbol":"mach_msg","symbolLocation":19,"imageIndex":6},{"imageOffset":180634,"symbol":"_xpc_pipe_mach_msg","symbolLocation":49,"imageIndex":11},{"imageOffset":178684,"symbol":"_xpc_pipe_routine","symbolLocation":384,"imageIndex":11},{"imageOffset":22267,"symbol":"_xpc_interface_routine","symbolLocation":173,"imageIndex":11},{"imageOffset":31137,"symbol":"bootstrap_look_up3","symbolLocation":426,"imageIndex":11},{"imageOffset":30684,"symbol":"bootstrap_look_up2","symbolLocation":41,"imageIndex":11},{"imageOffset":6977,"symbol":"SCClientSession::checkinWithServer(unsigned int*)","symbolLocation":121,"imageIndex":12},{"imageOffset":6403,"symbol":"connectToCoreServicesD()","symbolLocation":116,"imageIndex":12},{"imageOffset":5962,"symbol":"getStatus()","symbolLocation":49,"imageIndex":12},{"imageOffset":17175,"symbol":"scCreateSystemServiceVersion","symbolLocation":49,"imageIndex":12},{"imageOffset":305195,"symbol":"__FileIDTreeGetCachedPort_block_invoke","symbolLocation":220,"imageIndex":12},{"imageOffset":97262,"symbol":"_dispatch_client_callout","symbolLocation":6,"imageIndex":10},{"imageOffset":14573,"symbol":"_dispatch_once_callout","symbolLocation":20,"imageIndex":10},{"imageOffset":16847,"symbol":"FileIDTreeGetCachedPort","symbolLocation":51,"imageIndex":12},{"imageOffset":16526,"symbol":"FSNodeStorageGetAndLockCurrentUniverse","symbolLocation":92,"imageIndex":12},{"imageOffset":15928,"symbol":"FileIDTreeGetAndLockVolumeEntryForDeviceID","symbolLocation":56,"imageIndex":12},{"imageOffset":15593,"symbol":"FSMount::FSMount(unsigned int, FSMountNumberType, int*, unsigned int const*)","symbolLocation":85,"imageIndex":12},{"imageOffset":15457,"symbol":"FSMountPrepare","symbolLocation":59,"imageIndex":12},{"imageOffset":13627,"symbol":"MountInfoPrepare","symbolLocation":41,"imageIndex":13},{"imageOffset":195051,"symbol":"parseAttributeBuffer(__CFAllocator const*, unsigned char const*, unsigned char, attrlist const*, void const*, void**, _FileAttributes*, unsigned int*, unsigned char)","symbolLocation":3032,"imageIndex":13},{"imageOffset":12242,"symbol":"corePropertyProviderPrepareValues(__CFURL const*, __FileCache*, __CFString const* const*, void const**, long, void const*, __CFError**)","symbolLocation":1246,"imageIndex":13},{"imageOffset":10894,"symbol":"prepareValuesForBitmap(__CFURL const*, __FileCache*, _FilePropertyBitmap*, __CFError**)","symbolLocation":383,"imageIndex":13},{"imageOffset":3969,"symbol":"_FSURLCopyResourcePropertyForKeyInternal(__CFURL const*, __CFString const*, void*, void*, __CFError**, unsigned char)","symbolLocation":266,"imageIndex":13},{"imageOffset":271228,"symbol":"CFURLCopyResourcePropertyForKey","symbolLocation":96,"imageIndex":14},{"imageOffset":268434,"symbol":"____CFRunLoopSetOptionsReason_block_invoke_5","symbolLocation":168,"imageIndex":14},{"imageOffset":5817,"symbol":"_dispatch_call_block_and_release","symbolLocation":12,"imageIndex":10},{"imageOffset":97262,"symbol":"_dispatch_client_callout","symbolLocation":6,"imageIndex":10},{"imageOffset":207362,"symbol":"_dispatch_root_queue_drain.cold.3","symbolLocation":931,"imageIndex":10},{"imageOffset":68496,"symbol":"_dispatch_root_queue_drain","symbolLocation":98,"imageIndex":10},{"imageOffset":69674,"symbol":"_dispatch_worker_thread2","symbolLocation":174,"imageIndex":10},{"imageOffset":10280,"symbol":"_pthread_wqthread","symbolLocation":233,"imageIndex":7},{"imageOffset":6211,"symbol":"start_wqthread","symbolLocation":15,"imageIndex":7}]}],
+  "usedImages" : [
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 8632152064,
+    "size" : 647168,
+    "uuid" : "734c5ec7-3286-329f-b95c-55c9080d31db",
+    "path" : "\/usr\/lib\/dyld",
+    "name" : "dyld"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 140703127465984,
+    "size" : 196608,
+    "uuid" : "3ae46ed1-ca8a-3d8c-b1f5-eea020395932",
+    "path" : "\/usr\/libexec\/rosetta\/runtime",
+    "name" : "runtime"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 4470988800,
+    "size" : 425984,
+    "uuid" : "6065fd53-113c-30e5-9e0e-5c04d6ebd22a",
+    "path" : "\/Library\/Apple\/*\/libRosettaRuntime",
+    "name" : "libRosettaRuntime"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 4336406528,
+    "CFBundleShortVersionString" : "150.0.7871.114",
+    "CFBundleIdentifier" : "com.google.Chrome",
+    "size" : 237568,
+    "uuid" : "4c4c446d-5555-3144-a181-924a239f32d9",
+    "path" : "\/Applications\/Google Chrome.app\/Contents\/MacOS\/Google Chrome",
+    "name" : "Google Chrome",
+    "CFBundleVersion" : "7871.114"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 4966326272,
+    "CFBundleShortVersionString" : "150.0.7871.114",
+    "CFBundleIdentifier" : "com.google.Chrome.framework",
+    "size" : 241238016,
+    "uuid" : "4c4c44fb-5555-3144-a15c-380691f396eb",
+    "path" : "\/Applications\/Google Chrome.app\/Contents\/Frameworks\/Google Chrome Framework.framework\/Versions\/150.0.7871.114\/Google Chrome Framework",
+    "name" : "Google Chrome Framework",
+    "CFBundleVersion" : "7871.114"
+  },
+  {
+    "size" : 0,
+    "source" : "A",
+    "base" : 0,
+    "uuid" : "00000000-0000-0000-0000-000000000000"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703467528192,
+    "size" : 252184,
+    "uuid" : "2a7e104e-0d59-34a8-83d9-cc70154464eb",
+    "path" : "\/usr\/lib\/system\/libsystem_kernel.dylib",
+    "name" : "libsystem_kernel.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703467782144,
+    "size" : 49192,
+    "uuid" : "f9c81fc7-1abf-3b5e-a6b3-3113dad29577",
+    "path" : "\/usr\/lib\/system\/libsystem_pthread.dylib",
+    "name" : "libsystem_pthread.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703466295296,
+    "size" : 563448,
+    "uuid" : "b349e7c1-a14b-3991-b786-dbba5ee9d443",
+    "path" : "\/usr\/lib\/system\/libsystem_c.dylib",
+    "name" : "libsystem_c.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703588122624,
+    "CFBundleShortVersionString" : "1.22",
+    "CFBundleIdentifier" : "com.apple.HIServices",
+    "size" : 416580,
+    "uuid" : "f4c41c07-acb0-3862-8696-30b670cf6dfc",
+    "path" : "\/System\/Library\/Frameworks\/ApplicationServices.framework\/Versions\/A\/Frameworks\/HIServices.framework\/Versions\/A\/HIServices",
+    "name" : "HIServices"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703465988096,
+    "size" : 293154,
+    "uuid" : "22d4457f-c2ab-36da-a743-e92bef816167",
+    "path" : "\/usr\/lib\/system\/libdispatch.dylib",
+    "name" : "libdispatch.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703464415232,
+    "size" : 339402,
+    "uuid" : "dd6e5acd-6816-3107-8147-65e8942ca9d9",
+    "path" : "\/usr\/lib\/system\/libxpc.dylib",
+    "name" : "libxpc.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703528161280,
+    "CFBundleShortVersionString" : "1333",
+    "CFBundleIdentifier" : "com.apple.CoreServices.CarbonCore",
+    "size" : 3074610,
+    "uuid" : "dc789a88-34d3-3b4f-8b5e-167684fdc1d1",
+    "path" : "\/System\/Library\/Frameworks\/CoreServices.framework\/Versions\/A\/Frameworks\/CarbonCore.framework\/Versions\/A\/CarbonCore",
+    "name" : "CarbonCore",
+    "CFBundleVersion" : "1333"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703531237376,
+    "CFBundleShortVersionString" : "505",
+    "CFBundleIdentifier" : "com.apple.CoreServicesInternal",
+    "size" : 268992,
+    "uuid" : "83276a2c-ae16-36ec-9be1-16833c2fdd6d",
+    "path" : "\/System\/Library\/PrivateFrameworks\/CoreServicesInternal.framework\/Versions\/A\/CoreServicesInternal",
+    "name" : "CoreServicesInternal",
+    "CFBundleVersion" : "505"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703468068864,
+    "CFBundleShortVersionString" : "6.9",
+    "CFBundleIdentifier" : "com.apple.CoreFoundation",
+    "size" : 4956771,
+    "uuid" : "81ee41a1-661a-3e85-9729-165ef4c01a9b",
+    "path" : "\/System\/Library\/Frameworks\/CoreFoundation.framework\/Versions\/A\/CoreFoundation",
+    "name" : "CoreFoundation",
+    "CFBundleVersion" : "4302"
+  }
+],
+  "sharedCache" : {
+  "base" : 140703421693952,
+  "size" : 30064771072,
+  "uuid" : "ecf37cd4-b9d6-36f3-b85b-42db0619754f"
+},
+  "vmSummary" : "ReadOnly portion of Libraries: Total=1.6G resident=0K(0%) swapped_out_or_unallocated=1.6G(100%)\nWritable regions: Total=892.9M written=1666K(0%) resident=1666K(0%) swapped_out=0K(0%) unallocated=891.2M(100%)\n\n                                VIRTUAL   REGION \nREGION TYPE                        SIZE    COUNT (non-coalesced) \n===========                     =======  ======= \nKernel Alloc Once                    8K        1 \nMALLOC                           713.2M       29 \nMALLOC guard page                   96K        6 \nMemory Tag 253                    48.0G       66 \nPROTECTED_MEMORY                     4K        1 \nRosetta Arena                     4096K        2 \nRosetta Generic                   1496K      371 \nRosetta IndirectBranch             128K        1 \nRosetta JIT                      128.0M        1 \nRosetta Return Stack                60K        6 \nRosetta Thread Context              60K        6 \nSTACK GUARD                          4K        1 \nStack                             9240K        3 \nStack Guard                       56.0M        2 \nVM_ALLOCATE                         88K        4 \n__CTF                               824        1 \n__DATA                            45.9M      958 \n__DATA_CONST                     128.9M     1008 \n__DATA_DIRTY                      7891K      850 \n__FONT_DATA                        2352        1 \n__INFO_FILTER                         8        1 \n__LINKEDIT                       154.4M       10 \n__OBJC_RO                         64.3M        1 \n__OBJC_RW                         2567K        1 \n__TEXT                             1.4G     1025 \n__TPRO_CONST                         4K        1 \nmapped file                      389.4M       11 \npage table in kernel              1666K        1 \nshared memory                       64K        3 \n===========                     =======  ======= \nTOTAL                             51.1G     4372 \n",
+  "legacyInfo" : {
+  "threadTriggered" : {
+    "queue" : "com.apple.main-thread"
+  }
+},
+  "logWritingSignature" : "a24161e4ab19a7d3f54dccca35b9e7e30a211c5a",
+  "roots_installed" : 0,
+  "bug_type" : "309",
+  "trmStatus" : 1,
+  "trialInfo" : {
+  "rollouts" : [
+    {
+      "rolloutId" : "5fb4245a1bbfe8005e33a1e1",
+      "factorPackIds" : [
+
+      ],
+      "deploymentId" : 240000021
+    },
+    {
+      "rolloutId" : "5f72dc58705eff005a46b3a9",
+      "factorPackIds" : [
+
+      ],
+      "deploymentId" : 240000015
+    }
+  ],
+  "experiments" : [
+
+  ]
+},
+  "reportNotes" : [
+  "RIP register does not match crashing frame (0x0 vs 0x7FF8A0142B80)"
+]
+}

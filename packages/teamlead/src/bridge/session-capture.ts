@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { CommDB } from "flywheel-comm/db";
+import { commDbRootDir } from "./commdb-path.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -45,9 +45,13 @@ export async function defaultExecCapture(
  * Derive CommDB path from project name.
  * Default: ~/.flywheel/comm/{projectName}/comm.db
  * Extracted as a parameter for testability (Codex R1 #1).
+ *
+ * FLY-493: shares `commDbRootDir()` so `FLYWHEEL_COMM_DIR` isolates BOTH this
+ * (preRegisterCommDb) and `commDbPathForProject` (event-route) in tests — no
+ * writes to the live Bridge comm.db.
  */
 export function defaultGetCommDbPath(projectName: string): string {
-	return join(homedir(), ".flywheel", "comm", projectName, "comm.db");
+	return join(commDbRootDir(), projectName, "comm.db");
 }
 
 /**

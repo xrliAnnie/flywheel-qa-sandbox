@@ -1,0 +1,14 @@
+# transcript: bridge-log-segment-extraction
+# command: single-pass awk over /tmp/flywheel-bridge.log extracting 8 line ranges (line numbers from bridge-restart-history-linenos.txt, alignment verified via sed spot-check same run)
+# collected_at: 2026-07-10T08:21:52Z (host local: 2026-07-10 01:21:52 PDT)
+# source: /tmp/flywheel-bridge.log size=365614360
+# ranges:
+#   bridge-seg-130918-pre.log      2034638-2034900  (pre-13:09:18 boundary + both 13:09 boots)
+#   bridge-seg-142620-pre.log      2063274-2063480  (pre-14:26:20 watchdog kill #1)
+#   bridge-seg-144037-pre.log      2069929-2070200  (pre-14:40:37 + both 14:40/14:41 boots)
+#   bridge-seg-181658-pre.log      2169283-2169500  (pre-18:16:58 watchdog kill #2)
+#   bridge-seg-182324-tail.log     2170074-2170300  (tail of 18:16:58 segment -> 18:23:24 kill #3)
+#   bridge-seg-210341-pre.log      2252385-2252600  (pre-21:03:41 boundary)
+#   bridge-seg-211245-213524-full.log 2256195-2264765 (full 4th-kill segment incl 5th-kill trigger window)
+#   bridge-seg-232959-pre.log      2322841-2323060  (pre-23:29:59 watchdog kill #6)
+# exit_code: 0

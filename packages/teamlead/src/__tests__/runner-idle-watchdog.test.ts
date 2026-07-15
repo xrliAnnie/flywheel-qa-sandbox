@@ -48,6 +48,7 @@ function createMockStore(sessions: Session[] = []) {
 		failureError?: string;
 	}> = [];
 	let seqCounter = 0;
+	const quietNotified = new Set<string>(); // FLY-637 persistent dedup (test)
 
 	return {
 		getActiveSessions: vi.fn(() => sessions),
@@ -88,10 +89,32 @@ function createMockStore(sessions: Session[] = []) {
 			if (ev) ev.delivered = true;
 		}),
 		recordDeliveryFailure: vi.fn((_seq: number, _error: string) => {}),
+		// FLY-639: self-heal hook the watchdog calls when a poll throws.
+		recoverFromCorruption: vi.fn((_err: unknown) => false),
+		// FLY-637: persistent quiet-wake dedup surface (Set-backed for real dedup).
+		hasQuietWakeNotified: vi.fn((e: string, s: string, f: string) =>
+			quietNotified.has(`${e}|${s}|${f}`),
+		),
+		recordQuietWakeNotified: vi.fn((e: string, s: string, f: string) => {
+			quietNotified.add(`${e}|${s}|${f}`);
+		}),
+		clearQuietWakeNotified: vi.fn((e: string, s?: string) => {
+			for (const key of [...quietNotified]) {
+				const [ke, ks] = key.split("|");
+				if (ke === e && (!s || ks === s)) quietNotified.delete(key);
+			}
+		}),
+		pruneQuietWakeNotifiedNotIn: vi.fn((s: string, keep: string[]) => {
+			for (const key of [...quietNotified]) {
+				const [ke, ks] = key.split("|");
+				if (ks === s && !keep.includes(ke)) quietNotified.delete(key);
+			}
+		}),
 		_events: events,
 		_resetEvents: () => {
 			events = [];
 			seqCounter = 0;
+			quietNotified.clear();
 		},
 	};
 }
@@ -122,6 +145,8 @@ function createMockRegistry(runtime?: ReturnType<typeof createMockRuntime>) {
 type StatusResponse = {
 	result: { status: string; reason: string; stale_seconds?: number };
 	captureErrorStatus?: number;
+	/** FLY-195: raw capture passthrough for the stuck detector. */
+	output?: string;
 };
 
 // Build a watchdog with a mocked statusQuery for deterministic testing
@@ -129,6 +154,8 @@ function createTestWatchdog(opts: {
 	sessions?: Session[];
 	statusResponses?: StatusResponse[];
 	delivered?: boolean;
+	/** FLY-195: fake stuck detector to assert the wiring contract. */
+	stuckDetector?: { checkSession: any; pruneInactive: any };
 }) {
 	const sessions = opts.sessions ?? [makeSession()];
 	const store = createMockStore(sessions);
@@ -155,6 +182,7 @@ function createTestWatchdog(opts: {
 		store: store as any,
 		runtimeRegistry: registry as any,
 		captureSessionFn: captureSessionFn as any,
+		stuckDetector: opts.stuckDetector as any,
 	};
 
 	const watchdog = new RunnerIdleWatchdog(config);
@@ -776,6 +804,101 @@ describe("RunnerIdleWatchdog", () => {
 		});
 	});
 
+	describe("FLY-195 stuck-detector wiring", () => {
+		function fakeDetector() {
+			return {
+				checkSession: vi.fn(async () => null),
+				pruneInactive: vi.fn(),
+			};
+		}
+
+		it("passes its OWN capture to the detector as a precaptured outcome", async () => {
+			const detector = fakeDetector();
+			const { watchdog } = createTestWatchdog({
+				statusResponses: [
+					{
+						result: { status: "executing", reason: "active" },
+						output: "live terminal frame",
+					},
+				],
+				stuckDetector: detector,
+			});
+			await watchdog.pollOnce();
+			expect(detector.checkSession).toHaveBeenCalledTimes(1);
+			const [sessionArg, outcomeArg] = detector.checkSession.mock.calls[0];
+			expect(sessionArg.execution_id).toBe("exec-1");
+			expect(outcomeArg).toEqual({ ok: true, output: "live terminal frame" });
+			watchdog.stop();
+		});
+
+		it("hands infra errors over as { ok:false } (detector fails closed)", async () => {
+			const detector = fakeDetector();
+			const { watchdog } = createTestWatchdog({
+				statusResponses: [
+					{
+						result: { status: "unknown", reason: "CommDB 502" },
+						captureErrorStatus: 502,
+					},
+				],
+				stuckDetector: detector,
+			});
+			await watchdog.pollOnce();
+			const [, outcomeArg] = detector.checkSession.mock.calls[0];
+			expect(outcomeArg.ok).toBe(false);
+			watchdog.stop();
+		});
+
+		it("tmux-unreachable (unknown, no HTTP status) is also { ok:false }", async () => {
+			const detector = fakeDetector();
+			const { watchdog } = createTestWatchdog({
+				statusResponses: [
+					{ result: { status: "unknown", reason: "tmux window not found" } },
+				],
+				stuckDetector: detector,
+			});
+			await watchdog.pollOnce();
+			const [, outcomeArg] = detector.checkSession.mock.calls[0];
+			expect(outcomeArg.ok).toBe(false);
+			watchdog.stop();
+		});
+
+		it("prunes detector episodes with the active running set each poll", async () => {
+			const detector = fakeDetector();
+			const { watchdog } = createTestWatchdog({ stuckDetector: detector });
+			await watchdog.pollOnce();
+			expect(detector.pruneInactive).toHaveBeenCalledWith(new Set(["exec-1"]));
+			watchdog.stop();
+		});
+
+		it("a throwing detector does not break idle detection", async () => {
+			const detector = {
+				checkSession: vi.fn(async () => {
+					throw new Error("detector boom");
+				}),
+				pruneInactive: vi.fn(),
+			};
+			const { watchdog, store } = createTestWatchdog({
+				statusResponses: [
+					{ result: { status: "idle", reason: "bare shell" }, output: "$" },
+				],
+				stuckDetector: detector,
+			});
+			await watchdog.pollOnce();
+			// idle event still emitted despite the stuck-detector throwing
+			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
+			watchdog.stop();
+		});
+
+		it("watchdog without a detector behaves exactly as before (no-op)", async () => {
+			const { watchdog, store } = createTestWatchdog({
+				statusResponses: [{ result: { status: "idle", reason: "bare shell" } }],
+			});
+			await watchdog.pollOnce();
+			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
+			watchdog.stop();
+		});
+	});
+
 	describe("start/stop lifecycle", () => {
 		it("start sets up interval, stop clears it", () => {
 			const { watchdog } = createTestWatchdog({});
@@ -788,5 +911,41 @@ describe("RunnerIdleWatchdog", () => {
 			// Should not throw on double stop
 			watchdog.stop();
 		});
+	});
+});
+
+// --- FLY-639: poll() crash containment + StateStore self-heal ---
+
+describe("RunnerIdleWatchdog FLY-639 crash containment", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("getActiveSessions throwing does NOT reject poll() — it logs, self-heals, and skips", async () => {
+		const { watchdog, store } = createTestWatchdog({});
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		store.getActiveSessions.mockImplementation(() => {
+			throw new Error("no such table: sessions");
+		});
+
+		// MUST resolve (not reject) — a rejection here is the production crash.
+		await expect(watchdog.pollOnce()).resolves.toBeUndefined();
+
+		expect(warnSpy).toHaveBeenCalled();
+		// Best-effort StateStore self-heal invoked with the thrown error.
+		expect(store.recoverFromCorruption).toHaveBeenCalledTimes(1);
+		expect(store.recoverFromCorruption.mock.calls[0]![0]).toBeInstanceOf(Error);
+		// No idle event emitted on a failed poll.
+		expect(store.appendLeadEvent).not.toHaveBeenCalled();
+
+		// polling flag is released so the next cycle can run.
+		store.getActiveSessions.mockReturnValue([]);
+		await expect(watchdog.pollOnce()).resolves.toBeUndefined();
+
+		warnSpy.mockRestore();
+		watchdog.stop();
 	});
 });

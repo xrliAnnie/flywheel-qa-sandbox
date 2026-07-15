@@ -1,0 +1,237 @@
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>FLY-1091 · 方案 A 讲透 — 库放哪 + 改完多快生效（v5）</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,system-ui,"SF Pro Text",Segoe UI,Roboto,sans-serif;line-height:1.6;-webkit-text-size-adjust:100%}
+.wrap{max-width:900px;margin:0 auto;padding:20px 16px 96px}
+h1{font-size:22px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:13.5px;margin:0 0 4px}
+.secnum{color:var(--dim)}
+h2{font-size:19px;margin:30px 0 4px;letter-spacing:-.01em}
+h3{font-size:15px;margin:14px 0 4px;color:var(--navy)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:10px 0;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.card.blue{border-left:4px solid #007aff}.card.green{border-left:4px solid #34c759}.card.amber{border-left:4px solid #ff9500}
+p{margin:7px 0}ul,ol{margin:6px 0 8px 2px;padding-left:22px}li{margin:4px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.84em;background:#f0f0f4;padding:1px 5px;border-radius:5px}
+b{color:#111}
+.concl{background:#f1faf3;border:1px solid #b8e6c4;border-radius:10px;padding:8px 11px;margin:9px 0;font-size:13.5px}
+.concl.blue{background:#f4f9ff;border-color:#bcd9ff}
+.concl .lbl{font-weight:700;color:#1a7a37}.concl.blue .lbl{color:#1a5fb4}
+.you{background:#fffbea;border:1px solid #f2e2a0;border-left:4px solid #ff9500;border-radius:10px;padding:9px 12px;margin:9px 0;font-size:13.5px}
+.you .lbl{font-weight:800;color:#a05a00;display:block;margin-bottom:2px}
+.own{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:6px;vertical-align:middle}
+.own.p{background:#e7f0ff;color:#1a5fb4}.own.e{background:#fff4e5;color:#a05a00}
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:6px}
+.tag.ok{background:#e3f9ea;color:#1a7a3c}.tag.rec{background:#e3f9ea;color:#1a7a3c}.tag.done{background:#e3f9ea;color:#1a7a3c}.tag.new{background:#e7f0ff;color:#1a5fb4}
+.hint{color:var(--dim);font-size:12.5px;margin:6px 0}
+.svgwrap{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;margin:10px 0;border:1px solid var(--line);border-radius:12px;background:#fff;padding:6px}
+svg{display:block;height:auto}
+.cmt{margin:12px 0 4px;background:#fbfbfd;border:1px dashed #d6d6de;border-radius:10px;padding:8px 10px}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+.cmt textarea{width:100%;min-height:52px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;background:#fff;resize:vertical}
+.cmt textarea:focus{outline:2px solid #007aff;outline-offset:1px;border-color:transparent}
+.opts{margin:8px 0 2px;display:flex;flex-direction:column;gap:6px}
+.opt{display:flex;gap:9px;align-items:flex-start;background:#fff;border:1px solid var(--line);border-radius:10px;padding:9px 11px;cursor:pointer}
+.opt:hover{background:#fafaff}
+.opt input{margin-top:3px;flex:0 0 auto;width:16px;height:16px;accent-color:#007aff}
+.opt .ot{font-size:13.5px}
+.opt .rec{display:inline-block;font-size:11px;font-weight:700;color:#1a7a3c;background:#e3f9ea;padding:0 6px;border-radius:5px;margin-left:5px}
+.signoff{background:#f4f9ff;border:2px solid #007aff;border-radius:12px;padding:13px 15px;margin:14px 0}
+.signoff .lbl{font-weight:800;color:#1a5fb4;display:block;margin-bottom:4px}
+.bar{position:sticky;bottom:0;margin-top:24px;background:rgba(245,245,247,.92);backdrop-filter:saturate(180%) blur(8px);border-top:1px solid var(--line);padding:10px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+button{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:10px;padding:9px 16px;cursor:pointer}
+button.primary{background:#007aff;color:#fff}button.ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}
+#saveHint{color:var(--dim);font-size:12.5px}
+.small{font-size:12.5px;color:var(--dim)}
+.topnote{background:#fff;border:1px solid var(--line);border-left:4px solid #34c759;border-radius:12px;padding:12px 14px;margin:8px 0;font-size:13.5px}
+.recap{background:#f7f7fa;border:1px solid var(--line);border-radius:10px;padding:9px 12px;margin:9px 0;font-size:12.8px;color:#555}
+.locked{background:#eafaf0;border:1px solid #a9d8b8;border-radius:10px;padding:9px 12px;margin:9px 0;font-size:13.3px}
+.locked .lbl{font-weight:800;color:#1a7a3c}
+dialog{border:none;border-radius:14px;padding:0;max-width:680px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+dialog::backdrop{background:rgba(0,0,0,.35)}
+.dlg{padding:18px 20px}.dlg h3{margin-top:0}.dlg textarea{width:100%;min-height:220px;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px}
+</style>
+</head>
+<div class="wrap">
+<header>
+  <h1>方案 A 讲透 —— 库放哪 · 改完多快生效 <span class="tag new" style="vertical-align:middle">v5</span></h1>
+  <p class="sub">FLY-1091 · 2026-07-10 · 你选了 A,这版把 A 的机制讲到底 · 快能收 PRD 了 · 不 ship</p>
+</header>
+
+<div class="topnote">
+  <b>你选了 A —— 用一个中心的库存 flag、Dashboard 改、进程读、不重启。</b> 这版就回答你上一版问的两个具体问题:<br>
+  ① <b>那个库到底放哪?</b>(不想凭空多个东西)<br>
+  ② <b>改完多快生效?</b>(你怕像「每小时读一次」那么慢)<br>
+  两个都用图讲清。看懂了、觉得靠谱,这块基本就能收进 PRD 了。
+</div>
+<div class="recap">已定(不再重复):默认不加 flag、只 release/A-B/跨项目 canary;清理看用量不看天数;83-flag 逐条过 = 单独的 FLY-1136;方案选 <b>A</b>。</div>
+
+<!-- 1 DB where -->
+<h2><span class="secnum">1 · </span>那个「中心的库」放哪?= Bridge 现在就在跑的那个库 <span class="own p">你已选 A</span></h2>
+<div class="card green">
+  <p><b>好消息:不用新起任何东西。</b> Bridge(那个一直在后台跑、管着所有 runner / gate / 审计的主程序)<b>现在就已经在用一个 SQLite 数据库</b>了 —— 它本来就用这个库存「哪个 runner 在跑、哪个 gate 开着」这些状态。</p>
+  <p><b>flag store,就是在这个已有的库里加一张表。</b> 没有新数据库、没有新服务、没有新要维护的东西。</p>
+  <div class="svgwrap">
+    <svg viewBox="0 0 700 250" width="700" role="img" aria-label="方案 A 库放哪">
+      <defs>
+        <marker id="m1" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto"><path d="M0,0 L7.5,3 L0,6 Z" fill="#1a5fb4"/></marker>
+        <marker id="m1g" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto"><path d="M0,0 L7.5,3 L0,6 Z" fill="#1a7a3c"/></marker>
+      </defs>
+      <rect x="270" y="16" width="170" height="42" rx="10" fill="#e7f0ff" stroke="#9cc3f0"/>
+      <text x="355" y="37" font-size="13" text-anchor="middle" font-weight="700" fill="#1a5fb4">Dashboard</text>
+      <text x="355" y="52" font-size="11" text-anchor="middle" fill="#1a5fb4">你按项目开关 flag</text>
+      <line x1="355" y1="58" x2="355" y2="86" stroke="#1a5fb4" stroke-width="1.8" marker-end="url(#m1)"/>
+      <text x="362" y="76" font-size="11" fill="#1a5fb4">写新值</text>
+      <!-- Bridge big box -->
+      <rect x="150" y="88" width="410" height="74" rx="12" fill="#f6faf7" stroke="#89c9a0"/>
+      <text x="164" y="106" font-size="12.5" font-weight="700" fill="#1a7a3c">Bridge 主程序（本来就在跑）</text>
+      <rect x="168" y="114" width="170" height="38" rx="8" fill="#fff" stroke="#c9c9d2"/>
+      <text x="253" y="131" font-size="11.5" text-anchor="middle" fill="#555">SQLite 库（已有）</text>
+      <text x="253" y="145" font-size="10" text-anchor="middle" fill="#888">runner / gate / 审计状态</text>
+      <rect x="356" y="114" width="188" height="38" rx="8" fill="#eafaf0" stroke="#89c9a0"/>
+      <text x="450" y="131" font-size="11.5" text-anchor="middle" font-weight="700" fill="#1a7a3c">flag 表（新增这一张）</text>
+      <text x="450" y="145" font-size="10" text-anchor="middle" fill="#1a7a3c">每项目 · 每 flag = 一行值</text>
+      <!-- processes -->
+      <rect x="60" y="200" width="150" height="38" rx="10" fill="#fff" stroke="#c9c9d2"/>
+      <text x="135" y="223" font-size="12.5" text-anchor="middle" fill="#333">Lead 进程</text>
+      <rect x="500" y="200" width="150" height="38" rx="10" fill="#fff" stroke="#c9c9d2"/>
+      <text x="575" y="223" font-size="12.5" text-anchor="middle" fill="#333">Runner 进程</text>
+      <line x1="135" y1="200" x2="410" y2="152" stroke="#1a7a3c" stroke-width="1.6" marker-end="url(#m1g)"/>
+      <line x1="575" y1="200" x2="470" y2="152" stroke="#1a7a3c" stroke-width="1.6" marker-end="url(#m1g)"/>
+      <text x="355" y="188" font-size="11.5" text-anchor="middle" fill="#1a7a3c">进程用到 flag 时,去这张表读值</text>
+    </svg>
+  </div>
+  <div class="concl"><span class="lbl">一句话</span> 中心的库 = <b>Bridge 已经在跑的那个 SQLite</b>,加一张 flag 表。<span class="small">(技术细节:它现在用的是 native SQLite,存 runner/gate 状态;加表是最小改动。)</span></div>
+</div>
+<div class="cmt"><label>§1 留言(「加一张表」这个够清楚吗?)</label><textarea data-k="s1" data-label="§1 库放哪"></textarea></div>
+
+<!-- 2 read/how fast -->
+<h2><span class="secnum">2 · </span>改完多快生效?—— 不是「每小时」,是即时或几秒 <span class="own p">你定读法</span> <span class="own e">性能=Tadashi</span></h2>
+<div class="you"><span class="lbl">你的担心(我复述)</span>
+「读写/改的逻辑到底怎样?<b>我怕是像『每小时读一次』那种慢法。</b>」</div>
+<div class="card">
+  <p><b>先直接回答:不是每小时。</b> 「每小时」是那种最偷懒的做法,我们不用。你在 Dashboard 一改,生效有三种快法,都是<b>即时到几秒级</b> 👇</p>
+  <div class="svgwrap">
+    <svg viewBox="0 0 700 258" width="700" role="img" aria-label="改完多快生效">
+      <defs>
+        <marker id="t1" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto"><path d="M0,0 L7.5,3 L0,6 Z" fill="#666"/></marker>
+      </defs>
+      <rect x="14" y="14" width="220" height="34" rx="9" fill="#e7f0ff" stroke="#9cc3f0"/>
+      <text x="124" y="36" font-size="12.5" text-anchor="middle" font-weight="700" fill="#1a5fb4">t=0 · 你在 Dashboard 改成 ON（写库）</text>
+      <!-- (a) -->
+      <text x="14" y="82" font-size="13" font-weight="700" fill="#1a7a3c">(a) 用时现读　<tspan fill="#1a7a3c">✓ 推荐</tspan></text>
+      <rect x="14" y="90" width="150" height="34" rx="9" fill="#fff" stroke="#c9c9d2"/>
+      <text x="89" y="112" font-size="11.5" text-anchor="middle" fill="#333">进程下次判断这个 flag</text>
+      <line x1="164" y1="107" x2="300" y2="107" stroke="#666" stroke-width="1.6" marker-end="url(#t1)"/>
+      <text x="232" y="101" font-size="10.5" text-anchor="middle" fill="#666">就去表里读那一行</text>
+      <rect x="302" y="90" width="150" height="34" rx="9" fill="#eafaf0" stroke="#89c9a0"/>
+      <text x="377" y="112" font-size="11.5" text-anchor="middle" fill="#1a7a3c">读到 ON</text>
+      <rect x="470" y="90" width="180" height="34" rx="9" fill="#e3f9ea" stroke="#89c9a0"/>
+      <text x="560" y="112" font-size="12.5" text-anchor="middle" font-weight="700" fill="#1a7a3c">即时 · 毫秒级</text>
+      <!-- (b) -->
+      <text x="14" y="152" font-size="13" font-weight="700" fill="#1a7a3c">(b) 每几秒对一次　<tspan fill="#1a7a3c">✓ 也行</tspan></text>
+      <rect x="14" y="160" width="150" height="34" rx="9" fill="#fff" stroke="#c9c9d2"/>
+      <text x="89" y="182" font-size="11.5" text-anchor="middle" fill="#333">进程本地留个 cache</text>
+      <line x1="164" y1="177" x2="300" y2="177" stroke="#666" stroke-width="1.6" marker-end="url(#t1)"/>
+      <text x="232" y="171" font-size="10.5" text-anchor="middle" fill="#666">每 N 秒跟表对一次</text>
+      <rect x="302" y="160" width="150" height="34" rx="9" fill="#eafaf0" stroke="#89c9a0"/>
+      <text x="377" y="182" font-size="11.5" text-anchor="middle" fill="#1a7a3c">对到新值</text>
+      <rect x="470" y="160" width="180" height="34" rx="9" fill="#e3f9ea" stroke="#89c9a0"/>
+      <text x="560" y="182" font-size="12.5" text-anchor="middle" font-weight="700" fill="#1a7a3c">几秒内</text>
+      <!-- (c) -->
+      <text x="14" y="222" font-size="13" font-weight="700" fill="#555">(c) 库变就推送</text>
+      <rect x="14" y="230" width="150" height="30" rx="9" fill="#fff" stroke="#c9c9d2"/>
+      <text x="89" y="250" font-size="11.5" text-anchor="middle" fill="#333">库一变，通知进程</text>
+      <line x1="164" y1="245" x2="300" y2="245" stroke="#666" stroke-width="1.6" marker-end="url(#t1)"/>
+      <rect x="302" y="230" width="150" height="30" rx="9" fill="#eafaf0" stroke="#89c9a0"/>
+      <text x="377" y="250" font-size="11.5" text-anchor="middle" fill="#1a7a3c">立刻更新</text>
+      <rect x="470" y="230" width="180" height="30" rx="9" fill="#f0f0f4" stroke="#c9c9d2"/>
+      <text x="560" y="250" font-size="12" text-anchor="middle" fill="#555">近实时（稍复杂）</text>
+    </svg>
+  </div>
+  <div class="concl blue"><span class="lbl">我的推荐</span> <b>(a) 用时现读</b> —— 最简单、而且即时:进程每次要判断「这个 flag 开没开」,就顺手读一下那张表的那一行。你 Dashboard 一改,它<b>下一次判断就是新值</b>,毫秒级,不用等。<b>(b)</b> 也够用(几秒),如果读库太频繁想省一点就用它。<b>都不是「每小时」那种慢法。</b></div>
+  <div class="opts">
+    <label class="opt"><input type="radio" name="q_read" data-q="改完多快生效-读法选哪个" value="(a) 用时现读，即时"><span class="ot"><b>(a) 用时现读</b> · 即时(毫秒级)<span class="rec">我的推荐</span></span></label>
+    <label class="opt"><input type="radio" name="q_read" data-q="改完多快生效-读法选哪个" value="(b) 每几秒对一次"><span class="ot"><b>(b) 每几秒对一次</b> · 几秒内(省一点读库)</span></label>
+    <label class="opt"><input type="radio" name="q_read" data-q="改完多快生效-读法选哪个" value="都行，让 Tadashi 定"><span class="ot">(a)(b) 都行,交给 Tadashi 按性能定</span></label>
+  </div>
+  <div class="cmt"><label>§2 留言(即时/几秒 你能接受吗?还想问哪步?)</label><textarea data-k="s2" data-label="§2 多快生效"></textarea></div>
+</div>
+
+<!-- 3 A+C one line -->
+<h2><span class="secnum">3 · </span>「每项目不一样」怎么办?(A 为主,C 补一句)</h2>
+<div class="card">
+  <p>你要的「某个项目先开、别的项目先不开」—— A 本身就能做(flag 表里<b>每项目一行</b>)。如果以后想给某些 flag 定「项目级默认值」,可以用 C(每项目一个 config 文件)当补充:<b>A 管中心开关、C 管项目默认</b>。但重心是 A,C 有需要再加,不用现在展开。</p>
+  <div class="cmt"><label>§3 留言</label><textarea data-k="s3" data-label="§3 A+C"></textarea></div>
+</div>
+
+<!-- 4 self-service locked -->
+<h2><span class="secnum">4 · </span>自助开关 —— 已定 <span class="tag done">✓ 锁定</span></h2>
+<div class="locked"><span class="lbl">✓ 已定(你 v4 确认过)</span><br>
+你在 Dashboard 上按项目改 flag → <b>直接更新 Bridge 的库、立即生效</b> → <b>不开 PR、不重启</b>。每次改自动记一条 change-log(谁 / 什么时候 / 从什么改成什么),存在 Bridge 自己的库里(不碰 GitHub)。想回看或回滚,查这条 log。</div>
+<div class="cmt"><label>§4 留言(change-log 想多看什么字段?没有就跳过)</label><textarea data-k="s4" data-label="§4 自助已定"></textarea></div>
+
+<!-- 5 sign off -->
+<h2><span class="secnum">5 · </span>这块能收 PRD 了吗?</h2>
+<div class="signoff">
+  <span class="lbl">§2 那两个问题(库放哪 + 多快生效),回答到你满意了吗?</span>
+  <p class="small" style="margin:2px 0 6px">满意的话,我下一版就把 A 这套(库=Bridge 现有 SQLite 加一张表、读法=用时现读即时、自助=Dashboard 改+change-log 不走 PR)收成正式 PRD 交给 Tadashi。还想再抠哪就告诉我。</p>
+  <div class="opts">
+    <label class="opt"><input type="radio" name="q_prd" data-q="能收 PRD 了吗" value="可以，收 PRD"><span class="ot"><b>可以</b>,这块讲清了,收 PRD<span class="rec"></span></span></label>
+    <label class="opt"><input type="radio" name="q_prd" data-q="能收 PRD 了吗" value="还想再 iterate 一版"><span class="ot">还想再 iterate 一版(下面说要抠哪)</span></label>
+  </div>
+  <div class="cmt" style="margin:6px 0 0"><label>总留言 / 下一步</label><textarea data-k="signoff" data-label="总方向"></textarea></div>
+</div>
+<div class="recap" style="border-left:3px solid #ff9500"><b>收 PRD 前的一步(说明给你)</b>:方案 A 由你选定(产品);「用时现读」的真实性能和可行性,收 PRD 前我会<b>拉 Tadashi 过一眼</b>(工程 reality-check)—— 你要的「别拍脑袋、让工程确认能落地」。</div>
+
+<div class="bar">
+  <button class="primary" id="exportBtn">复制我的批注</button>
+  <button class="ghost" id="clearBtn">清空</button>
+  <span id="saveHint">你写的内容会自动存在本机</span>
+</div>
+</div>
+
+<dialog id="dlg">
+  <div class="dlg">
+    <h3>你的批注(已复制到剪贴板)</h3>
+    <p class="small">粘回 Discord 发我就行;也可以下载成文件。</p>
+    <textarea id="out" readonly></textarea>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="primary" id="dlBtn">下载 .md</button>
+      <button class="ghost" id="closeBtn">关闭</button>
+    </div>
+  </div>
+</dialog>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var scope=(typeof location!=="undefined"&&location.pathname)?location.pathname:"local";
+  var KEY="fly1091-flag-explainer-v5::"+scope;
+  var areas=Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
+  var radios=Array.prototype.slice.call(document.querySelectorAll("input[type=radio][data-q]"));
+  var saved={}; try{saved=JSON.parse(localStorage.getItem(KEY)||"{}");}catch(e){saved={};}
+  function persist(){ try{localStorage.setItem(KEY,JSON.stringify(saved));}catch(e){} var h=document.getElementById("saveHint"); if(h)h.textContent="已保存 ✓ · "+new Date().toLocaleTimeString(); }
+  areas.forEach(function(t){var k=t.getAttribute("data-k"); if(saved["t::"+k])t.value=saved["t::"+k]; t.addEventListener("input",function(){saved["t::"+k]=t.value;persist();});});
+  radios.forEach(function(r){var nk="r::"+r.name; if(saved[nk]===r.value)r.checked=true; r.addEventListener("change",function(){if(r.checked){saved[nk]=r.value;saved["ql::"+r.name]=r.getAttribute("data-q");persist();}});});
+  function buildMd(){
+    var lines=["# FLY-1091 Feature Flag v5 —— Annie 的 co-eval 批注","","日期: "+new Date().toLocaleString(),""];
+    var any=false, picks=[];
+    radios.forEach(function(r){if(r.checked)picks.push("- **"+r.getAttribute("data-q")+"** → "+r.value);});
+    if(picks.length){any=true;lines.push("## 我的选择","",picks.join("\n"),"");}
+    var notes=[];
+    areas.forEach(function(t){var v=(t.value||"").trim(); if(v){notes.push("### "+(t.getAttribute("data-label")||t.getAttribute("data-k")),"",v,"");}});
+    if(notes.length){any=true;lines.push("## 我的留言","",notes.join("\n"));}
+    if(!any)lines.push("> (还没有选择或批注)");
+    return lines.join("\n");
+  }
+  var dlg=document.getElementById("dlg"),out=document.getElementById("out");
+  document.getElementById("exportBtn").addEventListener("click",function(){ out.value=buildMd(); if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(out.value).catch(function(){}); if(dlg.showModal)dlg.showModal(); else alert(out.value); });
+  document.getElementById("clearBtn").addEventListener("click",function(){ if(!confirm("清空所有选择和批注?不可撤销。"))return; areas.forEach(function(t){t.value="";}); radios.forEach(function(r){r.checked=false;}); saved={}; try{localStorage.removeItem(KEY);}catch(e){} var h=document.getElementById("saveHint"); if(h)h.textContent="已清空。"; });
+  document.getElementById("dlBtn").addEventListener("click",function(){ var b=new Blob([out.value],{type:"text/markdown"}),u=URL.createObjectURL(b); var a=document.createElement("a"); a.href=u; a.download="fly1091-flag-批注-v5.md"; document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(function(){URL.revokeObjectURL(u);},1000); });
+  document.getElementById("closeBtn").addEventListener("click",function(){if(dlg.close)dlg.close();});
+})();
+</script>

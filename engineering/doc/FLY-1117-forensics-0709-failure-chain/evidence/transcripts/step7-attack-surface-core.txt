@@ -1,0 +1,987 @@
+# transcript: step7-attack-surface-core
+# command: bash scratchpad/step7_attack_surface.sh (READ-ONLY sweep; script reproduced below)
+# collected_at: 2026-07-10T12:45:38Z (host local: 2026-07-10 05:45:38 PDT)
+# host: MacBook-Pro.local / macOS 26.3.2 / Apple Silicon (shell under Rosetta reports x86_64)
+# notes: (1) lsof visibility is uid-501-scoped (root daemons' sockets invisible without sudo — recorded as gap);
+#        (2) the 'booster' pgrep matched an unrelated content-review process whose prompt text contains the word — lines ~200-715 of output are that harmless argv dump, not attack-surface data;
+#        (3) last(1) raw output stored locally at ~/FLY-1117-evidence-local/last-raw.txt (0600) per Step 0d; sha256 recorded in output below.
+# ---- SCRIPT ----
+#!/bin/bash
+# FLY-1117 Step 7 — READ-ONLY attack-surface sweep. No state changes, no privilege
+# escalation; permission failures are recorded as gaps. Sensitive raw output goes to
+# ~/FLY-1117-evidence-local (0700 dir); committed evidence gets redacted minimums.
+LOCAL="$HOME/FLY-1117-evidence-local"
+mkdir -p "$LOCAL"; chmod 700 "$LOCAL"
+
+echo "== 7.1 local/remote login records =="
+last > "$LOCAL/last-raw.txt" 2>&1; chmod 600 "$LOCAL/last-raw.txt"
+echo "raw: $LOCAL/last-raw.txt sha256=$(shasum -a 256 "$LOCAL/last-raw.txt" | awk '{print $1}') lines=$(wc -l < "$LOCAL/last-raw.txt" | tr -d ' ')"
+echo "--- redacted minimal view: session-type x source-category counts (last 60 days) ---"
+awk '{
+  if ($0 ~ /^$/ || $1=="wtmp") next;
+  user=$1; tty=$2;
+  src="local";
+  for(i=3;i<=NF;i++){ if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ || $i ~ /:/ && $i ~ /[0-9a-f]::/) src="REMOTE_ADDR" }
+  print user, substr(tty,1,7), src
+}' "$LOCAL/last-raw.txt" | sort | uniq -c | sort -rn | head -20
+echo "--- any non-console/non-ttys entries (ssh comes in as ttys with host column; look for hostnames/IPs col3) ---"
+grep -vE "console|^wtmp|^$" "$LOCAL/last-raw.txt" | awk '$3 !~ /^[A-Z][a-z][a-z]$/ && $3 != "" {print}' | head -10
+echo "--- 7/9 entries verbatim-shape count (user+tty+date only) ---"
+grep "Jul  9" "$LOCAL/last-raw.txt" | awk '{print $1, $2, $4, $5, $6}' | sort | uniq -c
+echo ""
+echo "== 7.2 SSH file forensics =="
+echo "--- authorized_keys: mtime + per-key fingerprint ---"
+AK="$HOME/.ssh/authorized_keys"
+if [ -e "$AK" ]; then
+  stat -f "mtime=%Sm size=%z" "$AK"
+  ssh-keygen -lf "$AK" 2>&1
+else echo "absent: $AK (absence = no inbound key trust)"; fi
+echo "--- ~/.ssh inventory (names + mtimes only) ---"
+ls -la "$HOME/.ssh/" 2>/dev/null
+echo "--- config mtime ---"
+stat -f "mtime=%Sm size=%z" "$HOME/.ssh/config" 2>/dev/null || echo "no config"
+echo ""
+echo "== 7.3 remote/overlay entry services =="
+echo "--- sshd: any listener on 22 + launchd state ---"
+lsof -nP -iTCP:22 -sTCP:LISTEN 2>/dev/null || echo "(no listener on :22)"
+launchctl print-disabled system 2>&1 | grep -Ei "ssh|screensharing|remotedesktop" || echo "(print-disabled needs root or empty — gap if error above)"
+echo "--- screensharingd process now ---"
+pgrep -lf screensharing 2>/dev/null || echo "(no screensharing process)"
+echo "--- Tailscale: daemon + 7/9 activity ---"
+pgrep -lf tailscaled 2>/dev/null || echo "(tailscaled not running)"
+TSLOG=$(ls -t /opt/homebrew/var/log/tailscale* /usr/local/var/log/tailscale* 2>/dev/null | head -1)
+echo "tailscale log: ${TSLOG:-none found}"
+[ -n "$TSLOG" ] && grep -c "2026-07-09" "$TSLOG" 2>/dev/null | sed 's/^/log lines mentioning 2026-07-09: /'
+command -v tailscale >/dev/null && tailscale status 2>&1 | head -8
+echo "--- ExpressVPN daemon ---"
+pgrep -lf expressvpn 2>/dev/null || echo "(expressvpnd not running)"
+echo "--- Chrome Remote Desktop ---"
+ls /Library/LaunchAgents/ 2>/dev/null | grep -i "chrome.remote\|remotedesktop" || echo "(no CRD launch agents in /Library/LaunchAgents)"
+pgrep -lf remote_assistance\|remoting 2>/dev/null || echo "(no CRD process)"
+echo "--- booster daemon ---"
+pgrep -lf booster 2>/dev/null || echo "(booster not running)"
+echo ""
+echo "== 7.4 persistence deltas =="
+echo "--- chezmoi diff (should be empty if dotfiles match source) ---"
+chezmoi diff 2>&1 | head -20
+echo "--- chezmoi git log last 3 days ---"
+chezmoi git -- log --format="%h %ci %s" --since="2026-07-07" 2>&1 | head -10
+echo "--- shell rc mtimes ---"
+for f in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.zshenv" "$HOME/.bashrc" "$HOME/.bash_profile" /etc/zshrc /etc/profile; do
+  [ -e "$f" ] && stat -f "%Sm  %N" "$f"
+done
+echo "--- login items (System Events query; may fail without automation permission = gap) ---"
+osascript -e 'tell application "System Events" to get the name of every login item' 2>&1
+echo ""
+echo "== 7.5 incident-window binary origins =="
+echo "--- 23:25-23:35 window: distinct checked-in app names (from committed lifecycle slice) ---"
+EV="$HOME/Dev/flywheel-FLY-1117/engineering/doc/FLY-1117-forensics-0709-failure-chain/evidence"
+gunzip -c "$EV/catchall-2325-2335-lifecycle-slice.log.gz" | grep "Checked in app" | sed -E 's/.*Checked in app : //' | sort | uniq -c | sort -rn | head -20
+echo "--- 14:20-14:40 window: distinct CHECKIN bundle paths from appDeath records (already tabled) + non-standard paths in wide export exec records ---"
+gunzip -c "$EV/catchall-1420-1440-raw-0710reexport.log.gz" | grep -oE "bundle path: [^ ]+" | sort | uniq -c | sort -rn | head -10
+echo ""
+echo "== 7.6 current network baseline (historical connections = declared blind spot) =="
+echo "--- listeners ---"
+lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk '{print $1, $3, $9}' | sort -u | head -40
+echo "--- established (counts by process) ---"
+lsof -nP -iTCP -sTCP:ESTABLISHED 2>/dev/null | awk '{print $1}' | sort | uniq -c | sort -rn | head -15
+echo ""
+echo "== 7.7 scratchpad 3dcb1b94 hunt =="
+ls -d "$HOME/.claude/projects/"*3dcb1b94* 2>/dev/null
+ls -d /private/tmp/claude-501/*/ 2>/dev/null | head -30
+find /private/tmp/claude-501 -maxdepth 2 -name "*3dcb1b94*" 2>/dev/null | head
+find "$HOME/.claude" -maxdepth 3 -name "*3dcb1b94*" 2>/dev/null | head
+echo "(runner-3dcb1b94 seen in health-log top-RSS 18:16-21:33 = flywheel-eng-lead runner; scratchpad dir search above)"
+echo ""
+echo "== 7.8 GitHub account-plane (public events as weak aux; security log = web-only blind spot) =="
+gh api /user --jq '.login' 2>&1
+gh api "/users/xrliAnnie/events?per_page=30" --jq '.[] | [.created_at, .type, .repo.name] | @tsv' 2>&1 | head -25
+# ---- OUTPUT ----
+== 7.1 local/remote login records ==
+raw: /Users/xiaorongli/FLY-1117-evidence-local/last-raw.txt sha256=ce63ae68d8b65e25a347a5e5ca97719a1ddb5f5ac1936bf2079d0b5f0c00a1be lines=2681
+--- redacted minimal view: session-type x source-category counts (last 60 days) ---
+  62 xiaorongli ttys002 local
+  60 xiaorongli ttys052 local
+  57 xiaorongli ttys048 local
+  55 xiaorongli ttys053 local
+  52 xiaorongli ttys059 local
+  52 xiaorongli ttys007 local
+  50 xiaorongli ttys001 local
+  47 xiaorongli ttys088 local
+  45 xiaorongli ttys058 local
+  44 xiaorongli ttys004 local
+  43 xiaorongli ttys080 local
+  40 xiaorongli ttys096 local
+  40 xiaorongli ttys039 local
+  39 xiaorongli ttys043 local
+  38 xiaorongli ttys047 local
+  36 xiaorongli ttys087 local
+  36 xiaorongli ttys076 local
+  35 xiaorongli ttys098 local
+  35 xiaorongli ttys068 local
+  35 xiaorongli ttys015 local
+--- any non-console/non-ttys entries (ssh comes in as ttys with host column; look for hostnames/IPs col3) ---
+--- 7/9 entries verbatim-shape count (user+tty+date only) ---
+   1 xiaorongli ttys001 Jul 9 14:29
+   1 xiaorongli ttys004 Jul 9 00:52
+   1 xiaorongli ttys004 Jul 9 14:38
+   1 xiaorongli ttys004 Jul 9 15:06
+   1 xiaorongli ttys008 Jul 9 14:29
+   1 xiaorongli ttys010 Jul 9 00:30
+   1 xiaorongli ttys010 Jul 9 14:41
+   1 xiaorongli ttys011 Jul 9 14:29
+   1 xiaorongli ttys013 Jul 9 00:43
+   1 xiaorongli ttys015 Jul 9 14:41
+   1 xiaorongli ttys015 Jul 9 15:58
+   1 xiaorongli ttys017 Jul 9 23:40
+   1 xiaorongli ttys018 Jul 9 14:29
+   1 xiaorongli ttys021 Jul 9 12:09
+   1 xiaorongli ttys021 Jul 9 14:29
+   1 xiaorongli ttys021 Jul 9 15:01
+   1 xiaorongli ttys023 Jul 9 11:33
+   1 xiaorongli ttys023 Jul 9 14:39
+   1 xiaorongli ttys023 Jul 9 15:38
+   1 xiaorongli ttys027 Jul 9 14:48
+   1 xiaorongli ttys029 Jul 9 22:49
+   1 xiaorongli ttys030 Jul 9 11:21
+   1 xiaorongli ttys031 Jul 9 14:48
+   1 xiaorongli ttys032 Jul 9 14:48
+   1 xiaorongli ttys034 Jul 9 14:29
+   1 xiaorongli ttys036 Jul 9 14:29
+   1 xiaorongli ttys037 Jul 9 14:29
+   1 xiaorongli ttys038 Jul 9 14:29
+   1 xiaorongli ttys039 Jul 9 14:29
+   1 xiaorongli ttys041 Jul 9 14:29
+   1 xiaorongli ttys042 Jul 9 13:05
+   1 xiaorongli ttys042 Jul 9 14:52
+   1 xiaorongli ttys043 Jul 9 14:29
+   1 xiaorongli ttys044 Jul 9 14:29
+   1 xiaorongli ttys045 Jul 9 14:52
+   1 xiaorongli ttys047 Jul 9 11:37
+   1 xiaorongli ttys047 Jul 9 11:43
+   1 xiaorongli ttys047 Jul 9 23:56
+   1 xiaorongli ttys048 Jul 9 22:52
+   1 xiaorongli ttys049 Jul 9 14:53
+   1 xiaorongli ttys050 Jul 9 14:29
+   1 xiaorongli ttys051 Jul 9 11:28
+   1 xiaorongli ttys051 Jul 9 12:07
+   1 xiaorongli ttys051 Jul 9 14:29
+   1 xiaorongli ttys052 Jul 9 14:29
+   1 xiaorongli ttys054 Jul 9 14:53
+   1 xiaorongli ttys055 Jul 9 14:53
+   1 xiaorongli ttys058 Jul 9 06:11
+   1 xiaorongli ttys058 Jul 9 12:11
+   1 xiaorongli ttys058 Jul 9 23:06
+   1 xiaorongli ttys059 Jul 9 12:11
+   1 xiaorongli ttys059 Jul 9 14:56
+   1 xiaorongli ttys060 Jul 9 14:56
+   1 xiaorongli ttys061 Jul 9 14:56
+   1 xiaorongli ttys062 Jul 9 14:56
+   1 xiaorongli ttys062 Jul 9 16:41
+   1 xiaorongli ttys063 Jul 9 14:00
+   1 xiaorongli ttys064 Jul 9 15:02
+   1 xiaorongli ttys066 Jul 9 15:06
+   1 xiaorongli ttys068 Jul 9 15:06
+   1 xiaorongli ttys070 Jul 9 15:10
+   1 xiaorongli ttys072 Jul 9 15:24
+   1 xiaorongli ttys073 Jul 9 15:25
+   1 xiaorongli ttys073 Jul 9 15:26
+   1 xiaorongli ttys073 Jul 9 15:27
+   1 xiaorongli ttys073 Jul 9 21:03
+   1 xiaorongli ttys073 Jul 9 21:59
+   1 xiaorongli ttys074 Jul 9 15:40
+   1 xiaorongli ttys075 Jul 9 16:25
+   1 xiaorongli ttys076 Jul 9 15:41
+   1 xiaorongli ttys077 Jul 9 23:14
+   1 xiaorongli ttys078 Jul 9 00:03
+   1 xiaorongli ttys079 Jul 9 15:44
+   1 xiaorongli ttys080 Jul 9 15:44
+   1 xiaorongli ttys082 Jul 9 15:50
+   1 xiaorongli ttys084 Jul 9 00:54
+   1 xiaorongli ttys084 Jul 9 15:52
+   1 xiaorongli ttys086 Jul 9 12:24
+   1 xiaorongli ttys086 Jul 9 15:53
+   1 xiaorongli ttys088 Jul 9 15:59
+   1 xiaorongli ttys089 Jul 9 16:01
+   2 xiaorongli ttys089 Jul 9 16:02
+   1 xiaorongli ttys089 Jul 9 16:03
+   1 xiaorongli ttys089 Jul 9 16:38
+   1 xiaorongli ttys090 Jul 9 16:44
+   1 xiaorongli ttys091 Jul 9 17:51
+   1 xiaorongli ttys091 Jul 9 18:03
+   1 xiaorongli ttys093 Jul 9 00:09
+   1 xiaorongli ttys094 Jul 9 16:45
+   1 xiaorongli ttys096 Jul 9 17:06
+   1 xiaorongli ttys098 Jul 9 00:15
+   1 xiaorongli ttys098 Jul 9 17:06
+   1 xiaorongli ttys098 Jul 9 17:14
+   1 xiaorongli ttys100 Jul 9 17:16
+   1 xiaorongli ttys101 Jul 9 00:17
+   1 xiaorongli ttys101 Jul 9 18:26
+   1 xiaorongli ttys102 Jul 9 17:24
+   1 xiaorongli ttys104 Jul 9 14:18
+   1 xiaorongli ttys104 Jul 9 17:34
+   1 xiaorongli ttys105 Jul 9 01:02
+   1 xiaorongli ttys105 Jul 9 18:02
+   1 xiaorongli ttys106 Jul 9 18:27
+   1 xiaorongli ttys108 Jul 9 23:27
+   1 xiaorongli ttys110 Jul 9 01:12
+   1 xiaorongli ttys111 Jul 9 01:12
+   1 xiaorongli ttys113 Jul 9 06:32
+   1 xiaorongli ttys114 Jul 9 01:14
+   1 xiaorongli ttys116 Jul 9 18:28
+   1 xiaorongli ttys117 Jul 9 18:31
+   1 xiaorongli ttys119 Jul 9 06:07
+   1 xiaorongli ttys119 Jul 9 12:26
+   1 xiaorongli ttys127 Jul 9 18:49
+   1 xiaorongli ttys128 Jul 9 06:24
+   1 xiaorongli ttys128 Jul 9 12:33
+   1 xiaorongli ttys129 Jul 9 12:52
+   1 xiaorongli ttys131 Jul 9 07:28
+   1 xiaorongli ttys132 Jul 9 08:32
+   1 xiaorongli ttys132 Jul 9 19:11
+   1 xiaorongli ttys135 Jul 9 13:25
+   1 xiaorongli ttys136 Jul 9 13:36
+   1 xiaorongli ttys137 Jul 9 13:37
+   1 xiaorongli ttys137 Jul 9 21:03
+   1 xiaorongli ttys138 Jul 9 14:25
+   1 xiaorongli ttys141 Jul 9 21:04
+   1 xiaorongli ttys142 Jul 9 21:04
+   1 xiaorongli ttys143 Jul 9 21:07
+   1 xiaorongli ttys147 Jul 9 21:26
+   1 xiaorongli ttys149 Jul 9 21:27
+   1 xiaorongli ttys150 Jul 9 21:30
+   1 xiaorongli ttys152 Jul 9 21:40
+   1 xiaorongli ttys154 Jul 9 21:37
+   1 xiaorongli ttys155 Jul 9 21:46
+
+== 7.2 SSH file forensics ==
+--- authorized_keys: mtime + per-key fingerprint ---
+mtime=Jul 31 20:14:32 2025 size=101
+256 SHA256:2FLJKBVxuo+/vQXLJmHCxn07b6jAIZFpFgNpytk6EoQ xrliAnnie@gmail.com (ED25519)
+--- ~/.ssh inventory (names + mtimes only) ---
+total 80
+drwx------   11 xiaorongli  staff   352 Jun 29 02:02 .
+drwxr-xr-x+ 245 xiaorongli  staff  7840 Jul 10 05:42 ..
+drwx------    3 xiaorongli  staff    96 Jun 29 02:02 agent
+-rw-------@   1 xiaorongli  staff   101 Jul 31  2025 authorized_keys
+-rw-r--r--@   1 xiaorongli  staff   162 Jul 31  2025 config
+-rw-------@   1 xiaorongli  staff  2622 Oct 20  2025 google_compute_engine
+-rw-r--r--@   1 xiaorongli  staff   584 Oct 20  2025 google_compute_engine.pub
+-rw-------    1 xiaorongli  staff   464 Feb  1  2025 id_ed25519
+-rw-r--r--    1 xiaorongli  staff   101 Feb  1  2025 id_ed25519.pub
+-rw-------@   1 xiaorongli  staff  8145 Feb  1 14:16 known_hosts
+-rw-------@   1 xiaorongli  staff  7027 Jan 25 17:06 known_hosts.old
+--- config mtime ---
+mtime=Jul 31 20:15:07 2025 size=162
+
+== 7.3 remote/overlay entry services ==
+--- sshd: any listener on 22 + launchd state ---
+(no listener on :22)
+		"com.openssh.sshd" => enabled
+--- screensharingd process now ---
+(no screensharing process)
+--- Tailscale: daemon + 7/9 activity ---
+514 /usr/local/opt/tailscale/bin/tailscaled
+tailscale log: /usr/local/var/log/tailscaled.log
+log lines mentioning 2026-07-09: 0
+100.68.215.33   macbook-pro-7        xrliannie@   macOS   -
+100.64.21.57    pixel-9-pro-xl       xrliannie@   android offline
+
+# Health check:
+#     - An update from version 1.84.2 to 1.98.8 is available. Run `tailscale update` or `tailscale set --auto-update` to update now.
+--- ExpressVPN daemon ---
+(expressvpnd not running)
+--- Chrome Remote Desktop ---
+(no CRD launch agents in /Library/LaunchAgents)
+(no CRD process)
+--- booster daemon ---
+65908 /bin/zsh -c source /Users/xiaorongli/.claude/shell-snapshots/snapshot-zsh-1783670434180-f422sm.sh 2>/dev/null || true && export CODEX_COMPANION_SESSION_ID='d088c246-d900-4109-a0d2-e7cf6a8fd9fc'
+export CLAUDE_PLUGIN_DATA='/Users/xiaorongli/.claude/plugins/data/codex-openai-codex'
+: && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && eval 'cd /Users/xiaorongli/Dev/tidal-echo-c7d63e46-fd29-4f47-86e9-90584a00cac0
+proj="sub/content/projects/beauty-aura/004-radiant-glow-2026-07-10"
+cat > /private/tmp/claude-501/-Users-xiaorongli-Dev-tidal-echo-c7d63e46-fd29-4f47-86e9-90584a00cac0/d088c246-d900-4109-a0d2-e7cf6a8fd9fc/scratchpad/codex-review-prompt.txt <<PROMPT
+You are reviewing subliminal-audio content copy for a nightly generation run (beauty packet, YouTube EN). Review the 4 artifacts below against these HARD rules and output a verdict.
+
+RULES:
+1. Affirmations (60 lines): positive-only, ZERO negation (no not/no/never/without/cannot, no Chinese 不/但), present tense ownership, NO body measurements / facial-feature surgery / medical mechanisms / timelines / shaming / comparison to others / maxxing terms. Aesthetic layer only (glow/radiance/aura/presence).
+2. Sung lyrics (2 songs): must be scene/mood/metaphor narrative. ZERO ownership statements ("I am X", "X is mine" identity claims). ZERO reuse of affirmation sentences. Positive-safe (dark imagery as neutral night scenery is acceptable). No artist-name copying.
+3. YouTube title + description: zero em/en dashes, zero negation words, zero production metadata (dB, Suno, TTS, 432Hz, frequency, booster), no decorative stars, no medical claims, no outcome guarantees, no timeline promises. Natural human register (not AI-flavored).
+4. No Chinglish anywhere.
+
+OUTPUT FORMAT: For each artifact: PASS or FAIL with specific line quotes for any failure. End with overall APPROVED or CHANGES_REQUIRED.
+
+=== ARTIFACT 1: affirmations (60 lines) ===
+$(grep -vE '"'"'^[[:space:]]*(#|>|$)'"'"' "$proj/affirmations.md")
+
+=== ARTIFACT 2: lyric Golden Hour Room ===
+$(cat "$proj/assets/lyric-fresh1-deai.txt")
+
+=== ARTIFACT 3: lyric Candlelight Still (full) ===
+$(cat "$proj/assets/lyric-cs-full-deai.txt")
+
+=== ARTIFACT 4: YouTube title + description ===
+TITLE: $(cat "$proj/title.txt")
+$(cat "$proj/youtube-description.txt")
+PROMPT
+codex-with-fallback exec --full-auto "$(cat /private/tmp/claude-501/-Users-xiaorongli-Dev-tidal-echo-c7d63e46-fd29-4f47-86e9-90584a00cac0/d088c246-d900-4109-a0d2-e7cf6a8fd9fc/scratchpad/codex-review-prompt.txt)" 2>&1 | tail -40' && pwd -P >| /tmp/claude-7b1d-cwd
+66024 bash /Users/xiaorongli/.local/bin/codex-with-fallback exec --full-auto You are reviewing subliminal-audio content copy for a nightly generation run (beauty packet, YouTube EN). Review the 4 artifacts below against these HARD rules and output a verdict.
+
+RULES:
+1. Affirmations (60 lines): positive-only, ZERO negation (no not/no/never/without/cannot, no Chinese 不/但), present tense ownership, NO body measurements / facial-feature surgery / medical mechanisms / timelines / shaming / comparison to others / maxxing terms. Aesthetic layer only (glow/radiance/aura/presence).
+2. Sung lyrics (2 songs): must be scene/mood/metaphor narrative. ZERO ownership statements ("I am X", "X is mine" identity claims). ZERO reuse of affirmation sentences. Positive-safe (dark imagery as neutral night scenery is acceptable). No artist-name copying.
+3. YouTube title + description: zero em/en dashes, zero negation words, zero production metadata (dB, Suno, TTS, 432Hz, frequency, booster), no decorative stars, no medical claims, no outcome guarantees, no timeline promises. Natural human register (not AI-flavored).
+4. No Chinglish anywhere.
+
+OUTPUT FORMAT: For each artifact: PASS or FAIL with specific line quotes for any failure. End with overall APPROVED or CHANGES_REQUIRED.
+
+=== ARTIFACT 1: affirmations (60 lines) ===
+My glow starts deep and rises easily.
+I carry morning light in my face.
+You are radiant before you even try.
+Beauty feels natural on me.
+I soften, and my light grows.
+My whole face rests in gentle harmony.
+Each day I wake a little more luminous.
+I am dew, light, and warm gold.
+You glow like golden hour, all day long.
+Radiance follows me from room to room.
+My beauty is calm and certain.
+I look fresh, rested, and bright.
+Grace lives in the way I move.
+You are the soft focus of every scene.
+My light is steady and fully my own.
+People warm up the moment I smile.
+Kind eyes find me everywhere I go.
+My presence feels like candlelight.
+Others soften around my calm.
+People remember my glow long after the words.
+You draw gentleness out of every room.
+Conversations tilt toward me, easily.
+My quiet draws people gently closer.
+Strangers smile back at my light.
+People feel lucky to sit near me.
+The air brightens where I stand.
+Your warmth reaches people before you speak.
+Compliments find me on ordinary days.
+My aura is soft, magnetic, and warm.
+People keep a little of my light with them.
+The mirror greets me warmly.
+I catch my reflection and feel proud.
+My face photographs like soft light.
+Beauty meets me from every angle.
+You smile at yourself first thing.
+The camera finds my best with ease.
+My reflection glows back at me.
+I like the face looking back at me.
+Mirrors show me someone luminous.
+You see your own beauty clearly now.
+My photos feel warm and alive.
+Looking at myself feels like kindness.
+I fit perfectly inside my own life.
+My body is a gentle home.
+You carry yourself with quiet worth.
+Being me feels soft and right.
+I give myself the tenderness I deserve.
+My beauty shines all on its own.
+I am worth every second look.
+Peace looks beautiful on me.
+I treat myself like something precious.
+Enough is what I am, always.
+Glow is my baseline.
+I shine, softly.
+Pretty comes easy to me.
+My light stays on.
+Radiance, head to toe.
+I am golden hour.
+Soft, luminous, sure.
+Beauty lives here.
+
+=== ARTIFACT 2: lyric Golden Hour Room ===
+[Intro]
+[Soft]
+gold dust light on the building across
+paint streaks the window, afternoon gloss
+
+[Verse 1]
+[Breathy Head Voice]
+curtains lift with the afternoon air
+a patch of sun lands on my chair
+steam from my cup just hangs in the gold
+a story the quiet has always told
+
+[Pre-Chorus]
+[Soft]
+and the sun just pours through the glass pane
+a whisper of warmth, again and again
+
+[Chorus]
+[Same Energy] [Breathy Head Voice]
+golden hour always seems to last here in my room
+the dust motes dance in amber, the long shadows softly loom
+the air feels thick like honey, slow and golden, catching light
+yeah, the whole world turns this color for the night
+
+[Verse 2]
+[Breathy Head Voice]
+a book left open on the wooden floor
+a pool of sun right by the door
+the cuff of my sleeve is catching the light
+the mirror's reflecting a room so bright
+
+[Pre-Chorus]
+[Soft]
+and the sun feels like it was made for here
+so familiar, all through the year
+
+[Chorus]
+[Same Energy] [Breathy Head Voice]
+golden hour always seems to last here in my room
+the dust motes dance in amber, the long shadows softly loom
+the air feels thick like honey, slow and golden, catching light
+yeah, the whole world turns this color for the night
+
+[Bridge]
+[Whisper]
+sky outside is turning rose
+a distant siren softly goes
+a streetlamp flickers, adding to the gold
+a new kind of warmth as the day gets old
+
+[Chorus]
+[Same Energy] [Breathy Head Voice]
+golden hour always seems to last here in my room
+the dust motes dance in amber, the long shadows softly loom
+the air feels thick like honey, slow and golden, catching light
+yeah, the whole world turns this color for the night
+
+[Outro]
+[Soft] [Same Energy]
+the last little stripe of sun on the wall
+fading so slowly, that's all
+the room holds the warmth, a memory
+just quiet, and gold, and me
+
+=== ARTIFACT 3: lyric Candlelight Still (full) ===
+[Intro]
+[Whisper]
+one small lamp, the sheets feel cool
+just my shadow on the wall
+
+[Verse 1]
+[Intimate]
+the wooden brush moves through my hair
+a hint of rose upon the air
+the traffic hums a mile away
+deep carpet sinks with every step
+
+[Pre-Chorus]
+[Soft]
+the quiet deepens, soft and slow
+a sliver of the moon hangs low
+
+[Chorus]
+[Whisper] [Same Energy] [No Lift]
+my reflection in the candlelight
+the corners of the room fade into night
+the scent of steam, the cool of silk
+and all the air is thick with still
+
+[Verse 2]
+[Intimate]
+a single earring in its velvet case
+the shadows find their resting place
+warm lotion, lavender and steam
+the light plays games across the ceiling beam
+
+[Pre-Chorus]
+[Soft]
+the quiet deepens, soft and slow
+a sliver of the moon hangs low
+
+[Chorus]
+[Whisper] [Same Energy] [No Lift]
+my reflection in the candlelight
+the corners of the room fade into night
+the scent of steam, the cool of silk
+and all the air is thick with still
+
+[Bridge]
+[Whisper]
+the last few cars are heading home
+this little world is all my own
+the candle flame just sways and leans
+painting pictures in between
+
+[Chorus]
+[Whisper] [Same Energy] [No Lift]
+my reflection in the candlelight
+the corners of the room fade into night
+the scent of steam, the cool of silk
+and all the air is thick with still
+
+[Outro]
+[Whisper] [No Lift]
+the little flame begins to fade
+a pool of gold the wax has made
+the scent of roses, one last sigh
+the dark behind my closing eyes
+
+[Chorus]
+[Whisper] [Same Energy] [No Lift]
+my reflection in the candlelight
+the corners of the room fade into night
+the scent of steam, the cool of silk
+and all the air is thick with still
+
+[Outro]
+[Whisper] [No Lift]
+the wick glows soft, the room turns gold
+my own heartbeat, soft and deep
+I breathe in rose, the dark pulls close
+a gentle dark where day has been
+
+=== ARTIFACT 4: YouTube title + description ===
+TITLE: Beauty Subliminal the soft glow that turns heads ✨
+You know that quiet, magnetic kind of beauty some people just have? This is for finding that in yourself, gently.
+
+WHAT THIS IS
+A soft affirmation loop with some dreamy, glowing music. Underneath, there are quiet, present-tense affirmations for a warm inner glow and for feeling truly at home in your own skin. It's basically a little glow ritual you just press play on.
+
+INCLUDED AFFIRMATIONS
+My glow starts deep and rises easily.
+People warm up the moment I smile.
+The mirror greets me warmly.
+I am dew, light, and warm gold.
+My presence feels like candlelight.
+I catch my reflection and feel proud.
+My body is a gentle home.
+Beauty lives here.
+
+HOW TO LISTEN
+Keep the volume low and comfortable. You can listen while you do your skincare, get ready for the day, journal, or as you're drifting off to sleep. A little bit every day seems to work best. Let it just be a soft part of your routine.
+
+BENEFITS
+The hope here is a kinder, warmer view of your own face. A settled, solid kind of confidence. More ease in front of mirrors and cameras. That soft glow that seems to come from the inside.
+
+A NOTE
+Just a heads-up, this is a practice for mindset and mood. It's meant to be a gentle addition to whatever professional care you're taking. Everyone connects with this at their own pace, so take all the time you like. Hope you enjoy it.
+
+#subliminal #affirmations #manifestation #glowup #itgirl #radiance #beautysubliminal #divinefeminineenergy
+66078 codex exec --full-auto You are reviewing subliminal-audio content copy for a nightly generation run (beauty packet, YouTube EN). Review the 4 artifacts below against these HARD rules and output a verdict.
+
+RULES:
+1. Affirmations (60 lines): positive-only, ZERO negation (no not/no/never/without/cannot, no Chinese 不/但), present tense ownership, NO body measurements / facial-feature surgery / medical mechanisms / timelines / shaming / comparison to others / maxxing terms. Aesthetic layer only (glow/radiance/aura/presence).
+2. Sung lyrics (2 songs): must be scene/mood/metaphor narrative. ZERO ownership statements ("I am X", "X is mine" identity claims). ZERO reuse of affirmation sentences. Positive-safe (dark imagery as neutral night scenery is acceptable). No artist-name copying.
+3. YouTube title + description: zero em/en dashes, zero negation words, zero production metadata (dB, Suno, TTS, 432Hz, frequency, booster), no decorative stars, no medical claims, no outcome guarantees, no timeline promises. Natural human register (not AI-flavored).
+4. No Chinglish anywhere.
+
+OUTPUT FORMAT: For each artifact: PASS or FAIL with specific line quotes for any failure. End with overall APPROVED or CHANGES_REQUIRED.
+
+=== ARTIFACT 1: affirmations (60 lines) ===
+My glow starts deep and rises easily.
+I carry morning light in my face.
+You are radiant before you even try.
+Beauty feels natural on me.
+I soften, and my light grows.
+My whole face rests in gentle harmony.
+Each day I wake a little more luminous.
+I am dew, light, and warm gold.
+You glow like golden hour, all day long.
+Radiance follows me from room to room.
+My beauty is calm and certain.
+I look fresh, rested, and bright.
+Grace lives in the way I move.
+You are the soft focus of every scene.
+My light is steady and fully my own.
+People warm up the moment I smile.
+Kind eyes find me everywhere I go.
+My presence feels like candlelight.
+Others soften around my calm.
+People remember my glow long after the words.
+You draw gentleness out of every room.
+Conversations tilt toward me, easily.
+My quiet draws people gently closer.
+Strangers smile back at my light.
+People feel lucky to sit near me.
+The air brightens where I stand.
+Your warmth reaches people before you speak.
+Compliments find me on ordinary days.
+My aura is soft, magnetic, and warm.
+People keep a little of my light with them.
+The mirror greets me warmly.
+I catch my reflection and feel proud.
+My face photographs like soft light.
+Beauty meets me from every angle.
+You smile at yourself first thing.
+The camera finds my best with ease.
+My reflection glows back at me.
+I like the face looking back at me.
+Mirrors show me someone luminous.
+You see your own beauty clearly now.
+My photos feel warm and alive.
+Looking at myself feels like kindness.
+I fit perfectly inside my own life.
+My body is a gentle home.
+You carry yourself with quiet worth.
+Being me feels soft and right.
+I give myself the tenderness I deserve.
+My beauty shines all on its own.
+I am worth every second look.
+Peace looks beautiful on me.
+I treat myself like something precious.
+Enough is what I am, always.
+Glow is my baseline.
+I shine, softly.
+Pretty comes easy to me.
+My light stays on.
+Radiance, head to toe.
+I am golden hour.
+Soft, luminous, sure.
+Beauty lives here.
+
+=== ARTIFACT 2: lyric Golden Hour Room ===
+[Intro]
+[Soft]
+gold dust light on the building across
+paint streaks the window, afternoon gloss
+
+[Verse 1]
+[Breathy Head Voice]
+curtains lift with the afternoon air
+a patch of sun lands on my chair
+steam from my cup just hangs in the gold
+a story the quiet has always told
+
+[Pre-Chorus]
+[Soft]
+and the sun just pours through the glass pane
+a whisper of warmth, again and again
+
+[Chorus]
+[Same Energy] [Breathy Head Voice]
+golden hour always seems to last here in my room
+the dust motes dance in amber, the long shadows softly loom
+the air feels thick like honey, slow and golden, catching light
+yeah, the whole world turns this color for the night
+
+[Verse 2]
+[Breathy Head Voice]
+a book left open on the wooden floor
+a pool of sun right by the door
+the cuff of my sleeve is catching the light
+the mirror's reflecting a room so bright
+
+[Pre-Chorus]
+[Soft]
+and the sun feels like it was made for here
+so familiar, all through the year
+
+[Chorus]
+[Same Energy] [Breathy Head Voice]
+golden hour always seems to last here in my room
+the dust motes dance in amber, the long shadows softly loom
+the air feels thick like honey, slow and golden, catching light
+yeah, the whole world turns this color for the night
+
+[Bridge]
+[Whisper]
+sky outside is turning rose
+a distant siren softly goes
+a streetlamp flickers, adding to the gold
+a new kind of warmth as the day gets old
+
+[Chorus]
+[Same Energy] [Breathy Head Voice]
+golden hour always seems to last here in my room
+the dust motes dance in amber, the long shadows softly loom
+the air feels thick like honey, slow and golden, catching light
+yeah, the whole world turns this color for the night
+
+[Outro]
+[Soft] [Same Energy]
+the last little stripe of sun on the wall
+fading so slowly, that's all
+the room holds the warmth, a memory
+just quiet, and gold, and me
+
+=== ARTIFACT 3: lyric Candlelight Still (full) ===
+[Intro]
+[Whisper]
+one small lamp, the sheets feel cool
+just my shadow on the wall
+
+[Verse 1]
+[Intimate]
+the wooden brush moves through my hair
+a hint of rose upon the air
+the traffic hums a mile away
+deep carpet sinks with every step
+
+[Pre-Chorus]
+[Soft]
+the quiet deepens, soft and slow
+a sliver of the moon hangs low
+
+[Chorus]
+[Whisper] [Same Energy] [No Lift]
+my reflection in the candlelight
+the corners of the room fade into night
+the scent of steam, the cool of silk
+and all the air is thick with still
+
+[Verse 2]
+[Intimate]
+a single earring in its velvet case
+the shadows find their resting place
+warm lotion, lavender and steam
+the light plays games across the ceiling beam
+
+[Pre-Chorus]
+[Soft]
+the quiet deepens, soft and slow
+a sliver of the moon hangs low
+
+[Chorus]
+[Whisper] [Same Energy] [No Lift]
+my reflection in the candlelight
+the corners of the room fade into night
+the scent of steam, the cool of silk
+and all the air is thick with still
+
+[Bridge]
+[Whisper]
+the last few cars are heading home
+this little world is all my own
+the candle flame just sways and leans
+painting pictures in between
+
+[Chorus]
+[Whisper] [Same Energy] [No Lift]
+my reflection in the candlelight
+the corners of the room fade into night
+the scent of steam, the cool of silk
+and all the air is thick with still
+
+[Outro]
+[Whisper] [No Lift]
+the little flame begins to fade
+a pool of gold the wax has made
+the scent of roses, one last sigh
+the dark behind my closing eyes
+
+[Chorus]
+[Whisper] [Same Energy] [No Lift]
+my reflection in the candlelight
+the corners of the room fade into night
+the scent of steam, the cool of silk
+and all the air is thick with still
+
+[Outro]
+[Whisper] [No Lift]
+the wick glows soft, the room turns gold
+my own heartbeat, soft and deep
+I breathe in rose, the dark pulls close
+a gentle dark where day has been
+
+=== ARTIFACT 4: YouTube title + description ===
+TITLE: Beauty Subliminal the soft glow that turns heads ✨
+You know that quiet, magnetic kind of beauty some people just have? This is for finding that in yourself, gently.
+
+WHAT THIS IS
+A soft affirmation loop with some dreamy, glowing music. Underneath, there are quiet, present-tense affirmations for a warm inner glow and for feeling truly at home in your own skin. It's basically a little glow ritual you just press play on.
+
+INCLUDED AFFIRMATIONS
+My glow starts deep and rises easily.
+People warm up the moment I smile.
+The mirror greets me warmly.
+I am dew, light, and warm gold.
+My presence feels like candlelight.
+I catch my reflection and feel proud.
+My body is a gentle home.
+Beauty lives here.
+
+HOW TO LISTEN
+Keep the volume low and comfortable. You can listen while you do your skincare, get ready for the day, journal, or as you're drifting off to sleep. A little bit every day seems to work best. Let it just be a soft part of your routine.
+
+BENEFITS
+The hope here is a kinder, warmer view of your own face. A settled, solid kind of confidence. More ease in front of mirrors and cameras. That soft glow that seems to come from the inside.
+
+A NOTE
+Just a heads-up, this is a practice for mindset and mood. It's meant to be a gentle addition to whatever professional care you're taking. Everyone connects with this at their own pace, so take all the time you like. Hope you enjoy it.
+
+#subliminal #affirmations #manifestation #glowup #itgirl #radiance #beautysubliminal #divinefeminineenergy
+
+== 7.4 persistence deltas ==
+--- chezmoi diff (should be empty if dotfiles match source) ---
+diff --git a/.claude/rules/agents.md b/.claude/rules/agents.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..d30bcef89d566efb6f42454d7aa92d3138c1b7e5
+--- /dev/null
++++ b/.claude/rules/agents.md
+@@ -0,0 +1,49 @@
++# Agent Orchestration
++
++## Available Agents
++
++Located in `~/.claude/agents/`:
++
++| Agent | Purpose | When to Use |
++|-------|---------|-------------|
++| planner | Implementation planning | Complex features, refactoring |
++| architect | System design | Architectural decisions |
++| tdd-guide | Test-driven development | New features, bug fixes |
++| code-reviewer | Code review | After writing code |
++| security-reviewer | Security analysis | Before commits |
++| build-error-resolver | Fix build errors | When build fails |
+--- chezmoi git log last 3 days ---
+5c45693 2026-07-10 02:00:05 -0700 auto-sync: 2026-07-10 02:00:05 from MacBook-Pro
+d3f8759 2026-07-09 02:00:02 -0700 auto-sync: 2026-07-09 02:00:02 from MacBook-Pro
+2aa2563 2026-07-08 02:00:06 -0700 auto-sync: 2026-07-08 02:00:06 from MacBook-Pro
+--- shell rc mtimes ---
+Jun 26 15:34:56 2026  /Users/xiaorongli/.zshrc
+Jun 12 13:42:00 2026  /Users/xiaorongli/.zprofile
+Feb 17 20:54:28 2026  /Users/xiaorongli/.zshenv
+Jun 18 22:04:26 2026  /Users/xiaorongli/.bashrc
+Jun 18 22:04:26 2026  /Users/xiaorongli/.bash_profile
+Mar 17 19:05:12 2026  /etc/zshrc
+Mar 17 19:05:12 2026  /etc/profile
+--- login items (System Events query; may fail without automation permission = gap) ---
+Typeless
+
+== 7.5 incident-window binary origins ==
+--- 23:25-23:35 window: distinct checked-in app names (from committed lifecycle slice) ---
+ 452 node
+ 282 cmux
+  29 osascript
+   2 npm exec chrome-devtools-mcp@latest --auto-connect --channel=stable
+   2 OrcaSlicer
+   1 npm exec vitest run
+   1 npm exec tsx scripts/run-bridge.ts
+   1 npm exec tsc --noEmit -p packages/teamlead
+   1 npm exec @upstash/context7-mcp
+   1 npm exec @playwright/mcp@latest
+   1 node (vitest 7)
+   1 node (vitest 3)
+   1 Shortcuts
+   1 Keychain Circle Notification
+   1 CoreServicesUIAgent
+--- 14:20-14:40 window: distinct CHECKIN bundle paths from appDeath records (already tabled) + non-standard paths in wide export exec records ---
+ 950 bundle path: /opt/homebrew/Cellar/node/25.6.1/bin/node
+ 521 bundle path: /Applications/cmux.app/Contents/Resources/bin/cmux
+  67 bundle path: /usr/bin/osascript
+   2 bundle path: /System/Library/CoreServices/screencaptureui.app
+
+== 7.6 current network baseline (historical connections = declared blind spot) ==
+--- listeners ---
+Adobe\x20 xiaorongli 127.0.0.1:15292
+COMMAND USER NAME
+ControlCe xiaorongli *:5000
+ControlCe xiaorongli *:7000
+Discord xiaorongli 127.0.0.1:6463
+Google xiaorongli 127.0.0.1:9222
+Linear xiaorongli 127.0.0.1:44450
+Linear xiaorongli 127.0.0.1:54232
+Ollama xiaorongli 127.0.0.1:60260
+Python xiaorongli *:8799
+Python xiaorongli *:8931
+Python xiaorongli 127.0.0.1:8799
+Python xiaorongli 127.0.0.1:8800
+Python xiaorongli 127.0.0.1:8801
+Typeless xiaorongli 127.0.0.1:57834
+cloudflar xiaorongli 127.0.0.1:20241
+netdisk_s xiaorongli 127.0.0.1:10000
+node xiaorongli *:8980
+node xiaorongli 127.0.0.1:63224
+node xiaorongli 127.0.0.1:63337
+node xiaorongli 127.0.0.1:63338
+node xiaorongli 127.0.0.1:63355
+node xiaorongli 127.0.0.1:63374
+node xiaorongli 127.0.0.1:63379
+node xiaorongli 127.0.0.1:8988
+node xiaorongli 127.0.0.1:9876
+node xiaorongli 127.0.0.1:9877
+node xiaorongli 127.0.0.1:9931
+node xiaorongli 127.0.0.1:9932
+ollama xiaorongli 127.0.0.1:11434
+python3.1 xiaorongli 127.0.0.1:24282
+python3.1 xiaorongli 127.0.0.1:24283
+rapportd xiaorongli *:49644
+rapportd xiaorongli *:49645
+rapportd xiaorongli *:58309
+xiaohongs xiaorongli 127.0.0.1:18060
+--- established (counts by process) ---
+  86 2.1.205
+  74 2.1.206
+  67 xiaohongs
+  49 bun.exe
+  41 Google
+   4 2.1.195
+   3 node
+   3 identitys
+   2 SogouInpu
+   1 codex
+   1 Typeless
+   1 Discord
+   1 COMMAND
+
+== 7.7 scratchpad 3dcb1b94 hunt ==
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-anna-interviewer-lead/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-claude-infra-bot-lead/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-cos-lead/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-flywheel-cos-lead/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-flywheel-eng-lead/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-flywheel-product-lead/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-flywheel-test-1/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-flywheel-test-2/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-flywheel-test-3/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-joycon-lead/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-ops-lead/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-product-lead/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-rafiki-lead/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-reflection-lead/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-sub-lead/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-tidal-echo-content-lead/
+/private/tmp/claude-501/-Users-xiaorongli--flywheel-lead-workspace-tidal-echo-cos-lead/
+/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-05f47a45-0305-4d56-ac6d-57649720ea4d-qa/
+/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-0b5d6647-b2a4-4d74-ba19-262ba0949195-qa/
+/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-1ecb1b2a-5cf2-4b7d-8ab7-4d6a07efd494-qa/
+/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-207e4660-a45b-43e9-9cde-6bdd9fade292-qa/
+/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-2450c281-3280-4d83-a3e6-436ce8528ce0-qa/
+/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-32b6457c-b7e6-4455-999b-1bb5bb7bf147-qa/
+/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-368b378e-8b0c-44eb-946c-c7f003a41b09-qa/
+/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-3aabac4f-57bc-470c-a78e-e2ffdfeaeda0-qa/
+/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-48043edf-68bd-4308-aa2c-7f983e9364e5-qa/
+/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-574bbf6c-9fd4-4ce0-8384-c4b4342fdbec-qa/
+/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-60c1ed8c-c6a4-4e2f-ae15-855dbf876038-qa/
+/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-62840483-2fc0-4f04-b8d1-bc07276bbc34-qa/
+/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-650959f4-70bf-4f8b-b621-97b2ad413145-qa/
+(runner-3dcb1b94 seen in health-log top-RSS 18:16-21:33 = flywheel-eng-lead runner; scratchpad dir search above)
+
+== 7.8 GitHub account-plane (public events as weak aux; security log = web-only blind spot) ==
+xrliAnnie
+2026-07-10T08:35:54Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T08:17:58Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T08:17:34Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T08:17:17Z	CreateEvent	xrliAnnie/flywheel
+2026-07-10T08:15:06Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T08:11:30Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T08:02:59Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T07:56:05Z	PullRequestReviewEvent	xrliAnnie/flywheel
+2026-07-10T07:51:25Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T07:49:42Z	PullRequestEvent	xrliAnnie/flywheel
+2026-07-10T07:49:43Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T07:49:10Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T07:44:05Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T07:40:20Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T07:37:42Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T07:36:15Z	PullRequestReviewEvent	xrliAnnie/flywheel
+2026-07-10T07:35:18Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T07:34:17Z	IssueCommentEvent	xrliAnnie/flywheel
+2026-07-10T07:33:08Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T07:28:50Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T07:28:19Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T07:26:31Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T07:25:45Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T07:24:41Z	PushEvent	xrliAnnie/flywheel
+2026-07-10T07:23:35Z	PushEvent	xrliAnnie/flywheel
