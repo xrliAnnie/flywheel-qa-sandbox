@@ -80,6 +80,15 @@ function record(value: unknown): Record<string, unknown> | null {
 		: null;
 }
 
+function safeDiagnostic(error: unknown, fallback: string): string {
+	const message = error instanceof Error ? error.message : String(error);
+	if (!message) return fallback;
+	return message.replace(
+		/(^|[\s("'=])\/[^\s)"'=]+/g,
+		(_match, prefix: string) => `${prefix}<path>`,
+	);
+}
+
 function integer(
 	value: unknown,
 	name: string,
@@ -265,7 +274,7 @@ function errorCron(input: {
 		},
 		enabled: {
 			targetId: buildCronTargetId(input.path, input.label, "enabled"),
-			current: true,
+			current: null,
 			source: { kind: "launchctl", revision: "launchctl:unknown" },
 			writeCapability: readonlyCapability(input.error),
 		},
@@ -348,7 +357,7 @@ function canonicalPaths(
 		try {
 			paths.push(deps.realpath(candidate));
 		} catch {
-			warnings.push(`无法解析程序路径 ${candidate}`);
+			warnings.push(`无法解析程序路径 ${basename(candidate)}`);
 		}
 	}
 	return paths;
@@ -362,13 +371,14 @@ export function scanManagementCrons(input: ScanManagementCronsInput): {
 } {
 	const deps: ManagementCronIo = { ...DEFAULT_IO, ...input.deps };
 	const uid = input.uid ?? process.getuid?.() ?? 0;
-	let disabled = new Set<string>();
+	let disabled: Set<string> | null = null;
+	let disabledError: string | undefined;
 	try {
 		disabled = disabledLabels(
 			deps.execFile("launchctl", ["print-disabled", `gui/${uid}`]),
 		);
 	} catch {
-		// Runtime evidence is independent from declared plist schedule.
+		disabledError = "launchctl 运行状态不可用；enabled 保持只读";
 	}
 	const canonicalProjects: ProjectRootCandidate[] = input.projects.map(
 		(project) => {
@@ -407,7 +417,7 @@ export function scanManagementCrons(input: ScanManagementCronsInput): {
 					path,
 					label: name.replace(/\.plist$/, ""),
 					revision: "file:unreadable",
-					error: error instanceof Error ? error.message : String(error),
+					error: safeDiagnostic(error, "cron plist metadata read failed"),
 				}),
 			);
 			continue;
@@ -443,7 +453,7 @@ export function scanManagementCrons(input: ScanManagementCronsInput): {
 					path,
 					label: name.replace(/\.plist$/, ""),
 					revision: "file:parse-error",
-					error: error instanceof Error ? error.message : String(error),
+					error: safeDiagnostic(error, "cron plist parse failed"),
 				}),
 			);
 			continue;
@@ -456,10 +466,17 @@ export function scanManagementCrons(input: ScanManagementCronsInput): {
 		} catch {
 			warnings.push("无法解析 plist 真实路径");
 		}
+		const rawLabel = plist.Label;
 		const label =
-			typeof plist.Label === "string" && plist.Label.trim()
-				? plist.Label.trim()
+			typeof rawLabel === "string" && rawLabel.trim()
+				? rawLabel.trim()
 				: name.replace(/\.plist$/, "");
+		const labelError =
+			typeof rawLabel !== "string" ||
+			rawLabel !== label ||
+			!/^[A-Za-z0-9._-]+$/.test(label)
+				? "launchd Label 缺失、含空白或不安全；该 plist 保持只读"
+				: undefined;
 		const normalized = normalizeWeeklySchedule(plist.StartCalendarInterval);
 		warnings.push(...normalized.warnings);
 		const ownership = matchProjectRoot(
@@ -474,13 +491,20 @@ export function scanManagementCrons(input: ScanManagementCronsInput): {
 				? undefined
 				: "Unassigned/Unmanaged";
 		const sourceRevision = fileSourceRevision(bytes);
-		const safelyManaged = Boolean(ownership.projectName) && !ambiguous;
+		const cronError = labelError ?? ownershipError;
+		const safelyManaged =
+			Boolean(ownership.projectName) &&
+			!ambiguous &&
+			!labelError &&
+			disabled !== null;
 		let loaded: boolean | null = null;
-		try {
-			deps.execFile("launchctl", ["print", `gui/${uid}/${label}`]);
-			loaded = true;
-		} catch {
-			loaded = false;
+		if (!labelError && disabled !== null) {
+			try {
+				deps.execFile("launchctl", ["print", `gui/${uid}/${label}`]);
+				loaded = true;
+			} catch {
+				loaded = false;
+			}
 		}
 		const typed = input.modelBindings?.get(canonicalPath);
 		const direct = directModelBinding(plist.ProgramArguments);
@@ -504,19 +528,23 @@ export function scanManagementCrons(input: ScanManagementCronsInput): {
 				},
 				writeCapability: launchdCapability(
 					safelyManaged && normalized.writable,
-					normalized.error ?? ownershipError ?? warnings[0],
+					normalized.error ?? disabledError ?? cronError ?? warnings[0],
 				),
 				error: normalized.error,
 			},
 			enabled: {
 				targetId: buildCronTargetId(canonicalPath, label, "enabled"),
-				current: !disabled.has(label),
+				current: disabled ? !disabled.has(label) : null,
 				source: {
 					kind: "launchctl",
-					revision: `launchctl:${uid}:${disabled.has(label) ? "disabled" : "enabled"}`,
+					revision: `launchctl:${uid}:${disabled ? (disabled.has(label) ? "disabled" : "enabled") : "unknown"}`,
 					hint: label,
 				},
-				writeCapability: launchdCapability(safelyManaged, ownershipError),
+				writeCapability: launchdCapability(
+					safelyManaged,
+					disabledError ?? cronError,
+				),
+				error: disabledError,
 			},
 			loaded,
 			model: {
@@ -529,11 +557,11 @@ export function scanManagementCrons(input: ScanManagementCronsInput): {
 				},
 				writeCapability: launchdCapability(
 					safelyManaged && modelBinding.writable,
-					modelBinding.reason ?? ownershipError,
+					modelBinding.reason ?? disabledError ?? cronError,
 				),
 			},
 			warnings,
-			error: ownershipError,
+			error: cronError ?? disabledError,
 		};
 		if (ownership.projectName) byProject.get(ownership.projectName)?.push(cron);
 		else unassignedCrons.push(cron);

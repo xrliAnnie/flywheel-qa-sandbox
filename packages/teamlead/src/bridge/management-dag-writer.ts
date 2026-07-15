@@ -8,6 +8,7 @@ import type {
 } from "../StateStore.js";
 import {
 	validateWorkflowManifest,
+	type WorkflowEffort,
 	type WorkflowManifestV1,
 } from "../workflow-template.js";
 import {
@@ -35,6 +36,21 @@ function invalid(error: unknown): ManagementDagWriteResult {
 	};
 }
 
+function workflowEffort(
+	value: string | null | undefined,
+): WorkflowEffort | undefined {
+	if (value == null) return undefined;
+	switch (value) {
+		case "low":
+		case "medium":
+		case "high":
+		case "xhigh":
+			return value;
+		default:
+			throw new Error(`unsupported workflow effort: ${value}`);
+	}
+}
+
 /** Resolve the opaque target from current server state; never trust client ids. */
 function resolveTarget(input: ManagementDagEdit):
 	| {
@@ -46,28 +62,34 @@ function resolveTarget(input: ManagementDagEdit):
 	  }
 	| undefined {
 	for (const template of input.store.listWorkflowTemplates()) {
-		if (!template.current_published_revision) continue;
-		const revision = input.store.getWorkflowTemplateRevision(
-			template.template_id,
-			template.current_published_revision,
-		);
-		if (!revision) continue;
-		const manifest = validateWorkflowManifest(JSON.parse(revision.manifest));
-		for (const node of manifest.nodes) {
-			if (node.type === "gate") continue;
-			const serverTarget = buildTargetId("dag", [
+		try {
+			if (!template.current_published_revision) continue;
+			const revision = input.store.getWorkflowTemplateRevision(
 				template.template_id,
-				node.id,
-				"dispatch",
-			]);
-			if (serverTarget !== input.targetId) continue;
-			return {
-				templateId: template.template_id,
-				revision: revision.revision,
-				digest: revision.manifest_digest,
-				manifest,
-				nodeId: node.id,
-			};
+				template.current_published_revision,
+			);
+			if (!revision) continue;
+			const manifest = validateWorkflowManifest(JSON.parse(revision.manifest));
+			for (const node of manifest.nodes) {
+				if (node.type === "gate") continue;
+				const serverTarget = buildTargetId("dag", [
+					template.template_id,
+					node.id,
+					"dispatch",
+				]);
+				if (serverTarget !== input.targetId) continue;
+				return {
+					templateId: template.template_id,
+					revision: revision.revision,
+					digest: revision.manifest_digest,
+					manifest,
+					nodeId: node.id,
+				};
+			}
+		} catch {
+			// A legacy/retired model in one persisted template must not block
+			// edits to independent healthy templates. The read model exposes that
+			// template's diagnostic separately.
 		}
 	}
 	return undefined;
@@ -112,8 +134,8 @@ export function applyManagementDagEdit(
 		}
 		node.vendor = registered.runtimeVendor;
 		node.model = registered.id;
-		if (input.desired.effort)
-			node.effort = input.desired.effort as typeof node.effort;
+		const effort = workflowEffort(input.desired.effort);
+		if (effort) node.effort = effort;
 		else delete node.effort;
 		const validated = validateWorkflowManifest(next);
 		return input.store.createAndPublishWorkflowTemplateRevision({

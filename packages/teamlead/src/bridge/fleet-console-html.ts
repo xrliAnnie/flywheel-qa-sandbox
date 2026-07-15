@@ -55,6 +55,10 @@ function normalizeTimes(times){
   valid.sort(function(a,b){return a.hour-b.hour||a.minute-b.minute;});
   return valid.length?valid:[{hour:9,minute:0}];
 }
+function shouldHandleScheduleEvent(action,eventType){
+  return (eventType==="click"&&(action==="day"||action==="add"||action==="remove"))||
+    (eventType==="change"&&(action==="hour"||action==="minute"));
+}
 function updateDraft(drafts,targetId,desiredValue,currentValue,observedRevision){
   if(stableUiValue(desiredValue)===stableUiValue(currentValue)){
     delete drafts[targetId];
@@ -213,7 +217,7 @@ const MANAGEMENT_CONSOLE_APP = `
   function catalogFor(surface){return snapshot.modelCatalog[surface]||{providers:[]};}
   function defaultSelection(surface){
     var catalog=catalogFor(surface);var provider=catalog.providers[0];var model=provider&&provider.models[0];
-    return provider&&model?{provider:provider.id,model:model.id,effort:model.efforts.length?model.efforts[0]:null}:null;
+    return provider&&model?{provider:provider.id,model:model.id,effort:null}:null;
   }
   function selectedProvider(catalog,value){
     var id=value&&value.provider;for(var i=0;i<catalog.providers.length;i++){if(catalog.providers[i].id===id){return catalog.providers[i];}}
@@ -225,13 +229,17 @@ const MANAGEMENT_CONSOLE_APP = `
   }
   function option(id,label,chosen){return '<option value="'+esc(id)+'" '+(id===chosen?'selected':'')+'>'+esc(label)+'</option>';}
   function modelControl(managed,surface,label,providerLocked){
-    var current=effective(managed);var value=current||defaultSelection(surface);var catalog=catalogFor(surface);var provider=selectedProvider(catalog,value);var model=selectedModel(provider,value);var disabled=writable(managed)?"":" disabled";
-    if(!provider||!model){return '<div class="field"><label>'+esc(label)+'</label><div class="reason">真实 registry 在此层没有可用型号</div>'+capability(managed)+'</div>';}
-    var providers=catalog.providers.map(function(item){return option(item.id,item.label,provider.id);}).join("");
-    var models=provider.models.map(function(item){return option(item.id,item.label,model.id);}).join("");
-    var efforts=model.efforts.map(function(item){return option(item,item,value&&value.effort);}).join("");
-    if(!efforts){efforts='<option value="">账户默认</option>';}
-    return '<div class="field" data-model-target="'+esc(managed.targetId)+'"><label>'+esc(label)+'</label><div class="three"><select data-model-part="provider" data-surface="'+esc(surface)+'"'+(providerLocked?' disabled':disabled)+'>'+providers+'</select><select data-model-part="model" data-surface="'+esc(surface)+'"'+disabled+'>'+models+'</select><select data-model-part="effort" data-surface="'+esc(surface)+'"'+disabled+'>'+efforts+'</select></div>'+capability(managed)+'</div>';
+    var value=effective(managed);var catalog=catalogFor(surface);var writableTarget=writable(managed);
+    if(!catalog.providers.length){return '<div class="field"><label>'+esc(label)+'</label><div class="reason">真实 registry 在此层没有可用型号</div>'+capability(managed)+'</div>';}
+    var provider=value?selectedProvider(catalog,value):(providerLocked?catalog.providers[0]:null);
+    var model=value&&provider?selectedModel(provider,value):null;
+    var providers=(providerLocked?'':'<option value="" '+(!provider?'selected':'')+'>账户默认</option>')+catalog.providers.map(function(item){return option(item.id,item.label,provider&&provider.id);}).join("");
+    var models='<option value="" '+(!model?'selected':'')+'>账户默认</option>'+(provider?provider.models.map(function(item){return option(item.id,item.label,model&&model.id);}).join(""):"");
+    var efforts='<option value="" '+(!value||value.effort==null?'selected':'')+'>账户默认</option>'+(model?model.efforts.map(function(item){return option(item,item,value&&value.effort);}).join(""):"");
+    var providerDisabled=providerLocked||!writableTarget?' disabled':'';
+    var modelDisabled=!writableTarget||!provider?' disabled':'';
+    var effortDisabled=!writableTarget||!model?' disabled':'';
+    return '<div class="field" data-model-target="'+esc(managed.targetId)+'"><label>'+esc(label)+'</label><div class="three"><select data-model-part="provider" data-surface="'+esc(surface)+'"'+providerDisabled+'>'+providers+'</select><select data-model-part="model" data-surface="'+esc(surface)+'"'+modelDisabled+'>'+models+'</select><select data-model-part="effort" data-surface="'+esc(surface)+'"'+effortDisabled+'>'+efforts+'</select></div>'+capability(managed)+'</div>';
   }
   function renderRoles(project){
     if(!project.roles.length){return '<div class="empty">未发现角色卡</div>';}
@@ -269,7 +277,7 @@ const MANAGEMENT_CONSOLE_APP = `
     return '<div class="field"><label>星期与时间</label>'+days+times+'<button class="mini-button" data-schedule-action="add" data-target="'+esc(managed.targetId)+'"'+disabled+'>增加时间</button>'+capability(managed)+'</div>';
   }
   function cronCard(cron){
-    var enabled=effective(cron.enabled);var html='<article class="card"><div class="card-head"><div><h3>'+esc(cron.label)+'</h3><div class="subtitle">'+esc(cron.sourceHint)+'</div></div><button class="toggle '+(enabled?'on':'')+'" data-toggle-target="'+esc(cron.enabled.targetId)+'"'+(writable(cron.enabled)?'':' disabled')+'>'+(enabled?'已启用':'已停用')+'</button></div>';
+    var enabled=effective(cron.enabled);var enabledLabel=enabled===null?'状态未知':enabled?'已启用':'已停用';var html='<article class="card"><div class="card-head"><div><h3>'+esc(cron.label)+'</h3><div class="subtitle">'+esc(cron.sourceHint)+'</div></div><button class="toggle '+(enabled===true?'on':'')+'" data-toggle-target="'+esc(cron.enabled.targetId)+'"'+(writable(cron.enabled)?'':' disabled')+'>'+enabledLabel+'</button></div>';
     html+='<div class="subtitle">launchd loaded：'+esc(cron.loaded===null?'未知':cron.loaded?'是':'否')+'</div>'+scheduleEditor(cron.schedule);
     if(cron.model){html+=modelControl(cron.model,"cron","任务模型",false);}
     cron.warnings.forEach(function(warning){html+='<div class="warning">'+esc(warning)+'</div>';});
@@ -338,12 +346,13 @@ const MANAGEMENT_CONSOLE_APP = `
 
   function handleModelChange(select){
     var holder=select.closest("[data-model-target]");var managed=targetIndex[holder.dataset.modelTarget];if(!managed||!writable(managed)){return;}
-    var surface=select.dataset.surface;var value=clone(effective(managed))||defaultSelection(surface);var catalog=catalogFor(surface);var part=select.dataset.modelPart;
-    value[part]=select.value||null;
+    var surface=select.dataset.surface;var current=clone(effective(managed));var catalog=catalogFor(surface);var part=select.dataset.modelPart;
+    if((part==="provider"||part==="model")&&!select.value){setDraft(managed,null);return;}
+    var value=current||defaultSelection(surface);if(!value){return;}value[part]=select.value||null;
     if(part==="provider"){
-      var provider=selectedProvider(catalog,value);var model=provider&&provider.models[0];if(!model){return;}value.model=model.id;value.effort=model.efforts.length?model.efforts[0]:null;
+      var provider=selectedProvider(catalog,value);var model=provider&&provider.models[0];if(!model){return;}value.model=model.id;value.effort=null;
     }else if(part==="model"){
-      var selected=selectedModel(selectedProvider(catalog,value),value);value.effort=selected&&selected.efforts.length?selected.efforts[0]:null;
+      value.effort=null;
     }
     setDraft(managed,value);
   }
@@ -364,7 +373,7 @@ const MANAGEMENT_CONSOLE_APP = `
   }
   function delegate(event){
     var model=event.target.closest("[data-model-part]");if(model&&event.type==="change"){handleModelChange(model);return;}
-    var schedule=event.target.closest("[data-schedule-action]");if(schedule){if(event.type==="click"||event.type==="change"){handleSchedule(schedule);}return;}
+    var schedule=event.target.closest("[data-schedule-action]");if(schedule){if(shouldHandleScheduleEvent(schedule.dataset.scheduleAction,event.type)){handleSchedule(schedule);}return;}
     var toggle=event.target.closest("[data-toggle-target]");if(toggle&&event.type==="click"){var managed=targetIndex[toggle.dataset.toggleTarget];if(managed){setDraft(managed,!effective(managed));}return;}
     var extension=event.target.closest("[data-extension-target]");if(extension&&event.type==="change"){var field=targetIndex[extension.dataset.extensionTarget];setDraft(field,extension.dataset.extensionKind==="number"?Number(extension.value):extension.value);return;}
     var order=event.target.closest("[data-order-target]");if(order&&event.type==="click"){handleOrder(order);}

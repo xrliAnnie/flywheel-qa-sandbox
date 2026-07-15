@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,12 @@ import { fileURLToPath } from "node:url";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..");
 const DEFAULT_URL = "http://127.0.0.1:9876";
+const REQUIRED_ACCEPTANCE_TESTS = [
+	"serves one secret-free aggregate and a UI with no manual ingest or copied inventory",
+	"auto-discovers added and removed Leads, registered flags, project crons, and unmatched crons with zero UI edits",
+	"stages server old-to-new values, writes config/DB/flag/plist, rejects stale sources, and journals partial results",
+	"ships a runnable live-readonly QA entrypoint that reports counts without mutation",
+];
 
 function fail(message) {
 	process.stderr.write(`FAIL: ${message}\n`);
@@ -22,6 +28,7 @@ function pass(requirement, evidence) {
 function parseArgs(argv) {
 	let mode = "isolated";
 	let baseUrl = process.env.FLYWHEEL_BRIDGE_URL || DEFAULT_URL;
+	let reportPath;
 	for (let index = 0; index < argv.length; index++) {
 		const arg = argv[index];
 		if (arg === "--live-readonly") {
@@ -33,6 +40,12 @@ function parseArgs(argv) {
 			if (!baseUrl) throw new Error("--base-url requires a value");
 			continue;
 		}
+		if (arg === "--verify-report") {
+			mode = "verify-report";
+			reportPath = argv[++index];
+			if (!reportPath) throw new Error("--verify-report requires a path");
+			continue;
+		}
 		if (arg === "--help" || arg === "-h") {
 			process.stdout.write(
 				`${[
@@ -42,11 +55,59 @@ function parseArgs(argv) {
 					"--live-readonly: fetch and summarize a loopback Bridge snapshot; never writes.",
 				].join("\n")}\n`,
 			);
-			return { mode: "help", baseUrl };
+			return { mode: "help", baseUrl, reportPath };
 		}
 		throw new Error(`unknown argument: ${arg}`);
 	}
-	return { mode, baseUrl };
+	return { mode, baseUrl, reportPath };
+}
+
+function verifyAcceptanceReport(report) {
+	const assertions = Array.isArray(report?.testResults)
+		? report.testResults.flatMap((result) =>
+				Array.isArray(result?.assertionResults) ? result.assertionResults : [],
+			)
+		: [];
+	if (report?.numTotalTests !== REQUIRED_ACCEPTANCE_TESTS.length) {
+		throw new Error(
+			`acceptance report must contain exactly four tests; found ${String(report?.numTotalTests)}`,
+		);
+	}
+	for (const title of REQUIRED_ACCEPTANCE_TESTS) {
+		const assertion = assertions.find(
+			(candidate) => candidate?.title === title,
+		);
+		if (!assertion)
+			throw new Error(`missing required acceptance test: ${title}`);
+		if (assertion.status !== "passed") {
+			throw new Error(
+				`required acceptance test did not pass (${assertion.status}): ${title}`,
+			);
+		}
+	}
+	if (report.numPassedTests !== REQUIRED_ACCEPTANCE_TESTS.length) {
+		throw new Error(
+			`acceptance report has non-passing tests: ${String(report.numPassedTests)}/${REQUIRED_ACCEPTANCE_TESTS.length}`,
+		);
+	}
+}
+
+function printAcceptancePasses() {
+	pass("§6.1", "one versioned aggregate contains all management sections");
+	pass("§6.2", "production HTML has no manual ingest or copied inventory");
+	pass(
+		"§6.3",
+		"Lead, flag, project cron, and unmatched cron appear and disappear automatically",
+	);
+	pass(
+		"§6.4",
+		"unified canonical stage/apply writes config, DB, env, and plist with stale/partial proof",
+	);
+}
+
+function verifyReportFile(path) {
+	verifyAcceptanceReport(JSON.parse(readFileSync(path, "utf8")));
+	printAcceptancePasses();
 }
 
 function assertLoopback(rawUrl) {
@@ -91,6 +152,7 @@ function runIsolated() {
 	const qaHome = mkdtempSync(join(tmpdir(), "fly1262-qa-home-"));
 	try {
 		mkdirSync(join(qaHome, ".flywheel"), { recursive: true });
+		const reportPath = join(qaHome, "vitest-report.json");
 		const result = spawnSync(
 			process.execPath,
 			[
@@ -107,6 +169,9 @@ function runIsolated() {
 				"--maxWorkers=1",
 				"--minWorkers=1",
 				"--testTimeout=30000",
+				"--reporter=json",
+				"--outputFile",
+				reportPath,
 			],
 			{
 				cwd: join(REPO_ROOT, "packages", "teamlead"),
@@ -115,23 +180,14 @@ function runIsolated() {
 					HOME: qaHome,
 					FLYWHEEL_QA_ISOLATED: "1",
 				},
-				stdio: "inherit",
+				stdio: ["ignore", "inherit", "inherit"],
 			},
 		);
 		if (result.error) throw result.error;
 		if (result.status !== 0) {
 			throw new Error(`isolated acceptance exited ${String(result.status)}`);
 		}
-		pass("§6.1", "one versioned aggregate contains all management sections");
-		pass("§6.2", "production HTML has no manual ingest or copied inventory");
-		pass(
-			"§6.3",
-			"Lead, flag, project cron, and unmatched cron appear and disappear automatically",
-		);
-		pass(
-			"§6.4",
-			"unified canonical stage/apply writes config, DB, env, and plist with stale/partial proof",
-		);
+		verifyReportFile(reportPath);
 	} finally {
 		rmSync(qaHome, { recursive: true, force: true });
 	}
@@ -196,6 +252,7 @@ try {
 	const args = parseArgs(process.argv.slice(2));
 	if (args.mode === "isolated") runIsolated();
 	if (args.mode === "live-readonly") await runLiveReadonly(args.baseUrl);
+	if (args.mode === "verify-report") verifyReportFile(args.reportPath);
 } catch (error) {
 	fail(error instanceof Error ? error.message : String(error));
 }

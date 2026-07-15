@@ -13,7 +13,14 @@ import {
 	unlinkSync,
 	writeSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve,
+} from "node:path";
 import {
 	getModelRegistryEntry,
 	isModelSelectionSupported,
@@ -31,6 +38,7 @@ interface CronWriterStat {
 	uid: number;
 	gid: number;
 	mode: number;
+	mtimeMs?: number;
 }
 
 export interface ManagementCronWriterIo {
@@ -47,6 +55,8 @@ export interface ManagementCronWriterIo {
 	chown(path: string, uid: number, gid: number): void;
 	execFile(file: string, args: readonly string[]): string;
 	randomId(): string;
+	processAlive(pid: number): boolean;
+	now(): number;
 }
 
 const DEFAULT_IO: ManagementCronWriterIo = {
@@ -64,7 +74,18 @@ const DEFAULT_IO: ManagementCronWriterIo = {
 	chown: (path, uid, gid) => chownSync(path, uid, gid),
 	execFile: (file, args) => execFileSync(file, [...args], { encoding: "utf8" }),
 	randomId: () => randomUUID(),
+	processAlive: (pid) => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch (error) {
+			return (error as NodeJS.ErrnoException).code === "EPERM";
+		}
+	},
+	now: () => Date.now(),
 };
+
+const STALE_LOCK_MS = 5 * 60_000;
 
 export type CronChangeField = "schedule" | "enabled" | "model";
 
@@ -222,6 +243,14 @@ function safeUnlink(io: ManagementCronWriterIo, path: string): void {
 	}
 }
 
+function safeDiagnostic(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	return message.replace(
+		/(^|[\s("'=])\/[^\s)"'=]+/g,
+		(_match, prefix: string) => `${prefix}<path>`,
+	);
+}
+
 export class ManagementCronWriter {
 	private readonly io: ManagementCronWriterIo;
 	private readonly launchAgentsDir: string;
@@ -235,7 +264,13 @@ export class ManagementCronWriter {
 		},
 	) {
 		this.io = { ...DEFAULT_IO, ...options.deps };
-		this.launchAgentsDir = this.io.realpath(options.launchAgentsDir);
+		// The directory is optional on macOS. Resolve it lazily during an actual
+		// target write so an absent LaunchAgents folder degrades only the cron source.
+		this.launchAgentsDir = resolve(options.launchAgentsDir);
+	}
+
+	private managedRoot(): string {
+		return this.io.realpath(this.launchAgentsDir);
 	}
 
 	stage(request: CronStageRequest): CronStageResult {
@@ -280,7 +315,7 @@ export class ManagementCronWriter {
 			canonicalPath = this.io.realpath(target.path);
 			if (
 				canonicalPath !== target.canonicalPath ||
-				!inside(this.launchAgentsDir, canonicalPath)
+				!inside(this.managedRoot(), canonicalPath)
 			) {
 				throw new Error(
 					"cron plist escapes the managed LaunchAgents directory",
@@ -312,7 +347,7 @@ export class ManagementCronWriter {
 		} catch (error) {
 			return {
 				status: "rejected",
-				reason: error instanceof Error ? error.message : String(error),
+				reason: safeDiagnostic(error),
 			};
 		}
 
@@ -369,7 +404,7 @@ export class ManagementCronWriter {
 		} catch (error) {
 			return {
 				status: "rejected",
-				reason: error instanceof Error ? error.message : String(error),
+				reason: safeDiagnostic(error),
 			};
 		}
 		if (sameValue(oldValue, newValue)) return { status: "no_op" };
@@ -383,7 +418,7 @@ export class ManagementCronWriter {
 				observedRevision: request.observedRevision,
 				fileSha: target.fileSha,
 				priorRuntime: {
-					enabled: target.view.enabled.current,
+					enabled: target.view.enabled.current === true,
 					loaded: target.view.loaded,
 				},
 				label: target.label,
@@ -495,6 +530,44 @@ export class ManagementCronWriter {
 		});
 	}
 
+	private openApplyLock(path: string): number {
+		let fd: number;
+		try {
+			fd = this.io.open(path, "wx", 0o600);
+		} catch (firstError) {
+			let reclaim = false;
+			try {
+				const stat = this.io.lstat(path);
+				const rawPid = Number.parseInt(
+					this.io.readFile(path).toString("utf8"),
+					10,
+				);
+				if (Number.isInteger(rawPid) && rawPid > 0) {
+					reclaim = !this.io.processAlive(rawPid);
+				} else if (typeof stat.mtimeMs === "number") {
+					reclaim = this.io.now() - stat.mtimeMs >= STALE_LOCK_MS;
+				}
+			} catch {
+				// Preserve the original exclusive-open failure when evidence is unclear.
+			}
+			if (!reclaim) throw firstError;
+			this.io.unlink(path);
+			fd = this.io.open(path, "wx", 0o600);
+		}
+		try {
+			this.io.write(fd, `${process.pid}\n`);
+			this.io.fsync(fd);
+			return fd;
+		} catch (error) {
+			try {
+				this.io.close(fd);
+			} finally {
+				safeUnlink(this.io, path);
+			}
+			throw error;
+		}
+	}
+
 	apply(change: StagedCronChange): CronApplyResult {
 		const current = this.options
 			.targets()
@@ -509,15 +582,16 @@ export class ManagementCronWriter {
 		const lock = `${change.path}.flywheel.lock`;
 		let lockFd: number;
 		try {
-			lockFd = this.io.open(lock, "wx", 0o600);
+			lockFd = this.openApplyLock(lock);
 		} catch (error) {
 			return {
 				status: "rejected",
-				reason: `cron writer lock unavailable: ${error instanceof Error ? error.message : String(error)}`,
+				reason: `cron writer lock unavailable: ${safeDiagnostic(error)}`,
 			};
 		}
 		let candidate: string | undefined;
 		let renamed = false;
+		let runtimeChanged = false;
 		try {
 			const stat = this.io.lstat(change.path);
 			if (
@@ -525,7 +599,7 @@ export class ManagementCronWriter {
 				!stat.isFile() ||
 				stat.uid !== this.options.uid ||
 				this.io.realpath(change.path) !== change.canonicalPath ||
-				!inside(this.launchAgentsDir, change.canonicalPath)
+				!inside(this.managedRoot(), change.canonicalPath)
 			) {
 				return { status: "rejected", reason: "cron plist safety check failed" };
 			}
@@ -551,7 +625,7 @@ export class ManagementCronWriter {
 				} catch (error) {
 					return {
 						status: "rejected",
-						reason: `plist render/lint failed: ${error instanceof Error ? error.message : String(error)}`,
+						reason: `plist render/lint failed: ${safeDiagnostic(error)}`,
 					};
 				}
 			}
@@ -587,6 +661,7 @@ export class ManagementCronWriter {
 							"bootout",
 							`gui/${this.options.uid}/${change.label}`,
 						);
+						runtimeChanged = true;
 					}
 					this.io.rename(candidate!, change.path);
 					renamed = true;
@@ -605,8 +680,8 @@ export class ManagementCronWriter {
 				}
 				return { status: "applied" };
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				if (!renamed && change.field !== "enabled") {
+				const message = safeDiagnostic(error);
+				if (!renamed && !runtimeChanged && change.field !== "enabled") {
 					return { status: "rejected", reason: message };
 				}
 				try {
@@ -616,17 +691,19 @@ export class ManagementCronWriter {
 					return {
 						status: "partial",
 						error: message,
-						rollbackError:
-							rollbackError instanceof Error
-								? rollbackError.message
-								: String(rollbackError),
+						rollbackError: safeDiagnostic(rollbackError),
 					};
 				}
 			}
 		} finally {
 			if (candidate) safeUnlink(this.io, candidate);
-			this.io.close(lockFd);
-			safeUnlink(this.io, lock);
+			try {
+				this.io.close(lockFd);
+			} catch {
+				// The exclusive file is the authority; cleanup must not be skipped.
+			} finally {
+				safeUnlink(this.io, lock);
+			}
 		}
 	}
 }

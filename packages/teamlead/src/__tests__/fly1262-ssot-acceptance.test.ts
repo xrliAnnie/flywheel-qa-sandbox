@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
 	existsSync,
 	lstatSync,
@@ -690,9 +689,6 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 
 	it("ships a runnable live-readonly QA entrypoint that reports counts without mutation", async () => {
 		expect(existsSync(QA_SCRIPT)).toBe(true);
-		expect(
-			createHash("sha256").update(readFileSync(QA_SCRIPT)).digest("hex"),
-		).toMatch(/^[a-f0-9]{64}$/);
 		const configBefore = readFileSync(configPath);
 		const envBefore = readFileSync(envPath);
 		const { stdout, stderr } = await execFileAsync(process.execPath, [

@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import BetterSqlite3 from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { readManagementDags } from "../bridge/management-dag-source.js";
 import { applyManagementDagEdit } from "../bridge/management-dag-writer.js";
@@ -162,5 +166,72 @@ describe("management DAG writer", () => {
 			});
 		}
 		store.close();
+	});
+
+	it("isolates an invalid stored template while editing a different valid template", async () => {
+		const root = mkdtempSync(join(tmpdir(), "management-dag-isolation-"));
+		const dbPath = join(root, "state.db");
+		let store = await StateStore.create(dbPath);
+		importBundledWorkflowSeeds(store);
+		const templates = store.listWorkflowTemplates();
+		const invalid = templates[0]!;
+		const valid = templates.find(
+			(template) => template.template_id !== invalid.template_id,
+		)!;
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "invalid",
+			templateId: invalid.template_id,
+			updatedBy: "test",
+		});
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "valid",
+			templateId: valid.template_id,
+			updatedBy: "test",
+		});
+		store.close();
+
+		const raw = new BetterSqlite3(dbPath);
+		raw.exec("DROP TRIGGER workflow_template_revision_no_update");
+		raw
+			.prepare(
+				`UPDATE workflow_template_revision
+				 SET manifest = ?
+				 WHERE template_id = ? AND revision = ?`,
+			)
+			.run(
+				JSON.stringify({ schema_version: 1, nodes: "corrupt" }),
+				invalid.template_id,
+				invalid.current_published_revision,
+			);
+		raw.close();
+
+		store = await StateStore.create(dbPath);
+		const dags = readManagementDags({
+			reader: store,
+			projectNames: ["flywheel"],
+		}).projectDags[0]!.dags;
+		expect(
+			dags.find((dag) => dag.templateId === invalid.template_id)?.error,
+		).toBeTruthy();
+		const validDag = dags.find((dag) => dag.templateId === valid.template_id)!;
+		const target = validDag.nodes[0]!;
+		expect(
+			applyManagementDagEdit({
+				store,
+				targetId: target.dispatch.targetId,
+				expectedRevision: validDag.revision,
+				expectedDigest: validDag.digest,
+				desired: {
+					provider: "openai",
+					model: "gpt-5.6-sol",
+					effort: "xhigh",
+				},
+				actor: "founder",
+			}),
+		).toMatchObject({ status: "published" });
+		store.close();
+		rmSync(root, { recursive: true, force: true });
 	});
 });

@@ -30,7 +30,11 @@ type FakeFile = {
 function scan(
 	files: Record<string, FakeFile>,
 	projects: ProjectEntry[] = [project("alpha")],
-	opts: { disabled?: string[]; loaded?: string[] } = {},
+	opts: {
+		disabled?: string[];
+		loaded?: string[];
+		failPrintDisabled?: boolean;
+	} = {},
 ) {
 	const directory = "/launch";
 	return scanManagementCrons({
@@ -58,6 +62,9 @@ function scan(
 					return JSON.stringify(item.plist);
 				}
 				if (args[0] === "print-disabled") {
+					if (opts.failPrintDisabled) {
+						throw new Error("launchctl evidence unavailable");
+					}
 					return (opts.disabled ?? [])
 						.map((label) => `\"${label}\" => true`)
 						.join("\n");
@@ -277,5 +284,67 @@ describe("launchd cron SSOT discovery", () => {
 			current: { provider: "openai", model: "gpt-5.6-sol" },
 			writeCapability: { writable: true },
 		});
+	});
+
+	it("fails closed when disabled-state evidence is unavailable", () => {
+		const result = scan(
+			{
+				"disabled.plist": {
+					plist: scheduled("disabled.job", [
+						"/projects/alpha/job.sh",
+						"--model",
+						"gpt-5.6-sol",
+					]),
+				},
+			},
+			undefined,
+			{ failPrintDisabled: true },
+		);
+		const cron = result.projectCrons[0]!.crons[0]!;
+		expect(cron.enabled.current).toBeNull();
+		expect(cron.loaded).toBeNull();
+		expect(cron.enabled.writeCapability).toMatchObject({
+			writable: false,
+			reason: expect.stringMatching(/launchctl|运行状态/i),
+		});
+		expect(cron.schedule.writeCapability).toMatchObject({
+			writable: false,
+			reason: expect.stringMatching(/launchctl|运行状态/i),
+		});
+		expect(cron.model?.writeCapability).toMatchObject({
+			writable: false,
+			reason: expect.stringMatching(/launchctl|运行状态/i),
+		});
+		expect(cron.enabled.error).toMatch(/launchctl|运行状态/i);
+	});
+
+	it("keeps missing or non-canonical labels visible but read-only", () => {
+		const result = scan({
+			"missing.plist": {
+				plist: {
+					ProgramArguments: ["/projects/alpha/missing.sh"],
+					StartCalendarInterval: { Weekday: 1, Hour: 9, Minute: 0 },
+				},
+			},
+			"whitespace.plist": {
+				plist: scheduled(" whitespace.job ", ["/projects/alpha/whitespace.sh"]),
+			},
+		});
+		for (const cron of result.projectCrons[0]!.crons) {
+			expect(cron.schedule.writeCapability).toMatchObject({ writable: false });
+			expect(cron.enabled.writeCapability).toMatchObject({ writable: false });
+			expect(cron.error).toMatch(/Label/i);
+		}
+	});
+
+	it("redacts absolute filesystem paths from browser diagnostics", () => {
+		const result = scan({
+			"secret.plist": {
+				error: "ENOENT: /Users/founder/private/secret.plist",
+			},
+		});
+		const serialized = JSON.stringify(result.unassignedCrons);
+		expect(serialized).not.toContain("/Users/founder");
+		expect(serialized).not.toContain("private/secret.plist");
 	});
 });

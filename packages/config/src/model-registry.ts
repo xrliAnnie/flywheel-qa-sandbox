@@ -37,6 +37,12 @@ const DISPATCH_AND_MANAGED_SURFACES: readonly ModelSurface[] = [
 	"dispatch",
 	...ALL_MANAGED_SURFACES,
 ];
+const WORKFLOW_EFFORT_LEVELS: readonly RoleEffort[] = [
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+];
 
 function claudeEntry(input: {
 	id: string;
@@ -57,8 +63,10 @@ function claudeEntry(input: {
 		effortsBySurface: {
 			lead: ROLE_EFFORT_LEVELS,
 			runner: ROLE_EFFORT_LEVELS,
-			workflow: ROLE_EFFORT_LEVELS,
-			cron: ROLE_EFFORT_LEVELS,
+			workflow: WORKFLOW_EFFORT_LEVELS,
+			// The managed launchd carrier persists --model only. Advertising an
+			// effort would make the console claim a write that cannot survive refresh.
+			cron: [],
 		},
 	};
 }
@@ -110,7 +118,7 @@ export const MODEL_REGISTRY: readonly ModelRegistryEntry[] = [
 		effortsBySurface: {
 			runner: ["xhigh"],
 			workflow: ["xhigh"],
-			cron: ["xhigh"],
+			cron: [],
 		},
 	},
 ];

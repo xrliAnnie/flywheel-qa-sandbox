@@ -77,6 +77,16 @@ describe("model registry catalog", () => {
 		expect(
 			workflow.providers.some((provider) => provider.id === "google"),
 		).toBe(false);
+		expect(
+			workflow.providers
+				.flatMap((provider) => provider.models)
+				.find((model) => model.id === "claude-fable-5")?.efforts,
+		).toEqual(["low", "medium", "high", "xhigh"]);
+		expect(
+			buildModelCatalog("cron").providers.flatMap((provider) =>
+				provider.models.flatMap((model) => model.efforts),
+			),
+		).toEqual([]);
 	});
 
 	it("renders an unknown current value but never makes it selectable", () => {
@@ -105,6 +115,20 @@ describe("model registry catalog", () => {
 				model: "gpt-5.6-sol",
 				effort: "xhigh",
 				runtimeVendor: "claude",
+			}),
+		).toBe(false);
+		expect(
+			isModelSelectionSupported({
+				surface: "workflow",
+				model: "claude-fable-5",
+				effort: "max",
+			}),
+		).toBe(false);
+		expect(
+			isModelSelectionSupported({
+				surface: "cron",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
 			}),
 		).toBe(false);
 	});

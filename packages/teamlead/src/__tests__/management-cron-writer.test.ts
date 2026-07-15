@@ -1,12 +1,16 @@
 import {
+	closeSync,
+	existsSync,
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	openSync,
 	readFileSync,
 	realpathSync,
 	renameSync,
 	rmSync,
 	symlinkSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -184,7 +188,7 @@ function setupTarget(
 		bytes,
 		fileSha: revision.slice("file:".length),
 		view,
-		modelArgumentIndex: options.modelCarrier ? 2 : null,
+		modelArgumentIndex: options.modelCarrier ? 1 : null,
 	};
 	const launchctl = new LaunchctlHarness({
 		loaded: options.loaded ?? true,
@@ -200,6 +204,22 @@ function setupTarget(
 }
 
 describe("management cron writer staging", () => {
+	it("does not disable the whole console when LaunchAgents is absent", () => {
+		expect(
+			() =>
+				new ManagementCronWriter({
+					launchAgentsDir: "/missing/Library/LaunchAgents",
+					uid: 501,
+					targets: () => [],
+					deps: {
+						realpath: () => {
+							throw new Error("ENOENT: LaunchAgents");
+						},
+					},
+				}),
+		).not.toThrow();
+	});
+
 	it("returns canonical old/new/SHA/runtime state with zero mutation", () => {
 		const { path, bytes, view, writer, launchctl } = setupTarget();
 		const staged = writer.stage({
@@ -375,6 +395,21 @@ describe("management cron writer staging", () => {
 				desiredValue: {
 					provider: "openai",
 					model: "gpt-5.6-sol",
+					effort: "xhigh",
+				},
+				observedRevision: view.model!.source.revision,
+			}),
+		).toMatchObject({ status: "rejected" });
+	});
+
+	it("rejects cron effort values that have no persisted launchd carrier", () => {
+		const { writer, view } = setupTarget({ modelCarrier: true });
+		expect(
+			writer.stage({
+				targetId: view.model!.targetId,
+				desiredValue: {
+					provider: "anthropic",
+					model: "claude-fable-5",
 					effort: "xhigh",
 				},
 				observedRevision: view.model!.source.revision,
@@ -573,6 +608,80 @@ describe("management cron writer apply/verify/rollback", () => {
 			status: "partial",
 			rollbackError: expect.stringContaining("restore rename failed"),
 		});
+	});
+
+	it("restores a loaded job when candidate rename fails after bootout", () => {
+		const renameFailure = setupTarget();
+		const writer = new ManagementCronWriter({
+			launchAgentsDir: join(renameFailure.root, "LaunchAgents"),
+			uid: process.getuid!(),
+			targets: () => [renameFailure.target],
+			deps: {
+				execFile: renameFailure.launchctl.execFile,
+				rename: (from, to) => {
+					if (from.includes(".candidate.")) throw new Error("rename failed");
+					renameSync(from, to);
+				},
+			},
+		});
+		const staged = writer.stage({
+			targetId: renameFailure.view.schedule.targetId,
+			desiredValue: {
+				days: [2],
+				times: [{ hour: 10, minute: 0 }],
+				label: "自定义",
+			},
+			observedRevision: renameFailure.view.schedule.source.revision,
+		});
+		if (staged.status !== "staged") throw new Error("expected staged");
+		expect(writer.apply(staged.change)).toMatchObject({
+			status: "rolled_back",
+			error: expect.stringContaining("rename failed"),
+		});
+		expect(renameFailure.launchctl.loaded).toBe(true);
+		expect(readFileSync(renameFailure.path)).toEqual(renameFailure.bytes);
+	});
+
+	it("reclaims a stale lock and always unlinks the lock even when close throws", () => {
+		const stale = setupTarget();
+		const request = {
+			targetId: stale.view.schedule.targetId,
+			desiredValue: {
+				days: [2],
+				times: [{ hour: 10, minute: 0 }],
+				label: "自定义" as const,
+			},
+			observedRevision: stale.view.schedule.source.revision,
+		};
+		const staged = stale.writer.stage(request);
+		if (staged.status !== "staged") throw new Error("expected staged");
+		const lock = `${stale.path}.flywheel.lock`;
+		writeFileSync(lock, "999999\n");
+		const old = new Date(Date.now() - 10 * 60_000);
+		utimesSync(lock, old, old);
+
+		let lockFd: number | undefined;
+		const writer = new ManagementCronWriter({
+			launchAgentsDir: join(stale.root, "LaunchAgents"),
+			uid: process.getuid!(),
+			targets: () => [stale.target],
+			deps: {
+				execFile: stale.launchctl.execFile,
+				open: (path, flags, mode) => {
+					const fd = openSync(path, flags, mode);
+					if (path === lock) lockFd = fd;
+					return fd;
+				},
+				close: (fd) => {
+					closeSync(fd);
+					if (fd === lockFd) throw new Error("close interrupted");
+				},
+				processAlive: () => false,
+				now: () => Date.now(),
+			} as never,
+		});
+		expect(writer.apply(staged.change)).toMatchObject({ status: "applied" });
+		expect(existsSync(lock)).toBe(false);
 	});
 
 	it("no-op has zero side effects and a second staged writer conflicts after the first applies", () => {

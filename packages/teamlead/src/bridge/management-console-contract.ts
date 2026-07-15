@@ -201,7 +201,7 @@ export interface ManagementCronView {
 	projectName: string | null;
 	sourceHint: string;
 	schedule: ManagedValue<WeeklySchedule | null>;
-	enabled: ManagedValue<boolean>;
+	enabled: ManagedValue<boolean | null>;
 	loaded: boolean | null;
 	model?: ManagedValue<ModelSelection | null>;
 	warnings: string[];
