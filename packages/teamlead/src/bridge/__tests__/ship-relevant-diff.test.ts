@@ -508,6 +508,69 @@ describe("ShipRelevantDiffService", () => {
 		expect(fixture.paths).toHaveLength(before);
 	});
 
+	it("throttles a revalidated docs-only exemption for a bounded 10s sub-lease", async () => {
+		// HIGH-3 over-correction fix: the docs-only side revalidated PR identity
+		// on EVERY consumer pass, so a 3s GatePoller tick hammered /pulls/N
+		// (~1200 calls/hr). A bounded 10s sub-lease — granted only AFTER the first
+		// post-classify revalidation confirms the anchors — caps that at ~360/hr
+		// while keeping the retarget-detection window <=10s (Lead-decided
+		// trade-off; not a return to the old 30s that was HIGH-3's cause).
+		const store = await StateStore.create(":memory:");
+		let now = 0;
+		const fixture = fakeApi({
+			pages: [[docFile], []],
+			headTree: tree(docFile.filename),
+		});
+		const service = new ShipRelevantDiffService(store, { now: () => now });
+
+		// Pass 1: full classify (docs-only). No sub-lease granted yet.
+		await service.ensure({
+			executionId: "exec-1",
+			repo: "owner/repo",
+			prNumber: 42,
+			prHeadSha: HEAD,
+			api: fixture.api,
+		});
+		const afterClassify = fixture.paths.length;
+
+		// Pass 2 (+3s): first consumer pass revalidates identity (1 metadata
+		// fetch) and grants the 10s sub-lease.
+		now = 3_000;
+		await service.ensure({
+			executionId: "exec-1",
+			repo: "owner/repo",
+			prNumber: 42,
+			prHeadSha: HEAD,
+			api: fixture.api,
+		});
+		expect(fixture.paths).toHaveLength(afterClassify + 1);
+		expect(fixture.paths.at(-1)).toBe("/repos/owner/repo/pulls/42");
+
+		// Pass 3 (within the sub-lease, +9s): throttled — NO new /pulls fetch.
+		now = 9_000;
+		await service.ensure({
+			executionId: "exec-1",
+			repo: "owner/repo",
+			prNumber: 42,
+			prHeadSha: HEAD,
+			api: fixture.api,
+		});
+		expect(fixture.paths).toHaveLength(afterClassify + 1);
+
+		// Pass 4 (after the sub-lease expires, +14s): revalidates again — the
+		// exposure to an undetected retarget is bounded by the 10s lease.
+		now = 14_000;
+		await service.ensure({
+			executionId: "exec-1",
+			repo: "owner/repo",
+			prNumber: 42,
+			prHeadSha: HEAD,
+			api: fixture.api,
+		});
+		expect(fixture.paths).toHaveLength(afterClassify + 2);
+		expect(fixture.paths.at(-1)).toBe("/repos/owner/repo/pulls/42");
+	});
+
 	it("prunes expired in-memory retry entries during later classifications", async () => {
 		const store = await StateStore.create(":memory:");
 		let now = 0;

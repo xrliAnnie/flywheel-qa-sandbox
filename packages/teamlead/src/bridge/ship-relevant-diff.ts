@@ -345,6 +345,7 @@ export class ShipRelevantDiffService {
 			now?: () => number;
 			retryMs?: number;
 			metadataRetryMs?: number;
+			docsMetadataRetryMs?: number;
 		} = {},
 	) {}
 
@@ -394,15 +395,25 @@ export class ShipRelevantDiffService {
 			this.options.metadataRetryMs ?? 30_000,
 			Math.floor(SHIP_RELEVANT_SNAPSHOT_MAX_AGE_MS / 2),
 		);
+		// A docs-only exemption is permissive authorization evidence, so it gets a
+		// SHORTER sub-lease than the safe-side ship-relevant result: it caps how
+		// long a retarget can go unnoticed while still cutting the per-tick /pulls
+		// load (~1200→~360 calls/hr for a 3s GatePoller tick). It is never longer
+		// than the ship-relevant lease.
+		const docsMetadataRetryMs = Math.min(
+			this.options.docsMetadataRetryMs ?? 10_000,
+			metadataRetryMs,
+		);
+		const subLeaseMs = (shipRelevant: number): number =>
+			shipRelevant === 1 ? metadataRetryMs : docsMetadataRetryMs;
 		const work = (async (): Promise<ShipRelevantClassification> => {
-			// A docs-only exemption is permissive authorization evidence, so every
-			// consumer pass must revalidate its PR identity. Only the safe-side
-			// ship-relevant result may use the metadata sub-lease.
+			// A cached result within its metadata sub-lease is trusted without a
+			// re-fetch. The lease length is side-specific and is granted only after
+			// a revalidation confirms the anchors (see below): the ship-relevant safe
+			// side leases longer; a docs-only exemption gets a short bounded lease so
+			// a retarget is still caught within it.
 			if (cachedMatches && cached) {
-				if (
-					cached.ship_relevant === 1 &&
-					(this.metadataAfter.get(key) ?? 0) > now
-				) {
+				if ((this.metadataAfter.get(key) ?? 0) > now) {
 					const { execution_id, computed_at, ...snapshot } = cached;
 					void execution_id;
 					void computed_at;
@@ -454,12 +465,13 @@ export class ShipRelevantDiffService {
 					cachedMatches = false;
 				} else {
 					// The content anchors are unchanged, so refresh the bounded
-					// authorization lease without re-fetching files and trees.
+					// authorization lease without re-fetching files and trees. The
+					// docs-only side gets the shorter lease (subLeaseMs).
 					this.store.putShipRelevantDiffSnapshot({
 						...cached,
 						computed_at: new Date(now).toISOString(),
 					});
-					this.metadataAfter.set(key, now + metadataRetryMs);
+					this.metadataAfter.set(key, now + subLeaseMs(cached.ship_relevant));
 					const { execution_id, computed_at, ...snapshot } = cached;
 					void execution_id;
 					void computed_at;
@@ -483,7 +495,16 @@ export class ShipRelevantDiffService {
 					computed_at: new Date(now).toISOString(),
 				});
 				this.retryAfter.set(key, now + retryMs);
-				this.metadataAfter.set(key, now + metadataRetryMs);
+				// Only the safe-side ship-relevant result leases straight off a full
+				// classify. A docs-only exemption is granted its bounded sub-lease
+				// only AFTER the first consumer pass revalidates the anchors — so a
+				// retarget landing right after classify is caught on the next tick,
+				// not masked for the whole lease.
+				if (result.snapshot.ship_relevant === 1) {
+					this.metadataAfter.set(key, now + metadataRetryMs);
+				} else {
+					this.metadataAfter.delete(key);
+				}
 			} else {
 				this.store.deleteShipRelevantDiffSnapshot(
 					input.executionId,
