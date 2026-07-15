@@ -3243,6 +3243,10 @@ export function createBridgeApp(
 			config.discordGuildId,
 			config.chatThreadsEnabled,
 			staleBlockerGuard,
+			{
+				masterToken: config.apiToken,
+				scopedToken: config.geminiAgentToken,
+			},
 		);
 		if (config.apiToken) {
 			app.use(
@@ -3517,6 +3521,12 @@ export async function startBridge(
 	// FLY-1244: deterministic boot import. Content hashes make restarts no-ops;
 	// a founder-owned seed mismatch is audited and refused by StateStore.
 	importBundledWorkflowSeeds(store);
+	const strandedGeneralized = store.holdStrandedGeneralizedExecutions();
+	if (strandedGeneralized.length > 0) {
+		console.warn(
+			`[workflow-template] generalized stranded executions held (no successor dispatch): ${strandedGeneralized.join(", ")}`,
+		);
+	}
 	const workflowSourceProjector = startWorkflowSourceProjector({
 		projects: () => loadProjects().map((project) => project.projectName),
 		openCommDb: (project) => new CommDB(commDbPathForProject(project)),

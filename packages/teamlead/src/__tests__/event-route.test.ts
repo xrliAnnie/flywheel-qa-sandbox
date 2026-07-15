@@ -1,4 +1,7 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
@@ -12,6 +15,7 @@ import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session } from "../StateStore.js";
 import { StateStore } from "../StateStore.js";
+import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
 
 const testProjects: ProjectEntry[] = [
 	{
@@ -56,6 +60,69 @@ function makeEvent(
 		payload: { issueIdentifier: "GEO-95", issueTitle: "Test issue" },
 		...overrides,
 	};
+}
+
+function bindGeneralizedExecution(
+	store: StateStore,
+	executionId: string,
+): void {
+	const root = mkdtempSync(join(tmpdir(), "flywheel-event-route-v2-"));
+	mkdirSync(join(root, "agents"));
+	writeFileSync(join(root, "agents", "generic.md"), "Execute.\n");
+	const snapshot = buildWorkflowRunSnapshotV2({
+		template: { id: "test", revision: 1 },
+		canonicalRoot: root,
+		manifest: {
+			schema_version: 2,
+			nodes: [
+				{
+					id: "execute",
+					type: "generic",
+					vendor: "codex",
+					model: "gpt-5.6-sol",
+					effort: "low",
+					agent_file: "agents/generic.md",
+				},
+				{ id: "founder_gate", type: "gate" },
+			],
+			edges: [
+				{
+					id: "done",
+					from: "execute",
+					to: "founder_gate",
+					condition: "node_done",
+				},
+			],
+			loops: [],
+			terminal_gate: {
+				node: "founder_gate",
+				predicate: "founder_approved",
+			},
+			ship_claims: ["founder_approved"],
+		},
+	});
+	rmSync(root, { recursive: true, force: true });
+	store.createWorkflowRun({
+		runId: `run-${executionId}`,
+		issueId: "issue-1",
+		projectName: "geoforge3d",
+		snapshotJson: JSON.stringify(snapshot),
+		claimsReadEnrolled: false,
+	});
+	const admission = store.admitGeneralizedWorkflowExecution({
+		runId: `run-${executionId}`,
+		nodeId: "execute",
+		executionId,
+		attempt: 1,
+		now: "2026-07-15T00:00:00.000Z",
+		expiresAt: "2026-07-15T00:05:00.000Z",
+		absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+		env: {
+			FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+		},
+	});
+	expect(admission.ok).toBe(true);
 }
 
 describe("Event route", () => {
@@ -109,6 +176,114 @@ describe("Event route", () => {
 		expect(session).toBeDefined();
 		expect(session!.status).toBe("running");
 		expect(session!.issue_identifier).toBe("GEO-95");
+	});
+
+	it("derives generalized workflow_node_id before storing the lifecycle event", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "generalized-started",
+					payload: {
+						issueIdentifier: "GEO-95",
+						workflowNodeId: "payload-forgery",
+					},
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-1")?.workflow_node_id).toBe("execute");
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.some((event) => event.event_id === "generalized-started"),
+		).toBe(true);
+	});
+
+	it("rejects a generalized set-once conflict before event idempotency consumes the id", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "pending",
+			workflow_node_id: "other",
+		});
+		const post = () =>
+			fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(makeEvent({ event_id: "generalized-conflict" })),
+			});
+		expect((await post()).status).toBe(409);
+		expect((await post()).status).toBe(409);
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.some((event) => event.event_id === "generalized-conflict"),
+		).toBe(false);
+	});
+
+	it("commits explicit generalized completion before audit and suppresses legacy issue completion", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "explicit-complete-1",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: { decision: { route: "no_code" } },
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-1")).toMatchObject({
+			status: "completed",
+			workflow_node_id: "execute",
+		});
+		const lifecycle = store
+			.getEventsByExecution("exec-1")
+			.filter((event) => event.event_type === "session_completed");
+		expect(lifecycle).toHaveLength(1);
+		expect(lifecycle[0]?.event_id).toMatch(/^wfca:/);
+	});
+
+	it("holds generalized teardown without a receipt and does not persist its lifecycle audit", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "teardown-complete-1",
+					event_type: "session_completed",
+					source: "direct-event-sink",
+					payload: { decision: { route: "no_code" } },
+				}),
+			),
+		});
+		expect(res.status).toBe(409);
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.some((event) => event.event_id === "teardown-complete-1"),
+		).toBe(false);
 	});
 
 	// FLY-728: the loopback /events session_started handler persists the resolved

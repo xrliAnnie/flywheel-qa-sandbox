@@ -61,6 +61,18 @@ export {
 	normalizeDispatchModel,
 } from "./model-tiers.js";
 export type {
+	NodeTypeRegistryEntry,
+	WorkflowCompletionRoute,
+	WorkflowNodeCapabilities,
+	WorkflowNodeTypeId,
+	WorkflowOutputMode,
+} from "./node-type-registry.js";
+export {
+	getNodeTypeRegistryEntry,
+	NODE_TYPE_REGISTRY,
+	nodeTypeWritesCode,
+} from "./node-type-registry.js";
+export type {
 	PonytailCondition,
 	PonytailEffective,
 	PonytailInput,

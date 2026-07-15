@@ -242,6 +242,8 @@ export interface BlueprintContext {
 	// path only). The adapter gates the Runner on this file + writes it at the
 	// commit point; the dispatcher adopts a replay ONLY if it exists.
 	launchCommitPath?: string;
+	launchGateToken?: string;
+	commitWorkflowLaunch?: () => { ok: boolean; reason?: string };
 	// FLY-137 v1.27.2 — Lead override: explicit agent name; bypasses label-match dispatch
 	agentName?: string;
 	// FLY-137 v1.27.2 — Pre-normalized (lowercased) Linear labels passed by caller
@@ -370,6 +372,16 @@ export interface BlueprintContext {
 	qaContext?: QaContext;
 	/** FLY-1244: Bridge-minted per-execution verdict submission credential. */
 	workflowSubmissionCredential?: string;
+	/** FLY-1281: trusted generalized workflow context, never sourced from HTTP. */
+	generalizedExecutionContext?: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		snapshotDigest: string;
+	};
+	workflowCapabilities?: Record<string, boolean | string>;
+	workflowAgentContent?: string;
+	workflowOutputCredential?: string;
 }
 
 /**
@@ -1016,8 +1028,10 @@ export class Blueprint {
 		// Landing is only supported in worktree mode (single-repo)
 		const landingEnabled = !!this.worktreeManager;
 		const hasLandCommand = !!this.skillsConfig?.land_command;
-		const canLand =
-			landingEnabled && (skillInjectionSucceeded || hasLandCommand);
+		const isGeneralizedExecution = !!ctx.generalizedExecutionContext;
+		const canLand = isGeneralizedExecution
+			? ctx.workflowCapabilities?.can_land === true && landingEnabled
+			: landingEnabled && (skillInjectionSucceeded || hasLandCommand);
 
 		// ── Build prompt + system prompt ──────────────────────
 		// FLY-579: an Auto-QA runner (sessionRole="qa", qaContext present) does
@@ -1087,7 +1101,9 @@ export class Blueprint {
 		const isDesignerPhase =
 			isDesignPhase && isUiDesignFlavored(effectiveLabels);
 		let prompt: string;
-		if (isQaRunner) {
+		if (isGeneralizedExecution) {
+			prompt = `Execute generalized workflow node ${ctx.generalizedExecutionContext!.nodeId} for ${hydrated.issueId}: ${hydrated.issueTitle}.\n\n${hydrated.issueDescription}`;
+		} else if (isQaRunner) {
 			prompt = `Independently QA ${qaTarget} at the reviewed commit (its own tracking issue is ${hydrated.issueId}: ${hydrated.issueTitle}).\n\n${hydrated.issueDescription}`;
 		} else if (isDesignerPhase) {
 			prompt = `Design phase (mockup-first) for ${hydrated.issueId}: ${hydrated.issueTitle}. This is a UI/design-flavored issue: do VISUAL design first — confirm the mockup type, explore concept directions A/B/C (dual-model), get the founder to pick one at a design gate, then produce a high-fidelity mockup + one-page spec. Do NOT write implementation code — the Implement phase does that on the same branch.\n\n${hydrated.issueDescription}`;
@@ -1102,7 +1118,47 @@ export class Blueprint {
 		}
 
 		let systemPromptLines: string[];
-		if (isQaRunner) {
+		if (isGeneralizedExecution) {
+			if (!ctx.workflowCapabilities || !ctx.workflowAgentContent?.trim()) {
+				throw new Error(
+					"generalized workflow execution is missing pinned capabilities or agent content",
+				);
+			}
+			const completionRoute = String(
+				ctx.workflowCapabilities.completion_route ?? "",
+			);
+			if (completionRoute !== "no_code") {
+				throw new Error(
+					`unsupported generalized completion route: ${completionRoute}`,
+				);
+			}
+			systemPromptLines = [
+				`You are generalized workflow node ${ctx.generalizedExecutionContext!.nodeId}. Follow the pinned Agent Role and stay within this node's bounded task.`,
+				"Do not dispatch successor or review nodes; the DAG orchestrator owns graph advancement.",
+			];
+			if (
+				ctx.workflowCapabilities.shared_branch_writer !== true &&
+				ctx.workflowCapabilities.creates_pr !== true
+			) {
+				systemPromptLines.push(
+					"This is a no-write node: do not modify the shared branch, create commits, push, or open a PR.",
+				);
+			}
+			if (ctx.workflowCapabilities.can_ship !== true) {
+				systemPromptLines.push(
+					"Do not request ship approval or ship/merge a PR.",
+				);
+			}
+			if (ctx.workflowCapabilities.produces_output === true) {
+				systemPromptLines.push(
+					`Before completion, write the required JSON artifact and submit it with \`node ${commCliPath} workflow-output --payload-file <absolute-json-path>\`; only after that succeeds run \`node ${commCliPath} complete --route no_code\`.`,
+				);
+			} else {
+				systemPromptLines.push(
+					`When the bounded work is complete, run \`node ${commCliPath} complete --route no_code\`.`,
+				);
+			}
+		} else if (isQaRunner) {
 			systemPromptLines = [];
 		} else if (isDesignerPhase) {
 			// FLY-1059: mockup-first Designer workflow for a UI/design-flavored
@@ -1852,7 +1908,13 @@ export class Blueprint {
 		// Codex Track A Round 1 #1 fix — was previously always cwd, which silently
 		// dropped shipped-generic content for zero-config projects.
 		let agentContext = "";
-		if (dispatchResult) {
+		if (isGeneralizedExecution) {
+			agentContext = [
+				"## Agent Role",
+				ctx.workflowAgentContent!.slice(0, 40_000),
+				"",
+			].join("\n");
+		} else if (dispatchResult) {
 			const agentFileBaseDir =
 				dispatchResult.agentFileRoot === "flywheel"
 					? this.flywheelRepoRoot
@@ -1986,6 +2048,7 @@ export class Blueprint {
 				bridgeUrl: resolveBridgeUrl(),
 				bridgeIngestToken: process.env.TEAMLEAD_INGEST_TOKEN,
 				workflowSubmissionCredential: ctx.workflowSubmissionCredential,
+				workflowOutputCredential: ctx.workflowOutputCredential,
 				// FLY-191 Phase 2: pin the Runner's verify-approval to THIS
 				// Bridge's StateStore (mirrors the FLY-137 bridgeUrl pattern).
 				// Unset/:memory: → no injection; both sides fall back to the
@@ -2007,6 +2070,8 @@ export class Blueprint {
 				onTmuxWindowOpened: ctx.onTmuxWindowOpened,
 				// FLY-245 R5: durable commit record (gates the Runner start).
 				launchCommitPath: ctx.launchCommitPath,
+				launchGateToken: ctx.launchGateToken,
+				commitWorkflowLaunch: ctx.commitWorkflowLaunch,
 				// FLY-142 PR 1.4: forward Agent Team transport identity so
 				// TmuxAdapter.tryBuildTransportSpawnConfig() actually fires
 				// (was dead code in QA E1 verify because none of these were

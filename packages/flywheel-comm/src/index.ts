@@ -58,6 +58,7 @@ import {
 	visualCapture,
 	visualCaptureStdout,
 } from "./commands/visual-capture.js";
+import { workflowOutput } from "./commands/workflow-output.js";
 import { xhsAnalysis } from "./commands/xhs-analysis.js";
 import { xhsState } from "./commands/xhs-state.js";
 import { xhsValidateFinal } from "./commands/xhs-validate-final.js";
@@ -98,6 +99,7 @@ Commands:
   complete  Emit session_completed terminal event to Bridge (Runner use)
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
   qa-result  Emit a QA verdict (pass|fail) that gates the founder ship notification (QA Runner use)
+  workflow-output  Submit a generalized node's JSON output before completion
   request-review  Register a codex-author review request bound to an open review gate (FLY-1188; --type design|code --question-id <id> [--plan <path>])
   review-ruling  Record or revoke a supervised Lead ruling for a delivered review finding (FLY-1278)
   codex-review-result  Emit a Codex code-review APPROVED verdict for the current head (FLY-827; await-codex-gate calls this automatically)
@@ -237,6 +239,9 @@ async function main(): Promise<void> {
 			break;
 		case "qa-result":
 			await runQaResult(commandArgs);
+			break;
+		case "workflow-output":
+			await runWorkflowOutput(commandArgs);
 			break;
 		case "request-review":
 			await runRequestReview(commandArgs);
@@ -1031,6 +1036,21 @@ async function runQaResult(args: string[]): Promise<void> {
 		summary: values.summary,
 		execId: values["exec-id"],
 		prHeadSha: values["pr-head"],
+	});
+}
+
+async function runWorkflowOutput(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"payload-file": { type: "string" },
+			"request-id": { type: "string" },
+		},
+		allowPositionals: false,
+	});
+	await workflowOutput({
+		payloadFile: values["payload-file"] ?? "",
+		requestId: values["request-id"],
 	});
 }
 
