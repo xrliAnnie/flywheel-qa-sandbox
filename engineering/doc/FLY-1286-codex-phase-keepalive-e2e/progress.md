@@ -1,9 +1,9 @@
 ---
 issue: FLY-1286
 phase: implement
-phaseCursor: 4/6
-updated: 2026-07-15T11:26:06.157Z
-nextStep: Request Lead-routed Design wake and prove durable re-hold
+phaseCursor: 5/6
+updated: 2026-07-15T11:29:51.000Z
+nextStep: Finalize evidence report, regressions, commit/push, sandbox PR and review
 chunks:
   - id: onboard
     order: 1
@@ -15,8 +15,8 @@ pointers:
 ---
 
 # FLY-1286 progress
-**phase**: implement (4/6)
-**next**: Request Lead-routed Design wake and prove durable re-hold
+**phase**: implement (5/6)
+**next**: Finalize evidence report, regressions, commit/push, sandbox PR and review
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
