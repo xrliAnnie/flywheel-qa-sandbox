@@ -2501,4 +2501,86 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "conversational",
 	},
+	// ─── FLY-1282: zombie-session liveness + folded family defects ───
+	{
+		name: "zombie_reconcile",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_ZOMBIE_RECONCILE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1282: 僵尸会话探真机器(tri-state pane 探活 + 连续 2 个 server-up absent cycle 宣告 failed + Lead 告警带未推送工作清单)。=0 逐字节回退到旧 readopt 行为(M0 golden 哨兵)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/HeartbeatService.ts",
+				"zombieMachineryEnabled",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+		note: "与既有 FLYWHEEL_LIVENESS_PANE_DEAD / FLYWHEEL_HEARTBEAT_READOPT 合成 zombieMachineryEnabled() 单谓词。",
+	},
+	{
+		name: "delivery_unconsumed_v2",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DELIVERY_UNCONSUMED_V2",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1282 Part B: delivery_unconsumed 误报修正——parked/awaiting_review/approved_to_ship 不触发 + 回报引用完整 [lead-instruction id] 即消费证明(不再只看 read_at)。=0 回 V1 判据",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"gapScanTick",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "terminal_thread_archive",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_TERMINAL_THREAD_ARCHIVE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1282 Part C(吸收 FLY-1289): issue 全段 {completed,terminated}+Linear Done+pane 死 → thread 分钟级自动归档(completion 事件入队,FLY-1165 scheduler 消费)。单次 boot 捕获;=0 双 sink 零入队,只剩 6h sweep 兜底",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"terminalArchiveBuffer",
+				"bridge_boot",
+			),
+		],
+		toggleable: "readonly",
+	},
+	{
+		name: "disposition_receipt",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DISPOSITION_RECEIPT",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1282 Part D: Lead 处置回执投递(检测告警 Lead-only 路由后,Lead 处置 → issue thread 落一条可见回执)。只门投递——处置记账(outbox prepare)恒写;=0 零投递,重开补 7 天窗口",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/disposition-receipt.ts",
+				"dispositionReceiptEnabled",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
 ];
