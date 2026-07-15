@@ -4,7 +4,7 @@ Issue: FLY-1285 (https://linear.app/geoforge3d/issue/FLY-1285/incident-2026-07-1
 日期: 2026-07-15
 基于: research.md
 
-**Status**: draft（codex design review Round 5 中；R1×10 + R2×8 + R3×8 + R4×6 已全量吸收）
+**Status**: draft（codex design review Round 7 中；R1×10 + R2×8 + R3×8 + R4×6 + R5×5 + R6×2 已全量吸收）
 **裁决来源**: brainstorm gate 已过（Tadashi 批 A/B/C 全量 + 四点裁决：PR-0 最先单独出 / runbook 附 research / B 加真机验收 / C 批准）。
 
 ## 核心安全原则（贯穿全计划）
@@ -97,7 +97,13 @@ Issue: FLY-1285 (https://linear.app/geoforge3d/issue/FLY-1285/incident-2026-07-1
 
 ### 3.2 ServerLossCoordinator + HeartbeatService + StateStore（R3 #4 修正：active-hold 穷举 + recover 原语 + 事务化）
 
-**durable hold（R5 #2/#3：持久 incident identity + kind 只是证据）**：StateStore `tmux_hold` = `{incidentId（不可变：归一 socket key + 世代/episode 签名，与 server-loss ledger 共享同一 identity）, currentReason(kind): saturated|split_brain|ambiguous|unknown|rescue_failed|lock_unavailable, firstReason, reasonHistory[], evidence(JSON), affectedExecutionIds[], originalShape(server_down|server_fresh), created_at, last_checked_at}`——**episode/correlation 身份 = host/socket/incidentId，绝不含易变的诊断 kind**（同一事件从 saturated→unknown→split_brain 演化、或双端同 tick 报不同 kind，都只落同一行/同一 episode；kind 变化只更新 currentReason+history）。
+**durable hold（R5 #2/#3 + R6 #1：持久 incident identity + 原子分配协议）**：StateStore `tmux_hold` = `{incidentId, currentReason(kind): saturated|split_brain|ambiguous|unknown|rescue_failed|lock_unavailable, firstReason, reasonHistory[], evidence(JSON), affectedExecutionIds[], originalShape(server_down|server_fresh), created_at, last_checked_at}`——**correlation 身份 = 归一 socketPath + incidentId，绝不含易变的诊断 kind**（同一事件 kind 演化或双端同 tick 报不同 kind，都只落同一行/同一 episode）。**持久键不含 hostKey**：StateStore 本就是单机作用域（多机部署=FLY-1005 follow-up，届时再引入持久 host UUID）。
+
+**incidentId 原子分配协议（R6 #1 定案——id 只由 Bridge 分配一次，reporter 永不自选）**：StateStore 新方法 `getOrCreateActiveTmuxHold(normalizedSocketPath, observation)`，单事务内：
+- 按唯一约束 `(normalizedSocketPath, active)` 查找 active 行：**存在 → 无论来源/kind 直接复用其不可变 incidentId**（更新 currentReason/history/evidence）；不存在 → Bridge 生成新 incidentId（uuid）建行——reporter（supervisor observation / coordinator inspect）都不推导、不携带 id。resolve/transition 关闭行后，下一次故障才可能获得新 id。
+- **首建同一事务内完成安全初始化（hydration）**：从 StateStore 快照该 socket 上全部 tmux-backed running execution → 写入 `affectedExecutionIds`；`originalShape` 初始化规则：observation/tick-leg 首建 = `server_down`，boot-leg 首建 = `server_fresh`（coordinator 后续证据只精化 reason/evidence，不改 shape）。由此**首次进入 hold 的同一 tick 起**，HeartbeatService 即可按 held ids 抑制三类 reaper——不存在"空 affectedExecutionIds 窗口"。
+- 观察端点响应返回 canonical `incidentId` 作为 ack；supervisor 只把它用于后续幂等上报。
+- 测试四组：不同 kind 的两个首次并发请求只生成一个 id；supervisor 先于 coordinator 上报时受影响 session 当 tick 即 held；Bridge 重启后复用同一 id；resolve 后新故障获得新 id。
 
 **tick leg（probe=down 时 inspect）**：
 | verdict | 动作 |
@@ -139,7 +145,7 @@ Issue: FLY-1285 (https://linear.app/geoforge3d/issue/FLY-1285/incident-2026-07-1
 ### 3.3 `tmux_hold` 单一权威 + 告警契约（R3 #6 定案）
 
 - **单一权威 = Bridge/StateStore**：durable `tmux_hold` episode + ticket 都由 Bridge 拥有；计时起点 = hold `created_at`（持久，双端重启不重置）；收敛 resolve 走 `AlertChannelHub.resolve()`（ticket 在 StateStore active thread 内，通道成立）。
-- **supervisor 上报 = hold observation（R4 #3 + R5 #3/#5 定案）**：PR-2 新增 Bridge 端点 `POST /api/tmux-hold-observation`（body：leadId/projectName/socketPath/kind/heldSinceTs——heldSinceTs 仅作参考证据，**权威计时 = Bridge 服务端接收时间**）。supervisor **首次进 hold 即从 t=0 幂等重试上报**（2.2c），Bridge 按 **correlation key = host/socket/incidentId（不含 kind）** 创建/合并 episode，kind 只更新 currentReason/history；10min 由 Bridge 侧升级；**双端并发上报（即使 kind 不同）合并为一**。**fallback 时点（R5 #5）**：lead-alert.sh 的不可自动 resolve severe **只在本地连续 hold ≥10min 且 Bridge 全程未确认过 observation** 时发出（恰一次、按日 dedupe）；Bridge 期间恢复并 ack → 取消 fallback；此降级不承诺跨 supervisor 重启保留本地剩余计时。端点硬化：`config.apiToken` 缺失显式 503（tokenAuthMiddleware 无 token 会 no-op，plugin.ts:765-770——不许裸跑）；校验 kind allowlist、lead/project 身份、socket 归一合法性、时间范围、body size。
+- **supervisor 上报 = hold observation（R4 #3 + R5 #3/#5 定案）**：PR-2 新增 Bridge 端点 `POST /api/tmux-hold-observation`（body：leadId/projectName/socketPath/kind/heldSinceTs——heldSinceTs 仅作参考证据，**权威计时 = Bridge 服务端接收时间**）。supervisor **首次进 hold 即从 t=0 幂等重试上报**（2.2c），Bridge 经 `getOrCreateActiveTmuxHold` 原子查建（correlation = 归一 socketPath 的 active 行，不含 kind），**响应返回 canonical incidentId 作 ack**，kind 只更新 currentReason/history；10min 由 Bridge 侧升级；**双端并发上报（即使 kind 不同）合并为一**。**fallback 时点（R5 #5）**：lead-alert.sh 的不可自动 resolve severe **只在本地连续 hold ≥10min 且 Bridge 全程未确认过 observation** 时发出（恰一次、按日 dedupe）；Bridge 期间恢复并 ack → 取消 fallback；此降级不承诺跨 supervisor 重启保留本地剩余计时。端点硬化：`config.apiToken` 缺失显式 503（tokenAuthMiddleware 无 token 会 no-op，plugin.ts:765-770——不许裸跑）；校验 kind allowlist、lead/project 身份、socket 归一合法性、时间范围、body size。
 - **Bridge 不可用 fallback**：supervisor 走 lead-alert.sh 发一条 severe，正文明确"人工确认，无自动 resolve"，dedupe=lead/socket/日——不承诺 episode 语义（诚实降级）。
 - **kind 契约（全定死）**：`tmux_hold`：owner `"claude"`（infra-bot 诊断）、arc `"human_by_design"`（remediation=运维介入/runbook，收敛时系统自动 resolve 不代表 remediation 自动化）、severity severe、**dedupe=host/归一 socketPath+incidentId（不含诊断 kind）**、升级阈值=episode created_at 起 10min、resolve=active-hold 对账完成。`tmux_split_brain`：owner `"founder_direct"` + arc `"human_by_design"`（并加入 ticket-owner-map.ts:67-75 no-owner 面）、severity severe、dedupe=归一 socketPath+排序 PID 集、**必须关联同一 hold incidentId**、resolve=同一 reconcile transition 完成后、metadata=`{socketPath,incidentId,reachablePid,orphanPids,casualtiesHeld}`。`socket_lost_rescued`=log-only。测试：不同 kind 的双端并发上报、kind 演化（saturated→unknown→split_brain）→ 始终恰一 tmux_hold episode/ticket。
 - ALERT_EVENT_TYPES/KIND_CONTRACTS/router/Hub/dedupe/owner-map 的 exhaustive 测试全列 PR-2 验收；shell 侧 lead-alert.sh kind allowlist 在 PR-1 加入。**CLI sync 契约（R4 #6）**：rescue CLI 加入 syncFlywheelCliBin 默认 allowlist + `sync-flywheel-hooks` 测试断言（allowlist 含该 CLI、同步后可执行位、missing-source 时的行为）；soft-fail 现状由 §4 的激活 preflight 兜底（CLI 未验证到位不许开 marker）。
