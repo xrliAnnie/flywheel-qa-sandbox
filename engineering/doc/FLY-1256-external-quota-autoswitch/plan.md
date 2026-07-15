@@ -14,7 +14,7 @@ Issue: FLY-1256 (https://linear.app/geoforge3d/issue/FLY-1256/build-外部配额
 新建体外常驻 daemon `flywheel-quota-monitor`（launchd KeepAlive、纯 Node 确定性进程）。设计哲学（Annie 定调）：**配额用到接近 100% 不浪费；贴墙跑，撞墙自动爬起**。
 
 - **监控**：基础每 20min 查当前号真实用量（OAuth usage endpoint，实测限额 5 次/5min/token）；当前号 5h >70% → 加密到 10min 并开始 ~60min 级候选扫描；闲置号平时零查询。每次 200 响应回写 statusline 缓存。
-- **触发**：当前号 **5h 已用 ≥ 90%**（运行时可调）。weekly 永不当阈值触发器；weekly **实际封顶（≥100%）** 为事实性死号仍触发（§9 R-1）。
+- **触发**：当前号 **5h 已用 ≥ 90%**（主动阈值，运行时可调）**或任一窗口实际耗尽（≥100%）**——weekly 无主动阈值（保证每号钱花完），但耗尽即事实性死号必须触发（**Annie v4 批注①明文拍板**，原 §9 R-1 边界解读转正）。
 - **选号**：资格 = 候选两窗「有余额」（<100%）+ freshness 可用；排序 = 7d reset 最早优先；founder 固定顺序平手裁决。回流 = 开（结构性内建）。
 - **执行**：复用 `switchAccount()` + `flywheel-claude-profile use`。
 - **恢复**（核心组件）：切号后扫 tmux panes，高置信签名识别卡配额对话框 → send-keys 解除+续跑，每 tick 复扫（per-pane 有界预算，持久化）。
@@ -106,7 +106,7 @@ stateDiagram-v2
 2. **查当前号**（锁外，网络调用不持锁）：`fetchAccountUsage(快照.accessToken)`。429 → `backoffUntilMs = now + retryAfterMs`（持久化）；401 → blind；malformed/network → `errorStreak++`（持久化；超阈 → `quota_monitor_down`）。
 3. **写前复核 + 锁内提交**（R1 blocker 1 / R2 blocker 1）：200 后**重取锁**速读 `.active` + generation——已变（手动切号并发）→ **丢弃本次观察**（不写缓存、不触发）log 返回；未变 → **持锁完成**缓存原子写（`raw` 原样 tmp+rename）与 state 更新（含 observedGeneration）后放锁——复核与提交是一个锁内原子段，锁只覆盖快速本地写，告警/网络/切号全在锁外。interleaving 测试点：手动 A→B 恰好插在「复核通过之后、rename 之前」（锁应使其不可能）。
 4. **档位与候选扫描**：5h ≤ acceleratePct → 下轮 basePollMinutes，候选零查询；> acceleratePct → 下轮 acceleratedPollMinutes，且距 `lastCandidateSweepAt` ≥ candidateSweepMinutes 时扫候选全景（**只用池内未过期 accessToken，过期跳过标 unknown；绝不例行 probe-refresh**——R7）。全景仅预热/告警展示。
-5. **触发判断**：`fiveH.pct >= trigger5hPct` → scope `5h`；`sevenD.pct >= 100` → scope `weekly`（事实性封顶，§9 R-1）；双满足 → `both`。未触发返回。触发但 `now - lastSwitchAt < minSwitchIntervalMinutes`（state 持久值，重启不失忆）→ log 返回。monitor-only → `quota_no_target`（body 注明原因）返回。
+5. **触发判断**：`fiveH.pct >= trigger5hPct` → scope `5h`；`sevenD.pct >= 100` → scope `weekly`（事实性耗尽，Annie v4 批注①明文拍板）；双满足 → `both`。未触发返回。触发但 `now - lastSwitchAt < minSwitchIntervalMinutes`（state 持久值，重启不失忆）→ log 返回。monitor-only → `quota_no_target`（body 注明原因）返回。
 6. **选号（切号时刻按需验证，权威）**：**候选全集 = config.order ∩ 池目录 ∩ store.accounts**（R1 blocker 11；任一缺席 → 全景标 `not_in_pool`/`not_in_store`，`--enable` 时即拒绝这种 order）。对全集中每个非 active 候选（store 导出的 usability 判定先筛 authExpired/cooldown 省调用）：
    a. **锁下 freshness**：取账号锁 → 速读 `.active` 复核候选未变 active（变了 → 跳过该候选）→ `verifyPoolCredential`（probe-refresh 仅限非 active，轮转写回池）→ 读回新 accessToken → 放锁。`{fresh:"stale"}` → 记 reason 跳过（**helper 现有返回形态不区分账号性/环境性失败——R1 blocker 2：daemon 预验阶段不做全局短路，所有失败一律按候选跳过记原因**；环境性故障的兜底在 switchAccount 内部的 typed `FreshnessUnavailableError` 路径，那里有 exit 31 精确信号）。
    b. 锁外 `fetchAccountUsage(候选 token)`（打候选自己的桶）。
@@ -168,7 +168,7 @@ stateDiagram-v2
 
 | # | 风险/边界 | 处置 |
 |---|---|---|
-| R-1 | **weekly ≥100% 仍触发**是对「weekly 永不当触发器」的边界解读（否则慢烧型 weekly 先尽 → fleet 卡死且 5h 触发器永不发火）。Codex R1 复核认可该解读 | 已向 Lead 标注；默认按此实现，反对则删 §3.5 weekly 分支（单点） |
+| R-1 | ~~weekly ≥100% 仍触发是边界解读~~ → **已由 Annie v4 批注①明文拍板**（「任一窗口耗尽即触发切号/不可用」），不再是开放解读 | 已定，照 §3.5 实现 |
 | R-2 | 90% 触发 + 10-20min 轮询可能两次 poll 间冲过 100% | Annie 哲学明示可接受；恢复扫描兜底；间隔运行时可调 |
 | R-3 | 资格「<100%」可能选中 5h 已 9x% 的候选 → 短期再触发 | 字面执行拍板；冷却 + CAS 兜 churn；7d reset 排序天然分散 |
 | R-4 | usage API 非公开面，契约可变 | fail-closed + `FLYWHEEL_QUOTA_API_BASE` 注入；退役后无被动兜底 → `quota_monitor_down` + KeepAlive + wrapper fail-loud 三层 |
