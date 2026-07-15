@@ -3,6 +3,7 @@ import {
 	type CodexDaemonClient,
 	CodexDaemonError,
 	type DaemonTransport,
+	type GoalPhaseLifecycle,
 	GoalRunError,
 	type GoalRunResult,
 } from "../src/codex-daemon-client.js";
@@ -318,6 +319,36 @@ describe("CodexDaemonGoalRuntime", () => {
 		// The restart reuses the SAME anchor — without this each restart re-armed a
 		// fresh full budget and N restarts multiplied the cap (Codex R2 MEDIUM).
 		expect(startedAts[1]).toBe(startedAts[0]);
+		rt.stop();
+	});
+
+	it("FLY-1269 carries phase lifecycle and both restored deadlines across restart", async () => {
+		const calls: Array<Record<string, unknown>> = [];
+		let attempt = 0;
+		const phaseLifecycle = {} as GoalPhaseLifecycle;
+		const h = makeHarness({
+			runGoalScript: [],
+			runGoalFn: (async (_client, input) => {
+				calls.push(input as unknown as Record<string, unknown>);
+				attempt += 1;
+				if (attempt === 1) {
+					input.onBudgetRestored?.({
+						deadlineMs: 50_000,
+						hardDeadlineMs: 90_000,
+					});
+					throw new GoalRunError("socket died", "transport_closed");
+				}
+				return COMPLETE;
+			}) as CodexDaemonGoalRuntimeOptions["runGoalFn"],
+		});
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		await rt.runGoal({ objective: "phase", phaseLifecycle });
+
+		expect(calls).toHaveLength(2);
+		expect(calls[0]?.phaseLifecycle).toBe(phaseLifecycle);
+		expect(calls[1]?.phaseLifecycle).toBe(phaseLifecycle);
+		expect(calls[1]?.minDeadlineMs).toBe(50_000);
+		expect(calls[1]?.minHardDeadlineMs).toBe(90_000);
 		rt.stop();
 	});
 

@@ -4,6 +4,7 @@ import {
 	CodexDaemonError,
 	type DaemonTransport,
 	GOAL_OBJECTIVE_MAX_CHARS,
+	type GoalPhaseLifecycle,
 	GoalRunError,
 	type GoalStatus,
 	isTerminalGoalStatus,
@@ -68,6 +69,57 @@ function makeClient(daemon: FakeDaemon, opts = {}) {
 		logger: () => {},
 		...opts,
 	});
+}
+
+class FakePhaseLifecycle implements GoalPhaseLifecycle {
+	hold: ReturnType<GoalPhaseLifecycle["getPhaseHold"]> = null;
+	observations: ReturnType<GoalPhaseLifecycle["observe"]>[] = [];
+	entered: Array<{
+		deadlineRemainingMs: number;
+		hardDeadlineRemainingMs: number;
+	}> = [];
+	confirmed = 0;
+	started: string[] = [];
+	finished: string[] = [];
+	left = 0;
+	onWait: (() => void) | undefined;
+
+	getPhaseHold() {
+		return this.hold;
+	}
+	async enterHold(budget: {
+		deadlineRemainingMs: number;
+		hardDeadlineRemainingMs: number;
+	}) {
+		this.entered.push(budget);
+		this.hold = {
+			schemaVersion: 1,
+			role: "design",
+			state: "entering",
+			enteredAt: "2026-07-14T00:00:00.000Z",
+			...budget,
+		};
+	}
+	async confirmHoldPaused() {
+		this.confirmed += 1;
+		if (this.hold) this.hold = { ...this.hold, state: "paused" };
+	}
+	observe() {
+		return this.observations.shift() ?? ({ kind: "active" } as const);
+	}
+	async waitForActivity() {
+		this.onWait?.();
+	}
+	markWakeStarted(id: string) {
+		this.started.push(id);
+	}
+	finishWake(id: string) {
+		this.finished.push(id);
+	}
+	async leaveHold() {
+		this.left += 1;
+		this.hold = null;
+	}
 }
 
 describe("isTerminalGoalStatus", () => {
@@ -380,6 +432,315 @@ describe("runGoalToTerminal", () => {
 		);
 		expect(notifs).toContain("item/started");
 		expect(goals).toContain("complete");
+	});
+});
+
+describe("runGoalToTerminal — FLY-1269 phase hold", () => {
+	it("holds notification-complete across 49h idle, then kicks exact wake before active", async () => {
+		const d = new FakeDaemon();
+		let setActiveCount = 0;
+		let currentStatus: GoalStatus = "active";
+		d.responders.set("thread/goal/set", (params, _id, push) => {
+			const status = (params as { status: GoalStatus }).status;
+			currentStatus = status;
+			if (status === "active") {
+				setActiveCount += 1;
+				if (setActiveCount === 2) {
+					push({
+						method: "goal/updated",
+						params: {
+							threadId: "t",
+							goal: { status: "blocked", objective: "phase objective" },
+						},
+					});
+				}
+			}
+			return {};
+		});
+		let turns = 0;
+		d.responders.set("turn/start", (_params, _id, push) => {
+			turns += 1;
+			if (turns === 1) {
+				push({
+					method: "goal/updated",
+					params: {
+						threadId: "t",
+						goal: { status: "complete", objective: "phase objective" },
+					},
+				});
+			}
+			return {};
+		});
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: currentStatus, objective: "phase objective" },
+		}));
+		const phase = new FakePhaseLifecycle();
+		phase.observations.push(
+			{ kind: "active" },
+			{
+				kind: "wake",
+				message: { id: "wake-1", content: "revise the plan" },
+			},
+		);
+		let clock = 0;
+		phase.onWait = () => {
+			clock += 50 * 60 * 60_000;
+		};
+
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "phase objective",
+			tokenBudget: 123,
+			overallTimeoutMs: 1_000,
+			waitingTimeoutMs: 49 * 60 * 60_000,
+			now: () => clock,
+			sleep: async () => {},
+			phaseLifecycle: phase,
+			phaseControlPollIntervalMs: 1,
+		});
+
+		expect(result.status).toBe("blocked");
+		expect(phase.entered).toHaveLength(1);
+		expect(phase.confirmed).toBe(1);
+		expect(phase.started).toEqual(["wake-1"]);
+		expect(phase.finished).toEqual(["wake-1"]);
+		expect(phase.left).toBe(1);
+		const frames = d.sent.filter((frame) =>
+			["thread/goal/set", "turn/start"].includes(frame.method as string),
+		);
+		expect(frames.map((frame) => frame.method)).toEqual([
+			"thread/goal/set",
+			"turn/start",
+			"thread/goal/set",
+			"turn/start",
+			"thread/goal/set",
+		]);
+		expect(frames[2]?.params).toMatchObject({
+			status: "paused",
+			objective: "phase objective",
+			tokenBudget: 123,
+		});
+		expect((frames[3]?.params as { input: unknown }).input).toEqual([
+			{ type: "text", text: "[phase-wake wake-1] revise the plan" },
+		]);
+	});
+
+	it("poll-fallback complete enters the same phase hold classifier", async () => {
+		const d = new FakeDaemon();
+		let currentStatus: GoalStatus = "active";
+		let activeSets = 0;
+		d.responders.set("thread/goal/set", (params) => {
+			currentStatus = (params as { status: GoalStatus }).status;
+			if (currentStatus === "active") activeSets += 1;
+			return {};
+		});
+		d.responders.set("turn/start", () => ({}));
+		d.responders.set("thread/goal/get", () => ({
+			goal: {
+				status:
+					currentStatus === "paused"
+						? "paused"
+						: activeSets === 1
+							? "complete"
+							: "blocked",
+				objective: "phase objective",
+			},
+		}));
+		const phase = new FakePhaseLifecycle();
+		phase.observations.push({
+			kind: "wake",
+			message: { id: "poll-wake", content: "fix" },
+		});
+
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "phase objective",
+			now: () => 0,
+			sleep: async () => {},
+			pollIntervalMs: 1,
+			phaseLifecycle: phase,
+		});
+		expect(result.status).toBe("blocked");
+		expect(phase.entered).toHaveLength(1);
+		expect(phase.finished).toEqual(["poll-wake"]);
+	});
+
+	it("a persisted paused hold resumes without an initial active goal or generic kick", async () => {
+		const d = new FakeDaemon();
+		let currentStatus: GoalStatus = "paused";
+		d.responders.set("thread/goal/set", (params, _id, push) => {
+			currentStatus = (params as { status: GoalStatus }).status;
+			if (currentStatus === "active") {
+				push({
+					method: "goal/updated",
+					params: {
+						threadId: "t",
+						goal: { status: "blocked", objective: "phase objective" },
+					},
+				});
+			}
+			return {};
+		});
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: currentStatus, objective: "phase objective" },
+		}));
+		d.responders.set("turn/start", () => ({}));
+		const phase = new FakePhaseLifecycle();
+		phase.hold = {
+			schemaVersion: 1,
+			role: "qa",
+			state: "paused",
+			enteredAt: "2026-07-14T00:00:00.000Z",
+			deadlineRemainingMs: 777,
+			hardDeadlineRemainingMs: 999,
+		};
+		phase.observations.push({
+			kind: "wake",
+			message: { id: "resume-wake", content: "continue" },
+		});
+
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "phase objective",
+			now: () => 100_000,
+			sleep: async () => {},
+			phaseLifecycle: phase,
+		});
+		expect(result.status).toBe("blocked");
+		expect(phase.entered).toHaveLength(0);
+		const starts = d.sent.filter((frame) => frame.method === "turn/start");
+		expect(starts).toHaveLength(1);
+		expect((starts[0]?.params as { input: unknown }).input).toEqual([
+			{ type: "text", text: "[phase-wake resume-wake] continue" },
+		]);
+		const statuses = d.sent
+			.filter((frame) => frame.method === "thread/goal/set")
+			.map((frame) => (frame.params as { status: GoalStatus }).status);
+		expect(statuses).toEqual(["paused", "active"]);
+	});
+
+	it("phase eligibility creates a fresh hold after every reactivated completion", async () => {
+		const d = new FakeDaemon();
+		let activeSets = 0;
+		d.responders.set("thread/goal/set", (params, _id, push) => {
+			if ((params as { status: GoalStatus }).status === "active") {
+				activeSets += 1;
+				if (activeSets > 1) {
+					push({
+						method: "goal/updated",
+						params: {
+							threadId: "t",
+							goal: {
+								status: activeSets === 2 ? "complete" : "blocked",
+								objective: "phase objective",
+							},
+						},
+					});
+				}
+			}
+			return {};
+		});
+		let initial = true;
+		d.responders.set("turn/start", (_params, _id, push) => {
+			if (initial) {
+				initial = false;
+				push({
+					method: "goal/updated",
+					params: {
+						threadId: "t",
+						goal: { status: "complete", objective: "phase objective" },
+					},
+				});
+			}
+			return {};
+		});
+		d.responders.set("thread/goal/get", (_params) => ({
+			goal: {
+				status: d.sent
+					.filter((frame) => frame.method === "thread/goal/set")
+					.at(-1)?.params
+					? (
+							d.sent
+								.filter((frame) => frame.method === "thread/goal/set")
+								.at(-1)?.params as { status: GoalStatus }
+						).status
+					: "paused",
+				objective: "phase objective",
+			},
+		}));
+		const phase = new FakePhaseLifecycle();
+		phase.observations.push(
+			{ kind: "wake", message: { id: "wake-a", content: "first" } },
+			{ kind: "wake", message: { id: "wake-b", content: "second" } },
+		);
+
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "phase objective",
+			now: () => 0,
+			sleep: async () => {},
+			phaseLifecycle: phase,
+		});
+		expect(result.status).toBe("blocked");
+		expect(phase.entered).toHaveLength(2);
+		expect(phase.finished).toEqual(["wake-a", "wake-b"]);
+	});
+
+	it("wake kick failure retains the queue and phase latch", async () => {
+		const d = new FakeDaemon();
+		let turns = 0;
+		const originalSend = d.send.bind(d);
+		d.send = (frame) => {
+			const request = frame as { id?: number; method?: string };
+			if (request.method === "turn/start") {
+				turns += 1;
+				if (turns === 2) {
+					d.sent.push(request as Record<string, unknown>);
+					queueMicrotask(() =>
+						d.push({
+							id: request.id,
+							error: { code: -1, message: "kick rejected" },
+						}),
+					);
+					return;
+				}
+			}
+			originalSend(frame);
+		};
+		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("turn/start", (_params, _id, push) => {
+			push({
+				method: "goal/updated",
+				params: {
+					threadId: "t",
+					goal: { status: "complete", objective: "phase objective" },
+				},
+			});
+			return {};
+		});
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: "paused", objective: "phase objective" },
+		}));
+		const phase = new FakePhaseLifecycle();
+		phase.observations.push({
+			kind: "wake",
+			message: { id: "failed-wake", content: "retry" },
+		});
+		phase.onWait = () => d.triggerClose("stop retry loop");
+
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "phase objective",
+				now: () => 0,
+				sleep: async () => {},
+				phaseLifecycle: phase,
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(phase.started).toEqual(["failed-wake"]);
+		expect(phase.finished).toEqual([]);
+		expect(phase.left).toBe(0);
+		expect(phase.hold).not.toBeNull();
 	});
 });
 

@@ -113,7 +113,7 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 		await lifecycle.stop();
 	});
 
-	it("enterHold starts initial mailbox scan; leaveHold stops it; next hold restarts", async () => {
+	it("enterHold persists entering before pause confirmation starts mailbox intake", async () => {
 		const instructionId = db.insertInstruction("lead", "exec-1", "revise");
 		const watcher = new FakeWatcher([
 			{
@@ -129,6 +129,13 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 			deadlineRemainingMs: 30_000,
 			hardDeadlineRemainingMs: 60_000,
 		});
+		expect(watcher.started).toBe(0);
+		expect(JSON.parse(readFileSync(statePath, "utf8")).phaseHold).toMatchObject(
+			{
+				state: "entering",
+			},
+		);
+		await lifecycle.confirmHoldPaused();
 
 		expect(watcher.started).toBe(1);
 		expect(lifecycle.observe()).toMatchObject({
@@ -150,6 +157,8 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 			deadlineRemainingMs: 20_000,
 			hardDeadlineRemainingMs: 50_000,
 		});
+		expect(watcher.started).toBe(1);
+		await lifecycle.confirmHoldPaused();
 		expect(watcher.started).toBe(2);
 		await lifecycle.stop();
 	});
@@ -162,6 +171,7 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 			deadlineRemainingMs: 1,
 			hardDeadlineRemainingMs: 2,
 		});
+		await lifecycle.confirmHoldPaused();
 
 		await watcher.emit({
 			id: "v-1",
@@ -195,6 +205,7 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 			deadlineRemainingMs: 1,
 			hardDeadlineRemainingMs: 2,
 		});
+		await lifecycle.confirmHoldPaused();
 		await watcher.emit({
 			id: "listed-vendor",
 			to: "runner-agent",
@@ -213,6 +224,7 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 			deadlineRemainingMs: 1,
 			hardDeadlineRemainingMs: 2,
 		});
+		await lifecycle.confirmHoldPaused();
 		await expect(
 			watcher.emit({
 				id: "wrong-recipient",

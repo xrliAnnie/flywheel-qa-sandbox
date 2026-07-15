@@ -282,9 +282,13 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		const lifecycle = {
 			start: vi.fn(async () => {}),
 			stop: vi.fn(async () => {}),
+			stopIntake: vi.fn(async () => {}),
 			waitForShutdown: vi.fn(() => new Promise(() => {})),
 			observe: vi.fn(() => ({ kind: "active" as const })),
+			getPhaseHold: vi.fn(() => null),
 			enterHold: vi.fn(async () => {}),
+			confirmHoldPaused: vi.fn(async () => {}),
+			waitForActivity: vi.fn(async () => {}),
 			leaveHold: vi.fn(async () => {}),
 			markWakeStarted: vi.fn(),
 			finishWake: vi.fn(),
@@ -318,8 +322,76 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(lifecycle.start).toHaveBeenCalledOnce();
 		expect(lifecycle.stop).toHaveBeenCalledOnce();
 		expect(watcher.start).not.toHaveBeenCalled();
+		expect(runtime.runGoalInputs[0]?.phaseLifecycle).toBe(lifecycle);
 		expect(runtime.stopped).toBe(1);
 		expect(runtime.drainedCalls).toBe(1);
+	});
+
+	it("request-bound phase shutdown stops the runtime, drains, then acknowledges", async () => {
+		let rejectGoal: ((error: Error) => void) | undefined;
+		const order: string[] = [];
+		const controlledRuntime: CodexDaemonGoalRuntimeLike = {
+			runGoal: () =>
+				new Promise((_resolve, reject) => {
+					rejectGoal = reject;
+				}),
+			stop: () => {
+				order.push("runtime.stop");
+				rejectGoal?.(new GoalRunError("controlled close", "transport_closed"));
+			},
+			drained: async () => {
+				order.push("runtime.drained");
+			},
+		};
+		const lifecycle = {
+			start: vi.fn(async () => {}),
+			stopIntake: vi.fn(async () => order.push("intake.stop")),
+			stop: vi.fn(async () => order.push("controller.stop")),
+			waitForShutdown: vi.fn(async () => ({ requestId: "shutdown-1" })),
+			observe: vi.fn(() => ({
+				kind: "shutdown" as const,
+				requestId: "shutdown-1",
+			})),
+			getPhaseHold: vi.fn(() => null),
+			enterHold: vi.fn(async () => {}),
+			confirmHoldPaused: vi.fn(async () => {}),
+			waitForActivity: vi.fn(async () => {}),
+			leaveHold: vi.fn(async () => {}),
+			markWakeStarted: vi.fn(),
+			finishWake: vi.fn(),
+			ackShutdown: vi.fn(() => order.push("shutdown.ack")),
+		};
+		const deps = {
+			...makeDeps(),
+			runtimeFactory: () => controlledRuntime,
+			phaseLifecycleFactory: () => lifecycle,
+		};
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			deps,
+		);
+
+		const result = await adapter.execute(
+			ctx({ phaseKeepAlive: { role: "qa" } }),
+		);
+
+		expect(result.success).toBe(true);
+		expect(lifecycle.ackShutdown).toHaveBeenCalledWith("shutdown-1", {
+			ok: true,
+		});
+		expect(order).toEqual([
+			"runtime.stop",
+			"intake.stop",
+			"runtime.stop",
+			"runtime.drained",
+			"shutdown.ack",
+			"controller.stop",
+		]);
 	});
 
 	it("runs without phaseKeepAlive create no phase controller or receiver", async () => {

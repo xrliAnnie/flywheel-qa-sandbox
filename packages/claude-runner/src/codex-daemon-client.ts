@@ -109,6 +109,44 @@ export interface GoalRunResult {
 	succeeded: boolean;
 }
 
+export interface GoalPhaseHold {
+	schemaVersion: 1;
+	role: "design" | "implement" | "qa";
+	state: "entering" | "paused" | "reactivating";
+	enteredAt: string;
+	deadlineRemainingMs: number;
+	hardDeadlineRemainingMs: number;
+}
+
+export type GoalPhaseObservation =
+	| { kind: "active" }
+	| { kind: "parked"; reason?: string }
+	| {
+			kind: "wake";
+			message: {
+				id: string;
+				content: string;
+				metadata?: Record<string, unknown>;
+			};
+	  }
+	| { kind: "shutdown"; requestId: string }
+	| { kind: "unknown"; error: string };
+
+/** Structural phase controller seam; this protocol layer imports no CommDB. */
+export interface GoalPhaseLifecycle {
+	getPhaseHold(): GoalPhaseHold | null;
+	enterHold(budget: {
+		deadlineRemainingMs: number;
+		hardDeadlineRemainingMs: number;
+	}): Promise<void>;
+	confirmHoldPaused(): Promise<void>;
+	observe(): GoalPhaseObservation;
+	waitForActivity(timeoutMs: number): Promise<void>;
+	markWakeStarted(messageId: string): void;
+	finishWake(messageId: string): void;
+	leaveHold(): Promise<void>;
+}
+
 /** Streaming events surfaced to the caller (pane render, gate detection). */
 export interface CodexDaemonEvents {
 	/** Every raw server notification method (for pane rendering / diagnostics). */
@@ -520,9 +558,22 @@ export async function runGoalToTerminal(
 		 * The runtime feeds back the max extended deadline via `onDeadlineExtended`.
 		 */
 		minDeadlineMs?: number;
+		/** Phase-restored hard-deadline floor carried across daemon restarts. */
+		minHardDeadlineMs?: number;
 		/** FLY-1188 MED-7 R3: fired whenever the deadline is extended (monotonic),
 		 * so the runtime can carry the extension across restarts. */
 		onDeadlineExtended?: (deadlineMs: number) => void;
+		/** Reports both deadlines after a phase hold restores frozen budgets. */
+		onBudgetRestored?: (budget: {
+			deadlineMs: number;
+			hardDeadlineMs: number;
+		}) => void;
+		/** FLY-1269: explicit resident three-stage phase lifecycle. */
+		phaseLifecycle?: GoalPhaseLifecycle;
+		/** Slow, zero-token phase control poll (default 15s). */
+		phaseControlPollIntervalMs?: number;
+		/** Per local phase control RPC bound (default 30s). */
+		phaseControlRpcTimeoutMs?: number;
 		/** getGoal poll interval as a fallback to the notification stream. */
 		pollIntervalMs?: number;
 		/** FLY-1188 M4d: fired the INSTANT this run's goal is confirmed SET (right
@@ -553,7 +604,10 @@ export async function runGoalToTerminal(
 		overallTimeoutMs,
 		input.waitingTimeoutMs ?? overallTimeoutMs,
 	);
-	const hardDeadline = startedAt + hardCeilingMs;
+	let hardDeadline = Math.max(
+		startedAt + hardCeilingMs,
+		input.minHardDeadlineMs ?? 0,
+	);
 	// Extend-only: while a gate is open keep the deadline ≥ now + active budget,
 	// capped at the hard ceiling. It NEVER retracts, so a runner that waited long
 	// on a gate and just got its answer is not cut off the instant the gate
@@ -566,6 +620,20 @@ export async function runGoalToTerminal(
 		hardDeadline,
 		Math.max(startedAt + activeCapMs, input.minDeadlineMs ?? 0),
 	);
+	let phaseHold = input.phaseLifecycle?.getPhaseHold() ?? null;
+	if (phaseHold) {
+		const resumedAt = now();
+		deadline = resumedAt + phaseHold.deadlineRemainingMs;
+		hardDeadline = resumedAt + phaseHold.hardDeadlineRemainingMs;
+		try {
+			input.onBudgetRestored?.({
+				deadlineMs: deadline,
+				hardDeadlineMs: hardDeadline,
+			});
+		} catch {
+			/* budget carry callback must not break the held goal */
+		}
+	}
 
 	const turnIds = new Set<string>();
 	let latestTokens = 0;
@@ -653,37 +721,141 @@ export async function runGoalToTerminal(
 	const failClose = (msg: string): never => {
 		throw new GoalRunError(msg, "transport_closed");
 	};
+	const phase = input.phaseLifecycle;
+	const phaseControlPollIntervalMs = input.phaseControlPollIntervalMs ?? 15_000;
+	const phaseControlRpcTimeoutMs = input.phaseControlRpcTimeoutMs ?? 30_000;
+	let held = phaseHold !== null;
+	const setGoalStatus = (status: "active" | "paused", timeoutMs: number) =>
+		client.setGoal(
+			{
+				threadId: input.threadId,
+				objective: input.objective,
+				tokenBudget: input.tokenBudget,
+				status,
+			},
+			timeoutMs,
+		);
+	const waitForPhaseActivity = async (): Promise<void> => {
+		if (phase) {
+			await phase.waitForActivity(phaseControlPollIntervalMs);
+		} else {
+			await sleep(phaseControlPollIntervalMs);
+		}
+	};
+	const ensurePhasePaused = async (): Promise<void> => {
+		if (!phase) throw new Error("phase lifecycle missing");
+		while (true) {
+			if (client.isClosed())
+				failClose("daemon transport closed entering phase hold");
+			try {
+				await setGoalStatus("paused", phaseControlRpcTimeoutMs);
+				goalArmed = true;
+				const confirmed = await client.getGoal(
+					input.threadId,
+					phaseControlRpcTimeoutMs,
+				);
+				if (confirmed?.status === "paused" && objectiveIsOurs(confirmed)) {
+					await phase.confirmHoldPaused();
+					return;
+				}
+			} catch (error) {
+				if (client.isClosed()) {
+					failClose(
+						`daemon transport closed entering phase hold: ${error instanceof Error ? error.message : error}`,
+					);
+				}
+			}
+			// Persistent pause rejection is fail-loud/held: the entering latch stays
+			// durable and this zero-token local loop retries slowly.
+			await waitForPhaseActivity();
+		}
+	};
+	const enterPhaseHold = async (): Promise<void> => {
+		if (!phase) throw new Error("phase lifecycle missing");
+		if (!phaseHold) {
+			const t = now();
+			await phase.enterHold({
+				deadlineRemainingMs: Math.max(0, deadline - t),
+				hardDeadlineRemainingMs: Math.max(0, hardDeadline - t),
+			});
+			phaseHold = phase.getPhaseHold();
+			if (!phaseHold) throw new Error("phase hold was not persisted");
+		}
+		await ensurePhasePaused();
+		held = true;
+		terminalSeen = null;
+	};
+	const reactivateWake = async (
+		message: Extract<GoalPhaseObservation, { kind: "wake" }>["message"],
+	): Promise<boolean> => {
+		if (!phase || !phaseHold) return false;
+		phase.markWakeStarted(message.id);
+		try {
+			await client.startTurn(
+				input.threadId,
+				`[phase-wake ${message.id}] ${message.content}`,
+				phaseControlRpcTimeoutMs,
+			);
+			// Clear a complete emitted by the paused wake turn BEFORE active; a
+			// notification emitted by the active transition remains authoritative.
+			terminalSeen = null;
+			await setGoalStatus("active", phaseControlRpcTimeoutMs);
+			const restoredAt = now();
+			deadline = restoredAt + phaseHold.deadlineRemainingMs;
+			hardDeadline = restoredAt + phaseHold.hardDeadlineRemainingMs;
+			try {
+				input.onBudgetRestored?.({
+					deadlineMs: deadline,
+					hardDeadlineMs: hardDeadline,
+				});
+			} catch {
+				/* budget carry callback must not break activation */
+			}
+			phase.finishWake(message.id);
+			await phase.leaveHold();
+			phaseHold = null;
+			held = false;
+			return true;
+		} catch (error) {
+			if (client.isClosed()) {
+				failClose(
+					`daemon transport closed reactivating phase wake ${message.id}: ${error instanceof Error ? error.message : error}`,
+				);
+			}
+			// Keep started queue row + latch. A retry carries the same stable id;
+			// runner-side replay handling prevents duplicate external side effects.
+			return false;
+		}
+	};
 
 	try {
 		// Setup RPCs count against the same deadline and are each bounded by the
 		// remaining budget, so a hung setGoal/startTurn cannot blow the ceiling.
 		try {
-			if (remainingBudget() <= 0) timedOut("before setGoal");
-			await client.setGoal(
-				{
-					threadId: input.threadId,
-					objective: input.objective,
-					tokenBudget: input.tokenBudget,
-					status: "active",
-				},
-				remainingBudget(),
-			);
+			if (held) {
+				await ensurePhasePaused();
+			} else {
+				if (remainingBudget() <= 0) timedOut("before setGoal");
+				await setGoalStatus("active", remainingBudget());
+			}
 			// R23 HIGH-2: only NOW is a terminal for this thread trustworthy as
 			// OUR goal's terminal — the goal has been confirmed set.
 			goalArmed = true;
 			// FLY-1188 M4d: the goal is confirmed set → safe FLY-245 launch-commit
 			// point. Swallow a throwing handler (it must never break the run).
-			try {
-				input.onGoalActive?.();
-			} catch {
-				/* launch-commit handler must not break the goal run */
+			if (!held) {
+				try {
+					input.onGoalActive?.();
+				} catch {
+					/* launch-commit handler must not break the goal run */
+				}
+				if (remainingBudget() <= 0) timedOut("before startTurn");
+				await client.startTurn(
+					input.threadId,
+					input.kickText ?? "Begin working toward the goal now.",
+					remainingBudget(),
+				);
 			}
-			if (remainingBudget() <= 0) timedOut("before startTurn");
-			await client.startTurn(
-				input.threadId,
-				input.kickText ?? "Begin working toward the goal now.",
-				remainingBudget(),
-			);
 		} catch (err) {
 			// R23 HIGH-1: a real terminal observed (via the notification stream)
 			// BEFORE this setup RPC rejected — the daemon is allowed to stream a
@@ -708,10 +880,26 @@ export async function runGoalToTerminal(
 		}
 
 		while (true) {
+			if (held) {
+				if (client.isClosed())
+					failClose("daemon transport closed in phase hold");
+				const observation = phase?.observe() ?? { kind: "unknown" as const };
+				if (observation.kind === "wake") {
+					if (await reactivateWake(observation.message)) continue;
+				}
+				await waitForPhaseActivity();
+				continue;
+			}
 			// A terminal notification wins immediately, re-checked before every
 			// blocking step so a real terminal is never masked by a later close.
 			// (remainingBudget extends the deadline when a gate is open — MED-7.)
-			if (terminalSeen) break;
+			if (terminalSeen) {
+				if (phase && terminalSeen === "complete") {
+					await enterPhaseHold();
+					continue;
+				}
+				break;
+			}
 			if (client.isClosed()) failClose("daemon transport closed mid-run");
 			if (remainingBudget() <= 0) timedOut("waiting for terminal status");
 
@@ -722,7 +910,7 @@ export async function runGoalToTerminal(
 			// and the transport then closes in the same tick, skipping getGoal
 			// keeps the real terminal status from being clobbered by a
 			// transport_closed failure.
-			if (terminalSeen) break;
+			if (terminalSeen) continue;
 			// R22 HIGH: a close that landed during the sleep (with no terminal
 			// seen before it) fails the run now — no need for a getGoal round-trip
 			// to discover the dead socket.
@@ -739,7 +927,7 @@ export async function runGoalToTerminal(
 			} catch (err) {
 				// R21 HIGH-2: a terminal already observed takes precedence over any
 				// getGoal failure — never fail-close over a real terminal status.
-				if (terminalSeen) break;
+				if (terminalSeen) continue;
 				if (client.isClosed())
 					failClose(`getGoal failed on a closed transport: ${err}`);
 				if (remainingBudget() <= 0) timedOut("polling goal status");
@@ -750,7 +938,7 @@ export async function runGoalToTerminal(
 			// over the poll result — otherwise a poll that observed a
 			// just-replaced goal would wrongly throw goal_replaced over a terminal
 			// we already legitimately reached (R21 "first terminal wins").
-			if (terminalSeen) break;
+			if (terminalSeen) continue;
 			if (goal?.status) {
 				// R24 HIGH: the poll reads the thread's CURRENT goal. If another
 				// control end replaced our goal, its objective no longer matches
@@ -765,7 +953,6 @@ export async function runGoalToTerminal(
 				if (typeof goal.tokensUsed === "number") latestTokens = goal.tokensUsed;
 				if (isTerminalGoalStatus(goal.status)) {
 					terminalSeen = goal.status;
-					break;
 				}
 			}
 		}

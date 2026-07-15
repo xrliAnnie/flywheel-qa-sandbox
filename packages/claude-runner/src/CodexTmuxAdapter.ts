@@ -64,7 +64,10 @@ import {
 	enforceObjectiveLimit,
 } from "./codex-daemon-adapter-helpers.js";
 import type { CodexDaemonEvents } from "./codex-daemon-client.js";
-import { GOAL_OBJECTIVE_MAX_CHARS } from "./codex-daemon-client.js";
+import {
+	GOAL_OBJECTIVE_MAX_CHARS,
+	GoalRunError,
+} from "./codex-daemon-client.js";
 import type {
 	CodexDaemonGoalRuntimeOptions,
 	RunGoalInput,
@@ -366,6 +369,15 @@ export class CodexTmuxAdapter implements IAdapter {
 		let outcome: RunGoalOutcome | undefined;
 		let caughtError: unknown;
 		let teardownError: unknown;
+		let controlledShutdownRequestId: string | undefined;
+		const controlledShutdownSucceeded = (): boolean => {
+			if (!controlledShutdownRequestId || teardownError) return false;
+			if (classifyGoalOutcome({ outcome, caughtError }).success) return true;
+			return (
+				caughtError instanceof GoalRunError &&
+				caughtError.kind === "transport_closed"
+			);
+		};
 
 		try {
 			// M4c-1: SHORT SUN_LEN-safe control socket (fail loud on over-length).
@@ -626,7 +638,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					: undefined) ?? this.readPersistedThreadId(ctx.executionId);
 			const reapOrphanPid = this.readPersistedDaemonPid(ctx.executionId);
 
-			outcome = await runtime.runGoal(
+			const goalPromise = runtime.runGoal(
 				{
 					objective,
 					// FLY-1236: the full working instructions ride the kick turn
@@ -661,9 +673,40 @@ export class CodexTmuxAdapter implements IAdapter {
 						latestDaemonPid = pid;
 					},
 					onGoalActive,
+					...(phaseLifecycle ? { phaseLifecycle } : {}),
 				},
 				{ onNotification: () => heartbeat() },
 			);
+			if (phaseLifecycle) {
+				type GoalSettled =
+					| { kind: "goal"; outcome: RunGoalOutcome }
+					| { kind: "error"; error: unknown };
+				const settledGoal: Promise<GoalSettled> = goalPromise.then(
+					(value) => ({ kind: "goal", outcome: value }),
+					(error: unknown) => ({ kind: "error", error }),
+				);
+				const first = await Promise.race([
+					settledGoal,
+					phaseLifecycle
+						.waitForShutdown()
+						.then(
+							({ requestId }) => ({ kind: "shutdown", requestId }) as const,
+						),
+				]);
+				if (first.kind === "shutdown") {
+					controlledShutdownRequestId = first.requestId;
+					runtime.stop();
+					const settled = await settledGoal;
+					if (settled.kind === "goal") outcome = settled.outcome;
+					else caughtError = settled.error;
+				} else if (first.kind === "goal") {
+					outcome = first.outcome;
+				} else {
+					throw first.error;
+				}
+			} else {
+				outcome = await goalPromise;
+			}
 			// Fallback: ONLY when the authoritative onThreadReady hook NEVER fired (a
 			// very fast / quiet run) — open from the resolved outcome so the founder
 			// still gets the pane. One synchronous shot, no retry (the run has ended,
@@ -703,11 +746,11 @@ export class CodexTmuxAdapter implements IAdapter {
 			stopHeartbeat();
 			if (phaseLifecycle) {
 				try {
-					await phaseLifecycle.stop();
+					await phaseLifecycle.stopIntake();
 				} catch (err) {
 					teardownError ??= err;
 					console.warn(
-						`[CodexTmuxAdapter] ${ctx.executionId} phase controller teardown failed: ${(err as Error).message}`,
+						`[CodexTmuxAdapter] ${ctx.executionId} phase intake teardown failed: ${(err as Error).message}`,
 					);
 				}
 			}
@@ -728,6 +771,33 @@ export class CodexTmuxAdapter implements IAdapter {
 					);
 				}
 			}
+			if (phaseLifecycle && controlledShutdownRequestId) {
+				try {
+					phaseLifecycle.ackShutdown(
+						controlledShutdownRequestId,
+						controlledShutdownSucceeded()
+							? { ok: true }
+							: {
+									ok: false,
+									error:
+										teardownError instanceof Error
+											? teardownError.message
+											: caughtError instanceof Error
+												? caughtError.message
+												: "controlled shutdown did not settle cleanly",
+								},
+					);
+				} catch (err) {
+					teardownError ??= err;
+				}
+			}
+			if (phaseLifecycle) {
+				try {
+					await phaseLifecycle.stop();
+				} catch (err) {
+					teardownError ??= err;
+				}
+			}
 			if (registeredSession && ctx.commDbPath) {
 				try {
 					const commDb = new CommDB(ctx.commDbPath);
@@ -735,7 +805,8 @@ export class CodexTmuxAdapter implements IAdapter {
 					// Codex R2 MEDIUM: a SIGKILL-unconfirmed teardown must NOT be
 					// recorded as a clean "completed" (a still-live daemon would look
 					// finished to the cleanup/route layer).
-					const okComplete = c.success && !teardownError;
+					const okComplete =
+						(c.success || controlledShutdownSucceeded()) && !teardownError;
 					commDb.updateSessionStatus(
 						ctx.executionId,
 						okComplete ? "completed" : "timeout",
@@ -753,7 +824,8 @@ export class CodexTmuxAdapter implements IAdapter {
 		const cls = classifyGoalOutcome({ outcome, caughtError });
 		// HIGH-6: an unconfirmed daemon teardown fails the run (a live daemon +
 		// "completed" would be a lie).
-		const success = cls.success && !teardownError;
+		const success =
+			(cls.success || controlledShutdownSucceeded()) && !teardownError;
 		const threadId = outcome?.threadId;
 		const result: AdapterExecutionResult = {
 			success,

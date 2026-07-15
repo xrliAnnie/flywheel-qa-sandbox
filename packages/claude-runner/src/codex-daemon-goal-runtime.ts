@@ -16,6 +16,7 @@ import {
 	CodexDaemonError,
 	type CodexDaemonEvents,
 	type DaemonTransport,
+	type GoalPhaseLifecycle,
 	GoalRunError,
 	type GoalRunResult,
 	type GoalStatus,
@@ -121,6 +122,10 @@ export interface RunGoalInput {
 	waitingTimeoutMs?: number;
 	/** FLY-1188 MED-7: is this run currently blocked on an OPEN gate? */
 	isWaiting?: () => boolean;
+	/** FLY-1269 explicit resident three-stage phase controller. */
+	phaseLifecycle?: GoalPhaseLifecycle;
+	phaseControlPollIntervalMs?: number;
+	phaseControlRpcTimeoutMs?: number;
 	/**
 	 * FLY-1188 M4d: fired the moment OUR thread is confirmed ready (right after
 	 * `ensureThread` resolves the authoritative own-thread id) — NOT a raw
@@ -458,6 +463,7 @@ export class CodexDaemonGoalRuntime {
 			// closes. Each runGoalToTerminal reports its max deadline; the next call
 			// gets it as a floor.
 			let carriedDeadlineMs = 0;
+			let carriedHardDeadlineMs = 0;
 
 			while (true) {
 				try {
@@ -490,9 +496,29 @@ export class CodexDaemonGoalRuntime {
 							startedAt: runStartedAt,
 							// MED-7 R3: floor from a prior call's gate extension + feedback.
 							minDeadlineMs: carriedDeadlineMs,
+							minHardDeadlineMs: carriedHardDeadlineMs,
 							onDeadlineExtended: (ms) => {
 								if (ms > carriedDeadlineMs) carriedDeadlineMs = ms;
 							},
+							onBudgetRestored: ({ deadlineMs, hardDeadlineMs }) => {
+								if (deadlineMs > carriedDeadlineMs)
+									carriedDeadlineMs = deadlineMs;
+								if (hardDeadlineMs > carriedHardDeadlineMs) {
+									carriedHardDeadlineMs = hardDeadlineMs;
+								}
+							},
+							...(input.phaseLifecycle
+								? { phaseLifecycle: input.phaseLifecycle }
+								: {}),
+							...(input.phaseControlPollIntervalMs !== undefined
+								? {
+										phaseControlPollIntervalMs:
+											input.phaseControlPollIntervalMs,
+									}
+								: {}),
+							...(input.phaseControlRpcTimeoutMs !== undefined
+								? { phaseControlRpcTimeoutMs: input.phaseControlRpcTimeoutMs }
+								: {}),
 							// MED-7: forward the extended-ceiling + gate-open predicate so
 							// the goal loop caps at the active budget unless a gate is open.
 							...(input.waitingTimeoutMs !== undefined

@@ -187,12 +187,16 @@ export interface CodexPhaseLifecycleControllerOptions {
 export interface CodexPhaseLifecycle {
 	start(): Promise<void>;
 	stop(): Promise<void>;
+	stopIntake(): Promise<void>;
 	waitForShutdown(): Promise<{ requestId: string }>;
 	observe(): PhaseLifecycleObservation;
+	getPhaseHold(): PhaseHoldState | null;
 	enterHold(budget: {
 		deadlineRemainingMs: number;
 		hardDeadlineRemainingMs: number;
 	}): Promise<void>;
+	confirmHoldPaused(): Promise<void>;
+	waitForActivity(timeoutMs: number): Promise<void>;
 	leaveHold(): Promise<void>;
 	markWakeStarted(messageId: string): void;
 	finishWake(messageId: string): void;
@@ -215,6 +219,7 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 	private started = false;
 	private stopped = false;
 	private watcherStarted = false;
+	private readonly activityWaiters = new Set<() => void>();
 
 	constructor(private readonly options: CodexPhaseLifecycleControllerOptions) {
 		this.db = options.db ?? new CommDB(options.commDbPath);
@@ -248,10 +253,19 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 		if (this.shutdownTimer) clearInterval(this.shutdownTimer);
 		this.shutdownTimer = undefined;
 		try {
-			if (this.watcherStarted) await this.options.watcher?.stop();
+			await this.stopIntake();
+		} finally {
+			this.signalActivity();
+			if (this.ownsDb) this.db.close?.();
+		}
+	}
+
+	async stopIntake(): Promise<void> {
+		if (!this.watcherStarted) return;
+		try {
+			await this.options.watcher?.stop();
 		} finally {
 			this.watcherStarted = false;
-			if (this.ownsDb) this.db.close?.();
 		}
 	}
 
@@ -301,6 +315,13 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 		}
 	}
 
+	getPhaseHold(): PhaseHoldState | null {
+		const state = readSessionState(this.options.sessionStatePath);
+		if (state.phaseHold === undefined) return null;
+		assertValidPhaseHold(state.phaseHold);
+		return state.phaseHold;
+	}
+
 	async enterHold(budget: {
 		deadlineRemainingMs: number;
 		hardDeadlineRemainingMs: number;
@@ -322,7 +343,14 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 		atomicMergeCodexSessionState(this.options.sessionStatePath, {
 			phaseHold: { ...base, state: "entering" },
 		});
+	}
 
+	async confirmHoldPaused(): Promise<void> {
+		const hold = this.getPhaseHold();
+		if (!hold) throw new Error("cannot confirm a missing phaseHold");
+		atomicMergeCodexSessionState(this.options.sessionStatePath, {
+			phaseHold: { ...hold, state: "paused" },
+		});
 		if (this.options.watcher && !this.watcherStarted) {
 			this.options.watcher.onDelivered = async (message) => {
 				if (
@@ -338,13 +366,31 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 					message,
 					this.now(),
 				);
+				this.signalActivity();
 			};
-			await this.options.watcher.start();
 			this.watcherStarted = true;
+			try {
+				await this.options.watcher.start();
+			} catch (error) {
+				try {
+					await this.options.watcher.stop();
+				} finally {
+					this.watcherStarted = false;
+				}
+				throw error;
+			}
 		}
+	}
 
-		atomicMergeCodexSessionState(this.options.sessionStatePath, {
-			phaseHold: { ...base, state: "paused" },
+	waitForActivity(timeoutMs: number): Promise<void> {
+		return new Promise((resolve) => {
+			const done = () => {
+				clearTimeout(timer);
+				this.activityWaiters.delete(done);
+				resolve();
+			};
+			this.activityWaiters.add(done);
+			const timer = setTimeout(done, Math.max(0, timeoutMs));
 		});
 	}
 
@@ -426,9 +472,14 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 				const resolve = this.shutdownResolve;
 				this.shutdownResolve = undefined;
 				resolve({ requestId: shutdown.request_id });
+				this.signalActivity();
 			}
 		} catch {
 			// Fail closed: retain the live controller and retry on the next local tick.
 		}
+	}
+
+	private signalActivity(): void {
+		for (const resolve of [...this.activityWaiters]) resolve();
 	}
 }
