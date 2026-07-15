@@ -580,6 +580,30 @@ export class RetryDispatcher implements IRetryDispatcher {
 			req.leadId,
 			preRegistrationVendor(runnerSpawn),
 		);
+
+		// FLY-1257 M2: retry is a real three-stage launch, so it must receive
+		// the shared-worktree TURN before Blueprint can start the runner's first
+		// self-check. grantTurn's upsert increments the epoch atomically, moving
+		// ownership from the predecessor to this successor.
+		if (
+			req.shareParentBranch === true &&
+			isThreeStagePhaseRole(role) &&
+			threeStageKeepAliveEnabled()
+		) {
+			try {
+				const db = new CommDB(defaultGetCommDbPath(req.projectName));
+				try {
+					db.grantTurn(req.issueId, newExecutionId, role, Date.now());
+				} finally {
+					db.close();
+				}
+			} catch (err) {
+				this.abortPreLaunch(key, newExecutionId, req.projectName);
+				throw new Error(
+					`pre-launch TURN grant failed for ${role} phase retry on ${req.issueId}: ${(err as Error).message}`,
+				);
+			}
+		}
 		const ctx: BlueprintContext = {
 			teamName: "eng",
 			// FLY-793 follow-up: phase runners show their phase in the cmux window.
@@ -646,8 +670,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 			const commit =
 				await this.lifecycleLaunchGuard.commitLaunch(newExecutionId);
 			if (!commit.ok) {
-				this.inflight.delete(key);
-				this.cleanupPreRegistration(newExecutionId, req.projectName);
+				this.abortPreLaunch(key, newExecutionId, req.projectName);
 				throw new LifecycleParkedError(
 					commit.reason ?? "cancelled_between_admission_and_launch",
 				);
@@ -755,6 +778,33 @@ export class RetryDispatcher implements IRetryDispatcher {
 			}
 		} catch {
 			// Best-effort — CommDB may not be reachable
+		}
+	}
+
+	/**
+	 * FLY-1257 M2: one symmetric pre-launch abort for fresh and retry paths.
+	 * Every cleanup is best-effort and independent so a broken CommDB cannot
+	 * leave the inflight entry or durable lifecycle claim stuck at `starting`.
+	 */
+	protected abortPreLaunch(
+		key: string,
+		executionId: string,
+		projectName: string,
+	): void {
+		try {
+			this.inflight.delete(key);
+		} catch {
+			/* Map.delete is expected not to throw; keep the remaining cleanup alive. */
+		}
+		try {
+			this.cleanupPreRegistration(executionId, projectName);
+		} catch {
+			/* best-effort; cleanupPreRegistration already contains its own guard */
+		}
+		try {
+			this.lifecycleLaunchGuard?.onSpawnFailed(executionId);
+		} catch {
+			/* lifecycle cleanup must never mask the original launch failure */
 		}
 	}
 
@@ -1043,8 +1093,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					db.close();
 				}
 			} catch (err) {
-				this.inflight.delete(key);
-				this.cleanupPreRegistration(executionId, req.projectName);
+				this.abortPreLaunch(key, executionId, req.projectName);
 				throw new Error(
 					`pre-launch TURN grant failed for ${role} phase on ${req.issueId}: ${(err as Error).message}`,
 				);
@@ -1138,8 +1187,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		if (this.lifecycleLaunchGuard) {
 			const commit = await this.lifecycleLaunchGuard.commitLaunch(executionId);
 			if (!commit.ok) {
-				this.inflight.delete(key);
-				this.cleanupPreRegistration(executionId, req.projectName);
+				this.abortPreLaunch(key, executionId, req.projectName);
 				throw new LifecycleParkedError(
 					commit.reason ?? "cancelled_between_admission_and_launch",
 				);
