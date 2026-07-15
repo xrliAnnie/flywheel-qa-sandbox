@@ -1,14 +1,14 @@
 ---
 issue: FLY-1256
 phase: implement
-phaseCursor: 4/7
-updated: 2026-07-15T06:28:29.963Z
-nextStep: "M5 RED: retire Bridge quota paths behind
-  FLYWHEEL_QUOTA_MONITOR_EXTERNAL and preserve legacy byte-compat"
+phaseCursor: 5/7
+updated: 2026-07-15T06:36:26.132Z
+nextStep: "M6 RED: wrapper, launchd template, setup install-enable health
+  cutover, runnable isolated E2E"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1256 progress
-**phase**: implement (4/7)
-**next**: M5 RED: retire Bridge quota paths behind FLYWHEEL_QUOTA_MONITOR_EXTERNAL and preserve legacy byte-compat
+**phase**: implement (5/7)
+**next**: M6 RED: wrapper, launchd template, setup install-enable health cutover, runnable isolated E2E
