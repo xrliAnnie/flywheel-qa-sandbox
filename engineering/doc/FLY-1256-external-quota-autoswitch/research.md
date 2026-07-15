@@ -71,7 +71,7 @@ Accept: application/json
 
 事故①「54%→79% / 20min 且滞后于 Annie 端」完全被 1+2+3 解释：fleet 高速烧配额时，10 分钟前的缓存 + 一帧延迟 = 显示比真值低一大截；Annie 端（Anthropic 官网）是服务端真值。
 
-**修复（随本单交付，零改 statusline 脚本）**：daemon 每次 poll 把 200 响应原样原子写入 `~/.claude/usage-api-cache.json`（tmp+rename，与脚本自身写法 :108 相同）→ 缓存 mtime 永远新鲜 → 脚本自己的刷新分支（:114-119）不再触发（成为 daemon 停摆时的自然 fallback），显示值最坏落后一个 poll 间隔（默认 120s，见 §1.3 实测）。两个写者都是原子 rename，last-writer-wins，无撕裂风险。
+**修复（随本单交付，零改 statusline 脚本；表述已按 Codex R2-7 修正）**：daemon 每次 poll 把 200 响应原样原子写入 `~/.claude/usage-api-cache.json`（tmp+rename，与脚本自身写法 :108 相同）。注意交互事实：statusline 自身缓存年龄阈 600s < daemon 基础轮询 1200s → **脚本的自刷新分支（:114-119）在 daemon 写入间隙仍会照常运行**，daemon 的贡献是把「10 分钟缓存 + 空闲期无限冻结」改善为「空闲期也有 daemon 持续供数，显示新鲜度 ≤ max(自刷新节奏, daemon 轮询 20/10min)」。两个写者都是原子 rename 写新鲜 200 响应，last-writer-wins 无害；合计调用预算见 §1.3。
 
 ## 3. 凭证与 token 生命周期（安全约束）
 
@@ -129,10 +129,13 @@ active 账号 accessToken 过期（`expiresAt` 已过）且机器上无任何活
 
 Annie 批注⑦推翻此前「保留为兜底」决定（「从来就没 work 过」）——daemon 成为**唯一**自动切号器。退役是外科手术式的，边界如下：
 
-**退（Bridge 内的自动切号触发-执行管线）**：
+**退（Bridge 内的自动切号触发-执行管线，共三个执行面 + 队列，Codex R1/R2 核实）**：
 - `AutoRepairBot` 的 accountSwitch 路由（`AutoRepairBot.ts:148/256-257` 的 `canAttempt`/`enqueue`）；
-- `account-switch-watchdog.ts` 的 poll-piggyback 执行 tick（`plugin.ts:8002` 挂接点）及其 `pending-store` durable 队列的**自动切号用途**；
+- `account-switch-watchdog.ts` 的 poll-piggyback 执行 tick（`plugin.ts:8002` 挂接点）；
+- **`POST /api/account-switch` HTTP route 及 `accountSwitchRouteHolder`**（第三个执行面，退役后返回带认证的稳定 410）；
+- `pending-store` durable 队列的自动切号用途——既有 pending 记录在 pending 锁下 quarantine，永不可再被认领执行；
 - FLY-1182（点火单，In Progress，PR #562）随之**停止点火**——被本单取代，处置（关闭/重定向）由 Lead 定。
+- **生效方式**：以上全部经 env `FLYWHEEL_QUOTA_DAEMON_CUTOVER` 运行时门控双模式（未设 = 现行 wiring 字节原样），在 daemon 健康验证后的切换窗口翻转——不留自动切号真空（plan §8）。
 
 **留（daemon 的地基 + 与自动切号无关的功能）**：
 - 共享库：`switch-executor.ts`（switchAccount）、`account-store.ts`、`claude-profile-cli.ts`、`freshness.ts`、`mkdir-lock.ts`——daemon 直接复用，**不许删**；
