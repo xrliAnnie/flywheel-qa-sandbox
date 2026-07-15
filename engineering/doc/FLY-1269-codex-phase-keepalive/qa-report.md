@@ -193,14 +193,15 @@ A7 terminal request/ack/delete + FINAL PASS 仍留给 issue 外 FLY-1269 closing
 | C2 one-poll abort | observer 新增 `armingAttempts`/`armingDeadlineAt`（默认 5 次 / 10s，可 `--arming-attempts`/`--arming-timeout-ms`）；`initialFailure` 仅在超过 bound 才 fail，否则 `sleep+continue`；fail verdict 带 `arming{attempts,maxAttempts,timeoutMs,deadlineAt}` | `retries transient startup liveness before arming`（瞬时抖动后 arm，verdict undefined）+ `fails closed after bounded startup retries`（arming.attempts===3）均通过 |
 | C3 holder 无 observedAt | `probeHolders` 给 present/absent/indeterminate 全部盖 `observedAt` ISO 时间戳；缓存复用保留原采样时刻 | `timestamps holder evidence and preserves its sample time while cached` 通过 |
 
-### Observer regression（full 529 harness）
+### Observer regression（full committed 529 harness）
 
-- 默认短超时直跑：**13/19 pass, 6 fail**（本机 `load avg 8.5`、41 users）。6 个失败全为 `cleanup_not_observed`
-  / `observer did not exit` 超时型，**非断言错误**；失败输出证明 observer 逻辑正确（如
-  `records requested then acked` 的 history 正确记录 requested→acked 绑定），只是 loaded 机器上
-  每帧 node-spawn 假探针使 observer 无法在 2000ms 内走到 cleanup。
-- 用**真实 committed `observer.mjs`** + load-tolerant 超时的 harness 副本(scratchpad，未改被审文件)复跑：
-  **19/19 全部 pass**。决定性证明 observer 对全部场景功能正确，默认超时下的 6 个失败纯属本机负载伪影。
+- RED：旧 committed short-deadline harness 在 loaded 529 host 为 **13/19**；六个失败均为
+  `cleanup_not_observed` / `observer did not exit` timeout。
+- GREEN：`3b183e70fc8fa520e0c4de646ed8fb67c27dad5f` 仅放宽 fixture observer/wait/exit/test
+  deadlines，不改 production observer defaults、probe 逻辑或任何 assertion。
+- 在该 exact commit 运行 committed command
+  `node --test engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs`：
+  `2026-07-15T13:45:54Z` → `13:46:44Z`，`49576.048458ms`，**19 pass / 0 fail**。
 
 ### Locked three-stage chain (runtime-attested)
 
@@ -209,14 +210,17 @@ A7 terminal request/ack/delete + FINAL PASS 仍留给 issue 外 FLY-1269 closing
 | StateStore | `design_done` / codex-tmux / role design / `gpt-5.6-sol` | `awaiting_review` / codex-tmux / role implement / `gpt-5.6-sol` | `running` / **claude-tmux / qa / claude-opus-4-8** |
 | declared | `parked` | `parked` | — |
 | phaseHold | `paused` (enteredAt 11:27:00.624Z) | `paused` (enteredAt 13:05:23.365Z) | — |
-| native goal | `paused` goal `d05c8f51` tokens 565978 / time 3156 (immutable read) | `paused` goal `4ffe8b18` tokens 946085 / time 5813 | — |
+| native goal | `paused` goal `d05c8f51` tokens 565978 / time 3156 | `paused` goal `4ffe8b18` tokens 949749 / time 5843 | — |
 | daemon/socket | pid/pgid `88885`，socket `d159c5c4…` connectable，holder 88885 | pid/pgid `54044`，socket `6d3a98f0…` connectable，holder 54044 | — |
 | xhigh | — | argv `model_reasoning_effort="xhigh"` + TUI `gpt-5.6-sol xhigh … Goal paused` | — |
 | tmux | live (pane_dead=0) | live (pane_dead=0) | — |
 
-**60-second two-sample freeze**（13:19:59 → 13:21:03/04）：Design 与 Implement 的 goal
-tokens/time/updated_at + phaseHold enteredAt/state 均**完全冻结**，heartbeat 持续前进
-（design 13:19:59→13:20:59；implement 13:19:59→13:21:04），socket holder group 稳定。
+**73-second authoritative two-sample freeze**（13:44:19 → 13:45:32）：两次实际 evidence query
+均为 live `goals_1.sqlite` 上的 `sqlite3 -readonly` + `PRAGMA query_only=1`，没有使用
+`immutable=1`。Design goal 保持 `paused / 565978 / 3156 / 1784114820643`，Implement
+保持 `paused / 949749 / 5843 / 1784122323318`；heartbeat 分别前进到 `13:45:30` / `13:45:29`，
+socket holder pid `88885` / `54044` 稳定。完整命令、模式、时间戳见
+`qa/qa-round4-evidence.md`。
 
 ### Acceptance matrix (QA re-audit)
 

@@ -1,6 +1,6 @@
 # FLY-1269 529 E2E — QA round-4 runtime evidence
-host: MacBook-Pro.local | node: v25.6.1 | UTC: 2026-07-15T13:25:06Z
-worktree HEAD: 1f12c3fb8f255e6795b58d57a9ee40b61cf925c8 | branch: project-slot-2-FLY-1286
+host: MacBook-Pro.local | node: v25.6.1 | updated UTC: 2026-07-15T13:46:44Z
+tested source commit: 3b183e70fc8fa520e0c4de646ed8fb67c27dad5f | branch: project-slot-2-FLY-1286
 
 ## StateStore sessions (test-slot-2 teamlead.db)
 [{"execution_id":"464064c0-a711-4aa7-9426-5633dcef590d","status":"design_done","adapter_type":"codex-tmux","chat_thread_role":"design","runner_model":"gpt-5.6-sol","heartbeat_at":"2026-07-15 13:25:04"},
@@ -18,19 +18,42 @@ worktree HEAD: 1f12c3fb8f255e6795b58d57a9ee40b61cf925c8 | branch: project-slot-2
 464064c0-a711-4aa7-9426-5633dcef590d {"schemaVersion":1,"role":"design","enteredAt":"2026-07-15T11:27:00.624Z","deadlineRemainingMs":86399995,"hardDeadlineRemainingMs":173241918,"state":"paused"}
 1ba0f0f1-928c-4aaa-aa5f-5782a54a37ad {"schemaVersion":1,"role":"implement","enteredAt":"2026-07-15T13:05:23.365Z","deadlineRemainingMs":86399995,"hardDeadlineRemainingMs":170585106,"state":"paused"}
 
-## native goals (paused, frozen budget)
-design (immutable): [{"goal_id":"d05c8f51-0db3-4029-982d-d293e4347044","status":"paused","tokens_used":565978,"time_used_seconds":3156}]
-implement:          [{"goal_id":"4ffe8b18-dcb8-4b6a-9155-46031750276e","status":"paused","tokens_used":946085,"time_used_seconds":5813}] (CANTOPEN under -readonly during a WAL-checkpoint window; read via ?immutable=1 — data unchanged/frozen)
+## native goals (paused, frozen budget; authoritative live reads)
+
+Both samples used `sqlite3 -readonly <live goals_1.sqlite> "PRAGMA query_only=1; SELECT ... FROM thread_goals ..."`.
+No sample used `immutable=1`. The recovered Design DB had no active WAL owner, so a temporary
+SQLite connection was kept open with `PRAGMA query_only=1` only to establish WAL shared-memory;
+the two evidence queries themselves were separate `-readonly` connections against the live DB.
+
+- sample A `2026-07-15T13:44:19Z`
+  - design: `paused`, tokens `565978`, time `3156`, updated_at_ms `1784114820643`
+  - implement: `paused`, tokens `949749`, time `5843`, updated_at_ms `1784122323318`
+- sample B `2026-07-15T13:45:32Z`
+  - design: `paused`, tokens `565978`, time `3156`, updated_at_ms `1784114820643`
+  - implement: `paused`, tokens `949749`, time `5843`, updated_at_ms `1784122323318`
 
 ## Implement xhigh (argv on socket 6d3a98f097b21829)
 model_reasoning_effort="xhigh"
 TUI: gpt-5.6-sol xhigh · …project-slot-2… Goal paused (captured live)
 
-## Observer regression (full 529 harness, 19 tests)
-- default short timeouts (loaded host, load avg ~8.5): 13/19 pass; 6 fail are cleanup_not_observed / observer-did-not-exit TIMEOUT artifacts (not assertion failures).
-- real committed observer.mjs + load-tolerant harness copy: 19/19 PASS (functional correctness proven).
-- C1/C2/C3 fix tests (fails-closed-indeterminate, retries-transient / fails-closed-after-bounded, timestamps-holder-evidence): all PASS.
+## Observer regression (full committed 529 harness, 19 tests)
 
-## 60s two-sample freeze (13:19:59 -> 13:21:04)
-- design    goal paused tokens 565978 / time 3156 FROZEN; phaseHold enteredAt 11:27:00.624Z FROZEN; hb 13:19:59->13:20:59 advancing; pgid 88885 stable
-- implement goal paused tokens 946085 / time 5813 FROZEN; phaseHold enteredAt 13:05:23.365Z FROZEN; hb 13:19:59->13:21:04 advancing; pgid 54044 stable
+- RED evidence: the prior committed short-deadline harness produced `13/19`; the six failures were
+  `cleanup_not_observed` / `observer did not exit` timeout artifacts on the loaded 529 host.
+- Fix commit `3b183e70fc8fa520e0c4de646ed8fb67c27dad5f` raises only fixture observer/wait/exit/test
+  deadlines. It does not change observer production defaults, probe behavior, or assertions.
+- Exact committed command:
+  `node --test engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs`
+- Run window: `2026-07-15T13:45:54Z` → `2026-07-15T13:46:44Z`; Node duration
+  `49576.048458ms`; result `19 pass / 0 fail`.
+- C1/C2/C3 tests (fail-closed indeterminate, transient retry / bounded fail-close, timestamped
+  holder evidence) are included in those 19 committed tests and all passed.
+
+## 73s two-sample freeze (13:44:19 -> 13:45:32)
+
+- design: authoritative readonly goal values stayed `paused / 565978 / 3156 / 1784114820643`;
+  heartbeat advanced `13:44:20` → `13:45:30`; socket holder stayed pid `88885`.
+- implement: authoritative readonly goal values stayed `paused / 949749 / 5843 / 1784122323318`;
+  heartbeat advanced `13:44:19` → `13:45:29`; socket holder stayed pid `54044`.
+- Observer source: `/tmp/fly1286-terminal-ec8f6b7e-epoch7.jsonl`, samples at
+  `2026-07-15T13:44:20.140Z` and `2026-07-15T13:45:33.235Z`.
