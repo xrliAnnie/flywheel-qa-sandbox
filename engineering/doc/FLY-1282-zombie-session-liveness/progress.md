@@ -1,13 +1,13 @@
 ---
 issue: FLY-1282
 phase: design
-phaseCursor: 3/6
-updated: 2026-07-15T15:35:28.650Z
-nextStep: plan.md → design_review gate
+phaseCursor: 4/6
+updated: 2026-07-15T15:37:09.907Z
+nextStep: Codex design review gate
 chunks: []
 pointers: {}
 ---
 
 # FLY-1282 progress
-**phase**: design (3/6)
-**next**: plan.md → design_review gate
+**phase**: design (4/6)
+**next**: Codex design review gate
