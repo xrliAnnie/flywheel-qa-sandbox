@@ -17,6 +17,7 @@ function managed(targetId: string, current: unknown, consequence = "new-run") {
 }
 
 function catalog(surface: string) {
+	const efforts = surface === "cron" ? [] : ["low", "medium", "high", "xhigh"];
 	return {
 		version: 1,
 		surface,
@@ -29,13 +30,13 @@ function catalog(surface: string) {
 						id: "claude-fable-5",
 						label: "Fable 5",
 						runtimeVendor: "claude",
-						efforts: ["low", "medium", "high", "xhigh"],
+						efforts,
 					},
 					{
 						id: "claude-opus-4-8",
 						label: "Opus 4.8",
 						runtimeVendor: "claude",
-						efforts: ["low", "medium", "high", "xhigh"],
+						efforts,
 					},
 				],
 			},
@@ -80,7 +81,25 @@ function snapshot() {
 					},
 				],
 				roles: [],
-				dags: [],
+				dags: [
+					{
+						id: "dag-1",
+						templateId: "default",
+						title: "Default workflow",
+						revision: 1,
+						nodes: [
+							{
+								id: "implement",
+								name: "Implement",
+								dispatch: managed("dag-target", {
+									provider: "anthropic",
+									model: "claude-fable-5",
+									effort: null,
+								}),
+							},
+						],
+					},
+				],
 				crons: [
 					{
 						id: "cron-1",
@@ -98,6 +117,15 @@ function snapshot() {
 						),
 						enabled: managed("enabled-target", true, "reload-launchd"),
 						loaded: true,
+						model: managed(
+							"cron-model-target",
+							{
+								provider: "anthropic",
+								model: "claude-fable-5",
+								effort: null,
+							},
+							"reload-launchd",
+						),
 						warnings: [],
 					},
 				],
@@ -220,5 +248,26 @@ describe("management console browser interactions", () => {
 				},
 			],
 		});
+	});
+
+	it("does not advertise nullable provider/model choices to concrete-only DAG and cron writers", () => {
+		for (const targetId of ["dag-target", "cron-model-target"]) {
+			const holder = document.querySelector(
+				`[data-model-target="${targetId}"]`,
+			)!;
+			for (const part of ["provider", "model"]) {
+				const select = holder.querySelector(
+					`[data-model-part="${part}"]`,
+				) as HTMLSelectElement;
+				expect([...select.options].map((option) => option.value)).not.toContain(
+					"",
+				);
+			}
+		}
+
+		const cronEffort = document.querySelector(
+			'[data-model-target="cron-model-target"] [data-model-part="effort"]',
+		) as HTMLSelectElement;
+		expect([...cronEffort.options].map((option) => option.value)).toEqual([""]);
 	});
 });

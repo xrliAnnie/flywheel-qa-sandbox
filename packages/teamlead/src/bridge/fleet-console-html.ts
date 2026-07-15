@@ -228,18 +228,19 @@ const MANAGEMENT_CONSOLE_APP = `
     return provider.models[0]||null;
   }
   function option(id,label,chosen){return '<option value="'+esc(id)+'" '+(id===chosen?'selected':'')+'>'+esc(label)+'</option>';}
-  function modelControl(managed,surface,label,providerLocked){
+  function modelControl(managed,surface,label,providerLocked,selectionNullable){
     var value=effective(managed);var catalog=catalogFor(surface);var writableTarget=writable(managed);
     if(!catalog.providers.length){return '<div class="field"><label>'+esc(label)+'</label><div class="reason">真实 registry 在此层没有可用型号</div>'+capability(managed)+'</div>';}
+    if(!value&&!selectionNullable){return '<div class="field"><label>'+esc(label)+'</label><div class="reason">当前真源没有声明具体模型</div>'+capability(managed)+'</div>';}
     var provider=value?selectedProvider(catalog,value):(providerLocked?catalog.providers[0]:null);
     var model=value&&provider?selectedModel(provider,value):null;
-    var providers=(providerLocked?'':'<option value="" '+(!provider?'selected':'')+'>账户默认</option>')+catalog.providers.map(function(item){return option(item.id,item.label,provider&&provider.id);}).join("");
-    var models='<option value="" '+(!model?'selected':'')+'>账户默认</option>'+(provider?provider.models.map(function(item){return option(item.id,item.label,model&&model.id);}).join(""):"");
+    var providers=(!providerLocked&&selectionNullable?'<option value="" '+(!provider?'selected':'')+'>账户默认</option>':'')+catalog.providers.map(function(item){return option(item.id,item.label,provider&&provider.id);}).join("");
+    var models=(selectionNullable?'<option value="" '+(!model?'selected':'')+'>账户默认</option>':'')+(provider?provider.models.map(function(item){return option(item.id,item.label,model&&model.id);}).join(""):"");
     var efforts='<option value="" '+(!value||value.effort==null?'selected':'')+'>账户默认</option>'+(model?model.efforts.map(function(item){return option(item,item,value&&value.effort);}).join(""):"");
     var providerDisabled=providerLocked||!writableTarget?' disabled':'';
     var modelDisabled=!writableTarget||!provider?' disabled':'';
     var effortDisabled=!writableTarget||!model?' disabled':'';
-    return '<div class="field" data-model-target="'+esc(managed.targetId)+'"><label>'+esc(label)+'</label><div class="three"><select data-model-part="provider" data-surface="'+esc(surface)+'"'+providerDisabled+'>'+providers+'</select><select data-model-part="model" data-surface="'+esc(surface)+'"'+modelDisabled+'>'+models+'</select><select data-model-part="effort" data-surface="'+esc(surface)+'"'+effortDisabled+'>'+efforts+'</select></div>'+capability(managed)+'</div>';
+    return '<div class="field" data-model-target="'+esc(managed.targetId)+'" data-model-nullable="'+(selectionNullable?'true':'false')+'"><label>'+esc(label)+'</label><div class="three"><select data-model-part="provider" data-surface="'+esc(surface)+'"'+providerDisabled+'>'+providers+'</select><select data-model-part="model" data-surface="'+esc(surface)+'"'+modelDisabled+'>'+models+'</select><select data-model-part="effort" data-surface="'+esc(surface)+'"'+effortDisabled+'>'+efforts+'</select></div>'+capability(managed)+'</div>';
   }
   function renderRoles(project){
     if(!project.roles.length){return '<div class="empty">未发现角色卡</div>';}
@@ -252,9 +253,9 @@ const MANAGEMENT_CONSOLE_APP = `
   }
   function renderModelPanel(project){
     var html='<div class="panel '+(activeTab==="model"?'active':'')+'" data-panel="model"><h2 class="section-title">Lead 模型</h2><div class="grid">';
-    html+=project.leads.map(function(lead){return '<article class="card"><div class="card-head"><div><h3>'+esc(lead.displayName)+'</h3><div class="subtitle">'+esc(lead.department||lead.backend)+'</div></div><span class="status '+esc(lead.online)+'"></span></div>'+modelControl(lead.dispatch,"lead","公司 → 型号 → effort",true)+'</article>';}).join("");
+    html+=project.leads.map(function(lead){return '<article class="card"><div class="card-head"><div><h3>'+esc(lead.displayName)+'</h3><div class="subtitle">'+esc(lead.department||lead.backend)+'</div></div><span class="status '+esc(lead.online)+'"></span></div>'+modelControl(lead.dispatch,"lead","公司 → 型号 → effort",true,true)+'</article>';}).join("");
     html+='</div><h2 class="section-title">Runner 默认</h2>';
-    html+=project.runnerDefault?'<div class="grid"><article class="card"><h3>'+esc(project.name)+'</h3>'+modelControl(project.runnerDefault.dispatch,"runner","公司 → 型号 → effort",false)+'</article></div>':'<div class="empty">项目没有声明 Runner 默认模型</div>';
+    html+=project.runnerDefault?'<div class="grid"><article class="card"><h3>'+esc(project.name)+'</h3>'+modelControl(project.runnerDefault.dispatch,"runner","公司 → 型号 → effort",false,true)+'</article></div>':'<div class="empty">项目没有声明 Runner 默认模型</div>';
     html+='</div>';return html;
   }
   function renderDagPanel(project){
@@ -263,7 +264,7 @@ const MANAGEMENT_CONSOLE_APP = `
     project.dags.forEach(function(dag){
       html+='<article class="card"><div class="card-head"><div><h3>'+esc(dag.title)+'</h3><div class="subtitle">'+esc(dag.templateId)+' · revision '+esc(dag.revision)+'</div></div></div>';
       if(dag.error){html+='<div class="role-error">'+esc(dag.error)+'</div>';}
-      dag.nodes.forEach(function(node){html+='<div class="dag-row"><strong>'+esc(node.name)+'</strong>'+modelControl(node.dispatch,"workflow","stage 模型",false)+'</div>';});
+      dag.nodes.forEach(function(node){html+='<div class="dag-row"><strong>'+esc(node.name)+'</strong>'+modelControl(node.dispatch,"workflow","stage 模型",false,false)+'</div>';});
       html+='</article>';
     });
     return html+'</div>';
@@ -279,7 +280,7 @@ const MANAGEMENT_CONSOLE_APP = `
   function cronCard(cron){
     var enabled=effective(cron.enabled);var enabledLabel=enabled===null?'状态未知':enabled?'已启用':'已停用';var html='<article class="card"><div class="card-head"><div><h3>'+esc(cron.label)+'</h3><div class="subtitle">'+esc(cron.sourceHint)+'</div></div><button class="toggle '+(enabled===true?'on':'')+'" data-toggle-target="'+esc(cron.enabled.targetId)+'"'+(writable(cron.enabled)?'':' disabled')+'>'+enabledLabel+'</button></div>';
     html+='<div class="subtitle">launchd loaded：'+esc(cron.loaded===null?'未知':cron.loaded?'是':'否')+'</div>'+scheduleEditor(cron.schedule);
-    if(cron.model){html+=modelControl(cron.model,"cron","任务模型",false);}
+    if(cron.model){html+=modelControl(cron.model,"cron","任务模型",false,false);}
     cron.warnings.forEach(function(warning){html+='<div class="warning">'+esc(warning)+'</div>';});
     if(cron.error){html+='<div class="role-error">'+esc(cron.error)+'</div>';}
     return html+'</article>';
@@ -347,7 +348,7 @@ const MANAGEMENT_CONSOLE_APP = `
   function handleModelChange(select){
     var holder=select.closest("[data-model-target]");var managed=targetIndex[holder.dataset.modelTarget];if(!managed||!writable(managed)){return;}
     var surface=select.dataset.surface;var current=clone(effective(managed));var catalog=catalogFor(surface);var part=select.dataset.modelPart;
-    if((part==="provider"||part==="model")&&!select.value){setDraft(managed,null);return;}
+    if((part==="provider"||part==="model")&&!select.value){if(holder.dataset.modelNullable==="true"){setDraft(managed,null);}return;}
     var value=current||defaultSelection(surface);if(!value){return;}value[part]=select.value||null;
     if(part==="provider"){
       var provider=selectedProvider(catalog,value);var model=provider&&provider.models[0];if(!model){return;}value.model=model.id;value.effort=null;
