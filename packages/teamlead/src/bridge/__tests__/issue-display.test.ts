@@ -116,10 +116,32 @@ function states(
 	);
 }
 
+function statuses(
+	entries: Partial<Record<ThreeStagePhase, string>>,
+): Map<ThreeStagePhase, string> {
+	return new Map(Object.entries(entries) as [ThreeStagePhase, string][]);
+}
+
+function titleBadge(args: {
+	phaseStates: ReadonlyMap<ThreeStagePhase, PhaseDisplayState>;
+	phaseStatuses?: ReadonlyMap<ThreeStagePhase, string>;
+	shipFinalizationClaimed?: boolean;
+	mainSessionStage?: string;
+	mainSessionStatus?: string;
+}) {
+	return deriveIssueTitleBadge({
+		phaseStates: args.phaseStates,
+		phaseStatuses: args.phaseStatuses ?? new Map(),
+		shipFinalizationClaimed: args.shipFinalizationClaimed ?? false,
+		mainSessionStage: args.mainSessionStage,
+		mainSessionStatus: args.mainSessionStatus,
+	});
+}
+
 describe("deriveIssueTitleBadge (plan 1b aggregation)", () => {
 	it("empty map + main session → stage kind (现行单 session 公式)", () => {
 		expect(
-			deriveIssueTitleBadge({
+			titleBadge({
 				phaseStates: new Map(),
 				mainSessionStage: "implement",
 				mainSessionStatus: "running",
@@ -130,7 +152,7 @@ describe("deriveIssueTitleBadge (plan 1b aggregation)", () => {
 	it("empty map + failed/terminated/blocked main → blocked kind", () => {
 		for (const status of ["failed", "terminated", "blocked"]) {
 			expect(
-				deriveIssueTitleBadge({
+				titleBadge({
 					phaseStates: new Map(),
 					mainSessionStage: "implement",
 					mainSessionStatus: status,
@@ -141,7 +163,7 @@ describe("deriveIssueTitleBadge (plan 1b aggregation)", () => {
 
 	it("empty map + completed main → completed kind", () => {
 		expect(
-			deriveIssueTitleBadge({
+			titleBadge({
 				phaseStates: new Map(),
 				mainSessionStage: "ship",
 				mainSessionStatus: "completed",
@@ -149,49 +171,179 @@ describe("deriveIssueTitleBadge (plan 1b aggregation)", () => {
 		).toEqual({ kind: "completed" });
 	});
 
+	it("single-session completed stage is clamped by a still-open ship gate", () => {
+		expect(
+			titleBadge({
+				phaseStates: new Map(),
+				mainSessionStage: "completed",
+				mainSessionStatus: "awaiting_review",
+			}),
+		).toEqual({ kind: "stage", stage: "approve" });
+		expect(
+			titleBadge({
+				phaseStates: new Map(),
+				mainSessionStage: "completed",
+				mainSessionStatus: "approved_to_ship",
+			}),
+		).toEqual({ kind: "stage", stage: "ship" });
+	});
+
+	it("single-session non-completed stages remain byte-compatible", () => {
+		expect(
+			titleBadge({
+				phaseStates: new Map(),
+				mainSessionStage: "pr_created",
+				mainSessionStatus: "awaiting_review",
+			}),
+		).toEqual({ kind: "stage", stage: "pr_created" });
+	});
+
 	it("any phase blocked → blocked (kill/terminate QA shows 🔴受阻)", () => {
 		expect(
-			deriveIssueTitleBadge({
+			titleBadge({
 				phaseStates: states({
 					design: "done",
 					implement: "done",
+					qa: "blocked",
+				}),
+				phaseStatuses: statuses({
+					design: "design_done",
+					implement: "awaiting_review",
 					qa: "blocked",
 				}),
 			}),
 		).toEqual({ kind: "blocked" });
 	});
 
-	it("all existing phases done AND qa exists+done → completed (ship 收尾终态)", () => {
+	it("gate-open FLY-1224 shape stays at approve even when every phase display row is done", () => {
 		expect(
-			deriveIssueTitleBadge({
+			titleBadge({
 				phaseStates: states({ design: "done", implement: "done", qa: "done" }),
+				phaseStatuses: statuses({
+					design: "design_done",
+					implement: "awaiting_review",
+					qa: "awaiting_review",
+				}),
+			}),
+		).toEqual({ kind: "stage", stage: "approve" });
+	});
+
+	it("approved_to_ship outranks awaiting_review while every phase display row is done", () => {
+		expect(
+			titleBadge({
+				phaseStates: states({ design: "done", implement: "done", qa: "done" }),
+				phaseStatuses: statuses({
+					design: "design_done",
+					implement: "awaiting_review",
+					qa: "approved_to_ship",
+				}),
+			}),
+		).toEqual({ kind: "stage", stage: "ship" });
+	});
+
+	it("a validated post-ship finalization claim completes the post-merge stale-gate window", () => {
+		expect(
+			titleBadge({
+				phaseStates: states({ design: "done", implement: "done", qa: "done" }),
+				phaseStatuses: statuses({
+					design: "design_done",
+					implement: "awaiting_review",
+					qa: "completed",
+				}),
+				shipFinalizationClaimed: true,
+			}),
+		).toEqual({ kind: "completed" });
+	});
+
+	it("a completed phase cannot globally override an unclaimed awaiting_review gate", () => {
+		expect(
+			titleBadge({
+				phaseStates: states({ design: "done", implement: "done", qa: "done" }),
+				phaseStatuses: statuses({
+					design: "design_done",
+					implement: "awaiting_review",
+					qa: "completed",
+				}),
+			}),
+		).toEqual({ kind: "stage", stage: "approve" });
+	});
+
+	it("all terminal phase rows complete without a post-ship claim", () => {
+		expect(
+			titleBadge({
+				phaseStates: states({ design: "done", implement: "done", qa: "done" }),
+				phaseStatuses: statuses({
+					design: "completed",
+					implement: "merged",
+					qa: "completed",
+				}),
+			}),
+		).toEqual({ kind: "completed" });
+	});
+
+	it("display-done rows without a gate or positive ship fact fall through conservatively", () => {
+		expect(
+			titleBadge({
+				phaseStates: states({ design: "done", implement: "done", qa: "done" }),
+				phaseStatuses: statuses({
+					design: "design_done",
+					implement: "running",
+					qa: "running",
+				}),
+			}),
+		).toEqual({ kind: "phase", phase: "qa" });
+	});
+
+	it("a validated ship claim outranks stale awaiting_review and approved_to_ship rows", () => {
+		expect(
+			titleBadge({
+				phaseStates: states({ design: "done", implement: "done", qa: "done" }),
+				phaseStatuses: statuses({
+					design: "design_done",
+					implement: "awaiting_review",
+					qa: "approved_to_ship",
+				}),
+				shipFinalizationClaimed: true,
 			}),
 		).toEqual({ kind: "completed" });
 	});
 
 	it("design+implement done but qa never spawned → NOT completed (handoff gap shows implement)", () => {
 		expect(
-			deriveIssueTitleBadge({
+			titleBadge({
 				phaseStates: states({ design: "done", implement: "done" }),
+				phaseStatuses: statuses({
+					design: "design_done",
+					implement: "awaiting_review",
+				}),
 			}),
 		).toEqual({ kind: "phase", phase: "implement" });
 	});
 
 	it("latest active phase wins (design done, implement active → 🔨实现)", () => {
 		expect(
-			deriveIssueTitleBadge({
+			titleBadge({
 				phaseStates: states({ design: "done", implement: "active" }),
+				phaseStatuses: statuses({
+					design: "design_done",
+					implement: "running",
+				}),
 			}),
 		).toEqual({ kind: "phase", phase: "implement" });
 	});
 
 	it("qa active while implement parked-done → 🧪QA", () => {
 		expect(
-			deriveIssueTitleBadge({
+			titleBadge({
 				phaseStates: states({
 					design: "done",
 					implement: "done",
 					qa: "active",
+				}),
+				phaseStatuses: statuses({
+					design: "design_done",
+					implement: "awaiting_review",
+					qa: "running",
 				}),
 			}),
 		).toEqual({ kind: "phase", phase: "qa" });
@@ -200,30 +352,42 @@ describe("deriveIssueTitleBadge (plan 1b aggregation)", () => {
 	it("FLY-543 scenario: design woken for rework (active) while implement/qa done-ish → title back to 🎨设计? No — LAST active wins; but a lone woken design with others pending goes back to design", () => {
 		// qa FAIL → wake implement: implement flips back to active → 🔨实现 (not ✅)
 		expect(
-			deriveIssueTitleBadge({
+			titleBadge({
 				phaseStates: states({
 					design: "done",
 					implement: "active",
 					qa: "done",
 				}),
+				phaseStatuses: statuses({
+					design: "design_done",
+					implement: "awaiting_review",
+					qa: "running",
+				}),
 			}),
 		).toEqual({ kind: "phase", phase: "implement" });
 		// killed design re-dispatched: design active, others not started → 🎨设计
 		expect(
-			deriveIssueTitleBadge({ phaseStates: states({ design: "active" }) }),
+			titleBadge({
+				phaseStates: states({ design: "active" }),
+				phaseStatuses: statuses({ design: "running" }),
+			}),
 		).toEqual({ kind: "phase", phase: "design" });
 	});
 
 	it("design done, implement not yet dispatched (handoff gap, no active) → previous phase (design)", () => {
 		expect(
-			deriveIssueTitleBadge({ phaseStates: states({ design: "done" }) }),
+			titleBadge({
+				phaseStates: states({ design: "done" }),
+				phaseStatuses: statuses({ design: "design_done" }),
+			}),
 		).toEqual({ kind: "phase", phase: "design" });
 	});
 
 	it("design pending only (all pending) → design", () => {
-		expect(
-			deriveIssueTitleBadge({ phaseStates: states({ design: "pending" }) }),
-		).toEqual({ kind: "phase", phase: "design" });
+		expect(titleBadge({ phaseStates: states({ design: "pending" }) })).toEqual({
+			kind: "phase",
+			phase: "design",
+		});
 	});
 });
 

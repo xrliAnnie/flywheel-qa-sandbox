@@ -368,14 +368,17 @@ const LEGACY_HEADER_DONE_STATUSES: ReadonlySet<string> = new Set([
 /**
  * FLY-907 sweep layer-1 fast hash input: the sessions-table component of the
  * display fingerprint — per-role latest {role, status, exec} + the issue's
- * latest session {status, session_stage, exec}. Cheap (StateStore only, zero
- * CommDB), and computed IDENTICALLY by the refresher's fingerprint writer so
- * layer-1 comparison is exact.
+ * latest session {status, session_stage, exec} + the three-stage issue's
+ * post-ship finalization-claim bit. Cheap (StateStore only, zero CommDB), and
+ * computed IDENTICALLY by the refresher's fingerprint writer so layer-1
+ * comparison is exact.
  */
 export function computeSessionsFingerprint(
 	store: Pick<
 		StateStore,
-		"getLatestPhaseSessionsForIssue" | "getSessionByIssue"
+		| "countEventsByIssueAndType"
+		| "getLatestPhaseSessionsForIssue"
+		| "getSessionByIssue"
 	>,
 	issueId: string,
 ): string {
@@ -387,6 +390,13 @@ export function computeSessionsFingerprint(
 	const main = store.getSessionByIssue(issueId);
 	return JSON.stringify({
 		p: phases,
+		// `getLatestPhaseSessionsForIssue` only returns design/implement/qa rows,
+		// so a non-empty result is the same three-stage guard used by derivation.
+		// Single-session issues retain the pre-FLY-1225 zero-query path.
+		fc:
+			phases.length > 0 &&
+			store.countEventsByIssueAndType(issueId, "post_ship_finalization_claim") >
+				0,
 		m: main
 			? { st: main.status, sg: main.session_stage ?? "", e: main.execution_id }
 			: null,
@@ -634,19 +644,27 @@ export class IssueDisplayRefresher {
 
 		// Unified per-phase states (face A aggregation + face B rows).
 		const phaseStates = new Map<ThreeStagePhase, PhaseDisplayState>();
+		const phaseStatuses = new Map<ThreeStagePhase, string>();
 		const phaseSessionByRole = new Map<ThreeStagePhase, Session>();
 		for (const s of latestPhase) {
 			const role = s.chat_thread_role as ThreeStagePhase;
 			phaseSessionByRole.set(role, s);
+			phaseStatuses.set(role, s.status);
 			phaseStates.set(
 				role,
 				derivePhaseDisplayState({ role, status: s.status, park: parkFor(s) }),
 			);
 		}
+		const shipFinalizationClaimed =
+			isThreeStage &&
+			store.countEventsByIssueAndType(issueId, "post_ship_finalization_claim") >
+				0;
 
 		// ── Face A: title badge ──
 		let badge = deriveIssueTitleBadge({
 			phaseStates,
+			phaseStatuses,
+			shipFinalizationClaimed,
 			mainSessionStage: anySession.session_stage,
 			mainSessionStatus: anySession.status,
 		});

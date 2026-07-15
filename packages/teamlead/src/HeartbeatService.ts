@@ -23,6 +23,7 @@ import {
 import { hasPendingCompleteMarker } from "./bridge/done-running-reconciler.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
+import type { IssueDisplayRefreshHolder } from "./bridge/issue-display-refresher.js";
 import {
 	GUARDRAIL_EVENT_TYPES,
 	type LeadEventEnvelope,
@@ -1792,6 +1793,10 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		 * Absent → Display-A no-ops (the re-adopt heartbeat fix still works).
 		 */
 		private chatThreadCreator?: ChatThreadCreator,
+		/** FLY-1225: late-bound issue-level display authority. When available,
+		 * reconnect-clear must re-derive from every phase instead of restoring a
+		 * completed phase's badge onto the shared issue thread. */
+		private issueDisplayRefresh?: IssueDisplayRefreshHolder,
 	) {}
 
 	async onSessionStuck(
@@ -1914,6 +1919,10 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 	 * created). Never throws into the caller.
 	 */
 	private stampReconnect(session: Session, mode: "enter" | "clear"): void {
+		if (mode === "clear" && this.issueDisplayRefresh?.current) {
+			this.issueDisplayRefresh.current.enqueue(session.issue_id);
+			return;
+		}
 		if (!this.chatThreadCreator) return; // Display-A not wired → no-op
 		let chatChannel: string;
 		let botToken: string;
