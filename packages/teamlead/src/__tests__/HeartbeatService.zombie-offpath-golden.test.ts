@@ -344,10 +344,6 @@ describe("OFF-path golden — seedReconnecting FLY-1264 contract (readopt ON, zo
 
 // ── RegistryHeartbeatNotifier payload goldens ────────────────────────────────
 
-interface DeliverCall {
-	event: Record<string, unknown>;
-}
-
 function makeRegistryFixture(opts?: { deliverImpl?: MockFn }): {
 	notifier: RegistryHeartbeatNotifier;
 	store: MockStore;
@@ -411,6 +407,54 @@ describe("OFF-path golden — RegistryHeartbeatNotifier payload + delivery lifec
 		);
 		expect("liveness_probe" in payload).toBe(false);
 		expect("concurrent_reestablished" in payload).toBe(false);
+	});
+
+	it("unparseable zombie evidence prepares a payload with NO liveness_probe at all (code R1 #4 — never fabricate probe facts)", () => {
+		// Local construction: prepare resolves the lead from the PROJECTS list
+		// (not the registry mock), so it needs a routable project.
+		const deliver = vi.fn(async () => ({ delivered: true }));
+		const store: MockStore = {
+			getSessionLabels: vi.fn().mockReturnValue([]),
+			appendLeadEvent: vi.fn().mockReturnValue(41),
+			markLeadEventDelivered: vi.fn(),
+			recordDeliveryFailure: vi.fn(),
+		};
+		const registry = {
+			resolveWithLead: vi.fn(),
+			getForLead: vi.fn(() => ({ deliver })),
+		};
+		const projects = [
+			{
+				projectName: "flywheel",
+				projectRoot: "/tmp/fw",
+				leads: [
+					{
+						agentId: "flywheel-eng-lead",
+						chatChannel: "chan-1",
+						match: { labels: [] },
+					},
+				],
+			},
+		];
+		const notifier = new RegistryHeartbeatNotifier(
+			registry as never,
+			projects as never,
+			store as never,
+			undefined,
+			false,
+		);
+		const prepared = notifier.prepareSessionZombieDetected(
+			sess({ status: "failed" }),
+			{
+				kind: "unparseable",
+				rawLastError: "zombie: junk from an older vintage",
+			},
+			{ ok: false, worktreePath: "/tmp/wt", error: "git unavailable" },
+		);
+		expect(prepared).not.toBeNull();
+		const payload = JSON.parse(prepared?.payloadJson ?? "{}");
+		expect(payload.event_type).toBe("session_zombie_detected");
+		expect("liveness_probe" in payload).toBe(false);
 	});
 
 	it("deliver returning delivered:false on advisory → marked delivered anyway (best-effort golden)", async () => {

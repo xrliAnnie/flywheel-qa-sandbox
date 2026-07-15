@@ -155,11 +155,10 @@ export interface DispositionReceiptPassDeps {
 		| "getPendingDispositionReceipts"
 		| "markDispositionReceiptPosted"
 		| "markDispositionReceiptAttempt"
-		| "markDispositionReceiptExpired"
+		| "expireDispositionReceiptWithAudit"
 		| "getChatThreadByIssue"
 		| "getSessionLabels"
 		| "getSession"
-		| "insertEvent"
 	>;
 	projects: ProjectEntry[];
 	globalBotToken?: string;
@@ -222,32 +221,21 @@ async function deliverOneReceipt(
 	log: (msg: string) => void,
 ): Promise<void> {
 	if (nowMs - row.created_at_ms > RECEIPT_EXPIRY_MS) {
-		if (deps.store.markDispositionReceiptExpired(row.receipt_id)) {
-			// Annie 铁律(Lead 29e7508a): every suppression path must answer "who
-			// definitely sees this". Expiry is a give-up on the founder-visible
-			// leg — a durable audit row (symmetric with unroutable) keeps it
-			// accountable beyond the log line.
-			try {
-				deps.store.insertEvent({
-					event_id: `receipt-expired-${row.receipt_id}`,
-					execution_id: row.target_key,
-					issue_id: row.issue_id ?? "",
-					project_name:
-						deps.store.getSession(row.target_key)?.project_name ?? "unknown",
-					event_type: "disposition_receipt_expired",
-					source: "bridge.disposition-receipt",
-					payload: {
-						kind: row.kind,
-						episodeFingerprint: row.episode_fingerprint,
-						actorLeadId: row.actor_lead_id,
-						disposition: row.disposition,
-						attempts: row.attempts,
-					},
-				});
-			} catch {
-				/* audit is best-effort; the loud log below still fires */
-			}
-		}
+		// Annie 铁律(Lead 29e7508a): every suppression path must answer "who
+		// definitely sees this". Expiry is a give-up on the founder-visible leg,
+		// so the state flip and its durable audit row commit in ONE transaction
+		// (code R1 #3) — a failed audit leaves the receipt pending for retry.
+		deps.store.expireDispositionReceiptWithAudit(row.receipt_id, {
+			executionId: row.target_key,
+			issueId: row.issue_id ?? "",
+			projectName:
+				deps.store.getSession(row.target_key)?.project_name ?? "unknown",
+			kind: row.kind,
+			episodeFingerprint: row.episode_fingerprint,
+			actorLeadId: row.actor_lead_id,
+			disposition: row.disposition,
+			attempts: row.attempts,
+		});
 		log(
 			`RECEIPT EXPIRED (>7d) for ${row.target_key}/${row.kind} receipt_id=${row.receipt_id} — giving up (thread never resolvable or delivery switched off too long)`,
 		);

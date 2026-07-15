@@ -236,6 +236,25 @@ describe("M9 targeted mode — veto fixtures (stricter than the global sweep)", 
 		expect(reopened.kind).toBe("vetoed_linear");
 	});
 
+	it("launch-claim read error is fail-CLOSED: transient_error, zero archives (code R1 #2)", async () => {
+		seedSession("exec-a");
+		store.upsertChatThread("thread-1", "ch-eng", UUID, "tadashi");
+		const deps = makeDeps();
+		const boom = vi
+			.spyOn(store, "listOpenLaunchClaims")
+			.mockImplementation(() => {
+				throw new Error("database is locked");
+			});
+		try {
+			const out = await runTargetedArchiveCheck(IDENT, deps);
+			expect(out.kind).toBe("transient_error");
+			expect(isRetryableOutcome(out)).toBe(true);
+			expect(deps.archiveFn).not.toHaveBeenCalled();
+		} finally {
+			boom.mockRestore();
+		}
+	});
+
 	it("mid-probe successor changes the alias/claim fingerprint → transient_error (retryable re-run)", async () => {
 		seedSession("exec-a");
 		store.upsertChatThread("thread-1", "ch-eng", UUID, "tadashi");
@@ -348,6 +367,30 @@ describe("M9 scheduler — targeted queue lifecycle", () => {
 		});
 		expect(() => bare.enqueue(IDENT)).not.toThrow(); // byte-compat no-op
 		await bare.stop();
+	});
+
+	it("enqueue during a suspended in-flight check is deduped — ONE logical item survives a retryable outcome (code R1 #8)", async () => {
+		let release: (v: { done: boolean }) => void = () => {};
+		const first = new Promise<{ done: boolean }>((r) => {
+			release = r;
+		});
+		let calls = 0;
+		const runTargeted = vi.fn(() => {
+			calls++;
+			return calls === 1 ? first : Promise.resolve({ done: true });
+		});
+		const { handle } = makeScheduler({ runTargeted });
+		handle.enqueue(IDENT);
+		await vi.advanceTimersByTimeAsync(1_000); // starts + suspends in flight
+		expect(runTargeted).toHaveBeenCalledTimes(1);
+		handle.enqueue(IDENT); // completion re-fired while in flight → deduped
+		release({ done: false }); // retryable → requeues exactly one item
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(61_000); // one backoff retry (done)
+		expect(runTargeted).toHaveBeenCalledTimes(2);
+		await vi.advanceTimersByTimeAsync(3_600_000); // no phantom second item
+		expect(runTargeted).toHaveBeenCalledTimes(2);
+		await handle.stop();
 	});
 
 	it("disabled PAUSES consumption and retains the queue; re-enable resumes without restart", async () => {

@@ -26,7 +26,7 @@ export interface HookPayload {
 	 * only as good as this record (never a bare assertion). */
 	liveness_probe?: {
 		method: "tmux_pane_probe";
-		/** tmux window target probed; absent on degraded (unparseable) backfill. */
+		/** tmux window target probed. */
 		target?: string;
 		result: "alive" | "absent";
 		probed_at?: string;

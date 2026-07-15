@@ -222,3 +222,57 @@ describe("inspectWorktreeForUnpushedWork", () => {
 		expect(r.unpushedCommits).toBe(0);
 	});
 });
+
+describe("code R1 #6 — entry validation + real total budget", () => {
+	it("a regular file path is rejected before any git call", async () => {
+		const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const dir = mkdtempSync(join(tmpdir(), "fly1282-wtinspect-"));
+		try {
+			const file = join(dir, "not-a-dir");
+			writeFileSync(file, "x");
+			const exec = vi.fn();
+			const out = await inspectWorktreeForUnpushedWork(file, exec as never);
+			expect(out.ok).toBe(false);
+			expect(out.error).toContain("not a directory");
+			expect(exec).not.toHaveBeenCalled();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("per-call timeout shrinks to the remaining budget and late queries are refused (total ~10s is REAL)", async () => {
+		vi.useFakeTimers();
+		try {
+			const timeouts: number[] = [];
+			const exec = vi.fn(
+				async (
+					_cmd: string,
+					_args: string[],
+					opts?: { timeout?: number },
+				): Promise<ExecFileResult> => {
+					timeouts.push(opts?.timeout ?? -1);
+					// each call burns 4s of wall clock (slow but under per-call cap)
+					vi.setSystemTime(Date.now() + 4_000);
+					return { stdout: "", stderr: "" };
+				},
+			);
+			const out = await inspectWorktreeForUnpushedWork(
+				process.cwd(),
+				exec as never,
+			);
+			// status(4s) + branch(4s) land at 8s; the upstream probe still fits
+			// with a SHRUNK 2s timeout (min(5s, 10s-8s)); the count query is then
+			// refused by the budget check — never a 4th 5s call.
+			expect(exec).toHaveBeenCalledTimes(3);
+			expect(timeouts[0]).toBe(5_000);
+			expect(timeouts[1]).toBe(5_000);
+			expect(timeouts[2]).toBeLessThanOrEqual(2_000);
+			expect(out.unpushedCommits).toBeUndefined();
+			expect(JSON.stringify(out.warnings ?? [])).toContain("budget");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});

@@ -540,23 +540,6 @@ export class HeartbeatService implements ReconnectController {
 		// maintenance, retry, server-loss, crash reaper, stale/parked/review
 		// stages keep running. OFF → no guard, current overlap semantics.
 		const zombieOn = this.zombieMachineryEnabled();
-		let livenessOwner = false;
-		if (zombieOn) {
-			if (this.livenessChainInFlight) {
-				this.skippedLivenessTicks++;
-				const inFlightMs = Date.now() - this.livenessPassStartedAt;
-				const log = inFlightMs > 10 * 60_000 ? console.warn : console.log;
-				log(
-					`[HeartbeatService] FLY-1282 liveness chain still in flight (${Math.round(inFlightMs / 1000)}s, ${this.skippedLivenessTicks} tick(s) skipped) — skipping reconcile/stuck/orphan this tick`,
-				);
-			} else {
-				this.livenessChainInFlight = true;
-				this.livenessPassStartedAt = Date.now();
-				this.skippedLivenessTicks = 0;
-				livenessOwner = true;
-			}
-		}
-		const runLivenessChain = livenessOwner || !zombieOn;
 		try {
 			// FLY-25: Retry undelivered guardrail events from PREVIOUS cycles first,
 			// before detection generates new events in this cycle.
@@ -569,49 +552,78 @@ export class HeartbeatService implements ReconnectController {
 			if (zombieOn) {
 				await this.reconcileZombieAlertBacklog();
 			}
-			// FLY-172: reconcile monitoring loss BEFORE stuck/orphan detection so the
-			// monitor-lost / marker-retry skip sets are current. This pass is the
-			// single owner of tmux probing for running sessions (Codex guidance #1).
-			// Only awaited when wired (production) — skipping the await when
-			// unconfigured keeps checkStuck's synchronous getStuckSessions call on the
-			// same tick (preserves existing fake-timer test timing).
-			let zombieHeld: ReadonlySet<string> = EMPTY_SET;
-			if (runLivenessChain && this.monitorReconcile) {
-				zombieHeld = await this.reconcileMonitorLoss();
-			}
-			// FLY-720: crash reaper runs BEFORE reapOrphans and claims confirmed
-			// dead-pins into deadPinOwned so reapOrphans skips them (never force-fails
-			// a crash to `failed`). Best-effort — a reaper failure must not skip the
-			// rest of the cycle. Only awaited when the reaper is wired + enabled, so an
-			// unconfigured Bridge keeps checkStuck's synchronous getStuckSessions call
-			// on the same tick (mirrors the monitorReconcile guard; preserves existing
-			// fake-timer test timing).
-			// FLY-1082 (Task 2.3): server-loss coordinator — the pre-reaper phase.
-			// Runs AFTER reconcileMonitorLoss (liveness sets current) and BEFORE
-			// the crash reaper / orphan reaping so a fleet-level tmux server death
-			// is claimed as ONE grouped, episode-tagged migration in this same
-			// cycle; the claimed ids suppress the per-runner paths below.
-			// Best-effort — a coordinator failure must never skip the cycle.
-			let serverLossOwned: ReadonlySet<string> = new Set();
-			if (this.serverLoss) {
-				try {
-					serverLossOwned = await this.serverLoss.check();
-				} catch (err) {
-					console.error(
-						`[server-loss] check failed (cycle continues): ${(err as Error).message}`,
+			// FLY-1282 (code R1 #1): the single-flight guard is acquired HERE — at
+			// the entry of the liveness-dependent span — and released in the local
+			// finally right after reapOrphans. Retry/backfill above and the
+			// stale/parked/review stages below run OUTSIDE the guard: a hang there
+			// must never freeze the liveness chain for later ticks (and a hung
+			// liveness pass must never freeze them — they run on skipped ticks).
+			let livenessOwner = false;
+			if (zombieOn) {
+				if (this.livenessChainInFlight) {
+					this.skippedLivenessTicks++;
+					const inFlightMs = Date.now() - this.livenessPassStartedAt;
+					const log = inFlightMs > 10 * 60_000 ? console.warn : console.log;
+					log(
+						`[HeartbeatService] FLY-1282 liveness chain still in flight (${Math.round(inFlightMs / 1000)}s, ${this.skippedLivenessTicks} tick(s) skipped) — skipping reconcile/stuck/orphan this tick`,
 					);
+				} else {
+					this.livenessChainInFlight = true;
+					this.livenessPassStartedAt = Date.now();
+					this.skippedLivenessTicks = 0;
+					livenessOwner = true;
 				}
 			}
-			let deadPinOwned: ReadonlySet<string> = new Set();
-			if (this.crashReaperConfig?.enabled) {
-				deadPinOwned = await this.reapCrashedRunners();
-			}
-			if (runLivenessChain) {
-				await this.checkStuck(zombieHeld);
-				await this.reapOrphans(
-					new Set([...deadPinOwned, ...serverLossOwned]),
-					zombieHeld,
-				);
+			const runLivenessChain = livenessOwner || !zombieOn;
+			try {
+				// FLY-172: reconcile monitoring loss BEFORE stuck/orphan detection so the
+				// monitor-lost / marker-retry skip sets are current. This pass is the
+				// single owner of tmux probing for running sessions (Codex guidance #1).
+				// Only awaited when wired (production) — skipping the await when
+				// unconfigured keeps checkStuck's synchronous getStuckSessions call on the
+				// same tick (preserves existing fake-timer test timing).
+				let zombieHeld: ReadonlySet<string> = EMPTY_SET;
+				if (runLivenessChain && this.monitorReconcile) {
+					zombieHeld = await this.reconcileMonitorLoss();
+				}
+				// FLY-720: crash reaper runs BEFORE reapOrphans and claims confirmed
+				// dead-pins into deadPinOwned so reapOrphans skips them (never force-fails
+				// a crash to `failed`). Best-effort — a reaper failure must not skip the
+				// rest of the cycle. Only awaited when the reaper is wired + enabled, so an
+				// unconfigured Bridge keeps checkStuck's synchronous getStuckSessions call
+				// on the same tick (mirrors the monitorReconcile guard; preserves existing
+				// fake-timer test timing).
+				// FLY-1082 (Task 2.3): server-loss coordinator — the pre-reaper phase.
+				// Runs AFTER reconcileMonitorLoss (liveness sets current) and BEFORE
+				// the crash reaper / orphan reaping so a fleet-level tmux server death
+				// is claimed as ONE grouped, episode-tagged migration in this same
+				// cycle; the claimed ids suppress the per-runner paths below.
+				// Best-effort — a coordinator failure must never skip the cycle.
+				let serverLossOwned: ReadonlySet<string> = new Set();
+				if (this.serverLoss) {
+					try {
+						serverLossOwned = await this.serverLoss.check();
+					} catch (err) {
+						console.error(
+							`[server-loss] check failed (cycle continues): ${(err as Error).message}`,
+						);
+					}
+				}
+				let deadPinOwned: ReadonlySet<string> = new Set();
+				if (this.crashReaperConfig?.enabled) {
+					deadPinOwned = await this.reapCrashedRunners();
+				}
+				if (runLivenessChain) {
+					await this.checkStuck(zombieHeld);
+					await this.reapOrphans(
+						new Set([...deadPinOwned, ...serverLossOwned]),
+						zombieHeld,
+					);
+				}
+			} finally {
+				// FLY-1282 (code R1 #1): release IMMEDIATELY after the liveness span
+				// — the stages below must not extend the guard's hold.
+				if (livenessOwner) this.livenessChainInFlight = false;
 			}
 			await this.checkStaleCompleted();
 			// FLY-1204: reclaim leaked three-stage keep-alive phase sessions
@@ -628,9 +640,6 @@ export class HeartbeatService implements ReconnectController {
 			if (typeof this.store.recoverFromCorruption === "function") {
 				this.store.recoverFromCorruption(err);
 			}
-		} finally {
-			// FLY-1282: release the liveness-chain guard only if THIS tick owned it.
-			if (livenessOwner) this.livenessChainInFlight = false;
 		}
 	}
 
@@ -999,6 +1008,12 @@ export class HeartbeatService implements ReconnectController {
 				// Same boolean the fallback always consumed: not-provably-dead.
 				tmuxAlive:
 					liveness.verdict === "alive" || liveness.verdict === "indeterminate",
+				// Code R1 #5: honest logging — indeterminate must not be logged
+				// as "tmux alive" (the notification path is already honest).
+				livenessVerdict:
+					liveness.verdict === "dead_pin" || liveness.verdict === "gone"
+						? "dead"
+						: liveness.verdict,
 				routeStatus: outcome.routeStatus,
 				quarantinePath: outcome.quarantinePath,
 			});
@@ -1253,7 +1268,10 @@ export class HeartbeatService implements ReconnectController {
 					);
 				}
 			} else {
-				this.recordUnroutableZombieAudit(fresh);
+				// Code R1 #7: pass the FRESH lastError — `fresh` was read before
+				// the transition, so its own last_error is stale; the deterministic
+				// event id makes a wrong first write permanent (backfill dedupes).
+				this.recordUnroutableZombieAudit(fresh, lastError);
 			}
 
 			// 6) Cleanup — declaration owns every suppression it created.
@@ -1266,8 +1284,15 @@ export class HeartbeatService implements ReconnectController {
 		}
 	}
 
-	/** FLY-1282 (R5 #1/R6 #2): deterministic, UNIQUE-deduped unroutable audit. */
-	private recordUnroutableZombieAudit(session: Session): void {
+	/** FLY-1282 (R5 #1/R6 #2): deterministic, UNIQUE-deduped unroutable audit.
+	 * `lastError` overrides the row's own value on the declaration path (code
+	 * R1 #7: the pre-transition snapshot's last_error is stale there); the
+	 * backfill path omits it — the failed row already carries the zombie
+	 * marker. */
+	private recordUnroutableZombieAudit(
+		session: Session,
+		lastError?: string,
+	): void {
 		console.error(
 			`[HeartbeatService] FLY-1282 no Lead resolvable for zombie ${session.execution_id} (${session.issue_identifier ?? session.issue_id}) — recording session_events audit`,
 		);
@@ -1281,7 +1306,7 @@ export class HeartbeatService implements ReconnectController {
 			severity: "warning",
 			payload: {
 				unroutable: true,
-				last_error: session.last_error,
+				last_error: lastError ?? session.last_error,
 				worktree_path: session.worktree_path,
 			},
 			source: "bridge.zombie-reconcile",
@@ -2964,13 +2989,11 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 				probed_at: evidence.liveness.probedAt,
 				consecutive_probes: evidence.streak,
 			};
-		} else {
-			hookPayload.liveness_probe = {
-				method: "tmux_pane_probe",
-				result: "absent",
-				degraded: true,
-			};
 		}
+		// Unparseable evidence carries NO liveness_probe at all (code R1 #4): a
+		// malformed marker proves only "cannot parse" — never that a pane probe
+		// ran, and never its result. The degradation is expressed in the
+		// notification_context wording alone.
 		hookPayload.chat_channel = lead.chatChannel;
 		if (this.chatThreadsEnabled) {
 			hookPayload.chat_thread_id = resolveChatThreadId(

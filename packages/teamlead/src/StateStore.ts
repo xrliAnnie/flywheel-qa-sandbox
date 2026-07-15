@@ -7570,7 +7570,10 @@ export class StateStore {
 			// Audit ONLY on a real insert (a conflict means the same-generation
 			// receipt already exists — its audit already happened).
 			this.insertEvent({
-				event_id: `receipt-unroutable-${targetKey}-${kind}-${row.first_detected_at_ms}`,
+				// Full generation key (code R1 #3): two same-target same-kind
+				// episodes acked in the same millisecond must not collapse onto
+				// one UNIQUE session_event.
+				event_id: `receipt-unroutable-${targetKey}-${kind}-${episodeFingerprint}-${row.first_detected_at_ms}`,
 				execution_id: receipt.executionId,
 				issue_id: "",
 				project_name: receipt.projectName,
@@ -7650,16 +7653,56 @@ export class StateStore {
 		return changed;
 	}
 
-	/** 7-day give-up (loud log at the caller). */
-	markDispositionReceiptExpired(receiptId: number): boolean {
-		this.db.run(
-			`UPDATE disposition_receipts
-			 SET state = 'expired'
-			 WHERE receipt_id = ? AND state = 'pending'`,
-			[receiptId],
-		);
-		const changed = this.db.getRowsModified() > 0;
-		if (changed) this.save();
+	/**
+	 * 7-day give-up (loud log at the caller). Code R1 #3: the terminal state
+	 * flip and its accountability audit row commit in ONE transaction — a
+	 * failed audit INSERT rolls the expiry back (the receipt stays pending and
+	 * is retried), so the 铁律 promise "expired 有审计可查" cannot be lost to a
+	 * crash or write failure between two separate writes. Direct INSERT here,
+	 * NOT insertEvent (that helper swallows errors).
+	 */
+	expireDispositionReceiptWithAudit(
+		receiptId: number,
+		audit: {
+			executionId: string;
+			issueId: string;
+			projectName: string;
+			kind: string;
+			episodeFingerprint: string;
+			actorLeadId: string;
+			disposition: string;
+			attempts: number;
+		},
+	): boolean {
+		let changed = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE disposition_receipts
+				 SET state = 'expired'
+				 WHERE receipt_id = ? AND state = 'pending'`,
+				[receiptId],
+			);
+			changed = this.db.getRowsModified() > 0;
+			if (!changed) return;
+			this.db.run(
+				`INSERT INTO session_events (event_id, execution_id, issue_id, project_name, event_type, severity, payload, source)
+				 VALUES (?, ?, ?, ?, 'disposition_receipt_expired', 'warning', ?, 'bridge.disposition-receipt')`,
+				[
+					// receipt_id is the immutable delivery identity — collision-free.
+					`receipt-expired-${receiptId}`,
+					audit.executionId,
+					audit.issueId,
+					audit.projectName,
+					JSON.stringify({
+						kind: audit.kind,
+						episodeFingerprint: audit.episodeFingerprint,
+						actorLeadId: audit.actorLeadId,
+						disposition: audit.disposition,
+						attempts: audit.attempts,
+					}),
+				],
+			);
+		});
 		return changed;
 	}
 

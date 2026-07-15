@@ -463,6 +463,29 @@ describe("M3 liveness-chain single-flight", () => {
 			reconcileReadsBefore,
 		);
 	});
+
+	it("post-liveness stage hang does NOT hold the guard: the trio re-enters on the next tick (code R1 #1)", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		// The stale-completed stage (AFTER the trio) hangs on its notifier call.
+		store.getStaleCompletedSessions.mockReturnValueOnce([
+			sess({ execution_id: "exec-stale", status: "completed" }),
+		]);
+		notifier.onSessionStale.mockImplementationOnce(async () => {
+			await gate;
+		});
+		const p1 = service.check(); // trio completes fast, hangs in stale stage
+		await new Promise((r) => setTimeout(r, 0));
+		const reconcileReadsBefore = store.getOrphanSessions.mock.calls.length;
+		await service.check(); // guard was released at trio exit → trio re-enters
+		expect(store.getOrphanSessions.mock.calls.length).toBeGreaterThan(
+			reconcileReadsBefore,
+		);
+		release();
+		await p1;
+	});
 });
 
 describe("M3 backfill wiring", () => {

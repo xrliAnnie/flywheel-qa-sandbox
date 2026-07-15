@@ -220,6 +220,30 @@ describe("M10 prepare — transactional ack + receipt", () => {
 		store = await StateStore.create(join(dir, "state.db")); // for afterEach
 	});
 
+	it("two same-millisecond unroutable episodes (different fingerprints) each keep their own audit row (code R1 #3)", () => {
+		seedEpisode({
+			issueId: null,
+			fingerprint: "aaaaaaaaaaaaaaaa",
+			firstDetectedAtMs: NOW - 60_000,
+		});
+		seedEpisode({
+			issueId: null,
+			fingerprint: "bbbbbbbbbbbbbbbb",
+			firstDetectedAtMs: NOW - 60_000,
+		});
+		for (const fp of ["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"]) {
+			store.ackDetectionEscalationWithReceipt("exec-1", KIND, fp, {
+				atMs: NOW,
+				disposition: "ack",
+				receipt: receiptInput(),
+			});
+		}
+		expect(allReceipts()).toHaveLength(2);
+		expect(
+			store.getEventsByType("disposition_receipt_unroutable"),
+		).toHaveLength(2);
+	});
+
 	it("issue_id empty → immediate terminal unroutable + session_events audit (only on real insert)", () => {
 		seedEpisode({ issueId: null });
 		const out = store.ackDetectionEscalationWithReceipt(
@@ -573,6 +597,37 @@ describe("M10 delivery — single consumer", () => {
 		expect(store.getEventsByType("disposition_receipt_expired")).toHaveLength(
 			1,
 		);
+	});
+
+	it("expiry audit failure rolls the expiry back — the receipt STAYS pending for retry (atomic, code R1 #3)", async () => {
+		seedPendingReceipt({ createdAtMs: NOW - RECEIPT_EXPIRY_MS - 1 });
+		const receiptId = (
+			store as unknown as {
+				db: { exec: (sql: string) => Array<{ values: unknown[][] }> };
+			}
+		).db.exec("SELECT receipt_id FROM disposition_receipts")[0]?.values[0]?.[0];
+		// Occupy the audit event id — the in-transaction INSERT will hit UNIQUE
+		// and throw, which must roll the expired-state flip back too.
+		store.insertEvent({
+			event_id: `receipt-expired-${receiptId}`,
+			execution_id: "exec-1",
+			issue_id: "FLY-1282",
+			project_name: "flywheel",
+			event_type: "occupied",
+			source: "test",
+		});
+		const pass = createDispositionReceiptPass({
+			store,
+			projects: PROJECTS,
+			env: {} as NodeJS.ProcessEnv,
+			now: () => NOW,
+			postFn: vi.fn(),
+			log: () => {},
+		});
+		await pass();
+		const row = store.getPendingDispositionReceipts(10)[0];
+		expect(row).toBeDefined(); // still pending — never expired without audit
+		expect(row?.attempts).toBe(1); // the failure was stamped for rotation
 	});
 
 	it("FLYWHEEL_DISPOSITION_RECEIPT=0 → zero delivery, rows retained; re-enable delivers", async () => {

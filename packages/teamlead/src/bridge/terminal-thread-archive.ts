@@ -285,14 +285,13 @@ function readAliasSnapshot(
 	rootUuid: string,
 ): AliasSnapshot {
 	const rows = store.getSessionsForIssueAliases(aliasKeys);
-	let claims: AliasSnapshot["claims"] = [];
-	try {
-		claims = store
-			.listOpenLaunchClaims(rootUuid)
-			.map((c) => ({ executionId: c.executionId, state: c.state }));
-	} catch {
-		claims = [];
-	}
+	// Code R1 #2: a claims read error is NOT proof of "no claims" — swallowing
+	// it here would fail OPEN (an admitted-but-invisible successor could be
+	// archived over). Let it throw: runTargetedArchiveCheck maps any escape to
+	// transient_error, which stays in the retry queue.
+	const claims: AliasSnapshot["claims"] = store
+		.listOpenLaunchClaims(rootUuid)
+		.map((c) => ({ executionId: c.executionId, state: c.state }));
 	const fingerprint = JSON.stringify([
 		rows.map((r) => [r.execution_id, r.status]).sort(),
 		claims.map((c) => [c.executionId, c.state]).sort(),

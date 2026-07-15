@@ -24,7 +24,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -114,6 +114,22 @@ export async function inspectWorktreeForUnpushedWork(
 			error: "worktree path unknown or missing",
 		};
 	}
+	// Code R1 #6: a regular file must not be handed to git as a cwd.
+	try {
+		if (!statSync(worktreePath).isDirectory()) {
+			return {
+				ok: false,
+				worktreePath,
+				error: "worktree path is not a directory",
+			};
+		}
+	} catch (err) {
+		return {
+			ok: false,
+			worktreePath,
+			error: `worktree path unreadable: ${(err as Error).message}`,
+		};
+	}
 
 	const startedAt = Date.now();
 	const warnings: string[] = [];
@@ -125,11 +141,19 @@ export async function inspectWorktreeForUnpushedWork(
 		}
 	};
 	const overBudget = () => Date.now() - startedAt > TOTAL_BUDGET_MS;
-	const git = (args: string[]) =>
-		execFileFn("git", args, {
+	// Code R1 #6: the TOTAL budget is real — every call gets
+	// min(PER_CALL, remaining), so a run of slow-but-under-per-call queries
+	// can never stack up to ~4x the promised ceiling.
+	const git = (args: string[]) => {
+		const remaining = TOTAL_BUDGET_MS - (Date.now() - startedAt);
+		if (remaining <= 0) {
+			return Promise.reject(new Error("total budget exceeded"));
+		}
+		return execFileFn("git", args, {
 			cwd: worktreePath,
-			timeout: PER_CALL_TIMEOUT_MS,
+			timeout: Math.min(PER_CALL_TIMEOUT_MS, remaining),
 		});
+	};
 
 	const out: WorktreeInspection = { ok: false, worktreePath };
 
@@ -177,6 +201,7 @@ export async function inspectWorktreeForUnpushedWork(
 			hasUpstream = false;
 		}
 		try {
+			if (overBudget()) throw new Error("total budget exceeded before count");
 			if (hasUpstream) {
 				const { stdout } = await git(["rev-list", "--count", "@{u}..HEAD"]);
 				out.unpushedCommits = Number.parseInt(stdout.trim(), 10);

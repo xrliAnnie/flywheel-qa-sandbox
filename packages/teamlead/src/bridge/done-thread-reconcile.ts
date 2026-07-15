@@ -920,6 +920,10 @@ export function startDoneThreadReconcileScheduler(
 		nextEligibleAt: number;
 	}
 	const targetedQueue: TargetedItem[] = [];
+	// Code R1 #8: dedupe must cover the item CURRENTLY in flight too — a
+	// completion re-fired while the targeted check is suspended must not mint
+	// a second logical item (double backoff entries, wasted capacity).
+	const targetedMembers = new Set<string>();
 
 	const shouldAbort = () => stopped;
 
@@ -941,7 +945,10 @@ export function startDoneThreadReconcileScheduler(
 		if (!runTargeted || stopped || inFlight) return;
 		inFlight = runTargeted(item.issueId)
 			.then((outcome) => {
-				if (outcome.done) return;
+				if (outcome.done) {
+					targetedMembers.delete(item.issueId);
+					return;
+				}
 				// Retryable: capped backoff, fair tail rotation; after 24h drop
 				// to low-frequency-forever (never silently dropped — R13 #2).
 				item.attempts += 1;
@@ -1022,13 +1029,14 @@ export function startDoneThreadReconcileScheduler(
 				return;
 			}
 			if (stopped) return;
-			if (targetedQueue.some((i) => i.issueId === issueId)) return;
+			if (targetedMembers.has(issueId)) return; // queued OR in flight
 			if (targetedQueue.length >= TARGETED_QUEUE_CAP) {
 				log(
 					`targeted queue full (${TARGETED_QUEUE_CAP}) — REFUSING enqueue for ${issueId}; periodic sweep is the backstop when enabled`,
 				);
 				return;
 			}
+			targetedMembers.add(issueId);
 			targetedQueue.push({
 				issueId,
 				attempts: 0,
@@ -1045,6 +1053,7 @@ export function startDoneThreadReconcileScheduler(
 			clearTimeout(bootTimer);
 			clearInterval(tickTimer);
 			targetedQueue.length = 0;
+			targetedMembers.clear();
 			if (inFlight) {
 				try {
 					await inFlight;
