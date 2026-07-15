@@ -3,7 +3,7 @@ import {
 	applyModelMarker,
 	BLOCKED_EMOJI,
 	hasIssueKeyHead,
-	modelMarkerCode,
+	modelMarkerLabel,
 	STAGE_EMOJI,
 	STAGE_WORD,
 	splitStatusEmoji,
@@ -338,18 +338,44 @@ describe("FLY-755: model-code front marker ([F]/[O]/[S]/[H])", () => {
 		);
 	});
 
-	it("modelMarkerCode extracts the front marker, falling back to the legacy tail", () => {
-		expect(modelMarkerCode("[F] [FLY-728] Title")).toBe("F");
-		expect(modelMarkerCode("[H] [FLY-728] Title")).toBe("H");
+	it("modelMarkerLabel extracts the front marker, falling back to the legacy tail", () => {
+		expect(modelMarkerLabel("[F] [FLY-728] Title")).toBe("F");
+		expect(modelMarkerLabel("[H] [FLY-728] Title")).toBe("H");
 		// legacy tail fallback (preserve path on un-migrated threads)
-		expect(modelMarkerCode("[FLY-728] Title ·H")).toBe("H");
+		expect(modelMarkerLabel("[FLY-728] Title ·H")).toBe("H");
 		// front wins over a (defensive) simultaneous legacy tail
-		expect(modelMarkerCode("[F] [FLY-728] Title ·H")).toBe("F");
-		expect(modelMarkerCode("[FLY-728] Title")).toBeUndefined();
-		expect(modelMarkerCode("[FLY-728] A·B thing")).toBeUndefined();
+		expect(modelMarkerLabel("[F] [FLY-728] Title ·H")).toBe("F");
+		expect(modelMarkerLabel("[FLY-728] Title")).toBeUndefined();
+		expect(modelMarkerLabel("[FLY-728] A·B thing")).toBeUndefined();
 		// keyless literal bracket titles carry no code
-		expect(modelMarkerCode("[F] Founder copy")).toBeUndefined();
-		expect(modelMarkerCode("[F] [infra] copy")).toBeUndefined();
+		expect(modelMarkerLabel("[F] Founder copy")).toBeUndefined();
+		expect(modelMarkerLabel("[F] [infra] copy")).toBeUndefined();
+	});
+
+	it("supports only namespaced vendor-neutral markers", () => {
+		expect(applyModelMarker("[FLY-1255] Title", "Model GPT-5.6")).toBe(
+			"[Model GPT-5.6] [FLY-1255] Title",
+		);
+		expect(
+			modelMarkerLabel("[Model kimi-for-coding] [FLY-1255] Title"),
+		).toBe("Model kimi-for-coding");
+		expect(stripModelMarker("[Model GPT-5.6] [FLY-1255] Title")).toBe(
+			"[FLY-1255] Title",
+		);
+		expect(
+			applyModelMarker(
+				"[Model GPT-5.6] [FLY-1255] Title",
+				"Model kimi-for-coding",
+			),
+		).toBe("[Model kimi-for-coding] [FLY-1255] Title");
+
+		expect(modelMarkerLabel("[infra] [FLY-1255] Title")).toBeUndefined();
+		expect(stripModelMarker("[infra] [FLY-1255] Title")).toBe(
+			"[infra] [FLY-1255] Title",
+		);
+		expect(applyModelMarker("[FLY-1255] Title", "Model bad]value")).toBe(
+			"[FLY-1255] Title",
+		);
 	});
 
 	it("hasIssueKeyHead recognizes only a bracketed Linear issue key head", () => {
