@@ -66,6 +66,7 @@ interface SessionState {
 	status?: string;
 	review_question_id?: string | null;
 	pr_head_sha?: string | null;
+	pr_number?: number | null;
 }
 
 async function rebindHarness(opts: {
@@ -78,12 +79,18 @@ async function rebindHarness(opts: {
 	held?: boolean;
 	founderId?: string;
 	hookFlips?: boolean;
+	guardResult?:
+		| { kind: "continue"; prState: "open" }
+		| { kind: "suppress_merged"; cleanupComplete: boolean }
+		| { kind: "retry_later"; reason: "unknown" | "missing_binding" }
+		| { kind: "terminal_unavailable"; reason: "unknown_exhausted" };
 }) {
 	const store = await freshStore();
 	const sessionState: SessionState = opts.session ?? {
 		status: "awaiting_review",
 		review_question_id: "Q-1",
 		pr_head_sha: SHA_A,
+		pr_number: 42,
 	};
 	store.deferFounderApproval({
 		questionId: "Q-1",
@@ -126,11 +133,73 @@ async function rebindHarness(opts: {
 		resolveBotToken: () => "bot-token",
 		reactImpl: reactImpl as never,
 		nowMs: () => Date.now(),
+		mergedGateGuard: opts.guardResult
+			? vi.fn().mockResolvedValue(opts.guardResult)
+			: undefined,
+		resolveProjectRoot: () => "/repo",
 	};
 	return { store, sessionState, deps, hook, reactImpl, commState: state };
 }
 
 describe("rebind pass — guard chain", () => {
+	it("MERGED before TTL notice stays silent", async () => {
+		const { store, deps, hook } = await rebindHarness({
+			expiresInSeconds: 1,
+			guardResult: { kind: "suppress_merged", cleanupComplete: true },
+		});
+		deps.nowMs = () => Date.now() + 10_000;
+		await runDeferredApprovalRebindPass(deps);
+		expect(store.getFounderAction("ttl-notice-Q-1-100")).toBeUndefined();
+		expect(hook).not.toHaveBeenCalled();
+	});
+
+	it("transient UNKNOWN keeps the row active and emits no notice", async () => {
+		const { store, deps, hook } = await rebindHarness({
+			expiresInSeconds: 1,
+			guardResult: { kind: "retry_later", reason: "unknown" },
+		});
+		deps.nowMs = () => Date.now() + 10_000;
+		await runDeferredApprovalRebindPass(deps);
+		expect(store.listActiveDeferredApprovals()).toHaveLength(1);
+		expect(store.getFounderAction("ttl-notice-Q-1-100")).toBeUndefined();
+		expect(hook).not.toHaveBeenCalled();
+	});
+
+	it("missing PR binding preserves the captured decision for a later rebind", async () => {
+		const { store, deps, hook } = await rebindHarness({
+			session: {
+				status: "awaiting_review",
+				review_question_id: "Q-1",
+				pr_head_sha: SHA_A,
+				pr_number: null,
+			},
+			guardResult: { kind: "retry_later", reason: "missing_binding" },
+		});
+		await runDeferredApprovalRebindPass(deps);
+		expect(store.listActiveDeferredApprovals()).toHaveLength(1);
+		expect(
+			store.getDeferredApproval("Q-1", "100")?.invalidated_reason,
+		).toBeUndefined();
+		expect(hook).not.toHaveBeenCalled();
+	});
+
+	it("terminal UNKNOWN invalidates silently instead of retrying forever", async () => {
+		const { store, deps, hook } = await rebindHarness({
+			expiresInSeconds: 1,
+			guardResult: {
+				kind: "terminal_unavailable",
+				reason: "unknown_exhausted",
+			},
+		});
+		deps.nowMs = () => Date.now() + 10_000;
+		await runDeferredApprovalRebindPass(deps);
+		expect(store.getDeferredApproval("Q-1", "100")?.invalidated_reason).toBe(
+			"merged_guard_terminal",
+		);
+		expect(store.getFounderAction("ttl-notice-Q-1-100")).toBeUndefined();
+		expect(hook).not.toHaveBeenCalled();
+	});
+
 	it("TTL expired → invalidate ttl_expired + notice intent + audit; never writes", async () => {
 		const { store, deps, hook } = await rebindHarness({ expiresInSeconds: 1 });
 		deps.nowMs = () => Date.now() + 10_000;

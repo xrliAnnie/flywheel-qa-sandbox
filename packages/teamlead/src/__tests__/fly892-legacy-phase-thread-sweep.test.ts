@@ -119,6 +119,7 @@ describe("reconcileLegacyPhaseThreads (FLY-892 Step 5)", () => {
 		});
 		expect(r.archived).toBe(1);
 		expect(archived).toEqual(["t-design"]);
+		expect(JSON.parse(posted[0]?.body ?? "{}").content).toMatch(/^🤖\[自动\] /);
 		expect(posted[0]?.body).toContain("<#t-main>"); // pointer to main thread
 		expect(posted[0]?.token).toBe("Bot lead-bot"); // no announcer → lead bot
 		// idempotent: archived row drops out → second run is a no-op

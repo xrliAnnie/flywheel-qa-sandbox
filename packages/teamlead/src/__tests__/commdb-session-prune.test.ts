@@ -3,14 +3,16 @@
  * Uses a REAL temp comm.db (the SQL + status filter are the whole point) with an
  * injected tmux-liveness probe so no real tmux server is needed.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { commDbPathForProject } from "../bridge/commdb-path.js";
 import {
-	deleteCommDbSession,
+	finalizeCommDbSession,
 	pruneDeadTerminalCommDbSessions,
+	resolveCommDbPath,
 } from "../bridge/commdb-session-prune.js";
 
 describe("commdb-session-prune (FLY-638)", () => {
@@ -37,8 +39,30 @@ describe("commdb-session-prune (FLY-638)", () => {
 		if (status !== "running") db.updateSessionStatus(execId, status);
 	}
 
-	describe("deleteCommDbSession", () => {
-		it("transactionally deletes the session and phase lifecycle rows", () => {
+	describe("finalizeCommDbSession", () => {
+		it("uses the same FLYWHEEL_COMM_DIR resolver as gate retirement", () => {
+			const previousDir = process.env.FLYWHEEL_COMM_DIR;
+			const previousRoot = process.env.FLYWHEEL_COMM_ROOT;
+			const commRoot = join(dir, "comm-root");
+			const projectDir = join(commRoot, "flywheel");
+			mkdirSync(projectDir, { recursive: true });
+			const isolated = new CommDB(join(projectDir, "comm.db"));
+			isolated.close();
+			try {
+				process.env.FLYWHEEL_COMM_DIR = commRoot;
+				delete process.env.FLYWHEEL_COMM_ROOT;
+				expect(resolveCommDbPath("flywheel")).toBe(
+					commDbPathForProject("flywheel"),
+				);
+			} finally {
+				if (previousDir === undefined) delete process.env.FLYWHEEL_COMM_DIR;
+				else process.env.FLYWHEEL_COMM_DIR = previousDir;
+				if (previousRoot === undefined) delete process.env.FLYWHEEL_COMM_ROOT;
+				else process.env.FLYWHEEL_COMM_ROOT = previousRoot;
+			}
+		});
+
+		it("retires pending gates and deletes the existing row", () => {
 			seed("e1", "completed");
 			db.enqueueRunnerPhaseWake(
 				"e1",
@@ -46,18 +70,52 @@ describe("commdb-session-prune (FLY-638)", () => {
 				1,
 			);
 			db.requestRunnerShutdown("e1", "shutdown-1", 2);
-			expect(deleteCommDbSession("e1", "flywheel", dbPath)).toBe(true);
+			const qid = db.insertQuestion("e1", "lead-a", "ship?", {
+				checkpoint: "approve_to_ship",
+			});
+			expect(finalizeCommDbSession("e1", "flywheel", dbPath)).toEqual({
+				ok: true,
+				outcome: "finalized",
+				retiredGateCount: 1,
+				deletedSessionCount: 1,
+			});
 			expect(db.getSession("e1")).toBeUndefined();
+			expect(db.isQuestionPending(qid)).toBe(false);
 			expect(db.listRunnerPhaseWakes("e1")).toEqual([]);
 			expect(db.getRunnerShutdown("e1")).toBeNull();
 		});
 
-		it("is a no-op (false) when the row is absent", () => {
-			expect(deleteCommDbSession("missing", "flywheel", dbPath)).toBe(false);
+		it("is an explicit successful no-op when the DB is absent", () => {
+			expect(finalizeCommDbSession("missing", "../evil")).toEqual({
+				ok: true,
+				outcome: "no_db",
+				retiredGateCount: 0,
+				deletedSessionCount: 0,
+			});
 		});
 
-		it("refuses an unsafe project name (path traversal) without opening a db", () => {
-			expect(deleteCommDbSession("e1", "../evil")).toBe(false);
+		it("surfaces transaction failure and leaves session + gate intact", () => {
+			seed("e1", "completed");
+			db.enqueueRunnerPhaseWake(
+				"e1",
+				{ id: "wake-1", to: "e1", content: "retry design" },
+				1,
+			);
+			db.requestRunnerShutdown("e1", "shutdown-1", 2);
+			const qid = db.insertQuestion("e1", "lead-a", "ship?", {
+				checkpoint: "approve_to_ship",
+			});
+			(db as unknown as { db: { exec(sql: string): void } }).db.exec(`
+				CREATE TRIGGER abort_finalize BEFORE DELETE ON sessions
+				WHEN OLD.execution_id = 'e1'
+				BEGIN SELECT RAISE(ABORT, 'forced'); END
+			`);
+			const result = finalizeCommDbSession("e1", "flywheel", dbPath);
+			expect(result).toMatchObject({ ok: false, outcome: "failed" });
+			expect(db.getSession("e1")).toBeDefined();
+			expect(db.isQuestionPending(qid)).toBe(true);
+			expect(db.listRunnerPhaseWakes("e1")).toHaveLength(1);
+			expect(db.getRunnerShutdown("e1")?.request_id).toBe("shutdown-1");
 		});
 	});
 
@@ -88,6 +146,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 			expect(res.scanned).toBe(4);
 			expect(res.pruned).toBe(2); // dead1 + dead2 (proven dead)
 			expect(res.kept).toBe(2); // parked (alive) + flaky (indeterminate)
+			expect(res.failed).toBe(0);
 			expect(db.getSession("dead1")).toBeUndefined();
 			expect(db.listRunnerPhaseWakes("dead1")).toEqual([]);
 			expect(db.getRunnerShutdown("dead1")).toBeNull();
@@ -117,7 +176,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 				dbPath,
 				probe: async () => "dead",
 			});
-			expect(res).toEqual({ scanned: 0, pruned: 0, kept: 0 });
+			expect(res).toEqual({ scanned: 0, pruned: 0, kept: 0, failed: 0 });
 			expect(db.getSession("only-running")).toBeDefined();
 		});
 	});

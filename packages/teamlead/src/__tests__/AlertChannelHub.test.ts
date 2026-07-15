@@ -697,6 +697,7 @@ describe("createDiscordOps (FLY-368 rework: repair chain + allowed_mentions)", (
 			"Bot cass-tok",
 		);
 		const body = JSON.parse(init.body as string);
+		expect(body.content).toMatch(/^🤖\[自动\] /);
 		expect(body.allowed_mentions).toEqual({ parse: [] });
 	});
 
@@ -714,6 +715,7 @@ describe("createDiscordOps (FLY-368 rework: repair chain + allowed_mentions)", (
 			fetchFn as unknown as { mock: { calls: [string, RequestInit][] } }
 		).mock.calls[0]!;
 		const body = JSON.parse(init.body as string);
+		expect(body.content).toMatch(/^🤖\[自动\] /);
 		expect(body.allowed_mentions).toEqual({ users: ["123"] });
 	});
 

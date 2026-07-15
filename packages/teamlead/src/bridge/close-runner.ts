@@ -32,7 +32,10 @@ import {
 	isResidentCodexPhase,
 	prepareCodexPhaseShutdown,
 } from "./codex-phase-shutdown.js";
-import { deleteCommDbSession } from "./commdb-session-prune.js";
+import {
+	type FinalizeCommDbResult,
+	finalizeCommDbSession,
+} from "./commdb-session-prune.js";
 import {
 	type CloseArchiveDeps,
 	maybeArchiveThreadOnClose,
@@ -185,6 +188,10 @@ export function registerLifecycleCloseGuard(
 
 export interface CloseRunnerResult {
 	closed: boolean;
+	/** FLY-1238: true only after unresolved CommDB gates and the session row
+	 * were retired in one transaction (or the project has no CommDB). */
+	commDbFinalized: boolean;
+	retiredGateCount: number;
 	alreadyGone?: boolean;
 	/** FLY-116: true when crash status preserved tmux + tab. */
 	preserved?: boolean;
@@ -214,7 +221,12 @@ async function closeRunnerInner(
 ): Promise<CloseRunnerResult> {
 	let session = store.getSession(opts.executionId);
 	if (!session) {
-		return { closed: false, error: "session_not_found" };
+		return {
+			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: "session_not_found",
+		};
 	}
 
 	// FLY-102 Round 3 QA finding: audit event_id is Lead-dimensional.
@@ -232,7 +244,12 @@ async function closeRunnerInner(
 		if (!opts.transitionOpts) {
 			// Defensive: production wires transitionOpts. Without it we cannot
 			// transition through the FSM, and must not forceStatus past it.
-			return { closed: false, error: "finalize_done_unavailable" };
+			return {
+				closed: false,
+				commDbFinalized: false,
+				retiredGateCount: 0,
+				error: "finalize_done_unavailable",
+			};
 		}
 		const priorStatus = session.status;
 		const fin = applyTransition(
@@ -250,6 +267,8 @@ async function closeRunnerInner(
 		if (!fin.ok) {
 			return {
 				closed: false,
+				commDbFinalized: false,
+				retiredGateCount: 0,
 				error: `finalize_done_rejected:${fin.error ?? "fsm"}`,
 			};
 		}
@@ -291,7 +310,13 @@ async function closeRunnerInner(
 				executorType: opts.executorType ?? "engineer",
 			},
 		});
-		return { closed: false, preserved: true, reason: "crash_preserve" };
+		return {
+			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			preserved: true,
+			reason: "crash_preserve",
+		};
 	}
 
 	// Eligibility gate: AUTO_CLOSE_STATES OR force-closing a preserve state OR
@@ -316,7 +341,12 @@ async function closeRunnerInner(
 				leadId: opts.leadId,
 			},
 		});
-		return { closed: false, error: err };
+		return {
+			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: err,
+		};
 	}
 
 	if (
@@ -339,6 +369,33 @@ async function closeRunnerInner(
 		});
 	}
 
+	const finalizeCommunications = (): FinalizeCommDbResult => {
+		const finalized = finalizeCommDbSession(opts.executionId, opts.projectName);
+		store.recordCommDbFinalizeOutcome({
+			executionId: opts.executionId,
+			issueId: opts.issueId,
+			projectName: opts.projectName,
+			ok: finalized.ok,
+			error: finalized.error,
+		});
+		if (!finalized.ok) {
+			store.insertEvent({
+				event_id: `close-runner-commdb-finalize-failed-${auditKey}`,
+				execution_id: opts.executionId,
+				issue_id: opts.issueId,
+				project_name: opts.projectName,
+				event_type: "lead_close_runner_commdb_finalize_failed",
+				source: "bridge.close-runner",
+				payload: {
+					error: finalized.error,
+					reason: opts.reason,
+					leadId: opts.leadId,
+				},
+			});
+		}
+		return finalized;
+	};
+
 	// FLY-1269: a resident Codex phase owns a daemon + founder TUI beyond its
 	// phase-complete status. Issue-terminal close must ask that controller to
 	// drain first; only a proven orphan may use the legacy direct kill below.
@@ -351,12 +408,16 @@ async function closeRunnerInner(
 				if (!authority.ok) {
 					return {
 						closed: false,
+						commDbFinalized: false,
+						retiredGateCount: 0,
 						error: `authority_lost:pre_phase_shutdown:${authority.reason ?? "authority_lost"}`,
 					};
 				}
 			} catch (err) {
 				return {
 					closed: false,
+					commDbFinalized: false,
+					retiredGateCount: 0,
 					error: `authority_lost:pre_phase_shutdown:authority_check_failed:${(err as Error).message}`,
 				};
 			}
@@ -380,7 +441,12 @@ async function closeRunnerInner(
 					phaseShutdownError: shutdown.error,
 				},
 			});
-			return { closed: false, error: shutdown.error };
+			return {
+				closed: false,
+				commDbFinalized: false,
+				retiredGateCount: 0,
+				error: shutdown.error,
+			};
 		}
 		if (shutdown.kind === "graceful") {
 			if (opts.authorityCheck) {
@@ -389,12 +455,16 @@ async function closeRunnerInner(
 					if (!authority.ok) {
 						return {
 							closed: false,
+							commDbFinalized: false,
+							retiredGateCount: 0,
 							error: `authority_lost:post_phase_shutdown:${authority.reason ?? "authority_lost"}`,
 						};
 					}
 				} catch (err) {
 					return {
 						closed: false,
+						commDbFinalized: false,
+						retiredGateCount: 0,
 						error: `authority_lost:post_phase_shutdown:authority_check_failed:${(err as Error).message}`,
 					};
 				}
@@ -418,11 +488,23 @@ async function closeRunnerInner(
 				},
 			});
 			markDetectionClearingSafe(store, opts.executionId);
+			const finalized = finalizeCommunications();
+			if (!finalized.ok) {
+				return {
+					closed: true,
+					commDbFinalized: false,
+					retiredGateCount: 0,
+					error: `commdb_finalize_failed:${finalized.error ?? "unknown"}`,
+				};
+			}
 			if (opts.archive) {
 				await maybeArchiveThreadOnClose(store, session, opts.archive);
 			}
-			deleteCommDbSession(opts.executionId, opts.projectName);
-			return { closed: true };
+			return {
+				closed: true,
+				commDbFinalized: true,
+				retiredGateCount: finalized.retiredGateCount,
+			};
 		}
 	}
 
@@ -456,16 +538,31 @@ async function closeRunnerInner(
 		// episodes (CLEARING) so half-torn-down state cannot spam the Lead. Only
 		// on success paths; best-effort (a marking failure must not block close).
 		markDetectionClearingSafe(store, opts.executionId);
+		// FLY-1238: retire every unresolved gate in the same transaction that
+		// deletes the CommDB session. Archival is forbidden until this succeeds;
+		// otherwise a zombie gate could still consume founder speech.
+		const finalized = finalizeCommunications();
+		if (!finalized.ok) {
+			return {
+				closed: true,
+				alreadyGone: true,
+				commDbFinalized: false,
+				retiredGateCount: 0,
+				error: `commdb_finalize_failed:${finalized.error ?? "unknown"}`,
+			};
+		}
 		// FLY-369: runner is closed (already gone) → central close→archive
 		// cascade. Guarded inside to done-cleanup (completed) + no other active
 		// runner. Runs only on this success path (Codex code review R6 #1).
 		if (opts.archive) {
 			await maybeArchiveThreadOnClose(store, session, opts.archive);
 		}
-		// FLY-638: tmux is already gone → drop the dead CommDB session row so it
-		// doesn't linger in runner_terminal_list / bootstrap.
-		deleteCommDbSession(opts.executionId, opts.projectName);
-		return { closed: true, alreadyGone: true };
+		return {
+			closed: true,
+			alreadyGone: true,
+			commDbFinalized: true,
+			retiredGateCount: finalized.retiredGateCount,
+		};
 	}
 
 	// FLY-1185 (Codex R4#2 + R7#2): fail-closed, STICKY authority re-check
@@ -499,7 +596,12 @@ async function closeRunnerInner(
 			source: "bridge.close-runner",
 			payload: { stage, reason, leadId: opts.leadId },
 		});
-		return { closed: false, error: `authority_lost:${stage}:${reason}` };
+		return {
+			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: `authority_lost:${stage}:${reason}`,
+		};
 	};
 
 	// FLY-1185 §2.5: reap the runner's MCP-family descendant processes BEFORE
@@ -643,22 +745,32 @@ async function closeRunnerInner(
 		markDetectionClearingSafe(store, opts.executionId);
 	}
 
+	let commDbFinalized = false;
+	let retiredGateCount = 0;
+	let finalizeError: string | undefined;
+	if (res.killed) {
+		const finalized = finalizeCommunications();
+		commDbFinalized = finalized.ok;
+		retiredGateCount = finalized.retiredGateCount;
+		if (!finalized.ok) {
+			finalizeError = `commdb_finalize_failed:${finalized.error ?? "unknown"}`;
+		}
+	}
+
 	// FLY-369: central close→archive cascade — ONLY when the close actually
 	// succeeded (Codex code review R6 #1: a kill failure must NOT archive). The
 	// cascade is itself guarded to done-cleanup (completed) + no other active
-	// runner; it runs after terminal-tab cleanup and never affects the result.
-	if (res.killed && opts.archive) {
+	// runner; FLY-1238 additionally requires communication finalization first.
+	if (res.killed && commDbFinalized && opts.archive) {
 		await maybeArchiveThreadOnClose(store, session, opts.archive);
 	}
 
-	// FLY-638: on a successful close the runner's tmux window is gone → drop its
-	// CommDB session row. Only on the killed path — a kill failure leaves the row
-	// (and the still-alive runner) for retry.
-	if (res.killed) {
-		deleteCommDbSession(opts.executionId, opts.projectName);
-	}
-
-	return { closed: res.killed, error: res.error };
+	return {
+		closed: res.killed,
+		commDbFinalized,
+		retiredGateCount,
+		error: res.error ?? finalizeError,
+	};
 }
 
 /**

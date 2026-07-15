@@ -78,7 +78,12 @@ describe("reapCrashedRunners (FLY-720)", () => {
 			killCmuxLinkedSession: vi.fn(async () => ({ killed: true })),
 			killTmuxWindow: vi.fn(async () => ({ killed: true })),
 			closeTerminalView: vi.fn(async () => {}),
-			deleteCommDbSession: vi.fn(),
+			finalizeCommDbSession: vi.fn(() => ({
+				ok: true,
+				outcome: "finalized",
+				retiredGateCount: 1,
+				deletedSessionCount: 1,
+			})),
 			archiveThread: vi.fn(async () => {}),
 			log: () => {},
 			...over,
@@ -94,13 +99,33 @@ describe("reapCrashedRunners (FLY-720)", () => {
 		expect(res.deadPinOwned.has("z1")).toBe(true);
 		expect(deps.killCmuxLinkedSession).toHaveBeenCalledWith("geo:@1");
 		expect(deps.killTmuxWindow).toHaveBeenCalledWith("geo:@1");
-		expect(deps.deleteCommDbSession).toHaveBeenCalledWith("z1", "geo");
+		expect(deps.finalizeCommDbSession).toHaveBeenCalledWith("z1", "geo");
 		expect(deps.archiveThread).toHaveBeenCalledTimes(1);
 		expect(store.getSession("z1")?.status).toBe("terminated");
 		const events = store.getEventsByExecution("z1") ?? [];
 		expect(events.some((e) => e.event_type === "runner_crash_reaped")).toBe(
 			true,
 		);
+	});
+
+	it("FLY-1238: a CommDB finalization failure remains cleanup-pending and never archives", async () => {
+		seedRunning("z1", 120);
+		const deps = baseDeps({
+			finalizeCommDbSession: vi.fn(() => ({
+				ok: false,
+				outcome: "failed",
+				retiredGateCount: 0,
+				deletedSessionCount: 0,
+				error: "sqlite busy",
+			})),
+		});
+
+		const res = await reapCrashedRunners(deps);
+
+		expect(res.cleanupPending).toBe(1);
+		expect(res.reaped).toBe(0);
+		expect(deps.archiveThread).not.toHaveBeenCalled();
+		expect(store.getSession("z1")?.status).toBe("running");
 	});
 
 	it("dumps forensics BEFORE teardown", async () => {
@@ -258,7 +283,7 @@ describe("reapCrashedRunners (FLY-720)", () => {
 		expect(res.reaped).toBe(0);
 		expect(deps.archiveThread).not.toHaveBeenCalled();
 		expect(store.getSession("z1")?.status).toBe("completed"); // NOT forced to terminated
-		expect(deps.deleteCommDbSession).toHaveBeenCalledWith("z1", "geo");
+		expect(deps.finalizeCommDbSession).toHaveBeenCalledWith("z1", "geo");
 		const events = store.getEventsByExecution("z1") ?? [];
 		expect(
 			events.some(

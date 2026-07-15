@@ -15,6 +15,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { StateStore } from "../StateStore.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 
 /**
  * Derived type — avoids adding a new StateStore export.
@@ -122,7 +123,9 @@ export async function emitRunnerReadyToCloseNotification(
 					Authorization: `Bot ${opts.botToken}`,
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({ content: body }),
+				body: JSON.stringify({
+					content: markAutomatedDiscordText(body),
+				}),
 			},
 		);
 		if (!resp.ok) {

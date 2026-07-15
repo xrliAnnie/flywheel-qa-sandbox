@@ -325,6 +325,36 @@ export interface FounderActionIntent {
 	dependsOn?: string;
 }
 
+/** FLY-1238: durable bounded-failure state for the merged-PR last-mile guard. */
+export interface MergedGateGuardFailureRow {
+	question_id: string;
+	source: string;
+	execution_id: string;
+	issue_id: string;
+	project_name: string;
+	attempts: number;
+	first_seen_ms: number;
+	next_retry_ms: number;
+	last_error?: string;
+	terminal: boolean;
+	alerted: boolean;
+	resolved_at?: string;
+}
+
+/** FLY-1238: durable visibility for an atomic CommDB gate/session finalizer
+ * that keeps failing after the physical runner is gone. */
+export interface CommDbFinalizeFailureRow {
+	execution_id: string;
+	issue_id: string;
+	project_name: string;
+	attempts: number;
+	first_failure_ms: number;
+	last_failure_ms: number;
+	last_error?: string;
+	alerted: boolean;
+	resolved_at?: string;
+}
+
 /** FLY-1099 §3.1: bounded-retry row for one pinned founder message. */
 export interface FounderReplyRetryRow {
 	thread_id: string;
@@ -828,6 +858,7 @@ export interface CodexReviewJob {
 	verdict?: string;
 	findings_json?: string;
 	failure_reason?: string;
+	failure_raw?: string;
 	author_family?: string;
 	created_at: string;
 	updated_at?: string;
@@ -1883,6 +1914,7 @@ export class StateStore {
 				verdict               TEXT,
 				findings_json         TEXT,
 				failure_reason        TEXT,
+				failure_raw           TEXT,
 				author_family         TEXT,
 				created_at            TEXT NOT NULL DEFAULT (datetime('now')),
 				updated_at            TEXT,
@@ -1905,6 +1937,16 @@ export class StateStore {
 			);
 		} catch {
 			/* exists */
+		}
+		// FLY-1254: retain the latest failed attempt's bounded diagnostic tail.
+		// Unlike the historical best-effort migrations above, failure evidence is
+		// on the active write path: any unexpected migration error must fail boot
+		// loudly instead of leaving a database that will reject future writes.
+		const reviewJobInfo = this.db.exec("PRAGMA table_info(codex_review_job)");
+		const reviewJobColumns =
+			reviewJobInfo[0]?.values.map((row) => row[1] as string) ?? [];
+		if (!reviewJobColumns.includes("failure_raw")) {
+			this.db.run("ALTER TABLE codex_review_job ADD COLUMN failure_raw TEXT");
 		}
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_exec ON codex_review_job(execution_id)",
@@ -2005,6 +2047,40 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_founder_action_status ON founder_action_ledger(status)",
 		);
+
+		// FLY-1238: a gh UNKNOWN cannot retry forever or silently degrade into
+		// posting a stale founder-facing message. Persist before the first probe.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS merged_gate_guard_failure (
+				question_id   TEXT NOT NULL,
+				source        TEXT NOT NULL,
+				execution_id  TEXT NOT NULL,
+				issue_id      TEXT NOT NULL,
+				project_name  TEXT NOT NULL,
+				attempts      INTEGER NOT NULL DEFAULT 0,
+				first_seen_ms INTEGER NOT NULL,
+				next_retry_ms INTEGER NOT NULL DEFAULT 0,
+				last_error    TEXT,
+				terminal      INTEGER NOT NULL DEFAULT 0,
+				alerted       INTEGER NOT NULL DEFAULT 0,
+				resolved_at   TEXT,
+				PRIMARY KEY (question_id, source)
+			)
+		`);
+
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS commdb_finalize_failures (
+				execution_id     TEXT PRIMARY KEY,
+				issue_id         TEXT NOT NULL,
+				project_name     TEXT NOT NULL,
+				attempts         INTEGER NOT NULL DEFAULT 0,
+				first_failure_ms INTEGER NOT NULL,
+				last_failure_ms  INTEGER NOT NULL,
+				last_error       TEXT,
+				alerted          INTEGER NOT NULL DEFAULT 0,
+				resolved_at      TEXT
+			)
+		`);
 
 		// FLY-1099 §3.1: bounded founder-reply retry ledger — the durable source
 		// for the cursor-pin watchdog AND the dead-letter decision. first_seen_ms
@@ -4583,6 +4659,7 @@ export class StateStore {
 			verdict: (row.verdict as string) ?? undefined,
 			findings_json: (row.findings_json as string) ?? undefined,
 			failure_reason: (row.failure_reason as string) ?? undefined,
+			failure_raw: (row.failure_raw as string) ?? undefined,
 			author_family: (row.author_family as string) ?? undefined,
 			created_at: row.created_at as string,
 			updated_at: (row.updated_at as string) ?? undefined,
@@ -4664,7 +4741,8 @@ export class StateStore {
 	claimCodexReviewJobRunning(requestId: string): boolean {
 		this.db.run(
 			`UPDATE codex_review_job
-			   SET status = 'running', updated_at = datetime('now')
+			   SET status = 'running', failure_reason = NULL, failure_raw = NULL,
+			       updated_at = datetime('now')
 			 WHERE request_id = ? AND status IN ('pending','failed')`,
 			[requestId],
 		);
@@ -4681,7 +4759,8 @@ export class StateStore {
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET status = 'done', verdict = ?, findings_json = ?,
-			       failure_reason = NULL, updated_at = datetime('now')
+			       failure_reason = NULL, failure_raw = NULL,
+			       updated_at = datetime('now')
 			 WHERE request_id = ?`,
 			[verdict, findingsJson ?? null, requestId],
 		);
@@ -4693,12 +4772,17 @@ export class StateStore {
 	 * respond/stamp after the verdict landed must not downgrade the row out of
 	 * the outbox scan (which only re-delivers done/skipped).
 	 */
-	failCodexReviewJob(requestId: string, reason: string): void {
+	failCodexReviewJob(
+		requestId: string,
+		reason: string,
+		failureRaw?: string,
+	): void {
 		this.db.run(
 			`UPDATE codex_review_job
-			   SET status = 'failed', failure_reason = ?, updated_at = datetime('now')
+			   SET status = 'failed', failure_reason = ?, failure_raw = ?,
+			       updated_at = datetime('now')
 			 WHERE request_id = ? AND status NOT IN ('done','skipped')`,
-			[reason, requestId],
+			[reason, failureRaw ?? null, requestId],
 		);
 		this.save();
 	}
@@ -4790,7 +4874,7 @@ export class StateStore {
 		return n;
 	}
 
-	/** Latest DONE job for (exec, type) — reround prompts carry its findings. */
+	/** Latest DONE job for fresh rerounds that must rebuild prior context. */
 	latestDoneCodexReviewJob(
 		executionId: string,
 		reviewType: "design" | "code",
@@ -7728,12 +7812,24 @@ export class StateStore {
 	}
 
 	markFounderActionDelivered(actionKey: string): void {
-		this.db.run(
-			`UPDATE founder_action_ledger
-			    SET status = 'delivered', delivered_at = datetime('now')
-			  WHERE action_key = ? AND status = 'pending'`,
-			[actionKey],
-		);
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE founder_action_ledger
+				    SET status = 'delivered', delivered_at = datetime('now')
+				  WHERE action_key = ? AND status = 'pending'`,
+				[actionKey],
+			);
+			if (
+				this.db.getRowsModified() > 0 &&
+				actionKey.startsWith("commdb-finalize-stuck-")
+			) {
+				this.db.run(
+					`UPDATE commdb_finalize_failures SET alerted = 1
+					  WHERE execution_id = ?`,
+					[actionKey.slice("commdb-finalize-stuck-".length)],
+				);
+			}
+		});
 		this.save();
 	}
 
@@ -7789,6 +7885,345 @@ export class StateStore {
 	}
 
 	// ── FLY-1099: bounded founder-reply retry ledger ─────────────────────────
+
+	// FLY-1238: durable state for the merged-PR last-mile guard.
+	private rowToMergedGateGuardFailure(
+		row: Record<string, unknown>,
+	): MergedGateGuardFailureRow {
+		return {
+			question_id: row.question_id as string,
+			source: row.source as string,
+			execution_id: row.execution_id as string,
+			issue_id: row.issue_id as string,
+			project_name: row.project_name as string,
+			attempts: Number(row.attempts ?? 0),
+			first_seen_ms: Number(row.first_seen_ms),
+			next_retry_ms: Number(row.next_retry_ms ?? 0),
+			last_error: (row.last_error as string) ?? undefined,
+			terminal: Number(row.terminal ?? 0) === 1,
+			alerted: Number(row.alerted ?? 0) === 1,
+			resolved_at: (row.resolved_at as string) ?? undefined,
+		};
+	}
+
+	ensureMergedGateGuardFailure(input: {
+		questionId: string;
+		source: string;
+		executionId: string;
+		issueId: string;
+		projectName: string;
+		nowMs: number;
+	}): MergedGateGuardFailureRow {
+		let changed = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT OR IGNORE INTO merged_gate_guard_failure
+				   (question_id, source, execution_id, issue_id, project_name, first_seen_ms)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					input.questionId,
+					input.source,
+					input.executionId,
+					input.issueId,
+					input.projectName,
+					input.nowMs,
+				],
+			);
+			changed = this.db.getRowsModified() > 0;
+
+			// OPEN/CLOSED resolves one UNKNOWN episode, but the same gate can be
+			// checked again after the short result cache expires. Re-arm a resolved
+			// row so a later outage gets its own bounded backoff and durable alert.
+			this.db.run(
+				`UPDATE merged_gate_guard_failure
+				    SET execution_id = ?, issue_id = ?, project_name = ?, attempts = 0,
+				        first_seen_ms = ?, next_retry_ms = 0, last_error = NULL,
+				        terminal = 0, alerted = 0, resolved_at = NULL
+				  WHERE question_id = ? AND source = ? AND resolved_at IS NOT NULL`,
+				[
+					input.executionId,
+					input.issueId,
+					input.projectName,
+					input.nowMs,
+					input.questionId,
+					input.source,
+				],
+			);
+			changed = this.db.getRowsModified() > 0 || changed;
+		});
+		if (changed) this.save();
+		return this.getMergedGateGuardFailure(input.questionId, input.source)!;
+	}
+
+	getMergedGateGuardFailure(
+		questionId: string,
+		source: string,
+	): MergedGateGuardFailureRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM merged_gate_guard_failure WHERE question_id = ? AND source = ?",
+		);
+		stmt.bind([questionId, source]);
+		let row: MergedGateGuardFailureRow | undefined;
+		if (stmt.step()) {
+			row = this.rowToMergedGateGuardFailure(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return row;
+	}
+
+	recordMergedGateGuardUnknown(input: {
+		questionId: string;
+		source: string;
+		nowMs: number;
+		nextRetryMs: number;
+		error: string;
+		terminal: boolean;
+	}): MergedGateGuardFailureRow {
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE merged_gate_guard_failure
+				    SET attempts = attempts + 1, next_retry_ms = ?, last_error = ?,
+				        terminal = CASE WHEN ? THEN 1 ELSE terminal END
+				  WHERE question_id = ? AND source = ? AND resolved_at IS NULL`,
+				[
+					input.nextRetryMs,
+					input.error.slice(0, 500),
+					input.terminal ? 1 : 0,
+					input.questionId,
+					input.source,
+				],
+			);
+			if (!input.terminal) return;
+			const row = this.getMergedGateGuardFailure(
+				input.questionId,
+				input.source,
+			);
+			if (!row || row.alerted) return;
+			this.insertFounderActionRaw({
+				actionKey: `merged-gate-guard-unavailable-${input.questionId}-${input.source}`,
+				kind: "emit_alert",
+				executionId: row.execution_id,
+				issueId: row.issue_id,
+				projectName: row.project_name,
+				payload: {
+					alert: {
+						leadId: "",
+						projectName: row.project_name,
+						eventId: `merged-gate-guard-unavailable-${input.questionId}-${input.source}`,
+						eventType: "merged_gate_guard_unavailable",
+						title: `Merged gate guard unavailable — ${row.issue_id}`,
+						body:
+							`Suppressed founder-facing recovery for gate ${input.questionId} after ${row.attempts} inconclusive PR-state checks. ` +
+							"Check GitHub and retire or re-drive the gate manually.",
+						severity: "warning",
+					},
+				},
+			});
+			this.db.run(
+				`UPDATE merged_gate_guard_failure SET alerted = 1
+				  WHERE question_id = ? AND source = ?`,
+				[input.questionId, input.source],
+			);
+		});
+		this.save();
+		return this.getMergedGateGuardFailure(input.questionId, input.source)!;
+	}
+
+	resolveMergedGateGuardFailure(questionId: string, source: string): void {
+		this.db.run(
+			`UPDATE merged_gate_guard_failure SET resolved_at = datetime('now')
+			  WHERE question_id = ? AND source = ? AND resolved_at IS NULL`,
+			[questionId, source],
+		);
+		if (this.db.getRowsModified() > 0) this.save();
+	}
+
+	private rowToCommDbFinalizeFailure(
+		row: Record<string, unknown>,
+	): CommDbFinalizeFailureRow {
+		return {
+			execution_id: row.execution_id as string,
+			issue_id: row.issue_id as string,
+			project_name: row.project_name as string,
+			attempts: Number(row.attempts ?? 0),
+			first_failure_ms: Number(row.first_failure_ms),
+			last_failure_ms: Number(row.last_failure_ms),
+			last_error: (row.last_error as string) ?? undefined,
+			alerted: Number(row.alerted ?? 0) === 1,
+			resolved_at: (row.resolved_at as string) ?? undefined,
+		};
+	}
+
+	getCommDbFinalizeFailure(
+		executionId: string,
+	): CommDbFinalizeFailureRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM commdb_finalize_failures WHERE execution_id = ?",
+		);
+		stmt.bind([executionId]);
+		let row: CommDbFinalizeFailureRow | undefined;
+		if (stmt.step()) {
+			row = this.rowToCommDbFinalizeFailure(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return row;
+	}
+
+	/** Record every structured finalizer outcome. The third failure or a
+	 * fifteen-minute episode queues one stable Lead-only alert; `alerted` is
+	 * deliberately set only by markFounderActionDelivered after a real receipt. */
+	recordCommDbFinalizeOutcome(input: {
+		executionId: string;
+		issueId: string;
+		projectName: string;
+		ok: boolean;
+		error?: string;
+		nowMs?: number;
+	}): CommDbFinalizeFailureRow | undefined {
+		const nowMs = input.nowMs ?? Date.now();
+		if (input.ok) {
+			this.db.run(
+				`UPDATE commdb_finalize_failures SET resolved_at = datetime('now')
+				  WHERE execution_id = ? AND resolved_at IS NULL`,
+				[input.executionId],
+			);
+			if (this.db.getRowsModified() > 0) this.save();
+			return this.getCommDbFinalizeFailure(input.executionId);
+		}
+
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT INTO commdb_finalize_failures
+				   (execution_id, issue_id, project_name, attempts,
+				    first_failure_ms, last_failure_ms, last_error)
+				 VALUES (?, ?, ?, 1, ?, ?, ?)
+				 ON CONFLICT(execution_id) DO UPDATE SET
+				   issue_id = excluded.issue_id,
+				   project_name = excluded.project_name,
+				   attempts = commdb_finalize_failures.attempts + 1,
+				   last_failure_ms = excluded.last_failure_ms,
+				   last_error = excluded.last_error`,
+				[
+					input.executionId,
+					input.issueId,
+					input.projectName,
+					nowMs,
+					nowMs,
+					(input.error ?? "unknown").slice(0, 500),
+				],
+			);
+			const row = this.getCommDbFinalizeFailure(input.executionId);
+			if (
+				!row ||
+				row.alerted ||
+				row.resolved_at ||
+				(row.attempts < 3 && nowMs - row.first_failure_ms < 15 * 60_000)
+			) {
+				return;
+			}
+			this.insertFounderActionRaw({
+				actionKey: `commdb-finalize-stuck-${input.executionId}`,
+				kind: "emit_alert",
+				executionId: input.executionId,
+				issueId: input.issueId,
+				projectName: input.projectName,
+				payload: {
+					alert: {
+						leadId: "",
+						projectName: input.projectName,
+						eventId: `commdb-finalize-stuck-${input.executionId}`,
+						eventType: "commdb_finalize_stuck",
+						title: `CommDB finalization stuck — ${input.issueId}`,
+						body:
+							`Runner ${input.executionId} is physically gone, but its gates and CommDB session could not be retired atomically after ${row.attempts} attempts. ` +
+							"Issue-level archive and Linear closeout remain fail-closed; inspect comm.db and retry cleanup.",
+						severity: "warning",
+					},
+				},
+			});
+		});
+		this.save();
+		return this.getCommDbFinalizeFailure(input.executionId);
+	}
+
+	/** A MERGED verdict already suppresses output; this only retires artifacts. */
+	invalidateMergedGateArtifacts(input: {
+		executionId: string;
+		issueId: string;
+		projectName: string;
+		questionId: string;
+		prNumber: number;
+		source: string;
+		observedMergeCommitOid?: string;
+	}): {
+		invalidatedDeferredCount: number;
+		supersededActionCount: number;
+	} {
+		let invalidatedDeferredCount = 0;
+		let supersededActionCount = 0;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE founder_deferred_approval
+				    SET invalidated_at = datetime('now'), invalidated_reason = 'pr_merged'
+				  WHERE question_id = ? AND consumed_at IS NULL AND invalidated_at IS NULL`,
+				[input.questionId],
+			);
+			invalidatedDeferredCount = this.db.getRowsModified();
+
+			const pending = this.db.prepare(
+				`SELECT action_key, payload FROM founder_action_ledger
+				  WHERE execution_id = ? AND status = 'pending'
+				    AND kind IN ('held_reply','ttl_expired_notice','head_drift_notice','rebound_notice')`,
+			);
+			pending.bind([input.executionId]);
+			const matchingKeys: string[] = [];
+			while (pending.step()) {
+				const row = pending.getAsObject() as Record<string, unknown>;
+				try {
+					const payload = JSON.parse(String(row.payload)) as Record<
+						string,
+						unknown
+					>;
+					if (payload.questionId === input.questionId) {
+						matchingKeys.push(String(row.action_key));
+					}
+				} catch {
+					// Malformed payload: do not guess-match an action to another gate.
+				}
+			}
+			pending.free();
+			for (const actionKey of matchingKeys) {
+				this.db.run(
+					`UPDATE founder_action_ledger SET status = 'superseded', last_error = 'pr_merged'
+					  WHERE action_key = ? AND status = 'pending'`,
+					[actionKey],
+				);
+				supersededActionCount += this.db.getRowsModified();
+			}
+
+			this.insertAuditEventRaw({
+				event_id: `merged-gate-suppressed-${input.questionId}-${input.source}`,
+				execution_id: input.executionId,
+				issue_id: input.issueId,
+				project_name: input.projectName,
+				event_type: "merged_gate_suppressed",
+				source: `bridge.merged-gate-guard.${input.source}`,
+				payload: {
+					questionId: input.questionId,
+					prNumber: input.prNumber,
+					observedMergeCommitOid: input.observedMergeCommitOid,
+					invalidatedDeferredCount,
+					supersededActionCount,
+				},
+			});
+		});
+		this.save();
+		return { invalidatedDeferredCount, supersededActionCount };
+	}
 
 	private rowToFounderReplyRetry(
 		row: Record<string, unknown>,

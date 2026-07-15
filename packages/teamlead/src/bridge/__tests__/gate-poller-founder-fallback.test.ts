@@ -153,6 +153,66 @@ describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
 		expect(fetchImpl).toHaveBeenCalledTimes(1);
 	});
 
+	it("FLY-1238: MERGED approve gate is silent and gets no durable done marker", async () => {
+		const { store, events } = makeStore();
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+		const mergedGateGuard = vi.fn().mockResolvedValue({
+			kind: "suppress_merged",
+			cleanupComplete: true,
+		});
+		const poller = makePoller(
+			{
+				fetchImpl: fetchImpl as unknown as typeof fetch,
+				mergedGateGuard,
+			},
+			store,
+		);
+		await fallback(
+			poller,
+			makeSession({
+				status: "awaiting_review",
+				review_question_id: "q1",
+				pr_number: 588,
+			}),
+			makeQuestion({ checkpoint: "approve_to_ship" }),
+		);
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(events.some((e) => e.event_id === "founder-thread-notify-q1")).toBe(
+			false,
+		);
+	});
+
+	it.each([
+		{ kind: "retry_later", reason: "unknown" },
+		{ kind: "terminal_unavailable", reason: "unknown_exhausted" },
+	])(
+		"FLY-1238: $kind is silent without a permanent done marker",
+		async (guarded) => {
+			const { store, events } = makeStore();
+			const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+			const poller = makePoller(
+				{
+					fetchImpl: fetchImpl as unknown as typeof fetch,
+					mergedGateGuard: vi.fn().mockResolvedValue(guarded),
+				},
+				store,
+			);
+			await fallback(
+				poller,
+				makeSession({
+					status: "awaiting_review",
+					review_question_id: "q1",
+					pr_number: 588,
+				}),
+				makeQuestion({ checkpoint: "approve_to_ship" }),
+			);
+			expect(fetchImpl).not.toHaveBeenCalled();
+			expect(
+				events.some((e) => e.event_id === "founder-thread-notify-q1"),
+			).toBe(false);
+		},
+	);
+
 	it("runner_question (null) and plain 'question' checkpoint → never triggers", async () => {
 		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
 		const poller = makePoller({

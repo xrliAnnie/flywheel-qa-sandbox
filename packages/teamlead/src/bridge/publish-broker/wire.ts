@@ -18,6 +18,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import type { ReactionFetcher } from "../../lead-backends/codex/gateway/founder-confirmation.js";
 import { deriveCanonicalFounderId } from "../approval-signal/canonical-founder-id.js";
+import { markAutomatedDiscordText } from "../automated-message.js";
 import { DISCORD_API } from "../discord-utils.js";
 import { PublishBroker } from "./publish-broker.js";
 import { executePublishRelease } from "./release-commit.js";
@@ -168,7 +169,9 @@ function makeDiscordCardSurface(opts: {
 						authorization: `Bot ${opts.botToken}`,
 						"content-type": "application/json",
 					},
-					body: JSON.stringify({ content: text }),
+					body: JSON.stringify({
+						content: markAutomatedDiscordText(text),
+					}),
 				},
 			);
 			if (!res.ok) {

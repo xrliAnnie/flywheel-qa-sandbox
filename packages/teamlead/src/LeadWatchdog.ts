@@ -1105,6 +1105,10 @@ function titleFor(kind: AlertEventType): string {
 			return "Founder notify dead-lettered";
 		case "founder_reply_unreachable_runner":
 			return "Runner unreachable for founder replies";
+		case "commdb_finalize_stuck":
+			return "CommDB finalization stuck";
+		case "merged_gate_guard_unavailable":
+			return "Merged gate guard unavailable";
 		// FLY-1081: never emitted by LeadWatchdog (restart-services.sh /
 		// update-flywheel.sh fire these via scripts/lead-alert.sh with their own
 		// titles); cases exist for switch exhaustiveness.
@@ -1228,6 +1232,10 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A founder-facing ledger action (held notice / rebound notice / codex nudge / feedback wake) failed terminally after bounded retries — the target never received it.";
 		case "founder_reply_unreachable_runner":
 			return "A LIVE session's CommDB registration row is gone (FLY-1049 shape) — founder replies to its gate cannot be wake-delivered and will dead-letter. Re-register or close the session.";
+		case "commdb_finalize_stuck":
+			return "A physically gone runner still has unresolved gates or a CommDB session because atomic finalization keeps failing. Issue closeout remains fail-closed; inspect comm.db and retry cleanup.";
+		case "merged_gate_guard_unavailable":
+			return "The Bridge could not establish the bound PR's merge state after bounded checks, so it suppressed founder-facing recovery copy. Verify GitHub and retire or re-drive the gate manually.";
 		// FLY-1081: never emitted by LeadWatchdog (restart-services.sh /
 		// update-flywheel.sh build their own bodies via lead-alert.sh).
 		case "deploy_failed":

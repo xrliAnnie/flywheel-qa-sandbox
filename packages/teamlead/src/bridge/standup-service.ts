@@ -7,6 +7,7 @@
 
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 import {
 	DISCORD_API,
 	MAX_DISCORD_MESSAGE_LENGTH,
@@ -383,7 +384,9 @@ export class StandupService {
 							Authorization: `Bot ${this.discordBotToken}`,
 							"Content-Type": "application/json",
 						},
-						body: JSON.stringify({ content: chunk }),
+						body: JSON.stringify({
+							content: markAutomatedDiscordText(chunk),
+						}),
 						signal: controller.signal,
 					},
 				);

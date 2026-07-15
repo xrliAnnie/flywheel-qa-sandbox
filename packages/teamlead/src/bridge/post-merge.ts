@@ -23,7 +23,7 @@ import {
 	isResidentCodexPhase,
 	prepareCodexPhaseShutdown,
 } from "./codex-phase-shutdown.js";
-import { deleteCommDbSession } from "./commdb-session-prune.js";
+import { finalizeCommDbSession } from "./commdb-session-prune.js";
 import { reapRunnerMcp } from "./runner-teardown.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import {
@@ -42,6 +42,8 @@ export interface PostMergeOpts {
 
 export interface PostMergeResult {
 	tmuxClosed: boolean;
+	commDbFinalized: boolean;
+	retiredGateCount: number;
 	errors: string[];
 }
 
@@ -57,8 +59,11 @@ export async function postMergeTmuxCleanup(
 ): Promise<PostMergeResult> {
 	const result: PostMergeResult = {
 		tmuxClosed: false,
+		commDbFinalized: false,
+		retiredGateCount: 0,
 		errors: [],
 	};
+	let physicalGone = false;
 
 	// Close Runner tmux session AND macOS Terminal viewer tab (FLY-116)
 	try {
@@ -77,7 +82,7 @@ export async function postMergeTmuxCleanup(
 				// The request-bound adapter ack is written only after daemon drain,
 				// credential scrub, and founder-TUI removal. No second tmux kill.
 				result.tmuxClosed = true;
-				deleteCommDbSession(opts.executionId, opts.projectName);
+				physicalGone = true;
 				phaseControllerHandled = true;
 			}
 		}
@@ -101,10 +106,10 @@ export async function postMergeTmuxCleanup(
 				);
 				const killResult = await killTmuxWindow(target.tmuxWindow);
 				result.tmuxClosed = killResult.killed;
+				physicalGone = killResult.killed;
 				if (killResult.error) {
 					result.errors.push(`tmux: ${killResult.error}`);
 				}
-
 				// FLY-116: close per-runner Terminal viewer tab + linked viewer session
 				if (session && killResult.killed) {
 					const identity = resolveTerminalViewIdentity(session, target);
@@ -127,17 +132,33 @@ export async function postMergeTmuxCleanup(
 							result.errors.push(`terminal: ${closeRes.error}`);
 						}
 					}
-					// FLY-638: post-merge tmux is gone → drop the dead CommDB session
-					// row so it doesn't linger in runner_terminal_list / bootstrap.
-					if (killResult.killed) {
-						deleteCommDbSession(opts.executionId, opts.projectName);
-					}
 				}
+			} else {
+				physicalGone = true;
 			}
 		}
 		// No target → tmux was never registered or CommDB missing. Not an error.
 	} catch (err) {
 		result.errors.push(`tmux: ${(err as Error).message}`);
+	}
+
+	// FLY-1238: an absent target and a successful kill both prove the physical
+	// runner is gone. Retire its unresolved founder gates in the same transaction
+	// that deletes the CommDB session; a failure keeps this cleanup partial.
+	if (physicalGone) {
+		const finalized = finalizeCommDbSession(opts.executionId, opts.projectName);
+		store.recordCommDbFinalizeOutcome({
+			executionId: opts.executionId,
+			issueId: opts.issueId,
+			projectName: opts.projectName,
+			ok: finalized.ok,
+			error: finalized.error,
+		});
+		result.commDbFinalized = finalized.ok;
+		result.retiredGateCount = finalized.retiredGateCount;
+		if (!finalized.ok) {
+			result.errors.push(`commdb finalize: ${finalized.error ?? "unknown"}`);
+		}
 	}
 
 	// Audit event
@@ -152,6 +173,8 @@ export async function postMergeTmuxCleanup(
 		source: "bridge.post-merge",
 		payload: {
 			tmuxClosed: result.tmuxClosed,
+			commDbFinalized: result.commDbFinalized,
+			retiredGateCount: result.retiredGateCount,
 			errors: result.errors.length > 0 ? result.errors : undefined,
 		},
 	});

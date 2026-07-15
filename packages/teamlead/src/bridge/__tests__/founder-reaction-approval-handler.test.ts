@@ -28,7 +28,12 @@ const gate = {
 	checkpoint: "approve_to_ship",
 	createdAtMs: 1,
 };
-const ctx = { issueId: "I", threadId: "T" };
+const ctx = {
+	issueId: "I",
+	threadId: "T",
+	projectName: "proj",
+	projectRoot: "/repo",
+};
 
 function make(over: Record<string, unknown> = {}) {
 	const session = {
@@ -202,5 +207,37 @@ describe("tryFounderReactionApproval — hold guard (FLY-1041 Chunk 5, Codex R2 
 		const r = await tryFounderReactionApproval({ gate, ctx }, deps as never);
 		expect(r).toEqual({ handled: ["Q-1"], retrySafe: true });
 		expect(writeGateResponseImpl).toHaveBeenCalledOnce();
+	});
+});
+
+describe("tryFounderReactionApproval — FLY-1238 merged guard", () => {
+	it("MERGED suppresses the response write without reporting handled", async () => {
+		const { deps, writeGateResponseImpl } = make({
+			mergedGateGuard: vi.fn().mockResolvedValue({
+				kind: "suppress_merged",
+				cleanupComplete: true,
+			}),
+		});
+		const result = await tryFounderReactionApproval(
+			{ gate, ctx },
+			deps as never,
+		);
+		expect(result).toEqual({ handled: [], retrySafe: true });
+		expect(writeGateResponseImpl).not.toHaveBeenCalled();
+	});
+
+	it("UNKNOWN remains retryable and does not write", async () => {
+		const { deps, writeGateResponseImpl } = make({
+			mergedGateGuard: vi.fn().mockResolvedValue({
+				kind: "retry_later",
+				reason: "unknown",
+			}),
+		});
+		const result = await tryFounderReactionApproval(
+			{ gate, ctx },
+			deps as never,
+		);
+		expect(result).toEqual({ handled: [], retrySafe: false });
+		expect(writeGateResponseImpl).not.toHaveBeenCalled();
 	});
 });
