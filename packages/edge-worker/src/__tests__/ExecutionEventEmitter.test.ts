@@ -136,6 +136,21 @@ describe("TeamLeadClient", () => {
 		expect(payload.lastActivity).toBe("2024-01-01T00:00:00Z");
 	});
 
+	it("FLY-1279: emitFailed carries typed terminal failure metadata", async () => {
+		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
+		await client.emitFailed(makeEnvelope(), "blocked", undefined, {
+			failureKind: "goal_blocked",
+			failureReason: "goal ended non-complete: blocked",
+		});
+
+		const body = receivedBodies[0] as Record<string, unknown>;
+		const payload = body.payload as Record<string, unknown>;
+		expect(payload.failure).toEqual({
+			failureKind: "goal_blocked",
+			failureReason: "goal ended non-complete: blocked",
+		});
+	});
+
 	it("emitStarted silently catches HTTP errors (fire-and-forget)", async () => {
 		const client = new TeamLeadClient("http://127.0.0.1:1"); // invalid port
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});

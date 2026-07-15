@@ -101,6 +101,9 @@ export const ALERT_EVENT_TYPES = [
 	// started and this Lead-only alert fires so a completed phase is never
 	// silently stranded. Not a founder-facing notification.
 	"three_stage_stuck",
+	// FLY-1279: shared branch-B takeover was refused (dirty/head drift). Separate
+	// from generic handoff failures so the Lead sees the exact recovery class.
+	"three_stage_takeover_failed",
 	// FLY-637-ext: the owning Lead did not answer a runner's BLOCKING question
 	// gate after the configured number of backoff nudges → page Annie ONCE
 	// (final fallback). DISTINCT from runner_stuck_unhandled: the runner is fine,
@@ -260,6 +263,8 @@ export const ALERT_EVENT_TYPES = [
 	// not landing. eventId is per-episode deterministic → claims-deduped
 	// across reconcile retries (no per-tick spam).
 	"detection_page_undeliverable",
+	// FLY-1279: an ACK-required Lead event exhausted its bounded delivery budget.
+	"delivery_dead_letter",
 ] as const;
 
 export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];

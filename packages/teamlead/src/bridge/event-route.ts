@@ -9,6 +9,7 @@ import {
 	isThreeStagePhaseRole,
 	resolveCompletionSessionRole,
 } from "flywheel-config";
+import type { TerminalFailureInfo } from "flywheel-core";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
 import {
@@ -110,6 +111,21 @@ function resolveIdentifier(
 /** Coerce a value to number or undefined. */
 function asNumber(v: unknown): number | undefined {
 	return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+function asTerminalFailureInfo(v: unknown): TerminalFailureInfo | undefined {
+	if (!v || typeof v !== "object") return undefined;
+	const failure = v as Record<string, unknown>;
+	const failureKind = asString(failure.failureKind);
+	const failureReason = asString(failure.failureReason);
+	if (
+		(failureKind !== "goal_blocked" &&
+			failureKind !== "worktree_takeover_failed") ||
+		!failureReason
+	) {
+		return undefined;
+	}
+	return { failureKind, failureReason };
 }
 
 function formatNotification(session: Session, eventType: string): string {
@@ -1565,6 +1581,12 @@ export function createEventRouter(
 					}
 				}
 			} else if (event.event_type === "session_failed") {
+				const failure = asTerminalFailureInfo(payload.failure);
+				const goalBlocked = failure?.failureKind === "goal_blocked";
+				const terminalStatus = goalBlocked ? "blocked" : "failed";
+				const terminalError = goalBlocked
+					? failure.failureReason
+					: asString(payload.error);
 				// FLY-59: Read session role from failed event payload.
 				// FLY-793 (824 R2 E2E fix): same invariant as the completed path — a
 				// signal must not downgrade a dispatched phase role to the payload
@@ -1581,11 +1603,11 @@ export function createEventRouter(
 					const result = applyTransition(
 						transitionOpts,
 						event.execution_id,
-						"failed",
+						terminalStatus,
 						ctx,
 						{
 							last_activity_at: now,
-							last_error: asString(payload.error),
+							last_error: terminalError,
 							// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
 							issue_identifier: asString(payload.issueIdentifier) || undefined,
 							issue_title: asString(payload.issueTitle),
@@ -1603,9 +1625,9 @@ export function createEventRouter(
 						execution_id: event.execution_id,
 						issue_id: event.issue_id,
 						project_name: event.project_name,
-						status: "failed",
+						status: terminalStatus,
 						last_activity_at: now,
-						last_error: asString(payload.error),
+						last_error: terminalError,
 						// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
 						issue_identifier: asString(payload.issueIdentifier) || undefined,
 						issue_title: asString(payload.issueTitle),
@@ -2110,6 +2132,32 @@ export function createEventRouter(
 
 		// Best-effort notification push via RuntimeRegistry (GEO-195)
 		const session = store.getSession(event.execution_id);
+		const terminalFailure =
+			event.event_type === "session_failed"
+				? asTerminalFailureInfo(payload.failure)
+				: undefined;
+		if (
+			terminalFailure?.failureKind === "worktree_takeover_failed" &&
+			phaseOrchestrator?.current &&
+			session
+		) {
+			await phaseOrchestrator.current.alertWorktreeTakeoverFailure(
+				session,
+				terminalFailure.failureReason,
+			);
+		}
+		let autoQaFailureOwned = false;
+		if (event.event_type === "session_failed" && autoQaCoordinator?.current) {
+			try {
+				autoQaFailureOwned = (
+					await autoQaCoordinator.current.onQaSessionFailed(event.execution_id)
+				).owned;
+			} catch (err) {
+				console.error(
+					`[event-route] auto-QA failure hook threw for ${event.execution_id}: ${(err as Error).message}`,
+				);
+			}
+		}
 
 		// FLY-579: a main session that just entered awaiting_review (code review
 		// passed, approve gate opened) → drive the auto-QA pipeline. This runs
@@ -2167,6 +2215,7 @@ export function createEventRouter(
 		// Sister call: DirectEventSink.emitFailed.
 		if (
 			event.event_type === "session_failed" &&
+			!autoQaFailureOwned &&
 			phaseOrchestrator?.current &&
 			session?.project_name &&
 			(session.chat_thread_role ?? "main") === "qa"

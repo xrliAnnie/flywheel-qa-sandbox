@@ -103,6 +103,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	// the founder is reached), mirroring the pane_error_stalled sibling contract.
 	detection_fleet_aggregate: { owner: "claude", arc: "human_by_design" },
 	detection_page_undeliverable: { owner: "claude", arc: "human_by_design" },
+	delivery_dead_letter: { owner: "founder_direct", arc: "none_escalate" },
 	runner_stuck_unhandled: {
 		owner: "claude",
 		arc: "auto",
@@ -120,6 +121,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	review_ruling_disputed: { owner: "claude", arc: "human_by_design" },
 	review_ruling_notify_failed: { owner: "claude", arc: "human_by_design" },
 	three_stage_stuck: { owner: "claude", arc: "human_by_design" },
+	three_stage_takeover_failed: { owner: "claude", arc: "human_by_design" },
 	founder_milestone_undelivered: { owner: "claude", arc: "human_by_design" },
 	tui_window_lost: { owner: "claude", arc: "human_by_design" },
 	restart_guard_bypass: { owner: "claude", arc: "human_by_design" },

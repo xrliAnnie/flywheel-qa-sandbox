@@ -111,6 +111,30 @@ describe("MailboxLeadRuntime", () => {
 			expect(writeCall.payload.metadata?.seq).toBe("42");
 		});
 
+		it("uses attempt identity for dedupe and renders the backend-neutral ACK handle", async () => {
+			const transport = makeMockTransport();
+			const runtime = new MailboxLeadRuntime({ leadId: "cos-lead", transport });
+			await runtime.deliver(
+				makeEnvelope({
+					deliveryAttemptId: "attempt-2",
+					ack: {
+						eventSeq: 42,
+						token: "bearer-token",
+						policy: "explicit_receipt",
+					},
+				}),
+			);
+
+			const writeCall = (transport.write as ReturnType<typeof vi.fn>).mock
+				.calls[0][0];
+			expect(writeCall.payload.metadata?.flywheelId).toBe("cos-lead-attempt-2");
+			expect(writeCall.payload.content).toContain(
+				"flywheel-comm ack-event 42 --project test-project --token-stdin",
+			);
+			expect(writeCall.payload.content).toContain("bearer-token");
+			expect(writeCall.payload.content).toContain("flywheel_inbox_ack_event");
+		});
+
 		it("formats event content identical to CommDBLeadRuntime parity", async () => {
 			const transport = makeMockTransport();
 			const runtime = new MailboxLeadRuntime({

@@ -135,6 +135,64 @@ describe("RunDispatcher", () => {
 		expect(result.issueId).toBe("GEO-1");
 	});
 
+	it("FLY-1279 uses a caller-prebound successor execution id", async () => {
+		const runtimes = new Map([makeRuntime("TestProject")]);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+
+		const result = await dispatcher.start({
+			issueId: "FLY-1279-QA",
+			projectName: "TestProject",
+			sessionRole: "qa",
+			successorExecutionId: "qa-recovery-exec",
+		});
+
+		expect(result.executionId).toBe("qa-recovery-exec");
+	});
+
+	it("FLY-1279 auto-QA skips phase resume and preserves fresh-worktree false", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const resumeComputer = vi.fn(() => ({
+			startPoint: "resume-tip",
+			progressPath: "engineering/doc/progress.md",
+			priorExecutionId: "old-phase",
+			resumeKind: "restart" as const,
+		}));
+		const dispatcher = new RunDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+			undefined,
+			undefined,
+			resumeComputer,
+		);
+
+		await dispatcher.start({
+			issueId: "qa-issue-uuid",
+			projectName: "TestProject",
+			sessionRole: "qa",
+			shareParentBranch: false,
+			startPoint: "a".repeat(40),
+			qaContext: {
+				parentExecutionId: "parent-exec",
+				prHeadSha: "a".repeat(40),
+			},
+		});
+
+		expect(resumeComputer).not.toHaveBeenCalled();
+		const ctx = (
+			runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> }
+		).run.mock.calls[0]?.[2];
+		expect(ctx).toMatchObject({
+			shareParentBranch: false,
+			startPoint: "a".repeat(40),
+		});
+		expect(ctx.progressResume).toBeUndefined();
+	});
+
 	it("start() rejects when shutting down", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
 		const dispatcher = new RunDispatcher(

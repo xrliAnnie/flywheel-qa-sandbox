@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import {
 	DEFAULT_GATE_TIMEOUT_MS,
@@ -9,6 +10,7 @@ import {
 	type AccountRotationNotifyArgs,
 	accountRotationNotify,
 } from "./commands/account-rotation-notify.js";
+import { ackEvent } from "./commands/ack-event.js";
 import { ask } from "./commands/ask.js";
 import { awaitCodexGate } from "./commands/await-codex-gate.js";
 import { capture } from "./commands/capture.js";
@@ -71,6 +73,8 @@ Commands:
             ("DONE: …") — the Lead still gets it, but founder thread replies
             can never bind to it.
   check     Check if a question has been answered
+  ack-event Write a backend-neutral Lead-event ACK receipt. The bearer token
+            MUST arrive on stdin: ack-event <seq> --project <name> --token-stdin
   gate      Block at a checkpoint until Lead responds (ask+poll+resolve).
             With --no-block (FLY-191): park the question + return questionId
             JSON immediately; runner goes idle and is woken by mailbox.
@@ -174,6 +178,9 @@ async function main(): Promise<void> {
 			break;
 		case "check":
 			runCheck(commandArgs);
+			break;
+		case "ack-event":
+			runAckEvent(commandArgs);
 			break;
 		case "gate":
 			await runGate(commandArgs);
@@ -299,6 +306,39 @@ async function main(): Promise<void> {
 			printUsage();
 			process.exit(1);
 	}
+}
+
+function runAckEvent(args: string[]): void {
+	const { values, positionals } = parseArgs({
+		args,
+		options: {
+			db: { type: "string" },
+			project: { type: "string" },
+			lead: { type: "string" },
+			"token-stdin": { type: "boolean", default: false },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: true,
+	});
+	const eventSeq = Number(positionals[0]);
+	if (!Number.isSafeInteger(eventSeq) || eventSeq <= 0) {
+		throw new Error("A positive event sequence is required");
+	}
+	if (!values["token-stdin"]) {
+		throw new Error(
+			"--token-stdin is required; tokens are never accepted in argv",
+		);
+	}
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	const receiptId = ackEvent({
+		dbPath,
+		eventSeq,
+		ackToken: readFileSync(0, "utf8").trim(),
+		leadId: values.lead ?? process.env.FLYWHEEL_LEAD_ID ?? "lead",
+	});
+	if (values.json)
+		console.log(JSON.stringify({ receipt_id: receiptId, event_seq: eventSeq }));
+	else console.log(`ACK receipt queued for event ${eventSeq}`);
 }
 
 /**

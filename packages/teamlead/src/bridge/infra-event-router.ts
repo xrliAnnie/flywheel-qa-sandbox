@@ -81,6 +81,7 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 export const ISSUE_PROGRESS_KINDS: ReadonlySet<AlertEventType> =
 	new Set<AlertEventType>([
 		"three_stage_stuck",
+		"three_stage_takeover_failed",
 		"founder_milestone_undelivered",
 		"runner_lead_pending_unhandled",
 	]);

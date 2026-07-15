@@ -59,6 +59,27 @@ describe("CommDBLeadRuntime", () => {
 			);
 		});
 
+		it("dedupes crash retries by attempt id and includes ACK instructions", async () => {
+			const envelope = {
+				...makeEnvelope({}, 44),
+				deliveryAttemptId: "attempt-44",
+				ack: {
+					eventSeq: 44,
+					token: "receipt-token",
+					policy: "explicit_receipt" as const,
+				},
+			};
+			await runtime.deliver(envelope);
+
+			expect(mockInsertInstruction).toHaveBeenCalledWith(
+				"bridge",
+				"lead-peter",
+				expect.stringContaining("flywheel-comm ack-event 44"),
+				{ dedupeId: "lead-event-attempt-attempt-44" },
+			);
+			expect(mockInsertInstruction.mock.calls[0][2]).toContain("receipt-token");
+		});
+
 		it("formats envelope with all available fields", async () => {
 			const envelope = makeEnvelope({
 				event_type: "session_completed",

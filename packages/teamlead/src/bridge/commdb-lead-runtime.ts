@@ -20,6 +20,7 @@ import {
 	formatShipApprovalRequest,
 	formatStuckEscalation,
 } from "./hook-payload.js";
+import { appendLeadEventAckInstructions } from "./lead-event-ack-render.js";
 import type {
 	DeliveryResult,
 	LeadBootstrap,
@@ -43,8 +44,17 @@ export class CommDBLeadRuntime implements LeadRuntime {
 
 	async deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult> {
 		try {
-			const content = this.formatEnvelope(envelope);
-			this.commDb.insertInstruction("bridge", this.leadId, content);
+			const content = appendLeadEventAckInstructions(
+				this.formatEnvelope(envelope),
+				envelope,
+			);
+			if (envelope.deliveryAttemptId) {
+				this.commDb.insertInstruction("bridge", this.leadId, content, {
+					dedupeId: `lead-event-attempt-${envelope.deliveryAttemptId}`,
+				});
+			} else {
+				this.commDb.insertInstruction("bridge", this.leadId, content);
+			}
 			this.lastDeliveryAt = new Date().toISOString();
 			this.lastDeliveredSeq = envelope.seq;
 			return { delivered: true };

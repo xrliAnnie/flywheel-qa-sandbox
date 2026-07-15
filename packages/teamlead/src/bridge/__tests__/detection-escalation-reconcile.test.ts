@@ -184,6 +184,35 @@ describe("reconcileDetectionEscalations (FLY-1048 C3)", () => {
 		expect(fleet).toHaveLength(0);
 	});
 
+	it("park policy can suppress founder paging or bypass fleet aggregation", async () => {
+		const store = await freshStore();
+		for (let i = 0; i < 4; i++) {
+			await seedNotified(store, `park-${i}`, {
+				kind: "park:blocked",
+				fp: `fp:${i}`,
+			});
+		}
+		await seedNotified(store, "qa-lead-only", {
+			kind: "park:qa_hold_orphaned",
+			fp: "fp:qa",
+		});
+		const { deps, paged, fleet } = makeDeps(store, {
+			pagePolicy: (row) =>
+				row.kind === "park:qa_hold_orphaned" ? "lead_only" : "page_no_fleet",
+		});
+
+		await reconcileDetectionEscalations(deps);
+		expect(paged.sort()).toEqual(["park-0", "park-1", "park-2", "park-3"]);
+		expect(fleet).toEqual([]);
+		expect(
+			store.getDetectionEscalation(
+				"qa-lead-only",
+				"park:qa_hold_orphaned",
+				"fp:qa",
+			)?.status,
+		).toBe("LEAD_NOTIFIED");
+	});
+
 	it("second reconcile after ESCALATED is a no-op (never re-pages)", async () => {
 		const store = await freshStore();
 		await seedNotified(store, "e1");
@@ -288,6 +317,30 @@ describe("resolveRecoveredDetectionTargets (FLY-1048 C3-w)", () => {
 		).toBe("RESOLVED");
 		expect(
 			store.getDetectionEscalation("e1", "delivery_unconsumed", "fp:b")?.status,
+		).toBe("RESOLVED");
+	});
+
+	it("can preserve semantic park episodes on terminal while resolving other kinds", async () => {
+		const store = await freshStore();
+		await seedNotified(store, "e1", { kind: "park:blocked", fp: "fp:park" });
+		await seedNotified(store, "e1", {
+			kind: "delivery_unconsumed",
+			fp: "fp:delivery",
+		});
+		const n = resolveRecoveredDetectionTargets({
+			store,
+			probe: () => ({ terminal: true, lastActivityAtMs: null }),
+			preserveOnTerminal: (row) => row.kind.startsWith("park:"),
+			logger: () => {},
+		});
+
+		expect(n).toBe(1);
+		expect(
+			store.getDetectionEscalation("e1", "park:blocked", "fp:park")?.status,
+		).toBe("LEAD_NOTIFIED");
+		expect(
+			store.getDetectionEscalation("e1", "delivery_unconsumed", "fp:delivery")
+				?.status,
 		).toBe("RESOLVED");
 	});
 

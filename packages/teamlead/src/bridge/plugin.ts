@@ -177,6 +177,7 @@ import {
 import type { CrashReaperInjectedDeps } from "./crash-reaper.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
+import { FileDeliverySecretProvider } from "./delivery-secret.js";
 import { createDeploymentsRouter } from "./deployments-route.js";
 import { loadDetectionGraceByProject } from "./detection-config-source.js";
 import {
@@ -298,6 +299,11 @@ import {
 	defaultLeadPaneCapture,
 	resolveAlertDirsFromEnv,
 } from "./lead-alert-helpers.js";
+import { deliveryAckEnabled } from "./lead-event-ack-policy.js";
+import {
+	createLeadEventDeadLetterHandler,
+	LeadEventDeliveryCoordinator,
+} from "./lead-event-delivery.js";
 import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
@@ -338,6 +344,12 @@ import { createMergedGateGuard } from "./merged-gate-guard.js";
 import { notifyDigestExpectTick } from "./notify-digest-expect.js";
 import { defaultReceiptsPath } from "./notify-receipts.js";
 import { hashPane, liveRegion } from "./pane-live-region.js";
+import {
+	LEAD_ONLY_PARK_KINDS,
+	PARK_KIND_PREFIX,
+	parkFounderGraceMs,
+	runParkWatch,
+} from "./park-watch.js";
 import {
 	PhaseOrchestrator,
 	type PhaseSession,
@@ -3788,6 +3800,42 @@ export async function startBridge(
 		);
 	}
 
+	const deliveryDeadLetterAlertHolder: {
+		current?: (
+			row: NonNullable<ReturnType<StateStore["getLeadEventBySeq"]>>,
+		) => Promise<boolean>;
+	} = {};
+	const testDeliverySecret = process.env.VITEST
+		? { secretId: "vitest-delivery-secret", key: randomBytes(32) }
+		: null;
+	const deliverySecretProvider = testDeliverySecret
+		? { getActive: () => testDeliverySecret }
+		: new FileDeliverySecretProvider({ store });
+	let deliverySecretBootError: string | undefined;
+	if (deliveryAckEnabled()) {
+		try {
+			deliverySecretProvider.getActive();
+		} catch (error) {
+			deliverySecretBootError =
+				error instanceof Error ? error.message : String(error);
+			console.error(
+				`[lead-event-delivery] ACK cohort paused: ${deliverySecretBootError}`,
+			);
+		}
+	}
+	const leadEventDelivery = new LeadEventDeliveryCoordinator({
+		store,
+		runtimeForLead: (leadId) => registry.getRawForLead(leadId),
+		commDbPaths: () =>
+			projects.map((project) => commDbPathForProject(project.projectName)),
+		secretProvider: deliverySecretProvider,
+		onDeadLetter: async (row) =>
+			deliveryDeadLetterAlertHolder.current?.(row) ?? false,
+	});
+	registry.setDeliveryInterceptor((runtime, envelope) =>
+		leadEventDelivery.deliver(envelope, runtime),
+	);
+
 	// FLY-80: Periodic retry for leads not ready at startup (e.g., Lead starts after Bridge).
 	// Checks every 30s until all leads are registered, then stops.
 	const unregisteredLeads: Array<{ lead: LeadConfig; projectName: string }> =
@@ -6092,10 +6140,20 @@ export async function startBridge(
 			// delivery / unreported park stays live on a working runner (漏②'s
 			// typical shape). Terminal still resolves every kind.
 			progressResolvableKinds: new Set([CASE_C_ESCALATION_KIND]),
+			preserveOnTerminal: (row) => row.kind.startsWith(PARK_KIND_PREFIX),
+			pagePolicy: (row) =>
+				LEAD_ONLY_PARK_KINDS.has(row.kind)
+					? "lead_only"
+					: row.kind.startsWith(PARK_KIND_PREFIX)
+						? "page_no_fleet"
+						: "page",
 			graceMs: Number.isFinite(graceEnv) && graceEnv > 0 ? graceEnv : undefined,
 			// Per-project override (detection.lead_grace_ms in the project's
 			// CANONICAL .flywheel/config.yaml — loaded once at boot).
 			graceMsFor: (row) => {
+				if (row.kind.startsWith(PARK_KIND_PREFIX)) {
+					return parkFounderGraceMs();
+				}
 				const session = store.getSession(row.target_key);
 				return session
 					? detectionGraceByProject.get(session.project_name)
@@ -6114,6 +6172,12 @@ export async function startBridge(
 			fn4OverdueMs: defaultGapThresholds(process.env).unconsumedMs,
 		});
 	};
+	const parkWatchTick = (): Promise<void> =>
+		runParkWatch({
+			store,
+			commDbPathForProject: defaultGetCommDbPath,
+			notify: notifyDetectionEpisode,
+		});
 
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
@@ -6121,6 +6185,26 @@ export async function startBridge(
 		store,
 		runtimeRegistry: registry,
 		ensureShipRelevantDiff,
+		onDeliveryReconcileTick: () => leadEventDelivery.reconcile(),
+		onParkWatchTick: parkWatchTick,
+		parkWatchEveryNTicks: (() => {
+			const n = Number.parseInt(
+				process.env.FLYWHEEL_PARK_WATCH_EVERY_N_TICKS ?? "",
+				10,
+			);
+			return Number.isFinite(n) && n > 0 ? n : undefined;
+		})(),
+		// FLY-1279 B2: the holder is populated after GatePoller construction;
+		// periodic recovery and boot reconcile share the coordinator's single-flight.
+		onQaReconcileTick: () =>
+			autoQaCoordinatorHolder.current?.sweepOrphanedQaRecords(),
+		qaReconcileEveryNTicks: (() => {
+			const n = Number.parseInt(
+				process.env.FLYWHEEL_QA_RECONCILE_EVERY_N_TICKS ?? "",
+				10,
+			);
+			return Number.isFinite(n) && n > 0 ? n : undefined;
+		})(),
 		// FLY-1048 (A6): gap-scan piggyback (zero new timer; env-gated inside).
 		onGapScanTick: gapScanTick,
 		gapScanEveryNTicks: (() => {
@@ -6322,6 +6406,55 @@ export async function startBridge(
 		// dirs the live Bridge drainer reads.
 		...resolveAlertDirsFromEnv(process.env),
 	});
+	deliveryDeadLetterAlertHolder.current = createLeadEventDeadLetterHandler({
+		pageFounder: detectionPageFounder,
+		mirror: async (row) => {
+			let payload: Record<string, unknown> = {};
+			let route: Record<string, unknown> = {};
+			try {
+				payload = JSON.parse(row.payload) as Record<string, unknown>;
+			} catch {}
+			try {
+				route = row.routing_snapshot
+					? (JSON.parse(row.routing_snapshot) as Record<string, unknown>)
+					: {};
+			} catch {}
+			const projectName = String(
+				route.projectName ?? payload.project_name ?? "flywheel",
+			);
+			const leadId = row.ack_owner_lead_id ?? row.lead_id;
+			await leadAlertNotifier.alert({
+				leadId,
+				projectName,
+				eventId: `delivery-dead-letter:${row.seq}`,
+				eventType: "delivery_dead_letter",
+				title: `Lead delivery exhausted — event #${row.seq}`,
+				body:
+					`Bridge exhausted bounded delivery for ${row.event_type} (${row.event_id}). ` +
+					`Issue: ${String(payload.issue_identifier ?? payload.issue_id ?? "unknown")}; ` +
+					`owner: ${leadId}. Founder intervention is required.`,
+				severity: "severe",
+				sessionKey: row.session_key,
+			});
+		},
+	});
+	if (deliverySecretBootError) {
+		const fallbackProject =
+			projects.find((project) => project.projectName === "flywheel") ??
+			projects[0];
+		const fallbackLead = fallbackProject?.leads[0];
+		if (fallbackProject && fallbackLead) {
+			void leadAlertNotifier.alert({
+				leadId: fallbackLead.agentId,
+				projectName: fallbackProject.projectName,
+				eventId: "delivery-secret-unavailable",
+				eventType: "delivery_dead_letter",
+				title: "Lead delivery ACK secret unavailable",
+				body: `${deliverySecretBootError}. ACK-cohort work is paused; legacy ACK-exempt delivery remains available.`,
+				severity: "severe",
+			});
+		}
+	}
 
 	// FLY-907: build the unified issue-display refresher. The holder is read
 	// late-bound by EVERY trigger surface (applyTransition hook,
@@ -6941,6 +7074,36 @@ export async function startBridge(
 								session.issue_identifier ?? session.issue_id
 							}`,
 							body: truthfulBody,
+							severity: "warning",
+							sessionKey: session.execution_id,
+						});
+					},
+					// FLY-1279 B2: dedicated, head-stable takeover alert. This path is
+					// selected instead of (never in addition to) three_stage_stuck.
+					alertWorktreeTakeoverFailure: async ({ session, reason }) => {
+						const projectName = session.project_name ?? "";
+						let leadId: string | undefined;
+						try {
+							leadId = resolveLeadForIssue(
+								projects,
+								projectName,
+								parseJsonStringArray(
+									store.getSession(session.execution_id)?.issue_labels,
+								),
+							).lead.agentId;
+						} catch {
+							console.error(
+								`[three-stage] takeover failure (no lead): ${reason}`,
+							);
+							return;
+						}
+						await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
+							leadId,
+							projectName,
+							eventId: `three-stage-takeover:${session.execution_id}`,
+							eventType: "three_stage_takeover_failed",
+							title: `Three-stage worktree takeover failed — ${session.issue_identifier ?? session.issue_id}`,
+							body: reason,
 							severity: "warning",
 							sessionKey: session.execution_id,
 						});

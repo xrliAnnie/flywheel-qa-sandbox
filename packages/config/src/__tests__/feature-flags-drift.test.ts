@@ -41,6 +41,7 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_RUNNER_BACKEND_ID: "context: runner backend id",
 	FLYWHEEL_RUNNER_VENDOR_ID: "context: runner vendor id",
 	FLYWHEEL_AGENT_BACKEND: "context: agent backend",
+	FLYWHEEL_LEAD_ID: "context: owning Lead id",
 	FLYWHEEL_RUNNER_START_POINT: "context: runner start point",
 	FLYWHEEL_FOUNDER_USER_ID: "context: founder discord id",
 	FLYWHEEL_FOUNDER_DISCORD_USER_ID: "context: founder discord id (alt)",
@@ -204,6 +205,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: cron stale-blocker TTL minutes (FLY-742)",
 	FLYWHEEL_THREE_STAGE_MAX_FIX_ROUNDS:
 		"tuning knob: three-stage QA fix-loop round cap, default 3 (FLY-859)",
+	FLYWHEEL_QA_RECONCILE_EVERY_N_TICKS:
+		"tuning knob: dead auto-QA recovery reconcile cadence (FLY-1279 D3b)",
 	// FLY-927 infra-alert ticket-queue rollout levers (all default-off = current
 	// behavior; ops-flipped in ~/.flywheel/.env + Bridge restart, NOT founder
 	// dashboard toggles yet — same class as the internal ops levers above). When

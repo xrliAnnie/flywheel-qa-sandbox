@@ -117,6 +117,12 @@ export interface IRetryDispatcher {
 export interface StartRequest {
 	issueId: string;
 	projectName: string;
+	/**
+	 * FLY-1279 B2: durable recovery successor id. The coordinator persists this
+	 * before dispatch so a crash can adopt/re-drive the same physical launch.
+	 * Absent keeps the fresh-start random UUID behavior.
+	 */
+	successorExecutionId?: string;
 	leadId?: string;
 	/** FLY-24: Pre-fetched issue title from runs-route Linear pre-flight */
 	issueTitle?: string;
@@ -252,6 +258,8 @@ export interface StartResult {
 
 export interface IStartDispatcher {
 	start(req: StartRequest): Promise<StartResult>;
+	/** FLY-1279: fail-closed recovery gate; production RunDispatcher implements it. */
+	hasInflightForRole?(issueId: string, role: string): boolean;
 	/** Current count of inflight (dispatched but not yet completed) executions */
 	getInflightCount(): number;
 	/**

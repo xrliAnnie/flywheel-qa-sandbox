@@ -210,6 +210,33 @@ describe("Event route", () => {
 		expect(session!.last_error).toBe("deployment timeout");
 	});
 
+	it("FLY-1279: HTTP session_failed persists goal_blocked as blocked with its real reason", async () => {
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_type: "session_failed",
+					payload: {
+						error: "legacy error",
+						failure: {
+							failureKind: "goal_blocked",
+							failureReason: "goal ended non-complete: blocked",
+						},
+					},
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		expect(session?.status).toBe("blocked");
+		expect(session?.last_error).toBe("goal ended non-complete: blocked");
+	});
+
 	it("POST /events with duplicate event_id returns ok + duplicate", async () => {
 		const event = makeEvent({ event_id: "dup-1" });
 

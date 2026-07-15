@@ -7,6 +7,12 @@ import {
 	crossFamilyReviewSatisfied,
 } from "flywheel-config";
 import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
+import type { HookPayload } from "./bridge/hook-payload.js";
+import {
+	ackPolicyForLeadEvent,
+	type LeadEventAckPolicy,
+	routingSnapshotForLeadEvent,
+} from "./bridge/lead-event-ack-policy.js";
 import type { LeadNudgeRow } from "./bridge/lead-pending-escalation.js";
 import { findingKey as deriveReviewFindingKey } from "./bridge/review-verdict-policy.js";
 import {
@@ -747,6 +753,7 @@ export interface RetryDispatchIntent {
  *  - failed     — QA verdict FAIL → routed back to implementer (founder NOT notified)
  *  - superseded — a newer reviewed head opened a fresh record; this one is dead
  *  - stuck      — spawn failed or QA died without a verdict → Lead-only pipeline error
+ *  - retry_pending / retry_starting — a dead QA is being clean-recovered once
  */
 export interface AutoQaRecord {
 	parent_execution_id: string;
@@ -779,6 +786,8 @@ export interface AutoQaRecord {
 	status:
 		| "running"
 		| "awaiting_retest"
+		| "retry_pending"
+		| "retry_starting"
 		| "passed"
 		| "failed"
 		| "superseded"
@@ -795,6 +804,12 @@ export interface AutoQaRecord {
 	 * retest wake never silently strands the founder gate.
 	 */
 	retest_wake_pending_at?: string;
+	/** FLY-1279: bounded automatic recovery. At most one replacement QA launch. */
+	auto_retry_count: number;
+	/** Time the dead-QA CAS durably claimed the retry episode. */
+	retry_intent_at?: string;
+	/** Pre-bound successor execution id, persisted before dispatcher.start(). */
+	retry_attempt_id?: string;
 }
 
 /** Bridge-owned classification of the exact PR diff for one candidate head. */
@@ -1620,6 +1635,22 @@ export class StateStore {
 				delivered_at TEXT,
 				delivery_attempts INTEGER NOT NULL DEFAULT 0,
 				last_delivery_error TEXT,
+				ack_required INTEGER NOT NULL DEFAULT 0,
+				ack_policy TEXT,
+				ack_protocol_version INTEGER,
+				ack_deadline_at TEXT,
+				acked_at TEXT,
+				dead_letter_pending_at TEXT,
+				dead_lettered_at TEXT,
+				ack_token_valid_until TEXT,
+				ack_token_consumed_at TEXT,
+				ingress_disposed_at TEXT,
+				routing_snapshot TEXT,
+				ack_owner_lead_id TEXT,
+				ack_owner_epoch INTEGER NOT NULL DEFAULT 0,
+				pending_delivery_reason TEXT CHECK(pending_delivery_reason IN ('owner_transfer','secret_rotation')),
+				page_claim_token TEXT,
+				page_claim_lease_expires_at TEXT,
 				created_at TEXT NOT NULL DEFAULT (datetime('now'))
 			)
 		`);
@@ -1629,6 +1660,41 @@ export class StateStore {
 		this.db.run(
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_events_dedup ON lead_events(lead_id, event_id)",
 		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS lead_event_delivery_attempts (
+				attempt_id TEXT PRIMARY KEY,
+				event_seq INTEGER NOT NULL REFERENCES lead_events(seq),
+				attempt_no INTEGER NOT NULL,
+				kind TEXT NOT NULL CHECK(kind IN ('initial','reminder')),
+				reason TEXT NOT NULL CHECK(reason IN ('initial','ack_timeout','owner_transfer','secret_rotation')),
+				counts_toward_redelivery INTEGER NOT NULL CHECK(counts_toward_redelivery IN (0,1)),
+				claim_token TEXT NOT NULL,
+				owner_epoch_at_claim INTEGER NOT NULL,
+				secret_id_at_claim TEXT NOT NULL,
+				reclaim_count INTEGER NOT NULL DEFAULT 0,
+				last_reclaimed_at TEXT,
+				lease_expires_at TEXT NOT NULL,
+				claimed_at TEXT NOT NULL,
+				pushed_at TEXT,
+				finalized_at TEXT,
+				outcome TEXT CHECK(outcome IN ('pushed','failed')),
+				last_error TEXT,
+				retired_at TEXT,
+				UNIQUE(event_seq, attempt_no)
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_lead_delivery_attempt_open ON lead_event_delivery_attempts(event_seq, finalized_at, retired_at, lease_expires_at)",
+		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS delivery_secret_state (
+				singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+				state TEXT NOT NULL CHECK(state IN ('PREPARED','ACTIVE')),
+				active_secret_id TEXT,
+				prepared_secret_id TEXT,
+				updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+			)
+		`);
 
 		// FLY-1018: ship-approval-request outbox. Each row is the durable
 		// record of a gemini-agent ship REQUEST; it is inserted in the SAME
@@ -1920,6 +1986,9 @@ export class StateStore {
 				completed_at TEXT,
 				notified_at TEXT,
 				retest_wake_pending_at TEXT,
+				auto_retry_count INTEGER NOT NULL DEFAULT 0,
+				retry_intent_at TEXT,
+				retry_attempt_id TEXT,
 				PRIMARY KEY (parent_execution_id, target_pr_head_sha)
 			)
 		`);
@@ -3387,6 +3456,23 @@ export class StateStore {
 		return rows;
 	}
 
+	/** FLY-1279 D2: bounded semantic park inventory (includes truthful blocked). */
+	listParkWatchSessions(): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE status IN ('running','awaiting_review','approved_to_ship','blocked')
+			 ORDER BY execution_id`,
+		);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
 	/**
 	 * FLY-793 (Codex R1+R2): a same-issue session that OCCUPIES the shared branch-B
 	 * worktree — so a fresh three-stage re-dispatch here must be rejected, or it
@@ -4355,6 +4441,9 @@ export class StateStore {
 			notified_at: (row.notified_at as string) ?? undefined,
 			retest_wake_pending_at:
 				(row.retest_wake_pending_at as string) ?? undefined,
+			auto_retry_count: Number(row.auto_retry_count ?? 0),
+			retry_intent_at: (row.retry_intent_at as string) ?? undefined,
+			retry_attempt_id: (row.retry_attempt_id as string) ?? undefined,
 		};
 	}
 
@@ -4398,6 +4487,142 @@ export class StateStore {
 			[qaExecutionId, parentExecutionId, targetPrHeadSha],
 		);
 		this.save();
+	}
+
+	/**
+	 * FLY-1279 B2: ownership is broader than the recovery CAS. The same QA exec
+	 * may appear on historical rows, so prefer a hold-active owner and use a
+	 * deterministic newest-row tiebreak. Callers use this only to decide whether
+	 * a failure belongs to auto-QA; state transitions remain separately guarded.
+	 */
+	findAutoQaOwnershipByQaExec(qaExecutionId: string): AutoQaRecord | undefined {
+		const stmt = this.db.prepare(
+			`SELECT * FROM auto_qa_record
+			  WHERE qa_execution_id = ?
+			  ORDER BY CASE WHEN status IN
+			    ('running','awaiting_retest','retry_pending','retry_starting','stuck')
+			    THEN 0 ELSE 1 END,
+			    started_at DESC, rowid DESC
+			  LIMIT 1`,
+		);
+		stmt.bind([qaExecutionId]);
+		let rec: AutoQaRecord | undefined;
+		if (stmt.step()) {
+			rec = this.rowToAutoQaRecord(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return rec;
+	}
+
+	/**
+	 * Claim a dead running QA exactly once. The first death enters retry_pending;
+	 * a replacement death after the one-shot budget is consumed becomes stuck.
+	 */
+	markDeadAutoQaExecution(
+		parentExecutionId: string,
+		targetPrHeadSha: string,
+		deadQaExecutionId: string,
+	): "retry_pending" | "exhausted" | "noop" {
+		this.db.run(
+			`UPDATE auto_qa_record
+			    SET status = CASE WHEN auto_retry_count = 0
+			                      THEN 'retry_pending' ELSE 'stuck' END,
+			        auto_retry_count = CASE WHEN auto_retry_count = 0
+			                                THEN 1 ELSE auto_retry_count END,
+			        retry_intent_at = CASE WHEN auto_retry_count = 0
+			                               THEN datetime('now') ELSE retry_intent_at END,
+			        completed_at = CASE WHEN auto_retry_count = 0
+			                            THEN NULL ELSE datetime('now') END
+			  WHERE parent_execution_id = ?
+			    AND target_pr_head_sha = ?
+			    AND qa_execution_id = ?
+			    AND status = 'running'`,
+			[parentExecutionId, targetPrHeadSha, deadQaExecutionId],
+		);
+		const changed = this.db.getRowsModified() > 0;
+		this.save();
+		if (!changed) return "noop";
+		return this.getAutoQaRecord(parentExecutionId, targetPrHeadSha)?.status ===
+			"retry_pending"
+			? "retry_pending"
+			: "exhausted";
+	}
+
+	/** Initial dispatcher.start() failed before a QA execution id was bound. */
+	claimAutoQaRetryAfterSpawnFailure(
+		parentExecutionId: string,
+		targetPrHeadSha: string,
+	): boolean {
+		this.db.run(
+			`UPDATE auto_qa_record
+			    SET status = 'retry_pending', auto_retry_count = 1,
+			        retry_intent_at = datetime('now'), completed_at = NULL
+			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?
+			    AND status = 'running' AND qa_execution_id IS NULL
+			    AND auto_retry_count = 0`,
+			[parentExecutionId, targetPrHeadSha],
+		);
+		const claimed = this.db.getRowsModified() > 0;
+		this.save();
+		return claimed;
+	}
+
+	/** Persist the pre-bound successor id before the first async launch effect. */
+	claimAutoQaRetryLaunch(
+		parentExecutionId: string,
+		targetPrHeadSha: string,
+		retryAttemptId: string,
+	): boolean {
+		this.db.run(
+			`UPDATE auto_qa_record
+			    SET status = 'retry_starting', retry_attempt_id = ?
+			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?
+			    AND status = 'retry_pending'`,
+			[retryAttemptId, parentExecutionId, targetPrHeadSha],
+		);
+		const claimed = this.db.getRowsModified() > 0;
+		this.save();
+		return claimed;
+	}
+
+	/** Bind the launched successor only when the durable attempt still owns it. */
+	completeAutoQaRetryLaunch(
+		parentExecutionId: string,
+		targetPrHeadSha: string,
+		retryAttemptId: string,
+		qaExecutionId: string,
+	): boolean {
+		this.db.run(
+			`UPDATE auto_qa_record
+			    SET status = 'running', qa_execution_id = ?, completed_at = NULL,
+			        retest_wake_pending_at = NULL
+			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?
+			    AND status = 'retry_starting' AND retry_attempt_id = ?`,
+			[qaExecutionId, parentExecutionId, targetPrHeadSha, retryAttemptId],
+		);
+		const completed = this.db.getRowsModified() > 0;
+		this.save();
+		return completed;
+	}
+
+	/** Definite dispatcher failure exhausts the recovery episode fail-closed. */
+	failAutoQaRetryLaunch(
+		parentExecutionId: string,
+		targetPrHeadSha: string,
+		retryAttemptId: string,
+	): boolean {
+		this.db.run(
+			`UPDATE auto_qa_record
+			    SET status = 'stuck', completed_at = datetime('now')
+			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?
+			    AND status = 'retry_starting' AND retry_attempt_id = ?`,
+			[parentExecutionId, targetPrHeadSha, retryAttemptId],
+		);
+		const failed = this.db.getRowsModified() > 0;
+		this.save();
+		return failed;
 	}
 
 	/**
@@ -4468,14 +4693,15 @@ export class StateStore {
 		this.save();
 	}
 
-	/** Mark all of a parent's still-running records superseded EXCEPT keepSha. */
+	/** Mark all of a parent's still-active records superseded EXCEPT keepSha. */
 	supersedeOtherAutoQaRecords(
 		parentExecutionId: string,
 		keepSha: string,
 	): void {
 		this.db.run(
 			`UPDATE auto_qa_record SET status = 'superseded'
-			  WHERE parent_execution_id = ? AND target_pr_head_sha != ? AND status = 'running'`,
+			  WHERE parent_execution_id = ? AND target_pr_head_sha != ?
+			    AND status IN ('running','awaiting_retest','retry_pending','retry_starting','stuck')`,
 			[parentExecutionId, keepSha],
 		);
 		this.save();
@@ -5757,6 +5983,24 @@ export class StateStore {
 		return out;
 	}
 
+	/** FLY-1279 D2: all records that can semantically hold an implementer. */
+	listParkWatchAutoQaRecords(): AutoQaRecord[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM auto_qa_record
+			 WHERE status IN
+			  ('running','awaiting_retest','retry_pending','retry_starting','stuck')
+			 ORDER BY started_at`,
+		);
+		const out: AutoQaRecord[] = [];
+		while (stmt.step()) {
+			out.push(
+				this.rowToAutoQaRecord(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return out;
+	}
+
 	/** Records that PASSED QA but whose founder ship-ready notification was
 	 * never confirmed (notified_at IS NULL) — reconcile re-notifies these so a
 	 * crash between status=passed and the notification can't strand the change. */
@@ -5880,7 +6124,7 @@ export class StateStore {
 
 	/**
 	 * FLY-846 gate ③: the issue-level active-QA lookup. Returns records in a
-	 * non-terminal QA state (running / awaiting_retest / stuck) whose PARENT
+	 * non-terminal QA state (running / awaiting_retest / recovery / stuck) whose PARENT
 	 * issue matches any of the given keys (UUID/identifier mixed-form), excluding
 	 * the caller's own parent execution (same-parent records are handled by the
 	 * owner-record branch). `passed`/`failed`/`superseded` never block a new QA.
@@ -5894,7 +6138,7 @@ export class StateStore {
 		const placeholders = keys.map(() => "?").join(",");
 		const stmt = this.db.prepare(
 			`SELECT * FROM auto_qa_record
-			  WHERE status IN ('running','awaiting_retest','stuck')
+			  WHERE status IN ('running','awaiting_retest','retry_pending','retry_starting','stuck')
 			    AND issue_id IN (${placeholders})
 			    AND parent_execution_id != ?
 			  ORDER BY started_at, rowid`,
@@ -7200,11 +7444,40 @@ export class StateStore {
 		payload: string,
 		sessionKey?: string,
 	): number {
+		let hookPayload: HookPayload | null = null;
+		try {
+			const parsed = JSON.parse(payload) as unknown;
+			if (parsed && typeof parsed === "object") {
+				hookPayload = parsed as HookPayload;
+			}
+		} catch {
+			// Non-HookPayload journal rows remain ACK-exempt for byte compatibility.
+		}
+		const ackPolicy = hookPayload
+			? ackPolicyForLeadEvent(eventType, hookPayload)
+			: null;
+		const routingSnapshot = hookPayload
+			? JSON.stringify(routingSnapshotForLeadEvent(leadId, hookPayload))
+			: null;
 		try {
 			this.db.run(
-				`INSERT INTO lead_events (lead_id, event_id, event_type, payload, session_key)
-				 VALUES (?, ?, ?, ?, ?)`,
-				[leadId, eventId, eventType, payload, sessionKey ?? null],
+				`INSERT INTO lead_events (
+				   lead_id, event_id, event_type, payload, session_key,
+				   ack_required, ack_policy, ack_protocol_version,
+				   routing_snapshot, ack_owner_lead_id
+				 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					leadId,
+					eventId,
+					eventType,
+					payload,
+					sessionKey ?? null,
+					ackPolicy ? 1 : 0,
+					ackPolicy,
+					ackPolicy ? 1 : null,
+					routingSnapshot,
+					leadId,
+				],
 			);
 		} catch (err) {
 			// UNIQUE constraint → duplicate
@@ -7391,6 +7664,479 @@ export class StateStore {
 			[leadId, eventId],
 		);
 		return rows.length > 0 && (rows[0]?.values?.length ?? 0) > 0;
+	}
+
+	getLeadEventBySeq(seq: number): LeadEventRow | null {
+		const row = this.db.raw
+			.prepare("SELECT * FROM lead_events WHERE seq = ?")
+			.get(seq) as Record<string, unknown> | undefined;
+		return row ? mapLeadEventRow(row) : null;
+	}
+
+	listOpenAckLeadEvents(limit = 100): LeadEventRow[] {
+		const rows = this.db.raw
+			.prepare(
+				`SELECT * FROM lead_events
+				 WHERE ack_required = 1 AND ack_protocol_version IS NOT NULL
+				   AND acked_at IS NULL AND dead_lettered_at IS NULL
+				 ORDER BY seq LIMIT ?`,
+			)
+			.all(limit) as Record<string, unknown>[];
+		return rows.map(mapLeadEventRow);
+	}
+
+	listLateAckLeadEvents(nowIso: string, limit = 100): LeadEventRow[] {
+		const rows = this.db.raw
+			.prepare(
+				`SELECT * FROM lead_events
+				 WHERE ack_required = 1 AND ack_protocol_version IS NOT NULL
+				   AND acked_at IS NULL AND dead_lettered_at IS NOT NULL
+				   AND ack_token_valid_until > ?
+				 ORDER BY seq LIMIT ?`,
+			)
+			.all(nowIso, limit) as Record<string, unknown>[];
+		return rows.map(mapLeadEventRow);
+	}
+
+	listExpiredAckIngressRows(nowIso: string, limit = 100): LeadEventRow[] {
+		const rows = this.db.raw
+			.prepare(
+				`SELECT * FROM lead_events
+				 WHERE ack_required = 1 AND dead_lettered_at IS NOT NULL
+				   AND ack_token_valid_until <= ? AND ingress_disposed_at IS NULL
+				 ORDER BY seq LIMIT ?`,
+			)
+			.all(nowIso, limit) as Record<string, unknown>[];
+		return rows.map(mapLeadEventRow);
+	}
+
+	markLeadEventIngressDisposed(seq: number, nowIso: string): boolean {
+		return (
+			this.db.raw
+				.prepare(
+					`UPDATE lead_events SET ingress_disposed_at = ?
+					 WHERE seq = ? AND dead_lettered_at IS NOT NULL
+					   AND ingress_disposed_at IS NULL`,
+				)
+				.run(nowIso, seq).changes === 1
+		);
+	}
+
+	listLeadEventDeliveryAttempts(
+		eventSeq: number,
+	): LeadEventDeliveryAttemptRow[] {
+		return this.db.raw
+			.prepare(
+				`SELECT * FROM lead_event_delivery_attempts
+				 WHERE event_seq = ? ORDER BY attempt_no`,
+			)
+			.all(eventSeq) as LeadEventDeliveryAttemptRow[];
+	}
+
+	setActiveDeliverySecretId(secretId: string): void {
+		this.db.transaction(() => {
+			const current = this.getActiveDeliverySecretId();
+			if (current === secretId) return;
+			this.db.run(
+				`INSERT INTO delivery_secret_state
+				   (singleton, state, active_secret_id, prepared_secret_id, updated_at)
+				 VALUES (1, 'ACTIVE', ?, NULL, datetime('now'))
+				 ON CONFLICT(singleton) DO UPDATE SET
+				   state = 'ACTIVE', active_secret_id = excluded.active_secret_id,
+				   prepared_secret_id = NULL, updated_at = datetime('now')`,
+				[secretId],
+			);
+			if (current) this.requeueLeadEventsForSecretRotation();
+		});
+	}
+
+	prepareDeliverySecret(secretId: string): void {
+		this.db.run(
+			`INSERT INTO delivery_secret_state
+			   (singleton, state, active_secret_id, prepared_secret_id, updated_at)
+			 VALUES (1, 'PREPARED', NULL, ?, datetime('now'))
+			 ON CONFLICT(singleton) DO UPDATE SET
+			   state = 'PREPARED', prepared_secret_id = excluded.prepared_secret_id,
+			   updated_at = datetime('now')`,
+			[secretId],
+		);
+	}
+
+	activatePreparedDeliverySecret(secretId: string): boolean {
+		let activated = false;
+		this.db.transaction(() => {
+			const marker = this.getDeliverySecretState();
+			const result = this.db.raw
+				.prepare(
+					`UPDATE delivery_secret_state SET
+					   state = 'ACTIVE', active_secret_id = ?, prepared_secret_id = NULL,
+					   updated_at = datetime('now')
+					 WHERE singleton = 1 AND state = 'PREPARED'
+					   AND prepared_secret_id = ?`,
+				)
+				.run(secretId, secretId);
+			activated = result.changes === 1;
+			if (
+				activated &&
+				marker?.activeSecretId &&
+				marker.activeSecretId !== secretId
+			) {
+				this.requeueLeadEventsForSecretRotation();
+			}
+		});
+		return activated;
+	}
+
+	private requeueLeadEventsForSecretRotation(): void {
+		this.db.run(
+			`UPDATE lead_events SET
+			   pending_delivery_reason = 'secret_rotation',
+			   ack_deadline_at = datetime('now')
+			 WHERE ack_required = 1 AND acked_at IS NULL
+			   AND dead_lettered_at IS NULL`,
+		);
+		this.db.run(
+			`UPDATE lead_event_delivery_attempts SET retired_at = datetime('now')
+			 WHERE retired_at IS NULL
+			   AND event_seq IN (
+			     SELECT seq FROM lead_events
+			      WHERE pending_delivery_reason = 'secret_rotation'
+			   )`,
+		);
+	}
+
+	transferLeadEventAckOwner(
+		seq: number,
+		newLeadId: string,
+		nowIso: string,
+	): boolean {
+		let transferred = false;
+		this.db.transaction(() => {
+			const result = this.db.raw
+				.prepare(
+					`UPDATE lead_events SET
+					   ack_owner_lead_id = ?, ack_owner_epoch = ack_owner_epoch + 1,
+					   pending_delivery_reason = 'owner_transfer', ack_deadline_at = ?
+					 WHERE seq = ? AND ack_required = 1 AND acked_at IS NULL
+					   AND dead_lettered_at IS NULL AND ack_owner_lead_id <> ?`,
+				)
+				.run(newLeadId, nowIso, seq, newLeadId);
+			if (result.changes !== 1) return;
+			this.db.raw
+				.prepare(
+					`UPDATE lead_event_delivery_attempts SET retired_at = ?
+					 WHERE event_seq = ? AND retired_at IS NULL`,
+				)
+				.run(nowIso, seq);
+			transferred = true;
+		});
+		return transferred;
+	}
+
+	getDeliverySecretState(): DeliverySecretState | null {
+		const row = this.db.raw
+			.prepare(
+				`SELECT state, active_secret_id, prepared_secret_id
+				 FROM delivery_secret_state WHERE singleton = 1`,
+			)
+			.get() as
+			| {
+					state: "PREPARED" | "ACTIVE";
+					active_secret_id: string | null;
+					prepared_secret_id: string | null;
+			  }
+			| undefined;
+		return row
+			? {
+					state: row.state,
+					activeSecretId: row.active_secret_id,
+					preparedSecretId: row.prepared_secret_id,
+				}
+			: null;
+	}
+
+	getActiveDeliverySecretId(): string | null {
+		const row = this.db.raw
+			.prepare(
+				"SELECT active_secret_id FROM delivery_secret_state WHERE singleton = 1 AND state = 'ACTIVE'",
+			)
+			.get() as { active_secret_id?: string } | undefined;
+		return row?.active_secret_id ?? null;
+	}
+
+	claimLeadEventDeliveryAttempt(input: {
+		eventSeq: number;
+		reason: LeadEventDeliveryReason;
+		secretId: string;
+		nowIso: string;
+		leaseExpiresIso: string;
+	}): LeadEventDeliveryAttemptRow | null {
+		let claimed: LeadEventDeliveryAttemptRow | null = null;
+		this.db.transaction(() => {
+			const event = this.getLeadEventBySeq(input.eventSeq);
+			if (
+				!event?.ack_required ||
+				event.acked_at ||
+				event.dead_lettered_at ||
+				!event.ack_owner_lead_id ||
+				this.getActiveDeliverySecretId() !== input.secretId
+			) {
+				return;
+			}
+
+			const existing = this.db.raw
+				.prepare(
+					`SELECT * FROM lead_event_delivery_attempts
+					 WHERE event_seq = ? AND finalized_at IS NULL AND retired_at IS NULL
+					 ORDER BY attempt_no DESC LIMIT 1`,
+				)
+				.get(input.eventSeq) as LeadEventDeliveryAttemptRow | undefined;
+			const claimToken = randomUUID();
+			if (existing) {
+				if (existing.lease_expires_at > input.nowIso) return;
+				const result = this.db.raw
+					.prepare(
+						`UPDATE lead_event_delivery_attempts SET
+						   claim_token = ?, lease_expires_at = ?,
+						   reclaim_count = reclaim_count + 1,
+						   last_reclaimed_at = ?
+						 WHERE attempt_id = ? AND claim_token = ?
+						   AND finalized_at IS NULL AND retired_at IS NULL
+						   AND lease_expires_at <= ?`,
+					)
+					.run(
+						claimToken,
+						input.leaseExpiresIso,
+						input.nowIso,
+						existing.attempt_id,
+						existing.claim_token,
+						input.nowIso,
+					);
+				if (result.changes !== 1) return;
+				claimed = this.db.raw
+					.prepare(
+						"SELECT * FROM lead_event_delivery_attempts WHERE attempt_id = ?",
+					)
+					.get(existing.attempt_id) as LeadEventDeliveryAttemptRow;
+				return;
+			}
+
+			const maxRow = this.db.raw
+				.prepare(
+					"SELECT COALESCE(MAX(attempt_no), -1) AS n FROM lead_event_delivery_attempts WHERE event_seq = ?",
+				)
+				.get(input.eventSeq) as { n: number };
+			const attemptNo = Number(maxRow.n) + 1;
+			const attemptId = randomUUID();
+			const kind = input.reason === "initial" ? "initial" : "reminder";
+			const countsTowardRedelivery = input.reason === "ack_timeout" ? 1 : 0;
+			this.db.raw
+				.prepare(
+					`INSERT INTO lead_event_delivery_attempts (
+					   attempt_id, event_seq, attempt_no, kind, reason,
+					   counts_toward_redelivery, claim_token, owner_epoch_at_claim,
+					   secret_id_at_claim, lease_expires_at, claimed_at
+					 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				)
+				.run(
+					attemptId,
+					input.eventSeq,
+					attemptNo,
+					kind,
+					input.reason,
+					countsTowardRedelivery,
+					claimToken,
+					event.ack_owner_epoch ?? 0,
+					input.secretId,
+					input.leaseExpiresIso,
+					input.nowIso,
+				);
+			claimed = this.db.raw
+				.prepare(
+					"SELECT * FROM lead_event_delivery_attempts WHERE attempt_id = ?",
+				)
+				.get(attemptId) as LeadEventDeliveryAttemptRow;
+		});
+		return claimed;
+	}
+
+	finalizeLeadEventDeliveryAttempt(input: {
+		claimToken: string;
+		outcome: "pushed" | "failed";
+		nowIso: string;
+		ackDeadlineIso?: string;
+		error?: string;
+	}): boolean {
+		let finalized = false;
+		this.db.transaction(() => {
+			const attempt = this.db.raw
+				.prepare(
+					`SELECT a.*, e.ack_owner_epoch, e.acked_at, e.dead_lettered_at,
+					        s.active_secret_id
+					 FROM lead_event_delivery_attempts a
+					 JOIN lead_events e ON e.seq = a.event_seq
+					 LEFT JOIN delivery_secret_state s ON s.singleton = 1
+					 WHERE a.claim_token = ? AND a.finalized_at IS NULL
+					   AND a.retired_at IS NULL`,
+				)
+				.get(input.claimToken) as
+				| (LeadEventDeliveryAttemptRow & {
+						ack_owner_epoch: number;
+						acked_at: string | null;
+						dead_lettered_at: string | null;
+						active_secret_id: string | null;
+				  })
+				| undefined;
+			if (
+				!attempt ||
+				attempt.acked_at ||
+				attempt.dead_lettered_at ||
+				attempt.owner_epoch_at_claim !== attempt.ack_owner_epoch ||
+				attempt.secret_id_at_claim !== attempt.active_secret_id
+			) {
+				return;
+			}
+
+			const attemptUpdate = this.db.raw
+				.prepare(
+					`UPDATE lead_event_delivery_attempts SET
+					   finalized_at = ?, outcome = ?,
+					   pushed_at = CASE WHEN ? = 'pushed' THEN ? ELSE pushed_at END,
+					   last_error = ?
+					 WHERE claim_token = ? AND finalized_at IS NULL AND retired_at IS NULL
+					   AND owner_epoch_at_claim = (
+					     SELECT ack_owner_epoch FROM lead_events
+					      WHERE seq = lead_event_delivery_attempts.event_seq
+					   )
+					   AND secret_id_at_claim = (
+					     SELECT active_secret_id FROM delivery_secret_state WHERE singleton = 1
+					   )`,
+				)
+				.run(
+					input.nowIso,
+					input.outcome,
+					input.outcome,
+					input.nowIso,
+					input.error ?? null,
+					input.claimToken,
+				);
+			if (attemptUpdate.changes !== 1) return;
+
+			const eventUpdate = this.db.raw
+				.prepare(
+					input.outcome === "pushed"
+						? `UPDATE lead_events SET
+						     delivered_at = COALESCE(delivered_at, ?),
+						     ack_deadline_at = ?, last_delivery_error = NULL,
+						     pending_delivery_reason = NULL
+						   WHERE seq = ? AND acked_at IS NULL AND dead_lettered_at IS NULL
+						     AND ack_owner_epoch = ?`
+						: `UPDATE lead_events SET last_delivery_error = ?
+						   WHERE seq = ? AND acked_at IS NULL AND dead_lettered_at IS NULL
+						     AND ack_owner_epoch = ?`,
+				)
+				.run(
+					...(input.outcome === "pushed"
+						? [
+								input.nowIso,
+								input.ackDeadlineIso ?? input.nowIso,
+								attempt.event_seq,
+								attempt.owner_epoch_at_claim,
+							]
+						: [
+								input.error ?? "delivery failed",
+								attempt.event_seq,
+								attempt.owner_epoch_at_claim,
+							]),
+				);
+			if (eventUpdate.changes !== 1) {
+				throw new Error(
+					"lead event finalizer fence changed during transaction",
+				);
+			}
+			finalized = true;
+		});
+		return finalized;
+	}
+
+	markLeadEventAcked(seq: number, nowIso: string): boolean {
+		let acked = false;
+		this.db.transaction(() => {
+			const result = this.db.raw
+				.prepare(
+					`UPDATE lead_events SET
+					   acked_at = ?, ack_token_consumed_at = ?
+					 WHERE seq = ? AND ack_required = 1 AND acked_at IS NULL
+					   AND (dead_lettered_at IS NULL OR ack_token_valid_until > ?)`,
+				)
+				.run(nowIso, nowIso, seq, nowIso);
+			if (result.changes !== 1) return;
+			this.db.raw
+				.prepare(
+					`UPDATE lead_event_delivery_attempts SET retired_at = ?
+					 WHERE event_seq = ? AND retired_at IS NULL`,
+				)
+				.run(nowIso, seq);
+			acked = true;
+		});
+		return acked;
+	}
+
+	markLeadEventDeadLetterPending(seq: number, nowIso: string): boolean {
+		return (
+			this.db.raw
+				.prepare(
+					`UPDATE lead_events SET dead_letter_pending_at = COALESCE(dead_letter_pending_at, ?)
+					 WHERE seq = ? AND ack_required = 1 AND acked_at IS NULL
+					   AND dead_lettered_at IS NULL`,
+				)
+				.run(nowIso, seq).changes === 1
+		);
+	}
+
+	claimLeadEventDeadLetterPage(input: {
+		seq: number;
+		claimToken: string;
+		nowIso: string;
+		leaseExpiresIso: string;
+	}): boolean {
+		return (
+			this.db.raw
+				.prepare(
+					`UPDATE lead_events SET
+					   page_claim_token = ?, page_claim_lease_expires_at = ?
+					 WHERE seq = ? AND dead_letter_pending_at IS NOT NULL
+					   AND acked_at IS NULL AND dead_lettered_at IS NULL
+					   AND (page_claim_token IS NULL OR page_claim_lease_expires_at <= ?)`,
+				)
+				.run(input.claimToken, input.leaseExpiresIso, input.seq, input.nowIso)
+				.changes === 1
+		);
+	}
+
+	markLeadEventDeadLetterConfirmed(input: {
+		seq: number;
+		claimToken: string;
+		nowIso: string;
+		ackTokenValidUntilIso: string;
+	}): boolean {
+		return (
+			this.db.raw
+				.prepare(
+					`UPDATE lead_events SET
+					   dead_lettered_at = ?, ack_token_valid_until = ?
+					 WHERE seq = ? AND page_claim_token = ?
+					   AND page_claim_lease_expires_at > ?
+					   AND acked_at IS NULL AND dead_lettered_at IS NULL`,
+				)
+				.run(
+					input.nowIso,
+					input.ackTokenValidUntilIso,
+					input.seq,
+					input.claimToken,
+					input.nowIso,
+				).changes === 1
+		);
 	}
 
 	// --- FLY-195: stuck-episode disposition receipts (plan §3.4) ---
@@ -7843,6 +8589,35 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-1279 D2: persist one positive semantic observation. The monotonic
+	 * counter makes gate-row-missing require two complete scans without relying
+	 * on process memory; notification ownership remains the normal NEW→
+	 * LEAD_NOTIFIED transition.
+	 */
+	observeParkCondition(input: {
+		targetKey: string;
+		kind: string;
+		episodeFingerprint: string;
+		issueId?: string | null;
+		firstDetectedAtMs: number;
+	}): DetectionEscalationRow {
+		this.upsertDetectionEscalation(input);
+		this.db.run(
+			`UPDATE detection_escalations SET attempts = attempts + 1
+			 WHERE target_key = ? AND kind = ? AND episode_fingerprint = ?
+			   AND status = 'NEW'`,
+			[input.targetKey, input.kind, input.episodeFingerprint],
+		);
+		const row = this.getDetectionEscalation(
+			input.targetKey,
+			input.kind,
+			input.episodeFingerprint,
+		);
+		if (!row) throw new Error("park observation failed to persist");
+		return row;
+	}
+
+	/**
 	 * Stamp LEAD_NOTIFIED. The FIRST notification timestamp wins on repeats so
 	 * a re-notify can never slide the founder-grace window forward. Only moves
 	 * NEW/LEAD_NOTIFIED rows (never regresses ACKED/terminal states).
@@ -7878,17 +8653,40 @@ export class StateStore {
 		// heartbeat can never see an event whose episode is still NEW.
 		let seq = 0;
 		let claimed = false;
+		let hookPayload: HookPayload | null = null;
+		try {
+			const parsed = JSON.parse(opts.payload) as unknown;
+			if (parsed && typeof parsed === "object") {
+				hookPayload = parsed as HookPayload;
+			}
+		} catch {
+			// Non-hook detection rows remain ACK-exempt.
+		}
+		const ackPolicy = hookPayload
+			? ackPolicyForLeadEvent(opts.eventType, hookPayload)
+			: null;
+		const routingSnapshot = hookPayload
+			? JSON.stringify(routingSnapshotForLeadEvent(opts.leadId, hookPayload))
+			: null;
 		this.db.transaction(() => {
 			try {
 				this.db.run(
-					`INSERT INTO lead_events (lead_id, event_id, event_type, payload, session_key)
-					 VALUES (?, ?, ?, ?, ?)`,
+					`INSERT INTO lead_events (
+					   lead_id, event_id, event_type, payload, session_key,
+					   ack_required, ack_policy, ack_protocol_version,
+					   routing_snapshot, ack_owner_lead_id
+					 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 					[
 						opts.leadId,
 						opts.eventId,
 						opts.eventType,
 						opts.payload,
 						opts.sessionKey ?? null,
+						ackPolicy ? 1 : 0,
+						ackPolicy,
+						ackPolicy ? 1 : null,
+						routingSnapshot,
+						opts.leadId,
 					],
 				);
 				const inserted = this.db.exec("SELECT last_insert_rowid()");
@@ -9178,23 +9976,55 @@ export class StateStore {
 
 	/** FLY-25: Migration for existing DBs that lack delivery_attempts/last_delivery_error columns. */
 	private migrateLeadEventsDeliveryColumns(): void {
-		try {
-			const info = this.db.exec("PRAGMA table_info(lead_events)");
-			if (info.length === 0) return;
-			const columns = info[0]!.values.map((row) => row[1] as string);
-			if (!columns.includes("delivery_attempts")) {
-				this.db.run(
-					"ALTER TABLE lead_events ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0",
-				);
-			}
-			if (!columns.includes("last_delivery_error")) {
-				this.db.run(
-					"ALTER TABLE lead_events ADD COLUMN last_delivery_error TEXT",
-				);
-			}
-		} catch {
-			// Table may not exist yet (first run) — CREATE TABLE will handle it
+		const info = this.db.exec("PRAGMA table_info(lead_events)");
+		if (info.length === 0) return;
+		const columns = info[0]!.values.map((row) => row[1] as string);
+		if (!columns.includes("delivery_attempts")) {
+			this.db.run(
+				"ALTER TABLE lead_events ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0",
+			);
 		}
+		if (!columns.includes("last_delivery_error")) {
+			this.db.run(
+				"ALTER TABLE lead_events ADD COLUMN last_delivery_error TEXT",
+			);
+		}
+		const additions: Array<[string, string]> = [
+			["ack_required", "INTEGER NOT NULL DEFAULT 0"],
+			["ack_policy", "TEXT"],
+			["ack_protocol_version", "INTEGER"],
+			["ack_deadline_at", "TEXT"],
+			["acked_at", "TEXT"],
+			["dead_letter_pending_at", "TEXT"],
+			["dead_lettered_at", "TEXT"],
+			["ack_token_valid_until", "TEXT"],
+			["ack_token_consumed_at", "TEXT"],
+			["ingress_disposed_at", "TEXT"],
+			["routing_snapshot", "TEXT"],
+			["ack_owner_lead_id", "TEXT"],
+			["ack_owner_epoch", "INTEGER NOT NULL DEFAULT 0"],
+			[
+				"pending_delivery_reason",
+				"TEXT CHECK(pending_delivery_reason IN ('owner_transfer','secret_rotation'))",
+			],
+			["page_claim_token", "TEXT"],
+			["page_claim_lease_expires_at", "TEXT"],
+		];
+		for (const [column, ddl] of additions) {
+			if (!columns.includes(column)) {
+				this.db.run(`ALTER TABLE lead_events ADD COLUMN ${column} ${ddl}`);
+			}
+		}
+		// Historical rows are ACK-exempt; only fill the mutable owner identity so
+		// observability and a future explicit transfer have a total value. Migration
+		// errors deliberately escape: starting with a half-migrated delivery journal
+		// would silently strand actionable events.
+		this.db.run(
+			"UPDATE lead_events SET ack_owner_lead_id = lead_id WHERE ack_owner_lead_id IS NULL",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_lead_events_ack_due ON lead_events(ack_required, acked_at, dead_lettered_at, ack_deadline_at)",
+		);
 	}
 
 	/** FLY-369: add archived_at to chat_threads on legacy DBs (idempotent). */
@@ -9309,6 +10139,16 @@ export class StateStore {
 				// FLY-752: durable retest-wake crash-recovery marker.
 				"retest_wake_pending_at",
 			]) {
+				if (!columns.includes(col)) {
+					this.db.run(`ALTER TABLE auto_qa_record ADD COLUMN ${col} TEXT`);
+				}
+			}
+			if (!columns.includes("auto_retry_count")) {
+				this.db.run(
+					"ALTER TABLE auto_qa_record ADD COLUMN auto_retry_count INTEGER NOT NULL DEFAULT 0",
+				);
+			}
+			for (const col of ["retry_intent_at", "retry_attempt_id"]) {
 				if (!columns.includes(col)) {
 					this.db.run(`ALTER TABLE auto_qa_record ADD COLUMN ${col} TEXT`);
 				}
@@ -13390,6 +14230,99 @@ export interface LeadEventRow {
 	created_at: string;
 	delivery_attempts?: number;
 	last_delivery_error?: string;
+	ack_required?: boolean;
+	ack_policy?: LeadEventAckPolicy;
+	ack_protocol_version?: number;
+	ack_deadline_at?: string;
+	acked_at?: string;
+	dead_letter_pending_at?: string;
+	dead_lettered_at?: string;
+	ack_token_valid_until?: string;
+	ack_token_consumed_at?: string;
+	ingress_disposed_at?: string;
+	routing_snapshot?: string;
+	ack_owner_lead_id?: string;
+	ack_owner_epoch?: number;
+	pending_delivery_reason?: "owner_transfer" | "secret_rotation";
+	page_claim_token?: string;
+	page_claim_lease_expires_at?: string;
+}
+
+export type LeadEventDeliveryReason =
+	| "initial"
+	| "ack_timeout"
+	| "owner_transfer"
+	| "secret_rotation";
+
+export interface LeadEventDeliveryAttemptRow {
+	attempt_id: string;
+	event_seq: number;
+	attempt_no: number;
+	kind: "initial" | "reminder";
+	reason: LeadEventDeliveryReason;
+	counts_toward_redelivery: number;
+	claim_token: string;
+	owner_epoch_at_claim: number;
+	secret_id_at_claim: string;
+	reclaim_count: number;
+	last_reclaimed_at: string | null;
+	lease_expires_at: string;
+	claimed_at: string;
+	pushed_at: string | null;
+	finalized_at: string | null;
+	outcome: "pushed" | "failed" | null;
+	last_error: string | null;
+	retired_at: string | null;
+}
+
+export interface DeliverySecretState {
+	state: "PREPARED" | "ACTIVE";
+	activeSecretId: string | null;
+	preparedSecretId: string | null;
+}
+
+function mapLeadEventRow(row: Record<string, unknown>): LeadEventRow {
+	return {
+		seq: Number(row.seq),
+		lead_id: String(row.lead_id),
+		event_id: String(row.event_id),
+		event_type: String(row.event_type),
+		payload: String(row.payload),
+		session_key: (row.session_key as string | null) ?? undefined,
+		delivered_at: (row.delivered_at as string | null) ?? undefined,
+		created_at: String(row.created_at),
+		delivery_attempts: Number(row.delivery_attempts ?? 0),
+		last_delivery_error:
+			(row.last_delivery_error as string | null) ?? undefined,
+		ack_required: Number(row.ack_required ?? 0) === 1,
+		ack_policy: (row.ack_policy as LeadEventAckPolicy | null) ?? undefined,
+		ack_protocol_version:
+			row.ack_protocol_version == null
+				? undefined
+				: Number(row.ack_protocol_version),
+		ack_deadline_at: (row.ack_deadline_at as string | null) ?? undefined,
+		acked_at: (row.acked_at as string | null) ?? undefined,
+		dead_letter_pending_at:
+			(row.dead_letter_pending_at as string | null) ?? undefined,
+		dead_lettered_at: (row.dead_lettered_at as string | null) ?? undefined,
+		ack_token_valid_until:
+			(row.ack_token_valid_until as string | null) ?? undefined,
+		ack_token_consumed_at:
+			(row.ack_token_consumed_at as string | null) ?? undefined,
+		ingress_disposed_at:
+			(row.ingress_disposed_at as string | null) ?? undefined,
+		routing_snapshot: (row.routing_snapshot as string | null) ?? undefined,
+		ack_owner_lead_id: (row.ack_owner_lead_id as string | null) ?? undefined,
+		ack_owner_epoch: Number(row.ack_owner_epoch ?? 0),
+		pending_delivery_reason:
+			(row.pending_delivery_reason as
+				| "owner_transfer"
+				| "secret_rotation"
+				| null) ?? undefined,
+		page_claim_token: (row.page_claim_token as string | null) ?? undefined,
+		page_claim_lease_expires_at:
+			(row.page_claim_lease_expires_at as string | null) ?? undefined,
+	};
 }
 
 /** FLY-368: a row of the alert_threads active-mapping table. */

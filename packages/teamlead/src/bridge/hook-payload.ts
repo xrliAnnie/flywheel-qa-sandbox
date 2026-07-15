@@ -66,7 +66,7 @@ export interface HookPayload {
 	question_id?: string;
 	from_agent?: string;
 	comm_db_path?: string;
-	// FLY-159: gate_timed_out event fields (Lead notifies Annie via Discord)
+	// FLY-159 gate timeout / FLY-1279 park notice: elapsed wait duration.
 	waited_ms?: number;
 	original_message?: string;
 	timeout_behavior?: string;
@@ -419,6 +419,9 @@ export function formatDetectionEscalation(
 	return [
 		`[Event #${env.seq}] detection_escalation`,
 		`Issue: ${label} | Target: ${e.detection_target_key ?? "—"} | Project: ${e.project_name ?? "—"}`,
+		...(e.waited_ms == null
+			? []
+			: [`Waited: ${formatDurationMs(e.waited_ms)}`]),
 		`[ESCALATION] Watchdog detected: ${e.escalation_kind ?? "?"} — you are the first responder (PRD §4.5):`,
 		"---",
 		e.escalation_reason ?? "(no reason captured)",

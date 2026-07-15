@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { TerminalFailureInfo } from "flywheel-core";
 import type { BlueprintResult } from "./Blueprint.js";
 
 export interface EventEnvelope {
@@ -87,6 +88,7 @@ export interface ExecutionEventEmitter {
 		env: EventEnvelope,
 		error: string,
 		lastActivity?: string,
+		failure?: TerminalFailureInfo,
 	): Promise<void>;
 	/** GEO-157: Heartbeat — dedicated route, no session_events, no lead notification */
 	emitHeartbeat(env: EventEnvelope): Promise<void>;
@@ -164,6 +166,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 		env: EventEnvelope,
 		error: string,
 		lastActivity?: string,
+		failure?: TerminalFailureInfo,
 	): Promise<void> {
 		await this.postEventReliable({
 			event_id: randomUUID(),
@@ -178,6 +181,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				lastActivity,
 				labels: env.labels,
 				sessionRole: env.sessionRole,
+				failure,
 			},
 		});
 	}
@@ -353,7 +357,12 @@ export class NoOpEventEmitter implements ExecutionEventEmitter {
 		_env: EventEnvelope,
 		_result: BlueprintResult,
 	): Promise<void> {}
-	async emitFailed(_env: EventEnvelope, _error: string): Promise<void> {}
+	async emitFailed(
+		_env: EventEnvelope,
+		_error: string,
+		_lastActivity?: string,
+		_failure?: TerminalFailureInfo,
+	): Promise<void> {}
 	async emitHeartbeat(_env: EventEnvelope): Promise<void> {}
 	async flush(): Promise<void> {}
 }

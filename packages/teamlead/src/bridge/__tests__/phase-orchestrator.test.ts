@@ -125,6 +125,31 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	};
 }
 
+describe("FLY-1279 typed worktree takeover failure", () => {
+	it("uses the dedicated alert exactly once and never duplicates the generic alert", async () => {
+		const h = makeDeps();
+		const dedicated = vi.fn(async () => {});
+		h.deps.effects.alertWorktreeTakeoverFailure = dedicated;
+		const orchestrator = new PhaseOrchestrator(h.deps);
+		const session = {
+			execution_id: "impl-exec",
+			issue_id: "FLY-1279",
+			project_name: "flywheel",
+			status: "failed",
+			session_role: "implement",
+			chat_thread_role: "implement",
+		} as PhaseSession;
+
+		await orchestrator.alertWorktreeTakeoverFailure(
+			session,
+			"worktree_takeover_failed: dirty",
+		);
+
+		expect(dedicated).toHaveBeenCalledOnce();
+		expect(h.alertLeadPipelineError).not.toHaveBeenCalled();
+	});
+});
+
 function session(over: Partial<PhaseSession>): PhaseSession {
 	return {
 		execution_id: "exec-1",

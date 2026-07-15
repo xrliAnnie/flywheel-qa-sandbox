@@ -33,6 +33,7 @@ import {
 	formatShipApprovalRequest,
 	formatStuckEscalation,
 } from "./hook-payload.js";
+import { appendLeadEventAckInstructions } from "./lead-event-ack-render.js";
 import type {
 	DeliveryResult,
 	LeadBootstrap,
@@ -84,7 +85,10 @@ export class MailboxLeadRuntime implements LeadRuntime {
 	}
 
 	async deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult> {
-		const content = this.formatEnvelope(envelope);
+		const content = appendLeadEventAckInstructions(
+			this.formatEnvelope(envelope),
+			envelope,
+		);
 		const payload: MailboxPayload = {
 			from: "bridge",
 			to: this.leadId,
@@ -175,6 +179,9 @@ export class MailboxLeadRuntime implements LeadRuntime {
 	// ----------------------------------------------------------------------
 
 	private buildFlywheelId(env: LeadEventEnvelope): string {
+		if (env.deliveryAttemptId) {
+			return `${this.leadId}-${env.deliveryAttemptId}`;
+		}
 		const exec = env.event.execution_id ?? "no-exec";
 		return `${this.leadId}-${env.seq}-${exec}`;
 	}

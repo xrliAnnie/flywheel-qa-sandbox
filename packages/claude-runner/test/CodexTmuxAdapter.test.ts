@@ -820,6 +820,30 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(res.sessionParams).toMatchObject({ threadId: THREAD_ID });
 	});
 
+	it("FLY-1279: a blocked goal preserves a typed failure and blocked CommDB status", async () => {
+		runtime = new FakeRuntime(async () => ({
+			threadId: THREAD_ID,
+			result: {
+				status: "blocked",
+				tokensUsed: 9,
+				turns: 3,
+				succeeded: false,
+			},
+			restarts: 0,
+		}));
+
+		const res = await makeAdapter().execute(ctx());
+
+		expect(res.success).toBe(false);
+		expect(res.failure).toEqual({
+			failureKind: "goal_blocked",
+			failureReason: "goal ended non-complete: blocked",
+		});
+		const db = new CommDB(dbPath);
+		expect(db.getSession(execId)?.status).toBe("blocked");
+		db.close();
+	});
+
 	it("a GoalRunError timeout → timedOut result, teardown still runs", async () => {
 		runtime = new FakeRuntime(async () => {
 			throw new GoalRunError("active budget exceeded", "timeout");

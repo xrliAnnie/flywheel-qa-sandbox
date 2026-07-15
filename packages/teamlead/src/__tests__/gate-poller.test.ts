@@ -208,6 +208,15 @@ describe("GatePoller (FLY-161)", () => {
 		expect(env.event.checkpoint).toBe("brainstorm");
 		expect(env.event.question_id).toBe(qid);
 		expect(env.event.summary).toBe("Please review my plan");
+		const protectedDb = new CommDB(dbPath);
+		try {
+			expect(protectedDb.getMessageById(qid)).toMatchObject({
+				relay_state: "protected",
+				logical_event_id: String(env.seq),
+			});
+		} finally {
+			protectedDb.close();
+		}
 	});
 
 	it("Case 2: emits runner_question for pending question without checkpoint", async () => {

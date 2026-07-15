@@ -72,6 +72,9 @@ const NO_OWNER_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>([
 	// nudge rounds); re-@'ing the Lead would fight the approved thresholds.
 	// Callers set the ticket status straight to ESCALATED for this kind.
 	"runner_lead_pending_unhandled",
+	// FLY-1279: the canonical founder issue-thread page already landed before
+	// this best-effort mirror fires; no infra bot should re-own the occurrence.
+	"delivery_dead_letter",
 ]);
 
 /**

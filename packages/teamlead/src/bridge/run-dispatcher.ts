@@ -927,7 +927,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 
 		// FLY-116: opener moved into BlueprintContext callback below.
 
-		const executionId = randomUUID();
+		const executionId = req.successorExecutionId ?? randomUUID();
 
 		// FLY-1185 (R11#1): lifecycle admission at the single spawn chokepoint —
 		// every surface (HTTP start / phase handoff / auto-QA / rescue) flows
@@ -1088,8 +1088,13 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		// rebuilds WITH progress.md). Undefined computer / no prior progress ⇒ fresh
 		// (byte-compatible). Never overrides a caller-supplied startPoint (793 phase
 		// handoff already pins its own).
-		const resume =
-			this.resumeComputer?.(req.issueId, role, req.projectName) ?? null;
+		// Auto-QA recovery is intentionally a clean-worktree launch pinned to the
+		// reviewed head. Phase resume metadata would flip it into shared-branch
+		// takeover and can reproduce the worktree_takeover_failed death it is meant
+		// to recover from.
+		const resume = req.qaContext
+			? null
+			: (this.resumeComputer?.(req.issueId, role, req.projectName) ?? null);
 
 		const ctx: BlueprintContext = {
 			teamName: "eng",
@@ -1105,7 +1110,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			sessionRole: req.sessionRole,
 			// FLY-793: three-stage phases share one branch B (Bridge-internal).
 			// FLY-795: a resume also shares branch B (reuse the same mechanism).
-			shareParentBranch: req.shareParentBranch || (resume ? true : undefined),
+			shareParentBranch: req.shareParentBranch ?? (resume ? true : undefined),
 			// FLY-859: Implement-fix round context after a QA FAIL (Bridge-internal).
 			phaseFixContext: req.phaseFixContext,
 			// FLY-24: Pass pre-fetched metadata so Blueprint/EventEnvelope uses real title

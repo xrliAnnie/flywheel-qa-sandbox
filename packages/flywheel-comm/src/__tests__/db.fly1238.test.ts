@@ -7,8 +7,11 @@ import { CommDB } from "../db.js";
 describe("CommDB.finalizeSession (FLY-1238)", () => {
 	let db: CommDB;
 	let tmpDir: string;
+	let previousProtection: string | undefined;
 
 	beforeEach(() => {
+		previousProtection = process.env.FLYWHEEL_COMMDB_PROTECTION;
+		delete process.env.FLYWHEEL_COMMDB_PROTECTION;
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-fly1238-db-"));
 		db = new CommDB(join(tmpDir, "comm.db"));
 	});
@@ -16,9 +19,36 @@ describe("CommDB.finalizeSession (FLY-1238)", () => {
 	afterEach(() => {
 		db.close();
 		rmSync(tmpDir, { recursive: true, force: true });
+		if (previousProtection === undefined) {
+			delete process.env.FLYWHEEL_COMMDB_PROTECTION;
+		} else {
+			process.env.FLYWHEEL_COMMDB_PROTECTION = previousProtection;
+		}
 	});
 
-	it("retires only unanswered checkpoint gates and deletes the session atomically", () => {
+	it("machine-proven terminal finalization disposes checkpoint gates even with protection on", () => {
+		db.registerSession("exec-a", "window-a", "proj", "FLY-1238", "lead");
+		const ship = db.insertQuestion("exec-a", "lead", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		const brainstorm = db.insertQuestion("exec-a", "lead", "design?", {
+			checkpoint: "brainstorm",
+		});
+
+		expect(db.finalizeSession("exec-a")).toEqual({
+			retiredQuestionCount: 2,
+			deletedSessionCount: 1,
+		});
+		expect(db.getSession("exec-a")).toBeUndefined();
+		for (const qid of [ship, brainstorm]) {
+			expect(db.getMessageById(qid)?.resolved_at).toBeTruthy();
+			expect(db.getMessageById(qid)?.relay_state).toBe("terminal_disposed");
+			expect(db.isQuestionPending(qid)).toBe(false);
+		}
+	});
+
+	it("retires only unanswered checkpoint gates in explicit legacy mode too", () => {
+		process.env.FLYWHEEL_COMMDB_PROTECTION = "0";
 		db.registerSession("exec-a", "window-a", "proj", "FLY-1238", "lead");
 		db.registerSession("exec-b", "window-b", "proj", "FLY-OTHER", "lead");
 		const ship = db.insertQuestion("exec-a", "lead", "ship?", {

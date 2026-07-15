@@ -261,6 +261,11 @@ export interface PhaseOrchestratorDeps {
 			session: PhaseSession;
 			reason: string;
 		}): Promise<void>;
+		/** Dedicated structured alert for shared-worktree takeover refusal. */
+		alertWorktreeTakeoverFailure?(args: {
+			session: PhaseSession;
+			reason: string;
+		}): Promise<void>;
 		/**
 		 * FLY-887: 4-state process liveness of a phase runner. `alive` → park it;
 		 * `dead_pin`/`absent` → close-clean; `indeterminate` → fail-closed (leave
@@ -516,6 +521,32 @@ export class PhaseOrchestrator {
 	}
 	private warn(m: string): void {
 		(this.deps.logger?.warn ?? this.deps.logger?.log)?.(`[phase-orch] ${m}`);
+	}
+
+	/**
+	 * FLY-1279 B2: typed takeover refusal is mutually exclusive with the generic
+	 * pipeline-error alert. Non-phase/spoofed rows are ignored.
+	 */
+	async alertWorktreeTakeoverFailure(
+		session: PhaseSession,
+		reason: string,
+	): Promise<void> {
+		// chat_thread_role is the durable three-stage discriminator. Auto-QA also
+		// uses session_role=qa, so falling back to session_role would misclassify it.
+		const role = session.chat_thread_role;
+		if (role !== "implement" && role !== "qa") return;
+		try {
+			if (this.deps.effects.alertWorktreeTakeoverFailure) {
+				await this.deps.effects.alertWorktreeTakeoverFailure({
+					session,
+					reason,
+				});
+			} else {
+				await this.deps.effects.alertLeadPipelineError({ session, reason });
+			}
+		} catch (err) {
+			this.warn(`worktree takeover alert failed: ${(err as Error).message}`);
+		}
 	}
 
 	/**

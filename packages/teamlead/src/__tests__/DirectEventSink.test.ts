@@ -897,6 +897,22 @@ describe("DirectEventSink — FLY-793: completion must not clobber a phase role 
 		expect(s?.session_role).toBe("design"); // NOT clobbered to "main"
 	});
 
+	it("FLY-1279: emitFailed persists goal_blocked as blocked with its real reason", async () => {
+		await new DirectEventSink(store, makeConfig(), testProjects).emitFailed(
+			makeEnvelope(),
+			"legacy error",
+			undefined,
+			{
+				failureKind: "goal_blocked",
+				failureReason: "goal ended non-complete: blocked",
+			},
+		);
+
+		const s = store.getSession("exec-1");
+		expect(s?.status).toBe("blocked");
+		expect(s?.last_error).toBe("goal ended non-complete: blocked");
+	});
+
 	it("byte-compat: a non-phase (main) session keeps role main on completion", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",
@@ -922,17 +938,20 @@ describe("DirectEventSink — FLY-793: completion must not clobber a phase role 
 		const reconcileTurnBelt = vi.fn(async () => {});
 		const onPhaseComplete = vi.fn(async () => {});
 		const reconcileQaLoss = vi.fn(async () => {});
+		const alertWorktreeTakeoverFailure = vi.fn(async () => {});
 		return {
 			holder: {
 				current: {
 					reconcileTurnBelt,
 					onPhaseComplete,
 					reconcileQaLoss,
+					alertWorktreeTakeoverFailure,
 				} as unknown as import("../bridge/phase-orchestrator.js").PhaseOrchestrator,
 			},
 			reconcileTurnBelt,
 			onPhaseComplete,
 			reconcileQaLoss,
+			alertWorktreeTakeoverFailure,
 		};
 	}
 
@@ -1024,6 +1043,59 @@ describe("DirectEventSink — FLY-793: completion must not clobber a phase role 
 		expect(fake.reconcileTurnBelt).toHaveBeenCalledOnce();
 		expect(fake.reconcileQaLoss.mock.invocationCallOrder[0]!).toBeLessThan(
 			fake.reconcileTurnBelt.mock.invocationCallOrder[0]!,
+		);
+	});
+
+	it("FLY-1279: an auto-QA-owned failure never falls through to three-stage QA loss", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			session_role: "qa",
+			chat_thread_role: "qa",
+		});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		const fake = makeFakeOrchestrator();
+		const onQaSessionFailed = vi.fn(async () => ({
+			owned: true,
+			transition: "retry_pending" as const,
+		}));
+		sink.phaseOrchestrator = fake.holder;
+		sink.autoQaCoordinator = {
+			current: {
+				onQaSessionFailed,
+			} as unknown as AutoQaCoordinator,
+		};
+
+		await sink.emitFailed(makeEnvelope(), "killed");
+
+		expect(onQaSessionFailed).toHaveBeenCalledWith("exec-1");
+		expect(fake.reconcileQaLoss).not.toHaveBeenCalled();
+		expect(fake.reconcileTurnBelt).toHaveBeenCalledOnce();
+	});
+
+	it("FLY-1279: emitFailed forwards typed takeover detail to the dedicated phase alert", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			session_role: "implement",
+			chat_thread_role: "implement",
+		});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		const fake = makeFakeOrchestrator();
+		sink.phaseOrchestrator = fake.holder;
+
+		await sink.emitFailed(makeEnvelope(), "legacy", undefined, {
+			failureKind: "worktree_takeover_failed",
+			failureReason: "worktree_takeover_failed: head drift",
+		});
+
+		expect(fake.alertWorktreeTakeoverFailure).toHaveBeenCalledWith(
+			expect.objectContaining({ execution_id: "exec-1" }),
+			"worktree_takeover_failed: head drift",
 		);
 	});
 

@@ -82,6 +82,7 @@ import {
 	emitIssueThreadInfraNotification,
 } from "./founder-thread-notifier.js";
 import type { HookPayload } from "./hook-payload.js";
+import { deliveryAckEnabled } from "./lead-event-ack-policy.js";
 import {
 	computeStuckKey,
 	decideLeadNudge,
@@ -214,6 +215,21 @@ export interface GatePollerConfig {
 	/** FLY-1048 (A6): cadence in poll ticks (default 100 ≈ 5min at 3s; plugin
 	 * reads FLYWHEEL_GAP_SCAN_EVERY_N_TICKS). */
 	gapScanEveryNTicks?: number;
+	/**
+	 * FLY-1279 B2: event-independent dead auto-QA recovery. Piggybacks the
+	 * existing timer and is deliberately independent of the park-watch switch.
+	 */
+	onQaReconcileTick?: () => void | Promise<void>;
+	/** Cadence in poll ticks (default 20, about 60s in production). */
+	qaReconcileEveryNTicks?: number;
+	/** FLY-1279 D1: durable ACK/reminder/dead-letter reconciliation. */
+	onDeliveryReconcileTick?: () => void | Promise<void>;
+	/** Cadence in poll ticks (default every tick). */
+	deliveryReconcileEveryNTicks?: number;
+	/** FLY-1279 D2: semantic park inventory and durable Lead-first notification. */
+	onParkWatchTick?: () => void | Promise<void>;
+	/** Cadence in poll ticks (default 20, about 60s in production). */
+	parkWatchEveryNTicks?: number;
 
 	// ── FLY-605: bidirectional in-thread founder relay fallback ──
 	/** Global Discord bot token fallback (lead.botToken takes precedence). */
@@ -451,6 +467,7 @@ export function computeFounderPassHealthy(
 export class GatePoller {
 	private timerHandle: ReturnType<typeof setInterval> | null = null;
 	private polling = false;
+	private parkWatchPass: Promise<void> | null = null;
 	// FLY-1099 §7.2: founder-reply health watchdog + its per-thread routing map
 	// (refreshed by every deliver pass; unknown threads fall back to the infra
 	// owner route).
@@ -671,6 +688,45 @@ export class GatePoller {
 					);
 			}
 
+			// FLY-1279 B2: dead auto-QA sweep. This is not gated by park-watch;
+			// recovery remains active even when the notification feature is rolled back.
+			if (
+				this.config.onQaReconcileTick &&
+				(this.tickCount - 1) % this.qaReconcileEveryNTicks() === 0
+			) {
+				void Promise.resolve()
+					.then(() => this.config.onQaReconcileTick?.())
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] FLY-1279 auto-QA reconcile error (non-fatal): ${(err as Error).message}`,
+						),
+					);
+			}
+
+			if (
+				this.config.onDeliveryReconcileTick &&
+				(this.tickCount - 1) % this.deliveryReconcileEveryNTicks() === 0
+			) {
+				void Promise.resolve()
+					.then(() => this.config.onDeliveryReconcileTick?.())
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] FLY-1279 delivery reconcile error (non-fatal): ${(err as Error).message}`,
+						),
+					);
+			}
+
+			if (
+				this.config.onParkWatchTick &&
+				(this.tickCount - 1) % this.parkWatchEveryNTicks() === 0
+			) {
+				void this.runParkWatchPass().catch((err) =>
+					console.warn(
+						`[GatePoller] FLY-1279 park-watch error (non-fatal): ${(err as Error).message}`,
+					),
+				);
+			}
+
 			const patrolDue =
 				this.misroutePatrolEnabled() &&
 				this.tickCount % this.patrolEveryNTicks() === 1;
@@ -690,6 +746,11 @@ export class GatePoller {
 			// loop. The session is still resolved per-question below for metadata,
 			// but presence in the active set is no longer a prerequisite.
 			for (const project of this.config.projects) {
+				const projectDbPath = defaultGetCommDbPath(project.projectName);
+				if (!this.ensureCommDbMigrated(projectDbPath, project)) {
+					leadPendingPollComplete = false;
+					continue;
+				}
 				for (const lead of project.leads) {
 					const leadKey = `${project.projectName}::${lead.agentId}`;
 					// FLY-307 B: while a lead's circuit is open, skip BOTH the
@@ -701,7 +762,7 @@ export class GatePoller {
 						leadPendingPollComplete = false; // FLY-637-ext: incomplete view → skip prune
 						continue;
 					}
-					const dbPath = defaultGetCommDbPath(project.projectName);
+					const dbPath = projectDbPath;
 					let relayFailed = false;
 					try {
 						const pending = this.getPendingQuestions(
@@ -1077,6 +1138,9 @@ export class GatePoller {
 	// until tickCount reaches the stored tick, then retry the write.
 	private readonly evictedGateIds = new Set<string>();
 	private readonly evictionRetryAt = new Map<string, number>();
+	private readonly migratedCommDbPaths = new Set<string>();
+	private readonly commDbMigrationRetryAt = new Map<string, number>();
+	private readonly commDbMigrationAlerted = new Set<string>();
 
 	// FLY-307 B: per-lead circuit breaker keyed `projectName::agentId`.
 	private readonly circuitFailures = new Map<string, number>();
@@ -1106,6 +1170,109 @@ export class GatePoller {
 	/** FLY-1048 (A6): gap-scan cadence (default 100 ≈ 5min at 3s). */
 	private gapScanEveryNTicks(): number {
 		return this.config.gapScanEveryNTicks ?? 100;
+	}
+
+	/** FLY-1279 B2: dead auto-QA recovery cadence (default 20 ≈ 60s). */
+	private qaReconcileEveryNTicks(): number {
+		return this.config.qaReconcileEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS;
+	}
+
+	private deliveryReconcileEveryNTicks(): number {
+		return Math.max(
+			1,
+			this.config.deliveryReconcileEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS,
+		);
+	}
+
+	private parkWatchEveryNTicks(): number {
+		return Math.max(
+			1,
+			this.config.parkWatchEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS,
+		);
+	}
+
+	private runParkWatchPass(): Promise<void> {
+		if (this.parkWatchPass) return this.parkWatchPass;
+		const pass = Promise.resolve()
+			.then(() => this.config.onParkWatchTick?.())
+			.then(() => undefined);
+		const guarded = pass.finally(() => {
+			if (this.parkWatchPass === guarded) this.parkWatchPass = null;
+		});
+		this.parkWatchPass = guarded;
+		return guarded;
+	}
+
+	private ensureCommDbMigrated(dbPath: string, project: ProjectEntry): boolean {
+		if (this.migratedCommDbPaths.has(dbPath)) return true;
+		const retryAt = this.commDbMigrationRetryAt.get(dbPath);
+		if (retryAt !== undefined && this.tickCount < retryAt) return false;
+		try {
+			const db = new CommDB(dbPath);
+			db.close();
+			this.migratedCommDbPaths.add(dbPath);
+			this.commDbMigrationRetryAt.delete(dbPath);
+			this.commDbMigrationAlerted.delete(dbPath);
+			return true;
+		} catch (error) {
+			this.commDbMigrationRetryAt.set(
+				dbPath,
+				this.tickCount + DEFAULT_PATROL_EVERY_N_TICKS,
+			);
+			console.warn(
+				`[GatePoller] CommDB migration failed; project relay paused for ${dbPath}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			if (!this.commDbMigrationAlerted.has(dbPath)) {
+				this.commDbMigrationAlerted.add(dbPath);
+				void this.alertCommDbMigrationFailure(project, dbPath, error).catch(
+					(alertError) => {
+						this.commDbMigrationAlerted.delete(dbPath);
+						console.warn(
+							`[GatePoller] CommDB migration Lead alert failed for ${dbPath}: ${alertError instanceof Error ? alertError.message : String(alertError)}`,
+						);
+					},
+				);
+			}
+			return false;
+		}
+	}
+
+	private async alertCommDbMigrationFailure(
+		project: ProjectEntry,
+		dbPath: string,
+		error: unknown,
+	): Promise<void> {
+		const sink = this.config.leadAlertSink;
+		const route = project.leads[0]
+			? { leadId: project.leads[0].agentId, projectName: project.projectName }
+			: this.infraAlertRoute();
+		if (!sink || !route) {
+			this.commDbMigrationAlerted.delete(dbPath);
+			return;
+		}
+		const pathHash = createHash("sha256")
+			.update(dbPath)
+			.digest("hex")
+			.slice(0, 12);
+		const result = await sink.alert({
+			leadId: route.leadId,
+			projectName: route.projectName,
+			eventId: `commdb-migration-failed:${project.projectName}:${pathHash}`,
+			eventType: "crash_loop",
+			title: `CommDB relay paused — ${project.projectName}`,
+			body:
+				`Bridge could not migrate/open ${dbPath}; all gate and question relay for ` +
+				`${project.projectName} is paused until recovery. Error: ${error instanceof Error ? error.message : String(error)}`,
+			severity: "warning",
+		});
+		if (
+			!result.sent &&
+			!result.queued &&
+			!result.dmSent &&
+			result.skipped !== "duplicate"
+		) {
+			this.commDbMigrationAlerted.delete(dbPath);
+		}
 	}
 
 	private backlogThreshold(): number {
@@ -1506,6 +1673,18 @@ export class GatePoller {
 			JSON.stringify(payload),
 			session.execution_id,
 		);
+		if (deliveryAckEnabled()) {
+			const commDb = new CommDB(dbPath, false);
+			try {
+				if (!commDb.markQuestionProtected(question.id, String(seq))) {
+					console.warn(
+						`[GatePoller] question ${question.id} could not bind to lead event seq ${seq}; relay continues without protection`,
+					);
+				}
+			} finally {
+				commDb.close();
+			}
+		}
 
 		// Deliver to Lead via the runtime (CommDB instruction or mailbox).
 		const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);

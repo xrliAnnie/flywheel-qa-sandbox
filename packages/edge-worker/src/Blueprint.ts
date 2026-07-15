@@ -26,6 +26,7 @@ import type {
 	DecisionResult,
 	ExecutionContext,
 	IAdapter,
+	TerminalFailureInfo,
 } from "flywheel-core";
 import { buildWindowLabel, cleanIssueTitle } from "flywheel-core";
 import type { DagNode } from "flywheel-dag-resolver";
@@ -109,6 +110,8 @@ export interface BlueprintResult {
 	projectId?: string;
 	exitReason?: string;
 	consecutiveFailures?: number;
+	/** Machine-readable failure propagated unchanged to both Bridge sinks. */
+	failure?: TerminalFailureInfo;
 }
 
 /**
@@ -798,9 +801,14 @@ export class Blueprint {
 					head = null;
 				}
 				if (!clean || !ctx.startPoint || head !== ctx.startPoint) {
+					const failureReason = `worktree_takeover_failed: shared branch-B worktree ${expected.path} is not reusable in place (clean=${clean}, head=${head ?? "?"}, expected=${ctx.startPoint ?? "?"}) — refusing to reuse an active phase worktree; a parked phase may hold uncommitted work`;
 					return {
 						success: false,
-						error: `worktree_takeover_failed: shared branch-B worktree ${expected.path} is not reusable in place (clean=${clean}, head=${head ?? "?"}, expected=${ctx.startPoint ?? "?"}) — refusing to reuse an active phase worktree; a parked phase may hold uncommitted work`,
+						error: failureReason,
+						failure: {
+							failureKind: "worktree_takeover_failed",
+							failureReason,
+						},
 						worktreePath: expected.path,
 					};
 				}
@@ -2047,6 +2055,24 @@ export class Blueprint {
 			}
 		}
 
+		// FLY-1279: a resident goal's explicit blocked terminal is authoritative.
+		// Commits may predate the impasse; neither GitResultChecker nor the
+		// DecisionLayer may turn that terminal into a successful completion.
+		if (result.failure?.failureKind === "goal_blocked") {
+			return {
+				success: false,
+				costUsd: result.costUsd,
+				sessionId: result.sessionId,
+				tmuxWindow: result.tmuxWindow,
+				durationMs: result.durationMs,
+				error: result.failure.failureReason,
+				failure: result.failure,
+				worktreePath: worktreeInfo?.worktreePath,
+				evidence,
+				sessionParams: result.sessionParams,
+			};
+		}
+
 		// ── Decision Layer (v0.2 Step 2b — optional) ──────────
 		if (this.decisionLayer && evidence) {
 			return this.runWithDecision(
@@ -2095,7 +2121,12 @@ export class Blueprint {
 				const summary = this.buildSummary(result);
 				await this.eventEmitter.emitCompleted(env, result, summary);
 			} else {
-				await this.eventEmitter.emitFailed(env, result.error ?? "unknown");
+				await this.eventEmitter.emitFailed(
+					env,
+					result.error ?? "unknown",
+					undefined,
+					result.failure,
+				);
 			}
 		} catch (err) {
 			// postEventReliable never throws, but defensive catch for interface changes

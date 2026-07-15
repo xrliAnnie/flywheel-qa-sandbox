@@ -13,7 +13,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { handleAck, processPendingDeliveries } from "../delivery.js";
+import {
+	handleAck,
+	handleEventAck,
+	processPendingDeliveries,
+} from "../delivery.js";
 
 describe("inbox-mcp delivery + ack state machine", () => {
 	let testDir: string;
@@ -139,6 +143,43 @@ describe("inbox-mcp delivery + ack state machine", () => {
 			.prepare("SELECT read_at FROM messages WHERE id = ?")
 			.get(idForOther) as { read_at: string | null };
 		expect(row.read_at).toBeNull();
+	});
+
+	it("event ack writes a backend-neutral receipt without returning the bearer", () => {
+		const result = handleEventAck(db, {
+			leadId,
+			eventSeq: 42,
+			ackToken: "mcp-bearer-secret",
+			project: "flywheel",
+			expectedProject: "flywheel",
+		});
+
+		expect(result).toEqual({ ok: true, eventSeq: 42 });
+		expect(JSON.stringify(result)).not.toContain("mcp-bearer-secret");
+		expect(db.getPendingAckReceipts()).toMatchObject([
+			{
+				from_agent: leadId,
+				to_agent: "bridge",
+				type: "ack_receipt",
+				content: JSON.stringify({
+					event_seq: 42,
+					ack_token: "mcp-bearer-secret",
+				}),
+			},
+		]);
+	});
+
+	it("event ack rejects a project mismatch before writing a receipt", () => {
+		const result = handleEventAck(db, {
+			leadId,
+			eventSeq: 42,
+			ackToken: "wrong-project-bearer",
+			project: "another-project",
+			expectedProject: "flywheel",
+		});
+
+		expect(result).toMatchObject({ ok: false });
+		expect(db.getPendingAckReceipts()).toEqual([]);
 	});
 
 	it("delivery preserves FIFO order", async () => {
