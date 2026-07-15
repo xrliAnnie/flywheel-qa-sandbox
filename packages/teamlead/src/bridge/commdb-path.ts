@@ -18,8 +18,8 @@ import { join } from "node:path";
  */
 export function commDbRootDir(): string {
 	const override =
-		process.env.FLYWHEEL_COMM_DIR?.trim() ||
-		process.env.FLYWHEEL_COMM_ROOT?.trim();
+		process.env.FLYWHEEL_COMM_ROOT?.trim() ||
+		process.env.FLYWHEEL_COMM_DIR?.trim();
 	return override || join(homedir(), ".flywheel", "comm");
 }
 
