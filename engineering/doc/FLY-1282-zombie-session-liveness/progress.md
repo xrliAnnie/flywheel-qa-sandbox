@@ -1,13 +1,14 @@
 ---
 issue: FLY-1282
 phase: implement
-phaseCursor: 9/12
-updated: 2026-07-15T19:46:11.252Z
-nextStep: Part D 增量 design review(Codex R16)→ 实现 Part D → M9+M10 测试 → 全仓 test+lint → PR
+phaseCursor: 10/13
+updated: 2026-07-15T20:22:36.658Z
+nextStep: 实现 Part D(StateStore outbox + 三路由 + receipt pass + GatePoller stage)→
+  M9+M10 测试 → 全仓 test+lint → PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-1282 progress
-**phase**: implement (9/12)
-**next**: Part D 增量 design review(Codex R16)→ 实现 Part D → M9+M10 测试 → 全仓 test+lint → PR
+**phase**: implement (10/13)
+**next**: 实现 Part D(StateStore outbox + 三路由 + receipt pass + GatePoller stage)→ M9+M10 测试 → 全仓 test+lint → PR
