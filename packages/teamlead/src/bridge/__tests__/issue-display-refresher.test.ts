@@ -55,6 +55,7 @@ interface TitleCall {
 
 interface FaceLog {
 	title: TitleCall[];
+	titleMarkers: Array<string | null | undefined>;
 	header: string[];
 	attachPin: string[];
 	unresolved: number;
@@ -63,7 +64,14 @@ interface FaceLog {
 }
 
 function makeLog(): FaceLog {
-	return { title: [], header: [], attachPin: [], unresolved: 0, deleted: [] };
+	return {
+		title: [],
+		titleMarkers: [],
+		header: [],
+		attachPin: [],
+		unresolved: 0,
+		deleted: [],
+	};
 }
 
 function makeCreatorStub(
@@ -74,12 +82,15 @@ function makeCreatorStub(
 		results[k] ?? results.all ?? "changed";
 	return {
 		stampStageEmojiResult: async (
-			_ctx: unknown,
+			ctx: unknown,
 			_threadId: string,
 			stage: string,
 			_withWord: boolean,
 			phaseBadge?: string | null,
 		) => {
+			log.titleMarkers.push(
+				(ctx as { modelMarker?: string | null }).modelMarker,
+			);
 			log.title.push({
 				via: "stage",
 				stage,
@@ -88,10 +99,13 @@ function makeCreatorStub(
 			return r("title");
 		},
 		stampStatusBadgeResult: async (
-			_ctx: unknown,
+			ctx: unknown,
 			_threadId: string,
 			badge: string | null,
 		) => {
+			log.titleMarkers.push(
+				(ctx as { modelMarker?: string | null }).modelMarker,
+			);
 			log.title.push({ via: "statusBadge", badge });
 			return r("title");
 		},
@@ -192,6 +206,7 @@ function seedSession(
 		status: string;
 		stage?: string;
 		model?: string;
+		backend?: string;
 	},
 ): void {
 	seq += 1;
@@ -207,6 +222,7 @@ function seedSession(
 		chat_thread_role: args.role ?? "main",
 		session_role: args.role ?? "main",
 		runner_model: args.model,
+		adapter_type: args.backend,
 	});
 	if (args.stage) {
 		store.patchSessionMetadata(args.exec, { session_stage: args.stage });
@@ -573,6 +589,43 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		]);
 		expect(log.header).toEqual([]); // no pipeline header on a single-session issue
 		expect(log.deleted).toEqual([]); // no legacy status line to clean
+	});
+
+	it("renders the actual Codex model marker from the persisted session", async () => {
+		seedSession(store, {
+			exec: "e-main",
+			role: "main",
+			status: "running",
+			stage: "implement",
+			backend: "codex-tmux",
+			model: "gpt-5.6-sol",
+		});
+		const { refresher, log } = makeRefresher(store);
+		await refresher.refresh(ISSUE);
+
+		expect(log.titleMarkers[0]).toBe("Model GPT-5.6");
+	});
+
+	it("pending implement marker follows the kill-switch-aware phase plan", async () => {
+		const original = process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT;
+		try {
+			process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT = "0";
+			seedSession(store, {
+				exec: "e-impl",
+				role: "implement",
+				status: "running",
+			});
+			const { refresher, log } = makeRefresher(store);
+			await refresher.refresh(ISSUE);
+
+			expect(log.titleMarkers[0]).toBe("F");
+		} finally {
+			if (original === undefined) {
+				delete process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT;
+			} else {
+				process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT = original;
+			}
+		}
 	});
 
 	it("single-session terminal states: completed → ✅完成; failed → 🔴受阻 (kill/reset now refresh — the old code never did)", async () => {

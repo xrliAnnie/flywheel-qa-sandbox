@@ -480,7 +480,8 @@ git commit -m "feat(FLY-1255): generalize thread model markers"
    `Model GPT-5.6`，不能降成 Claude/raw id；
 2. issue display refresh：actual Codex row 得到 `[Model GPT-5.6]`；pending implement row
    无 `runner_model` 仍得到 planned `[Model GPT-5.6]`；kill-switch=0 得 `[F]`；
-3. reconnect：Codex session 重盖标题不清空 marker；
+3. reconnect：Codex session 重盖标题不清空 marker；Bridge re-adopt 成功并发出
+   `session_monitoring_reestablished` 时，立即清除旧 `⚠️重连中` 前缀并恢复实际 phase/status；
 4. auto-QA：Claude session 仍 `[O/F]`，无 byte regression；
 5. legacy stage_changed path 与 aggregate refresher 输出相同。
 

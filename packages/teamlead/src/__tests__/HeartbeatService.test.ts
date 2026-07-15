@@ -473,6 +473,54 @@ describe("RegistryHeartbeatNotifier", () => {
 		store.close();
 	});
 
+	it("reconnect title carries the resolved Codex marker without skipping the reconnect state", async () => {
+		const { registry } = createMockRegistry();
+		const hbStore = await StateStore.create(":memory:");
+		const projects: ProjectEntry[] = [
+			{
+				projectName: "geo",
+				projectRoot: "/tmp/geo",
+				leads: [
+					{
+						agentId: "product-lead",
+						chatChannel: "test-chat",
+						botToken: "bot-token",
+						match: { labels: [] },
+					},
+				],
+			},
+		];
+		hbStore.upsertChatThread("thread-1255", "test-chat", "i-1255");
+		const stampStatusBadge = vi.fn().mockResolvedValue(undefined);
+		const notifier = new RegistryHeartbeatNotifier(
+			registry,
+			projects,
+			hbStore,
+			undefined,
+			true,
+			{ stampStatusBadge } as never,
+		);
+		const session: Session = {
+			execution_id: "exec-1255",
+			issue_id: "i-1255",
+			project_name: "geo",
+			status: "running",
+			issue_identifier: "FLY-1255",
+			adapter_type: "codex-tmux",
+			runner_model: "gpt-5.6-sol",
+			chat_thread_role: "implement",
+			session_stage: "implement",
+		};
+
+		await notifier.onSessionMonitoringReestablished(session, 5);
+
+		expect(stampStatusBadge).toHaveBeenCalledTimes(1);
+		expect(stampStatusBadge.mock.calls[0]?.[0]).toMatchObject({
+			modelMarker: "G",
+		});
+		expect(stampStatusBadge.mock.calls[0]?.[2]).toBe("⚠️重连中");
+		hbStore.close();
+	});
 	it("sends session_stuck envelope via registry runtime with sessionKey", async () => {
 		const { registry, envelopes } = createMockRegistry();
 		const hbStore = await StateStore.create(":memory:");

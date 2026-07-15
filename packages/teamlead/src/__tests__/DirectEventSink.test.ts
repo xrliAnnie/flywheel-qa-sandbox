@@ -667,6 +667,37 @@ describe("DirectEventSink — FLY-493: pr_handoff → terminal completed", () =>
 		expect(store.getSession("exec-1")?.runner_model ?? null).toBeNull();
 	});
 
+	it.each(["codex-tmux", undefined])(
+		"emitStarted renders GPT-5.6 in a fresh thread when backend metadata is %s",
+		async (runnerBackend) => {
+			const contexts: Array<Record<string, unknown>> = [];
+			const creator = {
+				ensureChatThread: vi.fn(async (ctx: Record<string, unknown>) => {
+					contexts.push(ctx);
+					return { created: true, threadId: "thread-1255" };
+				}),
+			};
+			const sink = new DirectEventSink(
+				store,
+				makeConfig({ chatThreadsEnabled: true }),
+				testProjects,
+				undefined,
+				undefined,
+				creator as never,
+			);
+
+			await sink.emitStarted(
+				makeEnvelope({
+					labels: ["Product"],
+					runnerBackend,
+					runnerModel: "gpt-5.6-sol",
+				}),
+			);
+
+			expect(contexts[0]?.modelMarker).toBe("Model GPT-5.6");
+		},
+	);
+
 	it("awaiting_review + route=pr_handoff → status unchanged (skipped, no strand-clear)", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",
