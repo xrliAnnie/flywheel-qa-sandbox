@@ -269,6 +269,93 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(runtime.drainedCalls).toBe(1);
 	});
 
+	it("phase keep-alive starts one controller without starting mailbox intake before hold", async () => {
+		const watcher = {
+			start: vi.fn(async () => {}),
+			stop: vi.fn(async () => {}),
+			health: vi.fn(async () => ({ ok: true })),
+		};
+		const transport = {
+			buildRunnerSpawnConfig: vi.fn(() => ({ args: [], env: {} })),
+			createReceiver: vi.fn(() => watcher),
+		};
+		const lifecycle = {
+			start: vi.fn(async () => {}),
+			stop: vi.fn(async () => {}),
+			waitForShutdown: vi.fn(() => new Promise(() => {})),
+			observe: vi.fn(() => ({ kind: "active" as const })),
+			enterHold: vi.fn(async () => {}),
+			leaveHold: vi.fn(async () => {}),
+			markWakeStarted: vi.fn(),
+			finishWake: vi.fn(),
+			ackShutdown: vi.fn(),
+		};
+		const deps = {
+			...makeDeps(),
+			phaseLifecycleFactory: vi.fn(() => lifecycle),
+		};
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			transport,
+			deps,
+		);
+
+		const result = await adapter.execute(
+			ctx({
+				phaseKeepAlive: { role: "design" },
+				agentName: "runner-agent",
+				teamName: "flywheel-eng-lead",
+			}),
+		);
+
+		expect(result.success).toBe(true);
+		expect(deps.phaseLifecycleFactory).toHaveBeenCalledOnce();
+		expect(transport.createReceiver).toHaveBeenCalledOnce();
+		expect(lifecycle.start).toHaveBeenCalledOnce();
+		expect(lifecycle.stop).toHaveBeenCalledOnce();
+		expect(watcher.start).not.toHaveBeenCalled();
+		expect(runtime.stopped).toBe(1);
+		expect(runtime.drainedCalls).toBe(1);
+	});
+
+	it("runs without phaseKeepAlive create no phase controller or receiver", async () => {
+		const transport = {
+			buildRunnerSpawnConfig: vi.fn(() => ({ args: [], env: {} })),
+			createReceiver: vi.fn(() => null),
+		};
+		const phaseLifecycleFactory = vi.fn();
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			transport,
+			{ ...makeDeps(), phaseLifecycleFactory },
+		);
+
+		await adapter.execute(
+			ctx({
+				agentName: "runner-agent",
+				teamName: "flywheel-eng-lead",
+			}),
+		);
+		await adapter.execute(
+			ctx({
+				agentName: "runner-agent",
+				teamName: "flywheel-eng-lead",
+				issueId: "FLY-AUTO-QA-SHAPED",
+			}),
+		);
+
+		expect(phaseLifecycleFactory).not.toHaveBeenCalled();
+		expect(transport.createReceiver).not.toHaveBeenCalled();
+	});
+
 	// ── QA · FLY-1188 (real-machine E2E, 2026-07-13) ────────────────────────
 	// The founder TUI never rendered on a real machine: the pane died instantly
 	// with `Error: stdout is not a terminal` (exit 1). The adapter hands the TUI

@@ -84,6 +84,13 @@ import {
 	stripInheritedSecretEnv,
 } from "./codex-home.js";
 import {
+	atomicMergeCodexSessionState,
+	type CodexPhaseLifecycle,
+	CodexPhaseLifecycleController,
+	type CodexPhaseLifecycleControllerOptions,
+	type CodexWakeWatcher,
+} from "./codex-phase-lifecycle.js";
+import {
 	ensureRunnerTuiWindow,
 	isRunnerTuiWindowAlive,
 	killRunnerTuiWindow,
@@ -127,16 +134,7 @@ export interface CodexRunnerTransport {
 	}): CodexWakeWatcher | null;
 }
 
-export interface CodexWakeWatcher {
-	start(): Promise<void>;
-	stop(): Promise<void>;
-	health(): Promise<{ ok: boolean; lastEventTs?: number }>;
-	onDelivered?: (msg: {
-		id: string;
-		content: string;
-		metadata?: Record<string, unknown>;
-	}) => void;
-}
+export type { CodexWakeWatcher } from "./codex-phase-lifecycle.js";
 
 /**
  * FLY-1188 M4d: the resident-/goal runtime surface execute() drives — injected
@@ -168,6 +166,10 @@ export interface CodexDaemonAdapterDeps {
 	 * retry). Returns a cancel handle. Default: an unref'd `setTimeout`. Injected
 	 * in tests to drive the retry chain deterministically. */
 	scheduleReopen?: (fn: () => void, ms: number) => () => void;
+	/** Build the adapter-owned three-stage phase lifecycle controller. */
+	phaseLifecycleFactory?: (
+		options: CodexPhaseLifecycleControllerOptions,
+	) => CodexPhaseLifecycle;
 }
 
 export function codexSessionStateDir(
@@ -191,6 +193,9 @@ export class CodexTmuxAdapter implements IAdapter {
 	private readonly killWindow: typeof killRunnerTuiWindow;
 	private readonly windowAliveFn: (windowName: string) => boolean;
 	private readonly scheduleReopen: (fn: () => void, ms: number) => () => void;
+	private readonly phaseLifecycleFactory: NonNullable<
+		CodexDaemonAdapterDeps["phaseLifecycleFactory"]
+	>;
 
 	constructor(
 		private sessionName: string = "flywheel",
@@ -224,6 +229,9 @@ export class CodexTmuxAdapter implements IAdapter {
 				(t as { unref?: () => void }).unref?.();
 				return () => clearTimeout(t);
 			});
+		this.phaseLifecycleFactory =
+			deps.phaseLifecycleFactory ??
+			((options) => new CodexPhaseLifecycleController(options));
 	}
 
 	async checkEnvironment(): Promise<AdapterHealthCheck> {
@@ -345,6 +353,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		let tmuxWindow = `${this.sessionName}:${windowName}`;
 
 		let runtime: CodexDaemonGoalRuntimeLike | undefined;
+		let phaseLifecycle: CodexPhaseLifecycle | undefined;
 		let registeredSession = false;
 		let stopGateWatcher: () => void = () => {};
 		let stopHeartbeat: () => void = () => {};
@@ -416,6 +425,34 @@ export class CodexTmuxAdapter implements IAdapter {
 				networkAccess: true,
 				logger: (m) => this.log(m),
 			});
+
+			if (ctx.phaseKeepAlive) {
+				if (!ctx.commDbPath) {
+					throw new Error(
+						`phase keep-alive requires commDbPath for ${ctx.executionId}`,
+					);
+				}
+				const watcher =
+					this.transport && ctx.agentName && ctx.teamName
+						? this.transport.createReceiver({
+								leadName: ctx.leadId ?? ctx.teamName,
+								runnerName: ctx.agentName,
+								teamName: ctx.teamName,
+							})
+						: null;
+				phaseLifecycle = this.phaseLifecycleFactory({
+					executionId: ctx.executionId,
+					role: ctx.phaseKeepAlive.role,
+					commDbPath: ctx.commDbPath,
+					sessionStatePath: join(
+						codexSessionStateDir(ctx.executionId),
+						"session.json",
+					),
+					...(ctx.agentName ? { mailboxAgentName: ctx.agentName } : {}),
+					watcher,
+				});
+				await phaseLifecycle.start();
+			}
 
 			const buildSpec = (threadId: string) => ({
 				tmuxSession: this.sessionName,
@@ -664,6 +701,16 @@ export class CodexTmuxAdapter implements IAdapter {
 			}
 			stopGateWatcher();
 			stopHeartbeat();
+			if (phaseLifecycle) {
+				try {
+					await phaseLifecycle.stop();
+				} catch (err) {
+					teardownError ??= err;
+					console.warn(
+						`[CodexTmuxAdapter] ${ctx.executionId} phase controller teardown failed: ${(err as Error).message}`,
+					);
+				}
+			}
 			this.killWindow(
 				{ tmuxSession: this.sessionName, windowName },
 				{ log: (m) => this.log(m) },
@@ -827,27 +874,19 @@ export class CodexTmuxAdapter implements IAdapter {
 		try {
 			const stateDir = codexSessionStateDir(ctx.executionId);
 			mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-			writeFileSync(
-				join(stateDir, "session.json"),
-				JSON.stringify(
-					{
-						executionId: ctx.executionId,
-						issueId: ctx.issueId,
-						tmuxWindow: `${this.sessionName}:${windowName}`,
-						cwd: ctx.cwd,
-						vendor: "codex",
-						threadId,
-						// HIGH-3: the live daemon's pid, so a resuming redrive can reap
-						// this daemon if a Bridge crash orphaned it (detached:false does
-						// NOT kill the child on parent death). Omitted when unknown.
-						...(daemonPid !== undefined ? { daemonPid } : {}),
-						updatedAt: new Date().toISOString(),
-					},
-					null,
-					2,
-				),
-				{ encoding: "utf-8", mode: 0o600 },
-			);
+			atomicMergeCodexSessionState(join(stateDir, "session.json"), {
+				executionId: ctx.executionId,
+				issueId: ctx.issueId,
+				tmuxWindow: `${this.sessionName}:${windowName}`,
+				cwd: ctx.cwd,
+				vendor: "codex",
+				threadId,
+				// HIGH-3: the live daemon's pid, so a resuming redrive can reap
+				// this daemon if a Bridge crash orphaned it (detached:false does
+				// NOT kill the child on parent death). Omitted when unknown.
+				...(daemonPid !== undefined ? { daemonPid } : {}),
+				updatedAt: new Date().toISOString(),
+			});
 		} catch (err) {
 			console.warn(
 				`[CodexTmuxAdapter] session state persist failed: ${(err as Error).message}`,
