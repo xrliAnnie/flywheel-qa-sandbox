@@ -29,6 +29,7 @@ import {
 	leadPaneLiveHash,
 } from "../LeadWatchdog.js";
 import type { AlertThreadRow, StateStore } from "../StateStore.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 import { type AutoRepairBot, HUMAN_ONLY_REASON } from "./AutoRepairBot.js";
 import {
 	formatAccountCapOwnerAssignment,
@@ -112,7 +113,10 @@ export function createDiscordOps(
 					{
 						method: "POST",
 						headers: authHeaders(token),
-						body: JSON.stringify({ content, allowed_mentions }),
+						body: JSON.stringify({
+							content: markAutomatedDiscordText(content),
+							allowed_mentions,
+						}),
 					},
 				);
 				if (res.ok) return;
@@ -174,7 +178,7 @@ export function createDiscordOps(
 							method: "PATCH",
 							headers: authHeaders(token),
 							body: JSON.stringify({
-								content,
+								content: markAutomatedDiscordText(content),
 								allowed_mentions: { parse: [] as string[] },
 							}),
 						},

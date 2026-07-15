@@ -82,6 +82,7 @@ describe("ChatThreadCreator.ensureRunnerAttachPin (FLY-560)", () => {
 		// POST body carries the command in a code block + allowed_mentions parse:[]
 		const post = mockFetch.mock.calls.find((c) => c[1].method === "POST")!;
 		const body = JSON.parse(post[1].body);
+		expect(body.content).toMatch(/^🤖\[自动\] /);
 		expect(body.content).toContain(CMD);
 		expect(body.content).toContain("FLY-560");
 		expect(body.allowed_mentions).toEqual({ parse: [] });

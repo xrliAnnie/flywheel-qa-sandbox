@@ -12,6 +12,7 @@ import {
 	MAX_DISCORD_MESSAGE_LENGTH,
 	splitDiscordMessage,
 } from "./discord-utils.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -383,7 +384,9 @@ export class StandupService {
 							Authorization: `Bot ${this.discordBotToken}`,
 							"Content-Type": "application/json",
 						},
-						body: JSON.stringify({ content: chunk }),
+						body: JSON.stringify({
+							content: markAutomatedDiscordText(chunk),
+						}),
 						signal: controller.signal,
 					},
 				);

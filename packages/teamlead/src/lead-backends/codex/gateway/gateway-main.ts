@@ -36,6 +36,7 @@ import {
 	getActionClassMeta,
 	isLifecycleAction,
 } from "../../../bridge/founder-consent/reserved-endpoints.js";
+import { markAutomatedDiscordText } from "../../../bridge/automated-message.js";
 import { matchesLead } from "../../../bridge/lead-scope.js";
 import { checkStartedEvidence } from "../../../bridge/started-evidence.js";
 import {
@@ -369,7 +370,9 @@ function discordRest(botToken: string) {
 			const res = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
 				method: "POST",
 				headers,
-				body: JSON.stringify({ content: text }),
+				body: JSON.stringify({
+					content: markAutomatedDiscordText(text),
+				}),
 			});
 			if (!res.ok) {
 				throw new Error(`discord send failed: ${res.status}`);
@@ -380,7 +383,13 @@ function discordRest(botToken: string) {
 		async editMessage(channelId: string, messageId: string, text: string) {
 			const res = await fetch(
 				`${DISCORD_API}/channels/${channelId}/messages/${messageId}`,
-				{ method: "PATCH", headers, body: JSON.stringify({ content: text }) },
+				{
+					method: "PATCH",
+					headers,
+					body: JSON.stringify({
+						content: markAutomatedDiscordText(text),
+					}),
+				},
 			);
 			if (!res.ok) throw new Error(`discord edit failed: ${res.status}`);
 		},

@@ -39,6 +39,7 @@ import {
 import type { MetaAlertReason } from "./MetaAlertNotifier.js";
 import type { LeadConfig, ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
+import { markAutomatedDiscordText } from "./bridge/automated-message.js";
 
 /**
  * FLY-182 Track B: minimal sink so LeadAlertNotifier can fire a Discord-
@@ -1055,7 +1056,7 @@ export class LeadAlertNotifier {
 							"Content-Type": "application/json",
 						},
 						body: JSON.stringify({
-							content,
+							content: markAutomatedDiscordText(content),
 							allowed_mentions: { parse: [] as string[] },
 						}),
 					},
@@ -1158,9 +1159,11 @@ export class LeadAlertNotifier {
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify({
-					content: formatContent(payload, {
-						ticketHeader: !!this.unifiedAlert && this.ticketsEnabled(),
-					}),
+					content: markAutomatedDiscordText(
+						formatContent(payload, {
+							ticketHeader: !!this.unifiedAlert && this.ticketsEnabled(),
+						}),
+					),
 					// FLY-368 (Codex code R1 MEDIUM-3): suppress all mentions on the
 					// unified-channel root alert so an issue id / title / body can never
 					// @everyone/@here/@role-ping the channel. Gated on unified mode so the

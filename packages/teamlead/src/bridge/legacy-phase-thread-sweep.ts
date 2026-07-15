@@ -26,6 +26,7 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveAnnouncerBotToken } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { archiveChatThread } from "./chat-thread-utils.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 import { resolveBotTokenForThread } from "./done-thread-archiver.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
@@ -68,7 +69,9 @@ async function postPointerMessage(
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify({
-					content: `🔀 本 issue 的后续消息已归并到主 thread：<#${mainThreadId}>（一 issue = 一 thread）。`,
+					content: markAutomatedDiscordText(
+						`🔀 本 issue 的后续消息已归并到主 thread：<#${mainThreadId}>（一 issue = 一 thread）。`,
+					),
 					allowed_mentions: { parse: [] },
 				}),
 				signal: controller.signal,

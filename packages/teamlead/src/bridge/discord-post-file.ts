@@ -20,6 +20,7 @@
  */
 
 import { DISCORD_API } from "./discord-utils.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 
 export interface DiscordFileAttachment {
 	data: Buffer;
@@ -44,7 +45,7 @@ export async function postDiscordMessageWithFile(
 	form.append(
 		"payload_json",
 		JSON.stringify({
-			content,
+			content: markAutomatedDiscordText(content),
 			allowed_mentions: { parse: [] },
 			attachments: [{ id: 0, filename: file.filename }],
 		}),
