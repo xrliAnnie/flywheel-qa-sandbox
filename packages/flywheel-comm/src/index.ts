@@ -41,6 +41,7 @@ import { qaResult } from "./commands/qa-result.js";
 import { reportDeployed } from "./commands/report-deployed.js";
 import { requestReview } from "./commands/request-review.js";
 import { respond } from "./commands/respond.js";
+import { reviewRuling } from "./commands/review-ruling.js";
 import { runRunnerConfig } from "./commands/runner-config.js";
 import { search } from "./commands/search.js";
 import { send } from "./commands/send.js";
@@ -94,6 +95,7 @@ Commands:
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
   qa-result  Emit a QA verdict (pass|fail) that gates the founder ship notification (QA Runner use)
   request-review  Register a codex-author review request bound to an open review gate (FLY-1188; --type design|code --question-id <id> [--plan <path>])
+  review-ruling  Record or revoke a supervised Lead ruling for a delivered review finding (FLY-1278)
   codex-review-result  Emit a Codex code-review APPROVED verdict for the current head (FLY-827; await-codex-gate calls this automatically)
   cleanup   Delete read messages older than TTL (default 24h)
   visual-capture   Run ProofShot UI/3D capture, select artifacts, write manifest (GEO-151)
@@ -231,6 +233,9 @@ async function main(): Promise<void> {
 			break;
 		case "request-review":
 			await runRequestReview(commandArgs);
+			break;
+		case "review-ruling":
+			await runReviewRuling(commandArgs);
 			break;
 		case "codex-review-result":
 			await runCodexReviewResult(commandArgs);
@@ -922,6 +927,48 @@ async function runRequestReview(args: string[]): Promise<void> {
 		questionId: values["question-id"],
 		planPath: values.plan,
 		requestId: values["request-id"],
+	});
+}
+
+// FLY-1278: supervised governance for an already-delivered review finding.
+async function runReviewRuling(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			project: { type: "string" },
+			issue: { type: "string" },
+			finding: { type: "string" },
+			"request-id": { type: "string" },
+			"finding-index": { type: "string" },
+			disposition: { type: "string" },
+			"follow-up": { type: "string" },
+			reason: { type: "string" },
+			lead: { type: "string" },
+			revoke: { type: "string" },
+			"exec-id": { type: "string" },
+		},
+		allowPositionals: false,
+	});
+	const rawIndex = values["finding-index"];
+	const findingIndex =
+		rawIndex !== undefined && /^\d+$/.test(rawIndex)
+			? Number.parseInt(rawIndex, 10)
+			: rawIndex === undefined
+				? undefined
+				: Number.NaN;
+
+	await reviewRuling({
+		project: values.project,
+		issue: values.issue,
+		finding: values.finding,
+		requestId: values["request-id"],
+		findingIndex,
+		disposition: values.disposition,
+		followUp: values["follow-up"],
+		reason: values.reason,
+		lead: values.lead,
+		revoke: values.revoke,
+		execId: values["exec-id"],
 	});
 }
 

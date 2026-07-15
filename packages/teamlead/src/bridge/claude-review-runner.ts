@@ -25,6 +25,8 @@ import type { RoleEffort } from "flywheel-config";
 import { washJudgeEnv } from "./watchdog-judge.js";
 
 export interface ClaudeReviewFinding {
+	id?: string;
+	disputesRuling?: string;
 	severity?: string;
 	file?: string;
 	line?: number;
