@@ -330,15 +330,12 @@ export function killRunnerTuiWindow(
 	try {
 		assertShellSafe("tmuxSession", spec.tmuxSession, SAFE_NAME);
 		assertShellSafe("windowName", spec.windowName, SAFE_NAME);
-		if (spec.windowId) assertShellSafe("windowId", spec.windowId, SAFE_WINDOW_ID);
+		if (spec.windowId)
+			assertShellSafe("windowId", spec.windowId, SAFE_WINDOW_ID);
 		const target = spec.windowId
 			? `=${spec.tmuxSession}:${spec.windowId}`
 			: `=${spec.tmuxSession}:=${spec.windowName}`;
-		const r = exec("tmux", [
-			"kill-window",
-			"-t",
-			target,
-		]);
+		const r = exec("tmux", ["kill-window", "-t", target]);
 		safeLog(
 			deps.log,
 			r.ok

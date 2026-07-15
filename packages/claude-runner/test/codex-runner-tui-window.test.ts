@@ -513,9 +513,7 @@ describe("killRunnerTuiWindow", () => {
 			},
 			{ exec: r.exec },
 		);
-		expect(r.calls).toEqual([
-			["tmux", "kill-window", "-t", "=flywheel:@7"],
-		]);
+		expect(r.calls).toEqual([["tmux", "kill-window", "-t", "=flywheel:@7"]]);
 	});
 });
 
