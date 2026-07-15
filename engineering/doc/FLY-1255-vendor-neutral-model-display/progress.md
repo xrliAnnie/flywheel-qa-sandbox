@@ -2,12 +2,12 @@
 issue: FLY-1255
 phase: design
 phaseCursor: 4/5
-updated: 2026-07-15T00:04:54.682Z
-nextStep: Request final clean design review
+updated: 2026-07-15T00:09:25.081Z
+nextStep: Request final review of alias inference fix
 chunks: []
 pointers: {}
 ---
 
 # FLY-1255 progress
 **phase**: design (4/5)
-**next**: Request final clean design review
+**next**: Request final review of alias inference fix
