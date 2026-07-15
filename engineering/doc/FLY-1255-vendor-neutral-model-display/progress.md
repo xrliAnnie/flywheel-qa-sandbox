@@ -1,13 +1,13 @@
 ---
 issue: FLY-1255
 phase: implement
-phaseCursor: 3/6
-updated: 2026-07-15T00:26:17.953Z
-nextStep: "Task 4 RED: migrate every managed thread-title writer"
+phaseCursor: 4/6
+updated: 2026-07-15T00:35:16.281Z
+nextStep: "Task 5 RED: vendor-neutral runner window names and cmux preservation"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1255 progress
-**phase**: implement (3/6)
-**next**: Task 4 RED: migrate every managed thread-title writer
+**phase**: implement (4/6)
+**next**: Task 5 RED: vendor-neutral runner window names and cmux preservation
