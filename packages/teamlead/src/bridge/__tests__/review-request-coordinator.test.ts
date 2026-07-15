@@ -715,7 +715,7 @@ describe("ReviewRequestCoordinator — job execution", () => {
 			`When done, output ONLY a JSON object: {"verdict": "APPROVED" | "CHANGES_REQUESTED", ` +
 			`"findings": [{"severity": "HIGH|MEDIUM|LOW", "file": "...", "line": 0, "title": "...", "detail": "..."}], ` +
 			`"reviewedHeadSha": "<the exact commit you reviewed, git rev-parse HEAD>"}. ` +
-			`No prose outside the JSON.`;
+			`No prose outside the JSON. Your very last line must be that JSON object itself.`;
 		const target = `Review the CODE at commit ${HEAD} on the current branch. Diff it against the merge base with the default branch (git diff), read the touched files in full, check correctness, security, edge cases and error handling. Skip style nitpicks.`;
 		expect(legacy.invocations[0]?.prompt).toBe(
 			`${legacyContract}\n\n${target}\n\nThis is round 1.`,
