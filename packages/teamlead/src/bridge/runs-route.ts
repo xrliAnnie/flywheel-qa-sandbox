@@ -11,7 +11,7 @@
  * Action Gate rule. Gated by `BRIDGE_DEPT_SCOPE_REJECT` env var (default on).
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -78,6 +78,26 @@ const THREAD_POLL_MAX_MS = 5000;
  * times out. 30s headroom over the codex spawn latency QA measured (~3.4s).
  */
 const GHOST_GUARD_SESSION_WAIT_MS = 30_000;
+
+function secureTokenEqual(
+	actual: string | undefined,
+	expected: string | undefined,
+) {
+	if (!actual || !expected) return false;
+	const actualDigest = createHash("sha256").update(actual).digest();
+	const expectedDigest = createHash("sha256").update(expected).digest();
+	return timingSafeEqual(actualDigest, expectedDigest);
+}
+
+function isSchemaV2Snapshot(snapshot: string | null | undefined): boolean {
+	if (!snapshot) return false;
+	try {
+		const parsed = JSON.parse(snapshot) as { schema_version?: unknown };
+		return parsed?.schema_version === 2;
+	} catch {
+		return false;
+	}
+}
 
 /**
  * FLY-127: Read the dept-scope reject feature flag.
@@ -182,12 +202,14 @@ export function createRunsRouter(
 			req.headers.authorization.startsWith("Bearer ")
 				? req.headers.authorization.slice("Bearer ".length)
 				: undefined;
-		const requestAuthKind: WorkflowRequestAuthKind =
-			auth?.masterToken && bearer === auth.masterToken
-				? "master"
-				: auth?.scopedToken && bearer === auth.scopedToken
-					? "scoped"
-					: "tokenless";
+		const requestAuthKind: WorkflowRequestAuthKind = secureTokenEqual(
+			bearer,
+			auth?.masterToken,
+		)
+			? "master"
+			: secureTokenEqual(bearer, auth?.scopedToken)
+				? "scoped"
+				: "tokenless";
 		const rawProjectName = req.body.projectName;
 		let leadId = req.body.leadId as string | undefined;
 
@@ -412,10 +434,15 @@ export function createRunsRouter(
 		const replayReservation = requestedStartKey
 			? store.getWorkflowStartReservation(requestedStartKey)
 			: undefined;
-		if (
-			alreadyActive &&
-			replayReservation?.execution_id !== alreadyActive.execution_id
-		) {
+		const exactGeneralizedReplay =
+			requestAuthKind === "master" &&
+			replayReservation?.execution_id === alreadyActive?.execution_id &&
+			isSchemaV2Snapshot(
+				replayReservation
+					? store.getWorkflowRun(replayReservation.run_id)?.snapshot
+					: undefined,
+			);
+		if (alreadyActive && !exactGeneralizedReplay) {
 			// FLY-742: a done-but-parked blocker (finished, PR merged/closed, never
 			// emitted `completed`) would silently block this scheduled/cron run
 			// forever. The guard either auto-finalizes such a blocker (freeing the

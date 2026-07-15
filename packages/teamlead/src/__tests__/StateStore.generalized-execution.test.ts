@@ -71,6 +71,58 @@ const enabled = {
 };
 
 describe("generalized execution admission and terminal contracts", () => {
+	it("revokes an older attempt's unconsumed output credential when retrying", async () => {
+		const store = await StateStore.create(":memory:");
+		createRun(store, { output: true });
+		const first = store.admitGeneralizedWorkflowExecution({
+			runId: "run-1",
+			nodeId: "execute",
+			executionId: "exec-1",
+			attempt: 1,
+			expiresAt: "2026-07-15T00:20:00.000Z",
+			absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+			now: "2026-07-15T00:00:00.000Z",
+			env: enabled,
+		});
+		expect(first).toMatchObject({ ok: true });
+		const retry = store.admitGeneralizedWorkflowExecution({
+			runId: "run-1",
+			nodeId: "execute",
+			executionId: "exec-2",
+			attempt: 2,
+			expiresAt: "2026-07-15T00:25:00.000Z",
+			absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+			now: "2026-07-15T00:05:00.000Z",
+			env: enabled,
+		});
+		expect(retry).toMatchObject({ ok: true });
+		if (
+			!first.ok ||
+			!first.outputCredential ||
+			!retry.ok ||
+			!retry.outputCredential
+		) {
+			throw new Error("output admission failed");
+		}
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: first.outputCredential,
+				clientRequestId: "stale-output",
+				payload: '{"stale":true}',
+				now: "2026-07-15T00:06:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "credential_revoked" });
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: retry.outputCredential,
+				clientRequestId: "retry-output",
+				payload: '{"retry":true}',
+				now: "2026-07-15T00:06:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		store.close();
+	});
+
 	it("rotates a lost output credential only under the live pre-commit launch owner", async () => {
 		const store = await StateStore.create(":memory:");
 		createRun(store, { output: true });
@@ -410,6 +462,46 @@ describe("generalized execution admission and terminal contracts", () => {
 				now: "2026-07-15T00:02:01.000Z",
 			}),
 		).toMatchObject({ ok: true, idempotentReplay: true });
+		store.close();
+	});
+
+	it("bumps lifecycle revision only when generalized completion changes status", async () => {
+		const store = await StateStore.create(":memory:");
+		createRun(store);
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-1",
+				nodeId: "execute",
+				executionId: "exec-1",
+				attempt: 1,
+				expiresAt: "2026-07-15T00:20:00.000Z",
+				absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+				now: "2026-07-15T00:00:00.000Z",
+				env: enabled,
+			}),
+		).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "execute",
+		});
+		expect(store.getLifecycleRevision("exec-1")).toBe(0);
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "complete-1",
+				completionSubmission: { decision: { route: "no_code" } },
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		expect(store.getLifecycleRevision("exec-1")).toBe(1);
+		expect(
+			store.observeEnrolledTeardown({ executionId: "exec-1" }),
+		).toMatchObject({ receipt: true });
+		expect(store.getLifecycleRevision("exec-1")).toBe(1);
 		store.close();
 	});
 

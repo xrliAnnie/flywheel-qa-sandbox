@@ -368,5 +368,15 @@ describe("workflow template manifest v2", () => {
 				nodes: { produce: { skip: true } },
 			}),
 		).toThrow(/cannot skip.*produce/i);
+
+		const research = loadBundledWorkflowSeeds().find(
+			(seed) => seed.templateId === "tpl_research_light",
+		)!.manifest;
+		expect(() =>
+			applyWorkflowOverride(research, {
+				reason: "the deliverable is still mandatory",
+				nodes: { research: { skip: true } },
+			}),
+		).toThrow(/cannot skip.*research.*output|output.*research/i);
 	});
 });

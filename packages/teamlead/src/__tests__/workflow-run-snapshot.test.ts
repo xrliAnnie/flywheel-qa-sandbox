@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NODE_TYPE_REGISTRY } from "flywheel-config";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	buildWorkflowRunSnapshotV2,
@@ -104,5 +105,38 @@ describe("typed generalized workflow snapshot", () => {
 				canonicalRoot: root,
 			}),
 		).toThrow(/agent/i);
+	});
+
+	it("parses a pinned run after the live node registry changes", () => {
+		const { root, manifest } = fixture();
+		const snapshot = buildWorkflowRunSnapshotV2({
+			template: { id: "tpl_ops", revision: 1 },
+			manifest,
+			canonicalRoot: root,
+		});
+		const generic = NODE_TYPE_REGISTRY.generic.capabilities as {
+			shared_branch_writer: boolean;
+		};
+		const original = generic.shared_branch_writer;
+		try {
+			generic.shared_branch_writer = true;
+			expect(() =>
+				parseWorkflowRunSnapshot(JSON.stringify(snapshot)),
+			).not.toThrow();
+		} finally {
+			generic.shared_branch_writer = original;
+		}
+	});
+
+	it("rejects an empty agent file before writing an unreadable snapshot", () => {
+		const { root, manifest } = fixture();
+		writeFileSync(join(root, "agents", "generic.md"), "  \n");
+		expect(() =>
+			buildWorkflowRunSnapshotV2({
+				template: { id: "tpl_ops", revision: 1 },
+				manifest,
+				canonicalRoot: root,
+			}),
+		).toThrow(/agent.*non-empty|non-empty.*agent/i);
 	});
 });

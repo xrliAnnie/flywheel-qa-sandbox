@@ -12228,6 +12228,16 @@ export class StateStore {
 					"workflow start response requires positive launch evidence",
 				);
 			}
+			const launchOwner = this.getWorkflowLaunchOwner(reservation.execution_id);
+			if (
+				!launchOwner ||
+				launchOwner.committed_generation !== launchOwner.owner_generation ||
+				launchOwner.delivery_state !== "delivered"
+			) {
+				throw new Error(
+					"workflow start response requires durable launch owner delivery evidence",
+				);
+			}
 			const existing = this.workflowSelectAll(
 				"SELECT response_json FROM workflow_start_response WHERE idempotency_key = ?",
 				[input.idempotencyKey],
@@ -13041,8 +13051,16 @@ export class StateStore {
 		const binding = this.getWorkflowExecutionBinding(executionId);
 		if (!binding) return undefined;
 		const run = this.getWorkflowRun(binding.run_id);
-		if (!run?.snapshot)
-			throw new Error("bound workflow execution has no snapshot");
+		// Legacy shadow/auto-QA bindings intentionally have no typed snapshot.
+		// A binding row alone is not schema-v2 enrollment.
+		if (!run?.snapshot) {
+			if (run?.selection_source) {
+				throw new Error(
+					"generalized workflow execution has no pinned snapshot",
+				);
+			}
+			return undefined;
+		}
 		let raw: unknown;
 		try {
 			raw = JSON.parse(run.snapshot);
@@ -13196,6 +13214,13 @@ export class StateStore {
 				],
 			);
 			if (node.capabilities.produces_output) {
+				this.db.run(
+					`UPDATE workflow_output_credential
+					    SET revoked = 1, revoked_reason = 'superseded_by_retry'
+					  WHERE run_id = ? AND node_id = ? AND attempt < ?
+					    AND consumed_at IS NULL AND revoked = 0`,
+					[input.runId, input.nodeId, input.attempt],
+				);
 				outputCredential = generateCapabilityToken();
 				this.db.run(
 					`INSERT INTO workflow_output_credential
@@ -13479,6 +13504,7 @@ export class StateStore {
 			return { ok: false, reason: "output_too_large" };
 		}
 		let outputId = 0;
+		let refusal: "output_already_exists" | "stale_output_attempt" | undefined;
 		this.db.transaction(() => {
 			const prior = this.workflowSelectAll(
 				`SELECT * FROM workflow_node_outputs
@@ -13489,13 +13515,17 @@ export class StateStore {
 					Number(credential.attempt),
 				],
 			)[0];
-			if (prior) throw new Error("workflow output already exists for attempt");
+			if (prior) {
+				refusal = "output_already_exists";
+				return;
+			}
 			const current = this.workflowSelectAll(
 				"SELECT * FROM workflow_node_output_current WHERE run_id = ? AND node_id = ?",
 				[credential.run_id as string, credential.node_id as string],
 			)[0];
 			if (current && Number(current.attempt) >= Number(credential.attempt)) {
-				throw new Error("workflow output attempt is not monotonic");
+				refusal = "stale_output_attempt";
+				return;
 			}
 			this.db.run(
 				`INSERT INTO workflow_node_outputs
@@ -13550,6 +13580,7 @@ export class StateStore {
 				payload: { attempt: Number(credential.attempt), outputId },
 			});
 		});
+		if (refusal) return { ok: false, reason: refusal };
 		this.save();
 		return { ok: true, outputId, idempotentReplay: false };
 	}
@@ -13560,6 +13591,7 @@ export class StateStore {
 		completedAt: string;
 	}): void {
 		const { binding, run } = input.context;
+		const previousStatus = this.getSession(binding.execution_id)?.status;
 		this.db.run(
 			`UPDATE workflow_run_node SET state = 'done', ended_at = ?
 			  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
@@ -13585,6 +13617,9 @@ export class StateStore {
 				binding.node_id,
 			],
 		);
+		if (previousStatus && previousStatus !== "completed") {
+			this.bumpLifecycleRevision(binding.execution_id);
+		}
 	}
 
 	commitEnrolledCompletion(input: {
@@ -13736,8 +13771,8 @@ export class StateStore {
 		executionId: string,
 		proposedNodeId?: string,
 	): string | undefined {
-		const binding = this.getWorkflowExecutionBinding(executionId);
-		if (!binding) {
+		const rawBinding = this.getWorkflowExecutionBinding(executionId);
+		if (!rawBinding) {
 			if (proposedNodeId) {
 				throw new Error(
 					`workflow node set-once conflict for unbound execution ${executionId}`,
@@ -13745,39 +13780,9 @@ export class StateStore {
 			}
 			return undefined;
 		}
-		const run = this.getWorkflowRun(binding.run_id);
-		if (!run?.snapshot) {
-			throw new Error(
-				`workflow snapshot missing for bound execution ${executionId}`,
-			);
-		}
-
-		let rawSnapshot: unknown;
-		try {
-			rawSnapshot = JSON.parse(run.snapshot);
-		} catch {
-			throw new Error(
-				`workflow snapshot is invalid for bound execution ${executionId}`,
-			);
-		}
-		if (
-			typeof rawSnapshot !== "object" ||
-			rawSnapshot === null ||
-			!("schema_version" in rawSnapshot)
-		) {
-			throw new Error(
-				`workflow snapshot is invalid for bound execution ${executionId}`,
-			);
-		}
-		if ((rawSnapshot as { schema_version: unknown }).schema_version !== 2) {
-			return undefined;
-		}
-		const snapshot = parseWorkflowRunSnapshot(run.snapshot);
-		if (!snapshot.resolved.nodes.some((node) => node.id === binding.node_id)) {
-			throw new Error(
-				`unknown workflow node ${binding.node_id} in snapshot for execution ${executionId}`,
-			);
-		}
+		const context = this.generalizedExecutionContext(executionId);
+		if (!context) return undefined;
+		const binding = context.binding;
 		const persistedNodeId = this.getSession(executionId)?.workflow_node_id;
 		for (const candidate of [persistedNodeId, proposedNodeId]) {
 			if (candidate && candidate !== binding.node_id) {
@@ -15902,7 +15907,9 @@ export type WorkflowOutputSubmissionResult =
 				| "credential_expired"
 				| "replay_payload_mismatch"
 				| "node_does_not_produce_output"
-				| "output_too_large";
+				| "output_too_large"
+				| "output_already_exists"
+				| "stale_output_attempt";
 	  };
 
 export type WorkflowCompletionResult =

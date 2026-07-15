@@ -36,7 +36,7 @@ function makeStore(initial: Record<string, SessionRow> = {}) {
 	return {
 		sessions,
 		getSession: vi.fn((id: string) => sessions.get(id)),
-		getWorkflowExecutionBinding: vi.fn(() => undefined),
+		getGeneralizedWorkflowNodeForExecution: vi.fn(() => undefined),
 		getWorkflowNodeCompletion: vi.fn(() => undefined),
 		getEventPayloadById: vi.fn(() => undefined),
 		forceStatus: vi.fn(
@@ -413,11 +413,13 @@ describe("tryReconcileComplete", () => {
 		});
 		const store = makeStore({ "exec-output": { status: "running" } });
 		Object.assign(store, {
-			getWorkflowExecutionBinding: vi.fn(() => ({
-				execution_id: "exec-output",
-				run_id: "run-1",
-				node_id: "produce",
-				attempt: 1,
+			getGeneralizedWorkflowNodeForExecution: vi.fn(() => ({
+				binding: {
+					execution_id: "exec-output",
+					run_id: "run-1",
+					node_id: "produce",
+					attempt: 1,
+				},
 			})),
 			getWorkflowNodeCompletion: vi.fn(() => undefined),
 		});
@@ -453,11 +455,13 @@ describe("tryReconcileComplete", () => {
 		let receipt: Record<string, unknown> | undefined;
 		let canonicalAudit: Record<string, unknown> | undefined;
 		Object.assign(store, {
-			getWorkflowExecutionBinding: vi.fn(() => ({
-				execution_id: "exec-receipt",
-				run_id: "run-1",
-				node_id: "execute",
-				attempt: 1,
+			getGeneralizedWorkflowNodeForExecution: vi.fn(() => ({
+				binding: {
+					execution_id: "exec-receipt",
+					run_id: "run-1",
+					node_id: "execute",
+					attempt: 1,
+				},
 			})),
 			getWorkflowNodeCompletion: vi.fn(() => receipt),
 			getEventPayloadById: vi.fn(() => canonicalAudit),
@@ -486,11 +490,13 @@ describe("tryReconcileComplete", () => {
 		const store = makeStore({ "exec-audit-gap": { status: "completed" } });
 		let canonicalAudit: Record<string, unknown> | undefined;
 		Object.assign(store, {
-			getWorkflowExecutionBinding: vi.fn(() => ({
-				execution_id: "exec-audit-gap",
-				run_id: "run-1",
-				node_id: "execute",
-				attempt: 1,
+			getGeneralizedWorkflowNodeForExecution: vi.fn(() => ({
+				binding: {
+					execution_id: "exec-audit-gap",
+					run_id: "run-1",
+					node_id: "execute",
+					attempt: 1,
+				},
 			})),
 			getWorkflowNodeCompletion: vi.fn(() => ({
 				execution_id: "exec-audit-gap",
@@ -521,11 +527,13 @@ describe("tryReconcileComplete", () => {
 		});
 		const store = makeStore({ "exec-audit-conflict": { status: "completed" } });
 		Object.assign(store, {
-			getWorkflowExecutionBinding: vi.fn(() => ({
-				execution_id: "exec-audit-conflict",
-				run_id: "run-1",
-				node_id: "execute",
-				attempt: 1,
+			getGeneralizedWorkflowNodeForExecution: vi.fn(() => ({
+				binding: {
+					execution_id: "exec-audit-conflict",
+					run_id: "run-1",
+					node_id: "execute",
+					attempt: 1,
+				},
 			})),
 			getWorkflowNodeCompletion: vi.fn(() => ({
 				execution_id: "exec-audit-conflict",

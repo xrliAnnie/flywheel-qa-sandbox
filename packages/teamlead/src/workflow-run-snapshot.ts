@@ -6,6 +6,7 @@ import {
 	type WorkflowNodeCapabilities,
 } from "flywheel-config";
 import {
+	validatePinnedWorkflowManifest,
 	validateWorkflowManifest,
 	type WorkflowEffort,
 	type WorkflowManifestV2,
@@ -82,6 +83,9 @@ function readAgent(canonicalRoot: string, agentFile: string) {
 	}
 	const source = readFileSync(target, "utf8");
 	const content = source.slice(0, 40_000);
+	if (!content.trim()) {
+		throw new Error("workflow agent content must be non-empty");
+	}
 	return { content, digest: canonicalSubmissionDigest(content) };
 }
 
@@ -207,10 +211,10 @@ export function parseWorkflowRunSnapshot(
 	if (root.schema_version !== 2) {
 		throw new Error("workflow snapshot schema_version must be 2");
 	}
-	const manifest = validateWorkflowManifest(root.manifest);
-	if (manifest.schema_version !== 2) {
-		throw new Error("workflow snapshot manifest must be schema_version 2");
-	}
+	// The manifest is already pinned. Parse its structure without consulting the
+	// mutable live node registry; capability invariants are checked below from
+	// the snapshot's pinned resolved nodes.
+	const manifest = validatePinnedWorkflowManifest(root.manifest);
 	const manifestDigest = nonempty(
 		root.manifest_digest,
 		"workflow snapshot.manifest_digest",
@@ -327,6 +331,19 @@ export function parseWorkflowRunSnapshot(
 	) {
 		throw new Error(
 			"workflow snapshot resolved nodes do not cover the manifest",
+		);
+	}
+	const pinnedWritesCode = resolved.some(
+		(node) =>
+			node.capabilities.shared_branch_writer || node.capabilities.creates_pr,
+	);
+	const qaCount = resolved.filter((node) => node.type === "qa").length;
+	if (
+		pinnedWritesCode &&
+		(qaCount !== 1 || !manifest.ship_claims.includes("qa_passed"))
+	) {
+		throw new Error(
+			"a workflow containing a pinned code-writing node must contain exactly one independent QA node and qa_passed ship claim",
 		);
 	}
 	const body = snapshotBody({

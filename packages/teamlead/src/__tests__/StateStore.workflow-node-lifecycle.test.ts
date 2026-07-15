@@ -118,6 +118,53 @@ describe("workflow node id lifecycle", () => {
 		store.close();
 	});
 
+	it.each([
+		["shadow run without a snapshot", undefined],
+		[
+			"schema-v1 run",
+			JSON.stringify({
+				schema_version: 1,
+				nodes: [],
+				edges: [],
+				loops: [],
+				terminal_gate: { node: "founder_gate", predicate: "founder_approved" },
+				ship_claims: ["founder_approved"],
+			}),
+		],
+	] as const)(
+		"keeps legacy bindings out of v2 identity: %s",
+		async (_label, snapshotJson) => {
+			const store = await StateStore.create(":memory:");
+			store.createWorkflowRun({
+				runId: "legacy-run",
+				issueId: "FLY-LEGACY",
+				projectName: "flywheel",
+				...(snapshotJson ? { snapshotJson } : {}),
+				claimsReadEnrolled: false,
+			});
+			expect(
+				store.admitWorkflowExecution({
+					runId: "legacy-run",
+					nodeId: "qa",
+					executionId: "legacy-exec",
+					attempt: 1,
+					family: "qa_verdict",
+					now: "2026-07-15T00:00:00.000Z",
+					expiresAt: "2026-07-15T00:05:00.000Z",
+					absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			expect(store.getWorkflowExecutionBinding("legacy-exec")).toBeDefined();
+			expect(
+				store.getGeneralizedWorkflowNodeForExecution("legacy-exec"),
+			).toBeUndefined();
+			expect(
+				store.resolveWorkflowNodeIdForExecution("legacy-exec"),
+			).toBeUndefined();
+			store.close();
+		},
+	);
+
 	it("fails closed when a generalized binding names a node outside its snapshot", async () => {
 		const store = await StateStore.create(":memory:");
 		bind(store, "corrupt", "mystery");

@@ -156,6 +156,88 @@ describe("workflow template selection", () => {
 		store.close();
 	});
 
+	it("records a start response only after the durable launch owner proves delivery", async () => {
+		const store = await StateStore.create(":memory:");
+		const root = setupRoot();
+		const seed = v2Seed();
+		store.importWorkflowTemplateSeed(seed, enabled);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "research",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+		const selected = resolveWorkflowTemplateSelection(store, {
+			project: "flywheel",
+			issueId: "FLY-X",
+			taskCategory: "research",
+			selectedBy: "research-lead",
+			actor: "master",
+			authKind: "master",
+			canonicalRoot: root,
+			idempotencyKey: "start-key-proof",
+			env: enabled,
+			idFactory: (() => {
+				const values = ["run-proof", "exec-proof"];
+				return () => values.shift()!;
+			})(),
+			now: "2026-07-15T00:00:00.000Z",
+		});
+		if (!selected) throw new Error("selection failed");
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: selected.runId,
+				nodeId: selected.nodeId,
+				executionId: selected.executionId,
+				attempt: 1,
+				expiresAt: "2026-07-15T00:20:00.000Z",
+				absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+				now: "2026-07-15T00:00:30.000Z",
+				env: enabled,
+				idempotencyKey: "start-key-proof",
+			}),
+		).toMatchObject({ ok: true });
+		store.advanceWorkflowStartStage(
+			"start-key-proof",
+			"launch_committed",
+			"2026-07-15T00:01:00.000Z",
+		);
+		expect(() =>
+			store.recordWorkflowStartResponse({
+				idempotencyKey: "start-key-proof",
+				response: { success: true },
+			}),
+		).toThrow(/launch.*evidence|owner|delivery/i);
+
+		const markerPath = join(root, "launch-proof.json");
+		const owner = store.recoverOrAcquireWorkflowLaunch({
+			executionId: selected.executionId,
+			ownerId: "dispatcher",
+			now: "2026-07-15T00:02:00.000Z",
+			leaseExpiresAt: "2026-07-15T00:10:00.000Z",
+			markerPath,
+		});
+		if (owner.status !== "acquired") throw new Error("owner not acquired");
+		expect(
+			store.fencedCommitWorkflowLaunch({
+				executionId: selected.executionId,
+				ownerId: "dispatcher",
+				generation: owner.generation,
+				deliveryAttempt: owner.deliveryAttempt,
+				markerPath,
+				now: "2026-07-15T00:03:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		store.recordWorkflowStartResponse({
+			idempotencyKey: "start-key-proof",
+			response: { success: true },
+		});
+		expect(store.getWorkflowStartResponse("start-key-proof")).toEqual({
+			success: true,
+		});
+		store.close();
+	});
+
 	it("requires master auth, reason for lead choice, flags, and a v2 idempotency key", async () => {
 		const store = await StateStore.create(":memory:");
 		const root = setupRoot();

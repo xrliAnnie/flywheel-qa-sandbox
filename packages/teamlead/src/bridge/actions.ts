@@ -860,7 +860,8 @@ async function handleRetry(
 
 	let generalizedExecution: GeneralizedExecutionDispatch | undefined;
 	let adoptedGeneralizedExecutionId: string | undefined;
-	const predecessorBinding = store.getWorkflowExecutionBinding(executionId);
+	const predecessorBinding =
+		store.getGeneralizedWorkflowNodeForExecution(executionId)?.binding;
 	if (predecessorBinding) {
 		const run = store.getWorkflowRun(predecessorBinding.run_id);
 		if (!run?.snapshot) {

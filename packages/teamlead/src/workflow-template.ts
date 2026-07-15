@@ -504,7 +504,10 @@ function assertSafeAgentFile(value: unknown, path: string): string {
 	return relative;
 }
 
-function validateWorkflowManifestV2(value: unknown): WorkflowManifestV2 {
+function validateWorkflowManifestV2(
+	value: unknown,
+	nodeWritesCode: (type: WorkflowNodeType) => boolean = nodeTypeWritesCode,
+): WorkflowManifestV2 {
 	const root = record(value, "manifest");
 	exactKeys(
 		root,
@@ -813,7 +816,7 @@ function validateWorkflowManifestV2(value: unknown): WorkflowManifestV2 {
 			"manifest review nodes and design_review_approved ship claim must be declared together",
 		);
 	}
-	if (nodes.some((node) => nodeTypeWritesCode(node.type)) && qaCount !== 1) {
+	if (nodes.some((node) => nodeWritesCode(node.type)) && qaCount !== 1) {
 		throw new Error(
 			"a workflow containing a code-writing node must contain exactly one independent QA node and qa_passed ship claim",
 		);
@@ -912,10 +915,19 @@ function validateWorkflowManifestV2(value: unknown): WorkflowManifestV2 {
 export function validateWorkflowManifest(value: unknown): WorkflowManifest {
 	const root = record(value, "manifest");
 	if (root.schema_version === 1) return validateWorkflowManifestV1(value);
-	if (root.schema_version === 2) return validateWorkflowManifestV2(value);
+	if (root.schema_version === 2) {
+		return validateWorkflowManifestV2(value);
+	}
 	throw new Error(
 		"manifest.schema_version must be one of the supported versions: 1, 2",
 	);
+}
+
+/** Parse a pinned v2 manifest structurally; its frozen capabilities are checked by the snapshot parser. */
+export function validatePinnedWorkflowManifest(
+	value: unknown,
+): WorkflowManifestV2 {
+	return validateWorkflowManifestV2(value, () => false);
 }
 
 export function parseWorkflowManifestYaml(source: string): WorkflowManifest {
@@ -976,6 +988,9 @@ export function applyWorkflowOverride(
 				throw new Error(`cannot skip independent QA node ${nodeId}`);
 			if (node.type === "review")
 				throw new Error(`cannot skip review node ${nodeId}`);
+			if (node.produces_output) {
+				throw new Error(`cannot skip output-producing node ${nodeId}`);
+			}
 			if (
 				next.loops.some((loop) => loop.from === nodeId || loop.to === nodeId)
 			) {

@@ -202,6 +202,32 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
 		expect(dispatched[0]?.successorExecutionId).toBeUndefined();
 	});
 
+	it("a legacy workflow binding without a v2 snapshot stays on legacy retry", async () => {
+		store.createWorkflowRun({
+			runId: "legacy-shadow-run",
+			issueId: "issue-1",
+			projectName: "fly245-d2-route-test",
+			claimsReadEnrolled: false,
+		});
+		expect(
+			store.admitWorkflowExecution({
+				runId: "legacy-shadow-run",
+				nodeId: "qa",
+				executionId: "pred-1",
+				attempt: 1,
+				family: "qa_verdict",
+				now: "2026-07-15T00:00:00.000Z",
+				expiresAt: "2026-07-15T00:05:00.000Z",
+				absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+
+		const result = await postRetry({ execution_id: "pred-1" });
+		expect(result.status).toBe(200);
+		expect(dispatched).toHaveLength(1);
+		expect(dispatched[0]?.generalizedExecution).toBeUndefined();
+	});
+
 	// Codex R2 MED-6: a POST-dispatch bookkeeping failure must NOT be reported as
 	// a clean failure (the gateway would map the 4xx to `not_dispatched` and allow
 	// a SECOND successor). Once dispatch() returns, the Runner is starting → the

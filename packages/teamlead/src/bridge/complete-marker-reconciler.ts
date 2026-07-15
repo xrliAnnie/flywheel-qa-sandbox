@@ -362,7 +362,8 @@ export async function tryReconcileComplete(
 
 	const currentSession = deps.store.getSession(execId);
 	const currentStatus = currentSession?.status;
-	const generalizedBinding = deps.store.getWorkflowExecutionBinding(execId);
+	const generalizedBinding =
+		deps.store.getGeneralizedWorkflowNodeForExecution(execId)?.binding;
 	const generalizedReceipt = generalizedBinding
 		? deps.store.getWorkflowNodeCompletion(
 				generalizedBinding.run_id,
