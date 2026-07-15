@@ -16,6 +16,16 @@ Issue: FLY-1257 (https://linear.app/geoforge3d/issue/FLY-1257/fix-codex-常驻�
 
 ## 缺陷① Codex 等门自杀(最高优先)
 
+> **根因更正(2026-07-14,Lead Linear comment,来自 FLY-1255 runner 一手取证,
+> 覆盖 issue 描述旧表述)**:「连续 3 回合」不是 FLY-1188 设的耐心上限,而是
+> **Codex 平台对 update_goal(status=blocked) 的准入门槛**——同一 blocker 持续
+> ≥3 个 goal turns 后平台才*允许*标 blocked。事故机理 = runner 把「允许标
+> blocked」误当「应该标 blocked」主动停手,再被缺陷④(blocked 删门)放大。
+> 修法相应更新:主修 = Blueprint 等门指引写死「资格≠指令、resident 持续 poll、
+> 仅真实 timeout/error/reject 才 fail-close」(FLY-1255 本轮已按此行为运行,可作
+> 正确行为参照);缺陷④照修;「便宜睡眠」保留为**优化项**(降低持续 poll 的回合
+> 消耗),不再是止血必需。下文审计与方案已按此更正重排。
+
 ### 现场审计
 
 - Codex runner 的 gate 形态(FLY-1188 M4):`gate <checkpoint> --no-block` 注册 +
@@ -30,13 +40,17 @@ Issue: FLY-1257 (https://linear.app/geoforge3d/issue/FLY-1257/fix-codex-常驻�
   `active|paused|blocked|usageLimited|budgetLimited|complete`,其中
   `blocked` 是 TERMINAL(`codex-daemon-client.ts:36-41`)→ `runGoalToTerminal`
   返回 → adapter 结束会话。
-- **「连续 3 回合轮询无果 → blocked」不是 Flywheel 代码里的常量**——代码与契约全文
-  无此数字。它是 codex 原生 goal 引擎/模型自己的判断:design 产出完成后无独立工作可
-  做,模型每轮 `check` 得 `pending`,几轮(实测 ~3)后自判「genuinely blocked」→
-  原生 goal 状态翻 blocked(终态)→ 会话自停。2026-07-14 三张 Codex design 全部
-  这样死掉,而 Lead 批复只晚了十几分钟。
+- **「连续 3 回合」不是 Flywheel 代码里的常量**(代码与契约全文无此数字),也不是
+  平台的自动裁决——它是 **Codex 平台对 update_goal(status=blocked) 的准入门槛**
+  (FLY-1255 一手取证):同一 blocker 持续 ≥3 goal turns 后,平台才*允许*模型标
+  blocked。真正停手的是模型自己:design 产出完成后无独立工作,每轮 `check` 得
+  `pending`,凑满门槛后把「有资格标 blocked」误当「应该标 blocked」→ 主动
+  update_goal(blocked)(终态)→ 会话自停。2026-07-14 三张 Codex design 全部
+  这样死掉,而 Lead 批复只晚了十几分钟。FLY-1255 同日反例:runner 持续 poll 不
+  宣 blocked,行为正确——证明这是可用提示词纪律约束的误判,不是平台强制。
 - 顺带的浪费:等待期间每一轮轮询都是一次真实模型回合(烧 token + 烧 24h active
-  budget;MED-7 waiting ceiling 只延 deadline,不省回合)。
+  budget;MED-7 waiting ceiling 只延 deadline,不省回合)——这是「便宜睡眠」
+  优化项要解决的部分,不是止血必需。
 
 ### 已有可复用资产
 
@@ -57,20 +71,24 @@ Issue: FLY-1257 (https://linear.app/geoforge3d/issue/FLY-1257/fix-codex-常驻�
   3. approvalPolicy elicitation —— 语义不匹配(是命令批准流,不是 Lead gate),
      且 runner 沙箱姿态固定 `approvalPolicy:"never"`,不可挪用。
 
-### 方案选项
+### 方案(按根因更正重排)
 
-- **A. Runtime 驱动的原生 pause/resume(推荐)**:模型注册 gate 后照常报告并继续
-  独立工作;当 goal 翻 blocked/或模型示意等待、且 `isWaiting()` 为真时,adapter
-  把 goal 置 `paused`(原生 RPC),停止烧回合;gate watcher(已有)检测到 marker
-  被答/超时 → resume(status `active`)+ kick 一轮「gate <id> 已答,跑 check」。
-  耐心上限 = gate deadline(默认 48h,fail-close 由 watcher 发 `gate_timed_out`,
-  与 Claude 的无限等对齐)。**保险丝**:goal 终态 blocked 但存在未答 mandatory-gate
-  marker → 不当终态处理,转入等门(模型自杀被 runtime 拦下)。
-- B. Turn 内阻塞 gate:改注入文本让模型跑 blocking `gate`。烧回合→不烧回合同样成立,
-  但依赖未验证的 tool-call 无限阻塞行为(codex shell tool 有无 per-call timeout 待
-  验证)+ daemon 重启恢复语义要重做;m4d 已明确否决过一次。
-- C. 只改提示词(禁止 gate pending 时宣 blocked + 低频轮询指引):最便宜,但模型判
-  断失误依然可能,且每轮轮询照烧回合,治标不治本。可作为 A 的辅助层。
+- **主修(止血,必做)= 提示词/契约写死等门纪律 + CLI 硬闸**:Blueprint 的 codex
+  等门指引(brainstorm/review/question/generic 四处 isCodexRunner 分支)+
+  codex-runner-contract.md 写死三条——(a) **资格≠指令**:平台允许你标 blocked
+  不等于你应该标;(b) resident 持续 poll(节奏放缓),gate pending 不是 blocked;
+  (c) 仅真实 timeout / error / reject 才走 fail-close。FLY-1255 本轮的正确行为即
+  参照。辅以 **CLI 硬闸**:`complete --route blocked` 在存在未答且未过 deadline
+  的 mandatory gate marker 时拒绝——同一条纪律从软提示变成硬约束,堵住误判的
+  第二条出口。
+- **优化项(可独立摘除)= 便宜睡眠(原生 pause/resume)**:降低持续 poll 的
+  回合/token 消耗。模型无独立工作时 runtime 把原生 goal 置 `paused`(协议面
+  `thread/goal/set`,TUI /goal pause 已实测真停),gate watcher 检测 marker
+  被答/超时 → resume + kick;同时天然构成第二道保险丝(goal 翻 blocked 且
+  isWaiting() 为真 → 不当终态)。不再是止血必需,排在四缺陷主修之后,风险大可
+  整体摘到 follow-up。
+- 已排除:turn 内阻塞 gate(m4d 已否决的未验证路径:tool-call timeout 行为未知、
+  daemon 重启杀阻塞子进程后恢复语义要重做),只作对照记录。
 
 ## 缺陷② retry action 不发 three_stage TURN 带
 
@@ -159,10 +177,11 @@ retry 为 phase row 恢复 startPoint。来源候选:
 
 ## 波及面与风险预判
 
-- ①动 `CodexTmuxAdapter`/`codex-daemon-goal-runtime`/`codex-daemon-client`
-  (claude-runner 包,Claude 路径零接触);需真机验证原生 `thread/goal/set
-  status:"paused"` RPC 行为(TUI 已实证,协议面待 probe——本 design 的 research
-  步骤补)。
+- ①主修只动 Blueprint codex 分支文本 + `codex-runner-contract.md` +
+  `flywheel-comm complete`(CLI 闸);优化项(若做)才动
+  `CodexTmuxAdapter`/`codex-daemon-goal-runtime`/`codex-daemon-client`
+  (claude-runner 包,Claude 路径零接触),且需真机验证原生 `thread/goal/set
+  status:"paused"` RPC 行为(TUI 已实证,协议面待 probe)。
 - ②③只动 retry 路径(dispatch()/actions.ts),start()/orchestrator 路径 byte-compat。
 - ④只动 zombie-gate-hygiene 判定谓词,Z2 与 kill-switch 语义不变。
 - 回归测试:四项各自以 2026-07-14 实战场景为 fixture(①等门>3 轮后 Lead 才答、
@@ -171,6 +190,7 @@ retry 为 phase row 恢复 startPoint。来源候选:
 
 ## 结论
 
-四项均已定位到具体代码位点,修复方向明确:①A(原生 pause/resume + 保险丝)、
-②镜像 FLY-887 seam、③a(branch B tip)、④a(时间序判定)。①需要一步协议面
-probe 验证(research 阶段做)。
+四项均已定位到具体代码位点,修复方向明确(含 Lead 根因更正):①主修=等门纪律
+写死进提示词/契约 + CLI 硬闸,便宜睡眠(原生 pause/resume)降级为可摘除的优化项、
+②镜像 FLY-887 seam、③a(branch B tip)、④a(时间序判定)。优化项需要一步协议面
+probe 验证(纳入 plan 的可选里程碑)。

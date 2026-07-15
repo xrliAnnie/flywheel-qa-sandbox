@@ -52,14 +52,27 @@ Issue: FLY-1257 (https://linear.app/geoforge3d/issue/FLY-1257/fix-codex-常驻�
   沙箱姿态固定 `approvalPolicy:"never"`(`ensureThread`,
   `codex-daemon-goal-runtime.ts:353-367`),挪用会打开不该开的批准面。**排除。**
 
-### R1.4 「连续 3 回合」的定性
+### R1.4 「连续 3 回合」的定性(根因更正,Lead Linear comment 2026-07-14)
 
-Flywheel 代码/契约/提示词全文没有这个常量(grep 证实)。它是 codex 原生 goal
-dispatcher + 模型自判的涌现行为:design 产出完成后无独立工作,模型每轮
-`check` 得 pending,数轮后自判 goal blocked(原生终态)。所以修法必须在
-**runtime 层拦截/接管等待**,单纯改提示词管不住模型判断。
+Flywheel 代码/契约/提示词全文没有这个常量(grep 证实)。FLY-1255 runner 一手
+取证给出定性:它是 **Codex 平台对 update_goal(status=blocked) 的准入门槛**——
+同一 blocker 持续 ≥3 goal turns 后,平台才*允许*模型标 blocked。**允许≠应该**:
+真正停手的是模型误判(把资格当指令),缺陷④(blocked 删门)再放大后果。
+FLY-1255 同日反例(持续 poll、不宣 blocked、行为正确)证明这是提示词纪律可约束
+的误判,不是平台强制。**因此主修落在提示词/契约 + CLI 硬闸**;runtime 层的
+便宜睡眠降级为优化项(省回合,不是止血必需)。
 
-### R1.5 拦截点与现有钩子
+### R1.5 主修落点 + 优化项的拦截点与现有钩子
+
+主修落点(提示词/契约/CLI,详见 plan M1):
+
+- Blueprint codex 等门指引四处 isCodexRunner 分支(`Blueprint.ts:1627-1636`
+  brainstorm、`1684-1696` review_code、`1755-1791` question/generic)——加写
+  「资格≠指令 / 持续 poll / 仅真 timeout·error·reject 才 fail-close」;
+- `codex-runner-contract.md` 等待章节同款铁律;
+- `flywheel-comm complete` 的 route=blocked 硬闸(见 R1.5 末条)。
+
+以下钩子盘点服务于**优化项**(便宜睡眠)与其保险丝:
 
 - `runGoalToTerminal`(`codex-daemon-client.ts:486` 起):终态经
   notification + `getGoal` poll fallback 两路观察;`blocked` 在
@@ -167,23 +180,25 @@ dispatcher + 模型自判的涌现行为:design 产出完成后无独立工作,�
 
 | 缺陷 | 既有测试文件 | 新增回归场景 |
 |---|---|---|
-| ① | `codex-daemon-goal-runtime.test.ts`、`CodexTmuxAdapter.test.ts` | goal 翻 blocked 时 isWaiting()=true → 不终态、进入等待;marker answered → resume+kick;marker 超时 fail-close → resume+kick 超时文案;isWaiting()=false 的 blocked 照旧终态(byte-compat) |
-| ①CLI | flywheel-comm `complete` 测试 | `complete --route blocked` 撞未答 mandatory marker → 拒绝;无 marker / 已答 / 已过期 → 放行 |
+| ①主修 | `Blueprint.fly1188-codex-prompt.test.ts`、`Blueprint.fly1188-codex-identity.test.ts` | codex 分支四处等门文本断言含「资格≠指令/持续 poll/仅真 timeout·error·reject 才 fail-close」;Claude 分支 byte-compat |
+| ①CLI | flywheel-comm `complete` 测试 | `complete --route blocked` 撞未答且未过期 mandatory marker → 拒绝;无 marker / 已答 / 已过期 / --force-blocked → 放行 |
+| ①优化项(若做) | `codex-daemon-goal-runtime.test.ts`、`CodexTmuxAdapter.test.ts` | goal 翻 blocked 时 isWaiting()=true → 不终态、进入等待;marker answered → resume+kick;marker 超时 fail-close → resume+kick 超时文案;isWaiting()=false 的 blocked 照旧终态(byte-compat) |
 | ② | `run-dispatcher-fly887-turn-seam.test.ts` | phase-row retry dispatch 后 `getTurn` = 新 execId、epoch 递增;grant 失败 → dispatch 抛 + 清理;非 phase retry 零行为变化 |
 | ③ | `Blueprint.fly887-worktree-takeover.test.ts`、dispatcher 测试 | 注册 worktree + clean + head==tip 的 phase retry → takeover 成功;dirty → 照旧拒;branch 不存在 → 不设 startPoint 走 create;worktree 被删 + branch 有已提交工作 → create 重置到 tip(不丢工作) |
 | ④ | `zombie-scan.test.ts` | blocked 会话 + 终态后新建 gate → Z1 跳过(永不退);终态前建的 gate → 照退(FLY-1099 不回退);terminal_at NULL 存量行 → 保守跳过 |
 
 ## R6. 波及面结论
 
-- ① 改 `claude-runner`(goal loop 终态判定 + adapter watcher resume 钩子 +
-  goal-runtime 透传)+ `flywheel-comm/complete` guard。Claude 路径零接触
-  (全部在 codex-only 文件/分支)。
+- ①主修改 Blueprint codex 分支文本 + `codex-runner-contract.md` +
+  `flywheel-comm/complete` guard;优化项(若做)才改 `claude-runner`(goal loop
+  终态判定 + goal-runtime 透传)。Claude 路径零接触(全部在 codex-only
+  文件/分支)。
 - ② 改 `run-dispatcher.ts`(dispatch() 加 seam)。start() byte-compat。
 - ③ 改 `run-dispatcher.ts`(dispatch() 推导 branch tip → ctx.startPoint)。
   Blueprint 守卫本身不动。
 - ④ 改 `StateStore`(terminal_at 列 + 状态写入点盖戳)+
   `zombie-gate-hygiene.ts`(谓词)+ `gate-poller.ts`(透传 created_at)。
   Z2/审计/kill-switch 不动。
-- 四项互相独立可分 commit;①依赖 M0 probe 结论(probe 失败的降级线:goal loop
-  拦截后不 pause、改为「不 kick 的静默等待」——dispatcher 不续跑时同样不烧回合,
-  只是模型停在半轮;probe 结论写进 plan 的风险节)。
+- 四项主修互相独立可分 commit,均不依赖 probe;只有优化项依赖 M-opt probe 结论
+  (probe 失败的降级线:goal loop 拦截后不 pause、改为「不 kick 的静默等待」;
+  probe 结论写进 plan 的风险节)。优化项整体可摘除,不影响止血。
