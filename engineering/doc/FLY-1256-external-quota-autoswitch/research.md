@@ -53,8 +53,9 @@ Accept: application/json
 - **旁证隔离性**：探测打满限额期间，本机同账号的活 Claude session（本 runner 自身）推理全程正常——usage endpoint 的限流桶与推理通道相互独立，探测/轮询不影响干活。
 - 恢复验证（phase 2，已闭环）：429（16:41:16）→ 等 retry-after 满 → **16:47:36 单发恢复 200**。契约完整实证：**5 次/5 分钟/token，429 附 retry-after: 300，窗口过后立即恢复**。
 
-**设计含义**（Annie 第二轮：10-20 分钟一次即可 → 分级轮询）：
-- daemon 常态 poll 间隔 **15min**（900s）；**近墙加速**：active 已用量 ≥90%（可配）时收紧到 **5min**（300s）——95% 触发线 + 分钟级间隔存在「两次 poll 之间冲过 100%」窗口（按 Annie 哲学可接受，恢复扫描兜底），近墙加速把该窗口压短。预算占用两档均远低于 5 次/5min。
+**设计含义**（Annie 第三轮终版：怕查太频被封号，查询次数压到最低）：
+- 基础 poll = **20min，只查当前号**；当前号 5h >70%（可配）→ 加密到 **10min**（她给 5-10 区间取上限，明令不再用 2 分钟）；此时**才开始**每 ~60min 扫一遍候选号（预热排序数据，用池内未过期 accessToken，过期即跳过标 unknown——**绝不为例行扫描 probe-refresh**，token 轮转只发生在切号时刻）；闲置号平时零查询。切号时刻按需逐个验证候选（权威数据，probe-refresh + usage 查询）。
+- 90% 触发 + 10-20min 间隔存在「两次 poll 之间冲过 100%」窗口——按 Annie 哲学可接受，恢复扫描（§9）兜底。全部间隔运行时可调（§8）。预算占用各档均远低于实测 5 次/5min。
 - 429 处理：读 `retry-after`（实测总是给出）按其退避；缺失时指数退避（60s 起、上限 30min）。
 - 目标验证的每候选 1 次调用打在**候选自己的 token 桶**上（per-token 限流），不消耗 active 桶。
 - statusline 缓存被 daemon 持续刷新后，statusline 自己的刷新分支（cache 永不过期）**不再发起任何调用**——active 桶的唯一常驻消费者就是 daemon，预算独占。
@@ -116,10 +117,10 @@ OAuth refresh 是**轮转式**：refresh 一次，旧 refreshToken 全家作废�
 ## 5. 缺口与设计含义
 
 ### 5.1 选号策略无处表达（Annie 2026-07-14 拍板：两段式）
-`selectNextAccount`（`account-store.ts:78`）现规则：5h → 字母序第一个可用；weekly → 本地缓存 weeklyResetAt 最近优先（常为 null）。Annie 拍板的**两段式**（先筛 5h+7d 双水位资格 → 合格者按**实时 seven_day.resets_at 最早优先**「先到期先用」→ founder 固定顺序仅平手裁决；5h 不参与排序）没有对应实现——排序键需要切号时刻各候选的实时 API 数据，本地 store 给不了。→ **daemon 在体外完成两段式计算**（资格筛 + 实时 reset 排序 + 平手裁决），把算好的有序合格名单经 **`SelectInput` 新可选字段 `preferredOrder?: string[]`** 传进 `switchAccount`：present 时候选排序 = 在列表中的下标（未列出的账号不参与选择），既有 usability 过滤（authExpired/cooldown）保留；absent 时行为 byte-identical（既有测试全绿为证）。Bridge 被动路径不传该字段，行为零变化。既有 weekly 启发式与 Annie 规则同哲学（`account-store.ts:10-16`「周五先用周一 reset 的」），差别在数据源实时性。
+`selectNextAccount`（`account-store.ts:78`）现规则：5h → 字母序第一个可用；weekly → 本地缓存 weeklyResetAt 最近优先（常为 null）。Annie 终版的选号规则（资格 = 两窗「有余额就行」→ 合格者按**实时 seven_day.resets_at 最早优先**「先到期先用」→ founder 固定顺序仅平手裁决；触发只看 5h ≥90%）没有对应实现——排序键需要切号时刻各候选的实时 API 数据，本地 store 给不了。→ **daemon 在体外完成两段式计算**（资格筛 + 实时 reset 排序 + 平手裁决），把算好的有序合格名单经 **`SelectInput` 新可选字段 `preferredOrder?: string[]`** 传进 `switchAccount`：present 时候选排序 = 在列表中的下标（未列出的账号不参与选择），既有 usability 过滤（authExpired/cooldown）保留；absent 时行为 byte-identical（既有测试全绿为证）。Bridge 被动路径不传该字段，行为零变化。既有 weekly 启发式与 Annie 规则同哲学（`account-store.ts:10-16`「周五先用周一 reset 的」），差别在数据源实时性。
 
 ### 5.2 切前不验目标配额
-`switch-executor.ts:165-207` 候选环只处理 auth freshness，`selectNextAccount` 只看本地 `quotaExhaustedUntil`（且该字段只在切号 commit 时对源账号写入，目标账号真实余量从未查过）。→ daemon 在调 `switchAccount` **之前**对全部候选完成验证（§3.3 四步，两段式需要每个候选的实时数据来排序），`preferredOrder` = **已通过双水位资格筛、按 7d reset 排好序的合格名单**——switchAccount 内部的 freshness 候选环只会在这份名单里走（榜首在竞态窗口内变 stale 时自动落到榜二，仍是配额已验账号），不可能落到未验证配额的账号上。
+`switch-executor.ts:165-207` 候选环只处理 auth freshness，`selectNextAccount` 只看本地 `quotaExhaustedUntil`（且该字段只在切号 commit 时对源账号写入，目标账号真实余量从未查过）。→ daemon 在调 `switchAccount` **之前**对全部候选完成验证（§3.3 四步，两段式需要每个候选的实时数据来排序），`preferredOrder` = **已通过「有余额 + freshness」资格筛、按 7d reset 排好序的合格名单**——switchAccount 内部的 freshness 候选环只会在这份名单里走（榜首在竞态窗口内变 stale 时自动落到榜二，仍是配额已验账号），不可能落到未验证配额的账号上。
 
 ### 5.3 监控盲区（v1 文档化边界）
 active 账号 accessToken 过期（`expiresAt` 已过）且机器上无任何活 Claude session 来刷新它时，daemon 无法读 active 用量（401），且红线 R1 禁止它自己刷。v1 行为：读 Keychain `expiresAt` 预判、跳过 API 调用、进入 blind 态并发一条（claims.db 日去重的）`quota_read_blind` 告警。本机 fleet 24/7 运转，blind 态罕见；「全员因配额假死」场景 token 仍有效（quota≠auth），**不落入盲区**。
