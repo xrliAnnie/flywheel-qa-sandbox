@@ -154,6 +154,26 @@ describe("workflow template manifest v1", () => {
 		).toThrow(/independent QA node/i);
 	});
 
+	it("rejects model/vendor/effort combinations outside the canonical registry", () => {
+		const valid = loadBundledWorkflowSeeds()[0]!.manifest;
+		expect(() =>
+			validateWorkflowManifest({
+				...valid,
+				nodes: valid.nodes.map((node) =>
+					node.id === "design" ? { ...node, model: "claude-invented" } : node,
+				),
+			}),
+		).toThrow(/registry|supported/i);
+		expect(() =>
+			validateWorkflowManifest({
+				...valid,
+				nodes: valid.nodes.map((node) =>
+					node.id === "implement" ? { ...node, effort: "high" } : node,
+				),
+			}),
+		).toThrow(/registry|supported|effort/i);
+	});
+
 	it("applies only reasoned model/effort/skip overrides and consumes skip before validation", () => {
 		const heavy = loadBundledWorkflowSeeds()[0]!.manifest;
 		expect(() => applyWorkflowOverride(heavy, { reason: "" })).toThrow(

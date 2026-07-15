@@ -7,6 +7,7 @@ import {
 import {
 	assertManagementSnapshot,
 	MANAGEMENT_SCHEMA_VERSION,
+	type ManagementDagView,
 	type ManagementExtensionSection,
 	type ManagementFlagView,
 	type ManagementProjectView,
@@ -21,6 +22,8 @@ export interface ManagementSnapshotFragment {
 	flags?: ManagementFlagView[];
 	extensions?: ManagementExtensionSection[];
 	modelCatalog?: Partial<Record<ModelSurface, ModelCatalog>>;
+	/** Provider-owned project sections joined after all authority reads complete. */
+	projectDags?: Array<{ projectName: string; dags: ManagementDagView[] }>;
 }
 
 export interface ManagementSnapshotProviderResult {
@@ -53,6 +56,8 @@ export function composeManagementSnapshot(input: {
 	const flags: ManagementFlagView[] = [];
 	const extensions: ManagementExtensionSection[] = [];
 	const modelCatalog: ManagementSnapshotV1["modelCatalog"] = {};
+	const projectDags: Array<{ projectName: string; dags: ManagementDagView[] }> =
+		[];
 
 	for (const provider of [...input.providers].sort((a, b) =>
 		a.id.localeCompare(b.id),
@@ -70,6 +75,7 @@ export function composeManagementSnapshot(input: {
 			flags.push(...(result.fragment.flags ?? []));
 			extensions.push(...(result.fragment.extensions ?? []));
 			Object.assign(modelCatalog, result.fragment.modelCatalog ?? {});
+			projectDags.push(...(result.fragment.projectDags ?? []));
 		} catch (error) {
 			sources.push({
 				kind: provider.sourceKind,
@@ -80,6 +86,15 @@ export function composeManagementSnapshot(input: {
 		}
 	}
 
+	const projectsByName = new Map(
+		projects.map((project) => [project.name, project]),
+	);
+	for (const section of projectDags) {
+		const project = projectsByName.get(section.projectName);
+		if (!project) continue;
+		project.dags.push(...section.dags);
+		project.dags.sort((a, b) => a.title.localeCompare(b.title));
+	}
 	projects.sort((a, b) => a.name.localeCompare(b.name));
 	presentationGroups.sort((a, b) => a.id.localeCompare(b.id));
 	flags.sort((a, b) => a.name.localeCompare(b.name));

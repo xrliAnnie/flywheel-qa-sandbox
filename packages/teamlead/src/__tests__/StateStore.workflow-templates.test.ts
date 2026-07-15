@@ -318,4 +318,89 @@ describe("StateStore workflow templates", () => {
 		);
 		store.close();
 	});
+
+	it("atomically appends and publishes one revision, with conflict rollback and run pinning", async () => {
+		const store = await StateStore.create(":memory:");
+		importBundledWorkflowSeeds(store);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "heavy",
+			templateId: "tpl_eng_heavy",
+			updatedBy: "test",
+		});
+		const oldRun = store.materializeWorkflowRun({
+			runId: "old-run",
+			issueId: "issue-old",
+			projectName: "flywheel",
+			taskCategory: "heavy",
+			claimsReadEnrolled: false,
+			actor: "test",
+		});
+		const seed = loadBundledWorkflowSeeds()[0]!;
+		const changed = {
+			...seed.manifest,
+			nodes: seed.manifest.nodes.map((node) =>
+				node.id === "design" ? { ...node, effort: "high" as const } : node,
+			),
+		};
+		const before = {
+			revisions: store.listWorkflowTemplateRevisions(seed.templateId).length,
+			publications: store.listWorkflowTemplatePublications(seed.templateId)
+				.length,
+			audit: store.listWorkflowTemplateAudit(seed.templateId).length,
+		};
+		expect(
+			store.createAndPublishWorkflowTemplateRevision({
+				templateId: seed.templateId,
+				manifest: changed,
+				expectedRevision: 1,
+				createdBy: "founder",
+			}),
+		).toEqual({ status: "published", revision: 2 });
+		expect(store.listWorkflowTemplateRevisions(seed.templateId)).toHaveLength(
+			before.revisions + 1,
+		);
+		expect(
+			store.listWorkflowTemplatePublications(seed.templateId),
+		).toHaveLength(before.publications + 1);
+		expect(store.listWorkflowTemplateAudit(seed.templateId)).toHaveLength(
+			before.audit + 2,
+		);
+
+		const afterSuccess = {
+			revisions: store.listWorkflowTemplateRevisions(seed.templateId).length,
+			publications: store.listWorkflowTemplatePublications(seed.templateId)
+				.length,
+			audit: store.listWorkflowTemplateAudit(seed.templateId).length,
+		};
+		expect(
+			store.createAndPublishWorkflowTemplateRevision({
+				templateId: seed.templateId,
+				manifest: changed,
+				expectedRevision: 1,
+				createdBy: "stale-editor",
+			}),
+		).toEqual({ status: "conflict", currentRevision: 2 });
+		expect({
+			revisions: store.listWorkflowTemplateRevisions(seed.templateId).length,
+			publications: store.listWorkflowTemplatePublications(seed.templateId)
+				.length,
+			audit: store.listWorkflowTemplateAudit(seed.templateId).length,
+		}).toEqual(afterSuccess);
+
+		expect(
+			JSON.parse(store.getWorkflowRun(oldRun.run_id)!.snapshot!).template
+				.revision,
+		).toBe(1);
+		const newRun = store.materializeWorkflowRun({
+			runId: "new-run",
+			issueId: "issue-new",
+			projectName: "flywheel",
+			taskCategory: "heavy",
+			claimsReadEnrolled: false,
+			actor: "test",
+		});
+		expect(JSON.parse(newRun.snapshot!).template.revision).toBe(2);
+		store.close();
+	});
 });

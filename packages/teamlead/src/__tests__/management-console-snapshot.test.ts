@@ -132,4 +132,33 @@ describe("management snapshot composer", () => {
 		expect(first.generatedAt).not.toBe(same.generatedAt);
 		expect(first.snapshotRevision).not.toBe(changed.snapshotRevision);
 	});
+
+	it("joins provider-owned DAG sections into the authoritative project", () => {
+		const topology = provider("topology", "projects_json", "file:p", {
+			projects: [topologyProject()],
+		});
+		const workflows = provider("workflows", "workflow_catalog", "db:1:digest", {
+			projectDags: [
+				{
+					projectName: "example",
+					dags: [
+						{
+							id: "example/default",
+							title: "Engineering heavy",
+							templateId: "tpl_eng_heavy",
+							revision: 1,
+							digest: "digest",
+							nodes: [],
+						},
+					],
+				},
+			],
+		});
+		const snapshot = composeManagementSnapshot({
+			providers: [topology, workflows],
+		});
+		expect(snapshot.projects[0]!.dags).toEqual([
+			expect.objectContaining({ templateId: "tpl_eng_heavy" }),
+		]);
+	});
 });

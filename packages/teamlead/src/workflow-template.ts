@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { canonicalSubmissionDigest } from "flywheel-config";
+import {
+	canonicalSubmissionDigest,
+	getModelRegistryEntry,
+	isModelSelectionSupported,
+} from "flywheel-config";
 import { parse } from "yaml";
 import type { StateStore } from "./StateStore.js";
 
@@ -124,10 +128,31 @@ function oneOf<T extends string>(
 	return value as T;
 }
 
-function compatibleModel(vendor: WorkflowVendor, model: string): boolean {
-	return vendor === "claude"
-		? model.startsWith("claude-")
-		: model.startsWith("gpt-");
+function compatibleModel(
+	vendor: WorkflowVendor,
+	model: string,
+	effort?: WorkflowEffort,
+): boolean {
+	return isModelSelectionSupported({
+		surface: "workflow",
+		model,
+		effort,
+		runtimeVendor: vendor,
+	});
+}
+
+function canonicalWorkflowModel(
+	vendor: WorkflowVendor,
+	model: string,
+	effort?: WorkflowEffort,
+): string {
+	const registered = getModelRegistryEntry(model);
+	if (!registered || !compatibleModel(vendor, model, effort)) {
+		throw new Error(
+			`model ${model} is not supported by the canonical workflow registry for vendor ${vendor}${effort ? ` and effort ${effort}` : ""}`,
+		);
+	}
+	return registered.id;
 }
 
 function assertAcyclic(nodes: string[], edges: WorkflowManifestEdge[]): void {
@@ -217,11 +242,6 @@ export function validateWorkflowManifest(value: unknown): WorkflowManifestV1 {
 		if (model && !vendor) {
 			throw new Error(`node ${id} model requires a vendor intent`);
 		}
-		if (vendor && model && !compatibleModel(vendor, model)) {
-			throw new Error(
-				`node ${id} vendor ${vendor} is incompatible with model ${model}`,
-			);
-		}
 		let handoffPointer: WorkflowManifestNode["handoff_pointer"];
 		if (node.handoff_pointer !== undefined) {
 			const pointer = record(
@@ -248,11 +268,16 @@ export function validateWorkflowManifest(value: unknown): WorkflowManifestV1 {
 						["low", "medium", "high", "xhigh"] as const,
 						`manifest.nodes[${index}].effort`,
 					);
+		if (effort && (!vendor || !model)) {
+			throw new Error(`node ${id} effort requires a vendor and model`);
+		}
+		const canonicalModel =
+			vendor && model ? canonicalWorkflowModel(vendor, model, effort) : model;
 		return {
 			id,
 			type,
 			...(vendor ? { vendor } : {}),
-			...(model ? { model } : {}),
+			...(canonicalModel ? { model: canonicalModel } : {}),
 			...(effort ? { effort } : {}),
 			...(handoffPointer ? { handoff_pointer: handoffPointer } : {}),
 		};
@@ -488,7 +513,7 @@ export function applyWorkflowOverride(
 				nodeOverride.model,
 				`override.nodes.${nodeId}.model`,
 			);
-			if (!node.vendor || !compatibleModel(node.vendor, model)) {
+			if (!node.vendor || !compatibleModel(node.vendor, model, node.effort)) {
 				throw new Error(
 					`node ${nodeId} vendor is incompatible with override model ${model}`,
 				);
