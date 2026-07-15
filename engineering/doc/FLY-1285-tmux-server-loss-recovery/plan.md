@@ -4,7 +4,7 @@ Issue: FLY-1285 (https://linear.app/geoforge3d/issue/FLY-1285/incident-2026-07-1
 日期: 2026-07-15
 基于: research.md
 
-**Status**: draft（codex design review Round 9 中；R1×10 + R2×8 + R3×8 + R4×6 + R5×5 + R6×2 + R7×3 + R8×2 已全量吸收）
+**Status**: **codex-approved**（design review 10 轮：R1×10 + R2×8 + R3×8 + R4×6 + R5×5 + R6×2 + R7×3 + R8×2 + R9×2 全量吸收，Round 10 APPROVED — ready to implement）
 **裁决来源**: brainstorm gate 已过（Tadashi 批 A/B/C 全量 + 四点裁决：PR-0 最先单独出 / runbook 附 research / B 加真机验收 / C 批准）。
 
 ## 核心安全原则（贯穿全计划）

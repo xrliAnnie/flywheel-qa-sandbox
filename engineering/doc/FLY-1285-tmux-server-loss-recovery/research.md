@@ -60,7 +60,40 @@ unlink socket 后 `tmux ls` 报 "error connecting … (No such file or directory
 - **~20 个旧 runner claude**（含 7/13 起的 runner-7a10c953 等）+ **~12 个 codex resume 进程** + 3 个 pane shell。
 - 这批孤儿在持续消耗 CPU/内存（当前 load 25–30 的一部分即来自它们），且其中 runner 仍可能经 HTTP/CommDB 触达 Bridge 写状态。
 
-### 收敛 runbook（由 Tadashi/founder 在裸终端执行；本 Runner 不执行——FLY-913 部署护栏 + 不可逆动作需 founder 授权）
+### P0 步骤单（已验证 pid 清单，2026-07-15 12:34 PDT 快照；Tadashi 核对后手动执行——本 Runner 不执行）
+
+**验证方法**：① 旧世代 = `ps -axwwo pid,ppid,command | awk '$2==3738'` 中 argv 为 `claude --agent <lead>`（非 --agent-id runner-*）的进程；② 每个旧 Lead 都用同法在 93009 下找到**活着的新世代同名实例**（配对齐全才许杀）；③ 19 个旧 runner 的 exec-id 前缀逐一对照 Bridge `/api/sessions`（Bearer 认证）。当前 running 的 9 个 session **无一**在 3738 上。
+
+**铁律（执行前逐字确认）**：绝不 kill 3738 本体（最后一步除外）；**绝不对 3738 发 SIGUSR1**（E3 实证会反向抢占 default 路径，把现役 server 93009 打成孤儿=事故二次上演）；每个 pid kill 前用 `ps -p <pid> -o lstart,command` 重验启动时间与 argv 一致（防 PID 复用）。
+
+**第一批：13 个旧世代 Lead（双 Discord 连接=双回复风险，先断）**——逐个 `kill <pid>`（TERM），等 10s，仍活再 `kill -9`：
+
+| 旧 pid（杀） | Lead | 启动时间（重验用） | 新世代 pid（勿动，在 93009 上） |
+|---|---|---|---|
+| 24821 | claude-infra-bot-lead | Jul 14 13:09:16 | 79766 |
+| 44090 | flywheel-cos-lead | Jul 14 13:09:56 | 96601 |
+| 72462 | flywheel-product-lead | Jul 14 13:11:17 | 25056 |
+| 88479 | cos-lead | Jul 14 13:11:57 | 39665 |
+| 8021 | ops-lead | Jul 14 13:12:37 | 61770 |
+| 31652 | product-lead | Jul 14 13:13:19 | 79249 |
+| 70606 | rafiki-lead | Jul 14 13:14:25 | 19026 |
+| 84083 | reflection-lead | Jul 14 13:15:05 | 46758 |
+| 98676 | joycon-lead | Jul 14 13:15:45 | 65941 |
+| 15796 | belle-lead | Jul 14 13:16:25 | 80059 |
+| 28274 | sub-lead | Jul 14 13:17:05 | 99640 |
+| 45900 | tidal-echo-content-lead | Jul 14 13:17:46 | 14690 |
+| 60215 | tidal-echo-cos-lead | Jul 14 13:18:27 | 38835 |
+
+（flywheel-eng-lead 的旧实例事故夜已手动收敛，新实例 pid 9040 在 93009 上，无需处理。）旧 Lead 死后其 Discord adapter 会孤儿化（ppid→1）——FLY-183 的 adapter 自清 + 下次 launch 前扫除会收，无需手动。
+
+**第二批：19 个旧 runner claude + ~9 个 codex resume + 4 个 zsh**（第一批完成、观察 Discord 无双回复后再做）：
+- StateStore 对照结论（已核）：**仅 `060d6ca9`（sub-lead 的 nightly cron 会话）仍是 awaiting_review** ——它的 worktree 可能有未收割产物，终止前由 sub-lead/Tadashi 先看一眼其分支；该进程本就在孤儿 server 上（wake 打的是新 server，永远到不了它），杀之不破坏任何在途 review。其余 18 个 runner 前缀均不在活跃账本（终态/已清），逐个 TERM→KILL。
+- codex resume 进程（argv 含 `codex resume --remote unix:///…cdx-sock/…`）与 3 个交互 zsh：直接 TERM。
+- 每杀一个前同样 `ps -p` 重验。
+
+**第三批：3738 本体**——确认 `ps -axo pid,ppid | awk '$2==3738' | wc -l` 归零后，`kill 3738`（TERM 即可，空 server 会自退）。验证：`ps -axo pid,ppid,command | awk '$2==1'` 中 default 路径 tmux server 仅剩 93009；load 应显著回落（这批孤儿是当前 load 25-30 的主要成分）。
+
+### 收敛 runbook（原始版本，机制与原则说明）
 
 1. **铁律：绝不对 3738 发 SIGUSR1**（E3 实证：会反向抢占 default 路径，把现在承载全部现役 Lead/runner 的新 server 93009 打成孤儿——事故二次上演）。
 2. 清点：`ps -axo pid,ppid,lstart,command | awk '$2==3738'` 得孤儿清单；按 argv 里的 --agent（Lead）/ --agent-id runner-xxxx(Runner) / codex resume sock 归类。
