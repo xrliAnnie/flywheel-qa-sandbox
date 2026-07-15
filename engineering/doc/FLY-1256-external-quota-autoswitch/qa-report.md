@@ -48,6 +48,24 @@ Issue 明文要求：**「真机 QA 必须覆盖『Claude 全员假死时 daemon
 - 候选验证顺序 school 先于 backup（7d reset 排序 + order 平手）✅
 - **凭证物料泄漏 grep**（覆盖 security-argv / state / cache / daemon.log / http.log / alerts.log）零命中 ✅
 
+## 2.5 真机 Discord 投递 E2E（补测 —— 回应 founder gate 提问）
+
+Founder 在 ship gate 追问「有没有跑真机 Discord E2E」。诚实纠正：§2 的 hermetic e2e **刻意用了假的 `lead-alert` sink**（隔离 daemon，证明 daemon 用正确的 `--kind account_switched --strict-delivery` 调告警），6 个告警 kind 真正**落 Discord** 的路径原先只有单测/shell 测覆盖，没有在真频道看到落地。这是通知类功能按 founder 标准的缺口，已补测：
+
+**配方**：真 `scripts/lead-alert.sh`（daemon 的实际生产告警路径，Bridge-independent）→ **隔离** 测试频道 `#test-flywheel-alerts`（`1519421055805165842`，测试 bot `TEST_BOT_TOKEN_1`，**非生产**），`FLYWHEEL_ALERT_TICKETS=1`，队列/死信/claims 全 slot-local 隔离。
+
+**真频道读回结果（fetch 自 Discord API）**：
+
+| kind | 落地 | 渲染 |
+|---|---|---|
+| `account_switched`（INFORMATIONAL, info） | HTTP 200 sent | `ℹ️` 前缀，**无 🎫 票头**（INFORMATIONAL 抑制正确）✅ |
+| `account_switch_failed`（actionable, severe） | HTTP 200 sent | `🚨` 前缀，**带 🎫 票头** ✅ |
+| `quota_monitor_down`（actionable, severe） | HTTP 200 sent | `🚨` 前缀，**带 🎫 票头** ✅ |
+
+**隔离验证**：生产 `~/.flywheel/alert-queue` / `alert-deadletter` / `alerts/claims.db` 三者**零改动**（before/after 快照对比）——测试告警绝不污染生产告警频道/队列。
+
+**结论**：FLY-1256 的 6-kind 白名单在真 Discord 上生效、真落地；`account_switched` 的 INFORMATIONAL 去票头是 **kind-specific** 的（对照 actionable kind 带票头证明不是全局关票头）。真机通知段 PASS。
+
 ## 3. plan §7 其余真机场景覆盖来源
 
 | 场景 | 覆盖方式 |
@@ -84,6 +102,6 @@ Issue 明文要求：**「真机 QA 必须覆盖『Claude 全员假死时 daemon
 
 ## 7. 结论
 
-FLY-1256 实现完整、测试充分、安全红线到位；**Issue 硬性要求的「Claude 全员假死独立切号」真机场景已 e2e PASS**。全套单测 + config drift 守卫 + shell 契约（clean env）+ typecheck + lint 全绿。
+FLY-1256 实现完整、测试充分、安全红线到位；**Issue 硬性要求的「Claude 全员假死独立切号」真机场景已 e2e PASS**；**告警通知在真 Discord（隔离测试频道）投递 E2E 也 PASS**（§2.5，回应 founder gate 提问补测）。全套单测 + config drift 守卫 + shell 契约（clean env）+ typecheck + lint 全绿。
 
 **QA Verdict: PASS** —— 建议进入 founder 审批 ship 流程（本报告作者作为三段式 ship executor 随即开 approve gate）。
