@@ -1,10 +1,9 @@
 ---
 issue: FLY-1286
 phase: design
-phaseCursor: 1/5
-updated: 2026-07-15T09:15:21.363Z
-nextStep: Audit FLY-1269 candidate behavior and lock the E2E design through the
-  brainstorm stage
+phaseCursor: 2/5
+updated: 2026-07-15T09:18:01.807Z
+nextStep: Write the code-audited research evidence map and exact acceptance oracle
 chunks:
   - id: onboard
     order: 1
@@ -15,8 +14,8 @@ pointers: {}
 ---
 
 # FLY-1286 progress
-**phase**: design (1/5)
-**next**: Audit FLY-1269 candidate behavior and lock the E2E design through the brainstorm stage
+**phase**: design (2/5)
+**next**: Write the code-audited research evidence map and exact acceptance oracle
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
