@@ -74,10 +74,22 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: fleet-sanitize.sh scanner path override (FLY-1062 broker gate; tests point it at stubs)",
 	FLYWHEEL_CLAUDE_ACCOUNTS_PATH:
 		"plumbing: claude account-state json path (FLY-696)",
+	FLYWHEEL_CLAUDE_ACCOUNTS_LOCK:
+		"plumbing: shared claude account switch lock path (FLY-1256 daemon reuses the FLY-696/852 lock)",
+	FLYWHEEL_CLAUDE_PROFILES_DIR:
+		"plumbing: claude profile pool directory (FLY-1256 daemon reuses the existing credential pool)",
 	FLYWHEEL_ACCOUNT_PENDING_PATH:
 		"plumbing: account_switch_pending store path (FLY-696)",
 	FLYWHEEL_CLAUDE_PROFILE_BIN:
 		"plumbing: flywheel-claude-profile script path (FLY-696)",
+	FLYWHEEL_CLAUDE_SECURITY_BIN:
+		"plumbing: macOS security executable override for scratch-keychain QA (FLY-1256)",
+	FLYWHEEL_CLAUDE_KEYCHAIN:
+		"plumbing: optional macOS keychain path for isolated profile credentials (FLY-1256)",
+	FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT:
+		"config value: machine Keychain item account selector (FLY-1256)",
+	FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE:
+		"config value: machine Keychain item service selector (FLY-1256)",
 	FLYWHEEL_CLAUDE_LOCK_DELEGATED:
 		"internal contract: parent lock-holder pid passed to the profile script (FLY-852 anti-deadlock; validated against the live holder marker)",
 	FLYWHEEL_CLAUDE_OAUTH_ENDPOINT:
@@ -91,6 +103,22 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_DETECTION_AI_CLASSIFY:
 		"internal ops lever: kill-switch for the Layer-2 AI-assisted pane classify step, default-on (FLY-871)",
 	FLYWHEEL_BRIDGE_WATCHDOG_LOG: "plumbing: watchdog log path",
+	FLYWHEEL_LEAD_ALERT_BIN:
+		"plumbing: lead-alert executable override for hermetic quota-monitor QA (FLY-1256)",
+	FLYWHEEL_QUOTA_PIDFILE:
+		"plumbing: external quota-monitor singleton pidfile path (FLY-1256)",
+	FLYWHEEL_QUOTA_RUN_MARKER:
+		"plumbing: external quota-monitor graceful-exit marker path (FLY-1256)",
+	FLYWHEEL_QUOTA_MONITOR_CONFIG:
+		"config value: external quota-monitor runtime config path (FLY-1256)",
+	FLYWHEEL_QUOTA_STATUSLINE_CACHE:
+		"plumbing: statusline usage cache output path (FLY-1256)",
+	FLYWHEEL_QUOTA_TMUX_SOCKET:
+		"plumbing: tmux socket name for isolated quota revive scans (FLY-1256)",
+	FLYWHEEL_QUOTA_STATE_PATH:
+		"plumbing: external quota-monitor durable state path (FLY-1256)",
+	FLYWHEEL_QUOTA_API_BASE:
+		"config value: OAuth usage API base URL override (FLY-1256; local mock in QA)",
 	// secrets / token env names
 	FLYWHEEL_INGEST_TOKEN: "secret: ingest token",
 	FLYWHEEL_ALERT_REPAIR_BOT_TOKEN_ENV:
