@@ -4,7 +4,7 @@ Issue: FLY-1256 (https://linear.app/geoforge3d/issue/FLY-1256/build-外部配额
 日期: 2026-07-14
 基于: exploration.md, research.md
 
-**Status**: draft（Codex design review R1 CHANGES REQUESTED → 14 条全采纳，本版为 R2 送审稿）
+**Status**: draft（Codex design review R1 14 条 + R2 7 条 + R3 4 条全部采纳，本版为 R4 送审稿）
 **Implement 执行体**: Codex gpt-5.6-sol xhigh（founder 批复单，勿改）· TDD（RED→GREEN→REFACTOR）
 **版本号**: ship 时取空号（FLY-494 惯例）
 **Founder 输入**: 三轮拍板全部折入（exploration §6），第三轮为终版。
@@ -47,7 +47,7 @@ stateDiagram-v2
 | `packages/teamlead/src/account-heal/quota-usage-api.ts` | usage API 客户端。`fetchAccountUsage(accessToken, opts)` → `{ok: {raw: ValidatedPayload, fiveH: {pct, resetsAt}, sevenD: {pct, resetsAt}}} \| {error: "unauthorized"\|"rate_limited"\|"network"\|"malformed", retryAfterMs?}`。请求头含 `anthropic-beta: oauth-2025-04-20` + `Accept: application/json`；`opts = {baseUrl, timeoutMs(默认10s), fetchFn}`；**abort 计时覆盖到 `response.json()` 读体完成**；`Retry-After` 解析秒数与 HTTP-date 两形态并 clamp 到 [60s, 30min]。`raw` = 通过 shape 校验的原始 payload（供缓存原样回写）。**accessToken 只进 Authorization 头，日志/错误对象绝不携带** |
 | `packages/teamlead/src/account-heal/quota-monitor-config.ts` | 运行时配置契约。`loadQuotaMonitorConfig(path)`，默认 `~/.flywheel/quota-monitor.json`（env `FLYWHEEL_QUOTA_MONITOR_CONFIG`）。每 tick 重读。**校验含跨字段不变量**：`0 ≤ acceleratePct < trigger5hPct ≤ 100`；各间隔为正且 `acceleratedPollMinutes ≤ basePollMinutes`；`order` 元素唯一且过 bash `require_valid_name` 同款正则（无前导点/无 `..`/字符白名单）；数值有界。**`order: []` 合法 = monitor-only**（非校验失败）。文件缺失/校验失败 → monitor-only + 日去重告警，**监控节奏回落到编译期默认常量**（founder 可调值不硬编码指配置文件里的值；文件不可用时的兜底节奏是代码常量，行为可预期） |
 | `packages/teamlead/src/account-heal/quota-monitor.ts` | 核心编排 `pollOnce(deps)`。IO 全注入（新增 `withAccountsLock`——与 `mkdir-lock.ts`/bash 同一把账号锁的注入 seam）。**锁下一致性观察**（§3.1）+ 触发/缓存写前复核 + 候选锁下验证（§3.6）+ 分级节奏 + 冷却闸 + 持久化调度状态（§3.8） |
-| `packages/teamlead/src/account-heal/quota-monitor-state.ts` | **版本化持久状态**：`{version: 1, lastPollAt, lastSuccessfulUsageAt, errorStreak, backoffUntilMs, tier, lastCandidateSweepAt, lastSwitchAt, observedGeneration, reviveEpoch: {open, sourceAccount, generation, openedAt, expiresAt, panes: {[paneInstanceKey]: {attempts, lastAttemptAt}}} \| null}`（R2 blocker 4：**开放式切号 epoch** 是 send-keys 的唯一授权来源——`expiresAt` = 源账号 5h resetsAt + 30min 宽限；**paneInstanceKey = tmux socket + pane_id + pane_pid**，pane-id 复用天然失配旧记录）。0600 原子写；启动读取+校验，损坏 → 保守初值（新冷却 + **epoch 置 null**）+ 告警；store generation 超前 → 同样新冷却 + epoch 置 null（不重建，保守不发键）。**无任何 token 字段**。路径 env `FLYWHEEL_QUOTA_STATE_PATH` 可覆盖 |
+| `packages/teamlead/src/account-heal/quota-monitor-state.ts` | **版本化持久状态**：`{version: 1, lastPollAt, lastSuccessfulUsageAt, errorStreak, backoffUntilMs, tier, lastCandidateSweepAt, lastSwitchAt, observedGeneration, reviveEpoch: {open, sourceAccount, generation, openedAt, expiresAt, panes: {[paneInstanceKey]: {attempts, lastAttemptAt}}} \| null}`（R2 blocker 4：**开放式切号 epoch** 是 send-keys 的唯一授权来源——`expiresAt` = **触发 scope 的 operative resetAt**（与传给 switchAccount 的 resetAt 同源：scope 5h → 5h resetsAt；weekly/both → weekly resetsAt）+ 30min 宽限（R3 高 2：weekly 封顶时源账号在 5h reset 后仍不可用，迟到 pane 会持续撞 weekly 墙直到周 reset）；**paneInstanceKey = tmux socket + pane_id + pane_pid**，pane-id 复用天然失配旧记录）。0600 原子写；启动读取+校验，损坏 → 保守初值（新冷却 + **epoch 置 null**）+ 告警；store generation 超前 → 同样新冷却 + epoch 置 null（不重建，保守不发键）。**无任何 token 字段**。路径 env `FLYWHEEL_QUOTA_STATE_PATH` 可覆盖 |
 | `packages/teamlead/src/account-heal/quota-revive-scan.ts` | 切号后恢复扫描（§4）。分类器纯函数 + tmux 命令注入；per-pane episode 预算持久化于 state；`login_expired` 只计数；其他形态零接触 |
 | `packages/teamlead/src/account-heal/quota-monitor-cli.ts` | 进程入口：**原子 singleton**（pidfile 以 `open(...,"wx")` 抢占；校验既有文件为常规文件+本 uid 所有+记录的进程启动时间匹配才判「活」；只删自己拥有的 pidfile；路径 env 可覆盖）、setTimeout 链主循环（间隔由档位+state 决定，**重启后尊重持久化的 backoffUntilMs/lastSwitchAt/lastCandidateSweepAt**）、SIGTERM/SIGINT 优雅退出、结构化 stderr 日志（永不打印 token）。**自体健康**：`errorStreak` 超阈（连续 ~6 次 usage 失败）→ `quota_monitor_down` 告警（日去重）；wrapper 侧对快速 crash-loop（launchd ThrottleInterval 内反复退出）与 dist 缺失同样 fail-loud 到同 kind（镜像 FLY-927 bridge-wrapper fail-loud 模式） |
 | `packages/teamlead/bin/flywheel-quota-monitor` | bash thin launcher → `node dist/account-heal/quota-monitor-cli.js`（镜像 `flywheel-claude-freshness`；dist 缺失 exit 31 + wrapper 告警）。**登记进 `packages/teamlead/package.json` 的 `bin`/`files`** |
@@ -63,7 +63,8 @@ stateDiagram-v2
 | `account-store.ts` | ① `SelectInput.preferredOrder?: string[]`（present：既有 usability 过滤后只保留列表内账号、按下标排序；absent：字节不变，既有测试零改动为哨兵）② **导出**既有 usability 判定（`isAuthUnusable` 等）供 daemon 复用，杜绝私有逻辑复制 |
 | `switch-executor.ts` | `SwitchInput.preferredOrder?: string[]` 透传 `selectNextAccount`；typed 原因码放在**正确的结果变体上**（R2 blocker 6）：`no_account` 加 `reasonCode: "no_eligible_account" \| "target_stale_exhausted"`（现行为：TargetStale 标记后 re-select，耗尽落 no_account）；`failed` 加 `reasonCode: "freshness_unavailable" \| "apply_failed"`。daemon 不解析文本。既有调用方对新可选字段零感知（byte-compat） |
 | **告警 kind 四处同步**（R2 blocker 2 修正：不是三处） | ① `scripts/lead-alert.sh` kind 白名单加 **6** 项：`account_switched` / `quota_no_target` / `quota_read_blind` / `account_switch_failed` / `quota_revive_stuck` / `quota_monitor_down`；② `LeadAlertNotifier.ts::ALERT_EVENT_TYPES` union 同步 6 项；③ `packages/teamlead/src/bridge/kind-contract.ts` 加 6 个 `KIND_CONTRACTS` 条目——**按真实契约形态 `{owner, arc, remediationRef?}` 落地**（不虚构 severity/copy 字段；如需扩展 schema 属独立决策，本单不做）；④ `packages/teamlead/src/bridge/__tests__/kind-contract.test.ts` drift 守卫同步 |
-| **`account_switched` 无票据机制**（R2 blocker 2） | 现状 `lead-alert.sh` 在 unified-tickets 开启时对所有 kind 无条件加 `🎫 … 状态 NEW` 票头 → 实现 **kind 级票头抑制**，且**两个渲染面都做**：shell 直发渲染（lead-alert.sh）+ TS queue-drain 重放渲染（LeadAlertNotifier 排队重发路径）——否则瞬时排队的 informational 告警会以票据形态回来。测试覆盖直发与排队重放两路径 |
+| **`account_switched` 端到端无票据机制**（R2 blocker 2 / R3 blocker 1） | 渲染抑制不够——queue 重放路径上 `LeadAlertNotifier.drainQueue()` 把重放成功的 unified root 交给 `plugin.ts → AlertChannelHub.attachThreadForDelivered()` 开 thread + 种 NEW ticket。**机制 = kind-contract.ts 新增 typed 非票据注册表 `INFORMATIONAL_KINDS: ReadonlySet<AlertEventType>`（唯一权威源，本单只含 account_switched）**，三个消费点：① lead-alert.sh 直发渲染抑制票头；② LeadAlertNotifier queue-drain 重放渲染抑制票头；③ plugin.ts Hub 挂接路由——informational kind 的 delivered root **不交给** attachThreadForDelivered。不发明新 KindArc 值（契约 schema 扩展明确不在本单）。测试断言三点齐备：queue 重放后**无票头、无 thread、无 active ticket 行、无 AutoRepairBot dispatch** |
+| **6 个新 kind 的精确契约值**（R3 blocker 1） | 全部 `{owner: "quota-monitor", arc: "human_by_design"}`（无 remediationRef；不用 arc:"auto"——绝不触发 AutoRepairBot）。票据行为：`account_switched` 入 INFORMATIONAL_KINDS（纯通知）；`quota_no_target`/`quota_read_blind`/`account_switch_failed`/`quota_revive_stuck`/`quota_monitor_down` 走正常票据（皆为需人跟进的状态） |
 
 告警调用契约：`lead-alert.sh --lead quota-monitor --project flywheel --kind <k> --severity <s> --title <t> --body <b> --signature <sig> --strict-delivery`；结果映射：`sent`/`queued_transient` = 成功；`duplicate` = 已有同签名 claim（**不证明曾送达**，仅防重复）；`dead_lettered`/`config_error` = fail-loud 记入日志与 state.errorStreak。启用窗口 preflight：确认 `FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID` + `FLYWHEEL_ALERT_SENDER_TOKEN_ENV` 可用（发一条 info 级探活）。
 
@@ -119,7 +120,7 @@ stateDiagram-v2
 
 ## 4. 切号后恢复扫描（`reviveScan` 规格，核心组件）
 
-- **授权与持续**（R2 blocker 4）：**send-keys 的唯一授权 = state 中开放且未过期的 reviveEpoch**（切号 `switched` 时原子开放，`expiresAt` = 源账号 5h resetsAt + 30min 宽限；到期/monitor-only/无 epoch → 分类照跑、**零按键**）。切号后立即一轮（在 `account_switched` 组稿之前——R1 高 7）；epoch 存续期内**每个 poll tick 复扫**（本地 tmux 零 API 成本）——迟到出现的配额对话框在 epoch 窗口内同样被逮到（R1 高 6）；epoch 过期后自动关闭（置 null 持久化）。
+- **授权与持续**（R2 blocker 4）：**send-keys 的唯一授权 = state 中开放且未过期的 reviveEpoch**（切号 `switched` 时原子开放，`expiresAt` = 触发 scope 的 operative resetAt + 30min 宽限——scope 5h → 5h reset，weekly/both → weekly reset（R3 高 2）；到期/monitor-only/无 epoch → 分类照跑、**零按键**）。切号后立即一轮（在 `account_switched` 组稿之前——R1 高 7）；epoch 存续期内**每个 poll tick 复扫**（本地 tmux 零 API 成本）——迟到出现的配额对话框在 epoch 窗口内同样被逮到（R1 高 6）；epoch 过期后自动关闭（置 null 持久化）。
 - **识别**：`tmux -L $SOCKET list-panes -a -F '#{pane_id} #{pane_pid}'` → `capture-pane -p` → 分类器（fixture 驱动正则，锚定底部 live-region，FLY-193 方法论）：`quota_stuck` / `login_expired` / `other`。
 - **动作**：仅 `quota_stuck` 且 epoch 活 → 发 fixture 定死的按键序列；**per-pane 预算 3 次持久化于 state**，键 = **paneInstanceKey（socket+pane_id+pane_pid）**——pane-id 复用（旧 id 新 pane）产生新 key，旧 attempts 不误继承，新 pane 若也是 `quota_stuck` 则按新 episode 处理（R2 blocker 4 测试点）；pane 消失/恢复即清记录；两次尝试间隔 ≥1 个 tick（给 TUI 反应时间）；发键后下 tick 复查分类。
 - **预算耗尽/需重登**：`quota_stuck` 3 次未解 → `quota_revive_stuck` 告警（warning，签名=paneInstanceKey+epoch openedAt，去重）；`login_expired` → 计数入告警 body，不动手（edge case b，FLY-1049 疆域）。
@@ -134,15 +135,15 @@ stateDiagram-v2
 5. **R5**：monitor-only 缺省安全——order 空永不切号；install 不等于 enable。
 6. **R6**：恢复扫描只碰高置信 `quota_stuck`；其他形态零按键（对抗测试）。
 7. **R7**：例行候选扫描绝不 probe-refresh。
-8. **R8**：一切对 `.active`/store/池凭证的读改判定在账号锁下取一致快照；网络调用不持锁；写缓存/触发前复核快照未失效（并发手动切号的确定性 interleaving 测试：A→B 手动切插在每个边界）。
+8. **R8**（R3 高 3 精确化）：一切对 `.active`/store/池凭证的读改判定在账号锁下取一致快照；**usage endpoint 调用与告警发送绝不持账号锁**；**唯一刻意例外 = 有界的非 active freshness refresh**（`verifyPoolCredential` 的 active 复核 + OAuth 轮转 + 池写必须在锁内序列化——与既有 `switchAccount → use → freshness_guard` 持锁刷新行为一致；其 10s 超时 < 锁 120s stale-break 阈，锁测试覆盖此例外）；「切号前放锁」= daemon 外层复核锁在调 `switchAccount` 前释放（switchAccount 内部自取同一把锁）；写缓存/触发前复核快照未失效（interleaving 测试：手动 A→B 切插在每个边界含锁内段不可达性）。
 
 ## 6. 里程碑（Codex implement 按序，TDD）
 
 - **M1 库层**：quota-usage-api + config（含不变量）+ state 模块 + account-store/switch-executor 扩展（preferredOrder + typed reason_code + usability 导出）+ 全部单测（先 RED）。
 - **M2 daemon**：pollOnce（锁下观察/复核/分级/触发/选号/冷却/持久调度）+ cli（原子 singleton + 重启恢复语义）+ bin/package.json 登记 + 单测/集成测（macOS-gated scratch keychain）。
 - **M3 恢复扫描**：**第一步 = 真机抓「卡配额对话框」pane fixture**（committed；抓不到就受控真机复现一次）→ 分类签名 + 解除按键契约 → quota-revive-scan + 对抗测试（R6）+ episode 持久化测试（重启/迟到对话框/pane-id 复用）。**M3 fixture 套件 = 退役门控翻转（§8）的硬前置**。
-- **M4 通知**：6 kind 三处同步（whitelist + KIND_CONTRACTS + bridge/__tests__/kind-contract.test.ts）+ account_switched 无票据形态 + strict-delivery 结果映射封装。
-- **M5 Bridge 退役**：三个执行面（enqueue/watchdog/HTTP route+holder）+ pending 隔离 + usage_limit 契约文案 + runnerQuotaScan 解耦 + `FLYWHEEL_QUOTA_DAEMON_CUTOVER` 门控 + 两侧字节兼容/退役哨兵测试。
+- **M4 通知**：6 kind **四处**同步（lead-alert.sh whitelist + LeadAlertNotifier.ts ALERT_EVENT_TYPES + kind-contract.ts KIND_CONTRACTS + bridge/__tests__/kind-contract.test.ts）+ INFORMATIONAL_KINDS 注册表及三消费点（渲染×2 + Hub 挂接路由）+ strict-delivery 结果映射封装。
+- **M5 Bridge 退役**：三个执行面双模式接线（enqueue/watchdog/HTTP route 410）+ pending 隔离 + runnerQuotaScan 解耦 + `FLYWHEEL_QUOTA_DAEMON_CUTOVER` 门控 + 两侧字节兼容/退役哨兵测试。**本 PR 不改 `KIND_CONTRACTS.usage_limit`**（两阶段迁移阶段一）；**flag 清理 + usage_limit 契约阶段二的 follow-up issue 必须在 CUTOVER 翻转前立案**（防临时兼容态意外永久化，R3 中 4）。
 - **M6 部署物料**：wrapper（fail-loud）+ plist 模板 + setup（install/--enable 分离、幂等、探活=新鲜 state）+ e2e 可运行断言脚本。
 - **M7 收尾**：全仓 lint + 全测 + PR → Codex code review → 独立 QA。
 

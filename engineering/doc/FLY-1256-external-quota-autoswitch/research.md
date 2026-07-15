@@ -110,7 +110,7 @@ OAuth refresh 是**轮转式**：refresh 一次，旧 refreshToken 全家作废�
 | `withMkdirLock`（Node↔bash 同锁） | `mkdir-lock.ts` | 经 switchAccount 间接用 |
 | `verifyPoolCredential()` | `freshness.ts:150` | 目标验证步骤① |
 | `flywheel-claude-profile`（Keychain 换号全套） | `packages/claude-runner/bin/` | 经 switchAccount→applyProfile 间接用 |
-| `lead-alert.sh`（Bridge-independent Discord：直连 REST :472、token 经 curl -K - stdin :475-477、claims.db 去重 :307-338、queue 兜底、kind 白名单 :115） | `scripts/lead-alert.sh` | 通知通道；新 kind 需白名单 + `LeadAlertNotifier.ts` union + `kind-contract.test.ts` 三处同步 |
+| `lead-alert.sh`（Bridge-independent Discord：直连 REST :472、token 经 curl -K - stdin :475-477、claims.db 去重 :307-338、queue 兜底、kind 白名单 :115） | `scripts/lead-alert.sh` | 通知通道；新 kind 需**四处**同步：白名单 + `LeadAlertNotifier.ts::ALERT_EVENT_TYPES` + `kind-contract.ts::KIND_CONTRACTS` + `bridge/__tests__/kind-contract.test.ts` |
 | launchd 范式（label `com.flywheel.*`、KeepAlive+ThrottleInterval 30+RunAtLoad、wrapper source `~/.flywheel/.env`、日志 `/tmp/flywheel-<name>.log`、token 不进 plist） | `scripts/com.flywheel.cmux-watcher.plist.template`、`scripts/token-usage-daily.sh:26,38` | 照搬 |
 | 隔离 QA env（scratch keychain service/pool/lock 全套 env override） | `flywheel-claude-profile:33-41` | 真机 QA 隔离 |
 
@@ -166,7 +166,7 @@ Annie 批注⑦推翻此前「保留为兜底」决定（「从来就没 work �
 
 - **读**：daemon 每 tick 重读 + schema 校验——改值即时生效（≤1 个轮询周期），零重启；校验失败退 monitor-only + 告警（fail-safe，不 crash-loop）。
 - **写**：任何写者（founder 手编 / dashboard 经 Bridge / setup 脚本）必须原子写（tmp+rename）——daemon 的重读因此永不见撕裂 JSON。
-- **dashboard 集成边界**：daemon 侧交付到文件契约为止（schema + 原子性 + 重读语义 + 本节文档）；Bridge 暴露该文件读写 API 给 Honey Lemon 的 dashboard 属 Bridge/dashboard 侧工作，Tadashi 与 HL 协调，**不在本单**。schema 字段即 plan 的配置表（阈值/资格线/回流/轮询两档/冷却/顺序）。
+- **dashboard 集成边界**：daemon 侧交付到文件契约为止（schema + 原子性 + 重读语义 + 本节文档）；Bridge 暴露该文件读写 API 给 Honey Lemon 的 dashboard 属 Bridge/dashboard 侧工作，Tadashi 与 HL 协调，**不在本单**。schema 字段即 plan 的配置表（触发线/轮询两档/加密水位/候选扫描间隔/冷却/顺序——资格无阈值：终版拍板「有余额就行」= <100% 固定语义）。
 
 ## 9. 切号后恢复扫描（Annie edge case (a)——核心组件的可行性）
 
@@ -178,6 +178,6 @@ Annie 批注⑦推翻此前「保留为兜底」决定（「从来就没 work �
 
 **安全边界（FLY-313 resume-menu 误按教训）**：只对**高置信匹配配额对话框签名**的 pane 动手；识别到 resume-menu/compact/login 等其他形态一律不碰（login-expired 形态 = edge case (b)，只告警）。确切「解除 + 续跑」按键序列今天无现成 fixture——**implement 阶段第一步 = 真机抓一个卡配额对话框的 pane fixture**（FLY-193 committed-fixture 惯例），按键契约以 fixture 为准，绝不凭想象写 send-keys。
 
-**触发时机**：切号 commit 成功后立即扫一轮 + 之后每个 poll tick 复扫（本地 tmux 扫描零 API 成本），直到无卡 pane；每 pane 有界重试 + 结果入 Discord 通知。
+**触发时机与授权**：切号 commit 成功后立即扫一轮 + epoch 存续期内每个 poll tick 复扫（本地 tmux 扫描零 API 成本）；**send-keys 的唯一授权 = 持久化的开放 reviveEpoch**（expiry = 触发 scope 的 operative reset + 宽限），epoch 过期/不存在则只分类零按键；每 pane 有界重试（按 pane 实例身份记账）+ 结果入 Discord 通知。
 
 **已知 edge case (b)（Annie 实测）**：未用尽就切 profile，偶发个别窗口要 re-login。v1 边界：恢复扫描识别到 login-expired 形态 → **只告警不自动 re-login**（re-login 属 FLY-1049 救援链）。根因调查线索：live session 在 Keychain 已切换后 mid-session 刷新 token，新账号 refresh 结果与 `~/.claude.json` 身份/会话状态不一致（FLY-865 疆域）——实现阶段若能抓到复现 fixture 则记档，不阻塞 v1。
