@@ -2,10 +2,10 @@
 issue: FLY-1286
 phase: design
 phaseCursor: 4/5
-updated: 2026-07-15T09:54:51.011Z
-nextStep: Review findings verified against candidate source and all eight
-  revisions applied; open a fresh review_design gate/request and poll
-  fail-closed for approval
+updated: 2026-07-15T10:00:26.020Z
+nextStep: Round 4 approved; applied its non-blocking executable refinements
+  (holders.some ownership, observer copied outside worktree, readonly WAL
+  recovery retry). Request final fresh review round before commit/push
 chunks:
   - id: onboard
     order: 1
@@ -18,7 +18,7 @@ pointers:
 
 # FLY-1286 progress
 **phase**: design (4/5)
-**next**: Review findings verified against candidate source and all eight revisions applied; open a fresh review_design gate/request and poll fail-closed for approval
+**next**: Round 4 approved; applied its non-blocking executable refinements (holders.some ownership, observer copied outside worktree, readonly WAL recovery retry). Request final fresh review round before commit/push
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
