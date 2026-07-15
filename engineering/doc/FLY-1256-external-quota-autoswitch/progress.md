@@ -1,13 +1,14 @@
 ---
 issue: FLY-1256
 phase: implement
-phaseCursor: 3/7
-updated: 2026-07-15T06:20:22.889Z
-nextStep: "M4 RED: six alert kinds + informational no-ticket parity and routing"
+phaseCursor: 4/7
+updated: 2026-07-15T06:28:29.963Z
+nextStep: "M5 RED: retire Bridge quota paths behind
+  FLYWHEEL_QUOTA_MONITOR_EXTERNAL and preserve legacy byte-compat"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1256 progress
-**phase**: implement (3/7)
-**next**: M4 RED: six alert kinds + informational no-ticket parity and routing
+**phase**: implement (4/7)
+**next**: M5 RED: retire Bridge quota paths behind FLYWHEEL_QUOTA_MONITOR_EXTERNAL and preserve legacy byte-compat
