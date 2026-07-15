@@ -1,13 +1,13 @@
 ---
 issue: FLY-1282
 phase: implement
-phaseCursor: 5/10
-updated: 2026-07-15T18:19:18.568Z
-nextStep: M2 tri-state 分派 + M3 宣告(HeartbeatService 主体改造)
+phaseCursor: 6/10
+updated: 2026-07-15T18:33:53.295Z
+nextStep: M2/M3 新行为测试套(zombie-reconcile.test.ts)→ M4 文案/路由断言 → M8/M9 Part B/C
 chunks: []
 pointers: {}
 ---
 
 # FLY-1282 progress
-**phase**: implement (5/10)
-**next**: M2 tri-state 分派 + M3 宣告(HeartbeatService 主体改造)
+**phase**: implement (6/10)
+**next**: M2/M3 新行为测试套(zombie-reconcile.test.ts)→ M4 文案/路由断言 → M8/M9 Part B/C
