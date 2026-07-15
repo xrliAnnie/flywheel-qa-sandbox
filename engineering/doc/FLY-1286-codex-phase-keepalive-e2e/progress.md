@@ -1,9 +1,10 @@
 ---
 issue: FLY-1286
 phase: design
-phaseCursor: 2/5
-updated: 2026-07-15T09:18:01.807Z
-nextStep: Write the code-audited research evidence map and exact acceptance oracle
+phaseCursor: 3/5
+updated: 2026-07-15T09:20:42.163Z
+nextStep: Write a stepwise plan for the real phase chain, bounded wake/crash
+  probes, QA, and external shutdown witness
 chunks:
   - id: onboard
     order: 1
@@ -14,8 +15,8 @@ pointers: {}
 ---
 
 # FLY-1286 progress
-**phase**: design (2/5)
-**next**: Write the code-audited research evidence map and exact acceptance oracle
+**phase**: design (3/5)
+**next**: Write a stepwise plan for the real phase chain, bounded wake/crash probes, QA, and external shutdown witness
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
