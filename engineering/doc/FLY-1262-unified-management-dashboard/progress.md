@@ -1,13 +1,13 @@
 ---
 issue: FLY-1262
-phase: design
-phaseCursor: 5/5
-updated: 2026-07-15T02:38:11.166Z
-nextStep: Commit and push approved design docs; complete phase handoff
+phase: implement
+phaseCursor: 0/13
+updated: 2026-07-15T05:31:03.907Z
+nextStep: "Task 0: record focused green baseline and add SSOT discovery fixtures"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1262 progress
-**phase**: design (5/5)
-**next**: Commit and push approved design docs; complete phase handoff
+**phase**: implement (0/13)
+**next**: Task 0: record focused green baseline and add SSOT discovery fixtures
