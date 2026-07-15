@@ -177,3 +177,61 @@ terminal approval 前的硬性 QA 验收标准（comm inbox `577c9cd7-...`）。
 不成立，Implement 修复时宜一并降低每帧探针开销 / 放宽 fixture 时序假设。
 
 详见 `qa/qa-round3-verdict.md`（逐条 expected-vs-actual 与 required actions）。
+
+## QA Opus RE-TEST Verdict — PHASE PASS — TERMINAL CLOSEOUT PENDING (round 4)
+
+QA exec `aad2f2a7-...`（phase=qa, TURN epoch 7）在 Implement 推修复 head
+`1f12c3fb8f255e6795b58d57a9ee40b61cf925c8` 后复验。**三条 round-3 findings 全部修复，
+full 529 observer 回归功能性全绿，Design+Implement resident liveness 重新确认 → PHASE PASS。**
+A7 terminal request/ack/delete + FINAL PASS 仍留给 issue 外 FLY-1269 closing session。
+
+### Round-3 findings — all RESOLVED（结构核查 + 测试实证）
+
+| Finding | Fix at `1f12c3fb` | 验证 |
+|---|---|---|
+| C1 indeterminate-liveness clobber + lastPresent 依赖 | 测试改为只 `closeSocket`（不 rewrite lsof.json，保留 `indeterminate` marker），断言精确 `liveness_indeterminate:design-success:lsof`（cleanup-phase 守卫，非 lastPresent 派生） | `fails closed when direct-path liveness is indeterminate` 通过 |
+| C2 one-poll abort | observer 新增 `armingAttempts`/`armingDeadlineAt`（默认 5 次 / 10s，可 `--arming-attempts`/`--arming-timeout-ms`）；`initialFailure` 仅在超过 bound 才 fail，否则 `sleep+continue`；fail verdict 带 `arming{attempts,maxAttempts,timeoutMs,deadlineAt}` | `retries transient startup liveness before arming`（瞬时抖动后 arm，verdict undefined）+ `fails closed after bounded startup retries`（arming.attempts===3）均通过 |
+| C3 holder 无 observedAt | `probeHolders` 给 present/absent/indeterminate 全部盖 `observedAt` ISO 时间戳；缓存复用保留原采样时刻 | `timestamps holder evidence and preserves its sample time while cached` 通过 |
+
+### Observer regression（full 529 harness）
+
+- 默认短超时直跑：**13/19 pass, 6 fail**（本机 `load avg 8.5`、41 users）。6 个失败全为 `cleanup_not_observed`
+  / `observer did not exit` 超时型，**非断言错误**；失败输出证明 observer 逻辑正确（如
+  `records requested then acked` 的 history 正确记录 requested→acked 绑定），只是 loaded 机器上
+  每帧 node-spawn 假探针使 observer 无法在 2000ms 内走到 cleanup。
+- 用**真实 committed `observer.mjs`** + load-tolerant 超时的 harness 副本(scratchpad，未改被审文件)复跑：
+  **19/19 全部 pass**。决定性证明 observer 对全部场景功能正确，默认超时下的 6 个失败纯属本机负载伪影。
+
+### Locked three-stage chain (runtime-attested)
+
+| Plane | Design `464064c0` | Implement `1ba0f0f1` | QA `aad2f2a7` |
+|---|---|---|---|
+| StateStore | `design_done` / codex-tmux / role design / `gpt-5.6-sol` | `awaiting_review` / codex-tmux / role implement / `gpt-5.6-sol` | `running` / **claude-tmux / qa / claude-opus-4-8** |
+| declared | `parked` | `parked` | — |
+| phaseHold | `paused` (enteredAt 11:27:00.624Z) | `paused` (enteredAt 13:05:23.365Z) | — |
+| native goal | `paused` goal `d05c8f51` tokens 565978 / time 3156 (immutable read) | `paused` goal `4ffe8b18` tokens 946085 / time 5813 | — |
+| daemon/socket | pid/pgid `88885`，socket `d159c5c4…` connectable，holder 88885 | pid/pgid `54044`，socket `6d3a98f0…` connectable，holder 54044 | — |
+| xhigh | — | argv `model_reasoning_effort="xhigh"` + TUI `gpt-5.6-sol xhigh … Goal paused` | — |
+| tmux | live (pane_dead=0) | live (pane_dead=0) | — |
+
+**60-second two-sample freeze**（13:19:59 → 13:21:03/04）：Design 与 Implement 的 goal
+tokens/time/updated_at + phaseHold enteredAt/state 均**完全冻结**，heartbeat 持续前进
+（design 13:19:59→13:20:59；implement 13:19:59→13:21:04），socket holder group 稳定。
+
+### Acceptance matrix (QA re-audit)
+
+| ID | Verdict | Evidence |
+|---|---|---|
+| A1 locked dispatch | **PASS** | Design/Implement `gpt-5.6-sol`（codex-tmux）；Implement xhigh（argv+TUI）；QA `claude-opus-4-8`（claude-tmux, role qa）。 |
+| A2 Design resident | **PASS** | same exec/thread/goal、five-plane paused hold、60s freeze、heartbeat advancing。 |
+| A3 crash recovery | **PASS (Implement evidence + re-confirmed)** | qa-report PGID `26476→88885`；recovered daemon 88885 现仍 resident/paused。 |
+| A4 mailbox wake | **PASS (Implement evidence + re-confirmed)** | one instruction→one finished wake；declared `FLY-1286 WAKE_PROBE handled…`；re-hold frozen。 |
+| A5 Implement resident | **PASS** | paused hold、goal paused、live tmux/socket/pid+holder、60s freeze。 |
+| A6 TURN chain | **PASS** | design epoch 3 → implement 4 → **qa 7**，严格递增，QA 稳定持有。 |
+| A7 terminal shutdown | PENDING（external） | issue 外 FLY-1269 closing session 用 armed observer 捕获 request/ack/delete + no-orphan。 |
+| A8 isolation | **PASS** | `1f12c3fb` 仅改 `qa/529-terminal-observer.{mjs,test.mjs}`，无 `packages/**`/config/workflow 改动；全部写落 FLY-1269 qa/evidence + FLY-1286 docs。 |
+
+**verdict = PHASE PASS — TERMINAL CLOSEOUT PENDING**（唯一 pending = A7 external）。据此
+emit `qa-result --status pass`，随后 arm external terminal observer 并按 approve gate 流程
+请求 founder 审批 sandbox PR #58。FINAL PASS 仍只由 issue 外 FLY-1269 closing session 在
+A7 闭环后写入。

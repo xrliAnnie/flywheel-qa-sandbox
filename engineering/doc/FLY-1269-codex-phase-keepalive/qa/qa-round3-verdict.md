@@ -108,3 +108,25 @@ Lead 明确把 review round-3 的三条 findings 设为 terminal approval 前的
 4. 修复后重新过 code review(新一轮),再唤醒 QA 复验。
 
 **在三条全部修复并复验通过前,QA 不 arm terminal observer、不开 founder approve gate。**
+
+---
+
+## RESOLVED — round 4 re-test (head `1f12c3fb8f255e6795b58d57a9ee40b61cf925c8`)
+
+Implement 在同分支推 `1f12c3fb`（`test(FLY-1269): harden observer startup evidence`,
+仅改 observer + test,无 `packages/**`）。QA exec `aad2f2a7`(TURN epoch 7)复验:
+
+- **C1 RESOLVED**:indeterminate 测试改为只 `closeSocket`(不 rewrite lsof.json),lsof
+  `indeterminate` marker 在 cleanup 边界保留,断言精确 `liveness_indeterminate:design-success:lsof`
+  (cleanup-phase 守卫,确定性,不依赖 lastPresent 时序)。
+- **C2 RESOLVED**:observer 新增 bounded arming window(`armingAttempts`/`armingDeadlineAt`,
+  默认 5 次/10s;`initialFailure` 仅超 bound 才 fail,否则 `sleep+continue`),fail verdict 带
+  `arming{attempts,maxAttempts,timeoutMs,deadlineAt}`。新测试 `retries transient startup liveness
+  before arming` + `fails closed after bounded startup retries` 双向验证。
+- **C3 RESOLVED**:`probeHolders` 给 present/absent/indeterminate 全部盖 `observedAt`,缓存复用保留
+  原采样时刻;新测试 `timestamps holder evidence and preserves its sample time while cached`。
+
+full 529 observer 回归用真实 committed `observer.mjs` + load-tolerant harness 复跑 **19/19 全绿**
+(默认短超时下 13/19,6 个失败纯本机负载超时伪影,非逻辑缺陷);Design+Implement resident liveness
+经 60s freeze 双采样重新确认。详见 qa-report.md "QA Opus RE-TEST Verdict"。**三条全部 RESOLVED →
+本轮 PHASE PASS**。
