@@ -567,8 +567,6 @@ export async function runGoalToTerminal(
 	// Default-on rollback switch. Read at call time so an emergency Bridge env
 	// change affects the next goal run without changing Claude/non-goal paths.
 	const gateWaitEnabled = process.env.FLYWHEEL_CODEX_GATE_WAIT !== "0";
-	const gateResolvedKick =
-		"The gate result is ready. Run flywheel-comm check for the pending question, then act on its timeout/rejection/approval semantics and continue the goal.";
 
 	// R20 HIGH-1: arm the deadline BEFORE any RPC, so setGoal/startTurn latency
 	// counts against the ceiling. FLY-1188 MED-7: the ceiling is DYNAMIC — the
@@ -747,10 +745,7 @@ export async function runGoalToTerminal(
 			/* launch-commit handler must not break the goal run */
 		}
 	};
-	const activateAndKick = async (
-		kickText: string,
-		clearGateHoldAfter: boolean,
-	): Promise<void> => {
+	const activateGoal = async (): Promise<void> => {
 		if (remainingBudget() <= 0) timedOut("before setGoal");
 		await client.setGoalStatus(
 			{
@@ -764,10 +759,20 @@ export async function runGoalToTerminal(
 		gatePauseAttempted = false;
 		goalArmed = true;
 		fireGoalActive();
+	};
+	const startInitialTurn = async (): Promise<void> => {
 		if (remainingBudget() <= 0) timedOut("before startTurn");
-		await client.startTurn(input.threadId, kickText, remainingBudget());
-		// Clear ONLY after active goal/set and the wake kick both succeeded.
-		if (clearGateHoldAfter) writeGateHold(false);
+		await client.startTurn(
+			input.threadId,
+			input.kickText ?? "Begin working toward the goal now.",
+			remainingBudget(),
+		);
+	};
+	const resumeHeldGoal = async (): Promise<void> => {
+		// Native goal/set(active) resumes a paused goal. A concurrent turn/start
+		// races that automatic continuation and can duplicate a turn.
+		await activateGoal();
+		writeGateHold(false);
 	};
 
 	try {
@@ -803,8 +808,7 @@ export async function runGoalToTerminal(
 					);
 				}
 				const existingIsOurs =
-					typeof existingGoal?.objective === "string" &&
-					existingGoal.objective === input.objective;
+					existingGoal !== null && objectiveIsOurs(existingGoal);
 				if (existingIsOurs && existingGoal) {
 					if (typeof existingGoal.tokensUsed === "number")
 						latestTokens = existingGoal.tokensUsed;
@@ -819,7 +823,10 @@ export async function runGoalToTerminal(
 						skipInitialActivation = true;
 					} else if (existingGoal.status === "paused") {
 						terminalSeen = null;
-						await activateAndKick(gateResolvedKick, gateHoldLatched);
+						// Preflight established generation ownership before the resume RPC;
+						// auto-resume may emit terminal before goal/set replies.
+						goalArmed = true;
+						await resumeHeldGoal();
 						skipInitialActivation = true;
 						// A latched active/blocked goal plus a still-open marker means the
 						// daemon died inside the hold window: do not set or kick.
@@ -829,9 +836,10 @@ export async function runGoalToTerminal(
 						skipInitialActivation = true;
 					} else if (gateHoldLatched) {
 						// The marker resolved while the daemon/Bridge was down (or the
-						// prior wake kick failed). Retry the exact active+wake sequence.
+						// prior active transition failed). Retry the native resume.
 						terminalSeen = null;
-						await activateAndKick(gateResolvedKick, true);
+						goalArmed = true;
+						await resumeHeldGoal();
 						skipInitialActivation = true;
 					} else if (existingGoal.status === "blocked") {
 						goalArmed = true;
@@ -846,10 +854,9 @@ export async function runGoalToTerminal(
 			}
 
 			if (!skipInitialActivation) {
-				await activateAndKick(
-					input.kickText ?? "Begin working toward the goal now.",
-					gateWaitEnabled && gateHoldLatched,
-				);
+				await activateGoal();
+				await startInitialTurn();
+				if (gateWaitEnabled && gateHoldLatched) writeGateHold(false);
 			}
 		} catch (err) {
 			// A durable-latch failure always wins over a streamed terminal. The
@@ -887,8 +894,8 @@ export async function runGoalToTerminal(
 		while (true) {
 			// FLY-1257: notifications and polls converge here. A blocked goal is
 			// terminal only when no gate is open. Once held, a resolved marker causes
-			// exactly one active set + wake kick; duplicate/out-of-order blocked
-			// notifications cannot duplicate that wake.
+			// exactly one native active transition; duplicate/out-of-order blocked
+			// notifications cannot duplicate that resume.
 			if (terminalSeen && classifyTerminalStatus(terminalSeen) === "terminal")
 				break;
 			if (gateWaitEnabled && gateHoldActive) {
@@ -897,7 +904,7 @@ export async function runGoalToTerminal(
 					await pauseGateGoal();
 				} else {
 					terminalSeen = null;
-					await activateAndKick(gateResolvedKick, true);
+					await resumeHeldGoal();
 					gateHoldActive = false;
 					continue;
 				}
@@ -905,7 +912,8 @@ export async function runGoalToTerminal(
 			// A terminal notification wins immediately, re-checked before every
 			// blocking step so a real terminal is never masked by a later close.
 			// (remainingBudget extends the deadline when a gate is open — MED-7.)
-			if (terminalSeen) break;
+			if (terminalSeen && classifyTerminalStatus(terminalSeen) === "terminal")
+				break;
 			if (client.isClosed()) failClose("daemon transport closed mid-run");
 			if (remainingBudget() <= 0) timedOut("waiting for terminal status");
 
@@ -934,7 +942,8 @@ export async function runGoalToTerminal(
 			} catch (err) {
 				// R21 HIGH-2: a terminal already observed takes precedence over any
 				// getGoal failure — never fail-close over a real terminal status.
-				if (terminalSeen) break;
+				if (terminalSeen && classifyTerminalStatus(terminalSeen) === "terminal")
+					break;
 				if (client.isClosed())
 					failClose(`getGoal failed on a closed transport: ${err}`);
 				if (remainingBudget() <= 0) timedOut("polling goal status");
@@ -945,7 +954,8 @@ export async function runGoalToTerminal(
 			// over the poll result — otherwise a poll that observed a
 			// just-replaced goal would wrongly throw goal_replaced over a terminal
 			// we already legitimately reached (R21 "first terminal wins").
-			if (terminalSeen) break;
+			if (terminalSeen && classifyTerminalStatus(terminalSeen) === "terminal")
+				break;
 			if (goal?.status) {
 				// R24 HIGH: the poll reads the thread's CURRENT goal. If another
 				// control end replaced our goal, its objective no longer matches

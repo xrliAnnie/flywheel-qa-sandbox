@@ -339,19 +339,36 @@ describe("runGoalToTerminal", () => {
 
 	it("FLY-1257: a blocked notification while a gate is open holds, then reactivates with objective + budget and completes", async () => {
 		const d = new FakeDaemon();
-		let starts = 0;
+		let activeSets = 0;
 		d.responders.set("thread/goal/get", () => ({ goal: null }));
-		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("thread/goal/set", (params, _id, push) => {
+			if ((params as { status?: string }).status === "active") {
+				activeSets += 1;
+				if (activeSets === 2) {
+					push({
+						method: "goal/updated",
+						params: {
+							threadId: "t",
+							goal: {
+								status: "complete",
+								objective: "ship FLY-1257",
+								tokensUsed: 75,
+							},
+						},
+					});
+				}
+			}
+			return {};
+		});
 		d.responders.set("turn/start", (_p, _id, push) => {
-			starts += 1;
 			push({
 				method: "goal/updated",
 				params: {
 					threadId: "t",
 					goal: {
-						status: starts === 1 ? "blocked" : "complete",
+						status: "blocked",
 						objective: "ship FLY-1257",
-						tokensUsed: starts === 1 ? 50 : 75,
+						tokensUsed: 50,
 					},
 				},
 			});
@@ -394,8 +411,58 @@ describe("runGoalToTerminal", () => {
 			status: "active",
 		});
 		const turns = d.sent.filter((frame) => frame.method === "turn/start");
-		expect(turns).toHaveLength(2);
-		expect(JSON.stringify(turns[1]?.params)).toContain("gate result is ready");
+		expect(turns).toHaveLength(1);
+	});
+
+	it("FLY-1257 review R1: reopening a held goal relies on native auto-resume without a duplicate turn/start", async () => {
+		const d = new FakeDaemon();
+		let activeSets = 0;
+		d.responders.set("thread/goal/get", () => ({ goal: null }));
+		d.responders.set("thread/goal/set", (params, _id, push) => {
+			if ((params as { status?: string }).status !== "active") return {};
+			activeSets += 1;
+			if (activeSets === 2) {
+				push({
+					method: "goal/updated",
+					params: {
+						threadId: "t",
+						goal: { status: "complete", objective: "native resume fixture" },
+					},
+				});
+			}
+			return {};
+		});
+		d.responders.set("turn/start", (_params, _id, push) => {
+			push({
+				method: "goal/updated",
+				params: {
+					threadId: "t",
+					goal: { status: "blocked", objective: "native resume fixture" },
+				},
+			});
+			return {};
+		});
+		let waiting = true;
+		let latched = false;
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "native resume fixture",
+			isWaiting: () => waiting,
+			readGateHoldLatch: () => latched,
+			writeGateHoldLatch: (held) => {
+				latched = held;
+			},
+			sleep: async () => {
+				waiting = false;
+			},
+			now: () => 0,
+		});
+
+		expect(result.status).toBe("complete");
+		expect(
+			d.sent.filter((frame) => frame.method === "turn/start"),
+		).toHaveLength(1);
+		expect(latched).toBe(false);
 	});
 
 	it("FLY-1257: the poll fallback uses the same blocked/waiting classifier without a duplicate wake", async () => {
@@ -462,7 +529,7 @@ describe("runGoalToTerminal", () => {
 					(frame.params as { status?: string }).status === "paused",
 			),
 		).toHaveLength(1);
-		expect(starts).toBe(2);
+		expect(starts).toBe(1);
 	});
 
 	it("FLY-1257: restart preflight holds an already-blocked own goal and wakes it only after the marker resolves", async () => {
@@ -474,15 +541,16 @@ describe("runGoalToTerminal", () => {
 				tokensUsed: 40,
 			},
 		}));
-		d.responders.set("thread/goal/set", () => ({}));
-		d.responders.set("turn/start", (_p, _id, push) => {
-			push({
-				method: "goal/updated",
-				params: {
-					threadId: "t",
-					goal: { status: "complete", objective: "restart fixture" },
-				},
-			});
+		d.responders.set("thread/goal/set", (params, _id, push) => {
+			if ((params as { status?: string }).status === "active") {
+				push({
+					method: "goal/updated",
+					params: {
+						threadId: "t",
+						goal: { status: "complete", objective: "restart fixture" },
+					},
+				});
+			}
 			return {};
 		});
 		let waiting = true;
@@ -518,8 +586,7 @@ describe("runGoalToTerminal", () => {
 			status: "active",
 		});
 		expect(writes).toEqual([false]);
-		const wake = d.sent.find((frame) => frame.method === "turn/start");
-		expect(JSON.stringify(wake?.params)).toContain("gate result is ready");
+		expect(d.sent.some((frame) => frame.method === "turn/start")).toBe(false);
 	});
 
 	it("FLY-1257: a pause RPC error is best-effort and the local hold still wakes", async () => {
@@ -550,14 +617,28 @@ describe("runGoalToTerminal", () => {
 			}
 			originalSend(frame);
 		};
-		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("thread/goal/set", (params, _id, push) => {
+			if (
+				(params as { status?: string }).status === "active" &&
+				activeSets === 2
+			) {
+				push({
+					method: "goal/updated",
+					params: {
+						threadId: "t",
+						goal: { status: "complete", objective: "pause error fixture" },
+					},
+				});
+			}
+			return {};
+		});
 		d.responders.set("turn/start", (_params, _id, push) => {
 			push({
 				method: "goal/updated",
 				params: {
 					threadId: "t",
 					goal: {
-						status: activeSets === 1 ? "blocked" : "complete",
+						status: "blocked",
 						objective: "pause error fixture",
 					},
 				},
@@ -598,21 +679,20 @@ describe("runGoalToTerminal", () => {
 				tokenBudget: 800,
 			},
 		}));
-		d.responders.set("thread/goal/set", (params) => {
+		d.responders.set("thread/goal/set", (params, _id, push) => {
 			goalStatus = (params as { status: GoalStatus }).status;
-			return {};
-		});
-		d.responders.set("turn/start", (_params, _id, push) => {
-			push({
-				method: "goal/updated",
-				params: {
-					threadId: "t",
-					goal: {
-						status: "complete",
-						objective: "paused restart fixture",
+			if (goalStatus === "active") {
+				push({
+					method: "goal/updated",
+					params: {
+						threadId: "t",
+						goal: {
+							status: "complete",
+							objective: "paused restart fixture",
+						},
 					},
-				},
-			});
+				});
+			}
 			return {};
 		});
 		let waiting = true;
@@ -653,8 +733,7 @@ describe("runGoalToTerminal", () => {
 				tokenBudget: 901,
 			},
 		}));
-		d.responders.set("thread/goal/set", () => ({}));
-		d.responders.set("turn/start", (_params, _id, push) => {
+		d.responders.set("thread/goal/set", (_params, _id, push) => {
 			push({
 				method: "goal/updated",
 				params: {
@@ -678,11 +757,7 @@ describe("runGoalToTerminal", () => {
 		});
 		expect(result.status).toBe("complete");
 		expect(latched).toBe(false);
-		expect(d.sentMethods()).toEqual([
-			"thread/goal/get",
-			"thread/goal/set",
-			"turn/start",
-		]);
+		expect(d.sentMethods()).toEqual(["thread/goal/get", "thread/goal/set"]);
 		expect(
 			d.sent.find((frame) => frame.method === "thread/goal/set")?.params,
 		).toMatchObject({
@@ -717,19 +792,49 @@ describe("runGoalToTerminal", () => {
 		expect(d.sentMethods()).toEqual(["thread/goal/get"]);
 	});
 
-	it("FLY-1257: a failed wake kick never clears the durable gate-hold latch", async () => {
+	it("FLY-1257 review R1: a latched preflight goal with an omitted objective is still adopted", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: "blocked", tokensUsed: 12 },
+		}));
+		d.responders.set("thread/goal/set", (_params, _id, push) => {
+			push({
+				method: "goal/updated",
+				params: {
+					threadId: "t",
+					goal: { status: "complete", objective: "omitted objective fixture" },
+				},
+			});
+			return {};
+		});
+		let latched = true;
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "omitted objective fixture",
+			isWaiting: () => false,
+			readGateHoldLatch: () => latched,
+			writeGateHoldLatch: (held) => {
+				latched = held;
+			},
+			now: () => 0,
+		});
+		expect(result.status).toBe("complete");
+		expect(latched).toBe(false);
+		expect(d.sentMethods()).toEqual(["thread/goal/get", "thread/goal/set"]);
+	});
+
+	it("FLY-1257: a failed native wake never clears the durable gate-hold latch", async () => {
 		const d = new FakeDaemon();
 		d.responders.set("thread/goal/get", () => ({
 			goal: { status: "blocked", objective: "kick failure fixture" },
 		}));
-		d.responders.set("thread/goal/set", () => ({}));
 		const originalSend = d.send.bind(d);
 		d.send = (frame) => {
 			const f = frame as { id?: number; method?: string };
-			if (f.method === "turn/start") {
+			if (f.method === "thread/goal/set") {
 				d.sent.push(f as Record<string, unknown>);
 				queueMicrotask(() =>
-					d.push({ id: f.id, error: { code: -1, message: "kick rejected" } }),
+					d.push({ id: f.id, error: { code: -1, message: "wake rejected" } }),
 				);
 				return;
 			}
@@ -761,8 +866,7 @@ describe("runGoalToTerminal", () => {
 		d.responders.set("thread/goal/get", () => ({
 			goal: { status: "blocked", objective: "latch write fixture" },
 		}));
-		d.responders.set("thread/goal/set", () => ({}));
-		d.responders.set("turn/start", (_p, _id, push) => {
+		d.responders.set("thread/goal/set", (_p, _id, push) => {
 			push({
 				method: "goal/updated",
 				params: {
@@ -1681,6 +1785,49 @@ describe("runGoalToTerminal — R24 poll ownership + turn arming", () => {
 		expect(res.status).toBe("complete");
 		expect(res.succeeded).toBe(true);
 		expect(res.tokensUsed).toBe(55);
+	});
+
+	it("FLY-1257 review R1: blocked streamed while getGoal is in flight stays held until the gate resolves", async () => {
+		const d = new FakeDaemon();
+		const objective = "WAITING-GOAL";
+		let waiting = true;
+		let gets = 0;
+		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("turn/start", () => ({}));
+		d.responders.set("thread/goal/get", (_p, _id, push) => {
+			gets += 1;
+			if (gets === 1) return { goal: null }; // setup preflight
+			if (gets === 2) {
+				push({
+					method: "goal/updated",
+					params: {
+						threadId: "t",
+						goal: { status: "blocked", objective },
+					},
+				});
+				return { goal: { status: "active", objective } };
+			}
+			return { goal: { status: "complete", objective } };
+		});
+		let sleeps = 0;
+		const c = makeClient(d);
+		const result = await runGoalToTerminal(c, {
+			threadId: "t",
+			objective,
+			isWaiting: () => waiting,
+			readGateHoldLatch: () => false,
+			writeGateHoldLatch: () => undefined,
+			sleep: async () => {
+				sleeps += 1;
+				if (sleeps >= 2) waiting = false;
+			},
+			pollIntervalMs: 1,
+			overallTimeoutMs: 100_000,
+			now: () => 0,
+		});
+
+		expect(result.status).toBe("complete");
+		expect(gets).toBeGreaterThanOrEqual(3);
 	});
 
 	it("MEDIUM: a turn emitted BEFORE the goal is armed is not counted", async () => {
