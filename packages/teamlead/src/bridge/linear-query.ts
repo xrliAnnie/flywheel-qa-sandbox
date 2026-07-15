@@ -240,3 +240,85 @@ export async function lookupLinearIssueByIdentifier(
 	const node = (result.data as { issue: LinearIssueNode | null }).issue;
 	return node ? mapIssueNode(node, false) : null;
 }
+
+/** one comment as the landing reconciliation reads it (FLY-1160 §3.3 读口). */
+export interface LinearIssueComment {
+	id: string;
+	body: string;
+	createdAt: string;
+}
+
+export interface LinearCommentsPage {
+	comments: LinearIssueComment[];
+	hasNextPage: boolean;
+	endCursor: string | null;
+}
+
+/**
+ * FLY-1160 (plan §3.3 读口): paged comments of ONE issue, read-only — the
+ * landing reconciliation scans for its deterministic stage markers
+ * (assistant-summary <sessionId> / transcript chunk markers) instead of blind
+ * re-posting after a deadline/crash cut a landing mid-flight. Returns null
+ * when the issue does not resolve (a miss, not an upstream failure).
+ */
+export async function listLinearIssueComments(
+	linearApiKey: string,
+	issueId: string,
+	opts: { after?: string; limit?: number; timeoutMs?: number } = {},
+): Promise<LinearCommentsPage | null> {
+	const query = `
+		query IssueComments($id: String!, $first: Int!, $after: String) {
+			issue(id: $id) {
+				id
+				comments(first: $first, after: $after) {
+					nodes { id body createdAt }
+					pageInfo { hasNextPage endCursor }
+				}
+			}
+		}
+	`;
+	let result: { data?: unknown };
+	try {
+		const { LinearClient } = await import("@linear/sdk");
+		const client = new LinearClient({ apiKey: linearApiKey });
+		const resultPromise = client.client.rawRequest(query, {
+			id: issueId,
+			first: Math.min(Math.max(1, opts.limit ?? 50), 100),
+			after: opts.after ?? null,
+		});
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeoutPromise = new Promise<never>((_, reject) => {
+			timer = setTimeout(
+				() => reject(new Error("Linear API timeout")),
+				opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+			);
+		});
+		result = await Promise.race([resultPromise, timeoutPromise]).finally(() =>
+			clearTimeout(timer),
+		);
+	} catch (err) {
+		const msg = (err as Error).message ?? "";
+		if (/entity not found|could not be found/i.test(msg)) return null;
+		throw new LinearUpstreamError(msg || "Linear API request failed", err);
+	}
+	const node = (
+		result.data as {
+			issue: {
+				comments: {
+					nodes: LinearIssueComment[];
+					pageInfo: { hasNextPage: boolean; endCursor: string | null };
+				};
+			} | null;
+		}
+	).issue;
+	if (!node) return null;
+	return {
+		comments: node.comments.nodes.map((c) => ({
+			id: c.id,
+			body: c.body,
+			createdAt: c.createdAt,
+		})),
+		hasNextPage: node.comments.pageInfo.hasNextPage,
+		endCursor: node.comments.pageInfo.endCursor,
+	};
+}

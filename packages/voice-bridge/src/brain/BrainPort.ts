@@ -31,6 +31,10 @@ export interface BrainPortBrain {
 export interface BrainPortManager {
 	get(key: string): BrainPortBrain | undefined;
 	stats(): { active: number };
+	/** FLY-1160 §4.2-4 ② (Codex #552 R2 HIGH-4): the meeting is finalizing —
+	 * refuse new shim turns with 503 (checked at entry AND fenced right before
+	 * respond, so a turn that grabbed the ref before suspend is still refused). */
+	isFinalizing?(key: string): boolean;
 }
 
 export interface BrainPortOptions {
@@ -148,6 +152,13 @@ export class BrainPort {
 			this.json(res, 413, { error: "text exceeds 16KB" });
 			return;
 		}
+		// FLY-1160 §4.2-4 ② (Codex #552 R2 HIGH-4): a finalizing key refuses new
+		// shim turns with 503 (distinct from an unknown-key 404) — the daemon is
+		// running the minutes turn on a captured ref.
+		if (this.opts.manager.isFinalizing?.(key)) {
+			this.json(res, 503, { error: "finalizing" });
+			return;
+		}
 		const brain = this.opts.manager.get(key);
 		if (!brain) {
 			this.json(res, 404, { error: "unknown key" });
@@ -201,6 +212,14 @@ export class BrainPort {
 				return;
 			}
 
+			// FLY-1160 §4.2-4 ② FENCE (Codex #552 R2 HIGH-4): a turn that grabbed
+			// the brain ref BEFORE suspend passed the interrupt/prev awaits — the
+			// key may have gone finalizing in that window. Re-check right before
+			// respond() so a late turn cannot supersede the minutes turn.
+			if (this.opts.manager.isFinalizing?.(key)) {
+				this.json(res, 503, { error: "finalizing" });
+				return;
+			}
 			const ctrl = new AbortController();
 			streaming = true;
 

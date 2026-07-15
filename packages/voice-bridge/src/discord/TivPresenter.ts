@@ -83,7 +83,13 @@ export class TivPresenter implements TivSurface {
 		this.scheduleFlush();
 	}
 
-	caption(role: "user" | "assistant", text: string): void {
+	// nameOverride: the /meet huddle (FLY-545) captions MULTIPLE assistant
+	// speakers (per-lead display names), not one fixed assistantName.
+	caption(
+		role: "user" | "assistant",
+		text: string,
+		nameOverride?: string,
+	): void {
 		const clean = scrubTranscript(text);
 		if (!this.captionsOn) {
 			this.log(`[caption:${role}] ${clean}`);
@@ -93,7 +99,8 @@ export class TivPresenter implements TivSurface {
 			clean.length > this.captionMax
 				? clean.slice(0, this.captionMax) + TRUNCATION_NOTE
 				: clean;
-		const name = role === "user" ? this.founderName : this.assistantName;
+		const name =
+			nameOverride ?? (role === "user" ? this.founderName : this.assistantName);
 		const prefix = role === "user" ? "🗣️" : "💬";
 		void this.deps
 			.send(`${prefix} **${name}**:${body}`)

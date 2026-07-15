@@ -83,9 +83,19 @@ const CONFIG: HuddleBridgeConfig = {
 	earsToken: "ears-token",
 	leads: [],
 	backchannelMs: 350,
+	bargeInMinRms: 0,
+	bargeInHoldoffMs: 1000,
 	allowUserIds: [],
 	healthPort: 0,
 	ffmpegBin: "ffmpeg",
+	// this branch's /glaw assembly requirements (FLY-545 PR-2 fail-fasts)
+	bridgeUrl: "http://127.0.0.1:1",
+	apiToken: "t-bridge",
+	founderUserId: "annie-1",
+	geminiApiKey: "t-gemini",
+	geminiModel: "gemini-live-test",
+	claudeBin: "claude",
+	brainTimeoutMs: 1000,
 };
 
 const ASSISTANT = {
@@ -155,6 +165,13 @@ function makeFakes() {
 		moveMember: vi.fn(async () => true),
 		leaveVoice: vi.fn(),
 		connectionEvents: () => ({ onDown: () => () => {}, onUp: () => () => {} }),
+		// this branch's /glaw assembly seams (FLY-545 PR-2)
+		tivPort: () => ({
+			post: async () => ({ id: "m1" }),
+			edit: async () => {},
+		}),
+		onChatInteraction: () => {},
+		moveMemberDetailed: async () => ({ ok: true }),
 	} as unknown as Parameters<typeof runVoiceBridge>[0]["deps"];
 
 	const registry = {
@@ -393,6 +410,24 @@ describe("FLY-1159 layer (a) — cli.ts startup fail-fast (half-configured advan
 					advanced: { leadId: "qa-lead", commandName: "eleven" },
 				},
 				eleven: { commandName: "eleven" } as never,
+				deps: makeDeps(),
+				log: () => {},
+				probe: async () => ({ ok: true, detail: "fake" }),
+			}),
+		).rejects.toThrow(/duplicate voice command name/);
+	});
+
+	// Codex R41 (merge convergence): the /glaw huddle command is ALWAYS
+	// enabled on this chassis and rides the same orchestrator client — a
+	// custom huddle.commandName colliding with any other voice command would
+	// double-handle every interaction (two deferReply, two issues, two modes
+	// racing the VC). The guard must cover it.
+	it("the huddle command name colliding with another voice command → dies at startup", async () => {
+		process.env.GEMINI_API_KEY = "present-so-the-967-check-passes";
+		await expect(
+			runVoiceBridge({
+				config: { ...CONFIG, commandName: "gemini" },
+				assistant: ASSISTANT, // registers /gemini on the same client
 				deps: makeDeps(),
 				log: () => {},
 				probe: async () => ({ ok: true, detail: "fake" }),

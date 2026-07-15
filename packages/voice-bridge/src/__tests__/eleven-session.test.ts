@@ -431,4 +431,300 @@ describe("ElevenSession (FLY-1006 S7)", () => {
 		await expect(f.session.start()).rejects.toThrow(/signed-url/);
 		expect(f.room.slot.current()).toBe(null);
 	});
+
+	describe("FLY-1160 §4.2-4 finalizer (exactly-once, reason-branched minutes)", () => {
+		function landingSeams(over: Record<string, unknown> = {}) {
+			const landed: unknown[] = [];
+			const aborted: { comments: string[]; closes: number } = {
+				comments: [],
+				closes: 0,
+			};
+			const seams = {
+				issueId: "FLY-3000",
+				landing: {
+					land: vi.fn(async (input: unknown) => {
+						landed.push(input);
+						return { ok: true };
+					}),
+				},
+				generateMinutes: vi.fn(async () => ({
+					recapText: "定了:先修耳朵。",
+					quotes: [{ ts: "t", text: "先修耳朵" }],
+				})),
+				journalQuotes: () => [{ ts: "t", text: "从 journal 兜底" }],
+				linearAbort: {
+					comment: vi.fn(async (_id: string, body: string) => {
+						aborted.comments.push(body);
+					}),
+					closeIssue: vi.fn(async () => {
+						aborted.closes++;
+					}),
+				},
+				...over,
+			};
+			return { seams, landed, aborted };
+		}
+
+		it("manual stop with an issue: resident minutes → landing (confirmed), slot released once", async () => {
+			const { seams, landed } = landingSeams();
+			const f = makeFixture(seams);
+			await f.session.start();
+			await f.session.stop("manual");
+			expect(seams.generateMinutes).toHaveBeenCalledTimes(1);
+			expect(landed).toHaveLength(1);
+			expect(landed[0]).toMatchObject({
+				issueId: "FLY-3000",
+				confirmed: true,
+				recapText: "定了:先修耳朵。",
+			});
+			expect(seams.linearAbort.comment).not.toHaveBeenCalled();
+			expect(f.room.slot.current()).toBe(null);
+		});
+
+		it("brain unavailable (generateMinutes → null): DEGRADED landing from journal, not confirmed", async () => {
+			const { seams, landed } = landingSeams({
+				generateMinutes: vi.fn(async () => null),
+			});
+			const f = makeFixture(seams);
+			await f.session.start();
+			await f.session.stop("ws-error");
+			expect(landed[0]).toMatchObject({ confirmed: false });
+			expect((landed[0] as { quotes: unknown[] }).quotes).toEqual([
+				{ ts: "t", text: "从 journal 兜底" },
+			]);
+		});
+
+		it("no-show: abort-close the issue, NO minutes", async () => {
+			const { seams, landed, aborted } = landingSeams();
+			const f = makeFixture(seams);
+			await f.session.start();
+			await f.session.stop("no-show");
+			expect(seams.generateMinutes).not.toHaveBeenCalled();
+			expect(landed).toHaveLength(0);
+			expect(aborted.comments[0]).toContain("no-show");
+			expect(aborted.closes).toBe(1);
+		});
+
+		it("exactly-once: five converging stop() calls run the landing ONCE", async () => {
+			const { seams, landed } = landingSeams();
+			const f = makeFixture(seams);
+			await f.session.start();
+			await Promise.all([
+				f.session.stop("manual"),
+				f.session.stop("ws-error"),
+				f.session.stop("shutdown"),
+				f.session.stop("manual"),
+				f.session.stop("ws-error"),
+			]);
+			expect(seams.generateMinutes).toHaveBeenCalledTimes(1);
+			expect(landed).toHaveLength(1);
+			expect(f.ws.closes).toBe(1);
+		});
+
+		it("start-failure: abort-close (no minutes) and the error carries issueClosed for the honest reply", async () => {
+			const { seams, aborted } = landingSeams({
+				connect: async () => {
+					throw new Error("signed-url 500");
+				},
+			});
+			const f = makeFixture(seams);
+			const err = await f.session.start().catch((e) => e);
+			expect((err as { issueClosed?: boolean }).issueClosed).toBe(true);
+			expect(aborted.comments[0]).toContain("start-failure");
+			expect(aborted.closes).toBe(1);
+		});
+
+		it("Codex #552 M9: start-failure whose close FAILS reports issueClosed=false (honest reply)", async () => {
+			const { seams } = landingSeams({
+				connect: async () => {
+					throw new Error("signed-url 500");
+				},
+				linearAbort: {
+					comment: vi.fn(async () => {}),
+					closeIssue: vi.fn(async () => {
+						throw new Error("linear down");
+					}),
+				},
+			});
+			const f = makeFixture(seams);
+			const err = await f.session.start().catch((e) => e);
+			expect((err as { issueClosed?: boolean }).issueClosed).toBe(false);
+		});
+
+		it("Codex #552 HIGH-5: the finalizer suspends the key and awaits the brain interrupt BEFORE the minutes turn", async () => {
+			const order: string[] = [];
+			const { seams } = landingSeams({
+				suspendBrain: () => order.push("suspend"),
+				brainInterrupt: vi.fn(async () => {
+					order.push("interrupt");
+				}),
+				generateMinutes: vi.fn(async () => {
+					order.push("minutes");
+					return { recapText: "x", quotes: [] };
+				}),
+			});
+			const f = makeFixture(seams);
+			await f.session.start();
+			await f.session.stop("manual");
+			expect(order).toEqual(["suspend", "interrupt", "minutes"]);
+		});
+
+		it("Codex #552 R1 HIGH-3: an explicit stop('no-show') abort-closes with NO minutes", async () => {
+			// no-show is now driven by the WIRING from presence; the session's
+			// terminal for it is a plain abort-close (no minutes turn).
+			const { seams, aborted, landed } = landingSeams();
+			const f = makeFixture(seams);
+			await f.session.start();
+			await f.session.stop("no-show");
+			expect(seams.generateMinutes).not.toHaveBeenCalled();
+			expect(landed).toHaveLength(0);
+			expect(aborted.comments[0]).toContain("no-show");
+			expect(aborted.closes).toBe(1);
+			expect(f.room.slot.current()).toBe(null);
+		});
+
+		it("Codex #552 R3 HIGH-1: a no-show firing DURING start() does not revive the session", async () => {
+			// stop("no-show") lands while connect() is still awaiting; start() must
+			// close the just-opened WS and NOT go live.
+			const { seams } = landingSeams();
+			let resolveConnect!: (ws: unknown) => void;
+			let wsClosed = 0;
+			const f = makeFixture({
+				...seams,
+				connect: () =>
+					new Promise((res) => {
+						resolveConnect = res;
+					}),
+			});
+			const startP = f.session.start();
+			// flush enough microtasks for start() to reach the pending connect()
+			for (let i = 0; i < 6; i++) await Promise.resolve();
+			expect(resolveConnect).toBeTypeOf("function");
+			// the finalizer fires while connect is pending
+			const stopP = f.session.stop("no-show");
+			resolveConnect({
+				sendAudio() {},
+				flushAudio() {},
+				close() {
+					wsClosed++;
+				},
+			});
+			await Promise.all([startP, stopP]);
+			expect(f.session.stateName).toBe("ended");
+			expect(wsClosed).toBe(1); // the late WS was closed, not left live
+		});
+
+		it("Codex #552 R3 HIGH-2: a shutdown abort during a no-show comment does NOT chain the close", async () => {
+			const ctrl = new AbortController();
+			const closes: number[] = [];
+			const { seams } = landingSeams({
+				linearAbort: {
+					comment: vi.fn(async () => {
+						ctrl.abort(); // deadline hits mid-comment
+					}),
+					closeIssue: vi.fn(async () => {
+						closes.push(1);
+					}),
+				},
+			});
+			const f = makeFixture(seams);
+			await f.session.start();
+			await f.session.stop("no-show", { signal: ctrl.signal });
+			expect(closes).toHaveLength(0); // the close mutation was NOT issued
+		});
+
+		it("Codex #552 R4 HIGH: the shutdown signal is TRUE cancellation of the in-flight abort-close mutation", async () => {
+			const ctrl = new AbortController();
+			let committed = false;
+			const { seams } = landingSeams({
+				linearAbort: {
+					// a signal-aware pending mutation (like a real fetch): rejects on
+					// abort WITHOUT committing.
+					comment: vi.fn(
+						(_id: string, _b: string, o?: { signal?: AbortSignal }) =>
+							new Promise((_res, rej) => {
+								o?.signal?.addEventListener("abort", () =>
+									rej(new Error("aborted")),
+								);
+							}).then(() => {
+								committed = true;
+							}),
+					),
+					closeIssue: vi.fn(async () => {}),
+				},
+			});
+			const f = makeFixture(seams);
+			await f.session.start();
+			const stopP = f.session.stop("no-show", { signal: ctrl.signal });
+			await Promise.resolve();
+			ctrl.abort(); // deadline: the in-flight comment fetch is cancelled
+			await stopP; // the finalizer settles (no hang)
+			expect(committed).toBe(false);
+			expect(seams.linearAbort.closeIssue).not.toHaveBeenCalled();
+		});
+
+		it("Codex #552 R3 MEDIUM-4: a failed interrupt barrier skips the resident minutes turn (journal-degraded)", async () => {
+			const { seams, landed } = landingSeams({
+				brainInterrupt: vi.fn(async () => {
+					throw new Error("barrier failed");
+				}),
+			});
+			const f = makeFixture(seams);
+			await f.session.start();
+			await f.session.stop("manual");
+			// the resident minutes turn was NOT driven; a degraded record landed
+			expect(seams.generateMinutes).not.toHaveBeenCalled();
+			expect(landed[0]).toMatchObject({ confirmed: false });
+		});
+
+		it("Codex #552 R2 HIGH-1: a shutdown signal arriving AFTER a manual finalizer still cancels the minutes turn", async () => {
+			let minutesSignal: AbortSignal | undefined;
+			const { seams } = landingSeams({
+				generateMinutes: vi.fn(async (sig?: AbortSignal) => {
+					minutesSignal = sig;
+					// hold so the shutdown signal can race in
+					await new Promise((r) => setTimeout(r, 20));
+					return { recapText: "x", quotes: [] };
+				}),
+			});
+			const f = makeFixture(seams);
+			await f.session.start();
+			vi.useRealTimers(); // real timing for the race
+			const manual = f.session.stop("manual"); // no signal — starts finalizer
+			const ctrl = new AbortController();
+			await f.session.stop("shutdown", { signal: ctrl.signal }); // bridges in
+			ctrl.abort();
+			await manual;
+			vi.useFakeTimers();
+			expect(minutesSignal?.aborted).toBe(true);
+		});
+
+		it("Codex #552 MEDIUM-8: a mismatched conversation_id fails loud (terminate)", async () => {
+			const { seams } = landingSeams();
+			const f = makeFixture(seams);
+			await f.session.start();
+			f.handlers().onMetadata?.({
+				conversationId: "SOMEONE-ELSES-UUID",
+				agentOutputAudioFormat: "x",
+				userInputAudioFormat: "y",
+			});
+			await vi.waitFor(() => {
+				if (f.session.stateName !== "ended") throw new Error("not torn down");
+			});
+		});
+
+		it("Codex #552 MEDIUM-8: a MISSING (empty) conversation_id also fails loud", async () => {
+			const { seams } = landingSeams();
+			const f = makeFixture(seams);
+			await f.session.start();
+			f.handlers().onMetadata?.({
+				conversationId: "",
+				agentOutputAudioFormat: "x",
+				userInputAudioFormat: "y",
+			});
+			await vi.waitFor(() => {
+				if (f.session.stateName !== "ended") throw new Error("not torn down");
+			});
+		});
+	});
 });

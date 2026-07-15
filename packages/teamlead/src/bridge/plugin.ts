@@ -318,6 +318,7 @@ import {
 } from "./lifecycle-routes.js";
 import { sweepProjectLifecycle } from "./lifecycle-sweep.js";
 import {
+	listLinearIssueComments,
 	lookupLinearIssueByIdentifier,
 	queryLinearIssues,
 } from "./linear-query.js";
@@ -2913,6 +2914,88 @@ export function createBridgeApp(
 			} catch (err) {
 				console.error(
 					"[linear-proxy] issue-lookup failed:",
+					(err as Error).message,
+				);
+				res.status(502).json({ error: "Linear API error" });
+			}
+		},
+	);
+
+	// FLY-1160 (plan §3.3 读口): read-only PAGED comments of one issue — the
+	// voice landing reconciliation confirms which stage markers already landed
+	// (assistant-summary <sessionId> / transcript chunk markers) after a
+	// shutdown deadline or crash cut a landing mid-flight, instead of blind
+	// re-posting. Scoped like the comment WRITE path: a named project binding
+	// must contain the issue.
+	app.get(
+		"/api/linear/comments",
+		tokenAuthMiddleware(config.apiToken),
+		async (req, res) => {
+			if (!config.linearApiKey) {
+				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
+				return;
+			}
+			const issueIdRaw = Array.isArray(req.query.issueId)
+				? String(req.query.issueId[0])
+				: (req.query.issueId as string | undefined);
+			if (!issueIdRaw || issueIdRaw.trim().length === 0) {
+				res.status(400).json({ error: "issueId is required" });
+				return;
+			}
+			const afterRaw = Array.isArray(req.query.after)
+				? String(req.query.after[0])
+				: (req.query.after as string | undefined);
+			const limitRaw =
+				req.query.limit !== undefined
+					? parseInt(String(req.query.limit), 10)
+					: 50;
+			const limit = Number.isNaN(limitRaw)
+				? 50
+				: Math.min(Math.max(1, limitRaw), 100);
+			const bound = resolveProjectNameParam(projects, req.query.projectName);
+			if (!bound.ok) {
+				res.status(bound.status).json({ error: bound.error });
+				return;
+			}
+			try {
+				const issue = await lookupLinearIssueByIdentifier(
+					config.linearApiKey,
+					issueIdRaw.trim(),
+				);
+				if (!issue) {
+					res.status(404).json({ error: `issue "${issueIdRaw}" not found` });
+					return;
+				}
+				if (bound.binding && !issueMatchesBinding(issue, bound.binding)) {
+					res.status(403).json({
+						error: `issue "${issue.identifier}" is outside the "${String(
+							Array.isArray(req.query.projectName)
+								? req.query.projectName[0]
+								: req.query.projectName,
+						)}" project scope`,
+					});
+					return;
+				}
+				const page = await listLinearIssueComments(
+					config.linearApiKey,
+					issue.id,
+					{ after: afterRaw?.trim() || undefined, limit },
+				);
+				if (!page) {
+					res.status(404).json({ error: `issue "${issueIdRaw}" not found` });
+					return;
+				}
+				res.json({
+					issueId: issue.identifier,
+					state: issue.state,
+					stateType: issue.stateType,
+					comments: page.comments,
+					hasNextPage: page.hasNextPage,
+					endCursor: page.endCursor,
+				});
+			} catch (err) {
+				console.error(
+					"[linear-proxy] comments-list failed:",
 					(err as Error).message,
 				);
 				res.status(502).json({ error: "Linear API error" });

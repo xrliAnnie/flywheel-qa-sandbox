@@ -1,7 +1,7 @@
 /**
  * SessionSlot — the single-session mutex of the resident VC (FLY-545).
  *
- * The resident #huddle VC hosts ONE voice session at a time; /meet (huddle,
+ * The resident #huddle VC hosts ONE voice session at a time; /glaw (huddle,
  * FLY-545) and /gemini (assistant, FLY-967) contend for the SAME slot — the
  * concurrency=1 rule is a property of the room, not of either mode. Generic
  * semantics per the 545/967 boundary ruling: acquire/release keyed by
@@ -9,7 +9,7 @@
  * founder-facing message, and only the current holder can release.
  *
  * In-process state only (plan §10: no cross-restart session recovery — a
- * dropped meeting is re-/meet'ed, honestly).
+ * dropped meeting is re-/glaw-ed, honestly).
  */
 
 export interface SessionSlotHolder {

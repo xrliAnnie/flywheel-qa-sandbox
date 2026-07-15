@@ -31,6 +31,7 @@ class FakeSession implements ConversationSession {
 		this.frames.push(frame);
 	}
 	sendText(): void {}
+	injectContext(): void {}
 	interrupt(): void {}
 	injectToolResult(_r: ToolResult, _s?: ScheduleHint): void {}
 	on<E extends keyof ConversationEventMap>(

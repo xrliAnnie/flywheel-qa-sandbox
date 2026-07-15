@@ -22,6 +22,10 @@ export interface ElevenModeConfig {
 	commandName: string;
 	/** the ElevenLabs agent id (rebuilt per rig session; m1-rig.md runbook). */
 	agentId: string;
+	/** FLY-1160 §4.2: the Lead whose persona the resident brain speaks with —
+	 * must name a lead declared in the project's `leads`; the identity file
+	 * resolves to <projectRoot>/.lead/<leadId>/identity.md. */
+	leadId: string;
 	/** env var holding the xi-api-key (default ELEVENLABS_API_KEY). */
 	apiKeyEnv: string;
 	/** shim health probe (default http://127.0.0.1:8980/health). */
@@ -65,6 +69,25 @@ export function resolveElevenConfig(
 			"voice-bridge: huddle.eleven.agentId is required — rebuild the agent per engineering/doc/FLY-1006-eleven-product-e2e/evidence/m1-rig.md and paste its id",
 		);
 	}
+	// FLY-1160 §4.2: the resident brain speaks with a Lead's persona — the
+	// leadId is REQUIRED and must exist in the project's declared leads
+	// (fail-loud at load, not at the first meeting).
+	const leadId = optString(e, "leadId");
+	if (!leadId) {
+		throw new Error(
+			"voice-bridge: huddle.eleven.leadId is required (FLY-1160) — the resident brain persona source; set it to one of the project's leads[].agentId",
+		);
+	}
+	const declaredLeads = Array.isArray(entry.leads)
+		? (entry.leads as Record<string, unknown>[]).map((l) =>
+				String(l?.agentId ?? ""),
+			)
+		: [];
+	if (!declaredLeads.includes(leadId)) {
+		throw new Error(
+			`voice-bridge: huddle.eleven.leadId "${leadId}" is not among the project's leads (${declaredLeads.join(", ") || "none declared"}) — the persona must belong to a declared lead`,
+		);
+	}
 	const apiKeyEnv = optString(e, "apiKeyEnv") ?? DEFAULT_API_KEY_ENV;
 	if (!env[apiKeyEnv]) {
 		throw new Error(
@@ -74,6 +97,7 @@ export function resolveElevenConfig(
 	return {
 		commandName: optString(e, "commandName") ?? DEFAULT_COMMAND,
 		agentId,
+		leadId,
 		apiKeyEnv,
 		shimHealthUrl: optString(e, "shimHealthUrl") ?? DEFAULT_SHIM_HEALTH,
 		voiceId: optString(e, "voiceId"),
