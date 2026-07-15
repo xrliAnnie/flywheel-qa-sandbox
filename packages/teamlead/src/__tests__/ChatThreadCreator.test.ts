@@ -546,13 +546,13 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 				status: 200,
 				json: () =>
 					Promise.resolve({
-						name: "🔨 [Model GPT-5.6] [FLY-560] Discord issue status",
+						name: "🔨 [G] [FLY-560] Discord issue status",
 					}),
 			})
 			.mockResolvedValueOnce({ ok: true, status: 200 });
 
 		await creator.stampStageEmoji(
-			ctx({ modelMarker: "Model kimi-for-coding" }),
+			ctx({ modelMarker: "K" }),
 			"thread-1",
 			"design_review",
 		);
@@ -561,7 +561,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 			(c) => c[1]?.method === "PATCH",
 		);
 		expect(JSON.parse(patchCall![1].body).name).toBe(
-			"👀 [Model kimi-for-coding] [FLY-560] Discord issue status",
+			"👀 [K] [FLY-560] Discord issue status",
 		);
 	});
 
@@ -572,7 +572,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 				status: 200,
 				json: () =>
 					Promise.resolve({
-						name: "🔨 [Model GPT-5.6] [FLY-560] Discord issue status",
+						name: "🔨 [G] [FLY-560] Discord issue status",
 					}),
 			})
 			.mockResolvedValueOnce({ ok: true, status: 200 });
@@ -602,7 +602,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 			.mockResolvedValueOnce({ ok: true, status: 200 });
 
 		await creator.stampStageEmoji(
-			ctx({ issueTitle: undefined, modelMarker: "Model GPT-5.6" }),
+			ctx({ issueTitle: undefined, modelMarker: "G" }),
 			"thread-1",
 			"implement",
 		);
@@ -612,7 +612,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 		);
 		const name = JSON.parse(patchCall![1].body).name as string;
 		expect(name).toHaveLength(100);
-		expect(name.startsWith("🔨 [Model GPT-5.6] [FLY-560]")).toBe(true);
+		expect(name.startsWith("🔨 [G] [FLY-560]")).toBe(true);
 	});
 
 	it("FLY-755: an authoritative modelMarker=null CLEARS a stale front marker", async () => {
@@ -1549,12 +1549,12 @@ describe("FLY-755: creation + backfill carry the front model marker", () => {
 			issueIdentifier: "FLY-1255",
 			issueTitle: "Vendor-neutral display",
 			botToken: "bot-token",
-			modelMarker: "Model GPT-5.6",
+			modelMarker: "G",
 		});
 
 		const threadBody = JSON.parse(mockFetch.mock.calls[1]![1].body);
 		expect(threadBody.name).toBe(
-			"[Model GPT-5.6] [FLY-1255] Vendor-neutral display",
+			"[G] [FLY-1255] Vendor-neutral display",
 		);
 	});
 

@@ -275,7 +275,7 @@ describe("RetryDispatcher", () => {
 		});
 
 		const ctx = vi.mocked(runtime.blueprint.run).mock.calls[0]?.[2];
-		expect(ctx?.runnerName).toBe("implement-codex-GPT-5-6");
+		expect(ctx?.runnerName).toBe("implement-codex-G");
 	});
 
 	it("dispatch() returns old and new execution IDs", async () => {
@@ -782,16 +782,16 @@ describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () 
 	it("includes the vendor-neutral model label when a model was resolved", () => {
 		expect(
 			runnerDisplayName("implement", true, {
-				threadMarker: "Model GPT-5.6",
-				windowLabel: "codex-GPT-5-6",
+				threadMarker: "G",
+				windowLabel: "codex-G",
 			}),
-		).toBe("implement-codex-GPT-5-6");
+		).toBe("implement-codex-G");
 		expect(
 			runnerDisplayName("main", false, {
-				threadMarker: "Model kimi-for-coding",
-				windowLabel: "kimi-kimi-for-coding",
+				threadMarker: "K",
+				windowLabel: "kimi-K",
 			}),
-		).toBe("runner-kimi-kimi-for-coding");
+		).toBe("runner-kimi-K");
 		expect(
 			runnerDisplayName("qa", true, {
 				threadMarker: "O",
@@ -809,7 +809,7 @@ describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () 
 	it("infers Codex defensively when backend metadata is absent", () => {
 		const display = renderRunnerModelDisplay({ model: "gpt-5.6-sol" });
 		expect(runnerDisplayName("main", false, display)).toBe(
-			"runner-codex-GPT-5-6",
+			"runner-codex-G",
 		);
 	});
 

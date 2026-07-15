@@ -281,12 +281,17 @@ export function stripStatusEmojiPrefix(name: string): string {
 /**
  * FLY-755/1255: the model marker is stamped as a LEADING bracket marker placed
  * after the FLY-560 stage badge and before the issue key, e.g.
- * `🧠规划 [F] [FLY-755] Title` or
- * `🔨实现 [Model GPT-5.6] [FLY-1255] Title`. The FLY-728 tail suffix (` ·F`)
- * was invisible on mobile, where long titles truncate and the tail never
- * renders. The marker still rides the SAME thread rename as the stage badge
- * (splitStatusEmoji peels only the badge, leaving the marker at the front of
- * the base), so it never adds a Discord rate-limit rename of its own.
+ * `🧠规划 [F] [FLY-755] Title` or `🔨实现 [G] [FLY-1255] Title`.
+ *
+ * FLY-1255 (Plan B — Annie): every vendor folds to a single letter — Claude
+ * keeps F/O/S/H, codex/GPT-5.6 → `G`, kimi → `K`. An UNvetted vendor/model that
+ * has no curated letter (gemini, antigravity, a future gpt-6) is still stamped
+ * with the human-readable `Model <safe-id>` namespace rather than a fabricated
+ * letter, so the grammar keeps recognizing that long form too. The FLY-728 tail
+ * suffix (` ·F`) was invisible on mobile, where long titles truncate and the
+ * tail never renders. The marker still rides the SAME thread rename as the stage
+ * badge (splitStatusEmoji peels only the badge, leaving the marker at the front
+ * of the base), so it never adds a Discord rate-limit rename of its own.
  *
  * Recognition and insertion are a PAIRED contract anchored on a bracketed
  * Linear issue key: the marker is only recognized when followed by `[KEY-N]`,
@@ -298,13 +303,19 @@ export function stripStatusEmojiPrefix(name: string): string {
  * marker on their next re-stamp; no proactive mass rename.
  */
 const ISSUE_KEY_HEAD_RE = /^\[[A-Z][A-Z0-9]*-\d+\](?:\s|$)/;
+// FLY-1255 (Plan B): the curated single-letter codes across every vendor —
+// Claude F/O/S/H + codex `G` + kimi `K`. Maintained in lockstep with the
+// `flywheel-config` short-code tables (`modelShortCode` + `vendorModelShortCode`).
+const MODEL_MARKER_CODE_CLASS = "[FGHKOS]";
 const MODEL_MARKER_PAYLOAD_RE = `[A-Za-z0-9][A-Za-z0-9._+-]{0,${RUNNER_MODEL_MARKER_PAYLOAD_MAX - 1}}`;
 const MODEL_MARKER_VALUE_RE = new RegExp(
-	`^(?:[FOSH]|Model ${MODEL_MARKER_PAYLOAD_RE})$`,
+	`^(?:${MODEL_MARKER_CODE_CLASS}|Model ${MODEL_MARKER_PAYLOAD_RE})$`,
 );
 const MODEL_MARKER_RE = new RegExp(
-	`^\\[((?:[FOSH]|Model ${MODEL_MARKER_PAYLOAD_RE}))\\] (?=\\[[A-Z][A-Z0-9]*-\\d+\\](?:\\s|$))`,
+	`^\\[((?:${MODEL_MARKER_CODE_CLASS}|Model ${MODEL_MARKER_PAYLOAD_RE}))\\] (?=\\[[A-Z][A-Z0-9]*-\\d+\\](?:\\s|$))`,
 );
+// Legacy FLY-728 tail (` ·F`) is Claude-only — `G`/`K` never shipped as a tail,
+// so old-thread migration recognizes only the original F/O/S/H suffix.
 const LEGACY_MODEL_SUFFIX_RE = / ·([FOSH])$/;
 
 /** True when `base` starts with a bracketed Linear issue key (`[FLY-755] …`). */

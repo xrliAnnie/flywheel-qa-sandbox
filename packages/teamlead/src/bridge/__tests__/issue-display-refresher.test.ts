@@ -603,7 +603,7 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		const { refresher, log } = makeRefresher(store);
 		await refresher.refresh(ISSUE);
 
-		expect(log.titleMarkers[0]).toBe("Model GPT-5.6");
+		expect(log.titleMarkers[0]).toBe("G");
 	});
 
 	it("pending implement marker follows the kill-switch-aware phase plan", async () => {

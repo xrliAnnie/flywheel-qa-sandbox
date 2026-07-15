@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderRunnerModelDisplay } from "../model-display.js";
 
-describe("renderRunnerModelDisplay (FLY-1255)", () => {
+describe("renderRunnerModelDisplay (FLY-1255 Plan B — single-letter codes)", () => {
 	it.each([
 		[
 			"claude",
@@ -13,18 +13,13 @@ describe("renderRunnerModelDisplay (FLY-1255)", () => {
 			"claude-opus-4-8[1m]",
 			{ threadMarker: "O", windowLabel: "claude-Opus" },
 		],
-		[
-			"codex",
-			"gpt-5.6-sol",
-			{ threadMarker: "Model GPT-5.6", windowLabel: "codex-GPT-5-6" },
-		],
+		// Plan B: codex/GPT-5.6 folds to the single letter `G` (was `Model GPT-5.6`).
+		["codex", "gpt-5.6-sol", { threadMarker: "G", windowLabel: "codex-G" }],
+		// Plan B: kimi folds to the single letter `K` (was `Model kimi-for-coding`).
 		[
 			"kimi",
 			"kimi-for-coding",
-			{
-				threadMarker: "Model kimi-for-coding",
-				windowLabel: "kimi-kimi-for-coding",
-			},
+			{ threadMarker: "K", windowLabel: "kimi-K" },
 		],
 	] as const)("renders %s/%s", (vendor, model, expected) => {
 		expect(renderRunnerModelDisplay({ vendor, model })).toEqual(expected);
@@ -43,11 +38,13 @@ describe("renderRunnerModelDisplay (FLY-1255)", () => {
 	});
 
 	it("infers a known family only when vendor metadata is absent", () => {
+		// Missing backend metadata stays honest: a gpt-5.6 row is still `G`
+		// (codex), never a Claude letter and never a fabricated one.
 		expect(
 			renderRunnerModelDisplay({ vendor: undefined, model: "gpt-5.6-sol" }),
 		).toEqual({
-			threadMarker: "Model GPT-5.6",
-			windowLabel: "codex-GPT-5-6",
+			threadMarker: "G",
+			windowLabel: "codex-G",
 		});
 		expect(
 			renderRunnerModelDisplay({ vendor: undefined, model: "future-v9" }),
@@ -63,12 +60,36 @@ describe("renderRunnerModelDisplay (FLY-1255)", () => {
 		});
 	});
 
-	it("bounds and sanitizes opaque model ids", () => {
+	it("never fabricates a letter for an unvetted vendor/model (Plan B ③)", () => {
+		// A future gpt-6 is NOT the curated gpt-5.6 signature → long fallback, not `G`.
 		expect(
-			renderRunnerModelDisplay({ vendor: "kimi", model: " bad] model🔥 " }),
+			renderRunnerModelDisplay({ vendor: "codex", model: "gpt-6" }),
+		).toEqual({
+			threadMarker: "Model gpt-6",
+			windowLabel: "codex-gpt-6",
+		});
+		// Uncurated families (gemini, antigravity) never get a letter.
+		expect(
+			renderRunnerModelDisplay({ vendor: "gemini", model: "gemini-3-pro" }),
+		).toEqual({
+			threadMarker: "Model gemini-3-pro",
+			windowLabel: "gemini-gemini-3-pro",
+		});
+		expect(
+			renderRunnerModelDisplay({ vendor: "antigravity", model: "agy-1" }),
+		).toEqual({
+			threadMarker: "Model agy-1",
+			windowLabel: "antigravity-agy-1",
+		});
+	});
+
+	it("bounds and sanitizes opaque model ids on the fallback path", () => {
+		// Uncurated vendor → long fallback, which is where sanitization matters.
+		expect(
+			renderRunnerModelDisplay({ vendor: "gemini", model: " bad] model🔥 " }),
 		).toEqual({
 			threadMarker: "Model bad-model",
-			windowLabel: "kimi-bad-model",
+			windowLabel: "gemini-bad-model",
 		});
 		const long = renderRunnerModelDisplay({
 			vendor: "future",

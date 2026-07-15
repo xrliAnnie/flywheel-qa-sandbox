@@ -1,4 +1,8 @@
-import { modelDisplayName, modelShortCode } from "./model-tiers.js";
+import {
+	modelDisplayName,
+	modelShortCode,
+	vendorModelShortCode,
+} from "./model-tiers.js";
 
 /** Shared producer/consumer cap for the payload after the `Model ` namespace. */
 export const RUNNER_MODEL_MARKER_PAYLOAD_MAX = 24;
@@ -48,21 +52,35 @@ export function renderRunnerModelDisplay(
 				? "kimi"
 				: "unknown";
 	const family = explicitFamily || inferredFamily;
+
+	// FLY-1255 (Plan B — Annie): resolve a SINGLE-LETTER short code by table
+	// lookup. Claude keeps its F/O/S/H tier codes (byte-unchanged); curated
+	// non-Claude families fold to `G` (codex/GPT-5.6) or `K` (kimi). A model with
+	// no curated code (gemini, antigravity, a future gpt-6) keeps the long
+	// `Model <id>` fallback below — the letter is NEVER fabricated.
 	const claudeCode = family === "claude" ? claudeCodeCandidate : undefined;
-	const familyDisplay =
-		family === "claude" && claudeCode
-			? modelDisplayName(model)
-			: family === "codex" && lowerModel.startsWith("gpt-")
-				? modelDisplayName(model)
-				: undefined;
+	const vendorCode = vendorModelShortCode(family, model);
+	const code = claudeCode ?? vendorCode;
+
+	// Claude window keeps its readable tier name (`claude-Fable`, byte-unchanged);
+	// the NEW non-Claude codes use the compact letter in the window too so the
+	// short label frees up the tmux/cmux issue-title sidebar (`codex-G`, `kimi-K`).
+	// A model with no curated code falls back to its honest raw id in both the
+	// `Model <id>` marker and the `<family>-<id>` window label (a formerly-
+	// prettified `gpt-5.6` is now `G`, so the fallback no longer needs to reach
+	// for a display name).
+	const claudeDisplay =
+		family === "claude" && claudeCode ? modelDisplayName(model) : undefined;
 	const payload = safeToken(
-		familyDisplay ?? model,
+		claudeDisplay ?? model,
 		RUNNER_MODEL_MARKER_PAYLOAD_MAX,
 	);
-	if (!payload) return undefined;
+	if (!code && !payload) return undefined;
+
+	const windowSegment = vendorCode ?? payload;
 
 	return {
-		threadMarker: claudeCode ?? `Model ${payload}`,
-		windowLabel: windowSafe(`${family}-${payload}`),
+		threadMarker: code ?? `Model ${payload}`,
+		windowLabel: windowSafe(`${family}-${windowSegment}`),
 	};
 }

@@ -84,7 +84,7 @@ const SCENARIOS = [
 		issueKey: "FLY-1255",
 		title: "vendor-neutral model display",
 		phaseBadge: "🔨实现",
-		expect: "🔨实现 [Model GPT-5.6] [FLY-1255] vendor-neutral model display",
+		expect: "🔨实现 [G] [FLY-1255] vendor-neutral model display",
 	},
 	{
 		name: "Kimi backend (must not be swallowed by Claude logic)",
@@ -96,7 +96,7 @@ const SCENARIOS = [
 		issueKey: "FLY-1255",
 		title: "kimi runner",
 		phaseBadge: "🧪QA",
-		expect: "🧪QA [Model kimi-for-coding] [FLY-1255] kimi runner",
+		expect: "🧪QA [K] [FLY-1255] kimi runner",
 	},
 	{
 		name: "Claude backward-compat (F/O/S/H must not regress)",

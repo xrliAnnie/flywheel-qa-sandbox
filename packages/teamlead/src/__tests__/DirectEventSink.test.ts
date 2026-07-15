@@ -694,7 +694,7 @@ describe("DirectEventSink — FLY-493: pr_handoff → terminal completed", () =>
 				}),
 			);
 
-			expect(contexts[0]?.modelMarker).toBe("Model GPT-5.6");
+			expect(contexts[0]?.modelMarker).toBe("G");
 		},
 	);
 

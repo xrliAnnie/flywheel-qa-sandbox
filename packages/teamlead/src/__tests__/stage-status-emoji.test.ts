@@ -266,7 +266,8 @@ describe("FLY-755: model-code front marker ([F]/[O]/[S]/[H])", () => {
 			`[Model ${"x".repeat(RUNNER_MODEL_MARKER_PAYLOAD_MAX)}] [FLY-1255] Title`,
 		);
 	});
-	it("applyModelMarker prepends the code before the issue key — all four codes", () => {
+	it("applyModelMarker prepends the code before the issue key — all six codes", () => {
+		// FLY-755 Claude tiers.
 		expect(applyModelMarker("[FLY-728] Title", "F")).toBe(
 			"[F] [FLY-728] Title",
 		);
@@ -279,6 +280,30 @@ describe("FLY-755: model-code front marker ([F]/[O]/[S]/[H])", () => {
 		expect(applyModelMarker("[FLY-728] Title", "H")).toBe(
 			"[H] [FLY-728] Title",
 		);
+		// FLY-1255 Plan B: codex/GPT → G, kimi → K.
+		expect(applyModelMarker("[FLY-1255] Title", "G")).toBe(
+			"[G] [FLY-1255] Title",
+		);
+		expect(applyModelMarker("[FLY-1255] Title", "K")).toBe(
+			"[K] [FLY-1255] Title",
+		);
+	});
+
+	it("FLY-1255: the new G/K codes round-trip (stamp / label / strip / swap)", () => {
+		expect(modelMarkerLabel("[G] [FLY-1255] Title")).toBe("G");
+		expect(modelMarkerLabel("[K] [FLY-1255] Title")).toBe("K");
+		expect(stripModelMarker("[G] [FLY-1255] Title")).toBe("[FLY-1255] Title");
+		expect(stripModelMarker("[K] [FLY-1255] Title")).toBe("[FLY-1255] Title");
+		// idempotent + swappable like the Claude codes.
+		expect(applyModelMarker("[G] [FLY-1255] Title", "G")).toBe(
+			"[G] [FLY-1255] Title",
+		);
+		expect(applyModelMarker("[G] [FLY-1255] Title", "K")).toBe(
+			"[K] [FLY-1255] Title",
+		);
+		// a keyless single-letter bracket is still real title text, never a marker.
+		expect(stripModelMarker("[G] Founder copy")).toBe("[G] Founder copy");
+		expect(modelMarkerLabel("[K] Founder copy")).toBeUndefined();
 	});
 
 	it("applyModelMarker is idempotent (re-stamp does not double the marker)", () => {

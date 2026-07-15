@@ -79,11 +79,11 @@ console.log(
 		shareParentBranch: true,
 	};
 	const d = rmd.sessionModelDisplay(s, {});
-	check("codex thread marker", d.threadMarker, "Model GPT-5.6");
+	check("codex thread marker", d.threadMarker, "G");
 	check(
 		"codex window label (dots→dashes: tmux-legal)",
 		d.windowLabel,
-		"codex-GPT-5-6",
+		"codex-G",
 	);
 	check(
 		"codex founder thread title",
@@ -93,12 +93,12 @@ console.log(
 			"Vendor-neutral model display",
 			d.threadMarker,
 		),
-		"🔨实现 [Model GPT-5.6] [FLY-1255] Vendor-neutral model display",
+		"🔨实现 [G] [FLY-1255] Vendor-neutral model display",
 	);
 	const w = windowName(s, "FLY-1255", LONG);
 	check(
 		"codex cmux window keeps vendor+model+phase",
-		w.startsWith("FLY-1255-implement-codex-GPT-5-6"),
+		w.startsWith("FLY-1255-implement-codex-G"),
 		true,
 	);
 	check("codex window ≤50 chars", w.length <= 50, true);
@@ -114,16 +114,16 @@ console.log(
 		chat_thread_role: null,
 	};
 	const d = rmd.sessionModelDisplay(s, {});
-	check("kimi thread marker", d.threadMarker, "Model kimi-for-coding");
-	check("kimi window label", d.windowLabel, "kimi-kimi-for-coding");
+	check("kimi thread marker", d.threadMarker, "K");
+	check("kimi window label", d.windowLabel, "kimi-K");
 	check(
 		"kimi founder thread title",
 		threadTitle("", "FLY-9", "Kimi backend", d.threadMarker),
-		"[Model kimi-for-coding] [FLY-9] Kimi backend",
+		"[K] [FLY-9] Kimi backend",
 	);
 	check(
 		"kimi window is managed namespace",
-		windowName(s, "FLY-9", LONG).includes("runner-kimi-kimi-for-coding"),
+		windowName(s, "FLY-9", LONG).includes("runner-kimi-K"),
 		true,
 	);
 }
@@ -186,9 +186,9 @@ console.log(
 	check(
 		"missing adapter + gpt model → codex, never claude-*",
 		d.windowLabel,
-		"codex-GPT-5-6",
+		"codex-G",
 	);
-	check("missing adapter marker", d.threadMarker, "Model GPT-5.6");
+	check("missing adapter marker", d.threadMarker, "G");
 }
 {
 	// vendor/model disagree → must not misrepresent a gpt model as a Claude tier.
@@ -240,7 +240,7 @@ console.log(
 	check(
 		"design kill-switch on → codex marker",
 		designOn.threadMarker,
-		"Model GPT-5.6",
+		"G",
 	);
 }
 
@@ -263,18 +263,18 @@ console.log("\n=== 6. Marker safety: injection + round-trip idempotency ===");
 	);
 	check(
 		"keyless base never stamped",
-		su.applyModelMarker("no key here", "Model GPT-5.6"),
+		su.applyModelMarker("no key here", "G"),
 		"no key here",
 	);
 
 	// idempotency: re-stamping must not churn or stack markers.
-	const once = su.applyModelMarker("[FLY-1255] T", "Model GPT-5.6");
-	const twice = su.applyModelMarker(once, "Model GPT-5.6");
+	const once = su.applyModelMarker("[FLY-1255] T", "G");
+	const twice = su.applyModelMarker(once, "G");
 	check("re-stamp is idempotent (no marker stacking)", twice, once);
 	check(
 		"marker round-trips through parser",
 		su.modelMarkerLabel(once),
-		"Model GPT-5.6",
+		"G",
 	);
 	check("strip returns bare base", su.stripModelMarker(once), "[FLY-1255] T");
 
@@ -294,8 +294,8 @@ console.log("\n=== 6. Marker safety: injection + round-trip idempotency ===");
 	check("legacy tail ·F recognized", su.modelMarkerLabel("[FLY-1] T ·F"), "F");
 	check(
 		"legacy tail migrates to front",
-		su.applyModelMarker("[FLY-1] T ·F", "Model GPT-5.6"),
-		"[Model GPT-5.6] [FLY-1] T",
+		su.applyModelMarker("[FLY-1] T ·F", "G"),
+		"[G] [FLY-1] T",
 	);
 }
 

@@ -10,6 +10,7 @@ import {
 	MODEL_TIERS,
 	modelShortCode,
 	normalizeDispatchModel,
+	vendorModelShortCode,
 } from "../model-tiers.js";
 
 describe("normalizeDispatchModel", () => {
@@ -92,6 +93,38 @@ describe("modelShortCode (F/O/S/H)", () => {
 		expect(modelShortCode("")).toBeUndefined();
 		expect(modelShortCode("gpt-5.5-codex")).toBeUndefined();
 		expect(modelShortCode("gemini-3-pro-preview")).toBeUndefined();
+	});
+});
+
+describe("vendorModelShortCode (FLY-1255 Plan B — non-Claude single letters)", () => {
+	it("maps the curated codex/GPT-5.6 and kimi families to G / K", () => {
+		expect(vendorModelShortCode("codex", "gpt-5.6-sol")).toBe("G");
+		expect(vendorModelShortCode("codex", "gpt-5.6")).toBe("G");
+		expect(vendorModelShortCode("kimi", "kimi-for-coding")).toBe("K");
+		// kimi is family-wide (Annie: "[K]=kimi family").
+		expect(vendorModelShortCode("kimi", "kimi-k2-next")).toBe("K");
+		// case-insensitive on both family and model.
+		expect(vendorModelShortCode("CODEX", "GPT-5.6-SOL")).toBe("G");
+	});
+
+	it("never fabricates a letter for an unvetted vendor/model", () => {
+		// A future gpt-6 is NOT the curated gpt-5.6 signature → no letter.
+		expect(vendorModelShortCode("codex", "gpt-6")).toBeUndefined();
+		expect(vendorModelShortCode("codex", "gpt-4o")).toBeUndefined();
+		// Uncurated families never get a letter.
+		expect(vendorModelShortCode("gemini", "gemini-3-pro")).toBeUndefined();
+		expect(vendorModelShortCode("antigravity", "agy-1")).toBeUndefined();
+		// Claude is intentionally NOT handled here (its codes come from modelShortCode).
+		expect(vendorModelShortCode("claude", "claude-fable-5")).toBeUndefined();
+		// A vendor/model mismatch (codex + a Claude id) gets no codex letter.
+		expect(vendorModelShortCode("codex", "claude-fable-5")).toBeUndefined();
+	});
+
+	it("returns undefined for absent family or model", () => {
+		expect(vendorModelShortCode(undefined, "gpt-5.6-sol")).toBeUndefined();
+		expect(vendorModelShortCode("codex", undefined)).toBeUndefined();
+		expect(vendorModelShortCode("codex", "")).toBeUndefined();
+		expect(vendorModelShortCode(null, null)).toBeUndefined();
 	});
 });
 

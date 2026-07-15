@@ -11,15 +11,15 @@ describe("sessionModelDisplay (FLY-1255)", () => {
 				chat_thread_role: "implement",
 			}),
 		).toEqual({
-			threadMarker: "Model GPT-5.6",
-			windowLabel: "codex-GPT-5-6",
+			threadMarker: "G",
+			windowLabel: "codex-G",
 		});
 	});
 
 	it("pending implement falls back to the phase dispatch plan", () => {
 		expect(
 			sessionModelDisplay({ chat_thread_role: "implement" }, {}),
-		).toMatchObject({ threadMarker: "Model GPT-5.6" });
+		).toMatchObject({ threadMarker: "G" });
 	});
 
 	it("phase fallback follows both kill switches", () => {
@@ -35,8 +35,8 @@ describe("sessionModelDisplay (FLY-1255)", () => {
 				{ FLYWHEEL_THREE_STAGE_CODEX_DESIGN: "1" },
 			),
 		).toEqual({
-			threadMarker: "Model GPT-5.6",
-			windowLabel: "codex-GPT-5-6",
+			threadMarker: "G",
+			windowLabel: "codex-G",
 		});
 	});
 
@@ -58,8 +58,8 @@ describe("sessionModelDisplay (FLY-1255)", () => {
 				chat_thread_role: "main",
 			}),
 		).toEqual({
-			threadMarker: "Model GPT-5.6",
-			windowLabel: "codex-GPT-5-6",
+			threadMarker: "G",
+			windowLabel: "codex-G",
 		});
 	});
 
