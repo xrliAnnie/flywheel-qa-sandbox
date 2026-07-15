@@ -128,7 +128,7 @@ interface HarnessOpts {
 		Record<"title" | "header" | "attachPin" | "all", DisplayWriteResult>
 	>;
 	deleteOk?: boolean;
-	isReconnecting?: (execId: string) => boolean;
+	isReconnectTitleActive?: (execId: string) => boolean;
 	flags?: {
 		issueStatusEmojiEnabled?: boolean;
 		issueAttachPinEnabled?: boolean;
@@ -152,7 +152,7 @@ function makeRefresher(store: StateStore, opts: HarnessOpts = {}) {
 			issueAttachPinEnabled: opts.flags?.issueAttachPinEnabled ?? true,
 		},
 		keepAliveEnabled: () => true,
-		isReconnecting: opts.isReconnecting,
+		isReconnectTitleActive: opts.isReconnectTitleActive,
 		readParkProbe: (_project, execId) => opts.park?.[execId] ?? "not_parked",
 		getTmuxTarget: (execId) => {
 			const w = opts.tmux?.[execId];
@@ -603,7 +603,16 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		expect(JSON.parse(fp!).s).toBe(computeSessionsFingerprint(store, ISSUE));
 	});
 
-	it("reconnecting guard (FLY-623): face A defers while HeartbeatService owns the ⚠️重连中 title — no derived stamp, no fingerprint", async () => {
+	it("a deferred canonical title write withholds the success fingerprint", async () => {
+		seedSession(store, { exec: "e-design", role: "design", status: "running" });
+		const { refresher } = makeRefresher(store, {
+			results: { title: "deferred" },
+		});
+		await refresher.refresh(ISSUE);
+		expect(storedFingerprint(store)).toBeNull();
+	});
+
+	it("title-active guard defers Face A and withholds the fingerprint", async () => {
 		seedSession(store, {
 			exec: "e-main",
 			role: "main",
@@ -611,13 +620,37 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 			stage: "implement",
 		});
 		const { refresher, log } = makeRefresher(store, {
-			isReconnecting: () => true,
+			isReconnectTitleActive: () => true,
 			tmux: { "e-main": "runner-proj:@5" },
 			windowNames: { "runner-proj:@5": `${IDENT}-runner-x` },
 		});
 		await refresher.refresh(ISSUE);
 		expect(log.title).toEqual([]);
 		expect(storedFingerprint(store)).toBeNull();
+	});
+
+	it("FLY-1264: boot title settle lets the same persisted stage replace ⚠️ without a runner event", async () => {
+		seedSession(store, {
+			exec: "e-main",
+			role: "main",
+			status: "running",
+			stage: "implement",
+		});
+		let titleActive = true;
+		const { refresher, log } = makeRefresher(store, {
+			isReconnectTitleActive: () => titleActive,
+			tmux: { "e-main": "runner-proj:@5" },
+			windowNames: { "runner-proj:@5": `${IDENT}-runner-x` },
+		});
+
+		await refresher.refresh(ISSUE);
+		expect(log.title).toEqual([]);
+		expect(storedFingerprint(store)).toBeNull();
+
+		titleActive = false;
+		await refresher.refresh(ISSUE);
+		expect(log.title).toEqual([{ via: "stage", stage: "implement" }]);
+		expect(storedFingerprint(store)).not.toBeNull();
 	});
 
 	it("Lead 指令 17ab4f53 收敛: a legacy scattered status-line message is DELETED (record cleared) — 一处置顶、原地更新、别散发", async () => {

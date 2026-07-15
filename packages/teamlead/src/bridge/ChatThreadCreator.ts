@@ -77,6 +77,17 @@ async function retryAfterMsFrom(res: Response): Promise<number> {
 	return DEFAULT_RETRY_AFTER_MS;
 }
 
+/** Discord rejects renames of archived threads with HTTP 400 / code 50083. */
+function isArchivedThreadError(status: number, body: string): boolean {
+	if (status !== 400) return false;
+	try {
+		const parsed = JSON.parse(body) as { code?: unknown };
+		return parsed.code === 50083;
+	} catch {
+		return false;
+	}
+}
+
 /**
  * FLY-630 ①: outcome of one GET+PATCH title write. `rate_limited` carries the
  * honored Retry-After so the coalescing drain can wait then retry the latest
@@ -86,6 +97,7 @@ type TitleWriteResult =
 	| { status: "ok" }
 	| { status: "noop" }
 	| { status: "error" }
+	| { status: "deferred" }
 	| { status: "rate_limited"; retryAfterMs: number };
 
 /**
@@ -625,6 +637,7 @@ export class ChatThreadCreator {
 				case "noop":
 					return "noop";
 				case "rate_limited":
+				case "deferred":
 					return "deferred";
 				default:
 					return "failed";
@@ -666,8 +679,9 @@ export class ChatThreadCreator {
 					// and the loop writes it next; otherwise the loop exits.
 					rateLimitRetries = 0;
 				}
-				// `error` / retries-exhausted: do NOT spin — loop only if a newer
-				// target was queued during the write (state.dirty set by enqueue).
+				// `error` / `deferred` / retries-exhausted: do NOT spin — loop only
+				// if a newer target was queued during the write (state.dirty set by
+				// enqueue). The issue-display sweep owns the later retry.
 				// The next stage_changed reconciles a dropped write.
 			}
 		} finally {
@@ -773,6 +787,9 @@ export class ChatThreadCreator {
 					};
 				}
 				const body = await patchRes.text().catch(() => "");
+				if (isArchivedThreadError(patchRes.status, body)) {
+					return { status: "deferred" };
+				}
 				console.warn(
 					`[ChatThreadCreator] stage-emoji PATCH failed: ${patchRes.status} ${body.slice(0, 200)}`,
 				);

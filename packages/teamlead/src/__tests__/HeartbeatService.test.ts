@@ -397,6 +397,42 @@ async function makeReconnectHarness(
 }
 
 describe("RegistryHeartbeatNotifier", () => {
+	it("still delivers the runtime re-entry advisory while suppressing its reconnect title write", async () => {
+		const { registry, envelopes } = createMockRegistry();
+		const hbStore = await StateStore.create(":memory:");
+		const notifier = new RegistryHeartbeatNotifier(
+			registry,
+			testProjects,
+			hbStore,
+		);
+		const stampReconnect = vi
+			.spyOn(
+				notifier as unknown as {
+					stampReconnect: (session: Session, mode: "enter" | "clear") => void;
+				},
+				"stampReconnect",
+			)
+			.mockImplementation(() => {});
+		const session: Session = {
+			execution_id: "exec-runtime-reentry",
+			issue_id: "i-runtime",
+			project_name: "geo",
+			status: "running",
+			issue_identifier: "GEO-1264",
+		};
+
+		await notifier.onSessionMonitoringReestablished(session, 15, {
+			stampReconnectTitle: false,
+		});
+
+		expect(stampReconnect).not.toHaveBeenCalled();
+		expect(envelopes).toHaveLength(1);
+		expect(envelopes[0]?.event.event_type).toBe(
+			"session_monitoring_reestablished",
+		);
+		hbStore.close();
+	});
+
 	it("reconnect clear delegates to the issue-level refresher when available", async () => {
 		const enqueue = vi.fn();
 		const holder: IssueDisplayRefreshHolder = {

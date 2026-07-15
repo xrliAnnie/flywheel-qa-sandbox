@@ -349,6 +349,7 @@ import {
 import { patchSessionParams } from "./proofshot-session.js";
 import { wirePublishBroker } from "./publish-broker/wire.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
+import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
 import { createRepoMutationLock } from "./repo-mutation-lock.js";
 import {
 	DEFAULT_RETENTION_MAX_AGE_MS,
@@ -4990,8 +4991,9 @@ export async function startBridge(
 	// false-stuck/idle window and making the in-memory set restart-safe (re-seeded
 	// every boot → survives repeated restarts). No-op on the kill-switch path.
 	// Best-effort: must not block Bridge startup.
+	let bootReconnectExecutionIds: string[] = [];
 	try {
-		await heartbeatService.seedReconnecting();
+		bootReconnectExecutionIds = await heartbeatService.seedReconnecting();
 	} catch (err) {
 		console.error(
 			`[Bridge] FLY-623 reconnect boot-seed failed (non-fatal): ${(err as Error).message}`,
@@ -6113,7 +6115,7 @@ export async function startBridge(
 	// FLYWHEEL_ISSUE_DISPLAY_REFRESH=0 / chat-threads off → holder stays empty →
 	// every new trigger dormant + stage_changed keeps the legacy stamp+pin path.
 	if (issueDisplayRefreshEnabled && chatThreadCreator) {
-		issueDisplayRefreshHolder.current = new IssueDisplayRefresher({
+		const issueDisplayRefresher = new IssueDisplayRefresher({
 			store,
 			projects,
 			config,
@@ -6126,9 +6128,31 @@ export async function startBridge(
 			keepAliveEnabled: () => threeStageKeepAliveEnabled(),
 			// FLY-623 interaction: while HeartbeatService owns the ⚠️重连中 title,
 			// face A defers instead of overwriting it with a derived badge.
-			isReconnecting: (execId) =>
-				reconnectHolder.current?.isReconnecting(execId) ?? false,
+			isReconnectTitleActive: (execId) =>
+				reconnectHolder.current?.isReconnectTitleActive(execId) ?? false,
 		});
+		issueDisplayRefreshHolder.current = issueDisplayRefresher;
+		const restoreReconnectTitles = (executionIds?: readonly string[]) => {
+			const restoredIssues = settleReconnectTitlesAndRefresh(
+				heartbeatService,
+				issueDisplayRefresher,
+				executionIds,
+			);
+			if (restoredIssues.length > 0) {
+				console.log(
+					`[issue-display] queued reconnect-title restore for ${restoredIssues.length} issue(s)`,
+				);
+			}
+		};
+		// Runtime re-entries after this point keep the canonical title and cost zero
+		// Discord renames. Then drain every title episode that became active before
+		// this late-bound refresher existed (boot seed or an early heartbeat tick).
+		heartbeatService.markReconnectTitleRefresherReady();
+		// Preserve the early-accepted-event race guarantee: an explicit boot id
+		// still gets a canonical enqueue even if the event already cleared both
+		// reconnect sets before the refresher bound.
+		restoreReconnectTitles(bootReconnectExecutionIds);
+		restoreReconnectTitles();
 		console.log(
 			"[issue-display] FLY-907 unified refresher wired (derive-from-state, all lifecycle triggers)",
 		);

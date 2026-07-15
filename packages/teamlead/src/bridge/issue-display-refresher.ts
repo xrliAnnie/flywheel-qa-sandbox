@@ -441,9 +441,9 @@ export interface IssueDisplayRefresherDeps {
 	/**
 	 * FLY-623 interaction guard: while a session is detached-but-alive after a
 	 * Bridge restart, HeartbeatService owns the "⚠️重连中" title — a derived
-	 * stamp would clear it prematurely. Face A defers while reconnecting.
+	 * stamp would clear it prematurely. Face A defers while the title episode is active.
 	 */
-	isReconnecting?: (execId: string) => boolean;
+	isReconnectTitleActive?: (execId: string) => boolean;
 	// ── test seams (default to the real implementations) ──
 	readParkProbe?: (projectName: string, execId: string) => ParkProbe;
 	getTmuxTarget?: (
@@ -697,7 +697,7 @@ export class IssueDisplayRefresher {
 
 		let resultA: DisplayWriteResult = "noop";
 		if (flags.issueStatusEmojiEnabled) {
-			if (this.deps.isReconnecting?.(badgeSession.execution_id)) {
+			if (this.deps.isReconnectTitleActive?.(badgeSession.execution_id)) {
 				// HeartbeatService owns the ⚠️重连中 title right now — defer (no
 				// fingerprint) so a later refresh reconciles after reconnect ends.
 				resultA = "deferred";
