@@ -53,7 +53,7 @@ import {
 } from "./lead-runtime.js";
 import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
 import {
-	computeShipDecision,
+	computeAuthoritativeShipDecision,
 	isMergeBlocked,
 	parkMergeBlock,
 } from "./merge-ship-gate.js";
@@ -981,13 +981,13 @@ export function createEventRouter(
 				// the kill-switch still bypasses when OFF. Use the event identity so the
 				// gate is consulted even for a first-seen session_completed.
 				const erDecision = erMergedLanding
-					? computeShipDecision(
+					? await computeAuthoritativeShipDecision(
 							store,
 							existingSession ?? {
 								execution_id: event.execution_id,
 								project_name: event.project_name,
 							},
-							erPrHead ?? "",
+							erPrHead,
 						)
 					: undefined;
 				const erShipEligible = erMergedLanding
@@ -998,7 +998,7 @@ export function createEventRouter(
 						const claimed = parkMergeBlock(
 							store,
 							existingSession,
-							erPrHead ?? "",
+							erDecision?.authoritativeHead ?? erPrHead ?? "",
 							erDecision ?? {
 								eligible: false,
 								mergeApprovalOk: false,
@@ -1791,13 +1791,13 @@ export function createEventRouter(
 						const w2PrHead = sessionAtStage?.pr_head_sha?.trim();
 						const w2Decision =
 							landingStatus?.status === "merged"
-								? computeShipDecision(
+								? await computeAuthoritativeShipDecision(
 										store,
 										sessionAtStage ?? {
 											execution_id: event.execution_id,
 											project_name: event.project_name,
 										},
-										w2PrHead ?? "",
+										w2PrHead,
 									)
 								: undefined;
 						const w2ShipEligible =
@@ -1812,7 +1812,7 @@ export function createEventRouter(
 							const claimed = parkMergeBlock(
 								store,
 								sessionAtStage,
-								w2PrHead ?? "",
+								w2Decision?.authoritativeHead ?? w2PrHead ?? "",
 								w2Decision ?? {
 									eligible: false,
 									mergeApprovalOk: false,

@@ -18,7 +18,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -56,6 +56,14 @@ export interface QaResultBody {
 		prHeadSha?: string;
 		summary?: string;
 	};
+}
+
+export interface WorkflowQaDecisionBody {
+	credential: string;
+	client_request_id: string;
+	status: "pass" | "fail";
+	client_pr_head_sha?: string;
+	summary?: string;
 }
 
 /**
@@ -115,6 +123,8 @@ export async function qaResult(opts: QaResultOpts): Promise<void> {
 	const projectName = requireEnv("FLYWHEEL_PROJECT_NAME");
 	const bridgeUrl = requireEnv("FLYWHEEL_BRIDGE_URL");
 	const ingestToken = process.env.FLYWHEEL_INGEST_TOKEN;
+	const workflowCredential =
+		process.env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL?.trim();
 
 	const prHeadSha = (opts.prHeadSha ?? deriveHeadSha())?.trim() || undefined;
 
@@ -127,21 +137,36 @@ export async function qaResult(opts: QaResultOpts): Promise<void> {
 		prHeadSha,
 		summary: opts.summary?.trim() || undefined,
 	});
+	const submissionBody: QaResultBody | WorkflowQaDecisionBody =
+		workflowCredential
+			? {
+					credential: workflowCredential,
+					client_request_id: body.event_id,
+					status: status as "pass" | "fail",
+					...(prHeadSha ? { client_pr_head_sha: prHeadSha } : {}),
+					...(opts.summary?.trim() ? { summary: opts.summary.trim() } : {}),
+				}
+			: body;
+	const endpoint = workflowCredential
+		? `${bridgeUrl.replace(/\/$/, "")}/api/workflow/decision`
+		: `${bridgeUrl.replace(/\/$/, "")}/events`;
 
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 	};
-	if (ingestToken) headers.Authorization = `Bearer ${ingestToken}`;
+	if (!workflowCredential && ingestToken) {
+		headers.Authorization = `Bearer ${ingestToken}`;
+	}
 
 	let lastError: string | undefined;
 	for (let attempt = 1; attempt <= ATTEMPT_COUNT; attempt += 1) {
 		try {
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
-			const response = await fetch(`${bridgeUrl}/events`, {
+			const response = await fetch(endpoint, {
 				method: "POST",
 				headers,
-				body: JSON.stringify(body),
+				body: JSON.stringify(submissionBody),
 				signal: controller.signal,
 			});
 			clearTimeout(timer);
@@ -166,7 +191,12 @@ export async function qaResult(opts: QaResultOpts): Promise<void> {
 		}
 	}
 
-	const markerWritten = writeMarker({ execId: qaExecId, body, lastError });
+	const markerWritten = writeMarker({
+		execId: qaExecId,
+		requestId: body.event_id,
+		body: submissionBody,
+		lastError,
+	});
 	console.error(
 		`[qa-result] FAIL-CLOSE: ${ATTEMPT_COUNT} attempts failed. ${
 			markerWritten ? "Marker written." : "Marker NOT written (see above)."
@@ -204,6 +234,7 @@ function sleep(ms: number): Promise<void> {
 
 function writeMarker(args: {
 	execId: string;
+	requestId: string;
 	body: unknown;
 	lastError: string | undefined;
 }): boolean {
@@ -214,16 +245,7 @@ function writeMarker(args: {
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(
 			markerPath,
-			JSON.stringify(
-				{
-					execution_id: args.execId,
-					error: args.lastError,
-					timestamp: new Date().toISOString(),
-					...(typeof args.body === "object" ? args.body : {}),
-				},
-				null,
-				2,
-			),
+			JSON.stringify(buildQaResultFailureMarker(args), null, 2),
 			"utf8",
 		);
 		return true;
@@ -235,4 +257,29 @@ function writeMarker(args: {
 		);
 		return false;
 	}
+}
+
+/** Opaque retry marker: enough to correlate/replay from logs, no body/token. */
+export function buildQaResultFailureMarker(args: {
+	execId: string;
+	requestId: string;
+	body: unknown;
+	lastError: string | undefined;
+	timestamp?: string;
+}): {
+	execution_id: string;
+	client_request_id: string;
+	error: string | undefined;
+	timestamp: string;
+	body_digest: string;
+} {
+	return {
+		execution_id: args.execId,
+		client_request_id: args.requestId,
+		error: args.lastError,
+		timestamp: args.timestamp ?? new Date().toISOString(),
+		body_digest: createHash("sha256")
+			.update(JSON.stringify(args.body))
+			.digest("hex"),
+	};
 }

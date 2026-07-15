@@ -18,6 +18,11 @@ import {
 	type Session,
 	type StateStore,
 } from "../StateStore.js";
+import {
+	type FounderApprovalCardAuthority,
+	writeGateResponseAndRunPostWrite,
+} from "./approval-signal/write-gate-response.js";
+import { reviewHoldReason } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import { AUTO_CLOSE_STATES, closeRunner } from "./close-runner.js";
 import { finalizeCommDbSession } from "./commdb-session-prune.js";
@@ -202,6 +207,7 @@ export async function approveExecution(
 	// recovered-merge finalization (a completion path that bypasses both the
 	// applyTransition hook and the DirectEventSink hook).
 	refreshIssueDisplay?: (issueId: string) => Promise<void>,
+	cardAuthority?: FounderApprovalCardAuthority,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -282,33 +288,42 @@ export async function approveExecution(
 				};
 			}
 
-			const existingResponse = db.getResponse(targetQuestionId);
-			if (existingResponse) {
-				// Idempotent retry only for a prior APPROVAL; an existing
-				// feedback answer means the review already concluded
-				// differently — approve must not silently overwrite it.
-				let priorApproved = false;
-				try {
-					priorApproved =
-						JSON.parse(existingResponse.content)?.approved === true;
-				} catch {
-					/* non-approval */
-				}
-				if (!priorApproved) {
-					return {
-						success: false,
-						message: `Cannot approve ${identifier ?? executionId}: review question ${targetQuestionId} already has a non-approval answer. The runner must address it and re-request review.`,
-					};
-				}
-				gateUnblocked = true; // already written — proceed to transition
-			} else {
-				db.insertResponse(
-					targetQuestionId,
-					"bridge",
-					JSON.stringify({ approved: true }),
-				);
-				gateUnblocked = true;
+			const write = await writeGateResponseAndRunPostWrite({
+				db,
+				store,
+				questionId: targetQuestionId,
+				executionId,
+				source: "actions",
+				cardAuthority,
+				actor: "bridge",
+				answer: JSON.stringify({ approved: true }),
+				expectedCurrentReviewQuestionId: boundId || undefined,
+				// Direct unit callers historically omit Bridge config. Production
+				// action routes always pass it and therefore enforce the shared hold.
+				holdReasonFor: config
+					? (id) => {
+							const held = store.getSession(id);
+							// Dashboard approval is the explicit FLY-869 same-head recovery
+							// surface. Mask only its merge marker, then still enforce every
+							// downstream Codex/QA hold on the parked session.
+							const withoutMergeBlock = held?.merge_block_reason
+								? { ...held, merge_block_reason: undefined }
+								: held;
+							return reviewHoldReason(store, withoutMergeBlock);
+						}
+					: undefined,
+			});
+			if (
+				write.disposition === "defer" ||
+				write.disposition === "reject" ||
+				(!write.written && write.disposition !== "already_applied")
+			) {
+				return {
+					success: false,
+					message: `Cannot approve ${identifier ?? executionId}: founder approval boundary refused the write (${write.reason ?? write.disposition ?? "unknown"}).`,
+				};
 			}
+			gateUnblocked = true;
 		} finally {
 			db.close();
 		}
@@ -1272,6 +1287,7 @@ export function createActionRouter(
 	// strand). plugin.ts must pass it at BOTH createActionRouter call sites
 	// (/actions dashboard alias + /api/actions — the FLY-175 dual-mount).
 	phaseOrchestrator?: { current?: PhaseOrchestrator },
+	cardAuthority?: FounderApprovalCardAuthority,
 ): Router {
 	const router = Router();
 
@@ -1317,6 +1333,7 @@ export function createActionRouter(
 								issueDisplayRefresh.current?.refresh(issueId) ??
 								Promise.resolve()
 						: undefined,
+					cardAuthority,
 				);
 				if (result.success) {
 					res.json({

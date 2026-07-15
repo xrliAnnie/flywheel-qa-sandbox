@@ -49,7 +49,7 @@ import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { stage } from "./commands/stage.js";
 import { runTokenReport } from "./commands/token-report.js";
 import { formatTurnStatus, turnStatus } from "./commands/turn.js";
-import { verifyApproval } from "./commands/verify-approval.js";
+import { verifyApprovalWithBridgeHead } from "./commands/verify-approval.js";
 import {
 	type VisualCaptureArgs,
 	visualCapture,
@@ -248,7 +248,7 @@ async function main(): Promise<void> {
 			await runCodexResume(commandArgs);
 			break;
 		case "verify-approval":
-			runVerifyApproval(commandArgs);
+			await runVerifyApproval(commandArgs);
 			break;
 		case "cleanup":
 			runCleanup(commandArgs);
@@ -825,7 +825,7 @@ async function runSearch(args: string[]): Promise<void> {
 	}
 }
 
-function runVerifyApproval(args: string[]): void {
+async function runVerifyApproval(args: string[]): Promise<void> {
 	const { values } = parseArgs({
 		args,
 		options: {
@@ -849,11 +849,12 @@ function runVerifyApproval(args: string[]): void {
 	}
 
 	const dbPath = resolveDbPath({ db: values.db, project: values.project });
-	const result = verifyApproval({
+	const result = await verifyApprovalWithBridgeHead({
 		execId: values["exec-id"],
 		prHead: values["pr-head"],
 		dbPath,
 		stateDbPath: values["state-db"],
+		bridgeUrl: process.env.FLYWHEEL_BRIDGE_URL ?? "",
 	});
 
 	// Always emit structured JSON — the runner's ship decision branches on it

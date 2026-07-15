@@ -279,6 +279,12 @@ export interface AdapterExecutionContext {
 	/** Optional ingest token for Bridge authentication */
 	bridgeIngestToken?: string;
 	/**
+	 * FLY-1244: short-lived credential bound to this exact enrolled workflow
+	 * execution. Used only by the dedicated workflow verdict endpoint; unlike the
+	 * fleet-wide ingest bearer, a leak is scoped to one execution + TTL.
+	 */
+	workflowSubmissionCredential?: string;
+	/**
 	 * FLY-191 Phase 2: the Bridge's StateStore path, propagated to the Runner
 	 * env as FLYWHEEL_STATE_DB_PATH so `flywheel-comm verify-approval` reads
 	 * the SAME StateStore the Bridge writes. Without it both sides only agree

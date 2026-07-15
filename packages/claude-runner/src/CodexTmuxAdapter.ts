@@ -1046,6 +1046,9 @@ export class CodexTmuxAdapter implements IAdapter {
 		if (ctx.bridgeUrl) env.FLYWHEEL_BRIDGE_URL = ctx.bridgeUrl;
 		if (ctx.bridgeIngestToken)
 			env.FLYWHEEL_INGEST_TOKEN = ctx.bridgeIngestToken;
+		if (ctx.workflowSubmissionCredential)
+			env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL =
+				ctx.workflowSubmissionCredential;
 		if (ctx.stateDbPath) env.FLYWHEEL_STATE_DB_PATH = ctx.stateDbPath;
 		if (ctx.progressPath) env.FLYWHEEL_PROGRESS_PATH = ctx.progressPath; // FLY-795
 		if (ctx.projectName) env.FLYWHEEL_PROJECT_NAME = ctx.projectName;

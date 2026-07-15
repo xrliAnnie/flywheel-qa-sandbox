@@ -22,7 +22,10 @@
  *     refused) → the deliverer's byte-compatible WAKE-only fallback.
  */
 
-import type { ReviewHoldReason } from "../auto-qa-held.js";
+import {
+	isDeferrableReviewHoldReason,
+	type ReviewHoldReason,
+} from "../auto-qa-held.js";
 import type { ShipApprovalOutcome } from "../founder-reply-deliverer.js";
 import type {
 	MergedGateGuard,
@@ -40,6 +43,7 @@ import type {
 } from "./types.js";
 import {
 	type GateResponseDb,
+	type WriteGateResponseArgs,
 	writeGateResponseAndRunPostWrite,
 } from "./write-gate-response.js";
 
@@ -143,6 +147,7 @@ export interface ShipApprovalHandlerDeps {
 	db: GateResponseDb;
 	evaluateTextImpl?: typeof evaluateTextSource;
 	writeGateResponseImpl?: typeof writeGateResponseAndRunPostWrite;
+	cardAuthority?: WriteGateResponseArgs["cardAuthority"];
 	onResponseWritten?: Parameters<
 		typeof writeGateResponseAndRunPostWrite
 	>[0]["onResponseWritten"];
@@ -368,14 +373,14 @@ export async function tryFounderShipApproval(
 			});
 			return null;
 		}
-		if (reason === "merge_block") {
-			// Codex R1 #2: merge_block only clears via same-head approval recovery
-			// (FLY-869) — deferring would deadlock until TTL. Point the founder at
-			// the recovery surface instead; no classification, no deferral.
+		if (!isDeferrableReviewHoldReason(reason)) {
+			// merge_block only clears via same-head recovery; evidence/reviewer
+			// readiness holds require a fresh founder action after they clear. None
+			// may park an early approval for automatic replay.
 			deps.auditSink?.("held_declined", {
 				questionId: gate.questionId,
 				executionId: gate.executionId,
-				holdReason: "merge_block",
+				holdReason: reason,
 			});
 			const guardResult = await runMergedGuard();
 			if (guardResult) {
@@ -387,8 +392,8 @@ export async function tryFounderShipApproval(
 					questionId: gate.questionId,
 					msgId: args.msg.id,
 					executionId: gate.executionId,
-					kind: "merge_block",
-					holdReason: "merge_block",
+					kind: reason === "merge_block" ? "merge_block" : "deferred_off",
+					holdReason: reason,
 				});
 			}
 			return null;
@@ -595,12 +600,20 @@ export async function tryFounderShipApproval(
 	try {
 		res = await write({
 			db: deps.db,
-			store: { getSession: (e) => deps.store.getSession(e) },
+			store: deps.store,
 			questionId: gate.questionId,
 			executionId: gate.executionId,
+			source: "text",
+			cardAuthority: deps.cardAuthority,
 			actor: deps.canonicalFounderId,
+			founderId: deps.canonicalFounderId,
 			answer,
 			expectedCurrentReviewQuestionId: session.review_question_id ?? undefined,
+			holdReasonFor: deps.deferral
+				? (executionId) => deps.deferral!.holdReason(executionId)
+				: deps.isHeld
+					? (executionId) => (deps.isHeld!(executionId) ? "qa_not_green" : null)
+					: undefined,
 			onResponseWritten: guard.hook,
 		});
 	} catch (err) {

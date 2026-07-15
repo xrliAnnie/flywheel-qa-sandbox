@@ -22,6 +22,8 @@ import {
 } from "../../applyTransition.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import type { StateStore } from "../../StateStore.js";
+import { deriveCanonicalFounderId } from "../approval-signal/canonical-founder-id.js";
+import { reviewHoldReason } from "../auto-qa-held.js";
 import { finalizeRecoveredMerge } from "../merge-ship-gate.js";
 import { makeFinalizeThreeStagePhases } from "../post-ship-finalization.js";
 import { sendRunnerWake } from "../runner-wake.js";
@@ -250,6 +252,9 @@ export function buildFounderConsentWiring(
 
 	const enabled = fc.decisionMode !== "off";
 	const configuredProjects = new Set(projects.map((p) => p.projectName));
+	const founderId =
+		deriveCanonicalFounderId(config.discordOwnerUserId, fc.founderUserId) ??
+		undefined;
 
 	// Shared context resolver — needed only when evaluating, but cheap to build.
 	const resolveContext: ConsentContextResolver = async (executionId) => {
@@ -336,6 +341,10 @@ export function buildFounderConsentWiring(
 			resolveContext,
 			getSessionProject,
 			getCurrentReviewQuestionId,
+			writerStore: store,
+			holdReasonFor: (executionId) =>
+				reviewHoldReason(store, store.getSession(executionId)),
+			founderId,
 			configuredProjects,
 			logger,
 			onResponseWritten,
@@ -389,6 +398,10 @@ export function buildFounderConsentWiring(
 		resolveContext,
 		getSessionProject,
 		getCurrentReviewQuestionId,
+		writerStore: store,
+		holdReasonFor: (executionId) =>
+			reviewHoldReason(store, store.getSession(executionId)),
+		founderId,
 		configuredProjects,
 		logger,
 		onResponseWritten,

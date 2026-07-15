@@ -16,7 +16,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -165,7 +165,7 @@ export async function emitCodexReviewResult(
 		if (attempt < ATTEMPT_COUNT) await sleep(BACKOFF_MS[attempt - 1] ?? 0);
 	}
 
-	writeMarker({ execId, body, lastError });
+	writeMarker({ execId, requestId: body.event_id, body, lastError });
 	console.error(
 		`[codex-review-result] FAIL-CLOSE: ${ATTEMPT_COUNT} attempts failed (marker written). Last error: ${lastError}`,
 	);
@@ -192,6 +192,7 @@ function sleep(ms: number): Promise<void> {
 
 function writeMarker(args: {
 	execId: string;
+	requestId: string;
 	body: unknown;
 	lastError: string | undefined;
 }): void {
@@ -202,16 +203,7 @@ function writeMarker(args: {
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(
 			markerPath,
-			JSON.stringify(
-				{
-					execution_id: args.execId,
-					error: args.lastError,
-					timestamp: new Date().toISOString(),
-					...(typeof args.body === "object" ? args.body : {}),
-				},
-				null,
-				2,
-			),
+			JSON.stringify(buildCodexReviewFailureMarker(args), null, 2),
 			"utf8",
 		);
 	} catch (err) {
@@ -221,4 +213,29 @@ function writeMarker(args: {
 			}`,
 		);
 	}
+}
+
+/** Opaque retry marker: preserve correlation, never persist the verdict body. */
+export function buildCodexReviewFailureMarker(args: {
+	execId: string;
+	requestId: string;
+	body: unknown;
+	lastError: string | undefined;
+	timestamp?: string;
+}): {
+	execution_id: string;
+	client_request_id: string;
+	error: string | undefined;
+	timestamp: string;
+	body_digest: string;
+} {
+	return {
+		execution_id: args.execId,
+		client_request_id: args.requestId,
+		error: args.lastError,
+		timestamp: args.timestamp ?? new Date().toISOString(),
+		body_digest: createHash("sha256")
+			.update(JSON.stringify(args.body))
+			.digest("hex"),
+	};
 }

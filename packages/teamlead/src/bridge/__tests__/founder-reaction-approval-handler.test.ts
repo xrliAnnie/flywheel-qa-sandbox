@@ -71,7 +71,8 @@ function make(over: Record<string, unknown> = {}) {
 
 describe("tryFounderReactionApproval", () => {
 	it("founder ✅ on the bound gate message → writes {approved:true} attributed to founder", async () => {
-		const { deps, writeGateResponseImpl } = make();
+		const cardAuthority = vi.fn().mockReturnValue({ ok: true });
+		const { deps, writeGateResponseImpl } = make({ cardAuthority });
 		const r = await tryFounderReactionApproval({ gate, ctx }, deps as never);
 		expect(r).toEqual({ handled: ["Q-1"], retrySafe: true });
 		expect(writeGateResponseImpl).toHaveBeenCalledOnce();
@@ -79,6 +80,11 @@ describe("tryFounderReactionApproval", () => {
 		expect(w.actor).toBe("FOUNDER-1");
 		expect(JSON.parse(w.answer).approved).toBe(true);
 		expect(w.questionId).toBe("Q-1");
+		expect(w).toMatchObject({
+			source: "reaction",
+			targetMessageId: "GATEMSG-1",
+			cardAuthority,
+		});
 	});
 
 	it("passes the bound targetMessageId to the reaction evaluator", async () => {

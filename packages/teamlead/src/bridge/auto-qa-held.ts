@@ -87,7 +87,23 @@ export function isReviewHeld(
  *   - `codex_pending` / `qa_not_green` — self-clearing holds → deferrable.
  * null = not held.
  */
-export type ReviewHoldReason = "merge_block" | "codex_pending" | "qa_not_green";
+export type ReviewHoldReason =
+	| "merge_block"
+	| "codex_pending"
+	| "qa_not_green"
+	| "qa_evidence_missing"
+	| "qa_evidence_unknown"
+	| "no_qualified_reviewer";
+
+/**
+ * Holds that can safely park an approval until the same review round clears.
+ * Every other reason requires a fresh founder action after readiness returns.
+ */
+export function isDeferrableReviewHoldReason(
+	reason: ReviewHoldReason,
+): reason is "codex_pending" | "qa_not_green" {
+	return reason === "codex_pending" || reason === "qa_not_green";
+}
 
 export function reviewHoldReason(
 	store: AutoQaHeldStore & CodexGateStore,

@@ -3,7 +3,10 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { buildCodexReviewResultBody } from "../commands/codex-review-result.js";
+import {
+	buildCodexReviewFailureMarker,
+	buildCodexReviewResultBody,
+} from "../commands/codex-review-result.js";
 
 const SHA = "a".repeat(40);
 
@@ -48,4 +51,21 @@ describe("buildCodexReviewResultBody", () => {
 		expect(body.payload.codexThreadId).toBeUndefined();
 		expect(body.payload.prHeadSha).toBe(SHA);
 	});
+});
+
+it("keeps failed-delivery markers opaque", () => {
+	const marker = buildCodexReviewFailureMarker({
+		execId: "exec-1",
+		requestId: "evt-1",
+		body: { codexThreadId: "private-thread", reviewedTarget: "private-url" },
+		lastError: "Bridge returned 503",
+		timestamp: "2026-07-14T00:00:00.000Z",
+	});
+	expect(marker).toMatchObject({
+		execution_id: "exec-1",
+		client_request_id: "evt-1",
+		body_digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+	});
+	expect(JSON.stringify(marker)).not.toContain("private-thread");
+	expect(JSON.stringify(marker)).not.toContain("private-url");
 });

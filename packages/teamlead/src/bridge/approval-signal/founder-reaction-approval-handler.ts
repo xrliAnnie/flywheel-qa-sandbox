@@ -24,6 +24,7 @@ import { evaluateReactionSource } from "./reaction-approval-source.js";
 import type { GateBinding } from "./types.js";
 import {
 	type GateResponseDb,
+	type WriteGateResponseArgs,
 	writeGateResponseAndRunPostWrite,
 } from "./write-gate-response.js";
 
@@ -48,6 +49,7 @@ export interface ReactionApprovalHandlerDeps {
 	) => GateMessageBinding | null;
 	evaluateReactionImpl?: typeof evaluateReactionSource;
 	writeGateResponseImpl?: typeof writeGateResponseAndRunPostWrite;
+	cardAuthority?: WriteGateResponseArgs["cardAuthority"];
 	onResponseWritten?: Parameters<
 		typeof writeGateResponseAndRunPostWrite
 	>[0]["onResponseWritten"];
@@ -163,9 +165,16 @@ export async function tryFounderReactionApproval(
 		store: { getSession: (e) => deps.store.getSession(e) },
 		questionId: gate.questionId,
 		executionId: gate.executionId,
+		source: "reaction",
+		targetMessageId: binding.targetMessageId,
+		cardAuthority: deps.cardAuthority,
 		actor: deps.canonicalFounderId,
+		founderId: deps.canonicalFounderId,
 		answer: '{"approved": true}',
 		expectedCurrentReviewQuestionId: session.review_question_id ?? undefined,
+		holdReasonFor: deps.isHeld
+			? (executionId) => (deps.isHeld!(executionId) ? "qa_not_green" : null)
+			: undefined,
 		onResponseWritten: deps.onResponseWritten,
 	});
 

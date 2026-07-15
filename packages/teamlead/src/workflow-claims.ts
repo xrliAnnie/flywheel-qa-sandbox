@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 
+export { canonicalSubmissionDigest } from "flywheel-config";
+
 /**
  * FLY-1135 PR-1 — the workflow claims vocabulary (plan §2.1/§2.2).
  *
@@ -90,29 +92,6 @@ export const PASSING_PREDICATES: ReadonlySet<WorkflowClaimPredicate> = new Set([
 	"founder_approved",
 	"qa_exempt",
 ]);
-
-/** Stable stringify (sorted object keys) so digests are canonical. */
-function canonicalJson(value: unknown): string {
-	if (Array.isArray(value)) {
-		return `[${value.map(canonicalJson).join(",")}]`;
-	}
-	if (value !== null && typeof value === "object") {
-		const entries = Object.entries(value as Record<string, unknown>)
-			.filter(([, v]) => v !== undefined)
-			.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-			.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`);
-		return `{${entries.join(",")}}`;
-	}
-	return JSON.stringify(value);
-}
-
-/**
- * Canonical submission digest (plan §2.1 `submission_digest`) — the ONLY
- * deterministic comparison key for consumed-capability idempotent replay.
- */
-export function canonicalSubmissionDigest(payload: unknown): string {
-	return createHash("sha256").update(canonicalJson(payload)).digest("hex");
-}
 
 /** Mint a decision-capability token. Plaintext lives ONLY in Bridge memory. */
 export function generateCapabilityToken(): string {

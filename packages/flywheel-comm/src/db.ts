@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
+import {
+	canonicalJsonString,
+	canonicalSubmissionDigest,
+} from "flywheel-config";
 import type { Message, Session } from "./types.js";
 import { deleteContentRef as deleteContentRefFile } from "./utils/content-ref.js";
 
@@ -43,6 +47,38 @@ CREATE TABLE IF NOT EXISTS three_stage_turn (
   epoch           INTEGER NOT NULL,
   granted_at      INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS workflow_source_event (
+  project             TEXT NOT NULL,
+  source_event_id     TEXT NOT NULL,
+  kind                TEXT NOT NULL CHECK(kind IN ('founder_approval','turn_grant')),
+  payload             TEXT NOT NULL,
+  payload_digest      TEXT NOT NULL,
+  schema_version      INTEGER NOT NULL,
+  at                  TEXT NOT NULL,
+  PRIMARY KEY (project, source_event_id)
+);
+CREATE TABLE IF NOT EXISTS turn_source_history (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_id            TEXT NOT NULL,
+  from_role           TEXT,
+  to_role             TEXT NOT NULL,
+  epoch               INTEGER NOT NULL,
+  target_run_id       TEXT,
+  source_event_id     TEXT NOT NULL UNIQUE,
+  at                  TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS workflow_source_event_no_update
+BEFORE UPDATE ON workflow_source_event
+BEGIN SELECT RAISE(ABORT, 'workflow_source_event is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS workflow_source_event_no_delete
+BEFORE DELETE ON workflow_source_event
+BEGIN SELECT RAISE(ABORT, 'workflow_source_event is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS turn_source_history_no_update
+BEFORE UPDATE ON turn_source_history
+BEGIN SELECT RAISE(ABORT, 'turn_source_history is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS turn_source_history_no_delete
+BEFORE DELETE ON turn_source_history
+BEGIN SELECT RAISE(ABORT, 'turn_source_history is append-only'); END;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_response ON messages(parent_id) WHERE type = 'response';
 CREATE INDEX IF NOT EXISTS idx_messages_to_agent ON messages(to_agent, type, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_id);
@@ -86,6 +122,27 @@ export interface ThreeStageTurn {
 export interface FinalizeSessionResult {
 	retiredQuestionCount: number;
 	deletedSessionCount: number;
+}
+
+export interface WorkflowSourceEvent {
+	project: string;
+	source_event_id: string;
+	kind: "founder_approval" | "turn_grant";
+	payload: string;
+	payload_digest: string;
+	schema_version: number;
+	at: string;
+}
+
+export interface TurnSourceHistory {
+	id: number;
+	issue_id: string;
+	from_role: string | null;
+	to_role: string;
+	epoch: number;
+	target_run_id: string | null;
+	source_event_id: string;
+	at: string;
 }
 
 export class CommDB {
@@ -505,6 +562,108 @@ export class CommDB {
 				input.expectedCheckpoint,
 			);
 		return result.changes > 0;
+	}
+
+	/**
+	 * Answer an open founder ship gate and append its frozen cross-database
+	 * source event in the SAME CommDB transaction. A source-event failure rolls
+	 * the response back; there is no response-without-outbox window.
+	 */
+	insertFounderApprovalResponseWithSource(input: {
+		project: string;
+		sourceEventId: string;
+		questionId: string;
+		fromAgent: string;
+		content: string;
+		expectedOwner: string;
+		payload: unknown;
+	}): boolean {
+		const payload = canonicalJsonString(input.payload);
+		const payloadDigest = canonicalSubmissionDigest(input.payload);
+		const at = new Date().toISOString();
+		return this.db.transaction(() => {
+			const responseId = randomUUID();
+			const result = this.db
+				.prepare(
+					`INSERT INTO messages (id, from_agent, to_agent, type, content, parent_id)
+					 SELECT ?, ?, q.from_agent, 'response', ?, q.id
+					   FROM messages q
+					  WHERE q.id = ?
+					    AND q.type = 'question'
+					    AND q.from_agent = ?
+					    AND q.checkpoint = 'approve_to_ship'
+					    AND q.resolved_at IS NULL
+					    AND q.expires_at > datetime('now')
+					    AND NOT EXISTS (
+					      SELECT 1 FROM messages r
+					       WHERE r.parent_id = q.id AND r.type = 'response'
+					    )`,
+				)
+				.run(
+					responseId,
+					input.fromAgent,
+					input.content,
+					input.questionId,
+					input.expectedOwner,
+				);
+			if (result.changes !== 1) return false;
+			this.db
+				.prepare(
+					`INSERT INTO workflow_source_event
+					   (project, source_event_id, kind, payload, payload_digest, schema_version, at)
+					 VALUES (?, ?, 'founder_approval', ?, ?, 1, ?)`,
+				)
+				.run(input.project, input.sourceEventId, payload, payloadDigest, at);
+			return true;
+		})();
+	}
+
+	listWorkflowSourceEvents(): WorkflowSourceEvent[] {
+		return this.db
+			.prepare(
+				`SELECT project, source_event_id, kind, payload, payload_digest,
+				        schema_version, at
+				   FROM workflow_source_event
+				  ORDER BY at, source_event_id`,
+			)
+			.all() as WorkflowSourceEvent[];
+	}
+
+	listWorkflowSourceEventsAfter(
+		afterRowId: number,
+		limit = 256,
+	): Array<WorkflowSourceEvent & { row_id: number }> {
+		return this.db
+			.prepare(
+				`SELECT rowid AS row_id, project, source_event_id, kind, payload,
+				        payload_digest, schema_version, at
+				   FROM workflow_source_event
+				  WHERE rowid > ?
+				  ORDER BY rowid
+				  LIMIT ?`,
+			)
+			.all(afterRowId, limit) as Array<
+			WorkflowSourceEvent & { row_id: number }
+		>;
+	}
+
+	listTurnSourceHistory(issueId?: string): TurnSourceHistory[] {
+		if (issueId) {
+			return this.db
+				.prepare(
+					`SELECT id, issue_id, from_role, to_role, epoch, target_run_id,
+					        source_event_id, at
+					   FROM turn_source_history WHERE issue_id = ? ORDER BY id`,
+				)
+				.all(issueId) as TurnSourceHistory[];
+		}
+		return this.db
+			.prepare(
+				`SELECT id, issue_id, from_role, to_role, epoch, target_run_id,
+				        source_event_id, at
+				   FROM turn_source_history ORDER BY id`,
+			)
+			.all() as TurnSourceHistory[];
 	}
 
 	/**
@@ -936,7 +1095,97 @@ export class CommDB {
 		holderExecId: string,
 		phase: string,
 		grantedAtMs: number,
+		source?: { project: string; sourceEventId: string },
 	): void {
+		if (source) {
+			this.db.transaction(() => {
+				const priorSource = this.db
+					.prepare(
+						`SELECT project, payload FROM workflow_source_event
+						  WHERE project = ? AND source_event_id = ?`,
+					)
+					.get(source.project, source.sourceEventId) as
+					| { project: string; payload: string }
+					| undefined;
+				if (priorSource) {
+					const frozen = JSON.parse(priorSource.payload) as Record<
+						string,
+						unknown
+					>;
+					if (
+						frozen.issue_id !== issueId ||
+						frozen.new_holder !== holderExecId ||
+						frozen.to_role !== phase ||
+						frozen.target_run_id !== null
+					) {
+						throw new Error(
+							`workflow source replay payload mismatch (poison): ${source.sourceEventId}`,
+						);
+					}
+					return;
+				}
+
+				const current = this.db
+					.prepare(
+						"SELECT holder_exec_id, phase, epoch FROM three_stage_turn WHERE issue_id = ?",
+					)
+					.get(issueId) as
+					| { holder_exec_id: string; phase: string; epoch: number }
+					| undefined;
+				const resultingEpoch = (current?.epoch ?? 0) + 1;
+				const payloadObject = {
+					schema_version: 1,
+					issue_id: issueId,
+					old_holder: current?.holder_exec_id ?? null,
+					new_holder: holderExecId,
+					from_role: current?.phase ?? null,
+					to_role: phase,
+					resulting_epoch: resultingEpoch,
+					target_run_id: null,
+				};
+				const at = new Date(grantedAtMs).toISOString();
+				this.db
+					.prepare(
+						`INSERT INTO three_stage_turn
+						   (issue_id, holder_exec_id, phase, epoch, granted_at)
+						 VALUES (?, ?, ?, ?, ?)
+						 ON CONFLICT(issue_id) DO UPDATE SET
+						   holder_exec_id = excluded.holder_exec_id,
+						   phase = excluded.phase,
+						   epoch = excluded.epoch,
+						   granted_at = excluded.granted_at`,
+					)
+					.run(issueId, holderExecId, phase, resultingEpoch, grantedAtMs);
+				this.db
+					.prepare(
+						`INSERT INTO turn_source_history
+						   (issue_id, from_role, to_role, epoch, target_run_id, source_event_id, at)
+						 VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+					)
+					.run(
+						issueId,
+						current?.phase ?? null,
+						phase,
+						resultingEpoch,
+						source.sourceEventId,
+						at,
+					);
+				this.db
+					.prepare(
+						`INSERT INTO workflow_source_event
+						   (project, source_event_id, kind, payload, payload_digest, schema_version, at)
+						 VALUES (?, ?, 'turn_grant', ?, ?, 1, ?)`,
+					)
+					.run(
+						source.project,
+						source.sourceEventId,
+						canonicalJsonString(payloadObject),
+						canonicalSubmissionDigest(payloadObject),
+						at,
+					);
+			})();
+			return;
+		}
 		this.db
 			.prepare(
 				`INSERT INTO three_stage_turn

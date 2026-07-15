@@ -18,6 +18,30 @@
  * hook is idempotent). All guard rejections are retrySafe (nothing to do here).
  */
 
+import { isTrustedApprovalAttribution } from "flywheel-comm/founder-attribution";
+import {
+	isDeferrableReviewHoldReason,
+	type ReviewHoldReason,
+} from "../auto-qa-held.js";
+
+export type FounderApprovalRouteSource =
+	| "reaction"
+	| "text"
+	| "voice"
+	| "deferred"
+	| "actions"
+	| "founder-consent";
+
+export interface FounderApprovalCardAuthorityInput {
+	executionId: string;
+	source: FounderApprovalRouteSource;
+	targetMessageId?: string;
+}
+
+export type FounderApprovalCardAuthority = (
+	input: FounderApprovalCardAuthorityInput,
+) => { ok: true } | { ok: false; reason: string };
+
 /** Structural CommDB surface (real CommDB satisfies it; tests inject a fake). */
 export interface GateResponseDb {
 	getMessageById(
@@ -25,13 +49,32 @@ export interface GateResponseDb {
 	): { checkpoint: string | null; from_agent: string } | undefined;
 	getResponse(id: string): { content: string; from_agent: string } | undefined;
 	insertResponse(id: string, fromAgent: string, content: string): void;
+	insertFounderApprovalResponseWithSource?(input: {
+		project: string;
+		sourceEventId: string;
+		questionId: string;
+		fromAgent: string;
+		content: string;
+		expectedOwner: string;
+		payload: unknown;
+	}): boolean;
 }
 
 /** Structural StateStore surface. */
 export interface GateResponseStore {
-	getSession(
-		executionId: string,
-	): { status?: string; review_question_id?: string | null } | undefined;
+	getSession(executionId: string):
+		| {
+				status?: string;
+				review_question_id?: string | null;
+				project_name?: string;
+				issue_id?: string;
+				pr_head_sha?: string | null;
+		  }
+		| undefined;
+	getActiveWorkflowRun?(
+		projectName: string,
+		issueId: string,
+	): { run_id: string } | undefined;
 }
 
 export interface WriteGateResponseArgs {
@@ -45,6 +88,25 @@ export interface WriteGateResponseArgs {
 	answer: string;
 	/** Session's current review_question_id — when set, only it is answerable. */
 	expectedCurrentReviewQuestionId?: string;
+	/** Live ship-review hold. Checked in this shared write boundary. */
+	holdReasonFor?: (executionId: string) => ReviewHoldReason | null;
+	/** Fixed by each production caller; every founder-write route is explicit. */
+	source: FounderApprovalRouteSource;
+	/** Reaction routes identify the exact card message being acted on. */
+	targetMessageId?: string;
+	/** Optional downstream authority seam. Absence preserves FLY-1244 behavior. */
+	cardAuthority?: FounderApprovalCardAuthority;
+	/** Canonical founder identity used to distinguish trusted approval writers. */
+	founderId?: string;
+	/** Frozen source metadata for a claims-enrolled workflow run. */
+	founderSource?: {
+		project: string;
+		runId: string;
+		issueId: string;
+		approvedHead: string;
+		classification: string;
+		authorityId: string;
+	};
 	/**
 	 * Best-effort post-write side effects (flip awaiting_review→approved_to_ship +
 	 * wake). May return an `{ ok: boolean }` outcome (sync or via a Promise) so the
@@ -63,6 +125,7 @@ export interface WriteGateResponseArgs {
 export interface WriteGateResponseResult {
 	written: boolean;
 	retrySafe: boolean;
+	disposition?: "written" | "already_applied" | "defer" | "reject";
 	reason?: string;
 }
 
@@ -148,11 +211,119 @@ export async function writeGateResponseAndRunPostWrite(
 		}
 		// Same decision already recorded — re-run the (idempotent) hook only.
 		const ok = await runHook(args);
-		return { written: false, retrySafe: ok, reason: "already_answered" };
+		return {
+			written: false,
+			retrySafe: ok,
+			disposition: "already_applied",
+			reason: "already_answered",
+		};
+	}
+
+	// Holds guard NEW decisions only. A response already durable above must be
+	// allowed to re-run its idempotent post-write hook; otherwise a hold that
+	// arrives between write and hook recovery can strand an answered gate.
+	const holdReason = args.holdReasonFor?.(args.executionId) ?? null;
+	if (holdReason) {
+		return {
+			written: false,
+			retrySafe: true,
+			disposition: isDeferrableReviewHoldReason(holdReason)
+				? "defer"
+				: "reject",
+			reason: `held_${holdReason}`,
+		};
+	}
+
+	if (isApproval(args.answer) && args.cardAuthority) {
+		try {
+			const authority = args.cardAuthority({
+				executionId: args.executionId,
+				source: args.source,
+				targetMessageId: args.targetMessageId,
+			});
+			if (!authority.ok) {
+				return {
+					written: false,
+					retrySafe: true,
+					disposition: "reject",
+					reason: `card_authority_${authority.reason}`,
+				};
+			}
+		} catch {
+			return {
+				written: false,
+				retrySafe: true,
+				disposition: "reject",
+				reason: "card_authority_error",
+			};
+		}
 	}
 
 	// Fresh write, then the post-write hook.
-	args.db.insertResponse(args.questionId, args.actor, args.answer);
+	const activeRun =
+		liveSession?.project_name && liveSession.issue_id
+			? args.store.getActiveWorkflowRun?.(
+					liveSession.project_name,
+					liveSession.issue_id,
+				)
+			: undefined;
+	const derivedFounderSource =
+		activeRun &&
+		liveSession?.project_name &&
+		liveSession.issue_id &&
+		liveSession.pr_head_sha
+			? {
+					project: liveSession.project_name,
+					runId: activeRun.run_id,
+					issueId: liveSession.issue_id,
+					approvedHead: liveSession.pr_head_sha.toLowerCase(),
+					classification:
+						args.actor === "bridge"
+							? "dashboard_founder_action"
+							: args.actor === "bridge-founder-consent"
+								? "founder_consent_enforce"
+								: "founder_direct_signal",
+					authorityId: args.questionId,
+				}
+			: undefined;
+	const founderSource = args.founderSource ?? derivedFounderSource;
+	const trustedFounderApproval =
+		isApproval(args.answer) &&
+		isTrustedApprovalAttribution(args.actor, args.founderId) &&
+		founderSource !== undefined &&
+		args.db.insertFounderApprovalResponseWithSource !== undefined;
+	if (trustedFounderApproval) {
+		const source = founderSource!;
+		const wrote = args.db.insertFounderApprovalResponseWithSource!({
+			project: source.project,
+			sourceEventId: `founder-approval:${args.questionId}`,
+			questionId: args.questionId,
+			fromAgent: args.actor,
+			content: args.answer,
+			expectedOwner: args.executionId,
+			payload: {
+				schema_version: 1,
+				run_id: source.runId,
+				issue_id: source.issueId,
+				question_id: args.questionId,
+				response: { approved: true },
+				actor: args.actor,
+				approved_head: source.approvedHead,
+				classification: source.classification,
+				authority_id: source.authorityId,
+			},
+		});
+		if (!wrote) {
+			return {
+				written: false,
+				retrySafe: true,
+				disposition: "reject",
+				reason: "atomic_source_write_rejected",
+			};
+		}
+	} else {
+		args.db.insertResponse(args.questionId, args.actor, args.answer);
+	}
 	const ok = await runHook(args);
-	return { written: true, retrySafe: ok };
+	return { written: true, retrySafe: ok, disposition: "written" };
 }
