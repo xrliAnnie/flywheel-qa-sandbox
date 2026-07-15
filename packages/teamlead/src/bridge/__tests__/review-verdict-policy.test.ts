@@ -1,23 +1,36 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
 	computeEffectiveVerdict,
 	findingFingerprint,
 	isNonBlockingSeverity,
-	severityPolicyEnabled,
 	type ReviewFindingRulingSnapshot,
+	severityPolicyEnabled,
 } from "../review-verdict-policy.js";
 
 describe("FLY-1278 review verdict policy", () => {
+	afterEach(() => {
+		delete process.env.FLYWHEEL_REVIEW_SEVERITY_POLICY;
+	});
+
 	it("is default-on and only an explicit 0 disables it", () => {
 		expect(severityPolicyEnabled({})).toBe(true);
-		expect(severityPolicyEnabled({ FLYWHEEL_REVIEW_SEVERITY_POLICY: "1" })).toBe(
-			true,
-		);
-		expect(severityPolicyEnabled({ FLYWHEEL_REVIEW_SEVERITY_POLICY: "0" })).toBe(
-			false,
-		);
+		expect(
+			severityPolicyEnabled({ FLYWHEEL_REVIEW_SEVERITY_POLICY: "1" }),
+		).toBe(true);
+		expect(
+			severityPolicyEnabled({ FLYWHEEL_REVIEW_SEVERITY_POLICY: "0" }),
+		).toBe(false);
+	});
+
+	it("observes a live process.env mutation on the next review-round read", () => {
+		delete process.env.FLYWHEEL_REVIEW_SEVERITY_POLICY;
+		expect(severityPolicyEnabled()).toBe(true);
+		process.env.FLYWHEEL_REVIEW_SEVERITY_POLICY = "0";
+		expect(severityPolicyEnabled()).toBe(false);
+		process.env.FLYWHEEL_REVIEW_SEVERITY_POLICY = "1";
+		expect(severityPolicyEnabled()).toBe(true);
 	});
 
 	it.each([
@@ -167,14 +180,15 @@ describe("FLY-1251 production R6-R9 replay", () => {
 	});
 
 	it("reproduces the old non-converging sequence when disabled", () => {
-		const verdicts = rows.map((row) =>
-			computeEffectiveVerdict({
-				reviewerVerdict: row.verdict,
-				findings: JSON.parse(row.findings_json),
-				reviewType: "code",
-				rulings: [],
-				enabled: false,
-			}).effectiveVerdict,
+		const verdicts = rows.map(
+			(row) =>
+				computeEffectiveVerdict({
+					reviewerVerdict: row.verdict,
+					findings: JSON.parse(row.findings_json),
+					reviewType: "code",
+					rulings: [],
+					enabled: false,
+				}).effectiveVerdict,
 		);
 		expect(verdicts).toEqual([
 			"CHANGES_REQUESTED",
