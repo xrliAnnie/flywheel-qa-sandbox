@@ -374,6 +374,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			ctx.label ?? `codex-${ctx.executionId.slice(0, 8)}`,
 		);
 		let tmuxWindow = `${this.sessionName}:${windowName}`;
+		let founderWindowId: string | undefined;
 
 		let runtime: CodexDaemonGoalRuntimeLike | undefined;
 		let phaseLifecycle: CodexPhaseLifecycle | undefined;
@@ -507,7 +508,11 @@ export class CodexTmuxAdapter implements IAdapter {
 			const wireCreated = (): void => {
 				tuiOpened = true;
 				const windowId = this.resolveWindowId(windowName);
-				if (windowId) tmuxWindow = `${this.sessionName}:${windowId}`;
+				if (windowId) {
+					founderWindowId = windowId;
+					tmuxWindow = `${this.sessionName}:${windowId}`;
+					this.pinCommDbSessionWindow(ctx, tmuxWindow);
+				}
 				if (ctx.onTmuxWindowCreated) {
 					try {
 						ctx.onTmuxWindowCreated({
@@ -788,7 +793,11 @@ export class CodexTmuxAdapter implements IAdapter {
 				}
 				try {
 					this.killWindow(
-						{ tmuxSession: this.sessionName, windowName },
+						{
+							tmuxSession: this.sessionName,
+							windowName,
+							...(founderWindowId ? { windowId: founderWindowId } : {}),
+						},
 						{ log: (m) => this.log(m) },
 					);
 				} catch (err) {
@@ -841,7 +850,11 @@ export class CodexTmuxAdapter implements IAdapter {
 				// Ordinary/non-request-bound Codex retains terminal-window-first order.
 				stopHeartbeat();
 				this.killWindow(
-					{ tmuxSession: this.sessionName, windowName },
+					{
+						tmuxSession: this.sessionName,
+						windowName,
+						...(founderWindowId ? { windowId: founderWindowId } : {}),
+					},
 					{ log: (m) => this.log(m) },
 				);
 				if (runtime) {
@@ -1275,6 +1288,24 @@ export class CodexTmuxAdapter implements IAdapter {
 			return true;
 		} catch {
 			return false; // non-fatal (same as TmuxAdapter)
+		}
+	}
+
+	/** Pin the lazily-created founder pane to its immutable tmux id without
+	 * replacing the session row (which would erase lifecycle/review metadata). */
+	private pinCommDbSessionWindow(
+		ctx: AdapterExecutionContext,
+		tmuxWindow: string,
+	): void {
+		if (!ctx.commDbPath) return;
+		let commDb: CommDB | undefined;
+		try {
+			commDb = new CommDB(ctx.commDbPath);
+			commDb.updateSessionTmuxWindow(ctx.executionId, tmuxWindow);
+		} catch {
+			// Best-effort: the adapter still owns the immutable id for teardown.
+		} finally {
+			commDb?.close();
 		}
 	}
 

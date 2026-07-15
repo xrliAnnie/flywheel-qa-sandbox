@@ -1552,6 +1552,17 @@ export class CommDB {
 			);
 	}
 
+	/**
+	 * FLY-1269: replace only the routing target after a lazily-created tmux
+	 * window has an immutable id. Unlike registerSession's INSERT OR REPLACE,
+	 * this preserves lifecycle/review metadata already attached to the row.
+	 */
+	updateSessionTmuxWindow(executionId: string, tmuxWindow: string): void {
+		this.db
+			.prepare("UPDATE sessions SET tmux_window = ? WHERE execution_id = ?")
+			.run(tmuxWindow, executionId);
+	}
+
 	/** FLY-80: Remove a pre-registered session only if still in :pending state.
 	 *  If Runner has self-registered (overwritten tmux_window), this is a no-op. */
 	unregisterPendingSession(executionId: string): void {

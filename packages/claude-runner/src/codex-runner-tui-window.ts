@@ -24,6 +24,7 @@ import { spawnSync } from "node:child_process";
 const SAFE_PATH = /^[A-Za-z0-9_./-]+$/; // absolute paths, no quotes/spaces/metachars
 const SAFE_ID = /^[A-Za-z0-9-]+$/; // thread ids are UUID-shaped
 const SAFE_NAME = /^[A-Za-z0-9_.-]+$/; // tmux session/window names
+const SAFE_WINDOW_ID = /^@[0-9]+$/; // immutable tmux window ids
 
 /** A value interpolated into the tmux shell command must be system-derived
  * config, not user input — but validate at the boundary anyway (a value that
@@ -319,15 +320,24 @@ export function isRunnerTuiWindowAlive(
 /** Explicitly tear down the founder TUI window (on run completion / shutdown —
  * leaving it alive orphans a TUI pointing at a dead daemon socket). Fail-open. */
 export function killRunnerTuiWindow(
-	spec: Pick<RunnerTuiWindowSpec, "tmuxSession" | "windowName">,
+	spec: Pick<RunnerTuiWindowSpec, "tmuxSession" | "windowName"> & {
+		/** Immutable tmux identity captured after creation. Survives pane rename. */
+		windowId?: string;
+	},
 	deps: RunnerTuiWindowDeps = {},
 ): void {
 	const exec = deps.exec ?? defaultExec;
 	try {
+		assertShellSafe("tmuxSession", spec.tmuxSession, SAFE_NAME);
+		assertShellSafe("windowName", spec.windowName, SAFE_NAME);
+		if (spec.windowId) assertShellSafe("windowId", spec.windowId, SAFE_WINDOW_ID);
+		const target = spec.windowId
+			? `=${spec.tmuxSession}:${spec.windowId}`
+			: `=${spec.tmuxSession}:=${spec.windowName}`;
 		const r = exec("tmux", [
 			"kill-window",
 			"-t",
-			`=${spec.tmuxSession}:=${spec.windowName}`,
+			target,
 		]);
 		safeLog(
 			deps.log,

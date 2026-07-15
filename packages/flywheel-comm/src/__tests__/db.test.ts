@@ -319,6 +319,19 @@ describe("CommDB", () => {
 			expect(session!.ended_at).toBeNull();
 		});
 
+		it("updates only the tmux target without replacing session lifecycle metadata", () => {
+			db.registerSession("exec-1", "flywheel:FLY-1269", "flywheel", "FLY-1269");
+			db.updateSessionStatus("exec-1", "completed");
+			const before = db.getSession("exec-1");
+
+			db.updateSessionTmuxWindow("exec-1", "flywheel:@7");
+
+			const after = db.getSession("exec-1");
+			expect(after?.tmux_window).toBe("flywheel:@7");
+			expect(after?.status).toBe("completed");
+			expect(after?.ended_at).toBe(before?.ended_at);
+		});
+
 		it("should list active sessions", () => {
 			db.registerSession("exec-1", "@42", "geoforge3d", "GEO-208");
 			db.registerSession("exec-2", "@43", "geoforge3d", "GEO-209");

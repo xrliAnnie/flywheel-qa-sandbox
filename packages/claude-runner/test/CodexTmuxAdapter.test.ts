@@ -1185,6 +1185,19 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(sess?.vendor).toBe("codex");
 	});
 
+	it("pins CommDB registration and teardown to the immutable founder window id", async () => {
+		await makeAdapter().execute(ctx());
+		const db = new CommDB(dbPath);
+		const sess = db.getSession(execId);
+		db.close();
+		expect(sess?.tmux_window).toBe(`testsess:${WINDOW_ID}`);
+		expect(killWindowCalls).toContainEqual({
+			tmuxSession: "testsess",
+			windowName: "FLY-1188",
+			windowId: WINDOW_ID,
+		});
+	});
+
 	it("HIGH-3: persists the live daemon pid, and a resuming re-execute threads it as reapOrphanPid", async () => {
 		// Run 1: the daemon reports its pid, then OUR thread becomes ready →
 		// persistSessionState writes {threadId, daemonPid} to session.json.
