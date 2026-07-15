@@ -342,7 +342,7 @@ describe("ShipRelevantDiffService", () => {
 		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD)).toBeUndefined();
 	});
 
-	it("coalesces a valid snapshot for 60s, then refreshes base identity from GitHub", async () => {
+	it("revalidates base identity inside the file-list backoff and invalidates on retarget", async () => {
 		const store = await StateStore.create(":memory:");
 		let now = 0;
 		const first = fakeApi({
@@ -367,9 +367,10 @@ describe("ShipRelevantDiffService", () => {
 			prHeadSha: HEAD,
 			api: first.api,
 		});
-		expect(first.paths).toHaveLength(before);
+		expect(first.paths).toHaveLength(before + 1);
+		expect(first.paths.at(-1)).toBe("/repos/owner/repo/pulls/42");
 
-		now = 61_000;
+		now = 31_000;
 		const nextBase = "c".repeat(40);
 		const refreshed = fakeApi({
 			metadata: {
@@ -391,5 +392,36 @@ describe("ShipRelevantDiffService", () => {
 			base_oid: nextBase,
 			ship_relevant: 1,
 		});
+	});
+
+	it("prunes expired in-memory retry entries during later classifications", async () => {
+		const store = await StateStore.create(":memory:");
+		let now = 0;
+		const fixture = fakeApi({
+			pages: [[docFile], []],
+			headTree: tree(docFile.filename),
+		});
+		const service = new ShipRelevantDiffService(store, { now: () => now });
+		await service.ensure({
+			executionId: "exec-old",
+			repo: "owner/repo",
+			prNumber: 42,
+			prHeadSha: HEAD,
+			api: fixture.api,
+		});
+		now = 61_000;
+		await service.ensure({
+			executionId: "exec-current",
+			repo: "owner/repo",
+			prNumber: 42,
+			prHeadSha: HEAD,
+			api: fixture.api,
+		});
+
+		const retryAfter = (
+			service as unknown as { retryAfter: Map<string, number> }
+		).retryAfter;
+		expect(retryAfter.has(`exec-old:${HEAD}`)).toBe(false);
+		expect(retryAfter.has(`exec-current:${HEAD}`)).toBe(true);
 	});
 });

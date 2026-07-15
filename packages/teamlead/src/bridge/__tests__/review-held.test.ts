@@ -17,6 +17,7 @@ interface FakeState {
 	codexApproved?: boolean;
 	qaRecord?: Partial<AutoQaRecord>;
 	shipRelevant?: 0 | 1;
+	snapshotComputedAt?: string;
 	throwAt?: "codex" | "qa" | "snapshot";
 }
 
@@ -56,7 +57,7 @@ function fakeStore(state: FakeState) {
 						classifier_version: 1,
 						ship_relevant: state.shipRelevant,
 						file_count: 1,
-						computed_at: "now",
+						computed_at: state.snapshotComputedAt ?? new Date().toISOString(),
 					};
 		},
 	};
@@ -102,6 +103,17 @@ describe("FLY-827 isReviewHeld", () => {
 	it("E2: server-classified docs-only PR is the only no-evidence release", () => {
 		const store = fakeStore({ codexApproved: true, shipRelevant: 0 });
 		expect(isReviewHeld(store, awaitingMain, {})).toBe(false);
+	});
+
+	it("E2: an expired docs-only classification fails closed when refresh stops", () => {
+		const store = fakeStore({
+			codexApproved: true,
+			shipRelevant: 0,
+			snapshotComputedAt: "2000-01-01T00:00:00.000Z",
+		});
+		expect(reviewHoldReason(store, awaitingMain, {})).toBe(
+			"qa_evidence_unknown",
+		);
 	});
 
 	it("E3: a missing diff snapshot fails closed until classification completes", () => {

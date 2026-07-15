@@ -30,7 +30,10 @@ import {
 	isCodexGateSatisfied,
 	isReviewableRole,
 } from "./codex-gate.js";
-import { SHIP_RELEVANT_CLASSIFIER_VERSION } from "./ship-relevant-diff.js";
+import {
+	SHIP_RELEVANT_CLASSIFIER_VERSION,
+	SHIP_RELEVANT_SNAPSHOT_MAX_AGE_MS,
+} from "./ship-relevant-diff.js";
 
 /** Minimal read surface — keeps the predicate trivially unit-testable. */
 export interface AutoQaHeldStore {
@@ -46,6 +49,7 @@ export interface AutoQaHeldStore {
 				pr_number: number;
 				classifier_version: number;
 				ship_relevant: 0 | 1;
+				computed_at: string;
 		  }
 		| undefined;
 }
@@ -104,8 +108,7 @@ export type ReviewHoldReason =
 	| "codex_pending"
 	| "qa_not_green"
 	| "qa_evidence_missing"
-	| "qa_evidence_unknown"
-	| "no_qualified_reviewer";
+	| "qa_evidence_unknown";
 
 export function reviewHoldReason(
 	store: AutoQaHeldStore & CodexGateStore,
@@ -156,6 +159,15 @@ export function reviewHoldReason(
 			snapshot.classifier_version !== SHIP_RELEVANT_CLASSIFIER_VERSION
 		) {
 			return "qa_evidence_missing";
+		}
+		const computedAt = Date.parse(snapshot.computed_at);
+		const ageMs = Date.now() - computedAt;
+		if (
+			!Number.isFinite(computedAt) ||
+			ageMs < -SHIP_RELEVANT_SNAPSHOT_MAX_AGE_MS ||
+			ageMs > SHIP_RELEVANT_SNAPSHOT_MAX_AGE_MS
+		) {
+			return "qa_evidence_unknown";
 		}
 		return snapshot.ship_relevant === 0 ? null : "qa_evidence_missing";
 	} catch (error) {

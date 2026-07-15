@@ -4269,6 +4269,23 @@ export class StateStore {
 		return deleted;
 	}
 
+	/** Keep only the current candidate head for an execution. Classification
+	 * snapshots are authorization caches, not an audit ledger; retaining stale
+	 * heads would grow the daemon DB forever and can never satisfy a live gate. */
+	deleteOtherShipRelevantDiffSnapshots(
+		executionId: string,
+		keepPrHeadSha: string,
+	): number {
+		this.db.run(
+			`DELETE FROM ship_relevant_diff_snapshot
+			 WHERE execution_id = ? AND lower(pr_head_sha) != ?`,
+			[executionId, keepPrHeadSha.toLowerCase()],
+		);
+		const deleted = this.db.getRowsModified();
+		if (deleted > 0) this.save();
+		return deleted;
+	}
+
 	// ─────────────────────────── FLY-827 Codex code-review gate ───────────────
 
 	private rowToCodexReviewRecord(

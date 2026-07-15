@@ -1,6 +1,9 @@
 import type { StateStore } from "../StateStore.js";
 
 export const SHIP_RELEVANT_CLASSIFIER_VERSION = 1;
+/** A docs-only exemption is authorization evidence, so it expires when the
+ * async GitHub metadata refresher stops making progress. */
+export const SHIP_RELEVANT_SNAPSHOT_MAX_AGE_MS = 60_000;
 
 const MAX_DOCS_ONLY_FILES = 50;
 const DOCS_PREFIXES = [
@@ -313,6 +316,7 @@ export class ShipRelevantDiffService {
 			StateStore,
 			| "putShipRelevantDiffSnapshot"
 			| "deleteShipRelevantDiffSnapshot"
+			| "deleteOtherShipRelevantDiffSnapshots"
 			| "getShipRelevantDiffSnapshot"
 		>,
 		private readonly options: { now?: () => number; retryMs?: number } = {},
@@ -330,11 +334,18 @@ export class ShipRelevantDiffService {
 		if (existing) return existing;
 
 		const now = this.options.now?.() ?? Date.now();
-		const cached = this.store.getShipRelevantDiffSnapshot(
+		for (const [candidate, retryAt] of this.retryAfter) {
+			if (retryAt <= now) this.retryAfter.delete(candidate);
+		}
+		this.store.deleteOtherShipRelevantDiffSnapshots(
 			input.executionId,
 			input.prHeadSha,
 		);
-		const cachedMatches =
+		let cached = this.store.getShipRelevantDiffSnapshot(
+			input.executionId,
+			input.prHeadSha,
+		);
+		let cachedMatches =
 			cached?.repo === input.repo &&
 			cached.pr_number === input.prNumber &&
 			cached.classifier_version === SHIP_RELEVANT_CLASSIFIER_VERSION;
@@ -344,40 +355,94 @@ export class ShipRelevantDiffService {
 				input.prHeadSha,
 			);
 			this.retryAfter.delete(key);
-		}
-		if ((this.retryAfter.get(key) ?? 0) > now) {
-			if (cachedMatches && cached) {
-				const { execution_id, computed_at, ...snapshot } = cached;
-				void execution_id;
-				void computed_at;
-				return Promise.resolve({ kind: "snapshot", snapshot });
-			}
-			return Promise.resolve({ kind: "unknown", reason: "api_error" });
+			cached = undefined;
+			cachedMatches = false;
 		}
 
-		const work = classifyShipRelevantDiff({
-			repo: input.repo,
-			prNumber: input.prNumber,
-			prHeadSha: input.prHeadSha,
-			api: input.api,
-		})
-			.then((result) => {
-				if (result.kind === "snapshot") {
-					this.store.putShipRelevantDiffSnapshot({
-						execution_id: input.executionId,
-						...result.snapshot,
-					});
-					this.retryAfter.set(key, now + (this.options.retryMs ?? 60_000));
-				} else {
+		const retryMs = this.options.retryMs ?? 60_000;
+		const work = (async (): Promise<ShipRelevantClassification> => {
+			// Even inside the expensive file/tree backoff, re-read PR metadata.
+			// A retarget can change GitHub's three-dot diff without changing head.
+			if (cachedMatches && cached) {
+				let metadata: PullMetadata | undefined;
+				try {
+					metadata = parseMetadata(
+						await input.api(`/repos/${input.repo}/pulls/${input.prNumber}`),
+					);
+				} catch {
 					this.store.deleteShipRelevantDiffSnapshot(
 						input.executionId,
 						input.prHeadSha,
 					);
-					this.retryAfter.set(key, now + (this.options.retryMs ?? 60_000));
+					this.retryAfter.set(key, now + retryMs);
+					return { kind: "unknown", reason: "api_error" };
 				}
-				return result;
-			})
-			.finally(() => this.inFlight.delete(key));
+				if (!metadata) {
+					this.store.deleteShipRelevantDiffSnapshot(
+						input.executionId,
+						input.prHeadSha,
+					);
+					this.retryAfter.set(key, now + retryMs);
+					return { kind: "unknown", reason: "metadata_invalid" };
+				}
+				if (metadata.head.sha !== input.prHeadSha.toLowerCase()) {
+					this.store.deleteShipRelevantDiffSnapshot(
+						input.executionId,
+						input.prHeadSha,
+					);
+					this.retryAfter.set(key, now + retryMs);
+					return { kind: "unknown", reason: "head_mismatch" };
+				}
+				if (
+					metadata.base.ref !== cached.base_ref ||
+					metadata.base.sha !== cached.base_oid.toLowerCase()
+				) {
+					this.store.deleteShipRelevantDiffSnapshot(
+						input.executionId,
+						input.prHeadSha,
+					);
+					this.retryAfter.delete(key);
+					cached = undefined;
+					cachedMatches = false;
+				} else if ((this.retryAfter.get(key) ?? 0) > now) {
+					// Metadata was just revalidated; refresh the bounded synchronous
+					// authorization lease without re-fetching files and trees.
+					this.store.putShipRelevantDiffSnapshot({
+						...cached,
+						computed_at: new Date(now).toISOString(),
+					});
+					const { execution_id, computed_at, ...snapshot } = cached;
+					void execution_id;
+					void computed_at;
+					return { kind: "snapshot", snapshot };
+				}
+			}
+			if ((this.retryAfter.get(key) ?? 0) > now) {
+				return { kind: "unknown", reason: "api_error" };
+			}
+
+			const result = await classifyShipRelevantDiff({
+				repo: input.repo,
+				prNumber: input.prNumber,
+				prHeadSha: input.prHeadSha,
+				api: input.api,
+			});
+			if (result.kind === "snapshot") {
+				this.store.putShipRelevantDiffSnapshot({
+					execution_id: input.executionId,
+					...result.snapshot,
+					computed_at: new Date(now).toISOString(),
+				});
+				this.retryAfter.set(key, now + retryMs);
+			} else {
+				this.store.deleteShipRelevantDiffSnapshot(
+					input.executionId,
+					input.prHeadSha,
+				);
+				this.retryAfter.set(key, now + retryMs);
+			}
+			return result;
+		})().finally(() => this.inFlight.delete(key));
 		this.inFlight.set(key, work);
 		return work;
 	}

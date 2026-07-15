@@ -71,7 +71,6 @@ const NON_DEFERRABLE_HOLD_LABELS: Partial<Record<ReviewHoldReason, string>> = {
 	merge_block: "合并被挡",
 	qa_evidence_missing: "独立 QA 证据缺失",
 	qa_evidence_unknown: "PR / head 或 QA 证据无法确认",
-	no_qualified_reviewer: "没有合格的独立 reviewer",
 };
 
 export function heldReplyText(
@@ -97,6 +96,16 @@ export function mergeBlockPointerText(): string {
 	return (
 		"这个 PR 之前被合并挡下了(merge block),走的是另一条恢复流程——" +
 		"需要你对当前 head 重新批准(恢复流程会把新的确认发给你),这条消息我没法直接绑。"
+	);
+}
+
+export function readinessHoldPointerText(
+	holdReason: "qa_evidence_missing" | "qa_evidence_unknown",
+): string {
+	const label = NON_DEFERRABLE_HOLD_LABELS[holdReason];
+	return (
+		`这个 PR 现在还不能批准(${label})——这条批准没有被暂存。` +
+		"等当前 head 的独立 QA 证据确认通过后,请在新的批准卡上重新确认。"
 	);
 }
 
@@ -262,7 +271,11 @@ export function makeDeferralSupport(args: {
 				const text =
 					a.kind === "merge_block"
 						? mergeBlockPointerText()
-						: deferredOffExplainerText(a.holdReason);
+						: a.kind === "readiness_hold" &&
+								(a.holdReason === "qa_evidence_missing" ||
+									a.holdReason === "qa_evidence_unknown")
+							? readinessHoldPointerText(a.holdReason)
+							: deferredOffExplainerText(a.holdReason);
 				store.insertFounderAction({
 					actionKey: heldReplyActionKey(a.questionId, a.msgId),
 					kind: "held_reply",

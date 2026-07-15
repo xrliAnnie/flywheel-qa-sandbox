@@ -401,7 +401,7 @@ describe("tryFounderShipApproval — attribution audit + hold guard (FLY-1041)",
 				questionId: "Q-1",
 				msgId: "MSG-1",
 				executionId: "E-1",
-				kind: "deferred_off",
+				kind: "readiness_hold",
 				holdReason,
 			});
 		},

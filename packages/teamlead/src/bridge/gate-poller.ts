@@ -493,7 +493,9 @@ export class GatePoller {
 					title: `Ship readiness held — ${issue}`,
 					body:
 						`Founder approval remains hidden for ${issue} because ${reason}. ` +
-						"Bridge will retry the server-owned PR classification; for a code-bearing run, enroll independent QA through POST /api/qa/manual-spawn with executionId and prHeadSha only.",
+						"Bridge will retry the server-owned PR classification. For a code-bearing run, use the two-step same-origin flow: " +
+						"POST /api/qa/manual-spawn/stage with executionId and prHeadSha, then POST /api/qa/manual-spawn with the returned x-flywheel-confirm-token header. " +
+						"Both requests require Origin: http://127.0.0.1:<port> matching the Bridge origin.",
 					severity: "warning",
 					sessionKey: session.execution_id,
 				}),

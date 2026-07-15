@@ -63,7 +63,10 @@ describe("GatePoller FLY-1251 ship-readiness hold discovery", () => {
 			);
 			expect(second.eventId).toBe(first.eventId);
 			expect(first.eventType).toBe("auto_qa_stuck");
+			expect(first.body).toContain("/api/qa/manual-spawn/stage");
 			expect(first.body).toContain("/api/qa/manual-spawn");
+			expect(first.body).toContain("x-flywheel-confirm-token");
+			expect(first.body).toContain("Origin: http://127.0.0.1:<port>");
 		},
 	);
 

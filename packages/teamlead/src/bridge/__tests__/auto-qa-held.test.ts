@@ -103,6 +103,7 @@ describe("founderApprovalHoldGuard (FLY-1041 Chunk 5)", () => {
 			pr_number: 42,
 			classifier_version: 1,
 			ship_relevant: 0 as const,
+			computed_at: new Date().toISOString(),
 		}),
 	} as Parameters<typeof founderApprovalHoldGuard>[0];
 

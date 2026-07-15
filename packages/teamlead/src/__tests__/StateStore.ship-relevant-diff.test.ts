@@ -84,4 +84,27 @@ describe("StateStore ship_relevant_diff_snapshot", () => {
 		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD_A)).toBeUndefined();
 		expect(store.deleteShipRelevantDiffSnapshot("exec-1", HEAD_A)).toBe(false);
 	});
+
+	it("prunes superseded heads while retaining the current candidate", async () => {
+		const store = await freshStore();
+		for (const head of [HEAD_A, HEAD_B]) {
+			store.putShipRelevantDiffSnapshot({
+				execution_id: "exec-1",
+				pr_head_sha: head,
+				repo: "owner/repo",
+				pr_number: 42,
+				base_ref: "main",
+				base_oid: BASE_A,
+				classifier_version: 1,
+				ship_relevant: 0,
+				file_count: 1,
+			});
+		}
+
+		expect(store.deleteOtherShipRelevantDiffSnapshots("exec-1", HEAD_B)).toBe(
+			1,
+		);
+		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD_A)).toBeUndefined();
+		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD_B)).toBeDefined();
+	});
 });
