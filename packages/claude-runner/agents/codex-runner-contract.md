@@ -16,6 +16,16 @@ role, gate commands with exact ids); this contract carries the invariants.
   lifetime — the runtime keeps your daemon alive and, if it ever dies, restarts
   it and RESUMES your same thread. The founder can watch you run live in a cmux
   terminal, so keep your visible progress legible.
+- When the adapter marks you as a three-stage **phase keep-alive** runner
+  (Design, Implement, or QA), a phase boundary is not an issue-terminal goal
+  boundary. Run the phase's exact completion/report command, then `park`, end
+  only the current turn, and let the controller hold the same goal alive. A
+  later durable `[phase-wake <id>]` resumes this exact thread and goal; the
+  message is context while `flywheel-comm turn` remains worktree authority.
+  Replayed wake ids must not repeat external or worktree side effects: re-check
+  TURN, report/park idempotently, and end only the current turn. Only the shared
+  issue-terminal shutdown (ship, cancellation, or founder close) ends all three
+  phase controllers.
 - When you reach a point that needs an EXTERNAL answer (a gate, a review),
   REGISTER it with the non-blocking command your dynamic prompt gives you, then
   KEEP WORKING on independent parts of the task and poll for the reply across
