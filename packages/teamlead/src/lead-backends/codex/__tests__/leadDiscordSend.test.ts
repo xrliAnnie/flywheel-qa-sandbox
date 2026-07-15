@@ -36,6 +36,7 @@ describe("buildLeadDiscordSend", () => {
 		expect(
 			(calls[0].init.headers as Record<string, string>).Authorization,
 		).toBe("Bot tok-mufasa");
+		expect(JSON.parse(calls[0].init.body as string).content).toBe("hi");
 	});
 
 	it("throws when the Lead has no bot token (never posts with a wrong identity)", async () => {

@@ -3137,7 +3137,7 @@ export class GatePoller {
 					threadId,
 					text,
 					token,
-					{},
+					{ origin: "automation" },
 					this.config.fetchImpl ?? fetch,
 				);
 				return res.ok ? { ok: true } : { ok: false, error: res.error };

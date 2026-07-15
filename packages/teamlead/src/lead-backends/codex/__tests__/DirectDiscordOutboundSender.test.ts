@@ -2,10 +2,20 @@ import { describe, expect, it, vi } from "vitest";
 import { DirectDiscordOutboundSender } from "../DirectDiscordOutboundSender.js";
 
 function fakePost(ok = true, error?: string) {
-	const calls: Array<{ channelId: string; text: string; token: string }> = [];
+	const calls: Array<{
+		channelId: string;
+		text: string;
+		token: string;
+		options: { origin: string };
+	}> = [];
 	let n = 0;
-	const postImpl = (async (channelId: string, text: string, token: string) => {
-		calls.push({ channelId, text, token });
+	const postImpl = (async (
+		channelId: string,
+		text: string,
+		token: string,
+		options: { origin: string },
+	) => {
+		calls.push({ channelId, text, token, options });
 		return ok
 			? { ok: true, messageIds: [`m-${++n}`], chunksSent: 1, chunksTotal: 1 }
 			: {
@@ -50,7 +60,12 @@ describe("DirectDiscordOutboundSender", () => {
 		expect(id).toBe("e1:out");
 		await sender.deliver(id);
 		expect(calls).toEqual([
-			{ channelId: "chan-mufasa", text: "hello world", token: "mufasa-tok" },
+			{
+				channelId: "chan-mufasa",
+				text: "hello world",
+				token: "mufasa-tok",
+				options: { origin: "lead_authored" },
+			},
 		]);
 	});
 
@@ -64,7 +79,12 @@ describe("DirectDiscordOutboundSender", () => {
 		});
 		await sender.deliver(id);
 		expect(calls).toEqual([
-			{ channelId: "round-table", text: "in roundtable", token: "mufasa-tok" },
+			{
+				channelId: "round-table",
+				text: "in roundtable",
+				token: "mufasa-tok",
+				options: { origin: "lead_authored" },
+			},
 		]);
 	});
 

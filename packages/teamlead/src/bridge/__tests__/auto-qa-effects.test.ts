@@ -636,6 +636,7 @@ describe("AutoQaEffects.refreshPhaseStatusLine (FLY-887 founder-visibility)", ()
 				url: "https://discord.com/api/v10/channels/thread-1/messages",
 			}),
 		]);
+		expect(JSON.parse(calls[0].body).content).toMatch(/^🤖\[自动\] /);
 		expect(store.getPhaseStatusLine("FLY-887", "chan-1")).toEqual({
 			messageId: "msg-42",
 			text: "🎨design(active)·🔨implement(pending)·🧪qa(pending)",
@@ -691,6 +692,7 @@ describe("AutoQaEffects.refreshPhaseStatusLine (FLY-887 founder-visibility)", ()
 				url: "https://discord.com/api/v10/channels/thread-1/messages/msg-1",
 			}),
 		]);
+		expect(JSON.parse(calls[0].body).content).toMatch(/^🤖\[自动\] /);
 		expect(store.getPhaseStatusLine("FLY-887", "chan-1")).toEqual({
 			messageId: "msg-1",
 			text: "🎨design(parked)·🔨implement(active)·🧪qa(pending)",

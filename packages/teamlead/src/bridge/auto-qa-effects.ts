@@ -172,7 +172,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			t.threadId,
 			`${prefix}${args.text}`,
 			broadcastToken,
-			{},
+			{ origin: "automation" },
 			this.deps.fetchImpl ?? fetch,
 		);
 		if (!res.ok) {
@@ -209,6 +209,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 				existing.messageId,
 				args.text,
 				t.botToken,
+				{ origin: "automation" },
 				this.deps.fetchImpl ?? fetch,
 			);
 			if (edit.ok) {
@@ -233,7 +234,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			t.threadId,
 			args.text,
 			t.botToken,
-			{},
+			{ origin: "automation" },
 			this.deps.fetchImpl ?? fetch,
 		);
 		if (post.ok && post.messageIds[0]) {
@@ -369,7 +370,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			t.threadId,
 			text,
 			t.botToken,
-			{},
+			{ origin: "automation" },
 			this.deps.fetchImpl ?? fetch,
 		);
 		if (!res.ok || res.messageIds.length === 0) {
