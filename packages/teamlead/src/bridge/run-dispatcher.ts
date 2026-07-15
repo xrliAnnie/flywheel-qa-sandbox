@@ -16,9 +16,12 @@ import type {
 	PhaseDispatchVendor,
 	RoleBackendMap,
 	RoleEffort,
+	RunnerModelDisplay,
 } from "flywheel-config";
 import {
+	adapterTypeToFamily,
 	isThreeStagePhaseRole,
+	renderRunnerModelDisplay,
 	resolveRunnerMcpProfile,
 } from "flywheel-config";
 import { openTmuxViewer } from "flywheel-core";
@@ -115,14 +118,17 @@ export function launchCommitPath(executionId: string): string {
  * cmux/tmux window label (`{issueId}-{runner}-{title}`). A three-stage PHASE
  * runner shows its phase (`design` / `implement` / `qa`) so the founder can see
  * which phase is live in cmux at a glance — instead of every phase showing the
- * generic `claude`.
+ * generic `claude`. FLY-1255 adds the resolved executor family/model while
+ * keeping that phase prefix authoritative for shared-branch runs.
  *
  * Gated on `shareParentBranch` (the three-stage marker), NOT `sessionRole` alone:
  * the FLY-579 Auto-QA session also carries `sessionRole: "qa"` but is a standalone
  * QA runner (no `shareParentBranch`), so keying on the role alone would flip its
  * window from `-claude-` to `-qa-` and break byte-compat. Mirrors Blueprint's
  * three-stage discriminator (`ctx.shareParentBranch && ctx.sessionRole`). Every
- * non-three-stage run (main + Auto-QA) stays `claude` → byte-compatible.
+ * When no model is resolved, every non-three-stage run (main + Auto-QA) stays
+ * `claude` → byte-compatible. With a resolved model, non-phase runs use the
+ * narrow `runner-<family>-<model>` namespace consumed by cmux cleanup.
  *
  * SCOPE (FLY-840 → resolved by FLY-1224): the RETRY path (actions.ts
  * `handleRetry`) now propagates `shareParentBranch` for PHASE rows
@@ -135,10 +141,18 @@ export function launchCommitPath(executionId: string): string {
 export function runnerDisplayName(
 	sessionRole: string | undefined,
 	shareParentBranch: boolean | undefined,
+	modelDisplay?: RunnerModelDisplay,
 ): string {
-	return shareParentBranch && isThreeStagePhaseRole(sessionRole)
-		? sessionRole
-		: "claude";
+	const phase =
+		shareParentBranch && isThreeStagePhaseRole(sessionRole)
+			? sessionRole
+			: undefined;
+	if (modelDisplay) {
+		return phase
+			? `${phase}-${modelDisplay.windowLabel}`
+			: `runner-${modelDisplay.windowLabel}`;
+	}
+	return phase ?? "claude";
 }
 
 export interface ProjectRuntime {
@@ -566,6 +580,12 @@ export class RetryDispatcher implements IRetryDispatcher {
 			req.dispatchVendor,
 			req.dispatchEffort,
 		);
+		const modelDisplay = renderRunnerModelDisplay({
+			vendor: runnerSpawn.runnerBackend
+				? adapterTypeToFamily(runnerSpawn.runnerBackend)
+				: undefined,
+			model: runnerSpawn.runnerModel,
+		});
 
 		// FLY-80: Pre-register in CommDB before blueprint starts.
 		// FLY-1188: carry the resolved vendor — the adapter's self-registration
@@ -582,8 +602,12 @@ export class RetryDispatcher implements IRetryDispatcher {
 		);
 		const ctx: BlueprintContext = {
 			teamName: "eng",
-			// FLY-793 follow-up: phase runners show their phase in the cmux window.
-			runnerName: runnerDisplayName(req.sessionRole, req.shareParentBranch),
+			// FLY-1255: phase/model identity is composed once from the resolved spawn.
+			runnerName: runnerDisplayName(
+				req.sessionRole,
+				req.shareParentBranch,
+				modelDisplay,
+			),
 			projectName: req.projectName,
 			executionId: newExecutionId,
 			leadId: req.leadId,
@@ -943,6 +967,12 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			req.dispatchVendor, // FLY-1224 per-phase vendor
 			req.dispatchEffort, // FLY-1224 per-phase effort
 		);
+		const modelDisplay = renderRunnerModelDisplay({
+			vendor: runnerSpawn.runnerBackend
+				? adapterTypeToFamily(runnerSpawn.runnerBackend)
+				: undefined,
+			model: runnerSpawn.runnerModel,
+		});
 
 		// FLY-1232 T1/T2/T7 pre-launch seam: ONE composite shadow transaction
 		// after execId allocation, BEFORE the CommDB pre-registration and
@@ -1063,8 +1093,12 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 
 		const ctx: BlueprintContext = {
 			teamName: "eng",
-			// FLY-793 follow-up: phase runners show their phase in the cmux window.
-			runnerName: runnerDisplayName(req.sessionRole, req.shareParentBranch),
+			// FLY-1255: fresh starts use the same phase/model composition as retries.
+			runnerName: runnerDisplayName(
+				req.sessionRole,
+				req.shareParentBranch,
+				modelDisplay,
+			),
 			projectName: req.projectName,
 			executionId,
 			leadId: req.leadId,
