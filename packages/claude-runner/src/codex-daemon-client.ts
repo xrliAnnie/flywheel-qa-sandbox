@@ -811,11 +811,6 @@ export async function runGoalToTerminal(
 			} catch {
 				/* budget carry callback must not break activation */
 			}
-			phase.finishWake(message.id);
-			await phase.leaveHold();
-			phaseHold = null;
-			held = false;
-			return true;
 		} catch (error) {
 			if (client.isClosed()) {
 				failClose(
@@ -826,6 +821,29 @@ export async function runGoalToTerminal(
 			// runner-side replay handling prevents duplicate external side effects.
 			return false;
 		}
+
+		// The wake turn and active transition have already committed. From this
+		// point forward, retry ONLY durable bookkeeping: replaying turn/start would
+		// duplicate runner side effects for the same stable wake id. Both operations
+		// are idempotent, so a partial success safely converges on the next local
+		// control tick while the reactivated turn keeps running.
+		for (;;) {
+			try {
+				phase.finishWake(message.id);
+				await phase.leaveHold();
+				break;
+			} catch (error) {
+				if (client.isClosed()) {
+					failClose(
+						`daemon transport closed finalizing phase wake ${message.id}: ${error instanceof Error ? error.message : error}`,
+					);
+				}
+				await waitForPhaseActivity();
+			}
+		}
+		phaseHold = null;
+		held = false;
+		return true;
 	};
 
 	try {

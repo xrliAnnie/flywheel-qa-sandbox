@@ -82,6 +82,8 @@ class FakePhaseLifecycle implements GoalPhaseLifecycle {
 	started: string[] = [];
 	finished: string[] = [];
 	left = 0;
+	finishFailures = 0;
+	leaveFailures = 0;
 	onWait: (() => void) | undefined;
 
 	getPhaseHold() {
@@ -114,9 +116,17 @@ class FakePhaseLifecycle implements GoalPhaseLifecycle {
 		this.started.push(id);
 	}
 	finishWake(id: string) {
-		this.finished.push(id);
+		if (this.finishFailures > 0) {
+			this.finishFailures -= 1;
+			throw new Error("finish wake transient failure");
+		}
+		if (!this.finished.includes(id)) this.finished.push(id);
 	}
 	async leaveHold() {
+		if (this.leaveFailures > 0) {
+			this.leaveFailures -= 1;
+			throw new Error("leave hold transient failure");
+		}
 		this.left += 1;
 		this.hold = null;
 	}
@@ -741,6 +751,64 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 		expect(phase.finished).toEqual([]);
 		expect(phase.left).toBe(0);
 		expect(phase.hold).not.toBeNull();
+	});
+
+	it("retries post-activation bookkeeping without replaying the wake turn", async () => {
+		const d = new FakeDaemon();
+		let activeSets = 0;
+		d.responders.set("thread/goal/set", (params, _id, push) => {
+			if ((params as { status: GoalStatus }).status === "active") {
+				activeSets += 1;
+				if (activeSets === 2) {
+					push({
+						method: "goal/updated",
+						params: {
+							threadId: "t",
+							goal: { status: "blocked", objective: "phase objective" },
+						},
+					});
+				}
+			}
+			return {};
+		});
+		let turns = 0;
+		d.responders.set("turn/start", (_params, _id, push) => {
+			turns += 1;
+			if (turns === 1) {
+				push({
+					method: "goal/updated",
+					params: {
+						threadId: "t",
+						goal: { status: "complete", objective: "phase objective" },
+					},
+				});
+			}
+			return {};
+		});
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: "paused", objective: "phase objective" },
+		}));
+		const phase = new FakePhaseLifecycle();
+		phase.finishFailures = 1;
+		phase.leaveFailures = 1;
+		phase.observations.push({
+			kind: "wake",
+			message: { id: "bookkeeping-wake", content: "continue" },
+		});
+
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "phase objective",
+			now: () => 0,
+			sleep: async () => {},
+			phaseLifecycle: phase,
+		});
+
+		expect(result.status).toBe("blocked");
+		expect(turns).toBe(2);
+		expect(phase.started).toEqual(["bookkeeping-wake"]);
+		expect(phase.finished).toEqual(["bookkeeping-wake"]);
+		expect(phase.left).toBe(1);
 	});
 });
 
