@@ -1,13 +1,14 @@
 ---
 issue: FLY-1255
 phase: implement
-phaseCursor: 0/3
-updated: 2026-07-15T07:45:49.776Z
-nextStep: Reproduce the three inherited GPT-family assertion/comment inconsistencies
+phaseCursor: 1/3
+updated: 2026-07-15T07:49:52.072Z
+nextStep: Run the full FLY-1255 regression matrix, typechecks, shell gate, lint,
+  and build
 chunks: []
 pointers: {}
 ---
 
 # FLY-1255 progress
-**phase**: implement (0/3)
-**next**: Reproduce the three inherited GPT-family assertion/comment inconsistencies
+**phase**: implement (1/3)
+**next**: Run the full FLY-1255 regression matrix, typechecks, shell gate, lint, and build
