@@ -17,6 +17,10 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import express from "express";
 import { CommDB } from "flywheel-comm/db";
+import {
+	defaultGateMarkerDir,
+	markGateMarkerAnsweredForExecution,
+} from "flywheel-comm/gate-marker";
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
 // FLY-286 PR-2: web-local review route (固化 default-on since FLY-1243).
 import {
@@ -6325,6 +6329,17 @@ export async function startBridge(
 			emitReviewAlert,
 			postReviewRulingThread: (input) =>
 				reviewThreadEffects.postThreadResult(input),
+			// FLY-1257 HIGH-1: flip the answered review gate's marker so a resident
+			// codex `/goal` resumes at once (its isWaiting() reads answeredAt),
+			// instead of waiting for the deadline watcher. Execution-guarded no-op
+			// for a foreign/missing/already-answered marker.
+			markGateAnswered: (questionId, executionId) => {
+				markGateMarkerAnsweredForExecution(
+					defaultGateMarkerDir(process.env),
+					questionId,
+					executionId,
+				);
+			},
 			wakeRunner: async (executionId, sessionInfo, questionId, summary) => {
 				const db = new CommDB(
 					join(commRoot, sessionInfo.project_name, "comm.db"),

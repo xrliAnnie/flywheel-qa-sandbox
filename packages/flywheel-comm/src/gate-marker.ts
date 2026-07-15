@@ -126,6 +126,29 @@ export function markGateMarkerAnswered(dir: string, questionId: string): void {
 	writeGateMarker(dir, { ...marker, answeredAt: new Date().toISOString() });
 }
 
+/**
+ * FLY-1257 defect ① × ④ (Codex code review HIGH-1): mark a gate's marker
+ * answered when the answer came from something OTHER than the CLI `respond`
+ * path — specifically the review coordinator, which writes the CommDB response
+ * + a mailbox wake but never touched the marker. A resident codex `/goal` only
+ * resumes once its held gate's marker flips answered (the adapter's
+ * `isWaiting()` reads `answeredAt`); without this it would wait for the deadline
+ * watcher (~72h). Execution-guarded + idempotent: a missing / already-answered /
+ * foreign-execution marker is a silent no-op. Returns true iff it marked one.
+ */
+export function markGateMarkerAnsweredForExecution(
+	dir: string,
+	questionId: string,
+	executionId: string,
+): boolean {
+	const marker = readGateMarker(dir, questionId);
+	if (!marker || marker.answeredAt) return false;
+	// A mismatched execution id means a stale/foreign marker — never touch it.
+	if (marker.executionId !== executionId) return false;
+	markGateMarkerAnswered(dir, questionId);
+	return true;
+}
+
 export function removeGateMarker(dir: string, questionId: string): void {
 	try {
 		rmSync(markerPath(dir, questionId), { force: true });

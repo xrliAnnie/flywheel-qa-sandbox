@@ -1344,6 +1344,12 @@ export class CommDB {
 					 WHERE q.from_agent = ?
 					   AND q.type = 'question'
 					   AND q.checkpoint IS NOT NULL
+					   -- FLY-1257 defect ④ path-3 (Codex code review HIGH-2): a review
+					   -- gate is a binding credential the reviewer/coordinator answers,
+					   -- NOT the author runner — it must survive the author's teardown
+					   -- (mirrors the GatePoller path-2 eviction exemption). Retiring it
+					   -- here would make the coordinator drop a still-valid verdict.
+					   AND q.checkpoint NOT IN ('review_design', 'review_code')
 					   AND q.resolved_at IS NULL
 					   AND NOT EXISTS (
 					     SELECT 1 FROM messages r

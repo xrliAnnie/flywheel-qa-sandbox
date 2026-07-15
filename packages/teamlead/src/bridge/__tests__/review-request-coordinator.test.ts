@@ -78,6 +78,8 @@ interface Harness {
 		effort?: string;
 	}>;
 	wakes: Array<{ executionId: string; questionId: string; summary: string }>;
+	/** FLY-1257 HIGH-1: capture of markGateAnswered(questionId, executionId). */
+	gateAnswers: Array<{ questionId: string; executionId: string }>;
 	alerts: string[];
 	reviewAlerts: Array<Record<string, unknown>>;
 	rulingThreadPosts: string[];
@@ -104,6 +106,7 @@ async function makeHarness(
 	const outcomes: ClaudeReviewOutcome[] = [];
 	const invocations: Harness["invocations"] = [];
 	const wakes: Harness["wakes"] = [];
+	const gateAnswers: Harness["gateAnswers"] = [];
 	const alerts: string[] = [];
 	const reviewAlerts: Array<Record<string, unknown>> = [];
 	const rulingThreadPosts: string[] = [];
@@ -141,6 +144,9 @@ async function makeHarness(
 		wakeRunner: async (executionId, _session, questionId, summary) => {
 			wakes.push({ executionId, questionId, summary });
 		},
+		markGateAnswered: (questionId, executionId) => {
+			gateAnswers.push({ questionId, executionId });
+		},
 		alertLead: (m) => alerts.push(m),
 		emitReviewAlert: async (event) => {
 			reviewAlerts.push(event as unknown as Record<string, unknown>);
@@ -158,6 +164,7 @@ async function makeHarness(
 		outcomes,
 		invocations,
 		wakes,
+		gateAnswers,
 		alerts,
 		reviewAlerts,
 		rulingThreadPosts,
@@ -1207,6 +1214,10 @@ describe("ReviewRequestCoordinator — job execution", () => {
 		const resp = h.comm.getResponse("q1");
 		expect(resp && JSON.parse(resp.content).reviewVerdict).toBe("APPROVED");
 		expect(h.wakes).toHaveLength(1);
+		// FLY-1257 HIGH-1: answering the review gate also flips its MARKER answered
+		// so a resident codex `/goal` resumes at once (isWaiting → false) instead
+		// of waiting ~72h for the deadline watcher.
+		expect(h.gateAnswers).toEqual([{ questionId: "q1", executionId: "e1" }]);
 	});
 
 	it("code APPROVED but head MOVED between freeze and verdict → job failed, NO response, gate stays closed", async () => {
