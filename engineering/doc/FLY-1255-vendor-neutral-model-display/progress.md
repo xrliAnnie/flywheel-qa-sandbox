@@ -1,13 +1,13 @@
 ---
 issue: FLY-1255
 phase: implement
-phaseCursor: 3/4
-updated: 2026-07-15T08:50:51.889Z
-nextStep: Apply approved FLY-1062 tar-listing CI flake fix, verify, push, and re-review
+phaseCursor: 4/4
+updated: 2026-07-15T08:52:16.318Z
+nextStep: Push frozen head, re-review delta, and monitor CI/QA
 chunks: []
 pointers: {}
 ---
 
 # FLY-1255 progress
-**phase**: implement (3/4)
-**next**: Apply approved FLY-1062 tar-listing CI flake fix, verify, push, and re-review
+**phase**: implement (4/4)
+**next**: Push frozen head, re-review delta, and monitor CI/QA
