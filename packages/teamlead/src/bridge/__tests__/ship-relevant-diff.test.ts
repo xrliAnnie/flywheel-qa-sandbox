@@ -342,7 +342,7 @@ describe("ShipRelevantDiffService", () => {
 		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD)).toBeUndefined();
 	});
 
-	it("revalidates base identity inside the file-list backoff and invalidates on retarget", async () => {
+	it("throttles base revalidation below the snapshot lease and invalidates on retarget", async () => {
 		const store = await StateStore.create(":memory:");
 		let now = 0;
 		const first = fakeApi({
@@ -359,6 +359,16 @@ describe("ShipRelevantDiffService", () => {
 		});
 
 		const before = first.paths.length;
+		now = 3_000;
+		await service.ensure({
+			executionId: "exec-1",
+			repo: "owner/repo",
+			prNumber: 42,
+			prHeadSha: HEAD,
+			api: first.api,
+		});
+		expect(first.paths).toHaveLength(before);
+
 		now = 30_000;
 		await service.ensure({
 			executionId: "exec-1",
@@ -370,7 +380,7 @@ describe("ShipRelevantDiffService", () => {
 		expect(first.paths).toHaveLength(before + 1);
 		expect(first.paths.at(-1)).toBe("/repos/owner/repo/pulls/42");
 
-		now = 31_000;
+		now = 59_000;
 		const nextBase = "c".repeat(40);
 		const refreshed = fakeApi({
 			metadata: {
@@ -380,6 +390,20 @@ describe("ShipRelevantDiffService", () => {
 			},
 			pages: [[{ status: "modified", filename: "packages/app.ts" }], []],
 		});
+		await service.ensure({
+			executionId: "exec-1",
+			repo: "owner/repo",
+			prNumber: 42,
+			prHeadSha: HEAD,
+			api: refreshed.api,
+		});
+		expect(refreshed.paths).toHaveLength(0);
+		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD)).toMatchObject({
+			base_ref: "main",
+			base_oid: BASE,
+		});
+
+		now = 60_000;
 		await service.ensure({
 			executionId: "exec-1",
 			repo: "owner/repo",

@@ -310,6 +310,7 @@ export class ShipRelevantDiffService {
 		Promise<ShipRelevantClassification>
 	>();
 	private readonly retryAfter = new Map<string, number>();
+	private readonly metadataAfter = new Map<string, number>();
 
 	constructor(
 		private readonly store: Pick<
@@ -319,7 +320,11 @@ export class ShipRelevantDiffService {
 			| "deleteOtherShipRelevantDiffSnapshots"
 			| "getShipRelevantDiffSnapshot"
 		>,
-		private readonly options: { now?: () => number; retryMs?: number } = {},
+		private readonly options: {
+			now?: () => number;
+			retryMs?: number;
+			metadataRetryMs?: number;
+		} = {},
 	) {}
 
 	ensure(input: {
@@ -336,6 +341,9 @@ export class ShipRelevantDiffService {
 		const now = this.options.now?.() ?? Date.now();
 		for (const [candidate, retryAt] of this.retryAfter) {
 			if (retryAt <= now) this.retryAfter.delete(candidate);
+		}
+		for (const [candidate, retryAt] of this.metadataAfter) {
+			if (retryAt <= now) this.metadataAfter.delete(candidate);
 		}
 		this.store.deleteOtherShipRelevantDiffSnapshots(
 			input.executionId,
@@ -355,15 +363,27 @@ export class ShipRelevantDiffService {
 				input.prHeadSha,
 			);
 			this.retryAfter.delete(key);
+			this.metadataAfter.delete(key);
 			cached = undefined;
 			cachedMatches = false;
 		}
 
 		const retryMs = this.options.retryMs ?? 60_000;
+		const metadataRetryMs = Math.min(
+			this.options.metadataRetryMs ?? 30_000,
+			Math.floor(SHIP_RELEVANT_SNAPSHOT_MAX_AGE_MS / 2),
+		);
 		const work = (async (): Promise<ShipRelevantClassification> => {
-			// Even inside the expensive file/tree backoff, re-read PR metadata.
-			// A retarget can change GitHub's three-dot diff without changing head.
+			// Re-read PR metadata on a sub-lease, not on every GatePoller tick. A
+			// retarget can change GitHub's three-dot diff without changing head,
+			// while the half-lease cadence keeps the synchronous cache fresh.
 			if (cachedMatches && cached) {
+				if ((this.metadataAfter.get(key) ?? 0) > now) {
+					const { execution_id, computed_at, ...snapshot } = cached;
+					void execution_id;
+					void computed_at;
+					return { kind: "snapshot", snapshot };
+				}
 				let metadata: PullMetadata | undefined;
 				try {
 					metadata = parseMetadata(
@@ -374,6 +394,7 @@ export class ShipRelevantDiffService {
 						input.executionId,
 						input.prHeadSha,
 					);
+					this.metadataAfter.delete(key);
 					this.retryAfter.set(key, now + retryMs);
 					return { kind: "unknown", reason: "api_error" };
 				}
@@ -382,6 +403,7 @@ export class ShipRelevantDiffService {
 						input.executionId,
 						input.prHeadSha,
 					);
+					this.metadataAfter.delete(key);
 					this.retryAfter.set(key, now + retryMs);
 					return { kind: "unknown", reason: "metadata_invalid" };
 				}
@@ -390,6 +412,7 @@ export class ShipRelevantDiffService {
 						input.executionId,
 						input.prHeadSha,
 					);
+					this.metadataAfter.delete(key);
 					this.retryAfter.set(key, now + retryMs);
 					return { kind: "unknown", reason: "head_mismatch" };
 				}
@@ -402,15 +425,17 @@ export class ShipRelevantDiffService {
 						input.prHeadSha,
 					);
 					this.retryAfter.delete(key);
+					this.metadataAfter.delete(key);
 					cached = undefined;
 					cachedMatches = false;
-				} else if ((this.retryAfter.get(key) ?? 0) > now) {
-					// Metadata was just revalidated; refresh the bounded synchronous
+				} else {
+					// The content anchors are unchanged, so refresh the bounded
 					// authorization lease without re-fetching files and trees.
 					this.store.putShipRelevantDiffSnapshot({
 						...cached,
 						computed_at: new Date(now).toISOString(),
 					});
+					this.metadataAfter.set(key, now + metadataRetryMs);
 					const { execution_id, computed_at, ...snapshot } = cached;
 					void execution_id;
 					void computed_at;
@@ -434,12 +459,14 @@ export class ShipRelevantDiffService {
 					computed_at: new Date(now).toISOString(),
 				});
 				this.retryAfter.set(key, now + retryMs);
+				this.metadataAfter.set(key, now + metadataRetryMs);
 			} else {
 				this.store.deleteShipRelevantDiffSnapshot(
 					input.executionId,
 					input.prHeadSha,
 				);
 				this.retryAfter.set(key, now + retryMs);
+				this.metadataAfter.delete(key);
 			}
 			return result;
 		})().finally(() => this.inFlight.delete(key));
