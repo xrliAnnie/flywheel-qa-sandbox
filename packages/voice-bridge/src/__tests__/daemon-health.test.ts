@@ -32,6 +32,24 @@ function fakeDeps(): DiscordDeps {
 		createResource: () => ({}),
 		speakingEvents: () => ({ on: () => {} }),
 		isHumanFactory: () => () => false,
+		registerGuildCommand: async () => {},
+		onChatCommand: () => {},
+		onChatInteraction: () => {},
+		sendMessage: async () => {},
+		onVoiceStateUpdate: () => () => {},
+		voiceChannelHumanCount: async () => 0,
+		moveMember: async () => false,
+		moveMemberDetailed: async () => "not-in-voice",
+		memberDisplayName: async () => undefined,
+		tivPort: () => ({
+			post: async () => ({ id: "m1" }),
+			edit: async () => {},
+		}),
+		leaveVoice: () => {},
+		connectionEvents: () => ({
+			onDown: () => () => {},
+			onUp: () => () => {},
+		}),
 	};
 }
 
@@ -56,6 +74,13 @@ function config(port: number): HuddleBridgeConfig {
 		allowUserIds: [],
 		healthPort: port,
 		ffmpegBin: "ffmpeg",
+		bridgeUrl: "http://127.0.0.1:9876",
+		apiToken: "tok-bridge",
+		founderUserId: "annie-1",
+		geminiApiKey: "tok-gemini",
+		geminiModel: "gemini-3.1-flash-live-preview",
+		claudeBin: "claude",
+		brainTimeoutMs: 30_000,
 	};
 }
 
@@ -69,6 +94,8 @@ describe("voice-bridge daemon /health", () => {
 			deps: fakeDeps(),
 			probe: okProbe,
 			log: () => {},
+			// explicit off: never read the machine's real projects.json in a test
+			assistant: null,
 		});
 		try {
 			const res = await fetch(`http://127.0.0.1:${port}/health`);
@@ -98,6 +125,7 @@ describe("voice-bridge daemon /health", () => {
 				deps: fakeDeps(),
 				probe: async () => ({ ok: false, detail: "not found" }),
 				log: () => {},
+				assistant: null,
 			}),
 		).rejects.toThrow(/ffmpeg/);
 	});

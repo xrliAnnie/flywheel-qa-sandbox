@@ -101,6 +101,7 @@ async function setup(opts?: {
 	startImpl?: (
 		req: StartRequest,
 	) => Promise<{ executionId: string; issueId: string }>;
+	hasInflightImpl?: (issueId: string, role: string) => boolean;
 	createQaIssueImpl?: (args: {
 		parent: { issue_id: string };
 		prHeadSha: string;
@@ -110,6 +111,7 @@ async function setup(opts?: {
 	closeQaRunnerImpl?: () => Promise<void> | void;
 	/** FLY-863: test seam for reconcileStuckCodexHolds's "now". */
 	now?: () => number;
+	ensureShipRelevantDiff?: (session: { execution_id: string }) => Promise<void>;
 }) {
 	const store = await StateStore.create(":memory:");
 	const f = fakeEffects({
@@ -121,11 +123,18 @@ async function setup(opts?: {
 	const start = vi.fn(async (req: StartRequest) => {
 		startCalls.push(req);
 		if (opts?.startImpl) return opts.startImpl(req);
-		return { executionId: `qa-${startCalls.length}`, issueId: req.issueId };
+		return {
+			executionId: req.successorExecutionId ?? `qa-${startCalls.length}`,
+			issueId: req.issueId,
+		};
 	});
+	const hasInflight = vi.fn(
+		(issueId: string, role: string) =>
+			opts?.hasInflightImpl?.(issueId, role) ?? false,
+	);
 	const coord = new AutoQaCoordinator({
 		store,
-		startDispatcher: { start },
+		startDispatcher: { start, hasInflightForRole: hasInflight },
 		resolveQaPolicy: () => opts?.policy ?? { enabled: true },
 		effects: f.effects,
 		// FLY-827: these tests validate the QA pipeline, which is orthogonal to the
@@ -134,11 +143,13 @@ async function setup(opts?: {
 		// IS the byte-compat guarantee. Codex-gate behavior has its own test file.
 		env: opts?.env ?? { FLYWHEEL_CODEX_HARD_GATE: "0" },
 		now: opts?.now,
+		ensureShipRelevantDiff: opts?.ensureShipRelevantDiff,
 	});
 	return {
 		store,
 		coord,
 		start,
+		hasInflight,
 		startCalls,
 		posts: f.posts,
 		postTexts: () => f.posts.map((p) => p.text),
@@ -265,6 +276,27 @@ describe("AutoQaCoordinator.onMainAwaitingReview", () => {
 		expect(s.stamps).toContainEqual({ issueId: "FLY-1", stage: "test" });
 	});
 
+	it("FLY-1251: materializes the exact-head ship-diff snapshot before a policy-off run can reach the founder", async () => {
+		const ensureShipRelevantDiff = vi.fn(async () => {});
+		const s2 = await setup({
+			policy: { enabled: false, reason: "no-qa" },
+			ensureShipRelevantDiff,
+		});
+		const main = awaitingMain(s2.store);
+
+		await s2.coord.onMainAwaitingReview(main);
+
+		expect(ensureShipRelevantDiff).toHaveBeenCalledOnce();
+		expect(ensureShipRelevantDiff).toHaveBeenCalledWith(
+			expect.objectContaining({
+				execution_id: "main-1",
+				pr_head_sha: SHA,
+				pr_number: 42,
+			}),
+		);
+		expect(s2.start).not.toHaveBeenCalled();
+	});
+
 	it("FLY-643: createQaIssue failure → record stuck + Lead alert, no QA spawn (fail-closed)", async () => {
 		const s2 = await setup({ createQaIssueImpl: () => undefined });
 		const main = awaitingMain(s2.store);
@@ -307,16 +339,31 @@ describe("AutoQaCoordinator.onMainAwaitingReview", () => {
 		expect(s.start).not.toHaveBeenCalled();
 	});
 
-	it("spawn failure → record stuck + Lead alert (never a held parent with no QA)", async () => {
+	it("initial dispatcher spawn failure queues the one clean retry instead of stranding", async () => {
+		let attempts = 0;
 		const s2 = await setup({
-			startImpl: async () => {
-				throw new Error("admission deferred");
+			startImpl: async (req) => {
+				attempts += 1;
+				if (attempts === 1) throw new Error("admission deferred");
+				return {
+					executionId: req.successorExecutionId ?? "missing-successor",
+					issueId: req.issueId,
+				};
 			},
 		});
 		const main = awaitingMain(s2.store);
 		await s2.coord.onMainAwaitingReview(main);
-		expect(s2.store.getAutoQaRecord("main-1", SHA)?.status).toBe("stuck");
-		expect(s2.alerts.some((a) => a.includes("spawn failed"))).toBe(true);
+		expect(s2.store.getAutoQaRecord("main-1", SHA)).toMatchObject({
+			status: "retry_pending",
+			auto_retry_count: 1,
+		});
+		expect(s2.alerts.some((a) => a.includes("automatic retry queued"))).toBe(
+			true,
+		);
+
+		await s2.coord.sweepOrphanedQaRecords();
+		expect(s2.store.getAutoQaRecord("main-1", SHA)?.status).toBe("running");
+		expect(attempts).toBe(2);
 	});
 
 	// ── FLY-752: fix-loop reuse ──
@@ -349,7 +396,7 @@ describe("AutoQaCoordinator.onMainAwaitingReview", () => {
 		expect(rec?.retest_wake_pending_at).toBeFalsy();
 	});
 
-	it("a NEW head after the QA already ENDED (prior PASS closed it) → re-spawn into the SAME QA issue", async () => {
+	it("a NEW head after the QA already ENDED queues bounded clean recovery in the SAME QA issue", async () => {
 		const main = awaitingMain(s.store);
 		await s.coord.onMainAwaitingReview(main);
 		// QA passed + was closed → its session is terminal (completed).
@@ -365,12 +412,19 @@ describe("AutoQaCoordinator.onMainAwaitingReview", () => {
 		const main2 = awaitingMain(s.store, { prHeadSha: SHA2 });
 		await s.coord.onMainAwaitingReview(main2, { freshTransition: false });
 
-		// No retest wake (QA dead) → re-spawn, reusing the SAME QA issue (no new create).
+		// No retest wake (QA dead) → event-like detection claims recovery; it does
+		// not synchronously spawn in the handoff path.
 		expect(s.retests.length).toBe(0);
-		expect(s.start).toHaveBeenCalledTimes(2);
+		expect(s.start).toHaveBeenCalledTimes(1);
 		expect(s.createCalls.length).toBe(1); // QA issue reused, not re-created
-		const rec = s.store.getAutoQaRecord("main-1", SHA2);
+		let rec = s.store.getAutoQaRecord("main-1", SHA2);
+		expect(rec?.status).toBe("retry_pending");
+
+		await s.coord.sweepOrphanedQaRecords();
+		expect(s.start).toHaveBeenCalledTimes(2);
+		rec = s.store.getAutoQaRecord("main-1", SHA2);
 		expect(rec?.status).toBe("running");
+		expect(rec?.auto_retry_count).toBe(1);
 	});
 
 	it("retest wake that does NOT land → founder HELD, durable marker kept, Lead alerted (never released)", async () => {
@@ -426,9 +480,12 @@ describe("AutoQaCoordinator.onMainAwaitingReview", () => {
 		s.store.setAutoQaStatus("main-1", SHA, "failed", {});
 		const main2 = awaitingMain(s.store, { prHeadSha: SHA2 });
 		await s.coord.onMainAwaitingReview(main2, { freshTransition: false });
-		const rec = s.store.getAutoQaRecord("main-1", SHA2);
-		expect(rec?.status).toBe("running"); // held on the new head → no founder leak
-		expect(s.start).toHaveBeenCalledTimes(2); // re-spawn into same QA issue
+		expect(s.store.getAutoQaRecord("main-1", SHA2)?.status).toBe(
+			"retry_pending",
+		); // held on the new head → no founder leak
+		await s.coord.sweepOrphanedQaRecords();
+		expect(s.store.getAutoQaRecord("main-1", SHA2)?.status).toBe("running");
+		expect(s.start).toHaveBeenCalledTimes(2); // clean recovery into same QA issue
 	});
 });
 
@@ -587,8 +644,125 @@ describe("AutoQaCoordinator.onQaResult", () => {
 	});
 });
 
+describe("AutoQaCoordinator.manualSpawnQa (FLY-1251)", () => {
+	it("bypasses auto policy but uses the standard server-owned QA spawn chain", async () => {
+		const s = await setup({ policy: { enabled: false, reason: "no-qa" } });
+		awaitingMain(s.store);
+
+		await expect(s.coord.manualSpawnQa("main-1", SHA)).resolves.toMatchObject({
+			status: "spawned",
+		});
+		expect(s.start).toHaveBeenCalledOnce();
+		expect(s.store.getAutoQaRecord("main-1", SHA)).toMatchObject({
+			status: "running",
+			enrollment_source: "manual",
+			qa_execution_id: "qa-1",
+		});
+		const audit = s.store
+			.getEventsByExecution("main-1")
+			.find((event) => event.event_type === "manual_qa_enrolled");
+		expect(audit).toMatchObject({
+			event_id: `manual-qa-enrolled-main-1-${SHA}-qa-1`,
+			source: "bridge.auto-qa-coordinator",
+		});
+	});
+
+	it("rejects a stale requested head without creating evidence", async () => {
+		const s = await setup();
+		awaitingMain(s.store);
+		await expect(s.coord.manualSpawnQa("main-1", SHA2)).resolves.toEqual({
+			status: "rejected",
+			reason: "head_mismatch",
+		});
+		expect(s.start).not.toHaveBeenCalled();
+	});
+
+	it.each(["running", "awaiting_retest", "passed"] as const)(
+		"returns an idempotent conflict for an existing %s record",
+		async (status) => {
+			const s = await setup();
+			awaitingMain(s.store);
+			s.store.claimAutoQaRecord({
+				parentExecutionId: "main-1",
+				targetPrHeadSha: SHA,
+				issueId: "FLY-1",
+				projectName: "proj",
+			});
+			s.store.setAutoQaStatus("main-1", SHA, status, {});
+
+			await expect(s.coord.manualSpawnQa("main-1", SHA)).resolves.toEqual({
+				status: "existing",
+				recordStatus: status,
+			});
+			expect(s.start).not.toHaveBeenCalled();
+		},
+	);
+
+	it("revives a stuck row only when its prior QA runner is confirmed dead", async () => {
+		const s = await setup();
+		awaitingMain(s.store);
+		s.store.claimAutoQaRecord({
+			parentExecutionId: "main-1",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		s.store.setAutoQaQaExecutionId("main-1", SHA, "qa-dead");
+		s.store.setAutoQaStatus("main-1", SHA, "stuck", {});
+
+		await expect(s.coord.manualSpawnQa("main-1", SHA)).resolves.toMatchObject({
+			status: "spawned",
+		});
+		expect(s.start).toHaveBeenCalledOnce();
+		expect(s.store.getAutoQaRecord("main-1", SHA)).toMatchObject({
+			status: "running",
+			enrollment_source: "manual",
+			qa_execution_id: "qa-1",
+		});
+	});
+
+	it("does not revive a stuck row while its QA runner is still live", async () => {
+		const s = await setup();
+		awaitingMain(s.store);
+		s.store.claimAutoQaRecord({
+			parentExecutionId: "main-1",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		s.store.setAutoQaQaExecutionId("main-1", SHA, "qa-live");
+		s.store.setAutoQaStatus("main-1", SHA, "stuck", {});
+		s.store.upsertSession({
+			execution_id: "qa-live",
+			issue_id: "qa-issue",
+			project_name: "proj",
+			status: "running",
+			session_role: "qa",
+		});
+
+		await expect(s.coord.manualSpawnQa("main-1", SHA)).resolves.toEqual({
+			status: "existing",
+			recordStatus: "stuck",
+		});
+		expect(s.start).not.toHaveBeenCalled();
+	});
+
+	it("auto-vs-manual admission races converge to one QA runner", async () => {
+		const s = await setup();
+		const main = awaitingMain(s.store);
+
+		await Promise.all([
+			s.coord.onMainAwaitingReview(main),
+			s.coord.manualSpawnQa("main-1", SHA),
+		]);
+
+		expect(s.start).toHaveBeenCalledOnce();
+		expect(s.store.listAutoQaRecordsByParent("main-1")).toHaveLength(1);
+	});
+});
+
 describe("AutoQaCoordinator.reconcileOnStartup", () => {
-	it("lost-event: QA session ended but no verdict → record stuck + Lead alert (never auto-release)", async () => {
+	it("lost-event: dead QA is detected and clean-retried once with a durable successor id", async () => {
 		const s = await setup();
 		const main = awaitingMain(s.store);
 		await s.coord.onMainAwaitingReview(main);
@@ -600,9 +774,142 @@ describe("AutoQaCoordinator.reconcileOnStartup", () => {
 			session_role: "qa",
 		});
 		await s.coord.reconcileOnStartup();
-		expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("stuck");
-		expect(s.alerts.some((a) => a.includes("stuck"))).toBe(true);
+		const rec = s.store.getAutoQaRecord("main-1", SHA);
+		expect(rec?.status).toBe("running");
+		expect(rec?.auto_retry_count).toBe(1);
+		expect(rec?.qa_execution_id).toBe(rec?.retry_attempt_id);
+		expect(s.start).toHaveBeenCalledTimes(2);
+		expect(s.startCalls[1]).toMatchObject({
+			successorExecutionId: rec?.retry_attempt_id,
+			shareParentBranch: false,
+		});
+		expect(s.alerts.some((a) => a.includes("automatic retry queued"))).toBe(
+			true,
+		);
 		expect(s.counters.shipReady).toBe(0);
+	});
+
+	it("inflight hard gate defers respawn until the old dispatcher releases the QA role", async () => {
+		let inflight = true;
+		const s = await setup({ hasInflightImpl: () => inflight });
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main);
+		s.store.upsertSession({
+			execution_id: "qa-1",
+			issue_id: QA_ISSUE.issueId,
+			project_name: "proj",
+			status: "failed",
+			session_role: "qa",
+		});
+
+		await s.coord.sweepOrphanedQaRecords();
+		expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe(
+			"retry_pending",
+		);
+		expect(s.start).toHaveBeenCalledTimes(1);
+
+		inflight = false;
+		await s.coord.sweepOrphanedQaRecords();
+		expect(s.start).toHaveBeenCalledTimes(2);
+		expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("running");
+	});
+
+	it("retry_starting adopts an already-live pre-bound successor without launching a duplicate", async () => {
+		const s = await setup();
+		awaitingMain(s.store);
+		s.store.claimAutoQaRecord({
+			parentExecutionId: "main-1",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		s.store.setAutoQaIssue("main-1", SHA, QA_ISSUE);
+		s.store.setAutoQaQaExecutionId("main-1", SHA, "qa-dead");
+		s.store.markDeadAutoQaExecution("main-1", SHA, "qa-dead");
+		s.store.claimAutoQaRetryLaunch("main-1", SHA, "qa-successor");
+		s.store.upsertSession({
+			execution_id: "qa-successor",
+			issue_id: QA_ISSUE.issueId,
+			project_name: "proj",
+			status: "running",
+			session_role: "qa",
+		});
+
+		await s.coord.sweepOrphanedQaRecords();
+		expect(s.start).not.toHaveBeenCalled();
+		expect(s.store.getAutoQaRecord("main-1", SHA)).toMatchObject({
+			status: "running",
+			qa_execution_id: "qa-successor",
+			retry_attempt_id: "qa-successor",
+		});
+	});
+
+	it("retry_starting re-drives the same durable id and concurrent sweeps are single-flight", async () => {
+		let release!: () => void;
+		const launched = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const s = await setup({
+			startImpl: async (req) => {
+				await launched;
+				return {
+					executionId: req.successorExecutionId ?? "unexpected",
+					issueId: req.issueId,
+				};
+			},
+		});
+		awaitingMain(s.store);
+		s.store.claimAutoQaRecord({
+			parentExecutionId: "main-1",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		s.store.setAutoQaIssue("main-1", SHA, QA_ISSUE);
+		s.store.setAutoQaQaExecutionId("main-1", SHA, "qa-dead");
+		s.store.markDeadAutoQaExecution("main-1", SHA, "qa-dead");
+		s.store.claimAutoQaRetryLaunch("main-1", SHA, "qa-durable-attempt");
+
+		const first = s.coord.sweepOrphanedQaRecords();
+		const second = s.coord.sweepOrphanedQaRecords();
+		await vi.waitFor(() => expect(s.start).toHaveBeenCalledTimes(1));
+		expect(s.startCalls[0]?.successorExecutionId).toBe("qa-durable-attempt");
+		release();
+		await Promise.all([first, second]);
+		expect(s.start).toHaveBeenCalledTimes(1);
+		expect(s.store.getAutoQaRecord("main-1", SHA)?.qa_execution_id).toBe(
+			"qa-durable-attempt",
+		);
+	});
+
+	it("a replacement QA death exhausts recovery and never starts QA3", async () => {
+		const s = await setup();
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main);
+		s.store.upsertSession({
+			execution_id: "qa-1",
+			issue_id: QA_ISSUE.issueId,
+			project_name: "proj",
+			status: "failed",
+			session_role: "qa",
+		});
+		await s.coord.sweepOrphanedQaRecords();
+		const replacement = s.store.getAutoQaRecord("main-1", SHA)?.qa_execution_id;
+		expect(replacement).toBeTruthy();
+		s.store.upsertSession({
+			execution_id: replacement!,
+			issue_id: QA_ISSUE.issueId,
+			project_name: "proj",
+			status: "terminated",
+			session_role: "qa",
+		});
+
+		await s.coord.sweepOrphanedQaRecords();
+		expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("stuck");
+		expect(s.start).toHaveBeenCalledTimes(2);
+		expect(s.alerts.some((a) => a.includes("automatic retry exhausted"))).toBe(
+			true,
+		);
 	});
 
 	it("claimed-but-unspawned (crash before QA issue created) → reconcile creates the QA issue + spawns", async () => {
@@ -665,6 +972,54 @@ describe("AutoQaCoordinator.reconcileOnStartup", () => {
 		await s.coord.reconcileOnStartup();
 		expect(s.counters.shipReady).toBe(1);
 		expect(s.store.getAutoQaRecord("main-1", SHA)?.notified_at).toBeTruthy();
+	});
+});
+
+describe("AutoQaCoordinator.onQaSessionFailed", () => {
+	it("owns an auto-QA failure, claims retry + alerts, but never spawns in the event hook", async () => {
+		const s = await setup();
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main);
+
+		expect(await s.coord.onQaSessionFailed("qa-1")).toEqual({
+			owned: true,
+			transition: "retry_pending",
+		});
+		expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe(
+			"retry_pending",
+		);
+		expect(s.start).toHaveBeenCalledTimes(1);
+		expect(s.alerts.some((a) => a.includes("automatic retry queued"))).toBe(
+			true,
+		);
+	});
+
+	it("consumes duplicate and historical auto-QA failures without falling through", async () => {
+		const s = await setup();
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main);
+		await s.coord.onQaSessionFailed("qa-1");
+		const alertsAfterClaim = s.alerts.length;
+
+		expect(await s.coord.onQaSessionFailed("qa-1")).toEqual({
+			owned: true,
+			transition: "noop",
+		});
+		expect(s.alerts).toHaveLength(alertsAfterClaim);
+
+		s.store.setAutoQaStatus("main-1", SHA, "passed", {});
+		expect(await s.coord.onQaSessionFailed("qa-1")).toEqual({
+			owned: true,
+			transition: "noop",
+		});
+	});
+
+	it("returns owned=false for three-stage/non-auto QA", async () => {
+		const s = await setup();
+		expect(await s.coord.onQaSessionFailed("phase-qa")).toEqual({
+			owned: false,
+			transition: "noop",
+		});
 	});
 });
 
@@ -871,6 +1226,10 @@ describe("FLY-827 AutoQaCoordinator codex hard gate (gate ON)", () => {
 		// runner has no live session — the point is the gate no longer blocks B).
 		await s.coord.onCodexReviewResult(codexEvent({ prHeadSha: SHA2 }));
 		expect(s.store.isCodexCodeReviewApproved("main-1", SHA2)).toBe(true);
+		expect(s.store.getAutoQaRecord("main-1", SHA2)?.status).toBe(
+			"retry_pending",
+		);
+		await s.coord.sweepOrphanedQaRecords();
 		expect(s.start).toHaveBeenCalledTimes(2);
 	});
 

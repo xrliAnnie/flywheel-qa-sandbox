@@ -78,7 +78,10 @@ export class AssistantSpeaker {
 				highWaterMark: this.opts.highWaterMark ?? DEFAULT_HWM,
 			});
 			this.opts.player.play(
-				this.opts.createResource({ kind: "stream", stream: this.stream }),
+				// raw-stream: headerless 48k s16le stereo PCM — the explicit kind
+				// keeps the Raw tag after the 545/967 createResource reconciliation
+				// (plain "stream" now takes the ffmpeg probe path for TTS output).
+				this.opts.createResource({ kind: "raw-stream", stream: this.stream }),
 			);
 			this.opts.log?.("[assistant-speaker] playing turn stream on the player");
 		}

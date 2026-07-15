@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import {
+	resolveGlobalThreeStageKillSwitch,
 	resolveHandoffDispatchChannelId,
 	resolveThreeStageEntry,
 	resolveThreeStagePolicy,
@@ -56,6 +57,42 @@ describe("resolveThreeStageEntry (FLY-793 Step 4 ENTRY)", () => {
 		// table's vendor too (design = claude, no effort).
 		expect(e.dispatchVendor).toBe("claude");
 		expect(e.dispatchEffort).toBeUndefined();
+		expect(e.designBackend).toBe("claude");
+	});
+
+	it("an explicit codex override beats a disabled global design switch", () => {
+		expect(
+			resolveThreeStageEntry({
+				requestRole: "main",
+				pipelineConfig: { three_stage: true },
+				issueLabels: [],
+				designBackend: "codex",
+				env: { FLYWHEEL_THREE_STAGE_CODEX_DESIGN: "0" },
+			}),
+		).toMatchObject({
+			enteredThreeStage: true,
+			designBackend: "codex",
+			dispatchVendor: "codex",
+			dispatchModel: "gpt-5.6-sol",
+			dispatchEffort: "xhigh",
+		});
+	});
+
+	it("an explicit claude override beats an enabled global design switch", () => {
+		expect(
+			resolveThreeStageEntry({
+				requestRole: "main",
+				pipelineConfig: { three_stage: true },
+				issueLabels: [],
+				designBackend: "claude",
+				env: { FLYWHEEL_THREE_STAGE_CODEX_DESIGN: "1" },
+			}),
+		).toMatchObject({
+			enteredThreeStage: true,
+			designBackend: "claude",
+			dispatchVendor: "claude",
+			dispatchModel: "claude-fable-5",
+		});
 	});
 
 	it("FLY-887 R2: a NON-entry decision carries no dispatchModel (single-session path untouched)", () => {
@@ -78,6 +115,9 @@ describe("resolveThreeStageEntry (FLY-793 Step 4 ENTRY)", () => {
 		});
 		expect(e.enteredThreeStage).toBe(false);
 		expect(e.role).toBe("main");
+		expect(e.notEnteredReasonCode).toBe("policy_disabled");
+		expect(e.notEnteredDetail).toMatch(/not enabled/i);
+		expect(e.designBackend).toBeUndefined();
 	});
 
 	it("an explicit phase role (handoff) passes through untouched — NOT re-entered", () => {
@@ -90,6 +130,7 @@ describe("resolveThreeStageEntry (FLY-793 Step 4 ENTRY)", () => {
 			});
 			expect(e.enteredThreeStage).toBe(false);
 			expect(e.role).toBe(role);
+			expect(e.notEnteredReasonCode).toBe("non_main_role");
 		}
 	});
 
@@ -113,6 +154,8 @@ describe("resolveThreeStageEntry (FLY-793 Step 4 ENTRY)", () => {
 		});
 		expect(e.enteredThreeStage).toBe(false);
 		expect(e.role).toBe("main");
+		expect(e.notEnteredReasonCode).toBe("no_three_stage_label");
+		expect(e.notEnteredDetail).toMatch(/no-three-stage/i);
 	});
 
 	it("`FLYWHEEL_THREE_STAGE=0` kill-switch keeps a fresh dispatch as `main`", () => {
@@ -124,6 +167,8 @@ describe("resolveThreeStageEntry (FLY-793 Step 4 ENTRY)", () => {
 		});
 		expect(e.enteredThreeStage).toBe(false);
 		expect(e.role).toBe("main");
+		expect(e.notEnteredReasonCode).toBe("global_disabled");
+		expect(e.notEnteredDetail).toMatch(/kill-switch/i);
 	});
 });
 
@@ -237,6 +282,7 @@ describe("resolveThreeStagePolicy — three_stage_channels gating (FLY-887 R2)",
 			dispatchChannelId: "111222333",
 		});
 		expect(d.enabled).toBe(false);
+		expect(d.reasonCode).toBe("channel_not_allowed");
 		expect(d.reason).toContain("111222333");
 	});
 
@@ -290,6 +336,8 @@ describe("resolveThreeStagePolicy — three_stage_channels gating (FLY-887 R2)",
 		expect(e.enteredThreeStage).toBe(false);
 		expect(e.role).toBe("main");
 		expect(e.dispatchModel).toBeUndefined();
+		expect(e.notEnteredReasonCode).toBe("channel_not_allowed");
+		expect(e.notEnteredDetail).toContain("999");
 	});
 
 	it("entry path: an in-allowlist channel enters three-stage with the design model", () => {
@@ -356,5 +404,51 @@ describe("resolveHandoffDispatchChannelId (FLY-902)", () => {
 		expect(
 			resolveHandoffDispatchChannelId(projects, undefined, []),
 		).toBeUndefined();
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLY-1259 (Codex code R2) — the early kill-switch check runs-route uses before
+// dedup. It is deliberately global-ONLY: every other block outranks
+// policy_disabled, so deciding more here could report a reason code the
+// authoritative resolveThreeStagePolicy disagrees with.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("resolveGlobalThreeStageKillSwitch (FLY-1259 early check)", () => {
+	it("blocks with the bounded global_disabled code when the switch is off", () => {
+		expect(
+			resolveGlobalThreeStageKillSwitch({ FLYWHEEL_THREE_STAGE: "0" }),
+		).toEqual({
+			reasonCode: "global_disabled",
+			reason: "FLYWHEEL_THREE_STAGE=0 global kill-switch",
+		});
+	});
+
+	it.each([{}, { FLYWHEEL_THREE_STAGE: "1" }, { FLYWHEEL_THREE_STAGE: "" }])(
+		"does not block on %j — the label/channel/pipeline checks still decide",
+		(env) => {
+			expect(resolveGlobalThreeStageKillSwitch(env)).toBeUndefined();
+		},
+	);
+
+	it("agrees with resolveThreeStagePolicy wherever it returns a verdict", () => {
+		// The pair can only disagree if this helper decides something it must not.
+		// Sweep the inputs that change the authoritative answer and assert that
+		// whenever the helper blocks, the full policy reports the SAME code.
+		for (const env of [{ FLYWHEEL_THREE_STAGE: "0" }, {}]) {
+			for (const issueLabels of [[], ["no-three-stage"]]) {
+				for (const three_stage of [true, false]) {
+					const early = resolveGlobalThreeStageKillSwitch(env);
+					const full = resolveThreeStagePolicy({
+						pipelineConfig: { three_stage },
+						issueLabels,
+						env,
+					});
+					if (early) {
+						expect(full.enabled).toBe(false);
+						expect(full.reasonCode).toBe(early.reasonCode);
+					}
+				}
+			}
+		}
 	});
 });

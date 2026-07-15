@@ -1,0 +1,148 @@
+# FLY-1256 外部配额监控 + 自动切号器 — 探索
+
+Issue: FLY-1256 (https://linear.app/geoforge3d/issue/FLY-1256/build-外部配额监控-自动切号器跑在-claude-体外-p1今天事故实证)
+日期: 2026-07-14
+基于: 无
+
+## 1. 问题定义（2026-07-14 两个事故实证）
+
+**事故 ①：statusline 配额滞后。** 终端 statusline 显示的 5h 用量在 20 分钟内从 54% 跳到 79%，且始终滞后于 Annie 在 Anthropic 端看到的真实值。fleet 满负荷时 5h 窗口烧得极快（本次 ≈25%/20min），滞后的显示让人对「还剩多少」产生系统性误判——等看到危险水位时已经来不及主动切号。
+
+**事故 ②：切号器不能是 Claude 自己。** Lead（Claude session）执行切号后，机器 Keychain 指向了一个没有配额的账号；Lead 自身的 access token 到期刷新时从 Keychain 读到的就是这个断粮账号 → Lead 当场失能（哑 30 分钟），靠人工救回。推论是结构性的：**Claude 断粮时，一切 Claude agent 都无法自救**——切号器必须活在 Claude 体外。
+
+## 2. 现状审计（要点，细节见 research.md）
+
+- **切号机械已经存在且在体外**（Node/bash，不烧 Claude 额度）：FLY-696 全家桶（`packages/teamlead/src/account-heal/`）+ `flywheel-claude-profile` bash 脚本（Keychain 换号、capture-back、freshness guard、verify-before-commit、FLY-865 身份同步、跨语言 mkdir 锁 + CAS）。FLY-1182 正在给这套 Bridge 内引擎点火（In Progress，PR #562）。
+- **但这套引擎是「被动式」且托管在 Bridge 进程内**：检测源 = 30s 刮 Claude pane 的 statusline 文本，pane 显示 100% 封顶才触发；Bridge 重启 / wedge / QA 窗口期间整条链停摆。
+- **三大缺口**（审计确认，一个都没有现成实现）：
+  1. **没有实时配额源**——现有检测全部依赖滞后的 pane 文本；
+  2. **切前从不验目标账号配额**——只验 auth freshness（FLY-871），可能切进另一堵墙（`feedback_account_switch_verify_target_quota` 正是此坑）；
+  3. **founder 顺序无处表达**——现为字母序 + weekly-reset 启发式（`account-store.ts:78`），「shopping→school→…」在代码里不存在对应配置。
+- **实时配额源已真机验证存在**：`GET https://api.anthropic.com/api/oauth/usage`（OAuth Bearer，Keychain token，header `anthropic-beta: oauth-2025-04-20`）返回 `five_hour`/`seven_day` 的 `utilization` + `resets_at`，2026-07-14 本机探测成功（10%/22%）。
+
+## 3. 方案选项与决策
+
+### D-A：切号器跑在哪？
+
+| 选项 | 评估 |
+|---|---|
+| A1 纯 Node 确定性 daemon（launchd KeepAlive，独立进程） | ✅ **选定**。阈值判断不需要 LLM；确定性、可单测、可注入 mock；不依赖任何 AI 账号存活——这正是本单要治的病 |
+| A2 常驻 Codex agent 做监控 | ✗ LLM 在阈值回路里 = 不确定 + 烧 Codex 额度 + Codex 账号自己也会限流/过期（`reference_companion_codex_lead_auth_expiry`）。Codex 只作为 implement 阶段的作者（按批复单模型分配） |
+| A3 扩展 Bridge 引擎 | ✗ 违反「体外」前提：Bridge 重启频繁、进程重、且它是被喂养系统的一部分 |
+
+### D-B：与 FLY-1182（Bridge 被动引擎）的关系？
+
+**终版（Annie 2026-07-14 批注⑦拍板，推翻此前「保留」）：不保留，直接退役**（她的原话：「从来就没 work 过」）。daemon 成为唯一自动切号器；FLY-1182 停止点火、被本单取代。退役是外科手术式的——只退 Bridge 内「检测后自动切」的触发-执行管线，daemon 复用的共享库（switchAccount/account-store/profile 脚本/freshness/锁）与 pane 封顶**告警**全部保留。退役边界与迁移注意详见 research.md §6。
+（历史记录：brainstorm gate 阶段 Lead 曾拍「保留为兜底」，后被 founder 批注推翻——以 founder 终版为准。）
+
+### D-C：daemon 怎么选目标账号？
+
+**终版（Annie 第三轮 2026-07-14 拍板，替代第二轮的严格双水位）：**
+
+- **触发**：当前号 **5h 已用 ≥ 90%**（主动阈值，运行时可调）**或任一窗口实际耗尽（≥100%）**。weekly 无主动阈值——保证每个号的 weekly 钱花完，绝不在 95-99% 时提前弃号；但耗尽 = 事实性死号必须触发（初为工程边界解读，**Annie v4 批注①明文拍板转正**：「5h 还有量但 weekly 耗尽同样不可用，任一窗口耗尽即触发」）。
+- **资格**（简化）：候选**两个窗口「有余额就行」**（5h <100% 且 7d <100%）+ freshness 可用（probe-refresh 仅限非 active，FLY-871 既有机制）。不再有 70%/85% 严格水位。
+- **排序**：合格者按 **7d reset 最早优先**（先到期先用），founder 固定顺序（shopping→school→…）平手裁决。
+
+任何候选都不合格 → 不切 + Discord 告警（附全账号配额全景）。
+
+> 巧合佐证：既有 Bridge 引擎的 weekly 启发式（`account-store.ts:10-16`「周五先用周一 reset 的」）与 Annie 的先到期先用同哲学，但它依赖本地缓存的 weeklyResetAt（常为 null）；daemon 用切号时刻的实时 API 数据排序，数据源升级。
+
+### D-D：凭证安全边界？
+
+- daemon **自身绝不落盘 / 绝不打印 token**；token 只在内存中用于 usage API 调用。
+- Keychain 与池的一切写操作**全部委托既有 `flywheel-claude-profile`**（`security -i` 无 argv 范式、verify-before-commit、capture-back）。池文件 `~/.flywheel/claude-profiles/<name>/.credentials.json`（0600）是**既有**落盘形态，本单不新增任何落盘。
+- **红线：绝不刷新 ACTIVE 账号的 token**（外部刷新会轮转 refresh-token family，strand 全部活 session——正是事故②的机理，也是 FLY-871 的既有红线）。
+
+### D-E：剩余配额「花不完」怎么办？（回流 = 开，Annie 第三轮拍死）
+
+Annie 批注①④的担忧：90%/95% 触发换号，剩的 5-10% 是不是永远花不完？三层回答：
+
+1. **不必然浪费**：5h 窗口每 ~5 小时滚动清零、7d 每周清零——窗口一刷新，账号回到候选池，余量重新可用。真正可能浪费的只有「7d 窗口临期时还没用掉的尾巴」。
+2. **先到期先用最小化它**：排序天然优先消耗快过期的账号，把尾巴压到最小。
+3. **回流模式 = 开**（Annie 第三轮拍死：「必须要开，不然账号都用不完了」）。且在第三轮资格简化后，回流**结构性内建、无需独立开关**：资格 =「有余额就行」+ 触发只看 5h → 被换下的号在其 5h 窗口 reset 后（cooldown 到期）自动回到候选池、weekly 余量可继续榨——回头切它就是普通选号，无需特殊路径。原「二次上限 98%」随严格水位一并取消（字面执行「有余额就行」，churn 由换号冷却 + CAS 兜底）。
+
+同时说明：触发线留的余量不是纯损耗——换号后活 session 仍在旧账号上烧到各自 token 自然刷新，这段迁移期就靠这个安全垫供血。
+
+### D-G：设计哲学（Annie 第二轮，2026-07-14）：用到接近 100%，撞墙要能自动恢复
+
+Annie 的底层动机 = **配额用到接近 100% 不浪费**（她原本设想「Codex 和 Claude 互相反查救援」就是为这个）。体外 daemon 的存在让「跑到接近 100% 再切」变得可行。落地：
+
+- **触发线：5h ≥ 90%**（第三轮改回 90 并限定 5h-only，见 D-C），**不许硬编码**——运行时动态可调（见 D-H）。
+- **轮询（第三轮大改，她的首要顾虑 = 查太频被封号，总原则 = 查询次数压到最低）**：基础 = 每 **20 分钟**只查当前号；当前号 5h >70% → 加密到 **10 分钟**（她给 5-10 区间，取上限尊重最少查询原则；明令不再用 2 分钟）+ **这时才开始**每 ~60 分钟扫一遍候选号（预热排序数据）；闲置号平时零查询，切号时刻按需逐个验证（权威数据）。
+- 坦率的 tradeoff：90% 触发 + 10-20 分钟轮询 = 高烧速时**可能在两次轮询之间冲过 100%**。按她哲学可接受——撞墙代价被 D-I（切号后恢复扫描）压到接近零。
+- 回流模式已拍死 = 开（D-E）。
+
+### D-H：运行时配置接口（Annie 拍板：阈值等参数不许硬编码，接 dashboard）
+
+**契约 = 配置文件本身**（`~/.flywheel/quota-monitor.json`）：daemon **每 tick 重读**（改了即时生效，零重启）；一切写者（founder 手编、dashboard 经 Bridge）原子写（tmp+rename）+ schema 校验。daemon 自己不开任何 HTTP 面——dashboard 集成 = Bridge 侧提供该文件的读写 API 供 dashboard 用（Honey Lemon 的 dashboard 对接由 Tadashi 与 HL 协调；本单交付文件契约的 schema 与原子性/校验语义，Bridge API 不在本单）。
+
+### D-I：切号后恢复扫描（Annie edge case (a)，核心组件——不是 nice-to-have）
+
+完全用尽才切时，在跑的 runner 会卡在 rate-limit 配额对话框，切完号还得一个个人工去戳（Tadashi 2026-07-14 手工干了一遍）。daemon 在**切号成功后**自动做这件事：扫 tmux panes → 用高置信 pane 签名识别「卡配额对话框」状态 → send-keys 解除 + 续跑。安全边界：**只碰匹配高置信签名的 pane**，绝不盲发按键（FLY-313 resume-menu 误按教训、FLY-193 live-region 识别经验直接复用）；确切解除按键序列在 implement 阶段用真实抓屏 fixture 定契约。持续性：切号后立即扫一轮 + 之后每个 poll tick 复扫（有 pane 卡着就解），直到无卡 pane。
+
+已知 edge case（Annie 实测观察 (b)，单独立此为界）：**未用尽就切 profile，个别窗口可能要 re-login**——v1 不自动 re-login（那是 FLY-1049 救援链的事），恢复扫描发现 login-expired 形态的 pane 时只告警不动手。根因方向（~/.claude.json 身份与 Keychain 中途刷新的交互，FLY-865 疆域）留调查线索于 research。
+
+### D-F：statusline 滞后要不要顺手修？
+
+**要（低成本高回报）。** 滞后根因 = statusline 脚本自身的 10 分钟缓存 + 后台异步刷新（过期后首帧仍显示旧值）+ 只在 Claude 渲染时才跑 + usage API ~5 次/token 的 429 预算逼出的保守缓存（详见 research.md §2）。daemon 每次 poll 把新鲜响应原样写回 `~/.claude/usage-api-cache.json` → statusline 读到的缓存永远新鲜，**零额外 API 调用**，statusline 脚本一行不用改。
+
+## 4. 目标架构
+
+```mermaid
+graph TB
+    subgraph 体外["体外常驻（launchd KeepAlive，Claude/Bridge 全死也活着）"]
+        D[flywheel-quota-monitor daemon<br/>纯 Node 确定性进程]
+    end
+    API[api.anthropic.com<br/>/api/oauth/usage]
+    KC[macOS Keychain<br/>Claude Code-credentials]
+    POOL[账号池 ~/.flywheel/claude-profiles/<br/>+ claude-accounts.json CAS store]
+    CACHE[~/.claude/usage-api-cache.json<br/>statusline 读的缓存]
+    PROF[flywheel-claude-profile use<br/>freshness guard + capture-back<br/>+ verify-commit + 身份同步]
+    DISC[Discord #flywheel-alerts<br/>via lead-alert.sh 直连 REST]
+    BRIDGE[Bridge 被动引擎 FLY-696/1182<br/>自动切号管线退役 — Annie 拍板<br/>仅保留封顶告警]
+
+    D -->|"poll active 用量(常态 20min / >70% 加密 10min)"| API
+    D -->|读 active token| KC
+    D -->|回写新鲜数据| CACHE
+    D -->|"切前验目标(池 token 查用量)"| API
+    D -->|执行切号 switchAccount| PROF
+    PROF --> KC
+    PROF --> POOL
+    D -->|切号/无目标/盲区 告警| DISC
+    BRIDGE -.->|"退役(research §6); 手动 CLI 仍经同锁+CAS 串行"| POOL
+```
+
+## 5. Scope 边界
+
+**In**：daemon（监控 + 阈值切号 + 两段式目标验证/排序 + 通知）、水位/顺序配置、statusline 缓存回写、`selectNextAccount` 顺序扩展（byte-compat）、告警 kind 注册、launchd 安装物料、实时配额源调研 + rate-limit 真机探测报告（research.md）、**Bridge 被动切号管线退役**（Annie 批注⑦，边界见 research.md §6）、回流（= 开，结构性内建于资格规则）、「Claude 全员假死时独立切号」QA 支持面。
+
+**Out**：Codex 账号轮转（已有 per-runner fallback）；卡 quota 旧 runner 的自动恢复（FLY-1182 D2 已定 v1 不搬）；active token 过期且无活 session 时的「监控盲区」自动解除（v1 = 告警 + 文档化边界，见 research.md §5）；多机 fleet 协同（单机 v1）。
+
+## 6. 决策记录
+
+1. Lead（Tadashi）2026-07-14 brainstorm gate APPROVED：A=保留 Bridge 被动引擎为兜底；B=纯 Node 确定性 daemon（非常驻 Codex agent）。设计要点确认保留：usage API 实时源、绝不刷新 ACTIVE token 红线、切前验目标配额（probe 仅限非 active）、新鲜数据回写 statusline 缓存。
+2. Annie（2026-07-14 经 Lead 转达，[FLY-1256] thread）：
+   - 选号规则改为**两段式**：先筛「余量够」（5h+7d 双水位资格线），合格者中 **7d reset 最早优先**（先到期先用）；固定顺序（shopping→school→…）降级为平手裁决。**替代**最初的固定顺序优先方案。
+   - 5h 终版拍板：7d reset 是主凭据；5h 降级为资格筛（不参与排序），按实现简单性落地，不过度设计。
+   - 轮询节奏疑问已答：常驻轮询（非每日定时），active 每 5 分钟、池子号只在换号时验。
+3. 流程注：Annie 要求设计定稿前先看 founder-facing HTML 设计稿（`/tmp/fly1256-design-overview.html`，经 Lead publish）——plan.md 定稿与 Codex design review HOLD 至她确认/批注折入。
+4. Annie 对 v1 设计稿的 7 条批注（2026-07-14 经 Lead 原样转达）+ Tadashi 补充裁定，全部折入：
+   - ①④ 剩余配额「花不完」担忧 → D-E 三层回答 + 可选回流模式卡（她 v2 拍板开/关）。
+   - ② 先到期先用合理，但资格线语义要写成人话 + 全部数字做显式配置表 → v2 稿照做。
+   - ⑤ 「每 5 分钟查」与「~5 次限额」矛盾 → **真机探测**（Tadashi 裁定①）：实测 **5 次/5 分钟/token（429 带 retry-after: 300）**，据此定默认 poll 120s（用预算一半）；方法与数据见 research.md §1.3。
+   - ⑥ statusline 回写：赞成，保留。
+   - ⑦ **Bridge 被动引擎退役**（「从来就没 work 过」）——推翻决策记录 1 中 Lead 的「保留」，D-B/架构图/Scope/research §6 全部改写；FLY-1182 停止点火。
+   - Tadashi 裁定③：改完出 v2 稿经他重新 publish 给 Annie 确认；plan 定稿仍 HOLD。
+5. Annie 第二轮追加拍板（2026-07-14 经 Lead 转达，v2 稿评审）：
+   - **阈值默认 95%**（非 90%），**不许硬编码**——运行时动态可调、接 dashboard（HL 侧对接 Tadashi 协调）→ D-G/D-H。
+   - **轮询 10-20 分钟一次即可**（不必 5 分钟）→ 常态 15min + 近墙（≥90%）5min 分级。
+   - 设计哲学：配额用到接近 100% 不浪费；两个实测 edge case 折入设计：(a) 完全用尽再切 → runner 卡 rate-limit 对话框 → 新增**切号后恢复扫描**（D-I，核心组件）；(b) 未用尽就切偶发个别窗口 re-login → 已知 edge case 单独一节（D-I 末）。
+6. Annie 第三轮终版拍板（2026-07-14 经 Lead 转达，明示最后一轮、折完直接定稿不出 v4）：
+   - 资格简化 =「两窗有余额就行」（取消 70%/85% 严格水位）；**触发只看 5h ≥90%**，weekly 永不当阈值触发器（保证每号钱花完）——weekly 实际封顶（≥100%）仍触发为工程边界解读，已向 Lead 标注待其确认。
+   - **回流模式 = 开**（「必须要开，不然账号都用不完了」）——在新资格规则下结构性内建（D-E）。
+   - 轮询大改（怕封号，查询压到最低）：基础 20min 只查当前号；>70% 加密（Runner 定 10min）+ 才开始查候选（~60min 级）；闲置号平时不查。
+   - 流程令：本轮折入后**直接定稿 plan.md + 跑 Codex design review**，不再出 v4 给她。（后被 Lead 更正令 5b912c3f 推翻：定稿前仍需她确认终版——v4 确认稿随后产出。）
+7. Annie 对 v4 的批注（2026-07-14 经 Lead 转达，f3f7c5bf）：
+   - ① 触发必须纳入 weekly 耗尽（「5h 还有量但 weekly 耗尽同样不可用，任一窗口耗尽即触发」）——与 plan §9 R-1 既有边界解读完全一致，规则转正为 founder 拍板，设计零改动只明文化。
+   - ② 提问「恢复扫描谁执行」——答复：执行主体 = 体外 daemon 自己（非 Bridge、非任何 AI），tmux 直扫直按；防误按三层 = 高置信签名（真机 fixture 定死）+ 按键序列 fixture 定死 + epoch 时限授权。答案入 v5 稿卡 3。
+8. Annie 对 v5 的答复（2026-07-14 经 Lead 转达，b935df6a）= **确认** + 一条批注：§7 上线方式改为 **merge 即 enable**（不留 staged/灰度，default-enable 铁律；kill-switch 留作事后应急、初始状态 = 开）——显式推翻 Codex R1-3 的 fail-safe 缺省姿态（founder authority），plan §8/R5/setup 已改写。设计其余部分无异议。**设计定稿。**

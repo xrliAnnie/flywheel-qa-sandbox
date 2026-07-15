@@ -4,6 +4,7 @@
 // rendering); teamlead depends on edge-worker, so we import the type here for
 // StartRequest. Defining it in teamlead would invert the dependency.
 import type {
+	DesignBackend,
 	PhaseDispatchVendor,
 	PonytailInput,
 	RoleEffort,
@@ -72,6 +73,8 @@ export interface RetryRequest {
 	dispatchVendor?: PhaseDispatchVendor;
 	/** FLY-1224: per-phase reasoning effort (phase table output). */
 	dispatchEffort?: RoleEffort;
+	/** FLY-1259: effective design backend locked at three-stage admission. */
+	designBackend?: DesignBackend;
 	/**
 	 * FLY-245 D2 (plan §5.2.1): gateway pre-bound successor execution id.
 	 * When present the dispatcher MUST use it instead of generating a fresh
@@ -117,6 +120,12 @@ export interface IRetryDispatcher {
 export interface StartRequest {
 	issueId: string;
 	projectName: string;
+	/**
+	 * FLY-1279 B2: durable recovery successor id. The coordinator persists this
+	 * before dispatch so a crash can adopt/re-drive the same physical launch.
+	 * Absent keeps the fresh-start random UUID behavior.
+	 */
+	successorExecutionId?: string;
 	leadId?: string;
 	/** FLY-24: Pre-fetched issue title from runs-route Linear pre-flight */
 	issueTitle?: string;
@@ -171,6 +180,8 @@ export interface StartRequest {
 	dispatchVendor?: PhaseDispatchVendor;
 	/** FLY-1224: per-phase reasoning effort (phase table output). */
 	dispatchEffort?: RoleEffort;
+	/** FLY-1259: effective design backend locked at three-stage admission. */
+	designBackend?: DesignBackend;
 	/**
 	 * FLY-579: explicit git start point for the worktree (a commit SHA / ref).
 	 * Threaded to `WorktreeManager.create({ startPoint })`. The Auto-QA
@@ -252,6 +263,8 @@ export interface StartResult {
 
 export interface IStartDispatcher {
 	start(req: StartRequest): Promise<StartResult>;
+	/** FLY-1279: fail-closed recovery gate; production RunDispatcher implements it. */
+	hasInflightForRole?(issueId: string, role: string): boolean;
 	/** Current count of inflight (dispatched but not yet completed) executions */
 	getInflightCount(): number;
 	/**

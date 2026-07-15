@@ -685,13 +685,14 @@ export class CodexTmuxAdapter implements IAdapter {
 				try {
 					const commDb = new CommDB(ctx.commDbPath);
 					const c = classifyGoalOutcome({ outcome, caughtError });
+					const goalBlocked = outcome?.result.status === "blocked";
 					// Codex R2 MEDIUM: a SIGKILL-unconfirmed teardown must NOT be
 					// recorded as a clean "completed" (a still-live daemon would look
 					// finished to the cleanup/route layer).
 					const okComplete = c.success && !teardownError;
 					commDb.updateSessionStatus(
 						ctx.executionId,
-						okComplete ? "completed" : "timeout",
+						okComplete ? "completed" : goalBlocked ? "blocked" : "timeout",
 					);
 					commDb.close();
 				} catch {
@@ -720,6 +721,12 @@ export class CodexTmuxAdapter implements IAdapter {
 			},
 		};
 		if (cls.resultText !== undefined) result.resultText = cls.resultText;
+		if (outcome?.result.status === "blocked") {
+			result.failure = {
+				failureKind: "goal_blocked",
+				failureReason: cls.failureReason ?? "goal ended non-complete: blocked",
+			};
+		}
 		if (!success) {
 			const reason =
 				cls.failureReason ??

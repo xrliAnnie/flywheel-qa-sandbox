@@ -169,15 +169,27 @@ describe("parseClaudeReviewOutput", () => {
 		).toBe("APPROVED");
 	});
 
-	it("CHANGES_REQUESTED with findings round-trips", () => {
+	it("CHANGES_REQUESTED with stable-id and ruling-dispute findings round-trips", () => {
 		const out = JSON.stringify({
 			verdict: "changes_requested",
-			findings: [{ severity: "HIGH", file: "a.ts", title: "bug" }],
+			findings: [
+				{
+					id: "auth-bug",
+					disputesRuling: "settled-auth",
+					severity: "HIGH",
+					file: "a.ts",
+					title: "bug",
+				},
+			],
 			reviewedHeadSha: null,
 		});
 		const parsed = parseClaudeReviewOutput(out);
 		expect(parsed?.verdict).toBe("CHANGES_REQUESTED");
 		expect(parsed?.findings).toHaveLength(1);
+		expect(parsed?.findings[0]).toMatchObject({
+			id: "auth-bug",
+			disputesRuling: "settled-auth",
+		});
 		expect(parsed?.reviewedHeadSha).toBeNull();
 	});
 

@@ -21,6 +21,7 @@ import { z } from "zod";
 import {
 	type DeliveryMessage,
 	handleAck,
+	handleEventAck,
 	processPendingDeliveries,
 } from "./delivery.js";
 
@@ -118,6 +119,43 @@ server.tool(
 		if (result.ok) {
 			return {
 				content: [{ type: "text" as const, text: `acked: ${message_id}` }],
+			};
+		}
+		return {
+			content: [{ type: "text" as const, text: `Error: ${result.error}` }],
+			isError: true,
+		};
+	},
+);
+
+server.tool(
+	"flywheel_inbox_ack_event",
+	"Acknowledge a durable Flywheel Lead event. Use the event_seq, project, and token included in that event's ACK instructions. This is separate from flywheel_inbox_ack, which acknowledges inbox message delivery.",
+	{
+		event_seq: z
+			.number()
+			.int()
+			.positive()
+			.describe("The global event sequence from the ACK instructions"),
+		project: z.string().min(1).describe("The Flywheel project name"),
+		token: z.string().min(1).describe("The per-event bearer ACK token"),
+	},
+	async ({ event_seq, project, token }) => {
+		const result = handleEventAck(commDb, {
+			leadId: leadId!,
+			eventSeq: event_seq,
+			ackToken: token,
+			project,
+			expectedProject: projectName,
+		});
+		if (result.ok) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `ACK receipt queued: event ${result.eventSeq}`,
+					},
+				],
 			};
 		}
 		return {

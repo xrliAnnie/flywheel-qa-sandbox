@@ -16,6 +16,7 @@ import {
 	makeDeferralSupport,
 	mergeBlockPointerText,
 	type RebindCommDb,
+	readinessHoldPointerText,
 	runDeferredApprovalRebindPass,
 	ttlExpiredText,
 } from "../approval-signal/deferred-approval.js";
@@ -440,6 +441,27 @@ describe("capture support — 2×2 truth table (§4.4)", () => {
 			mergeBlockPointerText(),
 		);
 	});
+
+	it.each(["qa_evidence_missing", "qa_evidence_unknown"] as const)(
+		"queueHeldNotice(readiness_hold) truthfully says fresh QA is required for %s",
+		async (holdReason) => {
+			const { store, support } = await captureHarness(holdReason);
+			support.queueHeldNotice({
+				questionId: "Q-1",
+				msgId: "100",
+				executionId: "E-1",
+				kind: "readiness_hold",
+				holdReason,
+			});
+			const notice = store.getFounderAction("held-reply-Q-1-100");
+			expect(JSON.parse(notice?.payload ?? "{}").text).toBe(
+				readinessHoldPointerText(holdReason),
+			);
+			expect(JSON.parse(notice?.payload ?? "{}").text).not.toContain(
+				"暂存功能当前关闭",
+			);
+		},
+	);
 
 	it("flag faces read env per call", async () => {
 		const { support } = await captureHarness("codex_pending");

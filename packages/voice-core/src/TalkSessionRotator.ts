@@ -21,6 +21,16 @@ export interface TalkSessionRotatorOptions {
 	log?: (line: string) => void;
 	/** rotation failed — the conversation is dead; the CLI decides shutdown. */
 	onError?: (err: unknown) => void;
+	/** an UNEXPECTED disconnect was auto-recovered (FLY-545 QA R2 F1) —
+	 * resumed=true when the successor carried the resume handle (context
+	 * kept), false when it restarted cold. Callers surface this to the user
+	 * ("刚才闪断了一下…") so the abort window is never a silent black hole. */
+	onReconnected?: (resumed: boolean) => void;
+	/** a connection-DEATH reconnect rotation is STARTING (FLY-545 QA R5) —
+	 * fired before the successor exists, so the caller can show a truthful
+	 * "line down / recovering" state for the whole abort window. Graceful
+	 * goAway rotations are planned and sub-second — they do not fire this. */
+	onDown?: () => void;
 }
 
 export class TalkSessionRotator {
@@ -52,6 +62,16 @@ export class TalkSessionRotator {
 		this.session?.sendText(text);
 	}
 
+	/** FLY-545: forward a silent context feed to the current session. Returns
+	 * false while a rotation is in flight (no live session) — the caller's
+	 * feed cursor must NOT advance on a drop, or the fact is lost forever
+	 * (Codex R1 HIGH: a silent void no-op read as delivered). */
+	injectContext(text: string): boolean {
+		if (!this.session) return false;
+		this.session.injectContext(text);
+		return true;
+	}
+
 	/** close the live session (if any) and stop all future rotation. */
 	async close(): Promise<ResumeHandle | undefined> {
 		this.closed = true;
@@ -67,12 +87,32 @@ export class TalkSessionRotator {
 		session.on("session-expiring", () => {
 			if (this.session === session) void this.rotate(session);
 		});
+		// connection DEATH auto-reconnect (FLY-545 QA R2 F1): the meeting-
+		// assembly burst reproducibly aborts a live ws; the resume handle is
+		// still cached in the session, so a rotate recovers the conversation
+		// instead of leaving the line dead for the rest of the meeting. Only
+		// this one error code rotates — protocol/tool errors stay put.
+		session.on("error", (err) => {
+			if (
+				err.code === "connection-closed" &&
+				this.session === session &&
+				!this.closed
+			) {
+				void this.rotate(session, { reconnect: true });
+			}
+		});
 	}
 
-	/** single-flight goAway renewal: close → take handle → reopen resumed. */
-	private async rotate(expected: ConversationSession): Promise<void> {
+	/** single-flight renewal (goAway rotation AND disconnect reconnect):
+	 * close → take handle → reopen resumed. */
+	private async rotate(
+		expected: ConversationSession,
+		opts: { reconnect?: boolean } = {},
+	): Promise<void> {
 		if (this.rotating || this.closed || this.session !== expected) return;
 		this.rotating = true;
+		// after the guard, so a late/duplicate error never double-fires it.
+		if (opts.reconnect) this.opts.onDown?.();
 		const old = expected;
 		this.session = undefined; // frames drop instead of hitting a dying socket
 		try {
@@ -89,6 +129,7 @@ export class TalkSessionRotator {
 					? "[session resumed]"
 					: "[session restarted — no resume handle, context lost]",
 			);
+			if (opts.reconnect) this.opts.onReconnected?.(!!handle);
 		} catch (err) {
 			this.opts.onError?.(err);
 		} finally {

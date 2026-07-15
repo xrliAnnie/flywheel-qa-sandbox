@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import type { DesignBackend } from "flywheel-config";
+import type { TerminalFailureInfo } from "flywheel-core";
 import type { BlueprintResult } from "./Blueprint.js";
 
 export interface EventEnvelope {
@@ -13,6 +15,8 @@ export interface EventEnvelope {
 	labels?: string[];
 	/** FLY-59: Session role for multi-session-per-issue support */
 	sessionRole?: string;
+	/** FLY-1259: effective design vendor locked at three-stage admission. */
+	designBackend?: DesignBackend;
 	/**
 	 * FLY-793 (Step 11): the chat-thread role, computed ONCE at dispatch as
 	 * `shareParentBranch ? sessionRole : 'main'`. Carried on session_started so both
@@ -87,6 +91,7 @@ export interface ExecutionEventEmitter {
 		env: EventEnvelope,
 		error: string,
 		lastActivity?: string,
+		failure?: TerminalFailureInfo,
 	): Promise<void>;
 	/** GEO-157: Heartbeat — dedicated route, no session_events, no lead notification */
 	emitHeartbeat(env: EventEnvelope): Promise<void>;
@@ -114,6 +119,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				issueTitle: env.issueTitle,
 				labels: env.labels,
 				sessionRole: env.sessionRole,
+				designBackend: env.designBackend,
 				// FLY-793 (Codex full-PR R1 #4): carry the chat-thread role on the HTTP
 				// started payload too — real runners emit via this client, so without it
 				// the /events sink defaults to "main" and (INSERT-once, never updated)
@@ -164,6 +170,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 		env: EventEnvelope,
 		error: string,
 		lastActivity?: string,
+		failure?: TerminalFailureInfo,
 	): Promise<void> {
 		await this.postEventReliable({
 			event_id: randomUUID(),
@@ -178,6 +185,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				lastActivity,
 				labels: env.labels,
 				sessionRole: env.sessionRole,
+				failure,
 			},
 		});
 	}
@@ -353,7 +361,12 @@ export class NoOpEventEmitter implements ExecutionEventEmitter {
 		_env: EventEnvelope,
 		_result: BlueprintResult,
 	): Promise<void> {}
-	async emitFailed(_env: EventEnvelope, _error: string): Promise<void> {}
+	async emitFailed(
+		_env: EventEnvelope,
+		_error: string,
+		_lastActivity?: string,
+		_failure?: TerminalFailureInfo,
+	): Promise<void> {}
 	async emitHeartbeat(_env: EventEnvelope): Promise<void> {}
 	async flush(): Promise<void> {}
 }

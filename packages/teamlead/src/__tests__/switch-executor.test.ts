@@ -136,7 +136,10 @@ describe("switchAccount", () => {
 		});
 		const d = deps();
 		const res = await switchAccount(input, d);
-		expect(res.outcome).toBe("no_account");
+		expect(res).toMatchObject({
+			outcome: "no_account",
+			reasonCode: "no_eligible_account",
+		});
 		expect(d.applyProfile).not.toHaveBeenCalled();
 		expect(readStore(storePath).generation).toBe(1);
 	});
@@ -156,7 +159,10 @@ describe("switchAccount", () => {
 			}),
 		});
 		const res = await switchAccount(input, d);
-		expect(res.outcome).toBe("failed");
+		expect(res).toMatchObject({
+			outcome: "failed",
+			reasonCode: "apply_failed",
+		});
 		const after = readStore(storePath);
 		expect(after.activeAccount).toBe("personal"); // unchanged
 		expect(after.generation).toBe(1);
@@ -270,7 +276,10 @@ describe("switchAccount", () => {
 			throw new TargetStaleError(name);
 		});
 		const res = await switchAccount(input, deps({ applyProfile }));
-		expect(res.outcome).toBe("no_account");
+		expect(res).toMatchObject({
+			outcome: "no_account",
+			reasonCode: "target_stale_exhausted",
+		});
 		const after = readStore(storePath);
 		// active never switched; both non-current accounts flagged authExpired
 		expect(after.activeAccount).toBe("personal");
@@ -288,7 +297,10 @@ describe("switchAccount", () => {
 			throw new FreshnessUnavailableError();
 		});
 		const res = await switchAccount(input, deps({ applyProfile }));
-		expect(res.outcome).toBe("failed");
+		expect(res).toMatchObject({
+			outcome: "failed",
+			reasonCode: "freshness_unavailable",
+		});
 		// exactly ONE apply attempt (no candidate loop — a candidate fails the same)
 		expect(applyProfile).toHaveBeenCalledTimes(1);
 		const after = readStore(storePath);
@@ -304,7 +316,10 @@ describe("switchAccount", () => {
 			throw new Error("keychain locked");
 		});
 		const res = await switchAccount(input, deps({ applyProfile }));
-		expect(res.outcome).toBe("failed");
+		expect(res).toMatchObject({
+			outcome: "failed",
+			reasonCode: "apply_failed",
+		});
 		expect(applyProfile).toHaveBeenCalledTimes(1); // no loop
 		expect(readStore(storePath).accounts.every((a) => !a.authExpired)).toBe(
 			true,
@@ -355,5 +370,39 @@ describe("switchAccount", () => {
 		);
 		expect(personal?.quotaExhaustedUntil).toBe("2026-07-06T14:00:00.000Z");
 		expect(personal?.weeklyResetAt).toBe("2026-07-06T14:00:00.000Z");
+	});
+
+	it("preferredOrder is passed through on every candidate selection and excludes unverified accounts", async () => {
+		seed(threeAccountStore());
+		const applyProfile = vi.fn(async () => {});
+		const res = await switchAccount(
+			{ ...input, preferredOrder: ["school"] },
+			deps({ applyProfile }),
+		);
+		expect(res).toMatchObject({ outcome: "switched", to: "school" });
+		expect(applyProfile).toHaveBeenCalledTimes(1);
+		expect(applyProfile).toHaveBeenCalledWith("school");
+	});
+
+	it("a stale first preferred target falls through only to the next verified target", async () => {
+		const s = threeAccountStore();
+		s.accounts.push({
+			name: "shopping",
+			quotaExhaustedUntil: null,
+			weeklyResetAt: null,
+		});
+		seed(s);
+		const applyProfile = vi.fn(async (name: string) => {
+			if (name === "school") throw new TargetStaleError(name);
+		});
+		const res = await switchAccount(
+			{ ...input, preferredOrder: ["school", "shopping"] },
+			deps({ applyProfile }),
+		);
+		expect(res).toMatchObject({ outcome: "switched", to: "shopping" });
+		expect(applyProfile.mock.calls.map(([name]) => name)).toEqual([
+			"school",
+			"shopping",
+		]);
 	});
 });

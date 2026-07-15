@@ -102,6 +102,32 @@ function envSite(
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	// ─── env kill-switches / features, call_time → DIRECT-toggle candidates ───
 	{
+		// FLY-1256 phase-1 migration flag: after the external daemon is healthy,
+		// setup flips this to retire the Bridge's legacy switch execution surfaces.
+		// The Bridge captures the resolved mode while wiring the plugin, so changing
+		// the env requires a restart. This row is deliberately readonly/temporary;
+		// FLY-1284 removes the flag after one week of stable daemon operation.
+		name: "quota_daemon_cutover",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_QUOTA_DAEMON_CUTOVER",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1256: daemon 健康后退役 Bridge 内旧 account-switch 执行面（迁移期临时 flag，翻转需重启）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/quota-daemon-cutover.ts",
+				"resolveQuotaDaemonCutover",
+				"object_construction",
+			),
+		],
+		toggleable: "readonly",
+		note: "临时两阶段迁移 flag；FLY-1284 在 enable 稳定 >=1 周后删除，并同步迁移 KIND_CONTRACTS.usage_limit。",
+	},
+	{
 		name: "auto_qa_killswitch",
 		category: "kill_switch",
 		source: "env",
@@ -164,6 +190,34 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		// the runner-CLI verify-approval .env bidirectional live-toggle test.
 		directToggleProof:
 			"resolve.direct-toggle.test:codex_hard_gate_killswitch live-observe + verify-approval.test:.env live-toggle",
+	},
+	{
+		// FLY-1278: default-ON convergence policy for cross-family review. It
+		// classifies MEDIUM/LOW findings as advisory and applies Lead-settled
+		// finding rulings; `=0` restores the legacy reviewer-verdict lane byte for
+		// byte. The coordinator reads this at the start of every review job, so a
+		// live mutation affects the next round without reconstructing the Bridge.
+		name: "review_severity_policy_killswitch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_REVIEW_SEVERITY_POLICY",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"全局关掉跨家族审查收敛政策（=0 回滚 legacy verdict；默认 ON=MEDIUM/LOW 不阻塞并尊重 Lead 已裁决 finding）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/review-verdict-policy.ts",
+				"severityPolicyEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"review-verdict-policy.test:FLYWHEEL_REVIEW_SEVERITY_POLICY live-observe",
 	},
 	{
 		// FLY-869 B: the merge-race ship gate kill-switch. Default-ON (决定②): a merged
@@ -342,13 +396,13 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "与 FLYWHEEL_THREE_STAGE(整体开关)/ FLYWHEEL_THREE_STAGE_KEEPALIVE 正交；本 env=0 只翻 implement 段的 vendor/model，phase 表其余行不动。",
 	},
 	{
-		// FLY-1245: per-phase vendor — the design phase defaults to claude/Fable
-		// (heavy). `=1` flips the design dispatch to codex (gpt-5.6-sol, xhigh) —
-		// the operational escape hatch when the Fable quota is the bottleneck.
+		// FLY-1245 / FLY-1259: new-run admission fallback for the design phase
+		// when admission did not provide a per-dispatch designBackend. `=1` flips
+		// the fallback from claude/Fable to codex (gpt-5.6-sol, xhigh).
 		// MIRROR of the implement kill-switch but INVERTED activating value: design
 		// defaults to claude (=1 opts INTO codex) whereas implement defaults to
-		// codex (=0 falls back to claude). Display fallbacks (phaseMessageTag /
-		// issue-display pending rows) read the same table, so they follow.
+		// codex (=0 falls back to claude). New-run display fallbacks prefer the
+		// locked backend; legacy/null rows still read this table.
 		name: "three_stage_codex_design_toggle",
 		category: "kill_switch",
 		source: "env",
@@ -358,7 +412,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		valueKind: "bool",
 		default: false,
 		description:
-			"三段式 design 段 codex 派发开关（=1 → design 从 Fable 切到 codex gpt-5.6-sol xhigh；不设/≠1 → 现状 claude/heavy(Fable)，字节不变；implement/qa 不受影响；改 ~/.flywheel/.env 后需 restart-services.sh --bridge-only）(FLY-1245)",
+			"三段式 design 段新 run admission fallback（仅在 admission 时且本次 run 未指定 designBackend：=1 → codex gpt-5.6-sol xhigh；不设/≠1 → claude/Fable；一旦写入 sessions.design_backend，retry/rescue 不再读本开关；implement/qa 不受影响；改 ~/.flywheel/.env 后需 restart-services.sh --bridge-only）(FLY-1245/FLY-1259)",
 		readSites: [
 			envSite(
 				"packages/config/src/three-stage-phases.ts",
@@ -367,7 +421,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			),
 		],
 		toggleable: "readonly",
-		note: "与 implement 开关方向相反：implement 默认 codex(=0 关)，design 默认 Fable(=1 开)。正交于 FLYWHEEL_THREE_STAGE / FLYWHEEL_THREE_STAGE_KEEPALIVE；design=codex 后 design review 自动翻 Claude lane(FLY-1188 §7.1)。",
+		note: "per-dispatch designBackend 与已锁定 sessions.design_backend 优先于本全局 fallback；已锁定 run 如需换 vendor，结束旧 run 后以显式 designBackend 新开 run；display fallback 对新 run 先读 locked backend，legacy/null 才读本开关。",
 	},
 	{
 		// FLY-939 (G-D): Bridge boot logs its running HEAD and best-effort compares
@@ -1433,27 +1487,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
-		name: "attribution_hold_align",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_ATTRIBUTION_HOLD_ALIGN",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1041 Fix B: held(codex 未绿/QA 未绿/merge_block)期间三个 founder 批准写入源(text/✅/voice)统一拒写(=0 回到 held 也写入的 FLY-910 现状;一个开关管三源)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/auto-qa-held.ts",
-				"founderApprovalHoldGuard",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
 		name: "tier2_prefix_norm",
 		category: "kill_switch",
 		source: "env",
@@ -2207,5 +2240,265 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "readonly",
 		note: "Independent emergency fallback; resolved before any claims table access.",
+	},
+	{
+		name: "delivery_ack",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DELIVERY_ACK",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1279: durable Lead-event ACK, bounded reminder, and dead-letter escalation loop",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/lead-event-ack-policy.ts",
+				"deliveryAckEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "commdb_protection",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_COMMDB_PROTECTION",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1279 H2: retain unanswered actionable CommDB rows through expiry, finalize, and prune paths",
+		readSites: [
+			envSite(
+				"packages/flywheel-comm/src/db.ts",
+				"commDbProtectionEnabled",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "delivery_ack_timeout_ms",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DELIVERY_ACK_TIMEOUT_MS",
+		polarity: "opt_in",
+		valueKind: "value",
+		default: "300000",
+		description: "FLY-1279: ACK deadline before a Lead-event reminder",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/lead-event-delivery.ts",
+				"LeadEventDeliveryCoordinator constructor",
+				"object_construction",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "delivery_max_redeliver",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DELIVERY_MAX_REDELIVER",
+		polarity: "opt_in",
+		valueKind: "value",
+		default: "5",
+		description:
+			"FLY-1279: maximum pushed ACK reminders before dead-letter escalation",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/lead-event-delivery.ts",
+				"LeadEventDeliveryCoordinator constructor",
+				"object_construction",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "delivery_max_transport_failures",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DELIVERY_MAX_TRANSPORT_FAILURES",
+		polarity: "opt_in",
+		valueKind: "value",
+		default: "5",
+		description:
+			"FLY-1279: maximum failed transport attempts before dead-letter escalation",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/lead-event-delivery.ts",
+				"LeadEventDeliveryCoordinator constructor",
+				"object_construction",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "ack_late_window_ms",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_ACK_LATE_WINDOW_MS",
+		polarity: "opt_in",
+		valueKind: "value",
+		default: "86400000",
+		description:
+			"FLY-1279: late-ACK acceptance window after a confirmed founder page",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/lead-event-delivery.ts",
+				"LeadEventDeliveryCoordinator constructor",
+				"object_construction",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "delivery_ack_types",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DELIVERY_ACK_TYPES",
+		polarity: "opt_in",
+		valueKind: "value",
+		default:
+			"gate_question,runner_question,runner_park_notice,gate_timed_out,session_failed",
+		description:
+			"FLY-1279: enqueue-time event-type cohort for durable ACK semantics; historical rows are never reinterpreted",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/lead-event-ack-policy.ts",
+				"configuredAckTypes",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "delivery_secret_path",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DELIVERY_SECRET_PATH",
+		polarity: "opt_in",
+		valueKind: "value",
+		default: "~/.flywheel/delivery-secret",
+		description:
+			"FLY-1279: versioned 0600 HMAC key path for per-event ACK bearer capabilities",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/delivery-secret.ts",
+				"FileDeliverySecretProvider constructor",
+				"object_construction",
+			),
+		],
+		toggleable: "readonly",
+	},
+	{
+		name: "park_watch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_PARK_WATCH",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1279 D2: semantic scan for blocked, missing-gate, declared-park, and QA-hold episodes",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/park-watch.ts",
+				"runParkWatch",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "park_watch_cadence",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_PARK_WATCH_EVERY_N_TICKS",
+		polarity: "opt_in",
+		valueKind: "value",
+		default: "20",
+		description: "FLY-1279 D2: park-watch cadence on the GatePoller timer",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"GatePoller park-watch wiring",
+				"object_construction",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "park_watch_n1_ms",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_PARK_N1_MS",
+		polarity: "opt_in",
+		valueKind: "value",
+		default: "600000",
+		description: "FLY-1279 D2: ordinary park age before Lead notification",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/park-watch.ts",
+				"runParkWatch",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "park_watch_qa_n3_ms",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_PARK_QA_N3_MS",
+		polarity: "opt_in",
+		valueKind: "value",
+		default: "7200000",
+		description:
+			"FLY-1279 D2: healthy QA/retest hold age before a Lead-only patrol notice",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/park-watch.ts",
+				"runParkWatch",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "park_watch_n2_ms",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_PARK_N2_MS",
+		polarity: "opt_in",
+		valueKind: "value",
+		default: "600000",
+		description:
+			"FLY-1279 D2: grace after Lead park notification before confirmed founder issue-thread escalation",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/park-watch.ts",
+				"parkFounderGraceMs",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
 	},
 ];

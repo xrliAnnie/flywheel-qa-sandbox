@@ -41,6 +41,7 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_RUNNER_BACKEND_ID: "context: runner backend id",
 	FLYWHEEL_RUNNER_VENDOR_ID: "context: runner vendor id",
 	FLYWHEEL_AGENT_BACKEND: "context: agent backend",
+	FLYWHEEL_LEAD_ID: "context: owning Lead id",
 	FLYWHEEL_RUNNER_START_POINT: "context: runner start point",
 	FLYWHEEL_FOUNDER_USER_ID: "context: founder discord id",
 	FLYWHEEL_FOUNDER_DISCORD_USER_ID: "context: founder discord id (alt)",
@@ -74,10 +75,22 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: fleet-sanitize.sh scanner path override (FLY-1062 broker gate; tests point it at stubs)",
 	FLYWHEEL_CLAUDE_ACCOUNTS_PATH:
 		"plumbing: claude account-state json path (FLY-696)",
+	FLYWHEEL_CLAUDE_ACCOUNTS_LOCK:
+		"plumbing: shared claude account switch lock path (FLY-1256 daemon reuses the FLY-696/852 lock)",
+	FLYWHEEL_CLAUDE_PROFILES_DIR:
+		"plumbing: claude profile pool directory (FLY-1256 daemon reuses the existing credential pool)",
 	FLYWHEEL_ACCOUNT_PENDING_PATH:
 		"plumbing: account_switch_pending store path (FLY-696)",
 	FLYWHEEL_CLAUDE_PROFILE_BIN:
 		"plumbing: flywheel-claude-profile script path (FLY-696)",
+	FLYWHEEL_CLAUDE_SECURITY_BIN:
+		"plumbing: macOS security executable override for scratch-keychain QA (FLY-1256)",
+	FLYWHEEL_CLAUDE_KEYCHAIN:
+		"plumbing: optional macOS keychain path for isolated profile credentials (FLY-1256)",
+	FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT:
+		"config value: machine Keychain item account selector (FLY-1256)",
+	FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE:
+		"config value: machine Keychain item service selector (FLY-1256)",
 	FLYWHEEL_CLAUDE_LOCK_DELEGATED:
 		"internal contract: parent lock-holder pid passed to the profile script (FLY-852 anti-deadlock; validated against the live holder marker)",
 	FLYWHEEL_CLAUDE_OAUTH_ENDPOINT:
@@ -91,6 +104,22 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_DETECTION_AI_CLASSIFY:
 		"internal ops lever: kill-switch for the Layer-2 AI-assisted pane classify step, default-on (FLY-871)",
 	FLYWHEEL_BRIDGE_WATCHDOG_LOG: "plumbing: watchdog log path",
+	FLYWHEEL_LEAD_ALERT_BIN:
+		"plumbing: lead-alert executable override for hermetic quota-monitor QA (FLY-1256)",
+	FLYWHEEL_QUOTA_PIDFILE:
+		"plumbing: external quota-monitor singleton pidfile path (FLY-1256)",
+	FLYWHEEL_QUOTA_RUN_MARKER:
+		"plumbing: external quota-monitor graceful-exit marker path (FLY-1256)",
+	FLYWHEEL_QUOTA_MONITOR_CONFIG:
+		"config value: external quota-monitor runtime config path (FLY-1256)",
+	FLYWHEEL_QUOTA_STATUSLINE_CACHE:
+		"plumbing: statusline usage cache output path (FLY-1256)",
+	FLYWHEEL_QUOTA_TMUX_SOCKET:
+		"plumbing: tmux socket name for isolated quota revive scans (FLY-1256)",
+	FLYWHEEL_QUOTA_STATE_PATH:
+		"plumbing: external quota-monitor durable state path (FLY-1256)",
+	FLYWHEEL_QUOTA_API_BASE:
+		"config value: OAuth usage API base URL override (FLY-1256; local mock in QA)",
 	// secrets / token env names
 	FLYWHEEL_INGEST_TOKEN: "secret: ingest token",
 	FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL:
@@ -176,6 +205,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: cron stale-blocker TTL minutes (FLY-742)",
 	FLYWHEEL_THREE_STAGE_MAX_FIX_ROUNDS:
 		"tuning knob: three-stage QA fix-loop round cap, default 3 (FLY-859)",
+	FLYWHEEL_QA_RECONCILE_EVERY_N_TICKS:
+		"tuning knob: dead auto-QA recovery reconcile cadence (FLY-1279 D3b)",
 	// FLY-927 infra-alert ticket-queue rollout levers (all default-off = current
 	// behavior; ops-flipped in ~/.flywheel/.env + Bridge restart, NOT founder
 	// dashboard toggles yet — same class as the internal ops levers above). When
@@ -293,5 +324,16 @@ describe("feature-flag drift guard", () => {
 			unregistered,
 			`new FLYWHEEL_* env not registered or allowlisted (register it, or add to NON_FLAG_ALLOWLIST with a reason): ${unregistered.join(", ")}`,
 		).toEqual([]);
+	});
+
+	it("documents the global design switch as the fallback below a per-dispatch lock", () => {
+		const designFlag = FEATURE_FLAGS.find(
+			(flag) => flag.name === "three_stage_codex_design_toggle",
+		);
+		expect(designFlag?.description).toContain("未指定 designBackend");
+		expect(designFlag?.description).toContain("admission");
+		expect(designFlag?.description).toContain("retry/rescue 不再读");
+		expect(designFlag?.note).toContain("per-dispatch designBackend");
+		expect(designFlag?.note).toContain("新开 run");
 	});
 });

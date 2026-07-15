@@ -24,11 +24,23 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { adapterTypeToFamily, type RoleEffort } from "flywheel-config";
-import type { CodexReviewJob, Session, StateStore } from "../StateStore.js";
+import type {
+	CodexReviewJob,
+	ReviewFindingRuling,
+	Session,
+	StateStore,
+} from "../StateStore.js";
 import {
 	type ClaudeReviewOutcome,
 	runClaudeReviewRound,
 } from "./claude-review-runner.js";
+import { buildGovernancePromptSegment } from "./review-governance-prompt.js";
+import {
+	computeEffectiveVerdict,
+	type EffectiveReviewVerdict,
+	type ReviewFindingRulingSnapshot,
+	severityPolicyEnabled,
+} from "./review-verdict-policy.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -76,6 +88,44 @@ export type AcceptReviewResult =
 	  }
 	| { accepted: false; httpStatus: number; reason: string };
 
+export interface ReviewRulingPayload {
+	projectName?: unknown;
+	issue?: unknown;
+	findingKey?: unknown;
+	requestId?: unknown;
+	findingIndex?: unknown;
+	disposition?: unknown;
+	followUpIssue?: unknown;
+	rationale?: unknown;
+	ruledBy?: unknown;
+	executionId?: unknown;
+	revokeRulingId?: unknown;
+}
+
+export type ReviewRulingResult =
+	| {
+			accepted: true;
+			httpStatus: 200 | 201;
+			ruling: ReviewFindingRuling;
+	  }
+	| { accepted: false; httpStatus: number; reason: string };
+
+export type ReviewAlertKind =
+	| "review_advisory_pass"
+	| "review_ruling_recorded"
+	| "review_ruling_disputed"
+	| "review_ruling_notify_failed";
+
+export interface ReviewAlertEvent {
+	kind: ReviewAlertKind;
+	eventId: string;
+	issueId: string;
+	executionId?: string;
+	requestId?: string;
+	rulingId?: string;
+	message: string;
+}
+
 export interface ReviewCoordinatorDeps {
 	store: StateStore;
 	commDbPathFor: (projectName: string) => string;
@@ -104,6 +154,20 @@ export interface ReviewCoordinatorDeps {
 	 */
 	reviewerEffort?: RoleEffort;
 	reviewerTimeoutMs?: number;
+	/** Test seam; production follows FLYWHEEL_REVIEW_SEVERITY_POLICY. */
+	reviewSeverityPolicyEnabled?: boolean;
+	/** Slice seam: StateStore-backed issue lookup is connected in FLY-1278/2. */
+	listActiveReviewFindingRulings?: (input: {
+		projectName: string;
+		issueId: string;
+	}) => readonly ReviewFindingRulingSnapshot[];
+	/** Structured Lead alert path (late-bound routed notifier in production). */
+	emitReviewAlert?: (event: ReviewAlertEvent) => Promise<void>;
+	/** Best-effort supervised audit post to the source issue thread. */
+	postReviewRulingThread?: (input: {
+		session: Session;
+		text: string;
+	}) => Promise<{ ok: boolean }>;
 }
 
 const REQUEST_ID_MAX = 128;
@@ -195,6 +259,12 @@ function sanitizeFailureSummary(raw: string | undefined): string | undefined {
 		.slice(0, ALERT_SUMMARY_MAX);
 	return sanitized || undefined;
 }
+const ISSUE_REF =
+	/^(?:[A-Z][A-Z0-9]*-[0-9]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+const FOLLOW_UP_REF = /^[A-Z][A-Z0-9]*-[0-9]+$/;
+const PROJECT_NAME = /^[A-Za-z0-9._-]+$/;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: privileged prompt fields reject all controls
+const CONTROL_CHAR = /[\u0000-\u001f\u007f]/;
 
 /**
  * Codex full-PR review MED-6: a design review's `planPath` is persisted and
@@ -254,6 +324,134 @@ export class ReviewRequestCoordinator {
 			const next = this.waiters.shift();
 			next?.();
 		}
+	}
+
+	/**
+	 * FLY-1278 supervised Lead override. The caller supplies intent and a
+	 * locator; StateStore derives every finding audit field from a delivered
+	 * review job. Free-form gate/request text is deliberately not authority.
+	 */
+	async reviewRuling(
+		payload: ReviewRulingPayload,
+	): Promise<ReviewRulingResult> {
+		const projectName = str(payload.projectName);
+		const rationale = str(payload.rationale);
+		const ruledBy = str(payload.ruledBy);
+		const revokeRulingId = str(payload.revokeRulingId);
+		if (
+			!projectName ||
+			projectName.length > 128 ||
+			!PROJECT_NAME.test(projectName) ||
+			!validPrivilegedText(rationale, 2_000) ||
+			!validPrivilegedText(ruledBy, 64)
+		) {
+			return rejectRuling(400, "invalid projectName, rationale, or ruledBy");
+		}
+
+		if (revokeRulingId) {
+			if (!validPrivilegedText(revokeRulingId, 128)) {
+				return rejectRuling(400, "invalid revokeRulingId");
+			}
+			const ruling = this.store.revokeReviewFindingRuling({
+				projectName,
+				rulingId: revokeRulingId,
+				revokedBy: ruledBy!,
+				reason: rationale!,
+			});
+			return ruling
+				? { accepted: true, httpStatus: 200, ruling }
+				: rejectRuling(404, `review ruling ${revokeRulingId} not found`);
+		}
+
+		const issue = str(payload.issue);
+		const findingKey = str(payload.findingKey);
+		const requestId = str(payload.requestId);
+		const findingIndex =
+			typeof payload.findingIndex === "number" &&
+			Number.isInteger(payload.findingIndex) &&
+			payload.findingIndex >= 0
+				? payload.findingIndex
+				: undefined;
+		const disposition = str(payload.disposition);
+		const followUpIssue = str(payload.followUpIssue);
+		const executionId = str(payload.executionId);
+		const findingLocator = findingKey !== undefined;
+		const requestLocator =
+			requestId !== undefined || findingIndex !== undefined;
+		if (
+			!issue ||
+			!ISSUE_REF.test(issue) ||
+			findingLocator === requestLocator ||
+			(requestLocator && (!requestId || findingIndex === undefined)) ||
+			(findingKey !== undefined && !validPrivilegedText(findingKey, 128)) ||
+			(requestId !== undefined && !validPrivilegedText(requestId, 128)) ||
+			(executionId !== undefined && !validPrivilegedText(executionId, 128)) ||
+			(disposition !== "overruled" && disposition !== "follow_up") ||
+			(disposition === "follow_up" &&
+				(!followUpIssue || !FOLLOW_UP_REF.test(followUpIssue))) ||
+			(disposition === "overruled" && followUpIssue !== undefined)
+		) {
+			return rejectRuling(
+				400,
+				"invalid issue, locator, disposition, or follow-up",
+			);
+		}
+
+		const recorded = this.store.recordReviewFindingRuling({
+			projectName,
+			issue,
+			...(findingKey ? { findingKey } : {}),
+			...(requestId ? { requestId } : {}),
+			...(findingIndex !== undefined ? { findingIndex } : {}),
+			disposition,
+			...(followUpIssue ? { followUpIssue } : {}),
+			rationale: rationale!,
+			ruledBy: ruledBy!,
+			...(executionId ? { executionId } : {}),
+		});
+		if (recorded.status === "issue_not_found") {
+			return rejectRuling(
+				404,
+				`issue ${issue} not found in project ${projectName}`,
+			);
+		}
+		if (recorded.status === "finding_not_found") {
+			return rejectRuling(400, "finding was not present in a delivered review");
+		}
+		if (
+			recorded.status === "issue_ambiguous" ||
+			recorded.status === "finding_ambiguous" ||
+			recorded.status === "conflict"
+		) {
+			return rejectRuling(409, recorded.status);
+		}
+		if (!recorded.ruling) {
+			return rejectRuling(500, "review ruling was not persisted");
+		}
+
+		if (recorded.status === "created") {
+			const sourceJob = this.store.getCodexReviewJob(
+				recorded.ruling.source_request_id,
+			);
+			await this.emitReviewAlert({
+				kind: "review_ruling_recorded",
+				eventId: `review-ruling:${recorded.ruling.ruling_id}`,
+				issueId:
+					recorded.ruling.issue_identifier ??
+					recorded.ruling.issue_id_canonical,
+				...(sourceJob ? { executionId: sourceJob.execution_id } : {}),
+				rulingId: recorded.ruling.ruling_id,
+				message: `Lead recorded governance ruling ${recorded.ruling.ruling_id} for ${recorded.ruling.finding_key}.`,
+			});
+		}
+		if (!recorded.ruling.notified_at) {
+			await this.notifyReviewRuling(recorded.ruling);
+		}
+		return {
+			accepted: true,
+			httpStatus: recorded.status === "created" ? 201 : 200,
+			ruling: recorded.ruling,
+		};
 	}
 
 	/**
@@ -506,6 +704,13 @@ export class ReviewRequestCoordinator {
 	 * re-review); (2) running → pending, then enqueue every redrivable job.
 	 */
 	redriveOnBoot(): number {
+		for (const ruling of this.store.listPendingReviewRulingNotifications()) {
+			void this.notifyReviewRuling(ruling).catch((err) => {
+				this.log(
+					`ruling notification redrive failed for ${ruling.ruling_id}: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			});
+		}
 		for (const job of this.store.listUndeliveredCodexReviewJobs()) {
 			void this.deliverStoredResponse(job).catch((err) => {
 				this.log(
@@ -540,12 +745,22 @@ export class ReviewRequestCoordinator {
 				projectName: job.project_name,
 			});
 		}
+		if (
+			job.status !== "skipped" &&
+			job.payload_version === 2 &&
+			!job.response_json
+		) {
+			this.alert(
+				`review ${job.request_id}: payload_version=2 is missing canonical response_json — outbox delivery and authority commit refused.`,
+			);
+			return;
+		}
 		// R17: the server-only delivery nonce makes this payload unforgeable —
 		// a runner pre-writing a "predictable" bridge response cannot know it.
 		const nonceField = job.delivery_nonce
 			? { deliveryNonce: job.delivery_nonce }
 			: {};
-		const content: Record<string, unknown> =
+		const content: Record<string, unknown> | string =
 			job.status === "skipped"
 				? {
 						reviewVerdict: "SKIPPED",
@@ -553,16 +768,18 @@ export class ReviewRequestCoordinator {
 						note: "codex_skip is active for this execution — review sanctioned as skipped; proceed.",
 						...nonceField,
 					}
-				: {
-						reviewVerdict: job.verdict ?? "CHANGES_REQUESTED",
-						requestId: job.request_id,
-						round: job.round,
-						findings: safeParseArray(job.findings_json),
-						...(job.frozen_head_sha
-							? { reviewedHeadSha: job.frozen_head_sha }
-							: {}),
-						...nonceField,
-					};
+				: job.payload_version === 2 && job.response_json
+					? job.response_json
+					: {
+							reviewVerdict: job.verdict ?? "CHANGES_REQUESTED",
+							requestId: job.request_id,
+							round: job.round,
+							findings: safeParseArray(job.findings_json),
+							...(job.frozen_head_sha
+								? { reviewedHeadSha: job.frozen_head_sha }
+								: {}),
+							...nonceField,
+						};
 		// R13 MEDIUM-1: stamp ONLY when the durable response in place is OURS
 		// (freshly inserted or an idempotent replay of the exact canonical
 		// payload). A foreign answer (e.g. a Lead cancellation) must not be
@@ -693,10 +910,42 @@ export class ReviewRequestCoordinator {
 			return;
 		}
 
+		const policyEnabled =
+			this.deps.reviewSeverityPolicyEnabled ?? severityPolicyEnabled();
+		// FLY-1278 R2 #1: one immutable pre-prompt snapshot is reused after the
+		// reviewer returns. Mid-round create/revoke takes effect next round only.
+		const rulingSnapshot: readonly ReviewFindingRulingSnapshot[] = policyEnabled
+			? Object.freeze(
+					(
+						this.deps.listActiveReviewFindingRulings?.({
+							projectName: job.project_name,
+							issueId: job.issue_id ?? session.issue_id,
+						}) ?? []
+					).map((ruling) => Object.freeze({ ...ruling })),
+				)
+			: Object.freeze([]);
+		const governancePrompt = policyEnabled
+			? buildGovernancePromptSegment(rulingSnapshot, job.review_type)
+			: { text: "", elided: 0 };
+		if (governancePrompt.elided > 0) {
+			await this.emitReviewAlert({
+				kind: "review_advisory_pass",
+				eventId: `review-advisory:${requestId}:governance-elided`,
+				issueId: job.issue_id ?? session.issue_id,
+				executionId: job.execution_id,
+				requestId,
+				message: `${governancePrompt.elided} older active governance ruling(s) were elided from the bounded reviewer prompt; review whether stale rulings should be revoked.`,
+			});
+		}
 		const roundRunner = this.deps.reviewRound ?? runClaudeReviewRound;
 		const runRound = (roundResume: boolean, roundSessionUuid: string) =>
 			roundRunner({
-				prompt: this.buildPrompt(job, roundResume),
+				prompt: this.buildPrompt(
+					job,
+					roundResume,
+					policyEnabled,
+					governancePrompt.text,
+				),
 				sessionId: roundSessionUuid,
 				resume: roundResume,
 				cwd,
@@ -795,6 +1044,14 @@ export class ReviewRequestCoordinator {
 			return;
 		}
 
+		const policyResult = computeEffectiveVerdict({
+			reviewerVerdict: outcome.verdict,
+			findings: outcome.findings,
+			reviewType: job.review_type,
+			rulings: rulingSnapshot,
+			enabled: policyEnabled,
+		});
+
 		if (job.review_type === "code") {
 			// accept-time freeze × verdict-time recheck for EVERY code verdict
 			// (R3 #2 + R12 MEDIUM: findings against a moved head are as
@@ -808,7 +1065,7 @@ export class ReviewRequestCoordinator {
 				);
 				return;
 			}
-			if (outcome.verdict === "APPROVED") {
+			if (policyResult.effectiveVerdict === "APPROVED") {
 				// R12 HIGH-6: the reviewer MUST echo the exact sha it reviewed —
 				// a missing/mismatching echo can never become an authority record.
 				if (!outcome.reviewedHeadSha || outcome.reviewedHeadSha !== frozen) {
@@ -838,22 +1095,52 @@ export class ReviewRequestCoordinator {
 		// `done` is re-driven by the outbox, which re-runs this same
 		// deliver-then-authority sequence from the stored verdict.
 		const findingsJson = JSON.stringify(outcome.findings ?? []);
-		this.store.completeCodexReviewJob(requestId, outcome.verdict, findingsJson);
-		const owned = await this.respond(
-			session,
-			job.question_id,
-			{
-				reviewVerdict: outcome.verdict,
-				requestId,
-				round: job.round,
-				findings: safeParseArray(findingsJson),
-				...(job.frozen_head_sha
-					? { reviewedHeadSha: job.frozen_head_sha }
-					: {}),
-				...(job.delivery_nonce ? { deliveryNonce: job.delivery_nonce } : {}),
-			},
-			{ executionId: job.execution_id, reviewType: job.review_type },
+		const responsePayload = policyEnabled
+			? buildVerdictPayload(job, policyResult)
+			: buildLegacyVerdictPayload(job, outcome.verdict, findingsJson);
+		const responseJson = JSON.stringify(responsePayload);
+		this.store.completeCodexReviewJob(
+			requestId,
+			policyResult.effectiveVerdict,
+			findingsJson,
+			policyEnabled
+				? {
+						reviewerVerdict: outcome.verdict,
+						advisoriesJson: JSON.stringify(policyResult.advisories),
+						settledJson: JSON.stringify(policyResult.settled),
+						responseJson,
+						payloadVersion: 2,
+					}
+				: undefined,
 		);
+		if (
+			policyResult.effectiveVerdict === "APPROVED" &&
+			policyResult.advisories.length > 0
+		) {
+			await this.emitReviewAlert({
+				kind: "review_advisory_pass",
+				eventId: `review-advisory:${requestId}`,
+				issueId: job.issue_id ?? session.issue_id,
+				executionId: job.execution_id,
+				requestId,
+				message: `Review ${requestId} passed with ${policyResult.advisories.length} non-blocking advisory finding(s).`,
+			});
+		}
+		for (const dispute of policyResult.disputes) {
+			await this.emitReviewAlert({
+				kind: "review_ruling_disputed",
+				eventId: `review-dispute:${requestId}:${dispute.ruling.rulingId}`,
+				issueId: job.issue_id ?? session.issue_id,
+				executionId: job.execution_id,
+				requestId,
+				rulingId: dispute.ruling.rulingId,
+				message: `Reviewer ${dispute.kind} dispute of governance ruling ${dispute.ruling.rulingId}: ${dispute.finding.title ?? dispute.finding.findingKey}.`,
+			});
+		}
+		const owned = await this.respond(session, job.question_id, responseJson, {
+			executionId: job.execution_id,
+			reviewType: job.review_type,
+		});
 		if (!owned) {
 			// narrow race: a foreign answer landed between the pre-verdict
 			// recheck and the write. The job stays done+unstamped (immutable),
@@ -865,7 +1152,7 @@ export class ReviewRequestCoordinator {
 		}
 		this.commitAuthorityIfApproved({
 			...job,
-			verdict: outcome.verdict,
+			verdict: policyResult.effectiveVerdict,
 		});
 		this.store.stampCodexReviewJobResponded(requestId);
 	}
@@ -919,8 +1206,10 @@ export class ReviewRequestCoordinator {
 			execution_id: string;
 		},
 		resume: boolean,
+		policyEnabled: boolean,
+		governancePrompt: string,
 	): string {
-		const contract =
+		const legacyContract =
 			`You are the CROSS-FAMILY REVIEWER for ${job.issue_id ?? job.execution_id} ` +
 			`(a codex-authored change; you are the independent Claude lane). ` +
 			`Actively explore this repository — do not rely on any diff alone. ` +
@@ -928,17 +1217,28 @@ export class ReviewRequestCoordinator {
 			`"findings": [{"severity": "HIGH|MEDIUM|LOW", "file": "...", "line": 0, "title": "...", "detail": "..."}], ` +
 			`"reviewedHeadSha": "<the exact commit you reviewed, git rev-parse HEAD>"}. ` +
 			`No prose outside the JSON. Your very last line must be that JSON object itself.`;
+		const contract = policyEnabled
+			? legacyContract.replace(
+					`"findings": [{"severity": "HIGH|MEDIUM|LOW",`,
+					`"findings": [{"id": "stable-short-slug", "severity": "HIGH|MEDIUM|LOW",`,
+				) +
+				` Severity policy: HIGH means a ship-unsafe defect in correctness, security, data loss, or authorization. MEDIUM means a non-ship-blocking improvement; LOW means a nit. Vote CHANGES_REQUESTED ONLY when at least one HIGH finding exists. If every finding is MEDIUM/LOW, vote APPROVED and list them as non-blocking advisories. Give every finding a stable "id" and reuse the same id for the same issue in every re-review round.`
+			: legacyContract;
 		const target =
 			job.review_type === "design"
 				? `Review the DESIGN/PLAN at path: ${job.target_path ?? "engineering/doc (locate the plan for this issue)"} — read it fully, verify it against the codebase, judge soundness, completeness and risk.`
 				: `Review the CODE at commit ${job.frozen_head_sha ?? "HEAD"} on the current branch. Diff it against the merge base with the default branch (git diff), read the touched files in full, check correctness, security, edge cases and error handling. Skip style nitpicks.`;
+		const governance = governancePrompt ? `\n\n${governancePrompt}` : "";
 		if (job.round <= 1) {
-			return `${contract}\n\n${target}\n\nThis is round ${job.round}.`;
+			return `${contract}\n\n${target}${governance}\n\nThis is round ${job.round}.`;
 		}
 		if (resume) {
 			return (
 				`${contract}\n\nRound ${job.round} re-review — you reviewed this work before in THIS session and retain that context. ` +
-				`${target}\n\nFocus on whether the issues you raised were correctly fixed and on anything new the changes introduced.`
+				`${target}${governance}\n\n` +
+				(policyEnabled
+					? `Focus on whether the issues NOT marked governance-settled were correctly fixed and on anything new the changes introduced.`
+					: `Focus on whether the issues you raised were correctly fixed and on anything new the changes introduced.`)
 			);
 		}
 		const prior = this.store.latestDoneCodexReviewJob(
@@ -950,8 +1250,10 @@ export class ReviewRequestCoordinator {
 			: "(no reliable record of your prior findings survives — treat this as a fresh, full review)";
 		return (
 			`${contract}\n\nRound ${job.round} fresh re-review (the prior reviewer session was unavailable). ` +
-			`${target}\n\n${priorContext}\n\n` +
-			`Perform a full review, using the durable prior context above when available.`
+			`${target}${governance}\n\n${priorContext}\n\n` +
+			(policyEnabled
+				? `Perform a full review, using the durable prior context above when available and without reopening governance-settled findings.`
+				: `Perform a full review, using the durable prior context above when available.`)
 		);
 	}
 
@@ -1008,21 +1310,23 @@ export class ReviewRequestCoordinator {
 	private async respond(
 		session: Session,
 		questionId: string,
-		content: Record<string, unknown>,
+		content: Record<string, unknown> | string,
 		binding: { executionId: string; reviewType: "design" | "code" },
 	): Promise<boolean> {
+		const contentJson =
+			typeof content === "string" ? content : JSON.stringify(content);
 		const db = this.deps.openCommDb(
 			this.deps.commDbPathFor(session.project_name),
 		);
 		try {
 			const existing = db.getResponse(questionId);
 			if (existing) {
-				if (!isOurResponse(existing, content)) return false;
+				if (!isOurResponse(existing, contentJson)) return false;
 			} else {
 				const inserted = db.insertResponseIfGateOpen({
 					questionId,
 					fromAgent: "bridge",
-					content: JSON.stringify(content),
+					content: contentJson,
 					expectedOwner: binding.executionId,
 					expectedCheckpoint: `review_${binding.reviewType}`,
 				});
@@ -1031,7 +1335,7 @@ export class ReviewRequestCoordinator {
 					// expired, or a racing answer landed. Re-read: only our own
 					// canonical bytes count as delivered.
 					const after = db.getResponse(questionId);
-					if (!after || !isOurResponse(after, content)) return false;
+					if (!after || !isOurResponse(after, contentJson)) return false;
 				}
 			}
 		} finally {
@@ -1046,7 +1350,7 @@ export class ReviewRequestCoordinator {
 						project_name: session.project_name,
 					},
 					questionId,
-					String(content.reviewVerdict ?? "answered"),
+					reviewVerdictSummary(contentJson),
 				);
 			} catch (err) {
 				this.log(
@@ -1099,6 +1403,46 @@ export class ReviewRequestCoordinator {
 			/* alerts are best-effort */
 		}
 	}
+
+	private async emitReviewAlert(event: ReviewAlertEvent): Promise<void> {
+		try {
+			await this.deps.emitReviewAlert?.(event);
+		} catch (err) {
+			this.log(
+				`review alert ${event.eventId} failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+
+	private async notifyReviewRuling(ruling: ReviewFindingRuling): Promise<void> {
+		const sourceJob = this.store.getCodexReviewJob(ruling.source_request_id);
+		const session = sourceJob
+			? this.store.getSession(sourceJob.execution_id)
+			: undefined;
+		const text = formatReviewRulingThreadPost(ruling);
+		let ok = false;
+		if (session && this.deps.postReviewRulingThread) {
+			try {
+				ok = (await this.deps.postReviewRulingThread({ session, text })).ok;
+			} catch (err) {
+				this.log(
+					`review ruling thread post failed for ${ruling.ruling_id}: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		}
+		if (ok) {
+			this.store.markReviewFindingRulingNotified(ruling.ruling_id);
+			return;
+		}
+		await this.emitReviewAlert({
+			kind: "review_ruling_notify_failed",
+			eventId: `review-ruling:${ruling.ruling_id}:notify_failed`,
+			issueId: ruling.issue_identifier ?? ruling.issue_id_canonical,
+			...(sourceJob ? { executionId: sourceJob.execution_id } : {}),
+			rulingId: ruling.ruling_id,
+			message: `Governance ruling ${ruling.ruling_id} is active, but its issue-thread audit post failed and remains pending for boot redrive.`,
+		});
+	}
 }
 
 function str(v: unknown): string | undefined {
@@ -1116,10 +1460,62 @@ function str(v: unknown): string | undefined {
  */
 function isOurResponse(
 	existing: { content: string; from_agent?: string },
-	expectedContent: Record<string, unknown>,
+	expectedContentJson: string,
 ): boolean {
 	if (existing.from_agent !== "bridge") return false;
-	return existing.content === JSON.stringify(expectedContent);
+	return existing.content === expectedContentJson;
+}
+
+export const REVIEW_POLICY_NOTE = "medium_low_findings_are_non_blocking_v1";
+
+export function buildVerdictPayload(
+	job: Pick<
+		CodexReviewJob,
+		"request_id" | "round" | "frozen_head_sha" | "delivery_nonce"
+	>,
+	result: EffectiveReviewVerdict,
+): Record<string, unknown> {
+	return {
+		reviewVerdict: result.effectiveVerdict,
+		reviewerVerdict: result.reviewerVerdict,
+		requestId: job.request_id,
+		round: job.round,
+		findings: result.findings,
+		advisories: result.advisories,
+		settled: result.settled,
+		policyNote: REVIEW_POLICY_NOTE,
+		...(job.frozen_head_sha ? { reviewedHeadSha: job.frozen_head_sha } : {}),
+		...(job.delivery_nonce ? { deliveryNonce: job.delivery_nonce } : {}),
+	};
+}
+
+function buildLegacyVerdictPayload(
+	job: Pick<
+		CodexReviewJob,
+		"request_id" | "round" | "frozen_head_sha" | "delivery_nonce"
+	>,
+	verdict: string,
+	findingsJson: string | undefined,
+): Record<string, unknown> {
+	return {
+		reviewVerdict: verdict,
+		requestId: job.request_id,
+		round: job.round,
+		findings: safeParseArray(findingsJson),
+		...(job.frozen_head_sha ? { reviewedHeadSha: job.frozen_head_sha } : {}),
+		...(job.delivery_nonce ? { deliveryNonce: job.delivery_nonce } : {}),
+	};
+}
+
+function reviewVerdictSummary(contentJson: string): string {
+	try {
+		const parsed = JSON.parse(contentJson) as { reviewVerdict?: unknown };
+		return typeof parsed.reviewVerdict === "string"
+			? parsed.reviewVerdict
+			: "answered";
+	} catch {
+		return "answered";
+	}
 }
 
 function safeParseArray(json: string | undefined): unknown[] {
@@ -1134,4 +1530,38 @@ function safeParseArray(json: string | undefined): unknown[] {
 
 function reject(httpStatus: number, reason: string): AcceptReviewResult {
 	return { accepted: false, httpStatus, reason };
+}
+
+function rejectRuling(httpStatus: number, reason: string): ReviewRulingResult {
+	return { accepted: false, httpStatus, reason };
+}
+
+function validPrivilegedText(
+	value: string | undefined,
+	maxLength: number,
+): value is string {
+	return (
+		value !== undefined &&
+		value.length > 0 &&
+		value.length <= maxLength &&
+		!CONTROL_CHAR.test(value)
+	);
+}
+
+function formatReviewRulingThreadPost(ruling: ReviewFindingRuling): string {
+	const disposition =
+		ruling.disposition === "follow_up"
+			? `follow-up ${ruling.follow_up_issue}`
+			: "overruled";
+	const title = ruling.finding_title
+		? ` — ${JSON.stringify(ruling.finding_title.slice(0, 200))}`
+		: "";
+	return (
+		`⚖️ Review governance ruling recorded\n` +
+		`ruling_id: ${ruling.ruling_id}\n` +
+		`finding: ${ruling.finding_key}${title}\n` +
+		`disposition: ${disposition}\n` +
+		`ruled_by: ${ruling.ruled_by}\n` +
+		`reason: ${ruling.rationale}`
+	);
 }

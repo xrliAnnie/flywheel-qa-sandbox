@@ -59,6 +59,7 @@ import {
 	classifyDetection,
 	makeSubscriptionDetectionClassifier,
 } from "../account-heal/detection-classifier.js";
+import { quarantinePendingSwitches } from "../account-heal/pending-store.js";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -176,6 +177,7 @@ import {
 import type { CrashReaperInjectedDeps } from "./crash-reaper.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
+import { FileDeliverySecretProvider } from "./delivery-secret.js";
 import { createDeploymentsRouter } from "./deployments-route.js";
 import { loadDetectionGraceByProject } from "./detection-config-source.js";
 import {
@@ -229,6 +231,7 @@ import {
 	resolveDoneThreadReconcileConfig,
 	startDoneThreadReconcileScheduler,
 } from "./done-thread-reconcile.js";
+import { attachDeliveredAlertLifecycles } from "./drained-alert-routing.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
 import { createExternalMergeReconciler } from "./external-merge-reconcile.js";
@@ -240,6 +243,7 @@ import {
 	handleFlagApply,
 	handleFlagStage,
 } from "./flag-routes.js";
+import { ConfirmTokenStore } from "./fleet-admin.js";
 import { defaultFleetConsoleOptions, FleetConsole } from "./fleet-console.js";
 import { getFleetConsoleHtml } from "./fleet-console-html.js";
 import {
@@ -296,6 +300,11 @@ import {
 	defaultLeadPaneCapture,
 	resolveAlertDirsFromEnv,
 } from "./lead-alert-helpers.js";
+import { deliveryAckEnabled } from "./lead-event-ack-policy.js";
+import {
+	createLeadEventDeadLetterHandler,
+	LeadEventDeliveryCoordinator,
+} from "./lead-event-delivery.js";
 import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
@@ -316,6 +325,7 @@ import {
 } from "./lifecycle-routes.js";
 import { sweepProjectLifecycle } from "./lifecycle-sweep.js";
 import {
+	listLinearIssueComments,
 	lookupLinearIssueByIdentifier,
 	queryLinearIssues,
 } from "./linear-query.js";
@@ -325,12 +335,22 @@ import {
 	resolveProjectNameParam,
 } from "./linear-scope.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
+import {
+	handleManualQaApply,
+	handleManualQaStage,
+} from "./manual-qa-routes.js";
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
 import { notifyDigestExpectTick } from "./notify-digest-expect.js";
 import { defaultReceiptsPath } from "./notify-receipts.js";
 import { hashPane, liveRegion } from "./pane-live-region.js";
+import {
+	LEAD_ONLY_PARK_KINDS,
+	PARK_KIND_PREFIX,
+	parkFounderGraceMs,
+	runParkWatch,
+} from "./park-watch.js";
 import {
 	PhaseOrchestrator,
 	type PhaseSession,
@@ -350,6 +370,10 @@ import {
 import { patchSessionParams } from "./proofshot-session.js";
 import { wirePublishBroker } from "./publish-broker/wire.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
+import {
+	quotaDaemonCutoverEnabled,
+	resolveQuotaDaemonBridgeMode,
+} from "./quota-daemon-cutover.js";
 import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
 import { createRepoMutationLock } from "./repo-mutation-lock.js";
 import {
@@ -367,7 +391,12 @@ import {
 	type RescueRuntime,
 } from "./rescue-runtime.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
+import {
+	createReviewAlertEmitter,
+	toReviewFindingRulingSnapshot,
+} from "./review-governance-effects.js";
 import { ReviewRequestCoordinator } from "./review-request-coordinator.js";
+import { createReviewRulingHandler } from "./review-ruling-route.js";
 import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
 import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js";
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
@@ -402,6 +431,7 @@ import {
 	defaultHasGateResponse,
 	defaultIsAncestor,
 } from "./ship-gate-rebind.js";
+import { ShipRelevantDiffService } from "./ship-relevant-diff.js";
 import {
 	alertStaleBlockerToLead,
 	createStaleBlockerGuard,
@@ -914,6 +944,8 @@ export class SseBroadcaster {
 /** GEO-294 + FLY-91 Round 3: Options object for new Bridge dependencies. */
 export interface BridgeAppOptions {
 	vercelToken?: string;
+	/** FLY-1251: manual-QA confirm tokens (independent of Fleet console uptime). */
+	manualQaTokens?: ConfirmTokenStore;
 	/** FLY-1185: ship-entry lifecycle bundle built in startBridge. */
 	lifecycleInfra?: LifecycleShipInfra;
 	/** FLY-1185 §2.11: the shared per-repo mutation lock (startBridge-owned). */
@@ -1029,6 +1061,8 @@ export interface BridgeAppOptions {
 	 * (self-heal off = byte-compat).
 	 */
 	accountSwitchRoute?: { current?: AccountSwitchRuntime };
+	/** FLY-1256: authenticated /api/account-switch retirement gate. */
+	quotaDaemonCutover?: () => boolean;
 	/**
 	 * FLY-871 R3/C9: the /api/rescue route (mounted in createBridgeApp) reads this
 	 * holder at request time; startBridge sets `.current` only when the rescue
@@ -1346,6 +1380,18 @@ export function createBridgeApp(
 		},
 	);
 
+	// FLY-1278: supervised Lead governance for a delivered finding. This is a
+	// distinct authority channel — gate/request prose never becomes a ruling.
+	// It shares the ingest-token boundary and late-bound coordinator with review
+	// requests; the handler preserves 4xx conflict/not-found semantics.
+	app.post(
+		"/review-rulings",
+		tokenAuthMiddleware(config.ingestToken),
+		createReviewRulingHandler(
+			opts?.reviewCoordinator ?? { current: undefined },
+		),
+	);
+
 	// FLY-598: founder-facing UX gate routes. Mounted BEFORE the broad `/api`
 	// token middleware so the ingest-token status READ is not shadowed by the
 	// api-token middleware (Codex R3-#1). Always mounted (per-request, operates
@@ -1361,6 +1407,59 @@ export function createBridgeApp(
 		apiToken: config.apiToken,
 		discordBotToken: config.discordBotToken,
 	});
+
+	// FLY-1251: manual QA is a server-owned enrollment, never a client-minted
+	// verdict or executor identity. The stage endpoint issues a single-use token
+	// bound to the exact {executionId, prHeadSha}; apply carries that token in a
+	// header so its JSON body remains the strict two-field schema. The token store
+	// is independent of Fleet console availability in production.
+	const manualQaTokens = opts?.manualQaTokens ?? opts?.fleetConsole?.tokens;
+	if (manualQaTokens) {
+		const requestHeaders = (
+			req: express.Request,
+		): Record<string, string | undefined> => ({
+			origin:
+				typeof req.headers.origin === "string" ? req.headers.origin : undefined,
+			referer:
+				typeof req.headers.referer === "string"
+					? req.headers.referer
+					: undefined,
+		});
+		app.post("/api/qa/manual-spawn/stage", (req, res) => {
+			const selfOrigin = loopbackSelfOrigin(req.headers.host);
+			if (!selfOrigin) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			if (!ffIsSameOrigin(requestHeaders(req), selfOrigin)) {
+				res.status(403).json({ error: "cross-origin" });
+				return;
+			}
+			const result = handleManualQaStage(manualQaTokens, req.body);
+			res.status(result.code).json(result.body);
+		});
+		app.post("/api/qa/manual-spawn", async (req, res) => {
+			const selfOrigin = loopbackSelfOrigin(req.headers.host);
+			if (!selfOrigin) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			if (!ffIsSameOrigin(requestHeaders(req), selfOrigin)) {
+				res.status(403).json({ error: "cross-origin" });
+				return;
+			}
+			const token = req.headers["x-flywheel-confirm-token"];
+			const result = await handleManualQaApply(
+				{
+					tokens: manualQaTokens,
+					coordinator: opts?.autoQaCoordinator?.current,
+				},
+				req.body,
+				typeof token === "string" ? token : undefined,
+			);
+			res.status(result.code).json(result.body);
+		});
+	}
 
 	// FLY-247 inc2a: Fleet console founder-admin surface (§2.2). Mounted BEFORE
 	// the `/api` Bearer middleware so `/api/fleet/*` never hits it — the console
@@ -2847,6 +2946,88 @@ export function createBridgeApp(
 		},
 	);
 
+	// FLY-1160 (plan §3.3 读口): read-only PAGED comments of one issue — the
+	// voice landing reconciliation confirms which stage markers already landed
+	// (assistant-summary <sessionId> / transcript chunk markers) after a
+	// shutdown deadline or crash cut a landing mid-flight, instead of blind
+	// re-posting. Scoped like the comment WRITE path: a named project binding
+	// must contain the issue.
+	app.get(
+		"/api/linear/comments",
+		tokenAuthMiddleware(config.apiToken),
+		async (req, res) => {
+			if (!config.linearApiKey) {
+				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
+				return;
+			}
+			const issueIdRaw = Array.isArray(req.query.issueId)
+				? String(req.query.issueId[0])
+				: (req.query.issueId as string | undefined);
+			if (!issueIdRaw || issueIdRaw.trim().length === 0) {
+				res.status(400).json({ error: "issueId is required" });
+				return;
+			}
+			const afterRaw = Array.isArray(req.query.after)
+				? String(req.query.after[0])
+				: (req.query.after as string | undefined);
+			const limitRaw =
+				req.query.limit !== undefined
+					? parseInt(String(req.query.limit), 10)
+					: 50;
+			const limit = Number.isNaN(limitRaw)
+				? 50
+				: Math.min(Math.max(1, limitRaw), 100);
+			const bound = resolveProjectNameParam(projects, req.query.projectName);
+			if (!bound.ok) {
+				res.status(bound.status).json({ error: bound.error });
+				return;
+			}
+			try {
+				const issue = await lookupLinearIssueByIdentifier(
+					config.linearApiKey,
+					issueIdRaw.trim(),
+				);
+				if (!issue) {
+					res.status(404).json({ error: `issue "${issueIdRaw}" not found` });
+					return;
+				}
+				if (bound.binding && !issueMatchesBinding(issue, bound.binding)) {
+					res.status(403).json({
+						error: `issue "${issue.identifier}" is outside the "${String(
+							Array.isArray(req.query.projectName)
+								? req.query.projectName[0]
+								: req.query.projectName,
+						)}" project scope`,
+					});
+					return;
+				}
+				const page = await listLinearIssueComments(
+					config.linearApiKey,
+					issue.id,
+					{ after: afterRaw?.trim() || undefined, limit },
+				);
+				if (!page) {
+					res.status(404).json({ error: `issue "${issueIdRaw}" not found` });
+					return;
+				}
+				res.json({
+					issueId: issue.identifier,
+					state: issue.state,
+					stateType: issue.stateType,
+					comments: page.comments,
+					hasNextPage: page.hasNextPage,
+					endCursor: page.endCursor,
+				});
+			} catch (err) {
+				console.error(
+					"[linear-proxy] comments-list failed:",
+					(err as Error).message,
+				);
+				res.status(502).json({ error: "Linear API error" });
+			}
+		},
+	);
+
 	// FLY-21: Combined triage data endpoint — issues + sessions + capacity in one call
 	app.use(
 		"/api/triage/data",
@@ -3216,6 +3397,7 @@ export function createBridgeApp(
 			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 			createAccountSwitchRouter({
 				getRuntime: () => opts?.accountSwitchRoute?.current,
+				cutoverEnabled: opts?.quotaDaemonCutover,
 			}),
 		);
 	} else {
@@ -3354,6 +3536,39 @@ export async function startBridge(
 		store,
 		log: (message) => console.warn(message),
 	});
+
+	const shipRelevantDiffService = new ShipRelevantDiffService(store);
+	const ensureShipRelevantDiff = async (session: Session): Promise<void> => {
+		const head = session.pr_head_sha?.toLowerCase();
+		if (!head || !/^[0-9a-f]{40}$/.test(head)) return;
+		const project = projects.find(
+			(candidate) => candidate.projectName === session.project_name,
+		);
+		if (
+			!project ||
+			!project.projectRepo ||
+			!/^[^/]+\/[^/]+$/.test(project.projectRepo) ||
+			!Number.isSafeInteger(session.pr_number) ||
+			(session.pr_number ?? 0) <= 0
+		) {
+			store.deleteShipRelevantDiffSnapshot(session.execution_id, head);
+			return;
+		}
+		await shipRelevantDiffService.ensure({
+			executionId: session.execution_id,
+			repo: project.projectRepo,
+			prNumber: session.pr_number!,
+			prHeadSha: head,
+			api: async (path) => {
+				const { stdout } = await execFileP("gh", ["api", path], {
+					cwd: project.projectRoot,
+					timeout: 15_000,
+					maxBuffer: 5 * 1024 * 1024,
+				});
+				return JSON.parse(stdout) as unknown;
+			},
+		});
+	};
 
 	// FLY-1082 (Task 2.2): the fleet pressure-hold gates runner admission —
 	// late-bind the probe now that the store exists. Fail-open inside tryAdmit.
@@ -3597,6 +3812,42 @@ export async function startBridge(
 			`[Bridge] RuntimeRegistry: ${registry.size} lead runtime(s) registered`,
 		);
 	}
+
+	const deliveryDeadLetterAlertHolder: {
+		current?: (
+			row: NonNullable<ReturnType<StateStore["getLeadEventBySeq"]>>,
+		) => Promise<boolean>;
+	} = {};
+	const testDeliverySecret = process.env.VITEST
+		? { secretId: "vitest-delivery-secret", key: randomBytes(32) }
+		: null;
+	const deliverySecretProvider = testDeliverySecret
+		? { getActive: () => testDeliverySecret }
+		: new FileDeliverySecretProvider({ store });
+	let deliverySecretBootError: string | undefined;
+	if (deliveryAckEnabled()) {
+		try {
+			deliverySecretProvider.getActive();
+		} catch (error) {
+			deliverySecretBootError =
+				error instanceof Error ? error.message : String(error);
+			console.error(
+				`[lead-event-delivery] ACK cohort paused: ${deliverySecretBootError}`,
+			);
+		}
+	}
+	const leadEventDelivery = new LeadEventDeliveryCoordinator({
+		store,
+		runtimeForLead: (leadId) => registry.getRawForLead(leadId),
+		commDbPaths: () =>
+			projects.map((project) => commDbPathForProject(project.projectName)),
+		secretProvider: deliverySecretProvider,
+		onDeadLetter: async (row) =>
+			deliveryDeadLetterAlertHolder.current?.(row) ?? false,
+	});
+	registry.setDeliveryInterceptor((runtime, envelope) =>
+		leadEventDelivery.deliver(envelope, runtime),
+	);
 
 	// FLY-80: Periodic retry for leads not ready at startup (e.g., Lead starts after Bridge).
 	// Checks every 30s until all leads are registered, then stops.
@@ -4221,6 +4472,22 @@ export async function startBridge(
 	// channel). Undefined ⇒ route returns 409 needs_human (byte-compat).
 	const rescueRouteHolder: { current?: RescueRouteRuntime } = {};
 
+	// FLY-1256: freeze one startup mode for every in-process execution face.
+	// setup flips CUTOVER only after the external daemon proves healthy, then
+	// restarts Bridge; a process never straddles modes.
+	const claudeAccountPoolConfigured = accountPoolConfigured();
+	const quotaBridgeMode = resolveQuotaDaemonBridgeMode(
+		claudeAccountPoolConfigured,
+	);
+	if (quotaBridgeMode.quarantinePending) {
+		const quarantined = await quarantinePendingSwitches();
+		if (quarantined) {
+			console.warn(
+				`[Bridge] FLY-1256 quarantined legacy account-switch pending store: ${quarantined}`,
+			);
+		}
+	}
+
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -4326,6 +4593,7 @@ export async function startBridge(
 			stuckDetectorHolder,
 			stuckLatchTtlMs: stuckLatchTtlMs(),
 			fleetConsole,
+			manualQaTokens: fleetConsole?.tokens ?? new ConfirmTokenStore(),
 			// FLY-516: /health reads this; close() flips it at teardown start.
 			shutdownStateHolder,
 			// FLY-623: event router reads this to clear reconnecting on a real event.
@@ -4340,6 +4608,7 @@ export async function startBridge(
 			accountRotationPost: accountRotationPostHolder,
 			// FLY-871 R2/C5: /api/account-switch route reads this holder.
 			accountSwitchRoute: accountSwitchRouteHolder,
+			quotaDaemonCutover: quotaDaemonCutoverEnabled,
 			rescueRoute: rescueRouteHolder,
 			// FLY-907: unified issue-display refresher (populated post-listen).
 			issueDisplayRefresh: issueDisplayRefreshHolder,
@@ -5163,20 +5432,14 @@ export async function startBridge(
 			.filter(Boolean),
 	);
 	// FLY-1041 Chunk 5: ONE hold guard closure injected into every founder
-	// approval source (text / ✅ reaction / voice) so they cannot drift —
-	// kill-switch FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0 (read per call) restores
-	// the pre-FLY-1041 held-writes-anyway behavior for all three at once.
+	// approval source (text / ✅ reaction / voice) so they cannot drift.
 	const founderApprovalIsHeld = (executionId: string): boolean =>
 		founderApprovalHoldGuard(store, store.getSession(executionId));
 
 	// FLY-1099 §4.1: the reason-classified hold face (same predicate order as
-	// isReviewHeld — shared implementation, cannot drift). The kill-switch
-	// FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0 keeps its FLY-1041 semantics: holds are
-	// ignored entirely (the deferral face then reports "not held" too).
+	// isReviewHeld — shared implementation, cannot drift).
 	const founderHoldReasonFor = (executionId: string) =>
-		process.env.FLYWHEEL_ATTRIBUTION_HOLD_ALIGN === "0"
-			? null
-			: reviewHoldReason(store, store.getSession(executionId));
+		reviewHoldReason(store, store.getSession(executionId));
 	// FLY-1099: current canonical founder id (same derivation the factory uses).
 	const founderCanonicalId = (): string | undefined =>
 		deriveCanonicalFounderId(
@@ -5954,10 +6217,20 @@ export async function startBridge(
 			// delivery / unreported park stays live on a working runner (漏②'s
 			// typical shape). Terminal still resolves every kind.
 			progressResolvableKinds: new Set([CASE_C_ESCALATION_KIND]),
+			preserveOnTerminal: (row) => row.kind.startsWith(PARK_KIND_PREFIX),
+			pagePolicy: (row) =>
+				LEAD_ONLY_PARK_KINDS.has(row.kind)
+					? "lead_only"
+					: row.kind.startsWith(PARK_KIND_PREFIX)
+						? "page_no_fleet"
+						: "page",
 			graceMs: Number.isFinite(graceEnv) && graceEnv > 0 ? graceEnv : undefined,
 			// Per-project override (detection.lead_grace_ms in the project's
 			// CANONICAL .flywheel/config.yaml — loaded once at boot).
 			graceMsFor: (row) => {
+				if (row.kind.startsWith(PARK_KIND_PREFIX)) {
+					return parkFounderGraceMs();
+				}
 				const session = store.getSession(row.target_key);
 				return session
 					? detectionGraceByProject.get(session.project_name)
@@ -5976,12 +6249,39 @@ export async function startBridge(
 			fn4OverdueMs: defaultGapThresholds(process.env).unconsumedMs,
 		});
 	};
+	const parkWatchTick = (): Promise<void> =>
+		runParkWatch({
+			store,
+			commDbPathForProject: defaultGetCommDbPath,
+			notify: notifyDetectionEpisode,
+		});
 
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
 		projects,
 		store,
 		runtimeRegistry: registry,
+		ensureShipRelevantDiff,
+		onDeliveryReconcileTick: () => leadEventDelivery.reconcile(),
+		onParkWatchTick: parkWatchTick,
+		parkWatchEveryNTicks: (() => {
+			const n = Number.parseInt(
+				process.env.FLYWHEEL_PARK_WATCH_EVERY_N_TICKS ?? "",
+				10,
+			);
+			return Number.isFinite(n) && n > 0 ? n : undefined;
+		})(),
+		// FLY-1279 B2: the holder is populated after GatePoller construction;
+		// periodic recovery and boot reconcile share the coordinator's single-flight.
+		onQaReconcileTick: () =>
+			autoQaCoordinatorHolder.current?.sweepOrphanedQaRecords(),
+		qaReconcileEveryNTicks: (() => {
+			const n = Number.parseInt(
+				process.env.FLYWHEEL_QA_RECONCILE_EVERY_N_TICKS ?? "",
+				10,
+			);
+			return Number.isFinite(n) && n > 0 ? n : undefined;
+		})(),
 		// FLY-1048 (A6): gap-scan piggyback (zero new timer; env-gated inside).
 		onGapScanTick: gapScanTick,
 		gapScanEveryNTicks: (() => {
@@ -6192,6 +6492,55 @@ export async function startBridge(
 		// dirs the live Bridge drainer reads.
 		...resolveAlertDirsFromEnv(process.env),
 	});
+	deliveryDeadLetterAlertHolder.current = createLeadEventDeadLetterHandler({
+		pageFounder: detectionPageFounder,
+		mirror: async (row) => {
+			let payload: Record<string, unknown> = {};
+			let route: Record<string, unknown> = {};
+			try {
+				payload = JSON.parse(row.payload) as Record<string, unknown>;
+			} catch {}
+			try {
+				route = row.routing_snapshot
+					? (JSON.parse(row.routing_snapshot) as Record<string, unknown>)
+					: {};
+			} catch {}
+			const projectName = String(
+				route.projectName ?? payload.project_name ?? "flywheel",
+			);
+			const leadId = row.ack_owner_lead_id ?? row.lead_id;
+			await leadAlertNotifier.alert({
+				leadId,
+				projectName,
+				eventId: `delivery-dead-letter:${row.seq}`,
+				eventType: "delivery_dead_letter",
+				title: `Lead delivery exhausted — event #${row.seq}`,
+				body:
+					`Bridge exhausted bounded delivery for ${row.event_type} (${row.event_id}). ` +
+					`Issue: ${String(payload.issue_identifier ?? payload.issue_id ?? "unknown")}; ` +
+					`owner: ${leadId}. Founder intervention is required.`,
+				severity: "severe",
+				sessionKey: row.session_key,
+			});
+		},
+	});
+	if (deliverySecretBootError) {
+		const fallbackProject =
+			projects.find((project) => project.projectName === "flywheel") ??
+			projects[0];
+		const fallbackLead = fallbackProject?.leads[0];
+		if (fallbackProject && fallbackLead) {
+			void leadAlertNotifier.alert({
+				leadId: fallbackLead.agentId,
+				projectName: fallbackProject.projectName,
+				eventId: "delivery-secret-unavailable",
+				eventType: "delivery_dead_letter",
+				title: "Lead delivery ACK secret unavailable",
+				body: `${deliverySecretBootError}. ACK-cohort work is paused; legacy ACK-exempt delivery remains available.`,
+				severity: "severe",
+			});
+		}
+	}
 
 	// FLY-907: build the unified issue-display refresher. The holder is read
 	// late-bound by EVERY trigger surface (applyTransition hook,
@@ -6244,16 +6593,26 @@ export async function startBridge(
 		);
 	}
 
-	// FLY-1188 §7.1: build the codex-author review-request coordinator and
-	// redrive any jobs a dead Bridge left pending/running. The /review-requests
-	// route reads the holder at request time (503 until filled). Lead-facing
-	// failure alerts currently log via console + the durable failed job row;
-	// routing them through the FLY-927 alert funnel needs its own alert kind
-	// (follow-up — MetaAlertReason is a closed infra union).
+	// FLY-1188 §7.1 / FLY-1278: build the codex-author review coordinator and
+	// redrive jobs plus unsent governance audit posts. Both runner routes read the
+	// holder at request time (503 until filled). Review governance events use the
+	// late-bound routed sink, so the eventual AlertChannelHub owns dedup/tickets.
 	{
 		const commRoot =
 			process.env.FLYWHEEL_COMM_ROOT?.trim() ||
 			join(homedir(), ".flywheel", "comm");
+		const reviewThreadEffects = new AutoQaEffects({
+			store,
+			projects,
+			config,
+			chatThreadCreator,
+		});
+		const emitReviewAlert = createReviewAlertEmitter({
+			store,
+			projects,
+			alert: (payload) =>
+				(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(payload),
+		});
 		reviewCoordinatorHolder.current = new ReviewRequestCoordinator({
 			store,
 			commDbPathFor: (projectName) => join(commRoot, projectName, "comm.db"),
@@ -6261,6 +6620,13 @@ export async function startBridge(
 			reviewerTimeoutMs: parseReviewerTimeoutMs(
 				process.env.FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS,
 			),
+			listActiveReviewFindingRulings: ({ projectName, issueId }) =>
+				store
+					.listActiveReviewFindingRulings(projectName, issueId)
+					.map(toReviewFindingRulingSnapshot),
+			emitReviewAlert,
+			postReviewRulingThread: (input) =>
+				reviewThreadEffects.postThreadResult(input),
 			wakeRunner: async (executionId, sessionInfo, questionId, summary) => {
 				const db = new CommDB(
 					join(commRoot, sessionInfo.project_name, "comm.db"),
@@ -6346,6 +6712,7 @@ export async function startBridge(
 						issueLabels: parseJsonStringArray(session.issue_labels),
 					}),
 				effects: autoQaEffects,
+				ensureShipRelevantDiff,
 				// FLY-827: the codex hard-gate kill-switch is read live from
 				// process.env (the direct feature-flag toggle mutates it in place).
 				env: process.env,
@@ -6797,6 +7164,36 @@ export async function startBridge(
 							sessionKey: session.execution_id,
 						});
 					},
+					// FLY-1279 B2: dedicated, head-stable takeover alert. This path is
+					// selected instead of (never in addition to) three_stage_stuck.
+					alertWorktreeTakeoverFailure: async ({ session, reason }) => {
+						const projectName = session.project_name ?? "";
+						let leadId: string | undefined;
+						try {
+							leadId = resolveLeadForIssue(
+								projects,
+								projectName,
+								parseJsonStringArray(
+									store.getSession(session.execution_id)?.issue_labels,
+								),
+							).lead.agentId;
+						} catch {
+							console.error(
+								`[three-stage] takeover failure (no lead): ${reason}`,
+							);
+							return;
+						}
+						await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
+							leadId,
+							projectName,
+							eventId: `three-stage-takeover:${session.execution_id}`,
+							eventType: "three_stage_takeover_failed",
+							title: `Three-stage worktree takeover failed — ${session.issue_identifier ?? session.issue_id}`,
+							body: reason,
+							severity: "warning",
+							sessionKey: session.execution_id,
+						});
+					},
 					// FLY-887: 4-state PROCESS liveness (not window existence). No tmux
 					// target = the process is gone → absent.
 					probePhaseAlive: async (session) => {
@@ -7217,8 +7614,8 @@ export async function startBridge(
 
 	// FLY-696: hoisted so both the Hub's repair path AND the account-switch
 	// watchdog (piggybacked on onPollComplete below, no new timer) share one
-	// DiscordOps + one accountSwitch instance. accountSwitch is gated on
-	// the account-pool presence (FLY-1243; absent = byte-compat → undefined).
+	// DiscordOps + one accountSwitch instance. accountSwitch is gated on both
+	// pool presence and FLY-1256 legacy mode (CUTOVER retires Bridge execution).
 	const alertDiscordOps = createDiscordOps(() => {
 		// FLY-927 (D2): single sender identity — when set, Hub thread operations
 		// use the SAME one identity as the root alert (no repair-chain fan-out).
@@ -7239,10 +7636,9 @@ export async function startBridge(
 		await alertDiscordOps.postToThread(threadId, content);
 	};
 	// FLY-1243: FLYWHEEL_ACCOUNT_SELF_HEAL retired (固化 default-on). The Claude
-	// account pool file is now the de-facto switch — present ⇒ self-heal wires
-	// (production); absent ⇒ undefined = byte-compat for deployments that never
-	// provisioned a pool (QA slots / sub / joycon), no quota scan, no switch.
-	const accountSwitchRepair = accountPoolConfigured()
+	// account pool file is the legacy switch signal; FLY-1256 CUTOVER supersedes
+	// it and leaves the external daemon as the only account-switch executor.
+	const accountSwitchRepair = quotaBridgeMode.attachAccountSwitch
 		? makeAccountSwitchRepair({
 				switchDeps: makeClaudeProfileSwitchDeps({
 					binPath: claudeProfileBinPath(),
@@ -7252,11 +7648,9 @@ export async function startBridge(
 
 	// FLY-696 M1/④: now that the unified-channel DiscordOps exists, late-bind the
 	// account_rotation Alerts-post the event router reads. Reuses the SAME
-	// post-to-thread path the account-switch watchdog uses. Gated on the SAME
-	// self-heal switch as the rest of FLY-696 (Codex R1 MED-2: flag off = the
-	// default MUST be byte-compatible, no new Alerts behavior); no unified
-	// channel likewise leaves the holder undefined → the event is acked, not
-	// posted.
+	// post-to-thread path the legacy account-switch watchdog uses. Manual/profile
+	// rotation notices and login rescue remain wired through CUTOVER; only the
+	// three automatic account-switch execution faces are retired.
 	// FLY-871 R3/C9: the infra self-heal rescue runtime (built inside the same
 	// self-heal gate below). Declared here so the account-switch watchdog tick
 	// (onPollComplete, later in this closure) can trigger the post-switch sweep.
@@ -7268,7 +7662,7 @@ export async function startBridge(
 	let postSwitchResult:
 		| ((detail: string, disposition?: RepairDisposition) => Promise<void>)
 		| undefined;
-	if (accountSwitchRepair && unifiedAlertChannelId) {
+	if (claudeAccountPoolConfigured && unifiedAlertChannelId) {
 		// The Alerts post is authoritative and unchanged in the dormant states;
 		// on top of it:
 		//  - needs_human (no_account / failed / not-attemptable) +
@@ -7310,34 +7704,37 @@ export async function startBridge(
 				await postInfraNotifyDigest(formatRotationDigest(rotation));
 			}
 		};
-		// FLY-871 R2/C5: bind the /api/account-switch runtime (same self-heal gate).
+		// FLY-871 R2/C5 + FLY-1256: bind the runtime only in legacy mode.
 		// The route claims a pending record + reuses accountSwitchRepair.executeSwitch,
 		// posts the result to the Alerts channel, and audits before/after to lead_events.
-		accountSwitchRouteHolder.current = {
-			repair: accountSwitchRepair,
-			postResult: postSwitchResult,
-			audit: (e) =>
-				store.appendLeadEvent(
-					e.actorBotId,
-					`account-switch:${e.phase}:${e.key}`,
-					`account_switch_${e.phase}`,
-					JSON.stringify(e),
-				),
-			// FLY-927 (Task 2.3): the atomic pending-switch claim ACKs the matching
-			// ACTIVE ticket — exact event-id correlation, so a stale episode can
-			// never be acked; legacy rows (NULL ticket_status) untouched.
-			ackTicket: (sourceAlertId) => {
-				const row = store.getActiveAlertThreadByEventId(sourceAlertId);
-				if (row?.ticket_status) {
-					store.setTicketStatus(row.correlation_key, "ACK");
-				}
-			},
-		};
+		if (accountSwitchRepair) {
+			accountSwitchRouteHolder.current = {
+				repair: accountSwitchRepair,
+				postResult: postSwitchResult,
+				audit: (e) =>
+					store.appendLeadEvent(
+						e.actorBotId,
+						`account-switch:${e.phase}:${e.key}`,
+						`account_switch_${e.phase}`,
+						JSON.stringify(e),
+					),
+				// FLY-927 (Task 2.3): the atomic pending-switch claim ACKs the matching
+				// ACTIVE ticket — exact event-id correlation, so a stale episode can
+				// never be acked; legacy rows (NULL ticket_status) untouched.
+				ackTicket: (sourceAlertId) => {
+					const row = store.getActiveAlertThreadByEventId(sourceAlertId);
+					if (row?.ticket_status) {
+						store.setTicketStatus(row.correlation_key, "ACK");
+					}
+				},
+			};
+		}
 
 		// FLY-871 R3/C9: build the infra self-heal rescue runtime — binds the pure
 		// rescue orchestration (rescue.ts) to the real Bridge primitives. Consumed
 		// by the /api/rescue route (W3) and the post-switch sweep (W5). Same
-		// self-heal gate ⇒ dormant + byte-compat when the flag is off.
+		// Pool + unified-channel gate remains independent of quota CUTOVER: login
+		// rescue is not an account-switch execution face and must stay available.
 		const resolveRescueLeadId = defaultResolveLeadId(projects);
 		// The founder's Discord id for a REAL @-ping on a rescue escalation (snowflake
 		// only; unset/malformed ⇒ undefined = degrade to no-mention, like the Hub).
@@ -7520,9 +7917,11 @@ export async function startBridge(
 		// FLY-871 R3/W5: on a successful bot-claimed switch (the /api/account-switch
 		// route), sweep the incident-window login-stuck sessions. The watchdog-fired
 		// switch wires the same sweep below (onPollComplete).
-		accountSwitchRouteHolder.current.onSwitchSuccess = async () => {
-			await rescueRuntime?.postSwitchRescueSweep();
-		};
+		if (accountSwitchRouteHolder.current) {
+			accountSwitchRouteHolder.current.onSwitchSuccess = async () => {
+				await rescueRuntime?.postSwitchRescueSweep();
+			};
+		}
 	}
 
 	// FLY-1082 (Task 3.2): runbook-gap Linear wiring — FLY team / Flywheel
@@ -7700,6 +8099,7 @@ export async function startBridge(
 								phasePrefix: phaseMessageTag(
 									session.chat_thread_role,
 									session.runner_model,
+									session.design_backend,
 								),
 							},
 							{ store },
@@ -8063,11 +8463,10 @@ export async function startBridge(
 		isReconnecting: (execId) =>
 			reconnectHolder.current?.isReconnecting(execId) ?? false,
 		// FLY-696 M1/③: runner-side quota scan, piggybacked on this poll's capture
-		// (no new timer). Gated on the SAME switch (accountSwitchRepair exists iff
-		// account pool provisioned; FLY-1243) — absent ⇒ undefined ⇒ byte-compat.
-		// Routes a real runner cap through the shared alert sink (Hub threading +
-		// AutoRepairBot enqueue), with the §3.3 transient-529 short-circuit inside.
-		runnerQuotaScan: accountSwitchRepair
+		// (no new timer). Legacy mode preserves the pool gate byte-for-byte; CUTOVER
+		// deliberately keeps this detector alive while omitting accountSwitchRepair,
+		// so a cap still alerts but can no longer enqueue a Bridge-side switch.
+		runnerQuotaScan: quotaBridgeMode.runRunnerQuotaScan
 			? (() => {
 					const quotaScan = makeRunnerQuotaScan({
 						projects,
@@ -8230,7 +8629,11 @@ export async function startBridge(
 					`[auto-qa] reconcileCodexHoldNudges (poll) failed: ${(err as Error).message}`,
 				);
 			}
-			if (accountSwitchRepair && unifiedAlertChannelId) {
+			if (
+				quotaBridgeMode.runAccountSwitchWatchdog &&
+				accountSwitchRepair &&
+				unifiedAlertChannelId
+			) {
 				try {
 					await accountSwitchWatchdogTick({
 						now: () => Date.now(),
@@ -8381,19 +8784,9 @@ export async function startBridge(
 				// thread + ticket lifecycle — otherwise every over-cap (rate-limited /
 				// transient-retry) alert silently bypasses the Hub. Best-effort each.
 				if (alertHub) {
-					for (const d of delivered) {
-						try {
-							await alertHub.attachThreadForDelivered(
-								d.payload,
-								d.channelId,
-								d.messageId,
-							);
-						} catch (err) {
-							console.warn(
-								`[Bridge] drained-thread attach failed: ${(err as Error).message}`,
-							);
-						}
-					}
+					await attachDeliveredAlertLifecycles(delivered, alertHub, (message) =>
+						console.warn(`[Bridge] ${message}`),
+					);
 				}
 				// Dead-letters happened → surface (Discord-independent).
 				if (deadLettered > 0) {

@@ -260,3 +260,119 @@ idle → invoked(/meet:建 issue+回执+叫人)→ assembling(Lead bots + 耳朵
 4. D2 多-Lead = tag 路由(降级位主持-only)、D5 专用耳朵 bot、D7 并发=1 —— 有异议吗?
 5. 三块 A/B/C 在同一 issue 内是否仍按「A 先真机闭环 → B → C」顺序交付、一个 PR 还是分 PR(建议
    分:PR-1 = voice-bridge 收发地基(A),PR-2 = /meet 编排 + 落地(B+C))?
+
+---
+
+# 第二轮 design:PR-2 再设计(2026-07-07,design phase 第二次运行)
+
+> **背景**:PR-1(#495)已 merge + QA PASS(voice-bridge 底盘常驻:BotRegistry / EarsReceiver /
+> LeadSpeaker / resample / SessionSlot / config / daemon + voice-core extraTools)。原 plan 的
+> PR-2 段(P7-P13)按 D1-B(TEXT 模态)写,S1 spike 证明 D1-B 物理不可行(全部 Live 模型
+> 服务端拒 TEXT),Implementation Addendum A1/A10 已把引擎改判为「**Gemini 多 session
+> gated + 静默补喂**」(FLY-968 横评 GO)。本轮 = 把 PR-2 重写成 A10 形态的可实施设计。
+> **本节之前的原文全部保留作历史记录;与本节冲突处以本节(及 plan v2)为准。**
+
+## 9. 第二轮 brainstorm gate 回执(2026-07-07,Tadashi 确认,不再讨论)
+
+1. **本轮范围 = PR-2 再设计**(/glaw 端到端 + 结论落地);PR-1 as-built 不动。
+2. **依赖协调 = first-to-land-builds**:voice-core 增量(sendText/systemPreamble/voice→speechConfig)
+   与 Bridge P12 两条路由(comment / issue query)已在 FLY-967 分支实现(未 merge)——谁先
+   merge 谁算数、后者 rebase byte-align;与 967 runner(525f8151)对齐边界,**绝不各写一份**。
+3. **点名路由 v1 = sticky addressing + 显式点名切换**(968 已证 all-listen 不可用,8/10 轮抢答)。
+4. **PR-2 保持单 PR**(Annie 定 545 = PR-1 + PR-2,不再拆)。
+5. **命名定稿:命令 = `/glaw`**(Annie 定稿 ①:/glaw = Gemini 耳 + Claude 脑;967 = /gemini)。
+   设计文档所有 /meet 引用改为 /glaw;`huddle.commandName` 保持可配置,**默认值改 "glaw"**
+   (PR-1 as-built 默认 "meet",PR-2 翻默认)。取代 Addendum A7 的「545 = /meet」。
+6. 会议逻辑若冒出**新的**产品决策(非已定 A10/D4)再 gate 报 Tadashi 转 Annie;纯工程细化自主推进。
+
+## 10. PR-2 核心架构:多 session 编排(A10 落地形态)
+
+每个参与 Lead 一条 Gemini Live session(各配 `speechConfig.voiceName` 声线),音频输出天然
+路由到该 Lead 自己 bot 的 voice connection——A2「谁回答谁亮圈」结构性解决,无需归因解析。
+组件形态:**LeadLine**(每 Lead 一束:ConversationSession + 流式嘴 + rotator + 只读脑)+
+**AddressRouter**(点名路由)+ **FeedPipeline**(静默补喂)+ HuddleSession 状态机总编排。
+
+### D8. 点名路由:sticky + 切换机制(gate 已拍原则,机制自主定)
+
+- **sticky**:默认被点名者 = 主持 Lead(@ 的第一个);founder 音频**只**实时喂当前 addressed
+  session(它做 VAD/语义端点,产出 inputTranscription 唯一源)。
+- **切换检测**:AddressRouter 扫 inputTranscription(final)命中其他参与 Lead 的名字别名
+  (Discord display name + agentId 派生 + 可配别名)→ 判定「这轮在点名 X」。
+- **切换轮的交接(关键机制)**:点名发生在「喂给旧 addressed session 的那句话」里——旧 session
+  会试图抢答。落法:检测命中 → ①立刻 interrupt 旧 session + 嘴上 turn-gate 丢弃其本轮输出;
+  ②该句转写文本作为**触发说话的文本轮**(sendText / sendClientContent turnComplete:true)喂给
+  新 addressed session → 它开口回答(音频走它自己的 bot);③sticky 指针切到 X,下一句起
+  founder 音频直喂 X 的 session。切换轮延迟略高(转写 final + 文本轮 ~1.2-1.7s),常态轮不受
+  影响——切换是低频动作,可接受;若真机体感差,退路 = 缓冲 PCM 重放进新 session(复杂度高,
+  不预建,记 documented alternative)。
+- **误检代价**:名字误命中 → 错 Lead 回答一轮(可当场口头纠正,transcript 不受影响);漏检 →
+  旧 Lead 答了别人的问题,同样口头可纠。均非破坏性,v1 可接受。
+
+### D9. 补喂 = 一等公民(968 负对照:不补喂会自信瞎编)
+
+- **通道**:`sendClientContent(turnComplete:false)`——968 B 格真机实测 **0 字节出声**、事后可
+  正确引用(含跨 agent 事实)。**不是** 967 的 `sendText`(sendRealtimeInput text 会破静默,
+  968 A 格实测出声)——两通道语义相反,voice-core 需要**新增 injectContext()**(545 PR-2 增量,
+  与 967 的 sendText 增量不重叠、不冲突)。
+- **内容**:会议 journal(进程内有序事件流)= founder 每句 final 转写 + 每轮开口 Lead 的
+  outputTranscription,带 speaker 标签;每条落 journal 即 fan-out 到**所有非发声/非收音**
+  session(addressed session 亲历 founder 音频、发声 session 亲历自己的话,都不用喂自己那份)。
+- **可靠性设计**:per-session 投递游标 + 失败重试;session 经 rotator 续接(resume handle)时
+  上下文保留、无需重放;**resume 失败开新 session** → 从 journal 全量重放(systemPreamble 或
+  批量 injectContext);投递持续失败 → TIV fail-visible(「⚠️ X 的上下文同步落后」),绝不静默。
+
+### D10. turn 纪律:同刻只有一张嘴
+
+- orchestrator 持**发声令牌**:只有 addressed session(或切换轮的新 session)的音频允许进它的
+  嘴(流式 AudioPlayer);其他 session 的意外音频(理论上不应有——它们收不到音频轮)被嘴上
+  turn-gate 丢弃 + 计数告警(防抢话 belt,968 教训的运行时兜底)。
+- **barge-in fan-out**:Note-taker 的 backchannel 门(PR-1 as-built,350ms)判定真打断 →
+  interrupt 当前发声 session + flush 其嘴(<100ms,本地动作)。
+
+### D11. 嘴的形态:流式 turn mouth ×N(非 PR-1 LeadSpeaker 的离散队列)
+
+Gemini 音频直出 = 24k mono PCM chunk 流;PR-1 LeadSpeaker 是 edge-tts 离散 utterance 队列,
+不适配。967 分支已有 AssistantSpeaker(beginTurn/feed/endTurn/flush,PassThrough 单资源流
++ turn-gate + earcon/filler,复用 LeadSpeaker 的 PlayerLike/ResourceSource seam)——PR-2 的
+per-Lead 流式嘴按同款形态实现(**assistant/* 是 967 专属模块,545 在 huddle/ 侧落自己的
+GeminiTurnMouth**;967 先 merge 则评估共享化,first-to-land-builds 同款纪律)。LeadSpeaker
+保留:earcon/filler 预合成文件播放 + FLY-546 announce 面继续用它。
+
+### D12. 会话时限 ×N 与生命周期
+
+- 每条 session 由自己的 TalkSessionRotator 管续接(15min 音频时限;resume handle 保上下文);
+  非 addressed session 只收 injectContext 文本,音频时限压力集中在 addressed 一条。
+- session 全部在 assembling 期建立(参会名单即 /glaw 点名名单,会中不加人——PRD 无会中加人
+  要求),teardown 全部关闭。
+- GEMINI_API_KEY 从 PR-1 的 WARN 升级为 fail-fast(PR-1 cli.ts 注释已预告)。
+
+### D13. C 块与 concluding 的多 session 适配
+
+- **recap 由主持 session 出**(它被补喂了全场,上下文完整):orchestrator 用控制文本轮
+  (967 sendText 语义,触发说话)steering「请口头 recap:1)…2)…对吗?」;确认检测 = 后续
+  founder 转写命中明确肯定词。
+- **summary 生成 = ReadOnlyLeadBrain(claude -p 主持 persona,只读)消费 journal/JSONL**,
+  逐条结论/action item 附原话引用(ts+原句)——不让 Live session 写长文(口语模型写文档
+  不可靠,脑侧生成可控可测)。
+- landing 顺序与失败语义沿用 plan v1 §6(comment → worktree → Done → TIV 卡片;任何前步
+  失败 issue 不 Done;summary comment 带幂等标记,Codex R2 护栏①)。
+- **A6 会后逐条下达**:action items 在 landing 阶段批量投递(issue thread @Lead /
+  create-issue),会中口头只承诺「记下了」。
+
+## 11. 与兄弟 issue 的边界(第二轮刷新)
+
+| 对象 | 状态 | 边界 |
+|------|------|------|
+| FLY-967 /gemini(runner 525f8151) | 分支在途,已 rebase 到 545 PR-1 底盘,动作快 | voice-core 增量(sendText/systemPreamble/voice→speechConfig)+ Bridge P12 两路由 = **first-to-land-builds,绝不各写一份**;assistant/* 是 967 专属;545 新增 injectContext 与 967 不重叠 |
+| FLY-546 voice-headphone | 分支在途(implement 12/12 + QA) | A4 照旧:c 档接口留位、当前走 readback + 现有 founder gate;**不依赖 546 merge** |
+| FLY-968 | 已 merge(#494) | 引擎选型证据来源;OpenAI Realtime text-out = documented fallback |
+
+## 12. 第二轮风险增量
+
+| 风险 | 等级 | 对策 |
+|------|------|------|
+| 切换轮交接(interrupt 旧 + 文本轮喂新)真机不顺滑 | 中 | 切换低频;E2E 专测;退路 = PCM 缓冲重放(documented,不预建) |
+| 补喂通路是 preview 模型的非官方行为(968 靠实测推翻文档先验) | 中 | 模型 pin 3.1(968 C 格:2.5 有幻觉样本);补喂验证进 staged E2E;fail-visible |
+| 名字别名检测中文口语变体(「Tadashi」被转写成汉字/近音) | 中 | 别名表可配 + 转写实测校准(S1 已见「Huddle」→「哈豆」);漏检代价小(口头纠) |
+| ×N session 并发成本/配额 | 低 | 968 实测 1.05×;N≤3 |
+| 967/545 merge 撞车 | 低 | first-to-land-builds + 与 525f8151 对齐;byte-align 消费 |

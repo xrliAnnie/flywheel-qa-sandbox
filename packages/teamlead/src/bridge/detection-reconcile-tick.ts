@@ -70,6 +70,10 @@ export interface DetectionReconcileTickDeps {
 	/** Kinds PROGRESS may resolve (terminal resolves all) — see
 	 * resolveRecoveredDetectionTargets. Unset = all kinds. */
 	progressResolvableKinds?: ReadonlySet<string>;
+	preserveOnTerminal?: (row: DetectionEscalationRow) => boolean;
+	pagePolicy?: (
+		row: DetectionEscalationRow,
+	) => "page" | "lead_only" | "page_no_fleet";
 	graceMs?: number;
 	graceMsFor?: (row: DetectionEscalationRow) => number | undefined;
 	fleetThreshold?: number;
@@ -99,6 +103,7 @@ export async function runDetectionReconcileTick(
 			store: deps.store,
 			probe: deps.recoveryProbe,
 			progressResolvableKinds: deps.progressResolvableKinds,
+			preserveOnTerminal: deps.preserveOnTerminal,
 			logger,
 		});
 	} catch (err) {
@@ -198,6 +203,7 @@ export async function runDetectionReconcileTick(
 	await reconcileDetectionEscalations({
 		store: deps.store,
 		pageFounder: deps.pageFounder,
+		pagePolicy: deps.pagePolicy,
 		fleetSink: deps.fleetSink,
 		graceMs: deps.graceMs,
 		graceMsFor: deps.graceMsFor,

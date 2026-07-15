@@ -165,7 +165,7 @@ describe("QA FLY-1006 — waiting cue (Annie 反馈②)", () => {
 		await session.start();
 
 		handlers().onAudio(Buffer.alloc(480)); // first chunk: cue off, turn opens
-		const turnStreamPlaying = events.lastIndexOf("play:stream");
+		const turnStreamPlaying = events.lastIndexOf("play:raw-stream");
 		expect(turnStreamPlaying).toBeGreaterThanOrEqual(0);
 
 		handlers().onAudio(Buffer.alloc(480)); // mid-turn chunks

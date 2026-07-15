@@ -61,10 +61,13 @@ function fakeBrain(
 
 function makeManager() {
 	const brains = new Map<string, FakeBrain>();
+	const finalizing = new Set<string>();
 	return {
 		brains,
+		finalizing,
 		get: (k: string) => brains.get(k),
 		stats: () => ({ active: brains.size }),
+		isFinalizing: (k: string) => finalizing.has(k),
 	};
 }
 
@@ -144,6 +147,39 @@ describe("BrainPort — /brain/turn validation", () => {
 		const res = await turnReq(port, { key: "FLY-1:lead", text: "hi" });
 		expect(res.status).toBe(200);
 		expect(await res.text()).toBe("你好");
+	});
+
+	it("FLY-1160 (Codex #552 R2 HIGH-4): a FINALIZING key refuses new turns with 503 (not 404)", async () => {
+		const manager = makeManager();
+		manager.brains.set("eleven:conv-1", fakeBrain({ chunks: ["x"] }));
+		manager.finalizing.add("eleven:conv-1");
+		const { port } = await start(manager);
+		const res = await turnReq(port, { key: "eleven:conv-1", text: "hi" });
+		expect(res.status).toBe(503);
+		expect((await res.json()).error).toBe("finalizing");
+	});
+
+	it("FLY-1160 (Codex #552 R2 HIGH-4): the FENCE refuses a turn that goes finalizing DURING the interrupt/prev awaits", async () => {
+		const manager = makeManager();
+		// hangFirst holds turn-1 at its interrupt barrier; turn-2 queues behind it
+		// and, once turn-1's stream closes, would reach respond() — but the key
+		// went finalizing in that window, so the fence must 503 it.
+		const b = fakeBrain({
+			chunks: ["a"],
+			hangFirst: true,
+			manualRelease: true,
+		});
+		manager.brains.set("eleven:conv-1", b);
+		const { port } = await start(manager);
+		const t1 = turnReq(port, { key: "eleven:conv-1", text: "one" });
+		await waitFor(() => b.calls === 1);
+		const t2 = turnReq(port, { key: "eleven:conv-1", text: "two" });
+		// the daemon starts finalizing while turn-2 is queued behind turn-1
+		manager.finalizing.add("eleven:conv-1");
+		b.release?.(); // let turn-1 finish so turn-2 reaches the fence
+		const res2 = await t2;
+		expect(res2.status).toBe(503);
+		await t1.catch(() => {});
 	});
 
 	it("404 on an unbound key (only daemon wiring can open/close brains)", async () => {

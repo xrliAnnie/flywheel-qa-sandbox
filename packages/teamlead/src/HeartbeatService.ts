@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { CommDB } from "flywheel-comm/db";
-import { modelShortCode } from "flywheel-config";
+import { phaseThreadBadge } from "flywheel-config";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -35,6 +35,7 @@ import {
 	TURN_GRANT_GRACE_MS,
 } from "./bridge/phase-orchestrator.js";
 import { classifyQuiet, type QuietSignals } from "./bridge/quiet-classifier.js";
+import { sessionModelDisplay } from "./bridge/runner-model-display.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import { reconnectingBadge, stageBadge } from "./bridge/stage-utils.js";
 import {
@@ -241,10 +242,9 @@ export interface HeartbeatNotifier {
 	/**
 	 * FLY-623: readopt-ON happy path — the Bridge re-adopted a live detached
 	 * Runner after a restart (heartbeat re-established via tmux liveness). A
-	 * one-time, low-priority, NON-retryable FYI per reconnecting episode (the
-	 * founder-facing signal is the Display-A "⚠️重连中" title, not this). An
-	 * implementation that owns a chat thread also stamps the reconnecting title
-	 * here.
+	 * one-time, low-priority, NON-retryable FYI per reconnecting episode. An
+	 * implementation that owns a chat thread also restores the actual phase/status
+	 * title here, so a Bridge-restart warning cannot remain stale after re-adopt.
 	 */
 	onSessionMonitoringReestablished(
 		session: Session,
@@ -288,7 +288,7 @@ export interface HeartbeatNotifier {
 	): Promise<boolean>;
 	/**
 	 * FLY-623: re-stamp the real/terminal status badge on a Runner's thread title
-	 * once it leaves the reconnecting state (strips the "⚠️重连中" marker). Optional
+	 * once it leaves the reconnecting state (strips any stale reconnect marker). Optional
 	 * + best-effort: a notifier without a chat thread (legacy / tests) no-ops.
 	 */
 	clearReconnectStamp?(session: Session): void;
@@ -2601,7 +2601,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 
 	/**
 	 * FLY-623: readopt-ON happy path. The Bridge re-adopted a live detached Runner
-	 * after a restart. Stamp the Display-A "⚠️重连中" title (founder signal) and
+	 * after a restart. Stamp the Display-A reconnecting title and
 	 * deliver a one-time, low-priority, NON-retryable FYI to the Lead. Best-effort:
 	 * `session_monitoring_reestablished` is not in GUARDRAIL/RETRYABLE sets, so
 	 * deliverHook marks it delivered regardless and it is never re-delivered.
@@ -2653,7 +2653,8 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 				hookPayload.concurrent_reestablished = details.concurrentCount;
 			}
 		}
-		// Display-A: stamp the ⚠️重连中 marker (fire-and-forget, best-effort).
+		// Display-A: stamp the ⚠️重连中 marker with the resolved model marker
+		// (fire-and-forget, best-effort). Runtime re-entry may suppress this write.
 		if (details?.stampReconnectTitle !== false) {
 			this.stampReconnect(session, "enter");
 		}
@@ -2715,20 +2716,21 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			issueTitle: session.issue_title,
 			botToken,
 			leadId,
-			// FLY-728 Part D: the reconnect stamp has the session — keep the model
-			// code authoritative (`?? null` clears on account-default) so a reconnect
-			// rename never keeps a stale code (Codex code R1).
-			modelCode: modelShortCode(session.runner_model) ?? null,
+			// FLY-1255: reconnect renames use the same resolved-dispatch model
+			// marker as every other managed title writer.
+			modelMarker: sessionModelDisplay(session)?.threadMarker ?? null,
 		};
 
+		const phaseBadge = phaseThreadBadge(session.chat_thread_role) || undefined;
 		let badge: string | null;
 		if (mode === "enter") {
 			badge = reconnectingBadge(withWord);
 		} else if (session.status === "completed") {
 			badge = stageBadge("completed", withWord) ?? null;
+		} else if (session.status === "running" && phaseBadge) {
+			badge = phaseBadge;
 		} else if (session.status === "running" && session.session_stage) {
-			// Cleared while still running (e.g. a stage_changed proved the channel
-			// live) → restore the current real stage badge.
+			// A non-phase runner restores its current real stage badge.
 			badge = stageBadge(session.session_stage, withWord) ?? null;
 		} else {
 			// failed / blocked / unknown terminal → strip the prefix to the base title.

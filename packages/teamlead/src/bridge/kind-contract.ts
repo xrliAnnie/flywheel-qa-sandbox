@@ -103,6 +103,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	// the founder is reached), mirroring the pane_error_stalled sibling contract.
 	detection_fleet_aggregate: { owner: "claude", arc: "human_by_design" },
 	detection_page_undeliverable: { owner: "claude", arc: "human_by_design" },
+	delivery_dead_letter: { owner: "founder_direct", arc: "none_escalate" },
 	runner_stuck_unhandled: {
 		owner: "claude",
 		arc: "auto",
@@ -115,7 +116,12 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	},
 	auto_qa_stuck: { owner: "claude", arc: "human_by_design" },
 	codex_gate_blocked: { owner: "claude", arc: "human_by_design" },
+	review_advisory_pass: { owner: "claude", arc: "human_by_design" },
+	review_ruling_recorded: { owner: "claude", arc: "human_by_design" },
+	review_ruling_disputed: { owner: "claude", arc: "human_by_design" },
+	review_ruling_notify_failed: { owner: "claude", arc: "human_by_design" },
 	three_stage_stuck: { owner: "claude", arc: "human_by_design" },
+	three_stage_takeover_failed: { owner: "claude", arc: "human_by_design" },
 	founder_milestone_undelivered: { owner: "claude", arc: "human_by_design" },
 	tui_window_lost: { owner: "claude", arc: "human_by_design" },
 	restart_guard_bypass: { owner: "claude", arc: "human_by_design" },
@@ -152,6 +158,14 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	// never emits them; same legacy human posture as the other shell kinds.
 	deploy_failed: { owner: "claude", arc: "human_by_design" },
 	deploy_degraded: { owner: "claude", arc: "human_by_design" },
+	// FLY-1256: the quota monitor already performed (or deliberately declined)
+	// the switch/revive. Bridge ARC would duplicate an external safety action.
+	account_switched: { owner: "claude", arc: "human_by_design" },
+	quota_no_target: { owner: "claude", arc: "human_by_design" },
+	quota_read_blind: { owner: "claude", arc: "human_by_design" },
+	account_switch_failed: { owner: "claude", arc: "human_by_design" },
+	quota_revive_stuck: { owner: "claude", arc: "human_by_design" },
+	quota_monitor_down: { owner: "claude", arc: "human_by_design" },
 
 	// ── FLY-1082 fleet kinds — every one has a named owner + executable ARC
 	// (or an explicit (b) posture). Fleet-level failures never fall through to

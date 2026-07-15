@@ -54,7 +54,8 @@ export interface FounderThreadNotifyOpts {
 	 * the header so, in the single converged issue thread, the founder can tell
 	 * which of the three-stage phase sessions is speaking. Empty for a main / non-
 	 * three-stage session → byte-unchanged. Callers pass
-	 * `phaseMessageTag(session.chat_thread_role, session.runner_model)`.
+	 * `phaseMessageTag(session.chat_thread_role, session.runner_model,
+	 * session.design_backend)`.
 	 */
 	phasePrefix?: string;
 }

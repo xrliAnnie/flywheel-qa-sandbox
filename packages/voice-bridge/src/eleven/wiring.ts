@@ -10,11 +10,16 @@
  * tunnel + agent are session-front runbook assets (research §2.3) — the
  * command preflight fail-louds when any is missing, never a silent degrade.
  */
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { ResidentBrainManager } from "flywheel-voice-core";
 import { AssistantSpeaker } from "../assistant/AssistantSpeaker.js";
-import { makeDeferredPlayer } from "../assistant/wiring.js";
+import {
+	classifyVoiceDelta,
+	makeDeferredPlayer,
+	makeLinearClient,
+} from "../assistant/wiring.js";
 import type { PlayerLike, ResourceSource } from "../audio/LeadSpeaker.js";
 import type { DiscordDeps } from "../bots/discordWiring.js";
 import type { HuddleBridgeConfig } from "../config.js";
@@ -22,13 +27,25 @@ import type { VoiceRoomRuntime } from "../VoiceRoomRuntime.js";
 import { ELEVEN_SLOT_MODE, type ElevenModeConfig } from "./config.js";
 import { ElevenCommand, type ElevenPreflightResult } from "./ElevenCommand.js";
 import {
+	type ElevenMinutes,
 	ElevenSession,
 	type ElevenWsHandlers,
 	type ElevenWsLike,
 } from "./ElevenSession.js";
 import { ElevenWs } from "./ElevenWs.js";
+import {
+	ElevenLanding,
+	elevenTranscriptPath,
+	readElevenTranscriptRows,
+	reconcilePendingLandings,
+} from "./landing.js";
 
 const ORCHESTRATOR = "orchestrator";
+/** FLY-1160 §4.2-4: the founder-join assemble window before a meeting is a
+ * no-show. Presence-based (occupancy probe + voice-state join), NOT audio. */
+const DEFAULT_NO_SHOW_MS = 10 * 60 * 1000;
+const MINUTES_PROMPT =
+	"这场语音会到此结束。请用中文把它整理成一段简短的会议纪要:先一句话总结聊定的事,再列关键决定与待办(有就列,没有就说没有)。只输出纪要正文,不要客套。";
 
 /** M2 追加要求② — the waiting cue on the SHARED player (the cue and the mouth
  * are the same orchestrator bot). plan §4: the clip LOOPS from the founder's
@@ -94,11 +111,27 @@ export interface WireElevenOptions {
 	/** FLY-1160 §3.3 Phase 1: when true, new /eleven invocations are refused
 	 * (命令下架) — the daemon is shutting down and must not start meetings. */
 	isShuttingDown?: () => boolean;
+	// ---- FLY-1160 §4.2 resident brain (all optional; absent = pre-1160
+	// bare product-test surface, no kickoff issue, no landing) ----
+	/** the daemon's resident brain manager — /eleven opens ONE session per
+	 * meeting keyed eleven:<sessionId> (the shim reaches it via BrainPort; the
+	 * daemon drives the final minutes turn directly). */
+	brainManager?: ResidentBrainManager;
+	/** claude binary for the resident brain (default "claude"). */
+	claudeBin?: string;
+	/** test seam: drive the resident final-turn minutes generation. */
+	generateMinutes?: (sessionId: string) => Promise<ElevenMinutes | null>;
+	/** FLY-1160 §4.2-4 (Codex #552 R2 HIGH-3): the founder-join assemble window
+	 * before a meeting is a no-show. Default 10min; 0 disables. */
+	noShowMs?: number;
 }
 
 export interface ElevenRuntime {
 	commandName: string;
-	close(): Promise<void>;
+	/** FLY-1160 §3.3 Phase 2 (Codex #552 R1 HIGH-2): the shutdown deadline
+	 * signal reaches the finalizer's minutes turn + landing — true cancellation,
+	 * no deadline-crossing Linear writes. */
+	close(opts?: { signal?: AbortSignal }): Promise<void>;
 }
 
 export async function wireElevenMode(
@@ -121,6 +154,54 @@ export async function wireElevenMode(
 		opts.stateDir ??
 		join(homedir(), ".flywheel", "voice-eleven", config.projectName);
 	mkdirSync(stateDir, { recursive: true });
+
+	// FLY-1160 §4.2: the resident brain writes minutes onto a kickoff issue.
+	// The Bridge Linear proxy is load-bearing when the brain is enabled — a
+	// missing token is a fail-loud config error, not a silent bare surface.
+	const brainEnabled = opts.brainManager !== undefined;
+	const apiToken = env.FLYWHEEL_API_TOKEN;
+	if (brainEnabled && !apiToken) {
+		throw new Error(
+			"voice-bridge: FLYWHEEL_API_TOKEN unset — /eleven resident brain needs the Bridge Linear proxy (kickoff issue + minutes landing)",
+		);
+	}
+	const bridgeUrl =
+		env.FLYWHEEL_BRIDGE_URL ?? env.BRIDGE_URL ?? "http://127.0.0.1:9876";
+	const linear =
+		brainEnabled && apiToken
+			? makeLinearClient({
+					bridgeUrl,
+					apiToken,
+					projectName: config.projectName,
+					fetchImpl,
+				})
+			: undefined;
+	const identityFile = brainEnabled
+		? join(config.projectRoot, ".lead", eleven.leadId, "identity.md")
+		: undefined;
+	if (brainEnabled && identityFile && !existsSync(identityFile)) {
+		// the persona source must exist — fail-loud at wire time, not mid-meeting
+		throw new Error(
+			`voice-bridge: /eleven leadId "${eleven.leadId}" identity file not found at ${identityFile} — the resident brain persona source`,
+		);
+	}
+
+	// FLY-1160 §4.2-4 boot reconciliation: resume any landing a shutdown
+	// deadline / crash cut mid-flight, before serving new meetings. Best-effort
+	// (a failing envelope is kept for the next boot; never blocks startup).
+	if (linear) {
+		void reconcilePendingLandings({
+			stateDir,
+			linear,
+			read: linear,
+			commandName: eleven.commandName,
+			log,
+		}).catch((err) =>
+			log(
+				`[eleven] boot reconciliation error (non-fatal): ${String((err as Error).message ?? err)}`,
+			),
+		);
+	}
 
 	// fail-loud preflight (research §2.3): agent reachable + shim healthy.
 	// key-in-place is checked above; the tunnel is transitively proven by the
@@ -163,6 +244,43 @@ export async function wireElevenMode(
 	const orchestratorClient = registry.client(ORCHESTRATOR);
 	let activeSession: ElevenSession | null = null;
 
+	// FLY-1160 §4.2-4 (Codex #552 R2 HIGH-3): founder PRESENCE over the resident
+	// VC drives the no-show decision (occupancy probe + voice-state join), NOT
+	// audio. A founder who joined but stayed silent is present, never a no-show.
+	const noShowMs = opts.noShowMs ?? DEFAULT_NO_SHOW_MS;
+	let humanCount = 0;
+	const founderJoinCbs = new Set<() => void>();
+	const unsubVoiceState =
+		brainEnabled && typeof deps.onVoiceStateUpdate === "function"
+			? deps.onVoiceStateUpdate(orchestratorClient, (u) => {
+					if (u.isBot) return;
+					const delta = classifyVoiceDelta(u, config.voiceChannelId);
+					if (delta === "join") {
+						humanCount++;
+						for (const cb of founderJoinCbs) cb();
+					} else if (delta === "leave") {
+						humanCount = Math.max(0, humanCount - 1);
+					}
+				})
+			: undefined;
+	/** seed occupancy so a founder ALREADY in the VC when /eleven starts counts
+	 * as present (no false no-show). Best-effort — a probe failure stays 0. */
+	const seedOccupancy = async (): Promise<void> => {
+		if (!brainEnabled || typeof deps.voiceChannelHumanCount !== "function")
+			return;
+		try {
+			humanCount = await deps.voiceChannelHumanCount(
+				orchestratorClient,
+				config.guildId,
+				config.voiceChannelId,
+			);
+		} catch (err) {
+			log(
+				`[eleven] occupancy seed failed (staying 0): ${String((err as Error).message ?? err)}`,
+			);
+		}
+	};
+
 	// QA R3 ②③ — the TIV: status + BOTH sides' transcript into the voice
 	// channel's text area (the assistant TivSurface shape). /eleven captions
 	// are per-turn platform events (one user_transcript + one agent_response
@@ -183,22 +301,32 @@ export async function wireElevenMode(
 				.catch((err) => log(`eleven TIV caption send failed: ${err.message}`)),
 	};
 
+	// FLY-1160: kickoff issue (brain enabled) — the resident brain lands
+	// minutes here. Absent brain = the pre-1160 bare surface, no issue.
+	const createIssue = async (title: string) => {
+		if (!linear) return { identifier: "", url: undefined };
+		return linear.createIssue(title);
+	};
+
 	const command = new ElevenCommand({
 		commandName: eleven.commandName,
 		slot: room.slot,
 		joinUrl: `https://discord.com/channels/${config.guildId}/${config.voiceChannelId}`,
 		preflight,
+		createIssue,
+		founderName: env.FLYWHEEL_FOUNDER_NAME || "Annie",
 		pingFounder: (text) =>
 			deps.sendMessage(orchestratorClient, config.voiceChannelId, text),
 		log,
 		stopSession: async () => {
 			if (!activeSession) return false;
-			await activeSession.stop();
+			await activeSession.stop("manual");
 			activeSession = null;
 			return true;
 		},
-		startSession: async ({ sessionId, topic }) => {
+		startSession: async ({ sessionId, issueId, topic }) => {
 			let orchestratorConn: unknown;
+			let noShowTimer: ReturnType<typeof setTimeout> | undefined;
 			const deferredPlayer = makeDeferredPlayer(log);
 			const speaker = new AssistantSpeaker({
 				player: deferredPlayer.player,
@@ -212,7 +340,71 @@ export async function wireElevenMode(
 						path: eleven.waitingCuePath,
 					})
 				: undefined;
-			const transcriptPath = join(stateDir, `${sessionId}.jsonl`);
+			const transcriptPath = elevenTranscriptPath(stateDir, sessionId);
+			const brainKey = `eleven:${sessionId}`;
+			// FLY-1160 §4.2-3 (Codex #552 R1 HIGH-4): pre-heat is a start() step,
+			// NOT best-effort here. A preheat failure THROWS → start-failure →
+			// abort-close the issue (no dead meeting whose shim turns all 404).
+			// The captured brain ref is used for the minutes turn so the finalizer
+			// can SUSPEND the key (BrainPort 404s new shim turns) without hiding
+			// the brain from the daemon's own final turn (HIGH-5).
+			let brainRef: ReturnType<ResidentBrainManager["open"]> | null = null;
+			const preheat = (): void => {
+				if (!opts.brainManager || !identityFile) return;
+				brainRef = opts.brainManager.open(brainKey, {
+					claudeBin: opts.claudeBin ?? "claude",
+					identityFile,
+					readOnlyRoot: config.projectRoot,
+					model: config.brain?.model,
+					sessionPreamble: topic
+						? `本场 /eleven 语音会话的话题:${topic}`
+						: undefined,
+				});
+			};
+
+			// FLY-1160 §4.2-4: minutes = the resident brain's FINAL turn on the
+			// CAPTURED ref (reachable even while the key is suspended). Test seam
+			// wins; brain gone/failed → null → the finalizer degrades to journal.
+			// The shutdown-deadline signal cancels the turn (§3.3 Phase 2).
+			const generateMinutes = async (
+				signal?: AbortSignal,
+			): Promise<ElevenMinutes | null> => {
+				if (opts.generateMinutes) return opts.generateMinutes(sessionId);
+				if (!brainRef) return null;
+				try {
+					let text = "";
+					for await (const chunk of brainRef.respond(
+						{ text: MINUTES_PROMPT, history: [] },
+						{ signal: signal ?? new AbortController().signal },
+					)) {
+						text += chunk;
+					}
+					if (!text.trim()) return null;
+					return { recapText: text.trim(), quotes: journalQuotes() };
+				} catch (err) {
+					log(
+						`[eleven] resident minutes turn failed (degrading to journal): ${String((err as Error).message ?? err)}`,
+					);
+					return null;
+				}
+			};
+
+			// degraded-minutes quote source: the founder's verbatim lines.
+			const journalQuotes = (): { ts: string; text: string }[] =>
+				readElevenTranscriptRows(transcriptPath)
+					.filter((r) => r.role === "user")
+					.map((r) => ({ ts: r.ts, text: r.text }));
+
+			const landing = linear
+				? new ElevenLanding({
+						stateDir,
+						sessionId,
+						linear,
+						commandName: eleven.commandName,
+						log,
+					})
+				: undefined;
+
 			const connect =
 				opts.connectWs != null
 					? (handlers: ElevenWsHandlers) =>
@@ -239,6 +431,7 @@ export async function wireElevenMode(
 			const session = new ElevenSession({
 				sessionId,
 				topic,
+				...(issueId ? { issueId } : {}),
 				slot: room.slot,
 				slotMode: ELEVEN_SLOT_MODE,
 				ears: room,
@@ -274,11 +467,63 @@ export async function wireElevenMode(
 						);
 					}
 				},
+				// FLY-1160 §4.2-4 finalizer seams (present only with the brain)
+				...(landing ? { landing } : {}),
+				...(brainEnabled ? { generateMinutes } : {}),
+				...(brainEnabled ? { journalQuotes } : {}),
+				...(linear ? { linearAbort: linear } : {}),
+				...(brainEnabled ? { preheat } : {}),
+				...(brainEnabled
+					? {
+							// ④ interrupt the in-flight brain turn + await its barrier;
+							// ② suspend the key so BrainPort 404s new shim turns.
+							brainInterrupt: async () => {
+								await brainRef?.interrupt();
+							},
+							suspendBrain: () => opts.brainManager?.suspend(brainKey),
+						}
+					: {}),
 				log,
 				onEnded: () => {
 					if (activeSession === session) activeSession = null;
+					// disarm the no-show watch for this meeting.
+					if (noShowTimer) clearTimeout(noShowTimer);
+					noShowTimer = undefined;
+					founderJoinCbs.delete(onFounderJoin);
+					// who spawns reaps (FLY-1148): close the resident brain for
+					// this meeting — after the finalizer's minutes turn is done.
+					void opts.brainManager?.close(brainKey).catch(() => {});
 				},
 			});
+
+			// FLY-1160 §4.2-4 (Codex #552 R2 HIGH-3): arm the presence-based
+			// no-show watch. Seed occupancy (a founder already in the VC counts
+			// as present); a voice-state JOIN disarms it; the timer fires →
+			// stop("no-show") only if the founder never joined.
+			const onFounderJoin = (): void => {
+				if (noShowTimer) {
+					clearTimeout(noShowTimer);
+					noShowTimer = undefined;
+				}
+			};
+			if (brainEnabled && noShowMs > 0) {
+				await seedOccupancy();
+				if (humanCount > 0) {
+					// founder already present — never a no-show
+				} else {
+					founderJoinCbs.add(onFounderJoin);
+					noShowTimer = setTimeout(() => {
+						noShowTimer = undefined;
+						founderJoinCbs.delete(onFounderJoin);
+						if (activeSession === session) {
+							log("[eleven] no-show — founder never joined; abort-closing");
+							void session.stop("no-show");
+						}
+					}, noShowMs);
+					noShowTimer.unref?.();
+				}
+			}
+
 			activeSession = session;
 			await session.start();
 		},
@@ -333,9 +578,16 @@ export async function wireElevenMode(
 
 	return {
 		commandName: command.name,
-		close: async () => {
-			await activeSession?.stop();
+		close: async (closeOpts?: { signal?: AbortSignal }) => {
+			// daemon shutdown → the finalizer runs the minutes+landing under the
+			// two-phase shutdown budget (FLY-1160 §3.3). The deadline signal is
+			// TRUE cancellation: it reaches the minutes turn + landing writes.
+			await activeSession?.stop(
+				"shutdown",
+				closeOpts?.signal ? { signal: closeOpts.signal } : {},
+			);
 			activeSession = null;
+			unsubVoiceState?.();
 		},
 	};
 }

@@ -683,6 +683,7 @@ async function runPostShipFinalizationInner(
 			phasePrefix: phaseMessageTag(
 				finalizedSession?.chat_thread_role,
 				finalizedSession?.runner_model,
+				finalizedSession?.design_backend,
 			),
 		},
 		{ store, fetchImpl: deps.fetchImpl },

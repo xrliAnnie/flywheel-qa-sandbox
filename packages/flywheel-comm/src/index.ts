@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import {
 	DEFAULT_GATE_TIMEOUT_MS,
@@ -9,6 +10,7 @@ import {
 	type AccountRotationNotifyArgs,
 	accountRotationNotify,
 } from "./commands/account-rotation-notify.js";
+import { ackEvent } from "./commands/ack-event.js";
 import { ask } from "./commands/ask.js";
 import { awaitCodexGate } from "./commands/await-codex-gate.js";
 import { capture } from "./commands/capture.js";
@@ -41,6 +43,7 @@ import { qaResult } from "./commands/qa-result.js";
 import { reportDeployed } from "./commands/report-deployed.js";
 import { requestReview } from "./commands/request-review.js";
 import { respond } from "./commands/respond.js";
+import { reviewRuling } from "./commands/review-ruling.js";
 import { runRunnerConfig } from "./commands/runner-config.js";
 import { search } from "./commands/search.js";
 import { send } from "./commands/send.js";
@@ -70,6 +73,8 @@ Commands:
             ("DONE: …") — the Lead still gets it, but founder thread replies
             can never bind to it.
   check     Check if a question has been answered
+  ack-event Write a backend-neutral Lead-event ACK receipt. The bearer token
+            MUST arrive on stdin: ack-event <seq> --project <name> --token-stdin
   gate      Block at a checkpoint until Lead responds (ask+poll+resolve).
             With --no-block (FLY-191): park the question + return questionId
             JSON immediately; runner goes idle and is woken by mailbox.
@@ -94,6 +99,7 @@ Commands:
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
   qa-result  Emit a QA verdict (pass|fail) that gates the founder ship notification (QA Runner use)
   request-review  Register a codex-author review request bound to an open review gate (FLY-1188; --type design|code --question-id <id> [--plan <path>])
+  review-ruling  Record or revoke a supervised Lead ruling for a delivered review finding (FLY-1278)
   codex-review-result  Emit a Codex code-review APPROVED verdict for the current head (FLY-827; await-codex-gate calls this automatically)
   cleanup   Delete read messages older than TTL (default 24h)
   visual-capture   Run ProofShot UI/3D capture, select artifacts, write manifest (GEO-151)
@@ -173,6 +179,9 @@ async function main(): Promise<void> {
 		case "check":
 			runCheck(commandArgs);
 			break;
+		case "ack-event":
+			runAckEvent(commandArgs);
+			break;
 		case "gate":
 			await runGate(commandArgs);
 			break;
@@ -231,6 +240,9 @@ async function main(): Promise<void> {
 			break;
 		case "request-review":
 			await runRequestReview(commandArgs);
+			break;
+		case "review-ruling":
+			await runReviewRuling(commandArgs);
 			break;
 		case "codex-review-result":
 			await runCodexReviewResult(commandArgs);
@@ -294,6 +306,39 @@ async function main(): Promise<void> {
 			printUsage();
 			process.exit(1);
 	}
+}
+
+function runAckEvent(args: string[]): void {
+	const { values, positionals } = parseArgs({
+		args,
+		options: {
+			db: { type: "string" },
+			project: { type: "string" },
+			lead: { type: "string" },
+			"token-stdin": { type: "boolean", default: false },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: true,
+	});
+	const eventSeq = Number(positionals[0]);
+	if (!Number.isSafeInteger(eventSeq) || eventSeq <= 0) {
+		throw new Error("A positive event sequence is required");
+	}
+	if (!values["token-stdin"]) {
+		throw new Error(
+			"--token-stdin is required; tokens are never accepted in argv",
+		);
+	}
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	const receiptId = ackEvent({
+		dbPath,
+		eventSeq,
+		ackToken: readFileSync(0, "utf8").trim(),
+		leadId: values.lead ?? process.env.FLYWHEEL_LEAD_ID ?? "lead",
+	});
+	if (values.json)
+		console.log(JSON.stringify({ receipt_id: receiptId, event_seq: eventSeq }));
+	else console.log(`ACK receipt queued for event ${eventSeq}`);
 }
 
 /**
@@ -922,6 +967,48 @@ async function runRequestReview(args: string[]): Promise<void> {
 		questionId: values["question-id"],
 		planPath: values.plan,
 		requestId: values["request-id"],
+	});
+}
+
+// FLY-1278: supervised governance for an already-delivered review finding.
+async function runReviewRuling(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			project: { type: "string" },
+			issue: { type: "string" },
+			finding: { type: "string" },
+			"request-id": { type: "string" },
+			"finding-index": { type: "string" },
+			disposition: { type: "string" },
+			"follow-up": { type: "string" },
+			reason: { type: "string" },
+			lead: { type: "string" },
+			revoke: { type: "string" },
+			"exec-id": { type: "string" },
+		},
+		allowPositionals: false,
+	});
+	const rawIndex = values["finding-index"];
+	const findingIndex =
+		rawIndex !== undefined && /^\d+$/.test(rawIndex)
+			? Number.parseInt(rawIndex, 10)
+			: rawIndex === undefined
+				? undefined
+				: Number.NaN;
+
+	await reviewRuling({
+		project: values.project,
+		issue: values.issue,
+		finding: values.finding,
+		requestId: values["request-id"],
+		findingIndex,
+		disposition: values.disposition,
+		followUp: values["follow-up"],
+		reason: values.reason,
+		lead: values.lead,
+		revoke: values.revoke,
+		execId: values["exec-id"],
 	});
 }
 

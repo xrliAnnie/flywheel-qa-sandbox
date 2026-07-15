@@ -42,23 +42,54 @@ describe("modelDisplayName (FLY-892)", () => {
 });
 
 describe("phaseMessageTag (FLY-892)", () => {
+	it("FLY-1259: locked design backend beats the opposite global switch", () => {
+		const previous = process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
+		try {
+			process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "0";
+			expect(phaseMessageTag("design", null, "codex")).toBe("[设计·GPT-5.6] ");
+			process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "1";
+			expect(phaseMessageTag("design", undefined, "claude")).toBe(
+				"[设计·Fable] ",
+			);
+			expect(phaseMessageTag("design", undefined, undefined)).toBe(
+				"[设计·GPT-5.6] ",
+			);
+		} finally {
+			if (previous === undefined) {
+				delete process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
+			} else {
+				process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = previous;
+			}
+		}
+	});
+
 	it("tags each phase with its own runner model", () => {
-		expect(phaseMessageTag("design", "claude-fable-5")).toBe("[设计·Fable] ");
-		expect(phaseMessageTag("implement", "claude-opus-4-8")).toBe(
+		expect(phaseMessageTag("design", "claude-fable-5", undefined)).toBe(
+			"[设计·Fable] ",
+		);
+		expect(phaseMessageTag("implement", "claude-opus-4-8", undefined)).toBe(
 			"[实现·Opus] ",
 		);
-		expect(phaseMessageTag("qa", "claude-sonnet-5")).toBe("[QA·Sonnet] ");
+		expect(phaseMessageTag("qa", "claude-sonnet-5", undefined)).toBe(
+			"[QA·Sonnet] ",
+		);
 	});
 	it("shows GPT for a codex phase session's runner model (FLY-1224 T9)", () => {
-		expect(phaseMessageTag("implement", "gpt-5.6-sol")).toBe("[实现·GPT-5.6] ");
+		expect(phaseMessageTag("implement", "gpt-5.6-sol", undefined)).toBe(
+			"[实现·GPT-5.6] ",
+		);
 	});
 	it("falls back to the phase's PLANNED DISPATCH model when runner_model is absent", () => {
 		// FLY-1224 (Annie's 2026-07-13 table): design → Fable, implement → Codex
 		// GPT-5.6, qa → Opus. A pending/no-runner_model implement row must show the
 		// model it WILL run on, not the legacy tier (the display lie R1 #3 fixed).
-		expect(phaseMessageTag("design")).toBe("[设计·Fable] ");
-		expect(phaseMessageTag("implement", null)).toBe("[实现·GPT-5.6] ");
-		expect(phaseMessageTag("qa", undefined)).toBe("[QA·Opus] ");
+		expect(phaseMessageTag("design", undefined, undefined)).toBe(
+			"[设计·Fable] ",
+		);
+		expect(phaseMessageTag("implement", null, undefined)).toBe(
+			"[实现·GPT-5.6] ",
+		);
+		expect(phaseMessageTag("qa", undefined, undefined)).toBe("[QA·Opus] ");
 	});
 	it("kill-switch: implement fallback shows Fable when codex-implement is off (FLY-1224 T9)", () => {
 		// phaseMessageTag reads the dispatch table (kill-switch aware) — flip the
@@ -66,7 +97,9 @@ describe("phaseMessageTag (FLY-892)", () => {
 		const prev = process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT;
 		process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT = "0";
 		try {
-			expect(phaseMessageTag("implement")).toBe("[实现·Fable] ");
+			expect(phaseMessageTag("implement", undefined, undefined)).toBe(
+				"[实现·Fable] ",
+			);
 		} finally {
 			if (prev === undefined) {
 				delete process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT;
@@ -76,10 +109,12 @@ describe("phaseMessageTag (FLY-892)", () => {
 		}
 	});
 	it("is EMPTY for a main / non-phase role (byte-compat)", () => {
-		expect(phaseMessageTag("main")).toBe("");
-		expect(phaseMessageTag(undefined)).toBe("");
-		expect(phaseMessageTag(null)).toBe("");
-		expect(phaseMessageTag("something-else", "claude-opus-4-8")).toBe("");
+		expect(phaseMessageTag("main", undefined, undefined)).toBe("");
+		expect(phaseMessageTag(undefined, undefined, undefined)).toBe("");
+		expect(phaseMessageTag(null, undefined, undefined)).toBe("");
+		expect(
+			phaseMessageTag("something-else", "claude-opus-4-8", undefined),
+		).toBe("");
 	});
 });
 

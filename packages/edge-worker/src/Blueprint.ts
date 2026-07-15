@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
 	CheckpointsConfig,
+	DesignBackend,
 	DocFlowConfig,
 	FounderUxGateConfig,
 	PonytailConfig,
@@ -26,6 +27,7 @@ import type {
 	DecisionResult,
 	ExecutionContext,
 	IAdapter,
+	TerminalFailureInfo,
 } from "flywheel-core";
 import { buildWindowLabel, cleanIssueTitle } from "flywheel-core";
 import type { DagNode } from "flywheel-dag-resolver";
@@ -109,6 +111,8 @@ export interface BlueprintResult {
 	projectId?: string;
 	exitReason?: string;
 	consecutiveFailures?: number;
+	/** Machine-readable failure propagated unchanged to both Bridge sinks. */
+	failure?: TerminalFailureInfo;
 }
 
 /**
@@ -205,6 +209,8 @@ export interface BlueprintContext {
 	docTier?: DocTier;
 	// FLY-59 — Session role for multi-session-per-issue support
 	sessionRole?: string;
+	/** FLY-1259: effective design vendor locked at three-stage admission. */
+	designBackend?: DesignBackend;
 	// FLY-793 — Bridge-INTERNAL three-stage flag (PhaseOrchestrator only; never
 	// from /api/runs/start or runner payload). When set, the Design/Implement/QA
 	// phase-sessions share ONE branch B (worktree key = parent main key,
@@ -640,6 +646,9 @@ export class Blueprint {
 			runAttempt: ctx.retryContext?.attempt,
 			// FLY-59: Propagate session role from context to event envelope
 			sessionRole: ctx.sessionRole,
+			// FLY-1259: run-level design backend lock; successor phase contexts carry
+			// the same value even when this runner itself is implement or QA.
+			...(ctx.designBackend && { designBackend: ctx.designBackend }),
 			// FLY-793 (Step 11): compute the chat-thread role ONCE here (the only
 			// place shareParentBranch is known) — a three-stage phase carries its
 			// phase role; everything else (incl. auto-QA's own sessionRole==='qa' on
@@ -798,9 +807,14 @@ export class Blueprint {
 					head = null;
 				}
 				if (!clean || !ctx.startPoint || head !== ctx.startPoint) {
+					const failureReason = `worktree_takeover_failed: shared branch-B worktree ${expected.path} is not reusable in place (clean=${clean}, head=${head ?? "?"}, expected=${ctx.startPoint ?? "?"}) — refusing to reuse an active phase worktree; a parked phase may hold uncommitted work`;
 					return {
 						success: false,
-						error: `worktree_takeover_failed: shared branch-B worktree ${expected.path} is not reusable in place (clean=${clean}, head=${head ?? "?"}, expected=${ctx.startPoint ?? "?"}) — refusing to reuse an active phase worktree; a parked phase may hold uncommitted work`,
+						error: failureReason,
+						failure: {
+							failureKind: "worktree_takeover_failed",
+							failureReason,
+						},
 						worktreePath: expected.path,
 					};
 				}
@@ -2049,6 +2063,24 @@ export class Blueprint {
 			}
 		}
 
+		// FLY-1279: a resident goal's explicit blocked terminal is authoritative.
+		// Commits may predate the impasse; neither GitResultChecker nor the
+		// DecisionLayer may turn that terminal into a successful completion.
+		if (result.failure?.failureKind === "goal_blocked") {
+			return {
+				success: false,
+				costUsd: result.costUsd,
+				sessionId: result.sessionId,
+				tmuxWindow: result.tmuxWindow,
+				durationMs: result.durationMs,
+				error: result.failure.failureReason,
+				failure: result.failure,
+				worktreePath: worktreeInfo?.worktreePath,
+				evidence,
+				sessionParams: result.sessionParams,
+			};
+		}
+
 		// ── Decision Layer (v0.2 Step 2b — optional) ──────────
 		if (this.decisionLayer && evidence) {
 			return this.runWithDecision(
@@ -2097,7 +2129,12 @@ export class Blueprint {
 				const summary = this.buildSummary(result);
 				await this.eventEmitter.emitCompleted(env, result, summary);
 			} else {
-				await this.eventEmitter.emitFailed(env, result.error ?? "unknown");
+				await this.eventEmitter.emitFailed(
+					env,
+					result.error ?? "unknown",
+					undefined,
+					result.failure,
+				);
 			}
 		} catch (err) {
 			// postEventReliable never throws, but defensive catch for interface changes

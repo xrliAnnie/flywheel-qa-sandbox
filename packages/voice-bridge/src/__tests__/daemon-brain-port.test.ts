@@ -11,6 +11,12 @@ import type { DiscordDeps } from "../bots/discordWiring.js";
 import { runVoiceBridge, type VoiceBridgeRuntime } from "../cli.js";
 import type { HuddleBridgeConfig } from "../config.js";
 
+// FLY-1160 Phase B merge: the merged 545 cli wires the FULL /glaw meeting face
+// at startup (tivPort / slash-command registration / voiceState handler / ears),
+// so a daemon-boot test needs the COMPLETE DiscordDeps surface — the same
+// complete fake daemon-health.test.ts / assistant-wiring.test.ts already use.
+// (The brain-port assertions below are unaffected by the meeting face booting
+// on fakes; assistant:null + eleven:null keep the /gemini + /eleven modes off.)
 function fakeDeps(): DiscordDeps {
 	return {
 		createClient: () => ({
@@ -32,8 +38,21 @@ function fakeDeps(): DiscordDeps {
 		createResource: () => ({}),
 		speakingEvents: () => ({ on: () => {} }),
 		isHumanFactory: () => () => false,
+		// this branch's /glaw assembly seams
+		tivPort: () => ({
+			post: async () => ({ id: "m1" }),
+			edit: async () => {},
+		}),
+		registerGuildCommand: async () => {},
+		onChatInteraction: (_c: unknown, _n: string, cb: (i: unknown) => void) => {
+			glawInteractionCb = cb;
+		},
+		onVoiceStateUpdate: () => {},
+		moveMemberDetailed: async () => ({ ok: true }),
 	} as unknown as DiscordDeps;
 }
+
+let glawInteractionCb: ((i: unknown) => void) | undefined;
 
 const randPort = () => 22000 + Math.floor(Math.random() * 20000);
 
@@ -54,9 +73,19 @@ function config(
 			{ agentId: "flywheel-eng-lead", botTokenEnv: "X", botToken: "tok-lead" },
 		],
 		backchannelMs: 350,
+		bargeInMinRms: 0,
+		bargeInHoldoffMs: 1000,
 		allowUserIds: [],
 		healthPort: port,
 		ffmpegBin: "ffmpeg",
+		// this branch's /glaw fail-fast requirements
+		bridgeUrl: "http://127.0.0.1:1",
+		apiToken: "t-bridge",
+		founderUserId: "annie-1",
+		geminiApiKey: "t-gemini",
+		geminiModel: "gemini-live-test",
+		claudeBin: "claude",
+		brainTimeoutMs: 1000,
 		...(brain ? { brain } : {}),
 	};
 }
@@ -176,5 +205,23 @@ describe("voice-bridge daemon — BrainPort assembly", () => {
 		await expect(
 			fetch(`http://127.0.0.1:${bp}/brain/health`),
 		).rejects.toThrow();
+	});
+});
+
+describe("Phase-1 命令下架 — /glaw acknowledges during shutdown (Codex R33)", () => {
+	it("a /glaw interaction after close() begins gets a shutting-down reply, no meeting", async () => {
+		delete process.env[TOKEN_ENV];
+		const runtime = await run(config(randPort()));
+		const closing = runtime.close();
+		const replies: string[] = [];
+		glawInteractionCb?.({
+			isChatInputCommand: () => true,
+			commandName: "glaw",
+			options: { getString: () => null },
+			reply: async (p: { content: string }) => void replies.push(p.content),
+		});
+		await closing;
+		expect(replies).toHaveLength(1);
+		expect(replies[0]).toContain("正在关闭");
 	});
 });

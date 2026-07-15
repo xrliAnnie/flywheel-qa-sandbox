@@ -35,8 +35,12 @@ export type VoiceErrorCode =
 	| "subprocess-failed" // subprocess exited non-zero
 	| "timeout" // subprocess exceeded its deadline
 	| "cancelled" // aborted via AbortSignal
-	| "backend-protocol" // backend protocol error (ws disconnect, bad frame, ...)
-	| "resource-exhausted"; // a hard capacity cap refused new work (FLY-1160: resident session limit)
+	| "backend-protocol" // backend protocol error (bad frame, tool failure, ...)
+	| "resource-exhausted" // a hard capacity cap refused new work (FLY-1160: resident session limit)
+	// the live CONNECTION died unexpectedly (ws close outside an intentional
+	// close/goAway) — the one error class a rotator should auto-reconnect on
+	// (FLY-545 QA R2 F1: meeting-assembly aborts must not kill the meeting).
+	| "connection-closed";
 
 export class VoiceError extends Error {
 	constructor(
@@ -216,6 +220,16 @@ export interface ConversationSession {
 	 */
 	sendText(text: string): void;
 	/**
+	 * FLY-545: SILENT context feed — catch this session up on meeting facts it
+	 * did not hear (the huddle's gated multi-session orchestration feeds the
+	 * non-addressed Leads this way). Unlike sendText it must NEVER trigger
+	 * speech: FLY-968 measured realtime text frames break silence on
+	 * gemini-3.1, while sendClientContent(turnComplete:false) injects with
+	 * 0 bytes of audio and the facts stay quotable. Nothing is written to the
+	 * transcript sink (these are minutes, not new conversation).
+	 */
+	injectContext(text: string): void;
+	/**
 	 * FLY-967 round-6: the user finished their utterance — commit the turn so
 	 * the model responds. Needed because Discord silence-suppression ends the
 	 * audio stream abruptly (no trailing silence), so the server VAD never
@@ -251,6 +265,8 @@ export interface TtsEngine {
 export interface TranscriptSink {
 	/** failures throw explicitly — never swallowed. */
 	append(entry: TranscriptEntry): void;
+	/** drain pending writes (async sinks); readers await this first. */
+	flush?(): Promise<void>;
 }
 
 export type TranscriptEntry = {

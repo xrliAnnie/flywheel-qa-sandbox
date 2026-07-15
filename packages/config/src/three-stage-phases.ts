@@ -31,9 +31,9 @@
  *   - `FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT=0` falls the implement phase back to
  *     (claude, heavy) — the escape hatch when the codex account quota is out.
  *   - `FLYWHEEL_THREE_STAGE_CODEX_DESIGN=1` flips the design phase FROM Fable TO
- *     codex (gpt-5.6-sol, xhigh) — for when Fable's quota is the bottleneck
- *     (FLY-1245). Opposite activating value (=1 vs =0) because design defaults
- *     to claude while implement defaults to codex.
+ *     codex (gpt-5.6-sol, xhigh) when a run has no per-dispatch design override
+ *     (FLY-1245 / FLY-1259). Opposite activating value (=1 vs =0) because design
+ *     defaults to claude while implement defaults to codex.
  * Env is read at process start: edit `~/.flywheel/.env`, then
  * `restart-services.sh --bridge-only` (see the FLY-1224 plan §7 runbook).
  *
@@ -127,6 +127,22 @@ export const DEFAULT_PHASE_TIER: Readonly<Record<ThreeStagePhase, ModelTier>> =
  */
 export type PhaseDispatchVendor = "claude" | "codex";
 
+/** Transitional public choices for a three-stage run's design author. */
+export type DesignBackend = PhaseDispatchVendor;
+export const DESIGN_BACKENDS = [
+	"codex",
+	"claude",
+] as const satisfies readonly DesignBackend[];
+
+export function isDesignBackend(value: unknown): value is DesignBackend {
+	return DESIGN_BACKENDS.includes(value as DesignBackend);
+}
+
+/** Admission-time override shape aligned with future per-node dispatch specs. */
+export interface PhaseDispatchOverride {
+	vendor: PhaseDispatchVendor;
+}
+
 export interface PhaseDispatchSpec {
 	vendor: PhaseDispatchVendor;
 	/** Model id passed to the runner CLI / codex thread (claude entries use the
@@ -163,10 +179,12 @@ export const DEFAULT_PHASE_DISPATCH: Readonly<
 };
 
 /**
- * FLY-1224 / FLY-1245: the dispatch spec for a three-stage phase, kill-switch
- * aware. TWO env toggles let ops swap a phase's vendor with a `~/.flywheel/.env`
- * edit + Bridge restart, no code change. They point in OPPOSITE directions
- * because the two phases DEFAULT to opposite vendors:
+ * FLY-1224 / FLY-1245 / FLY-1259: the dispatch spec for a three-stage phase,
+ * admission override and kill-switch aware. A design-only per-dispatch override
+ * wins over the global fallback. Without one, TWO env toggles let ops swap a
+ * phase's vendor with a `~/.flywheel/.env` edit + Bridge restart, no code change.
+ * They point in OPPOSITE directions because the two phases DEFAULT to opposite
+ * vendors:
  *
  *   - implement defaults to CODEX → `FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT=0`
  *     falls it BACK to the legacy (claude, heavy) row — the escape hatch when
@@ -191,7 +209,14 @@ export const DEFAULT_PHASE_DISPATCH: Readonly<
 export function resolvePhaseDispatch(
 	phase: ThreeStagePhase,
 	env: Record<string, string | undefined> = process.env,
+	override?: PhaseDispatchOverride,
 ): PhaseDispatchSpec {
+	if (phase === "design" && override?.vendor === "codex") {
+		return CODEX_STANDARD_DISPATCH;
+	}
+	if (phase === "design" && override?.vendor === "claude") {
+		return DEFAULT_PHASE_DISPATCH.design;
+	}
 	if (
 		phase === "implement" &&
 		env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT === "0"
@@ -280,14 +305,17 @@ const PHASE_MESSAGE_NAME: Readonly<Record<ThreeStagePhase, string>> = {
  */
 export function phaseMessageTag(
 	role: string | null | undefined,
-	runnerModel?: string | null,
+	runnerModel: string | null | undefined,
+	designBackend: DesignBackend | null | undefined,
 ): string {
 	if (!isThreeStagePhaseRole(role)) return "";
 	const name = PHASE_MESSAGE_NAME[role];
+	const override =
+		role === "design" && designBackend ? { vendor: designBackend } : undefined;
 	const model =
 		modelDisplayName(runnerModel) ??
 		modelDisplayName(
-			resolvePhaseDispatch(role).model,
+			resolvePhaseDispatch(role, process.env, override).model,
 			DEFAULT_PHASE_TIER[role],
 		);
 	return model ? `[${name}·${model}] ` : `[${name}] `;

@@ -367,6 +367,18 @@ export interface AdapterExecutionContext {
 // ---------------------------------------------------------------------------
 
 /**
+ * A machine-readable terminal failure that must survive adapter, orchestration,
+ * and Bridge boundaries. Unknown failures deliberately remain on the legacy
+ * untyped `failed` path.
+ */
+export type TerminalFailureKind = "goal_blocked" | "worktree_takeover_failed";
+
+export interface TerminalFailureInfo {
+	failureKind: TerminalFailureKind;
+	failureReason: string;
+}
+
+/**
  * Result returned by `IAdapter.execute()`.
  *
  * Unifies FlywheelRunResult (DAG path) fields with additional session
@@ -387,6 +399,8 @@ export interface AdapterExecutionResult {
 	numTurns?: number;
 	/** The agent's text result */
 	resultText?: string;
+	/** Typed terminal cause for failures whose semantics must not be flattened. */
+	failure?: TerminalFailureInfo;
 
 	// -- Session persistence --
 

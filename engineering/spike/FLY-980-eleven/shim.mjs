@@ -174,6 +174,19 @@ const sessions = new BrainSessions({
 });
 
 const token = process.env.FLY980_TOKEN ?? randomBytes(24).toString("hex");
+// FLY-1160 §4.2-5: forward mode — both env vars must be set. When on, the
+// shim forwards each turn to the daemon's resident brain (BrainPort) instead
+// of spawning a local `claude -p`; unset = current behavior byte-for-byte.
+// Codex #552 R1 MEDIUM-7: a HALF configuration (one of the two) is a config
+// error, NOT a silent fall-back to a local spawn — fail LOUD at boot.
+const BRAIN_URL = process.env.FLY980_BRAIN_URL;
+const BRAIN_PORT_TOKEN = process.env.FLYWHEEL_BRAIN_PORT_TOKEN;
+if (Boolean(BRAIN_URL) !== Boolean(BRAIN_PORT_TOKEN)) {
+	console.error(
+		"[fly980-shim] forward mode is half-configured — set BOTH FLY980_BRAIN_URL and FLYWHEEL_BRAIN_PORT_TOKEN, or NEITHER (refusing to silently spawn a local brain)",
+	);
+	process.exit(2);
+}
 const server = createShimServer({
 	token,
 	sessions,
@@ -181,6 +194,9 @@ const server = createShimServer({
 	log,
 	toolMode: TOOL_MODE,
 	injectFacts: INJECT_FACTS,
+	...(BRAIN_URL && BRAIN_PORT_TOKEN
+		? { brainUrl: BRAIN_URL, brainToken: BRAIN_PORT_TOKEN }
+		: {}),
 });
 server.listen(PORT, () => {
 	// token printed ONCE to stdout (never written to disk / evidence)

@@ -20,6 +20,7 @@ import {
 	formatShipApprovalRequest,
 	formatStuckEscalation,
 } from "./hook-payload.js";
+import { appendLeadEventAckInstructions } from "./lead-event-ack-render.js";
 import type {
 	DeliveryResult,
 	LeadBootstrap,
@@ -43,8 +44,17 @@ export class CommDBLeadRuntime implements LeadRuntime {
 
 	async deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult> {
 		try {
-			const content = this.formatEnvelope(envelope);
-			this.commDb.insertInstruction("bridge", this.leadId, content);
+			const content = appendLeadEventAckInstructions(
+				this.formatEnvelope(envelope),
+				envelope,
+			);
+			if (envelope.deliveryAttemptId) {
+				this.commDb.insertInstruction("bridge", this.leadId, content, {
+					dedupeId: `lead-event-attempt-${envelope.deliveryAttemptId}`,
+				});
+			} else {
+				this.commDb.insertInstruction("bridge", this.leadId, content);
+			}
 			this.lastDeliveryAt = new Date().toISOString();
 			this.lastDeliveredSeq = envelope.seq;
 			return { delivered: true };
@@ -192,6 +202,13 @@ export class CommDBLeadRuntime implements LeadRuntime {
 			`[Event #${env.seq}] ${roleLabel}${e.event_type}`,
 			`ID: ${e.execution_id || "—"} | Issue: ${e.issue_identifier || e.issue_id || "—"}`,
 		];
+		if (
+			e.event_type === "session_started" &&
+			e.session_role === "design" &&
+			e.design_backend
+		) {
+			lines.push(`Design Backend: ${e.design_backend}`);
+		}
 		if (e.issue_title) lines.push(`Title: ${e.issue_title}`);
 		if (e.status) lines.push(`Status: ${e.status}`);
 		if (e.decision_route) lines.push(`Route: ${e.decision_route}`);

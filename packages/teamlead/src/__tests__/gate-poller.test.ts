@@ -125,6 +125,9 @@ describe("GatePoller (FLY-161)", () => {
 		patrolEveryNTicks?: number;
 		transport?: import("../bridge/gate-poller.js").MisroutePatrolTransport;
 		misrouteArchiveDir?: string;
+		ensureShipRelevantDiff?: (
+			session: import("../StateStore.js").Session,
+		) => Promise<void>;
 	}): GatePoller {
 		return new GatePoller({
 			pollIntervalMs: 60_000, // not auto-started in tests
@@ -138,6 +141,7 @@ describe("GatePoller (FLY-161)", () => {
 			patrolEveryNTicks: opts?.patrolEveryNTicks,
 			transport: opts?.transport,
 			misrouteArchiveDir: opts?.misrouteArchiveDir,
+			ensureShipRelevantDiff: opts?.ensureShipRelevantDiff,
 		});
 	}
 
@@ -204,6 +208,15 @@ describe("GatePoller (FLY-161)", () => {
 		expect(env.event.checkpoint).toBe("brainstorm");
 		expect(env.event.question_id).toBe(qid);
 		expect(env.event.summary).toBe("Please review my plan");
+		const protectedDb = new CommDB(dbPath);
+		try {
+			expect(protectedDb.getMessageById(qid)).toMatchObject({
+				relay_state: "protected",
+				logical_event_id: String(env.seq),
+			});
+		} finally {
+			protectedDb.close();
+		}
 	});
 
 	it("Case 2: emits runner_question for pending question without checkpoint", async () => {
@@ -245,6 +258,53 @@ describe("GatePoller (FLY-161)", () => {
 		const types = runtime.captured.map((c) => c.envelope.event.event_type);
 		expect(types).toContain("gate_question");
 		expect(types).toContain("runner_question");
+	});
+
+	it("FLY-1251: a code-capable run cannot surface approve_to_ship without QA evidence", async () => {
+		const head = "a".repeat(40);
+		insertSession("exec-held", {
+			status: "awaiting_review",
+			labels: ["product"],
+		});
+		const qid = insertQuestion({
+			execId: "exec-held",
+			leadId: "product-lead",
+			content: "PR ready",
+			checkpoint: "approve_to_ship",
+		});
+		store.setReviewBinding("exec-held", {
+			questionId: qid,
+			prHeadSha: head,
+		});
+		store.patchSessionMetadata("exec-held", {
+			pr_number: 42,
+			codex_skip: 1,
+		});
+		const ensureShipRelevantDiff = vi.fn(async () => {});
+		const poller = makePoller({ ensureShipRelevantDiff });
+
+		await runPoll(poller);
+
+		expect(ensureShipRelevantDiff).toHaveBeenCalledOnce();
+		expect(runtime.captured).toHaveLength(0);
+		expect(pendingFor("product-lead")).toHaveLength(1);
+
+		store.putShipRelevantDiffSnapshot({
+			execution_id: "exec-held",
+			pr_head_sha: head,
+			repo: "owner/repo",
+			pr_number: 42,
+			base_ref: "main",
+			base_oid: "b".repeat(40),
+			classifier_version: 1,
+			ship_relevant: 0,
+			file_count: 1,
+		});
+
+		await runPoll(poller);
+
+		expect(runtime.captured).toHaveLength(1);
+		expect(runtime.captured[0]!.envelope.event.question_id).toBe(qid);
 	});
 
 	it("Case 4: does not re-deliver already-delivered events", async () => {

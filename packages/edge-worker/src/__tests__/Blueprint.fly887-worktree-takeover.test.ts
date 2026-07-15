@@ -187,6 +187,10 @@ describe("FLY-887 worktree in-place takeover", () => {
 		);
 		expect(result.success).toBe(false);
 		expect(result.error).toContain("worktree_takeover_failed");
+		expect(result.failure).toEqual({
+			failureKind: "worktree_takeover_failed",
+			failureReason: result.error,
+		});
 		expect(wt.removeIfExists).not.toHaveBeenCalled();
 		expect(wt.create).not.toHaveBeenCalled();
 	});
@@ -202,6 +206,8 @@ describe("FLY-887 worktree in-place takeover", () => {
 		);
 		expect(result.success).toBe(false);
 		expect(result.error).toContain("worktree_takeover_failed");
+		expect(result.failure?.failureKind).toBe("worktree_takeover_failed");
+		expect(result.failure?.failureReason).toContain("head=deadbeef");
 		expect(wt.create).not.toHaveBeenCalled();
 	});
 

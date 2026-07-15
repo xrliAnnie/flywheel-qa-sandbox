@@ -2,6 +2,7 @@
  * FLY-22: RunDispatcher unit tests.
  */
 
+import { renderRunnerModelDisplay } from "flywheel-config";
 import { buildWindowLabel } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -134,6 +135,84 @@ describe("RunDispatcher", () => {
 		expect(result.issueId).toBe("GEO-1");
 	});
 
+	it("FLY-1279 uses a caller-prebound successor execution id", async () => {
+		const runtimes = new Map([makeRuntime("TestProject")]);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+
+		const result = await dispatcher.start({
+			issueId: "FLY-1279-QA",
+			projectName: "TestProject",
+			sessionRole: "qa",
+			successorExecutionId: "qa-recovery-exec",
+		});
+
+		expect(result.executionId).toBe("qa-recovery-exec");
+	});
+
+	it("FLY-1279 auto-QA skips phase resume and preserves fresh-worktree false", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const resumeComputer = vi.fn(() => ({
+			startPoint: "resume-tip",
+			progressPath: "engineering/doc/progress.md",
+			priorExecutionId: "old-phase",
+			resumeKind: "restart" as const,
+		}));
+		const dispatcher = new RunDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+			undefined,
+			undefined,
+			resumeComputer,
+		);
+
+		await dispatcher.start({
+			issueId: "qa-issue-uuid",
+			projectName: "TestProject",
+			sessionRole: "qa",
+			shareParentBranch: false,
+			startPoint: "a".repeat(40),
+			qaContext: {
+				parentExecutionId: "parent-exec",
+				prHeadSha: "a".repeat(40),
+			},
+		});
+
+		expect(resumeComputer).not.toHaveBeenCalled();
+		const ctx = (
+			runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> }
+		).run.mock.calls[0]?.[2];
+		expect(ctx).toMatchObject({
+			shareParentBranch: false,
+			startPoint: "a".repeat(40),
+		});
+		expect(ctx.progressResume).toBeUndefined();
+	});
+
+	it("FLY-1259: start() carries designBackend into Blueprint context", async () => {
+		const runtimes = new Map([makeRuntime("TestProject")]);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+
+		await dispatcher.start({
+			issueId: "FLY-1259",
+			projectName: "TestProject",
+			designBackend: "codex",
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const blueprint = runtimes.get("TestProject")!.blueprint;
+		const ctx = vi.mocked(blueprint.run).mock.calls[0]?.[2];
+		expect(ctx?.designBackend).toBe("codex");
+	});
+
 	it("start() rejects when shutting down", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
 		const dispatcher = new RunDispatcher(
@@ -257,6 +336,26 @@ describe("RunDispatcher", () => {
 });
 
 describe("RetryDispatcher", () => {
+	it("keeps the resolved Codex model in a retried implement-phase window", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const dispatcher = new RetryDispatcher(new Map([[name, runtime]]), []);
+
+		await dispatcher.dispatch({
+			oldExecutionId: "old-exec",
+			issueId: "FLY-1255",
+			projectName: "TestProject",
+			runAttempt: 1,
+			sessionRole: "implement",
+			shareParentBranch: true,
+			ignoreRunnerLabelSelection: true,
+			dispatchVendor: "codex",
+			dispatchModel: "gpt-5.6-sol",
+		});
+
+		const ctx = vi.mocked(runtime.blueprint.run).mock.calls[0]?.[2];
+		expect(ctx?.runnerName).toBe("implement-codex-G");
+	});
+
 	it("dispatch() returns old and new execution IDs", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
 		const dispatcher = new RetryDispatcher(runtimes, []);
@@ -270,6 +369,24 @@ describe("RetryDispatcher", () => {
 
 		expect(result.oldExecutionId).toBe("old-exec");
 		expect(result.newExecutionId).toBeDefined();
+	});
+
+	it("FLY-1259: dispatch() carries designBackend into Blueprint context", async () => {
+		const runtimes = new Map([makeRuntime("TestProject")]);
+		const dispatcher = new RetryDispatcher(runtimes, []);
+
+		await dispatcher.dispatch({
+			oldExecutionId: "old-exec",
+			issueId: "FLY-1259",
+			projectName: "TestProject",
+			runAttempt: 1,
+			designBackend: "claude",
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const blueprint = runtimes.get("TestProject")!.blueprint;
+		const ctx = vi.mocked(blueprint.run).mock.calls[0]?.[2];
+		expect(ctx?.designBackend).toBe("claude");
 	});
 
 	it("dispatch() rejects duplicate issue", async () => {
@@ -758,6 +875,43 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 });
 
 describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () => {
+	it("includes the vendor-neutral model label when a model was resolved", () => {
+		expect(
+			runnerDisplayName("implement", true, {
+				threadMarker: "G",
+				windowLabel: "codex-G",
+			}),
+		).toBe("implement-codex-G");
+		expect(
+			runnerDisplayName("main", false, {
+				threadMarker: "K",
+				windowLabel: "kimi-K",
+			}),
+		).toBe("runner-kimi-K");
+		expect(
+			runnerDisplayName("qa", true, {
+				threadMarker: "O",
+				windowLabel: "claude-Opus",
+			}),
+		).toBe("qa-claude-Opus");
+		expect(
+			runnerDisplayName("main", false, {
+				threadMarker: "F",
+				windowLabel: "claude-Fable",
+			}),
+		).toBe("runner-claude-Fable");
+	});
+
+	it("infers Codex defensively when backend metadata is absent", () => {
+		const display = renderRunnerModelDisplay({ model: "gpt-5.6-sol" });
+		expect(runnerDisplayName("main", false, display)).toBe("runner-codex-G");
+	});
+
+	it("keeps legacy names when no model was resolved", () => {
+		expect(runnerDisplayName("implement", true, undefined)).toBe("implement");
+		expect(runnerDisplayName("main", false, undefined)).toBe("claude");
+	});
+
 	// A three-stage phase runner is (shareParentBranch === true) AND a phase role.
 	it("maps a three-stage phase role (shareParentBranch=true) to its phase name", () => {
 		expect(runnerDisplayName("design", true)).toBe("design");

@@ -44,6 +44,10 @@ import type {
 import { TurnAccumulator, type TurnRole } from "./turn-accumulator.js";
 
 const ASK_LEAD_TOOL = "ask_lead";
+/** function-response for calls cancelled by a barge-in (NO_INTERRUPTION mode
+ * needs SOME response or the server never completes the cancelled turn). */
+const CANCELLED_TOOL_NOTE =
+	"(cancelled — the user interrupted this answer; do not retry, wait for their next question)";
 
 const ASK_LEAD_DECLARATION: LiveToolDeclaration = {
 	name: ASK_LEAD_TOOL,
@@ -121,6 +125,7 @@ export class GeminiLiveBackend implements VoiceBackend {
 			opts.brain,
 			opts.transcriptSink,
 			extraTools,
+			opts.bargeIn ?? true,
 		);
 	}
 }
@@ -151,6 +156,8 @@ class GeminiLiveSession implements ConversationSession {
 	private readonly emitter = new TypedEmitter<ConversationEventMap>();
 	private latestHandle?: string;
 	private closed = false;
+	/** ws died unexpectedly — close() must not touch the dead socket. */
+	private connDead = false;
 	/** true after the current assistant turn was cancelled (barge-in or manual). */
 	private turnCancelled = false;
 	/** true while a model response window is open (response-started emitted). */
@@ -168,6 +175,8 @@ class GeminiLiveSession implements ConversationSession {
 		private readonly brain: BrainAdapter,
 		private readonly transcriptSink?: TranscriptSink,
 		extraTools: LiveToolSpec[] = [],
+		/** server-side interruption mode; false = NO_INTERRUPTION pinned. */
+		private readonly serverInterrupts: boolean = true,
 	) {
 		this.extraTools = new Map(
 			extraTools.map((t) => [t.declaration.name, t.handler]),
@@ -182,6 +191,11 @@ class GeminiLiveSession implements ConversationSession {
 	/** control prompt — not the founder's words; never written to the transcript. */
 	sendText(text: string): void {
 		this.conn.sendText(text);
+	}
+
+	/** silent context feed (FLY-545) — never speaks, never hits the transcript. */
+	injectContext(text: string): void {
+		this.conn.injectContext(text);
 	}
 
 	/** FLY-967 round-6: the user stopped speaking — commit their turn so the
@@ -218,7 +232,10 @@ class GeminiLiveSession implements ConversationSession {
 			this.flushFinal("user");
 			this.flushFinal("assistant");
 			this.abortAllTools();
-			await this.conn.close();
+			// drain the (async) transcript sink so post-close readers (landing /
+			// record) see every line that was emitted before close (QA R4 d).
+			await this.transcriptSink?.flush?.();
+			if (!this.connDead) await this.conn.close();
 		}
 		return this.latestHandle
 			? { backendId: this.backendId, payload: this.latestHandle }
@@ -229,6 +246,18 @@ class GeminiLiveSession implements ConversationSession {
 		if (this.turnCancelled) return;
 		this.turnCancelled = true;
 		this.turnActive = false; // the next turn re-opens its own window
+		// Under NO_INTERRUPTION the server WAITS for every pending function
+		// response before it will ever close the cancelled turn — an aborted
+		// tool with no response wedges the turn open and the persistent
+		// cancellation never clears (Codex R24). Answer each in-flight call
+		// with an explicit cancelled note BEFORE aborting (the runners' abort
+		// path sends nothing, so there is no double-send). interrupts-ON keeps
+		// the legacy no-response contract (the server killed the turn itself).
+		if (!this.serverInterrupts) {
+			for (const callId of this.toolAborts.keys()) {
+				this.conn.sendToolResponse(callId, CANCELLED_TOOL_NOTE);
+			}
+		}
 		this.abortAllTools();
 		this.emitter.emit("response-cancelled");
 	}
@@ -256,6 +285,17 @@ class GeminiLiveSession implements ConversationSession {
 	}
 
 	private onServerEvent(e: LiveServerEvent): void {
+		// Codex R28: once close() begins, LATE server events must be silent —
+		// a late generation/turn-complete during the sink drain re-entered
+		// flushFinal and appended AFTER the drain snapshot, so close() resolved
+		// while writes were still pending and landing could read a partial file.
+		// EXCEPT resumption-update (Codex R29): the docs do not guarantee a
+		// usable handle precedes GoAway/close — a late handle is exactly what
+		// close() must return for the successor to truly resume.
+		if (this.closed) {
+			if (e.type === "resumption-update") this.latestHandle = e.handle;
+			return;
+		}
 		switch (e.type) {
 			case "transcript":
 				// suppress assistant transcript after a cancel (contract); user always
@@ -276,9 +316,13 @@ class GeminiLiveSession implements ConversationSession {
 				// fast path: the SDK's official end-of-transcription flag (probe:
 				// never sent by the current model; kept for model upgrades).
 				if (e.finished === true) this.flushFinal(e.role);
-				if (e.role === "user") {
-					// a new user turn resets a cancelled window; the response window
-					// itself opens on the first MODEL output (ensureTurnStarted).
+				if (e.role === "user" && this.serverInterrupts) {
+					// interrupts-ON: the server already killed the cancelled answer,
+					// so a new user turn safely resets the window. Under
+					// NO_INTERRUPTION the server NEVER stops the old answer — a
+					// reset here let its late audio REPLAY through the reopened
+					// gate (Codex R23 HIGH-1); cancellation must persist until the
+					// old turn truly closes (generation/turn-complete).
 					this.turnCancelled = false;
 				}
 				break;
@@ -306,9 +350,15 @@ class GeminiLiveSession implements ConversationSession {
 				break;
 			case "tool-call":
 				// a tool call arriving after this turn was cancelled belongs to the
-				// cancelled generation — drop it entirely (local-suppression semantics;
-				// running it would send a function-response for a dead turn).
-				if (this.turnCancelled) return;
+				// cancelled generation — never RUN it. interrupts-ON drops it
+				// silently (server killed the turn); NO_INTERRUPTION must still
+				// answer it or the server waits forever and the cancelled turn
+				// never closes (Codex R24).
+				if (this.turnCancelled) {
+					if (!this.serverInterrupts)
+						this.conn.sendToolResponse(e.callId, CANCELLED_TOOL_NOTE);
+					return;
+				}
 				this.emitter.emit("tool-call", {
 					callId: e.callId,
 					name: e.name,
@@ -349,6 +399,18 @@ class GeminiLiveSession implements ConversationSession {
 				this.emitter.emit("session-expiring", { inSec: e.timeLeftSec });
 				break;
 			case "error":
+				if (e.connectionClosed) {
+					// connection DEATH (unexpected ws close): mark the conn dead so
+					// close() skips the dead socket but still returns the cached
+					// resume handle — the rotator reconnects on this code
+					// (FLY-545 QA R2 F1).
+					this.connDead = true;
+					this.emitter.emit(
+						"error",
+						new VoiceError("connection-closed", e.message),
+					);
+					break;
+				}
 				this.emitter.emit(
 					"error",
 					new VoiceError("backend-protocol", e.message),

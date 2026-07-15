@@ -78,12 +78,14 @@ describe("RunDispatcher backend resolution (FLY-123)", () => {
 	async function startAndWait(
 		d: RunDispatcher,
 		labels?: string[],
+		overrides: Partial<Parameters<RunDispatcher["start"]>[0]> = {},
 	): Promise<BlueprintContext> {
 		await d.start({
 			issueId: "FLY-123",
 			projectName: "proj",
 			leadId: "product-lead",
 			...(labels && { issueLabels: labels }),
+			...overrides,
 		} as Parameters<RunDispatcher["start"]>[0]);
 		await d.drain();
 		expect(captured).toBeTruthy();
@@ -118,6 +120,34 @@ describe("RunDispatcher backend resolution (FLY-123)", () => {
 		const ctx = await startAndWait(dispatcher);
 		expect(ctx.runnerBackend).toBe("codex-tmux");
 		expect(ctx.runnerModel).toBe("gpt-5.5-codex");
+	});
+
+	it("Codex project model appears in the real start() window name", async () => {
+		dispatcher = makeDispatcher({
+			runner: { backend: "codex-tmux", model: "gpt-5.6-sol" },
+		});
+		const ctx = await startAndWait(dispatcher);
+		expect(ctx.runnerName).toBe("runner-codex-G");
+	});
+
+	it("Kimi project model appears in the real start() window name", async () => {
+		dispatcher = makeDispatcher({
+			runner: { backend: "kimi-tmux", model: "kimi-for-coding" },
+		});
+		const ctx = await startAndWait(dispatcher);
+		expect(ctx.runnerName).toBe("runner-kimi-K");
+	});
+
+	it("phase dispatch prefixes the resolved Codex model with its phase", async () => {
+		dispatcher = makeDispatcher();
+		const ctx = await startAndWait(dispatcher, undefined, {
+			sessionRole: "implement",
+			shareParentBranch: true,
+			ignoreRunnerLabelSelection: true,
+			dispatchVendor: "codex",
+			dispatchModel: "gpt-5.6-sol",
+		});
+		expect(ctx.runnerName).toBe("implement-codex-G");
 	});
 
 	// FLY-241: per-project Runner model override on the DEFAULT claude backend.
