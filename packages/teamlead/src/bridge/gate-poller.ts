@@ -1402,8 +1402,8 @@ export class GatePoller {
 				// FLY-1257 path-2: a review gate outlives its author by design — the
 				// review coordinator binds it and the reviewer answers it, so the
 				// FLY-307 A premise below does not hold. Withhold delivery (as ever
-				// for a terminal session) but leave the gate bindable; its own 48h
-				// TTL still bounds the leak.
+				// for a terminal session) but leave the gate bindable; the schema's
+				// own `expires_at` default (+72h, flywheel-comm db.ts) still bounds it.
 				if (isReviewGateCheckpoint(question.checkpoint)) return;
 				// FLY-307 A: a gate from a terminal session can never be answered
 				// (the Runner is gone, and the active-session check already withholds

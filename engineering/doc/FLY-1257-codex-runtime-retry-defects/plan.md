@@ -477,24 +477,39 @@ review 的 gate 免驱逐」)。**必须按 checkpoint 判**:bug 的窗口恰恰
 
 - 免驱逐 = review 门重新回到「每 tick 被 poll 到、走一次 `getSession()`」,
   即 FLY-307 A 想省的那点 sql.js churn 对 review 门恢复了。量级:每 issue 至多
-  几个 review 门 × 至多 48h 自然 TTL,相对正确性可忽略。**不是无界泄漏** ——
-  门自己的 48h TTL 仍然兜底,只是不再被提前烧到 0。
+  几个 review 门 × 至多 **72h** 自然 TTL,相对正确性可忽略。**不是无界泄漏** ——
+  门自己的 TTL 仍然兜底,只是不再被提前烧到 0。
+  (**72h 是核过的事实**:`messages.expires_at` schema 默认 = `datetime('now',
+  '+72 hours')`,flywheel-comm `db.ts:22`,并被 `gate-noblock.test.ts:67` 锁死。
+  我初稿写「48h」是照抄了 gate-poller.ts 里 FLY-307 A 那句旧注释 —— 那句本身就
+  写错了,Codex code review LOW-1 抓出来的。我只改了自己的措辞;那条既有的错注释
+  不在本次改动范围内,留作 follow-up。)
 - 非 review 门的驱逐行为**逐字不变**(控制用例 8f 锁死)。
 
 ### 测试(全部已跑,非计划)
 
 `packages/teamlead/src/__tests__/gate-poller.test.ts`:
 
-- **Case 8e ×2**(`review_code` / `review_design`,session=`blocked`):不投递、
-  `resolveGate` **零调用**、门仍 pending;
+- **Case 8e ×4**(`review_code` / `review_design` × session `blocked` /
+  `completed`):不投递、`resolveGate` **零调用**、门仍 pending。两个终态都盖
+  (Codex LOW-2:只特判 `blocked` 的半吊子修复必须被抓住);
+- **Case 8e-chokepoint**:**直接调**私有的 `evictTerminalGateQuestion()`(绕过
+  relay,正是 eviction-retry 短路走的那条),锁死「不变式在唯一写入口」这个承诺;
 - **Case 8f 控制**:`brainstorm` 门 + `blocked` session → **仍然驱逐**(FLY-307 A
   未被我改宽)。
 
-**突变验证**(不是「绿了就算」):把 `gate-poller.ts` 的修复 `git stash` 掉重跑
-→ 8e 立刻红,报错 `expected "resolveGate" to not be called at all, but actually
-been called 1 times` —— 与生产现场同一句;`stash pop` → 22/22 绿。证明测试真能
-抓这个 bug。回归:gate-poller 22 + review-request-coordinator 45 +
-zombie-gate-watchdog 25 = **92 全绿**。
+**突变验证 ×2**(不是「绿了就算」——这条是铁律,每条安全测试都要突变过):
+
+1. **整体撤销**:把 `gate-poller.ts` 的修复 `git stash` 掉重跑 → 8e 立刻红,
+   报错 `expected "resolveGate" to not be called at all, but actually been
+   called 1 times` —— 与生产现场同一句;`stash pop` → 绿。
+2. **只删 chokepoint 守卫、保留 relay 守卫**(Codex LOW-2 点名的那种半吊子破坏)
+   → **恰好** `Case 8e-chokepoint` 变红、其余 24 条仍绿。证明新增那条测试真的
+   独立锁住了唯一写入口,不是陪跑。
+
+回归:gate-poller **25** + review-request-coordinator 45 + zombie-gate-watchdog
+25 = **95 全绿**。与 base 的差分对照:无关套件在改前/改后都是 7 failed / 89
+passed(本地 workspace 未全量 build 所致的既有环境失败)→ **本改动零回归**。
 
 ## M-opt — 优化项:原生 goal paused RPC(可整体摘除)
 

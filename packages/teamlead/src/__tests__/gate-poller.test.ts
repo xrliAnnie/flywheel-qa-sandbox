@@ -440,31 +440,68 @@ describe("GatePoller (FLY-161)", () => {
 	// `request-review` could bind it, so a blocked/completed session could never
 	// re-request review (checkGate → answered/expired → fail-close forever).
 	// Sibling of the FLY-579 approve_to_ship QA-held carve-out above.
+	// Both review checkpoints × BOTH terminal statuses. `completed` is covered
+	// explicitly (Codex review LOW-2): a fix that only special-cased `blocked`
+	// would otherwise slip through, and `completed` is the status the production
+	// incident actually hit once the author finished.
 	for (const checkpoint of ["review_code", "review_design"] as const) {
-		it(`Case 8e (FLY-1257 path-2): ${checkpoint} gate from a terminal session is NOT evicted — the review coordinator consumes it, not the runner`, async () => {
-			insertSession(`exec-${checkpoint}`, {
-				status: "blocked",
-				labels: ["product"],
-			});
-			insertQuestion({
-				execId: `exec-${checkpoint}`,
-				leadId: "product-lead",
-				content: `${checkpoint} requested for PR #599`,
-				checkpoint,
-			});
-			expect(pendingFor("product-lead")).toHaveLength(1);
+		for (const status of ["blocked", "completed"] as const) {
+			it(`Case 8e (FLY-1257 path-2): ${checkpoint} gate from a ${status} session is NOT evicted — the review coordinator consumes it, not the runner`, async () => {
+				insertSession(`exec-${checkpoint}-${status}`, {
+					status,
+					labels: ["product"],
+				});
+				insertQuestion({
+					execId: `exec-${checkpoint}-${status}`,
+					leadId: "product-lead",
+					content: `${checkpoint} requested for PR #599`,
+					checkpoint,
+				});
+				expect(pendingFor("product-lead")).toHaveLength(1);
 
-			const resolveSpy = vi.spyOn(CommDB.prototype, "resolveGate");
-			await runPoll(makePoller());
+				const resolveSpy = vi.spyOn(CommDB.prototype, "resolveGate");
+				await runPoll(makePoller());
 
-			// Terminal session ⇒ still no Lead delivery (unchanged). But the gate
-			// MUST survive to its natural TTL so request-review can bind it.
-			expect(runtime.captured).toHaveLength(0);
-			expect(resolveSpy).not.toHaveBeenCalled();
-			expect(pendingFor("product-lead")).toHaveLength(1);
-			resolveSpy.mockRestore();
-		});
+				// Terminal session ⇒ still no Lead delivery (unchanged). But the gate
+				// MUST survive to its natural TTL so request-review can bind it.
+				expect(runtime.captured).toHaveLength(0);
+				expect(resolveSpy).not.toHaveBeenCalled();
+				expect(pendingFor("product-lead")).toHaveLength(1);
+				resolveSpy.mockRestore();
+			});
+		}
 	}
+
+	// Codex review LOW-2: pin the CHOKEPOINT itself, not just the relay path.
+	// Without this, deleting the guard inside evictTerminalGateQuestion() (leaving
+	// only the relay-side one) would keep every other test green — yet the
+	// eviction-retry short-circuit could still expire a review gate.
+	it("Case 8e-chokepoint (FLY-1257 path-2): evictTerminalGateQuestion itself refuses a review gate, whatever the caller", async () => {
+		insertSession("exec-choke", { status: "completed", labels: ["product"] });
+		const qid = insertQuestion({
+			execId: "exec-choke",
+			leadId: "product-lead",
+			content: "review_code requested",
+			checkpoint: "review_code",
+		});
+		const poller = makePoller();
+		const resolveSpy = vi.spyOn(CommDB.prototype, "resolveGate");
+
+		// Call the private mutation chokepoint DIRECTLY — bypassing relayToLead,
+		// which is exactly what the eviction-retry short-circuit does.
+		(
+			poller as unknown as {
+				evictTerminalGateQuestion: (q: unknown, p: string) => void;
+			}
+		).evictTerminalGateQuestion(
+			{ id: qid, from_agent: "exec-choke", checkpoint: "review_code" },
+			dbPath,
+		);
+
+		expect(resolveSpy).not.toHaveBeenCalled();
+		expect(pendingFor("product-lead")).toHaveLength(1);
+		resolveSpy.mockRestore();
+	});
 
 	it("Case 8f (FLY-1257 path-2 control): a NON-review gate from a blocked session is still evicted (FLY-307 A preserved)", async () => {
 		insertSession("exec-blocked-bs", {
