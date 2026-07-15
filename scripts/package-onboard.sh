@@ -70,7 +70,8 @@ teamlead:scripts/inbox-ack-rule.md
 teamlead:scripts/screencapture-l3-skill.md
 teamlead:scripts/expect-dev-channels.exp
 teamlead:scripts/lib/mcp-inherit.sh
-teamlead:scripts/lib/reap-orphan-adapters.sh"}
+teamlead:scripts/lib/reap-orphan-adapters.sh
+teamlead:scripts/lib/tmux-supervisor-guard.sh"}
 
 # Curated scripts/ whitelist — EXPLICIT file list, not an ignore list. Every
 # entry here must have a row in the packaged-path audit table
@@ -98,6 +99,7 @@ lib/platform-deps.sh
 lib/script-sanity.sh
 lib/supervisor.sh
 lib/bridge-port.sh
+lib/tmux-server-rescue.sh
 lib/self-ship-queue.sh
 packaged/create-compat-mirror.sh
 packaged/bootstrap-services.sh
