@@ -1,10 +1,10 @@
 ---
 issue: FLY-1286
 phase: design
-phaseCursor: 3/5
-updated: 2026-07-15T10:33:56.313Z
-nextStep: Self-review rerun delta docs, verify fresh IDs and epoch 3→4→5, then
-  request cross-family design review
+phaseCursor: 4/5
+updated: 2026-07-15T10:35:41.210Z
+nextStep: Await current-exec brainstorm approval, then run request-driven
+  cross-family design review on the fresh-root rerun plan
 chunks:
   - id: onboard
     order: 1
@@ -16,8 +16,8 @@ pointers:
 ---
 
 # FLY-1286 progress
-**phase**: design (3/5)
-**next**: Self-review rerun delta docs, verify fresh IDs and epoch 3→4→5, then request cross-family design review
+**phase**: design (4/5)
+**next**: Await current-exec brainstorm approval, then run request-driven cross-family design review on the fresh-root rerun plan
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
