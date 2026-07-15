@@ -7,8 +7,10 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import net from "node:net";
@@ -91,16 +93,20 @@ function makeExecutable(filePath, source) {
 	chmodSync(filePath, 0o755);
 }
 
-function createFixture({ oldAttempt = false } = {}) {
+function createFixture({ oldAttempt = false, symlinkSocketRoot = false } = {}) {
 	const root = mkdtempSync(path.join(os.tmpdir(), "fly1286-observer-"));
 	const stateDb = path.join(root, "state.db");
 	const commDb = path.join(root, "comm.db");
 	const out = path.join(root, "observer.jsonl");
 	const socketRoot = path.join(root, "sockets");
+	const lsofSocketRoot = symlinkSocketRoot
+		? path.join(root, "sockets-real")
+		: socketRoot;
 	const fakeBin = path.join(root, "bin");
 	const probeDir = path.join(root, "probes");
 	const probeLog = path.join(root, "probe.log");
-	mkdirSync(socketRoot);
+	mkdirSync(lsofSocketRoot);
+	if (symlinkSocketRoot) symlinkSync(lsofSocketRoot, socketRoot);
 	mkdirSync(fakeBin);
 	mkdirSync(probeDir);
 	writeFileSync(probeLog, "");
@@ -220,6 +226,7 @@ function createFixture({ oldAttempt = false } = {}) {
 		if(state==='live'){process.stdout.write('0\\n');process.exit(0)}
 		if(state==='dead'){process.stdout.write('1\\n');process.exit(0)}
 		if(state==='absent'){process.stderr.write("can't find pane: "+target+'\\n');process.exit(1)}
+		if(state==='permission'){process.stderr.write('permission denied\\n');process.exit(1)}
 		process.stderr.write('no server running on /tmp/tmux-test/default\\n');process.exit(1);
 		`,
 	);
@@ -233,10 +240,13 @@ function createFixture({ oldAttempt = false } = {}) {
 			process.stderr.write('lsof: status error on socket: Permission denied\\n');
 			process.exit(1);
 		}
+		if(map.__warning==='warning'){
+			process.stderr.write("lsof: WARNING: can't stat() apfs file system /Volumes/example\\n      Output information may be incomplete.\\n");
+		}
 		let output='p99999\\nf8\\nn/unrelated.sock\\n';
 		for(const [name,holders] of Object.entries(map)){
 			if(!Array.isArray(holders))continue;
-			for(const pid of holders)output+='p'+pid+'\\nf27\\nn'+process.env.FAKE_SOCKET_ROOT+'/'+name+'\\n';
+			for(const pid of holders)output+='p'+pid+'\\nf27\\nn'+process.env.FAKE_LSOF_SOCKET_ROOT+'/'+name+'\\n';
 		}
 		process.stdout.write(output);process.exit(0);
 		`,
@@ -270,6 +280,7 @@ function createFixture({ oldAttempt = false } = {}) {
 		commDb,
 		out,
 		socketRoot,
+		lsofSocketRoot,
 		probeDir,
 		probeLog,
 		fakeBin,
@@ -313,7 +324,7 @@ function observerEnv(fixture) {
 		PATH: `${fixture.fakeBin}:${process.env.PATH}`,
 		FAKE_PROBE_DIR: fixture.probeDir,
 		FAKE_PROBE_LOG: fixture.probeLog,
-		FAKE_SOCKET_ROOT: fixture.socketRoot,
+		FAKE_LSOF_SOCKET_ROOT: realpathSync(fixture.lsofSocketRoot),
 		SQLITE_ARG_LOG: fixture.sqliteLog,
 	};
 }
@@ -326,7 +337,7 @@ function readFrames(out) {
 		.map((line) => JSON.parse(line));
 }
 
-async function waitFor(predicate, message, timeoutMs = 1500) {
+async function waitFor(predicate, message, timeoutMs = 3000) {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (predicate()) return;
@@ -647,10 +658,13 @@ test(
 	async () => {
 		const fixture = createFixture();
 		try {
+			await fixture.listen(DESIGN);
+			await fixture.listen(IMPLEMENT);
 			const child = startObserver(fixture);
+			await waitForSnapshot(fixture);
 			updateProbe(fixture, "tmux", (value) => {
-				value["slot:design"] = "indeterminate";
-				value["slot:implement"] = "indeterminate";
+				value["slot:design"] = "permission";
+				value["slot:implement"] = "permission";
 			});
 			updateProbe(fixture, "lsof", (value) => {
 				value[path.basename(socketPath(fixture.socketRoot, DESIGN))] =
@@ -662,6 +676,7 @@ test(
 				fixture,
 				(frame) => frame.liveness?.design?.tmux === "indeterminate",
 			);
+			await clearSockets(fixture);
 			clearTmux(fixture);
 			deleteLifecycle(fixture);
 			const result = await waitForExit(child);
@@ -692,6 +707,119 @@ test("reports a dead tmux pane instead of treating it as live", async () => {
 			(frame) => frame.kind === "snapshot",
 		);
 		assert.equal(snapshot?.liveness.design.tmux, "dead");
+	} finally {
+		await fixture.dispose();
+	}
+});
+
+test("matches lsof holder names through a canonicalized socket root", async () => {
+	const fixture = createFixture({ symlinkSocketRoot: true });
+	try {
+		const result = spawnSync(
+			process.execPath,
+			observerArgs(fixture, 2000, ["--once"]),
+			{
+				encoding: "utf8",
+				env: observerEnv(fixture),
+			},
+		);
+		assert.equal(result.status, 0, result.stderr);
+		const snapshot = readFrames(fixture.out).findLast(
+			(frame) => frame.kind === "snapshot",
+		);
+		assert.equal(snapshot?.liveness.design.holders.state, "present");
+		assert.deepEqual(snapshot?.liveness.design.holders.holders, [31001]);
+	} finally {
+		await fixture.dispose();
+	}
+});
+
+test("fails fast when the initial tmux server cannot be observed", async () => {
+	const fixture = createFixture();
+	try {
+		updateProbe(fixture, "tmux", (value) => {
+			value["slot:design"] = "indeterminate";
+		});
+		const child = startObserver(fixture, 2500);
+		const result = await waitForExit(child, 5000);
+		assert.notEqual(result.code, 0);
+		assert.equal(
+			verdict(fixture)?.reason,
+			"initial_tmux_not_live:design:indeterminate",
+		);
+	} finally {
+		await fixture.dispose();
+	}
+});
+
+test(
+	"treats a vanished tmux server as absent only after observing it live",
+	{ timeout: 8000 },
+	async () => {
+		const fixture = createFixture();
+		try {
+			await fixture.listen(DESIGN);
+			await fixture.listen(IMPLEMENT);
+			const child = startObserver(fixture);
+			await waitForSnapshot(fixture);
+			for (const [executionId, requestId] of [
+				[DESIGN, "req-design"],
+				[IMPLEMENT, "req-implement"],
+			]) {
+				setShutdown(fixture, executionId, requestId, "requested");
+			}
+			await waitForSnapshot(
+				fixture,
+				(frame) => frame.shutdown?.implement?.state === "requested",
+			);
+			for (const [executionId, requestId] of [
+				[DESIGN, "req-design"],
+				[IMPLEMENT, "req-implement"],
+			]) {
+				setShutdown(fixture, executionId, requestId, "acked");
+			}
+			await waitForSnapshot(
+				fixture,
+				(frame) => frame.shutdown?.implement?.state === "acked",
+			);
+			await clearSockets(fixture);
+			updateProbe(fixture, "tmux", (value) => {
+				value["slot:design"] = "indeterminate";
+				value["slot:implement"] = "indeterminate";
+				value["slot:qa"] = "indeterminate";
+			});
+			deleteLifecycle(fixture);
+			const result = await waitForExit(child);
+			assert.equal(
+				result.code,
+				0,
+				JSON.stringify({ stderr: result.stderr, verdict: verdict(fixture) }),
+			);
+		} finally {
+			await fixture.dispose();
+		}
+	},
+);
+
+test("accepts a parsed lsof scan with a known benign warning", async () => {
+	const fixture = createFixture();
+	try {
+		updateProbe(fixture, "lsof", (value) => {
+			value.__warning = "warning";
+		});
+		const result = spawnSync(
+			process.execPath,
+			observerArgs(fixture, 2000, ["--once"]),
+			{
+				encoding: "utf8",
+				env: observerEnv(fixture),
+			},
+		);
+		assert.equal(result.status, 0, result.stderr);
+		const snapshot = readFrames(fixture.out).findLast(
+			(frame) => frame.kind === "snapshot",
+		);
+		assert.equal(snapshot?.liveness.design.holders.state, "present");
 	} finally {
 		await fixture.dispose();
 	}
@@ -731,6 +859,10 @@ test("deduplicates stable snapshots despite heartbeat age advancing", async () =
 		);
 		assert.equal(snapshots.length, 1);
 		assert.equal(verdict(fixture)?.reason, "cleanup_not_observed");
+		const lsofCalls = readFileSync(fixture.probeLog, "utf8")
+			.split("\n")
+			.filter(Boolean);
+		assert.deepEqual(lsofCalls, ["lsof"]);
 	} finally {
 		await fixture.dispose();
 	}

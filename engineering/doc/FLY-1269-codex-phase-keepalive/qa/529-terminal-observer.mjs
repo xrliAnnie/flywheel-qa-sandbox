@@ -2,7 +2,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, realpathSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
 
@@ -104,7 +104,7 @@ function heartbeatMs(value) {
 	return Number.isFinite(parsed) ? parsed : null;
 }
 
-function probeTmux(target) {
+function probeTmux(target, seenLive) {
 	if (!target) return "indeterminate";
 	const result = spawnSync(
 		"tmux",
@@ -127,11 +127,50 @@ function probeTmux(target) {
 	) {
 		return "absent";
 	}
+	if (
+		seenLive &&
+		result.status === 1 &&
+		/^no server running on /m.test(result.stderr.trim())
+	) {
+		return "absent";
+	}
 	return "indeterminate";
 }
 
-function probeHolders(sockets) {
-	const uniqueSockets = [...new Set(sockets)];
+function socketAliases(socket) {
+	const aliases = new Set([socket]);
+	try {
+		aliases.add(
+			path.join(realpathSync(path.dirname(socket)), path.basename(socket)),
+		);
+	} catch {
+		// Keep the raw path. The startup liveness gate will fail closed if the
+		// socket root itself cannot be resolved or observed.
+	}
+	return [...aliases];
+}
+
+function benignLsofStderr(stderr) {
+	const lines = stderr
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean);
+	for (let index = 0; index < lines.length; index += 1) {
+		if (
+			!/^lsof: WARNING: can't stat\(\) .+ file system .+$/.test(lines[index])
+		) {
+			return false;
+		}
+		if (lines[index + 1] !== "Output information may be incomplete.") {
+			return false;
+		}
+		index += 1;
+	}
+	return true;
+}
+
+function probeHolders(aliasesBySocket) {
+	const uniqueSockets = Object.keys(aliasesBySocket);
 	const indeterminate = () =>
 		Object.fromEntries(
 			uniqueSockets.map((socket) => [
@@ -143,7 +182,7 @@ function probeHolders(sockets) {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 	});
-	if (result.error || result.status !== 0 || result.stderr.trim()) {
+	if (result.error || result.status !== 0 || !benignLsofStderr(result.stderr)) {
 		return indeterminate();
 	}
 
@@ -154,6 +193,14 @@ function probeHolders(sockets) {
 	const holdersBySocket = new Map(
 		uniqueSockets.map((socket) => [socket, new Set()]),
 	);
+	const socketsByAlias = new Map();
+	for (const [socket, aliases] of Object.entries(aliasesBySocket)) {
+		for (const alias of aliases) {
+			const matches = socketsByAlias.get(alias) ?? [];
+			matches.push(socket);
+			socketsByAlias.set(alias, matches);
+		}
+	}
 	for (const line of result.stdout.split("\n").filter(Boolean)) {
 		if (line.startsWith("p")) {
 			const pid = Number(line.slice(1));
@@ -172,7 +219,9 @@ function probeHolders(sockets) {
 			if (currentPid === null) {
 				malformed = true;
 			} else {
-				holdersBySocket.get(line.slice(1))?.add(currentPid);
+				for (const socket of socketsByAlias.get(line.slice(1)) ?? []) {
+					holdersBySocket.get(socket)?.add(currentPid);
+				}
 			}
 			continue;
 		}
@@ -380,8 +429,18 @@ async function main() {
 			socketFor(options["socket-root"], identities[role]),
 		]),
 	);
+	const aliasesBySocket = Object.fromEntries(
+		Object.values(socketsByRole).map((socket) => [
+			socket,
+			socketAliases(socket),
+		]),
+	);
 	const savedTargets = {};
+	const tmuxSeenLive = {};
 	const lastPresent = {};
+	let holdersBySocket = null;
+	let lastHolderEvidenceKey = null;
+	let armed = false;
 	let lastKey = null;
 	let pendingReason = "cleanup_not_observed";
 	const startedAt = Date.now();
@@ -428,7 +487,10 @@ async function main() {
 		const state = indexBy(stateRows, "execution_id");
 		const comm = indexBy(commRows, "execution_id");
 		const shutdownById = indexBy(shutdownRows, "execution_id");
-		const holdersBySocket = probeHolders(Object.values(socketsByRole));
+		const stateGone = executionIds.every((executionId) => !state[executionId]);
+		const commGone = executionIds.every((executionId) => !comm[executionId]);
+		const codexStateGone = codexRoles.every((role) => !state[identities[role]]);
+		const codexCommGone = codexRoles.every((role) => !comm[identities[role]]);
 		const liveness = {};
 		for (const role of Object.keys(identities)) {
 			const executionId = identities[role];
@@ -442,9 +504,11 @@ async function main() {
 			if (target) savedTargets[role] = target;
 			const heartbeat = heartbeatMs(stateRow?.heartbeat_at);
 			const socket = socketsByRole[role] ?? null;
+			const tmux = probeTmux(target, tmuxSeenLive[role] === true);
+			if (tmux === "live") tmuxSeenLive[role] = true;
 			const current = {
 				target,
-				tmux: probeTmux(target),
+				tmux,
 				heartbeatAt: stateRow?.heartbeat_at ?? null,
 				heartbeatAgeMs:
 					heartbeat === null ? null : Math.max(0, Date.now() - heartbeat),
@@ -456,12 +520,35 @@ async function main() {
 					? {
 							socketPath: socket,
 							socket: await probeSocket(socket),
-							holders: holdersBySocket[socket],
 						}
 					: {}),
 			};
 			liveness[role] = current;
-			if (stateRow || commRow) lastPresent[role] = structuredClone(current);
+		}
+
+		const holderEvidenceKey = JSON.stringify(
+			codexRoles.map((role) => ({
+				role,
+				socket: liveness[role].socket,
+				statePresent: Boolean(state[identities[role]]),
+				commPresent: Boolean(comm[identities[role]]),
+			})),
+		);
+		if (
+			holdersBySocket === null ||
+			holderEvidenceKey !== lastHolderEvidenceKey
+		) {
+			holdersBySocket = probeHolders(aliasesBySocket);
+			lastHolderEvidenceKey = holderEvidenceKey;
+		}
+		for (const role of codexRoles) {
+			liveness[role].holders = holdersBySocket[socketsByRole[role]];
+		}
+		for (const role of Object.keys(identities)) {
+			const executionId = identities[role];
+			if (state[executionId] || comm[executionId]) {
+				lastPresent[role] = structuredClone(liveness[role]);
+			}
 		}
 
 		try {
@@ -497,11 +584,37 @@ async function main() {
 			lastKey = key;
 		}
 		if (options.once) return 0;
+		if (!armed) {
+			let initialFailure = null;
+			for (const role of Object.keys(identities)) {
+				if (liveness[role].tmux !== "live") {
+					initialFailure = `initial_tmux_not_live:${role}:${liveness[role].tmux}`;
+					break;
+				}
+				if (codexRoles.includes(role) && liveness[role].socket !== "live") {
+					initialFailure = `initial_socket_not_live:${role}:${liveness[role].socket}`;
+					break;
+				}
+				if (
+					codexRoles.includes(role) &&
+					liveness[role].holders.state !== "present"
+				) {
+					initialFailure = `initial_holders_not_present:${role}:${liveness[role].holders.state}`;
+					break;
+				}
+			}
+			if (initialFailure) {
+				appendFrame(options.out, {
+					kind: "verdict",
+					at,
+					pass: false,
+					reason: initialFailure,
+				});
+				return 1;
+			}
+			armed = true;
+		}
 
-		const stateGone = executionIds.every((executionId) => !state[executionId]);
-		const commGone = executionIds.every((executionId) => !comm[executionId]);
-		const codexStateGone = codexRoles.every((role) => !state[identities[role]]);
-		const codexCommGone = codexRoles.every((role) => !comm[identities[role]]);
 		if (stateGone && commGone) {
 			if (turnRows.length > 0) {
 				pendingReason = "turn_not_deleted";
