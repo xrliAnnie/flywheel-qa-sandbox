@@ -1,13 +1,13 @@
 ---
 issue: FLY-1285
-phase: design
-phaseCursor: 4/4
-updated: 2026-07-15T19:37:52.981Z
-nextStep: phase_design_complete → park;Implement 按 plan §0 三 PR(PR-0 健康窗最先单独出)
+phase: implement
+phaseCursor: 0/2
+updated: 2026-07-15T19:40:32.515Z
+nextStep: Audit PR-1 seams and write first failing rescue-library test
 chunks: []
 pointers: {}
 ---
 
 # FLY-1285 progress
-**phase**: design (4/4)
-**next**: phase_design_complete → park;Implement 按 plan §0 三 PR(PR-0 健康窗最先单独出)
+**phase**: implement (0/2)
+**next**: Audit PR-1 seams and write first failing rescue-library test
