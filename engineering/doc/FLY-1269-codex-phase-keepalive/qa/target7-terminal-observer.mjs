@@ -1,6 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import {
+	PANE_FORMAT,
+	paneSnapshotFromResult,
+	windowLive,
+} from "./target7-pane-identity.mjs";
 
 const require = createRequire(
 	"/Users/xiaorongli/Dev/flywheel/packages/teamlead/package.json",
@@ -37,19 +42,16 @@ function rows(path, sql, args = []) {
 	}
 }
 
-function windowLive(id) {
-	return (
-		spawnSync(
-			"tmux",
-			[
-				"display-message",
-				"-p",
-				"-t",
-				`runner-test-slot-2:=${id}`,
-				"#{window_id}",
-			],
-			{ encoding: "utf8" },
-		).stdout.trim() === id
+const TMUX_SESSION = "runner-test-slot-2";
+
+// FLY-1269: identity probe via `list-panes -a` (no `-t`, so nothing to
+// mis-resolve). Replaces a `display-message -t` check that exited 0 for DELETED
+// windows and read them as ALIVE. Rules live in target7-pane-identity.mjs.
+function paneSnapshot() {
+	return paneSnapshotFromResult(
+		spawnSync("tmux", ["list-panes", "-a", "-F", PANE_FORMAT], {
+			encoding: "utf8",
+		}),
 	);
 }
 
@@ -94,7 +96,12 @@ function snapshot() {
 		`SELECT execution_id, session_role, status FROM sessions WHERE execution_id IN (${placeholders}) ORDER BY execution_id`,
 		executions,
 	);
-	const windows = Object.fromEntries(windowIds.map((id) => [id, windowLive(id)]));
+	// One atomic view per tick: every window verdict below reads the SAME
+	// snapshot, so the tuple recorded as evidence is the tuple that was judged.
+	const panes = paneSnapshot();
+	const windows = Object.fromEntries(
+		windowIds.map((id) => [id, windowLive(id, panes)]),
+	);
 	const sockets = Object.fromEntries(
 		socketPaths.map((path) => [path.split("/").at(-1), existsSync(path)]),
 	);
@@ -107,6 +114,12 @@ function snapshot() {
 		turns,
 		state,
 		windows,
+		// Forensic evidence: the identity tuples the verdict was derived from
+		// (null = tmux unreadable, which windowLive treats as still-live).
+		panes:
+			panes === null
+				? null
+				: panes.filter((pane) => pane.sessionName === TMUX_SESSION),
 		sockets,
 		daemons,
 	};

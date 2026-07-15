@@ -58,8 +58,17 @@ export type CodexPhaseShutdownDecision =
 	| { kind: "not_applicable" }
 	| {
 			kind: "direct";
+			// FLY-1269 Authority Matrix: only a tmux-identity verdict that the target
+			// is provably absent licenses direct cleanup — `target_gone` / `dead_pin`
+			// / `absent`. A heartbeat signal never does: it cannot distinguish a dead
+			// controller from a live-but-wedged one, and culling the latter orphans
+			// its daemon.
 			reason:
 				| "target_gone"
+				// now unreachable by design (FLY-1269): both heartbeat-derived reasons
+				// are only ever evaluated once the pane probed ALIVE, which is exactly
+				// when direct cleanup is forbidden. Kept (not deleted) so existing
+				// referents and persisted values keep resolving.
 				| "controller_lease_stale"
 				| "controller_heartbeat_stopped"
 				| "dead_pin"
@@ -192,7 +201,15 @@ export async function prepareCodexPhaseShutdown(
 	const startedAt = now();
 	const initialHeartbeat = initialSession?.heartbeat_at;
 	if (!isFreshHeartbeat(initialHeartbeat, startedAt, leaseMaxAgeMs)) {
-		return { kind: "direct", reason: "controller_lease_stale" };
+		// FLY-1269: every not-alive liveness returned above, so the pane is
+		// provably LIVE here. A stale lease then means "the controller stopped
+		// beating" OR "we cannot read its beat" — never "provably absent", which
+		// is the only licence the header contract grants direct cleanup. Fail
+		// closed: killing a live controller's window orphans its daemon.
+		return {
+			kind: "blocked",
+			error: "phase_shutdown_controller_lease_stale_live_pane",
+		};
 	}
 
 	const resolvePath = deps.resolveCommDbPath ?? resolveCommDbPath;
@@ -297,5 +314,15 @@ export async function prepareCodexPhaseShutdown(
 			error: "phase_shutdown_ack_timeout_live_controller",
 		};
 	}
-	return { kind: "direct", reason: "controller_heartbeat_stopped" };
+	// FLY-1269: the pane is provably LIVE (every other liveness returned above),
+	// so a heartbeat that stopped advancing during the ack wait is ambiguous — a
+	// wedged-but-live controller and a dead one look identical from here, and only
+	// the latter would be safe to cull. The header contract allows direct cleanup
+	// solely when the controller is provably absent, which a live pane refutes.
+	// Fail closed and let the tmux-identity probe (gone/dead_pin/absent) be the
+	// sole authority for culling.
+	return {
+		kind: "blocked",
+		error: "phase_shutdown_ack_timeout_heartbeat_stopped_live_pane",
+	};
 }
