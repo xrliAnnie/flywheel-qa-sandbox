@@ -1,13 +1,13 @@
 ---
 issue: FLY-1257
 phase: implement
-phaseCursor: 7/7
-updated: 2026-07-15T04:50:21.962Z
-nextStep: Push branch, create PR, and monitor CI
+phaseCursor: 6/7
+updated: 2026-07-15T05:36:45.734Z
+nextStep: Fix reproduced gate-hold race and reviewer findings, then reverify
 chunks: []
 pointers: {}
 ---
 
 # FLY-1257 progress
-**phase**: implement (7/7)
-**next**: Push branch, create PR, and monitor CI
+**phase**: implement (6/7)
+**next**: Fix reproduced gate-hold race and reviewer findings, then reverify
