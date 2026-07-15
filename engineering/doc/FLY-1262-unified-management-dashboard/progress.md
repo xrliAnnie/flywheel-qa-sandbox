@@ -1,13 +1,13 @@
 ---
 issue: FLY-1262
 phase: implement
-phaseCursor: 2/13
-updated: 2026-07-15T05:38:23.008Z
-nextStep: "Task 2: versioned management snapshot contract"
+phaseCursor: 3/13
+updated: 2026-07-15T05:41:10.346Z
+nextStep: "Task 3: topology, role and snapshot provider orchestration"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1262 progress
-**phase**: implement (2/13)
-**next**: Task 2: versioned management snapshot contract
+**phase**: implement (3/13)
+**next**: Task 3: topology, role and snapshot provider orchestration
