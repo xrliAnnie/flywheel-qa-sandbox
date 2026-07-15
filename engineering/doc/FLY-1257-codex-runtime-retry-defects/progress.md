@@ -2,13 +2,18 @@
 issue: FLY-1257
 phase: implement
 phaseCursor: 1/1
-updated: 2026-07-15T18:03:17.552Z
-nextStep: "path-2 committed 82099d835 (92 green + mutation-verified). Next: full
-  teamlead suite + Codex code review at new head → report Tadashi to merge."
+updated: 2026-07-15T18:57:57.492Z
+nextStep: "DONE+CI GREEN. #599 head=e27f27e06 MERGEABLE/CLEAN. path-2 fix +
+  merge-conflict resolution; Codex APPROVED x2; 183+11 local green, CI green.
+  BLOCKED ON LEAD DECISION: request-review 409s claude-family authors
+  (coordinator:494) so instruction 2 is not executable — asked Tadashi to pick
+  (A) legacy lane via stage pr_created + await-codex-gate to earn
+  codex_review_record at e27f27e06, or (B) executor-merge. Holding running
+  (non-terminal) to keep the review gate alive; NOT self-merging."
 chunks: []
 pointers: {}
 ---
 
 # FLY-1257 progress
 **phase**: implement (1/1)
-**next**: path-2 committed 82099d835 (92 green + mutation-verified). Next: full teamlead suite + Codex code review at new head → report Tadashi to merge.
+**next**: DONE+CI GREEN. #599 head=e27f27e06 MERGEABLE/CLEAN. path-2 fix + merge-conflict resolution; Codex APPROVED x2; 183+11 local green, CI green. BLOCKED ON LEAD DECISION: request-review 409s claude-family authors (coordinator:494) so instruction 2 is not executable — asked Tadashi to pick (A) legacy lane via stage pr_created + await-codex-gate to earn codex_review_record at e27f27e06, or (B) executor-merge. Holding running (non-terminal) to keep the review gate alive; NOT self-merging.
