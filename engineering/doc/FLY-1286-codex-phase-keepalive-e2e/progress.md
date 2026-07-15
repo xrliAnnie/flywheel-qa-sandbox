@@ -1,10 +1,10 @@
 ---
 issue: FLY-1286
 phase: design
-phaseCursor: 2/5
-updated: 2026-07-15T10:27:26.837Z
-nextStep: Bind rerun plan to patched runtime cad61a078 and current Design
-  execution; audit hold-entry fix and evidence oracles
+phaseCursor: 3/5
+updated: 2026-07-15T10:33:56.313Z
+nextStep: Self-review rerun delta docs, verify fresh IDs and epoch 3→4→5, then
+  request cross-family design review
 chunks:
   - id: onboard
     order: 1
@@ -16,8 +16,8 @@ pointers:
 ---
 
 # FLY-1286 progress
-**phase**: design (2/5)
-**next**: Bind rerun plan to patched runtime cad61a078 and current Design execution; audit hold-entry fix and evidence oracles
+**phase**: design (3/5)
+**next**: Self-review rerun delta docs, verify fresh IDs and epoch 3→4→5, then request cross-family design review
 
 ## chunks
 - ✅ onboard — onboarding 与候选快照初审完成
