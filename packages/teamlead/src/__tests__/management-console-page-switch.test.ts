@@ -61,9 +61,8 @@ describe("management console page switching (real-CSS mutual exclusion)", () => 
 	it("never displays both pages at once in either nav state", () => {
 		const { instances, flags } = mountShell();
 		const displayedCount = () =>
-			[instances, flags].filter(
-				(el) => getComputedStyle(el).display !== "none",
-			).length;
+			[instances, flags].filter((el) => getComputedStyle(el).display !== "none")
+				.length;
 		// default (instances active)
 		expect(displayedCount()).toBe(1);
 		// after switching to flags
