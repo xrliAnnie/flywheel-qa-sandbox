@@ -2,101 +2,151 @@
 
 Issue: [FLY-1286](https://linear.app/geoforge3d/issue/FLY-1286/qa-fly-1269-codex-常驻三段式-529-room-真机-e2edesigncodex-implementcodex)
 日期: 2026-07-15
-基于: FLY-1269 candidate snapshot `c833f78b552b0df54fb49d8f0d7c79331513ea28`
+基于: FLY-1269 PR #604 candidate `cad61a07894a98d808aea5b948830f12cfdcff83`
 
 ## Verdict
 
-**FAIL — A2 resident hold / budget freeze 未成立。**
+**IN PROGRESS — IMPLEMENT EVIDENCE PASS；QA RESIDENCY 与 TERMINAL CLOSEOUT PENDING。**
 
-Implement phase 按计划取得 `implement / epoch 2` TURN 后，从 StateStore、CommDB、Codex
-session state、native goal DB、tmux 与 execution-private socket 反向检查 Design。Design
-仍是成功链原 execution/thread/goal，TUI 和 socket 也都活着，但它只有 CommDB
-`declaredState=parked` 标签，没有进入 native paused hold：
+fresh successful chain 已完成 Implement 负责的三项核心真机证明：
 
-- `session.json.phaseHold = null`；
-- native goal `status = active`；
-- 5 秒窗口内 `tokens_used` 从 `758321` 增至 `759004`（`+683`）；
-- `time_used_seconds` 从 `4389` 增至 `4394`（`+5`）；
-- `updated_at_ms` 从 `1784110734993` 增至 `1784110739676`；
-- Design TUI 正在反复执行 `turn` / `inbox` / `park`，而不是停在 adapter 的
-  `phaseHold.state=paused` 循环。
+1. Design phase 在 handoff 后以同一 execution/thread/goal 进入 paused hold，63.258 秒内
+   goal budget 与 phaseHold remainder 完全冻结，StateStore heartbeat 持续前进；
+2. 在 execution-private socket、shim process group、paused goal 与 Implement TURN 全部
+   fail-close 前置成立后，只对 Design detached daemon group 注入一次 SIGKILL；controller
+   在 3.736 秒内以新 shim/PGID 恢复，同一 thread/goal/hold/TURN 未变，并再次冻结
+   63.185 秒；
+3. Lead 只发送一条真实 Design mailbox instruction；durable wake row 唯一绑定该 instruction，
+   Design 真实执行 TURN 得到 `not-yours ... phase=implement epoch=4`，未触碰 worktree，
+   re-park 后建立新的 paused hold，并再次冻结 63.284 秒。
 
-这直接触发 plan Stop Condition 4。Implement 没有执行 daemon crash、没有请求 mailbox
-wake、没有 signal 任何进程，也没有继续构造一条表面成功的链。
+Implement 不能自证 A5，也不能在 terminal cleanup 后观察 A7。因此当前不写
+`PHASE PASS — TERMINAL CLOSEOUT PENDING`：该 pre-terminal verdict 只能由 QA Opus 在完成
+A1–A6/A8 独立复核后写入；FINAL PASS 仍只能由 issue 外 FLY-1269 closing session 在 A7
+request/ack/delete observer 闭环成立后写入。
 
-## Runtime Identity
+## Runtime Attestation
 
-| Plane | Design evidence | Result |
+| Evidence | Value | Result |
 |---|---|---|
-| StateStore | `c552669e-611b-47fc-98ca-63371c81cbe8`, `design_done`, `codex-tmux`, `gpt-5.6-sol` | identity retained |
-| Native thread | `019f6506-6123-7453-9bc1-5aaaa4c32c58` | same thread |
-| Native goal | `acedce0b-ad08-47b8-adbe-0618df6caa09`, `active` | **FAIL: expected paused** |
-| Session latch | `phaseHold: null` | **FAIL: expected paused latch** |
-| CommDB state | `parked`, reason `three-stage design parked until ship` | label exists but does not prove hold |
-| TURN | holder `e854cc74-39dc-4c75-b78b-d2e220a08cbe`, phase `implement`, epoch `2` | correct handoff |
-| tmux | target exists, `pane_dead=0` | live |
-| app-server | socket `407ac44945241bf9.sock` connects; `lsof` holder PID/PGID `47673` | live and attributable |
+| Production PR #604 head | `cad61a07894a98d808aea5b948830f12cfdcff83` | pinned |
+| Candidate worktree head | `cad61a07894a98d808aea5b948830f12cfdcff83` | pinned |
+| Parked-boundary fix | `7d20e4a76d718efd6d6fbb440dec2dd8bdf66c6d` | ancestor |
+| Bridge listener | PID `96935`, cwd FLY-1269 QA worktree | current listener |
+| Estimated Bridge start | epoch `1784110600` | after source/dist mtimes |
+| Source/dist mtimes | `1784110558` / `1784110560` | loaded fixed artifacts |
+| Dist semantic check | `observeBoundary()` → parked branch → `enterPhaseHold()` | present |
 
-The StateStore heartbeat remained at `2026-07-15 10:00:20`; this is not treated as proof of death
-because the stronger socket/lsof/tmux oracles showed the execution live, and the native goal counters
-were still advancing.
+旧 `bridge.log` boot line 没有用作当前进程证明。observer 的 real `--once` 运行前后，
+StateStore/CommDB 及 WAL/SHM 的 mutation oracle 完全一致，证明读取使用
+`sqlite3 -readonly` + `PRAGMA query_only=1`。
+
+## Successful Chain Identity
+
+| Plane | Design | Implement |
+|---|---|---|
+| Execution | `464064c0-a711-4aa7-9426-5633dcef590d` | `1ba0f0f1-928c-4aaa-aa5f-5782a54a37ad` |
+| Role/backend | `design / codex-tmux` | `implement / codex-tmux` |
+| Model | `gpt-5.6-sol` | `gpt-5.6-sol` |
+| Thread | `019f654c-e651-71c2-9ab9-c4e68bcdcfd5` | `019f6579-9da9-7882-8ef2-29bfc50e692c` |
+| Goal | `d05c8f51-0db3-4029-982d-d293e4347044` | `4ffe8b18-dcb8-4b6a-9155-46031750276e` |
+| TURN epoch | `3` | `4` |
+
+首次 A2 FAIL 的 Design `c552669e-…` / Implement `e854cc74-…` 只保留在
+`priorAttempts`，其 immutable evidence anchor 为 `ec78d79239f3cb61916f876f58855dcfccb89679`；
+它们未混入本次 successful chain。
+
+## Design Residency
+
+handoff 后的联合证据：
+
+- StateStore: `design_done`、`codex-tmux`、role `design`、heartbeat advancing；
+- CommDB: declared `parked`；
+- session latch: `phaseHold.state=paused`；
+- native goal: same goal id、`status=paused`；
+- tmux: live pane，redacted capture status anchor 为 `gpt-5.6-sol xhigh — Goal paused`；
+- socket: `/Users/xiaorongli/.flywheel/cdx-sock/d159c5c4c11eff43.sock` connectable，
+  holder PGID 与 persisted shim 一致；
+- TURN: Implement exec / phase implement / epoch 4，三个冻结窗口内均未漂移。
+
+### Freeze windows
+
+| Window | Duration | PID/PGID | Tokens | Goal time | Goal updated_at | phaseHold |
+|---|---:|---:|---:|---:|---:|---|
+| pre-crash | 63.258s | `26476` | `562219 → 562219` | `3126 → 3126` | `1784114094257` stable | `11:14:54.236Z` stable |
+| post-recovery | 63.185s | `88885` | `562219 → 562219` | `3126 → 3126` | `1784114559736` stable | `11:14:54.236Z` stable |
+| post-wake re-hold | 63.284s | `88885` | `565978 → 565978` | `3156 → 3156` | `1784114820643` stable | `11:27:00.624Z` stable |
+
+每个窗口 heartbeat 都前进；execution/thread/goal、socket holder group 与 TURN 都保持不变。
+
+## Crash Recovery
+
+`2026-07-15T11:22:36.000Z` signal 前重新验证：execution/issue/thread 正确、phaseHold 与
+native goal 都 paused、socket connectable、`lsof -Fpg` holder group 为 `26476`、Implement
+仍持有 epoch 4 TURN、wake count 为 11、fresh live Design count 为 1。全部成立后只执行：
+
+```text
+SIGKILL process group 26476
+```
+
+native goal `updated_at_ms=1784114559736` 对应
+`2026-07-15T11:22:39.736Z`，给出正确 UTC bounded recovery latency `3736ms`。恢复结果：
+
+- new shim/PGID/socket holder = `88885`；old group 无进程、无 socket holder；
+- execution/thread/goal/phaseHold 均未换；
+- TURN 仍为 Implement epoch 4；
+- wake count 仍为 11；fresh live Design count 仍为 1；
+- tokens/time 不重置、不增长；随后 63.185 秒 freeze 再次成立。
+
+## Mailbox Wake
+
+- Lead ask question: `4bc1ae9b-a137-4ca5-8adf-5e1ce97c9e15`；
+- CommDB instruction: `c18f4e2b-f7c4-4ea7-a51d-a12ed4eb4716`；
+- transport message: `2219c21e-4d3f-4357-b999-b18a0b4397ed`；
+- wake queue seq: `12`；
+- queued/started/finished: `1784114790554 / 1784114790554 / 1784114790573`；
+- exact instruction count = 1；exact source-bound wake row count = 1；
+- TUI ground truth: `not-yours holder=1ba0f0f1-... phase=implement epoch=4`；
+- declared state 更新为 `FLY-1286 WAKE_PROBE handled; three-stage design parked until ship`；
+- same goal 在 bounded wake 中 tokens `562219 → 565978`、time `3126 → 3156`，然后
+  以新 `phaseHold.enteredAt=2026-07-15T11:27:00.624Z` 返回 paused；
+- 新 hold 的 63.284 秒 freeze 完整通过。
 
 ## Acceptance Matrix
 
 | ID | Verdict | Evidence |
 |---|---|---|
-| A1 locked dispatch | INCOMPLETE | Design and Implement are Codex `gpt-5.6-sol`; QA was not spawned after fail-fast, so Opus is unproven. |
-| A2 Design resident | **FAIL** | Same exec/thread/goal remains live, but no `phaseHold`, goal active, token/time counters advance. |
-| A3 crash recovery | NOT RUN | Unsafe and invalid after A2 preconditions failed. |
-| A4 mailbox wake | NOT RUN | Lead wake was not requested after the chain had already failed. |
-| A5 Implement resident | NOT RUN | Implement did not complete/park a failed chain. |
-| A6 TURN chain | PARTIAL | Design → Implement handoff is correct at epoch 2; QA epoch 3 was not started. |
-| A7 terminal shutdown | NOT RUN | External terminal observer was not armed for a failed chain. |
-| A8 isolation | PASS TO FAILURE POINT | All mutations stayed inside the plan allowlist; no production source/config changed. |
+| A1 locked dispatch | IN PROGRESS | Design/Implement 均为 Codex `gpt-5.6-sol`；Implement xhigh 由 QA 从 argv/TUI 独立复核；QA Opus 尚未 spawn。 |
+| A2 Design resident | **PASS** | same exec/thread/goal、five-plane paused hold、pre-crash 63.258s freeze。 |
+| A3 crash recovery | **PASS** | PGID `26476 → 88885`，3.736s bounded recovery，同 identity/hold/TURN，post-recovery 63.185s freeze。 |
+| A4 mailbox wake | **PASS** | one instruction → one finished wake；TURN `not-yours`；same goal re-hold；63.284s freeze。 |
+| A5 Implement resident | PENDING | 必须在 Implement complete+park 后由 QA 反向观察 ≥60s。 |
+| A6 TURN chain | IN PROGRESS | fresh Design epoch 3 → Implement epoch 4；QA 必须捕获更大的稳定 epoch。 |
+| A7 terminal shutdown | PENDING | 外部 observer 必须在 terminal 前捕获两个 Codex phase 的 request/ack/delete 与无 orphan。 |
+| A8 isolation | PASS TO IMPLEMENT BOUNDARY | mutation 只在 per-exec runtime、test-slot-2、gate marker 与 qa-sandbox evidence allowlist；无 production source/config 改动。 |
 
-Missing and not-run evidence is not counted as PASS. Overall verdict remains FAIL.
+缺失项不计 PASS；当前 overall 仍为 `IN_PROGRESS`。
 
-## Observer TDD
+## Observer Regression
 
-The terminal observer deliverable was built before the live stop condition was found. Its nine
-fixture tests cover:
+terminal observer syntax 通过，9/9 fixture tests 通过，覆盖 request→ack、durable same-id
+corroboration、missing ack fail-close、direct_proven rerun、indeterminate liveness、旧 attempt
+过滤、TURN/QA cleanup、socket orphan 与 read-only WAL 行为。real `--once` 也通过。
 
-1. requested → acked ordering before row deletion;
-2. same-request durable `lead_close_runner` corroboration when ack sampling is missed;
-3. live/fresh cleanup without ack/corroboration fails closed;
-4. proven direct cleanup is classified with `rerunRequired:true`;
-5. indeterminate liveness fails closed;
-6. old same-issue attempts outside the manifest are ignored;
-7. TURN and QA successful-chain cleanup are mandatory;
-8. socket listener/holder orphans fail;
-9. both SQLite databases are opened with `-readonly` and `PRAGMA query_only=1`.
+Implement head 的 fresh narrow regression：
 
-The observer was also run in real `--once` mode against test-slot-2. That read exposed the live
-Design socket and stale StateStore heartbeat without writing either source database.
-
-## Regression Verification
-
-Fresh verification at the failure evidence head:
-
-- terminal observer: 9/9 tests passed;
-- `codex-phase-lifecycle` + daemon client/runtime: 87/87 tests passed;
-- three-stage phase routing table: 21/21 tests passed;
-- observer syntax, evidence JSON parse, and `git diff --check`: passed.
-
-The narrow static suite is therefore green while the real resident chain fails A2. The static tests
-must not be used to override the live native-goal evidence.
+- terminal observer: 9/9 passed，duration `20.630s`；
+- `codex-phase-lifecycle` + daemon client/runtime: 89/89 passed，duration `0.811s`；
+- three-stage routing table: 21/21 passed，duration `0.598s`；
+- production PR #604 head 与 candidate worktree 均重新核对为 pinned `cad61a078`；
+- evidence JSON parse、scope guard 与 `git diff --check` 通过。
 
 ## Safety / Scope
 
-- No `packages/**`, workflow, runtime config, or production script was modified.
-- No daemon/process signal was sent.
-- No Design wake instruction was requested or injected.
-- No production PR #604 action was taken.
-- Raw structured evidence is in `qa/529-e2e-chain.json`.
-
-## Required Recovery
-
-FLY-1269 must ensure phase completion transitions the native Codex goal into the adapter-managed
-paused hold before the Design phase begins self-driven continuation/polling. After the candidate is
-fixed and cross-family reviewed, rerun FLY-1286 from a fresh successful chain; do not resume at the
-crash or wake steps from this failed chain.
+- 没有修改 `packages/**`、workflow、runtime config 或 production script；
+- fault injection 只 signal 已证明属于 Design execution 的 detached process group；
+- mailbox wake 由 Lead 发送，Implement 没有冒用 Lead 身份；
+- 没有操作 production PR #604；
+- structured raw evidence 在 `qa/529-e2e-chain.json`；
+- 下一步由 QA Opus 独立复核 A1–A6/A8、观察 Implement resident hold，再 arm external
+  terminal observer。Issue terminal 前不得写 FINAL PASS。
