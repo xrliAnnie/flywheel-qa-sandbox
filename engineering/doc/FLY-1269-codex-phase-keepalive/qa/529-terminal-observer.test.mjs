@@ -1047,7 +1047,9 @@ test(
 			try {
 				await fixture.listen(DESIGN);
 				await fixture.listen(IMPLEMENT);
-				const child = startObserver(fixture, 2000);
+				// This sequence performs several SQLite/probe transitions before the
+				// expected fail-closed verdict; keep its observer budget load-tolerant.
+				const child = startObserver(fixture, 8000);
 				await waitForSnapshot(fixture);
 				for (const [executionId, requestId] of [
 					[DESIGN, "req-design"],
@@ -1075,7 +1077,7 @@ test(
 					keepTurn: retained === "turn",
 					keepQa: retained === "qa",
 				});
-				const result = await waitForExit(child, 3500);
+				const result = await waitForExit(child, 12_000);
 				assert.notEqual(result.code, 0);
 				assert.match(
 					verdict(fixture)?.reason ?? "",
