@@ -141,6 +141,27 @@ describe("gate-marker (FLY-123)", () => {
 		expect(() => strict(dir, "exec-1")).toThrow(malformedPath);
 	});
 
+	it("strict enumeration skips a foreign execution before validating its private fields", () => {
+		const foreignPath = join(dir, "foreign-q.json");
+		writeFileSync(
+			foreignPath,
+			JSON.stringify({
+				questionId: "foreign-q",
+				executionId: "exec-2",
+				answeredAt: true,
+			}),
+		);
+
+		const strict = (
+			gateMarkerModule as unknown as {
+				listGateMarkersForExecutionStrict?: StrictMarkerLister;
+			}
+		).listGateMarkersForExecutionStrict;
+		expect(strict).toBeTypeOf("function");
+		if (!strict) return;
+		expect(strict(dir, "exec-1")).toEqual([]);
+	});
+
 	it("strict enumeration treats an absent marker directory as a legitimate empty set", () => {
 		const strict = (
 			gateMarkerModule as unknown as {

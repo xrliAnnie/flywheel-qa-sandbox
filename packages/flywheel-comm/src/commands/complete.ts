@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { listGateMarkersForExecutionStrict } from "../gate-marker.js";
+import { CommDB } from "../db.js";
 
 // FLY-222 #1: `no_code` is the terminal route for a runner-driven no-code /
 // no-merge clean success (e.g. the scheduled learning Runner — reads, analyzes,
@@ -153,23 +153,34 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 
 	// FLY-1257 M1-c: marker presence is an explicit Codex capability signal.
 	// Claude runners do not receive this env var and retain their prior behavior.
-	// A terminal blocked event is irreversible enough that ambiguous/corrupt
-	// marker state must fail closed rather than silently killing a waiting goal.
+	// Marker files are runner-writable wake mirrors, not lifecycle authority:
+	// query CommDB so deleting a marker cannot hide an unanswered gate.
 	const gateMarkerDir = process.env.FLYWHEEL_GATE_MARKER_DIR?.trim();
 	if (opts.route === "blocked" && gateMarkerDir) {
-		let markers: ReturnType<typeof listGateMarkersForExecutionStrict>;
-		try {
-			markers = listGateMarkersForExecutionStrict(gateMarkerDir, execId);
-		} catch (error) {
+		const commDbPath = process.env.FLYWHEEL_COMM_DB?.trim();
+		if (!commDbPath) {
 			console.error(
-				`[complete] cannot prove gate state from ${gateMarkerDir}; refusing route=blocked. Repair or quarantine the named marker path. ${error instanceof Error ? error.message : String(error)}`,
+				"[complete] FLYWHEEL_COMM_DB is required to prove Codex gate state; refusing route=blocked.",
 			);
 			process.exit(1);
 		}
-		const pending = markers.find((marker) => !marker.answeredAt);
+		let pendingGates: ReturnType<CommDB["getPendingGatesByRunner"]>;
+		let db: CommDB | undefined;
+		try {
+			db = new CommDB(commDbPath, false);
+			pendingGates = db.getPendingGatesByRunner(execId);
+		} catch (error) {
+			console.error(
+				`[complete] cannot prove gate state from CommDB ${commDbPath}; refusing route=blocked. ${error instanceof Error ? error.message : String(error)}`,
+			);
+			process.exit(1);
+		} finally {
+			db?.close();
+		}
+		const pending = pendingGates[0];
 		if (pending) {
 			console.error(
-				`[complete] gate/review pending is not blocked; refusing route=blocked while ${pending.checkpoint} gate ${pending.questionId} is unanswered. Continue polling with flywheel-comm check ${pending.questionId}.`,
+				`[complete] gate/review pending is not blocked; refusing route=blocked while ${pending.checkpoint} gate ${pending.id} is unanswered. Continue polling with flywheel-comm check ${pending.id}.`,
 			);
 			process.exit(1);
 		}

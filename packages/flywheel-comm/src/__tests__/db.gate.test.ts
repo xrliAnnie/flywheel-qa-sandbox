@@ -61,6 +61,25 @@ describe("CommDB gate methods", () => {
 		});
 	});
 
+	describe("pending gates by runner", () => {
+		it("returns only this runner's unresolved checkpoint questions", () => {
+			const gateId = db.insertQuestion("exec-1", "lead-1", "review", {
+				checkpoint: "review_code",
+			});
+			db.insertQuestion("exec-1", "lead-1", "ordinary ask");
+			db.insertQuestion("other-exec", "lead-1", "other gate", {
+				checkpoint: "brainstorm",
+			});
+
+			expect(db.getPendingGatesByRunner("exec-1").map((q) => q.id)).toEqual([
+				gateId,
+			]);
+
+			db.insertResponse(gateId, "lead-1", "done");
+			expect(db.getPendingGatesByRunner("exec-1")).toEqual([]);
+		});
+	});
+
 	describe("resolveGate", () => {
 		it("should mark question as resolved", () => {
 			const id = db.insertQuestion("runner-1", "lead-1", "content", {

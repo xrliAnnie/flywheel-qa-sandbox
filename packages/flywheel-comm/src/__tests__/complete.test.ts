@@ -21,11 +21,8 @@ vi.mock("node:child_process", () => ({
 
 import { execFileSync } from "node:child_process";
 import { complete } from "../commands/complete.js";
-import {
-	markGateMarkerAnswered,
-	removeGateMarker,
-	writeGateMarker,
-} from "../gate-marker.js";
+import { CommDB } from "../db.js";
+import { removeGateMarker, writeGateMarker } from "../gate-marker.js";
 
 const execFileSyncMock = vi.mocked(execFileSync);
 
@@ -47,6 +44,7 @@ describe("complete command", () => {
 		process.env.HOME = tmpHome;
 		delete process.env.FLYWHEEL_INGEST_TOKEN;
 		delete process.env.FLYWHEEL_GATE_MARKER_DIR;
+		delete process.env.FLYWHEEL_COMM_DB;
 
 		mockFetch = vi
 			.fn()
@@ -217,106 +215,95 @@ describe("complete command", () => {
 		expect(mockFetch).not.toHaveBeenCalled();
 	});
 
-	describe("FLY-1257 M1-c: blocked completion guard for marker-capable runners", () => {
-		const marker = {
-			questionId: "gate-q-1257",
-			executionId: "exec-108",
-			backend: "codex-tmux",
-			vendor: "codex",
-			checkpoint: "brainstorm",
-		};
-
-		function enableMarkers(): string {
-			const dir = join(tmpHome, "codex-gates");
-			process.env.FLYWHEEL_GATE_MARKER_DIR = dir;
-			return dir;
+	describe("FLY-1257 M1-c: blocked completion guard for Codex runners", () => {
+		function enableCodex(): { dbPath: string; markerDir: string } {
+			const dbPath = join(tmpHome, "comm.db");
+			const markerDir = join(tmpHome, "codex-gates");
+			process.env.FLYWHEEL_GATE_MARKER_DIR = markerDir;
+			process.env.FLYWHEEL_COMM_DB = dbPath;
+			const db = new CommDB(dbPath);
+			db.close();
+			return { dbPath, markerDir };
 		}
 
-		it("refuses route=blocked while this execution has an unanswered mandatory gate", async () => {
-			const dir = enableMarkers();
-			writeGateMarker(dir, marker);
+		function insertGate(dbPath: string, runnerId = "exec-108"): string {
+			const db = new CommDB(dbPath, false);
+			try {
+				return db.insertQuestion(runnerId, "lead-1", "review", {
+					checkpoint: "review_code",
+				});
+			} finally {
+				db.close();
+			}
+		}
+
+		it("refuses route=blocked from CommDB even when the marker mirror is absent", async () => {
+			const { dbPath } = enableCodex();
+			const questionId = insertGate(dbPath);
 
 			await expect(
 				complete({ route: "blocked", merged: false }),
 			).rejects.toThrow("process.exit(1)");
 			expect(errorSpy).toHaveBeenCalledWith(
-				expect.stringContaining("gate/review pending is not blocked"),
-			);
-			expect(errorSpy).toHaveBeenCalledWith(
-				expect.stringContaining("gate-q-1257"),
+				expect.stringContaining(questionId),
 			);
 			expect(mockFetch).not.toHaveBeenCalled();
 		});
 
-		it("allows route=blocked after the marker is answered", async () => {
-			const dir = enableMarkers();
-			writeGateMarker(dir, marker);
-			markGateMarkerAnswered(dir, marker.questionId);
+		it("a runner-deleted marker cannot hide a pending CommDB gate", async () => {
+			const { dbPath, markerDir } = enableCodex();
+			const questionId = insertGate(dbPath);
+			writeGateMarker(markerDir, {
+				questionId,
+				executionId: "exec-108",
+				backend: "codex-tmux",
+				vendor: "codex",
+				checkpoint: "review_code",
+			});
+			removeGateMarker(markerDir, questionId);
+
+			await expect(
+				complete({ route: "blocked", merged: false }),
+			).rejects.toThrow("process.exit(1)");
+			expect(mockFetch).not.toHaveBeenCalled();
+		});
+
+		it("allows route=blocked after the authoritative gate is answered", async () => {
+			const { dbPath } = enableCodex();
+			const questionId = insertGate(dbPath);
+			const db = new CommDB(dbPath, false);
+			db.insertResponse(questionId, "lead-1", "answered");
+			db.close();
 
 			await complete({ route: "blocked", merged: false });
 			expect(mockFetch).toHaveBeenCalledOnce();
 		});
 
-		it("allows route=blocked after watcher timeout resolution removes the marker (fail-close or fail-open)", async () => {
-			const dir = enableMarkers();
-			writeGateMarker(dir, marker);
-			removeGateMarker(dir, marker.questionId);
-
+		it("ignores another execution's pending CommDB gate", async () => {
+			const { dbPath } = enableCodex();
+			insertGate(dbPath, "other-exec");
 			await complete({ route: "blocked", merged: false });
 			expect(mockFetch).toHaveBeenCalledOnce();
 		});
 
-		it("allows route=blocked when the injected marker directory has never been created", async () => {
-			enableMarkers();
-			await complete({ route: "blocked", merged: false });
-			expect(mockFetch).toHaveBeenCalledOnce();
-		});
-
-		it("ignores another execution's pending marker", async () => {
-			const dir = enableMarkers();
-			writeGateMarker(dir, { ...marker, executionId: "other-exec" });
-			await complete({ route: "blocked", merged: false });
-			expect(mockFetch).toHaveBeenCalledOnce();
-		});
-
-		it("fails closed on a corrupt marker and identifies the repair path", async () => {
-			const dir = enableMarkers();
-			const corruptPath = join(dir, "corrupt.json");
-			writeGateMarker(dir, marker);
-			writeFileSync(corruptPath, "{not-json");
+		it("fails closed when CommDB authority is missing", async () => {
+			process.env.FLYWHEEL_GATE_MARKER_DIR = join(tmpHome, "codex-gates");
+			delete process.env.FLYWHEEL_COMM_DB;
 
 			await expect(
 				complete({ route: "blocked", merged: false }),
 			).rejects.toThrow("process.exit(1)");
 			expect(errorSpy).toHaveBeenCalledWith(
-				expect.stringContaining(corruptPath),
+				expect.stringContaining("FLYWHEEL_COMM_DB"),
 			);
-			expect(mockFetch).not.toHaveBeenCalled();
 		});
+	});
 
-		it("fails closed when the injected marker path cannot be enumerated", async () => {
-			const notDirectory = join(tmpHome, "marker-path-is-a-file");
-			writeFileSync(notDirectory, "not a directory");
-			process.env.FLYWHEEL_GATE_MARKER_DIR = notDirectory;
-
-			await expect(
-				complete({ route: "blocked", merged: false }),
-			).rejects.toThrow("process.exit(1)");
-			expect(errorSpy).toHaveBeenCalledWith(
-				expect.stringContaining(notDirectory),
-			);
-			expect(mockFetch).not.toHaveBeenCalled();
-		});
-
-		it("keeps Claude/non-marker executions byte-compatible even if the shared default contains corruption", async () => {
-			const defaultDir = join(tmpHome, ".flywheel", "state", "codex-gates");
-			writeGateMarker(defaultDir, marker);
-			writeFileSync(join(defaultDir, "corrupt.json"), "{not-json");
-			delete process.env.FLYWHEEL_GATE_MARKER_DIR;
-
-			await complete({ route: "blocked", merged: false });
-			expect(mockFetch).toHaveBeenCalledOnce();
-		});
+	it("keeps Claude/non-marker executions byte-compatible without consulting CommDB", async () => {
+		delete process.env.FLYWHEEL_GATE_MARKER_DIR;
+		process.env.FLYWHEEL_COMM_DB = join(tmpHome, "missing", "comm.db");
+		await complete({ route: "blocked", merged: false });
+		expect(mockFetch).toHaveBeenCalledOnce();
 	});
 
 	it("--merged without --pr → exit 1", async () => {

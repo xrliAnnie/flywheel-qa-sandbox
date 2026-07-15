@@ -21,11 +21,13 @@
  * see the env → no markers → byte-compatible behavior.
  */
 
+import { randomUUID } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -83,19 +85,23 @@ export function writeGateMarker(
 	dir: string,
 	marker: Omit<GateMarker, "createdAt"> & { createdAt?: string },
 ): void {
+	const target = markerPath(dir, marker.questionId);
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const full: GateMarker = {
 		...marker,
 		createdAt: marker.createdAt ?? new Date().toISOString(),
 	};
-	writeFileSync(
-		markerPath(dir, marker.questionId),
-		JSON.stringify(full, null, 2),
-		{
+	const temp = join(dir, `.${marker.questionId}.${randomUUID()}.tmp`);
+	try {
+		writeFileSync(temp, JSON.stringify(full, null, 2), {
 			encoding: "utf-8",
 			mode: 0o600,
-		},
-	);
+		});
+		renameSync(temp, target);
+	} catch (error) {
+		rmSync(temp, { force: true });
+		throw error;
+	}
 }
 
 export function readGateMarker(
@@ -162,12 +168,11 @@ export function listGateMarkersForExecutionStrict(
 	dir: string,
 	executionId: string,
 ): GateMarker[] {
-	if (!existsSync(dir)) return [];
-
 	let files: string[];
 	try {
 		files = readdirSync(dir);
 	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
 		throw new Error(
 			`gate-marker: cannot enumerate ${dir}: ${error instanceof Error ? error.message : String(error)}`,
 		);
@@ -190,9 +195,16 @@ export function listGateMarkersForExecutionStrict(
 			typeof raw !== "object" ||
 			raw === null ||
 			Array.isArray(raw) ||
+			typeof marker.executionId !== "string"
+		) {
+			throw new Error(`gate-marker: invalid marker shape at ${path}`);
+		}
+		// The directory is shared across executions. Once the owning execution is
+		// identifiable, foreign marker internals are outside this lifecycle decision.
+		if (marker.executionId !== executionId) continue;
+		if (
 			typeof marker.questionId !== "string" ||
 			!SAFE_QUESTION_ID.test(marker.questionId) ||
-			typeof marker.executionId !== "string" ||
 			typeof marker.backend !== "string" ||
 			typeof marker.vendor !== "string" ||
 			typeof marker.checkpoint !== "string" ||
@@ -215,7 +227,7 @@ export function listGateMarkersForExecutionStrict(
 		) {
 			throw new Error(`gate-marker: invalid marker shape at ${path}`);
 		}
-		if (marker.executionId === executionId) result.push(marker as GateMarker);
+		result.push(marker as GateMarker);
 	}
 	return result;
 }
