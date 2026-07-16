@@ -29,10 +29,18 @@ function tmux(args: string[]): { ok: boolean; out: string } {
 	try {
 		return {
 			ok: true,
-			out: execFileSync("tmux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }),
+			out: execFileSync("tmux", args, {
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "pipe"],
+			}),
 		};
 	} catch (e) {
-		return { ok: false, out: (e as { stdout?: string; message: string }).stdout ?? (e as Error).message };
+		return {
+			ok: false,
+			out:
+				(e as { stdout?: string; message: string }).stdout ??
+				(e as Error).message,
+		};
 	}
 }
 
@@ -49,7 +57,10 @@ describe.skipIf(!tmuxAvailable)(
 			tmux(["kill-session", "-t", SESSION]);
 		});
 
-		async function mkDeps(): Promise<{ store: StateStore; deps: StateStoreGhostDeps }> {
+		async function mkDeps(): Promise<{
+			store: StateStore;
+			deps: StateStoreGhostDeps;
+		}> {
 			const store = await StateStore.create(":memory:");
 			const deps: StateStoreGhostDeps = {
 				store,
@@ -92,7 +103,10 @@ describe.skipIf(!tmuxAvailable)(
 		it("(A) awaiting_review + empty CommDB + REAL live session + 46min → KEEP (untouchable)", async () => {
 			const { store, deps } = await mkDeps();
 			seed(store, "handoff-alive", OLD);
-			const outcome = await reapStateStoreGhost(store.getSession("handoff-alive")!, deps);
+			const outcome = await reapStateStoreGhost(
+				store.getSession("handoff-alive")!,
+				deps,
+			);
 			expect(outcome).toBe("kept_target_not_dead");
 			expect(store.getSession("handoff-alive")?.status).toBe("awaiting_review");
 		});
@@ -105,7 +119,10 @@ describe.skipIf(!tmuxAvailable)(
 				probed = true;
 				return probeTmuxWindowLiveness(t);
 			};
-			const outcome = await reapStateStoreGhost(store.getSession("handoff-fresh")!, deps);
+			const outcome = await reapStateStoreGhost(
+				store.getSession("handoff-fresh")!,
+				deps,
+			);
 			expect(outcome).toBe("kept_fresh_or_invalid_age");
 			expect(probed).toBe(false);
 		});
@@ -115,7 +132,10 @@ describe.skipIf(!tmuxAvailable)(
 			expect(await probeTmuxWindowLiveness(SESSION)).toBe("dead");
 			const { store, deps } = await mkDeps();
 			seed(store, "handoff-dead", OLD);
-			const outcome = await reapStateStoreGhost(store.getSession("handoff-dead")!, deps);
+			const outcome = await reapStateStoreGhost(
+				store.getSession("handoff-dead")!,
+				deps,
+			);
 			expect(outcome).toBe("reaped");
 			expect(store.getSession("handoff-dead")?.status).toBe("terminated");
 			// restore for afterAll idempotence
