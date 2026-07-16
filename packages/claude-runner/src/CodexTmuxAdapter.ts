@@ -65,7 +65,10 @@ import {
 	enforceObjectiveLimit,
 } from "./codex-daemon-adapter-helpers.js";
 import type { CodexDaemonEvents } from "./codex-daemon-client.js";
-import { GOAL_OBJECTIVE_MAX_CHARS } from "./codex-daemon-client.js";
+import {
+	GOAL_OBJECTIVE_MAX_CHARS,
+	GoalRunError,
+} from "./codex-daemon-client.js";
 import type {
 	CodexDaemonGoalRuntimeOptions,
 	RunGoalInput,
@@ -84,6 +87,12 @@ import {
 	scrubCodexHomeCredential,
 	stripInheritedSecretEnv,
 } from "./codex-home.js";
+import {
+	type CodexPhaseLifecycle,
+	CodexPhaseLifecycleController,
+	type CodexPhaseLifecycleControllerOptions,
+	type CodexWakeWatcher,
+} from "./codex-phase-lifecycle.js";
 import {
 	ensureRunnerTuiWindow,
 	isRunnerTuiWindowAlive,
@@ -128,16 +137,7 @@ export interface CodexRunnerTransport {
 	}): CodexWakeWatcher | null;
 }
 
-export interface CodexWakeWatcher {
-	start(): Promise<void>;
-	stop(): Promise<void>;
-	health(): Promise<{ ok: boolean; lastEventTs?: number }>;
-	onDelivered?: (msg: {
-		id: string;
-		content: string;
-		metadata?: Record<string, unknown>;
-	}) => void;
-}
+export type { CodexWakeWatcher } from "./codex-phase-lifecycle.js";
 
 /**
  * FLY-1188 M4d: the resident-/goal runtime surface execute() drives — injected
@@ -169,6 +169,16 @@ export interface CodexDaemonAdapterDeps {
 	 * retry). Returns a cancel handle. Default: an unref'd `setTimeout`. Injected
 	 * in tests to drive the retry chain deterministically. */
 	scheduleReopen?: (fn: () => void, ms: number) => () => void;
+	/** Build the adapter-owned three-stage phase lifecycle controller. */
+	phaseLifecycleFactory?: (
+		options: CodexPhaseLifecycleControllerOptions,
+	) => CodexPhaseLifecycle;
+	/** FLY-1269: heartbeat lifetime seam. Controlled phase shutdown keeps this
+	 * running through drain/TUI cleanup/ack; tests pin the stop boundary. */
+	startHeartbeat?: (heartbeat: () => void, intervalMs: number) => () => void;
+	/** FLY-1269: credential retirement seam used to prove scrub precedes the
+	 * request-bound success acknowledgement. */
+	scrubCredential?: (executionId: string) => void;
 }
 
 export function codexSessionStateDir(
@@ -192,6 +202,15 @@ export class CodexTmuxAdapter implements IAdapter {
 	private readonly killWindow: typeof killRunnerTuiWindow;
 	private readonly windowAliveFn: (windowName: string) => boolean;
 	private readonly scheduleReopen: (fn: () => void, ms: number) => () => void;
+	private readonly phaseLifecycleFactory: NonNullable<
+		CodexDaemonAdapterDeps["phaseLifecycleFactory"]
+	>;
+	private readonly startHeartbeat: NonNullable<
+		CodexDaemonAdapterDeps["startHeartbeat"]
+	>;
+	private readonly scrubCredential: NonNullable<
+		CodexDaemonAdapterDeps["scrubCredential"]
+	>;
 
 	constructor(
 		private sessionName: string = "flywheel",
@@ -225,6 +244,17 @@ export class CodexTmuxAdapter implements IAdapter {
 				(t as { unref?: () => void }).unref?.();
 				return () => clearTimeout(t);
 			});
+		this.phaseLifecycleFactory =
+			deps.phaseLifecycleFactory ??
+			((options) => new CodexPhaseLifecycleController(options));
+		this.startHeartbeat =
+			deps.startHeartbeat ??
+			((heartbeat, intervalMs) => {
+				const timer = setInterval(heartbeat, intervalMs);
+				(timer as { unref?: () => void }).unref?.();
+				return () => clearInterval(timer);
+			});
+		this.scrubCredential = deps.scrubCredential ?? scrubCodexHomeCredential;
 	}
 
 	async checkEnvironment(): Promise<AdapterHealthCheck> {
@@ -344,8 +374,10 @@ export class CodexTmuxAdapter implements IAdapter {
 			ctx.label ?? `codex-${ctx.executionId.slice(0, 8)}`,
 		);
 		let tmuxWindow = `${this.sessionName}:${windowName}`;
+		let founderWindowId: string | undefined;
 
 		let runtime: CodexDaemonGoalRuntimeLike | undefined;
+		let phaseLifecycle: CodexPhaseLifecycle | undefined;
 		let registeredSession = false;
 		let stopGateWatcher: () => void = () => {};
 		let stopHeartbeat: () => void = () => {};
@@ -358,6 +390,15 @@ export class CodexTmuxAdapter implements IAdapter {
 		let outcome: RunGoalOutcome | undefined;
 		let caughtError: unknown;
 		let teardownError: unknown;
+		let controlledShutdownRequestId: string | undefined;
+		const controlledShutdownSucceeded = (): boolean => {
+			if (!controlledShutdownRequestId || teardownError) return false;
+			if (classifyGoalOutcome({ outcome, caughtError }).success) return true;
+			return (
+				caughtError instanceof GoalRunError &&
+				caughtError.kind === "transport_closed"
+			);
+		};
 
 		try {
 			// M4c-1: SHORT SUN_LEN-safe control socket (fail loud on over-length).
@@ -418,6 +459,34 @@ export class CodexTmuxAdapter implements IAdapter {
 				logger: (m) => this.log(m),
 			});
 
+			if (ctx.phaseKeepAlive) {
+				if (!ctx.commDbPath) {
+					throw new Error(
+						`phase keep-alive requires commDbPath for ${ctx.executionId}`,
+					);
+				}
+				const watcher =
+					this.transport && ctx.agentName && ctx.teamName
+						? this.transport.createReceiver({
+								leadName: ctx.leadId ?? ctx.teamName,
+								runnerName: ctx.agentName,
+								teamName: ctx.teamName,
+							})
+						: null;
+				phaseLifecycle = this.phaseLifecycleFactory({
+					executionId: ctx.executionId,
+					role: ctx.phaseKeepAlive.role,
+					commDbPath: ctx.commDbPath,
+					sessionStatePath: join(
+						codexSessionStateDir(ctx.executionId),
+						"session.json",
+					),
+					...(ctx.agentName ? { mailboxAgentName: ctx.agentName } : {}),
+					watcher,
+				});
+				await phaseLifecycle.start();
+			}
+
 			const buildSpec = (threadId: string) => ({
 				tmuxSession: this.sessionName,
 				windowName,
@@ -439,7 +508,11 @@ export class CodexTmuxAdapter implements IAdapter {
 			const wireCreated = (): void => {
 				tuiOpened = true;
 				const windowId = this.resolveWindowId(windowName);
-				if (windowId) tmuxWindow = `${this.sessionName}:${windowId}`;
+				if (windowId) {
+					founderWindowId = windowId;
+					tmuxWindow = `${this.sessionName}:${windowId}`;
+					this.pinCommDbSessionWindow(ctx, tmuxWindow);
+				}
 				if (ctx.onTmuxWindowCreated) {
 					try {
 						ctx.onTmuxWindowCreated({
@@ -540,9 +613,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					/* heartbeat is best-effort — never break the run */
 				}
 			};
-			const hbTimer = setInterval(heartbeat, this.pollIntervalMs);
-			(hbTimer as { unref?: () => void }).unref?.();
-			stopHeartbeat = () => clearInterval(hbTimer);
+			stopHeartbeat = this.startHeartbeat(heartbeat, this.pollIntervalMs);
 
 			// AUTHORITATIVE own-thread hook (MEDIUM-2): NOT a raw notification (a
 			// daemon can emit foreign-thread traffic). On OUR thread becoming ready:
@@ -598,7 +669,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					: undefined) ?? this.readPersistedThreadId(ctx.executionId);
 			const reapOrphanPid = this.readPersistedDaemonPid(ctx.executionId);
 
-			outcome = await runtime.runGoal(
+			const goalPromise = runtime.runGoal(
 				{
 					objective,
 					// FLY-1236: the full working instructions ride the kick turn
@@ -636,9 +707,40 @@ export class CodexTmuxAdapter implements IAdapter {
 						latestDaemonPid = pid;
 					},
 					onGoalActive,
+					...(phaseLifecycle ? { phaseLifecycle } : {}),
 				},
 				{ onNotification: () => heartbeat() },
 			);
+			if (phaseLifecycle) {
+				type GoalSettled =
+					| { kind: "goal"; outcome: RunGoalOutcome }
+					| { kind: "error"; error: unknown };
+				const settledGoal: Promise<GoalSettled> = goalPromise.then(
+					(value) => ({ kind: "goal", outcome: value }),
+					(error: unknown) => ({ kind: "error", error }),
+				);
+				const first = await Promise.race([
+					settledGoal,
+					phaseLifecycle
+						.waitForShutdown()
+						.then(
+							({ requestId }) => ({ kind: "shutdown", requestId }) as const,
+						),
+				]);
+				if (first.kind === "shutdown") {
+					controlledShutdownRequestId = first.requestId;
+					runtime.stop();
+					const settled = await settledGoal;
+					if (settled.kind === "goal") outcome = settled.outcome;
+					else caughtError = settled.error;
+				} else if (first.kind === "goal") {
+					outcome = first.outcome;
+				} else {
+					throw first.error;
+				}
+			} else {
+				outcome = await goalPromise;
+			}
 			// Fallback: ONLY when the authoritative onThreadReady hook NEVER fired (a
 			// very fast / quiet run) — open from the resolved outcome so the founder
 			// still gets the pane. One synchronous shot, no retry (the run has ended,
@@ -675,51 +777,142 @@ export class CodexTmuxAdapter implements IAdapter {
 				);
 			}
 			stopGateWatcher();
-			stopHeartbeat();
-			this.killWindow(
-				{ tmuxSession: this.sessionName, windowName },
-				{ log: (m) => this.log(m) },
-			);
-			if (runtime) {
-				runtime.stop();
+			if (phaseLifecycle) {
 				try {
-					await runtime.drained();
+					await phaseLifecycle.stopIntake();
 				} catch (err) {
-					// HIGH-6: a SIGKILL-unconfirmed daemon must NOT read as a clean
-					// success — capture it and degrade the result below.
-					teardownError = err;
+					teardownError ??= err;
 					console.warn(
-						`[CodexTmuxAdapter] ${ctx.executionId} daemon teardown unconfirmed: ${(err as Error).message}`,
+						`[CodexTmuxAdapter] ${ctx.executionId} phase intake teardown failed: ${(err as Error).message}`,
 					);
 				}
 			}
-			if (registeredSession && ctx.commDbPath) {
+			if (phaseLifecycle && controlledShutdownRequestId) {
+				// FLY-1269 request-bound order: keep the heartbeat advancing while
+				// daemon drain and required cleanup run. The matching ack is written
+				// only after the TUI, registry status, and credential are retired.
+				if (runtime) {
+					runtime.stop();
+					try {
+						await runtime.drained();
+					} catch (err) {
+						teardownError = err;
+						console.warn(
+							`[CodexTmuxAdapter] ${ctx.executionId} daemon teardown unconfirmed: ${(err as Error).message}`,
+						);
+					}
+				}
 				try {
-					const commDb = new CommDB(ctx.commDbPath);
-					const c = classifyGoalOutcome({ outcome, caughtError });
-					const goalBlocked = outcome?.result.status === "blocked";
-					// Codex R2 MEDIUM: a SIGKILL-unconfirmed teardown must NOT be
-					// recorded as a clean "completed" (a still-live daemon would look
-					// finished to the cleanup/route layer).
-					const okComplete = c.success && !teardownError;
-					commDb.updateSessionStatus(
-						ctx.executionId,
-						okComplete ? "completed" : goalBlocked ? "blocked" : "timeout",
+					this.killWindow(
+						{
+							tmuxSession: this.sessionName,
+							windowName,
+							...(founderWindowId ? { windowId: founderWindowId } : {}),
+						},
+						{ log: (m) => this.log(m) },
 					);
-					commDb.close();
-				} catch {
-					// non-fatal
+				} catch (err) {
+					teardownError ??= err;
 				}
+				if (registeredSession && ctx.commDbPath) {
+					let commDb: CommDB | undefined;
+					try {
+						commDb = new CommDB(ctx.commDbPath);
+						commDb.updateSessionStatus(
+							ctx.executionId,
+							controlledShutdownSucceeded() ? "completed" : "timeout",
+						);
+					} catch (err) {
+						teardownError ??= err;
+					} finally {
+						commDb?.close();
+					}
+				}
+				try {
+					this.scrubCredential(ctx.executionId);
+				} catch (err) {
+					teardownError ??= err;
+				}
+				try {
+					phaseLifecycle.ackShutdown(
+						controlledShutdownRequestId,
+						controlledShutdownSucceeded()
+							? { ok: true }
+							: {
+									ok: false,
+									error:
+										teardownError instanceof Error
+											? teardownError.message
+											: caughtError instanceof Error
+												? caughtError.message
+												: "controlled shutdown did not settle cleanly",
+								},
+					);
+				} catch (err) {
+					teardownError ??= err;
+				}
+				stopHeartbeat();
+				try {
+					await phaseLifecycle.stop();
+				} catch (err) {
+					teardownError ??= err;
+				}
+			} else {
+				// Ordinary/non-request-bound Codex retains terminal-window-first order.
+				stopHeartbeat();
+				this.killWindow(
+					{
+						tmuxSession: this.sessionName,
+						windowName,
+						...(founderWindowId ? { windowId: founderWindowId } : {}),
+					},
+					{ log: (m) => this.log(m) },
+				);
+				if (runtime) {
+					runtime.stop();
+					try {
+						await runtime.drained();
+					} catch (err) {
+						teardownError = err;
+						console.warn(
+							`[CodexTmuxAdapter] ${ctx.executionId} daemon teardown unconfirmed: ${(err as Error).message}`,
+						);
+					}
+				}
+				if (phaseLifecycle) {
+					try {
+						await phaseLifecycle.stop();
+					} catch (err) {
+						teardownError ??= err;
+					}
+				}
+				if (registeredSession && ctx.commDbPath) {
+					try {
+						const commDb = new CommDB(ctx.commDbPath);
+						const c = classifyGoalOutcome({ outcome, caughtError });
+						// FLY-1279: a blocked goal is a real, typed outcome of its own —
+						// recording it as a timeout loses why the run actually stopped.
+						const goalBlocked = outcome?.result.status === "blocked";
+						const okComplete =
+							(c.success || controlledShutdownSucceeded()) && !teardownError;
+						commDb.updateSessionStatus(
+							ctx.executionId,
+							okComplete ? "completed" : goalBlocked ? "blocked" : "timeout",
+						);
+						commDb.close();
+					} catch {
+						// non-fatal (legacy behavior)
+					}
+				}
+				this.scrubCredential(ctx.executionId);
 			}
-			// FLY-123 P5 (HIGH-5): scrub the live GH_TOKEN on EVERY post-provision
-			// exit — success, failure, or a setup exception before runGoal.
-			scrubCodexHomeCredential(ctx.executionId);
 		}
 
 		const cls = classifyGoalOutcome({ outcome, caughtError });
 		// HIGH-6: an unconfirmed daemon teardown fails the run (a live daemon +
 		// "completed" would be a lie).
-		const success = cls.success && !teardownError;
+		const success =
+			(cls.success || controlledShutdownSucceeded()) && !teardownError;
 		const threadId = outcome?.threadId;
 		const result: AdapterExecutionResult = {
 			success,
@@ -1174,6 +1367,24 @@ export class CodexTmuxAdapter implements IAdapter {
 			return true;
 		} catch {
 			return false; // non-fatal (same as TmuxAdapter)
+		}
+	}
+
+	/** Pin the lazily-created founder pane to its immutable tmux id without
+	 * replacing the session row (which would erase lifecycle/review metadata). */
+	private pinCommDbSessionWindow(
+		ctx: AdapterExecutionContext,
+		tmuxWindow: string,
+	): void {
+		if (!ctx.commDbPath) return;
+		let commDb: CommDB | undefined;
+		try {
+			commDb = new CommDB(ctx.commDbPath);
+			commDb.updateSessionTmuxWindow(ctx.executionId, tmuxWindow);
+		} catch {
+			// Best-effort: the adapter still owns the immutable id for teardown.
+		} finally {
+			commDb?.close();
 		}
 	}
 

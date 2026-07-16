@@ -72,6 +72,12 @@ describe("commdb-session-prune (FLY-638)", () => {
 
 		it("terminal-disposes pending gates while deleting the existing row by default", () => {
 			seed("e1", "completed");
+			db.enqueueRunnerPhaseWake(
+				"e1",
+				{ id: "wake-1", to: "e1", content: "retry design" },
+				1,
+			);
+			db.requestRunnerShutdown("e1", "shutdown-1", 2);
 			const qid = db.insertQuestion("e1", "lead-a", "ship?", {
 				checkpoint: "approve_to_ship",
 			});
@@ -83,6 +89,8 @@ describe("commdb-session-prune (FLY-638)", () => {
 			});
 			expect(db.getSession("e1")).toBeUndefined();
 			expect(db.isQuestionPending(qid)).toBe(false);
+			expect(db.listRunnerPhaseWakes("e1")).toEqual([]);
+			expect(db.getRunnerShutdown("e1")).toBeNull();
 			expect(db.getMessageById(qid)?.relay_state).toBe("terminal_disposed");
 		});
 
@@ -112,6 +120,12 @@ describe("commdb-session-prune (FLY-638)", () => {
 
 		it("surfaces transaction failure and leaves session + gate intact", () => {
 			seed("e1", "completed");
+			db.enqueueRunnerPhaseWake(
+				"e1",
+				{ id: "wake-1", to: "e1", content: "retry design" },
+				1,
+			);
+			db.requestRunnerShutdown("e1", "shutdown-1", 2);
 			const qid = db.insertQuestion("e1", "lead-a", "ship?", {
 				checkpoint: "approve_to_ship",
 			});
@@ -124,12 +138,20 @@ describe("commdb-session-prune (FLY-638)", () => {
 			expect(result).toMatchObject({ ok: false, outcome: "failed" });
 			expect(db.getSession("e1")).toBeDefined();
 			expect(db.isQuestionPending(qid)).toBe(true);
+			expect(db.listRunnerPhaseWakes("e1")).toHaveLength(1);
+			expect(db.getRunnerShutdown("e1")?.request_id).toBe("shutdown-1");
 		});
 	});
 
 	describe("pruneDeadTerminalCommDbSessions", () => {
 		it("deletes only PROVABLY-dead terminal rows; keeps alive/indeterminate + running", async () => {
 			seed("dead1", "completed", "base:@1");
+			db.enqueueRunnerPhaseWake(
+				"dead1",
+				{ id: "wake-dead", to: "dead1", content: "stale" },
+				1,
+			);
+			db.requestRunnerShutdown("dead1", "shutdown-dead", 2);
 			seed("dead2", "timeout", "base:@2");
 			seed("parked", "completed", "base:@3"); // terminal but tmux alive
 			seed("flaky", "completed", "base:@5"); // terminal but probe indeterminate
@@ -150,6 +172,8 @@ describe("commdb-session-prune (FLY-638)", () => {
 			expect(res.kept).toBe(2); // parked (alive) + flaky (indeterminate)
 			expect(res.failed).toBe(0);
 			expect(db.getSession("dead1")).toBeUndefined();
+			expect(db.listRunnerPhaseWakes("dead1")).toEqual([]);
+			expect(db.getRunnerShutdown("dead1")).toBeNull();
 			expect(db.getSession("dead2")).toBeUndefined();
 			expect(db.getSession("parked")).toBeDefined(); // alive → kept
 			expect(db.getSession("flaky")).toBeDefined(); // indeterminate → kept (no proof of death)

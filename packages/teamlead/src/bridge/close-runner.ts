@@ -29,6 +29,10 @@ import {
 import type { StateStore } from "../StateStore.js";
 import { requestCmuxPinClose } from "./cmux-close-request.js";
 import {
+	isResidentCodexPhase,
+	prepareCodexPhaseShutdown,
+} from "./codex-phase-shutdown.js";
+import {
 	type FinalizeCommDbResult,
 	finalizeCommDbSession,
 } from "./commdb-session-prune.js";
@@ -365,11 +369,6 @@ async function closeRunnerInner(
 		});
 	}
 
-	// FLY-1048 PR-C (C5): detection episodes flip to CLEARING only on the two
-	// SUCCESS paths below (already-gone / killed) — a refused close or a failed
-	// tmux kill leaves a possibly-still-alive runner, and muting its detection
-	// for the clearing TTL would blind the very watchdog this flow exists for.
-	const target = getTmuxTargetFromCommDb(opts.executionId, opts.projectName);
 	const finalizeCommunications = (): FinalizeCommDbResult => {
 		const finalized = finalizeCommDbSession(opts.executionId, opts.projectName);
 		store.recordCommDbFinalizeOutcome({
@@ -396,6 +395,124 @@ async function closeRunnerInner(
 		}
 		return finalized;
 	};
+
+	// FLY-1269: a resident Codex phase owns a daemon + founder TUI beyond its
+	// phase-complete status. Issue-terminal close must ask that controller to
+	// drain first; only a proven orphan may use the legacy direct kill below.
+	// Claude phases and ordinary Codex executions are not applicable and remain
+	// byte-compatible.
+	if (isResidentCodexPhase(session)) {
+		if (opts.authorityCheck) {
+			try {
+				const authority = await opts.authorityCheck();
+				if (!authority.ok) {
+					return {
+						closed: false,
+						commDbFinalized: false,
+						retiredGateCount: 0,
+						error: `authority_lost:pre_phase_shutdown:${authority.reason ?? "authority_lost"}`,
+					};
+				}
+			} catch (err) {
+				return {
+					closed: false,
+					commDbFinalized: false,
+					retiredGateCount: 0,
+					error: `authority_lost:pre_phase_shutdown:authority_check_failed:${(err as Error).message}`,
+				};
+			}
+		}
+		const shutdown = await prepareCodexPhaseShutdown({
+			executionId: opts.executionId,
+			projectName: opts.projectName,
+			getSession: () => store.getSession(opts.executionId),
+		});
+		if (shutdown.kind === "blocked") {
+			store.insertEvent({
+				event_id: `close-runner-phase-shutdown-blocked-${auditKey}`,
+				execution_id: opts.executionId,
+				issue_id: opts.issueId,
+				project_name: opts.projectName,
+				event_type: "lead_close_runner_failed",
+				source: "bridge.close-runner",
+				payload: {
+					closed: false,
+					reason: opts.reason,
+					phaseShutdownError: shutdown.error,
+				},
+			});
+			return {
+				closed: false,
+				commDbFinalized: false,
+				retiredGateCount: 0,
+				error: shutdown.error,
+			};
+		}
+		if (shutdown.kind === "graceful") {
+			if (opts.authorityCheck) {
+				try {
+					const authority = await opts.authorityCheck();
+					if (!authority.ok) {
+						return {
+							closed: false,
+							commDbFinalized: false,
+							retiredGateCount: 0,
+							error: `authority_lost:post_phase_shutdown:${authority.reason ?? "authority_lost"}`,
+						};
+					}
+				} catch (err) {
+					return {
+						closed: false,
+						commDbFinalized: false,
+						retiredGateCount: 0,
+						error: `authority_lost:post_phase_shutdown:authority_check_failed:${(err as Error).message}`,
+					};
+				}
+			}
+			store.insertEvent({
+				event_id: `close-runner-${auditKey}`,
+				execution_id: opts.executionId,
+				issue_id: opts.issueId,
+				project_name: opts.projectName,
+				event_type: forceClose
+					? "lead_close_runner_force_preserved"
+					: "lead_close_runner",
+				source: "bridge.close-runner",
+				payload: {
+					closed: true,
+					reason: opts.reason,
+					leadId: opts.leadId,
+					executorType: opts.executorType ?? "engineer",
+					phaseShutdownRequestId: shutdown.requestId,
+					forcedPreserved: forceClose || undefined,
+				},
+			});
+			markDetectionClearingSafe(store, opts.executionId);
+			const finalized = finalizeCommunications();
+			if (!finalized.ok) {
+				return {
+					closed: true,
+					commDbFinalized: false,
+					retiredGateCount: 0,
+					error: `commdb_finalize_failed:${finalized.error ?? "unknown"}`,
+				};
+			}
+			if (opts.archive) {
+				await maybeArchiveThreadOnClose(store, session, opts.archive);
+			}
+			return {
+				closed: true,
+				commDbFinalized: true,
+				retiredGateCount: finalized.retiredGateCount,
+			};
+		}
+	}
+
+	// FLY-1048 PR-C (C5): detection episodes flip to CLEARING only on the two
+	// SUCCESS paths below (already-gone / killed) — a refused close or a failed
+	// tmux kill leaves a possibly-still-alive runner, and muting its detection
+	// for the clearing TTL would blind the very watchdog this flow exists for.
+	const target = getTmuxTargetFromCommDb(opts.executionId, opts.projectName);
 
 	if (!target) {
 		// CommDB has no target → tmux already gone. We don't attempt osascript

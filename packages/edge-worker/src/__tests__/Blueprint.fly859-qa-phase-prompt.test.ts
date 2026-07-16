@@ -10,17 +10,22 @@
  * implement dispatch is byte-compatible.
  */
 
+import { execFileSync } from "node:child_process";
+import { mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
 	IAdapter,
 } from "flywheel-core";
 import type { DagNode } from "flywheel-dag-resolver";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
 import { Blueprint } from "../Blueprint.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
+import type { WorktreeManager } from "../WorktreeManager.js";
 
 function makeNode(id = "FLY-859"): DagNode {
 	return { id, blockedBy: [] };
@@ -69,16 +74,53 @@ function makeMockAdapter(): IAdapter {
 	};
 }
 
+const cleanups: string[] = [];
+afterEach(() => {
+	while (cleanups.length) {
+		rmSync(cleanups.pop() as string, { recursive: true, force: true });
+	}
+});
+
+function makeRealWorktree(): string {
+	const p = join(
+		tmpdir(),
+		`fly859-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+	);
+	mkdirSync(p, { recursive: true });
+	execFileSync("git", ["init", "-q"], { cwd: p });
+	cleanups.push(p);
+	return p;
+}
+
+function makeWtManager(worktreePath: string) {
+	return {
+		expectedWorktree: vi.fn(() => ({
+			path: worktreePath,
+			branch: "flywheel-FLY-859",
+		})),
+		isRegistered: vi.fn(async () => false),
+		removeIfExists: vi.fn(async () => true),
+		create: vi.fn(async () => ({
+			projectName: "proj",
+			issueId: "FLY-859",
+			worktreePath,
+			branch: "flywheel-FLY-859",
+			mainRepoPath: "/tmp/fly859-main",
+		})),
+	} as unknown as WorktreeManager;
+}
+
 async function buildPrompt(
 	ctxOverrides: Partial<BlueprintContext> = {},
 ): Promise<string> {
 	const adapter = makeMockAdapter();
+	const worktreePath = makeRealWorktree();
 	const blueprint = new Blueprint(
 		makeHydrator(),
 		makeMockGitChecker(),
 		() => adapter,
 		makeMockShell(),
-		undefined,
+		makeWtManager(worktreePath),
 		undefined,
 		undefined,
 		undefined,
@@ -132,6 +174,33 @@ describe("Blueprint QA-phase PASS/FAIL sequencing (FLY-859)", () => {
 		// the legacy close-and-respawn wording is gone under keep-alive
 		expect(p).not.toContain("Do NOT park for retest");
 		expect(p).not.toContain("the pipeline closes this session");
+	});
+
+	it("Codex QA PASS parks after the needs-review completion boundary", async () => {
+		const p = await buildPrompt({
+			runnerBackend: "codex-tmux",
+			sessionRole: "qa",
+			shareParentBranch: true,
+		});
+		const completion = p.indexOf("complete --route needs_review");
+		const park = p.indexOf("park --exec-id", completion);
+		expect(completion).toBeGreaterThanOrEqual(0);
+		expect(park).toBeGreaterThan(completion);
+		expect(p).toContain("phase controller stays alive");
+	});
+
+	it("Codex QA FAIL parks after qa-result and replays stable wake ids safely", async () => {
+		const p = await buildPrompt({
+			runnerBackend: "codex-tmux",
+			sessionRole: "qa",
+			shareParentBranch: true,
+		});
+		const verdict = p.indexOf("--status fail");
+		const park = p.indexOf("park --exec-id", verdict);
+		expect(verdict).toBeGreaterThanOrEqual(0);
+		expect(park).toBeGreaterThan(verdict);
+		expect(p).toContain("[phase-wake <id>]");
+		expect(p).toContain("do not repeat external or worktree side effects");
 	});
 
 	it("Implement-fix dispatch renders the QA fix-round context", async () => {

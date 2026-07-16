@@ -519,6 +519,19 @@ describe("killRunnerTuiWindow", () => {
 			["tmux", "kill-window", "-t", "=flywheel:=FLY-1188"],
 		]);
 	});
+
+	it("prefers the immutable window id after the pane auto-renames", () => {
+		const r = recorder();
+		killRunnerTuiWindow(
+			{
+				tmuxSession: "flywheel",
+				windowName: "FLY-1188",
+				windowId: "@7",
+			},
+			{ exec: r.exec },
+		);
+		expect(r.calls).toEqual([["tmux", "kill-window", "-t", "=flywheel:@7"]]);
+	});
 });
 
 // ── QA · FLY-1188 — regressions from the real-machine E2E (2026-07-13) ──────

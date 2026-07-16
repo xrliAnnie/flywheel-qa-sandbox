@@ -27,6 +27,11 @@ export type {
 export { search } from "./commands/search.js";
 export type { SessionsArgs } from "./commands/sessions.js";
 export { sessions } from "./commands/sessions.js";
+export type {
+	PhaseWakeInput,
+	RunnerPhaseWake,
+	RunnerShutdownControl,
+} from "./db.js";
 export { CommDB } from "./db.js";
 export type {
 	AuditDecision,

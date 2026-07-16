@@ -188,10 +188,34 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 		for (const banned of BANNED_IN_CODEX_PROMPT) {
 			expect(prompt).not.toContain(banned);
 		}
-		expect(prompt).toContain("END YOUR TURN");
+		expect(prompt).toContain("park --exec-id");
+		expect(prompt).toContain("phase controller stays alive");
+		expect(prompt).toContain("[phase-wake <id>]");
+		expect(prompt).toContain("message is context; TURN is authority");
+		expect(prompt).toContain("do not repeat external or worktree side effects");
+		expect(prompt).not.toContain(
+			"make your final message a short status note and END YOUR TURN",
+		);
 	});
 
-	it("codex three-stage QA phase: no banned tokens AND no park/wake/same-session lifecycle promises", async () => {
+	it("codex three-stage design phase parks after its exact completion route", async () => {
+		const prompt = await buildCodexPrompt({
+			sessionRole: "design",
+			shareParentBranch: true,
+			startPoint: "abc123",
+		});
+		const complete = prompt.indexOf("complete --route phase_design_complete");
+		const park = prompt.indexOf("park --exec-id", complete);
+		expect(complete).toBeGreaterThanOrEqual(0);
+		expect(park).toBeGreaterThan(complete);
+		expect(prompt).toContain("phase controller stays alive");
+		expect(prompt).toContain("[phase-wake <id>]");
+		expect(prompt).not.toContain(
+			"make your final message a short handoff note and END YOUR TURN",
+		);
+	});
+
+	it("codex three-stage QA phase parks after verdict and supports same-session re-test", async () => {
 		const prompt = await buildCodexPrompt({
 			sessionRole: "qa",
 			shareParentBranch: true,
@@ -201,13 +225,14 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 		for (const banned of BANNED_IN_CODEX_PROMPT) {
 			expect(prompt).not.toContain(banned);
 		}
-		// Codex M2 review R4 HIGH-1: transitional contract — until the adapter
-		// loop lands, the codex prompt must not promise a lifecycle the runtime
-		// cannot deliver (park suppression, RE-TEST wakes, parked-alive peers).
-		expect(prompt).not.toContain("park");
-		expect(prompt).not.toContain("RE-TEST wake");
-		expect(prompt).not.toContain("alive, parked");
-		// 5-fb + step f exist but in their conditional, end-turn codex forms
+		const failVerdict = prompt.indexOf("--status fail");
+		const park = prompt.indexOf("park --exec-id", failVerdict);
+		expect(failVerdict).toBeGreaterThanOrEqual(0);
+		expect(park).toBeGreaterThan(failVerdict);
+		expect(prompt).toContain("RE-TEST wake");
+		expect(prompt).toContain("turn --exec-id");
+		expect(prompt).toContain("[phase-wake <id>]");
+		expect(prompt).toContain("message is context; TURN is authority");
 		expect(prompt).toContain("5-fb.");
 		expect(prompt).toContain("FEEDBACK = KICKBACK");
 	});

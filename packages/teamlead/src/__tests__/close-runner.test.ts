@@ -22,6 +22,33 @@ const mockGetTmuxTarget = vi.fn();
 const mockKillTmuxWindow = vi.fn();
 
 const mockKillCmuxLinkedSession = vi.fn(async () => ({ killed: true }));
+const mockPrepareCodexPhaseShutdown = vi.fn();
+
+vi.mock("../bridge/runner-teardown.js", () => ({
+	reapRunnerMcp: vi.fn(async () => ({ killed: [], failed: [] })),
+}));
+
+vi.mock("flywheel-core", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("flywheel-core")>();
+	return {
+		...actual,
+		closeRunnerTerminalView: vi.fn(async () => ({
+			closedTab: true,
+			killedViewerSession: true,
+		})),
+	};
+});
+
+vi.mock("../bridge/codex-phase-shutdown.js", () => ({
+	isResidentCodexPhase: (session: {
+		adapter_type?: string;
+		chat_thread_role?: string;
+	}) =>
+		session?.adapter_type === "codex-tmux" &&
+		["design", "implement", "qa"].includes(session.chat_thread_role ?? ""),
+	prepareCodexPhaseShutdown: (...args: unknown[]) =>
+		mockPrepareCodexPhaseShutdown(...args),
+}));
 
 vi.mock("../bridge/tmux-lookup.js", () => ({
 	getTmuxTargetFromCommDb: (...args: unknown[]) => mockGetTmuxTarget(...args),
@@ -77,6 +104,89 @@ describe("closeRunner", () => {
 			retiredGateCount: 2,
 			deletedSessionCount: 1,
 		});
+		mockPrepareCodexPhaseShutdown.mockReset();
+		mockPrepareCodexPhaseShutdown.mockResolvedValue({
+			kind: "not_applicable",
+		});
+	});
+
+	it("FLY-1269: treats an adapter-acknowledged resident Codex phase as closed without direct kill", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-102",
+			project_name: "flywheel",
+			status: "completed",
+			adapter_type: "codex-tmux",
+			chat_thread_role: "qa",
+		});
+		mockPrepareCodexPhaseShutdown.mockResolvedValue({
+			kind: "graceful",
+			requestId: "shutdown-1",
+		});
+
+		const result = await closeRunner(makeOpts(), store);
+
+		expect(result).toEqual({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 2,
+		});
+		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
+		expect(mockFinalizeCommDbSession).toHaveBeenCalledWith(
+			"exec-1",
+			"flywheel",
+		);
+	});
+
+	it("FLY-1269: preserves a live Codex phase and its rows when the shutdown handshake blocks", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-102",
+			project_name: "flywheel",
+			status: "completed",
+			adapter_type: "codex-tmux",
+			chat_thread_role: "design",
+		});
+		mockPrepareCodexPhaseShutdown.mockResolvedValue({
+			kind: "blocked",
+			error: "phase_shutdown_ack_timeout_live_controller",
+		});
+
+		const result = await closeRunner(makeOpts(), store);
+
+		expect(result).toEqual({
+			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: "phase_shutdown_ack_timeout_live_controller",
+		});
+		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+	});
+
+	it("FLY-1269: a proven-orphan Codex phase falls through to the legacy direct kill", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-102",
+			project_name: "flywheel",
+			status: "completed",
+			adapter_type: "codex-tmux",
+			chat_thread_role: "implement",
+		});
+		mockPrepareCodexPhaseShutdown.mockResolvedValue({
+			kind: "direct",
+			reason: "controller_heartbeat_stopped",
+		});
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "FLY-102:@0",
+			sessionName: "FLY-102",
+		});
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+
+		const result = await closeRunner(makeOpts(), store);
+
+		expect(result.closed).toBe(true);
+		expect(mockKillTmuxWindow).toHaveBeenCalledWith("FLY-102:@0");
 	});
 
 	it("returns session_not_found when session is absent (no event written)", async () => {

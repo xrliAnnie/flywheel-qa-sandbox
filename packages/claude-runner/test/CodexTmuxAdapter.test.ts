@@ -270,6 +270,283 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(runtime.drainedCalls).toBe(1);
 	});
 
+	it("phase keep-alive starts one controller without starting mailbox intake before hold", async () => {
+		const watcher = {
+			start: vi.fn(async () => {}),
+			stop: vi.fn(async () => {}),
+			health: vi.fn(async () => ({ ok: true })),
+		};
+		const transport = {
+			buildRunnerSpawnConfig: vi.fn(() => ({ args: [], env: {} })),
+			createReceiver: vi.fn(() => watcher),
+		};
+		const lifecycle = {
+			start: vi.fn(async () => {}),
+			stop: vi.fn(async () => {}),
+			stopIntake: vi.fn(async () => {}),
+			waitForShutdown: vi.fn(() => new Promise(() => {})),
+			observe: vi.fn(() => ({ kind: "active" as const })),
+			getPhaseHold: vi.fn(() => null),
+			enterHold: vi.fn(async () => {}),
+			confirmHoldPaused: vi.fn(async () => {}),
+			waitForActivity: vi.fn(async () => {}),
+			leaveHold: vi.fn(async () => {}),
+			markWakeStarted: vi.fn(),
+			finishWake: vi.fn(),
+			ackShutdown: vi.fn(),
+		};
+		const deps = {
+			...makeDeps(),
+			phaseLifecycleFactory: vi.fn(() => lifecycle),
+		};
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			transport,
+			deps,
+		);
+
+		const result = await adapter.execute(
+			ctx({
+				phaseKeepAlive: { role: "design" },
+				agentName: "runner-agent",
+				teamName: "flywheel-eng-lead",
+			}),
+		);
+
+		expect(result.success).toBe(true);
+		expect(deps.phaseLifecycleFactory).toHaveBeenCalledOnce();
+		expect(transport.createReceiver).toHaveBeenCalledOnce();
+		expect(lifecycle.start).toHaveBeenCalledOnce();
+		expect(lifecycle.stop).toHaveBeenCalledOnce();
+		expect(watcher.start).not.toHaveBeenCalled();
+		expect(runtime.runGoalInputs[0]?.phaseLifecycle).toBe(lifecycle);
+		expect(runtime.stopped).toBe(1);
+		expect(runtime.drainedCalls).toBe(1);
+	});
+
+	it("request-bound phase shutdown stops the runtime, drains, then acknowledges", async () => {
+		let rejectGoal: ((error: Error) => void) | undefined;
+		const order: string[] = [];
+		const controlledRuntime: CodexDaemonGoalRuntimeLike = {
+			runGoal: () =>
+				new Promise((_resolve, reject) => {
+					rejectGoal = reject;
+				}),
+			stop: () => {
+				order.push("runtime.stop");
+				rejectGoal?.(new GoalRunError("controlled close", "transport_closed"));
+			},
+			drained: async () => {
+				order.push("runtime.drained");
+			},
+		};
+		const lifecycle = {
+			start: vi.fn(async () => {}),
+			stopIntake: vi.fn(async () => order.push("intake.stop")),
+			stop: vi.fn(async () => order.push("controller.stop")),
+			waitForShutdown: vi.fn(async () => ({ requestId: "shutdown-1" })),
+			observe: vi.fn(() => ({
+				kind: "shutdown" as const,
+				requestId: "shutdown-1",
+			})),
+			getPhaseHold: vi.fn(() => null),
+			enterHold: vi.fn(async () => {}),
+			confirmHoldPaused: vi.fn(async () => {}),
+			waitForActivity: vi.fn(async () => {}),
+			leaveHold: vi.fn(async () => {}),
+			markWakeStarted: vi.fn(),
+			finishWake: vi.fn(),
+			ackShutdown: vi.fn(() => {
+				const db = new CommDB(dbPath);
+				try {
+					expect(db.getSession(execId)?.status).toBe("completed");
+				} finally {
+					db.close();
+				}
+				order.push("shutdown.ack");
+			}),
+		};
+		const deps = {
+			...makeDeps(),
+			runtimeFactory: () => controlledRuntime,
+			phaseLifecycleFactory: () => lifecycle,
+			killWindow: vi.fn(() => order.push("tui.kill")),
+			scrubCredential: vi.fn(() => order.push("credential.scrub")),
+			startHeartbeat: vi.fn(() => () => order.push("heartbeat.stop")),
+		};
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			deps,
+		);
+
+		const result = await adapter.execute(
+			ctx({ phaseKeepAlive: { role: "qa" } }),
+		);
+
+		expect(result.success).toBe(true);
+		expect(lifecycle.ackShutdown).toHaveBeenCalledWith("shutdown-1", {
+			ok: true,
+		});
+		expect(order).toEqual([
+			"runtime.stop",
+			"intake.stop",
+			"runtime.stop",
+			"runtime.drained",
+			"tui.kill",
+			"credential.scrub",
+			"shutdown.ack",
+			"heartbeat.stop",
+			"controller.stop",
+		]);
+	});
+
+	it("request-bound phase shutdown writes a failed ack when daemon drain is unconfirmed", async () => {
+		let rejectGoal: ((error: Error) => void) | undefined;
+		const order: string[] = [];
+		const controlledRuntime: CodexDaemonGoalRuntimeLike = {
+			runGoal: () =>
+				new Promise((_resolve, reject) => {
+					rejectGoal = reject;
+				}),
+			stop: () => {
+				order.push("runtime.stop");
+				rejectGoal?.(new GoalRunError("controlled close", "transport_closed"));
+			},
+			drained: async () => {
+				order.push("runtime.drained");
+				throw new Error("SIGKILL unconfirmed");
+			},
+		};
+		const lifecycle = {
+			start: vi.fn(async () => {}),
+			stopIntake: vi.fn(async () => order.push("intake.stop")),
+			stop: vi.fn(async () => order.push("controller.stop")),
+			waitForShutdown: vi.fn(async () => ({ requestId: "shutdown-fail" })),
+			observe: vi.fn(() => ({
+				kind: "shutdown" as const,
+				requestId: "shutdown-fail",
+			})),
+			getPhaseHold: vi.fn(() => null),
+			enterHold: vi.fn(async () => {}),
+			confirmHoldPaused: vi.fn(async () => {}),
+			waitForActivity: vi.fn(async () => {}),
+			leaveHold: vi.fn(async () => {}),
+			markWakeStarted: vi.fn(),
+			finishWake: vi.fn(),
+			ackShutdown: vi.fn(() => order.push("shutdown.ack")),
+		};
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			{
+				...makeDeps(),
+				runtimeFactory: () => controlledRuntime,
+				phaseLifecycleFactory: () => lifecycle,
+				killWindow: vi.fn(() => order.push("tui.kill")),
+				scrubCredential: vi.fn(() => order.push("credential.scrub")),
+				startHeartbeat: vi.fn(() => () => order.push("heartbeat.stop")),
+			},
+		);
+
+		const result = await adapter.execute(
+			ctx({ phaseKeepAlive: { role: "design" } }),
+		);
+
+		expect(result.success).toBe(false);
+		expect(lifecycle.ackShutdown).toHaveBeenCalledWith("shutdown-fail", {
+			ok: false,
+			error: "SIGKILL unconfirmed",
+		});
+		expect(order.indexOf("credential.scrub")).toBeLessThan(
+			order.indexOf("shutdown.ack"),
+		);
+		expect(order.indexOf("shutdown.ack")).toBeLessThan(
+			order.indexOf("heartbeat.stop"),
+		);
+	});
+
+	it("ordinary Codex keeps terminal-window-first teardown order", async () => {
+		const order: string[] = [];
+		const ordinaryRuntime: CodexDaemonGoalRuntimeLike = {
+			runGoal: async () => complete(),
+			stop: () => order.push("runtime.stop"),
+			drained: async () => order.push("runtime.drained"),
+		};
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			{
+				...makeDeps(),
+				runtimeFactory: () => ordinaryRuntime,
+				killWindow: vi.fn(() => order.push("tui.kill")),
+				scrubCredential: vi.fn(() => order.push("credential.scrub")),
+				startHeartbeat: vi.fn(() => () => order.push("heartbeat.stop")),
+			},
+		);
+
+		const result = await adapter.execute(ctx());
+
+		expect(result.success).toBe(true);
+		expect(order).toEqual([
+			"heartbeat.stop",
+			"tui.kill",
+			"runtime.stop",
+			"runtime.drained",
+			"credential.scrub",
+		]);
+	});
+
+	it("runs without phaseKeepAlive create no phase controller or receiver", async () => {
+		const transport = {
+			buildRunnerSpawnConfig: vi.fn(() => ({ args: [], env: {} })),
+			createReceiver: vi.fn(() => null),
+		};
+		const phaseLifecycleFactory = vi.fn();
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			transport,
+			{ ...makeDeps(), phaseLifecycleFactory },
+		);
+
+		await adapter.execute(
+			ctx({
+				agentName: "runner-agent",
+				teamName: "flywheel-eng-lead",
+			}),
+		);
+		await adapter.execute(
+			ctx({
+				agentName: "runner-agent",
+				teamName: "flywheel-eng-lead",
+				issueId: "FLY-AUTO-QA-SHAPED",
+			}),
+		);
+
+		expect(phaseLifecycleFactory).not.toHaveBeenCalled();
+		expect(transport.createReceiver).not.toHaveBeenCalled();
+	});
+
 	// ── QA · FLY-1188 (real-machine E2E, 2026-07-13) ────────────────────────
 	// The founder TUI never rendered on a real machine: the pane died instantly
 	// with `Error: stdout is not a terminal` (exit 1). The adapter hands the TUI
@@ -990,6 +1267,19 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		const sess = db.getSession(execId);
 		db.close();
 		expect(sess?.vendor).toBe("codex");
+	});
+
+	it("pins CommDB registration and teardown to the immutable founder window id", async () => {
+		await makeAdapter().execute(ctx());
+		const db = new CommDB(dbPath);
+		const sess = db.getSession(execId);
+		db.close();
+		expect(sess?.tmux_window).toBe(`testsess:${WINDOW_ID}`);
+		expect(killWindowCalls).toContainEqual({
+			tmuxSession: "testsess",
+			windowName: "FLY-1188",
+			windowId: WINDOW_ID,
+		});
 	});
 
 	it("HIGH-3: persists the live daemon pid, and a resuming re-execute threads it as reapOrphanPid", async () => {

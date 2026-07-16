@@ -136,6 +136,51 @@ function session(over: Partial<PhaseSession>): PhaseSession {
 describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 	beforeEach(() => vi.clearAllMocks());
 
+	it("FLY-1269: live design_done probes, parks, then hands off without closing", async () => {
+		const order: string[] = [];
+		const h = makeDeps({
+			startDispatcher: {
+				start: vi.fn(async () => {
+					order.push("dispatch-implement");
+					return { executionId: "impl-new" };
+				}),
+			},
+			effects: {
+				capturePhaseHeadSha: vi.fn(async () => {
+					order.push("capture-head");
+					return "deadbeefcafe1234";
+				}),
+				closePhaseRunner: vi.fn(async () => order.push("close")),
+				alertLeadPipelineError: vi.fn(async () => {}),
+				probePhaseAlive: vi.fn(async () => {
+					order.push("probe-alive");
+					return "alive" as const;
+				}),
+				probeGhostTmux: vi.fn(async () => "absent" as const),
+				parkPhaseRunner: vi.fn(async () => order.push("park-design")),
+				wakePhaseRunner: vi.fn(async () => ({ ok: true })),
+				assertPhaseWorktreeReady: vi.fn(async () => ({ ok: true })),
+			},
+		});
+
+		await new PhaseOrchestrator(h.deps).onPhaseComplete(
+			session({
+				execution_id: "codex-design-exec",
+				session_role: "design",
+				chat_thread_role: "design",
+				status: "design_done",
+			}),
+		);
+
+		expect(order).toEqual([
+			"capture-head",
+			"probe-alive",
+			"park-design",
+			"dispatch-implement",
+		]);
+		expect(h.deps.effects.closePhaseRunner).not.toHaveBeenCalled();
+	});
+
 	it("design done + alive → PARK (not close); no live implement → spawn", async () => {
 		const h = makeDeps();
 		await new PhaseOrchestrator(h.deps).onPhaseComplete(
@@ -225,7 +270,45 @@ describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 		expect(h.wakePhaseRunner).toHaveBeenCalledWith(
 			expect.objectContaining({ session: qa, kind: "retest" }),
 		);
+		expect(h.grantTurn.mock.invocationCallOrder[0]).toBeLessThan(
+			h.wakePhaseRunner.mock.invocationCallOrder[0]!,
+		);
 		expect(h.start).not.toHaveBeenCalled();
+	});
+
+	it("FLY-1269: kill switch OFF preserves legacy close then spawn behavior", async () => {
+		const order: string[] = [];
+		const h = makeDeps({
+			keepAliveEnabled: () => false,
+			startDispatcher: {
+				start: vi.fn(async () => {
+					order.push("dispatch");
+					return { executionId: "legacy-next" };
+				}),
+			},
+			effects: {
+				capturePhaseHeadSha: vi.fn(async () => {
+					order.push("capture");
+					return "deadbeefcafe1234";
+				}),
+				closePhaseRunner: vi.fn(async () => order.push("close")),
+				alertLeadPipelineError: vi.fn(async () => {}),
+				probePhaseAlive: vi.fn(async () => {
+					order.push("probe");
+					return "alive" as const;
+				}),
+				probeGhostTmux: vi.fn(async () => "absent" as const),
+				parkPhaseRunner: vi.fn(async () => order.push("park")),
+				wakePhaseRunner: vi.fn(async () => ({ ok: true })),
+				assertPhaseWorktreeReady: vi.fn(async () => ({ ok: true })),
+			},
+		});
+
+		await new PhaseOrchestrator(h.deps).onPhaseComplete(
+			session({ session_role: "design", status: "design_done" }),
+		);
+
+		expect(order).toEqual(["capture", "close", "dispatch"]);
 	});
 
 	it("wake target worktree not ready → fail-closed, no grantTurn, no wake", async () => {
@@ -330,6 +413,9 @@ describe("FLY-887 keep-alive QA-FAIL fix loop (wake implement, don't close QA)",
 		);
 		expect(h.wakePhaseRunner).toHaveBeenCalledWith(
 			expect.objectContaining({ session: impl, kind: "fix", round: 1 }),
+		);
+		expect(h.grantTurn.mock.invocationCallOrder[0]).toBeLessThan(
+			h.wakePhaseRunner.mock.invocationCallOrder[0]!,
 		);
 		expect(h.closePhaseRunner).not.toHaveBeenCalled(); // QA parks, not closed
 		expect(h.intents.get("qa-1")?.fixExecId).toBe("impl-1");

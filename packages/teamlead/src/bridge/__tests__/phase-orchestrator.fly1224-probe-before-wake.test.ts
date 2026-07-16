@@ -392,6 +392,9 @@ describe("FLY-1224 C8 — handoff-wake site (T8)", () => {
 		expect(h.wakePhaseRunner).toHaveBeenCalledWith(
 			expect.objectContaining({ session: qa, kind: "retest" }),
 		);
+		expect(h.grantTurn.mock.invocationCallOrder[0]).toBeLessThan(
+			h.wakePhaseRunner.mock.invocationCallOrder[0]!,
+		);
 		expect(h.start).not.toHaveBeenCalled();
 	});
 

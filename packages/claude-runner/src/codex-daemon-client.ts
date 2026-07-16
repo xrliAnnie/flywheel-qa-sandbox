@@ -109,6 +109,55 @@ export interface GoalRunResult {
 	succeeded: boolean;
 }
 
+export interface GoalPhaseHold {
+	schemaVersion: 1;
+	role: "design" | "implement" | "qa";
+	state: "entering" | "paused" | "reactivating";
+	enteredAt: string;
+	deadlineRemainingMs: number;
+	hardDeadlineRemainingMs: number;
+}
+
+export type GoalPhaseObservation =
+	| { kind: "active" }
+	| { kind: "parked"; reason?: string }
+	| {
+			kind: "wake";
+			message: {
+				id: string;
+				content: string;
+				metadata?: Record<string, unknown>;
+			};
+	  }
+	| { kind: "shutdown"; requestId: string }
+	| { kind: "unknown"; error: string };
+
+export type GoalPhaseBoundaryObservation = Extract<
+	GoalPhaseObservation,
+	{ kind: "active" | "parked" | "unknown" }
+>;
+
+/** Structural phase controller seam; this protocol layer imports no CommDB. */
+export interface GoalPhaseLifecycle {
+	getPhaseHold(): GoalPhaseHold | null;
+	/**
+	 * Read only the durable phase-boundary marker. Unlike observe(), this never
+	 * surfaces or advances wake/shutdown work, so the active goal loop can detect
+	 * a completed handoff without consuming a future wake.
+	 */
+	observeBoundary(): GoalPhaseBoundaryObservation;
+	enterHold(budget: {
+		deadlineRemainingMs: number;
+		hardDeadlineRemainingMs: number;
+	}): Promise<void>;
+	confirmHoldPaused(): Promise<void>;
+	observe(): GoalPhaseObservation;
+	waitForActivity(timeoutMs: number): Promise<void>;
+	markWakeStarted(messageId: string): void;
+	finishWake(messageId: string): void;
+	leaveHold(): Promise<void>;
+}
+
 /** Streaming events surfaced to the caller (pane render, gate detection). */
 export interface CodexDaemonEvents {
 	/** Every raw server notification method (for pane rendering / diagnostics). */
@@ -494,6 +543,13 @@ export class GoalRunError extends Error {
 }
 
 /**
+ * What a goal status observed by `runGoalToTerminal` actually means for the run.
+ * `none` = nothing observed yet. The two `*_held` verdicts are the run staying
+ * RESIDENT: the daemon reported a terminal, but this run is not over.
+ */
+type TerminalVerdict = "terminal" | "gate_held" | "phase_held" | "none";
+
+/**
  * Drive a goal to a terminal status. Sets the goal, kicks the first turn, and
  * RESOLVES when a goal notification (or the getGoal poll fallback) reports a
  * terminal status. NEVER resolves with a non-terminal status — R20 HIGH-1:
@@ -544,9 +600,22 @@ export async function runGoalToTerminal(
 		 * The runtime feeds back the max extended deadline via `onDeadlineExtended`.
 		 */
 		minDeadlineMs?: number;
+		/** Phase-restored hard-deadline floor carried across daemon restarts. */
+		minHardDeadlineMs?: number;
 		/** FLY-1188 MED-7 R3: fired whenever the deadline is extended (monotonic),
 		 * so the runtime can carry the extension across restarts. */
 		onDeadlineExtended?: (deadlineMs: number) => void;
+		/** Reports both deadlines after a phase hold restores frozen budgets. */
+		onBudgetRestored?: (budget: {
+			deadlineMs: number;
+			hardDeadlineMs: number;
+		}) => void;
+		/** FLY-1269: explicit resident three-stage phase lifecycle. */
+		phaseLifecycle?: GoalPhaseLifecycle;
+		/** Slow, zero-token phase control poll (default 15s). */
+		phaseControlPollIntervalMs?: number;
+		/** Per local phase control RPC bound (default 30s). */
+		phaseControlRpcTimeoutMs?: number;
 		/** getGoal poll interval as a fallback to the notification stream. */
 		pollIntervalMs?: number;
 		/** FLY-1188 M4d: fired the INSTANT this run's goal is confirmed SET (right
@@ -580,7 +649,10 @@ export async function runGoalToTerminal(
 		overallTimeoutMs,
 		input.waitingTimeoutMs ?? overallTimeoutMs,
 	);
-	const hardDeadline = startedAt + hardCeilingMs;
+	let hardDeadline = Math.max(
+		startedAt + hardCeilingMs,
+		input.minHardDeadlineMs ?? 0,
+	);
 	// Extend-only: while a gate is open keep the deadline ≥ now + active budget,
 	// capped at the hard ceiling. It NEVER retracts, so a runner that waited long
 	// on a gate and just got its answer is not cut off the instant the gate
@@ -593,6 +665,20 @@ export async function runGoalToTerminal(
 		hardDeadline,
 		Math.max(startedAt + activeCapMs, input.minDeadlineMs ?? 0),
 	);
+	let phaseHold = input.phaseLifecycle?.getPhaseHold() ?? null;
+	if (phaseHold) {
+		const resumedAt = now();
+		deadline = resumedAt + phaseHold.deadlineRemainingMs;
+		hardDeadline = resumedAt + phaseHold.hardDeadlineRemainingMs;
+		try {
+			input.onBudgetRestored?.({
+				deadlineMs: deadline,
+				hardDeadlineMs: hardDeadline,
+			});
+		} catch {
+			/* budget carry callback must not break the held goal */
+		}
+	}
 
 	const turnIds = new Set<string>();
 	let latestTokens = 0;
@@ -683,25 +769,208 @@ export async function runGoalToTerminal(
 	const failClose = (msg: string): never => {
 		throw new GoalRunError(msg, "transport_closed");
 	};
-	const writeGateHold = (held: boolean): void => {
+	// ── FLY-1269: resident phase control ──────────────────────────────────────
+	// A phase's own `complete` ends the PHASE, not the issue. With a phase
+	// controller the goal is parked and stays resident until the ISSUE reaches
+	// its terminal, so the next phase reuses this thread instead of respawning.
+	const phase = input.phaseLifecycle;
+	const phaseControlPollIntervalMs = input.phaseControlPollIntervalMs ?? 15_000;
+	const phaseControlRpcTimeoutMs = input.phaseControlRpcTimeoutMs ?? 30_000;
+	let held = phaseHold !== null;
+	// FLY-1257 M-opt: the single spelling for every active/paused transition —
+	// it replays the cached objective and budget rather than gambling on the
+	// daemon preserving them across a partial update.
+	const setGoalStatus = (status: "active" | "paused", timeoutMs: number) =>
+		client.setGoalStatus(
+			{
+				threadId: input.threadId,
+				objective: input.objective,
+				tokenBudget: input.tokenBudget,
+				status,
+			},
+			timeoutMs,
+		);
+	const waitForPhaseActivity = async (): Promise<void> => {
+		if (phase) {
+			await phase.waitForActivity(phaseControlPollIntervalMs);
+		} else {
+			await sleep(phaseControlPollIntervalMs);
+		}
+	};
+	const ensurePhasePaused = async (): Promise<void> => {
+		if (!phase) throw new Error("phase lifecycle missing");
+		while (true) {
+			if (client.isClosed())
+				failClose("daemon transport closed entering phase hold");
+			try {
+				await setGoalStatus("paused", phaseControlRpcTimeoutMs);
+				goalArmed = true;
+				const confirmed = await client.getGoal(
+					input.threadId,
+					phaseControlRpcTimeoutMs,
+				);
+				if (confirmed?.status === "paused" && objectiveIsOurs(confirmed)) {
+					await phase.confirmHoldPaused();
+					return;
+				}
+			} catch (error) {
+				if (client.isClosed()) {
+					failClose(
+						`daemon transport closed entering phase hold: ${error instanceof Error ? error.message : error}`,
+					);
+				}
+			}
+			// Persistent pause rejection is fail-loud/held: the entering latch stays
+			// durable and this zero-token local loop retries slowly.
+			await waitForPhaseActivity();
+		}
+	};
+	const enterPhaseHold = async (): Promise<void> => {
+		if (!phase) throw new Error("phase lifecycle missing");
+		// FLY-1257 × FLY-1269: a phase boundary SUPERSEDES any gate episode — a
+		// runner that parked its phase has finished it, so by definition it is no
+		// longer waiting on a Lead answer. The two holds have orthogonal TRIGGERS
+		// but NOT orthogonal state: without this, gate state survives into the next
+		// phase, where `classifyTerminalStatus` masks that phase's genuine
+		// `blocked` on a stale `gateHoldActive` alone (it does not re-check
+		// isWaiting), and the loop's gate branch fires a duplicate goal/set(active)
+		// on top of the wake's. Clearing the durable latch here also keeps a crash
+		// recoverable: the phase hold becomes the single durable hold, which is
+		// exactly what the setup's `held` branch expects to find.
+		clearGateEpisode();
+		if (!phaseHold) {
+			const t = now();
+			await phase.enterHold({
+				deadlineRemainingMs: Math.max(0, deadline - t),
+				hardDeadlineRemainingMs: Math.max(0, hardDeadline - t),
+			});
+			phaseHold = phase.getPhaseHold();
+			if (!phaseHold) throw new Error("phase hold was not persisted");
+		}
+		await ensurePhasePaused();
+		held = true;
+		terminalSeen = null;
+	};
+	const reactivateWake = async (
+		message: Extract<GoalPhaseObservation, { kind: "wake" }>["message"],
+	): Promise<boolean> => {
+		if (!phase || !phaseHold) return false;
+		phase.markWakeStarted(message.id);
+		try {
+			await client.startTurn(
+				input.threadId,
+				`[phase-wake ${message.id}] ${message.content}`,
+				phaseControlRpcTimeoutMs,
+			);
+			// Clear a complete emitted by the paused wake turn BEFORE active; a
+			// notification emitted by the active transition remains authoritative.
+			terminalSeen = null;
+			await setGoalStatus("active", phaseControlRpcTimeoutMs);
+			const restoredAt = now();
+			deadline = restoredAt + phaseHold.deadlineRemainingMs;
+			hardDeadline = restoredAt + phaseHold.hardDeadlineRemainingMs;
+			try {
+				input.onBudgetRestored?.({
+					deadlineMs: deadline,
+					hardDeadlineMs: hardDeadline,
+				});
+			} catch {
+				/* budget carry callback must not break activation */
+			}
+		} catch (error) {
+			if (client.isClosed()) {
+				failClose(
+					`daemon transport closed reactivating phase wake ${message.id}: ${error instanceof Error ? error.message : error}`,
+				);
+			}
+			// Keep started queue row + latch. A retry carries the same stable id;
+			// runner-side replay handling prevents duplicate external side effects.
+			return false;
+		}
+
+		// The wake turn and active transition have already committed. From this
+		// point forward, retry ONLY durable bookkeeping: replaying turn/start would
+		// duplicate runner side effects for the same stable wake id. Both operations
+		// are idempotent, so a partial success safely converges on the next local
+		// control tick while the reactivated turn keeps running.
+		for (;;) {
+			try {
+				phase.finishWake(message.id);
+				await phase.leaveHold();
+				break;
+			} catch (error) {
+				if (client.isClosed()) {
+					failClose(
+						`daemon transport closed finalizing phase wake ${message.id}: ${error instanceof Error ? error.message : error}`,
+					);
+				}
+				await waitForPhaseActivity();
+			}
+		}
+		phaseHold = null;
+		held = false;
+		return true;
+	};
+
+	// ── FLY-1257: gate hold ───────────────────────────────────────────────────
+	// A `blocked` goal is this run's terminal ONLY when no gate is open. While
+	// the runner waits on a Lead answer the goal is held (durably latched) and
+	// resumed once the marker resolves.
+	// The parameter is deliberately NOT named `held`: that name belongs to the
+	// FLY-1269 phase hold in this same scope, and the two are different states.
+	const writeGateHold = (latched: boolean): void => {
 		// Persistence is a safety boundary, not best-effort. Update local state
 		// only after the durable writer succeeds; on failure the prior true latch
 		// remains authoritative for the next retry.
 		try {
-			input.writeGateHoldLatch?.(held);
+			input.writeGateHoldLatch?.(latched);
 		} catch (error) {
 			throw new GoalRunError(
 				`gate-hold latch write failed: ${error instanceof Error ? error.message : String(error)}`,
 				"setup_failed",
 			);
 		}
-		gateHoldLatched = held;
+		gateHoldLatched = latched;
 	};
 	const enterGateHold = (): void => {
 		if (!gateHoldLatched) writeGateHold(true);
 		gateHoldActive = true;
 		// A blocked status being held is deliberately not terminal authority.
 		terminalSeen = null;
+	};
+	/**
+	 * End the current gate episode: no gate is open and none is latched. Called
+	 * at every entry into a phase hold, because a phase boundary supersedes the
+	 * episode (see `enterPhaseHold`).
+	 *
+	 * Codex R4: this must normalize the DURABLE latch, not the in-memory flag.
+	 * `gateHoldLatched` starts false on EVERY invocation, so a run that inherits
+	 * a durable `gateHold=true` — a crash between the durable park and this
+	 * clear, or a retry after a failed clear — would skip the write and leave
+	 * BOTH durable holds set. A later restart's gate preflight would then resume
+	 * the goal out from under the phase hold. Read the durable value and clear it
+	 * for real.
+	 *
+	 * Both the read and the write are fail-closed (they throw): if we cannot
+	 * prove the gate latch is clear, the run must not settle into a phase hold on
+	 * top of it.
+	 */
+	const clearGateEpisode = (): void => {
+		gateHoldActive = false;
+		// Let the next episode attempt its own best-effort pause.
+		gatePauseAttempted = false;
+		let latched = gateHoldLatched;
+		if (!latched) {
+			try {
+				latched = input.readGateHoldLatch?.() === true;
+			} catch (error) {
+				throw new GoalRunError(
+					`gate-hold latch read failed: ${error instanceof Error ? error.message : String(error)}`,
+					"setup_failed",
+				);
+			}
+		}
+		if (latched) writeGateHold(false);
 	};
 	const classifyTerminalStatus = (status: GoalStatus): "terminal" | "held" => {
 		if (gateWaitEnabled && status === "blocked") {
@@ -721,15 +990,7 @@ export async function runGoalToTerminal(
 		const budget = remainingBudget();
 		if (budget <= 0) return;
 		try {
-			await client.setGoalStatus(
-				{
-					threadId: input.threadId,
-					objective: input.objective,
-					tokenBudget: input.tokenBudget,
-					status: "paused",
-				},
-				budget,
-			);
+			await setGoalStatus("paused", budget);
 		} catch (error) {
 			// Pausing is an optimization layered over the durable local hold. Never
 			// lose that safety behavior because the optional RPC is unavailable.
@@ -747,15 +1008,7 @@ export async function runGoalToTerminal(
 	};
 	const activateGoal = async (): Promise<void> => {
 		if (remainingBudget() <= 0) timedOut("before setGoal");
-		await client.setGoalStatus(
-			{
-				threadId: input.threadId,
-				objective: input.objective,
-				tokenBudget: input.tokenBudget,
-				status: "active",
-			},
-			remainingBudget(),
-		);
+		await setGoalStatus("active", remainingBudget());
 		gatePauseAttempted = false;
 		goalArmed = true;
 		fireGoalActive();
@@ -775,12 +1028,63 @@ export async function runGoalToTerminal(
 		writeGateHold(false);
 	};
 
+	/**
+	 * FLY-1257 × FLY-1269: the ONE checkpoint every terminal — streamed or
+	 * polled — is settled by, so neither hold can mask the other. The two holds
+	 * are orthogonal: they key on different statuses and never both apply.
+	 *  - `blocked` + an open gate → gate hold (FLY-1257): stay resident, resume
+	 *    when the marker resolves. Falls through exactly as before.
+	 *  - `complete` + a phase controller → phase hold (FLY-1269): the PHASE is
+	 *    done, the issue is not. The caller MUST `continue` to the loop top: the
+	 *    hold's budget is saved for the next phase, so falling through to a
+	 *    deadline check would time out a healthy parked runner.
+	 * Anything else is this run's real terminal.
+	 */
+	const settleTerminal = async (): Promise<TerminalVerdict> => {
+		const status = terminalSeen;
+		if (!status) return "none";
+		if (classifyTerminalStatus(status) !== "terminal") return "gate_held";
+		if (phase && status === "complete") {
+			await enterPhaseHold();
+			return "phase_held";
+		}
+		return "terminal";
+	};
+
 	try {
 		// Setup RPCs count against the same deadline and are each bounded by the
 		// remaining budget, so a hung setGoal/startTurn cannot blow the ceiling.
 		try {
+			// Three restart-recovery paths, checked most-durable first. Each one
+			// adopts an existing suspended goal instead of re-arming a fresh one;
+			// only a run with nothing to adopt sets a goal and kicks it.
+			// R23 HIGH-2: a terminal for this thread is trustworthy as OUR goal's
+			// terminal only once the goal is confirmed set — every branch below
+			// arms `goalArmed` at exactly that point.
 			let skipInitialActivation = false;
-			if (gateWaitEnabled) {
+			if (held) {
+				// FLY-1269: a durable phase hold survived the restart. Re-assert the
+				// paused goal and stay resident — no kick, the phase is parked.
+				// Codex R4: this branch never goes through `enterPhaseHold`, so it
+				// must normalize an inherited durable gate latch itself — otherwise
+				// both durable holds persist and the gate preflight below (on a later
+				// restart) resumes the goal out from under this phase hold.
+				clearGateEpisode();
+				await ensurePhasePaused();
+				skipInitialActivation = true;
+			} else if (phase?.observeBoundary().kind === "parked") {
+				// `flywheel-comm complete` and the native /goal terminal are separate
+				// control planes. The runner persists its phase handoff with `park`
+				// before ending the current turn; honor that durable boundary even if
+				// the native goal has not emitted `complete` yet. This also lets a
+				// restarted adapter reconstruct the hold before it starts a generic
+				// continuation turn.
+				await enterPhaseHold();
+				skipInitialActivation = true;
+			} else if (gateWaitEnabled) {
+				// FLY-1257: no phase hold to adopt — but a phase runner still opens
+				// gates DURING a phase (the brainstorm gate), so this preflight runs
+				// for phase and non-phase runs alike.
 				try {
 					gateHoldLatched = input.readGateHoldLatch?.() === true;
 				} catch (error) {
@@ -853,6 +1157,8 @@ export async function runGoalToTerminal(
 				}
 			}
 
+			// Nothing to adopt: arm a fresh goal and kick it. `activateGoal` fires
+			// the FLY-245 launch-commit handler at the confirmed-set point.
 			if (!skipInitialActivation) {
 				await activateGoal();
 				await startInitialTurn();
@@ -892,12 +1198,31 @@ export async function runGoalToTerminal(
 		}
 
 		while (true) {
+			// FLY-1269: a phase hold is resident — zero tokens, no daemon poll and
+			// deliberately NO budget check. The hold saved this run's remaining
+			// budget and restores it on wake, so a parked runner waiting for the
+			// next phase must never be timed out by the drain it is exempt from.
+			if (held) {
+				if (client.isClosed())
+					failClose("daemon transport closed in phase hold");
+				const observation = phase?.observe() ?? { kind: "unknown" as const };
+				if (observation.kind === "wake") {
+					if (await reactivateWake(observation.message)) continue;
+				}
+				await waitForPhaseActivity();
+				continue;
+			}
+			if (phase?.observeBoundary().kind === "parked") {
+				await enterPhaseHold();
+				continue;
+			}
 			// FLY-1257: notifications and polls converge here. A blocked goal is
 			// terminal only when no gate is open. Once held, a resolved marker causes
 			// exactly one native active transition; duplicate/out-of-order blocked
 			// notifications cannot duplicate that resume.
-			if (terminalSeen && classifyTerminalStatus(terminalSeen) === "terminal")
-				break;
+			let verdict = await settleTerminal();
+			if (verdict === "terminal") break;
+			if (verdict === "phase_held") continue;
 			if (gateWaitEnabled && gateHoldActive) {
 				if (input.isWaiting?.()) {
 					terminalSeen = null;
@@ -912,8 +1237,9 @@ export async function runGoalToTerminal(
 			// A terminal notification wins immediately, re-checked before every
 			// blocking step so a real terminal is never masked by a later close.
 			// (remainingBudget extends the deadline when a gate is open — MED-7.)
-			if (terminalSeen && classifyTerminalStatus(terminalSeen) === "terminal")
-				break;
+			verdict = await settleTerminal();
+			if (verdict === "terminal") break;
+			if (verdict === "phase_held") continue;
 			if (client.isClosed()) failClose("daemon transport closed mid-run");
 			if (remainingBudget() <= 0) timedOut("waiting for terminal status");
 
@@ -924,8 +1250,9 @@ export async function runGoalToTerminal(
 			// and the transport then closes in the same tick, skipping getGoal
 			// keeps the real terminal status from being clobbered by a
 			// transport_closed failure.
-			if (terminalSeen && classifyTerminalStatus(terminalSeen) === "terminal")
-				break;
+			verdict = await settleTerminal();
+			if (verdict === "terminal") break;
+			if (verdict === "phase_held") continue;
 			// R22 HIGH: a close that landed during the sleep (with no terminal
 			// seen before it) fails the run now — no need for a getGoal round-trip
 			// to discover the dead socket.
@@ -942,8 +1269,9 @@ export async function runGoalToTerminal(
 			} catch (err) {
 				// R21 HIGH-2: a terminal already observed takes precedence over any
 				// getGoal failure — never fail-close over a real terminal status.
-				if (terminalSeen && classifyTerminalStatus(terminalSeen) === "terminal")
-					break;
+				verdict = await settleTerminal();
+				if (verdict === "terminal") break;
+				if (verdict === "phase_held") continue;
 				if (client.isClosed())
 					failClose(`getGoal failed on a closed transport: ${err}`);
 				if (remainingBudget() <= 0) timedOut("polling goal status");
@@ -954,8 +1282,9 @@ export async function runGoalToTerminal(
 			// over the poll result — otherwise a poll that observed a
 			// just-replaced goal would wrongly throw goal_replaced over a terminal
 			// we already legitimately reached (R21 "first terminal wins").
-			if (terminalSeen && classifyTerminalStatus(terminalSeen) === "terminal")
-				break;
+			verdict = await settleTerminal();
+			if (verdict === "terminal") break;
+			if (verdict === "phase_held") continue;
 			if (goal?.status) {
 				// R24 HIGH: the poll reads the thread's CURRENT goal. If another
 				// control end replaced our goal, its objective no longer matches
@@ -968,11 +1297,11 @@ export async function runGoalToTerminal(
 					);
 				}
 				if (typeof goal.tokensUsed === "number") latestTokens = goal.tokensUsed;
-				if (
-					isTerminalGoalStatus(goal.status) &&
-					classifyTerminalStatus(goal.status) === "terminal"
-				) {
-					break;
+				if (isTerminalGoalStatus(goal.status)) {
+					terminalSeen = goal.status;
+					verdict = await settleTerminal();
+					if (verdict === "terminal") break;
+					if (verdict === "phase_held") continue;
 				}
 			}
 		}

@@ -8,6 +8,10 @@
  * prompt is never affected (no shareParentBranch).
  */
 
+import { execFileSync } from "node:child_process";
+import { mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
@@ -19,6 +23,7 @@ import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
 import { Blueprint } from "../Blueprint.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
+import type { WorktreeManager } from "../WorktreeManager.js";
 
 function makeNode(id = "FLY-887"): DagNode {
 	return { id, blockedBy: [] };
@@ -63,16 +68,64 @@ function makeMockAdapter(): IAdapter {
 	};
 }
 
+const cleanups: string[] = [];
+afterEach(() => {
+	while (cleanups.length) {
+		rmSync(cleanups.pop() as string, { recursive: true, force: true });
+	}
+});
+
+function makeRealWorktree(): string {
+	const p = join(
+		tmpdir(),
+		`fly887-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+	);
+	mkdirSync(p, { recursive: true });
+	execFileSync("git", ["init", "-q"], { cwd: p });
+	cleanups.push(p);
+	return p;
+}
+
+function makeWtManager(worktreePath: string) {
+	return {
+		expectedWorktree: vi.fn(() => ({
+			path: worktreePath,
+			branch: "flywheel-FLY-887",
+		})),
+		isRegistered: vi.fn(async () => false),
+		removeIfExists: vi.fn(async () => true),
+		create: vi.fn(async () => ({
+			projectName: "proj",
+			issueId: "FLY-887",
+			worktreePath,
+			branch: "flywheel-FLY-887",
+			mainRepoPath: "/tmp/fly887-main",
+		})),
+	} as unknown as WorktreeManager;
+}
+
 async function buildPrompt(
 	ctxOverrides: Partial<BlueprintContext> = {},
 ): Promise<string> {
+	const call = await buildExecutionContext(ctxOverrides);
+	return call.appendSystemPrompt ?? "";
+}
+
+type CapturedPhaseContext = AdapterExecutionContext & {
+	phaseKeepAlive?: { role: "design" | "implement" | "qa" };
+};
+
+async function buildExecutionContext(
+	ctxOverrides: Partial<BlueprintContext> = {},
+): Promise<CapturedPhaseContext> {
 	const adapter = makeMockAdapter();
+	const worktreePath = makeRealWorktree();
 	const blueprint = new Blueprint(
 		makeHydrator(),
 		makeMockGitChecker(),
 		() => adapter,
 		makeMockShell(),
-		undefined,
+		makeWtManager(worktreePath),
 		undefined,
 		undefined,
 		undefined,
@@ -88,10 +141,64 @@ async function buildPrompt(
 		...ctxOverrides,
 	};
 	await blueprint.run(makeNode(), "/tmp/fly887-blueprint-test", ctx);
-	const call = (adapter.execute as ReturnType<typeof vi.fn>).mock
-		.calls[0]![0] as AdapterExecutionContext;
-	return call.appendSystemPrompt ?? "";
+	return (adapter.execute as ReturnType<typeof vi.fn>).mock
+		.calls[0]![0] as CapturedPhaseContext;
 }
+
+describe("FLY-1269 adapter phase keep-alive identity", () => {
+	afterEach(() => {
+		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = undefined;
+	});
+
+	it.each(["design", "implement", "qa"] as const)(
+		"codex %s phase receives its exact keep-alive role",
+		async (role) => {
+			const call = await buildExecutionContext({
+				runnerBackend: "codex-tmux",
+				sessionRole: role,
+				shareParentBranch: true,
+			});
+			expect(call.phaseKeepAlive).toEqual({ role });
+		},
+	);
+
+	it("Auto-QA remains outside the three-stage phase lifetime", async () => {
+		const call = await buildExecutionContext({
+			runnerBackend: "codex-tmux",
+			sessionRole: "qa",
+			shareParentBranch: true,
+			qaContext: {
+				parentExecutionId: "parent-exec",
+				prHeadSha: "deadbeef",
+			},
+		});
+		expect(call.phaseKeepAlive).toBeUndefined();
+	});
+
+	it("single-session Codex receives no phase lifetime", async () => {
+		const call = await buildExecutionContext({ runnerBackend: "codex-tmux" });
+		expect(call.phaseKeepAlive).toBeUndefined();
+	});
+
+	it("kill-switch OFF removes the Codex phase lifetime", async () => {
+		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = "0";
+		const call = await buildExecutionContext({
+			runnerBackend: "codex-tmux",
+			sessionRole: "design",
+			shareParentBranch: true,
+		});
+		expect(call.phaseKeepAlive).toBeUndefined();
+	});
+
+	it("Claude three-stage phases keep their existing adapter context", async () => {
+		const call = await buildExecutionContext({
+			runnerBackend: "claude-tmux",
+			sessionRole: "implement",
+			shareParentBranch: true,
+		});
+		expect(call.phaseKeepAlive).toBeUndefined();
+	});
+});
 
 describe("FLY-887 keep-alive prompts — default ON", () => {
 	afterEach(() => {
