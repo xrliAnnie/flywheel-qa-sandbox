@@ -94,7 +94,6 @@ _tmux_rescue_normalize_socket() {
 
 _tmux_rescue_pid_has_socket() {
   local pid="$1" socket_path="$2" output rc line reported normalized
-  local unresolved_path=false
   command -v lsof >/dev/null 2>&1 || return 2
   output="$(_tmux_rescue_bounded_exec "${FLYWHEEL_TMUX_RESCUE_INSPECT_TIMEOUT_SEC:-3}" \
     lsof -a -p "$pid" -U -Fn 2>/dev/null)"
@@ -110,17 +109,13 @@ _tmux_rescue_pid_has_socket() {
     case "$line" in
       n/*)
         reported="${line#n}"
-        normalized="$(_tmux_rescue_normalize_socket "$reported")" || {
-          unresolved_path=true
-          continue
-        }
+        normalized="$(_tmux_rescue_normalize_socket "$reported")" || continue
         [ "$normalized" = "$socket_path" ] && return 0
         ;;
     esac
   done <<EOF
 $output
 EOF
-  [ "$unresolved_path" = false ] || return 2
   return 1
 }
 

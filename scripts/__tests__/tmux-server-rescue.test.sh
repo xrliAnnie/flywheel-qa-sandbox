@@ -112,14 +112,14 @@ else
   fail "lsof alias did not match: reported=$FAKE_LSOF_SOCKET_PATH expected=$TEST_SOCKET"
 fi
 
-echo "[TEST] an unnormalizable lsof path is incomplete evidence, not proof of absence"
+echo "[TEST] an unrelated unnormalizable lsof path does not poison the target verdict"
 export FAKE_LSOF_SOCKET_PATH="$TMP_DIR/missing-parent/socket"
 _tmux_rescue_pid_has_socket 9301 "$TEST_SOCKET"
 LSOF_PATH_RC=$?
-if [ "$LSOF_PATH_RC" -eq 2 ]; then
-  pass "an unresolved owner path makes the process scan fail closed"
+if [ "$LSOF_PATH_RC" -eq 1 ]; then
+  pass "an unresolved non-target path is definitive non-ownership"
 else
-  fail "unresolved lsof path was treated as definitive non-ownership: rc=$LSOF_PATH_RC"
+  fail "an unrelated unresolved path poisoned the target scan: rc=$LSOF_PATH_RC"
 fi
 export FAKE_LSOF_SOCKET_PATH=""
 

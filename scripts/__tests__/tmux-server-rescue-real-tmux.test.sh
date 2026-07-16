@@ -67,13 +67,13 @@ start_server() { # <socket> -> echoes pid
   local sock="$1" pid
   tmux -S "$sock" new-session -d -s live 2>/dev/null
   pid="$(server_pid_on "$sock")"
-  SPAWNED="$SPAWNED $pid"
   printf '%s' "$pid"
 }
 
 echo "[TEST] a real daemonized tmux server is recognized as a server candidate"
 SOCK_A="$BASE/recognize.sock"
 PID_A="$(start_server "$SOCK_A")"
+SPAWNED="$SPAWNED $PID_A"
 if [ -z "$PID_A" ]; then
   fail "could not start an isolated tmux server; environment cannot host this test"
 else
@@ -108,6 +108,7 @@ SYM_BASE="/tmp/${BASE#/private/tmp/}"
 if [ -e "$SYM_BASE" ]; then
   SOCK_SYM="$SYM_BASE/symlinked.sock"
   PID_SYM="$(start_server "$SOCK_SYM")"
+  SPAWNED="$SPAWNED $PID_SYM"
   if [ -n "$PID_SYM" ]; then
     if _tmux_rescue_pid_has_socket "$PID_SYM" "$(_tmux_rescue_normalize_socket "$SOCK_SYM")"; then
       pass "ownership predicate is robust to /tmp -> /private/tmp normalization"
@@ -135,6 +136,7 @@ echo "[TEST] THE INCIDENT: a live-but-saturated server must hold, never be repla
 # unlink the socket and fork a second server, orphaning every window.
 SOCK_S="$BASE/saturated.sock"
 PID_S="$(start_server "$SOCK_S")"
+SPAWNED="$SPAWNED $PID_S"
 INODE_BEFORE="$(stat -f '%i' "$SOCK_S" 2>/dev/null || stat -c '%i' "$SOCK_S" 2>/dev/null)"
 kill -STOP "$PID_S"
 /usr/bin/python3 - "$SOCK_S" "$BASE/filled" <<'PY' &
