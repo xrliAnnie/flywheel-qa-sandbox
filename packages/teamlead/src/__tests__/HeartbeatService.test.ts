@@ -284,6 +284,42 @@ describe("HeartbeatService", () => {
 		);
 	});
 
+	it("durable tmux holds suppress stuck and orphan actions in the same cycle", async () => {
+		const held = makeSession({ execution_id: "exec-held" });
+		store.getStuckSessions.mockReturnValue([held]);
+		store.getOrphanSessions.mockReturnValue([held]);
+		const claimed = new Set<string>() as ReadonlySet<string> & {
+			claimed: ReadonlySet<string>;
+			heldExecutionIds: ReadonlySet<string>;
+		};
+		Object.assign(claimed, {
+			claimed,
+			heldExecutionIds: new Set([held.execution_id]),
+		});
+		const heldService = new HeartbeatService(
+			store as any,
+			notifier as any,
+			15,
+			60_000,
+			60,
+			undefined,
+			24,
+			6 * 3_600_000,
+			undefined,
+			48,
+			undefined,
+			undefined,
+			undefined,
+			{ check: vi.fn().mockResolvedValue(claimed) },
+		);
+
+		await heldService.check();
+
+		expect(notifier.onSessionStuck).not.toHaveBeenCalled();
+		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
+		expect(store.forceStatus).not.toHaveBeenCalled();
+	});
+
 	// --- Timer management ---
 
 	it("start/stop manages interval", async () => {

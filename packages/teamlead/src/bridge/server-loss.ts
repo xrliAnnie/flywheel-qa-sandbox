@@ -33,14 +33,48 @@ import type {
 	ServerLossEpisodeState,
 	Session,
 	StateStore,
+	TmuxHoldReason,
+	TmuxHoldRow,
+	TmuxHoldShape,
 } from "../StateStore.js";
 
 export type ServerProbe = "up" | "down" | "unknown";
+
+export interface TmuxSocketInspection {
+	verdict:
+		| "reachable"
+		| "missing_single_orphan"
+		| "saturated"
+		| "dead"
+		| "split_brain"
+		| "ambiguous"
+		| "unknown";
+	socketPresent: boolean;
+	socketPath: string;
+	reachablePid?: number;
+	candidatePids: number[];
+	scanComplete: boolean;
+}
+
+/**
+ * A Set-compatible result keeps pre-FLY-1285 callers byte-compatible while
+ * exposing the explicit claimed/held split HeartbeatService now needs.
+ */
+export interface ServerLossCheckResult extends ReadonlySet<string> {
+	claimed: ReadonlySet<string>;
+	heldExecutionIds: ReadonlySet<string>;
+}
 
 export interface ServerLossDeps {
 	store: StateStore;
 	/** tmux server liveness (list-sessions): down = PROVEN "no server". */
 	probeServer: () => Promise<ServerProbe>;
+	/** Guard helper's exhaustive socket verdict. Omitted only by legacy tests. */
+	inspectSocket?: () => Promise<TmuxSocketInspection>;
+	/** Never-create orphan rescue. true means the original server was restored. */
+	recoverSocket?: () => Promise<boolean>;
+	/** Canonical socket key shared with observation hydration. */
+	normalizedSocketPath?: string;
 	/**
 	 * Boot-shape probe: is this session's tmux target provably GONE on the
 	 * (live) server? true=gone, false=present, null=cannot tell (never claim).
@@ -65,6 +99,8 @@ export interface ServerLossDeps {
 	) => Promise<boolean>;
 	/** The routed alert sink (ONE fleet ticket per episode). */
 	alert: (p: AlertPayload) => Promise<AlertResult>;
+	/** Resolve the correlated hold/split-brain ticket after positive reconcile. */
+	resolveHoldAlert?: (incidentId: string) => Promise<void>;
 	/** Current memory watermark summary (free%) for the notification. */
 	currentWatermark?: () => string | null;
 	env?: NodeJS.ProcessEnv;
@@ -75,6 +111,35 @@ export interface ServerLossDeps {
 function isTmuxBacked(session: Session): boolean {
 	// Absent adapter_type = the claude-tmux default (legacy rows).
 	return (session.adapter_type ?? "claude-tmux").includes("tmux");
+}
+
+function checkResult(
+	claimedInput: Iterable<string>,
+	heldInput: Iterable<string>,
+): ServerLossCheckResult {
+	const claimed = new Set(claimedInput);
+	const result = claimed as unknown as ServerLossCheckResult;
+	Object.defineProperties(result, {
+		claimed: { value: claimed, enumerable: true },
+		heldExecutionIds: { value: new Set(heldInput), enumerable: true },
+	});
+	return result;
+}
+
+function inspectionReason(
+	verdict: TmuxSocketInspection["verdict"],
+): TmuxHoldReason {
+	switch (verdict) {
+		case "saturated":
+		case "split_brain":
+		case "ambiguous":
+		case "unknown":
+			return verdict;
+		case "missing_single_orphan":
+			return "rescue_failed";
+		default:
+			return "unknown";
+	}
 }
 
 export class ServerLossCoordinator {
@@ -120,10 +185,11 @@ export class ServerLossCoordinator {
 	 * failed and surfaced via the ticket's leadsFailed → needs_human), the
 	 * fleet ticket is emitted once.
 	 */
-	async check(): Promise<ReadonlySet<string>> {
+	async check(): Promise<ServerLossCheckResult> {
 		const wasFirst = this.firstCheck;
 		this.firstCheck = false;
 		const running = this.deps.store.getRunningSessions().filter(isTmuxBacked);
+		const heldExecutionIds = new Set<string>();
 
 		// Completion check: the episode is over when the ticket landed, every
 		// owed Lead is either notified or terminally failed, and nothing claimed
@@ -134,7 +200,45 @@ export class ServerLossCoordinator {
 			ledger = undefined;
 		}
 
-		if (!ledger && running.length === 0) return new Set();
+		// FLY-1285: active durable holds are reconciled before any fresh loss
+		// detection. A helper failure is fail-closed for this tick: every running
+		// tmux-backed execution is held and no migration side effect runs.
+		const activeHolds = this.deps.store.listActiveTmuxHolds();
+		if (activeHolds.length > 0 && this.deps.inspectSocket) {
+			try {
+				for (const hold of activeHolds) {
+					for (const id of hold.affectedExecutionIds) {
+						if (running.some((session) => session.execution_id === id)) {
+							heldExecutionIds.add(id);
+						}
+					}
+					await this.reconcileActiveHold(hold, heldExecutionIds);
+					const stillActive = this.deps.store.getActiveTmuxHold(
+						hold.normalizedSocketPath,
+					);
+					if (stillActive?.incidentId === hold.incidentId) {
+						await this.emitHoldAlerts(stillActive);
+					}
+				}
+			} catch (error) {
+				this.log(
+					`tmux inspect failed — holding all running tmux sessions: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+				return checkResult(
+					[],
+					running.map((session) => session.execution_id),
+				);
+			}
+			ledger = this.deps.store.getServerLossEpisode();
+			// An active hold that reconciled without arming an episode consumes this
+			// tick's contradictory probe evidence; do not immediately reopen it.
+			if (!ledger) return checkResult([], heldExecutionIds);
+		}
+
+		if (!ledger && running.length === 0)
+			return checkResult([], heldExecutionIds);
 
 		// The probe is only needed when sessions could be migrated/extended.
 		const probe: ServerProbe =
@@ -145,8 +249,40 @@ export class ServerLossCoordinator {
 			let casualties: Session[] | null = null;
 			let shape: "server_down" | "server_fresh" = "server_down";
 			if (probe === "down") {
-				// Tick leg: the server hosting these sessions is GONE — any count.
-				casualties = running;
+				if (this.deps.inspectSocket) {
+					let inspection: TmuxSocketInspection;
+					try {
+						inspection = await this.deps.inspectSocket();
+					} catch (error) {
+						this.log(
+							`tmux inspect failed — holding all running tmux sessions: ${
+								error instanceof Error ? error.message : String(error)
+							}`,
+						);
+						return checkResult(
+							[],
+							running.map((session) => session.execution_id),
+						);
+					}
+					if (inspection.verdict === "dead" && inspection.scanComplete) {
+						casualties = running;
+					} else if (inspection.verdict === "missing_single_orphan") {
+						const rescued = await this.deps
+							.recoverSocket?.()
+							.catch(() => false);
+						if (rescued) return checkResult([], []);
+						const hold = this.openHold(inspection, running);
+						await this.emitHoldAlerts(hold);
+						return checkResult([], hold.affectedExecutionIds);
+					} else {
+						const hold = this.openHold(inspection, running);
+						await this.emitHoldAlerts(hold);
+						return checkResult([], hold.affectedExecutionIds);
+					}
+				} else {
+					// Legacy/test path: pre-FLY-1285 proof was probeServer=down.
+					casualties = running;
+				}
 			} else if (probe === "up" && wasFirst) {
 				// Boot leg: server responds but the previous generation's runners
 				// may have died with a server restart. Aggregation threshold guards
@@ -164,7 +300,27 @@ export class ServerLossCoordinator {
 					}
 				}
 			}
-			if (!casualties) return new Set();
+			if (!casualties) return checkResult([], heldExecutionIds);
+			if (shape === "server_fresh" && this.deps.inspectSocket) {
+				let inspection: TmuxSocketInspection;
+				try {
+					inspection = await this.deps.inspectSocket();
+				} catch {
+					return checkResult(
+						[],
+						running.map((session) => session.execution_id),
+					);
+				}
+				if (
+					inspection.verdict !== "reachable" ||
+					!inspection.scanComplete ||
+					inspection.candidatePids.length > 0
+				) {
+					const hold = this.openHold(inspection, running);
+					await this.emitHoldAlerts(hold);
+					return checkResult([], hold.affectedExecutionIds);
+				}
+			}
 			const signature = `tmux-server-lost:${this.now()}`;
 			this.log(
 				`${shape}: ${casualties.length} running tmux session(s) lost — episode ${signature}`,
@@ -362,7 +518,243 @@ export class ServerLossCoordinator {
 			}
 		}
 
-		return claimed;
+		return checkResult(claimed, heldExecutionIds);
+	}
+
+	private openHold(
+		inspection: TmuxSocketInspection,
+		sessions: Session[],
+	): TmuxHoldRow {
+		const socketPath = this.deps.normalizedSocketPath ?? inspection.socketPath;
+		return this.deps.store.getOrCreateActiveTmuxHold(socketPath, {
+			reason: inspectionReason(inspection.verdict),
+			shape: "provisional",
+			shapeSource: "coordinator",
+			evidence: {
+				verdict: inspection.verdict,
+				reachablePid: inspection.reachablePid,
+				candidatePids: inspection.candidatePids,
+				scanComplete: inspection.scanComplete,
+			},
+			affectedExecutionIds: sessions.map((session) => session.execution_id),
+		});
+	}
+
+	private async reconcileActiveHold(
+		hold: TmuxHoldRow,
+		heldExecutionIds: Set<string>,
+	): Promise<void> {
+		if (!this.deps.inspectSocket) return;
+		let inspection = await this.deps.inspectSocket();
+		if (inspection.verdict === "missing_single_orphan") {
+			const rescued = await this.deps.recoverSocket?.().catch(() => false);
+			if (!rescued) {
+				this.refreshHold(hold, inspection, "rescue_failed");
+				return;
+			}
+			inspection = await this.deps.inspectSocket();
+		}
+
+		if (inspection.verdict === "dead" && inspection.scanComplete) {
+			await this.transitionHold(
+				hold,
+				"server_down",
+				hold.affectedExecutionIds,
+				inspection,
+				heldExecutionIds,
+			);
+			return;
+		}
+		if (inspection.verdict !== "reachable") {
+			this.refreshHold(hold, inspection, inspectionReason(inspection.verdict));
+			return;
+		}
+
+		const affected = hold.affectedExecutionIds
+			.map((id) => this.deps.store.getSession(id))
+			.filter((session): session is Session => session?.status === "running");
+		if (affected.length === 0) {
+			this.resolveHold(hold, heldExecutionIds);
+			return;
+		}
+		const verdicts = await Promise.all(
+			affected.map(async (session) => ({
+				session,
+				gone: await this.deps.targetGone(session),
+			})),
+		);
+		if (verdicts.some((item) => item.gone == null)) return;
+		const gone = verdicts
+			.filter((item) => item.gone === true)
+			.map((item) => item.session.execution_id);
+		const present = verdicts
+			.filter((item) => item.gone === false)
+			.map((item) => item.session.execution_id);
+		if (gone.length === 0) {
+			this.resolveHold(hold, heldExecutionIds);
+			return;
+		}
+		if (present.length === 0) {
+			await this.transitionHold(
+				hold,
+				"server_fresh",
+				gone,
+				inspection,
+				heldExecutionIds,
+			);
+			return;
+		}
+
+		const originalPid = hold.evidence.originalServerPid;
+		if (
+			Number.isSafeInteger(originalPid) &&
+			Number.isSafeInteger(inspection.reachablePid) &&
+			originalPid !== inspection.reachablePid
+		) {
+			await this.transitionHold(
+				hold,
+				"server_fresh",
+				gone,
+				inspection,
+				heldExecutionIds,
+			);
+			for (const id of present) heldExecutionIds.delete(id);
+			return;
+		}
+
+		// Mixed without generation proof: release the present subset, keep only
+		// provably-gone targets held, and wait for a later shaping fact.
+		this.deps.store.replaceActiveTmuxHoldAffectedExecutionIds(
+			hold.normalizedSocketPath,
+			hold.incidentId,
+			gone,
+		);
+		for (const id of present) heldExecutionIds.delete(id);
+	}
+
+	private refreshHold(
+		hold: TmuxHoldRow,
+		inspection: TmuxSocketInspection,
+		reason: TmuxHoldReason,
+	): void {
+		this.deps.store.getOrCreateActiveTmuxHold(hold.normalizedSocketPath, {
+			incidentId: hold.incidentId,
+			reason,
+			shape: hold.shape,
+			shapeSource: hold.shapeSource,
+			evidence: {
+				verdict: inspection.verdict,
+				reachablePid: inspection.reachablePid,
+				candidatePids: inspection.candidatePids,
+				scanComplete: inspection.scanComplete,
+			},
+			affectedExecutionIds: hold.affectedExecutionIds,
+		});
+	}
+
+	private async transitionHold(
+		hold: TmuxHoldRow,
+		shape: Exclude<TmuxHoldShape, "provisional">,
+		claimedExecutionIds: string[],
+		inspection: TmuxSocketInspection,
+		heldExecutionIds: Set<string>,
+	): Promise<void> {
+		this.deps.store.getOrCreateActiveTmuxHold(hold.normalizedSocketPath, {
+			incidentId: hold.incidentId,
+			reason: hold.currentReason,
+			shape,
+			shapeSource: "coordinator",
+			evidence: {
+				verdict: inspection.verdict,
+				reachablePid: inspection.reachablePid,
+				candidatePids: inspection.candidatePids,
+				scanComplete: inspection.scanComplete,
+			},
+			affectedExecutionIds: claimedExecutionIds,
+		});
+		const leadIdsByExecutionId: Record<string, string> = {};
+		for (const id of claimedExecutionIds) {
+			const session = this.deps.store.getSession(id);
+			const leadId = session ? this.deps.resolveLeadId(session) : null;
+			if (leadId) leadIdsByExecutionId[id] = leadId;
+		}
+		const transitioned = this.deps.store.transitionTmuxHoldToServerLossEpisode({
+			normalizedSocketPath: hold.normalizedSocketPath,
+			incidentId: hold.incidentId,
+			shape,
+			claimedExecutionIds,
+			leadIdsByExecutionId,
+		});
+		if (transitioned) {
+			for (const id of hold.affectedExecutionIds) heldExecutionIds.delete(id);
+			await this.deps.resolveHoldAlert?.(hold.incidentId);
+		}
+	}
+
+	private resolveHold(hold: TmuxHoldRow, heldExecutionIds: Set<string>): void {
+		if (
+			this.deps.store.resolveTmuxHold(
+				hold.normalizedSocketPath,
+				hold.incidentId,
+			)
+		) {
+			for (const id of hold.affectedExecutionIds) heldExecutionIds.delete(id);
+			void this.deps
+				.resolveHoldAlert?.(hold.incidentId)
+				.catch((error) =>
+					this.log(`hold alert resolve failed: ${String(error)}`),
+				);
+		}
+	}
+
+	private async emitHoldAlerts(hold: TmuxHoldRow): Promise<void> {
+		const ageMs = this.now() - Date.parse(hold.createdAt);
+		const metadata = {
+			tmuxHold: {
+				socketPath: hold.normalizedSocketPath,
+				incidentId: hold.incidentId,
+				reason: hold.currentReason,
+				casualtiesHeld: hold.affectedExecutionIds.length,
+				reachablePid:
+					typeof hold.evidence.reachablePid === "number"
+						? hold.evidence.reachablePid
+						: undefined,
+				orphanPids: Array.isArray(hold.evidence.candidatePids)
+					? (hold.evidence.candidatePids as number[])
+					: undefined,
+			},
+		};
+		if (Number.isFinite(ageMs) && ageMs >= 10 * 60_000) {
+			await this.deps.alert({
+				leadId: "tmux-server",
+				projectName: FLEET_ALERT_PROJECT,
+				eventId: `tmux-hold:${hold.incidentId}`,
+				eventType: "tmux_hold",
+				sessionKey: hold.incidentId,
+				title: `tmux safety hold — ${hold.affectedExecutionIds.length} runner(s) protected`,
+				body: `The canonical tmux socket has remained ${hold.currentReason} for ${Math.floor(
+					ageMs / 60_000,
+				)} minutes. Destructive per-runner actions are suppressed until positive target reconciliation succeeds.`,
+				severity: "severe",
+				metadata,
+			});
+		}
+		if (hold.currentReason === "split_brain") {
+			const pids = [...(metadata.tmuxHold.orphanPids ?? [])]
+				.sort((a, b) => a - b)
+				.join(",");
+			await this.deps.alert({
+				leadId: "tmux-server",
+				projectName: FLEET_ALERT_PROJECT,
+				eventId: `tmux-split-brain:${hold.incidentId}:${pids}`,
+				eventType: "tmux_split_brain",
+				sessionKey: hold.incidentId,
+				title: "tmux split brain — human generation choice required",
+				body: `Multiple tmux server candidates reference ${hold.normalizedSocketPath} (${pids || "unknown pids"}). No signal, create, or reap action will run automatically.`,
+				severity: "severe",
+				metadata,
+			});
+		}
 	}
 
 	/** Over when: ticket landed, no owed Lead remains (notified or terminally

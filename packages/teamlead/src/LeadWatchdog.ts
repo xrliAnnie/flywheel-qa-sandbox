@@ -1150,6 +1150,10 @@ function titleFor(kind: AlertEventType): string {
 			return "Swap pressure high (OOM early warning)";
 		case "tmux_server_lost":
 			return "tmux server lost (fleet-level)";
+		case "tmux_hold":
+			return "tmux safety hold";
+		case "tmux_split_brain":
+			return "tmux split brain";
 		case "bridge_abnormal_exit":
 			return "Bridge died without a clean shutdown";
 		case "infra_bot_down":
@@ -1303,6 +1307,10 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "Machine swap usage crossed the high watermark — OOM early warning. The auto-repair bot places a reversible dispatch pressure-hold and notifies Leads to shed load; the ticket resolves when swap falls below the low watermark.";
 		case "tmux_server_lost":
 			return "The tmux server hosting the runners is gone while sessions were still running. The server-loss coordinator migrates affected runners to their terminal state and notifies each Lead with its casualty list + resume pointers.";
+		case "tmux_hold":
+			return "The Bridge cannot positively prove a safe tmux recovery action. Affected runners remain held until target reconciliation succeeds; follow the FLY-1285 recovery runbook if this persists.";
+		case "tmux_split_brain":
+			return "Multiple tmux server generations appear to reference the canonical socket. The system will not choose or signal one automatically; a human must establish the authoritative generation.";
 		case "bridge_abnormal_exit":
 			return "The Bridge process exited without a clean shutdown (fatal exit / kill). launchd respawns it; the revived Bridge opens this ticket, runs boot reconcile, and resolves quietly when the self-check passes.";
 		case "infra_bot_down":

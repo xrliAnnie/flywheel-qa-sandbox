@@ -13,11 +13,12 @@ import type { AdapterExecutionContext } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // We'll test TmuxAdapter by injecting a mock execFileFn
-import type { ExecFileFn } from "../src/TmuxAdapter.js";
+import type { AsyncExecFileFn, ExecFileFn } from "../src/TmuxAdapter.js";
 import {
 	ensureRunnerSession,
 	pruneScaffoldWindow,
 	TmuxAdapter,
+	TmuxSessionHoldError,
 } from "../src/TmuxAdapter.js";
 
 // ─── Helpers ─────────────────────────────────────
@@ -2006,67 +2007,131 @@ describe("pruneScaffoldWindow (FLY-758)", () => {
 describe("ensureRunnerSession (FLY-758)", () => {
 	function renameCalls(calls: ExecCall[]): ExecCall[] {
 		return calls.filter(
-			(c) => c.cmd === "tmux" && c.args[0] === "rename-window",
+			(c) => c.cmd === "tmux" && c.args.includes("rename-window"),
 		);
 	}
 
 	function mockExec(opts: { sessionExists?: boolean; scaffoldId?: string }): {
 		fn: ExecFileFn;
+		asyncFn: AsyncExecFileFn;
 		calls: ExecCall[];
 	} {
 		const calls: ExecCall[] = [];
 		const fn: ExecFileFn = (cmd, args) => {
 			calls.push({ cmd, args });
-			if (cmd === "tmux" && args[0] === "has-session") {
-				if (!opts.sessionExists) throw new Error("session not found");
-				return { stdout: "" };
-			}
-			if (cmd === "tmux" && args[0] === "new-session") {
-				// the -P -F form returns the created scaffold window id
-				return { stdout: args.includes("-P") ? (opts.scaffoldId ?? "@0") : "" };
-			}
 			return { stdout: "" };
 		};
-		return { fn, calls };
+		const asyncFn: AsyncExecFileFn = async (cmd, args) => {
+			calls.push({ cmd, args });
+			return {
+				stdout: JSON.stringify({
+					action: opts.sessionExists ? "verified" : "created",
+					createStdout: opts.sessionExists ? "" : (opts.scaffoldId ?? "@0"),
+					reachablePid: 100,
+				}),
+				stderr: "",
+			};
+		};
+		return { fn, asyncFn, calls };
 	}
 
-	it("creates the session and renames the scaffold window to zsh (runner-* session)", () => {
-		const { fn, calls } = mockExec({ sessionExists: false, scaffoldId: "@0" });
-		ensureRunnerSession(fn, "runner-test");
+	it("creates the session through the guard and renames the scaffold window to zsh (runner-* session)", async () => {
+		const { fn, asyncFn, calls } = mockExec({
+			sessionExists: false,
+			scaffoldId: "@0",
+		});
+		await ensureRunnerSession(fn, "runner-test", { asyncExecFileFn: asyncFn });
+		expect(calls[0].cmd).toContain("tmux-server-rescue");
+		expect(calls[0].args).toContain("--verify");
+		expect(calls[0].args).toContain("--create");
 		const rn = renameCalls(calls);
 		expect(rn).toHaveLength(1);
-		expect(rn[0].args).toEqual(["rename-window", "-t", "@0", "zsh"]);
+		expect(rn[0].args).toEqual(
+			expect.arrayContaining(["rename-window", "-t", "@0", "zsh"]),
+		);
 	});
 
-	it("does not create or rename when the session already exists", () => {
-		const { fn, calls } = mockExec({ sessionExists: true });
-		ensureRunnerSession(fn, "runner-test");
-		expect(calls.filter((c) => c.args[0] === "new-session")).toHaveLength(0);
+	it("does not issue any unguarded tmux create when the session already exists", async () => {
+		const { fn, asyncFn, calls } = mockExec({ sessionExists: true });
+		await ensureRunnerSession(fn, "runner-test", { asyncExecFileFn: asyncFn });
+		expect(
+			calls.filter((c) => c.cmd === "tmux" && c.args[0] === "new-session"),
+		).toHaveLength(0);
 		expect(renameCalls(calls)).toHaveLength(0);
 	});
 
-	it("never renames a non-runner session's scaffold (but still creates it)", () => {
-		const { fn, calls } = mockExec({ sessionExists: false, scaffoldId: "@0" });
-		ensureRunnerSession(fn, "flywheel");
+	it("never renames a non-runner session's scaffold (but still guards it)", async () => {
+		const { fn, asyncFn, calls } = mockExec({
+			sessionExists: false,
+			scaffoldId: "@0",
+		});
+		await ensureRunnerSession(fn, "flywheel", { asyncExecFileFn: asyncFn });
 		expect(renameCalls(calls)).toHaveLength(0);
-		expect(calls.some((c) => c.args[0] === "new-session")).toBe(true);
+		expect(calls.some((c) => c.cmd.includes("tmux-server-rescue"))).toBe(true);
 	});
 
-	it("falls back to a plain create when -P/-F throws, and never throws", () => {
-		const calls: ExecCall[] = [];
-		const fn: ExecFileFn = (cmd, args) => {
-			calls.push({ cmd, args });
-			if (cmd === "tmux" && args[0] === "has-session")
-				throw new Error("not found");
-			if (cmd === "tmux" && args[0] === "new-session" && args.includes("-P")) {
-				throw new Error("-P unsupported");
-			}
-			return { stdout: "" };
+	it("fails closed with a typed hold instead of falling back to plain create", async () => {
+		const fn: ExecFileFn = () => ({ stdout: "" });
+		const asyncFn: AsyncExecFileFn = async () => {
+			const err = new Error("guarded hold") as Error & {
+				code: number;
+				stdout: string;
+			};
+			err.code = 2;
+			err.stdout = JSON.stringify({
+				action: "hold_saturated",
+				evidence: { reason: "socket_present_unreachable" },
+			});
+			throw err;
 		};
-		expect(() => ensureRunnerSession(fn, "runner-test")).not.toThrow();
-		const ns = calls.filter((c) => c.args[0] === "new-session");
-		expect(ns).toHaveLength(2); // -P -F attempt (threw) + plain fallback
-		expect(ns[1].args).toEqual(["new-session", "-d", "-s", "runner-test"]);
-		expect(renameCalls(calls)).toHaveLength(0); // no id → no rename
+		await expect(
+			ensureRunnerSession(fn, "runner-test", {
+				asyncExecFileFn: asyncFn,
+				deadlineMs: 1,
+				retryDelayMs: 0,
+			}),
+		).rejects.toMatchObject({ kind: "saturated" });
+	});
+
+	it("rejects an exit-0 helper payload whose action is not a success verdict", async () => {
+		const fn: ExecFileFn = () => ({ stdout: "" });
+		const asyncFn: AsyncExecFileFn = async () => ({
+			stdout: JSON.stringify({
+				action: "hold_unknown",
+				reachablePid: 100,
+			}),
+			stderr: "",
+		});
+		await expect(
+			ensureRunnerSession(fn, "runner-test", {
+				asyncExecFileFn: asyncFn,
+				deadlineMs: 1,
+				retryDelayMs: 0,
+			}),
+		).rejects.toMatchObject({
+			kind: "unknown",
+			evidence: { reason: "invalid_helper_output" },
+		});
+	});
+
+	it("a hung first guard probe yields the event loop and expires as a typed hold", async () => {
+		vi.useFakeTimers();
+		const fn: ExecFileFn = () => ({ stdout: "" });
+		const asyncFn: AsyncExecFileFn = () => new Promise(() => {});
+		let timerServed = false;
+		setTimeout(() => {
+			timerServed = true;
+		}, 5);
+		const pending = ensureRunnerSession(fn, "runner-test", {
+			asyncExecFileFn: asyncFn,
+			deadlineMs: 20,
+			retryDelayMs: 1,
+		});
+		const rejection =
+			expect(pending).rejects.toBeInstanceOf(TmuxSessionHoldError);
+		await vi.advanceTimersByTimeAsync(25);
+		expect(timerServed).toBe(true);
+		await rejection;
+		vi.useRealTimers();
 	});
 });

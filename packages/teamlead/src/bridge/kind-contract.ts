@@ -182,6 +182,18 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		remediationRef:
 			"server-loss coordinator：成组终态迁移 + 按 Lead 分组通知带 resume 指针 (FLY-1082)",
 	},
+	tmux_hold: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef:
+			"inspect the durable tmux hold and follow the FLY-1285 recovery runbook",
+	},
+	tmux_split_brain: {
+		owner: "founder_direct",
+		arc: "human_by_design",
+		remediationRef:
+			"choose the authoritative tmux generation before any signal/create/reap",
+	},
 	bridge_abnormal_exit: {
 		owner: "claude",
 		arc: "auto",
@@ -229,6 +241,14 @@ export const FLEET_ESCALATION_COPY: Partial<
 		label: "承载 runner 的 tmux server 丢了",
 		decision:
 			"有 Lead 没收到阵亡通知或没动手：要不要点名让它复活自己的 runner？",
+	},
+	tmux_hold: {
+		label: "tmux 安全证据不足，runner 已暂停处置",
+		decision: "要不要按 runbook 人工确认 tmux server 世代并解除 hold？",
+	},
+	tmux_split_brain: {
+		label: "tmux 出现多个冲突世代",
+		decision: "请确认哪一个 tmux server 世代应保留；系统不会自动选。",
 	},
 	bridge_abnormal_exit: {
 		label: "Bridge 非正常退出",

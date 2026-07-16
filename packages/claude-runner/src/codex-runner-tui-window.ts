@@ -20,6 +20,9 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 
 const SAFE_PATH = /^[A-Za-z0-9_./-]+$/; // absolute paths, no quotes/spaces/metachars
 const SAFE_ID = /^[A-Za-z0-9-]+$/; // thread ids are UUID-shaped
@@ -93,6 +96,8 @@ export function buildRunnerTuiCommand(spec: RunnerTuiWindowSpec): string {
 export interface RunnerTuiWindowDeps {
 	exec?: (cmd: string, args: string[]) => { ok: boolean };
 	execOut?: (cmd: string, args: string[]) => string | undefined;
+	/** Guarded shared-session ensure. Production uses tmux-server-rescue. */
+	ensureSession?: (tmuxSession: string) => boolean;
 	log?: (m: string) => void;
 	/** Block for `ms` (default: a real synchronous sleep). Injected in tests. */
 	sleep?: (ms: number) => void;
@@ -105,9 +110,61 @@ export interface RunnerTuiWindowDeps {
 	settleMs?: number;
 }
 
+function tmuxSocketPath(): string {
+	const override = process.env.FLYWHEEL_TMUX_SOCKET_OVERRIDE?.trim();
+	if (override?.startsWith("/")) return resolve(override);
+	let tmp = "/tmp";
+	try {
+		tmp = realpathSync("/tmp");
+	} catch {
+		// tmux itself defaults to /tmp when the symlink cannot be resolved.
+	}
+	const uid = process.getuid?.();
+	if (!Number.isSafeInteger(uid) || (uid ?? -1) < 0) {
+		throw new Error("runner-tui-window: cannot determine tmux socket uid");
+	}
+	return join(tmp, `tmux-${uid}`, "default");
+}
+
+function defaultEnsureSession(tmuxSession: string): boolean {
+	const socket = tmuxSocketPath();
+	const cli = join(homedir(), ".flywheel", "bin", "tmux-server-rescue");
+	const result = spawnSync(
+		cli,
+		[
+			"ensure",
+			socket,
+			"--verify",
+			"tmux",
+			"-S",
+			socket,
+			"has-session",
+			"-t",
+			`=${tmuxSession}`,
+			"--create",
+			"tmux",
+			"-S",
+			socket,
+			"new-session",
+			"-Ad",
+			"-s",
+			tmuxSession,
+		],
+		{ stdio: "ignore", timeout: 90_000 },
+	);
+	return result.status === 0;
+}
+
 function defaultExec(cmd: string, args: string[]): { ok: boolean } {
 	try {
-		const r = spawnSync(cmd, args, { stdio: "ignore", timeout: 10_000 });
+		const effectiveArgs =
+			cmd === "tmux" && process.env.FLYWHEEL_TMUX_SOCKET_OVERRIDE
+				? ["-S", tmuxSocketPath(), ...args]
+				: args;
+		const r = spawnSync(cmd, effectiveArgs, {
+			stdio: "ignore",
+			timeout: 10_000,
+		});
 		return { ok: r.status === 0 };
 	} catch {
 		return { ok: false };
@@ -116,7 +173,14 @@ function defaultExec(cmd: string, args: string[]): { ok: boolean } {
 
 function defaultExecOut(cmd: string, args: string[]): string | undefined {
 	try {
-		const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 5_000 });
+		const effectiveArgs =
+			cmd === "tmux" && process.env.FLYWHEEL_TMUX_SOCKET_OVERRIDE
+				? ["-S", tmuxSocketPath(), ...args]
+				: args;
+		const r = spawnSync(cmd, effectiveArgs, {
+			encoding: "utf8",
+			timeout: 5_000,
+		});
 		return r.status === 0 ? r.stdout.trim() : undefined;
 	} catch {
 		return undefined;
@@ -175,6 +239,7 @@ function purgeSameNameWindows(
 	spec: Pick<RunnerTuiWindowSpec, "tmuxSession" | "windowName">,
 	exec: (cmd: string, args: string[]) => { ok: boolean },
 	execOut: (cmd: string, args: string[]) => string | undefined,
+	ensureSession: (tmuxSession: string) => boolean,
 ): boolean {
 	const sessionTarget = `=${spec.tmuxSession}`;
 	const listWindows = (): Array<{ id: string; name: string }> | undefined => {
@@ -207,7 +272,7 @@ function purgeSameNameWindows(
 	// Killing a session's LAST window destroys the session — re-ensure it. A no-op
 	// if it survived; recreates the session (with a DIFFERENT-named scaffold window)
 	// if the purge emptied it, so the verify listing below can still run.
-	exec("tmux", ["new-session", "-Ad", "-s", spec.tmuxSession]);
+	if (!ensureSession(spec.tmuxSession)) return false;
 	const after = listWindows();
 	if (after === undefined) return false; // verify listing failed → cannot prove clean
 	return !after.some((w) => w.name === spec.windowName);
@@ -231,6 +296,12 @@ export function ensureRunnerTuiWindow(
 ): RunnerTuiWindowOutcome {
 	const exec = deps.exec ?? defaultExec;
 	const execOut = deps.execOut ?? defaultExecOut;
+	const ensureSession =
+		deps.ensureSession ??
+		(deps.exec
+			? (session: string) =>
+					exec("tmux", ["new-session", "-Ad", "-s", session]).ok
+			: defaultEnsureSession);
 	assertShellSafe("tmuxSession", spec.tmuxSession, SAFE_NAME);
 	assertShellSafe("windowName", spec.windowName, SAFE_NAME);
 	try {
@@ -241,9 +312,15 @@ export function ensureRunnerTuiWindow(
 			);
 			return { created: false, reason: "tmux-absent" };
 		}
-		exec("tmux", ["new-session", "-Ad", "-s", spec.tmuxSession]);
+		if (!ensureSession(spec.tmuxSession)) {
+			safeLog(
+				deps.log,
+				`runner-tui-window: guarded tmux session ensure held — skipping (${spec.windowName})`,
+			);
+			return { created: false, reason: "create-failed" };
+		}
 		// FLY-1239: prove no stale/duplicate same-named window remains before create.
-		if (!purgeSameNameWindows(spec, exec, execOut)) {
+		if (!purgeSameNameWindows(spec, exec, execOut, ensureSession)) {
 			safeLog(
 				deps.log,
 				`runner-tui-window: could not prove the session is free of stale '${spec.windowName}' windows — skipping create this attempt (non-fatal, run unaffected)`,

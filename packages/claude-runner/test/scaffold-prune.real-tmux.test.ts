@@ -14,6 +14,7 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	defaultExecFile,
@@ -36,7 +37,48 @@ function tmuxUsable(): boolean {
 	spawnSync("tmux", ["kill-session", "-t", `=${probe}`], { stdio: "ignore" });
 	return true;
 }
-const describeReal = tmuxUsable() ? describe : describe.skip;
+const rescueCliPath = join(
+	process.cwd(),
+	"../../scripts/lib/tmux-server-rescue.sh",
+);
+
+// The production guard needs a complete same-UID process scan before it may
+// create a session. Some test sandboxes permit tmux socket operations but deny
+// `ps`; that is an intentional fail-closed hold, so only the guard-dependent
+// probes skip there. The remaining real-tmux prune coverage still runs.
+function rescueGuardUsable(): boolean {
+	const socket = spawnSync(
+		"tmux",
+		["display-message", "-p", "#{socket_path}"],
+		{
+			encoding: "utf8",
+			timeout: 5000,
+		},
+	);
+	if (socket.status !== 0 || !socket.stdout.trim()) return false;
+	const inspection = spawnSync(
+		rescueCliPath,
+		["inspect", socket.stdout.trim()],
+		{
+			encoding: "utf8",
+			timeout: 5000,
+		},
+	);
+	if (inspection.status !== 0) return false;
+	try {
+		const parsed = JSON.parse(inspection.stdout) as {
+			verdict?: string;
+			scanComplete?: boolean;
+		};
+		return parsed.verdict === "reachable" && parsed.scanComplete === true;
+	} catch {
+		return false;
+	}
+}
+
+const realTmuxUsable = tmuxUsable();
+const describeReal = realTmuxUsable ? describe : describe.skip;
+const itWithRescueGuard = realTmuxUsable && rescueGuardUsable() ? it : it.skip;
 
 interface Win {
 	id: string;
@@ -91,53 +133,63 @@ describeReal("FLY-758 scaffold prune (real tmux)", () => {
 		expect(listWindows(s).map((w) => w.name)).toContain("tmux");
 	});
 
-	it("ensureRunnerSession names the scaffold zsh immediately, and prune removes it after new-window", () => {
-		const s = newSessionName();
-		// Fix path: create + normalize the scaffold name at millisecond time.
-		ensureRunnerSession(defaultExecFile, s);
-		const before = listWindows(s);
-		expect(before).toHaveLength(1);
-		expect(before[0].name).toBe("zsh"); // race defeated — named zsh right away
+	itWithRescueGuard(
+		"ensureRunnerSession names the scaffold zsh immediately, and prune removes it after new-window",
+		async () => {
+			const s = newSessionName();
+			// Fix path: create + normalize the scaffold name at millisecond time.
+			await ensureRunnerSession(defaultExecFile, s, {
+				rescueCliPath,
+			});
+			const before = listWindows(s);
+			expect(before).toHaveLength(1);
+			expect(before[0].name).toBe("zsh"); // race defeated — named zsh right away
 
-		// Add a real runner-like window (mirrors TmuxAdapter.execute's new-window).
-		const runnerWid = execFileSync(
-			"tmux",
-			[
-				"new-window",
-				"-t",
-				`=${s}`,
-				"-P",
-				"-F",
-				"#{window_id}",
-				"-n",
-				"GEO-436-claude-fix",
-			],
-			{ encoding: "utf8", timeout: 5000 },
-		).trim();
-		expect(listWindows(s)).toHaveLength(2);
+			// Add a real runner-like window (mirrors TmuxAdapter.execute's new-window).
+			const runnerWid = execFileSync(
+				"tmux",
+				[
+					"new-window",
+					"-t",
+					`=${s}`,
+					"-P",
+					"-F",
+					"#{window_id}",
+					"-n",
+					"GEO-436-claude-fix",
+				],
+				{ encoding: "utf8", timeout: 5000 },
+			).trim();
+			expect(listWindows(s)).toHaveLength(2);
 
-		// Prune — the exact call TmuxAdapter.execute makes.
-		pruneScaffoldWindow(defaultExecFile, s, runnerWid);
+			// Prune — the exact call TmuxAdapter.execute makes.
+			pruneScaffoldWindow(defaultExecFile, s, runnerWid);
 
-		const after = listWindows(s);
-		expect(after).toHaveLength(1);
-		expect(after[0].id).toBe(runnerWid); // only the runner window remains
-		expect(after.map((w) => w.name)).not.toContain("zsh"); // scaffold gone
-	});
+			const after = listWindows(s);
+			expect(after).toHaveLength(1);
+			expect(after[0].id).toBe(runnerWid); // only the runner window remains
+			expect(after.map((w) => w.name)).not.toContain("zsh"); // scaffold gone
+		},
+	);
 
-	it("never kills the keepWindowId even when it is the zsh-named window (defense in depth)", () => {
-		const s = newSessionName();
-		ensureRunnerSession(defaultExecFile, s); // scaffold named zsh
-		const scaffoldId = listWindows(s)[0].id;
-		execFileSync(
-			"tmux",
-			["new-window", "-t", `=${s}`, "-n", "GEO-1-claude-a"],
-			{ timeout: 5000 },
-		);
-		// Pass the zsh scaffold's own id as keepWindowId → it must be skipped.
-		pruneScaffoldWindow(defaultExecFile, s, scaffoldId);
-		expect(listWindows(s).map((w) => w.name)).toContain("zsh"); // survived
-	});
+	itWithRescueGuard(
+		"never kills the keepWindowId even when it is the zsh-named window (defense in depth)",
+		async () => {
+			const s = newSessionName();
+			await ensureRunnerSession(defaultExecFile, s, {
+				rescueCliPath,
+			}); // scaffold named zsh
+			const scaffoldId = listWindows(s)[0].id;
+			execFileSync(
+				"tmux",
+				["new-window", "-t", `=${s}`, "-n", "GEO-1-claude-a"],
+				{ timeout: 5000 },
+			);
+			// Pass the zsh scaffold's own id as keepWindowId → it must be skipped.
+			pruneScaffoldWindow(defaultExecFile, s, scaffoldId);
+			expect(listWindows(s).map((w) => w.name)).toContain("zsh"); // survived
+		},
+	);
 
 	it("never prunes when only the runner window exists (>=2 guard, never kills the session)", () => {
 		const s = newSessionName();

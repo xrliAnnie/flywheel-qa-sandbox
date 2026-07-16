@@ -401,6 +401,35 @@ describe("syncFlywheelCliBin", () => {
 		expect(await readlink(linkPath)).toBe(sourcePath);
 	});
 
+	it("FLY-1285: default allowlist deploys the tmux rescue CLI executable", async () => {
+		await writeCliSource();
+		const rescueSource = join(
+			ctx.repoRoot,
+			"scripts",
+			"lib",
+			"tmux-server-rescue.sh",
+		);
+		await mkdir(dirOf(rescueSource), { recursive: true });
+		await writeFile(rescueSource, "#!/bin/bash\necho rescue\n");
+		await chmod(rescueSource, 0o644);
+
+		const result = await syncFlywheelCliBin({
+			repoRoot: ctx.repoRoot,
+			binDir: ctx.binDir,
+			log: () => {},
+		});
+
+		expect(result.synced).toEqual([
+			"agent-team-transport",
+			"tmux-server-rescue",
+		]);
+		expect(await readlink(join(ctx.binDir, "tmux-server-rescue"))).toBe(
+			rescueSource,
+		);
+		const sourceMode = await stat(rescueSource);
+		expect(sourceMode.mode & 0o755).toBe(0o755);
+	});
+
 	it("idempotent: matching symlink target → matched, not re-synced", async () => {
 		const sourcePath = await writeCliSource();
 		await mkdir(ctx.binDir, { recursive: true });
@@ -471,7 +500,10 @@ describe("syncFlywheelCliBin", () => {
 			log: () => {},
 		});
 
-		expect(result.missingSource).toEqual(["agent-team-transport"]);
+		expect(result.missingSource).toEqual([
+			"agent-team-transport",
+			"tmux-server-rescue",
+		]);
 		expect(result.synced).toEqual([]);
 		expect(result.errors).toEqual([]);
 	});
