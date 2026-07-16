@@ -1,13 +1,13 @@
 ---
 issue: FLY-1066
 phase: implement
-phaseCursor: 1/6
-updated: 2026-07-16T17:04:58.873Z
-nextStep: "A2 RED: bounded async terminal CommDB sync queue and five wiring surfaces"
+phaseCursor: 2/6
+updated: 2026-07-16T17:15:36.745Z
+nextStep: A3/A4 audit dispatcher pre-registration cleanup and teardown ownership pins
 chunks: []
 pointers: {}
 ---
 
 # FLY-1066 progress
-**phase**: implement (1/6)
-**next**: A2 RED: bounded async terminal CommDB sync queue and five wiring surfaces
+**phase**: implement (2/6)
+**next**: A3/A4 audit dispatcher pre-registration cleanup and teardown ownership pins
