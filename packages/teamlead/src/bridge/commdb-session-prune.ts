@@ -10,8 +10,10 @@
  * Two surfaces — mirroring the FLY-324 live-handler + boot-sweep shape:
  *   1. `finalizeCommDbSession` — live cleanup. Atomically retires unresolved
  *      gates and deletes the session once the tmux window is gone.
- *   2. `pruneDeadTerminalCommDbSessions` — one-shot boot sweep. Clears the
- *      EXISTING backlog: every terminal row whose tmux window is provably gone.
+ *   2. `pruneDeadTerminalCommDbSessions` — boot/maintenance sweep. Clears the
+ *      EXISTING backlog: every eligible terminal row whose tmux window is
+ *      provably gone. FLY-1066 extends eligibility to failed/blocked only while
+ *      its residue-harvest kill-switch is enabled.
  *
  * Safety: only terminal (completed/timeout) rows are swept, and only when the
  * tmux probe says the window is gone — a still-alive parked runner's row is left
@@ -117,6 +119,8 @@ export async function pruneDeadTerminalCommDbSessions(
 	projectName: string,
 	opts: {
 		dbPath?: string;
+		/** FLY-1066: include failed/blocked CRASH_PRESERVE rows. */
+		includeCrashPreserve?: boolean;
 		probe?: (tmuxWindow: string) => Promise<TmuxWindowProbe>;
 		onFinalizeOutcome?: (
 			executionId: string,
@@ -138,7 +142,12 @@ export async function pruneDeadTerminalCommDbSessions(
 	let db: CommDB | undefined;
 	try {
 		db = new CommDB(dbPath);
-		const terminal = db.listSessions(projectName, ["completed", "timeout"]);
+		const terminal = db.listSessions(
+			projectName,
+			opts.includeCrashPreserve
+				? ["completed", "timeout", "failed", "blocked"]
+				: ["completed", "timeout"],
+		);
 		result.scanned = terminal.length;
 		for (const s of terminal) {
 			// Delete ONLY on a proven-dead window. `alive` (parked) and

@@ -20,6 +20,7 @@ export interface ResidueHarvesterDeps {
 	/** FLYWHEEL_COMMDB_FSM_RECONCILE gates only the CommDB-running face. */
 	commDbFsmEnabled: boolean;
 	harvestCommDb: (projectName: string) => Promise<unknown>;
+	pruneTerminalCommDb: (projectName: string) => Promise<unknown>;
 	harvestStateStoreGhosts: (projectName: string) => Promise<unknown>;
 	resolveOrphanEscalations: () => unknown;
 	reapStateStoreGhost: (session: Session) => Promise<boolean>;
@@ -47,6 +48,13 @@ export function createResidueHarvester(
 								`[residue-harvest] CommDB pass failed for ${projectName} (non-fatal): ${(err as Error).message}`,
 							);
 						}
+					}
+					try {
+						await deps.pruneTerminalCommDb(projectName);
+					} catch (err) {
+						log(
+							`[residue-harvest] terminal CommDB prune failed for ${projectName} (non-fatal): ${(err as Error).message}`,
+						);
 					}
 					try {
 						await deps.harvestStateStoreGhosts(projectName);
@@ -98,9 +106,12 @@ export interface ResidueAwareBootSweepDeps {
 export async function runResidueAwareBootSweep(
 	deps: ResidueAwareBootSweepDeps,
 ): Promise<void> {
-	if (deps.residueHarvester) await deps.residueHarvester.runFullPass();
+	if (deps.residueHarvester) {
+		await deps.residueHarvester.runFullPass();
+		return;
+	}
 	for (const projectName of new Set(deps.projectNames)) {
-		if (!deps.residueHarvester && deps.commDbFsmEnabled) {
+		if (deps.commDbFsmEnabled) {
 			await deps.runLegacyCommDbFsm(projectName);
 		}
 		await deps.pruneCommDb(projectName);

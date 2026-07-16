@@ -32,6 +32,9 @@ describe("createResidueHarvester", () => {
 				calls.push(`comm:${project}`);
 				if (project === "flywheel") throw new Error("comm locked");
 			}),
+			pruneTerminalCommDb: vi.fn(async (project) => {
+				calls.push(`prune:${project}`);
+			}),
 			harvestStateStoreGhosts: vi.fn(async (project) => {
 				calls.push(`state:${project}`);
 			}),
@@ -43,8 +46,10 @@ describe("createResidueHarvester", () => {
 		expect(await harvester.runFullPass()).toBe("completed");
 		expect(calls).toEqual([
 			"comm:flywheel",
+			"prune:flywheel",
 			"state:flywheel",
 			"comm:joycon",
+			"prune:joycon",
 			"state:joycon",
 			"global",
 		]);
@@ -52,12 +57,14 @@ describe("createResidueHarvester", () => {
 
 	it("FLYWHEEL_COMMDB_FSM_RECONCILE=0 gates only face ①/②", async () => {
 		const harvestCommDb = vi.fn(async () => {});
+		const pruneTerminalCommDb = vi.fn(async () => {});
 		const harvestStateStoreGhosts = vi.fn(async () => {});
 		const resolveOrphanEscalations = vi.fn(() => undefined);
 		const harvester = createResidueHarvester({
 			projectNames: ["flywheel"],
 			commDbFsmEnabled: false,
 			harvestCommDb,
+			pruneTerminalCommDb,
 			harvestStateStoreGhosts,
 			resolveOrphanEscalations,
 			reapStateStoreGhost: vi.fn(async () => false),
@@ -65,6 +72,7 @@ describe("createResidueHarvester", () => {
 
 		await harvester.runFullPass();
 		expect(harvestCommDb).not.toHaveBeenCalled();
+		expect(pruneTerminalCommDb).toHaveBeenCalledExactlyOnceWith("flywheel");
 		expect(harvestStateStoreGhosts).toHaveBeenCalledOnce();
 		expect(resolveOrphanEscalations).toHaveBeenCalledOnce();
 	});
@@ -75,6 +83,7 @@ describe("createResidueHarvester", () => {
 			projectNames: ["flywheel"],
 			commDbFsmEnabled: false,
 			harvestCommDb: vi.fn(async () => {}),
+			pruneTerminalCommDb: vi.fn(async () => {}),
 			harvestStateStoreGhosts: vi.fn(async () => {}),
 			resolveOrphanEscalations: vi.fn(),
 			reapStateStoreGhost,
@@ -94,6 +103,7 @@ describe("createResidueHarvester", () => {
 			projectNames: ["flywheel"],
 			commDbFsmEnabled: true,
 			harvestCommDb: vi.fn(async () => held),
+			pruneTerminalCommDb: vi.fn(async () => {}),
 			harvestStateStoreGhosts: vi.fn(async () => {}),
 			resolveOrphanEscalations: vi.fn(),
 			reapStateStoreGhost,
@@ -126,10 +136,7 @@ describe("runResidueAwareBootSweep", () => {
 
 		expect(runFullPass).toHaveBeenCalledOnce();
 		expect(legacy).not.toHaveBeenCalled();
-		expect(prune.mock.calls.map(([project]) => project)).toEqual([
-			"flywheel",
-			"joycon",
-		]);
+		expect(prune).not.toHaveBeenCalled();
 	});
 
 	it("flag OFF preserves the legacy FLY-817 + FLY-638 per-project order and makes zero new calls", async () => {
@@ -186,7 +193,7 @@ describe("runResidueAwareBootSweep", () => {
 
 		expect(runFullPass).toHaveBeenCalledOnce();
 		expect(legacy).not.toHaveBeenCalled();
-		expect(prune).toHaveBeenCalledExactlyOnceWith("flywheel");
+		expect(prune).not.toHaveBeenCalled();
 	});
 });
 
@@ -209,6 +216,8 @@ describe("plugin production wiring", () => {
 		expect(source).toContain("reconcileGhost: opts?.residueHarvester");
 		expect(source).toContain("residueHarvester,");
 		expect(source).toContain("runResidueAwareBootSweep({");
+		expect(source).toContain("pruneTerminalCommDb: pruneResidueCommDb");
+		expect(source).toContain("includeCrashPreserve: residueHarvestEnabled");
 
 		const maintenanceStart = source.indexOf("async (tick) => {");
 		const residueTick = source.indexOf(

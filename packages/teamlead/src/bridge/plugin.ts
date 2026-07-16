@@ -4699,6 +4699,37 @@ export async function startBridge(
 		},
 		log: (message) => console.warn(message),
 	};
+	const recordResidueFinalizeOutcome = (
+		executionId: string,
+		projectName: string,
+		result: ReturnType<typeof finalizeCommDbSession>,
+	) => {
+		const session = store.getSession(executionId);
+		store.recordCommDbFinalizeOutcome({
+			executionId,
+			issueId: session?.issue_id ?? executionId,
+			projectName,
+			ok: result.ok,
+			error: result.error,
+		});
+	};
+	const pruneResidueCommDb = async (projectName: string) => {
+		try {
+			const pruned = await pruneDeadTerminalCommDbSessions(projectName, {
+				includeCrashPreserve: residueHarvestEnabled,
+				onFinalizeOutcome: recordResidueFinalizeOutcome,
+			});
+			if (pruned.pruned > 0) {
+				console.log(
+					`[Bridge] CommDB terminal prune (${projectName}): scanned=${pruned.scanned} pruned=${pruned.pruned} kept=${pruned.kept}`,
+				);
+			}
+		} catch (err) {
+			console.error(
+				`[Bridge] CommDB terminal prune (${projectName}) failed (non-fatal): ${(err as Error).message}`,
+			);
+		}
+	};
 	const residueHarvester = residueHarvestEnabled
 		? createResidueHarvester({
 				projectNames: projects.map((project) => project.projectName),
@@ -4730,6 +4761,7 @@ export async function startBridge(
 						);
 					}
 				},
+				pruneTerminalCommDb: pruneResidueCommDb,
 				harvestStateStoreGhosts: async (projectName) => {
 					const result = await reconcileStateStoreGhosts(
 						projectName,
@@ -5789,26 +5821,12 @@ export async function startBridge(
 	// disjoint (running vs completed/timeout). `FLYWHEEL_COMMDB_FSM_RECONCILE=0`
 	// disables the reconcile (kill-switch, mirrors FLYWHEEL_CRASH_REAPER).
 	{
-		const recordFinalizeOutcome = (
-			executionId: string,
-			projectName: string,
-			result: ReturnType<typeof finalizeCommDbSession>,
-		) => {
-			const session = store.getSession(executionId);
-			store.recordCommDbFinalizeOutcome({
-				executionId,
-				issueId: session?.issue_id ?? executionId,
-				projectName,
-				ok: result.ok,
-				error: result.error,
-			});
-		};
 		const runLegacyCommDbFsm = async (projectName: string) => {
 			try {
 				const result = await reconcileCommDbRunningAgainstFsm(
 					projectName,
 					(executionId) => store.getSession(executionId)?.status,
-					{ onFinalizeOutcome: recordFinalizeOutcome },
+					{ onFinalizeOutcome: recordResidueFinalizeOutcome },
 				);
 				if (result.reconciled > 0) {
 					console.log(
@@ -5821,28 +5839,12 @@ export async function startBridge(
 				);
 			}
 		};
-		const pruneCommDb = async (projectName: string) => {
-			try {
-				const pruned = await pruneDeadTerminalCommDbSessions(projectName, {
-					onFinalizeOutcome: recordFinalizeOutcome,
-				});
-				if (pruned.pruned > 0) {
-					console.log(
-						`[Bridge] FLY-638 CommDB prune (${projectName}): scanned=${pruned.scanned} pruned=${pruned.pruned} kept=${pruned.kept} stale terminal rows removed`,
-					);
-				}
-			} catch (err) {
-				console.error(
-					`[Bridge] FLY-638 CommDB prune (${projectName}) failed (non-fatal): ${(err as Error).message}`,
-				);
-			}
-		};
 		void runResidueAwareBootSweep({
 			projectNames: projects.map((project) => project.projectName),
 			residueHarvester,
 			commDbFsmEnabled: commDbFsmReconcileEnabled,
 			runLegacyCommDbFsm,
-			pruneCommDb,
+			pruneCommDb: pruneResidueCommDb,
 		}).catch((err) =>
 			console.error(
 				`[Bridge] CommDB boot sweep failed (non-fatal): ${(err as Error).message}`,
