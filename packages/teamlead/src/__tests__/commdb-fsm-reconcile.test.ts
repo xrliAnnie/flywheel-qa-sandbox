@@ -16,6 +16,7 @@ import {
 	RECONCILE_DELETABLE_STATES,
 	reconcileCommDbRunningAgainstFsm,
 } from "../bridge/commdb-fsm-reconcile.js";
+import { pruneDeadTerminalCommDbSessions } from "../bridge/commdb-session-prune.js";
 
 describe("commdb-fsm-reconcile (FLY-817)", () => {
 	let dir: string;
@@ -286,6 +287,34 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 		expect(res.reconciled).toBe(0);
 		expect(db.getSession("c1")).toBeDefined();
 		expect(db.getSession("t1")).toBeDefined();
+	});
+
+	it("FLY-1066 B2: Layer 1 mark leaves the running scan, then terminal prune converges it", async () => {
+		seedRunning("marked-failed", "base:@marked");
+		db.markSessionTerminalStatus("marked-failed", "failed");
+
+		const runningPass = await reconcileCommDbRunningAgainstFsm(
+			"flywheel",
+			fsmFrom({ "marked-failed": "failed" }),
+			{
+				dbPath,
+				probe: async () => "dead",
+				harvest: {
+					orphanMinAgeMs: 24 * 60 * 60 * 1000,
+					nowMs: () => Date.now(),
+				},
+			},
+		);
+		expect(runningPass.scanned).toBe(0);
+		expect(db.getSession("marked-failed")?.status).toBe("failed");
+
+		const terminalPass = await pruneDeadTerminalCommDbSessions("flywheel", {
+			dbPath,
+			includeCrashPreserve: true,
+			probe: async () => "dead",
+		});
+		expect(terminalPass).toMatchObject({ scanned: 1, pruned: 1 });
+		expect(db.getSession("marked-failed")).toBeUndefined();
 	});
 
 	it("`pending` placeholder target deletes when the probe returns dead", async () => {

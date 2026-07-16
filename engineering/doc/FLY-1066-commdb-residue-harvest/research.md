@@ -211,6 +211,19 @@ e90f3962-0c73-…|runner-geoforge3d:pending   |geoforge3d|9619b712-…(UUID)    
 - CHECK 迁移是 schema 层、不可 flag 化——但迁移本身零行为变化(只放宽约束),旧值全兼容;
   迁移幂等判据 = schema sql 含 `'failed'`(FLY-1279 同款)。
 
+### 9.5 B1/B2 实施交互结论(2026-07-16)
+
+- terminal prune 的无条件集合仍是 `{completed,timeout}`;仅当
+  `FLYWHEEL_COMMDB_RESIDUE_HARVEST` 开启才扩为 `{completed,timeout,failed,blocked}`。所有集合仍先
+  走 tri-state tmux probe,只有 `dead` 删除;alive/indeterminate 保留。
+- residue `runFullPass` 的每项目顺序现在是 running-face harvest → terminal prune → StateStore ghost;
+  boot 在 harvester 存在时直接返回,不再追加第二次 FLY-638 prune。因此 A2 mark 把 row 移出 running
+  集后,同一 full pass 的 terminal 阶段仍可收敛,且同轮每 row 只 probe 一次。
+- `commdb-fsm-reconcile.test.ts` pin “mark 后 running scan=0,terminal prune=1”;新增
+  `commdb-residue-layer-interaction.test.ts` 以真实 CommDB 覆盖四个关键组合:全开→删除、全关→保留
+  running、只①→保留 truthful failed、只②→收走 legacy running preserve。三个 flag 的职责因此保持
+  正交,没有把 schema/CAS 原语错误绑到 kill-switch。
+
 ## 10. 下游
 
 双层实施计划(Part A = ①层 L-A/L-B/L-C;Part B = ②层 as-built 引用 + FLY-638 prune 扩展增量;
