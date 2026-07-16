@@ -564,8 +564,13 @@ close_workspace_by_ref() {
 # Fail-closed: rc=2 on the JSON gate → return 0 (next tick retries).
 reap_ghost_workspaces() {
   if linked_view_enabled || view_invariant_enabled; then
-    reconcile_prepared_ledger
-    return $?
+    reconcile_prepared_ledger || {
+      # Durable-state reads are a fail-closed pass gate, not a daemon-fatal
+      # error. The next additive tick retries once cmux/state IO recovers.
+      log "WARN: prepared-ledger reconciliation skipped; deferring ghost pass"
+      return 0
+    }
+    return 0
   fi
   local refs
   refs=$(get_ghost_workspace_refs) || return 0  # JSON unavailable → skip
@@ -2239,8 +2244,11 @@ _retire_create_intent_stage() {
 
 recover_view_construction() {
   # Reconcile one WAL against the current tmux generation and topology. Any
-  # malformed/ambiguous/stale-generation record is preserved and authorizes
-  # zero mutation.
+  # malformed/ambiguous record is preserved and authorizes zero mutation.
+  # A stale-generation record is safe to retire: tmux sessions cannot survive
+  # the server generation encoded in the WAL, so its stage is impossible in
+  # the current server. A same-name current-generation object remains foreign
+  # and is never mutated by this cleanup.
   local requested_view="$1" wal line fields
   local version generation state nonce view source wid stage_sid placeholder stage current_generation
   wal=$(_view_wal_path "$requested_view")
@@ -2256,8 +2264,9 @@ recover_view_construction() {
   case "$view$source$wid$stage_sid$placeholder" in *$'\n'*) return 1 ;; esac
   current_generation=$(tmux_server_generation) || return 1
   [[ "$generation" == "$current_generation" ]] || {
-    log "WARN: view WAL generation mismatch for $requested_view; preserving without mutation"
-    return 1
+    log "GC stale-generation view WAL for $requested_view"
+    rm -f "$wal" 2>/dev/null || return 1
+    return 0
   }
   stage="fwstage-${nonce}"
 
@@ -3594,7 +3603,13 @@ sync_additive_bootstrap() {
   reconcile_existing_workspaces
 
   # 2. Refresh linked sessions — fix stale current-window pointers (FLY-98).
-  refresh_linked_sessions
+  if ! refresh_linked_sessions; then
+    # A transient durable-state/topology read failure means this pass is
+    # inconclusive. Defer the whole pass before create/heal, but keep the
+    # long-running watcher alive under `set -e`.
+    log "WARN: bootstrap linked-view refresh inconclusive; pass deferred"
+    return 0
+  fi
 
   # 3. Create missing workspaces. No cleanup of existing ones.
   # FLY-129 Phase 3 (R3-1): tri-state — only act on rc=1 (not found).
@@ -3638,7 +3653,10 @@ sync_additive() {
   fi
 
   reconcile_existing_workspaces
-  refresh_linked_sessions
+  if ! refresh_linked_sessions; then
+    log "WARN: periodic linked-view refresh inconclusive; pass deferred"
+    return 0
+  fi
 
   # FLY-129 Phase 3 (R3-1): tri-state — only act on rc=1.
   while IFS='|' read -r src_sess wid wname; do

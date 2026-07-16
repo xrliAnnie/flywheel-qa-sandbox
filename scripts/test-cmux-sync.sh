@@ -4650,7 +4650,7 @@ test_fly1272_p1_rename_output_lost_recovers_claim() {
 }
 
 test_fly1272_p1_generation_mismatch_is_read_only() {
-  echo "Test: FLY-1272 P1 — stale-generation WAL authorizes zero mutation"
+  echo "Test: FLY-1272 P1 — stale-generation WAL is retired with zero topology mutation"
   reset_mocks
   MOCK_TOPOLOGY_MODE="1"
   topo_add_session "runner-flywheel" '$1'
@@ -4664,11 +4664,64 @@ test_fly1272_p1_generation_mismatch_is_read_only() {
   : > "$TOPO_JOURNAL"
   local rc=0
   recover_view_construction "cmux-FLY-1272-implement" || rc=$?
-  if [[ "$rc" -ne 0 && -f "$wal" ]] && topo_session_exists "fwstage-old-generation" \
+  if [[ "$rc" -eq 0 && ! -f "$wal" ]] && topo_session_exists "fwstage-old-generation" \
       && ! grep -Eq '^(kill|unlink|rename|link|new)-' "$TOPO_JOURNAL"; then
-    pass "generation mismatch preserves WAL and topology for manual diagnosis"
+    pass "generation mismatch retires only the impossible old-server WAL"
   else
-    fail "stale-generation recovery mutated or discarded authority (rc=$rc journal=$(tr '\n' ';' < "$TOPO_JOURNAL"))"
+    fail "stale-generation WAL was not safely retired (rc=$rc wal=$([[ -f "$wal" ]] && echo yes || echo no) journal=$(tr '\n' ';' < "$TOPO_JOURNAL"))"
+  fi
+}
+
+test_fly1272_skip_rc_never_kills_watcher() {
+  echo "Test: FLY-1272 review HIGH — transient durable-state skip never kills watcher under errexit"
+  reset_mocks
+  local bootstrap_marker="$TMPDIR_ROOT/fly1272-bootstrap-survived"
+  local periodic_marker="$TMPDIR_ROOT/fly1272-periodic-survived"
+  local reaper_marker="$TMPDIR_ROOT/fly1272-reaper-survived"
+  local unsafe_after_skip="$TMPDIR_ROOT/fly1272-unsafe-after-skip"
+  local bootstrap_rc=0 periodic_rc=0 reaper_rc=0
+
+  (
+    set -euo pipefail
+    get_tmux_agent_windows() { printf '%s\n' 'runner-flywheel|@42|FLY-1272-implement'; }
+    reconcile_existing_workspaces() { return 0; }
+    refresh_linked_sessions() { return 1; }
+    create_workspace_for_window() { : > "$unsafe_after_skip"; }
+    self_heal_sweep_all() { : > "$unsafe_after_skip"; }
+    sync_additive_bootstrap
+    : > "$bootstrap_marker"
+  )
+  bootstrap_rc=$?
+
+  (
+    set -euo pipefail
+    register_hooks_on_new_sessions() { return 0; }
+    get_tmux_agent_windows() { printf '%s\n' 'runner-flywheel|@42|FLY-1272-implement'; }
+    reconcile_existing_workspaces() { return 0; }
+    refresh_linked_sessions() { return 1; }
+    create_workspace_for_window() { : > "$unsafe_after_skip"; }
+    cleanup_stale_conservative() { : > "$unsafe_after_skip"; }
+    sync_additive
+    : > "$periodic_marker"
+  )
+  periodic_rc=$?
+
+  (
+    set -euo pipefail
+    linked_view_enabled() { return 0; }
+    view_invariant_enabled() { return 1; }
+    reconcile_prepared_ledger() { return 1; }
+    reap_ghost_workspaces
+    : > "$reaper_marker"
+  )
+  reaper_rc=$?
+
+  if [[ "$bootstrap_rc" -eq 0 && "$periodic_rc" -eq 0 && "$reaper_rc" -eq 0 \
+      && -f "$bootstrap_marker" && -f "$periodic_marker" && -f "$reaper_marker" \
+      && ! -e "$unsafe_after_skip" ]]; then
+    pass "bootstrap, periodic, and ghost reconciliation defer safely without post-skip mutation"
+  else
+    fail "skip rc escaped or later mutation ran boot=$bootstrap_rc periodic=$periodic_rc reaper=$reaper_rc unsafe=$([[ -e "$unsafe_after_skip" ]] && echo yes || echo no)"
   fi
 }
 
@@ -5083,6 +5136,7 @@ test_fly1272_p1_staging_wal_happy_path
 test_fly1272_p1_link_failure_recovers_owned_stage
 test_fly1272_p1_rename_output_lost_recovers_claim
 test_fly1272_p1_generation_mismatch_is_read_only
+test_fly1272_skip_rc_never_kills_watcher
 test_fly1272_p1_source_gone_collision_escrows_stage
 test_fly1272_p3_create_uses_isolated_view_by_default
 test_fly1272_flags_default_on_and_explicit_off
