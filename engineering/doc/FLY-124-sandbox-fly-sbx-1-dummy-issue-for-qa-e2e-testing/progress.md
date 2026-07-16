@@ -1,13 +1,13 @@
 ---
 issue: FLY-124
 phase: design
-phaseCursor: 1/7
-updated: 2026-07-16T02:34:18.081Z
-nextStep: Poll brainstorm gate 89ccd6a8-1a02-464f-9531-0705f9fe423f
+phaseCursor: 2/7
+updated: 2026-07-16T02:35:38.911Z
+nextStep: Run RED check for root README.md exact content
 chunks: []
 pointers: {}
 ---
 
 # FLY-124 progress
-**phase**: design (1/7)
-**next**: Poll brainstorm gate 89ccd6a8-1a02-464f-9531-0705f9fe423f
+**phase**: design (2/7)
+**next**: Run RED check for root README.md exact content
