@@ -1,13 +1,13 @@
 ---
 issue: FLY-124
-phase: design
-phaseCursor: 2/7
-updated: 2026-07-16T02:35:38.911Z
-nextStep: Run RED check for root README.md exact content
+phase: implement
+phaseCursor: 3/7
+updated: 2026-07-16T02:36:13.748Z
+nextStep: Create README.md with exact bytes Hi newline
 chunks: []
 pointers: {}
 ---
 
 # FLY-124 progress
-**phase**: design (2/7)
-**next**: Run RED check for root README.md exact content
+**phase**: implement (3/7)
+**next**: Create README.md with exact bytes Hi newline
