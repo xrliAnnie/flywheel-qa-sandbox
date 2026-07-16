@@ -1,13 +1,13 @@
 ---
 issue: FLY-1272
 phase: implement
-phaseCursor: 6/8
-updated: 2026-07-16T16:54:10.129Z
-nextStep: Run full integration/lint/typecheck regressions and close P8 evidence
+phaseCursor: 7/8
+updated: 2026-07-16T17:16:59.533Z
+nextStep: Final diff review, commit, push, PR, cross-family review, and CI landing
 chunks: []
 pointers: {}
 ---
 
 # FLY-1272 progress
-**phase**: implement (6/8)
-**next**: Run full integration/lint/typecheck regressions and close P8 evidence
+**phase**: implement (7/8)
+**next**: Final diff review, commit, push, PR, cross-family review, and CI landing
