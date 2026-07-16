@@ -1,0 +1,14 @@
+[
+	{
+		"projectName": "personal-assistant",
+		"projectRoot": "/__FLY1262_PROJECT_ROOT__/personal-assistant",
+		"leads": [
+			{
+				"agentId": "personal-lead",
+				"chatChannel": "test-channel",
+				"match": { "labels": ["personal"] },
+				"canSpawnRunners": true
+			}
+		]
+	}
+]

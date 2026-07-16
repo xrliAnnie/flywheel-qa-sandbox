@@ -1,0 +1,364 @@
+import { readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
+import {
+	canonicalSubmissionDigest,
+	getNodeTypeRegistryEntry,
+	type WorkflowNodeCapabilities,
+} from "flywheel-config";
+import {
+	validatePinnedWorkflowManifest,
+	validateWorkflowManifest,
+	type WorkflowEffort,
+	type WorkflowManifestV2,
+	type WorkflowNodeType,
+	type WorkflowOutputContract,
+	type WorkflowVendor,
+} from "./workflow-template.js";
+
+export interface ResolvedWorkflowNodeV2 {
+	id: string;
+	type: WorkflowNodeType;
+	capabilities: WorkflowNodeCapabilities;
+	dispatch?: {
+		vendor: WorkflowVendor;
+		model: string;
+		effort: WorkflowEffort;
+	};
+	output?: WorkflowOutputContract;
+	agent?: { content: string; digest: string };
+}
+
+export interface WorkflowRunSnapshotV2 {
+	schema_version: 2;
+	template: { id: string; revision: number };
+	manifest: WorkflowManifestV2;
+	manifest_digest: string;
+	resolved: { nodes: ResolvedWorkflowNodeV2[] };
+	snapshot_digest: string;
+}
+
+function object(value: unknown, path: string): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error(`${path} must be an object`);
+	}
+	return value as Record<string, unknown>;
+}
+
+function exact(
+	value: Record<string, unknown>,
+	allowed: readonly string[],
+	path: string,
+): void {
+	const unknown = Object.keys(value).find((key) => !allowed.includes(key));
+	if (unknown) throw new Error(`${path} unknown key: ${unknown}`);
+}
+
+function nonempty(value: unknown, path: string): string {
+	if (typeof value !== "string" || !value.trim()) {
+		throw new Error(`${path} must be a non-empty string`);
+	}
+	return value;
+}
+
+function snapshotBody(
+	snapshot: Omit<WorkflowRunSnapshotV2, "snapshot_digest">,
+): Omit<WorkflowRunSnapshotV2, "snapshot_digest"> {
+	return snapshot;
+}
+
+function readAgent(canonicalRoot: string, agentFile: string) {
+	let root: string;
+	let target: string;
+	try {
+		root = realpathSync(canonicalRoot);
+		target = realpathSync(resolve(root, agentFile));
+	} catch (err) {
+		throw new Error(
+			`workflow agent file cannot be read: ${(err as Error).message}`,
+		);
+	}
+	const rel = relative(root, target);
+	if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
+		throw new Error("workflow agent file escapes the canonical project root");
+	}
+	const source = readFileSync(target, "utf8");
+	const content = source.slice(0, 40_000);
+	if (!content.trim()) {
+		throw new Error("workflow agent content must be non-empty");
+	}
+	return { content, digest: canonicalSubmissionDigest(content) };
+}
+
+/** Materialize every live-registry decision into a self-contained v2 snapshot. */
+export function buildWorkflowRunSnapshotV2(input: {
+	template: { id: string; revision: number };
+	manifest: unknown;
+	canonicalRoot: string;
+}): WorkflowRunSnapshotV2 {
+	const validated = validateWorkflowManifest(input.manifest);
+	if (validated.schema_version !== 2) {
+		throw new Error("typed generalized snapshot requires schema_version 2");
+	}
+	const resolved: ResolvedWorkflowNodeV2[] = validated.nodes.map((node) => {
+		const registry = getNodeTypeRegistryEntry(node.type);
+		const capabilities: WorkflowNodeCapabilities = {
+			...registry.capabilities,
+			...(node.type === "generic" && node.produces_output
+				? { produces_output: true, output_mode: "json_v1" as const }
+				: {}),
+		};
+		if (capabilities.qa_verdict_emitter && capabilities.produces_output) {
+			throw new Error(
+				`workflow node ${node.id} cannot emit QA verdicts and produce output`,
+			);
+		}
+		if (node.type === "gate") {
+			return { id: node.id, type: node.type, capabilities };
+		}
+		if (!node.vendor || !node.model || !node.effort) {
+			throw new Error(
+				`workflow node ${node.id} requires pinned vendor, model, and effort`,
+			);
+		}
+		return {
+			id: node.id,
+			type: node.type,
+			capabilities,
+			dispatch: {
+				vendor: node.vendor,
+				model: node.model,
+				effort: node.effort,
+			},
+			...(node.output ? { output: node.output } : {}),
+			...(node.type === "generic"
+				? { agent: readAgent(input.canonicalRoot, node.agent_file!) }
+				: {}),
+		};
+	});
+	const body = snapshotBody({
+		schema_version: 2,
+		template: { ...input.template },
+		manifest: validated,
+		manifest_digest: canonicalSubmissionDigest(validated),
+		resolved: { nodes: resolved },
+	});
+	return { ...body, snapshot_digest: canonicalSubmissionDigest(body) };
+}
+
+const CAPABILITY_KEYS = [
+	"shared_branch_writer",
+	"creates_pr",
+	"can_ship",
+	"can_land",
+	"approval_gate_holder",
+	"needs_review_evidence",
+	"needs_mailbox_transport",
+	"keepalive_park",
+	"qa_verdict_emitter",
+	"produces_output",
+	"completion_route",
+	"output_mode",
+] as const;
+
+function parseCapabilities(
+	value: unknown,
+	path: string,
+): WorkflowNodeCapabilities {
+	const raw = object(value, path);
+	exact(raw, CAPABILITY_KEYS, `${path} capabilities`);
+	const booleanKeys = CAPABILITY_KEYS.slice(0, 10);
+	for (const key of booleanKeys) {
+		if (typeof raw[key] !== "boolean") {
+			throw new Error(`${path}.${key} must be boolean`);
+		}
+	}
+	if (
+		raw.completion_route !== "phase_design_complete" &&
+		raw.completion_route !== "needs_review" &&
+		raw.completion_route !== "no_code"
+	) {
+		throw new Error(`${path}.completion_route is unknown`);
+	}
+	if (raw.output_mode !== "none" && raw.output_mode !== "json_v1") {
+		throw new Error(`${path}.output_mode is unknown`);
+	}
+	return raw as unknown as WorkflowNodeCapabilities;
+}
+
+/** Parse only pinned snapshot vocabulary; never consult the mutable live registry. */
+export function parseWorkflowRunSnapshot(
+	source: string,
+): WorkflowRunSnapshotV2 {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(source);
+	} catch {
+		throw new Error("workflow snapshot JSON is corrupt");
+	}
+	const root = object(parsed, "workflow snapshot");
+	exact(
+		root,
+		[
+			"schema_version",
+			"template",
+			"manifest",
+			"manifest_digest",
+			"resolved",
+			"snapshot_digest",
+		],
+		"workflow snapshot",
+	);
+	if (root.schema_version !== 2) {
+		throw new Error("workflow snapshot schema_version must be 2");
+	}
+	// The manifest is already pinned. Parse its structure without consulting the
+	// mutable live node registry; capability invariants are checked below from
+	// the snapshot's pinned resolved nodes.
+	const manifest = validatePinnedWorkflowManifest(root.manifest);
+	const manifestDigest = nonempty(
+		root.manifest_digest,
+		"workflow snapshot.manifest_digest",
+	);
+	if (manifestDigest !== canonicalSubmissionDigest(manifest)) {
+		throw new Error("workflow snapshot manifest digest mismatch");
+	}
+	const templateRaw = object(root.template, "workflow snapshot.template");
+	exact(templateRaw, ["id", "revision"], "workflow snapshot.template");
+	const template = {
+		id: nonempty(templateRaw.id, "workflow snapshot.template.id"),
+		revision: Number(templateRaw.revision),
+	};
+	if (!Number.isInteger(template.revision) || template.revision <= 0) {
+		throw new Error("workflow snapshot.template.revision must be positive");
+	}
+	const resolvedRaw = object(root.resolved, "workflow snapshot.resolved");
+	exact(resolvedRaw, ["nodes"], "workflow snapshot.resolved");
+	if (!Array.isArray(resolvedRaw.nodes)) {
+		throw new Error("workflow snapshot.resolved.nodes must be an array");
+	}
+	const resolved = resolvedRaw.nodes.map(
+		(value, index): ResolvedWorkflowNodeV2 => {
+			const path = `workflow snapshot.resolved.nodes[${index}]`;
+			const nodeRaw = object(value, path);
+			exact(
+				nodeRaw,
+				["id", "type", "capabilities", "dispatch", "output", "agent"],
+				path,
+			);
+			const id = nonempty(nodeRaw.id, `${path}.id`);
+			const manifestNode = manifest.nodes.find((node) => node.id === id);
+			if (!manifestNode || manifestNode.type !== nodeRaw.type) {
+				throw new Error(`${path} references an unknown or mismatched node`);
+			}
+			const capabilities = parseCapabilities(
+				nodeRaw.capabilities,
+				`${path}.capabilities`,
+			);
+			if (manifestNode.type === "gate") {
+				if (
+					nodeRaw.dispatch !== undefined ||
+					nodeRaw.output !== undefined ||
+					nodeRaw.agent !== undefined
+				) {
+					throw new Error(`${path} gate cannot carry execution fields`);
+				}
+				return { id, type: manifestNode.type, capabilities };
+			}
+			const dispatchRaw = object(nodeRaw.dispatch, `${path}.dispatch`);
+			exact(dispatchRaw, ["vendor", "model", "effort"], `${path}.dispatch`);
+			if (dispatchRaw.vendor !== "claude" && dispatchRaw.vendor !== "codex") {
+				throw new Error(`${path}.dispatch.vendor is unknown`);
+			}
+			if (
+				dispatchRaw.effort !== "low" &&
+				dispatchRaw.effort !== "medium" &&
+				dispatchRaw.effort !== "high" &&
+				dispatchRaw.effort !== "xhigh"
+			) {
+				throw new Error(`${path}.dispatch.effort is unknown`);
+			}
+			const node: ResolvedWorkflowNodeV2 = {
+				id,
+				type: manifestNode.type,
+				capabilities,
+				dispatch: {
+					vendor: dispatchRaw.vendor,
+					model: nonempty(dispatchRaw.model, `${path}.dispatch.model`),
+					effort: dispatchRaw.effort,
+				},
+			};
+			if (nodeRaw.output !== undefined) {
+				const outputRaw = object(nodeRaw.output, `${path}.output`);
+				exact(outputRaw, ["schema", "max_bytes"], `${path}.output`);
+				if (
+					outputRaw.schema !== "json_v1" ||
+					!Number.isInteger(outputRaw.max_bytes) ||
+					Number(outputRaw.max_bytes) <= 0 ||
+					Number(outputRaw.max_bytes) > 262_144
+				) {
+					throw new Error(`${path}.output is invalid`);
+				}
+				node.output = {
+					schema: "json_v1",
+					max_bytes: Number(outputRaw.max_bytes),
+				};
+			}
+			if (manifestNode.type === "generic") {
+				const agentRaw = object(nodeRaw.agent, `${path}.agent`);
+				exact(agentRaw, ["content", "digest"], `${path}.agent`);
+				const content = nonempty(agentRaw.content, `${path}.agent.content`);
+				const digest = nonempty(agentRaw.digest, `${path}.agent.digest`);
+				if (digest !== canonicalSubmissionDigest(content)) {
+					throw new Error(`${path}.agent digest mismatch`);
+				}
+				node.agent = { content, digest };
+			} else if (nodeRaw.agent !== undefined) {
+				throw new Error(`${path} non-generic node cannot carry an agent`);
+			}
+			if (capabilities.produces_output !== !!node.output) {
+				throw new Error(
+					`${path} output capability does not match output contract`,
+				);
+			}
+			return node;
+		},
+	);
+	if (
+		resolved.length !== manifest.nodes.length ||
+		manifest.nodes.some(
+			(node) => !resolved.some((candidate) => candidate.id === node.id),
+		)
+	) {
+		throw new Error(
+			"workflow snapshot resolved nodes do not cover the manifest",
+		);
+	}
+	const pinnedWritesCode = resolved.some(
+		(node) =>
+			node.capabilities.shared_branch_writer || node.capabilities.creates_pr,
+	);
+	const qaCount = resolved.filter((node) => node.type === "qa").length;
+	if (
+		pinnedWritesCode &&
+		(qaCount !== 1 || !manifest.ship_claims.includes("qa_passed"))
+	) {
+		throw new Error(
+			"a workflow containing a pinned code-writing node must contain exactly one independent QA node and qa_passed ship claim",
+		);
+	}
+	const body = snapshotBody({
+		schema_version: 2,
+		template,
+		manifest,
+		manifest_digest: manifestDigest,
+		resolved: { nodes: resolved },
+	});
+	const digest = nonempty(
+		root.snapshot_digest,
+		"workflow snapshot.snapshot_digest",
+	);
+	if (digest !== canonicalSubmissionDigest(body)) {
+		throw new Error("workflow snapshot digest mismatch");
+	}
+	return { ...body, snapshot_digest: digest };
+}

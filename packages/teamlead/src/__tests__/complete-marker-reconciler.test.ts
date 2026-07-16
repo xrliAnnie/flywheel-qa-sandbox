@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { canonicalSubmissionDigest } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // CODEX R1 MEDIUM: applyQuarantineFallback prefers the canonical applyTransition
@@ -35,6 +36,9 @@ function makeStore(initial: Record<string, SessionRow> = {}) {
 	return {
 		sessions,
 		getSession: vi.fn((id: string) => sessions.get(id)),
+		getGeneralizedWorkflowNodeForExecution: vi.fn(() => undefined),
+		getWorkflowNodeCompletion: vi.fn(() => undefined),
+		getEventPayloadById: vi.fn(() => undefined),
 		forceStatus: vi.fn(
 			(id: string, status: string, _now: string, lastError?: string) => {
 				const cur = sessions.get(id) ?? {};
@@ -401,6 +405,157 @@ describe("tryReconcileComplete", () => {
 		);
 		expect(r.kind).toBe("transient_failed");
 		expect(readdirSync(markerDir)).toContain("exec3b.json");
+	});
+
+	it("generalized missing-output replay stays retryable and keeps the marker", async () => {
+		writeMarker(markerDir, "exec-output", {
+			payload: { decision: { route: "no_code" }, evidence: {} },
+		});
+		const store = makeStore({ "exec-output": { status: "running" } });
+		Object.assign(store, {
+			getGeneralizedWorkflowNodeForExecution: vi.fn(() => ({
+				binding: {
+					execution_id: "exec-output",
+					run_id: "run-1",
+					node_id: "produce",
+					attempt: 1,
+				},
+			})),
+			getWorkflowNodeCompletion: vi.fn(() => undefined),
+		});
+		const fetchFn = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						ok: false,
+						reason: "missing_output",
+						retryable: true,
+					}),
+					{ status: 409, headers: { "content-type": "application/json" } },
+				),
+		);
+		const result = await tryReconcileComplete(
+			"exec-output",
+			baseDeps(store, fetchFn as never),
+		);
+		expect(result).toEqual({
+			kind: "transient_failed",
+			error: "missing_output",
+		});
+		expect(readdirSync(markerDir)).toContain("exec-output.json");
+		expect(existsSync(quarantineDir)).toBe(false);
+	});
+
+	it("generalized replay deletes the marker only after its receipt is visible", async () => {
+		writeMarker(markerDir, "exec-receipt", {
+			payload: { decision: { route: "no_code" }, evidence: {} },
+		});
+		const store = makeStore({ "exec-receipt": { status: "running" } });
+		const payload = { decision: { route: "no_code" }, evidence: {} };
+		let receipt: Record<string, unknown> | undefined;
+		let canonicalAudit: Record<string, unknown> | undefined;
+		Object.assign(store, {
+			getGeneralizedWorkflowNodeForExecution: vi.fn(() => ({
+				binding: {
+					execution_id: "exec-receipt",
+					run_id: "run-1",
+					node_id: "execute",
+					attempt: 1,
+				},
+			})),
+			getWorkflowNodeCompletion: vi.fn(() => receipt),
+			getEventPayloadById: vi.fn(() => canonicalAudit),
+		});
+		const fetchFn = vi.fn(async () => {
+			receipt = {
+				execution_id: "exec-receipt",
+				route: "no_code",
+				event_uid: "wfc:run-1:execute:1",
+				completion_submission_digest: canonicalSubmissionDigest(payload),
+			};
+			canonicalAudit = payload;
+			return new Response(JSON.stringify({ ok: true }), { status: 200 });
+		});
+		const result = await tryReconcileComplete(
+			"exec-receipt",
+			baseDeps(store, fetchFn as never),
+		);
+		expect(result).toEqual({ kind: "reconciled", status: "node_completed" });
+		expect(existsSync(join(markerDir, "exec-receipt.json"))).toBe(false);
+	});
+
+	it("generalized receipt without its canonical audit replays before deleting the marker", async () => {
+		const payload = { decision: { route: "no_code" }, evidence: {} };
+		writeMarker(markerDir, "exec-audit-gap", { payload });
+		const store = makeStore({ "exec-audit-gap": { status: "completed" } });
+		let canonicalAudit: Record<string, unknown> | undefined;
+		Object.assign(store, {
+			getGeneralizedWorkflowNodeForExecution: vi.fn(() => ({
+				binding: {
+					execution_id: "exec-audit-gap",
+					run_id: "run-1",
+					node_id: "execute",
+					attempt: 1,
+				},
+			})),
+			getWorkflowNodeCompletion: vi.fn(() => ({
+				execution_id: "exec-audit-gap",
+				route: "no_code",
+				event_uid: "wfc:run-1:execute:1",
+				completion_submission_digest: canonicalSubmissionDigest(payload),
+			})),
+			getEventPayloadById: vi.fn(() => canonicalAudit),
+		});
+		const fetchFn = vi.fn(async () => {
+			canonicalAudit = payload;
+			return new Response(JSON.stringify({ ok: true }), { status: 200 });
+		});
+
+		const result = await tryReconcileComplete(
+			"exec-audit-gap",
+			baseDeps(store, fetchFn as never),
+		);
+
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+		expect(result).toEqual({ kind: "reconciled", status: "node_completed" });
+		expect(existsSync(join(markerDir, "exec-audit-gap.json"))).toBe(false);
+	});
+
+	it("generalized receipt with a conflicting marker digest is quarantined without replay", async () => {
+		writeMarker(markerDir, "exec-audit-conflict", {
+			payload: { decision: { route: "no_code" }, evidence: { changed: true } },
+		});
+		const store = makeStore({ "exec-audit-conflict": { status: "completed" } });
+		Object.assign(store, {
+			getGeneralizedWorkflowNodeForExecution: vi.fn(() => ({
+				binding: {
+					execution_id: "exec-audit-conflict",
+					run_id: "run-1",
+					node_id: "execute",
+					attempt: 1,
+				},
+			})),
+			getWorkflowNodeCompletion: vi.fn(() => ({
+				execution_id: "exec-audit-conflict",
+				route: "no_code",
+				event_uid: "wfc:run-1:execute:1",
+				completion_submission_digest: canonicalSubmissionDigest({
+					decision: { route: "no_code" },
+					evidence: {},
+				}),
+			})),
+		});
+		const fetchFn = vi.fn();
+
+		const result = await tryReconcileComplete(
+			"exec-audit-conflict",
+			baseDeps(store, fetchFn as never),
+		);
+
+		expect(fetchFn).not.toHaveBeenCalled();
+		expect(result.kind).toBe("quarantined");
+		expect(existsSync(join(markerDir, "exec-audit-conflict.json"))).toBe(false);
+		expect(readdirSync(quarantineDir)).toContain("exec-audit-conflict.json");
 	});
 
 	it("rejected: 200+warning (FSM/route reject), session stays running → quarantine (Codex R1 #3)", async () => {

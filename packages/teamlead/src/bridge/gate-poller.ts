@@ -93,6 +93,7 @@ import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import type { MergedGateGuard } from "./merged-gate-guard.js";
 import { decideMilestoneReport } from "./milestone-report-policy.js";
+import { isReviewGateCheckpoint } from "./review-gate-checkpoints.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { defaultGetCommDbPath } from "./session-capture.js";
@@ -425,6 +426,24 @@ const ACTIVE_SESSION_STATUSES = new Set([
 	"awaiting_review",
 	"approved_to_ship",
 ]);
+
+/**
+ * FLY-1257 defect ④ path-2: the review gates (`review_design` / `review_code`,
+ * the FLY-1224 non-claude-author lane). These are the ONE gate family the
+ * authoring runner never answers — `request-review` BINDS them and the reviewer
+ * answers them, so the FLY-307 A eviction premise ("the Runner is gone, so this
+ * gate can never be answered") is false for them. Evicting one expired it
+ * (`resolveGate(qid, 0)`) before `request-review` could bind it, so a
+ * blocked/completed session could never re-request review: checkGate saw
+ * answered/expired → fail-close forever, and the row was then purged by TTL.
+ * Sibling in intent to the FLY-579 approve_to_ship QA-held carve-out.
+ *
+ * The set + predicate live in `./review-gate-checkpoints.js` (single source of
+ * truth — the zombie-gate-hygiene Z1 sweep consults the same one; a drifting
+ * copy is the defect ④ bug). Imported above; re-exported here so the previously
+ * public `isReviewGateCheckpoint` API is preserved.
+ */
+export { isReviewGateCheckpoint };
 
 /**
  * FLY-1041 Fix A (sweeper judgement, pure). A pending approve_to_ship gate is
@@ -1327,6 +1346,10 @@ export class GatePoller {
 		dbPath: string,
 	): void {
 		if (question.checkpoint == null) return; // FLY-161 boundary
+		// FLY-1257 path-2 (defense in depth): the invariant lives at the single
+		// mutation chokepoint, so neither caller — the relay path nor the
+		// eviction-retry short-circuit above — can expire a review gate.
+		if (isReviewGateCheckpoint(question.checkpoint)) return;
 		if (this.evictedGateIds.has(question.id)) return;
 		try {
 			const db = new CommDB(dbPath);
@@ -1623,6 +1646,12 @@ export class GatePoller {
 			//     reaching product-lead. Preserves the label-routing precedence
 			//     that the brainstorm session decided to keep for gate.
 			if (!ACTIVE_SESSION_STATUSES.has(session.status)) {
+				// FLY-1257 path-2: a review gate outlives its author by design — the
+				// review coordinator binds it and the reviewer answers it, so the
+				// FLY-307 A premise below does not hold. Withhold delivery (as ever
+				// for a terminal session) but leave the gate bindable; the schema's
+				// own `expires_at` default (+72h, flywheel-comm db.ts) still bounds it.
+				if (isReviewGateCheckpoint(question.checkpoint)) return;
 				// FLY-307 A: a gate from a terminal session can never be answered
 				// (the Runner is gone, and the active-session check already withholds
 				// delivery), so it would otherwise be re-polled every tick until its
@@ -3510,6 +3539,7 @@ export class GatePoller {
 							id: q.id,
 							from_agent: q.from_agent,
 							checkpoint: q.checkpoint,
+							created_at: q.created_at,
 						})),
 						db: db as unknown as ZombieCommDb,
 						noteUnreachableRunner: watchdogOn

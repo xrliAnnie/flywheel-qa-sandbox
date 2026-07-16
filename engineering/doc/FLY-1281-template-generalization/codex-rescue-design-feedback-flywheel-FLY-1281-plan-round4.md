@@ -1,0 +1,34 @@
+# Design Review — FLY-1281 plan.md (Round 4)
+
+Date: 2026-07-14
+Author: Codex
+Status: CHANGES REQUESTED
+
+## Summary
+
+Draft v4 resolves the six Round 3 concerns at the architectural level: completion ownership is now split correctly, auth and snapshot authority are implementable, and the new DDL has the required binding integrity. Four remaining source-integration gaps still violate the stated default-off and exact-replay contracts, so the plan is not yet safe to implement as written.
+
+## What's Good (Keep)
+
+- Keep the capability-driven D2 rule, including `design` as a writer, and the same-transaction snapshot pin plus deterministic `qa_exempt` write. This now has one authority and an independently testable acceptance group.
+- Keep `admitGeneralizedWorkflowExecution` as the single pre-spawn authority, with retry admission inside `RetryDispatcher.dispatch`, immutable execution-runtime pinning, start-node/attempt enforcement, and explicit rejection of review/successor execution in C.
+- Keep server-derived `workflow_node_id` on every session-creation path, including lost-start completion/failure, with binding validation before `insertEvent`. That is the right fail-closed boundary for all eight lifecycle faces.
+- Keep the two completion primitives. Restricting receipt creation to explicit `flywheel-comm complete` while making Blueprint/TeamLead teardown observation-only removes the previous ambiguity and preserves the C→D boundary.
+- Keep the typed snapshot independent of later live-registry/config/label changes. Materialization-time registry validation plus pinned capabilities/dispatch inputs and one strict parser matches the umbrella snapshot contract.
+- Keep the mutable output-current CAS pointer separate from immutable output rows, and retain the composite binding FKs, stale-attempt checks, and immutable runtime/completion records.
+- Keep the explicit `/api/runs/start` auth-kind contract and the separation between audit actor and owning Lead. It is compatible with the current middleware once the route is given the configured token identities or an equivalent server-owned classifier.
+- Keep the per-cell tests and narrowed E2E, especially the assertions that review/successor dispatch remains unreachable in C.
+
+## Issues & Recommendations
+
+1. **`OFF + v1 candidate` is not an existing `/api/runs/start` behavior and would break the byte-compat requirement.** The current route never calls `materializeWorkflowRun` or resolves `workflow_category_binding`; production callers are absent, and `workflow-template-routes.ts` is read-only. Therefore Step 6's new pre-three-stage selection would enroll/materialize a v1 candidate where today's start path ignores the template substrate, even when `FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES` is OFF. Calling that the “existing v1 contract” confuses an existing storage API with an existing start-time behavior. Change the start gate so OFF still performs only the minimum read needed to detect and hold an already-stored v2 candidate: no candidate or a v1 candidate must continue through the exact legacy start path with no workflow run/claim/context; a v2 candidate may reject fail-closed. Enable the new start-time selection/materialization behavior only when the generalized flag is ON. Replace the current `OFF+v1 candidate` expectation with a sentinel proving no `workflow_run` is created and the dispatcher request/response is byte-identical to the no-selection baseline.
+
+2. **The claimed post-core-transaction audit recovery is unreachable through the current complete-marker reconciler.** After `commitEnrolledCompletion` atomically projects the session terminal state, a crash can leave the marker present and `session_events` missing. Today `tryReconcileComplete` deletes a marker without POSTing when the session is already at the expected terminal state; for `no_code`, `expectedStatusFromMarker` on an already-completed row returns null and the terminal fast path also deletes it. Thus the exact v4 crash cell loses the audit instead of “same-ID replay converges.” Add an enrolled-v2 branch before both legacy terminal short-circuits: inspect the completion receipt and marker `event_id`; if the receipt exists but that audit row does not, replay the original body even though the session is terminal, then verify both the receipt/projection and the audit row before unlinking. If both already exist, deletion is safe. Also define a typed retryable response for `missing_output` that the reconciler preserves rather than quarantines—currently non-429 4xx responses are treated as permanent. Add tests beginning from `(receipt + done projection + marker, no session_event)` and `(missing output + marker)` against the real reconciler.
+
+3. **“Exact `/api/runs/start` replay” has no stable request identity and does not reuse the physical execution.** Step 6 passes an internal `runId` into the resolver, but the public request has no idempotency key, and current `RunDispatcher.start` allocates a fresh random execution ID. After a response-loss retry, the server cannot distinguish the same start from a new request; a newly generated run ID conflicts with the active run, while merely reusing the existing run context still calls the dispatcher with a new execution and fails or duplicates admission/spawn. Define a durable v2 start idempotency contract: accept a server-validated `Idempotency-Key` (or equivalent request ID), bind it to a canonical selection digest plus run/node/attempt/execution, and on exact replay return the existing start result without dispatching again. Reuse of the key with different normalized inputs must reject; an active run under a different key must hold. Test response loss after materialization, after execution admission, and after launch commit/CommDB registration, asserting one binding and one physical spawn.
+
+4. **`workflow_node_completion.event_uid` conflates two different identities.** The plan fixes it to `wfc:<run>:<node>:<attempt>` for the deterministic `workflow_run_event`, yet also says a receipt replay must match its event identity. The ingress `session_completed.event_id` is a random UUID and is what `session_events` deduplicates. With only the deterministic UID, a second invocation of `flywheel-comm complete` has the same receipt UID but a different ingress ID, so the promised “same key, different event rejects” check is not expressible and a second audit row can be inserted. Store a separate `source_event_id` (and, preferably, a canonical completion-submission digest) on the receipt while retaining the deterministic run-event UID. Define whether a different source ID is rejected or treated as the same logical completion with audit suppression; either policy must prevent a second lifecycle audit/side effect. Add a test that invokes `complete` twice with two generated event IDs, not only a transport retry of one body.
+
+## Verdict
+
+CHANGES REQUESTED — address items above

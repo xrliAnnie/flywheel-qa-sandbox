@@ -1,0 +1,30 @@
+{
+	"issue": "FLY-1281",
+	"generated_at": "2026-07-16T00:30:15.093Z",
+	"harness": {
+		"bridge": "production createBridgeApp HTTP stack",
+		"state": "isolated teamlead.db",
+		"spawn": "real TmuxAdapter gated fresh spawn with deterministic probe"
+	},
+	"observed_flag_names": [
+		"FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES",
+		"FLYWHEEL_WORKFLOW_CLAIMS_WRITE"
+	],
+	"checks": {
+		"v2_seeds_imported_under_flag": true,
+		"lead_and_binding_start_routes": true,
+		"real_tmux_fresh_spawn_exactly_once_per_start": true,
+		"selection_provenance_persisted": true,
+		"typed_snapshot_pins_agent_content": true,
+		"zero_and_output_credential_shapes": true,
+		"missing_output_is_retryable_then_same_event_completes": true,
+		"no_output_completion_receipt_and_projection": true,
+		"blueprint_tail_is_receipt_noop": true,
+		"successor_and_review_dispatch_remain_unreachable": true,
+		"completion_marker_present_before_restart": true,
+		"restart_reconciles_marker_without_losing_output": true,
+		"restart_completion_replay_is_idempotent_with_one_canonical_audit": true,
+		"flag_off_rejects_lead_binding_and_boot_import_without_side_effects": true
+	},
+	"pass": true
+}

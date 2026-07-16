@@ -70,13 +70,15 @@ describe("loadFeatureFlagProjectConfigs", () => {
 		// ok → loaded config
 		expect(map.get("ok")?.config).toBeDefined();
 		expect(map.get("ok")?.error).toBeUndefined();
+		expect(map.get("ok")?.revision).toMatch(/^file:[a-f0-9]{64}$/);
 
 		// missing → no error, no config (absent/default semantics)
-		expect(map.get("missing")).toEqual({});
+		expect(map.get("missing")).toEqual({ revision: "registry:absent" });
 
 		// broken → error surfaced as data
 		expect(map.get("broken")?.error).toBeTruthy();
 		expect(map.get("broken")?.config).toBeUndefined();
+		expect(map.get("broken")?.revision).toMatch(/^file:[a-f0-9]{64}$/);
 	});
 });
 
@@ -138,6 +140,7 @@ describe("ProjectConfigCache", () => {
 				return readFileSync(p, "utf-8");
 			});
 			const m1 = await cache.get([entry]);
+			const firstRevision = m1.get("ok")?.revision;
 			expect(m1.get("ok")?.config?.roles?.runner?.model).toBe(
 				"claude-sonnet-5",
 			);
@@ -156,6 +159,7 @@ describe("ProjectConfigCache", () => {
 			const m3 = await cache.get([entry]);
 			expect(reads).toBe(2);
 			expect(m3.get("ok")?.config?.roles?.runner?.model).toBe("claude-fable-5");
+			expect(m3.get("ok")?.revision).not.toBe(firstRevision);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -167,7 +171,7 @@ describe("ProjectConfigCache", () => {
 			const cache = new ProjectConfigCache();
 			// Absent → absent/default semantics.
 			const m1 = await cache.get([entry]);
-			expect(m1.get("ok")).toEqual({});
+			expect(m1.get("ok")).toEqual({ revision: "registry:absent" });
 			// File appears → loaded.
 			writeFileSync(configPath, OK);
 			const m2 = await cache.get([entry]);
@@ -175,7 +179,7 @@ describe("ProjectConfigCache", () => {
 			// File disappears (e.g. renamed away) → back to absent, not stale config.
 			rmSync(configPath);
 			const m3 = await cache.get([entry]);
-			expect(m3.get("ok")).toEqual({});
+			expect(m3.get("ok")).toEqual({ revision: "registry:absent" });
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

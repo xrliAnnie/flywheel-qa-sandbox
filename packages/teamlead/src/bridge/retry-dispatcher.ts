@@ -14,6 +14,25 @@ import type { WorkflowShadowContext } from "./workflow-shadow-writer.js";
 
 export type { QaContext };
 
+export interface GeneralizedExecutionDispatch {
+	executionId: string;
+	runId: string;
+	nodeId: string;
+	attempt: number;
+	snapshotDigest: string;
+	dispatch: {
+		vendor: "claude" | "codex";
+		model: string;
+		effort: "low" | "medium" | "high" | "xhigh";
+	};
+	capabilities: Record<string, boolean | string>;
+	agentContent: string;
+	outputCredential?: string;
+	idempotencyKey: string;
+	launchGateToken?: string;
+	commitWorkflowLaunch?: () => { ok: boolean; reason?: string };
+}
+
 export interface RetryRequest {
 	oldExecutionId: string;
 	issueId: string;
@@ -99,6 +118,8 @@ export interface RetryRequest {
 	 * for `chat_thread_role='main'` rows, incl. auto-QA).
 	 */
 	ignoreRunnerLabelSelection?: boolean;
+	/** FLY-1281: Bridge-internal, pre-bound generalized retry execution. */
+	generalizedExecution?: GeneralizedExecutionDispatch;
 }
 
 export interface RetryResult {
@@ -254,6 +275,8 @@ export interface StartRequest {
 	 * writer is present, and is entirely inert when it is not.
 	 */
 	shadowContext?: WorkflowShadowContext;
+	/** FLY-1281: Bridge-internal, pre-bound generalized node execution. */
+	generalizedExecution?: GeneralizedExecutionDispatch;
 }
 
 export interface StartResult {
