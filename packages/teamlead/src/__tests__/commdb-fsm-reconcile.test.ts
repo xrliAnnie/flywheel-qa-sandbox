@@ -307,6 +307,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 		it("harvests an old CommDB-only registration only when its target is proven dead, retiring its gate", async () => {
 			seedRunning("orphan-old", "runner-flywheel:pending");
 			setStartedAt("orphan-old", "2026-07-15 11:59:59");
+			const probe = vi.fn(async () => "dead" as const);
 			const qid = db.insertQuestion("orphan-old", "lead-a", "still there?", {
 				checkpoint: "approve_to_ship",
 			});
@@ -314,7 +315,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 			const result = await reconcileCommDbRunningAgainstFsm(
 				"flywheel",
 				fsmFrom({}),
-				{ dbPath, probe: async () => "dead", harvest },
+				{ dbPath, probe, harvest },
 			);
 
 			expect(result).toMatchObject({
@@ -330,6 +331,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 			});
 			expect(db.getSession("orphan-old")).toBeUndefined();
 			expect(db.isQuestionPending(qid)).toBe(false);
+			expect(probe).toHaveBeenCalledTimes(1);
 		});
 
 		it("keeps young, missing, invalid, and future-dated CommDB-only registrations without probing", async () => {
@@ -390,6 +392,11 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 			seedRunning("failed-alive");
 			seedRunning("failed-unknown");
 
+			const probe = vi.fn(async (target: string) => {
+				if (target.endsWith("failed-alive")) return "alive" as const;
+				if (target.endsWith("failed-unknown")) return "indeterminate" as const;
+				return "dead" as const;
+			});
 			const result = await reconcileCommDbRunningAgainstFsm(
 				"flywheel",
 				fsmFrom({
@@ -401,11 +408,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 				{
 					dbPath,
 					harvest,
-					probe: async (target) => {
-						if (target.endsWith("failed-alive")) return "alive";
-						if (target.endsWith("failed-unknown")) return "indeterminate";
-						return "dead";
-					},
+					probe,
 				},
 			);
 
@@ -421,6 +424,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 			expect(db.getSession("blocked-dead")).toBeUndefined();
 			expect(db.getSession("failed-alive")).toBeDefined();
 			expect(db.getSession("failed-unknown")).toBeDefined();
+			expect(probe).toHaveBeenCalledTimes(4);
 		});
 
 		it("preserves the exact legacy result shape and no-probe behavior when harvest is omitted", async () => {

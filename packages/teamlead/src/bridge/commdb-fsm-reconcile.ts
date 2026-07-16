@@ -155,6 +155,7 @@ export async function reconcileCommDbRunningAgainstFsm(
 		for (const s of running) {
 			const fsm = fsmStatusOf(s.execution_id);
 			let harvestKind: "orphan" | "preserve" | undefined;
+			let targetProvenDead = false;
 			// FLY-817 legacy: preserve targets are never probed. FLY-1066 opt-in:
 			// once the target is PROVEN dead, the teardown target + scrollback no
 			// longer exist, so the stale registration can be finalized safely.
@@ -169,6 +170,7 @@ export async function reconcileCommDbRunningAgainstFsm(
 					result.harvest!.keptPreserveAlive++;
 					continue;
 				}
+				targetProvenDead = true;
 				harvestKind = "preserve";
 			}
 			// FLY-1066 CommDB-only orphan: the 24h guard is the actual mid-dispatch
@@ -191,6 +193,7 @@ export async function reconcileCommDbRunningAgainstFsm(
 					result.harvest!.keptOrphanCandidate++;
 					continue;
 				}
+				targetProvenDead = true;
 				harvestKind = "orphan";
 			}
 			// FSM row missing with harvest off, OR a non-deletable / non-terminal
@@ -201,10 +204,12 @@ export async function reconcileCommDbRunningAgainstFsm(
 			}
 			// Deletable terminal outcome → require a PROVEN-dead tmux target so a
 			// pending-teardown window is never stranded (BLOCKER 2, mirrors FLY-638).
-			const state = await probe(s.tmux_window);
-			if (state !== "dead") {
-				result.keptAliveTarget++;
-				continue;
+			if (!targetProvenDead) {
+				const state = await probe(s.tmux_window);
+				if (state !== "dead") {
+					result.keptAliveTarget++;
+					continue;
+				}
 			}
 			try {
 				const raw = finalizeSession(db, s.execution_id) as
