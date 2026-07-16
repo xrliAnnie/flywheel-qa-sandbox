@@ -171,10 +171,10 @@ e90f3962-0c73-…|runner-geoforge3d:pending   |geoforge3d|9619b712-…(UUID)    
 
 | exit path | CommDB row | app-server/MCP 子进程 | worktree/分支 |
 |---|---|---|---|
-| Lead close/terminate(B) | ✅ closeRunner→finalizeCommDbSession(close-runner.ts:373;actions.ts:1402) | ✅ closeRunner MCP-descendant reap(FLY-228) | ✅ lifecycle-closeout(FLY-1185) |
+| Lead close/terminate(B) | ✅ closeRunner→finalizeCommDbSession(close-runner.ts:373;actions.ts) | ✅ closeRunner MCP-descendant reap(FLY-228) | ✅ lifecycle-closeout(FLY-1185) |
 | ship-terminal(A) | ✅ post-ship-finalization → closeout | ✅ 同上 | ✅ Layer A ship closeout(FLY-1185 §2.4) |
 | crash reap(C,FLY-720) | ✅ crash-reaper.ts:319 finalize | ✅ teardown 序列 | ➖ periodic sweep(E)兜 |
-| issue-terminal reconcile(D)/periodic sweep(E) | ✅ lifecycle-closeout.ts:243 | ✅ | ✅ |
+| issue-terminal reconcile(D)/periodic sweep(E) | ✅ lifecycle-closeout.ts:1156-1215 direct/closeRunner finalize | ✅ | ✅ |
 | adapter 受控退出 | ✅ §9.2 completed/timeout | ✅ adapter 自身 teardown | ➖ 不归 adapter |
 | **FSM → failed/blocked(S1/S2/S3)** | ❌ **无 owner(①层 L-A 的靶子)** | CRASH_PRESERVE 政策性保留窗口(非泄漏);codex resident 场景由 FLY-1269 协作关停 | 保留(retry 可能复用;closeout 时清) |
 | SIGKILL/OOM/Bridge crash(S6) | ②收割 | crash-reaper + FLY-1269 provably-absent backstop | FLY-1185 periodic sweep |
@@ -182,6 +182,26 @@ e90f3962-0c73-…|runner-geoforge3d:pending   |geoforge3d|9619b712-…(UUID)    
 
 已知独立 open item(不并入本票,plan 引为边界):FLY-603 worktree autoclean 曾未触发的调查
 (team task #108);FLY-1148 infra-bot 进程泄漏(已另票)。
+
+#### Implement 审计结论(A3/A4,2026-07-16)
+
+- **A3 无行为缺口**:fresh/retry 两条 dispatcher 都在 Blueprint `success:false && !sessionId` 与
+  rejected promise 分支调用 `cleanupPreRegistration`(run-dispatcher.ts:824-843,1390-1421);TURN grant /
+  lifecycle commit 等 launch 前失败统一走 `abortPreLaunch`(911-934)。新增
+  `run-dispatcher-pre-registration-cleanup.test.ts` 用真实 CommDB pin 四个失败交错均删除 pending row,
+  并以 `sessionId` 阳性对照证明已自注册的失败不会被误删;既有
+  `run-dispatcher-fly887-turn-seam.test.ts` pin fresh/retry pre-launch abort。GEO-441 历史形态在现行
+  dispatcher 已被上述 owner 覆盖,无需新增 unregister 生产调用。
+- **A4 owner pins**:closeRunner 的协作关停成功仍调用 finalize
+  (`close-runner.test.ts:118-138`);crash-reaper 的证死序列在 archive 前 finalize
+  (`crash-reaper.test.ts:93-108`);lifecycle-closeout 对存在 session row 走 closeRunner,对 auto-QA
+  record 存在但 session row 缺失的节点直接调用 finalize,新增
+  `lifecycle-closeout.test.ts` 的 `FLY-1066 A4` 哨兵。三格均有可执行测试,未发现 app-server/worktree
+  owner 真 gap。
+- **其余 forceStatus 可达性**:HeartbeatService 的 zombie/orphan fallback 均标注 legacy test seam,
+  生产构造始终注入共享 `transitionOpts`;server-loss 与 actions 的 direct forceStatus 同样只在缺少
+  production transitionOpts 时可达。唯一生产可达且会写 failed/blocked 的 direct fallback 是
+  complete-marker quarantine,已纳入 A2 第五写入面。由此五面 inventory 闭合,没有第六个遗漏面。
 
 ### 9.4 ①层 kill-switch 与 byte-compat
 
