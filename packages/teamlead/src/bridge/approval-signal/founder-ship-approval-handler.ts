@@ -93,15 +93,15 @@ export interface DeferralSupport {
 		holdReason: "codex_pending" | "qa_not_green";
 	}): "inserted" | "noop_existing";
 	/**
-	 * Queue the held explainer thread notice (merge_block pointer / the
-	 * deferred-OFF "请再说一次" explainer — §4.4 truth table). Idempotent per
+	 * Queue the held explainer thread notice (merge_block recovery pointer,
+	 * readiness pointer, or deferred-OFF explainer). Idempotent per
 	 * (questionId, msgId); best-effort (must not throw into attribution).
 	 */
 	queueHeldNotice(args: {
 		questionId: string;
 		msgId: string;
 		executionId: string;
-		kind: "merge_block" | "deferred_off";
+		kind: "merge_block" | "readiness_hold" | "deferred_off";
 		holdReason: ReviewHoldReason;
 	}): void;
 	/**
@@ -392,7 +392,13 @@ export async function tryFounderShipApproval(
 					questionId: gate.questionId,
 					msgId: args.msg.id,
 					executionId: gate.executionId,
-					kind: reason === "merge_block" ? "merge_block" : "deferred_off",
+					kind:
+						reason === "merge_block"
+							? "merge_block"
+							: reason === "qa_evidence_missing" ||
+									reason === "qa_evidence_unknown"
+								? "readiness_hold"
+								: "deferred_off",
 					holdReason: reason,
 				});
 			}

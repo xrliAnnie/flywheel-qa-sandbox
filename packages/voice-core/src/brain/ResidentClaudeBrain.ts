@@ -409,12 +409,18 @@ export class ResidentClaudeBrain implements BrainAdapter {
 		pid?: number;
 		turns: number;
 		sessionId?: string;
+		/** FLY-1160 §4.1-6: true once dispose()/forceKill() started — set BEFORE
+		 * the interrupt that ends any in-flight turn, so a consumer (the meeting
+		 * summary) can tell a NORMAL completion from an EXTERNAL teardown interrupt
+		 * (both leave the turn's iterator returning cleanly). */
+		disposed: boolean;
 	} {
 		return {
 			state: this.state,
 			pid: this.alive ? this.child?.pid : undefined,
 			turns: this.turnsCompleted,
 			sessionId: this.sessionId,
+			disposed: this.disposed,
 		};
 	}
 

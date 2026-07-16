@@ -2,12 +2,14 @@ export interface Message {
 	id: string;
 	from_agent: string;
 	to_agent: string;
-	type: "question" | "response" | "instruction" | "progress";
+	type: "question" | "response" | "instruction" | "progress" | "ack_receipt";
 	content: string;
 	parent_id: string | null;
 	read_at: string | null;
 	created_at: string;
 	expires_at: string;
+	relay_state: "open" | "protected" | "terminal_disposed";
+	logical_event_id: string | null;
 	checkpoint: string | null;
 	content_ref: string | null;
 	/** GEO-151: added "artifact" for ProofShot artifact_emitted audit rows. */
@@ -62,7 +64,7 @@ export interface Session {
 	lead_id: string | null;
 	started_at: string;
 	ended_at: string | null;
-	status: "running" | "completed" | "timeout";
+	status: "running" | "completed" | "timeout" | "blocked";
 	/**
 	 * FLY-1188: transport vendor of the runner ("claude-code" | "codex"),
 	 * written by the spawning adapter. `send` routes the mailbox wake by it.

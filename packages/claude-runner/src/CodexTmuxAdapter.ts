@@ -34,6 +34,7 @@ import {
 	mkdirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -87,7 +88,6 @@ import {
 	stripInheritedSecretEnv,
 } from "./codex-home.js";
 import {
-	atomicMergeCodexSessionState,
 	type CodexPhaseLifecycle,
 	CodexPhaseLifecycleController,
 	type CodexPhaseLifecycleControllerOptions,
@@ -641,7 +641,15 @@ export class CodexTmuxAdapter implements IAdapter {
 			let committed = false;
 			const onGoalActive = (): void => {
 				if (committed || !ctx.launchCommitPath) return;
-				if (this.writeLaunchCommit(ctx.launchCommitPath)) committed = true;
+				if (ctx.commitWorkflowLaunch) {
+					const result = ctx.commitWorkflowLaunch();
+					if (!result.ok) {
+						throw new Error(result.reason ?? "Bridge launch fence rejected");
+					}
+					committed = true;
+				} else if (this.writeLaunchCommit(ctx.launchCommitPath)) {
+					committed = true;
+				}
 			};
 
 			// HIGH-4 (Codex R2): resume the prior thread across a Bridge/adapter
@@ -687,6 +695,9 @@ export class CodexTmuxAdapter implements IAdapter {
 							return false;
 						}
 					},
+					readGateHoldLatch: () => this.readPersistedGateHold(ctx.executionId),
+					writeGateHoldLatch: (held) =>
+						this.mergeSessionState(ctx.executionId, { gateHold: held }),
 					...(resumeThreadId ? { resumeThreadId } : {}),
 					...(reapOrphanPid !== undefined ? { reapOrphanPid } : {}),
 					onThreadReady,
@@ -879,11 +890,14 @@ export class CodexTmuxAdapter implements IAdapter {
 					try {
 						const commDb = new CommDB(ctx.commDbPath);
 						const c = classifyGoalOutcome({ outcome, caughtError });
+						// FLY-1279: a blocked goal is a real, typed outcome of its own —
+						// recording it as a timeout loses why the run actually stopped.
+						const goalBlocked = outcome?.result.status === "blocked";
 						const okComplete =
 							(c.success || controlledShutdownSucceeded()) && !teardownError;
 						commDb.updateSessionStatus(
 							ctx.executionId,
-							okComplete ? "completed" : "timeout",
+							okComplete ? "completed" : goalBlocked ? "blocked" : "timeout",
 						);
 						commDb.close();
 					} catch {
@@ -912,6 +926,12 @@ export class CodexTmuxAdapter implements IAdapter {
 			},
 		};
 		if (cls.resultText !== undefined) result.resultText = cls.resultText;
+		if (outcome?.result.status === "blocked") {
+			result.failure = {
+				failureKind: "goal_blocked",
+				failureReason: cls.failureReason ?? "goal ended non-complete: blocked",
+			};
+		}
 		if (!success) {
 			const reason =
 				cls.failureReason ??
@@ -993,6 +1013,21 @@ export class CodexTmuxAdapter implements IAdapter {
 		}
 	}
 
+	/** FLY-1257: durable latch reader. Malformed/corrupt state fails closed so
+	 * runGoalToTerminal cannot silently reactivate an ambiguous blocked goal. */
+	private readPersistedGateHold(executionId: string): boolean {
+		const p = join(codexSessionStateDir(executionId), "session.json");
+		if (!existsSync(p)) return false;
+		const state = JSON.parse(readFileSync(p, "utf-8")) as {
+			gateHold?: unknown;
+		};
+		if (state.gateHold === undefined) return false;
+		if (typeof state.gateHold !== "boolean") {
+			throw new Error(`invalid gateHold in ${p}`);
+		}
+		return state.gateHold;
+	}
+
 	/** Is the founder TUI window's pane still alive? (used to reopen after a
 	 * daemon restart closed its old socket). Fail-open: unknown → treat as alive
 	 * so we don't churn the window. */
@@ -1017,9 +1052,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		daemonPid: number | undefined,
 	): void {
 		try {
-			const stateDir = codexSessionStateDir(ctx.executionId);
-			mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-			atomicMergeCodexSessionState(join(stateDir, "session.json"), {
+			this.mergeSessionState(ctx.executionId, {
 				executionId: ctx.executionId,
 				issueId: ctx.issueId,
 				tmuxWindow: `${this.sessionName}:${windowName}`,
@@ -1030,12 +1063,56 @@ export class CodexTmuxAdapter implements IAdapter {
 				// this daemon if a Bridge crash orphaned it (detached:false does
 				// NOT kill the child on parent death). Omitted when unknown.
 				...(daemonPid !== undefined ? { daemonPid } : {}),
-				updatedAt: new Date().toISOString(),
 			});
 		} catch (err) {
 			console.warn(
 				`[CodexTmuxAdapter] session state persist failed: ${(err as Error).message}`,
 			);
+		}
+	}
+
+	/**
+	 * Merge-owned fields into session.json and publish with an atomic rename.
+	 * Every writer (regular resume metadata and the gate-hold latch) uses this
+	 * seam so sequential interleavings preserve both known and future fields.
+	 */
+	private mergeSessionState(
+		executionId: string,
+		patch: Record<string, unknown>,
+	): void {
+		const stateDir = codexSessionStateDir(executionId);
+		mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+		const path = join(stateDir, "session.json");
+		let current: Record<string, unknown> = {};
+		if (existsSync(path)) {
+			const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+			if (
+				typeof parsed !== "object" ||
+				parsed === null ||
+				Array.isArray(parsed)
+			) {
+				throw new Error(`invalid session state object in ${path}`);
+			}
+			current = parsed as Record<string, unknown>;
+		}
+		const tempPath = join(
+			stateDir,
+			`.session.json.${process.pid}.${randomUUID()}.tmp`,
+		);
+		try {
+			writeFileSync(
+				tempPath,
+				JSON.stringify(
+					{ ...current, ...patch, updatedAt: new Date().toISOString() },
+					null,
+					2,
+				),
+				{ encoding: "utf-8", mode: 0o600 },
+			);
+			renameSync(tempPath, path);
+		} catch (error) {
+			rmSync(tempPath, { force: true });
+			throw error;
 		}
 	}
 
@@ -1233,6 +1310,8 @@ export class CodexTmuxAdapter implements IAdapter {
 		if (ctx.workflowSubmissionCredential)
 			env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL =
 				ctx.workflowSubmissionCredential;
+		if (ctx.workflowOutputCredential)
+			env.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL = ctx.workflowOutputCredential;
 		if (ctx.stateDbPath) env.FLYWHEEL_STATE_DB_PATH = ctx.stateDbPath;
 		if (ctx.progressPath) env.FLYWHEEL_PROGRESS_PATH = ctx.progressPath; // FLY-795
 		if (ctx.projectName) env.FLYWHEEL_PROJECT_NAME = ctx.projectName;

@@ -57,7 +57,7 @@ import {
 	runDeferredApprovalRebindPass,
 } from "./approval-signal/deferred-approval.js";
 import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
-import { isReviewHeld, reviewHoldReason } from "./auto-qa-held.js";
+import { type ReviewHoldReason, reviewHoldReason } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 // FLY-927 (Task 3.3): truthful park wording for the lead-pending nudge.
 import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
@@ -82,6 +82,7 @@ import {
 	emitIssueThreadInfraNotification,
 } from "./founder-thread-notifier.js";
 import type { HookPayload } from "./hook-payload.js";
+import { deliveryAckEnabled } from "./lead-event-ack-policy.js";
 import {
 	computeStuckKey,
 	decideLeadNudge,
@@ -92,6 +93,7 @@ import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import type { MergedGateGuard } from "./merged-gate-guard.js";
 import { decideMilestoneReport } from "./milestone-report-policy.js";
+import { isReviewGateCheckpoint } from "./review-gate-checkpoints.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { defaultGetCommDbPath } from "./session-capture.js";
@@ -143,6 +145,8 @@ export interface GatePollerConfig {
 	projects: ProjectEntry[];
 	store: StateStore;
 	runtimeRegistry: RuntimeRegistry;
+	/** FLY-1251: async producer for the exact-head ship-diff hold snapshot. */
+	ensureShipRelevantDiff?: (session: Session) => Promise<void> | void;
 	/** FLY-91: Enable per-issue chat thread hints in gate_question payloads. */
 	chatThreadsEnabled?: boolean;
 	/**
@@ -212,6 +216,21 @@ export interface GatePollerConfig {
 	/** FLY-1048 (A6): cadence in poll ticks (default 100 ≈ 5min at 3s; plugin
 	 * reads FLYWHEEL_GAP_SCAN_EVERY_N_TICKS). */
 	gapScanEveryNTicks?: number;
+	/**
+	 * FLY-1279 B2: event-independent dead auto-QA recovery. Piggybacks the
+	 * existing timer and is deliberately independent of the park-watch switch.
+	 */
+	onQaReconcileTick?: () => void | Promise<void>;
+	/** Cadence in poll ticks (default 20, about 60s in production). */
+	qaReconcileEveryNTicks?: number;
+	/** FLY-1279 D1: durable ACK/reminder/dead-letter reconciliation. */
+	onDeliveryReconcileTick?: () => void | Promise<void>;
+	/** Cadence in poll ticks (default every tick). */
+	deliveryReconcileEveryNTicks?: number;
+	/** FLY-1279 D2: semantic park inventory and durable Lead-first notification. */
+	onParkWatchTick?: () => void | Promise<void>;
+	/** Cadence in poll ticks (default 20, about 60s in production). */
+	parkWatchEveryNTicks?: number;
 
 	// ── FLY-605: bidirectional in-thread founder relay fallback ──
 	/** Global Discord bot token fallback (lead.botToken takes precedence). */
@@ -400,6 +419,24 @@ const ACTIVE_SESSION_STATUSES = new Set([
 ]);
 
 /**
+ * FLY-1257 defect ④ path-2: the review gates (`review_design` / `review_code`,
+ * the FLY-1224 non-claude-author lane). These are the ONE gate family the
+ * authoring runner never answers — `request-review` BINDS them and the reviewer
+ * answers them, so the FLY-307 A eviction premise ("the Runner is gone, so this
+ * gate can never be answered") is false for them. Evicting one expired it
+ * (`resolveGate(qid, 0)`) before `request-review` could bind it, so a
+ * blocked/completed session could never re-request review: checkGate saw
+ * answered/expired → fail-close forever, and the row was then purged by TTL.
+ * Sibling in intent to the FLY-579 approve_to_ship QA-held carve-out.
+ *
+ * The set + predicate live in `./review-gate-checkpoints.js` (single source of
+ * truth — the zombie-gate-hygiene Z1 sweep consults the same one; a drifting
+ * copy is the defect ④ bug). Imported above; re-exported here so the previously
+ * public `isReviewGateCheckpoint` API is preserved.
+ */
+export { isReviewGateCheckpoint };
+
+/**
  * FLY-1041 Fix A (sweeper judgement, pure). A pending approve_to_ship gate is
  * SUPERSEDED when its session has re-bound to a DIFFERENT question whose row
  * was created STRICTLY later — the founder must only ever see ONE bindable
@@ -449,6 +486,7 @@ export function computeFounderPassHealthy(
 export class GatePoller {
 	private timerHandle: ReturnType<typeof setInterval> | null = null;
 	private polling = false;
+	private parkWatchPass: Promise<void> | null = null;
 	// FLY-1099 §7.2: founder-reply health watchdog + its per-thread routing map
 	// (refreshed by every deliver pass; unknown threads fall back to the infra
 	// owner route).
@@ -465,6 +503,51 @@ export class GatePoller {
 			resolveThreadRoute: (threadId) => this.founderThreadRoutes.get(threadId),
 			infraRoute: () => this.infraAlertRoute(),
 		});
+	}
+
+	/**
+	 * FLY-1251 R2: a code-bearing or unclassifiable PR stays founder-hidden.
+	 * The caller has already refreshed the server-owned classifier; emit a
+	 * Lead-only deterministic alert. LeadAlertNotifier's durable claim makes the
+	 * stable event id the once-per-(execution, head, reason) marker across restarts.
+	 */
+	private async handleHeldReviewGate(
+		lead: LeadConfig,
+		session: Session,
+		reason: ReviewHoldReason,
+	): Promise<void> {
+		if (reason !== "qa_evidence_missing" && reason !== "qa_evidence_unknown") {
+			return;
+		}
+		const head = session.pr_head_sha?.toLowerCase() ?? "unknown";
+		const issue = session.issue_identifier ?? session.issue_id;
+		const work: Promise<unknown>[] = [];
+		if (this.config.leadAlertSink) {
+			work.push(
+				this.config.leadAlertSink.alert({
+					leadId: lead.agentId,
+					projectName: session.project_name,
+					eventId: `ship-readiness-hold:${session.execution_id}:${head}:${reason}`,
+					eventType: "auto_qa_stuck",
+					title: `Ship readiness held — ${issue}`,
+					body:
+						`Founder approval remains hidden for ${issue} because ${reason}. ` +
+						"Bridge will retry the server-owned PR classification. For a code-bearing run, use the two-step same-origin flow: " +
+						"POST /api/qa/manual-spawn/stage with executionId and prHeadSha, then POST /api/qa/manual-spawn with the returned x-flywheel-confirm-token header. " +
+						"Both requests require Origin: http://127.0.0.1:<port> matching the Bridge origin.",
+					severity: "warning",
+					sessionKey: session.execution_id,
+				}),
+			);
+		}
+		const results = await Promise.allSettled(work);
+		for (const result of results) {
+			if (result.status === "rejected") {
+				console.warn(
+					`[GatePoller] ship-readiness hold handling failed for ${session.execution_id}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+				);
+			}
+		}
 	}
 
 	/**
@@ -624,6 +707,45 @@ export class GatePoller {
 					);
 			}
 
+			// FLY-1279 B2: dead auto-QA sweep. This is not gated by park-watch;
+			// recovery remains active even when the notification feature is rolled back.
+			if (
+				this.config.onQaReconcileTick &&
+				(this.tickCount - 1) % this.qaReconcileEveryNTicks() === 0
+			) {
+				void Promise.resolve()
+					.then(() => this.config.onQaReconcileTick?.())
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] FLY-1279 auto-QA reconcile error (non-fatal): ${(err as Error).message}`,
+						),
+					);
+			}
+
+			if (
+				this.config.onDeliveryReconcileTick &&
+				(this.tickCount - 1) % this.deliveryReconcileEveryNTicks() === 0
+			) {
+				void Promise.resolve()
+					.then(() => this.config.onDeliveryReconcileTick?.())
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] FLY-1279 delivery reconcile error (non-fatal): ${(err as Error).message}`,
+						),
+					);
+			}
+
+			if (
+				this.config.onParkWatchTick &&
+				(this.tickCount - 1) % this.parkWatchEveryNTicks() === 0
+			) {
+				void this.runParkWatchPass().catch((err) =>
+					console.warn(
+						`[GatePoller] FLY-1279 park-watch error (non-fatal): ${(err as Error).message}`,
+					),
+				);
+			}
+
 			const patrolDue =
 				this.misroutePatrolEnabled() &&
 				this.tickCount % this.patrolEveryNTicks() === 1;
@@ -643,6 +765,11 @@ export class GatePoller {
 			// loop. The session is still resolved per-question below for metadata,
 			// but presence in the active set is no longer a prerequisite.
 			for (const project of this.config.projects) {
+				const projectDbPath = defaultGetCommDbPath(project.projectName);
+				if (!this.ensureCommDbMigrated(projectDbPath, project)) {
+					leadPendingPollComplete = false;
+					continue;
+				}
 				for (const lead of project.leads) {
 					const leadKey = `${project.projectName}::${lead.agentId}`;
 					// FLY-307 B: while a lead's circuit is open, skip BOTH the
@@ -654,7 +781,7 @@ export class GatePoller {
 						leadPendingPollComplete = false; // FLY-637-ext: incomplete view → skip prune
 						continue;
 					}
-					const dbPath = defaultGetCommDbPath(project.projectName);
+					const dbPath = projectDbPath;
 					let relayFailed = false;
 					try {
 						const pending = this.getPendingQuestions(
@@ -706,11 +833,19 @@ export class GatePoller {
 							// must survive so it can be surfaced once QA passes; verify-approval
 							// remains bound to it). Same isQaHeld predicate as event-route +
 							// HeartbeatService so the three surfaces cannot drift.
-							if (
-								question.checkpoint === "approve_to_ship" &&
-								isReviewHeld(this.config.store, session)
-							) {
-								continue;
+							if (question.checkpoint === "approve_to_ship") {
+								try {
+									await this.config.ensureShipRelevantDiff?.(session);
+								} catch (err) {
+									console.warn(
+										`[GatePoller] ship-diff refresh failed for ${session.execution_id}: ${err instanceof Error ? err.message : String(err)}`,
+									);
+								}
+								const holdReason = reviewHoldReason(this.config.store, session);
+								if (holdReason !== null) {
+									await this.handleHeldReviewGate(lead, session, holdReason);
+									continue;
+								}
 							}
 							// FLY-605 Part A (Codex R2 #3): relayToLead and the founder-thread
 							// fallback get SEPARATE try/catch so a Lead-runtime throw from the
@@ -1022,6 +1157,9 @@ export class GatePoller {
 	// until tickCount reaches the stored tick, then retry the write.
 	private readonly evictedGateIds = new Set<string>();
 	private readonly evictionRetryAt = new Map<string, number>();
+	private readonly migratedCommDbPaths = new Set<string>();
+	private readonly commDbMigrationRetryAt = new Map<string, number>();
+	private readonly commDbMigrationAlerted = new Set<string>();
 
 	// FLY-307 B: per-lead circuit breaker keyed `projectName::agentId`.
 	private readonly circuitFailures = new Map<string, number>();
@@ -1053,6 +1191,109 @@ export class GatePoller {
 		return this.config.gapScanEveryNTicks ?? 100;
 	}
 
+	/** FLY-1279 B2: dead auto-QA recovery cadence (default 20 ≈ 60s). */
+	private qaReconcileEveryNTicks(): number {
+		return this.config.qaReconcileEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS;
+	}
+
+	private deliveryReconcileEveryNTicks(): number {
+		return Math.max(
+			1,
+			this.config.deliveryReconcileEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS,
+		);
+	}
+
+	private parkWatchEveryNTicks(): number {
+		return Math.max(
+			1,
+			this.config.parkWatchEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS,
+		);
+	}
+
+	private runParkWatchPass(): Promise<void> {
+		if (this.parkWatchPass) return this.parkWatchPass;
+		const pass = Promise.resolve()
+			.then(() => this.config.onParkWatchTick?.())
+			.then(() => undefined);
+		const guarded = pass.finally(() => {
+			if (this.parkWatchPass === guarded) this.parkWatchPass = null;
+		});
+		this.parkWatchPass = guarded;
+		return guarded;
+	}
+
+	private ensureCommDbMigrated(dbPath: string, project: ProjectEntry): boolean {
+		if (this.migratedCommDbPaths.has(dbPath)) return true;
+		const retryAt = this.commDbMigrationRetryAt.get(dbPath);
+		if (retryAt !== undefined && this.tickCount < retryAt) return false;
+		try {
+			const db = new CommDB(dbPath);
+			db.close();
+			this.migratedCommDbPaths.add(dbPath);
+			this.commDbMigrationRetryAt.delete(dbPath);
+			this.commDbMigrationAlerted.delete(dbPath);
+			return true;
+		} catch (error) {
+			this.commDbMigrationRetryAt.set(
+				dbPath,
+				this.tickCount + DEFAULT_PATROL_EVERY_N_TICKS,
+			);
+			console.warn(
+				`[GatePoller] CommDB migration failed; project relay paused for ${dbPath}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			if (!this.commDbMigrationAlerted.has(dbPath)) {
+				this.commDbMigrationAlerted.add(dbPath);
+				void this.alertCommDbMigrationFailure(project, dbPath, error).catch(
+					(alertError) => {
+						this.commDbMigrationAlerted.delete(dbPath);
+						console.warn(
+							`[GatePoller] CommDB migration Lead alert failed for ${dbPath}: ${alertError instanceof Error ? alertError.message : String(alertError)}`,
+						);
+					},
+				);
+			}
+			return false;
+		}
+	}
+
+	private async alertCommDbMigrationFailure(
+		project: ProjectEntry,
+		dbPath: string,
+		error: unknown,
+	): Promise<void> {
+		const sink = this.config.leadAlertSink;
+		const route = project.leads[0]
+			? { leadId: project.leads[0].agentId, projectName: project.projectName }
+			: this.infraAlertRoute();
+		if (!sink || !route) {
+			this.commDbMigrationAlerted.delete(dbPath);
+			return;
+		}
+		const pathHash = createHash("sha256")
+			.update(dbPath)
+			.digest("hex")
+			.slice(0, 12);
+		const result = await sink.alert({
+			leadId: route.leadId,
+			projectName: route.projectName,
+			eventId: `commdb-migration-failed:${project.projectName}:${pathHash}`,
+			eventType: "crash_loop",
+			title: `CommDB relay paused — ${project.projectName}`,
+			body:
+				`Bridge could not migrate/open ${dbPath}; all gate and question relay for ` +
+				`${project.projectName} is paused until recovery. Error: ${error instanceof Error ? error.message : String(error)}`,
+			severity: "warning",
+		});
+		if (
+			!result.sent &&
+			!result.queued &&
+			!result.dmSent &&
+			result.skipped !== "duplicate"
+		) {
+			this.commDbMigrationAlerted.delete(dbPath);
+		}
+	}
+
 	private backlogThreshold(): number {
 		return this.config.backlogThreshold ?? DEFAULT_BACKLOG_THRESHOLD;
 	}
@@ -1080,6 +1321,10 @@ export class GatePoller {
 		dbPath: string,
 	): void {
 		if (question.checkpoint == null) return; // FLY-161 boundary
+		// FLY-1257 path-2 (defense in depth): the invariant lives at the single
+		// mutation chokepoint, so neither caller — the relay path nor the
+		// eviction-retry short-circuit above — can expire a review gate.
+		if (isReviewGateCheckpoint(question.checkpoint)) return;
 		if (this.evictedGateIds.has(question.id)) return;
 		try {
 			const db = new CommDB(dbPath);
@@ -1376,6 +1621,12 @@ export class GatePoller {
 			//     reaching product-lead. Preserves the label-routing precedence
 			//     that the brainstorm session decided to keep for gate.
 			if (!ACTIVE_SESSION_STATUSES.has(session.status)) {
+				// FLY-1257 path-2: a review gate outlives its author by design — the
+				// review coordinator binds it and the reviewer answers it, so the
+				// FLY-307 A premise below does not hold. Withhold delivery (as ever
+				// for a terminal session) but leave the gate bindable; the schema's
+				// own `expires_at` default (+72h, flywheel-comm db.ts) still bounds it.
+				if (isReviewGateCheckpoint(question.checkpoint)) return;
 				// FLY-307 A: a gate from a terminal session can never be answered
 				// (the Runner is gone, and the active-session check already withholds
 				// delivery), so it would otherwise be re-polled every tick until its
@@ -1451,6 +1702,18 @@ export class GatePoller {
 			JSON.stringify(payload),
 			session.execution_id,
 		);
+		if (deliveryAckEnabled()) {
+			const commDb = new CommDB(dbPath, false);
+			try {
+				if (!commDb.markQuestionProtected(question.id, String(seq))) {
+					console.warn(
+						`[GatePoller] question ${question.id} could not bind to lead event seq ${seq}; relay continues without protection`,
+					);
+				}
+			} finally {
+				commDb.close();
+			}
+		}
 
 		// Deliver to Lead via the runtime (CommDB instruction or mailbox).
 		const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
@@ -2168,6 +2431,7 @@ export class GatePoller {
 				phasePrefix: phaseMessageTag(
 					session.chat_thread_role,
 					session.runner_model,
+					session.design_backend,
 				),
 			},
 			{ store: this.config.store, fetchImpl: this.config.fetchImpl },
@@ -2550,7 +2814,11 @@ export class GatePoller {
 					botToken: lead.botToken ?? this.config.discordBotToken,
 					ownerUserId: this.config.discordOwnerUserId,
 					// FLY-892 (Step 3): tag which phase reached the milestone; "" for main.
-					phasePrefix: phaseMessageTag(s.chat_thread_role, s.runner_model),
+					phasePrefix: phaseMessageTag(
+						s.chat_thread_role,
+						s.runner_model,
+						s.design_backend,
+					),
 				},
 				{ store: this.config.store, fetchImpl: this.config.fetchImpl },
 			);
@@ -3246,6 +3514,7 @@ export class GatePoller {
 							id: q.id,
 							from_agent: q.from_agent,
 							checkpoint: q.checkpoint,
+							created_at: q.created_at,
 						})),
 						db: db as unknown as ZombieCommDb,
 						noteUnreachableRunner: watchdogOn

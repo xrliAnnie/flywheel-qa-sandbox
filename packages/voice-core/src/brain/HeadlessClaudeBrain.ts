@@ -54,6 +54,9 @@ export interface HeadlessClaudeBrainOptions {
 	runner?: ProcessRunner;
 	/** use --resume to keep one headless session across turns (default true). */
 	useResume?: boolean;
+	/** FLY-545: working directory for the claude -p child — the read-only
+	 * huddle brain anchors Read/Grep/Glob at the project root. */
+	cwd?: string;
 }
 
 export class HeadlessClaudeBrain implements BrainAdapter {
@@ -102,7 +105,11 @@ export class HeadlessClaudeBrain implements BrainAdapter {
 			? buildPrompt(voiceContext, [], turn.text)
 			: buildPrompt(voiceContext, turn.history, turn.text);
 
-		const child = this.runner.spawn(this.opts.claudeBin, args);
+		const child = this.runner.spawn(
+			this.opts.claudeBin,
+			args,
+			this.opts.cwd ? { cwd: this.opts.cwd } : {},
+		);
 		const stream = new BrainStream(child, opts.signal, this.opts.timeoutMs);
 		child.end(prompt); // write prompt + close stdin (EOF) so claude -p starts
 		try {

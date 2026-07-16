@@ -55,6 +55,16 @@ SIGNATURE=""
 STRICT_DELIVERY=0
 MENTION_USER=""
 
+# FLY-1256 mirror of LeadAlertNotifier.INFORMATIONAL_KINDS. These kinds still
+# post a root message, but never render the unified ticket header.
+INFORMATIONAL_KINDS="account_switched"
+is_informational_kind() {
+  case " ${INFORMATIONAL_KINDS} " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # FLY-913: machine-readable delivery result on stdout, ONLY under
 # --strict-delivery. log() writes to stderr, so this is the sole stdout line.
 emit_result() {
@@ -112,7 +122,7 @@ case "$KIND" in
   # on this leg (the wrapper preflight dirty-marker page fires while the Bridge
   # is down); the other four are added for face parity with the TS union
   # (kind-contract.test.ts is the drift guard on both faces).
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog) ;;
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|quota_no_target|quota_read_blind|account_switch_failed|quota_revive_stuck|quota_monitor_down) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"
@@ -348,7 +358,7 @@ CONTENT=$(printf '%s **%s** (%s / %s)\n%s' "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" 
 # FLY-927 (Task 1.7): 🎫 ticket header, SAME shape as the TS formatContent —
 # only in unified-channel mode with tickets on. Shell side always renders
 # `owner — · 状态 NEW` (owner @ is the Bridge's job; drain does not rewrite).
-if [ -n "$UNIFIED_CHANNEL" ] && [ "${FLYWHEEL_ALERT_TICKETS:-}" = "1" ]; then
+if [ -n "$UNIFIED_CHANNEL" ] && [ "${FLYWHEEL_ALERT_TICKETS:-}" = "1" ] && ! is_informational_kind "$KIND"; then
   CONTENT=$(printf '%s **%s** (%s / %s)\n🎫 %s · 首见 %s · owner — · 状态 NEW\n%s' \
     "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" "$PROJECT_NAME" "$(date '+%H:%M')" "$BODY")
 fi

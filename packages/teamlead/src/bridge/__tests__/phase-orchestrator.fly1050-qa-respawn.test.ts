@@ -214,7 +214,7 @@ afterEach(() => {
 describe("FLY-1050 F1: qa terminated (intent pass) → clean QA respawn", () => {
 	it("scoped reconcileQaLoss spawns exactly one QA at the implement head, re-parks implement, posts the respawn note", async () => {
 		const h = makeHarness({
-			implementRows: [implRow()],
+			implementRows: [implRow({ design_backend: "claude" })],
 			qaRows: [deadQaRow()],
 			intents: {
 				"qa-dead-1": { status: "pass", event_id: "e1", at: "t0" },
@@ -227,6 +227,9 @@ describe("FLY-1050 F1: qa terminated (intent pass) → clean QA respawn", () => 
 		expect(h.start).toHaveBeenCalledOnce();
 		expect(h.start.mock.calls[0]![0]).toMatchObject({
 			sessionRole: "qa",
+			designBackend: "claude",
+			dispatchVendor: "claude",
+			dispatchModel: "claude-opus-4-8",
 			startPoint: HEAD, // capturePhaseHeadSha(implement) — the latest valid head
 			shareParentBranch: true,
 			ignoreRunnerLabelSelection: true,

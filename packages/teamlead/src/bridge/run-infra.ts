@@ -45,6 +45,7 @@ import {
 	HaikuVerifier,
 	HardRuleEngine,
 	HookCallbackServer,
+	resolveWorktreeKey,
 	SkillInjector,
 	WorktreeManager,
 } from "flywheel-edge-worker";
@@ -67,6 +68,8 @@ import {
 import {
 	type LifecycleAdmissionFn,
 	type LifecycleLaunchGuard,
+	type PhaseRetryStartPoint,
+	type PhaseRetryStartPointComputer,
 	type ProjectRuntime,
 	type ResumeComputer,
 	RunDispatcher,
@@ -76,6 +79,58 @@ import type { BridgeConfig } from "./types.js";
 import type { WorkflowShadowWriter } from "./workflow-shadow-writer.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 import { reconcileProjectWorktrees } from "./worktree-reconciler.js";
+
+/**
+ * FLY-1257 M3: inspect one fully-qualified local branch ref with a
+ * machine-readable three-state exit contract. Exit 1 from `--verify --quiet`
+ * is the only confirmed-missing result; every other failure is indeterminate.
+ */
+export function probePhaseRetryBranchTip(
+	projectRoot: string,
+	branch: string,
+): PhaseRetryStartPoint {
+	try {
+		const stdout = execFileSync(
+			"git",
+			[
+				"-C",
+				projectRoot,
+				"rev-parse",
+				"--verify",
+				"--quiet",
+				`refs/heads/${branch}^{commit}`,
+			],
+			{
+				encoding: "utf-8",
+				stdio: ["ignore", "pipe", "pipe"],
+				timeout: 20_000,
+			},
+		).trim();
+		if (!stdout) {
+			return {
+				kind: "indeterminate",
+				error: `git rev-parse returned an empty sha for refs/heads/${branch}`,
+			};
+		}
+		return { kind: "found", sha: stdout };
+	} catch (error) {
+		const failure = error as {
+			status?: unknown;
+			signal?: unknown;
+			message?: unknown;
+			stderr?: unknown;
+		};
+		if (failure.status === 1) return { kind: "missing" };
+		const detail = [
+			`exit=${String(failure.status ?? "spawn-error")}`,
+			failure.signal ? `signal=${String(failure.signal)}` : "",
+			failure.message ? String(failure.message) : "",
+		]
+			.filter(Boolean)
+			.join(" ");
+		return { kind: "indeterminate", error: detail };
+	}
+}
 
 /**
  * Build a fetchIssue function that tries Linear API, falls back to StateStore.
@@ -881,6 +936,41 @@ export async function setupRunInfrastructure(
 		return computeProgressResume(issueId, role, "restart", deps);
 	};
 
+	// FLY-1257 M3: phase retries recover branch B's own tip, using the same
+	// WorktreeManager path/branch authority as Blueprint. This runs for every
+	// phase retry even when three-stage keep-alive is disabled: the recreate path
+	// still needs to rebuild from branch B rather than silently reset to main.
+	const phaseRetryStartPointComputer: PhaseRetryStartPointComputer = (
+		issueId,
+		role,
+		projectName,
+	) => {
+		const runtime = projectRuntimes.get(projectName);
+		if (!runtime) {
+			return {
+				kind: "indeterminate",
+				error: `project runtime ${projectName} is unavailable`,
+			};
+		}
+		try {
+			const key = resolveWorktreeKey(issueId, {
+				sessionRole: role,
+				shareParentBranch: true,
+			});
+			const { branch } = worktreeManager.expectedWorktree(
+				runtime.projectRoot,
+				projectName,
+				key,
+			);
+			return probePhaseRetryBranchTip(runtime.projectRoot, branch);
+		} catch (error) {
+			return {
+				kind: "indeterminate",
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+	};
+
 	return new RunDispatcher(
 		projectRuntimes,
 		cleanupHandles,
@@ -924,6 +1014,7 @@ export async function setupRunInfrastructure(
 					},
 				}
 			: undefined,
+		phaseRetryStartPointComputer, // FLY-1257: branch B tip before retry TURN/launch
 	);
 }
 

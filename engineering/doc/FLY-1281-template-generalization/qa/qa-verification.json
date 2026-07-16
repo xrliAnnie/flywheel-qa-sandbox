@@ -1,0 +1,68 @@
+{
+	"issue": "FLY-1281",
+	"phase": "qa",
+	"verifier": "independent QA session (three-stage phase 3)",
+	"pr": 613,
+	"verified_head": "680433728c7c5771116c676ef9a4cb2ed84028e3",
+	"verdict": "FAIL",
+	"suite_teamlead_clean_env": {
+		"result": "6 failed | 7491 passed (7497)",
+		"note": "all 6 = load-contention flakes in files this PR does not touch; each passes in isolation",
+		"isolated_reruns": {
+			"runs-route-registration.test.ts": "1/1 pass (3.0s vs 15.0s timeout under load)",
+			"codex-lead-runtime.test.ts": "114/114 pass",
+			"worktree-quarantine.test.ts": "5/5 pass"
+		}
+	},
+	"suite_polluted_env_note": "first run showed 76 failures; root cause = runner TMPDIR inside ~/.flywheel + ambient FLYWHEEL_*/CODEX_* leakage (documented false-failure class). Scrubbed env dropped 70 of them.",
+	"fly1281_own_tests_isolated": "12 files | 180/180 pass",
+	"github_ci_at_head": "Build & Test pass (run 29457020035)",
+	"e2e_independent_rerun": {
+		"checks": 14,
+		"pass": 14,
+		"reproduces_implementer_evidence": true
+	},
+	"mutation_verification": {
+		"purpose": "prove the guards are enforced and the tests/E2E are not theater",
+		"results": [
+			"D2 QA invariant disabled in workflow-template.ts -> workflow-template.test.ts RED",
+			"teardown fail-closed hold removed in StateStore.ts -> event-route.test.ts RED",
+			"materializeWorkflowRun flag-off gate disabled in StateStore.ts -> workflow-template-selection.test.ts RED",
+			"flag-off gate disabled in compiled dist/StateStore.js -> real-machine E2E flag_off check FAIL, exit 1"
+		],
+		"tree_restored_clean": true
+	},
+	"byte_compat_default_off": "production default (no candidate) short-circuits before any workflow work (workflow-template-selection.ts:52 early return null); legacy start path asserted end-to-end by pre-existing start-e2e.test.ts",
+	"scope_boundary_checked": "C rejects successor/review dispatch (E2E: successor_and_review_dispatch_remain_unreachable)",
+	"verdict_history": [
+		"PASS (initial, at 18fca9f28) — WITHDRAWN: my testing never probed the generated Runner prompt.",
+		"FAIL (corrected) — capability-isolation defect confirmed by an independent production-shaped probe after Codex code review round 2 flagged it."
+	],
+	"blocking_finding": {
+		"severity": "HIGH",
+		"title": "generalized no-write/no-ship node still receives the legacy APPROVE GATE / MERGE AUTHORITY ship instructions",
+		"file": "packages/edge-worker/src/Blueprint.ts",
+		"root_cause": "the FLY-47 checkpoint-injection loop skips brainstorm/approve_to_ship for isQaRunner only; there is no isGeneralizedExecution skip, so with checkpoints enabled those blocks are appended after the generalized capability lines",
+		"failure_scenario": "flywheel project runs with brainstorm + approve_to_ship checkpoints ENABLED. A tpl_research_light 'research' node (generic, no-write, no-ship, completion_route=no_code) is dispatched. Its prompt then contains BOTH 'Do not request ship approval or ship/merge a PR.' AND 'APPROVE GATE (MANDATORY — do NOT skip)' + 'complete --route needs_review' + MERGE AUTHORITY + verify-approval + ':cool:'. Contradictory instructions break capability isolation and can drive a no-ship node toward a ship/merge path or a wrong terminal state.",
+		"evidence": "independent probe with production-shaped checkpointConfig; committed regression test 'suppresses brainstorm/approve_to_ship gates for a generalized node when checkpoints are enabled' is RED against current code",
+		"why_qa_missed_it_first_pass": "the pre-existing Blueprint generalized test constructs Blueprint with NO checkpointConfig, so its not.toContain('BRAINSTORM GATE') passes vacuously — it proves nothing about the checkpoint path. My E2E asserted DB/receipt behavior, never prompt text.",
+		"credit": "surfaced by Codex code review round 2 (xhigh); independently reproduced and narrowed by QA — Codex also claimed 'gh pr create' leaked, which my probe shows is absent."
+	},
+	"codex_code_review_round2": {
+		"verdict": "CHANGES REQUESTED",
+		"high": 1,
+		"medium": 2,
+		"medium_findings": [
+			"runs-route.ts selected_by taken from request leadId; owning-Lead check rides the legacy BRIDGE_DEPT_SCOPE_REJECT kill-switch — with it off a v2 run can record an unverified Lead (plan requires server-derived identity + wrong-Lead 403)",
+			"runs-route.ts committed launch proven dead → output-producing node permanently holds instead of entering the plan R9/R10 delivery-attempt CAS repair; affects tpl_research_light"
+		],
+		"note": "Codex could not post to GitHub (network); local review JSON at /tmp/fly1281-codex-review-round2.json"
+	},
+	"non_blocking_verified_good": [
+		"FLY-1281 own 12 test files isolated clean-env: 180/180 pass",
+		"teamlead suite clean-env 6 failed/7491 passed — all 6 load flakes in untouched files, each passes isolated",
+		"GitHub CI green at head",
+		"real-machine E2E 14/14 reproduced independently",
+		"mutation verification 4/4 — D2 invariant, teardown fail-closed hold, flag-off gate, and dist-level E2E teeth all proven real"
+	]
+}

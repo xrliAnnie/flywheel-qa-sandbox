@@ -34,6 +34,12 @@ export class ResidentBrainManager {
 	/** key → its latest in-flight close, so a repeat close(key) returns the
 	 * SAME promise instead of resolving early (Codex #550 R2 MEDIUM). */
 	private readonly closingByKey = new Map<string, Promise<void>>();
+	/** keys whose meeting is FINALIZING — BrainPort refuses new shim turns for
+	 * them with 503 (checked at entry AND fenced right before respond, Codex
+	 * #552 R2 HIGH-4) while the daemon runs the finalizer minutes turn on a
+	 * captured brain ref. The brain stays live + reachable until close() reaps
+	 * it, which also clears the finalizing mark (Codex #552 R2 LOW-9). */
+	private readonly finalizing = new Set<string>();
 
 	constructor(opts: ResidentBrainManagerOptions = {}) {
 		this.maxSessions = opts.maxSessions ?? DEFAULT_MAX_SESSIONS;
@@ -59,11 +65,32 @@ export class ResidentBrainManager {
 		return this.brains.get(key);
 	}
 
+	/** the daemon's finalize path — an explicit alias so the minutes turn is
+	 * clearly "reach the brain even while shim turns are refused". */
+	getForFinalize(key: string): ResidentClaudeBrain | undefined {
+		return this.brains.get(key);
+	}
+
+	/** FLY-1160 §4.2-4 ②: mark the meeting finalizing so BrainPort refuses new
+	 * shim turns (503) while the daemon runs the minutes turn. close() clears
+	 * it (Codex #552 R2 LOW-9). */
+	suspend(key: string): void {
+		if (this.brains.has(key)) this.finalizing.add(key);
+	}
+
+	/** BrainPort checks this at entry AND right before respond() (fence) — a
+	 * turn that grabbed the brain ref before suspend must still be refused
+	 * (Codex #552 R2 HIGH-4 TOCTOU). */
+	isFinalizing(key: string): boolean {
+		return this.finalizing.has(key);
+	}
+
 	/** dispose + CONFIRM process exit before resolving. A repeat close(key)
 	 * while the child is still dying returns the SAME in-flight promise. On a
 	 * dispose failure the brain stays in the live set — the hard-timer
 	 * forceKillAll must never lose its kill handle. */
 	close(key: string): Promise<void> {
+		this.finalizing.delete(key); // Codex #552 R2 LOW-9: never leak a mark
 		const brain = this.brains.get(key);
 		if (!brain) return this.closingByKey.get(key) ?? Promise.resolve();
 		this.brains.delete(key);

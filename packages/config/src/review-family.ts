@@ -56,6 +56,10 @@ export interface CrossFamilyReviewInput {
  * - `skipped` → true regardless of families (a sanctioned codex-skip is a
  *   governance-level bypass, not a review).
  * - `approved` with BOTH families stamped → families must differ.
+ *   FLY-1278: `approved` is written only after the review coordinator's
+ *   effective verdict (raw reviewer vote + severity policy + any supervised
+ *   per-finding Lead rulings) is delivered. A ruling is not a bypass here; it
+ *   still produces the same head-bound, cross-family approval record.
  * - `approved` with families missing (legacy pre-FLY-1188 row): valid ONLY
  *   for a claude-family author (adapter_type NULL/claude-tmux) — those rows
  *   could only have come from the historical claude-author→codex-reviewer

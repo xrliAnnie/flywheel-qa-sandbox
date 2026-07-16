@@ -108,6 +108,8 @@ export interface AccountSwitchRouteDeps {
 	 * (the established late-bound-holder pattern in plugin.ts).
 	 */
 	getRuntime: () => AccountSwitchRuntime | undefined;
+	/** Cutover keeps the authenticated route stable but permanently retired. */
+	cutoverEnabled?: () => boolean;
 }
 
 export function createAccountSwitchRouter(
@@ -116,6 +118,13 @@ export function createAccountSwitchRouter(
 	const router = Router();
 
 	router.post("/", async (req, res) => {
+		if (deps.cutoverEnabled?.()) {
+			res.status(410).json({
+				error: "retired",
+				reason: "quota_daemon_cutover",
+			});
+			return;
+		}
 		const b = (req.body ?? {}) as Record<string, unknown>;
 		const str = (v: unknown): string | undefined =>
 			typeof v === "string" && v.trim() ? v.trim() : undefined;

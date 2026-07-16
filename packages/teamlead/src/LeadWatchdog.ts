@@ -1027,6 +1027,8 @@ function titleFor(kind: AlertEventType): string {
 			return "Fleet-scale detection incident";
 		case "detection_page_undeliverable":
 			return "Detection founder-page undeliverable";
+		case "delivery_dead_letter":
+			return "Lead delivery dead-lettered";
 		// FLY-195: never emitted by LeadWatchdog (the stuck-runner detector owns
 		// it and builds its own title); case exists for switch exhaustiveness.
 		case "runner_stuck_unhandled":
@@ -1039,6 +1041,8 @@ function titleFor(kind: AlertEventType): string {
 		// own title); case exists for switch exhaustiveness.
 		case "three_stage_stuck":
 			return "Three-stage pipeline stuck";
+		case "three_stage_takeover_failed":
+			return "Three-stage worktree takeover failed";
 		// FLY-637-ext: never emitted by LeadWatchdog (the lead-pending escalation
 		// builds its own title); case exists for switch exhaustiveness.
 		case "runner_lead_pending_unhandled":
@@ -1051,6 +1055,15 @@ function titleFor(kind: AlertEventType): string {
 		// title); case exists for switch exhaustiveness.
 		case "codex_gate_blocked":
 			return "Codex code review not passed";
+		// FLY-1278: emitted by the review coordinator, not LeadWatchdog.
+		case "review_advisory_pass":
+			return "Review passed with non-blocking advisories";
+		case "review_ruling_recorded":
+			return "Lead review ruling recorded";
+		case "review_ruling_disputed":
+			return "Reviewer disputed a Lead ruling";
+		case "review_ruling_notify_failed":
+			return "Review ruling audit post failed";
 		// FLY-871 R2/C8: never emitted by LeadWatchdog (the runner auth scan owns
 		// it and builds its own title); case exists for switch exhaustiveness.
 		case "runner_login_expired":
@@ -1116,6 +1129,20 @@ function titleFor(kind: AlertEventType): string {
 			return "Flywheel deploy failed";
 		case "deploy_degraded":
 			return "Flywheel deploy degraded";
+		// FLY-1256: never emitted by LeadWatchdog; the external quota monitor
+		// supplies its own title. Cases keep the shared union exhaustive.
+		case "account_switched":
+			return "Claude account switched";
+		case "quota_no_target":
+			return "No Claude account has quota";
+		case "quota_read_blind":
+			return "Claude quota monitor is blind";
+		case "account_switch_failed":
+			return "Claude account switch failed";
+		case "quota_revive_stuck":
+			return "Claude pane revive stuck";
+		case "quota_monitor_down":
+			return "Claude quota monitor down";
 		// FLY-1082: fleet kinds — never emitted by LeadWatchdog (the fleet
 		// sensors / server-loss coordinator / boot self-check build their own
 		// titles); cases exist for switch exhaustiveness.
@@ -1174,6 +1201,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "Several detection episodes of the same kind went unhandled at once — a fleet-scale incident. The founder was NOT paged per-episode; investigate the shared cause (Bridge, transport, or a fleet-wide runner condition).";
 		case "detection_page_undeliverable":
 			return "A detection founder page could not be addressed or posted (no session, no thread binding, or the POST failed). The episode stays LEAD_NOTIFIED and keeps retrying; fix the thread binding / bot token / routing.";
+		case "delivery_dead_letter":
+			return "A Lead-directed event exhausted bounded transport or acknowledgement retries. The founder was paged because the owning Lead path did not consume it.";
 		// FLY-195: never emitted by LeadWatchdog (see titleFor).
 		case "runner_stuck_unhandled":
 			return "A stuck Runner episode received no Lead disposition within the grace window. Check the owning Lead, then the runner tmux window.";
@@ -1183,6 +1212,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-793: never emitted by LeadWatchdog (the PhaseOrchestrator builds its own body).
 		case "three_stage_stuck":
 			return "A three-stage pipeline phase handoff (Design→Implement→QA) could not proceed (head-SHA capture failed, the previous phase runner would not close, or the next phase dispatch threw). The next phase was NOT started; investigate the phase Runner.";
+		case "three_stage_takeover_failed":
+			return "A shared branch-B worktree was dirty or at an unexpected HEAD, so Flywheel refused the in-place phase takeover. Inspect and preserve the parked phase's work before retrying.";
 		// FLY-637-ext: never emitted by LeadWatchdog (the lead-pending escalation builds its own body).
 		case "runner_lead_pending_unhandled":
 			return "A runner has been blocked waiting on the Lead to answer its question, and the Lead did not respond after several reminders. Poke the Lead — the runner itself is fine.";
@@ -1192,6 +1223,16 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-827: never emitted by LeadWatchdog (AutoQaEffects builds its own body).
 		case "codex_gate_blocked":
 			return "A PR reached awaiting_review but Codex code review is not APPROVED for the current head. The hard gate blocked auto-QA + merge and held the founder; the runner was re-sent the /codex-code-review instruction.";
+		// FLY-1278: never emitted by LeadWatchdog (the review coordinator builds
+		// request/ruling-specific bodies and deterministic event ids).
+		case "review_advisory_pass":
+			return "Cross-family review approved the head with non-blocking MEDIUM/LOW advisories. The hard review gate is satisfied; triage advisories into follow-up work as appropriate.";
+		case "review_ruling_recorded":
+			return "A Lead recorded a supervised governance ruling for an already-delivered review finding. The durable ruling and issue-thread audit are the authority; gate prose is not.";
+		case "review_ruling_disputed":
+			return "A reviewer supplied new HIGH-severity evidence against a governance-settled finding. The ruling still prevents a mechanical review loop; the Lead must reassess or revoke it.";
+		case "review_ruling_notify_failed":
+			return "A durable Lead review ruling is active, but its issue-thread audit post failed. Bridge boot redrive will retry; investigate Discord thread/token routing.";
 		// FLY-871 R2/C8: never emitted by LeadWatchdog (the runner auth scan builds its own body).
 		case "runner_login_expired":
 			return "A Runner appears logged out (auth/login expired). Rescue restarts it in place so it re-reads the fresh Keychain; if that fails once, the founder is paged.";
@@ -1242,6 +1283,20 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A Flywheel deploy failed (restart / rollback / self-update). Shell-only kind via lead-alert.sh — see the shell alert body for specifics; check /tmp/flywheel-bridge.log and ~/.flywheel/deployed-sha.";
 		case "deploy_degraded":
 			return "A Flywheel deploy completed degraded (skipped/failed leads, plugin update problem, or idle-wait timeout). Shell-only kind via lead-alert.sh — see the shell alert body for specifics.";
+		// FLY-1256: never emitted by LeadWatchdog. The external daemon supplies
+		// account/quota/reset evidence in the real alert body.
+		case "account_switched":
+			return "The external quota monitor switched Claude accounts after verifying the target account had fresh quota.";
+		case "quota_no_target":
+			return "The external quota monitor found no fresh, usable target account under the configured thresholds.";
+		case "quota_read_blind":
+			return "The external quota monitor could not obtain trustworthy quota data; automatic switching is fail-closed.";
+		case "account_switch_failed":
+			return "The external quota monitor selected a verified target but the credential switch failed.";
+		case "quota_revive_stuck":
+			return "A Claude pane remained quota-stuck after the external monitor exhausted its audited revive budget.";
+		case "quota_monitor_down":
+			return "The launchd quota monitor stopped producing healthy polling evidence; inspect its run marker and logs.";
 		// FLY-1082: fleet kinds — never emitted by LeadWatchdog (their sensors
 		// build their own bodies); cases exist for switch exhaustiveness.
 		case "swap_pressure_high":

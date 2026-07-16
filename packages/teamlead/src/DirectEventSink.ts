@@ -5,13 +5,14 @@
 
 import { randomUUID } from "node:crypto";
 import {
+	adapterTypeToFamily,
 	DEFAULT_PROOFSHOT_CONFIG,
 	isThreeStagePhaseRole,
-	modelShortCode,
+	renderRunnerModelDisplay,
 	resolveCompletionSessionRole,
 	type SkillsConfig,
 } from "flywheel-config";
-import { WORKFLOW_TRANSITIONS } from "flywheel-core";
+import { type TerminalFailureInfo, WORKFLOW_TRANSITIONS } from "flywheel-core";
 import type {
 	EventEnvelope,
 	ExecutionEventEmitter,
@@ -160,6 +161,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
 		const now = sqliteDatetime();
+		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
+			env.executionId,
+		);
 		// GEO-202: Ensure issue_identifier is never null — fallback to issueId
 		const identifier = env.issueIdentifier || env.issueId;
 
@@ -204,10 +208,13 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// is using. The HTTP /events session_started handler persists the same
 			// field for the loopback path.
 			runner_model: env.runnerModel,
+			// FLY-1259: run-level effective design backend, set-once in StateStore.
+			design_backend: env.designBackend,
 			// FLY-615: persist the resolved ponytail condition (A/B join key for
 			// FLY-614 token accounting + FLY-616 quality eval). HTTP /events path
 			// persists the same field.
 			ponytail_condition: env.ponytailCondition,
+			workflow_node_id: workflowNodeId,
 		});
 
 		// FLY-1185 (Codex R5#1): the launch-claim starting→active CAS is NOT done
@@ -263,11 +270,16 @@ export class DirectEventSink implements ExecutionEventEmitter {
 							botToken,
 							leadId: ctLead.agentId,
 							ownerUserId: this.config.discordOwnerUserId,
-							// FLY-728 Part D: stamp the model code at thread creation so a
-							// new [FLY-XX] thread shows F/O/S/H immediately (not only after
-							// the first stage_changed). `?? null` = authoritative (no stale
-							// code carried onto a reused thread).
-							modelCode: modelShortCode(env.runnerModel) ?? null,
+							// FLY-1255: stamp the resolved runner model at thread creation.
+							// `?? null` is authoritative and clears a stale marker when no
+							// model was selected.
+							modelMarker:
+								renderRunnerModelDisplay({
+									vendor: env.runnerBackend
+										? adapterTypeToFamily(env.runnerBackend)
+										: undefined,
+									model: env.runnerModel,
+								})?.threadMarker ?? null,
 							// FLY-892 (converge): one issue = one thread — no per-phase
 							// thread role is passed; the phase session and the Lead resolve
 							// the SAME (issue, channel) thread. `chat_thread_role` is still
@@ -427,6 +439,20 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		summary?: string,
 	): Promise<void> {
 		const now = sqliteDatetime();
+		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
+			env.executionId,
+		);
+		const generalizedTeardown = this.store.observeEnrolledTeardown({
+			executionId: env.executionId,
+		});
+		if (generalizedTeardown.enrolled) {
+			if (generalizedTeardown.held) {
+				console.error(
+					`[DirectEventSink] generalized completion held for ${env.executionId}: explicit completion receipt missing`,
+				);
+			}
+			return;
+		}
 
 		this.store.insertEvent({
 			event_id: randomUUID(),
@@ -747,6 +773,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					preExistingSession?.session_role,
 					env.sessionRole,
 				),
+				workflow_node_id: workflowNodeId,
 			});
 		}
 
@@ -979,8 +1006,26 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		env: EventEnvelope,
 		error: string,
 		_lastActivity?: string,
+		failure?: TerminalFailureInfo,
 	): Promise<void> {
 		const now = sqliteDatetime();
+		const goalBlocked = failure?.failureKind === "goal_blocked";
+		const terminalStatus = goalBlocked ? "blocked" : "failed";
+		const terminalError = goalBlocked ? failure.failureReason : error;
+		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
+			env.executionId,
+		);
+		const generalizedTeardown = this.store.observeEnrolledTeardown({
+			executionId: env.executionId,
+		});
+		if (generalizedTeardown.enrolled) {
+			if (generalizedTeardown.held) {
+				console.error(
+					`[DirectEventSink] generalized failure held for ${env.executionId}: explicit completion receipt missing`,
+				);
+			}
+			return;
+		}
 		// FLY-793: pre-failure snapshot so a failure signal doesn't downgrade a
 		// dispatched phase role (sister of the event-route failed guard).
 		const preFailureSession = this.store.getSession(env.executionId);
@@ -998,9 +1043,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			execution_id: env.executionId,
 			issue_id: env.issueId,
 			project_name: env.projectName,
-			status: "failed",
+			status: terminalStatus,
 			last_activity_at: now,
-			last_error: error,
+			last_error: terminalError,
 			// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
 			issue_identifier: env.issueIdentifier || undefined,
 			issue_title: env.issueTitle,
@@ -1008,6 +1053,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				preFailureSession?.session_role,
 				env.sessionRole,
 			),
+			workflow_node_id: workflowNodeId,
 		});
 
 		// GEO-202: Post-upsert backfill — if session still has no identifier, fall back to issueId
@@ -1017,6 +1063,19 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				this.store.patchSessionMetadata(env.executionId, {
 					issue_identifier: env.issueId,
 				});
+			}
+		}
+
+		if (
+			failure?.failureKind === "worktree_takeover_failed" &&
+			this.phaseOrchestrator?.current
+		) {
+			const phaseSession = this.store.getSession(env.executionId);
+			if (phaseSession) {
+				await this.phaseOrchestrator.current.alertWorktreeTakeoverFailure(
+					phaseSession,
+					failure.failureReason,
+				);
 			}
 		}
 
@@ -1049,6 +1108,15 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	 * Never throws.
 	 */
 	private async maybeReconcileQaLoss(executionId: string): Promise<void> {
+		try {
+			const autoQa =
+				await this.autoQaCoordinator?.current?.onQaSessionFailed(executionId);
+			if (autoQa?.owned) return;
+		} catch (err) {
+			console.error(
+				`[DirectEventSink] auto-QA failure hook threw for ${executionId}: ${(err as Error).message}`,
+			);
+		}
 		const orchestrator = this.phaseOrchestrator?.current;
 		if (!orchestrator) return;
 		const session = this.store.getSession(executionId);
@@ -1167,6 +1235,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				chat_channel: lead.chatChannel,
 				issue_labels: labels,
 				session_role: session.session_role ?? "main",
+				design_backend: session.design_backend,
 			};
 
 			// FLY-91: Fill chat_thread_id for Lead thread routing

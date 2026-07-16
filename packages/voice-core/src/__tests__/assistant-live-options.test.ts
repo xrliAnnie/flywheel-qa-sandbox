@@ -36,6 +36,7 @@ class FakeConnection implements LiveConnection {
 	sendText(text: string): void {
 		this.sentTexts.push(text);
 	}
+	injectContext(): void {}
 	sendToolResponse(): void {}
 	onEvent(cb: (e: LiveServerEvent) => void): void {
 		this.cb = cb;
@@ -139,6 +140,7 @@ class FakeSession implements ConversationSession {
 	sendText(text: string): void {
 		this.texts.push(text);
 	}
+	injectContext(): void {}
 	interrupt(): void {}
 	injectToolResult(_r: ToolResult, _s?: ScheduleHint): void {}
 	on<E extends keyof ConversationEventMap>(

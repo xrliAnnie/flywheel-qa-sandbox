@@ -1,0 +1,11 @@
+=== FLY-1158 daemon log — full FLY-545 relevant lines (evidence) ===
+[voice-bridge] meeting FLY-1158 assembling
+[voice-bridge] [turn-mouth] stream backpressure — model audio outrunning playback beyond highWaterMark
+[voice-bridge] [turn-mouth] stream backpressure — model audio outrunning playback beyond highWaterMark
+[voice-bridge] [meeting] line flywheel-eng-lead error: Gemini Live connection closed unexpectedly: The operation was aborted.
+[voice-bridge] [meeting] line flywheel-eng-lead reconnected (resumed=true)
+[voice-bridge] [turn-mouth] stream backpressure — model audio outrunning playback beyond highWaterMark
+[voice-bridge] [turn-mouth] stream backpressure — model audio outrunning playback beyond highWaterMark
+
+=== abort/reconnect/backpressure counts ===
+aborts=1 reconnects=1 backpressure=4

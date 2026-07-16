@@ -4,7 +4,7 @@
  * drive command registration → preflight → session start → cross-mode slot
  * contention → stop.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -213,7 +213,7 @@ describe("wireElevenMode (FLY-1006 S7)", () => {
 
 		// the real answer's onset: cue off (one stop), then the turn stream
 		h.wsHandlers[0].onAudio(Buffer.alloc(480));
-		const streamAt = events.lastIndexOf("play:stream");
+		const streamAt = events.lastIndexOf("play:raw-stream");
 		expect(streamAt).toBeGreaterThanOrEqual(0);
 		expect(events.slice(0, streamAt)).toContain("stop");
 
@@ -258,4 +258,174 @@ describe("wireElevenMode (FLY-1006 S7)", () => {
 
 		await h.runtime.close();
 	});
+
+	describe("FLY-1160 §4.2 resident-brain wiring", () => {
+		function fakeManager() {
+			const opened: string[] = [];
+			const closed: string[] = [];
+			const suspended: string[] = [];
+			const interrupts: string[] = [];
+			const brains = new Map<string, unknown>();
+			return {
+				manager: {
+					open: (key: string) => {
+						opened.push(key);
+						const brain = {
+							interrupt: async () => {
+								interrupts.push(key);
+							},
+							respond: async function* () {},
+						};
+						brains.set(key, brain);
+						return brain as never;
+					},
+					get: (key: string) => brains.get(key),
+					getForFinalize: (key: string) => brains.get(key),
+					suspend: (key: string) => {
+						suspended.push(key);
+					},
+					isFinalizing: (key: string) => suspended.includes(key),
+					close: async (key: string) => {
+						closed.push(key);
+					},
+					closeAll: async () => {},
+					forceKillAll: () => {},
+					stats: () => ({ active: 0 }),
+				},
+				opened,
+				closed,
+				suspended,
+				interrupts,
+			};
+		}
+
+		function fetchStub(created: string[], landed: string[]) {
+			return (async (url: string, init?: RequestInit) => {
+				if (String(url).includes("/api/linear/create-issue")) {
+					created.push("x");
+					return Response.json({ issue: { identifier: "FLY-4000", url: "u" } });
+				}
+				if (String(url).includes("/api/linear/comments")) {
+					return Response.json({
+						comments: [],
+						hasNextPage: false,
+						endCursor: null,
+						stateType: "started",
+					});
+				}
+				if (String(url).includes("/api/linear/comment")) {
+					landed.push(String((init?.body as string) ?? ""));
+					return Response.json({ comment: { url: "cu" } });
+				}
+				return Response.json({ ok: true });
+			}) as unknown as typeof fetch;
+		}
+
+		it("missing leadId identity file fails LOUD at wire time (not mid-meeting)", async () => {
+			const f = makeFakes();
+			const m = fakeManager();
+			const err = await wireElevenMode({
+				config: CONFIG, // projectRoot /tmp/flywheel has no .lead/eng-lead
+				eleven: { ...ELEVEN, leadId: "eng-lead" },
+				registry: f.registry,
+				deps: f.deps,
+				room: new VoiceRoomRuntime(),
+				env: {
+					ELEVENLABS_API_KEY: "xi-key",
+					FLYWHEEL_API_TOKEN: "tok",
+				} as NodeJS.ProcessEnv,
+				log: () => {},
+				fetchImpl: fetchStub([], []),
+				connectWs: async () => ({
+					sendAudio() {},
+					flushAudio() {},
+					close() {},
+				}),
+				stateDir,
+				brainManager: m.manager as never,
+				noShowMs: 0,
+			}).catch((e) => e as Error);
+			expect(err).toBeInstanceOf(Error);
+			expect((err as Error).message).toContain("identity file not found");
+		});
+
+		it("brain enabled: kickoff issue minted → brain pre-heated → minutes land → brain reaped on end", async () => {
+			const f = makeFakes();
+			const room = new VoiceRoomRuntime();
+			const m = fakeManager();
+			const created: string[] = [];
+			const landed: string[] = [];
+			// a real projectRoot with the lead identity file so the wire passes.
+			const projectRoot = mkdtempSync(join(tmpdir(), "fly1160-proj-"));
+			mkdirSync(join(projectRoot, ".lead", "eng-lead"), { recursive: true });
+			writeFileSync(
+				join(projectRoot, ".lead", "eng-lead", "identity.md"),
+				"You are the Eng Lead.",
+			);
+			try {
+				const runtime = await wireElevenMode({
+					config: { ...CONFIG, projectRoot },
+					eleven: { ...ELEVEN, leadId: "eng-lead" },
+					registry: f.registry,
+					deps: f.deps,
+					room,
+					env: {
+						ELEVENLABS_API_KEY: "xi-key",
+						FLYWHEEL_API_TOKEN: "tok",
+					} as NodeJS.ProcessEnv,
+					log: () => {},
+					fetchImpl: fetchStub(created, landed),
+					connectWs: async () => ({
+						sendAudio() {},
+						flushAudio() {},
+						close() {},
+					}),
+					stateDir,
+					brainManager: m.manager as never,
+					noShowMs: 0,
+					generateMinutes: async () => ({
+						recapText: "聊定:先修耳朵。",
+						quotes: [{ ts: "t", text: "先修耳朵" }],
+					}),
+				});
+				// invoke → kickoff issue + brain preheat
+				h_invoke(f.commandHandlers);
+				await vi.waitFor(() => {
+					if (created.length === 0) throw new Error("no kickoff issue yet");
+					if (m.opened.length === 0) throw new Error("brain not preheated yet");
+				});
+				expect(m.opened[0]).toBe(`eleven:${sessionOf(m.opened)}`);
+				// close the daemon → finalizer minutes land + brain reaped
+				await runtime.close();
+				await vi.waitFor(() => {
+					if (!landed.some((b) => b.includes("assistant-summary")))
+						throw new Error("minutes not landed yet");
+					if (m.closed.length === 0) throw new Error("brain not reaped yet");
+				});
+			} finally {
+				rmSync(projectRoot, { recursive: true, force: true });
+			}
+		});
+	});
 });
+
+function h_invoke(
+	handlers: Map<
+		string,
+		(inv: {
+			topic?: string;
+			userId: string;
+			reply: (t: string, o?: { joinUrl?: string }) => Promise<void>;
+		}) => void
+	>,
+): void {
+	handlers.get("eleven")?.({
+		topic: "声线",
+		userId: "annie",
+		reply: async () => {},
+	});
+}
+
+function sessionOf(opened: string[]): string {
+	return opened[0].replace(/^eleven:/, "");
+}

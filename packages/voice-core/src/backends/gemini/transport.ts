@@ -41,12 +41,19 @@ export type LiveServerEvent =
 	| { type: "resumption-update"; handle: string }
 	/** goAway.timeLeft (seconds) — connection about to drop. */
 	| { type: "go-away"; timeLeftSec: number }
-	| { type: "error"; message: string };
+	// connectionClosed marks connection DEATH (unexpected ws close) as opposed
+	// to protocol-level errors — the session maps it to VoiceError
+	// "connection-closed" so the rotator can auto-reconnect (FLY-545 QA R2 F1).
+	| { type: "error"; message: string; connectionClosed?: boolean };
 
 export interface LiveConnection {
 	sendAudio(frame: Buffer, format: AudioFormat): void;
 	/** FLY-967: text control prompt via sendRealtimeInput({ text }). */
 	sendText(text: string): void;
+	/** FLY-545: SILENT context feed via sendClientContent(turnComplete:false) —
+	 * never triggers speech (FLY-968: realtime text frames DO break silence on
+	 * gemini-3.1, so this must stay a separate channel from sendText). */
+	injectContext(text: string): void;
 	/** FLY-967 round-6: signal end-of-user-audio (audioStreamEnd) so the model
 	 * commits the turn and responds. Discord silence-suppression stops the
 	 * audio stream abruptly when the user goes quiet — with no trailing silence

@@ -283,6 +283,7 @@ describe("AutoQaEffects.stampIssueStage (FLY-630 ②)", () => {
 	];
 
 	function fakeCreator() {
+		const markers: Array<string | null | undefined> = [];
 		const calls: {
 			threadId: string;
 			stage: string;
@@ -292,11 +293,12 @@ describe("AutoQaEffects.stampIssueStage (FLY-630 ②)", () => {
 		const creator = {
 			stampStageEmoji: vi.fn(
 				async (
-					ctx: { chatChannelId: string },
+					ctx: { chatChannelId: string; modelMarker?: string | null },
 					threadId: string,
 					stage: string,
 					withWord: boolean,
 				) => {
+					markers.push(ctx.modelMarker);
 					calls.push({
 						threadId,
 						stage,
@@ -306,7 +308,7 @@ describe("AutoQaEffects.stampIssueStage (FLY-630 ②)", () => {
 				},
 			),
 		} as unknown as ChatThreadCreator;
-		return { creator, calls };
+		return { creator, calls, markers };
 	}
 
 	let store: StateStore;
@@ -355,6 +357,27 @@ describe("AutoQaEffects.stampIssueStage (FLY-630 ②)", () => {
 				channel: "chan-1",
 			},
 		]);
+	});
+
+	it("keeps a Claude parent model marker authoritative during auto-QA stamps", async () => {
+		store.upsertChatThread("thread-1", "chan-1", "FLY-1");
+		const { creator, markers } = fakeCreator();
+		const effects = new AutoQaEffects({
+			store,
+			projects,
+			config: {} as never,
+			chatThreadCreator: creator,
+		});
+
+		await effects.stampIssueStage({
+			session: session({
+				adapter_type: "claude-tmux",
+				runner_model: "claude-opus-4-8",
+			}),
+			stage: "test",
+		});
+
+		expect(markers[0]).toBe("O");
 	});
 
 	it("no-ops when the feature flag is off (FLYWHEEL_ISSUE_STATUS_EMOJI=0)", async () => {

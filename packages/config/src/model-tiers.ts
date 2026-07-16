@@ -113,6 +113,62 @@ export function modelShortCode(
 	return undefined;
 }
 
+/**
+ * FLY-1255 (Plan B — Annie): the NON-Claude single-letter thread/window short
+ * codes, maintained here alongside the Claude F/O/S/H tier codes so every
+ * short code lives in ONE table. Annie rejected the earlier long
+ * `[Model GPT-5.6]` / `[Model kimi-for-coding]` markers; every CURATED family
+ * now folds to a single letter, keyed by FAMILY (not by model version):
+ *   - codex / GPT family (`gpt-*`) → `G`
+ *   - kimi family (`kimi-*`)       → `K`
+ * The lookup is pure table matching by family + model prefix. A model whose
+ * family is NOT in the table (`gemini-3-pro`, `antigravity`) returns `undefined`
+ * and the renderer falls back to the long `[Model <id>]` form — we never
+ * fabricate a letter for an un-curated FAMILY. Adding a family = one row here.
+ *
+ * The single letter is deliberately version-less (Annie's Plan B tradeoff): a
+ * future `gpt-6` is still `G` because it is the GPT family — exactly as `F` does
+ * not distinguish fable-5 from a future fable-6. The full version (GPT-5.6) is
+ * still rendered by the separate `modelDisplayName()` long-name path, so it is
+ * not lost. Claude is intentionally absent here — its F/O/S/H codes come from
+ * `modelShortCode()` and stay byte-unchanged.
+ */
+interface VendorShortCodeEntry {
+	/** Resolved executor family this row applies to (`codex` / `kimi` / …). */
+	family: string;
+	/** True when this row's curated model-family prefix matches (lower-cased id). */
+	matches: (lowerModel: string) => boolean;
+	/** The single-letter thread/window short code. */
+	code: "G" | "K";
+}
+
+const VENDOR_SHORT_CODES: readonly VendorShortCodeEntry[] = [
+	// codex/GPT family: any gpt-* model (gpt-5.6-sol, a future gpt-6, …) → G.
+	// The family gate still rejects a mismatched non-gpt model on a codex row
+	// (e.g. a stray `claude-*` id), which falls back to the honest long form.
+	{ family: "codex", matches: (m) => m.startsWith("gpt-"), code: "G" },
+	{ family: "kimi", matches: (m) => m.startsWith("kimi-"), code: "K" },
+];
+
+/**
+ * FLY-1255: the curated NON-Claude single-letter short code for a resolved
+ * `{family, model}`, or `undefined` when the pair is not a curated entry (the
+ * caller then keeps the long `[Model <id>]` fallback). Pure table lookup — no
+ * letter is ever invented for an unrecognized vendor/model.
+ */
+export function vendorModelShortCode(
+	family: string | null | undefined,
+	model: string | null | undefined,
+): "G" | "K" | undefined {
+	const fam = family?.toLowerCase();
+	const m = model?.toLowerCase() ?? "";
+	if (!fam || !m) return undefined;
+	for (const entry of VENDOR_SHORT_CODES) {
+		if (entry.family === fam && entry.matches(m)) return entry.code;
+	}
+	return undefined;
+}
+
 /** Short code → the family display name shown in FLY-892 phase tags/headers. */
 const SHORT_CODE_DISPLAY_NAME: Readonly<Record<"F" | "O" | "S" | "H", string>> =
 	{ F: "Fable", O: "Opus", S: "Sonnet", H: "Haiku" };

@@ -8,8 +8,11 @@ import { CommDB } from "../db.js";
 describe("CommDB", () => {
 	let db: CommDB;
 	let tmpDir: string;
+	let previousProtection: string | undefined;
 
 	beforeEach(() => {
+		previousProtection = process.env.FLYWHEEL_COMMDB_PROTECTION;
+		delete process.env.FLYWHEEL_COMMDB_PROTECTION;
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-comm-test-"));
 		db = new CommDB(join(tmpDir, "comm.db"));
 	});
@@ -17,6 +20,11 @@ describe("CommDB", () => {
 	afterEach(() => {
 		db.close();
 		rmSync(tmpDir, { recursive: true, force: true });
+		if (previousProtection === undefined) {
+			delete process.env.FLYWHEEL_COMMDB_PROTECTION;
+		} else {
+			process.env.FLYWHEEL_COMMDB_PROTECTION = previousProtection;
+		}
 	});
 
 	describe("schema creation", () => {
@@ -64,6 +72,23 @@ describe("CommDB", () => {
 		});
 	});
 
+	describe("event ACK receipts", () => {
+		it("stores one consumable backend-neutral receipt without exposing token fields", () => {
+			const id = db.insertAckReceipt("lead-1", 42, "secret-token");
+			expect(db.getPendingAckReceipts()).toMatchObject([
+				{
+					id,
+					from_agent: "lead-1",
+					type: "ack_receipt",
+					content: JSON.stringify({ event_seq: 42, ack_token: "secret-token" }),
+				},
+			]);
+			expect(db.markAckReceiptConsumed(id)).toBe(true);
+			expect(db.getPendingAckReceipts()).toEqual([]);
+			expect(db.markAckReceiptConsumed(id)).toBe(false);
+		});
+	});
+
 	describe("pending questions", () => {
 		it("should list unanswered questions for a lead", () => {
 			const q1 = db.insertQuestion("runner-1", "product-lead", "Q1?");
@@ -88,7 +113,101 @@ describe("CommDB", () => {
 	});
 
 	describe("expiry", () => {
-		it("should purge expired messages", () => {
+		it("does not mutate relay metadata when protection is disabled", () => {
+			process.env.FLYWHEEL_COMMDB_PROTECTION = "0";
+			const qId = db.insertQuestion("runner-1", "product-lead", "Ship?", {
+				checkpoint: "approve_to_ship",
+			});
+
+			expect(db.markQuestionProtected(qId, "lead-event-off")).toBe(true);
+			expect(db.getMessageById(qId)).toMatchObject({
+				relay_state: "open",
+				logical_event_id: null,
+			});
+		});
+
+		it("protects an expired unanswered question by default, including on reopen", () => {
+			const dbPath = join(tmpDir, "comm.db");
+			const qId = db.insertQuestion("runner-1", "product-lead", "Old Q?", {
+				checkpoint: "approve_to_ship",
+			});
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+				)
+				.run(qId);
+
+			expect(db.purgeExpired()).toBe(0);
+			expect(db.isQuestionPending(qId)).toBe(true);
+			expect(db.getPendingQuestions("product-lead").map((q) => q.id)).toEqual([
+				qId,
+			]);
+
+			db.close();
+			db = new CommDB(dbPath);
+			expect(db.getMessageById(qId)?.relay_state).not.toBe("terminal_disposed");
+			expect(db.isQuestionPending(qId)).toBe(true);
+		});
+
+		it("purges an expired question only after an explicit terminal disposition", () => {
+			const qId = db.insertQuestion("runner-1", "product-lead", "Old Q?", {
+				checkpoint: "approve_to_ship",
+			});
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+				)
+				.run(qId);
+
+			expect(db.markQuestionTerminalDisposed(qId)).toBe(true);
+			expect(db.purgeExpired()).toBe(1);
+			expect(db.getMessageById(qId)).toBeUndefined();
+		});
+
+		it("keeps an expired protected gate answerable and disposes it with the response", () => {
+			const qId = db.insertQuestion("runner-1", "product-lead", "Ship?", {
+				checkpoint: "approve_to_ship",
+			});
+			expect(db.markQuestionProtected(qId, "lead-event-1")).toBe(true);
+			expect(db.getMessageById(qId)).toMatchObject({
+				relay_state: "protected",
+				logical_event_id: "lead-event-1",
+			});
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+				)
+				.run(qId);
+
+			expect(
+				db.insertResponseIfGateOpen({
+					questionId: qId,
+					fromAgent: "product-lead",
+					content: "approved",
+					expectedOwner: "runner-1",
+					expectedCheckpoint: "approve_to_ship",
+				}),
+			).toBe(true);
+			expect(db.getResponse(qId)?.content).toBe("approved");
+			expect(db.getMessageById(qId)?.relay_state).toBe("terminal_disposed");
+			expect(db.isQuestionPending(qId)).toBe(false);
+		});
+
+		it("does not let read-message hygiene delete an unanswered action row", () => {
+			const qId = db.insertQuestion("runner-1", "product-lead", "Still open?");
+			(db as any).db
+				.prepare(
+					`UPDATE messages SET read_at = datetime('now', '-48 hours'),
+					 created_at = datetime('now', '-48 hours') WHERE id = ?`,
+				)
+				.run(qId);
+
+			expect(db.cleanupReadMessages()).toBe(0);
+			expect(db.isQuestionPending(qId)).toBe(true);
+		});
+
+		it("preserves legacy expiry deletion when protection is explicitly off", () => {
+			process.env.FLYWHEEL_COMMDB_PROTECTION = "0";
 			// Insert a question, then manually set expires_at to past
 			const qId = db.insertQuestion("runner-1", "product-lead", "Old Q?");
 			// Access internal db to force expire
@@ -161,6 +280,62 @@ describe("CommDB", () => {
 			expect(tables.some((t: { name: string }) => t.name === "sessions")).toBe(
 				true,
 			);
+		});
+
+		it("adds durable relay protection columns idempotently", () => {
+			const dbPath = join(tmpDir, "relay-migrate.db");
+			const first = new CommDB(dbPath);
+			first.close();
+			const second = new CommDB(dbPath);
+			const columns = (second as any).db
+				.prepare("PRAGMA table_info(messages)")
+				.all() as Array<{ name: string }>;
+			expect(columns.map((column) => column.name)).toEqual(
+				expect.arrayContaining(["relay_state", "logical_event_id"]),
+			);
+			second.close();
+		});
+
+		it("rebuilds the legacy message type constraint without losing parent-child rows", () => {
+			const dbPath = join(tmpDir, "legacy-message-types.db");
+			const legacy = new Database(dbPath);
+			legacy.exec(`
+				CREATE TABLE messages (
+				  id TEXT PRIMARY KEY,
+				  from_agent TEXT NOT NULL,
+				  to_agent TEXT NOT NULL,
+				  type TEXT NOT NULL CHECK(type IN ('question','response','instruction','progress')),
+				  content TEXT NOT NULL,
+				  parent_id TEXT,
+				  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				  expires_at DATETIME NOT NULL DEFAULT (datetime('now', '+72 hours')),
+				  FOREIGN KEY (parent_id) REFERENCES messages(id)
+				);
+				INSERT INTO messages (id, from_agent, to_agent, type, content)
+				VALUES ('legacy-q', 'runner', 'lead', 'question', 'old question');
+				INSERT INTO messages (id, from_agent, to_agent, type, content, parent_id)
+				VALUES ('legacy-r', 'lead', 'runner', 'response', 'old response', 'legacy-q');
+			`);
+			legacy.close();
+
+			const migrated = new CommDB(dbPath);
+			try {
+				const schema = (migrated as any).db
+					.prepare(
+						"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
+					)
+					.get() as { sql: string };
+				expect(schema.sql).toContain("'ack_receipt'");
+				expect(migrated.getMessageById("legacy-r")).toMatchObject({
+					parent_id: "legacy-q",
+					content: "old response",
+				});
+				expect(
+					migrated.insertAckReceipt("lead", 9, "migrated-token"),
+				).toBeTruthy();
+			} finally {
+				migrated.close();
+			}
 		});
 	});
 
@@ -300,6 +475,31 @@ describe("CommDB", () => {
 	});
 
 	describe("session CRUD", () => {
+		it("FLY-1279: migrates legacy session status constraints and persists blocked", () => {
+			const legacyPath = join(tmpDir, "legacy.db");
+			const legacy = new Database(legacyPath);
+			legacy.exec(`
+				CREATE TABLE sessions (
+					execution_id TEXT PRIMARY KEY,
+					tmux_window TEXT NOT NULL,
+					project_name TEXT NOT NULL,
+					issue_id TEXT,
+					lead_id TEXT,
+					started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+					ended_at DATETIME,
+					status TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout')),
+					vendor TEXT
+				);
+			`);
+			legacy.close();
+
+			const migrated = new CommDB(legacyPath);
+			migrated.registerSession("exec-blocked", "@7", "flywheel", "FLY-1279");
+			migrated.updateSessionStatus("exec-blocked", "blocked");
+			expect(migrated.getSession("exec-blocked")?.status).toBe("blocked");
+			migrated.close();
+		});
+
 		it("should register and retrieve a session", () => {
 			db.registerSession(
 				"exec-1",

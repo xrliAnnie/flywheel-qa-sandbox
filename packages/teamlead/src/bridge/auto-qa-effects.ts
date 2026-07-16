@@ -16,7 +16,7 @@
 
 import { CommDB } from "flywheel-comm/db";
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
-import { modelShortCode, phaseMessageTag } from "flywheel-config";
+import { phaseMessageTag } from "flywheel-config";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import {
@@ -37,6 +37,7 @@ import {
 import { buildSessionKey } from "./hook-payload.js";
 import type { MergedGateGuard } from "./merged-gate-guard.js";
 import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
+import { sessionModelDisplay } from "./runner-model-display.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import type { BridgeConfig } from "./types.js";
 
@@ -165,6 +166,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 		const prefix = phaseMessageTag(
 			args.session.chat_thread_role,
 			args.session.runner_model,
+			args.session.design_backend,
 		);
 		// FLY-892 (Step 7): a QA status broadcast → announcer bot when configured;
 		// else the Lead bot (byte-compat).
@@ -602,9 +604,9 @@ export class AutoQaEffects implements AutoQaSideEffects {
 					issueTitle: args.session.issue_title,
 					botToken,
 					leadId,
-					// FLY-728 Part D: carry the parent runner's model code (authoritative
-					// — `?? null` clears on account-default, never keeps a stale code).
-					modelCode: modelShortCode(args.session.runner_model) ?? null,
+					// FLY-1255: carry the resolved parent model marker. `?? null`
+					// authoritatively clears stale title state.
+					modelMarker: sessionModelDisplay(args.session)?.threadMarker ?? null,
 				},
 				thread.thread_id,
 				args.stage,

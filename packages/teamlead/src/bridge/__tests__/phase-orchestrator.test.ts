@@ -125,6 +125,31 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	};
 }
 
+describe("FLY-1279 typed worktree takeover failure", () => {
+	it("uses the dedicated alert exactly once and never duplicates the generic alert", async () => {
+		const h = makeDeps();
+		const dedicated = vi.fn(async () => {});
+		h.deps.effects.alertWorktreeTakeoverFailure = dedicated;
+		const orchestrator = new PhaseOrchestrator(h.deps);
+		const session = {
+			execution_id: "impl-exec",
+			issue_id: "FLY-1279",
+			project_name: "flywheel",
+			status: "failed",
+			session_role: "implement",
+			chat_thread_role: "implement",
+		} as PhaseSession;
+
+		await orchestrator.alertWorktreeTakeoverFailure(
+			session,
+			"worktree_takeover_failed: dirty",
+		);
+
+		expect(dedicated).toHaveBeenCalledOnce();
+		expect(h.alertLeadPipelineError).not.toHaveBeenCalled();
+	});
+});
+
 function session(over: Partial<PhaseSession>): PhaseSession {
 	return {
 		execution_id: "exec-1",
@@ -141,7 +166,11 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 	it("Design done → captures SHA, closes design, starts Implement (Codex gpt-5.6-sol xhigh) on branch B", async () => {
 		const { deps, start, capturePhaseHeadSha, closePhaseRunner } = makeDeps();
 		await new PhaseOrchestrator(deps).onPhaseComplete(
-			session({ session_role: "design", status: "design_done" }),
+			session({
+				session_role: "design",
+				status: "design_done",
+				design_backend: "codex",
+			}),
 		);
 		expect(capturePhaseHeadSha).toHaveBeenCalledOnce();
 		expect(closePhaseRunner).toHaveBeenCalledOnce();
@@ -149,6 +178,7 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 		expect(start.mock.calls[0]![0]).toMatchObject({
 			issueId: "FLY-793",
 			sessionRole: "implement",
+			designBackend: "codex",
 			// FLY-1224 (Annie's 2026-07-13 table): implement dispatches the FULL
 			// codex triple {model, vendor, effort}; the label layer stays bypassed
 			// so no issue label can override the phase table. T3 mutation target:
@@ -385,13 +415,17 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 
 			it("FAIL happy path: capture → close → dispatch Implement-fix, durably in order", async () => {
 				const h = makeDeps();
-				await new PhaseOrchestrator(h.deps).onQaResult(qaSession(), verdict());
+				await new PhaseOrchestrator(h.deps).onQaResult(
+					qaSession({ design_backend: "claude" }),
+					verdict(),
+				);
 				expect(h.capturePhaseHeadSha).toHaveBeenCalledOnce();
 				expect(h.closePhaseRunner).toHaveBeenCalledOnce();
 				expect(h.start).toHaveBeenCalledOnce();
 				expect(h.start.mock.calls[0]![0]).toMatchObject({
 					issueId: "FLY-793",
 					sessionRole: "implement",
+					designBackend: "claude",
 					// FLY-1224 (T3, legacy fix lane): implement-fix carries the full
 					// codex triple from the phase table; label layer stays bypassed.
 					dispatchModel: "gpt-5.6-sol",
@@ -1557,5 +1591,52 @@ describe("FLY-921 Fix C — turn-belt stale-holder reconcile", () => {
 		expect(h.grantTurn).toHaveBeenCalledWith(
 			expect.objectContaining({ execId: "design-b", projectName: "proj-2" }),
 		);
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLY-1259 — respawnUnenrolledQa (FLY-1244 re-QA lane) must inherit the run lock.
+// This successor path landed after the FLY-1259 plan was written; without the
+// copy it silently drops design_backend for the new attempt and every successor
+// spawned from it, so a locked run would fall back to the global switch.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("FLY-1259: re-QA respawn inherits the locked design backend", () => {
+	const HEAD_SHA = "a".repeat(40);
+	const unenrolledQa = (over: Partial<PhaseSession> = {}): PhaseSession =>
+		session({
+			execution_id: "qa-unenrolled",
+			session_role: "qa",
+			chat_thread_role: "qa",
+			status: "running",
+			...over,
+		});
+
+	it("carries design_backend onto the new QA attempt while keeping the QA triple", async () => {
+		const h = makeDeps();
+		await new PhaseOrchestrator(h.deps).respawnUnenrolledQa(
+			unenrolledQa({ design_backend: "claude" }),
+			HEAD_SHA,
+			2,
+		);
+		expect(h.start).toHaveBeenCalledOnce();
+		expect(h.start.mock.calls[0]![0]).toMatchObject({
+			sessionRole: "qa",
+			designBackend: "claude",
+			// The lock is metadata only — the QA phase keeps its own dispatch triple.
+			dispatchVendor: "claude",
+			dispatchModel: "claude-opus-4-8",
+			startPoint: HEAD_SHA,
+		});
+	});
+
+	it("omits designBackend for a legacy row that never locked one", async () => {
+		const h = makeDeps();
+		await new PhaseOrchestrator(h.deps).respawnUnenrolledQa(
+			unenrolledQa(),
+			HEAD_SHA,
+			2,
+		);
+		expect(h.start).toHaveBeenCalledOnce();
+		expect(h.start.mock.calls[0]![0]).not.toHaveProperty("designBackend");
 	});
 });

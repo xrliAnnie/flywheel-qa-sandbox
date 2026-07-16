@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -63,6 +63,19 @@ function names(lines: string[]): string[] {
 }
 
 describe("lead-rules-bundle.sh — behavioral", () => {
+	it("ships the per-dispatch three-stage design backend contract", () => {
+		const modelRules = readFileSync(
+			join(BASE_RULES_DIR, "model-routing.md"),
+			"utf8",
+		);
+		expect(modelRules).toContain('"designBackend": "codex"');
+		expect(modelRules).toContain('"designBackend": "claude"');
+		expect(modelRules).toContain("only the design phase");
+		expect(modelRules).toContain("DESIGN_BACKEND_NOT_APPLICABLE");
+		expect(modelRules).toContain("new admission");
+		expect(modelRules).toContain("start a new run");
+	});
+
 	it("dept (mailbox) → full ordered bundle incl. runner-messaging + governance", () => {
 		const { lines, status } = runBundle("dept", BASE_RULES_DIR, "mailbox", "1");
 		expect(status).toBe(0);

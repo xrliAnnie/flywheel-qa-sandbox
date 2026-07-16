@@ -309,31 +309,34 @@ describe("tryFounderShipApproval — attribution audit + hold guard (FLY-1041)",
 	});
 
 	it.each(["qa_evidence_missing", "qa_evidence_unknown"] as const)(
-		"%s is NEVER deferrable and requires a fresh founder action",
-		async (reason) => {
+		"FLY-1251: %s is never deferred; it rejects the click with an explicit held notice",
+		async (holdReason) => {
 			const deferral = {
-				holdReason: vi.fn().mockReturnValue(reason),
-				deferredEnabled: vi.fn().mockReturnValue(true),
-				heldReplyEnabled: vi.fn().mockReturnValue(true),
-				defer: vi.fn().mockReturnValue("inserted"),
+				holdReason: vi.fn(() => holdReason),
+				deferredEnabled: () => true,
+				heldReplyEnabled: () => true,
+				defer: vi.fn(() => "inserted" as const),
 				queueHeldNotice: vi.fn(),
+				parkForConvergence: vi.fn(),
+				queueFeedbackWake: vi.fn(),
 			};
 			const d = deps({ deferral });
 
-			const r = await tryFounderShipApproval(
+			const result = await tryFounderShipApproval(
 				{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
-				d as never,
+				d,
 			);
 
-			expect(r).toBeNull();
+			expect(result).toBeNull();
 			expect(deferral.defer).not.toHaveBeenCalled();
-			expect(deferral.queueHeldNotice).toHaveBeenCalledWith(
-				expect.objectContaining({
-					kind: "deferred_off",
-					holdReason: reason,
-				}),
-			);
-			expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
+			expect(d.evaluateTextImpl).not.toHaveBeenCalled();
+			expect(deferral.queueHeldNotice).toHaveBeenCalledWith({
+				questionId: "Q-1",
+				msgId: "MSG-1",
+				executionId: "E-1",
+				kind: "readiness_hold",
+				holdReason,
+			});
 		},
 	);
 

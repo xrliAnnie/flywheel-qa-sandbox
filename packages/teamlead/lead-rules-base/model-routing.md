@@ -93,6 +93,30 @@ The resolved model shows as a short code on the `[FLY-XX]` thread title
 (**F**able / **O**pus / **S**onnet / **H**aiku) and on the Bridge dashboard, so
 the founder can see at a glance which model each issue is running.
 
+## Three-stage design backend
+
+For an engineering run that enters the three-stage pipeline, an explicit
+per-dispatch design choice goes in the same `/api/runs/start` body:
+
+- `"designBackend": "codex"` selects the standard Codex design runner.
+- `"designBackend": "claude"` selects the standard Claude/Fable design runner.
+
+This affects only the design phase; it is not a synonym for the general
+`model` difficulty parameter. A valid explicit value overrides the Bridge's
+global design switch for this run and is echoed in the start receipt. When
+there is no explicit founder, issue, or Lead choice, omit `designBackend` so
+the current global default is read for that new admission. The effective
+backend is then locked: retry/rescue does not re-read the switch. To change
+vendor after a locked run fails, end that run and start a new run with an
+explicit `designBackend`; this transitional API does not mutate a run in
+place. Never restart Bridge merely to route one task. Unknown values fail with
+`400 INVALID_DESIGN_BACKEND`; a valid
+choice that cannot enter three-stage fails before dispatch with
+`400 DESIGN_BACKEND_NOT_APPLICABLE` and a bounded reason code.
+`non_main_role` means the caller attempted to combine the public override with
+an internal phase role. Never treat a missing receipt field as an applied
+choice.
+
 ## Calibration is still being learned
 
 The exact difficulty→tier boundaries are **not yet fixed** — the founder will

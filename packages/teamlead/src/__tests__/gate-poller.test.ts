@@ -125,6 +125,9 @@ describe("GatePoller (FLY-161)", () => {
 		patrolEveryNTicks?: number;
 		transport?: import("../bridge/gate-poller.js").MisroutePatrolTransport;
 		misrouteArchiveDir?: string;
+		ensureShipRelevantDiff?: (
+			session: import("../StateStore.js").Session,
+		) => Promise<void>;
 	}): GatePoller {
 		return new GatePoller({
 			pollIntervalMs: 60_000, // not auto-started in tests
@@ -138,6 +141,7 @@ describe("GatePoller (FLY-161)", () => {
 			patrolEveryNTicks: opts?.patrolEveryNTicks,
 			transport: opts?.transport,
 			misrouteArchiveDir: opts?.misrouteArchiveDir,
+			ensureShipRelevantDiff: opts?.ensureShipRelevantDiff,
 		});
 	}
 
@@ -204,6 +208,15 @@ describe("GatePoller (FLY-161)", () => {
 		expect(env.event.checkpoint).toBe("brainstorm");
 		expect(env.event.question_id).toBe(qid);
 		expect(env.event.summary).toBe("Please review my plan");
+		const protectedDb = new CommDB(dbPath);
+		try {
+			expect(protectedDb.getMessageById(qid)).toMatchObject({
+				relay_state: "protected",
+				logical_event_id: String(env.seq),
+			});
+		} finally {
+			protectedDb.close();
+		}
 	});
 
 	it("Case 2: emits runner_question for pending question without checkpoint", async () => {
@@ -245,6 +258,53 @@ describe("GatePoller (FLY-161)", () => {
 		const types = runtime.captured.map((c) => c.envelope.event.event_type);
 		expect(types).toContain("gate_question");
 		expect(types).toContain("runner_question");
+	});
+
+	it("FLY-1251: a code-capable run cannot surface approve_to_ship without QA evidence", async () => {
+		const head = "a".repeat(40);
+		insertSession("exec-held", {
+			status: "awaiting_review",
+			labels: ["product"],
+		});
+		const qid = insertQuestion({
+			execId: "exec-held",
+			leadId: "product-lead",
+			content: "PR ready",
+			checkpoint: "approve_to_ship",
+		});
+		store.setReviewBinding("exec-held", {
+			questionId: qid,
+			prHeadSha: head,
+		});
+		store.patchSessionMetadata("exec-held", {
+			pr_number: 42,
+			codex_skip: 1,
+		});
+		const ensureShipRelevantDiff = vi.fn(async () => {});
+		const poller = makePoller({ ensureShipRelevantDiff });
+
+		await runPoll(poller);
+
+		expect(ensureShipRelevantDiff).toHaveBeenCalledOnce();
+		expect(runtime.captured).toHaveLength(0);
+		expect(pendingFor("product-lead")).toHaveLength(1);
+
+		store.putShipRelevantDiffSnapshot({
+			execution_id: "exec-held",
+			pr_head_sha: head,
+			repo: "owner/repo",
+			pr_number: 42,
+			base_ref: "main",
+			base_oid: "b".repeat(40),
+			classifier_version: 1,
+			ship_relevant: 0,
+			file_count: 1,
+		});
+
+		await runPoll(poller);
+
+		expect(runtime.captured).toHaveLength(1);
+		expect(runtime.captured[0]!.envelope.event.question_id).toBe(qid);
 	});
 
 	it("Case 4: does not re-deliver already-delivered events", async () => {
@@ -431,6 +491,97 @@ describe("GatePoller (FLY-161)", () => {
 		expect(resolveSpy).not.toHaveBeenCalled();
 		expect(pendingFor("product-lead")).toHaveLength(1); // still pending
 		resolveSpy.mockRestore();
+	});
+
+	// FLY-1257 defect ④ path-2. The FLY-307 A premise — "a gate from a terminal
+	// session can never be answered (the Runner is gone)" — does NOT hold for a
+	// review gate: it is consumed by the review-request coordinator + reviewer,
+	// never by the authoring runner. Evicting it expired the gate BEFORE
+	// `request-review` could bind it, so a blocked/completed session could never
+	// re-request review (checkGate → answered/expired → fail-close forever).
+	// Sibling of the FLY-579 approve_to_ship QA-held carve-out above.
+	// Both review checkpoints × BOTH terminal statuses. `completed` is covered
+	// explicitly (Codex review LOW-2): a fix that only special-cased `blocked`
+	// would otherwise slip through, and `completed` is the status the production
+	// incident actually hit once the author finished.
+	for (const checkpoint of ["review_code", "review_design"] as const) {
+		for (const status of ["blocked", "completed"] as const) {
+			it(`Case 8e (FLY-1257 path-2): ${checkpoint} gate from a ${status} session is NOT evicted — the review coordinator consumes it, not the runner`, async () => {
+				insertSession(`exec-${checkpoint}-${status}`, {
+					status,
+					labels: ["product"],
+				});
+				insertQuestion({
+					execId: `exec-${checkpoint}-${status}`,
+					leadId: "product-lead",
+					content: `${checkpoint} requested for PR #599`,
+					checkpoint,
+				});
+				expect(pendingFor("product-lead")).toHaveLength(1);
+
+				const resolveSpy = vi.spyOn(CommDB.prototype, "resolveGate");
+				await runPoll(makePoller());
+
+				// Terminal session ⇒ still no Lead delivery (unchanged). But the gate
+				// MUST survive to its natural TTL so request-review can bind it.
+				expect(runtime.captured).toHaveLength(0);
+				expect(resolveSpy).not.toHaveBeenCalled();
+				expect(pendingFor("product-lead")).toHaveLength(1);
+				resolveSpy.mockRestore();
+			});
+		}
+	}
+
+	// Codex review LOW-2: pin the CHOKEPOINT itself, not just the relay path.
+	// Without this, deleting the guard inside evictTerminalGateQuestion() (leaving
+	// only the relay-side one) would keep every other test green — yet the
+	// eviction-retry short-circuit could still expire a review gate.
+	it("Case 8e-chokepoint (FLY-1257 path-2): evictTerminalGateQuestion itself refuses a review gate, whatever the caller", async () => {
+		insertSession("exec-choke", { status: "completed", labels: ["product"] });
+		const qid = insertQuestion({
+			execId: "exec-choke",
+			leadId: "product-lead",
+			content: "review_code requested",
+			checkpoint: "review_code",
+		});
+		const poller = makePoller();
+		const resolveSpy = vi.spyOn(CommDB.prototype, "resolveGate");
+
+		// Call the private mutation chokepoint DIRECTLY — bypassing relayToLead,
+		// which is exactly what the eviction-retry short-circuit does.
+		(
+			poller as unknown as {
+				evictTerminalGateQuestion: (q: unknown, p: string) => void;
+			}
+		).evictTerminalGateQuestion(
+			{ id: qid, from_agent: "exec-choke", checkpoint: "review_code" },
+			dbPath,
+		);
+
+		expect(resolveSpy).not.toHaveBeenCalled();
+		expect(pendingFor("product-lead")).toHaveLength(1);
+		resolveSpy.mockRestore();
+	});
+
+	it("Case 8f (FLY-1257 path-2 control): a NON-review gate from a blocked session is still evicted (FLY-307 A preserved)", async () => {
+		insertSession("exec-blocked-bs", {
+			status: "blocked",
+			labels: ["product"],
+		});
+		const qid = insertQuestion({
+			execId: "exec-blocked-bs",
+			leadId: "product-lead",
+			content: "Brainstorm gate on a blocked session",
+			checkpoint: "brainstorm",
+		});
+
+		await runPoll(makePoller());
+
+		expect(pendingFor("product-lead")).toHaveLength(0);
+		const warnedEvict = warnSpy.mock.calls.some((args: unknown[]) =>
+			JSON.stringify(args).includes(`evicting stale gate_question qid=${qid}`),
+		);
+		expect(warnedEvict).toBe(true);
 	});
 
 	it("Case 10 (FLY-307 B): circuit opens after N consecutive failures and skips the lead", async () => {
@@ -672,5 +823,108 @@ describe("GatePoller (FLY-161)", () => {
 
 		appendSpy.mockRestore();
 		recoverSpy.mockRestore();
+	});
+
+	it("FLY-1257: zombie candidate mapping preserves CommDB created_at", async () => {
+		process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE = "1";
+		process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG = "0";
+		insertSession("exec-chronology", {
+			status: "blocked",
+			labels: ["product"],
+		});
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE sessions SET terminal_at = '2099-01-01 00:00:00' WHERE execution_id = 'exec-chronology'",
+		);
+
+		// A NON-review carrier: this case asserts the wrapper hands CommDB's
+		// created_at to the zombie candidates (pre-terminal ⇒ retired). Review
+		// gates are exempt from Z1 outright (see the sibling case below), so they
+		// can no longer carry a chronology assertion.
+		const qid = insertQuestion({
+			execId: "exec-chronology",
+			leadId: "product-lead",
+			content: "old blocked run — design?",
+			checkpoint: "brainstorm",
+		});
+		const db = new CommDB(dbPath);
+		try {
+			(
+				db as unknown as {
+					db: { prepare(sql: string): { run(...args: unknown[]): unknown } };
+				}
+			).db
+				.prepare("UPDATE messages SET created_at = ? WHERE id = ?")
+				.run("2000-01-01 00:00:00", qid);
+		} finally {
+			db.close();
+		}
+
+		await (
+			makePoller() as unknown as {
+				zombieGateHygienePass: () => Promise<void>;
+			}
+		).zombieGateHygienePass();
+
+		expect(pendingFor("product-lead")).toHaveLength(0);
+		delete process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE;
+		delete process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG;
+	});
+
+	// FLY-1257 defect ④ (Codex R5 HIGH) through the REAL wrapper: same terminal
+	// session + same pre-terminal chronology that retires the brainstorm gate
+	// above, but a review gate survives the whole zombieGateHygienePass. The
+	// reviewer — not the gone author — answers it, so Z1 must never retire it.
+	// Drop the isReviewGateCheckpoint exemption and this goes red (length 0).
+	it("FLY-1257 defect ④: a review_code gate is NOT retired by the zombie pass (Z1 exemption, real wrapper)", async () => {
+		process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE = "1";
+		process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG = "0";
+		insertSession("exec-review-z1", {
+			status: "blocked",
+			labels: ["product"],
+		});
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE sessions SET terminal_at = '2099-01-01 00:00:00' WHERE execution_id = 'exec-review-z1'",
+		);
+
+		const qid = insertQuestion({
+			execId: "exec-review-z1",
+			leadId: "product-lead",
+			content: "review requested",
+			checkpoint: "review_code",
+		});
+		const db = new CommDB(dbPath);
+		try {
+			// created_at BEFORE terminal_at — the exact chronology that makes a
+			// non-review gate a "true Z1 zombie".
+			(
+				db as unknown as {
+					db: { prepare(sql: string): { run(...args: unknown[]): unknown } };
+				}
+			).db
+				.prepare("UPDATE messages SET created_at = ? WHERE id = ?")
+				.run("2000-01-01 00:00:00", qid);
+		} finally {
+			db.close();
+		}
+
+		await (
+			makePoller() as unknown as {
+				zombieGateHygienePass: () => Promise<void>;
+			}
+		).zombieGateHygienePass();
+
+		const pending = pendingFor("product-lead") as Array<{ id: string }>;
+		expect(pending).toHaveLength(1);
+		expect(pending[0]?.id).toBe(qid);
+		delete process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE;
+		delete process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG;
 	});
 });

@@ -85,6 +85,7 @@ describe("buildRegistry (A5 pluggability, dual-face)", () => {
 			return {
 				sendAudio() {},
 				sendText() {},
+				injectContext() {},
 				sendToolResponse() {},
 				onEvent() {},
 				async close() {},

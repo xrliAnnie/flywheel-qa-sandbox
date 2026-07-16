@@ -61,6 +61,52 @@ describe("CommDB gate methods", () => {
 		});
 	});
 
+	describe("pending gates by runner", () => {
+		it("returns only this runner's unresolved checkpoint questions", () => {
+			const gateId = db.insertQuestion("exec-1", "lead-1", "review", {
+				checkpoint: "review_code",
+			});
+			db.insertQuestion("exec-1", "lead-1", "ordinary ask");
+			db.insertQuestion("other-exec", "lead-1", "other gate", {
+				checkpoint: "brainstorm",
+			});
+
+			expect(db.getPendingGatesByRunner("exec-1").map((q) => q.id)).toEqual([
+				gateId,
+			]);
+
+			db.insertResponse(gateId, "lead-1", "done");
+			expect(db.getPendingGatesByRunner("exec-1")).toEqual([]);
+		});
+
+		// FLY-1257 QA (independent): a gate whose FLY-159 deadline watcher has
+		// already timed it out must NOT keep counting as pending. This is the
+		// authority `complete --route blocked` consults (M1-c): once the watcher
+		// resolves a gate by deadline, the runner has to be free to complete —
+		// the timeout resolution must never leave it permanently refused. Locks
+		// the query's `expires_at > datetime('now')` clause the M1-c guard leans on.
+		it("excludes a gate whose deadline has already passed (timeout passthrough)", () => {
+			const gateId = db.insertQuestion("exec-1", "lead-1", "review", {
+				checkpoint: "review_code",
+			});
+			expect(db.getPendingGatesByRunner("exec-1").map((q) => q.id)).toEqual([
+				gateId,
+			]);
+			// Force the deadline past without waiting — same raw rewind the other
+			// expiry tests use — to stand in for the watcher having timed it out.
+			(
+				db as unknown as {
+					db: { prepare: (s: string) => { run: (...a: unknown[]) => unknown } };
+				}
+			).db
+				.prepare(
+					"UPDATE messages SET expires_at = datetime('now','-1 hour') WHERE id = ?",
+				)
+				.run(gateId);
+			expect(db.getPendingGatesByRunner("exec-1")).toEqual([]);
+		});
+	});
+
 	describe("resolveGate", () => {
 		it("should mark question as resolved", () => {
 			const id = db.insertQuestion("runner-1", "lead-1", "content", {
@@ -184,7 +230,7 @@ describe("CommDB gate methods", () => {
 			expect(db.getResponse(id)).toBeUndefined();
 		});
 
-		it("expired gate → false", () => {
+		it("expired unanswered gate remains answerable while H2 protection is on", () => {
 			const id = db.insertQuestion("exec-1", "bridge", "review my code", {
 				checkpoint: "review_code",
 				ttlSeconds: 1,
@@ -199,7 +245,7 @@ describe("CommDB gate methods", () => {
 					"UPDATE messages SET expires_at = datetime('now','-1 hour') WHERE id = ?",
 				)
 				.run(id);
-			expect(db.insertResponseIfGateOpen(args(id))).toBe(false);
+			expect(db.insertResponseIfGateOpen(args(id))).toBe(true);
 		});
 	});
 
@@ -241,11 +287,21 @@ describe("CommDB gate methods", () => {
 
 		it("writes to an EXPIRED gate (insertResponseIfGateOpen would refuse)", () => {
 			const id = openExpiredGate();
-			// The old race-safe write refuses on an expired question…
-			expect(db.insertResponseIfGateOpen(timeoutArgs(id))).toBe(false);
-			// …but the timeout write succeeds (deadline-passed is the whole point).
-			expect(db.insertTimeoutResponse(timeoutArgs(id))).toBe(true);
-			expect(db.getResponse(id)?.content).toContain("GATE TIMEOUT");
+			const prior = process.env.FLYWHEEL_COMMDB_PROTECTION;
+			process.env.FLYWHEEL_COMMDB_PROTECTION = "0";
+			try {
+				// In explicit legacy mode the ordinary race-safe write still refuses
+				// an expired question, while the timeout-specific write preserves it.
+				expect(db.insertResponseIfGateOpen(timeoutArgs(id))).toBe(false);
+				expect(db.insertTimeoutResponse(timeoutArgs(id))).toBe(true);
+				expect(db.getResponse(id)?.content).toContain("GATE TIMEOUT");
+			} finally {
+				if (prior === undefined) {
+					delete process.env.FLYWHEEL_COMMDB_PROTECTION;
+				} else {
+					process.env.FLYWHEEL_COMMDB_PROTECTION = prior;
+				}
+			}
 		});
 
 		it("the response SURVIVES the runner's next `check` (fresh RW open purges)", () => {

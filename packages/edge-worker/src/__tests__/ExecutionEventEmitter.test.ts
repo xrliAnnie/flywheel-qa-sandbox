@@ -105,6 +105,26 @@ describe("TeamLeadClient", () => {
 		expect(payload.runnerModel).toBeUndefined();
 	});
 
+	it("FLY-1259: emitStarted carries designBackend in the payload", async () => {
+		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
+		await client.emitStarted(makeEnvelope({ designBackend: "claude" }));
+		await client.flush();
+
+		const body = receivedBodies[0] as Record<string, unknown>;
+		const payload = body.payload as Record<string, unknown>;
+		expect(payload.designBackend).toBe("claude");
+	});
+
+	it("FLY-1259: emitStarted omits an absent designBackend (byte-compat)", async () => {
+		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
+		await client.emitStarted(makeEnvelope());
+		await client.flush();
+
+		const body = receivedBodies[0] as Record<string, unknown>;
+		const payload = body.payload as Record<string, unknown>;
+		expect(payload).not.toHaveProperty("designBackend");
+	});
+
 	it("emitCompleted includes evidence in payload", async () => {
 		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
 		const result = makeResult();
@@ -134,6 +154,21 @@ describe("TeamLeadClient", () => {
 		const payload = body.payload as Record<string, unknown>;
 		expect(payload.error).toBe("git preflight failed");
 		expect(payload.lastActivity).toBe("2024-01-01T00:00:00Z");
+	});
+
+	it("FLY-1279: emitFailed carries typed terminal failure metadata", async () => {
+		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
+		await client.emitFailed(makeEnvelope(), "blocked", undefined, {
+			failureKind: "goal_blocked",
+			failureReason: "goal ended non-complete: blocked",
+		});
+
+		const body = receivedBodies[0] as Record<string, unknown>;
+		const payload = body.payload as Record<string, unknown>;
+		expect(payload.failure).toEqual({
+			failureKind: "goal_blocked",
+			failureReason: "goal ended non-complete: blocked",
+		});
 	});
 
 	it("emitStarted silently catches HTTP errors (fire-and-forget)", async () => {

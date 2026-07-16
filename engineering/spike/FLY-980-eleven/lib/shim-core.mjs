@@ -218,6 +218,51 @@ function guessLang(text) {
 	return cjk >= latin / 4 ? "zh" : "en";
 }
 
+// ------------------------------------------------ BrainPort forward mode ---
+
+/**
+ * FLY-1160 §4.2-5: forward mode. When FLY980_BRAIN_URL + FLYWHEEL_BRAIN_PORT_TOKEN
+ * are BOTH set, the shim stops spawning a local `claude -p` per turn and
+ * instead forwards each turn to the daemon's resident-brain loopback
+ * (BrainPort POST /brain/turn) keyed by conversation_id. A 404 / disconnect
+ * FAILS LOUD to the platform — never a silent degrade back to a local spawn.
+ * Unset = current behavior byte-for-byte.
+ */
+export function makeBrainForwarder({ brainUrl, brainToken, key, fetchImpl }) {
+	const doFetch = fetchImpl ?? fetch;
+	return {
+		async *respond(turn, opts) {
+			const res = await doFetch(new URL("/brain/turn", brainUrl).toString(), {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${brainToken}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ key, text: turn.text }),
+				signal: opts?.signal,
+			});
+			if (res.status === 404) {
+				// the daemon has no resident brain bound to this conversation — a
+				// hard error the platform must see, NOT a silent local-spawn fallback.
+				throw new Error(
+					`brain forward: 404 no resident brain for key "${key}" — the daemon is not serving this /eleven meeting`,
+				);
+			}
+			if (!res.ok || !res.body) {
+				throw new Error(`brain forward: BrainPort ${res.status}`);
+			}
+			const reader = res.body.getReader();
+			const decoder = new TextDecoder();
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				const text = decoder.decode(value, { stream: true });
+				if (text) yield text;
+			}
+		},
+	};
+}
+
 // ------------------------------------------------------------------ server ---
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
@@ -237,7 +282,14 @@ export function createShimServer(opts) {
 		toolMode = "off",
 		injectFacts = false,
 		modelName = "flywheel-claude-brain",
+		// FLY-1160 §4.2-5: forward mode — both must be set to activate.
+		brainUrl,
+		brainToken,
+		brainKeyPrefix = "eleven:",
+		fetchImpl,
 	} = opts;
+	const forwardMode = Boolean(brainUrl && brainToken);
+	if (forwardMode) log({ type: "brain_forward_mode", brainUrl });
 
 	// QA FLY-1006 R3 ① — per-conversation single-flight: platform retries /
 	// interruption re-sends must not pile concurrent claude -p runs onto one
@@ -247,8 +299,47 @@ export function createShimServer(opts) {
 
 	return http.createServer((req, res) => {
 		if (req.method === "GET" && req.url === "/health") {
-			res.writeHead(200, { "content-type": "application/json" });
-			res.end(JSON.stringify({ ok: true }));
+			// FLY-1160 §4.2-5 (Codex #552 R1 MEDIUM-7): in forward mode the shim
+			// health must PROVE the BrainPort backend is reachable, not blindly
+			// return ok — a daemon preflight probing /health would otherwise pass
+			// while the forward backend is down (every turn 404s). Local-spawn
+			// mode keeps the cheap unconditional ok.
+			if (!forwardMode) {
+				// Codex #552 R2 MEDIUM-7: byte-compat — unset forward env keeps the
+				// exact pre-1160 body {"ok":true}, no extra fields.
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(JSON.stringify({ ok: true }));
+				return;
+			}
+			void (async () => {
+				try {
+					const doFetch = fetchImpl ?? fetch;
+					// Codex #552 R2 HIGH-2: BrainPort serves /brain/health (Bearer),
+					// NOT /health — probing the wrong path 404s a healthy backend.
+					const r = await doFetch(
+						new URL("/brain/health", brainUrl).toString(),
+						{
+							headers: { authorization: `Bearer ${brainToken}` },
+						},
+					);
+					const ok = r.ok;
+					res.writeHead(ok ? 200 : 503, {
+						"content-type": "application/json",
+					});
+					res.end(
+						JSON.stringify({ ok, mode: "forward", brainStatus: r.status }),
+					);
+				} catch (err) {
+					res.writeHead(503, { "content-type": "application/json" });
+					res.end(
+						JSON.stringify({
+							ok: false,
+							mode: "forward",
+							error: String(err?.message ?? err),
+						}),
+					);
+				}
+			})();
 			return;
 		}
 		if (req.method !== "POST" || !req.url.endsWith("/chat/completions")) {
@@ -386,8 +477,17 @@ export function createShimServer(opts) {
 			log({ type: "facts_injected", requestId });
 		}
 
-		const identityFile = writeIdentityFile(workDir, key, systemText);
-		const brain = sessions.getBrain(key, identityFile);
+		// FLY-1160 §4.2-5: forward mode reaches the daemon's resident brain via
+		// BrainPort (persona lives in the daemon's identity file, not here); the
+		// local per-turn spawn path is used only when forward mode is off.
+		const brain = forwardMode
+			? makeBrainForwarder({
+					brainUrl,
+					brainToken,
+					key: `${brainKeyPrefix}${key}`,
+					fetchImpl,
+				})
+			: sessions.getBrain(key, writeIdentityFile(workDir, key, systemText));
 
 		const ac = new AbortController();
 		inflight.set(key, ac);

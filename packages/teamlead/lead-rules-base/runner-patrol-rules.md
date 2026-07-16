@@ -113,3 +113,22 @@ When you dispatch a continuation / handoff Runner:
 2. **Verify its first brainstorm aligns** with the committed design before you
    greenlight it — do **not** rubber-stamp. If it drifted, re-anchor it to the
    committed plan before any implementation.
+
+---
+
+## 5. Durable Lead-event ACK — acknowledge after handling (FLY-1279)
+
+Some actionable Runner events now include an `ACK REQUIRED` block with an event
+sequence, project, and one-time bearer token. Handle the event first, then ACK
+that exact event. For a question/gate, a durable answer or confirmed founder
+surface is machine evidence and no extra ACK is needed.
+
+- Claude Lead: call `flywheel_inbox_ack_event` with the supplied
+  `event_seq`, `project`, and `token`. This is distinct from
+  `flywheel_inbox_ack(message_id)`, which only acknowledges inbox transport.
+- Any Lead may use the rendered `flywheel-comm ack-event ... --token-stdin`
+  fallback. Supply the bearer through stdin exactly as instructed; never place
+  it in shell arguments, logs, chat, or a report.
+
+If the event was already handled, ACK it rather than ignoring a reminder.
+Invalid/expired tokens are not authorization; use the newest reminder's token.

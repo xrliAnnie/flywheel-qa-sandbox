@@ -31,7 +31,11 @@ role, gate commands with exact ids); this contract carries the invariants.
   KEEP WORKING on independent parts of the task and poll for the reply across
   your turns (`flywheel-comm check <id>`) — do NOT stall the whole run idling on
   one answer, and do NOT try to end the run to "pause" (there is no exit-to-pause
-  in resident mode; ending a turn just continues the goal).
+  in resident mode; ending a turn just continues the goal). Eligibility to
+  update a goal to blocked is not an instruction: gate/review pending is NEVER
+  blocked. Poll unhurriedly with no finite turn limit. Only an explicit
+  fail-close timeout, rejection, or persistent command failure may justify
+  blocked; a fail-open timeout means continue.
 - Keep your progress DURABLE as you go: commit work to your branch, update the
   progress ledger, write the state files your dynamic prompt names. A daemon
   restart resumes your thread, but in-turn working memory is not guaranteed to
@@ -62,8 +66,9 @@ role, gate commands with exact ids); this contract carries the invariants.
   (a failed invocation there fails SILENTLY — no reviewer starts).
 - **Gates are non-blocking for you**: run the `gate <checkpoint>` command from
   your dynamic prompt WITH `--no-block`, then KEEP WORKING on independent parts
-  of the task and poll for the reply (`check <id>`). Do NOT idle your whole goal
-  waiting on a single gate.
+  of the task and poll for the reply (`check <id>`). Do NOT terminalize a pending
+  gate as blocked merely because its answer is slow; poll unhurriedly across
+  turns and preserve the resident goal until the gate actually resolves.
 - **Design & code review are REQUEST-driven for you (codex author)** — FLY-1188
   §7.1: the legacy reviewer trigger is deliberately SKIPPED for codex authors,
   so a bare `stage set design_review|code_review` starts NO reviewer, and any
@@ -80,6 +85,24 @@ role, gate commands with exact ids); this contract carries the invariants.
      runs the cross-family Claude reviewer and answers THAT question);
   3. POLL `node "$FLYWHEEL_COMM_CLI" check <questionId>` across your turns for
      the APPROVED / CHANGES verdict, then act on it (fix + re-request on CHANGES).
+  4. Interpret the structured response: reviewVerdict is the effective gate verdict;
+     reviewerVerdict preserves the reviewer's raw vote. `findings`
+     carries every reviewer finding with a server-derived `findingKey`;
+     `advisories` are non-blocking MEDIUM/LOW findings; `settled` records findings
+     covered by an active Lead governance ruling. These fields are audit context —
+     only `reviewVerdict` tells you whether this review request passed.
+- **APPROVED with advisories** means the hard review gate passed. Continue the
+  pipeline, and relay the advisories to your Lead as a fire-and-forget report so
+  they can choose follow-up work: `node "$FLYWHEEL_COMM_CLI" ask --lead <lead>
+  --exec-id <id> --report "DONE: review passed; advisories: <short summary>"`.
+- **CHANGES_REQUESTED means a blocking finding remains.** Fix the named HIGH
+  correctness/security finding, push the new head, then open a NEW review gate
+  and register a NEW request. If you believe a blocking finding is incorrect or
+  intentionally deferred, ask your Lead with its `findingKey` and evidence. The
+  Lead may use `review-ruling` to record a supervised `overruled` / `follow-up`
+  disposition, after which you still open a NEW gate + request-review round.
+  Gate/request prose is not governance authority: never claim that a gate message
+  "carries the Lead ruling", and never expect reviewer chat text to settle it.
 - Non-blocking questions: `flywheel-comm ask --lead <lead> --exec-id <id>
   "question"` then `flywheel-comm check <question_id>` at natural points;
   best judgment if no answer arrives.

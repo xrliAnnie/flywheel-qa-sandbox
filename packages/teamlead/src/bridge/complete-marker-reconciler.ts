@@ -44,6 +44,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { canonicalSubmissionDigest } from "flywheel-config";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -361,6 +362,57 @@ export async function tryReconcileComplete(
 
 	const currentSession = deps.store.getSession(execId);
 	const currentStatus = currentSession?.status;
+	const generalizedBinding =
+		deps.store.getGeneralizedWorkflowNodeForExecution(execId)?.binding;
+	const generalizedReceipt = generalizedBinding
+		? deps.store.getWorkflowNodeCompletion(
+				generalizedBinding.run_id,
+				generalizedBinding.node_id,
+				generalizedBinding.attempt,
+			)
+		: undefined;
+	const generalizedSubmissionDigest = canonicalSubmissionDigest(
+		body.payload ?? {},
+	);
+	if (generalizedReceipt) {
+		if (
+			generalizedReceipt.execution_id !== execId ||
+			generalizedReceipt.route !== body.payload?.decision?.route ||
+			generalizedReceipt.completion_submission_digest !==
+				generalizedSubmissionDigest
+		) {
+			const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
+			log(
+				`[complete-reconciler] generalized completion conflict quarantined ${execId}: ${qp}`,
+			);
+			return {
+				kind: "quarantined",
+				reason: "rejected",
+				quarantinePath: qp,
+			};
+		}
+		const canonicalAuditId = `wfca:${generalizedReceipt.event_uid.slice("wfc:".length)}`;
+		const canonicalAuditPayload =
+			deps.store.getEventPayloadById(canonicalAuditId);
+		if (canonicalAuditPayload) {
+			if (
+				canonicalSubmissionDigest(canonicalAuditPayload) !==
+				generalizedReceipt.completion_submission_digest
+			) {
+				const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
+				log(
+					`[complete-reconciler] generalized canonical audit conflict quarantined ${execId}: ${qp}`,
+				);
+				return {
+					kind: "quarantined",
+					reason: "rejected",
+					quarantinePath: qp,
+				};
+			}
+			safeUnlink(markerPath, log);
+			return { kind: "duplicate_terminal", status: "node_completed" };
+		}
+	}
 
 	// FLY-869 B (design R2 HIGH-4): a merged marker whose session is NOT
 	// ship-eligible must NOT reconcile to `completed` (that would finalize/Done a
@@ -429,7 +481,7 @@ export async function tryReconcileComplete(
 		currentStatus,
 		currentSession?.review_question_id,
 	);
-	if (expectedStatus === null) {
+	if (expectedStatus === null && !generalizedBinding) {
 		// FLY-222 #1 (Codex code-review R2 MED): if the session already reached a
 		// terminal state, an unreplayable/stale marker (e.g. a no_code marker that
 		// lost its response AFTER the Bridge already completed the run, or any
@@ -454,7 +506,7 @@ export async function tryReconcileComplete(
 	}
 
 	// If already at expected terminal state, nothing to replay — just delete.
-	if (currentStatus === expectedStatus) {
+	if (!generalizedBinding && currentStatus === expectedStatus) {
 		safeUnlink(markerPath, log);
 		return { kind: "duplicate_terminal", status: expectedStatus };
 	}
@@ -475,7 +527,15 @@ export async function tryReconcileComplete(
 		payload: body.payload ?? {},
 	};
 
-	let json: { ok?: boolean; duplicate?: boolean; warning?: string } | undefined;
+	let json:
+		| {
+				ok?: boolean;
+				duplicate?: boolean;
+				warning?: string;
+				reason?: string;
+				retryable?: boolean;
+		  }
+		| undefined;
 	try {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), 5000);
@@ -498,6 +558,14 @@ export async function tryReconcileComplete(
 			json = undefined;
 		}
 		if (!res.ok) {
+			if (
+				generalizedBinding &&
+				res.status === 409 &&
+				json?.reason === "missing_output" &&
+				json.retryable === true
+			) {
+				return { kind: "transient_failed", error: "missing_output" };
+			}
 			// 4xx (non-429) — malformed request, won't succeed on retry.
 			const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
 			log(
@@ -506,13 +574,44 @@ export async function tryReconcileComplete(
 			return {
 				kind: "quarantined",
 				reason: "rejected",
-				routeStatus: expectedStatus,
+				routeStatus: expectedStatus ?? undefined,
 				quarantinePath: qp,
 			};
 		}
 	} catch (err) {
 		// Network error / abort — Bridge unreachable. Keep marker, retry later.
 		return { kind: "transient_failed", error: (err as Error).message };
+	}
+
+	if (generalizedBinding) {
+		const receipt = deps.store.getWorkflowNodeCompletion(
+			generalizedBinding.run_id,
+			generalizedBinding.node_id,
+			generalizedBinding.attempt,
+		);
+		if (
+			receipt?.execution_id === execId &&
+			receipt.route === body.payload?.decision?.route &&
+			receipt.completion_submission_digest === generalizedSubmissionDigest
+		) {
+			const canonicalAuditId = `wfca:${receipt.event_uid.slice("wfc:".length)}`;
+			const canonicalAuditPayload =
+				deps.store.getEventPayloadById(canonicalAuditId);
+			if (
+				canonicalAuditPayload &&
+				canonicalSubmissionDigest(canonicalAuditPayload) ===
+					receipt.completion_submission_digest
+			) {
+				safeUnlink(markerPath, log);
+				return { kind: "reconciled", status: "node_completed" };
+			}
+		}
+		return {
+			kind: "transient_failed",
+			error:
+				json?.warning ??
+				"generalized completion receipt or canonical audit missing",
+		};
 	}
 
 	// Re-read session and verify it reached the proven terminal status. Do NOT
@@ -543,7 +642,7 @@ export async function tryReconcileComplete(
 		return {
 			kind: "quarantined",
 			reason: "duplicate_nonterminal",
-			routeStatus: expectedStatus,
+			routeStatus: expectedStatus ?? undefined,
 			quarantinePath: qp,
 		};
 	}
@@ -556,7 +655,7 @@ export async function tryReconcileComplete(
 	return {
 		kind: "quarantined",
 		reason: "rejected",
-		routeStatus: expectedStatus,
+		routeStatus: expectedStatus ?? undefined,
 		quarantinePath: qp,
 	};
 }

@@ -27,6 +27,7 @@
  */
 
 import {
+	type DesignBackend,
 	isThreeStagePhaseRole,
 	nextPhase,
 	type PhaseDispatchVendor,
@@ -64,6 +65,8 @@ export interface PhaseSession {
 	chat_thread_role?: string;
 	/** FLY-859: ship-gate binding — set by a needs_review completion. */
 	review_question_id?: string;
+	/** FLY-1259: run-level effective design backend copied across phase rows. */
+	design_backend?: DesignBackend;
 	/**
 	 * FLY-869: the durable merged-but-unapproved park marker (`merge_block`).
 	 * FLY-1050 F9: an implement stuck at awaiting_review whose PR already
@@ -225,6 +228,8 @@ export interface PhaseOrchestratorDeps {
 			projectName: string;
 			leadId?: string;
 			sessionRole: string;
+			/** FLY-1259: run-level design backend lock; metadata only for non-design phases. */
+			designBackend?: DesignBackend;
 			dispatchModel: string;
 			/**
 			 * FLY-1224: the phase table's vendor — every phase spawn carries the
@@ -258,6 +263,11 @@ export interface PhaseOrchestratorDeps {
 		closePhaseRunner(session: PhaseSession): Promise<void>;
 		/** Surface a fail-closed handoff error to the Lead (never silent). */
 		alertLeadPipelineError(args: {
+			session: PhaseSession;
+			reason: string;
+		}): Promise<void>;
+		/** Dedicated structured alert for shared-worktree takeover refusal. */
+		alertWorktreeTakeoverFailure?(args: {
 			session: PhaseSession;
 			reason: string;
 		}): Promise<void>;
@@ -519,6 +529,32 @@ export class PhaseOrchestrator {
 	}
 
 	/**
+	 * FLY-1279 B2: typed takeover refusal is mutually exclusive with the generic
+	 * pipeline-error alert. Non-phase/spoofed rows are ignored.
+	 */
+	async alertWorktreeTakeoverFailure(
+		session: PhaseSession,
+		reason: string,
+	): Promise<void> {
+		// chat_thread_role is the durable three-stage discriminator. Auto-QA also
+		// uses session_role=qa, so falling back to session_role would misclassify it.
+		const role = session.chat_thread_role;
+		if (role !== "implement" && role !== "qa") return;
+		try {
+			if (this.deps.effects.alertWorktreeTakeoverFailure) {
+				await this.deps.effects.alertWorktreeTakeoverFailure({
+					session,
+					reason,
+				});
+			} else {
+				await this.deps.effects.alertLeadPipelineError({ session, reason });
+			}
+		} catch (err) {
+			this.warn(`worktree takeover alert failed: ${(err as Error).message}`);
+		}
+	}
+
+	/**
 	 * FLY-1244: founder-confirmed recovery for an in-flight, pre-enrollment QA.
 	 * The old runner is closed through the normal dirty-safe phase teardown, then
 	 * a NEW logical attempt is spawned. Admission happens inside RunDispatcher
@@ -555,6 +591,12 @@ export class PhaseOrchestrator {
 				projectName: session.project_name,
 				leadId: this.deps.resolveLeadId(session),
 				sessionRole: "qa",
+				// FLY-1259: the run-level design lock rides every successor, including
+				// this re-QA attempt, so a later design respawn cannot fall back to the
+				// global switch.
+				...(session.design_backend && {
+					designBackend: session.design_backend,
+				}),
 				dispatchModel: dispatch.model,
 				dispatchVendor: dispatch.vendor,
 				...(dispatch.effort && { dispatchEffort: dispatch.effort }),
@@ -1318,6 +1360,9 @@ export class PhaseOrchestrator {
 				projectName: session.project_name,
 				leadId: fixLeadId,
 				sessionRole: "implement",
+				...(session.design_backend && {
+					designBackend: session.design_backend,
+				}),
 				dispatchModel: dispatch.model,
 				dispatchVendor: dispatch.vendor,
 				...(dispatch.effort && { dispatchEffort: dispatch.effort }),
@@ -1517,6 +1562,9 @@ export class PhaseOrchestrator {
 				projectName,
 				leadId: fixLeadId,
 				sessionRole: "implement",
+				...(session.design_backend && {
+					designBackend: session.design_backend,
+				}),
 				dispatchModel: dispatch.model,
 				dispatchVendor: dispatch.vendor,
 				...(dispatch.effort && { dispatchEffort: dispatch.effort }),
@@ -1794,6 +1842,9 @@ export class PhaseOrchestrator {
 				projectName: prev.project_name as string,
 				leadId,
 				sessionRole: next,
+				...(prev.design_backend && {
+					designBackend: prev.design_backend,
+				}),
 				dispatchModel: dispatch.model,
 				dispatchVendor: dispatch.vendor,
 				...(dispatch.effort && { dispatchEffort: dispatch.effort }),

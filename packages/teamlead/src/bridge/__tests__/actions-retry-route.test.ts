@@ -25,6 +25,7 @@ let server: Server;
 let baseUrl: string;
 let dispatched: RetryRequest[];
 let dispatchImpl: (req: RetryRequest) => Promise<{ newExecutionId: string }>;
+const originalDesignFlag = process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
 
 function makeStubDispatcher(): IRetryDispatcher {
 	return {
@@ -93,6 +94,11 @@ afterEach(async () => {
 		server.close((e) => (e ? rej(e) : res())),
 	);
 	vi.restoreAllMocks();
+	if (originalDesignFlag === undefined) {
+		delete process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
+	} else {
+		process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = originalDesignFlag;
+	}
 });
 
 describe("POST /api/actions/retry — D2 boundary validation", () => {
@@ -196,6 +202,32 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
 		expect(dispatched[0]?.successorExecutionId).toBeUndefined();
 	});
 
+	it("a legacy workflow binding without a v2 snapshot stays on legacy retry", async () => {
+		store.createWorkflowRun({
+			runId: "legacy-shadow-run",
+			issueId: "issue-1",
+			projectName: "fly245-d2-route-test",
+			claimsReadEnrolled: false,
+		});
+		expect(
+			store.admitWorkflowExecution({
+				runId: "legacy-shadow-run",
+				nodeId: "qa",
+				executionId: "pred-1",
+				attempt: 1,
+				family: "qa_verdict",
+				now: "2026-07-15T00:00:00.000Z",
+				expiresAt: "2026-07-15T00:05:00.000Z",
+				absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+
+		const result = await postRetry({ execution_id: "pred-1" });
+		expect(result.status).toBe(200);
+		expect(dispatched).toHaveLength(1);
+		expect(dispatched[0]?.generalizedExecution).toBeUndefined();
+	});
+
 	// Codex R2 MED-6: a POST-dispatch bookkeeping failure must NOT be reported as
 	// a clean failure (the gateway would map the 4xx to `not_dispatched` and allow
 	// a SECOND successor). Once dispatch() returns, the Runner is starting → the
@@ -235,6 +267,71 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
  * Non-phase rows (`chat_thread_role='main'`, incl. auto-QA): byte-compatible.
  */
 describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => {
+	it("FLY-1259: locked codex beats a disabled global design switch", async () => {
+		process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "0";
+		store.upsertSession({
+			execution_id: "phase-design-codex",
+			issue_id: "issue-1259-codex",
+			project_name: "fly245-d2-route-test",
+			status: "failed",
+			chat_thread_role: "design",
+			design_backend: "codex",
+		});
+
+		const r = await postRetry({ execution_id: "phase-design-codex" });
+
+		expect(r.status).toBe(200);
+		expect(dispatched[0]).toMatchObject({
+			designBackend: "codex",
+			dispatchVendor: "codex",
+			dispatchModel: "gpt-5.6-sol",
+			dispatchEffort: "xhigh",
+		});
+	});
+
+	it("FLY-1259: locked claude beats an enabled global design switch", async () => {
+		process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "1";
+		store.upsertSession({
+			execution_id: "phase-design-claude",
+			issue_id: "issue-1259-claude",
+			project_name: "fly245-d2-route-test",
+			status: "failed",
+			chat_thread_role: "design",
+			design_backend: "claude",
+		});
+
+		const r = await postRetry({ execution_id: "phase-design-claude" });
+
+		expect(r.status).toBe(200);
+		expect(dispatched[0]).toMatchObject({
+			designBackend: "claude",
+			dispatchVendor: "claude",
+			dispatchModel: "claude-fable-5",
+		});
+		expect(dispatched[0]?.dispatchEffort).toBeUndefined();
+	});
+
+	it("FLY-1259: legacy design rows still follow the global switch", async () => {
+		process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "1";
+		store.upsertSession({
+			execution_id: "phase-design-legacy",
+			issue_id: "issue-1259-legacy",
+			project_name: "fly245-d2-route-test",
+			status: "failed",
+			chat_thread_role: "design",
+		});
+
+		const r = await postRetry({ execution_id: "phase-design-legacy" });
+
+		expect(r.status).toBe(200);
+		expect(dispatched[0]).toMatchObject({
+			dispatchVendor: "codex",
+			dispatchModel: "gpt-5.6-sol",
+			dispatchEffort: "xhigh",
+		});
+		expect(dispatched[0]?.designBackend).toBeUndefined();
+	});
+
 	it("a failed phase row (persisted phase model + sonnet label) retries on the phase table", async () => {
 		store.upsertSession({
 			execution_id: "phase-impl-1",

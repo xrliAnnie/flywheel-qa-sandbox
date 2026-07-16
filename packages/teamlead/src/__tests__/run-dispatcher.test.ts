@@ -2,6 +2,11 @@
  * FLY-22: RunDispatcher unit tests.
  */
 
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { renderRunnerModelDisplay } from "flywheel-config";
 import { buildWindowLabel } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -11,12 +16,85 @@ import {
 	RunDispatcher,
 	runnerDisplayName,
 } from "../bridge/run-dispatcher.js";
+import * as runInfraModule from "../bridge/run-infra.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 
 // Mock flywheel-core openTmuxViewer (no-op in tests)
 vi.mock("flywheel-core", async (importOriginal) => {
 	const mod = (await importOriginal()) as Record<string, unknown>;
 	return { ...mod, openTmuxViewer: vi.fn() };
+});
+
+type PhaseRetryProbe = (
+	projectRoot: string,
+	branch: string,
+) =>
+	| { kind: "found"; sha: string }
+	| { kind: "missing" }
+	| { kind: "indeterminate"; error: string };
+
+describe("FLY-1257 phase retry branch-tip probe", () => {
+	const dirs: string[] = [];
+	const probe = () =>
+		(
+			runInfraModule as unknown as {
+				probePhaseRetryBranchTip?: PhaseRetryProbe;
+			}
+		).probePhaseRetryBranchTip;
+
+	function git(cwd: string, args: string[]): string {
+		return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
+	}
+
+	function makeRepo(): string {
+		const dir = mkdtempSync(join(tmpdir(), "fly1257-phase-retry-"));
+		dirs.push(dir);
+		git(dir, ["init", "-q"]);
+		git(dir, ["config", "user.email", "test@example.com"]);
+		git(dir, ["config", "user.name", "Flywheel Test"]);
+		writeFileSync(join(dir, "base.txt"), "base\n");
+		git(dir, ["add", "base.txt"]);
+		git(dir, ["commit", "-qm", "base"]);
+		return dir;
+	}
+
+	afterEach(() => {
+		for (const dir of dirs.splice(0))
+			rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("returns found with the fully-qualified local branch tip", () => {
+		const dir = makeRepo();
+		const branch = "flywheel-FLY-1257";
+		git(dir, ["branch", branch]);
+		const expected = git(dir, ["rev-parse", "HEAD"]);
+		expect(probe()).toBeTypeOf("function");
+		expect(probe()?.(dir, branch)).toEqual({ kind: "found", sha: expected });
+	});
+
+	it("returns missing for a confirmed absent branch", () => {
+		const dir = makeRepo();
+		expect(probe()).toBeTypeOf("function");
+		expect(probe()?.(dir, "flywheel-FLY-1257")).toEqual({ kind: "missing" });
+	});
+
+	it("same-name tag cannot impersonate the missing refs/heads branch", () => {
+		const dir = makeRepo();
+		const name = "flywheel-FLY-1257";
+		git(dir, ["tag", name]);
+		expect(probe()).toBeTypeOf("function");
+		expect(probe()?.(dir, name)).toEqual({ kind: "missing" });
+	});
+
+	it("fatal git/repository errors are indeterminate, never missing", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1257-not-repo-"));
+		dirs.push(dir);
+		mkdirSync(join(dir, "nested"));
+		expect(probe()).toBeTypeOf("function");
+		expect(probe()?.(join(dir, "nested"), "flywheel-FLY-1257")).toMatchObject({
+			kind: "indeterminate",
+		});
+	});
 });
 
 function mockBlueprint() {
@@ -132,6 +210,84 @@ describe("RunDispatcher", () => {
 
 		expect(result.executionId).toBeDefined();
 		expect(result.issueId).toBe("GEO-1");
+	});
+
+	it("FLY-1279 uses a caller-prebound successor execution id", async () => {
+		const runtimes = new Map([makeRuntime("TestProject")]);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+
+		const result = await dispatcher.start({
+			issueId: "FLY-1279-QA",
+			projectName: "TestProject",
+			sessionRole: "qa",
+			successorExecutionId: "qa-recovery-exec",
+		});
+
+		expect(result.executionId).toBe("qa-recovery-exec");
+	});
+
+	it("FLY-1279 auto-QA skips phase resume and preserves fresh-worktree false", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const resumeComputer = vi.fn(() => ({
+			startPoint: "resume-tip",
+			progressPath: "engineering/doc/progress.md",
+			priorExecutionId: "old-phase",
+			resumeKind: "restart" as const,
+		}));
+		const dispatcher = new RunDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+			undefined,
+			undefined,
+			resumeComputer,
+		);
+
+		await dispatcher.start({
+			issueId: "qa-issue-uuid",
+			projectName: "TestProject",
+			sessionRole: "qa",
+			shareParentBranch: false,
+			startPoint: "a".repeat(40),
+			qaContext: {
+				parentExecutionId: "parent-exec",
+				prHeadSha: "a".repeat(40),
+			},
+		});
+
+		expect(resumeComputer).not.toHaveBeenCalled();
+		const ctx = (
+			runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> }
+		).run.mock.calls[0]?.[2];
+		expect(ctx).toMatchObject({
+			shareParentBranch: false,
+			startPoint: "a".repeat(40),
+		});
+		expect(ctx.progressResume).toBeUndefined();
+	});
+
+	it("FLY-1259: start() carries designBackend into Blueprint context", async () => {
+		const runtimes = new Map([makeRuntime("TestProject")]);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+
+		await dispatcher.start({
+			issueId: "FLY-1259",
+			projectName: "TestProject",
+			designBackend: "codex",
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const blueprint = runtimes.get("TestProject")!.blueprint;
+		const ctx = vi.mocked(blueprint.run).mock.calls[0]?.[2];
+		expect(ctx?.designBackend).toBe("codex");
 	});
 
 	it("start() rejects when shutting down", async () => {
@@ -257,6 +413,40 @@ describe("RunDispatcher", () => {
 });
 
 describe("RetryDispatcher", () => {
+	it("keeps the resolved Codex model in a retried implement-phase window", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		// FLY-1257 defect ③: a three-stage PHASE retry (shareParentBranch +
+		// design/implement/qa role) now resolves branch B's tip through the
+		// startPoint computer, and fails closed when it cannot — an indeterminate
+		// probe must never silently reset branch B to origin/main. This FLY-1255
+		// model-display test predates that dependency, so it supplies the computer
+		// the same way production wiring does; the assertion below is unchanged.
+		const dispatcher = new RetryDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			undefined, // launchClaims
+			undefined, // isCommitted (keep the real default)
+			undefined, // lifecycleAdmission
+			undefined, // lifecycleLaunchGuard
+			() => ({ kind: "found", sha: "b".repeat(40) }),
+		);
+
+		await dispatcher.dispatch({
+			oldExecutionId: "old-exec",
+			issueId: "FLY-1255",
+			projectName: "TestProject",
+			runAttempt: 1,
+			sessionRole: "implement",
+			shareParentBranch: true,
+			ignoreRunnerLabelSelection: true,
+			dispatchVendor: "codex",
+			dispatchModel: "gpt-5.6-sol",
+		});
+
+		const ctx = vi.mocked(runtime.blueprint.run).mock.calls[0]?.[2];
+		expect(ctx?.runnerName).toBe("implement-codex-G");
+	});
+
 	it("dispatch() returns old and new execution IDs", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
 		const dispatcher = new RetryDispatcher(runtimes, []);
@@ -270,6 +460,24 @@ describe("RetryDispatcher", () => {
 
 		expect(result.oldExecutionId).toBe("old-exec");
 		expect(result.newExecutionId).toBeDefined();
+	});
+
+	it("FLY-1259: dispatch() carries designBackend into Blueprint context", async () => {
+		const runtimes = new Map([makeRuntime("TestProject")]);
+		const dispatcher = new RetryDispatcher(runtimes, []);
+
+		await dispatcher.dispatch({
+			oldExecutionId: "old-exec",
+			issueId: "FLY-1259",
+			projectName: "TestProject",
+			runAttempt: 1,
+			designBackend: "claude",
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const blueprint = runtimes.get("TestProject")!.blueprint;
+		const ctx = vi.mocked(blueprint.run).mock.calls[0]?.[2];
+		expect(ctx?.designBackend).toBe("claude");
 	});
 
 	it("dispatch() rejects duplicate issue", async () => {
@@ -758,6 +966,43 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 });
 
 describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () => {
+	it("includes the vendor-neutral model label when a model was resolved", () => {
+		expect(
+			runnerDisplayName("implement", true, {
+				threadMarker: "G",
+				windowLabel: "codex-G",
+			}),
+		).toBe("implement-codex-G");
+		expect(
+			runnerDisplayName("main", false, {
+				threadMarker: "K",
+				windowLabel: "kimi-K",
+			}),
+		).toBe("runner-kimi-K");
+		expect(
+			runnerDisplayName("qa", true, {
+				threadMarker: "O",
+				windowLabel: "claude-Opus",
+			}),
+		).toBe("qa-claude-Opus");
+		expect(
+			runnerDisplayName("main", false, {
+				threadMarker: "F",
+				windowLabel: "claude-Fable",
+			}),
+		).toBe("runner-claude-Fable");
+	});
+
+	it("infers Codex defensively when backend metadata is absent", () => {
+		const display = renderRunnerModelDisplay({ model: "gpt-5.6-sol" });
+		expect(runnerDisplayName("main", false, display)).toBe("runner-codex-G");
+	});
+
+	it("keeps legacy names when no model was resolved", () => {
+		expect(runnerDisplayName("implement", true, undefined)).toBe("implement");
+		expect(runnerDisplayName("main", false, undefined)).toBe("claude");
+	});
+
 	// A three-stage phase runner is (shareParentBranch === true) AND a phase role.
 	it("maps a three-stage phase role (shareParentBranch=true) to its phase name", () => {
 		expect(runnerDisplayName("design", true)).toBe("design");

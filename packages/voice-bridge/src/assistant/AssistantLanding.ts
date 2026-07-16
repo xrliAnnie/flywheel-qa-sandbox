@@ -16,7 +16,10 @@
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { scrubTranscript } from "flywheel-voice-core";
+import {
+	getTranscriptWriteFailure,
+	scrubTranscript,
+} from "flywheel-voice-core";
 
 export interface LandingLinear {
 	/** FLY-1160 §3.3: opts.signal (when given) must reach the underlying
@@ -71,7 +74,17 @@ export interface LandingInput {
 
 export type LandingResult =
 	| { ok: true; commentUrl?: string; transcriptChunks?: number }
-	| { ok: false; stage: "comment" | "transcript" | "close"; message: string };
+	| {
+			ok: false;
+			stage: "comment" | "transcript" | "close";
+			message: string;
+			/** FLY-1160: every mutation (incl. close) COMMITTED, only the success
+			 * report fell past the shutdown deadline — nothing left to re-run. */
+			landedAll?: boolean;
+			/** FLY-1160: the deadline aborted this stage's mutation MID-FLIGHT —
+			 * the server may or may not have committed it (§3.3 unknown outcome). */
+			outcomeUnknown?: boolean;
+	  };
 
 interface Receipt {
 	issueId: string;
@@ -239,6 +252,7 @@ export class AssistantLanding {
 				ok: false,
 				stage,
 				message: `落地的 ${stage} 写在 shutdown deadline 被中断,结果未知——issue 保持打开;重跑会重试这一步(可能出现一次重复,以显式重复换绝不静默丢)。`,
+				outcomeUnknown: true,
 			};
 		};
 		// no-signal callers keep the exact legacy call shape (2-arg) — the
@@ -293,6 +307,18 @@ export class AssistantLanding {
 		}
 
 		// ---- FLY-1065: verbatim transcript comments (chunk-granular idempotent) ----
+		// Codex R27 HIGH: an async-sink WRITE failure means the file on disk is
+		// silently incomplete — reading it back would publish a partial record
+		// as a "complete" one and close the issue. Same contract as the read
+		// failure below: keep the issue open and re-runnable.
+		const writeFailure = getTranscriptWriteFailure(this.opts.transcriptPath);
+		if (writeFailure) {
+			return {
+				ok: false,
+				stage: "transcript",
+				message: `纪要已落,但逐字记录写入曾失败(${writeFailure.message})——磁盘上的记录不完整,不能当完整逐字稿发布;issue 保持打开,修复后重跑续发。文件在 ${this.opts.transcriptPath}。`,
+			};
+		}
 		let rows: TranscriptRow[];
 		try {
 			rows = this.readRows();
@@ -385,6 +411,7 @@ export class AssistantLanding {
 				ok: false,
 				stage: "close",
 				message: `落地已全部完成(含关单),但确认落在 shutdown deadline 之后——按合同不报成功;issue 已关,无需重跑。`,
+				landedAll: true,
 			};
 		}
 		return { ok: true, commentUrl: receipt?.commentUrl, transcriptChunks };

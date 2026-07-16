@@ -83,9 +83,44 @@ const STATUS_SPEAKING = "💬 回话中";
  * A real wait is ≥1.5s (fastest observed answer onset), so it always shows. */
 const DEFAULT_STATUS_DEBOUNCE_MS = 1000;
 
+/** FLY-1160 §4.2-4: the minutes the resident brain's final turn produces
+ * (null = brain failed → the finalizer lands a degraded record from the
+ * journal trail instead). */
+export interface ElevenMinutes {
+	recapText: string;
+	quotes: { ts: string; text: string }[];
+	/** brain unavailable → landed from the journal, loudly labeled. */
+	degraded?: boolean;
+}
+
+/** the landing face the finalizer drives (ElevenLanding satisfies it). */
+export interface ElevenLandingLike {
+	land(
+		input: {
+			issueId: string;
+			sessionId: string;
+			recapText: string;
+			quotes: { ts: string; text: string }[];
+			confirmed: boolean;
+		},
+		opts?: { signal?: AbortSignal },
+	): Promise<{ ok: boolean; message?: string }>;
+}
+
+/** FLY-1160 §4.2-4: the exactly-once finalizer's five convergent reasons. */
+export type ElevenStopReason =
+	| "manual" // /eleven stop
+	| "ws-error" // platform WS closed / errored mid-meeting
+	| "start-failure" // start() threw before live — NO minutes, abort-close the issue
+	| "shutdown" // daemon shutting down
+	| "no-show"; // founder never joined within the assemble window
+
 export interface ElevenSessionOptions {
 	sessionId: string;
 	topic?: string;
+	/** FLY-1160: the kickoff issue minutes land on (undefined = the pre-1160
+	 * bare product-test surface, no landing). */
+	issueId?: string;
 	/** the shared room slot — the command acquired it; every exit path here
 	 * releases it (mirror of the Gemini ownership handoff). */
 	slot: SessionSlot;
@@ -110,6 +145,39 @@ export interface ElevenSessionOptions {
 	log?: (line: string) => void;
 	onEnded?: () => void;
 	now?: () => number;
+	// ---- FLY-1160 §4.2-4 finalizer seams (all optional; absent = no landing) ----
+	/** drive the resident brain's FINAL turn to produce the minutes; null =
+	 * brain failed (the finalizer lands a degraded record from the journal).
+	 * The shutdown deadline signal cancels the turn (§3.3 Phase 2). */
+	generateMinutes?: (signal?: AbortSignal) => Promise<ElevenMinutes | null>;
+	/** the landing (ElevenLanding). Absent = no issue landing (pre-1160). */
+	landing?: ElevenLandingLike;
+	/** degraded minutes source when the brain is unavailable — the founder's
+	 * verbatim user_transcript lines from the trail. */
+	journalQuotes?: () => { ts: string; text: string }[];
+	/** the "meeting never happened" path (start-failure / no-show): comment +
+	 * close the kickoff issue without minutes (GeminiCommand abort shape). The
+	 * shutdown signal is TRUE cancellation — it reaches the underlying fetch so
+	 * an in-flight mutation is aborted, not merely un-chained (Codex #552 R4). */
+	linearAbort?: {
+		comment(
+			issueId: string,
+			body: string,
+			opts?: { signal?: AbortSignal },
+		): Promise<unknown>;
+		closeIssue(issueId: string, opts?: { signal?: AbortSignal }): Promise<void>;
+	};
+	/** FLY-1160 §4.2-4 ④ (Codex #552 R1 HIGH-5): interrupt the in-flight
+	 * resident brain turn and AWAIT its barrier before the minutes turn — a
+	 * closed platform WS does NOT prove the custom-LLM HTTP turn is cancelled. */
+	brainInterrupt?: () => Promise<void>;
+	/** FLY-1160 §4.2-4 ② (Codex #552 R1 HIGH-5): stop the BrainPort from serving
+	 * NEW shim turns for this key while the finalizer runs the minutes turn (so
+	 * a late shim turn cannot supersede the minutes turn). */
+	suspendBrain?: () => void;
+	/** FLY-1160 §4.2-3 (Codex #552 R1 HIGH-4): pre-heat the resident brain
+	 * BEFORE the WS connects — a throw here is a start-failure (abort-close). */
+	preheat?: () => void | Promise<void>;
 }
 
 const DEFAULT_TURN_GAP_MS = 1500;
@@ -133,6 +201,19 @@ export class ElevenSession {
 	private speechEndAt: number | null = null;
 	/** observability: late chunks dropped after an interruption. */
 	droppedLateChunks = 0;
+	/** FLY-1160 §4.2-4: the exactly-once finalizer — CAS into finalizing so
+	 * the five convergent reasons collapse to one landing (repeat stop returns
+	 * the SAME promise). */
+	private finalizePromise: Promise<void> | null = null;
+	/** FLY-1160 §3.3 Phase 2 (Codex #552 R2 HIGH-1): the finalizer's minutes
+	 * turn + landing observe THIS shared controller. Every stop({signal})
+	 * bridges its signal into it, so a shutdown deadline that arrives AFTER a
+	 * manual/WS/no-show finalizer already started still cancels the in-flight
+	 * writes (an AssistantSession-style shared abort). */
+	private readonly finalizeAbort = new AbortController();
+	/** set by abortClose() when it CONFIRMS the kickoff issue closed — the
+	 * start-failure reply must not claim a close that failed (Codex #552 M9). */
+	private issueClosedByAbort = false;
 
 	constructor(private readonly opts: ElevenSessionOptions) {}
 
@@ -140,10 +221,32 @@ export class ElevenSession {
 		return this.state;
 	}
 
+	/** read the state without flow-narrowing — a startup await may have set it
+	 * to "ended" via an out-of-band finalizer (Codex #552 R3 HIGH-1). */
+	private isEnded(): boolean {
+		return this.state === "ended";
+	}
+
 	async start(): Promise<void> {
 		const { opts } = this;
 		try {
+			// FLY-1160 §4.2-3 (Codex #552 R1 HIGH-4): pre-heat the resident brain
+			// BEFORE the WS connects — key eleven:<sessionId> must exist or every
+			// shim turn 404s. A preheat FAILURE is a start-failure: the catch
+			// below abort-closes the kickoff issue (no dead meeting), never a
+			// silent mid-meeting degrade.
+			await opts.preheat?.();
+			// Codex #552 R3 HIGH-1: a no-show/shutdown finalizer can fire DURING
+			// start() (preheat/join/connect can outrun the assemble deadline).
+			// After every startup await, bail if the session already ended and
+			// close any resource this await acquired — NEVER revive to "live"
+			// (the AssistantSession R17 pattern).
+			if (this.isEnded()) return;
 			await opts.voice.join();
+			if (this.isEnded()) {
+				this.opts.voice.leave();
+				return;
+			}
 			this.ws = await opts.connect({
 				onAudio: (chunk) => this.onAudio(chunk),
 				onInterruption: () => this.interrupt("platform"),
@@ -158,7 +261,30 @@ export class ElevenSession {
 					this.trail({ type: "agent_response", text });
 					this.opts.tiv?.caption("assistant", text);
 				},
-				onMetadata: (meta) => this.trail({ type: "metadata", meta }),
+				onMetadata: (meta) => {
+					this.trail({ type: "metadata", meta });
+					// FLY-1160 §4.2-3 UUID consistency gate (Codex #552 R1 MEDIUM-8):
+					// the platform echoes the conversation_id it keyed the session
+					// with. If it does not match the daemon-minted UUID, the shim
+					// would bucket this meeting under the wrong resident brain — a
+					// hard fail, not a warning. Only enforced when the brain is on
+					// (issueId present); the bare product-test surface has no key.
+					const echoed = (meta as { conversationId?: string })?.conversationId;
+					// Codex #552 R2 MEDIUM-8: a MISSING id (empty string) is also a
+					// mismatch — in brain mode the platform MUST echo the daemon UUID,
+					// so anything ≠ sessionId fails loud (no truthy `echoed &&` gate).
+					if (this.opts.issueId && echoed !== this.opts.sessionId) {
+						opts.log?.(
+							`[eleven-session] conversation_id mismatch: platform=${echoed} daemon=${this.opts.sessionId} — fail-loud terminate`,
+						);
+						this.trail({
+							type: "conversation_id_mismatch",
+							platform: echoed,
+							daemon: this.opts.sessionId,
+						});
+						void this.stop("ws-error");
+					}
+				},
 				onError: (err) => {
 					this.trail({ type: "error", message: err.message });
 					opts.log?.(`[eleven-session] ws error: ${err.message}`);
@@ -166,10 +292,22 @@ export class ElevenSession {
 				onClose: () => {
 					if (this.state === "live") {
 						opts.log?.("[eleven-session] ws closed — tearing down");
-						void this.stop();
+						void this.stop("ws-error");
 					}
 				},
 			});
+			// Codex #552 R3 HIGH-1: the finalizer may have run while connect() was
+			// awaiting — close the just-opened WS and bail, never go live.
+			if (this.isEnded()) {
+				this.ws?.close();
+				this.ws = null;
+				this.opts.voice.leave();
+				return;
+			}
+			// FLY-1160 §4.2-4 (Codex #552 R2 HIGH-3): the no-show path is driven
+			// by the WIRING from Discord PRESENCE (occupancy probe + voice-state
+			// join), NOT from audio here — a founder who joined but stayed silent
+			// is present, not a no-show. The wiring calls stop("no-show").
 			this.unsubs.push(
 				opts.ears.onFrame((frame) => this.ws?.sendAudio(frame)),
 				opts.ears.onSpeakingStart(() => {
@@ -194,7 +332,13 @@ export class ElevenSession {
 			this.trail({ type: "session_live", sessionId: opts.sessionId });
 			this.setStatus(STATUS_LISTENING);
 		} catch (err) {
-			await this.stop();
+			// start-failure: the finalizer abort-closes the kickoff issue (no
+			// minutes) — flag the REAL close result so the command's founder-
+			// facing reply never claims a close that failed (Codex #552 M9).
+			await this.stop("start-failure");
+			(err as { issueClosed?: boolean }).issueClosed = this.opts.issueId
+				? this.issueClosedByAbort
+				: undefined;
 			throw err;
 		}
 	}
@@ -305,24 +449,206 @@ export class ElevenSession {
 		this.setStatus(STATUS_LISTENING);
 	}
 
-	/** idempotent teardown — every exit path lands here exactly once. */
-	async stop(): Promise<void> {
-		if (this.state === "ended") return;
+	/**
+	 * FLY-1160 §4.2-4: the exactly-once finalizer. Five reasons (manual / WS
+	 * error / start-failure / shutdown / no-show) converge to ONE landing.
+	 * Strict order (Codex R2 #3 — silence the live links BEFORE the minutes
+	 * turn, else the old turn's disconnect-interrupt cancels the minutes turn):
+	 *   ① CAS finalizing (repeat stop returns the same promise) →
+	 *   ② stop new input: unsubscribe ears + close WS + SUSPEND the brain key
+	 *      (BrainPort 404s new shim turns) →
+	 *   ③ mouth/cue synchronously stop →
+	 *   ④ interrupt the in-flight brain turn + AWAIT its barrier (Codex #552
+	 *      R1 HIGH-5 — a closed WS does not prove the custom-LLM HTTP turn is
+	 *      cancelled) →
+	 *   ⑤ freeze + timestamp the journal →
+	 *   ⑥ reason branch: start-failure/no-show → abort-close (NO minutes);
+	 *      else → resident final-turn minutes (brain failed → degraded journal
+	 *      record) → landing →
+	 *   ⑦ finally: slot release, always.
+	 * The shutdown deadline signal (§3.3 Phase 2) is TRUE cancellation: it
+	 * reaches the minutes brain turn and landing.land — once aborted, no
+	 * further external write happens.
+	 */
+	async stop(
+		reason: ElevenStopReason = "manual",
+		opts: { signal?: AbortSignal } = {},
+	): Promise<void> {
+		// bridge the incoming deadline signal into the shared controller FIRST —
+		// this must happen even for a repeat stop(), so a shutdown that races an
+		// already-running finalizer still cancels its writes (Codex #552 R2 H1).
+		if (opts.signal) {
+			if (opts.signal.aborted) this.finalizeAbort.abort();
+			else
+				opts.signal.addEventListener("abort", () => this.finalizeAbort.abort());
+		}
+		if (this.finalizePromise) return this.finalizePromise;
+		this.finalizePromise = this.finalize(reason);
+		return this.finalizePromise;
+	}
+
+	private async finalize(reason: ElevenStopReason): Promise<void> {
+		const signal = this.finalizeAbort.signal;
+		// ② stop new input: unsubscribe ears + close WS + suspend brain key so
+		// BrainPort refuses new shim turns while the minutes turn runs.
 		this.state = "ended";
 		if (this.gapTimer) clearTimeout(this.gapTimer);
 		this.gapTimer = undefined;
 		for (const u of this.unsubs.splice(0)) u();
+		this.opts.suspendBrain?.();
+		// ③ mouth/cue synchronously stop
 		this.endWait();
 		this.opts.speaker.flush();
 		this.ws?.close();
 		this.ws = null;
 		this.opts.voice.leave();
-		this.opts.slot.release(this.opts.slotMode, this.opts.sessionId);
+
+		// ④ interrupt the in-flight brain turn and AWAIT its barrier before the
+		// minutes turn (a real meeting only — start-failure never had a turn).
+		// Codex #552 R3 MEDIUM-4: a barrier FAILURE cannot prove the old turn
+		// stopped, so the resident minutes turn is UNSAFE — skip it and land a
+		// journal-degraded record instead (never a silent skip).
+		let barrierFailed = false;
+		if (reason !== "start-failure") {
+			try {
+				await this.opts.brainInterrupt?.();
+			} catch (err) {
+				barrierFailed = true;
+				this.opts.log?.(
+					`[eleven-session] brain interrupt barrier failed (${reason}) — skipping the resident minutes turn, journal-degrading: ${String((err as Error).message ?? err)}`,
+				);
+			}
+		}
+
+		// ⑤ freeze the journal with a timestamp before any landing reads it
 		this.trail({
 			type: "session_ended",
+			reason,
 			droppedLateChunks: this.droppedLateChunks,
 		});
-		this.opts.onEnded?.();
+
+		try {
+			// ⑥ reason branch
+			if (this.opts.issueId) {
+				if (reason === "start-failure" || reason === "no-show") {
+					await this.abortClose(reason, signal);
+				} else {
+					await this.landMinutes(reason, signal, barrierFailed);
+				}
+			}
+		} catch (err) {
+			this.opts.log?.(
+				`[eleven-session] finalize landing failed (${reason}): ${String((err as Error).message ?? err)}`,
+			);
+		} finally {
+			// ⑦ slot release ALWAYS — the meeting is over regardless of landing
+			this.opts.slot.release(this.opts.slotMode, this.opts.sessionId);
+			this.opts.onEnded?.();
+		}
+	}
+
+	/** the resident final-turn minutes → landing. Brain failure degrades to a
+	 * journal-only record, loudly labeled, never a silent skip. The shutdown
+	 * deadline signal reaches BOTH the minutes turn and landing.land. */
+	private async landMinutes(
+		reason: ElevenStopReason,
+		signal?: AbortSignal,
+		barrierFailed = false,
+	): Promise<void> {
+		const issueId = this.opts.issueId as string;
+		if (!this.opts.landing) return; // pre-1160 bare surface
+		this.opts.tiv?.status("🛬 正在落纪要…");
+		let minutes: ElevenMinutes | null = null;
+		// Codex #552 R3 MEDIUM-4: an unproven barrier means the resident brain
+		// may still be mid-turn — NEVER drive a second (minutes) turn onto it;
+		// degrade straight to the journal record.
+		if (barrierFailed) {
+			this.opts.log?.(
+				`[eleven-session] barrier unproven (${reason}) — journal-degraded record, no resident minutes turn`,
+			);
+		} else {
+			try {
+				minutes = (await this.opts.generateMinutes?.(signal)) ?? null;
+			} catch (err) {
+				this.opts.log?.(
+					`[eleven-session] minutes generation threw (${reason}) — degrading to journal: ${String((err as Error).message ?? err)}`,
+				);
+			}
+		}
+		const degraded = !minutes || minutes.degraded === true;
+		const input = {
+			issueId,
+			sessionId: this.opts.sessionId,
+			recapText:
+				minutes?.recapText || "(脑不可用——本纪要由 journal 兜底,未经模型整理)",
+			quotes: minutes?.quotes ?? this.opts.journalQuotes?.() ?? [],
+			// a degraded (brain-failed) landing is never "confirmed" minutes
+			confirmed: !degraded,
+		};
+		this.trail({ type: "landing_start", degraded });
+		const r = await this.opts.landing.land(input, signal ? { signal } : {});
+		if (r.ok) {
+			this.opts.tiv?.status(`✅ 会议纪要已落 ${issueId}`);
+		} else {
+			this.opts.tiv?.status(
+				r.message ?? `落地未完成——${issueId} 保持打开,可重跑。`,
+			);
+		}
+	}
+
+	/** the "meeting never happened" path (start-failure / no-show): comment +
+	 * close the kickoff issue without minutes (GeminiCommand abort shape).
+	 * Returns whether the issue was actually closed (Codex #552 R1 MEDIUM-9:
+	 * the founder-facing reply must not claim a close that failed). */
+	private async abortClose(
+		reason: ElevenStopReason,
+		signal?: AbortSignal,
+	): Promise<boolean> {
+		const issueId = this.opts.issueId as string;
+		if (!this.opts.linearAbort) return false;
+		// Codex #552 R3 HIGH-2: the shutdown deadline reaches abort-close too —
+		// gate each write both BEFORE (skip) and AFTER (don't chain the next
+		// mutation) so an aborted comment cannot trigger a deadline-crossing
+		// close.
+		const aborted = (): boolean => {
+			if (signal?.aborted) {
+				this.trail({ type: "abort_close", reason, aborted: true });
+				this.opts.log?.(
+					`[eleven-session] abort-close cut by the shutdown deadline (${reason}) — no further mutation`,
+				);
+				return true;
+			}
+			return false;
+		};
+		const note =
+			reason === "no-show"
+				? "本次 /eleven 没开成——founder 未加入语音频道(no-show)。"
+				: "本次 /eleven 没开成——会话启动失败(start-failure)。";
+		const sigOpts = signal ? { signal } : {};
+		try {
+			if (aborted()) return false;
+			// TRUE cancellation: the signal reaches the underlying fetch (Codex
+			// #552 R4 HIGH) — an in-flight comment/close is aborted, not merely
+			// left un-chained. The post-await gate still stops the close from
+			// chaining after a slow comment that did commit.
+			await this.opts.linearAbort.comment(issueId, note, sigOpts);
+			if (aborted()) return false; // deadline hit mid-comment — do NOT close
+			await this.opts.linearAbort.closeIssue(issueId, sigOpts);
+			if (signal?.aborted) {
+				// close committed but the deadline passed — report honestly
+				this.trail({ type: "abort_close", reason, issueClosed: true });
+				return false;
+			}
+			this.trail({ type: "abort_close", reason, issueClosed: true });
+			this.issueClosedByAbort = true;
+			return true;
+		} catch (err) {
+			this.trail({ type: "abort_close", reason, issueClosed: false });
+			this.opts.log?.(
+				`[eleven-session] abort-close failed (${reason}): ${String((err as Error).message ?? err)}`,
+			);
+			return false;
+		}
 	}
 
 	private trail(line: Record<string, unknown>): void {

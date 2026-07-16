@@ -598,14 +598,17 @@ export function assistantTranscriptPath(
 
 // ---- Bridge Linear proxy client ----
 
-interface LinearClientOpts {
+export interface LinearClientOpts {
 	bridgeUrl: string;
 	apiToken: string;
 	projectName: string;
 	fetchImpl: typeof fetch;
 }
 
-function makeLinearClient(o: LinearClientOpts) {
+/** the Bridge Linear proxy client — shared by /gemini and /eleven (FLY-1160).
+ * projectName-scoped on EVERY call; landing mutations carry the shutdown
+ * deadline signal; `comments` is the §3.3 read-back for reconciliation. */
+export function makeLinearClient(o: LinearClientOpts) {
 	const call = async (
 		method: "GET" | "POST" | "PATCH",
 		path: string,
@@ -675,6 +678,21 @@ function makeLinearClient(o: LinearClientOpts) {
 				undefined,
 				opts?.signal,
 			);
+		},
+		/** FLY-1160 §3.3 读口: paged comments of one issue for landing
+		 * reconciliation (which stage markers already landed + issue state). */
+		comments: async (issueId: string, opts?: { after?: string }) => {
+			const data = (await call("GET", "/api/linear/comments", undefined, {
+				issueId,
+				...(opts?.after ? { after: opts.after } : {}),
+			})) as {
+				comments: { id: string; body: string }[];
+				hasNextPage: boolean;
+				endCursor: string | null;
+				state?: string;
+				stateType?: string;
+			};
+			return data;
 		},
 	};
 }

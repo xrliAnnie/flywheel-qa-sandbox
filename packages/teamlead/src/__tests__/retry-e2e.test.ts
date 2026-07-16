@@ -75,6 +75,9 @@ function createMockDispatcher(store: StateStore): IRetryDispatcher & {
 				issue_id: req.issueId,
 				project_name: req.projectName,
 				status: "running",
+				session_role: req.sessionRole,
+				chat_thread_role: req.shareParentBranch ? req.sessionRole : "main",
+				design_backend: req.designBackend,
 			});
 			return {
 				newExecutionId,
@@ -222,6 +225,39 @@ describe("Retry E2E — composite action with mock dispatcher", () => {
 
 		expect(res.status).toBe(200);
 		expect(dispatcher.calls).toHaveLength(1);
+	});
+
+	it("FLY-1259: retry-of-retry preserves the locked design backend", async () => {
+		store.upsertSession({
+			execution_id: "design-old",
+			issue_id: "issue-design",
+			project_name: "geoforge3d",
+			status: "failed",
+			session_role: "design",
+			chat_thread_role: "design",
+			design_backend: "claude",
+		});
+
+		const first = await fetch(`${baseUrl}/api/actions/retry`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ execution_id: "design-old" }),
+		});
+		expect(first.status).toBe(200);
+		const firstSuccessor = store.getSession("design-old")!.retry_successor!;
+		expect(dispatcher.calls[0]?.designBackend).toBe("claude");
+		expect(store.getSession(firstSuccessor)?.design_backend).toBe("claude");
+
+		store.forceStatus(firstSuccessor, "failed", "2026-07-14 18:00:00");
+		const second = await fetch(`${baseUrl}/api/actions/retry`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ execution_id: firstSuccessor }),
+		});
+		expect(second.status).toBe(200);
+		expect(dispatcher.calls[1]?.designBackend).toBe("claude");
+		const secondSuccessor = store.getSession(firstSuccessor)!.retry_successor!;
+		expect(store.getSession(secondSuccessor)?.design_backend).toBe("claude");
 	});
 
 	// ── Eligibility checks ──────────────────────────────────────

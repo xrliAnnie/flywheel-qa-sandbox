@@ -728,45 +728,48 @@ const isStaleAlert = (r) => /stale|TURN/i.test(r) && !/respawn cap/i.test(r);
 // ─────────────────────────────────────────────────────────────────────────────
 // E7 — escape-hatch 对照(MANDATORY):FLYWHEEL_THREE_STAGE_QA_RESPAWN=0
 // ─────────────────────────────────────────────────────────────────────────────
-scenario(
-	"E7 — escape hatch =0: scoped inert + boot reverts row-exists + stranded-pass hardening NOT gated",
-);
-process.env.FLYWHEEL_THREE_STAGE_QA_RESPAWN = "0";
-try {
-	// (a) scoped: E1 fixture replay → inert
-	const env = await makeEnv();
-	env.seedImpl();
-	env.seedQa("qa-0");
-	const res = await env.postAction("/api/actions", { execution_id: "qa-0" });
-	check("terminate HTTP 200", res.status === 200);
-	await silence();
-	check(
-		"(a) scoped reconcileQaLoss inert: zero spawn (silence 800ms)",
-		env.calls.start.length === 0,
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: intentional per-scenario grouping in this evidence harness (FLY-1259 lint pin surfaced it)
+{
+	scenario(
+		"E7 — escape hatch =0: scoped inert + boot reverts row-exists + stranded-pass hardening NOT gated",
 	);
-	// (b) boot criteria reverts to row-exists → skip (pre-fix behavior)
-	await env.orch.reconcileOnStartup();
-	await silence();
-	check(
-		"(b) boot row-exists criteria: zero spawn",
-		env.calls.start.length === 0,
-	);
-	// (c) stranded-pass terminated hardening NOT gated by the switch
-	env.store.setSessionParams("qa-0", {
-		three_stage_verdict: { status: "pass", event_id: "e1", at: "t0" },
-	});
-	const deadRow = env.store.getSession("qa-0");
-	await env.orch.onPhaseComplete(deadRow);
-	check(
-		"(c) stranded-pass alert still fires with =0 (hardening independent of switch)",
-		env.calls.alerts.some(
-			(r) => r.includes("terminated") && r.includes("ship gate"),
-		),
-		JSON.stringify(env.calls.alerts),
-	);
-	await env.cleanup();
-} finally {
-	delete process.env.FLYWHEEL_THREE_STAGE_QA_RESPAWN;
+	process.env.FLYWHEEL_THREE_STAGE_QA_RESPAWN = "0";
+	try {
+		// (a) scoped: E1 fixture replay → inert
+		const env = await makeEnv();
+		env.seedImpl();
+		env.seedQa("qa-0");
+		const res = await env.postAction("/api/actions", { execution_id: "qa-0" });
+		check("terminate HTTP 200", res.status === 200);
+		await silence();
+		check(
+			"(a) scoped reconcileQaLoss inert: zero spawn (silence 800ms)",
+			env.calls.start.length === 0,
+		);
+		// (b) boot criteria reverts to row-exists → skip (pre-fix behavior)
+		await env.orch.reconcileOnStartup();
+		await silence();
+		check(
+			"(b) boot row-exists criteria: zero spawn",
+			env.calls.start.length === 0,
+		);
+		// (c) stranded-pass terminated hardening NOT gated by the switch
+		env.store.setSessionParams("qa-0", {
+			three_stage_verdict: { status: "pass", event_id: "e1", at: "t0" },
+		});
+		const deadRow = env.store.getSession("qa-0");
+		await env.orch.onPhaseComplete(deadRow);
+		check(
+			"(c) stranded-pass alert still fires with =0 (hardening independent of switch)",
+			env.calls.alerts.some(
+				(r) => r.includes("terminated") && r.includes("ship gate"),
+			),
+			JSON.stringify(env.calls.alerts),
+		);
+		await env.cleanup();
+	} finally {
+		delete process.env.FLYWHEEL_THREE_STAGE_QA_RESPAWN;
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

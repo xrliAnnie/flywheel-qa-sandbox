@@ -220,7 +220,7 @@ export interface ProjectLinearBinding {
  * the standalone voice-bridge daemon (packages/voice-bridge reads
  * ~/.flywheel/projects.json itself — this validator only guards the shape).
  * Absent OR `null` ⇒ huddle disabled for the project (byte-compat). Defaults
- * (commandName "meet", moveMembers true) are applied by the CONSUMER, not
+ * (commandName "glaw", moveMembers true) are applied by the CONSUMER, not
  * normalized in here (FLY-231 pattern).
  */
 export interface HuddleConfig {
@@ -232,7 +232,7 @@ export interface HuddleConfig {
 	orchestratorBotTokenEnv: string;
 	/** Env var NAME for the ears (receive) bot token (pool claim). REQUIRED. */
 	earsBotTokenEnv: string;
-	/** Slash-command name (PRD R10: configurable). Consumer default: "meet". */
+	/** Slash-command name (PRD R10: configurable). Consumer default: "glaw" (Annie-final ①). */
 	commandName?: string;
 	/** Zero-tap MOVE_MEMBERS when the founder is already in a VC. Consumer default: true. */
 	moveMembers?: boolean;

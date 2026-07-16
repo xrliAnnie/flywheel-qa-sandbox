@@ -103,6 +103,54 @@ function makeContext(
 }
 
 describe("Blueprint Decision Layer Integration", () => {
+	it("FLY-1279: goal_blocked bypasses DecisionLayer even when commits exist", async () => {
+		const decisionLayer = makeMockDecisionLayer({ route: "auto_approve" });
+		const emitFailed = vi.fn(async () => {});
+		const blueprint = new Blueprint(
+			makeMockHydrator(),
+			makeMockGitChecker(),
+			() =>
+				makeMockAdapter({
+					success: false,
+					failure: {
+						failureKind: "goal_blocked",
+						failureReason: "goal ended non-complete: blocked",
+					},
+				}),
+			makeMockShell(),
+			undefined,
+			undefined,
+			makeMockEvidenceCollector(),
+			undefined,
+			decisionLayer,
+			{
+				emitStarted: vi.fn(async () => {}),
+				emitWorktreeReady: vi.fn(async () => {}),
+				emitCompleted: vi.fn(async () => {}),
+				emitFailed,
+				emitHeartbeat: vi.fn(async () => {}),
+				flush: vi.fn(async () => {}),
+			},
+		);
+
+		const result = await blueprint.run(
+			{ id: "GEO-101", blockedBy: [] },
+			"/project",
+			makeContext(),
+		);
+
+		expect(decisionLayer.decide).not.toHaveBeenCalled();
+		expect(result.success).toBe(false);
+		expect(result.decision).toBeUndefined();
+		expect(result.failure?.failureKind).toBe("goal_blocked");
+		expect(emitFailed).toHaveBeenCalledWith(
+			expect.anything(),
+			"goal ended non-complete: blocked",
+			undefined,
+			result.failure,
+		);
+	});
+
 	it("auto_approve → success=true, window killed", async () => {
 		const shell = makeMockShell();
 		const decisionLayer = makeMockDecisionLayer({ route: "auto_approve" });

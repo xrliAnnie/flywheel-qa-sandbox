@@ -1,0 +1,388 @@
+// FLY-1257 M-opt-0 — real Codex app-server paused-goal probe.
+//
+// Verifies the exact protocol seam the optional runtime overlay would use:
+// 1. partial thread/goal/set({status:"paused"}) preserves objective + budget;
+// 2. no autonomous turns/actions start while paused;
+// 3. paused state and fields survive daemon restart + thread/resume;
+// 4. partial {status:"active"} preserves fields and work resumes;
+// 5. production-shaped blocked -> paused and blocked -> active transitions
+//    are accepted, and both resume paths continue without a duplicate kick.
+//
+// Run from the Flywheel repository root:
+//   cp engineering/doc/FLY-1257-codex-runtime-retry-defects/qa/m0-paused-probe.mjs.txt \
+//     /private/tmp/fly1257-m0-paused-probe.mjs
+//   node /private/tmp/fly1257-m0-paused-probe.mjs
+
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const require = createRequire(join(process.cwd(), "packages/claude-runner/package.json"));
+const WebSocket = require("ws");
+const codexBin = process.env.CODEX_BIN ?? "codex";
+const codexHome = process.env.CODEX_HOME;
+if (!codexHome) throw new Error("CODEX_HOME is required for authenticated probe");
+
+const startedAt = Date.now();
+const scratch = mkdtempSync(join(tmpdir(), "fly1257-paused-probe-"));
+const workdir = join(scratch, "workdir");
+mkdirSync(workdir, { recursive: true });
+const socketA = join(scratch, "daemon-a.sock");
+const socketB = join(scratch, "daemon-b.sock");
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const elapsed = () => Date.now() - startedAt;
+const trace = (kind, frame) =>
+	console.log(JSON.stringify({ tMs: elapsed(), kind, frame }));
+const version = execFileSync(codexBin, ["--version"], { encoding: "utf8" }).trim();
+
+let daemon;
+let client;
+let threadId;
+let turnStarts = 0;
+let turnCompletions = 0;
+const activeTurns = new Set();
+const objective =
+	"In the current directory create twenty files step-01.txt through step-20.txt, " +
+	"each containing its own two-digit number. Work on exactly one new file per goal " +
+	"turn, verify that file, then end the turn so the goal dispatcher can continue. " +
+	"The goal is complete only after all twenty files are verified.";
+const tokenBudget = 100_000;
+
+function workFiles() {
+	return readdirSync(workdir)
+		.filter((name) => /^step-\d{2}\.txt$/.test(name))
+		.sort();
+}
+
+async function waitUntil(predicate, timeoutMs, label) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (predicate()) return;
+		await sleep(100);
+	}
+	throw new Error(`timeout waiting for ${label}`);
+}
+
+function startDaemon(socketPath, label) {
+	const child = spawn(
+		codexBin,
+		["app-server", "--remote-control", "--listen", `unix://${socketPath}`],
+		{
+			env: { ...process.env, CODEX_HOME: codexHome },
+			stdio: ["ignore", "ignore", "pipe"],
+			detached: true,
+		},
+	);
+	child.stderr.on("data", (chunk) =>
+		trace(`daemon:${label}:stderr`, String(chunk).trim()),
+	);
+	child.on("exit", (code, signal) =>
+		trace(`daemon:${label}:exit`, { code, signal }),
+	);
+	return child;
+}
+
+async function stopDaemon(child) {
+	if (!child || child.exitCode !== null) return;
+	try {
+		process.kill(-child.pid, "SIGTERM");
+	} catch {
+		child.kill("SIGTERM");
+	}
+	await Promise.race([
+		new Promise((resolve) => child.once("exit", resolve)),
+		sleep(5_000),
+	]);
+	if (child.exitCode === null) {
+		try {
+			process.kill(-child.pid, "SIGKILL");
+		} catch {
+			child.kill("SIGKILL");
+		}
+	}
+}
+
+async function connect(socketPath, label) {
+	await waitUntil(() => existsSync(socketPath), 15_000, `${label} socket`);
+	const ws = new WebSocket(`ws+unix://${socketPath}:/`, {
+		perMessageDeflate: false,
+	});
+	await new Promise((resolve, reject) => {
+		ws.once("open", resolve);
+		ws.once("error", reject);
+	});
+
+	let nextId = 1;
+	const pending = new Map();
+	ws.on("message", (raw) => {
+		let frame;
+		try {
+			frame = JSON.parse(raw.toString());
+		} catch {
+			return;
+		}
+		if (frame.method === "turn/started") {
+			turnStarts += 1;
+			const id = frame.params?.turn?.id ?? `unknown-${turnStarts}`;
+			activeTurns.add(id);
+			trace(`recv:${label}`, frame);
+		} else if (frame.method === "turn/completed") {
+			turnCompletions += 1;
+			const id = frame.params?.turn?.id;
+			if (id) activeTurns.delete(id);
+			trace(`recv:${label}`, frame);
+		} else if (typeof frame.method === "string" && frame.method.includes("goal")) {
+			trace(`recv:${label}`, frame);
+		}
+
+		if (frame.method !== undefined && frame.id !== undefined) {
+			ws.send(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					id: frame.id,
+					error: { code: -32601, message: "method not found" },
+				}),
+			);
+			return;
+		}
+		if (frame.method === undefined && pending.has(frame.id)) {
+			const entry = pending.get(frame.id);
+			pending.delete(frame.id);
+			trace(`recv:${label}:${entry.method}`, frame);
+			if (frame.error) entry.reject(new Error(JSON.stringify(frame.error)));
+			else entry.resolve(frame.result);
+		}
+	});
+
+	function rpc(method, params, timeoutMs = 60_000) {
+		const id = nextId++;
+		const frame = { jsonrpc: "2.0", id, method, params };
+		trace(`send:${label}`, frame);
+		ws.send(JSON.stringify(frame));
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				pending.delete(id);
+				reject(new Error(`${method} timed out`));
+			}, timeoutMs);
+			pending.set(id, {
+				method,
+				resolve: (result) => {
+					clearTimeout(timer);
+					resolve(result);
+				},
+				reject: (error) => {
+					clearTimeout(timer);
+					reject(error);
+				},
+			});
+		});
+	}
+
+	await rpc("initialize", {
+		clientInfo: {
+			name: "fly1257-paused-probe",
+			title: "FLY-1257 paused goal probe",
+			version: "1.0.0",
+		},
+		capabilities: {},
+	});
+	const initialized = { jsonrpc: "2.0", method: "initialized", params: {} };
+	trace(`send:${label}`, initialized);
+	ws.send(JSON.stringify(initialized));
+	return { ws, rpc };
+}
+
+function assertGoal(goal, status, where) {
+	if (goal?.status !== status) {
+		throw new Error(`${where}: expected status=${status}, got ${goal?.status}`);
+	}
+	if (goal.objective !== objective) {
+		throw new Error(`${where}: objective was not preserved`);
+	}
+	if (goal.tokenBudget !== tokenBudget) {
+		throw new Error(`${where}: tokenBudget was not preserved`);
+	}
+}
+
+try {
+	trace("probe:start", { version, scratch });
+	daemon = startDaemon(socketA, "a");
+	client = await connect(socketA, "a");
+	const started = await client.rpc("thread/start", {
+		cwd: workdir,
+		approvalPolicy: "never",
+		sandbox: "workspace-write",
+		baseInstructions:
+			"This is an isolated app-server protocol probe. Follow the explicit goal and do not inspect or modify the Flywheel repository.",
+	});
+	threadId = started?.thread?.id ?? started?.threadId ?? started?.id;
+	if (!threadId) throw new Error("thread/start returned no thread id");
+
+	const activeSet = await client.rpc("thread/goal/set", {
+		threadId,
+		objective,
+		status: "active",
+		tokenBudget,
+	});
+	assertGoal(activeSet?.goal, "active", "initial goal/set");
+	await client.rpc("turn/start", {
+		threadId,
+		input: [{ type: "text", text: "Begin working toward the goal now." }],
+	});
+	await waitUntil(() => turnStarts >= 1, 90_000, "first turn start");
+	await sleep(1_000);
+
+	const pausedSet = await client.rpc("thread/goal/set", {
+		threadId,
+		status: "paused",
+	});
+	assertGoal(pausedSet?.goal, "paused", "partial paused goal/set");
+	const pausedReadback = await client.rpc("thread/goal/get", { threadId });
+	assertGoal(pausedReadback?.goal, "paused", "paused goal/get");
+	await waitUntil(() => activeTurns.size === 0, 180_000, "in-flight turn completion");
+
+	const quietBaseline = {
+		turnStarts,
+		turnCompletions,
+		files: workFiles(),
+	};
+	await sleep(15_000);
+	const quietAfter = {
+		turnStarts,
+		turnCompletions,
+		files: workFiles(),
+	};
+	if (
+		quietAfter.turnStarts !== quietBaseline.turnStarts ||
+		JSON.stringify(quietAfter.files) !== JSON.stringify(quietBaseline.files)
+	) {
+		throw new Error("paused goal started a new turn or changed workdir during quiet window");
+	}
+	trace("probe:paused-quiet", { quietBaseline, quietAfter, quietWindowMs: 15_000 });
+
+	client.ws.close();
+	await stopDaemon(daemon);
+	daemon = startDaemon(socketB, "b");
+	client = await connect(socketB, "b");
+	await client.rpc("thread/resume", { threadId });
+	const restartedReadback = await client.rpc("thread/goal/get", { threadId });
+	assertGoal(restartedReadback?.goal, "paused", "post-restart goal/get");
+
+	const startsBeforeResume = turnStarts;
+	const activeAgain = await client.rpc("thread/goal/set", {
+		threadId,
+		status: "active",
+	});
+	assertGoal(activeAgain?.goal, "active", "partial active goal/set");
+	let resumeMode = "automatic";
+	try {
+		await waitUntil(() => turnStarts > startsBeforeResume, 10_000, "automatic resume");
+	} catch {
+		resumeMode = "kick-required";
+		await client.rpc("turn/start", {
+			threadId,
+			input: [{ type: "text", text: "Resume work after the paused gate." }],
+		});
+		await waitUntil(() => turnStarts > startsBeforeResume, 90_000, "kicked resume");
+	}
+
+	// Round-2 review probe: production enters the local hold only after Codex
+	// reports blocked. Exercise those exact daemon-side transitions rather than
+	// inferring them from active -> paused -> active above.
+	const blockedForPause = await client.rpc("thread/goal/set", {
+		threadId,
+		status: "blocked",
+	});
+	assertGoal(blockedForPause?.goal, "blocked", "blocked before pause");
+	await waitUntil(() => activeTurns.size === 0, 180_000, "blocked turn completion");
+	const pausedFromBlocked = await client.rpc("thread/goal/set", {
+		threadId,
+		status: "paused",
+	});
+	assertGoal(pausedFromBlocked?.goal, "paused", "blocked -> paused");
+	const startsBeforeBlockedPauseResume = turnStarts;
+	const activeFromBlockedPause = await client.rpc("thread/goal/set", {
+		threadId,
+		status: "active",
+	});
+	assertGoal(activeFromBlockedPause?.goal, "active", "paused -> active after blocked");
+	await waitUntil(
+		() => turnStarts > startsBeforeBlockedPauseResume,
+		30_000,
+		"automatic resume after blocked -> paused",
+	);
+
+	const blockedForDirectResume = await client.rpc("thread/goal/set", {
+		threadId,
+		status: "blocked",
+	});
+	assertGoal(blockedForDirectResume?.goal, "blocked", "blocked before direct active");
+	await waitUntil(
+		() => activeTurns.size === 0,
+		180_000,
+		"direct blocked turn completion",
+	);
+	const startsBeforeBlockedDirectResume = turnStarts;
+	const activeFromBlocked = await client.rpc("thread/goal/set", {
+		threadId,
+		status: "active",
+	});
+	assertGoal(activeFromBlocked?.goal, "active", "blocked -> active");
+	let blockedDirectResumeMode = "automatic";
+	try {
+		await waitUntil(
+			() => turnStarts > startsBeforeBlockedDirectResume,
+			30_000,
+			"automatic blocked -> active resume",
+		);
+	} catch {
+		blockedDirectResumeMode = "kick-required";
+		await client.rpc("turn/start", {
+			threadId,
+			input: [{ type: "text", text: "Resume work from blocked state." }],
+		});
+		await waitUntil(
+			() => turnStarts > startsBeforeBlockedDirectResume,
+			90_000,
+			"kicked blocked -> active resume",
+		);
+	}
+
+	await client.rpc("thread/goal/set", { threadId, status: "paused" });
+	await client.rpc("thread/goal/clear", { threadId });
+	trace("probe:result", {
+		verdict: "PASS",
+		version,
+		threadId,
+		resumeMode,
+		blockedPauseAccepted: true,
+		blockedDirectResumeMode,
+		quietWindowMs: 15_000,
+		turnStarts,
+		turnCompletions,
+		files: workFiles(),
+		durationMs: elapsed(),
+	});
+} catch (error) {
+	trace("probe:result", {
+		verdict: "FAIL",
+		version,
+		threadId,
+		error: error instanceof Error ? error.message : String(error),
+		turnStarts,
+		turnCompletions,
+		files: workFiles(),
+		durationMs: elapsed(),
+	});
+	process.exitCode = 1;
+} finally {
+	try {
+		if (threadId && client) await client.rpc("thread/goal/clear", { threadId }, 5_000);
+	} catch {
+		// Best-effort cleanup after a failed probe.
+	}
+	client?.ws.close();
+	await stopDaemon(daemon);
+}

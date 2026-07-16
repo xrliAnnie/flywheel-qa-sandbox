@@ -36,6 +36,8 @@ export interface SwitchInput {
 	/** ISO reset instant of the hit window — recorded as the account's cooldown. */
 	resetAt: string;
 	now: Date;
+	/** Quota-verified target ranking; when present, unlisted accounts are excluded. */
+	preferredOrder?: string[];
 }
 
 export interface SwitchDeps {
@@ -52,8 +54,16 @@ export interface SwitchDeps {
 export type SwitchResult =
 	| { outcome: "switched"; from: string; to: string; generation: number }
 	| { outcome: "noop_already_switched"; activeAccount: string }
-	| { outcome: "no_account"; earliestReset: string | null }
-	| { outcome: "failed"; reason: string };
+	| {
+			outcome: "no_account";
+			earliestReset: string | null;
+			reasonCode: "no_eligible_account" | "target_stale_exhausted";
+	  }
+	| {
+			outcome: "failed";
+			reason: string;
+			reasonCode: "freshness_unavailable" | "apply_failed";
+	  };
 
 /**
  * FLY-871 R1/C3 — the target's pooled credential failed freshness verification
@@ -173,15 +183,23 @@ export async function switchAccount(
 		// size as a backstop.
 		let working = store;
 		let applied: string | null = null;
+		let targetStaleSeen = false;
 		const maxAttempts = store.accounts.length + 1;
 		for (let attempt = 0; attempt < maxAttempts; attempt++) {
 			const next = selectNextAccount(working, {
 				scope: input.scope,
 				currentName: input.observedAccount,
 				now: input.now,
+				preferredOrder: input.preferredOrder,
 			});
 			if (next === null) {
-				return { outcome: "no_account", earliestReset: earliestReset(working) };
+				return {
+					outcome: "no_account",
+					earliestReset: earliestReset(working),
+					reasonCode: targetStaleSeen
+						? "target_stale_exhausted"
+						: "no_eligible_account",
+				};
 			}
 			try {
 				await deps.applyProfile(next);
@@ -189,21 +207,33 @@ export async function switchAccount(
 				break;
 			} catch (err) {
 				if (err instanceof TargetStaleError) {
+					targetStaleSeen = true;
 					working = markAuthExpired(working, next);
 					writeStore(working, storePath); // in-lock, atomic
 					continue;
 				}
 				if (err instanceof FreshnessUnavailableError) {
-					return { outcome: "failed", reason: err.message };
+					return {
+						outcome: "failed",
+						reason: err.message,
+						reasonCode: "freshness_unavailable",
+					};
 				}
 				return {
 					outcome: "failed",
 					reason: err instanceof Error ? err.message : String(err),
+					reasonCode: "apply_failed",
 				};
 			}
 		}
 		if (applied === null) {
-			return { outcome: "no_account", earliestReset: earliestReset(working) };
+			return {
+				outcome: "no_account",
+				earliestReset: earliestReset(working),
+				reasonCode: targetStaleSeen
+					? "target_stale_exhausted"
+					: "no_eligible_account",
+			};
 		}
 
 		const updated = commitSwitch(working, input, applied);

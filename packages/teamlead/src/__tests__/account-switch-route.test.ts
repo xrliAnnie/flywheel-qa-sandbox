@@ -104,6 +104,7 @@ describe("POST /api/account-switch", () => {
 
 	function makeApp(
 		runtimeOverride?: AccountSwitchRuntime | undefined | "none",
+		cutover = false,
 	) {
 		const runtime: AccountSwitchRuntime | undefined =
 			runtimeOverride === "none"
@@ -121,7 +122,10 @@ describe("POST /api/account-switch", () => {
 		app.use(express.json());
 		app.use(
 			"/api/account-switch",
-			createAccountSwitchRouter({ getRuntime: () => runtime }),
+			createAccountSwitchRouter({
+				getRuntime: () => runtime,
+				cutoverEnabled: () => cutover,
+			}),
 		);
 		return app;
 	}
@@ -228,6 +232,21 @@ describe("POST /api/account-switch", () => {
 		);
 		expect(r.status).toBe(409);
 		expect(r.body.reason).toBe("self_heal_disabled");
+	});
+
+	it("cutover returns stable 410 retired before validation or execution", async () => {
+		const r = await request(
+			makeApp(undefined, true),
+			"/api/account-switch",
+			{},
+		);
+		expect(r.status).toBe(410);
+		expect(r.body).toEqual({
+			error: "retired",
+			reason: "quota_daemon_cutover",
+		});
+		expect(audit).not.toHaveBeenCalled();
+		expect(executeSwitch).not.toHaveBeenCalled();
 	});
 
 	it("200 success: claims, executes, audits before+after, posts result", async () => {

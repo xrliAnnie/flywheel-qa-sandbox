@@ -16,6 +16,55 @@ import { StateStore } from "../StateStore.js";
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
 
+describe("StateStore — FLY-1278 frozen review payload", () => {
+	it("persists reviewer/effective verdict split and the exact canonical response", async () => {
+		const store = await StateStore.create(":memory:");
+		store.insertCodexReviewJob({
+			requestId: "r1",
+			executionId: "e1",
+			issueId: "FLY-1278",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		const responseJson = JSON.stringify({ reviewVerdict: "APPROVED" });
+		store.completeCodexReviewJob("r1", "APPROVED", "[]", {
+			reviewerVerdict: "CHANGES_REQUESTED",
+			advisoriesJson: "[]",
+			settledJson: "[]",
+			responseJson,
+			payloadVersion: 2,
+		});
+
+		expect(store.getCodexReviewJob("r1")).toMatchObject({
+			verdict: "APPROVED",
+			reviewer_verdict: "CHANGES_REQUESTED",
+			advisories_json: "[]",
+			settled_json: "[]",
+			response_json: responseJson,
+			payload_version: 2,
+		});
+	});
+
+	it("keeps the legacy completion call byte-compatible", async () => {
+		const store = await StateStore.create(":memory:");
+		store.insertCodexReviewJob({
+			requestId: "r1",
+			executionId: "e1",
+			projectName: "proj",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		store.completeCodexReviewJob("r1", "CHANGES_REQUESTED", "[]");
+
+		expect(store.getCodexReviewJob("r1")).toMatchObject({
+			verdict: "CHANGES_REQUESTED",
+		});
+		expect(store.getCodexReviewJob("r1")?.payload_version).toBeUndefined();
+		expect(store.getCodexReviewJob("r1")?.response_json).toBeUndefined();
+	});
+});
+
 describe("StateStore — FLY-827 codex_review_record", () => {
 	let store: StateStore;
 

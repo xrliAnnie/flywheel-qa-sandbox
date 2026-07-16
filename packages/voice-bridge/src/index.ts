@@ -2,7 +2,7 @@
  * flywheel-voice-bridge — public surface (FLY-545).
  *
  * Consumed by THREE parties (public-contract standard, changes must stay
- * backward compatible): FLY-545 itself (/meet), FLY-546 (voice approval
+ * backward compatible): FLY-545 itself (/glaw), FLY-546 (voice approval
  * signal + per-Lead voices), FLY-967 (/gemini assistant mode, which builds its
  * assistant/* modules on this exact chassis).
  */
@@ -64,6 +64,10 @@ export {
 	type SpeakingEvents,
 } from "./audio/EarsReceiver.js";
 export {
+	GeminiTurnMouth,
+	type GeminiTurnMouthOptions,
+} from "./audio/GeminiTurnMouth.js";
+export {
 	LeadSpeaker,
 	type LeadSpeakerOptions,
 	type LeadSpeakerResult,
@@ -105,7 +109,13 @@ export {
 	type HuddleBridgeLead,
 	loadHuddleBridgeConfig,
 	resolveHuddleBridgeConfig,
+	type VoiceRef,
 } from "./config.js";
+export {
+	TivPresenter,
+	type TivPresenterOptions,
+	type TivSendDeps,
+} from "./discord/TivPresenter.js";
 // ---- FLY-1006 /eleven mode (eleven/*) ----
 export {
 	ELEVEN_SLOT_MODE,
@@ -141,6 +151,70 @@ export {
 	type WireElevenOptions,
 	wireElevenMode,
 } from "./eleven/wiring.js";
+export {
+	type AddressParticipant,
+	AddressRouter,
+	type RouteResult,
+} from "./huddle/AddressRouter.js";
+export {
+	ConclusionPipeline,
+	type ConclusionPipelineOptions,
+	type LandInput,
+	type LandOutcome,
+	SUMMARY_MARKER,
+} from "./huddle/ConclusionPipeline.js";
+export {
+	ConfirmationLadder,
+	type LadderOptions,
+	type LadderOutcome,
+} from "./huddle/ConfirmationLadder.js";
+export {
+	type FeedEntry,
+	FeedPipeline,
+	type FeedPipelineOptions,
+	type FeedTarget,
+} from "./huddle/FeedPipeline.js";
+export {
+	GlawCommand,
+	type GlawCommandOptions,
+	type GlawInteractionLike,
+	type GlawInvocation,
+	type GlawParticipant,
+} from "./huddle/GlawCommand.js";
+export {
+	type HuddleLine,
+	HuddleSession,
+	type HuddleSessionOptions,
+	type HuddleState,
+	type LineMouth,
+	type LineSession,
+} from "./huddle/HuddleSession.js";
+export {
+	createHuddleTiv,
+	type HuddlePresence,
+	type HuddleTivOptions,
+	type HuddleTivPort,
+	PRESENCE_LINE,
+} from "./huddle/huddleTiv.js";
+export {
+	createReadOnlyLeadBrain,
+	READ_ONLY_TOOL_ARGS,
+	type ReadOnlyLeadBrainOptions,
+} from "./huddle/ReadOnlyLeadBrain.js";
+export {
+	type MeetingConfigSlice,
+	type MeetingLeadConfig,
+	type MeetingPorts,
+	type WiredMeeting,
+	wireMeeting,
+} from "./huddle/wireMeeting.js";
+export {
+	BridgeLinearClient,
+	type BridgeLinearClientOptions,
+	BridgeLinearError,
+	type CreatedIssue,
+	type IssueLookupResult,
+} from "./linear/BridgeLinearClient.js";
 export { type BinaryProbe, verifyPlaybackStack } from "./preflight.js";
 export {
 	type RoomEarsRuntime,

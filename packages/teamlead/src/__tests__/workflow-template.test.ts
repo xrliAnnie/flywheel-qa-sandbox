@@ -1,19 +1,73 @@
 import { describe, expect, it } from "vitest";
 import {
 	applyWorkflowOverride,
+	isGeneralizedTemplatesEnabled,
 	loadBundledWorkflowSeeds,
 	parseWorkflowManifestYaml,
 	validateWorkflowManifest,
 	WORKFLOW_OUTCOME_VOCABULARY,
 } from "../workflow-template.js";
 
+const generalizedManifest = () => ({
+	schema_version: 2,
+	nodes: [
+		{
+			id: "produce",
+			type: "generic",
+			vendor: "codex",
+			model: "gpt-5.6-sol",
+			effort: "low",
+			agent_file: "agents/product-producer.md",
+			produces_output: true,
+			output: { schema: "json_v1", max_bytes: 262_144 },
+		},
+		{
+			id: "review",
+			type: "review",
+			vendor: "claude",
+			model: "claude-opus-4-8",
+		},
+		{ id: "founder_gate", type: "gate" },
+	],
+	edges: [
+		{
+			id: "produce_done",
+			from: "produce",
+			to: "review",
+			condition: "node_done",
+		},
+		{
+			id: "review_pass",
+			from: "review",
+			to: "founder_gate",
+			condition: "review_pass",
+		},
+	],
+	loops: [
+		{
+			id: "review_retry",
+			from: "review",
+			to: "produce",
+			loop_when: "review_fail",
+			exit_when: "review_pass",
+			max_iterations: 3,
+			on_limit: "escalate",
+		},
+	],
+	terminal_gate: { node: "founder_gate", predicate: "founder_approved" },
+	ship_claims: ["design_review_approved", "founder_approved"],
+});
+
 describe("workflow template manifest v1", () => {
-	it("loads the three founder-revised seeds with independent QA and pointer handoffs", () => {
+	it("loads the founder-revised engineering seeds plus the default-off generalized set", () => {
 		const seeds = loadBundledWorkflowSeeds();
 		expect(seeds.map((seed) => seed.templateId)).toEqual([
 			"tpl_eng_heavy",
 			"tpl_eng_light",
 			"tpl_eng_trivial",
+			"tpl_product_v1",
+			"tpl_research_light",
+			"tpl_ops_light",
 		]);
 
 		const heavy = seeds[0]!.manifest;
@@ -65,7 +119,7 @@ describe("workflow template manifest v1", () => {
 			vendor: "claude",
 			model: "claude-fable-5",
 		});
-		for (const seed of seeds) {
+		for (const seed of seeds.slice(0, 3)) {
 			expect(() => validateWorkflowManifest(seed.manifest)).not.toThrow();
 			expect(
 				seed.manifest.nodes.filter((node) => node.type === "qa"),
@@ -79,6 +133,9 @@ describe("workflow template manifest v1", () => {
 				});
 			}
 		}
+		expect(seeds.slice(3).map((seed) => seed.manifest.schema_version)).toEqual([
+			2, 2, 2,
+		]);
 	});
 
 	it("rejects unknown keys, inline handoffs, unsupported schemas, and invalid graphs", () => {
@@ -106,7 +163,7 @@ describe("workflow template manifest v1", () => {
 		expect(() =>
 			validateWorkflowManifest({
 				...valid,
-				schema_version: 2,
+				schema_version: 99,
 			}),
 		).toThrow(/schema_version/i);
 		expect(() =>
@@ -188,5 +245,138 @@ describe("workflow template manifest v1", () => {
 		expect(JSON.stringify(applied.manifest)).not.toContain("skip");
 		expect(applied.override.reason).toContain("tiny change");
 		expect(() => validateWorkflowManifest(applied.manifest)).not.toThrow();
+	});
+});
+
+describe("workflow template manifest v2", () => {
+	it("is independently default-off", () => {
+		expect(isGeneralizedTemplatesEnabled({})).toBe(false);
+		expect(
+			isGeneralizedTemplatesEnabled({
+				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "true",
+			}),
+		).toBe(false);
+		expect(
+			isGeneralizedTemplatesEnabled({
+				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+			}),
+		).toBe(true);
+	});
+
+	it("accepts a linear no-code generic→review→gate graph with output and review loop contracts", () => {
+		const parsed = validateWorkflowManifest(generalizedManifest());
+		expect(parsed.schema_version).toBe(2);
+		expect(parsed.nodes[0]).toMatchObject({
+			type: "generic",
+			agent_file: "agents/product-producer.md",
+			produces_output: true,
+			output: { schema: "json_v1", max_bytes: 262_144 },
+		});
+		expect(parsed.loops[0]).toMatchObject({
+			loop_when: "review_fail",
+			exit_when: "review_pass",
+		});
+	});
+
+	it("enforces the capability-driven independent-QA invariant", () => {
+		const base = generalizedManifest();
+		for (const writerType of ["design", "implement"] as const) {
+			expect(() =>
+				validateWorkflowManifest({
+					...base,
+					nodes: [
+						{
+							id: "writer",
+							type: writerType,
+							vendor: "codex",
+							model: "gpt-5.6-sol",
+						},
+						{ id: "founder_gate", type: "gate" },
+					],
+					edges: [
+						{
+							id: "writer_done",
+							from: "writer",
+							to: "founder_gate",
+							condition:
+								writerType === "design" ? "design_done" : "implement_done",
+						},
+					],
+					loops: [],
+					ship_claims: ["founder_approved"],
+				}),
+			).toThrow(/exactly one independent QA|qa_passed/i);
+		}
+
+		expect(() =>
+			validateWorkflowManifest({
+				...base,
+				ship_claims: ["qa_passed", ...base.ship_claims],
+			}),
+		).toThrow(/qa_passed.*qa|qa.*qa_passed/i);
+	});
+
+	it("requires review evidence, strict output contracts, and safe agent paths", () => {
+		const base = generalizedManifest();
+		expect(() =>
+			validateWorkflowManifest({
+				...base,
+				ship_claims: ["founder_approved"],
+			}),
+		).toThrow(/design_review_approved/i);
+		expect(() =>
+			validateWorkflowManifest({
+				...base,
+				nodes: base.nodes.map((node) =>
+					node.id === "produce"
+						? { ...node, output: { schema: "json_v1", max_bytes: 262_145 } }
+						: node,
+				),
+			}),
+		).toThrow(/max_bytes/i);
+		expect(() =>
+			validateWorkflowManifest({
+				...base,
+				nodes: base.nodes.map((node) =>
+					node.id === "produce"
+						? { ...node, agent_file: "../escape.md" }
+						: node,
+				),
+			}),
+		).toThrow(/agent_file/i);
+	});
+
+	it("allows reasoned generic overrides but never skips review or a reviewed producer", () => {
+		const base = generalizedManifest();
+		const applied = applyWorkflowOverride(base, {
+			reason: "Lead selected a lighter producer",
+			nodes: { produce: { model: "gpt-5.5", effort: "medium" } },
+		});
+		expect(applied.manifest.nodes[0]).toMatchObject({
+			model: "gpt-5.5",
+			effort: "medium",
+		});
+		expect(() =>
+			applyWorkflowOverride(base, {
+				reason: "reviews are mandatory",
+				nodes: { review: { skip: true } },
+			}),
+		).toThrow(/cannot skip.*review/i);
+		expect(() =>
+			applyWorkflowOverride(base, {
+				reason: "review still depends on the output",
+				nodes: { produce: { skip: true } },
+			}),
+		).toThrow(/cannot skip.*produce/i);
+
+		const research = loadBundledWorkflowSeeds().find(
+			(seed) => seed.templateId === "tpl_research_light",
+		)!.manifest;
+		expect(() =>
+			applyWorkflowOverride(research, {
+				reason: "the deliverable is still mandatory",
+				nodes: { research: { skip: true } },
+			}),
+		).toThrow(/cannot skip.*research.*output|output.*research/i);
 	});
 });

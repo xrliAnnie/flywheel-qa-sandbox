@@ -173,6 +173,22 @@ describe("FLY-1048 C3-w createFounderPager", () => {
 		expect(content).not.toMatch(/pane|Traceback|\$ /i);
 	});
 
+	it.each([
+		["park:awaiting_review", "Runner 正在等待 founder 审批"],
+		["park:blocked", "Runner 已因无法继续而暂停"],
+		["park:declared", "Runner 已声明正在等待"],
+		["park:gate_row_missing", "Runner 等待的门记录缺失"],
+		["park:gate_unreachable", "Runner 等待的门无法送达"],
+		["park:qa_recovery_exhausted", "独立 QA 失败且自动恢复已耗尽"],
+		["park:review_hold", "Runner 的 review 仍被前置检查拦住"],
+	])("renders %s as founder-facing human language", async (kind, expected) => {
+		const h = await pagerHarness();
+		await h.pageFounder(row({ kind, episode_fingerprint: `fp-${kind}` }));
+		const content = String(h.emitted[0]?.content);
+		expect(content).toContain(expected);
+		expect(content).not.toContain(kind);
+	});
+
 	it("returns false + closes onUndeliverable when no target resolves", async () => {
 		const h = await pagerHarness({ resolveTarget: () => null });
 		await expect(h.pageFounder(row())).resolves.toBe(false);
