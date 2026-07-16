@@ -42,6 +42,12 @@ export CMUX_SOCK_IDENT_FILE="$TMPDIR_ROOT/sock-ident"  # FLY-254
 export ORPHAN_PIN_STATE="$TMPDIR_ROOT/orphan-pin.state"  # FLY-293
 export FLYWHEEL_CMUX_CLOSE_REQUEST_FILE="$TMPDIR_ROOT/close-requested"  # FLY-685
 export HUSK_STATE="$TMPDIR_ROOT/husk.state"  # FLY-867
+export VIEW_WAL_DIR="$TMPDIR_ROOT/view-wal"  # FLY-1272
+export VIEW_LEDGER="$TMPDIR_ROOT/view-ledger"  # FLY-1272
+export KEEPER_INVENTORY="$TMPDIR_ROOT/keeper-inventory"  # FLY-1272
+export VIEW_ABSENT_STATE="$TMPDIR_ROOT/view-absent.state"  # FLY-1272
+export FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMPDIR_ROOT/cmux-maintenance"  # FLY-1272
+export FLYWHEEL_CMUX_TMUX_GENERATION="tmux-test-generation"  # FLY-1272
 export FLYWHEEL_CMUX_CLEANUP_DELAY=30
 export FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP=300
 
@@ -64,8 +70,296 @@ MOCK_TMUX_KILLED=""        # captured tmux kill-session targets
 MOCK_TMUX_KILLED_WINDOWS="" # FLY-867: captured tmux kill-window targets
 MOCK_PGREP_HIT="0"         # FLY-129 Phase 1: pgrep mock — 1 = watcher running, 0 = not
 MOCK_SHOW_HOOKS=""         # FLY-129 Phase 2: tmux show-hooks output — lines of "<hook>[idx] ..." per session
+MOCK_CMUX_MUTATE_JSON="0"  # FLY-1272: opt-in mutation-faithful workspace model
+
+# FLY-1272 P0: opt-in, file-backed tmux topology model. The linked-view
+# state machine performs tmux reads inside command substitutions, so ordinary
+# shell globals cannot faithfully carry mutations back to the parent shell.
+# Files are the oracle here, matching the production process boundary.
+MOCK_TOPOLOGY_MODE="0"
+TOPO_SESSIONS="$TMPDIR_ROOT/topology.sessions" # name|session_id|group|owner|marker
+TOPO_WINDOWS="$TMPDIR_ROOT/topology.windows"   # session|window_id|name|active|pane_dead
+TOPO_JOURNAL="$TMPDIR_ROOT/topology.journal"
+
+topo_reset() {
+  : > "$TOPO_SESSIONS"
+  : > "$TOPO_WINDOWS"
+  : > "$TOPO_JOURNAL"
+  echo 100 > "$TMPDIR_ROOT/topology.next-session"
+  echo 1000 > "$TMPDIR_ROOT/topology.next-window"
+}
+
+topo_add_session() {
+  local name="$1" sid="$2" group="${3:-}" owner="${4:-}" marker="${5:-}"
+  printf '%s|%s|%s|%s|%s\n' "$name" "$sid" "$group" "$owner" "$marker" >> "$TOPO_SESSIONS"
+}
+
+topo_add_window() {
+  local session="$1" wid="$2" name="$3" active="${4:-0}" dead="${5:-0}"
+  printf '%s|%s|%s|%s|%s\n' "$session" "$wid" "$name" "$active" "$dead" >> "$TOPO_WINDOWS"
+}
+
+topo_session_exists() {
+  awk -F'|' -v s="$1" '$1 == s { found=1 } END { exit(found ? 0 : 1) }' "$TOPO_SESSIONS"
+}
+
+topo_session_field() {
+  local name="$1" field="$2"
+  awk -F'|' -v s="$name" -v f="$field" '$1 == s { print $f; exit }' "$TOPO_SESSIONS"
+}
+
+topo_set_session_field() {
+  local name="$1" field="$2" value="$3" tmp="$TOPO_SESSIONS.tmp"
+  awk -F'|' -v OFS='|' -v s="$name" -v f="$field" -v v="$value" '$1 == s { $f=v } { print }' "$TOPO_SESSIONS" > "$tmp"
+  mv "$tmp" "$TOPO_SESSIONS"
+}
+
+topo_alloc_id() {
+  local file="$1" prefix="$2" n
+  n=$(cat "$file")
+  echo $((n + 1)) > "$file"
+  printf '%s%s' "$prefix" "$n"
+}
+
+topo_target_parts() {
+  local clean="${1#=}"
+  TOPO_TARGET_SESSION="${clean%%:*}"
+  TOPO_TARGET_WINDOW=""
+  [[ "$clean" == *:* ]] && TOPO_TARGET_WINDOW="${clean#*:}"
+  TOPO_TARGET_WINDOW="${TOPO_TARGET_WINDOW#=}"
+}
+
+topo_window_row() {
+  local session="$1" target="$2"
+  awk -F'|' -v s="$session" -v t="$target" '$1 == s && ($2 == t || $3 == t) { print; exit }' "$TOPO_WINDOWS"
+}
+
+topo_remove_session() {
+  local session="$1" tmp
+  tmp="$TOPO_SESSIONS.tmp"; awk -F'|' -v s="$session" '$1 != s' "$TOPO_SESSIONS" > "$tmp"; mv "$tmp" "$TOPO_SESSIONS"
+  tmp="$TOPO_WINDOWS.tmp"; awk -F'|' -v s="$session" '$1 != s' "$TOPO_WINDOWS" > "$tmp"; mv "$tmp" "$TOPO_WINDOWS"
+}
+
+topo_tmux() {
+  local command="$1"; shift
+  printf '%s %s\n' "$command" "$*" >> "$TOPO_JOURNAL"
+  case "$command" in
+    list-sessions)
+      [[ "${MOCK_TMUX_LIST_FAIL:-0}" == "1" ]] && return 1
+      local fmt='#{session_name}' filter="" session name sid group owner marker grouped
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -F) fmt="$2"; shift 2 ;;
+          -f) filter="$2"; shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      while IFS='|' read -r name sid group owner marker; do
+        [[ -z "$name" ]] && continue
+        if [[ -n "$filter" ]]; then
+          session=$(printf '%s' "$filter" | sed -n 's/.*session_name},\([^}]*\)}.*/\1/p')
+          [[ -n "$session" && "$name" != "$session" ]] && continue
+        fi
+        [[ -n "$group" ]] && grouped=1 || grouped=0
+        case "$fmt" in
+          '#{session_name}') printf '%s\n' "$name" ;;
+          '#{session_group}') printf '%s\n' "$group" ;;
+          '#{session_id}') printf '%s\n' "$sid" ;;
+          '#{session_id}|#{session_name}|#{session_grouped}|#{session_group}|#{@flywheel_cmux_owner}|#{@flywheel_cmux_placeholder}')
+            printf '%s|%s|%s|%s|%s|%s\n' "$sid" "$name" "$grouped" "$group" "$owner" "$marker" ;;
+          *) printf '%s\n' "$name" ;;
+        esac
+      done < "$TOPO_SESSIONS"
+      ;;
+    list-windows)
+      local target="" fmt='#{session_name}|#{window_id}|#{window_name}'
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -t) target="${2#=}"; shift 2 ;;
+          -F) fmt="$2"; shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      target="${target%:}"
+      topo_session_exists "$target" || return 1
+      local session wid wname active dead
+      while IFS='|' read -r session wid wname active dead; do
+        [[ "$session" != "$target" ]] && continue
+        case "$fmt" in
+          '#{window_id}') printf '%s\n' "$wid" ;;
+          '#{window_name}') printf '%s\n' "$wname" ;;
+          '#{window_id}|#{window_name}') printf '%s|%s\n' "$wid" "$wname" ;;
+          '#{window_id}|#{window_name}|#{window_active}|#{pane_dead}') printf '%s|%s|%s|%s\n' "$wid" "$wname" "$active" "$dead" ;;
+          '#{session_name}|#{window_id}|#{window_name}|#{pane_dead}') printf '%s|%s|%s|%s\n' "$session" "$wid" "$wname" "$dead" ;;
+          *) printf '%s|%s|%s\n' "$session" "$wid" "$wname" ;;
+        esac
+      done < "$TOPO_WINDOWS"
+      ;;
+    has-session)
+      local target=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in -t) target="${2#=}"; shift 2 ;; *) shift ;; esac
+      done
+      topo_session_exists "$target"
+      ;;
+    new-session)
+      local name="" grouped_source="" window_name="zsh" sid wid group=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -s) name="$2"; shift 2 ;;
+          -t) grouped_source="${2#=}"; shift 2 ;;
+          -n) window_name="$2"; shift 2 ;;
+          -d|-P) shift ;;
+          -F) shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      [[ -n "$name" ]] || return 1
+      topo_session_exists "$name" && return 1
+      sid=$(topo_alloc_id "$TMPDIR_ROOT/topology.next-session" '$')
+      if [[ -n "$grouped_source" ]]; then
+        topo_session_exists "$grouped_source" || return 1
+        group="$grouped_source"
+        topo_add_session "$name" "$sid" "$group"
+        : > "$TOPO_WINDOWS.tmp"
+        awk -F'|' -v OFS='|' -v src="$grouped_source" -v dst="$name" '$1 == src { $1=dst; print }' "$TOPO_WINDOWS" >> "$TOPO_WINDOWS.tmp"
+        cat "$TOPO_WINDOWS.tmp" >> "$TOPO_WINDOWS"; rm -f "$TOPO_WINDOWS.tmp"
+      else
+        wid=$(topo_alloc_id "$TMPDIR_ROOT/topology.next-window" '@')
+        topo_add_session "$name" "$sid"
+        topo_add_window "$name" "$wid" "$window_name" 1 0
+      fi
+      ;;
+    set-option)
+      local target="" option="" value=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in -t) target="${2#=}"; shift 2 ;; @*) option="$1"; value="$2"; shift 2 ;; *) shift ;; esac
+      done
+      target="${target%:}"
+      topo_session_exists "$target" || return 1
+      case "$option" in @flywheel_cmux_owner) topo_set_session_field "$target" 4 "$value" ;; @flywheel_cmux_placeholder) topo_set_session_field "$target" 5 "$value" ;; esac
+      ;;
+    show-options)
+      local target="" option=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in -t) target="${2#=}"; shift 2 ;; -v) shift ;; @*) option="$1"; shift ;; *) shift ;; esac
+      done
+      target="${target%:}"
+      topo_session_exists "$target" || return 1
+      case "$option" in @flywheel_cmux_owner) topo_session_field "$target" 4 ;; @flywheel_cmux_placeholder) topo_session_field "$target" 5 ;; esac
+      ;;
+    display-message)
+      local target="" fmt="" row session wid wname active dead sid group owner marker grouped
+      while [[ $# -gt 0 ]]; do
+        case "$1" in -p) shift ;; -t) target="$2"; shift 2 ;; *) fmt="$1"; shift ;; esac
+      done
+      topo_target_parts "$target"; session="$TOPO_TARGET_SESSION"
+      topo_session_exists "$session" || return 1
+      sid=$(topo_session_field "$session" 2); group=$(topo_session_field "$session" 3); owner=$(topo_session_field "$session" 4); marker=$(topo_session_field "$session" 5)
+      [[ -n "$group" ]] && grouped=1 || grouped=0
+      if [[ -n "$TOPO_TARGET_WINDOW" ]]; then
+        row=$(topo_window_row "$session" "$TOPO_TARGET_WINDOW") || return 1
+      else
+        row=$(awk -F'|' -v s="$session" '$1 == s && $4 == 1 { print; exit }' "$TOPO_WINDOWS")
+      fi
+      IFS='|' read -r _ wid wname active dead <<< "$row"
+      case "$fmt" in
+        '#{pane_dead}') printf '%s\n' "$dead" ;;
+        '#{window_name}') printf '%s\n' "$wname" ;;
+        '#{session_id}') printf '%s\n' "$sid" ;;
+        '#{session_grouped}') printf '%s\n' "$grouped" ;;
+        '#{session_group}') printf '%s\n' "$group" ;;
+        '#{window_id}') printf '%s\n' "$wid" ;;
+        '#{session_id}|#{session_grouped}|#{window_id}|#{@flywheel_cmux_owner}|#{@flywheel_cmux_placeholder}') printf '%s|%s|%s|%s|%s\n' "$sid" "$grouped" "$wid" "$owner" "$marker" ;;
+        *) printf '%s\n' "$wname" ;;
+      esac
+      ;;
+    link-window)
+      [[ "${MOCK_TOPO_LINK_FAIL:-0}" == "1" ]] && return 1
+      local source="" target="" row dst src_session src_window
+      while [[ $# -gt 0 ]]; do
+        case "$1" in -s) source="$2"; shift 2 ;; -t) target="$2"; shift 2 ;; *) shift ;; esac
+      done
+      topo_target_parts "$source"; src_session="$TOPO_TARGET_SESSION"; src_window="$TOPO_TARGET_WINDOW"
+      row=$(topo_window_row "$src_session" "$src_window") || return 1
+      topo_target_parts "$target"; dst="$TOPO_TARGET_SESSION"
+      topo_session_exists "$dst" || return 1
+      IFS='|' read -r _ wid wname _ dead <<< "$row"
+      topo_add_window "$dst" "$wid" "$wname" 0 "$dead"
+      ;;
+    select-window)
+      [[ "${MOCK_TMUX_SELECT_FAIL:-0}" == "1" ]] && return 1
+      local target="" tmp row session window
+      while [[ $# -gt 0 ]]; do case "$1" in -t) target="$2"; shift 2 ;; *) shift ;; esac; done
+      topo_target_parts "$target"; session="$TOPO_TARGET_SESSION"; window="$TOPO_TARGET_WINDOW"
+      row=$(topo_window_row "$session" "$window") || return 1
+      window=$(printf '%s' "$row" | cut -d'|' -f2)
+      tmp="$TOPO_WINDOWS.tmp"
+      awk -F'|' -v OFS='|' -v s="$session" -v w="$window" '$1 == s { $4=($2 == w ? 1 : 0) } { print }' "$TOPO_WINDOWS" > "$tmp"; mv "$tmp" "$TOPO_WINDOWS"
+      ;;
+    unlink-window)
+      [[ "${MOCK_TOPO_UNLINK_FAIL:-0}" == "1" ]] && return 1
+      local target="" row session window refs tmp
+      while [[ $# -gt 0 ]]; do case "$1" in -t) target="$2"; shift 2 ;; *) shift ;; esac; done
+      topo_target_parts "$target"; session="$TOPO_TARGET_SESSION"; window="$TOPO_TARGET_WINDOW"
+      row=$(topo_window_row "$session" "$window") || return 1
+      window=$(printf '%s' "$row" | cut -d'|' -f2)
+      refs=$(awk -F'|' -v w="$window" '$2 == w { n++ } END { print n+0 }' "$TOPO_WINDOWS")
+      [[ "$refs" -le 1 ]] && return 1
+      tmp="$TOPO_WINDOWS.tmp"; awk -F'|' -v s="$session" -v w="$window" '!($1 == s && $2 == w)' "$TOPO_WINDOWS" > "$tmp"; mv "$tmp" "$TOPO_WINDOWS"
+      if ! awk -F'|' -v s="$session" '$1 == s { found=1 } END { exit(found ? 0 : 1) }' "$TOPO_WINDOWS"; then
+        tmp="$TOPO_SESSIONS.tmp"; awk -F'|' -v s="$session" '$1 != s' "$TOPO_SESSIONS" > "$tmp"; mv "$tmp" "$TOPO_SESSIONS"
+      fi
+      ;;
+    kill-window)
+      local target="" row session window tmp
+      while [[ $# -gt 0 ]]; do case "$1" in -t) target="$2"; shift 2 ;; *) shift ;; esac; done
+      topo_target_parts "$target"; session="$TOPO_TARGET_SESSION"; window="$TOPO_TARGET_WINDOW"
+      row=$(topo_window_row "$session" "$window") || return 1
+      window=$(printf '%s' "$row" | cut -d'|' -f2)
+      tmp="$TOPO_WINDOWS.tmp"; awk -F'|' -v w="$window" '$2 != w' "$TOPO_WINDOWS" > "$tmp"; mv "$tmp" "$TOPO_WINDOWS"
+      ;;
+    kill-session)
+      local target=""; while [[ $# -gt 0 ]]; do case "$1" in -t) target="${2#=}"; shift 2 ;; *) shift ;; esac; done
+      topo_session_exists "$target" || return 1
+      topo_remove_session "$target"
+      ;;
+    rename-session)
+      [[ "${MOCK_TOPO_RENAME_FAIL:-0}" == "1" ]] && return 1
+      local source="" target="" tmp
+      while [[ $# -gt 0 ]]; do case "$1" in -t) source="${2#=}"; shift 2 ;; *) target="$1"; shift ;; esac; done
+      topo_session_exists "$source" || return 1
+      topo_session_exists "$target" && return 1
+      tmp="$TOPO_SESSIONS.tmp"; awk -F'|' -v OFS='|' -v s="$source" -v t="$target" '$1 == s { $1=t } { print }' "$TOPO_SESSIONS" > "$tmp"; mv "$tmp" "$TOPO_SESSIONS"
+      tmp="$TOPO_WINDOWS.tmp"; awk -F'|' -v OFS='|' -v s="$source" -v t="$target" '$1 == s { $1=t } { print }' "$TOPO_WINDOWS" > "$tmp"; mv "$tmp" "$TOPO_WINDOWS"
+      [[ "${MOCK_TOPO_RENAME_OUTPUT_LOST:-0}" == "1" ]] && return 1
+      return 0
+      ;;
+    list-clients)
+      local target="" spec cnt_file n=0 val j=1
+      while [[ $# -gt 0 ]]; do
+        case "$1" in -t) target="$2"; shift 2 ;; *) shift ;; esac
+      done
+      target="${target#=}"
+      spec=$(echo "$MOCK_TMUX_CLIENTS" | awk -F= -v k="$target" '$1==k{print $2; f=1} END{if(!f) print "__ERR__"}')
+      [[ "$spec" == "__ERR__" ]] && return 1
+      cnt_file="$TMPDIR_ROOT/clients.$(echo "$target" | tr -c 'A-Za-z0-9_.-' '_').n"
+      [[ -f "$cnt_file" ]] && n=$(cat "$cnt_file")
+      n=$((n + 1)); echo "$n" > "$cnt_file"
+      val=$(echo "$spec" | awk -F, -v i="$n" '{ if (i>NF) i=NF; print $i }')
+      [[ "$val" == "ERR" ]] && return 1
+      while [[ $j -le ${val:-0} ]]; do echo "client$j"; j=$((j + 1)); done
+      return 0
+      ;;
+    *) return 0 ;;
+  esac
+}
 
 tmux() {
+  if [[ "${MOCK_TOPOLOGY_MODE:-0}" == "1" ]]; then
+    topo_tmux "$@"
+    return $?
+  fi
   case "$1" in
     list-windows)
       # FLY-293: simulate per-session list-windows failure (strict-inventory tests).
@@ -305,8 +599,52 @@ cmux() {
       # unconfirmed close. NB: use an explicit `if` — a trailing `[[…]] && return`
       # would make the case arm exit 1 whenever the condition is FALSE.
       if [[ "${MOCK_CMUX_CLOSE_FAIL:-0}" == "1" ]]; then return 1; fi
+      if [[ "${MOCK_CMUX_MUTATE_JSON:-0}" == "1" ]]; then
+        local close_ref="" close_json
+        shift
+        while [[ $# -gt 0 ]]; do
+          case "$1" in --workspace) close_ref="$2"; shift 2 ;; *) shift ;; esac
+        done
+        close_json=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c '
+import json,sys
+r=sys.argv[1]; d=json.load(sys.stdin)
+d["workspaces"]=[w for w in d.get("workspaces",[]) if w.get("ref") != r]
+print(json.dumps(d))' "$close_ref")
+        MOCK_CMUX_WORKSPACES_JSON="$close_json"
+      fi
       ;;
-    new-workspace|rename-workspace|send|send-key|refresh-surfaces)
+    new-workspace)
+      MOCK_CMUX_OPS+="$*"$'\n'
+      if [[ "${MOCK_CMUX_MUTATE_JSON:-0}" == "1" ]]; then
+        local next_n next_ref new_json
+        next_n=$(cat "$TMPDIR_ROOT/cmux.next-ref" 2>/dev/null || echo 100)
+        next_ref="workspace:${next_n}"
+        echo $((next_n + 1)) > "$TMPDIR_ROOT/cmux.next-ref"
+        new_json=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c '
+import json,sys
+d=json.load(sys.stdin); d.setdefault("workspaces",[]).append({"ref":sys.argv[1],"title":None})
+print(json.dumps(d))' "$next_ref")
+        MOCK_CMUX_WORKSPACES_JSON="$new_json"
+      fi
+      ;;
+    rename-workspace)
+      MOCK_CMUX_OPS+="$*"$'\n'
+      if [[ "${MOCK_CMUX_MUTATE_JSON:-0}" == "1" ]]; then
+        local rename_ref="" rename_title="" rename_json
+        shift
+        while [[ $# -gt 0 ]]; do
+          case "$1" in --workspace) rename_ref="$2"; shift 2 ;; *) rename_title="$1"; shift ;; esac
+        done
+        rename_json=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c '
+import json,sys
+r,t=sys.argv[1:3]; d=json.load(sys.stdin)
+for w in d.get("workspaces",[]):
+    if w.get("ref") == r: w["title"] = t
+print(json.dumps(d))' "$rename_ref" "$rename_title")
+        MOCK_CMUX_WORKSPACES_JSON="$rename_json"
+      fi
+      ;;
+    send|send-key|refresh-surfaces)
       # FLY-169: capture send / send-key / refresh-surfaces too (with their
       # --surface args) so tests can assert surface-scoped self-heal sends.
       MOCK_CMUX_OPS+="$*"$'\n'
@@ -448,6 +786,15 @@ kill() {
 export -f tmux cmux pgrep kill
 
 reset_mocks() {
+  MOCK_TOPOLOGY_MODE="0"
+  MOCK_TOPO_LINK_FAIL="0"
+  MOCK_TOPO_UNLINK_FAIL="0"
+  MOCK_TOPO_RENAME_FAIL="0"
+  MOCK_TOPO_RENAME_OUTPUT_LOST="0"
+  FLYWHEEL_CMUX_LINKED_VIEW="0"       # pre-FLY-1272 fixtures exercise byte-compatible legacy paths
+  FLYWHEEL_CMUX_VIEW_INVARIANT="0"
+  FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="test-incarnation"
+  topo_reset
   MOCK_TMUX_WINDOWS=""
   MOCK_PANE_DEAD=""
   MOCK_CMUX_WORKSPACES=""
@@ -461,6 +808,7 @@ reset_mocks() {
   MOCK_TMUX_KILLED_WINDOWS=""
   MOCK_PGREP_HIT="0"
   MOCK_SHOW_HOOKS=""
+  MOCK_CMUX_MUTATE_JSON="0"
   # FLY-293: tmux inventory failure knobs + orphan-pin reaper env/state.
   MOCK_TMUX_LIST_FAIL="0"        # 1 = tmux list-sessions fails (server down)
   MOCK_TMUX_LISTWINDOWS_FAIL="0" # 1 = tmux list-windows fails (per-session probe)
@@ -522,6 +870,9 @@ reset_mocks() {
                                  # 1 = wait_for_watcher_exit tests opt in to recording-only mode
   rm -f "$TMPDIR_ROOT"/clients.*.n
   rm -f "$CMUX_SOCK_IDENT_FILE" "$TMPDIR_ROOT"/readscreen.n "$TMPDIR_ROOT"/wsjson.n "$TMPDIR_ROOT"/wsjson.[0-9]* 2>/dev/null
+  rm -f "$TMPDIR_ROOT/cmux.next-ref"
+  rm -rf "$VIEW_WAL_DIR"
+  rm -f "$VIEW_LEDGER" "$KEEPER_INVENTORY" "$VIEW_ABSENT_STATE" "$FLYWHEEL_CMUX_MAINTENANCE_MARKER"
   rm -rf "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" "${FLYWHEEL_CMUX_WATCHER_LOCK_DIR}.reap"
 }
 
@@ -4144,6 +4495,613 @@ test_fly867_mock_select_name_ambiguity
 test_fly867_fixA_create_by_id_survives_dup_name
 test_fly867_fixB_create_skips_dead_husk
 test_fly867_fixB_mixed_creates_live_only
+
+# ════════════════════════════════════════════════════════════════
+# FLY-1272 P0/P1: linked-view topology model + staging WAL
+# ════════════════════════════════════════════════════════════════
+
+test_fly1272_p0_topology_mock() {
+  echo "Test: FLY-1272 P0 — file-backed topology models link/group/active/unlink semantics"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1272-implement" 1 0
+
+  tmux new-session -d -s "fwstage-p0" -n "__flywheel_placeholder__"
+  tmux set-option -t "=fwstage-p0" @flywheel_cmux_owner "runner-flywheel"
+  tmux set-option -t "=fwstage-p0" @flywheel_cmux_placeholder "1"
+  tmux link-window -s "=runner-flywheel:@42" -t "=fwstage-p0:"
+  tmux select-window -t "=fwstage-p0:@42"
+
+  local active grouped owner refs rc=0
+  active=$(tmux display-message -p -t "=fwstage-p0" '#{window_id}')
+  grouped=$(tmux display-message -p -t "=fwstage-p0" '#{session_grouped}')
+  owner=$(tmux show-options -v -t "=fwstage-p0" @flywheel_cmux_owner)
+  refs=$(awk -F'|' '$2 == "@42" { n++ } END { print n+0 }' "$TOPO_WINDOWS")
+  if [[ "$active" == "@42" && "$grouped" == "0" && "$owner" == "runner-flywheel" && "$refs" == "2" ]]; then
+    pass "independent stage links the exact shared @id and selects it without grouping"
+  else
+    fail "bad linked topology: active=$active grouped=$grouped owner=$owner refs=$refs"
+  fi
+
+  tmux unlink-window -t "=fwstage-p0:@42" || rc=$?
+  if [[ "$rc" -eq 0 ]] && topo_window_row "runner-flywheel" "@42" >/dev/null; then
+    pass "unlink removes only the view reference and preserves the source window"
+  else
+    fail "unlink damaged source or unexpectedly failed (rc=$rc)"
+  fi
+
+  rc=0
+  tmux unlink-window -t "=runner-flywheel:@42" || rc=$?
+  if [[ "$rc" -ne 0 ]] && topo_window_row "runner-flywheel" "@42" >/dev/null; then
+    pass "last-reference unlink is atomically refused"
+  else
+    fail "last-reference unlink must fail without deleting @42 (rc=$rc)"
+  fi
+
+  tmux new-session -d -t "runner-flywheel" -s "cmux-legacy"
+  grouped=$(tmux display-message -p -t "=cmux-legacy" '#{session_grouped}')
+  if [[ "$grouped" == "1" ]]; then
+    pass "legacy grouped session remains distinguishable from linked topology"
+  else
+    fail "grouped topology oracle returned grouped=$grouped"
+  fi
+}
+
+test_fly1272_p1_staging_wal_happy_path() {
+  echo "Test: FLY-1272 P1 — staging WAL claims an exact single-window canonical view"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  FLYWHEEL_CMUX_TEST_NONCE="nonce-happy"
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1272-implement" 1 0
+
+  local rc=0
+  create_or_replace_view_session "runner-flywheel" "@42" "FLY-1272-implement" || rc=$?
+  local canonical="cmux-FLY-1272-implement" active grouped owner members stages wal_count
+  active=$(tmux display-message -p -t "=$canonical" '#{window_id}' 2>/dev/null || true)
+  grouped=$(tmux display-message -p -t "=$canonical" '#{session_grouped}' 2>/dev/null || true)
+  owner=$(tmux show-options -v -t "=$canonical" @flywheel_cmux_owner 2>/dev/null || true)
+  members=$(tmux list-windows -t "=$canonical" -F '#{window_id}' 2>/dev/null | sort | tr '\n' ' ')
+  stages=$(awk -F'|' '$1 ~ /^fwstage-/ { n++ } END { print n+0 }' "$TOPO_SESSIONS")
+  wal_count=$(find "$VIEW_WAL_DIR" -type f 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$rc" -eq 0 && "$active" == "@42" && "$grouped" == "0" \
+        && "$owner" == "runner-flywheel" && "$members" == "@42 " \
+        && "$stages" == "0" && "$wal_count" == "0" \
+        && "${VIEW_BUILD_OUTCOME:-}" == "staging_ready" ]]; then
+    pass "WAL build ends at canonical=session-id-preserving, independent, exact-one-window ready state"
+  else
+    fail "staging result rc=$rc active=$active grouped=$grouped owner=$owner members=[$members] stages=$stages wal=$wal_count outcome=${VIEW_BUILD_OUTCOME:-<unset>}"
+  fi
+
+  local create_line link_line claim_line
+  create_line=$(grep -n '^new-session .*fwstage-nonce-happy' "$TOPO_JOURNAL" | head -1 | cut -d: -f1)
+  link_line=$(grep -n '^link-window ' "$TOPO_JOURNAL" | head -1 | cut -d: -f1)
+  claim_line=$(grep -n '^rename-session .*cmux-FLY-1272-implement' "$TOPO_JOURNAL" | head -1 | cut -d: -f1)
+  if [[ -n "$create_line" && -n "$link_line" && -n "$claim_line" \
+        && "$create_line" -lt "$link_line" && "$link_line" -lt "$claim_line" ]]; then
+    pass "topology journal records stage → exact link → atomic canonical claim order"
+  else
+    fail "missing or reordered staging mutations: $(tr '\n' ';' < "$TOPO_JOURNAL")"
+  fi
+}
+
+test_fly1272_p1_link_failure_recovers_owned_stage() {
+  echo "Test: FLY-1272 P1 — link failure leaves WAL, recovery removes only the owned stage"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  FLYWHEEL_CMUX_TEST_NONCE="nonce-link-fail"
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1272-implement" 1 0
+  MOCK_TOPO_LINK_FAIL="1"
+  local rc=0 wal
+  create_or_replace_view_session "runner-flywheel" "@42" "FLY-1272-implement" || rc=$?
+  wal=$(_view_wal_path "cmux-FLY-1272-implement")
+  if [[ "$rc" -ne 0 && -f "$wal" ]] && topo_session_exists "fwstage-nonce-link-fail" \
+      && topo_window_row "runner-flywheel" "@42" >/dev/null; then
+    pass "failed mutation is durable and source @42 remains intact"
+  else
+    fail "link failure lost WAL/stage or damaged source (rc=$rc wal=$([[ -f "$wal" ]] && echo yes || echo no))"
+  fi
+
+  MOCK_TOPO_LINK_FAIL="0"
+  rc=0
+  recover_view_construction "cmux-FLY-1272-implement" || rc=$?
+  if [[ "$rc" -eq 0 && ! -f "$wal" ]] \
+      && ! topo_session_exists "fwstage-nonce-link-fail" \
+      && topo_window_row "runner-flywheel" "@42" >/dev/null; then
+    pass "recovery clears the proven-owned placeholder stage without touching source"
+  else
+    fail "recovery did not safely retire link_intent (rc=$rc)"
+  fi
+}
+
+test_fly1272_p1_rename_output_lost_recovers_claim() {
+  echo "Test: FLY-1272 P1 — rename executed/output lost is recognized by session_id"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  FLYWHEEL_CMUX_TEST_NONCE="nonce-output-lost"
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1272-implement" 1 0
+  MOCK_TOPO_RENAME_OUTPUT_LOST="1"
+  local rc=0 wal
+  create_or_replace_view_session "runner-flywheel" "@42" "FLY-1272-implement" || rc=$?
+  wal=$(_view_wal_path "cmux-FLY-1272-implement")
+  if [[ "$rc" -ne 0 && -f "$wal" ]] \
+      && topo_session_exists "cmux-FLY-1272-implement" \
+      && ! topo_session_exists "fwstage-nonce-output-lost"; then
+    pass "output-loss crash shape retains claim_intent beside the renamed canonical"
+  else
+    fail "rename output-loss shape not modeled (rc=$rc)"
+  fi
+
+  MOCK_TOPO_RENAME_OUTPUT_LOST="0"
+  rc=0
+  recover_view_construction "cmux-FLY-1272-implement" || rc=$?
+  if [[ "$rc" -eq 0 && ! -f "$wal" ]] \
+      && _linked_view_matches "cmux-FLY-1272-implement" "@42" "runner-flywheel"; then
+    pass "recovery accepts only the canonical with the WAL-recorded session_id and clears WAL"
+  else
+    fail "session-id claim recovery failed (rc=$rc)"
+  fi
+}
+
+test_fly1272_p1_generation_mismatch_is_read_only() {
+  echo "Test: FLY-1272 P1 — stale-generation WAL authorizes zero mutation"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1272-implement" 1 0
+  topo_add_session "fwstage-old-generation" '$2' "" "FLY-1272-implement" "1"
+  topo_add_window "fwstage-old-generation" "@1000" "__flywheel_placeholder__" 1 0
+  local wal
+  wal=$(_view_wal_path "cmux-FLY-1272-implement")
+  _write_view_wal "$wal" "old-generation" created "old-generation" \
+    "cmux-FLY-1272-implement" "runner-flywheel" "@42" '$2' "@1000"
+  : > "$TOPO_JOURNAL"
+  local rc=0
+  recover_view_construction "cmux-FLY-1272-implement" || rc=$?
+  if [[ "$rc" -ne 0 && -f "$wal" ]] && topo_session_exists "fwstage-old-generation" \
+      && ! grep -Eq '^(kill|unlink|rename|link|new)-' "$TOPO_JOURNAL"; then
+    pass "generation mismatch preserves WAL and topology for manual diagnosis"
+  else
+    fail "stale-generation recovery mutated or discarded authority (rc=$rc journal=$(tr '\n' ';' < "$TOPO_JOURNAL"))"
+  fi
+}
+
+test_fly1272_p1_source_gone_collision_escrows_stage() {
+  echo "Test: FLY-1272 P1 — source-gone claim collision escrows the proven stage"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1
+  topo_add_session "fwstage-collision" '$2' "" "runner-flywheel" "0"
+  topo_add_window "fwstage-collision" "@42" "FLY-1272-implement" 1 0
+  topo_add_session "cmux-FLY-1272-implement" '$9' "" "founder-session" "0"
+  topo_add_window "cmux-FLY-1272-implement" "@99" "founder-shell" 1 0
+  local wal keeper rc=0
+  wal=$(_view_wal_path "cmux-FLY-1272-implement")
+  _write_view_wal "$wal" "tmux-test-generation" claim_intent collision \
+    "cmux-FLY-1272-implement" "runner-flywheel" "@42" '$2' "@1000"
+  recover_view_construction "cmux-FLY-1272-implement" >/dev/null 2>&1 || rc=$?
+  keeper=$(awk -F'|' '$6 == "committed" { print $3; exit }' "$KEEPER_INVENTORY" 2>/dev/null || true)
+  if [[ "$rc" -ne 0 && -f "$wal" && "$keeper" == fwkeeper-* ]] \
+      && topo_session_exists "$keeper" && topo_session_exists "cmux-FLY-1272-implement" \
+      && ! topo_session_exists "fwstage-collision"; then
+    pass "foreign canonical is untouched; the sole-holder stage becomes an inventoried keeper"
+  else
+    fail "source-gone collision lost stage/canonical authority rc=$rc keeper=[$keeper] wal=$([[ -f "$wal" ]] && echo yes || echo no)"
+  fi
+}
+
+test_fly1272_p3_create_uses_isolated_view_by_default() {
+  echo "Test: FLY-1272 P3 — create path uses exact isolated view when A is enabled"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  FLYWHEEL_CMUX_TEST_NONCE="nonce-create-path"
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1272-implement" 1 0
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
+  MOCK_CMUX_MUTATE_JSON="1"
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  create_workspace_for_window "runner-flywheel" "@42" "FLY-1272-implement"
+  local grouped active members ledger_row
+  grouped=$(tmux display-message -p -t "=cmux-FLY-1272-implement" '#{session_grouped}' 2>/dev/null || true)
+  active=$(tmux display-message -p -t "=cmux-FLY-1272-implement" '#{window_id}' 2>/dev/null || true)
+  members=$(tmux list-windows -t "=cmux-FLY-1272-implement" -F '#{window_id}' 2>/dev/null | tr '\n' ' ')
+  ledger_row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  if [[ "$grouped" == "0" && "$active" == "@42" && "$members" == "@42 " ]] \
+      && grep -q "new-workspace --command .*cmux-FLY-1272-implement" <<< "$MOCK_CMUX_OPS" \
+      && [[ "$ledger_row" == "committed|cmux-generation-1|workspace:100|FLY-1272-implement" ]]; then
+    pass "workspace attach target is isolated and its exact renamed ref is ledger-committed"
+  else
+    fail "create topology/ledger mismatch (grouped=$grouped active=$active members=[$members] ledger=[$ledger_row] ops=[$MOCK_CMUX_OPS])"
+  fi
+}
+
+test_fly1272_flags_default_on_and_explicit_off() {
+  echo "Test: FLY-1272 flags — linked view defaults on; only explicit 0 selects legacy"
+  reset_mocks
+  unset FLYWHEEL_CMUX_LINKED_VIEW
+  local default_rc=0 off_rc=0 invalid_rc=0
+  linked_view_enabled || default_rc=$?
+  FLYWHEEL_CMUX_LINKED_VIEW=0; linked_view_enabled || off_rc=$?
+  FLYWHEEL_CMUX_LINKED_VIEW=garbage; linked_view_enabled >/dev/null 2>&1 || invalid_rc=$?
+  if [[ "$default_rc" -eq 0 && "$off_rc" -ne 0 && "$invalid_rc" -eq 0 ]]; then
+    pass "default/invalid fail safe to A=1; explicit A=0 preserves rollback"
+  else
+    fail "flag semantics default=$default_rc off=$off_rc invalid=$invalid_rc"
+  fi
+}
+
+test_fly1272_p2_dismantle_linked_preserves_source() {
+  echo "Test: FLY-1272 P2 — linked dismantle closes only ledger ref and unlinks only view reference"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_CMUX_MUTATE_JSON=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1272-implement" 1 0
+  topo_add_session "cmux-FLY-1272-implement" '$2' "" "runner-flywheel" "0"
+  topo_add_window "cmux-FLY-1272-implement" "@42" "FLY-1272-implement" 1 0
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:100","title":"FLY-1272-implement"}]}'
+  _ledger_upsert committed "cmux-generation-1" "workspace:100" "FLY-1272-implement"
+  local rc=0
+  dismantle_view_display "FLY-1272-implement" "invariant-mismatch" || rc=$?
+  if [[ "$rc" -eq 0 ]] && topo_window_row "runner-flywheel" "@42" >/dev/null \
+      && ! topo_session_exists "cmux-FLY-1272-implement" \
+      && grep -q 'close-workspace --workspace workspace:100' <<< "$MOCK_CMUX_OPS" \
+      && ! grep -q '^kill-window\|^kill-session' "$TOPO_JOURNAL"; then
+    pass "linked teardown preserves source @42 and never uses destructive tmux kill"
+  else
+    fail "linked teardown unsafe/incomplete rc=$rc journal=$(tr '\n' ';' < "$TOPO_JOURNAL")"
+  fi
+}
+
+test_fly1272_p2_sole_holder_escrows_instead_of_destroying() {
+  echo "Test: FLY-1272 P2 — last-reference unlink refusal escrows the live window"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_CMUX_MUTATE_JSON=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  topo_add_session "cmux-FLY-1272-implement" '$2' "" "runner-flywheel" "0"
+  topo_add_window "cmux-FLY-1272-implement" "@42" "FLY-1272-implement" 1 0
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:100","title":"FLY-1272-implement"}]}'
+  _ledger_upsert committed "cmux-generation-1" "workspace:100" "FLY-1272-implement"
+  local rc=0 keeper
+  dismantle_view_display "FLY-1272-implement" "source-gone" || rc=$?
+  keeper=$(awk -F'|' '$6 == "committed" { print $3; exit }' "$KEEPER_INVENTORY" 2>/dev/null || true)
+  if [[ "$rc" -eq 0 && "$keeper" == fwkeeper-* ]] \
+      && topo_session_exists "$keeper" && topo_window_row "$keeper" "@42" >/dev/null \
+      && ! grep -q '^kill-window\|^kill-session' "$TOPO_JOURNAL"; then
+    pass "sole-holder @42 survives under an inventory-committed keeper"
+  else
+    fail "sole-holder was not safely escrowed rc=$rc keeper=[$keeper] journal=$(tr '\n' ';' < "$TOPO_JOURNAL")"
+  fi
+}
+
+test_fly1272_p2_grouped_view_always_escrows() {
+  echo "Test: FLY-1272 P2 — legacy grouped view is renamed to keeper, never unlinked"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_CMUX_MUTATE_JSON=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1272-implement" 1 0
+  tmux new-session -d -t "runner-flywheel" -s "cmux-FLY-1272-implement"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:100","title":"FLY-1272-implement"}]}'
+  _ledger_upsert committed "cmux-generation-1" "workspace:100" "FLY-1272-implement"
+  local rc=0 keeper
+  dismantle_view_display "FLY-1272-implement" "legacy-grouped" || rc=$?
+  keeper=$(awk -F'|' '$6 == "committed" { print $3; exit }' "$KEEPER_INVENTORY" 2>/dev/null || true)
+  if [[ "$rc" -eq 0 && "$keeper" == fwkeeper-* ]] \
+      && topo_session_exists "$keeper" && topo_window_row "runner-flywheel" "@42" >/dev/null \
+      && ! grep -q '^unlink-window\|^kill-window\|^kill-session' "$TOPO_JOURNAL"; then
+    pass "grouped display shell moved to keeper with shared source untouched"
+  else
+    fail "grouped teardown used unsafe mutation rc=$rc keeper=[$keeper] journal=$(tr '\n' ';' < "$TOPO_JOURNAL")"
+  fi
+}
+
+test_fly1272_p2_foreign_same_title_is_untouched() {
+  echo "Test: FLY-1272 P2 — B-foreign: A closes, B stays visible/unmodified, no substitute ref, keyed warning"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_CMUX_MUTATE_JSON=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  topo_add_session "cmux-FLY-1272-implement" '$9' "" "founder-owned" "0"
+  topo_add_window "cmux-FLY-1272-implement" "@99" "founder-shell" 1 0
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:900","title":"FLY-1272-implement"}]}'
+  : > "$TOPO_JOURNAL"
+  local rc=0
+  dismantle_view_display "FLY-1272-implement" "collision" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -ne 0 ]] && topo_session_exists "cmux-FLY-1272-implement" \
+      && ! grep -Eq '^(close-workspace|unlink-window|rename-session|kill-window|kill-session)' "$TOPO_JOURNAL" \
+      && ! grep -q 'close-workspace' <<< "$MOCK_CMUX_OPS"; then
+    pass "A has no authority; B stays visible/unmodified, no substitute authority is invented, warning is emitted"
+  else
+    fail "foreign same-title object was mutated rc=$rc journal=$(tr '\n' ';' < "$TOPO_JOURNAL") ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1272_p4_grouped_husk_cannot_back_wrong_tab() {
+  echo "Test: FLY-1272 P4 — grouped view pointing at husk is escrowed and rebuilt exact"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  FLYWHEEL_CMUX_TEST_NONCE="nonce-invariant"; MOCK_CMUX_MUTATE_JSON=1; MOCK_SOCK_IDENT="cmux-generation-1"
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1272-implement" 0 0
+  topo_add_window "runner-flywheel" "@99" "FLY-1225-qa" 1 1
+  tmux new-session -d -t "runner-flywheel" -s "cmux-FLY-1272-implement"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:100","title":"FLY-1272-implement"}]}'
+  _ledger_upsert committed "cmux-generation-1" "workspace:100" "FLY-1272-implement"
+  : > "$TOPO_JOURNAL"; MOCK_CMUX_OPS=""
+  local rc=0 active members grouped keeper first_mutations
+  refresh_linked_sessions || rc=$?
+  first_mutations=$(grep -Ec '^(unlink-window|rename-session|kill-window|kill-session|link-window|new-session)' "$TOPO_JOURNAL" || true)
+  refresh_linked_sessions || rc=$?
+  active=$(tmux display-message -p -t "=cmux-FLY-1272-implement" '#{window_id}' 2>/dev/null || true)
+  members=$(tmux list-windows -t "=cmux-FLY-1272-implement" -F '#{window_id}' 2>/dev/null | tr '\n' ' ')
+  grouped=$(tmux display-message -p -t "=cmux-FLY-1272-implement" '#{session_grouped}' 2>/dev/null || true)
+  keeper=$(awk -F'|' '$6 == "committed" { print $3; exit }' "$KEEPER_INVENTORY" 2>/dev/null || true)
+  if [[ "$rc" -eq 0 && "$first_mutations" == "0" && "$active" == "@42" && "$members" == "@42 " && "$grouped" == "0" \
+      && "$keeper" == fwkeeper-* ]] && topo_window_row "runner-flywheel" "@99" >/dev/null; then
+    pass "FLY-1272 tab topology is physically unable to fall back to FLY-1225 husk"
+  else
+    fail "invariant repair did not isolate target rc=$rc first_mutations=$first_mutations active=$active grouped=$grouped members=[$members] keeper=[$keeper]"
+  fi
+}
+
+test_fly1272_p4_uncertain_source_snapshot_mutates_nothing() {
+  echo "Test: FLY-1272 P4 — uncertain source inventory causes zero mutation"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  MOCK_SOCK_IDENT="cmux-generation-1"; MOCK_TMUX_LIST_FAIL="1"
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1272-implement" 1 0
+  topo_add_session "cmux-FLY-1272-implement" '$2' "" "runner-flywheel" "0"
+  topo_add_window "cmux-FLY-1272-implement" "@99" "FLY-1225-qa" 1 0
+  : > "$TOPO_JOURNAL"
+  local rc=0
+  refresh_linked_sessions >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -ne 0 ]] && ! grep -Eq '^(unlink-window|rename-session|kill-window|kill-session|link-window|new-session)' "$TOPO_JOURNAL"; then
+    pass "inconclusive pass is fail-closed before the first topology mutation"
+  else
+    fail "uncertain pass mutated or falsely succeeded rc=$rc journal=$(tr '\n' ';' < "$TOPO_JOURNAL")"
+  fi
+}
+
+test_fly1272_p3_prepared_ledger_recovers_exact_unnamed_ref() {
+  echo "Test: FLY-1272 P3 — prepared ledger recovers only its exact unnamed ref"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_CMUX_MUTATE_JSON=1; MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:100","title":null},{"ref":"workspace:900","title":null}]}'
+  _ledger_upsert prepared "cmux-generation-1" "workspace:100" "FLY-1272-implement"
+  local rc=0 row foreign_title
+  reconcile_prepared_ledger || rc=$?
+  row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  foreign_title=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(w for w in d["workspaces"] if w["ref"]=="workspace:900")["title"])')
+  if [[ "$rc" -eq 0 && "$row" == "committed|cmux-generation-1|workspace:100|FLY-1272-implement" \
+      && "$foreign_title" == "None" ]] \
+      && grep -q 'rename-workspace --workspace workspace:100 FLY-1272-implement' <<< "$MOCK_CMUX_OPS" \
+      && ! grep -q 'workspace:900' <<< "$MOCK_CMUX_OPS"; then
+    pass "prepared recovery promotes exact ref; unledgered unnamed workspace remains foreign"
+  else
+    fail "prepared recovery mismatch rc=$rc row=[$row] foreign=$foreign_title ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1272_p3_ghost_reaper_never_closes_unledgered_ref() {
+  echo "Test: FLY-1272 P3 — new-mode ghost reaper leaves unledgered refs untouched"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_CMUX_MUTATE_JSON=1; MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:900","title":null}]}'
+  reap_ghost_workspaces
+  if ! grep -q 'close-workspace' <<< "$MOCK_CMUX_OPS"; then
+    pass "title-null without prepared authority leaks safely instead of being guessed-owned"
+  else
+    fail "unledgered ghost was destructively reaped ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+_fly1272_attachment_fixture() {
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_CMUX_MUTATE_JSON=1
+  MOCK_SOCK_IDENT="cmux-generation-1"; FLYWHEEL_CMUX_TEST_NONCE="nonce-attachment"
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1272-implement" 1 0
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
+}
+
+test_fly1272_p3_orphan_client_attach_failure_alerts_exact_ref() {
+  echo "Test: FLY-1272 P3 — pre-existing orphan client + new attach failure never false-greens"
+  _fly1272_attachment_fixture
+  MOCK_TMUX_CLIENTS='cmux-FLY-1272-implement=1,1,1,1'
+  local log_file="$TMPDIR_ROOT/attachment-orphan.log" row
+  create_workspace_for_window "runner-flywheel" "@42" "FLY-1272-implement" 2>"$log_file"
+  row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  if [[ "$row" == 'committed|cmux-generation-1|workspace:100|FLY-1272-implement' ]] \
+      && grep -q 'attachment_unverified generation=cmux-generation-1 ref=workspace:100 title=FLY-1272-implement reason=client-baseline-ambiguous' "$log_file"; then
+    pass "orphan-client ambiguity retains exact authority and emits the keyed binding alert"
+  else
+    fail "orphan-client regression false-green row=[$row] log=[$(cat "$log_file" 2>/dev/null)]"
+  fi
+}
+
+test_fly1272_p3_post_create_client_read_failure_variants() {
+  echo "Test: FLY-1272 P3 — attach failure + post-create read failure (pre=0 and nonzero variants) retains ref"
+  local pre spec log_file row ok=1
+  for pre in 0 2; do
+    _fly1272_attachment_fixture
+    FLYWHEEL_CMUX_TEST_NONCE="nonce-post-read-${pre}"
+    spec="${pre},ERR"
+    MOCK_TMUX_CLIENTS="cmux-FLY-1272-implement=${spec}"
+    log_file="$TMPDIR_ROOT/attachment-post-${pre}.log"
+    create_workspace_for_window "runner-flywheel" "@42" "FLY-1272-implement" 2>"$log_file"
+    row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+    [[ "$row" == 'committed|cmux-generation-1|workspace:100|FLY-1272-implement' ]] || ok=0
+    grep -q 'attachment_unverified generation=cmux-generation-1 ref=workspace:100 title=FLY-1272-implement reason=client-baseline-ambiguous' "$log_file" || ok=0
+  done
+  [[ "$ok" == "1" ]] \
+    && pass "both pre-count variants retain the committed ref and emit the exact keyed alert" \
+    || fail "post-create client-read variant lost authority or alert"
+}
+
+test_fly1272_p3_unreadable_pre_capture_positive_post_is_unverified() {
+  echo "Test: FLY-1272 P3 — unreadable pre-capture + positive post-count stays unverified"
+  _fly1272_attachment_fixture
+  MOCK_TMUX_CLIENTS='cmux-FLY-1272-implement=ERR,1'
+  local log_file="$TMPDIR_ROOT/attachment-pre-unreadable.log"
+  create_workspace_for_window "runner-flywheel" "@42" "FLY-1272-implement" 2>"$log_file"
+  if grep -q 'attachment_unverified generation=cmux-generation-1 ref=workspace:100 title=FLY-1272-implement reason=client-baseline-ambiguous' "$log_file"; then
+    pass "a positive post-count cannot erase an unreadable pre-capture"
+  else
+    fail "unreadable pre-capture was falsely reported attached log=[$(cat "$log_file" 2>/dev/null)]"
+  fi
+}
+
+test_fly1272_p5_bootstrap_converges_once_then_is_quiet() {
+  echo "Test: FLY-1272 P5 — bootstrap converges grouped husk drift, second pass is mutation-free"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  FLYWHEEL_CMUX_TEST_NONCE="nonce-bootstrap"; MOCK_CMUX_MUTATE_JSON=1; MOCK_SOCK_IDENT="cmux-generation-1"
+  BOOTSTRAP_SKIP_HEAL_SWEEP=1
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1272-implement" 0 0
+  topo_add_window "runner-flywheel" "@99" "FLY-1225-qa" 1 1
+  tmux new-session -d -t "runner-flywheel" -s "cmux-FLY-1272-implement"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:100","title":"FLY-1272-implement"}]}'
+  echo 101 > "$TMPDIR_ROOT/cmux.next-ref"
+  _ledger_upsert committed "cmux-generation-1" "workspace:100" "FLY-1272-implement"
+  local rc=0 active members row first_new_count third_mutations
+  : > "$TOPO_JOURNAL"; MOCK_CMUX_OPS=""
+  sync_additive_bootstrap || rc=$?
+  if grep -Eq '^(unlink-window|rename-session|kill-session|kill-window|link-window|new-session)' "$TOPO_JOURNAL"; then
+    fail "first conclusive bootstrap mutated before the cross-tick latch"
+  else
+    pass "first conclusive bootstrap arms the mismatch latch without mutation"
+  fi
+  sync_additive_bootstrap || rc=$?
+  active=$(tmux display-message -p -t "=cmux-FLY-1272-implement" '#{window_id}' 2>/dev/null || true)
+  members=$(tmux list-windows -t "=cmux-FLY-1272-implement" -F '#{window_id}' 2>/dev/null | tr '\n' ' ')
+  row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  first_new_count=$(grep -c '^new-workspace' <<< "$MOCK_CMUX_OPS" || true)
+  : > "$TOPO_JOURNAL"; MOCK_CMUX_OPS=""
+  sync_additive_bootstrap || rc=$?
+  third_mutations=$(grep -Ec '^(new-session|link-window|unlink-window|rename-session|kill-session|kill-window)' "$TOPO_JOURNAL" || true)
+  if [[ "$rc" -eq 0 && "$active" == "@42" && "$members" == "@42 " \
+      && "$row" == "committed|cmux-generation-1|workspace:101|FLY-1272-implement" \
+      && "$first_new_count" == "1" && "$third_mutations" == "0" ]] \
+      && ! grep -q '^new-workspace' <<< "$MOCK_CMUX_OPS"; then
+    pass "bootstrap reaches exact topology/ref authority on pass two; pass three emits no mutation"
+  else
+    fail "bootstrap convergence/idempotence mismatch rc=$rc active=$active members=[$members] row=[$row] first_new=$first_new_count third_tmux=$third_mutations third_ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1272_p2_keeper_inventory_reconciliation() {
+  echo "Test: FLY-1272 P2 — keeper inventory rebuild/promote/GC is identity-bound"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1
+  topo_add_session "fwkeeper-2-cmux-FLY-1272-implement" '$2' "" "runner-flywheel" "0"
+  topo_add_window "fwkeeper-2-cmux-FLY-1272-implement" "@42" "FLY-1272-implement" 1 0
+  printf 'tmux-test-generation|$3|fwkeeper-3-old|runner-old|@9|committed|1\n' > "$KEEPER_INVENTORY"
+  printf 'malformed-row\n' >> "$KEEPER_INVENTORY"
+  local rc=0 rebuilt malformed stale
+  reconcile_keeper_inventory || rc=$?
+  rebuilt=$(awk -F'|' '$2 == "$2" { print $1 "|" $2 "|" $3 "|" $4 "|" $5 "|" $6 }' "$KEEPER_INVENTORY" 2>/dev/null || true)
+  malformed=$(grep -c '^malformed-row$' "$KEEPER_INVENTORY" 2>/dev/null || true)
+  stale=$(grep -c 'fwkeeper-3-old' "$KEEPER_INVENTORY" 2>/dev/null || true)
+  if [[ "$rc" -eq 0 && "$rebuilt" == 'tmux-test-generation|$2|fwkeeper-2-cmux-FLY-1272-implement|runner-flywheel|@42|committed' \
+      && "$malformed" == "1" && "$stale" == "0" ]]; then
+    pass "live keeper is reconstructed, missing committed identity is GCed, malformed row is non-authoritative and preserved"
+  else
+    fail "inventory reconcile rc=$rc rebuilt=[$rebuilt] malformed=$malformed stale=$stale rows=[$(cat "$KEEPER_INVENTORY" 2>/dev/null)]"
+  fi
+}
+
+test_fly1272_p1_generalized_mutator_lease() {
+  echo "Test: FLY-1272 P1 — generalized mutator lease records incarnation/mode/nonce and releases owner-only"
+  reset_mocks
+  local rc=0 owner saved_nonce
+  acquire_mutator_lease once || rc=$?
+  owner=$(cat "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR/owner" 2>/dev/null || true)
+  saved_nonce="${MUTATOR_LEASE_NONCE:-}"
+  if [[ "$rc" -eq 0 && "$(awk -F'|' '{print NF}' <<< "$owner")" == "4" \
+      && "$(cut -d'|' -f3 <<< "$owner")" == "once" ]] \
+      && assert_or_reuse_owned_lease; then
+    pass "lease identity is externally verifiable and nested prologue reuses its own lease"
+  else
+    fail "lease record/reuse mismatch rc=$rc owner=[$owner]"
+  fi
+  MUTATOR_LEASE_NONCE="not-the-owner"
+  release_mutator_lease
+  if [[ -d "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" ]]; then
+    pass "wrong nonce cannot release another owner's lease"
+  else
+    fail "wrong nonce removed the mutator lease"
+  fi
+  MUTATOR_LEASE_NONCE="$saved_nonce"
+  release_mutator_lease
+  [[ ! -d "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" ]] \
+    && pass "matching pid+incarnation+nonce releases lease" \
+    || fail "matching owner failed to release lease"
+}
+
+test_fly1272_p1_probe_lease_fail_closed_on_malformed_record() {
+  echo "Test: FLY-1272 P1 — read-only lease probe rejects malformed/stale-present state"
+  reset_mocks
+  mkdir -p "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR"
+  printf 'truncated\n' > "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR/owner"
+  : > "$TOPO_JOURNAL"
+  local rc=0
+  probe_mutator_lease || rc=$?
+  if [[ "$rc" -ne 0 && -d "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" ]]; then
+    pass "probe never steals or clears an unprovable lease"
+  else
+    fail "malformed lease probe returned success or mutated lock rc=$rc"
+  fi
+}
+
+test_fly1272_maintenance_marker_blocks_oneshot_without_locking() {
+  echo "Test: FLY-1272 P1 — maintenance marker makes one-shot release its lease without mutation"
+  reset_mocks
+  touch "$CMUX_MAINTENANCE_MARKER"
+  local rc=0 mutation_probe="$TMPDIR_ROOT/maintenance-mutation"
+  maintenance_mutator_probe() { touch "$mutation_probe"; }
+  run_mutator_once once maintenance_mutator_probe || rc=$?
+  unset -f maintenance_mutator_probe
+  if [[ "$rc" -eq 0 && ! -e "$mutation_probe" && ! -d "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" ]]; then
+    pass "maintenance window is non-holding for one-shot mutators"
+  else
+    fail "maintenance one-shot gate held lease or invoked mutation rc=$rc mutation=$([[ -e "$mutation_probe" ]] && echo yes || echo no)"
+  fi
+}
+
+echo ""
+echo "═══ FLY-1272: linked-view topology + staging WAL ═══"
+test_fly1272_p0_topology_mock
+test_fly1272_p1_staging_wal_happy_path
+test_fly1272_p1_link_failure_recovers_owned_stage
+test_fly1272_p1_rename_output_lost_recovers_claim
+test_fly1272_p1_generation_mismatch_is_read_only
+test_fly1272_p1_source_gone_collision_escrows_stage
+test_fly1272_p3_create_uses_isolated_view_by_default
+test_fly1272_flags_default_on_and_explicit_off
+test_fly1272_p2_dismantle_linked_preserves_source
+test_fly1272_p2_sole_holder_escrows_instead_of_destroying
+test_fly1272_p2_grouped_view_always_escrows
+test_fly1272_p2_keeper_inventory_reconciliation
+test_fly1272_p2_foreign_same_title_is_untouched
+test_fly1272_p4_grouped_husk_cannot_back_wrong_tab
+test_fly1272_p4_uncertain_source_snapshot_mutates_nothing
+test_fly1272_p3_prepared_ledger_recovers_exact_unnamed_ref
+test_fly1272_p3_ghost_reaper_never_closes_unledgered_ref
+test_fly1272_p3_orphan_client_attach_failure_alerts_exact_ref
+test_fly1272_p3_post_create_client_read_failure_variants
+test_fly1272_p3_unreadable_pre_capture_positive_post_is_unverified
+test_fly1272_p5_bootstrap_converges_once_then_is_quiet
+test_fly1272_p1_generalized_mutator_lease
+test_fly1272_p1_probe_lease_fail_closed_on_malformed_record
+test_fly1272_maintenance_marker_blocks_oneshot_without_locking
 
 set +e   # restore lenient mode for the summary
 

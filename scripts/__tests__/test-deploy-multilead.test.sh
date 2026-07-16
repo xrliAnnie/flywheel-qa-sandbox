@@ -26,6 +26,10 @@
 #   S1  test-deploy.sh wiring sentinels (lib sourced, builders single-sourced, flags parsed)
 set -uo pipefail
 
+# The managed test sandbox denies process-table reads. Production leaves this
+# unset and the teardown lease binds to the kernel-reported start time.
+export FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="multilead-test-incarnation"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB="${SCRIPT_DIR}/lib/qa-multilead.sh"
 

@@ -90,6 +90,11 @@ echo "tmux 3.5+: $TMUX_IS_35_PLUS"
 TMUX_SOCKET="flywheel-cmux-test-$$"
 TMPDIR_ROOT=$(mktemp -d -t fly110.XXXXXX)
 EVENT_FILE_BASE="$TMPDIR_ROOT/events"
+# Process-table reads are intentionally denied by the managed test sandbox.
+# Production leaves this unset and leases use the kernel-reported start time.
+export FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="hooks-integration-$$"
+export FLYWHEEL_CMUX_TMUX_GENERATION="hooks-integration-generation"
+VIEW_WAL_DIR="$TMPDIR_ROOT/view-wal"
 
 cleanup() {
   # Best-effort cleanup. Never fail the script in cleanup.
@@ -471,6 +476,33 @@ kill -TERM "$PID_A" "$PID_B" 2>/dev/null || true
 sleep 1
 rm -rf "$INT_LOCK_DIR" "${INT_LOCK_DIR}.reap" "$LOG_A" "$LOG_B"
 
+# ── Scenario F (FLY-1272): real isolated single-window linked view ─────
+echo
+echo "── Scenario F (FLY-1272): linked view cannot fall through to sibling husk ──"
+reset_scenario "F1272"
+FLYWHEEL_CMUX_LINKED_VIEW=1
+source_session="runner-test-fly1272"
+view_title="FLY-1272-implement"
+tmux new-session -d -s "$source_session" -n "$view_title" "sleep 60" 2>/dev/null
+tmux new-window -d -t "${source_session}:" -n "FLY-1225-qa" "sleep 60" 2>/dev/null
+source_wid=$(tmux list-windows -t "=$source_session" -F '#{window_id}|#{window_name}' \
+  | awk -F'|' -v n="$view_title" '$2 == n { print $1; exit }')
+f1272_rc=0
+create_or_replace_view_session "$source_session" "$source_wid" "$view_title" || f1272_rc=$?
+view_session="cmux-${view_title}"
+f1272_grouped=$(tmux display-message -p -t "=$view_session:" '#{session_grouped}' 2>/dev/null || true)
+f1272_members=$(tmux list-windows -t "=$view_session" -F '#{window_id}' 2>/dev/null | tr '\n' ' ')
+f1272_owner=$(tmux show-options -v -t "=$view_session:" @flywheel_cmux_owner 2>/dev/null || true)
+tmux kill-session -t "=$source_session" 2>/dev/null || true
+f1272_after=$(tmux list-windows -t "=$view_session" -F '#{window_id}|#{window_name}' 2>/dev/null || true)
+if [[ "$f1272_rc" -eq 0 && "$f1272_grouped" == "0" \
+    && "$f1272_members" == "$source_wid " && "$f1272_owner" == "$source_session" \
+    && "$f1272_after" == "$source_wid|$view_title" ]]; then
+  pass "Scenario F: real tmux view holds only the intended @id after its multi-window source dies"
+else
+  fail "Scenario F: topology rc=$f1272_rc grouped=$f1272_grouped members=[$f1272_members] owner=[$f1272_owner] after=[$f1272_after]"
+fi
+
 # ── Scenario E (FLY-293): orphan-pin reaper against REAL tmux inventory ──
 #
 # Proves the safety-critical detection predicate on a real tmux server (the
@@ -483,6 +515,10 @@ rm -rf "$INT_LOCK_DIR" "${INT_LOCK_DIR}.reap" "$LOG_A" "$LOG_B"
 echo
 echo "── Scenario E (FLY-293): orphan-pin reaper (real tmux inventory) ──"
 reset_scenario "E293"
+# This is explicitly the legacy FLY-293 contract. New mode requires ledger
+# authority and is covered by the FLY-1272 unit suite.
+FLYWHEEL_CMUX_LINKED_VIEW=0
+FLYWHEEL_CMUX_VIEW_INVARIANT=0
 # LIVE runner: real window + real grouped linked cmux- session → must be KEPT.
 tmux new-session -d -s "runner-test-fly293" -n "FLY-100-claude-alive" "sleep 60" 2>/dev/null
 tmux new-session -d -t "runner-test-fly293" -s "cmux-FLY-100-claude-alive" 2>/dev/null

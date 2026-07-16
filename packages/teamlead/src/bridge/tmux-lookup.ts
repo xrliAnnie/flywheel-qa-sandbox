@@ -544,7 +544,51 @@ export async function killTmuxWindow(
 export async function killCmuxLinkedSession(
 	tmuxWindow: string,
 	runTmux: TmuxRunner = defaultTmuxRunner,
-): Promise<{ killed: boolean; cmuxSession?: string; error?: string }> {
+): Promise<{
+	killed: boolean;
+	cmuxSession?: string;
+	viewSkipped?: boolean;
+	resolutionError?: string;
+	error?: string;
+}> {
+	// FLY-1272: isolated linked views can become the sole holder of a live
+	// window. A name-based observe→kill sequence also has an unavoidable rebind
+	// race: the watcher can escrow the observed session and atomically claim a
+	// replacement under the same name before kill-session executes. Therefore A
+	// enabled means no Bridge-side view kill under any observation result. We
+	// still resolve the name when possible so close_runner can write its existing
+	// pin-close marker; resolution failure remains lifecycle-permitting.
+	if (process.env.FLYWHEEL_CMUX_LINKED_VIEW !== "0") {
+		try {
+			const { stdout } = await runTmux([
+				"display-message",
+				"-p",
+				"-t",
+				tmuxWindow,
+				"#{window_name}",
+			]);
+			const windowName = stdout.trim();
+			if (!windowName) {
+				return {
+					killed: true,
+					viewSkipped: true,
+					resolutionError: "empty window_name",
+				};
+			}
+			return {
+				killed: true,
+				viewSkipped: true,
+				cmuxSession: `cmux-${windowName}`,
+			};
+		} catch (err) {
+			return {
+				killed: true,
+				viewSkipped: true,
+				resolutionError: (err as Error).message ?? String(err),
+			};
+		}
+	}
+
 	let windowName: string;
 	try {
 		const { stdout } = await runTmux([

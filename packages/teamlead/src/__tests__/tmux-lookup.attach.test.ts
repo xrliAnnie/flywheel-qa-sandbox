@@ -4,7 +4,7 @@
  * TmuxRunner seam so no real tmux server is needed; the real-tmux happy path is
  * covered in tmux-lookup.real-tmux.test.ts.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildAttachCommand,
 	killCmuxLinkedSession,
@@ -132,6 +132,12 @@ describe("buildAttachCommand", () => {
 
 // ── FLY-638: killCmuxLinkedSession ──────────────────────────────────────────
 describe("killCmuxLinkedSession", () => {
+	beforeEach(() => {
+		vi.stubEnv("FLYWHEEL_CMUX_LINKED_VIEW", "0");
+	});
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
 	it("resolves window_name then kills cmux-<name> by EXACT (=) match", async () => {
 		const calls: string[][] = [];
 		const runner: TmuxRunner = async (args) => {
@@ -200,6 +206,69 @@ describe("killCmuxLinkedSession", () => {
 		};
 		const res = await killCmuxLinkedSession("base:@1", runner);
 		expect(res).toEqual({ killed: true });
+		expect(calls.some((c) => c[0] === "kill-session")).toBe(false);
+	});
+});
+
+describe("killCmuxLinkedSession linked-view mode", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	it("defaults on and never name-kills a resolved canonical view", async () => {
+		vi.stubEnv("FLYWHEEL_CMUX_LINKED_VIEW", "1");
+		const calls: string[][] = [];
+		const runner: TmuxRunner = async (args) => {
+			calls.push(args);
+			return { stdout: "FLY-1272-implement\n" };
+		};
+		const res = await killCmuxLinkedSession("runner-flywheel:@42", runner);
+		expect(res).toEqual({
+			killed: true,
+			viewSkipped: true,
+			cmuxSession: "cmux-FLY-1272-implement",
+		});
+		expect(calls).toHaveLength(1);
+		expect(calls.some((c) => c[0] === "kill-session")).toBe(false);
+	});
+
+	it.each([
+		["missing window", new Error("can't find window"), "can't find window"],
+		["probe failure", new Error("permission denied"), "permission denied"],
+	])(
+		"permits lifecycle and remains non-destructive on %s",
+		async (_label, error, message) => {
+			vi.stubEnv("FLYWHEEL_CMUX_LINKED_VIEW", "1");
+			const calls: string[][] = [];
+			const runner: TmuxRunner = async (args) => {
+				calls.push(args);
+				throw error;
+			};
+			await expect(
+				killCmuxLinkedSession("runner-flywheel:@42", runner),
+			).resolves.toEqual({
+				killed: true,
+				viewSkipped: true,
+				resolutionError: message,
+			});
+			expect(calls.some((c) => c[0] === "kill-session")).toBe(false);
+		},
+	);
+
+	it("treats an empty resolved name as a safe skip", async () => {
+		vi.stubEnv("FLYWHEEL_CMUX_LINKED_VIEW", "1");
+		const calls: string[][] = [];
+		const runner: TmuxRunner = async (args) => {
+			calls.push(args);
+			return { stdout: "  \n" };
+		};
+		await expect(
+			killCmuxLinkedSession("runner-flywheel:@42", runner),
+		).resolves.toEqual({
+			killed: true,
+			viewSkipped: true,
+			resolutionError: "empty window_name",
+		});
 		expect(calls.some((c) => c[0] === "kill-session")).toBe(false);
 	});
 });

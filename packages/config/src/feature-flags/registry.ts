@@ -102,6 +102,61 @@ function envSite(
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	// ─── env kill-switches / features, call_time → DIRECT-toggle candidates ───
 	{
+		name: "cmux_linked_view",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CMUX_LINKED_VIEW",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1272: cmux managed tab 使用 exact-one-window link topology；=0 回滚 grouped legacy",
+		readSites: [
+			envSite(
+				"scripts/flywheel-cmux-sync.sh",
+				"linked_view_enabled",
+				"cli_invocation",
+			),
+			envSite(
+				"scripts/flywheel-cmux-autostart.sh",
+				"load_cmux_bool_flag FLYWHEEL_CMUX_LINKED_VIEW",
+				"cli_invocation",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/tmux-lookup.ts",
+				"killCmuxLinkedSession",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "cmux_view_invariant",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CMUX_VIEW_INVARIANT",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1272: 验证 managed view 的 active @window_id 并用 ledger-safe repair 收敛",
+		readSites: [
+			envSite(
+				"scripts/flywheel-cmux-sync.sh",
+				"view_invariant_enabled",
+				"cli_invocation",
+			),
+			envSite(
+				"scripts/flywheel-cmux-autostart.sh",
+				"load_cmux_bool_flag FLYWHEEL_CMUX_VIEW_INVARIANT",
+				"cli_invocation",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "codex_gate_wait",
 		category: "kill_switch",
 		source: "env",

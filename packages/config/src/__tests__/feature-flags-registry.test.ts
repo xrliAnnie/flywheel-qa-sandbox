@@ -164,4 +164,36 @@ describe("feature-flag registry invariants", () => {
 		]);
 		expect(cutover?.note).toContain("FLY-1284");
 	});
+
+	it("FLY-1272 registers the two default-on cmux rollback switches with exact read sites", () => {
+		const linked = FEATURE_FLAGS.find(
+			(f) => f.envVar === "FLYWHEEL_CMUX_LINKED_VIEW",
+		);
+		const invariant = FEATURE_FLAGS.find(
+			(f) => f.envVar === "FLYWHEEL_CMUX_VIEW_INVARIANT",
+		);
+		expect(linked).toMatchObject({
+			name: "cmux_linked_view",
+			polarity: "default_on",
+			default: true,
+			toggleable: "conversational",
+		});
+		expect(linked?.readSites).toHaveLength(3);
+		expect(linked?.readSites.map((s) => s.file)).toEqual([
+			"scripts/flywheel-cmux-sync.sh",
+			"scripts/flywheel-cmux-autostart.sh",
+			"packages/teamlead/src/bridge/tmux-lookup.ts",
+		]);
+		expect(invariant).toMatchObject({
+			name: "cmux_view_invariant",
+			polarity: "default_on",
+			default: true,
+			toggleable: "conversational",
+		});
+		expect(invariant?.readSites).toHaveLength(2);
+		expect(invariant?.readSites.map((s) => s.file)).toEqual([
+			"scripts/flywheel-cmux-sync.sh",
+			"scripts/flywheel-cmux-autostart.sh",
+		]);
+	});
 });
