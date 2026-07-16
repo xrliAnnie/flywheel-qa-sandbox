@@ -569,7 +569,15 @@ export class CodexTmuxAdapter implements IAdapter {
 			let committed = false;
 			const onGoalActive = (): void => {
 				if (committed || !ctx.launchCommitPath) return;
-				if (this.writeLaunchCommit(ctx.launchCommitPath)) committed = true;
+				if (ctx.commitWorkflowLaunch) {
+					const result = ctx.commitWorkflowLaunch();
+					if (!result.ok) {
+						throw new Error(result.reason ?? "Bridge launch fence rejected");
+					}
+					committed = true;
+				} else if (this.writeLaunchCommit(ctx.launchCommitPath)) {
+					committed = true;
+				}
 			};
 
 			// HIGH-4 (Codex R2): resume the prior thread across a Bridge/adapter
@@ -1056,6 +1064,8 @@ export class CodexTmuxAdapter implements IAdapter {
 		if (ctx.workflowSubmissionCredential)
 			env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL =
 				ctx.workflowSubmissionCredential;
+		if (ctx.workflowOutputCredential)
+			env.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL = ctx.workflowOutputCredential;
 		if (ctx.stateDbPath) env.FLYWHEEL_STATE_DB_PATH = ctx.stateDbPath;
 		if (ctx.progressPath) env.FLYWHEEL_PROGRESS_PATH = ctx.progressPath; // FLY-795
 		if (ctx.projectName) env.FLYWHEEL_PROJECT_NAME = ctx.projectName;

@@ -161,6 +161,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
 		const now = sqliteDatetime();
+		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
+			env.executionId,
+		);
 		// GEO-202: Ensure issue_identifier is never null — fallback to issueId
 		const identifier = env.issueIdentifier || env.issueId;
 
@@ -211,6 +214,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// FLY-614 token accounting + FLY-616 quality eval). HTTP /events path
 			// persists the same field.
 			ponytail_condition: env.ponytailCondition,
+			workflow_node_id: workflowNodeId,
 		});
 
 		// FLY-1185 (Codex R5#1): the launch-claim starting→active CAS is NOT done
@@ -435,6 +439,20 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		summary?: string,
 	): Promise<void> {
 		const now = sqliteDatetime();
+		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
+			env.executionId,
+		);
+		const generalizedTeardown = this.store.observeEnrolledTeardown({
+			executionId: env.executionId,
+		});
+		if (generalizedTeardown.enrolled) {
+			if (generalizedTeardown.held) {
+				console.error(
+					`[DirectEventSink] generalized completion held for ${env.executionId}: explicit completion receipt missing`,
+				);
+			}
+			return;
+		}
 
 		this.store.insertEvent({
 			event_id: randomUUID(),
@@ -755,6 +773,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					preExistingSession?.session_role,
 					env.sessionRole,
 				),
+				workflow_node_id: workflowNodeId,
 			});
 		}
 
@@ -993,6 +1012,20 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		const goalBlocked = failure?.failureKind === "goal_blocked";
 		const terminalStatus = goalBlocked ? "blocked" : "failed";
 		const terminalError = goalBlocked ? failure.failureReason : error;
+		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
+			env.executionId,
+		);
+		const generalizedTeardown = this.store.observeEnrolledTeardown({
+			executionId: env.executionId,
+		});
+		if (generalizedTeardown.enrolled) {
+			if (generalizedTeardown.held) {
+				console.error(
+					`[DirectEventSink] generalized failure held for ${env.executionId}: explicit completion receipt missing`,
+				);
+			}
+			return;
+		}
 		// FLY-793: pre-failure snapshot so a failure signal doesn't downgrade a
 		// dispatched phase role (sister of the event-route failed guard).
 		const preFailureSession = this.store.getSession(env.executionId);
@@ -1020,6 +1053,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				preFailureSession?.session_role,
 				env.sessionRole,
 			),
+			workflow_node_id: workflowNodeId,
 		});
 
 		// GEO-202: Post-upsert backfill — if session still has no identifier, fall back to issueId

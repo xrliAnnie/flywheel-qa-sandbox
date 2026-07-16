@@ -171,6 +171,37 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 		expect(readdirSync(markerDir)).not.toContain("execA.json");
 	});
 
+	it("a legacy shadow binding remains on the canonical completion path", async () => {
+		await startRunning("execLegacy", "iss-execLegacy");
+		store.createWorkflowRun({
+			runId: "legacy-shadow-run",
+			issueId: "iss-execLegacy",
+			projectName: "geoforge3d",
+			claimsReadEnrolled: false,
+		});
+		expect(
+			store.admitWorkflowExecution({
+				runId: "legacy-shadow-run",
+				nodeId: "qa",
+				executionId: "execLegacy",
+				attempt: 1,
+				family: "qa_verdict",
+				now: "2026-07-15T00:00:00.000Z",
+				expiresAt: "2026-07-15T00:05:00.000Z",
+				absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		writeMarker("execLegacy", "needs_review", false);
+
+		const result = await tryReconcileComplete("execLegacy", deps());
+		expect(result).toEqual({
+			kind: "reconciled",
+			status: "awaiting_review",
+		});
+		expect(store.getSession("execLegacy")?.status).toBe("awaiting_review");
+		expect(readdirSync(markerDir)).not.toContain("execLegacy.json");
+	});
+
 	it("auto_approve + merged → completed through real FSM", async () => {
 		await startRunning("execB", "iss-execB");
 		writeMarker("execB", "auto_approve", true);

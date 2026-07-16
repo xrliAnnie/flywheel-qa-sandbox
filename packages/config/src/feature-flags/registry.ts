@@ -2165,6 +2165,28 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 	},
 	{
+		name: "workflow_generalized_templates",
+		category: "governance_gate",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1281: schema-v2 generalized workflow templates and per-Lead/per-category selection. Default off for byte compatibility. V2 admission also requires workflow_claims_write, and workflow_claims_write must not be enabled before the pinned real fresh-spawn E2E passes.",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/workflow-template.ts",
+				"isGeneralizedTemplatesEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "Independent from claims WRITE/READ/FORCE_LEGACY; a v2 start requires generalized templates and claims WRITE together plus typed enrollment.",
+	},
+	{
 		name: "workflow_claims_write",
 		category: "governance_gate",
 		source: "env",

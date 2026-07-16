@@ -1,13 +1,15 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import { canonicalSubmissionDigest } from "flywheel-config";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
+import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import {
 	importBundledWorkflowSeeds,
 	loadBundledWorkflowSeeds,
+	workflowSeedContentHash,
 } from "../workflow-template.js";
 
 const cleanups: Array<() => void> = [];
@@ -29,7 +31,166 @@ function seedHash(seed: {
 	});
 }
 
+function generalizedOpsSeed() {
+	const seed = {
+		templateId: "tpl_ops_v2_test",
+		name: "Ops no-code test",
+		projectScope: "global",
+		manifest: {
+			schema_version: 2 as const,
+			nodes: [
+				{
+					id: "execute",
+					type: "generic" as const,
+					vendor: "codex" as const,
+					model: "gpt-5.6-sol",
+					effort: "low" as const,
+					agent_file: "agents/generic-executor.md",
+				},
+				{ id: "founder_gate", type: "gate" as const },
+			],
+			edges: [
+				{
+					id: "execute_done",
+					from: "execute",
+					to: "founder_gate",
+					condition: "node_done" as const,
+				},
+			],
+			loops: [],
+			terminal_gate: {
+				node: "founder_gate",
+				predicate: "founder_approved" as const,
+			},
+			ship_claims: ["founder_approved" as const],
+		},
+	};
+	return { ...seed, contentHash: workflowSeedContentHash(seed) };
+}
+
 describe("StateStore workflow templates", () => {
+	it("boot import skips v2 while off and imports the full optional set while on", async () => {
+		const offStore = await StateStore.create(":memory:");
+		const skipped: string[] = [];
+		importBundledWorkflowSeeds(offStore, {}, (message) =>
+			skipped.push(message),
+		);
+		expect(
+			offStore.listWorkflowTemplates().map((row) => row.template_id),
+		).toEqual(["tpl_eng_heavy", "tpl_eng_light", "tpl_eng_trivial"]);
+		expect(skipped).toHaveLength(3);
+		offStore.close();
+
+		const onStore = await StateStore.create(":memory:");
+		const env = { FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1" };
+		importBundledWorkflowSeeds(onStore, env, () => {});
+		expect(
+			onStore.listWorkflowTemplates().map((row) => row.template_id),
+		).toEqual([
+			"tpl_eng_heavy",
+			"tpl_eng_light",
+			"tpl_eng_trivial",
+			"tpl_ops_light",
+			"tpl_product_v1",
+			"tpl_research_light",
+		]);
+		importBundledWorkflowSeeds(onStore, env, () => {});
+		for (const row of onStore.listWorkflowTemplates()) {
+			expect(
+				onStore.listWorkflowTemplateRevisions(row.template_id),
+			).toHaveLength(1);
+		}
+		onStore.close();
+	});
+
+	it("gates all schema-v2 mutation seams independently and requires claims-write before materialization", async () => {
+		const store = await StateStore.create(":memory:");
+		const root = mkdtempSync(join(tmpdir(), "flywheel-v2-agent-"));
+		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+		mkdirSync(join(root, "agents"));
+		writeFileSync(
+			join(root, "agents", "generic-executor.md"),
+			"Execute the bounded ops task.\n",
+		);
+		const seed = generalizedOpsSeed();
+		expect(() => store.importWorkflowTemplateSeed(seed)).toThrow(
+			/generalized.*disabled|flag/i,
+		);
+		expect(
+			store.importWorkflowTemplateSeed(seed, {
+				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+			}),
+		).toMatchObject({ status: "imported", revision: 1 });
+
+		expect(() =>
+			store.createWorkflowTemplateRevision({
+				templateId: seed.templateId,
+				manifest: seed.manifest,
+				schemaVersion: 2,
+				createdBy: "founder",
+			}),
+		).toThrow(/generalized.*disabled|flag/i);
+		const revision2 = store.createWorkflowTemplateRevision({
+			templateId: seed.templateId,
+			manifest: seed.manifest,
+			schemaVersion: 2,
+			createdBy: "founder",
+			env: { FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1" },
+		});
+		expect(() =>
+			store.publishWorkflowTemplate({
+				templateId: seed.templateId,
+				revision: revision2,
+				expectedRevision: 1,
+				publishedBy: "founder",
+			}),
+		).toThrow(/generalized.*disabled|flag/i);
+		expect(
+			store.publishWorkflowTemplate({
+				templateId: seed.templateId,
+				revision: revision2,
+				expectedRevision: 1,
+				publishedBy: "founder",
+				env: { FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1" },
+			}),
+		).toMatchObject({ status: "published", revision: revision2 });
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "ops",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+		expect(() =>
+			store.materializeWorkflowRun({
+				runId: "v2-claims-off",
+				issueId: "FLY-X",
+				projectName: "flywheel",
+				taskCategory: "ops",
+				claimsReadEnrolled: false,
+				actor: "lead",
+				canonicalRoot: root,
+				env: { FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1" },
+			}),
+		).toThrow(/claims.*write/i);
+		expect(store.getWorkflowRun("v2-claims-off")).toBeUndefined();
+		const run = store.materializeWorkflowRun({
+			runId: "v2-enabled",
+			issueId: "FLY-X",
+			projectName: "flywheel",
+			taskCategory: "ops",
+			claimsReadEnrolled: false,
+			actor: "lead",
+			canonicalRoot: root,
+			env: {
+				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+				FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+			},
+		});
+		expect(parseWorkflowRunSnapshot(run.snapshot!).schema_version).toBe(2);
+		expect(store.countWorkflowClaims(run.run_id)).toBe(1);
+		store.close();
+	});
+
 	it("publishes with CAS and keeps revisions, publications, and audit append-only", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "flywheel-template-"));
 		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));

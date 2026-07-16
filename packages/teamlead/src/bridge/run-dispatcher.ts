@@ -475,8 +475,9 @@ export class RetryDispatcher implements IRetryDispatcher {
 			// of erroring — exactly-one-started, never a silent second runner.
 			// Anything else (different/absent pre-bound id) keeps the legacy throw.
 			if (
-				req.successorExecutionId &&
-				inflightEntry.executionId === req.successorExecutionId
+				(req.successorExecutionId || req.generalizedExecution) &&
+				inflightEntry.executionId ===
+					(req.generalizedExecution?.executionId ?? req.successorExecutionId)
 			) {
 				return {
 					newExecutionId: inflightEntry.executionId,
@@ -499,7 +500,17 @@ export class RetryDispatcher implements IRetryDispatcher {
 		// FLY-245 D2 (plan §5.2.1): honor a gateway PRE-BOUND successor id so
 		// recovery can reconcile/re-drive by a durably-bound key; legacy callers
 		// (no pre-bound id) keep the self-generated UUID byte-for-byte.
-		const newExecutionId = req.successorExecutionId ?? randomUUID();
+		const newExecutionId =
+			req.generalizedExecution?.executionId ??
+			req.successorExecutionId ??
+			randomUUID();
+		if (
+			req.generalizedExecution &&
+			req.successorExecutionId &&
+			req.successorExecutionId !== req.generalizedExecution.executionId
+		) {
+			throw new Error("generalized retry execution id mismatch");
+		}
 
 		// FLY-1185 (R11#1): lifecycle admission — a founder-parked issue must not
 		// grow a retry runner. Fresh tombstone check + durable starting claim
@@ -531,7 +542,10 @@ export class RetryDispatcher implements IRetryDispatcher {
 		//     SAME execId (FLY-99 converges). A recorded-but-never-committed window
 		//     is never mistaken for a started Runner (the R5 zero-convergence bug).
 		const committedDir = launchCommitPath(newExecutionId);
-		if (req.successorExecutionId && this.launchClaims) {
+		if (
+			(req.successorExecutionId || req.generalizedExecution) &&
+			this.launchClaims
+		) {
 			const claimResult = this.launchClaims.claim(newExecutionId, Date.now());
 			if (claimResult === "exists" && this.isCommitted(newExecutionId)) {
 				return {
@@ -572,13 +586,13 @@ export class RetryDispatcher implements IRetryDispatcher {
 			// the previous hardcoded undefined). The FLY-728 dispatch model is
 			// carried as before (`runner_model` is display/audit output only,
 			// FLY-751 Codex R1 #2).
-			req.ignoreRunnerLabelSelection,
-			req.dispatchModel,
+			req.generalizedExecution ? true : req.ignoreRunnerLabelSelection,
+			req.generalizedExecution?.dispatch.model ?? req.dispatchModel,
 			// FLY-1224: retry has no requireMailboxTransport source (positional gap);
 			// phase-row retries re-derive vendor/effort from the table (actions.ts).
 			undefined,
-			req.dispatchVendor,
-			req.dispatchEffort,
+			req.generalizedExecution?.dispatch.vendor ?? req.dispatchVendor,
+			req.generalizedExecution?.dispatch.effort ?? req.dispatchEffort,
 		);
 		const modelDisplay = renderRunnerModelDisplay({
 			vendor: runnerSpawn.runnerBackend
@@ -625,6 +639,17 @@ export class RetryDispatcher implements IRetryDispatcher {
 			// FLY-205: predecessor's tier + URL — retry NEVER re-defaults the tier
 			docTier: req.docTier,
 			issueUrl: req.issueUrl,
+			...(req.generalizedExecution && {
+				generalizedExecutionContext: {
+					runId: req.generalizedExecution.runId,
+					nodeId: req.generalizedExecution.nodeId,
+					attempt: req.generalizedExecution.attempt,
+					snapshotDigest: req.generalizedExecution.snapshotDigest,
+				},
+				workflowCapabilities: req.generalizedExecution.capabilities,
+				workflowAgentContent: req.generalizedExecution.agentContent,
+				workflowOutputCredential: req.generalizedExecution.outputCredential,
+			}),
 			...runnerSpawn,
 			// FLY-751: recompute the MCP slim profile on retry from the persisted
 			// session fields (sessionRole + issue labels flow through the retry
@@ -649,7 +674,12 @@ export class RetryDispatcher implements IRetryDispatcher {
 			// replay adopts ONLY a committed Runner, never a recorded-but-never-
 			// started gated shell. Deterministic path → a new Bridge computes the
 			// same path on replay.
-			launchCommitPath: req.successorExecutionId ? committedDir : undefined,
+			launchCommitPath:
+				req.successorExecutionId || req.generalizedExecution
+					? committedDir
+					: undefined,
+			launchGateToken: req.generalizedExecution?.launchGateToken,
+			commitWorkflowLaunch: req.generalizedExecution?.commitWorkflowLaunch,
 			// FLY-116: spawn macOS Terminal viewer once tmux window exists
 			onTmuxWindowCreated: ({ baseSessionName, windowId }) => {
 				openTmuxViewer({
@@ -915,7 +945,15 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		const role = req.sessionRole ?? "main";
 		const key = this.inflightKey(req.issueId, role);
 
-		if (this.inflight.has(key)) {
+		const inflightEntry = this.inflight.get(key);
+		if (
+			inflightEntry &&
+			req.generalizedExecution &&
+			inflightEntry.executionId === req.generalizedExecution.executionId
+		) {
+			return { executionId: inflightEntry.executionId, issueId: req.issueId };
+		}
+		if (inflightEntry) {
 			throw new Error(
 				`Run already in progress for issue ${req.issueId} role ${role}`,
 			);
@@ -928,7 +966,10 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 
 		// FLY-116: opener moved into BlueprintContext callback below.
 
-		const executionId = req.successorExecutionId ?? randomUUID();
+		const executionId =
+			req.generalizedExecution?.executionId ??
+			req.successorExecutionId ??
+			randomUUID();
 
 		// FLY-1185 (R11#1): lifecycle admission at the single spawn chokepoint —
 		// every surface (HTTP start / phase handoff / auto-QA / rescue) flows
@@ -962,11 +1003,11 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			req.leadId,
 			req.issueLabels,
 			runtime.rolesConfig,
-			req.ignoreRunnerLabelSelection,
-			req.dispatchModel, // FLY-728 Part C
+			req.generalizedExecution ? true : req.ignoreRunnerLabelSelection,
+			req.generalizedExecution?.dispatch.model ?? req.dispatchModel, // FLY-728 Part C
 			req.requireMailboxTransport, // FLY-752
-			req.dispatchVendor, // FLY-1224 per-phase vendor
-			req.dispatchEffort, // FLY-1224 per-phase effort
+			req.generalizedExecution?.dispatch.vendor ?? req.dispatchVendor, // FLY-1224/1281
+			req.generalizedExecution?.dispatch.effort ?? req.dispatchEffort,
 		);
 		const modelDisplay = renderRunnerModelDisplay({
 			vendor: runnerSpawn.runnerBackend
@@ -980,12 +1021,13 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		// Blueprint.run(). The orchestrator supplies shadowContext for handoff
 		// spawns (T2) and replacement starts (T7); a fresh entry synthesizes the
 		// T1 default. The writer never throws into this flow (loud warn inside).
-		const shadowContext: WorkflowShadowContext | undefined = this.workflowShadow
-			? (req.shadowContext ?? {
-					node: role.replace(/[^a-zA-Z0-9-]/g, "").toLowerCase() || "main",
-					attempt: 1,
-				})
-			: undefined;
+		const shadowContext: WorkflowShadowContext | undefined =
+			this.workflowShadow && !req.generalizedExecution
+				? (req.shadowContext ?? {
+						node: role.replace(/[^a-zA-Z0-9-]/g, "").toLowerCase() || "main",
+						attempt: 1,
+					})
+				: undefined;
 		if (this.workflowShadow && shadowContext) {
 			this.workflowShadow.onSpawnDispatch({
 				projectName: req.projectName,
@@ -1023,9 +1065,10 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		// sets no marker" sentinel. NOTE: this makes a flag-ON fresh launch go
 		// through the commit-gate wrapper (same shape as retry) — declared in
 		// the plan's risk section; B11 real-machine QA covers it.
-		const shadowCommitDir = this.workflowShadow
-			? launchCommitPath(executionId)
-			: undefined;
+		const shadowCommitDir =
+			req.generalizedExecution || this.workflowShadow
+				? launchCommitPath(executionId)
+				: undefined;
 		if (shadowCommitDir) {
 			try {
 				mkdirSync(join(shadowCommitDir, ".."), { recursive: true });
@@ -1133,9 +1176,22 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			startPoint: req.startPoint ?? resume?.startPoint,
 			qaContext: req.qaContext,
 			workflowSubmissionCredential,
+			...(req.generalizedExecution && {
+				generalizedExecutionContext: {
+					runId: req.generalizedExecution.runId,
+					nodeId: req.generalizedExecution.nodeId,
+					attempt: req.generalizedExecution.attempt,
+					snapshotDigest: req.generalizedExecution.snapshotDigest,
+				},
+				workflowCapabilities: req.generalizedExecution.capabilities,
+				workflowAgentContent: req.generalizedExecution.agentContent,
+				workflowOutputCredential: req.generalizedExecution.outputCredential,
+			}),
 			// FLY-1232: durable commit marker on the fresh path — flag ON only
 			// (undefined otherwise, byte-compatible with the normal-path sentinel).
 			launchCommitPath: shadowCommitDir,
+			launchGateToken: req.generalizedExecution?.launchGateToken,
+			commitWorkflowLaunch: req.generalizedExecution?.commitWorkflowLaunch,
 			// FLY-795: restart-resilient resume context (Blueprint renders resume mode).
 			...(resume && {
 				progressResume: {
