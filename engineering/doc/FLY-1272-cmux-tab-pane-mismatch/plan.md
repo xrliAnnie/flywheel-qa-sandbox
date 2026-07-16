@@ -2,12 +2,12 @@
 
 Issue: FLY-1272 (https://linear.app/geoforge3d/issue/FLY-1272/fix-cmux-tab-名pane-内容串台-一个-tab-显示错的会话codex-单显示成-claude-husk今晚坑-founder)
 日期: 2026-07-16
-基于: research.md（v24，含 §10 R1-R25 修正史）
-版本: plan v27（R25 收尾：清除最后两个活跃段裸词冲突（版本行不写旧 refresh-ACK success token 本体；@id follow-up 改叫 generation-scoped authority guard），P8 baseline=0 已实跑证明）
+基于: research.md（v24，含 §10 R1-R25 修正史；§11 独立复核对账）
+版本: plan v28（= v27 主体不动（仅 §0 末尾加一句 addendum 指针）+ §2.8 addendum：TmuxAdapter remain-on-exit window-scope 修正——第 3 任 runner 对账新增，Tadashi gate 拍板带上、部署分层；另 §3 变更表 + §5 QA 表各加一行。v27 = R25 收尾：清除最后两个活跃段裸词冲突，P8 baseline=0 已实跑证明）
 
 ## 0. 一句话
 
-cmux tab 显示层改为 **link-window 隔离**（view session 只含自己的目标窗，串台物理不可能）+ **invariant 校验兜底**；显示层拆除按 linked/grouped 分叉（linked=tmux unlink 原子拒绝；grouped=escrow rename 永不删除）；view 建造走 **staging WAL + 原子 rename 认领**；TS 侧只改一件事：**A=1 下一律跳过按名杀 view**（跳过 kill 永远非破坏性，无 TOCTOU）。杀 runner 窗仍是 lifecycle 既有权威与既有行为，本单不碰。
+cmux tab 显示层改为 **link-window 隔离**（view session 只含自己的目标窗，串台物理不可能）+ **invariant 校验兜底**；显示层拆除按 linked/grouped 分叉（linked=tmux unlink 原子拒绝；grouped=escrow rename 永不删除）；view 建造走 **staging WAL + 原子 rename 认领**；TS 侧只改一件事：**A=1 下一律跳过按名杀 view**（跳过 kill 永远非破坏性，无 TOCTOU）。杀 runner 窗仍是 lifecycle 既有权威与既有行为，本单不碰。（v28 addendum 在此之外增补第二处独立 TS 小改：TmuxAdapter remain-on-exit window-scope 修正，见 §2.8——与跳杀合同零交集。）
 
 ## 1. 目标与验收（真机；产品保证的适用模式如实声明）
 
@@ -93,12 +93,29 @@ additive pass 顶部一次严格 tri-state 源快照；任一新 flag 开启且 
 | test-teardown（QA 槽） | **以 `qa_teardown` lease 模式取共享 mutator lease**（R12 #2：入口裸检查是 check-then-act；持锁下检查 maintenance 标记，标记在 → 整体拒跑，含进程杀与 FS 清理——R11 #2：杀 session ≠ 杀窗，E6 下 view 引用可保窗与 runner 进程存活）；持锁至全部 tmux/worktree/slot mutation 结束（owner-only 释放；两向 barrier 测试 + teardown 持锁中进程死亡测试） | 同（标记与 lease 是 A/B 之外的运维联锁，同样适用） |
 | TS killCmuxLinkedSession | A=1 一律跳杀（2.3 表，零破坏） | A=0：legacy 按名杀逐字 |
 
+### 2.8 remain-on-exit window-scope 修正（v28 addendum；research §11.3 实证，Tadashi 2026-07-16 拍板带上）
+
+**事实**：`TmuxAdapter.ts:296` 的 `set-option -t "=<session>:" remain-on-exit on` 在 `new-window` 之前执行，命中的是 spawn 时刻该 session 的当前窗口，不是即将创建的 runner 窗口；生产实测窗口普遍 `remain-on-exit off` → claude runner 进程退出时窗口对象直接销毁（漂移的窗口死亡形态之一），E3 husk 语义只对偶然命中的窗口成立。
+
+**修复合同（Codex delta review R1 后定形）**：
+- **位置与顺序（硬合同）**：`new-window` 取得 `windowId` 之后**立即**、FLY-245 commit release（`commitWorkflowLaunch()` / commit-file token 写入）**之前**、`pruneScaffoldWindow` **之前**，对该确切窗口设 window 级选项：`set-option -w -t "=<session>:<windowId>" remain-on-exit on`。
+- **type 门（R1 #3）**：仅 `this.type === "claude-tmux"` 执行——`AntigravityTmuxAdapter`/`KimiTmuxAdapter` 继承 `TmuxAdapter.execute()`，无条件加调用会让 agy/kimi 正常结束也留 husk（未评审的行为变化）；本单只恢复 claude 窗口的 husk 语义。
+- **删除旧 pre-spawn 调用（R1 #1，非可选）**：原 `=<session>:` 调用继续打在 spawn 时刻任意 current window（可能是既有 claude/codex TUI/agy/kimi 窗口），破坏精确 scope 与 codex 不变边界——**一并删除**，只保留新 window-id-scoped 调用。
+- **失败合同（R1 #2）**：`set-option` 失败 → 按该确切 `@id` kill window 后抛错（不 commit release、不 prune、不注册）；只有设置成功才允许 commit release → prune。**诚实接受的窄 race**：普通 direct-launch 路径 agent 随 new-window 即启动，进程可能在 post-create 设置前极早退出——只影响死亡渲染形态（husk vs 掉壳），不影响 A 结构保证，不为它扩通用 launch gate。
+
+**边界**：codex TUI 窗口（ensureRunnerTuiWindow）不动——FLY-1269（2026-07-16 合入）后 phase park **保持原 TUI 常驻**，显式 killWindow 只发生在 issue-terminal/request-bound teardown；Tadashi 已接受「无窗无 tab」的诚实语义。`killCmuxLinkedSession`（§2.3）与 `killTmuxWindow` 零交集、一字不动。
+
+**部署分层（Tadashi 钉子 + R1 #4 收敛条件修正）**：watcher 侧（A/B flag）换 watcher 立即生效；本项是 TS 侧改动，随下一次批量 Bridge 重启生效，且**无 backfill**——只有重启后**新建**的 claude 窗口获得该选项，升级前已存在的活窗口保持旧死亡形态直到各自自然重建。skew 窗口（新 watcher × 旧 Bridge）与存量窗口期间，A=1 结构保证均不受影响（窗亡 → linked view 亡 → tab 死/关，永不显示别人），仅死亡渲染形态暂不统一，写入 rollout runbook 备注。
+
+**测试**：stub exec 事件 journal（commit callback 入同一 journal）断言全序 new-window < set-option(-w, 确切 @id) < commit release < prune；失败变体：set-option 失败 → 无 commit、精确 `@id` kill、无 prune/无注册；type 门：agy/kimi adapter 走 execute() 不发 set-option；真机回归（升级后 **fresh spawn** 的 claude 窗口）：进程退出 → 窗口留 husk（pane_dead=1）→ A=1 linked view 显示 dead pane（E3 语义）；突变验证：去掉 type 门或去掉 set-option 调用 → 对应断言转红。
+
 ## 3. 变更总览
 
 | 文件 | 改动 |
 |---|---|
 | `scripts/flywheel-cmux-sync.sh` | A+B：staging 原语（WAL intent/completion 对）、分叉拆除、escrow+inventory、ledger（generation 键、无破坏性 backfill）、快照门、收敛 sweep、reaper ledger 化、keeper inventory 重建、--probe-lease、maintenance 标记检查、**create 时 attachment 歧义分类器**（R20-R22：new-workspace 前预捕获 canonical view client 集 → 非 0/不可读时事后正计数归类 attachment_unverified；**任何 post-create 读取失败/不可读无条件归类**（不依赖预捕获值）；unverified 一律函数退出前发 ref 绑定告警；**无事件快速重建分支**——R18 后砍除） |
 | `packages/teamlead/src/bridge/tmux-lookup.ts` | §2.3：killCmuxLinkedSession 按 A flag 分支（A=1 一律跳杀 + 冻结返回合同；A=0 legacy 逐字）；六 caller 零流程改动，仅回归测试 |
+| `packages/claude-runner/src/TmuxAdapter.ts` | §2.8（v28 addendum）：new-window 后、FLY-245 commit release 前对确切 @id 设 window 级 remain-on-exit（仅 claude-tmux type 门内；删除旧 pre-spawn `=<session>:` 调用；失败=精确杀窗+抛错）；随下次批量 Bridge 重启生效、无 backfill |
 | `scripts/test-teardown.sh` | qa_teardown lease 模式 + maintenance 标记整体拒跑 + owner 解析 + 三命名空间（`^cmux-`/`^fwkeeper-`/`^fwstage-`，stage 以 owner option 或匹配 WAL intent 认权）+ 只杀本槽 |
 | `scripts/flywheel-cmux-autostart.sh` | 两 flag 提取（precedence/bool-only/fail-closed；绝不 source 整 .env）+ maintenance 标记检查（.zshrc 路径一次性退出；supervised 由 sync 脚本内有界轮询承担） |
 | （已撤）迁移辅助/install --migrate/restart-services 改动 | R12 后降海拔：迁移走人工 runbook，无新脚本；restart-services 零改动 |
@@ -164,6 +181,7 @@ A=1 走原语（终读即 ready-gate，defer 零残留零 TTL）；A=0 逐字。
 | 8 | teardown 所有权 | 本槽 view/keeper/stage 回收；foreign 一律不碰（活 pane 存活断言） |
 | 9 | 孤儿 + ref 权威 | 双锚点消失 → ledger reaper 收敛；stale-title 新 ref 不误关；跨 generation 旧账非权威；pre-upgrade 工作簿新模式下不被关 |
 | 10 | TS 跳杀（skew + 交错 + 解析失败） | A=1：任何观测下不按名杀 view；close_runner 后窗亡 view 自然亡、pin marker 正常或安全缺省；同名兄弟 @old 杀 @new view 留；missing window/空名/display 失败零破坏；A=0：legacy 按名杀逐字；交错（watcher escrow+认领并发）新 view 存活 |
+| 11 | remain-on-exit window-scope（§2.8，v28 addendum） | 升级后 **fresh spawn** 的 claude runner 窗口进程退出 → 窗口留 husk（pane_dead=1）、A=1 linked view 显示 dead pane（E3 语义）；升级前存量窗口不回填（如实旧形态）；codex TUI 行为不变（FLY-1269 后 phase park 保持原 TUI，issue-terminal teardown 才显式 killWindow）；agy/kimi 不受影响（type 门）；突变验证：去掉 type 门 / set-option 调用 → 对应断言转红 |
 
 QA 注意（memory 配方）：tmux 探活别杀最后一窗；平台谓词真机验、fixture 真抓格式（FLY-1285）；「干净/通过」断言必须同尺打中已知阳性。
 

@@ -4,7 +4,7 @@ Issue: FLY-1272 (https://linear.app/geoforge3d/issue/FLY-1272/fix-cmux-tab-名pa
 日期: 2026-07-16
 基于: exploration.md
 
-> 版本合同：本文与 **plan.md v27** 配套（plan §2 统一决策表为唯一权威合同）。历版下列**方案级合同**已被 Codex design review R1-R10 证伪或撤除，任何文档以方案形态出现即为陈旧残留、一律以 plan v27 §2 为准（R18 后追加撤除：事件快速重建分支 converge_view_for_title/repair_create/surface-repair 状态机/nonce attach 证明——同名重生走既有 reconcile+create additive 路径）（R12 后追加撤除：迁移辅助命令/迁移 fence/manifest 协议/refresh 请求 ACK 协议——整体不建，见 §10 R12）（注意区分：「session-not-found→killed:true」作为**成功合同**被否，但作为**具名既有缺陷**保留在 follow-up 清单——两种语境不同）：观测后按名杀 view（name-rebind TOCTOU，R7 #1）、靠 churn 完成迁移、无 prepared 态的 ledger/inventory、条件化杀源窗、全局裸 @id 杀、cleanup_pending 重试机、accepted-bounded 的 preflight→kill 条目（R6 裁定不安全，已随条件化杀窗整体撤除）、人工 grouped reclaim/guard 协议（descope）、破坏性 ledger backfill、通用 unlink 拆除（不分 grouped/linked）、keeper 自动 GC、单命令队列当事务、source-title 即 ledger 所有权、flag-only 的 TS 杀 view 决策、「结构性安全」的 preflight→kill 描述（实为 accepted-bounded + B 自愈）、session-not-found 即 killed:true、`ref|title` 不带 socket generation、lead-alert.sh 直发 keeper 告警、裸 check-then-kill 的 keeper 人工回收、byte-for-byte 源侧断言、双/三 readSite 一刀切（A=3 B=2）、`pnpm --filter teamlead`。修正史见 §10。
+> 版本合同：本文与 **plan.md v27 冻结主体 + v28 §2.8 addendum** 配套（plan §2 统一决策表为唯一权威合同；§11 为 v28 对账新增）。历版下列**方案级合同**已被 Codex design review R1-R10 证伪或撤除，任何文档以方案形态出现即为陈旧残留、一律以 plan v27 §2 为准（R18 后追加撤除：事件快速重建分支 converge_view_for_title/repair_create/surface-repair 状态机/nonce attach 证明——同名重生走既有 reconcile+create additive 路径）（R12 后追加撤除：迁移辅助命令/迁移 fence/manifest 协议/refresh 请求 ACK 协议——整体不建，见 §10 R12）（注意区分：「session-not-found→killed:true」作为**成功合同**被否，但作为**具名既有缺陷**保留在 follow-up 清单——两种语境不同）：观测后按名杀 view（name-rebind TOCTOU，R7 #1）、靠 churn 完成迁移、无 prepared 态的 ledger/inventory、条件化杀源窗、全局裸 @id 杀、cleanup_pending 重试机、accepted-bounded 的 preflight→kill 条目（R6 裁定不安全，已随条件化杀窗整体撤除）、人工 grouped reclaim/guard 协议（descope）、破坏性 ledger backfill、通用 unlink 拆除（不分 grouped/linked）、keeper 自动 GC、单命令队列当事务、source-title 即 ledger 所有权、flag-only 的 TS 杀 view 决策、「结构性安全」的 preflight→kill 描述（实为 accepted-bounded + B 自愈）、session-not-found 即 killed:true、`ref|title` 不带 socket generation、lead-alert.sh 直发 keeper 告警、裸 check-then-kill 的 keeper 人工回收、byte-for-byte 源侧断言、双/三 readSite 一刀切（A=3 B=2）、`pnpm --filter teamlead`。修正史见 §10。
 
 Brainstorm gate 已过：Tadashi 批准 Option C（A=link-window 隔离根治 + B=invariant 校验纵深），四钉子：① B 杀伤边界只到显示层、原文进 plan；② 存量迁移 + kill-switch（default on、=0 回旧、注册 registry）；③ 529 真机 QA + 振荡检查；④ scope 边界。3 轮安全阀时 Lead 复批：继续收敛路线；grouped 一律 escrow rename；keeper 自动 GC 显式 descope。
 
@@ -255,3 +255,28 @@ R18 抓出 nonce 证明撞已认领的 canonical 名、相位表「各有定义�
 ### R25（1 条采纳，plan v27 定稿；P8 门已实跑证明）
 
 1. 按三类排除规则实套后 baseline 仍有 2 个活跃裸词命中（plan 版本行写了旧 refresh-ACK success token 本体；@id follow-up 的「generation fence」合法用词撞全局禁词 fence）→ 版本行改述不写 token 本体；follow-up 改名 **generation-scoped authority guard**（tmux-generation 核验门）；research §1 的改名说明同样去 token 本体。**门已按 P8 合同实跑**（行级过滤脚本，三类排除）：baseline=0 → 注入 refresh ACK fixture 命中 1（转红）→ 移除恢复 0（转绿），实现机输出留档 design 阶段记录。
+
+## 11. 独立复核对账（2026-07-16，第 3 任 design runner；plan v28 addendum 的依据）
+
+背景：第 3 任 runner 在未读本文档的情况下独立做了一轮根因取证（生产 watcher 日志 + 隔离 tmux server 实验），推导出的方案与 v27 的 A（link-window 隔离）+ B（invariant 校验）同宗。**对账结论 = 兼容子集**：v27+WIP（06a598cf1）全部保留为唯一权威；独立会话的 plan 级提案全部废弃（其「启动时自动迁移」等想法恰是 R10-R12 已探索并否决的路线）；仅以下三个增量实证进入档案。
+
+### 11.1 独立复现（强化 v27 前提，零合同变化）
+
+- grouped view 指针漂移在隔离 server 100% 复现（kill 目标窗 → 指针跳组内任意窗）；link-window 单窗 view 在同一实验里 kill 目标窗 → session 直接死亡，无处可漂——**v27 A 的结构性前提在本机 tmux 3.5a 上直接验证通过**。
+- 事发晚（2026-07-14）watcher 日志：FLY-1264-implement 一晚 4 个窗口 id（@924→@943→@1034→@1057），每代死亡→tab 悬空→漂到组内长寿活窗 @680（FLY-1225-qa，weekly-limit Claude）→ 数分钟后才被 conservative cleanup 关闭。founder 两次撞见即此窗口期。
+
+### 11.2 事件清理路径的真实缺陷（修正一次错误探针后的结论；不改 v27 任何合同）
+
+- **探针修正**：pane-died/pane-exited 是 **window 级 hook** —— `show-hooks -g` / `show-hooks -t <sess>` 均不显示（要 `-gw` / `-w -t`）。生产的 pane-died[500]（全局）与 pane-exited[500]（per-session）**实际都注册着且功能上会 fire**；「设不上」是探针用错的假结论（已用功能级阳性对照纠正）。
+- **真缺陷 ①（错名 payload，精确限定 pane-exited）**：remain-on-exit off 时窗口随进程退出销毁，**pane-exited** 的 `#{session_name}|#{window_name}` 在 hook 执行时展开为**销毁后的当前窗口**（隔离 server 实证：victim3 死亡 → 事件载荷为 `exited|src|zsh`）→ 事件被 zsh/bash 过滤或指向无关窗口 → 30s event 清理对「自然销毁」结构性不可靠。pane-died 按 man page 只在 remain-on-exit on（窗口仍在）时触发，彼时上下文完整、载荷名正确（隔离 server 实证：victim2 husk → `pane-died|src|victim2`），不在此缺陷内。可靠信号只有 window-unlinked（`#{hook_window_name}` 载荷正确，kill-window 与自然销毁都触发，均已实证）。
+- **真缺陷 ②（watcher 自己的存在性探针盲区）**：register_session_hooks 用 `tmux show-hooks -t <sess>` grep 判断 pane-exited 是否已注册——window 级 hook 在该输出里不可见 → 每个 pass 都误判缺失并重注册（生产日志「was 1/2」× 3372 行，纯噪音但掩盖真实注册状态）。
+- **真缺陷 ③（全局 hook 的生命周期）**：register_global_hooks 只在 watcher 启动时跑一次；tmux server 若在 watcher 存活期间重启，window-unlinked 等全局 hook 丢失且无人补——与事发晚 event 清理近乎全灭（全天仅 5 条 Event cleanup vs 181 条 Conservative cleanup）一致。
+- **对 v27 的影响：零**。v27 的「绝不显示别人」保证是结构性的（A）+ additive pass 驱动（B/reconcile/create，≤2 conclusive pass 合同），刻意不依赖事件路径；§2.7 对「事件驱动 30s pending cleanup」仅沿用 legacy 语义，正确。本节价值=解释事故为何持续 5-10 分钟可见 + 为「不能依赖事件路径」提供实证。缺陷 ①②③ 的修复不在本单（follow-up 候选，报 Lead 建单归 watcher 维护域）。
+
+### 11.3 remain-on-exit scope 打偏（plan v28 addendum §2.8 的事实基础）
+
+`TmuxAdapter.ts:296` 的 `set-option -t "=<session>:" remain-on-exit on` 在 `new-window` **之前**执行，target 解析为该 session **spawn 时刻的当前窗口**——即将创建的 runner 窗口并未获得该选项；生产实测全局/`runner-flywheel` 均 `remain-on-exit off`。后果：claude runner 窗口的 husk 语义（E3「husk 显示真相」、FLY-867 Fix B 的 pane_dead 门）只对「恰好当过 current window」的窗口成立，其余窗口进程一退窗口即销毁（= 触发 11.1 漂移的窗口死亡形态之一）。codex TUI 窗口（ensureRunnerTuiWindow）从不设置该选项，但不受此项影响：FLY-1269（2026-07-16 00:00 合入）后 phase park **保持原 TUI 常驻**，显式 killWindow 只发生在 issue-terminal/request-bound teardown。修复合同见 plan §2.8（Tadashi 2026-07-16 gate 回复拍板带上，部署分层 + 无 backfill）。
+
+### 11.4 触发器量化（**FLY-1269 合入前的历史证据**；FLY-1308 域佐证，本单不修）
+
+codex phase runner 的窗口高频死/建曾是本次事故的频率放大器：11.1 的日志显示单 issue 单晚 4 代窗口（2026-07-14）。**该形态是 FLY-1269（2026-07-16 00:00 合入）之前的行为**——FLY-1269 后 phase park 保持原 TUI 常驻不再杀窗，当前残余 churn 只来自 issue-terminal teardown / crash / 重启。历史量化留作 runner-lifecycle 域（plan §8 已具名 descope 至 FLY-1308）的实证输入，引用时须带本时间界标。
