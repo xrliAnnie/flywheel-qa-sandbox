@@ -31,6 +31,9 @@ import {
 	type StateStore,
 	type StuckDisposition,
 } from "../StateStore.js";
+// FLY-1282 Part D: prepare-time receipt copy (final content is built at the
+// disposition route; delivery never reconstructs semantics).
+import { formatDispositionReceipt } from "./disposition-receipt.js";
 import { matchesLead } from "./lead-scope.js";
 // FLY-368: the recovery-nudge gates + audit-before-send now live in a shared,
 // audited operation reused by BOTH this route and the auto-repair bot. Gate-4's
@@ -298,48 +301,79 @@ export function createStuckRemanageRouter(
 			note = userNote ? userNote.slice(0, NOTE_MAX) : null;
 		}
 
-		store.setStuckDisposition({
-			execution_id: executionId,
-			episode_fingerprint: rowFingerprint,
-			disposition,
-			snooze_until_ms: rowSnoozeUntilMs,
-			noted_by: leadId,
-			note,
-		});
-		// FLY-1048 PR-C (C4a): mirror the Lead's receipt into the unified flow's
-		// episodes (single source of truth = detection_escalations) so its
-		// ~30min reconcile never founder-pages an episode the Lead already
-		// judged through the OLD route. Case-c kind only — gap/delivery kinds
-		// have their own detection-ack lifecycle. Terminal receipts
-		// (false_positive) → RESOLVED; latches (legitimate_wait / snooze /
-		// needs_founder) → ACKED. An execution latch acks EVERY active case-c
-		// episode of the target (same scope the '*' sentinel latches). A mirror
-		// failure never fails the request (trace-row posture).
-		try {
-			const mirrorDisposition =
-				disposition === "false_positive" ? "resolve" : "ack";
-			if (isExecutionScoped) {
-				for (const row of store.getDetectionEscalationsForReconcile()) {
-					if (row.target_key !== executionId || row.kind !== CASE_C_KIND) {
-						continue;
-					}
-					store.ackDetectionEscalation(
-						executionId,
-						CASE_C_KIND,
-						row.episode_fingerprint,
-						{ atMs: now(), disposition: mirrorDisposition },
-					);
+		// FLY-1048 PR-C (C4a) + FLY-1282 Part D: the authoritative stuck write,
+		// the unified-flow episode ack(s) AND the disposition-receipt prepare(s)
+		// commit in ONE StateStore transaction. The old shape committed
+		// setStuckDisposition first and swallowed a mirror failure with a 200 —
+		// that "disposed but zero unified ack / zero receipt" false success is
+		// gone: any failure rolls the whole disposition back and the route
+		// surfaces 500 (the Lead retries). Case-c kind only — gap/delivery
+		// kinds have their own detection-ack lifecycle. Terminal receipts
+		// (false_positive) → RESOLVED; latches → ACKED. An execution latch acks
+		// EVERY active case-c episode (N episodes → N independent receipts;
+		// per-episode-generation dedup is DB-enforced).
+		const mirrorDisposition =
+			disposition === "false_positive" ? "resolve" : "ack";
+		const mirrorEpisodes: Array<{
+			targetKey: string;
+			kind: string;
+			episodeFingerprint: string;
+			disposition: "ack" | "resolve" | "dismiss";
+		}> = [];
+		if (isExecutionScoped) {
+			for (const row of store.getDetectionEscalationsForReconcile()) {
+				if (row.target_key !== executionId || row.kind !== CASE_C_KIND) {
+					continue;
 				}
-			} else {
-				store.ackDetectionEscalation(executionId, CASE_C_KIND, fingerprint, {
-					atMs: now(),
+				mirrorEpisodes.push({
+					targetKey: executionId,
+					kind: CASE_C_KIND,
+					episodeFingerprint: row.episode_fingerprint,
 					disposition: mirrorDisposition,
 				});
 			}
+		} else {
+			mirrorEpisodes.push({
+				targetKey: executionId,
+				kind: CASE_C_KIND,
+				episodeFingerprint: fingerprint,
+				disposition: mirrorDisposition,
+			});
+		}
+		try {
+			store.applyStuckDispositionWithReceipts({
+				stuck: {
+					execution_id: executionId,
+					episode_fingerprint: rowFingerprint,
+					disposition,
+					snooze_until_ms: rowSnoozeUntilMs,
+					noted_by: leadId,
+					note,
+				},
+				episodes: mirrorEpisodes,
+				atMs: now(),
+				receipt: {
+					actorLeadId: leadId,
+					rawDisposition: disposition,
+					content: formatDispositionReceipt({
+						actorLeadId: leadId,
+						kind: CASE_C_KIND,
+						rawDisposition: disposition,
+						note: userNote,
+						snoozeUntilMs: rowSnoozeUntilMs,
+					}),
+					executionId,
+					projectName: session.project_name,
+				},
+			});
 		} catch (err) {
 			console.error(
-				`[stuck-disposition] detection-escalation mirror failed for ${executionId}: ${(err as Error).message}`,
+				`[stuck-disposition] transactional disposition failed for ${executionId}: ${(err as Error).message}`,
 			);
+			res.status(500).json({
+				error: `disposition persist failed: ${(err as Error).message}`,
+			});
+			return;
 		}
 		// Trace row is secondary — the stuck_dispositions receipt above IS the
 		// authoritative record, so a trace failure logs but does not fail the
@@ -458,10 +492,41 @@ export function createStuckRemanageRouter(
 			return;
 		}
 
-		store.ackDetectionEscalation(executionId, kind, fingerprint, {
-			atMs: now(),
-			disposition,
-		});
+		// FLY-1282 Part D: the ack + the disposition-receipt prepare commit in
+		// ONE transaction (a committed ack must never be missing its receipt
+		// row). changed=false (already RESOLVED — e.g. a recovery beat the
+		// Lead) prepares nothing: the first via:'lead' disposition wins.
+		let ackOutcome: { changed: boolean; receiptPrepared: boolean };
+		try {
+			ackOutcome = store.ackDetectionEscalationWithReceipt(
+				executionId,
+				kind,
+				fingerprint,
+				{
+					atMs: now(),
+					disposition,
+					receipt: {
+						actorLeadId: leadId,
+						rawDisposition: disposition,
+						content: formatDispositionReceipt({
+							actorLeadId: leadId,
+							kind,
+							rawDisposition: disposition,
+						}),
+						executionId,
+						projectName: session.project_name,
+					},
+				},
+			);
+		} catch (err) {
+			console.error(
+				`[detection-ack] transactional ack failed for ${executionId}: ${(err as Error).message}`,
+			);
+			res.status(500).json({
+				error: `detection ack persist failed: ${(err as Error).message}`,
+			});
+			return;
+		}
 		// FLY-1048 PR-C (C4a): mirror into the OLD receipts so the legacy flow
 		// (Bridge-restart rebuild + Q7 fallback) honors this judgment even with
 		// FLYWHEEL_DETECTION_ESCALATION off. Only the case-c kind keyed by a
@@ -508,7 +573,13 @@ export function createStuckRemanageRouter(
 				`[detection-ack] trace event write failed for ${executionId}: ${(err as Error).message}`,
 			);
 		}
-		res.json({ ok: true, status });
+		res.json({
+			ok: true,
+			status,
+			// FLY-1282 Part D: surfaced so the Lead can see whether this
+			// disposition earned the (first) receipt for the episode generation.
+			receiptPrepared: ackOutcome.receiptPrepared,
+		});
 	});
 
 	// ── 2. Restricted recovery nudge (plan §3.5) ──

@@ -877,33 +877,110 @@ export interface DoneThreadReconcileSchedulerOpts {
 	/** Heartbeat tick; each tick re-reads config and checks the interval. */
 	tickMs?: number;
 	log?: (msg: string) => void;
+	/**
+	 * FLY-1282 Part C: per-issue archive-only targeted check (composition wraps
+	 * `runTargetedArchiveCheck` + outcome mapping). `done:true` dequeues;
+	 * `done:false` is retried with capped backoff + fair tail rotation. Absent
+	 * → the scheduler is byte-identical to pre-FLY-1282 ({enqueue} is a loud
+	 * no-op).
+	 */
+	runTargeted?: (issueId: string) => Promise<{ done: boolean; note?: string }>;
+	now?: () => number;
 }
+
+/** FLY-1282 Part C queue tuning (per Codex R11 #4 / R12 #4 / R13 #2). */
+const TARGETED_QUEUE_CAP = 64;
+const TARGETED_BACKOFF_BASE_MS = 60_000;
+const TARGETED_BACKOFF_CAP_MS = 30 * 60_000;
+const TARGETED_SLOW_AFTER_MS = 24 * 3_600_000;
+const TARGETED_SLOW_INTERVAL_MS = 3_600_000;
 
 export function startDoneThreadReconcileScheduler(
 	opts: DoneThreadReconcileSchedulerOpts,
-): { stop: () => Promise<void> } {
+): { enqueue: (issueId: string) => void; stop: () => Promise<void> } {
 	const resolveConfig =
 		opts.resolveConfig ?? (() => resolveDoneThreadReconcileConfig());
 	const bootDelayMs = opts.bootDelayMs ?? 15_000;
 	const tickMs = opts.tickMs ?? 60_000;
+	const now = opts.now ?? (() => Date.now());
 	const log =
 		opts.log ??
 		((msg: string) => console.log(`[done-thread-reconcile] ${msg}`));
 
 	let stopped = false;
 	let inFlight: Promise<unknown> | null = null;
-	let lastRunAt = Date.now();
+	let lastRunAt = now();
+
+	// ── FLY-1282 Part C: in-memory targeted queue (scheduler-owned; shares
+	// the SAME inFlight single-flight as global passes — never concurrent). ──
+	interface TargetedItem {
+		issueId: string;
+		attempts: number;
+		enqueuedAt: number;
+		nextEligibleAt: number;
+	}
+	const targetedQueue: TargetedItem[] = [];
+	// Code R1 #8: dedupe must cover the item CURRENTLY in flight too — a
+	// completion re-fired while the targeted check is suspended must not mint
+	// a second logical item (double backoff entries, wasted capacity).
+	const targetedMembers = new Set<string>();
 
 	const shouldAbort = () => stopped;
 
 	const startRun = () => {
 		if (stopped || inFlight) return;
-		lastRunAt = Date.now();
+		lastRunAt = now();
 		inFlight = opts
 			.runOnce(shouldAbort)
 			.catch((err) =>
 				log(`pass failed: ${err instanceof Error ? err.message : String(err)}`),
 			)
+			.finally(() => {
+				inFlight = null;
+			});
+	};
+
+	const startTargeted = (item: TargetedItem) => {
+		const runTargeted = opts.runTargeted;
+		if (!runTargeted || stopped || inFlight) return;
+		inFlight = runTargeted(item.issueId)
+			.then((outcome) => {
+				if (outcome.done) {
+					targetedMembers.delete(item.issueId);
+					return;
+				}
+				// Retryable: capped backoff, fair tail rotation; after 24h drop
+				// to low-frequency-forever (never silently dropped — R13 #2).
+				item.attempts += 1;
+				const age = now() - item.enqueuedAt;
+				const backoff =
+					age > TARGETED_SLOW_AFTER_MS
+						? TARGETED_SLOW_INTERVAL_MS
+						: Math.min(
+								TARGETED_BACKOFF_BASE_MS * 2 ** (item.attempts - 1),
+								TARGETED_BACKOFF_CAP_MS,
+							);
+				item.nextEligibleAt = now() + backoff;
+				if (age > TARGETED_SLOW_AFTER_MS) {
+					log(
+						`targeted archive for ${item.issueId} still pending after ${Math.round(age / 3_600_000)}h (${outcome.note ?? "retryable"}) — low-frequency retry continues`,
+					);
+				}
+				targetedQueue.push(item); // tail — later items are not starved
+			})
+			.catch((err) => {
+				item.attempts += 1;
+				item.nextEligibleAt =
+					now() +
+					Math.min(
+						TARGETED_BACKOFF_BASE_MS * 2 ** (item.attempts - 1),
+						TARGETED_BACKOFF_CAP_MS,
+					);
+				targetedQueue.push(item);
+				log(
+					`targeted archive for ${item.issueId} threw: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			})
 			.finally(() => {
 				inFlight = null;
 			});
@@ -919,21 +996,64 @@ export function startDoneThreadReconcileScheduler(
 	const tickTimer = setInterval(() => {
 		if (stopped) return;
 		const cfg = resolveConfig();
+		// Disabled PAUSES consumption (items retained; resumes on re-enable
+		// without restart — R12 #4; construction stays unconditional).
 		if (!cfg.enabled) return;
-		if (cfg.intervalMin === 0) return; // boot-only mode
-		if (inFlight) return; // single-flight
-		if (Date.now() - lastRunAt >= cfg.intervalMin * 60_000) startRun();
+		if (inFlight) return; // single-flight (shared with targeted)
+		// Targeted items first (the minutes-not-hours path); one per tick.
+		if (opts.runTargeted) {
+			const idx = targetedQueue.findIndex((i) => i.nextEligibleAt <= now());
+			if (idx >= 0) {
+				const item = targetedQueue.splice(idx, 1)[0];
+				if (item) {
+					startTargeted(item);
+					return;
+				}
+			}
+		}
+		if (cfg.intervalMin === 0) return; // boot-only mode (global pass)
+		if (now() - lastRunAt >= cfg.intervalMin * 60_000) startRun();
 	}, tickMs);
 	tickTimer.unref?.();
 
 	return {
+		/**
+		 * FLY-1282 Part C: enqueue an issue for the archive-only targeted
+		 * check. Deduped; bounded (overflow REFUSES + loud log — the periodic
+		 * sweep is the backstop when enabled; boot-only + >cap burst is a
+		 * documented accepted gap, never a fake backstop).
+		 */
+		enqueue: (issueId: string) => {
+			if (!opts.runTargeted) {
+				log(`enqueue(${issueId}) ignored — no targeted runner wired`);
+				return;
+			}
+			if (stopped) return;
+			if (targetedMembers.has(issueId)) return; // queued OR in flight
+			if (targetedQueue.length >= TARGETED_QUEUE_CAP) {
+				log(
+					`targeted queue full (${TARGETED_QUEUE_CAP}) — REFUSING enqueue for ${issueId}; periodic sweep is the backstop when enabled`,
+				);
+				return;
+			}
+			targetedMembers.add(issueId);
+			targetedQueue.push({
+				issueId,
+				attempts: 0,
+				enqueuedAt: now(),
+				nextEligibleAt: now(),
+			});
+		},
 		// Cooperative drain: new runs stop immediately; an in-flight pass exits
 		// between candidates via shouldAbort and is awaited before returning —
-		// callers MUST stop() before store.close().
+		// callers MUST stop() before store.close(). Queued targeted items are
+		// dropped on stop (shutdown drain).
 		stop: async () => {
 			stopped = true;
 			clearTimeout(bootTimer);
 			clearInterval(tickTimer);
+			targetedQueue.length = 0;
+			targetedMembers.clear();
 			if (inFlight) {
 				try {
 					await inFlight;

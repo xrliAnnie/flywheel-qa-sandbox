@@ -102,6 +102,7 @@ const ENV_KEYS = [
 	"FLYWHEEL_STUCK_CONFIRM_PER_TICK",
 	"FLYWHEEL_STUCK_FRAME_GAP_MS",
 	"FLYWHEEL_STUCK_CONFIRM_DEADLINE_MS",
+	"FLYWHEEL_ZOMBIE_RECONCILE", // FLY-1282: pinned by the overlap-legacy test
 ] as const;
 const saved: Record<string, string | undefined> = {};
 
@@ -252,6 +253,10 @@ describe("FLY-1234 confirm layer — starvation regression (INV-2)", () => {
 
 describe("FLY-1234 confirm layer — re-entrancy guard (R1 #2)", () => {
 	it("kill-switch=0: overlap is NOT guarded — legacy timing preserved (INV-5, Codex R1 #2)", async () => {
+		// FLY-1282: this test asserts the FLY-1234 legacy overlap timing in
+		// isolation — the zombie-ON liveness-chain single-flight (a separate,
+		// deliberate serialization) must be off for it to be observable.
+		process.env.FLYWHEEL_ZOMBIE_RECONCILE = "0";
 		process.env.FLYWHEEL_STUCK_PANE_CONFIRM = "0";
 		let notifierCalls = 0;
 		let releaseFirst: (() => void) | undefined;

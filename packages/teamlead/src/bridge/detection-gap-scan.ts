@@ -81,6 +81,15 @@ export interface GapScanInput {
 	founderNotified: boolean | null;
 	nowMs: number;
 	thresholds: GapThresholds;
+	/**
+	 * FLY-1282 Part B (single per-tick snapshot — Codex R10 #2): when true the
+	 * V2 delivery_unconsumed semantics apply — parked/awaiting-human sessions
+	 * never trigger it (wake delivery owns those), and the reader's V2 SQL has
+	 * already excluded id-receipted instructions. The SAME captured boolean
+	 * must be passed to openGapReader.evidenceFor and both judgement functions;
+	 * absent/false → the exact legacy (V1) semantics.
+	 */
+	deliveryUnconsumedV2?: boolean;
 }
 
 export interface GapThresholds {
@@ -160,7 +169,13 @@ export function evaluateGapSuspicion(input: GapScanInput): SuspicionRecord[] {
 	}
 
 	// D6: delivered-but-unread push instruction past the threshold.
+	// FLY-1282 Part B (V2): a parked/awaiting-human session's undelivered-read
+	// state is normal (hook/wake delivery never stamps read_at; production
+	// 2026-07-15: three live false positives, all already acted on) — the
+	// status gate is a complete judgement for those sessions.
+	const unconsumedGatedOff = input.deliveryUnconsumedV2 === true && parkedish;
 	if (
+		!unconsumedGatedOff &&
 		comm.oldestUnconsumedDeliveryAgeMs !== null &&
 		comm.oldestUnconsumedDeliveryAgeMs >= thresholds.unconsumedMs
 	) {
@@ -213,7 +228,18 @@ export function evaluatedGapConditions(
 		out.add("gap1_parked_unreported");
 	}
 	if (comm.askSignalReadable) out.add("gap2_ask_unanswered");
-	if (comm.unconsumedSignalReadable) out.add("delivery_unconsumed");
+	// FLY-1282 Part B: under V2 a parkish target is ALWAYS evaluated for
+	// delivery_unconsumed — the status gate itself is the complete judgement
+	// (even when the unconsumed SQL signal is unreadable), so pre-existing
+	// false episodes absence-clear on the first post-deploy sweep. V1 keeps
+	// the readable-signal rule byte-for-byte.
+	const parkedishForEval =
+		comm.declaredParked === true || AWAITING_HUMAN_STATUSES.has(session.status);
+	if (input.deliveryUnconsumedV2 === true && parkedishForEval) {
+		out.add("delivery_unconsumed");
+	} else if (comm.unconsumedSignalReadable) {
+		out.add("delivery_unconsumed");
+	}
 	return out;
 }
 
@@ -256,6 +282,9 @@ export interface GapReader {
 		execId: string,
 		leadId: string | null,
 		nowMs: number,
+		/** FLY-1282 Part B: the SAME per-tick V2 snapshot the judgement
+		 * functions receive — never read env here (Codex R10 #2). */
+		opts?: { deliveryUnconsumedV2?: boolean },
 	): GapCommEvidence;
 	close(): void;
 }
@@ -287,7 +316,7 @@ export function openGapReader(dbPath: string): GapReader | null {
 	}
 
 	return {
-		evidenceFor(execId, leadId, nowMs) {
+		evidenceFor(execId, leadId, nowMs, opts) {
 			const declaredParked = probe<boolean | null>(null, () => {
 				const row = db
 					.prepare(
@@ -364,13 +393,29 @@ export function openGapReader(dbPath: string): GapReader | null {
 			const unconsumed = probe<{ readable: boolean; ageMs: number | null }>(
 				{ readable: false, ageMs: null },
 				() => {
-					const row = db
-						.prepare(
-							`SELECT MIN(delivered_at) AS oldest FROM messages
-							 WHERE to_agent = ? AND type = 'instruction'
-							   AND delivered_at IS NOT NULL AND read_at IS NULL`,
-						)
-						.get(execId) as { oldest: string | null };
+					// FLY-1282 Part B (V2, Codex R11 #1 + R12 #1): exclude
+					// instructions with a correlated consumption receipt — a later
+					// message FROM the runner containing the FULL instruction id.
+					// No delivered_at comparison (send.ts stamps delivered_at only
+					// after the mailbox wake returns; a runner can legitimately
+					// report before the stamp lands) — the full random id is
+					// unknowable before delivery, so the id itself is the causal
+					// proof. V1 (legacy) keeps the exact read_at-only query.
+					const sql = opts?.deliveryUnconsumedV2
+						? `SELECT MIN(m.delivered_at) AS oldest FROM messages m
+						   WHERE m.to_agent = ? AND m.type = 'instruction'
+						     AND m.delivered_at IS NOT NULL AND m.read_at IS NULL
+						     AND NOT EXISTS (
+						       SELECT 1 FROM messages r
+						       WHERE r.from_agent = m.to_agent
+						         AND instr(r.content, m.id) > 0
+						     )`
+						: `SELECT MIN(delivered_at) AS oldest FROM messages
+						   WHERE to_agent = ? AND type = 'instruction'
+						     AND delivered_at IS NOT NULL AND read_at IS NULL`;
+					const row = db.prepare(sql).get(execId) as {
+						oldest: string | null;
+					};
 					if (!row.oldest) return { readable: true, ageMs: null };
 					const ts = parseSqliteUtcMs(row.oldest);
 					// Codex R5 #1: non-null but unparsable = degraded, NOT "none".

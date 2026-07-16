@@ -23,6 +23,25 @@ export interface HookPayload {
 	 * through (dead_pin / judge c_stuck / budget exhausted / fail-open …).
 	 * Never pane text, never model rationale. Absent on the legacy path. */
 	confirm_note?: string;
+	// FLY-1282: liveness-evidence fields for zombie/reestablished events.
+	/** Point-in-time pane-probe evidence — the reestablished/zombie claim is
+	 * only as good as this record (never a bare assertion). */
+	liveness_probe?: {
+		method: "tmux_pane_probe";
+		/** tmux window target probed. */
+		target?: string;
+		result: "alive" | "absent";
+		probed_at?: string;
+		/** Consecutive server-up absent probes behind a zombie declaration. */
+		consecutive_probes?: number;
+	};
+	/** FLY-1282: read-only worktree unpushed-work summary attached to
+	 * session_zombie_detected (rescue is the Lead's decision, never automated). */
+	unpushed_work?: import("./worktree-inspect.js").WorktreeInspection;
+	/** FLY-1282 (observation only): sessions newly re-adopted in the SAME
+	 * reconcile pass; present only when >= 3 — a monitoring-side-interruption
+	 * suspicion signal, not a diagnosis. */
+	concurrent_reestablished?: number;
 	// FLY-195: runner_stuck_escalation evidence fields (plan §3.1/§3.2).
 	// Evidence ONLY — the Lead judges; none of these are act-triggers.
 	/** Whole minutes the runner's terminal output has been unchanged. */

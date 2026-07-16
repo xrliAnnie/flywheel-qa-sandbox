@@ -22,6 +22,9 @@
 
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
+// FLY-1282 Part D: a Lead-actor successful nudge prepares a founder-visible
+// disposition receipt (machine/auto-repair nudges never do).
+import { formatDispositionReceipt } from "./disposition-receipt.js";
 import { matchesLead } from "./lead-scope.js";
 import { isCaptureError } from "./session-capture.js";
 import { detectInputBoxPresent, fingerprintOutput } from "./stuck-candidate.js";
@@ -68,6 +71,13 @@ export interface RunnerNudgeOutcome {
 		tmuxWindow?: string;
 		warning?: string;
 		error?: string;
+		/**
+		 * FLY-1282 Part D: the keystroke cannot roll back with the DB
+		 * transaction — nudged:true + dispositionPersisted:false is the HONEST
+		 * shape when the send succeeded but the disposition/receipt transaction
+		 * failed (the Lead should re-nudge or write the disposition explicitly).
+		 */
+		dispositionPersisted?: boolean;
 	};
 }
 
@@ -255,17 +265,61 @@ export async function attemptRunnerRecoveryNudge(
 	}
 
 	// Implicit handled_remanaged disposition (suppresses Q7). A write failure must
-	// NOT report the (already sent) nudge as failed — surface a warning instead.
+	// NOT report the (already sent) nudge as failed — the keystroke cannot be
+	// rolled back with the DB transaction, so the boundary is HONESTLY
+	// non-atomic: nudged:true + dispositionPersisted:false + loud log
+	// (FLY-1282 Part D, Codex R18 #1 recovery contract).
 	let warning: string | undefined;
+	let dispositionPersisted = true;
+	const nudgeNote = `recovery-nudge "${phrase}" sent to ${target.tmuxWindow} (actor=${input.actor})`;
 	try {
-		store.setStuckDisposition({
-			execution_id: executionId,
-			episode_fingerprint: fingerprint,
-			disposition: "handled_remanaged",
-			noted_by: leadId,
-			note: `recovery-nudge "${phrase}" sent to ${target.tmuxWindow} (actor=${input.actor})`,
-		});
+		if (input.actor === "lead") {
+			// FLY-1282 Part D: a Lead-driven successful nudge IS a Lead
+			// disposition — the stuck write, the unified case-c episode ack AND
+			// the founder-visible receipt prepare commit in ONE transaction.
+			// The auto-repair bot below stays receipt-free (a machine action is
+			// not a Lead disposition).
+			store.applyStuckDispositionWithReceipts({
+				stuck: {
+					execution_id: executionId,
+					episode_fingerprint: fingerprint,
+					disposition: "handled_remanaged",
+					noted_by: leadId,
+					note: nudgeNote,
+				},
+				episodes: [
+					{
+						targetKey: executionId,
+						kind: "detection_stuck_confirmed",
+						episodeFingerprint: fingerprint,
+						disposition: "resolve",
+					},
+				],
+				atMs: deps.now(),
+				receipt: {
+					actorLeadId: leadId,
+					rawDisposition: "handled_remanaged",
+					content: formatDispositionReceipt({
+						actorLeadId: leadId,
+						kind: "detection_stuck_confirmed",
+						rawDisposition: "handled_remanaged",
+						note: `已向 Runner 发送恢复指令「${phrase}」`,
+					}),
+					executionId,
+					projectName: session.project_name,
+				},
+			});
+		} else {
+			store.setStuckDisposition({
+				execution_id: executionId,
+				episode_fingerprint: fingerprint,
+				disposition: "handled_remanaged",
+				noted_by: leadId,
+				note: nudgeNote,
+			});
+		}
 	} catch (err) {
+		dispositionPersisted = false;
 		warning = `nudge SENT but the handled_remanaged receipt could not be written (${(err as Error).message}) — write the disposition explicitly or Annie will be paged after the grace window`;
 		console.error(`[recovery-nudge] ${executionId}: ${warning}`);
 	}
@@ -275,6 +329,7 @@ export async function attemptRunnerRecoveryNudge(
 		body: {
 			nudged: true,
 			tmuxWindow: target.tmuxWindow,
+			dispositionPersisted,
 			...(warning ? { warning } : {}),
 		},
 	};

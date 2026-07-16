@@ -686,6 +686,13 @@ export function applyQuarantineFallback(args: {
 	issueId?: string;
 	projectName?: string;
 	tmuxAlive: boolean;
+	/**
+	 * FLY-1282 (code R1 #5): optional tri-state verdict for HONEST logging.
+	 * `tmuxAlive` keeps its legacy meaning ("not provably dead") byte-for-byte
+	 * for existing boolean callers; when the caller also passes the verdict,
+	 * an indeterminate probe is logged as indeterminate — never as "alive".
+	 */
+	livenessVerdict?: "alive" | "dead" | "indeterminate";
 	routeStatus?: string;
 	quarantinePath: string;
 	log?: (m: string) => void;
@@ -693,7 +700,9 @@ export function applyQuarantineFallback(args: {
 	const log = args.log ?? ((m: string) => console.log(m));
 	if (args.tmuxAlive) {
 		log(
-			`[complete-reconciler] ${args.executionId}: marker quarantined but tmux alive — leaving running, advisory will fire`,
+			args.livenessVerdict === "indeterminate"
+				? `[complete-reconciler] ${args.executionId}: marker quarantined, liveness indeterminate — leaving running (never reaped on uncertainty)`
+				: `[complete-reconciler] ${args.executionId}: marker quarantined but tmux alive — leaving running, advisory will fire`,
 		);
 		return;
 	}

@@ -564,6 +564,13 @@ export interface RunInfraOptions {
 	 */
 	lifecycleInfra?: LifecycleShipInfra;
 	/**
+	 * FLY-1282 Part C: targeted terminal-archive enqueue (pre-binding buffer →
+	 * FLY-1165 scheduler consumer), set on the DirectEventSink completion path.
+	 * The composition root passes this ONLY when FLYWHEEL_TERMINAL_THREAD_ARCHIVE
+	 * is ON (single boot-time capture). Absent → zero enqueue (byte-compat).
+	 */
+	terminalArchiveEnqueue?: (issueId: string) => void;
+	/**
 	 * FLY-1185 (R11#1): lifecycle spawn admission (founder-park tombstone +
 	 * durable starting claim), threaded to the RunDispatcher chokepoint.
 	 * Absent → legacy admission only (byte-compat).
@@ -776,6 +783,9 @@ export async function setupRunInfrastructure(
 			// FLY-1232 T9: the in-process post-ship finalization hook (external
 			// merge paths are covered by the claim-based startup repair instead).
 			directSink.workflowShadow = runInfraOpts?.workflowShadow;
+			// FLY-1282 Part C: targeted terminal-archive enqueue for the
+			// in-process completion path.
+			directSink.terminalArchiveEnqueue = runInfraOpts?.terminalArchiveEnqueue;
 
 			// FLY-137 v1.27.2: construct AgentDispatcher (always — empty agents map is valid,
 			// dispatcher returns shipped-generic for every issue in that case).

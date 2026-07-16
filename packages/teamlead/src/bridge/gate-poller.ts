@@ -193,6 +193,15 @@ export interface GatePollerConfig {
 	/** FLY-1048 (PR-C): cadence in poll ticks (default 20 ≈ 60s at 3s). */
 	detectionReconcileEveryNTicks?: number;
 	/**
+	 * FLY-1282 Part D: the disposition-receipt delivery pass — its OWN stage,
+	 * deliberately NOT governed by detectionReconcileEveryNTicks (that cadence
+	 * legitimately goes to 0 and must not become a hidden receipt kill
+	 * switch; FLYWHEEL_DISPOSITION_RECEIPT — checked inside the pass — is the
+	 * only delivery gate). Fixed cadence 20 ticks (≈60s at 3s); the pass has
+	 * its own in-process single-flight. Absent → complete no-op.
+	 */
+	onDispositionReceiptTick?: () => void | Promise<void>;
+	/**
 	 * FLY-907 (Step 4.5): the issue-display reconcile sweep, piggybacked on this
 	 * same poll tick (zero new periodic timers — FLY-169/172/208 discipline).
 	 * Error-isolated + fire-and-forget; MUST be cheap on a no-drift pass (the
@@ -667,6 +676,22 @@ export class GatePoller {
 							),
 						);
 				}
+			}
+
+			// FLY-1282 Part D: disposition-receipt delivery — independent stage
+			// (see config docs: NOT under the detection cadence). Same piggyback
+			// posture: zero new timer, own catch, never blocks the poll.
+			if (
+				this.config.onDispositionReceiptTick &&
+				(this.tickCount - 1) % 20 === 0
+			) {
+				void Promise.resolve()
+					.then(() => this.config.onDispositionReceiptTick?.())
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] FLY-1282 disposition receipt error (non-fatal): ${(err as Error).message}`,
+						),
+					);
 			}
 
 			// FLY-907: issue-display reconcile sweep — same piggyback pattern as

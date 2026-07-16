@@ -715,6 +715,34 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 			expect.any(String),
 		);
 	});
+	it("indeterminate verdict logs HONESTLY (never 'tmux alive'); legacy boolean-only call keeps the old line byte-for-byte (code R1 #5)", () => {
+		const store = makeStore({ d5: { status: "running" } });
+		const lines: string[] = [];
+		applyQuarantineFallback({
+			store: store as never,
+			executionId: "d5",
+			tmuxAlive: true, // legacy meaning: not-provably-dead
+			livenessVerdict: "indeterminate",
+			quarantinePath: "/q/d5.json",
+			log: (m) => lines.push(m),
+		});
+		expect(store.forceStatus).not.toHaveBeenCalled();
+		expect(lines[0]).toContain("liveness indeterminate — leaving running");
+		expect(lines[0]).not.toContain("tmux alive");
+		// Legacy boolean-only caller: byte-identical old copy.
+		const legacyLines: string[] = [];
+		applyQuarantineFallback({
+			store: store as never,
+			executionId: "d5",
+			tmuxAlive: true,
+			quarantinePath: "/q/d5.json",
+			log: (m) => legacyLines.push(m),
+		});
+		expect(legacyLines[0]).toBe(
+			"[complete-reconciler] d5: marker quarantined but tmux alive — leaving running, advisory will fire",
+		);
+	});
+
 	it("tmux alive → leaves session running (no forceStatus)", () => {
 		const store = makeStore({ d3: { status: "running" } });
 		applyQuarantineFallback({
