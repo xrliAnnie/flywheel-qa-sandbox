@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 4/5
-updated: 2026-07-16T05:06:59.973Z
-nextStep: Run exact structural and snapshot verifier
+phaseCursor: 5/5
+updated: 2026-07-16T05:08:10.797Z
+nextStep: Commit scoped files and open PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (4/5)
-**next**: Run exact structural and snapshot verifier
+**phase**: implement (5/5)
+**next**: Commit scoped files and open PR
