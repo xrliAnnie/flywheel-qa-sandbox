@@ -700,7 +700,7 @@ export class TmuxAdapter implements IAdapter {
 			if (registeredSession && ctx.commDbPath) {
 				try {
 					const commDb = new CommDB(ctx.commDbPath);
-					commDb.updateSessionStatus(ctx.executionId, sessionStatus);
+					commDb.updateSessionStatusIfRunning(ctx.executionId, sessionStatus);
 					commDb.close();
 				} catch {
 					// Update failure is non-fatal

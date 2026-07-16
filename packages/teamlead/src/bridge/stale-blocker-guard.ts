@@ -491,6 +491,11 @@ export async function alertStaleBlockerToLead(
 // ── Orchestration (mounted in runs-route via plugin.ts) ──────────────────────
 
 export interface StaleBlockerGuardDeps {
+	/**
+	 * FLY-1066 scope-free targeted StateStore ghost reconciliation. Optional is
+	 * the residue kill-switch's zero-call path. Runs before every FLY-742 gate.
+	 */
+	reconcileGhost?: (blocker: Session) => Promise<boolean>;
 	/** FLYWHEEL_CRON_STALE_GUARD !== "0" (default-on). */
 	enabled: boolean;
 	/** FLYWHEEL_CRON_STALE_TTL_MIN (default 120), in ms. */
@@ -524,6 +529,9 @@ export function createStaleBlockerGuard(
 
 	return {
 		async handleActiveBlocker(blocker) {
+			if (deps.reconcileGhost && (await deps.reconcileGhost(blocker))) {
+				return { proceed: true };
+			}
 			if (!deps.enabled) return { proceed: false };
 
 			const nowMs = deps.now();

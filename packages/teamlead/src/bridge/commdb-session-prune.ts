@@ -10,11 +10,14 @@
  * Two surfaces — mirroring the FLY-324 live-handler + boot-sweep shape:
  *   1. `finalizeCommDbSession` — live cleanup. Atomically retires unresolved
  *      gates and deletes the session once the tmux window is gone.
- *   2. `pruneDeadTerminalCommDbSessions` — one-shot boot sweep. Clears the
- *      EXISTING backlog: every terminal row whose tmux window is provably gone.
+ *   2. `pruneDeadTerminalCommDbSessions` — boot/maintenance sweep. Clears the
+ *      EXISTING backlog: every eligible terminal row whose tmux window is
+ *      provably gone. FLY-1066 extends eligibility to failed/blocked only while
+ *      its residue-harvest kill-switch is enabled.
  *
- * Safety: only terminal (completed/timeout) rows are swept, and only when the
- * tmux probe says the window is gone — a still-alive parked runner's row is left
+ * Safety: only eligible terminal rows are swept (completed/timeout always;
+ * failed/blocked only under the residue-harvest switch), and only when the tmux
+ * probe says the window is gone — a still-alive parked runner's row is left
  * untouched. The path is project-name-guarded (no traversal) and best-effort:
  * any failure logs a warning and is swallowed (a prune must never break a close
  * or block Bridge startup).
@@ -103,11 +106,24 @@ export interface CommDbPruneResult {
 	kept: number;
 	/** proven-dead rows whose atomic gate+session finalization failed. */
 	failed: number;
+	/**
+	 * Exact CommDB window targets that were proven dead immediately before their
+	 * rows were successfully finalized. This evidence is intentionally returned
+	 * to the caller rather than persisted in StateStore, where legacy
+	 * `tmux_session` values have no trustworthy provenance.
+	 */
+	provenDeadTargets: ProvenDeadTmuxTarget[];
+}
+
+export interface ProvenDeadTmuxTarget {
+	executionId: string;
+	tmuxWindow: string;
 }
 
 /**
- * Boot sweep: delete terminal (completed/timeout) CommDB session rows whose tmux
- * window is **provably** gone. Uses the tri-state `probeTmuxWindowLiveness` (NOT
+ * Boot/maintenance sweep: delete eligible terminal CommDB session rows whose
+ * tmux window is **provably** gone. Uses the tri-state
+ * `probeTmuxWindowLiveness` (NOT
  * the boolean `isTmuxWindowAlive`, which collapses a transient/indeterminate
  * probe failure into "not alive") so a parked-alive runner whose probe merely
  * timed out is never deleted — only a `dead` verdict deletes (Codex R1 HIGH).
@@ -117,6 +133,8 @@ export async function pruneDeadTerminalCommDbSessions(
 	projectName: string,
 	opts: {
 		dbPath?: string;
+		/** FLY-1066: include failed/blocked CRASH_PRESERVE rows. */
+		includeCrashPreserve?: boolean;
 		probe?: (tmuxWindow: string) => Promise<TmuxWindowProbe>;
 		onFinalizeOutcome?: (
 			executionId: string,
@@ -130,6 +148,7 @@ export async function pruneDeadTerminalCommDbSessions(
 		pruned: 0,
 		kept: 0,
 		failed: 0,
+		provenDeadTargets: [],
 	};
 	const dbPath = opts.dbPath ?? resolveCommDbPath(projectName);
 	if (!dbPath) return result;
@@ -138,7 +157,12 @@ export async function pruneDeadTerminalCommDbSessions(
 	let db: CommDB | undefined;
 	try {
 		db = new CommDB(dbPath);
-		const terminal = db.listSessions(projectName, ["completed", "timeout"]);
+		const terminal = db.listSessions(
+			projectName,
+			opts.includeCrashPreserve
+				? ["completed", "timeout", "failed", "blocked"]
+				: ["completed", "timeout"],
+		);
 		result.scanned = terminal.length;
 		for (const s of terminal) {
 			// Delete ONLY on a proven-dead window. `alive` (parked) and
@@ -150,22 +174,40 @@ export async function pruneDeadTerminalCommDbSessions(
 			}
 			try {
 				const finalized = db.finalizeSession(s.execution_id);
-				opts.onFinalizeOutcome?.(s.execution_id, projectName, {
+				const outcome: FinalizeCommDbResult = {
 					ok: true,
 					outcome: "finalized",
 					retiredGateCount: finalized.retiredQuestionCount,
 					deletedSessionCount: finalized.deletedSessionCount,
-				});
+				};
 				result.pruned++;
+				result.provenDeadTargets.push({
+					executionId: s.execution_id,
+					tmuxWindow: s.tmux_window,
+				});
+				try {
+					opts.onFinalizeOutcome?.(s.execution_id, projectName, outcome);
+				} catch (err) {
+					console.warn(
+						`[commdb-prune] audit successful finalize ${s.execution_id} (${projectName}) failed (non-fatal): ${(err as Error).message}`,
+					);
+				}
 			} catch (err) {
 				result.failed++;
-				opts.onFinalizeOutcome?.(s.execution_id, projectName, {
+				const outcome: FinalizeCommDbResult = {
 					ok: false,
 					outcome: "failed",
 					retiredGateCount: 0,
 					deletedSessionCount: 0,
 					error: (err as Error).message,
-				});
+				};
+				try {
+					opts.onFinalizeOutcome?.(s.execution_id, projectName, outcome);
+				} catch (auditErr) {
+					console.warn(
+						`[commdb-prune] audit failed finalize ${s.execution_id} (${projectName}) failed (non-fatal): ${(auditErr as Error).message}`,
+					);
+				}
 				console.warn(
 					`[commdb-prune] boot finalize ${s.execution_id} (${projectName}) failed: ${(err as Error).message}`,
 				);

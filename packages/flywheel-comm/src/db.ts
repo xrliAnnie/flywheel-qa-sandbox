@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   lead_id       TEXT,
   started_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
   ended_at      DATETIME,
-  status        TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout','blocked'))
+  status        TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout','blocked','failed'))
 );
 CREATE TABLE IF NOT EXISTS runner_declared_states (
   execution_id  TEXT PRIMARY KEY,
@@ -415,18 +415,19 @@ export class CommDB {
 			}
 		}
 
-		// FLY-1279: Codex resident goals can end in a truthful `blocked` state.
-		// SQLite cannot ALTER a CHECK constraint, so rebuild the tiny registry
-		// table atomically. No table references sessions via a foreign key.
+		// FLY-1279 / FLY-1066: resident goals can end in truthful `blocked` or
+		// `failed` states. SQLite cannot ALTER a CHECK constraint, so rebuild the
+		// tiny registry table atomically. No table references sessions via a
+		// foreign key.
 		const sessionSchema = this.db
 			.prepare(
 				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'",
 			)
 			.get() as { sql?: string } | undefined;
-		if (!sessionSchema?.sql?.includes("'blocked'")) {
+		if (!sessionSchema?.sql?.includes("'failed'")) {
 			this.db.transaction(() => {
 				this.db.exec(`
-					CREATE TABLE sessions_fly1279 (
+					CREATE TABLE sessions_fly1066 (
 						execution_id TEXT PRIMARY KEY,
 						tmux_window TEXT NOT NULL,
 						project_name TEXT NOT NULL,
@@ -434,10 +435,10 @@ export class CommDB {
 						lead_id TEXT,
 						started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 						ended_at DATETIME,
-						status TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout','blocked')),
+						status TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout','blocked','failed')),
 						vendor TEXT
 					);
-					INSERT INTO sessions_fly1279 (
+					INSERT INTO sessions_fly1066 (
 						execution_id, tmux_window, project_name, issue_id, lead_id,
 						started_at, ended_at, status, vendor
 					)
@@ -445,7 +446,7 @@ export class CommDB {
 						started_at, ended_at, status, vendor
 					FROM sessions;
 					DROP TABLE sessions;
-					ALTER TABLE sessions_fly1279 RENAME TO sessions;
+					ALTER TABLE sessions_fly1066 RENAME TO sessions;
 					CREATE INDEX idx_sessions_project ON sessions(project_name);
 					CREATE INDEX idx_sessions_status ON sessions(status);
 				`);
@@ -1976,8 +1977,22 @@ export class CommDB {
 	): void {
 		this.db
 			.prepare(
-				`INSERT OR REPLACE INTO sessions (execution_id, tmux_window, project_name, issue_id, lead_id, vendor)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO sessions (execution_id, tmux_window, project_name, issue_id, lead_id, vendor)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(execution_id) DO UPDATE SET
+		   tmux_window = excluded.tmux_window,
+		   project_name = excluded.project_name,
+		   issue_id = excluded.issue_id,
+		   lead_id = excluded.lead_id,
+		   vendor = excluded.vendor,
+		   started_at = CASE
+		     WHEN sessions.status = 'running' THEN excluded.started_at
+		     ELSE sessions.started_at
+		   END,
+		   ended_at = CASE
+		     WHEN sessions.status = 'running' THEN NULL
+		     ELSE sessions.ended_at
+		   END`,
 			)
 			.run(
 				executionId,
@@ -2017,6 +2032,38 @@ export class CommDB {
 		this.db
 			.prepare(
 				"UPDATE sessions SET status = ?, ended_at = datetime('now') WHERE execution_id = ?",
+			)
+			.run(status, executionId);
+	}
+
+	/**
+	 * FLY-1066: adapter-owned lifecycle completion may only retire a still-running
+	 * registration. It must not overwrite a StateStore-authoritative failed or
+	 * blocked mark that won the race first.
+	 */
+	updateSessionStatusIfRunning(
+		executionId: string,
+		status: "completed" | "timeout" | "blocked",
+	): void {
+		this.db
+			.prepare(
+				"UPDATE sessions SET status = ?, ended_at = COALESCE(ended_at, datetime('now')) WHERE execution_id = ? AND status = 'running'",
+			)
+			.run(status, executionId);
+	}
+
+	/**
+	 * FLY-1066: reflect the StateStore-authoritative crash-preserve terminal
+	 * state without deleting the routing target needed by retry teardown.
+	 * Repeated marks keep the first terminal timestamp stable.
+	 */
+	markSessionTerminalStatus(
+		executionId: string,
+		status: "failed" | "blocked",
+	): void {
+		this.db
+			.prepare(
+				"UPDATE sessions SET status = ?, ended_at = COALESCE(ended_at, datetime('now')) WHERE execution_id = ?",
 			)
 			.run(status, executionId);
 	}
@@ -2141,7 +2188,7 @@ export class CommDB {
 	}
 
 	/**
-	 * FLY-229: recent terminal (completed/timeout) sessions, for parked-alive
+	 * FLY-229 / FLY-1066: recent terminal sessions, for parked-alive
 	 * detection in `runner_terminal_list`. Lead-scoped IN SQL — the
 	 * `(lead_id = ? OR lead_id IS NULL)` predicate is applied BEFORE `LIMIT` so an
 	 * in-scope parked-alive row can't be pushed out of the window by another
@@ -2158,7 +2205,7 @@ export class CommDB {
 	): Session[] {
 		const scoped = leadId != null;
 		const sql =
-			"SELECT * FROM sessions WHERE project_name = ? AND status IN ('completed','timeout')" +
+			"SELECT * FROM sessions WHERE project_name = ? AND status IN ('completed','timeout','failed','blocked')" +
 			(scoped ? " AND (lead_id = ? OR lead_id IS NULL)" : "") +
 			" ORDER BY COALESCE(ended_at, started_at) DESC LIMIT ?";
 		const params: Array<string | number> = scoped
@@ -2168,14 +2215,14 @@ export class CommDB {
 	}
 
 	/**
-	 * FLY-229: count of terminal (completed/timeout) sessions matching the SAME
+	 * FLY-229 / FLY-1066: count of terminal sessions matching the SAME
 	 * scope as `getRecentTerminalSessions` — drives the truncation summary line
 	 * when more terminal rows exist than the probe cap.
 	 */
 	countTerminalSessions(projectName: string, leadId?: string): number {
 		const scoped = leadId != null;
 		const sql =
-			"SELECT COUNT(*) AS n FROM sessions WHERE project_name = ? AND status IN ('completed','timeout')" +
+			"SELECT COUNT(*) AS n FROM sessions WHERE project_name = ? AND status IN ('completed','timeout','failed','blocked')" +
 			(scoped ? " AND (lead_id = ? OR lead_id IS NULL)" : "");
 		const params: string[] = scoped
 			? [projectName, leadId as string]

@@ -475,6 +475,68 @@ describe("CommDB", () => {
 	});
 
 	describe("session CRUD", () => {
+		it("FLY-1066: migrates the blocked-era sessions schema and persists failed", () => {
+			const legacyPath = join(tmpDir, "fly1066-legacy.db");
+			const legacy = new Database(legacyPath);
+			legacy.exec(`
+				CREATE TABLE sessions (
+					execution_id TEXT PRIMARY KEY,
+					tmux_window TEXT NOT NULL,
+					project_name TEXT NOT NULL,
+					issue_id TEXT,
+					lead_id TEXT,
+					started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+					ended_at DATETIME,
+					status TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout','blocked')),
+					vendor TEXT
+				);
+				CREATE INDEX idx_sessions_project ON sessions(project_name);
+				CREATE INDEX idx_sessions_status ON sessions(status);
+				INSERT INTO sessions (
+					execution_id, tmux_window, project_name, issue_id, lead_id,
+					started_at, ended_at, status, vendor
+				) VALUES (
+					'exec-failed', '@7', 'flywheel', 'FLY-1066', 'flywheel-eng-lead',
+					'2026-07-16 10:00:00', NULL, 'running', 'codex'
+				);
+			`);
+			legacy.close();
+
+			const migrated = new CommDB(legacyPath);
+			migrated.markSessionTerminalStatus("exec-failed", "failed");
+
+			expect(migrated.getSession("exec-failed")).toMatchObject({
+				tmux_window: "@7",
+				project_name: "flywheel",
+				issue_id: "FLY-1066",
+				lead_id: "flywheel-eng-lead",
+				status: "failed",
+				vendor: "codex",
+			});
+			migrated.close();
+
+			const raw = new Database(legacyPath, { readonly: true });
+			const schema = raw
+				.prepare(
+					"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'",
+				)
+				.get() as { sql: string };
+			expect(schema.sql).toContain("'failed'");
+			expect(
+				raw
+					.prepare(
+						"SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'sessions' ORDER BY name",
+					)
+					.all(),
+			).toEqual(
+				expect.arrayContaining([
+					{ name: "idx_sessions_project" },
+					{ name: "idx_sessions_status" },
+				]),
+			);
+			raw.close();
+		});
+
 		it("FLY-1279: migrates legacy session status constraints and persists blocked", () => {
 			const legacyPath = join(tmpDir, "legacy.db");
 			const legacy = new Database(legacyPath);
@@ -554,6 +616,70 @@ describe("CommDB", () => {
 			expect(db.getActiveSessions()).toHaveLength(0);
 		});
 
+		describe("FLY-1066 terminal status ordering", () => {
+			it("adapter completion before authoritative mark converges to the mark", () => {
+				db.registerSession("exec-1", "@42", "flywheel");
+				db.updateSessionStatusIfRunning("exec-1", "completed");
+				db.markSessionTerminalStatus("exec-1", "failed");
+
+				expect(db.getSession("exec-1")?.status).toBe("failed");
+			});
+
+			it("adapter completion after authoritative mark cannot overwrite it", () => {
+				db.registerSession("exec-1", "@42", "flywheel");
+				db.markSessionTerminalStatus("exec-1", "blocked");
+				db.updateSessionStatusIfRunning("exec-1", "timeout");
+
+				expect(db.getSession("exec-1")?.status).toBe("blocked");
+			});
+
+			it("duplicate authoritative marks preserve the first terminal timestamp", () => {
+				db.registerSession("exec-1", "@42", "flywheel");
+				(db as unknown as { db: Database.Database }).db
+					.prepare(
+						"UPDATE sessions SET ended_at = '2026-07-16 10:00:00' WHERE execution_id = ?",
+					)
+					.run("exec-1");
+
+				db.markSessionTerminalStatus("exec-1", "failed");
+				db.markSessionTerminalStatus("exec-1", "blocked");
+
+				expect(db.getSession("exec-1")).toMatchObject({
+					status: "blocked",
+					ended_at: "2026-07-16 10:00:00",
+				});
+			});
+
+			it("late self-registration updates routing metadata without reviving a terminal row", () => {
+				db.registerSession(
+					"exec-1",
+					"runner-flywheel:pending",
+					"flywheel",
+					"FLY-1066",
+					"flywheel-eng-lead",
+					"codex",
+				);
+				db.markSessionTerminalStatus("exec-1", "failed");
+				const endedAt = db.getSession("exec-1")?.ended_at;
+
+				db.registerSession(
+					"exec-1",
+					"runner-flywheel:@7",
+					"flywheel",
+					"FLY-1066",
+					"flywheel-eng-lead",
+					"codex",
+				);
+
+				expect(db.getSession("exec-1")).toMatchObject({
+					tmux_window: "runner-flywheel:@7",
+					status: "failed",
+					ended_at: endedAt,
+					vendor: "codex",
+				});
+			});
+		});
+
 		// FLY-638: deleteSession
 		it("should delete a session row and return the change count", () => {
 			db.registerSession("exec-1", "@42", "geoforge3d");
@@ -584,7 +710,7 @@ describe("CommDB", () => {
 
 		// FLY-229: parked-alive detection helpers
 		describe("getRecentTerminalSessions / countTerminalSessions", () => {
-			it("returns only completed/timeout rows for the project (not running)", () => {
+			it("returns every terminal row for the project (not running)", () => {
 				db.registerSession(
 					"run-1",
 					"@1",
@@ -601,6 +727,20 @@ describe("CommDB", () => {
 				);
 				db.registerSession("to-1", "@3", "geoforge3d", "GEO-3", "product-lead");
 				db.registerSession(
+					"failed-1",
+					"@5",
+					"geoforge3d",
+					"GEO-5",
+					"product-lead",
+				);
+				db.registerSession(
+					"blocked-1",
+					"@6",
+					"geoforge3d",
+					"GEO-6",
+					"product-lead",
+				);
+				db.registerSession(
 					"other-1",
 					"@4",
 					"other-proj",
@@ -609,14 +749,18 @@ describe("CommDB", () => {
 				);
 				db.updateSessionStatus("done-1", "completed");
 				db.updateSessionStatus("to-1", "timeout");
+				db.markSessionTerminalStatus("failed-1", "failed");
+				db.markSessionTerminalStatus("blocked-1", "blocked");
 				db.updateSessionStatus("other-1", "completed");
 
 				const rows = db.getRecentTerminalSessions("geoforge3d", undefined, 50);
 				expect(rows.map((r) => r.execution_id).sort()).toEqual([
+					"blocked-1",
 					"done-1",
+					"failed-1",
 					"to-1",
 				]);
-				expect(db.countTerminalSessions("geoforge3d")).toBe(2);
+				expect(db.countTerminalSessions("geoforge3d")).toBe(4);
 			});
 
 			it("Lead-scopes in SQL (lead_id = leadId OR NULL) BEFORE limit", () => {

@@ -549,11 +549,11 @@ export interface DetectionEscalationRow {
 	clearing_since_ms: number | null;
 	status: DetectionEscalationStatus;
 	attempts: number;
-	/** How a RESOLVED row got there: 'recovery' (machine-proven clear —
-	 * terminal/progress/evidence-gone) may revive on re-detection; 'lead'
-	 * (a human receipt) follows the legacy identical-content semantics and
-	 * never revives. NULL = pre-migration → treated as 'lead' (conservative). */
-	resolved_via: "recovery" | "lead" | null;
+	/** How a RESOLVED row got there. Machine-proven clears (`recovery` and
+	 * `residue_harvest`) may revive on later re-detection; `lead` (a human
+	 * receipt) follows legacy identical-content semantics and never revives.
+	 * NULL = pre-migration → treated as `lead` (conservative). */
+	resolved_via: "recovery" | "residue_harvest" | "lead" | null;
 }
 
 /** FLY-1282 Part D: prepare-time receipt facts (the route builds the FINAL
@@ -9000,6 +9000,7 @@ export class StateStore {
 			attempts: row[11] as number,
 			resolved_via: ((row[12] as string | null) ?? null) as
 				| "recovery"
+				| "residue_harvest"
 				| "lead"
 				| null,
 		};
@@ -9061,8 +9062,9 @@ export class StateStore {
 		}
 		// FLY-1048 PR-C (Codex code R1 #1 + R2 #1): a RESOLVED fingerprint must
 		// not permanently silence a RECURRENCE — but revival needs DURABLE clear
-		// evidence. Only a machine resolution ('recovery': terminal / progress /
-		// evidence-gone) proves the condition cleared between episodes; the
+		// evidence. Only a machine resolution (`recovery`: terminal/progress/
+		// evidence-gone, or FLY-1066's double-absence `residue_harvest`) proves
+		// the condition cleared between episodes; the
 		// detection-side timestamps are in-process and rebuild on a Bridge
 		// restart, so a Lead-dismissed but UNCHANGED condition must never
 		// re-notify just because the clock reset. Lead receipts follow the
@@ -9071,7 +9073,8 @@ export class StateStore {
 		if (
 			!created &&
 			row.status === "RESOLVED" &&
-			row.resolved_via === "recovery" &&
+			(row.resolved_via === "recovery" ||
+				row.resolved_via === "residue_harvest") &&
 			input.firstDetectedAtMs > (row.lead_ack_at_ms ?? row.first_detected_at_ms)
 		) {
 			this.db.run(
@@ -9692,6 +9695,24 @@ export class StateStore {
 		this.db.run(
 			`UPDATE detection_escalations
 			 SET status = 'RESOLVED', resolved_via = 'recovery'
+			 WHERE target_key = ? AND status != 'RESOLVED'`,
+			[targetKey],
+		);
+		const n = this.db.getRowsModified();
+		if (n > 0) this.save();
+		return n;
+	}
+
+	/**
+	 * FLY-1066: both session ledgers prove this runner target no longer exists.
+	 * This is a machine clear like `recovery`, but keeps a distinct audit token.
+	 * ACKED/ESCALATED/CLEARING rows are included because disappearance is
+	 * independent of notification state. A later real recurrence may revive.
+	 */
+	resolveDetectionEscalationsForResidueTarget(targetKey: string): number {
+		this.db.run(
+			`UPDATE detection_escalations
+			 SET status = 'RESOLVED', resolved_via = 'residue_harvest'
 			 WHERE target_key = ? AND status != 'RESOLVED'`,
 			[targetKey],
 		);

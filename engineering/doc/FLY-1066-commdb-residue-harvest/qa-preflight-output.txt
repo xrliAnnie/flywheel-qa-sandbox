@@ -1,0 +1,56 @@
+# FLY-1066 QA same-predicate preflight — evidence capture (2026-07-16 03:40)
+# READ-ONLY reproduction of the harvest predicate across all configured projects.
+
+================ FLY-1066 same-predicate preflight (READ-ONLY) ================
+now=2026-07-16 03:40:38  24h-guard  30min-ghost-guard
+
+### CommDB face (①②+FLY-817) — configured projects (main Bridge harvests these) ###
+  [geoforge3d] CommDB running rows:
+    2692122f-52df runner-geoforge3d:@156       fsm=failed          -> HARVEST(face②preserve) (fsm=failed dead)
+    d2f31930-abba %194                         fsm=<none>          -> HARVEST(face①orphan) (no-fsm age=1581h dead)
+    5491a2a1-3163 runner-geoforge3d:@63        fsm=failed          -> HARVEST(face②preserve) (fsm=failed dead)
+    da6c6c3d-d39c runner-geoforge3d:@121       fsm=failed          -> HARVEST(face②preserve) (fsm=failed dead)
+    e4d3b29d-3905 runner-geoforge3d:pending    fsm=failed          -> HARVEST(face②preserve) (fsm=failed dead)
+    e90f3962-0c73 runner-geoforge3d:pending    fsm=failed          -> HARVEST(face②preserve) (fsm=failed dead)
+    cfd3ea5e-b958 runner-geoforge3d:@747       fsm=awaiting_review -> KEEP (fsm=awaiting_review non-terminal)
+  [joycon-typeless] CommDB running rows:
+    99768926-c9d3 runner-joycon-typeless:pending fsm=failed          -> HARVEST(face②preserve) (fsm=failed dead)
+    973c5e3c-7269 runner-joycon-typeless:pending fsm=blocked         -> HARVEST(face②preserve) (fsm=blocked dead)
+    18231709-6e23 runner-joycon-typeless:@2453 fsm=failed          -> HARVEST(face②preserve) (fsm=failed dead)
+    7339c7a9-2fae runner-joycon-typeless:@2685 fsm=awaiting_review -> KEEP (fsm=awaiting_review non-terminal)
+  [personal-assistant] CommDB running: 0
+  [growth] CommDB running rows:
+    6fcf75d3-acb8 runner-growth:pending        fsm=failed          -> HARVEST(face②preserve) (fsm=failed dead)
+    a235d904-914d runner-growth:pending        fsm=failed          -> HARVEST(face②preserve) (fsm=failed dead)
+  [flywheel] CommDB running rows:
+    6c02221e-bf05 runner-flywheel:pending      fsm=blocked         -> HARVEST(face②preserve) (fsm=blocked dead)
+    63ac4e95-a389 runner-flywheel:pending      fsm=failed          -> HARVEST(face②preserve) (fsm=failed dead)
+    8aeb1384-e913 runner-flywheel:@85          fsm=design_done     -> KEEP (fsm=design_done non-terminal)
+    be8e3e48-9c01 runner-flywheel:@563         fsm=failed          -> HARVEST(face②preserve) (fsm=failed dead)
+    d0ed7c15-cf52 runner-flywheel:@257         fsm=failed          -> HARVEST(face②preserve) (fsm=failed dead)
+    ddc9e9cb-954e runner-flywheel:@816         fsm=failed          -> HARVEST(face②preserve) (fsm=failed dead)
+    58830870-1710 runner-flywheel:@1126        fsm=failed          -> HARVEST(face②preserve) (fsm=failed dead)
+    b9e597a9-136d runner-flywheel:FLY-1262-implement-build-Flywheel-FLY-1038-PRD-SSO fsm=failed          -> HARVEST(face②preserve) (fsm=failed dead)
+    b7e7a805-6afb runner-flywheel:@438         fsm=running         -> KEEP (fsm=running non-terminal)
+    899c7cf5-c118 runner-flywheel:@453         fsm=awaiting_review -> KEEP (fsm=awaiting_review non-terminal)
+    ac869224-c90f runner-flywheel:@694         fsm=design_done     -> KEEP (fsm=design_done non-terminal)
+    6b3afba8-e5d0 runner-flywheel:FLY-1182-implement-enable-Claude-quota-FLY-696-8-Q fsm=running         -> KEEP (fsm=running non-terminal)
+    6cccffaa-ac8d runner-flywheel:FLY-1262-implement-codex-G-build-Flywheel-FLY-1038 fsm=blocked         -> HARVEST(face②preserve) (fsm=blocked dead)
+    b7c63197-d140 runner-flywheel:@749         fsm=design_done     -> KEEP (fsm=design_done non-terminal)
+    35b376f7-907b runner-flywheel:@751         fsm=design_done     -> KEEP (fsm=design_done non-terminal)
+    156c5cec-c8ec runner-flywheel:@752         fsm=running         -> KEEP (fsm=running non-terminal)
+    dd9b1f55-9c3c runner-flywheel:@753         fsm=design_done     -> KEEP (fsm=design_done non-terminal)
+    972d7738-b02b runner-flywheel:@754         fsm=running         -> KEEP (fsm=running non-terminal)
+    17dc3eab-db7c runner-flywheel:@756         fsm=design_done     -> KEEP (fsm=design_done non-terminal)
+    2d9f2845-ffca runner-flywheel:FLY-1307-implement-codex-G-build-DAG-D-orchestrato fsm=running         -> KEEP (fsm=running non-terminal)
+    3b24d68a-a1e8 runner-flywheel:FLY-1066-implement-codex-G-infra-Bridge-CommDB-Sta fsm=awaiting_review -> KEEP (fsm=awaiting_review non-terminal)
+    8bb6aa25-2ff8 runner-flywheel:FLY-1252-implement-codex-G-infra-claude-accounts-j fsm=running         -> KEEP (fsm=running non-terminal)
+    5e15c660-f633 runner-flywheel:FLY-1308-implement-codex-G-fix-phase-model-fallbac fsm=running         -> KEEP (fsm=running non-terminal)
+    c2c970bd-893e runner-flywheel:@805         fsm=running         -> KEEP (fsm=running non-terminal)
+  [tidal-echo] CommDB running: 0
+
+### CommDB face — sub (NOT in main projects.json; audited for completeness) ###
+  [sub] CommDB running rows:
+    90635170-979f runner-sub:pending           fsm=failed          -> HARVEST(face②preserve)[NOT-CONFIGURED:not-harvested-by-main-bridge] (fsm=failed dead)
+
+================ TOTALS: HARVEST=20  KEEP=18 ================

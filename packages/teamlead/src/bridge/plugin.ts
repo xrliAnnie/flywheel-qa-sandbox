@@ -187,6 +187,7 @@ import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
 import {
 	finalizeCommDbSession,
 	pruneDeadTerminalCommDbSessions,
+	resolveCommDbPath,
 } from "./commdb-session-prune.js";
 import {
 	buildLoopbackBaseUrl,
@@ -393,6 +394,7 @@ import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
 import { notifyDigestExpectTick } from "./notify-digest-expect.js";
 import { defaultReceiptsPath } from "./notify-receipts.js";
+import { resolveOrphanDetectionEscalations } from "./orphan-escalation-reconcile.js";
 import { hashPane, liveRegion } from "./pane-live-region.js";
 import {
 	LEAD_ONLY_PARK_KINDS,
@@ -439,6 +441,12 @@ import {
 	makeRunnerRevalidate,
 	type RescueRuntime,
 } from "./rescue-runtime.js";
+import {
+	createResidueHarvester,
+	type ResidueHarvester,
+	residueMaintenanceEveryNTicks,
+	runResidueAwareBootSweep,
+} from "./residue-harvest.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
 import {
 	createReviewAlertEmitter,
@@ -490,6 +498,11 @@ import {
 import { createStandupRouter } from "./standup-route.js";
 import { StandupService } from "./standup-service.js";
 import {
+	reapStateStoreGhost,
+	reconcileStateStoreGhosts,
+	type StateStoreGhostDeps,
+} from "./statestore-ghost-reconcile.js";
+import {
 	buildStuckRunnerDetector,
 	hasPendingBlockingGateFromCommDb,
 	hasPendingGateFromCommDb,
@@ -504,6 +517,10 @@ import {
 } from "./stuck-pane-confirm.js";
 import { createStuckRemanageRouter } from "./stuck-remanage-routes.js";
 import type { StuckRunnerDetector } from "./stuck-runner-detector.js";
+import {
+	createTerminalCommDbSync,
+	type TerminalCommDbSync,
+} from "./terminal-commdb-sync.js";
 import {
 	createTerminalArchiveEnqueueBuffer,
 	isRetryableOutcome,
@@ -529,6 +546,7 @@ import {
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
 	probeTmuxServer,
+	probeTmuxWindowLiveness,
 	sendEnterToWindow,
 	sendKeysToWindow,
 } from "./tmux-lookup.js";
@@ -1017,6 +1035,10 @@ export interface BridgeAppOptions {
 	 * (single boot-time capture in startBridge). Absent → zero enqueue.
 	 */
 	terminalArchiveEnqueue?: (issueId: string) => void;
+	/** FLY-1066: shared boot/maintenance/targeted residue single-flight. */
+	residueHarvester?: ResidueHarvester;
+	/** FLY-1066: shared non-blocking failed/blocked CommDB sync queue. */
+	terminalCommDbSync?: Pick<TerminalCommDbSync, "enqueue">;
 	/** FLY-91 Round 3: Global Discord bot token for thread creation fallback. */
 	globalBotToken?: string;
 	/**
@@ -3290,12 +3312,20 @@ export function createBridgeApp(
 			// FLY-907 (Codex R1 #1): this INDEPENDENT opts instance bypasses the
 			// shared transitionOpts object — hook it too, or a stale-blocker
 			// finalization (stale blocker → completed) never refreshes the display.
-			onTransition: (executionId, _targetStatus, ctx) => {
+			onTransition: (executionId, targetStatus, ctx) => {
 				const issueId = ctx.issueId ?? store.getSession(executionId)?.issue_id;
 				if (issueId) opts?.issueDisplayRefresh?.current?.enqueue(issueId);
+				opts?.terminalCommDbSync?.enqueue(
+					executionId,
+					targetStatus,
+					ctx.projectName,
+				);
 			},
 		};
 		const staleBlockerGuard = createStaleBlockerGuard({
+			reconcileGhost: opts?.residueHarvester
+				? (blocker) => opts.residueHarvester!.reapTarget(blocker)
+				: undefined,
 			enabled: process.env.FLYWHEEL_CRON_STALE_GUARD !== "0",
 			staleTtlMs: resolveCronStaleTtlMs(),
 			now: () => Date.now(),
@@ -3668,6 +3698,26 @@ export async function startBridge(
 	};
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+	// FLY-1066 Layer 1: migrate each existing project CommDB at boot, then mirror
+	// only StateStore-authoritative failed/blocked outcomes asynchronously. All
+	// SQLite work lives behind the queue; transition hooks remain enqueue-only.
+	const terminalCommDbSync = createTerminalCommDbSync({
+		enabled: process.env.FLYWHEEL_TERMINAL_COMMDB_SYNC !== "0",
+		getAuthoritativeStatus: (executionId) =>
+			store.getSession(executionId)?.status,
+		resolveDbPath: resolveCommDbPath,
+		openDb: (dbPath) => new CommDB(dbPath, false),
+		warmProject: (projectName) => {
+			const dbPath = resolveCommDbPath(projectName);
+			if (!dbPath) return;
+			const db = new CommDB(dbPath, false);
+			db.close();
+		},
+		log: (message) => console.warn(message),
+	});
+	await terminalCommDbSync.warmProjects(
+		projects.map((project) => project.projectName),
+	);
 	// FLY-1244: deterministic boot import. Content hashes make restarts no-ops;
 	// a founder-owned seed mismatch is audited and refused by StateStore.
 	importBundledWorkflowSeeds(store);
@@ -3797,9 +3847,10 @@ export async function startBridge(
 		// terminate / retry / reject / close-runner / crash-reaper / heartbeat
 		// reconcile / marker reconcilers / completion routes / founder consent)
 		// triggers ONE coalesced derive-from-state display refresh.
-		onTransition: (executionId, _targetStatus, ctx) => {
+		onTransition: (executionId, targetStatus, ctx) => {
 			const issueId = ctx.issueId ?? store.getSession(executionId)?.issue_id;
 			if (issueId) issueDisplayRefreshHolder.current?.enqueue(issueId);
+			terminalCommDbSync.enqueue(executionId, targetStatus, ctx.projectName);
 		},
 	};
 	// FLY-247: fleet config snapshot provider (hot fleet-field overlay onto
@@ -4584,6 +4635,182 @@ export async function startBridge(
 			return issueMutex(lockKeys, fn);
 		},
 	};
+
+	// FLY-1066: one startup-captured master switch and one shared single-flight
+	// instance for boot, maintenance, and the scope-free scheduled-run fast path.
+	// FLYWHEEL_COMMDB_FSM_RECONCILE remains the face-①/② sub-switch only: it
+	// never suppresses StateStore ghosts, orphan escalations, or the targeted path.
+	const commDbFsmReconcileEnabled =
+		process.env.FLYWHEEL_COMMDB_FSM_RECONCILE !== "0";
+	const residueHarvestEnabled =
+		process.env.FLYWHEEL_COMMDB_RESIDUE_HARVEST !== "0";
+	const openResidueCommDb = <T>(
+		projectName: string,
+		read: (db: CommDB) => T,
+	): T | undefined => {
+		if (/[/\\]|\.\./.test(projectName)) {
+			throw new Error(`unsafe configured project name: ${projectName}`);
+		}
+		const dbPath = resolveCommDbPath(projectName);
+		if (!dbPath) return undefined;
+		const db = CommDB.openReadonly(dbPath);
+		try {
+			return read(db);
+		} finally {
+			db.close();
+		}
+	};
+	const residueGhostDeps: StateStoreGhostDeps = {
+		store,
+		transitionOpts,
+		ghostMinAgeMs: 30 * 60_000,
+		nowMs: () => Date.now(),
+		lookupCommDbSession: (executionId, projectName) =>
+			openResidueCommDb(projectName, (db) => db.getSession(executionId)),
+		// Full passes override this with the immediately preceding prune's
+		// short-lived evidence. Targeted/historical rows have no safe fallback.
+		getProvenDeadTmuxTarget: () => undefined,
+		probe: (tmuxSession) => probeTmuxWindowLiveness(tmuxSession),
+		finalizeCommDbSession: (executionId, projectName) =>
+			finalizeCommDbSession(executionId, projectName),
+		lifecycleMutex: {
+			withIssueMutex: (keys, fn) => issueMutex(keys, fn),
+			resolveLockKeys: (issueId) => {
+				const resolved = resolveLifecycleRootKey(store, issueId, []);
+				return resolved.lockKeys.length > 0 ? resolved.lockKeys : [issueId];
+			},
+		},
+		archiveThread: (session) =>
+			archiveIssueThreadIfNoOtherActive(
+				store,
+				session,
+				{
+					projects,
+					globalBotToken: config.discordBotToken,
+					discordOwnerUserId: config.discordOwnerUserId,
+				},
+				{ allowStatuses: ["terminated"] },
+			),
+		onQaPhaseTerminated: (executionId, issueId) => {
+			void phaseOrchestratorHolder.current
+				?.reconcileQaLoss({ issueId, terminalExecId: executionId })
+				.catch((err) =>
+					console.warn(
+						`[residue-harvest] qa-loss reconcile failed for ${executionId}: ${(err as Error).message}`,
+					),
+				);
+		},
+		log: (message) => console.warn(message),
+	};
+	const recordResidueFinalizeOutcome = (
+		executionId: string,
+		projectName: string,
+		result: ReturnType<typeof finalizeCommDbSession>,
+	) => {
+		const session = store.getSession(executionId);
+		store.recordCommDbFinalizeOutcome({
+			executionId,
+			issueId: session?.issue_id ?? executionId,
+			projectName,
+			ok: result.ok,
+			error: result.error,
+		});
+	};
+	const pruneResidueCommDb = async (projectName: string) => {
+		try {
+			const pruned = await pruneDeadTerminalCommDbSessions(projectName, {
+				includeCrashPreserve: residueHarvestEnabled,
+				onFinalizeOutcome: recordResidueFinalizeOutcome,
+			});
+			if (pruned.pruned > 0) {
+				console.log(
+					`[Bridge] CommDB terminal prune (${projectName}): scanned=${pruned.scanned} pruned=${pruned.pruned} kept=${pruned.kept}`,
+				);
+			}
+			return pruned.provenDeadTargets;
+		} catch (err) {
+			console.error(
+				`[Bridge] CommDB terminal prune (${projectName}) failed (non-fatal): ${(err as Error).message}`,
+			);
+			return [];
+		}
+	};
+	const residueHarvester = residueHarvestEnabled
+		? createResidueHarvester({
+				projectNames: projects.map((project) => project.projectName),
+				commDbFsmEnabled: commDbFsmReconcileEnabled,
+				harvestCommDb: async (projectName) => {
+					const result = await reconcileCommDbRunningAgainstFsm(
+						projectName,
+						(executionId) => store.getSession(executionId)?.status,
+						{
+							harvest: {
+								orphanMinAgeMs: 24 * 3_600_000,
+								nowMs: () => Date.now(),
+							},
+							onFinalizeOutcome: (executionId, project, outcome) => {
+								const session = store.getSession(executionId);
+								store.recordCommDbFinalizeOutcome({
+									executionId,
+									issueId: session?.issue_id ?? executionId,
+									projectName: project,
+									ok: outcome.ok,
+									error: outcome.error,
+								});
+							},
+						},
+					);
+					if (result.reconciled > 0) {
+						console.log(
+							`[Bridge] FLY-1066 CommDB residue (${projectName}): scanned=${result.scanned} reconciled=${result.reconciled} orphan=${result.harvest?.orphanHarvested ?? 0} preserve=${result.harvest?.preserveHarvested ?? 0}`,
+						);
+					}
+				},
+				pruneTerminalCommDb: pruneResidueCommDb,
+				harvestStateStoreGhosts: async (projectName, provenDeadTargets) => {
+					const targetsByExecution = new Map(
+						provenDeadTargets.map((item) => [
+							item.executionId,
+							item.tmuxWindow,
+						]),
+					);
+					const result = await reconcileStateStoreGhosts(projectName, {
+						...residueGhostDeps,
+						getProvenDeadTmuxTarget: (executionId) =>
+							targetsByExecution.get(executionId),
+					});
+					if (result.reaped > 0) {
+						console.log(
+							`[Bridge] FLY-1066 StateStore ghosts (${projectName}): scanned=${result.scanned} reaped=${result.reaped}`,
+						);
+					}
+				},
+				resolveOrphanEscalations: () => {
+					const result = resolveOrphanDetectionEscalations({
+						store,
+						projectNames: projects.map((project) => project.projectName),
+						listCommDbExecutionIds: (projectName) =>
+							openResidueCommDb(projectName, (db) =>
+								db.listSessions().map((session) => session.execution_id),
+							) ?? [],
+						hasCommDbSession: (projectName, executionId) =>
+							openResidueCommDb(
+								projectName,
+								(db) => db.getSession(executionId) !== undefined,
+							) ?? false,
+						log: (message) => console.warn(message),
+					});
+					if (result.resolvedRows > 0) {
+						console.log(
+							`[Bridge] FLY-1066 orphan escalations: targets=${result.resolvedTargets} rows=${result.resolvedRows}`,
+						);
+					}
+				},
+				reapStateStoreGhost: async (session) =>
+					(await reapStateStoreGhost(session, residueGhostDeps)) === "reaped",
+				log: (message) => console.warn(message),
+			})
+		: undefined;
 	// FLY-1232 module ②: THE single default-off switch point for the lifecycle
 	// shadow writer. FLYWHEEL_WORKFLOW_CLAIMS_WRITE≠1 → undefined → every seam
 	// (dispatcher pre-launch, orchestrator hooks, post-ship T9) stays undefined
@@ -4741,6 +4968,7 @@ export async function startBridge(
 					// FLY-907: the in-process sink's display-refresh holder (its
 					// upsertSession writes bypass the applyTransition hook).
 					issueDisplayRefresh: issueDisplayRefreshHolder,
+					terminalCommDbSync,
 					// FLY-1232: dispatcher pre-launch seam + DirectEventSink T9 hook
 					// (undefined when the flag is OFF — byte-compatible).
 					workflowShadow: workflowShadowWriter,
@@ -4837,6 +5065,8 @@ export async function startBridge(
 		standupProjectName,
 		{
 			vercelToken,
+			residueHarvester,
+			terminalCommDbSync,
 			// FLY-1185: ship-entry bundle + shared repo lock for createBridgeApp's
 			// /events router + Layer A closure.
 			lifecycleInfra,
@@ -5154,6 +5384,8 @@ export async function startBridge(
 		{
 			bridgeBaseUrl: loopbackBaseUrl,
 			ingestToken: config.ingestToken,
+			onTerminalStatusPersisted: (executionId, status, projectName) =>
+				terminalCommDbSync.enqueue(executionId, status, projectName),
 		},
 		48, // reviewTimeoutHours (constructor default; FLY-159/191 48h)
 		quietSignalsProbe,
@@ -5250,6 +5482,16 @@ export async function startBridge(
 		// heartbeat interval); single-flight + detached inside HeartbeatService.
 		// Tick 0 = the boot pass (orphan reap + first sweep).
 		async (tick) => {
+			// FLY-1066: ~hourly residue convergence rides this existing tick and is
+			// deliberately independent of the worktree-autoclean kill-switch.
+			if (residueHarvester) {
+				const residueEveryNTicks = residueMaintenanceEveryNTicks(
+					config.stuckCheckIntervalMs,
+				);
+				if (tick % residueEveryNTicks === 0) {
+					await residueHarvester.runFullPass();
+				}
+			}
 			// R3#1: TERM/KILL of orphan MCP processes is a NEW deletion — it
 			// hangs off the same master switch as every other new mutator.
 			if (!worktreeAutocleanEnabled()) return;
@@ -5336,6 +5578,8 @@ export async function startBridge(
 			transitionOpts,
 			getTmuxTarget: getTmuxTargetFromCommDb,
 			isTmuxWindowAlive,
+			onTerminalStatusPersisted: (executionId, status, projectName) =>
+				terminalCommDbSync.enqueue(executionId, status, projectName),
 		});
 	} catch (err) {
 		console.error(
@@ -5589,60 +5833,35 @@ export async function startBridge(
 	// disjoint (running vs completed/timeout). `FLYWHEEL_COMMDB_FSM_RECONCILE=0`
 	// disables the reconcile (kill-switch, mirrors FLYWHEEL_CRASH_REAPER).
 	{
-		const prunedProjects = new Set<string>();
-		const reconcileOn = process.env.FLYWHEEL_COMMDB_FSM_RECONCILE !== "0";
-		const recordFinalizeOutcome = (
-			executionId: string,
-			projectName: string,
-			result: ReturnType<typeof finalizeCommDbSession>,
-		) => {
-			const session = store.getSession(executionId);
-			store.recordCommDbFinalizeOutcome({
-				executionId,
-				issueId: session?.issue_id ?? executionId,
-				projectName,
-				ok: result.ok,
-				error: result.error,
-			});
-		};
-		void (async () => {
-			for (const p of projects ?? []) {
-				if (prunedProjects.has(p.projectName)) continue;
-				prunedProjects.add(p.projectName);
-				if (reconcileOn) {
-					try {
-						const r = await reconcileCommDbRunningAgainstFsm(
-							p.projectName,
-							(id) => store.getSession(id)?.status,
-							{ onFinalizeOutcome: recordFinalizeOutcome },
-						);
-						if (r.reconciled > 0) {
-							console.log(
-								`[Bridge] FLY-817 CommDB↔FSM reconcile (${p.projectName}): scanned=${r.scanned} reconciled=${r.reconciled} keptNonTerminal=${r.keptNonTerminal} keptPreserve=${r.keptPreserve} keptAliveTarget=${r.keptAliveTarget}`,
-							);
-						}
-					} catch (err) {
-						console.error(
-							`[Bridge] FLY-817 CommDB↔FSM reconcile (${p.projectName}) failed (non-fatal): ${(err as Error).message}`,
-						);
-					}
-				}
-				try {
-					const pruned = await pruneDeadTerminalCommDbSessions(p.projectName, {
-						onFinalizeOutcome: recordFinalizeOutcome,
-					});
-					if (pruned.pruned > 0) {
-						console.log(
-							`[Bridge] FLY-638 CommDB prune (${p.projectName}): scanned=${pruned.scanned} pruned=${pruned.pruned} kept=${pruned.kept} stale terminal rows removed`,
-						);
-					}
-				} catch (err) {
-					console.error(
-						`[Bridge] FLY-638 CommDB prune (${p.projectName}) failed (non-fatal): ${(err as Error).message}`,
+		const runLegacyCommDbFsm = async (projectName: string) => {
+			try {
+				const result = await reconcileCommDbRunningAgainstFsm(
+					projectName,
+					(executionId) => store.getSession(executionId)?.status,
+					{ onFinalizeOutcome: recordResidueFinalizeOutcome },
+				);
+				if (result.reconciled > 0) {
+					console.log(
+						`[Bridge] FLY-817 CommDB↔FSM reconcile (${projectName}): scanned=${result.scanned} reconciled=${result.reconciled} keptNonTerminal=${result.keptNonTerminal} keptPreserve=${result.keptPreserve} keptAliveTarget=${result.keptAliveTarget}`,
 					);
 				}
+			} catch (err) {
+				console.error(
+					`[Bridge] FLY-817 CommDB↔FSM reconcile (${projectName}) failed (non-fatal): ${(err as Error).message}`,
+				);
 			}
-		})();
+		};
+		void runResidueAwareBootSweep({
+			projectNames: projects.map((project) => project.projectName),
+			residueHarvester,
+			commDbFsmEnabled: commDbFsmReconcileEnabled,
+			runLegacyCommDbFsm,
+			pruneCommDb: pruneResidueCommDb,
+		}).catch((err) =>
+			console.error(
+				`[Bridge] CommDB boot sweep failed (non-fatal): ${(err as Error).message}`,
+			),
+		);
 	}
 
 	// FLY-369: archive-on-close. Archiving is driven by the Lead's close action
@@ -9382,6 +9601,7 @@ export async function startBridge(
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
+		await terminalCommDbSync.close(1_000);
 		store.close();
 	};
 

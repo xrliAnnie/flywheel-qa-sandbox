@@ -246,6 +246,46 @@ describe("closeoutIssue — canceled disposition", () => {
 			expect.anything(),
 		);
 	});
+
+	it("FLY-1066 A4: a QA record without a session row finalizes CommDB directly", async () => {
+		const store = await freshStore();
+		seedSession(store, "parent", "completed");
+		store.claimAutoQaRecord({
+			parentExecutionId: "parent",
+			targetPrHeadSha: "head-a",
+			issueId: UUID,
+			projectName: "proj",
+		});
+		store.setAutoQaQaExecutionId("parent", "head-a", "qa-no-row");
+		const finalizeCommDbSessionFn = vi.fn(() => ({
+			ok: true,
+			outcome: "finalized" as const,
+			retiredGateCount: 1,
+			deletedSessionCount: 1,
+		}));
+
+		const report = await closeoutIssue(
+			baseDeps(store, { finalizeCommDbSessionFn }),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "canceled",
+				authority: "linear_reconcile",
+			},
+		);
+
+		expect(finalizeCommDbSessionFn).toHaveBeenCalledWith("qa-no-row", "proj");
+		expect(
+			report.nodes.find((node) => node.node.executionId === "qa-no-row"),
+		).toMatchObject({
+			confirmedGone: true,
+			communicationsFinalized: true,
+			teardown: {
+				state: "done",
+				detail: "no_session_row_communications_finalized",
+			},
+		});
+	});
 });
 
 describe("closeoutIssue — shipped disposition", () => {

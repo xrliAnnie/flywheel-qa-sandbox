@@ -966,6 +966,46 @@ describe("DirectEventSink — FLY-793: completion must not clobber a phase role 
 		expect(s?.last_error).toBe("goal ended non-complete: blocked");
 	});
 
+	it("FLY-1066: blocked completion enqueues the DirectEventSink bypass", async () => {
+		const enqueue = vi.fn();
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		sink.terminalCommDbSync = { enqueue };
+
+		await sink.emitCompleted(makeEnvelope(), {
+			...needsReviewResult(),
+			decision: { route: "blocked", reasoning: "blocked fixture" },
+		});
+
+		expect(enqueue).toHaveBeenCalledWith("exec-1", "blocked", "geoforge3d");
+	});
+
+	it("FLY-1066: emitFailed enqueues both failed and goal-blocked outcomes", async () => {
+		const enqueue = vi.fn();
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		sink.terminalCommDbSync = { enqueue };
+
+		await sink.emitFailed(makeEnvelope({ executionId: "exec-failed" }), "boom");
+		await sink.emitFailed(
+			makeEnvelope({ executionId: "exec-blocked" }),
+			"legacy",
+			undefined,
+			{ failureKind: "goal_blocked", failureReason: "blocked" },
+		);
+
+		expect(enqueue).toHaveBeenNthCalledWith(
+			1,
+			"exec-failed",
+			"failed",
+			"geoforge3d",
+		);
+		expect(enqueue).toHaveBeenNthCalledWith(
+			2,
+			"exec-blocked",
+			"blocked",
+			"geoforge3d",
+		);
+	});
+
 	it("byte-compat: a non-phase (main) session keeps role main on completion", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",

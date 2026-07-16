@@ -155,6 +155,12 @@ export interface MarkerReconcilerDeps {
 	 * AutoQaCoordinator's alert channel in plugin.ts. Absent → marker + log only.
 	 */
 	alertMergeWithoutApproval?: (session: Session, reason: string) => void;
+	/** FLY-1066: direct forceStatus fallback bypasses applyTransition. */
+	onTerminalStatusPersisted?: (
+		executionId: string,
+		status: "failed" | "blocked",
+		projectName: string,
+	) => void;
 }
 
 /**
@@ -695,6 +701,11 @@ export function applyQuarantineFallback(args: {
 	livenessVerdict?: "alive" | "dead" | "indeterminate";
 	routeStatus?: string;
 	quarantinePath: string;
+	onTerminalStatusPersisted?: (
+		executionId: string,
+		status: "failed" | "blocked",
+		projectName: string,
+	) => void;
 	log?: (m: string) => void;
 }): void {
 	const log = args.log ?? ((m: string) => console.log(m));
@@ -756,6 +767,23 @@ export function applyQuarantineFallback(args: {
 		);
 	}
 	args.store.forceStatus(args.executionId, target, now, lastError);
+	if (
+		(target === "failed" || target === "blocked") &&
+		args.projectName &&
+		args.onTerminalStatusPersisted
+	) {
+		try {
+			args.onTerminalStatusPersisted(
+				args.executionId,
+				target,
+				args.projectName,
+			);
+		} catch (err) {
+			log(
+				`[complete-reconciler] terminal CommDB enqueue threw for ${args.executionId}: ${(err as Error).message}`,
+			);
+		}
+	}
 	log(
 		`[complete-reconciler] ${args.executionId}: dead + un-replayable marker → forced status=${target}`,
 	);
@@ -836,6 +864,7 @@ export async function reconcileCompleteFailedMarkers(
 				tmuxAlive,
 				routeStatus: outcome.routeStatus,
 				quarantinePath: outcome.quarantinePath,
+				onTerminalStatusPersisted: deps.onTerminalStatusPersisted,
 				log,
 			});
 		}

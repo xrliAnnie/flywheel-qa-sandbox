@@ -44,6 +44,7 @@ import {
 } from "./bridge/proofshot-session.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import { STAGE_ORDER } from "./bridge/stage-utils.js";
+import type { TerminalCommDbSync } from "./bridge/terminal-commdb-sync.js";
 import type { BridgeConfig } from "./bridge/types.js";
 import type { WorktreeCleanupFn } from "./bridge/worktree-cleanup.js";
 import { type ProjectEntry, resolveLeadForIssue } from "./ProjectConfig.js";
@@ -112,6 +113,14 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	public issueDisplayRefresh?: IssueDisplayRefreshHolder;
 
 	/**
+	 * FLY-1066 Layer 1: this sink persists terminal StateStore rows directly,
+	 * bypassing applyTransition. The composition root supplies the shared,
+	 * non-blocking CommDB sync queue so failed/blocked registrations converge
+	 * without doing SQLite work in this event path.
+	 */
+	public terminalCommDbSync?: Pick<TerminalCommDbSync, "enqueue">;
+
+	/**
 	 * FLY-1185 (Codex R4#1, plan.md:145): launch-claim activation hook — CAS
 	 * starting→active under the canonical issue mutex, called by emitStarted
 	 * AFTER the session row is durable. Refusal (a park cancelled the claim
@@ -139,6 +148,20 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		} catch (err) {
 			console.warn(
 				`[DirectEventSink] issue-display enqueue threw for ${issueId}: ${(err as Error).message}`,
+			);
+		}
+	}
+
+	private enqueueTerminalCommDbStatus(
+		executionId: string,
+		status: "failed" | "blocked",
+		projectName: string,
+	): void {
+		try {
+			this.terminalCommDbSync?.enqueue(executionId, status, projectName);
+		} catch (err) {
+			console.warn(
+				`[DirectEventSink] terminal CommDB enqueue threw for ${executionId}: ${(err as Error).message}`,
 			);
 		}
 	}
@@ -784,6 +807,13 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				workflow_node_id: workflowNodeId,
 			});
 		}
+		if (!evidenceOnly && status === "blocked") {
+			this.enqueueTerminalCommDbStatus(
+				env.executionId,
+				"blocked",
+				env.projectName,
+			);
+		}
 
 		// FLY-208 5a: evidence-gap completion — persist the marker (FLY-210
 		// consumes it) and warn loudly. Sister write: event-route.ts.
@@ -1086,6 +1116,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			),
 			workflow_node_id: workflowNodeId,
 		});
+		this.enqueueTerminalCommDbStatus(
+			env.executionId,
+			terminalStatus,
+			env.projectName,
+		);
 
 		// GEO-202: Post-upsert backfill — if session still has no identifier, fall back to issueId
 		{

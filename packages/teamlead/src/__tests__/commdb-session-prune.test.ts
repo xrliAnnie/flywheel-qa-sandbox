@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commDbPathForProject } from "../bridge/commdb-path.js";
 import {
 	finalizeCommDbSession,
@@ -40,11 +40,15 @@ describe("commdb-session-prune (FLY-638)", () => {
 
 	function seed(
 		execId: string,
-		status: "running" | "completed" | "timeout",
+		status: "running" | "completed" | "timeout" | "failed" | "blocked",
 		win = `base:@${execId}`,
 	): void {
 		db.registerSession(execId, win, "flywheel", `i-${execId}`, "lead-a");
-		if (status !== "running") db.updateSessionStatus(execId, status);
+		if (status === "failed" || status === "blocked") {
+			db.markSessionTerminalStatus(execId, status);
+		} else if (status !== "running") {
+			db.updateSessionStatus(execId, status);
+		}
 	}
 
 	describe("finalizeCommDbSession", () => {
@@ -171,6 +175,10 @@ describe("commdb-session-prune (FLY-638)", () => {
 			expect(res.pruned).toBe(2); // dead1 + dead2 (proven dead)
 			expect(res.kept).toBe(2); // parked (alive) + flaky (indeterminate)
 			expect(res.failed).toBe(0);
+			expect(res.provenDeadTargets).toEqual([
+				{ executionId: "dead1", tmuxWindow: "base:@1" },
+				{ executionId: "dead2", tmuxWindow: "base:@2" },
+			]);
 			expect(db.getSession("dead1")).toBeUndefined();
 			expect(db.listRunnerPhaseWakes("dead1")).toEqual([]);
 			expect(db.getRunnerShutdown("dead1")).toBeNull();
@@ -194,13 +202,95 @@ describe("commdb-session-prune (FLY-638)", () => {
 			expect(db.getSession("t2")).toBeDefined();
 		});
 
+		it("FLY-1066 harvest expands the proven-dead scan to failed/blocked", async () => {
+			seed("failed-dead", "failed", "base:@failed");
+			seed("blocked-dead", "blocked", "base:@blocked");
+			seed("failed-alive", "failed", "base:@alive");
+
+			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
+				dbPath,
+				includeCrashPreserve: true,
+				probe: async (window) => (window === "base:@alive" ? "alive" : "dead"),
+			});
+
+			expect(res).toEqual({
+				scanned: 3,
+				pruned: 2,
+				kept: 1,
+				failed: 0,
+				provenDeadTargets: [
+					{ executionId: "failed-dead", tmuxWindow: "base:@failed" },
+					{ executionId: "blocked-dead", tmuxWindow: "base:@blocked" },
+				],
+			});
+			expect(db.getSession("failed-dead")).toBeUndefined();
+			expect(db.getSession("blocked-dead")).toBeUndefined();
+			expect(db.getSession("failed-alive")).toBeDefined();
+		});
+
+		it("keeps successful dead-target evidence when audit recording throws", async () => {
+			seed("audit-throws", "completed", "base:@7");
+
+			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
+				dbPath,
+				probe: async () => "dead",
+				onFinalizeOutcome: () => {
+					throw new Error("StateStore unavailable");
+				},
+			});
+
+			expect(res).toEqual({
+				scanned: 1,
+				pruned: 1,
+				kept: 0,
+				failed: 0,
+				provenDeadTargets: [
+					{ executionId: "audit-throws", tmuxWindow: "base:@7" },
+				],
+			});
+			expect(db.getSession("audit-throws")).toBeUndefined();
+		});
+
+		it("harvest flag off preserves the legacy completed/timeout scan exactly", async () => {
+			seed("failed-dead", "failed", "base:@failed");
+			seed("blocked-dead", "blocked", "base:@blocked");
+			seed("completed-dead", "completed", "base:@completed");
+
+			const probe = vi.fn(async () => "dead" as const);
+			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
+				dbPath,
+				includeCrashPreserve: false,
+				probe,
+			});
+
+			expect(res).toEqual({
+				scanned: 1,
+				pruned: 1,
+				kept: 0,
+				failed: 0,
+				provenDeadTargets: [
+					{ executionId: "completed-dead", tmuxWindow: "base:@completed" },
+				],
+			});
+			expect(probe).toHaveBeenCalledExactlyOnceWith("base:@completed");
+			expect(db.getSession("failed-dead")).toBeDefined();
+			expect(db.getSession("blocked-dead")).toBeDefined();
+			expect(db.getSession("completed-dead")).toBeUndefined();
+		});
+
 		it("returns zeros when there are no terminal sessions", async () => {
 			seed("only-running", "running");
 			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
 				dbPath,
 				probe: async () => "dead",
 			});
-			expect(res).toEqual({ scanned: 0, pruned: 0, kept: 0, failed: 0 });
+			expect(res).toEqual({
+				scanned: 0,
+				pruned: 0,
+				kept: 0,
+				failed: 0,
+				provenDeadTargets: [],
+			});
 			expect(db.getSession("only-running")).toBeDefined();
 		});
 	});
