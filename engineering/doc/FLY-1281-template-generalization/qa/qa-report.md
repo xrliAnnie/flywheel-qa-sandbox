@@ -4,7 +4,48 @@ Issue: FLY-1281
 日期: 2026-07-15
 基于: plan.md（Codex design review APPROVED，11 轮）
 
-**结论：PASS。** 验证 head = `680433728c7c5771116c676ef9a4cb2ed84028e3`（= PR #613 headRefOid，逐字一致）。
+**结论：FAIL（1 个 HIGH 阻断）。** 验证 head = `18fca9f2866055ae804172e838c7ce59ed782205`。
+
+> **更正声明**：我最初报了 PASS，**那个判断是错的，已撤回**。我的全部测试都在验 DB / 收据 / flag 行为，
+> **从没探过真正发给 Runner 的 prompt 文本**。Codex code review 第 2 轮点出了这一面，我独立复现后确认属实。
+> 记在这里而不是悄悄改掉，因为「我漏了哪一面」本身就是这次 QA 最该留下的信息。
+
+---
+
+## 0. 阻断项（HIGH）— capability 隔离被 legacy ship 尾巴打穿
+
+**现象**：当 checkpoints 开启（**flywheel 生产就是 brainstorm + approve_to_ship 全开**），一个泛化的
+**no-write / no-ship** 节点（如 `tpl_research_light` 的 `research`，`completion_route=no_code`）拿到的 prompt 里
+**同时**包含：
+
+- 它自己的能力契约：`Do not request ship approval or ship/merge a PR.` + `complete --route no_code`
+- **以及**互相矛盾的 legacy 尾巴：`APPROVE GATE (MANDATORY — do NOT skip)`、`complete --route needs_review`、
+  `MERGE AUTHORITY`、`verify-approval`、`:cool:`
+
+**根因**（`packages/edge-worker/src/Blueprint.ts`，FLY-47 checkpoint 注入循环）：该循环只对 `isQaRunner`
+跳过 `brainstorm` / `approve_to_ship`，**没有 `isGeneralizedExecution` 的跳过分支**，所以这些 block 被追加到
+泛化能力行之后。
+
+**为什么第一轮没抓到（诚实复盘）**：既有的 `Blueprint.generalized-workflow.test.ts` 构造 Blueprint 时
+**不传 checkpointConfig**，于是它那句 `expect(prompt).not.toContain("BRAINSTORM GATE")`
+**是空过的**——gate 文本本来就只在 checkpoints 开启时才注入。测试名字看起来覆盖了这一面，实际没有。
+这正是「标签不等于事实」：断言存在 ≠ 断言有效。我的 E2E 也只验 DB/收据，没验 prompt 文本。
+
+**已提交的失败回归测试**（本次 QA 新增，当前对着现网代码是 RED）：
+`Blueprint generalized workflow capability contract > suppresses brainstorm/approve_to_ship gates for a generalized node when checkpoints are enabled`
+
+**我没有自己改代码** —— 三段式里我是验证方，修复归 implement 阶段。
+
+## 0b. Codex 第 2 轮另报的 2 个 MEDIUM（我未独立复现，转给实现者判断）
+
+1. `runs-route.ts` — `selected_by` 直接取请求里的 `leadId`，其 owning-Lead 校验挂在 legacy
+   `BRIDGE_DEPT_SCOPE_REJECT` kill-switch 上；关掉该开关后 v2 run 可记录未经校验的 Lead，
+   与计划要求的「服务端派生身份 + 错 Lead 403」不符。
+2. `runs-route.ts` — 已 commit 的 launch 被正面证明死亡时，output-producing 节点直接永久 hold，
+   没有进入计划 R9/R10 的 delivery-attempt CAS 修复；`tpl_research_light` 受影响。
+
+> Codex 的 HIGH 描述里还说 `gh pr create` 也泄漏了 —— **我的探针显示它 absent**，这一条不成立。
+> 其余（APPROVE GATE / needs_review / MERGE AUTHORITY / verify-approval / `:cool:`）**全部复现属实**。
 
 ---
 

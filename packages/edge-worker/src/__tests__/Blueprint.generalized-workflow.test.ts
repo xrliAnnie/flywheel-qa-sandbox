@@ -1,3 +1,4 @@
+import type { CheckpointsConfig } from "flywheel-config";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
@@ -10,7 +11,7 @@ import { Blueprint } from "../Blueprint.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
 
-function harness() {
+function harness(checkpoints?: CheckpointsConfig) {
 	const adapter: IAdapter = {
 		type: "mock",
 		supportsStreaming: false,
@@ -43,7 +44,20 @@ function harness() {
 	} as ShellRunner;
 	return {
 		adapter,
-		blueprint: new Blueprint(hydrator, git, () => adapter, shell),
+		blueprint: new Blueprint(
+			hydrator,
+			git,
+			() => adapter,
+			shell,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			checkpoints,
+		),
 	};
 }
 
@@ -108,5 +122,40 @@ describe("Blueprint generalized workflow capability contract", () => {
 				},
 			}),
 		).rejects.toThrow(/unsupported generalized completion route/i);
+	});
+
+	// FLY-1281 QA regression: capability isolation must hold on the PRODUCTION
+	// shape. The pre-existing assertion above runs with NO checkpointConfig, so
+	// its `not.toContain("BRAINSTORM GATE")` passes vacuously — the gate text is
+	// only ever injected when checkpoints are enabled. The flywheel project runs
+	// with brainstorm + approve_to_ship enabled, and the checkpoint loop in
+	// Blueprint only skips those for `isQaRunner` — a generalized no-write /
+	// no-ship node still gets them, so its prompt says both "Do not request ship
+	// approval" AND "APPROVE GATE (MANDATORY)" / MERGE AUTHORITY / verify-approval.
+	it("suppresses brainstorm/approve_to_ship gates for a generalized node when checkpoints are enabled", async () => {
+		const checkpoints = {
+			brainstorm: { enabled: true },
+			approve_to_ship: { enabled: true },
+			question: { enabled: true },
+		} as unknown as CheckpointsConfig;
+		const { blueprint, adapter } = harness(checkpoints);
+		await blueprint.run(node, "/tmp/fly1281-generalized-cp", {
+			...generalized,
+			leadId: "flywheel-eng-lead",
+		} as BlueprintContext);
+		const call = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
+		const prompt = call.appendSystemPrompt ?? "";
+
+		// The capability contract this node was pinned with.
+		expect(prompt).toContain("Do not request ship approval");
+		expect(prompt).toContain("complete --route no_code");
+
+		// ...must not be contradicted by legacy ship/merge instructions.
+		expect(prompt).not.toContain("APPROVE GATE");
+		expect(prompt).not.toContain("complete --route needs_review");
+		expect(prompt).not.toContain("MERGE AUTHORITY");
+		expect(prompt).not.toContain("verify-approval");
+		expect(prompt).not.toContain("BRAINSTORM GATE");
 	});
 });
