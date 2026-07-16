@@ -118,15 +118,40 @@ SRC="runner-51418c98"
 CODEX_WIN="FLY-1259-implement"
 HUSK_WIN="FLY-1225-qa"
 
+# Build the fixture and PROVE it built. This box runs at load ~10; a fixed
+# sleep after kill-server is not a synchronisation primitive. If new-session
+# lands while the old server is still dying, the fixture silently does not
+# exist and every downstream assertion fails for an environmental reason —
+# a red for the wrong reason, which is as useless as a vacuous green. So:
+# bounded retry on the observable postcondition (session present, exactly the
+# two windows, both ids resolved), and a hard UNTESTABLE stop if it never
+# materialises. Never let a flaky fixture masquerade as a verdict.
 build_fixture() {
-  tmux kill-server 2>/dev/null || true
-  sleep 0.2
-  tmux new-session -d -s "$SRC" -n "$CODEX_WIN" "sleep 120" 2>/dev/null
-  tmux new-window -d -t "${SRC}:" -n "$HUSK_WIN" "sleep 120" 2>/dev/null
-  CODEX_WID=$(tmux list-windows -t "=$SRC" -F '#{window_id}|#{window_name}' \
-    | awk -F'|' -v n="$CODEX_WIN" '$2 == n { print $1; exit }')
-  HUSK_WID=$(tmux list-windows -t "=$SRC" -F '#{window_id}|#{window_name}' \
-    | awk -F'|' -v n="$HUSK_WIN" '$2 == n { print $1; exit }')
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    tmux kill-server 2>/dev/null || true
+    # Wait for the server to actually be gone rather than assuming it is.
+    local gone
+    for gone in 1 2 3 4 5 6 7 8 9 10; do
+      tmux list-sessions >/dev/null 2>&1 || break
+      sleep 0.2
+    done
+    tmux new-session -d -s "$SRC" -n "$CODEX_WIN" "sleep 120" 2>/dev/null
+    tmux new-window -d -t "${SRC}:" -n "$HUSK_WIN" "sleep 120" 2>/dev/null
+    CODEX_WID=$(tmux list-windows -t "=$SRC" -F '#{window_id}|#{window_name}' 2>/dev/null \
+      | awk -F'|' -v n="$CODEX_WIN" '$2 == n { print $1; exit }')
+    HUSK_WID=$(tmux list-windows -t "=$SRC" -F '#{window_id}|#{window_name}' 2>/dev/null \
+      | awk -F'|' -v n="$HUSK_WIN" '$2 == n { print $1; exit }')
+    local count
+    count=$(tmux list-windows -t "=$SRC" -F '#{window_id}' 2>/dev/null | grep -c . )
+    if [[ -n "$CODEX_WID" && -n "$HUSK_WID" && "$CODEX_WID" != "$HUSK_WID" && "$count" == "2" ]]; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "FATAL: fixture did not build after 10 attempts (codex=[${CODEX_WID:-}] husk=[${HUSK_WID:-}])." >&2
+  echo "  Refusing to report any verdict from a fixture that does not exist." >&2
+  exit 1
 }
 
 # THE RULER — what the tab renders = the view session's active window name.
@@ -261,8 +286,20 @@ echo "── §2.8 premise: remain-on-exit is a WINDOW option (the fact the fix 
 # (This lives here, in a committed artifact, so the report's claim is
 # reproducible — an earlier draft verified it only in a throwaway probe.)
 tmux kill-server 2>/dev/null || true
-sleep 0.2
-tmux new-session -d -s roe -n existing "sleep 60" 2>/dev/null
+# Same discipline as build_fixture: wait for the observable state, not a guess.
+for _gone in 1 2 3 4 5 6 7 8 9 10; do
+  tmux list-sessions >/dev/null 2>&1 || break
+  sleep 0.2
+done
+roe_ready=no
+for _try in 1 2 3 4 5; do
+  tmux new-session -d -s roe -n existing "sleep 60" 2>/dev/null
+  tmux has-session -t "=roe" 2>/dev/null && { roe_ready=yes; break; }
+  sleep 0.3
+done
+if [[ "$roe_ready" != "yes" ]]; then
+  fail "§2.8 UNTESTABLE: could not create the probe session (environment, not the fix)"
+else
 # OLD FORM, in the original order: session-target set-option BEFORE new-window.
 tmux set-option -t "=roe:" remain-on-exit on 2>/dev/null
 new_wid=$(tmux new-window -d -t "=roe:" -P -F '#{window_id}' -n runner "sleep 60" 2>/dev/null)
@@ -343,6 +380,7 @@ else
   else
     fail "§2.8 husk semantics: expected pane_dead=1, got [$husk_dead]"
   fi
+fi
 fi
 
 echo
