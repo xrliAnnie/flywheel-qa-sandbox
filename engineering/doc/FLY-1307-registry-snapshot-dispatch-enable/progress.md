@@ -1,13 +1,13 @@
 ---
 issue: FLY-1307
 phase: implement
-phaseCursor: 2/8
-updated: 2026-07-16T10:04:35.445Z
-nextStep: Run PR-7 regression/full tests, review diff, commit and open PR-7
+phaseCursor: 3/8
+updated: 2026-07-16T10:35:50.688Z
+nextStep: Complete PR-7 cross-family code review and CI, then land it
 chunks: []
 pointers: {}
 ---
 
 # FLY-1307 progress
-**phase**: implement (2/8)
-**next**: Run PR-7 regression/full tests, review diff, commit and open PR-7
+**phase**: implement (3/8)
+**next**: Complete PR-7 cross-family code review and CI, then land it
