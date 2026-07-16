@@ -29,13 +29,17 @@ describe("classifyRunnerRow", () => {
 		expect(classifyRunnerRow("running", true)).toBe("running");
 		expect(classifyRunnerRow("running", false)).toBe("running");
 	});
-	it("completed/timeout + alive → parked-alive", () => {
+	it("every terminal status + alive → parked-alive", () => {
 		expect(classifyRunnerRow("completed", true)).toBe("parked-alive");
 		expect(classifyRunnerRow("timeout", true)).toBe("parked-alive");
+		expect(classifyRunnerRow("failed", true)).toBe("parked-alive");
+		expect(classifyRunnerRow("blocked", true)).toBe("parked-alive");
 	});
-	it("completed/timeout + not alive → dead", () => {
+	it("every terminal status + not alive → dead", () => {
 		expect(classifyRunnerRow("completed", false)).toBe("dead");
 		expect(classifyRunnerRow("timeout", false)).toBe("dead");
+		expect(classifyRunnerRow("failed", false)).toBe("dead");
+		expect(classifyRunnerRow("blocked", false)).toBe("dead");
 	});
 });
 

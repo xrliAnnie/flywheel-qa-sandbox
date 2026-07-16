@@ -818,7 +818,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					let commDb: CommDB | undefined;
 					try {
 						commDb = new CommDB(ctx.commDbPath);
-						commDb.updateSessionStatus(
+						commDb.updateSessionStatusIfRunning(
 							ctx.executionId,
 							controlledShutdownSucceeded() ? "completed" : "timeout",
 						);
@@ -895,7 +895,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						const goalBlocked = outcome?.result.status === "blocked";
 						const okComplete =
 							(c.success || controlledShutdownSucceeded()) && !teardownError;
-						commDb.updateSessionStatus(
+						commDb.updateSessionStatusIfRunning(
 							ctx.executionId,
 							okComplete ? "completed" : goalBlocked ? "blocked" : "timeout",
 						);

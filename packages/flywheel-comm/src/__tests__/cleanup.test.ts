@@ -48,7 +48,7 @@ describe("cleanupStaleSessions", () => {
 			tmux_window: string;
 			project_name: string;
 			issue_id?: string;
-			status: "running" | "completed" | "timeout";
+			status: "running" | "completed" | "timeout" | "failed" | "blocked";
 			ended_at?: string;
 		}>,
 	): string {
@@ -62,7 +62,11 @@ describe("cleanupStaleSessions", () => {
 				s.issue_id,
 			);
 			if (s.status !== "running") {
-				db.updateSessionStatus(s.execution_id, s.status);
+				if (s.status === "failed" || s.status === "blocked") {
+					db.markSessionTerminalStatus(s.execution_id, s.status);
+				} else {
+					db.updateSessionStatus(s.execution_id, s.status);
+				}
 			}
 			if (s.ended_at) {
 				// Override ended_at for precise timeout testing
@@ -446,6 +450,36 @@ describe("cleanupStaleSessions", () => {
 		});
 		expect(result.cleaned).toBe(2);
 		expect(result.skipped).toBe(0);
+	});
+
+	it("FLY-1066: does not kill preserved failed/blocked windows", () => {
+		const dbPath = createDbWithSessions([
+			{
+				execution_id: "failed-1",
+				tmux_window: "GEO-1:@0",
+				project_name: "test",
+				status: "failed",
+				ended_at: "2020-01-01 00:00:00",
+			},
+			{
+				execution_id: "blocked-1",
+				tmux_window: "GEO-2:@0",
+				project_name: "test",
+				status: "blocked",
+				ended_at: "2020-01-01 00:00:00",
+			},
+		]);
+
+		const result = cleanupStaleSessions({
+			dbPaths: [dbPath],
+			timeoutMinutes: 30,
+		});
+		expect(result).toMatchObject({ cleaned: 0, skipped: 0 });
+		const killCalls = mockExecFileSync.mock.calls.filter(
+			(c: unknown[]) =>
+				c[0] === "tmux" && Array.isArray(c[1]) && c[1][0] === "kill-window",
+		);
+		expect(killCalls).toHaveLength(0);
 	});
 
 	it("uses default 30 minute timeout when not specified", () => {

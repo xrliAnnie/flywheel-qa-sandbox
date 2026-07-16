@@ -159,7 +159,7 @@ server.tool(
 	"runner_terminal_list",
 	[
 		"List Runner sessions observable by this Lead, classified by CommDB status + tmux liveness.",
-		"class=running (CommDB running), class=parked-alive (CommDB completed/timeout but tmux+agent still alive — idle, RE-ENGAGEABLE via `flywheel-comm send`/SendMessage, NO new run needed), class=dead (terminal + tmux gone).",
+		"class=running (CommDB running), class=parked-alive (CommDB terminal but tmux+agent still alive — preserved and RE-ENGAGEABLE via `flywheel-comm send`/SendMessage, NO new run needed), class=dead (terminal + tmux gone).",
 		"active_only=true (default) shows running + parked-alive (hides dead); active_only=false shows all classes.",
 		"NOTE: this reflects CommDB status + live tmux probe only — it does NOT see the Bridge FSM state (awaiting_review etc.).",
 	].join(" "),
@@ -187,7 +187,7 @@ server.tool(
 				running = db
 					.getActiveSessions(projectName)
 					.filter((s) => s.lead_id === null || s.lead_id === leadId);
-				// terminal (completed/timeout): lead-scoped + ended_at-ordered + capped
+				// terminal: lead-scoped + ended_at-ordered + capped
 				// IN SQL (FLY-229), so an in-scope parked-alive row can't be pushed out
 				// of the window by another Lead's newer rows.
 				terminal = db.getRecentTerminalSessions(

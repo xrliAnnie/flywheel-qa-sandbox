@@ -82,7 +82,7 @@ export interface Session {
 	lead_id: string | null;
 	started_at: string;
 	ended_at: string | null;
-	status: "running" | "completed" | "timeout" | "blocked";
+	status: "running" | "completed" | "timeout" | "blocked" | "failed";
 	/**
 	 * FLY-1188: transport vendor of the runner ("claude-code" | "codex"),
 	 * written by the spawning adapter. `send` routes the mailbox wake by it.
