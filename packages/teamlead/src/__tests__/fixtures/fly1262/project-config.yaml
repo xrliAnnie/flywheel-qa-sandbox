@@ -1,0 +1,30 @@
+project: personal-assistant
+
+linear:
+  team_id: FLY
+
+runners:
+  default: claude
+  available:
+    claude:
+      type: claude
+
+teams:
+  - name: default
+    orchestrators: []
+
+decision_layer:
+  autonomy_level: manual_only
+  escalation_channel: discord
+
+roles:
+  runner:
+    backend: claude-tmux
+    model: claude-opus-4-8
+
+agents:
+  personal:
+    agent_file: .flywheel/agents/engineering/personal-executor.md
+    department: engineering
+    match:
+      labels: [personal]

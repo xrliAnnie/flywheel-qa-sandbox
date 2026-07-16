@@ -11725,6 +11725,119 @@ export class StateStore {
 		return revision;
 	}
 
+	/**
+	 * Management-console authoring boundary: validate first, then append the
+	 * revision, publication, pointer update, and both audit facts in one CAS
+	 * transaction. A stale editor rolls the entire transaction back, so it can
+	 * never leave an orphan revision behind.
+	 */
+	createAndPublishWorkflowTemplateRevision(input: {
+		templateId: string;
+		manifest: unknown;
+		expectedRevision: number | null;
+		createdBy: string;
+		/** Repair-only: preserve unrelated retired selections after the caller validates the edited node. */
+		allowUnsupportedModels?: boolean;
+	}): WorkflowTemplatePublishResult {
+		const manifest = validateWorkflowManifest(input.manifest, {
+			allowUnsupportedModels: input.allowUnsupportedModels === true,
+		});
+		const digest = canonicalSubmissionDigest(manifest);
+		if (!this.getWorkflowTemplate(input.templateId)) {
+			return { status: "not_found" };
+		}
+		const conflict = Symbol("workflow_template_edit_publish_conflict");
+		let revision = 0;
+		try {
+			this.db.transaction(() => {
+				const template = this.workflowSelectAll(
+					`SELECT current_published_revision AS current
+					 FROM workflow_template WHERE template_id = ?`,
+					[input.templateId],
+				)[0];
+				const current =
+					template?.current === null || template?.current === undefined
+						? null
+						: Number(template.current);
+				if (current !== input.expectedRevision) throw conflict;
+
+				const max = this.workflowSelectAll(
+					`SELECT COALESCE(MAX(revision), 0) AS revision
+					 FROM workflow_template_revision WHERE template_id = ?`,
+					[input.templateId],
+				)[0];
+				revision = Number(max?.revision ?? 0) + 1;
+				this.db.run(
+					`INSERT INTO workflow_template_revision
+					 (template_id, revision, manifest, manifest_digest, schema_version, created_by)
+					 VALUES (?, ?, ?, ?, ?, ?)`,
+					[
+						input.templateId,
+						revision,
+						JSON.stringify(manifest),
+						digest,
+						manifest.schema_version,
+						input.createdBy,
+					],
+				);
+				this.db.run(
+					`INSERT INTO workflow_template_publication
+					 (template_id, revision, published_by) VALUES (?, ?, ?)`,
+					[input.templateId, revision, input.createdBy],
+				);
+				this.db.run(
+					`UPDATE workflow_template
+					 SET current_published_revision = ?,
+					     seed_owner = CASE
+					       WHEN ? = 'system' THEN seed_owner ELSE 'founder' END
+					 WHERE template_id = ?
+					   AND ((current_published_revision IS NULL AND ? IS NULL)
+					        OR current_published_revision = ?)`,
+					[
+						revision,
+						input.createdBy,
+						input.templateId,
+						input.expectedRevision,
+						input.expectedRevision,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) throw conflict;
+				this.db.run(
+					`INSERT INTO workflow_template_audit
+					 (actor, action, template_id, revision, detail)
+					 VALUES (?, 'create', ?, ?, ?)`,
+					[
+						input.createdBy,
+						input.templateId,
+						revision,
+						JSON.stringify({ manifest_digest: digest }),
+					],
+				);
+				this.db.run(
+					`INSERT INTO workflow_template_audit
+					 (actor, action, template_id, revision, detail)
+					 VALUES (?, 'publish', ?, ?, ?)`,
+					[
+						input.createdBy,
+						input.templateId,
+						revision,
+						JSON.stringify({ expected_revision: input.expectedRevision }),
+					],
+				);
+			});
+		} catch (error) {
+			if (error !== conflict) throw error;
+			return {
+				status: "conflict",
+				currentRevision:
+					this.getWorkflowTemplate(input.templateId)
+						?.current_published_revision ?? null,
+			};
+		}
+		this.save();
+		return { status: "published", revision };
+	}
+
 	publishWorkflowTemplate(input: {
 		templateId: string;
 		revision: number;
@@ -11957,6 +12070,17 @@ export class StateStore {
 			 LIMIT 1`,
 			[project, taskCategory, taskCategory],
 		)[0] as unknown as WorkflowCategoryBindingRow | undefined;
+	}
+
+	listWorkflowCategoryBindings(project?: string): WorkflowCategoryBindingRow[] {
+		return this.workflowSelectAll(
+			project
+				? `SELECT * FROM workflow_category_binding
+				   WHERE project = ? ORDER BY task_category, template_id`
+				: `SELECT * FROM workflow_category_binding
+				   ORDER BY project, task_category, template_id`,
+			project ? [project] : [],
+		) as unknown as WorkflowCategoryBindingRow[];
 	}
 
 	/** Resolve once, overlay once, validate once, then pin the whole snapshot. */

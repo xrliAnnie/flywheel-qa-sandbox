@@ -1,12 +1,44 @@
 import { describe, expect, it } from "vitest";
+import { StateStore } from "../StateStore.js";
 import {
 	applyWorkflowOverride,
+	ensureDefaultWorkflowBindings,
+	importBundledWorkflowSeeds,
 	isGeneralizedTemplatesEnabled,
 	loadBundledWorkflowSeeds,
 	parseWorkflowManifestYaml,
 	validateWorkflowManifest,
 	WORKFLOW_OUTCOME_VOCABULARY,
 } from "../workflow-template.js";
+
+describe("bundled workflow default bindings", () => {
+	it("binds only projects with no existing category authority and is idempotent", async () => {
+		const store = await StateStore.create(":memory:");
+		importBundledWorkflowSeeds(store);
+		store.bindWorkflowCategory({
+			project: "custom",
+			taskCategory: "light",
+			templateId: "tpl_eng_light",
+			updatedBy: "founder",
+		});
+
+		ensureDefaultWorkflowBindings(store, ["beta", "alpha", "alpha", "custom"]);
+		expect(store.listWorkflowCategoryBindings("alpha")).toMatchObject([
+			{ task_category: "*", template_id: "tpl_eng_heavy" },
+		]);
+		expect(store.listWorkflowCategoryBindings("beta")).toMatchObject([
+			{ task_category: "*", template_id: "tpl_eng_heavy" },
+		]);
+		expect(store.listWorkflowCategoryBindings("custom")).toMatchObject([
+			{ task_category: "light", template_id: "tpl_eng_light" },
+		]);
+		const auditCount = store.listWorkflowTemplateAudit().length;
+
+		ensureDefaultWorkflowBindings(store, ["alpha", "beta", "custom"]);
+		expect(store.listWorkflowTemplateAudit()).toHaveLength(auditCount);
+		store.close();
+	});
+});
 
 const generalizedManifest = () => ({
 	schema_version: 2,
@@ -209,6 +241,26 @@ describe("workflow template manifest v1", () => {
 				loops: [],
 			}),
 		).toThrow(/independent QA node/i);
+	});
+
+	it("rejects model/vendor/effort combinations outside the canonical registry", () => {
+		const valid = loadBundledWorkflowSeeds()[0]!.manifest;
+		expect(() =>
+			validateWorkflowManifest({
+				...valid,
+				nodes: valid.nodes.map((node) =>
+					node.id === "design" ? { ...node, model: "claude-invented" } : node,
+				),
+			}),
+		).toThrow(/registry|supported/i);
+		expect(() =>
+			validateWorkflowManifest({
+				...valid,
+				nodes: valid.nodes.map((node) =>
+					node.id === "implement" ? { ...node, effort: "high" } : node,
+				),
+			}),
+		).toThrow(/registry|supported|effort/i);
 	});
 
 	it("applies only reasoned model/effort/skip overrides and consumes skip before validation", () => {

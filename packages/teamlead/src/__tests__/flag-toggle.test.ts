@@ -41,6 +41,13 @@ describe("isDirectToggleable", () => {
 		expect(isDirectToggleable(gov as never)).toBe(false);
 		expect(isDirectToggleable(restart as never)).toBe(false);
 	});
+
+	it("rejects non-boolean value flags even if later marked direct", () => {
+		const autoQa = FEATURE_FLAGS.find((f) => f.name === "auto_qa_killswitch")!;
+		expect(isDirectToggleable({ ...autoQa, valueKind: "value" } as never)).toBe(
+			false,
+		);
+	});
 });
 
 describe("applyFlagToggle", () => {

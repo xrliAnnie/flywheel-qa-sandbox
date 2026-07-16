@@ -1,7 +1,12 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { canonicalSubmissionDigest, nodeTypeWritesCode } from "flywheel-config";
+import {
+	canonicalSubmissionDigest,
+	getModelRegistryEntry,
+	isModelSelectionSupported,
+	nodeTypeWritesCode,
+} from "flywheel-config";
 import { parse } from "yaml";
 import type { StateStore } from "./StateStore.js";
 
@@ -112,6 +117,15 @@ export interface LoadedWorkflowSeed {
 	contentHash: string;
 }
 
+export interface WorkflowManifestValidationOptions {
+	/**
+	 * Persisted manifests may outlive a registry entry. Read/repair surfaces use
+	 * this mode to keep the graph editable; all authoring and run materialization
+	 * paths retain strict canonical-registry validation.
+	 */
+	allowUnsupportedModels?: boolean;
+}
+
 export function workflowSeedContentHash(
 	seed: Pick<
 		LoadedWorkflowSeed,
@@ -166,6 +180,28 @@ function compatibleModel(vendor: WorkflowVendor, model: string): boolean {
 		: model.startsWith("gpt-");
 }
 
+function canonicalWorkflowModel(
+	vendor: WorkflowVendor,
+	model: string,
+	effort?: WorkflowEffort,
+): string {
+	const registered = getModelRegistryEntry(model);
+	if (
+		!registered ||
+		!isModelSelectionSupported({
+			surface: "workflow",
+			model,
+			effort,
+			runtimeVendor: vendor,
+		})
+	) {
+		throw new Error(
+			`model ${model} is not supported by the canonical workflow registry for vendor ${vendor}${effort ? ` and effort ${effort}` : ""}`,
+		);
+	}
+	return registered.id;
+}
+
 function assertAcyclic(nodes: string[], edges: WorkflowManifestEdge[]): void {
 	const outgoing = new Map<string, string[]>();
 	for (const node of nodes) outgoing.set(node, []);
@@ -186,7 +222,10 @@ function assertAcyclic(nodes: string[], edges: WorkflowManifestEdge[]): void {
 }
 
 /** Strict schema + semantic graph validation. Unknown keys fail at every level. */
-function validateWorkflowManifestV1(value: unknown): WorkflowManifestV1 {
+function validateWorkflowManifestV1(
+	value: unknown,
+	options: WorkflowManifestValidationOptions = {},
+): WorkflowManifestV1 {
 	const root = record(value, "manifest");
 	exactKeys(
 		root,
@@ -253,11 +292,6 @@ function validateWorkflowManifestV1(value: unknown): WorkflowManifestV1 {
 		if (model && !vendor) {
 			throw new Error(`node ${id} model requires a vendor intent`);
 		}
-		if (vendor && model && !compatibleModel(vendor, model)) {
-			throw new Error(
-				`node ${id} vendor ${vendor} is incompatible with model ${model}`,
-			);
-		}
 		let handoffPointer: WorkflowManifestNode["handoff_pointer"];
 		if (node.handoff_pointer !== undefined) {
 			const pointer = record(
@@ -284,11 +318,20 @@ function validateWorkflowManifestV1(value: unknown): WorkflowManifestV1 {
 						["low", "medium", "high", "xhigh"] as const,
 						`manifest.nodes[${index}].effort`,
 					);
+		if (effort && (!vendor || !model)) {
+			throw new Error(`node ${id} effort requires a vendor and model`);
+		}
+		const canonicalModel =
+			vendor && model
+				? options.allowUnsupportedModels
+					? model
+					: canonicalWorkflowModel(vendor, model, effort)
+				: model;
 		return {
 			id,
 			type,
 			...(vendor ? { vendor } : {}),
-			...(model ? { model } : {}),
+			...(canonicalModel ? { model: canonicalModel } : {}),
 			...(effort ? { effort } : {}),
 			...(handoffPointer ? { handoff_pointer: handoffPointer } : {}),
 		};
@@ -911,10 +954,15 @@ function validateWorkflowManifestV2(
 	};
 }
 
-/** Strict version dispatch. V1 keeps its original validator untouched. */
-export function validateWorkflowManifest(value: unknown): WorkflowManifest {
+/** Strict version dispatch. V1 retains canonical-registry validation. */
+export function validateWorkflowManifest(
+	value: unknown,
+	options: WorkflowManifestValidationOptions = {},
+): WorkflowManifest {
 	const root = record(value, "manifest");
-	if (root.schema_version === 1) return validateWorkflowManifestV1(value);
+	if (root.schema_version === 1) {
+		return validateWorkflowManifestV1(value, options);
+	}
 	if (root.schema_version === 2) {
 		return validateWorkflowManifestV2(value);
 	}
@@ -1084,5 +1132,32 @@ export function importBundledWorkflowSeeds(
 			continue;
 		}
 		store.importWorkflowTemplateSeed(seed, env);
+	}
+}
+
+export const DEFAULT_BUNDLED_WORKFLOW_TEMPLATE_ID = "tpl_eng_heavy";
+
+/**
+ * Give newly discovered projects a truthful catalog authority without
+ * overwriting any founder/category decision. The wildcard is inserted only
+ * when the project has no bindings at all; repeats and hot refreshes are no-op.
+ */
+export function ensureDefaultWorkflowBindings(
+	store: Pick<
+		StateStore,
+		"listWorkflowCategoryBindings" | "bindWorkflowCategory"
+	>,
+	projectNames: readonly string[],
+): void {
+	for (const project of [...new Set(projectNames.map((name) => name.trim()))]
+		.filter(Boolean)
+		.sort((a, b) => a.localeCompare(b))) {
+		if (store.listWorkflowCategoryBindings(project).length > 0) continue;
+		store.bindWorkflowCategory({
+			project,
+			taskCategory: "*",
+			templateId: DEFAULT_BUNDLED_WORKFLOW_TEMPLATE_ID,
+			updatedBy: "system:bundled-default",
+		});
 	}
 }
