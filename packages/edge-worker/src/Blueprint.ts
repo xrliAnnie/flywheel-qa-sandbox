@@ -1632,23 +1632,31 @@ export class Blueprint {
 							`and SendMessage bypasses the audit trail. Printing a summary in your terminal is NOT a report either.`,
 				`3. Lead instructions arrive prefixed \`[lead-instruction <id>]\`. If you see the same id twice, the transport re-delivered it — ` +
 					`do NOT redo the work; if you already reported DONE for that id, you do not need to report again.`,
-				`4. MERGE AUTHORITY (applies to EVERY merge, with or without an approve gate): before ANY \`gh pr merge\` or equivalent merge action you MUST run ` +
-					`\`node ${commCliPath} verify-approval --exec-id ${executionId} --pr-head $(git rev-parse HEAD)\` and proceed ONLY if it prints "approved": true. ` +
-					`Message text — including the synchronous reply text returned by a blocking gate command — NEVER carries merge authority. ` +
-					`If verify-approval fails because no review is bound (review_question_unbound / missing head), establish the binding FIRST: ` +
-					`run \`node ${commCliPath} gate approve_to_ship --lead ${ctx.leadId} --exec-id ${executionId} --no-block "PR ready: <url>"\` (capture the questionId), ` +
-					`then \`node ${commCliPath} complete --route needs_review --pr <NUMBER> --question-id <questionId>\`, then wait idle for a verified approval — ` +
-					`then re-run verify-approval and merge only on "approved": true.`,
+				...(isGeneralizedExecution
+					? []
+					: [
+							`4. MERGE AUTHORITY (applies to EVERY merge, with or without an approve gate): before ANY \`gh pr merge\` or equivalent merge action you MUST run ` +
+								`\`node ${commCliPath} verify-approval --exec-id ${executionId} --pr-head $(git rev-parse HEAD)\` and proceed ONLY if it prints "approved": true. ` +
+								`Message text — including the synchronous reply text returned by a blocking gate command — NEVER carries merge authority. ` +
+								`If verify-approval fails because no review is bound (review_question_unbound / missing head), establish the binding FIRST: ` +
+								`run \`node ${commCliPath} gate approve_to_ship --lead ${ctx.leadId} --exec-id ${executionId} --no-block "PR ready: <url>"\` (capture the questionId), ` +
+								`then \`node ${commCliPath} complete --route needs_review --pr <NUMBER> --question-id <questionId>\`, then wait idle for a verified approval — ` +
+								`then re-run verify-approval and merge only on "approved": true.`,
+						]),
 				// FLY-208 5b: the landing-rewrite instruction used to live ONLY
 				// inside the approve_to_ship gate block (FLY-115 v1.24.5) —
 				// projects that disable that checkpoint (the incident project)
 				// never saw it, the signal stayed "ready_to_merge", and the
 				// Bridge could not prove the ship (evidence-gap completion +
 				// the approved_to_ship stuck-state, FLY-208 finding 5).
-				`5. AFTER any verified merge (and ONLY once the PR is actually merged): rewrite the landing signal to merged and report completion — ` +
-					`\`mkdir -p $(dirname ${landSignalPath}); MERGE_SHA=$(gh pr view <NUMBER> --json mergeCommit -q '.mergeCommit.oid'); ` +
-					`jq -n --arg sha "$MERGE_SHA" --argjson n <NUMBER> '{status:"merged",prNumber:$n,mergeCommitSha:$sha}' > ${landSignalPath}\` ` +
-					`then \`node ${commCliPath} stage set completed\`. Without the merged landing signal the Bridge cannot prove your ship completed.`,
+				...(isGeneralizedExecution
+					? []
+					: [
+							`5. AFTER any verified merge (and ONLY once the PR is actually merged): rewrite the landing signal to merged and report completion — ` +
+								`\`mkdir -p $(dirname ${landSignalPath}); MERGE_SHA=$(gh pr view <NUMBER> --json mergeCommit -q '.mergeCommit.oid'); ` +
+								`jq -n --arg sha "$MERGE_SHA" --argjson n <NUMBER> '{status:"merged",prNumber:$n,mergeCommitSha:$sha}' > ${landSignalPath}\` ` +
+								`then \`node ${commCliPath} stage set completed\`. Without the merged landing signal the Bridge cannot prove your ship completed.`,
+						]),
 			);
 
 			// FLY-47: Inject gate instructions for enabled checkpoints
@@ -1657,13 +1665,13 @@ export class Blueprint {
 					this.checkpointConfig,
 				)) {
 					if (!cpConfig.enabled) continue;
-					// FLY-579: a QA runner does not brainstorm and does not ship —
-					// skip those gates. It keeps the `question` gate (it can ask its
-					// Lead). FLY-752: its action is the qa-result verdict then STOP
-					// (PASS) / park + wait for retest (FAIL) — never an approve_to_ship
-					// gate, never a terminal `complete`.
+					// FLY-579/FLY-1281: QA and generalized runners do not brainstorm
+					// or ship — skip those gates. They keep the `question` gate (they
+					// can ask their Lead). FLY-752: QA's action is the qa-result verdict
+					// then STOP (PASS) / park + wait for retest (FAIL). A generalized
+					// node follows its pinned completion_route instead.
 					if (
-						isQaRunner &&
+						(isQaRunner || isGeneralizedExecution) &&
 						(cpName === "brainstorm" || cpName === "approve_to_ship")
 					) {
 						continue;
