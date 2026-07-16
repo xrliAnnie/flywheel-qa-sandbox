@@ -523,6 +523,49 @@ describe("appendWorkflowSystemClaim — bridge_policy / founder_challenge claims
 });
 
 describe("resolveWorkflowDecisionClaim — USE-time gate resolution (plan §2.1)", () => {
+	it("requires the exact predicate inside a shared decision family", async () => {
+		const store = await freshStore();
+		const runId = seedRun(store);
+		const issued = store.issueWorkflowDecisionCapability({
+			runId,
+			nodeId: "review",
+			executionId: "review-exec",
+			attempt: 1,
+			allowedPredicateFamily: "review_verdict",
+			expiresAt: T1H,
+			absoluteDeadlineAt: T2H,
+		});
+		if (!issued.ok) throw new Error(issued.reason);
+		expect(
+			store.submitWorkflowDecisionClaim({
+				token: issued.token,
+				clientRequestId: "review-1",
+				predicate: "codex_approved",
+				subjectKind: "git_head",
+				subjectDigest: H1,
+				issuerVendor: "claude",
+				issuerModel: "sonnet",
+				subjectProducerExecutionId: "producer",
+				subjectProducerVendor: "codex",
+				claimExpiresAt: T1H,
+				now: T0,
+			}).ok,
+		).toBe(true);
+
+		expect(
+			store.resolveWorkflowDecisionClaim({
+				runId,
+				nodeId: "review",
+				decisionKind: "review_verdict",
+				predicate: "design_review_approved",
+				requiredAttempt: 1,
+				subjectKind: "git_head",
+				subjectDigest: H1,
+				now: T0,
+			}),
+		).toEqual({ valid: false, reason: "predicate_mismatch" });
+	});
+
 	it("E2: a PASS bound to H1 does NOT satisfy H2; a new-attempt PASS for H2 does", async () => {
 		const store = await freshStore();
 		const runId = seedRun(store);
@@ -627,6 +670,74 @@ describe("resolveWorkflowDecisionClaim — USE-time gate resolution (plan §2.1)
 });
 
 describe("append-only enforcement — the ledger cannot be rewritten", () => {
+	it("migrates the predicate check without losing existing claim rows", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1307-claim-predicate-"));
+		const dbPath = join(dir, "state.db");
+		const initial = await StateStore.create(dbPath);
+		initial.close();
+		const raw = new Database(dbPath);
+		raw.pragma("foreign_keys = OFF");
+		raw.exec(`
+			DROP TRIGGER IF EXISTS workflow_claims_no_update;
+			DROP TRIGGER IF EXISTS workflow_claims_no_delete;
+			DROP TABLE workflow_claims;
+			CREATE TABLE workflow_claims (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				server_seq INTEGER NOT NULL UNIQUE,
+				issued_at TEXT NOT NULL DEFAULT (datetime('now')),
+				issue_id TEXT NOT NULL,
+				workflow_run_id TEXT NOT NULL,
+				node_id TEXT,
+				decision_kind TEXT NOT NULL,
+				attempt INTEGER,
+				predicate TEXT NOT NULL CHECK (predicate IN (
+					'qa_passed','qa_failed','codex_approved','design_review_approved',
+					'founder_approved','qa_exempt')),
+				issuer_kind TEXT NOT NULL CHECK (issuer_kind IN (
+					'runner_node','bridge_policy','founder_challenge')),
+				issuer_execution_id TEXT,
+				issuer_node_id TEXT,
+				issuer_vendor TEXT,
+				issuer_model TEXT,
+				subject_producer_execution_id TEXT,
+				subject_kind TEXT NOT NULL CHECK (subject_kind IN ('git_head','snapshot_digest')),
+				subject_digest TEXT NOT NULL,
+				expires_at TEXT,
+				permanent INTEGER NOT NULL DEFAULT 0,
+				submission_digest TEXT,
+				client_request_id TEXT,
+				evidence JSON,
+				authority_id TEXT NOT NULL,
+				CHECK (issuer_kind != 'runner_node' OR (
+					node_id IS NOT NULL AND attempt IS NOT NULL
+					AND issuer_execution_id IS NOT NULL AND issuer_node_id IS NOT NULL
+					AND issuer_vendor IS NOT NULL AND issuer_model IS NOT NULL
+					AND submission_digest IS NOT NULL AND client_request_id IS NOT NULL
+				)),
+				CHECK (expires_at IS NOT NULL OR permanent = 1)
+			);
+			INSERT INTO workflow_claims
+				(server_seq, issue_id, workflow_run_id, decision_kind, predicate,
+				 issuer_kind, subject_kind, subject_digest, permanent, authority_id)
+			VALUES
+				(1, 'FLY-old', 'run-old', 'founder_decision', 'founder_approved',
+				 'founder_challenge', 'git_head', '${H1}', 1, 'old-authority');
+		`);
+		raw.close();
+
+		const migrated = await StateStore.create(dbPath);
+		expect(migrated.countWorkflowClaims("run-old")).toBe(1);
+		migrated.close();
+		const verified = new Database(dbPath, { readonly: true });
+		const sql = verified
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_claims'",
+			)
+			.get() as { sql: string };
+		expect(sql.sql).toContain("design_review_failed");
+		verified.close();
+	});
+
 	it("UPDATE/DELETE on claims, revocations and run events are rejected at the DB layer", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "fly1135-appendonly-"));
 		const dbPath = join(dir, "state.db");

@@ -16,6 +16,7 @@ export const WORKFLOW_CLAIM_PREDICATES = [
 	"qa_failed",
 	"codex_approved",
 	"design_review_approved",
+	"design_review_failed",
 	"founder_approved",
 	"qa_exempt",
 ] as const;
@@ -46,7 +47,11 @@ export type WorkflowClaimSubjectKind =
  */
 export const WORKFLOW_DECISION_FAMILIES = {
 	qa_verdict: ["qa_passed", "qa_failed"],
-	review_verdict: ["codex_approved", "design_review_approved"],
+	review_verdict: [
+		"codex_approved",
+		"design_review_approved",
+		"design_review_failed",
+	],
 	founder_decision: ["founder_approved"],
 	qa_policy: ["qa_exempt"],
 } as const satisfies Record<string, readonly WorkflowClaimPredicate[]>;
@@ -82,6 +87,7 @@ export const REVIEW_CLASS_PREDICATES: ReadonlySet<WorkflowClaimPredicate> =
 		"qa_failed",
 		"codex_approved",
 		"design_review_approved",
+		"design_review_failed",
 	]);
 
 /** Predicates that OPEN a gate. Everything else refuses (fail-closed). */

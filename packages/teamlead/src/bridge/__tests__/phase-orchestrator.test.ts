@@ -231,6 +231,50 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 		expect(start).not.toHaveBeenCalled();
 	});
 
+	it("engine-owned phase-shaped execution bypasses the legacy phase belt", async () => {
+		const isEngineOwnedExecution = vi.fn(() => true);
+		const { deps, start, capturePhaseHeadSha, qaVerdicts, turnBelt } = makeDeps(
+			{
+				isEngineOwnedExecution,
+			},
+		);
+		const orchestrator = new PhaseOrchestrator(deps);
+		const design = session({
+			execution_id: "engine-design",
+			session_role: "design",
+			chat_thread_role: "design",
+			status: "design_done",
+		});
+		await orchestrator.onPhaseComplete(design);
+		await orchestrator.onQaResult(
+			{
+				...design,
+				execution_id: "engine-qa",
+				session_role: "qa",
+				chat_thread_role: "qa",
+			},
+			{ eventId: "engine-verdict", status: "fail" },
+		);
+		(turnBelt.getTurn as ReturnType<typeof vi.fn>).mockReturnValue({
+			issue_id: design.issue_id,
+			holder_exec_id: "engine-design",
+			phase: "design",
+			epoch: 1,
+			granted_at: Date.now() - 60_000,
+		});
+		await orchestrator.reconcileTurnBelt({
+			issueId: design.issue_id,
+			projectName: design.project_name!,
+			terminalExecId: "engine-design",
+		});
+
+		expect(isEngineOwnedExecution).toHaveBeenCalled();
+		expect(capturePhaseHeadSha).not.toHaveBeenCalled();
+		expect(qaVerdicts.patchIntent).not.toHaveBeenCalled();
+		expect(turnBelt.getSessionForTurnHolder).not.toHaveBeenCalled();
+		expect(start).not.toHaveBeenCalled();
+	});
+
 	it("byte-compat: three_stage OFF → no-op even for a phase role", async () => {
 		const { deps, start } = makeDeps({
 			resolveThreeStage: () => ({ enabled: false }),

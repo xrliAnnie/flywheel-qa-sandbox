@@ -1143,7 +1143,11 @@ export class Blueprint {
 			const completionRoute = String(
 				ctx.workflowCapabilities.completion_route ?? "",
 			);
-			if (completionRoute !== "no_code") {
+			if (
+				completionRoute !== "no_code" &&
+				completionRoute !== "phase_design_complete" &&
+				completionRoute !== "needs_review"
+			) {
 				throw new Error(
 					`unsupported generalized completion route: ${completionRoute}`,
 				);
@@ -1165,13 +1169,17 @@ export class Blueprint {
 					"Do not request ship approval or ship/merge a PR.",
 				);
 			}
-			if (ctx.workflowCapabilities.produces_output === true) {
+			if (ctx.workflowSubmissionCredential) {
 				systemPromptLines.push(
-					`Before completion, write the required JSON artifact and submit it with \`node ${commCliPath} workflow-output --payload-file <absolute-json-path>\`; only after that succeeds run \`node ${commCliPath} complete --route no_code\`.`,
+					`Your terminal action is one structured verdict: run \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status pass|fail --summary "<evidence and verdict>"\`. Do not run \`complete\`; the accepted verdict is this node attempt's terminal fact.`,
+				);
+			} else if (ctx.workflowCapabilities.produces_output === true) {
+				systemPromptLines.push(
+					`Before completion, write the required JSON artifact and submit it with \`node ${commCliPath} workflow-output --payload-file <absolute-json-path>\`; only after that succeeds run \`node ${commCliPath} complete --route ${completionRoute}\`.`,
 				);
 			} else {
 				systemPromptLines.push(
-					`When the bounded work is complete, run \`node ${commCliPath} complete --route no_code\`.`,
+					`When the bounded work is complete, run \`node ${commCliPath} complete --route ${completionRoute}\`.`,
 				);
 			}
 		} else if (isQaRunner) {

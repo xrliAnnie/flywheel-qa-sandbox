@@ -82,7 +82,7 @@ describe("RetryDispatcher pre-bound successor id (D2)", () => {
 		expect(captured[0]?.executionId).toBe("succ-9");
 	});
 
-	it("threads only pinned generalized retry identity, capabilities, agent, and output ticket", async () => {
+	it("threads only pinned generalized retry identity, capabilities, agent, and capability tickets", async () => {
 		const d = makeDispatcher();
 		await d.dispatch({
 			...baseReq,
@@ -104,6 +104,7 @@ describe("RetryDispatcher pre-bound successor id (D2)", () => {
 				},
 				agentContent: "Produce a bounded JSON result.",
 				outputCredential: "output-ticket",
+				submissionCredential: "decision-ticket",
 				idempotencyKey: "retry:pred-1:succ-generalized",
 			},
 		});
@@ -122,6 +123,7 @@ describe("RetryDispatcher pre-bound successor id (D2)", () => {
 			},
 			workflowAgentContent: "Produce a bounded JSON result.",
 			workflowOutputCredential: "output-ticket",
+			workflowSubmissionCredential: "decision-ticket",
 		});
 	});
 

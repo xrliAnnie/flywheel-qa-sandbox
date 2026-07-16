@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
+import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import {
 	computeAuthoritativeShipDecision,
 	computeShipDecision,
@@ -77,6 +78,11 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			recursive: true,
 		});
 		writeFileSync(join(worktreePath, ".git", headRef), `${HEAD}\n`);
+		mkdirSync(join(worktreePath, "agents"));
+		writeFileSync(
+			join(worktreePath, "agents", "generic-executor.md"),
+			"Execute the pinned workflow node.\n",
+		);
 	});
 
 	afterEach(() => {
@@ -141,6 +147,187 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		});
 	}
 
+	function engineQaAtFounderGate(): { qaClaimId: number } {
+		const seed = loadBundledWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		)!;
+		store.importWorkflowTemplateSeed(seed);
+		store.materializeWorkflowRun({
+			runId: "engine-run",
+			issueId: ISSUE,
+			projectName: PROJECT,
+			taskCategory: "code",
+			templateId: seed.templateId,
+			claimsReadEnrolled: false,
+			actor: "lead",
+			startReservation: {
+				idempotencyKey: "engine-start",
+				selectionDigest: "selection",
+				nodeId: "design",
+				attempt: 1,
+				executionId: "engine-design",
+				createdAt: "2026-07-16T00:00:00.000Z",
+			},
+		});
+		store.upsertWorkflowRunNode({
+			runId: "engine-run",
+			nodeId: "design",
+			attempt: 1,
+			state: "running",
+			executionId: "engine-design",
+		});
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "engine-run",
+				nodeId: "design",
+				attempt: 1,
+				executionId: "engine-design",
+				outcome: "design_done",
+				successorExecutionId: "engine-implement",
+				now: "2026-07-16T00:05:00.000Z",
+			}).ok,
+		).toBe(true);
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "engine-run",
+				nodeId: "implement",
+				attempt: 1,
+				executionId: "engine-implement",
+				outcome: "implement_done",
+				successorExecutionId: EXEC,
+				now: "2026-07-16T00:10:00.000Z",
+			}).ok,
+		).toBe(true);
+		const admission = store.admitGeneralizedWorkflowExecution({
+			runId: "engine-run",
+			nodeId: "qa",
+			executionId: EXEC,
+			attempt: 1,
+			now: "2026-07-16T00:11:00.000Z",
+			expiresAt: "2027-07-16T00:11:00.000Z",
+			absoluteDeadlineAt: "2027-07-17T00:11:00.000Z",
+			env: { FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" },
+		});
+		if (!admission.ok || !admission.submissionCredential) {
+			throw new Error("engine QA admission failed");
+		}
+		const qa = store.submitWorkflowDecisionByCredential({
+			credential: admission.submissionCredential,
+			clientRequestId: "engine-qa-pass",
+			predicate: "qa_passed",
+			subjectDigest: HEAD,
+			issuerVendor: "claude",
+			issuerModel: "claude-opus-4-8",
+			subjectProducerExecutionId: "engine-implement",
+			subjectProducerVendor: "codex",
+			claimExpiresAt: "2027-07-16T00:11:00.000Z",
+			now: "2026-07-16T00:12:00.000Z",
+		});
+		if (!qa.ok) throw new Error(qa.reason);
+		upsert("approved_to_ship");
+		return { qaClaimId: qa.claimId };
+	}
+
+	function productWithWrongReviewPredicate(): void {
+		const seed = loadBundledWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_product_v1",
+		)!;
+		const flags = {
+			FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+		};
+		store.importWorkflowTemplateSeed(seed, flags);
+		store.materializeWorkflowRun({
+			runId: "product-run",
+			issueId: ISSUE,
+			projectName: PROJECT,
+			taskCategory: "product",
+			templateId: seed.templateId,
+			claimsReadEnrolled: false,
+			actor: "lead",
+			canonicalRoot: worktreePath,
+			env: flags,
+			startReservation: {
+				idempotencyKey: "product-start",
+				selectionDigest: "selection",
+				nodeId: "research",
+				attempt: 1,
+				executionId: "product-research",
+				createdAt: "2026-07-16T00:00:00.000Z",
+			},
+		});
+		store.upsertWorkflowRunNode({
+			runId: "product-run",
+			nodeId: "research",
+			attempt: 1,
+			state: "running",
+			executionId: "product-research",
+		});
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "product-run",
+				nodeId: "research",
+				attempt: 1,
+				executionId: "product-research",
+				outcome: "node_done",
+				successorExecutionId: "product-produce",
+				now: "2026-07-16T00:05:00.000Z",
+			}).ok,
+		).toBe(true);
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "product-run",
+				nodeId: "produce",
+				attempt: 1,
+				executionId: "product-produce",
+				outcome: "node_done",
+				successorExecutionId: EXEC,
+				now: "2026-07-16T00:10:00.000Z",
+			}).ok,
+		).toBe(true);
+		const review = store.admitGeneralizedWorkflowExecution({
+			runId: "product-run",
+			nodeId: "review",
+			executionId: EXEC,
+			attempt: 1,
+			now: "2026-07-16T00:11:00.000Z",
+			expiresAt: "2027-07-16T00:11:00.000Z",
+			absoluteDeadlineAt: "2027-07-17T00:11:00.000Z",
+			env: flags,
+		});
+		if (!review.ok || !review.submissionCredential) {
+			throw new Error("product review admission failed");
+		}
+		expect(
+			store.submitWorkflowDecisionByCredential({
+				credential: review.submissionCredential,
+				clientRequestId: "wrong-review-predicate",
+				predicate: "codex_approved",
+				subjectDigest: HEAD,
+				issuerVendor: "claude",
+				issuerModel: "sonnet",
+				subjectProducerExecutionId: "product-produce",
+				subjectProducerVendor: "codex",
+				claimExpiresAt: "2027-07-16T00:11:00.000Z",
+				now: "2026-07-16T00:12:00.000Z",
+			}).ok,
+		).toBe(true);
+		expect(
+			store.appendWorkflowSystemClaim({
+				issuerKind: "founder_challenge",
+				runId: "product-run",
+				issueId: ISSUE,
+				decisionKind: "founder_decision",
+				predicate: "founder_approved",
+				subjectKind: "git_head",
+				subjectDigest: HEAD,
+				permanent: true,
+				authorityId: "product-founder",
+			}).ok,
+		).toBe(true);
+		upsert("approved_to_ship");
+	}
+
 	// ── Group ① — FLY-120: genuinely approved + merged → eligible → completed ──
 	it("approved + merged PASSES the gate to completed (FLY-120 not regressed)", () => {
 		const qid = foundersApproved();
@@ -186,6 +373,82 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			mergeReason: "head_authority_mismatch",
 			qaReason: "head_authority_mismatch_failclosed",
 			authoritativeHead: HEAD,
+		});
+	});
+
+	it("engine-owned terminalization additively requires every snapshot ship claim at USE time", async () => {
+		const { qaClaimId } = engineQaAtFounderGate();
+		const session = store.getSession(EXEC)!;
+		const env = {
+			FLYWHEEL_WORKFLOW_CLAIMS_READ: "0",
+			FLYWHEEL_MERGE_APPROVAL_GATE: "0",
+			FLYWHEEL_QA_DONE_GATE: "0",
+			FLYWHEEL_CODEX_HARD_GATE: "0",
+		} as NodeJS.ProcessEnv;
+
+		const missingFounder = await computeAuthoritativeShipDecision(
+			store,
+			session,
+			HEAD,
+			env,
+		);
+		expect(missingFounder).toMatchObject({
+			eligible: false,
+			workflowClaimsOk: false,
+			workflowClaimsReason: "founder_approved:no_claim",
+		});
+		expect(
+			store.appendWorkflowSystemClaim({
+				issuerKind: "founder_challenge",
+				runId: "engine-run",
+				issueId: ISSUE,
+				decisionKind: "founder_decision",
+				predicate: "founder_approved",
+				subjectKind: "git_head",
+				subjectDigest: HEAD,
+				permanent: true,
+				authorityId: "founder-engine-head",
+			}).ok,
+		).toBe(true);
+		expect(
+			await computeAuthoritativeShipDecision(store, session, HEAD, env),
+		).toMatchObject({ eligible: true, workflowClaimsOk: true });
+
+		store.revokeWorkflowClaim({
+			claimId: qaClaimId,
+			reason: "head invalidated",
+			actor: "bridge",
+		});
+		expect(
+			await computeAuthoritativeShipDecision(store, session, HEAD, env),
+		).toMatchObject({
+			eligible: false,
+			workflowClaimsReason: "qa_passed:revoked",
+		});
+	});
+
+	it("does not confuse predicates in the review family and fails closed without materialized authority", async () => {
+		productWithWrongReviewPredicate();
+		const session = store.getSession(EXEC)!;
+		const env = {
+			FLYWHEEL_WORKFLOW_CLAIMS_READ: "0",
+			FLYWHEEL_MERGE_APPROVAL_GATE: "0",
+			FLYWHEEL_QA_DONE_GATE: "0",
+			FLYWHEEL_CODEX_HARD_GATE: "0",
+		} as NodeJS.ProcessEnv;
+		expect(
+			await computeAuthoritativeShipDecision(store, session, HEAD, env),
+		).toMatchObject({
+			eligible: false,
+			mergeReason: "head_authority_unavailable",
+		});
+		expect(
+			await computeAuthoritativeShipDecision(store, session, HEAD, env, {
+				resolve: async () => ({ head: HEAD, outputId: 1, attempt: 1 }),
+			}),
+		).toMatchObject({
+			eligible: false,
+			workflowClaimsReason: "design_review_approved:predicate_mismatch",
 		});
 	});
 

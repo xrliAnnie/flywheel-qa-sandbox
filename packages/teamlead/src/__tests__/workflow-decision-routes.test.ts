@@ -1,12 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
 import { describe, expect, it, vi } from "vitest";
 import { ConfirmTokenStore } from "../bridge/fleet-admin.js";
+import type { MaterializedHeadAuthority } from "../bridge/materialized-head-authority.js";
 import { createWorkflowDecisionRouter } from "../bridge/workflow-decision-routes.js";
 import { StateStore } from "../StateStore.js";
+import { loadBundledWorkflowSeeds } from "../workflow-template.js";
 
 const T0 = "2026-07-14T00:00:00.000Z";
 const T1 = "2026-07-14T01:00:00.000Z";
@@ -18,6 +20,11 @@ function gitWorktree(): { path: string; head: string } {
 	execFileSync("git", ["-C", path, "config", "user.email", "test@example.com"]);
 	execFileSync("git", ["-C", path, "config", "user.name", "Test"]);
 	writeFileSync(join(path, "README.md"), "head\n");
+	mkdirSync(join(path, "agents"));
+	writeFileSync(
+		join(path, "agents", "generic-executor.md"),
+		"Execute the pinned workflow node.\n",
+	);
 	execFileSync("git", ["-C", path, "add", "README.md"]);
 	execFileSync("git", ["-C", path, "commit", "-qm", "head"]);
 	return {
@@ -25,6 +32,154 @@ function gitWorktree(): { path: string; head: string } {
 		head: execFileSync("git", ["-C", path, "rev-parse", "HEAD"], {
 			encoding: "utf8",
 		}).trim(),
+	};
+}
+
+async function reviewFixture(options: {
+	materializedHeadAuthority?: MaterializedHeadAuthority;
+}) {
+	const store = await StateStore.create(":memory:");
+	const worktree = gitWorktree();
+	const seed = loadBundledWorkflowSeeds().find(
+		(candidate) => candidate.templateId === "tpl_product_v1",
+	)!;
+	store.importWorkflowTemplateSeed(seed, {
+		FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+	});
+	store.materializeWorkflowRun({
+		runId: "run-review",
+		issueId: "FLY-1307",
+		projectName: "flywheel",
+		taskCategory: "product",
+		templateId: seed.templateId,
+		claimsReadEnrolled: false,
+		actor: "lead",
+		canonicalRoot: worktree.path,
+		env: {
+			FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+		},
+		startReservation: {
+			idempotencyKey: "review-start",
+			selectionDigest: "review-selection",
+			nodeId: "research",
+			attempt: 1,
+			executionId: "research-1",
+			createdAt: T0,
+		},
+	});
+	store.upsertWorkflowRunNode({
+		runId: "run-review",
+		nodeId: "research",
+		attempt: 1,
+		state: "running",
+		executionId: "research-1",
+	});
+	const env = {
+		FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+		FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+	};
+	const admit = (nodeId: string, executionId: string) =>
+		store.admitGeneralizedWorkflowExecution({
+			runId: "run-review",
+			nodeId,
+			executionId,
+			attempt: 1,
+			expiresAt: T1,
+			absoluteDeadlineAt: T2,
+			now: T0,
+			env,
+		});
+	const researchAdmission = admit("research", "research-1");
+	if (!researchAdmission.ok) {
+		throw new Error(`research admission failed: ${researchAdmission.reason}`);
+	}
+	expect(
+		store.commitEnrolledCompletion({
+			executionId: "research-1",
+			route: "no_code",
+			sourceEventId: "research-complete",
+			completionSubmission: { decision: { route: "no_code" } },
+			now: T0,
+		}).ok,
+	).toBe(true);
+	const produceExecution = store.getWorkflowRunNode(
+		"run-review",
+		"produce",
+		1,
+	)?.execution_id;
+	if (!produceExecution) throw new Error("produce successor missing");
+	const produceAdmission = admit("produce", produceExecution);
+	if (!produceAdmission.ok || !produceAdmission.outputCredential) {
+		throw new Error("produce admission failed");
+	}
+	const output = store.submitWorkflowNodeOutput({
+		token: produceAdmission.outputCredential,
+		clientRequestId: "produce-output",
+		payload: '{"result":"ready"}',
+		now: T0,
+	});
+	if (!output.ok) throw new Error(output.reason);
+	expect(
+		store.commitEnrolledCompletion({
+			executionId: produceExecution,
+			route: "no_code",
+			sourceEventId: "produce-complete",
+			completionSubmission: { decision: { route: "no_code" } },
+			now: T0,
+		}).ok,
+	).toBe(true);
+	const reviewExecution = store.getWorkflowRunNode(
+		"run-review",
+		"review",
+		1,
+	)?.execution_id;
+	if (!reviewExecution) throw new Error("review successor missing");
+	const reviewAdmission = admit("review", reviewExecution);
+	if (!reviewAdmission.ok || !reviewAdmission.submissionCredential) {
+		throw new Error("review admission failed");
+	}
+	store.upsertSession({
+		execution_id: produceExecution,
+		issue_id: "FLY-1307",
+		project_name: "flywheel",
+		status: "completed",
+		adapter_type: "codex-tmux",
+	});
+	store.upsertSession({
+		execution_id: reviewExecution,
+		issue_id: "FLY-1307",
+		project_name: "flywheel",
+		status: "running",
+		adapter_type: "claude-tmux",
+	});
+	const onQaResult = vi.fn();
+	const app = express();
+	app.use(express.json());
+	app.use(
+		"/api/workflow",
+		createWorkflowDecisionRouter({
+			store,
+			phaseOrchestrator: { current: { onQaResult } as never },
+			materializedHeadAuthority: options.materializedHeadAuthority,
+			now: () => T0,
+		}),
+	);
+	const server = app.listen(0, "127.0.0.1");
+	await new Promise<void>((resolve) => server.once("listening", resolve));
+	const address = server.address();
+	if (!address || typeof address === "string") throw new Error("no port");
+	return {
+		store,
+		worktree,
+		outputId: output.outputId,
+		credential: reviewAdmission.submissionCredential,
+		reviewExecution,
+		produceExecution,
+		claimCountBeforeReview: store.countWorkflowClaims("run-review"),
+		onQaResult,
+		baseUrl: `http://127.0.0.1:${address.port}/api/workflow`,
+		close: () => new Promise<void>((resolve) => server.close(() => resolve())),
 	};
 }
 
@@ -285,6 +440,153 @@ describe("workflow decision routes", () => {
 				executionId: "qa-exec",
 				prHeadSha: f.worktree.head,
 			});
+		} finally {
+			await f.close();
+		}
+	});
+});
+
+describe("engine-owned review decision canonicalization", () => {
+	it("derives review authority from the pinned node and advances without the legacy QA belt", async () => {
+		let f: Awaited<ReturnType<typeof reviewFixture>> | undefined;
+		const authority: MaterializedHeadAuthority = {
+			resolve: vi.fn(async () => {
+				if (!f) throw new Error("fixture_not_ready");
+				return { head: f.worktree.head, outputId: f.outputId, attempt: 1 };
+			}),
+		};
+		f = await reviewFixture({ materializedHeadAuthority: authority });
+		try {
+			const body = {
+				credential: f.credential,
+				client_request_id: "review-pass",
+				status: "pass",
+				client_pr_head_sha: f.worktree.head,
+			};
+			const first = await fetch(`${f.baseUrl}/decision`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body),
+			});
+			expect(first.status).toBe(200);
+			const accepted = await first.json();
+			expect(accepted).toMatchObject({ ok: true, idempotentReplay: false });
+			expect(f.store.getWorkflowClaim(accepted.claimId)).toMatchObject({
+				predicate: "design_review_approved",
+				issuer_execution_id: f.reviewExecution,
+				subject_producer_execution_id: f.produceExecution,
+				subject_digest: f.worktree.head,
+			});
+			expect(
+				f.store.getWorkflowRunNode("run-review", "founder_gate", 1),
+			).toMatchObject({ state: "review" });
+			expect(f.onQaResult).not.toHaveBeenCalled();
+
+			const replay = await fetch(`${f.baseUrl}/decision`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body),
+			});
+			expect(await replay.json()).toMatchObject({
+				ok: true,
+				idempotentReplay: true,
+				claimId: accepted.claimId,
+			});
+			expect(f.store.countWorkflowClaims("run-review")).toBe(
+				f.claimCountBeforeReview + 1,
+			);
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("fails closed when materialized head authority is unavailable", async () => {
+		const f = await reviewFixture({});
+		try {
+			const response = await fetch(`${f.baseUrl}/decision`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					credential: f.credential,
+					client_request_id: "review-unavailable",
+					status: "pass",
+				}),
+			});
+			expect(response.status).toBe(409);
+			expect(await response.json()).toMatchObject({
+				ok: false,
+				reason: "materialized_head_unavailable",
+			});
+			expect(f.store.countWorkflowClaims("run-review")).toBe(
+				f.claimCountBeforeReview,
+			);
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("rejects a forged client review head before consuming the credential", async () => {
+		let f: Awaited<ReturnType<typeof reviewFixture>> | undefined;
+		const authority: MaterializedHeadAuthority = {
+			resolve: async () => {
+				if (!f) throw new Error("fixture_not_ready");
+				return { head: f.worktree.head, outputId: f.outputId, attempt: 1 };
+			},
+		};
+		f = await reviewFixture({ materializedHeadAuthority: authority });
+		try {
+			const response = await fetch(`${f.baseUrl}/decision`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					credential: f.credential,
+					client_request_id: "review-forged-head",
+					status: "pass",
+					client_pr_head_sha: "f".repeat(40),
+				}),
+			});
+			expect(response.status).toBe(409);
+			expect(await response.json()).toMatchObject({
+				ok: false,
+				reason: "head_authority_mismatch",
+				expectedPrHeadSha: f.worktree.head,
+			});
+			expect(f.store.countWorkflowClaims("run-review")).toBe(
+				f.claimCountBeforeReview,
+			);
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("records a review failure and follows the bounded producer loop", async () => {
+		let f: Awaited<ReturnType<typeof reviewFixture>> | undefined;
+		const authority: MaterializedHeadAuthority = {
+			resolve: async () => {
+				if (!f) throw new Error("fixture_not_ready");
+				return { head: f.worktree.head, outputId: f.outputId, attempt: 1 };
+			},
+		};
+		f = await reviewFixture({ materializedHeadAuthority: authority });
+		try {
+			const response = await fetch(`${f.baseUrl}/decision`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					credential: f.credential,
+					client_request_id: "review-fail",
+					status: "fail",
+					client_pr_head_sha: f.worktree.head,
+				}),
+			});
+			expect(response.status).toBe(200);
+			const accepted = await response.json();
+			expect(f.store.getWorkflowClaim(accepted.claimId)).toMatchObject({
+				predicate: "design_review_failed",
+			});
+			expect(
+				f.store.getWorkflowRunNode("run-review", "produce", 2),
+			).toMatchObject({ state: "pending", execution_id: expect.any(String) });
 		} finally {
 			await f.close();
 		}

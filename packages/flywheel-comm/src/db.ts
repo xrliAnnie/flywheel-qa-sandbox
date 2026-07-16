@@ -1702,9 +1702,18 @@ export class CommDB {
 		holderExecId: string,
 		phase: string,
 		grantedAtMs: number,
-		source?: { project: string; sourceEventId: string },
+		source?: {
+			project: string;
+			sourceEventId: string;
+			/** Server-derived workflow run ownership; absent preserves legacy null. */
+			targetRunId?: string;
+		},
 	): void {
 		if (source) {
+			const targetRunId = source.targetRunId ?? null;
+			if (targetRunId !== null && targetRunId.trim().length === 0) {
+				throw new Error("targetRunId must be non-empty when provided");
+			}
 			this.db.transaction(() => {
 				const priorSource = this.db
 					.prepare(
@@ -1723,7 +1732,7 @@ export class CommDB {
 						frozen.issue_id !== issueId ||
 						frozen.new_holder !== holderExecId ||
 						frozen.to_role !== phase ||
-						frozen.target_run_id !== null
+						frozen.target_run_id !== targetRunId
 					) {
 						throw new Error(
 							`workflow source replay payload mismatch (poison): ${source.sourceEventId}`,
@@ -1748,7 +1757,7 @@ export class CommDB {
 					from_role: current?.phase ?? null,
 					to_role: phase,
 					resulting_epoch: resultingEpoch,
-					target_run_id: null,
+					target_run_id: targetRunId,
 				};
 				const at = new Date(grantedAtMs).toISOString();
 				this.db
@@ -1767,13 +1776,14 @@ export class CommDB {
 					.prepare(
 						`INSERT INTO turn_source_history
 						   (issue_id, from_role, to_role, epoch, target_run_id, source_event_id, at)
-						 VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+						 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 					)
 					.run(
 						issueId,
 						current?.phase ?? null,
 						phase,
 						resultingEpoch,
+						targetRunId,
 						source.sourceEventId,
 						at,
 					);

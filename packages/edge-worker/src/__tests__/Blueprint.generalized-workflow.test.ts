@@ -103,6 +103,52 @@ describe("Blueprint generalized workflow capability contract", () => {
 		expect(call.workflowOutputCredential).toBe("output-ticket");
 	});
 
+	it("renders the pinned completion route and a decision-only verdict contract", async () => {
+		const designHarness = harness();
+		await designHarness.blueprint.run(node, "/tmp/fly1307-design", {
+			...generalized,
+			generalizedExecutionContext: {
+				...generalized.generalizedExecutionContext!,
+				nodeId: "design",
+			},
+			workflowCapabilities: {
+				...generalized.workflowCapabilities,
+				produces_output: false,
+				completion_route: "phase_design_complete",
+			},
+			workflowOutputCredential: undefined,
+		});
+		const designCall = (
+			designHarness.adapter.execute as ReturnType<typeof vi.fn>
+		).mock.calls[0]![0] as AdapterExecutionContext;
+		expect(designCall.appendSystemPrompt).toContain(
+			"complete --route phase_design_complete",
+		);
+
+		const reviewHarness = harness();
+		await reviewHarness.blueprint.run(node, "/tmp/fly1307-review", {
+			...generalized,
+			generalizedExecutionContext: {
+				...generalized.generalizedExecutionContext!,
+				nodeId: "review",
+			},
+			workflowCapabilities: {
+				...generalized.workflowCapabilities,
+				produces_output: false,
+				completion_route: "needs_review",
+			},
+			workflowOutputCredential: undefined,
+			workflowSubmissionCredential: "review-ticket",
+		});
+		const reviewCall = (
+			reviewHarness.adapter.execute as ReturnType<typeof vi.fn>
+		).mock.calls[0]![0] as AdapterExecutionContext;
+		expect(reviewCall.appendSystemPrompt).toContain("qa-result");
+		expect(reviewCall.appendSystemPrompt).toContain("--status pass|fail");
+		expect(reviewCall.appendSystemPrompt).toContain("Do not run `complete`");
+		expect(reviewCall.workflowSubmissionCredential).toBe("review-ticket");
+	});
+
 	it("fails closed when pinned generalized inputs are incomplete or unsupported", async () => {
 		const first = harness();
 		await expect(
@@ -118,7 +164,7 @@ describe("Blueprint generalized workflow capability contract", () => {
 				...generalized,
 				workflowCapabilities: {
 					...generalized.workflowCapabilities,
-					completion_route: "needs_review",
+					completion_route: "future_route",
 				},
 			}),
 		).rejects.toThrow(/unsupported generalized completion route/i);

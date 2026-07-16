@@ -10,6 +10,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
+import {
+	loadBundledWorkflowSeeds,
+	workflowSeedContentHash,
+} from "../workflow-template.js";
 
 const cleanups: string[] = [];
 afterEach(() => {
@@ -71,6 +75,86 @@ const enabled = {
 };
 
 describe("generalized execution admission and terminal contracts", () => {
+	it("rejects same-vendor review at admission before the claim-layer backstop", async () => {
+		const store = await StateStore.create(":memory:");
+		const root = mkdtempSync(join(tmpdir(), "flywheel-same-vendor-"));
+		cleanups.push(root);
+		mkdirSync(join(root, "agents"));
+		writeFileSync(join(root, "agents", "generic-executor.md"), "Execute.\n");
+		const seed = structuredClone(
+			loadBundledWorkflowSeeds().find(
+				(candidate) => candidate.templateId === "tpl_product_v1",
+			)!,
+		);
+		seed.templateId = "tpl_product_same_vendor";
+		const reviewNode = seed.manifest.nodes.find(
+			(node) => node.id === "review",
+		)!;
+		reviewNode.vendor = "codex";
+		reviewNode.model = "gpt-5.6-sol";
+		seed.contentHash = workflowSeedContentHash(seed);
+		store.importWorkflowTemplateSeed(seed, enabled);
+		store.materializeWorkflowRun({
+			runId: "same-vendor-run",
+			issueId: "FLY-X",
+			projectName: "flywheel",
+			taskCategory: "product",
+			templateId: seed.templateId,
+			claimsReadEnrolled: false,
+			actor: "lead",
+			canonicalRoot: root,
+			env: enabled,
+			startReservation: {
+				idempotencyKey: "same-vendor-start",
+				selectionDigest: "selection",
+				nodeId: "research",
+				attempt: 1,
+				executionId: "research",
+				createdAt: "2026-07-15T00:00:00.000Z",
+			},
+		});
+		store.upsertWorkflowRunNode({
+			runId: "same-vendor-run",
+			nodeId: "research",
+			attempt: 1,
+			state: "running",
+			executionId: "research",
+		});
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "same-vendor-run",
+				nodeId: "research",
+				attempt: 1,
+				executionId: "research",
+				outcome: "node_done",
+				successorExecutionId: "produce",
+			}).ok,
+		).toBe(true);
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "same-vendor-run",
+				nodeId: "produce",
+				attempt: 1,
+				executionId: "produce",
+				outcome: "node_done",
+				successorExecutionId: "review",
+			}).ok,
+		).toBe(true);
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "same-vendor-run",
+				nodeId: "review",
+				executionId: "review",
+				attempt: 1,
+				now: "2026-07-15T00:10:00.000Z",
+				expiresAt: "2026-07-15T01:10:00.000Z",
+				absoluteDeadlineAt: "2026-07-16T00:10:00.000Z",
+				env: enabled,
+			}),
+		).toEqual({ ok: false, reason: "same_vendor_review" });
+		store.close();
+	});
+
 	it("revokes an older attempt's unconsumed output credential when retrying", async () => {
 		const store = await StateStore.create(":memory:");
 		createRun(store, { output: true });

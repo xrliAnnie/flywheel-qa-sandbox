@@ -533,6 +533,7 @@ import {
 	createStuckConfirmRunner,
 } from "./watchdog-judge-assembly.js";
 import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
+import { WorkflowEngineDispatcher } from "./workflow-engine-dispatcher.js";
 import { createWorkflowShadowWriterFromEnv } from "./workflow-shadow-writer.js";
 import { createWorkflowTemplateRouter } from "./workflow-template-routes.js";
 import {
@@ -4716,6 +4717,29 @@ export async function startBridge(
 			);
 		}
 	}
+	const workflowEngineDispatcher = startDispatcher
+		? new WorkflowEngineDispatcher({
+				store,
+				startDispatcher,
+				env: process.env,
+				resolveLeadId: (executionId) => {
+					const session = store.getSession(executionId);
+					if (!session?.project_name) return undefined;
+					try {
+						const labels = store.getSessionLabels(executionId);
+						return resolveLeadForIssue(projects, session.project_name, labels)
+							.lead.agentId;
+					} catch (error) {
+						console.warn(
+							`[workflow-engine] resolveLeadId failed for ${executionId}: ${error instanceof Error ? error.message : String(error)}`,
+						);
+						return undefined;
+					}
+				},
+				log: (message) => console.warn(`[workflow-engine] ${message}`),
+			})
+		: undefined;
+	workflowEngineDispatcher?.start();
 
 	// FLY-253 (Codex R2 #4): the remanage router mounts inside createBridgeApp,
 	// but the StuckRunnerDetector is only created post-listen — give the router
@@ -7164,6 +7188,8 @@ export async function startBridge(
 			phaseStatusLineRefreshHolder.current = refreshPhaseStatusLineEffect;
 			phaseOrchestratorHolder.current = new PhaseOrchestrator({
 				startDispatcher: phaseStartDispatcher,
+				isEngineOwnedExecution: (executionId) =>
+					store.isWorkflowEngineOwnedExecution(executionId),
 				// FLY-1232: lifecycle shadow hooks (T3/T3b/T4/T5/T6) — undefined
 				// when FLYWHEEL_WORKFLOW_CLAIMS_WRITE is off (byte-compatible).
 				workflowShadow: workflowShadowWriter,
@@ -9160,6 +9186,7 @@ export async function startBridge(
 		// finds this marker still `running` knows the previous Bridge died dirty.
 		writeCleanMarker(bridgeMarker);
 		workflowSourceProjector.stop();
+		workflowEngineDispatcher?.stop();
 		heartbeatService?.stop();
 		await publishBrokerHandle?.close(); // FLY-1062: socket + observe timer
 		gatePoller.stop();

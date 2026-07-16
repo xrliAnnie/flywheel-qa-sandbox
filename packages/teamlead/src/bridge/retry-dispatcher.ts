@@ -15,6 +15,8 @@ import type { WorkflowShadowContext } from "./workflow-shadow-writer.js";
 export type { QaContext };
 
 export interface GeneralizedExecutionDispatch {
+	/** True only for a typed run whose transitions are owned by the DAG engine. */
+	engineOwned?: boolean;
 	executionId: string;
 	runId: string;
 	nodeId: string;
@@ -23,11 +25,12 @@ export interface GeneralizedExecutionDispatch {
 	dispatch: {
 		vendor: "claude" | "codex";
 		model: string;
-		effort: "low" | "medium" | "high" | "xhigh";
+		effort?: "low" | "medium" | "high" | "xhigh";
 	};
 	capabilities: Record<string, boolean | string>;
 	agentContent: string;
 	outputCredential?: string;
+	submissionCredential?: string;
 	idempotencyKey: string;
 	launchGateToken?: string;
 	commitWorkflowLaunch?: () => { ok: boolean; reason?: string };

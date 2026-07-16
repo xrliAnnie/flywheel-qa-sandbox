@@ -19,7 +19,10 @@ import {
 	type Session,
 	type StateStore,
 } from "../StateStore.js";
-import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
+import {
+	parseWorkflowRunSnapshot,
+	workflowNodeAgentContent,
+} from "../workflow-run-snapshot.js";
 import {
 	type FounderApprovalCardAuthority,
 	writeGateResponseAndRunPostWrite,
@@ -882,7 +885,8 @@ async function handleRetry(
 		const node = snapshot.resolved.nodes.find(
 			(candidate) => candidate.id === predecessorBinding.node_id,
 		);
-		if (!node?.dispatch || !node.agent) {
+		const agentContent = node ? workflowNodeAgentContent(node) : undefined;
+		if (!node?.dispatch || !agentContent) {
 			return {
 				success: false,
 				message:
@@ -932,6 +936,7 @@ async function handleRetry(
 			};
 		}
 		let outputCredential = admitted.outputCredential;
+		const submissionCredential = admitted.submissionCredential;
 		let launchGateToken: string | undefined;
 		let commitWorkflowLaunch:
 			| (() => { ok: boolean; reason?: string })
@@ -1048,8 +1053,9 @@ async function handleRetry(
 				snapshotDigest: snapshot.snapshot_digest,
 				dispatch: node.dispatch,
 				capabilities: { ...node.capabilities },
-				agentContent: node.agent.content,
+				agentContent,
 				outputCredential,
+				submissionCredential,
 				idempotencyKey: `retry:${executionId}:${successorExecutionId}`,
 				launchGateToken,
 				commitWorkflowLaunch,

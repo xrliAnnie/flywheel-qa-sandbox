@@ -38,6 +38,7 @@ import {
 	type WorkflowDecisionFamily,
 } from "./workflow-claims.js";
 import {
+	buildWorkflowRunSnapshotV1,
 	buildWorkflowRunSnapshotV2,
 	parseWorkflowRunSnapshot,
 } from "./workflow-run-snapshot.js";
@@ -11865,6 +11866,7 @@ export class StateStore {
 				current_qa_attempt INTEGER,
 				status TEXT NOT NULL DEFAULT 'active',
 				claims_read_enrolled INTEGER NOT NULL DEFAULT 0,
+				engine_owned INTEGER NOT NULL DEFAULT 0,
 				created_at TEXT NOT NULL DEFAULT (datetime('now'))
 			)
 		`);
@@ -11881,6 +11883,7 @@ export class StateStore {
 			"selection_source TEXT",
 			"selected_by TEXT",
 			"selection_reason TEXT",
+			"engine_owned INTEGER NOT NULL DEFAULT 0",
 		]) {
 			try {
 				this.db.run(`ALTER TABLE workflow_run ADD COLUMN ${column}`);
@@ -11948,7 +11951,7 @@ export class StateStore {
 				attempt INTEGER,
 				predicate TEXT NOT NULL CHECK (predicate IN (
 					'qa_passed','qa_failed','codex_approved','design_review_approved',
-					'founder_approved','qa_exempt')),
+					'design_review_failed','founder_approved','qa_exempt')),
 				issuer_kind TEXT NOT NULL CHECK (issuer_kind IN (
 					'runner_node','bridge_policy','founder_challenge')),
 				issuer_execution_id TEXT,
@@ -11973,6 +11976,83 @@ export class StateStore {
 				CHECK (expires_at IS NOT NULL OR permanent = 1)
 			)
 		`);
+		const workflowClaimsSql = (
+			this.db.raw
+				.prepare(
+					"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_claims'",
+				)
+				.get() as { sql?: string } | undefined
+		)?.sql;
+		if (
+			workflowClaimsSql &&
+			!workflowClaimsSql.includes("design_review_failed")
+		) {
+			const foreignKeys = Number(
+				this.db.raw.pragma("foreign_keys", { simple: true }),
+			);
+			this.db.raw.pragma("foreign_keys = OFF");
+			try {
+				this.db.raw.transaction(() => {
+					this.db.raw.exec(`
+						DROP TRIGGER IF EXISTS workflow_claims_no_update;
+						DROP TRIGGER IF EXISTS workflow_claims_no_delete;
+						CREATE TABLE workflow_claims_next (
+							id INTEGER PRIMARY KEY AUTOINCREMENT,
+							server_seq INTEGER NOT NULL UNIQUE,
+							issued_at TEXT NOT NULL DEFAULT (datetime('now')),
+							issue_id TEXT NOT NULL,
+							workflow_run_id TEXT NOT NULL,
+							node_id TEXT,
+							decision_kind TEXT NOT NULL,
+							attempt INTEGER,
+							predicate TEXT NOT NULL CHECK (predicate IN (
+								'qa_passed','qa_failed','codex_approved','design_review_approved',
+								'design_review_failed','founder_approved','qa_exempt')),
+							issuer_kind TEXT NOT NULL CHECK (issuer_kind IN (
+								'runner_node','bridge_policy','founder_challenge')),
+							issuer_execution_id TEXT,
+							issuer_node_id TEXT,
+							issuer_vendor TEXT,
+							issuer_model TEXT,
+							subject_producer_execution_id TEXT,
+							subject_kind TEXT NOT NULL CHECK (subject_kind IN ('git_head','snapshot_digest')),
+							subject_digest TEXT NOT NULL,
+							expires_at TEXT,
+							permanent INTEGER NOT NULL DEFAULT 0,
+							submission_digest TEXT,
+							client_request_id TEXT,
+							evidence JSON,
+							authority_id TEXT NOT NULL,
+							CHECK (issuer_kind != 'runner_node' OR (
+								node_id IS NOT NULL AND attempt IS NOT NULL
+								AND issuer_execution_id IS NOT NULL AND issuer_node_id IS NOT NULL
+								AND issuer_vendor IS NOT NULL AND issuer_model IS NOT NULL
+								AND submission_digest IS NOT NULL AND client_request_id IS NOT NULL
+							)),
+							CHECK (expires_at IS NOT NULL OR permanent = 1)
+						);
+						INSERT INTO workflow_claims_next
+							(id, server_seq, issued_at, issue_id, workflow_run_id, node_id,
+							 decision_kind, attempt, predicate, issuer_kind,
+							 issuer_execution_id, issuer_node_id, issuer_vendor, issuer_model,
+							 subject_producer_execution_id, subject_kind, subject_digest,
+							 expires_at, permanent, submission_digest, client_request_id,
+							 evidence, authority_id)
+						SELECT id, server_seq, issued_at, issue_id, workflow_run_id, node_id,
+							 decision_kind, attempt, predicate, issuer_kind,
+							 issuer_execution_id, issuer_node_id, issuer_vendor, issuer_model,
+							 subject_producer_execution_id, subject_kind, subject_digest,
+							 expires_at, permanent, submission_digest, client_request_id,
+							 evidence, authority_id
+						  FROM workflow_claims;
+						DROP TABLE workflow_claims;
+						ALTER TABLE workflow_claims_next RENAME TO workflow_claims;
+					`);
+				})();
+			} finally {
+				if (foreignKeys === 1) this.db.raw.pragma("foreign_keys = ON");
+			}
+		}
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_claim_revocation (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -12861,8 +12941,18 @@ export class StateStore {
 							})(),
 					})
 				: undefined;
-		const snapshot = generalizedSnapshot
-			? JSON.stringify(generalizedSnapshot)
+		const engineSnapshot =
+			applied.manifest.schema_version === 1 && input.startReservation
+				? buildWorkflowRunSnapshotV1({
+						template: {
+							id: template.template_id,
+							revision: template.current_published_revision,
+						},
+						manifest: applied.manifest,
+					})
+				: generalizedSnapshot;
+		const snapshot = engineSnapshot
+			? JSON.stringify(engineSnapshot)
 			: JSON.stringify({
 					schema_version: applied.manifest.schema_version,
 					template: {
@@ -12877,8 +12967,9 @@ export class StateStore {
 			this.db.run(
 				`INSERT INTO workflow_run
 				 (run_id, issue_id, project_name, template_id, template_revision,
-				  snapshot, claims_read_enrolled, selection_source, selected_by, selection_reason)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				  snapshot, claims_read_enrolled, engine_owned, current_node_id,
+				  selection_source, selected_by, selection_reason)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					input.runId,
 					input.issueId,
@@ -12887,6 +12978,8 @@ export class StateStore {
 					template.current_published_revision,
 					snapshot,
 					input.claimsReadEnrolled ? 1 : 0,
+					input.startReservation ? 1 : 0,
+					input.startReservation?.nodeId ?? null,
 					input.selection?.source ?? null,
 					input.selection?.selectedBy ?? null,
 					input.selection?.reason ?? null,
@@ -13025,6 +13118,7 @@ export class StateStore {
 				r.current_qa_attempt == null ? null : Number(r.current_qa_attempt),
 			status: r.status as string,
 			claims_read_enrolled: Number(r.claims_read_enrolled ?? 0),
+			engine_owned: Number(r.engine_owned ?? 0),
 			created_at: r.created_at as string,
 		};
 	}
@@ -13493,6 +13587,329 @@ export class StateStore {
 		return result;
 	}
 
+	/** Output-ticket counterpart of committed delivery repair. */
+	rotateGeneralizedWorkflowOutputCredentialForDeliveryRepair(input: {
+		executionId: string;
+		repairOwner: string;
+		generation: number;
+		repairAttempt: number;
+		now: string;
+		expiresAt: string;
+		absoluteDeadlineAt: string;
+	}): { ok: true; outputCredential: string } | { ok: false; reason: string } {
+		if (
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.expiresAt) ||
+			!StateStore.workflowFiniteTimestamp(input.absoluteDeadlineAt) ||
+			Date.parse(input.expiresAt) <= Date.parse(input.now) ||
+			Date.parse(input.expiresAt) > Date.parse(input.absoluteDeadlineAt)
+		) {
+			return { ok: false, reason: "invalid_expiry" };
+		}
+		const context = this.generalizedExecutionContext(input.executionId);
+		if (!context) return { ok: false, reason: "not_enrolled" };
+		if (!context.node.capabilities.produces_output) {
+			return { ok: false, reason: "node_does_not_produce_output" };
+		}
+		let result:
+			| { ok: true; outputCredential: string }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_delivery_repair_owner",
+		};
+		this.db.transaction(() => {
+			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			if (
+				!owner ||
+				owner.committed_generation !== input.generation ||
+				owner.delivery_state !== "repairing" ||
+				owner.delivery_owner !== input.repairOwner ||
+				owner.delivery_attempt !== input.repairAttempt ||
+				!owner.delivery_lease_expires_at ||
+				Date.parse(input.now) >= Date.parse(owner.delivery_lease_expires_at)
+			) {
+				return;
+			}
+			const consumed = this.workflowSelectAll(
+				`SELECT id FROM workflow_output_credential
+				  WHERE execution_id = ? AND consumed_at IS NOT NULL LIMIT 1`,
+				[input.executionId],
+			)[0];
+			if (consumed) {
+				result = { ok: false, reason: "output_already_consumed" };
+				return;
+			}
+			const unexpectedDecisionTicket = this.workflowSelectAll(
+				`SELECT id FROM workflow_submission_credential
+				  WHERE execution_id = ? AND consumed_at IS NULL AND revoked = 0 LIMIT 1`,
+				[input.executionId],
+			)[0];
+			if (unexpectedDecisionTicket) {
+				result = { ok: false, reason: "decision_credential_invariant" };
+				return;
+			}
+			const rotationUid = `output_credential_delivery_repair_rotated:${input.executionId}:${input.generation}:${input.repairAttempt}`;
+			if (
+				this.workflowSelectAll(
+					"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
+					[rotationUid],
+				)[0]
+			) {
+				result = { ok: false, reason: "repair_credential_already_rotated" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_output_credential
+				    SET revoked = 1, revoked_reason = 'delivery_repair_rotation'
+				  WHERE execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+				[input.executionId],
+			);
+			const outputCredential = generateCapabilityToken();
+			this.db.run(
+				`INSERT INTO workflow_output_credential
+				   (credential_hash, run_id, node_id, execution_id, attempt,
+				    issued_at, expires_at, absolute_deadline_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					hashCapabilityToken(outputCredential),
+					context.binding.run_id,
+					context.binding.node_id,
+					context.binding.execution_id,
+					context.binding.attempt,
+					input.now,
+					input.expiresAt,
+					input.absoluteDeadlineAt,
+				],
+			);
+			this.appendWorkflowRunEventTx({
+				runId: context.binding.run_id,
+				eventUid: rotationUid,
+				kind: "output_credential_rotated",
+				nodeId: context.binding.node_id,
+				executionId: input.executionId,
+				payload: {
+					attempt: context.binding.attempt,
+					ownerGeneration: input.generation,
+					deliveryAttempt: input.repairAttempt,
+				},
+			});
+			result = { ok: true, outputCredential };
+		});
+		this.save();
+		return result;
+	}
+
+	/**
+	 * Re-issues the plaintext QA/review decision ticket after a pre-launch
+	 * crash. As with output-ticket rotation, only the current uncommitted launch
+	 * owner may replace the lost capability.
+	 */
+	rotateGeneralizedWorkflowSubmissionCredential(input: {
+		executionId: string;
+		ownerId: string;
+		generation: number;
+		now: string;
+		expiresAt: string;
+		absoluteDeadlineAt: string;
+	}):
+		| { ok: true; submissionCredential: string }
+		| { ok: false; reason: string } {
+		if (
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.expiresAt) ||
+			!StateStore.workflowFiniteTimestamp(input.absoluteDeadlineAt) ||
+			Date.parse(input.expiresAt) <= Date.parse(input.now) ||
+			Date.parse(input.expiresAt) > Date.parse(input.absoluteDeadlineAt)
+		) {
+			return { ok: false, reason: "invalid_expiry" };
+		}
+		const context = this.generalizedExecutionContext(input.executionId);
+		if (!context) return { ok: false, reason: "not_enrolled" };
+		const family: WorkflowDecisionFamily | undefined =
+			context.node.type === "qa"
+				? "qa_verdict"
+				: context.node.type === "review"
+					? "review_verdict"
+					: undefined;
+		if (!family) return { ok: false, reason: "node_does_not_submit_decision" };
+		let result:
+			| { ok: true; submissionCredential: string }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_launch_owner",
+		};
+		this.db.transaction(() => {
+			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			if (owner?.committed_generation != null) {
+				result = { ok: false, reason: "launch_committed" };
+				return;
+			}
+			if (
+				!owner ||
+				owner.owner_id !== input.ownerId ||
+				owner.owner_generation !== input.generation ||
+				Date.parse(input.now) >= Date.parse(owner.lease_expires_at)
+			) {
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_submission_credential
+				    SET revoked = 1, revoked_reason = 'prelaunch_recovery_rotation'
+				  WHERE execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+				[input.executionId],
+			);
+			const submissionCredential = generateCapabilityToken();
+			this.db.run(
+				`INSERT INTO workflow_submission_credential
+				   (credential_hash, run_id, node_id, execution_id, attempt, family,
+				    issued_at, expires_at, absolute_deadline_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					hashCapabilityToken(submissionCredential),
+					context.binding.run_id,
+					context.binding.node_id,
+					context.binding.execution_id,
+					context.binding.attempt,
+					family,
+					input.now,
+					input.expiresAt,
+					input.absoluteDeadlineAt,
+				],
+			);
+			this.appendWorkflowRunEventTx({
+				runId: context.binding.run_id,
+				eventUid: `submission_credential_rotated:${input.executionId}:${input.generation}:${input.now}`,
+				kind: "submission_credential_rotated",
+				nodeId: context.binding.node_id,
+				executionId: input.executionId,
+				payload: {
+					attempt: context.binding.attempt,
+					family,
+					ownerGeneration: input.generation,
+				},
+			});
+			result = { ok: true, submissionCredential };
+		});
+		this.save();
+		return result;
+	}
+
+	/**
+	 * Re-issues a lost QA/review ticket only after a committed shell is proven
+	 * dead and the durable delivery-repair fence has been claimed. This is
+	 * deliberately separate from pre-launch rotation: a plain launch owner can
+	 * never mint credentials after commit.
+	 */
+	rotateGeneralizedWorkflowSubmissionCredentialForDeliveryRepair(input: {
+		executionId: string;
+		repairOwner: string;
+		generation: number;
+		repairAttempt: number;
+		now: string;
+		expiresAt: string;
+		absoluteDeadlineAt: string;
+	}):
+		| { ok: true; submissionCredential: string }
+		| { ok: false; reason: string } {
+		if (
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.expiresAt) ||
+			!StateStore.workflowFiniteTimestamp(input.absoluteDeadlineAt) ||
+			Date.parse(input.expiresAt) <= Date.parse(input.now) ||
+			Date.parse(input.expiresAt) > Date.parse(input.absoluteDeadlineAt)
+		) {
+			return { ok: false, reason: "invalid_expiry" };
+		}
+		const context = this.generalizedExecutionContext(input.executionId);
+		if (!context) return { ok: false, reason: "not_enrolled" };
+		const family: WorkflowDecisionFamily | undefined =
+			context.node.type === "qa"
+				? "qa_verdict"
+				: context.node.type === "review"
+					? "review_verdict"
+					: undefined;
+		if (!family) return { ok: false, reason: "node_does_not_submit_decision" };
+		let result:
+			| { ok: true; submissionCredential: string }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_delivery_repair_owner",
+		};
+		this.db.transaction(() => {
+			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			if (
+				!owner ||
+				owner.committed_generation !== input.generation ||
+				owner.delivery_state !== "repairing" ||
+				owner.delivery_owner !== input.repairOwner ||
+				owner.delivery_attempt !== input.repairAttempt ||
+				!owner.delivery_lease_expires_at ||
+				Date.parse(input.now) >= Date.parse(owner.delivery_lease_expires_at)
+			) {
+				return;
+			}
+			const consumed = this.workflowSelectAll(
+				`SELECT id FROM workflow_submission_credential
+				  WHERE execution_id = ? AND consumed_at IS NOT NULL LIMIT 1`,
+				[input.executionId],
+			)[0];
+			if (consumed) {
+				result = { ok: false, reason: "decision_already_consumed" };
+				return;
+			}
+			const rotationUid = `submission_credential_delivery_repair_rotated:${input.executionId}:${input.generation}:${input.repairAttempt}`;
+			if (
+				this.workflowSelectAll(
+					"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
+					[rotationUid],
+				)[0]
+			) {
+				result = { ok: false, reason: "repair_credential_already_rotated" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_submission_credential
+				    SET revoked = 1, revoked_reason = 'delivery_repair_rotation'
+				  WHERE execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+				[input.executionId],
+			);
+			const submissionCredential = generateCapabilityToken();
+			this.db.run(
+				`INSERT INTO workflow_submission_credential
+				   (credential_hash, run_id, node_id, execution_id, attempt, family,
+				    issued_at, expires_at, absolute_deadline_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					hashCapabilityToken(submissionCredential),
+					context.binding.run_id,
+					context.binding.node_id,
+					context.binding.execution_id,
+					context.binding.attempt,
+					family,
+					input.now,
+					input.expiresAt,
+					input.absoluteDeadlineAt,
+				],
+			);
+			this.appendWorkflowRunEventTx({
+				runId: context.binding.run_id,
+				eventUid: rotationUid,
+				kind: "submission_credential_rotated",
+				nodeId: context.binding.node_id,
+				executionId: input.executionId,
+				payload: {
+					attempt: context.binding.attempt,
+					family,
+					ownerGeneration: input.generation,
+					deliveryAttempt: input.repairAttempt,
+				},
+			});
+			result = { ok: true, submissionCredential };
+		});
+		this.save();
+		return result;
+	}
+
 	claimWorkflowLaunchDeliveryRepair(input: {
 		executionId: string;
 		repairOwner: string;
@@ -13904,6 +14321,12 @@ export class StateStore {
 		};
 	}
 
+	isWorkflowEngineOwnedExecution(executionId: string): boolean {
+		const binding = this.getWorkflowExecutionBinding(executionId);
+		if (!binding) return false;
+		return this.getWorkflowRun(binding.run_id)?.engine_owned === 1;
+	}
+
 	private generalizedExecutionContext(executionId: string):
 		| {
 				binding: WorkflowExecutionBindingRow;
@@ -13918,7 +14341,7 @@ export class StateStore {
 		if (!binding) return undefined;
 		const run = this.getWorkflowRun(binding.run_id);
 		// Legacy shadow/auto-QA bindings intentionally have no typed snapshot.
-		// A binding row alone is not schema-v2 enrollment.
+		// A binding row alone is not typed engine enrollment.
 		if (!run?.snapshot) {
 			if (run?.selection_source) {
 				throw new Error(
@@ -13933,10 +14356,13 @@ export class StateStore {
 		} catch {
 			throw new Error("bound workflow snapshot is corrupt");
 		}
+		const schemaVersion =
+			typeof raw === "object" && raw !== null
+				? (raw as { schema_version?: unknown }).schema_version
+				: undefined;
 		if (
-			typeof raw !== "object" ||
-			raw === null ||
-			(raw as { schema_version?: unknown }).schema_version !== 2
+			schemaVersion !== 2 &&
+			!(schemaVersion === 1 && run.engine_owned === 1)
 		) {
 			return undefined;
 		}
@@ -13948,7 +14374,7 @@ export class StateStore {
 		return { binding, run, snapshot, node };
 	}
 
-	/** One fail-closed admission seam for schema-v2 generalized executions. */
+	/** One fail-closed admission seam for typed engine and generalized executions. */
 	admitGeneralizedWorkflowExecution(input: {
 		runId: string;
 		nodeId: string;
@@ -13961,12 +14387,6 @@ export class StateStore {
 		idempotencyKey?: string;
 	}): GeneralizedWorkflowAdmissionResult {
 		const env = input.env ?? process.env;
-		if (!isGeneralizedTemplatesEnabled(env)) {
-			return { ok: false, reason: "generalized_disabled" };
-		}
-		if (!isWorkflowClaimsWriteEnabled(env)) {
-			return { ok: false, reason: "claims_write_disabled" };
-		}
 		const now = input.now ?? new Date().toISOString();
 		if (
 			!StateStore.workflowFiniteTimestamp(now) ||
@@ -13987,13 +14407,19 @@ export class StateStore {
 		} catch {
 			return { ok: false, reason: "invalid_snapshot" };
 		}
+		if (snapshot.schema_version === 2 && !isGeneralizedTemplatesEnabled(env)) {
+			return { ok: false, reason: "generalized_disabled" };
+		}
+		if (!isWorkflowClaimsWriteEnabled(env)) {
+			return { ok: false, reason: "claims_write_disabled" };
+		}
+		if (snapshot.schema_version === 1 && run.engine_owned !== 1) {
+			return { ok: false, reason: "engine_ownership_required" };
+		}
 		const node = snapshot.resolved.nodes.find(
 			(candidate) => candidate.id === input.nodeId,
 		);
 		if (!node) return { ok: false, reason: "unknown_node" };
-		if (node.type === "review") {
-			return { ok: false, reason: "review_execution_deferred" };
-		}
 		if (!node.dispatch || node.type === "gate") {
 			return { ok: false, reason: "not_start_node" };
 		}
@@ -14002,6 +14428,20 @@ export class StateStore {
 			node.capabilities.produces_output
 		) {
 			return { ok: false, reason: "unsupported_capability_combination" };
+		}
+		if (node.type === "qa" || node.type === "review") {
+			const producerIds = snapshot.manifest.edges
+				.filter((edge) => edge.to === node.id)
+				.map((edge) => edge.from);
+			const producers = snapshot.resolved.nodes.filter((candidate) =>
+				producerIds.includes(candidate.id),
+			);
+			if (producers.length !== 1 || !producers[0]?.dispatch) {
+				return { ok: false, reason: "decision_producer_ambiguous" };
+			}
+			if (producers[0].dispatch.vendor === node.dispatch.vendor) {
+				return { ok: false, reason: "same_vendor_review" };
+			}
 		}
 
 		const existingBinding = this.getWorkflowExecutionBinding(input.executionId);
@@ -14032,7 +14472,16 @@ export class StateStore {
 			(entry) => incoming.get(entry.id) === 0,
 		);
 		const attempts = this.listWorkflowRunNodes(input.runId, input.nodeId);
-		if (attempts.length === 0) {
+		const reservedSuccessor = attempts.find(
+			(candidate) =>
+				candidate.attempt === input.attempt &&
+				candidate.execution_id === input.executionId &&
+				(candidate.state === "pending" || candidate.state === "running"),
+		);
+		if (run.engine_owned === 1 && attempts.length > 0 && !reservedSuccessor) {
+			return { ok: false, reason: "successor_not_reserved" };
+		}
+		if (!reservedSuccessor && attempts.length === 0) {
 			if (
 				starts.length !== 1 ||
 				starts[0]!.id !== input.nodeId ||
@@ -14040,7 +14489,7 @@ export class StateStore {
 			) {
 				return { ok: false, reason: "not_start_node" };
 			}
-		} else {
+		} else if (!reservedSuccessor) {
 			const maxAttempt = Math.max(...attempts.map((entry) => entry.attempt));
 			if (input.attempt !== maxAttempt + 1) {
 				return { ok: false, reason: "invalid_retry_attempt" };
@@ -14048,13 +14497,23 @@ export class StateStore {
 		}
 
 		let outputCredential: string | undefined;
+		let submissionCredential: string | undefined;
 		this.db.transaction(() => {
-			this.db.run(
-				`INSERT INTO workflow_run_node
-				   (run_id, node_id, attempt, state, execution_id)
-				 VALUES (?, ?, ?, 'admitted', ?)`,
-				[input.runId, input.nodeId, input.attempt, input.executionId],
-			);
+			if (reservedSuccessor) {
+				this.db.run(
+					`UPDATE workflow_run_node SET state = 'admitted'
+					  WHERE run_id = ? AND node_id = ? AND attempt = ?
+					    AND execution_id = ? AND state IN ('pending', 'running')`,
+					[input.runId, input.nodeId, input.attempt, input.executionId],
+				);
+			} else {
+				this.db.run(
+					`INSERT INTO workflow_run_node
+					   (run_id, node_id, attempt, state, execution_id)
+					 VALUES (?, ?, ?, 'admitted', ?)`,
+					[input.runId, input.nodeId, input.attempt, input.executionId],
+				);
+			}
 			this.db.run(
 				`INSERT INTO workflow_execution_binding
 				   (execution_id, run_id, node_id, attempt, bound_at)
@@ -14073,7 +14532,7 @@ export class StateStore {
 					input.attempt,
 					node.dispatch!.vendor,
 					node.dispatch!.model,
-					node.dispatch!.effort,
+					node.dispatch!.effort ?? "",
 					node.dispatch!.vendor,
 					canonicalSubmissionDigest(node.capabilities),
 					now,
@@ -14105,9 +14564,46 @@ export class StateStore {
 					],
 				);
 			}
+			const decisionFamily: WorkflowDecisionFamily | undefined =
+				node.type === "qa"
+					? "qa_verdict"
+					: node.type === "review"
+						? "review_verdict"
+						: undefined;
+			if (decisionFamily) {
+				this.db.run(
+					`UPDATE workflow_submission_credential
+					    SET revoked = 1, revoked_reason = 'superseded_by_retry'
+					  WHERE run_id = ? AND node_id = ? AND attempt < ?
+					    AND consumed_at IS NULL AND revoked = 0`,
+					[input.runId, input.nodeId, input.attempt],
+				);
+				submissionCredential = generateCapabilityToken();
+				this.db.run(
+					`INSERT INTO workflow_submission_credential
+					   (credential_hash, run_id, node_id, execution_id, attempt, family,
+					    issued_at, expires_at, absolute_deadline_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						hashCapabilityToken(submissionCredential),
+						input.runId,
+						input.nodeId,
+						input.executionId,
+						input.attempt,
+						decisionFamily,
+						now,
+						input.expiresAt,
+						input.absoluteDeadlineAt,
+					],
+				);
+			}
 			this.db.run(
-				"UPDATE workflow_run SET claims_read_enrolled = 1, current_node_id = ? WHERE run_id = ?",
-				[input.nodeId, input.runId],
+				`UPDATE workflow_run
+				    SET claims_read_enrolled = 1,
+				        current_node_id = ?,
+				        current_qa_attempt = CASE WHEN ? = 'qa' THEN ? ELSE current_qa_attempt END
+				  WHERE run_id = ?`,
+				[input.nodeId, input.nodeId, input.attempt, input.runId],
 			);
 			this.appendWorkflowRunEventTx({
 				runId: input.runId,
@@ -14115,7 +14611,11 @@ export class StateStore {
 				kind: "execution_admitted",
 				nodeId: input.nodeId,
 				executionId: input.executionId,
-				payload: { attempt: input.attempt, output: !!outputCredential },
+				payload: {
+					attempt: input.attempt,
+					output: !!outputCredential,
+					decision: !!submissionCredential,
+				},
 			});
 			if (input.idempotencyKey) {
 				this.db.run(
@@ -14130,6 +14630,7 @@ export class StateStore {
 			ok: true,
 			idempotentReplay: false,
 			outputCredential,
+			submissionCredential,
 			snapshotDigest: snapshot.snapshot_digest,
 		};
 	}
@@ -14149,7 +14650,7 @@ export class StateStore {
 			attempt: Number(row.attempt),
 			vendor: row.vendor as string,
 			model: row.model as string,
-			effort: row.effort as string,
+			effort: (row.effort as string) ?? null,
 			resolved_family: row.resolved_family as string,
 			capabilities_digest: row.capabilities_digest as string,
 			created_at: row.created_at as string,
@@ -14180,7 +14681,26 @@ export class StateStore {
 		};
 	}
 
-	/** Typed reverse lookup for schema-v2 surfaces; legacy bindings return undefined. */
+	getWorkflowNodeOutput(outputId: number): WorkflowNodeOutputRow | undefined {
+		if (!Number.isInteger(outputId) || outputId <= 0) return undefined;
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_node_outputs WHERE id = ?",
+			[outputId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			id: Number(row.id),
+			run_id: row.run_id as string,
+			node_id: row.node_id as string,
+			attempt: Number(row.attempt),
+			execution_id: row.execution_id as string,
+			payload: row.payload as string,
+			output_digest: row.output_digest as string,
+			written_at: row.written_at as string,
+		};
+	}
+
+	/** Typed reverse lookup; legacy non-engine v1 bindings return undefined. */
 	getGeneralizedWorkflowNodeForExecution(executionId: string) {
 		const context = this.generalizedExecutionContext(executionId);
 		if (!context) return undefined;
@@ -14188,6 +14708,7 @@ export class StateStore {
 			binding: context.binding,
 			run: context.run,
 			node: context.node,
+			snapshot: context.snapshot,
 			snapshotDigest: context.snapshot.snapshot_digest,
 		};
 	}
@@ -14297,6 +14818,10 @@ export class StateStore {
 			const executionId = row.execution_id as string;
 			const context = this.generalizedExecutionContext(executionId);
 			if (!context) continue;
+			// Typed engine successors are recovered by WorkflowEngineDispatcher from
+			// the durable dispatch outbox. This legacy safety collector must not
+			// classify a recoverable engine launch as permanently stranded.
+			if (context.run.engine_owned === 1) continue;
 			this.appendWorkflowRunEvent({
 				runId: context.binding.run_id,
 				eventUid: `generalized_stranded_hold:${executionId}`,
@@ -14551,38 +15076,77 @@ export class StateStore {
 			}
 		}
 		const eventUid = `wfc:${context.binding.run_id}:${context.binding.node_id}:${context.binding.attempt}`;
-		this.db.transaction(() => {
-			this.db.run(
-				`INSERT INTO workflow_node_completion
+		const engineOutcome =
+			context.run.engine_owned !== 1
+				? undefined
+				: context.node.type === "design"
+					? "design_done"
+					: context.node.type === "implement"
+						? "implement_done"
+						: context.node.type === "generic"
+							? "node_done"
+							: undefined;
+		let transitionRefusal: string | undefined;
+		try {
+			this.db.transaction(() => {
+				this.db.run(
+					`INSERT INTO workflow_node_completion
 				   (run_id, node_id, attempt, execution_id, route, event_uid,
 				    source_event_id, completion_submission_digest, completed_at)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					context.binding.run_id,
-					context.binding.node_id,
-					context.binding.attempt,
-					context.binding.execution_id,
-					input.route,
-					eventUid,
-					input.sourceEventId,
-					digest,
-					now,
-				],
-			);
-			this.projectGeneralizedCompletionTx({
-				context,
-				route: input.route,
-				completedAt: now,
+					[
+						context.binding.run_id,
+						context.binding.node_id,
+						context.binding.attempt,
+						context.binding.execution_id,
+						input.route,
+						eventUid,
+						input.sourceEventId,
+						digest,
+						now,
+					],
+				);
+				if (context.run.engine_owned === 1) {
+					if (!engineOutcome) {
+						transitionRefusal = "decision_required";
+						throw new Error("engine_completion_transition_refused");
+					}
+					const transition = this.commitWorkflowTransitionTx({
+						runId: context.binding.run_id,
+						nodeId: context.binding.node_id,
+						attempt: context.binding.attempt,
+						executionId: context.binding.execution_id,
+						outcome: engineOutcome,
+						nodeCompletionEventUid: eventUid,
+						now,
+					});
+					if (!transition.ok) {
+						transitionRefusal = transition.reason;
+						throw new Error("engine_completion_transition_refused");
+					}
+				}
+				this.projectGeneralizedCompletionTx({
+					context,
+					route: input.route,
+					completedAt: now,
+				});
+				if (context.run.engine_owned !== 1) {
+					this.appendWorkflowRunEventTx({
+						runId: context.binding.run_id,
+						eventUid,
+						kind: "node_completed",
+						nodeId: context.binding.node_id,
+						executionId: context.binding.execution_id,
+						payload: { attempt: context.binding.attempt, route: input.route },
+					});
+				}
 			});
-			this.appendWorkflowRunEventTx({
-				runId: context.binding.run_id,
-				eventUid,
-				kind: "node_completed",
-				nodeId: context.binding.node_id,
-				executionId: context.binding.execution_id,
-				payload: { attempt: context.binding.attempt, route: input.route },
-			});
-		});
+		} catch (error) {
+			if (transitionRefusal) {
+				return { ok: false, reason: "transition_refused" };
+			}
+			throw error;
+		}
 		this.save();
 		return { ok: true, eventUid, idempotentReplay: false };
 	}
@@ -14749,56 +15313,60 @@ export class StateStore {
 			ok: false,
 			reason: "credential_not_found",
 		};
-		this.db.transaction(() => {
-			const credential = this.workflowSelectAll(
-				"SELECT * FROM workflow_submission_credential WHERE credential_hash = ?",
-				[hashCapabilityToken(input.credential)],
-			)[0];
-			if (!credential) {
-				result = { ok: false, reason: "credential_not_found" };
-				return;
-			}
-			if (credential.consumed_at != null) {
-				if (
-					credential.consumed_client_request_id === input.clientRequestId &&
-					credential.consumed_submission_digest === digest &&
-					credential.claim_id != null
-				) {
-					const claim = this.getWorkflowClaim(Number(credential.claim_id));
-					result = claim
-						? {
-								ok: true,
-								claimId: claim.id,
-								serverSeq: claim.server_seq,
-								idempotentReplay: true,
-							}
-						: { ok: false, reason: "credential_receipt_corrupt" };
-				} else {
-					result = { ok: false, reason: "replay_payload_mismatch" };
+		let transitionRefusal: string | undefined;
+		try {
+			this.db.transaction(() => {
+				const credential = this.workflowSelectAll(
+					"SELECT * FROM workflow_submission_credential WHERE credential_hash = ?",
+					[hashCapabilityToken(input.credential)],
+				)[0];
+				if (!credential) {
+					result = { ok: false, reason: "credential_not_found" };
+					return;
 				}
-				return;
-			}
-			if (Number(credential.revoked) === 1) {
-				result = { ok: false, reason: "credential_revoked" };
-				return;
-			}
-			if (
-				!StateStore.workflowFiniteTimestamp(credential.expires_at as string) ||
-				StateStore.workflowExpired(credential.expires_at as string, nowIso)
-			) {
-				result = { ok: false, reason: "credential_expired" };
-				return;
-			}
-			const family = credential.family as WorkflowDecisionFamily;
-			const allowed = WORKFLOW_DECISION_FAMILIES[family] as
-				| readonly string[]
-				| undefined;
-			if (!allowed?.includes(input.predicate)) {
-				result = { ok: false, reason: "predicate_not_allowed" };
-				return;
-			}
-			const binding = this.workflowSelectAll(
-				`SELECT b.execution_id
+				if (credential.consumed_at != null) {
+					if (
+						credential.consumed_client_request_id === input.clientRequestId &&
+						credential.consumed_submission_digest === digest &&
+						credential.claim_id != null
+					) {
+						const claim = this.getWorkflowClaim(Number(credential.claim_id));
+						result = claim
+							? {
+									ok: true,
+									claimId: claim.id,
+									serverSeq: claim.server_seq,
+									idempotentReplay: true,
+								}
+							: { ok: false, reason: "credential_receipt_corrupt" };
+					} else {
+						result = { ok: false, reason: "replay_payload_mismatch" };
+					}
+					return;
+				}
+				if (Number(credential.revoked) === 1) {
+					result = { ok: false, reason: "credential_revoked" };
+					return;
+				}
+				if (
+					!StateStore.workflowFiniteTimestamp(
+						credential.expires_at as string,
+					) ||
+					StateStore.workflowExpired(credential.expires_at as string, nowIso)
+				) {
+					result = { ok: false, reason: "credential_expired" };
+					return;
+				}
+				const family = credential.family as WorkflowDecisionFamily;
+				const allowed = WORKFLOW_DECISION_FAMILIES[family] as
+					| readonly string[]
+					| undefined;
+				if (!allowed?.includes(input.predicate)) {
+					result = { ok: false, reason: "predicate_not_allowed" };
+					return;
+				}
+				const binding = this.workflowSelectAll(
+					`SELECT b.execution_id
 				   FROM workflow_execution_binding b
 				   JOIN workflow_run_node n
 				     ON n.run_id = b.run_id AND n.node_id = b.node_id
@@ -14807,70 +15375,73 @@ export class StateStore {
 				     ON r.run_id = b.run_id AND r.claims_read_enrolled = 1
 				  WHERE b.execution_id = ? AND b.run_id = ? AND b.node_id = ? AND b.attempt = ?
 				    AND (? != 'qa' OR r.current_qa_attempt = b.attempt)`,
-				[
-					credential.execution_id,
-					credential.run_id,
-					credential.node_id,
-					credential.attempt,
-					credential.node_id,
-				],
-			)[0];
-			if (!binding) {
-				result = { ok: false, reason: "binding_not_current" };
-				return;
-			}
-			if (
-				REVIEW_CLASS_PREDICATES.has(input.predicate as WorkflowClaimPredicate)
-			) {
-				if (!input.subjectProducerExecutionId || !input.subjectProducerVendor) {
-					result = { ok: false, reason: "missing_subject_producer" };
+					[
+						credential.execution_id,
+						credential.run_id,
+						credential.node_id,
+						credential.attempt,
+						credential.node_id,
+					],
+				)[0];
+				if (!binding) {
+					result = { ok: false, reason: "binding_not_current" };
 					return;
 				}
-				if (input.issuerVendor === input.subjectProducerVendor) {
-					result = { ok: false, reason: "same_vendor_review" };
+				if (
+					REVIEW_CLASS_PREDICATES.has(input.predicate as WorkflowClaimPredicate)
+				) {
+					if (
+						!input.subjectProducerExecutionId ||
+						!input.subjectProducerVendor
+					) {
+						result = { ok: false, reason: "missing_subject_producer" };
+						return;
+					}
+					if (input.issuerVendor === input.subjectProducerVendor) {
+						result = { ok: false, reason: "same_vendor_review" };
+						return;
+					}
+				}
+				const run = this.workflowSelectAll(
+					"SELECT issue_id FROM workflow_run WHERE run_id = ?",
+					[credential.run_id],
+				)[0];
+				if (!run) {
+					result = { ok: false, reason: "run_not_found" };
 					return;
 				}
-			}
-			const run = this.workflowSelectAll(
-				"SELECT issue_id FROM workflow_run WHERE run_id = ?",
-				[credential.run_id],
-			)[0];
-			if (!run) {
-				result = { ok: false, reason: "run_not_found" };
-				return;
-			}
 
-			// The runner never receives this capability token. It exists only to keep
-			// the ledger's authority chain explicit and is consumed in this txn.
-			const capabilityToken = generateCapabilityToken();
-			const capabilityHash = hashCapabilityToken(capabilityToken);
-			this.db.run(
-				`INSERT INTO workflow_decision_capability
+				// The runner never receives this capability token. It exists only to keep
+				// the ledger's authority chain explicit and is consumed in this txn.
+				const capabilityToken = generateCapabilityToken();
+				const capabilityHash = hashCapabilityToken(capabilityToken);
+				this.db.run(
+					`INSERT INTO workflow_decision_capability
 				   (token_hash, run_id, node_id, execution_id, attempt,
 				    allowed_predicate_family, expected_subject_digest, issued_at,
 				    expires_at, absolute_deadline_at)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					capabilityHash,
-					credential.run_id,
-					credential.node_id,
-					credential.execution_id,
-					credential.attempt,
-					family,
-					input.subjectDigest,
-					nowIso,
-					credential.expires_at,
-					credential.absolute_deadline_at,
-				],
-			);
-			const cap = this.workflowSelectAll(
-				"SELECT id FROM workflow_decision_capability WHERE token_hash = ?",
-				[capabilityHash],
-			)[0];
-			const capabilityId = Number(cap?.id);
-			const serverSeq = this.nextWorkflowClaimSeq();
-			this.db.run(
-				`INSERT INTO workflow_claims
+					[
+						capabilityHash,
+						credential.run_id,
+						credential.node_id,
+						credential.execution_id,
+						credential.attempt,
+						family,
+						input.subjectDigest,
+						nowIso,
+						credential.expires_at,
+						credential.absolute_deadline_at,
+					],
+				);
+				const cap = this.workflowSelectAll(
+					"SELECT id FROM workflow_decision_capability WHERE token_hash = ?",
+					[capabilityHash],
+				)[0];
+				const capabilityId = Number(cap?.id);
+				const serverSeq = this.nextWorkflowClaimSeq();
+				this.db.run(
+					`INSERT INTO workflow_claims
 				   (server_seq, issue_id, workflow_run_id, node_id, decision_kind,
 				    attempt, predicate, issuer_kind, issuer_execution_id,
 				    issuer_node_id, issuer_vendor, issuer_model,
@@ -14879,61 +15450,433 @@ export class StateStore {
 				    evidence, authority_id)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, 'runner_node', ?, ?, ?, ?, ?,
 				         'git_head', ?, ?, 0, ?, ?, ?, ?)`,
-				[
-					serverSeq,
-					run.issue_id,
-					credential.run_id,
-					credential.node_id,
-					family,
-					credential.attempt,
-					input.predicate,
-					credential.execution_id,
-					credential.node_id,
-					input.issuerVendor,
-					input.issuerModel,
-					input.subjectProducerExecutionId ?? null,
-					input.subjectDigest,
-					input.claimExpiresAt,
-					digest,
-					input.clientRequestId,
-					input.evidence === undefined ? null : JSON.stringify(input.evidence),
-					String(capabilityId),
-				],
-			);
-			const claimId = this.workflowClaimIdBySeq(serverSeq);
-			this.db.run(
-				`UPDATE workflow_decision_capability
+					[
+						serverSeq,
+						run.issue_id,
+						credential.run_id,
+						credential.node_id,
+						family,
+						credential.attempt,
+						input.predicate,
+						credential.execution_id,
+						credential.node_id,
+						input.issuerVendor,
+						input.issuerModel,
+						input.subjectProducerExecutionId ?? null,
+						input.subjectDigest,
+						input.claimExpiresAt,
+						digest,
+						input.clientRequestId,
+						input.evidence === undefined
+							? null
+							: JSON.stringify(input.evidence),
+						String(capabilityId),
+					],
+				);
+				const claimId = this.workflowClaimIdBySeq(serverSeq);
+				this.db.run(
+					`UPDATE workflow_decision_capability
 				    SET consumed_at = ?, consumed_claim_id = ? WHERE id = ?`,
-				[nowIso, claimId, capabilityId],
-			);
-			this.db.run(
-				`UPDATE workflow_submission_credential
+					[nowIso, claimId, capabilityId],
+				);
+				this.db.run(
+					`UPDATE workflow_submission_credential
 				    SET decision_capability_id = ?, consumed_at = ?,
 				        consumed_client_request_id = ?, consumed_submission_digest = ?,
 				        claim_id = ?
 				  WHERE id = ?`,
-				[
-					capabilityId,
-					nowIso,
-					input.clientRequestId,
-					digest,
+					[
+						capabilityId,
+						nowIso,
+						input.clientRequestId,
+						digest,
+						claimId,
+						credential.id,
+					],
+				);
+				this.appendWorkflowRunEventTx({
+					runId: credential.run_id as string,
+					eventUid: `credential_claim_written:${credential.id}`,
+					kind: "claim_written",
+					nodeId: credential.node_id as string,
+					executionId: credential.execution_id as string,
+					payload: { claimId, serverSeq, predicate: input.predicate },
+				});
+				const engineOwned = Number(
+					this.workflowSelectAll(
+						"SELECT engine_owned FROM workflow_run WHERE run_id = ?",
+						[credential.run_id],
+					)[0]?.engine_owned ?? 0,
+				);
+				if (engineOwned === 1) {
+					const outcome =
+						input.predicate === "qa_passed"
+							? "qa_pass"
+							: input.predicate === "qa_failed"
+								? "qa_fail"
+								: input.predicate === "design_review_approved" ||
+										input.predicate === "codex_approved"
+									? "review_pass"
+									: input.predicate === "design_review_failed"
+										? "review_fail"
+										: undefined;
+					if (!outcome) {
+						transitionRefusal = "predicate_has_no_engine_outcome";
+						throw new Error("engine_decision_transition_refused");
+					}
+					const transition = this.commitWorkflowTransitionTx({
+						runId: credential.run_id as string,
+						nodeId: credential.node_id as string,
+						attempt: Number(credential.attempt),
+						executionId: credential.execution_id as string,
+						outcome,
+						now: nowIso,
+					});
+					if (!transition.ok) {
+						transitionRefusal = transition.reason;
+						throw new Error("engine_decision_transition_refused");
+					}
+				}
+				result = {
+					ok: true,
 					claimId,
-					credential.id,
-				],
-			);
-			this.appendWorkflowRunEventTx({
-				runId: credential.run_id as string,
-				eventUid: `credential_claim_written:${credential.id}`,
-				kind: "claim_written",
-				nodeId: credential.node_id as string,
-				executionId: credential.execution_id as string,
-				payload: { claimId, serverSeq, predicate: input.predicate },
+					serverSeq,
+					idempotentReplay: false,
+				};
 			});
+		} catch (error) {
+			if (transitionRefusal) {
+				return { ok: false, reason: "transition_refused" };
+			}
+			throw error;
+		}
+		this.save();
+		return result;
+	}
+
+	/**
+	 * Commit one engine-owned snapshot transition and its successor dispatch
+	 * intent in a single SQLite transaction. The transition identity excludes
+	 * the physical successor execution so competing drivers converge on the
+	 * first committed choice instead of allocating a second writer.
+	 */
+	commitWorkflowTransitionTx(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		outcome: string;
+		successorExecutionId?: string;
+		nodeCompletionEventUid?: string;
+		now?: string;
+	}): WorkflowTransitionResult {
+		const now = input.now ?? new Date().toISOString();
+		if (
+			!input.runId ||
+			!input.nodeId ||
+			!input.executionId ||
+			!input.outcome ||
+			!Number.isInteger(input.attempt) ||
+			input.attempt < 1 ||
+			!StateStore.workflowFiniteTimestamp(now)
+		) {
+			return { ok: false, reason: "invalid_transition" };
+		}
+		const transitionUid = `workflow_transition:${canonicalSubmissionDigest({
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+			outcome: input.outcome,
+		})}`;
+		let result: WorkflowTransitionResult = {
+			ok: false,
+			reason: "transition_not_committed",
+		};
+		this.db.transaction(() => {
+			const prior = this.workflowSelectAll(
+				"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
+				[transitionUid],
+			)[0];
+			if (prior) {
+				let payload: Record<string, unknown>;
+				try {
+					payload = JSON.parse(prior.payload as string) as Record<
+						string,
+						unknown
+					>;
+				} catch {
+					result = { ok: false, reason: "transition_receipt_corrupt" };
+					return;
+				}
+				const committedSuccessor =
+					typeof payload.successorExecutionId === "string"
+						? payload.successorExecutionId
+						: undefined;
+				if (
+					input.successorExecutionId !== undefined &&
+					committedSuccessor !== input.successorExecutionId
+				) {
+					result = { ok: false, reason: "transition_conflict" };
+					return;
+				}
+				result = {
+					ok: true,
+					idempotentReplay: true,
+					edgeId: String(payload.edgeId),
+					targetNodeId: String(payload.targetNodeId),
+					targetAttempt: Number(payload.targetAttempt),
+					...(committedSuccessor
+						? { successorExecutionId: committedSuccessor }
+						: {}),
+					...(payload.loopIteration == null
+						? {}
+						: { loopIteration: Number(payload.loopIteration) }),
+					...(payload.gateOpened === true ? { gateOpened: true } : {}),
+					...(payload.escalated === true ? { escalated: true } : {}),
+				};
+				return;
+			}
+
+			const run = this.getWorkflowRun(input.runId);
+			if (!run?.snapshot || run.engine_owned !== 1 || run.status !== "active") {
+				result = { ok: false, reason: "engine_run_not_active" };
+				return;
+			}
+			let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+			try {
+				snapshot = parseWorkflowRunSnapshot(run.snapshot);
+			} catch {
+				result = { ok: false, reason: "invalid_snapshot" };
+				return;
+			}
+			const source = snapshot.resolved.nodes.find(
+				(node) => node.id === input.nodeId,
+			);
+			const current = this.getWorkflowRunNode(
+				input.runId,
+				input.nodeId,
+				input.attempt,
+			);
+			if (
+				!source ||
+				!current ||
+				run.current_node_id !== input.nodeId ||
+				current.execution_id !== input.executionId ||
+				current.state === "done"
+			) {
+				result = { ok: false, reason: "node_attempt_not_current" };
+				return;
+			}
+			const priorEdges = this.workflowSelectAll(
+				`SELECT payload FROM workflow_run_event
+				  WHERE run_id = ? AND node_id = ? AND kind = 'edge_traversed'`,
+				[input.runId, input.nodeId],
+			).some((row) => {
+				try {
+					return (
+						(JSON.parse(row.payload as string) as { sourceAttempt?: unknown })
+							.sourceAttempt === input.attempt
+					);
+				} catch {
+					return true;
+				}
+			});
+			if (priorEdges) {
+				result = { ok: false, reason: "transition_conflict" };
+				return;
+			}
+
+			const edge = snapshot.manifest.edges.find(
+				(candidate) =>
+					candidate.from === input.nodeId &&
+					candidate.condition === input.outcome,
+			);
+			const loop = snapshot.manifest.loops.find(
+				(candidate) =>
+					candidate.from === input.nodeId &&
+					candidate.loop_when === input.outcome,
+			);
+			if ((edge ? 1 : 0) + (loop ? 1 : 0) !== 1) {
+				result = { ok: false, reason: "illegal_transition" };
+				return;
+			}
+			const selected = edge ?? loop!;
+			const target = snapshot.resolved.nodes.find(
+				(node) => node.id === selected.to,
+			);
+			if (!target) {
+				result = { ok: false, reason: "transition_target_missing" };
+				return;
+			}
+			const targetAttempts = this.listWorkflowRunNodes(input.runId, target.id);
+			const targetAttempt =
+				targetAttempts.reduce(
+					(max, candidate) => Math.max(max, candidate.attempt),
+					0,
+				) + 1;
+			const loopIteration = loop
+				? Number(
+						this.workflowSelectAll(
+							`SELECT COUNT(*) AS n FROM workflow_run_event
+							  WHERE run_id = ? AND kind = 'loop_iteration' AND edge_id = ?`,
+							[input.runId, loop.id],
+						)[0]?.n ?? 0,
+					) + 1
+				: undefined;
+			if (loop && loopIteration! > loop.max_iterations) {
+				this.upsertWorkflowRunNodeTx({
+					runId: input.runId,
+					nodeId: input.nodeId,
+					attempt: input.attempt,
+					state: "done",
+					executionId: input.executionId,
+					endedAt: now,
+				});
+				this.db.run(
+					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+					[input.runId],
+				);
+				this.appendWorkflowRunEventTx({
+					runId: input.runId,
+					eventUid: transitionUid,
+					kind: "loop_limit_escalated",
+					nodeId: input.nodeId,
+					edgeId: loop.id,
+					executionId: input.executionId,
+					payload: {
+						edgeId: loop.id,
+						targetNodeId: target.id,
+						targetAttempt,
+						sourceAttempt: input.attempt,
+						outcome: input.outcome,
+						attempt: input.attempt,
+						iteration: loopIteration,
+						loopIteration,
+						maxIterations: loop.max_iterations,
+						onLimit: loop.on_limit,
+						escalated: true,
+					},
+				});
+				result = {
+					ok: true,
+					idempotentReplay: false,
+					edgeId: loop.id,
+					targetNodeId: target.id,
+					targetAttempt,
+					loopIteration,
+					escalated: true,
+				};
+				return;
+			}
+			const successorExecutionId =
+				target.type === "gate"
+					? undefined
+					: (input.successorExecutionId ?? randomUUID());
+
+			this.upsertWorkflowRunNodeTx({
+				runId: input.runId,
+				nodeId: input.nodeId,
+				attempt: input.attempt,
+				state: "done",
+				executionId: input.executionId,
+				endedAt: now,
+			});
+			this.appendWorkflowRunEventTx({
+				runId: input.runId,
+				eventUid:
+					input.nodeCompletionEventUid ??
+					`engine_node_completed:${input.runId}:${input.nodeId}:${input.attempt}`,
+				kind: "node_completed",
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				payload: { attempt: input.attempt, outcome: input.outcome },
+			});
+			if (loop) {
+				this.appendWorkflowRunEventTx({
+					runId: input.runId,
+					eventUid: `loop_iteration:${transitionUid}`,
+					kind: "loop_iteration",
+					nodeId: input.nodeId,
+					edgeId: loop.id,
+					executionId: input.executionId,
+					payload: {
+						iteration: loopIteration,
+						maxIterations: loop.max_iterations,
+					},
+				});
+			}
+			const receipt = {
+				edgeId: selected.id,
+				targetNodeId: target.id,
+				targetAttempt,
+				sourceAttempt: input.attempt,
+				outcome: input.outcome,
+				...(successorExecutionId ? { successorExecutionId } : {}),
+				...(loopIteration ? { loopIteration } : {}),
+				...(target.type === "gate" ? { gateOpened: true } : {}),
+			};
+			this.appendWorkflowRunEventTx({
+				runId: input.runId,
+				eventUid: transitionUid,
+				kind: "edge_traversed",
+				nodeId: input.nodeId,
+				edgeId: selected.id,
+				executionId: input.executionId,
+				payload: receipt,
+			});
+			if (target.type === "gate") {
+				this.upsertWorkflowRunNodeTx({
+					runId: input.runId,
+					nodeId: target.id,
+					attempt: targetAttempt,
+					state: "review",
+				});
+				this.appendWorkflowRunEventTx({
+					runId: input.runId,
+					eventUid: `gate_opened:${input.runId}:${target.id}:${targetAttempt}`,
+					kind: "gate_opened",
+					nodeId: target.id,
+					payload: {
+						attempt: targetAttempt,
+						predicate: snapshot.manifest.terminal_gate.predicate,
+					},
+				});
+			} else {
+				const ordinal = this.allocateWorkflowLaunchOrdinalTx(
+					input.runId,
+					target.id,
+					targetAttempt,
+					successorExecutionId!,
+				);
+				this.upsertWorkflowRunNodeTx({
+					runId: input.runId,
+					nodeId: target.id,
+					attempt: targetAttempt,
+					state: "pending",
+					executionId: successorExecutionId!,
+				});
+				this.appendWorkflowRunEventTx({
+					runId: input.runId,
+					eventUid: `engine_dispatch_intent:${input.runId}:${target.id}:${targetAttempt}`,
+					kind: "node_dispatched",
+					nodeId: target.id,
+					executionId: successorExecutionId!,
+					payload: { attempt: targetAttempt, via: "engine_intent", ordinal },
+				});
+			}
+			this.db.run(
+				"UPDATE workflow_run SET current_node_id = ? WHERE run_id = ?",
+				[target.id, input.runId],
+			);
 			result = {
 				ok: true,
-				claimId,
-				serverSeq,
 				idempotentReplay: false,
+				edgeId: selected.id,
+				targetNodeId: target.id,
+				targetAttempt,
+				...(successorExecutionId ? { successorExecutionId } : {}),
+				...(loopIteration ? { loopIteration } : {}),
+				...(target.type === "gate" ? { gateOpened: true } : {}),
 			};
 		});
 		this.save();
@@ -15628,6 +16571,12 @@ export class StateStore {
 
 		let result: WorkflowSourceApplyResult | undefined;
 		this.db.transaction(() => {
+			const targetRunId =
+				input.kind === "turn_grant" && payload.target_run_id !== null
+					? typeof payload.target_run_id === "string"
+						? payload.target_run_id
+						: "__invalid__"
+					: null;
 			const existing = this.workflowSelectAll(
 				`SELECT payload_digest, claim_id FROM workflow_source_receipt
 				  WHERE project = ? AND source_event_id = ?`,
@@ -15644,15 +16593,42 @@ export class StateStore {
 								status: "replayed",
 								claimId: Number(existing.claim_id),
 							}
-						: { kind: "turn_project_history", status: "replayed" };
+						: targetRunId
+							? { kind: "turn_run_event", status: "replayed" }
+							: { kind: "turn_project_history", status: "replayed" };
 				return;
 			}
 
 			if (input.kind === "turn_grant") {
-				if (payload.target_run_id !== null) {
-					throw new Error(
-						"commit-A TURN source must remain project/issue scoped",
-					);
+				if (targetRunId === "__invalid__") {
+					throw new Error("TURN source payload invalid: target_run_id");
+				}
+				let turnBinding: WorkflowExecutionBindingRow | undefined;
+				if (targetRunId) {
+					const issueId =
+						typeof payload.issue_id === "string" ? payload.issue_id : "";
+					const newHolder =
+						typeof payload.new_holder === "string" ? payload.new_holder : "";
+					const toRole =
+						typeof payload.to_role === "string" ? payload.to_role : "";
+					const run = this.getWorkflowRun(targetRunId);
+					turnBinding = this.getWorkflowExecutionBinding(newHolder);
+					const context = turnBinding
+						? this.generalizedExecutionContext(newHolder)
+						: undefined;
+					if (
+						!run ||
+						run.engine_owned !== 1 ||
+						run.project_name !== input.project ||
+						run.issue_id !== issueId ||
+						!turnBinding ||
+						turnBinding.run_id !== targetRunId ||
+						context?.node.type !== toRole
+					) {
+						throw new Error(
+							"TURN source payload invalid: run ownership mismatch",
+						);
+					}
 				}
 				this.db.run(
 					`INSERT INTO workflow_source_receipt
@@ -15665,7 +16641,25 @@ export class StateStore {
 						new Date().toISOString(),
 					],
 				);
-				result = { kind: "turn_project_history", status: "applied" };
+				if (targetRunId && turnBinding) {
+					this.appendWorkflowRunEventTx({
+						runId: targetRunId,
+						eventUid: `source_turn:${input.project}:${input.sourceEventId}`,
+						kind: "turn_granted",
+						nodeId: turnBinding.node_id,
+						executionId: turnBinding.execution_id,
+						payload: {
+							attempt: turnBinding.attempt,
+							fromRole: payload.from_role,
+							toRole: payload.to_role,
+							resultingEpoch: payload.resulting_epoch,
+							sourceEventId: input.sourceEventId,
+						},
+					});
+					result = { kind: "turn_run_event", status: "applied" };
+				} else {
+					result = { kind: "turn_project_history", status: "applied" };
+				}
 				return;
 			}
 
@@ -15677,10 +16671,7 @@ export class StateStore {
 			const authorityId =
 				typeof payload.authority_id === "string" ? payload.authority_id : "";
 			const response = payload.response as { approved?: unknown } | undefined;
-			const run = this.workflowSelectAll(
-				"SELECT issue_id, project_name FROM workflow_run WHERE run_id = ?",
-				[runId],
-			)[0];
+			const run = this.getWorkflowRun(runId);
 			if (!run) {
 				throw new Error("workflow source run unavailable");
 			}
@@ -15734,6 +16725,45 @@ export class StateStore {
 					new Date().toISOString(),
 				],
 			);
+			if (run.engine_owned === 1 && run.snapshot && run.status === "active") {
+				let snapshot: ReturnType<typeof parseWorkflowRunSnapshot> | undefined;
+				try {
+					snapshot = parseWorkflowRunSnapshot(run.snapshot);
+				} catch {
+					throw new Error("founder approval source payload invalid: snapshot");
+				}
+				// Generalized/product v2 has no PR merge tail: its founder source is
+				// the sole terminal entry. Engineering v1 remains merge-gated by the
+				// Bridge composite seam and must not complete merely on approval.
+				if (
+					snapshot.schema_version === 2 &&
+					run.current_node_id === snapshot.manifest.terminal_gate.node
+				) {
+					const ship = this.resolveEngineWorkflowShipClaims({
+						runId,
+						subjectDigest: approvedHead,
+					});
+					if (ship.valid) {
+						this.db.run(
+							`UPDATE workflow_run SET status = 'completed'
+							  WHERE run_id = ? AND status = 'active' AND current_node_id = ?`,
+							[runId, snapshot.manifest.terminal_gate.node],
+						);
+						if (this.db.getRowsModified() === 1) {
+							this.appendWorkflowRunEventTx({
+								runId,
+								eventUid: `source_terminal:${input.project}:${input.sourceEventId}`,
+								kind: "run_completed",
+								nodeId: snapshot.manifest.terminal_gate.node,
+								payload: {
+									predicate: "founder_approved",
+									subjectDigest: approvedHead,
+								},
+							});
+						}
+					}
+				}
+			}
 			result = { kind: "founder_claim", status: "applied", claimId };
 		});
 		this.save();
@@ -15863,6 +16893,10 @@ export class StateStore {
 		runId: string;
 		nodeId?: string;
 		decisionKind: string;
+		/** Exact predicate required by the snapshot ship contract. */
+		predicate?: string;
+		/** Current logical node attempt; older evidence never carries forward. */
+		requiredAttempt?: number;
 		subjectKind: string;
 		subjectDigest: string;
 		now?: string;
@@ -15889,12 +16923,24 @@ export class StateStore {
 		const attemptOf = (r: Record<string, unknown>): number =>
 			r.attempt == null ? 0 : Number(r.attempt);
 		const maxAttempt = Math.max(...rows.map(attemptOf));
+		if (
+			input.requiredAttempt !== undefined &&
+			maxAttempt !== input.requiredAttempt
+		) {
+			return { valid: false, reason: "stale_attempt" };
+		}
 		const top = rows.filter((r) => attemptOf(r) === maxAttempt);
 		const candidate = top.reduce((a, b) =>
 			Number(a.server_seq) >= Number(b.server_seq) ? a : b,
 		);
 		if (top.some((r) => r.predicate !== candidate.predicate)) {
 			return { valid: false, reason: "conflict" };
+		}
+		if (
+			input.predicate !== undefined &&
+			candidate.predicate !== input.predicate
+		) {
+			return { valid: false, reason: "predicate_mismatch" };
 		}
 		const revoked = this.workflowSelectAll(
 			"SELECT 1 AS x FROM workflow_claim_revocation WHERE claim_id = ?",
@@ -15913,6 +16959,80 @@ export class StateStore {
 			return { valid: false, reason: "not_pass" };
 		}
 		return { valid: true, claim: this.workflowClaimRowFromRaw(candidate) };
+	}
+
+	/** Closed snapshot ship contract, resolved at USE time against one head. */
+	resolveEngineWorkflowShipClaims(input: {
+		runId: string;
+		subjectDigest: string;
+		now?: string;
+	}): WorkflowShipClaimsResolution {
+		const run = this.getWorkflowRun(input.runId);
+		if (run?.engine_owned !== 1 || !run.snapshot) {
+			return { valid: false, reason: "engine_run_unavailable" };
+		}
+		let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+		try {
+			snapshot = parseWorkflowRunSnapshot(run.snapshot);
+		} catch {
+			return { valid: false, reason: "snapshot_invalid" };
+		}
+		for (const required of snapshot.manifest.ship_claims) {
+			let nodeId: string | undefined;
+			let decisionKind: string;
+			let requiredAttempt: number | undefined;
+			if (required === "qa_passed") {
+				const nodes = snapshot.resolved.nodes.filter(
+					(node) => node.type === "qa",
+				);
+				if (nodes.length !== 1) {
+					return { valid: false, reason: "qa_claim_node_ambiguous" };
+				}
+				nodeId = nodes[0]!.id;
+				decisionKind = "qa_verdict";
+			} else if (required === "design_review_approved") {
+				const nodes = snapshot.resolved.nodes.filter(
+					(node) => node.type === "review",
+				);
+				if (nodes.length !== 1) {
+					return { valid: false, reason: "review_claim_node_ambiguous" };
+				}
+				nodeId = nodes[0]!.id;
+				decisionKind = "review_verdict";
+			} else if (required === "founder_approved") {
+				decisionKind = "founder_decision";
+			} else {
+				return {
+					valid: false,
+					reason: `unsupported_ship_claim:${required}`,
+				};
+			}
+			if (nodeId) {
+				requiredAttempt = this.listWorkflowRunNodes(input.runId, nodeId).at(
+					-1,
+				)?.attempt;
+				if (requiredAttempt === undefined) {
+					return {
+						valid: false,
+						reason: `${required}:attempt_unavailable`,
+					};
+				}
+			}
+			const resolved = this.resolveWorkflowDecisionClaim({
+				runId: input.runId,
+				...(nodeId && { nodeId }),
+				decisionKind,
+				predicate: required,
+				...(requiredAttempt !== undefined && { requiredAttempt }),
+				subjectKind: "git_head",
+				subjectDigest: input.subjectDigest,
+				now: input.now,
+			});
+			if (!resolved.valid) {
+				return { valid: false, reason: `${required}:${resolved.reason}` };
+			}
+		}
+		return { valid: true };
 	}
 
 	private nextWorkflowClaimSeq(): number {
@@ -16640,6 +17760,8 @@ export interface WorkflowRunRow {
 	/** Typed cutover marker (plan §3.2) — 1 only when this run was EXPLICITLY
 	 * enrolled in the claims read path at admission. Never inferred. */
 	claims_read_enrolled: number;
+	/** Snapshot interpreter ownership; written only by reserved engine starts. */
+	engine_owned: number;
 	created_at: string;
 }
 
@@ -16652,6 +17774,20 @@ export interface WorkflowRunNodeRow {
 	started_at: string;
 	ended_at: string | null;
 }
+
+export type WorkflowTransitionResult =
+	| {
+			ok: true;
+			idempotentReplay: boolean;
+			edgeId: string;
+			targetNodeId: string;
+			targetAttempt: number;
+			successorExecutionId?: string;
+			loopIteration?: number;
+			gateOpened?: true;
+			escalated?: true;
+	  }
+	| { ok: false; reason: string };
 
 export interface WorkflowExecutionBindingRow {
 	execution_id: string;
@@ -16668,7 +17804,7 @@ export interface WorkflowExecutionRuntimeRow {
 	attempt: number;
 	vendor: string;
 	model: string;
-	effort: string;
+	effort: string | null;
 	resolved_family: string;
 	capabilities_digest: string;
 	created_at: string;
@@ -16684,6 +17820,17 @@ export interface WorkflowNodeCompletionRow {
 	source_event_id: string;
 	completion_submission_digest: string;
 	completed_at: string;
+}
+
+export interface WorkflowNodeOutputRow {
+	id: number;
+	run_id: string;
+	node_id: string;
+	attempt: number;
+	execution_id: string;
+	payload: string;
+	output_digest: string;
+	written_at: string;
 }
 
 export type WorkflowStartStage =
@@ -16743,6 +17890,7 @@ export type GeneralizedWorkflowAdmissionResult =
 			ok: true;
 			idempotentReplay: boolean;
 			outputCredential?: string;
+			submissionCredential?: string;
 			snapshotDigest: string;
 	  }
 	| {
@@ -16754,11 +17902,14 @@ export type GeneralizedWorkflowAdmissionResult =
 				| "run_not_found"
 				| "invalid_snapshot"
 				| "unknown_node"
-				| "review_execution_deferred"
+				| "engine_ownership_required"
 				| "not_start_node"
 				| "unsupported_capability_combination"
+				| "decision_producer_ambiguous"
+				| "same_vendor_review"
 				| "execution_already_bound"
-				| "invalid_retry_attempt";
+				| "invalid_retry_attempt"
+				| "successor_not_reserved";
 	  };
 
 export type WorkflowOutputSubmissionResult =
@@ -16787,7 +17938,8 @@ export type WorkflowCompletionResult =
 				| "invalid_timestamp"
 				| "not_enrolled"
 				| "route_mismatch"
-				| "completion_conflict";
+				| "completion_conflict"
+				| "transition_refused";
 	  };
 
 export interface WorkflowSubmissionCredentialRow {
@@ -16841,7 +17993,8 @@ export type WorkflowCredentialSubmissionResult =
 				| "missing_subject_producer"
 				| "same_vendor_review"
 				| "invalid_timestamp"
-				| "run_not_found";
+				| "run_not_found"
+				| "transition_refused";
 	  };
 
 export interface WorkflowRunEventRow {
@@ -16965,11 +18118,17 @@ export type WorkflowClaimResolution =
 			reason:
 				| "no_claim"
 				| "conflict"
+				| "predicate_mismatch"
+				| "stale_attempt"
 				| "revoked"
 				| "expired"
 				| "not_pass"
 				| "invalid_timestamp";
 	  };
+
+export type WorkflowShipClaimsResolution =
+	| { valid: true }
+	| { valid: false; reason: string };
 
 export interface WorkflowSourceEventInput {
 	project: string;
@@ -16988,6 +18147,10 @@ export type WorkflowSourceApplyResult =
 	  }
 	| {
 			kind: "turn_project_history";
+			status: "applied" | "replayed";
+	  }
+	| {
+			kind: "turn_run_event";
 			status: "applied" | "replayed";
 	  };
 
