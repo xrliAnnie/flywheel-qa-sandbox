@@ -940,15 +940,37 @@ export async function runGoalToTerminal(
 	};
 	/**
 	 * End the current gate episode: no gate is open and none is latched. Called
-	 * when a phase boundary supersedes the episode (see `enterPhaseHold`). The
-	 * durable write can throw — that is FLY-1257's fail-closed latch boundary and
-	 * must propagate, never be swallowed into a half-cleared state.
+	 * at every entry into a phase hold, because a phase boundary supersedes the
+	 * episode (see `enterPhaseHold`).
+	 *
+	 * Codex R4: this must normalize the DURABLE latch, not the in-memory flag.
+	 * `gateHoldLatched` starts false on EVERY invocation, so a run that inherits
+	 * a durable `gateHold=true` — a crash between the durable park and this
+	 * clear, or a retry after a failed clear — would skip the write and leave
+	 * BOTH durable holds set. A later restart's gate preflight would then resume
+	 * the goal out from under the phase hold. Read the durable value and clear it
+	 * for real.
+	 *
+	 * Both the read and the write are fail-closed (they throw): if we cannot
+	 * prove the gate latch is clear, the run must not settle into a phase hold on
+	 * top of it.
 	 */
 	const clearGateEpisode = (): void => {
 		gateHoldActive = false;
 		// Let the next episode attempt its own best-effort pause.
 		gatePauseAttempted = false;
-		if (gateHoldLatched) writeGateHold(false);
+		let latched = gateHoldLatched;
+		if (!latched) {
+			try {
+				latched = input.readGateHoldLatch?.() === true;
+			} catch (error) {
+				throw new GoalRunError(
+					`gate-hold latch read failed: ${error instanceof Error ? error.message : String(error)}`,
+					"setup_failed",
+				);
+			}
+		}
+		if (latched) writeGateHold(false);
 	};
 	const classifyTerminalStatus = (status: GoalStatus): "terminal" | "held" => {
 		if (gateWaitEnabled && status === "blocked") {
@@ -1043,6 +1065,11 @@ export async function runGoalToTerminal(
 			if (held) {
 				// FLY-1269: a durable phase hold survived the restart. Re-assert the
 				// paused goal and stay resident — no kick, the phase is parked.
+				// Codex R4: this branch never goes through `enterPhaseHold`, so it
+				// must normalize an inherited durable gate latch itself — otherwise
+				// both durable holds persist and the gate preflight below (on a later
+				// restart) resumes the goal out from under this phase hold.
+				clearGateEpisode();
 				await ensurePhasePaused();
 				skipInitialActivation = true;
 			} else if (phase?.observeBoundary().kind === "parked") {

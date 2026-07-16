@@ -1638,6 +1638,88 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 		expect(phase.entered).toHaveLength(1);
 		expect(phase.finished).toEqual(["next-phase"]);
 	});
+
+	// Codex R4 HIGH — the same coupling, but INHERITED across a crash. The
+	// in-memory gateHoldLatched starts false on every invocation, so a run that
+	// wakes up owning a durable gateHold=true it never set must still normalize
+	// it. Otherwise both durable holds coexist and a later restart's gate
+	// preflight resumes the goal out from under the phase hold.
+	// Both phase-recovery entry points are covered: a durable `parked` boundary
+	// (-> enterPhaseHold) and a persisted phaseHold (-> ensurePhasePaused, which
+	// never goes through enterPhaseHold).
+	it.each([
+		{ entry: "durable parked boundary", persistHold: false },
+		{ entry: "persisted phaseHold", persistHold: true },
+	])(
+		"Codex R4: phase recovery via $entry clears a durable gate latch it inherited",
+		async ({ persistHold }) => {
+			const d = new FakeDaemon();
+			// The recovered phase's wake activates the goal; that phase then ends
+			// the run. Emitted from the ACTIVE transition, not the wake turn —
+			// reactivateWake deliberately clears a terminal streamed by the turn.
+			d.responders.set("thread/goal/set", (params, _id, push) => {
+				if ((params as { status: GoalStatus }).status === "active") {
+					push({
+						method: "goal/updated",
+						params: {
+							threadId: "t",
+							goal: { status: "usageLimited", objective: "phase objective" },
+						},
+					});
+				}
+				return {};
+			});
+			d.responders.set("turn/start", () => ({}));
+			d.responders.set("thread/goal/get", () =>
+				goalHasBeenSet(d)
+					? { goal: { status: "paused", objective: "phase objective" } }
+					: {},
+			);
+			const phase = new FakePhaseLifecycle();
+			if (persistHold) {
+				phase.hold = {
+					schemaVersion: 1,
+					role: "design",
+					state: "paused",
+					enteredAt: "2026-07-15T00:00:00.000Z",
+					deadlineRemainingMs: 500,
+					hardDeadlineRemainingMs: 900,
+				};
+			} else {
+				phase.boundary = { kind: "parked", reason: "crashed after park" };
+			}
+			phase.observations.push({
+				kind: "wake",
+				message: { id: "recovered", content: "carry on" },
+			});
+			// A prior run crashed with the gate latch durably set.
+			let durableLatch = true;
+			const latchWrites: boolean[] = [];
+
+			const result = await runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "phase objective",
+				now: () => 0,
+				sleep: async () => {},
+				// The gate that latch belonged to is long resolved.
+				isWaiting: () => false,
+				readGateHoldLatch: () => durableLatch,
+				writeGateHoldLatch: (v: boolean) => {
+					latchWrites.push(v);
+					durableLatch = v;
+				},
+				phaseLifecycle: phase,
+			});
+
+			// THE assertion: the inherited durable latch is released, so the phase
+			// hold is the single durable hold a later restart can find.
+			expect(durableLatch).toBe(false);
+			expect(latchWrites).toEqual([false]);
+			// The recovered phase ran and reached its own terminal.
+			expect(result.status).toBe("usageLimited");
+			expect(phase.finished).toEqual(["recovered"]);
+		},
+	);
 });
 
 // ── R19 findings — regression coverage ──────────────────────────────────
