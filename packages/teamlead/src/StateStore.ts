@@ -2013,6 +2013,30 @@ export class StateStore {
 			)
 		`);
 
+		// FLY-1285: durable, append-history tmux safety holds. Correlation is the
+		// normalized socket path plus an immutable Bridge-allocated incident id;
+		// diagnostic reason may evolve without opening a second incident.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS tmux_hold (
+				incident_id TEXT PRIMARY KEY,
+				normalized_socket_path TEXT NOT NULL,
+				shape TEXT NOT NULL CHECK (shape IN ('provisional','server_down','server_fresh')),
+				shape_source TEXT NOT NULL CHECK (shape_source IN ('observation','coordinator')),
+				current_reason TEXT NOT NULL,
+				first_reason TEXT NOT NULL,
+				reason_history_json TEXT NOT NULL,
+				evidence_json TEXT NOT NULL,
+				affected_execution_ids_json TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				last_checked_at TEXT NOT NULL,
+				resolved_at TEXT
+			)
+		`);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_tmux_hold_one_active_socket
+			ON tmux_hold(normalized_socket_path) WHERE resolved_at IS NULL
+		`);
+
 		// FLY-818 M3: durable per-eventId founder-page ledger. Records whether a
 		// GENUINE founder page (an @founder message in the stuck runner's [FLY-XX]
 		// issue thread — Annie's issue-thread design) actually succeeded for a
@@ -7310,6 +7334,274 @@ export class StateStore {
 	clearServerLossEpisode(): void {
 		this.db.run("DELETE FROM server_loss_episode WHERE id = 1", []);
 		this.save();
+	}
+
+	// ── FLY-1285: durable tmux holds ────────────────────────────────
+
+	getOrCreateActiveTmuxHold(
+		normalizedSocketPath: string,
+		observation: TmuxHoldObservation,
+	): TmuxHoldRow {
+		const transact = this.db.raw.transaction(() => {
+			const activeRaw = this.db.raw
+				.prepare(
+					"SELECT * FROM tmux_hold WHERE normalized_socket_path = ? AND resolved_at IS NULL",
+				)
+				.get(normalizedSocketPath) as Record<string, unknown> | undefined;
+			if (observation.incidentId) {
+				if (!activeRaw) {
+					throw new Error("tmux hold incident is resolved or stale");
+				}
+				if (activeRaw.incident_id !== observation.incidentId) {
+					throw new Error("tmux hold incident id mismatch");
+				}
+			}
+
+			const now = new Date().toISOString();
+			if (!activeRaw) {
+				const incidentId = randomUUID();
+				const evidence = { ...observation.evidence };
+				if (
+					Number.isSafeInteger(evidence.originalServerPid) &&
+					(evidence.originalServerPid as number) > 0 &&
+					evidence.source === "supervisor_archive"
+				) {
+					evidence.originalServerPidSource = "supervisor_archive";
+				}
+				this.db.raw
+					.prepare(
+						`INSERT INTO tmux_hold (
+							incident_id, normalized_socket_path, shape, shape_source,
+							current_reason, first_reason, reason_history_json,
+							evidence_json, affected_execution_ids_json,
+							created_at, last_checked_at, resolved_at
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+					)
+					.run(
+						incidentId,
+						normalizedSocketPath,
+						observation.shape,
+						observation.shapeSource,
+						observation.reason,
+						observation.reason,
+						JSON.stringify([observation.reason]),
+						JSON.stringify(evidence),
+						JSON.stringify([...new Set(observation.affectedExecutionIds)]),
+						now,
+						now,
+					);
+			} else {
+				const active = rowToTmuxHold(activeRaw);
+				const reasonHistory = active.reasonHistory.includes(observation.reason)
+					? active.reasonHistory
+					: [...active.reasonHistory, observation.reason];
+				const evidence = { ...active.evidence, ...observation.evidence };
+				if (active.evidence.originalServerPid !== undefined) {
+					evidence.originalServerPid = active.evidence.originalServerPid;
+					evidence.originalServerPidSource =
+						active.evidence.originalServerPidSource ?? "supervisor_archive";
+				}
+				const affected = [
+					...new Set([
+						...active.affectedExecutionIds,
+						...observation.affectedExecutionIds,
+					]),
+				];
+				const canSetShape =
+					active.shape === "provisional" &&
+					observation.shape !== "provisional" &&
+					observation.shapeSource === "coordinator";
+				this.db.raw
+					.prepare(
+						`UPDATE tmux_hold SET
+							shape = ?, shape_source = ?, current_reason = ?,
+							reason_history_json = ?, evidence_json = ?,
+							affected_execution_ids_json = ?, last_checked_at = ?
+						 WHERE incident_id = ? AND resolved_at IS NULL`,
+					)
+					.run(
+						canSetShape ? observation.shape : active.shape,
+						canSetShape ? observation.shapeSource : active.shapeSource,
+						observation.reason,
+						JSON.stringify(reasonHistory),
+						JSON.stringify(evidence),
+						JSON.stringify(affected),
+						now,
+						active.incidentId,
+					);
+			}
+
+			const row = this.db.raw
+				.prepare(
+					"SELECT * FROM tmux_hold WHERE normalized_socket_path = ? AND resolved_at IS NULL",
+				)
+				.get(normalizedSocketPath) as Record<string, unknown> | undefined;
+			if (!row) throw new Error("tmux hold transaction produced no active row");
+			return rowToTmuxHold(row);
+		});
+		const result = transact();
+		this.save();
+		return result;
+	}
+
+	getActiveTmuxHold(normalizedSocketPath: string): TmuxHoldRow | undefined {
+		const row = this.db.raw
+			.prepare(
+				"SELECT * FROM tmux_hold WHERE normalized_socket_path = ? AND resolved_at IS NULL",
+			)
+			.get(normalizedSocketPath) as Record<string, unknown> | undefined;
+		return row ? rowToTmuxHold(row) : undefined;
+	}
+
+	listActiveTmuxHolds(): TmuxHoldRow[] {
+		return (
+			this.db.raw
+				.prepare(
+					"SELECT * FROM tmux_hold WHERE resolved_at IS NULL ORDER BY created_at",
+				)
+				.all() as Record<string, unknown>[]
+		).map(rowToTmuxHold);
+	}
+
+	listTmuxHoldHistory(normalizedSocketPath: string): TmuxHoldRow[] {
+		return (
+			this.db.raw
+				.prepare(
+					"SELECT * FROM tmux_hold WHERE normalized_socket_path = ? ORDER BY created_at",
+				)
+				.all(normalizedSocketPath) as Record<string, unknown>[]
+		).map(rowToTmuxHold);
+	}
+
+	resolveTmuxHold(normalizedSocketPath: string, incidentId: string): boolean {
+		const now = new Date().toISOString();
+		const info = this.db.raw
+			.prepare(
+				`UPDATE tmux_hold SET resolved_at = ?, last_checked_at = ?
+				 WHERE normalized_socket_path = ? AND incident_id = ? AND resolved_at IS NULL`,
+			)
+			.run(now, now, normalizedSocketPath, incidentId);
+		this.save();
+		return info.changes === 1;
+	}
+
+	replaceActiveTmuxHoldAffectedExecutionIds(
+		normalizedSocketPath: string,
+		incidentId: string,
+		affectedExecutionIds: string[],
+	): boolean {
+		const info = this.db.raw
+			.prepare(
+				`UPDATE tmux_hold SET affected_execution_ids_json = ?, last_checked_at = ?
+				 WHERE normalized_socket_path = ? AND incident_id = ? AND resolved_at IS NULL`,
+			)
+			.run(
+				JSON.stringify([...new Set(affectedExecutionIds)]),
+				new Date().toISOString(),
+				normalizedSocketPath,
+				incidentId,
+			);
+		if (info.changes === 1) this.save();
+		return info.changes === 1;
+	}
+
+	/**
+	 * Atomically convert one positively-shaped hold into the existing durable
+	 * server-loss outbox intent. No migration/notification side effect runs in
+	 * this SQLite transaction; ServerLossCoordinator replays those afterward.
+	 */
+	transitionTmuxHoldToServerLossEpisode(
+		input: TmuxHoldToServerLossTransition,
+	): boolean {
+		const transact = this.db.raw.transaction(() => {
+			const activeRaw = this.db.raw
+				.prepare(
+					`SELECT * FROM tmux_hold
+					 WHERE normalized_socket_path = ? AND incident_id = ? AND resolved_at IS NULL`,
+				)
+				.get(input.normalizedSocketPath, input.incidentId) as
+				| Record<string, unknown>
+				| undefined;
+			if (!activeRaw) return false;
+			const active = rowToTmuxHold(activeRaw);
+			if (active.shape === "provisional") {
+				throw new Error("provisional tmux hold cannot arm server-loss episode");
+			}
+			if (active.shape !== input.shape) {
+				throw new Error(
+					`tmux hold shape mismatch: active=${active.shape} requested=${input.shape}`,
+				);
+			}
+
+			const existing = this.getServerLossEpisode();
+			let state: ServerLossEpisodeState;
+			if (existing) {
+				// The singleton outbox can merge only the exact incident while still
+				// open. A completed or unrelated episode must drain first.
+				if (
+					existing.signature !== input.incidentId ||
+					existing.state.ticketDone
+				) {
+					return false;
+				}
+				const oldClaimed = new Set(existing.state.claimed);
+				const claimed = [
+					...new Set([...existing.state.claimed, ...input.claimedExecutionIds]),
+				];
+				const affectedLeads = new Set(
+					input.claimedExecutionIds
+						.filter((id) => !oldClaimed.has(id))
+						.map((id) => input.leadIdsByExecutionId[id])
+						.filter((id): id is string => !!id),
+				);
+				state = {
+					...existing.state,
+					claimed,
+					notifiedLeads: existing.state.notifiedLeads.filter(
+						(leadId) => !affectedLeads.has(leadId),
+					),
+					failedLeads: existing.state.failedLeads.filter(
+						(leadId) => !affectedLeads.has(leadId),
+					),
+					notifyAttempts: Object.fromEntries(
+						Object.entries(existing.state.notifyAttempts).filter(
+							([leadId]) => !affectedLeads.has(leadId),
+						),
+					),
+				};
+			} else {
+				state = {
+					shape: input.shape,
+					claimed: [...new Set(input.claimedExecutionIds)],
+					ticketDone: false,
+					notifiedLeads: [],
+					failedLeads: [],
+					notifyAttempts: {},
+				};
+			}
+
+			const stamp = new Date().toISOString();
+			const resolved = this.db.raw
+				.prepare(
+					`UPDATE tmux_hold SET resolved_at = ?, last_checked_at = ?
+					 WHERE normalized_socket_path = ? AND incident_id = ? AND resolved_at IS NULL`,
+				)
+				.run(stamp, stamp, input.normalizedSocketPath, input.incidentId);
+			if (resolved.changes !== 1) {
+				throw new Error("tmux hold transition lost its active row");
+			}
+			this.db.raw
+				.prepare(
+					`INSERT INTO server_loss_episode (id, signature, state_json) VALUES (1, ?, ?)
+					 ON CONFLICT(id) DO UPDATE SET signature = excluded.signature,
+						state_json = excluded.state_json`,
+				)
+				.run(input.incidentId, JSON.stringify(state));
+			return true;
+		});
+		const transitioned = transact();
+		if (transitioned) this.save();
+		return transitioned;
 	}
 
 	/**
@@ -16891,6 +17183,48 @@ export interface ServerLossEpisodeState {
 	notifyAttempts: Record<string, number>;
 }
 
+export type TmuxHoldReason =
+	| "saturated"
+	| "split_brain"
+	| "ambiguous"
+	| "unknown"
+	| "rescue_failed"
+	| "lock_unavailable";
+export type TmuxHoldShape = "provisional" | "server_down" | "server_fresh";
+export type TmuxHoldShapeSource = "observation" | "coordinator";
+
+export interface TmuxHoldObservation {
+	incidentId?: string;
+	reason: TmuxHoldReason;
+	shape: TmuxHoldShape;
+	shapeSource: TmuxHoldShapeSource;
+	evidence: Record<string, unknown>;
+	affectedExecutionIds: string[];
+}
+
+export interface TmuxHoldRow {
+	incidentId: string;
+	normalizedSocketPath: string;
+	shape: TmuxHoldShape;
+	shapeSource: TmuxHoldShapeSource;
+	currentReason: TmuxHoldReason;
+	firstReason: TmuxHoldReason;
+	reasonHistory: TmuxHoldReason[];
+	evidence: Record<string, unknown>;
+	affectedExecutionIds: string[];
+	createdAt: string;
+	lastCheckedAt: string;
+	resolvedAt: string | null;
+}
+
+export interface TmuxHoldToServerLossTransition {
+	normalizedSocketPath: string;
+	incidentId: string;
+	shape: Exclude<TmuxHoldShape, "provisional">;
+	claimedExecutionIds: string[];
+	leadIdsByExecutionId: Record<string, string>;
+}
+
 export interface AlertThreadRow {
 	correlation_key: string;
 	event_id: string;
@@ -16947,5 +17281,39 @@ function rowToAlertThread(row: Record<string, unknown>): AlertThreadRow {
 		attempt_count: (row.attempt_count as number) ?? 0,
 		first_seen_at: (row.first_seen_at as string) ?? null,
 		acked_at: (row.acked_at as string) ?? null,
+	};
+}
+
+function rowToTmuxHold(row: Record<string, unknown>): TmuxHoldRow {
+	const parseArray = <T>(raw: unknown): T[] => {
+		try {
+			const value = JSON.parse(String(raw));
+			return Array.isArray(value) ? (value as T[]) : [];
+		} catch {
+			return [];
+		}
+	};
+	let evidence: Record<string, unknown> = {};
+	try {
+		const value = JSON.parse(String(row.evidence_json));
+		if (value && typeof value === "object" && !Array.isArray(value)) {
+			evidence = value as Record<string, unknown>;
+		}
+	} catch {
+		// Corrupt evidence is fail-closed empty metadata; the hold stays active.
+	}
+	return {
+		incidentId: String(row.incident_id),
+		normalizedSocketPath: String(row.normalized_socket_path),
+		shape: row.shape as TmuxHoldShape,
+		shapeSource: row.shape_source as TmuxHoldShapeSource,
+		currentReason: row.current_reason as TmuxHoldReason,
+		firstReason: row.first_reason as TmuxHoldReason,
+		reasonHistory: parseArray<TmuxHoldReason>(row.reason_history_json),
+		evidence,
+		affectedExecutionIds: parseArray<string>(row.affected_execution_ids_json),
+		createdAt: String(row.created_at),
+		lastCheckedAt: String(row.last_checked_at),
+		resolvedAt: row.resolved_at == null ? null : String(row.resolved_at),
 	};
 }

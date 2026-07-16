@@ -282,6 +282,8 @@ export interface AlertChannelHubDeps {
 const FLEET_RECOVERY_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"swap_pressure_high",
 	"tmux_server_lost",
+	"tmux_hold",
+	"tmux_split_brain",
 	"bridge_abnormal_exit",
 	"infra_bot_down",
 ]);

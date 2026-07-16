@@ -30,6 +30,8 @@ import {
 const FLEET_KINDS = [
 	"swap_pressure_high",
 	"tmux_server_lost",
+	"tmux_hold",
+	"tmux_split_brain",
 	"bridge_abnormal_exit",
 	"infra_bot_down",
 	"zombie_session_backlog",
@@ -61,12 +63,20 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		}
 	});
 
-	it("the 5 fleet kinds are in the union with the planned contracts", () => {
+	it("the fleet kinds are in the union with the planned contracts", () => {
 		for (const kind of FLEET_KINDS) {
 			expect(ALERT_EVENT_TYPES).toContain(kind);
 		}
 		expect(KIND_CONTRACTS.swap_pressure_high.arc).toBe("auto");
 		expect(KIND_CONTRACTS.tmux_server_lost.arc).toBe("auto");
+		expect(KIND_CONTRACTS.tmux_hold).toMatchObject({
+			owner: "claude",
+			arc: "human_by_design",
+		});
+		expect(KIND_CONTRACTS.tmux_split_brain).toMatchObject({
+			owner: "founder_direct",
+			arc: "human_by_design",
+		});
 		expect(KIND_CONTRACTS.bridge_abnormal_exit.arc).toBe("auto");
 		expect(KIND_CONTRACTS.infra_bot_down).toMatchObject({
 			owner: "cross_by_provider",

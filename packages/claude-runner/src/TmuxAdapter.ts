@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile as execFileCallback, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
 	chmodSync,
@@ -44,6 +44,39 @@ export type ExecFileFn = (
 	args: string[],
 	opts?: ExecFileOpts,
 ) => { stdout: string };
+
+export type AsyncExecFileFn = (
+	cmd: string,
+	args: string[],
+	opts?: ExecFileOpts,
+) => Promise<{ stdout: string; stderr: string }>;
+
+export interface EnsureRunnerSessionOptions {
+	asyncExecFileFn?: AsyncExecFileFn;
+	deadlineMs?: number;
+	retryDelayMs?: number;
+	rescueCliPath?: string;
+	socketPath?: string;
+}
+
+export type TmuxHoldKind =
+	| "saturated"
+	| "split_brain"
+	| "ambiguous"
+	| "unknown"
+	| "rescue_failed"
+	| "lock_unavailable";
+
+export class TmuxSessionHoldError extends Error {
+	constructor(
+		readonly kind: TmuxHoldKind,
+		readonly evidence: Record<string, unknown>,
+		message = `tmux session ensure held: ${kind}`,
+	) {
+		super(message);
+		this.name = "TmuxSessionHoldError";
+	}
+}
 
 /**
  * TmuxAdapter — launches Claude Code in an interactive tmux window.
@@ -131,6 +164,7 @@ export class TmuxAdapter implements IAdapter {
 		 * as `null`, which the reaper treats as unowned → foreign → never reaped.
 		 */
 		private ownerStateDbPath?: string,
+		private ensureSessionOptions?: EnsureRunnerSessionOptions,
 	) {}
 
 	/**
@@ -234,7 +268,7 @@ export class TmuxAdapter implements IAdapter {
 		const callbackToken = this.hookServer ? randomUUID() : undefined;
 
 		// Ensure session exists (idempotent)
-		this.ensureSession();
+		await this.ensureSession();
 
 		if (this.hookServer) {
 			// v0.2 mode: no marker dir needed
@@ -1155,8 +1189,17 @@ export class TmuxAdapter implements IAdapter {
 		});
 	}
 
-	private ensureSession(): void {
-		ensureRunnerSession(this.execFileFn, this.sessionName);
+	private async ensureSession(): Promise<void> {
+		let options = this.ensureSessionOptions;
+		if (!options && this.execFileFn !== defaultExecFile) {
+			// Existing unit/integration seams inject a synchronous tmux fake. Keep
+			// those hermetic without weakening the default production path: real
+			// adapters always use the deployed async guard below.
+			options = {
+				asyncExecFileFn: legacyInjectedEnsureAdapter(this.execFileFn),
+			};
+		}
+		await ensureRunnerSession(this.execFileFn, this.sessionName, options);
 	}
 
 	sanitizeWindowName(name: string): string {
@@ -1192,50 +1235,244 @@ export class TmuxAdapter implements IAdapter {
  * pre-fix behavior (scaffold cleaned once auto-rename settles on a later spawn),
  * never blocks the spawn.
  */
-export function ensureRunnerSession(
-	execFileFn: ExecFileFn,
+function positiveInt(raw: string | undefined, fallback: number): number {
+	const value = Number(raw);
+	return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function tmuxDefaultSocketPath(): string {
+	const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+	const root = process.env.TMUX_TMPDIR?.trim() || "/tmp";
+	return join(root, `tmux-${uid}`, "default");
+}
+
+const TMUX_ENSURE_SUCCESS_ACTIONS = new Set([
+	"verified",
+	"created",
+	"rescued_then_verified",
+	"rescued_then_created",
+]);
+
+function parseHold(error: unknown): TmuxSessionHoldError {
+	const candidate = error as {
+		code?: string | number;
+		stdout?: string | Buffer;
+		message?: string;
+	};
+	const stdout = candidate?.stdout
+		? Buffer.isBuffer(candidate.stdout)
+			? candidate.stdout.toString("utf8")
+			: String(candidate.stdout)
+		: "";
+	let parsed: { action?: string; evidence?: Record<string, unknown> } = {};
+	try {
+		parsed = JSON.parse(stdout);
+	} catch {
+		// A missing/corrupt helper response is unknown evidence, never permission
+		// to fall back to an unguarded tmux create.
+	}
+	const action = parsed.action ?? "hold_unknown";
+	const rawKind = action.startsWith("hold_") ? action.slice(5) : "unknown";
+	const allowed: TmuxHoldKind[] = [
+		"saturated",
+		"split_brain",
+		"ambiguous",
+		"unknown",
+		"rescue_failed",
+		"lock_unavailable",
+	];
+	const kind = allowed.includes(rawKind as TmuxHoldKind)
+		? (rawKind as TmuxHoldKind)
+		: candidate?.code === "ENOENT"
+			? "lock_unavailable"
+			: "unknown";
+	return new TmuxSessionHoldError(
+		kind,
+		parsed.evidence ?? {
+			reason:
+				candidate?.code === "ENOENT"
+					? "helper_missing"
+					: "invalid_helper_output",
+		},
+		candidate?.message,
+	);
+}
+
+function deadlineRace<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			reject(
+				new TmuxSessionHoldError("unknown", {
+					reason: "command_timeout",
+				}),
+			);
+		}, timeoutMs);
+		(timer as { unref?: () => void }).unref?.();
+		promise.then(
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(error) => {
+				clearTimeout(timer);
+				reject(error);
+			},
+		);
+	});
+}
+
+function asyncDelay(ms: number): Promise<void> {
+	if (ms <= 0) return Promise.resolve();
+	return new Promise((resolve) => {
+		const timer = setTimeout(resolve, ms);
+		(timer as { unref?: () => void }).unref?.();
+	});
+}
+
+function legacyInjectedEnsureAdapter(execFileFn: ExecFileFn): AsyncExecFileFn {
+	return async (cmd, args) => {
+		if (!cmd.includes("tmux-server-rescue")) {
+			return { ...execFileFn(cmd, args), stderr: "" };
+		}
+		const verifyIndex = args.indexOf("--verify");
+		const createIndex = args.indexOf("--create");
+		const verifyArgs = args.slice(verifyIndex + 1, createIndex);
+		const createArgs = args.slice(createIndex + 1);
+		const withoutSocket = (argv: string[]) =>
+			argv[1] === "-S" ? [argv[0]!, ...argv.slice(3)] : argv;
+		const legacyVerify = withoutSocket(verifyArgs);
+		const legacyCreate = withoutSocket(createArgs);
+		try {
+			execFileFn(legacyVerify[0]!, legacyVerify.slice(1));
+			return {
+				stdout: JSON.stringify({
+					action: "verified",
+					createStdout: "",
+					reachablePid: 1,
+				}),
+				stderr: "",
+			};
+		} catch {
+			const created = execFileFn(legacyCreate[0]!, legacyCreate.slice(1));
+			return {
+				stdout: JSON.stringify({
+					action: "created",
+					createStdout: created.stdout,
+					reachablePid: 1,
+				}),
+				stderr: "",
+			};
+		}
+	};
+}
+
+export async function ensureRunnerSession(
+	_execFileFn: ExecFileFn,
 	sessionName: string,
-): void {
-	try {
-		execFileFn("tmux", ["has-session", "-t", `=${sessionName}`]);
-		return; // session already exists — scaffold (if any) is aged; prune's name path handles it
-	} catch {
-		// session does not exist — create it below
-	}
+	options: EnsureRunnerSessionOptions = {},
+): Promise<void> {
+	const asyncExecFileFn = options.asyncExecFileFn ?? defaultAsyncExecFile;
+	const deadlineMs =
+		options.deadlineMs ??
+		positiveInt(process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS, 90_000);
+	const retryDelayMs = options.retryDelayMs ?? 1_000;
+	const rescueCliPath =
+		options.rescueCliPath ??
+		(process.env.FLYWHEEL_TMUX_RESCUE_CLI?.trim() ||
+			join(homedir(), ".flywheel", "bin", "tmux-server-rescue"));
+	const socketPath =
+		options.socketPath ??
+		(process.env.FLYWHEEL_TMUX_SOCKET_OVERRIDE?.trim() ||
+			tmuxDefaultSocketPath());
+	const startedAt = Date.now();
+	const args = [
+		"ensure",
+		socketPath,
+		"--verify",
+		"tmux",
+		"-S",
+		socketPath,
+		"has-session",
+		"-t",
+		`=${sessionName}`,
+		"--create",
+		"tmux",
+		"-S",
+		socketPath,
+		"new-session",
+		"-d",
+		"-P",
+		"-F",
+		"#{window_id}",
+		"-s",
+		sessionName,
+	];
 
-	let scaffoldWindowId = "";
-	try {
-		const created = execFileFn("tmux", [
-			"new-session",
-			"-d",
-			"-P",
-			"-F",
-			"#{window_id}",
-			"-s",
-			sessionName,
-		]);
-		scaffoldWindowId = created.stdout.trim();
-	} catch {
-		// -P/-F unexpectedly failed — fall back to a plain create so the spawn can
-		// proceed. The scaffold keeps its async name; prune's aged-name path cleans
-		// it on a later spawn.
+	let lastHold = new TmuxSessionHoldError("unknown", {
+		reason: "deadline_exhausted",
+	});
+	while (Date.now() - startedAt < deadlineMs) {
+		const remaining = Math.max(1, deadlineMs - (Date.now() - startedAt));
 		try {
-			execFileFn("tmux", ["new-session", "-d", "-s", sessionName]);
-		} catch {
-			// best-effort — a create failure surfaces later via the runner launch.
+			const result = await deadlineRace(
+				asyncExecFileFn(rescueCliPath, args, {
+					timeoutMs: Math.min(10_000, remaining),
+				}),
+				remaining,
+			);
+			const parsed = JSON.parse(result.stdout) as {
+				action?: string;
+				createStdout?: string;
+				reachablePid?: number;
+			};
+			if (
+				!parsed.action ||
+				!TMUX_ENSURE_SUCCESS_ACTIONS.has(parsed.action) ||
+				!Number.isSafeInteger(parsed.reachablePid) ||
+				(parsed.reachablePid ?? 0) <= 0
+			) {
+				throw new TmuxSessionHoldError("unknown", {
+					reason: "invalid_helper_output",
+				});
+			}
+			const scaffoldWindowId = parsed.createStdout?.trim() ?? "";
+			if (scaffoldWindowId && sessionName.startsWith("runner-")) {
+				try {
+					await deadlineRace(
+						asyncExecFileFn(
+							"tmux",
+							[
+								"-S",
+								socketPath,
+								"rename-window",
+								"-t",
+								scaffoldWindowId,
+								"zsh",
+							],
+							{ timeoutMs: Math.min(5_000, remaining) },
+						),
+						Math.min(5_000, remaining),
+					);
+				} catch {
+					// Cosmetic only. The guarded session creation has already succeeded;
+					// pruneScaffoldWindow still catches the aged shell later.
+				}
+			}
+			return;
+		} catch (error) {
+			lastHold =
+				error instanceof TmuxSessionHoldError ? error : parseHold(error);
+			if (
+				(error as { code?: string })?.code === "ENOENT" ||
+				Date.now() - startedAt >= deadlineMs ||
+				deadlineMs <= 1
+			) {
+				throw lastHold;
+			}
+			await asyncDelay(Math.min(retryDelayMs, remaining));
 		}
-		return;
 	}
-
-	// Normalize the fresh scaffold's name to `zsh` (defeats the async rename race)
-	// — runner-scoped so a non-runner base session's window naming is never touched.
-	if (scaffoldWindowId && sessionName.startsWith("runner-")) {
-		try {
-			execFileFn("tmux", ["rename-window", "-t", scaffoldWindowId, "zsh"]);
-		} catch {
-			// best-effort — prune's aged-name path still catches it later.
-		}
-	}
+	throw lastHold;
 }
 
 /**
@@ -1382,4 +1619,37 @@ export function defaultExecFile(
 		}
 		throw err;
 	}
+}
+
+export function defaultAsyncExecFile(
+	cmd: string,
+	args: string[],
+	opts?: ExecFileOpts,
+): Promise<{ stdout: string; stderr: string }> {
+	return new Promise((resolve, reject) => {
+		execFileCallback(
+			cmd,
+			args,
+			{
+				encoding: "utf8",
+				timeout: opts?.timeoutMs,
+				killSignal: "SIGKILL",
+				maxBuffer: 1024 * 1024,
+				env: opts?.env ? { ...process.env, ...opts.env } : undefined,
+			},
+			(error, stdout, stderr) => {
+				if (error) {
+					const enriched = error as Error & {
+						stdout?: string;
+						stderr?: string;
+					};
+					enriched.stdout = stdout;
+					enriched.stderr = stderr;
+					reject(enriched);
+					return;
+				}
+				resolve({ stdout, stderr });
+			},
+		);
+	});
 }

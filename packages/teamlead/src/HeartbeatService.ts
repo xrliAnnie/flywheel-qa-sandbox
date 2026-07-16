@@ -446,7 +446,15 @@ export class HeartbeatService implements ReconnectController {
 		 * they join the orphan suppression set. Absent → no-op (byte-compat).
 		 * Gated on FLYWHEEL_FLEET_SENSOR_TMUX=0 at the wiring layer.
 		 */
-		private serverLoss?: { check(): Promise<ReadonlySet<string>> },
+		private serverLoss?: {
+			check(): Promise<
+				| ReadonlySet<string>
+				| {
+						claimed: ReadonlySet<string>;
+						heldExecutionIds: ReadonlySet<string>;
+				  }
+			>;
+		},
 		/**
 		 * FLY-1204: injected parked-phase reclaim chokepoint (see
 		 * StaleParkedCloseConfig). Wired (production) → `checkStaleParkedPhases`
@@ -603,10 +611,22 @@ export class HeartbeatService implements ReconnectController {
 				// is claimed as ONE grouped, episode-tagged migration in this same
 				// cycle; the claimed ids suppress the per-runner paths below.
 				// Best-effort — a coordinator failure must never skip the cycle.
+				// FLY-1285: check() may return the new {claimed, heldExecutionIds}
+				// shape — heldExecutionIds is the unresolved-tmux-socket-evidence
+				// hold set that must suppress the crash reaper / stuck advisory /
+				// orphan force-fail below.
 				let serverLossOwned: ReadonlySet<string> = new Set();
+				let tmuxHeld: ReadonlySet<string> = new Set();
 				if (this.serverLoss) {
 					try {
-						serverLossOwned = await this.serverLoss.check();
+						const result = await this.serverLoss.check();
+						if ("claimed" in result && "heldExecutionIds" in result) {
+							serverLossOwned = result.claimed;
+							tmuxHeld = result.heldExecutionIds;
+						} else {
+							// Legacy injected tests/callers returned only the claimed set.
+							serverLossOwned = result;
+						}
 					} catch (err) {
 						console.error(
 							`[server-loss] check failed (cycle continues): ${(err as Error).message}`,
@@ -615,12 +635,12 @@ export class HeartbeatService implements ReconnectController {
 				}
 				let deadPinOwned: ReadonlySet<string> = new Set();
 				if (this.crashReaperConfig?.enabled) {
-					deadPinOwned = await this.reapCrashedRunners();
+					deadPinOwned = await this.reapCrashedRunners(tmuxHeld);
 				}
 				if (runLivenessChain) {
-					await this.checkStuck(zombieHeld);
+					await this.checkStuck(zombieHeld, tmuxHeld);
 					await this.reapOrphans(
-						new Set([...deadPinOwned, ...serverLossOwned]),
+						new Set([...deadPinOwned, ...serverLossOwned, ...tmuxHeld]),
 						zombieHeld,
 					);
 				}
@@ -1656,11 +1676,12 @@ export class HeartbeatService implements ReconnectController {
 
 	private async checkStuck(
 		zombieHeld: ReadonlySet<string> = EMPTY_SET,
+		tmuxHeld: ReadonlySet<string> = new Set(),
 	): Promise<void> {
 		const confirmEngaged =
 			this.stuckConfirmHolder !== undefined && this.stuckConfirmEnabled();
 		if (!confirmEngaged) {
-			await this.checkStuckInner(zombieHeld);
+			await this.checkStuckInner(zombieHeld, tmuxHeld);
 			return;
 		}
 		if (this.stuckCheckRunning) {
@@ -1671,7 +1692,7 @@ export class HeartbeatService implements ReconnectController {
 		}
 		this.stuckCheckRunning = true;
 		try {
-			await this.checkStuckInner(zombieHeld);
+			await this.checkStuckInner(zombieHeld, tmuxHeld);
 		} finally {
 			this.stuckCheckRunning = false;
 		}
@@ -1684,6 +1705,7 @@ export class HeartbeatService implements ReconnectController {
 
 	private async checkStuckInner(
 		zombieHeld: ReadonlySet<string> = EMPTY_SET,
+		tmuxHeld: ReadonlySet<string> = new Set(),
 	): Promise<void> {
 		const stuck = this.store.getStuckSessions(this.thresholdMinutes);
 
@@ -1706,6 +1728,9 @@ export class HeartbeatService implements ReconnectController {
 		let confirmBudget = parseStuckConfirmKnobs(process.env).perTick;
 
 		for (const session of stuck) {
+			// FLY-1285: an indeterminate tmux server episode suppresses both
+			// destructive reapers and the misleading per-runner stuck advisory.
+			if (tmuxHeld.has(session.execution_id)) continue;
 			// FLY-172 + FLY-623: a monitoring-lost / re-adopted (alive-but-detached)
 			// Runner looks "stuck" (last_activity stale) only because the Bridge lost
 			// its reporting channel — suppress the false session_stuck. Re-adopt
@@ -2379,7 +2404,9 @@ export class HeartbeatService implements ReconnectController {
 	 * set) when the reaper is unwired or its kill-switch is OFF. Never throws — a
 	 * reaper failure logs and returns an empty set so the rest of the cycle runs.
 	 */
-	private async reapCrashedRunners(): Promise<ReadonlySet<string>> {
+	private async reapCrashedRunners(
+		tmuxHeld: ReadonlySet<string> = new Set(),
+	): Promise<ReadonlySet<string>> {
 		if (!this.crashReaperConfig?.enabled || !this.transitionOpts) {
 			return new Set();
 		}
@@ -2391,7 +2418,9 @@ export class HeartbeatService implements ReconnectController {
 				orphanThresholdMinutes: this.orphanThresholdMinutes,
 				nowMs: Date.now(),
 				isSuppressed: (id) =>
-					this.isMonitorSuppressed(id) || this.markerRetryPending.has(id),
+					this.isMonitorSuppressed(id) ||
+					this.markerRetryPending.has(id) ||
+					tmuxHeld.has(id),
 				hasPendingCompleteMarker: (id) => hasPendingCompleteMarker(id),
 			});
 			if (

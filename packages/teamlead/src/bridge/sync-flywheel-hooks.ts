@@ -239,6 +239,10 @@ const CLI_BINS_TO_DEPLOY: readonly CliBinSpec[] = [
 		relativeSource:
 			"packages/agent-team-transport/dist/bin/agent-team-transport-cli.js",
 	},
+	{
+		name: "tmux-server-rescue",
+		relativeSource: "scripts/lib/tmux-server-rescue.sh",
+	},
 ];
 
 export interface SyncFlywheelCliBinResult {

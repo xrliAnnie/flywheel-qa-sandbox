@@ -68,6 +68,8 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 		// of the process-health family.
 		"swap_pressure_high",
 		"tmux_server_lost",
+		"tmux_hold",
+		"tmux_split_brain",
 		"bridge_abnormal_exit",
 		"infra_bot_down",
 		"zombie_session_backlog",

@@ -118,7 +118,11 @@ import {
 	ensureDefaultWorkflowBindings,
 	importBundledWorkflowSeeds,
 } from "../workflow-template.js";
-import { AlertChannelHub, createDiscordOps } from "./AlertChannelHub.js";
+import {
+	AlertChannelHub,
+	correlationKeyFor,
+	createDiscordOps,
+} from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
 import {
 	type AccountSwitchRuntime,
@@ -499,6 +503,10 @@ import {
 	threeStageKeepAliveEnabled,
 } from "./three-stage-policy.js";
 import {
+	canonicalDefaultTmuxSocketPath,
+	createTmuxHoldObservationRouter,
+} from "./tmux-hold-route.js";
+import {
 	captureRunnerScrollback,
 	getTmuxTargetFromCommDb,
 	isTmuxWindowAlive,
@@ -510,6 +518,7 @@ import {
 	sendEnterToWindow,
 	sendKeysToWindow,
 } from "./tmux-lookup.js";
+import { createTmuxRescueClient } from "./tmux-rescue-client.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
 import { createTriageTemplateRouter } from "./triage-template-route.js";
@@ -1157,6 +1166,18 @@ export function createBridgeApp(
 	}
 
 	app.use(express.json({ limit: "512kb" }));
+
+	// FLY-1285: supervisor observations are bearer-authenticated inside this
+	// dedicated router (including an explicit 503 when apiToken is absent) and
+	// hydrate the durable hold before any heartbeat reaper can act.
+	app.use(
+		"/api/tmux-hold-observation",
+		createTmuxHoldObservationRouter({
+			store,
+			projects,
+			apiToken: config.apiToken,
+		}),
+	);
 
 	// FLY-1244: scoped workflow decisions authenticate with a per-execution
 	// credential, never the fleet ingest bearer. The head read route is a separate
@@ -8562,9 +8583,17 @@ export async function startBridge(
 		serverLossPending: () =>
 			serverLossHolder.current?.hasPendingMigrations() ?? false,
 	});
+	const canonicalTmuxSocketPath = canonicalDefaultTmuxSocketPath();
+	const tmuxRescueClient = createTmuxRescueClient({
+		cliPath: join(homedir(), ".flywheel", "bin", "tmux-server-rescue"),
+		socketPath: canonicalTmuxSocketPath,
+	});
 	serverLossHolder.current = new ServerLossCoordinator({
 		store,
 		probeServer: () => probeTmuxServer(),
+		inspectSocket: () => tmuxRescueClient.inspect(),
+		recoverSocket: () => tmuxRescueClient.recover(),
+		normalizedSocketPath: canonicalTmuxSocketPath,
 		targetGone: async (session) => {
 			const lookup = lookupTmuxTarget(
 				session.execution_id,
@@ -8621,6 +8650,20 @@ export async function startBridge(
 		},
 		notifyLead: notifyLeadInstruction,
 		alert: (p) => routedAlertSink.alert(p),
+		resolveHoldAlert: alertHub
+			? async (incidentId) => {
+					for (const eventType of ["tmux_hold", "tmux_split_brain"] as const) {
+						await alertHub.resolve(
+							correlationKeyFor({
+								projectName: FLEET_ALERT_PROJECT,
+								leadId: "tmux-server",
+								eventType,
+								sessionKey: incidentId,
+							}),
+						);
+					}
+				}
+			: undefined,
 		currentWatermark: () => fleetSensorsHolder.current?.lastWatermark ?? null,
 	});
 	console.log(

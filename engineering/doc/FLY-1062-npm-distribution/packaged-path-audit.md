@@ -34,7 +34,7 @@ Issue: FLY-1062 (URL 不可得,只写 issue 号)
 | materialize-lead-manifests.sh | 无非注释命中 | included(零改动) | gate④ |
 | lib/host-config.sh | `:104/:147 FLYWHEEL_DIR` 解析(FLY-650 seam);`xrliAnnie/flywheel-skills` 默认值 | included(零改动)— flywheelDir=current 正是本设计的接入点;skills 默认值 = gate④ 注册行(customer path 不 fetch) | host-config 既有测试 + provision-prebuilt.test.sh(拷贝态解析 current) |
 | lib/supervisor.sh | `:235` darwin 叙述文案(flywheel-daemon.sh 字样) | **included-and-patched**(FLY-1062 已落):`FLYWHEEL_SUPERVISOR_DARWIN_INSTALL=1` opt-in 真 darwin 安装;默认 darwin 路径逐字保留 no-op(byte-compat) | packaged-seams.test.sh S11/S11b/S12 |
-| lib/bridge-port.sh / lib/self-ship-queue.sh / lib/fleet-sanitize.sh / lib/platform-deps.sh / lib/script-sanity.sh | 仅注释/自身逻辑命中 | included(零改动) | gate④ |
+| lib/bridge-port.sh / lib/self-ship-queue.sh / lib/fleet-sanitize.sh / lib/platform-deps.sh / lib/script-sanity.sh / lib/tmux-server-rescue.sh | 仅注释/自身逻辑命中 | included(零改动) | gate④ + package-onboard-smoke.test.sh(tmux 恢复依赖闭包) |
 | packaged/create-compat-mirror.sh | `packages/` 命中 = 镜像自身逻辑 | included(FLY-1062 新增件) | package-onboard-smoke.test.sh |
 | packaged/bootstrap-services.sh | 无非注释命中 | included(FLY-1062 新增件,P2-5) | provision-prebuilt.test.sh(temp-HOME 装四类服务) |
 | packaged/restart-packaged-services.sh | 无非注释命中 | included(FLY-1062 新增件,P3 更新链用) | packaged-restart.test.sh(QA·FLY-1062 直测:哨兵拒绝 + bridge/leads 经 supervisor seam 重启 + 健康门 + rc 传播);supervisor seam 本体另由 packaged-seams.test.sh S11/S12 覆盖 |

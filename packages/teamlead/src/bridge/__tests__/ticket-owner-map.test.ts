@@ -108,12 +108,20 @@ describe("resolveTicketOwner (PRD CH-1 whitelist matrix)", () => {
 		}
 	});
 
-	it("every TICKET_KIND except permission_blocked has a bot owner when registry is full", () => {
+	it("every bot-routed TICKET_KIND has an owner when registry is full", () => {
 		for (const kind of TICKET_KINDS) {
-			if (kind === "permission_blocked") continue;
+			if (kind === "permission_blocked" || kind === "tmux_split_brain") {
+				continue;
+			}
 			const owner = resolveTicketOwner(kind, "unknown", FULL);
 			expect(owner.kind, kind).toBe("infra_bot");
 		}
+	});
+
+	it("tmux_split_brain stays founder-direct instead of assigning a bot owner", () => {
+		expect(resolveTicketOwner("tmux_split_brain", "unknown", FULL)).toEqual({
+			kind: "none",
+		});
 	});
 });
 
