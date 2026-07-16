@@ -292,15 +292,6 @@ export class TmuxAdapter implements IAdapter {
 			"CLAUDECODE",
 		]);
 
-		// Enable remain-on-exit so dead panes stay visible.
-		this.execFileFn("tmux", [
-			"set-option",
-			"-t",
-			`=${this.sessionName}:`,
-			"remain-on-exit",
-			"on",
-		]);
-
 		// GEO-269: allow-rename ON so Claude CLI's --name can set the tmux window title.
 		// Previously OFF to prevent random title overwrites, but now we pass a meaningful
 		// --name (issueId + title) so Claude's title is exactly what we want to display.
@@ -593,6 +584,35 @@ export class TmuxAdapter implements IAdapter {
 			...windowCommand,
 		]);
 		const windowId = launchResult.stdout.trim();
+
+		// FLY-1272: remain-on-exit is a window option. The former pre-spawn
+		// `=<session>:` target changed whichever window happened to be current,
+		// not the runner window created above. Scope the option to the exact new
+		// Claude window before releasing a gated launch or pruning the scaffold.
+		// Kimi/Antigravity inherit this execute() path but intentionally retain
+		// their existing exit semantics.
+		if (this.type === "claude-tmux") {
+			const exactWindowTarget = `=${this.sessionName}:${windowId}`;
+			try {
+				this.execFileFn("tmux", [
+					"set-option",
+					"-w",
+					"-t",
+					exactWindowTarget,
+					"remain-on-exit",
+					"on",
+				]);
+			} catch (err) {
+				try {
+					this.execFileFn("tmux", ["kill-window", "-t", exactWindowTarget]);
+				} catch {
+					// Best-effort cleanup; the launch still fails closed below.
+				}
+				throw new Error(
+					`[TmuxAdapter] remain-on-exit setup failed for ${exactWindowTarget}: ${(err as Error).message}`,
+				);
+			}
+		}
 
 		// FLY-245 R5/R6 HIGH-3: write THIS launch's token to the durable COMMIT file
 		// = release ONLY this launch's gated shell. The file's existence is the

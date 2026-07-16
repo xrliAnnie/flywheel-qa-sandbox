@@ -835,16 +835,100 @@ describe("TmuxAdapter", () => {
 		expect(unsetCall!.args).toContain("=flywheel");
 	});
 
-	it("sets remain-on-exit on", async () => {
+	it("sets remain-on-exit on the exact new Claude window before commit release and scaffold prune", async () => {
+		const base = makeMockExec({
+			paneDead: true,
+			windowId: "@42",
+			listWindows: "@0|zsh\n@42|GEO-TEST-claude-fix",
+		});
+		const journal: string[] = [];
+		const fn: ExecFileFn = (cmd, args) => {
+			journal.push(`${cmd}:${args[0]}`);
+			return base.fn(cmd, args);
+		};
+		const adapter = new TmuxAdapter("runner-test", fn, 10);
+
+		await adapter.execute(
+			makeCtx({
+				launchCommitPath: "/tmp/fly1272-launch-commit",
+				launchGateToken: "fly1272-token",
+				commitWorkflowLaunch: () => {
+					journal.push("commit-release");
+					return { ok: true };
+				},
+			}),
+		);
+
+		const remainCalls = base.calls.filter(
+			(c) => c.args[0] === "set-option" && c.args.includes("remain-on-exit"),
+		);
+		expect(remainCalls).toHaveLength(1);
+		expect(remainCalls[0]?.args).toEqual([
+			"set-option",
+			"-w",
+			"-t",
+			"=runner-test:@42",
+			"remain-on-exit",
+			"on",
+		]);
+		expect(journal.indexOf("tmux:new-window")).toBeLessThan(
+			journal.indexOf("tmux:set-option"),
+		);
+		expect(journal.indexOf("tmux:set-option")).toBeLessThan(
+			journal.indexOf("commit-release"),
+		);
+		expect(journal.indexOf("commit-release")).toBeLessThan(
+			journal.indexOf("tmux:list-windows"),
+		);
+	});
+
+	it("kills only the exact new window and aborts before commit/prune when remain-on-exit fails", async () => {
+		const base = makeMockExec({
+			paneDead: true,
+			windowId: "@42",
+			listWindows: "@0|zsh\n@42|GEO-TEST-claude-fix",
+		});
+		const fn: ExecFileFn = (cmd, args) => {
+			if (
+				cmd === "tmux" &&
+				args[0] === "set-option" &&
+				args.includes("remain-on-exit")
+			) {
+				throw new Error("set-option failed");
+			}
+			return base.fn(cmd, args);
+		};
+		const commitWorkflowLaunch = vi.fn(() => ({ ok: true }));
+		const adapter = new TmuxAdapter("runner-test", fn, 10);
+
+		await expect(
+			adapter.execute(
+				makeCtx({
+					launchCommitPath: "/tmp/fly1272-launch-commit-failure",
+					launchGateToken: "fly1272-token",
+					commitWorkflowLaunch,
+				}),
+			),
+		).rejects.toThrow(/remain-on-exit.*runner-test:@42/i);
+		expect(commitWorkflowLaunch).not.toHaveBeenCalled();
+		expect(killWindowTargets(base.calls)).toEqual(["=runner-test:@42"]);
+		expect(base.calls.some((c) => c.args[0] === "list-windows")).toBe(false);
+	});
+
+	it("does not set remain-on-exit for non-Claude tmux adapters", async () => {
+		class NonClaudeAdapter extends TmuxAdapter {
+			readonly type = "kimi-tmux";
+		}
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const adapter = new TmuxAdapter("flywheel", fn, 10);
+		const adapter = new NonClaudeAdapter("flywheel", fn, 10);
 
 		await adapter.execute(makeCtx());
 
-		const setOption = calls.find((c) => c.args[0] === "set-option");
-		expect(setOption).toBeDefined();
-		expect(setOption!.args).toContain("remain-on-exit");
-		expect(setOption!.args).toContain("on");
+		expect(
+			calls.some(
+				(c) => c.args[0] === "set-option" && c.args.includes("remain-on-exit"),
+			),
+		).toBe(false);
 	});
 
 	// ─── Completion detection ───────────────────────
