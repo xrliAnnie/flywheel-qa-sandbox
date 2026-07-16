@@ -1549,6 +1549,95 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 		expect(phase.finished).toEqual(["bookkeeping-wake"]);
 		expect(phase.left).toBe(1);
 	});
+
+	// Codex R3 HIGH — the two holds have orthogonal TRIGGERS but shared STATE.
+	// A gate episode that is still latched when a phase boundary arrives used to
+	// survive into the next phase, where `classifyTerminalStatus` masks a genuine
+	// `blocked` on the stale `gateHoldActive` ALONE (it does not re-check
+	// isWaiting) and the loop's gate branch fires a duplicate goal/set(active).
+	// A phase boundary must END the gate episode.
+	it("Codex R3: a gate episode does not survive a phase boundary into the next phase", async () => {
+		const d = new FakeDaemon();
+		let activeSets = 0;
+		d.responders.set("thread/goal/set", (params, _id, push) => {
+			if ((params as { status: GoalStatus }).status === "active") {
+				activeSets += 1;
+				// Phase 2 (post-wake) hits its OWN genuine blocked, gate closed. It
+				// must be this run's terminal, not something a stale hold masks.
+				if (activeSets === 2) {
+					push({
+						method: "goal/updated",
+						params: {
+							threadId: "t",
+							goal: { status: "blocked", objective: "phase objective" },
+						},
+					});
+				}
+			}
+			return {};
+		});
+		let turns = 0;
+		d.responders.set("turn/start", (_params, _id, push) => {
+			turns += 1;
+			// Phase 1's kick blocks on an OPEN gate -> gate hold, durably latched.
+			if (turns === 1) {
+				push({
+					method: "goal/updated",
+					params: {
+						threadId: "t",
+						goal: { status: "blocked", objective: "phase objective" },
+					},
+				});
+			}
+			return {};
+		});
+		// A 3rd activation only happens if a STALE gate hold resumed on top of the
+		// wake's own activation. Report a distinct terminal there so the bug fails
+		// this test loudly instead of spinning the run forever.
+		d.responders.set("thread/goal/get", () => {
+			if (!goalHasBeenSet(d)) return {};
+			return {
+				goal: {
+					status: activeSets >= 3 ? "usageLimited" : "paused",
+					objective: "phase objective",
+				},
+			};
+		});
+		const phase = new FakePhaseLifecycle();
+		phase.observations.push({
+			kind: "wake",
+			message: { id: "next-phase", content: "start the next phase" },
+		});
+		let gateOpen = true;
+		const latchWrites: boolean[] = [];
+
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "phase objective",
+			now: () => 0,
+			// Mid-run: the Lead answers the gate, and phase 1 hands off (parks) —
+			// the ordinary flow, which reaches the phase hold with the gate episode
+			// still latched.
+			sleep: async () => {
+				gateOpen = false;
+				phase.boundary = { kind: "parked", reason: "phase handoff" };
+			},
+			isWaiting: () => gateOpen,
+			writeGateHoldLatch: (v: boolean) => latchWrites.push(v),
+			phaseLifecycle: phase,
+		});
+
+		// Phase 2's blocked is a REAL terminal — never masked by phase 1's episode.
+		expect(result.status).toBe("blocked");
+		// Entering the phase hold released the durable gate latch, so a crash
+		// leaves the phase hold as the single durable hold.
+		expect(latchWrites).toEqual([true, false]);
+		// Exactly one activation after the wake — no duplicate goal/set(active)
+		// from a stale gate-hold resume racing the wake's own.
+		expect(activeSets).toBe(2);
+		expect(phase.entered).toHaveLength(1);
+		expect(phase.finished).toEqual(["next-phase"]);
+	});
 });
 
 // ── R19 findings — regression coverage ──────────────────────────────────

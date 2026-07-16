@@ -827,6 +827,17 @@ export async function runGoalToTerminal(
 	};
 	const enterPhaseHold = async (): Promise<void> => {
 		if (!phase) throw new Error("phase lifecycle missing");
+		// FLY-1257 × FLY-1269: a phase boundary SUPERSEDES any gate episode — a
+		// runner that parked its phase has finished it, so by definition it is no
+		// longer waiting on a Lead answer. The two holds have orthogonal TRIGGERS
+		// but NOT orthogonal state: without this, gate state survives into the next
+		// phase, where `classifyTerminalStatus` masks that phase's genuine
+		// `blocked` on a stale `gateHoldActive` alone (it does not re-check
+		// isWaiting), and the loop's gate branch fires a duplicate goal/set(active)
+		// on top of the wake's. Clearing the durable latch here also keeps a crash
+		// recoverable: the phase hold becomes the single durable hold, which is
+		// exactly what the setup's `held` branch expects to find.
+		clearGateEpisode();
 		if (!phaseHold) {
 			const t = now();
 			await phase.enterHold({
@@ -926,6 +937,18 @@ export async function runGoalToTerminal(
 		gateHoldActive = true;
 		// A blocked status being held is deliberately not terminal authority.
 		terminalSeen = null;
+	};
+	/**
+	 * End the current gate episode: no gate is open and none is latched. Called
+	 * when a phase boundary supersedes the episode (see `enterPhaseHold`). The
+	 * durable write can throw — that is FLY-1257's fail-closed latch boundary and
+	 * must propagate, never be swallowed into a half-cleared state.
+	 */
+	const clearGateEpisode = (): void => {
+		gateHoldActive = false;
+		// Let the next episode attempt its own best-effort pause.
+		gatePauseAttempted = false;
+		if (gateHoldLatched) writeGateHold(false);
 	};
 	const classifyTerminalStatus = (status: GoalStatus): "terminal" | "held" => {
 		if (gateWaitEnabled && status === "blocked") {
