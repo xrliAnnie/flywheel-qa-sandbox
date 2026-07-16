@@ -72,9 +72,16 @@ tmux() { command tmux -L "$TMUX_SOCKET" "$@"; }
 
 export FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1272-qa-$$"
 export FLYWHEEL_CMUX_TMUX_GENERATION="fly1272-qa-generation"
-export FLYWHEEL_CMUX_STATE_DIR="$TMPDIR_ROOT/state"
 export FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$TMPDIR_ROOT/lock"
-mkdir -p "$FLYWHEEL_CMUX_STATE_DIR"
+
+# The view WAL is the production watcher's DURABLE AUTHORITY. Redirect it into
+# our temp dir via the knob the script actually reads: VIEW_WAL_DIR
+# (flywheel-cmux-sync.sh:64). An earlier draft exported FLYWHEEL_CMUX_STATE_DIR,
+# which NOTHING reads — a variable that merely looks like isolation. That draft
+# wrote WAL records into the live ~/.flywheel/state/cmux-view-wal, where a crash
+# mid-run could leave a record the production watcher would act on.
+export VIEW_WAL_DIR="$TMPDIR_ROOT/cmux-view-wal"
+mkdir -p "$VIEW_WAL_DIR"
 
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/flywheel-cmux-sync.sh"
@@ -85,6 +92,23 @@ source "$SCRIPT_DIR/flywheel-cmux-sync.sh"
 # harness mid-proof and report a false red. Drop -e; every rc is captured
 # explicitly instead.
 set +e
+
+# PROVE the WAL redirect actually took effect, rather than trusting that an
+# env var with an isolating-looking name isolates anything (it did not, once).
+# Ask the production script itself where it would write, and refuse to run if
+# that path is not inside our temp dir.
+_probe_wal=$(_view_wal_path "cmux-fly1272-isolation-probe" 2>/dev/null)
+case "$_probe_wal" in
+  "$TMPDIR_ROOT"/*)
+    echo "  · WAL isolation verified: production writes would land in $TMPDIR_ROOT"
+    ;;
+  *)
+    echo "FATAL: view WAL would be written to [$_probe_wal] — OUTSIDE the QA temp dir." >&2
+    echo "  Refusing to run: this harness must never write the production watcher's" >&2
+    echo "  durable authority. Check the VIEW_WAL_DIR knob in flywheel-cmux-sync.sh." >&2
+    exit 1
+    ;;
+esac
 
 # The incident fixture, both times identical:
 #   ONE runner tmux session holding TWO windows —
@@ -188,11 +212,17 @@ fi
 # green for no reason. Gate it on the view having actually rendered its own
 # window first, so a build failure can never be scored as husk-immunity.
 before_kill=$(rendered_window "$VIEW")
-tmux kill-window -t "=${SRC}:${CODEX_WID}" 2>/dev/null
+# Capture the kill rc: if the kill silently fails the window never died, the tab
+# still shows the Codex session, and "did not render the husk" would score a PASS
+# for a scenario that never happened (verified: kill_rc=1 → assertion PASS).
+kill_rc=0
+tmux kill-window -t "=${SRC}:${CODEX_WID}" 2>/dev/null || kill_rc=$?
 sleep 0.3
 after_rendered=$(rendered_window "$VIEW")
 if [[ "$before_kill" != "$CODEX_WIN" ]]; then
   fail "SUBJECT husk-immunity UNTESTABLE: view was not rendering '$CODEX_WIN' before the kill (was [${before_kill:-<absent>}])"
+elif [[ "$kill_rc" -ne 0 ]]; then
+  fail "SUBJECT husk-immunity UNTESTABLE: kill-window failed (rc=$kill_rc) — the target window never died, so this scenario did not run"
 elif [[ "$after_rendered" != "$HUSK_WIN" ]]; then
   pass "SUBJECT after its window dies: tab shows [${after_rendered:-<view gone>}], never the sibling husk"
 else
@@ -218,6 +248,51 @@ if [[ "$unlink_rc" -ne 0 && "$survivor" == "$CODEX_WID|$CODEX_WIN" && -n "$pane_
   pass "sole-holder: tmux REFUSED the unlink; runner window + live pane ($pane_cmd) survived"
 else
   fail "sole-holder broken (unlink_rc=$unlink_rc survivor=[$survivor] pane=[$pane_cmd])"
+fi
+
+echo
+echo "── §2.8 premise: remain-on-exit is a WINDOW option (the fact the fix rests on) ──"
+#
+# plan §2.8 justifies the TmuxAdapter change with a claim about tmux behaviour:
+# the old pre-spawn `set-option -t "=<session>:"` lands on whatever window is
+# current at spawn time, NOT on the runner window created afterwards. FLY-1285's
+# lesson is that platform predicates must be verified on the real platform, so
+# this asserts the claim against the real tmux rather than trusting the doc.
+# (This lives here, in a committed artifact, so the report's claim is
+# reproducible — an earlier draft verified it only in a throwaway probe.)
+tmux kill-server 2>/dev/null || true
+sleep 0.2
+tmux new-session -d -s roe -n existing "sleep 60" 2>/dev/null
+# OLD FORM, in the original order: session-target set-option BEFORE new-window.
+tmux set-option -t "=roe:" remain-on-exit on 2>/dev/null
+new_wid=$(tmux new-window -d -t "=roe:" -P -F '#{window_id}' -n runner "sleep 60" 2>/dev/null)
+old_on_existing=$(tmux show-options -w -v -t "=roe:existing" remain-on-exit 2>/dev/null)
+old_on_runner=$(tmux show-options -w -v -t "=roe:$new_wid" remain-on-exit 2>/dev/null)
+if [[ "$old_on_existing" == "on" && "$old_on_runner" != "on" ]]; then
+  pass "§2.8 premise TRUE: old form set the pre-existing window (on) and left the runner window unset [${old_on_runner:-<unset>}]"
+else
+  fail "§2.8 premise NOT reproduced (existing=[$old_on_existing] runner=[$old_on_runner]) — the fix's rationale needs re-checking on this tmux"
+fi
+
+# NEW FORM: window-scoped to the exact @id, as TmuxAdapter now does post-create.
+tmux set-option -w -t "=roe:$new_wid" remain-on-exit on 2>/dev/null
+new_on_runner=$(tmux show-options -w -v -t "=roe:$new_wid" remain-on-exit 2>/dev/null)
+if [[ "$new_on_runner" == "on" ]]; then
+  pass "§2.8 fix form: window-scoped set-option puts remain-on-exit=on on the exact runner window ($new_wid)"
+else
+  fail "§2.8 fix form failed: runner window remain-on-exit=[$new_on_runner]"
+fi
+
+# Behavioural end: with the option on, a window whose process exits stays as a
+# husk (pane_dead=1) instead of vanishing — the E3 semantics §2.8 restores.
+husk_wid=$(tmux new-window -d -t "=roe:" -P -F '#{window_id}' -n husktest "sh -c 'exit 0'" 2>/dev/null)
+tmux set-option -w -t "=roe:$husk_wid" remain-on-exit on 2>/dev/null
+sleep 0.5
+husk_dead=$(tmux display-message -p -t "=roe:$husk_wid" '#{pane_dead}' 2>/dev/null || echo "<window destroyed>")
+if [[ "$husk_dead" == "1" ]]; then
+  pass "§2.8 husk semantics: window with remain-on-exit=on survives process exit as a dead pane (pane_dead=1)"
+else
+  fail "§2.8 husk semantics: expected pane_dead=1, got [$husk_dead]"
 fi
 
 echo
