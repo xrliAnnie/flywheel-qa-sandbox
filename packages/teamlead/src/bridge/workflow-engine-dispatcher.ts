@@ -80,8 +80,18 @@ export class WorkflowEngineDispatcher {
 
 	start(intervalMs = 1_000): void {
 		if (this.timer) return;
-		void this.reconcile();
-		this.timer = setInterval(() => void this.reconcile(), intervalMs);
+		void this.reconcile().catch((error) => {
+			this.log(
+				`workflow engine reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		});
+		this.timer = setInterval(() => {
+			void this.reconcile().catch((error) => {
+				this.log(
+					`workflow engine reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			});
+		}, intervalMs);
 		this.timer.unref?.();
 	}
 
@@ -112,6 +122,11 @@ export class WorkflowEngineDispatcher {
 					);
 				}
 			}
+			return result;
+		} catch (error) {
+			this.log(
+				`workflow engine reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
 			return result;
 		} finally {
 			this.reconciling = false;

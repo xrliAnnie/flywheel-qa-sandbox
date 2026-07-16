@@ -191,6 +191,62 @@ function fakeStartDispatcher(store: StateStore) {
 }
 
 describe("WorkflowEngineDispatcher", () => {
+	it("attaches rejection containment to initial and periodic reconciles", async () => {
+		vi.useFakeTimers();
+		const store = {
+			listNonTerminalWorkflowSideEffects: () => [],
+		} as unknown as StateStore;
+		const startDispatcher = {
+			start: vi.fn(),
+			getInflightCount: () => 0,
+			validateAgentName: () => ({ ok: true as const }),
+		} as unknown as IStartDispatcher;
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher,
+		});
+		const catchRejection = vi.fn(() => Promise.resolve());
+		vi.spyOn(dispatcher, "reconcile").mockReturnValue({
+			catch: catchRejection,
+		} as unknown as Promise<{ started: number; held: number }>);
+
+		try {
+			dispatcher.start(1_000);
+			expect(catchRejection).toHaveBeenCalledTimes(1);
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(catchRejection).toHaveBeenCalledTimes(2);
+		} finally {
+			dispatcher.stop();
+			vi.useRealTimers();
+		}
+	});
+
+	it("contains top-level store read failures", async () => {
+		const store = {
+			listNonTerminalWorkflowSideEffects: () => {
+				throw new Error("database unavailable");
+			},
+		} as unknown as StateStore;
+		const log = vi.fn();
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: {
+				start: vi.fn(),
+				getInflightCount: () => 0,
+				validateAgentName: () => ({ ok: true as const }),
+			} as unknown as IStartDispatcher,
+			log,
+		});
+
+		await expect(dispatcher.reconcile()).resolves.toEqual({
+			started: 0,
+			held: 0,
+		});
+		expect(log).toHaveBeenCalledWith(
+			"workflow engine reconcile failed: database unavailable",
+		);
+	});
+
 	it("consumes a durable successor intent exactly once with pinned dispatch", async () => {
 		const store = await storeWithIntent("implement");
 		const fake = fakeStartDispatcher(store);
