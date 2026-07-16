@@ -1,13 +1,13 @@
 ---
 issue: FLY-1307
 phase: design
-phaseCursor: 3/5
-updated: 2026-07-16T08:08:44.485Z
-nextStep: write research.md (exploration.md done; audit facts collected)
+phaseCursor: 4/5
+updated: 2026-07-16T08:12:45.211Z
+nextStep: codex design review loop on plan.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-1307 progress
-**phase**: design (3/5)
-**next**: write research.md (exploration.md done; audit facts collected)
+**phase**: design (4/5)
+**next**: codex design review loop on plan.md
