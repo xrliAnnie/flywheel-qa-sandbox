@@ -263,27 +263,18 @@ export class ElevenSession {
 				},
 				onMetadata: (meta) => {
 					this.trail({ type: "metadata", meta });
-					// FLY-1160 §4.2-3 UUID consistency gate (Codex #552 R1 MEDIUM-8):
-					// the platform echoes the conversation_id it keyed the session
-					// with. If it does not match the daemon-minted UUID, the shim
-					// would bucket this meeting under the wrong resident brain — a
-					// hard fail, not a warning. Only enforced when the brain is on
-					// (issueId present); the bare product-test surface has no key.
-					const echoed = (meta as { conversationId?: string })?.conversationId;
-					// Codex #552 R2 MEDIUM-8: a MISSING id (empty string) is also a
-					// mismatch — in brain mode the platform MUST echo the daemon UUID,
-					// so anything ≠ sessionId fails loud (no truthy `echoed &&` gate).
-					if (this.opts.issueId && echoed !== this.opts.sessionId) {
-						opts.log?.(
-							`[eleven-session] conversation_id mismatch: platform=${echoed} daemon=${this.opts.sessionId} — fail-loud terminate`,
-						);
-						this.trail({
-							type: "conversation_id_mismatch",
-							platform: echoed,
-							daemon: this.opts.sessionId,
-						});
-						void this.stop("ws-error");
-					}
+					// The platform mints its own conversation_id (conv_…) and reports
+					// it here; it NEVER echoes custom_llm_extra_body.conversation_id
+					// (real-platform behavior, FLY-1006 预跑 + 4 prior real sessions).
+					// Daemon-UUID↔brain consistency is enforced at the boundary that
+					// actually routes turns: the platform forwards extra_body verbatim
+					// to the shim, and BrainPort 404s any key the daemon didn't open
+					// (fail-closed). The platform id is recorded above for forensics.
+					const platformId = (meta as { conversationId?: string })
+						?.conversationId;
+					opts.log?.(
+						`[eleven-session] platform conversation_id=${platformId || "(missing)"} (daemon session ${this.opts.sessionId})`,
+					);
 				},
 				onError: (err) => {
 					this.trail({ type: "error", message: err.message });
