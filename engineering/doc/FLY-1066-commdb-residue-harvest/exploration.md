@@ -1,144 +1,187 @@
-# FLY-1066 Bridge 侧残留收割 — 探索
+# FLY-1066 Bridge 侧残留治理(双层:根因自清 + 兜底收割)— 探索
 
 Issue: FLY-1066 (https://linear.app/geoforge3d/issue/FLY-1066/infra-bridge-侧残留收割-commdb-孤儿注册清理-statestorecommdb-终态同步-scope-free-清理入口)
 日期: 2026-07-16
 基于: 无(上游取证 = FLY-1050 design addendum F8 系列,权威摘要在 FLY-1066 issue 描述;F8 防御规格另见 engineering/doc/FLY-1070-qa-respawn-verify/research.md §3)
 
+## 0. Scope 演变(为什么这份是重写版)
+
+本票第一轮 design(本文件夹旧版,2026-07-16 上午,Codex design review 4 轮 APPROVED)只做了**收割器**:
+boot/心跳/定点三入口扫两本账、收四面僵尸。该方案已在本分支完整实现(M1-M5,原 PR #616)且独立 QA PASS。
+**Annie 否决了这个 scope**:只做收割 = 打补丁——残留会持续产生,收割器只是把垃圾定期扫走。
+她选了方案 C:**两层一起做**。Tadashi 在重开后的 brainstorm gate(2026-07-16)明确分工:
+
+> **能拦的走①实时自清(治本)、拦不住的走②收割(兜底,像 fsck)。只有② = 打补丁。**
+
+- **① 根因层(本轮新增,核心)**:complete / park / `--route blocked` / auto-QA spawn 失败这些**可拦截**的
+  终态路径,session 退出时**实时**清自己的残留(CommDB row + app-server + worktree),让残留根本不产生。
+  复用现有 `finalizeSession` / FLY-1185(FLY-603 家族)worktree-autoclean 原语。
+- **② 兜底层(上一轮已设计+已实现,保留)**:SIGKILL / OOM / Bridge crash——进程没有机会自清的死法——
+  由 boot/心跳/定点收割器兜底。四面判据与安全约束不变(见 §4)。
+
 ## 1. 现象与取证(2026-07-16 只读复核,全部样本仍在场)
 
-Flywheel 有两本账:**StateStore**(`~/.flywheel/teamlead.db`,Bridge 的 FSM 真相)和 **CommDB**(`~/.flywheel/comm/<project>/comm.db`,Lead↔Runner 通信 + Lead 视图 `runner_terminal_list` 的读模型)。两本账各自可以残留、也可以互相失同步,产生四种「永久僵尸」形态。
-
-本次对生产库快照(scratchpad 只读副本)横扫了 Bridge 配置的全部 6 个 project,规模如下:
+Flywheel 有两本账:**StateStore**(`~/.flywheel/teamlead.db`,Bridge 的 FSM 真相)和 **CommDB**
+(`~/.flywheel/comm/<project>/comm.db`,Lead↔Runner 通信 + Lead 视图 `runner_terminal_list` 的读模型)。
+两本账各自可以残留、也可以互相失同步,产生四种「永久僵尸」形态:
 
 | 面 | 形态 | 生产样本(2026-07-16 在场) | 数量 |
 |---|---|---|---|
 | ① CommDB 孤儿 | CommDB sessions 有 row(status=running),StateStore **无 row** | `d2f31930`(tmux `%194`、issue_id=NULL、lead_id=NULL、2026-05-11) | 1 |
 | ② 终态未同步 | StateStore 已终态(failed/blocked),CommDB registration 仍 running | `e4d3b29d`/`e90f3962`(GEO-441 auto-QA,`runner-geoforge3d:pending` 占位)+ geoforge3d 3 条(GEO-342/424/347)+ flywheel 8 条 | ~13 |
-| ③ StateStore 幽灵 | StateStore **非终态**(如 awaiting_review),CommDB **无 row**,tmux terminal 已死 | Asha 夜跑事故形态(2026-07-15 夜,3 个夜跑位被吃 + close_runner 报 No session found;brainstorm gate 上 Tadashi 补充为必做面) | 事故实证 |
-| ④ 双无主 escalation | `detection_escalations` 表 pending 行,target exec 在**两本账都查无此人** | 2026-07-15 夜 65 条告警风暴的实测形状(Tadashi 实测 sessions 表 0 命中) | 事故实证 |
+| ③ StateStore 幽灵 | StateStore **非终态**(如 awaiting_review),CommDB **无 row**,tmux terminal 已死 | Asha 夜跑事故形态(2026-07-15 夜,3 个夜跑位被吃 + close_runner 报 No session found) | 事故实证 |
+| ④ 双无主 escalation | `detection_escalations` 表 pending 行,target exec 在**两本账都查无此人** | 2026-07-15 夜 65 条告警风暴的实测形状 | 事故实证 |
 
-面①②的 6 个已知样本 tmux 目标全部实测 `probe=dead`(`can't find pane`/`can't find window` 可证死亡消息)。
+面①②的 6 个已知样本 tmux 目标全部实测 `probe=dead`。伤害:Lead 视图永远显示 running 僵尸、
+close_runner 够不到(无 StateStore row / 跨 project 被 checkLeadScope 挡)、幽灵占 active-session 位使
+`/api/runs/start` 409(cron 夜跑位被吃)、pending escalation 反复驱动告警风暴。
 
-**面①②的伤害**:Lead 视图永远显示 running 僵尸(alive=false status=running),污染 bootstrap 与 runner_terminal_list;close_runner 够不到(面①无 StateStore row → No session found;跨 project 残留被 checkLeadScope 挡)。
-**面③的伤害**:幽灵 session 一直占着 issue 的 active-session 位 → `/api/runs/start` 409 → cron/夜跑静默跳过(FLY-742 的 PR-证据路径只救 PR 已 merge/closed 的形态);close_runner 对 awaiting_review 又 status_not_eligible。
-**面④的伤害**:pending escalation 反复驱动告警,风暴复燃源。
+## 2. 根因分析 — 泄漏源清单(①层的靶子)
 
-## 2. 根因 — 现有清理机制的结构盲区
+残留 = **产生**(退出路径没清)+ **收不回**(现有清理机制盲区)。第一轮 design 只解了后者;这里把前者列全。
 
-现有三层清理(全部 Bridge 侧、boot 时跑)的候选枚举方式决定了各自的盲区:
+### 2.1 一个 session 的三种残留物与其应然归宿
 
-| 机制 | 扫描集 | 对四面的行为 |
+| 残留物 | 应然归宿 | 现有清理原语 |
 |---|---|---|
-| FLY-638 `pruneDeadTerminalCommDbSessions` | CommDB `{completed,timeout}` 行 | 面①②③④均不在扫描集 |
-| FLY-817 `reconcileCommDbRunningAgainstFsm` | CommDB `{running}` 行 | 面① → `keptNonTerminal`(无 FSM row 视为「无终局证明」豁免);面② → `keptPreserve`(CRASH_PRESERVE 一律不删,模块注释明说「read-model concern, tracked separately」——即本票);面③ **结构上看不见**(没有 CommDB 行可遍历);面④ 不涉及 |
-| FLY-720 crash-reaper(心跳 tick) | StateStore running 行 + **CommDB tmux 目标可得** | 面③ 的 CommDB row 缺失 → no-target → 明确不 own(「absent / no-target / indeterminate are NOT owned here」) |
+| CommDB sessions row | 正常关闭 → `finalizeSession` DELETE;crash-preserve(failed/blocked,窗口留取证)→ **status 如实标记**(不删,retry teardown target 保留) | `finalizeSession`(FLY-1238)/ `updateSessionStatus` / `unregisterPendingSession`(FLY-80) |
+| app-server / MCP 子进程(Codex 常驻 daemon 等) | 随 session 关闭被 reap | closeRunner 的 MCP-descendant reap(FLY-228)+ `codex-phase-shutdown`(FLY-1269 协作式关停) |
+| worktree + 分支 | ship/cancel closeout 时按 FLY-1185 §2.4 CAS 原语清理 | lifecycle-closeout 五入口(FLY-1185)+ branch-cleanup/worktree-cleanup 原语 |
 
-即:**面①②是 FLY-817 有意留下的两个缺口,面③是所有 CommDB-行驱动 sweep 的枚举盲区,面④是另一张表的孤儿**。FLY-1050 的 F8a-F8d fixtures 只保证 reconcile 代码对这些形态防御正确(不崩、不误 respawn),不收割——收割是本票。
+### 2.2 泄漏源逐条(exit-path × 是否可拦 × 现状)
 
-## 3. 方案(brainstorm gate 已批,2026-07-16 Tadashi;含 4 条修正全采纳)
+| # | 泄漏源(exit path) | 残留物 | 可拦? | 现状(2026-07-16 head 实核) |
+|---|---|---|---|---|
+| S1 | **FSM → failed**(reapOrphans force-fail、spawn 失败、DecisionLayer failed 路由、FLY-1282 zombie declaration) | CommDB row 停在 running | ✅ ①层 | 无任何路径同步 CommDB(CRASH_PRESERVE 不走 close)→ 生产 ~11 条 failed 僵尸的直接来源 |
+| S2 | **FSM → blocked**(`flywheel-comm complete --route blocked`) | CommDB row 停在 running | ✅ ①层 | 同上(FLY-817 模块头点名此路径);CommDB 有 `updateSessionStatus('blocked')` 原语但没人在此路径调 → 生产 2 条 blocked 僵尸 |
+| S3 | **auto-QA / dispatcher spawn 失败**(GEO-441 形态:预注册 `…:pending` 后 blueprint 外的失败) | CommDB `:pending` row 停在 running + StateStore failed | ✅ ①层 | `cleanupPreRegistration`(unregisterPendingSession)只挂在 run-dispatcher 自身 catch(run-dispatcher.ts:842/897/923);经 S1 hook 兜住后此形态归并为 S1(标记 failed),定点 unregister 为增强 |
+| S4 | **completed 但 Lead 从未 close** | CommDB row 停在 running(runner 可能 parked-alive) | 已有 owner | adapter 受控退出会写 completed(TmuxAdapter.ts:703 finally / CodexTmuxAdapter.ts:821)+ lifecycle-closeout 五入口(FLY-1185)+ FLY-817 boot 收 deletable 终态 → 非本票新增面 |
+| S5 | **park(declare-state parked)** | 无 —— parked = done-but-alive by design,残留在后续 close 时清(S4 owner) | 已有 owner | close/closeout 路径已调 finalizeCommDbSession(close-runner.ts:373 / actions.ts:1402 / crash-reaper.ts:319 / lifecycle-closeout.ts:243) |
+| S6 | **SIGKILL / OOM / Bridge crash** | 全部三种 | ❌ 只能② | 进程无机会自清 → 收割器兜底(crash-reaper 管 StateStore 侧可见的;两本账失同步形态归②四面) |
+| S7 | **StateStore 整库重建**(FLY-663 形态,样本①的成因) | CommDB 孤儿 row | ❌ 只能② | 没有任何 StateStore-driven 机制再认识它 → ②面① |
+| S8 | worktree / app-server 在 crash 死法下的残留 | worktree、daemon 进程 | ❌ 只能②/既有 | crash-reaper teardown + FLY-1185 periodic sweep + FLY-1269 provably-absent backstop 已各有 owner;审计 gap 落 plan 的 L-C 审计项 |
 
-### 3.1 总形状:扩展既有 sweep,不建新模块框架、不建新 timer、不建新端点
+**结论**:①层可拦截的真实 gap 收敛为一个结构性缺口——**Bridge 侧 FSM 转移到 CRASH_PRESERVE
+(failed/blocked)时,没有任何机制把 CommDB registration 的 status 如实化**(S1+S2+S3)。
+其余泄漏源要么已有 owner(S4/S5),要么原理上只能靠②(S6/S7/S8)。
 
-- **面①②**:扩展 `commdb-fsm-reconcile.ts` 的既有扫描循环,新增两个收割分支(见 §3.2)。
-- **面③**:新增 StateStore 侧分支——遍历 StateStore 非终态行,CommDB 无对应 row 且 probe=dead 时走 FSM finalize(见 §3.3)。
-- **面④**:收割时顺手把「双无主」的 pending `detection_escalations` 行置 RESOLVED(见 §3.4)。
-- **入口**(见 §3.5):boot sweep(既有循环)+ 心跳 tick 每 N tick 搭车(复用既有 timer)+ `scheduled_run_blocked` 触发的定点 reconcile。三个入口共用同一核心函数,全部 scope-free(遍历 Bridge config 全 projects、零 leadId 检查)。
+### 2.3 现有清理机制的盲区(②层的靶子,第一轮 design 结论,原样成立)
 
-### 3.2 面①② 收割判据(CommDB 行驱动)
+| 机制 | 扫描集 | 盲区 |
+|---|---|---|
+| FLY-638 boot prune | CommDB `{completed,timeout}` | 面①②③④均不在扫描集 |
+| FLY-817 FSM reconcile | CommDB `{running}` | 面①(`!fsm → keptNonTerminal`)、面②(`CRASH_PRESERVE → keptPreserve`,注释「tracked separately」= 本票)、面③(无 CommDB 行可遍历)结构性看不见 |
+| FLY-720 crash-reaper | StateStore running + CommDB 目标可得 | 面③ no-target 明确不 own |
+| FLY-742 stale-blocker-guard | 409 blocker | PR open/unknown 只告警不自愈 |
+
+## 3. ① 根因层设计(本轮新增)
+
+### 3.1 L-A:FSM 转移咽喉的 CommDB 终态同步(核心)
+
+`applyTransition`(applyTransition.ts:1-60)是 Bridge 侧「ALL status changes」的统一入口,且 FLY-907
+已经建立了后置 hook 模式(`onTransition`,composition root 注入,覆盖 kill/terminate/retry/close/
+crash-reaper/heartbeat/marker/completion 全漏斗)。①层沿同一模式:
 
 ```
-面①(孤儿):CommDB running 行
-  AND StateStore 无该 execution_id 的 row
-  AND probeTmuxWindowLiveness(tmux_window) === "dead"
-  AND 行龄 > 24h(started_at)
-  → db.finalizeSession(execId)   // 原子:清孤儿 checkpoint gate + 删 sessions 行
-
-面②(终态同步):CommDB running 行
-  AND StateStore status ∈ {failed, blocked}(CRASH_PRESERVE)
-  AND probeTmuxWindowLiveness(tmux_window) === "dead"
-  → db.finalizeSession(execId)
+composition root(plugin.ts)给 onTransition 增补一步(或并列新 hook):
+  targetStatus ∈ {failed, blocked}
+    → CommDB.updateSessionStatus(execId, targetStatus) + ended_at
+       (best-effort:失败 warn 不破坏 transition;幂等:重复 UPDATE 无害)
 ```
 
-- 删除动作复用 `finalizeSession`(FLY-1238 原子原语,连带清掉孤儿行挂着的未答 checkpoint gate——d2f31930 这类 2 个月的孤儿可能还挂着死 gate)。
-- CommDB 行的退出方式维持既有约定 = DELETE(CommDB status CHECK 约束表达不了 failed/terminated;FLY-817 模块注释:「the only way a CommDB row leaves is a DELETE」)。**不**给 CommDB 加状态列/宽 CHECK。
+- **只 mark 不 delete**:CRASH_PRESERVE 的窗口可能还活着(取证/scrollback/retry teardown target)——
+  FLY-116 政策与 FLY-817 BLOCKER-1 原样保留;`tmux-lookup.ts:178` 按 execution_id 读 row、status 无关,
+  mark 不破坏 retry。Tadashi gate 答复 A3 确认。
+- **CommDB CHECK 加 `'failed'`**(Tadashi gate 答复 A1 采纳):按 FLY-1279 已验证的整表原子重建模式
+  (db.ts:370-405 同款,SQLite 不能 ALTER CHECK)把 CHECK 扩为
+  `('running','completed','timeout','blocked','failed')`;`types.ts:67` Session.status union 同步;
+  `updateSessionStatus` 签名扩 `'failed'`。读方盘点(lifecycle.ts classify / cleanup.ts / FLY-638/817
+  显式状态列表)均容忍新值。
+- **效果**:status ≠ running → `classifyRunnerRow` 走 terminal 分支 → 窗口活 = parked-alive(比 running
+  诚实:preserve 取证窗就是 parked),窗口死 = dead(runner_terminal_list 默认隐藏)。S1/S2/S3 三个
+  泄漏源在**产生当刻**闭合,不再等收割。
+- **旁路盘点**:`forceStatus`(StateStore.ts:3505,legacy 直写)绕过 applyTransition——implement 时审计
+  「无生产调用方以 failed/blocked 调 forceStatus」并加守卫测试;若有,同步补 hook。
 
-### 3.3 面③ 收割判据(StateStore 行驱动,gate 修正①)
+### 3.2 L-B:spawn 失败的 pending row 定点清理(增强,非必需)
 
-```
-StateStore 非终态行(running/reconnecting/awaiting_review/approved_to_ship/design_done/pending)
-  AND CommDB 无该 execution_id 的 row(注意:tmux 目标的唯一权威在 CommDB,row 缺失 ⇒ 无可寻址目标)
-  AND session 级探活证明死亡:probeTmuxWindowLiveness(store.tmux_session) === "dead"
-      (StateStore 只存 session 名,session 整体消失 = 该 runner 的窗口必然消失 = 死亡证明;
-       session 还活着(有兄弟 runner)= 对该 runner 而言 indeterminate → keep)
-  AND 行龄 > 30min(started_at;双重证据下比面①的 24h 短——理由见下)
-  → applyTransition → `terminated`(全部非终态的 FSM 合法出边;失败即 keep + 告警,绝不 forceStatus)
-    + 复用 crash-reaper 同款终态化侧效(CommDB finalize 幂等无行可删、belt/orchestrator 通知、archive)
-```
+S3 经 L-A 已闭合(spawn 失败 → FSM failed → row 标 failed 隐藏)。在此之上,若 implement 审计发现
+auto-QA spawn 失败路径可拿到确定的「blueprint 从未启动」证据,则调 `unregisterPendingSession`
+直接删 `:pending` 占位(什么都没跑过的 row 无保留价值)——与 run-dispatcher 既有 FLY-80 行为对齐。
+拿不到确定证据就只靠 L-A 标记,不猜。
 
-- **为什么 30min**(Codex R1 #6 按 run-dispatcher 实核顺序修正):CommDB 预注册是 best-effort(preRegisterCommDb 失败被吞)且 Runner 自注册有延迟 → 年轻 StateStore 行短暂无 CommDB 行属正常瞬态;该窗口以秒~分钟计,30min >> 任何 spawn 延迟,且有 CommDB-row-缺失 + probe-dead 双证据,比面①的 24h 可以更短。反方向注意:预注册**先于** StateStore 行落库(fresh/retry 两路径皆然)→「CommDB running + 无 StateStore row + pending dead」是每次 spawn 的正常瞬态 → **面①的 24h 龄是实际安全边界(非纵深备份)**;started_at 缺失/非法/未来时间的行一律 fail-closed keep。
-- **为什么 finalize 目标是 `terminated` 不是 `failed`**:`awaiting_review` 的 FSM 合法出边没有 `failed`(workflow-fsm.ts),`terminated` 是唯一从所有非终态都合法的终态;且与 crash-reaper 的先例(transition to terminated + prune CommDB + archive)一致,下游(AUTO_CLOSE、belt、archive)语义现成。
-- **与 FLY-742 的边界**:FLY-742 的「PR open/unknown 绝不 auto-clear founder 拥有的 session」针对的是**还可能活着/可唤醒**的 parked runner;面③要求 CommDB row 缺失 + session 级死亡证明——该 runner 已不是可寻址实体(wake 发不到、close_runner 够不到),terminalize 是对既成事实的记账,不是替 founder 决策。此边界在 plan 里立节明写给 Codex reviewer。
+### 3.3 L-C:app-server / worktree 的审计与 pin(不重建机制)
 
-### 3.4 面④ 双无主 escalation 置结(全局一次,非 per-project)
+审计结论(research §10):这两类残留的清理**已有专责机制**——closeRunner 的 MCP-descendant reap
+(FLY-228)、codex-phase-shutdown(FLY-1269)、lifecycle-closeout 五入口 + branch/worktree CAS 原语
+(FLY-1185)。①层不重复建设,交付物为:
+1. research 里的 exit-path × 残留物 owner 矩阵(§10)——把「谁负责清什么」第一次写成一张表;
+2. implement 时对矩阵里标 gap 的格子逐个实核,真 gap 修在本票、机制级缺陷另开 issue
+   (已知线索:FLY-603 worktree autoclean 未触发的调查是独立 open item,不并入本票)。
 
-收割 pass 的最后一步、**每个全量 pass 只跑一次**(escalation 行没有 project 列,双无主时也无从反查 project):先对**全部** configured projects 的 CommDB 建 execution_id presence index(任一 DB 读取失败 → 本轮 face④ 整体放弃);遍历 `detection_escalations` 全部非 RESOLVED 行(NEW/LEAD_NOTIFIED/**ACKED**/ESCALATED/CLEARING——ACKED 纳入:机器证明的灭失不因 Lead 已 ack 而例外,与既有 recovery 契约一致),仅处理 execId 形态的 targetKey;初筛双无主后、UPDATE 前**逐候选重读双账**(防同 ID replay 竞态)→ 置 RESOLVED(`resolved_via='residue_harvest'`,复活 predicate 同步扩至该 token),防风暴复燃。target 仍在任一本账的行一概不碰。
+### 3.4 ①与②的交互
 
-### 3.5 入口与节奏(gate 修正④)
+- ①上线后,新增 failed/blocked 僵尸在源头闭合 → ②面②的候选集随时间收敛到「crash 死法」残留,
+  收割器回归 fsck 定位(Tadashi 的分工原话)。
+- ①标记出的 `failed`/`blocked` 终态 row,窗口一旦证死即成死尸 → **②的终态 prune(FLY-638)扫描集从
+  `{completed,timeout}` 扩为 `{completed,timeout,failed,blocked}`**(delete 仍只认 probe=dead)。
+  该 delete 的正当性 = 第一轮 design §3.7 已获 Tadashi + Codex 双签的 FLY-817 BLOCKER-1 修订
+  (probe=dead ⇒ preserve 标的已灭失)。
 
-```mermaid
-flowchart LR
-    A[Bridge boot] --> O[full-harvest orchestrator<br/>fire-and-forget + 三入口共享单飞行]
-    B[心跳 maintenance 每 N tick 搭车<br/>复用 HeartbeatService onMaintenanceTick] --> O
-    O --> H[per-project:面①② CommDB 行驱动 + 面③ StateStore 行驱动]
-    H -->|全部 project 完成后,全局一次| F[面④:escalation 置结<br/>全 project presence index + 逐候选重验]
-    C[scheduled-run 409 路径<br/>guard 顶部、早于 FLY-742 分类] -->|单行定点 ghostReconcileOne,不进 full pass| E[面③ 单 session 判据]
-```
+### 3.5 决策呈报:mark 与 delete 的分工(消解两次答复的表面矛盾)
 
-- **boot**:全量收割,folded 进既有 per-project fire-and-forget 循环(FLY-817 后、FLY-638 前后皆可,plan 定序)。
-- **心跳搭车**:每 N tick(默认取 ~1h 等效)跑一轮全量收割——解决「周中僵尸要等重启」;零新 timer。
-- **定点触发**(Codex R1 #3 修正插点):scheduled-run 409 路径,插在 **guard 顶部、早于 FLY-742 的 enabled 检查与 local classify**——running ghost 与 <120min 的 fresh-parked ghost 也必须能到达;仅由本票 flag 控制(FLYWHEEL_CRON_STALE_GUARD=0 不得关闭它)。对 blocker session 跑一次面③定点判据,证据足则当场 terminalize 放行 cron——这正是「昨晚 cron 位被吃」的最短闭环;判据不满足则逐字节回落 FLY-742 原路径。
-- **scope-free 的边界**:遍历的是**本 Bridge config 的 projects**,不枚举 `~/.flywheel/comm/` 全目录——目录里有 QA-slot/其它 Bridge 的 CommDB(fire-test、qa-fly-123、test-slot-2…),它们的 StateStore 在别的库,全目录枚举会把别家活 session 全部误判为面①孤儿而误删。scope-free 指零 leadId 检查,不是跨 Bridge。
+Tadashi 对重开 gate 的 A3 答复(「failed/blocked 只 mark 不 delete,delete 列 follow-up」)与
+第一轮已实现的面②(probe=dead 即 delete,BLOCKER-1 修订双签)表面冲突。本设计按**时机分工**消解:
 
-### 3.6 安全判据(硬约束,gate 修正③原文)
+| 时机 | 动作 | 理由 |
+|---|---|---|
+| ① 转移当刻(窗口可能活着) | **mark**(updateSessionStatus) | 非破坏;preserve 政策原样;A3 的本意 |
+| ② 收割时(probe=dead 铁证) | **delete**(finalizeSession) | preserve 标的已灭失;BLOCKER-1 修订已双签、已实现、已 QA |
 
-> 收割信号 = terminal/CommDB 存在性,绝不是 FSM 终不终态;awaiting_review + terminal 活 = 合法等 founder,结构性不可触。
+即:A3 约束的是「转移当刻」的实时动作;probe=dead 后的收割 delete 维持第一轮已批语义。
+此分工在 plan 呈 Tadashi 过目时显式列出,由他终裁。
 
-- 删除/终态化只认 `probe === "dead"`(可证死亡);`alive`/`indeterminate` 一律 keep——「destructive delete must require PROOF of death, never the absence of proof of life」(FLY-638 原则续用)。
-- design_done/parked 保活行(如三段式 design holder)结构性不可触:probe=alive 挡住;即便 probe 出 dead(tmux server 全灭),面③对其 terminalize 也是合法出边且诚实(runner 确已不在)。
-- 面②对**活窗口**的 failed/blocked 行为零变化——FLY-116 CRASH_PRESERVE 保 scrollback/retry teardown target 的政策原样保留,只收割「窗口已可证死亡」的行(此时 preserve 的标的已不存在)。
-- kill-switch:新 flag `FLYWHEEL_COMMDB_RESIDUE_HARVEST`(default on,`=0` 整体关闭四面收割;注册进 feature-flags registry)。FLY-817 的 `FLYWHEEL_COMMDB_FSM_RECONCILE` 语义不动。
+## 4. ② 兜底层(第一轮方案,保留;已实现)
 
-### 3.7 对 FLY-817 review BLOCKER-1 的修订(gate 已放行,plan 立节明写)
+四面判据、三入口(boot + 心跳 maintenance 搭车 + scheduled-run 409 定点)、安全约束
+(收割信号 = terminal/CommDB 存在性,绝不是 FSM 终不终态;删除只认 probe==="dead";
+awaiting_review + terminal 活 = 结构性不可触;fail-closed 时间戳;`FLYWHEEL_COMMDB_RESIDUE_HARVEST`
+kill-switch;scope-free = 零 leadId 检查、只遍历本 Bridge config projects)——
+全部见本文件夹旧版归档于 git 历史(commit `6a79e4918`)与 plan.md「Part B」;
+实现已在本分支(M1-M5,独立 QA PASS,qa-report.md)。本轮对②仅做两处增量:
+§3.4 的 FLY-638 prune 扫描集扩展 + 面②候选集在①上线后的收敛说明。
 
-FLY-817 Codex design R1 BLOCKER-1 裁定「failed/blocked 只看 FSM、绝不 probe、绝不删」,理由 = retry 的 `closeRunner(forcePreserved: true)` 要读 CommDB tmux 目标拆 preserved 窗口。本设计将其修订为「probe=dead 时可删」:窗口已可证消失时,teardown target 与 scrollback 都已不存在,preserve 的理由消失;删行后 retry 路径 `getTmuxTargetFromCommDb` 返回空 → closeRunner 幂等 success,无破坏。Tadashi 在 brainstorm gate 显式把关放行本修订(2026-07-16)。
-
-## 4. 备选方案(已否决)
+## 5. 备选方案(已否决)
 
 | 方案 | 否决理由 |
 |---|---|
-| CommDB status 加 failed/terminated(UPDATE 而非 DELETE) | CHECK 约束要重建表;与「CommDB 行退出=DELETE」的既有约定冲突;读模型(runner_terminal_list)还得再学一套状态 |
-| 新 `/api/actions/cleanup` 手动端点 | FLY-175 founder-only-authority 的 catch-all 保留面,扩权;FLY-1050 方案 C 同理由否决在先 |
-| 枚举 `~/.flywheel/comm/` 全目录 | 跨 Bridge 误伤(QA slot / 其它 Bridge 的活 session 会被误判孤儿),见 §3.5 |
-| 逐个修 dispatcher/auto-QA 的泄漏源头 | 打地鼠;泄漏源头多且会再新增,系统性收割器才是对形态类的根治;源头修复可另开 follow-up |
-| 只做 boot-only(不加周期/定点入口) | Tadashi gate 修正④:cron 位被吃要等重启,代价不可接受;已采纳搭车+定点双入口 |
+| 只做②收割器 | **Annie 否决**:= 打补丁;残留持续产生 |
+| 只做①自清、砍掉② | crash/OOM/SIGKILL/库重建死法无进程可自清;昨夜面③④事故正是这类;②已实现且 QA PASS,砍掉是倒退 |
+| ①逐调用点补 CommDB 同步(不走 applyTransition 咽喉) | 打地鼠:failed/blocked 的产生点 ≥4 处且会新增;FLY-907 已证咽喉 hook 模式覆盖全漏斗 |
+| ①连 completed 家族也 mark | S4 已有三重 owner(adapter finally / lifecycle-closeout / FLY-817);再加一层是冗余写放大 |
+| CommDB 不加 'failed'、failed 映射 'blocked' | 状态可信是 FLY-942 家族主题;Tadashi A1 拍板加 'failed';FLY-1279 迁移模式现成 |
+| 新 `/api/actions/cleanup` 手动端点 / 枚举 `~/.flywheel/comm/` 全目录 | 第一轮已否决(FLY-175 扩权 / 跨 Bridge 误伤),理由不变 |
 
-## 5. Non-goals
+## 6. Non-goals
 
-- 不改 FLY-742 的 PR-证据路径(merged/closed → finalize_proceed 逻辑原样),只在其分类之前插一次面③定点尝试。
-- 不动 CommDB `blocked` 状态行(FLY-1279 Codex resident goal 语义,归 FLY-1269 生命周期)。
-- 不做泄漏源头修复(preRegisterCommDb / auto-QA spawn 失败路径的逐点补 unregister)。
-- 不提供手动 HTTP 入口;操作员手动收割 = 重启 Bridge(boot sweep 即全量收割)。
-- 不迁移/重写 FLY-638、FLY-817 既有行为(byte-compat:flag 关闭时与现状逐字节一致)。
+- 不动 FLY-742 PR-证据路径;不做手动 HTTP 入口;FLY-638/817 关闭态 byte-compat(同第一轮)。
+- 不重建 worktree/app-server 清理机制(已有 owner,见 §3.3);FLY-603 autoclean 未触发的调查独立跟。
+- 不给 CommDB 加 'terminated' 等更多状态值(YAGNI:terminated 路径由 closeout DELETE,轮不到 mark)。
+- park 语义零变化(parked = 合法保活,不是残留)。
 
-## 6. 验收(issue 原文 + gate 修正)
+## 7. 验收(双层)
 
-1. 部署重启后:Peter 的 3 个真实样本(d2f31930/e4d3b29d/e90f3962)被干净收掉,geoforge3d 侧可复核;附带 geoforge3d 3 条(GEO-342/424/347)与 flywheel ~8 条同型残留同轮清空。
-2. §3.6 安全判据逐字进 plan 验收:awaiting_review + terminal 活 = 不可触;alive/indeterminate 一律 keep。
-3. 面③:构造幽灵 fixture(StateStore awaiting_review + CommDB 无 row + session 死)→ 心跳搭车/定点触发把它 terminalize,cron 409 解除。
-4. 面④:构造双无主 pending escalation → 收割后 RESOLVED;target 尚存的 escalation 不动。
-5. `FLYWHEEL_COMMDB_RESIDUE_HARVEST=0` 时全部新行为关闭,与现状 byte-compat(反向哨兵测试)。
+1. **①层**:构造 fixture——FSM 转移 failed(reapOrphans 路径)与 blocked(complete --route blocked 路径)
+   → CommDB row 实时变 'failed'/'blocked' + ended_at;runner_terminal_list 不再显示 running;
+   retry teardown(closeRunner forcePreserved)在 marked row 上照常工作(哨兵)。
+2. **②层**:第一轮验收原样(Peter 3 样本收净 + ~11 条同型 + 合法行零误伤阳性对照 + M6 same-predicate
+   preflight 独立 QA 核对)+ prune 扩展面(marked-dead row 被终态 prune 收走)。
+3. **byte-compat**:①层 hook 挂 kill-switch(plan 定 flag 名),=0 时与现状逐字节一致;②层旧 sentinel 原样。
+4. 部署重启后生产复核:新产生的 failed/blocked session 不再留 running 僵尸(观察一个 crash-preserve
+   实例);Peter 3 样本消失。
 
-## 7. 下游
+## 8. 下游
 
-- 代码审计细节(精确锚点、DB 取证、FSM 边、接线点)→ 同文件夹 `research.md`
-- 实施计划(任务拆分、TDD、验收、FLY-817 修订立节)→ 同文件夹 `plan.md`
+- ①层代码审计锚点 + exit-path×残留物 owner 矩阵 → 同文件夹 `research.md` §10(新增)
+- 双层实施计划(Part A = ①层新工作;Part B = ②层 as-built + 两处增量)→ 同文件夹 `plan.md`(重写)
+- plan 完成 → Codex design review → **发 Tadashi 过目 → 他呈 Annie → 才进 implement**(重开 gate 的明确指令)

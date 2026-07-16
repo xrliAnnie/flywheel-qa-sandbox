@@ -120,6 +120,62 @@ e90f3962-0c73-…|runner-geoforge3d:pending   |geoforge3d|9619b712-…(UUID)    
 - comm.db = better-sqlite3(同步),teamlead.db = sql.js(内存+export);收割全在 Bridge 进程内,无跨进程写者问题(CommDB 的其它写者 = runner CLI,行级 INSERT/UPDATE,better-sqlite3 WAL 容忍)。
 - 快照留存:`<scratchpad>/geoforge3d-comm.db` 等 7 份,QA/验收对照基线。
 
-## 9. 下游
+## 9. ①根因层审计(scope 重开后新增;②层事实见 §1-§8,原样成立)
 
-实施计划(任务拆分、TDD 顺序、验收清单、FLY-817 BLOCKER-1 修订立节)→ 同文件夹 `plan.md`
+### 9.1 FSM 转移咽喉与 hook 先例
+
+- `applyTransition`(`packages/teamlead/src/applyTransition.ts:1-60`)自注释:「Unified entry point for
+  ALL status changes … All status changes must go through this function」。
+- **FLY-907 hook 先例**:`ApplyTransitionOpts.onTransition`(:14-34)——composition root(plugin.ts)在
+  **两个** ApplyTransitionOpts 实例(共享 + stale-blocker-guard 自有)上注入,自述覆盖
+  kill/terminate/retry/reject/close-runner/crash-reaper/heartbeat reconcile/marker reconcilers/
+  completion routes/founder consent 全漏斗;hook 体 try/catch 包裹、永不破坏 transition。
+  ①层 CommDB 同步沿同一注入模式与同一安全契约(enqueue/best-effort、微秒级、不 throw)。
+- **failed/blocked 的产生方**(全部 import applyTransition,grep 实核):HeartbeatService(reapOrphans
+  force-fail、FLY-1282 zombie declaration)、event-route(`--route blocked` completion 消费)、
+  DirectEventSink / DecisionLayer 终态路由、run-infra / run-dispatcher(spawn 失败)、auto-qa-effects。
+- **旁路**:`forceStatus`(StateStore.ts:3505-3530,legacy 直写 `UPDATE sessions SET status …`)绕过
+  applyTransition。implement 需审计生产调用方是否可能以 failed/blocked 走此路;有则补同点 hook,
+  无则守卫测试 pin(断言生产代码 forceStatus 调用点不含 CRASH_PRESERVE 目标值)。
+
+### 9.2 CommDB 侧原语现状(①层直接复用)
+
+- `updateSessionStatus(execId, 'completed'|'timeout'|'blocked')`(db.ts:1911)——带 ended_at 的 UPDATE;
+  ①层扩签名 + CHECK 加 `'failed'`(FLY-1279 整表重建迁移模式,db.ts:370-405 逐字可仿)。
+- adapter 受控退出已写 CommDB:TmuxAdapter.ts:703(waitForCompletion finally → completed/timeout)、
+  CodexTmuxAdapter.ts:821/898(controlled shutdown → completed/timeout)。⇒ S4(completed 家族)在
+  adapter 在场的死法下已有实时同步;①层不重复。
+- `unregisterPendingSession`(db.ts:1903)——只删 `%:pending` 行;调用点仅 run-dispatcher.ts:842/897/923
+  (abortPreLaunch/cleanupPreRegistration,FLY-80)。GEO-441 形态(auto-QA spawn 失败)未走到 → S3。
+- CommDB status 读方矩阵(新值 'failed' 兼容性):`lifecycle.ts:20` classifyRunnerRow(status!==running
+  → terminal 分支,verbatim 渲染)、`cleanup.ts:67`(显式 ['completed','timeout'])、FLY-638/817 显式
+  状态列表、`types.ts:67` union(编译期扩)、wake/send 路径(按 execId 取 row,不 switch status)。
+
+### 9.3 exit-path × 残留物 owner 矩阵(①层的完整视野)
+
+| exit path | CommDB row | app-server/MCP 子进程 | worktree/分支 |
+|---|---|---|---|
+| Lead close/terminate(B) | ✅ closeRunner→finalizeCommDbSession(close-runner.ts:373;actions.ts:1402) | ✅ closeRunner MCP-descendant reap(FLY-228) | ✅ lifecycle-closeout(FLY-1185) |
+| ship-terminal(A) | ✅ post-ship-finalization → closeout | ✅ 同上 | ✅ Layer A ship closeout(FLY-1185 §2.4) |
+| crash reap(C,FLY-720) | ✅ crash-reaper.ts:319 finalize | ✅ teardown 序列 | ➖ periodic sweep(E)兜 |
+| issue-terminal reconcile(D)/periodic sweep(E) | ✅ lifecycle-closeout.ts:243 | ✅ | ✅ |
+| adapter 受控退出 | ✅ §9.2 completed/timeout | ✅ adapter 自身 teardown | ➖ 不归 adapter |
+| **FSM → failed/blocked(S1/S2/S3)** | ❌ **无 owner(①层 L-A 的靶子)** | CRASH_PRESERVE 政策性保留窗口(非泄漏);codex resident 场景由 FLY-1269 协作关停 | 保留(retry 可能复用;closeout 时清) |
+| SIGKILL/OOM/Bridge crash(S6) | ②收割 | crash-reaper + FLY-1269 provably-absent backstop | FLY-1185 periodic sweep |
+| StateStore 重建(S7) | ②面① | n/a(进程早死) | FLY-1185 periodic sweep |
+
+已知独立 open item(不并入本票,plan 引为边界):FLY-603 worktree autoclean 曾未触发的调查
+(team task #108);FLY-1148 infra-bot 进程泄漏(已另票)。
+
+### 9.4 ①层 kill-switch 与 byte-compat
+
+- 新 flag(plan 定名,倾向 `FLYWHEEL_TERMINAL_COMMDB_SYNC`,default on)控制 L-A hook;=0 时
+  onTransition 只保留 FLY-907 原行为,逐字节一致(反向哨兵)。与②的
+  `FLYWHEEL_COMMDB_RESIDUE_HARVEST` 相互独立(矩阵测试)。
+- CHECK 迁移是 schema 层、不可 flag 化——但迁移本身零行为变化(只放宽约束),旧值全兼容;
+  迁移幂等判据 = schema sql 含 `'failed'`(FLY-1279 同款)。
+
+## 10. 下游
+
+双层实施计划(Part A = ①层 L-A/L-B/L-C;Part B = ②层 as-built 引用 + FLY-638 prune 扩展增量;
+TDD 顺序、验收清单、FLY-817 BLOCKER-1 修订立节)→ 同文件夹 `plan.md`
