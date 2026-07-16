@@ -125,31 +125,47 @@ e90f3962-0c73-…|runner-geoforge3d:pending   |geoforge3d|9619b712-…(UUID)    
 ### 9.1 FSM 转移咽喉与 hook 先例
 
 - `applyTransition`(`packages/teamlead/src/applyTransition.ts:1-60`)自注释:「Unified entry point for
-  ALL status changes … All status changes must go through this function」。
+  ALL status changes」——**但该声称对 failed/blocked 不完整**(Codex design R1 #1 证伪):
+  `DirectEventSink` 明文说明它**故意**用 `upsertSession` 直写、不经 applyTransition
+  (DirectEventSink.ts:102-108;run-infra.ts:554-556 再次自述为生产设计)——in-process completion 的
+  `route==="blocked"` 在 DirectEventSink.ts:647,758-785 直写 blocked;`emitFailed`(:1036-1088)直写
+  failed/blocked。另有 `complete-marker-reconciler.ts:731-758` 的 forceStatus fallback。
+  ⇒ **①层的生产写入面 = 五个确定点**:共享 onTransition、stale-guard onTransition、DES blocked
+  completion、DES emitFailed、marker forceStatus fallback(plan A2 inventory)。
 - **FLY-907 hook 先例**:`ApplyTransitionOpts.onTransition`(:14-34)——composition root(plugin.ts)在
-  **两个** ApplyTransitionOpts 实例(共享 + stale-blocker-guard 自有)上注入,自述覆盖
-  kill/terminate/retry/reject/close-runner/crash-reaper/heartbeat reconcile/marker reconcilers/
-  completion routes/founder consent 全漏斗;hook 体 try/catch 包裹、永不破坏 transition。
-  ①层 CommDB 同步沿同一注入模式与同一安全契约(enqueue/best-effort、微秒级、不 throw)。
-- **failed/blocked 的产生方**(全部 import applyTransition,grep 实核):HeartbeatService(reapOrphans
-  force-fail、FLY-1282 zombie declaration)、event-route(`--route blocked` completion 消费)、
-  DirectEventSink / DecisionLayer 终态路由、run-infra / run-dispatcher(spawn 失败)、auto-qa-effects。
-- **旁路**:`forceStatus`(StateStore.ts:3505-3530,legacy 直写 `UPDATE sessions SET status …`)绕过
-  applyTransition。implement 需审计生产调用方是否可能以 failed/blocked 走此路;有则补同点 hook,
-  无则守卫测试 pin(断言生产代码 forceStatus 调用点不含 CRASH_PRESERVE 目标值)。
+  两个 ApplyTransitionOpts 实例上注入;hook 契约 = **只做微秒级 enqueue**、try/catch、永不破坏
+  transition(:19-27,71-80)。注意 `CommDB` 构造器是重量级(mkdir/WAL/全量 SCHEMA/migrations/
+  purgeExpired/busy_timeout 5000,db.ts:224-237)——**不得在 hook 内开库**,必须 enqueue+drain 分离
+  (Codex R1 #2)。
+- **经 applyTransition 的 failed/blocked 产生方**(grep 实核):HeartbeatService(reapOrphans
+  force-fail、FLY-1282 zombie declaration)、event-route、DecisionLayer 路由、run-infra /
+  run-dispatcher(spawn 失败)、auto-qa-effects。
+- **其余 forceStatus 调用点**(StateStore.ts:3505-3530 legacy 直写):多数注明生产总会传
+  transitionOpts;implement 逐点写死「生产不可达 failed/blocked」证明 + 守卫测试 pin,证明不成立的
+  并入五面 inventory(Codex R1 #1)。
 
 ### 9.2 CommDB 侧原语现状(①层直接复用)
 
-- `updateSessionStatus(execId, 'completed'|'timeout'|'blocked')`(db.ts:1911)——带 ended_at 的 UPDATE;
-  ①层扩签名 + CHECK 加 `'failed'`(FLY-1279 整表重建迁移模式,db.ts:370-405 逐字可仿)。
+- `updateSessionStatus(execId, 'completed'|'timeout'|'blocked')`(db.ts:1911)——带 ended_at 的 UPDATE。
+  ①层**不扩它**,而是:新 `markSessionTerminalStatus`(权威 mark,first-terminal ended_at)+ adapter
+  尾写调用点改 CAS(见下)+ CHECK 加 `'failed'`(FLY-1279 整表重建迁移模式,db.ts:370-405 逐字可仿)。
 - adapter 受控退出已写 CommDB:TmuxAdapter.ts:703(waitForCompletion finally → completed/timeout)、
   CodexTmuxAdapter.ts:821/898(controlled shutdown → completed/timeout)。⇒ S4(completed 家族)在
   adapter 在场的死法下已有实时同步;①层不重复。
 - `unregisterPendingSession`(db.ts:1903)——只删 `%:pending` 行;调用点仅 run-dispatcher.ts:842/897/923
   (abortPreLaunch/cleanupPreRegistration,FLY-80)。GEO-441 形态(auto-QA spawn 失败)未走到 → S3。
-- CommDB status 读方矩阵(新值 'failed' 兼容性):`lifecycle.ts:20` classifyRunnerRow(status!==running
-  → terminal 分支,verbatim 渲染)、`cleanup.ts:67`(显式 ['completed','timeout'])、FLY-638/817 显式
-  状态列表、`types.ts:67` union(编译期扩)、wake/send 路径(按 execId 取 row,不 switch status)。
+- CommDB status 读方矩阵(新值 'failed' 兼容性,Codex R1 #4 修正后):`lifecycle.ts:20`
+  classifyRunnerRow 能分类任意终态,**但 marked 行到不了它**——`runner_terminal_list` 的终态候选取自
+  `getRecentTerminalSessions`/`countTerminalSessions`,两者硬编码 `('completed','timeout')`
+  (db.ts:2052-2065,2073-2082;terminal-mcp/index.ts:182-198)⇒ A1 必须同步扩这两条 SQL,否则 mark
+  对 Lead 视图不可见。`cleanup.ts:67`(显式 ['completed','timeout'],**刻意不扩**——它 kill 窗口,与
+  preserve 政策冲突)、FLY-638/817 显式状态列表、`types.ts:67` union(编译期扩)、wake/send 路径
+  (按 execId 取 row,不 switch status)。
+- **updateSessionStatus 是无条件 last-writer-wins**(db.ts:1911-1919,且每次重写 ended_at)——
+  adapter 尾写(TmuxAdapter finally / CodexTmuxAdapter controlled shutdown)可覆盖 mark;
+  `registerSession` 是 INSERT OR REPLACE(db.ts:1875-1887),晚自注册可覆盖终态 mark。
+  ⇒ plan A1 定义写入优先级(adapter 尾写 CAS status='running';mark = first-terminal-write ended_at;
+  late-register 审计),Codex R1 #3。
 
 ### 9.3 exit-path × 残留物 owner 矩阵(①层的完整视野)
 

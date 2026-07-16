@@ -76,39 +76,44 @@ close_runner 够不到(无 StateStore row / 跨 project 被 checkLeadScope 挡)�
 
 ## 3. ① 根因层设计(本轮新增)
 
-### 3.1 L-A:FSM 转移咽喉的 CommDB 终态同步(核心)
+### 3.1 L-A:终态 CommDB 同步——五个生产写入面 + 非阻塞队列(核心;Codex design R1 收紧后形态)
 
-`applyTransition`(applyTransition.ts:1-60)是 Bridge 侧「ALL status changes」的统一入口,且 FLY-907
-已经建立了后置 hook 模式(`onTransition`,composition root 注入,覆盖 kill/terminate/retry/close/
-crash-reaper/heartbeat/marker/completion 全漏斗)。①层沿同一模式:
+Bridge 侧 failed/blocked 的**生产写入面是五个确定点**(不止 applyTransition——`DirectEventSink` 故意
+绕过它直写 upsertSession,DirectEventSink.ts:102-108 / run-infra.ts:554-556 自述):
+① 共享 ApplyTransitionOpts.onTransition(FLY-907 实例) ② stale-blocker-guard 自有 onTransition
+③ DirectEventSink 的 `route==="blocked"` completion 直写点 ④ `DirectEventSink.emitFailed`
+⑤ complete-marker-reconciler 的 forceStatus fallback。五点统一调同一入口:
 
 ```
-composition root(plugin.ts)给 onTransition 增补一步(或并列新 hook):
-  targetStatus ∈ {failed, blocked}
-    → CommDB.updateSessionStatus(execId, targetStatus) + ended_at
-       (best-effort:失败 warn 不破坏 transition;幂等:重复 UPDATE 无害)
+enqueueTerminalCommDbSync(execId, targetStatus, project):   // 同步调用点:只做内存入队,微秒级
+  targetStatus ∈ {failed, blocked} 才入队(coalesce by execId)
+drain(per-project single-flight,调用栈之外):
+  重读 StateStore 权威状态仍 ∈ {failed, blocked} → CommDB mark + first-terminal ended_at
+  (CommDB 构造器重量级——mkdir/WAL/migrations/busy_timeout 5s——绝不在 hook 内开库)
 ```
 
 - **只 mark 不 delete**:CRASH_PRESERVE 的窗口可能还活着(取证/scrollback/retry teardown target)——
   FLY-116 政策与 FLY-817 BLOCKER-1 原样保留;`tmux-lookup.ts:178` 按 execution_id 读 row、status 无关,
   mark 不破坏 retry。Tadashi gate 答复 A3 确认。
+- **写入优先级**(防 last-writer-wins 竞态):adapter 生命周期尾写(completed/timeout)只允许 CAS
+  `WHERE status='running'`;mark = StateStore 权威写,`ended_at` first-terminal-write 不漂移;
+  registerSession 晚注册时序审计。
 - **CommDB CHECK 加 `'failed'`**(Tadashi gate 答复 A1 采纳):按 FLY-1279 已验证的整表原子重建模式
-  (db.ts:370-405 同款,SQLite 不能 ALTER CHECK)把 CHECK 扩为
-  `('running','completed','timeout','blocked','failed')`;`types.ts:67` Session.status union 同步;
-  `updateSessionStatus` 签名扩 `'failed'`。读方盘点(lifecycle.ts classify / cleanup.ts / FLY-638/817
-  显式状态列表)均容忍新值。
-- **效果**:status ≠ running → `classifyRunnerRow` 走 terminal 分支 → 窗口活 = parked-alive(比 running
-  诚实:preserve 取证窗就是 parked),窗口死 = dead(runner_terminal_list 默认隐藏)。S1/S2/S3 三个
-  泄漏源在**产生当刻**闭合,不再等收割。
-- **旁路盘点**:`forceStatus`(StateStore.ts:3505,legacy 直写)绕过 applyTransition——implement 时审计
-  「无生产调用方以 failed/blocked 调 forceStatus」并加守卫测试;若有,同步补 hook。
+  (db.ts:370-405 同款)扩 CHECK;`types.ts:67` union 同步。**读侧候选集必须同步扩**:
+  `getRecentTerminalSessions`/`countTerminalSessions` 硬编码 `('completed','timeout')`,不扩则 mark
+  对 `runner_terminal_list` 不可见(Codex R1 #4);`cleanupStaleSessions` 刻意不扩(它 kill 窗口,
+  与 preserve 政策冲突)。
+- **效果**:status ≠ running → classifyRunnerRow terminal 分支 → 窗口活 = parked-alive(比 running
+  诚实),窗口死 = dead(默认隐藏)。S1/S2/S3 三个泄漏源在**产生当刻**闭合,不再等收割。
+- **其余 forceStatus 旁路**(StateStore.ts:3505 legacy 直写):逐点写死「生产不可达 failed/blocked」
+  证明 + 守卫测试 pin;证明不成立的并入五面 inventory。
 
-### 3.2 L-B:spawn 失败的 pending row 定点清理(增强,非必需)
+### 3.2 L-B:spawn 失败 cleanup 覆盖审计(非代码 gate;Codex R1 #7 改判)
 
-S3 经 L-A 已闭合(spawn 失败 → FSM failed → row 标 failed 隐藏)。在此之上,若 implement 审计发现
-auto-QA spawn 失败路径可拿到确定的「blueprint 从未启动」证据,则调 `unregisterPendingSession`
-直接删 `:pending` 占位(什么都没跑过的 row 无保留价值)——与 run-dispatcher 既有 FLY-80 行为对齐。
-拿不到确定证据就只靠 L-A 标记,不猜。
+S3 经 L-A 已闭合(spawn 失败 → FSM failed → row 标 failed 隐藏);且现行 dispatcher 已在 pre-launch
+abort / promise rejection / 无 sessionId 失败结果上调用 `cleanupPreRegistration`(FLY-80)。L-B 因此是
+**审计并引用/补 pin 既有覆盖**的非代码 gate——只有找到一个具名、可复现、且拿到「从未启动」证明的
+未覆盖分支才新增 `unregisterPendingSession` 调用;GEO-441 历史形态与现行覆盖的差异写进审计结论。
 
 ### 3.3 L-C:app-server / worktree 的审计与 pin(不重建机制)
 
@@ -124,9 +129,11 @@ auto-QA spawn 失败路径可拿到确定的「blueprint 从未启动」证据,�
 - ①上线后,新增 failed/blocked 僵尸在源头闭合 → ②面②的候选集随时间收敛到「crash 死法」残留,
   收割器回归 fsck 定位(Tadashi 的分工原话)。
 - ①标记出的 `failed`/`blocked` 终态 row,窗口一旦证死即成死尸 → **②的终态 prune(FLY-638)扫描集从
-  `{completed,timeout}` 扩为 `{completed,timeout,failed,blocked}`**(delete 仍只认 probe=dead)。
-  该 delete 的正当性 = 第一轮 design §3.7 已获 Tadashi + Codex 双签的 FLY-817 BLOCKER-1 修订
-  (probe=dead ⇒ preserve 标的已灭失)。
+  `{completed,timeout}` 扩为 `{completed,timeout,failed,blocked}`**(delete 仍只认 probe=dead;新增
+  两值挂 harvest flag,原集无条件保留)。该 delete 的正当性 = 第一轮 design §3.7 已获 Tadashi + Codex
+  双签的 FLY-817 BLOCKER-1 修订(probe=dead ⇒ preserve 标的已灭失)。**收敛节奏**:prune 同时纳入
+  residue full pass(heartbeat maintenance ~1h 一轮)——现状它只在 boot 跑,mark 后的行离开 running
+  扫描集,不入 full pass 就要等下次重启才收(Codex R1 #5)。
 
 ### 3.5 决策呈报:mark 与 delete 的分工(消解两次答复的表面矛盾)
 
@@ -157,7 +164,7 @@ kill-switch;scope-free = 零 leadId 检查、只遍历本 Bridge config projects
 |---|---|
 | 只做②收割器 | **Annie 否决**:= 打补丁;残留持续产生 |
 | 只做①自清、砍掉② | crash/OOM/SIGKILL/库重建死法无进程可自清;昨夜面③④事故正是这类;②已实现且 QA PASS,砍掉是倒退 |
-| ①逐调用点补 CommDB 同步(不走 applyTransition 咽喉) | 打地鼠:failed/blocked 的产生点 ≥4 处且会新增;FLY-907 已证咽喉 hook 模式覆盖全漏斗 |
+| ①各写入面各自开库直写(无统一队列入口) | 打地鼠 + 每处重复 open/close 重量级 CommDB;统一 `enqueueTerminalCommDbSync` 五面接线 + 单 drain,语义一处定义(注意 applyTransition **不是**唯一咽喉——DirectEventSink 生产直写,Codex R1 #1) |
 | ①连 completed 家族也 mark | S4 已有三重 owner(adapter finally / lifecycle-closeout / FLY-817);再加一层是冗余写放大 |
 | CommDB 不加 'failed'、failed 映射 'blocked' | 状态可信是 FLY-942 家族主题;Tadashi A1 拍板加 'failed';FLY-1279 迁移模式现成 |
 | 新 `/api/actions/cleanup` 手动端点 / 枚举 `~/.flywheel/comm/` 全目录 | 第一轮已否决(FLY-175 扩权 / 跨 Bridge 误伤),理由不变 |
