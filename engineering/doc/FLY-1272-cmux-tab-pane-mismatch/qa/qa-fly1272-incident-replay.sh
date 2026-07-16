@@ -267,7 +267,8 @@ tmux new-session -d -s roe -n existing "sleep 60" 2>/dev/null
 tmux set-option -t "=roe:" remain-on-exit on 2>/dev/null
 new_wid=$(tmux new-window -d -t "=roe:" -P -F '#{window_id}' -n runner "sleep 60" 2>/dev/null)
 old_on_existing=$(tmux show-options -w -v -t "=roe:existing" remain-on-exit 2>/dev/null)
-old_on_runner=$(tmux show-options -w -v -t "=roe:$new_wid" remain-on-exit 2>/dev/null)
+old_runner_read_rc=0
+old_on_runner=$(tmux show-options -w -v -t "=roe:$new_wid" remain-on-exit 2>/dev/null) || old_runner_read_rc=$?
 #
 # Anti-vacuity for this NEGATIVE assertion ("the runner window did NOT get it").
 # Measured tmux 3.5a semantics (real server, this machine):
@@ -284,10 +285,16 @@ old_on_runner=$(tmux show-options -w -v -t "=roe:$new_wid" remain-on-exit 2>/dev
 #   (b) a positive control: the same reader must return "on" for the window the
 #       old form DID hit — proving this ruler can see "on" at all, so an empty
 #       reading is a real unset rather than a broken read.
+#   (c) rc==0 on THIS read. Not sufficient (see above) but necessary: (a) and
+#       (b) qualify the target and the ruler, yet neither proves this
+#       particular call succeeded — a transient rc=1 with empty output would
+#       otherwise still score a pass.
 runner_exists=no
 tmux list-windows -t "=roe" -F '#{window_id}' 2>/dev/null | grep -qx "$new_wid" && runner_exists=yes
 if [[ "$runner_exists" != "yes" ]]; then
   fail "§2.8 premise UNTESTABLE: runner window [$new_wid] does not exist — any option read would silently fall back to another window"
+elif [[ "$old_runner_read_rc" -ne 0 ]]; then
+  fail "§2.8 premise UNTESTABLE: the runner-window option read itself failed (rc=$old_runner_read_rc) — an empty value proves nothing"
 elif [[ "$old_on_existing" != "on" ]]; then
   fail "§2.8 premise UNTESTABLE: positive control failed — reader did not see 'on' on the window the old form targeted (got [$old_on_existing]); an empty runner reading would prove nothing"
 elif [[ "$old_on_runner" != "on" ]]; then
