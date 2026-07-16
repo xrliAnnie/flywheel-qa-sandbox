@@ -13,8 +13,20 @@ Issue: FLY-1066
 
 **QA 判定 = PASS**(代码层面已独立验证,零回归)。
 
-**但 ship 前置未满足**:Codex code review 对本 head **尚未跑**(见 §6)。这不是代码缺陷,
+**但 ship 前置未满足**:Codex code review 的 **durable record 没落地**(见 §6)。这不是代码缺陷,
 是流程门 —— 我不 waive,也不代 implement 开 approve gate。
+
+**Tadashi 裁定 = (a)**(2026-07-16):implement 在**冻结 head** 上重注册 cross-family review
+(delta = 本轮 QA docs + harness,纯 docs-only,引用 R1-R3 历史做增量审)→ APPROVED **且 durable
+record 真落地**(`await-codex-gate` 验过)→ 我在**同 head** 重盖 qa-result → 开 approve gate → Tadashi 呈 Annie。
+存量 20 条候选等下次批量重启收,不动。
+
+**本轮我自己制造的两个问题(已修,记录在案)**:
+1. **CI 被我推红**:`qa2-e2e-fly1066.mjs` 没过 biome lint。根因 = 我只跑了 `biome check packages/`,
+   而我的新文件在 `engineering/doc/` —— **我验证的 scope 就是错的**(0 error 是真的,但那把尺子没量到我自己)。
+   已 `biome check --write` 修好,并**重跑 E2E 确认格式化没改坏行为**(仍 16/16)。
+2. **head 被 `flywheel-comm progress` 悄悄推走**:该命令会 path-limited commit `progress.md`
+   ([[reference_codex_review_record_how_earned]] 记过这个坑)。所幸**只在本地、没 push**,远端冻结头当时未受影响。
 
 ## 1. 测试执行(全部独立复跑,不采信实现者自报)
 
@@ -104,13 +116,21 @@ Issue: FLY-1066
 
 ## 6. ⚠️ Ship 前置未满足(交 Tadashi 裁,不由我 waive)
 
-- **Codex code review 对本 head 未跑**。依据(非推测):
+- **Codex code review 的 durable record 没落地**(≠ review 没跑 —— 见下方更正)。
+- 我观察到的事实(仍然成立):
   1. implement 自己的 `progress.md` = `phase: implement 6/7`,`nextStep: "…open a fresh cross-family code review"`;
   2. doc 文件夹只有 `design-review-*.md`(design 4 轮 + dual 2 轮),**无任何 code-review 产物**;
   3. PR #616 comments 只有 linear-linkback,**无 Codex 评审记录**。
-- FLY-827 的 merge 门认 durable `codex_review_record`([[reference_codex_review_record_how_earned.md]]:**跑了 Codex ≠ 有记录**)。
-- ∴ **implement 阶段尚未完成**。我不开 approve gate —— 不拿未过 code review 的码去踢 founder 批准
-  ([[feedback_dont_waive_codex_review_when_available]] / [[feedback_never_ask_ship_if_not_tested]])。
+- FLY-827 的 merge 门认 durable `codex_review_record`([[reference_codex_review_record_how_earned]]:**跑了 Codex ≠ 有记录**)。
+- ∴ ship 前置未满足。我不开 approve gate([[feedback_dont_waive_codex_review_when_available]] / [[feedback_never_ask_ship_if_not_tested]])。
+
+> **更正(Tadashi 2026-07-16,推翻我第一版的判断)**:R3 review **其实跑过、而且 APPROVED**(@ `6fb1523da`,
+> 他进程级看着 reviewer 跑完)。我原文写"code review **尚未跑**"是**错的**。
+> 我把上面三条"无记录"的证据**过度解读**成了"review 没发生" —— 它们只证明**记录没落库**,不证明 review 没跑。
+> 真正的缺口 = **verdict 没落成 durable record**(FLY-1185 同款落库缺口)+ 我推 QA 产物把 head 推到
+> `6030c64b9`,record 就算落了也**解绑**。要害结论(gate 未满足、不能 ship)不变,但**成因**必须写对。
+> 教训:"查不到记录" ≠ "事情没发生" —— 这正是 [[feedback_label_substituting_for_fact_bug_class]] 的镜像形态
+> (拿"记录缺失"当"行为缺失"),我下次要么找到"谁跑过/没跑过"的直接证据,要么把话说成"无记录可证"。
 
 ## 7. 部署注记(不阻塞本轮 QA)
 
