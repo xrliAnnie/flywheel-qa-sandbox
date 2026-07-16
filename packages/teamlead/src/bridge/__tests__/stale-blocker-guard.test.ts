@@ -399,6 +399,7 @@ function makeGuardDeps(over: {
 	enabled?: boolean;
 	prState?: PrState;
 	finalizeProceed?: boolean;
+	reconcileGhost?: (blocker: Session) => Promise<boolean>;
 }) {
 	const checkPrState = vi.fn(async () => over.prState ?? "unknown");
 	const finalizeBlocker = vi.fn(async () => ({
@@ -413,11 +414,86 @@ function makeGuardDeps(over: {
 		finalizeBlocker,
 		alertLead,
 		projectRootFor: () => "/repo/sub",
+		reconcileGhost: over.reconcileGhost,
 	};
 	return { deps, checkPrState, finalizeBlocker, alertLead };
 }
 
 describe("createStaleBlockerGuard (orchestration)", () => {
+	it("residue target hook runs before the FLY-742 kill-switch and releases a reaped ghost", async () => {
+		const reconcileGhost = vi.fn(async () => true);
+		const { deps, checkPrState } = makeGuardDeps({
+			enabled: false,
+			reconcileGhost,
+		});
+		const g = createStaleBlockerGuard(deps);
+		const r = await g.handleActiveBlocker(
+			session({
+				status: "awaiting_review",
+				started_at: sqliteAgo(31 * 60_000),
+				awaiting_review_entered_at: sqliteAgo(31 * 60_000),
+			}),
+		);
+
+		expect(r.proceed).toBe(true);
+		expect(reconcileGhost).toHaveBeenCalledOnce();
+		expect(checkPrState).not.toHaveBeenCalled();
+	});
+
+	it("running StateStore ghost can be released before local blocker classification", async () => {
+		const reconcileGhost = vi.fn(async () => true);
+		const { deps, checkPrState } = makeGuardDeps({ reconcileGhost });
+		const g = createStaleBlockerGuard(deps);
+		const r = await g.handleActiveBlocker(
+			session({ status: "running", started_at: sqliteAgo(10 * HOUR) }),
+		);
+
+		expect(r.proceed).toBe(true);
+		expect(checkPrState).not.toHaveBeenCalled();
+	});
+
+	it("fresh/non-ghost target falls through to the exact old 409 path", async () => {
+		const reconcileGhost = vi.fn(async () => false);
+		const { deps, checkPrState, finalizeBlocker, alertLead } = makeGuardDeps({
+			reconcileGhost,
+		});
+		const g = createStaleBlockerGuard(deps);
+		const r = await g.handleActiveBlocker(
+			session({
+				status: "awaiting_review",
+				started_at: sqliteAgo(5 * 60_000),
+				awaiting_review_entered_at: sqliteAgo(5 * 60_000),
+			}),
+		);
+
+		expect(r.proceed).toBe(false);
+		expect(reconcileGhost).toHaveBeenCalledOnce();
+		expect(checkPrState).not.toHaveBeenCalled();
+		expect(finalizeBlocker).not.toHaveBeenCalled();
+		expect(alertLead).not.toHaveBeenCalled();
+	});
+
+	it("non-ghost stale blocker preserves FLY-742 ordering after the new hook", async () => {
+		const reconcileGhost = vi.fn(async () => false);
+		const { deps, checkPrState, finalizeBlocker } = makeGuardDeps({
+			reconcileGhost,
+			prState: "merged",
+		});
+		const g = createStaleBlockerGuard(deps);
+		const r = await g.handleActiveBlocker(
+			session({
+				pr_number: 83,
+				awaiting_review_entered_at: sqliteAgo(10 * HOUR),
+			}),
+		);
+
+		expect(r.proceed).toBe(true);
+		expect(reconcileGhost.mock.invocationCallOrder[0]).toBeLessThan(
+			checkPrState.mock.invocationCallOrder[0]!,
+		);
+		expect(finalizeBlocker).toHaveBeenCalledOnce();
+	});
+
 	it("disabled → proceed:false, no gh call", async () => {
 		const { deps, checkPrState } = makeGuardDeps({ enabled: false });
 		const g = createStaleBlockerGuard(deps);

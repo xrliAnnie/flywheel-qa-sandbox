@@ -148,6 +148,17 @@ describe("feature-flag registry invariants", () => {
 		]);
 	});
 
+	it("FLY-1066 residue harvest is a registered default-on Bridge kill-switch", () => {
+		const flag = FEATURE_FLAGS.find((f) => f.name === "commdb_residue_harvest");
+		expect(flag).toMatchObject({
+			category: "kill_switch",
+			scope: "bridge_global",
+			envVar: "FLYWHEEL_COMMDB_RESIDUE_HARVEST",
+			polarity: "default_on",
+			default: true,
+		});
+	});
+
 	it("quota daemon cutover is a temporary readonly boot flag tied to FLY-1284", () => {
 		const cutover = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_QUOTA_DAEMON_CUTOVER",

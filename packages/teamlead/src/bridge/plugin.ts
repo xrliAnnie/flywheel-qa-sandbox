@@ -187,6 +187,7 @@ import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
 import {
 	finalizeCommDbSession,
 	pruneDeadTerminalCommDbSessions,
+	resolveCommDbPath,
 } from "./commdb-session-prune.js";
 import {
 	buildLoopbackBaseUrl,
@@ -393,6 +394,7 @@ import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
 import { notifyDigestExpectTick } from "./notify-digest-expect.js";
 import { defaultReceiptsPath } from "./notify-receipts.js";
+import { resolveOrphanDetectionEscalations } from "./orphan-escalation-reconcile.js";
 import { hashPane, liveRegion } from "./pane-live-region.js";
 import {
 	LEAD_ONLY_PARK_KINDS,
@@ -439,6 +441,12 @@ import {
 	makeRunnerRevalidate,
 	type RescueRuntime,
 } from "./rescue-runtime.js";
+import {
+	createResidueHarvester,
+	type ResidueHarvester,
+	residueMaintenanceEveryNTicks,
+	runResidueAwareBootSweep,
+} from "./residue-harvest.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
 import {
 	createReviewAlertEmitter,
@@ -490,6 +498,11 @@ import {
 import { createStandupRouter } from "./standup-route.js";
 import { StandupService } from "./standup-service.js";
 import {
+	reapStateStoreGhost,
+	reconcileStateStoreGhosts,
+	type StateStoreGhostDeps,
+} from "./statestore-ghost-reconcile.js";
+import {
 	buildStuckRunnerDetector,
 	hasPendingBlockingGateFromCommDb,
 	hasPendingGateFromCommDb,
@@ -529,6 +542,7 @@ import {
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
 	probeTmuxServer,
+	probeTmuxWindowLiveness,
 	sendEnterToWindow,
 	sendKeysToWindow,
 } from "./tmux-lookup.js";
@@ -1017,6 +1031,8 @@ export interface BridgeAppOptions {
 	 * (single boot-time capture in startBridge). Absent → zero enqueue.
 	 */
 	terminalArchiveEnqueue?: (issueId: string) => void;
+	/** FLY-1066: shared boot/maintenance/targeted residue single-flight. */
+	residueHarvester?: ResidueHarvester;
 	/** FLY-91 Round 3: Global Discord bot token for thread creation fallback. */
 	globalBotToken?: string;
 	/**
@@ -3296,6 +3312,9 @@ export function createBridgeApp(
 			},
 		};
 		const staleBlockerGuard = createStaleBlockerGuard({
+			reconcileGhost: opts?.residueHarvester
+				? (blocker) => opts.residueHarvester!.reapTarget(blocker)
+				: undefined,
 			enabled: process.env.FLYWHEEL_CRON_STALE_GUARD !== "0",
 			staleTtlMs: resolveCronStaleTtlMs(),
 			now: () => Date.now(),
@@ -4584,6 +4603,138 @@ export async function startBridge(
 			return issueMutex(lockKeys, fn);
 		},
 	};
+
+	// FLY-1066: one startup-captured master switch and one shared single-flight
+	// instance for boot, maintenance, and the scope-free scheduled-run fast path.
+	// FLYWHEEL_COMMDB_FSM_RECONCILE remains the face-①/② sub-switch only: it
+	// never suppresses StateStore ghosts, orphan escalations, or the targeted path.
+	const commDbFsmReconcileEnabled =
+		process.env.FLYWHEEL_COMMDB_FSM_RECONCILE !== "0";
+	const residueHarvestEnabled =
+		process.env.FLYWHEEL_COMMDB_RESIDUE_HARVEST !== "0";
+	const openResidueCommDb = <T>(
+		projectName: string,
+		read: (db: CommDB) => T,
+	): T | undefined => {
+		if (/[/\\]|\.\./.test(projectName)) {
+			throw new Error(`unsafe configured project name: ${projectName}`);
+		}
+		const dbPath = resolveCommDbPath(projectName);
+		if (!dbPath) return undefined;
+		const db = CommDB.openReadonly(dbPath);
+		try {
+			return read(db);
+		} finally {
+			db.close();
+		}
+	};
+	const residueGhostDeps: StateStoreGhostDeps = {
+		store,
+		transitionOpts,
+		ghostMinAgeMs: 30 * 60_000,
+		nowMs: () => Date.now(),
+		lookupCommDbSession: (executionId, projectName) =>
+			openResidueCommDb(projectName, (db) => db.getSession(executionId)),
+		probe: (tmuxSession) => probeTmuxWindowLiveness(tmuxSession),
+		finalizeCommDbSession: (executionId, projectName) =>
+			finalizeCommDbSession(executionId, projectName),
+		lifecycleMutex: {
+			withIssueMutex: (keys, fn) => issueMutex(keys, fn),
+			resolveLockKeys: (issueId) => {
+				const resolved = resolveLifecycleRootKey(store, issueId, []);
+				return resolved.lockKeys.length > 0 ? resolved.lockKeys : [issueId];
+			},
+		},
+		archiveThread: (session) =>
+			archiveIssueThreadIfNoOtherActive(
+				store,
+				session,
+				{
+					projects,
+					globalBotToken: config.discordBotToken,
+					discordOwnerUserId: config.discordOwnerUserId,
+				},
+				{ allowStatuses: ["terminated"] },
+			),
+		onQaPhaseTerminated: (executionId, issueId) => {
+			void phaseOrchestratorHolder.current
+				?.reconcileQaLoss({ issueId, terminalExecId: executionId })
+				.catch((err) =>
+					console.warn(
+						`[residue-harvest] qa-loss reconcile failed for ${executionId}: ${(err as Error).message}`,
+					),
+				);
+		},
+		log: (message) => console.warn(message),
+	};
+	const residueHarvester = residueHarvestEnabled
+		? createResidueHarvester({
+				projectNames: projects.map((project) => project.projectName),
+				commDbFsmEnabled: commDbFsmReconcileEnabled,
+				harvestCommDb: async (projectName) => {
+					const result = await reconcileCommDbRunningAgainstFsm(
+						projectName,
+						(executionId) => store.getSession(executionId)?.status,
+						{
+							harvest: {
+								orphanMinAgeMs: 24 * 3_600_000,
+								nowMs: () => Date.now(),
+							},
+							onFinalizeOutcome: (executionId, project, outcome) => {
+								const session = store.getSession(executionId);
+								store.recordCommDbFinalizeOutcome({
+									executionId,
+									issueId: session?.issue_id ?? executionId,
+									projectName: project,
+									ok: outcome.ok,
+									error: outcome.error,
+								});
+							},
+						},
+					);
+					if (result.reconciled > 0) {
+						console.log(
+							`[Bridge] FLY-1066 CommDB residue (${projectName}): scanned=${result.scanned} reconciled=${result.reconciled} orphan=${result.harvest?.orphanHarvested ?? 0} preserve=${result.harvest?.preserveHarvested ?? 0}`,
+						);
+					}
+				},
+				harvestStateStoreGhosts: async (projectName) => {
+					const result = await reconcileStateStoreGhosts(
+						projectName,
+						residueGhostDeps,
+					);
+					if (result.reaped > 0) {
+						console.log(
+							`[Bridge] FLY-1066 StateStore ghosts (${projectName}): scanned=${result.scanned} reaped=${result.reaped}`,
+						);
+					}
+				},
+				resolveOrphanEscalations: () => {
+					const result = resolveOrphanDetectionEscalations({
+						store,
+						projectNames: projects.map((project) => project.projectName),
+						listCommDbExecutionIds: (projectName) =>
+							openResidueCommDb(projectName, (db) =>
+								db.listSessions().map((session) => session.execution_id),
+							) ?? [],
+						hasCommDbSession: (projectName, executionId) =>
+							openResidueCommDb(
+								projectName,
+								(db) => db.getSession(executionId) !== undefined,
+							) ?? false,
+						log: (message) => console.warn(message),
+					});
+					if (result.resolvedRows > 0) {
+						console.log(
+							`[Bridge] FLY-1066 orphan escalations: targets=${result.resolvedTargets} rows=${result.resolvedRows}`,
+						);
+					}
+				},
+				reapStateStoreGhost: async (session) =>
+					(await reapStateStoreGhost(session, residueGhostDeps)) === "reaped",
+				log: (message) => console.warn(message),
+			})
+		: undefined;
 	// FLY-1232 module ②: THE single default-off switch point for the lifecycle
 	// shadow writer. FLYWHEEL_WORKFLOW_CLAIMS_WRITE≠1 → undefined → every seam
 	// (dispatcher pre-launch, orchestrator hooks, post-ship T9) stays undefined
@@ -4837,6 +4988,7 @@ export async function startBridge(
 		standupProjectName,
 		{
 			vercelToken,
+			residueHarvester,
 			// FLY-1185: ship-entry bundle + shared repo lock for createBridgeApp's
 			// /events router + Layer A closure.
 			lifecycleInfra,
@@ -5250,6 +5402,16 @@ export async function startBridge(
 		// heartbeat interval); single-flight + detached inside HeartbeatService.
 		// Tick 0 = the boot pass (orphan reap + first sweep).
 		async (tick) => {
+			// FLY-1066: ~hourly residue convergence rides this existing tick and is
+			// deliberately independent of the worktree-autoclean kill-switch.
+			if (residueHarvester) {
+				const residueEveryNTicks = residueMaintenanceEveryNTicks(
+					config.stuckCheckIntervalMs,
+				);
+				if (tick % residueEveryNTicks === 0) {
+					await residueHarvester.runFullPass();
+				}
+			}
 			// R3#1: TERM/KILL of orphan MCP processes is a NEW deletion — it
 			// hangs off the same master switch as every other new mutator.
 			if (!worktreeAutocleanEnabled()) return;
@@ -5589,8 +5751,6 @@ export async function startBridge(
 	// disjoint (running vs completed/timeout). `FLYWHEEL_COMMDB_FSM_RECONCILE=0`
 	// disables the reconcile (kill-switch, mirrors FLYWHEEL_CRASH_REAPER).
 	{
-		const prunedProjects = new Set<string>();
-		const reconcileOn = process.env.FLYWHEEL_COMMDB_FSM_RECONCILE !== "0";
 		const recordFinalizeOutcome = (
 			executionId: string,
 			projectName: string,
@@ -5605,44 +5765,51 @@ export async function startBridge(
 				error: result.error,
 			});
 		};
-		void (async () => {
-			for (const p of projects ?? []) {
-				if (prunedProjects.has(p.projectName)) continue;
-				prunedProjects.add(p.projectName);
-				if (reconcileOn) {
-					try {
-						const r = await reconcileCommDbRunningAgainstFsm(
-							p.projectName,
-							(id) => store.getSession(id)?.status,
-							{ onFinalizeOutcome: recordFinalizeOutcome },
-						);
-						if (r.reconciled > 0) {
-							console.log(
-								`[Bridge] FLY-817 CommDB↔FSM reconcile (${p.projectName}): scanned=${r.scanned} reconciled=${r.reconciled} keptNonTerminal=${r.keptNonTerminal} keptPreserve=${r.keptPreserve} keptAliveTarget=${r.keptAliveTarget}`,
-							);
-						}
-					} catch (err) {
-						console.error(
-							`[Bridge] FLY-817 CommDB↔FSM reconcile (${p.projectName}) failed (non-fatal): ${(err as Error).message}`,
-						);
-					}
-				}
-				try {
-					const pruned = await pruneDeadTerminalCommDbSessions(p.projectName, {
-						onFinalizeOutcome: recordFinalizeOutcome,
-					});
-					if (pruned.pruned > 0) {
-						console.log(
-							`[Bridge] FLY-638 CommDB prune (${p.projectName}): scanned=${pruned.scanned} pruned=${pruned.pruned} kept=${pruned.kept} stale terminal rows removed`,
-						);
-					}
-				} catch (err) {
-					console.error(
-						`[Bridge] FLY-638 CommDB prune (${p.projectName}) failed (non-fatal): ${(err as Error).message}`,
+		const runLegacyCommDbFsm = async (projectName: string) => {
+			try {
+				const result = await reconcileCommDbRunningAgainstFsm(
+					projectName,
+					(executionId) => store.getSession(executionId)?.status,
+					{ onFinalizeOutcome: recordFinalizeOutcome },
+				);
+				if (result.reconciled > 0) {
+					console.log(
+						`[Bridge] FLY-817 CommDB↔FSM reconcile (${projectName}): scanned=${result.scanned} reconciled=${result.reconciled} keptNonTerminal=${result.keptNonTerminal} keptPreserve=${result.keptPreserve} keptAliveTarget=${result.keptAliveTarget}`,
 					);
 				}
+			} catch (err) {
+				console.error(
+					`[Bridge] FLY-817 CommDB↔FSM reconcile (${projectName}) failed (non-fatal): ${(err as Error).message}`,
+				);
 			}
-		})();
+		};
+		const pruneCommDb = async (projectName: string) => {
+			try {
+				const pruned = await pruneDeadTerminalCommDbSessions(projectName, {
+					onFinalizeOutcome: recordFinalizeOutcome,
+				});
+				if (pruned.pruned > 0) {
+					console.log(
+						`[Bridge] FLY-638 CommDB prune (${projectName}): scanned=${pruned.scanned} pruned=${pruned.pruned} kept=${pruned.kept} stale terminal rows removed`,
+					);
+				}
+			} catch (err) {
+				console.error(
+					`[Bridge] FLY-638 CommDB prune (${projectName}) failed (non-fatal): ${(err as Error).message}`,
+				);
+			}
+		};
+		void runResidueAwareBootSweep({
+			projectNames: projects.map((project) => project.projectName),
+			residueHarvester,
+			commDbFsmEnabled: commDbFsmReconcileEnabled,
+			runLegacyCommDbFsm,
+			pruneCommDb,
+		}).catch((err) =>
+			console.error(
+				`[Bridge] CommDB boot sweep failed (non-fatal): ${(err as Error).message}`,
+			),
+		);
 	}
 
 	// FLY-369: archive-on-close. Archiving is driven by the Lead's close action

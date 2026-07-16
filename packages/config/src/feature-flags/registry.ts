@@ -1332,6 +1332,26 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "commdb_residue_harvest",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_COMMDB_RESIDUE_HARVEST",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"Bridge scope-free residue harvest — 清 CommDB-only 注册、StateStore ghost 与无主 detection escalation (FLY-1066)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"bridge_boot",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "lead_pending_escalation",
 		category: "feature",
 		source: "env",
