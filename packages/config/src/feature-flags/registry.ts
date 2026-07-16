@@ -102,6 +102,28 @@ function envSite(
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	// ─── env kill-switches / features, call_time → DIRECT-toggle candidates ───
 	{
+		name: "codex_gate_wait",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CODEX_GATE_WAIT",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"Codex resident goal 在 mandatory gate 未答时保活并在门解析后恢复（=0 回滚为 blocked 终态）",
+		readSites: [
+			envSite(
+				"packages/claude-runner/src/codex-daemon-client.ts",
+				"runGoalToTerminal",
+				"call_time",
+			),
+		],
+		// The flag lives in the runner process. Ops can change it conversationally,
+		// but a Bridge/process restart is the conservative activation boundary.
+		toggleable: "conversational",
+	},
+	{
 		// FLY-1256 phase-1 migration flag: after the external daemon is healthy,
 		// setup flips this to retire the Bridge's legacy switch execution surfaces.
 		// The Bridge captures the resolved mode while wiring the plugin, so changing

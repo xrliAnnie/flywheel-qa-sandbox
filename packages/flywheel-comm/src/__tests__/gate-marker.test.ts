@@ -10,6 +10,7 @@ import {
 	defaultGateMarkerDir,
 	listGateMarkersForExecution,
 	markGateMarkerAnswered,
+	markGateMarkerAnsweredForExecution,
 	readGateMarker,
 	removeGateMarker,
 	writeGateMarker,
@@ -93,6 +94,52 @@ describe("gate-marker (FLY-123)", () => {
 		).toBe("/x/y");
 		expect(defaultGateMarkerDir({} as NodeJS.ProcessEnv)).toMatch(
 			/\.flywheel\/state\/codex-gates$/,
+		);
+	});
+
+	// FLY-1257 defect ① × ④ HIGH-1: the isWaiting() predicate a held codex goal
+	// polls is `listGateMarkersForExecution(...).some(m => !m.answeredAt)`. The
+	// review coordinator answers a review gate via CommDB (not the marker), so a
+	// held goal would stay "waiting" ~72h. This helper is what the coordinator
+	// now calls to flip that predicate false immediately once the gate is answered.
+	const isWaiting = (execId: string) =>
+		listGateMarkersForExecution(dir, execId).some((m) => !m.answeredAt);
+
+	it("flips the isWaiting() predicate false once a review gate is answered", () => {
+		writeGateMarker(dir, {
+			...base,
+			questionId: "q-review",
+			checkpoint: "review_code",
+		});
+		expect(isWaiting("exec-1")).toBe(true); // held: gate open
+
+		expect(markGateMarkerAnsweredForExecution(dir, "q-review", "exec-1")).toBe(
+			true,
+		);
+
+		expect(isWaiting("exec-1")).toBe(false); // resumes at once, no 72h wait
+		expect(readGateMarker(dir, "q-review")?.answeredAt).toBeTruthy();
+	});
+
+	it("is a no-op for a foreign / missing / already-answered marker", () => {
+		writeGateMarker(dir, {
+			...base,
+			questionId: "q-review",
+			checkpoint: "review_code",
+		});
+		// Foreign execution id must never touch a marker it doesn't own.
+		expect(
+			markGateMarkerAnsweredForExecution(dir, "q-review", "other-exec"),
+		).toBe(false);
+		expect(readGateMarker(dir, "q-review")?.answeredAt).toBeUndefined();
+		// Missing marker.
+		expect(markGateMarkerAnsweredForExecution(dir, "no-such-q", "exec-1")).toBe(
+			false,
+		);
+		// Already answered → idempotent no-op.
+		markGateMarkerAnswered(dir, "q-review");
+		expect(markGateMarkerAnsweredForExecution(dir, "q-review", "exec-1")).toBe(
+			false,
 		);
 	});
 });

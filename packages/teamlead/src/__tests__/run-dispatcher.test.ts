@@ -2,6 +2,10 @@
  * FLY-22: RunDispatcher unit tests.
  */
 
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { renderRunnerModelDisplay } from "flywheel-config";
 import { buildWindowLabel } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,12 +16,85 @@ import {
 	RunDispatcher,
 	runnerDisplayName,
 } from "../bridge/run-dispatcher.js";
+import * as runInfraModule from "../bridge/run-infra.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 
 // Mock flywheel-core openTmuxViewer (no-op in tests)
 vi.mock("flywheel-core", async (importOriginal) => {
 	const mod = (await importOriginal()) as Record<string, unknown>;
 	return { ...mod, openTmuxViewer: vi.fn() };
+});
+
+type PhaseRetryProbe = (
+	projectRoot: string,
+	branch: string,
+) =>
+	| { kind: "found"; sha: string }
+	| { kind: "missing" }
+	| { kind: "indeterminate"; error: string };
+
+describe("FLY-1257 phase retry branch-tip probe", () => {
+	const dirs: string[] = [];
+	const probe = () =>
+		(
+			runInfraModule as unknown as {
+				probePhaseRetryBranchTip?: PhaseRetryProbe;
+			}
+		).probePhaseRetryBranchTip;
+
+	function git(cwd: string, args: string[]): string {
+		return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
+	}
+
+	function makeRepo(): string {
+		const dir = mkdtempSync(join(tmpdir(), "fly1257-phase-retry-"));
+		dirs.push(dir);
+		git(dir, ["init", "-q"]);
+		git(dir, ["config", "user.email", "test@example.com"]);
+		git(dir, ["config", "user.name", "Flywheel Test"]);
+		writeFileSync(join(dir, "base.txt"), "base\n");
+		git(dir, ["add", "base.txt"]);
+		git(dir, ["commit", "-qm", "base"]);
+		return dir;
+	}
+
+	afterEach(() => {
+		for (const dir of dirs.splice(0))
+			rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("returns found with the fully-qualified local branch tip", () => {
+		const dir = makeRepo();
+		const branch = "flywheel-FLY-1257";
+		git(dir, ["branch", branch]);
+		const expected = git(dir, ["rev-parse", "HEAD"]);
+		expect(probe()).toBeTypeOf("function");
+		expect(probe()?.(dir, branch)).toEqual({ kind: "found", sha: expected });
+	});
+
+	it("returns missing for a confirmed absent branch", () => {
+		const dir = makeRepo();
+		expect(probe()).toBeTypeOf("function");
+		expect(probe()?.(dir, "flywheel-FLY-1257")).toEqual({ kind: "missing" });
+	});
+
+	it("same-name tag cannot impersonate the missing refs/heads branch", () => {
+		const dir = makeRepo();
+		const name = "flywheel-FLY-1257";
+		git(dir, ["tag", name]);
+		expect(probe()).toBeTypeOf("function");
+		expect(probe()?.(dir, name)).toEqual({ kind: "missing" });
+	});
+
+	it("fatal git/repository errors are indeterminate, never missing", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1257-not-repo-"));
+		dirs.push(dir);
+		mkdirSync(join(dir, "nested"));
+		expect(probe()).toBeTypeOf("function");
+		expect(probe()?.(join(dir, "nested"), "flywheel-FLY-1257")).toMatchObject({
+			kind: "indeterminate",
+		});
+	});
 });
 
 function mockBlueprint() {
@@ -338,7 +415,21 @@ describe("RunDispatcher", () => {
 describe("RetryDispatcher", () => {
 	it("keeps the resolved Codex model in a retried implement-phase window", async () => {
 		const [name, runtime] = makeRuntime("TestProject");
-		const dispatcher = new RetryDispatcher(new Map([[name, runtime]]), []);
+		// FLY-1257 defect ③: a three-stage PHASE retry (shareParentBranch +
+		// design/implement/qa role) now resolves branch B's tip through the
+		// startPoint computer, and fails closed when it cannot — an indeterminate
+		// probe must never silently reset branch B to origin/main. This FLY-1255
+		// model-display test predates that dependency, so it supplies the computer
+		// the same way production wiring does; the assertion below is unchanged.
+		const dispatcher = new RetryDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			undefined, // launchClaims
+			undefined, // isCommitted (keep the real default)
+			undefined, // lifecycleAdmission
+			undefined, // lifecycleLaunchGuard
+			() => ({ kind: "found", sha: "b".repeat(40) }),
+		);
 
 		await dispatcher.dispatch({
 			oldExecutionId: "old-exec",

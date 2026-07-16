@@ -95,6 +95,18 @@ export type ResumeComputer = (
 	projectName: string,
 ) => ProgressResumeInfo | null;
 
+/** FLY-1257 M3: machine-readable branch-tip probe result for phase retries. */
+export type PhaseRetryStartPoint =
+	| { kind: "found"; sha: string }
+	| { kind: "missing" }
+	| { kind: "indeterminate"; error: string };
+
+export type PhaseRetryStartPointComputer = (
+	issueId: string,
+	role: string,
+	projectName: string,
+) => PhaseRetryStartPoint;
+
 import {
 	AdmissionDeferredError,
 	RunnerAdmissionController,
@@ -433,6 +445,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 		protected lifecycleAdmission?: LifecycleAdmissionFn,
 		/** FLY-1185 (Codex R1#5): pre-launch recheck + claim CAS hooks. */
 		protected lifecycleLaunchGuard?: LifecycleLaunchGuard,
+		/** FLY-1257 M3: recover the shared branch tip before a phase retry. */
+		protected phaseRetryStartPointComputer?: PhaseRetryStartPointComputer,
 	) {}
 
 	/** Shared admission gate — throws LifecycleParkedError on refusal. */
@@ -614,6 +628,80 @@ export class RetryDispatcher implements IRetryDispatcher {
 			req.leadId,
 			preRegistrationVendor(runnerSpawn),
 		);
+
+		// FLY-1257 M3: every phase retry (independent of keep-alive) recovers
+		// branch B's current tip before either granting TURN or touching Blueprint.
+		// Only a confirmed missing branch may use WorktreeManager's fresh fallback;
+		// an indeterminate git/IO failure must never reset branch B to origin/main.
+		const isPhaseRetry =
+			req.shareParentBranch === true && isThreeStagePhaseRole(role);
+		let retryStartPoint: string | undefined;
+		const computeRetryStartPoint = (): string | undefined => {
+			const computed = this.phaseRetryStartPointComputer?.(
+				req.issueId,
+				role,
+				req.projectName,
+			) ?? {
+				kind: "indeterminate" as const,
+				error: "phase retry startPoint computer unavailable",
+			};
+			if (computed.kind === "indeterminate") {
+				throw new Error(
+					`phase retry startPoint is indeterminate for ${role} on ${req.issueId}: ${computed.error}`,
+				);
+			}
+			if (computed.kind === "missing") return undefined;
+			const sha = computed.sha.trim();
+			if (!sha) {
+				throw new Error(
+					`phase retry startPoint is indeterminate for ${role} on ${req.issueId}: found probe returned an empty sha`,
+				);
+			}
+			return sha;
+		};
+		if (isPhaseRetry) {
+			try {
+				retryStartPoint = computeRetryStartPoint();
+			} catch (error) {
+				this.abortPreLaunch(key, newExecutionId, req.projectName);
+				throw error;
+			}
+		}
+
+		// FLY-1257 M2: retry is a real three-stage launch, so it must receive
+		// the shared-worktree TURN before Blueprint can start the runner's first
+		// self-check. grantTurn's upsert increments the epoch atomically, moving
+		// ownership from the predecessor to this successor.
+		if (isPhaseRetry && threeStageKeepAliveEnabled()) {
+			try {
+				const db = new CommDB(defaultGetCommDbPath(req.projectName));
+				try {
+					db.grantTurn(req.issueId, newExecutionId, role, Date.now(), {
+						project: req.projectName,
+						sourceEventId: `turn:spawn:${newExecutionId}`,
+					});
+				} finally {
+					db.close();
+				}
+			} catch (err) {
+				this.abortPreLaunch(key, newExecutionId, req.projectName);
+				throw new Error(
+					`pre-launch TURN grant failed for ${role} phase retry on ${req.issueId}: ${(err as Error).message}`,
+				);
+			}
+		}
+		// Re-probe after TURN transfer. The first read prevents an ambiguous probe
+		// from moving ownership; this second read is the authoritative branch tip
+		// under the single-writer fence. A failure leaves TURN on the successor for
+		// the normal dead-holder reconciler and never launches with a stale SHA.
+		if (isPhaseRetry) {
+			try {
+				retryStartPoint = computeRetryStartPoint();
+			} catch (error) {
+				this.abortPreLaunch(key, newExecutionId, req.projectName);
+				throw error;
+			}
+		}
 		const ctx: BlueprintContext = {
 			teamName: "eng",
 			// FLY-1255: phase/model identity is composed once from the resolved spawn.
@@ -629,6 +717,9 @@ export class RetryDispatcher implements IRetryDispatcher {
 			...(req.designBackend && { designBackend: req.designBackend }),
 			// FLY-793: three-stage phases share one branch B (Bridge-internal).
 			shareParentBranch: req.shareParentBranch,
+			// FLY-1257 M3: found branch B tip; absent only when branch absence was
+			// confirmed (or no computer was injected on a legacy external dispatcher).
+			...(retryStartPoint && { startPoint: retryStartPoint }),
 			// Forward pre-fetched metadata so EventEnvelope retains title/identifier
 			issueTitle: req.issueTitle,
 			issueIdentifier: req.issueIdentifier,
@@ -701,8 +792,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 			const commit =
 				await this.lifecycleLaunchGuard.commitLaunch(newExecutionId);
 			if (!commit.ok) {
-				this.inflight.delete(key);
-				this.cleanupPreRegistration(newExecutionId, req.projectName);
+				this.abortPreLaunch(key, newExecutionId, req.projectName, false);
 				throw new LifecycleParkedError(
 					commit.reason ?? "cancelled_between_admission_and_launch",
 				);
@@ -813,6 +903,36 @@ export class RetryDispatcher implements IRetryDispatcher {
 		}
 	}
 
+	/**
+	 * FLY-1257 M2: one symmetric pre-launch abort for fresh and retry paths.
+	 * Every cleanup is best-effort and independent so a broken CommDB cannot
+	 * leave the inflight entry or durable lifecycle claim stuck at `starting`.
+	 */
+	protected abortPreLaunch(
+		key: string,
+		executionId: string,
+		projectName: string,
+		notifySpawnFailed = true,
+	): void {
+		try {
+			this.inflight.delete(key);
+		} catch {
+			/* Map.delete is expected not to throw; keep the remaining cleanup alive. */
+		}
+		try {
+			this.cleanupPreRegistration(executionId, projectName);
+		} catch {
+			/* best-effort; cleanupPreRegistration already contains its own guard */
+		}
+		if (notifySpawnFailed) {
+			try {
+				this.lifecycleLaunchGuard?.onSpawnFailed(executionId);
+			} catch {
+				/* lifecycle cleanup must never mask the original launch failure */
+			}
+		}
+	}
+
 	/** FLY-59: Returns unique issueIds from composite keys (backward compat) */
 	getInflightIssues(): Set<string> {
 		const issueIds = new Set<string>();
@@ -874,6 +994,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		 */
 		private workflowShadow?: WorkflowShadowSeam,
 		private workflowClaimsAdmission?: WorkflowClaimsAdmissionSeam,
+		/** FLY-1257 M3: retry branch-tip recovery seam (production: run-infra). */
+		phaseRetryStartPointComputer?: PhaseRetryStartPointComputer,
 	) {
 		super(
 			blueprintsByProject,
@@ -882,6 +1004,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			isCommitted,
 			lifecycleAdmission,
 			lifecycleLaunchGuard,
+			phaseRetryStartPointComputer,
 		);
 	}
 
@@ -1117,8 +1240,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					db.close();
 				}
 			} catch (err) {
-				this.inflight.delete(key);
-				this.cleanupPreRegistration(executionId, req.projectName);
+				this.abortPreLaunch(key, executionId, req.projectName);
 				throw new Error(
 					`pre-launch TURN grant failed for ${role} phase on ${req.issueId}: ${(err as Error).message}`,
 				);
@@ -1235,8 +1357,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		if (this.lifecycleLaunchGuard) {
 			const commit = await this.lifecycleLaunchGuard.commitLaunch(executionId);
 			if (!commit.ok) {
-				this.inflight.delete(key);
-				this.cleanupPreRegistration(executionId, req.projectName);
+				this.abortPreLaunch(key, executionId, req.projectName, false);
 				throw new LifecycleParkedError(
 					commit.reason ?? "cancelled_between_admission_and_launch",
 				);
