@@ -139,6 +139,76 @@ record 真落地**(`await-codex-gate` 验过)→ 我在**同 head** 重盖 qa-re
 - Bridge 重启 = 破坏性 + founder-gated;本轮**未执行**,亦**未碰任何生产库**(preflight 只读副本)。
 - 重启后应由**独立 QA 复查生产库**,不采信实现者自报([[feedback_independent_qa_before_destructive_deploy]])。
 
+## 7b. Lead 直令四项(2026-07-16)— 逐项证据
+
+### ① 两条 HIGH 的回归验证(review R2 → R3 修复)
+
+R3 修复 = `6fb1523da` 「require authoritative ghost evidence」。**修复是结构性的**,不是补丁:
+- **HIGH-1**(误杀 parked/founder-pending):`STATESTORE_GHOST_SOURCE_STATUSES` **删掉**了
+  `awaiting_review` / `approved_to_ship` / `design_done` → 只剩 `pending` / `running`。parked 形态
+  **进不了候选集**,不是"进来了再放过"。
+- **HIGH-2**(先删 row 再拿缺 row 当死亡证据 + 依赖不可靠 `tmux_session`):改为**必须**由同轮
+  terminal prune 交出 exact window 证据(`getProvenDeadTmuxTarget`);legacy `tmux_session` **不再是 authority**。
+
+**独立突变验证(逐条把 HIGH 重新塞回去,确认测试真的变红)**:
+
+| 突变(重新引入的 HIGH) | 期望 | 实测 |
+|---|---|---|
+| MG1 把 awaiting_review/approved_to_ship/design_done 加回扫描集 | RED | ✅ CAUGHT(2 failed) |
+| MG2 允许"缺 authoritative target"= 死(no row == dead) | RED | ✅ CAUGHT(1 failed) |
+| MG3 接受 bare-session(非 exact)target → 共享 session 误杀 | RED | ✅ CAUGHT(1 failed) |
+| MG4 probe 非 dead 也当 dead(活窗口被收) | RED | ✅ CAUGHT(1 failed) |
+
+**4/4 全抓** → 两条 HIGH 的修复真的挡得住误杀,且被测试锁住。
+parked/awaiting_review 阳性对照见 §7b③(真生产行上验到,不只是 fixture)。
+
+### ② 双层交互矩阵(2×2 + 默认值)
+
+`commdb-residue-layer-interaction.test.ts` 用**真 CommDB** 跑 converge():
+
+| TERMINAL_COMMDB_SYNC | RESIDUE_HARVEST | 结果 | 含义 |
+|---|---|---|---|
+| on | on | row 消失 | ①mark → ②收,双层贯通 |
+| **off** | **off** | **`running` 原样** | **byte-compat = 逐字回到 FLY-638 现状** |
+| on | off | `failed` | ①如实 mark,**不删**(治本无兜底) |
+| off | on | row 消失 | ②收 legacy preserve 残留(第一轮形态) |
+
+**default-on 是真的**(不是靠 flag 名字):`plugin.ts:3705` = `process.env.FLYWHEEL_TERMINAL_COMMDB_SYNC !== "0"`、
+`plugin.ts:4646` = `FLYWHEEL_COMMDB_RESIDUE_HARVEST !== "0"` → **不设 = 开**,只有 `=0` 关。
+registry 两条均 `category: kill_switch` / `polarity: default_on` / `default: true`,与读点一致。
+harvest flag 的反向哨兵已被 M4 突变验证(flag 失效 → 测试变红)。
+
+### ③ 活体验收(今天真死的 runner,真生产 CommDB,只读)
+
+```
+================ TOTALS: HARVEST=20  KEEP=19 ================
+```
+存档:`qa2-preflight-output.txt`(首轮)+ 直令后复跑一致。
+
+**分类正确性(逐 face 各按自己的门验,不是一把尺子量所有)**:
+- face① orphan × 1:`no-fsm + age=1590h + probe dead` —— 三重门齐 → 0 violation
+- face② preserve × 19:**全部** `fsm=failed|blocked` **且** `probe dead` → 0 violation
+
+**issue 原文点名的 3 条,全部命中该收的门**:
+- `d2f31930` → HARVEST(face①orphan,no-fsm age=1590h dead)
+- `e4d3b29d` → HARVEST(face②preserve,fsm=failed dead)
+- `e90f3962` → HARVEST(face②preserve,fsm=failed dead)
+
+**零误杀(安全方向,阳性对照全在真行上开火)**:
+- KEEP = 6 running + 6 design_done + 6 awaiting_review + **1 `fsm=blocked` 但 `probe=alive`**
+- **HARVEST 集合里 0 条** parked / alive / running —— 活窗口绝不碰
+- **本 QA 会话 `61ec7494`(running)→ KEEP**;**FLY-1066 implement 会话 `2dda78be`(awaiting_review)→ KEEP**
+  —— 收割器不吃自己的流水线
+- `sub`(未注册项目)→ `NOT-CONFIGURED:not-harvested-by-main-bridge`
+
+全程零写入:只 `cp` 快照读副本,`tmux list-panes` 为读探针。
+
+### ④ approve gate
+
+Tadashi HOLD 到我 PASS 才呈 founder(645 纪律)。我的 verdict = **PASS**(见 §0)。
+**但 head 已漂**:直令写 `@ 6fb1523da`,实际 PR head = `f00286c72`(我推 QA 产物 + lint 修复所致),
+故 review record / gate binding 都需重挂新冻结头 —— 交 Tadashi 定序,我不自开。
+
 ## 8. 复现命令
 
 ```bash
