@@ -69,6 +69,21 @@ describe("createResidueHarvester", () => {
 		expect(resolveOrphanEscalations).toHaveBeenCalledOnce();
 	});
 
+	it("FLYWHEEL_COMMDB_FSM_RECONCILE=0 does not gate the targeted StateStore entry", async () => {
+		const reapStateStoreGhost = vi.fn(async () => true);
+		const harvester = createResidueHarvester({
+			projectNames: ["flywheel"],
+			commDbFsmEnabled: false,
+			harvestCommDb: vi.fn(async () => {}),
+			harvestStateStoreGhosts: vi.fn(async () => {}),
+			resolveOrphanEscalations: vi.fn(),
+			reapStateStoreGhost,
+		});
+
+		expect(await harvester.reapTarget(blocker())).toBe(true);
+		expect(reapStateStoreGhost).toHaveBeenCalledOnce();
+	});
+
 	it("shares one single-flight guard across full and targeted entry points", async () => {
 		let release!: () => void;
 		const held = new Promise<void>((resolve) => {
@@ -139,6 +154,39 @@ describe("runResidueAwareBootSweep", () => {
 			"legacy:joycon",
 			"prune:joycon",
 		]);
+	});
+
+	it("both flags OFF skips every FLY-817/residue call but preserves FLY-638", async () => {
+		const legacy = vi.fn(async () => {});
+		const prune = vi.fn(async () => {});
+
+		await runResidueAwareBootSweep({
+			projectNames: ["flywheel"],
+			commDbFsmEnabled: false,
+			runLegacyCommDbFsm: legacy,
+			pruneCommDb: prune,
+		});
+
+		expect(legacy).not.toHaveBeenCalled();
+		expect(prune).toHaveBeenCalledExactlyOnceWith("flywheel");
+	});
+
+	it("residue ON + FLY-817 OFF still invokes the shared M2/M3 pass", async () => {
+		const runFullPass = vi.fn(async () => "completed" as const);
+		const legacy = vi.fn(async () => {});
+		const prune = vi.fn(async () => {});
+
+		await runResidueAwareBootSweep({
+			projectNames: ["flywheel"],
+			residueHarvester: { runFullPass },
+			commDbFsmEnabled: false,
+			runLegacyCommDbFsm: legacy,
+			pruneCommDb: prune,
+		});
+
+		expect(runFullPass).toHaveBeenCalledOnce();
+		expect(legacy).not.toHaveBeenCalled();
+		expect(prune).toHaveBeenCalledExactlyOnceWith("flywheel");
 	});
 });
 
