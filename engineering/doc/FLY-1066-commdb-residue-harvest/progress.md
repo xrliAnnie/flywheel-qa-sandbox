@@ -1,13 +1,13 @@
 ---
 issue: FLY-1066
-phase: design
-phaseCursor: 5/5
-updated: 2026-07-16T09:05:41.227Z
-nextStep: commit docs + push + phase_design_complete
+phase: implement
+phaseCursor: 0/6
+updated: 2026-07-16T09:10:25.216Z
+nextStep: "M1 RED: add CommDB orphan and preserve residue tests"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1066 progress
-**phase**: design (5/5)
-**next**: commit docs + push + phase_design_complete
+**phase**: implement (0/6)
+**next**: M1 RED: add CommDB orphan and preserve residue tests
