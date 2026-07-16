@@ -1,13 +1,14 @@
 ---
 issue: FLY-1066
 phase: implement
-phaseCursor: 2/6
-updated: 2026-07-16T17:15:36.745Z
-nextStep: A3/A4 audit dispatcher pre-registration cleanup and teardown ownership pins
+phaseCursor: 3/6
+updated: 2026-07-16T17:19:57.343Z
+nextStep: "B1 RED: extend terminal prune to failed/blocked and run it in residue
+  maintenance without duplicate boot probes"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1066 progress
-**phase**: implement (2/6)
-**next**: A3/A4 audit dispatcher pre-registration cleanup and teardown ownership pins
+**phase**: implement (3/6)
+**next**: B1 RED: extend terminal prune to failed/blocked and run it in residue maintenance without duplicate boot probes
