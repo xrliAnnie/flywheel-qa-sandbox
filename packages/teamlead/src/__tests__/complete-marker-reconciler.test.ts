@@ -701,11 +701,14 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 	});
 	it("tmux dead + no routeStatus → failed", () => {
 		const store = makeStore({ d2: { status: "running" } });
+		const onTerminalStatusPersisted = vi.fn();
 		applyQuarantineFallback({
 			store: store as never,
 			executionId: "d2",
+			projectName: "geoforge3d",
 			tmuxAlive: false,
 			quarantinePath: "/q/d2.json",
+			onTerminalStatusPersisted,
 			log: () => {},
 		});
 		expect(store.forceStatus).toHaveBeenCalledWith(
@@ -713,6 +716,11 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 			"failed",
 			expect.any(String),
 			expect.any(String),
+		);
+		expect(onTerminalStatusPersisted).toHaveBeenCalledWith(
+			"d2",
+			"failed",
+			"geoforge3d",
 		);
 	});
 	it("indeterminate verdict logs HONESTLY (never 'tmux alive'); legacy boolean-only call keeps the old line byte-for-byte (code R1 #5)", () => {
@@ -759,6 +767,7 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 	it("CODEX R1 MEDIUM: transitionOpts present + FSM allows → applyTransition (no direct forceStatus)", () => {
 		mockedApplyTransition.mockReset().mockReturnValue({ ok: true } as never);
 		const store = makeStore({ d4: { status: "running" } });
+		const onTerminalStatusPersisted = vi.fn();
 		applyQuarantineFallback({
 			store: store as never,
 			transitionOpts: { fake: true } as never,
@@ -768,6 +777,7 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 			tmuxAlive: false,
 			routeStatus: "blocked",
 			quarantinePath: "/q/d4.json",
+			onTerminalStatusPersisted,
 			log: () => {},
 		});
 		expect(mockedApplyTransition).toHaveBeenCalledWith(
@@ -781,6 +791,7 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 		);
 		// FSM accepted → no fail-close direct write
 		expect(store.forceStatus).not.toHaveBeenCalled();
+		expect(onTerminalStatusPersisted).not.toHaveBeenCalled();
 	});
 
 	it("CODEX R1 MEDIUM: transitionOpts present but FSM rejects → fail-close forceStatus", () => {
@@ -788,6 +799,7 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 			.mockReset()
 			.mockReturnValue({ ok: false, error: "illegal" } as never);
 		const store = makeStore({ d5: { status: "running" } });
+		const onTerminalStatusPersisted = vi.fn();
 		applyQuarantineFallback({
 			store: store as never,
 			transitionOpts: { fake: true } as never,
@@ -797,6 +809,7 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 			tmuxAlive: false,
 			routeStatus: "blocked",
 			quarantinePath: "/q/d5.json",
+			onTerminalStatusPersisted,
 			log: () => {},
 		});
 		expect(mockedApplyTransition).toHaveBeenCalled();
@@ -806,6 +819,11 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 			"blocked",
 			expect.any(String),
 			expect.stringContaining("/q/d5.json"),
+		);
+		expect(onTerminalStatusPersisted).toHaveBeenCalledWith(
+			"d5",
+			"blocked",
+			"geoforge3d",
 		);
 	});
 
@@ -908,6 +926,7 @@ describe("reconcileCompleteFailedMarkers (boot drain, Codex R1 #2)", () => {
 					status: 200,
 				}),
 		);
+		const onTerminalStatusPersisted = vi.fn();
 		const r = await reconcileCompleteFailedMarkers({
 			store: store as never,
 			bridgeBaseUrl: "http://127.0.0.1:9876",
@@ -917,6 +936,7 @@ describe("reconcileCompleteFailedMarkers (boot drain, Codex R1 #2)", () => {
 			transitionOpts: undefined,
 			getTmuxTarget: () => ({ tmuxWindow: "geoforge3d:@0" }),
 			isTmuxWindowAlive: async () => false, // dead
+			onTerminalStatusPersisted,
 			log: () => {},
 		});
 		expect(r.quarantined).toBe(1);
@@ -925,6 +945,11 @@ describe("reconcileCompleteFailedMarkers (boot drain, Codex R1 #2)", () => {
 			"blocked",
 			expect.any(String),
 			expect.stringContaining("quarantine"),
+		);
+		expect(onTerminalStatusPersisted).toHaveBeenCalledWith(
+			"c",
+			"blocked",
+			"geoforge3d",
 		);
 	});
 });

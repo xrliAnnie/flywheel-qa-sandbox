@@ -518,6 +518,10 @@ import {
 import { createStuckRemanageRouter } from "./stuck-remanage-routes.js";
 import type { StuckRunnerDetector } from "./stuck-runner-detector.js";
 import {
+	createTerminalCommDbSync,
+	type TerminalCommDbSync,
+} from "./terminal-commdb-sync.js";
+import {
 	createTerminalArchiveEnqueueBuffer,
 	isRetryableOutcome,
 	runTargetedArchiveCheck,
@@ -1033,6 +1037,8 @@ export interface BridgeAppOptions {
 	terminalArchiveEnqueue?: (issueId: string) => void;
 	/** FLY-1066: shared boot/maintenance/targeted residue single-flight. */
 	residueHarvester?: ResidueHarvester;
+	/** FLY-1066: shared non-blocking failed/blocked CommDB sync queue. */
+	terminalCommDbSync?: Pick<TerminalCommDbSync, "enqueue">;
 	/** FLY-91 Round 3: Global Discord bot token for thread creation fallback. */
 	globalBotToken?: string;
 	/**
@@ -3306,9 +3312,14 @@ export function createBridgeApp(
 			// FLY-907 (Codex R1 #1): this INDEPENDENT opts instance bypasses the
 			// shared transitionOpts object — hook it too, or a stale-blocker
 			// finalization (stale blocker → completed) never refreshes the display.
-			onTransition: (executionId, _targetStatus, ctx) => {
+			onTransition: (executionId, targetStatus, ctx) => {
 				const issueId = ctx.issueId ?? store.getSession(executionId)?.issue_id;
 				if (issueId) opts?.issueDisplayRefresh?.current?.enqueue(issueId);
+				opts?.terminalCommDbSync?.enqueue(
+					executionId,
+					targetStatus,
+					ctx.projectName,
+				);
 			},
 		};
 		const staleBlockerGuard = createStaleBlockerGuard({
@@ -3687,6 +3698,26 @@ export async function startBridge(
 	};
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+	// FLY-1066 Layer 1: migrate each existing project CommDB at boot, then mirror
+	// only StateStore-authoritative failed/blocked outcomes asynchronously. All
+	// SQLite work lives behind the queue; transition hooks remain enqueue-only.
+	const terminalCommDbSync = createTerminalCommDbSync({
+		enabled: process.env.FLYWHEEL_TERMINAL_COMMDB_SYNC !== "0",
+		getAuthoritativeStatus: (executionId) =>
+			store.getSession(executionId)?.status,
+		resolveDbPath: resolveCommDbPath,
+		openDb: (dbPath) => new CommDB(dbPath, false),
+		warmProject: (projectName) => {
+			const dbPath = resolveCommDbPath(projectName);
+			if (!dbPath) return;
+			const db = new CommDB(dbPath, false);
+			db.close();
+		},
+		log: (message) => console.warn(message),
+	});
+	await terminalCommDbSync.warmProjects(
+		projects.map((project) => project.projectName),
+	);
 	// FLY-1244: deterministic boot import. Content hashes make restarts no-ops;
 	// a founder-owned seed mismatch is audited and refused by StateStore.
 	importBundledWorkflowSeeds(store);
@@ -3816,9 +3847,10 @@ export async function startBridge(
 		// terminate / retry / reject / close-runner / crash-reaper / heartbeat
 		// reconcile / marker reconcilers / completion routes / founder consent)
 		// triggers ONE coalesced derive-from-state display refresh.
-		onTransition: (executionId, _targetStatus, ctx) => {
+		onTransition: (executionId, targetStatus, ctx) => {
 			const issueId = ctx.issueId ?? store.getSession(executionId)?.issue_id;
 			if (issueId) issueDisplayRefreshHolder.current?.enqueue(issueId);
+			terminalCommDbSync.enqueue(executionId, targetStatus, ctx.projectName);
 		},
 	};
 	// FLY-247: fleet config snapshot provider (hot fleet-field overlay onto
@@ -4892,6 +4924,7 @@ export async function startBridge(
 					// FLY-907: the in-process sink's display-refresh holder (its
 					// upsertSession writes bypass the applyTransition hook).
 					issueDisplayRefresh: issueDisplayRefreshHolder,
+					terminalCommDbSync,
 					// FLY-1232: dispatcher pre-launch seam + DirectEventSink T9 hook
 					// (undefined when the flag is OFF — byte-compatible).
 					workflowShadow: workflowShadowWriter,
@@ -4989,6 +5022,7 @@ export async function startBridge(
 		{
 			vercelToken,
 			residueHarvester,
+			terminalCommDbSync,
 			// FLY-1185: ship-entry bundle + shared repo lock for createBridgeApp's
 			// /events router + Layer A closure.
 			lifecycleInfra,
@@ -5306,6 +5340,8 @@ export async function startBridge(
 		{
 			bridgeBaseUrl: loopbackBaseUrl,
 			ingestToken: config.ingestToken,
+			onTerminalStatusPersisted: (executionId, status, projectName) =>
+				terminalCommDbSync.enqueue(executionId, status, projectName),
 		},
 		48, // reviewTimeoutHours (constructor default; FLY-159/191 48h)
 		quietSignalsProbe,
@@ -5498,6 +5534,8 @@ export async function startBridge(
 			transitionOpts,
 			getTmuxTarget: getTmuxTargetFromCommDb,
 			isTmuxWindowAlive,
+			onTerminalStatusPersisted: (executionId, status, projectName) =>
+				terminalCommDbSync.enqueue(executionId, status, projectName),
 		});
 	} catch (err) {
 		console.error(
@@ -9549,6 +9587,7 @@ export async function startBridge(
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
+		await terminalCommDbSync.close(1_000);
 		store.close();
 	};
 

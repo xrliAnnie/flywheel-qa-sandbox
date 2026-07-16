@@ -321,6 +321,11 @@ export interface MonitorReconcileConfig {
 	fetchFn?: typeof fetch;
 	markerDir?: string;
 	quarantineDir?: string;
+	onTerminalStatusPersisted?: (
+		executionId: string,
+		status: "failed" | "blocked",
+		projectName: string,
+	) => void;
 }
 
 /**
@@ -788,6 +793,8 @@ export class HeartbeatService implements ReconnectController {
 			fetchFn: this.monitorReconcile.fetchFn,
 			markerDir: this.monitorReconcile.markerDir,
 			quarantineDir: this.monitorReconcile.quarantineDir,
+			onTerminalStatusPersisted:
+				this.monitorReconcile.onTerminalStatusPersisted,
 		};
 	}
 
@@ -856,6 +863,8 @@ export class HeartbeatService implements ReconnectController {
 					tmuxAlive: alive,
 					routeStatus: outcome.routeStatus,
 					quarantinePath: outcome.quarantinePath,
+					onTerminalStatusPersisted:
+						this.monitorReconcile?.onTerminalStatusPersisted,
 				});
 				if (alive) {
 					// CODEX R1 HIGH FIX (FLY-172): marker moved to quarantine but the
@@ -967,6 +976,8 @@ export class HeartbeatService implements ReconnectController {
 				tmuxAlive: alive,
 				routeStatus: outcome.routeStatus,
 				quarantinePath: outcome.quarantinePath,
+				onTerminalStatusPersisted:
+					this.monitorReconcile?.onTerminalStatusPersisted,
 			});
 			if (alive) await this.enterReconnecting(session);
 			else this.clearReconnecting(execId);
@@ -1040,6 +1051,8 @@ export class HeartbeatService implements ReconnectController {
 						: liveness.verdict,
 				routeStatus: outcome.routeStatus,
 				quarantinePath: outcome.quarantinePath,
+				onTerminalStatusPersisted:
+					this.monitorReconcile?.onTerminalStatusPersisted,
 			});
 		}
 

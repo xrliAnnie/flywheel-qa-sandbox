@@ -75,6 +75,7 @@ import {
 	RunDispatcher,
 } from "./run-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
+import type { TerminalCommDbSync } from "./terminal-commdb-sync.js";
 import type { BridgeConfig } from "./types.js";
 import type { WorkflowShadowWriter } from "./workflow-shadow-writer.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
@@ -556,6 +557,8 @@ export interface RunInfraOptions {
 	 * hook, so the sink triggers refreshes itself). Absent → byte-compatible.
 	 */
 	issueDisplayRefresh?: IssueDisplayRefreshHolder;
+	/** FLY-1066: shared non-blocking failed/blocked CommDB sync queue. */
+	terminalCommDbSync?: Pick<TerminalCommDbSync, "enqueue">;
 	/**
 	 * FLY-1185: the ship-entry lifecycle bundle (remote branch CAS + issue
 	 * closeout + trailing sweep), set on the DirectEventSink so the in-process
@@ -775,6 +778,8 @@ export async function setupRunInfrastructure(
 				runInfraOpts?.finalizeThreeStagePhases;
 			// FLY-907: display-refresh holder for the in-process status writes.
 			directSink.issueDisplayRefresh = runInfraOpts?.issueDisplayRefresh;
+			// FLY-1066: DirectEventSink writes terminal StateStore rows directly.
+			directSink.terminalCommDbSync = runInfraOpts?.terminalCommDbSync;
 			// FLY-1185 (Codex R4#1): launch-claim activation at the emitStarted
 			// point — the claim advances starting→active only once the session
 			// row is durable (plan.md:145).

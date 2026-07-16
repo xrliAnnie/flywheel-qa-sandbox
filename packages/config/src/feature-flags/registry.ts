@@ -1352,6 +1352,26 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "terminal_commdb_sync",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_TERMINAL_COMMDB_SYNC",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"StateStore failed/blocked → CommDB 异步终态同步（FLY-1066 根因层）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"bridge_boot",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "lead_pending_escalation",
 		category: "feature",
 		source: "env",
