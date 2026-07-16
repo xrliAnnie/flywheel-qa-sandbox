@@ -25,6 +25,13 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+	type CarrierEvidenceEntry,
+	processAliveWithStart as defaultProcessAliveWithStart,
+	LeadLeaseModeStore,
+	readCarrierRuntimeAssertion,
+	writeCarrierAuthorizationEvidenceSnapshot,
+} from "flywheel-comm/lead-lease";
+import {
 	DEFAULT_LEAD_BACKEND,
 	effectiveLeadBackend,
 	type LeadBackendId,
@@ -636,6 +643,72 @@ export interface FleetPollerOptions {
 	legacyBackendOf: (project: ProjectEntry) => string | undefined;
 	deps: FleetProbeDeps;
 	logger?: (msg: string) => void;
+	/** FLY-1309: opt-in production wiring for the carrier evidence writer. */
+	carrierEnv?: NodeJS.ProcessEnv;
+	processAliveWithStart?: (pid: number, lstart: string) => boolean;
+}
+
+function carrierEvidenceEnabled(env: NodeJS.ProcessEnv): boolean {
+	if (env.FLYWHEEL_DUAL_ACTIVE_SCAN !== "0") return true;
+	const modePath =
+		env.FLYWHEEL_LEAD_LEASE_MODE_FILE ??
+		join(homedir(), ".flywheel", "lead-lease-mode.json");
+	return new LeadLeaseModeStore(modePath, env).read().mode !== "off";
+}
+
+/**
+ * Aggregate generation-bound runtime assertions into one fresh authorization
+ * snapshot. Assertion wall-clock age is intentionally not an expiry signal:
+ * pid+lstart liveness is the generation boundary. A future timestamp is still
+ * rejected as malformed evidence.
+ */
+export function materializeCarrierAuthorizationEvidence(input: {
+	projects: ProjectEntry[];
+	legacyBackendOf: (project: ProjectEntry) => string | undefined;
+	env: NodeJS.ProcessEnv;
+	collectedAt: string;
+	processAliveWithStart?: (pid: number, lstart: string) => boolean;
+}): void {
+	const collectedAtMs = Date.parse(input.collectedAt);
+	if (!Number.isFinite(collectedAtMs)) {
+		throw new Error("carrier evidence collectedAt is invalid");
+	}
+	const isAlive = input.processAliveWithStart ?? defaultProcessAliveWithStart;
+	const leads: Record<string, CarrierEvidenceEntry> = {};
+	for (const project of input.projects) {
+		const legacyBackend = input.legacyBackendOf(project);
+		for (const lead of project.leads) {
+			if (
+				effectiveLeadBackend(lead.backend, legacyBackend).backend !==
+				"codex-app-server"
+			) {
+				continue;
+			}
+			const leadKey = `${project.projectName}-${lead.agentId}`;
+			const assertion = readCarrierRuntimeAssertion(input.env, leadKey);
+			if (!assertion) continue;
+			const publishedAtMs = Date.parse(assertion.publishedAt);
+			if (
+				!Number.isFinite(publishedAtMs) ||
+				publishedAtMs > collectedAtMs + 5_000 ||
+				!isAlive(assertion.pid, assertion.lstart)
+			) {
+				continue;
+			}
+			leads[leadKey] = {
+				leadKey,
+				backend: "codex-app-server",
+				pid: assertion.pid,
+				lstart: assertion.lstart,
+				instanceDigest: assertion.instanceDigest,
+			};
+		}
+	}
+	writeCarrierAuthorizationEvidenceSnapshot({
+		env: input.env,
+		collectedAt: input.collectedAt,
+		leads,
+	});
 }
 
 export class FleetPoller {
@@ -669,12 +742,29 @@ export class FleetPoller {
 		try {
 			this.opts.provider.refresh();
 			const { projects, state } = this.opts.provider.snapshot();
-			this.last = await collectFleetSnapshot(
+			const snapshot = await collectFleetSnapshot(
 				projects,
 				this.opts.legacyBackendOf,
 				this.opts.deps,
 				state,
 			);
+			if (
+				this.opts.carrierEnv &&
+				carrierEvidenceEnabled(this.opts.carrierEnv)
+			) {
+				materializeCarrierAuthorizationEvidence({
+					projects,
+					legacyBackendOf: this.opts.legacyBackendOf,
+					env: this.opts.carrierEnv,
+					collectedAt: snapshot.collectedAt,
+					...(this.opts.processAliveWithStart
+						? {
+								processAliveWithStart: this.opts.processAliveWithStart,
+							}
+						: {}),
+				});
+			}
+			this.last = snapshot;
 		} catch (err) {
 			this.opts.logger?.(
 				`[FleetPoller] collection failed — keeping previous snapshot: ${(err as Error).message}`,

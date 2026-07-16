@@ -210,6 +210,49 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		arc: "none_escalate",
 		remediationRef: "FLY-1066",
 	},
+	// FLY-1309: identity/lease incidents are deliberately fail-closed. Recovery
+	// requires establishing which Lead generation is authoritative, so the ARC
+	// loop must never guess or kill a process on its own.
+	lead_dual_active: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef: "FLY-1309 lead identity recovery",
+	},
+	lead_dual_active_sensor_degraded: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef: "FLY-1309 process sensor recovery",
+	},
+	lead_lease_store_broken: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef: "FLY-1309 lease store recovery",
+	},
+	lead_lease_bypass_used: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef: "FLY-1309 bypass audit",
+	},
+	lead_lease_would_block: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef: "FLY-1309 lease enforcement recovery",
+	},
+	lead_lease_control_broken: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef: "FLY-1309 lease control-plane recovery",
+	},
+	lead_identity_source_broken: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef: "FLY-1309 canonical identity recovery",
+	},
+	lead_backend_drift: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef: "FLY-1309 carrier/backend reconciliation",
+	},
 };
 
 /**

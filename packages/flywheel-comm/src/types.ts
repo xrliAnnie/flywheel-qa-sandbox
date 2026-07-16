@@ -28,6 +28,24 @@ export interface Message {
 	 * pre-FLY-1041 row and every unflagged ask (byte-compat).
 	 */
 	kind?: string | null;
+	/** FLY-1309: immutable Lead pane holder resolved from lease generation history. */
+	sender_lease_key: string | null;
+	sender_generation: number | null;
+	sender_holder_pid: number | null;
+	sender_holder_start: string | null;
+	/** OS process that performed the CommDB write (normally flywheel-comm CLI). */
+	writer_pid: number | null;
+	writer_start: string | null;
+}
+
+/** Camel-case write shape; CommDB persists it in the six sender_* / writer_* columns. */
+export interface MessageProvenance {
+	senderLeaseKey?: string | null;
+	senderGeneration?: number | null;
+	senderHolderPid?: number | null;
+	senderHolderStart?: string | null;
+	writerPid?: number | null;
+	writerStart?: string | null;
 }
 
 export interface CheckResult {

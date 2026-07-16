@@ -55,6 +55,10 @@ tmux_supervisor_archived_process_matches() {
   actual_start="$(tmux_supervisor_process_start_identity "$TMUX_ARCHIVE_PANE_PID")" || return 1
   [ -n "$actual_start" ] && [ "$actual_start" = "$TMUX_ARCHIVE_PANE_START" ] || return 1
   command="$(_tmux_supervisor_process_command "$TMUX_ARCHIVE_PANE_PID")" || return 1
+  if type lead_identity_command_matches >/dev/null 2>&1; then
+    lead_identity_command_matches "$command" "$lead_id"
+    return $?
+  fi
   case "$command" in
     *claude*"--agent ${lead_id}"*|*claude*"--agent=${lead_id}"*) return 0 ;;
   esac

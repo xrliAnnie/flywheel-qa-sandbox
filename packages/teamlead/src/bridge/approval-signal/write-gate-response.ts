@@ -20,6 +20,13 @@
 
 import { isTrustedApprovalAttribution } from "flywheel-comm/founder-attribution";
 import {
+	authorizeLeadWrite,
+	LeadLeaseDeniedError,
+	type LeadWriteAuthorization,
+	type LeadWriteAuthorizationDeps,
+	type MessageProvenance,
+} from "flywheel-comm/lead-lease";
+import {
 	isDeferrableReviewHoldReason,
 	type ReviewHoldReason,
 } from "../auto-qa-held.js";
@@ -48,7 +55,12 @@ export interface GateResponseDb {
 		id: string,
 	): { checkpoint: string | null; from_agent: string } | undefined;
 	getResponse(id: string): { content: string; from_agent: string } | undefined;
-	insertResponse(id: string, fromAgent: string, content: string): void;
+	insertResponse(
+		id: string,
+		fromAgent: string,
+		content: string,
+		provenance?: MessageProvenance,
+	): void;
 	insertFounderApprovalResponseWithSource?(input: {
 		project: string;
 		sourceEventId: string;
@@ -57,7 +69,18 @@ export interface GateResponseDb {
 		content: string;
 		expectedOwner: string;
 		payload: unknown;
+		provenance?: MessageProvenance;
 	}): boolean;
+}
+
+/** Preserved caller identity, independent from the final founder attribution. */
+export interface LeadRequestContext {
+	requestingLeadId: string;
+	projectName: string;
+	leaseClaim?: { leaseKey: string; generation: number };
+	/** Raw capability: request memory only; never include in persistence/logging. */
+	carrierClaim?: string;
+	provenance?: MessageProvenance;
 }
 
 /** Structural StateStore surface. */
@@ -108,6 +131,15 @@ export interface WriteGateResponseArgs {
 		authorityId: string;
 	};
 	/**
+	 * Present only for the token-authenticated Lead HTTP route. Internal founder
+	 * writers omit this and retain their existing trusted-server path.
+	 */
+	leadRequest?: LeadRequestContext;
+	/** Bridge-side control plane; request claim fields override only claim keys. */
+	leadLeaseEnv?: NodeJS.ProcessEnv;
+	/** Injectable OS seams for deterministic carrier/lstart tests. */
+	leadWriteAuthorizationDeps?: LeadWriteAuthorizationDeps;
+	/**
 	 * Best-effort post-write side effects (flip awaiting_review→approved_to_ship +
 	 * wake). May return an `{ ok: boolean }` outcome (sync or via a Promise) so the
 	 * caller can decide retrySafe; a void / fire-and-forget hook is treated as ok.
@@ -120,6 +152,50 @@ export interface WriteGateResponseArgs {
 		/** The CommDB the response was written to (the wake needs it). */
 		db: GateResponseDb;
 	}) => unknown;
+}
+
+function leadRequestEnv(
+	context: LeadRequestContext,
+	base: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+	const env = { ...base };
+	// The Bridge process is not the requesting Lead. Never let inherited pane
+	// identity or claims satisfy a request that omitted its own capability.
+	delete env.FLYWHEEL_LEAD_ID;
+	delete env.FLYWHEEL_LEAD_LEASE_KEY;
+	delete env.FLYWHEEL_LEAD_GENERATION;
+	delete env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID;
+	env.FLYWHEEL_PROJECT_NAME = context.projectName;
+	if (context.leaseClaim) {
+		env.FLYWHEEL_LEAD_LEASE_KEY = context.leaseClaim.leaseKey;
+		env.FLYWHEEL_LEAD_GENERATION = String(context.leaseClaim.generation);
+	}
+	if (context.carrierClaim) {
+		env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID = context.carrierClaim;
+	}
+	return env;
+}
+
+function requestWriterProvenance(
+	authorization: LeadWriteAuthorization,
+	request: MessageProvenance | undefined,
+): MessageProvenance {
+	return {
+		senderLeaseKey: authorization.provenance?.senderLeaseKey,
+		senderGeneration: authorization.provenance?.senderGeneration,
+		senderHolderPid: authorization.provenance?.senderHolderPid,
+		senderHolderStart: authorization.provenance?.senderHolderStart,
+		writerPid:
+			typeof request?.writerPid === "number" &&
+			Number.isSafeInteger(request.writerPid) &&
+			request.writerPid > 0
+				? request.writerPid
+				: null,
+		writerStart:
+			typeof request?.writerStart === "string" && request.writerStart.length > 0
+				? request.writerStart
+				: null,
+	};
 }
 
 export interface WriteGateResponseResult {
@@ -201,6 +277,36 @@ export async function writeGateResponseAndRunPostWrite(
 	const liveReviewQid = liveSession?.review_question_id;
 	if (liveReviewQid && liveReviewQid !== args.questionId) {
 		return guardOk("stale_review_question_live");
+	}
+
+	let leadProvenance: MessageProvenance | undefined;
+	if (args.leadRequest) {
+		try {
+			const authorization = authorizeLeadWrite(
+				{
+					claimedLeadId: args.leadRequest.requestingLeadId,
+					env: leadRequestEnv(
+						args.leadRequest,
+						args.leadLeaseEnv ?? process.env,
+					),
+				},
+				args.leadWriteAuthorizationDeps,
+			);
+			leadProvenance = requestWriterProvenance(
+				authorization,
+				args.leadRequest.provenance,
+			);
+		} catch (error) {
+			return {
+				written: false,
+				retrySafe: true,
+				disposition: "reject",
+				reason:
+					error instanceof LeadLeaseDeniedError
+						? `lead_lease_denied:${error.reason}`
+						: "lead_lease_authorization_error",
+			};
+		}
 	}
 
 	// Idempotent retry vs conflict.
@@ -312,6 +418,7 @@ export async function writeGateResponseAndRunPostWrite(
 				classification: source.classification,
 				authority_id: source.authorityId,
 			},
+			...(leadProvenance ? { provenance: leadProvenance } : {}),
 		});
 		if (!wrote) {
 			return {
@@ -322,7 +429,16 @@ export async function writeGateResponseAndRunPostWrite(
 			};
 		}
 	} else {
-		args.db.insertResponse(args.questionId, args.actor, args.answer);
+		if (leadProvenance) {
+			args.db.insertResponse(
+				args.questionId,
+				args.actor,
+				args.answer,
+				leadProvenance,
+			);
+		} else {
+			args.db.insertResponse(args.questionId, args.actor, args.answer);
+		}
 	}
 	const ok = await runHook(args);
 	return { written: true, retrySafe: ok, disposition: "written" };

@@ -69,6 +69,7 @@ teamlead:scripts/post-compact-bootstrap.sh
 teamlead:scripts/inbox-ack-rule.md
 teamlead:scripts/screencapture-l3-skill.md
 teamlead:scripts/expect-dev-channels.exp
+teamlead:scripts/lib/lead-identity-preflight.sh
 teamlead:scripts/lib/mcp-inherit.sh
 teamlead:scripts/lib/reap-orphan-adapters.sh
 teamlead:scripts/lib/tmux-supervisor-guard.sh"}

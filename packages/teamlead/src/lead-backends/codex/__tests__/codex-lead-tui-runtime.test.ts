@@ -51,6 +51,23 @@ describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Code
 		expect(e.SOME_RANDOM_SECRET).toBe("leak-me"); // raw — companion has no secrets in play
 		expect(e.FLYWHEEL_CODEX_TUI_HOME).toBe("/Users/x/.codex-mufasa");
 	});
+
+	it("injects one carrier generation into both full-access and companion daemons", () => {
+		for (const profile of ["full-access", "companion"] as const) {
+			const e = buildTuiDaemonEnv({
+				...base,
+				profile,
+				carrierInstanceId: "generation_capability",
+				leadId: "mufasa-lead",
+				projectName: "growth",
+			});
+			expect(e).toMatchObject({
+				FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: "generation_capability",
+				FLYWHEEL_LEAD_ID: "mufasa-lead",
+				FLYWHEEL_PROJECT_NAME: "growth",
+			});
+		}
+	});
 });
 
 function fakeProc() {

@@ -13,6 +13,8 @@
  * the process-based `LeadHealthProbe` (Phase 6a) instead.
  */
 
+import { effectiveLeadBackend as sharedEffectiveLeadBackend } from "flywheel-comm/canonical-lead";
+
 export type LeadBackendId = "claude-code" | "codex-app-server";
 
 /** Byte-compat default: an unset/unknown backend is the existing Claude path. */
@@ -52,18 +54,7 @@ export function isPaneBasedLeadBackend(
  * source so consumers can label it as migration-pending drift. Empty string /
  * null / undefined legacy means "not set".
  */
-export function effectiveLeadBackend(
-	explicit: LeadBackendId | undefined,
-	legacy?: string | undefined | null,
-): { backend: LeadBackendId; source: "explicit" | "legacy" | "default" } {
-	if (explicit !== undefined) {
-		return { backend: normalizeLeadBackend(explicit), source: "explicit" };
-	}
-	if (typeof legacy === "string" && legacy.length > 0) {
-		return { backend: normalizeLeadBackend(legacy), source: "legacy" };
-	}
-	return { backend: DEFAULT_LEAD_BACKEND, source: "default" };
-}
+export const effectiveLeadBackend = sharedEffectiveLeadBackend;
 
 /**
  * Partition projects/leads into those the pane-text watchdog should watch vs.

@@ -1,3 +1,4 @@
+import { effectiveLeadBackend as sharedEffectiveLeadBackend } from "flywheel-comm/canonical-lead";
 import { describe, expect, it } from "vitest";
 import {
 	DEFAULT_LEAD_BACKEND,
@@ -92,6 +93,10 @@ describe("partitionLeadsForPaneWatchdog", () => {
 import { effectiveLeadBackend } from "../lead-backend.js";
 
 describe("FLY-247 effectiveLeadBackend", () => {
+	it("consumes the shared flywheel-comm implementation instead of a second copy", () => {
+		expect(effectiveLeadBackend).toBe(sharedEffectiveLeadBackend);
+	});
+
 	it("explicit backend wins over legacy", () => {
 		expect(effectiveLeadBackend("codex-app-server", "claude-code")).toEqual({
 			backend: "codex-app-server",

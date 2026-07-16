@@ -53,6 +53,17 @@ const REVIEW_GOVERNANCE_KINDS = [
 	"review_ruling_notify_failed",
 ] as const;
 
+const LEAD_IDENTITY_KINDS = [
+	"lead_dual_active",
+	"lead_dual_active_sensor_degraded",
+	"lead_lease_store_broken",
+	"lead_lease_bypass_used",
+	"lead_lease_would_block",
+	"lead_lease_control_broken",
+	"lead_identity_source_broken",
+	"lead_backend_drift",
+] as const;
+
 describe("FLY-1082 kind contract (Task 1.1)", () => {
 	it("every kind in the union has a contract entry (runtime exhaustiveness)", () => {
 		for (const kind of ALERT_EVENT_TYPES) {
@@ -253,6 +264,17 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 			expect(
 				union.has(kind),
 				`shell kind "${kind}" missing from TS union`,
+			).toBe(true);
+		}
+	});
+
+	it("all FLY-1309 kinds exist on both the TS and shell faces", () => {
+		const allow = shellAllowlist();
+		for (const kind of LEAD_IDENTITY_KINDS) {
+			expect(ALERT_EVENT_TYPES).toContain(kind);
+			expect(
+				allow.has(kind),
+				`FLY-1309 kind "${kind}" missing from shell allowlist`,
 			).toBe(true);
 		}
 	});

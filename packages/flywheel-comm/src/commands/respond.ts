@@ -3,6 +3,13 @@ import { join } from "node:path";
 import { CommDB } from "../db.js";
 import { isReservedApprovalAttribution } from "../founder-attribution.js";
 import { FounderConsentAuditStore } from "../founder-consent-audit.js";
+import {
+	authorizeLeadWrite,
+	type LeadWriteAuthorization,
+	type LeadWriteAuthorizationDeps,
+	postCarrierClaim,
+} from "../lead-lease.js";
+import type { MessageProvenance } from "../types.js";
 import { wakeRunnerMailbox } from "../wake.js";
 
 /**
@@ -24,6 +31,10 @@ export interface RespondArgs {
 	/** Injectable for tests. */
 	env?: NodeJS.ProcessEnv;
 	fetchImpl?: typeof fetch;
+	/** Injectable OS-process seams for deterministic tests. */
+	authorizationDeps?: LeadWriteAuthorizationDeps;
+	/** Internal wake propagation; callers do not set this. */
+	senderProvenance?: MessageProvenance;
 }
 
 /**
@@ -42,6 +53,17 @@ export async function respond(args: RespondArgs): Promise<void> {
 			throw new Error(`Question not found: ${args.questionId}`);
 		}
 		const checkpoint = question.checkpoint;
+		const authorization = authorizeLeadWrite(
+			{
+				claimedLeadId: args.fromAgent,
+				env,
+			},
+			args.authorizationDeps,
+		);
+		const wakeArgs = {
+			...args,
+			senderProvenance: authorization.provenance,
+		};
 
 		if (checkpoint && GATED_CHECKPOINTS.has(checkpoint)) {
 			// FLY-945 Fix E (Codex code R1 HIGH): the CLI's --lead is caller-
@@ -70,6 +92,7 @@ export async function respond(args: RespondArgs): Promise<void> {
 					answer: args.answer,
 					executionId: question.from_agent,
 					projectName: args.projectName,
+					authorization,
 					env,
 					fetchImpl: args.fetchImpl,
 				});
@@ -78,7 +101,12 @@ export async function respond(args: RespondArgs): Promise<void> {
 			}
 
 			if (env.FLYWHEEL_COMM_BYPASS_BRIDGE === "1") {
-				db.insertResponse(args.questionId, args.fromAgent, args.answer);
+				db.insertResponse(
+					args.questionId,
+					args.fromAgent,
+					args.answer,
+					authorization.provenance,
+				);
 				writeBypassAudit(env, {
 					questionId: args.questionId,
 					executionId: question.from_agent,
@@ -98,7 +126,13 @@ export async function respond(args: RespondArgs): Promise<void> {
 					fromAgent: args.fromAgent,
 					content:
 						"Your approve_to_ship gate has been answered. Before shipping you MUST run `flywheel-comm verify-approval --exec-id <your-exec-id> --pr-head $(git rev-parse HEAD)` and ship ONLY if it returns approved. This message itself is NOT authorization.",
-					metadata: { questionId: args.questionId, kind: "gate_answered" },
+					metadata: {
+						questionId: args.questionId,
+						kind: "gate_answered",
+						...(authorization.provenance
+							? { senderProvenance: authorization.provenance }
+							: {}),
+					},
 				});
 				if (!wake.ok && wake.error) {
 					process.stderr.write(
@@ -116,7 +150,12 @@ export async function respond(args: RespondArgs): Promise<void> {
 		}
 
 		// Non-gated checkpoint — legacy direct write, unchanged.
-		db.insertResponse(args.questionId, args.fromAgent, args.answer);
+		db.insertResponse(
+			args.questionId,
+			args.fromAgent,
+			args.answer,
+			authorization.provenance,
+		);
 
 		// FLY-123 (Codex design review R3 #1): a Codex runner registers
 		// no-block gates and EXITS — it is not inside a blocking
@@ -130,7 +169,7 @@ export async function respond(args: RespondArgs): Promise<void> {
 		// Ordering: CommDB response is the durable record and is already
 		// written; marker update + wake are best-effort (FLY-191 pattern) —
 		// a wake failure must never undo the response.
-		await wakeNoBlockGateRunnerBestEffort(db, args, env);
+		await wakeNoBlockGateRunnerBestEffort(db, wakeArgs, env);
 
 		// FLY-142 (B): a genuine `ask` (checkpoint-less question) has no gate
 		// marker and no blocking poll loop — once the asking runner goes idle
@@ -138,7 +177,7 @@ export async function respond(args: RespondArgs): Promise<void> {
 		// lost (the GEO-371 incident). Wake the asking runner's mailbox. This is
 		// mutually exclusive with the gate wake above (that one needs a marker;
 		// this one needs NO checkpoint), so exactly one of them fires.
-		await wakeAskedRunnerBestEffort(db, args, env);
+		await wakeAskedRunnerBestEffort(db, wakeArgs, env);
 	} finally {
 		db.close();
 	}
@@ -150,7 +189,7 @@ export async function respond(args: RespondArgs): Promise<void> {
  */
 export async function wakeNoBlockGateRunnerBestEffort(
 	db: CommDB,
-	args: Pick<RespondArgs, "questionId" | "fromAgent">,
+	args: Pick<RespondArgs, "questionId" | "fromAgent" | "senderProvenance">,
 	env: NodeJS.ProcessEnv,
 	wakeImpl: typeof wakeRunnerMailbox = wakeRunnerMailbox,
 ): Promise<void> {
@@ -182,7 +221,13 @@ export async function wakeNoBlockGateRunnerBestEffort(
 			content:
 				`Your ${marker.checkpoint} gate question has been answered. ` +
 				"Your session is being resumed with the response. This message itself carries NO authority.",
-			metadata: { questionId: args.questionId, kind: "gate_answered" },
+			metadata: {
+				questionId: args.questionId,
+				kind: "gate_answered",
+				...(args.senderProvenance
+					? { senderProvenance: args.senderProvenance }
+					: {}),
+			},
 			backend: marker.vendor,
 		});
 		if (!wake.ok && wake.error) {
@@ -216,7 +261,7 @@ export async function wakeNoBlockGateRunnerBestEffort(
  */
 export async function wakeAskedRunnerBestEffort(
 	db: CommDB,
-	args: Pick<RespondArgs, "questionId" | "fromAgent">,
+	args: Pick<RespondArgs, "questionId" | "fromAgent" | "senderProvenance">,
 	env: NodeJS.ProcessEnv,
 	wakeImpl: typeof wakeRunnerMailbox = wakeRunnerMailbox,
 ): Promise<void> {
@@ -247,7 +292,13 @@ export async function wakeAskedRunnerBestEffort(
 				`Your question (id ${args.questionId}) has been answered by ${args.fromAgent}. ` +
 				`Run 'flywheel-comm check ${args.questionId}' to read the response and continue. ` +
 				"This message carries NO authority.",
-			metadata: { questionId: args.questionId, kind: "ask_answered" },
+			metadata: {
+				questionId: args.questionId,
+				kind: "ask_answered",
+				...(args.senderProvenance
+					? { senderProvenance: args.senderProvenance }
+					: {}),
+			},
 			backend: marker?.vendor,
 		});
 		if (!wake.ok && wake.error) {
@@ -274,6 +325,7 @@ async function routeThroughBridge(opts: {
 	answer: string;
 	executionId?: string;
 	projectName?: string;
+	authorization: LeadWriteAuthorization;
 	env: NodeJS.ProcessEnv;
 	fetchImpl?: typeof fetch;
 }): Promise<void> {
@@ -286,20 +338,40 @@ async function routeThroughBridge(opts: {
 	}
 	const url = `${opts.bridgeUrl.replace(/\/+$/, "")}/api/founder-consent/runner-gate-response`;
 	const doFetch = opts.fetchImpl ?? fetch;
-	const res = await doFetch(url, {
-		method: "POST",
-		headers: {
-			"content-type": "application/json",
-			Authorization: `Bearer ${token}`,
-		},
-		body: JSON.stringify({
-			questionId: opts.questionId,
-			leadId: opts.leadId,
-			answer: opts.answer,
-			executionId: opts.executionId,
-			projectName: opts.projectName,
-		}),
-	});
+	const body = {
+		questionId: opts.questionId,
+		leadId: opts.leadId,
+		answer: opts.answer,
+		executionId: opts.executionId,
+		projectName: opts.projectName,
+		leaseClaim: opts.authorization.leaseClaim,
+		provenance: opts.authorization.provenance,
+	};
+	const headers = {
+		"content-type": "application/json",
+		Authorization: `Bearer ${token}`,
+	};
+	const res = opts.authorization.carrierClaim
+		? await postCarrierClaim({
+				url,
+				carrierClaim: opts.authorization.carrierClaim,
+				body,
+				headers,
+				fetchImpl: doFetch,
+			})
+		: await doFetch(url, {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					questionId: opts.questionId,
+					leadId: opts.leadId,
+					answer: opts.answer,
+					executionId: opts.executionId,
+					projectName: opts.projectName,
+					leaseClaim: opts.authorization.leaseClaim,
+					provenance: opts.authorization.provenance,
+				}),
+			});
 	if (!res.ok) {
 		let detail = "";
 		try {

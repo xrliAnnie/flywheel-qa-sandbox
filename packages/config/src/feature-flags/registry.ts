@@ -124,6 +124,37 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		// FLY-1309: the Bridge constructs its duplicate-identity monitor once at
+		// boot, while FleetPoller also checks the same switch before each evidence
+		// refresh. Because one owning read is construction-time, changing this
+		// value requires a Bridge restart; it must never be advertised as a direct
+		// live toggle. `=0` is the emergency rollback for the default-on scanner.
+		name: "lead_dual_active_scan",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DUAL_ACTIVE_SCAN",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1309: 检测同一 leadId 双活并立刻告警、标记后起进程（=0 应急停用；改后需重启 Bridge）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"leadIdentityMonitor",
+				"object_construction",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/fleet-data.ts",
+				"carrierEvidenceEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+	},
+	{
 		// FLY-1256 phase-1 migration flag: after the external daemon is healthy,
 		// setup flips this to retire the Bridge's legacy switch execution surfaces.
 		// The Bridge captures the resolved mode while wiring the plugin, so changing
@@ -1834,6 +1865,31 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"packages/flywheel-comm/src/commands/respond.ts",
 				"respond",
 				"cli_invocation",
+			),
+		],
+		toggleable: "readonly",
+	},
+	{
+		// FLY-1309: this is a loud, audited break-glass override for the Lead
+		// identity authorization gate. It is intentionally a governance gate, not
+		// a dashboard feature: each flywheel-comm invocation reads it independently
+		// and use emits both an audit record and an alert.
+		name: "lead_lease_bypass",
+		category: "governance_gate",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_LEAD_LEASE_BYPASS",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1309: 紧急绕过 Lead identity lease 写授权（=1；强告警 + 审计；治理门，只读）",
+		readSites: [
+			envSite(
+				"packages/flywheel-comm/src/lead-lease.ts",
+				"authorizeLeadWrite",
+				"cli_invocation",
+				"env-param",
 			),
 		],
 		toggleable: "readonly",

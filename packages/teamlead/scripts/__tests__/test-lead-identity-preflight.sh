@@ -1,0 +1,165 @@
+#!/bin/bash
+# FLY-1309: exact Lead argv preflight + supervisor lease orchestration.
+set -uo pipefail
+export LC_ALL=C
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LEAD_SH="$(cd "$SCRIPT_DIR/.." && pwd)/claude-lead.sh"
+LIB="$(cd "$SCRIPT_DIR/../lib" && pwd)/lead-identity-preflight.sh"
+PASS=0
+FAIL=0
+ok() { PASS=$((PASS + 1)); printf '[TEST] ok - %s\n' "$*"; }
+bad() { FAIL=$((FAIL + 1)); printf '[TEST] FAIL - %s\n' "$*" >&2; }
+
+if [ ! -f "$LIB" ]; then
+  bad "lead-identity-preflight.sh is missing"
+  printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
+  exit 1
+fi
+
+# shellcheck source=../lib/lead-identity-preflight.sh
+source "$LIB"
+
+# Positive controls intentionally come first. Removing either accepted spelling
+# must make this suite red before any negative/mutation guard is evaluated.
+lead_identity_command_matches "/opt/bin/claude --agent eng-lead --resume abc" eng-lead \
+  && ok "split --agent form matches" || bad "split --agent form"
+lead_identity_command_matches "/opt/bin/claude --agent=eng-lead --resume abc" eng-lead \
+  && ok "equals --agent form matches" || bad "equals --agent form"
+
+for command in \
+  "/opt/bin/not-claude --agent eng-lead" \
+  "/opt/bin/claude --agent-id eng-lead" \
+  "/opt/bin/claude --agent eng-lead-shadow" \
+  "/opt/bin/claude --prompt=--agent=eng-lead" \
+  "/opt/bin/claude --agent-id=eng-lead"; do
+  if lead_identity_command_matches "$command" eng-lead; then
+    bad "near-match was accepted: $command"
+  else
+    ok "near-match rejected: $command"
+  fi
+done
+
+SNAPSHOT=$(cat <<'EOF'
+101 /opt/bin/claude --agent other-lead
+202 /opt/bin/not-claude --agent eng-lead
+303 /opt/bin/claude --agent=eng-lead --resume live
+404 /opt/bin/claude --agent eng-lead-shadow
+EOF
+)
+MATCH="$(printf '%s\n' "$SNAPSHOT" | lead_identity_first_conflict eng-lead)"
+[ "$MATCH" = $'303\t/opt/bin/claude --agent=eng-lead --resume live' ] \
+  && ok "scanner returns the exact conflicting process" \
+  || bad "scanner returned '$MATCH'"
+
+# Override the source-only library seam: production calls the real Comm CLI;
+# this fixture drives every resolver/acquire/bind state without filesystem or ps
+# side effects.
+FAKE_RESOLVE_STATUS=ok
+FAKE_ACQUIRE_STATUS=acquired
+FAKE_GENERATION=1
+FAKE_BIND_STATUS=bound
+FAKE_ACQUIRE_RC=0
+lead_identity_cli() {
+  case "$1" in
+    resolve)
+      case "$FAKE_RESOLVE_STATUS" in
+        ok) printf '{"status":"ok","canonicalProject":"flywheel","leadKey":"flywheel-eng-lead"}\n' ;;
+        valid_but_lead_absent) printf '{"status":"valid_but_lead_absent","leadId":"eng-lead"}\n' ;;
+        ambiguous) printf '{"status":"ambiguous","leadId":"eng-lead","projects":["a","b"]}\n' ;;
+        source_error) printf '{"status":"source_error","error":"broken"}\n'; return 1 ;;
+      esac
+      ;;
+    acquire)
+      printf '{"status":"%s","generation":%s,"leadKey":"flywheel-eng-lead"}\n' \
+        "$FAKE_ACQUIRE_STATUS" "$FAKE_GENERATION"
+      return "$FAKE_ACQUIRE_RC"
+      ;;
+    bind)
+      printf '{"status":"%s","generation":%s}\n' "$FAKE_BIND_STATUS" "$FAKE_GENERATION"
+      [ "$FAKE_BIND_STATUS" = bound ]
+      ;;
+  esac
+}
+
+if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" \
+  && [ "$LEAD_LEASE_KEY" = flywheel-eng-lead ] \
+  && [ "$LEAD_LEASE_GENERATION" = 1 ] \
+  && [ -z "$LEAD_LEASE_DEGRADED" ]; then
+  ok "canonical acquire exports an unbound generation"
+else
+  bad "canonical acquire did not produce the generation claim"
+fi
+
+FAKE_ACQUIRE_STATUS=idempotent
+lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null
+[ "$LEAD_LEASE_GENERATION" = 1 ] \
+  && ok "HOLD/retry acquire is generation-idempotent" \
+  || bad "idempotent acquire changed generation"
+
+FAKE_RESOLVE_STATUS=valid_but_lead_absent
+FAKE_ACQUIRE_STATUS=acquired
+FAKE_GENERATION=4
+lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null
+[ "$LEAD_LEASE_KEY" = flywheel-eng-lead ] && [ "$LEAD_LEASE_GENERATION" = 4 ] \
+  && ok "valid-but-absent bootstrap derives the scoped key" \
+  || bad "valid-but-absent bootstrap failed"
+
+for status in ambiguous source_error; do
+  FAKE_RESOLVE_STATUS="$status"
+  if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1; then
+    bad "$status resolver result did not HOLD"
+  elif [ "$LEAD_LEASE_HOLD_REASON" = "identity_${status}" ]; then
+    ok "$status resolver result HOLDs fail-stop"
+  else
+    bad "$status resolver HOLD reason was '$LEAD_LEASE_HOLD_REASON'"
+  fi
+done
+
+FAKE_RESOLVE_STATUS=ok
+FAKE_ACQUIRE_STATUS=error
+FAKE_ACQUIRE_RC=2
+if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1 \
+  && [ "$LEAD_LEASE_DEGRADED" = store_error ] \
+  && [ -z "$LEAD_LEASE_KEY" ] \
+  && [ -z "$LEAD_LEASE_GENERATION" ]; then
+  ok "lease store failure is explicit fail-open degradation"
+else
+  bad "lease store failure did not produce store_error degradation"
+fi
+
+FAKE_ACQUIRE_STATUS=denied_holder_alive
+FAKE_ACQUIRE_RC=3
+if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1; then
+  bad "live holder did not HOLD"
+elif [ "$LEAD_LEASE_HOLD_REASON" = denied_holder_alive ]; then
+  ok "live holder HOLDs without takeover"
+else
+  bad "live holder reason was '$LEAD_LEASE_HOLD_REASON'"
+fi
+
+FAKE_BIND_STATUS=bound
+FAKE_GENERATION=9
+lead_identity_bind_lease flywheel-eng-lead 9 700 "supervisor-start" 800 "pane-start" \
+  && ok "bind commit accepts the exact pane generation" \
+  || bad "valid bind failed"
+FAKE_BIND_STATUS=stale_generation
+if lead_identity_bind_lease flywheel-eng-lead 9 700 "supervisor-start" 800 "pane-start"; then
+  bad "stale bind was accepted"
+else
+  ok "stale bind fails for generation-bound cleanup"
+fi
+
+if rg -q 'source .*lead-identity-preflight\.sh' "$LEAD_SH" \
+  && rg -q 'lead_identity_prepare_lease' "$LEAD_SH" \
+  && rg -q 'lead_identity_preflight_first_conflict' "$LEAD_SH" \
+  && rg -q 'FLYWHEEL_LEAD_LEASE_KEY' "$LEAD_SH" \
+  && rg -q 'FLYWHEEL_LEAD_GENERATION' "$LEAD_SH" \
+  && rg -q 'lead_identity_bind_lease' "$LEAD_SH"; then
+  ok "production supervisor wires resolve/acquire/preflight/env/bind"
+else
+  bad "production supervisor is missing a lease integration seam"
+fi
+
+printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
+[ "$FAIL" -eq 0 ]

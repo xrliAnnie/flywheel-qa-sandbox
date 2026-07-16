@@ -39,6 +39,11 @@ process.env.FLYWHEEL_COMM_DB = join(
 	"comm.db",
 );
 
+// FLY-1309: legacy tests exercise send/respond without a synthetic Lead lease.
+// Keep them on the explicit byte-compat path and prevent reads/writes of the
+// production identity control plane. Enforcement tests pass their own env map.
+process.env.FLYWHEEL_LEAD_LEASE_MODE = "off";
+
 // Drop prod credentials / runner identity / land-status inherited from a live
 // runner session. Each test that needs one re-sets it in its own beforeEach.
 for (const key of [

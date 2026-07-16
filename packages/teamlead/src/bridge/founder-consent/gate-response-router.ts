@@ -18,6 +18,10 @@ import path, { join, resolve } from "node:path";
 import { type Request, type Response, Router } from "express";
 import { CommDB } from "flywheel-comm/db";
 import { isReservedApprovalAttribution } from "flywheel-comm/founder-attribution";
+import type {
+	LeadWriteAuthorizationDeps,
+	MessageProvenance,
+} from "flywheel-comm/lead-lease";
 import {
 	type GateResponseStore,
 	writeGateResponseAndRunPostWrite,
@@ -66,6 +70,10 @@ export interface GateResponseRouterDeps {
 	/** Override the comm root (tests). Defaults to ~/.flywheel/comm. */
 	commRoot?: string;
 	logger?: { info: (m: string) => void; warn: (m: string) => void };
+	/** Bridge-side lease/mode/projects control plane (tests override paths). */
+	leadLeaseEnv?: NodeJS.ProcessEnv;
+	/** Injectable OS liveness seams for carrier validation tests. */
+	leadWriteAuthorizationDeps?: LeadWriteAuthorizationDeps;
 	/**
 	 * FLY-191 Phase 2: invoked AFTER a successful CommDB response write (both
 	 * the pass-through and the consent-allow paths — this endpoint is the
@@ -160,6 +168,9 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 			projectName?: string;
 			reason?: string;
 			dbPath?: string;
+			leaseClaim?: { leaseKey?: unknown; generation?: unknown };
+			carrierClaim?: unknown;
+			provenance?: MessageProvenance;
 		};
 		const { questionId, leadId, answer, executionId, projectName } = body;
 
@@ -288,6 +299,26 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 					expectedCurrentReviewQuestionId: currentReviewId,
 					holdReasonFor: deps.holdReasonFor,
 					founderId: deps.founderId,
+					leadRequest: {
+						requestingLeadId: leadId,
+						projectName: resolvedProjectName,
+						...(typeof body.leaseClaim?.leaseKey === "string" &&
+						Number.isSafeInteger(body.leaseClaim.generation) &&
+						(body.leaseClaim.generation as number) > 0
+							? {
+									leaseClaim: {
+										leaseKey: body.leaseClaim.leaseKey,
+										generation: body.leaseClaim.generation as number,
+									},
+								}
+							: {}),
+						...(typeof body.carrierClaim === "string"
+							? { carrierClaim: body.carrierClaim }
+							: {}),
+						provenance: body.provenance,
+					},
+					leadLeaseEnv: deps.leadLeaseEnv,
+					leadWriteAuthorizationDeps: deps.leadWriteAuthorizationDeps,
 					onResponseWritten: () =>
 						runPostWriteHook(deps, {
 							executionId: question.from_agent,
@@ -305,8 +336,9 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 					return false;
 				}
 				res.status(409).json({
-					error:
-						result.reason === "conflicting_prior_response"
+					error: result.reason?.startsWith("lead_lease_")
+						? "lead_lease_denied"
+						: result.reason === "conflicting_prior_response"
 							? "question_already_answered"
 							: "founder_approval_write_refused",
 					detail: result.reason ?? result.disposition ?? "unknown",

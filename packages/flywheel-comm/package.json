@@ -20,7 +20,9 @@
 		"./xiaohongshu-review-locator": "./dist/xiaohongshu-review-locator.js",
 		"./xiaohongshu-review-delivery": "./dist/xiaohongshu-review-delivery.js",
 		"./verify-lifecycle-consent": "./dist/commands/verify-lifecycle-consent.js",
-		"./founder-attribution": "./dist/founder-attribution.js"
+		"./founder-attribution": "./dist/founder-attribution.js",
+		"./lead-lease": "./dist/lead-lease.js",
+		"./canonical-lead": "./dist/canonical-lead.js"
 	},
 	"bin": {
 		"flywheel-comm": "dist/index.js"

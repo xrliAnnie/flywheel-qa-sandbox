@@ -1,4 +1,8 @@
 import { CommDB } from "../db.js";
+import {
+	authorizeLeadWrite,
+	type LeadWriteAuthorizationDeps,
+} from "../lead-lease.js";
 import { wakeRunnerMailbox } from "../wake.js";
 
 export interface SendArgs {
@@ -6,13 +10,17 @@ export interface SendArgs {
 	toAgent: string;
 	content: string;
 	dbPath: string;
+	env?: NodeJS.ProcessEnv;
+	/** Injectable OS-process seams for deterministic tests. */
+	authorizationDeps?: LeadWriteAuthorizationDeps;
 }
 
 /**
  * Send a Lead → Runner instruction.
  *
- * CommDB write is the durable record (audit + rollback substrate) and ALWAYS
- * happens first. In mailbox mode (default) we ALSO write the Runner's
+ * Lease authorization happens before any CommDB mutation. Once authorized,
+ * the CommDB write is the durable record (audit + rollback substrate) and
+ * happens before delivery. In mailbox mode (default) we ALSO write the Runner's
  * claude-code Agent Team inbox so its stock `useInboxPoller` wakes an idle
  * Runner — FLY-168 fixes the transport gap where a sentinel-equipped idle
  * Runner never saw the CommDB-only instruction (the PostToolUse hook short-
@@ -29,9 +37,23 @@ export interface SendArgs {
  * go to stderr only.
  */
 export async function send(args: SendArgs): Promise<string> {
+	const authorization = authorizeLeadWrite(
+		{
+			claimedLeadId: args.fromAgent,
+			env: args.env,
+		},
+		args.authorizationDeps,
+	);
 	const db = new CommDB(args.dbPath);
 	try {
-		const id = db.insertInstruction(args.fromAgent, args.toAgent, args.content);
+		const id = db.insertInstruction(
+			args.fromAgent,
+			args.toAgent,
+			args.content,
+			{
+				provenance: authorization.provenance,
+			},
+		);
 
 		// FLY-626: a Lead/founder instruction to the runner is a RE-ENGAGEMENT —
 		// it clears any self-declared park/busy marker so the stall watchdogs
@@ -82,7 +104,13 @@ export async function send(args: SendArgs): Promise<string> {
 			execId: args.toAgent,
 			fromAgent: args.fromAgent,
 			content: `[lead-instruction ${id}]\n${args.content}`,
-			metadata: { flywheelId: id, execId: args.toAgent },
+			metadata: {
+				flywheelId: id,
+				execId: args.toAgent,
+				...(authorization.provenance
+					? { senderProvenance: authorization.provenance }
+					: {}),
+			},
 			...(targetVendor != null && { backend: targetVendor }),
 		});
 		if (wake.ok) {

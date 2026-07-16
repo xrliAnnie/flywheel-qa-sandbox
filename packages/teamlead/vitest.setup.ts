@@ -28,8 +28,17 @@ import { beforeEach } from "vitest";
 // deleting the dir under them would inject a spurious failure. The dirs live in
 // the OS tmpdir and are reclaimed by the OS — leaking a few KB per test is fine.
 beforeEach(() => {
-	process.env.FLYWHEEL_COMM_DIR = mkdtempSync(
-		join(tmpdir(), "flywheel-tl-test-comm-"),
+	const isolatedRoot = mkdtempSync(join(tmpdir(), "flywheel-tl-test-comm-"));
+	process.env.FLYWHEEL_COMM_DIR = isolatedRoot;
+	// FLY-1309: old Bridge tests send Lead-shaped gate responses without a
+	// synthetic identity lease. Keep their byte-compat path explicit and ensure
+	// they cannot create audit rows in the live ~/.flywheel/lead-lease.db. The
+	// FLY-1309 enforcement suite passes a fully isolated env object of its own.
+	process.env.FLYWHEEL_LEAD_LEASE_MODE = "off";
+	process.env.FLYWHEEL_LEAD_LEASE_DB = join(isolatedRoot, "lead-lease.db");
+	process.env.FLYWHEEL_LEAD_LEASE_MODE_FILE = join(
+		isolatedRoot,
+		"lead-lease-mode.json",
 	);
 	// FLY-827: the legacy teamlead suite was written for pre-hard-gate behavior —
 	// it drives sessions to awaiting_review and asserts founder surfacing / QA

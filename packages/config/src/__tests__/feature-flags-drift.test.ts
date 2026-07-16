@@ -66,6 +66,10 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_MISROUTE_ARCHIVE_DIR: "plumbing: misroute archive dir",
 	FLYWHEEL_ALERT_QUEUE_DIR: "plumbing: alert queue dir",
 	FLYWHEEL_ALERT_DEADLETTER_DIR: "plumbing: alert deadletter dir",
+	FLYWHEEL_LEAD_LEASE_DB:
+		"plumbing: durable Lead identity lease and authorization audit db path (FLY-1309)",
+	FLYWHEEL_LEAD_EPISODE_DB:
+		"plumbing: deduplicated Lead identity incident episode db path (FLY-1309)",
 	FLYWHEEL_PUBLISH_BROKER_SOCKET:
 		"plumbing: publish-broker unix socket path (FLY-1062)",
 	FLYWHEEL_PUBLISH_AUDIT_PATH: "plumbing: publish audit JSONL path (FLY-1062)",

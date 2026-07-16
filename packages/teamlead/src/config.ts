@@ -1,12 +1,11 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isAllowedLoopbackHostname } from "flywheel-comm/lead-lease";
 import { parseFounderConsentConfig } from "./bridge/founder-consent/config.js";
 import { RunnerAdmissionController } from "./bridge/runner-admission.js";
 import type { BridgeConfig } from "./bridge/types.js";
 
 export type { BridgeConfig };
-
-const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
 function parsePositiveInt(
 	value: string | undefined,
@@ -23,7 +22,7 @@ function parsePositiveInt(
 
 export function loadConfig(): BridgeConfig {
 	const host = process.env.TEAMLEAD_HOST ?? "127.0.0.1";
-	if (!ALLOWED_HOSTS.has(host)) {
+	if (!isAllowedLoopbackHostname(host)) {
 		throw new Error(
 			`TEAMLEAD_HOST must be loopback (127.0.0.1, localhost, or ::1), got: ${host}`,
 		);

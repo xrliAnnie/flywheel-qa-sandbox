@@ -32,6 +32,7 @@ import {
 } from "./commands/founder-ux.js";
 import { gate } from "./commands/gate.js";
 import { inbox } from "./commands/inbox.js";
+import { runLeadLeaseCommand } from "./commands/lead-lease.js";
 import { type NotifyArgs, notify } from "./commands/notify.js";
 import { pending } from "./commands/pending.js";
 import { progress } from "./commands/progress.js";
@@ -86,6 +87,7 @@ Commands:
   pending   List unanswered questions for a lead
   respond   Respond to a runner's question
   send      Send an instruction to a runner (Lead use)
+  lead-lease  Manage the Lead identity lease (acquire|bind|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
   sessions           List runner sessions
   sessions register  Register a runner session in CommDB
@@ -195,6 +197,9 @@ async function main(): Promise<void> {
 			break;
 		case "send":
 			await runSend(commandArgs);
+			break;
+		case "lead-lease":
+			process.exitCode = await runLeadLeaseCommand(commandArgs);
 			break;
 		case "inbox":
 			runInbox(commandArgs);

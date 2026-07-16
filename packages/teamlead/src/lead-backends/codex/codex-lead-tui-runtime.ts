@@ -23,10 +23,15 @@
  */
 
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import {
+	getProcessStart,
+	publishCarrierRuntimeAssertion,
+} from "flywheel-comm/lead-lease";
 import {
 	CodexDiscordGateway,
 	type DiscordInboundMessage,
@@ -88,6 +93,8 @@ const TUI_LIVENESS_INTERVAL_MS = 20_000;
 export interface CodexLeadTuiRuntimeConfig extends CodexLeadRuntimeConfig {
 	/** Working directory for the founder's TUI (`-C`). */
 	tuiCwd: string;
+	/** Runtime-only generation capability; absent while parsing/dry-running. */
+	carrierInstanceId?: string;
 }
 
 export function parseCodexLeadTuiRuntimeConfig(
@@ -125,8 +132,20 @@ export function buildTuiDaemonEnv(opts: {
 	env: NodeJS.ProcessEnv;
 	codexHome: string;
 	botToken: string;
+	carrierInstanceId?: string;
+	leadId?: string;
+	projectName?: string;
 }): NodeJS.ProcessEnv {
 	const { profile, env, codexHome, botToken } = opts;
+	const carrierEnv = opts.carrierInstanceId
+		? {
+				FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: opts.carrierInstanceId,
+				...(opts.leadId ? { FLYWHEEL_LEAD_ID: opts.leadId } : {}),
+				...(opts.projectName
+					? { FLYWHEEL_PROJECT_NAME: opts.projectName }
+					: {}),
+			}
+		: {};
 	if (profile === "full-access") {
 		return {
 			...buildFullAccessEnv(env),
@@ -136,9 +155,10 @@ export function buildTuiDaemonEnv(opts: {
 			// script's ensure-daemon does stop-before-start (no stale read-only daemon
 			// survives the flip — Codex R1 HIGH-1). Non-secret.
 			FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
+			...carrierEnv,
 		};
 	}
-	return { ...env, FLYWHEEL_CODEX_TUI_HOME: codexHome };
+	return { ...env, FLYWHEEL_CODEX_TUI_HOME: codexHome, ...carrierEnv };
 }
 
 // ── demuxed process facade (pure glue — unit-tested) ───────────────────────
@@ -671,6 +691,9 @@ function buildTuiGeneration(
 							// workspace-write sandbox → the founder resume pane passes
 							// `-s workspace-write` (buildTuiCommand), not `-s read-only`.
 							fullAccess: config.codexProfile === "full-access",
+							...(config.carrierInstanceId
+								? { carrierInstanceId: config.carrierInstanceId }
+								: {}),
 						};
 						// Identity-aware ensure (review R2 HIGH-2 + R3 MED-1 + R4 MED-1):
 						// ensureTuiHealthy does the UNCONDITIONAL ensure (PR-C stale-kill)
@@ -784,6 +807,18 @@ export async function main(
 		for (const line of dryRunReport(config)) console.log(line);
 		return;
 	}
+	const carrierInstanceId = randomBytes(32).toString("base64url");
+	const carrierConfig: CodexLeadTuiRuntimeConfig = {
+		...config,
+		carrierInstanceId,
+	};
+	publishCarrierRuntimeAssertion({
+		env,
+		leadKey: `${config.projectName}-${config.leadId}`,
+		rawCarrierInstanceId: carrierInstanceId,
+		pid: process.pid,
+		lstart: getProcessStart(process.pid),
+	});
 	// Resolve the home script for BOTH layouts: from dist/lead-backends/codex
 	// it's ../../../scripts; from src/lead-backends/codex it's ../../scripts
 	// is wrong too — scripts/ lives at the package root in both cases, three
@@ -859,11 +894,14 @@ export async function main(
 				env,
 				codexHome: config.codexHome,
 				botToken: config.botToken,
+				carrierInstanceId,
+				leadId: config.leadId,
+				projectName: config.projectName,
 			}),
 		});
 	};
 	const supervisor = new DaemonConnectionSupervisor({
-		buildGeneration: buildTuiGeneration(config, console),
+		buildGeneration: buildTuiGeneration(carrierConfig, console),
 		ensureDaemon,
 		log: (m) => console.warn(`[codex-lead-tui-runtime] ${m}`),
 	});

@@ -1160,6 +1160,22 @@ function titleFor(kind: AlertEventType): string {
 			return "Infra bot down";
 		case "zombie_session_backlog":
 			return "Cross-Lead zombie session backlog";
+		case "lead_dual_active":
+			return "Multiple active Lead processes share one identity";
+		case "lead_dual_active_sensor_degraded":
+			return "Lead identity process sensor degraded";
+		case "lead_lease_store_broken":
+			return "Lead identity lease store unavailable";
+		case "lead_lease_bypass_used":
+			return "Lead identity lease bypass used";
+		case "lead_lease_would_block":
+			return "Lead identity lease would block a write";
+		case "lead_lease_control_broken":
+			return "Lead identity lease control plane broken";
+		case "lead_identity_source_broken":
+			return "Canonical Lead identity source broken";
+		case "lead_backend_drift":
+			return "Lead carrier/backend identity drift";
 	}
 }
 
@@ -1317,5 +1333,21 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "An infra bot (claude/codex windowed Lead) is down. The OTHER side's bot owns this ticket (nobody rescues their own side); the auto-repair action is launchctl kickstart -k of the dead job.";
 		case "zombie_session_backlog":
 			return "Cross-Lead zombie sessions (CommDB↔StateStore drift) reached the backlog threshold. No auto-reaping by design (FLY-1066 owns the reaper) — the ticket escalates directly with the sample list.";
+		case "lead_dual_active":
+			return "Two live Lead processes claim the same canonical identity. The newer process is not authorized to issue runner instructions or answer gates; establish the authoritative generation before recovery.";
+		case "lead_dual_active_sensor_degraded":
+			return "The Bridge could not obtain trustworthy process evidence for Lead identity uniqueness across repeated scans. Lease enforcement remains fail-closed; restore the process sensor before declaring the incident recovered.";
+		case "lead_lease_store_broken":
+			return "The durable Lead identity lease store is unavailable or corrupt. Mutating Lead actions are fail-closed until the store is repaired and the carrier generation is revalidated.";
+		case "lead_lease_bypass_used":
+			return "An explicit emergency bypass performed a Lead mutation without a normal lease grant. Review the audit provenance and restore ordinary lease enforcement immediately.";
+		case "lead_lease_would_block":
+			return "Observe-mode lease enforcement detected a Lead mutation that would have been rejected. Reconcile the active holder and backend before enabling enforcement.";
+		case "lead_lease_control_broken":
+			return "Lead lease policy or control state could not be validated. Mutating actions are fail-closed until the control plane is restored.";
+		case "lead_identity_source_broken":
+			return "The canonical Lead identity could not be resolved unambiguously from configured evidence. Repair the identity mapping before allowing Lead mutations.";
+		case "lead_backend_drift":
+			return "The configured Lead backend and the live carrier evidence disagree. The conflicting process is not authoritative; reconcile the carrier generation before restoring write authority.";
 	}
 }

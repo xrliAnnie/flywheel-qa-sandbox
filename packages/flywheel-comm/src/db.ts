@@ -6,7 +6,7 @@ import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
-import type { Message, Session } from "./types.js";
+import type { Message, MessageProvenance, Session } from "./types.js";
 import { deleteContentRef as deleteContentRefFile } from "./utils/content-ref.js";
 
 const SCHEMA = `
@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS messages (
   expires_at  DATETIME NOT NULL DEFAULT (datetime('now', '+72 hours')),
   relay_state TEXT NOT NULL DEFAULT 'open' CHECK(relay_state IN ('open','protected','terminal_disposed')),
   logical_event_id TEXT,
+  sender_lease_key TEXT,
+  sender_generation INTEGER,
+  sender_holder_pid INTEGER,
+  sender_holder_start TEXT,
+  writer_pid INTEGER,
+  writer_start TEXT,
   FOREIGN KEY (parent_id) REFERENCES messages(id)
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -211,6 +217,26 @@ function isMissingTableError(error: unknown, table: string): boolean {
 	);
 }
 
+function provenanceValues(
+	provenance: MessageProvenance | undefined,
+): [
+	string | null,
+	number | null,
+	number | null,
+	string | null,
+	number | null,
+	string | null,
+] {
+	return [
+		provenance?.senderLeaseKey ?? null,
+		provenance?.senderGeneration ?? null,
+		provenance?.senderHolderPid ?? null,
+		provenance?.senderHolderStart ?? null,
+		provenance?.writerPid ?? null,
+		provenance?.writerStart ?? null,
+	];
+}
+
 export class CommDB {
 	private db: Database.Database;
 
@@ -330,6 +356,28 @@ export class CommDB {
 				if (!/duplicate column name: logical_event_id/i.test(msg)) throw err;
 			}
 		}
+		const provenanceColumns = [
+			["sender_lease_key", "TEXT"],
+			["sender_generation", "INTEGER"],
+			["sender_holder_pid", "INTEGER"],
+			["sender_holder_start", "TEXT"],
+			["writer_pid", "INTEGER"],
+			["writer_start", "TEXT"],
+		] as const;
+		for (const [name, sqlType] of provenanceColumns) {
+			if (columns.some((column) => column.name === name)) continue;
+			try {
+				this.db.exec(`ALTER TABLE messages ADD COLUMN ${name} ${sqlType}`);
+			} catch (error) {
+				if (
+					!new RegExp(`duplicate column name: ${name}`, "i").test(
+						(error as Error).message,
+					)
+				) {
+					throw error;
+				}
+			}
+		}
 		this.migrateMessageTypeConstraint();
 		// Existing answered/resolved questions already have machine evidence of a
 		// terminal disposition. Do not revive them as actionable during migration.
@@ -439,18 +487,26 @@ export class CommDB {
 					  kind TEXT,
 					  relay_state TEXT NOT NULL DEFAULT 'open' CHECK(relay_state IN ('open','protected','terminal_disposed')),
 					  logical_event_id TEXT,
+					  sender_lease_key TEXT,
+					  sender_generation INTEGER,
+					  sender_holder_pid INTEGER,
+					  sender_holder_start TEXT,
+					  writer_pid INTEGER,
+					  writer_start TEXT,
 					  FOREIGN KEY (parent_id) REFERENCES messages(id)
 					);
 					INSERT INTO messages (
 					  id, from_agent, to_agent, type, content, parent_id, read_at,
 					  created_at, expires_at, checkpoint, content_ref, content_type,
 					  resolved_at, delivered_at, attachments, kind, relay_state,
-					  logical_event_id
+					  logical_event_id, sender_lease_key, sender_generation,
+					  sender_holder_pid, sender_holder_start, writer_pid, writer_start
 					)
 					SELECT id, from_agent, to_agent, type, content, parent_id, read_at,
 					  created_at, expires_at, checkpoint, content_ref, content_type,
 					  resolved_at, delivered_at, attachments, kind, relay_state,
-					  logical_event_id
+					  logical_event_id, sender_lease_key, sender_generation,
+					  sender_holder_pid, sender_holder_start, writer_pid, writer_start
 					FROM messages_fly1279_legacy;
 					DROP TABLE messages_fly1279_legacy;
 					CREATE UNIQUE INDEX idx_unique_response ON messages(parent_id) WHERE type = 'response';
@@ -779,7 +835,12 @@ export class CommDB {
 			.run(cleanupTtlHours, questionId);
 	}
 
-	insertResponse(parentId: string, fromAgent: string, content: string): void {
+	insertResponse(
+		parentId: string,
+		fromAgent: string,
+		content: string,
+		provenance?: MessageProvenance,
+	): void {
 		const question = this.db
 			.prepare("SELECT * FROM messages WHERE id = ? AND type = 'question'")
 			.get(parentId) as Message | undefined;
@@ -790,10 +851,20 @@ export class CommDB {
 			const id = randomUUID();
 			this.db
 				.prepare(
-					`INSERT INTO messages (id, from_agent, to_agent, type, content, parent_id)
-		 VALUES (?, ?, ?, 'response', ?, ?)`,
+					`INSERT INTO messages (
+					  id, from_agent, to_agent, type, content, parent_id,
+					  sender_lease_key, sender_generation, sender_holder_pid,
+					  sender_holder_start, writer_pid, writer_start
+					) VALUES (?, ?, ?, 'response', ?, ?, ?, ?, ?, ?, ?, ?)`,
 				)
-				.run(id, fromAgent, question.from_agent, content, parentId);
+				.run(
+					id,
+					fromAgent,
+					question.from_agent,
+					content,
+					parentId,
+					...provenanceValues(provenance),
+				);
 			this.markQuestionTerminalDisposed(parentId);
 		})();
 	}
@@ -885,6 +956,7 @@ export class CommDB {
 		expectedOwner: string;
 		/** The question's checkpoint must still equal this value. */
 		expectedCheckpoint: string;
+		provenance?: MessageProvenance;
 	}): boolean {
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
@@ -893,8 +965,12 @@ export class CommDB {
 			const id = randomUUID();
 			const result = this.db
 				.prepare(
-					`INSERT INTO messages (id, from_agent, to_agent, type, content, parent_id)
-				 SELECT ?, ?, q.from_agent, 'response', ?, q.id
+					`INSERT INTO messages (
+					  id, from_agent, to_agent, type, content, parent_id,
+					  sender_lease_key, sender_generation, sender_holder_pid,
+					  sender_holder_start, writer_pid, writer_start
+					)
+				 SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
 				   FROM messages q
 				  WHERE q.id = ?
 				    AND q.type = 'question'
@@ -911,6 +987,7 @@ export class CommDB {
 					id,
 					input.fromAgent,
 					input.content,
+					...provenanceValues(input.provenance),
 					input.questionId,
 					input.expectedOwner,
 					input.expectedCheckpoint,
@@ -934,6 +1011,7 @@ export class CommDB {
 		content: string;
 		expectedOwner: string;
 		payload: unknown;
+		provenance?: MessageProvenance;
 	}): boolean {
 		const payload = canonicalJsonString(input.payload);
 		const payloadDigest = canonicalSubmissionDigest(input.payload);
@@ -945,8 +1023,12 @@ export class CommDB {
 			const responseId = randomUUID();
 			const result = this.db
 				.prepare(
-					`INSERT INTO messages (id, from_agent, to_agent, type, content, parent_id)
-					 SELECT ?, ?, q.from_agent, 'response', ?, q.id
+					`INSERT INTO messages (
+					  id, from_agent, to_agent, type, content, parent_id,
+					  sender_lease_key, sender_generation, sender_holder_pid,
+					  sender_holder_start, writer_pid, writer_start
+					)
+					 SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
 					   FROM messages q
 					  WHERE q.id = ?
 					    AND q.type = 'question'
@@ -963,6 +1045,7 @@ export class CommDB {
 					responseId,
 					input.fromAgent,
 					input.content,
+					...provenanceValues(input.provenance),
 					input.questionId,
 					input.expectedOwner,
 				);
@@ -1060,6 +1143,7 @@ export class CommDB {
 		 *  purge, so the runner can read it. Defaults to the resolveGate cleanup
 		 *  window (24h). */
 		graceHours?: number;
+		provenance?: MessageProvenance;
 	}): boolean {
 		const graceHours =
 			typeof input.graceHours === "number" &&
@@ -1068,8 +1152,12 @@ export class CommDB {
 				? Math.floor(input.graceHours)
 				: 24;
 		const insertResponse = this.db.prepare(
-			`INSERT INTO messages (id, from_agent, to_agent, type, content, parent_id)
-			 SELECT ?, ?, q.from_agent, 'response', ?, q.id
+			`INSERT INTO messages (
+			   id, from_agent, to_agent, type, content, parent_id,
+			   sender_lease_key, sender_generation, sender_holder_pid,
+			   sender_holder_start, writer_pid, writer_start
+			 )
+			 SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
 			   FROM messages q
 			  WHERE q.id = ?
 			    AND q.type = 'question'
@@ -1095,6 +1183,7 @@ export class CommDB {
 				randomUUID(),
 				input.fromAgent,
 				input.content,
+				...provenanceValues(input.provenance),
 				input.questionId,
 				input.expectedOwner,
 				input.expectedCheckpoint,
@@ -1200,7 +1289,7 @@ export class CommDB {
 		fromAgent: string,
 		toAgent: string,
 		content: string,
-		opts?: { dedupeId?: string },
+		opts?: { dedupeId?: string; provenance?: MessageProvenance },
 	): string {
 		// A caller-supplied dedupeId is a DETERMINISTIC message identity: the
 		// same logical send replayed (e.g. after a crash between this commit
@@ -1210,10 +1299,19 @@ export class CommDB {
 		const id = opts?.dedupeId ?? randomUUID();
 		this.db
 			.prepare(
-				`INSERT ${opts?.dedupeId ? "OR IGNORE " : ""}INTO messages (id, from_agent, to_agent, type, content)
-         VALUES (?, ?, ?, 'instruction', ?)`,
+				`INSERT ${opts?.dedupeId ? "OR IGNORE " : ""}INTO messages (
+				  id, from_agent, to_agent, type, content,
+				  sender_lease_key, sender_generation, sender_holder_pid,
+				  sender_holder_start, writer_pid, writer_start
+				) VALUES (?, ?, ?, 'instruction', ?, ?, ?, ?, ?, ?, ?)`,
 			)
-			.run(id, fromAgent, toAgent, content);
+			.run(
+				id,
+				fromAgent,
+				toAgent,
+				content,
+				...provenanceValues(opts?.provenance),
+			);
 		return id;
 	}
 
@@ -1229,13 +1327,17 @@ export class CommDB {
 		fromAgent: string,
 		toAgent: string,
 		content: string,
+		provenance?: MessageProvenance,
 	): boolean {
 		const info = this.db
 			.prepare(
-				`INSERT OR IGNORE INTO messages (id, from_agent, to_agent, type, content)
-         VALUES (?, ?, ?, 'instruction', ?)`,
+				`INSERT OR IGNORE INTO messages (
+				  id, from_agent, to_agent, type, content,
+				  sender_lease_key, sender_generation, sender_holder_pid,
+				  sender_holder_start, writer_pid, writer_start
+				) VALUES (?, ?, ?, 'instruction', ?, ?, ?, ?, ?, ?, ?)`,
 			)
-			.run(id, fromAgent, toAgent, content);
+			.run(id, fromAgent, toAgent, content, ...provenanceValues(provenance));
 		return info.changes > 0;
 	}
 

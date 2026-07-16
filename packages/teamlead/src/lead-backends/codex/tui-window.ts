@@ -43,6 +43,8 @@ export interface TuiWindowSpec {
 	 * `-s workspace-write` instead of the `-s read-only` pin (pin ③ of the five-pin
 	 * flip). Default/undefined keeps the `-s read-only` companion pin. */
 	fullAccess?: boolean;
+	/** FLY-1309 generation capability, inherited by the founder TUI shell. */
+	carrierInstanceId?: string;
 }
 
 /** The command string is executed by tmux via a shell — every interpolated
@@ -60,6 +62,7 @@ function assertShellSafe(name: string, value: string, re: RegExp): string {
 const SAFE_PATH = /^[A-Za-z0-9_./-]+$/; // absolute paths, no quotes/spaces/metachars
 const SAFE_ID = /^[A-Za-z0-9-]+$/; // thread ids are UUID-shaped
 const SAFE_BIN = /^[A-Za-z0-9_./-]+$/;
+const SAFE_CARRIER_ID = /^[A-Za-z0-9_-]+$/;
 
 /** Build the exact TUI command line (pure — unit-testable; quoted for the
  * shell tmux spawns). The remote socket path is derived from codexHome. */
@@ -68,6 +71,13 @@ export function buildTuiCommand(spec: TuiWindowSpec): string {
 	assertShellSafe("cwd", spec.cwd, SAFE_PATH);
 	assertShellSafe("threadId", spec.threadId, SAFE_ID);
 	if (spec.codexBin) assertShellSafe("codexBin", spec.codexBin, SAFE_BIN);
+	if (spec.carrierInstanceId) {
+		assertShellSafe(
+			"carrierInstanceId",
+			spec.carrierInstanceId,
+			SAFE_CARRIER_ID,
+		);
+	}
 	const bin = spec.codexBin ?? "codex";
 	const sock = `${spec.codexHome}/app-server-control/app-server-control.sock`;
 	return [
@@ -132,6 +142,16 @@ export function ensureTuiWindow(
 			`=${TUI_TMUX_SESSION}`,
 			"-n",
 			windowName,
+			...(spec.carrierInstanceId
+				? [
+						"-e",
+						`FLYWHEEL_LEAD_CARRIER_INSTANCE_ID=${spec.carrierInstanceId}`,
+						"-e",
+						`FLYWHEEL_LEAD_ID=${spec.leadId}`,
+						"-e",
+						`FLYWHEEL_PROJECT_NAME=${spec.projectName}`,
+					]
+				: []),
 			buildTuiCommand(spec),
 		]);
 		if (!created.ok) {

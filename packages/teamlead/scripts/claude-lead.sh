@@ -214,6 +214,10 @@ source "${FLYWHEEL_ROOT}/scripts/lib/tmux-server-rescue.sh"
 # FLY-1285: generation-bound Lead pane archive + duplicate-process takeover.
 # shellcheck source=lib/tmux-supervisor-guard.sh
 source "${SCRIPT_DIR}/lib/tmux-supervisor-guard.sh"
+# FLY-1309: canonical Lead lease orchestration + exact argv preflight. Source it
+# after the tmux guard so the production guard can consume the shared matcher.
+# shellcheck source=lib/lead-identity-preflight.sh
+source "${SCRIPT_DIR}/lib/lead-identity-preflight.sh"
 # FLY-83: Ensure all alert-path directories exist before anything can fail.
 # - blocked/  : marker files pausing supervisor until Annie clears them
 # - alert-queue/ : LeadAlertNotifier spills here when Discord POST fails
@@ -1443,6 +1447,18 @@ _launch_claude() {
     -e "FLYWHEEL_TEAMLEAD_SCRIPT_DIR=${FLYWHEEL_TEAMLEAD_SCRIPT_DIR:-}"
   )
 
+  # FLY-1309: only a successfully acquired generation enters the pane. A store
+  # fault starts without a claim and carries an explicit degraded marker; write
+  # boundaries therefore remain fail-closed in enforce mode.
+  if [ -n "${LEAD_LEASE_KEY:-}" ] && [ -n "${LEAD_LEASE_GENERATION:-}" ]; then
+    env_args+=(
+      -e "FLYWHEEL_LEAD_LEASE_KEY=${LEAD_LEASE_KEY}"
+      -e "FLYWHEEL_LEAD_GENERATION=${LEAD_LEASE_GENERATION}"
+    )
+  elif [ -n "${LEAD_LEASE_DEGRADED:-}" ]; then
+    env_args+=(-e "FLYWHEEL_LEAD_LEASE_DEGRADED=${LEAD_LEASE_DEGRADED}")
+  fi
+
   # FLY-231: companion marker — only added for companion panes (non-companion env
   # is byte-identical, no such entry). Read by the GLOBAL stable
   # post-compact-bootstrap.sh hook to early-exit before any bootstrap curl.
@@ -1569,6 +1585,24 @@ _launch_claude() {
     _tmux_generation_is_current "$TMUX_SERVER_PID" \
       && _tmux kill-window -t "$LEAD_WINDOW_ID" 2>/dev/null || true
     return 1
+  fi
+
+  # FLY-1309: bind is the authorization commit point. On failure, remove only
+  # the exact window+pane generation we just archived; an indeterminate target
+  # is preserved and held for investigation rather than killed by name.
+  if [ -n "${LEAD_LEASE_KEY:-}" ] && [ -n "${LEAD_LEASE_GENERATION:-}" ]; then
+    if ! lead_identity_bind_lease \
+      "$LEAD_LEASE_KEY" "$LEAD_LEASE_GENERATION" \
+      "$$" "$LEAD_LEASE_SUPERVISOR_START" \
+      "$_fly1285_pane_pid" "$_fly1285_pane_start"; then
+      ENSURE_HOLD_KIND="ambiguous"
+      ENSURE_HOLD_EVIDENCE="{\"reason\":\"lead_lease_bind_failed\",\"generation\":${LEAD_LEASE_GENERATION}}"
+      if _tmux_target_matches_archive "$LEAD_WINDOW_ID" true; then
+        _tmux kill-window -t "$LEAD_WINDOW_ID" 2>/dev/null || true
+        rm -f "$TMUX_ARCHIVE_FILE" 2>/dev/null || true
+      fi
+      return 3
+    fi
   fi
 
   _tmux set-window-option -t "$LEAD_WINDOW_ID" remain-on-exit on 2>/dev/null || true
@@ -2732,6 +2766,22 @@ fi
 echo $$ > "$PID_FILE"
 log "PID file written: ${PID_FILE} (PID $$)"
 
+LEAD_LEASE_KEY=""
+LEAD_LEASE_GENERATION=""
+LEAD_LEASE_DEGRADED=""
+LEAD_LEASE_HOLD_REASON=""
+LEAD_LEASE_SUPERVISOR_START="$(tmux_supervisor_process_start_identity "$$" || true)"
+LEAD_ALERT_SH="${FLYWHEEL_ROOT}/scripts/lead-alert.sh"
+
+_lead_identity_alert() {
+  local kind="$1" title="$2" body="$3"
+  [ -x "$LEAD_ALERT_SH" ] || return 0
+  "$LEAD_ALERT_SH" \
+    --lead "$LEAD_ID" --project "$PROJECT_NAME" \
+    --kind "$kind" --severity severe --title "$title" --body "$body" \
+    || true
+}
+
 log "Supervisor starting (recovery loop enabled)"
 log "Session ID file: ${SESSION_ID_FILE}"
 TMUX_HOLD_BACKOFF=3
@@ -2741,6 +2791,44 @@ while true; do
   if [ "$SHOULD_EXIT" -ne 0 ]; then
     log "Shutdown flag set — exiting supervisor."
     break
+  fi
+
+  # FLY-1309 order is deliberate: resolve → acquire, then the existing FLY-1285
+  # generation guard, then the whole-process-table preflight immediately before
+  # launch. Repeated HOLD passes are idempotent for this supervisor generation.
+  if [ -z "$LEAD_LEASE_SUPERVISOR_START" ]; then
+    LEAD_LEASE_KEY=""
+    LEAD_LEASE_GENERATION=""
+    LEAD_LEASE_DEGRADED="store_error"
+    _lead_identity_alert lead_lease_store_broken \
+      "Lead lease start identity unavailable" \
+      "${PROJECT_NAME}/${LEAD_ID} could not prove its supervisor pid+lstart; launching degraded while write boundaries remain protected."
+  elif lead_identity_prepare_lease \
+    "$LEAD_ID" "$PROJECT_NAME" "$$" "$LEAD_LEASE_SUPERVISOR_START"; then
+    if [ "$LEAD_LEASE_DEGRADED" = "store_error" ]; then
+      log "WARNING: Lead lease store unavailable; launching degraded without a generation claim"
+      _lead_identity_alert lead_lease_store_broken \
+        "Lead lease store unavailable" \
+        "${PROJECT_NAME}/${LEAD_ID} could not acquire its identity lease; launch is degraded and enforce-mode writes remain fail-closed."
+    fi
+  else
+    log "Lead identity HOLD (${LEAD_LEASE_HOLD_REASON}); retrying in ${TMUX_HOLD_BACKOFF}s"
+    case "$LEAD_LEASE_HOLD_REASON" in
+      identity_source_error|identity_ambiguous|identity_project_mismatch|identity_cli_unavailable|identity_invalid_response)
+        _lead_identity_alert lead_identity_source_broken \
+          "Lead identity resolution blocked startup" \
+          "${PROJECT_NAME}/${LEAD_ID} is held before launch: ${LEAD_LEASE_HOLD_REASON}."
+        ;;
+      denied_holder_alive)
+        _lead_identity_alert lead_dual_active \
+          "Lead identity already has a live holder" \
+          "${PROJECT_NAME}/${LEAD_ID} refused a second writer-capable generation."
+        ;;
+    esac
+    interruptible_sleep "$TMUX_HOLD_BACKOFF"
+    [ "$TMUX_HOLD_BACKOFF" -ge 30 ] || TMUX_HOLD_BACKOFF=$((TMUX_HOLD_BACKOFF * 2))
+    [ "$TMUX_HOLD_BACKOFF" -le 30 ] || TMUX_HOLD_BACKOFF=30
+    continue
   fi
 
   if ensure_tmux_session; then
@@ -2768,6 +2856,27 @@ while true; do
     interruptible_sleep "$TMUX_HOLD_BACKOFF"
     [ "$TMUX_HOLD_BACKOFF" -ge 30 ] || TMUX_HOLD_BACKOFF=$((TMUX_HOLD_BACKOFF * 2))
     [ "$TMUX_HOLD_BACKOFF" -le 30 ] || TMUX_HOLD_BACKOFF=30
+    continue
+  fi
+
+  _lead_identity_conflict=""
+  _lead_identity_preflight_rc=0
+  _lead_identity_conflict="$(lead_identity_preflight_first_conflict "$LEAD_ID")" \
+    || _lead_identity_preflight_rc=$?
+  if [ "$_lead_identity_preflight_rc" -eq 0 ]; then
+    _lead_identity_conflict_pid="${_lead_identity_conflict%%$'\t'*}"
+    log "Lead identity preflight HOLD: exact ${LEAD_ID} process already exists (PID ${_lead_identity_conflict_pid})"
+    _lead_identity_alert lead_dual_active \
+      "Lead identity preflight found a duplicate" \
+      "${PROJECT_NAME}/${LEAD_ID} refused launch because exact process PID ${_lead_identity_conflict_pid} already carries this identity."
+    interruptible_sleep "$TMUX_HOLD_BACKOFF"
+    continue
+  elif [ "$_lead_identity_preflight_rc" -ne 1 ]; then
+    log "Lead identity preflight sensor failed; holding before launch"
+    _lead_identity_alert lead_dual_active_sensor_degraded \
+      "Lead identity preflight sensor failed" \
+      "${PROJECT_NAME}/${LEAD_ID} could not read the process table and is held before launch."
+    interruptible_sleep "$TMUX_HOLD_BACKOFF"
     continue
   fi
 

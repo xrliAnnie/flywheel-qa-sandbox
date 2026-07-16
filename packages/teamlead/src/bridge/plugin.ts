@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
 	existsSync as ffExistsSync,
 	readFileSync as ffReadFileSync,
@@ -21,6 +21,11 @@ import {
 	defaultGateMarkerDir,
 	markGateMarkerAnsweredForExecution,
 } from "flywheel-comm/gate-marker";
+import {
+	ensureLeaseEpisodeMaterialized,
+	reconcileLeaseEpisodeQueue,
+	recoverLeaseEpisode,
+} from "flywheel-comm/lead-lease";
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
 // FLY-286 PR-2: web-local review route (固化 default-on since FLY-1243).
 import {
@@ -99,6 +104,7 @@ import {
 	loadProjectLeadRoles,
 	paneWatchdogProjects,
 } from "../lead-backends/codexLeadBridgeWiring.js";
+import { effectiveLeadBackend } from "../lead-backends/lead-backend.js";
 import { MetaAlertNotifier } from "../MetaAlertNotifier.js";
 import {
 	type LeadConfig,
@@ -316,11 +322,19 @@ import {
 	defaultLeadPaneCapture,
 	resolveAlertDirsFromEnv,
 } from "./lead-alert-helpers.js";
+import {
+	LeadDualActiveMonitor,
+	type LeadIdentityFinding,
+	type LeadScanTarget,
+	LeaseAuditOutbox,
+} from "./lead-dual-active-scan.js";
 import { deliveryAckEnabled } from "./lead-event-ack-policy.js";
 import {
 	createLeadEventDeadLetterHandler,
 	LeadEventDeliveryCoordinator,
 } from "./lead-event-delivery.js";
+import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
+import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
 import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
@@ -1938,6 +1952,35 @@ export function createBridgeApp(
 			opts?.issueDisplayRefresh, // FLY-907
 			opts?.phaseOrchestrator, // FLY-1050: terminate → QA-loss re-drive
 		),
+	);
+
+	// FLY-1309: privileged, loopback-only carrier attestation. The route is
+	// always present so missing master-token configuration fails closed instead
+	// of making carrier readiness ambiguous.
+	app.use(
+		"/api/lead-lease/self-check",
+		config.apiToken
+			? tokenAuthMiddleware(config.apiToken, config.geminiAgentToken)
+			: (((_req, res) => {
+					res.status(503).json({
+						ok: false,
+						reason: "api_token_not_configured",
+					});
+				}) as express.RequestHandler),
+		createLeadLeaseSelfCheckRouter(),
+	);
+	app.use(
+		"/api/lead-lease/diagnostics",
+		config.apiToken
+			? tokenAuthMiddleware(config.apiToken, config.geminiAgentToken)
+			: (((_req, res) => {
+					res.status(503).json({
+						schemaVersion: 1,
+						healthy: false,
+						reason: "api_token_not_configured",
+					});
+				}) as express.RequestHandler),
+		createLeadLeaseDiagnosticsRouter(),
 	);
 
 	// FLY-175 Track 2 Surface B + debug endpoint (auth-required). The gate
@@ -3773,6 +3816,7 @@ export async function startBridge(
 		legacyBackendOf: fleetLegacyBackendOf,
 		deps: buildDefaultFleetProbeDeps(),
 		logger: (msg) => console.log(msg),
+		carrierEnv: process.env,
 	});
 	fleetPoller.start();
 	console.log("[Bridge] FleetPoller started (30s evidence collection)");
@@ -8858,6 +8902,117 @@ export async function startBridge(
 		);
 	}
 
+	const leadIdentityFindingPayload = (
+		finding: LeadIdentityFinding,
+	): AlertPayload => {
+		const processEvidence = finding.processes.map((row) => ({
+			pid: row.pid,
+			lstart: row.lstart,
+		}));
+		const episode = createHash("sha256")
+			.update(
+				JSON.stringify({
+					kind: finding.kind,
+					projectName: finding.projectName,
+					leadId: finding.leadId,
+					processEvidence,
+				}),
+			)
+			.digest("hex")
+			.slice(0, 20);
+		const order = finding.ambiguousOrder
+			? "process order is ambiguous"
+			: finding.laterPid
+				? `later process PID ${finding.laterPid}`
+				: "no later process identified";
+		return {
+			leadId: finding.leadId,
+			projectName: finding.projectName,
+			eventId: `lead-identity:${episode}`,
+			eventType: finding.kind,
+			title:
+				finding.kind === "lead_dual_active_sensor_degraded"
+					? "Lead identity process sensor degraded"
+					: finding.kind === "lead_backend_drift"
+						? "Claude intruder under Codex Lead identity"
+						: "Two live processes share one Lead identity",
+			body: `${finding.projectName}/${finding.leadId}: ${order}; observed PIDs [${finding.processes.map((row) => row.pid).join(", ") || "none"}]${finding.carrierDisposition ? `; carrier=${finding.carrierDisposition}` : ""}.`,
+			severity: "severe",
+		};
+	};
+	const leadIdentityMonitor = new LeadDualActiveMonitor({
+		enabled: process.env.FLYWHEEL_DUAL_ACTIVE_SCAN !== "0",
+		notify: async (finding) => {
+			const payload = leadIdentityFindingPayload(finding);
+			const leadKey = `${finding.projectName}-${finding.leadId}`;
+			const sourceFingerprint =
+				finding.kind === "lead_backend_drift"
+					? `lead_backend_drift:claude_intruder:${leadKey}`
+					: finding.kind === "lead_dual_active_sensor_degraded"
+						? "lead_dual_active_sensor_degraded:bridge:ps"
+						: `lead_dual_active:${leadKey}`;
+			try {
+				ensureLeaseEpisodeMaterialized({
+					sourceFingerprint,
+					kind: finding.kind,
+					payload: { ...payload },
+				});
+			} catch (error) {
+				console.warn(
+					`[Bridge] lead identity episode store degraded: ${(error as Error).message}`,
+				);
+				await routedAlertSink.alert(payload);
+			}
+		},
+		onRecovery: async (finding) => {
+			const leadKey = `${finding.projectName}-${finding.leadId}`;
+			const sourceFingerprint =
+				finding.kind === "lead_backend_drift"
+					? `lead_backend_drift:claude_intruder:${leadKey}`
+					: finding.kind === "lead_dual_active_sensor_degraded"
+						? "lead_dual_active_sensor_degraded:bridge:ps"
+						: `lead_dual_active:${leadKey}`;
+			try {
+				recoverLeaseEpisode({ sourceFingerprint });
+			} catch (error) {
+				console.warn(
+					`[Bridge] lead identity episode recovery degraded: ${(error as Error).message}`,
+				);
+			}
+		},
+	});
+	const leaseAuditOutbox = new LeaseAuditOutbox({
+		dbPath:
+			process.env.FLYWHEEL_LEAD_LEASE_DB ??
+			join(homedir(), ".flywheel", "lead-lease.db"),
+		queueDir:
+			process.env.FLYWHEEL_ALERT_QUEUE_DIR ??
+			join(homedir(), ".flywheel", "alert-queue"),
+		episodeDbPath:
+			process.env.FLYWHEEL_LEAD_EPISODE_DB ??
+			join(homedir(), ".flywheel", "state", "lease-episodes.db"),
+	});
+	const leadIdentityTargets = (): LeadScanTarget[] => {
+		const fleet = new Map(
+			(fleetPoller.snapshot()?.leads ?? []).map((lead) => [lead.key, lead]),
+		);
+		return fleetConfigProvider.snapshot().projects.flatMap((project) =>
+			project.leads.map((lead) => {
+				const desiredBackend = effectiveLeadBackend(
+					lead.backend,
+					fleetLegacyBackendOf(project),
+				).backend;
+				const evidence = fleet.get(`${project.projectName}-${lead.agentId}`);
+				return {
+					projectName: project.projectName,
+					leadId: lead.agentId,
+					desiredBackend,
+					...(evidence ? { carrierDisposition: evidence.presentation } : {}),
+				};
+			}),
+		);
+	};
+
 	const leadWatchdog = new LeadWatchdog({
 		pollIntervalMs: 30_000,
 		paneHashStuckCycles: 2,
@@ -8913,6 +9068,27 @@ export async function startBridge(
 		// channel. Every sub-task is independently try/caught so one failing piece
 		// never wedges the others or the poll loop — no new timer for any of them.
 		onPollComplete: async () => {
+			try {
+				reconcileLeaseEpisodeQueue();
+			} catch (err) {
+				console.warn(
+					`[Bridge] lease episode reconcile failed: ${(err as Error).message}`,
+				);
+			}
+			try {
+				await leadIdentityMonitor.tick(leadIdentityTargets());
+			} catch (err) {
+				console.warn(
+					`[Bridge] lead identity scan failed: ${(err as Error).message}`,
+				);
+			}
+			try {
+				leaseAuditOutbox.materialize();
+			} catch (err) {
+				console.warn(
+					`[Bridge] lease audit outbox failed: ${(err as Error).message}`,
+				);
+			}
 			// FLY-1082: fleet sensors ride the SAME piggybacked tick (zero new
 			// timers) — memory pressure, infra-bot probes, throttled zombie scan.
 			// Runs BEFORE the Hub reconcile so a fresh sensor verdict (e.g. the

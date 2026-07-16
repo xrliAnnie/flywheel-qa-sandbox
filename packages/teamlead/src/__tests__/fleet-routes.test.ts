@@ -21,6 +21,7 @@ describe("fleet-routes — loopbackSelfOrigin (anti-DNS-rebinding, HIGH-1)", () 
 	});
 	it("rejects non-loopback / rebinding / missing hosts", () => {
 		expect(loopbackSelfOrigin("evil.test:9876")).toBeNull();
+		expect(loopbackSelfOrigin("127.0.0.2:9876")).toBeNull();
 		expect(loopbackSelfOrigin("127.0.0.1.evil.test:9876")).toBeNull();
 		expect(loopbackSelfOrigin("localhost.evil.test")).toBeNull();
 		expect(loopbackSelfOrigin("169.254.1.1:9876")).toBeNull();

@@ -105,6 +105,49 @@ describe("feature-flag registry invariants", () => {
 		);
 	});
 
+	it("FLY-1309 registers Lead identity safety controls with governance-safe toggleability", () => {
+		const scan = FEATURE_FLAGS.find(
+			(f) => f.envVar === "FLYWHEEL_DUAL_ACTIVE_SCAN",
+		);
+		expect(scan).toMatchObject({
+			name: "lead_dual_active_scan",
+			category: "kill_switch",
+			polarity: "default_on",
+			default: true,
+			toggleable: "readonly",
+		});
+		expect(scan?.readSites).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					file: "packages/teamlead/src/bridge/plugin.ts",
+					timing: "object_construction",
+				}),
+				expect.objectContaining({
+					file: "packages/teamlead/src/bridge/fleet-data.ts",
+					timing: "call_time",
+				}),
+			]),
+		);
+
+		const bypass = FEATURE_FLAGS.find(
+			(f) => f.envVar === "FLYWHEEL_LEAD_LEASE_BYPASS",
+		);
+		expect(bypass).toMatchObject({
+			name: "lead_lease_bypass",
+			category: "governance_gate",
+			polarity: "opt_in",
+			default: false,
+			toggleable: "readonly",
+		});
+		expect(bypass?.readSites).toEqual([
+			expect.objectContaining({
+				file: "packages/flywheel-comm/src/lead-lease.ts",
+				symbol: "authorizeLeadWrite",
+				timing: "cli_invocation",
+			}),
+		]);
+	});
+
 	it("quota daemon cutover is a temporary readonly boot flag tied to FLY-1284", () => {
 		const cutover = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_QUOTA_DAEMON_CUTOVER",

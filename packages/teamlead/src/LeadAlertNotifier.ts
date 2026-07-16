@@ -28,6 +28,12 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+	LEAD_LEASE_EPISODE_KINDS,
+	type LeadLeaseEpisodeDeliveryState,
+	type LeadLeaseEpisodeKind,
+	LeadLeaseEpisodeStore,
+} from "flywheel-comm/lead-lease";
+import {
 	buildRepairChain,
 	buildSendChain,
 	resolveFirstAvailableBotToken,
@@ -272,6 +278,15 @@ export const ALERT_EVENT_TYPES = [
 	"detection_page_undeliverable",
 	// FLY-1279: an ACK-required Lead event exhausted its bounded delivery budget.
 	"delivery_dead_letter",
+	// FLY-1309: Lead identity uniqueness, lease control, and carrier drift.
+	"lead_dual_active",
+	"lead_dual_active_sensor_degraded",
+	"lead_lease_store_broken",
+	"lead_lease_bypass_used",
+	"lead_lease_would_block",
+	"lead_lease_control_broken",
+	"lead_identity_source_broken",
+	"lead_backend_drift",
 ] as const;
 
 export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];
@@ -420,6 +435,9 @@ export interface AlertPayload {
 	 * a malformed id degrades to plain text).
 	 */
 	mentionUserId?: string;
+	/** FLY-1309 durable recurring-fault delivery identity. */
+	episodeId?: string;
+	sourceFingerprint?: string;
 }
 
 /**
@@ -519,6 +537,8 @@ export interface LeadAlertNotifierConfig {
 	 * limited (the T1 cap is a #flywheel-alerts channel semantic).
 	 */
 	rateLimiter?: AlertRateLimiter;
+	/** FLY-1309 durable episode DB (test seam; defaults to shared state). */
+	episodeDbPath?: string;
 }
 
 /** Queue reasons that are PERMANENT — config doesn't change at runtime, so
@@ -575,6 +595,7 @@ export class LeadAlertNotifier {
 	private unifiedAlert?: UnifiedAlertConfig;
 	private ticketsEnabled: () => boolean;
 	private rateLimiter?: AlertRateLimiter;
+	private episodeDbPath: string;
 
 	constructor(config: LeadAlertNotifierConfig) {
 		this.store = config.store;
@@ -599,6 +620,10 @@ export class LeadAlertNotifier {
 			config.ticketsEnabled ??
 			(() => process.env.FLYWHEEL_ALERT_TICKETS === "1");
 		this.rateLimiter = config.rateLimiter;
+		this.episodeDbPath =
+			config.episodeDbPath ??
+			process.env.FLYWHEEL_LEAD_EPISODE_DB ??
+			join(homedir(), ".flywheel", "state", "lease-episodes.db");
 		mkdirSync(this.queueDir, { recursive: true });
 	}
 
@@ -922,7 +947,14 @@ export class LeadAlertNotifier {
 	}> {
 		let entries = readdirSync(this.queueDir)
 			.filter((f) => f.endsWith(".json"))
-			.sort(); // names start with an ISO-ish stamp → lexical ≈ chronological
+			.sort((left, right) => {
+				// FLY-1309: shell (`YYYYMMDD...`) and TS/lease-audit (`YYYY-MM-DD...`)
+				// filenames do not share one lexical chronology. Queue content owns
+				// time; mtime is the legacy/malformed fallback, filename only a tie-break.
+				const delta =
+					this.queueEntryTimeMs(left) - this.queueEntryTimeMs(right);
+				return delta || left.localeCompare(right);
+			});
 		let sent = 0;
 		let deadLettered = 0;
 		const delivered: Array<{
@@ -968,6 +1000,13 @@ export class LeadAlertNotifier {
 				continue;
 			}
 
+			// FLY-1309 ack-before-unlink recovery: a prior drain may have committed
+			// delivery then crashed before removing this file. Never POST it again.
+			if (this.episodeDeliveryState(parsed) === "delivered") {
+				unlinkSync(path);
+				continue;
+			}
+
 			// Aging.
 			if (this.queueFileAgeMs(parsed.queuedAt, path) > this.queueMaxAgeMs) {
 				this.moveQueueFileToDeadLetter(file, "aged-out");
@@ -1008,6 +1047,7 @@ export class LeadAlertNotifier {
 				}
 				const sentResult = await this.postAlertWithSendChain(parsed, channel);
 				if (sentResult.ok) {
+					this.markEpisodeTerminal(parsed, "delivered");
 					unlinkSync(path);
 					sent++;
 					// FLY-927 (Codex R1 HIGH): hand the delivered root to the Hub so a
@@ -1055,6 +1095,7 @@ export class LeadAlertNotifier {
 			}
 			const outcome = await this.postMessage(channel, token, parsed);
 			if (outcome.ok) {
+				this.markEpisodeTerminal(parsed, "delivered");
 				unlinkSync(path);
 				sent++;
 			} else if (!outcome.transient) {
@@ -1123,6 +1164,14 @@ export class LeadAlertNotifier {
 	private moveQueueFileToDeadLetter(file: string, reason: string): void {
 		const src = join(this.queueDir, file);
 		try {
+			const parsed = JSON.parse(readFileSync(src, "utf8")) as AlertPayload & {
+				queuedAt?: string;
+			};
+			this.markEpisodeTerminal(parsed, "dead_lettered", reason);
+		} catch {
+			// Malformed queue entries have no trustworthy episode identity.
+		}
+		try {
 			mkdirSync(this.deadLetterDir, { recursive: true });
 			renameSync(src, join(this.deadLetterDir, `${reason}-${file}`));
 		} catch (err) {
@@ -1138,6 +1187,70 @@ export class LeadAlertNotifier {
 		}
 	}
 
+	private episodeDeliveryState(
+		payload: AlertPayload & { queuedAt?: string },
+	): LeadLeaseEpisodeDeliveryState | undefined {
+		if (!payload.episodeId || !payload.sourceFingerprint) return undefined;
+		if (
+			!LEAD_LEASE_EPISODE_KINDS.includes(
+				payload.eventType as LeadLeaseEpisodeKind,
+			)
+		) {
+			this.logger(
+				`episode ${payload.episodeId} carries invalid kind ${payload.eventType}`,
+			);
+			return undefined;
+		}
+		let store: LeadLeaseEpisodeStore | undefined;
+		try {
+			store = new LeadLeaseEpisodeStore(this.episodeDbPath);
+			let episode = store.getEpisode(payload.episodeId);
+			if (!episode) {
+				store.restoreQueued({
+					episodeId: payload.episodeId,
+					sourceFingerprint: payload.sourceFingerprint,
+					kind: payload.eventType as LeadLeaseEpisodeKind,
+					payload: { ...payload },
+					createdAt: payload.queuedAt ?? new Date().toISOString(),
+				});
+				episode = store.getEpisode(payload.episodeId);
+				this.logger(
+					`restored missing lease episode ${payload.episodeId} from queue`,
+				);
+			}
+			return episode?.deliveryState;
+		} catch (error) {
+			// Successful delivery remains authoritative even if the audit DB is
+			// unavailable; log and continue so a corrupt store cannot cause an
+			// infinite repost loop.
+			this.logger(
+				`lease episode state unavailable for ${payload.episodeId}: ${(error as Error).message}`,
+			);
+			return undefined;
+		} finally {
+			store?.close();
+		}
+	}
+
+	private markEpisodeTerminal(
+		payload: AlertPayload,
+		state: "delivered" | "dead_lettered",
+		reason?: string,
+	): void {
+		if (!payload.episodeId) return;
+		let store: LeadLeaseEpisodeStore | undefined;
+		try {
+			store = new LeadLeaseEpisodeStore(this.episodeDbPath);
+			store.markDelivery(payload.episodeId, state, reason);
+		} catch (error) {
+			this.logger(
+				`lease episode ${state} ack degraded for ${payload.episodeId}: ${(error as Error).message}`,
+			);
+		} finally {
+			store?.close();
+		}
+	}
+
 	/** Age of a queue file in ms — from `queuedAt` if present, else file mtime. */
 	private queueFileAgeMs(queuedAt: string | undefined, path: string): number {
 		const now = Date.now();
@@ -1149,6 +1262,27 @@ export class LeadAlertNotifier {
 			return now - statSync(path).mtimeMs;
 		} catch {
 			return 0;
+		}
+	}
+
+	private queueEntryTimeMs(file: string): number {
+		const path = join(this.queueDir, file);
+		try {
+			const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+				queuedAt?: unknown;
+			};
+			if (typeof parsed.queuedAt === "string") {
+				const timestamp = Date.parse(parsed.queuedAt);
+				if (Number.isFinite(timestamp)) return timestamp;
+			}
+		} catch {
+			// Malformed entries are still ordered deterministically by mtime below;
+			// the drain loop then moves them to dead-letter.
+		}
+		try {
+			return statSync(path).mtimeMs;
+		} catch {
+			return Number.POSITIVE_INFINITY;
 		}
 	}
 

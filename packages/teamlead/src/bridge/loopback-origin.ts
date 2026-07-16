@@ -1,3 +1,5 @@
+import { isAllowedLoopbackHostname } from "flywheel-comm/lead-lease";
+
 /**
  * Shared loopback + same-origin guards for Bridge routes that serve a LOCAL
  * browser surface (no `TEAMLEAD_API_TOKEN` in the page) and must be mounted
@@ -19,11 +21,11 @@
 export function loopbackSelfOrigin(host: string | undefined): string | null {
 	if (typeof host !== "string" || host.length === 0) return null;
 	const hostname = host.replace(/:\d+$/, ""); // strip :port (IPv4 / host / [::1])
-	if (
-		hostname !== "127.0.0.1" &&
-		hostname !== "localhost" &&
-		hostname !== "[::1]"
-	) {
+	const normalizedHostname =
+		hostname.startsWith("[") && hostname.endsWith("]")
+			? hostname.slice(1, -1)
+			: hostname;
+	if (!isAllowedLoopbackHostname(normalizedHostname)) {
 		return null;
 	}
 	return `http://${host}`;

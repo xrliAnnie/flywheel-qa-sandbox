@@ -12,6 +12,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -22,6 +23,10 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	getProcessStart,
+	publishCarrierRuntimeAssertion,
+} from "flywheel-comm/lead-lease";
 import {
 	assertGatewayOnlyToolSurface,
 	GATEWAY_ACTION_TOOL_NAMES,
@@ -1167,6 +1172,9 @@ export function spawnCodexAppServer(cfg: {
 	 * confined / read-only / (Z) write-capable path keeps the unconditional
 	 * action-secret wash (byte-compat — the FLY-245 Phase E sentinel holds). */
 	washSecrets?: boolean;
+	carrierInstanceId?: string;
+	leadId?: string;
+	projectName?: string;
 }): ChildTransport {
 	const args = ["app-server", "--strict-config", ...cfg.mcpArgv];
 	const base = cfg.baseEnv ?? process.env;
@@ -1174,6 +1182,15 @@ export function spawnCodexAppServer(cfg: {
 		env: {
 			...(cfg.washSecrets === false ? base : washActionSecretEnv(base)),
 			CODEX_HOME: cfg.codexHome,
+			...(cfg.carrierInstanceId
+				? {
+						FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: cfg.carrierInstanceId,
+						...(cfg.leadId ? { FLYWHEEL_LEAD_ID: cfg.leadId } : {}),
+						...(cfg.projectName
+							? { FLYWHEEL_PROJECT_NAME: cfg.projectName }
+							: {}),
+					}
+				: {}),
 		},
 		stdio: ["pipe", "pipe", "pipe"],
 	});
@@ -1375,11 +1392,21 @@ export function buildCodexLeadRuntime(
 		: undefined;
 
 	const proc = new CodexLeadProcess({
-		spawnChild: () =>
-			spawnCodexAppServer({
+		spawnChild: () => {
+			const carrierInstanceId = randomBytes(32).toString("base64url");
+			publishCarrierRuntimeAssertion({
+				leadKey: `${config.projectName}-${config.leadId}`,
+				rawCarrierInstanceId: carrierInstanceId,
+				pid: process.pid,
+				lstart: getProcessStart(process.pid),
+			});
+			const transport = spawnCodexAppServer({
 				codexBin: config.codexBin,
 				mcpArgv: spawnArgv,
 				codexHome: config.codexHome,
+				carrierInstanceId,
+				leadId: config.leadId,
+				projectName: config.projectName,
 				// FLY-350 full-access: the app-server child inherits the H-1 positive
 				// env allowlist (Claude-pane mirror + gh auth) AS-IS — washSecrets:false
 				// so its gh/Discord/Bridge auth survives. Every other path keeps the
@@ -1399,7 +1426,9 @@ export function buildCodexLeadRuntime(
 					: gatewayEnv
 						? { baseEnv: gatewayEnv }
 						: {}),
-			}),
+			});
+			return transport;
+		},
 	});
 
 	// ④ runtime half: collect MCP startup notifications; ensureThread blocks on

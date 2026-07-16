@@ -73,6 +73,7 @@ fi
 ok=1
 [ "$(readlink "$PKG_ROOT/packages/teamlead")" = "../node_modules/flywheel-teamlead" ] || ok=0
 [ -f "$PKG_ROOT/packages/teamlead/scripts/claude-lead.sh" ] || ok=0
+[ -f "$PKG_ROOT/packages/teamlead/scripts/lib/lead-identity-preflight.sh" ] || ok=0
 [ -f "$PKG_ROOT/packages/teamlead/scripts/lib/tmux-supervisor-guard.sh" ] || ok=0
 [ -f "$PKG_ROOT/scripts/lib/tmux-server-rescue.sh" ] || ok=0
 [ -f "$PKG_ROOT/packages/flywheel-comm/dist/index.js" ] || ok=0
