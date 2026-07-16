@@ -180,10 +180,11 @@ project/issue/run 一致）；projector 对带 run 归属的 source 在 receipt 
 
 ### 2.3 PR-7 验收
 
-- **eng 等价 harness（伞单 §0-2 的落点）**：测试内建 engine_owned v1 eng run（三档种子
-  任一），驱动 design→implement→qa→founder_gate 全链 + qa_fail 回环 + max 超限 escalate，
-  逐事件比对今天 phase-orchestrator belt 的行为快照（交接顺序/回环轮数/门行为逐字等价；
-  厂商阵容 = 有意差异不比对）。
+- ~~**eng 等价 harness（伞单 §0-2 的落点）**~~ → **已移交 PR-8（§4.3 具名硬验收项）**。
+  Tadashi 裁定 2026-07-16（QA round 2 抓出本条未实现）：PR-7 default-off + PR-7.5
+  materializer 仍是 fail-closed stub ⇒ 全链在 PR-7 下跑不通，等价性只有 enable 后才有
+  意义。**PR-7 不因此 kickback**；harness 作为 **PR-8 不过则不 gate** 的硬条件执行，
+  不得静默降级或被真机 E2E 冒充（见 §4.3 首条）。
 - E1 红测保持绿（断言原文）；E2-E6 全绿保持；1281 全部 OFF sentinel + byte-compat 快照不动。
 - 新增矩阵：非法转移拒 · 后继 admission 仅引擎上下文可达（HTTP 拒）· transition 事务
   crash 点 × 双 driver barrier（恰一 edge/恰一 intent）· loop 四要素（命中/出环/超限
@@ -307,6 +308,18 @@ durable provider 上线，PR-7 的 fake 换真）；真 head / stale head / resp
 
 ### 4.3 全 sentinel + 硬 gate + 真机 E2E
 
+- **【具名硬验收 · eng 等价 harness】（Tadashi 裁定 2026-07-16，QA round 2 抓出）**：
+  §2.3 首条原定归 PR-7 的**差分-vs-legacy-belt 等价 harness** —— 内建 engine_owned v1
+  eng run，驱动 design→implement→qa→founder_gate 全链 + qa_fail 回环 + max 超限
+  escalate，**逐事件比对**今天 phase-orchestrator belt 的行为快照（交接顺序/回环轮数/
+  门行为逐字等价；厂商阵容 = 有意差异不比对）—— **正式移交 PR-8，并在此升级为 PR-8 的
+  具名硬 gate 项**。
+  - **裁定理由**：PR-7 是 default-off（`engine_owned DEFAULT 0`）且 PR-7.5 materializer
+    仍是 fail-closed stub，全链在 PR-7 下**根本跑不通**，等价性只有 enable 后才有意义。
+  - **硬条件（不许静默降级）**：harness = plan §5 风险 1（phase-orchestrator 是活主路径）
+    的**既定缓解**。**PR-8 没有它不过 gate**；不得以 §4.3 真机 E2E 或单元矩阵替代——
+    E2E 证「新路径能跑通」，harness 证「新路径与 legacy 逐事件等价」，二者不可互相冒充。
+  - **PR-7 据此不 kickback**（QA round 2 = PASS）。
 - **sentinel 矩阵**：PRD §13 S1-S16 逐条映射到已落测试或本 PR 新增（映射表进 PR 描述）；
   伞单 §2.5 E1-E6 复跑；default-off 字节兼容 sentinel（OFF ⇒ entry/物化/派发/boot 全跳，
   与基线字节一致）；**flag 矩阵 v1/v2 × 每根必需 flag 单独 OFF，逐格按 §4.1 真值表

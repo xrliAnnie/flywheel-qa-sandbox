@@ -11,8 +11,10 @@ Issue: FLY-1307
 **FLY-1307 (子单D) ≠ 完成** —— PR-8 在本分支**完全不存在**（§3 铁证）。合入 #617 只落
 1/3 片。这不是 QA 缺陷（plan §1 预定的增量切法），但**关单标准未达**（plan 纪律 a）。
 
-新增 1 条 MEDIUM（§4：plan §2.3 首条验收「eng 等价 harness」未实现），非阻塞、建议
-随 PR-8 处理，交 Tadashi 裁定。
+新增 1 条 MEDIUM（§4：plan §2.3 首条验收「eng 等价 harness」未实现）。
+**Tadashi 已裁定（2026-07-16）**：harness **归 PR-8**，PR-7 **不 kickback**；已按硬条件
+写进 plan §4.3 作为 **PR-8 具名硬 gate 项**（没它不过 gate，不得被真机 E2E 冒充），
+§2.3 首条同步标注移交。**PR-7 单独 ship**（default-off），**FLY-1307 保持 OPEN**。
 
 ## 1. 本轮范围 = Round 1 之后的 delta
 
@@ -86,8 +88,16 @@ design→implement→qa→founder_gate 全链 + qa_fail 回环 + max 超限 esca
 - **default-off**：`engine_owned DEFAULT 0`，等价性只在 enable 后才有意义，而 enable 属 PR-8。
 - Codex code review 已在**同一 head** APPROVED（§5），设计段 5 轮过审。
 
-**建议**：harness 随 PR-8 落（PR-8 本就要跑全链真机 E2E，天然同址）。**交 Tadashi 裁定**——
-若判 PR-7 必须自带，则本条转 kickback。
+**建议**：harness 随 PR-8 落（PR-8 本就要跑全链真机 E2E，天然同址）。
+
+### 4.1 裁定结果（Tadashi，2026-07-16 · 本条已闭环）
+
+- **归属 = PR-8**，理由采纳（PR-7 default-off + PR-7.5 materializer 仍 fail-closed stub
+  ⇒ 全链在 PR-7 下跑不通，等价性只有 enable 后才有意义）。**PR-7 不 kickback。**
+- **硬条件（防静默降级）**：已写入 plan §4.3 首条为 **PR-8 具名硬 gate 项** ——
+  「PR-8 没它不过 gate」，且**不得以真机 E2E 冒充**（E2E 证「能跑通」，harness 证
+  「与 legacy 逐事件等价」，二者不可互替）；plan §2.3 首条同步标注移交，避免两处打架。
+- **Q2**：PR-7 单独 ship（plan §1 切片独立交付的既定形状），**FLY-1307 保持 OPEN**。
 
 ## 5. 门禁与回归实测（全部对**当前 head**）
 
