@@ -21,6 +21,149 @@ TEARDOWN_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/qa-multilead.sh
 source "${TEARDOWN_SCRIPT_DIR}/lib/qa-multilead.sh"
 
+# FLY-1272: test teardown is a full cmux/tmux mutator. It participates in the
+# same incarnation-bound lease as the watcher and one-shots, and holds that
+# lease through every process, tmux, worktree, and slot mutation below.
+CMUX_MUTATOR_LOCK_DIR="${FLYWHEEL_CMUX_WATCHER_LOCK_DIR:-/tmp/flywheel-cmux-watcher.lock}"
+CMUX_MUTATOR_REAP_MUTEX="${CMUX_MUTATOR_LOCK_DIR}.reap"
+CMUX_MAINTENANCE_MARKER="${FLYWHEEL_CMUX_MAINTENANCE_MARKER:-$HOME/.flywheel/state/cmux-maintenance}"
+CMUX_VIEW_WAL_DIR="${FLYWHEEL_CMUX_VIEW_WAL_DIR:-$HOME/.flywheel/state/cmux-view-wal}"
+CMUX_LEASE_NONCE=""
+CMUX_LEASE_INCARNATION=""
+
+cmux_process_incarnation() {
+  local pid="$1" started
+  [[ -n "$pid" ]] || return 1
+  if [[ -n "${FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE:-}" ]]; then
+    printf '%s\n' "$FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE"
+    return 0
+  fi
+  started=$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^[[:space:]]*//' || true)
+  [[ -n "$started" ]] || return 1
+  printf '%s\n' "$started"
+}
+
+read_cmux_mutator_owner() {
+  local file="$CMUX_MUTATOR_LOCK_DIR/owner" line fields
+  [[ -f "$file" ]] || return 1
+  [[ "$(wc -l < "$file" 2>/dev/null | tr -d ' ')" == "1" ]] || return 2
+  line=$(cat "$file" 2>/dev/null) || return 2
+  fields=$(printf '%s\n' "$line" | awk -F'|' '{print NF}')
+  [[ "$fields" == "4" ]] || return 2
+  IFS='|' read -r CMUX_OWNER_PID CMUX_OWNER_INCARNATION CMUX_OWNER_MODE CMUX_OWNER_NONCE <<< "$line"
+  case "$CMUX_OWNER_PID" in ''|*[!0-9]*) return 2 ;; esac
+  case "$CMUX_OWNER_MODE" in watch|bootstrap|once|refresh|reaper|qa_teardown) ;; *) return 2 ;; esac
+  case "$CMUX_OWNER_NONCE" in ''|*[!A-Za-z0-9_.-]*) return 2 ;; esac
+  [[ -n "$CMUX_OWNER_INCARNATION" ]] || return 2
+}
+
+cmux_owner_process_matches() {
+  local observed
+  kill -0 "$CMUX_OWNER_PID" 2>/dev/null || return 1
+  observed=$(cmux_process_incarnation "$CMUX_OWNER_PID") || return 1
+  [[ "$observed" == "$CMUX_OWNER_INCARNATION" ]]
+}
+
+acquire_cmux_teardown_lease() {
+  local read_rc=0 legacy_pid=""
+  if [[ -d "$CMUX_MUTATOR_LOCK_DIR" ]]; then
+    read_cmux_mutator_owner || read_rc=$?
+    if [[ "$read_rc" -eq 0 ]] && cmux_owner_process_matches; then
+      log "ERROR: cmux mutator lease is held by live mode=${CMUX_OWNER_MODE} pid=${CMUX_OWNER_PID}; refusing teardown"
+      return 1
+    elif [[ "$read_rc" -eq 2 ]]; then
+      log "ERROR: cmux mutator lease is malformed; refusing teardown"
+      return 1
+    elif [[ "$read_rc" -eq 1 ]]; then
+      legacy_pid=$(cat "$CMUX_MUTATOR_LOCK_DIR/pid" 2>/dev/null || true)
+      if [[ -n "$legacy_pid" ]] && kill -0 "$legacy_pid" 2>/dev/null; then
+        log "ERROR: legacy cmux watcher lease is live (pid=${legacy_pid}); refusing teardown"
+        return 1
+      fi
+    fi
+  fi
+
+  mkdir "$CMUX_MUTATOR_REAP_MUTEX" 2>/dev/null || {
+    log "ERROR: cmux mutator lease transition is busy; refusing teardown"
+    return 1
+  }
+  read_rc=0
+  if [[ -d "$CMUX_MUTATOR_LOCK_DIR" ]]; then
+    read_cmux_mutator_owner || read_rc=$?
+    if [[ "$read_rc" -eq 0 ]] && cmux_owner_process_matches; then
+      rmdir "$CMUX_MUTATOR_REAP_MUTEX" 2>/dev/null || true
+      return 1
+    fi
+    if [[ "$read_rc" -eq 2 ]]; then
+      rmdir "$CMUX_MUTATOR_REAP_MUTEX" 2>/dev/null || true
+      return 1
+    fi
+    rm -rf "$CMUX_MUTATOR_LOCK_DIR"
+  fi
+  if ! mkdir "$CMUX_MUTATOR_LOCK_DIR" 2>/dev/null; then
+    rmdir "$CMUX_MUTATOR_REAP_MUTEX" 2>/dev/null || true
+    return 1
+  fi
+  CMUX_LEASE_INCARNATION=$(cmux_process_incarnation "$$") || {
+    rm -rf "$CMUX_MUTATOR_LOCK_DIR"; rmdir "$CMUX_MUTATOR_REAP_MUTEX" 2>/dev/null || true; return 1;
+  }
+  CMUX_LEASE_NONCE="$(date +%s)-$$-$RANDOM"
+  printf '%s|%s|qa_teardown|%s\n' "$$" "$CMUX_LEASE_INCARNATION" "$CMUX_LEASE_NONCE" \
+    > "$CMUX_MUTATOR_LOCK_DIR/owner" || {
+    rm -rf "$CMUX_MUTATOR_LOCK_DIR"; rmdir "$CMUX_MUTATOR_REAP_MUTEX" 2>/dev/null || true; return 1;
+  }
+  printf '%s\n' "$$" > "$CMUX_MUTATOR_LOCK_DIR/pid"
+  rmdir "$CMUX_MUTATOR_REAP_MUTEX" 2>/dev/null || true
+}
+
+release_cmux_teardown_lease() {
+  local read_rc=0
+  read_cmux_mutator_owner || read_rc=$?
+  if [[ "$read_rc" -eq 0 && "$CMUX_OWNER_PID" == "$$" \
+      && "$CMUX_OWNER_INCARNATION" == "$CMUX_LEASE_INCARNATION" \
+      && "$CMUX_OWNER_NONCE" == "$CMUX_LEASE_NONCE" ]]; then
+    rm -rf "$CMUX_MUTATOR_LOCK_DIR" 2>/dev/null || true
+  fi
+  rmdir "$CMUX_MUTATOR_REAP_MUTEX" 2>/dev/null || true
+}
+
+cmux_tmux_generation() {
+  if [[ -n "${FLYWHEEL_CMUX_TMUX_GENERATION:-}" ]]; then
+    printf '%s\n' "$FLYWHEEL_CMUX_TMUX_GENERATION"
+    return 0
+  fi
+  local pid socket started
+  pid=$(tmux display-message -p '#{pid}' 2>/dev/null) || return 1
+  socket=$(tmux display-message -p '#{socket_path}' 2>/dev/null) || return 1
+  [[ -n "$pid" && -n "$socket" ]] || return 1
+  started=$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^[[:space:]]*//' || true)
+  [[ -n "$started" ]] || return 1
+  printf '%s|%s|%s\n' "$socket" "$pid" "$started"
+}
+
+wal_authorizes_stage_for_slot() {
+  local stage="$1" source="$2" generation file line fields
+  local version wal_generation state nonce view wal_source wid stage_sid placeholder observed_sid
+  generation=$(cmux_tmux_generation) || return 1
+  [[ -d "$CMUX_VIEW_WAL_DIR" ]] || return 1
+  for file in "$CMUX_VIEW_WAL_DIR"/*.wal; do
+    [[ -f "$file" ]] || continue
+    [[ "$(wc -l < "$file" 2>/dev/null | tr -d ' ')" == "1" ]] || continue
+    line=$(cat "$file" 2>/dev/null) || continue
+    fields=$(printf '%s\n' "$line" | awk -F'|' '{print NF}')
+    [[ "$fields" == "9" ]] || continue
+    IFS='|' read -r version wal_generation state nonce view wal_source wid stage_sid placeholder <<< "$line"
+    [[ "$version" == "v1" && "$wal_generation" == "$generation" \
+       && "$wal_source" == "$source" && "$stage" == "fwstage-${nonce}" \
+       && -n "$stage_sid" ]] || continue
+    case "$state" in created|link_intent|linked|claim_intent) ;; *) continue ;; esac
+    observed_sid=$(tmux list-sessions -F '#{session_id}' \
+      -f "#{==:#{session_name},${stage}}" 2>/dev/null | head -1 || true)
+    [[ -n "$observed_sid" && "$observed_sid" == "$stage_sid" ]] && return 0
+  done
+  return 1
+}
+
 # FLY-115 fix: mkdir(2)-based mutex matches inject-linear-issue.sh's locking
 # so teardown's prune doesn't race with a concurrent inject in another slot.
 # Parallel slot operations previously could drop in-flight trust keys. Stale
@@ -196,34 +339,51 @@ teardown_slot() {
     tmux kill-session -t "$RUNNER_TMUX" 2>/dev/null || true
   fi
 
-  # Unified cmux sweep, keyed on `#{session_group}` ownership.
+  # Unified display-session sweep. New isolated views and keepers persist the
+  # exact source session in @flywheel_cmux_owner; legacy grouped views fall
+  # back to their session_group. A foreign owner is foreign even when dead —
+  # teardown never turns liveness into ownership. Stages without an owner are
+  # accepted only by a current-generation WAL row plus exact session_id.
   # Decision table:
   #   owner == RUNNER_TMUX            → ours         → kill
   #   owner is a live sibling session → still in use → skip
-  #   owner names a dead session      → orphan       → kill (cleanup)
-  #   owner is empty                  → not Flywheel → skip (don't touch
-  #                                        sessions we didn't create —
-  #                                        narrower than the pre-v1.24.2
-  #                                        window-name sweep on purpose)
+  #   owner/group names another slot  → foreign      → skip (live or dead)
+  #   stage owner empty + WAL proof   → ours         → kill
+  #   ownership unprovable            → skip (fail-closed)
   #
   # Exact-match querying: `list-sessions -f '#{==:#{session_name},<s>}'`
   # is used instead of `display-message -t "=<s>"` because the latter
   # returns empty on macOS tmux when the target has no `:window` suffix,
   # and bare `-t <s>` risks prefix matching a differently-named session.
-  local cmux_s owner
+  local cmux_s owner group
   while IFS= read -r cmux_s || [[ -n "$cmux_s" ]]; do
     [[ -z "$cmux_s" ]] && continue
-    owner=$(tmux list-sessions -F '#{session_group}' \
+    owner=$(tmux show-options -v -t "=${cmux_s}:" @flywheel_cmux_owner 2>/dev/null | head -1 || true)
+    group=$(tmux list-sessions -F '#{session_group}' \
       -f "#{==:#{session_name},${cmux_s}}" 2>/dev/null | head -1 || echo "")
-    [[ -z "$owner" ]] && continue
-    if [[ "$owner" != "$RUNNER_TMUX" ]] \
-       && tmux has-session -t "=${owner}" 2>/dev/null; then
-      log "Skip cmux kill ${cmux_s} — owned by live session '${owner}'"
+    if [[ -n "$owner" ]]; then
+      if [[ "$owner" != "$RUNNER_TMUX" ]]; then
+        log "Skip display session ${cmux_s} — foreign owner '${owner}'"
+        continue
+      fi
+    elif [[ -n "$group" ]]; then
+      if [[ "$group" != "$RUNNER_TMUX" ]]; then
+        log "Skip grouped display session ${cmux_s} — foreign group '${group}'"
+        continue
+      fi
+    elif [[ "$cmux_s" == fwstage-* ]]; then
+      if ! wal_authorizes_stage_for_slot "$cmux_s" "$RUNNER_TMUX"; then
+        log "Skip stage ${cmux_s} — no current-generation ownership proof"
+        continue
+      fi
+    else
+      log "Skip display session ${cmux_s} — ownership unprovable"
       continue
     fi
-    log "Killing cmux linked session: ${cmux_s} (owner=${owner})"
+    log "Killing owned display session: ${cmux_s} (owner=${owner:-${group:-wal}})"
     tmux kill-session -t "=${cmux_s}" 2>/dev/null || true
-  done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^cmux-' || true)
+  done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null \
+    | grep -E '^(cmux-|fwkeeper-|fwstage-)' || true)
 
   # ── Step 1c (FLY-115 v1.24.2 Gap 3.3): Orphan `claude` CLI sweep ──
   # After killing the Runner tmux session, its child `claude` processes can
@@ -485,6 +645,22 @@ teardown_slot() {
 
 # ── Main ──────────────────────────────────────────────
 TARGET="${1:?Usage: test-teardown.sh <slot-number | all>}"
+
+if ! acquire_cmux_teardown_lease; then
+  log "ERROR: unable to acquire qa_teardown mutator lease; no teardown action taken"
+  exit 1
+fi
+trap release_cmux_teardown_lease EXIT
+trap 'release_cmux_teardown_lease; exit 130' INT
+trap 'release_cmux_teardown_lease; exit 143' TERM
+
+# Check the durable maintenance interlock only while holding the shared lease.
+# A marked migration window rejects the ENTIRE teardown, including process and
+# filesystem cleanup, because a surviving view can still own the live pane.
+if [[ -e "$CMUX_MAINTENANCE_MARKER" ]]; then
+  log "ERROR: cmux maintenance marker present at ${CMUX_MAINTENANCE_MARKER}; refusing whole teardown"
+  exit 1
+fi
 
 if [[ "$TARGET" == "all" ]]; then
   SLOTS_FILE="${HOME}/.flywheel/test-slots.json"
