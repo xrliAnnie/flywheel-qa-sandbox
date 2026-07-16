@@ -1,13 +1,13 @@
 ---
 issue: FLY-1066
 phase: design
-phaseCursor: 4/5
-updated: 2026-07-16T08:30:27.824Z
-nextStep: codex design review loop until approved
+phaseCursor: 5/5
+updated: 2026-07-16T09:05:41.227Z
+nextStep: commit docs + push + phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-1066 progress
-**phase**: design (4/5)
-**next**: codex design review loop until approved
+**phase**: design (5/5)
+**next**: commit docs + push + phase_design_complete
