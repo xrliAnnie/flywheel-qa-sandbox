@@ -1280,7 +1280,12 @@ export class Blueprint {
 				"6. After writing the landing signal (ready_to_merge or failed), exit the session.",
 				`Landing signal path: ${landSignalPath}`,
 			);
-		} else if (!isQaRunner && !isDesignPhase && !isQaPhase) {
+		} else if (
+			!isGeneralizedExecution &&
+			!isQaRunner &&
+			!isDesignPhase &&
+			!isQaPhase
+		) {
 			// Legacy behavior: stop after PR
 			systemPromptLines.push(
 				"5. Verify CI passes. If CI fails, fix and push again.",
@@ -1575,13 +1580,15 @@ export class Blueprint {
 					// FLY-1188 M4: a RESIDENT codex runner registers gates --no-block
 					// and POLLS `check` across its turns — it has no exec-cycle resume
 					// and no mailbox wake (the checkpoint blocks below teach this).
-					(isCodexRunner
-						? `For HARD CHECKPOINTS where a Lead decision must precede further work ` +
-							`(e.g. brainstorm understanding, approve_to_ship), use the \`gate\` commands described ` +
-							`later in this prompt exactly as written there (register with \`--no-block\`, then POLL \`check\` across your turns — you are resident, nothing auto-resumes or wakes you).`
-						: `For HARD CHECKPOINTS where you MUST wait for a Lead decision before continuing ` +
-							`(e.g. brainstorm understanding, approve_to_ship), use the \`gate\` commands described ` +
-							`later in this prompt — those BLOCK until the Lead responds.`),
+					(isGeneralizedExecution
+						? `If a blocker requires a Lead decision, use the QUESTION GATE described later; never request brainstorm or ship approval for this bounded node.`
+						: isCodexRunner
+							? `For HARD CHECKPOINTS where a Lead decision must precede further work ` +
+								`(e.g. brainstorm understanding, approve_to_ship), use the \`gate\` commands described ` +
+								`later in this prompt exactly as written there (register with \`--no-block\`, then POLL \`check\` across your turns — you are resident, nothing auto-resumes or wakes you).`
+							: `For HARD CHECKPOINTS where you MUST wait for a Lead decision before continuing ` +
+								`(e.g. brainstorm understanding, approve_to_ship), use the \`gate\` commands described ` +
+								`later in this prompt — those BLOCK until the Lead responds.`),
 			);
 			// GEO-266: Inbox instructions — auto-injected via PostToolUse hook, with manual fallback
 			// FLY-1188: the codex adapter has NO such hook — codex text describes
@@ -1620,7 +1627,9 @@ export class Blueprint {
 				"LEAD REPORT-BACK (MANDATORY — terminal output is NOT a report):",
 				`1. Whenever you receive a Lead instruction (a mailbox message from your Lead, or \`flywheel-comm inbox\` output) and finish acting on it, you MUST report back by running: ` +
 					`\`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} --report "DONE: <what you did> | commits: <sha(s)> | PR: <url or n/a>"\`. ` +
-					`This applies ESPECIALLY after you have already run \`stage set completed\` — post-completion revisions MUST be reported this way; ` +
+					(isGeneralizedExecution
+						? `After completion, any follow-up work MUST be reported this way; `
+						: `This applies ESPECIALLY after you have already run \`stage set completed\` — post-completion revisions MUST be reported this way; `) +
 					`the Bridge turns it into an event your Lead actually receives. There is NO other valid report channel. ` +
 					`Make the DONE report self-contained; your Lead may close it with a one-line response.`,
 				// FLY-1188: a codex runner has no teammate-messaging tool at all —
@@ -1892,7 +1901,7 @@ export class Blueprint {
 		// exits 1, and the FLY-137 onboard preamble silently no-ops — designer /
 		// agent-specific protocols never trigger end-to-end.
 		const bridgeUrl = resolveBridgeUrl();
-		if (bridgeUrl && ctx.projectName) {
+		if (bridgeUrl && ctx.projectName && !isGeneralizedExecution) {
 			systemPromptLines.push(
 				`Report your pipeline stage at each major transition using: ` +
 					`\`node ${commCliPath} stage set <stage>\`. ` +

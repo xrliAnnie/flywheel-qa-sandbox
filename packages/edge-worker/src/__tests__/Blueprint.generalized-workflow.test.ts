@@ -157,5 +157,14 @@ describe("Blueprint generalized workflow capability contract", () => {
 		expect(prompt).not.toContain("MERGE AUTHORITY");
 		expect(prompt).not.toContain("verify-approval");
 		expect(prompt).not.toContain("BRAINSTORM GATE");
+		expect(prompt).not.toContain("Verify CI passes");
+		expect(prompt).not.toContain("fix and push again");
+		expect(prompt).not.toContain("COMPLETION REPORTING");
+		expect(prompt).not.toContain("stage set completed");
+		expect(prompt).not.toContain("approve_to_ship");
+
+		// Generalized nodes can still ask their Lead through the bounded question
+		// checkpoint; capability isolation must not suppress that safe gate.
+		expect(prompt).toContain("QUESTION GATE");
 	});
 });
