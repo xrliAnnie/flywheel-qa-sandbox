@@ -1,5 +1,3 @@
-import { PHASE_THREAD_BADGE } from "./three-stage-phases.js";
-
 export type WorkflowNodeTypeId =
 	| "design"
 	| "implement"
@@ -62,7 +60,7 @@ export const NODE_TYPE_REGISTRY: Readonly<
 		id: "design",
 		isPhaseRole: true,
 		preserveCompletionRole: true,
-		badge: PHASE_THREAD_BADGE.design,
+		badge: "🎨设计",
 		capabilities: {
 			...noCode("phase_design_complete"),
 			shared_branch_writer: true,
@@ -75,7 +73,7 @@ export const NODE_TYPE_REGISTRY: Readonly<
 		id: "implement",
 		isPhaseRole: true,
 		preserveCompletionRole: true,
-		badge: PHASE_THREAD_BADGE.implement,
+		badge: "🔨实现",
 		capabilities: {
 			...noCode("needs_review"),
 			shared_branch_writer: true,
@@ -92,7 +90,7 @@ export const NODE_TYPE_REGISTRY: Readonly<
 		id: "qa",
 		isPhaseRole: true,
 		preserveCompletionRole: true,
-		badge: PHASE_THREAD_BADGE.qa,
+		badge: "🧪QA",
 		capabilities: {
 			...noCode("no_code"),
 			shared_branch_writer: true,

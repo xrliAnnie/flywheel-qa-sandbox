@@ -20,9 +20,14 @@ import {
 } from "flywheel-comm/ship-eligibility";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import { resolveWorkflowHeadAuthority } from "./head-authority.js";
 import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
+import {
+	type MaterializedHeadAuthority,
+	unavailableMaterializedHeadAuthority,
+} from "./materialized-head-authority.js";
 import { runPostShipFinalization } from "./post-ship-finalization.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
@@ -65,6 +70,151 @@ export function computeShipDecision(
 
 export interface AuthoritativeShipDecision extends ShipEligibilityDecision {
 	authoritativeHead: string;
+	workflowClaimsOk?: boolean;
+	workflowClaimsReason?: string;
+}
+
+type EngineShipContext = {
+	runId: string;
+	snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+};
+
+function engineShipContext(
+	store: StateStore,
+	executionId: string,
+):
+	| { engineOwned: false }
+	| ({ engineOwned: true } & EngineShipContext)
+	| {
+			engineOwned: true;
+			reason: string;
+	  } {
+	// Several legacy finalization tests (and third-party embedders) intentionally
+	// provide a narrow StateStore-shaped double. Missing engine capabilities mean
+	// the caller predates engine ownership, not that an engine run is malformed.
+	const capabilities = store as Partial<
+		Pick<StateStore, "getWorkflowExecutionBinding" | "getWorkflowRun">
+	>;
+	if (
+		typeof capabilities.getWorkflowExecutionBinding !== "function" ||
+		typeof capabilities.getWorkflowRun !== "function"
+	) {
+		return { engineOwned: false };
+	}
+	const binding = capabilities.getWorkflowExecutionBinding(executionId);
+	if (!binding) return { engineOwned: false };
+	const run = capabilities.getWorkflowRun(binding.run_id);
+	if (run?.engine_owned !== 1) return { engineOwned: false };
+	if (!run.snapshot)
+		return { engineOwned: true, reason: "snapshot_unavailable" };
+	try {
+		return {
+			engineOwned: true,
+			runId: run.run_id,
+			snapshot: parseWorkflowRunSnapshot(run.snapshot),
+		};
+	} catch {
+		return { engineOwned: true, reason: "snapshot_invalid" };
+	}
+}
+
+function evaluateEngineShipClaims(
+	store: StateStore,
+	context: EngineShipContext,
+	authoritativeHead: string,
+	now = new Date().toISOString(),
+): { eligible: true } | { eligible: false; reason: string } {
+	const resolved = store.resolveEngineWorkflowShipClaims({
+		runId: context.runId,
+		subjectDigest: authoritativeHead,
+		now,
+	});
+	return resolved.valid
+		? { eligible: true }
+		: { eligible: false, reason: resolved.reason };
+}
+
+export type EngineWorkflowShipPrecondition =
+	| { engineOwned: false; eligible: true; authoritativeHead: string }
+	| {
+			engineOwned: true;
+			eligible: boolean;
+			authoritativeHead: string;
+			reason?: string;
+	  };
+
+/**
+ * Status-independent engine terminal precondition. Completed-row recovery
+ * uses this instead of the legacy approval verifier, whose status contract
+ * intentionally rejects rows that are already completed.
+ */
+export async function computeEngineWorkflowShipPrecondition(
+	store: StateStore,
+	executionId: string,
+	observedAuthorityHead: string,
+	materializedHeadAuthority: MaterializedHeadAuthority = unavailableMaterializedHeadAuthority,
+): Promise<EngineWorkflowShipPrecondition> {
+	const context = engineShipContext(store, executionId);
+	const observed = observedAuthorityHead.trim().toLowerCase();
+	if (!context.engineOwned) {
+		return { engineOwned: false, eligible: true, authoritativeHead: observed };
+	}
+	if ("reason" in context) {
+		return {
+			engineOwned: true,
+			eligible: false,
+			authoritativeHead: "",
+			reason: context.reason,
+		};
+	}
+	let authoritativeHead = observed;
+	const reviewNode = context.snapshot.resolved.nodes.find(
+		(node) => node.type === "review",
+	);
+	if (reviewNode) {
+		try {
+			authoritativeHead = (
+				await materializedHeadAuthority.resolve(context.runId, reviewNode.id)
+			).head
+				.trim()
+				.toLowerCase();
+		} catch (error) {
+			return {
+				engineOwned: true,
+				eligible: false,
+				authoritativeHead: "",
+				reason:
+					error instanceof Error
+						? error.message
+						: "materialized_head_unavailable",
+			};
+		}
+		if (observed && observed !== authoritativeHead) {
+			return {
+				engineOwned: true,
+				eligible: false,
+				authoritativeHead,
+				reason: "head_authority_mismatch",
+			};
+		}
+	}
+	if (!/^[0-9a-f]{40}$/.test(authoritativeHead)) {
+		return {
+			engineOwned: true,
+			eligible: false,
+			authoritativeHead,
+			reason: "head_authority_invalid",
+		};
+	}
+	const result = evaluateEngineShipClaims(store, context, authoritativeHead);
+	return result.eligible
+		? { engineOwned: true, eligible: true, authoritativeHead }
+		: {
+				engineOwned: true,
+				eligible: false,
+				authoritativeHead,
+				reason: result.reason,
+			};
 }
 
 /**
@@ -76,20 +226,49 @@ export async function computeAuthoritativeShipDecision(
 	session: Pick<Session, "execution_id" | "project_name">,
 	observedHead: string | undefined,
 	env: NodeJS.ProcessEnv = process.env,
+	materializedHeadAuthority: MaterializedHeadAuthority = unavailableMaterializedHeadAuthority,
 ): Promise<AuthoritativeShipDecision> {
+	const engine = engineShipContext(store, session.execution_id);
+	const typedEngine =
+		engine.engineOwned && !("reason" in engine) ? engine : undefined;
 	// Default-off byte compatibility: until the claims read switch is explicitly
 	// enabled, every existing sink keeps its prior cached-head behavior.
-	if (!resolveWorkflowClaimsReadEnabled({ env })) {
+	if (!engine.engineOwned && !resolveWorkflowClaimsReadEnabled({ env })) {
 		return {
 			...computeShipDecision(store, session, observedHead ?? "", env),
 			authoritativeHead: observedHead?.trim().toLowerCase() ?? "",
 		};
 	}
+	if (engine.engineOwned && "reason" in engine) {
+		return {
+			eligible: false,
+			mergeApprovalOk: false,
+			qaOk: false,
+			mergeReason: `workflow_ship_claims_${engine.reason}`,
+			qaReason: "head_authority_unavailable_failclosed",
+			authoritativeHead: "",
+			workflowClaimsOk: false,
+			workflowClaimsReason: engine.reason,
+		};
+	}
 	let authoritativeHead = "";
 	try {
-		authoritativeHead = (
-			await resolveWorkflowHeadAuthority(store, session.execution_id)
-		).prHeadSha;
+		const reviewNode = typedEngine
+			? typedEngine.snapshot.resolved.nodes.find(
+					(node) => node.type === "review",
+				)
+			: undefined;
+		authoritativeHead = reviewNode
+			? (
+					await materializedHeadAuthority.resolve(
+						typedEngine!.runId,
+						reviewNode.id,
+					)
+				).head
+					.trim()
+					.toLowerCase()
+			: (await resolveWorkflowHeadAuthority(store, session.execution_id))
+					.prHeadSha;
 	} catch {
 		return {
 			eligible: false,
@@ -111,10 +290,30 @@ export async function computeAuthoritativeShipDecision(
 			authoritativeHead,
 		};
 	}
-	return {
-		...computeShipDecision(store, session, authoritativeHead, env),
-		authoritativeHead,
-	};
+	const base = computeShipDecision(store, session, authoritativeHead, env);
+	if (typedEngine) {
+		const workflow = evaluateEngineShipClaims(
+			store,
+			typedEngine,
+			authoritativeHead,
+		);
+		if (!workflow.eligible) {
+			return {
+				...base,
+				eligible: false,
+				mergeReason: `workflow_ship_claims:${workflow.reason}`,
+				authoritativeHead,
+				workflowClaimsOk: false,
+				workflowClaimsReason: workflow.reason,
+			};
+		}
+		return {
+			...base,
+			authoritativeHead,
+			workflowClaimsOk: true,
+		};
+	}
+	return { ...base, authoritativeHead };
 }
 
 /**

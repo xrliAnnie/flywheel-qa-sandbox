@@ -48,6 +48,24 @@ describe("CommDB workflow source events", () => {
 		]);
 	});
 
+	it("freezes an engine-owned target run into the source event and TURN history", () => {
+		db.grantTurn("FLY-1307", "engine-design", "design", 1_700_000_000_000, {
+			project: "flywheel",
+			sourceEventId: "turn:engine:design",
+			targetRunId: "run-engine-1",
+		});
+
+		const source = db.listWorkflowSourceEvents()[0]!;
+		expect(JSON.parse(source.payload)).toMatchObject({
+			issue_id: "FLY-1307",
+			new_holder: "engine-design",
+			target_run_id: "run-engine-1",
+		});
+		expect(db.listTurnSourceHistory("FLY-1307")[0]?.target_run_id).toBe(
+			"run-engine-1",
+		);
+	});
+
 	it("exact TURN source replay is a no-op while a mismatched replay is poison", () => {
 		const opts = {
 			project: "flywheel",

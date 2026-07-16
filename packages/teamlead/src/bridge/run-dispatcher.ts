@@ -679,6 +679,9 @@ export class RetryDispatcher implements IRetryDispatcher {
 					db.grantTurn(req.issueId, newExecutionId, role, Date.now(), {
 						project: req.projectName,
 						sourceEventId: `turn:spawn:${newExecutionId}`,
+						...(req.generalizedExecution?.engineOwned && {
+							targetRunId: req.generalizedExecution.runId,
+						}),
 					});
 				} finally {
 					db.close();
@@ -740,6 +743,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 				workflowCapabilities: req.generalizedExecution.capabilities,
 				workflowAgentContent: req.generalizedExecution.agentContent,
 				workflowOutputCredential: req.generalizedExecution.outputCredential,
+				workflowSubmissionCredential:
+					req.generalizedExecution.submissionCredential,
 			}),
 			...runnerSpawn,
 			// FLY-751: recompute the MCP slim profile on retry from the persisted
@@ -1235,6 +1240,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					db.grantTurn(req.issueId, executionId, role, Date.now(), {
 						project: req.projectName,
 						sourceEventId: `turn:spawn:${executionId}`,
+						...(req.generalizedExecution?.engineOwned && {
+							targetRunId: req.generalizedExecution.runId,
+						}),
 					});
 				} finally {
 					db.close();
@@ -1308,6 +1316,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				workflowCapabilities: req.generalizedExecution.capabilities,
 				workflowAgentContent: req.generalizedExecution.agentContent,
 				workflowOutputCredential: req.generalizedExecution.outputCredential,
+				workflowSubmissionCredential:
+					req.generalizedExecution.submissionCredential,
 			}),
 			// FLY-1232: durable commit marker on the fresh path — flag ON only
 			// (undefined otherwise, byte-compatible with the normal-path sentinel).

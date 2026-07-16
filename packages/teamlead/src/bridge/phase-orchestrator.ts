@@ -320,6 +320,8 @@ export interface PhaseOrchestratorDeps {
 		enabled: boolean;
 		reason?: string;
 	};
+	/** Engine-owned rows are interpreted only from their immutable snapshot. */
+	isEngineOwnedExecution?(executionId: string): boolean;
 	/**
 	 * FLY-793 (combined-QA FLY-855): resolve the REAL leadId for the next
 	 * phase's dispatch — project config + the issue's labels
@@ -527,6 +529,19 @@ export class PhaseOrchestrator {
 	private warn(m: string): void {
 		(this.deps.logger?.warn ?? this.deps.logger?.log)?.(`[phase-orch] ${m}`);
 	}
+	private isEngineOwned(executionId: string): boolean {
+		if (!this.deps.isEngineOwnedExecution) return false;
+		try {
+			return this.deps.isEngineOwnedExecution(executionId);
+		} catch (error) {
+			// Fail closed: an ownership-read outage must never license a second
+			// (legacy) interpreter for a typed engine execution.
+			this.warn(
+				`engine ownership lookup failed for ${executionId}: ${(error as Error).message} — legacy phase action suppressed`,
+			);
+			return true;
+		}
+	}
 
 	/**
 	 * FLY-1279 B2: typed takeover refusal is mutually exclusive with the generic
@@ -565,6 +580,9 @@ export class PhaseOrchestrator {
 		prHeadSha: string,
 		targetAttempt: number,
 	): Promise<{ executionId: string }> {
+		if (this.isEngineOwned(session.execution_id)) {
+			throw new Error("engine_owned_execution_uses_snapshot_dispatch");
+		}
 		if (
 			(session.session_role ?? "main") !== "qa" ||
 			(session.chat_thread_role ?? "main") !== "qa" ||
@@ -648,6 +666,7 @@ export class PhaseOrchestrator {
 			this.log(`reconcileOnStartup: ${stranded.length} stranded design_done`);
 		}
 		for (const s of stranded) {
+			if (this.isEngineOwned(s.execution_id)) continue;
 			// FLY-887 QA finding: under keep-alive a Design phase parks FOREVER at
 			// status='design_done' (that is the whole point of "park, don't exit"),
 			// so `getStrandedDesignPhaseSessions` — a blind `role='design' AND
@@ -709,6 +728,7 @@ export class PhaseOrchestrator {
 			);
 		}
 		for (const s of stranded) {
+			if (this.isEngineOwned(s.execution_id)) continue;
 			if (this.hasProgressedPastImplement(s.issue_id)) {
 				this.log(
 					`reconcileStrandedImplementHandoffs: ${s.execution_id} (${s.issue_id}) pipeline still owns itself (alive qa / latest-FAIL fix-loop / ship claim) — skip re-drive`,
@@ -793,6 +813,7 @@ export class PhaseOrchestrator {
 		terminalExecId: string;
 	}): Promise<void> {
 		if (!qaRespawnEnabled()) return;
+		if (this.isEngineOwned(scope.terminalExecId)) return;
 		const dead = this.deps.qaVerdicts.getSession(scope.terminalExecId); // fresh re-read
 		if ((dead?.chat_thread_role ?? "main") !== "qa") return; // three-stage qa rows only
 		if (!DEAD_QA_STATUSES.has(dead?.status ?? "")) return; // FSM-rejected zombies never enter
@@ -801,6 +822,7 @@ export class PhaseOrchestrator {
 			.listPhaseSessionRows(scope.issueId, "implement")
 			.find((s) => s.status === "awaiting_review");
 		if (!impl) return; // no stranded implement → nothing to re-drive
+		if (this.isEngineOwned(impl.execution_id)) return;
 		await this.tryRedriveImplementHandoff(impl);
 	}
 
@@ -954,6 +976,7 @@ export class PhaseOrchestrator {
 			candidates = [];
 		}
 		for (const s of candidates) {
+			if (this.isEngineOwned(s.execution_id)) continue;
 			try {
 				const ev = this.deps.qaVerdicts.getLatestQaResultEvent(s.execution_id);
 				if (!ev) continue;
@@ -985,6 +1008,7 @@ export class PhaseOrchestrator {
 			return;
 		}
 		for (const s of strandedPass) {
+			if (this.isEngineOwned(s.execution_id)) continue;
 			try {
 				await this.checkStrandedPass(s.execution_id);
 			} catch (err) {
@@ -996,6 +1020,7 @@ export class PhaseOrchestrator {
 	}
 
 	async onPhaseComplete(session: PhaseSession): Promise<void> {
+		if (this.isEngineOwned(session.execution_id)) return;
 		const role = session.session_role;
 		if (!isThreeStagePhaseRole(role)) return; // not a phase session
 
@@ -1083,6 +1108,7 @@ export class PhaseOrchestrator {
 		sessionInput: PhaseSession,
 		verdict: PhaseQaVerdict,
 	): Promise<void> {
+		if (this.isEngineOwned(sessionInput.execution_id)) return;
 		if ((sessionInput.session_role ?? "") !== "qa") return;
 		// Fresh re-read — never trust the caller's snapshot (mirrors FLY-846 ⓪).
 		const session =
@@ -1902,6 +1928,9 @@ export class PhaseOrchestrator {
 		terminalExecId?: string;
 	}): Promise<void> {
 		if (scope) {
+			if (scope.terminalExecId && this.isEngineOwned(scope.terminalExecId)) {
+				return;
+			}
 			let turn: TurnBeltRow | null;
 			try {
 				turn = this.deps.turnBelt.getTurn(scope.issueId, scope.projectName);
@@ -1912,6 +1941,7 @@ export class PhaseOrchestrator {
 				return;
 			}
 			if (!turn) return;
+			if (this.isEngineOwned(turn.holder_exec_id)) return;
 			// Guard 1: event position only handles "the dead one IS the holder".
 			if (
 				scope.terminalExecId &&
@@ -1933,6 +1963,7 @@ export class PhaseOrchestrator {
 			return;
 		}
 		for (const { projectName, turn } of rows) {
+			if (this.isEngineOwned(turn.holder_exec_id)) continue;
 			try {
 				await this.reconcileOneTurn(projectName, turn);
 			} catch (err) {

@@ -7,6 +7,10 @@ import type { StateStore } from "../StateStore.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
 import { resolveWorkflowHeadAuthority } from "./head-authority.js";
 import { isSameOrigin, loopbackSelfOrigin } from "./loopback-origin.js";
+import {
+	type MaterializedHeadAuthority,
+	unavailableMaterializedHeadAuthority,
+} from "./materialized-head-authority.js";
 import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 
 interface WorkflowDecisionBody {
@@ -20,6 +24,7 @@ interface WorkflowDecisionBody {
 export interface WorkflowDecisionRouterDeps {
 	store: StateStore;
 	phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
+	materializedHeadAuthority?: MaterializedHeadAuthority;
 	now?: () => string;
 	reQa?: {
 		tokens: Pick<ConfirmTokenStore, "issue" | "verifyAndConsume">;
@@ -27,6 +32,104 @@ export interface WorkflowDecisionRouterDeps {
 			canonical: WorkflowReQaCanonical,
 			prHeadSha: string,
 		): Promise<{ executionId: string }>;
+	};
+}
+
+type SubmissionCredential = NonNullable<
+	ReturnType<StateStore["getWorkflowSubmissionCredentialByToken"]>
+>;
+
+interface EngineDecisionCanonical {
+	reporting: NonNullable<ReturnType<StateStore["getSession"]>>;
+	serverHead: string;
+	predicate: string;
+	issuerVendor: string;
+	issuerModel: string;
+	producerExecutionId: string;
+	producerVendor: string;
+}
+
+async function resolveEngineDecisionCanonical(
+	deps: WorkflowDecisionRouterDeps,
+	credential: SubmissionCredential,
+	status: "pass" | "fail",
+): Promise<EngineDecisionCanonical | undefined> {
+	const context = deps.store.getGeneralizedWorkflowNodeForExecution(
+		credential.execution_id,
+	);
+	if (!context || context.run.engine_owned !== 1) return undefined;
+	if (context.node.type !== "qa" && context.node.type !== "review") {
+		throw new Error("node_does_not_emit_decisions");
+	}
+	const expectedFamily =
+		context.node.type === "qa" ? "qa_verdict" : "review_verdict";
+	if (credential.family !== expectedFamily) {
+		throw new Error("decision_family_mismatch");
+	}
+	const reporting = deps.store.getSession(credential.execution_id);
+	const issuer = deps.store.getWorkflowExecutionRuntime(
+		credential.execution_id,
+	);
+	if (!reporting || !issuer) throw new Error("execution_runtime_unavailable");
+
+	let serverHead: string;
+	let producerExecutionId: string;
+	if (context.node.type === "qa") {
+		serverHead = (
+			await resolveWorkflowHeadAuthority(deps.store, credential.execution_id)
+		).prHeadSha;
+		const producerNodeId = context.snapshot.manifest.edges.find(
+			(edge) => edge.to === context.node.id,
+		)?.from;
+		const producer = producerNodeId
+			? deps.store
+					.listWorkflowRunNodes(credential.run_id, producerNodeId)
+					.filter((node) => node.execution_id && node.state === "done")
+					.at(-1)
+			: undefined;
+		if (!producer?.execution_id) throw new Error("producer_not_found");
+		producerExecutionId = producer.execution_id;
+	} else {
+		const authority = await (
+			deps.materializedHeadAuthority ?? unavailableMaterializedHeadAuthority
+		).resolve(credential.run_id, context.node.id);
+		serverHead = authority.head.toLowerCase();
+		if (!/^[0-9a-f]{40}$/.test(serverHead)) {
+			throw new Error("materialized_head_invalid");
+		}
+		const output = deps.store.getWorkflowNodeOutput(authority.outputId);
+		const directProducer = output
+			? context.snapshot.manifest.edges.some(
+					(edge) => edge.from === output.node_id && edge.to === context.node.id,
+				)
+			: false;
+		if (
+			!output ||
+			output.run_id !== credential.run_id ||
+			output.attempt !== authority.attempt ||
+			!directProducer
+		) {
+			throw new Error("materialized_output_mismatch");
+		}
+		producerExecutionId = output.execution_id;
+	}
+	const producer = deps.store.getWorkflowExecutionRuntime(producerExecutionId);
+	if (!producer) throw new Error("producer_runtime_unavailable");
+	return {
+		reporting,
+		serverHead,
+		predicate:
+			context.node.type === "qa"
+				? status === "pass"
+					? "qa_passed"
+					: "qa_failed"
+				: status === "pass"
+					? "design_review_approved"
+					: "design_review_failed",
+		issuerVendor: issuer.vendor,
+		issuerModel: issuer.model,
+		producerExecutionId,
+		producerVendor: producer.vendor,
 	};
 }
 
@@ -184,6 +287,75 @@ export function createWorkflowDecisionRouter(
 			deps.store.getWorkflowSubmissionCredentialByToken(credential);
 		if (!credentialRow) {
 			res.status(401).json({ ok: false, reason: "credential_not_found" });
+			return;
+		}
+		let engineCanonical: EngineDecisionCanonical | undefined;
+		try {
+			engineCanonical = await resolveEngineDecisionCanonical(
+				deps,
+				credentialRow,
+				status as "pass" | "fail",
+			);
+		} catch (error) {
+			res.status(409).json({
+				ok: false,
+				reason:
+					error instanceof Error
+						? error.message
+						: "decision_authority_unavailable",
+			});
+			return;
+		}
+		if (engineCanonical) {
+			if (clientHead && clientHead !== engineCanonical.serverHead) {
+				res.status(409).json({
+					ok: false,
+					reason: "head_authority_mismatch",
+					expectedPrHeadSha: engineCanonical.serverHead,
+				});
+				return;
+			}
+			const result = deps.store.submitWorkflowDecisionByCredential({
+				credential,
+				clientRequestId,
+				predicate: engineCanonical.predicate,
+				subjectDigest: engineCanonical.serverHead,
+				issuerVendor: engineCanonical.issuerVendor,
+				issuerModel: engineCanonical.issuerModel,
+				subjectProducerExecutionId: engineCanonical.producerExecutionId,
+				subjectProducerVendor: engineCanonical.producerVendor,
+				claimExpiresAt: credentialRow.expires_at,
+				evidence: summary ? { summary } : undefined,
+				now: deps.now?.(),
+			});
+			if (!result.ok) {
+				res
+					.status(result.reason === "credential_not_found" ? 401 : 409)
+					.json(result);
+				return;
+			}
+			deps.store.insertEvent({
+				event_id: `workflow-decision:${credentialRow.id}:${clientRequestId}`,
+				execution_id: engineCanonical.reporting.execution_id,
+				issue_id: engineCanonical.reporting.issue_id,
+				project_name: engineCanonical.reporting.project_name,
+				event_type: "workflow_decision",
+				source: "bridge.workflow-decision",
+				payload: {
+					status,
+					predicate: engineCanonical.predicate,
+					targetExecutionId: engineCanonical.producerExecutionId,
+					subjectHead: engineCanonical.serverHead,
+					...(summary ? { summary } : {}),
+				},
+			});
+			res.json({
+				ok: true,
+				claimId: result.claimId,
+				serverSeq: result.serverSeq,
+				idempotentReplay: result.idempotentReplay,
+				requestId: clientRequestId,
+			});
 			return;
 		}
 		const reporting = deps.store.getSession(credentialRow.execution_id);

@@ -42,6 +42,7 @@ import {
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import { workflowNodeAgentContent } from "../workflow-run-snapshot.js";
 import {
 	resolveWorkflowTemplateSelection,
 	type WorkflowRequestAuthKind,
@@ -754,7 +755,10 @@ export function createRunsRouter(
 				});
 				return;
 			}
-			if (!generalizedSelection.node.agent?.content) {
+			const workflowAgentContent = workflowNodeAgentContent(
+				generalizedSelection.node,
+			);
+			if (!workflowAgentContent) {
 				res.status(409).json({
 					success: false,
 					code: "GENERALIZED_AGENT_CONTENT_MISSING",
@@ -763,6 +767,8 @@ export function createRunsRouter(
 			}
 			let startedSession = store.getSession(generalizedSelection.executionId);
 			let workflowOutputCredential = workflowAdmission.outputCredential;
+			const workflowSubmissionCredential =
+				workflowAdmission.submissionCredential;
 			let launchGateToken: string | undefined;
 			let commitWorkflowLaunch:
 				| (() => { ok: boolean; reason?: string })
@@ -935,8 +941,9 @@ export function createRunsRouter(
 							snapshotDigest: generalizedSelection.snapshotDigest,
 							dispatch: generalizedSelection.node.dispatch,
 							capabilities: { ...generalizedSelection.node.capabilities },
-							agentContent: generalizedSelection.node.agent.content,
+							agentContent: workflowAgentContent,
 							outputCredential: workflowOutputCredential,
+							submissionCredential: workflowSubmissionCredential,
 							idempotencyKey: generalizedSelection.idempotencyKey,
 							launchGateToken,
 							commitWorkflowLaunch,

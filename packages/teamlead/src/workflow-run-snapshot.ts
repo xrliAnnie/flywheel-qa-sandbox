@@ -9,20 +9,21 @@ import {
 	validatePinnedWorkflowManifest,
 	validateWorkflowManifest,
 	type WorkflowEffort,
+	type WorkflowManifestV1,
 	type WorkflowManifestV2,
 	type WorkflowNodeType,
 	type WorkflowOutputContract,
 	type WorkflowVendor,
 } from "./workflow-template.js";
 
-export interface ResolvedWorkflowNodeV2 {
+export interface ResolvedWorkflowNode {
 	id: string;
 	type: WorkflowNodeType;
 	capabilities: WorkflowNodeCapabilities;
 	dispatch?: {
 		vendor: WorkflowVendor;
 		model: string;
-		effort: WorkflowEffort;
+		effort?: WorkflowEffort;
 	};
 	output?: WorkflowOutputContract;
 	agent?: { content: string; digest: string };
@@ -33,9 +34,23 @@ export interface WorkflowRunSnapshotV2 {
 	template: { id: string; revision: number };
 	manifest: WorkflowManifestV2;
 	manifest_digest: string;
-	resolved: { nodes: ResolvedWorkflowNodeV2[] };
+	resolved: { nodes: ResolvedWorkflowNode[] };
 	snapshot_digest: string;
 }
+
+export interface WorkflowRunSnapshotV1 {
+	schema_version: 1;
+	template: { id: string; revision: number };
+	manifest: WorkflowManifestV1;
+	manifest_digest: string;
+	resolved: { nodes: ResolvedWorkflowNode[] };
+	snapshot_digest: string;
+}
+
+export type WorkflowRunSnapshot = WorkflowRunSnapshotV1 | WorkflowRunSnapshotV2;
+
+/** Kept as a source-compatible alias for schema-v2 consumers. */
+export type ResolvedWorkflowNodeV2 = ResolvedWorkflowNode;
 
 function object(value: unknown, path: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -60,9 +75,9 @@ function nonempty(value: unknown, path: string): string {
 	return value;
 }
 
-function snapshotBody(
-	snapshot: Omit<WorkflowRunSnapshotV2, "snapshot_digest">,
-): Omit<WorkflowRunSnapshotV2, "snapshot_digest"> {
+function snapshotBody<T extends Omit<WorkflowRunSnapshot, "snapshot_digest">>(
+	snapshot: T,
+): T {
 	return snapshot;
 }
 
@@ -89,6 +104,72 @@ function readAgent(canonicalRoot: string, agentFile: string) {
 	return { content, digest: canonicalSubmissionDigest(content) };
 }
 
+const BUILTIN_NODE_AGENT: Partial<Record<WorkflowNodeType, string>> = {
+	design:
+		"Complete the bounded design phase, persist its handoff, and report completion. Do not dispatch successors.",
+	implement:
+		"Implement the approved design on the pinned shared branch, verify it, and report completion. Do not dispatch successors.",
+	qa: "Independently verify the current code producer and emit one structured pass or fail verdict. Do not dispatch successors.",
+	review:
+		"Review the current materialized output against the bounded task and emit one structured pass or fail verdict. Do not dispatch successors.",
+};
+
+function builtInAgent(type: WorkflowNodeType) {
+	const content = BUILTIN_NODE_AGENT[type];
+	return content
+		? { content, digest: canonicalSubmissionDigest(content) }
+		: undefined;
+}
+
+/** Resolve the immutable role text delivered with a typed execution. */
+export function workflowNodeAgentContent(
+	node: Pick<ResolvedWorkflowNode, "type" | "agent">,
+): string | undefined {
+	return node.agent?.content ?? BUILTIN_NODE_AGENT[node.type];
+}
+
+/** Materialize the legacy engineering manifest into the same typed engine envelope. */
+export function buildWorkflowRunSnapshotV1(input: {
+	template: { id: string; revision: number };
+	manifest: unknown;
+}): WorkflowRunSnapshotV1 {
+	const validated = validateWorkflowManifest(input.manifest);
+	if (validated.schema_version !== 1) {
+		throw new Error("typed engineering snapshot requires schema_version 1");
+	}
+	const resolved: ResolvedWorkflowNode[] = validated.nodes.map((node) => {
+		const capabilities = {
+			...getNodeTypeRegistryEntry(node.type).capabilities,
+		};
+		if (node.type === "gate") {
+			return { id: node.id, type: node.type, capabilities };
+		}
+		if (!node.vendor || !node.model) {
+			throw new Error(
+				`workflow node ${node.id} requires pinned vendor and model`,
+			);
+		}
+		return {
+			id: node.id,
+			type: node.type,
+			capabilities,
+			dispatch: {
+				vendor: node.vendor,
+				model: node.model,
+				...(node.effort ? { effort: node.effort } : {}),
+			},
+		};
+	});
+	const body = snapshotBody({
+		schema_version: 1 as const,
+		template: { ...input.template },
+		manifest: validated,
+		manifest_digest: canonicalSubmissionDigest(validated),
+		resolved: { nodes: resolved },
+	});
+	return { ...body, snapshot_digest: canonicalSubmissionDigest(body) };
+}
+
 /** Materialize every live-registry decision into a self-contained v2 snapshot. */
 export function buildWorkflowRunSnapshotV2(input: {
 	template: { id: string; revision: number };
@@ -99,7 +180,7 @@ export function buildWorkflowRunSnapshotV2(input: {
 	if (validated.schema_version !== 2) {
 		throw new Error("typed generalized snapshot requires schema_version 2");
 	}
-	const resolved: ResolvedWorkflowNodeV2[] = validated.nodes.map((node) => {
+	const resolved: ResolvedWorkflowNode[] = validated.nodes.map((node) => {
 		const registry = getNodeTypeRegistryEntry(node.type);
 		const capabilities: WorkflowNodeCapabilities = {
 			...registry.capabilities,
@@ -132,7 +213,7 @@ export function buildWorkflowRunSnapshotV2(input: {
 			...(node.output ? { output: node.output } : {}),
 			...(node.type === "generic"
 				? { agent: readAgent(input.canonicalRoot, node.agent_file!) }
-				: {}),
+				: { agent: builtInAgent(node.type) }),
 		};
 	});
 	const body = snapshotBody({
@@ -186,9 +267,7 @@ function parseCapabilities(
 }
 
 /** Parse only pinned snapshot vocabulary; never consult the mutable live registry. */
-export function parseWorkflowRunSnapshot(
-	source: string,
-): WorkflowRunSnapshotV2 {
+export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(source);
@@ -208,13 +287,21 @@ export function parseWorkflowRunSnapshot(
 		],
 		"workflow snapshot",
 	);
-	if (root.schema_version !== 2) {
-		throw new Error("workflow snapshot schema_version must be 2");
+	if (root.schema_version !== 1 && root.schema_version !== 2) {
+		throw new Error("workflow snapshot schema_version must be 1 or 2");
 	}
 	// The manifest is already pinned. Parse its structure without consulting the
 	// mutable live node registry; capability invariants are checked below from
 	// the snapshot's pinned resolved nodes.
-	const manifest = validatePinnedWorkflowManifest(root.manifest);
+	const manifest =
+		root.schema_version === 1
+			? validateWorkflowManifest(root.manifest, {
+					allowUnsupportedModels: true,
+				})
+			: validatePinnedWorkflowManifest(root.manifest);
+	if (manifest.schema_version !== root.schema_version) {
+		throw new Error("workflow snapshot manifest schema_version mismatch");
+	}
 	const manifestDigest = nonempty(
 		root.manifest_digest,
 		"workflow snapshot.manifest_digest",
@@ -237,7 +324,7 @@ export function parseWorkflowRunSnapshot(
 		throw new Error("workflow snapshot.resolved.nodes must be an array");
 	}
 	const resolved = resolvedRaw.nodes.map(
-		(value, index): ResolvedWorkflowNodeV2 => {
+		(value, index): ResolvedWorkflowNode => {
 			const path = `workflow snapshot.resolved.nodes[${index}]`;
 			const nodeRaw = object(value, path);
 			exact(
@@ -270,6 +357,7 @@ export function parseWorkflowRunSnapshot(
 				throw new Error(`${path}.dispatch.vendor is unknown`);
 			}
 			if (
+				dispatchRaw.effort !== undefined &&
 				dispatchRaw.effort !== "low" &&
 				dispatchRaw.effort !== "medium" &&
 				dispatchRaw.effort !== "high" &&
@@ -277,16 +365,29 @@ export function parseWorkflowRunSnapshot(
 			) {
 				throw new Error(`${path}.dispatch.effort is unknown`);
 			}
-			const node: ResolvedWorkflowNodeV2 = {
+			if (root.schema_version === 2 && dispatchRaw.effort === undefined) {
+				throw new Error(`${path}.dispatch.effort is required`);
+			}
+			const node: ResolvedWorkflowNode = {
 				id,
 				type: manifestNode.type,
 				capabilities,
 				dispatch: {
 					vendor: dispatchRaw.vendor,
 					model: nonempty(dispatchRaw.model, `${path}.dispatch.model`),
-					effort: dispatchRaw.effort,
+					...(dispatchRaw.effort
+						? { effort: dispatchRaw.effort as WorkflowEffort }
+						: {}),
 				},
 			};
+			if (
+				root.schema_version === 1 &&
+				(nodeRaw.output !== undefined || nodeRaw.agent !== undefined)
+			) {
+				throw new Error(
+					`${path} schema-v1 node cannot carry generalized fields`,
+				);
+			}
 			if (nodeRaw.output !== undefined) {
 				const outputRaw = object(nodeRaw.output, `${path}.output`);
 				exact(outputRaw, ["schema", "max_bytes"], `${path}.output`);
@@ -303,7 +404,7 @@ export function parseWorkflowRunSnapshot(
 					max_bytes: Number(outputRaw.max_bytes),
 				};
 			}
-			if (manifestNode.type === "generic") {
+			if (nodeRaw.agent !== undefined) {
 				const agentRaw = object(nodeRaw.agent, `${path}.agent`);
 				exact(agentRaw, ["content", "digest"], `${path}.agent`);
 				const content = nonempty(agentRaw.content, `${path}.agent.content`);
@@ -312,8 +413,8 @@ export function parseWorkflowRunSnapshot(
 					throw new Error(`${path}.agent digest mismatch`);
 				}
 				node.agent = { content, digest };
-			} else if (nodeRaw.agent !== undefined) {
-				throw new Error(`${path} non-generic node cannot carry an agent`);
+			} else if (root.schema_version === 2 && manifestNode.type === "generic") {
+				throw new Error(`${path} generic node requires a pinned agent`);
 			}
 			if (capabilities.produces_output !== !!node.output) {
 				throw new Error(
@@ -346,13 +447,22 @@ export function parseWorkflowRunSnapshot(
 			"a workflow containing a pinned code-writing node must contain exactly one independent QA node and qa_passed ship claim",
 		);
 	}
-	const body = snapshotBody({
-		schema_version: 2,
-		template,
-		manifest,
-		manifest_digest: manifestDigest,
-		resolved: { nodes: resolved },
-	});
+	const body =
+		root.schema_version === 1 && manifest.schema_version === 1
+			? snapshotBody({
+					schema_version: 1 as const,
+					template,
+					manifest,
+					manifest_digest: manifestDigest,
+					resolved: { nodes: resolved },
+				})
+			: snapshotBody({
+					schema_version: 2 as const,
+					template,
+					manifest: manifest as WorkflowManifestV2,
+					manifest_digest: manifestDigest,
+					resolved: { nodes: resolved },
+				});
 	const digest = nonempty(
 		root.snapshot_digest,
 		"workflow snapshot.snapshot_digest",
@@ -360,5 +470,5 @@ export function parseWorkflowRunSnapshot(
 	if (digest !== canonicalSubmissionDigest(body)) {
 		throw new Error("workflow snapshot digest mismatch");
 	}
-	return { ...body, snapshot_digest: digest };
+	return { ...body, snapshot_digest: digest } as WorkflowRunSnapshot;
 }

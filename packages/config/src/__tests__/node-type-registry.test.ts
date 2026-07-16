@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
 	getNodeTypeRegistryEntry,
@@ -5,7 +6,10 @@ import {
 	nodeTypeWritesCode,
 } from "../node-type-registry.js";
 import {
+	isThreeStagePhaseRole,
 	PHASE_THREAD_BADGE,
+	phaseThreadBadge,
+	resolveCompletionSessionRole,
 	THREE_STAGE_PHASE_SEQUENCE,
 } from "../three-stage-phases.js";
 
@@ -60,5 +64,40 @@ describe("generalized workflow node-type registry", () => {
 		expect(() => getNodeTypeRegistryEntry("mystery")).toThrow(
 			/unknown workflow node type/i,
 		);
+	});
+
+	it("is the only source for phase identity, completion-role preservation, and badges", () => {
+		const registrySource = readFileSync(
+			new URL("../node-type-registry.ts", import.meta.url),
+			"utf8",
+		);
+		const phaseSource = readFileSync(
+			new URL("../three-stage-phases.ts", import.meta.url),
+			"utf8",
+		);
+		expect(registrySource).not.toMatch(
+			/from ["'].\/three-stage-phases\.js["']/,
+		);
+		expect(phaseSource).toMatch(/from ["'].\/node-type-registry\.js["']/);
+
+		const design = NODE_TYPE_REGISTRY.design as {
+			isPhaseRole: boolean;
+			preserveCompletionRole: boolean;
+			badge: string;
+		};
+		const original = { ...design };
+		try {
+			design.isPhaseRole = false;
+			expect(isThreeStagePhaseRole("design")).toBe(false);
+
+			design.isPhaseRole = true;
+			design.preserveCompletionRole = false;
+			expect(resolveCompletionSessionRole("design", "main")).toBe("main");
+
+			design.badge = "fixture-badge";
+			expect(phaseThreadBadge("design")).toBe("fixture-badge");
+		} finally {
+			Object.assign(design, original);
+		}
 	});
 });

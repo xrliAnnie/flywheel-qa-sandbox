@@ -14,6 +14,7 @@ import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { type Session, StateStore } from "../../StateStore.js";
+import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import type { BridgeConfig } from "../types.js";
 
 // Spy the finalization orchestrator — the sweeper's job ends at invoking it
@@ -89,6 +90,42 @@ function seedSession(store: StateStore, over: Partial<Session> = {}): void {
 	store.patchSessionMetadata(id, {
 		pr_head_sha: (over.pr_head_sha as string) ?? HEAD,
 	});
+}
+
+function bindEngineRun(store: StateStore, executionId = "exec-1"): void {
+	const seed = loadBundledWorkflowSeeds().find(
+		(candidate) => candidate.templateId === "tpl_eng_heavy",
+	)!;
+	store.importWorkflowTemplateSeed(seed);
+	store.materializeWorkflowRun({
+		runId: "engine-run",
+		issueId: "FLY-921",
+		projectName: "proj",
+		taskCategory: "code",
+		templateId: seed.templateId,
+		claimsReadEnrolled: false,
+		actor: "lead",
+		startReservation: {
+			idempotencyKey: "engine-start",
+			selectionDigest: "selection",
+			nodeId: "design",
+			attempt: 1,
+			executionId,
+			createdAt: "2026-07-01T00:00:00.000Z",
+		},
+	});
+	expect(
+		store.admitGeneralizedWorkflowExecution({
+			runId: "engine-run",
+			nodeId: "design",
+			executionId,
+			attempt: 1,
+			now: "2026-07-01T00:01:00.000Z",
+			expiresAt: "2027-07-01T00:01:00.000Z",
+			absoluteDeadlineAt: "2027-07-02T00:01:00.000Z",
+			env: { FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" },
+		}).ok,
+	).toBe(true);
 }
 
 interface Setup {
@@ -252,6 +289,24 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 				.getEventsByExecution("exec-1")
 				.some((e) => e.event_type === "external_merge_finalized"),
 		).toBe(true);
+	});
+
+	it("path 2: an engine-owned completed row cannot bypass missing snapshot ship claims", async () => {
+		const s = await setup({ trusted: true });
+		bindEngineRun(s.store);
+		seedSession(s.store, { status: "completed" });
+		await s.pass();
+		expect(runPostShipSpy).not.toHaveBeenCalled();
+		expect(s.alerts).toHaveLength(1);
+		expect(
+			s.store
+				.getEventsByExecution("exec-1")
+				.find((event) => event.event_type === "external_merge_suspect")
+				?.payload,
+		).toMatchObject({
+			engineShipEligible: false,
+			engineShipReason: "qa_passed:attempt_unavailable",
+		});
 	});
 
 	it("path 2: trusted approval bound to the OLD head but a DIFFERENT head merged → ALERT, never archived (FLY-921 night shape)", async () => {

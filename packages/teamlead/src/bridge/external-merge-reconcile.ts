@@ -56,8 +56,10 @@ import type { Session, StateStore } from "../StateStore.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import { resolveWorkflowHeadAuthority } from "./head-authority.js";
 import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
+import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
 import {
 	computeAuthoritativeShipDecision,
+	computeEngineWorkflowShipPrecondition,
 	parkMergeBlock,
 } from "./merge-ship-gate.js";
 import { runPostShipFinalization } from "./post-ship-finalization.js";
@@ -144,6 +146,8 @@ export interface ExternalMergeReconcileDeps {
 	checkPrMerge?: typeof checkPrMergeViaGh;
 	/** Test seam for the path-2 trusted-approval read (default: CommDB). */
 	hasTrustedApprovalImpl?: (session: Session) => boolean;
+	/** PR-7.5 supplies the durable materialized-head reader for product runs. */
+	materializedHeadAuthority?: MaterializedHeadAuthority;
 	/**
 	 * FLY-1204: the three-stage keep-alive phase finalizer (same one the
 	 * DirectEventSink / event-route paths use). External merge is a real ship
@@ -353,7 +357,13 @@ export function createExternalMergeReconciler(
 			boundHead === authoritativeHead &&
 			authoritativeHead === info.headRefOid;
 		const trusted = hasTrusted(session);
-		if (headMatch && trusted) {
+		const engineShip = await computeEngineWorkflowShipPrecondition(
+			deps.store,
+			session.execution_id,
+			authoritativeHead ?? "",
+			deps.materializedHeadAuthority,
+		);
+		if (headMatch && trusted && engineShip.eligible) {
 			log(
 				`[external-merge] FLY-945 finalizing completed-but-unfinalized ${session.execution_id} (${session.issue_id}) — merged head matches bound approval`,
 			);
@@ -374,6 +384,11 @@ export function createExternalMergeReconciler(
 				boundHead: boundHead ?? null,
 				mergedHead: info.headRefOid ?? null,
 				trustedApproval: trusted,
+				engineShipEligible: engineShip.eligible,
+				engineShipReason:
+					engineShip.engineOwned && !engineShip.eligible
+						? engineShip.reason
+						: null,
 			},
 		});
 		if (claimed) {

@@ -69,6 +69,53 @@ function generalizedOpsSeed() {
 }
 
 describe("StateStore workflow templates", () => {
+	it("atomically pins a typed v1 snapshot and engine ownership only with a start reservation", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = loadBundledWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		)!;
+		store.importWorkflowTemplateSeed(seed);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "code",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+
+		const engineRun = store.materializeWorkflowRun({
+			runId: "run-engine-v1",
+			issueId: "FLY-ENGINE",
+			projectName: "flywheel",
+			taskCategory: "code",
+			claimsReadEnrolled: false,
+			actor: "lead",
+			startReservation: {
+				idempotencyKey: "engine-start",
+				selectionDigest: "selection-digest",
+				nodeId: "design",
+				attempt: 1,
+				executionId: "design-exec",
+				createdAt: "2026-07-16T00:00:00.000Z",
+			},
+		});
+		expect(engineRun.engine_owned).toBe(1);
+		expect(parseWorkflowRunSnapshot(engineRun.snapshot!)).toMatchObject({
+			schema_version: 1,
+			template: { id: "tpl_eng_heavy", revision: 1 },
+		});
+
+		const legacyRun = store.materializeWorkflowRun({
+			runId: "run-legacy-v1",
+			issueId: "FLY-LEGACY",
+			projectName: "flywheel",
+			taskCategory: "code",
+			claimsReadEnrolled: false,
+			actor: "lead",
+		});
+		expect(legacyRun.engine_owned).toBe(0);
+		store.close();
+	});
+
 	it("boot import skips v2 while off and imports the full optional set while on", async () => {
 		const offStore = await StateStore.create(":memory:");
 		const skipped: string[] = [];

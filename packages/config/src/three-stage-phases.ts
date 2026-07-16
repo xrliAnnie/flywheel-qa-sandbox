@@ -53,20 +53,20 @@ import {
 	type ModelTier,
 	modelDisplayName,
 } from "./model-tiers.js";
+import {
+	NODE_TYPE_REGISTRY,
+	type WorkflowNodeTypeId,
+} from "./node-type-registry.js";
 import type { RoleEffort } from "./types.js";
 
 export type ThreeStagePhase = "design" | "implement" | "qa";
 
 /** Ordered phase sequence of a three-stage run (Design → Implement → QA). */
 export const THREE_STAGE_PHASE_SEQUENCE: readonly ThreeStagePhase[] = [
-	"design",
-	"implement",
-	"qa",
+	...Object.values(NODE_TYPE_REGISTRY)
+		.filter((entry) => entry.isPhaseRole)
+		.map((entry) => entry.id as ThreeStagePhase),
 ];
-
-const THREE_STAGE_PHASE_SET: ReadonlySet<string> = new Set(
-	THREE_STAGE_PHASE_SEQUENCE,
-);
 
 /**
  * Is `role` one of the three-stage phase roles (design/implement/qa)? The single
@@ -76,7 +76,10 @@ const THREE_STAGE_PHASE_SET: ReadonlySet<string> = new Set(
 export function isThreeStagePhaseRole(
 	role: string | null | undefined,
 ): role is ThreeStagePhase {
-	return role != null && THREE_STAGE_PHASE_SET.has(role);
+	return (
+		role != null &&
+		NODE_TYPE_REGISTRY[role as WorkflowNodeTypeId]?.isPhaseRole === true
+	);
 }
 
 /**
@@ -101,7 +104,13 @@ export function resolveCompletionSessionRole(
 	existingRole: string | null | undefined,
 	incomingRole: string | null | undefined,
 ): string {
-	if (isThreeStagePhaseRole(existingRole)) return existingRole;
+	if (
+		existingRole != null &&
+		NODE_TYPE_REGISTRY[existingRole as WorkflowNodeTypeId]
+			?.preserveCompletionRole === true
+	) {
+		return existingRole;
+	}
 	return incomingRole ?? "main";
 }
 
@@ -261,18 +270,21 @@ export function nextPhase(phase: ThreeStagePhase): ThreeStagePhase | null {
  */
 export const PHASE_THREAD_BADGE_PARTS: Readonly<
 	Record<ThreeStagePhase, { emoji: string; word: string }>
-> = {
-	design: { emoji: "🎨", word: "设计" },
-	implement: { emoji: "🔨", word: "实现" },
-	qa: { emoji: "🧪", word: "QA" },
-};
+> = Object.fromEntries(
+	THREE_STAGE_PHASE_SEQUENCE.map((phase) => {
+		const [emoji, ...word] = Array.from(NODE_TYPE_REGISTRY[phase].badge);
+		return [phase, { emoji: emoji ?? "", word: word.join("") }];
+	}),
+) as Record<ThreeStagePhase, { emoji: string; word: string }>;
 
 /** Composed `emoji+word` badge per phase (`🎨设计`). Derived from the parts. */
-export const PHASE_THREAD_BADGE: Readonly<Record<ThreeStagePhase, string>> = {
-	design: `${PHASE_THREAD_BADGE_PARTS.design.emoji}${PHASE_THREAD_BADGE_PARTS.design.word}`,
-	implement: `${PHASE_THREAD_BADGE_PARTS.implement.emoji}${PHASE_THREAD_BADGE_PARTS.implement.word}`,
-	qa: `${PHASE_THREAD_BADGE_PARTS.qa.emoji}${PHASE_THREAD_BADGE_PARTS.qa.word}`,
-};
+export const PHASE_THREAD_BADGE: Readonly<Record<ThreeStagePhase, string>> =
+	Object.fromEntries(
+		THREE_STAGE_PHASE_SEQUENCE.map((phase) => [
+			phase,
+			NODE_TYPE_REGISTRY[phase].badge,
+		]),
+	) as Record<ThreeStagePhase, string>;
 
 /**
  * FLY-892 (Step 6): the stage-level thread-title badge for a phase role (🎨设计 /
@@ -281,7 +293,7 @@ export const PHASE_THREAD_BADGE: Readonly<Record<ThreeStagePhase, string>> = {
  * title carries only the current phase, so a whole pipeline renames ~twice.
  */
 export function phaseThreadBadge(role: string | null | undefined): string {
-	return isThreeStagePhaseRole(role) ? PHASE_THREAD_BADGE[role] : "";
+	return isThreeStagePhaseRole(role) ? NODE_TYPE_REGISTRY[role].badge : "";
 }
 
 /** Human phase name shown inside a message tag (`[设计·Fable]`). */
