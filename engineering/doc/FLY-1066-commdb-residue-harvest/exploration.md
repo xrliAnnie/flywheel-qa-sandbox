@@ -29,7 +29,7 @@ Flywheel 有两本账:**StateStore**(`~/.flywheel/teamlead.db`,Bridge 的 FSM �
 |---|---|---|---|
 | ① CommDB 孤儿 | CommDB sessions 有 row(status=running),StateStore **无 row** | `d2f31930`(tmux `%194`、issue_id=NULL、lead_id=NULL、2026-05-11) | 1 |
 | ② 终态未同步 | StateStore 已终态(failed/blocked),CommDB registration 仍 running | `e4d3b29d`/`e90f3962`(GEO-441 auto-QA,`runner-geoforge3d:pending` 占位)+ geoforge3d 3 条(GEO-342/424/347)+ flywheel 8 条 | ~13 |
-| ③ StateStore 幽灵 | StateStore **非终态**(如 awaiting_review),CommDB **无 row**,tmux terminal 已死 | Asha 夜跑事故形态(2026-07-15 夜,3 个夜跑位被吃 + close_runner 报 No session found) | 事故实证 |
+| ③ StateStore 幽灵 | StateStore **活跃态**(pending/running),terminal CommDB row 同轮证死并删除 | Asha 夜跑事故暴露此类双账脱节;历史 StateStore-only 行因缺少可信 target provenance 只能 fail-closed | 事故实证 + 安全收窄 |
 | ④ 双无主 escalation | `detection_escalations` 表 pending 行,target exec 在**两本账都查无此人** | 2026-07-15 夜 65 条告警风暴的实测形状 | 事故实证 |
 
 面①②的 6 个已知样本 tmux 目标全部实测 `probe=dead`。伤害:Lead 视图永远显示 running 僵尸、
@@ -152,7 +152,9 @@ Tadashi 对重开 gate 的 A3 答复(「failed/blocked 只 mark 不 delete,delet
 
 四面判据、三入口(boot + 心跳 maintenance 搭车 + scheduled-run 409 定点)、安全约束
 (收割信号 = terminal/CommDB 存在性,绝不是 FSM 终不终态;删除只认 probe==="dead";
-awaiting_review + terminal 活 = 结构性不可触;fail-closed 时间戳;`FLYWHEEL_COMMDB_RESIDUE_HARVEST`
+awaiting_review/approved_to_ship/design_done = 结构性不可触(不以 probe 结果为转移依据);面③只消费同轮
+terminal prune 从 CommDB 取得的 exact `session:@windowId` 死亡证据,不信 StateStore legacy target;
+fail-closed 时间戳;`FLYWHEEL_COMMDB_RESIDUE_HARVEST`
 kill-switch;scope-free = 零 leadId 检查、只遍历本 Bridge config projects)——
 全部见本文件夹旧版归档于 git 历史(commit `6a79e4918`)与 plan.md「Part B」;
 实现已在本分支(M1-M5,独立 QA PASS,qa-report.md)。本轮对②仅做两处增量:

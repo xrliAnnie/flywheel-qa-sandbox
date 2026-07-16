@@ -30,9 +30,10 @@ closeRunner 幂等。**probe=alive/indeterminate 的 failed/blocked 行原决定
 
 ## 2. 硬约束(验收原文)
 
-> 收割信号 = terminal/CommDB 存在性,绝不是 FSM 终不终态;awaiting_review + terminal 活 = 合法等 founder,结构性不可触。
+> 收割信号 = terminal/CommDB 存在性,绝不是 FSM 终不终态;awaiting_review/approved_to_ship/design_done = 合法 park,结构性不可触。
 
-②层推论原样(删除/终态化只认 probe==="dead";alive/indeterminate keep;design_done/parked 不可触;
+②层推论原样(删除/终态化只认 authoritative exact-window probe==="dead";alive/indeterminate keep;
+design_done/founder-review parked 不可触;StateStore legacy `tmux_session` 不构成 authority;
 面③ FSM 拒绝即 keep 不 forceStatus;时间戳 fail-closed;搭车不阻塞 tick)。①层新增推论(Codex R1 收紧):
 - 生产写入面上的同步点**只做 enqueue**(微秒级、try/catch、永不破坏 transition/sink 调用栈——FLY-907
   契约原文);CommDB 打开/UPDATE/close 全部发生在调用栈之外的 drain 协程里(R1 #2);
@@ -132,8 +133,9 @@ closeRunner 幂等。**probe=alive/indeterminate 的 failed/blocked 行原决定
 
 **as-built**(本分支 commit `01201baf1`…`5cec7eeb2`,原 PR #616,独立 QA PASS = qa-report.md):
 M1 面①②收割分支(commdb-fsm-reconcile.ts harvest opts:孤儿 = 无 FSM row + 24h + probe dead → finalize;
-面② = CRASH_PRESERVE + probe dead → finalize)/ M2 面③ statestore-ghost-reconcile.ts(30min + CommDB
-absent + session 级 probe dead + 双重新读 → finalize 先行 → terminated + 显式侧效)/ M3 面④
+面② = CRASH_PRESERVE + probe dead → finalize)/ M2 面③ statestore-ghost-reconcile.ts(仅 pending/running、
+30min + CommDB absent + 同轮 terminal prune 返回 authoritative exact target + 再 probe dead + 双重新读
+→ finalize 先行 → terminated + 显式侧效;parked 与历史无 authority 行 fail-closed)/ M3 面④
 orphan-escalation-reconcile.ts(全局 presence index + TOCTOU 双验 + 复活 predicate 扩
 'residue_harvest')/ M4 三入口(boot 循环 + HeartbeatService onMaintenanceTick 搭车 ~1h + runs-route
 409 定点,`FLYWHEEL_COMMDB_RESIDUE_HARVEST` 总闸)/ M5 flag 矩阵哨兵。**本轮不重做、不重构**;
@@ -150,6 +152,10 @@ orphan-escalation-reconcile.ts(全局 presence index + TOCTOU 双验 + 复活 pr
   把扩展后的 terminal prune 纳入 `ResidueHarvester.runFullPass` 的 per-project 阶段(residue-harvest.ts:
   37-66,heartbeat maintenance ~1h 一轮),boot 同轮去重不重复 probe。收敛 SLA = mark 后窗口证死起
   ≤1 个 maintenance 周期(~1h)。
+- **面③证据交接(Code review HIGH 修复)**:terminal prune 对成功 finalization 的行返回 exact CommDB
+  `{executionId,tmuxWindow}`;`ResidueHarvester.runFullPass` 只把这组内存证据交给同 project、紧随其后的
+  StateStore scan,不持久化、不跨 pass。面③只收 pending/running 且二次 probe exact target dead;
+  awaiting_review/approved_to_ship/design_done 结构性排除。没有同轮证据的 StateStore-only 行 fail-closed。
 - **测试**:marked 'failed' + probe dead → prune(boot 与 maintenance 两入口各一);'failed' + alive →
   keep(preserve 哨兵);harvest flag=0 → 扫描集回 `{completed,timeout}`(反向哨兵);boot 轮 probe
   去重断言。
@@ -198,7 +204,8 @@ FLY-1066/FLY-817/FLY-742/FLY-1050/FLY-1279。
       返回,R1 #2);drain 前权威状态漂移不写;非 CRASH_PRESERVE 零 enqueue(突变对照);fail-open
       哨兵;flag=0 五面反向哨兵;retry teardown 哨兵;其余 forceStatus 点不可达证明落档。
 - [ ] A3:cleanup 覆盖审计结论落档(非代码 gate,R1 #7)。
-- [ ] B1:prune 四态矩阵 + boot/maintenance 双入口 + probe 去重 + 收敛 SLA(≤1 maintenance 周期);
+- [ ] B1:prune 四态矩阵 + boot/maintenance 双入口 + boot 重复 prune 去重 + 收敛 SLA(≤1 maintenance 周期);
+      prune→ghost 同轮 exact-target evidence integration + parked 三态矩阵 + real tmux exact-window QA;
       B2 交互回归 + 三 flag 组合哨兵。
 - [ ] Bridge boot warm-migrate 全 configured CommDB 先于 sync 队列启用;迁移失败逐 project 告警且该
       project 不启用队列(R1 #6 部署顺序)。
@@ -218,6 +225,7 @@ FLY-1066/FLY-817/FLY-742/FLY-1050/FLY-1279。
 | mark 与 retry 语义冲突 | mark 不动 tmux_window;tmux-lookup 按 execId status 无关(已核+哨兵);preserve 窗口照常保留 |
 | ①层 flag=0 时回到泄漏现状 | 有意为之(kill-switch 语义);②收割兜底仍在 |
 | 双层同 PR 体量大 | Part B 已实现且 QA 过,增量只有 B1/B2;真实新代码 = A1/A2(小);Codex resume 增量复审 |
+| terminal prune 删除 CommDB 后制造面③缺行前提 | 面③还必须持有同轮 prune 返回的 authoritative exact target;只收 pending/running;founder/design park 结构性排除 |
 
 ## 10. Non-goals(exploration §6 原样)
 

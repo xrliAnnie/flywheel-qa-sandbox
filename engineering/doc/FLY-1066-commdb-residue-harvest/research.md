@@ -104,8 +104,8 @@ e90f3962-0c73-…|runner-geoforge3d:pending   |geoforge3d|9619b712-…(UUID)    
 | R4 | tmux server 整体 down | 一切 probe = `no server running` → dead? **注意**:isTmuxAbsenceMessage 把 `no server running` 算「可证死亡」——server down 时全部窗口确实不存在(tmux 无持久化),FLY-638/817 已按此语义运行;面③ session 级 probe 同语义 | 与既有 sweep 语义一致,不新增风险面 |
 | R5 | 同名新窗(retry 复用 issue 名) | probe alive → keep | 保守无害,延迟收割 |
 | R6 | 心跳搭车轮与 boot 轮并发 | 单飞行守卫 + finalizeSession/applyTransition 幂等 | 双跑无害 |
-| R7 | awaiting_review + terminal 活 | probe=alive → keep(结构性) | 硬约束原文进 plan 验收 |
-| R8 | design_done park 保活(生产实存 ×2) | CommDB row 在 + StateStore 非 CRASH_PRESERVE → 面①②不触;面③要求 CommDB row 缺失 → 不触 | 哨兵测试固化 |
+| R7 | awaiting_review/approved_to_ship founder park | 不进入面③候选集,不以 target dead 作为终态依据 | 避免 terminal prune 先删 CommDB 后制造「缺行」前提并误杀合法等待 |
+| R8 | design_done park 保活(生产实存 ×2) | CommDB row 在 + StateStore 非 CRASH_PRESERVE → 面①②不触;即使后续 terminal prune 删除,面③仍不触 | 哨兵测试固化 |
 
 ## 7. 测试地形
 
@@ -218,11 +218,26 @@ e90f3962-0c73-…|runner-geoforge3d:pending   |geoforge3d|9619b712-…(UUID)    
   走 tri-state tmux probe,只有 `dead` 删除;alive/indeterminate 保留。
 - residue `runFullPass` 的每项目顺序现在是 running-face harvest → terminal prune → StateStore ghost;
   boot 在 harvester 存在时直接返回,不再追加第二次 FLY-638 prune。因此 A2 mark 把 row 移出 running
-  集后,同一 full pass 的 terminal 阶段仍可收敛,且同轮每 row 只 probe 一次。
+  集后,同一 full pass 的 terminal 阶段仍可收敛。terminal-only 行 probe 一次;若同 exec 还有
+  pending/running StateStore ghost,面③会对 prune 返回的 exact target 再 probe 一次以关闭异步竞态。
 - `commdb-fsm-reconcile.test.ts` pin “mark 后 running scan=0,terminal prune=1”;新增
   `commdb-residue-layer-interaction.test.ts` 以真实 CommDB 覆盖四个关键组合:全开→删除、全关→保留
   running、只①→保留 truthful failed、只②→收走 legacy running preserve。三个 flag 的职责因此保持
   正交,没有把 schema/CAS 原语错误绑到 kill-switch。
+
+### 9.6 Code review correction:面③ authoritative target 与 parked 边界
+
+- `bridge/tmux-lookup.ts` 明确 CommDB `tmux_window` 才是 source of truth;生产不会可靠写
+  `StateStore.tmux_session`,且 bare session target 在 shared-session 模型下语义过宽。面③因此不再读取
+  该 legacy 字段作为收割权限。
+- terminal prune 只有在 exact CommDB target 被 tri-state probe 判 `dead` 且 `finalizeSession` 成功后,
+  才把 `{executionId,tmuxWindow}` 作为**内存中的同轮证据**返回给紧随其后的 StateStore scan。证据不落库、
+  不跨 project、不跨 pass;历史 StateStore-only 行即使带看似 exact 的 legacy 值也 fail-closed keep。
+- 面③只允许 `pending|running`,并再次验证 target 是 exact `session:@windowId`、再次 probe dead、重读
+  StateStore 状态与 CommDB absence 后才转 `terminated`。`awaiting_review|approved_to_ship|design_done`
+  结构性排除,所以 prune 自己删除 terminal CommDB row 不会制造误杀 founder park 的充分条件。
+- 新增真实 CommDB×StateStore same-pass integration、production-shaped no-authority/bare-target 负向测试、
+  parked 三态矩阵,以及 real tmux exact-window QA。
 
 ## 10. 下游
 

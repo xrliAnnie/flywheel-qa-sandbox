@@ -34,9 +34,14 @@ describe("createResidueHarvester", () => {
 			}),
 			pruneTerminalCommDb: vi.fn(async (project) => {
 				calls.push(`prune:${project}`);
+				return [
+					{ executionId: `exec-${project}`, tmuxWindow: `${project}:@42` },
+				];
 			}),
-			harvestStateStoreGhosts: vi.fn(async (project) => {
-				calls.push(`state:${project}`);
+			harvestStateStoreGhosts: vi.fn(async (project, evidence) => {
+				calls.push(
+					`state:${project}:${evidence.map((item) => item.executionId).join(",")}`,
+				);
 			}),
 			resolveOrphanEscalations: vi.fn(() => calls.push("global")),
 			reapStateStoreGhost: vi.fn(async () => false),
@@ -47,17 +52,17 @@ describe("createResidueHarvester", () => {
 		expect(calls).toEqual([
 			"comm:flywheel",
 			"prune:flywheel",
-			"state:flywheel",
+			"state:flywheel:exec-flywheel",
 			"comm:joycon",
 			"prune:joycon",
-			"state:joycon",
+			"state:joycon:exec-joycon",
 			"global",
 		]);
 	});
 
 	it("FLYWHEEL_COMMDB_FSM_RECONCILE=0 gates only face ①/②", async () => {
 		const harvestCommDb = vi.fn(async () => {});
-		const pruneTerminalCommDb = vi.fn(async () => {});
+		const pruneTerminalCommDb = vi.fn(async () => []);
 		const harvestStateStoreGhosts = vi.fn(async () => {});
 		const resolveOrphanEscalations = vi.fn(() => undefined);
 		const harvester = createResidueHarvester({
@@ -73,7 +78,10 @@ describe("createResidueHarvester", () => {
 		await harvester.runFullPass();
 		expect(harvestCommDb).not.toHaveBeenCalled();
 		expect(pruneTerminalCommDb).toHaveBeenCalledExactlyOnceWith("flywheel");
-		expect(harvestStateStoreGhosts).toHaveBeenCalledOnce();
+		expect(harvestStateStoreGhosts).toHaveBeenCalledExactlyOnceWith(
+			"flywheel",
+			[],
+		);
 		expect(resolveOrphanEscalations).toHaveBeenCalledOnce();
 	});
 
@@ -83,7 +91,7 @@ describe("createResidueHarvester", () => {
 			projectNames: ["flywheel"],
 			commDbFsmEnabled: false,
 			harvestCommDb: vi.fn(async () => {}),
-			pruneTerminalCommDb: vi.fn(async () => {}),
+			pruneTerminalCommDb: vi.fn(async () => []),
 			harvestStateStoreGhosts: vi.fn(async () => {}),
 			resolveOrphanEscalations: vi.fn(),
 			reapStateStoreGhost,
@@ -103,7 +111,7 @@ describe("createResidueHarvester", () => {
 			projectNames: ["flywheel"],
 			commDbFsmEnabled: true,
 			harvestCommDb: vi.fn(async () => held),
-			pruneTerminalCommDb: vi.fn(async () => {}),
+			pruneTerminalCommDb: vi.fn(async () => []),
 			harvestStateStoreGhosts: vi.fn(async () => {}),
 			resolveOrphanEscalations: vi.fn(),
 			reapStateStoreGhost,

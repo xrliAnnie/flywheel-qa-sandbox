@@ -175,6 +175,10 @@ describe("commdb-session-prune (FLY-638)", () => {
 			expect(res.pruned).toBe(2); // dead1 + dead2 (proven dead)
 			expect(res.kept).toBe(2); // parked (alive) + flaky (indeterminate)
 			expect(res.failed).toBe(0);
+			expect(res.provenDeadTargets).toEqual([
+				{ executionId: "dead1", tmuxWindow: "base:@1" },
+				{ executionId: "dead2", tmuxWindow: "base:@2" },
+			]);
 			expect(db.getSession("dead1")).toBeUndefined();
 			expect(db.listRunnerPhaseWakes("dead1")).toEqual([]);
 			expect(db.getRunnerShutdown("dead1")).toBeNull();
@@ -209,10 +213,42 @@ describe("commdb-session-prune (FLY-638)", () => {
 				probe: async (window) => (window === "base:@alive" ? "alive" : "dead"),
 			});
 
-			expect(res).toEqual({ scanned: 3, pruned: 2, kept: 1, failed: 0 });
+			expect(res).toEqual({
+				scanned: 3,
+				pruned: 2,
+				kept: 1,
+				failed: 0,
+				provenDeadTargets: [
+					{ executionId: "failed-dead", tmuxWindow: "base:@failed" },
+					{ executionId: "blocked-dead", tmuxWindow: "base:@blocked" },
+				],
+			});
 			expect(db.getSession("failed-dead")).toBeUndefined();
 			expect(db.getSession("blocked-dead")).toBeUndefined();
 			expect(db.getSession("failed-alive")).toBeDefined();
+		});
+
+		it("keeps successful dead-target evidence when audit recording throws", async () => {
+			seed("audit-throws", "completed", "base:@7");
+
+			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
+				dbPath,
+				probe: async () => "dead",
+				onFinalizeOutcome: () => {
+					throw new Error("StateStore unavailable");
+				},
+			});
+
+			expect(res).toEqual({
+				scanned: 1,
+				pruned: 1,
+				kept: 0,
+				failed: 0,
+				provenDeadTargets: [
+					{ executionId: "audit-throws", tmuxWindow: "base:@7" },
+				],
+			});
+			expect(db.getSession("audit-throws")).toBeUndefined();
 		});
 
 		it("harvest flag off preserves the legacy completed/timeout scan exactly", async () => {
@@ -227,7 +263,15 @@ describe("commdb-session-prune (FLY-638)", () => {
 				probe,
 			});
 
-			expect(res).toEqual({ scanned: 1, pruned: 1, kept: 0, failed: 0 });
+			expect(res).toEqual({
+				scanned: 1,
+				pruned: 1,
+				kept: 0,
+				failed: 0,
+				provenDeadTargets: [
+					{ executionId: "completed-dead", tmuxWindow: "base:@completed" },
+				],
+			});
 			expect(probe).toHaveBeenCalledExactlyOnceWith("base:@completed");
 			expect(db.getSession("failed-dead")).toBeDefined();
 			expect(db.getSession("blocked-dead")).toBeDefined();
@@ -240,7 +284,13 @@ describe("commdb-session-prune (FLY-638)", () => {
 				dbPath,
 				probe: async () => "dead",
 			});
-			expect(res).toEqual({ scanned: 0, pruned: 0, kept: 0, failed: 0 });
+			expect(res).toEqual({
+				scanned: 0,
+				pruned: 0,
+				kept: 0,
+				failed: 0,
+				provenDeadTargets: [],
+			});
 			expect(db.getSession("only-running")).toBeDefined();
 		});
 	});

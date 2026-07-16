@@ -4667,6 +4667,9 @@ export async function startBridge(
 		nowMs: () => Date.now(),
 		lookupCommDbSession: (executionId, projectName) =>
 			openResidueCommDb(projectName, (db) => db.getSession(executionId)),
+		// Full passes override this with the immediately preceding prune's
+		// short-lived evidence. Targeted/historical rows have no safe fallback.
+		getProvenDeadTmuxTarget: () => undefined,
 		probe: (tmuxSession) => probeTmuxWindowLiveness(tmuxSession),
 		finalizeCommDbSession: (executionId, projectName) =>
 			finalizeCommDbSession(executionId, projectName),
@@ -4724,10 +4727,12 @@ export async function startBridge(
 					`[Bridge] CommDB terminal prune (${projectName}): scanned=${pruned.scanned} pruned=${pruned.pruned} kept=${pruned.kept}`,
 				);
 			}
+			return pruned.provenDeadTargets;
 		} catch (err) {
 			console.error(
 				`[Bridge] CommDB terminal prune (${projectName}) failed (non-fatal): ${(err as Error).message}`,
 			);
+			return [];
 		}
 	};
 	const residueHarvester = residueHarvestEnabled
@@ -4762,11 +4767,18 @@ export async function startBridge(
 					}
 				},
 				pruneTerminalCommDb: pruneResidueCommDb,
-				harvestStateStoreGhosts: async (projectName) => {
-					const result = await reconcileStateStoreGhosts(
-						projectName,
-						residueGhostDeps,
+				harvestStateStoreGhosts: async (projectName, provenDeadTargets) => {
+					const targetsByExecution = new Map(
+						provenDeadTargets.map((item) => [
+							item.executionId,
+							item.tmuxWindow,
+						]),
 					);
+					const result = await reconcileStateStoreGhosts(projectName, {
+						...residueGhostDeps,
+						getProvenDeadTmuxTarget: (executionId) =>
+							targetsByExecution.get(executionId),
+					});
 					if (result.reaped > 0) {
 						console.log(
 							`[Bridge] FLY-1066 StateStore ghosts (${projectName}): scanned=${result.scanned} reaped=${result.reaped}`,

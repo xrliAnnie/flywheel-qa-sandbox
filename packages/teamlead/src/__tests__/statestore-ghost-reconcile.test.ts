@@ -44,9 +44,9 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 			execution_id: executionId,
 			issue_id: `issue-${executionId}`,
 			project_name: opts.projectName ?? "geo",
-			status: opts.status ?? "awaiting_review",
+			status: opts.status ?? "running",
 			started_at: opts.startedAt ?? OLD,
-			tmux_session: opts.tmuxSession ?? "runner-geo",
+			tmux_session: opts.tmuxSession ?? "legacy-untrusted-session-name",
 			chat_thread_role: opts.chatThreadRole ?? "main",
 		});
 	}
@@ -60,6 +60,7 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 			ghostMinAgeMs: 30 * 60 * 1000,
 			nowMs: () => NOW_MS,
 			lookupCommDbSession: vi.fn(() => undefined),
+			getProvenDeadTmuxTarget: vi.fn(() => "runner-geo:@42"),
 			probe: vi.fn(async () => "dead" as const),
 			finalizeCommDbSession: vi.fn(() => ({
 				ok: true,
@@ -116,21 +117,36 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 		);
 	});
 
-	it.each([
-		"pending",
-		"running",
-		"awaiting_review",
-		"approved_to_ship",
-		"design_done",
-	])("terminalizes the legal non-terminal source status %s", async (status) => {
-		seed(`ghost-${status}`, { status });
-		const outcome = await reapStateStoreGhost(
-			store.getSession(`ghost-${status}`)!,
-			baseDeps(),
-		);
-		expect(outcome).toBe("reaped");
-		expect(store.getSession(`ghost-${status}`)?.status).toBe("terminated");
-	});
+	it.each(["pending", "running"])(
+		"terminalizes the active source status %s only with same-pass dead-target evidence",
+		async (status) => {
+			seed(`ghost-${status}`, { status });
+			const outcome = await reapStateStoreGhost(
+				store.getSession(`ghost-${status}`)!,
+				baseDeps(),
+			);
+			expect(outcome).toBe("reaped");
+			expect(store.getSession(`ghost-${status}`)?.status).toBe("terminated");
+		},
+	);
+
+	it.each(["awaiting_review", "approved_to_ship", "design_done"])(
+		"keeps parked founder-owned status %s even with exact dead-target evidence",
+		async (status) => {
+			seed(`parked-${status}`, { status });
+			const deps = baseDeps();
+
+			const outcome = await reapStateStoreGhost(
+				store.getSession(`parked-${status}`)!,
+				deps,
+			);
+
+			expect(outcome).toBe("kept_non_candidate_status");
+			expect(deps.lookupCommDbSession).not.toHaveBeenCalled();
+			expect(deps.probe).not.toHaveBeenCalled();
+			expect(store.getSession(`parked-${status}`)?.status).toBe(status);
+		},
+	);
 
 	it("does not scan terminal, preserve, reconnecting, or another project's rows", async () => {
 		seed("candidate");
@@ -148,7 +164,7 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 		expect(store.getSession("terminal")?.status).toBe("completed");
 		expect(store.getSession("preserve")?.status).toBe("failed");
 		expect(store.getSession("reconnecting")?.status).toBe("reconnecting");
-		expect(store.getSession("other-project")?.status).toBe("awaiting_review");
+		expect(store.getSession("other-project")?.status).toBe("running");
 	});
 
 	it.each([
@@ -176,20 +192,20 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 		},
 	);
 
-	it("keeps a CommDB-present design_done holder without probing", async () => {
-		seed("design-holder", { status: "design_done" });
+	it("keeps a CommDB-present active holder without probing", async () => {
+		seed("active-holder", { status: "pending" });
 		const deps = baseDeps({
 			lookupCommDbSession: vi.fn(() => ({ status: "running" })),
 		});
 
 		const outcome = await reapStateStoreGhost(
-			store.getSession("design-holder")!,
+			store.getSession("active-holder")!,
 			deps,
 		);
 
 		expect(outcome).toBe("kept_commdb_present");
 		expect(deps.probe).not.toHaveBeenCalled();
-		expect(store.getSession("design-holder")?.status).toBe("design_done");
+		expect(store.getSession("active-holder")?.status).toBe("pending");
 	});
 
 	it("keeps an unreadable CommDB fail-closed without probing or finalizing", async () => {
@@ -210,21 +226,38 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 		expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
 	});
 
-	it("keeps a row with no StateStore tmux session because there is no probe target", async () => {
-		seed("no-target", { tmuxSession: "" });
-		const deps = baseDeps();
+	it("keeps a production-shaped row with no same-pass authoritative target", async () => {
+		seed("no-target", { tmuxSession: "legacy-bare-session" });
+		const deps = baseDeps({
+			getProvenDeadTmuxTarget: vi.fn(() => undefined),
+		});
 
 		const outcome = await reapStateStoreGhost(
 			store.getSession("no-target")!,
 			deps,
 		);
 
-		expect(outcome).toBe("kept_no_tmux_target");
+		expect(outcome).toBe("kept_no_authoritative_target");
+		expect(deps.probe).not.toHaveBeenCalled();
+	});
+
+	it("rejects a bare-session evidence target instead of probing shared-session scope", async () => {
+		seed("bare-target");
+		const deps = baseDeps({
+			getProvenDeadTmuxTarget: vi.fn(() => "runner-geo"),
+		});
+
+		const outcome = await reapStateStoreGhost(
+			store.getSession("bare-target")!,
+			deps,
+		);
+
+		expect(outcome).toBe("kept_invalid_authoritative_target");
 		expect(deps.probe).not.toHaveBeenCalled();
 	});
 
 	it.each(["alive", "indeterminate"] as const)(
-		"keeps awaiting_review + %s session (founder-owned live review is untouchable)",
+		"keeps running + %s exact window",
 		async (probeState) => {
 			seed(`review-${probeState}`);
 			const deps = baseDeps({ probe: vi.fn(async () => probeState) });
@@ -236,9 +269,7 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 
 			expect(outcome).toBe("kept_target_not_dead");
 			expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
-			expect(store.getSession(`review-${probeState}`)?.status).toBe(
-				"awaiting_review",
-			);
+			expect(store.getSession(`review-${probeState}`)?.status).toBe("running");
 		},
 	);
 
@@ -343,7 +374,7 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 		expect(outcome).toBe("finalize_failed");
 		expect(onTransition).not.toHaveBeenCalled();
 		expect(deps.archiveThread).not.toHaveBeenCalled();
-		expect(store.getSession("finalize-fail")?.status).toBe("awaiting_review");
+		expect(store.getSession("finalize-fail")?.status).toBe("running");
 	});
 
 	it("FSM rejection after finalize never force-writes terminated", async () => {
@@ -351,7 +382,7 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 		const deps = baseDeps({
 			transitionOpts: {
 				store,
-				fsm: new WorkflowFSM({ ...WORKFLOW_TRANSITIONS, awaiting_review: [] }),
+				fsm: new WorkflowFSM({ ...WORKFLOW_TRANSITIONS, running: [] }),
 			},
 		});
 
@@ -363,7 +394,7 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 		expect(outcome).toBe("transition_failed");
 		expect(deps.finalizeCommDbSession).toHaveBeenCalledOnce();
 		expect(deps.archiveThread).not.toHaveBeenCalled();
-		expect(store.getSession("fsm-reject")?.status).toBe("awaiting_review");
+		expect(store.getSession("fsm-reject")?.status).toBe("running");
 	});
 
 	it("holds the canonical issue lifecycle mutex across the entire decision and reap", async () => {

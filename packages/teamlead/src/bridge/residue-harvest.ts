@@ -7,6 +7,7 @@
  */
 
 import type { Session } from "../StateStore.js";
+import type { ProvenDeadTmuxTarget } from "./commdb-session-prune.js";
 
 export type ResidueHarvestPassOutcome = "completed" | "skipped_in_flight";
 
@@ -20,8 +21,13 @@ export interface ResidueHarvesterDeps {
 	/** FLYWHEEL_COMMDB_FSM_RECONCILE gates only the CommDB-running face. */
 	commDbFsmEnabled: boolean;
 	harvestCommDb: (projectName: string) => Promise<unknown>;
-	pruneTerminalCommDb: (projectName: string) => Promise<unknown>;
-	harvestStateStoreGhosts: (projectName: string) => Promise<unknown>;
+	pruneTerminalCommDb: (
+		projectName: string,
+	) => Promise<readonly ProvenDeadTmuxTarget[]>;
+	harvestStateStoreGhosts: (
+		projectName: string,
+		provenDeadTargets: readonly ProvenDeadTmuxTarget[],
+	) => Promise<unknown>;
 	resolveOrphanEscalations: () => unknown;
 	reapStateStoreGhost: (session: Session) => Promise<boolean>;
 	log?: (message: string) => void;
@@ -49,15 +55,16 @@ export function createResidueHarvester(
 							);
 						}
 					}
+					let provenDeadTargets: readonly ProvenDeadTmuxTarget[] = [];
 					try {
-						await deps.pruneTerminalCommDb(projectName);
+						provenDeadTargets = await deps.pruneTerminalCommDb(projectName);
 					} catch (err) {
 						log(
 							`[residue-harvest] terminal CommDB prune failed for ${projectName} (non-fatal): ${(err as Error).message}`,
 						);
 					}
 					try {
-						await deps.harvestStateStoreGhosts(projectName);
+						await deps.harvestStateStoreGhosts(projectName, provenDeadTargets);
 					} catch (err) {
 						log(
 							`[residue-harvest] StateStore pass failed for ${projectName} (non-fatal): ${(err as Error).message}`,

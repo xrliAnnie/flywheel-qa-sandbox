@@ -4,8 +4,9 @@
  * The unit suite proves the keep/reap decision with a MOCKED probe. This QA test
  * exercises the SAME reconciler against a REAL tmux session and the REAL
  * `probeTmuxWindowLiveness` — no mock — to prove the design→implement handoff
- * shape (legit awaiting_review + empty CommDB window + LIVE tmux session) is left
- * untouched, and that the SAME shape is only reaped once the real session is gone.
+ * shape (active StateStore row + same-pass authoritative exact target) is left
+ * untouched while live and reaped only once that exact window is gone. Parked
+ * founder-review states stay outside the candidate set even with dead evidence.
  *
  * Skipped automatically where tmux is unavailable (e.g. CI without a tmux server).
  */
@@ -21,6 +22,7 @@ import {
 import { probeTmuxWindowLiveness } from "../tmux-lookup.js";
 
 const SESSION = "qa-fly1066-face3-realprobe";
+let EXACT_TARGET = `${SESSION}:@0`;
 const NOW = Date.parse("2026-07-16T12:00:00Z");
 const OLD = "2026-07-16 11:14:00"; // 46min < NOW → past the 30min ghost guard
 const FRESH = "2026-07-16 11:45:00"; // 15min < NOW → inside the guard
@@ -52,12 +54,20 @@ describe.skipIf(!tmuxAvailable)(
 		beforeAll(() => {
 			tmux(["kill-session", "-t", SESSION]);
 			tmux(["new-session", "-d", "-s", SESSION]);
+			const windowId = tmux([
+				"list-windows",
+				"-t",
+				`=${SESSION}`,
+				"-F",
+				"#{window_id}",
+			]).out.trim();
+			EXACT_TARGET = `${SESSION}:${windowId}`;
 		});
 		afterAll(() => {
 			tmux(["kill-session", "-t", SESSION]);
 		});
 
-		async function mkDeps(): Promise<{
+		async function mkDeps(target = EXACT_TARGET): Promise<{
 			store: StateStore;
 			deps: StateStoreGhostDeps;
 		}> {
@@ -72,6 +82,7 @@ describe.skipIf(!tmuxAvailable)(
 				ghostMinAgeMs: 30 * 60_000,
 				nowMs: () => NOW,
 				lookupCommDbSession: () => undefined, // empty CommDB window (the handoff transient)
+				getProvenDeadTmuxTarget: () => target,
 				probe: (t) => probeTmuxWindowLiveness(t), // THE REAL PROBE
 				finalizeCommDbSession: () => ({
 					ok: true,
@@ -84,23 +95,28 @@ describe.skipIf(!tmuxAvailable)(
 			return { store, deps };
 		}
 
-		function seed(store: StateStore, id: string, startedAt: string): void {
+		function seed(
+			store: StateStore,
+			id: string,
+			startedAt: string,
+			status = "running",
+		): void {
 			store.upsertSession({
 				execution_id: id,
 				issue_id: `issue-${id}`,
 				project_name: "geo",
-				status: "awaiting_review",
+				status,
 				started_at: startedAt,
-				tmux_session: SESSION,
+				tmux_session: "legacy-untrusted-session-name",
 			});
 		}
 
-		it("real probe returns alive for the live session, dead for a gone one", async () => {
-			expect(await probeTmuxWindowLiveness(SESSION)).toBe("alive");
-			expect(await probeTmuxWindowLiveness(`${SESSION}-absent`)).toBe("dead");
+		it("real probe returns alive for the exact live window, dead for an absent exact window", async () => {
+			expect(await probeTmuxWindowLiveness(EXACT_TARGET)).toBe("alive");
+			expect(await probeTmuxWindowLiveness(`${SESSION}:@999999`)).toBe("dead");
 		});
 
-		it("(A) awaiting_review + empty CommDB + REAL live session + 46min → KEEP (untouchable)", async () => {
+		it("(A) running + same-pass exact target + REAL live window + 46min → KEEP", async () => {
 			const { store, deps } = await mkDeps();
 			seed(store, "handoff-alive", OLD);
 			const outcome = await reapStateStoreGhost(
@@ -108,7 +124,7 @@ describe.skipIf(!tmuxAvailable)(
 				deps,
 			);
 			expect(outcome).toBe("kept_target_not_dead");
-			expect(store.getSession("handoff-alive")?.status).toBe("awaiting_review");
+			expect(store.getSession("handoff-alive")?.status).toBe("running");
 		});
 
 		it("(C) fresh (<30min) is kept by the age guard BEFORE any probe", async () => {
@@ -127,17 +143,22 @@ describe.skipIf(!tmuxAvailable)(
 			expect(probed).toBe(false);
 		});
 
-		it("(B) SAME shape but the REAL session is gone → reaped", async () => {
+		it("(B) SAME active shape but the REAL exact window is gone → reaped; parked stays parked", async () => {
 			tmux(["kill-session", "-t", SESSION]);
-			expect(await probeTmuxWindowLiveness(SESSION)).toBe("dead");
+			expect(await probeTmuxWindowLiveness(EXACT_TARGET)).toBe("dead");
 			const { store, deps } = await mkDeps();
 			seed(store, "handoff-dead", OLD);
+			seed(store, "parked-dead", OLD, "awaiting_review");
 			const outcome = await reapStateStoreGhost(
 				store.getSession("handoff-dead")!,
 				deps,
 			);
 			expect(outcome).toBe("reaped");
 			expect(store.getSession("handoff-dead")?.status).toBe("terminated");
+			expect(
+				await reapStateStoreGhost(store.getSession("parked-dead")!, deps),
+			).toBe("kept_non_candidate_status");
+			expect(store.getSession("parked-dead")?.status).toBe("awaiting_review");
 			// restore for afterAll idempotence
 			tmux(["new-session", "-d", "-s", SESSION]);
 		});

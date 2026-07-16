@@ -1,13 +1,13 @@
 /**
  * FLY-1066 face ③: reconcile StateStore-only non-terminal session ghosts.
  *
- * A row is terminalized only when it is old enough, has no CommDB registration,
- * carries a StateStore tmux-session target, and that whole session is PROVEN
- * dead. The decision is serialized with the issue lifecycle mutex and re-reads
- * both stores after the asynchronous probe. Finalization precedes the legal FSM
- * transition so a CommDB lifecycle-cleanup failure leaves the row eligible for
- * the next pass. Alive, indeterminate, unreadable, fresh, or changed evidence is
- * always kept.
+ * A row is terminalized only when it is an active pending/running session, old
+ * enough, has no CommDB registration, and the immediately preceding terminal
+ * CommDB prune supplied an exact window target that it proved dead. Legacy
+ * StateStore `tmux_session` is never used as authority. The decision is
+ * serialized with the issue lifecycle mutex and re-reads both stores and the
+ * same-pass evidence after the asynchronous probe. Alive, indeterminate,
+ * unreadable, fresh, parked, or changed evidence is always kept.
  */
 
 import type { TransitionContext } from "flywheel-core";
@@ -22,9 +22,6 @@ import type { TmuxWindowProbe } from "./tmux-lookup.js";
 export const STATESTORE_GHOST_SOURCE_STATUSES: ReadonlySet<string> = new Set([
 	"pending",
 	"running",
-	"awaiting_review",
-	"approved_to_ship",
-	"design_done",
 ]);
 
 export type StateStoreGhostOutcome =
@@ -33,7 +30,8 @@ export type StateStoreGhostOutcome =
 	| "kept_fresh_or_invalid_age"
 	| "kept_commdb_present"
 	| "kept_commdb_indeterminate"
-	| "kept_no_tmux_target"
+	| "kept_no_authoritative_target"
+	| "kept_invalid_authoritative_target"
 	| "kept_target_not_dead"
 	| "kept_changed_after_probe"
 	| "finalize_failed"
@@ -49,7 +47,15 @@ export interface StateStoreGhostDeps {
 		executionId: string,
 		projectName: string,
 	) => unknown | undefined;
-	probe: (tmuxSession: string) => Promise<TmuxWindowProbe>;
+	/**
+	 * Same-pass evidence from a successfully finalized terminal CommDB row.
+	 * Historical StateStore metadata is deliberately not a fallback.
+	 */
+	getProvenDeadTmuxTarget: (
+		executionId: string,
+		projectName: string,
+	) => string | undefined;
+	probe: (tmuxWindow: string) => Promise<TmuxWindowProbe>;
 	finalizeCommDbSession: (
 		executionId: string,
 		projectName: string,
@@ -89,6 +95,11 @@ function sqliteDatetimeAt(nowMs: number): string {
 		.toISOString()
 		.replace("T", " ")
 		.replace(/\.\d+Z$/, "");
+}
+
+/** Accept only an exact tmux window id, never a shared/bare session target. */
+export function isExactTmuxWindowTarget(target: string): boolean {
+	return /^.+:@\d+$/.test(target);
 }
 
 /** Reconcile every legal face-③ candidate for one configured project. */
@@ -162,11 +173,15 @@ async function reapStateStoreGhostUnlocked(
 		);
 		return "kept_commdb_indeterminate";
 	}
-	if (!session.tmux_session) return "kept_no_tmux_target";
+	const tmuxWindow = deps.getProvenDeadTmuxTarget(executionId, projectName);
+	if (!tmuxWindow) return "kept_no_authoritative_target";
+	if (!isExactTmuxWindowTarget(tmuxWindow)) {
+		return "kept_invalid_authoritative_target";
+	}
 
 	let probe: TmuxWindowProbe;
 	try {
-		probe = await deps.probe(session.tmux_session);
+		probe = await deps.probe(tmuxWindow);
 	} catch (err) {
 		log(
 			`[statestore-ghost-reconcile] ${executionId}: tmux probe indeterminate (${(err as Error).message})`,
@@ -182,7 +197,7 @@ async function reapStateStoreGhostUnlocked(
 		!current ||
 		current.project_name !== projectName ||
 		current.status !== session.status ||
-		current.tmux_session !== session.tmux_session
+		deps.getProvenDeadTmuxTarget(executionId, projectName) !== tmuxWindow
 	) {
 		return "kept_changed_after_probe";
 	}
@@ -240,7 +255,7 @@ async function reapStateStoreGhostUnlocked(
 			{
 				last_activity_at: sqliteDatetimeAt(nowMs),
 				last_error:
-					"StateStore ghost reaped (CommDB absent, tmux session dead)",
+					"StateStore ghost reaped (CommDB absent, authoritative tmux window dead)",
 			},
 		);
 	} catch (err) {
@@ -284,7 +299,7 @@ async function reapStateStoreGhostUnlocked(
 		source: "bridge.statestore-ghost-reconcile",
 		payload: {
 			previousStatus: session.status,
-			tmuxSession: session.tmux_session,
+			tmuxWindow,
 		},
 	});
 	return "reaped";

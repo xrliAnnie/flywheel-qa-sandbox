@@ -106,6 +106,18 @@ export interface CommDbPruneResult {
 	kept: number;
 	/** proven-dead rows whose atomic gate+session finalization failed. */
 	failed: number;
+	/**
+	 * Exact CommDB window targets that were proven dead immediately before their
+	 * rows were successfully finalized. This evidence is intentionally returned
+	 * to the caller rather than persisted in StateStore, where legacy
+	 * `tmux_session` values have no trustworthy provenance.
+	 */
+	provenDeadTargets: ProvenDeadTmuxTarget[];
+}
+
+export interface ProvenDeadTmuxTarget {
+	executionId: string;
+	tmuxWindow: string;
 }
 
 /**
@@ -136,6 +148,7 @@ export async function pruneDeadTerminalCommDbSessions(
 		pruned: 0,
 		kept: 0,
 		failed: 0,
+		provenDeadTargets: [],
 	};
 	const dbPath = opts.dbPath ?? resolveCommDbPath(projectName);
 	if (!dbPath) return result;
@@ -161,22 +174,40 @@ export async function pruneDeadTerminalCommDbSessions(
 			}
 			try {
 				const finalized = db.finalizeSession(s.execution_id);
-				opts.onFinalizeOutcome?.(s.execution_id, projectName, {
+				const outcome: FinalizeCommDbResult = {
 					ok: true,
 					outcome: "finalized",
 					retiredGateCount: finalized.retiredQuestionCount,
 					deletedSessionCount: finalized.deletedSessionCount,
-				});
+				};
 				result.pruned++;
+				result.provenDeadTargets.push({
+					executionId: s.execution_id,
+					tmuxWindow: s.tmux_window,
+				});
+				try {
+					opts.onFinalizeOutcome?.(s.execution_id, projectName, outcome);
+				} catch (err) {
+					console.warn(
+						`[commdb-prune] audit successful finalize ${s.execution_id} (${projectName}) failed (non-fatal): ${(err as Error).message}`,
+					);
+				}
 			} catch (err) {
 				result.failed++;
-				opts.onFinalizeOutcome?.(s.execution_id, projectName, {
+				const outcome: FinalizeCommDbResult = {
 					ok: false,
 					outcome: "failed",
 					retiredGateCount: 0,
 					deletedSessionCount: 0,
 					error: (err as Error).message,
-				});
+				};
+				try {
+					opts.onFinalizeOutcome?.(s.execution_id, projectName, outcome);
+				} catch (auditErr) {
+					console.warn(
+						`[commdb-prune] audit failed finalize ${s.execution_id} (${projectName}) failed (non-fatal): ${(auditErr as Error).message}`,
+					);
+				}
 				console.warn(
 					`[commdb-prune] boot finalize ${s.execution_id} (${projectName}) failed: ${(err as Error).message}`,
 				);
