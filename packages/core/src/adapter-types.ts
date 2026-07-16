@@ -284,6 +284,8 @@ export interface AdapterExecutionContext {
 	 * fleet-wide ingest bearer, a leak is scoped to one execution + TTL.
 	 */
 	workflowSubmissionCredential?: string;
+	/** FLY-1281: one-shot credential for a generalized generic node output. */
+	workflowOutputCredential?: string;
 	/**
 	 * FLY-191 Phase 2: the Bridge's StateStore path, propagated to the Runner
 	 * env as FLYWHEEL_STATE_DB_PATH so `flywheel-comm verify-approval` reads
@@ -360,11 +362,27 @@ export interface AdapterExecutionContext {
 	 * executionId so a replay (new Bridge process) computes the same path.
 	 */
 	launchCommitPath?: string;
+	/** FLY-1281: deterministic fenced token for the generalized launch gate. */
+	launchGateToken?: string;
+	/** Bridge-owned marker-first commit; adapters must not write the marker directly. */
+	commitWorkflowLaunch?: () => { ok: boolean; reason?: string };
 }
 
 // ---------------------------------------------------------------------------
 // AdapterExecutionResult — Execution output
 // ---------------------------------------------------------------------------
+
+/**
+ * A machine-readable terminal failure that must survive adapter, orchestration,
+ * and Bridge boundaries. Unknown failures deliberately remain on the legacy
+ * untyped `failed` path.
+ */
+export type TerminalFailureKind = "goal_blocked" | "worktree_takeover_failed";
+
+export interface TerminalFailureInfo {
+	failureKind: TerminalFailureKind;
+	failureReason: string;
+}
 
 /**
  * Result returned by `IAdapter.execute()`.
@@ -387,6 +405,8 @@ export interface AdapterExecutionResult {
 	numTurns?: number;
 	/** The agent's text result */
 	resultText?: string;
+	/** Typed terminal cause for failures whose semantics must not be flattened. */
+	failure?: TerminalFailureInfo;
 
 	// -- Session persistence --
 

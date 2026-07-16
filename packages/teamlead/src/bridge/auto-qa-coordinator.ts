@@ -28,6 +28,7 @@
  * touched — this coordinator only decides WHEN the founder is surfaced.
  */
 
+import { randomUUID } from "node:crypto";
 import { adapterTypeToFamily } from "flywheel-config";
 import {
 	type AutoQaRecord,
@@ -229,6 +230,7 @@ export interface AutoQaCoordinatorDeps {
 			executionId: string;
 			issueId: string;
 		}>;
+		hasInflightForRole?(issueId: string, role: string): boolean;
 	};
 	/** Per-(project, issue) policy: should auto-QA run for this awaiting_review main session? */
 	resolveQaPolicy(session: Session): QaPolicyDecision;
@@ -280,6 +282,7 @@ export type ManualQaSpawnResult =
 
 export class AutoQaCoordinator {
 	private readonly qaAgentName: string;
+	private qaRecoverySweep: Promise<void> | undefined;
 
 	constructor(private readonly deps: AutoQaCoordinatorDeps) {
 		this.qaAgentName = deps.qaAgentName ?? "qa";
@@ -1140,13 +1143,17 @@ export class AutoQaCoordinator {
 			return;
 		}
 
-		// QA runner already ended (prior PASS closed it, or it died) → re-spawn a
-		// fresh QA into the SAME QA issue (record carries qa_issue_id). Not a QA2 —
-		// the old one is gone; this is bounded, single-QA reuse of the issue/thread.
+		// QA runner already ended (prior PASS closed it, or it died). Claim the SAME
+		// bounded recovery state as the event/sweep path; never launch inline while a
+		// dying dispatcher may still own issue:qa.
 		this.log(
-			`retest re-spawn for ${session.issue_id} @ ${newSha.slice(0, 8)} — prior QA runner ended`,
+			`retest recovery queued for ${session.issue_id} @ ${newSha.slice(0, 8)} — prior QA runner ended`,
 		);
-		await this.spawnQa(session, newSha);
+		if (owner.qa_execution_id) {
+			await this.onQaSessionFailed(owner.qa_execution_id);
+		} else {
+			await this.spawnQa(session, newSha);
+		}
 	}
 
 	/**
@@ -1157,7 +1164,11 @@ export class AutoQaCoordinator {
 	 * persisted on the record BEFORE the runner spawns, so a crash mid-spawn lets
 	 * reconcile re-use it (no duplicate issue) on the next pass.
 	 */
-	private async spawnQa(session: Session, sha: string): Promise<void> {
+	private async spawnQa(
+		session: Session,
+		sha: string,
+		opts?: { retryAttemptId?: string },
+	): Promise<"launched" | "failed"> {
 		// Resolve (or create) the separate QA Linear issue. A record that already
 		// carries a qa_issue_id is a reconcile re-spawn → re-use it, never create a
 		// second issue.
@@ -1190,14 +1201,27 @@ export class AutoQaCoordinator {
 				this.warn(
 					`createQaIssue FAILED for ${session.issue_id} @ ${sha.slice(0, 8)} — marking stuck`,
 				);
-				this.deps.store.setAutoQaStatus(session.execution_id, sha, "stuck", {});
+				if (opts?.retryAttemptId) {
+					this.deps.store.failAutoQaRetryLaunch(
+						session.execution_id,
+						sha,
+						opts.retryAttemptId,
+					);
+				} else {
+					this.deps.store.setAutoQaStatus(
+						session.execution_id,
+						sha,
+						"stuck",
+						{},
+					);
+				}
 				await this.deps.effects.alertLeadPipelineError({
 					session,
 					issueId: session.issue_id,
 					projectName: session.project_name,
 					reason: `auto-QA could not create the QA issue for ${session.issue_id}. Held — founder NOT surfaced.`,
 				});
-				return;
+				return "failed";
 			}
 			// Persist BEFORE spawning so a crash mid-spawn re-uses this QA issue.
 			this.deps.store.setAutoQaIssue(session.execution_id, sha, qaIssue);
@@ -1232,14 +1256,39 @@ export class AutoQaCoordinator {
 				// that can never be re-woken → wedge the founder gate after the first
 				// FAIL. buildRunnerSpawnFields forces a Claude lane when this is set.
 				requireMailboxTransport: true,
+				// Auto-QA always gets a clean, role-scoped worktree. Explicit false plus
+				// RunDispatcher's qaContext resume bypass prevents phase takeover.
+				shareParentBranch: false,
+				successorExecutionId: opts?.retryAttemptId,
 				startPoint: sha,
 				qaContext,
 			});
-			this.deps.store.setAutoQaQaExecutionId(
-				session.execution_id,
-				sha,
-				result.executionId,
-			);
+			if (opts?.retryAttemptId && result.executionId !== opts.retryAttemptId) {
+				throw new Error(
+					`dispatcher returned ${result.executionId}, expected durable successor ${opts.retryAttemptId}`,
+				);
+			}
+			if (opts?.retryAttemptId) {
+				const bound = this.deps.store.completeAutoQaRetryLaunch(
+					session.execution_id,
+					sha,
+					opts.retryAttemptId,
+					result.executionId,
+				);
+				if (!bound) {
+					// The physical launch succeeded. Do not misclassify it as a definite
+					// spawn failure: the next sweep adopts this exact pre-bound id.
+					this.warn(
+						`retry launch ${opts.retryAttemptId} started but record binding changed; reconcile will adopt it`,
+					);
+				}
+			} else {
+				this.deps.store.setAutoQaQaExecutionId(
+					session.execution_id,
+					sha,
+					result.executionId,
+				);
+			}
 			// FLY-752: this spawn covers the record's current head → the retest wake
 			// (if this was a re-spawn after retarget) is satisfied. Clear the marker.
 			this.deps.store.clearRetestWakePending(session.execution_id, sha);
@@ -1255,21 +1304,45 @@ export class AutoQaCoordinator {
 			// QA is now running, so the badge becomes 🧪QA (not the frozen ⏳待批 from
 			// the implementer's approve stage). Best-effort — never fails the spawn.
 			await this.safeStampIssueStage(session, "test");
+			return "launched";
 		} catch (err) {
 			// NEVER leave a held parent with no QA runner. Mark stuck + Lead-only
 			// alert; the founder is not surfaced (held), the Lead investigates. The
 			// QA issue stays recorded so a manual re-drive can re-use it.
 			const msg = err instanceof Error ? err.message : String(err);
 			this.warn(
-				`spawn FAILED for ${session.issue_id} @ ${sha.slice(0, 8)}: ${msg} — marking stuck`,
+				`spawn FAILED for ${session.issue_id} @ ${sha.slice(0, 8)}: ${msg} — claiming bounded recovery`,
 			);
-			this.deps.store.setAutoQaStatus(session.execution_id, sha, "stuck", {});
+			let queuedInitialRetry = false;
+			if (opts?.retryAttemptId) {
+				this.deps.store.failAutoQaRetryLaunch(
+					session.execution_id,
+					sha,
+					opts.retryAttemptId,
+				);
+			} else {
+				queuedInitialRetry = this.deps.store.claimAutoQaRetryAfterSpawnFailure(
+					session.execution_id,
+					sha,
+				);
+				if (!queuedInitialRetry) {
+					this.deps.store.setAutoQaStatus(
+						session.execution_id,
+						sha,
+						"stuck",
+						{},
+					);
+				}
+			}
 			await this.deps.effects.alertLeadPipelineError({
 				session,
 				issueId: session.issue_id,
 				projectName: session.project_name,
-				reason: `auto-QA spawn failed for ${session.issue_id} (QA issue ${qaIssue.issueIdentifier ?? qaIssue.issueId}): ${msg}. Held — founder NOT surfaced.`,
+				reason: queuedInitialRetry
+					? `auto-QA spawn failed for ${session.issue_id} (QA issue ${qaIssue.issueIdentifier ?? qaIssue.issueId}): ${msg}; automatic retry queued (1/1). Founder remains held.`
+					: `auto-QA spawn failed for ${session.issue_id} (QA issue ${qaIssue.issueIdentifier ?? qaIssue.issueId}): ${msg}. Held — founder NOT surfaced.`,
 			});
+			return "failed";
 		}
 	}
 
@@ -1459,6 +1532,208 @@ export class AutoQaCoordinator {
 				session: qaSession,
 				text: `🔴 自动 QA 未通过 → 已把报告交回实现 Runner 修复,QA Runner 保活等复测(同一个,不重开;founder 不打扰)。\n${truncate(summary, 600)}`,
 			});
+		}
+	}
+
+	/**
+	 * FLY-1279 B2 event quick path. Ownership is intentionally checked before
+	 * the state CAS: a duplicate/historical auto-QA failure is still consumed and
+	 * must never fall through into the three-stage QA-loss reconciler. Dispatch is
+	 * deferred to the sweep because the dying RunDispatcher entry is still inflight
+	 * while session_failed is emitted.
+	 */
+	async onQaSessionFailed(deadExecutionId: string): Promise<{
+		owned: boolean;
+		transition: "retry_pending" | "exhausted" | "noop";
+	}> {
+		const owner = this.deps.store.findAutoQaOwnershipByQaExec(deadExecutionId);
+		if (!owner) return { owned: false, transition: "noop" };
+
+		const transition = this.deps.store.markDeadAutoQaExecution(
+			owner.parent_execution_id,
+			owner.target_pr_head_sha,
+			deadExecutionId,
+		);
+		if (transition === "noop") return { owned: true, transition };
+
+		const parent = this.deps.store.getSession(owner.parent_execution_id);
+		const reason =
+			transition === "retry_pending"
+				? `auto-QA ${deadExecutionId} died without a verdict for ${owner.issue_id}; automatic retry queued (1/1). Founder remains held.`
+				: `auto-QA ${deadExecutionId} died without a verdict for ${owner.issue_id}; automatic retry exhausted. Founder remains held.`;
+		try {
+			await this.deps.effects.alertLeadPipelineError({
+				session: parent,
+				issueId: owner.issue_id,
+				projectName: owner.project_name,
+				reason,
+			});
+		} catch (err) {
+			this.warn(
+				`dead-QA Lead alert failed for ${deadExecutionId}: ${asErr(err)}`,
+			);
+		}
+		return { owned: true, transition };
+	}
+
+	/**
+	 * Event-independent dead-QA maintenance sweep. Boot and GatePoller share this
+	 * single-flight entry so overlapping ticks cannot double-launch a successor.
+	 */
+	async sweepOrphanedQaRecords(): Promise<void> {
+		if (this.qaRecoverySweep) return this.qaRecoverySweep;
+		const sweep = this.runOrphanedQaSweep();
+		this.qaRecoverySweep = sweep;
+		try {
+			await sweep;
+		} finally {
+			if (this.qaRecoverySweep === sweep) this.qaRecoverySweep = undefined;
+		}
+	}
+
+	private async runOrphanedQaSweep(): Promise<void> {
+		// Detect missing/terminal QA sessions. The CAS and alert are shared with the
+		// event quick path, so whichever path wins makes the other a quiet no-op.
+		for (const rec of this.deps.store.listRunningAutoQaRecords()) {
+			if (rec.retest_wake_pending_at) continue;
+			const parent = this.deps.store.getSession(rec.parent_execution_id);
+			if (
+				!parent ||
+				parent.status !== "awaiting_review" ||
+				parent.pr_head_sha?.toLowerCase() !== rec.target_pr_head_sha
+			) {
+				this.deps.store.setAutoQaStatus(
+					rec.parent_execution_id,
+					rec.target_pr_head_sha,
+					"superseded",
+					{},
+				);
+				continue;
+			}
+			if (!rec.qa_execution_id) {
+				this.log(
+					`reconcile spawn (claimed-unspawned) for ${parent.issue_id} (${rec.parent_execution_id})`,
+				);
+				await this.spawnQa(parent, rec.target_pr_head_sha);
+				continue;
+			}
+			const qa = this.deps.store.getSession(rec.qa_execution_id);
+			if (!qa || TERMINAL_STATUSES.has(qa.status ?? "")) {
+				await this.onQaSessionFailed(rec.qa_execution_id);
+			}
+		}
+
+		// A retry_pending row waits until the dying dispatcher releases issue:qa.
+		for (const rec of this.deps.store.listAutoQaRecordsByStatus(
+			"retry_pending",
+		)) {
+			const parent = this.recoveryParent(rec);
+			if (!parent) continue;
+			if (!this.canLaunchRecovery(rec)) continue;
+			const attemptId = randomUUID();
+			if (
+				!this.deps.store.claimAutoQaRetryLaunch(
+					rec.parent_execution_id,
+					rec.target_pr_head_sha,
+					attemptId,
+				)
+			) {
+				continue;
+			}
+			await this.spawnQa(parent, rec.target_pr_head_sha, {
+				retryAttemptId: attemptId,
+			});
+		}
+
+		// Crash window: retry_starting was durable before dispatch. Adopt an active
+		// successor, or re-drive the exact same id (never allocate QA3).
+		for (const rec of this.deps.store.listAutoQaRecordsByStatus(
+			"retry_starting",
+		)) {
+			const parent = this.recoveryParent(rec);
+			if (!parent) continue;
+			const attemptId = rec.retry_attempt_id;
+			if (!attemptId) {
+				this.deps.store.setAutoQaStatus(
+					rec.parent_execution_id,
+					rec.target_pr_head_sha,
+					"stuck",
+					{},
+				);
+				continue;
+			}
+			const successor = this.deps.store.getSession(attemptId);
+			if (successor && !TERMINAL_STATUSES.has(successor.status ?? "")) {
+				this.deps.store.completeAutoQaRetryLaunch(
+					rec.parent_execution_id,
+					rec.target_pr_head_sha,
+					attemptId,
+					attemptId,
+				);
+				continue;
+			}
+			if (successor && TERMINAL_STATUSES.has(successor.status ?? "")) {
+				this.deps.store.failAutoQaRetryLaunch(
+					rec.parent_execution_id,
+					rec.target_pr_head_sha,
+					attemptId,
+				);
+				await this.alertRecoveryLaunchFailure(
+					parent,
+					`durable successor ${attemptId} is already ${successor.status}`,
+				);
+				continue;
+			}
+			if (!this.canLaunchRecovery(rec)) continue;
+			await this.spawnQa(parent, rec.target_pr_head_sha, {
+				retryAttemptId: attemptId,
+			});
+		}
+	}
+
+	private recoveryParent(rec: AutoQaRecord): Session | undefined {
+		const parent = this.deps.store.getSession(rec.parent_execution_id);
+		if (
+			parent &&
+			parent.status === "awaiting_review" &&
+			parent.pr_head_sha?.toLowerCase() === rec.target_pr_head_sha
+		) {
+			return parent;
+		}
+		this.deps.store.setAutoQaStatus(
+			rec.parent_execution_id,
+			rec.target_pr_head_sha,
+			"superseded",
+			{},
+		);
+		return undefined;
+	}
+
+	private canLaunchRecovery(rec: AutoQaRecord): boolean {
+		const qaIssueId = rec.qa_issue_id;
+		const hasInflight = this.deps.startDispatcher.hasInflightForRole;
+		if (!qaIssueId || !hasInflight) {
+			this.warn(
+				`recovery held for ${rec.issue_id}: ${!qaIssueId ? "missing QA issue" : "dispatcher has no inflight probe"}`,
+			);
+			return false;
+		}
+		return !hasInflight.call(this.deps.startDispatcher, qaIssueId, "qa");
+	}
+
+	private async alertRecoveryLaunchFailure(
+		parent: Session,
+		detail: string,
+	): Promise<void> {
+		try {
+			await this.deps.effects.alertLeadPipelineError({
+				session: parent,
+				issueId: parent.issue_id,
+				projectName: parent.project_name,
+				reason: `auto-QA recovery launch failed for ${parent.issue_id}: ${detail}. Founder remains held.`,
+			});
+		} catch (err) {
+			this.warn(`recovery launch alert failed: ${asErr(err)}`);
 		}
 	}
 
@@ -1925,62 +2200,21 @@ export class AutoQaCoordinator {
 					);
 				}
 			} else {
-				this.log(`reconcile re-spawn (retest, QA dead) for ${parent.issue_id}`);
-				await this.spawnQa(parent, rec.target_pr_head_sha);
-			}
-		}
-
-		// (3) RUNNING records (no pending marker) → spawn if never spawned; stuck if
-		// the QA died without a verdict.
-		for (const rec of this.deps.store.listRunningAutoQaRecords()) {
-			if (rec.retest_wake_pending_at) continue; // handled by sweep (2).
-			const parent = this.deps.store.getSession(rec.parent_execution_id);
-			// Parent moved on (merged / new head / gone) → record is moot.
-			if (
-				!parent ||
-				parent.status !== "awaiting_review" ||
-				parent.pr_head_sha?.toLowerCase() !== rec.target_pr_head_sha
-			) {
-				this.deps.store.setAutoQaStatus(
-					rec.parent_execution_id,
-					rec.target_pr_head_sha,
-					"superseded",
-					{},
-				);
-				continue;
-			}
-
-			if (!rec.qa_execution_id) {
-				// Claimed but the spawn never completed (crash mid-spawn) → spawn now.
 				this.log(
-					`reconcile spawn (claimed-unspawned) for ${parent.issue_id} (${rec.parent_execution_id})`,
+					`reconcile recovery claim (retest, QA dead) for ${parent.issue_id}`,
 				);
-				await this.spawnQa(parent, rec.target_pr_head_sha);
-				continue;
+				if (rec.qa_execution_id) {
+					await this.onQaSessionFailed(rec.qa_execution_id);
+				} else {
+					await this.spawnQa(parent, rec.target_pr_head_sha);
+				}
 			}
-
-			const qaSession = this.deps.store.getSession(rec.qa_execution_id);
-			if (!qaSession || TERMINAL_STATUSES.has(qaSession.status ?? "")) {
-				// QA session ended but the record is still running → the verdict was
-				// lost (or QA died). NEVER auto-release; mark stuck + alert the Lead.
-				this.warn(
-					`reconcile stuck: QA ${rec.qa_execution_id} for ${parent.issue_id} is ${qaSession?.status ?? "gone"} but no verdict landed`,
-				);
-				this.deps.store.setAutoQaStatus(
-					rec.parent_execution_id,
-					rec.target_pr_head_sha,
-					"stuck",
-					{},
-				);
-				await this.deps.effects.alertLeadPipelineError({
-					session: parent,
-					issueId: parent.issue_id,
-					projectName: parent.project_name,
-					reason: `auto-QA stuck for ${parent.issue_id}: QA session ${rec.qa_execution_id} ended without a verdict. Founder NOT surfaced.`,
-				});
-			}
-			// else QA still running → leave it; verdict pending.
 		}
+
+		// (3) Dead/missing QA detection + bounded clean recovery. This is the same
+		// single-flight entry GatePoller uses periodically, so boot and maintenance
+		// cannot double-launch a successor.
+		await this.sweepOrphanedQaRecords();
 
 		// (4) AWAITING_RETEST records (QA reported FAIL, parked for the next head).
 		// Parent moved on / gone → superseded (+ close a still-live QA); QA session

@@ -40,6 +40,60 @@ describe("sessionModelDisplay (FLY-1255)", () => {
 		});
 	});
 
+	it("FLY-1259: locked codex design backend beats a disabled global switch", () => {
+		expect(
+			sessionModelDisplay(
+				{
+					chat_thread_role: "design",
+					design_backend: "codex",
+					adapter_type: undefined,
+					runner_model: undefined,
+					dispatch_model: undefined,
+				},
+				{ FLYWHEEL_THREE_STAGE_CODEX_DESIGN: "0" },
+			),
+		).toEqual({ threadMarker: "G", windowLabel: "codex-G" });
+	});
+
+	it("FLY-1259: locked claude design backend beats an enabled global switch", () => {
+		expect(
+			sessionModelDisplay(
+				{
+					chat_thread_role: "design",
+					design_backend: "claude",
+					adapter_type: undefined,
+					runner_model: undefined,
+					dispatch_model: undefined,
+				},
+				{ FLYWHEEL_THREE_STAGE_CODEX_DESIGN: "1" },
+			),
+		).toEqual({ threadMarker: "F", windowLabel: "claude-Fable" });
+	});
+
+	it("FLY-1259: the actual runner_model still outranks a locked backend", () => {
+		expect(
+			sessionModelDisplay(
+				{
+					chat_thread_role: "design",
+					design_backend: "claude",
+					adapter_type: "codex-tmux",
+					runner_model: "gpt-5.6-sol",
+					dispatch_model: undefined,
+				},
+				{ FLYWHEEL_THREE_STAGE_CODEX_DESIGN: "0" },
+			),
+		).toEqual({ threadMarker: "G", windowLabel: "codex-G" });
+	});
+
+	it("FLY-1259: the lock never leaks into implement/qa phase fallbacks", () => {
+		expect(
+			sessionModelDisplay(
+				{ chat_thread_role: "implement", design_backend: "claude" },
+				{ FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT: "1" },
+			),
+		).toEqual(sessionModelDisplay({ chat_thread_role: "implement" }, {}));
+	});
+
 	it("non-phase may fall back to persisted dispatch_model", () => {
 		expect(
 			sessionModelDisplay({

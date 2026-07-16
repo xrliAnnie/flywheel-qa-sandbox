@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import BetterSqlite3 from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 
@@ -33,6 +37,157 @@ describe("StateStore auto_qa_record", () => {
 		expect(rec?.project_name).toBe("proj");
 		expect(rec?.qa_execution_id).toBeUndefined();
 		expect(rec?.started_at).toBeTruthy();
+		expect(rec?.auto_retry_count).toBe(0);
+		expect(rec?.retry_intent_at).toBeUndefined();
+		expect(rec?.retry_attempt_id).toBeUndefined();
+	});
+
+	it("findAutoQaOwnershipByQaExec prefers the active owner over historical rows", async () => {
+		const store = await freshStore();
+		store.claimAutoQaRecord({
+			parentExecutionId: "historical-parent",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		store.setAutoQaQaExecutionId("historical-parent", SHA_A, "qa-shared");
+		store.setAutoQaStatus("historical-parent", SHA_A, "passed", {});
+
+		store.claimAutoQaRecord({
+			parentExecutionId: "active-parent",
+			targetPrHeadSha: SHA_B,
+			issueId: "FLY-2",
+			projectName: "proj",
+		});
+		store.setAutoQaQaExecutionId("active-parent", SHA_B, "qa-shared");
+
+		const owner = store.findAutoQaOwnershipByQaExec("qa-shared");
+		expect(owner?.parent_execution_id).toBe("active-parent");
+		expect(owner?.status).toBe("running");
+	});
+
+	it("dead-QA CAS claims one retry, dedups replay, then exhausts after the replacement dies", async () => {
+		const store = await freshStore();
+		store.claimAutoQaRecord({
+			parentExecutionId: "parent-1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		store.setAutoQaQaExecutionId("parent-1", SHA_A, "qa-dead-1");
+
+		expect(store.markDeadAutoQaExecution("parent-1", SHA_A, "qa-dead-1")).toBe(
+			"retry_pending",
+		);
+		let rec = store.getAutoQaRecord("parent-1", SHA_A);
+		expect(rec?.status).toBe("retry_pending");
+		expect(rec?.auto_retry_count).toBe(1);
+		expect(rec?.retry_intent_at).toBeTruthy();
+
+		// The same hook is consumed by ownership but cannot move the CAS again.
+		expect(store.markDeadAutoQaExecution("parent-1", SHA_A, "qa-dead-1")).toBe(
+			"noop",
+		);
+
+		expect(
+			store.claimAutoQaRetryLaunch("parent-1", SHA_A, "qa-retry-attempt"),
+		).toBe(true);
+		rec = store.getAutoQaRecord("parent-1", SHA_A);
+		expect(rec?.status).toBe("retry_starting");
+		expect(rec?.retry_attempt_id).toBe("qa-retry-attempt");
+		expect(
+			store.claimAutoQaRetryLaunch("parent-1", SHA_A, "other-attempt"),
+		).toBe(false);
+
+		expect(
+			store.completeAutoQaRetryLaunch(
+				"parent-1",
+				SHA_A,
+				"qa-retry-attempt",
+				"qa-dead-2",
+			),
+		).toBe(true);
+		rec = store.getAutoQaRecord("parent-1", SHA_A);
+		expect(rec?.status).toBe("running");
+		expect(rec?.qa_execution_id).toBe("qa-dead-2");
+
+		expect(store.markDeadAutoQaExecution("parent-1", SHA_A, "qa-dead-2")).toBe(
+			"exhausted",
+		);
+		rec = store.getAutoQaRecord("parent-1", SHA_A);
+		expect(rec?.status).toBe("stuck");
+		expect(rec?.auto_retry_count).toBe(1);
+	});
+
+	it("retry launch completion is attempt-bound and failure is fail-closed", async () => {
+		const store = await freshStore();
+		store.claimAutoQaRecord({
+			parentExecutionId: "parent-1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		store.setAutoQaQaExecutionId("parent-1", SHA_A, "qa-dead");
+		store.markDeadAutoQaExecution("parent-1", SHA_A, "qa-dead");
+		store.claimAutoQaRetryLaunch("parent-1", SHA_A, "attempt-1");
+
+		expect(
+			store.completeAutoQaRetryLaunch(
+				"parent-1",
+				SHA_A,
+				"wrong-attempt",
+				"qa-new",
+			),
+		).toBe(false);
+		expect(store.failAutoQaRetryLaunch("parent-1", SHA_A, "attempt-1")).toBe(
+			true,
+		);
+		expect(store.getAutoQaRecord("parent-1", SHA_A)?.status).toBe("stuck");
+	});
+
+	it("migrates a legacy auto_qa_record table with retry defaults intact", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1279-auto-qa-migration-"));
+		const dbPath = join(dir, "state.db");
+		try {
+			const legacy = new BetterSqlite3(dbPath);
+			legacy.exec(`
+				CREATE TABLE auto_qa_record (
+					parent_execution_id TEXT NOT NULL,
+					target_pr_head_sha TEXT NOT NULL,
+					issue_id TEXT NOT NULL,
+					project_name TEXT NOT NULL,
+					qa_execution_id TEXT,
+					status TEXT NOT NULL DEFAULT 'running',
+					verdict_event_id TEXT,
+					started_at TEXT NOT NULL DEFAULT (datetime('now')),
+					completed_at TEXT,
+					notified_at TEXT,
+					PRIMARY KEY (parent_execution_id, target_pr_head_sha)
+				)
+			`);
+			legacy.close();
+
+			const store = await StateStore.create(dbPath);
+			store.claimAutoQaRecord({
+				parentExecutionId: "legacy-parent",
+				targetPrHeadSha: SHA_A,
+				issueId: "FLY-1279",
+				projectName: "flywheel",
+			});
+			expect(store.getAutoQaRecord("legacy-parent", SHA_A)).toMatchObject({
+				auto_retry_count: 0,
+			});
+			expect(
+				store.claimAutoQaRetryAfterSpawnFailure("legacy-parent", SHA_A),
+			).toBe(true);
+			expect(store.getAutoQaRecord("legacy-parent", SHA_A)).toMatchObject({
+				status: "retry_pending",
+				auto_retry_count: 1,
+			});
+			store.close();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("claimAutoQaRecord is an atomic dedup — second claim of same key returns false", async () => {

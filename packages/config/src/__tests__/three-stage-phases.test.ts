@@ -156,6 +156,39 @@ describe("three-stage-phases (FLY-793)", () => {
 				model: "claude-fable-5",
 			});
 		});
+
+		it("explicit codex design override beats a disabled global switch", () => {
+			expect(
+				resolvePhaseDispatch(
+					"design",
+					{ FLYWHEEL_THREE_STAGE_CODEX_DESIGN: "0" },
+					{ vendor: "codex" },
+				),
+			).toEqual({
+				vendor: "codex",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+			});
+		});
+
+		it("explicit claude design override beats an enabled global switch", () => {
+			expect(
+				resolvePhaseDispatch(
+					"design",
+					{ FLYWHEEL_THREE_STAGE_CODEX_DESIGN: "1" },
+					{ vendor: "claude" },
+				),
+			).toEqual({ vendor: "claude", model: "claude-fable-5" });
+		});
+
+		it("ignores the transitional design override for implement and qa", () => {
+			expect(
+				resolvePhaseDispatch("implement", {}, { vendor: "claude" }),
+			).toEqual(resolvePhaseDispatch("implement", {}));
+			expect(resolvePhaseDispatch("qa", {}, { vendor: "codex" })).toEqual(
+				resolvePhaseDispatch("qa", {}),
+			);
+		});
 	});
 
 	it("PINS implement's default dispatch byte-for-byte (FLY-1245 refactor guard)", () => {

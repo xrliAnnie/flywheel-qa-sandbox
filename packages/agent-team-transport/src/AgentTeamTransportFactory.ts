@@ -38,6 +38,7 @@ export interface FactoryOptions {
 	context?: "lead" | "runner";
 }
 
+// biome-ignore lint/complexity/noStaticOnlyClass: stable public factory surface (AgentTeamTransportFactory.fromEnv/forBackend) relied on across packages; converting to loose functions is an API break out of scope for FLY-1259 (biome pin surfaced this pre-existing shape)
 export class AgentTeamTransportFactory {
 	/**
 	 * Build adapter based on `FLYWHEEL_AGENT_BACKEND` env (default

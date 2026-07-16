@@ -51,6 +51,41 @@ describe("LeadConfig.voice", () => {
 			parseAndValidateProjects([entry({ leads: [lead({ voice: 42 })] })]),
 		).toThrow(/voice/);
 	});
+
+	it("accepts the FLY-546 object form { voiceId, rate?, pitch? } (union parity with voice-bridge)", () => {
+		const projects = parseAndValidateProjects([
+			entry({
+				leads: [
+					lead({
+						voice: {
+							voiceId: "zh-CN-XiaoxiaoNeural",
+							rate: "-10%",
+							pitch: "+2Hz",
+						},
+					}),
+				],
+			}),
+		]);
+		expect(projects[0]!.leads[0]!.voice).toEqual({
+			voiceId: "zh-CN-XiaoxiaoNeural",
+			rate: "-10%",
+			pitch: "+2Hz",
+		});
+	});
+
+	it("rejects malformed object-form voices (empty voiceId / bad prosody grammar)", () => {
+		for (const bad of [
+			{ voiceId: "" },
+			{ voiceId: 42 },
+			{ voiceId: "x", rate: "fast" },
+			{ voiceId: "x", pitch: "high" },
+			["zh-CN-YunxiNeural"],
+		]) {
+			expect(() =>
+				parseAndValidateProjects([entry({ leads: [lead({ voice: bad })] })]),
+			).toThrow(/voice/);
+		}
+	});
 });
 
 describe("ProjectEntry.huddle", () => {

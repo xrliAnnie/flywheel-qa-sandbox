@@ -211,6 +211,49 @@ describe("FLY-560 Feature C: event-route attach-pin wiring", () => {
 		expect(ctx.botToken).toBe("bot-token"); // LEAD bot, NOT announcer
 	});
 
+	it.each([
+		{ global: "0", designBackend: "codex", expected: "[设计·GPT-5.6]" },
+		{ global: "1", designBackend: "claude", expected: "[设计·Fable]" },
+	] as const)(
+		"FLY-1259: legacy pipeline header uses locked $designBackend backend when global=$global",
+		async ({ global, designBackend, expected }) => {
+			const previous = process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
+			process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = global;
+			try {
+				store.upsertSession({
+					execution_id: `exec-design-${designBackend}`,
+					issue_id: ISSUE_ID,
+					issue_identifier: ISSUE_ID,
+					issue_title: "Discord issue status",
+					project_name: PROJECT,
+					status: "running",
+					started_at: new Date().toISOString(),
+					issue_labels: JSON.stringify(["Flywheel"]),
+					session_role: "design",
+					chat_thread_role: "design",
+					design_backend: designBackend,
+				});
+
+				await postStage(
+					buildApp({
+						issueStatusEmojiEnabled: false,
+						issueAttachPinEnabled: true,
+					}),
+					`evt-backend-${designBackend}`,
+				);
+
+				expect(headerSpy).toHaveBeenCalledTimes(1);
+				expect(headerSpy.mock.calls[0]?.[2]).toContain(expected);
+			} finally {
+				if (previous === undefined) {
+					delete process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
+				} else {
+					process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = previous;
+				}
+			}
+		},
+	);
+
 	it("emoji on + attach off → stamps only (attach not pinned)", async () => {
 		await postStage(
 			buildApp({ issueStatusEmojiEnabled: true, issueAttachPinEnabled: false }),

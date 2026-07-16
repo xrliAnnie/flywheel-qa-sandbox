@@ -131,6 +131,29 @@ function describeKind(kind: string): string {
 		case "delivery_failed_reconcile":
 			return "投递失败且无人跟进";
 		default:
+			switch (kind) {
+				case "park:awaiting_review":
+					return "Runner 正在等待 founder 审批";
+				case "park:blocked":
+					return "Runner 已因无法继续而暂停";
+				case "park:declared":
+					return "Runner 已声明正在等待";
+				case "park:gate_row_missing":
+					return "Runner 等待的门记录缺失";
+				case "park:gate_unreachable":
+					return "Runner 等待的门无法送达";
+				case "park:qa_recovery_exhausted":
+					return "独立 QA 失败且自动恢复已耗尽";
+				case "park:qa_hold_orphaned":
+					return "implement 正在等待已失联的独立 QA";
+				case "park:qa_hold_healthy":
+					return "implement 正在等待独立 QA 完成";
+				case "park:runner_or_ci":
+					return "Runner 正在等待长任务或 CI";
+				case "park:review_hold":
+					return "Runner 的 review 仍被前置检查拦住";
+			}
+			if (kind.startsWith("park:")) return "Runner 处于等待状态且一直未获处置";
 			return `检测到异常(${kind})`;
 	}
 }

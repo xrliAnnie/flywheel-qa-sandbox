@@ -130,14 +130,24 @@ describe("FLY-967 ② makeCreateResource — raw PCM streams must not hit ffmpeg
 		};
 	}
 
-	it("stream sources are declared StreamType.Raw (48k s16le stereo from AssistantSpeaker)", () => {
+	it("raw-stream sources are declared StreamType.Raw (48k s16le stereo from AssistantSpeaker/GeminiTurnMouth — 545/967 reconciliation: the explicit kind carries the Raw tag)", () => {
 		const { voice, calls } = stubVoice();
 		const createResource = makeCreateResource(voice);
 		const stream = { fake: "stream" };
-		createResource({ kind: "stream", stream } as never);
+		createResource({ kind: "raw-stream", stream } as never);
 		expect(calls).toHaveLength(1);
 		expect(calls[0]![0]).toBe(stream);
 		expect(calls[0]![1]).toEqual({ inputType: "raw-sentinel" });
+	});
+
+	it("plain stream sources keep the ffmpeg probe path (LeadSpeaker TTS output has probeable headers — Raw would mis-decode it)", () => {
+		const { voice, calls } = stubVoice();
+		const createResource = makeCreateResource(voice);
+		const stream = { fake: "tts-stream" };
+		createResource({ kind: "stream", stream } as never);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]![0]).toBe(stream);
+		expect(calls[0]![1]).toBeUndefined();
 	});
 
 	it("file sources keep the ffmpeg path (headers are probeable)", () => {

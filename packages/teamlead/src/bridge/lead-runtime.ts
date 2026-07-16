@@ -55,6 +55,17 @@ export interface LeadEventEnvelope {
 	sessionKey: string;
 	leadId: string;
 	timestamp: string;
+	/** FLY-1279: a crash retry reuses this id; a deliberate reminder gets a new
+	 * id so mailbox dedupe produces a fresh interruption. */
+	deliveryAttemptId?: string;
+	ack?: {
+		eventSeq: number;
+		token: string;
+		policy:
+			| "question_response"
+			| "explicit_receipt"
+			| "founder_surface_confirmed";
+	};
 }
 
 /** Bootstrap snapshot for crash recovery. */

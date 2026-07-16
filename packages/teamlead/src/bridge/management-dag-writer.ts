@@ -9,7 +9,7 @@ import type {
 import {
 	validateWorkflowManifest,
 	type WorkflowEffort,
-	type WorkflowManifestV1,
+	type WorkflowManifest,
 } from "../workflow-template.js";
 import {
 	buildTargetId,
@@ -57,7 +57,7 @@ function resolveTarget(input: ManagementDagEdit):
 			templateId: string;
 			revision: number;
 			digest: string;
-			manifest: WorkflowManifestV1;
+			manifest: WorkflowManifest;
 			nodeId: string;
 	  }
 	| undefined {

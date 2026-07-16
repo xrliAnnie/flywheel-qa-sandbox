@@ -9,7 +9,7 @@
  *   qa PASS / kill QA / operator-reset / finalize / attach cross-wire.
  */
 
-import type { ThreeStagePhase } from "flywheel-config";
+import type { DesignBackend, ThreeStagePhase } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyTransition } from "../../applyTransition.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
@@ -206,6 +206,7 @@ function seedSession(
 		status: string;
 		stage?: string;
 		model?: string;
+		designBackend?: DesignBackend;
 		backend?: string;
 	},
 ): void {
@@ -222,6 +223,7 @@ function seedSession(
 		chat_thread_role: args.role ?? "main",
 		session_role: args.role ?? "main",
 		runner_model: args.model,
+		design_backend: args.designBackend,
 		adapter_type: args.backend,
 	});
 	if (args.stage) {
@@ -270,6 +272,54 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 			implement: "◾ 未开始",
 			qa: "◾ 未开始",
 		});
+	});
+
+	it("FLY-1259: locked codex design label beats a global Fable default", async () => {
+		const previous = process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
+		process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "0";
+		try {
+			seedSession(store, {
+				exec: "e-design",
+				role: "design",
+				status: "running",
+				designBackend: "codex",
+			});
+			const { refresher, log } = makeRefresher(store);
+
+			await refresher.refresh(ISSUE);
+
+			expect(log.header[0]).toContain("[设计·GPT-5.6]");
+		} finally {
+			if (previous === undefined) {
+				delete process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
+			} else {
+				process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = previous;
+			}
+		}
+	});
+
+	it("FLY-1259: locked Fable design label beats a global Codex default", async () => {
+		const previous = process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
+		process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "1";
+		try {
+			seedSession(store, {
+				exec: "e-design",
+				role: "design",
+				status: "running",
+				designBackend: "claude",
+			});
+			const { refresher, log } = makeRefresher(store);
+
+			await refresher.refresh(ISSUE);
+
+			expect(log.header[0]).toContain("[设计·Fable]");
+		} finally {
+			if (previous === undefined) {
+				delete process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
+			} else {
+				process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = previous;
+			}
+		}
 	});
 
 	it("design park+handoff (design_done+parked, implement running) → 设计✅ 实现▶, title 🔨实现", async () => {

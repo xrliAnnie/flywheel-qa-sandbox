@@ -122,7 +122,7 @@ case "$KIND" in
   # on this leg (the wrapper preflight dirty-marker page fires while the Bridge
   # is down); the other four are added for face parity with the TS union
   # (kind-contract.test.ts is the drift guard on both faces).
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|account_switched|quota_no_target|quota_read_blind|account_switch_failed|quota_revive_stuck|quota_monitor_down) ;;
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|quota_no_target|quota_read_blind|account_switch_failed|quota_revive_stuck|quota_monitor_down) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"

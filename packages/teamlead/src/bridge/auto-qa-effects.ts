@@ -166,6 +166,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 		const prefix = phaseMessageTag(
 			args.session.chat_thread_role,
 			args.session.runner_model,
+			args.session.design_backend,
 		);
 		// FLY-892 (Step 7): a QA status broadcast → announcer bot when configured;
 		// else the Lead bot (byte-compat).

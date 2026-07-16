@@ -33,6 +33,7 @@ import {
 	formatShipApprovalRequest,
 	formatStuckEscalation,
 } from "./hook-payload.js";
+import { appendLeadEventAckInstructions } from "./lead-event-ack-render.js";
 import type {
 	DeliveryResult,
 	LeadBootstrap,
@@ -84,7 +85,10 @@ export class MailboxLeadRuntime implements LeadRuntime {
 	}
 
 	async deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult> {
-		const content = this.formatEnvelope(envelope);
+		const content = appendLeadEventAckInstructions(
+			this.formatEnvelope(envelope),
+			envelope,
+		);
 		const payload: MailboxPayload = {
 			from: "bridge",
 			to: this.leadId,
@@ -175,6 +179,9 @@ export class MailboxLeadRuntime implements LeadRuntime {
 	// ----------------------------------------------------------------------
 
 	private buildFlywheelId(env: LeadEventEnvelope): string {
+		if (env.deliveryAttemptId) {
+			return `${this.leadId}-${env.deliveryAttemptId}`;
+		}
 		const exec = env.event.execution_id ?? "no-exec";
 		return `${this.leadId}-${env.seq}-${exec}`;
 	}
@@ -324,6 +331,13 @@ export class MailboxLeadRuntime implements LeadRuntime {
 			`[Event #${env.seq}] ${roleLabel}${e.event_type}`,
 			`ID: ${e.execution_id || "—"} | Issue: ${e.issue_identifier || e.issue_id || "—"}`,
 		];
+		if (
+			e.event_type === "session_started" &&
+			e.session_role === "design" &&
+			e.design_backend
+		) {
+			lines.push(`Design Backend: ${e.design_backend}`);
+		}
 		if (e.issue_title) lines.push(`Title: ${e.issue_title}`);
 		if (e.status) lines.push(`Status: ${e.status}`);
 		if (e.decision_route) lines.push(`Route: ${e.decision_route}`);

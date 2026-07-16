@@ -141,6 +141,16 @@ export interface ReviewCoordinatorDeps {
 		questionId: string,
 		summary: string,
 	) => Promise<void>;
+	/**
+	 * FLY-1257 defect ① × ④ (Codex code review HIGH-1): flip the answered review
+	 * gate's MARKER to answered so a resident codex `/goal` resumes at once. The
+	 * coordinator answers via CommDB + mailbox wake, but a held goal's
+	 * `isWaiting()` reads the gate marker's `answeredAt` — the CLI `respond` path
+	 * marks it, this lane must too, or the goal waits ~72h for the deadline
+	 * watcher. Best-effort (test seam); wired by plugin to
+	 * `markGateMarkerAnsweredForExecution`. Absent → no-op (byte-compatible).
+	 */
+	markGateAnswered?: (questionId: string, executionId: string) => void;
 	/** Lead-facing alert for fail-close job failures (wired by plugin). */
 	alertLead?: (message: string) => void;
 	logger?: (msg: string) => void;
@@ -1340,6 +1350,17 @@ export class ReviewRequestCoordinator {
 			}
 		} finally {
 			db.close();
+		}
+		// FLY-1257 HIGH-1: mark the answered review gate's marker so a resident
+		// codex `/goal` resumes at once (its `isWaiting()` reads `answeredAt`),
+		// instead of waiting ~72h for the deadline watcher. Best-effort — a marker
+		// failure must never fail the answer we already durably wrote.
+		try {
+			this.deps.markGateAnswered?.(questionId, session.execution_id);
+		} catch (err) {
+			this.log(
+				`gate marker mark failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+			);
 		}
 		if (this.deps.wakeRunner) {
 			try {

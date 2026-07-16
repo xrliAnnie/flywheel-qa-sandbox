@@ -23,10 +23,43 @@ describe("resolveElevenConfig (FLY-1006 S7)", () => {
 	it("missing api key env fails fast at load, not mid-session", () => {
 		expect(() =>
 			resolveElevenConfig(
-				[{ huddle: { eleven: { agentId: "agent_x" } } }],
+				[
+					{
+						huddle: { eleven: { agentId: "agent_x", leadId: "eng-lead" } },
+						leads: [{ agentId: "eng-lead", botTokenEnv: "X" }],
+					},
+				],
 				{} as NodeJS.ProcessEnv,
 			),
 		).toThrow(/ELEVENLABS_API_KEY/);
+	});
+
+	it("FLY-1160 §4.2: leadId is required (the resident brain persona source)", () => {
+		expect(() =>
+			resolveElevenConfig(
+				[
+					{
+						huddle: { eleven: { agentId: "agent_x" } },
+						leads: [{ agentId: "eng-lead", botTokenEnv: "X" }],
+					},
+				],
+				ENV,
+			),
+		).toThrow(/leadId/);
+	});
+
+	it("FLY-1160 §4.2: leadId must name a lead declared in the project's leads", () => {
+		expect(() =>
+			resolveElevenConfig(
+				[
+					{
+						huddle: { eleven: { agentId: "agent_x", leadId: "ghost-lead" } },
+						leads: [{ agentId: "eng-lead", botTokenEnv: "X" }],
+					},
+				],
+				ENV,
+			),
+		).toThrow(/ghost-lead.*leads/s);
 	});
 
 	it("defaults + explicit fields resolve", () => {
@@ -36,10 +69,12 @@ describe("resolveElevenConfig (FLY-1006 S7)", () => {
 					huddle: {
 						eleven: {
 							agentId: "agent_x",
+							leadId: "eng-lead",
 							voiceId: "v1",
 							waitingCuePath: "/tmp/cue.wav",
 						},
 					},
+					leads: [{ agentId: "eng-lead", botTokenEnv: "X" }],
 				},
 			],
 			ENV,
@@ -47,6 +82,7 @@ describe("resolveElevenConfig (FLY-1006 S7)", () => {
 		expect(cfg).toMatchObject({
 			commandName: "eleven",
 			agentId: "agent_x",
+			leadId: "eng-lead",
 			apiKeyEnv: "ELEVENLABS_API_KEY",
 			shimHealthUrl: "http://127.0.0.1:8980/health",
 			voiceId: "v1",

@@ -13,6 +13,7 @@ import {
 	createShimServer,
 	dedupeFinalEcho,
 	deriveConversationKey,
+	makeBrainForwarder,
 	mapMessages,
 	maybeToolCall,
 } from "./lib/shim-core.mjs";
@@ -645,6 +646,103 @@ test("single-flight: a same-key TOOL-CALL request also aborts the in-flight brai
 			"the in-flight brain was aborted by the tool-call request",
 		);
 		await p1; // superseded response terminates (no hang)
+	} finally {
+		server.close();
+	}
+});
+
+// FLY-1160 §4.2-5: BrainPort forward mode — the shim streams the daemon's
+// resident-brain chunks instead of a local spawn; 404 fails loud.
+test("makeBrainForwarder streams BrainPort chunks keyed by conversation id", async () => {
+	let seenBody;
+	let seenAuth;
+	const fetchImpl = async (_url, init) => {
+		seenAuth = init.headers.authorization;
+		seenBody = JSON.parse(init.body);
+		const stream = new ReadableStream({
+			start(c) {
+				c.enqueue(new TextEncoder().encode("你好"));
+				c.enqueue(new TextEncoder().encode("，Annie"));
+				c.close();
+			},
+		});
+		return new Response(stream, { status: 200 });
+	};
+	const fwd = makeBrainForwarder({
+		brainUrl: "http://127.0.0.1:9999",
+		brainToken: "tok",
+		key: "eleven:conv-1",
+		fetchImpl,
+	});
+	let out = "";
+	for await (const c of fwd.respond(
+		{ text: "hi", history: [] },
+		{ signal: new AbortController().signal },
+	))
+		out += c;
+	assert.equal(out, "你好，Annie");
+	assert.equal(seenBody.key, "eleven:conv-1");
+	assert.equal(seenBody.text, "hi");
+	assert.equal(seenAuth, "Bearer tok");
+});
+
+test("makeBrainForwarder throws (fail-loud) on 404 — no silent local fallback", async () => {
+	const fetchImpl = async () => new Response("", { status: 404 });
+	const fwd = makeBrainForwarder({
+		brainUrl: "http://127.0.0.1:9999",
+		brainToken: "tok",
+		key: "eleven:conv-x",
+		fetchImpl,
+	});
+	await assert.rejects(async () => {
+		for await (const _ of fwd.respond({ text: "hi", history: [] }, {})) {
+			// unreachable
+		}
+	}, /404 no resident brain/);
+});
+
+// FLY-1160 §4.2-5 (Codex #552 R1 MEDIUM-7): forward-mode /health PROVES the
+// BrainPort backend is reachable, not a blind ok. Local mode keeps cheap ok.
+test("forward-mode /health probes the BrainPort backend (503 when it is down)", async () => {
+	const workDir = mkdtempSync(join(tmpdir(), "fly980-fh-"));
+	let probedPath = null;
+	const fetchImpl = async (url) => {
+		probedPath = new URL(String(url)).pathname;
+		return new Response("", { status: 503 });
+	};
+	const server = createShimServer({
+		token: TOKEN,
+		sessions: new BrainSessions({ brainFactory: makeFakeBrainFactory() }),
+		workDir,
+		log: () => {},
+		brainUrl: "http://127.0.0.1:9999",
+		brainToken: "bt",
+		fetchImpl,
+	});
+	await new Promise((r) => server.listen(0, "127.0.0.1", r));
+	try {
+		const port = server.address().port;
+		const res = await fetch(`http://127.0.0.1:${port}/health`);
+		const body = await res.json();
+		assert.equal(res.status, 503, "unhealthy backend surfaces 503");
+		assert.equal(body.ok, false);
+		assert.equal(body.mode, "forward");
+		// Codex #552 R2 HIGH-2: the probe MUST hit BrainPort's /brain/health,
+		// not /health (a wrong path would 404 a healthy backend).
+		assert.equal(probedPath, "/brain/health");
+	} finally {
+		server.close();
+	}
+});
+
+test('local-mode /health stays byte-compatible {"ok":true} (no extra fields)', async () => {
+	const { server, url } = await startServer();
+	try {
+		const base = url.replace("/v1/chat/completions", "");
+		const res = await fetch(`${base}/health`);
+		const raw = await res.text();
+		assert.equal(res.status, 200);
+		assert.equal(raw, JSON.stringify({ ok: true }));
 	} finally {
 		server.close();
 	}

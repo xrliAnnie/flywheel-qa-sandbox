@@ -24,6 +24,8 @@ export type {
 	AdapterSession,
 	ClaudeAdapterConfig,
 	IAdapter,
+	TerminalFailureInfo,
+	TerminalFailureKind,
 } from "./adapter-types.js";
 // Agent Runner types
 export type {

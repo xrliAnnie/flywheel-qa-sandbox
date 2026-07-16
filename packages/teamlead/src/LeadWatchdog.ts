@@ -1027,6 +1027,8 @@ function titleFor(kind: AlertEventType): string {
 			return "Fleet-scale detection incident";
 		case "detection_page_undeliverable":
 			return "Detection founder-page undeliverable";
+		case "delivery_dead_letter":
+			return "Lead delivery dead-lettered";
 		// FLY-195: never emitted by LeadWatchdog (the stuck-runner detector owns
 		// it and builds its own title); case exists for switch exhaustiveness.
 		case "runner_stuck_unhandled":
@@ -1039,6 +1041,8 @@ function titleFor(kind: AlertEventType): string {
 		// own title); case exists for switch exhaustiveness.
 		case "three_stage_stuck":
 			return "Three-stage pipeline stuck";
+		case "three_stage_takeover_failed":
+			return "Three-stage worktree takeover failed";
 		// FLY-637-ext: never emitted by LeadWatchdog (the lead-pending escalation
 		// builds its own title); case exists for switch exhaustiveness.
 		case "runner_lead_pending_unhandled":
@@ -1197,6 +1201,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "Several detection episodes of the same kind went unhandled at once — a fleet-scale incident. The founder was NOT paged per-episode; investigate the shared cause (Bridge, transport, or a fleet-wide runner condition).";
 		case "detection_page_undeliverable":
 			return "A detection founder page could not be addressed or posted (no session, no thread binding, or the POST failed). The episode stays LEAD_NOTIFIED and keeps retrying; fix the thread binding / bot token / routing.";
+		case "delivery_dead_letter":
+			return "A Lead-directed event exhausted bounded transport or acknowledgement retries. The founder was paged because the owning Lead path did not consume it.";
 		// FLY-195: never emitted by LeadWatchdog (see titleFor).
 		case "runner_stuck_unhandled":
 			return "A stuck Runner episode received no Lead disposition within the grace window. Check the owning Lead, then the runner tmux window.";
@@ -1206,6 +1212,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-793: never emitted by LeadWatchdog (the PhaseOrchestrator builds its own body).
 		case "three_stage_stuck":
 			return "A three-stage pipeline phase handoff (Design→Implement→QA) could not proceed (head-SHA capture failed, the previous phase runner would not close, or the next phase dispatch threw). The next phase was NOT started; investigate the phase Runner.";
+		case "three_stage_takeover_failed":
+			return "A shared branch-B worktree was dirty or at an unexpected HEAD, so Flywheel refused the in-place phase takeover. Inspect and preserve the parked phase's work before retrying.";
 		// FLY-637-ext: never emitted by LeadWatchdog (the lead-pending escalation builds its own body).
 		case "runner_lead_pending_unhandled":
 			return "A runner has been blocked waiting on the Lead to answer its question, and the Lead did not respond after several reminders. Poke the Lead — the runner itself is fine.";

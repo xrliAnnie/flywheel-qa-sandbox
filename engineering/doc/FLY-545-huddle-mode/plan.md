@@ -442,6 +442,88 @@ FLY-968 语音模型横评真机验证后,/meet 主路 **从 A1 的单 session �
   daemon 全部 session 数量无关);多 session 编排 = PR-2 HuddleSession/对话环范围,并消费
   967 分支已落的 voice-core 增量(systemPreamble/sendText/voiceName→speechConfig)。
 
+## PR-2 v2(2026-07-07 第二轮对齐 — 权威增量,取代 P7-P13 的 D1-B 措辞)
+
+> **背景**:PR-1(#495)已 merge(底盘常驻:BotRegistry/EarsReceiver/LeadSpeaker/resample/
+> SessionSlot/config/daemon + voice-core extraTools)。P7-P13 原文按已死的 D1-B(TEXT 模态)
+> 写;本节把 PR-2 重写成 **A10 多 session** 可实施形态。设计决策全文见 exploration.md
+> §9-§12(D8-D13);Tadashi 批准跳过整轮 Codex design review(架构已过 968 横评 + Annie
+> 批准 A10),直接 implement。**与 P7-P13 冲突处以本节为准。**
+>
+> **命名(gate 定稿)**:命令 = **/glaw**(Annie 定稿 ①:Gemini 耳 + Claude 脑;967=/gemini)。
+> `DEFAULT_COMMAND` 从 "meet" 翻成 "glaw"(commandName 仍可配);代码/文档所有 /meet → /glaw。
+
+### V2-1. 引擎形态(A10 定稿)
+
+每个参与 Lead 一条 Gemini Live session(AUDIO 模态,各配 `speechConfig.voiceName`),音频
+天然路由到该 Lead bot 的 voice connection(A2 亮圈结构性解决;A3 自报身份保留在
+systemInstruction)。组件:**LeadLine**(per-Lead 束:ConversationSession + GeminiTurnMouth
++ TalkSessionRotator + ReadOnlyLeadBrain)+ **AddressRouter**(sticky 点名路由)+
+**FeedPipeline**(静默补喂)+ HuddleSession 状态机(§6 骨架不变)。
+
+- **sticky 路由(D8)**:founder 音频只实时喂 addressed session(默认主持);切换 = 转写
+  final 命中其他 Lead 名字别名 → interrupt 旧 session + 嘴 turn-gate 丢其本轮 → 该句转写
+  作为文本轮(触发说话)喂新 session → sticky 指针切换。误检/漏检代价 = 口头纠正,可接受。
+- **补喂(D9,一等公民)**:voice-core **新增 `ConversationSession.injectContext(text)`** →
+  `sendClientContent(turnComplete:false)`(968 B 格实测 0 字节出声、事后可引用)。**不是**
+  967 的 sendText(sendRealtimeInput text 破静默,968 A 格)。会议 journal(founder final
+  转写 + 发声 Lead 的 outputTranscription,带 speaker 标签)逐条 fan-out 到其余 session;
+  per-session 投递游标 + resume 失败全量重放 + 投递失败 TIV fail-visible。
+- **turn 纪律(D10)**:orchestrator 发声令牌,同刻一张嘴;非持牌 session 的意外音频在嘴上
+  turn-gate 丢弃 + 计数。barge-in = Note-taker backchannel 门(as-built)→ interrupt 当前
+  发声 session + flush 其嘴。
+- **嘴(D11)**:per-Lead **GeminiTurnMouth**(beginTurn/feed/endTurn/flush;PassThrough 单
+  资源流 + turn-gate + 24k→48k ZOH;967 AssistantSpeaker 同形态,落 huddle/ 侧——assistant/*
+  是 967 专属,first-to-land 后评估共享化)。LeadSpeaker 保留给 earcon/filler 预合成文件与
+  FLY-546 announce 面。
+- **时限 ×N(D12)**:per-session rotator(resume handle 续接);session 于 assembling 全建、
+  teardown 全关;GEMINI_API_KEY 升级 fail-fast(PR-1 cli 注释预告的那步)。
+
+### V2-2. 依赖协调(first-to-land-builds,gate 拍板)
+
+| 增量 | 现居 | 落法 |
+|------|------|------|
+| voice-core sendText / systemPreamble / voice→speechConfig | FLY-967 分支(未 merge) | 谁先 merge 谁算数、后者 rebase byte-align;545 需要时从 967 分支 byte-align 消费,**绝不各写一份** |
+| Bridge P12 两路由(POST /api/linear/comment + GET /api/linear/issue) | FLY-967 分支 commit 136e9cee(按 545 P12 合同建) | 同上;545 先 land 则 cherry-pick 该合同实现 |
+| voice-core injectContext(静默补喂) | **无主 — 545 PR-2 新增** | 545 独家,与 967 增量不重叠不冲突 |
+| FLY-546 approval 第三信号源 | FLY-546 分支(未 merge) | A4 照旧:c 档 readback + 现有 founder gate,接口留位,不依赖 |
+
+### V2-3. 实施步骤(TDD;取代 P7-P13 编号,P12 合同不变)
+
+- **P7′ /glaw 命令面**:GlawCommand(原 MeetCommand 全部合同:guild command 注册可配名/
+  interaction 应答/Join link button/founder @ping/MOVE_MEMBERS/建立项 issue via Bridge)+
+  DEFAULT_COMMAND="glaw"。mock REST 测同 P7 清单。
+- **P8′ voice-core 增量**:injectContext(transport sendClientContent turnComplete:false;
+  audio 模态不受扰;mock transport 断言不触发 response)+ byte-align 消费 967 的
+  sendText/systemPreamble/voice→speechConfig(若届时未 merge,按 first-to-land 从其分支取)。
+- **P9′ LeadLine + GeminiTurnMouth**:束装配(session/rotator/mouth/brain per Lead)+ 流式嘴
+  单测(单资源流/turn-gate 丢迟到 chunk/flush 停播/earcon-filler 不切 live turn)。
+- **P10′ AddressRouter + FeedPipeline**:别名命中(display name + agentId 派生 + 可配)/
+  sticky 切换三路径(常态/切换轮交接/误检口头纠)/journal fan-out 游标/resume 失败重放/
+  投递失败 fail-visible。全 mock 时钟/transport 单测。
+- **P11′ 对话环 + HuddleSession 接线**:EarsReceiver→addressed session;发声令牌;barge-in
+  fan-out;TivPresenter 状态行/字幕;transcript JSONL 双向(A5 多真人 speaker 归因:per-user
+  speaking 窗口与 inputTranscription 相关联)。生命周期 §6 骨架照旧(assembling 建 N session)。
+- **P12′ 双 tool + ConfirmationLadder**:per-session extraTools(ask_lead = 该 Lead persona
+  的 ReadOnlyLeadBrain;issue_status = Bridge GET 路由);三档合同照 P10 原清单(b 档沉默≠
+  同意/c 档零执行路径断言)。
+- **P13′ ConclusionPipeline**:recap 由主持 session 出(控制文本轮 steering)→ 确认检测 →
+  summary 生成 = ReadOnlyLeadBrain 消费 journal/JSONL(逐条附原话引用)→ comment(幂等
+  标记,Codex R2 护栏①)→ WorktreeManager.create → Done → TIV 卡片 → **A6 会后批量下达**
+  (issue thread @Lead / create-issue)。失败中断语义照 §6 landing 原表。
+- **P14′ E2E + 部署**:staged E2E(测试 guild,QA bot 当 founder,多 session 补喂/切换/
+  barge-in/落地全链)→ 生产部署 → **Annie 真用一次 /glaw 全程**(北极星,issue Done 唯一
+  凭据)。A9 架构图交付(publish-report 到 [FLY-545] thread)在主实现前补验/补交。
+
+### V2-4. 验收增量(A1-A8 照旧,A2/A3 已由 PR-1 结清;新增)
+
+| # | 标准 | 证据 |
+|---|------|------|
+| B1 | 补喂:注入 0 字节出声 + 跨 session 事实可引用 + 断喂负对照(staged E2E 复现 968 三格) | E2E 记录 |
+| B2 | sticky 切换:点名 X → X 的 bot 亮圈回答、旧 session 不出声 | E2E 记录 |
+| B3 | 同刻一张嘴:非持牌 session 零输出(结构断言 + 运行时计数) | 单测 + E2E |
+| B4 | /glaw 全链:命令→立项 issue→Lead 进 VC→@ping+Join→对话→recap→落地→卡片 | staged E2E + 北极星 |
+
 ## 附录 A:D1-A 降级通路(documented fallback,已按 Implementation Addendum A1 激活,引擎形态再按 A10 定稿)
 
 若 S1/A3 证明 TEXT+edge-tts 链路首音不可接受:ConversationSession 回 audio 模态(现行为),

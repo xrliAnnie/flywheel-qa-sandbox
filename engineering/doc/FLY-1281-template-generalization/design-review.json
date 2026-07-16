@@ -1,0 +1,28 @@
+{
+	"issue": "FLY-1281",
+	"plan": "engineering/doc/FLY-1281-template-generalization/plan.md",
+	"reviewer": "codex",
+	"effort": "xhigh",
+	"rounds": 11,
+	"verdict": "APPROVED",
+	"approved_at": "2026-07-15",
+	"findings_per_round": {
+		"R1": 10,
+		"R2": 7,
+		"R3": 6,
+		"R4": 4,
+		"R5": 3,
+		"R6": 2,
+		"R7": 3,
+		"R8": 2,
+		"R9": 2,
+		"R10": 2,
+		"R11": 0
+	},
+	"rejections": 0,
+	"round_files": "codex-rescue-design-feedback-flywheel-FLY-1281-plan-round{1..11}.md",
+	"nonblocking_notes": [
+		"marker comparison must use full (execution_id, committed_generation, delivery_attempt) tuple",
+		"marker writes via same-dir tmpfile + atomic rename + exact read-back; real-adapter crash tests at the filesystem seam"
+	]
+}

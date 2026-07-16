@@ -561,6 +561,9 @@ importers:
       discord.js:
         specifier: 14.26.4
         version: 14.26.4
+      flywheel-edge-worker:
+        specifier: workspace:*
+        version: link:../edge-worker
       flywheel-gemini-agent:
         specifier: workspace:*
         version: link:../gemini-agent

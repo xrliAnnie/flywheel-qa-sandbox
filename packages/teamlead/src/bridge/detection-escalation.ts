@@ -163,8 +163,12 @@ export async function notifyLeadFirst(
 	}
 
 	const eventId = escalationEventId(row);
+	const parkNotice = input.kind.startsWith("park:");
+	const journalEventType = parkNotice
+		? "runner_park_notice"
+		: "detection_escalation";
 	const payload: HookPayload = {
-		event_type: "detection_escalation",
+		event_type: journalEventType,
 		execution_id: input.executionId,
 		issue_id: input.issueId,
 		issue_identifier: input.issueIdentifier,
@@ -175,6 +179,9 @@ export async function notifyLeadFirst(
 		escalation_reason: input.reason,
 		escalation_next_step: input.nextStep,
 		episode_fingerprint: input.episodeFingerprint,
+		waited_ms: parkNotice
+			? Math.max(0, nowMs - input.firstDetectedAtMs)
+			: undefined,
 	};
 
 	// The atomic append+claim (Codex R5 #2 + R6 #1/#2) — one durability unit,
@@ -185,7 +192,7 @@ export async function notifyLeadFirst(
 	const { claimed, seq } = deps.store.appendAndClaimDetectionEscalation({
 		leadId: owner.leadId,
 		eventId,
-		eventType: "detection_escalation",
+		eventType: journalEventType,
 		payload: JSON.stringify(payload),
 		sessionKey: input.executionId,
 		targetKey: input.targetKey,
@@ -278,6 +285,10 @@ export interface ReconcileEscalationsDeps {
 	 * LEAD_NOTIFIED so the next reconcile retries (never a silent ESCALATED).
 	 */
 	pageFounder: (row: DetectionEscalationRow) => Promise<boolean>;
+	/** Per-kind founder/fleet policy. Unset preserves the legacy behavior. */
+	pagePolicy?: (
+		row: DetectionEscalationRow,
+	) => "page" | "lead_only" | "page_no_fleet";
 	/**
 	 * Fleet-scale aggregate (PRD §4.3 boundary): one ticket into the FLY-915
 	 * alert lane for the whole same-kind group — the founder is NOT paged and
@@ -359,6 +370,8 @@ export async function reconcileDetectionEscalations(
 	}
 
 	for (const [kind, group] of byKind) {
+		const policy = deps.pagePolicy?.(group[0]!) ?? "page";
+		if (policy === "lead_only") continue;
 		// Codex code R1 #4 + R2 #3: BOTH the fleet decision AND the aggregate
 		// payload use the DURABLE active same-kind window set (ESCALATED
 		// included) — staggered deadlines aggregate instead of paging the
@@ -371,7 +384,7 @@ export async function reconcileDetectionEscalations(
 		const activeSameKind = rows.filter(
 			(r) => r.kind === kind && r.first_detected_at_ms >= windowFloor,
 		);
-		if (activeSameKind.length >= threshold) {
+		if (policy !== "page_no_fleet" && activeSameKind.length >= threshold) {
 			try {
 				await deps.fleetSink(kind, activeSameKind);
 			} catch (err) {
@@ -468,6 +481,8 @@ export interface ResolveRecoveredDeps {
 	 * behavior, right when only case-c kinds exist).
 	 */
 	progressResolvableKinds?: ReadonlySet<string>;
+	/** Kinds whose semantic owner clears them explicitly even after terminal. */
+	preserveOnTerminal?: (row: DetectionEscalationRow) => boolean;
 	logger?: (msg: string) => void;
 }
 
@@ -526,6 +541,26 @@ export function resolveRecoveredDetectionTargets(
 			state.lastActivityAtMs != null &&
 			state.lastActivityAtMs > group.newestDetectedAtMs;
 		if (state.terminal) {
+			if (deps.preserveOnTerminal) {
+				for (const row of group.rows) {
+					if (deps.preserveOnTerminal(row)) continue;
+					if (
+						deps.store.ackDetectionEscalation(
+							row.target_key,
+							row.kind,
+							row.episode_fingerprint,
+							{
+								atMs: state.lastActivityAtMs ?? group.newestDetectedAtMs,
+								disposition: "resolve",
+								via: "recovery",
+							},
+						)
+					) {
+						resolved += 1;
+					}
+				}
+				continue;
+			}
 			// Terminal outranks the kind scope: the session is over, so every
 			// episode — ESCALATED included (the C1 method's contract) — closes.
 			const n = deps.store.resolveDetectionEscalationsForTarget(targetKey);

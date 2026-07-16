@@ -70,6 +70,31 @@ describe("ResidentBrainManager", () => {
 		expect(manager.get("missing")).toBeUndefined();
 	});
 
+	it("FLY-1160 suspend: isFinalizing flips (BrainPort 503s); get()/getForFinalize still reach the brain; close clears the mark", async () => {
+		const { runner, manager, brainOpts } = setup();
+		const b = manager.open("eleven:conv-1", brainOpts);
+		expect(manager.isFinalizing("eleven:conv-1")).toBe(false);
+		manager.suspend("eleven:conv-1");
+		// BrainPort checks isFinalizing → refuses new shim turns (503)…
+		expect(manager.isFinalizing("eleven:conv-1")).toBe(true);
+		// …but the brain stays reachable for the daemon's minutes turn.
+		expect(manager.get("eleven:conv-1")).toBe(b);
+		expect(manager.getForFinalize("eleven:conv-1")).toBe(b);
+		// suspend of an unknown key is a no-op (no phantom finalizing mark).
+		manager.suspend("missing");
+		expect(manager.isFinalizing("missing")).toBe(false);
+		// close CLEARS the finalizing mark (Codex #552 R2 LOW-9) so a re-opened
+		// key is servable again.
+		const h = runner.handles[0];
+		const p = manager.close("eleven:conv-1");
+		await waitFor(() => h.stdinClosed);
+		h.emitExit(0, null);
+		await p;
+		expect(manager.isFinalizing("eleven:conv-1")).toBe(false);
+		manager.open("eleven:conv-1", brainOpts);
+		expect(manager.isFinalizing("eleven:conv-1")).toBe(false);
+	});
+
 	it("global hard cap: over the limit open throws resource-exhausted (fail-loud, no queueing); existing keys unaffected", () => {
 		const { manager, brainOpts } = setup(2);
 		manager.open("a", brainOpts);

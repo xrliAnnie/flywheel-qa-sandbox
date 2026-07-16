@@ -41,6 +41,7 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_RUNNER_BACKEND_ID: "context: runner backend id",
 	FLYWHEEL_RUNNER_VENDOR_ID: "context: runner vendor id",
 	FLYWHEEL_AGENT_BACKEND: "context: agent backend",
+	FLYWHEEL_LEAD_ID: "context: owning Lead id",
 	FLYWHEEL_RUNNER_START_POINT: "context: runner start point",
 	FLYWHEEL_FOUNDER_USER_ID: "context: founder discord id",
 	FLYWHEEL_FOUNDER_DISCORD_USER_ID: "context: founder discord id (alt)",
@@ -123,6 +124,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_INGEST_TOKEN: "secret: ingest token",
 	FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL:
 		"secret: short-lived per-execution workflow submission credential",
+	FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL:
+		"secret: one-shot generalized workflow output credential",
 	FLYWHEEL_ALERT_REPAIR_BOT_TOKEN_ENV:
 		"config value: repair-bot token env NAME",
 	// value config (non-boolean)
@@ -204,6 +207,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: cron stale-blocker TTL minutes (FLY-742)",
 	FLYWHEEL_THREE_STAGE_MAX_FIX_ROUNDS:
 		"tuning knob: three-stage QA fix-loop round cap, default 3 (FLY-859)",
+	FLYWHEEL_QA_RECONCILE_EVERY_N_TICKS:
+		"tuning knob: dead auto-QA recovery reconcile cadence (FLY-1279 D3b)",
 	// FLY-927 infra-alert ticket-queue rollout levers (all default-off = current
 	// behavior; ops-flipped in ~/.flywheel/.env + Bridge restart, NOT founder
 	// dashboard toggles yet — same class as the internal ops levers above). When
@@ -321,5 +326,16 @@ describe("feature-flag drift guard", () => {
 			unregistered,
 			`new FLYWHEEL_* env not registered or allowlisted (register it, or add to NON_FLAG_ALLOWLIST with a reason): ${unregistered.join(", ")}`,
 		).toEqual([]);
+	});
+
+	it("documents the global design switch as the fallback below a per-dispatch lock", () => {
+		const designFlag = FEATURE_FLAGS.find(
+			(flag) => flag.name === "three_stage_codex_design_toggle",
+		);
+		expect(designFlag?.description).toContain("未指定 designBackend");
+		expect(designFlag?.description).toContain("admission");
+		expect(designFlag?.description).toContain("retry/rescue 不再读");
+		expect(designFlag?.note).toContain("per-dispatch designBackend");
+		expect(designFlag?.note).toContain("新开 run");
 	});
 });

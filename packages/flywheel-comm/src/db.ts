@@ -14,12 +14,14 @@ CREATE TABLE IF NOT EXISTS messages (
   id          TEXT PRIMARY KEY,
   from_agent  TEXT NOT NULL,
   to_agent    TEXT NOT NULL,
-  type        TEXT NOT NULL CHECK(type IN ('question','response','instruction','progress')),
+  type        TEXT NOT NULL CHECK(type IN ('question','response','instruction','progress','ack_receipt')),
   content     TEXT NOT NULL,
   parent_id   TEXT,
   read_at     DATETIME,
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
   expires_at  DATETIME NOT NULL DEFAULT (datetime('now', '+72 hours')),
+  relay_state TEXT NOT NULL DEFAULT 'open' CHECK(relay_state IN ('open','protected','terminal_disposed')),
+  logical_event_id TEXT,
   FOREIGN KEY (parent_id) REFERENCES messages(id)
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -30,7 +32,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   lead_id       TEXT,
   started_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
   ended_at      DATETIME,
-  status        TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout'))
+  status        TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout','blocked'))
 );
 CREATE TABLE IF NOT EXISTS runner_declared_states (
   execution_id  TEXT PRIMARY KEY,
@@ -122,6 +124,10 @@ export interface ThreeStageTurn {
 export interface FinalizeSessionResult {
 	retiredQuestionCount: number;
 	deletedSessionCount: number;
+}
+
+function commDbProtectionEnabled(): boolean {
+	return process.env.FLYWHEEL_COMMDB_PROTECTION !== "0";
 }
 
 export interface WorkflowSourceEvent {
@@ -246,8 +252,41 @@ export class CommDB {
 				}
 			}
 		}
+		if (!columns.some((c) => c.name === "relay_state")) {
+			try {
+				this.db.exec(
+					"ALTER TABLE messages ADD COLUMN relay_state TEXT NOT NULL DEFAULT 'open' CHECK(relay_state IN ('open','protected','terminal_disposed'))",
+				);
+			} catch (err) {
+				const msg = (err as Error).message ?? "";
+				if (!/duplicate column name: relay_state/i.test(msg)) throw err;
+			}
+		}
+		if (!columns.some((c) => c.name === "logical_event_id")) {
+			try {
+				this.db.exec("ALTER TABLE messages ADD COLUMN logical_event_id TEXT");
+			} catch (err) {
+				const msg = (err as Error).message ?? "";
+				if (!/duplicate column name: logical_event_id/i.test(msg)) throw err;
+			}
+		}
+		this.migrateMessageTypeConstraint();
+		// Existing answered/resolved questions already have machine evidence of a
+		// terminal disposition. Do not revive them as actionable during migration.
+		this.db.exec(`
+			UPDATE messages AS q SET relay_state = 'terminal_disposed'
+			 WHERE q.type = 'question'
+			   AND q.relay_state != 'terminal_disposed'
+			   AND (q.resolved_at IS NOT NULL OR EXISTS (
+			     SELECT 1 FROM messages r
+			      WHERE r.parent_id = q.id AND r.type = 'response'
+			   ))
+		`);
 		this.db.exec(
 			"CREATE INDEX IF NOT EXISTS idx_messages_checkpoint ON messages(checkpoint) WHERE checkpoint IS NOT NULL",
+		);
+		this.db.exec(
+			"CREATE INDEX IF NOT EXISTS idx_messages_logical_event ON messages(logical_event_id) WHERE logical_event_id IS NOT NULL",
 		);
 
 		const sessionColumns = this.db
@@ -267,6 +306,102 @@ export class CommDB {
 				}
 			}
 		}
+
+		// FLY-1279: Codex resident goals can end in a truthful `blocked` state.
+		// SQLite cannot ALTER a CHECK constraint, so rebuild the tiny registry
+		// table atomically. No table references sessions via a foreign key.
+		const sessionSchema = this.db
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'",
+			)
+			.get() as { sql?: string } | undefined;
+		if (!sessionSchema?.sql?.includes("'blocked'")) {
+			this.db.transaction(() => {
+				this.db.exec(`
+					CREATE TABLE sessions_fly1279 (
+						execution_id TEXT PRIMARY KEY,
+						tmux_window TEXT NOT NULL,
+						project_name TEXT NOT NULL,
+						issue_id TEXT,
+						lead_id TEXT,
+						started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+						ended_at DATETIME,
+						status TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout','blocked')),
+						vendor TEXT
+					);
+					INSERT INTO sessions_fly1279 (
+						execution_id, tmux_window, project_name, issue_id, lead_id,
+						started_at, ended_at, status, vendor
+					)
+					SELECT execution_id, tmux_window, project_name, issue_id, lead_id,
+						started_at, ended_at, status, vendor
+					FROM sessions;
+					DROP TABLE sessions;
+					ALTER TABLE sessions_fly1279 RENAME TO sessions;
+					CREATE INDEX idx_sessions_project ON sessions(project_name);
+					CREATE INDEX idx_sessions_status ON sessions(status);
+				`);
+			})();
+		}
+	}
+
+	/** FLY-1279: SQLite cannot ALTER a CHECK constraint, so add ack_receipt by
+	 * rebuilding the table once. All columns are present before this runs. */
+	private migrateMessageTypeConstraint(): void {
+		const schema = this.db
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
+			)
+			.get() as { sql?: string } | undefined;
+		if (schema?.sql?.includes("'ack_receipt'")) return;
+
+		this.db.pragma("foreign_keys = OFF");
+		try {
+			this.db.transaction(() => {
+				this.db.exec(`
+					ALTER TABLE messages RENAME TO messages_fly1279_legacy;
+					CREATE TABLE messages (
+					  id TEXT PRIMARY KEY,
+					  from_agent TEXT NOT NULL,
+					  to_agent TEXT NOT NULL,
+					  type TEXT NOT NULL CHECK(type IN ('question','response','instruction','progress','ack_receipt')),
+					  content TEXT NOT NULL,
+					  parent_id TEXT,
+					  read_at DATETIME,
+					  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+					  expires_at DATETIME NOT NULL DEFAULT (datetime('now', '+72 hours')),
+					  checkpoint TEXT,
+					  content_ref TEXT,
+					  content_type TEXT DEFAULT 'text',
+					  resolved_at DATETIME,
+					  delivered_at DATETIME,
+					  attachments TEXT,
+					  kind TEXT,
+					  relay_state TEXT NOT NULL DEFAULT 'open' CHECK(relay_state IN ('open','protected','terminal_disposed')),
+					  logical_event_id TEXT,
+					  FOREIGN KEY (parent_id) REFERENCES messages(id)
+					);
+					INSERT INTO messages (
+					  id, from_agent, to_agent, type, content, parent_id, read_at,
+					  created_at, expires_at, checkpoint, content_ref, content_type,
+					  resolved_at, delivered_at, attachments, kind, relay_state,
+					  logical_event_id
+					)
+					SELECT id, from_agent, to_agent, type, content, parent_id, read_at,
+					  created_at, expires_at, checkpoint, content_ref, content_type,
+					  resolved_at, delivered_at, attachments, kind, relay_state,
+					  logical_event_id
+					FROM messages_fly1279_legacy;
+					DROP TABLE messages_fly1279_legacy;
+					CREATE UNIQUE INDEX idx_unique_response ON messages(parent_id) WHERE type = 'response';
+					CREATE INDEX idx_messages_to_agent ON messages(to_agent, type, created_at);
+					CREATE INDEX idx_messages_parent ON messages(parent_id);
+					CREATE INDEX idx_messages_expires ON messages(expires_at);
+				`);
+			})();
+		} finally {
+			this.db.pragma("foreign_keys = ON");
+		}
 	}
 
 	purgeExpired(): number {
@@ -274,13 +409,49 @@ export class CommDB {
 	}
 
 	purgeExpiredWithRefs(): number {
+		if (!commDbProtectionEnabled()) {
+			// Exact pre-FLY-1279 behavior for emergency rollback.
+			const refs = this.db
+				.prepare(
+					`SELECT content_ref FROM messages
+					 WHERE (expires_at < datetime('now')
+					    OR parent_id IN (SELECT id FROM messages WHERE expires_at < datetime('now')))
+					   AND content_ref IS NOT NULL`,
+				)
+				.all() as Array<{ content_ref: string }>;
+			for (const { content_ref } of refs) deleteContentRefFile(content_ref);
+			const childResult = this.db
+				.prepare(
+					"DELETE FROM messages WHERE parent_id IN (SELECT id FROM messages WHERE expires_at < datetime('now'))",
+				)
+				.run();
+			const parentResult = this.db
+				.prepare("DELETE FROM messages WHERE expires_at < datetime('now')")
+				.run();
+			return childResult.changes + parentResult.changes;
+		}
+
+		const deletableExpired = (
+			alias: string,
+		) => `${alias}.expires_at < datetime('now')
+			AND NOT (
+				${alias}.type = 'question'
+				AND ${alias}.relay_state != 'terminal_disposed'
+				AND NOT EXISTS (
+					SELECT 1 FROM messages response
+					 WHERE response.parent_id = ${alias}.id AND response.type = 'response'
+				)
+			)`;
 		// Collect content_ref files from both expired messages and their children
 		const refs = this.db
 			.prepare(
-				`SELECT content_ref FROM messages
-				 WHERE (expires_at < datetime('now')
-				    OR parent_id IN (SELECT id FROM messages WHERE expires_at < datetime('now')))
-				   AND content_ref IS NOT NULL`,
+				`SELECT message.content_ref FROM messages message
+				 WHERE (${deletableExpired("message")}
+				    OR message.parent_id IN (
+				      SELECT parent.id FROM messages parent
+				       WHERE ${deletableExpired("parent")}
+				    ))
+				   AND message.content_ref IS NOT NULL`,
 			)
 			.all() as Array<{ content_ref: string }>;
 		for (const { content_ref } of refs) {
@@ -290,11 +461,19 @@ export class CommDB {
 		// better-sqlite3 enforces foreign_keys=ON by default.
 		const childResult = this.db
 			.prepare(
-				"DELETE FROM messages WHERE parent_id IN (SELECT id FROM messages WHERE expires_at < datetime('now'))",
+				`DELETE FROM messages WHERE parent_id IN (
+				   SELECT parent.id FROM messages parent
+				    WHERE ${deletableExpired("parent")}
+				 )`,
 			)
 			.run();
 		const parentResult = this.db
-			.prepare("DELETE FROM messages WHERE expires_at < datetime('now')")
+			.prepare(
+				`DELETE FROM messages WHERE id IN (
+				   SELECT message.id FROM messages message
+				    WHERE ${deletableExpired("message")}
+				 )`,
+			)
 			.run();
 		return childResult.changes + parentResult.changes;
 	}
@@ -304,13 +483,29 @@ export class CommDB {
 	}
 
 	cleanupReadMessagesWithRefs(ttlHours = 24): number {
-		const cleanupCondition = `read_at IS NOT NULL AND created_at < datetime('now', '-' || ? || ' hours')`;
+		const cleanupCondition = (alias: string) => `${alias}.read_at IS NOT NULL
+			AND ${alias}.created_at < datetime('now', '-' || ? || ' hours')
+			${
+				commDbProtectionEnabled()
+					? `AND NOT (
+						${alias}.type = 'question'
+						AND ${alias}.relay_state != 'terminal_disposed'
+						AND NOT EXISTS (
+							SELECT 1 FROM messages response
+							 WHERE response.parent_id = ${alias}.id AND response.type = 'response'
+						)
+					)`
+					: ""
+			}`;
 		const refs = this.db
 			.prepare(
-				`SELECT content_ref FROM messages
-			 WHERE (${cleanupCondition}
-			    OR parent_id IN (SELECT id FROM messages WHERE ${cleanupCondition}))
-			 AND content_ref IS NOT NULL`,
+				`SELECT message.content_ref FROM messages message
+			 WHERE (${cleanupCondition("message")}
+			    OR message.parent_id IN (
+			      SELECT parent.id FROM messages parent
+			       WHERE ${cleanupCondition("parent")}
+			    ))
+			 AND message.content_ref IS NOT NULL`,
 			)
 			.all(ttlHours, ttlHours) as Array<{ content_ref: string }>;
 		for (const { content_ref } of refs) {
@@ -319,11 +514,19 @@ export class CommDB {
 		// FLY-80: Delete child messages before parents to satisfy FK constraint
 		const childResult = this.db
 			.prepare(
-				`DELETE FROM messages WHERE parent_id IN (SELECT id FROM messages WHERE ${cleanupCondition})`,
+				`DELETE FROM messages WHERE parent_id IN (
+				   SELECT parent.id FROM messages parent
+				    WHERE ${cleanupCondition("parent")}
+				 )`,
 			)
 			.run(ttlHours);
 		const parentResult = this.db
-			.prepare(`DELETE FROM messages WHERE ${cleanupCondition}`)
+			.prepare(
+				`DELETE FROM messages WHERE id IN (
+				   SELECT message.id FROM messages message
+				    WHERE ${cleanupCondition("message")}
+				 )`,
+			)
 			.run(ttlHours);
 		return childResult.changes + parentResult.changes;
 	}
@@ -401,7 +604,8 @@ export class CommDB {
 	claimLifecycleConsent(questionId: string, checkpoint: string): boolean {
 		const info = this.db
 			.prepare(
-				`UPDATE messages SET resolved_at = datetime('now')
+				`UPDATE messages SET resolved_at = datetime('now'),
+				 relay_state = 'terminal_disposed'
          WHERE id = ? AND type = 'question' AND checkpoint = ?
            AND resolved_at IS NULL AND expires_at > datetime('now')`,
 			)
@@ -421,15 +625,19 @@ export class CommDB {
 	 * row was retired.
 	 */
 	retireShipGate(questionId: string): boolean {
+		const answerable = commDbProtectionEnabled()
+			? "relay_state != 'terminal_disposed'"
+			: "expires_at > datetime('now')";
 		const info = this.db
 			.prepare(
 				`UPDATE messages SET
 				 resolved_at = datetime('now'),
 				 read_at = COALESCE(read_at, datetime('now')),
-				 expires_at = datetime('now')
+				 expires_at = datetime('now'),
+				 relay_state = 'terminal_disposed'
 				 WHERE id = ? AND type = 'question'
 				 AND checkpoint = 'approve_to_ship'
-				 AND expires_at > datetime('now')
+				 AND ${answerable}
 				 AND NOT EXISTS (
 				   SELECT 1 FROM messages r WHERE r.parent_id = messages.id AND r.type = 'response'
 				 )`,
@@ -451,15 +659,19 @@ export class CommDB {
 		questionId: string,
 		opts: { expectedFromAgent: string; requireUnanswered: true },
 	): boolean {
+		const answerable = commDbProtectionEnabled()
+			? "relay_state != 'terminal_disposed'"
+			: "expires_at > datetime('now')";
 		const info = this.db
 			.prepare(
 				`UPDATE messages SET
 				 resolved_at = datetime('now'),
 				 read_at = COALESCE(read_at, datetime('now')),
-				 expires_at = datetime('now')
+				 expires_at = datetime('now'),
+				 relay_state = 'terminal_disposed'
 				 WHERE id = ? AND type = 'question'
 				 AND from_agent = ?
-				 AND expires_at > datetime('now')
+				 AND ${answerable}
 				 AND NOT EXISTS (
 				   SELECT 1 FROM messages r WHERE r.parent_id = messages.id AND r.type = 'response'
 				 )`,
@@ -474,6 +686,9 @@ export class CommDB {
 	 * applies, point-queried for the deferred-approval rebind pass.)
 	 */
 	isQuestionPending(questionId: string): boolean {
+		const answerable = commDbProtectionEnabled()
+			? "q.relay_state != 'terminal_disposed'"
+			: "q.expires_at > datetime('now')";
 		const row = this.db
 			.prepare(
 				`SELECT 1 AS hit FROM messages q
@@ -481,7 +696,7 @@ export class CommDB {
 	       AND NOT EXISTS (
 	         SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
 	       )
-	       AND q.expires_at > datetime('now')`,
+	       AND ${answerable}`,
 			)
 			.get(questionId) as { hit: number } | undefined;
 		return row !== undefined;
@@ -497,7 +712,8 @@ export class CommDB {
 				`UPDATE messages SET
 				 resolved_at = datetime('now'),
 				 read_at = COALESCE(read_at, datetime('now')),
-				 expires_at = datetime('now', '+' || ? || ' hours')
+				 expires_at = datetime('now', '+' || ? || ' hours'),
+				 relay_state = 'terminal_disposed'
 				 WHERE id = ? AND type = 'question'`,
 			)
 			.run(cleanupTtlHours, questionId);
@@ -510,13 +726,87 @@ export class CommDB {
 		if (!question) {
 			throw new Error(`Question ${parentId} not found`);
 		}
+		this.db.transaction(() => {
+			const id = randomUUID();
+			this.db
+				.prepare(
+					`INSERT INTO messages (id, from_agent, to_agent, type, content, parent_id)
+		 VALUES (?, ?, ?, 'response', ?, ?)`,
+				)
+				.run(id, fromAgent, question.from_agent, content, parentId);
+			this.markQuestionTerminalDisposed(parentId);
+		})();
+	}
+
+	insertAckReceipt(
+		fromAgent: string,
+		eventSeq: number,
+		ackToken: string,
+	): string {
+		if (!Number.isSafeInteger(eventSeq) || eventSeq <= 0) {
+			throw new Error("eventSeq must be a positive safe integer");
+		}
+		if (!ackToken) throw new Error("ackToken is required");
 		const id = randomUUID();
 		this.db
 			.prepare(
-				`INSERT INTO messages (id, from_agent, to_agent, type, content, parent_id)
-         VALUES (?, ?, ?, 'response', ?, ?)`,
+				`INSERT INTO messages (id, from_agent, to_agent, type, content)
+				 VALUES (?, ?, 'bridge', 'ack_receipt', ?)`,
 			)
-			.run(id, fromAgent, question.from_agent, content, parentId);
+			.run(
+				id,
+				fromAgent,
+				JSON.stringify({ event_seq: eventSeq, ack_token: ackToken }),
+			);
+		return id;
+	}
+
+	getPendingAckReceipts(): Message[] {
+		return this.db
+			.prepare(
+				`SELECT * FROM messages
+				 WHERE type = 'ack_receipt' AND read_at IS NULL
+				   AND expires_at > datetime('now')
+				 ORDER BY created_at, id`,
+			)
+			.all() as Message[];
+	}
+
+	markAckReceiptConsumed(id: string): boolean {
+		return (
+			this.db
+				.prepare(
+					`UPDATE messages SET read_at = datetime('now')
+					 WHERE id = ? AND type = 'ack_receipt' AND read_at IS NULL`,
+				)
+				.run(id).changes === 1
+		);
+	}
+
+	markQuestionProtected(questionId: string, logicalEventId: string): boolean {
+		if (!commDbProtectionEnabled()) return true;
+		const result = this.db
+			.prepare(
+				`UPDATE messages SET
+				   relay_state = 'protected',
+				   logical_event_id = COALESCE(logical_event_id, ?)
+				 WHERE id = ? AND type = 'question'
+				   AND relay_state != 'terminal_disposed'
+				   AND (logical_event_id IS NULL OR logical_event_id = ?)`,
+			)
+			.run(logicalEventId, questionId, logicalEventId);
+		return result.changes === 1;
+	}
+
+	markQuestionTerminalDisposed(questionId: string): boolean {
+		const result = this.db
+			.prepare(
+				`UPDATE messages SET relay_state = 'terminal_disposed'
+				 WHERE id = ? AND type = 'question'
+				   AND relay_state != 'terminal_disposed'`,
+			)
+			.run(questionId);
+		return result.changes === 1;
 	}
 
 	/**
@@ -536,10 +826,14 @@ export class CommDB {
 		/** The question's checkpoint must still equal this value. */
 		expectedCheckpoint: string;
 	}): boolean {
-		const id = randomUUID();
-		const result = this.db
-			.prepare(
-				`INSERT INTO messages (id, from_agent, to_agent, type, content, parent_id)
+		const answerable = commDbProtectionEnabled()
+			? "q.relay_state != 'terminal_disposed'"
+			: "q.expires_at > datetime('now')";
+		return this.db.transaction(() => {
+			const id = randomUUID();
+			const result = this.db
+				.prepare(
+					`INSERT INTO messages (id, from_agent, to_agent, type, content, parent_id)
 				 SELECT ?, ?, q.from_agent, 'response', ?, q.id
 				   FROM messages q
 				  WHERE q.id = ?
@@ -547,21 +841,24 @@ export class CommDB {
 				    AND q.from_agent = ?
 				    AND q.checkpoint = ?
 				    AND q.resolved_at IS NULL
-				    AND q.expires_at > datetime('now')
+				    AND ${answerable}
 				    AND NOT EXISTS (
 				      SELECT 1 FROM messages r
 				       WHERE r.parent_id = q.id AND r.type = 'response'
 				    )`,
-			)
-			.run(
-				id,
-				input.fromAgent,
-				input.content,
-				input.questionId,
-				input.expectedOwner,
-				input.expectedCheckpoint,
-			);
-		return result.changes > 0;
+				)
+				.run(
+					id,
+					input.fromAgent,
+					input.content,
+					input.questionId,
+					input.expectedOwner,
+					input.expectedCheckpoint,
+				);
+			if (result.changes !== 1) return false;
+			this.markQuestionTerminalDisposed(input.questionId);
+			return true;
+		})();
 	}
 
 	/**
@@ -581,6 +878,9 @@ export class CommDB {
 		const payload = canonicalJsonString(input.payload);
 		const payloadDigest = canonicalSubmissionDigest(input.payload);
 		const at = new Date().toISOString();
+		const answerable = commDbProtectionEnabled()
+			? "q.relay_state != 'terminal_disposed'"
+			: "q.expires_at > datetime('now')";
 		return this.db.transaction(() => {
 			const responseId = randomUUID();
 			const result = this.db
@@ -593,7 +893,7 @@ export class CommDB {
 					    AND q.from_agent = ?
 					    AND q.checkpoint = 'approve_to_ship'
 					    AND q.resolved_at IS NULL
-					    AND q.expires_at > datetime('now')
+					    AND ${answerable}
 					    AND NOT EXISTS (
 					      SELECT 1 FROM messages r
 					       WHERE r.parent_id = q.id AND r.type = 'response'
@@ -607,6 +907,7 @@ export class CommDB {
 					input.expectedOwner,
 				);
 			if (result.changes !== 1) return false;
+			this.markQuestionTerminalDisposed(input.questionId);
 			this.db
 				.prepare(
 					`INSERT INTO workflow_source_event
@@ -715,6 +1016,7 @@ export class CommDB {
 			    AND q.from_agent = ?
 			    AND q.checkpoint = ?
 			    AND q.resolved_at IS NULL
+			    AND q.relay_state != 'terminal_disposed'
 			    AND NOT EXISTS (
 			      SELECT 1 FROM messages r
 			       WHERE r.parent_id = q.id AND r.type = 'response'
@@ -724,7 +1026,8 @@ export class CommDB {
 			`UPDATE messages SET
 			 resolved_at = datetime('now'),
 			 read_at = COALESCE(read_at, datetime('now')),
-			 expires_at = datetime('now', '+' || ? || ' hours')
+			 expires_at = datetime('now', '+' || ? || ' hours'),
+			 relay_state = 'terminal_disposed'
 			 WHERE id = ? AND type = 'question'`,
 		);
 		const txn = this.db.transaction((): boolean => {
@@ -763,6 +1066,9 @@ export class CommDB {
 	}
 
 	getPendingQuestions(leadId: string): Message[] {
+		const answerable = commDbProtectionEnabled()
+			? "q.relay_state != 'terminal_disposed'"
+			: "q.expires_at > datetime('now')";
 		return this.db
 			.prepare(
 				`SELECT q.* FROM messages q
@@ -770,10 +1076,30 @@ export class CommDB {
          AND NOT EXISTS (
            SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
          )
-         AND q.expires_at > datetime('now')
+		 AND ${answerable}
          ORDER BY q.created_at ASC`,
 			)
 			.all(leadId) as Message[];
+	}
+
+	/**
+	 * Pending checkpoint questions opened by one runner. Lifecycle guards use
+	 * this CommDB query as authority; gate-marker files are only a wake mirror
+	 * and may be deleted or partially observed by the runner process.
+	 */
+	getPendingGatesByRunner(runnerId: string): Message[] {
+		return this.db
+			.prepare(
+				`SELECT q.* FROM messages q
+         WHERE q.from_agent = ? AND q.type = 'question'
+         AND q.checkpoint IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+         )
+         AND q.expires_at > datetime('now')
+         ORDER BY q.created_at ASC`,
+			)
+			.all(runnerId) as Message[];
 	}
 
 	/**
@@ -784,6 +1110,9 @@ export class CommDB {
 		runnerId: string,
 		checkpoint: string,
 	): Message | undefined {
+		const answerable = commDbProtectionEnabled()
+			? "q.relay_state != 'terminal_disposed'"
+			: "q.expires_at > datetime('now')";
 		return this.db
 			.prepare(
 				`SELECT q.* FROM messages q
@@ -792,7 +1121,7 @@ export class CommDB {
          AND NOT EXISTS (
            SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
          )
-         AND q.expires_at > datetime('now')
+		 AND ${answerable}
          ORDER BY q.created_at DESC
          LIMIT 1`,
 			)
@@ -951,6 +1280,9 @@ export class CommDB {
 	// ── Dynamic Timeout (Phase 2) ──
 
 	hasPendingQuestionsFrom(execId: string): boolean {
+		const answerable = commDbProtectionEnabled()
+			? "q.relay_state != 'terminal_disposed'"
+			: "q.expires_at > datetime('now')";
 		const row = this.db
 			.prepare(
 				`SELECT COUNT(*) as cnt FROM messages q
@@ -958,7 +1290,7 @@ export class CommDB {
          AND NOT EXISTS (
            SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
          )
-         AND q.expires_at > datetime('now')`,
+		 AND ${answerable}`,
 			)
 			.get(execId) as { cnt: number };
 		return row.cnt > 0;
@@ -973,6 +1305,9 @@ export class CommDB {
 	 * asks must not stop the loop). Stuck detection keeps the broad predicate.
 	 */
 	hasPendingBlockingGateFrom(execId: string): boolean {
+		const answerable = commDbProtectionEnabled()
+			? "q.relay_state != 'terminal_disposed'"
+			: "q.expires_at > datetime('now')";
 		const row = this.db
 			.prepare(
 				`SELECT COUNT(*) as cnt FROM messages q
@@ -981,7 +1316,7 @@ export class CommDB {
          AND NOT EXISTS (
            SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
          )
-         AND q.expires_at > datetime('now')`,
+		 AND ${answerable}`,
 			)
 			.get(execId) as { cnt: number };
 		return row.cnt > 0;
@@ -1292,7 +1627,7 @@ export class CommDB {
 
 	updateSessionStatus(
 		executionId: string,
-		status: "completed" | "timeout",
+		status: "completed" | "timeout" | "blocked",
 	): void {
 		this.db
 			.prepare(
@@ -1315,15 +1650,24 @@ export class CommDB {
 	 */
 	finalizeSession(executionId: string): FinalizeSessionResult {
 		return this.db.transaction((targetExecutionId: string) => {
+			// A machine-proven terminal runner is an explicit H2 disposal condition:
+			// protection prevents TTL/hygiene loss, not intentional lifecycle closeout.
 			const retired = this.db
 				.prepare(
 					`UPDATE messages AS q SET
 					   resolved_at = datetime('now'),
 					   read_at = COALESCE(read_at, datetime('now')),
-					   expires_at = datetime('now')
+					   expires_at = datetime('now'),
+					   relay_state = 'terminal_disposed'
 					 WHERE q.from_agent = ?
 					   AND q.type = 'question'
 					   AND q.checkpoint IS NOT NULL
+					   -- FLY-1257 defect ④ path-3 (Codex code review HIGH-2): a review
+					   -- gate is a binding credential the reviewer/coordinator answers,
+					   -- NOT the author runner — it must survive the author's teardown
+					   -- (mirrors the GatePoller path-2 eviction exemption). Retiring it
+					   -- here would make the coordinator drop a still-valid verdict.
+					   AND q.checkpoint NOT IN ('review_design', 'review_code')
 					   AND q.resolved_at IS NULL
 					   AND NOT EXISTS (
 					     SELECT 1 FROM messages r

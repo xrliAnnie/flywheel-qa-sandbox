@@ -11,10 +11,13 @@
  * Action Gate rule. Gated by `BRIDGE_DEPT_SCOPE_REJECT` env var (default on).
  */
 
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { Router } from "express";
 import type {
+	DesignBackend,
 	PhaseDispatchVendor,
 	PonytailInput,
 	RoleEffort,
@@ -22,6 +25,8 @@ import type {
 import {
 	ACCEPTED_DISPATCH_MODELS,
 	ConfigLoader,
+	DESIGN_BACKENDS,
+	isDesignBackend,
 	normalizeDispatchModel,
 	resolveEffectiveFounderUxConfig,
 } from "flywheel-config";
@@ -37,16 +42,27 @@ import {
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import {
+	resolveWorkflowTemplateSelection,
+	type WorkflowRequestAuthKind,
+} from "../workflow-template-selection.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
 import {
 	isQaIssueTitle,
 	resolveFounderFacingUx,
 } from "./founder-ux/trigger.js";
+import {
+	probeGeneralizedLaunchLiveness,
+	waitForGeneralizedLaunchDelivery,
+} from "./generalized-launch-recovery.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
 import type { RunnerAdmissionController } from "./runner-admission.js";
 import { waitForSession } from "./session-wait.js";
 import { loadPipelineConfigByProject } from "./three-stage-config-source.js";
-import { resolveThreeStageEntry } from "./three-stage-policy.js";
+import {
+	resolveGlobalThreeStageKillSwitch,
+	resolveThreeStageEntry,
+} from "./three-stage-policy.js";
 
 /** Poll interval / max wait for chat thread_id to appear on session (FLY-91). */
 const THREAD_POLL_INTERVAL_MS = 500;
@@ -62,6 +78,26 @@ const THREAD_POLL_MAX_MS = 5000;
  * times out. 30s headroom over the codex spawn latency QA measured (~3.4s).
  */
 const GHOST_GUARD_SESSION_WAIT_MS = 30_000;
+
+function secureTokenEqual(
+	actual: string | undefined,
+	expected: string | undefined,
+) {
+	if (!actual || !expected) return false;
+	const actualDigest = createHash("sha256").update(actual).digest();
+	const expectedDigest = createHash("sha256").update(expected).digest();
+	return timingSafeEqual(actualDigest, expectedDigest);
+}
+
+function isSchemaV2Snapshot(snapshot: string | null | undefined): boolean {
+	if (!snapshot) return false;
+	try {
+		const parsed = JSON.parse(snapshot) as { schema_version?: unknown };
+		return parsed?.schema_version === 2;
+	} catch {
+		return false;
+	}
+}
 
 /**
  * FLY-127: Read the dept-scope reject feature flag.
@@ -133,6 +169,7 @@ export function createRunsRouter(
 	staleBlockerGuard?: {
 		handleActiveBlocker(blocker: Session): Promise<{ proceed: boolean }>;
 	},
+	auth?: { masterToken?: string; scopedToken?: string },
 ): Router {
 	const router = Router();
 	// FLY-127: registry is constructed once per router and re-read on each
@@ -153,6 +190,26 @@ export function createRunsRouter(
 		}
 
 		const { issueId, sessionRole } = req.body;
+		if (Object.hasOwn(req.body, "founderOverrideTemplateId")) {
+			res.status(400).json({
+				success: false,
+				code: "FOUNDER_OVERRIDE_FORBIDDEN",
+			});
+			return;
+		}
+		const bearer =
+			typeof req.headers.authorization === "string" &&
+			req.headers.authorization.startsWith("Bearer ")
+				? req.headers.authorization.slice("Bearer ".length)
+				: undefined;
+		const requestAuthKind: WorkflowRequestAuthKind = secureTokenEqual(
+			bearer,
+			auth?.masterToken,
+		)
+			? "master"
+			: secureTokenEqual(bearer, auth?.scopedToken)
+				? "scoped"
+				: "tokenless";
 		const rawProjectName = req.body.projectName;
 		let leadId = req.body.leadId as string | undefined;
 
@@ -242,6 +299,34 @@ export function createRunsRouter(
 			docTier = parsedTier;
 		}
 
+		// FLY-1259: optional per-dispatch design author. Validate the exact public
+		// enum before any admission, policy, or runner side effect.
+		const rawDesignBackend = req.body.designBackend;
+		let requestedDesignBackend: DesignBackend | undefined;
+		if (rawDesignBackend === undefined || rawDesignBackend === null) {
+			requestedDesignBackend = undefined;
+		} else if (typeof rawDesignBackend !== "string") {
+			res.status(400).json({
+				success: false,
+				code: "INVALID_DESIGN_BACKEND",
+				reason: "wrong_type",
+				allowed: [...DESIGN_BACKENDS],
+				silent: false,
+			});
+			return;
+		} else if (!isDesignBackend(rawDesignBackend)) {
+			res.status(400).json({
+				success: false,
+				code: "INVALID_DESIGN_BACKEND",
+				reason: "unknown_backend",
+				allowed: [...DESIGN_BACKENDS],
+				silent: false,
+			});
+			return;
+		} else {
+			requestedDesignBackend = rawDesignBackend;
+		}
+
 		// FLY-728 Part C: optional per-run `model` param — the difficulty-sorter's
 		// output (the Lead judges difficulty at dispatch and passes a tier model).
 		// Semantics mirror docTier:
@@ -288,6 +373,49 @@ export function createRunsRouter(
 		// by the worktree single-writer (git cannot check out shared branch B twice).
 		let role =
 			(typeof sessionRole === "string" ? sessionRole : undefined) ?? "main";
+		if (requestedDesignBackend && role !== "main") {
+			res.status(400).json({
+				success: false,
+				code: "DESIGN_BACKEND_NOT_APPLICABLE",
+				reason: "non_main_role",
+				requested: requestedDesignBackend,
+				silent: false,
+			});
+			return;
+		}
+		// FLY-1259 (Codex code R1/R2): settle the Bridge-global kill-switch HERE —
+		// ahead of dedup, the stale-blocker guard and admission — so an override sent
+		// to a Bridge with three-stage off entirely gets its bounded 400 instead of a
+		// 409/429, and never makes the guard finalize/alert a previous session on
+		// behalf of a doomed request.
+		//
+		// Global-only is a precedence constraint (see the helper): the remaining
+		// checks — `no-three-stage` label, channel allowlist, pipeline opt-in — all
+		// rank BELOW the label check, which needs the Linear pre-flight that runs
+		// after dedup by design. Deciding them here would report a reason code the
+		// authoritative path disagrees with. They stay below and stay authoritative;
+		// for them a conflicting/deferred request still answers 409/429 first, which
+		// is honest — nothing can start for that issue yet regardless of backend, and
+		// a retry surfaces the 400.
+		//
+		// Entered ONLY for an explicit override, so the default path — including its
+		// 409/429 ordering — is byte-identical.
+		if (requestedDesignBackend) {
+			const globalBlock = resolveGlobalThreeStageKillSwitch(process.env);
+			if (globalBlock) {
+				console.warn(
+					`[runs/start] designBackend=${requestedDesignBackend} not applicable: ${globalBlock.reason}`,
+				);
+				res.status(400).json({
+					success: false,
+					code: "DESIGN_BACKEND_NOT_APPLICABLE",
+					reason: globalBlock.reasonCode,
+					requested: requestedDesignBackend,
+					silent: false,
+				});
+				return;
+			}
+		}
 		const activeSessions = store.getActiveSessions();
 		const alreadyActive = activeSessions.find(
 			(s) =>
@@ -299,7 +427,22 @@ export function createRunsRouter(
 				// session rule with getActiveSessions()).
 				["running", "awaiting_review", "approved_to_ship"].includes(s.status),
 		);
-		if (alreadyActive) {
+		const requestedStartKey =
+			typeof req.body.idempotencyKey === "string"
+				? req.body.idempotencyKey.trim()
+				: undefined;
+		const replayReservation = requestedStartKey
+			? store.getWorkflowStartReservation(requestedStartKey)
+			: undefined;
+		const exactGeneralizedReplay =
+			requestAuthKind === "master" &&
+			replayReservation?.execution_id === alreadyActive?.execution_id &&
+			isSchemaV2Snapshot(
+				replayReservation
+					? store.getWorkflowRun(replayReservation.run_id)?.snapshot
+					: undefined,
+			);
+		if (alreadyActive && !exactGeneralizedReplay) {
 			// FLY-742: a done-but-parked blocker (finished, PR merged/closed, never
 			// emitted `completed`) would silently block this scheduled/cron run
 			// forever. The guard either auto-finalizes such a blocker (freeing the
@@ -536,6 +679,323 @@ export function createRunsRouter(
 			normalizedIssueLabels,
 		);
 
+		const generalizedProject = projects.find(
+			(project) => project.projectName === projectName,
+		);
+		let generalizedSelection:
+			| ReturnType<typeof resolveWorkflowTemplateSelection>
+			| undefined;
+		try {
+			generalizedSelection = resolveWorkflowTemplateSelection(store, {
+				project: projectName,
+				issueId,
+				taskCategory:
+					typeof req.body.taskCategory === "string"
+						? req.body.taskCategory
+						: undefined,
+				leadTemplateId:
+					typeof req.body.templateId === "string"
+						? req.body.templateId
+						: undefined,
+				leadReason:
+					typeof req.body.selectionReason === "string"
+						? req.body.selectionReason
+						: undefined,
+				selectedBy: leadId ?? "unassigned",
+				actor: requestAuthKind,
+				authKind: requestAuthKind,
+				canonicalRoot: generalizedProject?.projectRoot ?? "",
+				idempotencyKey: requestedStartKey,
+				env: process.env,
+			});
+		} catch (err) {
+			res.status(409).json({
+				success: false,
+				code: "GENERALIZED_WORKFLOW_REJECTED",
+				reason: (err as Error).message,
+			});
+			return;
+		}
+
+		if (generalizedSelection) {
+			const priorResponse = store.getWorkflowStartResponse(
+				generalizedSelection.idempotencyKey,
+			);
+			if (priorResponse) {
+				res.json(priorResponse);
+				return;
+			}
+			const now = new Date();
+			const workflowAdmission = store.admitGeneralizedWorkflowExecution({
+				runId: generalizedSelection.runId,
+				nodeId: generalizedSelection.nodeId,
+				executionId: generalizedSelection.executionId,
+				attempt: 1,
+				now: now.toISOString(),
+				expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+				absoluteDeadlineAt: new Date(
+					now.getTime() + 24 * 60 * 60_000,
+				).toISOString(),
+				env: process.env,
+				idempotencyKey: generalizedSelection.idempotencyKey,
+			});
+			if (!workflowAdmission.ok) {
+				res.status(409).json({
+					success: false,
+					code: "GENERALIZED_ADMISSION_REJECTED",
+					reason: workflowAdmission.reason,
+				});
+				return;
+			}
+			if (!generalizedSelection.node.dispatch) {
+				res.status(409).json({
+					success: false,
+					code: "GENERALIZED_NODE_NOT_EXECUTABLE",
+				});
+				return;
+			}
+			if (!generalizedSelection.node.agent?.content) {
+				res.status(409).json({
+					success: false,
+					code: "GENERALIZED_AGENT_CONTENT_MISSING",
+				});
+				return;
+			}
+			let startedSession = store.getSession(generalizedSelection.executionId);
+			let workflowOutputCredential = workflowAdmission.outputCredential;
+			let launchGateToken: string | undefined;
+			let commitWorkflowLaunch:
+				| (() => { ok: boolean; reason?: string })
+				| undefined;
+			if (!startedSession) {
+				const launchOwnerId = randomUUID();
+				const launchMarkerPath = join(
+					process.env.HOME ?? homedir(),
+					".flywheel",
+					"state",
+					"launch-commits",
+					generalizedSelection.executionId,
+				);
+				const launchNow = new Date();
+				const launch = store.recoverOrAcquireWorkflowLaunch({
+					executionId: generalizedSelection.executionId,
+					ownerId: launchOwnerId,
+					now: launchNow.toISOString(),
+					leaseExpiresAt: new Date(
+						launchNow.getTime() + 60 * 60_000,
+					).toISOString(),
+					markerPath: launchMarkerPath,
+				});
+				if (launch.status === "hold" || launch.status === "busy") {
+					res.status(409).json({
+						success: false,
+						code: "GENERALIZED_LAUNCH_HELD",
+						reason:
+							launch.status === "hold"
+								? launch.reason
+								: `owner generation ${launch.generation} is active`,
+					});
+					return;
+				}
+				let shouldDispatch = launch.status === "acquired";
+				if (launch.status === "committed") {
+					const liveness = await probeGeneralizedLaunchLiveness(
+						generalizedSelection.executionId,
+						projectName,
+					);
+					if (liveness === "unknown") {
+						res.status(409).json({
+							success: false,
+							code: "GENERALIZED_LAUNCH_LIVENESS_HOLD",
+							reason:
+								"committed launch has neither a durable session nor conclusive tmux liveness evidence",
+						});
+						return;
+					}
+					if (liveness === "dead") {
+						// The output ticket is hash-only and launch-commit makes rotation
+						// terminal. Rebuilding an output-producing shell cannot recover its
+						// plaintext capability, so this shape must remain fail-closed.
+						if (generalizedSelection.node.capabilities.produces_output) {
+							res.status(409).json({
+								success: false,
+								code: "GENERALIZED_DELIVERY_REPAIR_CREDENTIAL_HELD",
+								reason:
+									"committed output credential is not reconstructable for delivery repair",
+							});
+							return;
+						}
+						const repairNow = new Date();
+						const repair = store.claimWorkflowLaunchDeliveryRepair({
+							executionId: generalizedSelection.executionId,
+							repairOwner: launchOwnerId,
+							now: repairNow.toISOString(),
+							leaseExpiresAt: new Date(
+								repairNow.getTime() + 60 * 60_000,
+							).toISOString(),
+						});
+						if (repair.status !== "claimed") {
+							res.status(409).json({
+								success: false,
+								code: "GENERALIZED_DELIVERY_REPAIR_HELD",
+								reason:
+									repair.status === "busy"
+										? `delivery repair attempt ${repair.attempt} is active`
+										: repair.reason,
+							});
+							return;
+						}
+						launchGateToken = repair.token;
+						commitWorkflowLaunch = () =>
+							store.commitWorkflowLaunchDeliveryRepair({
+								executionId: generalizedSelection!.executionId,
+								repairOwner: launchOwnerId,
+								generation: repair.generation,
+								attempt: repair.attempt,
+								markerPath: launchMarkerPath,
+								now: new Date().toISOString(),
+							});
+						shouldDispatch = true;
+					}
+				} else {
+					if (
+						generalizedSelection.node.capabilities.produces_output &&
+						!workflowOutputCredential
+					) {
+						const rotationNow = new Date();
+						const rotated = store.rotateGeneralizedWorkflowOutputCredential({
+							executionId: generalizedSelection.executionId,
+							ownerId: launchOwnerId,
+							generation: launch.generation,
+							now: rotationNow.toISOString(),
+							expiresAt: new Date(
+								rotationNow.getTime() + 60 * 60_000,
+							).toISOString(),
+							absoluteDeadlineAt: new Date(
+								rotationNow.getTime() + 24 * 60 * 60_000,
+							).toISOString(),
+						});
+						if (!rotated.ok) {
+							res.status(409).json({
+								success: false,
+								code: "GENERALIZED_START_RECOVERY_HELD",
+								reason: rotated.reason,
+							});
+							return;
+						}
+						workflowOutputCredential = rotated.outputCredential;
+					}
+					const renewalNow = new Date();
+					const renewed = store.renewWorkflowLaunchOwner({
+						executionId: generalizedSelection.executionId,
+						ownerId: launchOwnerId,
+						generation: launch.generation,
+						now: renewalNow.toISOString(),
+						leaseExpiresAt: new Date(
+							renewalNow.getTime() + 60 * 60_000,
+						).toISOString(),
+					});
+					if (!renewed.ok) {
+						res.status(409).json({
+							success: false,
+							code: "GENERALIZED_LAUNCH_HELD",
+							reason: renewed.reason,
+						});
+						return;
+					}
+					launchGateToken = launch.token;
+					commitWorkflowLaunch = () =>
+						store.fencedCommitWorkflowLaunch({
+							executionId: generalizedSelection!.executionId,
+							ownerId: launchOwnerId,
+							generation: launch.generation,
+							deliveryAttempt: launch.deliveryAttempt,
+							markerPath: launchMarkerPath,
+							now: new Date().toISOString(),
+						});
+				}
+				if (shouldDispatch) {
+					await startDispatcher.start({
+						issueId,
+						projectName,
+						leadId,
+						issueTitle,
+						issueIdentifier,
+						sessionRole: "main",
+						issueLabels: normalizedIssueLabels,
+						owningDept,
+						codexSkip: normalizedIssueLabels.includes("codex-skip"),
+						docTier,
+						issueUrl,
+						generalizedExecution: {
+							executionId: generalizedSelection.executionId,
+							runId: generalizedSelection.runId,
+							nodeId: generalizedSelection.nodeId,
+							attempt: 1,
+							snapshotDigest: generalizedSelection.snapshotDigest,
+							dispatch: generalizedSelection.node.dispatch,
+							capabilities: { ...generalizedSelection.node.capabilities },
+							agentContent: generalizedSelection.node.agent.content,
+							outputCredential: workflowOutputCredential,
+							idempotencyKey: generalizedSelection.idempotencyKey,
+							launchGateToken,
+							commitWorkflowLaunch,
+						},
+					});
+					store.advanceWorkflowStartStage(
+						generalizedSelection.idempotencyKey,
+						"commdb_registered",
+					);
+					startedSession = await waitForSession(
+						store,
+						generalizedSelection.executionId,
+						{ timeoutMs: GHOST_GUARD_SESSION_WAIT_MS },
+					);
+					if (!startedSession) {
+						res.status(500).json({
+							success: false,
+							code: "GENERALIZED_START_NOT_LIVE",
+							message: `Runner failed to start — session not registered after ${GHOST_GUARD_SESSION_WAIT_MS}ms.`,
+						});
+						return;
+					}
+				}
+			}
+			const committedOwner = await waitForGeneralizedLaunchDelivery(
+				store,
+				generalizedSelection.executionId,
+				{ timeoutMs: GHOST_GUARD_SESSION_WAIT_MS },
+			);
+			if (!committedOwner) {
+				res.status(409).json({
+					success: false,
+					code: "GENERALIZED_LAUNCH_NOT_COMMITTED",
+					reason:
+						"positive session evidence exists but the durable launch fence is not committed",
+				});
+				return;
+			}
+			store.advanceWorkflowStartStage(
+				generalizedSelection.idempotencyKey,
+				"launch_committed",
+			);
+			const response = {
+				success: true,
+				executionId: generalizedSelection.executionId,
+				issueId,
+				generalized: true,
+				workflowRunId: generalizedSelection.runId,
+				workflowNodeId: generalizedSelection.nodeId,
+				message: `Runner started for ${issueId}`,
+			};
+			store.recordWorkflowStartResponse({
+				idempotencyKey: generalizedSelection.idempotencyKey,
+				response,
+			});
+			res.json(response);
+			return;
+		}
+
 		// FLY-793 (Step 4 ENTRY): a FRESH `main` dispatch on a three-stage-enabled
 		// project STARTS at the Design phase — this is the entry the PhaseOrchestrator
 		// (handoff-only) does not cover. The policy is resolved SERVER-SIDE from the
@@ -555,6 +1015,7 @@ export function createRunsRouter(
 		// only writer, so the phase table stays the single vendor source.
 		let dispatchVendor: PhaseDispatchVendor | undefined;
 		let dispatchEffort: RoleEffort | undefined;
+		let effectiveDesignBackend: DesignBackend | undefined;
 		if (role === "main") {
 			const proj = projects.find((p) => p.projectName === projectName);
 			const pipelineConfig = proj
@@ -578,7 +1039,21 @@ export function createRunsRouter(
 				issueLabels: normalizedIssueLabels,
 				env: process.env,
 				dispatchChannelId,
+				designBackend: requestedDesignBackend,
 			});
+			if (requestedDesignBackend && !entry.enteredThreeStage) {
+				console.warn(
+					`[runs/start] designBackend=${requestedDesignBackend} not applicable: ${entry.notEnteredDetail ?? entry.notEnteredReasonCode ?? "policy_disabled"}`,
+				);
+				res.status(400).json({
+					success: false,
+					code: "DESIGN_BACKEND_NOT_APPLICABLE",
+					reason: entry.notEnteredReasonCode ?? "policy_disabled",
+					requested: requestedDesignBackend,
+					silent: false,
+				});
+				return;
+			}
 			if (entry.enteredThreeStage) {
 				// FLY-793 (Codex R1 BLOCKING): the per-role dedup above keyed on the
 				// request role `main` and CANNOT see an already-active Design/Implement/
@@ -609,6 +1084,7 @@ export function createRunsRouter(
 				// model so the resolver's dispatch layer picks the phase backend.
 				dispatchVendor = entry.dispatchVendor;
 				dispatchEffort = entry.dispatchEffort;
+				effectiveDesignBackend = entry.designBackend;
 				// FLY-887 R2 (Codex R1 blocker): the Linear label layer outranks
 				// dispatchModel in resolveRoleAdapter — a `sonnet` model label or a
 				// `codex`/`agy`/`kimi` vendor label would beat the phase table (and a
@@ -739,6 +1215,9 @@ export function createRunsRouter(
 				// undefined on every non-three-stage dispatch → byte-compatible)
 				dispatchVendor,
 				dispatchEffort,
+				...(effectiveDesignBackend && {
+					designBackend: effectiveDesignBackend,
+				}),
 			});
 
 			// FLY-91: Poll for chatThreadId. emitStarted() awaits chat thread
@@ -833,6 +1312,9 @@ export function createRunsRouter(
 				issueId: result.issueId,
 				chatThreadId,
 				message: `Runner started for ${issueId}`,
+				...(requestedDesignBackend && effectiveDesignBackend
+					? { designBackend: effectiveDesignBackend }
+					: {}),
 			});
 		} catch (err) {
 			// FLY-137 v1.27.2: InvalidAgentNameError thrown from AgentDispatcher

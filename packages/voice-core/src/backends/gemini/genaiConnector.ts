@@ -17,6 +17,16 @@ import type {
 
 export interface GenaiConnectorOptions {
 	apiKey: string;
+	/**
+	 * connect() retry/backoff (FLY-545 QA R2 F1): the meeting-assembly burst
+	 * (N Discord voice joins + N Gemini connects in one window) can starve the
+	 * ws handshake — a transient abort on FIRST connect must not kill the whole
+	 * meeting. Default ON: 3 attempts, 250ms exponential base, 8s per-attempt
+	 * timeout (Codex R13: the SDK's live.connect() stays PENDING when the ws
+	 * handshake dies — its failure surfaces via callbacks, never a rejection —
+	 * so a bare promise-retry would wait forever). attempts:1 disables retries.
+	 */
+	retry?: { attempts?: number; baseMs?: number; attemptTimeoutMs?: number };
 }
 
 /**
@@ -87,29 +97,54 @@ export function createGenaiTransport(
 				};
 			}
 
-			const session = await client.live.connect({
-				model: params.model,
-				config,
-				callbacks: {
-					onmessage: (msg: any) =>
-						mapMessage(msg, (e) => {
-							if (e.type === "tool-call") callNames.set(e.callId, e.name);
-							onEvent(e);
-						}),
-					onerror: (e: any) =>
-						onEvent({ type: "error", message: String(e?.message ?? e) }),
-					onclose: (e: any) => {
-						// plan r2 §3: ws disconnects must surface explicitly. Only an
-						// intentional close() (or a server goAway already surfaced) is silent.
-						if (!intentionalClose) {
-							onEvent({
-								type: "error",
-								message: describeUnexpectedClose(e?.reason, params.model),
-							});
-						}
-					},
+			const attempts = Math.max(1, opts.retry?.attempts ?? 3);
+			const baseMs = opts.retry?.baseMs ?? 250;
+			const attemptTimeoutMs = opts.retry?.attemptTimeoutMs ?? 8_000;
+			// Every attempt gets its OWN abandoned flag captured by its callbacks
+			// (Codex R14 HIGH-1): a timed-out attempt that settles late is closed
+			// as an orphan — without the flag its onclose fired a FAKE
+			// connectionClosed into the healthy winner's event stream and
+			// triggered a pointless rotation. The SDK session is `any`-typed on
+			// purpose (dynamic import).
+			const session: any = await connectWithRetry(
+				attempts,
+				baseMs,
+				attemptTimeoutMs,
+				() => {
+					const attempt = { abandoned: false };
+					const promise = client.live.connect({
+						model: params.model,
+						config,
+						callbacks: {
+							onmessage: (msg: any) => {
+								if (attempt.abandoned) return;
+								mapMessage(msg, (e) => {
+									if (e.type === "tool-call") callNames.set(e.callId, e.name);
+									onEvent(e);
+								});
+							},
+							onerror: (e: any) => {
+								if (attempt.abandoned) return;
+								onEvent({ type: "error", message: String(e?.message ?? e) });
+							},
+							onclose: (e: any) => {
+								// plan r2 §3: ws disconnects must surface explicitly. Only an
+								// intentional close() (or a server goAway already surfaced) is
+								// silent. connectionClosed lets the rotator auto-reconnect
+								// (FLY-545 QA R2 F1) — this is connection DEATH, not a protocol
+								// hiccup. An abandoned attempt's close is never surfaced.
+								if (attempt.abandoned || intentionalClose) return;
+								onEvent({
+									type: "error",
+									message: describeUnexpectedClose(e?.reason, params.model),
+									connectionClosed: true,
+								});
+							},
+						},
+					});
+					return { promise, attempt };
 				},
-			});
+			);
 
 			return {
 				sendAudio(frame: Buffer) {
@@ -122,6 +157,14 @@ export function createGenaiTransport(
 				},
 				sendText(text: string) {
 					session.sendRealtimeInput({ text });
+				},
+				injectContext(text: string) {
+					// FLY-968 B-cell: the one injection path measured to add
+					// context with 0 bytes of speech on gemini-3.1.
+					session.sendClientContent({
+						turns: [{ role: "user", parts: [{ text }] }],
+						turnComplete: false,
+					});
 				},
 				endAudioStream() {
 					session.sendRealtimeInput({ audioStreamEnd: true });
@@ -238,6 +281,74 @@ function secondsFrom(timeLeft: any): number {
 /** Human-actionable message for an unexpected ws close. A "model not found"
  * reason gets self-rescue guidance (FLY-959 bug 4: Google retires preview
  * models; the next 404 should cost the user 30 seconds, not a debug session). */
+/** Exponential-backoff retry for the initial ws handshake (FLY-545 QA R2 F1).
+ * Every failure is treated as retryable — at connect time there is no session
+ * to protect, and the terminal attempt rethrows the real error.
+ *
+ * Codex R13 HIGH: the SDK's live.connect() does NOT reject on a failed ws
+ * handshake — it stays pending while the failure goes to onerror/onclose. So
+ * each attempt races a timeout; an abandoned attempt that later resolves gets
+ * its session closed immediately (never leak a half-open connection). */
+async function connectWithRetry<T>(
+	attempts: number,
+	baseMs: number,
+	attemptTimeoutMs: number,
+	connect: () => { promise: Promise<T>; attempt: { abandoned: boolean } },
+): Promise<T> {
+	let lastErr: unknown;
+	for (let i = 0; i < attempts; i++) {
+		try {
+			return await attemptWithTimeout(connect, attemptTimeoutMs);
+		} catch (err) {
+			lastErr = err;
+			if (i < attempts - 1) {
+				await new Promise((r) => setTimeout(r, baseMs * 2 ** i));
+			}
+		}
+	}
+	throw lastErr;
+}
+
+async function attemptWithTimeout<T>(
+	connect: () => { promise: Promise<T>; attempt: { abandoned: boolean } },
+	timeoutMs: number,
+): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const { promise: pending, attempt } = connect();
+	try {
+		return await Promise.race([
+			pending,
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(() => {
+					// mark FIRST: from this instant the attempt's callbacks are
+					// muted (Codex R14 HIGH-1 — its later close must never inject
+					// a fake connectionClosed into the winner's event stream).
+					attempt.abandoned = true;
+					reject(
+						new Error(
+							`Gemini connect timed out after ${timeoutMs}ms (ws handshake starved)`,
+						),
+					);
+				}, timeoutMs);
+				timer.unref?.();
+			}),
+		]);
+	} catch (err) {
+		// EVERY failed attempt is abandoned, not just timeouts (Codex R15):
+		// some SDK failure modes reject the promise and STILL fire a late
+		// onclose from the dying socket — that close must stay muted too.
+		attempt.abandoned = true;
+		throw err;
+	} finally {
+		if (timer) clearTimeout(timer);
+		if (attempt.abandoned) {
+			// the SDK promise may still settle later — close the orphan session
+			// so a lost race never leaves a half-open ws behind.
+			void pending.then((s: any) => s?.close?.()).catch(() => undefined);
+		}
+	}
+}
+
 export function describeUnexpectedClose(
 	reason: string | undefined,
 	model: string,

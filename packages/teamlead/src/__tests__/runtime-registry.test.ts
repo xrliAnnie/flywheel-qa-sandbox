@@ -99,4 +99,24 @@ describe("RuntimeRegistry", () => {
 		expect(rt1.shutdown).toHaveBeenCalledOnce();
 		expect(rt2.shutdown).toHaveBeenCalledOnce();
 	});
+
+	it("routes every deliver call through one interceptor while retaining raw runtime access", async () => {
+		const reg = new RuntimeRegistry();
+		const rt = makeRuntime();
+		const intercept = vi.fn(async (raw, envelope) => raw.deliver(envelope));
+		reg.setDeliveryInterceptor(intercept);
+		reg.register(makeLead(), rt);
+		const envelope = {
+			seq: 7,
+			event: { event_type: "gate_question" },
+			sessionKey: "exec-1",
+			leadId: "product-lead",
+			timestamp: new Date().toISOString(),
+		};
+
+		await reg.getForLead("product-lead")!.deliver(envelope);
+		expect(intercept).toHaveBeenCalledWith(rt, envelope);
+		expect(rt.deliver).toHaveBeenCalledWith(envelope);
+		expect(reg.getRawForLead("product-lead")).toBe(rt);
+	});
 });

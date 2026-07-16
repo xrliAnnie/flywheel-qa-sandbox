@@ -98,6 +98,39 @@ describe("notifyLeadFirst (FLY-1048 C2)", () => {
 		expect(env.event.event_type).toBe("detection_escalation");
 	});
 
+	it("park episode queues runner_park_notice in the durable explicit-ACK cohort", async () => {
+		const previousAckFlag = process.env.FLYWHEEL_DELIVERY_ACK;
+		process.env.FLYWHEEL_DELIVERY_ACK = "1";
+		try {
+			const store = await freshStore();
+			const { deps, calls } = makeDeps(store);
+			const outcome = await notifyLeadFirst(deps, {
+				...INPUT,
+				kind: "park:blocked",
+				episodeFingerprint: "park:blocked:exec-1",
+			});
+			expect(outcome).toBe("notified");
+
+			const env = calls.find((call) => call.kind === "deliver")!.args[0] as {
+				seq: number;
+				event: HookPayload;
+			};
+			expect(env.event.event_type).toBe("runner_park_notice");
+			expect(env.event.waited_ms).toBe(49_000);
+			expect(store.getLeadEventBySeq(env.seq)).toMatchObject({
+				event_type: "runner_park_notice",
+				ack_required: true,
+				ack_policy: "explicit_receipt",
+			});
+		} finally {
+			if (previousAckFlag === undefined) {
+				delete process.env.FLYWHEEL_DELIVERY_ACK;
+			} else {
+				process.env.FLYWHEEL_DELIVERY_ACK = previousAckFlag;
+			}
+		}
+	});
+
 	it("second call for the SAME episode is a no-op (already_notified) — no double post, no timer slide", async () => {
 		const store = await freshStore();
 		const { deps, calls } = makeDeps(store);
@@ -251,6 +284,30 @@ describe("formatDetectionEscalation renderer (FLY-1048 C2 — Lead inbox renderi
 		expect(rendered).toContain("FLY-1048");
 		expect(rendered).toContain("~30min");
 		expect(rendered).toContain("fp:abc");
+	});
+
+	it("renders the structured wait duration for a parked runner", () => {
+		const rendered = formatDetectionEscalation({
+			seq: 8,
+			event: {
+				event_type: "runner_park_notice",
+				execution_id: "exec-parked",
+				issue_id: "issue-parked",
+				issue_identifier: "FLY-1279",
+				project_name: "flywheel",
+				detection_target_key: "exec-parked",
+				escalation_kind: "park:awaiting_review",
+				escalation_reason: "runner 已 park 在 founder 审批门(PR #606)",
+				escalation_next_step: "Lead 呈门",
+				episode_fingerprint: "fp:parked",
+				waited_ms: 10 * 60_000,
+			},
+			sessionKey: "exec-parked",
+			leadId: "flywheel-eng-lead",
+			timestamp: "2026-07-15T00:00:00.000Z",
+		});
+
+		expect(rendered).toContain("Waited: 10m");
 	});
 });
 

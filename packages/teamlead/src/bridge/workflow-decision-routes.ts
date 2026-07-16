@@ -107,6 +107,31 @@ export function createWorkflowDecisionRouter(
 ): express.Router {
 	const router = express.Router();
 
+	router.post("/output", (req, res) => {
+		if (rejectNonLoopback(req, res)) return;
+		const body = (req.body ?? {}) as Record<string, unknown>;
+		const credential = stringField(body.credential);
+		const clientRequestId = stringField(body.client_request_id);
+		const payload = typeof body.payload === "string" ? body.payload : undefined;
+		if (!credential || !clientRequestId || payload === undefined) {
+			res.status(400).json({ ok: false, reason: "invalid_request" });
+			return;
+		}
+		const result = deps.store.submitWorkflowNodeOutput({
+			token: credential,
+			clientRequestId,
+			payload,
+			now: deps.now?.(),
+		});
+		if (!result.ok) {
+			res
+				.status(result.reason === "credential_not_found" ? 401 : 409)
+				.json(result);
+			return;
+		}
+		res.json(result);
+	});
+
 	router.post("/head-authority", async (req, res) => {
 		if (rejectNonLoopback(req, res)) return;
 		const executionId = stringField(

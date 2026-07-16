@@ -11,6 +11,7 @@ import type http from "node:http";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
+import type { AutoQaCoordinator } from "../bridge/auto-qa-coordinator.js";
 import type { PhaseOrchestrator } from "../bridge/phase-orchestrator.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
@@ -55,6 +56,9 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 	let qaLossCalls: Array<Record<string, unknown>>;
 	// FLY-1050: interleaved call order — reconcileQaLoss must run BEFORE the belt.
 	let callOrder: string[];
+	let autoQaFailureCalls: string[];
+	let autoQaOwnsFailure: boolean;
+	let takeoverAlerts: Array<{ exec: string; reason: string }>;
 
 	const ingestHeaders = {
 		"Content-Type": "application/json",
@@ -74,9 +78,17 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 		reconcileCalls = [];
 		qaLossCalls = [];
 		callOrder = [];
+		autoQaFailureCalls = [];
+		autoQaOwnsFailure = false;
+		takeoverAlerts = [];
 
 		const fakeOrchestrator = {
 			onPhaseComplete: vi.fn(async () => {}),
+			alertWorktreeTakeoverFailure: vi.fn(
+				async (session: { execution_id: string }, reason: string) => {
+					takeoverAlerts.push({ exec: session.execution_id, reason });
+				},
+			),
 			reconcileTurnBelt: vi.fn(async (scope?: Record<string, unknown>) => {
 				reconcileCalls.push(scope);
 				callOrder.push("belt");
@@ -86,6 +98,15 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 				callOrder.push("qaLoss");
 			}),
 		} as unknown as PhaseOrchestrator;
+		const fakeAutoQaCoordinator = {
+			onQaSessionFailed: vi.fn(async (executionId: string) => {
+				autoQaFailureCalls.push(executionId);
+				return {
+					owned: autoQaOwnsFailure,
+					transition: autoQaOwnsFailure ? "retry_pending" : "noop",
+				};
+			}),
+		} as unknown as AutoQaCoordinator;
 
 		// Real FSM transitionOpts — the Codex R1 HIGH shape needs the genuine
 		// awaiting_review→failed FSM rejection, not a transition-less upsert.
@@ -111,6 +132,7 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 			undefined,
 			undefined,
 			{
+				autoQaCoordinator: { current: fakeAutoQaCoordinator },
 				phaseOrchestrator: { current: fakeOrchestrator },
 			},
 		);
@@ -243,6 +265,49 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 			terminalExecId: "qa-exec-1050",
 		});
 		expect(callOrder).toEqual(["qaLoss", "belt"]);
+	});
+
+	it("FLY-1279: auto-QA ownership consumes failure and prevents three-stage reconcile fallthrough", async () => {
+		autoQaOwnsFailure = true;
+		seedPhaseSession("auto-qa-exec", "qa");
+		const res = await postEvent({
+			event_id: "evt-fail-auto-qa",
+			execution_id: "auto-qa-exec",
+			issue_id: "FLY-543",
+			project_name: "flywheel",
+			event_type: "session_failed",
+			payload: { error: "worktree failed" },
+		});
+		expect(res.status).toBe(200);
+		expect(autoQaFailureCalls).toEqual(["auto-qa-exec"]);
+		expect(qaLossCalls).toHaveLength(0);
+		// Turn-belt cleanup is independent and remains enabled.
+		expect(reconcileCalls).toHaveLength(1);
+	});
+
+	it("FLY-1279: typed worktree takeover failure triggers the dedicated phase alert", async () => {
+		seedPhaseSession("impl-takeover", "implement");
+		const res = await postEvent({
+			event_id: "evt-fail-takeover",
+			execution_id: "impl-takeover",
+			issue_id: "FLY-543",
+			project_name: "flywheel",
+			event_type: "session_failed",
+			payload: {
+				error: "legacy",
+				failure: {
+					failureKind: "worktree_takeover_failed",
+					failureReason: "worktree_takeover_failed: dirty worktree",
+				},
+			},
+		});
+		expect(res.status).toBe(200);
+		expect(takeoverAlerts).toEqual([
+			{
+				exec: "impl-takeover",
+				reason: "worktree_takeover_failed: dirty worktree",
+			},
+		]);
 	});
 
 	it("FLY-1050: session_failed of a non-qa phase row does NOT fire reconcileQaLoss", async () => {

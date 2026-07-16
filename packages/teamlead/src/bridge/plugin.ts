@@ -17,6 +17,10 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import express from "express";
 import { CommDB } from "flywheel-comm/db";
+import {
+	defaultGateMarkerDir,
+	markGateMarkerAnsweredForExecution,
+} from "flywheel-comm/gate-marker";
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
 // FLY-286 PR-2: web-local review route (固化 default-on since FLY-1243).
 import {
@@ -181,6 +185,7 @@ import {
 import type { CrashReaperInjectedDeps } from "./crash-reaper.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
+import { FileDeliverySecretProvider } from "./delivery-secret.js";
 import { createDeploymentsRouter } from "./deployments-route.js";
 import { loadDetectionGraceByProject } from "./detection-config-source.js";
 import {
@@ -306,6 +311,11 @@ import {
 	defaultLeadPaneCapture,
 	resolveAlertDirsFromEnv,
 } from "./lead-alert-helpers.js";
+import { deliveryAckEnabled } from "./lead-event-ack-policy.js";
+import {
+	createLeadEventDeadLetterHandler,
+	LeadEventDeliveryCoordinator,
+} from "./lead-event-delivery.js";
 import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
@@ -326,6 +336,7 @@ import {
 } from "./lifecycle-routes.js";
 import { sweepProjectLifecycle } from "./lifecycle-sweep.js";
 import {
+	listLinearIssueComments,
 	lookupLinearIssueByIdentifier,
 	queryLinearIssues,
 } from "./linear-query.js";
@@ -364,6 +375,12 @@ import { createMergedGateGuard } from "./merged-gate-guard.js";
 import { notifyDigestExpectTick } from "./notify-digest-expect.js";
 import { defaultReceiptsPath } from "./notify-receipts.js";
 import { hashPane, liveRegion } from "./pane-live-region.js";
+import {
+	LEAD_ONLY_PARK_KINDS,
+	PARK_KIND_PREFIX,
+	parkFounderGraceMs,
+	runParkWatch,
+} from "./park-watch.js";
 import {
 	PhaseOrchestrator,
 	type PhaseSession,
@@ -2989,6 +3006,88 @@ export function createBridgeApp(
 		},
 	);
 
+	// FLY-1160 (plan §3.3 读口): read-only PAGED comments of one issue — the
+	// voice landing reconciliation confirms which stage markers already landed
+	// (assistant-summary <sessionId> / transcript chunk markers) after a
+	// shutdown deadline or crash cut a landing mid-flight, instead of blind
+	// re-posting. Scoped like the comment WRITE path: a named project binding
+	// must contain the issue.
+	app.get(
+		"/api/linear/comments",
+		tokenAuthMiddleware(config.apiToken),
+		async (req, res) => {
+			if (!config.linearApiKey) {
+				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
+				return;
+			}
+			const issueIdRaw = Array.isArray(req.query.issueId)
+				? String(req.query.issueId[0])
+				: (req.query.issueId as string | undefined);
+			if (!issueIdRaw || issueIdRaw.trim().length === 0) {
+				res.status(400).json({ error: "issueId is required" });
+				return;
+			}
+			const afterRaw = Array.isArray(req.query.after)
+				? String(req.query.after[0])
+				: (req.query.after as string | undefined);
+			const limitRaw =
+				req.query.limit !== undefined
+					? parseInt(String(req.query.limit), 10)
+					: 50;
+			const limit = Number.isNaN(limitRaw)
+				? 50
+				: Math.min(Math.max(1, limitRaw), 100);
+			const bound = resolveProjectNameParam(projects, req.query.projectName);
+			if (!bound.ok) {
+				res.status(bound.status).json({ error: bound.error });
+				return;
+			}
+			try {
+				const issue = await lookupLinearIssueByIdentifier(
+					config.linearApiKey,
+					issueIdRaw.trim(),
+				);
+				if (!issue) {
+					res.status(404).json({ error: `issue "${issueIdRaw}" not found` });
+					return;
+				}
+				if (bound.binding && !issueMatchesBinding(issue, bound.binding)) {
+					res.status(403).json({
+						error: `issue "${issue.identifier}" is outside the "${String(
+							Array.isArray(req.query.projectName)
+								? req.query.projectName[0]
+								: req.query.projectName,
+						)}" project scope`,
+					});
+					return;
+				}
+				const page = await listLinearIssueComments(
+					config.linearApiKey,
+					issue.id,
+					{ after: afterRaw?.trim() || undefined, limit },
+				);
+				if (!page) {
+					res.status(404).json({ error: `issue "${issueIdRaw}" not found` });
+					return;
+				}
+				res.json({
+					issueId: issue.identifier,
+					state: issue.state,
+					stateType: issue.stateType,
+					comments: page.comments,
+					hasNextPage: page.hasNextPage,
+					endCursor: page.endCursor,
+				});
+			} catch (err) {
+				console.error(
+					"[linear-proxy] comments-list failed:",
+					(err as Error).message,
+				);
+				res.status(502).json({ error: "Linear API error" });
+			}
+		},
+	);
+
 	// FLY-21: Combined triage data endpoint — issues + sessions + capacity in one call
 	app.use(
 		"/api/triage/data",
@@ -3217,6 +3316,10 @@ export function createBridgeApp(
 			config.discordGuildId,
 			config.chatThreadsEnabled,
 			staleBlockerGuard,
+			{
+				masterToken: config.apiToken,
+				scopedToken: config.geminiAgentToken,
+			},
 		);
 		if (config.apiToken) {
 			app.use(
@@ -3491,6 +3594,12 @@ export async function startBridge(
 	// FLY-1244: deterministic boot import. Content hashes make restarts no-ops;
 	// a founder-owned seed mismatch is audited and refused by StateStore.
 	importBundledWorkflowSeeds(store);
+	const strandedGeneralized = store.holdStrandedGeneralizedExecutions();
+	if (strandedGeneralized.length > 0) {
+		console.warn(
+			`[workflow-template] generalized stranded executions held (no successor dispatch): ${strandedGeneralized.join(", ")}`,
+		);
+	}
 	const workflowSourceProjector = startWorkflowSourceProjector({
 		projects: () => loadProjects().map((project) => project.projectName),
 		openCommDb: (project) => new CommDB(commDbPathForProject(project)),
@@ -3955,6 +4064,42 @@ export async function startBridge(
 			`[Bridge] RuntimeRegistry: ${registry.size} lead runtime(s) registered`,
 		);
 	}
+
+	const deliveryDeadLetterAlertHolder: {
+		current?: (
+			row: NonNullable<ReturnType<StateStore["getLeadEventBySeq"]>>,
+		) => Promise<boolean>;
+	} = {};
+	const testDeliverySecret = process.env.VITEST
+		? { secretId: "vitest-delivery-secret", key: randomBytes(32) }
+		: null;
+	const deliverySecretProvider = testDeliverySecret
+		? { getActive: () => testDeliverySecret }
+		: new FileDeliverySecretProvider({ store });
+	let deliverySecretBootError: string | undefined;
+	if (deliveryAckEnabled()) {
+		try {
+			deliverySecretProvider.getActive();
+		} catch (error) {
+			deliverySecretBootError =
+				error instanceof Error ? error.message : String(error);
+			console.error(
+				`[lead-event-delivery] ACK cohort paused: ${deliverySecretBootError}`,
+			);
+		}
+	}
+	const leadEventDelivery = new LeadEventDeliveryCoordinator({
+		store,
+		runtimeForLead: (leadId) => registry.getRawForLead(leadId),
+		commDbPaths: () =>
+			projects.map((project) => commDbPathForProject(project.projectName)),
+		secretProvider: deliverySecretProvider,
+		onDeadLetter: async (row) =>
+			deliveryDeadLetterAlertHolder.current?.(row) ?? false,
+	});
+	registry.setDeliveryInterceptor((runtime, envelope) =>
+		leadEventDelivery.deliver(envelope, runtime),
+	);
 
 	// FLY-80: Periodic retry for leads not ready at startup (e.g., Lead starts after Bridge).
 	// Checks every 30s until all leads are registered, then stops.
@@ -6260,10 +6405,20 @@ export async function startBridge(
 			// delivery / unreported park stays live on a working runner (漏②'s
 			// typical shape). Terminal still resolves every kind.
 			progressResolvableKinds: new Set([CASE_C_ESCALATION_KIND]),
+			preserveOnTerminal: (row) => row.kind.startsWith(PARK_KIND_PREFIX),
+			pagePolicy: (row) =>
+				LEAD_ONLY_PARK_KINDS.has(row.kind)
+					? "lead_only"
+					: row.kind.startsWith(PARK_KIND_PREFIX)
+						? "page_no_fleet"
+						: "page",
 			graceMs: Number.isFinite(graceEnv) && graceEnv > 0 ? graceEnv : undefined,
 			// Per-project override (detection.lead_grace_ms in the project's
 			// CANONICAL .flywheel/config.yaml — loaded once at boot).
 			graceMsFor: (row) => {
+				if (row.kind.startsWith(PARK_KIND_PREFIX)) {
+					return parkFounderGraceMs();
+				}
 				const session = store.getSession(row.target_key);
 				return session
 					? detectionGraceByProject.get(session.project_name)
@@ -6282,6 +6437,12 @@ export async function startBridge(
 			fn4OverdueMs: defaultGapThresholds(process.env).unconsumedMs,
 		});
 	};
+	const parkWatchTick = (): Promise<void> =>
+		runParkWatch({
+			store,
+			commDbPathForProject: defaultGetCommDbPath,
+			notify: notifyDetectionEpisode,
+		});
 
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
@@ -6289,6 +6450,26 @@ export async function startBridge(
 		store,
 		runtimeRegistry: registry,
 		ensureShipRelevantDiff,
+		onDeliveryReconcileTick: () => leadEventDelivery.reconcile(),
+		onParkWatchTick: parkWatchTick,
+		parkWatchEveryNTicks: (() => {
+			const n = Number.parseInt(
+				process.env.FLYWHEEL_PARK_WATCH_EVERY_N_TICKS ?? "",
+				10,
+			);
+			return Number.isFinite(n) && n > 0 ? n : undefined;
+		})(),
+		// FLY-1279 B2: the holder is populated after GatePoller construction;
+		// periodic recovery and boot reconcile share the coordinator's single-flight.
+		onQaReconcileTick: () =>
+			autoQaCoordinatorHolder.current?.sweepOrphanedQaRecords(),
+		qaReconcileEveryNTicks: (() => {
+			const n = Number.parseInt(
+				process.env.FLYWHEEL_QA_RECONCILE_EVERY_N_TICKS ?? "",
+				10,
+			);
+			return Number.isFinite(n) && n > 0 ? n : undefined;
+		})(),
 		// FLY-1048 (A6): gap-scan piggyback (zero new timer; env-gated inside).
 		onGapScanTick: gapScanTick,
 		gapScanEveryNTicks: (() => {
@@ -6490,6 +6671,55 @@ export async function startBridge(
 		// dirs the live Bridge drainer reads.
 		...resolveAlertDirsFromEnv(process.env),
 	});
+	deliveryDeadLetterAlertHolder.current = createLeadEventDeadLetterHandler({
+		pageFounder: detectionPageFounder,
+		mirror: async (row) => {
+			let payload: Record<string, unknown> = {};
+			let route: Record<string, unknown> = {};
+			try {
+				payload = JSON.parse(row.payload) as Record<string, unknown>;
+			} catch {}
+			try {
+				route = row.routing_snapshot
+					? (JSON.parse(row.routing_snapshot) as Record<string, unknown>)
+					: {};
+			} catch {}
+			const projectName = String(
+				route.projectName ?? payload.project_name ?? "flywheel",
+			);
+			const leadId = row.ack_owner_lead_id ?? row.lead_id;
+			await leadAlertNotifier.alert({
+				leadId,
+				projectName,
+				eventId: `delivery-dead-letter:${row.seq}`,
+				eventType: "delivery_dead_letter",
+				title: `Lead delivery exhausted — event #${row.seq}`,
+				body:
+					`Bridge exhausted bounded delivery for ${row.event_type} (${row.event_id}). ` +
+					`Issue: ${String(payload.issue_identifier ?? payload.issue_id ?? "unknown")}; ` +
+					`owner: ${leadId}. Founder intervention is required.`,
+				severity: "severe",
+				sessionKey: row.session_key,
+			});
+		},
+	});
+	if (deliverySecretBootError) {
+		const fallbackProject =
+			projects.find((project) => project.projectName === "flywheel") ??
+			projects[0];
+		const fallbackLead = fallbackProject?.leads[0];
+		if (fallbackProject && fallbackLead) {
+			void leadAlertNotifier.alert({
+				leadId: fallbackLead.agentId,
+				projectName: fallbackProject.projectName,
+				eventId: "delivery-secret-unavailable",
+				eventType: "delivery_dead_letter",
+				title: "Lead delivery ACK secret unavailable",
+				body: `${deliverySecretBootError}. ACK-cohort work is paused; legacy ACK-exempt delivery remains available.`,
+				severity: "severe",
+			});
+		}
+	}
 
 	// FLY-907: build the unified issue-display refresher. The holder is read
 	// late-bound by EVERY trigger surface (applyTransition hook,
@@ -6576,6 +6806,17 @@ export async function startBridge(
 			emitReviewAlert,
 			postReviewRulingThread: (input) =>
 				reviewThreadEffects.postThreadResult(input),
+			// FLY-1257 HIGH-1: flip the answered review gate's marker so a resident
+			// codex `/goal` resumes at once (its isWaiting() reads answeredAt),
+			// instead of waiting for the deadline watcher. Execution-guarded no-op
+			// for a foreign/missing/already-answered marker.
+			markGateAnswered: (questionId, executionId) => {
+				markGateMarkerAnsweredForExecution(
+					defaultGateMarkerDir(process.env),
+					questionId,
+					executionId,
+				);
+			},
 			wakeRunner: async (executionId, sessionInfo, questionId, summary) => {
 				const db = new CommDB(
 					join(commRoot, sessionInfo.project_name, "comm.db"),
@@ -7109,6 +7350,36 @@ export async function startBridge(
 								session.issue_identifier ?? session.issue_id
 							}`,
 							body: truthfulBody,
+							severity: "warning",
+							sessionKey: session.execution_id,
+						});
+					},
+					// FLY-1279 B2: dedicated, head-stable takeover alert. This path is
+					// selected instead of (never in addition to) three_stage_stuck.
+					alertWorktreeTakeoverFailure: async ({ session, reason }) => {
+						const projectName = session.project_name ?? "";
+						let leadId: string | undefined;
+						try {
+							leadId = resolveLeadForIssue(
+								projects,
+								projectName,
+								parseJsonStringArray(
+									store.getSession(session.execution_id)?.issue_labels,
+								),
+							).lead.agentId;
+						} catch {
+							console.error(
+								`[three-stage] takeover failure (no lead): ${reason}`,
+							);
+							return;
+						}
+						await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
+							leadId,
+							projectName,
+							eventId: `three-stage-takeover:${session.execution_id}`,
+							eventType: "three_stage_takeover_failed",
+							title: `Three-stage worktree takeover failed — ${session.issue_identifier ?? session.issue_id}`,
+							body: reason,
 							severity: "warning",
 							sessionKey: session.execution_id,
 						});
@@ -8018,6 +8289,7 @@ export async function startBridge(
 								phasePrefix: phaseMessageTag(
 									session.chat_thread_role,
 									session.runner_model,
+									session.design_backend,
 								),
 							},
 							{ store },

@@ -144,13 +144,14 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		expect(() => validateKindContracts(doctored)).toThrow(/pane_hash_stuck/);
 	});
 
-	it("escalatesAtEnqueue: exactly the none_escalate kinds (legacy special case + zombie)", () => {
+	it("escalatesAtEnqueue: exactly the none_escalate kinds", () => {
 		// Legacy: runner_lead_pending_unhandled landed directly ESCALATED before
 		// this contract existed (infra-alert-wiring special case) — the contract
 		// must reproduce that, and add ONLY zombie_session_backlog.
 		const expected = new Set([
 			"runner_lead_pending_unhandled",
 			"zombie_session_backlog",
+			"delivery_dead_letter",
 		]);
 		for (const kind of ALERT_EVENT_TYPES) {
 			expect(escalatesAtEnqueue(kind), kind).toBe(expected.has(kind));
