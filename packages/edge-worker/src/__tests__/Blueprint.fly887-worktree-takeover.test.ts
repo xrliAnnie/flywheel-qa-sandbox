@@ -222,10 +222,12 @@ describe("FLY-887 worktree in-place takeover", () => {
 		);
 		expect(result.success).toBe(true);
 		expect(wt.removeIfExists).toHaveBeenCalled();
-		expect(wt.create).toHaveBeenCalled();
+		expect(wt.create).toHaveBeenCalledWith(
+			expect.objectContaining({ startPoint: HEAD }),
+		);
 	});
 
-	it("byte-compat: design phase → legacy create path even if registered", async () => {
+	it("FLY-1257 review R1: design retry with startPoint reuses the registered branch-B worktree", async () => {
 		const path = makeRealWorktree();
 		created.push(path);
 		const wt = makeWtManager({ registered: true, path });
@@ -233,6 +235,23 @@ describe("FLY-887 worktree in-place takeover", () => {
 			wt,
 			makeGitChecker({ clean: true, head: HEAD }),
 			{ sessionRole: "design", shareParentBranch: true, startPoint: HEAD },
+		);
+		expect(result.success).toBe(true);
+		expect(wt.removeIfExists).not.toHaveBeenCalled();
+		expect(wt.create).not.toHaveBeenCalled();
+	});
+
+	it("byte-compat: fresh design without startPoint uses the legacy create path", async () => {
+		const path = makeRealWorktree();
+		created.push(path);
+		const wt = makeWtManager({ registered: true, path });
+		const { result } = await run(
+			wt,
+			makeGitChecker({ clean: true, head: HEAD }),
+			{
+				sessionRole: "design",
+				shareParentBranch: true,
+			},
 		);
 		expect(result.success).toBe(true);
 		expect(wt.create).toHaveBeenCalled();
@@ -249,7 +268,9 @@ describe("FLY-887 worktree in-place takeover", () => {
 			{ sessionRole: "implement", shareParentBranch: true, startPoint: HEAD },
 		);
 		expect(result.success).toBe(true);
-		expect(wt.create).toHaveBeenCalled();
+		expect(wt.create).toHaveBeenCalledWith(
+			expect.objectContaining({ startPoint: HEAD }),
+		);
 	});
 
 	it("byte-compat: non-three-stage (no shareParentBranch) → legacy create path", async () => {

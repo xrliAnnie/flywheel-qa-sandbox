@@ -667,6 +667,26 @@ describe("DirectEventSink — FLY-493: pr_handoff → terminal completed", () =>
 		expect(store.getSession("exec-1")?.runner_model ?? null).toBeNull();
 	});
 
+	it("FLY-1259: emitStarted persists and locks designBackend", async () => {
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		await sink.emitStarted(
+			makeEnvelope({
+				sessionRole: "design",
+				chatThreadRole: "design",
+				designBackend: "codex",
+			}),
+		);
+		await sink.emitStarted(
+			makeEnvelope({
+				sessionRole: "design",
+				chatThreadRole: "design",
+				designBackend: "claude",
+			}),
+		);
+
+		expect(store.getSession("exec-1")?.design_backend).toBe("codex");
+	});
+
 	it.each(["codex-tmux", undefined])(
 		"emitStarted renders GPT-5.6 in a fresh thread when backend metadata is %s",
 		async (runnerBackend) => {
@@ -764,6 +784,39 @@ describe("DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH
 			evidence: { headSha: SHA },
 		} as unknown as BlueprintResult;
 	}
+
+	it("FLY-1259: sends the persisted effective design backend to the Lead", async () => {
+		const delivered: Array<{ event: { design_backend?: string } }> = [];
+		const registry = {
+			resolveWithLead: () => ({
+				runtime: {
+					deliver: async (env: { event: { design_backend?: string } }) => {
+						delivered.push(env);
+						return { delivered: true };
+					},
+				},
+				lead: { agentId: "product-lead", chatChannel: "chat-ch-1" },
+			}),
+		} as unknown as RuntimeRegistry;
+		const sink = new DirectEventSink(
+			store,
+			makeConfig(),
+			testProjects,
+			undefined,
+			registry,
+		);
+
+		await sink.emitStarted(
+			makeEnvelope({
+				sessionRole: "design",
+				chatThreadRole: "design",
+				designBackend: "codex",
+			}),
+		);
+		await sink.flush();
+
+		expect(delivered[0]?.event.design_backend).toBe("codex");
+	});
 
 	it("suppresses the review-required delivery when the awaiting_review main is QA-held", async () => {
 		const { registry, delivered } = captureRegistry();

@@ -86,6 +86,25 @@ describe("feature-flag registry invariants", () => {
 		expect(p?.note ?? "").toMatch(/Annie/i);
 	});
 
+	it("FLY-1257 registers the resident Codex gate-wait rollback switch as default-on", () => {
+		const flag = FEATURE_FLAGS.find((f) => f.name === "codex_gate_wait");
+		expect(flag).toMatchObject({
+			category: "kill_switch",
+			envVar: "FLYWHEEL_CODEX_GATE_WAIT",
+			polarity: "default_on",
+			default: true,
+		});
+		expect(flag?.readSites).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					file: "packages/claude-runner/src/codex-daemon-client.ts",
+					symbol: "runGoalToTerminal",
+					timing: "call_time",
+				}),
+			]),
+		);
+	});
+
 	it("quota daemon cutover is a temporary readonly boot flag tied to FLY-1284", () => {
 		const cutover = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_QUOTA_DAEMON_CUTOVER",

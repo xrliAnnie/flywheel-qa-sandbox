@@ -699,32 +699,46 @@ describe("ElevenSession (FLY-1006 S7)", () => {
 			expect(minutesSignal?.aborted).toBe(true);
 		});
 
-		it("Codex #552 MEDIUM-8: a mismatched conversation_id fails loud (terminate)", async () => {
+		// FLY-1006 预跑回归(replaces the two Codex #552 MEDIUM-8 cases): the REAL
+		// platform NEVER echoes custom_llm_extra_body.conversation_id in
+		// conversation_initiation_metadata — it always reports its own conv_… id
+		// (4+ real sessions across FLY-980/1006, incl. conv_3001kxkr… which the
+		// old gate killed 2ms after session_live). The daemon-UUID↔shim binding
+		// is guaranteed at the real boundary instead: the platform forwards
+		// extra_body verbatim and BrainPort 404s unknown keys (fail-closed).
+		it("a platform-minted conversation_id (conv_… ≠ daemon UUID) must NOT terminate the session", async () => {
 			const { seams } = landingSeams();
 			const f = makeFixture(seams);
 			await f.session.start();
 			f.handlers().onMetadata?.({
-				conversationId: "SOMEONE-ELSES-UUID",
-				agentOutputAudioFormat: "x",
-				userInputAudioFormat: "y",
+				conversationId: "conv_3001kxkr7nh2eywamcd2qa4s1175",
+				agentOutputAudioFormat: "pcm_24000",
+				userInputAudioFormat: "pcm_16000",
 			});
-			await vi.waitFor(() => {
-				if (f.session.stateName !== "ended") throw new Error("not torn down");
-			});
+			// let any (wrongly) scheduled teardown propagate before asserting
+			for (let i = 0; i < 10; i++) await Promise.resolve();
+			expect(f.trail.some((l) => l.type === "conversation_id_mismatch")).toBe(
+				false,
+			);
+			expect(f.session.stateName).toBe("live");
+			// the platform id is still recorded for forensics (metadata trail row)
+			const meta = f.trail.find((l) => l.type === "metadata");
+			expect((meta?.meta as { conversationId?: string })?.conversationId).toBe(
+				"conv_3001kxkr7nh2eywamcd2qa4s1175",
+			);
 		});
 
-		it("Codex #552 MEDIUM-8: a MISSING (empty) conversation_id also fails loud", async () => {
+		it("a MISSING (empty) platform conversation_id must not terminate either", async () => {
 			const { seams } = landingSeams();
 			const f = makeFixture(seams);
 			await f.session.start();
 			f.handlers().onMetadata?.({
 				conversationId: "",
-				agentOutputAudioFormat: "x",
-				userInputAudioFormat: "y",
+				agentOutputAudioFormat: "pcm_24000",
+				userInputAudioFormat: "pcm_16000",
 			});
-			await vi.waitFor(() => {
-				if (f.session.stateName !== "ended") throw new Error("not torn down");
-			});
+			for (let i = 0; i < 10; i++) await Promise.resolve();
+			expect(f.session.stateName).toBe("live");
 		});
 	});
 });

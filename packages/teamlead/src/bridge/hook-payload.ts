@@ -1,3 +1,5 @@
+import type { DesignBackend } from "flywheel-config";
+
 export interface HookPayload {
 	event_type: string;
 	execution_id: string;
@@ -76,6 +78,8 @@ export interface HookPayload {
 	pr_number?: number;
 	// FLY-59: Session role for multi-session-per-issue support
 	session_role?: string;
+	/** FLY-1259: effective per-dispatch backend locked for a design phase. */
+	design_backend?: DesignBackend;
 	// FLY-47: stage context — explicit guidance for Lead (e.g., "Runner completed work, PR still needs review")
 	stage_context?: string;
 	// EventFilter fields (GEO-187)

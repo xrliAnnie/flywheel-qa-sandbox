@@ -5,6 +5,7 @@ import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
 import type { FounderUxGateMode } from "flywheel-config";
 import {
+	isDesignBackend,
 	isFounderUxGateEnabled,
 	isThreeStagePhaseRole,
 	resolveCompletionSessionRole,
@@ -546,6 +547,102 @@ export function createEventRouter(
 			}
 		}
 
+		let workflowNodeId: string | undefined;
+		if (
+			event.event_type === "session_started" ||
+			event.event_type === "session_completed" ||
+			event.event_type === "session_failed"
+		) {
+			try {
+				workflowNodeId = store.resolveWorkflowNodeIdForExecution(
+					event.execution_id,
+				);
+			} catch (err) {
+				res.status(409).json({
+					error: "workflow_node_identity_conflict",
+					detail: (err as Error).message,
+				});
+				return;
+			}
+		}
+
+		if (event.event_type === "session_completed") {
+			if (event.source === "flywheel-comm") {
+				const decision =
+					event.payload?.decision &&
+					typeof event.payload.decision === "object" &&
+					!Array.isArray(event.payload.decision)
+						? (event.payload.decision as Record<string, unknown>)
+						: undefined;
+				const completion = store.commitEnrolledCompletion({
+					executionId: event.execution_id,
+					route: asString(decision?.route) ?? "",
+					sourceEventId: event.event_id,
+					completionSubmission: event.payload ?? {},
+				});
+				if (
+					!(completion.ok === false && completion.reason === "not_enrolled")
+				) {
+					if (!completion.ok) {
+						res.status(409).json({
+							error:
+								completion.reason === "missing_output"
+									? "workflow_output_required"
+									: "workflow_completion_rejected",
+							reason: completion.reason,
+							...("retryable" in completion
+								? { retryable: completion.retryable }
+								: {}),
+						});
+						return;
+					}
+					store.insertEvent({
+						event_id: `wfca:${completion.eventUid.slice("wfc:".length)}`,
+						execution_id: event.execution_id,
+						issue_id: event.issue_id,
+						project_name: event.project_name,
+						event_type: "session_completed",
+						payload: event.payload,
+						source: "workflow-generalized-completion",
+					});
+					res.json({
+						ok: true,
+						generalized: true,
+						duplicate: completion.idempotentReplay,
+					});
+					return;
+				}
+			} else {
+				const teardown = store.observeEnrolledTeardown({
+					executionId: event.execution_id,
+				});
+				if (teardown.enrolled) {
+					if (teardown.held) {
+						res.status(409).json({
+							error: "workflow_completion_receipt_required",
+						});
+					} else {
+						res.json({ ok: true, generalized: true, teardown: true });
+					}
+					return;
+				}
+			}
+		} else if (event.event_type === "session_failed") {
+			const teardown = store.observeEnrolledTeardown({
+				executionId: event.execution_id,
+			});
+			if (teardown.enrolled) {
+				if (teardown.held) {
+					res.status(409).json({
+						error: "workflow_completion_receipt_required",
+					});
+				} else {
+					res.json({ ok: true, generalized: true, teardown: true });
+				}
+				return;
+			}
+		}
+
 		// Store event (idempotent)
 		const isNew = store.insertEvent({
 			event_id: event.event_id,
@@ -684,6 +781,10 @@ export function createEventRouter(
 				// FLY-728: persist the resolved runner model (per-issue model routing
 				// visibility). Mirrors the DirectEventSink production path.
 				const eventRunnerModel = asString(payload.runnerModel);
+				// FLY-1259: accept only the public enum on the untrusted event wire.
+				const eventDesignBackend = isDesignBackend(payload.designBackend)
+					? payload.designBackend
+					: undefined;
 				// FLY-615: persist the resolved ponytail condition (A/B join key).
 				const eventPonytailCondition = asString(payload.ponytailCondition);
 				// FLY-793 (Step 11): persist the chat-thread role (computed at dispatch
@@ -711,9 +812,13 @@ export function createEventRouter(
 							chat_thread_role: eventChatThreadRole,
 							...(eventAdapterType && { adapter_type: eventAdapterType }),
 							...(eventRunnerModel && { runner_model: eventRunnerModel }),
+							...(eventDesignBackend && {
+								design_backend: eventDesignBackend,
+							}),
 							...(eventPonytailCondition && {
 								ponytail_condition: eventPonytailCondition,
 							}),
+							workflow_node_id: workflowNodeId,
 						},
 					);
 					if (!result.ok) {
@@ -740,9 +845,13 @@ export function createEventRouter(
 						chat_thread_role: eventChatThreadRole,
 						...(eventAdapterType && { adapter_type: eventAdapterType }),
 						...(eventRunnerModel && { runner_model: eventRunnerModel }),
+						...(eventDesignBackend && {
+							design_backend: eventDesignBackend,
+						}),
 						...(eventPonytailCondition && {
 							ponytail_condition: eventPonytailCondition,
 						}),
+						workflow_node_id: workflowNodeId,
 					});
 				}
 
@@ -1319,6 +1428,7 @@ export function createEventRouter(
 							issue_identifier: asString(payload.issueIdentifier) || undefined,
 							issue_title: asString(payload.issueTitle),
 							session_role: completedSessionRole,
+							workflow_node_id: workflowNodeId,
 						},
 					);
 					if (!result.ok) {
@@ -1406,6 +1516,7 @@ export function createEventRouter(
 						issue_title: asString(payload.issueTitle),
 						pr_number: legacyPrNumber,
 						session_role: completedSessionRole,
+						workflow_node_id: workflowNodeId,
 					});
 
 					// FLY-191 Phase 2: upsertSession's column list doesn't carry the
@@ -1612,6 +1723,7 @@ export function createEventRouter(
 							issue_identifier: asString(payload.issueIdentifier) || undefined,
 							issue_title: asString(payload.issueTitle),
 							session_role: failedSessionRole,
+							workflow_node_id: workflowNodeId,
 						},
 					);
 					if (!result.ok) {
@@ -1632,6 +1744,7 @@ export function createEventRouter(
 						issue_identifier: asString(payload.issueIdentifier) || undefined,
 						issue_title: asString(payload.issueTitle),
 						session_role: failedSessionRole,
+						workflow_node_id: workflowNodeId,
 					});
 				}
 
@@ -2292,6 +2405,7 @@ export function createEventRouter(
 					issue_labels: labels,
 					pr_number: session.pr_number,
 					session_role: session.session_role ?? "main",
+					design_backend: session.design_backend,
 				};
 
 				// FLY-47: Add stage_context for stage_changed events to prevent Lead misinterpretation

@@ -50,6 +50,23 @@ export {
 	RUNNER_MODEL_MARKER_PAYLOAD_MAX,
 	renderRunnerModelDisplay,
 } from "./model-display.js";
+export type {
+	CurrentModelView,
+	ModelCatalog,
+	ModelProviderId,
+	ModelRegistryEntry,
+	ModelRuntimeVendor,
+	ModelSurface,
+} from "./model-registry.js";
+export {
+	assertValidModelRegistry,
+	buildModelCatalog,
+	getModelRegistryEntry,
+	isModelSelectionSupported,
+	MODEL_IDS,
+	MODEL_REGISTRY,
+	resolveCurrentModel,
+} from "./model-registry.js";
 // FLY-728: per-issue model routing — tier vocabulary (dispatch whitelist +
 // tier→model default + F/O/S/H short code).
 export type { ModelTier, ModelTierSpec } from "./model-tiers.js";
@@ -60,6 +77,18 @@ export {
 	modelShortCode,
 	normalizeDispatchModel,
 } from "./model-tiers.js";
+export type {
+	NodeTypeRegistryEntry,
+	WorkflowCompletionRoute,
+	WorkflowNodeCapabilities,
+	WorkflowNodeTypeId,
+	WorkflowOutputMode,
+} from "./node-type-registry.js";
+export {
+	getNodeTypeRegistryEntry,
+	NODE_TYPE_REGISTRY,
+	nodeTypeWritesCode,
+} from "./node-type-registry.js";
 export type {
 	PonytailCondition,
 	PonytailEffective,
@@ -144,6 +173,8 @@ export {
 // FLY-793: three-stage pipeline phase model tiers.
 // FLY-1224: per-phase vendor dispatch table (vendor + model + effort).
 export type {
+	DesignBackend,
+	PhaseDispatchOverride,
 	PhaseDispatchSpec,
 	PhaseDispatchVendor,
 	ThreeStagePhase,
@@ -151,6 +182,8 @@ export type {
 export {
 	DEFAULT_PHASE_DISPATCH,
 	DEFAULT_PHASE_TIER,
+	DESIGN_BACKENDS,
+	isDesignBackend,
 	isThreeStagePhaseRole,
 	nextPhase,
 	PHASE_THREAD_BADGE,

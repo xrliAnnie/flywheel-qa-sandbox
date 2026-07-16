@@ -1083,6 +1083,26 @@ export class CommDB {
 	}
 
 	/**
+	 * Pending checkpoint questions opened by one runner. Lifecycle guards use
+	 * this CommDB query as authority; gate-marker files are only a wake mirror
+	 * and may be deleted or partially observed by the runner process.
+	 */
+	getPendingGatesByRunner(runnerId: string): Message[] {
+		return this.db
+			.prepare(
+				`SELECT q.* FROM messages q
+         WHERE q.from_agent = ? AND q.type = 'question'
+         AND q.checkpoint IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+         )
+         AND q.expires_at > datetime('now')
+         ORDER BY q.created_at ASC`,
+			)
+			.all(runnerId) as Message[];
+	}
+
+	/**
 	 * FLY-58: Find the most recent pending gate question from a specific runner
 	 * with a specific checkpoint. Used by Bridge to respond to approve_to_ship gate.
 	 */
@@ -1642,6 +1662,12 @@ export class CommDB {
 					 WHERE q.from_agent = ?
 					   AND q.type = 'question'
 					   AND q.checkpoint IS NOT NULL
+					   -- FLY-1257 defect ④ path-3 (Codex code review HIGH-2): a review
+					   -- gate is a binding credential the reviewer/coordinator answers,
+					   -- NOT the author runner — it must survive the author's teardown
+					   -- (mirrors the GatePoller path-2 eviction exemption). Retiring it
+					   -- here would make the coordinator drop a still-valid verdict.
+					   AND q.checkpoint NOT IN ('review_design', 'review_code')
 					   AND q.resolved_at IS NULL
 					   AND NOT EXISTS (
 					     SELECT 1 FROM messages r

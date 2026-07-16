@@ -17,8 +17,16 @@ import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigLoader, type FlywheelConfig } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
+import {
+	fileSourceRevision,
+	registrySourceRevision,
+} from "./management-console-contract.js";
 
-export type ProjectConfigEntry = { config?: FlywheelConfig; error?: string };
+export type ProjectConfigEntry = {
+	config?: FlywheelConfig;
+	revision: string;
+	error?: string;
+};
 
 export async function loadFeatureFlagProjectConfigs(
 	projects: ProjectEntry[],
@@ -27,19 +35,31 @@ export async function loadFeatureFlagProjectConfigs(
 	const map = new Map<string, ProjectConfigEntry>();
 	for (const project of projects) {
 		const configPath = join(project.projectRoot, ".flywheel", "config.yaml");
+		let raw: string | undefined;
 		try {
-			const loader = new ConfigLoader(async (p) => readFile(p));
+			const loader = new ConfigLoader(async (p) => {
+				raw = readFile(p);
+				return raw;
+			});
 			const cfg = await loader.load(configPath);
 			// ENOENT surfaces as ConfigLoader returning undefined / throwing below;
 			// a loaded config (even empty) is stored as the config.
-			map.set(project.projectName, { config: cfg ?? undefined });
+			map.set(project.projectName, {
+				config: cfg ?? undefined,
+				revision: fileSourceRevision(Buffer.from(raw ?? "")),
+			});
 		} catch (err) {
 			const code = (err as NodeJS.ErrnoException).code;
 			if (code === "ENOENT") {
 				// No project config → absent/default semantics (not an error).
-				map.set(project.projectName, {});
+				map.set(project.projectName, {
+					revision: registrySourceRevision("absent"),
+				});
 			} else {
 				map.set(project.projectName, {
+					revision: raw
+						? fileSourceRevision(Buffer.from(raw))
+						: registrySourceRevision("read-error"),
 					error: `${(err as Error).message}`,
 				});
 			}
@@ -100,7 +120,9 @@ export class ProjectConfigCache {
 			);
 			this.entries.set(
 				project.projectName,
-				loaded.get(project.projectName) ?? {},
+				loaded.get(project.projectName) ?? {
+					revision: registrySourceRevision("read-error"),
+				},
 			);
 			this.stamps.set(project.projectName, stamp);
 		}

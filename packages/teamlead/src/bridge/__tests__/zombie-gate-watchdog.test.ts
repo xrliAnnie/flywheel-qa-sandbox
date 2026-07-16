@@ -5,7 +5,7 @@
  * hang detection while `polling` is stuck).
  */
 
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
@@ -51,15 +51,23 @@ function fakeZombieDb(opts: {
 	return { db, retireShipGate, retireQuestionGuarded };
 }
 
-function q(id: string, checkpoint: string | null = "approve_to_ship") {
-	return { id, from_agent: "E-1", checkpoint };
+function q(
+	id: string,
+	checkpoint: string | null = "approve_to_ship",
+	createdAt: string | null = "2026-07-14 11:59:59",
+) {
+	return { id, from_agent: "E-1", checkpoint, created_at: createdAt };
 }
 
 describe("zombie gate hygiene — Z1/Z2 判定矩阵", () => {
 	it("Z1: terminal StateStore session + missing CommDB row → intent + guarded retire + resolved outcome", async () => {
 		const store = await freshStore();
 		const storeWithSession = Object.assign(store, {
-			getSession: () => ({ status: "completed", issue_id: "FLY-1" }),
+			getSession: () => ({
+				status: "completed",
+				issue_id: "FLY-1",
+				terminal_at: "2026-07-14 12:00:00",
+			}),
 		});
 		const { db, retireShipGate } = fakeZombieDb({ commSession: false });
 		const res = await runZombieGateHygiene({
@@ -98,7 +106,11 @@ describe("zombie gate hygiene — Z1/Z2 判定矩阵", () => {
 	it("Z1 uses retireQuestionGuarded for NON-ship gates (FLY-161: runner_questions excluded entirely)", async () => {
 		const store = await freshStore();
 		const s = Object.assign(store, {
-			getSession: () => ({ status: "failed", issue_id: "FLY-1" }),
+			getSession: () => ({
+				status: "failed",
+				issue_id: "FLY-1",
+				terminal_at: "2026-07-14 12:00:00",
+			}),
 		});
 		const { db, retireShipGate, retireQuestionGuarded } = fakeZombieDb({
 			commSession: false,
@@ -142,7 +154,11 @@ describe("zombie gate hygiene — Z1/Z2 判定矩阵", () => {
 	it("live CommDB row → neither branch (wake routing intact)", async () => {
 		const store = await freshStore();
 		const s = Object.assign(store, {
-			getSession: () => ({ status: "completed", issue_id: "FLY-1" }),
+			getSession: () => ({
+				status: "completed",
+				issue_id: "FLY-1",
+				terminal_at: "2026-07-14 12:00:00",
+			}),
 		});
 		const { db, retireShipGate } = fakeZombieDb({ commSession: true });
 		const res = await runZombieGateHygiene({
@@ -160,7 +176,11 @@ describe("zombie gate hygiene — Z1/Z2 判定矩阵", () => {
 		process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE = "0";
 		const store = await freshStore();
 		const s = Object.assign(store, {
-			getSession: () => ({ status: "completed", issue_id: "FLY-1" }),
+			getSession: () => ({
+				status: "completed",
+				issue_id: "FLY-1",
+				terminal_at: "2026-07-14 12:00:00",
+			}),
 		});
 		const { db, retireShipGate } = fakeZombieDb({ commSession: false });
 		await runZombieGateHygiene({
@@ -174,11 +194,225 @@ describe("zombie gate hygiene — Z1/Z2 判定矩阵", () => {
 	});
 });
 
+describe("zombie gate hygiene — FLY-1257 terminal chronology", () => {
+	async function chronologyHarness(args: {
+		createdAt: string | null;
+		terminalAt: string | null;
+		runs?: number;
+	}) {
+		const store = await freshStore();
+		const s = Object.assign(store, {
+			getSession: () => ({
+				status: "blocked",
+				issue_id: "FLY-1244",
+				terminal_at: args.terminalAt,
+			}),
+		});
+		const { db, retireQuestionGuarded } = fakeZombieDb({ commSession: false });
+		for (let i = 0; i < (args.runs ?? 1); i += 1) {
+			await runZombieGateHygiene({
+				store: s as never,
+				projectName: "proj",
+				// A NON-review gate: chronology governs it (review gates are exempt
+				// unconditionally — see the defect ④ R5 block below — so testing
+				// created_at-vs-terminal_at needs a carrier the exemption ignores).
+				pendingGateQuestions: [q("Q-chronology", "brainstorm", args.createdAt)],
+				db,
+			});
+		}
+		return { store, retireQuestionGuarded };
+	}
+
+	it("gate created after terminal entry is preserved before intent audit", async () => {
+		const { store, retireQuestionGuarded } = await chronologyHarness({
+			createdAt: "2026-07-14 12:00:01",
+			terminalAt: "2026-07-14 12:00:00",
+			runs: 2,
+		});
+		expect(retireQuestionGuarded).not.toHaveBeenCalled();
+		expect(store.getEventsByExecution("E-1")).toHaveLength(0);
+	});
+
+	it("gate created before terminal entry remains a true Z1 zombie", async () => {
+		const { store, retireQuestionGuarded } = await chronologyHarness({
+			createdAt: "2026-07-14 11:59:59",
+			terminalAt: "2026-07-14 12:00:00",
+		});
+		expect(retireQuestionGuarded).toHaveBeenCalledWith("Q-chronology", {
+			expectedFromAgent: "E-1",
+			requireUnanswered: true,
+		});
+		expect(
+			store
+				.getEventsByExecution("E-1")
+				.some((e) => e.event_type === "founder_gate_zombie_resolve_intent"),
+		).toBe(true);
+	});
+
+	it.each([
+		["missing terminal_at", "2026-07-14 12:00:01", null],
+		["missing created_at", null, "2026-07-14 12:00:00"],
+		["malformed created_at", "July 14", "2026-07-14 12:00:00"],
+		["malformed terminal_at", "2026-07-14 12:00:01", "not-a-time"],
+	] as const)(
+		"%s fails open without an intent audit",
+		async (_name, createdAt, terminalAt) => {
+			const { store, retireQuestionGuarded } = await chronologyHarness({
+				createdAt,
+				terminalAt,
+			});
+			expect(retireQuestionGuarded).not.toHaveBeenCalled();
+			expect(store.getEventsByExecution("E-1")).toHaveLength(0);
+		},
+	);
+
+	it("same-second tie is permanently preserved across passes", async () => {
+		const { store, retireQuestionGuarded } = await chronologyHarness({
+			createdAt: "2026-07-14 12:00:00",
+			terminalAt: "2026-07-14 12:00:00",
+			runs: 2,
+		});
+		expect(retireQuestionGuarded).not.toHaveBeenCalled();
+		expect(store.getEventsByExecution("E-1")).toHaveLength(0);
+	});
+});
+
+describe("zombie gate hygiene — FLY-1257 defect ④ (R5): review gates never retired by Z1", () => {
+	// review_design / review_code are answered by the cross-family REVIEWER after
+	// request-review BINDS them — never by the authoring runner. Z1's "gone runner
+	// ⇒ dead gate" premise is false for them, so they are exempt UNCONDITIONALLY,
+	// ahead of the chronology guard, whether or not a session row survives. Delete
+	// the `isReviewGateCheckpoint` short-circuit and every retire/intent assertion
+	// below turns red.
+	for (const reviewCheckpoint of ["review_code", "review_design"] as const) {
+		it(`${reviewCheckpoint}: terminal session + gate created BEFORE terminal (would retire a non-review gate) is exempt`, async () => {
+			const store = await freshStore();
+			const s = Object.assign(store, {
+				getSession: () => ({
+					status: "blocked",
+					issue_id: "FLY-1257",
+					terminal_at: "2026-07-14 12:00:00",
+				}),
+			});
+			const { db, retireQuestionGuarded } = fakeZombieDb({
+				commSession: false,
+			});
+			const res = await runZombieGateHygiene({
+				store: s as never,
+				projectName: "proj",
+				// created BEFORE terminal — a brainstorm gate here WOULD be retired.
+				pendingGateQuestions: [
+					q("Q-review", reviewCheckpoint, "2026-07-14 11:59:59"),
+				],
+				db,
+			});
+			expect(retireQuestionGuarded).not.toHaveBeenCalled();
+			expect(res.resolved).toEqual([]);
+			// Exempt BEFORE the intent write — zero audit side effects.
+			expect(store.getEventsByExecution("E-1")).toHaveLength(0);
+		});
+
+		it(`${reviewCheckpoint}: MISSING session (the exact R5 shape after finalize deletes the row) is exempt`, async () => {
+			const store = await freshStore();
+			const s = Object.assign(store, { getSession: () => undefined });
+			const { db, retireQuestionGuarded } = fakeZombieDb({
+				commSession: false,
+			});
+			const res = await runZombieGateHygiene({
+				store: s as never,
+				projectName: "proj",
+				pendingGateQuestions: [
+					q("Q-review", reviewCheckpoint, "2026-07-14 11:59:59"),
+				],
+				db,
+			});
+			expect(retireQuestionGuarded).not.toHaveBeenCalled();
+			expect(res.resolved).toEqual([]);
+			expect(store.getEventsByExecution("E-1")).toHaveLength(0);
+		});
+	}
+
+	it("a live-but-unreachable review gate is STILL surfaced by Z2 (exemption blocks retirement, not alerting)", async () => {
+		const store = await freshStore();
+		const s = Object.assign(store, {
+			getSession: () => ({ status: "awaiting_review", issue_id: "FLY-1257" }),
+		});
+		const { db, retireQuestionGuarded } = fakeZombieDb({ commSession: false });
+		const note = vi.fn();
+		const res = await runZombieGateHygiene({
+			store: s as never,
+			projectName: "proj",
+			pendingGateQuestions: [
+				q("Q-review", "review_code", "2026-07-14 11:59:59"),
+			],
+			db,
+			noteUnreachableRunner: note,
+		});
+		// Z2 (alert) runs before the exemption: a genuinely stuck review gate is
+		// reported to the watchdog, not silently swallowed.
+		expect(res.unreachable).toEqual(["Q-review"]);
+		expect(note).toHaveBeenCalled();
+		expect(retireQuestionGuarded).not.toHaveBeenCalled();
+	});
+
+	// The end-to-end R5 reproduction with the REAL CommDB: finalizeSession spares
+	// the review gate but deletes the session row, and the very next zombie sweep
+	// must not finish the kill. Ground truth is the real db's own pending state.
+	it("finalize→zombie combined regression: a review gate spared by finalizeSession is NOT then retired by the sweep", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "fly1257-r5-"));
+		const db = new CommDB(join(tmpDir, "comm.db"));
+		try {
+			// A blocked codex author opened a review gate the reviewer hasn't answered.
+			db.registerSession("E-r5", "win-r5", "proj", "FLY-1257", "lead");
+			const review = db.insertQuestion("E-r5", "reviewer", "review please", {
+				checkpoint: "review_code",
+			});
+
+			// Teardown: review gate spared (HIGH-2), session row deleted — the R5 setup.
+			expect(db.finalizeSession("E-r5")).toEqual({
+				retiredQuestionCount: 0,
+				deletedSessionCount: 1,
+			});
+			expect(db.isQuestionPending(review)).toBe(true);
+			expect(db.getSession("E-r5")).toBeUndefined();
+
+			// Next zombie pass: StateStore session missing + CommDB row gone → without
+			// the Z1 exemption this drops straight into retireQuestionGuarded.
+			const store = await freshStore(); // getSession("E-r5") → undefined
+			const res = await runZombieGateHygiene({
+				store: store as never,
+				projectName: "proj",
+				pendingGateQuestions: [
+					{
+						id: review,
+						from_agent: "E-r5",
+						checkpoint: "review_code",
+						created_at: "2026-07-14 11:59:59",
+					},
+				],
+				db,
+			});
+
+			// Real-db ground truth: still pending, still answerable by the reviewer.
+			expect(res.resolved).toEqual([]);
+			expect(db.isQuestionPending(review)).toBe(true);
+			expect(store.getEventsByExecution("E-r5")).toHaveLength(0);
+		} finally {
+			db.close();
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("zombie gate hygiene — R2 #4 outcome re-read (false ≠ answered)", () => {
 	async function outcomeHarness(dbOpts: Parameters<typeof fakeZombieDb>[0]) {
 		const store = await freshStore();
 		const s = Object.assign(store, {
-			getSession: () => ({ status: "completed", issue_id: "FLY-1" }),
+			getSession: () => ({
+				status: "completed",
+				issue_id: "FLY-1",
+				terminal_at: "2026-07-14 12:00:00",
+			}),
 		});
 		const { db } = fakeZombieDb(dbOpts);
 		await runZombieGateHygiene({
@@ -366,7 +600,11 @@ describe("Codex code R1 MED-1: dangling-intent reconcile", () => {
 	it("intent-without-outcome (crash between mutation and audit) → outcome reconciled by re-read next pass", async () => {
 		const store = await freshStore();
 		const s = Object.assign(store, {
-			getSession: () => ({ status: "completed", issue_id: "FLY-1" }),
+			getSession: () => ({
+				status: "completed",
+				issue_id: "FLY-1",
+				terminal_at: "2026-07-14 12:00:00",
+			}),
 		});
 		// Simulate the crash shape: intent exists, question already retired
 		// (no longer pending), NO outcome event, and the question is no longer

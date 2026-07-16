@@ -9,7 +9,11 @@ import type { Session } from "../StateStore.js";
 
 type DisplaySession = Pick<
 	Session,
-	"adapter_type" | "runner_model" | "dispatch_model" | "chat_thread_role"
+	| "adapter_type"
+	| "runner_model"
+	| "dispatch_model"
+	| "chat_thread_role"
+	| "design_backend"
 >;
 
 export function sessionModelDisplay(
@@ -25,8 +29,12 @@ export function sessionModelDisplay(
 		});
 	}
 	if (isThreeStagePhaseRole(session.chat_thread_role)) {
+		const override =
+			session.chat_thread_role === "design" && session.design_backend
+				? { vendor: session.design_backend }
+				: undefined;
 		return renderRunnerModelDisplay(
-			resolvePhaseDispatch(session.chat_thread_role, env),
+			resolvePhaseDispatch(session.chat_thread_role, env, override),
 		);
 	}
 	if (session.dispatch_model) {

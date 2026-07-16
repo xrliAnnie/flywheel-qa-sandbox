@@ -458,6 +458,12 @@ export class TmuxAdapter implements IAdapter {
 				`FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL=${ctx.workflowSubmissionCredential}`,
 			);
 		}
+		if (ctx.workflowOutputCredential) {
+			envArgs.push(
+				"-e",
+				`FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL=${ctx.workflowOutputCredential}`,
+			);
+		}
 		// FLY-191 Phase 2: verify-approval must read the SAME StateStore the
 		// Bridge writes (QA-caught: custom TEAMLEAD_DB_PATH deployments left
 		// the Runner on the default-path DB → fail-closed forever).
@@ -547,7 +553,9 @@ export class TmuxAdapter implements IAdapter {
 		//     sees the file exists → adopts → exactly one started Runner.
 		// The non-gateway fleet path keeps the byte-identical direct `claude` launch.
 		const commitFile = ctx.launchCommitPath;
-		const launchToken = commitFile ? randomUUID() : undefined;
+		const launchToken = commitFile
+			? (ctx.launchGateToken ?? randomUUID())
+			: undefined;
 		const windowCommand =
 			commitFile && launchToken
 				? [
@@ -596,8 +604,15 @@ export class TmuxAdapter implements IAdapter {
 		// self-reaps — a replay re-drives cleanly; no kill is required for safety.
 		if (commitFile && launchToken) {
 			try {
-				mkdirSync(dirname(commitFile), { recursive: true });
-				writeFileSync(commitFile, launchToken);
+				if (ctx.commitWorkflowLaunch) {
+					const committed = ctx.commitWorkflowLaunch();
+					if (!committed.ok) {
+						throw new Error(committed.reason ?? "Bridge launch fence rejected");
+					}
+				} else {
+					mkdirSync(dirname(commitFile), { recursive: true });
+					writeFileSync(commitFile, launchToken);
+				}
 			} catch (err) {
 				try {
 					this.execFileFn("tmux", [

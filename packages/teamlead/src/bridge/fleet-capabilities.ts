@@ -17,11 +17,11 @@
  *                       does NOT switch Codex tiers — single read-only option)
  */
 
+import { buildModelCatalog, ROLE_EFFORT_LEVELS } from "flywheel-config";
 import {
 	effectiveLeadBackend,
 	type LeadBackendId,
 } from "../lead-backends/lead-backend.js";
-import { EFFORT_LEVELS } from "../lead-effort.js";
 import type { LeadConfig } from "../ProjectConfig.js";
 
 /** A selectable level. `id: null` is the account-default tier (no override). */
@@ -55,13 +55,21 @@ export interface BackendOption {
  * FLY-671 tier) and APPENDED Sonnet 5 so all existing ordinals stay
  * byte-compatible; this only EXPANDS `computeAllowedModelTargets`.
  */
+const LEAD_CLAUDE_MODELS = buildModelCatalog("lead").providers.find(
+	(provider) => provider.id === "anthropic",
+)?.models;
+if (!LEAD_CLAUDE_MODELS) {
+	throw new Error("canonical model registry has no Anthropic Lead models");
+}
+
 export const CLAUDE_TIER_OPTIONS: readonly TierOption[] = [
-	{ id: "claude-fable-5", label: "Fable 5" },
-	{ id: "claude-opus-4-8[1m]", label: "Opus 4.8 (1M)" },
+	...LEAD_CLAUDE_MODELS.map((model) => ({
+		id: model.id,
+		label: model.label,
+	})),
+	// `null` remains the exact persisted representation of account default. It is
+	// a write target, not a duplicate model-registry entry.
 	{ id: null, label: "Opus 4.8" },
-	{ id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
-	{ id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
-	{ id: "claude-sonnet-5", label: "Sonnet 5" },
 ];
 
 /** Codex tier options: single, read-only GPT-5 (display-only; not switchable). */
@@ -76,7 +84,7 @@ export const CODEX_TIER_OPTIONS: readonly TierOption[] = [
  */
 export const EFFORT_OPTIONS: readonly TierOption[] = [
 	{ id: null, label: "默认" },
-	...EFFORT_LEVELS.map((e) => ({ id: e as string, label: e })),
+	...ROLE_EFFORT_LEVELS.map((e) => ({ id: e as string, label: e })),
 ];
 
 /**
@@ -104,7 +112,9 @@ export function computeEffortOptions(
 export function computeAllowedEffortTargets(
 	backend: LeadBackendId,
 ): Array<string | null> {
-	return backend === "codex-app-server" ? [null] : [null, ...EFFORT_LEVELS];
+	return backend === "codex-app-server"
+		? [null]
+		: [null, ...ROLE_EFFORT_LEVELS];
 }
 
 export const DISABLED_BACKEND_SWITCH = "受管后端切换 = FLY-264";

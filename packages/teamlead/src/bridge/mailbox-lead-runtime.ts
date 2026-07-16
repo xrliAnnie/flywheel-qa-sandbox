@@ -331,6 +331,13 @@ export class MailboxLeadRuntime implements LeadRuntime {
 			`[Event #${env.seq}] ${roleLabel}${e.event_type}`,
 			`ID: ${e.execution_id || "—"} | Issue: ${e.issue_identifier || e.issue_id || "—"}`,
 		];
+		if (
+			e.event_type === "session_started" &&
+			e.session_role === "design" &&
+			e.design_backend
+		) {
+			lines.push(`Design Backend: ${e.design_backend}`);
+		}
 		if (e.issue_title) lines.push(`Title: ${e.issue_title}`);
 		if (e.status) lines.push(`Status: ${e.status}`);
 		if (e.decision_route) lines.push(`Route: ${e.decision_route}`);

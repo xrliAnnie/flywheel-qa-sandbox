@@ -307,6 +307,45 @@ describe("buildRescueRuntime wiring", () => {
 
 // ── FLY-1224 (T4b) — phase-aware rescue-successor dispatch fields ──────────
 describe("buildRescueSuccessorDispatchFields (FLY-1224 R1 #1 — the 6th lane)", () => {
+	it("FLY-1259: locked claude design backend beats the enabled global switch", () => {
+		const previous = process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
+		process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "1";
+		try {
+			const f = buildRescueSuccessorDispatchFields({
+				chat_thread_role: "design",
+				session_role: "design",
+				dispatch_model: null,
+				design_backend: "claude",
+			} as never);
+			expect(f).toMatchObject({
+				designBackend: "claude",
+				dispatchVendor: "claude",
+				dispatchModel: "claude-fable-5",
+			});
+		} finally {
+			if (previous === undefined) {
+				delete process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
+			} else {
+				process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = previous;
+			}
+		}
+	});
+
+	it("FLY-1259: implement rescue carries metadata without changing its phase triple", () => {
+		const f = buildRescueSuccessorDispatchFields({
+			chat_thread_role: "implement",
+			session_role: "implement",
+			dispatch_model: null,
+			design_backend: "claude",
+		} as never);
+		expect(f).toMatchObject({
+			designBackend: "claude",
+			dispatchVendor: "codex",
+			dispatchModel: "gpt-5.6-sol",
+			dispatchEffort: "xhigh",
+		});
+	});
+
 	it("implement PHASE row with dispatch_model=NULL → full codex triple + shared-branch identity", () => {
 		// The exact pre-fix bug shape: orchestrator-spawned phase rows persist NO
 		// dispatch_model, so the old passthrough rescued a codex implement back

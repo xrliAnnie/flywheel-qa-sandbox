@@ -11,6 +11,7 @@
  */
 
 import {
+	type DesignBackend,
 	isThreeStagePhaseRole,
 	type PhaseDispatchVendor,
 	type RoleEffort,
@@ -217,9 +218,13 @@ export interface CloseAndDispatchDeps {
  * Pure + exported so the REAL production derivation is unit-testable (T4b).
  */
 export function buildRescueSuccessorDispatchFields(
-	s: Pick<Session, "chat_thread_role" | "session_role" | "dispatch_model">,
+	s: Pick<
+		Session,
+		"chat_thread_role" | "session_role" | "dispatch_model" | "design_backend"
+	>,
 ): {
 	sessionRole?: string;
+	designBackend?: DesignBackend;
 	dispatchModel?: string;
 	dispatchVendor?: PhaseDispatchVendor;
 	dispatchEffort?: RoleEffort;
@@ -235,9 +240,14 @@ export function buildRescueSuccessorDispatchFields(
 			dispatchModel: s.dispatch_model ?? undefined,
 		};
 	}
-	const dispatch = resolvePhaseDispatch(phaseRole);
+	const designOverride =
+		phaseRole === "design" && s.design_backend
+			? { vendor: s.design_backend }
+			: undefined;
+	const dispatch = resolvePhaseDispatch(phaseRole, process.env, designOverride);
 	return {
 		sessionRole: phaseRole,
+		...(s.design_backend && { designBackend: s.design_backend }),
 		dispatchModel: dispatch.model,
 		dispatchVendor: dispatch.vendor,
 		dispatchEffort: dispatch.effort,

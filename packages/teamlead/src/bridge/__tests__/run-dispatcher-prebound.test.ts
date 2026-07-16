@@ -82,6 +82,49 @@ describe("RetryDispatcher pre-bound successor id (D2)", () => {
 		expect(captured[0]?.executionId).toBe("succ-9");
 	});
 
+	it("threads only pinned generalized retry identity, capabilities, agent, and output ticket", async () => {
+		const d = makeDispatcher();
+		await d.dispatch({
+			...baseReq,
+			successorExecutionId: "succ-generalized",
+			generalizedExecution: {
+				executionId: "succ-generalized",
+				runId: "run-1",
+				nodeId: "produce",
+				attempt: 2,
+				snapshotDigest: "snapshot-digest",
+				dispatch: {
+					vendor: "codex",
+					model: "gpt-5.6-sol",
+					effort: "low",
+				},
+				capabilities: {
+					produces_output: true,
+					completion_route: "no_code",
+				},
+				agentContent: "Produce a bounded JSON result.",
+				outputCredential: "output-ticket",
+				idempotencyKey: "retry:pred-1:succ-generalized",
+			},
+		});
+		await d.drain();
+		expect(captured[0]).toMatchObject({
+			executionId: "succ-generalized",
+			generalizedExecutionContext: {
+				runId: "run-1",
+				nodeId: "produce",
+				attempt: 2,
+				snapshotDigest: "snapshot-digest",
+			},
+			workflowCapabilities: {
+				produces_output: true,
+				completion_route: "no_code",
+			},
+			workflowAgentContent: "Produce a bounded JSON result.",
+			workflowOutputCredential: "output-ticket",
+		});
+	});
+
 	it("without a pre-bound id the legacy behavior is unchanged (fresh UUID)", async () => {
 		const d = makeDispatcher();
 		const res = await d.dispatch({ ...baseReq });

@@ -284,6 +284,8 @@ export interface AdapterExecutionContext {
 	 * fleet-wide ingest bearer, a leak is scoped to one execution + TTL.
 	 */
 	workflowSubmissionCredential?: string;
+	/** FLY-1281: one-shot credential for a generalized generic node output. */
+	workflowOutputCredential?: string;
 	/**
 	 * FLY-191 Phase 2: the Bridge's StateStore path, propagated to the Runner
 	 * env as FLYWHEEL_STATE_DB_PATH so `flywheel-comm verify-approval` reads
@@ -360,6 +362,10 @@ export interface AdapterExecutionContext {
 	 * executionId so a replay (new Bridge process) computes the same path.
 	 */
 	launchCommitPath?: string;
+	/** FLY-1281: deterministic fenced token for the generalized launch gate. */
+	launchGateToken?: string;
+	/** Bridge-owned marker-first commit; adapters must not write the marker directly. */
+	commitWorkflowLaunch?: () => { ok: boolean; reason?: string };
 }
 
 // ---------------------------------------------------------------------------
