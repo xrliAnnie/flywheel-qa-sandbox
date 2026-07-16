@@ -268,8 +268,30 @@ tmux set-option -t "=roe:" remain-on-exit on 2>/dev/null
 new_wid=$(tmux new-window -d -t "=roe:" -P -F '#{window_id}' -n runner "sleep 60" 2>/dev/null)
 old_on_existing=$(tmux show-options -w -v -t "=roe:existing" remain-on-exit 2>/dev/null)
 old_on_runner=$(tmux show-options -w -v -t "=roe:$new_wid" remain-on-exit 2>/dev/null)
-if [[ "$old_on_existing" == "on" && "$old_on_runner" != "on" ]]; then
-  pass "§2.8 premise TRUE: old form set the pre-existing window (on) and left the runner window unset [${old_on_runner:-<unset>}]"
+#
+# Anti-vacuity for this NEGATIVE assertion ("the runner window did NOT get it").
+# Measured tmux 3.5a semantics (real server, this machine):
+#   unset option              -> rc=0, empty output
+#   option set to on          -> rc=0, "on"
+#   BOGUS window in real sess -> rc=0, and SILENTLY returns another window's
+#                                value (tmux falls back to the current window)
+#   bogus session             -> rc=1
+# So an rc check cannot separate "unset" from "read went wrong" — rc is 0 for
+# both, and a mistargeted read returns a plausible WRONG value rather than
+# failing. Two independent discriminators instead:
+#   (a) the target window must actually exist (else we may be reading a
+#       fallback window and calling it evidence);
+#   (b) a positive control: the same reader must return "on" for the window the
+#       old form DID hit — proving this ruler can see "on" at all, so an empty
+#       reading is a real unset rather than a broken read.
+runner_exists=no
+tmux list-windows -t "=roe" -F '#{window_id}' 2>/dev/null | grep -qx "$new_wid" && runner_exists=yes
+if [[ "$runner_exists" != "yes" ]]; then
+  fail "§2.8 premise UNTESTABLE: runner window [$new_wid] does not exist — any option read would silently fall back to another window"
+elif [[ "$old_on_existing" != "on" ]]; then
+  fail "§2.8 premise UNTESTABLE: positive control failed — reader did not see 'on' on the window the old form targeted (got [$old_on_existing]); an empty runner reading would prove nothing"
+elif [[ "$old_on_runner" != "on" ]]; then
+  pass "§2.8 premise TRUE: old form set the pre-existing window (on, reader proven) and left the existing runner window [$new_wid] unset [${old_on_runner:-<unset>}]"
 else
   fail "§2.8 premise NOT reproduced (existing=[$old_on_existing] runner=[$old_on_runner]) — the fix's rationale needs re-checking on this tmux"
 fi
@@ -285,14 +307,35 @@ fi
 
 # Behavioural end: with the option on, a window whose process exits stays as a
 # husk (pane_dead=1) instead of vanishing — the E3 semantics §2.8 restores.
-husk_wid=$(tmux new-window -d -t "=roe:" -P -F '#{window_id}' -n husktest "sh -c 'exit 0'" 2>/dev/null)
+#
+# Ordering matters. An earlier draft spawned `sh -c 'exit 0'` and set the option
+# afterwards — the process could die before the set-option landed, which is
+# exactly the post-create race plan.md:104 names. That made the result
+# scheduling-dependent: a flaky red, or a green that proved nothing. Instead the
+# pane waits on a release file, so we can prove the option is on BEFORE the
+# process is allowed to exit. This measures husk semantics, not the race.
+release="$TMPDIR_ROOT/husk-release"
+husk_wid=$(tmux new-window -d -t "=roe:" -P -F '#{window_id}' -n husktest \
+  "sh -c 'while [ ! -f \"$release\" ]; do sleep 0.05; done; exit 0'" 2>/dev/null)
 tmux set-option -w -t "=roe:$husk_wid" remain-on-exit on 2>/dev/null
-sleep 0.5
-husk_dead=$(tmux display-message -p -t "=roe:$husk_wid" '#{pane_dead}' 2>/dev/null || echo "<window destroyed>")
-if [[ "$husk_dead" == "1" ]]; then
-  pass "§2.8 husk semantics: window with remain-on-exit=on survives process exit as a dead pane (pane_dead=1)"
+husk_opt=$(tmux show-options -w -v -t "=roe:$husk_wid" remain-on-exit 2>/dev/null)
+husk_alive_before=$(tmux display-message -p -t "=roe:$husk_wid" '#{pane_dead}' 2>/dev/null || echo "")
+if [[ "$husk_opt" != "on" || "$husk_alive_before" != "0" ]]; then
+  fail "§2.8 husk semantics UNTESTABLE: could not arm the pane before exit (option=[$husk_opt] pane_dead_before=[$husk_alive_before])"
 else
-  fail "§2.8 husk semantics: expected pane_dead=1, got [$husk_dead]"
+  # Option proven on and pane proven still alive → now let it exit.
+  : > "$release"
+  husk_dead=""
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    husk_dead=$(tmux display-message -p -t "=roe:$husk_wid" '#{pane_dead}' 2>/dev/null || echo "<window destroyed>")
+    [[ "$husk_dead" == "1" || "$husk_dead" == "<window destroyed>" ]] && break
+    sleep 0.1
+  done
+  if [[ "$husk_dead" == "1" ]]; then
+    pass "§2.8 husk semantics: pane armed with remain-on-exit=on BEFORE exit → window survives as a dead pane (pane_dead=1)"
+  else
+    fail "§2.8 husk semantics: expected pane_dead=1, got [$husk_dead]"
+  fi
 fi
 
 echo
