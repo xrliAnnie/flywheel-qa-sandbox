@@ -21,17 +21,18 @@
  *     teardown is still pending has a LIVE tmux window, and deleting the CommDB
  *     row (the source-of-truth tmux target, per tmux-lookup.ts) would strand it.
  *     Keeping `alive`/`indeterminate` rows preserves the teardown target.
- *   - `failed`/`blocked` (CRASH_PRESERVE) are deliberately EXCLUDED: retry's
+ *   - `failed`/`blocked` (CRASH_PRESERVE) remain excluded by default: retry's
  *     `closeRunner(forcePreserved: true)` reads the CommDB tmux target to tear
- *     the preserved window/tab down. Hiding their CommDB residue from the list is
- *     a read-model concern, tracked separately.
+ *     the preserved window/tab down. FLY-1066's opt-in harvest may finalize one
+ *     only after the target is provably dead, when that teardown target and its
+ *     scrollback no longer exist.
  *
- * Safety, structurally (never a whitelist): a missing or non-terminal FSM row is
- * always kept (no proof of a final outcome), so genuinely-alive runners and
- * FSM-less test-scratch CommDBs are exempt; terminal states never transition
- * back to running and a retry successor is a DIFFERENT execution_id, so deleting
- * by execution_id can never orphan a live runner. Best-effort: any failure logs
- * a warning and is swallowed (a reconcile must never block Bridge boot).
+ * Safety, structurally (never a whitelist): absent-FSM rows require the explicit
+ * harvest option, a valid age beyond its dispatch guard, and a proven-dead target.
+ * Otherwise they retain the exact FLY-817 keep behavior. Terminal states never
+ * transition back to running and a retry successor is a DIFFERENT execution_id,
+ * so deleting by execution_id can never orphan a live runner. Best-effort: any
+ * failure logs a warning and is swallowed (a reconcile must never block boot).
  */
 
 import { CommDB } from "flywheel-comm/db";
@@ -68,16 +69,36 @@ export interface CommDbFsmReconcileResult {
 	reconciled: number;
 	/** kept — FSM row missing OR a non-terminal/non-deletable state. */
 	keptNonTerminal: number;
-	/** kept — FSM is `failed`/`blocked` (CRASH_PRESERVE; never deleted here). */
+	/** kept — FSM is `failed`/`blocked` and harvest is off or target not dead. */
 	keptPreserve: number;
 	/** kept — deletable-terminal FSM but tmux target alive/indeterminate. */
 	keptAliveTarget: number;
 	/** proven-dead candidates whose atomic CommDB finalization failed. */
 	finalizeFailed: number;
+	/** FLY-1066 opt-in counters; absent preserves the exact FLY-817 result shape. */
+	harvest?: {
+		orphanHarvested: number;
+		preserveHarvested: number;
+		keptOrphanCandidate: number;
+		keptPreserveAlive: number;
+	};
 }
 
 /** FSM-status lookup: execution_id → status (undefined ⇒ no FSM row). */
 export type FsmStatusLookup = (executionId: string) => string | undefined;
+
+function parseHarvestStartedAt(
+	startedAt: string | undefined,
+	nowMs: number,
+): number | undefined {
+	if (!startedAt || !Number.isFinite(nowMs)) return undefined;
+	const iso = startedAt.includes("T")
+		? startedAt
+		: `${startedAt.replace(" ", "T")}Z`;
+	const startedAtMs = Date.parse(iso);
+	if (!Number.isFinite(startedAtMs) || startedAtMs > nowMs) return undefined;
+	return startedAtMs;
+}
 
 /**
  * Reconcile one project's CommDB against the Bridge FSM. Deletes a `running` row
@@ -91,6 +112,10 @@ export async function reconcileCommDbRunningAgainstFsm(
 	opts: {
 		dbPath?: string;
 		probe?: (tmuxWindow: string) => Promise<TmuxWindowProbe>;
+		harvest?: {
+			orphanMinAgeMs: number;
+			nowMs: () => number;
+		};
 		finalizeSession?: (db: CommDB, executionId: string) => unknown;
 		onFinalizeOutcome?: (
 			executionId: string,
@@ -107,6 +132,14 @@ export async function reconcileCommDbRunningAgainstFsm(
 		keptAliveTarget: 0,
 		finalizeFailed: 0,
 	};
+	if (opts.harvest) {
+		result.harvest = {
+			orphanHarvested: 0,
+			preserveHarvested: 0,
+			keptOrphanCandidate: 0,
+			keptPreserveAlive: 0,
+		};
+	}
 	const dbPath = opts.dbPath ?? resolveCommDbPath(projectName);
 	if (!dbPath) return result;
 	const probe = opts.probe ?? probeTmuxWindowLiveness;
@@ -121,15 +154,48 @@ export async function reconcileCommDbRunningAgainstFsm(
 		result.scanned = running.length;
 		for (const s of running) {
 			const fsm = fsmStatusOf(s.execution_id);
-			// CRASH_PRESERVE (failed/blocked) — decided by FSM alone, never probed
-			// (BLOCKER 1: the CommDB tmux target must survive for retry cleanup).
+			let harvestKind: "orphan" | "preserve" | undefined;
+			// FLY-817 legacy: preserve targets are never probed. FLY-1066 opt-in:
+			// once the target is PROVEN dead, the teardown target + scrollback no
+			// longer exist, so the stale registration can be finalized safely.
 			if (fsm && CRASH_PRESERVE_STATES.has(fsm)) {
-				result.keptPreserve++;
-				continue;
+				if (!opts.harvest) {
+					result.keptPreserve++;
+					continue;
+				}
+				const state = await probe(s.tmux_window);
+				if (state !== "dead") {
+					result.keptPreserve++;
+					result.harvest!.keptPreserveAlive++;
+					continue;
+				}
+				harvestKind = "preserve";
 			}
-			// FSM row missing (test-scratch) OR a non-deletable / non-terminal state
-			// (running/reconnecting/awaiting_review/approved_to_ship/pending/…) → keep.
-			if (!fsm || !RECONCILE_DELETABLE_STATES.has(fsm)) {
+			// FLY-1066 CommDB-only orphan: the 24h guard is the actual mid-dispatch
+			// safety boundary. Missing/invalid/future timestamps fail closed before
+			// probing; alive/indeterminate targets are always kept.
+			if (!fsm && opts.harvest) {
+				const nowMs = opts.harvest.nowMs();
+				const startedAtMs = parseHarvestStartedAt(s.started_at, nowMs);
+				if (
+					startedAtMs === undefined ||
+					nowMs - startedAtMs <= opts.harvest.orphanMinAgeMs
+				) {
+					result.keptNonTerminal++;
+					result.harvest!.keptOrphanCandidate++;
+					continue;
+				}
+				const state = await probe(s.tmux_window);
+				if (state !== "dead") {
+					result.keptNonTerminal++;
+					result.harvest!.keptOrphanCandidate++;
+					continue;
+				}
+				harvestKind = "orphan";
+			}
+			// FSM row missing with harvest off, OR a non-deletable / non-terminal
+			// state (running/reconnecting/awaiting_review/approved_to_ship/pending/…).
+			if (!harvestKind && (!fsm || !RECONCILE_DELETABLE_STATES.has(fsm))) {
 				result.keptNonTerminal++;
 				continue;
 			}
@@ -151,6 +217,8 @@ export async function reconcileCommDbRunningAgainstFsm(
 					deletedSessionCount: raw?.deletedSessionCount ?? 0,
 				});
 				result.reconciled++;
+				if (harvestKind === "orphan") result.harvest!.orphanHarvested++;
+				if (harvestKind === "preserve") result.harvest!.preserveHarvested++;
 			} catch (err) {
 				result.finalizeFailed++;
 				opts.onFinalizeOutcome?.(s.execution_id, projectName, {

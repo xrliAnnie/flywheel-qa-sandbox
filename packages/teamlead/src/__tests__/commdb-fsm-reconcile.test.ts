@@ -9,6 +9,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -34,6 +35,18 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 	/** Seed a CommDB `running` row (the only shape a zombie ever has). */
 	function seedRunning(execId: string, win = `base:@${execId}`): void {
 		db.registerSession(execId, win, "flywheel", `i-${execId}`, "lead-a");
+	}
+
+	/** Set the raw CommDB clock value so age parsing is exercised, not mocked. */
+	function setStartedAt(execId: string, startedAt: string | null): void {
+		const raw = new Database(dbPath);
+		try {
+			raw
+				.prepare("UPDATE sessions SET started_at = ? WHERE execution_id = ?")
+				.run(startedAt, execId);
+		} finally {
+			raw.close();
+		}
 	}
 
 	/** FSM lookup from a plain map — undefined ⇒ no FSM row (test scratch). */
@@ -132,7 +145,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 		expect(db.isQuestionPending(qid)).toBe(true);
 	});
 
-	it("BLOCKER 1: NEVER deletes preserve rows (failed/blocked), even with a dead tmux target", async () => {
+	it("BLOCKER 1 legacy path: without harvest, NEVER deletes preserve rows even with a dead target", async () => {
 		seedRunning("f1");
 		seedRunning("b1");
 		const probe = vi.fn(async () => "dead" as const);
@@ -284,6 +297,162 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 		);
 		expect(res.reconciled).toBe(1);
 		expect(db.getSession("pend")).toBeUndefined();
+	});
+
+	describe("FLY-1066 opt-in residue harvest", () => {
+		const nowMs = Date.parse("2026-07-16T12:00:00Z");
+		const orphanMinAgeMs = 24 * 60 * 60 * 1000;
+		const harvest = { orphanMinAgeMs, nowMs: () => nowMs };
+
+		it("harvests an old CommDB-only registration only when its target is proven dead, retiring its gate", async () => {
+			seedRunning("orphan-old", "runner-flywheel:pending");
+			setStartedAt("orphan-old", "2026-07-15 11:59:59");
+			const qid = db.insertQuestion("orphan-old", "lead-a", "still there?", {
+				checkpoint: "approve_to_ship",
+			});
+
+			const result = await reconcileCommDbRunningAgainstFsm(
+				"flywheel",
+				fsmFrom({}),
+				{ dbPath, probe: async () => "dead", harvest },
+			);
+
+			expect(result).toMatchObject({
+				scanned: 1,
+				reconciled: 1,
+				keptNonTerminal: 0,
+				harvest: {
+					orphanHarvested: 1,
+					preserveHarvested: 0,
+					keptOrphanCandidate: 0,
+					keptPreserveAlive: 0,
+				},
+			});
+			expect(db.getSession("orphan-old")).toBeUndefined();
+			expect(db.isQuestionPending(qid)).toBe(false);
+		});
+
+		it("keeps young, missing, invalid, and future-dated CommDB-only registrations without probing", async () => {
+			const timestamps: Record<string, string | null> = {
+				young: "2026-07-15 12:00:01",
+				missing: null,
+				invalid: "not-a-sqlite-datetime",
+				future: "2026-07-16 12:00:01",
+			};
+			for (const [id, startedAt] of Object.entries(timestamps)) {
+				seedRunning(id);
+				setStartedAt(id, startedAt);
+			}
+			const probe = vi.fn(async () => "dead" as const);
+
+			const result = await reconcileCommDbRunningAgainstFsm(
+				"flywheel",
+				fsmFrom({}),
+				{ dbPath, probe, harvest },
+			);
+
+			expect(result.reconciled).toBe(0);
+			expect(result.keptNonTerminal).toBe(4);
+			expect(result.harvest?.keptOrphanCandidate).toBe(4);
+			expect(probe).not.toHaveBeenCalled();
+			for (const id of Object.keys(timestamps)) {
+				expect(db.getSession(id)).toBeDefined();
+			}
+		});
+
+		it("keeps old CommDB-only registrations when tmux is alive or indeterminate", async () => {
+			seedRunning("orphan-alive");
+			seedRunning("orphan-unknown");
+			setStartedAt("orphan-alive", "2026-07-14 12:00:00");
+			setStartedAt("orphan-unknown", "2026-07-14 12:00:00");
+
+			const result = await reconcileCommDbRunningAgainstFsm(
+				"flywheel",
+				fsmFrom({}),
+				{
+					dbPath,
+					harvest,
+					probe: async (target) =>
+						target.endsWith("orphan-alive") ? "alive" : "indeterminate",
+				},
+			);
+
+			expect(result.reconciled).toBe(0);
+			expect(result.keptNonTerminal).toBe(2);
+			expect(result.harvest?.keptOrphanCandidate).toBe(2);
+			expect(db.getSession("orphan-alive")).toBeDefined();
+			expect(db.getSession("orphan-unknown")).toBeDefined();
+		});
+
+		it("harvests failed and blocked registrations only when their preserved target is proven dead", async () => {
+			seedRunning("failed-dead");
+			seedRunning("blocked-dead");
+			seedRunning("failed-alive");
+			seedRunning("failed-unknown");
+
+			const result = await reconcileCommDbRunningAgainstFsm(
+				"flywheel",
+				fsmFrom({
+					"failed-dead": "failed",
+					"blocked-dead": "blocked",
+					"failed-alive": "failed",
+					"failed-unknown": "failed",
+				}),
+				{
+					dbPath,
+					harvest,
+					probe: async (target) => {
+						if (target.endsWith("failed-alive")) return "alive";
+						if (target.endsWith("failed-unknown")) return "indeterminate";
+						return "dead";
+					},
+				},
+			);
+
+			expect(result.reconciled).toBe(2);
+			expect(result.keptPreserve).toBe(2);
+			expect(result.harvest).toEqual({
+				orphanHarvested: 0,
+				preserveHarvested: 2,
+				keptOrphanCandidate: 0,
+				keptPreserveAlive: 2,
+			});
+			expect(db.getSession("failed-dead")).toBeUndefined();
+			expect(db.getSession("blocked-dead")).toBeUndefined();
+			expect(db.getSession("failed-alive")).toBeDefined();
+			expect(db.getSession("failed-unknown")).toBeDefined();
+		});
+
+		it("preserves the exact legacy result shape and no-probe behavior when harvest is omitted", async () => {
+			seedRunning("legacy-orphan");
+			seedRunning("legacy-preserve");
+			setStartedAt("legacy-orphan", "2026-05-01 00:00:00");
+			const probe = vi.fn(async () => "dead" as const);
+
+			const result = await reconcileCommDbRunningAgainstFsm(
+				"flywheel",
+				fsmFrom({ "legacy-preserve": "failed" }),
+				{ dbPath, probe },
+			);
+
+			expect(Object.keys(result)).toEqual([
+				"scanned",
+				"reconciled",
+				"keptNonTerminal",
+				"keptPreserve",
+				"keptAliveTarget",
+				"finalizeFailed",
+			]);
+			expect(result).toEqual({
+				scanned: 2,
+				reconciled: 0,
+				keptNonTerminal: 1,
+				keptPreserve: 1,
+				keptAliveTarget: 0,
+				finalizeFailed: 0,
+			});
+			expect(probe).not.toHaveBeenCalled();
+		});
 	});
 
 	describe("best-effort (never throws)", () => {
