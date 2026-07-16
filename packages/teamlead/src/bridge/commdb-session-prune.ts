@@ -15,8 +15,9 @@
  *      provably gone. FLY-1066 extends eligibility to failed/blocked only while
  *      its residue-harvest kill-switch is enabled.
  *
- * Safety: only terminal (completed/timeout) rows are swept, and only when the
- * tmux probe says the window is gone — a still-alive parked runner's row is left
+ * Safety: only eligible terminal rows are swept (completed/timeout always;
+ * failed/blocked only under the residue-harvest switch), and only when the tmux
+ * probe says the window is gone — a still-alive parked runner's row is left
  * untouched. The path is project-name-guarded (no traversal) and best-effort:
  * any failure logs a warning and is swallowed (a prune must never break a close
  * or block Bridge startup).
@@ -108,8 +109,9 @@ export interface CommDbPruneResult {
 }
 
 /**
- * Boot sweep: delete terminal (completed/timeout) CommDB session rows whose tmux
- * window is **provably** gone. Uses the tri-state `probeTmuxWindowLiveness` (NOT
+ * Boot/maintenance sweep: delete eligible terminal CommDB session rows whose
+ * tmux window is **provably** gone. Uses the tri-state
+ * `probeTmuxWindowLiveness` (NOT
  * the boolean `isTmuxWindowAlive`, which collapses a transient/indeterminate
  * probe failure into "not alive") so a parked-alive runner whose probe merely
  * timed out is never deleted — only a `dead` verdict deletes (Codex R1 HIGH).
