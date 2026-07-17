@@ -1,13 +1,22 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
 import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
 import { describe, expect, it } from "vitest";
+import { drainWorkflowSourceEvents } from "../bridge/founder-approval-projector.js";
 import { StateStore } from "../StateStore.js";
 import { loadBundledWorkflowSeeds } from "../workflow-template.js";
+
+const WORKFLOW_ON = {
+	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+};
 
 const HEAD = "a".repeat(40);
 
@@ -133,8 +142,9 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 			projectName: "flywheel",
 			taskCategory: "code",
 			templateId: seed.templateId,
-			claimsReadEnrolled: false,
+			claimsReadEnrolled: true,
 			actor: "lead",
+			env: WORKFLOW_ON,
 			startReservation: {
 				idempotencyKey: "start-engine",
 				selectionDigest: "selection",
@@ -153,7 +163,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 				now: "2026-07-16T00:01:00.000Z",
 				expiresAt: "2026-07-16T01:01:00.000Z",
 				absoluteDeadlineAt: "2026-07-17T00:01:00.000Z",
-				env: { FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" },
+				env: WORKFLOW_ON,
 			}),
 		).toMatchObject({ ok: true });
 		const payload = {
@@ -216,6 +226,123 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 		store.close();
 	});
 
+	it("FLY-1307 hard gate: proves engine TURN authority from CommDB source outbox through the durable projector", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1307-source-outbox-"));
+		const commPath = join(root, "comm.db");
+		const store = await StateStore.create(join(root, "teamlead.db"));
+		try {
+			const seed = loadBundledWorkflowSeeds().find(
+				(candidate) => candidate.templateId === "tpl_eng_heavy",
+			)!;
+			store.importWorkflowTemplateSeed(seed);
+			store.materializeWorkflowRun({
+				runId: "engine-run",
+				issueId: "FLY-1307",
+				projectName: "flywheel",
+				taskCategory: "code",
+				templateId: seed.templateId,
+				claimsReadEnrolled: true,
+				actor: "lead",
+				env: WORKFLOW_ON,
+				startReservation: {
+					idempotencyKey: "start-engine",
+					selectionDigest: "selection",
+					nodeId: "design",
+					attempt: 1,
+					executionId: "engine-design",
+					createdAt: "2026-07-16T00:00:00.000Z",
+				},
+			});
+			expect(
+				store.admitGeneralizedWorkflowExecution({
+					runId: "engine-run",
+					nodeId: "design",
+					executionId: "engine-design",
+					attempt: 1,
+					now: "2026-07-16T00:01:00.000Z",
+					expiresAt: "2026-07-16T01:01:00.000Z",
+					absoluteDeadlineAt: "2026-07-17T00:01:00.000Z",
+					env: WORKFLOW_ON,
+				}),
+			).toMatchObject({ ok: true });
+
+			const comm = new CommDB(commPath);
+			comm.grantTurn("FLY-1307", "engine-design", "design", 1, {
+				project: "flywheel",
+				sourceEventId: "turn:engine:design",
+				targetRunId: "engine-run",
+			});
+			comm.grantTurn("FLY-1307", "forged-implement", "implement", 2, {
+				project: "flywheel",
+				sourceEventId: "turn:engine:forged",
+				targetRunId: "engine-run",
+			});
+			const sourceRows = comm.listWorkflowSourceEventsAfter(0);
+			const historyRows = comm.listTurnSourceHistory("FLY-1307");
+			comm.close();
+
+			// Compliance evidence exists in the source database before StateStore is
+			// touched. The projector is the only mutation seam used below; this test
+			// never calls applyWorkflowSourceEvent to manufacture a passing row.
+			expect(sourceRows).toHaveLength(2);
+			expect(historyRows).toEqual([
+				expect.objectContaining({
+					target_run_id: "engine-run",
+					source_event_id: "turn:engine:design",
+				}),
+				expect.objectContaining({
+					target_run_id: "engine-run",
+					source_event_id: "turn:engine:forged",
+				}),
+			]);
+			expect(store.listWorkflowRunEvents("engine-run")).toHaveLength(1);
+
+			const drained = drainWorkflowSourceEvents({
+				projects: ["flywheel"],
+				openCommDb: () => new CommDB(commPath),
+				store,
+			});
+			expect(drained).toEqual({
+				applied: 1,
+				replayed: 0,
+				deadlettered: 1,
+				skipped: 0,
+			});
+			expect(store.getWorkflowSourceCursor("flywheel")).toBe(
+				sourceRows[1]?.row_id,
+			);
+			expect(
+				store.getWorkflowSourceDeadletter("flywheel", "turn:engine:forged"),
+			).toMatchObject({ reason: expect.stringMatching(/ownership mismatch/) });
+			expect(
+				store
+					.listWorkflowRunEvents("engine-run")
+					.filter((event) => event.kind === "turn_granted"),
+			).toEqual([
+				expect.objectContaining({
+					event_uid: "source_turn:flywheel:turn:engine:design",
+					execution_id: "engine-design",
+				}),
+			]);
+
+			// Cursor replay is a no-op, and the terminal poison is never promoted to
+			// a receipt or a run event that could be counted as success.
+			expect(
+				drainWorkflowSourceEvents({
+					projects: ["flywheel"],
+					openCommDb: () => new CommDB(commPath),
+					store,
+				}),
+			).toEqual({ applied: 0, replayed: 0, deadlettered: 0, skipped: 0 });
+			expect(
+				store.getWorkflowSourceDeadletter("flywheel", "turn:engine:design"),
+			).toBeUndefined();
+		} finally {
+			store.close();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("atomically terminalizes a product v2 run only when founder source completes all ship claims", async () => {
 		const store = await StateStore.create(":memory:");
 		const root = mkdtempSync(join(tmpdir(), "fly1307-product-source-"));
@@ -227,10 +354,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 		const seed = loadBundledWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_product_v1",
 		)!;
-		const flags = {
-			FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
-		};
+		const flags = WORKFLOW_ON;
 		store.importWorkflowTemplateSeed(seed, flags);
 		store.materializeWorkflowRun({
 			runId: "product-run",
@@ -238,7 +362,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 			projectName: "flywheel",
 			taskCategory: "product",
 			templateId: seed.templateId,
-			claimsReadEnrolled: false,
+			claimsReadEnrolled: true,
 			actor: "lead",
 			canonicalRoot: root,
 			env: flags,

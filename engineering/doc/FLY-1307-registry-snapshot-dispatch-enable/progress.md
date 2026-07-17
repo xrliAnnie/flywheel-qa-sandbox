@@ -1,13 +1,15 @@
 ---
 issue: FLY-1307
-phase: implement
-phaseCursor: 4/5
-updated: 2026-07-16T18:55:52-07:00
-nextStep: "PR-7.5 exact-head review R5 blocking findings fixed with RED/GREEN coverage; verify, commit, push, and request a fresh exact-head cross-family review before independent QA. progress helper remains unavailable because the inherited exec is awaiting_review; Lead approved commit-carried ledger updates."
+phase: qa
+phaseCursor: 6/6
+updated: 2026-07-16T23:35:00-07:00
+nextStep: "QA round 4 = PASS(R9 @ 0dffb320b)。等 Tadashi 定两件事:① head 漂移(QA 报告 push→f4669725e,Codex R9 approved 绑 0dffb320b)是否请 Codex 增量 re-review;② approve gate 由我开还是他统一呈 Annie(他说 #623+#626 统一呈)。E2E 13/13 建议低负载窗口/FLY-529 QA Room 补。"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1307 progress
-**phase**: implement (4/5)
-**next**: PR-7.5 精确 head 的 R5 review 阻塞项已按 RED/GREEN 修复；下一步验证、commit、push，然后申请新的精确 head 跨模型家族 review，通过后才进独立 QA。progress helper 因继承 exec 仍为 awaiting_review 而拒绝写入，Lead 已批准改为随实现 commit 携带 ledger 更新。
+**phase**: qa (6/6) — **PASS**(带明示限定)
+**verdict**: round3 kickback 的等价 harness 空过已根治(同两刀突变现在都变红);三段式 entry 强制 / idempotency / binding 收紧全部 mutation-verified 为真;CI 绿。
+**限定**: 真机 E2E 未取得 13/13 干净复现 —— 已证实为满载生产机 pane 计时超 harness 窗口(qa probe 实际返回 200),非 R9 缺陷;建议低负载窗口/QA Room 补完整绿。
+**next**: 等 Tadashi 定 head 漂移处置 + approve gate 归属。不抢开 approve。

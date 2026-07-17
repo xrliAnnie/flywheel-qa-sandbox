@@ -93,39 +93,60 @@ function seedSession(store: StateStore, over: Partial<Session> = {}): void {
 }
 
 function bindEngineRun(store: StateStore, executionId = "exec-1"): void {
-	const seed = loadBundledWorkflowSeeds().find(
-		(candidate) => candidate.templateId === "tpl_eng_heavy",
-	)!;
-	store.importWorkflowTemplateSeed(seed);
-	store.materializeWorkflowRun({
-		runId: "engine-run",
-		issueId: "FLY-921",
-		projectName: "proj",
-		taskCategory: "code",
-		templateId: seed.templateId,
-		claimsReadEnrolled: false,
-		actor: "lead",
-		startReservation: {
-			idempotencyKey: "engine-start",
-			selectionDigest: "selection",
-			nodeId: "design",
-			attempt: 1,
-			executionId,
-			createdAt: "2026-07-01T00:00:00.000Z",
-		},
-	});
-	expect(
-		store.admitGeneralizedWorkflowExecution({
+	const dispatchBak = process.env.FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH;
+	const writeBak = process.env.FLYWHEEL_WORKFLOW_CLAIMS_WRITE;
+	const readBak = process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
+	try {
+		process.env.FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH = "1";
+		process.env.FLYWHEEL_WORKFLOW_CLAIMS_WRITE = "1";
+		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "1";
+		const seed = loadBundledWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		)!;
+		store.importWorkflowTemplateSeed(seed);
+		store.materializeWorkflowRun({
 			runId: "engine-run",
-			nodeId: "design",
-			executionId,
-			attempt: 1,
-			now: "2026-07-01T00:01:00.000Z",
-			expiresAt: "2027-07-01T00:01:00.000Z",
-			absoluteDeadlineAt: "2027-07-02T00:01:00.000Z",
-			env: { FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" },
-		}).ok,
-	).toBe(true);
+			issueId: "FLY-921",
+			projectName: "proj",
+			taskCategory: "code",
+			templateId: seed.templateId,
+			claimsReadEnrolled: false,
+			actor: "lead",
+			startReservation: {
+				idempotencyKey: "engine-start",
+				selectionDigest: "selection",
+				nodeId: "design",
+				attempt: 1,
+				executionId,
+				createdAt: "2026-07-01T00:00:00.000Z",
+			},
+		});
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "engine-run",
+				nodeId: "design",
+				executionId,
+				attempt: 1,
+				now: "2026-07-01T00:01:00.000Z",
+				expiresAt: "2027-07-01T00:01:00.000Z",
+				absoluteDeadlineAt: "2027-07-02T00:01:00.000Z",
+				env: {
+					FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+					FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+				},
+			}).ok,
+		).toBe(true);
+	} finally {
+		for (const [key, value] of Object.entries({
+			FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: dispatchBak,
+			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: writeBak,
+			FLYWHEEL_WORKFLOW_CLAIMS_READ: readBak,
+		})) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
 }
 
 interface Setup {
@@ -305,7 +326,9 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 				?.payload,
 		).toMatchObject({
 			engineShipEligible: false,
-			engineShipReason: "qa_passed:attempt_unavailable",
+			// The snapshot-bound ship gate now fails at the first missing durable
+			// authority: this fixture never materialized a worktree head.
+			engineShipReason: "worktree_not_found",
 		});
 	});
 

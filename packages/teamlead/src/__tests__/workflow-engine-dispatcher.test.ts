@@ -16,6 +16,12 @@ import { StateStore } from "../StateStore.js";
 import { loadBundledWorkflowSeeds } from "../workflow-template.js";
 
 const HEAD = "a".repeat(40);
+const WORKFLOW_ON = {
+	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+};
 
 async function storeWithIntent(target: "implement" | "qa") {
 	const store = await StateStore.create(":memory:");
@@ -29,8 +35,9 @@ async function storeWithIntent(target: "implement" | "qa") {
 		projectName: "flywheel",
 		taskCategory: "code",
 		templateId: seed.templateId,
-		claimsReadEnrolled: false,
+		claimsReadEnrolled: true,
 		actor: "lead",
+		env: WORKFLOW_ON,
 		startReservation: {
 			idempotencyKey: "engine-start",
 			selectionDigest: "selection",
@@ -120,8 +127,7 @@ async function storeWithProductOutputIntent() {
 		(candidate) => candidate.templateId === "tpl_product_v1",
 	)!;
 	const env = {
-		FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-		FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+		...WORKFLOW_ON,
 	};
 	store.importWorkflowTemplateSeed(seed, env);
 	store.materializeWorkflowRun({
@@ -130,7 +136,7 @@ async function storeWithProductOutputIntent() {
 		projectName: "flywheel",
 		taskCategory: "product",
 		templateId: seed.templateId,
-		claimsReadEnrolled: false,
+		claimsReadEnrolled: true,
 		actor: "lead",
 		canonicalRoot,
 		env,
@@ -196,6 +202,95 @@ function fakeStartDispatcher(store: StateStore) {
 }
 
 describe("WorkflowEngineDispatcher", () => {
+	it.each([
+		["v1", "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH"],
+		["v1", "FLYWHEEL_WORKFLOW_CLAIMS_WRITE"],
+		["v1", "FLYWHEEL_WORKFLOW_CLAIMS_READ"],
+		["v2", "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH"],
+		["v2", "FLYWHEEL_WORKFLOW_CLAIMS_WRITE"],
+		["v2", "FLYWHEEL_WORKFLOW_CLAIMS_READ"],
+		["v2", "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES"],
+	] as const)(
+		"holds an existing %s engine successor without mutating it when %s is removed",
+		async (schema, missing) => {
+			const fixture =
+				schema === "v1"
+					? {
+							store: await storeWithIntent("implement"),
+							canonicalRoot: undefined,
+						}
+					: await storeWithProductOutputIntent();
+			const { store } = fixture;
+			const intent = store.listNonTerminalWorkflowSideEffects()[0]!;
+			store.upsertSession({
+				execution_id: intent.execution_id,
+				issue_id: "FLY-1307",
+				project_name: "flywheel",
+				status: "running",
+			});
+			const env = { ...WORKFLOW_ON };
+			delete env[missing];
+			const start = vi.fn();
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: {
+					start,
+					getInflightCount: () => 0,
+					validateAgentName: () => ({ ok: true as const }),
+				} as unknown as IStartDispatcher,
+				env,
+			});
+
+			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+			expect(start).not.toHaveBeenCalled();
+			expect(store.listNonTerminalWorkflowSideEffects()[0]).toMatchObject({
+				state: "intent_recorded",
+			});
+			store.close();
+			if (fixture.canonicalRoot) {
+				rmSync(fixture.canonicalRoot, { recursive: true, force: true });
+			}
+		},
+	);
+
+	it("reuses one launch owner so a transient start failure retries without a 60-minute self-fence", async () => {
+		const store = await storeWithIntent("implement");
+		let attempts = 0;
+		const start = vi.fn(async (request: StartRequest) => {
+			attempts += 1;
+			if (attempts === 1) throw new Error("transient spawn failure");
+			const committed = request.generalizedExecution?.commitWorkflowLaunch?.();
+			if (!committed?.ok) throw new Error(committed?.reason ?? "not_committed");
+			store.upsertSession({
+				execution_id: request.generalizedExecution!.executionId,
+				issue_id: request.issueId,
+				project_name: request.projectName,
+				status: "running",
+				session_role: request.sessionRole,
+			});
+			return {
+				executionId: request.generalizedExecution!.executionId,
+				issueId: request.issueId,
+			};
+		});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: {
+				start,
+				getInflightCount: () => 0,
+				validateAgentName: () => ({ ok: true as const }),
+			} as IStartDispatcher,
+			env: WORKFLOW_ON,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1307-stable-owner-")),
+			now: () => new Date("2026-07-16T00:06:00.000Z"),
+			resolvePredecessorHead: async () => HEAD,
+		});
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(start).toHaveBeenCalledTimes(2);
+		store.close();
+	});
+
 	it("attaches rejection containment to initial and periodic reconciles", async () => {
 		vi.useFakeTimers();
 		const store = {
@@ -259,7 +354,7 @@ describe("WorkflowEngineDispatcher", () => {
 			store,
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1307-engine-dispatch-")),
-			env: { FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" },
+			env: WORKFLOW_ON,
 			resolvePredecessorHead: async () => HEAD,
 		});
 		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
@@ -350,7 +445,7 @@ describe("WorkflowEngineDispatcher", () => {
 			store,
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1307-engine-fix-")),
-			env: { FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" },
+			env: WORKFLOW_ON,
 			resolvePredecessorHead: async () => HEAD,
 			resolveLeadId: () => "flywheel-eng-lead",
 		});
@@ -373,7 +468,7 @@ describe("WorkflowEngineDispatcher", () => {
 			store,
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1307-engine-qa-")),
-			env: { FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" },
+			env: WORKFLOW_ON,
 			resolvePredecessorHead: async () => HEAD,
 		});
 		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
@@ -397,7 +492,7 @@ describe("WorkflowEngineDispatcher", () => {
 			now: "2026-07-16T00:11:00.000Z",
 			expiresAt: "2026-07-16T01:11:00.000Z",
 			absoluteDeadlineAt: "2026-07-17T00:11:00.000Z",
-			env: { FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" },
+			env: WORKFLOW_ON,
 		});
 		expect(admitted).toMatchObject({
 			ok: true,
@@ -410,7 +505,7 @@ describe("WorkflowEngineDispatcher", () => {
 			store,
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1307-engine-recover-")),
-			env: { FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" },
+			env: WORKFLOW_ON,
 			now: () => new Date("2026-07-16T00:12:00.000Z"),
 			resolvePredecessorHead: async () => HEAD,
 		});
@@ -436,7 +531,7 @@ describe("WorkflowEngineDispatcher", () => {
 			now: "2026-07-16T00:11:00.000Z",
 			expiresAt: "2026-07-16T01:11:00.000Z",
 			absoluteDeadlineAt: "2026-07-17T00:11:00.000Z",
-			env: { FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" },
+			env: WORKFLOW_ON,
 		});
 		expect(admitted).toMatchObject({
 			ok: true,
@@ -466,7 +561,7 @@ describe("WorkflowEngineDispatcher", () => {
 			store,
 			startDispatcher: fake.dispatcher,
 			stateRoot,
-			env: { FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" },
+			env: WORKFLOW_ON,
 			now: () => new Date("2026-07-16T00:12:00.000Z"),
 			resolvePredecessorHead: async () => HEAD,
 			probeLaunchLiveness: async () => "dead",
@@ -501,12 +596,59 @@ describe("WorkflowEngineDispatcher", () => {
 			store,
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1307-engine-adopt-")),
-			env: { FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" },
+			env: WORKFLOW_ON,
 			resolvePredecessorHead: async () => HEAD,
 		});
 		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
 		expect(fake.start).not.toHaveBeenCalled();
 		expect(store.listWorkflowSideEffects("run-1")[0]?.state).toBe("started");
+		expect(store.getWorkflowRunNode("run-1", "implement", 1)?.state).toBe(
+			"done",
+		);
+		store.close();
+	});
+
+	it("does not regress a node that completes before startDispatcher returns", async () => {
+		const store = await storeWithIntent("implement");
+		const start = vi.fn(async (request: StartRequest) => {
+			const committed = request.generalizedExecution?.commitWorkflowLaunch?.();
+			if (!committed?.ok) throw new Error(committed?.reason ?? "not_committed");
+			store.upsertSession({
+				execution_id: request.generalizedExecution!.executionId,
+				issue_id: request.issueId,
+				project_name: request.projectName,
+				status: "running",
+				session_role: request.sessionRole,
+			});
+			expect(
+				store.commitEnrolledCompletion({
+					executionId: request.generalizedExecution!.executionId,
+					route: "needs_review",
+					sourceEventId: "complete-before-start-return",
+					completionSubmission: {
+						decision: { route: "needs_review" },
+					},
+				}),
+			).toMatchObject({ ok: true });
+			return {
+				executionId: request.generalizedExecution!.executionId,
+				issueId: request.issueId,
+			};
+		});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: {
+				start,
+				getInflightCount: () => 0,
+				validateAgentName: () => ({ ok: true as const }),
+			} as IStartDispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1307-complete-race-")),
+			env: WORKFLOW_ON,
+			resolvePredecessorHead: async () => HEAD,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(start).toHaveBeenCalledOnce();
 		expect(store.getWorkflowRunNode("run-1", "implement", 1)?.state).toBe(
 			"done",
 		);

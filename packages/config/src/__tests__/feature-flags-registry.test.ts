@@ -236,4 +236,19 @@ describe("feature-flag registry invariants", () => {
 			"scripts/flywheel-cmux-autostart.sh",
 		]);
 	});
+
+	it("registers workflow template dispatch as a default-off governance gate", () => {
+		const flag = FEATURE_FLAGS.find(
+			(candidate) => candidate.name === "workflow_template_dispatch",
+		);
+		expect(flag).toMatchObject({
+			category: "governance_gate",
+			source: "env",
+			scope: "bridge_global",
+			envVar: "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH",
+			polarity: "opt_in",
+			default: false,
+			toggleable: "readonly",
+		});
+	});
 });

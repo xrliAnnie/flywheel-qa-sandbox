@@ -17,6 +17,10 @@ import {
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
+import {
+	ensureDefaultWorkflowBindings,
+	importBundledWorkflowSeeds,
+} from "../workflow-template.js";
 
 // Mock @linear/sdk for pre-flight issue check.
 // FLY-127: default issue carries "Product" label so the default product-lead
@@ -1062,6 +1066,195 @@ pipeline:
 			} finally {
 				warn.mockRestore();
 			}
+		});
+	});
+
+	describe("FLY-1307 — engineering v1 dispatch stays inside three-stage entry", () => {
+		let projectRoot: string;
+		let originalProjectRoot: string;
+		const flagNames = [
+			"FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES",
+			"FLYWHEEL_WORKFLOW_CLAIMS_WRITE",
+			"FLYWHEEL_WORKFLOW_CLAIMS_READ",
+			"FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH",
+			"FLYWHEEL_THREE_STAGE",
+		] as const;
+		let savedFlags: Record<(typeof flagNames)[number], string | undefined>;
+
+		function writeThreeStageConfig(enabled: boolean): void {
+			writeFileSync(
+				join(projectRoot, ".flywheel", "config.yaml"),
+				`project: TestProject
+linear:
+  team_id: TEST
+runners:
+  default: claude
+  available:
+    claude:
+      type: claude
+teams:
+  - name: dev
+    orchestrators:
+      - type: code
+        runner: claude
+        budget_per_issue: 5
+decision_layer:
+  autonomy_level: observer
+  escalation_channel: test
+pipeline:
+  three_stage: ${enabled}
+`,
+			);
+		}
+
+		beforeEach(() => {
+			projectRoot = mkdtempSync(join(tmpdir(), "fly1307-start-"));
+			mkdirSync(join(projectRoot, ".flywheel"), { recursive: true });
+			writeThreeStageConfig(true);
+			originalProjectRoot = testProjects[0]!.projectRoot;
+			testProjects[0]!.projectRoot = projectRoot;
+			savedFlags = Object.fromEntries(
+				flagNames.map((name) => [name, process.env[name]]),
+			) as Record<(typeof flagNames)[number], string | undefined>;
+			for (const name of flagNames.slice(0, 4)) process.env[name] = "1";
+			delete process.env.FLYWHEEL_THREE_STAGE;
+			importBundledWorkflowSeeds(store, process.env);
+			ensureDefaultWorkflowBindings(store, ["TestProject"]);
+		});
+
+		afterEach(() => {
+			testProjects[0]!.projectRoot = originalProjectRoot;
+			rmSync(projectRoot, { recursive: true, force: true });
+			for (const name of flagNames) {
+				const value = savedFlags[name];
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+		});
+
+		async function postStart(
+			issueId: string,
+			extra: Record<string, unknown> = {},
+		): Promise<Response> {
+			return fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId,
+					projectName: "TestProject",
+					...extra,
+				}),
+			});
+		}
+
+		it("normal Lead start without an idempotency key remains the incumbent three-stage dispatch", async () => {
+			const res = await postStart("GEO-V1-NO-KEY");
+			expect(res.status).toBe(200);
+			expect(mockDispatcher.start).toHaveBeenCalledWith(
+				expect.objectContaining({
+					sessionRole: "design",
+					shareParentBranch: true,
+				}),
+			);
+			expect(
+				mockDispatcher.start.mock.calls[0]![0].generalizedExecution,
+			).toBeUndefined();
+			expect(
+				store.getActiveWorkflowRunForIssue("GEO-V1-NO-KEY"),
+			).toBeUndefined();
+		});
+
+		it("project policy OFF keeps a keyed v1 candidate on the legacy main path", async () => {
+			writeThreeStageConfig(false);
+			const res = await postStart("GEO-V1-POLICY-OFF", {
+				idempotencyKey: "policy-off-key",
+			});
+			expect(res.status).toBe(200);
+			expect(mockDispatcher.start).toHaveBeenCalledWith(
+				expect.objectContaining({
+					sessionRole: "main",
+					shareParentBranch: undefined,
+				}),
+			);
+			expect(
+				mockDispatcher.start.mock.calls[0]![0].generalizedExecution,
+			).toBeUndefined();
+			expect(
+				store.getActiveWorkflowRunForIssue("GEO-V1-POLICY-OFF"),
+			).toBeUndefined();
+		});
+
+		it("no-three-stage label keeps a keyed v1 candidate on the legacy main path", async () => {
+			const { LinearClient } = await import("@linear/sdk");
+			(
+				LinearClient as unknown as ReturnType<typeof vi.fn>
+			).mockImplementationOnce(() => ({
+				issue: vi.fn().mockResolvedValue({
+					title: "Test Issue",
+					identifier: "GEO-V1-LABEL-OFF",
+					url: "https://linear.app/test/issue/GEO-V1-LABEL-OFF",
+					labels: vi.fn().mockResolvedValue({
+						nodes: [{ name: "Product" }, { name: "no-three-stage" }],
+					}),
+				}),
+			}));
+			const res = await postStart("GEO-V1-LABEL-OFF", {
+				idempotencyKey: "label-off-key",
+			});
+			expect(res.status).toBe(200);
+			expect(mockDispatcher.start).toHaveBeenCalledWith(
+				expect.objectContaining({
+					sessionRole: "main",
+				}),
+			);
+			expect(
+				mockDispatcher.start.mock.calls[0]![0].generalizedExecution,
+			).toBeUndefined();
+			expect(
+				store.getActiveWorkflowRunForIssue("GEO-V1-LABEL-OFF"),
+			).toBeUndefined();
+		});
+
+		it("global three-stage OFF keeps a keyed v1 candidate on the legacy main path", async () => {
+			process.env.FLYWHEEL_THREE_STAGE = "0";
+			const res = await postStart("GEO-V1-GLOBAL-OFF", {
+				idempotencyKey: "global-off-key",
+			});
+			expect(res.status).toBe(200);
+			expect(mockDispatcher.start).toHaveBeenCalledWith(
+				expect.objectContaining({
+					sessionRole: "main",
+				}),
+			);
+			expect(
+				mockDispatcher.start.mock.calls[0]![0].generalizedExecution,
+			).toBeUndefined();
+			expect(
+				store.getActiveWorkflowRunForIssue("GEO-V1-GLOBAL-OFF"),
+			).toBeUndefined();
+		});
+
+		it("active legacy phase rejects a keyed v1 start before engine materialization", async () => {
+			store.upsertSession({
+				execution_id: "active-design",
+				issue_id: "GEO-V1-ACTIVE",
+				project_name: "TestProject",
+				status: "running",
+				session_role: "design",
+				chat_thread_role: "design",
+			});
+			const res = await postStart("GEO-V1-ACTIVE", {
+				idempotencyKey: "active-key",
+			});
+			expect(res.status).toBe(409);
+			expect(await res.json()).toMatchObject({
+				success: false,
+				message: expect.stringContaining("active three-stage design phase"),
+			});
+			expect(mockDispatcher.start).not.toHaveBeenCalled();
+			expect(
+				store.getActiveWorkflowRunForIssue("GEO-V1-ACTIVE"),
+			).toBeUndefined();
 		});
 	});
 

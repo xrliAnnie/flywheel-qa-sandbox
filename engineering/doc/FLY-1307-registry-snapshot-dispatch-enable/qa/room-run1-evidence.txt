@@ -1,0 +1,25 @@
+=== Round5 房测 run-1 事件链(load 37.76,qa spawn 撞 3s 超时) ===
+seq|kind|node_id|execution_id|at
+1|execution_admitted|design|cceda10d-e27d-4bd6-92f8-17df7ec622ff|2026-07-17 07:30:57
+2|turn_granted|design|cceda10d-e27d-4bd6-92f8-17df7ec622ff|2026-07-17 07:30:59
+3|node_completed|design|cceda10d-e27d-4bd6-92f8-17df7ec622ff|2026-07-17 07:39:24
+4|edge_traversed|design|cceda10d-e27d-4bd6-92f8-17df7ec622ff|2026-07-17 07:39:24
+5|node_dispatched|implement|29a7650d-156d-44e0-9c99-a5fdfe8b489f|2026-07-17 07:39:24
+6|execution_admitted|implement|29a7650d-156d-44e0-9c99-a5fdfe8b489f|2026-07-17 07:39:25
+7|turn_granted|implement|29a7650d-156d-44e0-9c99-a5fdfe8b489f|2026-07-17 07:39:29
+8|node_completed|implement|29a7650d-156d-44e0-9c99-a5fdfe8b489f|2026-07-17 07:55:41
+9|edge_traversed|implement|29a7650d-156d-44e0-9c99-a5fdfe8b489f|2026-07-17 07:55:41
+10|node_dispatched|qa|a07a52ff-5458-4205-a4a7-e455764f9a04|2026-07-17 07:55:41
+11|execution_admitted|qa|a07a52ff-5458-4205-a4a7-e455764f9a04|2026-07-17 07:55:43
+12|turn_granted|qa|a07a52ff-5458-4205-a4a7-e455764f9a04|2026-07-17 07:55:44
+13|generalized_teardown_hold|qa|a07a52ff-5458-4205-a4a7-e455764f9a04|2026-07-17 07:57:18
+
+=== run ===
+run_id|template_id|current_node_id|status|engine_owned
+b344314b-9c94-4836-b5d5-ba0f663b55a6|tpl_eng_heavy|qa|active|1
+
+=== sessions ===
+substr(execution_id,1,8)|status|session_role|last_error
+cceda10d|completed|design|
+29a7650d|completed|implement|
+a07a52ff|failed|qa|tmux server lost (c2e9ade7-cae9-4104-a401-bdb1cb825db9)

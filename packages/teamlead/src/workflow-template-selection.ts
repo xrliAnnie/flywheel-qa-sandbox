@@ -6,6 +6,11 @@ import {
 	type ResolvedWorkflowNodeV2,
 } from "./workflow-run-snapshot.js";
 import { validateWorkflowManifest } from "./workflow-template.js";
+import {
+	isWorkflowTemplateDispatchEnabled,
+	workflowTemplateDispatchBlockMessage,
+	workflowTemplateDispatchBlockReason,
+} from "./workflow-template-dispatch.js";
 
 export type WorkflowRequestAuthKind = "master" | "scoped" | "tokenless";
 
@@ -19,6 +24,57 @@ export interface WorkflowTemplateSelectionResult {
 	idempotencyKey: string;
 	node: ResolvedWorkflowNodeV2;
 	replayed: boolean;
+}
+
+function resolveWorkflowTemplateCandidate(
+	store: StateStore,
+	input: {
+		project: string;
+		taskCategory?: string;
+		leadTemplateId?: string;
+	},
+) {
+	const category = input.taskCategory?.trim() || "*";
+	const binding = input.leadTemplateId
+		? undefined
+		: store.getWorkflowCategoryBinding(input.project, category);
+	const templateId = input.leadTemplateId?.trim() || binding?.template_id;
+	if (!templateId) return null;
+	const template = store.getWorkflowTemplate(templateId);
+	if (!template?.current_published_revision) {
+		throw new Error("workflow template candidate has no published revision");
+	}
+	const revision = store.getWorkflowTemplateRevision(
+		templateId,
+		template.current_published_revision,
+	);
+	if (!revision) throw new Error("workflow template revision not found");
+	const schemaVersion = revision.schema_version;
+	if (schemaVersion !== 1 && schemaVersion !== 2) {
+		throw new Error("workflow template candidate schema is unsupported");
+	}
+	return {
+		category,
+		binding,
+		templateId,
+		revision,
+		schemaVersion: schemaVersion as 1 | 2,
+	};
+}
+
+/**
+ * Read-only entry preflight. The route uses this to keep schema-v1 behind the
+ * three-stage policy without changing the independent schema-v2 entry path.
+ */
+export function resolveWorkflowTemplateCandidateSchema(
+	store: StateStore,
+	input: {
+		project: string;
+		taskCategory?: string;
+		leadTemplateId?: string;
+	},
+): 1 | 2 | null {
+	return resolveWorkflowTemplateCandidate(store, input)?.schemaVersion ?? null;
 }
 
 /**
@@ -39,36 +95,48 @@ export function resolveWorkflowTemplateSelection(
 		authKind: WorkflowRequestAuthKind;
 		canonicalRoot: string;
 		idempotencyKey?: string;
+		/** True only after the trusted three-stage entry policy admits schema v1. */
+		allowSchemaV1Dispatch?: boolean;
+		/** Candidate schema observed before the route's entry-policy await. */
+		candidateSchemaAtEntry?: 1 | 2 | null;
 		env?: Record<string, string | undefined>;
 		idFactory?: () => string;
 		now?: string;
 	},
 ): WorkflowTemplateSelectionResult | null {
-	const category = input.taskCategory?.trim() || "*";
-	const binding = input.leadTemplateId
-		? undefined
-		: store.getWorkflowCategoryBinding(input.project, category);
-	const templateId = input.leadTemplateId?.trim() || binding?.template_id;
-	if (!templateId) return null;
-	const template = store.getWorkflowTemplate(templateId);
-	if (!template?.current_published_revision) {
-		throw new Error("workflow template candidate has no published revision");
+	const candidate = resolveWorkflowTemplateCandidate(store, input);
+	if (
+		Object.hasOwn(input, "candidateSchemaAtEntry") &&
+		(candidate?.schemaVersion ?? null) !== input.candidateSchemaAtEntry
+	) {
+		throw new Error(
+			"workflow template candidate changed during entry resolution",
+		);
 	}
-	const revision = store.getWorkflowTemplateRevision(
-		templateId,
-		template.current_published_revision,
-	);
-	if (!revision) throw new Error("workflow template revision not found");
-	// C connects only schema-v2 starts. Stored v1 templates remain B substrate.
-	if (revision.schema_version === 1) return null;
-	if (revision.schema_version !== 2) {
-		throw new Error("workflow template candidate schema is unsupported");
+	if (!candidate) return null;
+	const { category, binding, templateId, revision, schemaVersion } = candidate;
+	const env = input.env ?? process.env;
+	// Candidate-first compatibility: v1 remains exact legacy while dispatch is
+	// off. A v2 candidate never falls back to legacy.
+	if (schemaVersion === 1 && !isWorkflowTemplateDispatchEnabled(env)) {
+		return null;
+	}
+	const blocked = workflowTemplateDispatchBlockReason(schemaVersion, env);
+	if (blocked) throw new Error(workflowTemplateDispatchBlockMessage(blocked));
+	// Engineering v1 is an engine implementation of the incumbent three-stage
+	// workflow, not a parallel entry policy. A policy opt-out or a normal Lead
+	// request without a stable start key must stay on today's legacy path. Keep
+	// this after the flag block so an explicitly enabled but incomplete flag set
+	// still fails closed per the published truth table.
+	if (schemaVersion === 1) {
+		if (input.allowSchemaV1Dispatch !== true) return null;
+		if (!input.idempotencyKey?.trim()) return null;
 	}
 	if (input.authKind !== "master") {
-		throw new Error("schema-v2 workflow selection requires master auth");
+		throw new Error("workflow template selection requires master auth");
 	}
 	if (!input.idempotencyKey?.trim()) {
-		throw new Error("schema-v2 workflow selection requires idempotencyKey");
+		throw new Error("workflow template selection requires idempotencyKey");
 	}
 	const selectionSource = input.leadTemplateId
 		? "lead"
@@ -125,7 +193,7 @@ export function resolveWorkflowTemplateSelection(
 	}
 
 	const manifest = validateWorkflowManifest(JSON.parse(revision.manifest));
-	if (manifest.schema_version !== 2) {
+	if (manifest.schema_version !== revision.schema_version) {
 		throw new Error("workflow template stored schema does not match manifest");
 	}
 	const incoming = new Map(manifest.nodes.map((node) => [node.id, 0]));
@@ -145,7 +213,7 @@ export function resolveWorkflowTemplateSelection(
 		projectName: input.project,
 		taskCategory: category,
 		templateId,
-		claimsReadEnrolled: false,
+		claimsReadEnrolled: true,
 		actor: input.actor,
 		canonicalRoot: input.canonicalRoot,
 		selection: {

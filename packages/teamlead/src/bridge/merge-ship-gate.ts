@@ -79,6 +79,27 @@ type EngineShipContext = {
 	snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
 };
 
+function outputBackedReviewNodeId(
+	snapshot: ReturnType<typeof parseWorkflowRunSnapshot>,
+): string | undefined {
+	const candidates = snapshot.resolved.nodes.filter((node) => {
+		if (node.type !== "review") return false;
+		const producerIds = snapshot.manifest.edges
+			.filter((edge) => edge.to === node.id && edge.condition === "node_done")
+			.map((edge) => edge.from);
+		const outputProducers = snapshot.resolved.nodes.filter(
+			(candidate) =>
+				producerIds.includes(candidate.id) &&
+				candidate.capabilities.produces_output,
+		);
+		return outputProducers.length === 1;
+	});
+	if (candidates.length > 1) {
+		throw new Error("materialized_review_node_ambiguous");
+	}
+	return candidates[0]?.id;
+}
+
 function engineShipContext(
 	store: StateStore,
 	executionId: string,
@@ -167,36 +188,36 @@ export async function computeEngineWorkflowShipPrecondition(
 			reason: context.reason,
 		};
 	}
-	let authoritativeHead = observed;
-	const reviewNode = context.snapshot.resolved.nodes.find(
-		(node) => node.type === "review",
-	);
-	if (reviewNode) {
-		try {
+	let authoritativeHead = "";
+	try {
+		const reviewNodeId = outputBackedReviewNodeId(context.snapshot);
+		if (reviewNodeId) {
 			authoritativeHead = (
-				await materializedHeadAuthority.resolve(context.runId, reviewNode.id)
+				await materializedHeadAuthority.resolve(context.runId, reviewNodeId)
 			).head
 				.trim()
 				.toLowerCase();
-		} catch (error) {
-			return {
-				engineOwned: true,
-				eligible: false,
-				authoritativeHead: "",
-				reason:
-					error instanceof Error
-						? error.message
-						: "materialized_head_unavailable",
-			};
+		} else {
+			authoritativeHead = (
+				await resolveWorkflowHeadAuthority(store, executionId)
+			).prHeadSha;
 		}
-		if (observed && observed !== authoritativeHead) {
-			return {
-				engineOwned: true,
-				eligible: false,
-				authoritativeHead,
-				reason: "head_authority_mismatch",
-			};
-		}
+	} catch (error) {
+		return {
+			engineOwned: true,
+			eligible: false,
+			authoritativeHead: "",
+			reason:
+				error instanceof Error ? error.message : "head_authority_unavailable",
+		};
+	}
+	if (observed && observed !== authoritativeHead) {
+		return {
+			engineOwned: true,
+			eligible: false,
+			authoritativeHead,
+			reason: "head_authority_mismatch",
+		};
 	}
 	if (!/^[0-9a-f]{40}$/.test(authoritativeHead)) {
 		return {
@@ -231,12 +252,26 @@ export async function computeAuthoritativeShipDecision(
 	const engine = engineShipContext(store, session.execution_id);
 	const typedEngine =
 		engine.engineOwned && !("reason" in engine) ? engine : undefined;
-	// Default-off byte compatibility: until the claims read switch is explicitly
-	// enabled, every existing sink keeps its prior cached-head behavior.
-	if (!engine.engineOwned && !resolveWorkflowClaimsReadEnabled({ env })) {
+	const claimsReadEnabled = resolveWorkflowClaimsReadEnabled({ env });
+	// Legacy byte compatibility remains exact while the read switch is off. An
+	// engine-owned run instead holds: it must never fall back to cached legacy
+	// authority after admission.
+	if (!engine.engineOwned && !claimsReadEnabled) {
 		return {
 			...computeShipDecision(store, session, observedHead ?? "", env),
 			authoritativeHead: observedHead?.trim().toLowerCase() ?? "",
+		};
+	}
+	if (engine.engineOwned && !claimsReadEnabled) {
+		return {
+			eligible: false,
+			mergeApprovalOk: false,
+			qaOk: false,
+			mergeReason: "workflow_ship_claims_claims_read_disabled",
+			qaReason: "qa_claim_gate_unenrolled_failclosed",
+			authoritativeHead: "",
+			workflowClaimsOk: false,
+			workflowClaimsReason: "claims_read_disabled",
 		};
 	}
 	if (engine.engineOwned && "reason" in engine) {
@@ -253,16 +288,14 @@ export async function computeAuthoritativeShipDecision(
 	}
 	let authoritativeHead = "";
 	try {
-		const reviewNode = typedEngine
-			? typedEngine.snapshot.resolved.nodes.find(
-					(node) => node.type === "review",
-				)
+		const reviewNodeId = typedEngine
+			? outputBackedReviewNodeId(typedEngine.snapshot)
 			: undefined;
-		authoritativeHead = reviewNode
+		authoritativeHead = reviewNodeId
 			? (
 					await materializedHeadAuthority.resolve(
 						typedEngine!.runId,
-						reviewNode.id,
+						reviewNodeId,
 					)
 				).head
 					.trim()

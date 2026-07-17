@@ -7,6 +7,7 @@ import {
 	parseWorkflowRunSnapshot,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
+import { workflowTemplateDispatchBlockReason } from "../workflow-template-dispatch.js";
 import {
 	type GeneralizedLaunchLiveness,
 	probeGeneralizedLaunchLiveness,
@@ -63,6 +64,7 @@ export class WorkflowEngineDispatcher {
 		executionId: string,
 		projectName: string,
 	) => Promise<GeneralizedLaunchLiveness>;
+	private readonly ownerId = randomUUID();
 	private timer: NodeJS.Timeout | undefined;
 	private reconciling = false;
 
@@ -178,6 +180,14 @@ export class WorkflowEngineDispatcher {
 		if (!run?.snapshot || run.status !== "active" || run.engine_owned !== 1) {
 			throw new Error("engine_run_not_active");
 		}
+		const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+		const dispatchBlocked = workflowTemplateDispatchBlockReason(
+			snapshot.schema_version,
+			this.env,
+		);
+		if (dispatchBlocked) {
+			throw new Error(`engine_dispatch_${dispatchBlocked}`);
+		}
 		if (
 			store.getWorkflowRunNode(intent.run_id, intent.node_id, intent.attempt)
 				?.state === "done"
@@ -189,7 +199,6 @@ export class WorkflowEngineDispatcher {
 			this.markStarted(intent);
 			return true;
 		}
-		const snapshot = parseWorkflowRunSnapshot(run.snapshot);
 		const node = snapshot.resolved.nodes.find(
 			(candidate) => candidate.id === intent.node_id,
 		);
@@ -299,7 +308,7 @@ export class WorkflowEngineDispatcher {
 			throw new Error(`engine_admission_${admitted.reason}`);
 		}
 
-		const ownerId = randomUUID();
+		const ownerId = this.ownerId;
 		const markerPath = join(this.stateRoot, intent.execution_id);
 		const launch = store.recoverOrAcquireWorkflowLaunch({
 			executionId: intent.execution_id,
@@ -486,7 +495,13 @@ export class WorkflowEngineDispatcher {
 			intent.execution_id,
 		);
 		if (!delivered) return false;
-		this.markStarted(intent);
+		// A deterministic/fresh-spawn runner can finish before start() returns.
+		// Never let launch bookkeeping regress its committed terminal projection.
+		this.markStarted(intent, {
+			preserveTerminalNode:
+				store.getWorkflowRunNode(intent.run_id, intent.node_id, intent.attempt)
+					?.state === "done",
+		});
 		return true;
 	}
 

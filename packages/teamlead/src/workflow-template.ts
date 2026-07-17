@@ -1137,10 +1137,16 @@ export function importBundledWorkflowSeeds(
 
 export const DEFAULT_BUNDLED_WORKFLOW_TEMPLATE_ID = "tpl_eng_heavy";
 
+const DEFAULT_ENGINEERING_WORKFLOW_BINDINGS = [
+	{ taskCategory: "*", templateId: "tpl_eng_heavy" },
+	{ taskCategory: "light", templateId: "tpl_eng_light" },
+	{ taskCategory: "trivial", templateId: "tpl_eng_trivial" },
+] as const;
+
 /**
- * Give newly discovered projects a truthful catalog authority without
- * overwriting any founder/category decision. The wildcard is inserted only
- * when the project has no bindings at all; repeats and hot refreshes are no-op.
+ * Seed the bundled engineering tiers only for projects with no binding
+ * authority yet. Any existing binding means a founder or migration already
+ * owns the project registry, so boot must not widen its candidate surface.
  */
 export function ensureDefaultWorkflowBindings(
 	store: Pick<
@@ -1152,12 +1158,15 @@ export function ensureDefaultWorkflowBindings(
 	for (const project of [...new Set(projectNames.map((name) => name.trim()))]
 		.filter(Boolean)
 		.sort((a, b) => a.localeCompare(b))) {
-		if (store.listWorkflowCategoryBindings(project).length > 0) continue;
-		store.bindWorkflowCategory({
-			project,
-			taskCategory: "*",
-			templateId: DEFAULT_BUNDLED_WORKFLOW_TEMPLATE_ID,
-			updatedBy: "system:bundled-default",
-		});
+		const existing = store.listWorkflowCategoryBindings(project);
+		if (existing.length > 0) continue;
+		for (const binding of DEFAULT_ENGINEERING_WORKFLOW_BINDINGS) {
+			store.bindWorkflowCategory({
+				project,
+				taskCategory: binding.taskCategory,
+				templateId: binding.templateId,
+				updatedBy: "system:bundled-default",
+			});
+		}
 	}
 }

@@ -1,5 +1,9 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
+import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
 
 const RUN = "run-materialize-1";
 const ISSUE = "FLY-1307";
@@ -16,12 +20,81 @@ type InternalDb = {
 	run(sql: string, params?: unknown[]): void;
 };
 
-async function seededStore(): Promise<StateStore> {
+async function seededStore(
+	options: { engineOwned?: boolean } = {},
+): Promise<StateStore> {
 	const store = await StateStore.create(":memory:");
+	let snapshotJson: string | undefined;
+	if (options.engineOwned) {
+		const root = mkdtempSync(join(tmpdir(), "flywheel-materialize-authority-"));
+		mkdirSync(join(root, "agents"));
+		writeFileSync(join(root, "agents", "producer.md"), "Produce docs.\n");
+		snapshotJson = JSON.stringify(
+			buildWorkflowRunSnapshotV2({
+				template: { id: "tpl-materialize", revision: 1 },
+				canonicalRoot: root,
+				manifest: {
+					schema_version: 2,
+					nodes: [
+						{
+							id: PRODUCER,
+							type: "generic",
+							vendor: "codex",
+							model: "gpt-5.6-sol",
+							effort: "low",
+							agent_file: "agents/producer.md",
+							produces_output: true,
+							output: { schema: "json_v1", max_bytes: 1024 },
+						},
+						{
+							id: REVIEW,
+							type: "review",
+							vendor: "claude",
+							model: "claude-opus-4-8",
+							effort: "high",
+						},
+						{ id: "founder_gate", type: "gate" },
+					],
+					edges: [
+						{
+							id: "produced",
+							from: PRODUCER,
+							to: REVIEW,
+							condition: "node_done",
+						},
+						{
+							id: "reviewed",
+							from: REVIEW,
+							to: "founder_gate",
+							condition: "review_pass",
+						},
+					],
+					loops: [
+						{
+							id: "review_retry",
+							from: REVIEW,
+							to: PRODUCER,
+							loop_when: "review_fail",
+							exit_when: "review_pass",
+							max_iterations: 2,
+							on_limit: "escalate",
+						},
+					],
+					terminal_gate: {
+						node: "founder_gate",
+						predicate: "founder_approved",
+					},
+					ship_claims: ["design_review_approved", "founder_approved"],
+				},
+			}),
+		);
+		rmSync(root, { recursive: true, force: true });
+	}
 	store.createWorkflowRun({
 		runId: RUN,
 		issueId: ISSUE,
 		projectName: "flywheel",
+		...(snapshotJson ? { snapshotJson } : {}),
 		claimsReadEnrolled: true,
 	});
 	store.upsertWorkflowRunNode({
@@ -32,6 +105,9 @@ async function seededStore(): Promise<StateStore> {
 		executionId: "exec-produce-1",
 	});
 	const db = (store as unknown as { db: InternalDb }).db;
+	if (options.engineOwned) {
+		db.run("UPDATE workflow_run SET engine_owned = 1 WHERE run_id = ?", [RUN]);
+	}
 	db.run(
 		`INSERT INTO workflow_execution_binding
 		   (execution_id, run_id, node_id, attempt, bound_at)
@@ -196,6 +272,31 @@ describe("workflow materialization ledger and receipts", () => {
 				subjectDigest: "f".repeat(40),
 			}),
 		).toEqual({ valid: false, reason: "revoked" });
+	});
+
+	it("refuses caller-supplied head promotion for a node that is not the pinned direct review successor", async () => {
+		const store = await seededStore({ engineOwned: true });
+		const intent = allocate(store);
+		store.adoptWorkflowMaterializationCommit({
+			effectId: intent.effect_id,
+			treeHead: TREE_HEAD,
+			commitHead: COMMIT_HEAD,
+		});
+		expect(() =>
+			store.confirmWorkflowMaterializationPush({
+				effectId: intent.effect_id,
+				remoteHead: COMMIT_HEAD,
+				reviewNodeId: "founder_gate",
+			}),
+		).toThrow(/review.*successor|head authority/i);
+		expect(
+			store
+				.getWorkflowMaterializationReceipts(intent.effect_id)
+				.some((receipt) => receipt.stage === "push_confirmed"),
+		).toBe(false);
+		expect(store.listWorkflowSideEffects(RUN)[0]?.state).toBe(
+			"launch_committed",
+		);
 	});
 
 	it("fails closed when the durable receipt no longer matches the current output pointer", async () => {

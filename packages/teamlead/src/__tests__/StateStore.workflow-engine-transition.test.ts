@@ -3,7 +3,9 @@ import { StateStore } from "../StateStore.js";
 import { loadBundledWorkflowSeeds } from "../workflow-template.js";
 
 const engineFlags = {
+	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
 	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 };
 
 async function engineRun(): Promise<StateStore> {
@@ -23,8 +25,9 @@ async function engineRun(): Promise<StateStore> {
 		issueId: "FLY-1307",
 		projectName: "flywheel",
 		taskCategory: "code",
-		claimsReadEnrolled: false,
+		claimsReadEnrolled: true,
 		actor: "lead",
+		env: engineFlags,
 		startReservation: {
 			idempotencyKey: "start-1",
 			selectionDigest: "selection-1",

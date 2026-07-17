@@ -2410,6 +2410,28 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 	},
 	{
+		name: "workflow_template_dispatch",
+		category: "governance_gate",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1307: enable candidate-first workflow-template dispatch through the typed snapshot engine. Default off for exact legacy compatibility; starts also require claims WRITE and READ, and schema v2 additionally requires generalized templates.",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/workflow-template-dispatch.ts",
+				"isWorkflowTemplateDispatchEnabled / workflowTemplateDispatchBlockReason",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "Independent default-off governance gate. Roll back with workflow_force_legacy plus this flag off.",
+	},
+	{
 		name: "workflow_generalized_templates",
 		category: "governance_gate",
 		source: "env",

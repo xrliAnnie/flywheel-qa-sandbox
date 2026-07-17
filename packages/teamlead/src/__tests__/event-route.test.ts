@@ -119,7 +119,9 @@ function bindGeneralizedExecution(
 		absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
 		env: {
 			FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+			FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
 			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+			FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 		},
 	});
 	expect(admission.ok).toBe(true);

@@ -1,0 +1,134 @@
+{
+	"issue": "FLY-1307",
+	"generated_at": "2026-07-17T05:36:33.488Z",
+	"harness": {
+		"bridge": "production createBridgeApp HTTP stack",
+		"state": "isolated teamlead.db + CommDB",
+		"spawn": "real TmuxAdapter gated fresh spawn with deterministic probe",
+		"tmux_rescue": "harness-local exact verify/create shim because sandbox denies production ps inspection",
+		"materialization": "production WorkflowDocsMaterializer + real local Git remote"
+	},
+	"observed_flag_names": [
+		"FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH",
+		"FLYWHEEL_WORKFLOW_CLAIMS_WRITE",
+		"FLYWHEEL_WORKFLOW_CLAIMS_READ",
+		"FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES"
+	],
+	"spawn_count": 8,
+	"spawn_records": [
+		{
+			"executionId": "e97f6519-9742-4224-920c-da0273d293fb",
+			"runId": "7f1ac443-08b2-4017-84de-699c54b206b6",
+			"nodeId": "design",
+			"attempt": 1,
+			"role": "design",
+			"shareParentBranch": true,
+			"dispatch": {
+				"vendor": "claude",
+				"model": "claude-fable-5"
+			}
+		},
+		{
+			"executionId": "f8774cb3-0007-40a8-9934-9db2e369f992",
+			"runId": "7f1ac443-08b2-4017-84de-699c54b206b6",
+			"nodeId": "implement",
+			"attempt": 1,
+			"role": "implement",
+			"shareParentBranch": true,
+			"dispatch": {
+				"vendor": "codex",
+				"model": "gpt-5.6-sol",
+				"effort": "xhigh"
+			}
+		},
+		{
+			"executionId": "ceabbfe7-2f20-4bc4-bf20-d2a9cf7c441b",
+			"runId": "7f1ac443-08b2-4017-84de-699c54b206b6",
+			"nodeId": "qa",
+			"attempt": 1,
+			"role": "qa",
+			"shareParentBranch": true,
+			"dispatch": {
+				"vendor": "claude",
+				"model": "claude-opus-4-8"
+			}
+		},
+		{
+			"executionId": "f26d4c2b-95d0-4f6d-8375-81e29085ce5d",
+			"runId": "7f1ac443-08b2-4017-84de-699c54b206b6",
+			"nodeId": "implement",
+			"attempt": 2,
+			"role": "implement",
+			"shareParentBranch": true,
+			"dispatch": {
+				"vendor": "codex",
+				"model": "gpt-5.6-sol",
+				"effort": "xhigh"
+			}
+		},
+		{
+			"executionId": "4ed36ffb-06df-4352-b4df-8c4526021e22",
+			"runId": "7f1ac443-08b2-4017-84de-699c54b206b6",
+			"nodeId": "qa",
+			"attempt": 2,
+			"role": "qa",
+			"shareParentBranch": true,
+			"dispatch": {
+				"vendor": "claude",
+				"model": "claude-opus-4-8"
+			}
+		},
+		{
+			"executionId": "0699a4a8-ae22-4101-abc0-6b12993b9457",
+			"runId": "c661b200-d20f-4e21-b091-7b1fcd9ece3a",
+			"nodeId": "research",
+			"attempt": 1,
+			"role": "main",
+			"dispatch": {
+				"vendor": "codex",
+				"model": "gpt-5.6-sol",
+				"effort": "low"
+			}
+		},
+		{
+			"executionId": "c7fd53a4-1c2a-4be3-99a8-5320829d061b",
+			"runId": "c661b200-d20f-4e21-b091-7b1fcd9ece3a",
+			"nodeId": "produce",
+			"attempt": 1,
+			"role": "main",
+			"dispatch": {
+				"vendor": "codex",
+				"model": "gpt-5.6-sol",
+				"effort": "high"
+			}
+		},
+		{
+			"executionId": "1336f816-92fa-4c7f-a2e3-c8e360aca30b",
+			"runId": "c661b200-d20f-4e21-b091-7b1fcd9ece3a",
+			"nodeId": "review",
+			"attempt": 1,
+			"role": "main",
+			"dispatch": {
+				"vendor": "claude",
+				"model": "claude-sonnet-4-5",
+				"effort": "high"
+			}
+		}
+	],
+	"checks": {
+		"six_seeds_and_engineering_default_bindings": true,
+		"engineering_v1_selected_and_materialized": true,
+		"engineering_full_chain_with_one_qa_loop": true,
+		"pinned_explicit_vendor_model_effort_dispatch": true,
+		"engineering_snapshot_is_typed_and_engine_owned": true,
+		"source_outbox_turns_are_run_attributed_and_projected": true,
+		"engineering_founder_claim_and_use_time_ship_gate": true,
+		"product_v2_selected_and_materialized": true,
+		"product_output_materialized_to_real_git_head": true,
+		"product_review_passes_on_exact_materialized_head": true,
+		"product_founder_claim_terminalizes_same_head": true,
+		"dispatch_off_v1_is_exact_legacy_and_v2_is_fail_closed": true,
+		"bridge_restart_replay_converges_without_duplicate_dispatch": true
+	},
+	"pass": true
+}

@@ -1,0 +1,39 @@
+[qa] PASS six_seeds_and_engineering_default_bindings
+[Bridge] Daily digest configured — channel=1521630422918758472
+[TmuxAdapter] FLY-142 PR 1.4 — FLYWHEEL_COMM_BACKEND=commdb (rollback): skipping mailbox sentinel for 136a8f96-723a-4080-854c-fd6c77d9fe74 + forcing FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 in Runner env. Hook will run legacy CommDB polling path.
+[TmuxAdapter] Runner pane died: window=@1444 exit=0 elapsed=2s session=e0408150-0854-4722-9f01-feec718c2c69
+[qa] probe design:1 response=200 reason=none output=none
+[qa] PASS engineering_v1_selected_and_materialized
+[TmuxAdapter] FLY-142 PR 1.4 — FLYWHEEL_COMM_BACKEND=commdb (rollback): skipping mailbox sentinel for 0f2cf658-7b17-4166-a00d-5eb84309c32d + forcing FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 in Runner env. Hook will run legacy CommDB polling path.
+[TmuxAdapter] Runner pane died: window=@1445 exit=0 elapsed=4s session=c975d6fe-ae4c-46aa-a3aa-1325d5421f99
+[qa] probe implement:1 response=200 reason=none output=none
+[TmuxAdapter] FLY-142 PR 1.4 — FLYWHEEL_COMM_BACKEND=commdb (rollback): skipping mailbox sentinel for b7020678-4ee1-4992-98ad-b7666e1f68b8 + forcing FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 in Runner env. Hook will run legacy CommDB polling path.
+[TmuxAdapter] Runner pane died: window=@1446 exit=0 elapsed=3s session=54dfbc4c-821c-4b5f-9158-205f0dbac670
+[qa] probe qa:1 response=200 reason=none output=none
+[TmuxAdapter] FLY-142 PR 1.4 — FLYWHEEL_COMM_BACKEND=commdb (rollback): skipping mailbox sentinel for 3bab1aea-22ee-4aeb-9a87-dc8010d0579b + forcing FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 in Runner env. Hook will run legacy CommDB polling path.
+[TmuxAdapter] Runner pane died: window=@1447 exit=0 elapsed=2s session=5dd8ee51-8680-45ae-8037-97ead8b22037
+[qa] probe implement:2 response=200 reason=none output=none
+[TmuxAdapter] FLY-142 PR 1.4 — FLYWHEEL_COMM_BACKEND=commdb (rollback): skipping mailbox sentinel for 15f4a3d5-f7a4-40f5-8402-87f470ebcfd7 + forcing FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 in Runner env. Hook will run legacy CommDB polling path.
+[TmuxAdapter] Runner pane died: window=@1448 exit=0 elapsed=3s session=e503f3d3-fbe1-4cb5-8dc8-c7d70848eb58
+[qa] probe qa:2 response=200 reason=none output=none
+[qa] PASS engineering_full_chain_with_one_qa_loop
+[qa] PASS pinned_explicit_vendor_model_effort_dispatch
+[qa] PASS engineering_snapshot_is_typed_and_engine_owned
+[qa] PASS source_outbox_turns_are_run_attributed_and_projected
+[qa] PASS engineering_founder_claim_and_use_time_ship_gate
+[TmuxAdapter] FLY-142 PR 1.4 — FLYWHEEL_COMM_BACKEND=commdb (rollback): skipping mailbox sentinel for bed9574e-3f4a-40a0-bfc1-2dc356b3ef92 + forcing FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 in Runner env. Hook will run legacy CommDB polling path.
+[TmuxAdapter] Runner pane died: window=@1449 exit=0 elapsed=1s session=5c9e6063-c76d-4cb3-9ed1-63a906a8085d
+[qa] probe research:1 response=200 reason=none output=none
+[qa] PASS product_v2_selected_and_materialized
+[TmuxAdapter] FLY-142 PR 1.4 — FLYWHEEL_COMM_BACKEND=commdb (rollback): skipping mailbox sentinel for 1d037ce0-803f-43db-8136-7579f9bbab8c + forcing FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 in Runner env. Hook will run legacy CommDB polling path.
+[qa] PASS product_output_materialized_to_real_git_head
+[TmuxAdapter] Runner pane died: window=@1450 exit=0 elapsed=9s session=82963db6-0b1c-4026-8341-019b877077b2
+[qa] probe produce:1 response=200 reason=none output=200
+[TmuxAdapter] FLY-142 PR 1.4 — FLYWHEEL_COMM_BACKEND=commdb (rollback): skipping mailbox sentinel for 444a3e4c-f799-4023-ada1-426072411a69 + forcing FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 in Runner env. Hook will run legacy CommDB polling path.
+[TmuxAdapter] Runner pane died: window=@1451 exit=0 elapsed=2s session=868edded-811a-43dc-a55b-810ef96b4f12
+[qa] probe review:1 response=200 reason=none output=none
+[qa] PASS product_review_passes_on_exact_materialized_head
+[qa] PASS product_founder_claim_terminalizes_same_head
+[qa] PASS dispatch_off_v1_is_exact_legacy_and_v2_is_fail_closed
+[Bridge] Daily digest configured — channel=1521630422918758472
+[qa] PASS bridge_restart_replay_converges_without_duplicate_dispatch

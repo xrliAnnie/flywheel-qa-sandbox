@@ -30,6 +30,7 @@ import { StateStore } from "../../StateStore.js";
 import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import {
 	computeAuthoritativeShipDecision,
+	computeEngineWorkflowShipPrecondition,
 	computeShipDecision,
 	finalizeRecoveredMerge,
 	isMergeBlocked,
@@ -43,6 +44,12 @@ const LEAD = "flywheel-eng-lead";
 const PROJECT = "proj";
 const ISSUE = "FLY-869";
 const HEAD = "a".repeat(40);
+const WORKFLOW_ON = {
+	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+};
 
 // All three gates ON — the production default this issue ships (决定②).
 const GATES_ON = {
@@ -158,8 +165,9 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			projectName: PROJECT,
 			taskCategory: "code",
 			templateId: seed.templateId,
-			claimsReadEnrolled: false,
+			claimsReadEnrolled: true,
 			actor: "lead",
+			env: WORKFLOW_ON,
 			startReservation: {
 				idempotencyKey: "engine-start",
 				selectionDigest: "selection",
@@ -206,7 +214,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			now: "2026-07-16T00:11:00.000Z",
 			expiresAt: "2027-07-16T00:11:00.000Z",
 			absoluteDeadlineAt: "2027-07-17T00:11:00.000Z",
-			env: { FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" },
+			env: WORKFLOW_ON,
 		});
 		if (!admission.ok || !admission.submissionCredential) {
 			throw new Error("engine QA admission failed");
@@ -234,10 +242,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		const seed = loadBundledWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_product_v1",
 		)!;
-		const flags = {
-			FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
-		};
+		const flags = WORKFLOW_ON;
 		store.importWorkflowTemplateSeed(seed, flags);
 		store.materializeWorkflowRun({
 			runId: "product-run",
@@ -245,7 +250,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			projectName: PROJECT,
 			taskCategory: "product",
 			templateId: seed.templateId,
-			claimsReadEnrolled: false,
+			claimsReadEnrolled: true,
 			actor: "lead",
 			canonicalRoot: worktreePath,
 			env: flags,
@@ -381,11 +386,22 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 	it("engine-owned terminalization additively requires every snapshot ship claim at USE time", async () => {
 		const { qaClaimId } = engineQaAtFounderGate();
 		const session = store.getSession(EXEC)!;
-		const env = {
+		const off = {
 			FLYWHEEL_WORKFLOW_CLAIMS_READ: "0",
 			FLYWHEEL_MERGE_APPROVAL_GATE: "0",
 			FLYWHEEL_QA_DONE_GATE: "0",
 			FLYWHEEL_CODEX_HARD_GATE: "0",
+		} as NodeJS.ProcessEnv;
+		expect(
+			await computeAuthoritativeShipDecision(store, session, HEAD, off),
+		).toMatchObject({
+			eligible: false,
+			workflowClaimsOk: false,
+			workflowClaimsReason: "claims_read_disabled",
+		});
+		const env = {
+			...off,
+			FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 		} as NodeJS.ProcessEnv;
 
 		const missingFounder = await computeAuthoritativeShipDecision(
@@ -427,13 +443,21 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			eligible: false,
 			workflowClaimsReason: "qa_passed:revoked",
 		});
+		expect(
+			await computeEngineWorkflowShipPrecondition(store, EXEC, "b".repeat(40)),
+		).toMatchObject({
+			engineOwned: true,
+			eligible: false,
+			authoritativeHead: HEAD,
+			reason: "head_authority_mismatch",
+		});
 	});
 
 	it("does not confuse predicates in the review family and fails closed without materialized authority", async () => {
 		productWithReviewPredicate("codex_approved");
 		const session = store.getSession(EXEC)!;
 		const env = {
-			FLYWHEEL_WORKFLOW_CLAIMS_READ: "0",
+			FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 			FLYWHEEL_MERGE_APPROVAL_GATE: "0",
 			FLYWHEEL_QA_DONE_GATE: "0",
 			FLYWHEEL_CODEX_HARD_GATE: "0",
@@ -544,7 +568,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			EXEC,
 			undefined,
 			{
-				FLYWHEEL_WORKFLOW_CLAIMS_READ: "0",
+				FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 				FLYWHEEL_MERGE_APPROVAL_GATE: "0",
 				FLYWHEEL_QA_DONE_GATE: "0",
 				FLYWHEEL_CODEX_HARD_GATE: "0",

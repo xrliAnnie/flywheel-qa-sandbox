@@ -27,6 +27,7 @@ import {
 	ConfigLoader,
 	DESIGN_BACKENDS,
 	isDesignBackend,
+	isThreeStagePhaseRole,
 	normalizeDispatchModel,
 	resolveEffectiveFounderUxConfig,
 } from "flywheel-config";
@@ -44,6 +45,7 @@ import {
 import type { Session, StateStore } from "../StateStore.js";
 import { workflowNodeAgentContent } from "../workflow-run-snapshot.js";
 import {
+	resolveWorkflowTemplateCandidateSchema,
 	resolveWorkflowTemplateSelection,
 	type WorkflowRequestAuthKind,
 } from "../workflow-template-selection.js";
@@ -90,14 +92,21 @@ function secureTokenEqual(
 	return timingSafeEqual(actualDigest, expectedDigest);
 }
 
-function isSchemaV2Snapshot(snapshot: string | null | undefined): boolean {
+function isSchemaSnapshot(
+	snapshot: string | null | undefined,
+	schemaVersion: 1 | 2,
+): boolean {
 	if (!snapshot) return false;
 	try {
 		const parsed = JSON.parse(snapshot) as { schema_version?: unknown };
-		return parsed?.schema_version === 2;
+		return parsed?.schema_version === schemaVersion;
 	} catch {
 		return false;
 	}
+}
+
+function isSchemaV2Snapshot(snapshot: string | null | undefined): boolean {
+	return isSchemaSnapshot(snapshot, 2);
 }
 
 /**
@@ -680,6 +689,98 @@ export function createRunsRouter(
 			normalizedIssueLabels,
 		);
 
+		const templateCandidateInput = {
+			project: projectName,
+			taskCategory:
+				typeof req.body.taskCategory === "string"
+					? req.body.taskCategory
+					: undefined,
+			leadTemplateId:
+				typeof req.body.templateId === "string"
+					? req.body.templateId
+					: undefined,
+		};
+		let candidateSchemaAtEntry: 1 | 2 | null;
+		try {
+			candidateSchemaAtEntry = resolveWorkflowTemplateCandidateSchema(
+				store,
+				templateCandidateInput,
+			);
+		} catch (err) {
+			res.status(409).json({
+				success: false,
+				code: "GENERALIZED_WORKFLOW_REJECTED",
+				reason: (err as Error).message,
+			});
+			return;
+		}
+
+		// FLY-793 (Step 4 ENTRY): resolve the trusted three-stage policy before
+		// schema-v1 template selection. The v1 engine is an implementation of this
+		// entry, so it may not bypass an opt-out or the shared-worktree phase guard.
+		// Schema v2 remains independently selectable and skips this legacy policy.
+		let shareParentBranch: boolean | undefined;
+		let ignoreRunnerLabelSelection: boolean | undefined;
+		let dispatchVendor: PhaseDispatchVendor | undefined;
+		let dispatchEffort: RoleEffort | undefined;
+		let effectiveDesignBackend: DesignBackend | undefined;
+		if (role === "main" && candidateSchemaAtEntry !== 2) {
+			const proj = projects.find((p) => p.projectName === projectName);
+			const pipelineConfig = proj
+				? (await loadPipelineConfigByProject([proj])).get(projectName)
+				: undefined;
+			const dispatchChannelId = leadId
+				? proj?.leads.find((l) => l.agentId === leadId)?.chatChannel
+				: undefined;
+			const entry = resolveThreeStageEntry({
+				requestRole: role,
+				pipelineConfig,
+				issueLabels: normalizedIssueLabels,
+				env: process.env,
+				dispatchChannelId,
+				designBackend: requestedDesignBackend,
+			});
+			if (requestedDesignBackend && !entry.enteredThreeStage) {
+				console.warn(
+					`[runs/start] designBackend=${requestedDesignBackend} not applicable: ${entry.notEnteredDetail ?? entry.notEnteredReasonCode ?? "policy_disabled"}`,
+				);
+				res.status(400).json({
+					success: false,
+					code: "DESIGN_BACKEND_NOT_APPLICABLE",
+					reason: entry.notEnteredReasonCode ?? "policy_disabled",
+					requested: requestedDesignBackend,
+					silent: false,
+				});
+				return;
+			}
+			if (entry.enteredThreeStage) {
+				const activePhase = store.getActivePhaseSessionForIssue(issueId);
+				const exactSchemaV1Replay =
+					requestAuthKind === "master" &&
+					replayReservation?.execution_id === activePhase?.execution_id &&
+					isSchemaSnapshot(
+						replayReservation
+							? store.getWorkflowRun(replayReservation.run_id)?.snapshot
+							: undefined,
+						1,
+					);
+				if (activePhase && !exactSchemaV1Replay) {
+					res.status(409).json({
+						success: false,
+						message: `Issue ${issueId} already has an active three-stage ${activePhase.session_role} phase (${activePhase.execution_id}, status: ${activePhase.status}). The pipeline advances Design→Implement→QA on one shared branch — do not start a second run; let the active phase hand off, or terminate it first.`,
+					});
+					return;
+				}
+				role = entry.role;
+				shareParentBranch = true;
+				dispatchModel = entry.dispatchModel;
+				dispatchVendor = entry.dispatchVendor;
+				dispatchEffort = entry.dispatchEffort;
+				effectiveDesignBackend = entry.designBackend;
+				ignoreRunnerLabelSelection = true;
+			}
+		}
+
 		const generalizedProject = projects.find(
 			(project) => project.projectName === projectName,
 		);
@@ -688,16 +789,8 @@ export function createRunsRouter(
 			| undefined;
 		try {
 			generalizedSelection = resolveWorkflowTemplateSelection(store, {
-				project: projectName,
+				...templateCandidateInput,
 				issueId,
-				taskCategory:
-					typeof req.body.taskCategory === "string"
-						? req.body.taskCategory
-						: undefined,
-				leadTemplateId:
-					typeof req.body.templateId === "string"
-						? req.body.templateId
-						: undefined,
 				leadReason:
 					typeof req.body.selectionReason === "string"
 						? req.body.selectionReason
@@ -707,6 +800,8 @@ export function createRunsRouter(
 				authKind: requestAuthKind,
 				canonicalRoot: generalizedProject?.projectRoot ?? "",
 				idempotencyKey: requestedStartKey,
+				allowSchemaV1Dispatch: role === "design" && shareParentBranch === true,
+				candidateSchemaAtEntry,
 				env: process.env,
 			});
 		} catch (err) {
@@ -921,19 +1016,26 @@ export function createRunsRouter(
 						});
 				}
 				if (shouldDispatch) {
+					const workflowRole = isThreeStagePhaseRole(
+						generalizedSelection.node.type,
+					)
+						? generalizedSelection.node.type
+						: "main";
 					await startDispatcher.start({
 						issueId,
 						projectName,
 						leadId,
 						issueTitle,
 						issueIdentifier,
-						sessionRole: "main",
+						sessionRole: workflowRole,
+						shareParentBranch: workflowRole === "main" ? undefined : true,
 						issueLabels: normalizedIssueLabels,
 						owningDept,
 						codexSkip: normalizedIssueLabels.includes("codex-skip"),
 						docTier,
 						issueUrl,
 						generalizedExecution: {
+							engineOwned: true,
 							executionId: generalizedSelection.executionId,
 							runId: generalizedSelection.runId,
 							nodeId: generalizedSelection.nodeId,
@@ -1001,106 +1103,6 @@ export function createRunsRouter(
 			});
 			res.json(response);
 			return;
-		}
-
-		// FLY-793 (Step 4 ENTRY): a FRESH `main` dispatch on a three-stage-enabled
-		// project STARTS at the Design phase — this is the entry the PhaseOrchestrator
-		// (handoff-only) does not cover. The policy is resolved SERVER-SIDE from the
-		// project's CANONICAL config (+ the issue's Linear labels + the env
-		// kill-switch), NEVER the request body, so `shareParentBranch` stays
-		// Bridge-internal and a runner cannot self-elevate its own run. Only the fresh
-		// `main` entry is rerouted; an explicit phase role (a PhaseOrchestrator handoff
-		// calls startDispatcher.start directly, not this HTTP route) and auto-QA
-		// (`qa`) pass through. Absent config / OFF / `no-three-stage` label /
-		// `FLYWHEEL_THREE_STAGE=0` → stays `main` (byte-compatible).
-		let shareParentBranch: boolean | undefined;
-		// FLY-887 R2: set with shareParentBranch at entry — phase sessions bypass
-		// the runner-label backend/model layer (see the entry branch below).
-		let ignoreRunnerLabelSelection: boolean | undefined;
-		// FLY-1224: the phase table's vendor + effort for a three-stage entry
-		// (design). NEVER read from the request body — the entry decision is the
-		// only writer, so the phase table stays the single vendor source.
-		let dispatchVendor: PhaseDispatchVendor | undefined;
-		let dispatchEffort: RoleEffort | undefined;
-		let effectiveDesignBackend: DesignBackend | undefined;
-		if (role === "main") {
-			const proj = projects.find((p) => p.projectName === projectName);
-			const pipelineConfig = proj
-				? (await loadPipelineConfigByProject([proj])).get(projectName)
-				: undefined;
-			// FLY-887 R2: resolve the dispatching Lead's chatChannel SERVER-SIDE
-			// (leadId → project.leads[].chatChannel — never the request body) for
-			// the `three_stage_channels` gate. leadId is trusted here: the
-			// membership check (:337-349) rejected a leadId not in project.leads,
-			// and the auto-resolve (:400-419) filled it server-side when absent —
-			// both ran before this entry decision. A dispatch-forged leadId can
-			// only select an ALREADY-CONFIGURED lead's channel, so the gate's
-			// risk surface is unchanged (three-stage is a workflow shape, not a
-			// privilege).
-			const dispatchChannelId = leadId
-				? proj?.leads.find((l) => l.agentId === leadId)?.chatChannel
-				: undefined;
-			const entry = resolveThreeStageEntry({
-				requestRole: role,
-				pipelineConfig,
-				issueLabels: normalizedIssueLabels,
-				env: process.env,
-				dispatchChannelId,
-				designBackend: requestedDesignBackend,
-			});
-			if (requestedDesignBackend && !entry.enteredThreeStage) {
-				console.warn(
-					`[runs/start] designBackend=${requestedDesignBackend} not applicable: ${entry.notEnteredDetail ?? entry.notEnteredReasonCode ?? "policy_disabled"}`,
-				);
-				res.status(400).json({
-					success: false,
-					code: "DESIGN_BACKEND_NOT_APPLICABLE",
-					reason: entry.notEnteredReasonCode ?? "policy_disabled",
-					requested: requestedDesignBackend,
-					silent: false,
-				});
-				return;
-			}
-			if (entry.enteredThreeStage) {
-				// FLY-793 (Codex R1 BLOCKING): the per-role dedup above keyed on the
-				// request role `main` and CANNOT see an already-active Design/Implement/
-				// QA phase for this issue (those rows have a phase `session_role`). A
-				// second fresh dispatch here would start another phase AND — via
-				// Blueprint.removeIfExists on the SHARED branch-B worktree key — tear
-				// away the running phase's worktree instead of failing closed. Reject if
-				// any phase is in flight (incl. the design_done handoff window). The
-				// single active phase IS the pipeline's own progress.
-				const activePhase = store.getActivePhaseSessionForIssue(issueId);
-				if (activePhase) {
-					res.status(409).json({
-						success: false,
-						message: `Issue ${issueId} already has an active three-stage ${activePhase.session_role} phase (${activePhase.execution_id}, status: ${activePhase.status}). The pipeline advances Design→Implement→QA on one shared branch — do not start a second run; let the active phase hand off, or terminate it first.`,
-					});
-					return;
-				}
-				role = entry.role; // "design"
-				shareParentBranch = true;
-				// FLY-887 R2: the phase table OWNS the phase model — apply the entry's
-				// model UNCONDITIONALLY. A difficulty-sorter pin (e.g. a light-sorted
-				// issue pinned to Sonnet) must NOT leak onto a phase session; an issue
-				// that genuinely needs a special model opts out of three-stage via the
-				// `no-three-stage` label and runs single-session (recorded trade-off,
-				// Lead-approved).
-				dispatchModel = entry.dispatchModel;
-				// FLY-1224: forward the phase table's vendor + effort alongside the
-				// model so the resolver's dispatch layer picks the phase backend.
-				dispatchVendor = entry.dispatchVendor;
-				dispatchEffort = entry.dispatchEffort;
-				effectiveDesignBackend = entry.designBackend;
-				// FLY-887 R2 (Codex R1 blocker): the Linear label layer outranks
-				// dispatchModel in resolveRoleAdapter — a `sonnet` model label or a
-				// `codex`/`agy`/`kimi` vendor label would beat the phase table (and a
-				// no-transport vendor backend can never receive park/wake mailboxes).
-				// Bypass the label layer for phase dispatch (FLY-643 seam, same as
-				// auto-QA); issueLabels still flow into BlueprintContext for
-				// Lead/thread routing.
-				ignoreRunnerLabelSelection = true;
-			}
 		}
 
 		// FLY-137 Phase 5: snapshot codex-skip label at run start (no mid-run
