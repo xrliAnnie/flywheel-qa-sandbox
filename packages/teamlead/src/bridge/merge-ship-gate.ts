@@ -421,6 +421,7 @@ export async function finalizeRecoveredMerge(
 		issueId: string,
 		projectName: string,
 	) => Promise<void>,
+	materializedHeadAuthority: MaterializedHeadAuthority = unavailableMaterializedHeadAuthority,
 ): Promise<boolean> {
 	const s = store.getSession(execId);
 	// Only a still-parked row (marker present) whose founder approval just landed.
@@ -433,7 +434,13 @@ export async function finalizeRecoveredMerge(
 	// Eligibility BEFORE clearing (Codex R2 #2): an unmet QA / Codex gate → NOT eligible → leave
 	// the marker in place (still held). verifyApproval also requires status approved_to_ship, so
 	// a not-yet-approved row is naturally ineligible here.
-	const decision = await computeAuthoritativeShipDecision(store, s, head, env);
+	const decision = await computeAuthoritativeShipDecision(
+		store,
+		s,
+		head,
+		env,
+		materializedHeadAuthority,
+	);
 	// Head-bound: only THIS authoritative head recovers THIS marker. A stale
 	// cached/session head or stale marker remains parked.
 	if (

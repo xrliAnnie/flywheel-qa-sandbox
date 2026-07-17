@@ -50,6 +50,7 @@ import {
 	applyTransition,
 } from "../applyTransition.js";
 import type { Session, StateStore } from "../StateStore.js";
+import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
 import {
 	computeAuthoritativeShipDecision,
 	parkMergeBlock,
@@ -161,6 +162,8 @@ export interface MarkerReconcilerDeps {
 		status: "failed" | "blocked",
 		projectName: string,
 	) => void;
+	/** FLY-1307 PR-7.5: trusted receipt-backed head for output-backed reviews. */
+	materializedHeadAuthority?: MaterializedHeadAuthority;
 }
 
 /**
@@ -452,6 +455,8 @@ export async function tryReconcileComplete(
 			deps.store,
 			currentSession,
 			prHead,
+			process.env,
+			deps.materializedHeadAuthority,
 		);
 		const eligible = decision.eligible;
 		if (!eligible) {

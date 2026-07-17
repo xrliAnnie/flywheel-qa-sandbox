@@ -2,10 +2,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import {
+	type MaterializedHeadAuthority,
+	receiptBackedMaterializedHeadAuthority,
+} from "../bridge/materialized-head-authority.js";
 import type {
 	IStartDispatcher,
 	StartRequest,
 } from "../bridge/retry-dispatcher.js";
+import { WorkflowDocsMaterializer } from "../bridge/workflow-docs-materializer.js";
 import { WorkflowEngineDispatcher } from "../bridge/workflow-engine-dispatcher.js";
 import { StateStore } from "../StateStore.js";
 import { loadBundledWorkflowSeeds } from "../workflow-template.js";
@@ -506,6 +511,106 @@ describe("WorkflowEngineDispatcher", () => {
 			"done",
 		);
 		store.close();
+	});
+
+	it("holds an output-backed review until durable materialization authority resolves, then launches at that head", async () => {
+		const { store, canonicalRoot, env } = await storeWithProductOutputIntent();
+		const produce = fakeStartDispatcher(store);
+		const produceDispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: produce.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1307-product-produce-")),
+			env,
+		});
+		expect(await produceDispatcher.reconcile()).toEqual({
+			started: 1,
+			held: 0,
+		});
+		const outputToken =
+			produce.requests[0]?.generalizedExecution?.outputCredential;
+		expect(outputToken).toEqual(expect.any(String));
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: outputToken!,
+				clientRequestId: "product-output-1",
+				payload: JSON.stringify({
+					kind: "docs_v1",
+					operations: [
+						{ op: "write", path: "product/doc/prd.md", content: "PRD\n" },
+					],
+				}),
+			}),
+		).toMatchObject({ ok: true });
+		store.commitWorkflowTransitionTx({
+			runId: "product-run",
+			nodeId: "produce",
+			attempt: 1,
+			executionId: "produce-1",
+			outcome: "node_done",
+			successorExecutionId: "review-1",
+			now: "2026-07-16T00:10:00.000Z",
+		});
+
+		const review = fakeStartDispatcher(store);
+		const unavailable: MaterializedHeadAuthority = {
+			resolve: vi.fn(async () => {
+				throw new Error("materialized_head_unavailable");
+			}),
+		};
+		const held = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: review.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1307-product-review-")),
+			env,
+			materializedHeadAuthority: unavailable,
+		});
+		expect(await held.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(review.start).not.toHaveBeenCalled();
+
+		let remoteHead: string | undefined;
+		const materializer = new WorkflowDocsMaterializer({
+			store,
+			projects: [
+				{
+					projectName: "flywheel",
+					projectRoot: canonicalRoot,
+					projectRepo: "xrliAnnie/flywheel",
+					leads: [],
+				},
+			],
+			withRepoLock: async (_root, fn) => fn(),
+			git: {
+				resolveBaseHead: async () => "b".repeat(40),
+				prepareOrAdoptCommit: async () => ({
+					treeHead: "c".repeat(40),
+					commitHead: HEAD,
+				}),
+				readRemoteHead: async () => remoteHead,
+				pushCommit: async () => {
+					remoteHead = HEAD;
+				},
+			},
+		});
+		expect(await materializer.reconcile()).toEqual({
+			materialized: 1,
+			held: 0,
+		});
+		const authority = receiptBackedMaterializedHeadAuthority(store);
+		const ready = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: review.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1307-product-review-ready-")),
+			env,
+			materializedHeadAuthority: authority,
+		});
+		expect(await ready.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(review.requests[0]).toMatchObject({
+			successorExecutionId: "review-1",
+			sessionRole: "main",
+			startPoint: HEAD,
+		});
+		store.close();
+		rmSync(canonicalRoot, { recursive: true, force: true });
 	});
 
 	it("rotates a lost output credential under the committed delivery-repair fence", async () => {

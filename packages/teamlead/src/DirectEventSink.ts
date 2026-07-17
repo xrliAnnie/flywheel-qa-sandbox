@@ -27,6 +27,7 @@ import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { IssueDisplayRefreshHolder } from "./bridge/issue-display-refresher.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import { makeLinearDoneFinalizer } from "./bridge/linear-issue-finalizer.js";
+import type { MaterializedHeadAuthority } from "./bridge/materialized-head-authority.js";
 import {
 	computeAuthoritativeShipDecision,
 	isMergeBlocked,
@@ -141,6 +142,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	public workflowShadow?: {
 		onShipFinalized(args: { projectName: string; issueId: string }): void;
 	};
+	/** FLY-1307 PR-7.5: trusted receipt-backed head for output-backed reviews. */
+	public materializedHeadAuthority?: MaterializedHeadAuthority;
 
 	private notifyDisplayChanged(issueId: string): void {
 		try {
@@ -578,6 +581,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						project_name: env.projectName,
 					},
 					desPrHead,
+					process.env,
+					this.materializedHeadAuthority,
 				)
 			: undefined;
 		const desShipEligible = desMergedLanding

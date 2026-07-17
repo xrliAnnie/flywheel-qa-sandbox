@@ -59,6 +59,7 @@ import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { EventFilter } from "./EventFilter.js";
 import type { IssueDisplayRefreshHolder } from "./issue-display-refresher.js";
 import { LaunchClaimStore } from "./launch-claim-store.js";
+import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
 import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import type { LifecycleShipInfra } from "./post-ship-finalization.js";
 import {
@@ -573,6 +574,8 @@ export interface RunInfraOptions {
 	 * is ON (single boot-time capture). Absent → zero enqueue (byte-compat).
 	 */
 	terminalArchiveEnqueue?: (issueId: string) => void;
+	/** FLY-1307 PR-7.5: trusted receipt-backed head for output-backed reviews. */
+	materializedHeadAuthority?: MaterializedHeadAuthority;
 	/**
 	 * FLY-1185 (R11#1): lifecycle spawn admission (founder-park tombstone +
 	 * durable starting claim), threaded to the RunDispatcher chokepoint.
@@ -788,6 +791,8 @@ export async function setupRunInfrastructure(
 			// FLY-1232 T9: the in-process post-ship finalization hook (external
 			// merge paths are covered by the claim-based startup repair instead).
 			directSink.workflowShadow = runInfraOpts?.workflowShadow;
+			directSink.materializedHeadAuthority =
+				runInfraOpts?.materializedHeadAuthority;
 			// FLY-1282 Part C: targeted terminal-archive enqueue for the
 			// in-process completion path.
 			directSink.terminalArchiveEnqueue = runInfraOpts?.terminalArchiveEnqueue;

@@ -39,6 +39,7 @@ import {
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
+import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
 import { finalizeRecoveredMerge } from "./merge-ship-gate.js";
 import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import { makeFinalizeThreeStagePhases } from "./post-ship-finalization.js";
@@ -220,6 +221,7 @@ export async function approveExecution(
 	// applyTransition hook and the DirectEventSink hook).
 	refreshIssueDisplay?: (issueId: string) => Promise<void>,
 	cardAuthority?: FounderApprovalCardAuthority,
+	materializedHeadAuthority?: MaterializedHeadAuthority,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -419,6 +421,7 @@ export async function approveExecution(
 						refreshIssueDisplay,
 					)
 				: undefined,
+			materializedHeadAuthority,
 		);
 		if (completed) {
 			console.log(
@@ -1534,6 +1537,7 @@ export function createActionRouter(
 	// (/actions dashboard alias + /api/actions — the FLY-175 dual-mount).
 	phaseOrchestrator?: { current?: PhaseOrchestrator },
 	cardAuthority?: FounderApprovalCardAuthority,
+	materializedHeadAuthority?: MaterializedHeadAuthority,
 ): Router {
 	const router = Router();
 
@@ -1580,6 +1584,7 @@ export function createActionRouter(
 								Promise.resolve()
 						: undefined,
 					cardAuthority,
+					materializedHeadAuthority,
 				);
 				if (result.success) {
 					res.json({

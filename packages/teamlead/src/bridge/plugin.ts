@@ -389,6 +389,7 @@ import {
 	handleManualQaApply,
 	handleManualQaStage,
 } from "./manual-qa-routes.js";
+import { receiptBackedMaterializedHeadAuthority } from "./materialized-head-authority.js";
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
@@ -566,6 +567,8 @@ import {
 	createStuckConfirmRunner,
 } from "./watchdog-judge-assembly.js";
 import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
+import { GitWorkflowDocsGit } from "./workflow-docs-git.js";
+import { WorkflowDocsMaterializer } from "./workflow-docs-materializer.js";
 import { WorkflowEngineDispatcher } from "./workflow-engine-dispatcher.js";
 import { createWorkflowShadowWriterFromEnv } from "./workflow-shadow-writer.js";
 import { createWorkflowTemplateRouter } from "./workflow-template-routes.js";
@@ -1024,6 +1027,8 @@ export interface BridgeAppOptions {
 	lifecycleInfra?: LifecycleShipInfra;
 	/** FLY-1185 §2.11: the shared per-repo mutation lock (startBridge-owned). */
 	withRepoLock?: <T>(mainRepoPath: string, fn: () => Promise<T>) => Promise<T>;
+	/** FLY-1307 PR-7.5: receipt-backed authority for output-backed review/ship heads. */
+	materializedHeadAuthority?: import("./materialized-head-authority.js").MaterializedHeadAuthority;
 	/** FLY-1185 §2.12: park/unpark + approved-manifest apply routers. */
 	lifecycleRoutes?: {
 		parkRouter: import("express").Router;
@@ -1225,6 +1230,7 @@ export function createBridgeApp(
 		"/api/workflow",
 		createWorkflowDecisionRouter({
 			store,
+			materializedHeadAuthority: opts?.materializedHeadAuthority,
 			phaseOrchestrator: opts?.phaseOrchestrator,
 			...(process.env.FLYWHEEL_WORKFLOW_CLAIMS_WRITE === "1" &&
 			opts?.fleetConsole &&
@@ -1265,6 +1271,7 @@ export function createBridgeApp(
 		transitionOpts,
 		// FLY-907: recovered-merge finalization display refresh (late-bound).
 		opts?.issueDisplayRefresh,
+		opts?.materializedHeadAuthority,
 	);
 	const fcNoop: express.RequestHandler = (_q, _s, next) => next();
 	const fcMw = (
@@ -1379,6 +1386,8 @@ export function createBridgeApp(
 			onApproved,
 			opts?.issueDisplayRefresh, // FLY-907
 			opts?.phaseOrchestrator, // FLY-1050: terminate → QA-loss re-drive
+			undefined, // cardAuthority
+			opts?.materializedHeadAuthority,
 		),
 	);
 
@@ -1433,6 +1442,7 @@ export function createBridgeApp(
 			opts?.issueDisplayRefresh, // FLY-907
 			lifecycleInfra, // FLY-1185 entry A bundle
 			opts?.terminalArchiveEnqueue, // FLY-1282 Part C
+			opts?.materializedHeadAuthority, // FLY-1307 PR-7.5
 		),
 	);
 
@@ -1975,6 +1985,8 @@ export function createBridgeApp(
 			onApproved,
 			opts?.issueDisplayRefresh, // FLY-907
 			opts?.phaseOrchestrator, // FLY-1050: terminate → QA-loss re-drive
+			undefined, // cardAuthority
+			opts?.materializedHeadAuthority,
 		),
 	);
 
@@ -4454,6 +4466,16 @@ export async function startBridge(
 	// contract (Annie 直令): zero new flags — every NEW deleter hangs off the
 	// existing FLYWHEEL_WORKTREE_AUTOCLEAN escape hatch inside its module.
 	const repoMutationLock = createRepoMutationLock();
+	const materializedHeadAuthority =
+		receiptBackedMaterializedHeadAuthority(store);
+	const workflowDocsMaterializer = new WorkflowDocsMaterializer({
+		store,
+		git: new GitWorkflowDocsGit(),
+		projects,
+		withRepoLock: repoMutationLock.withRepoLock,
+		log: (message) => console.warn(`[workflow-materializer] ${message}`),
+	});
+	workflowDocsMaterializer.start();
 	const issueMutex = createIssueMutex();
 	// Codex R2#3: EVERY closeRunner call (explicit close endpoint, reject/
 	// defer/shelve actions, legacy reconcile finalize) serializes through the
@@ -4897,6 +4919,7 @@ export async function startBridge(
 					// FLY-1282 Part C: targeted terminal-archive enqueue for the
 					// DirectEventSink completion path (undefined when switch OFF).
 					terminalArchiveEnqueue,
+					materializedHeadAuthority,
 					// FLY-1185 (R11#1): park admission at the dispatcher chokepoint.
 					lifecycleAdmission: (input) =>
 						assertIssueNotLifecycleClosed(
@@ -5010,6 +5033,7 @@ export async function startBridge(
 					}
 				},
 				log: (message) => console.warn(`[workflow-engine] ${message}`),
+				materializedHeadAuthority,
 			})
 		: undefined;
 	workflowEngineDispatcher?.start();
@@ -5099,6 +5123,7 @@ export async function startBridge(
 			// completion sites (undefined when switch OFF).
 			terminalArchiveEnqueue,
 			withRepoLock: repoMutationLock.withRepoLock,
+			materializedHeadAuthority,
 			// FLY-1185 §2.12: park/unpark + approved-manifest apply endpoints.
 			lifecycleRoutes: (() => {
 				const routeDeps = {
@@ -5409,6 +5434,7 @@ export async function startBridge(
 		{
 			bridgeBaseUrl: loopbackBaseUrl,
 			ingestToken: config.ingestToken,
+			materializedHeadAuthority,
 			onTerminalStatusPersisted: (executionId, status, projectName) =>
 				terminalCommDbSync.enqueue(executionId, status, projectName),
 		},
@@ -5600,6 +5626,7 @@ export async function startBridge(
 			store,
 			bridgeBaseUrl: loopbackBaseUrl,
 			ingestToken: config.ingestToken,
+			materializedHeadAuthority,
 			transitionOpts,
 			getTmuxTarget: getTmuxTargetFromCommDb,
 			isTmuxWindowAlive,
@@ -6165,6 +6192,7 @@ export async function startBridge(
 	// Kill-switch FLYWHEEL_EXTERNAL_MERGE_RECONCILE=0 lives inside pass().
 	const externalMergeReconciler = createExternalMergeReconciler({
 		store,
+		materializedHeadAuthority,
 		config,
 		projects,
 		removeCleanWorktree: makeBridgeWorktreeCleanup(store, projects),
@@ -9592,6 +9620,7 @@ export async function startBridge(
 		writeCleanMarker(bridgeMarker);
 		workflowSourceProjector.stop();
 		workflowEngineDispatcher?.stop();
+		workflowDocsMaterializer.stop();
 		heartbeatService?.stop();
 		await publishBrokerHandle?.close(); // FLY-1062: socket + observe timer
 		gatePoller.stop();

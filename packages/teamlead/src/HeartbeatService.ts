@@ -30,6 +30,7 @@ import {
 	type LeadRuntime,
 	RETRYABLE_LEAD_EVENT_TYPES,
 } from "./bridge/lead-runtime.js";
+import type { MaterializedHeadAuthority } from "./bridge/materialized-head-authority.js";
 import {
 	GHOST_PROBE_MAX_ROWS,
 	TURN_GRANT_GRACE_MS,
@@ -326,6 +327,7 @@ export interface MonitorReconcileConfig {
 		status: "failed" | "blocked",
 		projectName: string,
 	) => void;
+	materializedHeadAuthority?: MaterializedHeadAuthority;
 }
 
 /**
@@ -793,6 +795,8 @@ export class HeartbeatService implements ReconnectController {
 			fetchFn: this.monitorReconcile.fetchFn,
 			markerDir: this.monitorReconcile.markerDir,
 			quarantineDir: this.monitorReconcile.quarantineDir,
+			materializedHeadAuthority:
+				this.monitorReconcile.materializedHeadAuthority,
 			onTerminalStatusPersisted:
 				this.monitorReconcile.onTerminalStatusPersisted,
 		};

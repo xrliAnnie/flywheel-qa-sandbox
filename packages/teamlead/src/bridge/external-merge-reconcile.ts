@@ -298,7 +298,13 @@ export function createExternalMergeReconciler(
 		const head =
 			session.pr_head_sha?.trim().toLowerCase() || info.headRefOid || "";
 		const decision: ShipEligibilityDecision & { authoritativeHead: string } =
-			await computeAuthoritativeShipDecision(deps.store, session, head);
+			await computeAuthoritativeShipDecision(
+				deps.store,
+				session,
+				head,
+				(deps.env ?? process.env) as NodeJS.ProcessEnv,
+				deps.materializedHeadAuthority,
+			);
 		if (!decision.eligible) {
 			// Identical semantics to the live merge-ship-gate: park + one loud alert.
 			const claimed = parkMergeBlock(

@@ -228,7 +228,9 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		return { qaClaimId: qa.claimId };
 	}
 
-	function productWithWrongReviewPredicate(): void {
+	function productWithReviewPredicate(
+		predicate: "codex_approved" | "design_review_approved",
+	): void {
 		const seed = loadBundledWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_product_v1",
 		)!;
@@ -302,7 +304,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			store.submitWorkflowDecisionByCredential({
 				credential: review.submissionCredential,
 				clientRequestId: "wrong-review-predicate",
-				predicate: "codex_approved",
+				predicate,
 				subjectDigest: HEAD,
 				issuerVendor: "claude",
 				issuerModel: "sonnet",
@@ -428,7 +430,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 	});
 
 	it("does not confuse predicates in the review family and fails closed without materialized authority", async () => {
-		productWithWrongReviewPredicate();
+		productWithReviewPredicate("codex_approved");
 		const session = store.getSession(EXEC)!;
 		const env = {
 			FLYWHEEL_WORKFLOW_CLAIMS_READ: "0",
@@ -521,6 +523,41 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		);
 		expect(completed).toBe(true);
 		expect(isMergeBlocked(store.getSession(EXEC))).toBe(false); // marker cleared
+		expect(store.getSession(EXEC)?.status).toBe("completed");
+	});
+
+	it("recovered product merge resolves its materialized head through the production authority port", async () => {
+		productWithReviewPredicate("design_review_approved");
+		const session = store.getSession(EXEC)!;
+		parkMergeBlock(store, session, HEAD, {
+			eligible: false,
+			mergeApprovalOk: false,
+			qaOk: false,
+			mergeReason: "head_authority_unavailable",
+			qaReason: "head_authority_unavailable_failclosed",
+		});
+
+		const completed = await finalizeRecoveredMerge(
+			store,
+			{} as BridgeConfig,
+			[],
+			EXEC,
+			undefined,
+			{
+				FLYWHEEL_WORKFLOW_CLAIMS_READ: "0",
+				FLYWHEEL_MERGE_APPROVAL_GATE: "0",
+				FLYWHEEL_QA_DONE_GATE: "0",
+				FLYWHEEL_CODEX_HARD_GATE: "0",
+			} as NodeJS.ProcessEnv,
+			undefined,
+			undefined,
+			{
+				resolve: async () => ({ head: HEAD, outputId: 1, attempt: 1 }),
+			},
+		);
+
+		expect(completed).toBe(true);
+		expect(isMergeBlocked(store.getSession(EXEC))).toBe(false);
 		expect(store.getSession(EXEC)?.status).toBe("completed");
 	});
 

@@ -24,6 +24,7 @@ import type { ProjectEntry } from "../../ProjectConfig.js";
 import type { StateStore } from "../../StateStore.js";
 import { deriveCanonicalFounderId } from "../approval-signal/canonical-founder-id.js";
 import { reviewHoldReason } from "../auto-qa-held.js";
+import type { MaterializedHeadAuthority } from "../materialized-head-authority.js";
 import { finalizeRecoveredMerge } from "../merge-ship-gate.js";
 import { makeFinalizeThreeStagePhases } from "../post-ship-finalization.js";
 import { sendRunnerWake } from "../runner-wake.js";
@@ -108,6 +109,7 @@ export function buildGateResponsePostWriteHook(deps: {
 	issueDisplayRefresh?: {
 		current?: { refresh(issueId: string): Promise<void> };
 	};
+	materializedHeadAuthority?: MaterializedHeadAuthority;
 }): (info: {
 	executionId: string;
 	questionId: string;
@@ -193,6 +195,7 @@ export function buildGateResponsePostWriteHook(deps: {
 								refreshIssueDisplay,
 							)
 						: undefined,
+					deps.materializedHeadAuthority,
 				);
 				if (completed) {
 					log.warn(
@@ -246,6 +249,7 @@ export function buildFounderConsentWiring(
 	issueDisplayRefresh?: {
 		current?: { refresh(issueId: string): Promise<void> };
 	},
+	materializedHeadAuthority?: MaterializedHeadAuthority,
 ): FounderConsentWiring | null {
 	const fc = config.founderConsent;
 	if (!fc) return null; // Track 2 not compiled into this config at all.
@@ -325,6 +329,7 @@ export function buildFounderConsentWiring(
 		projects,
 		// FLY-907: terminal-state display refresh on the recovered-merge path.
 		issueDisplayRefresh,
+		materializedHeadAuthority,
 	});
 
 	// FLY-191 Phase 2 (Codex PR R1 CRITICAL): the gate router rejects answers

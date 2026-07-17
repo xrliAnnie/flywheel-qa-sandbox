@@ -14717,6 +14717,8 @@ export class StateStore {
 			execution_id: row.execution_id as string,
 			payload: row.payload as string,
 			output_digest: row.output_digest as string,
+			output_schema: row.output_schema as string,
+			byte_size: Number(row.byte_size),
 			written_at: row.written_at as string,
 		};
 	}
@@ -17143,6 +17145,59 @@ export class StateStore {
 			ON workflow_side_effect_ledger
 			BEGIN SELECT RAISE(ABORT, 'workflow_side_effect_ledger identity is immutable'); END
 		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_materialization_receipt (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				effect_id TEXT NOT NULL,
+				stage TEXT NOT NULL CHECK (stage IN
+					('intent_pinned','commit_adopted','push_confirmed')),
+				run_id TEXT,
+				node_id TEXT,
+				attempt INTEGER,
+				output_id INTEGER,
+				output_digest TEXT,
+				repo TEXT,
+				ref TEXT,
+				base_head TEXT,
+				tree_head TEXT,
+				commit_head TEXT,
+				remote_head TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				UNIQUE (effect_id, stage),
+				CHECK (
+					(stage = 'intent_pinned'
+					 AND run_id IS NOT NULL AND node_id IS NOT NULL AND attempt > 0
+					 AND output_id > 0 AND output_digest IS NOT NULL
+					 AND repo IS NOT NULL AND ref IS NOT NULL AND base_head IS NOT NULL
+					 AND tree_head IS NULL AND commit_head IS NULL AND remote_head IS NULL)
+				 OR (stage = 'commit_adopted'
+					 AND run_id IS NULL AND node_id IS NULL AND attempt IS NULL
+					 AND output_id IS NULL AND output_digest IS NULL
+					 AND repo IS NULL AND ref IS NULL AND base_head IS NULL
+					 AND tree_head IS NOT NULL AND commit_head IS NOT NULL
+					 AND remote_head IS NULL)
+				 OR (stage = 'push_confirmed'
+					 AND run_id IS NULL AND node_id IS NULL AND attempt IS NULL
+					 AND output_id IS NULL AND output_digest IS NULL
+					 AND repo IS NULL AND ref IS NULL AND base_head IS NULL
+					 AND tree_head IS NULL AND commit_head IS NOT NULL
+					 AND remote_head = commit_head)
+				)
+			)
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_materialization_receipt_no_update
+			BEFORE UPDATE ON workflow_materialization_receipt
+			BEGIN SELECT RAISE(ABORT, 'workflow_materialization_receipt is append-only'); END
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_materialization_receipt_no_delete
+			BEFORE DELETE ON workflow_materialization_receipt
+			BEGIN SELECT RAISE(ABORT, 'workflow_materialization_receipt is append-only'); END
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_workflow_materialization_receipt_run ON workflow_materialization_receipt(run_id, node_id, attempt, stage)",
+		);
 		// Exactly ONE active shadow run per (project, issue) — DB-level guarantee
 		// so "the ship left but a new workflow still appends to the old run" is
 		// structurally impossible (finalization releases the slot).
@@ -17195,6 +17250,439 @@ export class StateStore {
 	}
 
 	/**
+	 * Allocate one deterministic docs materialization fence. The ledger intent
+	 * and its pinned input receipt share a transaction; neither can exist alone.
+	 */
+	allocateWorkflowMaterialization(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		outputId: number;
+		outputDigest: string;
+		repo: string;
+		ref: string;
+		baseHead: string;
+	}): WorkflowMaterializationRow {
+		if (!Number.isInteger(input.attempt) || input.attempt <= 0) {
+			throw new Error("workflow materialization attempt must be positive");
+		}
+		if (!Number.isInteger(input.outputId) || input.outputId <= 0) {
+			throw new Error("workflow materialization output id must be positive");
+		}
+		if (!/^[0-9a-f]{64}$/.test(input.outputDigest)) {
+			throw new Error("workflow materialization output digest invalid");
+		}
+		if (!/^[0-9a-f]{40,64}$/.test(input.baseHead)) {
+			throw new Error("workflow materialization base head invalid");
+		}
+		if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input.repo)) {
+			throw new Error("workflow materialization repo invalid");
+		}
+		if (!input.ref.startsWith("refs/heads/") || input.ref.includes("..")) {
+			throw new Error("workflow materialization ref invalid");
+		}
+		const current = this.workflowSelectAll(
+			`SELECT o.id, o.attempt, o.output_digest
+			   FROM workflow_node_output_current c
+			   JOIN workflow_node_outputs o ON o.id = c.output_id
+			  WHERE c.run_id = ? AND c.node_id = ?
+			    AND c.output_id = ? AND c.attempt = ?
+			    AND o.run_id = c.run_id AND o.node_id = c.node_id
+			    AND o.attempt = c.attempt AND o.execution_id = c.execution_id`,
+			[input.runId, input.nodeId, input.outputId, input.attempt],
+		)[0];
+		if (!current || current.output_digest !== input.outputDigest) {
+			throw new Error(
+				"workflow materialization output is not the current accepted output",
+			);
+		}
+		const effectId = `mat:${canonicalSubmissionDigest({
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+			outputDigest: input.outputDigest,
+			baseHead: input.baseHead,
+		})}`;
+		const existing = this.getWorkflowMaterializationReceipts(effectId).find(
+			(row) => row.stage === "intent_pinned",
+		);
+		if (existing) {
+			if (
+				existing.run_id !== input.runId ||
+				existing.node_id !== input.nodeId ||
+				existing.attempt !== input.attempt ||
+				existing.output_id !== input.outputId ||
+				existing.output_digest !== input.outputDigest ||
+				existing.repo !== input.repo ||
+				existing.ref !== input.ref ||
+				existing.base_head !== input.baseHead
+			) {
+				throw new Error("workflow materialization effect id collision");
+			}
+			return this.workflowMaterializationRow(effectId);
+		}
+
+		this.db.transaction(() => {
+			const ordinal =
+				Number(
+					this.workflowSelectAll(
+						`SELECT COALESCE(MAX(launch_ordinal), 0) AS n
+						   FROM workflow_side_effect_ledger
+						  WHERE run_id = ? AND node_id = ? AND attempt = ?
+						    AND kind = 'materialize'`,
+						[input.runId, input.nodeId, input.attempt],
+					)[0]?.n ?? 0,
+				) + 1;
+			this.db.run(
+				`INSERT INTO workflow_side_effect_ledger
+				   (run_id, node_id, attempt, kind, launch_ordinal, execution_id, state)
+				 VALUES (?, ?, ?, 'materialize', ?, ?, 'intent_recorded')`,
+				[input.runId, input.nodeId, input.attempt, ordinal, effectId],
+			);
+			this.db.run(
+				`INSERT INTO workflow_materialization_receipt
+				   (effect_id, stage, run_id, node_id, attempt, output_id,
+				    output_digest, repo, ref, base_head)
+				 VALUES (?, 'intent_pinned', ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					effectId,
+					input.runId,
+					input.nodeId,
+					input.attempt,
+					input.outputId,
+					input.outputDigest,
+					input.repo,
+					input.ref,
+					input.baseHead,
+				],
+			);
+		});
+		this.save();
+		return this.workflowMaterializationRow(effectId);
+	}
+
+	adoptWorkflowMaterializationCommit(input: {
+		effectId: string;
+		treeHead: string;
+		commitHead: string;
+	}): void {
+		if (
+			!/^[0-9a-f]{40,64}$/.test(input.treeHead) ||
+			!/^[0-9a-f]{40,64}$/.test(input.commitHead)
+		) {
+			throw new Error("workflow materialization commit head invalid");
+		}
+		this.db.transaction(() => {
+			const row = this.workflowMaterializationLedgerRow(input.effectId);
+			if (row.state !== "intent_recorded" && row.state !== "launch_committed") {
+				throw new Error(
+					`workflow materialization cannot adopt from ${row.state}`,
+				);
+			}
+			const prior = this.getWorkflowMaterializationReceipts(
+				input.effectId,
+			).find((receipt) => receipt.stage === "commit_adopted");
+			if (prior) {
+				if (
+					prior.tree_head !== input.treeHead ||
+					prior.commit_head !== input.commitHead
+				) {
+					throw new Error("workflow materialization commit adoption mismatch");
+				}
+			} else {
+				this.db.run(
+					`INSERT INTO workflow_materialization_receipt
+					   (effect_id, stage, tree_head, commit_head)
+					 VALUES (?, 'commit_adopted', ?, ?)`,
+					[input.effectId, input.treeHead, input.commitHead],
+				);
+			}
+			if (row.state === "intent_recorded") {
+				const now = new Date().toISOString();
+				this.db.run(
+					`UPDATE workflow_side_effect_ledger
+					    SET state = 'launch_committed', committed_at = ?, updated_at = ?
+					  WHERE id = ?`,
+					[now, now, row.id],
+				);
+			}
+		});
+		this.save();
+	}
+
+	confirmWorkflowMaterializationPush(input: {
+		effectId: string;
+		remoteHead: string;
+		reviewNodeId: string;
+	}): void {
+		if (!/^[0-9a-f]{40,64}$/.test(input.remoteHead)) {
+			throw new Error("workflow materialization remote head invalid");
+		}
+		this.db.transaction(() => {
+			const row = this.workflowMaterializationLedgerRow(input.effectId);
+			if (row.state !== "launch_committed" && row.state !== "started") {
+				throw new Error(
+					`workflow materialization cannot confirm push from ${row.state}`,
+				);
+			}
+			const receipts = this.getWorkflowMaterializationReceipts(input.effectId);
+			const commit = receipts.find(
+				(receipt) => receipt.stage === "commit_adopted",
+			);
+			if (!commit || commit.commit_head !== input.remoteHead) {
+				throw new Error(
+					"workflow materialization remote head does not match adopted commit",
+				);
+			}
+			const prior = receipts.find(
+				(receipt) => receipt.stage === "push_confirmed",
+			);
+			if (prior) {
+				if (prior.remote_head !== input.remoteHead) {
+					throw new Error(
+						"workflow materialization push confirmation mismatch",
+					);
+				}
+			} else {
+				this.db.run(
+					`INSERT INTO workflow_materialization_receipt
+					   (effect_id, stage, commit_head, remote_head)
+					 VALUES (?, 'push_confirmed', ?, ?)`,
+					[input.effectId, input.remoteHead, input.remoteHead],
+				);
+			}
+			if (row.state === "launch_committed") {
+				const now = new Date().toISOString();
+				this.db.run(
+					`UPDATE workflow_side_effect_ledger
+					    SET state = 'started', started_at = ?, updated_at = ?
+					  WHERE id = ?`,
+					[now, now, row.id],
+				);
+				const staleClaims = this.workflowSelectAll(
+					`SELECT c.id FROM workflow_claims c
+					  WHERE c.workflow_run_id = ? AND c.node_id = ?
+					    AND c.predicate = 'design_review_approved'
+					    AND c.subject_kind = 'git_head' AND c.subject_digest <> ?
+					    AND NOT EXISTS (
+					      SELECT 1 FROM workflow_claim_revocation r WHERE r.claim_id = c.id)`,
+					[row.run_id, input.reviewNodeId, input.remoteHead],
+				);
+				for (const claim of staleClaims) {
+					this.db.run(
+						`INSERT INTO workflow_claim_revocation (claim_id, reason, actor)
+						 VALUES (?, 'materialized_head_superseded', 'workflow_materializer')`,
+						[Number(claim.id)],
+					);
+				}
+			}
+		});
+		this.save();
+	}
+
+	abandonWorkflowMaterialization(effectId: string, reason: string): void {
+		if (!reason)
+			throw new Error("workflow materialization abandon requires a reason");
+		this.db.transaction(() => {
+			const row = this.workflowMaterializationLedgerRow(effectId);
+			if (row.state === "abandoned") return;
+			if (row.state !== "intent_recorded") {
+				throw new Error("workflow materialization abandon is pre-commit only");
+			}
+			const now = new Date().toISOString();
+			this.db.run(
+				`UPDATE workflow_side_effect_ledger
+				    SET state = 'abandoned', reason = ?, abandoned_at = ?, updated_at = ?
+				  WHERE id = ?`,
+				[reason, now, now, row.id],
+			);
+		});
+		this.save();
+	}
+
+	getWorkflowMaterializationReceipts(
+		effectId: string,
+	): WorkflowMaterializationReceiptRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_materialization_receipt
+			  WHERE effect_id = ? ORDER BY id`,
+			[effectId],
+		).map((row) => this.workflowMaterializationReceiptRow(row));
+	}
+
+	getWorkflowMaterializedHead(
+		runId: string,
+		producerNodeId: string,
+	): { head: string; outputId: number; attempt: number } | undefined {
+		const row = this.workflowSelectAll(
+			`SELECT push.remote_head, intent.output_id, intent.attempt
+			   FROM workflow_materialization_receipt intent
+			   JOIN workflow_materialization_receipt adopted
+			     ON adopted.effect_id = intent.effect_id AND adopted.stage = 'commit_adopted'
+			   JOIN workflow_materialization_receipt push
+			     ON push.effect_id = intent.effect_id AND push.stage = 'push_confirmed'
+			   JOIN workflow_side_effect_ledger ledger
+			     ON ledger.execution_id = intent.effect_id AND ledger.kind = 'materialize'
+			   JOIN workflow_node_output_current current
+			     ON current.run_id = intent.run_id AND current.node_id = intent.node_id
+			    AND current.output_id = intent.output_id AND current.attempt = intent.attempt
+			  WHERE intent.stage = 'intent_pinned' AND intent.run_id = ? AND intent.node_id = ?
+			    AND ledger.state = 'started'
+			    AND push.remote_head = adopted.commit_head
+			  ORDER BY push.id DESC LIMIT 1`,
+			[runId, producerNodeId],
+		)[0];
+		return row
+			? {
+					head: row.remote_head as string,
+					outputId: Number(row.output_id),
+					attempt: Number(row.attempt),
+				}
+			: undefined;
+	}
+
+	listNonTerminalWorkflowMaterializations(): WorkflowMaterializationRow[] {
+		return this.workflowSelectAll(
+			`SELECT l.execution_id
+			   FROM workflow_side_effect_ledger l
+			  WHERE l.kind = 'materialize'
+			    AND l.state IN ('intent_recorded','launch_committed')
+			  ORDER BY l.id`,
+			[],
+		).map((row) => this.workflowMaterializationRow(row.execution_id as string));
+	}
+
+	/** Current accepted producer outputs whose pinned snapshot has one direct review successor. */
+	listWorkflowMaterializationCandidates(): WorkflowMaterializationCandidateRow[] {
+		const rows = this.workflowSelectAll(
+			`SELECT o.*, r.project_name, r.issue_id, r.snapshot
+			   FROM workflow_node_output_current current
+			   JOIN workflow_node_outputs o ON o.id = current.output_id
+			   JOIN workflow_run r ON r.run_id = current.run_id
+			  WHERE r.status = 'active' AND r.engine_owned = 1
+			    AND o.output_schema = 'json_v1'
+			    AND o.run_id = current.run_id AND o.node_id = current.node_id
+			    AND o.attempt = current.attempt
+			    AND o.execution_id = current.execution_id
+			  ORDER BY o.id`,
+			[],
+		);
+		return rows.flatMap((row) => {
+			if (typeof row.snapshot !== "string") return [];
+			let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+			try {
+				snapshot = parseWorkflowRunSnapshot(row.snapshot);
+			} catch {
+				return [];
+			}
+			const producer = snapshot.resolved.nodes.find(
+				(node) => node.id === row.node_id && node.capabilities.produces_output,
+			);
+			if (!producer) return [];
+			const reviewIds = new Set(
+				snapshot.manifest.edges
+					.filter(
+						(edge) =>
+							edge.from === producer.id && edge.condition === "node_done",
+					)
+					.map((edge) => edge.to),
+			);
+			const reviews = snapshot.resolved.nodes.filter(
+				(node) => reviewIds.has(node.id) && node.type === "review",
+			);
+			if (reviews.length !== 1) return [];
+			return [
+				{
+					runId: row.run_id as string,
+					producerNodeId: producer.id,
+					reviewNodeId: reviews[0]!.id,
+					attempt: Number(row.attempt),
+					outputId: Number(row.id),
+					outputDigest: row.output_digest as string,
+					payload: row.payload as string,
+					projectName: row.project_name as string,
+					issueId: row.issue_id as string,
+				},
+			];
+		});
+	}
+
+	private workflowMaterializationLedgerRow(
+		effectId: string,
+	): WorkflowSideEffectRow {
+		const row = this.listWorkflowSideEffectsByEffectId(effectId);
+		if (!row)
+			throw new Error(`workflow materialization not found: ${effectId}`);
+		return row;
+	}
+
+	private listWorkflowSideEffectsByEffectId(
+		effectId: string,
+	): WorkflowSideEffectRow | undefined {
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_side_effect_ledger
+			  WHERE kind = 'materialize' AND execution_id = ?`,
+			[effectId],
+		)[0];
+		return row ? this.workflowSideEffectRow(row) : undefined;
+	}
+
+	private workflowMaterializationRow(
+		effectId: string,
+	): WorkflowMaterializationRow {
+		const ledger = this.workflowMaterializationLedgerRow(effectId);
+		const intent = this.getWorkflowMaterializationReceipts(effectId).find(
+			(row) => row.stage === "intent_pinned",
+		);
+		if (!intent)
+			throw new Error(`workflow materialization intent missing: ${effectId}`);
+		return { ...ledger, effect_id: effectId, intent };
+	}
+
+	private workflowMaterializationReceiptRow(
+		row: Record<string, unknown>,
+	): WorkflowMaterializationReceiptRow {
+		return {
+			id: Number(row.id),
+			effect_id: row.effect_id as string,
+			stage: row.stage as WorkflowMaterializationReceiptStage,
+			run_id: (row.run_id as string) ?? null,
+			node_id: (row.node_id as string) ?? null,
+			attempt: row.attempt == null ? null : Number(row.attempt),
+			output_id: row.output_id == null ? null : Number(row.output_id),
+			output_digest: (row.output_digest as string) ?? null,
+			repo: (row.repo as string) ?? null,
+			ref: (row.ref as string) ?? null,
+			base_head: (row.base_head as string) ?? null,
+			tree_head: (row.tree_head as string) ?? null,
+			commit_head: (row.commit_head as string) ?? null,
+			remote_head: (row.remote_head as string) ?? null,
+			created_at: row.created_at as string,
+		};
+	}
+
+	private workflowSideEffectRow(
+		row: Record<string, unknown>,
+	): WorkflowSideEffectRow {
+		return {
+			id: Number(row.id),
+			run_id: row.run_id as string,
+			node_id: row.node_id as string,
+			attempt: Number(row.attempt),
+			kind: row.kind as string,
+			launch_ordinal: Number(row.launch_ordinal),
+			execution_id: row.execution_id as string,
+			state: row.state as WorkflowSideEffectState,
+			reason: (row.reason as string) ?? null,
+			created_at: row.created_at as string,
+			updated_at: row.updated_at as string,
+			committed_at: (row.committed_at as string) ?? null,
+			started_at: (row.started_at as string) ?? null,
+			abandoned_at: (row.abandoned_at as string) ?? null,
+		};
+	}
+
+	/**
 	 * Non-terminal side-effect ledger rows across ALL runs, each carrying its
 	 * run's project/issue identity. Evidence reconcile iterates THIS — never the
 	 * active-run list — so a run that shipped (completed) before its evidence
@@ -17207,7 +17695,8 @@ export class StateStore {
 			`SELECT l.*, r.project_name AS project_name, r.issue_id AS issue_id
 			   FROM workflow_side_effect_ledger l
 			   JOIN workflow_run r ON r.run_id = l.run_id
-			  WHERE l.state IN ('intent_recorded','launch_committed')
+			  WHERE l.kind = 'dispatch'
+			    AND l.state IN ('intent_recorded','launch_committed')
 			  ORDER BY l.id`,
 			[],
 		).map((r) => ({
@@ -17243,7 +17732,8 @@ export class StateStore {
 			`SELECT payload FROM session_events
 			  WHERE issue_id = ? AND event_type = 'three_stage_fix_round'
 			    AND execution_id IN (
-			      SELECT execution_id FROM workflow_side_effect_ledger WHERE run_id = ?
+			      SELECT execution_id FROM workflow_side_effect_ledger
+			       WHERE run_id = ? AND kind = 'dispatch'
 			      UNION
 			      SELECT execution_id FROM workflow_run_event
 			       WHERE run_id = ? AND execution_id IS NOT NULL)
@@ -17275,7 +17765,7 @@ export class StateStore {
 	): boolean {
 		const rows = this.workflowSelectAll(
 			`SELECT 1 AS x FROM workflow_side_effect_ledger
-			  WHERE run_id = ? AND execution_id = ?
+			  WHERE run_id = ? AND execution_id = ? AND kind = 'dispatch'
 			 UNION
 			 SELECT 1 AS x FROM workflow_run_event
 			  WHERE run_id = ? AND execution_id = ?
@@ -17293,7 +17783,8 @@ export class StateStore {
 			`SELECT 1 AS x FROM session_events
 			  WHERE issue_id = ? AND event_type = 'post_ship_finalization_claim'
 			    AND execution_id IN (
-			      SELECT execution_id FROM workflow_side_effect_ledger WHERE run_id = ?
+			      SELECT execution_id FROM workflow_side_effect_ledger
+			       WHERE run_id = ? AND kind = 'dispatch'
 			      UNION
 			      SELECT execution_id FROM workflow_run_event
 			       WHERE run_id = ? AND execution_id IS NOT NULL)
@@ -17851,7 +18342,21 @@ export interface WorkflowNodeOutputRow {
 	execution_id: string;
 	payload: string;
 	output_digest: string;
+	output_schema: string;
+	byte_size: number;
 	written_at: string;
+}
+
+export interface WorkflowMaterializationCandidateRow {
+	runId: string;
+	producerNodeId: string;
+	reviewNodeId: string;
+	attempt: number;
+	outputId: number;
+	outputDigest: string;
+	payload: string;
+	projectName: string;
+	issueId: string;
 }
 
 export type WorkflowStartStage =
@@ -18198,6 +18703,34 @@ export interface WorkflowSideEffectRow {
 	committed_at: string | null;
 	started_at: string | null;
 	abandoned_at: string | null;
+}
+
+export type WorkflowMaterializationReceiptStage =
+	| "intent_pinned"
+	| "commit_adopted"
+	| "push_confirmed";
+
+export interface WorkflowMaterializationReceiptRow {
+	id: number;
+	effect_id: string;
+	stage: WorkflowMaterializationReceiptStage;
+	run_id: string | null;
+	node_id: string | null;
+	attempt: number | null;
+	output_id: number | null;
+	output_digest: string | null;
+	repo: string | null;
+	ref: string | null;
+	base_head: string | null;
+	tree_head: string | null;
+	commit_head: string | null;
+	remote_head: string | null;
+	created_at: string;
+}
+
+export interface WorkflowMaterializationRow extends WorkflowSideEffectRow {
+	effect_id: string;
+	intent: WorkflowMaterializationReceiptRow;
 }
 
 /** One operation inside a shadow batch — see applyWorkflowShadowBatch. */

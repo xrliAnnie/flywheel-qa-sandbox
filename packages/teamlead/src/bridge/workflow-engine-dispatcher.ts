@@ -13,6 +13,10 @@ import {
 	waitForGeneralizedLaunchDelivery,
 } from "./generalized-launch-recovery.js";
 import { resolveWorkflowHeadAuthority } from "./head-authority.js";
+import {
+	type MaterializedHeadAuthority,
+	unavailableMaterializedHeadAuthority,
+} from "./materialized-head-authority.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
 
 interface WorkflowEngineDispatcherOptions {
@@ -27,6 +31,7 @@ interface WorkflowEngineDispatcherOptions {
 		projectName: string,
 	) => Promise<string>;
 	resolveLeadId?: (executionId: string) => string | undefined;
+	materializedHeadAuthority?: MaterializedHeadAuthority;
 	probeLaunchLiveness?: (
 		executionId: string,
 		projectName: string,
@@ -53,6 +58,7 @@ export class WorkflowEngineDispatcher {
 		projectName: string,
 	) => Promise<string>;
 	private readonly resolveLeadId: (executionId: string) => string | undefined;
+	private readonly materializedHeadAuthority: MaterializedHeadAuthority;
 	private readonly probeLaunchLiveness: (
 		executionId: string,
 		projectName: string,
@@ -74,6 +80,8 @@ export class WorkflowEngineDispatcher {
 					(authority) => authority.prHeadSha,
 				));
 		this.resolveLeadId = options.resolveLeadId ?? (() => undefined);
+		this.materializedHeadAuthority =
+			options.materializedHeadAuthority ?? unavailableMaterializedHeadAuthority;
 		this.probeLaunchLiveness =
 			options.probeLaunchLiveness ?? probeGeneralizedLaunchLiveness;
 	}
@@ -246,6 +254,32 @@ export class WorkflowEngineDispatcher {
 				.toLowerCase();
 			if (!/^[0-9a-f]{40}$/.test(startPoint)) {
 				throw new Error("engine_predecessor_head_invalid");
+			}
+		} else if (node.type === "review") {
+			const predecessorIds = new Set(
+				snapshot.manifest.edges
+					.filter(
+						(edge) => edge.to === node.id && edge.condition === "node_done",
+					)
+					.map((edge) => edge.from),
+			);
+			const outputProducers = snapshot.resolved.nodes.filter(
+				(candidate) =>
+					predecessorIds.has(candidate.id) &&
+					candidate.capabilities.produces_output,
+			);
+			if (outputProducers.length > 0) {
+				if (outputProducers.length !== 1) {
+					throw new Error("engine_materialized_producer_ambiguous");
+				}
+				startPoint = (
+					await this.materializedHeadAuthority.resolve(intent.run_id, node.id)
+				).head
+					.trim()
+					.toLowerCase();
+				if (!/^[0-9a-f]{40}$/.test(startPoint)) {
+					throw new Error("engine_materialized_head_invalid");
+				}
 			}
 		}
 		const now = this.now();

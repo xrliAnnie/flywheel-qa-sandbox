@@ -54,6 +54,7 @@ import {
 	type LeadEventEnvelope,
 } from "./lead-runtime.js";
 import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
+import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
 import {
 	computeAuthoritativeShipDecision,
 	isMergeBlocked,
@@ -452,6 +453,8 @@ export function createEventRouter(
 	// FLYWHEEL_TERMINAL_THREAD_ARCHIVE is ON (single boot-time capture);
 	// absent → zero enqueue (byte-compat).
 	terminalArchiveEnqueue?: (issueId: string) => void,
+	// FLY-1307 PR-7.5: trusted receipt-backed head for output-backed reviews.
+	materializedHeadAuthority?: MaterializedHeadAuthority,
 ): Router {
 	const router = Router();
 	const issueStatusEmojiEnabled =
@@ -1127,6 +1130,8 @@ export function createEventRouter(
 								project_name: event.project_name,
 							},
 							erPrHead,
+							process.env,
+							materializedHeadAuthority,
 						)
 					: undefined;
 				const erShipEligible = erMergedLanding
@@ -1953,6 +1958,8 @@ export function createEventRouter(
 											project_name: event.project_name,
 										},
 										w2PrHead,
+										process.env,
+										materializedHeadAuthority,
 									)
 								: undefined;
 						const w2ShipEligible =
