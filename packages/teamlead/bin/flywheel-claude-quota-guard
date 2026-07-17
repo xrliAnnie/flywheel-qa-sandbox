@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# FLY-1252 — thin launcher for live Claude quota verification.
+set -euo pipefail
+
+src="${BASH_SOURCE[0]}"
+if [[ -L "$src" ]]; then src="$(readlink "$src")"; fi
+here="$(cd "$(dirname "$src")" && pwd)"
+
+cli="$here/../dist/account-heal/quota-guard-cli.js"
+if [[ ! -f "$cli" ]]; then
+  echo "quota guard: compiled CLI not found at $cli (run the teamlead build)" >&2
+  exit 33
+fi
+exec node "$cli" "$@"

@@ -8,7 +8,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { writeStore } from "../account-heal/account-store.js";
+import {
+	type RecordObservationResult,
+	readStore,
+	writeStore,
+} from "../account-heal/account-store.js";
 import { makeQuotaMonitorRuntime } from "../account-heal/quota-monitor-runtime.js";
 import { writeQuotaMonitorState } from "../account-heal/quota-monitor-state.js";
 import { usageResult } from "./quota-monitor-test-helpers.js";
@@ -72,6 +76,8 @@ beforeEach(() => {
 			lastSwitchAt: null,
 			observedGeneration: 4,
 			reviveEpoch: null,
+			blockedEpisode: null,
+			pendingSwitchFailure: null,
 		},
 		statePath,
 	);
@@ -97,6 +103,42 @@ function writeConfig(trigger5hPct: number): void {
 }
 
 describe("makeQuotaMonitorRuntime", () => {
+	it("reconciles a manual active marker change before polling and migrates state to the new generation", async () => {
+		writeConfig(99);
+		writeFileSync(join(poolDir, ".active"), "school\n", { mode: 0o600 });
+		const runtime = makeQuotaMonitorRuntime({
+			now: () => NOW,
+			paths: { poolDir, configPath, statePath, storePath, cachePath, lockPath },
+			readKeychainCredential: async () => ({
+				accessToken: "school-secret",
+				expiresAt: NOW + 3_600_000,
+			}),
+			fetchUsage: async () => usageResult(40, 20),
+			tmux: {
+				listPanes: async () => [],
+				capturePane: async () => "",
+				sendContinue: async () => ({ sent: true }),
+			},
+			alert: async () => ({ primary: "sent" }),
+			log: vi.fn(),
+		});
+
+		const result = await runtime.tick();
+
+		expect(result.outcome).toBe("observed");
+		expect(readStore(storePath)).toMatchObject({
+			activeAccount: "school",
+			generation: 5,
+		});
+		expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
+			observedGeneration: 5,
+			lastSwitchAt: NOW,
+			reviveEpoch: null,
+			blockedEpisode: null,
+			pendingSwitchFailure: null,
+		});
+	});
+
 	it("assembles real file/lock/credential seams, re-reads config per tick, and persists cache/state without tokens", async () => {
 		writeConfig(99);
 		const current = usageResult(96, 20);
@@ -131,6 +173,7 @@ describe("makeQuotaMonitorRuntime", () => {
 			},
 			alert: async (alert) => {
 				alerts.push(alert);
+				return { primary: "sent" };
 			},
 			log: vi.fn(),
 		});
@@ -140,6 +183,13 @@ describe("makeQuotaMonitorRuntime", () => {
 		expect(switchImpl).not.toHaveBeenCalled();
 		expect(JSON.parse(readFileSync(cachePath, "utf8"))).toEqual(current.ok.raw);
 		expect(readFileSync(statePath, "utf8")).not.toContain("active-secret");
+		expect(
+			readStore(storePath).accounts.find((entry) => entry.name === "shopping"),
+		).toMatchObject({
+			lastObservedAt: new Date(NOW).toISOString(),
+			observedFiveHPct: 96,
+			observedSevenDPct: 20,
+		});
 
 		writeConfig(90);
 		result = await runtime.tick();
@@ -149,6 +199,47 @@ describe("makeQuotaMonitorRuntime", () => {
 		);
 		expect(alerts).toEqual([
 			expect.objectContaining({ kind: "account_switched" }),
+		]);
+	});
+
+	it("alerts after three consecutive store projection failures without stopping polls", async () => {
+		writeConfig(99);
+		const alerts: unknown[] = [];
+		const recordObservation = vi.fn(
+			async (): Promise<RecordObservationResult> => "write_failed",
+		);
+		const runtime = makeQuotaMonitorRuntime({
+			now: () => NOW,
+			paths: { poolDir, configPath, statePath, storePath, cachePath, lockPath },
+			readKeychainCredential: async () => ({
+				accessToken: "active-secret",
+				expiresAt: NOW + 3_600_000,
+			}),
+			fetchUsage: async () => usageResult(40, 20),
+			recordObservation,
+			tmux: {
+				listPanes: async () => [],
+				capturePane: async () => "",
+				sendContinue: async () => ({ sent: true }),
+			},
+			alert: async (alert) => {
+				alerts.push(alert);
+				return { primary: "sent" };
+			},
+			log: vi.fn(),
+		});
+
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const result = await runtime.tick();
+			expect(result.outcome).toBe("observed");
+		}
+
+		expect(recordObservation).toHaveBeenCalledTimes(3);
+		expect(alerts).toEqual([
+			expect.objectContaining({
+				kind: "quota_monitor_down",
+				signature: "quota-monitor-store-projection-2026-07-14",
+			}),
 		]);
 	});
 });

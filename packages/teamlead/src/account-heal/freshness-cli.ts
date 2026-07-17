@@ -14,7 +14,8 @@
  */
 
 import { fileURLToPath } from "node:url";
-import { verifyPoolCredential } from "./freshness.js";
+import { FreshnessLeaseLostError, verifyPoolCredential } from "./freshness.js";
+import { type LeaseProof, validateLeaseProof } from "./mkdir-lock.js";
 
 export interface FreshnessCliDeps {
 	verify?: typeof verifyPoolCredential;
@@ -62,16 +63,38 @@ export async function runFreshnessCli(
 		return 31;
 	}
 	try {
+		let lease: LeaseProof | undefined;
+		if (process.env.FLYWHEEL_LEASE_PROOF) {
+			try {
+				lease = JSON.parse(process.env.FLYWHEEL_LEASE_PROOF) as LeaseProof;
+			} catch {
+				log("FLYWHEEL_LOCK_LEASE_LOST invalid lease proof");
+				return 39;
+			}
+		}
 		const verdict = await verify({
 			name,
 			// empty string → no active account
 			activeName: active && active.length > 0 ? active : null,
 			poolDir: pool,
+			...(lease === undefined
+				? {}
+				: {
+						preWriteBack: () => {
+							if (!validateLeaseProof(lease)) {
+								throw new FreshnessLeaseLostError();
+							}
+						},
+					}),
 		});
 		if (verdict.fresh === "refreshed") return 0;
 		log(`freshness: '${name}' is STALE — ${verdict.reason}`);
 		return 30;
 	} catch (err) {
+		if (err instanceof FreshnessLeaseLostError) {
+			log("FLYWHEEL_LOCK_LEASE_LOST freshness write-back fenced");
+			return 39;
+		}
 		// Active-account refusal or any unexpected error → fail-closed (31).
 		log(
 			`freshness: refusing '${name}' — ${err instanceof Error ? err.message : String(err)}`,

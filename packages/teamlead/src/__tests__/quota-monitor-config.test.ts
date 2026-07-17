@@ -50,14 +50,32 @@ describe("loadQuotaMonitorConfig", () => {
 			minSwitchIntervalMinutes: 15,
 			order: [],
 			writeStatuslineCache: true,
+			degradedSwitch: false,
+			episodeRealertMinutes: 30,
 		});
 	});
 
-	it("loads a valid enabled config", () => {
+	it("loads an existing enabled config with safe defaults for new controls", () => {
 		write(enabledConfig);
 		expect(loadQuotaMonitorConfig(path)).toEqual({
-			config: enabledConfig,
+			config: {
+				...enabledConfig,
+				degradedSwitch: false,
+				episodeRealertMinutes: 30,
+			},
 			monitorOnly: false,
+		});
+	});
+
+	it("accepts explicit degraded-switch and episode re-alert controls", () => {
+		write({
+			...enabledConfig,
+			degradedSwitch: true,
+			episodeRealertMinutes: 45,
+		});
+		expect(loadQuotaMonitorConfig(path).config).toMatchObject({
+			degradedSwitch: true,
+			episodeRealertMinutes: 45,
 		});
 	});
 
@@ -98,6 +116,18 @@ describe("loadQuotaMonitorConfig", () => {
 		[
 			"unbounded interval",
 			JSON.stringify({ ...enabledConfig, basePollMinutes: 1_441 }),
+		],
+		[
+			"invalid degraded switch",
+			JSON.stringify({ ...enabledConfig, degradedSwitch: "yes" }),
+		],
+		[
+			"episode interval below minimum",
+			JSON.stringify({ ...enabledConfig, episodeRealertMinutes: 4 }),
+		],
+		[
+			"episode interval above maximum",
+			JSON.stringify({ ...enabledConfig, episodeRealertMinutes: 1_441 }),
 		],
 		[
 			"duplicate account",

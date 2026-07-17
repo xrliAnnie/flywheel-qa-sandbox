@@ -212,11 +212,16 @@ export const ALERT_EVENT_TYPES = [
 	// FLY-1256: emitted by the external quota monitor. account_switched is a
 	// successful state-change notice; the other five are actionable failures.
 	"account_switched",
+	"account_switch_degraded",
 	"quota_no_target",
+	"quota_blocked_recovered",
 	"quota_read_blind",
 	"account_switch_failed",
 	"quota_revive_stuck",
 	"quota_monitor_down",
+	// FLY-1252: a human explicitly bypassed the manual live 5h/7d quota guard.
+	// Fired via lead-alert.sh; actionable audit event, never informational.
+	"quota_guard_bypassed",
 	// ── FLY-1082: fleet-level failure kinds (the 2026-07-09 OOM incident gap —
 	// machine-wide failures had NO kind, so nobody owned them and the founder
 	// found out first). Every fleet kind has an owner + an explicit ARC posture
@@ -294,6 +299,7 @@ export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];
 /** Root-only notices that must never open a ticket/thread/ARC lifecycle. */
 export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"account_switched",
+	"quota_blocked_recovered",
 ]);
 
 export function isInformationalKind(kind: AlertEventType): boolean {

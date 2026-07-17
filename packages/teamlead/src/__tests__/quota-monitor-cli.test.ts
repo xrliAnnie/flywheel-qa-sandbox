@@ -13,6 +13,7 @@ import {
 	acquireSingletonPidfile,
 	cleanupRunMarker,
 	computeNextDelay,
+	installWakeCapability,
 	resolveOwnProcessStartTime,
 	runQuotaMonitorLoop,
 } from "../account-heal/quota-monitor-cli.js";
@@ -53,11 +54,15 @@ describe("atomic singleton pidfile", () => {
 	});
 
 	it("open(wx) allows exactly one owner and release removes only its own record", () => {
-		const first = acquireSingletonPidfile(path, pidDeps());
+		const first = acquireSingletonPidfile(path, {
+			...pidDeps(),
+			wakeProtocol: 1,
+		});
 		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
 			pid: 123,
 			uid: TEST_UID,
 			processStartTime: "start-123",
+			wakeProtocol: 1,
 		});
 		expect(() =>
 			acquireSingletonPidfile(path, {
@@ -82,6 +87,38 @@ describe("atomic singleton pidfile", () => {
 		});
 		expect(JSON.parse(readFileSync(path, "utf8")).pid).toBe(123);
 		owner.release();
+	});
+
+	it("does not unlink a successor that replaces the stale record before reclaim", () => {
+		writeFileSync(
+			path,
+			JSON.stringify({ pid: 999, uid: TEST_UID, processStartTime: "old" }),
+			{ mode: 0o600 },
+		);
+		let interleaved = false;
+
+		expect(() =>
+			acquireSingletonPidfile(path, {
+				...pidDeps(),
+				isProcessAlive: (candidate) => candidate === 777,
+				beforeStaleUnlink: () => {
+					if (interleaved) return;
+					interleaved = true;
+					writeFileSync(
+						path,
+						JSON.stringify({
+							pid: 777,
+							uid: TEST_UID,
+							processStartTime: "start-777",
+						}),
+						{ mode: 0o600 },
+					);
+				},
+			}),
+		).toThrow(/already running/i);
+
+		expect(interleaved).toBe(true);
+		expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({ pid: 777 });
 	});
 
 	it("refuses symlinks, foreign uid files, and a live PID with mismatched start time", () => {
@@ -134,6 +171,46 @@ describe("atomic singleton pidfile", () => {
 });
 
 describe("daemon scheduler", () => {
+	it("publishes wake capability only inside the installed SIGUSR1 handler lifetime", () => {
+		const events: string[] = [];
+		const release = installWakeCapability({
+			on: (_signal, _handler) => events.push("handler:on"),
+			off: (_signal, _handler) => events.push("handler:off"),
+			acquire: (_path, deps) => {
+				events.push(`acquire:wake-${deps.wakeProtocol}`);
+				return { release: () => events.push("pidfile:release") };
+			},
+			pidfilePath: path,
+			handler: () => undefined,
+		});
+
+		expect(events).toEqual(["handler:on", "acquire:wake-1"]);
+		release();
+		expect(events).toEqual([
+			"handler:on",
+			"acquire:wake-1",
+			"pidfile:release",
+			"handler:off",
+		]);
+	});
+
+	it("removes the SIGUSR1 handler when pidfile acquisition fails", () => {
+		const events: string[] = [];
+		expect(() =>
+			installWakeCapability({
+				on: () => events.push("handler:on"),
+				off: () => events.push("handler:off"),
+				acquire: () => {
+					events.push("acquire");
+					throw new Error("busy");
+				},
+				pidfilePath: path,
+				handler: () => undefined,
+			}),
+		).toThrow("busy");
+		expect(events).toEqual(["handler:on", "acquire", "handler:off"]);
+	});
+
 	it("removes the durable run marker only on graceful shutdown", () => {
 		const marker = join(dir, "run.marker");
 		writeFileSync(marker, "started", { mode: 0o600 });

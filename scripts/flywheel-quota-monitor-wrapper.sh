@@ -41,6 +41,7 @@ CRASH_STREAK="${FLYWHEEL_QUOTA_CRASH_STREAK:-$HOME/.flywheel/quota-monitor-crash
 CRASH_WINDOW="${FLYWHEEL_QUOTA_CRASH_WINDOW_SECONDS:-600}"
 CRASH_THRESHOLD="${FLYWHEEL_QUOTA_CRASH_THRESHOLD:-3}"
 ALERT_BIN="${FLYWHEEL_LEAD_ALERT_BIN:-$FLYWHEEL_DIR/scripts/lead-alert.sh}"
+LOG_PATH="${FLYWHEEL_QUOTA_LOG_PATH:-$HOME/.flywheel/logs/quota-monitor.log}"
 
 fail_loud() { # reason title body signature
   local reason="$1" title="$2" body="$3" signature="$4"
@@ -93,7 +94,7 @@ if [[ -f "$RUN_MARKER" ]]; then
   crash_count="$(wc -l < "$CRASH_STREAK" | tr -d ' ')"
   if (( crash_count >= CRASH_THRESHOLD )); then
     fail_loud "crash_loop" "Claude quota monitor crash-loop" \
-      "launchd observed ${crash_count} abnormal exits in ${CRASH_WINDOW}s; inspect /tmp/flywheel-quota-monitor.log" \
+      "launchd observed ${crash_count} abnormal exits in ${CRASH_WINDOW}s; inspect $LOG_PATH" \
       "quota-monitor-crash-loop-$(date -u +%Y%m%d%H%M)"
   fi
 fi

@@ -14,12 +14,22 @@
  * `execFile` is injected so this is unit-tested without the real script/Keychain.
  */
 
-import { execFile as nodeExecFile } from "node:child_process";
+import {
+	execFile as nodeExecFile,
+	spawn as nodeSpawn,
+	type SpawnOptions,
+} from "node:child_process";
 import { promisify } from "node:util";
-import { withMkdirLock } from "./mkdir-lock.js";
+import {
+	reconcileTransitionJournal,
+	withAccountsLock,
+} from "./accounts-lock.js";
+import { type LeaseProof, renewMkdirLock } from "./mkdir-lock.js";
 import {
 	FreshnessUnavailableError,
+	LockLeaseLostError,
 	type SwitchDeps,
+	TargetQuotaExhaustedError,
 	TargetStaleError,
 } from "./switch-executor.js";
 
@@ -31,12 +41,17 @@ type ExecFileFn = (
 	options?: { env?: NodeJS.ProcessEnv },
 ) => Promise<{ stdout: string; stderr: string }>;
 
+type SpawnFn = typeof nodeSpawn;
+
 export interface ClaudeProfileCliDeps {
 	/** Absolute path to the `flywheel-claude-profile` script. */
 	binPath: string;
 	/** Injectable for tests; defaults to node's execFile (promisified). */
 	execFile?: ExecFileFn;
-	withLock?: <T>(lockPath: string, fn: () => Promise<T>) => Promise<T>;
+	spawn?: SpawnFn;
+	withLock?: SwitchDeps["withLock"];
+	/** Internal daemon assertion that its candidate was live quota-verified. */
+	quotaPreverified?: boolean;
 	/**
 	 * FLY-865: surface the switch script's stderr on the AUTOMATIC path. `use`'s
 	 * display-identity sync is best-effort — on a missing/failed/locked identity
@@ -60,12 +75,22 @@ export function makeClaudeProfileSwitchDeps(
 	deps: ClaudeProfileCliDeps,
 ): SwitchDeps {
 	const exec: ExecFileFn = deps.execFile ?? (execFileAsync as ExecFileFn);
-	const withLock = deps.withLock ?? withMkdirLock;
+	const withLock: SwitchDeps["withLock"] =
+		deps.withLock ??
+		((lockPath, fn) =>
+			withAccountsLock(lockPath, fn, {
+				reconcile: (lease) =>
+					reconcileTransitionJournal(lease, { binPath: deps.binPath }),
+			}));
 	const onWarn = deps.onWarn ?? ((m: string) => console.warn(m));
 
 	return {
 		withLock,
-		async applyProfile(name: string): Promise<void> {
+		renewLock: renewMkdirLock,
+		async applyProfile(
+			name: string,
+			context?: { lease: LeaseProof; signal: AbortSignal },
+		): Promise<void> {
 			// FLY-852 (QA-caught self-deadlock): switchAccount calls this INSIDE its
 			// withMkdirLock critical section, and the bash script takes the SAME
 			// lock — the child would wait on its own parent until timeout. Delegate:
@@ -83,13 +108,33 @@ export function makeClaudeProfileSwitchDeps(
 			const childEnv: NodeJS.ProcessEnv = {
 				...process.env,
 				FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid),
+				FLYWHEEL_NODE_BIN: process.execPath,
 			};
+			if (context) {
+				childEnv.FLYWHEEL_CLAUDE_ACCOUNTS_LOCK = context.lease.lockPath;
+				childEnv.FLYWHEEL_LEASE_PROOF = JSON.stringify(context.lease);
+			}
 			delete childEnv.FLYWHEEL_CLAUDE_FRESHNESS_BYPASS;
+			delete childEnv.FLYWHEEL_CLAUDE_QUOTA_BYPASS;
+			delete childEnv.FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED;
+			if (deps.quotaPreverified === true) {
+				childEnv.FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED = "1";
+			}
 			let stderr: string;
 			try {
-				({ stderr } = await exec(deps.binPath, ["use", name], {
-					env: childEnv,
-				}));
+				if (deps.execFile !== undefined || context === undefined) {
+					({ stderr } = await exec(deps.binPath, ["use", name], {
+						env: childEnv,
+					}));
+				} else {
+					({ stderr } = await runDetachedProfile(
+						deps.spawn ?? nodeSpawn,
+						deps.binPath,
+						["use", name],
+						childEnv,
+						context.signal,
+					));
+				}
 			} catch (err) {
 				// FLY-871 R1/C3 — map the freshness exit codes to typed errors the
 				// switch executor's candidate loop understands. 30 = target stale (try
@@ -99,11 +144,17 @@ export function makeClaudeProfileSwitchDeps(
 				// failure rethrows unchanged (existing fail-closed behavior).
 				const e = err as { code?: number | string; stderr?: string };
 				const errText = String(e.stderr ?? "");
+				if (e.code === 32 || /FLYWHEEL_TARGET_QUOTA_EXHAUSTED/.test(errText)) {
+					throw new TargetQuotaExhaustedError(name);
+				}
 				if (e.code === 30 || /FLYWHEEL_TARGET_STALE/.test(errText)) {
 					throw new TargetStaleError(name);
 				}
 				if (e.code === 31 || /FLYWHEEL_FRESHNESS_UNAVAILABLE/.test(errText)) {
 					throw new FreshnessUnavailableError(errText.trim() || undefined);
+				}
+				if (e.code === 39 || /FLYWHEEL_LOCK_LEASE_LOST/.test(errText)) {
+					throw new LockLeaseLostError(errText.trim() || undefined);
 				}
 				throw err;
 			}
@@ -131,4 +182,96 @@ export function makeClaudeProfileSwitchDeps(
 			}
 		},
 	};
+}
+
+function runDetachedProfile(
+	spawn: SpawnFn,
+	file: string,
+	args: string[],
+	env: NodeJS.ProcessEnv,
+	signal: AbortSignal,
+): Promise<{ stdout: string; stderr: string }> {
+	return new Promise((resolve, reject) => {
+		const options: SpawnOptions = {
+			detached: true,
+			env,
+			stdio: ["ignore", "pipe", "pipe"],
+		};
+		const child = spawn(file, args, options);
+		let stdout = "";
+		let stderr = "";
+		child.stdout?.setEncoding("utf8");
+		child.stderr?.setEncoding("utf8");
+		child.stdout?.on("data", (chunk: string) => {
+			stdout += chunk;
+		});
+		child.stderr?.on("data", (chunk: string) => {
+			stderr += chunk;
+		});
+		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		const terminateGroup = () => {
+			if (child.pid === undefined) return;
+			try {
+				process.kill(-child.pid, "SIGTERM");
+			} catch {
+				// The group may already be fully reaped.
+			}
+			killTimer = setTimeout(() => {
+				if (child.pid === undefined) return;
+				try {
+					process.kill(-child.pid, "SIGKILL");
+				} catch {
+					// already reaped
+				}
+			}, 2_000);
+			killTimer.unref?.();
+		};
+		const groupExists = (): boolean => {
+			if (child.pid === undefined) return false;
+			try {
+				process.kill(-child.pid, 0);
+				return true;
+			} catch (error) {
+				return (error as NodeJS.ErrnoException).code === "EPERM";
+			}
+		};
+		if (signal.aborted) terminateGroup();
+		else signal.addEventListener("abort", terminateGroup, { once: true });
+		child.once("error", (error) => {
+			if (killTimer) clearTimeout(killTimer);
+			signal.removeEventListener("abort", terminateGroup);
+			reject(error);
+		});
+		child.once("close", (code, childSignal) => {
+			const deadline = Date.now() + 5_000;
+			const finishAfterGroupExit = () => {
+				if (groupExists() && Date.now() < deadline) {
+					setTimeout(finishAfterGroupExit, 25);
+					return;
+				}
+				if (groupExists() && child.pid !== undefined) {
+					try {
+						process.kill(-child.pid, "SIGKILL");
+					} catch {
+						// already gone
+					}
+				}
+				if (killTimer) clearTimeout(killTimer);
+				signal.removeEventListener("abort", terminateGroup);
+				if (code === 0 && !groupExists()) {
+					resolve({ stdout, stderr });
+					return;
+				}
+				reject(
+					Object.assign(
+						new Error(
+							`flywheel-claude-profile exited ${code ?? childSignal ?? "unknown"}`,
+						),
+						{ code: code ?? childSignal, stdout, stderr },
+					),
+				);
+			};
+			finishAfterGroupExit();
+		});
+	});
 }

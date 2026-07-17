@@ -1133,8 +1133,12 @@ function titleFor(kind: AlertEventType): string {
 		// supplies its own title. Cases keep the shared union exhaustive.
 		case "account_switched":
 			return "Claude account switched";
+		case "account_switch_degraded":
+			return "Claude account switched with degraded verification";
 		case "quota_no_target":
 			return "No Claude account has quota";
+		case "quota_blocked_recovered":
+			return "Claude quota block recovered";
 		case "quota_read_blind":
 			return "Claude quota monitor is blind";
 		case "account_switch_failed":
@@ -1143,6 +1147,8 @@ function titleFor(kind: AlertEventType): string {
 			return "Claude pane revive stuck";
 		case "quota_monitor_down":
 			return "Claude quota monitor down";
+		case "quota_guard_bypassed":
+			return "Claude quota guard BYPASSED manually";
 		// FLY-1082: fleet kinds — never emitted by LeadWatchdog (the fleet
 		// sensors / server-loss coordinator / boot self-check build their own
 		// titles); cases exist for switch exhaustiveness.
@@ -1307,8 +1313,12 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// account/quota/reset evidence in the real alert body.
 		case "account_switched":
 			return "The external quota monitor switched Claude accounts after verifying the target account had fresh quota.";
+		case "account_switch_degraded":
+			return "The external quota monitor switched Claude accounts using the controlled degraded-verification fallback; inspect the supplied panorama evidence.";
 		case "quota_no_target":
 			return "The external quota monitor found no fresh, usable target account under the configured thresholds.";
+		case "quota_blocked_recovered":
+			return "A persistent Claude quota-blocked episode recovered after usage normalized or an account switch succeeded.";
 		case "quota_read_blind":
 			return "The external quota monitor could not obtain trustworthy quota data; automatic switching is fail-closed.";
 		case "account_switch_failed":
@@ -1317,6 +1327,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A Claude pane remained quota-stuck after the external monitor exhausted its audited revive budget.";
 		case "quota_monitor_down":
 			return "The launchd quota monitor stopped producing healthy polling evidence; inspect its run marker and logs.";
+		case "quota_guard_bypassed":
+			return "A human manually bypassed live 5h/7d quota verification before a Claude account switch. Review the target account and the shell alert audit details.";
 		// FLY-1082: fleet kinds — never emitted by LeadWatchdog (their sensors
 		// build their own bodies); cases exist for switch exhaustiveness.
 		case "swap_pressure_high":

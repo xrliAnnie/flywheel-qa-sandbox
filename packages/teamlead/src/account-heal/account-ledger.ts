@@ -352,6 +352,8 @@ export interface AccountSummaryLine {
 	fivehPct: number | null;
 	weeklyPct: number | null;
 	weeklyResetAt: string | null;
+	/** Winning quota snapshot for this row; observed means daemon/store data. */
+	balanceSource: "ledger" | "observed" | null;
 	/** Minutes since the balance snapshot (null = never recorded). */
 	balanceAgeMin: number | null;
 	/** true if that snapshot was taken while the account was live (else stale carry-over). */
@@ -372,19 +374,45 @@ export function buildAccountSummary(
 	return store.accounts.map((a) => {
 		const e = ledger.accounts[a.name];
 		const bal = e?.balance;
-		const obsMs = bal ? Date.parse(bal.observedAt) : Number.NaN;
+		const ledgerMs = bal ? Date.parse(bal.observedAt) : Number.NaN;
+		const storeObservedMs = a.lastObservedAt
+			? Date.parse(a.lastObservedAt)
+			: Number.NaN;
+		const ledgerTimeValid = !Number.isNaN(ledgerMs);
+		const storeTimeValid = !Number.isNaN(storeObservedMs);
+		const balanceSource: AccountSummaryLine["balanceSource"] =
+			storeTimeValid && (!ledgerTimeValid || storeObservedMs > ledgerMs)
+				? "observed"
+				: bal
+					? "ledger"
+					: null;
+		const winningObservedAtMs =
+			balanceSource === "observed" ? storeObservedMs : ledgerMs;
 		const ageMin =
-			bal && !Number.isNaN(nowMs) && !Number.isNaN(obsMs)
-				? Math.max(0, Math.round((nowMs - obsMs) / 60000))
+			balanceSource !== null &&
+			!Number.isNaN(nowMs) &&
+			!Number.isNaN(winningObservedAtMs)
+				? Math.max(0, Math.round((nowMs - winningObservedAtMs) / 60000))
 				: null;
+		const observedWins = balanceSource === "observed";
 		return {
 			name: a.name,
 			active: store.activeAccount === a.name,
-			fivehPct: bal?.fivehPct ?? null,
-			weeklyPct: bal?.weeklyPct ?? null,
-			weeklyResetAt: a.weeklyResetAt,
+			fivehPct: observedWins
+				? (a.observedFiveHPct ?? null)
+				: (bal?.fivehPct ?? null),
+			weeklyPct: observedWins
+				? (a.observedSevenDPct ?? null)
+				: (bal?.weeklyPct ?? null),
+			weeklyResetAt: observedWins
+				? a.weeklyResetAt
+				: (bal?.weeklyResetAt ?? a.weeklyResetAt),
+			balanceSource,
 			balanceAgeMin: ageMin,
-			balanceLive: bal?.observedWhileActive ?? false,
+			balanceLive:
+				balanceSource === "ledger"
+					? (bal?.observedWhileActive ?? false)
+					: false,
 			authHealth: e?.auth.lastFreshness ?? "unknown",
 			authUnusable: Boolean(
 				a.authExpired || a.refreshTokenInvalid || a.profileVerifyFailed,
@@ -403,11 +431,15 @@ export function formatAccountSummary(lines: AccountSummaryLine[]): string {
 		const five = l.fivehPct == null ? "?" : `${l.fivehPct}%`;
 		const wk = l.weeklyPct == null ? "?" : `${l.weeklyPct}%`;
 		const age =
-			l.balanceAgeMin == null
-				? "no-data"
-				: l.balanceLive
-					? `${l.balanceAgeMin}m live`
-					: `${l.balanceAgeMin}m STALE`;
+			l.balanceSource === "observed"
+				? l.balanceAgeMin == null
+					? "observed age unknown"
+					: `observed ${l.balanceAgeMin}m ago`
+				: l.balanceAgeMin == null
+					? "no-data"
+					: l.balanceLive
+						? `${l.balanceAgeMin}m live`
+						: `${l.balanceAgeMin}m STALE`;
 		const health = l.authUnusable ? "auth✗" : l.authHealth;
 		const caps = l.openCaps > 0 ? ` caps:${l.openCaps}` : "";
 		return `${star} ${l.name}: 5h ${five} · 7d ${wk} (${age}) · ${health}${caps}`;

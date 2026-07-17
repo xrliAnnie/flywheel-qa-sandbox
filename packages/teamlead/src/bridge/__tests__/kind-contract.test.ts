@@ -39,12 +39,16 @@ const FLEET_KINDS = [
 
 const QUOTA_MONITOR_KINDS = [
 	"account_switched",
+	"account_switch_degraded",
 	"quota_no_target",
+	"quota_blocked_recovered",
 	"quota_read_blind",
 	"account_switch_failed",
 	"quota_revive_stuck",
 	"quota_monitor_down",
 ] as const;
+
+const QUOTA_GUARD_KINDS = ["quota_guard_bypassed"] as const;
 
 const REVIEW_GOVERNANCE_KINDS = [
 	"review_advisory_pass",
@@ -112,6 +116,17 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		}
 	});
 
+	it("FLY-1252 quota bypass is actionable, Claude-owned, and human-by-design", () => {
+		for (const kind of QUOTA_GUARD_KINDS) {
+			expect(ALERT_EVENT_TYPES).toContain(kind);
+			expect(KIND_CONTRACTS[kind]).toEqual({
+				owner: "claude",
+				arc: "human_by_design",
+			});
+			expect(INFORMATIONAL_KINDS.has(kind)).toBe(false);
+		}
+	});
+
 	it("routes review governance audit events to a human-owned contract", () => {
 		for (const kind of REVIEW_GOVERNANCE_KINDS) {
 			expect(ALERT_EVENT_TYPES).toContain(kind);
@@ -122,8 +137,10 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		}
 	});
 
-	it("FLY-1256 marks only account_switched informational", () => {
-		expect(INFORMATIONAL_KINDS).toEqual(new Set(["account_switched"]));
+	it("FLY-1252 marks successful switch and blocked recovery informational", () => {
+		expect(INFORMATIONAL_KINDS).toEqual(
+			new Set(["account_switched", "quota_blocked_recovered"]),
+		);
 	});
 
 	it("M5 migration phase one keeps legacy usage_limit ARC intact", () => {
@@ -286,9 +303,16 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 		}
 	});
 
-	it("the shell leg can emit all six quota-monitor kinds", () => {
+	it("the shell leg can emit all PR-A quota-monitor kinds", () => {
 		const allow = shellAllowlist();
 		for (const kind of QUOTA_MONITOR_KINDS) {
+			expect(allow.has(kind), `shell allowlist missing "${kind}"`).toBe(true);
+		}
+	});
+
+	it("the shell leg can emit the quota-guard bypass audit kind", () => {
+		const allow = shellAllowlist();
+		for (const kind of QUOTA_GUARD_KINDS) {
 			expect(allow.has(kind), `shell allowlist missing "${kind}"`).toBe(true);
 		}
 	});

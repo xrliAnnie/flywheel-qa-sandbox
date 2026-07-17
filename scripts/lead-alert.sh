@@ -19,7 +19,7 @@
 # Usage:
 #   lead-alert.sh \
 #     --lead <lead-id> --project <project-name> \
-#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded> \
+#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|quota_guard_bypassed|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded> \
 #     --severity <info|warning|severe> \
 #     --title <string> --body <string> \
 #     [--signature <string>] [--strict-delivery] [--mention-user <snowflake>]
@@ -57,7 +57,7 @@ MENTION_USER=""
 
 # FLY-1256 mirror of LeadAlertNotifier.INFORMATIONAL_KINDS. These kinds still
 # post a root message, but never render the unified ticket header.
-INFORMATIONAL_KINDS="account_switched"
+INFORMATIONAL_KINDS="account_switched quota_blocked_recovered"
 is_informational_kind() {
   case " ${INFORMATIONAL_KINDS} " in
     *" $1 "*) return 0 ;;
@@ -122,7 +122,7 @@ case "$KIND" in
   # on this leg (the wrapper preflight dirty-marker page fires while the Bridge
   # is down); the other four are added for face parity with the TS union
   # (kind-contract.test.ts is the drift guard on both faces).
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|tmux_hold|tmux_split_brain|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|quota_no_target|quota_read_blind|account_switch_failed|quota_revive_stuck|quota_monitor_down|lead_dual_active|lead_dual_active_sensor_degraded|lead_lease_store_broken|lead_lease_bypass_used|lead_lease_would_block|lead_lease_control_broken|lead_identity_source_broken|lead_backend_drift) ;;
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|quota_guard_bypassed|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|tmux_hold|tmux_split_brain|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|account_switch_degraded|quota_no_target|quota_blocked_recovered|quota_read_blind|account_switch_failed|quota_revive_stuck|quota_monitor_down|lead_dual_active|lead_dual_active_sensor_degraded|lead_lease_store_broken|lead_lease_bypass_used|lead_lease_would_block|lead_lease_control_broken|lead_identity_source_broken|lead_backend_drift) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"

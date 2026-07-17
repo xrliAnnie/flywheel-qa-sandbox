@@ -8,6 +8,7 @@
 	"bin": {
 		"teamlead": "dist/index.js",
 		"flywheel-claude-freshness": "bin/flywheel-claude-freshness",
+		"flywheel-claude-quota-guard": "bin/flywheel-claude-quota-guard",
 		"flywheel-account-summary": "bin/flywheel-account-summary",
 		"flywheel-rescue-lead": "bin/flywheel-rescue-lead",
 		"flywheel-quota-monitor": "bin/flywheel-quota-monitor"

@@ -36,7 +36,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { verifyPoolCredential } from "../account-heal/freshness.js";
+import {
+	FreshnessLeaseLostError,
+	verifyPoolCredential,
+} from "../account-heal/freshness.js";
 
 let dir: string;
 let poolDir: string;
@@ -124,6 +127,25 @@ describe("verifyPoolCredential — red lines", () => {
 		expect(readFileSync(f, "utf-8")).not.toMatch(/\s/);
 		// 0600 preserved
 		expect(statSync(f).mode & 0o777).toBe(0o600);
+	});
+
+	it("runs the post-network lease fence immediately before write-back", async () => {
+		const f = seed("school");
+		const before = readFileSync(f, "utf8");
+		const preWriteBack = vi.fn(() => {
+			throw new FreshnessLeaseLostError();
+		});
+		await expect(
+			verifyPoolCredential({
+				name: "school",
+				activeName: "personal",
+				poolDir,
+				fetchImpl: okFetch() as unknown as typeof fetch,
+				preWriteBack,
+			}),
+		).rejects.toBeInstanceOf(FreshnessLeaseLostError);
+		expect(preWriteBack).toHaveBeenCalledTimes(1);
+		expect(readFileSync(f, "utf8")).toBe(before);
 	});
 
 	it("two consecutive verifications rotate from the credential written by the prior call, never the invalidated token", async () => {

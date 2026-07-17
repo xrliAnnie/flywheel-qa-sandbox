@@ -4,24 +4,38 @@
  * (throws on non-zero → fail-closed); readActiveProfile parses `status`. Exec is
  * injected so this is tested without the real script/Keychain.
  */
+
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeClaudeProfileSwitchDeps } from "../account-heal/claude-profile-cli.js";
 import {
 	FreshnessUnavailableError,
+	TargetQuotaExhaustedError,
 	TargetStaleError,
 } from "../account-heal/switch-executor.js";
 
 const BIN = "/x/flywheel-claude-profile";
+const LEASE = {
+	lockPath: "/tmp/accounts.lock",
+	markerPath: "/tmp/accounts.lock/holder.1.token",
+	ownershipToken: "token",
+};
 
 function deps(
 	execFile: ReturnType<typeof vi.fn>,
 	onWarn?: (m: string) => void,
+	quotaPreverified?: boolean,
 ) {
 	return makeClaudeProfileSwitchDeps({
 		binPath: BIN,
 		execFile: execFile as never,
-		withLock: async (_l, fn) => fn(),
+		withLock: async (lockPath, fn) => ({
+			kind: "ok",
+			value: await fn({ ...LEASE, lockPath }),
+		}),
 		onWarn,
+		quotaPreverified,
 	});
 }
 
@@ -88,6 +102,53 @@ describe("makeClaudeProfileSwitchDeps", () => {
 		);
 	});
 
+	it("exit 39 maps to LockLeaseLostError", async () => {
+		const execFile = vi.fn(async () => {
+			throw Object.assign(new Error("lease lost"), {
+				code: 39,
+				stderr: "FLYWHEEL_LOCK_LEASE_LOST",
+			});
+		});
+		await expect(deps(execFile).applyProfile("school")).rejects.toMatchObject({
+			name: "LockLeaseLostError",
+		});
+	});
+
+	it("production apply starts a detached process group and passes the lease proof", async () => {
+		const child = new EventEmitter() as EventEmitter & {
+			pid: number;
+			stdout: PassThrough;
+			stderr: PassThrough;
+		};
+		child.pid = 43210;
+		child.stdout = new PassThrough();
+		child.stderr = new PassThrough();
+		const spawn = vi.fn(() => child);
+		const controller = new AbortController();
+		const apply = makeClaudeProfileSwitchDeps({
+			binPath: BIN,
+			spawn: spawn as never,
+			withLock: async (lockPath, fn) => ({
+				kind: "ok",
+				value: await fn({ ...LEASE, lockPath }),
+			}),
+		}).applyProfile("school", { lease: LEASE, signal: controller.signal });
+		child.emit("close", 0, null);
+		await apply;
+
+		expect(spawn).toHaveBeenCalledWith(
+			BIN,
+			["use", "school"],
+			expect.objectContaining({
+				detached: true,
+				env: expect.objectContaining({
+					FLYWHEEL_CLAUDE_ACCOUNTS_LOCK: LEASE.lockPath,
+					FLYWHEEL_LEASE_PROOF: JSON.stringify(LEASE),
+				}),
+			}),
+		);
+	});
+
 	it("readActiveProfile parses `Active profile: X`", async () => {
 		const execFile = vi.fn(async () => ({
 			stdout: "Active profile: personal\n",
@@ -114,6 +175,60 @@ describe("makeClaudeProfileSwitchDeps", () => {
 	it("exposes withLock for the switch executor to serialize on", () => {
 		const d = deps(vi.fn());
 		expect(typeof d.withLock).toBe("function");
+		expect(typeof d.renewLock).toBe("function");
+	});
+
+	describe("FLY-1252 quota exit-code mapping and env trust", () => {
+		const PREVERIFIED = "FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED";
+		const BYPASS = "FLYWHEEL_CLAUDE_QUOTA_BYPASS";
+		const saved = new Map<string, string | undefined>();
+
+		afterEach(() => {
+			for (const key of [PREVERIFIED, BYPASS]) {
+				const value = saved.get(key);
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+			saved.clear();
+		});
+
+		it("exit 32 maps to TargetQuotaExhaustedError", async () => {
+			const execFile = vi.fn(async () => {
+				throw Object.assign(new Error("use failed"), {
+					code: 32,
+					stderr: "FLYWHEEL_TARGET_QUOTA_EXHAUSTED school\n",
+				});
+			});
+
+			await expect(
+				deps(execFile).applyProfile("school"),
+			).rejects.toBeInstanceOf(TargetQuotaExhaustedError);
+		});
+
+		it("quotaPreverified true injects the internal marker and scrubs manual bypass", async () => {
+			for (const key of [PREVERIFIED, BYPASS]) saved.set(key, process.env[key]);
+			process.env[BYPASS] = "1";
+			const execFile = vi.fn(async () => ({ stdout: "Switched", stderr: "" }));
+
+			await deps(execFile, undefined, true).applyProfile("school");
+
+			const childEnv = execFile.mock.calls[0][2].env as NodeJS.ProcessEnv;
+			expect(childEnv[PREVERIFIED]).toBe("1");
+			expect(childEnv[BYPASS]).toBeUndefined();
+		});
+
+		it("legacy deps scrub ambient preverified and manual bypass values", async () => {
+			for (const key of [PREVERIFIED, BYPASS]) saved.set(key, process.env[key]);
+			process.env[PREVERIFIED] = "1";
+			process.env[BYPASS] = "1";
+			const execFile = vi.fn(async () => ({ stdout: "Switched", stderr: "" }));
+
+			await deps(execFile).applyProfile("school");
+
+			const childEnv = execFile.mock.calls[0][2].env as NodeJS.ProcessEnv;
+			expect(childEnv[PREVERIFIED]).toBeUndefined();
+			expect(childEnv[BYPASS]).toBeUndefined();
+		});
 	});
 
 	// ─── FLY-871 R1/C3 — freshness exit-code mapping + bypass env scrub ───

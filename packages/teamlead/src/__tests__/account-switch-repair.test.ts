@@ -207,6 +207,20 @@ describe("account-switch-repair · executeSwitch", () => {
 		expect(r.detail).toContain("school");
 	});
 
+	it("reconciled an interrupted switch → attempted no-op with generation", async () => {
+		const switchImpl = vi.fn(
+			async (): Promise<SwitchResult> => ({
+				outcome: "noop_reconciled",
+				activeAccount: "shopping",
+				generation: 8,
+			}),
+		);
+		const r = await repair(switchImpl).executeSwitch(pending());
+		expect(r.outcome).toBe("attempted");
+		expect(r.detail).toContain("shopping");
+		expect(r.detail).toContain("generation 8");
+	});
+
 	it("no account → needs_human with the earliest reset", async () => {
 		const switchImpl = vi.fn(
 			async (): Promise<SwitchResult> => ({

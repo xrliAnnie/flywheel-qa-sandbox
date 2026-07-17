@@ -27,7 +27,7 @@
 #     strands us (unlike a partition-list/trusted-app provision, which is lost
 #     on recreation — verified).
 #   - Same interprocess lock as the Node switch executor (withMkdirLock —
-#     mkdir + holder marker {pid,at}, 120s stale-break, rm -rf release) on
+#     mkdir + unique holder token, dead-PID stale-break, unlink+rmdir release) on
 #     $FLYWHEEL_CLAUDE_ACCOUNTS_LOCK so bash and Node never interleave.
 #
 # Env overrides (tests inject a fake security bin; real-machine QA points at a
@@ -39,7 +39,36 @@
 #   FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT  item account   ($USER)
 #   FLYWHEEL_CLAUDE_KEYCHAIN          keychain path  (empty = default search list)
 #   FLYWHEEL_CLAUDE_LOCK_TIMEOUT_MS   lock timeout   (30000)
+#   FLYWHEEL_CLAUDE_PS_BIN            process probe  (/bin/ps; tests may override)
 set -euo pipefail
+
+COMMAND="${1:-}"
+TRAMPOLINE_NODE="${FLYWHEEL_NODE_BIN:-node}"
+# A manual mutation must own a dedicated process group. macOS exposes setsid(2)
+# but no setsid executable, so a tiny Node trampoline creates the group and
+# forwards terminal cancellation to the whole mutation tree. The automatic
+# adapter already starts this script detached and sets delegated-lock metadata.
+case "$COMMAND" in
+  use|next|capture)
+    if [[ -z "${FLYWHEEL_CLAUDE_LOCK_DELEGATED:-}" && "${FLYWHEEL_PROFILE_GROUP_LEADER:-}" != "1" ]]; then
+      export FLYWHEEL_PROFILE_GROUP_LEADER=1
+      exec "$TRAMPOLINE_NODE" --input-type=module -e '
+        import { spawn } from "node:child_process";
+        const [file, ...args] = process.argv.slice(1);
+        const child = spawn(file, args, { detached: true, stdio: "inherit", env: { ...process.env, FLYWHEEL_NODE_BIN: process.execPath } });
+        const forward = (signal) => { if (child.pid) { try { process.kill(-child.pid, signal); } catch {} } };
+        process.on("SIGINT", () => forward("SIGINT"));
+        process.on("SIGTERM", () => forward("SIGTERM"));
+        child.once("error", (error) => { process.stderr.write(`${error.message}\n`); process.exit(1); });
+        child.once("exit", (code, signal) => {
+          if (typeof code === "number") process.exit(code);
+          process.stderr.write(`flywheel-claude-profile terminated by ${signal ?? "unknown signal"}\n`);
+          process.exit(1);
+        });
+      ' "${BASH_SOURCE[0]}" "$@"
+    fi
+    ;;
+esac
 
 POOL_DIR="${FLYWHEEL_CLAUDE_PROFILES_DIR:-$HOME/.flywheel/claude-profiles}"
 LOCK_DIR="${FLYWHEEL_CLAUDE_ACCOUNTS_LOCK:-$HOME/.flywheel/claude-accounts.lock}"
@@ -48,7 +77,11 @@ SERVICE="${FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE:-Claude Code-credentials}"
 ACCT="${FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT:-$USER}"
 KEYCHAIN="${FLYWHEEL_CLAUDE_KEYCHAIN:-}"
 LOCK_TIMEOUT_MS="${FLYWHEEL_CLAUDE_LOCK_TIMEOUT_MS:-30000}"
+PS_BIN="${FLYWHEEL_CLAUDE_PS_BIN:-/bin/ps}"
 ACTIVE_FILE="$POOL_DIR/.active"
+ACCOUNTS_STORE="${FLYWHEEL_CLAUDE_ACCOUNTS_PATH:-$HOME/.flywheel/claude-accounts.json}"
+TRANSITION_JOURNAL="${FLYWHEEL_CLAUDE_TRANSITION_JOURNAL:-$HOME/.flywheel/claude-account-transition.json}"
+NODE_BIN="${FLYWHEEL_NODE_BIN:-node}"
 
 # FLY-865: display-identity sync. `use` writes the target account's oauthAccount
 # block into ~/.claude.json (the source `/status` reads email/org from) so a new
@@ -102,40 +135,179 @@ stat_num() { # $1 = bsd format, $2 = gnu format, $3 = path
 }
 stat_perms() { stat_num %Lp %a "$1"; }
 stat_mtime() { stat_num %m %Y "$1"; }
+process_start_time() {
+  "$PS_BIN" -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//' || true
+}
 
 # ---------------------------------------------------------------- lock (C5)
 # Byte-compatible with packages/teamlead/src/account-heal/mkdir-lock.ts:
-# atomic mkdir + holder JSON {pid,at(ms)}; stale = at older than 120s OR dead
-# pid (no-marker fallback: dir mtime older than 120s); release = rm -rf.
+# atomic mkdir + UNIQUE holder.<pid>.<token> marker. Cooperative waiters never
+# steal from a live pid; dead/malformed holders are removed by unlinking only
+# the marker observed and then rmdir (never recursive deletion of a replacement).
 now_ms() { echo $(( $(date +%s) * 1000 )); }
 
+find_holder_marker() {
+  local found="" candidate
+  if [[ -f "$LOCK_DIR/holder" ]]; then found="$LOCK_DIR/holder"; fi # legacy
+  for candidate in "$LOCK_DIR"/holder.*; do
+    [[ -f "$candidate" ]] || continue
+    [[ -z "$found" ]] || return 2 # ambiguous ownership → fail closed
+    found="$candidate"
+  done
+  [[ -n "$found" ]] || return 1
+  printf '%s' "$found"
+}
+
 lock_is_stale() {
-  local holder="$LOCK_DIR/holder" pid="" at=""
-  if [[ ! -f "$holder" ]]; then
+  local holder="" pid="" expected_start="" live_start="" mtime="" rc=0
+  holder=$(find_holder_marker 2>/dev/null) || rc=$?
+  [[ "$rc" -eq 2 ]] && return 1
+  if [[ -z "$holder" ]]; then
     local mtime
     mtime=$(stat_mtime "$LOCK_DIR") || return 0 # dir vanished → free
     [[ $(( $(date +%s) - mtime )) -gt 120 ]]
     return
   fi
   pid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$holder" 2>/dev/null || true)
-  at=$(sed -n 's/.*"at":\([0-9][0-9]*\).*/\1/p' "$holder" 2>/dev/null || true)
-  if [[ -n "$at" && $(( $(now_ms) - at )) -gt 120000 ]]; then return 0; fi
-  if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+  if [[ -n "$pid" ]]; then
+    if kill -0 "$pid" 2>/dev/null; then
+      expected_start=$(sed -n 's/.*"processStartTime":"\([^"]*\)".*/\1/p' "$holder" 2>/dev/null || true)
+      if [[ -n "$expected_start" ]]; then
+        live_start=$(process_start_time "$pid")
+        [[ -n "$live_start" && "$live_start" != "$expected_start" ]] && return 0
+      fi
+      return 1
+    fi
     # Byte-compat with mkdir-lock.ts isProcessAlive: EPERM = the process
     # EXISTS (just not ours) → alive, NOT stale. Only ESRCH (no such
     # process) breaks the lock.
     local err
     err=$(kill -0 "$pid" 2>&1 || true)
     case "$err" in
-      *[Nn]ot\ permitted*) : ;; # alive (EPERM)
+      *[Nn]ot\ permitted*) return 1 ;; # alive (EPERM)
       *) return 0 ;;             # dead (ESRCH) → stale
     esac
   fi
-  return 1
+  mtime=$(stat_mtime "$holder" 2>/dev/null || echo "")
+  [[ -n "$mtime" && $(( $(date +%s) - mtime )) -gt 120 ]]
+}
+
+break_stale_lock() {
+  local holder="" current="" claim="" rc=0
+  holder=$(find_holder_marker 2>/dev/null) || rc=$?
+  [[ "$rc" -eq 2 ]] && return 1
+  lock_is_stale || return 1
+  if [[ -n "$holder" ]]; then
+    current=$(find_holder_marker 2>/dev/null || true)
+    [[ "$current" == "$holder" ]] || return 1
+    # Atomically claim the exact marker while it is still inside LOCK_DIR. Until
+    # the claim is removed, rmdir cannot succeed and a successor directory cannot
+    # be installed. This avoids relying on inode uniqueness (Linux may immediately
+    # reuse a removed directory's inode).
+    claim="$LOCK_DIR/.stale-break.$$.$RANDOM"
+    mv "$holder" "$claim" 2>/dev/null || return 1
+    rm -f "$claim" 2>/dev/null || return 1
+  else
+    # A breaker killed after the atomic marker rename can leave its unique claim
+    # behind. Only reap regular files/symlinks in an already-proven-stale lock;
+    # unknown entry types remain fail-closed and are bounded by the deadline.
+    local orphan
+    for orphan in "$LOCK_DIR"/.stale-break.*; do
+      [[ -e "$orphan" || -L "$orphan" ]] || continue
+      [[ -f "$orphan" || -L "$orphan" ]] || return 1
+      rm -f -- "$orphan" 2>/dev/null || return 1
+    done
+  fi
+  rmdir "$LOCK_DIR" 2>/dev/null
 }
 
 LOCK_HELD=0
-release_lock() { [[ "$LOCK_HELD" -eq 1 ]] && rm -rf "$LOCK_DIR" 2>/dev/null || true; }
+DELEGATED_LOCK_ACCEPTED=0
+LOCK_MARKER=""
+LOCK_TOKEN=""
+
+make_lease_proof() { # <marker> <token>
+  "$NODE_BIN" -e 'process.stdout.write(JSON.stringify({lockPath:process.argv[1],markerPath:process.argv[2],ownershipToken:process.argv[3]}))' \
+    "$LOCK_DIR" "$1" "$2"
+}
+
+validate_lease_proof() {
+  [[ -n "${FLYWHEEL_LEASE_PROOF:-}" ]] || return 1
+  FLYWHEEL_LEASE_PROOF_VALUE="$FLYWHEEL_LEASE_PROOF" "$NODE_BIN" --input-type=module - <<'NODE'
+import { readFileSync } from "node:fs";
+import { basename, dirname } from "node:path";
+let proof;
+try { proof = JSON.parse(process.env.FLYWHEEL_LEASE_PROOF_VALUE ?? ""); }
+catch { process.exit(1); }
+if (!proof || typeof proof.lockPath !== "string" || typeof proof.markerPath !== "string" ||
+    typeof proof.ownershipToken !== "string" || proof.ownershipToken.length === 0 ||
+    dirname(proof.markerPath) !== proof.lockPath ||
+    !(basename(proof.markerPath).startsWith("holder.") || basename(proof.markerPath) === "holder")) process.exit(1);
+let marker;
+try { marker = JSON.parse(readFileSync(proof.markerPath, "utf8")); }
+catch { process.exit(1); }
+if (proof.ownershipToken.startsWith("legacy-pid:")) {
+  process.exit(String(marker?.pid) === proof.ownershipToken.slice("legacy-pid:".length) ? 0 : 1);
+}
+process.exit(marker?.token === proof.ownershipToken ? 0 : 1);
+NODE
+}
+
+lease_fence_or_fail() {
+  if ! validate_lease_proof; then
+    echo "FLYWHEEL_LOCK_LEASE_LOST accounts lock ownership changed" >&2
+    fail_code 39 "accounts lock lease/ownership lost — refusing shared mutation"
+  fi
+}
+
+lock_holder_pid() {
+  local holder
+  holder=$(find_holder_marker) || return 1
+  sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$holder" 2>/dev/null
+}
+
+# Never delete a lock that another process replaced after we acquired it.
+release_lock() {
+  if [[ "$LOCK_HELD" -eq 1 ]]; then
+    local hpid="" token=""
+    if [[ -n "$LOCK_MARKER" && -f "$LOCK_MARKER" ]]; then
+      hpid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$LOCK_MARKER" 2>/dev/null || true)
+      token=$(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' "$LOCK_MARKER" 2>/dev/null || true)
+    fi
+    if [[ "$hpid" == "$$" && "$token" == "$LOCK_TOKEN" ]]; then
+      # The unique path cannot name a replacement holder. rmdir succeeds only
+      # while the directory is empty, so an established successor is fenced.
+      rm -f "$LOCK_MARKER" 2>/dev/null || true
+      rmdir "$LOCK_DIR" 2>/dev/null || true
+    else
+      echo "Warning: refusing to release $LOCK_DIR after lock ownership changed" >&2
+    fi
+    LOCK_HELD=0
+    LOCK_MARKER=""
+    LOCK_TOKEN=""
+  fi
+}
+
+# Refresh an OWNED lease only. Delegated children deliberately leave the
+# parent's marker untouched; the Node holder renews its own lease.
+renew_lock() {
+  [[ "$LOCK_HELD" -eq 1 ]] || return 0
+  local hpid="" token=""
+  [[ -n "$LOCK_MARKER" && -f "$LOCK_MARKER" ]] || return 1
+  hpid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$LOCK_MARKER" 2>/dev/null || true)
+  token=$(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' "$LOCK_MARKER" 2>/dev/null || true)
+  [[ "$hpid" == "$$" && "$token" == "$LOCK_TOKEN" ]] || return 1
+  # touch -c never creates our unique marker inside a replacement directory.
+  touch -c "$LOCK_MARKER" 2>/dev/null || return 1
+  [[ -f "$LOCK_MARKER" ]] || return 1
+}
+
+renew_lock_or_fail() {
+  if ! renew_lock || ! validate_lease_proof; then
+    echo "FLYWHEEL_LOCK_LEASE_LOST accounts lock ownership changed" >&2
+    fail_code 39 "accounts lock lease/ownership lost before commit — refusing switch"
+  fi
+}
 
 # FLY-865: the ~/.claude.json lock (mkdir mutex + mtime stale-steal + timeout),
 # byte-compatible with scripts/inject-linear-issue.sh:acquire_claude_lock so all
@@ -194,23 +366,53 @@ acquire_lock() {
   # Anything else falls through to a normal acquire (fail-safe). Delegated mode
   # neither takes nor releases the lock (the parent owns it): LOCK_HELD stays 0
   # so release_lock never touches it.
-  if [[ -n "${FLYWHEEL_CLAUDE_LOCK_DELEGATED:-}" && -f "$LOCK_DIR/holder" ]]; then
-    local hpid
-    hpid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$LOCK_DIR/holder" 2>/dev/null || true)
+  if [[ -n "${FLYWHEEL_CLAUDE_LOCK_DELEGATED:-}" ]]; then
+    local hpid holder=""
+    holder=$(find_holder_marker 2>/dev/null || true)
+    hpid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$holder" 2>/dev/null || true)
     if [[ -n "$hpid" && "$hpid" == "$FLYWHEEL_CLAUDE_LOCK_DELEGATED" && "$hpid" == "$PPID" ]] \
         && kill -0 "$hpid" 2>/dev/null; then
+      DELEGATED_LOCK_ACCEPTED=1
+      local delegated_token
+      delegated_token=$(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' "$holder" 2>/dev/null || true)
+      [[ -n "$delegated_token" ]] || delegated_token="legacy-pid:$hpid"
+      if [[ -z "${FLYWHEEL_LEASE_PROOF:-}" ]]; then
+        FLYWHEEL_LEASE_PROOF=$(make_lease_proof "$holder" "$delegated_token")
+        export FLYWHEEL_LEASE_PROOF
+      fi
+      lease_fence_or_fail
       return 0
     fi
   fi
   local deadline=$(( $(now_ms) + LOCK_TIMEOUT_MS ))
   mkdir -p "$(dirname "$LOCK_DIR")"
   while ! mkdir "$LOCK_DIR" 2>/dev/null; do
-    if lock_is_stale; then rm -rf "$LOCK_DIR" 2>/dev/null || true; continue; fi
+    if lock_is_stale; then break_stale_lock || true; fi
     [[ $(now_ms) -ge $deadline ]] && fail "timeout acquiring lock $LOCK_DIR"
     sleep 0.05
   done
+  LOCK_TOKEN="$$.$(now_ms).$RANDOM"
+  LOCK_MARKER="$LOCK_DIR/holder.$$.$LOCK_TOKEN"
+  local owner_start marker_written=0
+  owner_start=$(process_start_time "$$")
+  if [[ -n "$owner_start" ]]; then
+    if printf '{"pid":%d,"at":%d,"token":"%s","processStartTime":"%s"}' \
+      "$$" "$(now_ms)" "$LOCK_TOKEN" "$owner_start" > "$LOCK_MARKER"; then
+      marker_written=1
+    fi
+  else
+    if printf '{"pid":%d,"at":%d,"token":"%s"}' "$$" "$(now_ms)" "$LOCK_TOKEN" > "$LOCK_MARKER"; then
+      marker_written=1
+    fi
+  fi
+  if [[ "$marker_written" -ne 1 ]]; then
+    rm -f "$LOCK_MARKER" 2>/dev/null || true
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+    fail "failed to create owned marker for lock $LOCK_DIR"
+  fi
   LOCK_HELD=1
-  printf '{"pid":%d,"at":%d}' "$$" "$(now_ms)" > "$LOCK_DIR/holder"
+  FLYWHEEL_LEASE_PROOF=$(make_lease_proof "$LOCK_MARKER" "$LOCK_TOKEN")
+  export FLYWHEEL_LEASE_PROOF
 }
 
 # ------------------------------------------------------------- pool hygiene
@@ -265,6 +467,7 @@ kc_write() { # $1 = secret. NO-ARGV path: command incl. value goes via stdin (-i
   case "$secret" in
     *[[:space:]]*) fail "credential contains whitespace — refusing (security -i single-token rule)" ;;
   esac
+  lease_fence_or_fail
   # printf is a bash BUILTIN: the secret never appears in any process argv.
   if [[ -n "$KEYCHAIN" ]]; then
     printf 'add-generic-password -U -a "%s" -s "%s" -w %s "%s"\n' \
@@ -294,18 +497,18 @@ default_freshness_bin() {
   [[ -x "$cand" ]] && printf '%s' "$cand"
 }
 
-# freshness_guard <name> <active>: exit 30 (target stale) / 31 (helper missing) /
+# freshness_check <name> <active>: return 30 (target stale) / 31 (helper missing) /
 # return 0 (fresh — the helper may have written a rotated credential back to the
 # pool). Keychain/.active are UNTOUCHED on 30/31 (the incident root-cure). The
 # guard runs unconditionally on `use`/`next` (manual + automatic) — plan §5: the
 # manual stale-interception is part of the fix and is on at all times.
-freshness_guard() {
+freshness_check() {
   local name="$1" active="$2"
   # Emergency HUMAN override. Honored ONLY on the manual path (NOT delegated-lock,
   # i.e. not the Bridge auto-switch): Codex R2#1 layer 2 — even if the env leaks
   # into the automatic path, delegated mode refuses it (the CLI also scrubs it,
   # layer 1). The name is deliberately alarming; use only with a human at the keys.
-  if [[ -n "${FLYWHEEL_CLAUDE_FRESHNESS_BYPASS:-}" && -z "${FLYWHEEL_CLAUDE_LOCK_DELEGATED:-}" ]]; then
+  if [[ -n "${FLYWHEEL_CLAUDE_FRESHNESS_BYPASS:-}" && "$DELEGATED_LOCK_ACCEPTED" -eq 0 ]]; then
     echo "Warning: FLYWHEEL_CLAUDE_FRESHNESS_BYPASS set — SKIPPING token freshness verification for '$name'. Emergency manual override; the switched-to token is NOT verified fresh and may strand live sessions if stale." >&2
     return 0
   fi
@@ -313,21 +516,177 @@ freshness_guard() {
   [[ -z "$bin" ]] && bin="$(default_freshness_bin)"
   if [[ -z "$bin" || ! -x "$bin" ]]; then
     echo "FLYWHEEL_FRESHNESS_UNAVAILABLE $name" >&2
-    fail_code 31 "token freshness helper unavailable (looked for '${bin:-<none>}') — refusing to switch to a possibly-stale credential (fail-closed). Set FLYWHEEL_CLAUDE_FRESHNESS_BIN, or FLYWHEEL_CLAUDE_FRESHNESS_BYPASS=1 for an emergency manual override."
+    echo "Error: token freshness helper unavailable (looked for '${bin:-<none>}') — refusing to switch to a possibly-stale credential (fail-closed). Set FLYWHEEL_CLAUDE_FRESHNESS_BIN, or FLYWHEEL_CLAUDE_FRESHNESS_BYPASS=1 for an emergency manual override." >&2
+    return 31
   fi
   local rc=0
   "$bin" verify --name "$name" --active "$active" --pool "$POOL_DIR" || rc=$?
   case "$rc" in
     0) return 0 ;;
+    39)
+      echo "FLYWHEEL_LOCK_LEASE_LOST freshness write-back fenced" >&2
+      return 39
+      ;;
     30)
       echo "FLYWHEEL_TARGET_STALE $name" >&2
-      fail_code 30 "target account '$name' has a stale pooled credential (freshness refresh refused) — Keychain/.active unchanged"
+      echo "Error: target account '$name' has a stale pooled credential (freshness refresh refused) — Keychain/.active unchanged" >&2
+      return 30
       ;;
     *)
       echo "FLYWHEEL_FRESHNESS_UNAVAILABLE $name" >&2
-      fail_code 31 "freshness helper exited $rc for '$name' — refusing to switch (fail-closed)"
+      echo "Error: freshness helper exited $rc for '$name' — refusing to switch (fail-closed)" >&2
+      return 31
       ;;
   esac
+}
+
+# --------------------------------------------------------- live quota guard (FLY-1252)
+default_quota_guard_bin() {
+  local d cand
+  d="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 0
+  cand="$d/../../teamlead/bin/flywheel-claude-quota-guard"
+  [[ -x "$cand" ]] && printf '%s' "$cand"
+}
+
+default_lead_alert_bin() {
+  local d cand
+  d="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 0
+  cand="$d/../../../scripts/lead-alert.sh"
+  [[ -x "$cand" ]] && printf '%s' "$cand"
+}
+
+# Manual emergency bypasses are never silent. Alert delivery is best-effort so
+# an emergency recovery cannot be blocked by a broken Discord path.
+emit_quota_bypass_alert() {
+  local name="$1" bin="${FLYWHEEL_LEAD_ALERT_BIN:-}" epoch observed_at result="" rc=0
+  [[ -z "$bin" ]] && bin="$(default_lead_alert_bin)"
+  if [[ -z "$bin" || ! -x "$bin" ]]; then
+    echo "Warning: quota bypass alert helper unavailable; bypass remains visible only in this terminal" >&2
+    return 0
+  fi
+  epoch=$(date +%s)
+  observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  # launchd and other sparse callers may not have alert credentials in their
+  # environment. Load the shared .env inside a child shell, preserving the
+  # small alert-related process-env allowlist in memory. Never serialize the
+  # caller's exported environment (and its secrets) to a temporary file.
+  result=$(
+    env_file="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/.env"
+    preserve_names=(
+      HOME FLYWHEEL_STATE_DIR FLYWHEEL_ALERT_DEADLETTER_DIR
+      FLYWHEEL_ALERT_QUEUE_DIR FLYWHEEL_ALERT_RATE_PER_MIN
+      FLYWHEEL_ALERT_SENDER_TOKEN_ENV FLYWHEEL_ALERT_TICKETS
+      FLYWHEEL_CLAIMS_DB FLYWHEEL_PROJECTS_FILE
+      FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID
+    )
+    sender_name="${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}"
+    if [[ "$sender_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      preserve_names+=("$sender_name")
+    fi
+    preserve_set=()
+    preserve_values=()
+    for preserve_name in "${preserve_names[@]}"; do
+      if [[ "${!preserve_name+x}" == "x" ]]; then
+        preserve_set+=(1)
+        preserve_values+=("${!preserve_name}")
+      else
+        preserve_set+=(0)
+        preserve_values+=("")
+      fi
+    done
+    if [[ -f "$env_file" ]]; then
+      set -a
+      # shellcheck source=/dev/null
+      source "$env_file" || true
+      set +a
+      for preserve_idx in "${!preserve_names[@]}"; do
+        if [[ "${preserve_set[$preserve_idx]}" -eq 1 ]]; then
+          export "${preserve_names[$preserve_idx]}=${preserve_values[$preserve_idx]}"
+        fi
+      done
+    fi
+    "$bin" \
+      --lead quota-monitor --project flywheel \
+      --kind quota_guard_bypassed --severity warning \
+      --title "Claude quota guard BYPASSED manually" \
+      --body "target=$name; at=$observed_at; pid=$$; manual emergency bypass of quota verification (FLYWHEEL_CLAUDE_QUOTA_BYPASS=1) — target quota NOT verified" \
+      --signature "quota-guard-bypass-$name-$epoch-$$" \
+      --strict-delivery 2>/dev/null
+  ) || rc=$?
+  case "$result" in
+    sent|queued_transient)
+      echo "Warning: quota bypass audit alert accepted ($result)" >&2
+      ;;
+    *) echo "Warning: quota bypass alert delivery was not confirmed (result=${result:-none}, rc=$rc)" >&2 ;;
+  esac
+  return 0
+}
+
+# quota_check <name>: 0 healthy, 32 definitely exhausted, 33 evidence
+# unavailable. Only an AUTHENTICATED delegated child may honor PREVERIFIED;
+# raw ambient env values do not establish trust. Legacy delegated callers that
+# lack PREVERIFIED retain their historical fail-open behavior for 33 only.
+quota_check() {
+  local name="$1" bin="${FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN:-}" rc=0
+  if [[ "$DELEGATED_LOCK_ACCEPTED" -eq 1 && "${FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED:-}" == "1" ]]; then
+    return 0
+  fi
+  if [[ "$DELEGATED_LOCK_ACCEPTED" -eq 0 && "${FLYWHEEL_CLAUDE_QUOTA_BYPASS:-}" == "1" ]]; then
+    echo "Warning: FLYWHEEL_CLAUDE_QUOTA_BYPASS=1 — BYPASSING live 5h/7d quota guard for '$name'. Emergency manual override; target quota is NOT verified." >&2
+    emit_quota_bypass_alert "$name"
+    return 0
+  fi
+  [[ -z "$bin" ]] && bin="$(default_quota_guard_bin)"
+  if [[ -z "$bin" || ! -x "$bin" ]]; then
+    rc=33
+  else
+    "$bin" check --name "$name" --pool "$POOL_DIR" --store "$ACCOUNTS_STORE" || rc=$?
+    case "$rc" in
+      0|32|33|39) : ;;
+      *) rc=33 ;;
+    esac
+  fi
+  case "$rc" in
+    0) return 0 ;;
+    39)
+      echo "FLYWHEEL_LOCK_LEASE_LOST quota projection fenced" >&2
+      return 39
+      ;;
+    32)
+      echo "FLYWHEEL_TARGET_QUOTA_EXHAUSTED $name" >&2
+      echo "Error: target account '$name' is exhausted in its live 5h or 7d quota window — Keychain/.active unchanged" >&2
+      return 32
+      ;;
+    33)
+      if [[ "$DELEGATED_LOCK_ACCEPTED" -eq 1 ]]; then
+        echo "Warning: live quota evidence unavailable for '$name' in legacy delegated mode; proceeding for backward compatibility (set FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED=1 after an upstream live check)" >&2
+        return 0
+      fi
+      echo "FLYWHEEL_QUOTA_UNAVAILABLE $name" >&2
+      echo "Error: live quota evidence unavailable for '$name' — refusing manual switch (fail-closed). Set FLYWHEEL_CLAUDE_QUOTA_BYPASS=1 only for an emergency manual override." >&2
+      return 33
+      ;;
+  esac
+}
+
+# Best-effort projection of the already-committed machine profile marker into
+# claude-accounts.json. Manual use/next own the shared lock here. Delegated Node
+# switching is already the store writer, so it must not double-bump generation.
+active_sync_store() {
+  local name="$1" force="${2:-}" bin="${FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN:-}" rc=0
+  [[ "$DELEGATED_LOCK_ACCEPTED" -eq 1 && "$force" != "force" ]] && return 0
+  [[ -z "$bin" ]] && bin="$(default_quota_guard_bin)"
+  if [[ -z "$bin" || ! -x "$bin" ]]; then
+    echo "Warning: active account store sync helper unavailable after switching to '$name'; Keychain/.active remain committed" >&2
+    return 0
+  fi
+  lease_fence_or_fail
+  "$bin" active-sync --name "$name" --store "$ACCOUNTS_STORE" || rc=$?
+  [[ "$rc" -eq 39 ]] && return 39
+  if [[ "$rc" -ne 0 ]]; then
+    echo "Warning: active account store sync failed after switching to '$name' (rc=$rc); Keychain/.active remain committed" >&2
+  fi
+  return 0
 }
 
 # capture_back <active> <value>: FLY-871 R1/C1 — before we overwrite the Keychain,
@@ -354,10 +713,192 @@ capture_back() {
   [[ -L "$dir" ]] && { echo "Warning: profile dir $dir is a symlink — skipping capture-back" >&2; return 0; }
   [[ -d "$dir" ]] || { echo "Warning: active profile dir $dir missing — skipping capture-back for '$active'" >&2; return 0; }
   [[ -L "$file" ]] && { echo "Warning: credential file $file is a symlink — skipping capture-back" >&2; return 0; }
+  lease_fence_or_fail
   ( umask 077; printf '%s' "$value" > "$file.tmp" ) || { echo "Warning: capture-back write failed for '$active'" >&2; return 0; }
+  lease_fence_or_fail
   mv "$file.tmp" "$file" 2>/dev/null || { echo "Warning: capture-back rename failed for '$active'" >&2; rm -f "$file.tmp" 2>/dev/null || true; return 0; }
   chmod 600 "$file" 2>/dev/null || true
   echo "Captured-back current credential for active profile '$active' before switch" >&2
+}
+
+# ------------------------------------------------ transition journal (FLY-1252)
+digest_value() {
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+  else
+    printf '%s' "$1" | sha256sum | awk '{print $1}'
+  fi
+}
+
+lease_token_from_proof() {
+  FLYWHEEL_LEASE_PROOF_VALUE="$FLYWHEEL_LEASE_PROOF" "$NODE_BIN" -e '
+    try { const p=JSON.parse(process.env.FLYWHEEL_LEASE_PROOF_VALUE); if(typeof p.ownershipToken!=="string") process.exit(1); process.stdout.write(p.ownershipToken); }
+    catch { process.exit(1); }
+  '
+}
+
+write_transition_journal() { # <old-label> <target-label> <old-value> <target-value> -> opId
+  local old_label="$1" target_label="$2" old_digest target_digest writer_pgid leader_start lease_token op_id
+  old_digest=$(digest_value "$3")
+  target_digest=$(digest_value "$4")
+
+  # Detached mutation leaders have pgid==pid. Sandboxed test runners may forbid
+  # ps(1), so fall back to that construction; production also verifies group
+  # liveness with kill(-pgid,0), not a ps text scrape.
+  writer_pgid=$("$PS_BIN" -o pgid= -p $$ 2>/dev/null | tr -d ' ' || true)
+  [[ "$writer_pgid" =~ ^[0-9]+$ ]] || writer_pgid="$$"
+  [[ "$writer_pgid" =~ ^[0-9]+$ ]] || fail "cannot determine mutation process group"
+  leader_start=$(process_start_time "$$")
+  [[ -n "$leader_start" ]] || leader_start="started-before-$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  lease_token=$(lease_token_from_proof) || fail_code 39 "cannot read lease token before transition"
+  op_id="$(date +%s).$$.$RANDOM"
+  lease_fence_or_fail
+  "$NODE_BIN" --input-type=module - "$TRANSITION_JOURNAL" "$op_id" "$(id -u)" "$writer_pgid" "$$" "$leader_start" "$lease_token" "$old_label" "$target_label" "$old_digest" "$target_digest" <<'NODE'
+import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, renameSync, writeSync } from "node:fs";
+import { dirname } from "node:path";
+const [path,opId,writerUid,writerPgid,leaderPid,leaderStartTime,writerLeaseToken,oldLabel,targetLabel,oldDigest,targetDigest]=process.argv.slice(2);
+try { if (lstatSync(path).isSymbolicLink()) throw new Error("journal is symlink"); } catch (e) { if (e?.code !== "ENOENT") throw e; }
+const body=JSON.stringify({opId,writerUid:Number(writerUid),writerPgid:Number(writerPgid),leaderPid:Number(leaderPid),leaderStartTime,writerLeaseToken,oldLabel,targetLabel,oldDigest,targetDigest,startedAt:new Date().toISOString()})+"\n";
+mkdirSync(dirname(path),{recursive:true,mode:0o700});
+const tmp=`${path}.tmp.${process.pid}`;
+const fd=openSync(tmp,"wx",0o600);
+try { writeSync(fd,body); fsyncSync(fd); } finally { closeSync(fd); }
+renameSync(tmp,path);
+NODE
+  printf '%s' "$op_id"
+}
+
+clear_transition_journal() { # optional expected op id
+  local expected="${1:-}"
+  lease_fence_or_fail
+  "$NODE_BIN" --input-type=module - "$TRANSITION_JOURNAL" "$expected" <<'NODE'
+import { lstatSync, readFileSync, unlinkSync } from "node:fs";
+const [path,expected]=process.argv.slice(2);
+let stat;
+try { stat=lstatSync(path); } catch (e) { if (e?.code === "ENOENT") process.exit(0); throw e; }
+if (stat.isSymbolicLink() || !stat.isFile()) process.exit(1);
+if (expected) {
+  let parsed; try { parsed=JSON.parse(readFileSync(path,"utf8")); } catch { process.exit(1); }
+  if (parsed?.opId !== expected) process.exit(1);
+}
+unlinkSync(path);
+NODE
+}
+
+process_group_alive() { # 0 alive; 1 empty; 2 unknown
+  "$NODE_BIN" -e '
+    const pgid=Number(process.argv[1]);
+    if(!Number.isInteger(pgid)||pgid<=0) process.exit(2);
+    try { process.kill(-pgid,0); process.exit(0); }
+    catch(e) { if(e?.code==="ESRCH") process.exit(1); if(e?.code==="EPERM") process.exit(0); process.exit(2); }
+  ' "$1"
+}
+
+read_store_generation_for_active() { # <label>
+  "$NODE_BIN" --input-type=module - "$ACCOUNTS_STORE" "$1" <<'NODE'
+import { readFileSync } from "node:fs";
+const [path,label]=process.argv.slice(2);
+let store; try { store=JSON.parse(readFileSync(path,"utf8")); } catch { process.exit(1); }
+if (!Number.isInteger(store?.generation) || store.generation < 0 || store.activeAccount !== label || !Array.isArray(store.accounts) || !store.accounts.some((a)=>a?.name===label)) process.exit(1);
+process.stdout.write(String(store.generation));
+NODE
+}
+
+write_active_from_reconcile() { # <label>
+  require_valid_name "$1"
+  [[ -d "$POOL_DIR/$1" ]] || return 1
+  lease_fence_or_fail
+  ( umask 077; printf '%s' "$1" > "$ACTIVE_FILE.tmp" )
+  lease_fence_or_fail
+  mv "$ACTIVE_FILE.tmp" "$ACTIVE_FILE"
+}
+
+reconcile_transition_journal() {
+  [[ -e "$TRANSITION_JOURNAL" || -L "$TRANSITION_JOURNAL" ]] || { echo '{"outcome":"none"}'; return 0; }
+  local fields rc=0
+  fields=$("$NODE_BIN" --input-type=module - "$TRANSITION_JOURNAL" <<'NODE'
+import { lstatSync, readFileSync } from "node:fs";
+const path=process.argv[2];
+try {
+  const st=lstatSync(path); if(st.isSymbolicLink()||!st.isFile()) process.exit(1);
+  const j=JSON.parse(readFileSync(path,"utf8"));
+  const label=/^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]+$/; const digest=/^[a-f0-9]{64}$/;
+  if(typeof j.opId!=="string"||!Number.isInteger(j.writerUid)||!Number.isInteger(j.writerPgid)||j.writerPgid<=0||!Number.isInteger(j.leaderPid)||j.leaderPid<=0||typeof j.leaderStartTime!=="string"||typeof j.writerLeaseToken!=="string"||typeof j.oldLabel!=="string"||!label.test(j.targetLabel)||!digest.test(j.oldDigest)||!digest.test(j.targetDigest)||typeof j.startedAt!=="string") process.exit(1);
+  process.stdout.write([j.opId,j.writerUid,j.writerPgid,j.leaderPid,j.leaderStartTime,j.oldLabel,j.targetLabel,j.oldDigest,j.targetDigest].join("\t"));
+} catch { process.exit(1); }
+NODE
+  ) || rc=$?
+  if [[ "$rc" -ne 0 || -z "$fields" ]]; then echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; fi
+  local op_id writer_uid writer_pgid leader_pid leader_start old_label target_label old_digest target_digest
+  IFS=$'\t' read -r op_id writer_uid writer_pgid leader_pid leader_start old_label target_label old_digest target_digest <<<"$fields"
+  if [[ "$writer_uid" != "$(id -u)" ]]; then echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; fi
+  if process_group_alive "$writer_pgid"; then echo '{"outcome":"writer_alive"}'; return 0; else rc=$?; fi
+  [[ "$rc" -eq 1 ]] || { echo '{"outcome":"writer_alive"}'; return 0; }
+  local current current_digest generation
+  current=$(kc_read 2>/dev/null) || { echo '{"outcome":"conflict","reason":"keychain_unreadable"}'; return 0; }
+  current_digest=$(digest_value "$current")
+  if [[ "$current_digest" == "$old_digest" ]]; then
+    clear_transition_journal "$op_id" || { echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; }
+    echo '{"outcome":"cleared"}'
+    return 0
+  fi
+  if [[ "$current_digest" == "$target_digest" ]]; then
+    write_active_from_reconcile "$target_label" || { echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; }
+    active_sync_store "$target_label" force || { echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; }
+    generation=$(read_store_generation_for_active "$target_label") || { echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; }
+    clear_transition_journal "$op_id" || { echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; }
+    printf '{"outcome":"completed","activeAccount":"%s","generation":%s}\n' "$target_label" "$generation"
+    return 0
+  fi
+  echo '{"outcome":"conflict","reason":"digest_mismatch_both"}'
+}
+
+reconcile_after_acquire() {
+  local result
+  result=$(reconcile_transition_journal)
+  case "$result" in
+    *'"outcome":"none"'*|*'"outcome":"cleared"'*|*'"outcome":"completed"'*) return 0 ;;
+    *'"outcome":"writer_alive"'*) fail "switch in progress, retry shortly (transition writer group still alive)" ;;
+    *) fail "transition journal conflict — refusing account mutation: $result" ;;
+  esac
+}
+
+CAPTURE_RECOVERY_OP=""
+
+read_capture_recovery_fields() {
+  "$NODE_BIN" --input-type=module - "$TRANSITION_JOURNAL" <<'NODE'
+import { lstatSync, readFileSync } from "node:fs";
+const path=process.argv[2];
+try {
+  const st=lstatSync(path);
+  if(st.isSymbolicLink()||!st.isFile()) process.exit(1);
+  const j=JSON.parse(readFileSync(path,"utf8"));
+  const label=/^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]+$/;
+  if(typeof j.opId!=="string"||j.opId.length===0||typeof j.targetLabel!=="string"||!label.test(j.targetLabel)) process.exit(1);
+  process.stdout.write(`${j.opId}\t${j.targetLabel}`);
+} catch { process.exit(1); }
+NODE
+}
+
+# A crash followed by an operator re-login legitimately makes the Keychain
+# digest match neither journal endpoint. Allow only `capture <targetLabel>` to
+# recover that explicit target; every other mutation remains fail-closed.
+reconcile_before_capture() { # <capture name>
+  local name="$1" result fields op_id target_label
+  CAPTURE_RECOVERY_OP=""
+  result=$(reconcile_transition_journal)
+  case "$result" in
+    *'"outcome":"none"'*|*'"outcome":"cleared"'*|*'"outcome":"completed"'*) return 0 ;;
+    *'"outcome":"writer_alive"'*) fail "switch in progress, retry shortly (transition writer group still alive)" ;;
+    *'"outcome":"conflict"'*'"reason":"digest_mismatch_both"'*)
+      fields=$(read_capture_recovery_fields) || fail "transition journal conflict is not recoverable by capture: $result"
+      IFS=$'\t' read -r op_id target_label <<<"$fields"
+      [[ "$name" == "$target_label" ]] || fail "transition journal recovery requires: log into '$target_label' first, then run: flywheel-claude-profile capture $target_label"
+      CAPTURE_RECOVERY_OP="$op_id"
+      return 0
+      ;;
+    *) fail "transition journal conflict — refusing account mutation: $result" ;;
+  esac
 }
 
 # ------------------------------------------------------- display identity (FLY-865)
@@ -521,6 +1062,7 @@ sync_identity() {
     echo "Warning: could not acquire $CLAUDE_JSON_LOCK within ${CLAUDE_LOCK_WAIT_S}s — display identity NOT updated for '$name' (token switched OK)." >&2
     return 0
   fi
+  lease_fence_or_fail
   if email=$(patch_claude_json_identity "$src" "$CLAUDE_JSON"); then
     release_claude_json_lock
     echo "Updated ~/.claude.json display identity to '$name' (email: ${email:-unknown})" >&2
@@ -553,28 +1095,26 @@ show_status() {
   [[ -z "$active" ]] && echo "No active profile set." || echo "Active profile: $active"
 }
 
-use_profile() {
-  local name="$1"
+prepare_profile_locked() { # <name> <active>; returns 0/30/31/32/33
+  local name="$1" active="$2" rc=0
   require_pool_entry "$name"
-  acquire_lock
-
-  local active
-  active=$(get_active)
-
-  # FLY-871 R1/C2+C3 — freshness guard: before writing a NON-ACTIVE target to the
-  # Keychain, verify its pooled token is fresh (probe-refresh). The ACTIVE account
-  # is never pool-refreshed (its live session owns the token family). On a stale
-  # target (exit 30) or a missing helper (exit 31) we bail with the Keychain and
-  # .active UNTOUCHED — the 2026-07-04 incident root-cure. Re-selecting the current
-  # active (name == active) skips the probe (it re-writes the same account).
   if [[ "$name" != "$active" ]]; then
-    freshness_guard "$name" "$active"
+    freshness_check "$name" "$active" || rc=$?
+    [[ "$rc" -eq 0 ]] || return "$rc"
   fi
+  quota_check "$name" || rc=$?
+  return "$rc"
+}
 
-  local new backup="" got
-  # RE-READ after the guard — freshness_guard's helper may have written a ROTATED
-  # credential back to the pool, and we must switch to the fresh one.
+# Commit boundary: no probes here. The caller has prepared exactly once and
+# renewed its lease. Revalidate/re-read because freshness may have atomically
+# rotated the pooled credential.
+commit_profile_locked() { # <name> <active>
+  local name="$1" active="$2"
+  local new backup="" got journal_op sync_rc=0
+  require_pool_entry "$name"
   new=$(cat "$POOL_DIR/$name/.credentials.json")
+  renew_lock_or_fail
   # Snapshot the current value so a failed verify can roll back — the red line
   # is "switching must never leave the claude login broken".
   backup=$(kc_read 2>/dev/null || true)
@@ -585,8 +1125,15 @@ use_profile() {
     capture_back "$active" "$backup"
   fi
 
+  journal_op=$(write_transition_journal "$active" "$name" "$backup" "$new")
+  if [[ -n "${FLYWHEEL_TEST_PAUSE_AFTER_JOURNAL:-}" ]]; then
+    : > "${FLYWHEEL_TEST_PAUSE_AFTER_JOURNAL}.ready"
+    while [[ ! -e "${FLYWHEEL_TEST_PAUSE_AFTER_JOURNAL}.continue" ]]; do sleep 0.01; done
+  fi
+  lease_fence_or_fail
   kc_write "$new" # fail-closed: any non-zero aborts (set -e), .active untouched
 
+  lease_fence_or_fail
   got=$(kc_read 2>/dev/null || true)
   if [[ "$got" != "$new" ]]; then
     if [[ -n "$backup" ]]; then
@@ -599,15 +1146,45 @@ use_profile() {
     fail "verify-before-commit failed (read-back mismatch, no previous value to roll back) — .active unchanged"
   fi
 
+  lease_fence_or_fail
   printf '%s' "$name" > "$ACTIVE_FILE.tmp"
+  lease_fence_or_fail
   mv "$ACTIVE_FILE.tmp" "$ACTIVE_FILE"
+  active_sync_store "$name" || sync_rc=$?
+  [[ "$sync_rc" -eq 39 ]] && exit 39
   # FLY-865: swap the DISPLAY identity too (best-effort; never fails the switch).
   sync_identity "$name"
+  clear_transition_journal "$journal_op"
   echo "Switched machine Claude account to profile '$name' (new spawns use it; live sessions wait for reset)"
 }
 
+switch_profile_locked() { # <name> <active>; prepare exactly once, then commit
+  local name="$1" active="$2" rc=0
+  prepare_profile_locked "$name" "$active" || rc=$?
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  commit_profile_locked "$name" "$active"
+}
+
+use_profile() {
+  local name="$1" active rc=0
+  acquire_lock
+  reconcile_after_acquire
+  lease_fence_or_fail
+  mkdir -p "$POOL_DIR"
+  chmod 700 "$POOL_DIR" 2>/dev/null || true
+  require_pool_entry "$name"
+  active=$(get_active)
+  switch_profile_locked "$name" "$active" || rc=$?
+  [[ "$rc" -eq 0 ]] || exit "$rc"
+}
+
 next_profile() {
-  local active profiles=() name
+  local active profiles=() name rc=0
+  acquire_lock
+  reconcile_after_acquire
+  lease_fence_or_fail
+  mkdir -p "$POOL_DIR"
+  chmod 700 "$POOL_DIR" 2>/dev/null || true
   active=$(get_active)
   for dir in "$POOL_DIR"/*/; do
     [[ -d "$dir" ]] || continue
@@ -616,12 +1193,44 @@ next_profile() {
   [[ ${#profiles[@]} -eq 0 ]] && fail "no profiles in pool $POOL_DIR"
   [[ ${#profiles[@]} -eq 1 ]] && fail "only one profile in pool: ${profiles[0]}"
   IFS=$'\n' profiles=($(sort <<<"${profiles[*]}")); unset IFS
-  local idx=0 i
+  local idx=-1 i candidate_count offset candidate_idx candidate
   for i in "${!profiles[@]}"; do
     [[ "${profiles[$i]}" == "$active" ]] && { idx=$i; break; }
   done
-  local next_idx=$(( (idx + 1) % ${#profiles[@]} ))
-  use_profile "${profiles[$next_idx]}"
+  if [[ "$idx" -ge 0 ]]; then
+    candidate_count=$(( ${#profiles[@]} - 1 ))
+  else
+    candidate_count=${#profiles[@]}
+  fi
+
+  offset=1
+  while [[ "$offset" -le "$candidate_count" ]]; do
+    candidate_idx=$(( (idx + offset) % ${#profiles[@]} ))
+    candidate="${profiles[$candidate_idx]}"
+    renew_lock_or_fail
+    rc=0
+    prepare_profile_locked "$candidate" "$active" || rc=$?
+    case "$rc" in
+      0)
+        renew_lock_or_fail
+        commit_profile_locked "$candidate" "$active"
+        return 0
+        ;;
+      32)
+        echo "Skipping exhausted quota candidate '$candidate'" >&2
+        ;;
+      30|31|33|39)
+        exit "$rc"
+        ;;
+      *)
+        fail "unexpected candidate preparation result $rc for '$candidate'"
+        ;;
+    esac
+    offset=$(( offset + 1 ))
+  done
+  echo "FLYWHEEL_TARGET_QUOTA_EXHAUSTED all" >&2
+  echo "Error: every alternate Claude profile is exhausted; Keychain/.active unchanged" >&2
+  exit 32
 }
 
 capture_profile() {
@@ -631,22 +1240,37 @@ capture_profile() {
   [[ -L "$POOL_DIR" ]] && fail "pool dir $POOL_DIR is a symlink — refusing"
   [[ -L "$dir" ]] && fail "profile dir $dir is a symlink — refusing"
   acquire_lock
+  reconcile_before_capture "$name"
+  lease_fence_or_fail
   cur=$(kc_read) || fail "no Keychain item for service '$SERVICE' — nothing to capture"
   [[ -z "$cur" ]] && fail "Keychain item for service '$SERVICE' is empty — refusing to capture"
+  lease_fence_or_fail
   mkdir -p "$dir"
   chmod 700 "$POOL_DIR" "$dir"
   [[ -L "$dir/.credentials.json" ]] && fail "credential file is a symlink — refusing"
+  lease_fence_or_fail
   ( umask 077; printf '%s' "$cur" > "$dir/.credentials.json.tmp" )
+  lease_fence_or_fail
   mv "$dir/.credentials.json.tmp" "$dir/.credentials.json"
   chmod 600 "$dir/.credentials.json"
   echo "Captured current Keychain credential into pool profile '$name'"
   # FLY-865: snapshot the account's DISPLAY identity beside the token (or clear a
   # stale one so a fresh token is never paired with an old identity).
   capture_identity "$name"
+  if [[ -n "$CAPTURE_RECOVERY_OP" ]]; then
+    write_active_from_reconcile "$name" || fail "captured '$name' but could not recover .active; transition journal preserved"
+    active_sync_store "$name" force || fail "captured '$name' but account-store recovery lost the lease; transition journal preserved"
+    read_store_generation_for_active "$name" >/dev/null || fail "captured '$name' but account-store recovery was not committed; transition journal preserved"
+    clear_transition_journal "$CAPTURE_RECOVERY_OP" || fail "captured '$name' but transition journal cleanup failed; rerun capture"
+    echo "Recovered transition journal by capturing and activating profile '$name'"
+    CAPTURE_RECOVERY_OP=""
+  fi
 }
 
-mkdir -p "$POOL_DIR"
-chmod 700 "$POOL_DIR" 2>/dev/null || true
+reconcile_journal_command() {
+  acquire_lock
+  reconcile_transition_journal
+}
 
 # Arm the lock cleanup GLOBALLY, before any command can acquire a lock. This
 # covers the FLY-852 delegated path (acquire_lock returns early without setting
@@ -663,5 +1287,6 @@ case "${1:-}" in
   use)     [[ -n "${2:-}" ]] || usage; use_profile "$2" ;;
   next)    next_profile ;;
   capture) [[ -n "${2:-}" ]] || usage; capture_profile "$2" ;;
+  reconcile-journal) reconcile_journal_command ;;
   *)       usage ;;
 esac

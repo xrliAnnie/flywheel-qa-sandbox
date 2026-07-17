@@ -69,6 +69,15 @@ export interface VerifyPoolCredentialOpts {
 	clientId?: string;
 	/** Bounded network timeout in ms (default DEFAULT_TIMEOUT_MS). */
 	timeoutMs?: number;
+	/** Optional account-lock fence, run after OAuth and immediately before write. */
+	preWriteBack?: () => void;
+}
+
+export class FreshnessLeaseLostError extends Error {
+	constructor() {
+		super("account lock lease lost before freshness pool write-back");
+		this.name = "FreshnessLeaseLostError";
+	}
 }
 
 /** Thrown when asked to refresh the ACTIVE account — a structural red line. */
@@ -161,6 +170,7 @@ export async function verifyPoolCredential(
 		clientId = process.env.FLYWHEEL_CLAUDE_OAUTH_CLIENT_ID ??
 			DEFAULT_OAUTH_CLIENT_ID,
 		timeoutMs = DEFAULT_TIMEOUT_MS,
+		preWriteBack,
 	} = opts;
 
 	// RED LINE: never pool-refresh the active account — throw BEFORE any file
@@ -187,8 +197,8 @@ export async function verifyPoolCredential(
 	// the headers. Clearing the timer before `resp.json()` left the body unbounded
 	// — a server returning 200 headers then stalling the body would hang the helper
 	// INSIDE the bash `use` critical section while the Node parent holds
-	// claude-accounts.lock (which withMkdirLock breaks after 120s even with a LIVE
-	// holder → another switch could interleave and double-write the Keychain). The
+	// claude-accounts.lock (whose live holder remains exclusive and whose commit
+	// path still fails closed if ownership is lost). The
 	// abort signal cancels the body stream too, so a stalled `resp.json()` rejects
 	// on timeout → stale. So fetch + json() run inside ONE try and the timer is
 	// cleared only in the finally that wraps both.
@@ -267,8 +277,10 @@ export async function verifyPoolCredential(
 		expiresAt: newExpiresAt,
 	};
 	try {
+		preWriteBack?.();
 		writeBack(file, { claudeAiOauth: nextOauth });
 	} catch (err) {
+		if (err instanceof FreshnessLeaseLostError) throw err;
 		// We rotated the family on the server but couldn't persist it — the OLD
 		// pooled refresh_token is now dead. Report stale (don't switch): the next
 		// candidate is tried, and this account is flagged for re-login.

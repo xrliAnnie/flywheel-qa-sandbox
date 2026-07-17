@@ -27,6 +27,8 @@ import {
 	selectNextAccount,
 	writeStore,
 } from "./account-store.js";
+import type { AccountsLock } from "./accounts-lock.js";
+import { type LeaseProof, validateLeaseProof } from "./mkdir-lock.js";
 
 export interface SwitchInput {
 	scope: "5h" | "weekly" | "both";
@@ -38,32 +40,61 @@ export interface SwitchInput {
 	now: Date;
 	/** Quota-verified target ranking; when present, unlisted accounts are excluded. */
 	preferredOrder?: string[];
+	/** Start instant of the live verification round that produced preferredOrder. */
+	verifiedAt?: string;
+	/** Whether the bash apply may skip its independent live quota guard. */
+	quotaPreverified?: boolean;
 }
 
 export interface SwitchDeps {
 	storePath?: string;
 	lockPath?: string;
 	/** Acquire the interprocess lock, run `fn`, release. Injected (see withLock impls). */
-	withLock: <T>(lockPath: string, fn: () => Promise<T>) => Promise<T>;
+	withLock: AccountsLock;
+	/** Refresh the lease for the resolved lock path before each candidate attempt. */
+	renewLock: (lockPath: string) => boolean;
 	/** Write the chosen account into the machine credential source (A: Keychain). Throws on failure → fail-closed. */
-	applyProfile: (name: string) => Promise<void>;
+	applyProfile: (
+		name: string,
+		context: { lease: LeaseProof; signal: AbortSignal },
+	) => Promise<void>;
 	/** The account the real profile is currently active on (crash-recovery authority). */
 	readActiveProfile: () => Promise<string | null>;
+	/** Parent-side final fence seam. Defaults to marker-token validation. */
+	validateLease?: (lease: LeaseProof) => boolean;
+	/** Renewal cadence while the detached mutation process group is alive. */
+	heartbeatMs?: number;
 }
 
 export type SwitchResult =
 	| { outcome: "switched"; from: string; to: string; generation: number }
 	| { outcome: "noop_already_switched"; activeAccount: string }
+	| { outcome: "noop_reconciled"; activeAccount: string; generation: number }
 	| {
 			outcome: "no_account";
 			earliestReset: string | null;
-			reasonCode: "no_eligible_account" | "target_stale_exhausted";
+			reasonCode:
+				| "no_eligible_account"
+				| "target_stale_exhausted"
+				| "target_quota_exhausted";
 	  }
 	| {
 			outcome: "failed";
 			reason: string;
-			reasonCode: "freshness_unavailable" | "apply_failed";
+			reasonCode:
+				| "freshness_unavailable"
+				| "apply_failed"
+				| "lock_lease_lost"
+				| "transition_journal_conflict"
+				| "transition_journal_writer_alive";
 	  };
+
+export class LockLeaseLostError extends Error {
+	constructor(detail?: string) {
+		super(`account lock lease lost${detail ? `: ${detail}` : ""}`);
+		this.name = "LockLeaseLostError";
+	}
+}
 
 /**
  * FLY-871 R1/C3 — the target's pooled credential failed freshness verification
@@ -97,6 +128,13 @@ export class FreshnessUnavailableError extends Error {
 	}
 }
 
+export class TargetQuotaExhaustedError extends Error {
+	constructor(public readonly account: string) {
+		super(`target account '${account}' has exhausted Claude quota`);
+		this.name = "TargetQuotaExhaustedError";
+	}
+}
+
 function markAuthExpired(store: AccountStore, name: string): AccountStore {
 	return {
 		...store,
@@ -122,6 +160,7 @@ function commitSwitch(
 			? {
 					...a,
 					quotaExhaustedUntil: input.resetAt,
+					switchCooldownUntil: input.resetAt,
 					...(isWeekly ? { weeklyResetAt: input.resetAt } : {}),
 				}
 			: a,
@@ -140,7 +179,43 @@ export async function switchAccount(
 	const storePath = deps.storePath ?? defaultStorePath();
 	const lockPath = deps.lockPath ?? defaultLockPath();
 
-	return deps.withLock(lockPath, async () => {
+	const locked = await deps.withLock<SwitchResult>(lockPath, async (lease) => {
+		const validate = deps.validateLease ?? validateLeaseProof;
+		const fence = (): boolean => {
+			try {
+				return deps.renewLock(lockPath) && validate(lease);
+			} catch {
+				return false;
+			}
+		};
+		const leaseLost = (): SwitchResult => ({
+			outcome: "failed",
+			reason: `lost account lock lease: ${lockPath}`,
+			reasonCode: "lock_lease_lost",
+		});
+		const applyWithHeartbeat = async (name: string): Promise<void> => {
+			const controller = new AbortController();
+			let lost = false;
+			const timer = setInterval(() => {
+				if (fence()) return;
+				lost = true;
+				controller.abort(new LockLeaseLostError(lockPath));
+			}, deps.heartbeatMs ?? 1_000);
+			try {
+				await deps.applyProfile(name, {
+					lease,
+					signal: controller.signal,
+				});
+			} catch (error) {
+				if (lost || error instanceof LockLeaseLostError) {
+					throw new LockLeaseLostError(lockPath);
+				}
+				throw error;
+			} finally {
+				clearInterval(timer);
+			}
+			if (lost) throw new LockLeaseLostError(lockPath);
+		};
 		let store = readStore(storePath);
 
 		// Crash recovery: the real profile's active account wins over stale JSON.
@@ -184,31 +259,49 @@ export async function switchAccount(
 		let working = store;
 		let applied: string | null = null;
 		let targetStaleSeen = false;
+		let targetQuotaSeen = false;
+		const attemptedNames = new Set<string>();
 		const maxAttempts = store.accounts.length + 1;
 		for (let attempt = 0; attempt < maxAttempts; attempt++) {
+			if (!fence()) return leaseLost();
 			const next = selectNextAccount(working, {
 				scope: input.scope,
 				currentName: input.observedAccount,
 				now: input.now,
 				preferredOrder: input.preferredOrder,
+				verifiedAt: input.verifiedAt,
+				excludeNames: attemptedNames,
 			});
 			if (next === null) {
 				return {
 					outcome: "no_account",
-					earliestReset: earliestReset(working),
-					reasonCode: targetStaleSeen
-						? "target_stale_exhausted"
-						: "no_eligible_account",
+					earliestReset: earliestReset(working, input.now.getTime()),
+					reasonCode: targetQuotaSeen
+						? "target_quota_exhausted"
+						: targetStaleSeen
+							? "target_stale_exhausted"
+							: "no_eligible_account",
 				};
 			}
+			attemptedNames.add(next);
 			try {
-				await deps.applyProfile(next);
+				await applyWithHeartbeat(next);
+				// The child may settle in the gap before the next heartbeat. Re-proof
+				// after the entire process group has exited and before any parent write.
+				if (!fence()) return leaseLost();
 				applied = next;
 				break;
 			} catch (err) {
+				if (err instanceof LockLeaseLostError || !fence()) return leaseLost();
+				if (err instanceof TargetQuotaExhaustedError) {
+					targetQuotaSeen = true;
+					working = readStore(storePath);
+					continue;
+				}
 				if (err instanceof TargetStaleError) {
 					targetStaleSeen = true;
 					working = markAuthExpired(working, next);
+					if (!fence()) return leaseLost();
 					writeStore(working, storePath); // in-lock, atomic
 					continue;
 				}
@@ -229,10 +322,12 @@ export async function switchAccount(
 		if (applied === null) {
 			return {
 				outcome: "no_account",
-				earliestReset: earliestReset(working),
-				reasonCode: targetStaleSeen
-					? "target_stale_exhausted"
-					: "no_eligible_account",
+				earliestReset: earliestReset(working, input.now.getTime()),
+				reasonCode: targetQuotaSeen
+					? "target_quota_exhausted"
+					: targetStaleSeen
+						? "target_stale_exhausted"
+						: "no_eligible_account",
 			};
 		}
 
@@ -245,4 +340,36 @@ export async function switchAccount(
 			generation: updated.generation,
 		};
 	});
+
+	if (typeof locked !== "object" || locked === null || !("kind" in locked)) {
+		throw new Error(
+			"invalid account lock result: expected tagged LockRunResult",
+		);
+	}
+	switch (locked.kind) {
+		case "ok":
+			return locked.value;
+		case "reconciled":
+			return {
+				outcome: "noop_reconciled",
+				activeAccount: locked.activeAccount,
+				generation: locked.generation,
+			};
+		case "blocked":
+			return locked.reason.kind === "conflict"
+				? {
+						outcome: "failed",
+						reason: `transition journal conflict: ${locked.reason.detail}`,
+						reasonCode: "transition_journal_conflict",
+					}
+				: {
+						outcome: "failed",
+						reason: "transition writer process group is still alive",
+						reasonCode: "transition_journal_writer_alive",
+					};
+		default:
+			throw new Error(
+				"invalid account lock result: unknown LockRunResult kind",
+			);
+	}
 }

@@ -24,6 +24,38 @@ export interface ReviveEpoch {
 	panes: Record<string, RevivePaneAttempt>;
 }
 
+export interface EpisodeDelivery {
+	kind: "blocked" | "recovered";
+	round: number;
+	attempts: number;
+	lastAttemptAt: string | null;
+}
+
+export interface BlockedEpisode {
+	scope: "5h" | "weekly" | "both";
+	startedAt: string;
+	lastConfirmedAlertAt: string | null;
+	alertCount: number;
+	blockedRound: number;
+	recoveryRound: number;
+	activeDelivery: EpisodeDelivery | null;
+}
+
+export interface SwitchFailureDelivery {
+	round: number;
+	attempts: number;
+	lastAttemptAt: string | null;
+}
+
+export interface PendingSwitchFailure {
+	reasonCode: string;
+	degraded: boolean;
+	startedAt: string;
+	lastConfirmedAlertAt: string | null;
+	alertCount: number;
+	activeDelivery: SwitchFailureDelivery | null;
+}
+
 export interface QuotaMonitorState {
 	version: 1;
 	lastPollAt: number | null;
@@ -35,6 +67,8 @@ export interface QuotaMonitorState {
 	lastSwitchAt: number | null;
 	observedGeneration: number;
 	reviveEpoch: ReviveEpoch | null;
+	blockedEpisode: BlockedEpisode | null;
+	pendingSwitchFailure: PendingSwitchFailure | null;
 }
 
 export interface LoadQuotaMonitorStateOptions {
@@ -59,6 +93,8 @@ const STATE_KEYS = new Set([
 	"lastSwitchAt",
 	"observedGeneration",
 	"reviveEpoch",
+	"blockedEpisode",
+	"pendingSwitchFailure",
 ]);
 const EPOCH_KEYS = new Set([
 	"open",
@@ -69,6 +105,34 @@ const EPOCH_KEYS = new Set([
 	"panes",
 ]);
 const ATTEMPT_KEYS = new Set(["attempts", "lastAttemptAt"]);
+const BLOCKED_EPISODE_KEYS = new Set([
+	"scope",
+	"startedAt",
+	"lastConfirmedAlertAt",
+	"alertCount",
+	"blockedRound",
+	"recoveryRound",
+	"activeDelivery",
+]);
+const EPISODE_DELIVERY_KEYS = new Set([
+	"kind",
+	"round",
+	"attempts",
+	"lastAttemptAt",
+]);
+const SWITCH_FAILURE_KEYS = new Set([
+	"reasonCode",
+	"degraded",
+	"startedAt",
+	"lastConfirmedAlertAt",
+	"alertCount",
+	"activeDelivery",
+]);
+const SWITCH_FAILURE_DELIVERY_KEYS = new Set([
+	"round",
+	"attempts",
+	"lastAttemptAt",
+]);
 
 export function defaultQuotaMonitorStatePath(): string {
 	return (
@@ -91,6 +155,8 @@ export function emptyQuotaMonitorState(
 		lastSwitchAt: null,
 		observedGeneration,
 		reviveEpoch: null,
+		blockedEpisode: null,
+		pendingSwitchFailure: null,
 	};
 }
 
@@ -115,6 +181,127 @@ function isNullableTimestamp(value: unknown): value is number | null {
 
 function isGeneration(value: unknown): value is number {
 	return isNonNegativeNumber(value) && Number.isInteger(value);
+}
+
+function isIsoInstant(value: unknown): value is string {
+	return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+
+function isNullableIsoInstant(value: unknown): value is string | null {
+	return value === null || isIsoInstant(value);
+}
+
+function parseEpisodeDelivery(
+	value: unknown,
+): EpisodeDelivery | null | undefined {
+	if (value === null) return null;
+	if (!isRecord(value) || !hasOnlyKeys(value, EPISODE_DELIVERY_KEYS)) {
+		return undefined;
+	}
+	if (
+		(value.kind !== "blocked" && value.kind !== "recovered") ||
+		!isGeneration(value.round) ||
+		!isGeneration(value.attempts) ||
+		!isNullableIsoInstant(value.lastAttemptAt)
+	) {
+		return undefined;
+	}
+	return {
+		kind: value.kind,
+		round: value.round,
+		attempts: value.attempts,
+		lastAttemptAt: value.lastAttemptAt,
+	};
+}
+
+function parseBlockedEpisode(
+	value: unknown,
+): BlockedEpisode | null | undefined {
+	if (value === undefined || value === null) return null;
+	if (!isRecord(value) || !hasOnlyKeys(value, BLOCKED_EPISODE_KEYS)) {
+		return undefined;
+	}
+	const activeDelivery = parseEpisodeDelivery(value.activeDelivery);
+	if (
+		(value.scope !== "5h" &&
+			value.scope !== "weekly" &&
+			value.scope !== "both") ||
+		!isIsoInstant(value.startedAt) ||
+		!isNullableIsoInstant(value.lastConfirmedAlertAt) ||
+		!isGeneration(value.alertCount) ||
+		value.alertCount > 10 ||
+		!isGeneration(value.blockedRound) ||
+		!isGeneration(value.recoveryRound) ||
+		activeDelivery === undefined ||
+		(activeDelivery !== null &&
+			activeDelivery.round !==
+				(activeDelivery.kind === "blocked"
+					? value.blockedRound
+					: value.recoveryRound))
+	) {
+		return undefined;
+	}
+	return {
+		scope: value.scope,
+		startedAt: value.startedAt,
+		lastConfirmedAlertAt: value.lastConfirmedAlertAt,
+		alertCount: value.alertCount,
+		blockedRound: value.blockedRound,
+		recoveryRound: value.recoveryRound,
+		activeDelivery,
+	};
+}
+
+function parseSwitchFailureDelivery(
+	value: unknown,
+): SwitchFailureDelivery | null | undefined {
+	if (value === null) return null;
+	if (!isRecord(value) || !hasOnlyKeys(value, SWITCH_FAILURE_DELIVERY_KEYS)) {
+		return undefined;
+	}
+	if (
+		!isGeneration(value.round) ||
+		!isGeneration(value.attempts) ||
+		!isNullableIsoInstant(value.lastAttemptAt)
+	) {
+		return undefined;
+	}
+	return {
+		round: value.round,
+		attempts: value.attempts,
+		lastAttemptAt: value.lastAttemptAt,
+	};
+}
+
+function parsePendingSwitchFailure(
+	value: unknown,
+): PendingSwitchFailure | null | undefined {
+	if (value === undefined || value === null) return null;
+	if (!isRecord(value) || !hasOnlyKeys(value, SWITCH_FAILURE_KEYS)) {
+		return undefined;
+	}
+	const activeDelivery = parseSwitchFailureDelivery(value.activeDelivery);
+	if (
+		typeof value.reasonCode !== "string" ||
+		value.reasonCode.length === 0 ||
+		typeof value.degraded !== "boolean" ||
+		!isIsoInstant(value.startedAt) ||
+		!isNullableIsoInstant(value.lastConfirmedAlertAt) ||
+		!isGeneration(value.alertCount) ||
+		value.alertCount > 10 ||
+		activeDelivery === undefined ||
+		(activeDelivery !== null && activeDelivery.round !== value.alertCount)
+	) {
+		return undefined;
+	}
+	return {
+		reasonCode: value.reasonCode,
+		degraded: value.degraded,
+		startedAt: value.startedAt,
+		lastConfirmedAlertAt: value.lastConfirmedAlertAt,
+		alertCount: value.alertCount,
+		activeDelivery,
+	};
 }
 
 function parseReviveEpoch(value: unknown): ReviveEpoch | null | undefined {
@@ -163,6 +350,10 @@ function parseReviveEpoch(value: unknown): ReviveEpoch | null | undefined {
 function parseState(value: unknown): QuotaMonitorState | null {
 	if (!isRecord(value) || !hasOnlyKeys(value, STATE_KEYS)) return null;
 	const reviveEpoch = parseReviveEpoch(value.reviveEpoch);
+	const blockedEpisode = parseBlockedEpisode(value.blockedEpisode);
+	const pendingSwitchFailure = parsePendingSwitchFailure(
+		value.pendingSwitchFailure,
+	);
 	if (
 		value.version !== 1 ||
 		!isNullableTimestamp(value.lastPollAt) ||
@@ -173,7 +364,9 @@ function parseState(value: unknown): QuotaMonitorState | null {
 		!isNullableTimestamp(value.lastCandidateSweepAt) ||
 		!isNullableTimestamp(value.lastSwitchAt) ||
 		!isGeneration(value.observedGeneration) ||
-		reviveEpoch === undefined
+		reviveEpoch === undefined ||
+		blockedEpisode === undefined ||
+		pendingSwitchFailure === undefined
 	) {
 		return null;
 	}
@@ -188,6 +381,8 @@ function parseState(value: unknown): QuotaMonitorState | null {
 		lastSwitchAt: value.lastSwitchAt,
 		observedGeneration: value.observedGeneration,
 		reviveEpoch,
+		blockedEpisode,
+		pendingSwitchFailure,
 	};
 }
 
@@ -243,6 +438,8 @@ export function loadQuotaMonitorState(
 				observedGeneration: opts.storeGeneration,
 				lastSwitchAt: opts.nowMs,
 				reviveEpoch: null,
+				blockedEpisode: null,
+				pendingSwitchFailure: null,
 			},
 			recovery: "generation_advanced",
 		};

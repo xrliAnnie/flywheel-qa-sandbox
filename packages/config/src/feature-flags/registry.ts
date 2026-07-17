@@ -236,6 +236,50 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "临时两阶段迁移 flag；FLY-1284 在 enable 稳定 >=1 周后删除，并同步迁移 KIND_CONTRACTS.usage_limit。",
 	},
 	{
+		name: "quota_degraded_switch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_QUOTA_DEGRADED_SWITCH",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1252: 允许 quota daemon 执行已在 quota-monitor config 开启的受控降级切号（=0 立即压制）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/account-heal/quota-monitor.ts",
+				"pollOnce",
+				"call_time",
+			),
+		],
+		// The owning reader is the external daemon, not the Bridge process whose
+		// env the direct-toggle surface mutates.
+		toggleable: "conversational",
+	},
+	{
+		name: "quota_daemon_wake",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_QUOTA_WAKE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1252: Bridge 在可信 quota-limit 信号后通过能力协商 pidfile 立即唤醒 daemon（=0 停发信号）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/quota-daemon-wake.ts",
+				"createQuotaDaemonWaker",
+				"call_time",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/quota-daemon-wake.test.ts:createQuotaDaemonWaker observes disabled wake",
+	},
+	{
 		name: "auto_qa_killswitch",
 		category: "kill_switch",
 		source: "env",

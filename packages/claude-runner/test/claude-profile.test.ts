@@ -23,6 +23,7 @@ import {
 	spawn,
 	spawnSync,
 } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
 	accessSync,
 	chmodSync,
@@ -56,6 +57,8 @@ const SECRET_B =
 	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-BBB","refreshToken":"rB"}}';
 const SECRET_CUR =
 	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-CURRENT","refreshToken":"rC"}}';
+const SECRET_RELOGIN_PERSONAL =
+	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-PERSONAL-RELOGIN","refreshToken":"rP"}}';
 // FLY-871: a value the live Keychain "drifted" to (claude auto-refreshed the
 // active account's token) — capture-back must snapshot THIS into the pool.
 const SECRET_DRIFT =
@@ -74,6 +77,14 @@ let stubBin: string;
 // `use` tests keep passing; freshLog records its argv for the invocation assertion.
 let freshBin: string;
 let freshLog: string;
+// FLY-1252: live quota guard + bypass-alert stubs. Existing profile tests use
+// an always-healthy guard; focused tests override it to exercise 32/33.
+let quotaBin: string;
+let quotaLog: string;
+let alertBin: string;
+let alertLog: string;
+let accountsStore: string;
+let transitionJournal: string;
 // FLY-865: a scratch ~/.claude.json + its lock. env() ALWAYS points the script
 // at these so no test can ever touch the real ~/.claude.json.
 let claudeJson: string;
@@ -154,6 +165,13 @@ function env(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
 		// FLYWHEEL_CLAUDE_FRESHNESS_BIN to exercise stale / unavailable / refresh.
 		FLYWHEEL_CLAUDE_FRESHNESS_BIN: freshBin,
 		FRESH_ARGV_LOG: freshLog,
+		FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: quotaBin,
+		FLYWHEEL_CLAUDE_ACCOUNTS_PATH: accountsStore,
+		FLYWHEEL_CLAUDE_TRANSITION_JOURNAL: transitionJournal,
+		FLYWHEEL_NODE_BIN: process.execPath,
+		QUOTA_ARGV_LOG: quotaLog,
+		FLYWHEEL_LEAD_ALERT_BIN: alertBin,
+		ALERT_ARGV_LOG: alertLog,
 		// FLY-865 SAFETY: never let a test touch the real ~/.claude.json.
 		FLYWHEEL_CLAUDE_JSON: claudeJson,
 		FLYWHEEL_CLAUDE_JSON_LOCK: claudeJsonLock,
@@ -215,6 +233,33 @@ function seedProfile(name: string, secret: string): void {
 	writeFileSync(join(pool, name, ".credentials.json"), secret, { mode: 0o600 });
 }
 
+function digest(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+function seedTransitionJournal(
+	overrides: Partial<Record<string, unknown>> = {},
+): void {
+	writeFileSync(
+		transitionJournal,
+		JSON.stringify({
+			opId: "test-op",
+			writerUid: process.getuid?.() ?? 0,
+			writerPgid: 999_999,
+			leaderPid: 999_999,
+			leaderStartTime: "test-start",
+			writerLeaseToken: "old-token",
+			oldLabel: "school",
+			targetLabel: "personal",
+			oldDigest: digest(SECRET_CUR),
+			targetDigest: digest(SECRET_A),
+			startedAt: "2026-07-16T00:00:00.000Z",
+			...overrides,
+		}),
+		{ mode: 0o600 },
+	);
+}
+
 beforeEach(() => {
 	tmp = mkdtempSync(join(tmpdir(), "fly696-profile-"));
 	pool = join(tmp, "pool");
@@ -226,6 +271,12 @@ beforeEach(() => {
 	claudeJsonLock = join(tmp, "claude.json.lock");
 	freshBin = join(tmp, "fake-freshness");
 	freshLog = join(tmp, "fresh-argv.log");
+	quotaBin = join(tmp, "fake-quota-guard");
+	quotaLog = join(tmp, "quota-argv.log");
+	alertBin = join(tmp, "fake-lead-alert");
+	alertLog = join(tmp, "alert-argv.log");
+	accountsStore = join(tmp, "claude-accounts.json");
+	transitionJournal = join(tmp, "claude-account-transition.json");
 	writeFileSync(stubBin, STUB, { mode: 0o755 });
 	writeFileSync(argvLog, "");
 	// Default freshness helper: logs its argv, exits 0 (fresh). NO pool write-back.
@@ -235,6 +286,22 @@ beforeEach(() => {
 		{ mode: 0o755 },
 	);
 	writeFileSync(freshLog, "");
+	writeFileSync(
+		quotaBin,
+		'#!/usr/bin/env bash\nset -u\nprintf \'%s\\n\' "$*" >> "$QUOTA_ARGV_LOG"\nexit 0\n',
+		{ mode: 0o755 },
+	);
+	writeFileSync(quotaLog, "");
+	writeFileSync(
+		alertBin,
+		'#!/usr/bin/env bash\nset -u\nprintf \'%s\\n\' "$*" >> "$ALERT_ARGV_LOG"\necho sent\n',
+		{ mode: 0o755 },
+	);
+	writeFileSync(alertLog, "");
+	writeFileSync(
+		accountsStore,
+		JSON.stringify({ generation: 0, activeAccount: null, accounts: {} }),
+	);
 	mkdirSync(pool, { recursive: true });
 	seedProfile("personal", SECRET_A);
 	seedProfile("school", SECRET_B);
@@ -465,11 +532,11 @@ esac
 		rmSync(lockDir, { recursive: true, force: true });
 	});
 
-	it("lock: held by a LIVE holder → times out fail-closed", () => {
+	it("lock: held by a LIVE holder is never age-stolen → times out fail-closed", () => {
 		mkdirSync(lockDir, { recursive: true });
 		writeFileSync(
 			join(lockDir, "holder"),
-			JSON.stringify({ pid: process.pid, at: Date.now() }), // live pid, fresh
+			JSON.stringify({ pid: process.pid, at: Date.now() - 300_000 }),
 		);
 		const { status, stderr } = runExpectFail(["use", "personal"], {
 			FLYWHEEL_CLAUDE_LOCK_TIMEOUT_MS: "300",
@@ -489,11 +556,257 @@ esac
 		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A);
 	});
 
+	it("lock: a stale breaker never removes a successor directory created after inspection", () => {
+		mkdirSync(lockDir, { recursive: true });
+		const staleMarker = join(lockDir, "holder");
+		writeFileSync(
+			staleMarker,
+			JSON.stringify({ pid: 999999, at: Date.now() - 300_000 }),
+		);
+		const shimDir = join(tmp, "race-shims");
+		mkdirSync(shimDir);
+		writeFileSync(
+			join(shimDir, "mv"),
+			`#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "$RACE_STALE_MARKER" && ! -e "$RACE_ONCE" ]]; then
+  : > "$RACE_ONCE"
+  /bin/rm "$RACE_STALE_MARKER"
+  /bin/rmdir "$RACE_LOCK_DIR"
+  /bin/mkdir "$RACE_LOCK_DIR"
+fi
+/bin/mv "$@"
+`,
+			{ mode: 0o755 },
+		);
+
+		const { status, stderr } = runExpectFail(["use", "personal"], {
+			PATH: `${shimDir}:${process.env.PATH ?? ""}`,
+			RACE_STALE_MARKER: staleMarker,
+			RACE_LOCK_DIR: lockDir,
+			RACE_ONCE: join(tmp, "race-once"),
+			FLYWHEEL_CLAUDE_LOCK_TIMEOUT_MS: "250",
+		});
+
+		expect(status).not.toBe(0);
+		expect(stderr).toContain("timeout acquiring lock");
+		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_CUR);
+		expect(existsSync(lockDir)).toBe(true);
+	});
+
 	it("lock is RELEASED after a successful command (next run acquires instantly)", () => {
 		run(["use", "personal"]);
 		expect(existsSync(lockDir)).toBe(false);
 		run(["use", "school"], { FLYWHEEL_CLAUDE_LOCK_TIMEOUT_MS: "300" });
 		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
+	});
+
+	describe("FLY-1252 transition journal", () => {
+		it("persists before Keychain mutation and clears after a successful commit", () => {
+			run(["use", "personal"]);
+			expect(existsSync(transitionJournal)).toBe(false);
+			expect(readFileSync(stateFile, "utf8")).toBe(SECRET_A);
+		});
+
+		it("clears an abandoned journal when Keychain still has the old digest", () => {
+			seedTransitionJournal();
+			const result = JSON.parse(run(["reconcile-journal"]).trim());
+			expect(result).toEqual({ outcome: "cleared" });
+			expect(existsSync(transitionJournal)).toBe(false);
+			expect(readFileSync(stateFile, "utf8")).toBe(SECRET_CUR);
+		});
+
+		it("completes .active + store when Keychain has the target digest", () => {
+			writeFileSync(stateFile, SECRET_A);
+			writeFileSync(join(pool, ".active"), "school");
+			writeFileSync(
+				accountsStore,
+				JSON.stringify({
+					generation: 3,
+					activeAccount: "school",
+					accounts: [
+						{
+							name: "personal",
+							quotaExhaustedUntil: null,
+							weeklyResetAt: null,
+						},
+						{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+					],
+				}),
+			);
+			const syncBin = join(tmp, "sync-store");
+			writeFileSync(
+				syncBin,
+				`#!/usr/bin/env bash
+set -euo pipefail
+node -e 'const fs=require("fs"); const [path,name]=process.argv.slice(1); const s=JSON.parse(fs.readFileSync(path,"utf8")); if(s.activeAccount!==name){s.activeAccount=name;s.generation+=1;} fs.writeFileSync(path,JSON.stringify(s));' "$5" "$3"
+`,
+				{ mode: 0o755 },
+			);
+			seedTransitionJournal();
+
+			const result = JSON.parse(
+				run(["reconcile-journal"], {
+					FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncBin,
+				}).trim(),
+			);
+			expect(result).toEqual({
+				outcome: "completed",
+				activeAccount: "personal",
+				generation: 4,
+			});
+			expect(readFileSync(join(pool, ".active"), "utf8")).toBe("personal");
+			expect(JSON.parse(readFileSync(accountsStore, "utf8"))).toMatchObject({
+				generation: 4,
+				activeAccount: "personal",
+			});
+			expect(existsSync(transitionJournal)).toBe(false);
+		});
+
+		it("keeps the journal and blocks while any writer-group process is alive", () => {
+			const child = spawn(
+				process.execPath,
+				["-e", "setTimeout(()=>{},30000)"],
+				{
+					detached: true,
+					stdio: "ignore",
+				},
+			);
+			if (!child.pid) throw new Error("missing detached child pid");
+			try {
+				seedTransitionJournal({ writerPgid: child.pid, leaderPid: child.pid });
+				const result = JSON.parse(run(["reconcile-journal"]).trim());
+				expect(result).toEqual({ outcome: "writer_alive" });
+				expect(existsSync(transitionJournal)).toBe(true);
+			} finally {
+				try {
+					process.kill(-child.pid, "SIGKILL");
+				} catch {
+					// already gone
+				}
+			}
+		});
+
+		it("manual mutation runs under a dedicated group whose leader owns the journal", async () => {
+			const pause = join(tmp, "journal-pause");
+			const psStub = join(tmp, "fake-ps");
+			writeFileSync(
+				psStub,
+				`#!/usr/bin/env bash
+case "$*" in
+  *"lstart="*) printf '%s\n' "Thu Jul 16 15:00:00 2026" ;;
+  *) exit 1 ;;
+esac
+`,
+				{ mode: 0o755 },
+			);
+			const caller = spawn("bash", [PROFILE_BIN, "use", "personal"], {
+				env: env({
+					FLYWHEEL_TEST_PAUSE_AFTER_JOURNAL: pause,
+					FLYWHEEL_CLAUDE_PS_BIN: psStub,
+				}),
+				stdio: "ignore",
+			});
+			const waitFor = async (condition: () => boolean) => {
+				for (let i = 0; i < 500; i++) {
+					if (condition()) return true;
+					await new Promise((resolve) => setTimeout(resolve, 10));
+				}
+				return false;
+			};
+			try {
+				expect(await waitFor(() => existsSync(`${pause}.ready`))).toBe(true);
+				const journal = JSON.parse(readFileSync(transitionJournal, "utf8"));
+				const markerName = readdirSync(lockDir).find((name) =>
+					name.startsWith("holder."),
+				);
+				if (!markerName) throw new Error("bash lock marker missing");
+				const marker = JSON.parse(
+					readFileSync(join(lockDir, markerName), "utf8"),
+				);
+				expect(marker.processStartTime).toEqual(expect.any(String));
+				expect(marker.processStartTime.length).toBeGreaterThan(0);
+				expect(journal.writerPgid).toBe(journal.leaderPid);
+				expect(journal.leaderPid).not.toBe(caller.pid);
+				writeFileSync(`${pause}.continue`, "go");
+				const exitCode = await new Promise<number | null>((resolve) =>
+					caller.once("exit", resolve),
+				);
+				expect(exitCode).toBe(0);
+				expect(existsSync(transitionJournal)).toBe(false);
+			} finally {
+				if (caller.exitCode === null) caller.kill("SIGKILL");
+			}
+		}, 15_000);
+
+		it("fails closed and preserves a journal when Keychain matches neither digest", () => {
+			writeFileSync(stateFile, SECRET_B);
+			seedTransitionJournal();
+			const result = JSON.parse(run(["reconcile-journal"]).trim());
+			expect(result).toEqual({
+				outcome: "conflict",
+				reason: "digest_mismatch_both",
+			});
+			expect(existsSync(transitionJournal)).toBe(true);
+		});
+
+		it("capture of the journal target recovers a re-login digest conflict", () => {
+			// The operator followed the recovery instruction and logged into the
+			// journal target before capturing its newly-issued credential.
+			writeFileSync(stateFile, SECRET_RELOGIN_PERSONAL);
+			writeFileSync(
+				accountsStore,
+				JSON.stringify({
+					generation: 3,
+					activeAccount: "school",
+					accounts: [
+						{
+							name: "personal",
+							quotaExhaustedUntil: null,
+							weeklyResetAt: null,
+						},
+						{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+					],
+				}),
+			);
+			const syncBin = join(tmp, "capture-recovery-sync-store");
+			writeFileSync(
+				syncBin,
+				`#!/usr/bin/env bash
+set -euo pipefail
+node -e 'const fs=require("fs"); const [path,name]=process.argv.slice(1); const s=JSON.parse(fs.readFileSync(path,"utf8")); if(s.activeAccount!==name){s.activeAccount=name;s.generation+=1;} fs.writeFileSync(path,JSON.stringify(s));' "$5" "$3"
+`,
+				{ mode: 0o755 },
+			);
+			seedTransitionJournal();
+
+			const output = run(["capture", "personal"], {
+				FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncBin,
+			});
+
+			expect(output).toContain("Recovered transition journal");
+			expect(
+				readFileSync(join(pool, "personal", ".credentials.json"), "utf8"),
+			).toBe(SECRET_RELOGIN_PERSONAL);
+			expect(readFileSync(join(pool, ".active"), "utf8")).toBe("personal");
+			expect(JSON.parse(readFileSync(accountsStore, "utf8"))).toMatchObject({
+				generation: 4,
+				activeAccount: "personal",
+			});
+			expect(existsSync(transitionJournal)).toBe(false);
+		});
+
+		it("journal recovery tells the operator to log into the target before capture", () => {
+			writeFileSync(stateFile, SECRET_B);
+			seedTransitionJournal();
+
+			const { status, stderr } = runExpectFail(["capture", "school"]);
+
+			expect(status).not.toBe(0);
+			expect(stderr).toContain("log into 'personal' first");
+			expect(stderr).toContain("capture personal");
+			expect(existsSync(transitionJournal)).toBe(true);
+		});
 	});
 });
 
@@ -900,5 +1213,261 @@ exit 0
 		expect(stderr).toMatch(/symlink/i);
 		// the switch itself still succeeded
 		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
+	});
+});
+
+/**
+ * FLY-1252 — a target must pass a live 5h + 7d quota check before any
+ * Keychain mutation. `next` evaluates candidates under one owned lock and
+ * skips only definitely-exhausted (32) candidates; unavailable evidence (33)
+ * remains fail-closed for manual commands. The Node-delegated path may skip
+ * the duplicate probe only after the lock delegation itself is authenticated.
+ */
+describe("flywheel-claude-profile — live quota guard (FLY-1252)", () => {
+	it("never snapshots the exported environment to disk for bypass auditing", () => {
+		const source = readFileSync(PROFILE_BIN, "utf-8");
+		expect(source).not.toContain("flywheel-quota-bypass-env");
+		expect(source).not.toContain("export -p >");
+	});
+
+	function quotaStub(code: number, body = ""): string {
+		const p = join(tmp, `fake-quota-${code}-${Math.random()}`);
+		writeFileSync(
+			p,
+			`#!/usr/bin/env bash\nset -u\nprintf '%s\\n' "$*" >> "$QUOTA_ARGV_LOG"\n${body}\nexit ${code}\n`,
+			{ mode: 0o755 },
+		);
+		return p;
+	}
+
+	function seedBusinessActive(): void {
+		seedProfile("business", SECRET_CUR);
+		writeFileSync(join(pool, ".active"), "business", { mode: 0o600 });
+	}
+
+	it("`use` invokes freshness/check exactly once and active-sync after committing", () => {
+		run(["use", "personal"]);
+		const freshnessCalls = readFileSync(freshLog, "utf-8").trim().split("\n");
+		const quotaCalls = readFileSync(quotaLog, "utf-8").trim().split("\n");
+		expect(freshnessCalls).toHaveLength(1);
+		expect(quotaCalls).toHaveLength(2);
+		expect(quotaCalls[0]).toContain("check --name personal");
+		expect(quotaCalls[0]).toContain(`--pool ${pool}`);
+		expect(quotaCalls[0]).toContain(`--store ${accountsStore}`);
+		expect(quotaCalls[1]).toBe(
+			`active-sync --name personal --store ${accountsStore}`,
+		);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A);
+	});
+
+	it("quota exhausted (32) preserves a freshness write-back but never mutates Keychain/.active", () => {
+		const refreshBin = join(tmp, "freshness-rotates-before-quota");
+		writeFileSync(
+			refreshBin,
+			`#!/usr/bin/env bash\nset -u\nname=""; pool=""\nwhile [[ $# -gt 0 ]]; do\n  case "$1" in\n    --name) name="$2"; shift 2;;\n    --pool) pool="$2"; shift 2;;\n    *) shift;;\n  esac\ndone\nprintf '%s' '${SECRET_ROTATED}' > "$pool/$name/.credentials.json"\nexit 0\n`,
+			{ mode: 0o755 },
+		);
+		const { status, stderr } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_CLAUDE_FRESHNESS_BIN: refreshBin,
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: quotaStub(32),
+		});
+		expect(status).toBe(32);
+		expect(stderr).toContain("FLYWHEEL_TARGET_QUOTA_EXHAUSTED personal");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+		expect(
+			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
+		).toBe(SECRET_ROTATED);
+	});
+
+	it("quota evidence unavailable (33) is fail-closed for manual `use`", () => {
+		const { status, stderr } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: quotaStub(33),
+		});
+		expect(status).toBe(33);
+		expect(stderr).toContain("FLYWHEEL_QUOTA_UNAVAILABLE personal");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+	});
+
+	it("a missing quota helper is unavailable (33), never fail-open manually", () => {
+		const { status, stderr } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: join(tmp, "missing-quota-helper"),
+		});
+		expect(status).toBe(33);
+		expect(stderr).toContain("FLYWHEEL_QUOTA_UNAVAILABLE personal");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+	});
+
+	it("manual quota bypass is loud, alerts once, and proceeds without probing", () => {
+		const { stdout, stderr } = runBoth(["use", "personal"], {
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: quotaBin,
+			FLYWHEEL_CLAUDE_QUOTA_BYPASS: "1",
+		});
+		expect(stdout).toContain("Switched machine Claude account");
+		expect(stderr).toMatch(/BYPASS|quota guard/i);
+		expect(readFileSync(quotaLog, "utf-8")).toContain(
+			"active-sync --name personal",
+		);
+		expect(readFileSync(quotaLog, "utf-8")).not.toContain("check --name");
+		const alert = readFileSync(alertLog, "utf-8");
+		expect(alert).toContain("--kind quota_guard_bypassed");
+		expect(alert).toContain("--severity warning");
+		expect(alert).toContain("target=personal");
+		expect(alert.trim().split("\n")).toHaveLength(1);
+	});
+
+	it("forged delegation cannot unlock PREVERIFIED quota trust", () => {
+		const { status } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid),
+			FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED: "1",
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: quotaStub(32),
+		});
+		expect(status).toBe(32);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+	});
+
+	it("authenticated delegated + PREVERIFIED skips the duplicate quota probe", () => {
+		mkdirSync(lockDir, { recursive: true });
+		writeFileSync(
+			join(lockDir, "holder"),
+			JSON.stringify({ pid: process.pid, at: Date.now() }),
+		);
+		run(["use", "personal"], {
+			FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid),
+			FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED: "1",
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: quotaStub(32),
+		});
+		expect(readFileSync(quotaLog, "utf-8")).toBe("");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A);
+		expect(existsSync(lockDir)).toBe(true);
+		rmSync(lockDir, { recursive: true, force: true });
+	});
+
+	it("authenticated legacy delegation warns and fails open only for unavailable evidence (33)", () => {
+		mkdirSync(lockDir, { recursive: true });
+		writeFileSync(
+			join(lockDir, "holder"),
+			JSON.stringify({ pid: process.pid, at: Date.now() }),
+		);
+		const { stderr } = runBoth(["use", "personal"], {
+			FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid),
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: quotaStub(33),
+		});
+		expect(stderr).toMatch(/unavailable|legacy delegated/i);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A);
+		rmSync(lockDir, { recursive: true, force: true });
+	});
+
+	it("delegated mode ignores quota BYPASS and still refuses exhausted evidence (32)", () => {
+		mkdirSync(lockDir, { recursive: true });
+		writeFileSync(
+			join(lockDir, "holder"),
+			JSON.stringify({ pid: process.pid, at: Date.now() }),
+		);
+		const { status } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid),
+			FLYWHEEL_CLAUDE_QUOTA_BYPASS: "1",
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: quotaStub(32),
+		});
+		expect(status).toBe(32);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		rmSync(lockDir, { recursive: true, force: true });
+	});
+
+	it("`next` skips exhausted candidates under one lock and checks each candidate once", () => {
+		seedBusinessActive();
+		const selective = join(tmp, "quota-personal-exhausted");
+		writeFileSync(
+			selective,
+			`#!/usr/bin/env bash\nset -u\nprintf '%s\\n' "$*" >> "$QUOTA_ARGV_LOG"\nname=""\nwhile [[ $# -gt 0 ]]; do\n  if [[ "$1" == "--name" ]]; then name="$2"; break; fi\n  shift\ndone\n[[ "$name" == "personal" ]] && exit 32\nexit 0\n`,
+			{ mode: 0o755 },
+		);
+		run(["next"], { FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: selective });
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("school");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
+		const quotaCalls = readFileSync(quotaLog, "utf-8").trim().split("\n");
+		const freshnessCalls = readFileSync(freshLog, "utf-8").trim().split("\n");
+		expect(quotaCalls).toHaveLength(3);
+		expect(quotaCalls[0]).toContain("--name personal");
+		expect(quotaCalls[1]).toContain("--name school");
+		expect(quotaCalls[2]).toBe(
+			`active-sync --name school --store ${accountsStore}`,
+		);
+		expect(freshnessCalls).toHaveLength(2);
+		expect(existsSync(lockDir)).toBe(false);
+	});
+
+	it("warns but keeps a committed manual switch when active-sync fails", () => {
+		const helper = join(tmp, "quota-active-sync-fails");
+		writeFileSync(
+			helper,
+			`#!/usr/bin/env bash
+set -u
+printf '%s\\n' "$*" >> "$QUOTA_ARGV_LOG"
+[[ "\${1:-}" == "active-sync" ]] && exit 41
+exit 0
+`,
+			{ mode: 0o755 },
+		);
+
+		const { stdout, stderr } = runBoth(["use", "personal"], {
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: helper,
+		});
+
+		expect(stdout).toContain("Switched machine Claude account");
+		expect(stderr).toContain("Warning: active account store sync failed");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("personal");
+	});
+
+	it("`next` hard-stops after every candidate is exhausted (32)", () => {
+		seedBusinessActive();
+		const { status, stderr } = runExpectFail(["next"], {
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: quotaStub(32),
+		});
+		expect(status).toBe(32);
+		expect(stderr).toContain("FLYWHEEL_TARGET_QUOTA_EXHAUSTED");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("business");
+	});
+
+	it("`next` does not skip freshness failures or unavailable quota evidence", () => {
+		seedBusinessActive();
+		const staleBin = join(tmp, "freshness-stale-for-next");
+		writeFileSync(
+			staleBin,
+			'#!/usr/bin/env bash\nset -u\nprintf \'%s\\n\' "$*" >> "$FRESH_ARGV_LOG"\nexit 30\n',
+			{ mode: 0o755 },
+		);
+		const stale = runExpectFail(["next"], {
+			FLYWHEEL_CLAUDE_FRESHNESS_BIN: staleBin,
+		});
+		expect(stale.status).toBe(30);
+		expect(readFileSync(quotaLog, "utf-8")).toBe("");
+
+		writeFileSync(freshLog, "");
+		const unavailable = runExpectFail(["next"], {
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: quotaStub(33),
+		});
+		expect(unavailable.status).toBe(33);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+	});
+
+	it("losing lock ownership after verification aborts before Keychain and preserves the replacement holder", () => {
+		const steal = quotaStub(
+			0,
+			'rm -rf "$FLYWHEEL_CLAUDE_ACCOUNTS_LOCK"; mkdir "$FLYWHEEL_CLAUDE_ACCOUNTS_LOCK"; printf \'{"pid":1,"at":1,"token":"replacement"}\\n\' > "$FLYWHEEL_CLAUDE_ACCOUNTS_LOCK/holder.replacement"',
+		);
+		const { status, stderr } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: steal,
+		});
+		expect(status).not.toBe(0);
+		expect(stderr).toMatch(/lease|ownership|lock/i);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(lockDir)).toBe(true);
+		expect(
+			readFileSync(join(lockDir, "holder.replacement"), "utf-8"),
+		).toContain('"pid":1');
+		rmSync(lockDir, { recursive: true, force: true });
 	});
 });

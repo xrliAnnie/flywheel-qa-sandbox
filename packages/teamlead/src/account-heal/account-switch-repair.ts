@@ -194,6 +194,12 @@ export function makeAccountSwitchRepair(
 						action: "account_switch",
 						detail: `🔧 机器 Claude 账号已切到 ${result.activeAccount}（重复触发,跳过）。`,
 					};
+				case "noop_reconciled":
+					return {
+						outcome: "attempted",
+						action: "account_switch",
+						detail: `🔧 已收敛中断的 Claude 切换到 ${result.activeAccount}（generation ${result.generation}）,本轮旧观察已跳过。`,
+					};
 				case "no_account": {
 					const iso =
 						result.earliestReset ?? earliestReset(readStore(deps.storePath));

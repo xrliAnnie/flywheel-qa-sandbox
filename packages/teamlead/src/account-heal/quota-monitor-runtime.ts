@@ -8,7 +8,19 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { readStore } from "./account-store.js";
+import {
+	type AccountQuotaObservation,
+	type RecordObservationResult,
+	readStore,
+	readStoreStrict,
+	recordObservationInStore,
+	syncActiveAccountInStore,
+} from "./account-store.js";
+import {
+	withAccountsLock as acquireAccountsLock,
+	type LockRunResult,
+	reconcileTransitionJournal,
+} from "./accounts-lock.js";
 import {
 	claudeProfileBinPath,
 	makeClaudeProfileSwitchDeps,
@@ -17,13 +29,15 @@ import {
 	verifyPoolCredential as defaultVerifyPoolCredential,
 	type FreshnessVerdict,
 } from "./freshness.js";
-import { withMkdirLock } from "./mkdir-lock.js";
 import {
 	type MonitorCredential,
 	type PollOnceResult,
 	pollOnce,
 	type QuotaMonitorAlert,
+	type QuotaMonitorDeps,
+	type ReconcileActiveResult,
 } from "./quota-monitor.js";
+import type { DeliveryReport } from "./quota-monitor-alert.js";
 import {
 	defaultQuotaMonitorConfigPath,
 	loadQuotaMonitorConfig,
@@ -80,9 +94,14 @@ export interface QuotaMonitorRuntimeOptions {
 		name: string,
 		activeName: string | null,
 	) => Promise<FreshnessVerdict>;
+	recordObservation?: (
+		name: string,
+		observation: AccountQuotaObservation,
+		expectedGeneration: number,
+	) => Promise<RecordObservationResult>;
 	switchAccount?: (input: SwitchInput) => Promise<SwitchResult>;
 	tmux?: TmuxReviveDeps;
-	alert: (alert: QuotaMonitorAlert) => Promise<void>;
+	alert: (alert: QuotaMonitorAlert) => Promise<DeliveryReport>;
 	log?: (message: string) => void;
 }
 
@@ -127,8 +146,29 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 } {
 	const now = opts.now ?? Date.now;
 	const paths = resolvePaths(opts.paths);
-	const withAccountsLock = <T>(fn: () => Promise<T>) =>
-		withMkdirLock(paths.lockPath, fn);
+	const runAccountsLock = <T>(fn: () => Promise<T>) =>
+		acquireAccountsLock(paths.lockPath, async () => fn(), {
+			reconcile: (lease) =>
+				reconcileTransitionJournal(lease, {
+					binPath: claudeProfileBinPath(),
+					journalPath:
+						process.env.FLYWHEEL_CLAUDE_TRANSITION_JOURNAL ??
+						join(dirname(paths.storePath), "claude-account-transition.json"),
+				}),
+		});
+	class AccountLockInterrupted extends Error {
+		constructor(
+			public readonly result: Exclude<LockRunResult<never>, { kind: "ok" }>,
+		) {
+			super(`account lock interrupted: ${result.kind}`);
+			this.name = "AccountLockInterrupted";
+		}
+	}
+	const withAccountsLock = async <T>(fn: () => Promise<T>): Promise<T> => {
+		const result = await runAccountsLock(fn);
+		if (result.kind === "ok") return result.value;
+		throw new AccountLockInterrupted(result);
+	};
 	const readKeychain =
 		opts.readKeychainCredential ?? (() => readKeychainMonitorCredential());
 	const fetchUsage = opts.fetchUsage ?? ((token) => fetchAccountUsage(token));
@@ -145,27 +185,77 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 		((input: SwitchInput) =>
 			defaultSwitchAccount(
 				input,
-				makeClaudeProfileSwitchDeps({ binPath: claudeProfileBinPath() }),
+				makeClaudeProfileSwitchDeps({
+					binPath: claudeProfileBinPath(),
+					quotaPreverified: input.quotaPreverified === true,
+				}),
 			));
 	const tmux =
 		opts.tmux ??
 		makeTmuxReviveDeps({
 			socket: process.env.FLYWHEEL_QUOTA_TMUX_SOCKET ?? "",
 		} satisfies TmuxReviveOptions);
+	let projectionFailureStreak = 0;
+	const recordObservation = async (
+		name: string,
+		observation: AccountQuotaObservation,
+		expectedGeneration: number,
+	): Promise<RecordObservationResult> => {
+		let projection: RecordObservationResult;
+		try {
+			projection = opts.recordObservation
+				? await opts.recordObservation(name, observation, expectedGeneration)
+				: await withAccountsLock(async () =>
+						recordObservationInStore(paths.storePath, name, observation, {
+							expectedGeneration,
+						}),
+					);
+		} catch (error) {
+			if (error instanceof AccountLockInterrupted) throw error;
+			projection = "write_failed";
+		}
+
+		if (projection === "write_failed" || projection === "invalid_store") {
+			projectionFailureStreak += 1;
+			if (projectionFailureStreak >= 3) {
+				try {
+					await opts.alert({
+						kind: "quota_monitor_down",
+						severity: "severe",
+						title: "Claude quota store projection is failing",
+						body: `account=${name}; consecutive_projection_failures=${projectionFailureStreak}; result=${projection}`,
+						signature: `quota-monitor-store-projection-${new Date(now()).toISOString().slice(0, 10)}`,
+					});
+				} catch {
+					// Projection failures must never stop usage polling or switching.
+				}
+			}
+		} else {
+			projectionFailureStreak = 0;
+		}
+		return projection;
+	};
 
 	return {
 		async tick(): Promise<PollOnceResult> {
 			const config = loadQuotaMonitorConfig(paths.configPath);
-			const storeGeneration = await withAccountsLock(
+			const initialLock = await runAccountsLock(
 				async () => readStore(paths.storePath).generation,
 			);
+			const storeGeneration =
+				initialLock.kind === "ok"
+					? initialLock.value
+					: initialLock.kind === "reconciled"
+						? initialLock.generation
+						: 0;
 			const loadedState = loadQuotaMonitorState(paths.statePath, {
 				nowMs: now(),
 				storeGeneration,
 			});
 			if (
-				loadedState.recovery === "corrupt" ||
-				loadedState.recovery === "generation_advanced"
+				initialLock.kind !== "blocked" &&
+				(loadedState.recovery === "corrupt" ||
+					loadedState.recovery === "generation_advanced")
 			) {
 				await opts.alert({
 					kind: "quota_monitor_down",
@@ -177,10 +267,60 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 				writeQuotaMonitorState(loadedState.state, paths.statePath);
 			}
 
-			return pollOnce({
+			const lockInterruptionResult = (
+				result: Exclude<LockRunResult<never>, { kind: "ok" }>,
+			): ReconcileActiveResult =>
+				result.kind === "reconciled"
+					? {
+							result: "synced" as const,
+							generation: result.generation,
+						}
+					: {
+							result:
+								result.reason.kind === "conflict"
+									? ("transition_journal_conflict" as const)
+									: ("transition_journal_writer_alive" as const),
+							generation: null,
+						};
+			const baseDeps = {
 				now,
 				config,
 				state: loadedState.state,
+				reconcileActive: async (): Promise<ReconcileActiveResult> => {
+					if (initialLock.kind !== "ok") {
+						return lockInterruptionResult(initialLock);
+					}
+					try {
+						const result = await runAccountsLock<ReconcileActiveResult>(
+							async () => {
+								const activeName = readActiveProfileName(paths.poolDir);
+								if (activeName === null) {
+									return { result: "invalid_name", generation: null };
+								}
+								if (readStoreStrict(paths.storePath) === null) {
+									return { result: "invalid_store", generation: null };
+								}
+								const result = syncActiveAccountInStore(
+									paths.storePath,
+									activeName,
+								);
+								if (result !== "synced" && result !== "noop") {
+									return { result, generation: null };
+								}
+								const authoritative = readStoreStrict(paths.storePath);
+								if (authoritative === null) {
+									return { result: "invalid_store", generation: null };
+								}
+								return { result, generation: authoritative.generation };
+							},
+						);
+						return result.kind === "ok"
+							? result.value
+							: lockInterruptionResult(result);
+					} catch {
+						return { result: "write_failed", generation: null };
+					}
+				},
 				withAccountsLock,
 				readSnapshot: async () => ({
 					activeName: readActiveProfileName(paths.poolDir),
@@ -196,6 +336,7 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 					readPoolMonitorCredential(paths.poolDir, name),
 				verifyCandidate,
 				fetchUsage,
+				recordObservation,
 				writeStatuslineCache: async (raw) =>
 					writeStatuslineCache(raw, paths.cachePath),
 				persistState: async (state) =>
@@ -210,11 +351,22 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 						...tmux,
 						persistState: async (next) =>
 							writeQuotaMonitorState(next, paths.statePath),
-						alert: opts.alert,
+						alert: async (alert) => {
+							await opts.alert(alert);
+						},
 					}),
 				alert: opts.alert,
 				log: opts.log ?? (() => undefined),
-			});
+			} satisfies QuotaMonitorDeps;
+			try {
+				return await pollOnce(baseDeps);
+			} catch (error) {
+				if (!(error instanceof AccountLockInterrupted)) throw error;
+				return pollOnce({
+					...baseDeps,
+					reconcileActive: async () => lockInterruptionResult(error.result),
+				});
+			}
 		},
 	};
 }

@@ -2,13 +2,18 @@
  * FLY-871 R1/C2 — freshness CLI exit-code mapping (the bash contract).
  *   refreshed → 0 · stale → 30 · error/active-refusal/bad-usage → 31
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActiveAccountRefreshRefused } from "../account-heal/freshness.js";
 import { runFreshnessCli } from "../account-heal/freshness-cli.js";
 
 const silent = { log: () => {} };
 
 describe("runFreshnessCli exit codes", () => {
+	const savedLease = process.env.FLYWHEEL_LEASE_PROOF;
+	afterEach(() => {
+		if (savedLease === undefined) delete process.env.FLYWHEEL_LEASE_PROOF;
+		else process.env.FLYWHEEL_LEASE_PROOF = savedLease;
+	});
 	it("refreshed → 0", async () => {
 		const verify = vi.fn(
 			async () => ({ fresh: "refreshed", expiresAt: 1 }) as const,
@@ -71,5 +76,16 @@ describe("runFreshnessCli exit codes", () => {
 		expect(
 			await runFreshnessCli(["verify", "--active", "x"], { log: silent.log }),
 		).toBe(31);
+	});
+
+	it("invalid lease proof → dedicated exit 39, never freshness-unavailable 31", async () => {
+		process.env.FLYWHEEL_LEASE_PROOF = "not-json";
+		const verify = vi.fn();
+		const code = await runFreshnessCli(
+			["verify", "--name", "school", "--active", "personal", "--pool", "/p"],
+			{ verify, log: silent.log },
+		);
+		expect(code).toBe(39);
+		expect(verify).not.toHaveBeenCalled();
 	});
 });

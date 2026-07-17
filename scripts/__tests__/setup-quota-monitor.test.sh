@@ -44,6 +44,9 @@ if [[ "${1:-}" == "bootstrap" ]]; then
   printf '{"pid":%d,"uid":%d,"processStartTime":"fixture"}\n' "$PPID" "$(id -u)" > "$FLYWHEEL_QUOTA_PIDFILE"
   jq -n --argjson now "$now_ms" '{version:1,lastPollAt:$now,lastSuccessfulUsageAt:$now,errorStreak:0,backoffUntilMs:0,tier:"base",lastCandidateSweepAt:null,lastSwitchAt:null,observedGeneration:1,reviveEpoch:null}' > "$FLYWHEEL_QUOTA_STATE_PATH"
 fi
+if [[ "${1:-}" == "bootout" && "${FAKE_OLD_PID:-}" =~ ^[1-9][0-9]*$ ]]; then
+  kill "$FAKE_OLD_PID" 2>/dev/null || true
+fi
 EOF
 cat > "$ROOT/bin/restart" <<'EOF'
 #!/usr/bin/env bash
@@ -68,6 +71,7 @@ run_setup() { # <fixture> [args...]
     FLYWHEEL_QUOTA_MONITOR_CONFIG="$home/.flywheel/quota-monitor.json" \
     FLYWHEEL_QUOTA_PIDFILE="$home/.flywheel/quota-monitor.pid" \
     FLYWHEEL_QUOTA_STATE_PATH="$home/.flywheel/quota-monitor-state.json" \
+    FLYWHEEL_QUOTA_LOG_PATH="$home/.flywheel/logs/quota-monitor.log" \
     FLYWHEEL_QUOTA_LAUNCHCTL_BIN="$ROOT/bin/launchctl" \
     FLYWHEEL_QUOTA_RESTART_BIN="$ROOT/bin/restart" \
     FLYWHEEL_LEAD_ALERT_BIN="$ROOT/bin/alert" \
@@ -100,6 +104,87 @@ if run_setup default >/dev/null 2>&1; then
   fi
 else
   fail "default install" "setup exited non-zero"
+fi
+
+old_state_json() { # generation
+  jq -nc --argjson generation "$1" '{version:1,lastPollAt:100,lastSuccessfulUsageAt:100,errorStreak:0,backoffUntilMs:0,tier:"base",lastCandidateSweepAt:null,lastSwitchAt:null,observedGeneration:$generation,reviveEpoch:null}'
+}
+
+make_fixture rollback_valid
+old_state_json 1 > "$ROOT/rollback_valid/home/.flywheel/quota-monitor-state.json"
+valid_before="$(cat "$ROOT/rollback_valid/home/.flywheel/quota-monitor-state.json")"
+if run_setup rollback_valid --rollback-state >/dev/null 2>&1 \
+  && [[ "$(cat "$ROOT/rollback_valid/home/.flywheel/quota-monitor-state.json")" == "$valid_before" ]] \
+  && [[ ! -e "$ROOT/rollback_valid/launchctl.log" ]]; then
+  pass "rollback-state leaves a fully old-loader-compatible state byte-identical"
+else
+  fail "rollback valid no-op" "state=$(cat "$ROOT/rollback_valid/home/.flywheel/quota-monitor-state.json" 2>/dev/null)"
+fi
+
+make_fixture rollback_strip
+old_state_json 1 | jq '. + {blockedEpisode:null,pendingSwitchFailure:null}' \
+  > "$ROOT/rollback_strip/home/.flywheel/quota-monitor-state.json"
+if run_setup rollback_strip --rollback-state >/dev/null 2>&1 \
+  && jq -e '(has("blockedEpisode")|not) and (has("pendingSwitchFailure")|not) and .observedGeneration == 1' \
+    "$ROOT/rollback_strip/home/.flywheel/quota-monitor-state.json" >/dev/null \
+  && [[ "$(stat -f '%Lp' "$ROOT/rollback_strip/home/.flywheel/quota-monitor-state.json" 2>/dev/null || stat -c '%a' "$ROOT/rollback_strip/home/.flywheel/quota-monitor-state.json")" == "600" ]]; then
+  pass "rollback-state strips new fields, revalidates, and writes mode 0600"
+else
+  fail "rollback strip" "state=$(cat "$ROOT/rollback_strip/home/.flywheel/quota-monitor-state.json" 2>/dev/null)"
+fi
+
+for shape in missing corrupt ahead; do
+  make_fixture "rollback_$shape"
+done
+rm -f "$ROOT/rollback_missing/home/.flywheel/quota-monitor-state.json"
+printf '{broken\n' > "$ROOT/rollback_corrupt/home/.flywheel/quota-monitor-state.json"
+old_state_json 2 > "$ROOT/rollback_ahead/home/.flywheel/quota-monitor-state.json"
+rollback_bad_ok=1
+for shape in missing corrupt ahead; do
+  run_setup "rollback_$shape" --rollback-state >/dev/null 2>&1 || rollback_bad_ok=0
+  state="$ROOT/rollback_$shape/home/.flywheel/quota-monitor-state.json"
+  jq -e '.observedGeneration == 1 and (.lastSwitchAt|type == "number") and .reviveEpoch == null and (keys|index("blockedEpisode")|not)' "$state" >/dev/null 2>&1 \
+    || rollback_bad_ok=0
+done
+if (( rollback_bad_ok == 1 )); then
+  pass "rollback-state materializes conservative old state for missing/corrupt/ahead inputs"
+else
+  fail "rollback conservative materialization" "one or more invalid shapes failed"
+fi
+
+make_fixture rollback_symlink
+printf 'do-not-touch\n' > "$ROOT/rollback_symlink/state-target"
+ln -s "$ROOT/rollback_symlink/state-target" "$ROOT/rollback_symlink/home/.flywheel/quota-monitor-state.json"
+if run_setup rollback_symlink --rollback-state >/dev/null 2>&1; then
+  fail "rollback symlink refusal" "command exited zero"
+elif [[ "$(cat "$ROOT/rollback_symlink/state-target")" == "do-not-touch" ]]; then
+  pass "rollback-state refuses symlink state without touching its target"
+else
+  fail "rollback symlink refusal" "target mutated"
+fi
+
+make_fixture rotation
+rotation_log="$ROOT/rotation/home/.flywheel/logs/quota-monitor.log"
+mkdir -p "$(dirname "$rotation_log")"
+(
+  while true; do printf 'old-writer\n' >> "$rotation_log"; sleep 0.02; done
+) &
+old_writer=$!
+printf '{"pid":%d,"uid":%d,"processStartTime":"fixture"}\n' "$old_writer" "$(id -u)" \
+  > "$ROOT/rotation/home/.flywheel/quota-monitor.pid"
+if FAKE_OLD_PID="$old_writer" run_setup rotation >/dev/null 2>&1; then
+  size_before="$(wc -c < "$rotation_log.1" | tr -d ' ')"
+  sleep 0.1
+  size_after="$(wc -c < "$rotation_log.1" | tr -d ' ')"
+  if ! kill -0 "$old_writer" 2>/dev/null && [[ "$size_before" == "$size_after" ]] \
+    && grep -q 'old-writer' "$rotation_log.1"; then
+    pass "setup stops the old writer before rotating one durable log generation"
+  else
+    fail "stop-before-rotate ordering" "alive=$(kill -0 "$old_writer" 2>/dev/null && echo yes || echo no) sizes=$size_before/$size_after"
+  fi
+else
+  kill "$old_writer" 2>/dev/null || true
+  fail "rotation setup" "setup exited non-zero"
 fi
 
 make_fixture monitor

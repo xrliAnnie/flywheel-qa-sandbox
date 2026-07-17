@@ -425,6 +425,7 @@ import {
 	quotaDaemonCutoverEnabled,
 	resolveQuotaDaemonBridgeMode,
 } from "./quota-daemon-cutover.js";
+import { shouldWakeQuotaDaemon, wakeQuotaDaemon } from "./quota-daemon-wake.js";
 import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
 import { createRepoMutationLock } from "./repo-mutation-lock.js";
 import {
@@ -8725,12 +8726,21 @@ export async function startBridge(
 	// issue-progress alert with a bound [FLY-XX] thread is delivered THERE via
 	// the issue-thread infra leg; any resolution/delivery failure fail-safes back
 	// to the raw sink (ticket queue) — never silent, never recursive.
-	const routedAlertSink = buildInfraAlertRouting({
+	const routedAlertSinkCore = buildInfraAlertRouting({
 		store,
 		projects,
 		globalBotToken: config.discordBotToken,
 		rawSink: alertSink,
 	});
+	const routedAlertSink: {
+		alert: (p: AlertPayload) => Promise<AlertResult>;
+	} = {
+		alert: async (payload) => {
+			const delivered = await routedAlertSinkCore.alert(payload);
+			if (shouldWakeQuotaDaemon(payload)) wakeQuotaDaemon();
+			return delivered;
+		},
+	};
 	routedAlertSinkHolder.current = routedAlertSink;
 
 	// FLY-1204: now that the routed alert sink exists, back the late-bound

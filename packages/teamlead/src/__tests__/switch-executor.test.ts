@@ -13,10 +13,12 @@ import {
 	readStore,
 	writeStore,
 } from "../account-heal/account-store.js";
+import type { LeaseProof } from "../account-heal/mkdir-lock.js";
 import {
 	FreshnessUnavailableError,
 	type SwitchDeps,
 	switchAccount,
+	TargetQuotaExhaustedError,
 	TargetStaleError,
 } from "../account-heal/switch-executor.js";
 
@@ -24,6 +26,11 @@ const NOW = new Date("2026-07-03T20:00:00Z");
 
 let dir: string;
 let storePath: string;
+const lease: LeaseProof = {
+	lockPath: "/tmp/fly1252-accounts.lock",
+	markerPath: "/tmp/fly1252-accounts.lock/holder.1.token",
+	ownershipToken: "token",
+};
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "fly696-switch-"));
 	storePath = join(dir, "claude-accounts.json");
@@ -38,9 +45,14 @@ function seed(store: AccountStore): void {
 function deps(over: Partial<SwitchDeps> = {}): SwitchDeps {
 	return {
 		storePath,
-		withLock: async (_lock, fn) => fn(),
+		withLock: async (lockPath, fn) => ({
+			kind: "ok",
+			value: await fn({ ...lease, lockPath }),
+		}),
+		renewLock: vi.fn(() => true),
 		applyProfile: vi.fn(async () => {}),
 		readActiveProfile: async () => readStore(storePath).activeAccount,
+		validateLease: vi.fn(() => true),
 		...over,
 	};
 }
@@ -70,12 +82,20 @@ describe("switchAccount", () => {
 			from: "personal",
 			to: "school",
 		});
-		expect(d.applyProfile).toHaveBeenCalledWith("school");
+		expect(d.applyProfile).toHaveBeenCalledWith(
+			"school",
+			expect.objectContaining({
+				lease: expect.objectContaining({ lockPath: expect.any(String) }),
+			}),
+		);
 		const after = readStore(storePath);
 		expect(after.activeAccount).toBe("school");
 		expect(after.generation).toBe(2);
 		expect(
 			after.accounts.find((a) => a.name === "personal")?.quotaExhaustedUntil,
+		).toBe("2026-07-04T02:30:00.000Z");
+		expect(
+			after.accounts.find((a) => a.name === "personal")?.switchCooldownUntil,
 		).toBe("2026-07-04T02:30:00.000Z");
 	});
 
@@ -177,9 +197,10 @@ describe("switchAccount", () => {
 				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
 			],
 		});
-		const withLock = vi.fn(async (_lock: string, fn: () => Promise<unknown>) =>
-			fn(),
-		);
+		const withLock: SwitchDeps["withLock"] = vi.fn(async (lockPath, fn) => ({
+			kind: "ok",
+			value: await fn({ ...lease, lockPath }),
+		}));
 		await switchAccount(input, deps({ withLock }));
 		expect(withLock).toHaveBeenCalledTimes(1);
 	});
@@ -234,8 +255,16 @@ describe("switchAccount", () => {
 		const res = await switchAccount(input, deps({ applyProfile }));
 		expect(res).toMatchObject({ outcome: "switched", to: "school" });
 		// business was tried, marked stale, then school succeeded
-		expect(applyProfile).toHaveBeenNthCalledWith(1, "business");
-		expect(applyProfile).toHaveBeenNthCalledWith(2, "school");
+		expect(applyProfile).toHaveBeenNthCalledWith(
+			1,
+			"business",
+			expect.any(Object),
+		);
+		expect(applyProfile).toHaveBeenNthCalledWith(
+			2,
+			"school",
+			expect.any(Object),
+		);
 		const after = readStore(storePath);
 		expect(after.accounts.find((a) => a.name === "business")?.authExpired).toBe(
 			true,
@@ -381,7 +410,7 @@ describe("switchAccount", () => {
 		);
 		expect(res).toMatchObject({ outcome: "switched", to: "school" });
 		expect(applyProfile).toHaveBeenCalledTimes(1);
-		expect(applyProfile).toHaveBeenCalledWith("school");
+		expect(applyProfile).toHaveBeenCalledWith("school", expect.any(Object));
 	});
 
 	it("a stale first preferred target falls through only to the next verified target", async () => {
@@ -404,5 +433,266 @@ describe("switchAccount", () => {
 			"school",
 			"shopping",
 		]);
+	});
+
+	it("quota-exhausted target reloads the guard-updated store and tries the next candidate", async () => {
+		seed(threeAccountStore());
+		const applyProfile = vi.fn(async (name: string) => {
+			if (name !== "business") return;
+			const latest = readStore(storePath);
+			writeStore(
+				{
+					...latest,
+					accounts: latest.accounts.map((entry) =>
+						entry.name === name
+							? {
+									...entry,
+									quotaExhaustedUntil: "2026-07-04T03:00:00Z",
+									lastObservedAt: NOW.toISOString(),
+								}
+							: entry,
+					),
+				},
+				storePath,
+			);
+			throw new TargetQuotaExhaustedError(name);
+		});
+
+		const result = await switchAccount(input, deps({ applyProfile }));
+
+		expect(result).toMatchObject({ outcome: "switched", to: "school" });
+		expect(applyProfile.mock.calls.map(([name]) => name)).toEqual([
+			"business",
+			"school",
+		]);
+	});
+
+	it("all quota-exhausted candidates return target_quota_exhausted", async () => {
+		seed(threeAccountStore());
+		const applyProfile = vi.fn(async (name: string) => {
+			const latest = readStore(storePath);
+			writeStore(
+				{
+					...latest,
+					accounts: latest.accounts.map((entry) =>
+						entry.name === name
+							? {
+									...entry,
+									quotaExhaustedUntil: "2026-07-04T03:00:00Z",
+								}
+							: entry,
+					),
+				},
+				storePath,
+			);
+			throw new TargetQuotaExhaustedError(name);
+		});
+
+		const result = await switchAccount(input, deps({ applyProfile }));
+
+		expect(result).toMatchObject({
+			outcome: "no_account",
+			reasonCode: "target_quota_exhausted",
+		});
+		expect(applyProfile).toHaveBeenCalledTimes(2);
+	});
+
+	it("renews the actual resolved lock path before every candidate attempt", async () => {
+		seed(threeAccountStore());
+		const customLock = join(dir, "custom.lock");
+		const renewLock = vi.fn(() => true);
+
+		await switchAccount(input, deps({ lockPath: customLock, renewLock }));
+
+		expect(renewLock).toHaveBeenCalledWith(customLock);
+		// Candidate entry + parent-side post-settle fence before commit.
+		expect(renewLock).toHaveBeenCalledTimes(2);
+	});
+
+	it.each([
+		{ label: "returns false", renewLock: () => false },
+		{
+			label: "throws",
+			renewLock: () => {
+				throw new Error("holder replaced");
+			},
+		},
+	])(
+		"stops before any apply when lock renewal $label",
+		async ({ renewLock }) => {
+			seed(threeAccountStore());
+			const applyProfile = vi.fn(async () => {});
+
+			const result = await switchAccount(
+				input,
+				deps({ applyProfile, renewLock }),
+			);
+
+			expect(result).toMatchObject({
+				outcome: "failed",
+				reasonCode: "lock_lease_lost",
+			});
+			expect(applyProfile).not.toHaveBeenCalled();
+			expect(readStore(storePath).generation).toBe(1);
+		},
+	);
+
+	it("a mid-loop renewal loss stops all later candidates and shared writes", async () => {
+		seed(threeAccountStore());
+		const renewLock = vi
+			.fn<SwitchDeps["renewLock"]>()
+			.mockReturnValueOnce(true)
+			.mockReturnValueOnce(false);
+		const applyProfile = vi.fn(async (name: string) => {
+			if (name === "business") throw new TargetStaleError(name);
+		});
+
+		const result = await switchAccount(
+			input,
+			deps({ applyProfile, renewLock }),
+		);
+
+		expect(result).toMatchObject({
+			outcome: "failed",
+			reasonCode: "lock_lease_lost",
+		});
+		expect(applyProfile.mock.calls.map(([name]) => name)).toEqual(["business"]);
+		expect(readStore(storePath).activeAccount).toBe("personal");
+	});
+
+	it("never applies a preferred target with an exhausted fact newer than verification", async () => {
+		const s = threeAccountStore();
+		s.accounts.find((entry) => entry.name === "school")!.quotaExhaustedUntil =
+			"2026-07-04T03:00:00Z";
+		s.accounts.find((entry) => entry.name === "school")!.lastObservedAt =
+			"2026-07-03T20:00:01Z";
+		seed(s);
+		const applyProfile = vi.fn(async () => {});
+
+		const result = await switchAccount(
+			{
+				...input,
+				preferredOrder: ["school", "business"],
+				verifiedAt: "2026-07-03T20:00:00Z",
+			},
+			deps({ applyProfile }),
+		);
+
+		expect(result).toMatchObject({ outcome: "switched", to: "business" });
+		expect(applyProfile).toHaveBeenCalledWith("business", expect.any(Object));
+		expect(applyProfile.mock.calls.some(([name]) => name === "school")).toBe(
+			false,
+		);
+	});
+
+	it("maps completed journal reconciliation to noop_reconciled without running the stale callback", async () => {
+		seed(threeAccountStore());
+		const applyProfile = vi.fn(async () => {});
+		const result = await switchAccount(
+			input,
+			deps({
+				applyProfile,
+				withLock: async () => ({
+					kind: "reconciled",
+					activeAccount: "school",
+					generation: 8,
+				}),
+			}),
+		);
+
+		expect(result).toEqual({
+			outcome: "noop_reconciled",
+			activeAccount: "school",
+			generation: 8,
+		});
+		expect(applyProfile).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{
+			reason: { kind: "writer_alive" } as const,
+			reasonCode: "transition_journal_writer_alive",
+		},
+		{
+			reason: {
+				kind: "conflict",
+				detail: "digest_mismatch_both",
+			} as const,
+			reasonCode: "transition_journal_conflict",
+		},
+	])(
+		"maps a blocked journal ($reason.kind) without applying",
+		async ({ reason, reasonCode }) => {
+			seed(threeAccountStore());
+			const applyProfile = vi.fn(async () => {});
+			const result = await switchAccount(
+				input,
+				deps({
+					applyProfile,
+					withLock: async () => ({ kind: "blocked", reason }),
+				}),
+			);
+			expect(result).toMatchObject({ outcome: "failed", reasonCode });
+			expect(applyProfile).not.toHaveBeenCalled();
+		},
+	);
+
+	it("fails loudly when an injected lock returns an untagged callback result", async () => {
+		seed(threeAccountStore());
+		const offContractLock = (async (lockPath, fn) =>
+			fn({ ...lease, lockPath })) as unknown as SwitchDeps["withLock"];
+
+		await expect(
+			switchAccount(input, deps({ withLock: offContractLock })),
+		).rejects.toThrow(/invalid account lock result/i);
+	});
+
+	it("aborts the mutation process group when heartbeat renewal loses the lease", async () => {
+		seed(threeAccountStore());
+		const renewLock = vi
+			.fn<SwitchDeps["renewLock"]>()
+			.mockReturnValueOnce(true)
+			.mockReturnValue(false);
+		let aborted = false;
+		const applyProfile: SwitchDeps["applyProfile"] = vi.fn(
+			async (_name, context) =>
+				new Promise<void>((_resolve, reject) => {
+					context.signal.addEventListener("abort", () => {
+						aborted = true;
+						reject(context.signal.reason);
+					});
+				}),
+		);
+
+		const result = await switchAccount(
+			input,
+			deps({ applyProfile, renewLock, heartbeatMs: 1 }),
+		);
+
+		expect(result).toMatchObject({
+			outcome: "failed",
+			reasonCode: "lock_lease_lost",
+		});
+		expect(aborted).toBe(true);
+		expect(readStore(storePath).generation).toBe(1);
+	});
+
+	it("re-proofs after child settle and refuses the parent commit on ownership change", async () => {
+		seed(threeAccountStore());
+		const validateLease = vi
+			.fn<(proof: LeaseProof) => boolean>()
+			.mockReturnValueOnce(true)
+			.mockReturnValue(false);
+		const result = await switchAccount(
+			input,
+			deps({ validateLease, heartbeatMs: 60_000 }),
+		);
+
+		expect(result).toMatchObject({
+			outcome: "failed",
+			reasonCode: "lock_lease_lost",
+		});
+		expect(readStore(storePath).generation).toBe(1);
+		expect(readStore(storePath).activeAccount).toBe("personal");
 	});
 });

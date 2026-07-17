@@ -50,6 +50,32 @@ function populatedState(): QuotaMonitorState {
 				"fleet:%12:4321": { attempts: 2, lastAttemptAt: NOW - 30_000 },
 			},
 		},
+		blockedEpisode: {
+			scope: "5h",
+			startedAt: "2026-07-14T19:00:00.000Z",
+			lastConfirmedAlertAt: null,
+			alertCount: 0,
+			blockedRound: 1,
+			recoveryRound: 0,
+			activeDelivery: {
+				kind: "blocked",
+				round: 1,
+				attempts: 2,
+				lastAttemptAt: "2026-07-14T19:30:00.000Z",
+			},
+		},
+		pendingSwitchFailure: {
+			reasonCode: "lock_lease_lost",
+			degraded: true,
+			startedAt: "2026-07-14T19:10:00.000Z",
+			lastConfirmedAlertAt: null,
+			alertCount: 0,
+			activeDelivery: {
+				round: 0,
+				attempts: 1,
+				lastAttemptAt: "2026-07-14T19:40:00.000Z",
+			},
+		},
 	};
 }
 
@@ -76,6 +102,57 @@ describe("quota monitor persistent state", () => {
 		expect(statSync(path).mode & 0o777).toBe(0o600);
 		expect(readdirSync(dir)).toEqual(["quota-monitor-state.json"]);
 		expect(readFileSync(path, "utf8").toLowerCase()).not.toContain("token");
+	});
+
+	it("loads legacy state without episode fields as empty episodes", () => {
+		const legacy = populatedState() as QuotaMonitorState &
+			Record<string, unknown>;
+		delete legacy.blockedEpisode;
+		delete legacy.pendingSwitchFailure;
+		writeFileSync(path, `${JSON.stringify(legacy)}\n`, { mode: 0o600 });
+
+		const loaded = loadQuotaMonitorState(path, {
+			nowMs: NOW,
+			storeGeneration: 7,
+		});
+
+		expect(loaded.recovery).toBeUndefined();
+		expect(loaded.state.blockedEpisode).toBeNull();
+		expect(loaded.state.pendingSwitchFailure).toBeNull();
+	});
+
+	it.each([
+		[
+			"blocked delivery round",
+			() => {
+				const state = populatedState();
+				if (state.blockedEpisode?.activeDelivery) {
+					state.blockedEpisode.activeDelivery.round = 2;
+				}
+				return state;
+			},
+		],
+		[
+			"switch-failure delivery round",
+			() => {
+				const state = populatedState();
+				if (state.pendingSwitchFailure?.activeDelivery) {
+					state.pendingSwitchFailure.activeDelivery.round = 1;
+				}
+				return state;
+			},
+		],
+	] as const)("rejects a mismatched %s conservatively", (_label, makeState) => {
+		writeFileSync(path, `${JSON.stringify(makeState())}\n`, { mode: 0o600 });
+
+		const loaded = loadQuotaMonitorState(path, {
+			nowMs: NOW,
+			storeGeneration: 7,
+		});
+
+		expect(loaded.recovery).toBe("corrupt");
+		expect(loaded.state.blockedEpisode).toBeNull();
+		expect(loaded.state.pendingSwitchFailure).toBeNull();
 	});
 
 	it.each([
@@ -114,6 +191,8 @@ describe("quota monitor persistent state", () => {
 			observedGeneration: 8,
 			lastSwitchAt: NOW,
 			reviveEpoch: null,
+			blockedEpisode: null,
+			pendingSwitchFailure: null,
 		});
 		expect(loaded.state.backoffUntilMs).toBe(NOW + 300_000);
 	});

@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	type StrictDeliveryResult,
+	type DeliveryReport,
 	sendQuotaMonitorAlert,
 } from "../account-heal/quota-monitor-alert.js";
 
@@ -12,10 +12,26 @@ const alert = {
 	signature: "quota-monitor-down-2026-07-14",
 };
 
+beforeEach(() => {
+	delete process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER;
+	delete process.env.FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID;
+	delete process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID;
+});
+
+afterEach(() => {
+	delete process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER;
+	delete process.env.FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID;
+	delete process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID;
+});
+
 describe("sendQuotaMonitorAlert", () => {
-	it.each(["sent", "queued_transient", "duplicate"] as StrictDeliveryResult[])(
-		"maps %s to a non-throwing accepted result",
-		async (delivery) => {
+	it.each([
+		["sent", { primary: "sent" }],
+		["queued_transient", { primary: "queued_transient" }],
+		["duplicate", { primary: "duplicate" }],
+	] as const)(
+		"returns a primary delivery report for %s",
+		async (delivery, expected) => {
 			const execFile = vi.fn(async () => ({
 				stdout: `${delivery}\n`,
 				stderr: "",
@@ -25,7 +41,7 @@ describe("sendQuotaMonitorAlert", () => {
 					binPath: "/repo/scripts/lead-alert.sh",
 					execFile,
 				}),
-			).resolves.toBe(delivery);
+			).resolves.toEqual(expected satisfies DeliveryReport);
 			expect(execFile).toHaveBeenCalledWith(
 				"/repo/scripts/lead-alert.sh",
 				[
@@ -50,14 +66,146 @@ describe("sendQuotaMonitorAlert", () => {
 		},
 	);
 
-	it.each(["dead_lettered", "config_error", "unexpected"])(
-		"fails loud for %s",
+	it.each(["queued_transient", "config_error", "dead_lettered"] as const)(
+		"uses strict stdout %s from a non-zero child exit",
 		async (delivery) => {
+			const error = Object.assign(new Error("redacted process failure"), {
+				stdout: `${delivery}\n`,
+				stderr: "must-not-surface",
+			});
 			await expect(
 				sendQuotaMonitorAlert(alert, {
-					execFile: async () => ({ stdout: delivery, stderr: "secret detail" }),
+					execFile: async () => Promise.reject(error),
 				}),
-			).rejects.toThrow(/strict delivery failed/i);
+			).resolves.toEqual({ primary: delivery });
 		},
 	);
+
+	it.each([
+		[
+			"spawn failure",
+			async () => Promise.reject(new Error("secret path")),
+			"process_error",
+		],
+		[
+			"empty stdout",
+			async () => ({ stdout: "", stderr: "secret" }),
+			"process_error",
+		],
+		[
+			"invalid stdout",
+			async () => ({ stdout: "surprise", stderr: "secret" }),
+			"invalid_result",
+		],
+	] as const)(
+		"normalizes %s without throwing",
+		async (_label, execFile, expected) => {
+			await expect(sendQuotaMonitorAlert(alert, { execFile })).resolves.toEqual(
+				{
+					primary: expected,
+				},
+			);
+		},
+	);
+
+	it("mentions and dual-routes severe kinds while preserving asymmetric results", async () => {
+		process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER = "123456789";
+		process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "111";
+		process.env.FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID = "222";
+		const execFile = vi
+			.fn()
+			.mockResolvedValueOnce({ stdout: "sent\n", stderr: "" })
+			.mockResolvedValueOnce({ stdout: "config_error\n", stderr: "" });
+
+		await expect(
+			sendQuotaMonitorAlert(
+				{
+					kind: "account_switch_degraded",
+					severity: "severe",
+					title: "Degraded switch",
+					body: "shopping->school",
+					signature: "degraded-1",
+				},
+				{ execFile },
+			),
+		).resolves.toEqual({ primary: "sent", secondary: "config_error" });
+		expect(execFile).toHaveBeenCalledTimes(2);
+		for (const call of execFile.mock.calls) {
+			expect(call[1]).toEqual(
+				expect.arrayContaining(["--mention-user", "123456789"]),
+			);
+		}
+		expect(execFile.mock.calls[1]?.[1]).toEqual(
+			expect.arrayContaining(["--signature", "degraded-1-core"]),
+		);
+		expect(execFile.mock.calls[1]?.[2]).toEqual(
+			expect.objectContaining({
+				env: expect.objectContaining({
+					FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "222",
+				}),
+			}),
+		);
+	});
+
+	it("deduplicates severe routing when the severe and unified channels match", async () => {
+		process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "111";
+		process.env.FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID = "111";
+		const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+
+		await sendQuotaMonitorAlert(
+			{
+				kind: "quota_no_target",
+				severity: "severe",
+				title: "No target",
+				body: "none",
+				signature: "none-1",
+			},
+			{ execFile },
+		);
+
+		expect(execFile).toHaveBeenCalledTimes(1);
+	});
+
+	it("escalates transition-journal conflicts with mention + severe dual route", async () => {
+		process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER = "123456789";
+		process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "111";
+		process.env.FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID = "222";
+		const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+
+		await sendQuotaMonitorAlert(
+			{
+				kind: "account_switch_failed",
+				severity: "severe",
+				title: "Switch failed",
+				body: "reason=transition_journal_conflict; degraded=false",
+				signature: "journal-conflict-1",
+			},
+			{ execFile },
+		);
+
+		expect(execFile).toHaveBeenCalledTimes(2);
+		for (const call of execFile.mock.calls) {
+			expect(call[1]).toEqual(
+				expect.arrayContaining(["--mention-user", "123456789"]),
+			);
+		}
+	});
+
+	it("does not mention informational recovery alerts", async () => {
+		process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER = "123456789";
+		const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+
+		await sendQuotaMonitorAlert(
+			{
+				kind: "quota_blocked_recovered",
+				severity: "info",
+				title: "Recovered",
+				body: "healthy",
+				signature: "recovered-1",
+			},
+			{ execFile },
+		);
+
+		expect(execFile.mock.calls[0]?.[1]).not.toContain("--mention-user");
+	});
 });

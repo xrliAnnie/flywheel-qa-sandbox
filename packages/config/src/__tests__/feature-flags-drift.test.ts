@@ -81,6 +81,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: claude account-state json path (FLY-696)",
 	FLYWHEEL_CLAUDE_ACCOUNTS_LOCK:
 		"plumbing: shared claude account switch lock path (FLY-1256 daemon reuses the FLY-696/852 lock)",
+	FLYWHEEL_CLAUDE_TRANSITION_JOURNAL:
+		"plumbing: crash-recoverable Claude Keychain transition journal path (FLY-1252)",
 	FLYWHEEL_CLAUDE_PROFILES_DIR:
 		"plumbing: claude profile pool directory (FLY-1256 daemon reuses the existing credential pool)",
 	FLYWHEEL_ACCOUNT_PENDING_PATH:
@@ -97,6 +99,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: machine Keychain item service selector (FLY-1256)",
 	FLYWHEEL_CLAUDE_LOCK_DELEGATED:
 		"internal contract: parent lock-holder pid passed to the profile script (FLY-852 anti-deadlock; validated against the live holder marker)",
+	FLYWHEEL_LEASE_PROOF:
+		"internal contract: non-secret account-lock ownership proof passed to delegated mutation helpers (FLY-1252)",
 	FLYWHEEL_CLAUDE_OAUTH_ENDPOINT:
 		"config value: OAuth token-refresh endpoint override for the freshness helper (FLY-871; enable-gate spike pins the exact contract without a code change)",
 	FLYWHEEL_CLAUDE_OAUTH_CLIENT_ID:
@@ -124,6 +128,10 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: external quota-monitor durable state path (FLY-1256)",
 	FLYWHEEL_QUOTA_API_BASE:
 		"config value: OAuth usage API base URL override (FLY-1256; local mock in QA)",
+	FLYWHEEL_QUOTA_ALERT_MENTION_USER:
+		"config value: Discord user id mentioned by actionable quota alerts (FLY-1252)",
+	FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID:
+		"config value: secondary Discord channel id for severe quota alerts (FLY-1252)",
 	// secrets / token env names
 	FLYWHEEL_INGEST_TOKEN: "secret: ingest token",
 	FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL:

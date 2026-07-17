@@ -82,7 +82,15 @@ describe("FLY-1256 shell alert rendering", () => {
 		expect(send("account_switched", "info")).not.toContain("🎫");
 	});
 
+	it("quota_blocked_recovered posts a root message without a ticket header", () => {
+		expect(send("quota_blocked_recovered", "recovered")).not.toContain("🎫");
+	});
+
 	it("non-informational quota alerts keep the normal ticket header", () => {
 		expect(send("quota_no_target", "actionable")).toContain("🎫");
+	});
+
+	it("quota guard bypass is allowlisted and keeps the actionable ticket header", () => {
+		expect(send("quota_guard_bypassed", "bypass-audit")).toContain("🎫");
 	});
 });

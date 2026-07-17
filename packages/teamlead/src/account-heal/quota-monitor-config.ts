@@ -11,6 +11,8 @@ export interface QuotaMonitorConfig {
 	minSwitchIntervalMinutes: number;
 	order: string[];
 	writeStatuslineCache: boolean;
+	degradedSwitch: boolean;
+	episodeRealertMinutes: number;
 }
 
 export const DEFAULT_QUOTA_MONITOR_CONFIG: QuotaMonitorConfig = {
@@ -22,6 +24,8 @@ export const DEFAULT_QUOTA_MONITOR_CONFIG: QuotaMonitorConfig = {
 	minSwitchIntervalMinutes: 15,
 	order: [],
 	writeStatuslineCache: true,
+	degradedSwitch: false,
+	episodeRealertMinutes: 30,
 };
 
 export type LoadedQuotaMonitorConfig = {
@@ -66,6 +70,8 @@ function boundedNumber(
 
 function parseConfig(value: unknown): QuotaMonitorConfig | null {
 	if (!isRecord(value)) return null;
+	const degradedSwitch = value.degradedSwitch ?? false;
+	const episodeRealertMinutes = value.episodeRealertMinutes ?? 30;
 	if (
 		!boundedNumber(value.trigger5hPct, 0, 100) ||
 		!boundedNumber(value.acceleratePct, 0, 100) ||
@@ -74,6 +80,8 @@ function parseConfig(value: unknown): QuotaMonitorConfig | null {
 		!boundedNumber(value.candidateSweepMinutes, Number.EPSILON, 10_080) ||
 		!boundedNumber(value.minSwitchIntervalMinutes, Number.EPSILON, 1_440) ||
 		typeof value.writeStatuslineCache !== "boolean" ||
+		typeof degradedSwitch !== "boolean" ||
+		!boundedNumber(episodeRealertMinutes, 5, 1_440) ||
 		!Array.isArray(value.order)
 	) {
 		return null;
@@ -103,6 +111,8 @@ function parseConfig(value: unknown): QuotaMonitorConfig | null {
 		minSwitchIntervalMinutes: value.minSwitchIntervalMinutes,
 		order: [...value.order],
 		writeStatuslineCache: value.writeStatuslineCache,
+		degradedSwitch,
+		episodeRealertMinutes,
 	};
 }
 

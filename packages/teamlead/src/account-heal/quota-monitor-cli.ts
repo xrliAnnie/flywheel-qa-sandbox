@@ -1,18 +1,12 @@
-import { execFileSync } from "node:child_process";
-import {
-	closeSync,
-	existsSync,
-	fsyncSync,
-	lstatSync,
-	mkdirSync,
-	openSync,
-	readFileSync,
-	unlinkSync,
-	writeSync,
-} from "node:fs";
+import { existsSync, lstatSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+	acquireSingletonPidfile,
+	resolveOwnProcessStartTime,
+	type SingletonPidfileDeps,
+} from "./pidfile.js";
 import { sendQuotaMonitorAlert } from "./quota-monitor-alert.js";
 import {
 	loadQuotaMonitorConfig,
@@ -21,161 +15,18 @@ import {
 import { makeQuotaMonitorRuntime } from "./quota-monitor-runtime.js";
 import type { QuotaMonitorState } from "./quota-monitor-state.js";
 
-interface PidfileRecord {
-	pid: number;
-	uid: number;
-	processStartTime: string;
-}
-
-export interface SingletonPidfileDeps {
-	pid?: number;
-	uid?: number;
-	processStartTime?: string;
-	isProcessAlive?: (pid: number) => boolean;
-	readProcessStartTime?: (pid: number) => string | null;
-}
-
-function processAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
-	}
-}
-
-function processStartTime(pid: number): string | null {
-	try {
-		const stdout = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
-			encoding: "utf8",
-			timeout: 2_000,
-		});
-		return stdout.trim() || null;
-	} catch {
-		return null;
-	}
-}
-
-export interface OwnProcessStartTimeDeps {
-	readStart?: (pid: number) => string | null;
-	nowMs?: () => number;
-	uptimeSeconds?: () => number;
-}
-
-/**
- * Resolve this process's singleton identity without making `ps` a hard runtime
- * dependency. The uptime fallback is used only for the process claiming a new
- * pidfile; peer validation still calls `ps` and therefore fails closed when a
- * live existing PID cannot be identified.
- */
-export function resolveOwnProcessStartTime(
-	deps: OwnProcessStartTimeDeps = {},
-): string {
-	const readStart = deps.readStart ?? processStartTime;
-	const observed = readStart(process.pid);
-	if (observed) return observed;
-	const nowMs = deps.nowMs ?? Date.now;
-	const uptimeSeconds = deps.uptimeSeconds ?? process.uptime;
-	const bootMs = Math.max(0, Math.floor(nowMs() - uptimeSeconds() * 1_000));
-	return `node-uptime:${bootMs}`;
-}
-
-function parsePidfile(raw: string): PidfileRecord | null {
-	try {
-		const value = JSON.parse(raw) as Partial<PidfileRecord>;
-		if (
-			!Number.isInteger(value.pid) ||
-			(value.pid as number) <= 0 ||
-			!Number.isInteger(value.uid) ||
-			(value.uid as number) < 0 ||
-			typeof value.processStartTime !== "string" ||
-			value.processStartTime.length === 0
-		) {
-			return null;
-		}
-		return value as PidfileRecord;
-	} catch {
-		return null;
-	}
-}
-
-function safeOwnedRegularFile(path: string, uid: number): boolean {
-	try {
-		const stat = lstatSync(path);
-		return stat.isFile() && !stat.isSymbolicLink() && stat.uid === uid;
-	} catch {
-		return false;
-	}
-}
-
-/** Atomically claim a pidfile and refuse ambiguous existing ownership. */
-export function acquireSingletonPidfile(
-	path: string,
-	deps: SingletonPidfileDeps = {},
-): { release: () => void } {
-	const pid = deps.pid ?? process.pid;
-	const uid = deps.uid ?? process.getuid?.() ?? -1;
-	const readStart = deps.readProcessStartTime ?? processStartTime;
-	const start = deps.processStartTime ?? readStart(pid);
-	const isAlive = deps.isProcessAlive ?? processAlive;
-	if (uid < 0 || !start) throw new Error("unsafe pidfile owner identity");
-	const record: PidfileRecord = { pid, uid, processStartTime: start };
-	mkdirSync(dirname(path), { recursive: true });
-
-	for (let attempt = 0; attempt < 2; attempt++) {
-		let fd: number;
-		try {
-			fd = openSync(path, "wx", 0o600);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-			if (!safeOwnedRegularFile(path, uid)) {
-				throw new Error(
-					"unsafe existing pidfile (not a regular same-owner file)",
-				);
-			}
-			const existing = parsePidfile(readFileSync(path, "utf8"));
-			if (existing === null || existing.uid !== uid) {
-				throw new Error("unsafe existing pidfile record");
-			}
-			if (isAlive(existing.pid)) {
-				const liveStart = readStart(existing.pid);
-				if (liveStart === existing.processStartTime) {
-					throw new Error(
-						`quota monitor already running (pid ${existing.pid})`,
-					);
-				}
-				throw new Error("unsafe pidfile: live PID start time does not match");
-			}
-			unlinkSync(path);
-			continue;
-		}
-		try {
-			writeSync(fd, `${JSON.stringify(record)}\n`);
-			fsyncSync(fd);
-		} finally {
-			closeSync(fd);
-		}
-		return {
-			release(): void {
-				if (!safeOwnedRegularFile(path, uid)) return;
-				let current: PidfileRecord | null = null;
-				try {
-					current = parsePidfile(readFileSync(path, "utf8"));
-				} catch {
-					return;
-				}
-				if (
-					current?.pid === record.pid &&
-					current.uid === record.uid &&
-					current.processStartTime === record.processStartTime
-				) {
-					unlinkSync(path);
-				}
-			},
-		};
-	}
-	throw new Error("unable to acquire quota monitor pidfile");
-}
+export type {
+	OwnProcessStartTimeDeps,
+	PidfileRecord,
+	SingletonPidfileDeps,
+} from "./pidfile.js";
+export {
+	acquireSingletonPidfile,
+	parsePidfile,
+	processStartTime,
+	resolveOwnProcessStartTime,
+	safeOwnedRegularFile,
+} from "./pidfile.js";
 
 export function computeNextDelay(
 	state: QuotaMonitorState,
@@ -222,12 +73,25 @@ export async function runQuotaMonitorLoop(
 }
 
 function structuredLog(level: "info" | "error", message: string): void {
+	let fields: Record<string, unknown> = { message };
+	try {
+		const parsed = JSON.parse(message) as unknown;
+		if (
+			typeof parsed === "object" &&
+			parsed !== null &&
+			!Array.isArray(parsed)
+		) {
+			fields = parsed as Record<string, unknown>;
+		}
+	} catch {
+		// Plain diagnostic messages remain under `message`.
+	}
 	process.stderr.write(
 		`${JSON.stringify({
 			ts: new Date().toISOString(),
 			component: "flywheel-quota-monitor",
 			level,
-			message,
+			...fields,
 		})}\n`,
 	);
 }
@@ -267,18 +131,57 @@ export function cleanupRunMarker(path: string, graceful: boolean): void {
 	if (graceful) removeOwnRegularFile(path);
 }
 
+export interface WakeCapabilityDeps {
+	pidfilePath: string;
+	handler: () => void;
+	on?: (signal: NodeJS.Signals, handler: () => void) => void;
+	off?: (signal: NodeJS.Signals, handler: () => void) => void;
+	acquire?: (
+		path: string,
+		deps: SingletonPidfileDeps,
+	) => { release: () => void };
+}
+
+/** Publish the pidfile capability strictly inside the signal-handler lifetime. */
+export function installWakeCapability(deps: WakeCapabilityDeps): () => void {
+	const on = deps.on ?? ((signal, handler) => process.on(signal, handler));
+	const off =
+		deps.off ?? ((signal, handler) => process.removeListener(signal, handler));
+	const acquire = deps.acquire ?? acquireSingletonPidfile;
+	on("SIGUSR1", deps.handler);
+	let singleton: { release: () => void };
+	try {
+		singleton = acquire(deps.pidfilePath, {
+			processStartTime: resolveOwnProcessStartTime(),
+			wakeProtocol: 1,
+		});
+	} catch (error) {
+		off("SIGUSR1", deps.handler);
+		throw error;
+	}
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		singleton.release();
+		off("SIGUSR1", deps.handler);
+	};
+}
+
 /** Production daemon entry. Signals interrupt the current timer, never a poll. */
 export async function main(): Promise<void> {
-	const singleton = acquireSingletonPidfile(defaultPidfilePath(), {
-		processStartTime: resolveOwnProcessStartTime(),
+	let wakeWaiter: (() => void) | null = null;
+	const wake = () => wakeWaiter?.();
+	const releaseWakeCapability = installWakeCapability({
+		pidfilePath: defaultPidfilePath(),
+		handler: wake,
 	});
 	const runtime = makeQuotaMonitorRuntime({
-		alert: (alert) => sendQuotaMonitorAlert(alert).then(() => undefined),
+		alert: (alert) => sendQuotaMonitorAlert(alert),
 		log: (message) => structuredLog("info", message),
 	});
 	let stopping = false;
 	let gracefulShutdown = false;
-	let wakeWaiter: (() => void) | null = null;
 	const stop = () => {
 		stopping = true;
 		gracefulShutdown = true;
@@ -310,7 +213,7 @@ export async function main(): Promise<void> {
 		process.removeListener("SIGTERM", stop);
 		process.removeListener("SIGINT", stop);
 		cleanupRunMarker(gracefulMarkerPath(), gracefulShutdown);
-		singleton.release();
+		releaseWakeCapability();
 	}
 }
 

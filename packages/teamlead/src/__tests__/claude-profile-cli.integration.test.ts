@@ -61,6 +61,7 @@ esac
 const ENV_KEYS = [
 	"FLYWHEEL_CLAUDE_PROFILES_DIR",
 	"FLYWHEEL_CLAUDE_ACCOUNTS_LOCK",
+	"FLYWHEEL_CLAUDE_TRANSITION_JOURNAL",
 	"FLYWHEEL_CLAUDE_SECURITY_BIN",
 	"FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE",
 	"FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT",
@@ -148,6 +149,10 @@ beforeEach(() => {
 	for (const k of ENV_KEYS) saved[k] = process.env[k];
 	process.env.FLYWHEEL_CLAUDE_PROFILES_DIR = pool;
 	process.env.FLYWHEEL_CLAUDE_ACCOUNTS_LOCK = lockPath; // SAME lock as Node's
+	process.env.FLYWHEEL_CLAUDE_TRANSITION_JOURNAL = join(
+		tmp,
+		"claude-account-transition.json",
+	);
 	process.env.FLYWHEEL_CLAUDE_SECURITY_BIN = stubBin;
 	process.env.FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE = "Claude Seam-credentials";
 	process.env.FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT = "seamacct";

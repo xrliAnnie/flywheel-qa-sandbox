@@ -82,9 +82,9 @@ if [[ -f "$PLIST" ]] \
   && grep -q '<key>KeepAlive</key><true/>' "$PLIST" \
   && grep -q '<key>RunAtLoad</key><true/>' "$PLIST" \
   && grep -q '<key>ThrottleInterval</key><integer>30</integer>' "$PLIST" \
-  && grep -q '/tmp/flywheel-quota-monitor.log' "$PLIST" \
+  && grep -q '__HOME__/.flywheel/logs/quota-monitor.log' "$PLIST" \
   && grep -q '__HOME__' "$PLIST"; then
-  pass "plist pins KeepAlive launchd contract with tokenized HOME"
+  pass "plist pins KeepAlive and durable tokenized-HOME log contract"
 else
   fail "plist contract" "$PLIST"
 fi

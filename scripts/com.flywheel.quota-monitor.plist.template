@@ -11,7 +11,7 @@
     <key>KeepAlive</key><true/>
     <key>ThrottleInterval</key><integer>30</integer>
     <key>RunAtLoad</key><true/>
-    <key>StandardOutPath</key><string>/tmp/flywheel-quota-monitor.log</string>
-    <key>StandardErrorPath</key><string>/tmp/flywheel-quota-monitor.log</string>
+    <key>StandardOutPath</key><string>__HOME__/.flywheel/logs/quota-monitor.log</string>
+    <key>StandardErrorPath</key><string>__HOME__/.flywheel/logs/quota-monitor.log</string>
 </dict>
 </plist>
