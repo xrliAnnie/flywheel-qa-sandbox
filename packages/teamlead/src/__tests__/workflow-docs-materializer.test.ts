@@ -15,6 +15,7 @@ function fixture(
 		payload?: unknown;
 		adoptFailsOnce?: boolean;
 		pushLosesResponse?: boolean;
+		log?: (message: string) => void;
 	} = {},
 ) {
 	let ledgerState:
@@ -109,6 +110,7 @@ function fixture(
 			},
 		],
 		withRepoLock: async (_root, fn) => fn(),
+		log: options.log,
 	});
 	return { materializer, git, store, calls, state: () => ledgerState };
 }
@@ -170,6 +172,22 @@ describe("WorkflowDocsMaterializer", () => {
 			held: 1,
 		});
 		expect(git.resolveBaseHead).not.toHaveBeenCalled();
+	});
+
+	it("backs off a permanently invalid candidate instead of logging it every 1 Hz tick", async () => {
+		const log = vi.fn();
+		const { materializer } = fixture({
+			payload: {
+				kind: "docs_v1",
+				operations: [{ op: "write", path: "../pwn", content: "x" }],
+			},
+			log,
+		});
+		await materializer.reconcile();
+		await materializer.reconcile();
+		await materializer.reconcile();
+		expect(log).toHaveBeenCalledTimes(1);
+		expect(log).toHaveBeenCalledWith(expect.stringMatching(/held.*docs_v1/i));
 	});
 
 	it("contains a store-level reconciliation failure instead of rejecting", async () => {

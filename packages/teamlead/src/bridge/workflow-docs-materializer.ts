@@ -86,15 +86,23 @@ export interface WorkflowDocsMaterializerOptions {
 	projects: ProjectEntry[];
 	withRepoLock: <T>(projectRoot: string, fn: () => Promise<T>) => Promise<T>;
 	log?: (message: string) => void;
+	nowMs?: () => number;
+	permanentFailureBackoffMs?: number;
 }
 
 export class WorkflowDocsMaterializer {
 	private reconciling = false;
 	private timer: NodeJS.Timeout | undefined;
 	private readonly log: (message: string) => void;
+	private readonly nowMs: () => number;
+	private readonly permanentFailureBackoffMs: number;
+	private readonly retryAfterByCandidate = new Map<string, number>();
 
 	constructor(private readonly options: WorkflowDocsMaterializerOptions) {
 		this.log = options.log ?? (() => {});
+		this.nowMs = options.nowMs ?? Date.now;
+		this.permanentFailureBackoffMs =
+			options.permanentFailureBackoffMs ?? 5 * 60_000;
 	}
 
 	start(intervalMs = 1_000): void {
@@ -123,11 +131,23 @@ export class WorkflowDocsMaterializer {
 		const result = { materialized: 0, held: 0 };
 		try {
 			for (const candidate of this.options.store.listWorkflowMaterializationCandidates()) {
+				const key = this.candidateKey(candidate);
+				if ((this.retryAfterByCandidate.get(key) ?? 0) > this.nowMs()) {
+					result.held += 1;
+					continue;
+				}
 				try {
 					const materialized = await this.consume(candidate);
+					this.retryAfterByCandidate.delete(key);
 					if (materialized) result.materialized += 1;
 				} catch (error) {
 					result.held += 1;
+					if (this.isPermanentCandidateFailure(error)) {
+						this.retryAfterByCandidate.set(
+							key,
+							this.nowMs() + this.permanentFailureBackoffMs,
+						);
+					}
 					this.writeLog(
 						`workflow docs materialization held for ${candidate.runId}/${candidate.producerNodeId}/${candidate.attempt}: ${error instanceof Error ? error.message : String(error)}`,
 					);
@@ -141,6 +161,24 @@ export class WorkflowDocsMaterializer {
 		} finally {
 			this.reconciling = false;
 		}
+	}
+
+	private candidateKey(candidate: WorkflowMaterializationCandidate): string {
+		return [
+			candidate.runId,
+			candidate.producerNodeId,
+			candidate.attempt,
+			candidate.outputId,
+			candidate.outputDigest,
+		].join(":");
+	}
+
+	private isPermanentCandidateFailure(error: unknown): boolean {
+		const message = error instanceof Error ? error.message : String(error);
+		return (
+			message.includes("docs_v1") ||
+			message === "materializer_project_repo_unavailable"
+		);
 	}
 
 	private reportReconciliationFailure(error: unknown): void {

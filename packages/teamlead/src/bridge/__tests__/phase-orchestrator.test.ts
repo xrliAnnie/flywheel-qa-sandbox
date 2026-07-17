@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectEntry } from "../../ProjectConfig.js";
+import { StateStore } from "../../StateStore.js";
+import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import {
 	PhaseOrchestrator,
 	type PhaseOrchestratorDeps,
@@ -911,6 +913,237 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 			expect(start).toHaveBeenCalledTimes(2);
 			expect(alertLeadPipelineError).toHaveBeenCalledOnce();
 		});
+	});
+});
+
+describe("FLY-1307 named hard gate — engine-owned v1 is event-equivalent to the live legacy phase belt", () => {
+	const flags = {
+		FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+		FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+		FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+	};
+
+	async function engineRun(runId: string) {
+		const store = await StateStore.create(":memory:");
+		const seed = loadBundledWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		)!;
+		store.importWorkflowTemplateSeed(seed);
+		store.materializeWorkflowRun({
+			runId,
+			issueId: "FLY-1307",
+			projectName: "flywheel",
+			taskCategory: "heavy",
+			templateId: seed.templateId,
+			claimsReadEnrolled: true,
+			actor: "lead",
+			env: flags,
+			startReservation: {
+				idempotencyKey: `${runId}:start`,
+				selectionDigest: `${runId}:selection`,
+				nodeId: "design",
+				attempt: 1,
+				executionId: `${runId}:design:1`,
+				createdAt: "2026-07-16T00:00:00.000Z",
+			},
+		});
+		store.upsertWorkflowRunNode({
+			runId,
+			nodeId: "design",
+			attempt: 1,
+			state: "running",
+			executionId: `${runId}:design:1`,
+		});
+		return store;
+	}
+
+	function transitionTrace(store: StateStore, runId: string): string[] {
+		return store.listWorkflowRunEvents(runId).flatMap((event) => {
+			if (event.kind === "edge_traversed") {
+				const payload = event.payload as {
+					outcome?: string;
+					targetNodeId?: string;
+				};
+				return [`${payload.outcome}:${event.node_id}->${payload.targetNodeId}`];
+			}
+			if (event.kind === "loop_limit_escalated") {
+				return ["qa_fail:qa->escalate"];
+			}
+			return [];
+		});
+	}
+
+	it("matches handoff order, one fail loop, founder gate, and max-limit escalation (vendor lineup intentionally excluded)", async () => {
+		const legacy = makeDeps();
+		const belt = new PhaseOrchestrator(legacy.deps);
+		const legacyTrace: string[] = [];
+		await belt.onPhaseComplete(
+			session({ session_role: "design", status: "design_done" }),
+		);
+		legacyTrace.push("design_done:design->implement");
+		await belt.onPhaseComplete(
+			session({
+				execution_id: "implement-1",
+				session_role: "implement",
+				status: "awaiting_review",
+				review_question_id: "q-1",
+			}),
+		);
+		legacyTrace.push("implement_done:implement->qa");
+		await belt.onQaResult(
+			session({
+				execution_id: "qa-1",
+				session_role: "qa",
+				chat_thread_role: "qa",
+			}),
+			{ eventId: "qa-fail-1", status: "fail", summary: "retry" },
+		);
+		legacyTrace.push("qa_fail:qa->implement");
+		await belt.onPhaseComplete(
+			session({
+				execution_id: "implement-2",
+				session_role: "implement",
+				status: "awaiting_review",
+				review_question_id: "q-2",
+			}),
+		);
+		legacyTrace.push("implement_done:implement->qa");
+		await belt.onQaResult(
+			session({
+				execution_id: "qa-2",
+				session_role: "qa",
+				chat_thread_role: "qa",
+			}),
+			{ eventId: "qa-pass-2", status: "pass" },
+		);
+		legacyTrace.push("qa_pass:qa->founder_gate");
+
+		const store = await engineRun("equivalence-pass");
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "equivalence-pass",
+				nodeId: "design",
+				attempt: 1,
+				executionId: "equivalence-pass:design:1",
+				outcome: "design_done",
+				successorExecutionId: "equivalence-pass:implement:1",
+			}).ok,
+		).toBe(true);
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "equivalence-pass",
+				nodeId: "implement",
+				attempt: 1,
+				executionId: "equivalence-pass:implement:1",
+				outcome: "implement_done",
+				successorExecutionId: "equivalence-pass:qa:1",
+			}).ok,
+		).toBe(true);
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "equivalence-pass",
+				nodeId: "qa",
+				attempt: 1,
+				executionId: "equivalence-pass:qa:1",
+				outcome: "qa_fail",
+				successorExecutionId: "equivalence-pass:implement:2",
+			}).ok,
+		).toBe(true);
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "equivalence-pass",
+				nodeId: "implement",
+				attempt: 2,
+				executionId: "equivalence-pass:implement:2",
+				outcome: "implement_done",
+				successorExecutionId: "equivalence-pass:qa:2",
+			}).ok,
+		).toBe(true);
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "equivalence-pass",
+				nodeId: "qa",
+				attempt: 2,
+				executionId: "equivalence-pass:qa:2",
+				outcome: "qa_pass",
+			}).ok,
+		).toBe(true);
+		expect(transitionTrace(store, "equivalence-pass")).toEqual(legacyTrace);
+		expect(store.getWorkflowRun("equivalence-pass")).toMatchObject({
+			current_node_id: "founder_gate",
+		});
+		store.close();
+
+		const legacyLimitTrace: string[] = [];
+		for (const round of [1, 2, 3, 4]) {
+			const current = makeDeps();
+			(
+				current.qaVerdicts.countImplementPhases as ReturnType<typeof vi.fn>
+			).mockReturnValue(round);
+			await new PhaseOrchestrator(current.deps).onQaResult(
+				session({
+					execution_id: `legacy-limit-qa-${round}`,
+					session_role: "qa",
+					chat_thread_role: "qa",
+				}),
+				{ eventId: `limit-${round}`, status: "fail" },
+			);
+			legacyLimitTrace.push(
+				round <= 3 ? "qa_fail:qa->implement" : "qa_fail:qa->escalate",
+			);
+		}
+
+		const limited = await engineRun("equivalence-limit");
+		limited.commitWorkflowTransitionTx({
+			runId: "equivalence-limit",
+			nodeId: "design",
+			attempt: 1,
+			executionId: "equivalence-limit:design:1",
+			outcome: "design_done",
+			successorExecutionId: "equivalence-limit:implement:1",
+		});
+		limited.commitWorkflowTransitionTx({
+			runId: "equivalence-limit",
+			nodeId: "implement",
+			attempt: 1,
+			executionId: "equivalence-limit:implement:1",
+			outcome: "implement_done",
+			successorExecutionId: "equivalence-limit:qa:1",
+		});
+		for (const round of [1, 2, 3, 4]) {
+			const failed = limited.commitWorkflowTransitionTx({
+				runId: "equivalence-limit",
+				nodeId: "qa",
+				attempt: round,
+				executionId: `equivalence-limit:qa:${round}`,
+				outcome: "qa_fail",
+				...(round <= 3
+					? { successorExecutionId: `equivalence-limit:implement:${round + 1}` }
+					: {}),
+			});
+			expect(failed).toMatchObject(
+				round <= 3
+					? { ok: true, loopIteration: round }
+					: { ok: true, escalated: true },
+			);
+			if (round <= 3) {
+				limited.commitWorkflowTransitionTx({
+					runId: "equivalence-limit",
+					nodeId: "implement",
+					attempt: round + 1,
+					executionId: `equivalence-limit:implement:${round + 1}`,
+					outcome: "implement_done",
+					successorExecutionId: `equivalence-limit:qa:${round + 1}`,
+				});
+			}
+		}
+		expect(
+			transitionTrace(limited, "equivalence-limit").filter((entry) =>
+				entry.startsWith("qa_fail"),
+			),
+		).toEqual(legacyLimitTrace);
+		expect(limited.getWorkflowRun("equivalence-limit")?.status).toBe("held");
+		limited.close();
 	});
 });
 

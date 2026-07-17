@@ -12,7 +12,7 @@ import {
 } from "../workflow-template.js";
 
 describe("bundled workflow default bindings", () => {
-	it("binds only projects with no existing category authority and is idempotent", async () => {
+	it("fills the engineering three-tier defaults without repointing existing category authority", async () => {
 		const store = await StateStore.create(":memory:");
 		importBundledWorkflowSeeds(store);
 		store.bindWorkflowCategory({
@@ -25,12 +25,18 @@ describe("bundled workflow default bindings", () => {
 		ensureDefaultWorkflowBindings(store, ["beta", "alpha", "alpha", "custom"]);
 		expect(store.listWorkflowCategoryBindings("alpha")).toMatchObject([
 			{ task_category: "*", template_id: "tpl_eng_heavy" },
+			{ task_category: "light", template_id: "tpl_eng_light" },
+			{ task_category: "trivial", template_id: "tpl_eng_trivial" },
 		]);
 		expect(store.listWorkflowCategoryBindings("beta")).toMatchObject([
 			{ task_category: "*", template_id: "tpl_eng_heavy" },
+			{ task_category: "light", template_id: "tpl_eng_light" },
+			{ task_category: "trivial", template_id: "tpl_eng_trivial" },
 		]);
 		expect(store.listWorkflowCategoryBindings("custom")).toMatchObject([
+			{ task_category: "*", template_id: "tpl_eng_heavy" },
 			{ task_category: "light", template_id: "tpl_eng_light" },
+			{ task_category: "trivial", template_id: "tpl_eng_trivial" },
 		]);
 		const auditCount = store.listWorkflowTemplateAudit().length;
 

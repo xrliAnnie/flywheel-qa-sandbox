@@ -27,6 +27,7 @@ import {
 	ConfigLoader,
 	DESIGN_BACKENDS,
 	isDesignBackend,
+	isThreeStagePhaseRole,
 	normalizeDispatchModel,
 	resolveEffectiveFounderUxConfig,
 } from "flywheel-config";
@@ -921,19 +922,26 @@ export function createRunsRouter(
 						});
 				}
 				if (shouldDispatch) {
+					const workflowRole = isThreeStagePhaseRole(
+						generalizedSelection.node.type,
+					)
+						? generalizedSelection.node.type
+						: "main";
 					await startDispatcher.start({
 						issueId,
 						projectName,
 						leadId,
 						issueTitle,
 						issueIdentifier,
-						sessionRole: "main",
+						sessionRole: workflowRole,
+						shareParentBranch: workflowRole === "main" ? undefined : true,
 						issueLabels: normalizedIssueLabels,
 						owningDept,
 						codexSkip: normalizedIssueLabels.includes("codex-skip"),
 						docTier,
 						issueUrl,
 						generalizedExecution: {
+							engineOwned: true,
 							executionId: generalizedSelection.executionId,
 							runId: generalizedSelection.runId,
 							nodeId: generalizedSelection.nodeId,

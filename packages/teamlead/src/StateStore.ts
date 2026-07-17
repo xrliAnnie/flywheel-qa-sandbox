@@ -27,7 +27,6 @@ import { findingKey as deriveReviewFindingKey } from "./bridge/review-verdict-po
 import {
 	generateCapabilityToken,
 	hashCapabilityToken,
-	isWorkflowClaimsWriteEnabled,
 	PASSING_PREDICATES,
 	REVIEW_CLASS_PREDICATES,
 	RUNNER_CAPABILITY_FAMILIES,
@@ -50,6 +49,10 @@ import {
 	type WorkflowTemplateOverride,
 	workflowSeedContentHash,
 } from "./workflow-template.js";
+import {
+	workflowTemplateDispatchBlockMessage,
+	workflowTemplateDispatchBlockReason,
+} from "./workflow-template-dispatch.js";
 
 /**
  * FLY-663: a thin compatibility shim that exposes the exact sql.js surface
@@ -12930,16 +12933,17 @@ export class StateStore {
 		);
 		if (!revision)
 			throw new Error("published workflow template revision not found");
-		if (revision.schema_version === 2) {
+		if (
+			revision.schema_version === 2 ||
+			(revision.schema_version === 1 && input.startReservation)
+		) {
 			const env = input.env ?? process.env;
-			if (!isGeneralizedTemplatesEnabled(env)) {
-				throw new Error("generalized workflow templates are disabled by flag");
-			}
-			if (!isWorkflowClaimsWriteEnabled(env)) {
-				throw new Error(
-					"generalized workflow materialization requires workflow claims write",
-				);
-			}
+			const blocked = workflowTemplateDispatchBlockReason(
+				revision.schema_version,
+				env,
+			);
+			if (blocked)
+				throw new Error(workflowTemplateDispatchBlockMessage(blocked));
 		}
 		const base = validateWorkflowManifest(JSON.parse(revision.manifest));
 		const applied = input.override
@@ -14428,12 +14432,11 @@ export class StateStore {
 		} catch {
 			return { ok: false, reason: "invalid_snapshot" };
 		}
-		if (snapshot.schema_version === 2 && !isGeneralizedTemplatesEnabled(env)) {
-			return { ok: false, reason: "generalized_disabled" };
-		}
-		if (!isWorkflowClaimsWriteEnabled(env)) {
-			return { ok: false, reason: "claims_write_disabled" };
-		}
+		const blocked = workflowTemplateDispatchBlockReason(
+			snapshot.schema_version,
+			env,
+		);
+		if (blocked) return { ok: false, reason: blocked };
 		if (snapshot.schema_version === 1 && run.engine_owned !== 1) {
 			return { ok: false, reason: "engine_ownership_required" };
 		}
@@ -14459,6 +14462,12 @@ export class StateStore {
 			);
 			if (producers.length !== 1 || !producers[0]?.dispatch) {
 				return { ok: false, reason: "decision_producer_ambiguous" };
+			}
+			if (
+				node.type === "review" &&
+				!producers[0].capabilities.produces_output
+			) {
+				return { ok: false, reason: "review_output_producer_required" };
 			}
 			if (producers[0].dispatch.vendor === node.dispatch.vendor) {
 				return { ok: false, reason: "same_vendor_review" };
@@ -17425,6 +17434,36 @@ export class StateStore {
 					`workflow materialization cannot confirm push from ${row.state}`,
 				);
 			}
+			const run = this.getWorkflowRun(row.run_id);
+			if (run?.engine_owned === 1) {
+				if (!run.snapshot) {
+					throw new Error("workflow materialized head authority unavailable");
+				}
+				const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+				const review = snapshot.resolved.nodes.find(
+					(node) => node.id === input.reviewNodeId,
+				);
+				const directProducerIds = snapshot.manifest.edges
+					.filter(
+						(edge) =>
+							edge.to === input.reviewNodeId && edge.condition === "node_done",
+					)
+					.map((edge) => edge.from);
+				const directOutputProducers = snapshot.resolved.nodes.filter(
+					(node) =>
+						directProducerIds.includes(node.id) &&
+						node.capabilities.produces_output,
+				);
+				if (
+					review?.type !== "review" ||
+					directOutputProducers.length !== 1 ||
+					directOutputProducers[0]?.id !== row.node_id
+				) {
+					throw new Error(
+						"workflow materialized head review successor is not pinned",
+					);
+				}
+			}
 			const receipts = this.getWorkflowMaterializationReceipts(input.effectId);
 			const commit = receipts.find(
 				(receipt) => receipt.stage === "commit_adopted",
@@ -18422,8 +18461,10 @@ export type GeneralizedWorkflowAdmissionResult =
 	| {
 			ok: false;
 			reason:
+				| "template_dispatch_disabled"
 				| "generalized_disabled"
 				| "claims_write_disabled"
+				| "claims_read_disabled"
 				| "invalid_expiry"
 				| "run_not_found"
 				| "invalid_snapshot"
@@ -18432,6 +18473,7 @@ export type GeneralizedWorkflowAdmissionResult =
 				| "not_start_node"
 				| "unsupported_capability_combination"
 				| "decision_producer_ambiguous"
+				| "review_output_producer_required"
 				| "same_vendor_review"
 				| "execution_already_bound"
 				| "invalid_retry_attempt"

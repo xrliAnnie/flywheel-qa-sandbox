@@ -68,7 +68,82 @@ function generalizedOpsSeed() {
 	return { ...seed, contentHash: workflowSeedContentHash(seed) };
 }
 
+const WORKFLOW_ON = {
+	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+};
+
 describe("StateStore workflow templates", () => {
+	it.each([
+		[1, "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH", /dispatch.*disabled/i],
+		[1, "FLYWHEEL_WORKFLOW_CLAIMS_WRITE", /claims.*write/i],
+		[1, "FLYWHEEL_WORKFLOW_CLAIMS_READ", /claims.*read/i],
+		[2, "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH", /dispatch.*disabled/i],
+		[2, "FLYWHEEL_WORKFLOW_CLAIMS_WRITE", /claims.*write/i],
+		[2, "FLYWHEEL_WORKFLOW_CLAIMS_READ", /claims.*read/i],
+		[2, "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES", /generalized.*disabled/i],
+	] as const)(
+		"schema v%s materialization rejects without side effects when %s is removed",
+		async (schemaVersion, missing, expected) => {
+			const store = await StateStore.create(":memory:");
+			const root = mkdtempSync(join(tmpdir(), "flywheel-materialize-flags-"));
+			cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+			mkdirSync(join(root, "agents"));
+			writeFileSync(
+				join(root, "agents", "generic-executor.md"),
+				"Execute the bounded node.\n",
+			);
+			const seed =
+				schemaVersion === 1
+					? loadBundledWorkflowSeeds().find(
+							(candidate) => candidate.templateId === "tpl_eng_heavy",
+						)!
+					: generalizedOpsSeed();
+			store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);
+			store.bindWorkflowCategory({
+				project: "flywheel",
+				taskCategory: "matrix",
+				templateId: seed.templateId,
+				updatedBy: "test",
+			});
+			const env = { ...WORKFLOW_ON };
+			delete env[missing];
+			const runId = `matrix-${schemaVersion}-${missing}`;
+			const reservationKey = `start-${runId}`;
+			expect(() =>
+				store.materializeWorkflowRun({
+					runId,
+					issueId: `FLY-MATRIX-${schemaVersion}`,
+					projectName: "flywheel",
+					taskCategory: "matrix",
+					claimsReadEnrolled: true,
+					actor: "test",
+					canonicalRoot: root,
+					env,
+					...(schemaVersion === 1
+						? {
+								startReservation: {
+									idempotencyKey: reservationKey,
+									selectionDigest: "selection",
+									nodeId: "design",
+									attempt: 1 as const,
+									executionId: "design-matrix",
+									createdAt: "2026-07-16T00:00:00.000Z",
+								},
+							}
+						: {}),
+				}),
+			).toThrow(expected);
+			expect(store.getWorkflowRun(runId)).toBeUndefined();
+			expect(store.getWorkflowStartReservation(reservationKey)).toBeUndefined();
+			expect(store.countWorkflowClaims(runId)).toBe(0);
+			expect(store.listWorkflowSideEffects(runId)).toEqual([]);
+			store.close();
+		},
+	);
+
 	it("atomically pins a typed v1 snapshot and engine ownership only with a start reservation", async () => {
 		const store = await StateStore.create(":memory:");
 		const seed = loadBundledWorkflowSeeds().find(
@@ -87,8 +162,13 @@ describe("StateStore workflow templates", () => {
 			issueId: "FLY-ENGINE",
 			projectName: "flywheel",
 			taskCategory: "code",
-			claimsReadEnrolled: false,
+			claimsReadEnrolled: true,
 			actor: "lead",
+			env: {
+				FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+				FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+				FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+			},
 			startReservation: {
 				idempotencyKey: "engine-start",
 				selectionDigest: "selection-digest",
@@ -150,7 +230,7 @@ describe("StateStore workflow templates", () => {
 		onStore.close();
 	});
 
-	it("gates all schema-v2 mutation seams independently and requires claims-write before materialization", async () => {
+	it("gates all schema-v2 mutation seams independently and requires the dispatch predicate before materialization", async () => {
 		const store = await StateStore.create(":memory:");
 		const root = mkdtempSync(join(tmpdir(), "flywheel-v2-agent-"));
 		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -198,7 +278,11 @@ describe("StateStore workflow templates", () => {
 				revision: revision2,
 				expectedRevision: 1,
 				publishedBy: "founder",
-				env: { FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1" },
+				env: {
+					FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+					FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+				},
 			}),
 		).toMatchObject({ status: "published", revision: revision2 });
 		store.bindWorkflowCategory({
@@ -216,7 +300,11 @@ describe("StateStore workflow templates", () => {
 				claimsReadEnrolled: false,
 				actor: "lead",
 				canonicalRoot: root,
-				env: { FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1" },
+				env: {
+					FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+					FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+				},
 			}),
 		).toThrow(/claims.*write/i);
 		expect(store.getWorkflowRun("v2-claims-off")).toBeUndefined();
@@ -230,7 +318,9 @@ describe("StateStore workflow templates", () => {
 			canonicalRoot: root,
 			env: {
 				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+				FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
 				FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+				FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 			},
 		});
 		expect(parseWorkflowRunSnapshot(run.snapshot!).schema_version).toBe(2);

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
+import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import {
 	loadBundledWorkflowSeeds,
 	workflowSeedContentHash,
@@ -63,10 +64,12 @@ function v2Seed() {
 const enabled = {
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
 	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
 };
 
 describe("workflow template selection", () => {
-	it("returns null for no candidate and for schema-v1 candidates without side effects", async () => {
+	it("returns null for no candidate and for schema-v1 candidates while dispatch is off", async () => {
 		const store = await StateStore.create(":memory:");
 		const root = setupRoot();
 		expect(
@@ -98,12 +101,198 @@ describe("workflow template selection", () => {
 				actor: "master",
 				authKind: "master",
 				canonicalRoot: root,
-				env: enabled,
+				env: {
+					...enabled,
+					FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "0",
+				},
 			}),
 		).toBeNull();
 		expect(store.getActiveWorkflowRunForIssue("FLY-X")).toBeUndefined();
 		store.close();
 	});
+
+	it("rejects an explicitly requested v1 dispatch when either claims flag is missing", async () => {
+		const root = setupRoot();
+		for (const missing of [
+			"FLYWHEEL_WORKFLOW_CLAIMS_WRITE",
+			"FLYWHEEL_WORKFLOW_CLAIMS_READ",
+		] as const) {
+			const store = await StateStore.create(":memory:");
+			const v1 = loadBundledWorkflowSeeds().find(
+				(seed) => seed.manifest.schema_version === 1,
+			)!;
+			store.importWorkflowTemplateSeed(v1);
+			store.bindWorkflowCategory({
+				project: "flywheel",
+				taskCategory: "engineering",
+				templateId: v1.templateId,
+				updatedBy: "lead",
+			});
+			const env = { ...enabled };
+			delete env[missing];
+			expect(() =>
+				resolveWorkflowTemplateSelection(store, {
+					project: "flywheel",
+					issueId: `FLY-V1-${missing}`,
+					taskCategory: "engineering",
+					selectedBy: "eng-lead",
+					actor: "master",
+					authKind: "master",
+					canonicalRoot: root,
+					idempotencyKey: `v1-${missing}`,
+					env,
+				}),
+			).toThrow(
+				new RegExp(
+					missing.includes("WRITE") ? "claims write" : "claims read",
+					"i",
+				),
+			);
+			expect(
+				store.getActiveWorkflowRunForIssue(`FLY-V1-${missing}`),
+			).toBeUndefined();
+			expect(store.countWorkflowClaims(`FLY-V1-${missing}`)).toBe(0);
+			expect(store.listWorkflowSideEffects(`FLY-V1-${missing}`)).toEqual([]);
+			store.close();
+		}
+	});
+
+	it("materializes an enabled engineering v1 candidate as an enrolled typed engine run", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = loadBundledWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		)!;
+		store.importWorkflowTemplateSeed(seed);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "engineering",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+		const values = ["run-v1", "exec-design"];
+		const selected = resolveWorkflowTemplateSelection(store, {
+			project: "flywheel",
+			issueId: "FLY-V1-ON",
+			taskCategory: "engineering",
+			selectedBy: "eng-lead",
+			actor: "master",
+			authKind: "master",
+			canonicalRoot: setupRoot(),
+			idempotencyKey: "v1-enabled",
+			env: enabled,
+			idFactory: () => values.shift()!,
+			now: "2026-07-16T00:00:00.000Z",
+		});
+		expect(selected).toMatchObject({
+			runId: "run-v1",
+			executionId: "exec-design",
+			nodeId: "design",
+			node: {
+				type: "design",
+				dispatch: { vendor: "claude", model: "claude-fable-5" },
+			},
+		});
+		const run = store.getWorkflowRun("run-v1")!;
+		expect(run).toMatchObject({ engine_owned: 1, claims_read_enrolled: 1 });
+		expect(parseWorkflowRunSnapshot(run.snapshot!).schema_version).toBe(1);
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-v1",
+				nodeId: "design",
+				executionId: "exec-design",
+				attempt: 1,
+				now: "2026-07-16T00:00:01.000Z",
+				expiresAt: "2026-07-16T01:00:00.000Z",
+				absoluteDeadlineAt: "2026-07-17T00:00:00.000Z",
+				env: enabled,
+				idempotencyKey: "v1-enabled",
+			}),
+		).toMatchObject({ ok: true });
+		store.close();
+	});
+
+	it("falls back from an unbound engineering category to the project default binding", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = loadBundledWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		)!;
+		store.importWorkflowTemplateSeed(seed);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "*",
+			templateId: seed.templateId,
+			updatedBy: "system:bundled-default",
+		});
+		const values = ["run-default", "exec-default"];
+		expect(
+			resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: "FLY-V1-DEFAULT",
+				taskCategory: "engineering",
+				selectedBy: "eng-lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: setupRoot(),
+				idempotencyKey: "v1-default",
+				env: enabled,
+				idFactory: () => values.shift()!,
+				now: "2026-07-16T00:00:00.000Z",
+			}),
+		).toMatchObject({
+			runId: "run-default",
+			executionId: "exec-default",
+			selectionSource: "default",
+		});
+		store.close();
+	});
+
+	it.each([
+		[
+			"FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH",
+			/template dispatch|dispatch.*disabled/i,
+		],
+		["FLYWHEEL_WORKFLOW_CLAIMS_WRITE", /claims write/i],
+		["FLYWHEEL_WORKFLOW_CLAIMS_READ", /claims read/i],
+		["FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES", /generalized.*disabled/i],
+	] as const)(
+		"fails closed for a v2 candidate when %s is missing",
+		async (missing, expected) => {
+			const store = await StateStore.create(":memory:");
+			const root = setupRoot();
+			const seed = v2Seed();
+			store.importWorkflowTemplateSeed(seed, enabled);
+			store.bindWorkflowCategory({
+				project: "flywheel",
+				taskCategory: "research",
+				templateId: seed.templateId,
+				updatedBy: "lead",
+			});
+			const env = { ...enabled };
+			delete env[missing];
+			expect(() =>
+				resolveWorkflowTemplateSelection(store, {
+					project: "flywheel",
+					issueId: `FLY-V2-${missing}`,
+					taskCategory: "research",
+					selectedBy: "research-lead",
+					actor: "master",
+					authKind: "master",
+					canonicalRoot: root,
+					idempotencyKey: `v2-${missing}`,
+					env,
+				}),
+			).toThrow(expected);
+			expect(
+				store.getActiveWorkflowRunForIssue(`FLY-V2-${missing}`),
+			).toBeUndefined();
+			expect(
+				store.getWorkflowStartReservation(`v2-${missing}`),
+			).toBeUndefined();
+			expect(store.countWorkflowClaims(`FLY-V2-${missing}`)).toBe(0);
+			expect(store.listWorkflowSideEffects(`FLY-V2-${missing}`)).toEqual([]);
+			store.close();
+		},
+	);
 
 	it("materializes a bound v2 template with selection provenance and exact idempotent replay", async () => {
 		const store = await StateStore.create(":memory:");

@@ -71,10 +71,191 @@ function createRun(store: StateStore, options: { output?: boolean } = {}) {
 
 const enabled = {
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
 	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 };
 
 describe("generalized execution admission and terminal contracts", () => {
+	it.each([
+		[1, "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH", "template_dispatch_disabled"],
+		[1, "FLYWHEEL_WORKFLOW_CLAIMS_WRITE", "claims_write_disabled"],
+		[1, "FLYWHEEL_WORKFLOW_CLAIMS_READ", "claims_read_disabled"],
+		[2, "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH", "template_dispatch_disabled"],
+		[2, "FLYWHEEL_WORKFLOW_CLAIMS_WRITE", "claims_write_disabled"],
+		[2, "FLYWHEEL_WORKFLOW_CLAIMS_READ", "claims_read_disabled"],
+		[2, "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES", "generalized_disabled"],
+	] as const)(
+		"schema v%s admission rejects without credentials when %s is removed",
+		async (schemaVersion, missing, reason) => {
+			const store = await StateStore.create(":memory:");
+			let runId: string;
+			let nodeId: string;
+			let executionId: string;
+			if (schemaVersion === 1) {
+				const seed = loadBundledWorkflowSeeds().find(
+					(candidate) => candidate.templateId === "tpl_eng_heavy",
+				)!;
+				store.importWorkflowTemplateSeed(seed);
+				store.materializeWorkflowRun({
+					runId: "run-v1-matrix",
+					issueId: "FLY-V1-MATRIX",
+					projectName: "flywheel",
+					taskCategory: "engineering",
+					templateId: seed.templateId,
+					claimsReadEnrolled: true,
+					actor: "test",
+					env: enabled,
+					startReservation: {
+						idempotencyKey: "v1-matrix-start",
+						selectionDigest: "selection",
+						nodeId: "design",
+						attempt: 1,
+						executionId: "v1-design",
+						createdAt: "2026-07-16T00:00:00.000Z",
+					},
+				});
+				runId = "run-v1-matrix";
+				nodeId = "design";
+				executionId = "v1-design";
+			} else {
+				createRun(store);
+				runId = "run-1";
+				nodeId = "execute";
+				executionId = "v2-execute";
+			}
+			const beforeClaims = store.countWorkflowClaims(runId);
+			const beforeEffects = store.listWorkflowSideEffects(runId);
+			const env = { ...enabled };
+			delete env[missing];
+
+			expect(
+				store.admitGeneralizedWorkflowExecution({
+					runId,
+					nodeId,
+					executionId,
+					attempt: 1,
+					now: "2026-07-16T00:00:00.000Z",
+					expiresAt: "2026-07-16T01:00:00.000Z",
+					absoluteDeadlineAt: "2026-07-17T00:00:00.000Z",
+					env,
+				}),
+			).toEqual({ ok: false, reason });
+			expect(store.getWorkflowExecutionBinding(executionId)).toBeUndefined();
+			expect(store.getWorkflowExecutionRuntime(executionId)).toBeUndefined();
+			expect(store.countWorkflowClaims(runId)).toBe(beforeClaims);
+			expect(store.listWorkflowSideEffects(runId)).toEqual(beforeEffects);
+			store.close();
+		},
+	);
+
+	it("rejects a review node whose direct predecessor is not an output producer", async () => {
+		const store = await StateStore.create(":memory:");
+		const root = mkdtempSync(join(tmpdir(), "flywheel-review-producer-"));
+		cleanups.push(root);
+		mkdirSync(join(root, "agents"));
+		writeFileSync(join(root, "agents", "generic.md"), "Produce nothing.\n");
+		const snapshot = buildWorkflowRunSnapshotV2({
+			template: { id: "tpl-review-guard", revision: 1 },
+			canonicalRoot: root,
+			manifest: {
+				schema_version: 2,
+				nodes: [
+					{
+						id: "prepare",
+						type: "generic",
+						vendor: "codex",
+						model: "gpt-5.6-sol",
+						effort: "low",
+						agent_file: "agents/generic.md",
+					},
+					{
+						id: "review",
+						type: "review",
+						vendor: "claude",
+						model: "claude-opus-4-8",
+						effort: "high",
+					},
+					{ id: "founder_gate", type: "gate" },
+				],
+				edges: [
+					{
+						id: "prepared",
+						from: "prepare",
+						to: "review",
+						condition: "node_done",
+					},
+					{
+						id: "reviewed",
+						from: "review",
+						to: "founder_gate",
+						condition: "review_pass",
+					},
+				],
+				loops: [
+					{
+						id: "review_retry",
+						from: "review",
+						to: "prepare",
+						loop_when: "review_fail",
+						exit_when: "review_pass",
+						max_iterations: 2,
+						on_limit: "escalate",
+					},
+				],
+				terminal_gate: {
+					node: "founder_gate",
+					predicate: "founder_approved",
+				},
+				ship_claims: ["design_review_approved", "founder_approved"],
+			},
+		});
+		store.createWorkflowRun({
+			runId: "review-guard-run",
+			issueId: "FLY-X",
+			projectName: "flywheel",
+			snapshotJson: JSON.stringify(snapshot),
+			claimsReadEnrolled: true,
+		});
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'prepare' WHERE run_id = 'review-guard-run'",
+		);
+		store.upsertWorkflowRunNode({
+			runId: "review-guard-run",
+			nodeId: "prepare",
+			attempt: 1,
+			state: "running",
+			executionId: "prepare-exec",
+		});
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "review-guard-run",
+				nodeId: "prepare",
+				attempt: 1,
+				executionId: "prepare-exec",
+				outcome: "node_done",
+				successorExecutionId: "review-exec",
+			}).ok,
+		).toBe(true);
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "review-guard-run",
+				nodeId: "review",
+				executionId: "review-exec",
+				attempt: 1,
+				now: "2026-07-16T00:01:00.000Z",
+				expiresAt: "2026-07-16T01:00:00.000Z",
+				absoluteDeadlineAt: "2026-07-17T00:00:00.000Z",
+				env: enabled,
+			}),
+		).toEqual({ ok: false, reason: "review_output_producer_required" });
+		store.close();
+	});
+
 	it("rejects same-vendor review at admission before the claim-layer backstop", async () => {
 		const store = await StateStore.create(":memory:");
 		const root = mkdtempSync(join(tmpdir(), "flywheel-same-vendor-"));
@@ -426,7 +607,7 @@ describe("generalized execution admission and terminal contracts", () => {
 				now: "2026-07-15T00:00:00.000Z",
 				env: {},
 			}),
-		).toMatchObject({ ok: false, reason: "generalized_disabled" });
+		).toMatchObject({ ok: false, reason: "template_dispatch_disabled" });
 		expect(store.getWorkflowExecutionBinding("exec-1")).toBeUndefined();
 
 		const admitted = store.admitGeneralizedWorkflowExecution({

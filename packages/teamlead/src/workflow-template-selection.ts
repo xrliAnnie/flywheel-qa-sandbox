@@ -6,6 +6,11 @@ import {
 	type ResolvedWorkflowNodeV2,
 } from "./workflow-run-snapshot.js";
 import { validateWorkflowManifest } from "./workflow-template.js";
+import {
+	isWorkflowTemplateDispatchEnabled,
+	workflowTemplateDispatchBlockMessage,
+	workflowTemplateDispatchBlockReason,
+} from "./workflow-template-dispatch.js";
 
 export type WorkflowRequestAuthKind = "master" | "scoped" | "tokenless";
 
@@ -59,16 +64,28 @@ export function resolveWorkflowTemplateSelection(
 		template.current_published_revision,
 	);
 	if (!revision) throw new Error("workflow template revision not found");
-	// C connects only schema-v2 starts. Stored v1 templates remain B substrate.
-	if (revision.schema_version === 1) return null;
-	if (revision.schema_version !== 2) {
+	if (revision.schema_version !== 1 && revision.schema_version !== 2) {
 		throw new Error("workflow template candidate schema is unsupported");
 	}
+	const env = input.env ?? process.env;
+	// Candidate-first compatibility: v1 remains exact legacy while dispatch is
+	// off. A v2 candidate never falls back to legacy.
+	if (
+		revision.schema_version === 1 &&
+		!isWorkflowTemplateDispatchEnabled(env)
+	) {
+		return null;
+	}
+	const blocked = workflowTemplateDispatchBlockReason(
+		revision.schema_version,
+		env,
+	);
+	if (blocked) throw new Error(workflowTemplateDispatchBlockMessage(blocked));
 	if (input.authKind !== "master") {
-		throw new Error("schema-v2 workflow selection requires master auth");
+		throw new Error("workflow template selection requires master auth");
 	}
 	if (!input.idempotencyKey?.trim()) {
-		throw new Error("schema-v2 workflow selection requires idempotencyKey");
+		throw new Error("workflow template selection requires idempotencyKey");
 	}
 	const selectionSource = input.leadTemplateId
 		? "lead"
@@ -125,7 +142,7 @@ export function resolveWorkflowTemplateSelection(
 	}
 
 	const manifest = validateWorkflowManifest(JSON.parse(revision.manifest));
-	if (manifest.schema_version !== 2) {
+	if (manifest.schema_version !== revision.schema_version) {
 		throw new Error("workflow template stored schema does not match manifest");
 	}
 	const incoming = new Map(manifest.nodes.map((node) => [node.id, 0]));
@@ -145,7 +162,7 @@ export function resolveWorkflowTemplateSelection(
 		projectName: input.project,
 		taskCategory: category,
 		templateId,
-		claimsReadEnrolled: false,
+		claimsReadEnrolled: true,
 		actor: input.actor,
 		canonicalRoot: input.canonicalRoot,
 		selection: {

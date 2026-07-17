@@ -10,6 +10,13 @@ import { createWorkflowDecisionRouter } from "../bridge/workflow-decision-routes
 import { StateStore } from "../StateStore.js";
 import { loadBundledWorkflowSeeds } from "../workflow-template.js";
 
+const WORKFLOW_ON = {
+	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+};
+
 const T0 = "2026-07-14T00:00:00.000Z";
 const T1 = "2026-07-14T01:00:00.000Z";
 const T2 = "2026-07-14T02:00:00.000Z";
@@ -43,22 +50,17 @@ async function reviewFixture(options: {
 	const seed = loadBundledWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_product_v1",
 	)!;
-	store.importWorkflowTemplateSeed(seed, {
-		FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-	});
+	store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);
 	store.materializeWorkflowRun({
 		runId: "run-review",
 		issueId: "FLY-1307",
 		projectName: "flywheel",
 		taskCategory: "product",
 		templateId: seed.templateId,
-		claimsReadEnrolled: false,
+		claimsReadEnrolled: true,
 		actor: "lead",
 		canonicalRoot: worktree.path,
-		env: {
-			FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
-		},
+		env: WORKFLOW_ON,
 		startReservation: {
 			idempotencyKey: "review-start",
 			selectionDigest: "review-selection",
@@ -75,10 +77,7 @@ async function reviewFixture(options: {
 		state: "running",
 		executionId: "research-1",
 	});
-	const env = {
-		FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-		FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
-	};
+	const env = WORKFLOW_ON;
 	const admit = (nodeId: string, executionId: string) =>
 		store.admitGeneralizedWorkflowExecution({
 			runId: "run-review",
