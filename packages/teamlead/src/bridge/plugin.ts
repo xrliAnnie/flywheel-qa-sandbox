@@ -42,6 +42,7 @@ import {
 	phaseMessageTag,
 	resolveAllFlags,
 	resolveCommBackend as resolveCommBackendShared,
+	resolveFounderTimezone,
 	THREE_STAGE_PHASE_SEQUENCE,
 	type ThreeStagePhase,
 } from "flywheel-config";
@@ -3537,7 +3538,7 @@ export function createBridgeApp(
 	if (process.env.FLYWHEEL_DIGEST_CHANNEL) {
 		const digestSlug = process.env.LINEAR_WORKSPACE_SLUG;
 		const digestService = new DigestService(store, {
-			tz: process.env.FLYWHEEL_DIGEST_TZ ?? "America/Los_Angeles",
+			tz: process.env.FLYWHEEL_DIGEST_TZ ?? resolveFounderTimezone,
 			linearBaseUrl: digestSlug
 				? `https://linear.app/${digestSlug}/issue`
 				: undefined,

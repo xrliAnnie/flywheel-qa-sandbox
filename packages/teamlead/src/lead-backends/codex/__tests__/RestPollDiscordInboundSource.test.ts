@@ -10,6 +10,7 @@ interface RawMsg {
 	channel_id: string;
 	content: string;
 	author: { id: string; bot: boolean };
+	timestamp?: string;
 }
 
 /** Fake Discord REST: per-channel message log (chronological); serves
@@ -117,6 +118,34 @@ describe("RestPollDiscordInboundSource — baseline + poll", () => {
 		got.length = 0;
 		await src.pollOnce();
 		expect(got).toEqual([]);
+	});
+
+	it("maps Discord's raw timestamp to timestampMs", async () => {
+		const log = [msg("1", "c1", "old")];
+		const { fetchImpl } = fakeDiscord({ c1: log });
+		const got: DiscordInboundMessage[] = [];
+		const src = new RestPollDiscordInboundSource({
+			botToken: "tok",
+			channelIds: ["c1"],
+			fetchImpl,
+			setTimer: () => ({ cancel: () => {} }),
+			logger: silent,
+		});
+		src.onMessage((message) => {
+			got.push(message);
+			return true;
+		});
+		await src.start();
+		log.push({
+			...msg("2", "c1", "timestamped"),
+			timestamp: "2026-07-17T02:23:05.000Z",
+		});
+
+		await src.pollOnce();
+
+		expect(got[0].timestampMs).toBe(
+			new Date("2026-07-17T02:23:05.000Z").getTime(),
+		);
 	});
 
 	it("polls multiple channels independently", async () => {

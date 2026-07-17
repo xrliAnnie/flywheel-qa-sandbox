@@ -40,6 +40,66 @@ log() {
   echo "[lead-alert] $(date '+%H:%M:%S') $*" >&2
 }
 
+# FLY-1319: resolve Annie's current timezone without trusting `TZ=bad date`.
+# macOS date silently renders UTC and exits 0 for an invalid TZ, so every named
+# candidate must be a traversal-free IANA path present under a zoneinfo root.
+valid_founder_timezone() {
+  local candidate="$1" root
+  [ -n "$candidate" ] || return 1
+  case "$candidate" in
+    /*|*..*) return 1 ;;
+  esac
+  local old_ifs="$IFS"
+  IFS=':'
+  for root in ${FLYWHEEL_ZONEINFO_ROOTS:-/var/db/timezone/zoneinfo:/usr/share/zoneinfo}; do
+    if [ -f "${root%/}/${candidate}" ]; then
+      IFS="$old_ifs"
+      return 0
+    fi
+  done
+  IFS="$old_ifs"
+  return 1
+}
+
+resolve_founder_timezone() {
+  local candidate="${FLYWHEEL_FOUNDER_TZ:-}" localtime target
+  if [ -n "$candidate" ]; then
+    if valid_founder_timezone "$candidate"; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+    log "WARNING: invalid FLYWHEEL_FOUNDER_TZ='${candidate}', falling back to host timezone"
+  fi
+
+  localtime="${FLYWHEEL_LOCALTIME_PATH:-/etc/localtime}"
+  if [ -e "$localtime" ] && [ ! -L "$localtime" ]; then
+    # Copy-style /etc/localtime: no IANA name is recoverable, so let host date
+    # use the operating system's live local timezone.
+    printf '%s\n' '__HOST__'
+    return
+  fi
+  target=$(readlink "$localtime" 2>/dev/null || true)
+  case "$target" in
+    *zoneinfo/*) candidate="${target##*zoneinfo/}" ;;
+    *) candidate="" ;;
+  esac
+  if valid_founder_timezone "$candidate"; then
+    printf '%s\n' "$candidate"
+    return
+  fi
+  printf '%s\n' 'America/Los_Angeles'
+}
+
+founder_ticket_clock() {
+  local timezone
+  timezone=$(resolve_founder_timezone)
+  if [ "$timezone" = "__HOST__" ]; then
+    date '+%H:%M %Z'
+  else
+    TZ="$timezone" date '+%H:%M %Z'
+  fi
+}
+
 usage() {
   sed -n '3,40p' "$0" >&2
   exit 1
@@ -360,7 +420,7 @@ CONTENT=$(printf '%s **%s** (%s / %s)\n%s' "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" 
 # `owner — · 状态 NEW` (owner @ is the Bridge's job; drain does not rewrite).
 if [ -n "$UNIFIED_CHANNEL" ] && [ "${FLYWHEEL_ALERT_TICKETS:-}" = "1" ] && ! is_informational_kind "$KIND"; then
   CONTENT=$(printf '%s **%s** (%s / %s)\n🎫 %s · 首见 %s · owner — · 状态 NEW\n%s' \
-    "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" "$PROJECT_NAME" "$(date '+%H:%M')" "$BODY")
+    "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" "$PROJECT_NAME" "$(founder_ticket_clock)" "$BODY")
 fi
 # FLY-1081: explicit mention prefixes the content — Discord only truly pings an
 # id that appears in BOTH the content and allowed_mentions.users (see BODY_JSON

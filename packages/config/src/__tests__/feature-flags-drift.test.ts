@@ -153,6 +153,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: comma-separated projects excluded from founder auto-approve (FLY-799)",
 	FLYWHEEL_DIGEST_CHANNEL: "config value: daily digest channel id (FLY-727)",
 	FLYWHEEL_DIGEST_TZ: "config value: daily digest timezone (FLY-727)",
+	FLYWHEEL_FOUNDER_TZ:
+		"config value: founder local timezone override (FLY-1319)",
 	FLYWHEEL_FOUNDER_CONSENT_ENABLED:
 		"legacy alias of DECISION_MODE (the enum gate is registered)",
 	FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE:

@@ -5,6 +5,7 @@
  * Those are handled by PM Triage (GEO-276) via Simba.
  */
 
+import { resolveFounderTimezone } from "flywheel-config";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
@@ -59,11 +60,14 @@ export interface StandupReport {
 const COMPLETION_STATUSES = new Set(["completed", "approved"]);
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
-/** Pacific Time date in YYYY-MM-DD format. */
-export function pacificDateString(now?: Date): string {
+/** Founder's local date in YYYY-MM-DD format. */
+export function founderDateString(
+	now: Date = new Date(),
+	timezone = resolveFounderTimezone(),
+): string {
 	return new Intl.DateTimeFormat("en-CA", {
-		timeZone: "America/Los_Angeles",
-	}).format(now ?? new Date());
+		timeZone: timezone,
+	}).format(now);
 }
 
 function parseActivityTimestamp(session: Session): number | null {
@@ -118,7 +122,7 @@ export async function aggregateStandup(
 	staleThresholdHours: number,
 ): Promise<StandupReport> {
 	const now = Date.now();
-	const today = pacificDateString();
+	const today = founderDateString();
 
 	// ── System status ──
 	const activeSessions = store

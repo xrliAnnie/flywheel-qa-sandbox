@@ -1445,6 +1445,7 @@ _launch_claude() {
     # skill fell back to a slow `find /` recursive scan. Same tmux env
     # barrier pattern FLY-142 fixed for CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS.
     -e "FLYWHEEL_TEAMLEAD_SCRIPT_DIR=${FLYWHEEL_TEAMLEAD_SCRIPT_DIR:-}"
+    -e "FLYWHEEL_FOUNDER_TZ=${FLYWHEEL_FOUNDER_TZ:-}"
   )
 
   # FLY-1309: only a successfully acquired generation enters the pane. A store
@@ -2348,6 +2349,14 @@ else
     CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_COS_RULES")
     log "Appending base cos-lead rules: ${BASE_COS_RULES}"
   fi
+fi
+
+# ── FLY-1319: founder-local time (universal companion + cos + dept) ──
+# External customer-facing agents intentionally keep their narrower contract.
+BASE_FOUNDER_LOCAL_TIME_RULES="${BASE_RULES_DIR}/founder-local-time.md"
+if [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_FOUNDER_LOCAL_TIME_RULES" ] && [ -r "$BASE_FOUNDER_LOCAL_TIME_RULES" ]; then
+  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_LOCAL_TIME_RULES")
+  log "Appending founder-local time rules: ${BASE_FOUNDER_LOCAL_TIME_RULES}"
 fi
 
 # ── FLY-175: Founder-Only Authority (universal — both cos and dept roles) ──

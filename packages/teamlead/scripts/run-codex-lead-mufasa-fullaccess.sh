@@ -30,6 +30,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Headless runtime from the DEPLOYED main dist (not a worktree).
 TEAMLEAD_ROOT="${FLYWHEEL_TEAMLEAD_ROOT:-/Users/xiaorongli/Dev/flywheel/packages/teamlead}"
 RUNTIME="${TEAMLEAD_ROOT}/dist/lead-backends/codex/codex-lead-runtime.js"
+# This launcher bypasses claude-lead.sh, so bind the founder-time rule's CLI
+# authority explicitly instead of relying on an ambient shell variable.
+FLYWHEEL_PACKAGES_ROOT="$(cd "${TEAMLEAD_ROOT}/.." && pwd)"
+export FLYWHEEL_COMM_CLI="${FLYWHEEL_COMM_CLI:-${FLYWHEEL_PACKAGES_ROOT}/flywheel-comm/dist/index.js}"
 if [ ! -f "${RUNTIME}" ]; then
 	echo "runtime not built at ${RUNTIME} — run: pnpm --filter flywheel-teamlead build" >&2
 	exit 1

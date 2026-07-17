@@ -267,6 +267,20 @@ describe("CLI", () => {
 			expect(result).toContain("Usage:");
 			expect(result).toContain("ask");
 			expect(result).toContain("check");
+			expect(result).toContain("founder-time");
+		});
+	});
+
+	describe("founder-time", () => {
+		it("honors the founder timezone env override in JSON mode", () => {
+			const result = JSON.parse(
+				runCli(["founder-time", "--json"], {
+					FLYWHEEL_FOUNDER_TZ: "Asia/Tokyo",
+				}),
+			);
+			expect(result.tz).toBe("Asia/Tokyo");
+			expect(result.offsetMinutes).toBe(540);
+			expect(result.iso).toMatch(/[+]09:00$/);
 		});
 	});
 

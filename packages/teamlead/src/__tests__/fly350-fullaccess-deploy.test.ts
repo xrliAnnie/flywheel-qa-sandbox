@@ -266,6 +266,7 @@ describe("run-codex-lead-mufasa-fullaccess.sh (full-access cutover launcher)", (
 				'  "sandbox": "$FLYWHEEL_CODEX_LEAD_SANDBOX",',
 				'  "projectDir": "$FLYWHEEL_CODEX_LEAD_PROJECT_DIR",',
 				'  "stateDir": "$FLYWHEEL_CODEX_LEAD_STATE_DIR",',
+				'  "commCli": "$FLYWHEEL_COMM_CLI",',
 				'  "promptFiles": "$FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES"',
 				"}",
 				"EOF",
@@ -287,6 +288,7 @@ describe("run-codex-lead-mufasa-fullaccess.sh (full-access cutover launcher)", (
 			PATH: `${shimDir}:${process.env.PATH}`,
 			FLYWHEEL_TEAMLEAD_ROOT: TEAMLEAD_ROOT, // dist/ is built in-repo
 			FLYWHEEL_LEAD_DRY_RUN: "1",
+			FLYWHEEL_COMM_CLI: "",
 			MUFASA_BOT_TOKEN: "x",
 			FLYWHEEL_CODEX_LEAD_PROJECT_DIR: home, // a real dir (skips the non-dry checks anyway)
 		});
@@ -299,6 +301,7 @@ describe("run-codex-lead-mufasa-fullaccess.sh (full-access cutover launcher)", (
 		expect(dumped.projectDir).toBe(home);
 		// memory continuity: the pinned per-Lead state dir (thread 019eaf5d resumes).
 		expect(dumped.stateDir).toContain("state/codex-lead/mufasa-lead");
+		expect(dumped.commCli).toContain("flywheel-comm/dist/index.js");
 		// persona first, founder-only-authority governance appended after.
 		expect(dumped.promptFiles).toContain("identity.md");
 		expect(dumped.promptFiles).toContain("founder-only-authority.md");

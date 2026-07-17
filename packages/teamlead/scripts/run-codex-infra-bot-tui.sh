@@ -29,6 +29,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEAMLEAD_ROOT="${FLYWHEEL_TEAMLEAD_ROOT:-/Users/xiaorongli/Dev/flywheel/packages/teamlead}"
 TUI_RUNTIME="${TEAMLEAD_ROOT}/dist/lead-backends/codex/codex-lead-tui-runtime.js"
 TUI_HOME_SH="${TEAMLEAD_ROOT}/scripts/codex-lead-tui-home.sh"
+# This launcher bypasses claude-lead.sh, so bind the founder-time rule's CLI
+# authority explicitly instead of relying on an ambient shell variable.
+FLYWHEEL_PACKAGES_ROOT="$(cd "${TEAMLEAD_ROOT}/.." && pwd)"
+export FLYWHEEL_COMM_CLI="${FLYWHEEL_COMM_CLI:-${FLYWHEEL_PACKAGES_ROOT}/flywheel-comm/dist/index.js}"
 if [ ! -f "${TUI_RUNTIME}" ]; then
 	echo "codex-lead-tui-runtime.js not built at ${TUI_RUNTIME} — run: pnpm --filter flywheel-teamlead build" >&2
 	exit 1

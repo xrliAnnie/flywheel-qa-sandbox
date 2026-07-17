@@ -14,6 +14,7 @@
  * rebound) so wording is testable and consistent.
  */
 
+import { resolveFounderTimezone } from "flywheel-config";
 import type {
 	FounderActionIntent,
 	FounderDeferredApproval,
@@ -119,7 +120,10 @@ export function deferredOffExplainerText(holdReason: ReviewHoldReason): string {
 }
 
 /** HH:MM (founder's timezone) of the founder message, from its snowflake. */
-export function founderMsgClock(msgId: string): string {
+export function founderMsgClock(
+	msgId: string,
+	timezone = resolveFounderTimezone(),
+): string {
 	const ms = snowflakeToMs(msgId);
 	if (ms === null) return "";
 	try {
@@ -127,7 +131,7 @@ export function founderMsgClock(msgId: string): string {
 			hour12: false,
 			hour: "2-digit",
 			minute: "2-digit",
-			timeZone: "America/Los_Angeles",
+			timeZone: timezone,
 		});
 	} catch {
 		return "";

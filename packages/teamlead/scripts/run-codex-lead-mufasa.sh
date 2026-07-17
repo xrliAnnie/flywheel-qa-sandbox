@@ -14,6 +14,9 @@ set -euo pipefail
 
 WORKTREE="${FLY224_WORKTREE:-/Users/xiaorongli/Dev/flywheel/worktrees/fly-224-vendor-pluggable-lead}"
 RUNTIME="${WORKTREE}/packages/teamlead/dist/lead-backends/codex/codex-lead-runtime.js"
+# This launcher bypasses claude-lead.sh, so bind the founder-time rule's CLI
+# authority explicitly instead of relying on an ambient shell variable.
+export FLYWHEEL_COMM_CLI="${FLYWHEEL_COMM_CLI:-${WORKTREE}/packages/flywheel-comm/dist/index.js}"
 if [ ! -f "${RUNTIME}" ]; then
 	echo "codex-lead-runtime.js not built — run: pnpm --filter flywheel-teamlead build" >&2
 	exit 1
@@ -39,7 +42,8 @@ PERSONA_COMPANION="${WORKTREE}/packages/teamlead/lead-rules-base/companion-safet
 if [ ! -f "${PERSONA_COMPANION}" ]; then
 	PERSONA_COMPANION="${HOME}/Dev/flywheel/worktrees/fly-231-onboard-mufasa-belle/packages/teamlead/lead-rules-base/companion-safety-contract.md"
 fi
-export FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES="${FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES:-${PERSONA_IDENTITY},${PERSONA_COMPANION}}"
+FOUNDER_LOCAL_TIME_RULE="${WORKTREE}/packages/teamlead/lead-rules-base/founder-local-time.md"
+export FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES="${FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES:-${PERSONA_IDENTITY},${PERSONA_COMPANION},${FOUNDER_LOCAL_TIME_RULE}}"
 
 # Bot token: the SAME env var Claude Mufasa uses (MUFASA_BOT_TOKEN). In dry-run we
 # tolerate it being unset (the report redacts it and contacts nothing).

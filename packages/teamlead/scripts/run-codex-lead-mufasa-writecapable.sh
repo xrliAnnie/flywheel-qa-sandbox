@@ -26,6 +26,10 @@ set -euo pipefail
 TEAMLEAD_ROOT="${FLYWHEEL_TEAMLEAD_ROOT:-/Users/xiaorongli/Dev/flywheel/packages/teamlead}"
 RUNTIME="${TEAMLEAD_ROOT}/dist/lead-backends/codex/codex-lead-runtime.js"
 GATEWAY_ENTRY="${TEAMLEAD_ROOT}/dist/lead-backends/codex/gateway/gateway-main.js"
+# This launcher bypasses claude-lead.sh, so bind the founder-time rule's CLI
+# authority explicitly instead of relying on an ambient shell variable.
+FLYWHEEL_PACKAGES_ROOT="$(cd "${TEAMLEAD_ROOT}/.." && pwd)"
+export FLYWHEEL_COMM_CLI="${FLYWHEEL_COMM_CLI:-${FLYWHEEL_PACKAGES_ROOT}/flywheel-comm/dist/index.js}"
 if [ ! -f "${RUNTIME}" ] || [ ! -f "${GATEWAY_ENTRY}" ]; then
 	echo "runtime/gateway not built at ${TEAMLEAD_ROOT}/dist — run: pnpm --filter flywheel-teamlead build" >&2
 	exit 1
@@ -67,7 +71,8 @@ export FLYWHEEL_GATEWAY_PROJECT_REPO="${FLYWHEEL_GATEWAY_PROJECT_REPO:-xrliAnnie
 # but the persona prose still shapes the voice).
 PERSONA_IDENTITY="${HOME}/Dev/growth/.lead/mufasa-lead/identity.md"
 PERSONA_COMPANION="${TEAMLEAD_ROOT}/lead-rules-base/companion-safety-contract.md"
-export FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES="${FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES:-${PERSONA_IDENTITY},${PERSONA_COMPANION}}"
+FOUNDER_LOCAL_TIME_RULE="${TEAMLEAD_ROOT}/lead-rules-base/founder-local-time.md"
+export FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES="${FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES:-${PERSONA_IDENTITY},${PERSONA_COMPANION},${FOUNDER_LOCAL_TIME_RULE}}"
 
 # ── secrets (broker-served into the gateway ONLY; the runtime washes the
 #     app-server env of *TOKEN*/*SECRET*/*KEY* so NEITHER reaches the model shell) ──

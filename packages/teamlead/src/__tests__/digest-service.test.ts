@@ -2,11 +2,12 @@
  * FLY-727: daily deployment digest — aggregation + render + StateStore tests.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type AggregateContext,
 	aggregateDeploymentDigest,
 	cleanSummary,
+	DigestService,
 	dateStringInZone,
 	MAX_DIGEST_HTML_BYTES,
 	parseSqliteUtc,
@@ -75,6 +76,47 @@ describe("dateStringInZone / parseSqliteUtc (DST-safe PT day)", () => {
 				"America/Los_Angeles",
 			),
 		).toBe("2026-11-01");
+	});
+});
+
+describe("DigestService dynamic founder timezone", () => {
+	let store: StateStore;
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+	afterEach(() => store.close());
+
+	it("re-resolves a timezone provider between requests", () => {
+		let timezone = "America/Los_Angeles";
+		const service = new DigestService(store, { tz: () => timezone });
+		const now = new Date("2026-07-16T02:00:00.000Z");
+
+		expect(service.defaultDay(now)).toBe("2026-07-14");
+		timezone = "Asia/Tokyo";
+		expect(service.defaultDay(now)).toBe("2026-07-15");
+	});
+
+	it("takes one timezone snapshot for default-day and aggregation in a render", () => {
+		const provider = vi
+			.fn<() => string>()
+			.mockReturnValueOnce("America/Los_Angeles")
+			.mockReturnValue("Asia/Tokyo");
+		const service = new DigestService(store, { tz: provider });
+
+		const html = service.renderHtml(
+			undefined,
+			new Date("2026-07-16T02:00:00.000Z"),
+		);
+
+		expect(provider).toHaveBeenCalledTimes(1);
+		expect(html).toContain("今日上线 Digest — 2026-07-14");
+	});
+
+	it("keeps an explicit digest timezone fixed", () => {
+		const service = new DigestService(store, { tz: "Asia/Tokyo" });
+		expect(service.defaultDay(new Date("2026-07-16T02:00:00.000Z"))).toBe(
+			"2026-07-15",
+		);
 	});
 });
 

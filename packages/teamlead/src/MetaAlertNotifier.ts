@@ -29,6 +29,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { getStateDir } from "flywheel-agent-team-transport";
+import { formatFounderLocal, resolveFounderTimezone } from "flywheel-config";
 
 const execFileAsync = promisify(execFile);
 
@@ -69,6 +70,8 @@ export interface MetaAlertNotifierConfig {
 	/** Injectable exec for osascript (tests). */
 	execFileFn?: ExecFileLike;
 	now?: () => number;
+	/** Current founder timezone provider (injectable for deterministic tests). */
+	founderTimezone?: () => string;
 	logger?: (msg: string) => void;
 }
 
@@ -79,6 +82,7 @@ export class MetaAlertNotifier {
 	private readonly debounceMs: number;
 	private readonly execFileFn: ExecFileLike;
 	private readonly now: () => number;
+	private readonly founderTimezone: () => string;
 	private readonly logger: (msg: string) => void;
 	private readonly lastSent = new Map<MetaAlertReason, number>();
 
@@ -89,6 +93,7 @@ export class MetaAlertNotifier {
 			config.execFileFn ??
 			((cmd, args) => execFileAsync(cmd, args, { timeout: 10_000 }));
 		this.now = config.now ?? (() => Date.now());
+		this.founderTimezone = config.founderTimezone ?? resolveFounderTimezone;
 		this.logger =
 			config.logger ?? ((msg) => console.warn(`[MetaAlertNotifier] ${msg}`));
 	}
@@ -158,7 +163,7 @@ export class MetaAlertNotifier {
 		try {
 			await mkdir(this.dir, { recursive: true });
 			const path = join(this.dir, `${input.reason}.txt`);
-			const content = `[${new Date(now).toISOString()}] ${input.title}\nreason=${input.reason}\n\n${input.body}\n`;
+			const content = `[${formatFounderLocal(new Date(now), this.founderTimezone())}] ${input.title}\nreason=${input.reason}\n\n${input.body}\n`;
 			const tmp = `${path}.tmp.${process.pid}.${now}`;
 			await writeFile(tmp, content, "utf-8");
 			await rename(tmp, path);

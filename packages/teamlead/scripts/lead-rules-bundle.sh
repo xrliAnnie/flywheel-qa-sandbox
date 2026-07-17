@@ -87,6 +87,9 @@ compute_lead_rule_bundle() {
   esac
 
   # ── Universal governance (claude-lead.sh:1581-1617) ──
+  # Founder-local time is universal for companion + cos + dept. It is a short
+  # time-interpretation contract, not an engineering-role rule.
+  _lrb_emit "${base}/founder-local-time.md" 0 || return 10
   # founder-only-authority + html-delivery: cos + dept (companion skips both).
   if [ "$role" != "companion" ]; then
     _lrb_emit "${base}/founder-only-authority.md" "$governance_required" || return 10

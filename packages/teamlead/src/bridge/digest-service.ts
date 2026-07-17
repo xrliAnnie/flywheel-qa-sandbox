@@ -328,7 +328,7 @@ export function shiftDay(day: string, delta: number): string {
 }
 
 export interface DigestServiceOptions {
-	tz: string;
+	tz: string | (() => string);
 	linearBaseUrl?: string;
 }
 
@@ -344,7 +344,11 @@ export class DigestService {
 		private readonly opts: DigestServiceOptions,
 	) {}
 
-	aggregate(day: string): FleetDigestReport {
+	private resolveTimezone(): string {
+		return typeof this.opts.tz === "function" ? this.opts.tz() : this.opts.tz;
+	}
+
+	aggregate(day: string, timezone = this.resolveTimezone()): FleetDigestReport {
 		// Wide UTC window amply covering the PT civil day (PT = UTC-7/-8).
 		const sinceUtc = `${shiftDay(day, -1)} 00:00:00`;
 		const untilUtc = `${shiftDay(day, 2)} 00:00:00`;
@@ -388,18 +392,23 @@ export class DigestService {
 			sessionByKey,
 			completions,
 			day,
-			tz: this.opts.tz,
+			tz: timezone,
 		});
 	}
 
-	renderHtml(day: string): string {
-		return renderDigestHtml(this.aggregate(day), {
+	renderHtml(day?: string, now: Date = new Date()): string {
+		const timezone = this.resolveTimezone();
+		const renderDay = day ?? this.defaultDay(now, timezone);
+		return renderDigestHtml(this.aggregate(renderDay, timezone), {
 			linearBaseUrl: this.opts.linearBaseUrl,
 		});
 	}
 
 	/** The day the 00:35 job reports: YESTERDAY (the civil day that just ended). */
-	defaultDay(now: Date = new Date()): string {
-		return shiftDay(dateStringInZone(now, this.opts.tz), -1);
+	defaultDay(
+		now: Date = new Date(),
+		timezone = this.resolveTimezone(),
+	): string {
+		return shiftDay(dateStringInZone(now, timezone), -1);
 	}
 }

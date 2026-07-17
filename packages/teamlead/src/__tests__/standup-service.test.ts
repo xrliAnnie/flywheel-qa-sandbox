@@ -1,6 +1,6 @@
 /**
  * GEO-288: StandupService v2 unit tests.
- * Tests aggregateStandup, formatStandupReport, splitDiscordMessage, pacificDateString.
+ * Tests aggregateStandup, formatStandupReport, splitDiscordMessage, founderDateString.
  * v2: No StandupScheduler, no Linear backlog, no Blockers.
  */
 
@@ -9,7 +9,7 @@ import { MAX_DISCORD_MESSAGE_LENGTH } from "../bridge/discord-utils.js";
 import {
 	aggregateStandup,
 	formatStandupReport,
-	pacificDateString,
+	founderDateString,
 	splitDiscordMessage,
 } from "../bridge/standup-service.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -477,24 +477,32 @@ describe("formatStandupReport", () => {
 	});
 });
 
-// ─── pacificDateString tests ──────────────────────────────────────
+// ─── founderDateString tests ──────────────────────────────────────
 
-describe("pacificDateString", () => {
+describe("founderDateString", () => {
 	it("returns YYYY-MM-DD format", () => {
-		const result = pacificDateString(new Date("2026-03-28T12:00:00Z"));
+		const result = founderDateString(
+			new Date("2026-03-28T12:00:00Z"),
+			"America/Los_Angeles",
+		);
 		expect(result).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 	});
 
-	it("uses Pacific Time, not UTC", () => {
+	it("keeps the legacy Pacific date bytes when LA is resolved", () => {
 		// 2026-03-29 at 2:00 AM UTC = 2026-03-28 at 7:00 PM PT (before midnight PT)
-		const result = pacificDateString(new Date("2026-03-29T02:00:00Z"));
+		const result = founderDateString(
+			new Date("2026-03-29T02:00:00Z"),
+			"America/Los_Angeles",
+		);
 		expect(result).toBe("2026-03-28");
 	});
 
-	it("handles Pacific daylight saving correctly", () => {
-		// Summer date: 2026-07-15 at 5:00 AM UTC = 2026-07-14 at 10:00 PM PDT
-		const result = pacificDateString(new Date("2026-07-15T05:00:00Z"));
-		expect(result).toBe("2026-07-14");
+	it("uses the founder timezone instead of a hard-coded Pacific date", () => {
+		const instant = new Date("2026-07-15T05:00:00Z");
+		expect(founderDateString(instant, "America/Los_Angeles")).toBe(
+			"2026-07-14",
+		);
+		expect(founderDateString(instant, "Asia/Tokyo")).toBe("2026-07-15");
 	});
 });
 

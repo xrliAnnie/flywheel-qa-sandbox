@@ -81,6 +81,7 @@ OUT=$(run_dry "$H" "$P" mufasa-lead "$H/proj-growth" growth); PLAN=$(printf '%s'
 printf '%s\n' "$PLAN" | has $'ROLE\tcompanion'                         && ok "T1 companion role" || bad "T1 companion role"
 printf '%s\n' "$PLAN" | grep -qF 'companion-safety-contract.md'        && ok "T1 has safety-contract" || bad "T1 has safety-contract"
 printf '%s\n' "$PLAN" | grep -qF 'cross-dept-channel-rules.md'         && ok "T1 has cross-dept" || bad "T1 has cross-dept"
+printf '%s\n' "$PLAN" | grep -qF 'founder-local-time.md'               && ok "T1 has founder-local-time" || bad "T1 has founder-local-time"
 printf '%s\n' "$PLAN" | grep -qF $'ARG\t--effort'                      && ok "T1 has --effort flag" || bad "T1 has --effort flag"
 # FLY-583: companion effort is pinned to xhigh (was medium). Evidence showed medium
 # did NOT prevent the FLY-306/387 reply-leak (Belle leaked at xhigh too) and only
@@ -109,6 +110,7 @@ PLAN=$(run_dry "$H" "$P" product-lead "$H/proj-gf" geoforge3d | plan_of)
 printf '%s\n' "$PLAN" | has $'ROLE\tstandard'                         && ok "T2 standard role" || bad "T2 standard role"
 printf '%s\n' "$PLAN" | grep -qF 'department-lead-rules.md'           && ok "T2 has department-lead-rules" || bad "T2 has department-lead-rules"
 printf '%s\n' "$PLAN" | grep -qF 'founder-only-authority.md'          && ok "T2 has founder-only-authority" || bad "T2 has founder-only-authority"
+printf '%s\n' "$PLAN" | grep -qF 'founder-local-time.md'              && ok "T2 has founder-local-time" || bad "T2 has founder-local-time"
 printf '%s\n' "$PLAN" | grep -qF $'MCP_SERVER\tflywheel-terminal'     && ok "T2 has terminal MCP" || bad "T2 has terminal MCP"
 printf '%s\n' "$PLAN" | has $'PANE_ENV\tTEAMLEAD_API_TOKEN\tset'      && ok "T2 token SET (unchanged)" || bad "T2 token set"
 printf '%s\n' "$PLAN" | grep -qF $'ARG\t--effort'                     && bad "T2 must NOT have --effort" || ok "T2 no --effort"
@@ -123,6 +125,23 @@ printf '%s\n' "$PLAN" | has $'ROLE\tstandard'                        && ok "T3 c
 printf '%s\n' "$PLAN" | grep -qF 'cos-lead-rules.md'                 && ok "T3 has cos-lead-rules" || bad "T3 has cos-lead-rules"
 printf '%s\n' "$PLAN" | grep -qF 'department-lead-rules.md'          && bad "T3 cos must NOT have dept base rules" || ok "T3 no dept base rules"
 printf '%s\n' "$PLAN" | grep -qF 'founder-only-authority.md'         && ok "T3 has founder-only-authority" || bad "T3 has founder-only-authority"
+printf '%s\n' "$PLAN" | grep -qF 'founder-local-time.md'             && ok "T3 has founder-local-time" || bad "T3 has founder-local-time"
+rm -rf "$H"
+
+# FLY-1319: a configured founder timezone crosses the tmux env boundary for
+# every internal Lead role. The launch plan redacts values, so `set` is the
+# stable proof that companion/cos/dept panes receive the override.
+H=$(make_home); P=$(fixture_projects "$H" true)
+for ROLE_CASE in \
+  "mufasa-lead|$H/proj-growth|growth" \
+  "product-lead|$H/proj-gf|geoforge3d" \
+  "cos-lead|$H/proj-gf|geoforge3d"; do
+  IFS='|' read -r CASE_LEAD CASE_DIR CASE_PROJECT <<<"$ROLE_CASE"
+  PLAN=$(run_dry "$H" "$P" "$CASE_LEAD" "$CASE_DIR" "$CASE_PROJECT" FLYWHEEL_FOUNDER_TZ=Asia/Tokyo | plan_of)
+  printf '%s\n' "$PLAN" | has $'PANE_ENV\tFLYWHEEL_FOUNDER_TZ\tset' \
+    && ok "T3a $CASE_LEAD founder timezone reaches pane" \
+    || bad "T3a $CASE_LEAD founder timezone reaches pane"
+done
 rm -rf "$H"
 
 # ──────────────────────────────────── T4: notfound → fail-STOP, no side effect
@@ -204,6 +223,7 @@ env=DISCORD_CORE_CHANNEL=empty
 env=DISCORD_STATE_DIR=set
 env=FLYWHEEL_COMM_CLI=set
 env=FLYWHEEL_COMM_DB=set
+env=FLYWHEEL_FOUNDER_TZ=empty
 env=FLYWHEEL_LEAD_ID=set
 env=FLYWHEEL_PROJECT_DIR=set
 env=FLYWHEEL_PROJECT_NAME=set
@@ -226,6 +246,7 @@ rule=discord-reply-contract.md
 rule=doc-flow-rules.md
 rule=executor-routing.md
 rule=founder-html-delivery.md
+rule=founder-local-time.md
 rule=founder-only-authority.md
 rule=inbox-ack-rule.md
 rule=model-routing.md
@@ -245,6 +266,7 @@ env=DISCORD_CORE_CHANNEL=empty
 env=DISCORD_STATE_DIR=set
 env=FLYWHEEL_COMM_CLI=set
 env=FLYWHEEL_COMM_DB=set
+env=FLYWHEEL_FOUNDER_TZ=empty
 env=FLYWHEEL_LEAD_ID=set
 env=FLYWHEEL_PROJECT_DIR=set
 env=FLYWHEEL_PROJECT_NAME=set
@@ -263,6 +285,7 @@ rule=cos-lead-rules.md
 rule=cross-dept-channel-rules.md
 rule=discord-reply-contract.md
 rule=founder-html-delivery.md
+rule=founder-local-time.md
 rule=founder-only-authority.md
 rule=inbox-ack-rule.md
 rule=screencapture-l3-skill.md

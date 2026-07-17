@@ -41,6 +41,9 @@ set -euo pipefail
 WORKTREE="${FLY224_WORKTREE:-/Users/xiaorongli/Dev/flywheel}"
 TUI_RUNTIME="${WORKTREE}/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js"
 TUI_HOME_SH="${WORKTREE}/packages/teamlead/scripts/codex-lead-tui-home.sh"
+# This launcher bypasses claude-lead.sh, so bind the founder-time rule's CLI
+# authority explicitly instead of relying on an ambient shell variable.
+export FLYWHEEL_COMM_CLI="${FLYWHEEL_COMM_CLI:-${WORKTREE}/packages/flywheel-comm/dist/index.js}"
 if [ ! -f "${TUI_RUNTIME}" ]; then
 	echo "codex-lead-tui-runtime.js not built — run: pnpm --filter flywheel-teamlead build" >&2
 	exit 1
@@ -126,7 +129,8 @@ export FLYWHEEL_CODEX_LEAD_SANDBOX="read-only"
 # (byte-compat), but fails closed if NONE is readable.
 PERSONA_IDENTITY="${HOME}/Dev/growth/.lead/mufasa-lead/identity.md"
 PERSONA_COMPANION="${WORKTREE}/packages/teamlead/lead-rules-base/companion-safety-contract.md"
-export FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES="${FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES:-${PERSONA_IDENTITY},${PERSONA_COMPANION}}"
+FOUNDER_LOCAL_TIME_RULE="${WORKTREE}/packages/teamlead/lead-rules-base/founder-local-time.md"
+export FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES="${FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES:-${PERSONA_IDENTITY},${PERSONA_COMPANION},${FOUNDER_LOCAL_TIME_RULE}}"
 
 # Bot token: the SAME env var Claude/headless Mufasa uses (MUFASA_BOT_TOKEN). In
 # dry-run we tolerate it being unset (the report redacts it and contacts nothing).

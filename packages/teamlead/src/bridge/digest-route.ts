@@ -25,7 +25,7 @@ export function createDigestRouter(service: DigestService): Router {
 		const day =
 			typeof body.day === "string" && DAY_RE.test(body.day)
 				? body.day
-				: service.defaultDay();
+				: undefined;
 		try {
 			const html = service.renderHtml(day);
 			res.set("Content-Type", "text/html; charset=utf-8").send(html);

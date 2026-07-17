@@ -90,6 +90,7 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 			"doc-flow-rules.md",
 			"auto-qa-pipeline.md",
 			"xiaohongshu-memory-rules.md",
+			"founder-local-time.md",
 			"founder-only-authority.md",
 			"founder-html-delivery.md",
 			"cross-dept-channel-rules.md",
@@ -112,6 +113,7 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 		expect(status).toBe(0);
 		expect(names(lines)).toEqual([
 			"cos-lead-rules.md",
+			"founder-local-time.md",
 			"founder-only-authority.md",
 			"founder-html-delivery.md",
 			"cross-dept-channel-rules.md",
@@ -128,9 +130,49 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 		expect(status).toBe(0);
 		expect(names(lines)).toEqual([
 			"companion-safety-contract.md",
+			"founder-local-time.md",
 			"cross-dept-channel-rules.md",
 		]);
 		expect(names(lines)).not.toContain("founder-only-authority.md");
+	});
+
+	it("ships one hard founder-local time contract for every Lead role", () => {
+		const rule = readFileSync(
+			join(BASE_RULES_DIR, "founder-local-time.md"),
+			"utf8",
+		);
+		expect(rule).toContain("`ts=` is a UTC machine timestamp");
+		expect(rule).toContain("founder_local=");
+		expect(rule).toContain("[sent ");
+		expect(rule).toContain('node "$FLYWHEEL_COMM_CLI" founder-time');
+		expect(rule).toContain("FLYWHEEL_FOUNDER_TZ");
+		expect(rule).toContain("Bridge and affected Leads");
+	});
+
+	it("manual Mufasa launchers include the founder-local rule", () => {
+		for (const launcher of [
+			"run-codex-lead-mufasa-tui.sh",
+			"run-codex-lead-mufasa.sh",
+			"run-codex-lead-mufasa-writecapable.sh",
+		]) {
+			expect(readFileSync(join(SCRIPTS, launcher), "utf8")).toContain(
+				"founder-local-time.md",
+			);
+		}
+	});
+
+	it("every Mufasa launcher binds the founder-time CLI authority", () => {
+		for (const launcher of [
+			"run-codex-lead-mufasa-tui.sh",
+			"run-codex-lead-mufasa.sh",
+			"run-codex-lead-mufasa-writecapable.sh",
+			"run-codex-lead-mufasa-fullaccess.sh",
+			"run-codex-lead-mufasa-tui-fullaccess.sh",
+		]) {
+			expect(readFileSync(join(SCRIPTS, launcher), "utf8")).toContain(
+				"FLYWHEEL_COMM_CLI",
+			);
+		}
 	});
 
 	it("unknown role → rc 2, no output", () => {

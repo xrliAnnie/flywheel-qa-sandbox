@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import {
 	deferredApprovalTtlMs,
+	founderMsgClock,
 	headDriftText,
 	heldReplyText,
 	makeDeferralSupport,
@@ -25,6 +26,11 @@ const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
 const FOUNDER = "F-1";
 
+function snowflakeAt(iso: string): string {
+	const discordEpoch = 1_420_070_400_000n;
+	return ((BigInt(new Date(iso).getTime()) - discordEpoch) << 22n).toString();
+}
+
 afterEach(() => {
 	delete process.env.FLYWHEEL_DEFERRED_FOUNDER_APPROVAL;
 	delete process.env.FLYWHEEL_HELD_DECLINED_REPLY;
@@ -34,6 +40,23 @@ afterEach(() => {
 async function freshStore(): Promise<StateStore> {
 	return StateStore.create(":memory:");
 }
+
+describe("founderMsgClock", () => {
+	it("keeps the legacy LA bytes when LA is the resolved founder timezone", () => {
+		expect(
+			founderMsgClock(
+				snowflakeAt("2026-07-17T02:23:00.000Z"),
+				"America/Los_Angeles",
+			),
+		).toBe("19:23");
+	});
+
+	it("renders the message instant in the current founder timezone", () => {
+		expect(
+			founderMsgClock(snowflakeAt("2026-07-17T02:23:00.000Z"), "Asia/Tokyo"),
+		).toBe("11:23");
+	});
+});
 
 /** Minimal writable-CommDB fake for the rebind write (real writer drives it). */
 function fakeCommDb(opts: {

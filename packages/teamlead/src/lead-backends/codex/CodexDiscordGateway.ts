@@ -26,6 +26,8 @@
  * runtime entrypoint (Phase 2b).
  */
 
+import { formatFounderLocal, resolveFounderTimezone } from "flywheel-config";
+import { snowflakeToMs } from "../../bridge/founder-notify-utils.js";
 import type { LeadInputRouter } from "./LeadInputRouter.js";
 import type { RoundtableReplyRoute } from "./roundtable-reply-route.js";
 
@@ -37,6 +39,8 @@ export interface DiscordInboundMessage {
 	/** Whether the author is a bot (any bot, incl. this Lead or other Leads). */
 	authorBot: boolean;
 	content: string;
+	/** Discord's message send instant. Missing sources fall back to the snowflake. */
+	timestampMs?: number;
 	/** FLY-267: ids of users explicitly @-mentioned (Discord `mentions[].id`).
 	 * Optional/empty when unknown — mention detection then falls back to scanning
 	 * `content` for the `<@id>` / `<@!id>` token. */
@@ -93,6 +97,8 @@ export interface CodexDiscordGatewayOptions {
 	 * R1#1 — the gateway has its OWN static allowlist; without this it would drop the
 	 * thread message even though RestPoll polls it). Omitted → only static channels. */
 	registry?: { has: (channelId: string) => boolean };
+	/** Current founder timezone provider (injectable for deterministic tests). */
+	founderTimezone?: () => string;
 	logger?: {
 		debug?: (m: string, c?: unknown) => void;
 		warn: (m: string, c?: unknown) => void;
@@ -113,6 +119,7 @@ export class CodexDiscordGateway {
 		replyRoute?: RoundtableReplyRoute;
 	};
 	private readonly registry?: { has: (channelId: string) => boolean };
+	private readonly founderTimezone: () => string;
 	private readonly logger: {
 		debug?: (m: string, c?: unknown) => void;
 		warn: (m: string, c?: unknown) => void;
@@ -132,6 +139,7 @@ export class CodexDiscordGateway {
 		this.resolveReplyChannelId = opts.resolveReplyChannelId;
 		this.resolveReplyRoute = opts.resolveReplyRoute;
 		this.registry = opts.registry;
+		this.founderTimezone = opts.founderTimezone ?? resolveFounderTimezone;
 		this.logger = opts.logger ?? { warn: (m, c) => console.warn(m, c ?? "") };
 	}
 
@@ -173,10 +181,20 @@ export class CodexDiscordGateway {
 				? route.replyChannelId
 				: this.resolveReplyChannelId?.(msg);
 			const replyRoute = route?.replyRoute;
+			const explicitTimestamp = msg.timestampMs;
+			const sentAt =
+				typeof explicitTimestamp === "number" &&
+				Number.isFinite(explicitTimestamp)
+					? explicitTimestamp
+					: snowflakeToMs(msg.id);
+			const payload =
+				sentAt === null
+					? msg.content
+					: `[sent ${formatFounderLocal(new Date(sentAt), this.founderTimezone())} — founder 当前时区渲染]\n${msg.content}`;
 			this.router.submit({
 				idempotencyKey: msg.id,
 				source: "discord",
-				payload: msg.content,
+				payload,
 				...(replyChannelId ? { replyChannelId } : {}),
 				...(replyRoute ? { replyRoute } : {}),
 			});

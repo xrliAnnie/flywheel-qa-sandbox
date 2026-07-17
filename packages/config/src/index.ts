@@ -34,6 +34,17 @@ export {
 	resolveAllFlags,
 	resolveFlag,
 } from "./feature-flags/index.js";
+export type {
+	FounderTimezoneResolver,
+	FounderTimezoneResolverIo,
+} from "./founder-timezone.js";
+export {
+	createFounderTimezoneResolver,
+	formatFounderLocal,
+	founderLocalIso,
+	founderOffsetMinutes,
+	resolveFounderTimezone,
+} from "./founder-timezone.js";
 // FLY-869: founder-UX gate resolution choke point (absent config → enforce).
 // FLY-900: fleet-wide kill-switch helper (isFounderUxGateEnabled) — default OFF.
 export type { EffectiveFounderUxGateConfig } from "./founder-ux-config.js";

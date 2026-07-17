@@ -25,6 +25,7 @@ import {
 	parseDuration,
 } from "./commands/declare-state.js";
 import { runFeatureFlags } from "./commands/feature-flags.js";
+import { founderTime } from "./commands/founder-time.js";
 import {
 	awaitFounderUxGate,
 	declareFounderUx,
@@ -123,6 +124,8 @@ Commands:
             apply --name <flag> --to on|off [--bridge-url <url>]  — the command
             the founder pastes to the Lead (copy-paste-apply); stage→apply a
             direct-toggle flag on the loopback Bridge routes.
+  founder-time   Print Annie's current local time and timezone. Uses the host
+            device timezone by default; --json emits {iso,tz,abbrev,offsetMinutes}.
   runner-config   Per-project runner defaults + cron model (FLY-709). Subcommand:
             apply --project <name> [--cron <collection_id>] [--model <id|default>]
             [--effort <level|default>] [--backend <executor|default>] --yes
@@ -283,6 +286,9 @@ async function main(): Promise<void> {
 			break;
 		case "feature-flags":
 			await runFeatureFlags(commandArgs);
+			break;
+		case "founder-time":
+			founderTime(commandArgs);
 			break;
 		case "runner-config":
 			await runRunnerConfig(commandArgs);

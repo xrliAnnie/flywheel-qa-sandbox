@@ -29,6 +29,8 @@ interface RawDiscordMessage {
 	id: string;
 	channel_id?: string;
 	content?: string;
+	/** Discord ISO timestamp for the message send instant. */
+	timestamp?: string;
 	author?: { id?: string; bot?: boolean };
 	/** FLY-267: Discord populates `mentions` with the @-mentioned user objects. */
 	mentions?: Array<{ id?: string }>;
@@ -329,12 +331,18 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 	private deliver(m: RawDiscordMessage): boolean {
 		if (!this.handler || !m.id) return true;
 		try {
+			const parsedTimestamp = m.timestamp
+				? Date.parse(m.timestamp)
+				: Number.NaN;
 			return this.handler({
 				id: m.id,
 				channelId: m.channel_id ?? "",
 				authorId: m.author?.id ?? "",
 				authorBot: m.author?.bot === true,
 				content: m.content ?? "",
+				...(Number.isFinite(parsedTimestamp)
+					? { timestampMs: parsedTimestamp }
+					: {}),
 				// FLY-267: explicit @-mention ids (for shared-channel mention-gating).
 				mentions: (m.mentions ?? [])
 					.map((u) => u.id)

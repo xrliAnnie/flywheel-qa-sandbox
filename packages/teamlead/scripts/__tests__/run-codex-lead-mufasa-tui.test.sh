@@ -29,14 +29,19 @@ trap 'rm -rf "$T"' EXIT
 # this, a parent shell carrying FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS (e.g. a Lead
 # session) flips bridge cases to the cross-dept-conflict path (Codex R2/R3 finding).
 unset FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS FLYWHEEL_CODEX_LEAD_PROFILE \
-	FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES FLYWHEEL_CODEX_LEAD_OUTBOUND
+	FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES FLYWHEEL_CODEX_LEAD_OUTBOUND \
+	FLYWHEEL_COMM_CLI
 
 # Fake worktree with the built runtime + the tui-home script (a no-op stub; ensures
 # are skipped in dry-run, but the launcher checks the file exists).
 WT="$T/wt"
-mkdir -p "$WT/packages/teamlead/dist/lead-backends/codex" "$WT/packages/teamlead/scripts"
+REAL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+mkdir -p "$WT/packages/teamlead/dist/lead-backends/codex" "$WT/packages/teamlead/scripts" \
+	"$WT/packages/flywheel-comm/dist"
+ln -s "$REAL_ROOT/lead-rules-base" "$WT/packages/teamlead/lead-rules-base"
 printf '// stub\n' > "$WT/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js"
 printf '#!/bin/bash\nexit 0\n' > "$WT/packages/teamlead/scripts/codex-lead-tui-home.sh"
+printf '// stub\n' > "$WT/packages/flywheel-comm/dist/index.js"
 chmod +x "$WT/packages/teamlead/scripts/codex-lead-tui-home.sh"
 
 # Mock `node`: dump the env it was exec'd with to $ENVDUMP, then exit 0.
@@ -75,6 +80,9 @@ if [ -f "$D" ]; then
 	[ "$(envval "$D" FLYWHEEL_PROJECT_NAME)" = "growth" ] && pass "PROJECT_NAME=growth" || fail "PROJECT_NAME wrong"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_OUTBOUND)" = "direct" ] && pass "outbound defaults to direct (zero-regression, preserves roundtable)" || fail "outbound not direct"
 	[ "$(envval "$D" FLYWHEEL_CODEX_TUI_CWD)" = "$T/cwd" ] && pass "TUI_CWD passed through" || fail "TUI_CWD wrong"
+	[ "$(envval "$D" FLYWHEEL_COMM_CLI)" = "$WT/packages/flywheel-comm/dist/index.js" ] \
+		&& pass "founder-time CLI path reaches rollback TUI runtime" \
+		|| fail "FLYWHEEL_COMM_CLI missing/wrong ($(envval "$D" FLYWHEEL_COMM_CLI))"
 	cb=$(envval "$D" FLYWHEEL_CODEX_BIN)
 	case "$cb" in
 		*/packages/standalone/current/codex) pass "CODEX_BIN points at standalone (daemon backend)" ;;
@@ -145,10 +153,17 @@ else fail "invalid outbound should fail loud (rc=$rc, out=$out)"; fi
 D=$(run_dry env)
 if [ -f "$D" ]; then
 	spf=$(envval "$D" FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)
-	case "$spf" in
-		*companion-safety-contract.md) pass "default → companion contract (byte-compat)" ;;
+	case ",$spf," in
+		*,*/companion-safety-contract.md,*) pass "default → companion contract (byte-compat)" ;;
 		*) fail "default should load companion contract (got: $spf)" ;;
 	esac
+	case "$spf" in
+		*founder-local-time.md) pass "default → founder-local rule path" ;;
+		*) fail "default should load founder-local rule (got: $spf)" ;;
+	esac
+	printf '%s' "$spf" | tr ',' '\n' | xargs cat 2>/dev/null | grep -q "UTC machine timestamp" \
+		&& pass "rollback TUI baseInstructions contain founder-local rule body" \
+		|| fail "rollback TUI baseInstructions missing founder-local rule body"
 else fail "default dry-run produced no env dump"; fi
 
 # ── 10. FLY-1241: hostile ambient profile is overridden — pure companion pin ──
@@ -162,7 +177,7 @@ if [ -f "$D" ]; then
 	[ "$p" = "companion" ] && pass "hostile ambient full-access → pinned back to companion" || fail "ambient full-access leaked (profile=$p)"
 	[ "$s" = "read-only" ] && pass "hostile ambient workspace-write → pinned back to read-only" || fail "ambient sandbox leaked (sandbox=$s)"
 	spf=$(envval "$D" FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)
-	case "$spf" in *companion-safety-contract.md) pass "hostile ambient still loads companion contract" ;; *) fail "wrong contract under hostile ambient ($spf)" ;; esac
+	case ",$spf," in *,*/companion-safety-contract.md,*) pass "hostile ambient still loads companion contract" ;; *) fail "wrong contract under hostile ambient ($spf)" ;; esac
 else fail "hostile-ambient dry-run produced no env dump"; fi
 
 echo ""

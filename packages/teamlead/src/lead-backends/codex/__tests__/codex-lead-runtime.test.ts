@@ -823,6 +823,7 @@ describe("buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pa
 			TEAMLEAD_API_TOKEN: "tl", // Claude pane HAS this — allowed
 			OPENAI_API_KEY: "oai", // Claude pane HAS this — allowed
 			FLYWHEEL_COMM_DB: "/db",
+			FLYWHEEL_FOUNDER_TZ: "Asia/Tokyo",
 			BRIDGE_URL: "http://b", // Claude pane HAS this (NOT the FLYWHEEL_ alias)
 			// NOT in the Claude pane allowlist — must be dropped even though needed
 			// elsewhere; a full-access Lead must never get MORE secrets than Claude.
@@ -837,6 +838,7 @@ describe("buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pa
 		expect(out.DISCORD_BOT_TOKEN).toBe("discord");
 		expect(out.TEAMLEAD_API_TOKEN).toBe("tl");
 		expect(out.BRIDGE_URL).toBe("http://b");
+		expect(out.FLYWHEEL_FOUNDER_TZ).toBe("Asia/Tokyo");
 		expect(out.FLYWHEEL_API_TOKEN).toBeUndefined(); // extra token — dropped
 		expect(out.SOME_OTHER_LEAD_BOT_TOKEN).toBeUndefined();
 		expect(out.VERCEL_TOKEN).toBeUndefined();

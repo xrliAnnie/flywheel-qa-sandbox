@@ -75,6 +75,11 @@ function msg(over: Partial<DiscordInboundMessage> = {}): DiscordInboundMessage {
 	};
 }
 
+function snowflakeAt(iso: string): string {
+	const discordEpoch = 1_420_070_400_000n;
+	return ((BigInt(new Date(iso).getTime()) - discordEpoch) << 22n).toString();
+}
+
 describe("CodexDiscordGateway — construction", () => {
 	it("requires botUserId (echo immunity)", () => {
 		const source = new FakeSource();
@@ -125,6 +130,70 @@ describe("CodexDiscordGateway — forwarding + filters", () => {
 		expect(router.submits).toEqual([
 			{ idempotencyKey: "m9", source: "discord", payload: "do the thing" },
 		]);
+	});
+
+	it("prefixes the original payload with the message instant in founder local time", () => {
+		const { gw, router } = make({
+			founderTimezone: () => "America/Los_Angeles",
+		});
+
+		gw.handle(
+			msg({
+				id: "timestamped",
+				timestampMs: new Date("2026-07-17T02:23:05.000Z").getTime(),
+				content: "do the thing",
+			}),
+		);
+
+		expect(router.submits[0].payload).toBe(
+			"[sent 2026-07-16 19:23 PDT — founder 当前时区渲染]\ndo the thing",
+		);
+	});
+
+	it("uses the old sent instant for a downtime replay, not processing time", () => {
+		const { gw, router } = make({ founderTimezone: () => "Asia/Tokyo" });
+
+		gw.handle(
+			msg({
+				id: "backlog",
+				timestampMs: new Date("2026-07-16T02:23:05.000Z").getTime(),
+				content: "sent while down",
+			}),
+		);
+
+		expect(
+			router.submits[0].payload.startsWith(
+				"[sent 2026-07-16 11:23 GMT+9 — founder 当前时区渲染]",
+			),
+		).toBe(true);
+	});
+
+	it("re-renders an old instant when the current founder timezone changes", () => {
+		let timezone = "America/Los_Angeles";
+		const { gw, router } = make({ founderTimezone: () => timezone });
+		const old = msg({
+			id: "old-1",
+			timestampMs: new Date("2026-07-17T02:23:05.000Z").getTime(),
+		});
+
+		gw.handle(old);
+		timezone = "Asia/Tokyo";
+		gw.handle({ ...old, id: "old-2" });
+
+		expect(router.submits[0].payload).toContain("2026-07-16 19:23 PDT");
+		expect(router.submits[1].payload).toContain("2026-07-17 11:23 GMT+9");
+	});
+
+	it("falls back to the snowflake instant when timestampMs is absent", () => {
+		const { gw, router } = make({
+			founderTimezone: () => "America/Los_Angeles",
+		});
+
+		gw.handle(
+			msg({ id: snowflakeAt("2026-07-17T02:23:05.000Z"), content: "hi" }),
+		);
+
+		expect(router.submits[0].payload).toContain("2026-07-16 19:23 PDT");
 	});
 
 	it("ECHO IMMUNITY: drops the Lead's own bot messages (FLY-220) — safe to advance", () => {
