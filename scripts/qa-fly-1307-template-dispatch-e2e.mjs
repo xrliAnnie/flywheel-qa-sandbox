@@ -38,6 +38,7 @@ const MANAGED_ENV = [
 	"FLYWHEEL_WORKFLOW_CLAIMS_WRITE",
 	"FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES",
 	"FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH",
+	"FLYWHEEL_THREE_STAGE",
 ];
 const ORIGINAL_ENV = Object.fromEntries(
 	MANAGED_ENV.map((key) => [key, process.env[key]]),
@@ -97,6 +98,7 @@ try {
 	process.env.FLYWHEEL_COMM_BACKEND = "commdb";
 	process.env.BRIDGE_DEPT_SCOPE_REJECT = "0";
 	Object.assign(process.env, FLAGS_ON);
+	delete process.env.FLYWHEEL_THREE_STAGE;
 	mkdirSync(join(ROOT, ".flywheel"), { recursive: true });
 	mkdirSync(join(ROOT, ".flywheel", "bin"), { recursive: true });
 	symlinkSync(
@@ -147,9 +149,33 @@ try {
 	const projectRoot = join(ROOT, "project");
 	const bareRemote = join(ROOT, "remote.git");
 	mkdirSync(join(projectRoot, "agents"), { recursive: true });
+	mkdirSync(join(projectRoot, ".flywheel"), { recursive: true });
 	writeFileSync(
 		join(projectRoot, "agents", "generic-executor.md"),
 		"---\nname: generic-executor\n---\nExecute the pinned workflow node.\n",
+	);
+	writeFileSync(
+		join(projectRoot, ".flywheel", "config.yaml"),
+		`project: ${PROJECT}
+linear:
+  team_id: FLY
+runners:
+  default: claude
+  available:
+    claude:
+      type: claude
+teams:
+  - name: engineering
+    orchestrators:
+      - type: code
+        runner: claude
+        budget_per_issue: 5
+decision_layer:
+  autonomy_level: observer
+  escalation_channel: qa
+pipeline:
+  three_stage: true
+`,
 	);
 	sh("git", ["init", "-q", "--bare", bareRemote], ROOT);
 	sh("git", ["init", "-q", "-b", "main"], projectRoot);
@@ -280,6 +306,7 @@ try {
 				nodeId: generalized.nodeId,
 				attempt: generalized.attempt,
 				role: request.sessionRole,
+				shareParentBranch: request.shareParentBranch,
 				dispatch: generalized.dispatch,
 			});
 			const adapterType =
@@ -520,7 +547,9 @@ try {
 		"engineering_full_chain_with_one_qa_loop",
 		engineeringSpawns
 			.map((entry) => `${entry.nodeId}:${entry.attempt}`)
-			.join(",") === "design:1,implement:1,qa:1,implement:2,qa:2",
+			.join(",") === "design:1,implement:1,qa:1,implement:2,qa:2" &&
+			engineeringSpawns[0]?.role === "design" &&
+			engineeringSpawns[0]?.shareParentBranch === true,
 	);
 	record(
 		"pinned_explicit_vendor_model_effort_dispatch",

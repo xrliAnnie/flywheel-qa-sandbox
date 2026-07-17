@@ -1,6 +1,6 @@
 {
 	"issue": "FLY-1307",
-	"generated_at": "2026-07-17T04:47:16.202Z",
+	"generated_at": "2026-07-17T05:36:33.488Z",
 	"harness": {
 		"bridge": "production createBridgeApp HTTP stack",
 		"state": "isolated teamlead.db + CommDB",
@@ -17,22 +17,24 @@
 	"spawn_count": 8,
 	"spawn_records": [
 		{
-			"executionId": "feb5f5b2-e311-485b-98a5-bc0d33a3550c",
-			"runId": "0ce79c96-fc40-482c-bb6f-c5bf57e05539",
+			"executionId": "e97f6519-9742-4224-920c-da0273d293fb",
+			"runId": "7f1ac443-08b2-4017-84de-699c54b206b6",
 			"nodeId": "design",
 			"attempt": 1,
 			"role": "design",
+			"shareParentBranch": true,
 			"dispatch": {
 				"vendor": "claude",
 				"model": "claude-fable-5"
 			}
 		},
 		{
-			"executionId": "9dc8b809-f9d9-4b32-8d76-94d4a9697ff1",
-			"runId": "0ce79c96-fc40-482c-bb6f-c5bf57e05539",
+			"executionId": "f8774cb3-0007-40a8-9934-9db2e369f992",
+			"runId": "7f1ac443-08b2-4017-84de-699c54b206b6",
 			"nodeId": "implement",
 			"attempt": 1,
 			"role": "implement",
+			"shareParentBranch": true,
 			"dispatch": {
 				"vendor": "codex",
 				"model": "gpt-5.6-sol",
@@ -40,22 +42,24 @@
 			}
 		},
 		{
-			"executionId": "9ee420d3-db18-4400-87cb-a286ca4f937c",
-			"runId": "0ce79c96-fc40-482c-bb6f-c5bf57e05539",
+			"executionId": "ceabbfe7-2f20-4bc4-bf20-d2a9cf7c441b",
+			"runId": "7f1ac443-08b2-4017-84de-699c54b206b6",
 			"nodeId": "qa",
 			"attempt": 1,
 			"role": "qa",
+			"shareParentBranch": true,
 			"dispatch": {
 				"vendor": "claude",
 				"model": "claude-opus-4-8"
 			}
 		},
 		{
-			"executionId": "41da7b3c-f36c-4610-8adc-5bae6393b6de",
-			"runId": "0ce79c96-fc40-482c-bb6f-c5bf57e05539",
+			"executionId": "f26d4c2b-95d0-4f6d-8375-81e29085ce5d",
+			"runId": "7f1ac443-08b2-4017-84de-699c54b206b6",
 			"nodeId": "implement",
 			"attempt": 2,
 			"role": "implement",
+			"shareParentBranch": true,
 			"dispatch": {
 				"vendor": "codex",
 				"model": "gpt-5.6-sol",
@@ -63,19 +67,20 @@
 			}
 		},
 		{
-			"executionId": "3c0af65b-673f-41f8-acb0-99f2ceb00ca6",
-			"runId": "0ce79c96-fc40-482c-bb6f-c5bf57e05539",
+			"executionId": "4ed36ffb-06df-4352-b4df-8c4526021e22",
+			"runId": "7f1ac443-08b2-4017-84de-699c54b206b6",
 			"nodeId": "qa",
 			"attempt": 2,
 			"role": "qa",
+			"shareParentBranch": true,
 			"dispatch": {
 				"vendor": "claude",
 				"model": "claude-opus-4-8"
 			}
 		},
 		{
-			"executionId": "f4288303-0f9a-4328-a444-c246d910eade",
-			"runId": "83b2663f-f2d6-4e8b-b066-bf3d2880e7b7",
+			"executionId": "0699a4a8-ae22-4101-abc0-6b12993b9457",
+			"runId": "c661b200-d20f-4e21-b091-7b1fcd9ece3a",
 			"nodeId": "research",
 			"attempt": 1,
 			"role": "main",
@@ -86,8 +91,8 @@
 			}
 		},
 		{
-			"executionId": "56a0c9e0-17a0-4b75-9ec3-33860a55223f",
-			"runId": "83b2663f-f2d6-4e8b-b066-bf3d2880e7b7",
+			"executionId": "c7fd53a4-1c2a-4be3-99a8-5320829d061b",
+			"runId": "c661b200-d20f-4e21-b091-7b1fcd9ece3a",
 			"nodeId": "produce",
 			"attempt": 1,
 			"role": "main",
@@ -98,8 +103,8 @@
 			}
 		},
 		{
-			"executionId": "013b2b0d-6c25-45c9-9489-b2e98a41103c",
-			"runId": "83b2663f-f2d6-4e8b-b066-bf3d2880e7b7",
+			"executionId": "1336f816-92fa-4c7f-a2e3-c8e360aca30b",
+			"runId": "c661b200-d20f-4e21-b091-7b1fcd9ece3a",
 			"nodeId": "review",
 			"attempt": 1,
 			"role": "main",

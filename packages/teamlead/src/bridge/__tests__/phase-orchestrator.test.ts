@@ -973,14 +973,20 @@ describe("FLY-1307 named hard gate — engine-owned v1 is event-equivalent to th
 		});
 	}
 
-	it("matches handoff order, one fail loop, founder gate, and max-limit escalation (vendor lineup intentionally excluded)", async () => {
+	it("matches observed legacy handoffs, one fail loop, founder gate, and max-limit escalation (vendor lineup intentionally excluded)", async () => {
 		const legacy = makeDeps();
 		const belt = new PhaseOrchestrator(legacy.deps);
 		const legacyTrace: string[] = [];
+		let observedStartCount = 0;
+		const observeNewLegacyRole = (): string => {
+			const role = legacy.start.mock.calls[observedStartCount]?.[0].sessionRole;
+			observedStartCount = legacy.start.mock.calls.length;
+			return role ?? "missing";
+		};
 		await belt.onPhaseComplete(
 			session({ session_role: "design", status: "design_done" }),
 		);
-		legacyTrace.push("design_done:design->implement");
+		legacyTrace.push(`design_done:design->${observeNewLegacyRole()}`);
 		await belt.onPhaseComplete(
 			session({
 				execution_id: "implement-1",
@@ -989,7 +995,7 @@ describe("FLY-1307 named hard gate — engine-owned v1 is event-equivalent to th
 				review_question_id: "q-1",
 			}),
 		);
-		legacyTrace.push("implement_done:implement->qa");
+		legacyTrace.push(`implement_done:implement->${observeNewLegacyRole()}`);
 		await belt.onQaResult(
 			session({
 				execution_id: "qa-1",
@@ -998,7 +1004,7 @@ describe("FLY-1307 named hard gate — engine-owned v1 is event-equivalent to th
 			}),
 			{ eventId: "qa-fail-1", status: "fail", summary: "retry" },
 		);
-		legacyTrace.push("qa_fail:qa->implement");
+		legacyTrace.push(`qa_fail:qa->${observeNewLegacyRole()}`);
 		await belt.onPhaseComplete(
 			session({
 				execution_id: "implement-2",
@@ -1007,7 +1013,7 @@ describe("FLY-1307 named hard gate — engine-owned v1 is event-equivalent to th
 				review_question_id: "q-2",
 			}),
 		);
-		legacyTrace.push("implement_done:implement->qa");
+		legacyTrace.push(`implement_done:implement->${observeNewLegacyRole()}`);
 		await belt.onQaResult(
 			session({
 				execution_id: "qa-2",
@@ -1016,7 +1022,9 @@ describe("FLY-1307 named hard gate — engine-owned v1 is event-equivalent to th
 			}),
 			{ eventId: "qa-pass-2", status: "pass" },
 		);
-		legacyTrace.push("qa_pass:qa->founder_gate");
+		legacyTrace.push(
+			`qa_pass:qa->${legacy.intents.get("qa-2")?.status === "pass" ? "founder_gate" : "missing"}`,
+		);
 
 		const store = await engineRun("equivalence-pass");
 		expect(
@@ -1088,9 +1096,13 @@ describe("FLY-1307 named hard gate — engine-owned v1 is event-equivalent to th
 				}),
 				{ eventId: `limit-${round}`, status: "fail" },
 			);
-			legacyLimitTrace.push(
-				round <= 3 ? "qa_fail:qa->implement" : "qa_fail:qa->escalate",
-			);
+			const dispatchedRole = current.start.mock.calls.at(-1)?.[0].sessionRole;
+			const target = dispatchedRole
+				? dispatchedRole
+				: current.alertLeadPipelineError.mock.calls.length > 0
+					? "escalate"
+					: "missing";
+			legacyLimitTrace.push(`qa_fail:qa->${target}`);
 		}
 
 		const limited = await engineRun("equivalence-limit");

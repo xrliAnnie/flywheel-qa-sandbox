@@ -1,14 +1,14 @@
 ---
 issue: FLY-1307
-phase: qa
-phaseCursor: 5/5
-updated: 2026-07-16T22:15:00-07:00
-nextStep: "QA round 3 = FAIL(kickback)。实现者修 plan 4.3 首条具名硬 gate「eng 等价 harness」空过(qa-report-round3.md 2 节有突变复现步骤+4 节修法),推新 head 后唤醒 QA 复验。"
+phase: implement
+phaseCursor: 4/5
+updated: 2026-07-16T22:27:00-07:00
+nextStep: "提交并推送新 head；重新请求 cross-family code review，通过后再交独立 QA。保持 HOLD，不开 ship gate。"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1307 progress
-**phase**: qa (5/5) — **FAIL / kickback**
-**verdict**: PR-8 五道硬 gate 中 4 道真、1 道空过(eng 等价 harness,plan 4.3 首条具名项)。
-**next**: 实现者按 qa-report-round3.md §4 修 harness(不动生产代码),突变 A/B 自验会变红,推新 head → QA 复验。
+**phase**: implement (4/5) — **review/QA kickback fixed locally**
+**verdict**: eng 等价 harness 已改读真实 belt side effects，QA 指定的突变 A/B 均打红；另修 v1 无 key 409、three-stage entry/active-phase 绕过、默认 binding 扩面与启用文档语义。teamlead 15 文件 324/324、config 20/20、typecheck/build/biome、真机 E2E 13/13 全绿。
+**next**: commit + push exact head → 新 code review round → 独立 QA；HOLD，不自助 ship。

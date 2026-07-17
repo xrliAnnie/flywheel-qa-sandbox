@@ -8,7 +8,10 @@ import {
 	loadBundledWorkflowSeeds,
 	workflowSeedContentHash,
 } from "../workflow-template.js";
-import { resolveWorkflowTemplateSelection } from "../workflow-template-selection.js";
+import {
+	resolveWorkflowTemplateCandidateSchema,
+	resolveWorkflowTemplateSelection,
+} from "../workflow-template-selection.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -84,6 +87,12 @@ describe("workflow template selection", () => {
 				env: {},
 			}),
 		).toBeNull();
+		expect(
+			resolveWorkflowTemplateCandidateSchema(store, {
+				project: "flywheel",
+				taskCategory: "research",
+			}),
+		).toBeNull();
 		const v1 = loadBundledWorkflowSeeds()[0]!;
 		store.importWorkflowTemplateSeed(v1);
 		store.bindWorkflowCategory({
@@ -92,6 +101,12 @@ describe("workflow template selection", () => {
 			templateId: v1.templateId,
 			updatedBy: "lead",
 		});
+		expect(
+			resolveWorkflowTemplateCandidateSchema(store, {
+				project: "flywheel",
+				taskCategory: "research",
+			}),
+		).toBe(1);
 		expect(
 			resolveWorkflowTemplateSelection(store, {
 				project: "flywheel",
@@ -108,6 +123,66 @@ describe("workflow template selection", () => {
 			}),
 		).toBeNull();
 		expect(store.getActiveWorkflowRunForIssue("FLY-X")).toBeUndefined();
+		store.close();
+	});
+
+	it("keeps an enabled v1 candidate on the incumbent path without entry authority or a stable key", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = loadBundledWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		)!;
+		store.importWorkflowTemplateSeed(seed);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "*",
+			templateId: seed.templateId,
+			updatedBy: "system:bundled-default",
+		});
+		const root = setupRoot();
+
+		expect(
+			resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: "FLY-V1-POLICY-OFF",
+				selectedBy: "eng-lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: root,
+				idempotencyKey: "policy-off-key",
+				allowSchemaV1Dispatch: false,
+				env: enabled,
+			}),
+		).toBeNull();
+		expect(
+			resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: "FLY-V1-NO-KEY",
+				selectedBy: "eng-lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: root,
+				allowSchemaV1Dispatch: true,
+				env: enabled,
+			}),
+		).toBeNull();
+		expect(
+			store.getActiveWorkflowRunForIssue("FLY-V1-POLICY-OFF"),
+		).toBeUndefined();
+		expect(store.getActiveWorkflowRunForIssue("FLY-V1-NO-KEY")).toBeUndefined();
+		expect(() =>
+			resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: "FLY-V1-DRIFT",
+				selectedBy: "eng-lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: root,
+				idempotencyKey: "drift-key",
+				allowSchemaV1Dispatch: true,
+				candidateSchemaAtEntry: 2,
+				env: enabled,
+			}),
+		).toThrow(/candidate changed/i);
 		store.close();
 	});
 
@@ -140,6 +215,7 @@ describe("workflow template selection", () => {
 					authKind: "master",
 					canonicalRoot: root,
 					idempotencyKey: `v1-${missing}`,
+					allowSchemaV1Dispatch: true,
 					env,
 				}),
 			).toThrow(
@@ -179,6 +255,7 @@ describe("workflow template selection", () => {
 			authKind: "master",
 			canonicalRoot: setupRoot(),
 			idempotencyKey: "v1-enabled",
+			allowSchemaV1Dispatch: true,
 			env: enabled,
 			idFactory: () => values.shift()!,
 			now: "2026-07-16T00:00:00.000Z",
@@ -234,6 +311,7 @@ describe("workflow template selection", () => {
 				authKind: "master",
 				canonicalRoot: setupRoot(),
 				idempotencyKey: "v1-default",
+				allowSchemaV1Dispatch: true,
 				env: enabled,
 				idFactory: () => values.shift()!,
 				now: "2026-07-16T00:00:00.000Z",

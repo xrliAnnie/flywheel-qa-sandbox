@@ -7,11 +7,11 @@ Issue: FLY-1307
 
 | Gate | 自动化证据 | 结论 |
 |---|---|---|
-| eng 等价 harness | `phase-orchestrator.test.ts` — `matches handoff order, one fail loop, founder gate, and max-limit escalation` | engine v1 与 legacy belt 的交接顺序、一次 QA 回环、PASS 入 founder gate、第四次超限 escalate 逐事件一致；vendor 阵容按裁定不比较 |
+| eng 等价 harness | `phase-orchestrator.test.ts` — `matches observed legacy handoffs, one fail loop, founder gate, and max-limit escalation` | legacy trace 从真实 `start` calls、PASS intent、escalation alert 生成，再与 engine v1 逐事件比对；临时突变 `maxFixRounds 3→1` 和 `onPhaseComplete return` 均使该测试变红；vendor 阵容按裁定不比较 |
 | 四 mutation seams | `workflow-template-selection.test.ts`、`StateStore.workflow-templates.test.ts`、`StateStore.generalized-execution.test.ts`、`workflow-engine-dispatcher.test.ts` 的 v1/v2 逐 flag 矩阵 | selection / materialize / admission / successor consume 共用同一 fail-closed 谓词；拒绝格零 run/reservation/claim/dispatch 增量 |
 | source outbox | `StateStore.workflow-source-projector.test.ts` — `FLY-1307 hard gate...` | 真 CommDB source/history 带 `target_run_id`；projector cursor 对账；稳定 run event UID；poison 只进 deadletter、不计成功；投影前先证明 source 行存在 |
 | 真机 E2E | `scripts/qa-fly-1307-template-dispatch-e2e.mjs` + `qa/template-dispatch-e2e.json` | 13/13 checks PASS，8 次 real TmuxAdapter fresh spawn；eng QA 回环、product 物化/互审、source projector、restart、OFF 对照全过 |
-| default-off | config registry test + selection/E2E OFF 对照 | `workflow_template_dispatch` 为 `governance_gate`、default-off；v1 OFF 精确回 legacy，v2 OFF fail-closed |
+| default-off / entry policy | config registry test + selection/E2E OFF 对照 + `start-e2e.test.ts` FLY-1307 组 | `workflow_template_dispatch` 为 `governance_gate`、default-off；v1 OFF 精确回 legacy，v2 OFF fail-closed；v1 还必须经过 three-stage config/label/global policy 与 active-phase guard，普通无 key Lead start 保持 legacy belt |
 
 真机环境限制：runner sandbox 禁止 `ps`，production `tmux-server-rescue` 因此按设计 fail-closed。E2E 只替换这层检查为 harness-local shim；shim 执行原样的真实 tmux verify/create 命令并回读 live server PID。Bridge、TmuxAdapter、tmux socket/session/window、runner process、StateStore、CommDB 与 Git materialization 均为真实路径，限制已写入 JSON evidence，未隐去或冒充 production rescue 扫描。
 

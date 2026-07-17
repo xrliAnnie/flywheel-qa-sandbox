@@ -1144,9 +1144,9 @@ const DEFAULT_ENGINEERING_WORKFLOW_BINDINGS = [
 ] as const;
 
 /**
- * Fill the bundled engineering tiers without overwriting a founder/category
- * decision. Existing exact categories always win; repeats and hot refreshes
- * are no-op.
+ * Seed the bundled engineering tiers only for projects with no binding
+ * authority yet. Any existing binding means a founder or migration already
+ * owns the project registry, so boot must not widen its candidate surface.
  */
 export function ensureDefaultWorkflowBindings(
 	store: Pick<
@@ -1158,13 +1158,9 @@ export function ensureDefaultWorkflowBindings(
 	for (const project of [...new Set(projectNames.map((name) => name.trim()))]
 		.filter(Boolean)
 		.sort((a, b) => a.localeCompare(b))) {
-		const existing = new Set(
-			store
-				.listWorkflowCategoryBindings(project)
-				.map((binding) => binding.task_category),
-		);
+		const existing = store.listWorkflowCategoryBindings(project);
+		if (existing.length > 0) continue;
 		for (const binding of DEFAULT_ENGINEERING_WORKFLOW_BINDINGS) {
-			if (existing.has(binding.taskCategory)) continue;
 			store.bindWorkflowCategory({
 				project,
 				taskCategory: binding.taskCategory,

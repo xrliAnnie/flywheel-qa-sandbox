@@ -12,7 +12,7 @@ import {
 } from "../workflow-template.js";
 
 describe("bundled workflow default bindings", () => {
-	it("fills the engineering three-tier defaults without repointing existing category authority", async () => {
+	it("seeds three-tier defaults only for empty projects and leaves existing project authority untouched", async () => {
 		const store = await StateStore.create(":memory:");
 		importBundledWorkflowSeeds(store);
 		store.bindWorkflowCategory({
@@ -34,9 +34,7 @@ describe("bundled workflow default bindings", () => {
 			{ task_category: "trivial", template_id: "tpl_eng_trivial" },
 		]);
 		expect(store.listWorkflowCategoryBindings("custom")).toMatchObject([
-			{ task_category: "*", template_id: "tpl_eng_heavy" },
 			{ task_category: "light", template_id: "tpl_eng_light" },
-			{ task_category: "trivial", template_id: "tpl_eng_trivial" },
 		]);
 		const auditCount = store.listWorkflowTemplateAudit().length;
 
