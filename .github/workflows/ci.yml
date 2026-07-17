@@ -71,6 +71,14 @@ jobs:
       - name: Install tmux/lsof/sqlite3 for hermetic test scripts
         run: sudo apt-get update && sudo apt-get install -y tmux lsof sqlite3
 
+      # FLY-1327: deterministic cycle-time analytics use real WAL backup +
+      # immutable-snapshot reads against fixture DBs. Keep the sqlite preflight
+      # adjacent so a missing CLI fails with an explicit environment diagnosis.
+      - name: Test — FLY-1327 cycle-time report
+        run: |
+          sqlite3 --version
+          pnpm test:cycle-time
+
       # FLY-110: cmux-sync hook integration test runs against an isolated
       # tmux server (custom -L socket name) so it cannot interfere with
       # other CI processes. Verifies the production-critical cleanup path:

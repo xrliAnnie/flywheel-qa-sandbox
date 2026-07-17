@@ -14,6 +14,7 @@
 		"test:packages": "pnpm --filter './packages/*' test",
 		"test:packages:run": "pnpm --filter './packages/*' test:run",
 		"test:apps": "pnpm --filter './apps/*' test",
+		"test:cycle-time": "node --test scripts/cycle-time/__tests__/*.test.mjs",
 		"typecheck": "pnpm -r typecheck",
 		"prepare": "husky"
 	},

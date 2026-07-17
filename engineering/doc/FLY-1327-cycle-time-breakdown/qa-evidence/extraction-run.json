@@ -1,0 +1,27 @@
+{
+	"captured_at": "2026-07-17T09:31:57.801Z",
+	"as_of": "2026-07-17T08:55:31.345Z",
+	"raw_sources": {
+		"teamlead": {
+			"snapshot_path": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly1327-cycle-time-MadB49/snap-teamlead.db",
+			"raw_sha256": "8fa79441a6326ca9e5cc6231fbd55dbfb6b27c0bf031c014c5398d793f699fd3"
+		},
+		"commdb": {
+			"snapshot_path": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly1327-cycle-time-MadB49/snap-comm.db",
+			"raw_sha256": "da2038b519ecc527224f2c11368274812595d1fe5d8dc261a510ba5f59887ac8"
+		}
+	},
+	"errors": {},
+	"status": {
+		"linear": "ok",
+		"teamlead": "ok",
+		"commdb": "ok",
+		"gh": "ok"
+	},
+	"analytics_files": [
+		"data-FLY-1309.json",
+		"data-FLY-1307.json",
+		"data-FLY-1319.json",
+		"data-FLY-1252.json"
+	]
+}

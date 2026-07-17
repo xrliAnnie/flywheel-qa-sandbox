@@ -1,0 +1,41 @@
+{
+	"schema_version": "cycle-time-v1",
+	"as_of": "2026-07-17T08:55:31.345Z",
+	"manifests": [
+		{
+			"as_of": "2026-07-17T08:55:31.345Z",
+			"content_sha256": "c286167b7d4390696b8c2f6b3f573b9836a7ba4343f6a8c8c952adffe91e3dbe",
+			"schema_version": "cycle-time-v1",
+			"sort_version": "stable-json-v1",
+			"source_id": "linear"
+		},
+		{
+			"as_of": "2026-07-17T08:55:31.345Z",
+			"content_sha256": "f160f22f7c4493fff4561aa847c445ffe5c14cee6a603257093c2c18ad032c2c",
+			"schema_version": "cycle-time-v1",
+			"sort_version": "stable-json-v1",
+			"source_id": "teamlead"
+		},
+		{
+			"as_of": "2026-07-17T08:55:31.345Z",
+			"content_sha256": "39bbf1edf880c7f45cfded6278864173b1bef4a13289410c559affd5a8f28161",
+			"schema_version": "cycle-time-v1",
+			"sort_version": "stable-json-v1",
+			"source_id": "commdb"
+		},
+		{
+			"as_of": "2026-07-17T08:55:31.345Z",
+			"content_sha256": "adad347c6994cdd584480ab0bfaff5fa2238094bed5e26eba8db48e838275291",
+			"schema_version": "cycle-time-v1",
+			"sort_version": "stable-json-v1",
+			"source_id": "gh"
+		},
+		{
+			"as_of": "2026-07-17T08:55:31.345Z",
+			"content_sha256": "58a4e415027bbb9a4b5dc5ad53033a8b5b04d37677d0a6133c0dd5c17d3b44c3",
+			"schema_version": "cycle-time-v1",
+			"sort_version": "stable-json-v1",
+			"source_id": "system-health"
+		}
+	]
+}
