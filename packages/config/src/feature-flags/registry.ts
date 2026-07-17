@@ -100,6 +100,128 @@ function envSite(
 }
 
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
+	// ─── FLY-1329: session lifecycle floor — liveness never authorizes alone ───
+	{
+		// FLY-1329 (A1): the FLY-1319 incident. `handoff()` read liveness `absent`
+		// as proof of death and closed a park-alive implement (StateStore→completed,
+		// CommDB row deleted, shared branch B torn down) while its process was still
+		// running. `absent` only means no window answered to the name we looked up —
+		// a stale CommDB tmux_window mapping produces it on a healthy runner. Default
+		// ON: only `dead_pin` (every pane a remain-on-exit corpse) authorizes a close;
+		// `absent` parks + audits + still hands off. `=0` restores the legacy
+		// absent→close path byte-for-byte.
+		name: "park_biased_handoff",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_PARK_BIASED_HANDOFF",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"handoff 在 liveness=absent 时 park 而非 close(=0 回退 FLY-1319 事故前的 absent→close 旧行为)。absent 不是死亡证据,只是「按这个名字找不到窗」——CommDB 窗名过时时健康 runner 也返回它;只有 dead_pin 才是正证据 (FLY-1329 A1)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/phase-orchestrator.ts",
+				"handoff",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "改后需重启 Bridge。dead_pin close 与 indeterminate fail-close 两条路径不受本 env 影响。",
+	},
+	{
+		// FLY-1329 (A4/A5): an unexpired `runner_declared_states` park declaration —
+		// the runner asserting "I am alive and waiting" — vetoes both destructive
+		// reconcile sweeps. Shared by the FLY-324 done-but-running boot sweep and the
+		// CommDB row prune. Both fail closed: a declared-state lookup that throws
+		// vetoes too.
+		name: "prune_park_guard",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_PRUNE_PARK_GUARD",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"park 声明 veto 两条破坏性 reconcile 清扫:FLY-324 done-but-running 强转 completed + CommDB row prune(=0 回退到无 veto 的旧清扫)。取代原来靠人手填 FLYWHEEL_FLY324_SWEEP_EXCLUDE 名单的保护 (FLY-1329 A4/A5)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/done-running-reconciler.ts",
+				"reconcileDoneButRunning",
+				"call_time",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/commdb-session-prune.ts",
+				"pruneDeadTerminalCommDbSessions",
+				"call_time",
+			),
+			// A4 running-face reconcile (boot-first) + A5 live FLY-324 handler both
+			// read this same guard (Codex R2 LOW — registry must list every site).
+			envSite(
+				"packages/teamlead/src/bridge/commdb-fsm-reconcile.ts",
+				"reconcileCommDbRunningAgainstFsm",
+				"call_time",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/event-route.ts",
+				"isRunnerDeclaredParked",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "Lead 的 FLYWHEEL_FLY324_SWEEP_EXCLUDE 名单仍在且仍先生效;本 veto 是结构性补位。改后需重启 Bridge。",
+	},
+	{
+		// FLY-1329 (A3): boot re-adopt used to filter status='running' — the one
+		// status the PARKING roles are never in (HANDOFF_STATUS parks design at
+		// design_done, implement at awaiting_review). That is why the FLY-1319
+		// restart re-adopted QA and lost the parked implement.
+		name: "readopt_parked_roles",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_READOPT_PARKED",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"boot re-adopt 覆盖全角色 park 态(running|awaiting_review|design_done|approved_to_ship);=0 回退只认 running 的旧过滤器。keep-alive 下每个 role park 在不同 status,只认 running 恰好漏掉所有会 park 的 role (FLY-1329 A3)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/HeartbeatService.ts",
+				"seedReconnecting",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "终态永不进候选(re-adopt 终态=复活死人)。改后需重启 Bridge。",
+	},
+	{
+		// FLY-1329 (A2): wording-only. Deliberately NOT an input to the destructive
+		// verdict — a decision that swung on "was there traffic recently" would be
+		// unreproducible and would re-introduce the FLY-1319 bug class.
+		name: "liveness_activity_window_ms",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_LIVENESS_ACTIVITY_WINDOW_MS",
+		polarity: "opt_in",
+		valueKind: "value",
+		default: "600000",
+		description:
+			"absent-park 告警正文里判定 likely-alive / likely-dead 的活动窗口(默认 10 分钟)。【只影响告警措辞,绝不影响裁决】——活动证据故意不作为 decideDestructive 的输入 (FLY-1329 A2)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/liveness-evidence.ts",
+				"activityWindowMs",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "非法/未设/≤0 的 env 值由 activityWindowMs() 在运行时 sanitize 回默认 600000;resolveFlag 对本 flag 走同款 sanitizer(见 resolve.ts 特判),故 registry 显示的 effective 值 = 运行时实际生效值(Codex R2 LOW,修正 R1 LOW-6 的 raw-string 展示)。改这个改不了任何生命周期决定,只改人读的那句话。",
+	},
 	// ─── env kill-switches / features, call_time → DIRECT-toggle candidates ───
 	{
 		name: "cmux_linked_view",

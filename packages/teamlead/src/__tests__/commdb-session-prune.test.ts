@@ -226,6 +226,8 @@ describe("commdb-session-prune (FLY-638)", () => {
 					{ executionId: "failed-dead", tmuxWindow: "base:@failed" },
 					{ executionId: "blocked-dead", tmuxWindow: "base:@blocked" },
 				],
+				// FLY-1329 (A4): parkedVetoed joins the counters.
+				parkedVetoed: 0,
 			});
 			expect(db.getSession("failed-dead")).toBeUndefined();
 			expect(db.getSession("blocked-dead")).toBeUndefined();
@@ -251,6 +253,8 @@ describe("commdb-session-prune (FLY-638)", () => {
 				provenDeadTargets: [
 					{ executionId: "audit-throws", tmuxWindow: "base:@7" },
 				],
+				// FLY-1329 (A4): parkedVetoed joins the counters.
+				parkedVetoed: 0,
 			});
 			expect(db.getSession("audit-throws")).toBeUndefined();
 		});
@@ -275,6 +279,8 @@ describe("commdb-session-prune (FLY-638)", () => {
 				provenDeadTargets: [
 					{ executionId: "completed-dead", tmuxWindow: "base:@completed" },
 				],
+				// FLY-1329 (A4): parkedVetoed joins the counters.
+				parkedVetoed: 0,
 			});
 			expect(probe).toHaveBeenCalledExactlyOnceWith("base:@completed");
 			expect(db.getSession("failed-dead")).toBeDefined();
@@ -294,6 +300,8 @@ describe("commdb-session-prune (FLY-638)", () => {
 				kept: 0,
 				failed: 0,
 				provenDeadTargets: [],
+				// FLY-1329 (A4): parkedVetoed joins the counters.
+				parkedVetoed: 0,
 			});
 			expect(db.getSession("only-running")).toBeDefined();
 		});

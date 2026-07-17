@@ -79,6 +79,38 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 		expect(view.error).toMatch(/invalid/);
 		expect(view.error).toContain("bogus");
 	});
+
+	// FLY-1329 A2 (Codex R2 LOW): the activity window is runtime-sanitized. The
+	// resolver must report the SANITIZED value, not the raw env string, so the
+	// dashboard never shows a value the runtime does not actually use.
+	it("liveness_activity_window_ms: effective is the SANITIZED value, not the raw env", () => {
+		const s = spec("liveness_activity_window_ms");
+		// unset → default
+		expect(resolveFlag(s, { env: {} }).effective).toBe("600000");
+		expect(resolveFlag(s, { env: {} }).isDefault).toBe(true);
+		// junk / zero / negative → runtime uses the default, so does the display
+		expect(
+			resolveFlag(s, {
+				env: { FLYWHEEL_LIVENESS_ACTIVITY_WINDOW_MS: "junk" },
+			}).effective,
+		).toBe("600000");
+		expect(
+			resolveFlag(s, {
+				env: { FLYWHEEL_LIVENESS_ACTIVITY_WINDOW_MS: "0" },
+			}).effective,
+		).toBe("600000");
+		expect(
+			resolveFlag(s, {
+				env: { FLYWHEEL_LIVENESS_ACTIVITY_WINDOW_MS: "-5" },
+			}).effective,
+		).toBe("600000");
+		// a valid positive value is reported as-is and is NOT the default
+		const valid = resolveFlag(s, {
+			env: { FLYWHEEL_LIVENESS_ACTIVITY_WINDOW_MS: "120000" },
+		});
+		expect(valid.effective).toBe("120000");
+		expect(valid.isDefault).toBe(false);
+	});
 });
 
 describe("resolveFlag — project scope", () => {

@@ -95,6 +95,12 @@ function makeStore(): MockStore {
 		getStaleCompletedSessions: vi.fn().mockReturnValue([]),
 		getAwaitingReviewTimedOut: vi.fn().mockReturnValue([]),
 		getActiveSessions: vi.fn().mockReturnValue([]),
+		// FLY-1329 (A3): boot re-adopt now reads every parked role. These
+		// fixtures seed `running` sessions, where both queries agree — each test
+		// feeds this alongside getActiveSessions. The widened query\'s own
+		// semantics are pinned on a real StateStore in
+		// statestore.fly1329-readopt-candidates.test.ts.
+		getReadoptCandidateSessions: vi.fn().mockReturnValue([]),
 		getSession: vi.fn((id: string) => (id === "exec-z1" ? sess() : undefined)),
 		updateHeartbeat: vi.fn(),
 		markGateTimeoutNotified: vi.fn(),

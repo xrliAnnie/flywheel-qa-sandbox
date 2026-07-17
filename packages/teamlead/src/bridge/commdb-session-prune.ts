@@ -122,6 +122,13 @@ export interface CommDbPruneResult {
 	 * `tmux_session` values have no trustworthy provenance.
 	 */
 	provenDeadTargets: ProvenDeadTmuxTarget[];
+	/**
+	 * FLY-1329 (A4): rows KEPT because the runner declared itself parked, despite a
+	 * `dead` probe. That probe's `dead` only means tmux could not FIND the window
+	 * at the name we passed — a stale mapping reads identically to a real death,
+	 * and deleting on it is how a live runner's row vanished in FLY-1319.
+	 */
+	parkedVetoed: number;
 }
 
 export interface ProvenDeadTmuxTarget {
@@ -158,10 +165,13 @@ export async function pruneDeadTerminalCommDbSessions(
 		kept: 0,
 		failed: 0,
 		provenDeadTargets: [],
+		parkedVetoed: 0,
 	};
 	const dbPath = opts.dbPath ?? resolveCommDbPath(projectName);
 	if (!dbPath) return result;
 	const probe = opts.probe ?? probeTmuxWindowLiveness;
+	// FLY-1329 (A4): kill-switch restores the pre-veto prune byte-for-byte.
+	const parkGuardOn = process.env.FLYWHEEL_PRUNE_PARK_GUARD !== "0";
 
 	let db: CommDB | undefined;
 	try {
@@ -180,6 +190,33 @@ export async function pruneDeadTerminalCommDbSessions(
 			if (state !== "dead") {
 				result.kept++;
 				continue;
+			}
+			// FLY-1329 (A4): `dead` here is `isTmuxAbsenceMessage` — tmux could not
+			// FIND the window at this name. That is NOT proof the process died: a
+			// stale `tmux_window` mapping produces it on a perfectly healthy runner,
+			// and deleting the row is how a live runner stopped being recognized in
+			// FLY-1319. An unexpired park declaration is the runner contradicting
+			// this reading, so it vetoes the delete. Fail-closed: a lookup that
+			// throws also keeps the row.
+			if (parkGuardOn) {
+				let parked: boolean;
+				try {
+					parked =
+						db.getEffectiveDeclaredState(s.execution_id, Date.now())?.kind ===
+						"parked";
+				} catch (err) {
+					parked = true;
+					console.warn(
+						`[commdb-prune] declared-state lookup failed for ${s.execution_id}: ${(err as Error).message} — KEEPING the row (fail-closed)`,
+					);
+				}
+				if (parked) {
+					result.parkedVetoed++;
+					console.log(
+						`[commdb-prune] prune_skipped_parked_conflict: ${s.execution_id} (${projectName}) declares itself parked while its window name does not resolve — KEEPING the row (stale mapping suspected, FLY-1319 shape)`,
+					);
+					continue;
+				}
 			}
 			try {
 				const finalized = db.finalizeSession(s.execution_id);

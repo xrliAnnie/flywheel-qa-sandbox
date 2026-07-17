@@ -174,6 +174,8 @@ describe("FLY-324 reconcileDoneButRunning boot sweep", () => {
 		});
 
 		expect(result).toEqual({
+			// FLY-1329 (A5): parkedVetoed joins the counters.
+			parkedVetoed: 0,
 			scanned: 0,
 			reconciled: 0,
 			rejected: 0,

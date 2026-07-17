@@ -36,6 +36,7 @@ import {
 	type ThreeStagePhase,
 } from "flywheel-config";
 import { REVIEW_BINDING_UNBOUND } from "../StateStore.js";
+import { decideDestructive } from "./destructive-verdict.js";
 import { isMergeBlocked } from "./merge-ship-gate.js";
 import type {
 	WorkflowShadowContext,
@@ -312,6 +313,19 @@ export interface PhaseOrchestratorDeps {
 		 * (Codex design R1 #2). A row with no `tmux_session` → `absent`.
 		 */
 		probeGhostTmux(row: PhaseSession): Promise<PhaseLiveness>;
+		/**
+		 * FLY-1329 (A1/A2): record that a phase was parked on `absent` liveness
+		 * rather than closed — the FLY-1319 downgrade. Never silent: `absent` means
+		 * we could not find the window at the name we had, so the park is a
+		 * fail-safe choice made under uncertainty and an operator must be able to
+		 * see it. The activity evidence (A2) is gathered by the effect for the
+		 * alert body only; it never moves the verdict.
+		 */
+		recordParkLivenessDowngrade?(args: {
+			session: PhaseSession;
+			liveness: PhaseLiveness;
+			reason: string;
+		}): Promise<void>;
 	};
 	/** Per-project three-stage enablement (Step 1 policy). `reason` (present
 	 * when disabled) is logged at handoff boundaries — a disabled policy must
@@ -1713,10 +1727,44 @@ export class PhaseOrchestrator {
 			);
 			return;
 		}
-		if (liveness === "alive") {
+
+		// FLY-1329 (A1): `absent` is NOT death. It says no window answered to the
+		// name we looked up — which a stale CommDB `tmux_window` mapping produces on
+		// a perfectly healthy runner. FLY-1319 closed a live park-alive implement on
+		// exactly this input: StateStore forced to completed, CommDB row deleted,
+		// shared branch B torn down, while the process kept running and asking. So
+		// the close now requires a POSITIVE death verdict (`dead_pin`); `absent`
+		// parks instead — the same fail-safe direction as `indeterminate`, but it
+		// still hands off, because stranding the issue would trade one bug for
+		// another.
+		const verdict = decideDestructive({
+			action: "handoff_close",
+			authority: "none", // a handoff holds no independent right to destroy
+			declaredParked: false, // not a veto context (the marker describes `prev` itself)
+			liveness,
+		});
+		const parkBiased = process.env.FLYWHEEL_PARK_BIASED_HANDOFF !== "0";
+		const closeAuthorized = parkBiased ? verdict.allowed : liveness !== "alive";
+
+		if (!closeAuthorized) {
 			await this.deps.effects.parkPhaseRunner(prev);
+			// An `absent` park is a downgrade made under uncertainty — never silent.
+			if (liveness !== "alive") {
+				try {
+					await this.deps.effects.recordParkLivenessDowngrade?.({
+						session: prev,
+						liveness,
+						reason: verdict.reason,
+					});
+				} catch (err) {
+					this.warn(
+						`park liveness downgrade audit failed for ${prev.execution_id}: ${(err as Error).message}`,
+					);
+				}
+			}
 		} else {
-			// dead_pin / absent → the process is gone: close-clean (legacy behavior).
+			// dead_pin (or, with the kill-switch off, the legacy dead_pin/absent set)
+			// → the process is provably gone: close-clean.
 			try {
 				await this.deps.effects.closePhaseRunner(prev);
 			} catch (err) {

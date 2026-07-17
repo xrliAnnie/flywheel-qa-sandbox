@@ -365,6 +365,10 @@ import {
 	resolveLinearScope,
 	resolveProjectNameParam,
 } from "./linear-scope.js";
+import {
+	activityWindowMs,
+	describeActivityEvidence,
+} from "./liveness-evidence.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { ManagementChangeCoordinator } from "./management-change-coordinator.js";
 import {
@@ -509,6 +513,7 @@ import {
 	hasPendingBlockingGateFromCommDb,
 	hasPendingGateFromCommDb,
 	idleWatchdogPollMs,
+	probeDeclaredStateFromCommDb,
 	probeQuietSignals,
 	stuckCommActivityMs,
 	stuckLatchTtlMs,
@@ -5689,10 +5694,19 @@ export async function startBridge(
 		);
 		const sweep = reconcileDoneButRunning(store, transitionOpts, {
 			exclude: sweepExclude,
+			// FLY-1329 (A5): a runner that DECLARED itself parked is asserting it is
+			// alive and waiting — the sweep must not force-complete it. This is the
+			// signal the hand-maintained exclude list above was standing in for, and
+			// it is why a park-alive runner surviving a restart no longer depends on
+			// a human having remembered to name it. Reuses the existing readonly
+			// declared-state probe (never a second reader of the same table).
+			isParked: (execId, projectName) =>
+				probeDeclaredStateFromCommDb(execId, projectName, Date.now()) ===
+				"parked",
 		});
 		if (sweep.scanned > 0) {
 			console.log(
-				`[Bridge] FLY-324 boot sweep: scanned=${sweep.scanned} reconciled=${sweep.reconciled} rejected=${sweep.rejected} skipped=${sweep.skipped} excluded=${sweep.excluded} done-but-running → completed`,
+				`[Bridge] FLY-324 boot sweep: scanned=${sweep.scanned} reconciled=${sweep.reconciled} rejected=${sweep.rejected} skipped=${sweep.skipped} excluded=${sweep.excluded} parkedVetoed=${sweep.parkedVetoed} done-but-running → completed`,
 			);
 		}
 	} catch (err) {
@@ -7859,6 +7873,82 @@ export async function startBridge(
 						// (boundary status + parked → ✅) with NO stage_changed — the
 						// FLY-902 Finding #4 stale-display root cause. Refresh.
 						issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
+					},
+					// FLY-1329 (A1/A2): an `absent` park is a downgrade taken under
+					// uncertainty — audit it so it is never silent. The activity evidence is
+					// gathered HERE, for the alert body only: it tells the operator whether
+					// this is the FLY-1319 shape (live runner, stale window mapping) or a
+					// genuine corpse with no dead-pin. It is deliberately NOT passed to the
+					// verdict — see liveness-evidence.ts.
+					recordParkLivenessDowngrade: async ({
+						session,
+						liveness,
+						reason,
+					}) => {
+						let detail = "activity evidence unavailable";
+						try {
+							const row = store.getSession(session.execution_id);
+							const hb = row?.heartbeat_at
+								? Date.parse(`${row.heartbeat_at}Z`)
+								: Number.NaN;
+							// FLY-1329 (A2, LOW-5): recent CommDB traffic is a second liveness
+							// signal — a live parked runner still sending `ask`s while its
+							// heartbeat went stale IS the FLY-1319 shape, and heartbeat-alone
+							// would mislabel it likely-dead. Best-effort.
+							let hasRecentMessageInWindow = false;
+							try {
+								const proj = session.project_name ?? "";
+								const dbPath = commDbPathForProject(proj);
+								if (proj && ffExistsSync(dbPath)) {
+									const cdb = CommDB.openReadonly(dbPath);
+									try {
+										hasRecentMessageInWindow = cdb.hasRecentMessagesFrom(
+											session.execution_id,
+											Math.ceil(activityWindowMs() / 1000),
+										);
+									} finally {
+										cdb.close();
+									}
+								}
+							} catch {
+								/* evidence only — a comm.db read miss never breaks the audit */
+							}
+							detail = describeActivityEvidence(
+								{
+									heartbeatAtMs: Number.isFinite(hb) ? hb : null,
+									lastMessageAtMs: null,
+									hasRecentMessageInWindow,
+								},
+								Date.now(),
+							).detail;
+						} catch {
+							/* evidence is decoration — never break the audit for it */
+						}
+						try {
+							store.insertEvent({
+								// Stable per (exec, liveness): a re-driven handoff re-parking the
+								// same session dedupes instead of stacking duplicate audit rows.
+								event_id: `park-liveness-downgrade-${session.execution_id}-${liveness}`,
+								execution_id: session.execution_id,
+								issue_id: session.issue_id,
+								project_name: session.project_name ?? "",
+								event_type: "park_liveness_downgrade",
+								source: "bridge.phase-orchestrator",
+								payload: {
+									liveness,
+									reason,
+									activity: detail,
+									sessionRole: session.session_role ?? "main",
+								},
+							});
+						} catch (err) {
+							console.warn(
+								`[Bridge] park_liveness_downgrade audit failed for ${session.execution_id}: ${(err as Error).message}`,
+							);
+						}
+						console.warn(
+							`[Bridge] FLY-1329: parked ${session.execution_id} on liveness=${liveness} instead of closing it — ${detail}`,
+						);
 					},
 					// FLY-887: fail-closed pre-wake worktree check (mirrors the close
 					// path's dirty guard, on the wake path).

@@ -75,6 +75,12 @@ export interface CommDbFsmReconcileResult {
 	keptAliveTarget: number;
 	/** proven-dead candidates whose atomic CommDB finalization failed. */
 	finalizeFailed: number;
+	/**
+	 * FLY-1329 (A4): rows kept because the runner declared itself parked (or the
+	 * park lookup threw and we fail closed) — a `dead` probe here is only a stale
+	 * window name, not proof the process died.
+	 */
+	parkedVetoed: number;
 	/** FLY-1066 opt-in counters; absent preserves the exact FLY-817 result shape. */
 	harvest?: {
 		orphanHarvested: number;
@@ -122,6 +128,13 @@ export async function reconcileCommDbRunningAgainstFsm(
 			projectName: string,
 			result: FinalizeCommDbResult,
 		) => void;
+		/**
+		 * FLY-1329 (A4): does this execId hold an UNEXPIRED park declaration? The
+		 * default reads it through the sweep's already-open CommDB handle; tests
+		 * inject to exercise the fail-closed path. Undefined here would fall back to
+		 * that default (see body).
+		 */
+		isParked?: (executionId: string) => boolean;
 	} = {},
 ): Promise<CommDbFsmReconcileResult> {
 	const result: CommDbFsmReconcileResult = {
@@ -131,7 +144,11 @@ export async function reconcileCommDbRunningAgainstFsm(
 		keptPreserve: 0,
 		keptAliveTarget: 0,
 		finalizeFailed: 0,
+		parkedVetoed: 0,
 	};
+	// FLY-1329 (A4): kill-switch (shared with the terminal-face prune) restores the
+	// pre-veto reconcile byte-for-byte.
+	const parkGuardOn = process.env.FLYWHEEL_PRUNE_PARK_GUARD !== "0";
 	if (opts.harvest) {
 		result.harvest = {
 			orphanHarvested: 0,
@@ -208,6 +225,34 @@ export async function reconcileCommDbRunningAgainstFsm(
 				const state = await probe(s.tmux_window);
 				if (state !== "dead") {
 					result.keptAliveTarget++;
+					continue;
+				}
+			}
+			// FLY-1329 (A4, Codex R1 HIGH-2): an unexpired park declaration vetoes
+			// the delete. The `dead` verdict above is `isTmuxAbsenceMessage` — tmux
+			// could not find the window at this name, which a stale mapping produces
+			// on a live parked runner (the FLY-1319 shape). This is the running-face
+			// delete site that runs FIRST on boot, before the terminal-face prune the
+			// veto also guards. Fail-closed: a lookup that throws keeps the row.
+			if (parkGuardOn) {
+				const activeDb = db;
+				let parked: boolean;
+				try {
+					parked = opts.isParked
+						? opts.isParked(s.execution_id)
+						: activeDb.getEffectiveDeclaredState(s.execution_id, Date.now())
+								?.kind === "parked";
+				} catch (err) {
+					parked = true;
+					console.warn(
+						`[commdb-fsm-reconcile] declared-state lookup failed for ${s.execution_id}: ${(err as Error).message} — KEEPING the row (fail-closed)`,
+					);
+				}
+				if (parked) {
+					result.parkedVetoed++;
+					console.log(
+						`[commdb-fsm-reconcile] prune_skipped_parked_conflict: ${s.execution_id} (${projectName}) declares itself parked while its window name does not resolve — KEEPING the row (stale mapping suspected, FLY-1319 shape)`,
+					);
 					continue;
 				}
 			}

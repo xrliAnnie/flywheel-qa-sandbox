@@ -1,4 +1,4 @@
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { Router } from "express";
@@ -76,6 +76,41 @@ import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 
 // Re-export so existing callers (if any) keep working.
 export { commDbPathForProject } from "./commdb-path.js";
+
+/**
+ * FLY-1329 (A5, Codex R1 HIGH-3): does this runner hold an UNEXPIRED park
+ * declaration? The boot sweep (done-running-reconciler) got the parked-veto in
+ * PR-A; plan v5 A5 requires the LIVE FLY-324 running→completed path to honour it
+ * too (both sites). A runner that declared itself parked is asserting it is alive
+ * and waiting — which contradicts a stage=completed force-complete. Readonly and
+ * A MISSING comm.db means the runner never opened a channel, so there is no
+ * parked signal and the completion is allowed (a genuine completed assertion
+ * carries no parked marker). But an UNREADABLE comm.db — one that exists yet
+ * throws on open/read (corrupt / locked) — is NOT evidence of "not parked"; it is
+ * the absence of evidence, and this force-complete is destructive, so it must
+ * FAIL CLOSED (veto) exactly like the boot sweep (Codex R2 HIGH). Kill-switch
+ * shared with the prune (FLYWHEEL_PRUNE_PARK_GUARD).
+ */
+function isRunnerDeclaredParked(execId: string, projectName: string): boolean {
+	if (process.env.FLYWHEEL_PRUNE_PARK_GUARD === "0") return false;
+	if (/[/\\]|\.\./.test(projectName)) return false;
+	const dbPath = commDbPathForProject(projectName);
+	if (!existsSync(dbPath)) return false; // no channel opened = no parked signal
+	let declaredDb: CommDB | undefined;
+	try {
+		declaredDb = CommDB.openReadonly(dbPath);
+		return (
+			declaredDb.getEffectiveDeclaredState(execId, Date.now())?.kind ===
+			"parked"
+		);
+	} catch {
+		// A comm.db that exists but cannot be read is unresolved, not "not parked".
+		// Fail closed: treat as parked so the destructive completion is vetoed.
+		return true;
+	} finally {
+		declaredDb?.close();
+	}
+}
 
 interface IngestEvent {
 	event_id: string;
@@ -2118,7 +2153,23 @@ export function createEventRouter(
 							// that intends to stay parked must NOT report stage=completed. The
 							// Lead exclude list is a CUTOVER boot-sweep-only safety net for
 							// the pre-fix backlog where that contract wasn't yet in force.
-							if (transitionOpts) {
+							if (
+								transitionOpts &&
+								isRunnerDeclaredParked(
+									event.execution_id,
+									// Authoritative project from the resolved session row, not the
+									// event envelope: a mismatched event.project_name would look up
+									// the wrong comm.db and silently miss the veto (Codex R2 HIGH).
+									sessionAtStage?.project_name ?? event.project_name,
+								)
+							) {
+								// FLY-1329 (A5): the runner declared itself parked — a
+								// stage=completed report that contradicts that must not
+								// force-complete it. Mirrors the boot sweep's veto.
+								console.log(
+									`[event-route FLY-324] prune_skipped_parked_conflict: ${event.execution_id} declares itself parked — NOT force-completing (FLY-1329 A5)`,
+								);
+							} else if (transitionOpts) {
 								const r324 = applyTransition(
 									transitionOpts,
 									event.execution_id,

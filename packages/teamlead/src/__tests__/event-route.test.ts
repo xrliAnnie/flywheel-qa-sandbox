@@ -1,12 +1,16 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type http from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { EventFilter } from "../bridge/EventFilter.js";
-import { formatNotification } from "../bridge/event-route.js";
+import {
+	commDbPathForProject,
+	formatNotification,
+} from "../bridge/event-route.js";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import { RuntimeRegistry } from "../bridge/runtime-registry.js";
@@ -1018,10 +1022,15 @@ describe("Event route — GEO-292 stage tracking", () => {
 	let store: StateStore;
 	let server: http.Server;
 	let baseUrl: string;
+	let a5CommRoot: string; // FLY-1329 (A5): isolated CommDB declared-state root
 
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
 		const config = makeConfig();
+		// FLY-1329 (A5): isolate the CommDB declared-state root so the FLY-324 live
+		// handler's parked-veto read never touches ~/.flywheel/comm in tests.
+		a5CommRoot = mkdtempSync(join(tmpdir(), "fly1329-a5-comm-"));
+		process.env.FLYWHEEL_COMM_DIR = a5CommRoot;
 		// FLY-60 W2: pass transitionOpts so stage_changed=completed can fire
 		// the canonical applyTransition path. Without it, the W2 branch's
 		// defensive code refuses finalization (matches plugin.ts production).
@@ -1054,6 +1063,8 @@ describe("Event route — GEO-292 stage tracking", () => {
 		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_QA_DONE_GATE;
+		delete process.env.FLYWHEEL_COMM_DIR;
+		if (a5CommRoot) rmSync(a5CommRoot, { recursive: true, force: true });
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -1228,6 +1239,118 @@ describe("Event route — GEO-292 stage tracking", () => {
 		});
 		expect(res.status).toBe(200);
 		expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+	});
+
+	// FLY-1329 (A5, Codex R1 HIGH-3): the boot sweep's parked-veto must also guard
+	// this LIVE running→completed path. A runner that declared itself parked is
+	// asserting it is alive and waiting; a stage=completed report that contradicts
+	// that must NOT force-complete it. The isolated CommDB (set in beforeEach)
+	// carries the declaration.
+	it("FLY-324 + FLY-1329 A5: stage_changed=completed does NOT force-complete a runner that declared itself parked", async () => {
+		await postEvent(); // running
+
+		const dbPath = commDbPathForProject("geoforge3d");
+		mkdirSync(dirname(dbPath), { recursive: true });
+		const declaredDb = new CommDB(dbPath);
+		declaredDb.upsertDeclaredState(
+			"exec-1",
+			"parked",
+			"three-stage implement parked awaiting QA",
+			Date.now(),
+			null, // no expiry
+		);
+		declaredDb.close();
+
+		const res = await postEvent({
+			event_id: "evt-a5-parked",
+			event_type: "stage_changed",
+			payload: { stage: "completed" },
+		});
+		expect(res.status).toBe(200);
+		// Veto: the parked runner survives, NOT force-completed.
+		expect(store.getSession("exec-1")!.status).toBe("running");
+	});
+
+	it("FLY-324 + FLY-1329 A5: kill-switch FLYWHEEL_PRUNE_PARK_GUARD=0 restores the un-vetoed force-complete", async () => {
+		process.env.FLYWHEEL_PRUNE_PARK_GUARD = "0";
+		try {
+			await postEvent(); // running
+			const dbPath = commDbPathForProject("geoforge3d");
+			mkdirSync(dirname(dbPath), { recursive: true });
+			const declaredDb = new CommDB(dbPath);
+			declaredDb.upsertDeclaredState(
+				"exec-1",
+				"parked",
+				"parked",
+				Date.now(),
+				null,
+			);
+			declaredDb.close();
+
+			const res = await postEvent({
+				event_id: "evt-a5-killswitch",
+				event_type: "stage_changed",
+				payload: { stage: "completed" },
+			});
+			expect(res.status).toBe(200);
+			expect(store.getSession("exec-1")!.status).toBe("completed");
+		} finally {
+			delete process.env.FLYWHEEL_PRUNE_PARK_GUARD;
+		}
+	});
+
+	// Codex R2 HIGH: an UNREADABLE comm.db (exists but throws on read) is the
+	// absence of evidence, not proof of "not parked". The live force-complete is
+	// destructive, so it must FAIL CLOSED (veto), exactly like the boot sweep.
+	it("FLY-1329 A5: a corrupt/unreadable comm.db fails CLOSED — the running row is NOT force-completed", async () => {
+		await postEvent(); // running
+
+		const dbPath = commDbPathForProject("geoforge3d");
+		mkdirSync(dirname(dbPath), { recursive: true });
+		// Garbage bytes: the file exists (so we do not early-return "not parked"),
+		// but opening/reading it as SQLite throws.
+		writeFileSync(dbPath, "this is not a sqlite database file at all");
+
+		const res = await postEvent({
+			event_id: "evt-a5-corrupt",
+			event_type: "stage_changed",
+			payload: { stage: "completed" },
+		});
+		expect(res.status).toBe(200);
+		// Fail closed: unresolved parked state vetoes the destructive completion.
+		expect(store.getSession("exec-1")!.status).toBe("running");
+	});
+
+	// Codex R2 HIGH: the veto must look up the AUTHORITATIVE session project, not
+	// the event envelope's project_name. A mismatched event.project_name would look
+	// up the wrong (absent) comm.db and silently miss the veto — force-completing a
+	// parked runner. The declaration lives under the session's real project.
+	it("FLY-1329 A5: the veto uses the session's project, not a mismatched event.project_name", async () => {
+		await postEvent(); // running — session persisted under project geoforge3d
+
+		const dbPath = commDbPathForProject("geoforge3d");
+		mkdirSync(dirname(dbPath), { recursive: true });
+		const declaredDb = new CommDB(dbPath);
+		declaredDb.upsertDeclaredState(
+			"exec-1",
+			"parked",
+			"parked under the real session project",
+			Date.now(),
+			null,
+		);
+		declaredDb.close();
+
+		// The event carries a WRONG project_name. Pre-fix, the handler looked this
+		// up (absent db → no veto → force-complete). Post-fix, it uses the resolved
+		// session's project (geoforge3d) and finds the declaration.
+		const res = await postEvent({
+			event_id: "evt-a5-projmismatch",
+			event_type: "stage_changed",
+			project_name: "some-other-wrong-project",
+			payload: { stage: "completed" },
+		});
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-1")!.status).toBe("running");
 	});
 
 	// Design-review #3: a stage_changed=completed that carries a PR number in its

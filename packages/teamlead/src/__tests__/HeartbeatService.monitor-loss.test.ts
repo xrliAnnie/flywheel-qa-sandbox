@@ -79,6 +79,12 @@ function makeStore(): MockStore {
 		getStaleCompletedSessions: vi.fn().mockReturnValue([]),
 		getAwaitingReviewTimedOut: vi.fn().mockReturnValue([]),
 		getActiveSessions: vi.fn().mockReturnValue([]),
+		// FLY-1329 (A3): boot re-adopt now reads every parked role. These
+		// fixtures seed `running` sessions, where both queries agree — each test
+		// feeds this alongside getActiveSessions. The widened query\'s own
+		// semantics are pinned on a real StateStore in
+		// statestore.fly1329-readopt-candidates.test.ts.
+		getReadoptCandidateSessions: vi.fn().mockReturnValue([]),
 		getSession: vi.fn((id: string) => (id === "exec-1" ? sess() : undefined)),
 		updateHeartbeat: vi.fn(),
 		markGateTimeoutNotified: vi.fn(),
@@ -278,6 +284,7 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 	it("boot-seed: seedReconnecting re-adopts pre-existing running+alive sessions; stuck suppressed", async () => {
 		const s = sess();
 		store.getActiveSessions.mockReturnValue([s]);
+		store.getReadoptCandidateSessions.mockReturnValue([s]);
 		store.getStuckSessions.mockReturnValue([s]);
 		await service.seedReconnecting();
 		expect(store.updateHeartbeat).toHaveBeenCalledWith("exec-1");
@@ -290,6 +297,7 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 
 	it("boot seed returns only newly re-adopted execs and activates both layers", async () => {
 		store.getActiveSessions.mockReturnValue([sess()]);
+		store.getReadoptCandidateSessions.mockReturnValue([sess()]);
 		expect(await service.seedReconnecting()).toEqual(["exec-1"]);
 		expect(service.isReconnecting("exec-1")).toBe(true);
 		expect(service.isReconnectTitleActive("exec-1")).toBe(true);
@@ -324,6 +332,7 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 			.mockResolvedValueOnce({ kind: "transient_failed", error: "busy" })
 			.mockResolvedValueOnce({ kind: "absent" });
 		store.getActiveSessions.mockReturnValue([sess()]);
+		store.getReadoptCandidateSessions.mockReturnValue([sess()]);
 		expect(await service.seedReconnecting()).toEqual([]);
 
 		service.markReconnectTitleRefresherReady();
@@ -347,6 +356,7 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		// no-arg drain-all frees its title. If this path were a no-op, that title
 		// would stay stuck at ⚠️重连中 forever — the exact FLY-1264 failure mode.
 		store.getActiveSessions.mockReturnValue([]);
+		store.getReadoptCandidateSessions.mockReturnValue([]);
 		expect(await service.seedReconnecting()).toEqual([]); // no boot ids captured
 
 		// Early tick enters reconnecting + activates the title while the refresher
@@ -371,6 +381,7 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 	it("settles only the title layer and keeps monitor-loss suppression", async () => {
 		const s = sess();
 		store.getActiveSessions.mockReturnValue([s]);
+		store.getReadoptCandidateSessions.mockReturnValue([s]);
 		store.getStuckSessions.mockReturnValue([s]);
 		const seeded = await service.seedReconnecting();
 
@@ -384,6 +395,7 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 
 	it("accepted-event clear removes both layers but boot settle still returns its issue session", async () => {
 		store.getActiveSessions.mockReturnValue([sess()]);
+		store.getReadoptCandidateSessions.mockReturnValue([sess()]);
 		const seeded = await service.seedReconnecting();
 
 		service.clearReconnecting("exec-1");
@@ -395,6 +407,7 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 
 	it("event clear after boot title settle does not issue a stale legacy restamp", async () => {
 		store.getActiveSessions.mockReturnValue([sess()]);
+		store.getReadoptCandidateSessions.mockReturnValue([sess()]);
 		const seeded = await service.seedReconnecting();
 		service.settleReconnectTitles(seeded);
 
@@ -549,6 +562,7 @@ describe("HeartbeatService legacy (FLY-623 kill-switch FLYWHEEL_HEARTBEAT_READOP
 
 	it("boot-seed is a no-op under kill-switch", async () => {
 		store.getActiveSessions.mockReturnValue([sess()]);
+		store.getReadoptCandidateSessions.mockReturnValue([sess()]);
 		expect(await service.seedReconnecting()).toEqual([]);
 		expect(store.updateHeartbeat).not.toHaveBeenCalled();
 		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();

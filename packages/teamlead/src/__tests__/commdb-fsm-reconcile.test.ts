@@ -264,6 +264,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 			keptPreserve: 1,
 			keptAliveTarget: 1,
 			finalizeFailed: 0,
+			parkedVetoed: 0,
 		});
 		expect(db.getSession("gone")).toBeUndefined();
 		expect(db.getSession("app")).toBeUndefined();
@@ -475,6 +476,10 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 				"keptPreserve",
 				"keptAliveTarget",
 				"finalizeFailed",
+				// FLY-1329 (A4): the parked-veto counter is an always-present field
+				// alongside finalizeFailed; the optional harvest block still only
+				// appears when opts.harvest is set.
+				"parkedVetoed",
 			]);
 			expect(result).toEqual({
 				scanned: 2,
@@ -483,6 +488,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 				keptPreserve: 1,
 				keptAliveTarget: 0,
 				finalizeFailed: 0,
+				parkedVetoed: 0,
 			});
 			expect(probe).not.toHaveBeenCalled();
 		});
@@ -502,6 +508,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 				keptPreserve: 0,
 				keptAliveTarget: 0,
 				finalizeFailed: 0,
+				parkedVetoed: 0,
 			});
 		});
 

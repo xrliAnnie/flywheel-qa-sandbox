@@ -3671,6 +3671,36 @@ export class StateStore {
 		return rows;
 	}
 
+	/**
+	 * FLY-1329 (A3): every status a runner can be PARKED at, for boot re-adopt.
+	 *
+	 * Re-adopt used to filter `status === "running"`. Under keep-alive that is the
+	 * one status the parking roles are NOT in: phase-orchestrator's HANDOFF_STATUS
+	 * parks design at `design_done` and implement at `awaiting_review`, and
+	 * `design_done` is not even in `getActiveSessions`. So the roles that park were
+	 * exactly the roles re-adopt could not see — in the FLY-1319 restart, the QA
+	 * session was re-adopted and the parked implement was not, which is not luck,
+	 * it is the query.
+	 *
+	 * Terminal statuses are excluded: re-adopting one would resurrect the dead.
+	 *
+	 * Deliberately a NEW query rather than a widened `getActiveSessions` — that
+	 * one's existing callers depend on its exact set.
+	 */
+	getReadoptCandidateSessions(): Session[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE status IN ('running', 'awaiting_review', 'design_done', 'approved_to_ship')",
+		);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
 	getActiveSessions(): Session[] {
 		const stmt = this.db.prepare(
 			"SELECT * FROM sessions WHERE status IN ('running', 'awaiting_review', 'approved_to_ship')",

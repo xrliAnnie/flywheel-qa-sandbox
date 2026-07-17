@@ -237,8 +237,17 @@ export interface HeartbeatNotifier {
 		 * readopt-ON indeterminate path — liveness could NOT be verified, so the
 		 * context must not claim the runner is alive. Legacy callers keep the
 		 * exact two-argument call and the current copy byte-for-byte.
+		 *
+		 * FLY-1329 (A3, Codex R3): `parkedLiveness` carries a PROVABLE-absence
+		 * verdict for a parked re-adopt that found the runner gone. The legacy
+		 * two-argument copy says "still alive and working" — false for a dead
+		 * parked runner — so the death path must describe the verdict honestly
+		 * instead. `unverified` and `parkedLiveness` are mutually exclusive.
 		 */
-		details?: { unverified?: boolean },
+		details?: {
+			unverified?: boolean;
+			parkedLiveness?: "dead" | "dead_pin" | "gone";
+		},
 	): Promise<void>;
 	/**
 	 * FLY-623: readopt-ON happy path — the Bridge re-adopted a live detached
@@ -328,6 +337,24 @@ export interface MonitorReconcileConfig {
 		projectName: string,
 	) => void;
 	materializedHeadAuthority?: MaterializedHeadAuthority;
+}
+
+/**
+ * FLY-1329 (A3): the PARKED statuses boot re-adopt must cover, in addition to
+ * `running`. Kept in lock-step with `StateStore.getReadoptCandidateSessions`'s
+ * status set (running + these three); the readopt-parked test suite pins the
+ * behavioural agreement by re-adopting a candidate at each of these statuses.
+ * `running` is handled by the mainline consumer path, so it is deliberately NOT
+ * here — this predicate answers "is this a keep-alive parked phase?".
+ */
+const READOPT_PARKED_STATUSES: ReadonlySet<string> = new Set([
+	"awaiting_review",
+	"design_done",
+	"approved_to_ship",
+]);
+
+function isReadoptParkedStatus(status: string): boolean {
+	return READOPT_PARKED_STATUSES.has(status);
 }
 
 /**
@@ -949,9 +976,21 @@ export class HeartbeatService implements ReconnectController {
 	): Promise<void> {
 		const execId = session.execution_id;
 
-		// A reconnecting member terminalized by an accepted event (its status is no
-		// longer `running`) leaves reconnecting + gets its terminal title re-stamped.
+		// FLY-1329 (A3): a PARKED phase (awaiting_review / design_done /
+		// approved_to_ship) is a keep-alive runner intentionally waiting for the
+		// pipeline — the widened boot candidate query surfaces it. It is NOT a
+		// terminalized session, so re-adopt it: restore monitoring if its tmux is
+		// alive, alert-only if not. Never a status change, never a close. Without
+		// this branch the candidate is dropped on entry and A3 is a no-op (Codex
+		// R1 HIGH-1).
 		if (session.status !== "running") {
+			if (isReadoptParkedStatus(session.status)) {
+				await this.readoptParkedPhase(session);
+				return;
+			}
+			// A reconnecting member terminalized by an accepted event (its status is
+			// no longer `running`) leaves reconnecting + gets its terminal title
+			// re-stamped.
 			this.clearReconnecting(execId);
 			return;
 		}
@@ -1015,6 +1054,14 @@ export class HeartbeatService implements ReconnectController {
 		const execId = session.execution_id;
 
 		if (session.status !== "running") {
+			// FLY-1329 (A3): parked phases are re-adopted here too (Codex R1 HIGH-1)
+			// — see reconcileCandidateReadopt for the rationale. Tri-state probe:
+			// monitoring restored ONLY on a positive `alive`, alert-only otherwise,
+			// never a status change (Codex R2 — no indeterminate→alive fold).
+			if (isReadoptParkedStatus(session.status)) {
+				await this.readoptParkedPhase(session);
+				return;
+			}
 			this.clearReconnecting(execId);
 			this.zombieDeadStreak.delete(execId);
 			return;
@@ -1138,6 +1185,35 @@ export class HeartbeatService implements ReconnectController {
 		} catch {
 			return { verdict: "indeterminate", target, probedAt };
 		}
+	}
+
+	/**
+	 * FLY-1329 (A3, Codex R2): re-adopt a PARKED phase using the TRI-STATE probe,
+	 * never the boolean `isSessionTmuxAlive` (which folds `indeterminate` — a
+	 * CommDB/probe failure — into "alive"). The plan requires that only POSITIVE
+	 * `alive` evidence re-adopts (heartbeat refresh + monitoring-re-established);
+	 * a probe failure must ONLY alert, never refresh the heartbeat or announce
+	 * re-establishment. Folding `indeterminate` into alive would life-support a
+	 * dead parked session and, on a genuinely dead one, wrongly emit the "tmux
+	 * session is still alive" re-established notice. Provable absence
+	 * (`dead`/`dead_pin`/`gone`) alerts too — A3 never changes status or closes.
+	 */
+	private async readoptParkedPhase(session: Session): Promise<void> {
+		const liveness = await this.probeSessionLiveness(session);
+		if (liveness.verdict === "alive") {
+			await this.enterReconnecting(session);
+			return;
+		}
+		// Alert-only, never a status change. But the ALERT COPY must be honest
+		// (Codex R3): `indeterminate` = could-not-verify; a provable-absence verdict
+		// (dead/dead_pin/gone) must NOT reuse the legacy "still alive and working"
+		// two-argument copy — it describes the verdict instead.
+		await this.emitMonitorLostOnce(
+			session,
+			liveness.verdict === "indeterminate"
+				? { unverified: true }
+				: { parkedLiveness: liveness.verdict },
+		);
 	}
 
 	/**
@@ -1434,16 +1510,23 @@ export class HeartbeatService implements ReconnectController {
 		if (!deps || !this.readoptEnabled()) return [];
 		this.markerRetryPending.clear();
 		const seeded: string[] = [];
-		const running = this.store
-			.getActiveSessions()
-			.filter((s) => s.status === "running");
+		// FLY-1329 (A3): re-adopt EVERY role's parked status, not just `running`.
+		// Under keep-alive each role parks at a different status (HANDOFF_STATUS:
+		// design→design_done, implement→awaiting_review), so a `running`-only filter
+		// saw exactly the roles that never park. That is why the FLY-1319 restart
+		// re-adopted the QA session and left the parked implement unmonitored.
+		// `FLYWHEEL_READOPT_PARKED=0` restores the running-only filter.
+		const candidates =
+			process.env.FLYWHEEL_READOPT_PARKED === "0"
+				? this.store.getActiveSessions().filter((s) => s.status === "running")
+				: this.store.getReadoptCandidateSessions();
 		// FLY-1282 (R3 #1): the public Promise<string[]> contract (FLY-1264 boot
 		// title ids) is unchanged. On the zombie-ON path the boot pass uses the
 		// same aggregated V2 consumption; its held-set is deliberately DISCARDED
 		// (the first post-boot check() re-probes and owns suppression).
 		const zombieOn = this.zombieMachineryEnabled();
 		const ctx: ReadoptPassCtx = { held: new Set(), intents: [] };
-		for (const session of running) {
+		for (const session of candidates) {
 			const execId = session.execution_id;
 			const wasTitleActive = this.reconnectTitleActive.has(execId);
 			if (zombieOn) await this.reconcileCandidateReadoptV2(session, deps, ctx);
@@ -1559,7 +1642,10 @@ export class HeartbeatService implements ReconnectController {
 	 */
 	private async emitMonitorLostOnce(
 		session: Session,
-		details?: { unverified?: boolean },
+		details?: {
+			unverified?: boolean;
+			parkedLiveness?: "dead" | "dead_pin" | "gone";
+		},
 	): Promise<void> {
 		const execId = session.execution_id;
 		if (this.notifiedMonitorLost.has(execId)) return;
@@ -2625,15 +2711,28 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 	async onSessionMonitoringLost(
 		session: Session,
 		minutes: number,
-		details?: { unverified?: boolean },
+		details?: {
+			unverified?: boolean;
+			parkedLiveness?: "dead" | "dead_pin" | "gone";
+		},
 	): Promise<void> {
 		const label = session.issue_identifier ?? session.issue_id;
 		// FLY-1282 (INV-1): the readopt-ON indeterminate path could NOT verify
 		// liveness — its copy must not claim "alive and working". The legacy
 		// two-argument call keeps the pre-FLY-1282 copy byte-for-byte.
-		const context = details?.unverified
-			? `Runner ${label} lost Bridge monitoring and its liveness could NOT be verified (CommDB/pane probe indeterminate; heartbeat stale ${minutes}m). No heartbeat was refreshed. Please check it directly via tmux.`
-			: `Runner ${label} lost Bridge monitoring (no heartbeat for ${minutes}m, likely after a Flywheel restart) but its tmux session is still alive and working. Please keep an eye on it and drive it directly via tmux if needed.`;
+		// FLY-1329 (A3, Codex R3): a parked re-adopt that found the runner GONE must
+		// not reuse the "still alive" copy either — dead_pin is provable death, while
+		// dead/gone is a window/mapping miss that cannot confirm alive OR dead.
+		let context: string;
+		if (details?.parkedLiveness === "dead_pin") {
+			context = `Runner ${label} lost Bridge monitoring and its parked tmux window's pane is a dead remain-on-exit corpse — the process is provably gone (heartbeat stale ${minutes}m). No heartbeat was refreshed; the existing reconcile/reaper paths own the cleanup.`;
+		} else if (details?.parkedLiveness) {
+			context = `Runner ${label} lost Bridge monitoring and no tmux window answered to its name (${details.parkedLiveness}) — it is either gone or its window mapping went stale, so its liveness could NOT be confirmed alive OR dead (heartbeat stale ${minutes}m). No heartbeat was refreshed. Please check it directly via tmux.`;
+		} else if (details?.unverified) {
+			context = `Runner ${label} lost Bridge monitoring and its liveness could NOT be verified (CommDB/pane probe indeterminate; heartbeat stale ${minutes}m). No heartbeat was refreshed. Please check it directly via tmux.`;
+		} else {
+			context = `Runner ${label} lost Bridge monitoring (no heartbeat for ${minutes}m, likely after a Flywheel restart) but its tmux session is still alive and working. Please keep an eye on it and drive it directly via tmux if needed.`;
+		}
 		const hookPayload: HookPayload = {
 			event_type: "session_monitoring_lost",
 			execution_id: session.execution_id,

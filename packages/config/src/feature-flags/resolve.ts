@@ -155,6 +155,25 @@ export function resolveFlag(
 				};
 			}
 		}
+		// FLY-1329 A2 (Codex R2 LOW): the activity window is a wording-only value the
+		// runtime (`activityWindowMs`) sanitizes — junk / ≤0 / non-finite all become
+		// the default. Report the SANITIZED effective value, not the raw env string,
+		// so the dashboard never shows a value the runtime does not actually use.
+		// Kept in lock-step with activityWindowMs() (same finite-&&->0 rule); config
+		// cannot import teamlead, so the tiny rule is mirrored, not shared.
+		if (spec.envVar === "FLYWHEEL_LIVENESS_ACTIVITY_WINDOW_MS") {
+			const raw = env[spec.envVar];
+			const n = Number(raw);
+			const effective =
+				raw !== undefined && Number.isFinite(n) && n > 0
+					? String(n)
+					: String(spec.default);
+			return {
+				...base,
+				effective,
+				isDefault: effective === String(spec.default),
+			};
+		}
 		const effective = resolveEnvEffective(spec, env);
 		return { ...base, effective, isDefault: effective === spec.default };
 	}

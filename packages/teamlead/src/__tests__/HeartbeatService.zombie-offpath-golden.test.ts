@@ -82,6 +82,12 @@ function makeStore(): MockStore {
 		getStaleCompletedSessions: vi.fn().mockReturnValue([]),
 		getAwaitingReviewTimedOut: vi.fn().mockReturnValue([]),
 		getActiveSessions: vi.fn().mockReturnValue([]),
+		// FLY-1329 (A3): boot re-adopt now reads every parked role. These
+		// fixtures seed `running` sessions, where both queries agree — each test
+		// feeds this alongside getActiveSessions. The widened query\'s own
+		// semantics are pinned on a real StateStore in
+		// statestore.fly1329-readopt-candidates.test.ts.
+		getReadoptCandidateSessions: vi.fn().mockReturnValue([]),
 		getSession: vi.fn((id: string) => (id === "exec-g1" ? sess() : undefined)),
 		updateHeartbeat: vi.fn(),
 		markGateTimeoutNotified: vi.fn(),
@@ -316,6 +322,7 @@ describe("OFF-path golden — READOPT=0 legacy with zombie switches at defaults"
 
 	it("seedReconnecting stays a no-op string[] under kill-switch", async () => {
 		store.getActiveSessions.mockReturnValue([sess()]);
+		store.getReadoptCandidateSessions.mockReturnValue([sess()]);
 		const seeded = await service.seedReconnecting();
 		expect(seeded).toEqual([]);
 		expect(Array.isArray(seeded)).toBe(true);
@@ -329,6 +336,7 @@ describe("OFF-path golden — seedReconnecting FLY-1264 contract (readopt ON, zo
 		const notifier = makeNotifier();
 		const service = makeService(store, notifier);
 		store.getActiveSessions.mockReturnValue([sess()]);
+		store.getReadoptCandidateSessions.mockReturnValue([sess()]);
 		const seeded = await service.seedReconnecting();
 		expect(seeded).toEqual(["exec-g1"]);
 		expect(service.isReconnectTitleActive("exec-g1")).toBe(true);
