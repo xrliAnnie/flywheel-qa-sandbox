@@ -15,9 +15,14 @@ import {
 } from "../account-heal/account-store.js";
 import type { LeaseProof } from "../account-heal/mkdir-lock.js";
 import {
+	type ApplyProfileReport,
 	FreshnessUnavailableError,
+	IdentityRollbackFailedError,
 	type SwitchDeps,
 	switchAccount,
+	TargetIdentityMismatchError,
+	TargetIdentityRolledBackError,
+	TargetIdentityUnverifiableError,
 	TargetQuotaExhaustedError,
 	TargetStaleError,
 } from "../account-heal/switch-executor.js";
@@ -297,6 +302,136 @@ describe("switchAccount", () => {
 		expect(after.accounts.find((a) => a.name === "school")?.authExpired).toBe(
 			true,
 		);
+	});
+
+	it("identity mismatch marks only identityMismatch, carries the report, and tries the next candidate", async () => {
+		seed(threeAccountStore());
+		const report: ApplyProfileReport = {
+			identityChecks: [
+				{
+					label: "business",
+					checkpoint: "pre_write",
+					verdict: "mismatch",
+					expectedKey: "expected-digest",
+					actualDigest: "actual-digest",
+				},
+			],
+		};
+		const applyProfile = vi.fn(async (name: string) => {
+			if (name === "business") {
+				throw new TargetIdentityMismatchError(name, "actual-digest", report);
+			}
+		});
+
+		const result = await switchAccount(input, deps({ applyProfile }));
+
+		expect(result).toMatchObject({
+			outcome: "switched",
+			to: "school",
+			applyReports: [report],
+		});
+		expect(applyProfile.mock.calls.map(([name]) => name)).toEqual([
+			"business",
+			"school",
+		]);
+		const marked = readStore(storePath).accounts.find(
+			(account) => account.name === "business",
+		);
+		expect(marked?.identityMismatch).toEqual({
+			actualDigest: "actual-digest",
+			markedBy: "executor",
+			markedAt: NOW.toISOString(),
+		});
+		expect(marked?.profileVerifyFailed).toBeUndefined();
+		expect(readStore(storePath).generation).toBe(2);
+	});
+
+	it("rollback-success then unauthorized skip are attempt-local and a third candidate succeeds", async () => {
+		const s = threeAccountStore();
+		s.accounts.push({
+			name: "shopping",
+			quotaExhaustedUntil: null,
+			weeklyResetAt: null,
+		});
+		seed(s);
+		const applyProfile = vi.fn(async (name: string) => {
+			if (name === "business") throw new TargetIdentityRolledBackError(name);
+			if (name === "school") throw new TargetIdentityUnverifiableError(name);
+		});
+
+		const result = await switchAccount(
+			{
+				...input,
+				preferredOrder: ["business", "school", "shopping"],
+			},
+			deps({ applyProfile }),
+		);
+
+		expect(result).toMatchObject({ outcome: "switched", to: "shopping" });
+		expect(applyProfile.mock.calls.map(([name]) => name)).toEqual([
+			"business",
+			"school",
+			"shopping",
+		]);
+		const after = readStore(storePath);
+		expect(after.accounts.every((account) => !account.identityMismatch)).toBe(
+			true,
+		);
+		expect(
+			after.accounts.every((account) => !account.profileVerifyFailed),
+		).toBe(true);
+	});
+
+	it("rollback failure is fatal and preserves its severe reason code", async () => {
+		seed(threeAccountStore());
+		const report: ApplyProfileReport = {
+			identityChecks: [
+				{
+					label: "personal",
+					checkpoint: "capture_back",
+					verdict: "mismatch",
+					expectedKey: "expected-digest",
+					actualDigest: "actual-digest",
+				},
+			],
+		};
+		const applyProfile = vi.fn(async (name: string) => {
+			throw new IdentityRollbackFailedError(name, report);
+		});
+
+		const result = await switchAccount(input, deps({ applyProfile }));
+
+		expect(result).toMatchObject({
+			outcome: "failed",
+			reasonCode: "identity_rollback_failed",
+			applyReports: [report],
+		});
+		expect(applyProfile).toHaveBeenCalledTimes(1);
+		expect(readStore(storePath).activeAccount).toBe("personal");
+		expect(readStore(storePath).generation).toBe(1);
+	});
+
+	it("a successful apply carries non-secret capture facts to the switched result", async () => {
+		seed(threeAccountStore());
+		const report: ApplyProfileReport = {
+			identityChecks: [
+				{
+					label: "personal",
+					checkpoint: "capture_back",
+					verdict: "mismatch",
+					expectedKey: "expected-digest",
+					actualDigest: "actual-digest",
+				},
+			],
+		};
+		const result = await switchAccount(
+			input,
+			deps({ applyProfile: vi.fn(async () => report) }),
+		);
+		expect(result).toMatchObject({
+			outcome: "switched",
+			applyReports: [report],
+		});
 	});
 
 	it("all candidates stale → no_account (with earliest reset), Keychain never committed", async () => {

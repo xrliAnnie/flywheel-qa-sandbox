@@ -76,6 +76,23 @@ function populatedState(): QuotaMonitorState {
 				lastAttemptAt: "2026-07-14T19:40:00.000Z",
 			},
 		},
+		identityMismatchEpisodes: {
+			school: {
+				checkpoint: "active",
+				expectedKey: "b".repeat(64),
+				actualDigest: "a".repeat(64),
+				startedAt: "2026-07-14T19:20:00.000Z",
+				lastConfirmedAlertAt: null,
+				alertCount: 0,
+				round: 1,
+				activeDelivery: {
+					round: 1,
+					attempts: 1,
+					lastAttemptAt: "2026-07-14T19:50:00.000Z",
+				},
+			},
+		},
+		identityAlertCursor: "school",
 	};
 }
 
@@ -109,6 +126,8 @@ describe("quota monitor persistent state", () => {
 			Record<string, unknown>;
 		delete legacy.blockedEpisode;
 		delete legacy.pendingSwitchFailure;
+		delete legacy.identityMismatchEpisodes;
+		delete legacy.identityAlertCursor;
 		writeFileSync(path, `${JSON.stringify(legacy)}\n`, { mode: 0o600 });
 
 		const loaded = loadQuotaMonitorState(path, {
@@ -119,6 +138,8 @@ describe("quota monitor persistent state", () => {
 		expect(loaded.recovery).toBeUndefined();
 		expect(loaded.state.blockedEpisode).toBeNull();
 		expect(loaded.state.pendingSwitchFailure).toBeNull();
+		expect(loaded.state.identityMismatchEpisodes).toBeNull();
+		expect(loaded.state.identityAlertCursor).toBeNull();
 	});
 
 	it.each([
@@ -193,6 +214,8 @@ describe("quota monitor persistent state", () => {
 			reviveEpoch: null,
 			blockedEpisode: null,
 			pendingSwitchFailure: null,
+			identityMismatchEpisodes: null,
+			identityAlertCursor: null,
 		});
 		expect(loaded.state.backoffUntilMs).toBe(NOW + 300_000);
 	});

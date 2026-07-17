@@ -57,7 +57,8 @@ export interface SwitchDeps {
 	applyProfile: (
 		name: string,
 		context: { lease: LeaseProof; signal: AbortSignal },
-	) => Promise<void>;
+		// biome-ignore lint/suspicious/noConfusingVoidType: existing adapters return Promise<void>; reports are an additive channel.
+	) => Promise<ApplyProfileReport | void>;
 	/** The account the real profile is currently active on (crash-recovery authority). */
 	readActiveProfile: () => Promise<string | null>;
 	/** Parent-side final fence seam. Defaults to marker-token validation. */
@@ -66,7 +67,27 @@ export interface SwitchDeps {
 	heartbeatMs?: number;
 }
 
-export type SwitchResult =
+export type IdentityCheckpoint = "pre_write" | "capture_back" | "capture";
+
+export interface ApplyProfileIdentityCheck {
+	label: string;
+	checkpoint: IdentityCheckpoint;
+	verdict:
+		| "match"
+		| "mismatch"
+		| "unknown_missing"
+		| "profile_network"
+		| "profile_malformed"
+		| "profile_unauthorized";
+	expectedKey?: string;
+	actualDigest?: string;
+}
+
+export interface ApplyProfileReport {
+	identityChecks: ApplyProfileIdentityCheck[];
+}
+
+type SwitchOutcome =
 	| { outcome: "switched"; from: string; to: string; generation: number }
 	| { outcome: "noop_already_switched"; activeAccount: string }
 	| { outcome: "noop_reconciled"; activeAccount: string; generation: number }
@@ -76,7 +97,9 @@ export type SwitchResult =
 			reasonCode:
 				| "no_eligible_account"
 				| "target_stale_exhausted"
-				| "target_quota_exhausted";
+				| "target_quota_exhausted"
+				| "target_identity_mismatch"
+				| "target_identity_unverifiable";
 	  }
 	| {
 			outcome: "failed";
@@ -84,10 +107,17 @@ export type SwitchResult =
 			reasonCode:
 				| "freshness_unavailable"
 				| "apply_failed"
+				| "keychain_readback_mismatch"
+				| "identity_rollback_failed"
 				| "lock_lease_lost"
 				| "transition_journal_conflict"
 				| "transition_journal_writer_alive";
 	  };
+
+export type SwitchResult = SwitchOutcome & {
+	/** Non-secret child facts; consumed only after the account lock is released. */
+	applyReports?: ApplyProfileReport[];
+};
 
 export class LockLeaseLostError extends Error {
 	constructor(detail?: string) {
@@ -135,6 +165,67 @@ export class TargetQuotaExhaustedError extends Error {
 	}
 }
 
+interface ApplyProfileReportedError {
+	report?: ApplyProfileReport;
+}
+
+export class TargetIdentityMismatchError
+	extends Error
+	implements ApplyProfileReportedError
+{
+	constructor(
+		public readonly account: string,
+		public readonly actualDigest: string,
+		public readonly report?: ApplyProfileReport,
+	) {
+		super(`target account '${account}' does not match its trusted identity`);
+		this.name = "TargetIdentityMismatchError";
+	}
+}
+
+export class TargetIdentityRolledBackError
+	extends Error
+	implements ApplyProfileReportedError
+{
+	constructor(
+		public readonly account: string,
+		public readonly report?: ApplyProfileReport,
+	) {
+		super(
+			`target account '${account}' failed Keychain read-back; previous credential restored`,
+		);
+		this.name = "TargetIdentityRolledBackError";
+	}
+}
+
+export class IdentityRollbackFailedError
+	extends Error
+	implements ApplyProfileReportedError
+{
+	constructor(
+		public readonly account: string,
+		public readonly report?: ApplyProfileReport,
+	) {
+		super(
+			`target account '${account}' failed Keychain read-back and verified rollback`,
+		);
+		this.name = "IdentityRollbackFailedError";
+	}
+}
+
+export class TargetIdentityUnverifiableError
+	extends Error
+	implements ApplyProfileReportedError
+{
+	constructor(
+		public readonly account: string,
+		public readonly report?: ApplyProfileReport,
+	) {
+		super(`target account '${account}' identity endpoint rejected its token`);
+		this.name = "TargetIdentityUnverifiableError";
+	}
+}
+
 function markAuthExpired(store: AccountStore, name: string): AccountStore {
 	return {
 		...store,
@@ -142,6 +233,52 @@ function markAuthExpired(store: AccountStore, name: string): AccountStore {
 			a.name === name ? { ...a, authExpired: true } : a,
 		),
 	};
+}
+
+function markIdentityMismatch(
+	store: AccountStore,
+	name: string,
+	actualDigest: string,
+	markedAt: string,
+): AccountStore {
+	return {
+		...store,
+		accounts: store.accounts.map((account) =>
+			account.name === name
+				? {
+						...account,
+						identityMismatch: {
+							actualDigest,
+							markedBy: "executor" as const,
+							markedAt,
+						},
+					}
+				: account,
+		),
+	};
+}
+
+function appendReport(
+	reports: ApplyProfileReport[],
+	// biome-ignore lint/suspicious/noConfusingVoidType: preserve compatibility with existing void apply mocks.
+	value: ApplyProfileReport | void | ApplyProfileReportedError | Error,
+): void {
+	const report =
+		value && "identityChecks" in value
+			? value
+			: value && "report" in value
+				? value.report
+				: undefined;
+	if (report && report.identityChecks.length > 0) reports.push(report);
+}
+
+function withReports<T extends SwitchOutcome>(
+	result: T,
+	reports: ApplyProfileReport[],
+): SwitchResult {
+	return reports.length > 0
+		? { ...result, applyReports: [...reports] }
+		: result;
 }
 
 /** Default lockfile beside the state file. */
@@ -180,6 +317,7 @@ export async function switchAccount(
 	const lockPath = deps.lockPath ?? defaultLockPath();
 
 	const locked = await deps.withLock<SwitchResult>(lockPath, async (lease) => {
+		const applyReports: ApplyProfileReport[] = [];
 		const validate = deps.validateLease ?? validateLeaseProof;
 		const fence = (): boolean => {
 			try {
@@ -188,12 +326,19 @@ export async function switchAccount(
 				return false;
 			}
 		};
-		const leaseLost = (): SwitchResult => ({
-			outcome: "failed",
-			reason: `lost account lock lease: ${lockPath}`,
-			reasonCode: "lock_lease_lost",
-		});
-		const applyWithHeartbeat = async (name: string): Promise<void> => {
+		const leaseLost = (): SwitchResult =>
+			withReports(
+				{
+					outcome: "failed",
+					reason: `lost account lock lease: ${lockPath}`,
+					reasonCode: "lock_lease_lost",
+				},
+				applyReports,
+			);
+		const applyWithHeartbeat = async (
+			name: string,
+			// biome-ignore lint/suspicious/noConfusingVoidType: the injected apply contract remains backward-compatible.
+		): Promise<ApplyProfileReport | void> => {
 			const controller = new AbortController();
 			let lost = false;
 			const timer = setInterval(() => {
@@ -202,7 +347,7 @@ export async function switchAccount(
 				controller.abort(new LockLeaseLostError(lockPath));
 			}, deps.heartbeatMs ?? 1_000);
 			try {
-				await deps.applyProfile(name, {
+				return await deps.applyProfile(name, {
 					lease,
 					signal: controller.signal,
 				});
@@ -217,7 +362,6 @@ export async function switchAccount(
 			if (lost) throw new LockLeaseLostError(lockPath);
 		};
 		let store = readStore(storePath);
-
 		// Crash recovery: the real profile's active account wins over stale JSON.
 		const realActive = await deps.readActiveProfile();
 		if (realActive !== null && realActive !== store.activeAccount) {
@@ -229,10 +373,13 @@ export async function switchAccount(
 			store.activeAccount !== null &&
 			store.activeAccount !== input.observedAccount
 		) {
-			return {
-				outcome: "noop_already_switched",
-				activeAccount: store.activeAccount,
-			};
+			return withReports(
+				{
+					outcome: "noop_already_switched",
+					activeAccount: store.activeAccount,
+				},
+				applyReports,
+			);
 		}
 		// CAS part 2 (Codex code R1 MED-3): the GENERATION must also match. The
 		// name alone is not enough — after A→B→…→A the active NAME equals the
@@ -241,10 +388,13 @@ export async function switchAccount(
 		// (Crash recovery above is unaffected: an uncommitted switch never bumped
 		// the stored generation, and its name-mismatch already no-ops.)
 		if (store.generation !== input.observedGeneration) {
-			return {
-				outcome: "noop_already_switched",
-				activeAccount: store.activeAccount ?? input.observedAccount,
-			};
+			return withReports(
+				{
+					outcome: "noop_already_switched",
+					activeAccount: store.activeAccount ?? input.observedAccount,
+				},
+				applyReports,
+			);
 		}
 
 		// FLY-871 R1/C3 — freshness candidate loop. The destructive Keychain write
@@ -260,6 +410,9 @@ export async function switchAccount(
 		let applied: string | null = null;
 		let targetStaleSeen = false;
 		let targetQuotaSeen = false;
+		let targetIdentityMismatchSeen = false;
+		let targetIdentityUnverifiableSeen = false;
+		let keychainReadbackSeen = false;
 		const attemptedNames = new Set<string>();
 		const maxAttempts = store.accounts.length + 1;
 		for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -273,19 +426,38 @@ export async function switchAccount(
 				excludeNames: attemptedNames,
 			});
 			if (next === null) {
-				return {
-					outcome: "no_account",
-					earliestReset: earliestReset(working, input.now.getTime()),
-					reasonCode: targetQuotaSeen
-						? "target_quota_exhausted"
-						: targetStaleSeen
-							? "target_stale_exhausted"
-							: "no_eligible_account",
-				};
+				if (keychainReadbackSeen) {
+					return withReports(
+						{
+							outcome: "failed",
+							reason:
+								"all attempted Keychain writes failed byte read-back and were rolled back",
+							reasonCode: "keychain_readback_mismatch",
+						},
+						applyReports,
+					);
+				}
+				return withReports(
+					{
+						outcome: "no_account",
+						earliestReset: earliestReset(working, input.now.getTime()),
+						reasonCode: targetIdentityMismatchSeen
+							? "target_identity_mismatch"
+							: targetIdentityUnverifiableSeen
+								? "target_identity_unverifiable"
+								: targetQuotaSeen
+									? "target_quota_exhausted"
+									: targetStaleSeen
+										? "target_stale_exhausted"
+										: "no_eligible_account",
+					},
+					applyReports,
+				);
 			}
 			attemptedNames.add(next);
 			try {
-				await applyWithHeartbeat(next);
+				const report = await applyWithHeartbeat(next);
+				appendReport(applyReports, report);
 				// The child may settle in the gap before the next heartbeat. Re-proof
 				// after the entire process group has exited and before any parent write.
 				if (!fence()) return leaseLost();
@@ -293,6 +465,7 @@ export async function switchAccount(
 				break;
 			} catch (err) {
 				if (err instanceof LockLeaseLostError || !fence()) return leaseLost();
+				if (err instanceof Error) appendReport(applyReports, err);
 				if (err instanceof TargetQuotaExhaustedError) {
 					targetQuotaSeen = true;
 					working = readStore(storePath);
@@ -305,40 +478,97 @@ export async function switchAccount(
 					writeStore(working, storePath); // in-lock, atomic
 					continue;
 				}
-				if (err instanceof FreshnessUnavailableError) {
-					return {
-						outcome: "failed",
-						reason: err.message,
-						reasonCode: "freshness_unavailable",
-					};
+				if (err instanceof TargetIdentityMismatchError) {
+					targetIdentityMismatchSeen = true;
+					working = markIdentityMismatch(
+						working,
+						next,
+						err.actualDigest,
+						input.now.toISOString(),
+					);
+					if (!fence()) return leaseLost();
+					writeStore(working, storePath);
+					continue;
 				}
-				return {
-					outcome: "failed",
-					reason: err instanceof Error ? err.message : String(err),
-					reasonCode: "apply_failed",
-				};
+				if (err instanceof TargetIdentityRolledBackError) {
+					keychainReadbackSeen = true;
+					continue;
+				}
+				if (err instanceof TargetIdentityUnverifiableError) {
+					targetIdentityUnverifiableSeen = true;
+					continue;
+				}
+				if (err instanceof IdentityRollbackFailedError) {
+					return withReports(
+						{
+							outcome: "failed",
+							reason: err.message,
+							reasonCode: "identity_rollback_failed",
+						},
+						applyReports,
+					);
+				}
+				if (err instanceof FreshnessUnavailableError) {
+					return withReports(
+						{
+							outcome: "failed",
+							reason: err.message,
+							reasonCode: "freshness_unavailable",
+						},
+						applyReports,
+					);
+				}
+				return withReports(
+					{
+						outcome: "failed",
+						reason: err instanceof Error ? err.message : String(err),
+						reasonCode: "apply_failed",
+					},
+					applyReports,
+				);
 			}
 		}
 		if (applied === null) {
-			return {
-				outcome: "no_account",
-				earliestReset: earliestReset(working, input.now.getTime()),
-				reasonCode: targetQuotaSeen
-					? "target_quota_exhausted"
-					: targetStaleSeen
-						? "target_stale_exhausted"
-						: "no_eligible_account",
-			};
+			if (keychainReadbackSeen) {
+				return withReports(
+					{
+						outcome: "failed",
+						reason:
+							"all attempted Keychain writes failed byte read-back and were rolled back",
+						reasonCode: "keychain_readback_mismatch",
+					},
+					applyReports,
+				);
+			}
+			return withReports(
+				{
+					outcome: "no_account",
+					earliestReset: earliestReset(working, input.now.getTime()),
+					reasonCode: targetIdentityMismatchSeen
+						? "target_identity_mismatch"
+						: targetIdentityUnverifiableSeen
+							? "target_identity_unverifiable"
+							: targetQuotaSeen
+								? "target_quota_exhausted"
+								: targetStaleSeen
+									? "target_stale_exhausted"
+									: "no_eligible_account",
+				},
+				applyReports,
+			);
 		}
 
 		const updated = commitSwitch(working, input, applied);
 		writeStore(updated, storePath);
-		return {
-			outcome: "switched",
-			from: input.observedAccount,
-			to: applied,
-			generation: updated.generation,
-		};
+		return withReports(
+			{
+				outcome: "switched",
+				from: input.observedAccount,
+				to: applied,
+				generation: updated.generation,
+			},
+			applyReports,
+		);
 	});
 
 	if (typeof locked !== "object" || locked === null || !("kind" in locked)) {

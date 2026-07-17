@@ -42,7 +42,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 // (dirname is used by both the PROFILE_BIN locator and FLY-865 identity tests)
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.setConfig({ testTimeout: 15_000 });
 
 const PROFILE_BIN = join(
 	dirname(fileURLToPath(import.meta.url)),
@@ -348,7 +350,7 @@ describe("flywheel-claude-profile", () => {
 		const { status, stderr } = runExpectFail(["use", "personal"], {
 			FAKE_SEC_CORRUPT: "1",
 		});
-		expect(status).not.toBe(0);
+		expect(status).toBe(37);
 		expect(stderr).toContain("verify-before-commit failed");
 		expect(existsSync(join(pool, ".active"))).toBe(false);
 	});
@@ -379,7 +381,7 @@ esac
 		const { status, stderr } = runExpectFail(["use", "personal"], {
 			FLYWHEEL_CLAUDE_SECURITY_BIN: oneShotStub,
 		});
-		expect(status).not.toBe(0);
+		expect(status).toBe(36);
 		expect(stderr).toContain("rolled back");
 		// the machine credential is back to what it was — login never broken
 		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
@@ -1470,4 +1472,245 @@ exit 0
 		).toContain('"pid":1');
 		rmSync(lockDir, { recursive: true, force: true });
 	});
+});
+
+describe("flywheel-claude-profile — account identity policy (FLY-1252 P7)", () => {
+	const EXPECTED = "b".repeat(64);
+	const ACTUAL = "a".repeat(64);
+
+	function identityGuard(body: string): string {
+		const p = join(tmp, `fake-identity-${Math.random()}`);
+		writeFileSync(
+			p,
+			`#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >> "$QUOTA_ARGV_LOG"
+case "\${1:-}" in
+  check|active-sync) exit 0 ;;
+  identity-alert-flush) cat >/dev/null; exit 0 ;;
+  identity-verify)
+    token=$(cat)
+    name=""
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" == "--name" ]]; then name="$2"; break; fi
+      shift
+    done
+    ${body}
+    ;;
+  *) exit 33 ;;
+esac
+`,
+			{ mode: 0o755 },
+		);
+		return p;
+	}
+
+	it("pre-write mismatch exits 34 before Keychain mutation and reports only digests", () => {
+		const report = join(tmp, "apply-report-mismatch.json");
+		const guard = identityGuard(
+			`echo "identity verify: mismatch for '$name' expectedKey=${EXPECTED} actualDigest=${ACTUAL}" >&2
+exit 34`,
+		);
+		const { status, stderr } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_ACCOUNT_IDENTITY_CHECK: "1",
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: guard,
+			FLYWHEEL_APPLY_REPORT_FILE: report,
+		});
+
+		expect(status).toBe(34);
+		expect(stderr).toContain("FLYWHEEL_TARGET_IDENTITY_MISMATCH personal");
+		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_CUR);
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+		const calls = readFileSync(quotaLog, "utf8");
+		expect(calls).toContain("identity-verify --name personal");
+		expect(calls).not.toContain("sk-ant-oat01");
+		expect(JSON.parse(readFileSync(report, "utf8"))).toEqual({
+			identityChecks: [
+				{
+					label: "personal",
+					checkpoint: "pre_write",
+					verdict: "mismatch",
+					expectedKey: EXPECTED,
+					actualDigest: ACTUAL,
+				},
+			],
+		});
+	});
+
+	it("manual mismatch flushes its report only after releasing the account lock", () => {
+		const guard = join(tmp, "manual-identity-flush");
+		const flushed = join(tmp, "manual-identity-flushed.json");
+		writeFileSync(
+			guard,
+			`#!/usr/bin/env bash
+set -u
+case "\${1:-}" in
+  check|active-sync) exit 0 ;;
+  identity-verify)
+    cat >/dev/null
+    echo "identity verify: mismatch expectedKey=${EXPECTED} actualDigest=${ACTUAL}" >&2
+    exit 34
+    ;;
+  identity-alert-flush)
+    [[ ! -d "$FLYWHEEL_CLAUDE_ACCOUNTS_LOCK" ]] || exit 90
+    cat > "$MANUAL_IDENTITY_FLUSHED"
+    exit 0
+    ;;
+  *) exit 33 ;;
+esac
+`,
+			{ mode: 0o755 },
+		);
+
+		const { status } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_ACCOUNT_IDENTITY_CHECK: "1",
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: guard,
+			MANUAL_IDENTITY_FLUSHED: flushed,
+		});
+
+		expect(status).toBe(34);
+		expect(existsSync(lockDir)).toBe(false);
+		expect(JSON.parse(readFileSync(flushed, "utf8"))).toEqual({
+			identityChecks: [
+				{
+					label: "personal",
+					checkpoint: "pre_write",
+					verdict: "mismatch",
+					expectedKey: EXPECTED,
+					actualDigest: ACTUAL,
+				},
+			],
+		});
+	});
+
+	it("network-unknown pre-write identity warns and allows the switch", () => {
+		const report = join(tmp, "apply-report-unknown.json");
+		const guard = identityGuard(
+			'echo "identity verify: profile_network" >&2\nexit 35',
+		);
+		const { stdout, stderr } = runBoth(["use", "personal"], {
+			FLYWHEEL_ACCOUNT_IDENTITY_CHECK: "1",
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: guard,
+			FLYWHEEL_APPLY_REPORT_FILE: report,
+		});
+
+		expect(stdout).toContain("Switched machine Claude account");
+		expect(stderr).toMatch(/identity.*unknown|profile_network/i);
+		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_A);
+		expect(JSON.parse(readFileSync(report, "utf8"))).toMatchObject({
+			identityChecks: [
+				{
+					label: "personal",
+					checkpoint: "pre_write",
+					verdict: "profile_network",
+				},
+			],
+		});
+	});
+
+	it("profile unauthorized exits 38 before Keychain mutation without a sticky write", () => {
+		const guard = identityGuard(
+			'echo "identity verify: profile_unauthorized" >&2\nexit 38',
+		);
+		const { status, stderr } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_ACCOUNT_IDENTITY_CHECK: "1",
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: guard,
+			FLYWHEEL_APPLY_REPORT_FILE: join(tmp, "unauthorized-report.json"),
+		});
+		expect(status).toBe(38);
+		expect(stderr).toContain("FLYWHEEL_TARGET_IDENTITY_UNVERIFIABLE personal");
+		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_CUR);
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+	});
+
+	it("capture_back mismatch skips the pool write but still switches and reports the fact", () => {
+		writeFileSync(join(pool, ".active"), "personal", { mode: 0o600 });
+		writeFileSync(stateFile, SECRET_DRIFT);
+		const report = join(tmp, "capture-back-report.json");
+		const guard = identityGuard(
+			`if [[ "$name" == "personal" ]]; then
+  echo "identity verify: mismatch expectedKey=${EXPECTED} actualDigest=${ACTUAL}" >&2
+  exit 34
+fi
+echo "identity verify: match expectedKey=${EXPECTED}" >&2
+exit 0`,
+		);
+
+		run(["use", "school"], {
+			FLYWHEEL_ACCOUNT_IDENTITY_CHECK: "1",
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: guard,
+			FLYWHEEL_APPLY_REPORT_FILE: report,
+		});
+
+		expect(
+			readFileSync(join(pool, "personal", ".credentials.json"), "utf8"),
+		).toBe(SECRET_A);
+		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_B);
+		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("school");
+		expect(
+			JSON.parse(readFileSync(report, "utf8")).identityChecks[0],
+		).toMatchObject({
+			label: "personal",
+			checkpoint: "capture_back",
+			verdict: "mismatch",
+		});
+	});
+
+	it("manual capture mismatch exits 34 without creating the labeled pool slot", () => {
+		const guard = identityGuard(
+			`echo "identity verify: mismatch expectedKey=${EXPECTED} actualDigest=${ACTUAL}" >&2
+exit 34`,
+		);
+		const { status } = runExpectFail(["capture", "current"], {
+			FLYWHEEL_ACCOUNT_IDENTITY_CHECK: "1",
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: guard,
+			FLYWHEEL_APPLY_REPORT_FILE: join(tmp, "capture-report.json"),
+		});
+		expect(status).toBe(34);
+		expect(existsSync(join(pool, "current", ".credentials.json"))).toBe(false);
+	});
+
+	it("next skips identity mismatch and unauthorized candidates exactly once", () => {
+		seedProfile("business", SECRET_CUR);
+		writeFileSync(join(pool, ".active"), "business", { mode: 0o600 });
+		const guard = identityGuard(
+			`case "$name" in
+  personal) echo "identity verify: mismatch expectedKey=${EXPECTED} actualDigest=${ACTUAL}" >&2; exit 34 ;;
+  school) echo "identity verify: match expectedKey=${EXPECTED}" >&2; exit 0 ;;
+esac
+exit 38`,
+		);
+
+		run(["next"], {
+			FLYWHEEL_ACCOUNT_IDENTITY_CHECK: "1",
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: guard,
+			FLYWHEEL_APPLY_REPORT_FILE: join(tmp, "next-report.json"),
+		});
+
+		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("school");
+		const preWrites = JSON.parse(
+			readFileSync(join(tmp, "next-report.json"), "utf8"),
+		).identityChecks.filter(
+			(check: { checkpoint: string }) => check.checkpoint === "pre_write",
+		);
+		expect(preWrites.map((check: { label: string }) => check.label)).toEqual([
+			"personal",
+			"school",
+		]);
+	}, 15_000);
+
+	it("identity policy OFF preserves switch and capture behavior without identity probes", () => {
+		run(["use", "personal"]);
+		writeFileSync(quotaLog, "");
+		writeFileSync(stateFile, SECRET_DRIFT);
+		run(["use", "school"]);
+		run(["capture", "off-capture"]);
+		expect(readFileSync(quotaLog, "utf8")).not.toContain("identity-verify");
+		expect(
+			readFileSync(join(pool, "personal", ".credentials.json"), "utf8"),
+		).toBe(SECRET_DRIFT);
+		expect(
+			readFileSync(join(pool, "off-capture", ".credentials.json"), "utf8"),
+		).toBe(SECRET_B);
+	}, 15_000);
 });

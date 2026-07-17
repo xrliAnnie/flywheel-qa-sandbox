@@ -166,6 +166,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	quota_blocked_recovered: { owner: "claude", arc: "human_by_design" },
 	quota_read_blind: { owner: "claude", arc: "human_by_design" },
 	account_switch_failed: { owner: "claude", arc: "human_by_design" },
+	account_identity_mismatch: { owner: "claude", arc: "human_by_design" },
 	quota_revive_stuck: { owner: "claude", arc: "human_by_design" },
 	quota_monitor_down: { owner: "claude", arc: "human_by_design" },
 	quota_guard_bypassed: { owner: "claude", arc: "human_by_design" },

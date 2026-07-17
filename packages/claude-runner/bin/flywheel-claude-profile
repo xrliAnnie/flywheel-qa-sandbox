@@ -225,6 +225,8 @@ LOCK_HELD=0
 DELEGATED_LOCK_ACCEPTED=0
 LOCK_MARKER=""
 LOCK_TOKEN=""
+MANUAL_APPLY_REPORT_OWNED=0
+MANUAL_APPLY_REPORT_FLUSH=0
 
 make_lease_proof() { # <marker> <token>
   "$NODE_BIN" -e 'process.stdout.write(JSON.stringify({lockPath:process.argv[1],markerPath:process.argv[2],ownershipToken:process.argv[3]}))' \
@@ -326,7 +328,11 @@ release_claude_json_lock() {
 # any dispatch), so it fires on normal exit, set -e abort, and SIGINT/SIGTERM —
 # in delegated mode too (where acquire_lock returns before it could set a trap).
 # Each release no-ops when its *_HELD flag is 0.
-cleanup_locks() { release_lock; release_claude_json_lock; }
+cleanup_locks() {
+  release_lock
+  release_claude_json_lock
+  flush_manual_identity_report
+}
 
 acquire_claude_json_lock() { # returns non-zero on timeout (caller warns, best-effort)
   local waited_ms=0 step_ms=100 max_ms=$(( CLAUDE_LOCK_WAIT_S * 1000 ))
@@ -555,6 +561,150 @@ default_lead_alert_bin() {
   [[ -x "$cand" ]] && printf '%s' "$cand"
 }
 
+# ------------------------------------------------ account identity policy (FLY-1252 P7)
+identity_check_enabled() {
+  [[ "${FLYWHEEL_ACCOUNT_IDENTITY_CHECK:-0}" == "1" ]]
+}
+
+credential_access_token() { # <compact credential JSON> -> token on stdout
+  printf '%s' "$1" | "$NODE_BIN" -e '
+let raw="";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", chunk => { raw += chunk; });
+process.stdin.on("end", () => {
+  try {
+    const parsed=JSON.parse(raw);
+    const token=parsed?.claudeAiOauth?.accessToken;
+    if(typeof token!=="string" || token.length===0 || /\s/.test(token)) process.exit(1);
+    process.stdout.write(token);
+  } catch { process.exit(1); }
+});
+'
+}
+
+append_identity_report() { # <label> <checkpoint> <verdict> [expected-digest] [actual-digest]
+  ensure_manual_identity_report
+  local file="${FLYWHEEL_APPLY_REPORT_FILE:-}"
+  [[ -n "$file" ]] || return 0
+  "$NODE_BIN" - "$file" "$1" "$2" "$3" "${4:-}" "${5:-}" <<'NODE' || {
+const { readFileSync, writeFileSync } = require("node:fs");
+const [path,label,checkpoint,verdict,expectedKey,actualDigest]=process.argv.slice(2);
+let report={identityChecks:[]};
+try {
+  const parsed=JSON.parse(readFileSync(path,"utf8"));
+  if(Array.isArray(parsed?.identityChecks)) report={identityChecks:parsed.identityChecks};
+} catch {}
+const check={label,checkpoint,verdict};
+if(/^[a-f0-9]{64}$/.test(expectedKey)) check.expectedKey=expectedKey;
+if(/^[a-f0-9]{64}$/.test(actualDigest)) check.actualDigest=actualDigest;
+report.identityChecks.push(check);
+writeFileSync(path,JSON.stringify(report),{mode:0o600});
+NODE
+    echo "Warning: could not record non-secret identity apply fact" >&2
+    return 0
+  }
+}
+
+ensure_manual_identity_report() {
+  identity_check_enabled || return 0
+  [[ "$DELEGATED_LOCK_ACCEPTED" -eq 0 ]] || return 0
+  MANUAL_APPLY_REPORT_FLUSH=1
+  [[ -n "${FLYWHEEL_APPLY_REPORT_FILE:-}" ]] && return 0
+  local file
+  file=$(umask 077; mktemp "${TMPDIR:-/tmp}/flywheel-identity-report.XXXXXX") || {
+    echo "Warning: could not create manual identity report" >&2
+    return 0
+  }
+  chmod 600 "$file" 2>/dev/null || true
+  FLYWHEEL_APPLY_REPORT_FILE="$file"
+  export FLYWHEEL_APPLY_REPORT_FILE
+  MANUAL_APPLY_REPORT_OWNED=1
+}
+
+# Manual commands have no daemon caller to own an episode. Flush their accumulated
+# non-secret facts only after cleanup_locks has released every shared lock.
+flush_manual_identity_report() {
+  [[ "$MANUAL_APPLY_REPORT_FLUSH" -eq 1 ]] || return 0
+  local file="${FLYWHEEL_APPLY_REPORT_FILE:-}" bin="${FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN:-}"
+  MANUAL_APPLY_REPORT_FLUSH=0
+  local owned="$MANUAL_APPLY_REPORT_OWNED"
+  MANUAL_APPLY_REPORT_OWNED=0
+  [[ -z "$bin" ]] && bin="$(default_quota_guard_bin)"
+  if [[ -n "$file" && -s "$file" && -n "$bin" && -x "$bin" ]]; then
+    "$bin" identity-alert-flush < "$file" >/dev/null ||
+      echo "Warning: manual identity alert flush failed" >&2
+  elif [[ -n "$file" && -s "$file" ]]; then
+    echo "Warning: identity alert helper unavailable; mismatch remains visible only in this terminal" >&2
+  fi
+  if [[ "$owned" -eq 1 ]]; then
+    [[ -n "$file" ]] && rm -f -- "$file" 2>/dev/null || true
+    FLYWHEEL_APPLY_REPORT_FILE=""
+    export FLYWHEEL_APPLY_REPORT_FILE
+  fi
+  return 0
+}
+
+# Verify one exact credential payload without placing its OAuth token in argv.
+# policy=switch: unknown families warn+allow; policy=pool_write: every non-match
+# skips the write so a label can never absorb an unverified credential.
+identity_verify_payload() { # <label> <payload> <checkpoint> <switch|pool_write>
+  local name="$1" payload="$2" checkpoint="$3" policy="$4"
+  local bin="${FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN:-}" token="" output="" rc=0
+  local verdict="unknown_missing" expected_key="" actual_digest=""
+  identity_check_enabled || return 0
+  [[ -z "$bin" ]] && bin="$(default_quota_guard_bin)"
+  if [[ -z "$bin" || ! -x "$bin" ]]; then
+    append_identity_report "$name" "$checkpoint" "$verdict"
+    echo "Warning: identity helper unavailable for '$name'" >&2
+    [[ "$policy" == "switch" ]] && return 0
+    return 35
+  fi
+  token=$(credential_access_token "$payload" 2>/dev/null) || {
+    append_identity_report "$name" "$checkpoint" "$verdict"
+    echo "Warning: credential payload has no usable access token for identity check '$name'" >&2
+    [[ "$policy" == "switch" ]] && return 0
+    return 35
+  }
+  output=$(printf '%s' "$token" | "$bin" identity-verify --name "$name" --store "$ACCOUNTS_STORE" 2>&1) || rc=$?
+  token=""
+  lease_fence_or_fail
+  [[ -n "$output" ]] && echo "$output" >&2
+  expected_key=$(printf '%s' "$output" | sed -n 's/.*expectedKey=\([a-f0-9][a-f0-9]*\).*/\1/p' | tail -n 1)
+  actual_digest=$(printf '%s' "$output" | sed -n 's/.*actualDigest=\([a-f0-9][a-f0-9]*\).*/\1/p' | tail -n 1)
+  case "$rc" in
+    0) verdict="match" ;;
+    34) verdict="mismatch" ;;
+    38) verdict="profile_unauthorized" ;;
+    35)
+      case "$output" in
+        *profile_network*) verdict="profile_network" ;;
+        *profile_malformed*) verdict="profile_malformed" ;;
+        *) verdict="unknown_missing" ;;
+      esac
+      ;;
+    *) verdict="profile_network"; rc=35 ;;
+  esac
+  append_identity_report "$name" "$checkpoint" "$verdict" "$expected_key" "$actual_digest"
+  case "$rc" in
+    0) return 0 ;;
+    34)
+      echo "FLYWHEEL_TARGET_IDENTITY_MISMATCH $name actualDigest=${actual_digest:-unknown}" >&2
+      return 34
+      ;;
+    38)
+      echo "FLYWHEEL_TARGET_IDENTITY_UNVERIFIABLE $name" >&2
+      return 38
+      ;;
+    *)
+      if [[ "$policy" == "switch" ]]; then
+        echo "Warning: identity result '$verdict' for '$name' is unknown; allowing switch without a positive mismatch" >&2
+        return 0
+      fi
+      return 35
+      ;;
+  esac
+}
+
 # Manual emergency bypasses are never silent. Alert delivery is best-effort so
 # an emergency recovery cannot be blocked by a broken Discord path.
 emit_quota_bypass_alert() {
@@ -696,7 +846,7 @@ active_sync_store() {
 # warns to stderr (never fails the switch — the switch is the priority). Refuses a
 # non-JSON-object / whitespace value and symlinked targets (never poison the pool).
 capture_back() {
-  local active="$1" value="$2"
+  local active="$1" value="$2" identity_rc=0
   case "$active" in
     ""|.*|*[!A-Za-z0-9._-]*|*..*)
       echo "Warning: skipping capture-back — invalid active name '$active'" >&2; return 0 ;;
@@ -713,6 +863,11 @@ capture_back() {
   [[ -L "$dir" ]] && { echo "Warning: profile dir $dir is a symlink — skipping capture-back" >&2; return 0; }
   [[ -d "$dir" ]] || { echo "Warning: active profile dir $dir missing — skipping capture-back for '$active'" >&2; return 0; }
   [[ -L "$file" ]] && { echo "Warning: credential file $file is a symlink — skipping capture-back" >&2; return 0; }
+  identity_verify_payload "$active" "$value" capture_back pool_write || identity_rc=$?
+  if [[ "$identity_rc" -ne 0 ]]; then
+    echo "Warning: skipping capture-back for '$active' because identity verification returned $identity_rc" >&2
+    return 0
+  fi
   lease_fence_or_fail
   ( umask 077; printf '%s' "$value" > "$file.tmp" ) || { echo "Warning: capture-back write failed for '$active'" >&2; return 0; }
   lease_fence_or_fail
@@ -1111,7 +1266,7 @@ prepare_profile_locked() { # <name> <active>; returns 0/30/31/32/33
 # rotated the pooled credential.
 commit_profile_locked() { # <name> <active>
   local name="$1" active="$2"
-  local new backup="" got journal_op sync_rc=0
+  local new backup="" got rollback_got="" journal_op sync_rc=0 identity_rc=0
   require_pool_entry "$name"
   new=$(cat "$POOL_DIR/$name/.credentials.json")
   renew_lock_or_fail
@@ -1124,6 +1279,15 @@ commit_profile_locked() { # <name> <active>
   if [[ -n "$active" && "$active" != "$name" ]]; then
     capture_back "$active" "$backup"
   fi
+
+  # Exact-payload pre-write gate. Unknown endpoint families warn and allow the
+  # switch; positive mismatch and profile unauthorized refuse this candidate.
+  identity_verify_payload "$name" "$new" pre_write switch || identity_rc=$?
+  case "$identity_rc" in
+    0) : ;;
+    34|38) return "$identity_rc" ;;
+    *) return 35 ;;
+  esac
 
   journal_op=$(write_transition_journal "$active" "$name" "$backup" "$new")
   if [[ -n "${FLYWHEEL_TEST_PAUSE_AFTER_JOURNAL:-}" ]]; then
@@ -1138,12 +1302,19 @@ commit_profile_locked() { # <name> <active>
   if [[ "$got" != "$new" ]]; then
     if [[ -n "$backup" ]]; then
       if kc_write "$backup" 2>/dev/null; then
-        fail "verify-before-commit failed (read-back mismatch) — rolled back to the previous credential; .active unchanged"
-      else
-        fail "verify-before-commit failed AND rollback failed — Keychain may be inconsistent for service '$SERVICE'; manual check required"
+        lease_fence_or_fail
+        rollback_got=$(kc_read 2>/dev/null || true)
+        if [[ "$rollback_got" == "$backup" ]]; then
+          clear_transition_journal "$journal_op"
+          echo "FLYWHEEL_IDENTITY_ROLLED_BACK $name" >&2
+          echo "Error: verify-before-commit failed (read-back mismatch) — rolled back and verified the previous credential; .active unchanged" >&2
+          return 36
+        fi
       fi
     fi
-    fail "verify-before-commit failed (read-back mismatch, no previous value to roll back) — .active unchanged"
+    echo "FLYWHEEL_IDENTITY_ROLLBACK_FAILED $name" >&2
+    echo "Error: verify-before-commit failed AND verified rollback failed — Keychain may be inconsistent for service '$SERVICE'; manual check required" >&2
+    return 37
   fi
 
   lease_fence_or_fail
@@ -1213,8 +1384,17 @@ next_profile() {
     case "$rc" in
       0)
         renew_lock_or_fail
-        commit_profile_locked "$candidate" "$active"
-        return 0
+        rc=0
+        commit_profile_locked "$candidate" "$active" || rc=$?
+        case "$rc" in
+          0) return 0 ;;
+          34) echo "Skipping identity-mismatched candidate '$candidate'" >&2 ;;
+          36) echo "Skipping candidate '$candidate' after verified Keychain rollback" >&2 ;;
+          38) echo "Skipping identity-unauthorized candidate '$candidate'" >&2 ;;
+          37) exit 37 ;;
+          39) exit 39 ;;
+          *) exit "$rc" ;;
+        esac
         ;;
       32)
         echo "Skipping exhausted quota candidate '$candidate'" >&2
@@ -1236,7 +1416,7 @@ next_profile() {
 capture_profile() {
   local name="$1"
   require_valid_name "$name"
-  local dir="$POOL_DIR/$name" cur
+  local dir="$POOL_DIR/$name" cur identity_rc=0
   [[ -L "$POOL_DIR" ]] && fail "pool dir $POOL_DIR is a symlink — refusing"
   [[ -L "$dir" ]] && fail "profile dir $dir is a symlink — refusing"
   acquire_lock
@@ -1244,6 +1424,11 @@ capture_profile() {
   lease_fence_or_fail
   cur=$(kc_read) || fail "no Keychain item for service '$SERVICE' — nothing to capture"
   [[ -z "$cur" ]] && fail "Keychain item for service '$SERVICE' is empty — refusing to capture"
+  identity_verify_payload "$name" "$cur" capture pool_write || identity_rc=$?
+  if [[ "$identity_rc" -ne 0 ]]; then
+    echo "Error: refusing capture into '$name' because identity verification returned $identity_rc" >&2
+    return "$identity_rc"
+  fi
   lease_fence_or_fail
   mkdir -p "$dir"
   chmod 700 "$POOL_DIR" "$dir"

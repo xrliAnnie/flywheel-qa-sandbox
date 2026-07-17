@@ -6,11 +6,17 @@
  */
 
 import { EventEmitter } from "node:events";
+import { existsSync, writeFileSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeClaudeProfileSwitchDeps } from "../account-heal/claude-profile-cli.js";
 import {
+	type ApplyProfileReport,
 	FreshnessUnavailableError,
+	IdentityRollbackFailedError,
+	TargetIdentityMismatchError,
+	TargetIdentityRolledBackError,
+	TargetIdentityUnverifiableError,
 	TargetQuotaExhaustedError,
 	TargetStaleError,
 } from "../account-heal/switch-executor.js";
@@ -40,6 +46,19 @@ function deps(
 }
 
 describe("makeClaudeProfileSwitchDeps", () => {
+	const DIGEST = "a".repeat(64);
+	const REPORT: ApplyProfileReport = {
+		identityChecks: [
+			{
+				label: "school",
+				checkpoint: "pre_write",
+				verdict: "mismatch",
+				expectedKey: "b".repeat(64),
+				actualDigest: DIGEST,
+			},
+		],
+	};
+
 	it("applyProfile runs `<bin> use <name>` with the lock delegated to THIS pid", async () => {
 		// FLY-852: switchAccount calls applyProfile INSIDE its withMkdirLock
 		// critical section and the bash script takes the SAME lock — the child
@@ -113,6 +132,93 @@ describe("makeClaudeProfileSwitchDeps", () => {
 			name: "LockLeaseLostError",
 		});
 	});
+
+	it.each([
+		{ exit: 34, ErrorType: TargetIdentityMismatchError },
+		{ exit: 36, ErrorType: TargetIdentityRolledBackError },
+		{ exit: 37, ErrorType: IdentityRollbackFailedError },
+		{ exit: 38, ErrorType: TargetIdentityUnverifiableError },
+	])(
+		"identity exit $exit maps to $ErrorType.name and carries the apply report",
+		async ({ exit, ErrorType }) => {
+			let reportPath = "";
+			const execFile = vi.fn(async (_file, _args, options) => {
+				reportPath = String(options?.env?.FLYWHEEL_APPLY_REPORT_FILE ?? "");
+				writeFileSync(reportPath, JSON.stringify(REPORT), { mode: 0o600 });
+				throw Object.assign(new Error("identity policy refused"), {
+					code: exit,
+					stderr: `identity failure actualDigest=${DIGEST}`,
+				});
+			});
+
+			const rejected = await deps(execFile)
+				.applyProfile("school")
+				.catch((error: unknown) => error);
+
+			expect(rejected).toBeInstanceOf(ErrorType);
+			expect(rejected).toMatchObject({ report: REPORT });
+			if (exit === 34) {
+				expect(rejected).toMatchObject({ actualDigest: DIGEST });
+			}
+			expect(reportPath).not.toBe("");
+			expect(existsSync(reportPath)).toBe(false);
+		},
+	);
+
+	it("exit 34 without a readable report still carries an opaque digest", async () => {
+		const execFile = vi.fn(async () => {
+			throw Object.assign(new Error("identity policy refused"), {
+				code: 34,
+				stderr: "FLYWHEEL_TARGET_IDENTITY_MISMATCH",
+			});
+		});
+
+		const rejected = await deps(execFile)
+			.applyProfile("school")
+			.catch((error: unknown) => error);
+
+		expect(rejected).toBeInstanceOf(TargetIdentityMismatchError);
+		expect(rejected).toMatchObject({
+			actualDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+			report: undefined,
+		});
+		expect(rejected.actualDigest).not.toBe("unknown");
+	});
+
+	it("returns a valid apply report on success", async () => {
+		const execFile = vi.fn(async (_file, _args, options) => {
+			writeFileSync(
+				String(options?.env?.FLYWHEEL_APPLY_REPORT_FILE),
+				JSON.stringify(REPORT),
+				{ mode: 0o600 },
+			);
+			return { stdout: "Switched", stderr: "" };
+		});
+
+		await expect(deps(execFile).applyProfile("school")).resolves.toEqual(
+			REPORT,
+		);
+	});
+
+	it.each(["missing", "malformed"])(
+		"a $s apply report is treated as no facts",
+		async (mode) => {
+			const execFile = vi.fn(async (_file, _args, options) => {
+				if (mode === "malformed") {
+					writeFileSync(
+						String(options?.env?.FLYWHEEL_APPLY_REPORT_FILE),
+						'{"identityChecks":[{"label":"school","verdict":"mismatch","actualDigest":"token-secret"}]}',
+						{ mode: 0o600 },
+					);
+				}
+				return { stdout: "Switched", stderr: "" };
+			});
+
+			await expect(
+				deps(execFile).applyProfile("school"),
+			).resolves.toBeUndefined();
+		},
+	);
 
 	it("production apply starts a detached process group and passes the lease proof", async () => {
 		const child = new EventEmitter() as EventEmitter & {

@@ -191,6 +191,46 @@ describe("sendQuotaMonitorAlert", () => {
 		}
 	});
 
+	it.each([
+		[
+			"identity mismatch",
+			{
+				kind: "account_identity_mismatch" as const,
+				severity: "severe" as const,
+				title: "Identity mismatch",
+				body: "label=shopping",
+				signature: "identity-mismatch-1",
+			},
+		],
+		[
+			"identity rollback failure",
+			{
+				kind: "account_switch_failed" as const,
+				severity: "severe" as const,
+				title: "Switch failed",
+				body: "reason=identity_rollback_failed; degraded=false",
+				signature: "identity-rollback-1",
+			},
+		],
+	] as const)(
+		"escalates %s with mention + severe dual route",
+		async (_name, input) => {
+			process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER = "123456789";
+			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "111";
+			process.env.FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID = "222";
+			const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+
+			await sendQuotaMonitorAlert(input, { execFile });
+
+			expect(execFile).toHaveBeenCalledTimes(2);
+			for (const call of execFile.mock.calls) {
+				expect(call[1]).toEqual(
+					expect.arrayContaining(["--mention-user", "123456789"]),
+				);
+			}
+		},
+	);
+
 	it("does not mention informational recovery alerts", async () => {
 		process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER = "123456789";
 		const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));

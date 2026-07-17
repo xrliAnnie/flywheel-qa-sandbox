@@ -1143,6 +1143,8 @@ function titleFor(kind: AlertEventType): string {
 			return "Claude quota monitor is blind";
 		case "account_switch_failed":
 			return "Claude account switch failed";
+		case "account_identity_mismatch":
+			return "Claude account identity mismatch";
 		case "quota_revive_stuck":
 			return "Claude pane revive stuck";
 		case "quota_monitor_down":
@@ -1323,6 +1325,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "The external quota monitor could not obtain trustworthy quota data; automatic switching is fail-closed.";
 		case "account_switch_failed":
 			return "The external quota monitor selected a verified target but the credential switch failed.";
+		case "account_identity_mismatch":
+			return "A live Claude credential resolved to a different account than its trusted pool label; automatic mutation is fail-closed until the mapping is repaired.";
 		case "quota_revive_stuck":
 			return "A Claude pane remained quota-stuck after the external monitor exhausted its audited revive budget.";
 		case "quota_monitor_down":

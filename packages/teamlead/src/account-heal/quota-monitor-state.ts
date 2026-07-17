@@ -56,6 +56,24 @@ export interface PendingSwitchFailure {
 	activeDelivery: SwitchFailureDelivery | null;
 }
 
+export type IdentityMismatchCheckpoint =
+	| "candidate"
+	| "active"
+	| "pre_write"
+	| "capture_back"
+	| "capture";
+
+export interface IdentityMismatchEpisode {
+	checkpoint: IdentityMismatchCheckpoint;
+	expectedKey: string;
+	actualDigest: string;
+	startedAt: string;
+	lastConfirmedAlertAt: string | null;
+	alertCount: number;
+	round: number;
+	activeDelivery: SwitchFailureDelivery | null;
+}
+
 export interface QuotaMonitorState {
 	version: 1;
 	lastPollAt: number | null;
@@ -69,6 +87,8 @@ export interface QuotaMonitorState {
 	reviveEpoch: ReviveEpoch | null;
 	blockedEpisode: BlockedEpisode | null;
 	pendingSwitchFailure: PendingSwitchFailure | null;
+	identityMismatchEpisodes: Record<string, IdentityMismatchEpisode> | null;
+	identityAlertCursor: string | null;
 }
 
 export interface LoadQuotaMonitorStateOptions {
@@ -95,6 +115,8 @@ const STATE_KEYS = new Set([
 	"reviveEpoch",
 	"blockedEpisode",
 	"pendingSwitchFailure",
+	"identityMismatchEpisodes",
+	"identityAlertCursor",
 ]);
 const EPOCH_KEYS = new Set([
 	"open",
@@ -133,6 +155,24 @@ const SWITCH_FAILURE_DELIVERY_KEYS = new Set([
 	"attempts",
 	"lastAttemptAt",
 ]);
+const IDENTITY_MISMATCH_EPISODE_KEYS = new Set([
+	"checkpoint",
+	"expectedKey",
+	"actualDigest",
+	"startedAt",
+	"lastConfirmedAlertAt",
+	"alertCount",
+	"round",
+	"activeDelivery",
+]);
+const IDENTITY_CHECKPOINTS = new Set<IdentityMismatchCheckpoint>([
+	"candidate",
+	"active",
+	"pre_write",
+	"capture_back",
+	"capture",
+]);
+const DIGEST = /^[a-f0-9]{64}$/;
 
 export function defaultQuotaMonitorStatePath(): string {
 	return (
@@ -157,6 +197,8 @@ export function emptyQuotaMonitorState(
 		reviveEpoch: null,
 		blockedEpisode: null,
 		pendingSwitchFailure: null,
+		identityMismatchEpisodes: null,
+		identityAlertCursor: null,
 	};
 }
 
@@ -304,6 +346,53 @@ function parsePendingSwitchFailure(
 	};
 }
 
+function parseIdentityMismatchEpisodes(
+	value: unknown,
+): Record<string, IdentityMismatchEpisode> | null | undefined {
+	if (value === undefined || value === null) return null;
+	if (!isRecord(value) || Object.keys(value).length > 32) return undefined;
+	const episodes: Record<string, IdentityMismatchEpisode> = {};
+	for (const [label, raw] of Object.entries(value)) {
+		if (
+			!PROFILE_NAME.test(label) ||
+			!isRecord(raw) ||
+			!hasOnlyKeys(raw, IDENTITY_MISMATCH_EPISODE_KEYS)
+		) {
+			return undefined;
+		}
+		const activeDelivery = parseSwitchFailureDelivery(raw.activeDelivery);
+		if (
+			typeof raw.checkpoint !== "string" ||
+			!IDENTITY_CHECKPOINTS.has(raw.checkpoint as IdentityMismatchCheckpoint) ||
+			typeof raw.expectedKey !== "string" ||
+			!DIGEST.test(raw.expectedKey) ||
+			typeof raw.actualDigest !== "string" ||
+			!DIGEST.test(raw.actualDigest) ||
+			!isIsoInstant(raw.startedAt) ||
+			!isNullableIsoInstant(raw.lastConfirmedAlertAt) ||
+			!isGeneration(raw.alertCount) ||
+			raw.alertCount > 10 ||
+			!isGeneration(raw.round) ||
+			raw.round < 1 ||
+			activeDelivery === undefined ||
+			(activeDelivery !== null && activeDelivery.round !== raw.round)
+		) {
+			return undefined;
+		}
+		episodes[label] = {
+			checkpoint: raw.checkpoint as IdentityMismatchCheckpoint,
+			expectedKey: raw.expectedKey,
+			actualDigest: raw.actualDigest,
+			startedAt: raw.startedAt,
+			lastConfirmedAlertAt: raw.lastConfirmedAlertAt,
+			alertCount: raw.alertCount,
+			round: raw.round,
+			activeDelivery,
+		};
+	}
+	return Object.keys(episodes).length === 0 ? null : episodes;
+}
+
 function parseReviveEpoch(value: unknown): ReviveEpoch | null | undefined {
 	if (value === null) return null;
 	if (!isRecord(value) || !hasOnlyKeys(value, EPOCH_KEYS)) return undefined;
@@ -354,6 +443,17 @@ function parseState(value: unknown): QuotaMonitorState | null {
 	const pendingSwitchFailure = parsePendingSwitchFailure(
 		value.pendingSwitchFailure,
 	);
+	const identityMismatchEpisodes = parseIdentityMismatchEpisodes(
+		value.identityMismatchEpisodes,
+	);
+	const identityAlertCursor =
+		value.identityAlertCursor === undefined ||
+		value.identityAlertCursor === null
+			? null
+			: typeof value.identityAlertCursor === "string" &&
+					PROFILE_NAME.test(value.identityAlertCursor)
+				? value.identityAlertCursor
+				: undefined;
 	if (
 		value.version !== 1 ||
 		!isNullableTimestamp(value.lastPollAt) ||
@@ -366,7 +466,9 @@ function parseState(value: unknown): QuotaMonitorState | null {
 		!isGeneration(value.observedGeneration) ||
 		reviveEpoch === undefined ||
 		blockedEpisode === undefined ||
-		pendingSwitchFailure === undefined
+		pendingSwitchFailure === undefined ||
+		identityMismatchEpisodes === undefined ||
+		identityAlertCursor === undefined
 	) {
 		return null;
 	}
@@ -383,6 +485,8 @@ function parseState(value: unknown): QuotaMonitorState | null {
 		reviveEpoch,
 		blockedEpisode,
 		pendingSwitchFailure,
+		identityMismatchEpisodes,
+		identityAlertCursor,
 	};
 }
 
@@ -440,6 +544,8 @@ export function loadQuotaMonitorState(
 				reviveEpoch: null,
 				blockedEpisode: null,
 				pendingSwitchFailure: null,
+				identityMismatchEpisodes: null,
+				identityAlertCursor: null,
 			},
 			recovery: "generation_advanced",
 		};

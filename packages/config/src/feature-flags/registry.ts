@@ -258,6 +258,34 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "claude_account_identity_check",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_ACCOUNT_IDENTITY_CHECK",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1252: 对 Claude active/候选/切换/池写凭据执行 label 身份核验（默认 OFF，需先灌可信映射并 audit）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/account-heal/quota-monitor.ts",
+				"identityCheckEnabled",
+				"call_time",
+			),
+			envSite(
+				"packages/claude-runner/bin/flywheel-claude-profile",
+				"identity_check_enabled",
+				"cli_invocation",
+			),
+		],
+		// The owning readers are the external quota daemon and per-invocation CLI,
+		// not the Bridge process mutated by the direct-toggle surface.
+		toggleable: "conversational",
+		note: "启用前必须完成 identity-set + identity-audit；=0 立即停核验，但既有 identityMismatch 排除标记需 audit 清除。",
+	},
+	{
 		name: "quota_daemon_wake",
 		category: "kill_switch",
 		source: "env",

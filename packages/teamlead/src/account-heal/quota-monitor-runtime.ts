@@ -9,6 +9,10 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+	fetchProfileIdentity,
+	type ProfileIdentityResult,
+} from "./account-identity.js";
+import {
 	type AccountQuotaObservation,
 	type RecordObservationResult,
 	readStore,
@@ -90,6 +94,7 @@ export interface QuotaMonitorRuntimeOptions {
 	paths?: Partial<QuotaMonitorPaths>;
 	readKeychainCredential?: () => Promise<MonitorCredential | null>;
 	fetchUsage?: (accessToken: string) => Promise<AccountUsageResult>;
+	fetchIdentity?: (accessToken: string) => Promise<ProfileIdentityResult>;
 	verifyCandidate?: (
 		name: string,
 		activeName: string | null,
@@ -172,6 +177,8 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 	const readKeychain =
 		opts.readKeychainCredential ?? (() => readKeychainMonitorCredential());
 	const fetchUsage = opts.fetchUsage ?? ((token) => fetchAccountUsage(token));
+	const fetchIdentity =
+		opts.fetchIdentity ?? ((token) => fetchProfileIdentity(token));
 	const verifyCandidate =
 		opts.verifyCandidate ??
 		((name: string, activeName: string | null) =>
@@ -336,6 +343,7 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 					readPoolMonitorCredential(paths.poolDir, name),
 				verifyCandidate,
 				fetchUsage,
+				fetchIdentity,
 				recordObservation,
 				writeStatuslineCache: async (raw) =>
 					writeStatuslineCache(raw, paths.cachePath),

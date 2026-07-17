@@ -1,4 +1,10 @@
 import {
+	compareAccountIdentity,
+	expectedIdentityDigest,
+	identityDigest,
+	type ProfileIdentityResult,
+} from "./account-identity.js";
+import {
 	type AccountQuotaObservation,
 	type AccountStore,
 	isAuthUnusable,
@@ -11,6 +17,8 @@ import type { FreshnessVerdict } from "./freshness.js";
 import type { DeliveryReport } from "./quota-monitor-alert.js";
 import type { LoadedQuotaMonitorConfig } from "./quota-monitor-config.js";
 import type {
+	IdentityMismatchCheckpoint,
+	IdentityMismatchEpisode,
 	PendingSwitchFailure,
 	QuotaMonitorState,
 } from "./quota-monitor-state.js";
@@ -48,7 +56,8 @@ export type QuotaMonitorAlertKind =
 	| "quota_read_blind"
 	| "account_switch_failed"
 	| "quota_revive_stuck"
-	| "quota_monitor_down";
+	| "quota_monitor_down"
+	| "account_identity_mismatch";
 
 export interface QuotaMonitorAlert {
 	kind: QuotaMonitorAlertKind;
@@ -92,6 +101,8 @@ export interface QuotaMonitorDeps {
 		activeName: string | null,
 	) => Promise<FreshnessVerdict>;
 	fetchUsage: (accessToken: string) => Promise<AccountUsageResult>;
+	/** Live profile lookup; always called after the account lock is released. */
+	fetchIdentity: (accessToken: string) => Promise<ProfileIdentityResult>;
 	recordObservation: (
 		name: string,
 		observation: AccountQuotaObservation,
@@ -119,7 +130,8 @@ export type PollOutcome =
 	| "no_target"
 	| "switched"
 	| "switch_failed"
-	| "noop_already_switched";
+	| "noop_already_switched"
+	| "identity_mismatch_active";
 
 export interface PollOnceResult {
 	outcome: PollOutcome;
@@ -272,6 +284,7 @@ async function sweepCandidates(
 	deps: QuotaMonitorDeps,
 	snapshot: AccountSnapshot,
 	state: QuotaMonitorState,
+	attemptedIdentityLabels: Set<string>,
 ): Promise<void> {
 	const now = deps.now();
 	for (const name of deps.config.config.order) {
@@ -283,6 +296,32 @@ async function sweepCandidates(
 		if (isAuthUnusable(entry) || !isQuotaUsable(entry, now)) continue;
 		const { credential } = await readCandidateCredential(deps, name, false);
 		if (credential === null || credential.expiresAt <= now) continue;
+		if (identityCheckEnabled() && entry.identity !== undefined) {
+			const actual = await deps.fetchIdentity(credential.accessToken);
+			if ("error" in actual) {
+				deps.log(
+					JSON.stringify({
+						event: "account_identity_unknown",
+						label: name,
+						checkpoint: "candidate",
+						reason: actual.error,
+					}),
+				);
+				if (actual.error === "profile_unauthorized") continue;
+			} else if (
+				compareAccountIdentity(entry.identity, actual) === "mismatch"
+			) {
+				await openIdentityEpisode(deps, state, {
+					label: name,
+					checkpoint: "candidate",
+					expectedKey: expectedIdentityDigest(entry.identity),
+					actualDigest: identityDigest(actual),
+				});
+				continue;
+			} else {
+				await clearIdentityEpisode(deps, state, name);
+			}
+		}
 		const candidateUsage = await deps.fetchUsage(credential.accessToken);
 		if ("ok" in candidateUsage) {
 			await projectObservation(
@@ -293,6 +332,7 @@ async function sweepCandidates(
 			);
 		}
 	}
+	await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
 	state.lastCandidateSweepAt = now;
 	await deps.persistState(state);
 }
@@ -301,6 +341,9 @@ type UsageError = Extract<AccountUsageResult, { error: unknown }>["error"];
 type PanoramaStatus =
 	| "qualified"
 	| "qualified_low_headroom"
+	| "identity_unknown"
+	| "identity_mismatch"
+	| "identity_unauthorized"
 	| "quota_exhausted"
 	| "freshness_stale"
 	| "credential_missing"
@@ -316,6 +359,9 @@ type PanoramaClass = "usable" | "exhausted" | "unverifiable" | "ineligible";
 const PANORAMA_CLASS = {
 	qualified: "usable",
 	qualified_low_headroom: "usable",
+	identity_unknown: "usable",
+	identity_mismatch: "ineligible",
+	identity_unauthorized: "ineligible",
 	quota_exhausted: "exhausted",
 	freshness_stale: "unverifiable",
 	became_active: "unverifiable",
@@ -337,6 +383,17 @@ type PanoramaEntry = {
 	usage?: SuccessfulUsage;
 };
 
+type IdentityMismatchFact = {
+	label: string;
+	checkpoint: IdentityMismatchCheckpoint;
+	expectedKey: string;
+	actualDigest: string;
+};
+
+function identityCheckEnabled(): boolean {
+	return process.env.FLYWHEEL_ACCOUNT_IDENTITY_CHECK === "1";
+}
+
 async function verifyAndRankCandidates(
 	deps: QuotaMonitorDeps,
 	snapshot: AccountSnapshot,
@@ -345,6 +402,8 @@ async function verifyAndRankCandidates(
 	panorama: PanoramaEntry[];
 	usageByName: Map<string, SuccessfulUsage>;
 	verifiedAt: string;
+	identityMismatches: IdentityMismatchFact[];
+	identityMatches: string[];
 }> {
 	const now = deps.now();
 	const verifiedAt = new Date(now).toISOString();
@@ -361,6 +420,8 @@ async function verifyAndRankCandidates(
 		orderIndex: number;
 	}> = [];
 	const usageByName = new Map<string, SuccessfulUsage>();
+	const identityMismatches: IdentityMismatchFact[] = [];
+	const identityMatches: string[] = [];
 
 	for (const [orderIndex, name] of deps.config.config.order.entries()) {
 		if (name === snapshot.activeName) continue;
@@ -396,6 +457,42 @@ async function verifyAndRankCandidates(
 			});
 			continue;
 		}
+		let identityUnknown = false;
+		if (identityCheckEnabled()) {
+			if (entry.identity === undefined) {
+				identityUnknown = true;
+			} else {
+				const actual = await deps.fetchIdentity(checked.credential.accessToken);
+				if ("error" in actual) {
+					if (actual.error === "profile_unauthorized") {
+						panorama.push({ name, status: "identity_unauthorized" });
+						continue;
+					}
+					identityUnknown = true;
+					deps.log(
+						JSON.stringify({
+							event: "account_identity_unknown",
+							label: name,
+							checkpoint: "candidate",
+							reason: actual.error,
+						}),
+					);
+				} else if (
+					compareAccountIdentity(entry.identity, actual) === "mismatch"
+				) {
+					identityMismatches.push({
+						label: name,
+						checkpoint: "candidate",
+						expectedKey: expectedIdentityDigest(entry.identity),
+						actualDigest: identityDigest(actual),
+					});
+					panorama.push({ name, status: "identity_mismatch" });
+					continue;
+				} else {
+					identityMatches.push(name);
+				}
+			}
+		}
 		const candidateUsage = await deps.fetchUsage(
 			checked.credential.accessToken,
 		);
@@ -423,12 +520,16 @@ async function verifyAndRankCandidates(
 		}
 		const resetMs = Date.parse(candidateUsage.ok.sevenD.resetsAt);
 		if (candidateUsage.ok.fiveH.pct < deps.config.config.trigger5hPct) {
-			panorama.push({ name, status: "qualified", usage: candidateUsage.ok });
+			panorama.push({
+				name,
+				status: identityUnknown ? "identity_unknown" : "qualified",
+				usage: candidateUsage.ok,
+			});
 			tier0.push({ name, resetMs, orderIndex });
 		} else {
 			panorama.push({
 				name,
-				status: "qualified_low_headroom",
+				status: identityUnknown ? "identity_unknown" : "qualified_low_headroom",
 				usage: candidateUsage.ok,
 			});
 			tier1.push({
@@ -452,6 +553,8 @@ async function verifyAndRankCandidates(
 		panorama,
 		usageByName,
 		verifiedAt,
+		identityMismatches,
+		identityMatches,
 	};
 }
 
@@ -523,6 +626,178 @@ async function safeAlert(
 		return await deps.alert(alert);
 	} catch {
 		return { primary: "process_error" };
+	}
+}
+
+const IDENTITY_DIGEST = /^[a-f0-9]{64}$/;
+const IDENTITY_LABEL = /^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]+$/;
+
+function validIdentityFact(fact: IdentityMismatchFact): boolean {
+	return (
+		IDENTITY_LABEL.test(fact.label) &&
+		IDENTITY_DIGEST.test(fact.expectedKey) &&
+		IDENTITY_DIGEST.test(fact.actualDigest)
+	);
+}
+
+async function clearIdentityEpisode(
+	deps: QuotaMonitorDeps,
+	state: QuotaMonitorState,
+	label: string,
+	checkpoint?: IdentityMismatchCheckpoint,
+): Promise<void> {
+	const episodes = state.identityMismatchEpisodes;
+	if (episodes === null) return;
+	const episode = episodes[label];
+	if (episode === undefined) return;
+	if (checkpoint !== undefined && episode.checkpoint !== checkpoint) return;
+	delete episodes[label];
+	if (Object.keys(episodes).length === 0) {
+		state.identityMismatchEpisodes = null;
+		state.identityAlertCursor = null;
+	} else if (
+		state.identityAlertCursor !== null &&
+		episodes[state.identityAlertCursor] === undefined
+	) {
+		state.identityAlertCursor = null;
+	}
+	await deps.persistState(state);
+}
+
+async function openIdentityEpisode(
+	deps: QuotaMonitorDeps,
+	state: QuotaMonitorState,
+	fact: IdentityMismatchFact,
+): Promise<void> {
+	if (!validIdentityFact(fact)) return;
+	const now = deps.now();
+	const nowIso = new Date(now).toISOString();
+	const episodes = state.identityMismatchEpisodes ?? {};
+	const current = episodes[fact.label];
+	const sameFingerprint =
+		current !== undefined &&
+		current.checkpoint === fact.checkpoint &&
+		current.expectedKey === fact.expectedKey &&
+		current.actualDigest === fact.actualDigest;
+	let episode: IdentityMismatchEpisode;
+	if (!sameFingerprint) {
+		if (current === undefined && Object.keys(episodes).length >= 32) {
+			return;
+		}
+		episode = {
+			checkpoint: fact.checkpoint,
+			expectedKey: fact.expectedKey,
+			actualDigest: fact.actualDigest,
+			startedAt: nowIso,
+			lastConfirmedAlertAt: null,
+			alertCount: 0,
+			round: 1,
+			activeDelivery: { round: 1, attempts: 0, lastAttemptAt: null },
+		};
+		episodes[fact.label] = episode;
+		state.identityMismatchEpisodes = episodes;
+	} else if (current.activeDelivery !== null) {
+		return;
+	} else {
+		episode = current;
+		if (episode.alertCount >= 10) return;
+		const confirmedAt =
+			episode.lastConfirmedAlertAt === null
+				? Number.NEGATIVE_INFINITY
+				: Date.parse(episode.lastConfirmedAlertAt);
+		if (
+			!Number.isNaN(confirmedAt) &&
+			now - confirmedAt < deps.config.config.episodeRealertMinutes * 60_000
+		) {
+			return;
+		}
+		episode.round += 1;
+		episode.activeDelivery = {
+			round: episode.round,
+			attempts: 0,
+			lastAttemptAt: null,
+		};
+	}
+	await deps.persistState(state);
+}
+
+async function attemptIdentityDeliveries(
+	deps: QuotaMonitorDeps,
+	state: QuotaMonitorState,
+	attemptedLabels: Set<string>,
+): Promise<void> {
+	const episodes = state.identityMismatchEpisodes;
+	if (episodes === null || attemptedLabels.size >= 2) return;
+	const labels = Object.keys(episodes).sort();
+	if (labels.length === 0) return;
+	const cursorIndex =
+		state.identityAlertCursor === null
+			? -1
+			: labels.indexOf(state.identityAlertCursor);
+	const ordered = labels.map(
+		(_, index) => labels[(cursorIndex + 1 + index) % labels.length]!,
+	);
+	for (const label of ordered) {
+		if (attemptedLabels.size >= 2) break;
+		if (attemptedLabels.has(label)) continue;
+		const episode = episodes[label];
+		if (
+			episode === undefined ||
+			episode.activeDelivery === null ||
+			!deliveryDue(
+				episode.activeDelivery.attempts,
+				episode.activeDelivery.lastAttemptAt,
+				deps.now(),
+				deps.config.config.episodeRealertMinutes,
+			)
+		) {
+			continue;
+		}
+		const delivery = episode.activeDelivery;
+		attemptedLabels.add(label);
+		state.identityAlertCursor = label;
+		delivery.lastAttemptAt = new Date(deps.now()).toISOString();
+		await deps.persistState(state);
+		const report = await safeAlert(deps, {
+			kind: "account_identity_mismatch",
+			severity: "severe",
+			title: "Claude account identity does not match its label",
+			body: `label=${label}; checkpoint=${episode.checkpoint}; expectedKey=${episode.expectedKey}; actualDigest=${episode.actualDigest}`,
+			signature: `account-identity-mismatch-${label}-${episode.startedAt}-r${delivery.round}-a${delivery.attempts}`,
+		});
+		if (deliveryConfirmed(report)) {
+			episode.lastConfirmedAlertAt = new Date(deps.now()).toISOString();
+			episode.alertCount += 1;
+			episode.activeDelivery = null;
+		} else {
+			delivery.attempts += 1;
+		}
+		await deps.persistState(state);
+	}
+}
+
+async function consumeApplyIdentityReports(
+	deps: QuotaMonitorDeps,
+	state: QuotaMonitorState,
+	reports: SwitchResult["applyReports"],
+): Promise<void> {
+	for (const report of reports ?? []) {
+		for (const check of report.identityChecks) {
+			if (check.verdict === "match") {
+				await clearIdentityEpisode(deps, state, check.label, check.checkpoint);
+			} else if (
+				check.verdict === "mismatch" &&
+				check.expectedKey !== undefined &&
+				check.actualDigest !== undefined
+			) {
+				await openIdentityEpisode(deps, state, {
+					label: check.label,
+					checkpoint: check.checkpoint,
+					expectedKey: check.expectedKey,
+					actualDigest: check.actualDigest,
+				});
+			}
+		}
 	}
 }
 
@@ -831,6 +1106,7 @@ export async function pollOnce(
 	let state = structuredClone(deps.state);
 	state.lastPollAt = now;
 	const attemptedKinds = new Set<QuotaMonitorAlertKind>();
+	const attemptedIdentityLabels = new Set<string>();
 	let panorama: string[] = [];
 	const finish = (outcome: PollOutcome): PollOnceResult => {
 		if (outcome !== "observed") {
@@ -868,6 +1144,8 @@ export async function pollOnce(
 		state.reviveEpoch = null;
 		state.blockedEpisode = null;
 		state.pendingSwitchFailure = null;
+		state.identityMismatchEpisodes = null;
+		state.identityAlertCursor = null;
 		await deps.persistState(state);
 	}
 
@@ -876,6 +1154,7 @@ export async function pollOnce(
 	// invalidated episodes owned by a previous account generation.
 	await attemptBlockedDelivery(deps, state, attemptedKinds);
 	await attemptSwitchFailureDelivery(deps, state, attemptedKinds);
+	await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
 
 	// Local tmux recovery remains live even while usage polling is backed off.
 	({ state } = await runOpenReviveEpoch(deps, state));
@@ -908,6 +1187,50 @@ export async function pollOnce(
 			"credential_missing_or_expired",
 		);
 		return finish("blind");
+	}
+
+	if (identityCheckEnabled()) {
+		const activeEntry = snapshot.store.accounts.find(
+			(account) => account.name === snapshot.activeName,
+		);
+		if (activeEntry?.identity === undefined) {
+			deps.log(
+				JSON.stringify({
+					event: "account_identity_unknown",
+					label: snapshot.activeName,
+					checkpoint: "active",
+					reason: "unknown_missing",
+				}),
+			);
+		} else {
+			const activeIdentity = await deps.fetchIdentity(
+				snapshot.activeCredential.accessToken,
+			);
+			if ("error" in activeIdentity) {
+				deps.log(
+					JSON.stringify({
+						event: "account_identity_unknown",
+						label: snapshot.activeName,
+						checkpoint: "active",
+						reason: activeIdentity.error,
+					}),
+				);
+			} else if (
+				compareAccountIdentity(activeEntry.identity, activeIdentity) ===
+				"mismatch"
+			) {
+				await openIdentityEpisode(deps, state, {
+					label: snapshot.activeName,
+					checkpoint: "active",
+					expectedKey: expectedIdentityDigest(activeEntry.identity),
+					actualDigest: identityDigest(activeIdentity),
+				});
+				await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
+				return finish("identity_mismatch_active");
+			} else {
+				await clearIdentityEpisode(deps, state, snapshot.activeName, "active");
+			}
+		}
 	}
 
 	const currentUsage = await deps.fetchUsage(
@@ -977,7 +1300,7 @@ export async function pollOnce(
 			now - state.lastCandidateSweepAt >=
 				deps.config.config.candidateSweepMinutes * 60_000);
 	if (scope === null && sweepDue) {
-		await sweepCandidates(deps, snapshot, state);
+		await sweepCandidates(deps, snapshot, state, attemptedIdentityLabels);
 	}
 	if (scope === null) {
 		if (state.pendingSwitchFailure !== null) {
@@ -1013,6 +1336,18 @@ export async function pollOnce(
 	}
 
 	const candidates = await verifyAndRankCandidates(deps, snapshot);
+	for (const name of candidates.identityMatches) {
+		// A candidate can only reach this point after an audit has cleared any
+		// sticky identityMismatch marker and a fresh profile probe has confirmed
+		// the current pool credential. That positive reconciliation closes stale
+		// facts for the label regardless of the checkpoint that originally found
+		// them (for example, an executor pre_write mismatch).
+		await clearIdentityEpisode(deps, state, name);
+	}
+	for (const fact of candidates.identityMismatches) {
+		await openIdentityEpisode(deps, state, fact);
+	}
+	await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
 	panorama = candidates.panorama.map(({ name, status }) => `${name}:${status}`);
 	let preferredOrder = candidates.ranked;
 	let degraded = false;
@@ -1046,6 +1381,8 @@ export async function pollOnce(
 		verifiedAt: candidates.verifiedAt,
 		quotaPreverified: !degraded,
 	});
+	await consumeApplyIdentityReports(deps, state, switched.applyReports);
+	await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
 
 	if (switched.outcome === "noop_already_switched") {
 		return finish("noop_already_switched");
@@ -1056,6 +1393,8 @@ export async function pollOnce(
 		state.reviveEpoch = null;
 		state.blockedEpisode = null;
 		state.pendingSwitchFailure = null;
+		state.identityMismatchEpisodes = null;
+		state.identityAlertCursor = null;
 		await deps.persistState(state);
 		return finish("noop_already_switched");
 	}

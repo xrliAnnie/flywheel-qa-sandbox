@@ -1,4 +1,5 @@
 import { execFile as nodeExecFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -18,6 +19,11 @@ export interface KeychainCredentialOptions {
 	service?: string;
 	keychain?: string;
 	execFile?: ExecFileFn;
+}
+
+export interface PoolMonitorCredentialSnapshot extends MonitorCredential {
+	/** SHA-256 of the exact credential file bytes used for the probe. */
+	rawDigest: string;
 }
 
 function parseMonitorCredential(raw: string): MonitorCredential | null {
@@ -87,6 +93,16 @@ export function readPoolMonitorCredential(
 	poolDir: string,
 	name: string,
 ): MonitorCredential | null {
+	const snapshot = readPoolMonitorCredentialSnapshot(poolDir, name);
+	return snapshot === null
+		? null
+		: { accessToken: snapshot.accessToken, expiresAt: snapshot.expiresAt };
+}
+
+export function readPoolMonitorCredentialSnapshot(
+	poolDir: string,
+	name: string,
+): PoolMonitorCredentialSnapshot | null {
 	if (!PROFILE_NAME.test(name)) return null;
 	try {
 		const profileStat = lstatSync(join(poolDir, name));
@@ -95,7 +111,14 @@ export function readPoolMonitorCredential(
 		return null;
 	}
 	const raw = readRegularFile(join(poolDir, name, ".credentials.json"));
-	return raw === null ? null : parseMonitorCredential(raw);
+	if (raw === null) return null;
+	const credential = parseMonitorCredential(raw);
+	return credential === null
+		? null
+		: {
+				...credential,
+				rawDigest: createHash("sha256").update(raw).digest("hex"),
+			};
 }
 
 export function readActiveProfileName(poolDir: string): string | null {

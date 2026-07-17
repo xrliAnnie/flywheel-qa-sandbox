@@ -103,6 +103,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"internal contract: non-secret account-lock ownership proof passed to delegated mutation helpers (FLY-1252)",
 	FLYWHEEL_CLAUDE_OAUTH_ENDPOINT:
 		"config value: OAuth token-refresh endpoint override for the freshness helper (FLY-871; enable-gate spike pins the exact contract without a code change)",
+	FLYWHEEL_PROFILE_IDENTITY_ENDPOINT:
+		"config value: OAuth profile identity endpoint override for hermetic FLY-1252 tests",
 	FLYWHEEL_CLAUDE_OAUTH_CLIENT_ID:
 		"config value: OAuth public client id override for the freshness helper (FLY-871)",
 	FLYWHEEL_ACCOUNT_LEDGER_PATH:

@@ -90,6 +90,12 @@ describe("FLY-1256 shell alert rendering", () => {
 		expect(send("quota_no_target", "actionable")).toContain("🎫");
 	});
 
+	it("identity mismatch is allowlisted and keeps the actionable ticket header", () => {
+		expect(send("account_identity_mismatch", "identity-actionable")).toContain(
+			"🎫",
+		);
+	});
+
 	it("quota guard bypass is allowlisted and keeps the actionable ticket header", () => {
 		expect(send("quota_guard_bypassed", "bypass-audit")).toContain("🎫");
 	});

@@ -1,15 +1,38 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	compareAccountIdentity,
+	type ExpectedAccountIdentity,
+	expectedIdentityDigest,
+	fetchProfileIdentity,
+	identityDigest,
+	type ProfileIdentityResult,
+} from "./account-identity.js";
 import {
 	defaultStorePath,
 	earliestReset,
 	isAuthUnusable,
 	isQuotaUsable,
 	readStore,
+	readStoreStrict,
 	recordObservationInStore,
 	syncActiveAccountInStore,
+	writeStore,
 } from "./account-store.js";
+import { type AccountsLock, withAccountsLock } from "./accounts-lock.js";
 import { type LeaseProof, validateLeaseProof } from "./mkdir-lock.js";
-import { readPoolMonitorCredential } from "./quota-monitor-credentials.js";
+import type { QuotaMonitorAlert } from "./quota-monitor.js";
+import {
+	type DeliveryReport,
+	sendQuotaMonitorAlert,
+} from "./quota-monitor-alert.js";
+import {
+	type PoolMonitorCredentialSnapshot,
+	readPoolMonitorCredential,
+	readPoolMonitorCredentialSnapshot,
+} from "./quota-monitor-credentials.js";
 import {
 	type AccountUsageResult,
 	fetchAccountUsage,
@@ -18,7 +41,13 @@ import {
 export interface QuotaGuardCliDeps {
 	now?: () => number;
 	readCredential?: typeof readPoolMonitorCredential;
+	readCredentialSnapshot?: typeof readPoolMonitorCredentialSnapshot;
 	fetchUsage?: (accessToken: string) => Promise<AccountUsageResult>;
+	fetchIdentity?: (accessToken: string) => Promise<ProfileIdentityResult>;
+	readStdin?: () => string;
+	withAccountsLock?: AccountsLock;
+	lockPath?: string;
+	alert?: (alert: QuotaMonitorAlert) => Promise<DeliveryReport>;
 	log?: (message: string) => void;
 }
 
@@ -26,6 +55,8 @@ interface GuardArgs {
 	name?: string;
 	pool?: string;
 	store?: string;
+	email?: string;
+	uuid?: string;
 }
 
 function leaseFenceFromEnv(): (() => boolean) | null {
@@ -53,9 +84,359 @@ function parseArgs(argv: string[]): GuardArgs {
 		} else if (flag === "--store") {
 			out.store = value;
 			index++;
+		} else if (flag === "--email") {
+			out.email = value;
+			index++;
+		} else if (flag === "--uuid") {
+			out.uuid = value;
+			index++;
 		}
 	}
 	return out;
+}
+
+function defaultAccountsLockPath(): string {
+	return (
+		process.env.FLYWHEEL_CLAUDE_ACCOUNTS_LOCK ??
+		join(homedir(), ".flywheel", "claude-accounts.lock")
+	);
+}
+
+function safeAccessToken(raw: string): string | null {
+	const token = raw.trim();
+	return token.length > 0 && !/\s/.test(token) ? token : null;
+}
+
+function validEmail(raw: string): string | null {
+	const email = raw.trim().toLowerCase();
+	return /^[^\s@]+@[^\s@]+$/.test(email) ? email : null;
+}
+
+async function runIdentityVerify(
+	argv: string[],
+	deps: QuotaGuardCliDeps,
+	log: (message: string) => void,
+): Promise<number> {
+	const { name, store } = parseArgs(argv);
+	const storePath = store ?? defaultStorePath();
+	if (!name) {
+		log("identity verify: missing target name");
+		return 35;
+	}
+	const accountStore = readStoreStrict(storePath);
+	const matching = accountStore?.accounts.filter(
+		(entry) => entry.name === name,
+	);
+	const expected = matching?.length === 1 ? matching[0]?.identity : undefined;
+	if (!expected) {
+		log(`identity verify: expected identity unavailable for '${name}'`);
+		return 35;
+	}
+	const token = safeAccessToken(
+		(deps.readStdin ?? (() => readFileSync(0, "utf8")))(),
+	);
+	if (token === null) {
+		log("identity verify: credential unavailable");
+		return 35;
+	}
+
+	let result: ProfileIdentityResult;
+	try {
+		result = await (deps.fetchIdentity ?? fetchProfileIdentity)(token);
+	} catch {
+		result = { error: "profile_network" };
+	}
+	if ("error" in result) {
+		log(`identity verify: ${result.error}`);
+		return result.error === "profile_unauthorized" ? 38 : 35;
+	}
+	const comparison = compareAccountIdentity(expected, result);
+	if (comparison === "match") {
+		log(
+			`identity verify: match for '${name}' expectedKey=${expectedIdentityDigest(expected)}`,
+		);
+		return 0;
+	}
+	log(
+		`identity verify: mismatch for '${name}' expectedKey=${expectedIdentityDigest(expected)} actualDigest=${identityDigest(result)}`,
+	);
+	return 34;
+}
+
+type IdentitySetResult =
+	| "set"
+	| "invalid_input"
+	| "invalid_store"
+	| "missing_account"
+	| "write_failed";
+
+async function runIdentitySet(
+	argv: string[],
+	deps: QuotaGuardCliDeps,
+	log: (message: string) => void,
+): Promise<number> {
+	const { name, email: rawEmail, uuid: rawUuid, store } = parseArgs(argv);
+	const email = rawEmail === undefined ? null : validEmail(rawEmail);
+	const uuid = rawUuid?.trim().toLowerCase();
+	if (!name || email === null || (rawUuid !== undefined && !uuid)) {
+		log("identity set: invalid input");
+		return 33;
+	}
+	const storePath = store ?? defaultStorePath();
+	const lockPath = deps.lockPath ?? defaultAccountsLockPath();
+	const lock = deps.withAccountsLock ?? withAccountsLock;
+	const result = await lock<IdentitySetResult>(lockPath, async () => {
+		const current = readStoreStrict(storePath);
+		if (current === null) return "invalid_store";
+		const matches = current.accounts
+			.map((entry, index) => ({ entry, index }))
+			.filter(({ entry }) => entry.name === name);
+		if (matches.length !== 1) return "missing_account";
+		const selected = matches[0];
+		if (!selected) return "missing_account";
+		current.accounts[selected.index] = {
+			...selected.entry,
+			identity: {
+				email,
+				...(uuid ? { uuid } : {}),
+				setAt: new Date((deps.now ?? Date.now)()).toISOString(),
+			},
+		};
+		try {
+			writeStore(current, storePath);
+			return "set";
+		} catch {
+			return "write_failed";
+		}
+	});
+	if (result.kind !== "ok") {
+		log(`identity set: lock result=${result.kind}`);
+		return 33;
+	}
+	log(`identity set: result=${result.value}; name=${name}`);
+	return result.value === "set" ? 0 : 33;
+}
+
+interface IdentityAuditSnapshot {
+	name: string;
+	expected: ExpectedAccountIdentity;
+	expectedDigest: string;
+	credential: PoolMonitorCredentialSnapshot;
+}
+
+type IdentityAuditProbe = IdentityAuditSnapshot & {
+	result: ProfileIdentityResult;
+};
+
+type IdentityAuditStatus =
+	| "match"
+	| "mismatch"
+	| "unknown_missing"
+	| "profile_network"
+	| "profile_malformed"
+	| "profile_unauthorized"
+	| "fingerprint_changed";
+
+function auditExit(statuses: IdentityAuditStatus[]): number {
+	if (statuses.includes("mismatch")) return 34;
+	if (statuses.includes("profile_unauthorized")) return 38;
+	if (statuses.some((status) => status !== "match")) return 35;
+	return 0;
+}
+
+async function runIdentityAudit(
+	argv: string[],
+	deps: QuotaGuardCliDeps,
+	log: (message: string) => void,
+): Promise<number> {
+	const { pool, store } = parseArgs(argv);
+	if (!pool) {
+		log("identity audit: missing pool path");
+		return 35;
+	}
+	const shouldMark = argv.includes("--mark");
+	const storePath = store ?? defaultStorePath();
+	const lockPath = deps.lockPath ?? defaultAccountsLockPath();
+	const lock = deps.withAccountsLock ?? withAccountsLock;
+	const readSnapshot =
+		deps.readCredentialSnapshot ?? readPoolMonitorCredentialSnapshot;
+
+	const first = await lock<{
+		snapshots: IdentityAuditSnapshot[];
+		statuses: Map<string, IdentityAuditStatus>;
+	}>(lockPath, async () => {
+		const current = readStoreStrict(storePath);
+		if (current === null) {
+			return {
+				snapshots: [],
+				statuses: new Map([["store", "profile_malformed" as const]]),
+			};
+		}
+		const snapshots: IdentityAuditSnapshot[] = [];
+		const statuses = new Map<string, IdentityAuditStatus>();
+		for (const account of current.accounts) {
+			if (account.identity === undefined) {
+				statuses.set(account.name, "unknown_missing");
+				continue;
+			}
+			const credential = readSnapshot(pool, account.name);
+			if (credential === null) {
+				statuses.set(account.name, "unknown_missing");
+				continue;
+			}
+			snapshots.push({
+				name: account.name,
+				expected: account.identity,
+				expectedDigest: expectedIdentityDigest(account.identity),
+				credential,
+			});
+		}
+		return { snapshots, statuses };
+	});
+	if (first.kind !== "ok") {
+		log(`identity audit: first lock result=${first.kind}`);
+		return 35;
+	}
+
+	const probes: IdentityAuditProbe[] = [];
+	for (const snapshot of first.value.snapshots) {
+		let result: ProfileIdentityResult;
+		try {
+			result = await (deps.fetchIdentity ?? fetchProfileIdentity)(
+				snapshot.credential.accessToken,
+			);
+		} catch {
+			result = { error: "profile_network" };
+		}
+		probes.push({ ...snapshot, result });
+	}
+
+	const second = await lock<{
+		statuses: Map<string, IdentityAuditStatus>;
+		writeFailed: boolean;
+	}>(lockPath, async () => {
+		const current = readStoreStrict(storePath);
+		if (current === null) {
+			return {
+				statuses: new Map([["store", "profile_malformed" as const]]),
+				writeFailed: false,
+			};
+		}
+		const statuses = new Map(first.value.statuses);
+		let changed = false;
+		for (const probe of probes) {
+			const matches = current.accounts
+				.map((entry, index) => ({ entry, index }))
+				.filter(({ entry }) => entry.name === probe.name);
+			const selected = matches.length === 1 ? matches[0] : undefined;
+			const credential = readSnapshot(pool, probe.name);
+			if (
+				selected === undefined ||
+				selected.entry.identity === undefined ||
+				credential === null ||
+				credential.rawDigest !== probe.credential.rawDigest ||
+				expectedIdentityDigest(selected.entry.identity) !== probe.expectedDigest
+			) {
+				statuses.set(probe.name, "fingerprint_changed");
+				continue;
+			}
+			if ("error" in probe.result) {
+				statuses.set(probe.name, probe.result.error);
+				continue;
+			}
+			const comparison = compareAccountIdentity(
+				selected.entry.identity,
+				probe.result,
+			);
+			statuses.set(probe.name, comparison);
+			if (!shouldMark) continue;
+			if (comparison === "mismatch") {
+				selected.entry.identityMismatch = {
+					actualDigest: identityDigest(probe.result),
+					markedBy: "audit",
+					markedAt: new Date((deps.now ?? Date.now)()).toISOString(),
+				};
+				changed = true;
+			} else if (selected.entry.identityMismatch !== undefined) {
+				const { identityMismatch: _, ...withoutMismatch } = selected.entry;
+				current.accounts[selected.index] = withoutMismatch;
+				changed = true;
+			}
+		}
+		if (!changed) return { statuses, writeFailed: false };
+		try {
+			writeStore(current, storePath);
+			return { statuses, writeFailed: false };
+		} catch {
+			return { statuses, writeFailed: true };
+		}
+	});
+	if (second.kind !== "ok" || second.value.writeFailed) {
+		log(
+			`identity audit: second lock result=${second.kind}${second.kind === "ok" ? "; write_failed=true" : ""}`,
+		);
+		return 35;
+	}
+	for (const [name, status] of second.value.statuses) {
+		log(`identity audit: name=${name}; result=${status}`);
+	}
+	return auditExit([...second.value.statuses.values()]);
+}
+
+const REPORT_LABEL = /^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]+$/;
+const REPORT_DIGEST = /^[a-f0-9]{64}$/;
+const REPORT_CHECKPOINTS = new Set(["pre_write", "capture_back", "capture"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function runIdentityAlertFlush(
+	deps: QuotaGuardCliDeps,
+	log: (message: string) => void,
+): Promise<number> {
+	let value: unknown;
+	try {
+		value = JSON.parse((deps.readStdin ?? (() => readFileSync(0, "utf8")))());
+	} catch {
+		log("identity alert flush: ignored malformed report");
+		return 0;
+	}
+	if (!isRecord(value) || !Array.isArray(value.identityChecks)) {
+		log("identity alert flush: ignored malformed report");
+		return 0;
+	}
+	const alert = deps.alert ?? ((input) => sendQuotaMonitorAlert(input));
+	let index = 0;
+	for (const check of value.identityChecks) {
+		if (
+			!isRecord(check) ||
+			check.verdict !== "mismatch" ||
+			typeof check.label !== "string" ||
+			!REPORT_LABEL.test(check.label) ||
+			typeof check.checkpoint !== "string" ||
+			!REPORT_CHECKPOINTS.has(check.checkpoint) ||
+			typeof check.expectedKey !== "string" ||
+			!REPORT_DIGEST.test(check.expectedKey) ||
+			typeof check.actualDigest !== "string" ||
+			!REPORT_DIGEST.test(check.actualDigest)
+		) {
+			continue;
+		}
+		try {
+			await alert({
+				kind: "account_identity_mismatch",
+				severity: "severe",
+				title: "Claude account identity does not match its label",
+				body: `label=${check.label}; checkpoint=${check.checkpoint}; expectedKey=${check.expectedKey}; actualDigest=${check.actualDigest}; source=manual`,
+				signature: `account-identity-mismatch-manual-${check.label}-${check.actualDigest}-${(deps.now ?? Date.now)()}-${index}`,
+			});
+		} catch {
+			log(`identity alert flush: delivery failed for label=${check.label}`);
+		}
+		index += 1;
+	}
+	return 0;
 }
 
 function ageText(ageMs: number): string {
@@ -144,6 +525,18 @@ export async function runQuotaGuardCli(
 ): Promise<number> {
 	const log =
 		deps.log ?? ((message: string) => process.stderr.write(`${message}\n`));
+	if (argv[0] === "identity-verify") {
+		return runIdentityVerify(argv, deps, log);
+	}
+	if (argv[0] === "identity-set") {
+		return runIdentitySet(argv, deps, log);
+	}
+	if (argv[0] === "identity-audit") {
+		return runIdentityAudit(argv, deps, log);
+	}
+	if (argv[0] === "identity-alert-flush") {
+		return runIdentityAlertFlush(deps, log);
+	}
 	if (argv[0] === "active-sync") {
 		const { name, store } = parseArgs(argv);
 		const fence = leaseFenceFromEnv();
@@ -164,7 +557,7 @@ export async function runQuotaGuardCli(
 	}
 	if (argv[0] !== "check") {
 		log(
-			"usage: quota-guard check --name <target> --pool <dir> [--store <path>] | active-sync --name <active> [--store <path>]",
+			"usage: quota-guard check --name <target> --pool <dir> [--store <path>] | active-sync --name <active> [--store <path>] | identity-verify --name <target> [--store <path>] | identity-set --name <target> --email <email> [--uuid <uuid>] [--store <path>] | identity-audit [--mark] --pool <dir> [--store <path>] | identity-alert-flush",
 		);
 		return 33;
 	}

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProfileIdentityResult } from "../account-heal/account-identity.js";
 import {
 	type AccountQuotaObservation,
 	type AccountStore,
@@ -100,6 +101,14 @@ function harness() {
 		events.push(`fetch:${token.replace("secret-", "")}`);
 		return usages.get(token) ?? { error: "network" };
 	});
+	const fetchIdentity = vi.fn(
+		async (token: string): Promise<ProfileIdentityResult> => {
+			expect(lockDepth).toBe(0);
+			events.push(`identity:${token.replace("secret-", "")}`);
+			const label = token.replace("secret-", "");
+			return { email: `${label}@example.com`, uuid: `uuid-${label}` };
+		},
+	);
 	const verifyCandidate = vi.fn(async (name: string) => {
 		expect(lockDepth).toBe(1);
 		events.push(`verify:${name}`);
@@ -184,6 +193,7 @@ function harness() {
 		},
 		verifyCandidate,
 		fetchUsage,
+		fetchIdentity,
 		recordObservation,
 		writeStatuslineCache: async (raw) => {
 			expect(lockDepth).toBe(1);
@@ -215,6 +225,7 @@ function harness() {
 		credentials,
 		usages,
 		fetchUsage,
+		fetchIdentity,
 		verifyCandidate,
 		recordObservation,
 		switchImpl,
@@ -239,14 +250,242 @@ let h: Harness;
 
 beforeEach(() => {
 	delete process.env.FLYWHEEL_QUOTA_DEGRADED_SWITCH;
+	delete process.env.FLYWHEEL_ACCOUNT_IDENTITY_CHECK;
 	h = harness();
 });
 
 afterEach(() => {
 	delete process.env.FLYWHEEL_QUOTA_DEGRADED_SWITCH;
+	delete process.env.FLYWHEEL_ACCOUNT_IDENTITY_CHECK;
 });
 
 describe("pollOnce", () => {
+	it("active identity mismatch is terminal before usage projection or switching", async () => {
+		process.env.FLYWHEEL_ACCOUNT_IDENTITY_CHECK = "1";
+		const next = store();
+		next.accounts.find((account) => account.name === "shopping")!.identity = {
+			email: "shopping@example.com",
+			uuid: "uuid-shopping",
+			setAt: new Date(NOW - 60_000).toISOString(),
+		};
+		h.setStore(next);
+		h.fetchIdentity.mockResolvedValueOnce({
+			email: "intruder@example.com",
+			uuid: "uuid-intruder",
+		});
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("identity_mismatch_active");
+		expect(h.fetchIdentity).toHaveBeenCalledWith("secret-shopping");
+		expect(h.fetchUsage).not.toHaveBeenCalled();
+		expect(h.recordObservation).not.toHaveBeenCalled();
+		expect(h.switchImpl).not.toHaveBeenCalled();
+		expect(h.alerts.map((alert) => alert.kind)).toEqual([
+			"account_identity_mismatch",
+		]);
+		expect(result.state.identityMismatchEpisodes?.shopping).toMatchObject({
+			checkpoint: "active",
+			alertCount: 1,
+		});
+	});
+
+	it("active identity unknown warns but keeps the usage tick live", async () => {
+		process.env.FLYWHEEL_ACCOUNT_IDENTITY_CHECK = "1";
+		const next = store();
+		next.accounts.find((account) => account.name === "shopping")!.identity = {
+			email: "shopping@example.com",
+			uuid: "uuid-shopping",
+			setAt: new Date(NOW - 60_000).toISOString(),
+		};
+		h.setStore(next);
+		h.fetchIdentity.mockResolvedValueOnce({ error: "profile_network" });
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("observed");
+		expect(h.fetchUsage).toHaveBeenCalledWith("secret-shopping");
+		expect(h.alerts).toEqual([]);
+		expect(h.deps.log).toHaveBeenCalledWith(
+			expect.stringContaining('"reason":"profile_network"'),
+		);
+	});
+
+	it("a confirmed active match clears the matching identity episode", async () => {
+		process.env.FLYWHEEL_ACCOUNT_IDENTITY_CHECK = "1";
+		const next = store();
+		next.accounts.find((account) => account.name === "shopping")!.identity = {
+			email: "shopping@example.com",
+			uuid: "uuid-shopping",
+			setAt: new Date(NOW - 60_000).toISOString(),
+		};
+		h.setStore(next);
+		h.deps.state = {
+			...emptyQuotaMonitorState(4),
+			identityMismatchEpisodes: {
+				shopping: {
+					checkpoint: "active",
+					expectedKey: "b".repeat(64),
+					actualDigest: "a".repeat(64),
+					startedAt: new Date(NOW - 60_000).toISOString(),
+					lastConfirmedAlertAt: new Date(NOW - 30_000).toISOString(),
+					alertCount: 1,
+					round: 1,
+					activeDelivery: null,
+				},
+			},
+			identityAlertCursor: "shopping",
+		};
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("observed");
+		expect(result.state.identityMismatchEpisodes).toBeNull();
+		expect(result.state.identityAlertCursor).toBeNull();
+		expect(h.alerts).toEqual([]);
+	});
+
+	it("a confirmed candidate match after audit reconciliation clears an older checkpoint episode", async () => {
+		process.env.FLYWHEEL_ACCOUNT_IDENTITY_CHECK = "1";
+		const next = store();
+		for (const account of next.accounts) {
+			account.identity = {
+				email: `${account.name}@example.com`,
+				uuid: `uuid-${account.name}`,
+				setAt: new Date(NOW - 60_000).toISOString(),
+			};
+		}
+		// The audit has already cleared school.identityMismatch in the store.
+		h.setStore(next);
+		h.usages.set("secret-shopping", usage(100, 20));
+		h.deps.state = {
+			...emptyQuotaMonitorState(4),
+			identityMismatchEpisodes: {
+				school: {
+					checkpoint: "pre_write",
+					expectedKey: "b".repeat(64),
+					actualDigest: "a".repeat(64),
+					startedAt: new Date(NOW - 60_000).toISOString(),
+					lastConfirmedAlertAt: new Date(NOW - 30_000).toISOString(),
+					alertCount: 1,
+					round: 1,
+					activeDelivery: null,
+				},
+			},
+			identityAlertCursor: "school",
+		};
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switched");
+		expect(h.fetchIdentity).toHaveBeenCalledWith("secret-school");
+		expect(result.state.identityMismatchEpisodes).toBeNull();
+		expect(result.state.identityAlertCursor).toBeNull();
+	});
+
+	it("candidate mismatch is ineligible while a network-unknown candidate remains rankable", async () => {
+		process.env.FLYWHEEL_ACCOUNT_IDENTITY_CHECK = "1";
+		const next = store();
+		for (const account of next.accounts) {
+			account.identity = {
+				email: `${account.name}@example.com`,
+				uuid: `uuid-${account.name}`,
+				setAt: new Date(NOW - 60_000).toISOString(),
+			};
+		}
+		h.setStore(next);
+		h.usages.set("secret-shopping", usage(100, 20));
+		h.fetchIdentity.mockImplementation(async (token) => {
+			if (token === "secret-school") {
+				return { email: "intruder@example.com", uuid: "uuid-intruder" };
+			}
+			if (token === "secret-business") return { error: "profile_network" };
+			const label = token.replace("secret-", "");
+			return { email: `${label}@example.com`, uuid: `uuid-${label}` };
+		});
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switched");
+		expect(h.switchImpl).toHaveBeenCalledWith(
+			expect.objectContaining({ preferredOrder: ["business"] }),
+		);
+		expect(h.fetchIdentity).toHaveBeenCalledWith("secret-school");
+		expect(h.fetchIdentity).toHaveBeenCalledWith("secret-business");
+		expect(
+			h.alerts.some((alert) => alert.kind === "account_identity_mismatch"),
+		).toBe(true);
+		expect(result.state.identityMismatchEpisodes?.school).toMatchObject({
+			checkpoint: "candidate",
+		});
+	});
+
+	it("successful apply reports open capture-back identity episodes after the switch lock", async () => {
+		h.usages.set("secret-shopping", usage(100, 20));
+		h.switchImpl.mockResolvedValueOnce({
+			outcome: "switched",
+			from: "shopping",
+			to: "school",
+			generation: 5,
+			applyReports: [
+				{
+					identityChecks: [
+						{
+							label: "shopping",
+							checkpoint: "capture_back",
+							verdict: "mismatch",
+							expectedKey: "b".repeat(64),
+							actualDigest: "a".repeat(64),
+						},
+					],
+				},
+			],
+		});
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switched");
+		expect(result.state.identityMismatchEpisodes?.shopping).toMatchObject({
+			checkpoint: "capture_back",
+		});
+		expect(
+			h.alerts.some((alert) => alert.kind === "account_identity_mismatch"),
+		).toBe(true);
+	});
+
+	it("services at most two identity labels per tick with a durable round-robin cursor", async () => {
+		const episode = (label: string) => ({
+			checkpoint: "candidate" as const,
+			expectedKey: "b".repeat(64),
+			actualDigest: label.charCodeAt(0).toString(16).padStart(64, "0"),
+			startedAt: new Date(NOW - 60_000).toISOString(),
+			lastConfirmedAlertAt: null,
+			alertCount: 0,
+			round: 1,
+			activeDelivery: { round: 1, attempts: 0, lastAttemptAt: null },
+		});
+		h.deps.state = {
+			...emptyQuotaMonitorState(4),
+			backoffUntilMs: NOW + 60_000,
+			identityMismatchEpisodes: {
+				business: episode("business"),
+				school: episode("school"),
+				shopping: episode("shopping"),
+			},
+		};
+		h.alertImpl.mockResolvedValue({ primary: "dead_lettered" });
+
+		const first = await pollOnce(h.deps);
+		h.deps.state = first.state;
+		const second = await pollOnce(h.deps);
+
+		const identityBodies = h.alerts
+			.filter((alert) => alert.kind === "account_identity_mismatch")
+			.map((alert) => alert.body);
+		expect(identityBodies.slice(0, 2).join("\n")).toMatch(/business.*school/s);
+		expect(identityBodies.slice(2).join("\n")).toContain("label=shopping");
+		expect(second.state.identityAlertCursor).not.toBeNull();
+	});
 	it("turns a transition-journal conflict into a persistent switch-failure episode before domain reads", async () => {
 		h.reconcileActive.mockResolvedValueOnce({
 			result: "transition_journal_conflict",
@@ -454,6 +693,43 @@ describe("pollOnce", () => {
 			"shopping",
 			"school",
 		]);
+	});
+
+	it("does not project a mislabeled credential during the accelerated candidate sweep", async () => {
+		process.env.FLYWHEEL_ACCOUNT_IDENTITY_CHECK = "1";
+		const next = store();
+		for (const account of next.accounts) {
+			account.identity = {
+				email: `${account.name}@example.com`,
+				uuid: `uuid-${account.name}`,
+				setAt: new Date(NOW - 60_000).toISOString(),
+			};
+		}
+		h.setStore(next);
+		h.usages.set("secret-shopping", usage(71, 20));
+		h.credentials.business.expiresAt = NOW - 1;
+		h.fetchIdentity.mockImplementation(async (token) =>
+			token === "secret-school"
+				? { email: "intruder@example.com", uuid: "uuid-intruder" }
+				: {
+						email: `${token.replace("secret-", "")}@example.com`,
+						uuid: `uuid-${token.replace("secret-", "")}`,
+					},
+		);
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("observed");
+		expect(h.fetchUsage.mock.calls.map(([token]) => token)).toEqual([
+			"secret-shopping",
+		]);
+		expect(h.observations.map(({ name }) => name)).toEqual(["shopping"]);
+		expect(result.state.identityMismatchEpisodes?.school).toMatchObject({
+			checkpoint: "candidate",
+		});
+		expect(h.alerts.map((alert) => alert.kind)).toContain(
+			"account_identity_mismatch",
+		);
 	});
 
 	it("weekly exhaustion triggers even when 5h is below its proactive threshold and ranks verified targets by 7d reset", async () => {

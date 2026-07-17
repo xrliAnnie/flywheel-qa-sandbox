@@ -44,6 +44,7 @@ const QUOTA_MONITOR_KINDS = [
 	"quota_blocked_recovered",
 	"quota_read_blind",
 	"account_switch_failed",
+	"account_identity_mismatch",
 	"quota_revive_stuck",
 	"quota_monitor_down",
 ] as const;

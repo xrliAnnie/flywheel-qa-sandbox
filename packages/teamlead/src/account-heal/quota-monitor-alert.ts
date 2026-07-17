@@ -44,6 +44,7 @@ const ROUTING = {
 	account_switched: { mention: true, severe: false },
 	account_switch_degraded: { mention: true, severe: true },
 	quota_no_target: { mention: true, severe: true },
+	account_identity_mismatch: { mention: true, severe: true },
 	quota_blocked_recovered: { mention: false, severe: false },
 	quota_read_blind: { mention: false, severe: false },
 	account_switch_failed: { mention: false, severe: false },
@@ -133,7 +134,9 @@ export async function sendQuotaMonitorAlert(
 	const project = opts.project ?? "flywheel";
 	const policy =
 		alert.kind === "account_switch_failed" &&
-		/\breason=transition_journal_conflict\b/.test(alert.body)
+		/\breason=(?:transition_journal_conflict|identity_rollback_failed)\b/.test(
+			alert.body,
+		)
 			? { mention: true, severe: true }
 			: ROUTING[alert.kind];
 	const mentionUser = policy.mention

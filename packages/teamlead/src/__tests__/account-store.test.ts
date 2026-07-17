@@ -296,6 +296,17 @@ describe("selectNextAccount", () => {
 		);
 		expect(isAuthUnusable(acct("school"))).toBe(false);
 		expect(
+			isAuthUnusable(
+				acct("school", {
+					identityMismatch: {
+						actualDigest: "abc123",
+						markedBy: "audit",
+						markedAt: "2026-07-03T20:00:00Z",
+					},
+				}),
+			),
+		).toBe(true);
+		expect(
 			isQuotaUsable(
 				acct("school", { quotaExhaustedUntil: "2026-07-03T18:00:00Z" }),
 				NOW.getTime(),

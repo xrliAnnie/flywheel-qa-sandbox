@@ -187,6 +187,24 @@ describe("feature-flag registry invariants", () => {
 		expect(cutover?.note).toContain("FLY-1284");
 	});
 
+	it("FLY-1252 registers account identity verification as a default-off external-runtime feature", () => {
+		const identity = FEATURE_FLAGS.find(
+			(f) => f.envVar === "FLYWHEEL_ACCOUNT_IDENTITY_CHECK",
+		);
+		expect(identity).toMatchObject({
+			name: "claude_account_identity_check",
+			category: "feature",
+			polarity: "opt_in",
+			default: false,
+			toggleable: "conversational",
+		});
+		expect(identity?.readSites.map((site) => site.timing)).toEqual([
+			"call_time",
+			"cli_invocation",
+		]);
+		expect(identity?.note).toContain("identity-set + identity-audit");
+	});
+
 	it("FLY-1272 registers the two default-on cmux rollback switches with exact read sites", () => {
 		const linked = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_CMUX_LINKED_VIEW",

@@ -12,11 +12,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProfileIdentityResult } from "../account-heal/account-identity.js";
 import {
 	type AccountStore,
 	readStore,
 	writeStore,
 } from "../account-heal/account-store.js";
+import type { AccountsLock } from "../account-heal/accounts-lock.js";
+import type { LeaseProof } from "../account-heal/mkdir-lock.js";
 import { runQuotaGuardCli } from "../account-heal/quota-guard-cli.js";
 import type { AccountUsageResult } from "../account-heal/quota-usage-api.js";
 
@@ -24,6 +27,21 @@ const NOW = Date.parse("2026-07-14T20:00:00Z");
 const FIVE_RESET = "2026-07-14T23:00:00.000Z";
 const WEEK_RESET = "2026-07-21T14:00:00.000Z";
 const TOKEN = "secret-token-must-never-leak";
+
+function writePoolCredential(name: string, token: string): void {
+	mkdirSync(join(poolDir, name), { recursive: true });
+	writeFileSync(
+		join(poolDir, name, ".credentials.json"),
+		JSON.stringify({
+			claudeAiOauth: {
+				accessToken: token,
+				refreshToken: `refresh-${name}`,
+				expiresAt: NOW + 3_600_000,
+			},
+		}),
+		{ mode: 0o600 },
+	);
+}
 
 function usage(fiveHPct: number, sevenDPct: number): AccountUsageResult {
 	return {
@@ -78,22 +96,22 @@ let poolDir: string;
 let storePath: string;
 let output: string[];
 
+const lease: LeaseProof = {
+	lockPath: "/tmp/fly1252-identity.lock",
+	markerPath: "/tmp/fly1252-identity.lock/holder.1.token",
+	ownershipToken: "owner-token",
+};
+
+const immediateAccountsLock: AccountsLock = async (_path, fn) => ({
+	kind: "ok",
+	value: await fn(lease),
+});
+
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "fly1252-guard-"));
 	poolDir = join(dir, "pool");
 	storePath = join(dir, "claude-accounts.json");
-	mkdirSync(join(poolDir, "business"), { recursive: true });
-	writeFileSync(
-		join(poolDir, "business", ".credentials.json"),
-		JSON.stringify({
-			claudeAiOauth: {
-				accessToken: TOKEN,
-				refreshToken: "refresh-secret",
-				expiresAt: NOW + 3_600_000,
-			},
-		}),
-		{ mode: 0o600 },
-	);
+	writePoolCredential("business", TOKEN);
 	writeStore(initialStore(), storePath);
 	output = [];
 });
@@ -116,6 +134,444 @@ async function run(
 }
 
 describe("runQuotaGuardCli", () => {
+	describe("P7 identity commands", () => {
+		function fetchIdentity(
+			result: ProfileIdentityResult,
+		): (token: string) => Promise<ProfileIdentityResult> {
+			return vi.fn(async (token: string) => {
+				expect(token).toBe(TOKEN);
+				return result;
+			});
+		}
+
+		function trustIdentity(
+			name: string,
+			identity: {
+				email: string;
+				uuid?: string;
+			},
+		): void {
+			const current = readStore(storePath);
+			const account = current.accounts.find((entry) => entry.name === name);
+			if (!account) throw new Error(`fixture missing ${name}`);
+			account.identity = {
+				...identity,
+				setAt: "2026-07-14T19:00:00.000Z",
+			};
+			writeStore(current, storePath);
+		}
+
+		function trustBusinessIdentity(identity: {
+			email: string;
+			uuid?: string;
+		}): void {
+			trustIdentity("business", identity);
+		}
+
+		it("identity-verify consumes the token from stdin and returns 0 on a uuid match", async () => {
+			trustBusinessIdentity({
+				email: "wrong@example.com",
+				uuid: "expected-uuid",
+			});
+			const probe = fetchIdentity({
+				email: "actual@example.com",
+				uuid: "EXPECTED-UUID",
+			});
+			const code = await runQuotaGuardCli(
+				["identity-verify", "--name", "business", "--store", storePath],
+				{
+					readStdin: () => `${TOKEN}\n`,
+					fetchIdentity: probe,
+					log: (message) => output.push(message),
+				},
+			);
+			expect(code).toBe(0);
+			expect(probe).toHaveBeenCalledOnce();
+			expect(output.join("\n")).not.toContain(TOKEN);
+		});
+
+		it.each([
+			{
+				label: "positive mismatch",
+				result: {
+					email: "other@example.com",
+					uuid: "other-uuid",
+				} as ProfileIdentityResult,
+				exit: 34,
+			},
+			{
+				label: "network unknown",
+				result: { error: "profile_network" } as ProfileIdentityResult,
+				exit: 35,
+			},
+			{
+				label: "malformed unknown",
+				result: { error: "profile_malformed" } as ProfileIdentityResult,
+				exit: 35,
+			},
+			{
+				label: "unauthorized",
+				result: { error: "profile_unauthorized" } as ProfileIdentityResult,
+				exit: 38,
+			},
+		])(
+			"identity-verify returns the policy exit for $label",
+			async (testCase) => {
+				trustBusinessIdentity({
+					email: "expected@example.com",
+					uuid: "expected-uuid",
+				});
+				const code = await runQuotaGuardCli(
+					["identity-verify", "--name", "business", "--store", storePath],
+					{
+						readStdin: () => TOKEN,
+						fetchIdentity: fetchIdentity(testCase.result),
+						log: (message) => output.push(message),
+					},
+				);
+				expect(code).toBe(testCase.exit);
+				expect(output.join("\n")).not.toContain(TOKEN);
+				expect(output.join("\n")).not.toContain("other@example.com");
+			},
+		);
+
+		it("identity-verify returns unknown without probing when trusted identity is absent", async () => {
+			const probe = fetchIdentity({
+				email: "observed@example.com",
+				uuid: "observed-uuid",
+			});
+			const code = await runQuotaGuardCli(
+				["identity-verify", "--name", "business", "--store", storePath],
+				{
+					readStdin: () => TOKEN,
+					fetchIdentity: probe,
+					log: (message) => output.push(message),
+				},
+			);
+			expect(code).toBe(35);
+			expect(probe).not.toHaveBeenCalled();
+		});
+
+		it("identity-set writes only explicit normalized identity and preserves generation and unrelated fields", async () => {
+			const current = initialStore() as AccountStore & { futureTop?: string };
+			current.futureTop = "preserve-me";
+			const business = current.accounts.find(
+				(entry) => entry.name === "business",
+			) as (typeof current.accounts)[number] & { futureEntry?: string };
+			business.futureEntry = "also-preserve";
+			business.profileVerifyFailed = true;
+			writeStore(current, storePath);
+
+			const code = await runQuotaGuardCli(
+				[
+					"identity-set",
+					"--name",
+					"business",
+					"--email",
+					" Annie.Business@Example.COM ",
+					"--uuid",
+					" UUID-BUSINESS ",
+					"--store",
+					storePath,
+				],
+				{
+					now: () => NOW,
+					withAccountsLock: immediateAccountsLock,
+					lockPath: lease.lockPath,
+					log: (message) => output.push(message),
+				},
+			);
+			const after = readStore(storePath) as AccountStore & {
+				futureTop?: string;
+			};
+			expect(code).toBe(0);
+			expect(after.generation).toBe(7);
+			expect(after.futureTop).toBe("preserve-me");
+			expect(
+				after.accounts.find((entry) => entry.name === "business"),
+			).toMatchObject({
+				futureEntry: "also-preserve",
+				profileVerifyFailed: true,
+				identity: {
+					email: "annie.business@example.com",
+					uuid: "uuid-business",
+					setAt: new Date(NOW).toISOString(),
+				},
+			});
+		});
+
+		it("identity-set fails closed without mutating bytes for invalid input, missing account, or blocked lock", async () => {
+			const before = readFileSync(storePath, "utf8");
+			const cases: Array<{
+				argv: string[];
+				withLock?: AccountsLock;
+			}> = [
+				{
+					argv: [
+						"identity-set",
+						"--name",
+						"business",
+						"--email",
+						"not-an-email",
+						"--store",
+						storePath,
+					],
+				},
+				{
+					argv: [
+						"identity-set",
+						"--name",
+						"ghost",
+						"--email",
+						"ghost@example.com",
+						"--store",
+						storePath,
+					],
+				},
+				{
+					argv: [
+						"identity-set",
+						"--name",
+						"business",
+						"--email",
+						"business@example.com",
+						"--store",
+						storePath,
+					],
+					withLock: async () => ({
+						kind: "blocked",
+						reason: { kind: "writer_alive" },
+					}),
+				},
+			];
+			for (const testCase of cases) {
+				expect(
+					await runQuotaGuardCli(testCase.argv, {
+						withAccountsLock: testCase.withLock ?? immediateAccountsLock,
+						lockPath: lease.lockPath,
+						log: (message) => output.push(message),
+					}),
+				).not.toBe(0);
+				expect(readFileSync(storePath, "utf8")).toBe(before);
+			}
+		});
+
+		it("identity-audit --mark probes outside both lock windows and reconciles only identityMismatch", async () => {
+			const shoppingToken = "shopping-token-must-never-leak";
+			writePoolCredential("shopping", shoppingToken);
+			trustIdentity("business", {
+				email: "business@example.com",
+				uuid: "business-uuid",
+			});
+			trustIdentity("shopping", {
+				email: "shopping@example.com",
+				uuid: "shopping-uuid",
+			});
+			const seeded = readStore(storePath);
+			const shopping = seeded.accounts.find(
+				(entry) => entry.name === "shopping",
+			);
+			if (!shopping) throw new Error("fixture missing shopping");
+			shopping.identityMismatch = {
+				actualDigest: "old-digest",
+				markedBy: "executor",
+				markedAt: "2026-07-14T18:00:00.000Z",
+			};
+			shopping.profileVerifyFailed = true;
+			writeStore(seeded, storePath);
+
+			let inLock = false;
+			let lockCalls = 0;
+			const lock: AccountsLock = async (_path, fn) => {
+				lockCalls++;
+				inLock = true;
+				try {
+					return { kind: "ok", value: await fn(lease) };
+				} finally {
+					inLock = false;
+				}
+			};
+			const probe = vi.fn(async (token: string) => {
+				expect(inLock).toBe(false);
+				return token === TOKEN
+					? { email: "intruder@example.com", uuid: "intruder-uuid" }
+					: { email: "shopping@example.com", uuid: "shopping-uuid" };
+			});
+
+			const code = await runQuotaGuardCli(
+				["identity-audit", "--mark", "--pool", poolDir, "--store", storePath],
+				{
+					now: () => NOW,
+					fetchIdentity: probe,
+					withAccountsLock: lock,
+					lockPath: lease.lockPath,
+					log: (message) => output.push(message),
+				},
+			);
+
+			const after = readStore(storePath);
+			const business = after.accounts.find(
+				(entry) => entry.name === "business",
+			);
+			const healedShopping = after.accounts.find(
+				(entry) => entry.name === "shopping",
+			);
+			expect(code).toBe(34);
+			expect(lockCalls).toBe(2);
+			expect(probe).toHaveBeenCalledTimes(2);
+			expect(after.generation).toBe(7);
+			expect(business?.identityMismatch).toMatchObject({
+				markedBy: "audit",
+				markedAt: new Date(NOW).toISOString(),
+			});
+			expect(business?.identityMismatch?.actualDigest).toMatch(
+				/^[a-f0-9]{64}$/,
+			);
+			expect(healedShopping?.identityMismatch).toBeUndefined();
+			expect(healedShopping?.profileVerifyFailed).toBe(true);
+			expect(output.join("\n")).not.toContain(TOKEN);
+			expect(output.join("\n")).not.toContain(shoppingToken);
+			expect(output.join("\n")).not.toContain("intruder@example.com");
+		});
+
+		it.each(["credential", "expected identity"])(
+			"identity-audit discards a probed mismatch when the %s fingerprint changes",
+			async (changedFingerprint) => {
+				trustBusinessIdentity({
+					email: "business@example.com",
+					uuid: "business-uuid",
+				});
+				let lockCalls = 0;
+				const lock: AccountsLock = async (_path, fn) => {
+					lockCalls++;
+					if (lockCalls === 2) {
+						if (changedFingerprint === "credential") {
+							writePoolCredential("business", "rotated-token");
+						} else {
+							trustBusinessIdentity({
+								email: "new@example.com",
+								uuid: "new-uuid",
+							});
+						}
+					}
+					return { kind: "ok", value: await fn(lease) };
+				};
+
+				const code = await runQuotaGuardCli(
+					["identity-audit", "--mark", "--pool", poolDir, "--store", storePath],
+					{
+						fetchIdentity: fetchIdentity({
+							email: "intruder@example.com",
+							uuid: "intruder-uuid",
+						}),
+						withAccountsLock: lock,
+						lockPath: lease.lockPath,
+						log: (message) => output.push(message),
+					},
+				);
+
+				expect(code).toBe(35);
+				expect(lockCalls).toBe(2);
+				expect(
+					readStore(storePath).accounts.find(
+						(entry) => entry.name === "business",
+					)?.identityMismatch,
+				).toBeUndefined();
+			},
+		);
+
+		it("identity-audit without --mark reports mismatch without changing store bytes", async () => {
+			trustBusinessIdentity({
+				email: "business@example.com",
+				uuid: "business-uuid",
+			});
+			const before = readFileSync(storePath, "utf8");
+			const code = await runQuotaGuardCli(
+				["identity-audit", "--pool", poolDir, "--store", storePath],
+				{
+					fetchIdentity: fetchIdentity({
+						email: "intruder@example.com",
+						uuid: "intruder-uuid",
+					}),
+					withAccountsLock: immediateAccountsLock,
+					lockPath: lease.lockPath,
+					log: (message) => output.push(message),
+				},
+			);
+			expect(code).toBe(34);
+			expect(readFileSync(storePath, "utf8")).toBe(before);
+		});
+
+		it("identity-alert-flush routes only strict non-secret mismatch facts and never changes command status", async () => {
+			const alert = vi.fn(async () => ({ primary: "sent" as const }));
+			const code = await runQuotaGuardCli(["identity-alert-flush"], {
+				now: () => NOW,
+				readStdin: () =>
+					JSON.stringify({
+						identityChecks: [
+							{
+								label: "business",
+								checkpoint: "pre_write",
+								verdict: "mismatch",
+								expectedKey: "b".repeat(64),
+								actualDigest: "a".repeat(64),
+							},
+							{
+								label: "shopping",
+								checkpoint: "capture",
+								verdict: "match",
+							},
+							{
+								label: TOKEN,
+								checkpoint: "capture_back",
+								verdict: "mismatch",
+								expectedKey: "bad",
+								actualDigest: TOKEN,
+							},
+						],
+					}),
+				alert,
+				log: (message) => output.push(message),
+			});
+
+			expect(code).toBe(0);
+			expect(alert).toHaveBeenCalledOnce();
+			expect(alert).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "account_identity_mismatch",
+					body: expect.stringContaining("label=business"),
+				}),
+			);
+			expect(JSON.stringify(alert.mock.calls)).not.toContain(TOKEN);
+		});
+
+		it("identity-alert-flush treats malformed input and delivery failure as best effort", async () => {
+			for (const readStdin of [
+				() => "not-json",
+				() =>
+					JSON.stringify({
+						identityChecks: [
+							{
+								label: "business",
+								checkpoint: "capture",
+								verdict: "mismatch",
+								expectedKey: "b".repeat(64),
+								actualDigest: "a".repeat(64),
+							},
+						],
+					}),
+			]) {
+				await expect(
+					runQuotaGuardCli(["identity-alert-flush"], {
+						readStdin,
+						alert: async () => Promise.reject(new Error("delivery down")),
+						log: (message) => output.push(message),
+					}),
+				).resolves.toBe(0);
+			}
+		});
+	});
+
 	it("active-sync updates only the active account and generation, then always exits zero", async () => {
 		const before = initialStore();
 		const code = await runQuotaGuardCli(

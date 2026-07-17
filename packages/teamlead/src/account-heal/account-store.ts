@@ -51,6 +51,14 @@ export interface AccountEntry {
 	authExpired?: boolean;
 	refreshTokenInvalid?: boolean;
 	profileVerifyFailed?: boolean;
+	/** Trusted operator-provided identity expectation; never learned from a probe. */
+	identity?: { email: string; uuid?: string; setAt: string };
+	/** Identity-domain exclusion marker; does not change switch generation. */
+	identityMismatch?: {
+		actualDigest: string;
+		markedBy: "audit" | "executor";
+		markedAt: string;
+	};
 }
 
 export interface AccountStore {
@@ -101,7 +109,10 @@ const VALID_ACCOUNT_NAME = /^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]+$/;
 
 export function isAuthUnusable(a: AccountEntry): boolean {
 	return Boolean(
-		a.authExpired || a.refreshTokenInvalid || a.profileVerifyFailed,
+		a.authExpired ||
+			a.refreshTokenInvalid ||
+			a.profileVerifyFailed ||
+			a.identityMismatch,
 	);
 }
 

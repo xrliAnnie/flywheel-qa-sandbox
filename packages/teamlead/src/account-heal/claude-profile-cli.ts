@@ -19,6 +19,10 @@ import {
 	spawn as nodeSpawn,
 	type SpawnOptions,
 } from "node:child_process";
+import { createHash } from "node:crypto";
+import { lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import {
 	reconcileTransitionJournal,
@@ -26,9 +30,15 @@ import {
 } from "./accounts-lock.js";
 import { type LeaseProof, renewMkdirLock } from "./mkdir-lock.js";
 import {
+	type ApplyProfileIdentityCheck,
+	type ApplyProfileReport,
 	FreshnessUnavailableError,
+	IdentityRollbackFailedError,
 	LockLeaseLostError,
 	type SwitchDeps,
+	TargetIdentityMismatchError,
+	TargetIdentityRolledBackError,
+	TargetIdentityUnverifiableError,
 	TargetQuotaExhaustedError,
 	TargetStaleError,
 } from "./switch-executor.js";
@@ -42,6 +52,80 @@ type ExecFileFn = (
 ) => Promise<{ stdout: string; stderr: string }>;
 
 type SpawnFn = typeof nodeSpawn;
+
+const PROFILE_LABEL = /^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]+$/;
+const DIGEST = /^[a-f0-9]{64}$/;
+const UNAVAILABLE_IDENTITY_DIGEST = createHash("sha256")
+	.update("identity-digest-unavailable")
+	.digest("hex");
+const IDENTITY_CHECKPOINTS = new Set(["pre_write", "capture_back", "capture"]);
+const IDENTITY_VERDICTS = new Set([
+	"match",
+	"mismatch",
+	"unknown_missing",
+	"profile_network",
+	"profile_malformed",
+	"profile_unauthorized",
+]);
+
+function parseApplyProfileReport(raw: string): ApplyProfileReport | undefined {
+	try {
+		const parsed = JSON.parse(raw) as { identityChecks?: unknown };
+		if (
+			!Array.isArray(parsed.identityChecks) ||
+			parsed.identityChecks.length > 32
+		) {
+			return undefined;
+		}
+		const identityChecks: ApplyProfileIdentityCheck[] = [];
+		for (const value of parsed.identityChecks) {
+			if (typeof value !== "object" || value === null) return undefined;
+			const check = value as Record<string, unknown>;
+			if (
+				typeof check.label !== "string" ||
+				!PROFILE_LABEL.test(check.label) ||
+				typeof check.checkpoint !== "string" ||
+				!IDENTITY_CHECKPOINTS.has(check.checkpoint) ||
+				typeof check.verdict !== "string" ||
+				!IDENTITY_VERDICTS.has(check.verdict) ||
+				(check.expectedKey !== undefined &&
+					(typeof check.expectedKey !== "string" ||
+						!DIGEST.test(check.expectedKey))) ||
+				(check.actualDigest !== undefined &&
+					(typeof check.actualDigest !== "string" ||
+						!DIGEST.test(check.actualDigest)))
+			) {
+				return undefined;
+			}
+			identityChecks.push({
+				label: check.label,
+				checkpoint: check.checkpoint as ApplyProfileIdentityCheck["checkpoint"],
+				verdict: check.verdict as ApplyProfileIdentityCheck["verdict"],
+				...(typeof check.expectedKey === "string"
+					? { expectedKey: check.expectedKey }
+					: {}),
+				...(typeof check.actualDigest === "string"
+					? { actualDigest: check.actualDigest }
+					: {}),
+			});
+		}
+		return { identityChecks };
+	} catch {
+		return undefined;
+	}
+}
+
+function readApplyProfileReport(path: string): ApplyProfileReport | undefined {
+	try {
+		const stat = lstatSync(path);
+		if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024) {
+			return undefined;
+		}
+		return parseApplyProfileReport(readFileSync(path, "utf8"));
+	} catch {
+		return undefined;
+	}
+}
 
 export interface ClaudeProfileCliDeps {
 	/** Absolute path to the `flywheel-claude-profile` script. */
@@ -90,7 +174,8 @@ export function makeClaudeProfileSwitchDeps(
 		async applyProfile(
 			name: string,
 			context?: { lease: LeaseProof; signal: AbortSignal },
-		): Promise<void> {
+			// biome-ignore lint/suspicious/noConfusingVoidType: existing adapters remain valid while reports are additive.
+		): Promise<ApplyProfileReport | void> {
 			// FLY-852 (QA-caught self-deadlock): switchAccount calls this INSIDE its
 			// withMkdirLock critical section, and the bash script takes the SAME
 			// lock — the child would wait on its own parent until timeout. Delegate:
@@ -120,6 +205,9 @@ export function makeClaudeProfileSwitchDeps(
 			if (deps.quotaPreverified === true) {
 				childEnv.FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED = "1";
 			}
+			const reportDir = mkdtempSync(join(tmpdir(), "flywheel-apply-report-"));
+			const reportPath = join(reportDir, "report.json");
+			childEnv.FLYWHEEL_APPLY_REPORT_FILE = reportPath;
 			let stderr: string;
 			try {
 				if (deps.execFile !== undefined || context === undefined) {
@@ -136,6 +224,8 @@ export function makeClaudeProfileSwitchDeps(
 					));
 				}
 			} catch (err) {
+				const report = readApplyProfileReport(reportPath);
+				rmSync(reportDir, { recursive: true, force: true });
 				// FLY-871 R1/C3 — map the freshness exit codes to typed errors the
 				// switch executor's candidate loop understands. 30 = target stale (try
 				// the next candidate); 31 = freshness helper unavailable (environmental,
@@ -144,6 +234,36 @@ export function makeClaudeProfileSwitchDeps(
 				// failure rethrows unchanged (existing fail-closed behavior).
 				const e = err as { code?: number | string; stderr?: string };
 				const errText = String(e.stderr ?? "");
+				if (
+					e.code === 34 ||
+					/FLYWHEEL_TARGET_IDENTITY_MISMATCH/.test(errText)
+				) {
+					const actualDigest =
+						report?.identityChecks.find(
+							(check) =>
+								check.label === name &&
+								check.checkpoint === "pre_write" &&
+								check.verdict === "mismatch",
+						)?.actualDigest ??
+						errText.match(/actualDigest=([a-f0-9]{64})/)?.[1] ??
+						UNAVAILABLE_IDENTITY_DIGEST;
+					throw new TargetIdentityMismatchError(name, actualDigest, report);
+				}
+				if (e.code === 36 || /FLYWHEEL_IDENTITY_ROLLED_BACK/.test(errText)) {
+					throw new TargetIdentityRolledBackError(name, report);
+				}
+				if (
+					e.code === 37 ||
+					/FLYWHEEL_IDENTITY_ROLLBACK_FAILED/.test(errText)
+				) {
+					throw new IdentityRollbackFailedError(name, report);
+				}
+				if (
+					e.code === 38 ||
+					/FLYWHEEL_TARGET_IDENTITY_UNVERIFIABLE/.test(errText)
+				) {
+					throw new TargetIdentityUnverifiableError(name, report);
+				}
 				if (e.code === 32 || /FLYWHEEL_TARGET_QUOTA_EXHAUSTED/.test(errText)) {
 					throw new TargetQuotaExhaustedError(name);
 				}
@@ -158,6 +278,8 @@ export function makeClaudeProfileSwitchDeps(
 				}
 				throw err;
 			}
+			const report = readApplyProfileReport(reportPath);
+			rmSync(reportDir, { recursive: true, force: true });
 			// FLY-865: the switch succeeded (exit 0), but `use` may have warned on
 			// stderr that the DISPLAY identity wasn't updated (no captured identity,
 			// lock timeout, patch failure). execFile discards child stderr, so
@@ -171,6 +293,7 @@ export function makeClaudeProfileSwitchDeps(
 				.join("\n")
 				.trim();
 			if (warning) onWarn(`[flywheel-claude-profile use ${name}] ${warning}`);
+			return report;
 		},
 		async readActiveProfile(): Promise<string | null> {
 			try {
