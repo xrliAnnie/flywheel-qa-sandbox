@@ -53,6 +53,13 @@ Common flags: `--db <sqlite-fallback-path>` (default `~/.flywheel/token-usage.db
 comparison's before-window, so a Supabase-unreachable local fallback still self-heals a
 full trend + a correct comparison hero.
 
+Reports run an integrity self-check before returning success: the report day must have
+a `total` row, its project + Lead attribution must match that total, and the latest
+stored total day must reach the requested report day. A failed check is rendered as a
+red banner in HTML (and an explicit text error) and exits with code `3` after writing
+the artifact. For deliberate empty-data diagnostics only, `--allow-empty` or
+`TOKEN_USAGE_ALLOW_EMPTY=1` keeps the visible warning but permits exit code `0`.
+
 ## Persistence
 
 - **Primary**: Supabase Postgres table `token_usage_daily` (see

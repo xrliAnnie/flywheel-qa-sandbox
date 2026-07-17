@@ -37,6 +37,18 @@ export interface WindowAgg {
 	avgCost: number;
 	byModel: Record<string, number>;
 }
+export type ReportIntegrityCode =
+	| "missing_report_day_total"
+	| "attributed_total_mismatch"
+	| "stale_latest_total";
+export interface ReportIntegrity {
+	ok: boolean;
+	codes: ReportIntegrityCode[];
+	messages: string[];
+	latestDataDay: string | null;
+	reportDayTotal: number | null;
+	attributedTotal: number;
+}
 export interface ReportModel {
 	reportDay: string;
 	timezone: string;
@@ -54,6 +66,7 @@ export interface ReportModel {
 	trendTotal: TrendPoint[];
 	trendByProject: { project: string; points: TrendPoint[] }[];
 	comparison?: { before: WindowAgg; after: WindowAgg };
+	integrity: ReportIntegrity;
 	storeMode?: "supabase" | "local";
 	warning?: string;
 }
@@ -99,6 +112,41 @@ export function buildReportModel(
 	const leadScope = dayRows.filter((r) => r.scope === "lead");
 	const issueScope = dayRows.filter((r) => r.scope === "issue");
 	const modelScope = dayRows.filter((r) => r.scope === "model");
+	const totalDays = rows.filter((r) => r.scope === "total").map((r) => r.day);
+	const latestDataDay = totalDays.length
+		? totalDays.reduce((latest, candidate) =>
+				candidate > latest ? candidate : latest,
+			)
+		: null;
+	const attributedTotal = [...projScope, ...leadScope].reduce(
+		(sum, r) => sum + r.totalTokens,
+		0,
+	);
+	const integrityCodes: ReportIntegrityCode[] = [];
+	const integrityMessages: string[] = [];
+	if (!totalRow) {
+		integrityCodes.push("missing_report_day_total");
+		integrityMessages.push(`报告日 ${day} 缺少 total 汇总行`);
+	} else if (attributedTotal !== totalRow.totalTokens) {
+		integrityCodes.push("attributed_total_mismatch");
+		integrityMessages.push(
+			`报告日 ${day} 分项目与 Lead 合计 ${attributedTotal}，与总用量 ${totalRow.totalTokens} 不一致`,
+		);
+	}
+	if (latestDataDay === null || latestDataDay < day) {
+		integrityCodes.push("stale_latest_total");
+		integrityMessages.push(
+			`最新 total 数据日为 ${latestDataDay ?? "无"}，早于报告日 ${day}`,
+		);
+	}
+	const integrity: ReportIntegrity = {
+		ok: integrityCodes.length === 0,
+		codes: integrityCodes,
+		messages: integrityMessages,
+		latestDataDay,
+		reportDayTotal: totalRow?.totalTokens ?? null,
+		attributedTotal,
+	};
 
 	const projectNames = new Set<string>();
 	for (const r of projScope) projectNames.add(r.dimKey);
@@ -249,6 +297,7 @@ export function buildReportModel(
 		models,
 		trendTotal,
 		trendByProject,
+		integrity,
 		storeMode: opts.storeMode,
 		warning: opts.warning,
 	};

@@ -4,6 +4,10 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { aggregateAndPersist, dateRange, generateReport } from "../pipeline.js";
 import { LocalSqliteUsageStore } from "../store/local-sqlite-store.js";
+import {
+	type SupabaseLike,
+	SupabaseUsageStore,
+} from "../store/supabase-store.js";
 import type { DailyRow } from "../types.js";
 
 function totalRow(day: string, tokens: number): DailyRow {
@@ -35,6 +39,93 @@ describe("dateRange", () => {
 			"2026-06-27",
 		]);
 		expect(dateRange("2026-06-26", "2026-06-26")).toEqual(["2026-06-26"]);
+	});
+});
+
+describe("FLY-1348 newest-days end-to-end regression", () => {
+	it("renders the newest three days and project block even when they start after row 1000", async () => {
+		const dbRows: Record<string, unknown>[] = Array.from(
+			{ length: 1_000 },
+			(_, i) => ({
+				day: "2026-07-13",
+				scope: "project",
+				dim_key: `old-${String(i).padStart(4, "0")}`,
+				project: `old-${String(i).padStart(4, "0")}`,
+				total_tokens: 1,
+			}),
+		);
+		for (const [day, tokens] of [
+			["2026-07-14", 100],
+			["2026-07-15", 200],
+			["2026-07-16", 400],
+		] as const) {
+			dbRows.push({ day, scope: "total", dim_key: "", total_tokens: tokens });
+			dbRows.push({
+				day,
+				scope: "project",
+				dim_key: "latest-project",
+				project: "latest-project",
+				total_tokens: tokens,
+			});
+		}
+
+		const client: SupabaseLike = {
+			rpc: () => Promise.resolve({ error: null }),
+			from: () => {
+				let from = 0;
+				let to = 999;
+				const builder = {
+					select() {
+						return this;
+					},
+					gte() {
+						return this;
+					},
+					lte() {
+						return this;
+					},
+					eq() {
+						return this;
+					},
+					order() {
+						return this;
+					},
+					range(start: number, end: number) {
+						from = start;
+						to = end;
+						return this;
+					},
+					// biome-ignore lint/suspicious/noThenProperty: mock must be awaitable like the real supabase query builder
+					then(resolve: (x: { data: unknown[]; error: null }) => void) {
+						resolve({ data: dbRows.slice(from, to + 1), error: null });
+					},
+				};
+				return builder;
+			},
+		};
+
+		const gen = await generateReport({
+			store: new SupabaseUsageStore(client),
+			reportDay: "2026-07-16",
+			trendSince: "2026-07-14",
+			timeZone: "UTC",
+			completedDbPath: "/nonexistent/teamlead.db",
+		});
+
+		expect(gen.model.integrity.ok).toBe(true);
+		expect(gen.model.trendTotal.map((point) => point.day)).toEqual([
+			"2026-07-14",
+			"2026-07-15",
+			"2026-07-16",
+		]);
+		expect(gen.model.projects.map((project) => project.name)).toContain(
+			"latest-project",
+		);
+		for (const day of ["2026-07-14", "2026-07-15", "2026-07-16"]) {
+			expect(gen.html).toContain(day);
+		}
+		expect(gen.html).toContain("latest-project");
+		expect(gen.html).not.toContain("报告数据完整性自检未过");
 	});
 });
 

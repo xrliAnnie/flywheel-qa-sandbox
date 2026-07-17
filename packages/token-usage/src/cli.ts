@@ -41,6 +41,12 @@ function str(f: Flags, k: string): string | undefined {
 	return typeof v === "string" ? v : undefined;
 }
 
+function envEnabled(value: string | undefined): boolean {
+	return (
+		value !== undefined && ["1", "true", "yes"].includes(value.toLowerCase())
+	);
+}
+
 /** Shift a YYYY-MM-DD day by `delta` days (UTC arithmetic on the civil date). */
 function shiftDay(day: string, delta: number): string {
 	const d = new Date(`${day}T00:00:00Z`);
@@ -334,6 +340,18 @@ export async function main(
 			process.stdout.write(`${gen.json}\n`);
 		} else if (!out) {
 			process.stdout.write(`${gen.text}\n`);
+		}
+		if (!gen.model.integrity.ok) {
+			console.error(
+				`[token-usage] integrity check failed: ${gen.model.integrity.messages.join("; ")}`,
+			);
+			const allowEmpty =
+				flags["allow-empty"] === true ||
+				envEnabled(process.env.TOKEN_USAGE_ALLOW_EMPTY);
+			if (!allowEmpty) return 3;
+			console.error(
+				"[token-usage] integrity failure allowed by explicit allow-empty override",
+			);
 		}
 		return 0;
 	} finally {

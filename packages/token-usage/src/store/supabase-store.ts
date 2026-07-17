@@ -6,6 +6,9 @@ import {
 	type UsageStore,
 } from "../types.js";
 
+const QUERY_PAGE_SIZE = 1_000;
+const QUERY_MAX_ROWS = 100_000;
+
 /** Minimal structural type for the Supabase bits we use (keeps tests mockable). */
 export interface SupabaseLike {
 	rpc(
@@ -81,14 +84,31 @@ export class SupabaseUsageStore implements UsageStore {
 	}
 
 	async queryDaily(opts: QueryDailyOptions = {}): Promise<DailyRow[]> {
-		let q = this.client.from("token_usage_daily").select("*");
-		if (opts.since) q = q.gte("day", opts.since);
-		if (opts.until) q = q.lte("day", opts.until);
-		if (opts.scope) q = q.eq("scope", opts.scope);
-		if (opts.project) q = q.eq("project", opts.project);
-		q = q.order("day");
-		const { data, error } = await q;
-		if (error) throw new Error(`supabase queryDaily: ${error.message}`);
-		return ((data ?? []) as any[]).map(fromDbRow);
+		const rows: any[] = [];
+		let offset = 0;
+		while (true) {
+			let q = this.client.from("token_usage_daily").select("*");
+			if (opts.since) q = q.gte("day", opts.since);
+			if (opts.until) q = q.lte("day", opts.until);
+			if (opts.scope) q = q.eq("scope", opts.scope);
+			if (opts.project) q = q.eq("project", opts.project);
+			q = q
+				.order("day")
+				.order("scope")
+				.order("dim_key")
+				.range(offset, offset + QUERY_PAGE_SIZE - 1);
+			const { data, error } = await q;
+			if (error) throw new Error(`supabase queryDaily: ${error.message}`);
+			const batch = (data ?? []) as any[];
+			if (batch.length === 0) break;
+			if (rows.length + batch.length >= QUERY_MAX_ROWS) {
+				throw new Error(
+					`supabase queryDaily read ${rows.length} rows and the next ${batch.length}-row batch would reach the ${QUERY_MAX_ROWS}-row safety limit`,
+				);
+			}
+			rows.push(...batch);
+			offset += batch.length;
+		}
+		return rows.map(fromDbRow);
 	}
 }

@@ -40,6 +40,12 @@ const rows: DailyRow[] = [
 		costMicroUsd: 2_700_000_000,
 	}),
 	r({
+		scope: "project",
+		dimKey: "sub",
+		project: "sub",
+		totalTokens: 1_007_000_000,
+	}),
+	r({
 		scope: "lead",
 		dimKey: "flywheel-eng-lead",
 		project: "flywheel",
@@ -114,6 +120,24 @@ describe("renderReportHtml", () => {
 			warning: "Supabase unreachable; local-only",
 		});
 		expect(withWarn).toContain("Supabase unreachable");
+	});
+
+	it("renders a prominent red integrity failure banner", () => {
+		const broken = buildReportModel(
+			[r({ day: "2026-06-25", scope: "total", totalTokens: 100 })],
+			{
+				reportDay: "2026-06-26",
+				timezone: "UTC",
+				isCompleted: () => false,
+				trendSince: "2026-06-25",
+			},
+		);
+		const out = renderReportHtml(broken);
+		expect(out).toContain('class="alert-red"');
+		expect(out).toContain("报告数据完整性自检未过");
+		expect(out).toContain("缺少 total 汇总行");
+		expect(out).toContain("2026-06-25");
+		expect(out).toContain("2026-06-26");
 	});
 
 	it("reframes USD as a cost estimate (not 'weight')", () => {
@@ -234,6 +258,70 @@ describe("renderReportHtml — FLY-744 trend + comparison sentinels", () => {
 		expect(html).toContain("峰值");
 		expect(html).toContain("维度①");
 		expect(html).toContain("维度②");
+	});
+
+	it("keeps total-trend SVG bar heights linearly proportional to token values", () => {
+		const ratioRows: DailyRow[] = [
+			...tr("2026-06-24", 100, 10),
+			...tr("2026-06-25", 200, 20),
+			...tr("2026-06-26", 400, 40),
+		];
+		const out = renderReportHtml(
+			buildReportModel(ratioRows, {
+				reportDay: "2026-06-26",
+				timezone: "UTC",
+				isCompleted: () => false,
+				trendSince: "2026-06-24",
+			}),
+		);
+		const heights = new Map<string, number>();
+		for (const match of out.matchAll(
+			/<rect[^>]*height="([\d.]+)"[^>]*><title>(2026-06-\d{2}):/g,
+		)) {
+			heights.set(match[2]!, Number(match[1]));
+		}
+		expect(heights.size).toBe(3);
+		expect(heights.get("2026-06-25")! / heights.get("2026-06-24")!).toBeCloseTo(
+			2,
+			2,
+		);
+		expect(heights.get("2026-06-26")! / heights.get("2026-06-24")!).toBeCloseTo(
+			4,
+			2,
+		);
+	});
+
+	it("scales project bars against the actual maximum even when projects are unsorted", () => {
+		const model = buildReportModel(
+			[
+				r({ scope: "total", totalTokens: 300 }),
+				r({
+					scope: "project",
+					dimKey: "small",
+					project: "small",
+					totalTokens: 100,
+				}),
+				r({
+					scope: "project",
+					dimKey: "large",
+					project: "large",
+					totalTokens: 200,
+				}),
+			],
+			{
+				reportDay: "2026-06-26",
+				timezone: "UTC",
+				isCompleted: () => false,
+			},
+		);
+		const out = renderReportHtml({
+			...model,
+			projects: [...model.projects].reverse(),
+		});
+		const small = out.slice(out.indexOf('<span class="pn">small</span>'));
+		const large = out.slice(out.indexOf('<span class="pn">large</span>'));
+		expect(small.slice(0, 250)).toContain("width:50%");
+		expect(large.slice(0, 250)).toContain("width:100%");
 	});
 
 	it("renders weekday glyphs (the 'week display' Annie asked to restore)", () => {

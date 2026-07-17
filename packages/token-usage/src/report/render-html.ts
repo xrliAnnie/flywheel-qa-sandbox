@@ -281,6 +281,7 @@ const CSS = `*{box-sizing:border-box;margin:0;padding:0}body{background:#f5f5f7;
 .pill{display:inline-block;background:#34c759;color:#fff;font-size:12px;font-weight:600;padding:3px 10px;border-radius:20px;vertical-align:middle}
 .bigdate{font-size:26px;font-weight:800;color:#1a365d;letter-spacing:-.01em;margin:10px 0 2px}.bigdate small{font-size:14px;font-weight:600;color:#86868b;margin-left:8px}
 .warn{background:#fff3e0;border-left:4px solid #ff9500;border-radius:10px;padding:8px 14px;font-size:12.5px;color:#9a6700;margin-top:12px}
+.alert-red{background:#fff1f0;border:2px solid #ff3b30;border-radius:10px;padding:10px 14px;font-size:13px;color:#a8071a;margin-top:12px}.alert-red strong{display:block;margin-bottom:3px}
 .pcard.zero{padding:12px 20px;opacity:.7}.pcard.zero .phead{margin-bottom:0}
 .card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:18px 20px;overflow:hidden;margin-top:16px}
 .card h2{font-size:13px;font-weight:600;color:#86868b;text-transform:uppercase;letter-spacing:.04em;margin-bottom:12px;display:flex;justify-content:space-between}
@@ -321,7 +322,7 @@ export function renderReportHtml(m: ReportModel): string {
 
 	const summaryCard = `<div class="card"><h2>当日总用量 <span>${esc(m.reportDay)} · ${esc(m.timezone)}</span></h2><div class="big">${fmtTok(t.tokens)} <small>tokens</small> <span style="color:#86868b;font-size:18px">· ${formatUsd(t.cost)} 成本估算</span></div>${split}</div>`;
 
-	const maxTok = m.projects[0]?.tokens ?? 1;
+	const maxTok = Math.max(...m.projects.map((p) => p.tokens), 1);
 	const workspace = linearWorkspace();
 	const projCards = m.projects
 		.slice(0, 16)
@@ -351,9 +352,12 @@ export function renderReportHtml(m: ReportModel): string {
 	const warnBanner = m.warning
 		? `<div class="warn">${esc(m.warning)}</div>`
 		: "";
+	const integrityBanner = m.integrity.ok
+		? ""
+		: `<div class="alert-red"><strong>报告数据完整性自检未过</strong><div>${esc(m.integrity.messages.join("；"))}</div></div>`;
 	const storeNote = m.storeMode === "local" ? "（本地 fallback 数据）" : "";
 
-	const body = `<h1>每日 Token 用量报告 <span class="pill">FLY-614</span></h1><div class="bigdate">📅 ${esc(cnDate(m.reportDay))} ${esc(weekdayCN(m.reportDay))}<small>${esc(m.reportDay)} · 昨日完整一天 · ${esc(m.timezone)}</small></div><div class="sub">全 fleet · 项目→(Leads + 当天已完成 issues) 嵌套 · 用量 + 成本估算(USD) · 范围=仅 Claude Code 用量(Codex 暂未并入,见 FLY-714) ${storeNote}</div>${warnBanner}${heroCard}${trendCard}${summaryCard}${projSection}${leadsCard}${modelCard}`;
+	const body = `<h1>每日 Token 用量报告 <span class="pill">FLY-614</span></h1><div class="bigdate">📅 ${esc(cnDate(m.reportDay))} ${esc(weekdayCN(m.reportDay))}<small>${esc(m.reportDay)} · 昨日完整一天 · ${esc(m.timezone)}</small></div><div class="sub">全 fleet · 项目→(Leads + 当天已完成 issues) 嵌套 · 用量 + 成本估算(USD) · 范围=仅 Claude Code 用量(Codex 暂未并入,见 FLY-714) ${storeNote}</div>${warnBanner}${integrityBanner}${heroCard}${trendCard}${summaryCard}${projSection}${leadsCard}${modelCard}`;
 
 	return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-614 每日 Token 报告 ${esc(m.reportDay)}</title><style>${CSS}</style></head><body><div class="wrap">${body}<div class="foot">FLY-614 · 数据=CC 日志真实用量 · USD=按各模型公开 API 单价 × token 用量估算的成本(订阅制下为参考成本,非实际账单) · 范围=仅 Claude Code 用量,Codex 暂未并入(见 FLY-714) · issue 可点跳 Linear · 仅当天已完成 · Lead↔项目=一对多(项目总量含其 Leads) · 持久化=Supabase(daily 聚合)+本地 fallback</div></div></body></html>`;
 }

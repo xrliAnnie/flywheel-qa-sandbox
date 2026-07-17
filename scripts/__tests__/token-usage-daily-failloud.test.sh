@@ -5,12 +5,9 @@
 # flywheel-comm with a fake node dist that records argv (and can be told to
 # fail specific subcommands), plus a fake scripts/lead-alert.sh in the fake
 # repo recording its argv. Asserts:
-#   1. P-expect=1 + token-report failure → lead-alert.sh called with
-#      --kind notify_digest_failed AND the original exit code is preserved.
-#   2. FLY-1243: FLYWHEEL_NOTIFY_DIGEST_EXPECT is retired (固化 default-on) —
-#      P-expect UNSET + same failure still fires lead-alert.sh unconditionally,
-#      same exit code preserved.
-#   3. P-expect=1 + publish failure → fail-loud fires for the publish step too.
+#   1. integrity exit 3 → warning HTML is still published, then alert + exit 3.
+#   2. ordinary token-report failure → no publish, alert + original exit code.
+#   3. publish failure after integrity exit 3 → publish exit code wins.
 #   4. Happy path: report-day's date reaches publish-report as
 #      `--kind token_report --expected-date <date>`.
 #   5. report-day returning garbage → publish-report called WITHOUT the
@@ -28,7 +25,7 @@ DAILY="${SCRIPT_DIR}/../token-usage-daily.sh"
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fly929-failloud.XXXXXX")"
 trap 'rm -rf "$ROOT"' EXIT
 
-# Fake flywheel-comm dist: records argv; env knobs FAIL_DAILY / FAIL_PUBLISH /
+# Fake flywheel-comm dist: records argv; env knobs DAILY_RC / FAIL_PUBLISH /
 # REPORT_DAY drive behavior per subcommand.
 build_fake_repo() {
 	local home="$1"
@@ -39,10 +36,9 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.COMM_LOG, args.join(" ") + "\n");
 if (args[0] === "token-report" && args[1] === "daily") {
-	if (process.env.FAIL_DAILY === "1") process.exit(3);
 	const i = args.indexOf("--out");
 	if (i >= 0 && args[i + 1]) fs.writeFileSync(args[i + 1], "<html>fake</html>");
-	process.exit(0);
+	process.exit(Number(process.env.DAILY_RC ?? "0"));
 }
 if (args[0] === "token-report" && args[1] === "report-day") {
 	process.stdout.write((process.env.REPORT_DAY ?? "2026-07-06") + "\n");
@@ -81,45 +77,49 @@ run_daily() {
 		bash "$DAILY" > "${home}/stdout.log" 2> "${home}/stderr.log"
 }
 
-# ── Case 1: expect=1 + token-report fails → alert + original exit code ──────
+# ── Case 1: integrity exit 3 → publish first, then alert + preserve 3 ──────
 H1="${ROOT}/h1"; mkdir -p "$H1"
-run_daily "$H1" FAIL_DAILY=1 FLYWHEEL_NOTIFY_DIGEST_EXPECT=1; rc=$?
+run_daily "$H1" DAILY_RC=3; rc=$?
 if [[ $rc -eq 3 ]]; then
-	pass "expect=1 + daily failure: original exit code 3 preserved"
+	pass "integrity failure: exit code 3 preserved"
 else
-	fail "expect=1 + daily failure: exit code was $rc (want 3)"
+	fail "integrity failure: exit code was $rc (want 3)"
 fi
-if grep -q -- "--kind notify_digest_failed" "${H1}/alert.log" 2>/dev/null && \
-   grep -q -- "--lead codex-infra-bot-lead" "${H1}/alert.log"; then
-	pass "expect=1 + daily failure: lead-alert fired with notify_digest_failed"
+if grep -q "publish-report" "${H1}/comm.log" 2>/dev/null; then
+	pass "integrity failure: warning report published before failure"
 else
-	fail "expect=1 + daily failure: alert.log: $(cat "${H1}/alert.log" 2>/dev/null)"
+	fail "integrity failure: publish-report missing: $(cat "${H1}/comm.log" 2>/dev/null)"
+fi
+if grep -q "step=token-report integrity-check exit=3" "${H1}/alert.log" 2>/dev/null; then
+	pass "integrity failure: lead alert identifies the integrity-check step"
+else
+	fail "integrity failure: alert.log: $(cat "${H1}/alert.log" 2>/dev/null)"
 fi
 
-# ── Case 2 (FLY-1243): expect unset + same failure → alert STILL fires ──────
-# FLYWHEEL_NOTIFY_DIGEST_EXPECT is retired (固化 default-on); fail_loud() no
-# longer gates on it, so this is no longer a "byte-compat NO alert" case.
+# ── Case 2: ordinary daily failure → alert, but no publish ─────────────────
 H2="${ROOT}/h2"; mkdir -p "$H2"
-run_daily "$H2" FAIL_DAILY=1; rc=$?
-if [[ $rc -eq 3 ]]; then
-	pass "expect unset + daily failure: exit code 3 preserved"
+run_daily "$H2" DAILY_RC=2; rc=$?
+if [[ $rc -eq 2 ]]; then
+	pass "ordinary daily failure: original exit code 2 preserved"
 else
-	fail "expect unset + daily failure: exit code was $rc (want 3)"
+	fail "ordinary daily failure: exit code was $rc (want 2)"
 fi
-if grep -q -- "--kind notify_digest_failed" "${H2}/alert.log" 2>/dev/null && \
-   grep -q -- "--lead codex-infra-bot-lead" "${H2}/alert.log"; then
-	pass "expect unset + daily failure: lead-alert fires unconditionally (FLY-1243 default-on)"
+if ! grep -q "publish-report" "${H2}/comm.log" 2>/dev/null && \
+   grep -q "step=token-report daily exit=2" "${H2}/alert.log" 2>/dev/null; then
+	pass "ordinary daily failure: no publish and fail-loud alert fired"
 else
-	fail "expect unset + daily failure: alert.log: $(cat "${H2}/alert.log" 2>/dev/null)"
+	fail "ordinary daily failure: comm=$(tr '\n' '|' < "${H2}/comm.log") alert=$(cat "${H2}/alert.log" 2>/dev/null)"
 fi
 
-# ── Case 3: expect=1 + publish fails → fail-loud for the publish step ───────
+# ── Case 3: publish failure after exit 3 → publish code wins ───────────────
 H3="${ROOT}/h3"; mkdir -p "$H3"
-run_daily "$H3" FAIL_PUBLISH=1 FLYWHEEL_NOTIFY_DIGEST_EXPECT=1; rc=$?
-if [[ $rc -eq 4 ]] && grep -q "step=publish-report exit=4" "${H3}/alert.log" 2>/dev/null; then
-	pass "expect=1 + publish failure: alert fired with step/exit, exit code 4 preserved"
+run_daily "$H3" DAILY_RC=3 FAIL_PUBLISH=1; rc=$?
+if [[ $rc -eq 4 ]] && \
+   grep -q "step=publish-report exit=4" "${H3}/alert.log" 2>/dev/null && \
+   ! grep -q "integrity-check" "${H3}/alert.log" 2>/dev/null; then
+	pass "publish failure after integrity warning: publish alert/code 4 wins"
 else
-	fail "expect=1 + publish failure: rc=$rc alert.log: $(cat "${H3}/alert.log" 2>/dev/null)"
+	fail "publish failure after integrity warning: rc=$rc alert.log: $(cat "${H3}/alert.log" 2>/dev/null)"
 fi
 
 # ── Case 4: happy path → receipt flags reach publish-report ─────────────────

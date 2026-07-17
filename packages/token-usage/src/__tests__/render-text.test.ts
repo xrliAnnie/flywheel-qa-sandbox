@@ -33,7 +33,7 @@ const rows: DailyRow[] = [
 		scope: "project",
 		dimKey: "flywheel",
 		project: "flywheel",
-		totalTokens: 1_000,
+		totalTokens: 600,
 		costMicroUsd: 1_142_000_000,
 	}),
 	r({
@@ -94,5 +94,19 @@ describe("renderReportText", () => {
 	it("shows $ on the by-model row", () => {
 		const line = text.split("\n").find((l) => l.includes("claude-opus-4-8"));
 		expect(line).toContain("$6,500");
+	});
+
+	it("prints an explicit integrity failure line", () => {
+		const broken = buildReportModel(
+			[r({ day: "2026-06-25", scope: "total", totalTokens: 100 })],
+			{
+				reportDay: "2026-06-26",
+				timezone: "UTC",
+				isCompleted: () => false,
+			},
+		);
+		const out = renderReportText(broken);
+		expect(out).toContain("报告数据完整性自检未过");
+		expect(out).toContain("缺少 total 汇总行");
 	});
 });

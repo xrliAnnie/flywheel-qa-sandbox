@@ -17,6 +17,9 @@ export function renderReportText(m: ReportModel): string {
 	L.push(`每日 Token 用量报告 — ${m.reportDay} (${m.timezone})`);
 	L.push("范围 = 仅 Claude Code 用量（Codex 暂未并入，见 FLY-714）");
 	if (m.warning) L.push(`⚠ ${m.warning}`);
+	if (!m.integrity.ok) {
+		L.push(`❌ 报告数据完整性自检未过: ${m.integrity.messages.join("；")}`);
+	}
 	L.push(
 		`总用量 ${fmtTok(m.total.tokens)} tokens · ${formatUsd(m.total.cost)} 成本估算  ` +
 			`[in ${fmtTok(m.total.input)} / out ${fmtTok(m.total.output)} / cacheR ${fmtTok(m.total.cacheRead)} / cacheW ${fmtTok(m.total.cacheWrite)}]`,

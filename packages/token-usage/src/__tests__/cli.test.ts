@@ -1,10 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	deriveAggregateWindow,
 	deriveComparison,
+	main,
 	parseIsoDayStrict,
 	resolveReportParams,
 } from "../cli.js";
+import { LocalSqliteUsageStore } from "../store/local-sqlite-store.js";
+import type { DailyRow } from "../types.js";
 
 describe("parseIsoDayStrict", () => {
 	it("accepts a valid civil date", () => {
@@ -233,5 +239,118 @@ describe("resolveReportParams (daily orchestration seam)", () => {
 			today,
 		);
 		expect(p.reportDay).toBe("2026-06-15");
+	});
+});
+
+describe.sequential("main report integrity exit contract (FLY-1348)", () => {
+	let dir: string;
+	let dbPath: string;
+	let outPath: string;
+	let savedEnv: Record<string, string | undefined>;
+
+	const envKeys = [
+		"SUPABASE_URL",
+		"SUPABASE_SERVICE_ROLE_KEY",
+		"TOKEN_USAGE_ALLOW_EMPTY",
+	] as const;
+
+	function restoreEnv(): void {
+		for (const key of envKeys) {
+			const value = savedEnv[key];
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+
+	function args(extra: string[] = []): string[] {
+		return [
+			"report",
+			"--date",
+			"2026-07-16",
+			"--trend-since",
+			"2026-07-14",
+			"--db",
+			dbPath,
+			"--completed-db",
+			path.join(dir, "teamlead.db"),
+			"--projects-json",
+			path.join(dir, "projects.json"),
+			"--out",
+			outPath,
+			...extra,
+		];
+	}
+
+	function usageRow(scope: "total" | "project", tokens: number): DailyRow {
+		return {
+			day: "2026-07-16",
+			scope,
+			dimKey: scope === "total" ? "" : "flywheel",
+			project: scope === "total" ? null : "flywheel",
+			inputTokens: tokens,
+			outputTokens: 0,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 0,
+			totalTokens: tokens,
+			freshTokens: tokens,
+			costMicroUsd: 0,
+			isCompleted: null,
+		};
+	}
+
+	beforeEach(() => {
+		dir = mkdtempSync(path.join(os.tmpdir(), "token-cli-integrity-"));
+		dbPath = path.join(dir, "usage.db");
+		outPath = path.join(dir, "report.html");
+		savedEnv = Object.fromEntries(
+			envKeys.map((key) => [key, process.env[key]]),
+		);
+		for (const key of envKeys) delete process.env[key];
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		restoreEnv();
+		vi.restoreAllMocks();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("writes the warning HTML before returning exit 3 for missing report data", async () => {
+		const code = await main(args());
+		const html = readFileSync(outPath, "utf8");
+		expect(code).toBe(3);
+		expect(html).toContain("报告数据完整性自检未过");
+		expect(console.error).toHaveBeenCalledWith(
+			expect.stringContaining("integrity check failed"),
+		);
+	});
+
+	it("returns 0 for a healthy report", async () => {
+		const store = new LocalSqliteUsageStore(dbPath);
+		await store.replaceDaily("2026-07-16", [
+			usageRow("total", 100),
+			usageRow("project", 100),
+		]);
+		store.close();
+
+		const code = await main(args());
+		expect(code).toBe(0);
+		expect(readFileSync(outPath, "utf8")).not.toContain(
+			"报告数据完整性自检未过",
+		);
+	});
+
+	it("--allow-empty returns 0 but keeps the visible warning", async () => {
+		const code = await main(args(["--allow-empty"]));
+		expect(code).toBe(0);
+		expect(readFileSync(outPath, "utf8")).toContain("报告数据完整性自检未过");
+	});
+
+	it("TOKEN_USAGE_ALLOW_EMPTY=1 returns 0 but keeps the visible warning", async () => {
+		process.env.TOKEN_USAGE_ALLOW_EMPTY = "1";
+		const code = await main(args());
+		expect(code).toBe(0);
+		expect(readFileSync(outPath, "utf8")).toContain("报告数据完整性自检未过");
 	});
 });

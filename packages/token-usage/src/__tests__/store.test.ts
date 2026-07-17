@@ -118,6 +118,79 @@ describe("LocalSqliteUsageStore", () => {
 });
 
 describe("SupabaseUsageStore (mocked client)", () => {
+	function dbRows(count: number): Record<string, unknown>[] {
+		return Array.from({ length: count }, (_, i) => ({
+			day: `2026-06-${String(Math.floor(i / 100) + 1).padStart(2, "0")}`,
+			scope: "project",
+			dim_key: `project-${String(i).padStart(4, "0")}`,
+			total_tokens: i + 1,
+		}));
+	}
+
+	function cappedQueryClient(
+		rows: Record<string, unknown>[],
+		serverCap: number,
+		options: { alwaysFull?: boolean } = {},
+	): {
+		client: SupabaseLike;
+		ops: unknown[][];
+		ranges: [number, number][];
+	} {
+		const ops: unknown[][] = [];
+		const ranges: [number, number][] = [];
+		const client: SupabaseLike = {
+			rpc: () => Promise.resolve({ error: null }),
+			from: () => {
+				let from = 0;
+				let to = 999;
+				const builder = {
+					select(c: string) {
+						ops.push(["select", c]);
+						return this;
+					},
+					gte(c: string, v: string) {
+						ops.push(["gte", c, v]);
+						return this;
+					},
+					lte(c: string, v: string) {
+						ops.push(["lte", c, v]);
+						return this;
+					},
+					eq(c: string, v: string) {
+						ops.push(["eq", c, v]);
+						return this;
+					},
+					order(c: string) {
+						ops.push(["order", c]);
+						return this;
+					},
+					range(start: number, end: number) {
+						from = start;
+						to = end;
+						ranges.push([start, end]);
+						ops.push(["range", start, end]);
+						return this;
+					},
+					// biome-ignore lint/suspicious/noThenProperty: mock must be awaitable like the real supabase query builder
+					then(resolve: (x: { data: unknown[]; error: null }) => void) {
+						const length = Math.min(serverCap, to - from + 1);
+						const data = options.alwaysFull
+							? Array.from({ length }, (_, i) => ({
+									day: "2026-06-26",
+									scope: "project",
+									dim_key: `pathological-${from + i}`,
+									total_tokens: 1,
+								}))
+							: rows.slice(from, Math.min(to + 1, from + serverCap));
+						resolve({ data, error: null });
+					},
+				};
+				return builder;
+			},
+		};
+		return { client, ops, ranges };
+	}
+
 	it("replaceDaily calls the atomic RPC with day/source/rows", async () => {
 		let captured: { fn: string; args: Record<string, unknown> } | null = null;
 		const client: SupabaseLike = {
@@ -153,6 +226,7 @@ describe("SupabaseUsageStore (mocked client)", () => {
 
 	it("queryDaily builds the filter chain and maps rows", async () => {
 		const ops: unknown[][] = [];
+		let rangeStart = 0;
 		const builder = {
 			select(c: string) {
 				ops.push(["select", c]);
@@ -174,12 +248,25 @@ describe("SupabaseUsageStore (mocked client)", () => {
 				ops.push(["order", c]);
 				return this;
 			},
+			range(from: number, to: number) {
+				rangeStart = from;
+				ops.push(["range", from, to]);
+				return this;
+			},
 			// biome-ignore lint/suspicious/noThenProperty: mock must be awaitable like the real supabase query builder
 			then(res: (x: { data: unknown; error: null }) => void) {
 				res({
-					data: [
-						{ day: "2026-06-26", scope: "total", dim_key: "", total_tokens: 5 },
-					],
+					data:
+						rangeStart === 0
+							? [
+									{
+										day: "2026-06-26",
+										scope: "total",
+										dim_key: "",
+										total_tokens: 5,
+									},
+								]
+							: [],
 					error: null,
 				});
 			},
@@ -200,6 +287,52 @@ describe("SupabaseUsageStore (mocked client)", () => {
 		});
 		expect(ops).toContainEqual(["gte", "day", "2026-06-01"]);
 		expect(ops).toContainEqual(["eq", "scope", "total"]);
+		expect(ops.filter((op) => op[0] === "order").slice(0, 3)).toEqual([
+			["order", "day"],
+			["order", "scope"],
+			["order", "dim_key"],
+		]);
+	});
+
+	it("queryDaily paginates beyond PostgREST's 1000-row cap", async () => {
+		const rows = dbRows(1_252);
+		const { client, ranges } = cappedQueryClient(rows, 1_000);
+
+		const got = await new SupabaseUsageStore(client).queryDaily();
+
+		expect(got).toHaveLength(1_252);
+		expect(got.at(-1)?.dimKey).toBe("project-1251");
+		expect(ranges).toEqual([
+			[0, 999],
+			[1_000, 1_999],
+			[1_252, 2_251],
+		]);
+	});
+
+	it("queryDaily advances by the actual batch length when the server cap is smaller", async () => {
+		const rows = dbRows(1_252);
+		const { client, ranges } = cappedQueryClient(rows, 10);
+
+		const got = await new SupabaseUsageStore(client).queryDaily();
+
+		expect(got).toHaveLength(1_252);
+		expect(ranges.slice(0, 3)).toEqual([
+			[0, 999],
+			[10, 1_009],
+			[20, 1_019],
+		]);
+		expect(ranges.at(-1)).toEqual([1_252, 2_251]);
+	});
+
+	it("queryDaily fails loudly at the 100000-row safety fuse", async () => {
+		const { client, ranges } = cappedQueryClient([], 1_000, {
+			alwaysFull: true,
+		});
+
+		await expect(new SupabaseUsageStore(client).queryDaily()).rejects.toThrow(
+			/99000.*100000|100000.*99000/,
+		);
+		expect(ranges).toHaveLength(100);
 	});
 });
 

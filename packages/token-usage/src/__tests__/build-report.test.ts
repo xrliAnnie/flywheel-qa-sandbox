@@ -37,7 +37,7 @@ const rows: DailyRow[] = [
 		project: "flywheel",
 		totalTokens: 600,
 	}),
-	r({ scope: "project", dimKey: "sub", project: "sub", totalTokens: 100 }),
+	r({ scope: "project", dimKey: "sub", project: "sub", totalTokens: 150 }),
 	r({
 		scope: "lead",
 		dimKey: "flywheel-eng-lead",
@@ -155,6 +155,16 @@ describe("buildReportModel", () => {
 		});
 	});
 
+	it("marks a balanced report day healthy", () => {
+		expect(m.integrity).toMatchObject({
+			ok: true,
+			codes: [],
+			latestDataDay: "2026-06-26",
+			reportDayTotal: 1000,
+			attributedTotal: 1000,
+		});
+	});
+
 	it("builds total trend across the window (tokens + cost)", () => {
 		expect(m.trendTotal).toEqual([
 			{ day: "2026-06-25", tokens: 800, cost: 0 },
@@ -182,5 +192,132 @@ describe("buildReportModel", () => {
 		expect(cmp?.before.avgTokens).toBe(800);
 		expect(cmp?.after.avgTokens).toBe(1000);
 		expect(cmp?.after.byModel["claude-opus-4-8"]).toBe(950);
+	});
+});
+
+describe("buildReportModel integrity self-checks (FLY-1348)", () => {
+	const build = (input: DailyRow[], reportDay = "2026-07-16") =>
+		buildReportModel(input, {
+			reportDay,
+			timezone: "America/Los_Angeles",
+			isCompleted: () => false,
+			trendSince: "2026-07-14",
+		});
+
+	it("C1: reports a missing report-day total row", () => {
+		const model = build([
+			r({ day: "2026-07-15", scope: "total", totalTokens: 80 }),
+			r({
+				day: "2026-07-15",
+				scope: "project",
+				dimKey: "flywheel",
+				project: "flywheel",
+				totalTokens: 80,
+			}),
+		]);
+
+		expect(model.integrity.ok).toBe(false);
+		expect(model.integrity.codes).toContain("missing_report_day_total");
+		expect(model.integrity.latestDataDay).toBe("2026-07-15");
+	});
+
+	it("C1+C3: ignores report-day non-total rows when finding the latest complete day", () => {
+		const model = build([
+			r({ day: "2026-07-15", scope: "total", totalTokens: 80 }),
+			r({
+				day: "2026-07-16",
+				scope: "project",
+				dimKey: "flywheel",
+				project: "flywheel",
+				totalTokens: 50,
+			}),
+			r({
+				day: "2026-07-16",
+				scope: "lead",
+				dimKey: "flywheel-eng-lead",
+				project: "flywheel",
+				totalTokens: 30,
+			}),
+			r({
+				day: "2026-07-16",
+				scope: "model",
+				dimKey: "claude-opus-4-8",
+				totalTokens: 80,
+			}),
+		]);
+
+		expect(model.integrity.latestDataDay).toBe("2026-07-15");
+		expect(model.integrity.codes).toEqual([
+			"missing_report_day_total",
+			"stale_latest_total",
+		]);
+	});
+
+	it("C2: reports a mismatch between total and project+lead attribution", () => {
+		const model = build([
+			r({ day: "2026-07-16", scope: "total", totalTokens: 100 }),
+			r({
+				day: "2026-07-16",
+				scope: "project",
+				dimKey: "flywheel",
+				project: "flywheel",
+				totalTokens: 60,
+			}),
+			r({
+				day: "2026-07-16",
+				scope: "lead",
+				dimKey: "flywheel-eng-lead",
+				project: "flywheel",
+				totalTokens: 20,
+			}),
+		]);
+
+		expect(model.integrity).toMatchObject({
+			ok: false,
+			latestDataDay: "2026-07-16",
+			reportDayTotal: 100,
+			attributedTotal: 80,
+		});
+		expect(model.integrity.codes).toContain("attributed_total_mismatch");
+	});
+
+	it("C3: reports when the latest total day is null or before reportDay", () => {
+		const noTotals = build([]);
+		expect(noTotals.integrity.latestDataDay).toBeNull();
+		expect(noTotals.integrity.codes).toContain("stale_latest_total");
+
+		const stale = build([
+			r({ day: "2026-07-14", scope: "total", totalTokens: 50 }),
+		]);
+		expect(stale.integrity.latestDataDay).toBe("2026-07-14");
+		expect(stale.integrity.codes).toContain("stale_latest_total");
+	});
+
+	it("accepts a healthy project-only report day", () => {
+		const model = build([
+			r({ day: "2026-07-16", scope: "total", totalTokens: 100 }),
+			r({
+				day: "2026-07-16",
+				scope: "project",
+				dimKey: "flywheel",
+				project: "flywheel",
+				totalTokens: 100,
+			}),
+		]);
+		expect(model.integrity.ok).toBe(true);
+	});
+
+	it("accepts a healthy lead-only report day", () => {
+		const model = build([
+			r({ day: "2026-07-16", scope: "total", totalTokens: 100 }),
+			r({
+				day: "2026-07-16",
+				scope: "lead",
+				dimKey: "flywheel-eng-lead",
+				project: "flywheel",
+				totalTokens: 100,
+			}),
+		]);
+		expect(model.integrity.ok).toBe(true);
 	});
 });
