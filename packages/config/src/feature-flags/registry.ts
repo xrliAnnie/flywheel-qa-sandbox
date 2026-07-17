@@ -408,6 +408,31 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "启用前必须完成 identity-set + identity-audit；=0 立即停核验，但既有 identityMismatch 排除标记需 audit 清除。",
 	},
 	{
+		name: "voice_qa_presence_override",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1353: voice-bridge /gemini headless 声学 E2E 的 presence QA seam —— =1 时 founderPresent() 视为满足(仅 staged rig;armed 时 allowlist 只放行 http://127.0.0.1:9877 staged Bridge,其余 boot 拒启)",
+		readSites: [
+			envSite(
+				"packages/voice-bridge/src/assistant/wiring.ts",
+				"wireAssistantMode",
+				"object_construction",
+				"env-param",
+			),
+		],
+		// The owning reader is the voice-bridge daemon (external process), not the
+		// Bridge whose env the direct-toggle surface mutates. QA-only: never a
+		// founder dashboard toggle, never set in production.
+		toggleable: "readonly",
+		note: "QA-only seam(FLY-1353)。生产永不置位;armed + 生产 Bridge URL = boot 拒启。",
+	},
+	{
 		name: "quota_daemon_wake",
 		category: "kill_switch",
 		source: "env",

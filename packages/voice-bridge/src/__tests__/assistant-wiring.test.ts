@@ -592,6 +592,145 @@ describe("staged QA seams (FLY-967 ②)", () => {
 	});
 });
 
+describe("presence QA seam (FLY-1353)", () => {
+	async function startHeadlessRound(override?: string) {
+		vi.useFakeTimers();
+		const f = makeFakes();
+		f.deps.voiceChannelHumanCount = async () => 0;
+		const logs: string[] = [];
+		const stateDir = mkdtempSync(join(tmpdir(), "fly1353-presence-"));
+		const runtime = await wireAssistantMode({
+			config: CONFIG,
+			assistant: ASSISTANT,
+			registry: f.registry,
+			deps: f.deps,
+			earsConnection: {},
+			env: {
+				FLYWHEEL_API_TOKEN: "t",
+				FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9877",
+				FLYWHEEL_GEMINI_AUTOSTART: "presence QA",
+				...(override !== undefined
+					? { FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE: override }
+					: {}),
+			},
+			log: (message) => logs.push(message),
+			createConversation: f.createConversation,
+			fetchImpl: f.fetchImpl,
+			stateDir,
+		});
+		await vi.waitFor(() => {
+			expect(logs).toContain("[presence] humanCount seeded=0 (boot occupancy)");
+		});
+		await vi.advanceTimersByTimeAsync(2_100);
+		await vi.waitFor(() => expect(f.conversations).toHaveLength(1));
+
+		return {
+			f,
+			logs,
+			close: async () => {
+				await runtime.close();
+				rmSync(stateDir, { recursive: true, force: true });
+				vi.useRealTimers();
+			},
+		};
+	}
+
+	it("unset keeps a headless round invoked and does not send the opening prompt", async () => {
+		const round = await startHeadlessRound();
+		try {
+			expect(round.f.conversations[0]?.sentTexts).toHaveLength(0);
+			expect(round.logs.some((line) => line.includes("QA OVERRIDE"))).toBe(
+				false,
+			);
+		} finally {
+			await round.close();
+		}
+	});
+
+	it('override="1" enters live without a human and logs both override disclosures', async () => {
+		const round = await startHeadlessRound("1");
+		try {
+			expect(round.f.conversations[0]?.sentTexts).toHaveLength(1);
+			expect(
+				round.logs.some((line) => line.includes("QA presence override armed")),
+			).toBe(true);
+			expect(
+				round.logs.some((line) =>
+					line.includes("QA OVERRIDE — humanCount ignored"),
+				),
+			).toBe(true);
+		} finally {
+			await round.close();
+		}
+	});
+
+	it.each(["0", "true", ""])(
+		'override="%s" stays fail-closed and does not enter live',
+		async (override) => {
+			const round = await startHeadlessRound(override);
+			try {
+				expect(round.f.conversations[0]?.sentTexts).toHaveLength(0);
+			} finally {
+				await round.close();
+			}
+		},
+	);
+
+	it.each([
+		[
+			"production FLYWHEEL_BRIDGE_URL",
+			{ FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9876" },
+		],
+		["production BRIDGE_URL alias", { BRIDGE_URL: "http://127.0.0.1:9876" }],
+		[
+			"non-loopback host",
+			{ FLYWHEEL_BRIDGE_URL: "https://bridge.internal.example" },
+		],
+		[
+			"loopback without an explicit port",
+			{ FLYWHEEL_BRIDGE_URL: "http://127.0.0.1" },
+		],
+		[
+			"unapproved loopback port",
+			{ FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:43210" },
+		],
+		["https localhost", { FLYWHEEL_BRIDGE_URL: "https://localhost:8443" }],
+		["non-http protocol", { FLYWHEEL_BRIDGE_URL: "ftp://127.0.0.1:9877" }],
+	] as const)(
+		"rejects %s when the QA override is armed",
+		async (_label, urlEnv) => {
+			const f = makeFakes();
+			const stateDir = mkdtempSync(join(tmpdir(), "fly1353-guard-"));
+			let runtime: Awaited<ReturnType<typeof wireAssistantMode>> | undefined;
+			let thrown: unknown;
+			try {
+				runtime = await wireAssistantMode({
+					config: CONFIG,
+					assistant: ASSISTANT,
+					registry: f.registry,
+					deps: f.deps,
+					earsConnection: {},
+					env: {
+						FLYWHEEL_API_TOKEN: "t",
+						FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE: "1",
+						...urlEnv,
+					},
+					log: () => {},
+					createConversation: f.createConversation,
+					fetchImpl: f.fetchImpl,
+					stateDir,
+				});
+			} catch (error) {
+				thrown = error;
+			} finally {
+				await runtime?.close();
+				rmSync(stateDir, { recursive: true, force: true });
+			}
+			expect(String(thrown)).toMatch(/QA-only seam/);
+		},
+	);
+});
+
 describe("runVoiceBridge assistant hook (FLY-967 QA-B1)", () => {
 	it("assistant: null keeps the daemon byte-compatible (no assistant surface)", async () => {
 		const f = makeFakes();

@@ -22,6 +22,7 @@
  * conversation round is the founder's A8 step.
  */
 import { runVoiceBridge } from "../dist/cli.js";
+import { buildStagedConfig } from "./lib/rig-config.mjs";
 
 const need = (k) => {
 	const v = process.env[k];
@@ -34,8 +35,10 @@ const need = (k) => {
 
 const guildId = need("STAGED_GUILD_ID");
 const voiceChannelId = need("STAGED_VC_ID");
-need("GEMINI_API_KEY");
-need("FLYWHEEL_API_TOKEN");
+const geminiApiKey = need("GEMINI_API_KEY");
+const apiToken = need("FLYWHEEL_API_TOKEN");
+const orchestratorToken = need("HUDDLE_ORCH_BOT_TOKEN");
+const earsToken = need("HUDDLE_EARS_BOT_TOKEN");
 // isolation guard (Codex R7 HIGH): the wiring falls back to the PROD Bridge
 // (127.0.0.1:9876) when FLYWHEEL_BRIDGE_URL is unset — a staged run must be
 // pinned to the staged Bridge explicitly, and pointing it at the prod port
@@ -48,21 +51,15 @@ if (/:9876(\/|$)/.test(process.env.FLYWHEEL_BRIDGE_URL)) {
 	process.exit(2);
 }
 
-const config = {
-	projectName: process.env.STAGED_PROJECT_NAME ?? "flywheel",
-	projectRoot: process.cwd(),
-	guildId,
-	voiceChannelId,
-	commandName: "meet",
-	moveMembers: false,
-	orchestratorToken: need("HUDDLE_ORCH_BOT_TOKEN"),
-	earsToken: need("HUDDLE_EARS_BOT_TOKEN"),
-	leads: [],
-	backchannelMs: 350,
-	allowUserIds: [],
-	healthPort: Number(process.env.STAGED_HEALTH_PORT ?? 9879),
-	ffmpegBin: process.env.FFMPEG_BIN ?? "ffmpeg",
-};
+const config = buildStagedConfig({
+	...process.env,
+	STAGED_GUILD_ID: guildId,
+	STAGED_VC_ID: voiceChannelId,
+	GEMINI_API_KEY: geminiApiKey,
+	FLYWHEEL_API_TOKEN: apiToken,
+	HUDDLE_ORCH_BOT_TOKEN: orchestratorToken,
+	HUDDLE_EARS_BOT_TOKEN: earsToken,
+});
 
 const assistant = {
 	commandName: process.env.STAGED_COMMAND_NAME ?? "gemini",
@@ -85,6 +82,9 @@ const log = (msg) => {
 };
 
 process.env.FLYWHEEL_GEMINI_AUTOSTART ??= "staged E2E 冒烟";
+// FLY-1353: a headless rig has no human in the VC. Override this to "0"
+// for the required negative control, which must remain stalled in invoked.
+process.env.FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE ??= "1";
 
 const runtime = await runVoiceBridge({ config, assistant, log });
 log(

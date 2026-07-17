@@ -34,6 +34,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { runVoiceBridge } from "../dist/cli.js";
+import { buildStagedConfig } from "./lib/rig-config.mjs";
 
 const need = (k) => {
 	const v = process.env[k];
@@ -48,8 +49,10 @@ const guildId = need("STAGED_GUILD_ID");
 const voiceChannelId = need("STAGED_VC_ID");
 const probeWav = need("PROBE_WAV");
 const outDir = process.env.OUT_DIR ?? "/tmp/fly967-voice-loop";
-need("GEMINI_API_KEY");
-need("FLYWHEEL_API_TOKEN");
+const geminiApiKey = need("GEMINI_API_KEY");
+const apiToken = need("FLYWHEEL_API_TOKEN");
+const orchestratorToken = need("HUDDLE_ORCH_BOT_TOKEN");
+const earsToken = need("HUDDLE_EARS_BOT_TOKEN");
 const injectorToken = need("INJECTOR_BOT_TOKEN");
 
 process.env.FLYWHEEL_BRIDGE_URL ??= "http://127.0.0.1:9877";
@@ -108,22 +111,23 @@ log(`injector online as ${injector.user.tag} (${injectorId})`);
 
 // ---- venue boots with the injector allowlisted + autostart round ----
 process.env.FLYWHEEL_GEMINI_AUTOSTART = "voice-loop 自验";
+// FLY-1353: a headless rig has no human in the VC. Override this to "0"
+// for the required negative control, which must remain stalled in invoked.
+process.env.FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE ??= "1";
+const config = {
+	...buildStagedConfig({
+		...process.env,
+		STAGED_GUILD_ID: guildId,
+		STAGED_VC_ID: voiceChannelId,
+		GEMINI_API_KEY: geminiApiKey,
+		FLYWHEEL_API_TOKEN: apiToken,
+		HUDDLE_ORCH_BOT_TOKEN: orchestratorToken,
+		HUDDLE_EARS_BOT_TOKEN: earsToken,
+	}),
+	allowUserIds: [injectorId], // ears admits the synthetic speaker
+};
 const runtime = await runVoiceBridge({
-	config: {
-		projectName: process.env.STAGED_PROJECT_NAME ?? "flywheel",
-		projectRoot: process.cwd(),
-		guildId,
-		voiceChannelId,
-		commandName: "meet",
-		moveMembers: false,
-		orchestratorToken: need("HUDDLE_ORCH_BOT_TOKEN"),
-		earsToken: need("HUDDLE_EARS_BOT_TOKEN"),
-		leads: [],
-		backchannelMs: 350,
-		allowUserIds: [injectorId], // ears admits the synthetic speaker
-		healthPort: Number(process.env.STAGED_HEALTH_PORT ?? 9879),
-		ffmpegBin: process.env.FFMPEG_BIN ?? "ffmpeg",
-	},
+	config,
 	assistant: {
 		commandName: process.env.STAGED_COMMAND_NAME ?? "gemini",
 		voice: process.env.STAGED_VOICE ?? "Kore",

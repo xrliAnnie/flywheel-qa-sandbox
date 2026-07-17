@@ -205,6 +205,30 @@ describe("feature-flag registry invariants", () => {
 		expect(identity?.note).toContain("identity-set + identity-audit");
 	});
 
+	it("FLY-1353 registers the voice presence QA seam with its real external-daemon read site", () => {
+		const flag = FEATURE_FLAGS.find(
+			(candidate) => candidate.envVar === "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
+		);
+		expect(flag).toMatchObject({
+			name: "voice_qa_presence_override",
+			category: "feature",
+			source: "env",
+			scope: "bridge_global",
+			polarity: "opt_in",
+			valueKind: "bool",
+			default: false,
+			toggleable: "readonly",
+		});
+		expect(flag?.readSites).toEqual([
+			expect.objectContaining({
+				file: "packages/voice-bridge/src/assistant/wiring.ts",
+				symbol: "wireAssistantMode",
+				pattern: "env-param",
+				timing: "object_construction",
+			}),
+		]);
+	});
+
 	it("FLY-1272 registers the two default-on cmux rollback switches with exact read sites", () => {
 		const linked = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_CMUX_LINKED_VIEW",
