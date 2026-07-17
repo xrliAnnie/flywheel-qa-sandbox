@@ -1219,6 +1219,11 @@ async function closeoutOneNode(
 			projectName: node.projectName,
 			ok: finalized.ok,
 			error: finalized.error,
+			audit: {
+				retiredGateCount: finalized.retiredGateCount,
+				retiredAskCount: finalized.retiredAskCount,
+				source: "bridge.lifecycle-closeout",
+			},
 		});
 		result.communicationsFinalized = finalized.ok;
 		result.teardown = finalized.ok

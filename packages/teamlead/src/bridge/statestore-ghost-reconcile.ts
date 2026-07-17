@@ -220,6 +220,7 @@ async function reapStateStoreGhostUnlocked(
 			ok: false,
 			outcome: "failed",
 			retiredGateCount: 0,
+			retiredAskCount: 0,
 			deletedSessionCount: 0,
 			error: (err as Error).message,
 		};
@@ -231,6 +232,11 @@ async function reapStateStoreGhostUnlocked(
 		ok: finalized.ok,
 		error: finalized.error,
 		nowMs,
+		audit: {
+			retiredGateCount: finalized.retiredGateCount,
+			retiredAskCount: finalized.retiredAskCount,
+			source: "bridge.statestore-ghost-reconcile",
+		},
 	});
 	if (!finalized.ok) {
 		log(

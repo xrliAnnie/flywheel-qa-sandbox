@@ -371,6 +371,8 @@ describe("zombie gate hygiene — FLY-1257 defect ④ (R5): review gates never r
 			// Teardown: review gate spared (HIGH-2), session row deleted — the R5 setup.
 			expect(db.finalizeSession("E-r5")).toEqual({
 				retiredQuestionCount: 0,
+				// FLY-1328: no checkpoint-less asks on this session to cascade.
+				retiredAskCount: 0,
 				deletedSessionCount: 1,
 			});
 			expect(db.isQuestionPending(review)).toBe(true);

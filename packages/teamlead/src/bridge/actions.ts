@@ -1415,6 +1415,11 @@ export async function handleTerminate(
 			projectName: session.project_name,
 			ok: finalized.ok,
 			error: finalized.error,
+			audit: {
+				retiredGateCount: finalized.retiredGateCount,
+				retiredAskCount: finalized.retiredAskCount,
+				source: "bridge.actions",
+			},
 		});
 		if (!finalized.ok) {
 			cleanupError = `commdb finalize failed: ${finalized.error ?? "unknown"}`;

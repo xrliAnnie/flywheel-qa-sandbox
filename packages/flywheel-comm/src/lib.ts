@@ -32,7 +32,7 @@ export type {
 	RunnerPhaseWake,
 	RunnerShutdownControl,
 } from "./db.js";
-export { CommDB } from "./db.js";
+export { askHygieneEnabled, CommDB } from "./db.js";
 export type {
 	AuditDecision,
 	AuditDecisionSource,

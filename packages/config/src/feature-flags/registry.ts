@@ -1046,6 +1046,41 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 	},
 	{
+		name: "ask_hygiene",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_ASK_HYGIENE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"runner 收尾清它名下未答的 ask(A1 close 级联 + A2 巡检 sweep;OFF=今日字节路径,含 gate 行 resolved_via 保持 NULL)",
+		readSites: [
+			envSite(
+				"packages/flywheel-comm/src/db.ts",
+				"askHygieneEnabled",
+				"call_time",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/zombie-gate-hygiene.ts",
+				"askHygieneEnabled",
+				"call_time",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/gate-poller.ts",
+				"askHygieneEnabled",
+				"call_time",
+			),
+			envSite(
+				"packages/teamlead/src/StateStore.ts",
+				"askHygieneEnabled",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+	},
+	{
 		name: "founder_milestone_notify",
 		category: "kill_switch",
 		source: "env",

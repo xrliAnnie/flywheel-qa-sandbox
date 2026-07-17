@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import BetterSqlite3, { type Database as BetterDb } from "better-sqlite3";
+import { askHygieneEnabled } from "flywheel-comm/db";
 import {
 	canonicalSubmissionDigest,
 	crossFamilyReviewSatisfied,
@@ -3188,7 +3189,16 @@ export class StateStore {
 	/** FLY-1257: maintain the single SQLite-clock chronology anchor shared by
 	 * all status-write paths. First terminal entry stamps; terminal rewrites
 	 * preserve the first stamp; any revival clears it. Must run inside the
-	 * caller's status transaction after that status write succeeds. */
+	 * caller's status transaction after that status write succeeds.
+	 *
+	 * FLY-1328 — EVERY new sessions status-write path MUST call this. The gate
+	 * branch's chronology fails OPEN on a missing stamp, so a bypass there only
+	 * degrades gate hygiene. The ask sweep fails CLOSED: terminal status + no
+	 * stamp reads as "no evidence of reopening" and the ask is retired. A future
+	 * status-write path that skips this call would therefore make every reopened
+	 * runner of that shape silently sweepable — and it would surface not as a
+	 * failing test but as questions quietly vanishing weeks later. If you are
+	 * adding a fourth writer, stamp here or the sweep will eat its asks. */
 	private applyTerminalTimestamp(
 		executionId: string,
 		previousStatus: string | undefined,
@@ -10398,7 +10408,12 @@ export class StateStore {
 
 	/** Record every structured finalizer outcome. The third failure or a
 	 * fifteen-minute episode queues one stable Lead-only alert; `alerted` is
-	 * deliberately set only by markFounderActionDelivered after a real receipt. */
+	 * deliberately set only by markFounderActionDelivered after a real receipt.
+	 *
+	 * FLY-1328: `audit` carries what the teardown actually disposed of. This is
+	 * the audit seam because it is the one method every finalize call site
+	 * already reaches AND the one holding issue/project context — the CommDB
+	 * wrapper has neither, so its signature stays untouched. */
 	recordCommDbFinalizeOutcome(input: {
 		executionId: string;
 		issueId: string;
@@ -10406,8 +10421,39 @@ export class StateStore {
 		ok: boolean;
 		error?: string;
 		nowMs?: number;
+		audit?: {
+			retiredGateCount: number;
+			retiredAskCount: number;
+			source: string;
+		};
 	}): CommDbFinalizeFailureRow | undefined {
 		const nowMs = input.nowMs ?? Date.now();
+		// FLY-1328 — an ASK-DISPOSITION record, not a per-finalize one. Only a
+		// finalize that truly retired asks writes an event: a failed/no-op close
+		// disposed of nothing, and inventing an `owner_closed` record for it would
+		// put a fiction in the forensic log. Flag off, no audit, or zero asks all
+		// leave today's event set exactly as it is.
+		if (
+			input.ok &&
+			input.audit &&
+			input.audit.retiredAskCount > 0 &&
+			askHygieneEnabled()
+		) {
+			this.insertEvent({
+				event_id: `commdb-ask-disposed-${input.executionId}`,
+				execution_id: input.executionId,
+				issue_id: input.issueId,
+				project_name: input.projectName,
+				event_type: "commdb_ask_disposed",
+				source: input.audit.source,
+				payload: {
+					retiredGateCount: input.audit.retiredGateCount,
+					retiredAskCount: input.audit.retiredAskCount,
+					resolvedVia: "owner_closed",
+					source: input.audit.source,
+				},
+			});
+		}
 		if (input.ok) {
 			this.db.run(
 				`UPDATE commdb_finalize_failures SET resolved_at = datetime('now')
@@ -15039,6 +15085,17 @@ export class StateStore {
 				input.route,
 				binding.node_id,
 			],
+		);
+		// FLY-1328 HIGH: this generalized-completion writer sets status='completed'
+		// but is NOT the FSM path, so it must stamp terminal_at itself. Without it a
+		// session completed here stays terminal-with-no-stamp, and the A2 ask sweep's
+		// FLY-1257 chronology guard fails CLOSED on the missing stamp — retiring an ask
+		// this execution was still owed a human answer for. Same transaction as the
+		// upsert above; the helper no-ops on the idempotent replay (already terminal).
+		this.applyTerminalTimestamp(
+			binding.execution_id,
+			previousStatus,
+			"completed",
 		);
 		if (previousStatus && previousStatus !== "completed") {
 			this.bumpLifecycleRevision(binding.execution_id);

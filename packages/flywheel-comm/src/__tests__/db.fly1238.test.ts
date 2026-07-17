@@ -37,6 +37,8 @@ describe("CommDB.finalizeSession (FLY-1238)", () => {
 
 		expect(db.finalizeSession("exec-a")).toEqual({
 			retiredQuestionCount: 2,
+			// FLY-1328: no checkpoint-less asks on this session to cascade.
+			retiredAskCount: 0,
 			deletedSessionCount: 1,
 		});
 		expect(db.getSession("exec-a")).toBeUndefined();
@@ -74,6 +76,10 @@ describe("CommDB.finalizeSession (FLY-1238)", () => {
 
 		expect(db.finalizeSession("exec-a")).toEqual({
 			retiredQuestionCount: 2,
+			// FLY-1328: `runnerQuestion` is checkpoint-less but seconds old, so the
+			// cascade's grace window spares it — the FLY-161 survive-completion
+			// assertion below still holds for a freshly-written ask.
+			retiredAskCount: 0,
 			deletedSessionCount: 1,
 		});
 		expect(db.getSession("exec-a")).toBeUndefined();
@@ -115,6 +121,7 @@ describe("CommDB.finalizeSession (FLY-1238)", () => {
 
 			expect(db.finalizeSession("exec-a")).toEqual({
 				retiredQuestionCount: 1, // ship only — the review gate is exempt
+				retiredAskCount: 0,
 				deletedSessionCount: 1,
 			});
 

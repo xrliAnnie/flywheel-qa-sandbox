@@ -323,6 +323,11 @@ async function reapOne(
 		projectName,
 		ok: finalized.ok,
 		error: finalized.error,
+		audit: {
+			retiredGateCount: finalized.retiredGateCount,
+			retiredAskCount: finalized.retiredAskCount,
+			source: "bridge.crash-reaper",
+		},
 	});
 	if (!finalized.ok) {
 		result.cleanupPending++;

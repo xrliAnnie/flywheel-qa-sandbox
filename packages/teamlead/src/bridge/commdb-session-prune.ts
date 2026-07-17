@@ -50,6 +50,12 @@ export interface FinalizeCommDbResult {
 	ok: boolean;
 	outcome: "finalized" | "no_db" | "failed";
 	retiredGateCount: number;
+	/**
+	 * FLY-1328: checkpoint-less asks cascade-retired by this teardown. Required
+	 * so a construction site that forgets to carry the real count is a compile
+	 * error rather than a silent zero in the forensic record.
+	 */
+	retiredAskCount: number;
 	deletedSessionCount: number;
 	error?: string;
 }
@@ -64,6 +70,7 @@ export function finalizeCommDbSession(
 			ok: true,
 			outcome: "no_db",
 			retiredGateCount: 0,
+			retiredAskCount: 0,
 			deletedSessionCount: 0,
 		};
 	}
@@ -75,6 +82,7 @@ export function finalizeCommDbSession(
 			ok: true,
 			outcome: "finalized",
 			retiredGateCount: result.retiredQuestionCount,
+			retiredAskCount: result.retiredAskCount,
 			deletedSessionCount: result.deletedSessionCount,
 		};
 	} catch (err) {
@@ -85,6 +93,7 @@ export function finalizeCommDbSession(
 			ok: false,
 			outcome: "failed",
 			retiredGateCount: 0,
+			retiredAskCount: 0,
 			deletedSessionCount: 0,
 			error: (err as Error).message,
 		};
@@ -178,6 +187,7 @@ export async function pruneDeadTerminalCommDbSessions(
 					ok: true,
 					outcome: "finalized",
 					retiredGateCount: finalized.retiredQuestionCount,
+					retiredAskCount: finalized.retiredAskCount,
 					deletedSessionCount: finalized.deletedSessionCount,
 				};
 				result.pruned++;
@@ -198,6 +208,7 @@ export async function pruneDeadTerminalCommDbSessions(
 					ok: false,
 					outcome: "failed",
 					retiredGateCount: 0,
+					retiredAskCount: 0,
 					deletedSessionCount: 0,
 					error: (err as Error).message,
 				};

@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
   expires_at  DATETIME NOT NULL DEFAULT (datetime('now', '+72 hours')),
   relay_state TEXT NOT NULL DEFAULT 'open' CHECK(relay_state IN ('open','protected','terminal_disposed')),
+  resolved_via TEXT,
   logical_event_id TEXT,
   sender_lease_key TEXT,
   sender_generation INTEGER,
@@ -152,13 +153,54 @@ export interface ThreeStageTurn {
 }
 
 export interface FinalizeSessionResult {
+	/** FLY-1238: checkpoint gates retired by this teardown. Gate count only. */
 	retiredQuestionCount: number;
+	/**
+	 * FLY-1328: checkpoint-less asks (incl. `--report`) cascade-retired by this
+	 * teardown. Required, not optional: `CommDB.finalizeSession` is the single
+	 * authoritative producer of this type, so requiring the field makes any
+	 * consumer that forgets to carry the count a compile error rather than a
+	 * silent zero. Always 0 when FLYWHEEL_ASK_HYGIENE=0 — the DB path reverts,
+	 * and the authority result reports that truthfully.
+	 */
+	retiredAskCount: number;
 	deletedSessionCount: number;
 }
 
 function commDbProtectionEnabled(): boolean {
 	return process.env.FLYWHEEL_COMMDB_PROTECTION !== "0";
 }
+
+/**
+ * FLY-1328 kill-switch (default ON). OFF restores the pre-FLY-1328 byte path on
+ * both sides of the cascade: no ask retirement, and no `resolved_via` stamp on
+ * the gate rows either. Shared export — `db.ts` (A1 cascade) and the teamlead
+ * patrol (A2 sweep) must never disagree about whether the feature is live.
+ */
+export function askHygieneEnabled(
+	env: Record<string, string | undefined> = process.env,
+): boolean {
+	return env.FLYWHEEL_ASK_HYGIENE !== "0";
+}
+
+/**
+ * FLY-1328: an ask younger than this at teardown is spared. It kills the
+ * "written → first relay tick" race: GatePoller relays every ~3s, so a
+ * last-moment `ask --report` is durably in `lead_events` long before the window
+ * lapses. This is a grace period, not a guarantee — a per-lead circuit stuck
+ * open (or a StateStore outage) for longer than this can still swallow a late
+ * ask. That exception is accepted and documented, not papered over.
+ */
+const ASK_CASCADE_GRACE_SQL = "-15 minutes";
+
+/**
+ * FLY-1328: with protection ON, a cascade-retired ask leaves `pending` via
+ * relay_state immediately but its row lingers this long so an hours-scale
+ * forensic query can still see who disposed of it and why. Day-scale forensics
+ * live in the StateStore audit event instead. With protection OFF, legacy
+ * pending filters on `expires_at > now`, so the row must expire on the spot.
+ */
+const ASK_FORENSIC_TTL_SQL = "+1 hour";
 
 export interface WorkflowSourceEvent {
 	project: string;
@@ -379,6 +421,26 @@ export class CommDB {
 			}
 		}
 		this.migrateMessageTypeConstraint();
+		// FLY-1328: who disposed of this question — 'owner_closed' (the owning
+		// runner's teardown cascade) / 'owner_closed_sweep' (the patrol catching a
+		// runner that died without one). NULL for every pre-FLY-1328 row and for
+		// every disposal the flag is off for. Deliberately added AFTER the rebuild
+		// above: that rebuild carries a fixed column list, so a pre-FLY-1279
+		// database must rebuild first and gain the column second, or the column is
+		// dropped on the way through. (The converse — a database with resolved_via
+		// but no ack_receipt — cannot exist: within one open, rebuild always runs
+		// before this ADD.) Same duplicate-column race tolerance as delivered_at.
+		const postRebuildColumns = this.db
+			.prepare("PRAGMA table_info(messages)")
+			.all() as Array<{ name: string }>;
+		if (!postRebuildColumns.some((c) => c.name === "resolved_via")) {
+			try {
+				this.db.exec("ALTER TABLE messages ADD COLUMN resolved_via TEXT");
+			} catch (err) {
+				const msg = (err as Error).message ?? "";
+				if (!/duplicate column name: resolved_via/i.test(msg)) throw err;
+			}
+		}
 		// Existing answered/resolved questions already have machine evidence of a
 		// terminal disposition. Do not revive them as actionable during migration.
 		this.db.exec(`
@@ -774,18 +836,42 @@ export class CommDB {
 	 */
 	retireQuestionGuarded(
 		questionId: string,
-		opts: { expectedFromAgent: string; requireUnanswered: true },
+		opts: {
+			expectedFromAgent: string;
+			requireUnanswered: true;
+			/**
+			 * FLY-1328: disposal provenance for the `resolved_via` column. Omitted
+			 * = today's byte path (column stays NULL) — the zombie-gate Z1 caller
+			 * shares this primitive and its rows must not change.
+			 */
+			resolvedVia?: string;
+			/**
+			 * FLY-1328: 'ask_forensic' keeps the row for a 1h forensic window under
+			 * protection instead of expiring it now. Omitted = today's immediate
+			 * expiry, so the existing gate purge timing is untouched.
+			 */
+			retention?: "ask_forensic";
+		},
 	): boolean {
-		const answerable = commDbProtectionEnabled()
+		const protection = commDbProtectionEnabled();
+		const answerable = protection
 			? "relay_state != 'terminal_disposed'"
 			: "expires_at > datetime('now')";
+		// Legacy pending filters on expires_at, so the forensic window only applies
+		// where relay_state does the filtering — otherwise the row would linger in
+		// the very queue this is clearing.
+		const expiry =
+			opts.retention === "ask_forensic" && protection
+				? `datetime('now', '${ASK_FORENSIC_TTL_SQL}')`
+				: "datetime('now')";
 		const info = this.db
 			.prepare(
 				`UPDATE messages SET
 				 resolved_at = datetime('now'),
 				 read_at = COALESCE(read_at, datetime('now')),
-				 expires_at = datetime('now'),
+				 expires_at = ${expiry},
 				 relay_state = 'terminal_disposed'
+				 ${opts.resolvedVia ? ", resolved_via = ?" : ""}
 				 WHERE id = ? AND type = 'question'
 				 AND from_agent = ?
 				 AND ${answerable}
@@ -793,7 +879,13 @@ export class CommDB {
 				   SELECT 1 FROM messages r WHERE r.parent_id = messages.id AND r.type = 'response'
 				 )`,
 			)
-			.run(questionId, opts.expectedFromAgent);
+			// Positional order follows the SQL: the SET placeholder (when present)
+			// precedes the WHERE ones.
+			.run(
+				...(opts.resolvedVia ? [opts.resolvedVia] : []),
+				questionId,
+				opts.expectedFromAgent,
+			);
 		return info.changes > 0;
 	}
 
@@ -2086,11 +2178,18 @@ export class CommDB {
 
 	/**
 	 * FLY-1238: atomically retire every unanswered checkpoint gate owned by a
-	 * runner and remove its session registry row. A checkpoint-less `ask` is not
-	 * a gate; an answered question is immutable history. Errors deliberately
-	 * propagate so teardown callers fail closed and retry the whole transaction.
+	 * runner and remove its session registry row. An answered question is
+	 * immutable history. Errors deliberately propagate so teardown callers fail
+	 * closed and retry the whole transaction.
+	 *
+	 * FLY-1328: the same teardown now also cascades to the runner's own aged,
+	 * unanswered checkpoint-less asks. Closing a runner closes its account —
+	 * leaving its asks pending forever is what let dead runners' questions
+	 * outnumber live ones in the Lead's queue until `pending` stopped being worth
+	 * reading. Gate semantics (predicates, review-gate exemption) are untouched.
 	 */
 	finalizeSession(executionId: string): FinalizeSessionResult {
+		const askHygiene = askHygieneEnabled();
 		return this.db.transaction((targetExecutionId: string) => {
 			// A machine-proven terminal runner is an explicit H2 disposal condition:
 			// protection prevents TTL/hygiene loss, not intentional lifecycle closeout.
@@ -2101,6 +2200,7 @@ export class CommDB {
 					   read_at = COALESCE(read_at, datetime('now')),
 					   expires_at = datetime('now'),
 					   relay_state = 'terminal_disposed'
+					   ${askHygiene ? ", resolved_via = 'owner_closed'" : ""}
 					 WHERE q.from_agent = ?
 					   AND q.type = 'question'
 					   AND q.checkpoint IS NOT NULL
@@ -2117,6 +2217,40 @@ export class CommDB {
 					   )`,
 				)
 				.run(targetExecutionId).changes;
+
+			// FLY-1328 A1 — cascade the owner's unanswered asks. An ask younger than
+			// the grace window is spared: it may not have reached the Lead yet, and
+			// the queue can afford one more tick far more than the founder can afford
+			// a swallowed report.
+			let retiredAsks = 0;
+			if (askHygiene) {
+				const forensicTtl = commDbProtectionEnabled()
+					? ASK_FORENSIC_TTL_SQL
+					: // Legacy pending filters on expires_at > now — expire on the spot
+						// or the row would linger in the very queue we are clearing.
+						"+0 seconds";
+				retiredAsks = this.db
+					.prepare(
+						`UPDATE messages AS q SET
+						   resolved_at = datetime('now'),
+						   read_at = COALESCE(read_at, datetime('now')),
+						   expires_at = datetime('now', '${forensicTtl}'),
+						   relay_state = 'terminal_disposed',
+						   resolved_via = 'owner_closed'
+						 WHERE q.from_agent = ?
+						   AND q.type = 'question'
+						   AND q.checkpoint IS NULL
+						   AND q.resolved_at IS NULL
+						   AND q.relay_state != 'terminal_disposed'
+						   AND q.created_at <= datetime('now', ?)
+						   AND NOT EXISTS (
+						     SELECT 1 FROM messages r
+						      WHERE r.parent_id = q.id AND r.type = 'response'
+						   )`,
+					)
+					.run(targetExecutionId, ASK_CASCADE_GRACE_SQL).changes;
+			}
+
 			this.db
 				.prepare("DELETE FROM runner_phase_wakes WHERE execution_id = ?")
 				.run(targetExecutionId);
@@ -2128,6 +2262,7 @@ export class CommDB {
 				.run(targetExecutionId).changes;
 			return {
 				retiredQuestionCount: retired,
+				retiredAskCount: retiredAsks,
 				deletedSessionCount: deleted,
 			};
 		})(executionId);
@@ -2139,6 +2274,15 @@ export class CommDB {
 	 * is gone, and (b) the boot prune sweep that clears the backlog of dead
 	 * terminal rows polluting `runner_terminal_list` / bootstrap. Idempotent —
 	 * deleting a missing row is a no-op. Returns the number of rows removed.
+	 *
+	 * FLY-1328 — PROVEN-TEARDOWN ONLY. The A2 ask sweep treats "this row is gone"
+	 * as proof the runner is torn down and can never read an answer, and retires
+	 * its asks on that basis. Deleting the row of a runner that is still alive
+	 * would therefore silently destroy its live questions and break the FLY-161
+	 * survive-completion contract. Do not call this to tidy up, to reset state, or
+	 * on any path where the runner might still be running. New call sites must
+	 * also update the FLY-1328 call-site sentinel test, which exists to make
+	 * exactly this decision a conscious one.
 	 */
 	deleteSession(executionId: string): number {
 		return this.db
@@ -2146,7 +2290,13 @@ export class CommDB {
 			.run(executionId).changes;
 	}
 
-	/** FLY-1269: issue-terminal cleanup for a resident phase execution. */
+	/**
+	 * FLY-1269: issue-terminal cleanup for a resident phase execution.
+	 *
+	 * FLY-1328 — PROVEN-TEARDOWN ONLY, for the same reason as `deleteSession`
+	 * above: dropping the registry row is what tells the A2 ask sweep the runner
+	 * is gone for good.
+	 */
 	deleteSessionAndRunnerPhaseLifecycle(executionId: string): number {
 		const remove = this.db.transaction(() => {
 			this.db

@@ -213,12 +213,17 @@ export async function reconcileCommDbRunningAgainstFsm(
 			}
 			try {
 				const raw = finalizeSession(db, s.execution_id) as
-					| { retiredQuestionCount?: number; deletedSessionCount?: number }
+					| {
+							retiredQuestionCount?: number;
+							retiredAskCount?: number;
+							deletedSessionCount?: number;
+					  }
 					| undefined;
 				opts.onFinalizeOutcome?.(s.execution_id, projectName, {
 					ok: true,
 					outcome: "finalized",
 					retiredGateCount: raw?.retiredQuestionCount ?? 0,
+					retiredAskCount: raw?.retiredAskCount ?? 0,
 					deletedSessionCount: raw?.deletedSessionCount ?? 0,
 				});
 				result.reconciled++;
@@ -230,6 +235,7 @@ export async function reconcileCommDbRunningAgainstFsm(
 					ok: false,
 					outcome: "failed",
 					retiredGateCount: 0,
+					retiredAskCount: 0,
 					deletedSessionCount: 0,
 					error: (err as Error).message,
 				});

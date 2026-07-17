@@ -106,6 +106,7 @@ import {
 import type { UnhandledAlertSink } from "./stuck-escalation.js";
 import { isTmuxSessionAlive } from "./tmux-lookup.js";
 import {
+	askHygieneEnabled,
 	runZombieGateHygiene,
 	type ZombieCommDb,
 	zombieGateResolveEnabled,
@@ -3503,8 +3504,16 @@ export class GatePoller {
 	/** §5: zombie gate hygiene (Z1 guarded retire + Z2 unreachable detection). */
 	private async zombieGateHygienePass(): Promise<void> {
 		const watchdogOn = process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG !== "0";
-		if (!zombieGateResolveEnabled() && !watchdogOn) return;
-		this.founderReplyWatchdog.beginUnreachableSweep();
+		const askOn = askHygieneEnabled();
+		// FLY-1328: the pass now hosts three capabilities — only skip it when ALL
+		// are off, or the ask sweep would be silently swallowed by the old flags.
+		if (!zombieGateResolveEnabled() && !watchdogOn && !askOn) return;
+		// The unreachable-sweep bookkeeping belongs to the Z1/Z2 capabilities. In
+		// an ASK-only configuration we must not touch it: begin/end would clear the
+		// watchdog's in-memory unreachable episodes without either capability
+		// having looked for them.
+		const sweepBookkeeping = zombieGateResolveEnabled() || watchdogOn;
+		if (sweepBookkeeping) this.founderReplyWatchdog.beginUnreachableSweep();
 		for (const project of this.config.projects) {
 			for (const lead of project.leads) {
 				let db: CommDB;
@@ -3518,13 +3527,17 @@ export class GatePoller {
 					// stale-gate eviction bookkeeping are being handled by that path —
 					// the zombie pass must NOT re-touch them (each getSession() on a
 					// known-stale gate is exactly the sql.js churn FLY-307 removed).
+					// FLY-1328: checkpoint-less asks are now candidates too (the ask
+					// branch dispatches internally), so the checkpoint filter is gone.
+					// The eviction exclusions are gate-only bookkeeping, so they still
+					// only exclude gates — an ask never enters that path.
 					const pending = (
 						db.getPendingQuestions(lead.agentId) as PendingQuestion[]
 					).filter(
 						(q) =>
-							q.checkpoint != null &&
-							!this.evictedGateIds.has(q.id) &&
-							!this.evictionRetryAt.has(q.id),
+							q.checkpoint == null ||
+							(!this.evictedGateIds.has(q.id) &&
+								!this.evictionRetryAt.has(q.id)),
 					);
 					// Codex code R8 MED-1: run the hygiene pass even with ZERO
 					// candidates — its tail reconciles dangling zombie intents
@@ -3540,6 +3553,7 @@ export class GatePoller {
 							from_agent: q.from_agent,
 							checkpoint: q.checkpoint,
 							created_at: q.created_at,
+							kind: q.kind,
 						})),
 						db: db as unknown as ZombieCommDb,
 						noteUnreachableRunner: watchdogOn
@@ -3557,7 +3571,7 @@ export class GatePoller {
 				}
 			}
 		}
-		this.founderReplyWatchdog.endUnreachableSweep();
+		if (sweepBookkeeping) this.founderReplyWatchdog.endUnreachableSweep();
 	}
 
 	/** FLY-799: minimum spacing between reaction-checks for one ship gate. */

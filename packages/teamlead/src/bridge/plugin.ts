@@ -4738,6 +4738,11 @@ export async function startBridge(
 			projectName,
 			ok: result.ok,
 			error: result.error,
+			audit: {
+				retiredGateCount: result.retiredGateCount,
+				retiredAskCount: result.retiredAskCount,
+				source: "bridge.commdb-terminal-prune",
+			},
 		});
 	};
 	const pruneResidueCommDb = async (projectName: string) => {
@@ -4780,6 +4785,11 @@ export async function startBridge(
 									projectName: project,
 									ok: outcome.ok,
 									error: outcome.error,
+									audit: {
+										retiredGateCount: outcome.retiredGateCount,
+										retiredAskCount: outcome.retiredAskCount,
+										source: "bridge.commdb-fsm-reconcile",
+									},
 								});
 							},
 						},

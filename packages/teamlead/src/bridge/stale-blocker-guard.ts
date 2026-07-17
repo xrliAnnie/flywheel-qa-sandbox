@@ -151,6 +151,12 @@ export interface FinalizeStore {
 		projectName: string;
 		ok: boolean;
 		error?: string;
+		/** FLY-1328: ask-disposal forensics — see StateStore for the contract. */
+		audit?: {
+			retiredGateCount: number;
+			retiredAskCount: number;
+			source: string;
+		};
 	}): unknown;
 	insertEvent(e: {
 		event_id: string;
@@ -212,6 +218,11 @@ export async function finalizeStaleBlocker(
 			projectName: project,
 			ok: finalized.ok,
 			error: finalized.error,
+			audit: {
+				retiredGateCount: finalized.retiredGateCount,
+				retiredAskCount: finalized.retiredAskCount,
+				source: "bridge.stale-blocker-guard",
+			},
 		});
 		return finalized;
 	};

@@ -770,6 +770,49 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
+	it("stamps terminal_at when generalized completion enters a terminal status (FLY-1328)", async () => {
+		const store = await StateStore.create(":memory:");
+		createRun(store);
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-1",
+				nodeId: "execute",
+				executionId: "exec-1",
+				attempt: 1,
+				expiresAt: "2026-07-15T00:20:00.000Z",
+				absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+				now: "2026-07-15T00:00:00.000Z",
+				env: enabled,
+			}),
+		).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "execute",
+		});
+		// Pre-condition: a live session carries no terminal stamp.
+		expect(store.getSession("exec-1")?.terminal_at ?? null).toBeNull();
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "complete-1",
+				completionSubmission: { decision: { route: "no_code" } },
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		// FLY-1328 HIGH: completing through the generalized path (commitEnrolledCompletion
+		// → projectGeneralizedCompletionTx) must leave a canonical terminal_at. Without it
+		// the A2 ask sweep's FLY-1257 chronology guard fails CLOSED on the missing stamp
+		// and can retire an ask this execution was still owed a human answer for.
+		const completedSession = store.getSession("exec-1");
+		expect(completedSession?.status).toBe("completed");
+		expect(completedSession?.terminal_at).toBeTruthy();
+		store.close();
+	});
+
 	it("holds teardown without an explicit receipt and rejects non-start/review execution", async () => {
 		const store = await StateStore.create(":memory:");
 		createRun(store);

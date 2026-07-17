@@ -89,6 +89,8 @@ describe("commdb-session-prune (FLY-638)", () => {
 				ok: true,
 				outcome: "finalized",
 				retiredGateCount: 1,
+				// FLY-1328: no checkpoint-less asks on this session to cascade.
+				retiredAskCount: 0,
 				deletedSessionCount: 1,
 			});
 			expect(db.getSession("e1")).toBeUndefined();
@@ -108,6 +110,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 				ok: true,
 				outcome: "finalized",
 				retiredGateCount: 1,
+				retiredAskCount: 0,
 				deletedSessionCount: 1,
 			});
 			expect(db.isQuestionPending(qid)).toBe(false);
@@ -118,6 +121,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 				ok: true,
 				outcome: "no_db",
 				retiredGateCount: 0,
+				retiredAskCount: 0,
 				deletedSessionCount: 0,
 			});
 		});
