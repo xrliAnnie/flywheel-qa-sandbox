@@ -67,7 +67,7 @@ describe("FLY-663 — StateStore better-sqlite3 migration", () => {
 		store.close();
 	});
 
-	it("adds failure_raw to a legacy codex_review_job table idempotently", async () => {
+	it("adds indexed review fields to a legacy codex_review_job table idempotently", async () => {
 		const legacy = new BetterSqlite3(dbPath);
 		legacy.exec(`
 			CREATE TABLE codex_review_job (
@@ -85,7 +85,9 @@ describe("FLY-663 — StateStore better-sqlite3 migration", () => {
 			).db.raw.pragma("table_info(codex_review_job)") as Array<{
 				name: string;
 			}>;
-			expect(columns.map((column) => column.name)).toContain("failure_raw");
+			expect(columns.map((column) => column.name)).toEqual(
+				expect.arrayContaining(["failure_raw", "question_id"]),
+			);
 			store.close();
 		}
 	});

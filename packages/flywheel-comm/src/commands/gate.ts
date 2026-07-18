@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { CommDB } from "../db.js";
+import { probeShipCiGreen, type ShipCiGuardResult } from "../ship-ci-guard.js";
 import {
 	CONTENT_REF_THRESHOLD,
 	writeContentRef,
@@ -38,6 +39,8 @@ export interface GateArgs {
 	 * from the wake message itself.
 	 */
 	noBlock?: boolean;
+	/** Test seam; production probes the current branch's GitHub PR. */
+	shipCiProbe?: () => ShipCiGuardResult;
 }
 
 export interface GateResult {
@@ -66,6 +69,15 @@ export interface GateResult {
  * - fail-open:  stderr "continuing" msg + exitCode=0 (no event POST, by design)
  */
 export async function gate(args: GateArgs): Promise<GateResult> {
+	// FLY-1314 material #8: this is an authorization prerequisite, not a
+	// timeout-policy infrastructure error. Keep it OUTSIDE the fail-open catch so
+	// even a misconfigured approve gate cannot open while CI is red/unknown.
+	if (args.checkpoint === "approve_to_ship") {
+		const ci = args.shipCiProbe?.() ?? probeShipCiGreen({ cwd: process.cwd() });
+		if (!ci.green) {
+			throw new Error(`CI not green: ${ci.detail}`);
+		}
+	}
 	let questionId: string | undefined;
 	try {
 		return await gateInner(args, (id) => {

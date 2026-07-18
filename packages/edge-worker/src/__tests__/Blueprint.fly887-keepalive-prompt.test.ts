@@ -228,6 +228,12 @@ describe("FLY-887 keep-alive prompts — default ON", () => {
 		expect(p).toContain("parked awaiting QA");
 		expect(p).toContain("turn --exec-id");
 		expect(p).toContain("ALREADY COMMITTED on this branch");
+		expect(p).toContain(
+			"re-run the code review, then repeat the APPROVE GATE flow below",
+		);
+		expect(p).not.toContain(
+			"re-request review (`gate approve_to_ship --no-block`",
+		);
 		expect(p).not.toContain("declare-state");
 	});
 });

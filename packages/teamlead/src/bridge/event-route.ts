@@ -58,6 +58,7 @@ import type { MaterializedHeadAuthority } from "./materialized-head-authority.js
 import {
 	computeAuthoritativeShipDecision,
 	isMergeBlocked,
+	mergedPrCiProbe,
 	parkMergeBlock,
 } from "./merge-ship-gate.js";
 import type { PhaseOrchestrator } from "./phase-orchestrator.js";
@@ -1167,6 +1168,7 @@ export function createEventRouter(
 							erPrHead,
 							process.env,
 							materializedHeadAuthority,
+							mergedPrCiProbe,
 						)
 					: undefined;
 				const erShipEligible = erMergedLanding
@@ -1362,7 +1364,9 @@ export function createEventRouter(
 						);
 						let retired = false;
 						try {
-							retired = commDb.retireShipGate(supersededQid);
+							retired = commDb.retireShipGate(supersededQid, {
+								supersededBy: reviewQuestionId,
+							});
 						} finally {
 							commDb.close();
 						}
@@ -1995,6 +1999,7 @@ export function createEventRouter(
 										w2PrHead,
 										process.env,
 										materializedHeadAuthority,
+										mergedPrCiProbe,
 									)
 								: undefined;
 						const w2ShipEligible =
@@ -2392,7 +2397,10 @@ export function createEventRouter(
 			session
 		) {
 			try {
-				await phaseOrchestrator.current.onPhaseComplete(session);
+				await phaseOrchestrator.current.onPhaseComplete(session, {
+					eventId: event.event_id,
+					source: "http",
+				});
 			} catch (err) {
 				console.error(
 					`[event-route] onPhaseComplete threw for ${event.execution_id}: ${(err as Error).message}`,

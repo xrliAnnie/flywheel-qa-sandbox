@@ -2239,6 +2239,7 @@ export class StateStore {
 		const reviewJobColumns =
 			reviewJobInfo[0]?.values.map((row) => row[1] as string) ?? [];
 		for (const [column, type] of [
+			["question_id", "TEXT"],
 			["failure_raw", "TEXT"],
 			["reviewer_verdict", "TEXT"],
 			["advisories_json", "TEXT"],
@@ -2257,6 +2258,9 @@ export class StateStore {
 		);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_status ON codex_review_job(status)",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_question ON codex_review_job(question_id)",
 		);
 
 		// FLY-1278: Lead-authoritative, per-finding governance rulings. Rows are
@@ -4024,6 +4028,85 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-1314: immutable predecessor ledger for a three-stage QA FAIL round.
+	 * The event id is derived from the verdict event, so crash replay is
+	 * idempotent and can never overwrite the original round/head causality.
+	 */
+	recordThreeStageVerdictHead(args: {
+		qaExecutionId: string;
+		issueId: string;
+		projectName: string;
+		verdictEventId: string;
+		round: number;
+		verdictHead: string;
+	}): boolean {
+		return this.insertEvent({
+			event_id: `three-stage-verdict-head-${args.verdictEventId}`,
+			execution_id: args.qaExecutionId,
+			issue_id: args.issueId,
+			project_name: args.projectName,
+			event_type: "three_stage_verdict_head",
+			source: "bridge.phase-orchestrator",
+			payload: {
+				issueId: args.issueId,
+				qaExecId: args.qaExecutionId,
+				verdictEventId: args.verdictEventId,
+				round: args.round,
+				verdictHead: args.verdictHead.toLowerCase(),
+			},
+		});
+	}
+
+	/**
+	 * Minimal-safe predecessor selection: exactly one immutable mapping for this
+	 * QA execution + issue is unambiguous. Multiple rounds, malformed payloads,
+	 * or cross-issue rows fail open (null) so the caller runs QA again.
+	 */
+	getUnambiguousThreeStageVerdictHead(
+		qaExecutionId: string,
+		issueId: string,
+	): {
+		verdictEventId: string;
+		round: number;
+		verdictHead: string;
+	} | null {
+		const stmt = this.db.prepare(
+			`SELECT payload FROM session_events
+			 WHERE execution_id = ? AND issue_id = ?
+			   AND event_type = 'three_stage_verdict_head'
+			 ORDER BY id LIMIT 2`,
+		);
+		stmt.bind([qaExecutionId, issueId]);
+		const payloads: unknown[] = [];
+		while (stmt.step()) {
+			payloads.push((stmt.getAsObject() as Record<string, unknown>).payload);
+		}
+		stmt.free();
+		if (payloads.length !== 1 || typeof payloads[0] !== "string") return null;
+		try {
+			const payload = JSON.parse(payloads[0]) as Record<string, unknown>;
+			if (
+				payload.issueId !== issueId ||
+				payload.qaExecId !== qaExecutionId ||
+				typeof payload.verdictEventId !== "string" ||
+				!Number.isInteger(payload.round) ||
+				(payload.round as number) <= 0 ||
+				typeof payload.verdictHead !== "string" ||
+				!/^[0-9a-f]{40}$/.test(payload.verdictHead)
+			) {
+				return null;
+			}
+			return {
+				verdictEventId: payload.verdictEventId,
+				round: payload.round as number,
+				verdictHead: payload.verdictHead,
+			};
+		} catch {
+			return null;
+		}
+	}
+
+	/**
 	 * FLY-892 (Step 4): for the converged pipeline header, the LATEST session of
 	 * each three-stage phase role (design/implement/qa) on `issueId`. Keyed on
 	 * `chat_thread_role` (the persistent three-stage phase marker), NOT
@@ -5475,6 +5558,26 @@ export class StateStore {
 		}
 		stmt.free();
 		return job;
+	}
+
+	/**
+	 * FLY-1314: reverse-map an orphan review gate to its durable review job.
+	 * Exactly one row is required; duplicate bindings are ambiguous and fail open
+	 * (the supersede patrol leaves the gate untouched).
+	 */
+	getCodexReviewJobByQuestionId(questionId: string): CodexReviewJob | null {
+		const stmt = this.db.prepare(
+			"SELECT * FROM codex_review_job WHERE question_id = ? ORDER BY request_id LIMIT 2",
+		);
+		stmt.bind([questionId]);
+		const jobs: CodexReviewJob[] = [];
+		while (stmt.step()) {
+			jobs.push(
+				this.rowToCodexReviewJob(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return jobs.length === 1 ? jobs[0]! : null;
 	}
 
 	/**

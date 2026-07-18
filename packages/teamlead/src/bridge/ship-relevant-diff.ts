@@ -119,7 +119,7 @@ function parsePullFile(value: unknown): PullFile | undefined {
 	};
 }
 
-function isDocsPath(path: string): boolean {
+export function isShipDocsPath(path: string): boolean {
 	return DOCS_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
 
@@ -236,7 +236,9 @@ export async function classifyShipRelevantDiff(input: {
 		return { kind: "unknown", reason: "file_count_mismatch" };
 	}
 
-	const nonDocs = files.flatMap(filePaths).filter((path) => !isDocsPath(path));
+	const nonDocs = files
+		.flatMap(filePaths)
+		.filter((path) => !isShipDocsPath(path));
 	if (nonDocs.length > 0) {
 		return {
 			kind: "snapshot",

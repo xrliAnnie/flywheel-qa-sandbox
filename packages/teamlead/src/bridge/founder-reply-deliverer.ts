@@ -248,7 +248,7 @@ function audit(
 }
 
 const SHIP_WAKE_TEXT = (summary: string): string =>
-	`Annie 在 thread 回复了你的 ship gate：${summary}\n` +
+	`Annie 在 issue thread 发了一条消息（未绑定到任何 gate，可能与你的 gate 无关）：${summary}\n` +
 	"这条不是授权——ship 前必须跑 verify-approval。";
 
 export async function emitFounderReplyDeliveryForThread(

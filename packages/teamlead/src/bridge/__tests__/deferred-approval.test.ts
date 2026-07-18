@@ -78,6 +78,7 @@ function fakeCommDb(opts: {
 				throw new Error("UNIQUE constraint failed: messages.parent_id");
 			}
 			state.responses.set(qid, { content, from_agent: from });
+			return { written: true as const };
 		},
 		close: () => {
 			state.closed = true;

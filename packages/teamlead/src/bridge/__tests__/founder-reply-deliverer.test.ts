@@ -155,6 +155,8 @@ describe("FLY-605 emitFounderReplyDeliveryForThread (Part B)", () => {
 		expect(wakeImpl).toHaveBeenCalledTimes(1);
 		const wakeArg = (wakeImpl as ReturnType<typeof vi.fn>).mock.calls[0][0];
 		expect(wakeArg.content).toContain("verify-approval");
+		expect(wakeArg.content).not.toContain("回复了你的 ship gate");
+		expect(wakeArg.content).toContain("未绑定到任何 gate");
 	});
 
 	it("🔴 ship: a SECOND founder message wakes again (msg-id dedupe, Codex R1 #3)", async () => {

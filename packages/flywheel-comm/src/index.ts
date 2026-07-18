@@ -928,6 +928,7 @@ async function runVerifyApproval(args: string[]): Promise<void> {
 			responseFrom: result.responseFrom,
 			status: result.status,
 			expectedPrHeadSha: result.expectedPrHeadSha,
+			ciDetail: result.ciDetail,
 		}),
 	);
 	process.exit(result.exitCode);

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -201,6 +201,37 @@ describe("respond() fail-closed gate (§11.2)", () => {
 		expect((rows[0] as Record<string, unknown>).decision_source).toBe(
 			"bypass_env_cli",
 		);
+	});
+
+	it("a superseded gate rejects the emergency bypass without audit or wake side effects", async () => {
+		const oldGate = seed("approve_to_ship");
+		const db = new CommDB(dbPath, false);
+		try {
+			const replacement = db.insertQuestion("exec-2", "lead-x", "replacement", {
+				checkpoint: "approve_to_ship",
+			});
+			expect(db.retireShipGate(oldGate, { supersededBy: replacement })).toBe(
+				true,
+			);
+		} finally {
+			db.close();
+		}
+
+		await expect(
+			respond({
+				questionId: oldGate,
+				fromAgent: "lead-x",
+				answer: "approved",
+				dbPath,
+				projectName: "Proj",
+				env: {
+					FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
+					FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH: auditPath,
+				},
+			}),
+		).rejects.toThrow(/gate is no longer open/);
+		expect(hasResponse(oldGate)).toBe(false);
+		expect(existsSync(auditPath)).toBe(false);
 	});
 
 	it("throws when question not found", async () => {

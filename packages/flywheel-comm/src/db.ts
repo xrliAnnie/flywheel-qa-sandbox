@@ -6,7 +6,12 @@ import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
-import type { Message, MessageProvenance, Session } from "./types.js";
+import type {
+	Message,
+	MessageProvenance,
+	ResponseWriteResult,
+	Session,
+} from "./types.js";
 import { deleteContentRef as deleteContentRefFile } from "./utils/content-ref.js";
 
 const SCHEMA = `
@@ -23,6 +28,8 @@ CREATE TABLE IF NOT EXISTS messages (
   relay_state TEXT NOT NULL DEFAULT 'open' CHECK(relay_state IN ('open','protected','terminal_disposed')),
   resolved_via TEXT,
   logical_event_id TEXT,
+  superseded_at DATETIME,
+  superseded_by TEXT,
   sender_lease_key TEXT,
   sender_generation INTEGER,
   sender_holder_pid INTEGER,
@@ -150,6 +157,19 @@ export interface ThreeStageTurn {
 	phase: string;
 	epoch: number;
 	granted_at: number;
+}
+
+/** Lightweight indexed row used by the Bridge issue-gate supersede patrol. */
+export interface GateSupersedeRow {
+	row_id: number;
+	id: string;
+	from_agent: string;
+	checkpoint: "approve_to_ship" | "review_design" | "review_code";
+	created_at: string;
+	superseded_at: string | null;
+	superseded_by: string | null;
+	answered: 0 | 1;
+	pending: 0 | 1;
 }
 
 export interface FinalizeSessionResult {
@@ -396,6 +416,20 @@ export class CommDB {
 			} catch (err) {
 				const msg = (err as Error).message ?? "";
 				if (!/duplicate column name: logical_event_id/i.test(msg)) throw err;
+			}
+		}
+		for (const name of ["superseded_at", "superseded_by"] as const) {
+			if (columns.some((column) => column.name === name)) continue;
+			try {
+				this.db.exec(`ALTER TABLE messages ADD COLUMN ${name} TEXT`);
+			} catch (error) {
+				if (
+					!new RegExp(`duplicate column name: ${name}`, "i").test(
+						(error as Error).message,
+					)
+				) {
+					throw error;
+				}
 			}
 		}
 		const provenanceColumns = [
@@ -803,7 +837,10 @@ export class CommDB {
 	 * Bridge-side `ship_gate_superseded` session_event. Returns true iff a
 	 * row was retired.
 	 */
-	retireShipGate(questionId: string): boolean {
+	retireShipGate(
+		questionId: string,
+		opts?: { supersededBy?: string },
+	): boolean {
 		const answerable = commDbProtectionEnabled()
 			? "relay_state != 'terminal_disposed'"
 			: "expires_at > datetime('now')";
@@ -813,7 +850,9 @@ export class CommDB {
 				 resolved_at = datetime('now'),
 				 read_at = COALESCE(read_at, datetime('now')),
 				 expires_at = datetime('now'),
-				 relay_state = 'terminal_disposed'
+				 relay_state = 'terminal_disposed',
+				 superseded_at = CASE WHEN ? IS NULL THEN superseded_at ELSE datetime('now') END,
+				 superseded_by = COALESCE(?, superseded_by)
 				 WHERE id = ? AND type = 'question'
 				 AND checkpoint = 'approve_to_ship'
 				 AND ${answerable}
@@ -821,7 +860,7 @@ export class CommDB {
 				   SELECT 1 FROM messages r WHERE r.parent_id = messages.id AND r.type = 'response'
 				 )`,
 			)
-			.run(questionId);
+			.run(opts?.supersededBy ?? null, opts?.supersededBy ?? null, questionId);
 		return info.changes > 0;
 	}
 
@@ -851,6 +890,7 @@ export class CommDB {
 			 * expiry, so the existing gate purge timing is untouched.
 			 */
 			retention?: "ask_forensic";
+			supersededBy?: string;
 		},
 	): boolean {
 		const protection = commDbProtectionEnabled();
@@ -870,7 +910,9 @@ export class CommDB {
 				 resolved_at = datetime('now'),
 				 read_at = COALESCE(read_at, datetime('now')),
 				 expires_at = ${expiry},
-				 relay_state = 'terminal_disposed'
+				 relay_state = 'terminal_disposed',
+				 superseded_at = CASE WHEN ? IS NULL THEN superseded_at ELSE datetime('now') END,
+				 superseded_by = COALESCE(?, superseded_by)
 				 ${opts.resolvedVia ? ", resolved_via = ?" : ""}
 				 WHERE id = ? AND type = 'question'
 				 AND from_agent = ?
@@ -879,9 +921,9 @@ export class CommDB {
 				   SELECT 1 FROM messages r WHERE r.parent_id = messages.id AND r.type = 'response'
 				 )`,
 			)
-			// Positional order follows the SQL: the SET placeholder (when present)
-			// precedes the WHERE ones.
 			.run(
+				opts.supersededBy ?? null,
+				opts.supersededBy ?? null,
 				...(opts.resolvedVia ? [opts.resolvedVia] : []),
 				questionId,
 				opts.expectedFromAgent,
@@ -911,6 +953,85 @@ export class CommDB {
 		return row !== undefined;
 	}
 
+	/** FLY-1314: complete narrow-row read for global issue/family ordering. */
+	getGatesForSupersede(): GateSupersedeRow[] {
+		const answerable = commDbProtectionEnabled()
+			? "q.relay_state != 'terminal_disposed'"
+			: "q.expires_at > datetime('now')";
+		return this.db
+			.prepare(
+				`SELECT q.rowid AS row_id, q.id, q.from_agent, q.checkpoint,
+				        q.created_at, q.superseded_at, q.superseded_by,
+				        CASE WHEN EXISTS (
+				          SELECT 1 FROM messages r
+				           WHERE r.parent_id = q.id AND r.type = 'response'
+				        ) THEN 1 ELSE 0 END AS answered,
+				        CASE WHEN ${answerable} AND NOT EXISTS (
+				          SELECT 1 FROM messages r
+				           WHERE r.parent_id = q.id AND r.type = 'response'
+				        ) THEN 1 ELSE 0 END AS pending
+				   FROM messages q
+				  WHERE q.type = 'question'
+				    AND q.checkpoint IN ('approve_to_ship','review_design','review_code')
+				    AND q.superseded_at IS NULL
+				  ORDER BY q.created_at, q.rowid`,
+			)
+			.all() as GateSupersedeRow[];
+	}
+
+	/** FLY-1314: independent audit-reconciliation read of durable dispositions. */
+	getSupersededGates(): GateSupersedeRow[] {
+		return this.db
+			.prepare(
+				`SELECT q.rowid AS row_id, q.id, q.from_agent, q.checkpoint,
+				        q.created_at, q.superseded_at, q.superseded_by,
+				        CASE WHEN EXISTS (
+				          SELECT 1 FROM messages r
+				           WHERE r.parent_id = q.id AND r.type = 'response'
+				        ) THEN 1 ELSE 0 END AS answered,
+				        0 AS pending
+				   FROM messages q
+				  WHERE q.type = 'question'
+				    AND q.checkpoint IN ('approve_to_ship','review_design','review_code')
+				    AND q.superseded_at IS NOT NULL
+				  ORDER BY q.created_at, q.rowid`,
+			)
+			.all() as GateSupersedeRow[];
+	}
+
+	/**
+	 * FLY-1314 point-read recheck immediately before mutation. The target must
+	 * still be pending/unanswered and the named supersessor must still be a
+	 * later, non-superseded gate in the same exact family. Answered supersessors
+	 * deliberately count; answered targets deliberately do not.
+	 */
+	canSupersedeGate(questionId: string, supersessorId: string): boolean {
+		const answerable = commDbProtectionEnabled()
+			? "old.relay_state != 'terminal_disposed'"
+			: "old.expires_at > datetime('now')";
+		const hit = this.db
+			.prepare(
+				`SELECT 1 AS hit
+				   FROM messages old
+				   JOIN messages newer ON newer.id = ?
+				  WHERE old.id = ?
+				    AND old.type = 'question' AND newer.type = 'question'
+				    AND old.checkpoint = newer.checkpoint
+				    AND old.checkpoint IN ('approve_to_ship','review_design','review_code')
+				    AND old.superseded_at IS NULL
+				    AND newer.superseded_at IS NULL
+				    AND ${answerable}
+				    AND NOT EXISTS (
+				      SELECT 1 FROM messages r
+				       WHERE r.parent_id = old.id AND r.type = 'response'
+				    )
+				    AND (newer.created_at > old.created_at OR
+				         (newer.created_at = old.created_at AND newer.rowid > old.rowid))`,
+			)
+			.get(supersessorId, questionId) as { hit: number } | undefined;
+		return hit !== undefined;
+	}
+
 	/**
 	 * Mark a gate question as resolved: set resolved_at, mark read,
 	 * and shorten TTL to the configured cleanup hours.
@@ -933,32 +1054,68 @@ export class CommDB {
 		fromAgent: string,
 		content: string,
 		provenance?: MessageProvenance,
-	): void {
+	): ResponseWriteResult {
 		const question = this.db
 			.prepare("SELECT * FROM messages WHERE id = ? AND type = 'question'")
 			.get(parentId) as Message | undefined;
 		if (!question) {
 			throw new Error(`Question ${parentId} not found`);
 		}
-		this.db.transaction(() => {
+		return this.db.transaction((): ResponseWriteResult => {
 			const id = randomUUID();
-			this.db
-				.prepare(
-					`INSERT INTO messages (
+			if (question.checkpoint === "approve_to_ship") {
+				const answerable = commDbProtectionEnabled()
+					? "q.relay_state != 'terminal_disposed'"
+					: "q.expires_at > datetime('now')";
+				const result = this.db
+					.prepare(
+						`INSERT INTO messages (
+						  id, from_agent, to_agent, type, content, parent_id,
+						  sender_lease_key, sender_generation, sender_holder_pid,
+						  sender_holder_start, writer_pid, writer_start
+						)
+						 SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
+						   FROM messages q
+						  WHERE q.id = ? AND q.type = 'question'
+						    AND q.checkpoint = 'approve_to_ship'
+						    AND q.resolved_at IS NULL
+						    AND q.superseded_at IS NULL
+						    AND ${answerable}
+						    AND NOT EXISTS (
+						      SELECT 1 FROM messages r
+						       WHERE r.parent_id = q.id AND r.type = 'response'
+						    )`,
+					)
+					.run(
+						id,
+						fromAgent,
+						content,
+						...provenanceValues(provenance),
+						parentId,
+					);
+				if (result.changes !== 1) {
+					return { written: false, reason: "gate_not_open" };
+				}
+			} else {
+				this.db
+					.prepare(
+						`INSERT INTO messages (
 					  id, from_agent, to_agent, type, content, parent_id,
 					  sender_lease_key, sender_generation, sender_holder_pid,
 					  sender_holder_start, writer_pid, writer_start
 					) VALUES (?, ?, ?, 'response', ?, ?, ?, ?, ?, ?, ?, ?)`,
-				)
-				.run(
-					id,
-					fromAgent,
-					question.from_agent,
-					content,
-					parentId,
-					...provenanceValues(provenance),
-				);
+					)
+					.run(
+						id,
+						fromAgent,
+						question.from_agent,
+						content,
+						parentId,
+						...provenanceValues(provenance),
+					);
+			}
 			this.markQuestionTerminalDisposed(parentId);
+			return { written: true };
 		})();
 	}
 
@@ -1128,6 +1285,7 @@ export class CommDB {
 					    AND q.from_agent = ?
 					    AND q.checkpoint = 'approve_to_ship'
 					    AND q.resolved_at IS NULL
+					    AND q.superseded_at IS NULL
 					    AND ${answerable}
 					    AND NOT EXISTS (
 					      SELECT 1 FROM messages r
@@ -2064,6 +2222,25 @@ export class CommDB {
 		this.db
 			.prepare("DELETE FROM three_stage_turn WHERE issue_id = ?")
 			.run(issueId);
+	}
+
+	/**
+	 * FLY-1314: compare-and-delete a TURN belt after a slow external-merge /
+	 * liveness probe. A re-grant increments epoch, so a probe that observed an
+	 * old holder can never erase the newer authority row.
+	 */
+	deleteTurnIfCurrent(
+		issueId: string,
+		expectedHolder: string,
+		expectedEpoch: number,
+	): boolean {
+		const info = this.db
+			.prepare(
+				`DELETE FROM three_stage_turn
+				 WHERE issue_id = ? AND holder_exec_id = ? AND epoch = ?`,
+			)
+			.run(issueId, expectedHolder, expectedEpoch);
+		return info.changes === 1;
 	}
 
 	// ── Session Registry (Phase 2) ──

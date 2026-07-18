@@ -179,6 +179,7 @@ describe("FLY-1048 C3-w createFounderPager", () => {
 		["park:declared", "Runner 已声明正在等待"],
 		["park:gate_row_missing", "Runner 等待的门记录缺失"],
 		["park:gate_unreachable", "Runner 等待的门无法送达"],
+		["park:gate_superseded", "Runner 等待的门已被更新的门取代"],
 		["park:qa_recovery_exhausted", "独立 QA 失败且自动恢复已耗尽"],
 		["park:review_hold", "Runner 的 review 仍被前置检查拦住"],
 	])("renders %s as founder-facing human language", async (kind, expected) => {

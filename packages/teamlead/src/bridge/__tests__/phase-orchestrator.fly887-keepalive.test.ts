@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type PhaseLiveness,
 	PhaseOrchestrator,
@@ -29,6 +29,9 @@ function makeQaVerdicts() {
 		),
 		countImplementPhases: vi.fn(() => 1),
 		recordFixRound: vi.fn(() => 1),
+		recordVerdictHead: vi.fn(() => {}),
+		getUnambiguousVerdictHead: vi.fn(() => null),
+		recordRetestSuppressed: vi.fn(() => {}),
 		getActiveImplementSession: vi.fn((): PhaseSession | undefined => undefined),
 		listVerdictEventCandidates: vi.fn((): PhaseSession[] => []),
 		getLatestQaResultEvent: vi.fn(() => undefined),
@@ -49,6 +52,10 @@ function makeQaVerdicts() {
 function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	const start = vi.fn(async () => ({ executionId: "next-exec" }));
 	const capturePhaseHeadSha = vi.fn(async () => "deadbeefcafe1234");
+	const classifyRetestHeadDelta = vi.fn(async () => ({
+		kind: "retest" as const,
+		reason: "unknown" as const,
+	}));
 	const closePhaseRunner = vi.fn(async () => {});
 	const alertLeadPipelineError = vi.fn(async () => {});
 	const probePhaseAlive = vi.fn(async (): Promise<PhaseLiveness> => "alive");
@@ -77,6 +84,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		startDispatcher: { start },
 		effects: {
 			capturePhaseHeadSha,
+			classifyRetestHeadDelta,
 			closePhaseRunner,
 			alertLeadPipelineError,
 			probePhaseAlive,
@@ -103,6 +111,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		deps,
 		start,
 		capturePhaseHeadSha,
+		classifyRetestHeadDelta,
 		closePhaseRunner,
 		alertLeadPipelineError,
 		probePhaseAlive,
@@ -135,6 +144,9 @@ function session(over: Partial<PhaseSession>): PhaseSession {
 
 describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 	beforeEach(() => vi.clearAllMocks());
+	afterEach(() => {
+		delete process.env.FLYWHEEL_RETEST_HEAD_DELTA_GUARD;
+	});
 
 	it("FLY-1269: live design_done probes, parks, then hands off without closing", async () => {
 		const order: string[] = [];
@@ -274,6 +286,223 @@ describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 			h.wakePhaseRunner.mock.invocationCallOrder[0]!,
 		);
 		expect(h.start).not.toHaveBeenCalled();
+	});
+
+	it("FLY-1314: same verdict/current head suppresses QA re-test after parking implement", async () => {
+		const head = "a".repeat(40);
+		const qa = session({
+			execution_id: "qa-exec",
+			session_role: "qa",
+			chat_thread_role: "qa",
+		});
+		const h = makeDeps({
+			getAlivePhaseSession: vi.fn((_issue, phase) =>
+				phase === "qa" ? qa : undefined,
+			),
+		});
+		h.capturePhaseHeadSha.mockResolvedValue(head);
+		(
+			h.qaVerdicts.getUnambiguousVerdictHead as ReturnType<typeof vi.fn>
+		).mockReturnValue({
+			verdictEventId: "verdict-1",
+			round: 1,
+			verdictHead: head,
+		});
+		h.classifyRetestHeadDelta.mockResolvedValue({
+			kind: "suppress",
+			reason: "no_head_delta",
+		});
+
+		await new PhaseOrchestrator(h.deps).onPhaseComplete(
+			session({
+				session_role: "implement",
+				status: "awaiting_review",
+				review_question_id: "q-1",
+				worktree_path: "/tmp/flywheel-FLY-1314",
+			}),
+			{ eventId: "completion-1", source: "http" },
+		);
+
+		expect(h.parkPhaseRunner).toHaveBeenCalledOnce();
+		expect(h.classifyRetestHeadDelta).toHaveBeenCalledWith({
+			worktreePath: "/tmp/flywheel-FLY-1314",
+			verdictHead: head,
+			currentHead: head,
+		});
+		expect(h.qaVerdicts.recordRetestSuppressed).toHaveBeenCalledWith(
+			expect.objectContaining({
+				completionEventId: "completion-1",
+				qaSession: qa,
+				reason: "no_head_delta",
+			}),
+		);
+		expect(h.assertPhaseWorktreeReady).not.toHaveBeenCalled();
+		expect(h.grantTurn).not.toHaveBeenCalled();
+		expect(h.wakePhaseRunner).not.toHaveBeenCalled();
+		expect(h.start).not.toHaveBeenCalled();
+	});
+
+	it("FLY-1314: exact docs-only delta suppresses QA re-test and records paths", async () => {
+		const qa = session({ execution_id: "qa-exec", session_role: "qa" });
+		const h = makeDeps({
+			getAlivePhaseSession: vi.fn((_issue, phase) =>
+				phase === "qa" ? qa : undefined,
+			),
+		});
+		h.capturePhaseHeadSha.mockResolvedValue("b".repeat(40));
+		(
+			h.qaVerdicts.getUnambiguousVerdictHead as ReturnType<typeof vi.fn>
+		).mockReturnValue({
+			verdictEventId: "verdict-1",
+			round: 1,
+			verdictHead: "a".repeat(40),
+		});
+		h.classifyRetestHeadDelta.mockResolvedValue({
+			kind: "suppress",
+			reason: "docs_only_delta",
+			paths: ["engineering/doc/FLY-1314/qa.md"],
+		});
+
+		await new PhaseOrchestrator(h.deps).onPhaseComplete(
+			session({
+				session_role: "implement",
+				status: "awaiting_review",
+				review_question_id: "q-1",
+				worktree_path: "/tmp/flywheel-FLY-1314",
+			}),
+			{ eventId: "completion-2", source: "direct" },
+		);
+
+		expect(h.qaVerdicts.recordRetestSuppressed).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reason: "docs_only_delta",
+				paths: ["engineering/doc/FLY-1314/qa.md"],
+			}),
+		);
+		expect(h.wakePhaseRunner).not.toHaveBeenCalled();
+	});
+
+	it("FLY-1314: product delta preserves normal QA wake", async () => {
+		const qa = session({ execution_id: "qa-exec", session_role: "qa" });
+		const h = makeDeps({
+			getAlivePhaseSession: vi.fn((_issue, phase) =>
+				phase === "qa" ? qa : undefined,
+			),
+		});
+		h.capturePhaseHeadSha.mockResolvedValue("b".repeat(40));
+		(
+			h.qaVerdicts.getUnambiguousVerdictHead as ReturnType<typeof vi.fn>
+		).mockReturnValue({
+			verdictEventId: "verdict-1",
+			round: 1,
+			verdictHead: "a".repeat(40),
+		});
+		h.classifyRetestHeadDelta.mockResolvedValue({
+			kind: "retest",
+			reason: "product_delta",
+			paths: ["packages/teamlead/src/bridge/plugin.ts"],
+		});
+
+		await new PhaseOrchestrator(h.deps).onPhaseComplete(
+			session({
+				session_role: "implement",
+				status: "awaiting_review",
+				review_question_id: "q-1",
+				worktree_path: "/tmp/flywheel-FLY-1314",
+			}),
+			{ eventId: "completion-3", source: "http" },
+		);
+
+		expect(h.qaVerdicts.recordRetestSuppressed).not.toHaveBeenCalled();
+		expect(h.grantTurn).toHaveBeenCalledOnce();
+		expect(h.wakePhaseRunner).toHaveBeenCalledOnce();
+	});
+
+	it("FLY-1314: missing completion context fails open to QA", async () => {
+		const qa = session({ execution_id: "qa-exec", session_role: "qa" });
+		const h = makeDeps({
+			getAlivePhaseSession: vi.fn((_issue, phase) =>
+				phase === "qa" ? qa : undefined,
+			),
+		});
+		(
+			h.qaVerdicts.getUnambiguousVerdictHead as ReturnType<typeof vi.fn>
+		).mockReturnValue(null);
+		const impl = session({
+			session_role: "implement",
+			status: "awaiting_review",
+			review_question_id: "q-1",
+			worktree_path: "/tmp/flywheel-FLY-1314",
+		});
+
+		await new PhaseOrchestrator(h.deps).onPhaseComplete(impl);
+
+		expect(h.classifyRetestHeadDelta).not.toHaveBeenCalled();
+		expect(h.wakePhaseRunner).toHaveBeenCalledOnce();
+	});
+
+	it("FLY-1314: multiple-round predecessor ambiguity fails open to QA", async () => {
+		const qa = session({ execution_id: "qa-exec", session_role: "qa" });
+		const h = makeDeps({
+			getAlivePhaseSession: vi.fn((_issue, phase) =>
+				phase === "qa" ? qa : undefined,
+			),
+		});
+		(
+			h.qaVerdicts.getUnambiguousVerdictHead as ReturnType<typeof vi.fn>
+		).mockReturnValue(null);
+
+		await new PhaseOrchestrator(h.deps).onPhaseComplete(
+			session({
+				session_role: "implement",
+				status: "awaiting_review",
+				review_question_id: "q-1",
+				worktree_path: "/tmp/flywheel-FLY-1314",
+			}),
+			{ eventId: "late-round-n-completion", source: "direct" },
+		);
+
+		expect(h.qaVerdicts.getUnambiguousVerdictHead).toHaveBeenCalledWith(
+			"qa-exec",
+			"FLY-1",
+		);
+		expect(h.classifyRetestHeadDelta).not.toHaveBeenCalled();
+		expect(h.qaVerdicts.recordRetestSuppressed).not.toHaveBeenCalled();
+		expect(h.wakePhaseRunner).toHaveBeenCalledOnce();
+	});
+
+	it("FLY-1314: kill switch disables suppression", async () => {
+		process.env.FLYWHEEL_RETEST_HEAD_DELTA_GUARD = "0";
+		const qa = session({ execution_id: "qa-exec", session_role: "qa" });
+		const h = makeDeps({
+			getAlivePhaseSession: vi.fn((_issue, phase) =>
+				phase === "qa" ? qa : undefined,
+			),
+		});
+		(
+			h.qaVerdicts.getUnambiguousVerdictHead as ReturnType<typeof vi.fn>
+		).mockReturnValue({
+			verdictEventId: "verdict-1",
+			round: 1,
+			verdictHead: "a".repeat(40),
+		});
+		h.classifyRetestHeadDelta.mockResolvedValue({
+			kind: "suppress",
+			reason: "no_head_delta",
+		});
+
+		await new PhaseOrchestrator(h.deps).onPhaseComplete(
+			session({
+				session_role: "implement",
+				status: "awaiting_review",
+				review_question_id: "q-1",
+				worktree_path: "/tmp/flywheel-FLY-1314",
+			}),
+			{ eventId: "completion-4", source: "http" },
+		);
+
+		expect(h.classifyRetestHeadDelta).not.toHaveBeenCalled();
+		expect(h.wakePhaseRunner).toHaveBeenCalledOnce();
 	});
 
 	it("FLY-1269: kill switch OFF preserves legacy close then spawn behavior", async () => {
@@ -419,6 +648,34 @@ describe("FLY-887 keep-alive QA-FAIL fix loop (wake implement, don't close QA)",
 		);
 		expect(h.closePhaseRunner).not.toHaveBeenCalled(); // QA parks, not closed
 		expect(h.intents.get("qa-1")?.fixExecId).toBe("impl-1");
+	});
+
+	it("FLY-1314: FAIL records immutable verdict predecessor before waking implement", async () => {
+		const head = "a".repeat(40);
+		const impl = session({ execution_id: "impl-1", session_role: "implement" });
+		const h = makeDeps({
+			getAlivePhaseSession: vi.fn((_i, phase) =>
+				phase === "implement" ? impl : undefined,
+			),
+		});
+		h.capturePhaseHeadSha.mockResolvedValue(head);
+		h.setSessionRow(qaSession());
+
+		await new PhaseOrchestrator(h.deps).onQaResult(qaSession(), {
+			eventId: "verdict-1",
+			status: "fail",
+		});
+
+		expect(h.qaVerdicts.recordVerdictHead).toHaveBeenCalledWith({
+			session: expect.objectContaining({ execution_id: "qa-1" }),
+			verdictEventId: "verdict-1",
+			round: 1,
+			verdictHead: head,
+		});
+		expect(
+			(h.qaVerdicts.recordVerdictHead as ReturnType<typeof vi.fn>).mock
+				.invocationCallOrder[0],
+		).toBeLessThan(h.wakePhaseRunner.mock.invocationCallOrder[0]!);
 	});
 
 	it("FAIL round over cap → refuse (alert Lead), no wake", async () => {

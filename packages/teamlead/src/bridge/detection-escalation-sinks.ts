@@ -142,6 +142,8 @@ function describeKind(kind: string): string {
 					return "Runner 等待的门记录缺失";
 				case "park:gate_unreachable":
 					return "Runner 等待的门无法送达";
+				case "park:gate_superseded":
+					return "Runner 等待的门已被更新的门取代";
 				case "park:qa_recovery_exhausted":
 					return "独立 QA 失败且自动恢复已耗尽";
 				case "park:qa_hold_orphaned":

@@ -17,6 +17,10 @@ export interface Message {
 	 */
 	resolved_via?: string | null;
 	logical_event_id: string | null;
+	/** FLY-1314: durable disposition for a gate retired by a newer issue gate. */
+	superseded_at: string | null;
+	/** FLY-1314: exact newer question id that caused the retirement. */
+	superseded_by: string | null;
 	checkpoint: string | null;
 	content_ref: string | null;
 	/** GEO-151: added "artifact" for ProofShot artifact_emitted audit rows. */
@@ -44,6 +48,11 @@ export interface Message {
 	writer_pid: number | null;
 	writer_start: string | null;
 }
+
+/** Result of attempting to write a question response. */
+export type ResponseWriteResult =
+	| { written: true }
+	| { written: false; reason: "gate_not_open" };
 
 /** Camel-case write shape; CommDB persists it in the six sender_* / writer_* columns. */
 export interface MessageProvenance {

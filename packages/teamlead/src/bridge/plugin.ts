@@ -315,6 +315,7 @@ import {
 	IssueDisplayRefresher,
 	type IssueDisplayRefreshHolder,
 } from "./issue-display-refresher.js";
+import { sweepIssueGatesForProject } from "./issue-gate-supersede.js";
 import { validateKindContracts } from "./kind-contract.js";
 import { probeLaunchdJobAlive } from "./launchctl.js";
 import {
@@ -454,6 +455,7 @@ import {
 	residueMaintenanceEveryNTicks,
 	runResidueAwareBootSweep,
 } from "./residue-harvest.js";
+import { classifyRetestHeadDelta } from "./retest-head-delta.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
 import {
 	createReviewAlertEmitter,
@@ -5451,6 +5453,7 @@ export async function startBridge(
 			bridgeBaseUrl: loopbackBaseUrl,
 			ingestToken: config.ingestToken,
 			materializedHeadAuthority,
+			commDbPathForProject,
 			onTerminalStatusPersisted: (executionId, status, projectName) =>
 				terminalCommDbSync.enqueue(executionId, status, projectName),
 		},
@@ -6221,6 +6224,10 @@ export async function startBridge(
 		config,
 		projects,
 		removeCleanWorktree: makeBridgeWorktreeCleanup(store, projects),
+		probeTurnHolderLiveness: async (session) => {
+			if (!session.tmux_session) return "indeterminate";
+			return probeRunnerProcessLiveness(session.tmux_session);
+		},
 		// FLY-1204: external merge is a real ship path — reclaim the parked
 		// three-stage phase sessions here too (shared finalizer, same as run-infra).
 		finalizeThreeStagePhases,
@@ -6882,6 +6889,27 @@ export async function startBridge(
 			commDbPathForProject: defaultGetCommDbPath,
 			notify: notifyDetectionEpisode,
 		});
+	const issueGateSupersedeTick = (): void => {
+		for (const project of projects) {
+			let db: CommDB | undefined;
+			try {
+				db = new CommDB(commDbPathForProject(project.projectName));
+				sweepIssueGatesForProject({
+					projectName: project.projectName,
+					db,
+					store,
+					env: process.env,
+					log: (message) => console.warn(message),
+				});
+			} catch (error) {
+				console.warn(
+					`[gate-supersede] project sweep failed for ${project.projectName}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			} finally {
+				db?.close();
+			}
+		}
+	};
 
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
@@ -6889,6 +6917,7 @@ export async function startBridge(
 		store,
 		runtimeRegistry: registry,
 		ensureShipRelevantDiff,
+		onIssueGateSupersedeTick: issueGateSupersedeTick,
 		onDeliveryReconcileTick: () => leadEventDelivery.reconcile(),
 		onParkWatchTick: parkWatchTick,
 		parkWatchEveryNTicks: (() => {
@@ -7562,6 +7591,51 @@ export async function startBridge(
 						}
 						return round;
 					},
+					recordVerdictHead: ({
+						session,
+						verdictEventId,
+						round,
+						verdictHead,
+					}) => {
+						store.recordThreeStageVerdictHead({
+							qaExecutionId: session.execution_id,
+							issueId: session.issue_id,
+							projectName: session.project_name ?? "",
+							verdictEventId,
+							round,
+							verdictHead,
+						});
+					},
+					getUnambiguousVerdictHead: (qaExecutionId, issueId) =>
+						store.getUnambiguousThreeStageVerdictHead(qaExecutionId, issueId),
+					recordRetestSuppressed: ({
+						completionEventId,
+						implementSession,
+						qaSession,
+						verdictEventId,
+						verdictHead,
+						currentHead,
+						reason,
+						paths,
+					}) => {
+						store.insertEvent({
+							event_id: `qa-retest-suppressed-${completionEventId}`,
+							execution_id: implementSession.execution_id,
+							issue_id: implementSession.issue_id,
+							project_name: implementSession.project_name ?? "",
+							event_type: "qa_retest_suppressed",
+							source: "bridge.phase-orchestrator",
+							payload: {
+								completionEventId,
+								qaExecutionId: qaSession.execution_id,
+								verdictEventId,
+								verdictHead,
+								currentHead,
+								reason,
+								...(paths && { paths }),
+							},
+						});
+					},
 					getActiveImplementSession: (issueId) => {
 						const s = store.getActivePhaseSessionForIssue(issueId);
 						return s && s.session_role === "implement" ? s : undefined;
@@ -7672,6 +7746,7 @@ export async function startBridge(
 							return null;
 						}
 					},
+					classifyRetestHeadDelta,
 					// Dirty-safe close of the completed phase runner. `finalizeDone`
 					// FSM-transitions the design_done / awaiting_review phase-session to
 					// completed first (edges are legal), then frees its tmux + worktree
@@ -8031,7 +8106,7 @@ export async function startBridge(
 							const content =
 								kind === "fix"
 									? `Three-stage QA FIX round ${round ?? "?"}: the QA phase FAILED this branch. Its findings / failing tests / report are ALREADY COMMITTED on this branch at ${headSha}. FIRST run \`flywheel-comm turn --exec-id ${session.execution_id}\` and proceed ONLY on a \`yours\` answer (this wake text is context, not authority). Then fix exactly what they name in THIS worktree, push, re-run Codex review, re-request review (gate approve_to_ship --no-block + complete --route needs_review), then park again and WAIT. QA summary: ${qaSummary ?? "(none)"}`
-									: `Three-stage RE-TEST: the implement phase pushed a fix and your worktree is ALREADY at the new head ${headSha} (same directory — zero fetch/checkout). FIRST run \`flywheel-comm turn --exec-id ${session.execution_id}\` and proceed ONLY on a \`yours\` answer. Then re-run your QA scenarios and emit \`flywheel-comm qa-result\` again. Same session — do NOT complete; on FAIL park again and wait for the next RE-TEST.`;
+									: `Three-stage RE-TEST: Bridge observed an implement completion at head ${headSha} and selected this QA phase for re-verification. This message does not assert what changed. Your worktree is ALREADY at that head (same directory — zero fetch/checkout). FIRST run \`flywheel-comm turn --exec-id ${session.execution_id}\` and proceed ONLY on a \`yours\` answer. Then re-run your QA scenarios and emit \`flywheel-comm qa-result\` again. Same session — do NOT complete; on FAIL park again and wait for the next RE-TEST.`;
 							const res = await wakeRunnerMailbox({
 								db,
 								execId: session.execution_id,

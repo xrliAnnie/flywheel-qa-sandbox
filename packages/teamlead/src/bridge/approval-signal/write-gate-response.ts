@@ -60,7 +60,7 @@ export interface GateResponseDb {
 		fromAgent: string,
 		content: string,
 		provenance?: MessageProvenance,
-	): void;
+	): { written: true } | { written: false; reason: "gate_not_open" };
 	insertFounderApprovalResponseWithSource?(input: {
 		project: string;
 		sourceEventId: string;
@@ -429,15 +429,21 @@ export async function writeGateResponseAndRunPostWrite(
 			};
 		}
 	} else {
-		if (leadProvenance) {
-			args.db.insertResponse(
-				args.questionId,
-				args.actor,
-				args.answer,
-				leadProvenance,
-			);
-		} else {
-			args.db.insertResponse(args.questionId, args.actor, args.answer);
+		const writeResult = leadProvenance
+			? args.db.insertResponse(
+					args.questionId,
+					args.actor,
+					args.answer,
+					leadProvenance,
+				)
+			: args.db.insertResponse(args.questionId, args.actor, args.answer);
+		if (!writeResult.written) {
+			return {
+				written: false,
+				retrySafe: true,
+				disposition: "reject",
+				reason: `response_write_${writeResult.reason}`,
+			};
 		}
 	}
 	const ok = await runHook(args);

@@ -107,6 +107,31 @@ describe("Blueprint approve_to_ship instruction (FLY-191 Phase 2)", () => {
 	it("teaches the non-blocking flow with mandatory verify-approval", async () => {
 		const prompt = await buildPromptWithCheckpoints();
 
+		// FLY-1314 material #8: gate creation is a hard CI authority boundary.
+		// The generated runner contract must wait for required checks BEFORE it
+		// invokes gate approve_to_ship, otherwise a normal pending CI run strands
+		// the mandatory flow without a questionId.
+		const approveSection = prompt.indexOf("APPROVE GATE (MANDATORY");
+		const ciPrecondition = prompt.indexOf(
+			"CI PRECONDITION (HARD)",
+			approveSection,
+		);
+		const gateOpen = prompt.indexOf("gate approve_to_ship", approveSection);
+		expect(ciPrecondition).toBeGreaterThanOrEqual(0);
+		expect(prompt).toContain("gh pr checks <NUMBER>");
+		expect(prompt).not.toContain("gh pr checks <NUMBER> --required");
+		expect(prompt).not.toContain("gh pr checks <NUMBER> --watch");
+		expect(prompt).toContain("Exit 8 means checks are still pending");
+		expect(prompt).toContain("re-run the short probe on the next turn or wake");
+		expect(prompt).toContain("do NOT open the approve gate");
+		expect(ciPrecondition).toBeLessThan(gateOpen);
+		expect(prompt).toContain(
+			"repeat the CI PRECONDITION and APPROVE GATE steps a-b",
+		);
+		expect(prompt).toContain(
+			"repeat the CI PRECONDITION and APPROVE GATE steps a-b (not steps a-b alone)",
+		);
+
 		// Non-blocking request + label + question binding
 		expect(prompt).toContain("--no-block");
 		expect(prompt).toContain("complete --route needs_review");

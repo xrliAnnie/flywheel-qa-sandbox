@@ -60,6 +60,7 @@ import type { MaterializedHeadAuthority } from "./materialized-head-authority.js
 import {
 	computeAuthoritativeShipDecision,
 	computeEngineWorkflowShipPrecondition,
+	mergedPrCiProbe,
 	parkMergeBlock,
 } from "./merge-ship-gate.js";
 import { runPostShipFinalization } from "./post-ship-finalization.js";
@@ -146,6 +147,14 @@ export interface ExternalMergeReconcileDeps {
 	checkPrMerge?: typeof checkPrMergeViaGh;
 	/** Test seam for the path-2 trusted-approval read (default: CommDB). */
 	hasTrustedApprovalImpl?: (session: Session) => boolean;
+	/**
+	 * FLY-1314: direct probe of a terminal TURN holder's persisted tmux target.
+	 * The caller must return indeterminate on probe uncertainty; only dead_pin /
+	 * absent authorize belt reclamation.
+	 */
+	probeTurnHolderLiveness?: (
+		session: Session,
+	) => Promise<"alive" | "dead_pin" | "absent" | "indeterminate">;
 	/** PR-7.5 supplies the durable materialized-head reader for product runs. */
 	materializedHeadAuthority?: MaterializedHeadAuthority;
 	/**
@@ -164,6 +173,28 @@ export interface ExternalMergeReconcileDeps {
 }
 
 const PARK_STATES = new Set(["awaiting_review", "approved_to_ship"]);
+const TERMINAL_TURN_HOLDER_STATES = new Set(["completed", "failed"]);
+
+interface TurnBeltMergeCandidate {
+	turn: ExternalMergeTurnRow;
+	holder: Session;
+	prNumber: number;
+}
+
+interface ExternalMergeTurnRow {
+	issue_id: string;
+	holder_exec_id: string;
+	phase: string;
+	epoch: number;
+	granted_at: number;
+}
+
+interface ProjectMergeCandidate {
+	issueId: string;
+	prNumber: number;
+	sessions: Session[];
+	belt?: TurnBeltMergeCandidate;
+}
 
 function intEnv(
 	env: Record<string, string | undefined>,
@@ -220,6 +251,10 @@ export function createExternalMergeReconciler(
 	// Per-project rotation cursor so a >budget backlog makes progress across
 	// passes instead of re-checking the same first N forever.
 	const rotation = new Map<string, number>();
+	// FLY-1314: non-MERGED probes are new bounded in-memory state. They avoid
+	// spending the shared gh budget on the same open/closed/unknown PR every
+	// patrol tick; merged results are never cached negatively.
+	const negativeMergeCache = new Map<string, number>();
 
 	const log = deps.log ?? ((m: string) => console.log(m));
 	const now = deps.now ?? (() => Date.now());
@@ -252,6 +287,138 @@ export function createExternalMergeReconciler(
 		} catch {
 			return false;
 		}
+	}
+
+	function candidateKey(
+		projectName: string,
+		issueId: string,
+		prNumber: number,
+	): string {
+		return `${projectName}\u0000${issueId}\u0000${prNumber}`;
+	}
+
+	function resolveTurnPrNumber(
+		turn: ExternalMergeTurnRow,
+		holder: Session,
+	): { prNumber?: number; reason?: "missing" | "conflict" } {
+		const numbers = new Set<number>();
+		const collect = (session: Session): void => {
+			const pr = session.pr_number;
+			if (Number.isInteger(pr) && (pr as number) > 0) numbers.add(pr as number);
+		};
+		// Trust order is holder first, then issue-level implement/QA/landing
+		// evidence. We still inspect the latter for conflicts: acting on one of two
+		// contradictory PR numbers would be unsafe.
+		collect(holder);
+		for (const session of deps.store.getSessionHistory(turn.issue_id)) {
+			const role = session.chat_thread_role ?? session.session_role ?? "main";
+			if (role === "implement" || role === "qa" || role === "main") {
+				collect(session);
+			}
+		}
+		if (numbers.size === 0) return { reason: "missing" };
+		if (numbers.size > 1) return { reason: "conflict" };
+		return { prNumber: [...numbers][0] };
+	}
+
+	async function collectTurnBeltCandidates(
+		projectName: string,
+		nowMs: number,
+	): Promise<{
+		candidates: TurnBeltMergeCandidate[];
+		scanned: number;
+		missingPr: number;
+		conflictingPr: number;
+	}> {
+		const stats = {
+			candidates: [] as TurnBeltMergeCandidate[],
+			scanned: 0,
+			missingPr: 0,
+			conflictingPr: 0,
+		};
+		if (env().FLYWHEEL_TURN_BELT_MERGED_RECLAIM === "0") return stats;
+		if (!deps.probeTurnHolderLiveness) return stats;
+		const ageMs = intEnv(
+			env(),
+			"FLYWHEEL_TURN_BELT_MERGED_RECLAIM_AGE_MS",
+			30 * 60_000,
+		);
+		let db: CommDB | undefined;
+		let turns: ExternalMergeTurnRow[];
+		try {
+			db = CommDB.openReadonly(commDbPathForProject(projectName));
+			turns = db.listTurns() as ExternalMergeTurnRow[];
+		} catch {
+			return stats;
+		} finally {
+			db?.close();
+		}
+		stats.scanned = turns.length;
+		for (const turn of turns) {
+			if (nowMs - turn.granted_at <= ageMs) continue;
+			const holder = deps.store.getSession(turn.holder_exec_id);
+			if (!holder || holder.project_name !== projectName) continue;
+			if (!TERMINAL_TURN_HOLDER_STATES.has(holder.status)) continue;
+			if (!holder.tmux_session?.trim()) continue;
+			let liveness: "alive" | "dead_pin" | "absent" | "indeterminate" =
+				"indeterminate";
+			try {
+				liveness = await deps.probeTurnHolderLiveness(holder);
+			} catch {
+				liveness = "indeterminate";
+			}
+			if (liveness !== "dead_pin" && liveness !== "absent") continue;
+			const resolved = resolveTurnPrNumber(turn, holder);
+			if (!resolved.prNumber) {
+				if (resolved.reason === "conflict") stats.conflictingPr++;
+				else stats.missingPr++;
+				continue;
+			}
+			stats.candidates.push({
+				turn,
+				holder,
+				prNumber: resolved.prNumber,
+			});
+		}
+		return stats;
+	}
+
+	async function reclaimTurnBelt(
+		projectName: string,
+		candidate: TurnBeltMergeCandidate,
+		info: PrMergeInfo,
+	): Promise<void> {
+		let db: CommDB | undefined;
+		let deleted = false;
+		try {
+			db = new CommDB(commDbPathForProject(projectName));
+			deleted = db.deleteTurnIfCurrent(
+				candidate.turn.issue_id,
+				candidate.turn.holder_exec_id,
+				candidate.turn.epoch,
+			);
+		} finally {
+			db?.close();
+		}
+		if (!deleted) return;
+		deps.store.insertEvent({
+			event_id: `turn-belt-reclaimed-external-merge-${candidate.turn.issue_id}-${candidate.turn.holder_exec_id}-${candidate.turn.epoch}-${candidate.prNumber}`,
+			execution_id: candidate.turn.holder_exec_id,
+			issue_id: candidate.turn.issue_id,
+			project_name: projectName,
+			event_type: "turn_belt_reclaimed_external_merge",
+			source: "bridge.external-merge-reconcile",
+			payload: {
+				issueId: candidate.turn.issue_id,
+				holderExecId: candidate.turn.holder_exec_id,
+				epoch: candidate.turn.epoch,
+				prNumber: candidate.prNumber,
+				mergeCommitOid: info.mergeCommitOid ?? null,
+			},
+		});
+		log(
+			`[external-merge] FLY-1314 reclaimed TURN ${candidate.turn.issue_id} holder=${candidate.turn.holder_exec_id} epoch=${candidate.turn.epoch} after PR #${candidate.prNumber} MERGED proof`,
+		);
 	}
 
 	async function finalize(session: Session, info: PrMergeInfo): Promise<void> {
@@ -304,6 +471,7 @@ export function createExternalMergeReconciler(
 				head,
 				(deps.env ?? process.env) as NodeJS.ProcessEnv,
 				deps.materializedHeadAuthority,
+				mergedPrCiProbe,
 			);
 		if (!decision.eligible) {
 			// Identical semantics to the live merge-ship-gate: park + one loud alert.
@@ -468,12 +636,64 @@ export function createExternalMergeReconciler(
 						return !claimedAlready;
 					});
 
-				const all = [...parked, ...completed];
+				const candidateMap = new Map<string, ProjectMergeCandidate>();
+				for (const session of [...parked, ...completed]) {
+					const prNumber = session.pr_number as number;
+					const key = candidateKey(projectName, session.issue_id, prNumber);
+					const candidate: ProjectMergeCandidate = candidateMap.get(key) ?? {
+						issueId: session.issue_id,
+						prNumber,
+						sessions: [],
+					};
+					candidate.sessions.push(session);
+					candidateMap.set(key, candidate);
+				}
+
+				// FLY-1314: TURN rows are first-class candidates. They are collected
+				// even when every ordinary session was filtered by archive/finalization
+				// claim/lookback, then deduped with ordinary work by (issue, PR).
+				const belts = await collectTurnBeltCandidates(projectName, nowMs);
+				for (const belt of belts.candidates) {
+					const key = candidateKey(
+						projectName,
+						belt.turn.issue_id,
+						belt.prNumber,
+					);
+					const candidate: ProjectMergeCandidate = candidateMap.get(key) ?? {
+						issueId: belt.turn.issue_id,
+						prNumber: belt.prNumber,
+						sessions: [],
+					};
+					candidate.belt = belt;
+					candidateMap.set(key, candidate);
+				}
+				if (belts.missingPr > 0 || belts.conflictingPr > 0) {
+					log(
+						`[external-merge] FLY-1314 ${projectName} TURN belts: scanned=${belts.scanned} eligible=${belts.candidates.length} missing_pr=${belts.missingPr} conflicting_pr=${belts.conflictingPr}`,
+					);
+				}
+
+				const negativeTtlMs = intEnv(
+					env(),
+					"FLYWHEEL_EXTERNAL_MERGE_NEGATIVE_CACHE_MS",
+					10 * 60_000,
+				);
+				for (const [key, expiresAt] of negativeMergeCache) {
+					if (expiresAt <= nowMs) negativeMergeCache.delete(key);
+				}
+				const all = [...candidateMap.values()].filter((candidate) => {
+					const key = candidateKey(
+						projectName,
+						candidate.issueId,
+						candidate.prNumber,
+					);
+					return (negativeMergeCache.get(key) ?? 0) <= nowMs;
+				});
 				if (all.length === 0) continue;
 
 				// ── rotate + budget the gh calls ──
 				const start = rotation.get(projectName) ?? 0;
-				const picked: Session[] = [];
+				const picked: ProjectMergeCandidate[] = [];
 				for (
 					let i = 0;
 					i < all.length && picked.length < budgetPerProject;
@@ -492,23 +712,39 @@ export function createExternalMergeReconciler(
 					);
 				}
 
-				for (const session of picked) {
+				for (const candidate of picked) {
 					try {
-						const info = await checkPr(root, session.pr_number as number);
+						const info = await checkPr(root, candidate.prNumber);
 						// MERGED and ONLY merged acts; open/unknown/closed-unmerged are
 						// untouched (closed may be a reject flow).
-						if (info.state !== "merged") continue;
-						// Re-read the row — the world may have moved during the gh call.
-						const fresh = deps.store.getSession(session.execution_id);
-						if (!fresh) continue;
-						if (PARK_STATES.has(fresh.status)) {
-							if (!fresh.merge_block_reason) await handleParked(fresh, info);
-						} else if (fresh.status === "completed") {
-							await handleCompletedUnfinalized(fresh, info);
+						const cacheKey = candidateKey(
+							projectName,
+							candidate.issueId,
+							candidate.prNumber,
+						);
+						if (info.state !== "merged") {
+							negativeMergeCache.set(cacheKey, nowMs + negativeTtlMs);
+							continue;
+						}
+						negativeMergeCache.delete(cacheKey);
+						for (const session of candidate.sessions) {
+							// Re-read the row — the world may have moved during the gh call.
+							const fresh = deps.store.getSession(session.execution_id);
+							if (!fresh) continue;
+							if (PARK_STATES.has(fresh.status)) {
+								if (!fresh.merge_block_reason) await handleParked(fresh, info);
+							} else if (fresh.status === "completed") {
+								await handleCompletedUnfinalized(fresh, info);
+							}
+						}
+						// Belt reclaim is intentionally independent of path-1/path-2 ship
+						// validation. MERGED proof + terminal/dead holder + CAS is enough.
+						if (candidate.belt) {
+							await reclaimTurnBelt(projectName, candidate.belt, info);
 						}
 					} catch (err) {
 						log(
-							`[external-merge] ${session.execution_id} reconcile error (isolated): ${(err as Error).message}`,
+							`[external-merge] ${candidate.issueId}#${candidate.prNumber} reconcile error (isolated): ${(err as Error).message}`,
 						);
 					}
 				}

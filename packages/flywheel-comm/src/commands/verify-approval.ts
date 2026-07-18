@@ -53,6 +53,7 @@ import {
 	resolveFounderAttributionGateOn,
 	resolveFounderId,
 } from "../founder-attribution.js";
+import { probeShipCiGreen, type ShipCiGuardResult } from "../ship-ci-guard.js";
 
 export interface VerifyApprovalArgs {
 	execId: string;
@@ -68,6 +69,12 @@ export interface VerifyApprovalArgs {
 	 * hard-gate kill-switch is read from at call time (test injection only).
 	 */
 	codexDotenvPath?: string;
+	/** Test seam; production probes the bound PR in its persisted worktree. */
+	ciProbe?: (args: {
+		cwd: string;
+		prNumber: number;
+		expectedHead: string;
+	}) => ShipCiGuardResult;
 }
 
 export type VerifyApprovalReason =
@@ -81,6 +88,7 @@ export type VerifyApprovalReason =
 	| "commdb_unreadable"
 	| "review_question_missing"
 	| "review_question_invalid"
+	| "gate_superseded"
 	| "gate_not_answered"
 	| "response_not_structured_approval"
 	| "response_not_approved"
@@ -88,7 +96,8 @@ export type VerifyApprovalReason =
 	| "status_not_approved_to_ship"
 	| "pr_head_sha_missing"
 	| "pr_head_sha_mismatch"
-	| "codex_review_not_approved";
+	| "codex_review_not_approved"
+	| "ci_not_green";
 
 export interface VerifyApprovalResult {
 	approved: boolean;
@@ -101,6 +110,8 @@ export interface VerifyApprovalResult {
 	status?: string;
 	/** pr_head_sha persisted on the session (trusted side of the comparison). */
 	expectedPrHeadSha?: string;
+	/** Fail-closed GitHub observation detail; never authority by itself. */
+	ciDetail?: string;
 	exitCode: number;
 }
 
@@ -304,6 +315,8 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 				review_question_id?: string | null;
 				codex_skip?: number | null;
 				adapter_type?: string | null;
+				pr_number?: number | null;
+				worktree_path?: string | null;
 		  }
 		| undefined;
 	// FLY-827: does an approved/skipped Codex code-review record exist for the
@@ -317,7 +330,7 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 		try {
 			row = stateDb
 				.prepare(
-					"SELECT status, pr_head_sha, review_question_id, codex_skip, adapter_type FROM sessions WHERE execution_id = ?",
+					"SELECT status, pr_head_sha, review_question_id, codex_skip, adapter_type, pr_number, worktree_path FROM sessions WHERE execution_id = ?",
 				)
 				.get(args.execId) as typeof row;
 			// Separate try: an un-upgraded DB may lack codex_review_record (or,
@@ -393,6 +406,9 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 				// Bound id points at something that is not THIS runner's
 				// approve_to_ship gate — corrupt/forged binding → fail-closed.
 				return notApproved("review_question_invalid", { questionId });
+			}
+			if (question.superseded_at) {
+				return notApproved("gate_superseded", { questionId });
 			}
 			const response = db.getResponse(questionId);
 			if (!response) {
@@ -504,6 +520,39 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 			responseFrom,
 			status: row.status,
 			expectedPrHeadSha: expected,
+		});
+	}
+
+	// 6. FLY-1314 material #8: GitHub CI is an independent ship axis. Re-probe
+	// at the final authority point; a green observation made when the gate opened
+	// is not reusable because checks can be re-run or invalidated afterward.
+	const prNumber = Number(row.pr_number);
+	const worktreePath = row.worktree_path?.trim();
+	if (
+		!Number.isSafeInteger(prNumber) ||
+		prNumber <= 0 ||
+		(!worktreePath && !args.ciProbe)
+	) {
+		return notApproved("ci_not_green", {
+			questionId,
+			responseFrom,
+			status: row.status,
+			expectedPrHeadSha: expected,
+			ciDetail: "bound PR number or worktree path is missing",
+		});
+	}
+	const ci = (args.ciProbe ?? probeShipCiGreen)({
+		cwd: worktreePath ?? "",
+		prNumber,
+		expectedHead: prHead,
+	});
+	if (!ci.green) {
+		return notApproved("ci_not_green", {
+			questionId,
+			responseFrom,
+			status: row.status,
+			expectedPrHeadSha: expected,
+			ciDetail: ci.detail,
 		});
 	}
 

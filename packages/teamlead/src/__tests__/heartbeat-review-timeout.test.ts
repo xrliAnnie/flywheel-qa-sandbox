@@ -7,7 +7,11 @@
  * `gate_timeout_notified_at` stamp; ingest failure retries next cycle.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type HeartbeatNotifier,
 	HeartbeatService,
@@ -41,8 +45,10 @@ function backdateEnteredAt(
 
 describe("HeartbeatService.checkAwaitingReviewTimeout (FLY-191 Phase 2)", () => {
 	let store: StateStore;
+	let dir: string;
 
 	beforeEach(async () => {
+		dir = mkdtempSync(join(tmpdir(), "fly1314-heartbeat-"));
 		store = await StateStore.create(":memory:");
 		store.upsertSession({
 			execution_id: EXEC,
@@ -78,7 +84,15 @@ describe("HeartbeatService.checkAwaitingReviewTimeout (FLY-191 Phase 2)", () => 
 		});
 	});
 
-	function makeService(fetchFn: typeof fetch): HeartbeatService {
+	afterEach(() => {
+		store.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	function makeService(
+		fetchFn: typeof fetch,
+		commDbPath?: string,
+	): HeartbeatService {
 		return new HeartbeatService(
 			store,
 			noopNotifier(),
@@ -92,10 +106,47 @@ describe("HeartbeatService.checkAwaitingReviewTimeout (FLY-191 Phase 2)", () => 
 				bridgeBaseUrl: "http://127.0.0.1:9999",
 				ingestToken: "tok",
 				fetchFn,
+				commDbPathForProject: commDbPath ? () => commDbPath : undefined,
 			},
 			48,
 		);
 	}
+
+	it("stamps and records superseded awaiting_review without escalating or hot-looping", async () => {
+		backdateEnteredAt(store, EXEC, 50);
+		const commDbPath = join(dir, "comm.db");
+		const db = new CommDB(commDbPath);
+		const oldGate = db.insertQuestion(EXEC, "lead", "old", {
+			checkpoint: "approve_to_ship",
+		});
+		const newGate = db.insertQuestion("new-exec", "lead", "new", {
+			checkpoint: "approve_to_ship",
+		});
+		db.retireShipGate(oldGate, { supersededBy: newGate });
+		db.close();
+		store.setReviewBinding(EXEC, {
+			questionId: oldGate,
+			prHeadSha: HEAD,
+		});
+		const fetchFn = vi.fn() as unknown as typeof fetch;
+		const svc = makeService(fetchFn, commDbPath);
+
+		await svc.checkAwaitingReviewTimeout();
+		await svc.checkAwaitingReviewTimeout();
+
+		expect(fetchFn).not.toHaveBeenCalled();
+		expect(store.getSession(EXEC)?.gate_timeout_notified_at).toBeTruthy();
+		const events = store
+			.getEventsByExecution(EXEC)
+			.filter(
+				(event) => event.event_type === "awaiting_review_superseded_noalert",
+			);
+		expect(events).toHaveLength(1);
+		expect(events[0]?.payload).toMatchObject({
+			questionId: oldGate,
+			supersededBy: newGate,
+		});
+	});
 
 	it("emits gate_timed_out via loopback once and stamps the dedup column", async () => {
 		backdateEnteredAt(store, EXEC, 50);

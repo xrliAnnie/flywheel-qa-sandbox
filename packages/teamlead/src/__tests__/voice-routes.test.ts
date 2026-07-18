@@ -139,6 +139,7 @@ function makeCommDb() {
 			getResponse: (id: string) => responses.get(id),
 			insertResponse: (id: string, fromAgent: string, content: string) => {
 				responses.set(id, { content, from_agent: fromAgent });
+				return { written: true as const };
 			},
 		},
 	};

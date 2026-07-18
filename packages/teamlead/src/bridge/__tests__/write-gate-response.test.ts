@@ -28,6 +28,7 @@ function fakeDb(
 		getResponse: vi.fn((id: string) => responses.get(id)),
 		insertResponse: vi.fn((id: string, from: string, content: string) => {
 			responses.set(id, { content, from_agent: from });
+			return { written: true } as const;
 		}),
 		_responses: responses,
 	};
@@ -74,6 +75,30 @@ describe("writeGateResponseAndRunPostWrite — happy path", () => {
 			onResponseWritten: vi.fn().mockResolvedValue({ ok: false }),
 		});
 		expect(r).toMatchObject({ written: true, retrySafe: false });
+	});
+
+	it("a guarded writer rejection never runs the post-write hook", async () => {
+		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
+		db.insertResponse.mockReturnValue({
+			written: false,
+			reason: "gate_not_open",
+		});
+		const onResponseWritten = vi.fn().mockResolvedValue({ ok: true });
+
+		const r = await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			db,
+			store: store("awaiting_review"),
+			onResponseWritten,
+		});
+
+		expect(r).toMatchObject({
+			written: false,
+			retrySafe: true,
+			disposition: "reject",
+			reason: "response_write_gate_not_open",
+		});
+		expect(onResponseWritten).not.toHaveBeenCalled();
 	});
 });
 

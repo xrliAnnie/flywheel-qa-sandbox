@@ -175,7 +175,10 @@ describe("FLY-869 ship-eligibility", () => {
 		db.close();
 	}
 
-	const on = { FLYWHEEL_QA_DONE_GATE: "1" } as NodeJS.ProcessEnv;
+	const on = {
+		FLYWHEEL_QA_DONE_GATE: "1",
+		FLYWHEEL_WORKFLOW_FORCE_LEGACY: "0",
+	} as NodeJS.ProcessEnv;
 
 	describe("evaluateQaShipGate", () => {
 		it("kill-switch off → passes regardless of snapshot", () => {
@@ -249,6 +252,7 @@ describe("FLY-869 ship-eligibility", () => {
 				env: {
 					FLYWHEEL_QA_DONE_GATE: "1",
 					FLYWHEEL_WORKFLOW_CLAIMS_READ: "0",
+					FLYWHEEL_WORKFLOW_FORCE_LEGACY: "0",
 				} as NodeJS.ProcessEnv,
 			});
 			expect(r).toMatchObject({
@@ -267,6 +271,7 @@ describe("FLY-869 ship-eligibility", () => {
 				env: {
 					FLYWHEEL_QA_DONE_GATE: "1",
 					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+					FLYWHEEL_WORKFLOW_FORCE_LEGACY: "0",
 				} as NodeJS.ProcessEnv,
 			});
 			expect(r).toMatchObject({ passed: true, reason: "qa_claim_ok" });
@@ -320,6 +325,7 @@ describe("FLY-869 ship-eligibility", () => {
 				env: {
 					FLYWHEEL_QA_DONE_GATE: "1",
 					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+					FLYWHEEL_WORKFLOW_FORCE_LEGACY: "0",
 				} as NodeJS.ProcessEnv,
 			});
 			expect(r.passed).toBe(false);
@@ -341,6 +347,7 @@ describe("FLY-869 ship-eligibility", () => {
 				env: {
 					FLYWHEEL_QA_DONE_GATE: "1",
 					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+					FLYWHEEL_WORKFLOW_FORCE_LEGACY: "0",
 				} as NodeJS.ProcessEnv,
 			});
 			expect(r.passed).toBe(false);
@@ -359,6 +366,7 @@ describe("FLY-869 ship-eligibility", () => {
 				env: {
 					FLYWHEEL_QA_DONE_GATE: "1",
 					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+					FLYWHEEL_WORKFLOW_FORCE_LEGACY: "0",
 				} as NodeJS.ProcessEnv,
 			});
 			expect(r).toMatchObject({ passed: true, reason: "qa_claim_ok" });

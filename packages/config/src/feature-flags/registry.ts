@@ -862,6 +862,95 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"resolve.direct-toggle.test:gatepoller_circuit live-observe",
 	},
 	{
+		name: "issue_gate_supersede_mode",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_ISSUE_GATE_SUPERSEDE",
+		polarity: "default_on",
+		valueKind: "enum",
+		enumValues: ["enforce", "observe", "0"],
+		default: "enforce",
+		description:
+			"FLY-1314: issue gate supersede patrol 模式（enforce=收敛、observe=只审计、0=停止新 mutation）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/issue-gate-supersede.ts",
+				"sweepIssueGatesForProject",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "已写入 superseded_at/superseded_by 的 disposition 永久有效；=0 只停止新的 mutation，不回滚历史 stamp。",
+	},
+	{
+		name: "founder_review_gate_exclude",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1314: founder 单字母回复候选排除 review_design/review_code gate（=0 恢复旧候选集合）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/gate-poller.ts",
+				"founderReplyDeliverPass",
+				"call_time",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"gate-poller-fly1041-report-exclusion.test:FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE=0 restores review candidates",
+	},
+	{
+		name: "retest_head_delta_guard",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_RETEST_HEAD_DELTA_GUARD",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1314: 用不可变 QA verdict head 与 exact range diff 抑制无代码变化的重复 retest（=0 恢复每次重驱）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/phase-orchestrator.ts",
+				"shouldSuppressQaRetest",
+				"call_time",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"phase-orchestrator.fly887-keepalive.test:FLYWHEEL_RETEST_HEAD_DELTA_GUARD=0 preserves retest",
+	},
+	{
+		name: "ship_ci_guard",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_SHIP_CI_GUARD",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1314: approve gate 与最终 ship authority 的即时 GitHub CI 守卫（=0 紧急旁路 GitHub evidence axis）",
+		readSites: [
+			envSite(
+				"packages/flywheel-comm/src/ship-ci-guard.ts",
+				"probeShipCiGreen",
+				"cli_invocation",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "由每次 flywheel-comm CLI invocation 读取；默认开启，=0 仅用于 GitHub/gh 证据链故障的紧急恢复。",
+	},
+	{
 		name: "misroute_patrol",
 		category: "kill_switch",
 		source: "env",

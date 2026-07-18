@@ -184,6 +184,14 @@ describe("FLY-1041 Fix A: retire-on-rebind (HTTP /events)", () => {
 		// …and the superseded gate is retired: only the NEW gate stays bindable.
 		expect(pendingGateIds()).not.toContain(q1);
 		expect(pendingGateIds()).toContain(q2);
+		const commDb = new CommDB(commDbPathForProject(PROJECT));
+		try {
+			expect(commDb.getMessageById(q1)).toMatchObject({
+				superseded_by: q2,
+			});
+		} finally {
+			commDb.close();
+		}
 
 		const events = store.getEventsByExecution(execId);
 		const audit = events.find(

@@ -38,6 +38,7 @@ import {
 import { REVIEW_BINDING_UNBOUND } from "../StateStore.js";
 import { decideDestructive } from "./destructive-verdict.js";
 import { isMergeBlocked } from "./merge-ship-gate.js";
+import type { RetestHeadDeltaResult } from "./retest-head-delta.js";
 import type {
 	WorkflowShadowContext,
 	WorkflowShadowHooks,
@@ -82,6 +83,14 @@ export interface PhaseSession {
 	 * still alive — the "don't respawn onto a live ghost" signal.
 	 */
 	tmux_session?: string;
+	/** Persisted shared-worktree path used for exact predecessor..current diffs. */
+	worktree_path?: string;
+}
+
+/** Immutable event identity for a runner-driven phase completion. */
+export interface PhaseCompletionContext {
+	eventId: string;
+	source: "direct" | "http";
 }
 
 /**
@@ -260,6 +269,12 @@ export interface PhaseOrchestratorDeps {
 	effects: {
 		/** git rev-parse HEAD in the phase's worktree; null if unavailable. */
 		capturePhaseHeadSha(session: PhaseSession): Promise<string | null>;
+		/** FLY-1314: exact verdict-head..current-head retest classifier. */
+		classifyRetestHeadDelta?(args: {
+			worktreePath: string;
+			verdictHead: string;
+			currentHead: string;
+		}): Promise<RetestHeadDeltaResult>;
 		/** Dirty-safe close of the phase runner/tmux/worktree. */
 		closePhaseRunner(session: PhaseSession): Promise<void>;
 		/** Surface a fail-closed handoff error to the Lead (never silent). */
@@ -463,6 +478,33 @@ export interface PhaseOrchestratorDeps {
 		 * implement, so the session count no longer grows).
 		 */
 		recordFixRound(session: PhaseSession, verdictEventId: string): number;
+		/** Immutable QA verdict predecessor mapping for retest-delta decisions. */
+		recordVerdictHead?(args: {
+			session: PhaseSession;
+			verdictEventId: string;
+			round: number;
+			verdictHead: string;
+		}): void;
+		/** Exactly one predecessor is safe; ambiguity returns null and retests. */
+		getUnambiguousVerdictHead?(
+			qaExecutionId: string,
+			issueId: string,
+		): {
+			verdictEventId: string;
+			round: number;
+			verdictHead: string;
+		} | null;
+		/** Deterministic audit event for an intentionally suppressed QA retest. */
+		recordRetestSuppressed?(args: {
+			completionEventId: string;
+			implementSession: PhaseSession;
+			qaSession: PhaseSession;
+			verdictEventId: string;
+			verdictHead: string;
+			currentHead: string;
+			reason: "no_head_delta" | "docs_only_delta";
+			paths?: string[];
+		}): void;
 		/**
 		 * Live (non-terminal) implement phase-session for the issue, if any —
 		 * closes the crash window between a successful fix dispatch and the
@@ -1033,7 +1075,10 @@ export class PhaseOrchestrator {
 		}
 	}
 
-	async onPhaseComplete(session: PhaseSession): Promise<void> {
+	async onPhaseComplete(
+		session: PhaseSession,
+		completionContext?: PhaseCompletionContext,
+	): Promise<void> {
 		if (this.isEngineOwned(session.execution_id)) return;
 		const role = session.session_role;
 		if (!isThreeStagePhaseRole(role)) return; // not a phase session
@@ -1099,7 +1144,7 @@ export class PhaseOrchestrator {
 		const next = nextPhase(phase);
 		if (!next) return; // qa is last — its PASS/FAIL is the internal-QA path (Step 8)
 
-		await this.handoff(session, next);
+		await this.handoff(session, next, completionContext);
 		await this.deps.refreshPhaseStatusLine(session.issue_id);
 	}
 
@@ -1376,6 +1421,7 @@ export class PhaseOrchestrator {
 		}
 
 		const round = implementCount; // Nth fix round (1 initial + N-1 prior fixes)
+		this.recordVerdictHead(session, intent()?.event_id, round, headSha);
 		// FLY-1232 T6 (legacy path): the round determination point mirrors the
 		// keep-alive path's recordFixRound site — same sole-owner discipline.
 		this.deps.workflowShadow?.onKickback({
@@ -1499,6 +1545,7 @@ export class PhaseOrchestrator {
 			}
 			this.deps.qaVerdicts.patchIntent(execId, { headSha });
 		}
+		this.recordVerdictHead(session, verdictEventId, round, headSha);
 
 		const qaSummary = intent()?.summary ?? "(no QA summary provided)";
 		const impl = this.deps.getAlivePhaseSession(session.issue_id, "implement");
@@ -1680,6 +1727,7 @@ export class PhaseOrchestrator {
 	private async handoff(
 		prev: PhaseSession,
 		next: ThreeStagePhase,
+		completionContext?: PhaseCompletionContext,
 	): Promise<void> {
 		// 1. Capture the previous phase's exact head SHA BEFORE any cleanup — this
 		//    is the durable handoff point (files on branch B). Fail-closed if
@@ -1709,6 +1757,19 @@ export class PhaseOrchestrator {
 					prev,
 					"session missing project_name — cannot start next phase",
 				);
+				return;
+			}
+			const target = this.deps.getAlivePhaseSession(prev.issue_id, next);
+			if (
+				target &&
+				(await this.shouldSuppressQaRetest(
+					prev,
+					next,
+					target,
+					headSha,
+					completionContext,
+				))
+			) {
 				return;
 			}
 			await this.dispatchNextPhase(prev, next, headSha);
@@ -1793,6 +1854,19 @@ export class PhaseOrchestrator {
 		const targetDead = target
 			? await this.isWakeTargetProvenDead(target)
 			: false;
+		if (
+			target &&
+			!targetDead &&
+			(await this.shouldSuppressQaRetest(
+				prev,
+				next,
+				target,
+				headSha,
+				completionContext,
+			))
+		) {
+			return;
+		}
 		if (target && !targetDead) {
 			// The parked next phase is alive → WAKE it in place (zero checkout).
 			const ready = await this.deps.effects.assertPhaseWorktreeReady(
@@ -1855,6 +1929,90 @@ export class PhaseOrchestrator {
 		// duplicate + second writer. Fail-closed: ghostGuard alerts + returns false.
 		if (!(await this.ghostGuard(prev.issue_id, next))) return;
 		await this.dispatchNextPhase(prev, next, headSha);
+	}
+
+	/**
+	 * FLY-1314: an implement completion may be bookkeeping-only after the QA
+	 * verdict it is responding to. Suppress a repeat QA wake only when every
+	 * piece of causality is explicit and the exact predecessor..current diff is
+	 * empty or docs-only. Any missing/ambiguous/error path returns false and
+	 * preserves the existing retest behavior.
+	 */
+	private async shouldSuppressQaRetest(
+		prev: PhaseSession,
+		next: ThreeStagePhase,
+		qaSession: PhaseSession,
+		currentHead: string,
+		completionContext?: PhaseCompletionContext,
+	): Promise<boolean> {
+		if (
+			next !== "qa" ||
+			prev.session_role !== "implement" ||
+			process.env.FLYWHEEL_RETEST_HEAD_DELTA_GUARD === "0" ||
+			!completionContext ||
+			!prev.worktree_path ||
+			!this.deps.effects.classifyRetestHeadDelta ||
+			!this.deps.qaVerdicts.getUnambiguousVerdictHead ||
+			!this.deps.qaVerdicts.recordRetestSuppressed
+		) {
+			return false;
+		}
+
+		try {
+			const predecessor = this.deps.qaVerdicts.getUnambiguousVerdictHead(
+				qaSession.execution_id,
+				prev.issue_id,
+			);
+			if (!predecessor) return false;
+			const delta = await this.deps.effects.classifyRetestHeadDelta({
+				worktreePath: prev.worktree_path,
+				verdictHead: predecessor.verdictHead,
+				currentHead,
+			});
+			if (delta.kind !== "suppress") return false;
+
+			this.deps.qaVerdicts.recordRetestSuppressed({
+				completionEventId: completionContext.eventId,
+				implementSession: prev,
+				qaSession,
+				verdictEventId: predecessor.verdictEventId,
+				verdictHead: predecessor.verdictHead,
+				currentHead,
+				reason: delta.reason,
+				...("paths" in delta && { paths: delta.paths }),
+			});
+			this.log(
+				`implement → qa retest suppressed on ${prev.issue_id}: ${delta.reason} (${predecessor.verdictHead.slice(0, 8)}..${currentHead.slice(0, 8)})`,
+			);
+			return true;
+		} catch (err) {
+			this.warn(
+				`retest head-delta guard failed open for ${prev.issue_id}: ${(err as Error).message}`,
+			);
+			return false;
+		}
+	}
+
+	/** FLY-1314: best-effort immutable causality; absence fails open to QA. */
+	private recordVerdictHead(
+		session: PhaseSession,
+		verdictEventId: string | undefined,
+		round: number,
+		verdictHead: string,
+	): void {
+		if (!verdictEventId || !this.deps.qaVerdicts.recordVerdictHead) return;
+		try {
+			this.deps.qaVerdicts.recordVerdictHead({
+				session,
+				verdictEventId,
+				round,
+				verdictHead,
+			});
+		} catch (err) {
+			this.warn(
+				`record verdict head failed open for ${session.issue_id}: ${(err as Error).message}`,
+			);
+		}
 	}
 
 	/**
@@ -2047,6 +2205,9 @@ export class PhaseOrchestrator {
 			// a still-parked upstream phase + fire a false STALE-TURN Lead alert
 			// on EVERY successful three-stage ship — and there is no useful phase
 			// to recover to. Leave it to the finalization/handoff lifecycle. Only
+			// FLY-1314: an external merge that bypassed that lifecycle is handled by
+			// external-merge-reconcile, which proves MERGED and CAS-reclaims the exact
+			// holder+epoch. This live-pipeline reconciler must not race that cleanup.
 			// `failed` holders (killed / crashed — the actual FLY-543 shape) and
 			// completed NON-qa holders (a phase that finished while still holding
 			// the TURN because its handoff never ran — a genuine stuck state)

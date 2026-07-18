@@ -148,6 +148,82 @@ describe("feature-flag registry invariants", () => {
 		]);
 	});
 
+	it("FLY-1314 registers gate-hygiene rollback controls", () => {
+		const issueGateSupersede = FEATURE_FLAGS.find(
+			(f) => f.envVar === "FLYWHEEL_ISSUE_GATE_SUPERSEDE",
+		);
+		expect(issueGateSupersede).toMatchObject({
+			name: "issue_gate_supersede_mode",
+			category: "kill_switch",
+			polarity: "default_on",
+			valueKind: "enum",
+			enumValues: ["enforce", "observe", "0"],
+			default: "enforce",
+			toggleable: "readonly",
+		});
+		expect(issueGateSupersede?.readSites).toEqual([
+			expect.objectContaining({
+				file: "packages/teamlead/src/bridge/issue-gate-supersede.ts",
+				symbol: "sweepIssueGatesForProject",
+				timing: "call_time",
+			}),
+		]);
+
+		const founderReviewExclusion = FEATURE_FLAGS.find(
+			(f) => f.envVar === "FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE",
+		);
+		expect(founderReviewExclusion).toMatchObject({
+			name: "founder_review_gate_exclude",
+			category: "kill_switch",
+			polarity: "default_on",
+			default: true,
+			toggleable: "direct",
+		});
+		expect(founderReviewExclusion?.readSites).toEqual([
+			expect.objectContaining({
+				file: "packages/teamlead/src/bridge/gate-poller.ts",
+				symbol: "founderReplyDeliverPass",
+				timing: "call_time",
+			}),
+		]);
+
+		const retestHeadDeltaGuard = FEATURE_FLAGS.find(
+			(f) => f.envVar === "FLYWHEEL_RETEST_HEAD_DELTA_GUARD",
+		);
+		expect(retestHeadDeltaGuard).toMatchObject({
+			name: "retest_head_delta_guard",
+			category: "kill_switch",
+			polarity: "default_on",
+			default: true,
+			toggleable: "direct",
+		});
+		expect(retestHeadDeltaGuard?.readSites).toEqual([
+			expect.objectContaining({
+				file: "packages/teamlead/src/bridge/phase-orchestrator.ts",
+				symbol: "shouldSuppressQaRetest",
+				timing: "call_time",
+			}),
+		]);
+
+		const shipCiGuard = FEATURE_FLAGS.find(
+			(f) => f.envVar === "FLYWHEEL_SHIP_CI_GUARD",
+		);
+		expect(shipCiGuard).toMatchObject({
+			name: "ship_ci_guard",
+			category: "kill_switch",
+			polarity: "default_on",
+			default: true,
+			toggleable: "readonly",
+		});
+		expect(shipCiGuard?.readSites).toEqual([
+			expect.objectContaining({
+				file: "packages/flywheel-comm/src/ship-ci-guard.ts",
+				symbol: "probeShipCiGreen",
+				timing: "cli_invocation",
+			}),
+		]);
+	});
+
 	it("FLY-1066 residue harvest is a registered default-on Bridge kill-switch", () => {
 		const flag = FEATURE_FLAGS.find((f) => f.name === "commdb_residue_harvest");
 		expect(flag).toMatchObject({

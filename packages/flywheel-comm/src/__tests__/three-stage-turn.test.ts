@@ -74,6 +74,30 @@ describe("CommDB three_stage_turn (FLY-887)", () => {
 		expect(() => db.deleteTurn("ISSUE-1")).not.toThrow();
 	});
 
+	it("deleteTurnIfCurrent removes only the exact holder and epoch", () => {
+		db.grantTurn("ISSUE-1", "exec-a", "qa", T0);
+		expect(db.deleteTurnIfCurrent("ISSUE-1", "exec-b", 1)).toBe(false);
+		expect(db.deleteTurnIfCurrent("ISSUE-1", "exec-a", 2)).toBe(false);
+		expect(db.getTurn("ISSUE-1")).not.toBeNull();
+		expect(db.deleteTurnIfCurrent("ISSUE-1", "exec-a", 1)).toBe(true);
+		expect(db.getTurn("ISSUE-1")).toBeNull();
+		expect(db.deleteTurnIfCurrent("ISSUE-1", "exec-a", 1)).toBe(false);
+	});
+
+	it("deleteTurnIfCurrent refuses an epoch that advanced during a probe", () => {
+		db.grantTurn("ISSUE-1", "exec-a", "implement", T0);
+		const probed = db.getTurn("ISSUE-1")!;
+		db.grantTurn("ISSUE-1", "exec-b", "qa", T0 + 1);
+
+		expect(
+			db.deleteTurnIfCurrent("ISSUE-1", probed.holder_exec_id, probed.epoch),
+		).toBe(false);
+		expect(db.getTurn("ISSUE-1")).toMatchObject({
+			holder_exec_id: "exec-b",
+			epoch: 2,
+		});
+	});
+
 	it("migration is idempotent — re-opening the same DB does not throw", () => {
 		db.grantTurn("ISSUE-1", "exec-a", "design", T0);
 		db.close();

@@ -50,6 +50,12 @@ const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
 };
+const CI_GREEN = () => ({
+	green: true as const,
+	reason: "ci_green" as const,
+	mergeStateStatus: "CLEAN",
+	checks: ["Build & Test"],
+});
 
 // All three gates ON — the production default this issue ships (决定②).
 const GATES_ON = {
@@ -143,6 +149,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			execution_id: EXEC,
 			issue_id: ISSUE,
 			project_name: PROJECT,
+			pr_number: 869,
 			status,
 			session_role: "main",
 			branch: "fly-869",
@@ -343,7 +350,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 
 		const session = store.getSession(EXEC);
 		if (!session) throw new Error("session missing");
-		const d = computeShipDecision(store, session, HEAD, GATES_ON);
+		const d = computeShipDecision(store, session, HEAD, GATES_ON, CI_GREEN);
 
 		expect(d.eligible).toBe(true);
 		expect(d.mergeApprovalOk).toBe(true);
@@ -544,9 +551,41 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			EXEC,
 			undefined,
 			GATES_ON,
+			undefined,
+			undefined,
+			undefined,
+			CI_GREEN,
 		);
 		expect(completed).toBe(true);
 		expect(isMergeBlocked(store.getSession(EXEC))).toBe(false); // marker cleared
+		expect(store.getSession(EXEC)?.status).toBe("completed");
+	});
+
+	it("a same-head recovered merge does not require an open-PR CI probe", async () => {
+		upsert("awaiting_review");
+		withQaAndCodexGreen();
+		const session = store.getSession(EXEC);
+		if (!session) throw new Error("session missing");
+		parkMergeBlock(
+			store,
+			session,
+			HEAD,
+			computeShipDecision(store, session, HEAD, GATES_ON, CI_GREEN),
+		);
+		const qid = foundersApproved();
+		upsert("approved_to_ship", qid);
+
+		const completed = await finalizeRecoveredMerge(
+			store,
+			{} as BridgeConfig,
+			[],
+			EXEC,
+			undefined,
+			GATES_ON,
+		);
+
+		expect(completed).toBe(true);
+		expect(isMergeBlocked(store.getSession(EXEC))).toBe(false);
 		expect(store.getSession(EXEC)?.status).toBe("completed");
 	});
 
@@ -618,6 +657,8 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			async () => {
 				order.push("finalize-phases");
 			},
+			undefined,
+			CI_GREEN,
 		);
 		expect(completed).toBe(true);
 		expect(order).toEqual(["finalize-phases", "refresh"]);
@@ -659,6 +700,10 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			EXEC,
 			undefined,
 			GATES_ON,
+			undefined,
+			undefined,
+			undefined,
+			CI_GREEN,
 		);
 		expect(completed).toBe(false);
 		expect(store.getSession(EXEC)?.status).toBe("approved_to_ship");

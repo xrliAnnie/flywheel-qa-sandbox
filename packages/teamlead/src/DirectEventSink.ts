@@ -31,6 +31,7 @@ import type { MaterializedHeadAuthority } from "./bridge/materialized-head-autho
 import {
 	computeAuthoritativeShipDecision,
 	isMergeBlocked,
+	mergedPrCiProbe,
 	parkMergeBlock,
 } from "./bridge/merge-ship-gate.js";
 import type { PhaseOrchestrator } from "./bridge/phase-orchestrator.js";
@@ -488,8 +489,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			return;
 		}
 
+		const completionEventId = randomUUID();
 		this.store.insertEvent({
-			event_id: randomUUID(),
+			event_id: completionEventId,
 			execution_id: env.executionId,
 			issue_id: env.issueId,
 			project_name: env.projectName,
@@ -583,6 +585,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					desPrHead,
 					process.env,
 					this.materializedHeadAuthority,
+					mergedPrCiProbe,
 				)
 			: undefined;
 		const desShipEligible = desMergedLanding
@@ -957,7 +960,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			const phaseSession = this.store.getSession(env.executionId);
 			if (phaseSession) {
 				try {
-					await this.phaseOrchestrator.current.onPhaseComplete(phaseSession);
+					await this.phaseOrchestrator.current.onPhaseComplete(phaseSession, {
+						eventId: completionEventId,
+						source: "direct",
+					});
 				} catch (err) {
 					console.error(
 						`[DirectEventSink] onPhaseComplete threw for ${env.executionId}: ${(err as Error).message}`,

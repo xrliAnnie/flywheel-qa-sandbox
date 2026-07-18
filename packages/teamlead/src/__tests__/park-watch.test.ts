@@ -129,6 +129,70 @@ describe("runParkWatch (FLY-1279 D2)", () => {
 		expect(seen.map((input) => input.kind)).toEqual(["park:gate_row_missing"]);
 	});
 
+	it("classifies a superseded gate as an honest terminal state, not unreachable", async () => {
+		session("superseded", "awaiting_review", {
+			awaiting_review_entered_at: new Date(nowMs).toISOString(),
+		});
+		const db = new CommDB(dbPath);
+		const oldGate = db.insertQuestion("superseded", "lead", "old", {
+			checkpoint: "approve_to_ship",
+		});
+		const newGate = db.insertQuestion("new-exec", "lead", "new", {
+			checkpoint: "approve_to_ship",
+		});
+		expect(db.retireShipGate(oldGate, { supersededBy: newGate })).toBe(true);
+		db.close();
+		store.setReviewBinding("superseded", {
+			questionId: oldGate,
+			prHeadSha: "abc",
+		});
+		const seen: DetectionEscalationInput[] = [];
+
+		await scan(seen);
+		await scan(seen);
+
+		expect(seen).toHaveLength(1);
+		expect(seen[0]).toMatchObject({
+			kind: "park:gate_superseded",
+		});
+		expect(seen[0]!.reason).toContain(newGate);
+		expect(seen[0]!.nextStep).toContain("不要重建");
+		expect(seen[0]!.nextStep).not.toContain("重新建立");
+	});
+
+	it("does not resolve a superseded episode while CommDB evidence is unavailable", async () => {
+		session("superseded-db-down", "awaiting_review");
+		const db = new CommDB(dbPath);
+		const oldGate = db.insertQuestion("superseded-db-down", "lead", "old", {
+			checkpoint: "approve_to_ship",
+		});
+		const newGate = db.insertQuestion("new-exec", "lead", "new", {
+			checkpoint: "approve_to_ship",
+		});
+		db.retireShipGate(oldGate, { supersededBy: newGate });
+		db.close();
+		store.setReviewBinding("superseded-db-down", {
+			questionId: oldGate,
+			prHeadSha: "abc",
+		});
+		const seen: DetectionEscalationInput[] = [];
+		await scan(seen);
+		await scan(seen);
+		expect(
+			store
+				.getDetectionEscalationsForReconcile()
+				.some((row) => row.kind === "park:gate_superseded"),
+		).toBe(true);
+
+		rmSync(dbPath, { force: true });
+		await scan(seen);
+		expect(
+			store
+				.getDetectionEscalationsForReconcile()
+				.some((row) => row.kind === "park:gate_superseded"),
+		).toBe(true);
+	});
+
 	it("gives a stuck QA hold priority over the generic approval wait", async () => {
 		session("parent", "awaiting_review", {
 			pr_number: 12,

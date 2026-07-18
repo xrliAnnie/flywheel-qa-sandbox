@@ -35,6 +35,10 @@ import {
 	hasTrustedFounderApproval,
 	type PrMergeInfo,
 } from "../external-merge-reconcile.js";
+import {
+	computeAuthoritativeShipDecision,
+	mergedPrCiProbe,
+} from "../merge-ship-gate.js";
 
 const HEAD = "a".repeat(40);
 const OTHER_HEAD = "b".repeat(40);
@@ -157,6 +161,9 @@ interface Setup {
 	env: Record<string, string | undefined>;
 }
 
+let tmpRoot: string;
+let stateDbSequence = 0;
+
 async function setup(opts?: {
 	prInfo?: PrMergeInfo;
 	trusted?: boolean;
@@ -167,7 +174,9 @@ async function setup(opts?: {
 		projectName: string,
 	) => Promise<void>;
 }): Promise<Setup> {
-	const store = await StateStore.create(":memory:");
+	const store = await StateStore.create(
+		join(tmpRoot, `state-${stateDbSequence++}.db`),
+	);
 	const alerts: { title: string }[] = [];
 	const checkPr = vi.fn(
 		async () =>
@@ -209,11 +218,17 @@ async function setup(opts?: {
 
 describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 	let envBak: Record<string, string | undefined>;
+	let priorCommDir: string | undefined;
 	beforeEach(() => {
 		envBak = {
 			FLYWHEEL_MERGE_APPROVAL_GATE: process.env.FLYWHEEL_MERGE_APPROVAL_GATE,
 			FLYWHEEL_QA_DONE_GATE: process.env.FLYWHEEL_QA_DONE_GATE,
+			FLYWHEEL_CODEX_HARD_GATE: process.env.FLYWHEEL_CODEX_HARD_GATE,
 		};
+		tmpRoot = mkdtempSync(join(tmpdir(), "fly945-external-merge-"));
+		priorCommDir = process.env.FLYWHEEL_COMM_DIR;
+		process.env.FLYWHEEL_COMM_DIR = join(tmpRoot, "comm");
+		stateDbSequence = 0;
 		runPostShipSpy.mockClear();
 	});
 	afterEach(() => {
@@ -221,6 +236,9 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 			if (v === undefined) delete process.env[k];
 			else process.env[k] = v;
 		}
+		if (priorCommDir === undefined) delete process.env.FLYWHEEL_COMM_DIR;
+		else process.env.FLYWHEEL_COMM_DIR = priorCommDir;
+		rmSync(tmpRoot, { recursive: true, force: true });
 	});
 
 	it("path 1: stale parked + PR MERGED + ship-eligible (gates off) → completed + finalization + audit", async () => {
@@ -236,6 +254,66 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 			prNumber: 478,
 			mergeCommitOid: MERGE_OID,
 		});
+	});
+
+	it("path 1: an already-merged PR does not re-run the open-PR CI probe", async () => {
+		const s = await setup({
+			env: {
+				FLYWHEEL_MERGE_APPROVAL_GATE: "1",
+				FLYWHEEL_QA_DONE_GATE: "1",
+				FLYWHEEL_CODEX_HARD_GATE: "1",
+			},
+		});
+		seedSession(s.store);
+		const db = new CommDB(join(tmpRoot, "comm", "proj", "comm.db"));
+		const qid = db.insertQuestion("exec-1", "lead-1", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		db.insertResponse(qid, "bridge", JSON.stringify({ approved: true }));
+		db.close();
+		s.store.setReviewBinding("exec-1", {
+			questionId: qid,
+			prHeadSha: HEAD,
+		});
+		s.store.setQaRequiredSnapshot({
+			executionId: "exec-1",
+			required: 1,
+			reason: "test",
+		});
+		s.store.claimAutoQaRecord({
+			parentExecutionId: "exec-1",
+			targetPrHeadSha: HEAD,
+			issueId: "FLY-921",
+			projectName: "proj",
+		});
+		s.store.setAutoQaStatus("exec-1", HEAD, "passed", {});
+		s.store.recordCodexReviewApproved({
+			executionId: "exec-1",
+			targetPrHeadSha: HEAD,
+			issueId: "FLY-921",
+			projectName: "proj",
+		});
+		const session = s.store.getSession("exec-1");
+		if (!session) throw new Error("session missing");
+		const decision = await computeAuthoritativeShipDecision(
+			s.store,
+			session,
+			HEAD,
+			s.env as NodeJS.ProcessEnv,
+			undefined,
+			mergedPrCiProbe,
+		);
+		expect(decision).toMatchObject({
+			eligible: true,
+			mergeApprovalOk: true,
+			qaOk: true,
+		});
+
+		await s.pass();
+
+		expect(s.store.getSession("exec-1")?.status).toBe("completed");
+		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
+		expect(s.alerts).toHaveLength(0);
 	});
 
 	// FLY-1204 (Change A2): the external-merge path is a real ship path, so it
@@ -402,6 +480,249 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 		await s.pass();
 		expect(s.checkPr).not.toHaveBeenCalled();
 		expect(s.store.getSession("exec-1")?.status).toBe("approved_to_ship");
+	});
+});
+
+describe("FLY-1314: external-merge TURN-belt reclaim", () => {
+	let tmp: string;
+	let priorCommDir: string | undefined;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "fly1314-turn-belt-"));
+		priorCommDir = process.env.FLYWHEEL_COMM_DIR;
+		process.env.FLYWHEEL_COMM_DIR = tmp;
+		runPostShipSpy.mockClear();
+	});
+
+	afterEach(() => {
+		if (priorCommDir === undefined) delete process.env.FLYWHEEL_COMM_DIR;
+		else process.env.FLYWHEEL_COMM_DIR = priorCommDir;
+		delete process.env.FLYWHEEL_TURN_BELT_MERGED_RECLAIM;
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	async function beltHarness(args?: {
+		state?: PrMergeInfo["state"];
+		probe?: "alive" | "dead_pin" | "absent" | "indeterminate";
+		prNumber?: number | null;
+		tmuxSession?: string;
+		grantedAt?: number;
+		beltOnly?: boolean;
+		checkPr?: (root: string, pr: number) => Promise<PrMergeInfo>;
+		now?: () => number;
+		env?: Record<string, string | undefined>;
+	}) {
+		const store = await StateStore.create(":memory:");
+		seedSession(store, {
+			execution_id: "qa-holder",
+			issue_id: "FLY-1307",
+			status: "completed",
+			session_role: "qa",
+			chat_thread_role: "qa",
+			pr_number: args?.prNumber === null ? undefined : (args?.prNumber ?? 478),
+			tmux_session:
+				args?.tmuxSession === undefined ? "tmux:qa" : args.tmuxSession,
+		});
+		// Make this a genuine belt-only source: the ordinary completed candidate
+		// path is already claimed and therefore filters the session out before gh.
+		if (args?.beltOnly !== false) {
+			store.insertEvent({
+				event_id: "post-ship-finalization-qa-holder",
+				execution_id: "qa-holder",
+				issue_id: "FLY-1307",
+				project_name: "proj",
+				event_type: "post_ship_finalization_claim",
+				source: "test",
+			});
+		}
+		const dbPath = join(tmp, "proj", "comm.db");
+		const db = new CommDB(dbPath);
+		db.grantTurn(
+			"FLY-1307",
+			"qa-holder",
+			"qa",
+			args?.grantedAt ?? NOW_MS - 31 * 60_000,
+		);
+		db.close();
+		const checkPr = vi.fn(
+			args?.checkPr ??
+				(async () => ({
+					state: args?.state ?? "merged",
+					mergeCommitOid: MERGE_OID,
+					headRefOid: HEAD,
+				})),
+		);
+		const probe = vi.fn(async () => args?.probe ?? "dead_pin");
+		const reconciler = createExternalMergeReconciler({
+			store,
+			config,
+			projects,
+			env: {
+				FLYWHEEL_MERGE_APPROVAL_GATE: "0",
+				FLYWHEEL_QA_DONE_GATE: "0",
+				...(args?.env ?? {}),
+			},
+			now: args?.now ?? (() => NOW_MS),
+			checkPrMerge: checkPr as never,
+			probeTurnHolderLiveness: probe,
+			log: () => {},
+		});
+		return {
+			store,
+			dbPath,
+			checkPr,
+			probe,
+			pass: () => reconciler.pass(),
+		};
+	}
+
+	it("reclaims a belt-only merged candidate and writes the exact CAS audit", async () => {
+		const h = await beltHarness();
+		await h.pass();
+
+		expect(h.checkPr).toHaveBeenCalledTimes(1);
+		expect(h.probe).toHaveBeenCalledTimes(1);
+		const db = new CommDB(h.dbPath);
+		expect(db.getTurn("FLY-1307")).toBeNull();
+		db.close();
+		expect(
+			h.store
+				.getEventsByExecution("qa-holder")
+				.find(
+					(event) => event.event_type === "turn_belt_reclaimed_external_merge",
+				)?.payload,
+		).toMatchObject({
+			issueId: "FLY-1307",
+			holderExecId: "qa-holder",
+			epoch: 1,
+			prNumber: 478,
+			mergeCommitOid: MERGE_OID,
+		});
+	});
+
+	it("refuses CAS deletion when the epoch advances during the gh probe", async () => {
+		let dbPath = "";
+		const h = await beltHarness({
+			checkPr: async () => {
+				const db = new CommDB(dbPath);
+				db.grantTurn("FLY-1307", "new-holder", "implement", NOW_MS);
+				db.close();
+				return { state: "merged", mergeCommitOid: MERGE_OID };
+			},
+		});
+		dbPath = h.dbPath;
+		await h.pass();
+
+		const db = new CommDB(h.dbPath);
+		expect(db.getTurn("FLY-1307")).toMatchObject({
+			holder_exec_id: "new-holder",
+			epoch: 2,
+		});
+		db.close();
+		expect(
+			h.store
+				.getEventsByExecution("qa-holder")
+				.some(
+					(event) => event.event_type === "turn_belt_reclaimed_external_merge",
+				),
+		).toBe(false);
+	});
+
+	it.each(["open", "closed", "unknown"] as const)(
+		"leaves the belt untouched when PR state is %s",
+		async (state) => {
+			const h = await beltHarness({ state });
+			await h.pass();
+			const db = new CommDB(h.dbPath);
+			expect(db.getTurn("FLY-1307")).not.toBeNull();
+			db.close();
+		},
+	);
+
+	it.each(["alive", "indeterminate"] as const)(
+		"does not spend gh or reclaim when the persisted target probes %s",
+		async (probe) => {
+			const h = await beltHarness({ probe });
+			await h.pass();
+			expect(h.checkPr).not.toHaveBeenCalled();
+			const db = new CommDB(h.dbPath);
+			expect(db.getTurn("FLY-1307")).not.toBeNull();
+			db.close();
+		},
+	);
+
+	it("child kill-switch disables only belt reclaim", async () => {
+		const h = await beltHarness({
+			env: { FLYWHEEL_TURN_BELT_MERGED_RECLAIM: "0" },
+		});
+		await h.pass();
+		expect(h.checkPr).not.toHaveBeenCalled();
+	});
+
+	it("parent kill-switch disables the whole pass before belt probing", async () => {
+		const h = await beltHarness({
+			env: { FLYWHEEL_EXTERNAL_MERGE_RECONCILE: "0" },
+		});
+		await h.pass();
+		expect(h.probe).not.toHaveBeenCalled();
+		expect(h.checkPr).not.toHaveBeenCalled();
+	});
+
+	it("requires a persisted tmux target before treating a terminal holder as dead", async () => {
+		const h = await beltHarness({ tmuxSession: "" });
+		await h.pass();
+		expect(h.probe).not.toHaveBeenCalled();
+		expect(h.checkPr).not.toHaveBeenCalled();
+	});
+
+	it("refuses missing and conflicting PR evidence before spending gh", async () => {
+		const missing = await beltHarness({ prNumber: null });
+		await missing.pass();
+		expect(missing.checkPr).not.toHaveBeenCalled();
+
+		const conflict = await beltHarness();
+		seedSession(conflict.store, {
+			execution_id: "implement-old",
+			issue_id: "FLY-1307",
+			status: "failed",
+			session_role: "implement",
+			chat_thread_role: "implement",
+			pr_number: 999,
+		});
+		await conflict.pass();
+		expect(conflict.checkPr).not.toHaveBeenCalled();
+	});
+
+	it("promotes a belt that becomes old enough on a later patrol", async () => {
+		let clock = NOW_MS;
+		const h = await beltHarness({
+			grantedAt: NOW_MS - 29 * 60_000,
+			now: () => clock,
+		});
+		await h.pass();
+		expect(h.checkPr).not.toHaveBeenCalled();
+
+		clock += 2 * 60_000;
+		await h.pass();
+		expect(h.checkPr).toHaveBeenCalledTimes(1);
+	});
+
+	it("negative-caches non-MERGED results for ten minutes", async () => {
+		let clock = NOW_MS;
+		const h = await beltHarness({ state: "open", now: () => clock });
+		await h.pass();
+		await h.pass();
+		expect(h.checkPr).toHaveBeenCalledTimes(1);
+
+		clock += 10 * 60_000 + 1;
+		await h.pass();
+		expect(h.checkPr).toHaveBeenCalledTimes(2);
+	});
+
+	it("dedupes ordinary and belt candidates by issue+PR into one gh probe", async () => {
+		const h = await beltHarness({ beltOnly: false });
+		await h.pass();
+		expect(h.checkPr).toHaveBeenCalledTimes(1);
 	});
 });
 

@@ -54,6 +54,8 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		review_question_id?: string | null;
 		codex_skip?: number;
 		adapter_type?: string | null;
+		pr_number?: number;
+		worktree_path?: string;
 	}): void {
 		const db = new Database(stateDbPath);
 		db.exec(
@@ -63,7 +65,9 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				pr_head_sha TEXT,
 				review_question_id TEXT,
 				codex_skip INTEGER NOT NULL DEFAULT 0,
-				adapter_type TEXT
+				adapter_type TEXT,
+				pr_number INTEGER NOT NULL DEFAULT 621,
+				worktree_path TEXT NOT NULL DEFAULT '/worktree'
 			)`,
 		);
 		db.prepare(
@@ -141,6 +145,7 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 			// require a codex_review_record. Codex-gate behavior has its own block.
 			env: { FLYWHEEL_CODEX_HARD_GATE: "0" } as NodeJS.ProcessEnv,
 			codexDotenvPath: join(tmpDir, "nonexistent.env"),
+			ciProbe: () => ({ green: true, reason: "ci_green" }),
 		});
 	}
 
@@ -157,6 +162,7 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 			stateDbPath,
 			env: opts?.env ?? ({} as NodeJS.ProcessEnv),
 			codexDotenvPath: opts?.dotenvPath ?? join(tmpDir, "nonexistent.env"),
+			ciProbe: () => ({ green: true, reason: "ci_green" }),
 		});
 	}
 
@@ -184,6 +190,80 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		expect(r.exitCode).toBe(0);
 	});
 
+	it("FLY-1314: rejects an otherwise valid approval when CI is not green", () => {
+		const qid = setupFullyApproved();
+		const result = verifyApproval({
+			execId: EXEC,
+			prHead: HEAD,
+			dbPath: commDbPath,
+			stateDbPath,
+			env: { FLYWHEEL_CODEX_HARD_GATE: "0" } as NodeJS.ProcessEnv,
+			codexDotenvPath: join(tmpDir, "nonexistent.env"),
+			ciProbe: () => ({
+				green: false,
+				reason: "ci_not_green",
+				detail: "Build & Test failed",
+			}),
+		});
+		expect(result).toMatchObject({
+			approved: false,
+			reason: "ci_not_green",
+			questionId: qid,
+			exitCode: 1,
+		});
+	});
+
+	it("rejects a superseded binding even if a response was injected behind the guarded writer", () => {
+		const qid = createGateQuestion();
+		const db = new CommDB(commDbPath);
+		try {
+			const replacement = db.insertQuestion(EXEC, LEAD, "replacement", {
+				checkpoint: "approve_to_ship",
+			});
+			expect(db.retireShipGate(qid, { supersededBy: replacement })).toBe(true);
+		} finally {
+			db.close();
+		}
+		const raw = new Database(commDbPath);
+		try {
+			raw
+				.prepare(
+					`INSERT INTO messages
+				 (id, from_agent, to_agent, type, content, parent_id)
+				 VALUES ('forced-response', 'bridge', ?, 'response', ?, ?)`,
+				)
+				.run(EXEC, JSON.stringify({ approved: true }), qid);
+		} finally {
+			raw.close();
+		}
+		writeStateSession({
+			execution_id: EXEC,
+			status: "approved_to_ship",
+			pr_head_sha: HEAD,
+			review_question_id: qid,
+		});
+
+		expect(
+			verifyApproval({
+				execId: EXEC,
+				prHead: HEAD,
+				dbPath: commDbPath,
+				stateDbPath,
+				env: {
+					FLYWHEEL_CODEX_HARD_GATE: "0",
+					FLYWHEEL_ISSUE_GATE_SUPERSEDE: "0",
+					FLYWHEEL_SHIP_GATE_RETIRE: "0",
+				} as NodeJS.ProcessEnv,
+				codexDotenvPath: join(tmpDir, "nonexistent.env"),
+			}),
+		).toMatchObject({
+			approved: false,
+			reason: "gate_superseded",
+			questionId: qid,
+			exitCode: 1,
+		});
+	});
+
 	describe("FLY-1244 Bridge head authority", () => {
 		it("uses the Bridge-derived head for the final local approval check", async () => {
 			setupFullyApproved();
@@ -202,6 +282,7 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 				} as NodeJS.ProcessEnv,
 				codexDotenvPath: join(tmpDir, "nonexistent.env"),
+				ciProbe: () => ({ green: true, reason: "ci_green" }),
 			});
 			expect(result).toMatchObject({ approved: true, reason: "approved" });
 		});
@@ -279,6 +360,7 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				stateDbPath,
 				env: {} as NodeJS.ProcessEnv,
 				codexDotenvPath: dotenvPath,
+				ciProbe: () => ({ green: true, reason: "ci_green" }),
 			});
 		}
 

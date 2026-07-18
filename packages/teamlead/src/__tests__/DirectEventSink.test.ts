@@ -1087,6 +1087,16 @@ describe("DirectEventSink — FLY-793: completion must not clobber a phase role 
 		await sink.emitCompleted(makeEnvelope(), needsReviewResult());
 
 		expect(fake.onPhaseComplete).toHaveBeenCalledOnce();
+		const completionEvent = store
+			.getEventsByExecution("exec-1")
+			.find((event) => event.event_type === "session_completed");
+		expect(fake.onPhaseComplete).toHaveBeenCalledWith(
+			expect.objectContaining({ execution_id: "exec-1" }),
+			{
+				eventId: completionEvent?.event_id,
+				source: "direct",
+			},
+		);
 		expect(fake.reconcileTurnBelt).toHaveBeenCalledOnce();
 		expect(fake.onPhaseComplete.mock.invocationCallOrder[0]!).toBeLessThan(
 			fake.reconcileTurnBelt.mock.invocationCallOrder[0]!,

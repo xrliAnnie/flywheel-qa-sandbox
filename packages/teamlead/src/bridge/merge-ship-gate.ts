@@ -16,6 +16,7 @@
 import {
 	evaluateShipEligibility,
 	resolveWorkflowClaimsReadEnabled,
+	type ShipEligibilityArgs,
 	type ShipEligibilityDecision,
 } from "flywheel-comm/ship-eligibility";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -31,6 +32,21 @@ import {
 import { runPostShipFinalization } from "./post-ship-finalization.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
+
+/**
+ * Post-merge recovery has stronger landing evidence than the open-PR CI probe:
+ * GitHub already accepted the exact head and reports the PR as MERGED. Re-running
+ * the open-PR probe here is both redundant and incorrect because GitHub reports
+ * mergeStateStatus=UNKNOWN after merge and the runner worktree may be gone.
+ */
+export const mergedPrCiProbe: NonNullable<
+	ShipEligibilityArgs["ciProbe"]
+> = () => ({
+	green: true,
+	reason: "ci_green",
+	mergeStateStatus: "MERGED",
+	checks: [],
+});
 
 /**
  * Compute the ship decision for a (session, prHead) BEFORE mutating status.
@@ -50,6 +66,7 @@ export function computeShipDecision(
 	session: Pick<Session, "execution_id" | "project_name">,
 	prHead: string,
 	env: NodeJS.ProcessEnv = process.env,
+	ciProbe?: ShipEligibilityArgs["ciProbe"],
 ): ShipEligibilityDecision {
 	return evaluateShipEligibility({
 		execId: session.execution_id,
@@ -65,6 +82,7 @@ export function computeShipDecision(
 		stateDbPath:
 			typeof store.getDbPath === "function" ? store.getDbPath() : undefined,
 		env,
+		ciProbe,
 	});
 }
 
@@ -248,6 +266,7 @@ export async function computeAuthoritativeShipDecision(
 	observedHead: string | undefined,
 	env: NodeJS.ProcessEnv = process.env,
 	materializedHeadAuthority: MaterializedHeadAuthority = unavailableMaterializedHeadAuthority,
+	ciProbe?: ShipEligibilityArgs["ciProbe"],
 ): Promise<AuthoritativeShipDecision> {
 	const engine = engineShipContext(store, session.execution_id);
 	const typedEngine =
@@ -258,7 +277,7 @@ export async function computeAuthoritativeShipDecision(
 	// authority after admission.
 	if (!engine.engineOwned && !claimsReadEnabled) {
 		return {
-			...computeShipDecision(store, session, observedHead ?? "", env),
+			...computeShipDecision(store, session, observedHead ?? "", env, ciProbe),
 			authoritativeHead: observedHead?.trim().toLowerCase() ?? "",
 		};
 	}
@@ -323,7 +342,13 @@ export async function computeAuthoritativeShipDecision(
 			authoritativeHead,
 		};
 	}
-	const base = computeShipDecision(store, session, authoritativeHead, env);
+	const base = computeShipDecision(
+		store,
+		session,
+		authoritativeHead,
+		env,
+		ciProbe,
+	);
 	if (typedEngine) {
 		const workflow = evaluateEngineShipClaims(
 			store,
@@ -455,6 +480,7 @@ export async function finalizeRecoveredMerge(
 		projectName: string,
 	) => Promise<void>,
 	materializedHeadAuthority: MaterializedHeadAuthority = unavailableMaterializedHeadAuthority,
+	ciProbe?: ShipEligibilityArgs["ciProbe"],
 ): Promise<boolean> {
 	const s = store.getSession(execId);
 	// Only a still-parked row (marker present) whose founder approval just landed.
@@ -473,6 +499,7 @@ export async function finalizeRecoveredMerge(
 		head,
 		env,
 		materializedHeadAuthority,
+		ciProbe ?? mergedPrCiProbe,
 	);
 	// Head-bound: only THIS authoritative head recovers THIS marker. A stale
 	// cached/session head or stale marker remains parked.

@@ -53,6 +53,7 @@ import type { Session, StateStore } from "../StateStore.js";
 import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
 import {
 	computeAuthoritativeShipDecision,
+	mergedPrCiProbe,
 	parkMergeBlock,
 } from "./merge-ship-gate.js";
 
@@ -457,6 +458,7 @@ export async function tryReconcileComplete(
 			prHead,
 			process.env,
 			deps.materializedHeadAuthority,
+			mergedPrCiProbe,
 		);
 		const eligible = decision.eligible;
 		if (!eligible) {

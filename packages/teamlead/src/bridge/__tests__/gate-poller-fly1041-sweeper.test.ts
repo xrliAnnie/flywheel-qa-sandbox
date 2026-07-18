@@ -210,6 +210,7 @@ describe("GatePoller.maybeSweepSupersededShipGate (integration with real CommDB)
 
 		expect(swept).toBe(true);
 		expect(db.getPendingQuestions("lead").map((q) => q.id)).toEqual([q2]);
+		expect(db.getMessageById(q1)).toMatchObject({ superseded_by: q2 });
 		expect(insertedEvents).toHaveLength(1);
 		expect(insertedEvents[0]).toMatchObject({
 			event_id: `ship-gate-superseded-${q1}`,

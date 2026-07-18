@@ -42,6 +42,7 @@ describe("gate --no-block (FLY-191 Phase 2)", () => {
 			cleanupTtlHours: 24,
 			pollIntervalMs: 50,
 			noBlock: true,
+			shipCiProbe: () => ({ green: true, reason: "ci_green" }),
 			...overrides,
 		};
 	}

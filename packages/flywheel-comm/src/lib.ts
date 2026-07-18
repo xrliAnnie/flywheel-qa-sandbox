@@ -28,6 +28,7 @@ export { search } from "./commands/search.js";
 export type { SessionsArgs } from "./commands/sessions.js";
 export { sessions } from "./commands/sessions.js";
 export type {
+	GateSupersedeRow,
 	PhaseWakeInput,
 	RunnerPhaseWake,
 	RunnerShutdownControl,
@@ -57,6 +58,7 @@ export type {
 	CheckResult,
 	Message,
 	PendingQuestion,
+	ResponseWriteResult,
 	Session,
 } from "./types.js";
 export { buildSafeRegex, validateProjectName } from "./validate.js";

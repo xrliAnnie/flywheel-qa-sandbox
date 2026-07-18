@@ -59,6 +59,10 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 	let autoQaFailureCalls: string[];
 	let autoQaOwnsFailure: boolean;
 	let takeoverAlerts: Array<{ exec: string; reason: string }>;
+	let phaseCompleteCalls: Array<{
+		session: { execution_id: string };
+		context?: { eventId: string; source: string };
+	}>;
 
 	const ingestHeaders = {
 		"Content-Type": "application/json",
@@ -81,9 +85,17 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 		autoQaFailureCalls = [];
 		autoQaOwnsFailure = false;
 		takeoverAlerts = [];
+		phaseCompleteCalls = [];
 
 		const fakeOrchestrator = {
-			onPhaseComplete: vi.fn(async () => {}),
+			onPhaseComplete: vi.fn(
+				async (
+					session: { execution_id: string },
+					context?: { eventId: string; source: string },
+				) => {
+					phaseCompleteCalls.push({ session, context });
+				},
+			),
 			alertWorktreeTakeoverFailure: vi.fn(
 				async (session: { execution_id: string }, reason: string) => {
 					takeoverAlerts.push({ exec: session.execution_id, reason });
@@ -203,6 +215,12 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 			projectName: "flywheel",
 			terminalExecId: "impl-exec-1",
 		});
+		expect(phaseCompleteCalls).toEqual([
+			{
+				session: expect.objectContaining({ execution_id: "impl-exec-1" }),
+				context: { eventId: "evt-done-1", source: "http" },
+			},
+		]);
 	});
 
 	it("Codex R1 HIGH: session_failed of a PARKED (awaiting_review) holder — FSM rejects the transition, reconcile still runs", async () => {

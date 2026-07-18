@@ -331,6 +331,8 @@ export interface MonitorReconcileConfig {
 	fetchFn?: typeof fetch;
 	markerDir?: string;
 	quarantineDir?: string;
+	/** FLY-1314: readonly gate-disposition lookup for timeout suppression. */
+	commDbPathForProject?: (projectName: string) => string;
 	onTerminalStatusPersisted?: (
 		executionId: string,
 		status: "failed" | "blocked",
@@ -738,6 +740,42 @@ export class HeartbeatService implements ReconnectController {
 		for (const session of timedOut) {
 			const enteredAt = session.awaiting_review_entered_at;
 			if (!enteredAt) continue; // query excludes these; belt-and-braces
+			// FLY-1314: a superseded gate is an intentionally closed old lap, not
+			// an unanswered founder decision. Record that terminal observation and
+			// stamp the timeout cursor so this session does not become a permanent
+			// heartbeat hot-loop. CommDB lookup failure remains fail-open to the
+			// existing timeout path (never silently suppress a real escalation).
+			const qid = session.review_question_id;
+			const commDbPath = this.monitorReconcile.commDbPathForProject;
+			if (qid && qid !== "unbound" && commDbPath) {
+				let db: CommDB | undefined;
+				try {
+					db = CommDB.openReadonly(commDbPath(session.project_name));
+					const gate = db.getMessageById(qid);
+					if (gate?.superseded_at) {
+						this.store.insertEvent({
+							event_id: `awaiting-review-superseded-noalert-${session.execution_id}-${qid}`,
+							execution_id: session.execution_id,
+							issue_id: session.issue_id,
+							project_name: session.project_name,
+							event_type: "awaiting_review_superseded_noalert",
+							source: "bridge.heartbeat",
+							payload: {
+								questionId: qid,
+								supersededBy: gate.superseded_by,
+							},
+						});
+						this.store.markGateTimeoutNotified(session.execution_id);
+						continue;
+					}
+				} catch (error) {
+					console.warn(
+						`[HeartbeatService] FLY-1314 superseded-gate lookup failed for ${session.execution_id}: ${error instanceof Error ? error.message : String(error)}; retaining timeout behavior`,
+					);
+				} finally {
+					db?.close();
+				}
+			}
 			// FLY-579: QA-held — do NOT escalate a founder `gate_timed_out` while
 			// independent QA is still running/failed. The founder is intentionally
 			// not surfaced until QA is green; a QA stall is a Lead-only pipeline

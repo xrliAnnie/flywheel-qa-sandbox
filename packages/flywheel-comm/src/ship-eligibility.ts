@@ -28,6 +28,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import {
 	resolveStateDbPath,
+	type VerifyApprovalArgs,
 	verifyApproval,
 } from "./commands/verify-approval.js";
 
@@ -381,6 +382,8 @@ export interface ShipEligibilityArgs {
 	/** Test-only `.env` overrides for the Codex / QA live gates. */
 	codexDotenvPath?: string;
 	qaDotenvPath?: string;
+	/** Test seam; production verifyApproval probes GitHub directly. */
+	ciProbe?: VerifyApprovalArgs["ciProbe"];
 }
 
 export interface ShipEligibilityDecision {
@@ -428,6 +431,7 @@ export function evaluateShipEligibility(
 			// Production must NOT inject env (design R2 HIGH-2): only tests pass it.
 			env: args.env,
 			codexDotenvPath: args.codexDotenvPath,
+			ciProbe: args.ciProbe,
 		});
 		mergeApprovalOk = approval.approved;
 		mergeReason = approval.reason;

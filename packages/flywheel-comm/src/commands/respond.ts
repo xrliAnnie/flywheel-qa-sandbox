@@ -101,12 +101,17 @@ export async function respond(args: RespondArgs): Promise<void> {
 			}
 
 			if (env.FLYWHEEL_COMM_BYPASS_BRIDGE === "1") {
-				db.insertResponse(
+				const writeResult = db.insertResponse(
 					args.questionId,
 					args.fromAgent,
 					args.answer,
 					authorization.provenance,
 				);
+				if (!writeResult.written) {
+					throw new Error(
+						`flywheel-comm: approve_to_ship gate is no longer open (${args.questionId}); response was not written.`,
+					);
+				}
 				writeBypassAudit(env, {
 					questionId: args.questionId,
 					executionId: question.from_agent,

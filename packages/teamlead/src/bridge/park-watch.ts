@@ -232,17 +232,24 @@ export async function runParkWatch(options: ParkWatchOptions): Promise<void> {
 							!response &&
 							(!message || message.relay_state === "terminal_disposed")
 						) {
+							const superseded = Boolean(message?.superseded_at);
 							conditions.push({
 								session,
 								kind: message
-									? "park:gate_unreachable"
+									? superseded
+										? "park:gate_superseded"
+										: "park:gate_unreachable"
 									: "park:gate_row_missing",
 								fingerprint: `gate:${qid}`,
 								firstDetectedAtMs: anchor,
 								reason: message
-									? "session 仍等审批,但 gate 已不可回答"
+									? superseded
+										? `session 的旧审批 lap 已被同 issue 更新的 gate 取代(supersededBy=${message.superseded_by ?? "unknown"})`
+										: "session 仍等审批,但 gate 已不可回答"
 									: "session 仍等审批,但 CommDB gate row 已丢失",
-								nextStep: "Lead 重新建立并绑定审批 gate",
+								nextStep: superseded
+									? "Lead 等 issue 终态清理旧 runner;不要重建或重绑这个旧 gate"
+									: "Lead 重新建立并绑定审批 gate",
 								minAgeMs: 0,
 								minObservations: 2,
 							});
@@ -353,7 +360,8 @@ export async function runParkWatch(options: ParkWatchOptions): Promise<void> {
 			const requiresCommEvidence =
 				row.kind === "park:declared" ||
 				row.kind === "park:gate_row_missing" ||
-				row.kind === "park:gate_unreachable";
+				row.kind === "park:gate_unreachable" ||
+				row.kind === "park:gate_superseded";
 			if (requiresCommEvidence && !dbFor(session.project_name)) continue;
 			options.store.ackDetectionEscalation(
 				row.target_key,

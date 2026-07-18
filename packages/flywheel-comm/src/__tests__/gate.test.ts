@@ -29,6 +29,7 @@ describe("gate command", () => {
 			timeoutBehavior: "fail-close",
 			cleanupTtlHours: 24,
 			pollIntervalMs: 50, // fast polling for tests
+			shipCiProbe: () => ({ green: true, reason: "ci_green" }),
 			...overrides,
 		};
 	}
@@ -122,6 +123,46 @@ describe("gate command", () => {
 		expect(result.content).toContain(
 			"NOT verified approval — run verify-approval before any merge",
 		);
+	});
+
+	it("FLY-1314: refuses to open approve_to_ship while CI is not green", async () => {
+		const shipCiProbe = vi.fn(() => ({
+			green: false as const,
+			reason: "ci_not_green" as const,
+			detail: "required check Build & Test is fail",
+		}));
+		await expect(
+			gate(
+				baseArgs({
+					checkpoint: "approve_to_ship",
+					noBlock: true,
+					timeoutBehavior: "fail-open",
+					shipCiProbe,
+				}),
+			),
+		).rejects.toThrow(/CI not green.*Build & Test/);
+		expect(shipCiProbe).toHaveBeenCalledOnce();
+		const db = new CommDB(dbPath);
+		try {
+			expect(db.getPendingQuestions("product-lead")).toHaveLength(0);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("FLY-1314: non-ship checkpoints do not invoke the CI guard", async () => {
+		const shipCiProbe = vi.fn(() => ({
+			green: false as const,
+			reason: "ci_not_green" as const,
+		}));
+		await gate(
+			baseArgs({
+				checkpoint: "question",
+				noBlock: true,
+				shipCiProbe,
+			}),
+		);
+		expect(shipCiProbe).not.toHaveBeenCalled();
 	});
 
 	it("FLY-208 6c-②: approve_to_ship + structured JSON approval → NO caution line", async () => {

@@ -185,6 +185,13 @@ export interface GatePollerConfig {
 	/** FLY-513: cadence for `onHealthTick` in poll ticks (default 20 ≈ 60s at 3s). */
 	healthCheckEveryNTicks?: number;
 	/**
+	 * FLY-1314: issue-scoped gate supersede patrol. It shares the existing
+	 * GatePoller timer and runs every tick so a newly-opened replacement gate
+	 * cannot leave a long founder-reply ambiguity window. The callback owns its
+	 * own bounded mutation budget; failures are fully contained here.
+	 */
+	onIssueGateSupersedeTick?: () => void | Promise<void>;
+	/**
 	 * FLY-1048 (PR-C): the detection-escalation reconcile sweep — the ~30min
 	 * Lead-grace timer that pages the founder (or aggregates a fleet incident).
 	 * Piggybacks this same poll tick (zero new periodic timer). Error-isolated +
@@ -635,6 +642,19 @@ export class GatePoller {
 			// reports are a minutes-scale human-loop event; every Nth tick
 			// (default 20 ≈ 60s at the production 3s interval) is plenty.
 			this.tickCount++;
+
+			// FLY-1314: gate hygiene is a same-tick invariant repair, not a new
+			// background timer. Keep it outside the project/lead loops and isolate it
+			// exactly like the other patrol callbacks.
+			if (this.config.onIssueGateSupersedeTick) {
+				void Promise.resolve()
+					.then(() => this.config.onIssueGateSupersedeTick?.())
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] FLY-1314 issue-gate supersede error (non-fatal): ${(err as Error).message}`,
+						),
+					);
+			}
 
 			// FLY-513: global-codex drift probe — piggybacks this same tick (zero
 			// new periodic timer). Runs OUTSIDE the (project,lead) loops, fully
@@ -2279,7 +2299,9 @@ export class GatePoller {
 			const wdb = new CommDB(dbPath, false);
 			let retired = false;
 			try {
-				retired = wdb.retireShipGate(question.id);
+				retired = wdb.retireShipGate(question.id, {
+					supersededBy: boundQid,
+				});
 			} finally {
 				wdb.close();
 			}
@@ -2944,6 +2966,10 @@ export class GatePoller {
 		return process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER !== "0";
 	}
 
+	private founderReviewGateExcludeEnabled(): boolean {
+		return process.env.FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE !== "0";
+	}
+
 	private founderReplyDeliverGraceMs(): number {
 		return this.config.founderReplyDeliverGraceMs ?? 10 * 60_000;
 	}
@@ -3029,6 +3055,17 @@ export class GatePoller {
 					// the ONLY place reports are special-cased: relayToLead, the
 					// pending CLI, and liveness all keep treating them as questions.
 					if (q.kind === "report") continue;
+					// FLY-1314: cross-family design/code review gates are reviewer
+					// transport, never founder-answerable. Leaving them in this set
+					// makes a one-letter founder reply ambiguous with the actual ship
+					// gate. This exclusion deliberately does not alter relay/pending/
+					// liveness semantics for review gates.
+					if (
+						this.founderReviewGateExcludeEnabled() &&
+						isReviewGateCheckpoint(q.checkpoint)
+					) {
+						continue;
+					}
 					const createdMs = parseSqliteUtcMs(q.created_at);
 					if (createdMs === null) continue;
 					const session = this.config.store.getSession(q.from_agent);
