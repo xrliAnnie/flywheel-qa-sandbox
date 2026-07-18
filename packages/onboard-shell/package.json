@@ -1,10 +1,13 @@
 {
-	"name": "@flywheel/onboard",
+	"name": "@flywheel-ai/onboard",
 	"version": "0.1.0",
 	"description": "Flywheel onboarding installer — one command to install and start Flywheel with a license key. Zero repository access.",
 	"type": "module",
 	"bin": {
 		"flywheel-onboard": "bin/flywheel-onboard.js"
+	},
+	"scripts": {
+		"prepublishOnly": "bash ../../scripts/release/shell-publish-preflight.sh --founder-local"
 	},
 	"files": [
 		"bin",

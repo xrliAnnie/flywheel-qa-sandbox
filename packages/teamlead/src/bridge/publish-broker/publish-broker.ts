@@ -67,7 +67,7 @@ function requestCardText(req: PublishRequest): string {
 	const what =
 		req.action === "publish-release"
 			? "对外发布(promote to customer-release)"
-			: "薄壳 npm 发布(publish @flywheel/onboard)";
+			: "薄壳 npm 发布(publish @flywheel-ai/onboard)";
 	return [
 		`🔐 发布审批请求 — ${what}`,
 		`action: ${req.action}`,

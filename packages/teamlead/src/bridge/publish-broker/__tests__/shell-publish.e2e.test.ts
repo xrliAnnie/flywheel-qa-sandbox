@@ -52,7 +52,7 @@ function buildShellTarball(opts: FixtureOpts = {}): {
 	sha256: string;
 } {
 	const {
-		name = "@flywheel/onboard",
+		name = "@flywheel-ai/onboard",
 		version = "9.9.9",
 		endpoint = "https://onboard.example.com",
 		marker = "",
@@ -175,7 +175,7 @@ function startStubRegistry(): Promise<StubRegistry> {
 	let packumentGets = 0;
 	const server = http.createServer(async (req, res) => {
 		const url = decodeURIComponent(req.url ?? "");
-		if (req.method === "GET" && url === "/@flywheel/onboard") {
+		if (req.method === "GET" && url === "/@flywheel-ai/onboard") {
 			packumentGets++;
 			if (published.size === 0) {
 				res.writeHead(404).end(JSON.stringify({ error: "not found" }));
@@ -185,16 +185,16 @@ function startStubRegistry(): Promise<StubRegistry> {
 			for (const v of published.keys()) {
 				versions[v] = {
 					dist: {
-						tarball: `http://127.0.0.1:${(server.address() as { port: number }).port}/@flywheel/onboard/-/onboard-${v}.tgz`,
+						tarball: `http://127.0.0.1:${(server.address() as { port: number }).port}/@flywheel-ai/onboard/-/onboard-${v}.tgz`,
 					},
 				};
 			}
 			res
 				.writeHead(200, { "content-type": "application/json" })
-				.end(JSON.stringify({ name: "@flywheel/onboard", versions }));
+				.end(JSON.stringify({ name: "@flywheel-ai/onboard", versions }));
 			return;
 		}
-		const tarballMatch = /^\/@flywheel\/onboard\/-\/onboard-(.+)\.tgz$/.exec(
+		const tarballMatch = /^\/@flywheel-ai\/onboard\/-\/onboard-(.+)\.tgz$/.exec(
 			url,
 		);
 		if (req.method === "GET" && tarballMatch) {
@@ -207,7 +207,7 @@ function startStubRegistry(): Promise<StubRegistry> {
 			res.end(bytes);
 			return;
 		}
-		if (req.method === "PUT" && url === "/@flywheel/onboard") {
+		if (req.method === "PUT" && url === "/@flywheel-ai/onboard") {
 			const chunks: Buffer[] = [];
 			for await (const c of req) chunks.push(Buffer.from(c));
 			const doc = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -271,7 +271,7 @@ describe("verifyShellTarball (broker-side authoritative gate)", () => {
 	it("accepts the clean publishable form and returns the full manifest", () => {
 		const { tarball, sha256 } = buildShellTarball();
 		const id = verifyShellTarball(tarball, sha256);
-		expect(id.name).toBe("@flywheel/onboard");
+		expect(id.name).toBe("@flywheel-ai/onboard");
 		expect(id.version).toBe("9.9.9");
 		expect(id.manifest.bin).toEqual({
 			"flywheel-onboard": "bin/flywheel-onboard.js",
@@ -433,7 +433,7 @@ describe("executePublishShell against a stub registry", () => {
 			{ stagedPath: tarball, sha256, registryUrl: reg.url },
 			GAT,
 		);
-		expect(detail.name).toBe("@flywheel/onboard");
+		expect(detail.name).toBe("@flywheel-ai/onboard");
 		expect(detail.version).toBe("9.9.9");
 		expect(reg.puts.length).toBe(1);
 		expect(reg.puts[0].auth).toBe(`Bearer ${GAT}`);
@@ -531,7 +531,7 @@ describe("DRIFT LOCK — the pinned file set tracks the REAL shell package", () 
 		});
 		const sha = sha256Hex(fs.readFileSync(repacked));
 		const id = verifyShellTarball(repacked, sha);
-		expect(id.name).toBe("@flywheel/onboard");
+		expect(id.name).toBe("@flywheel-ai/onboard");
 		expect((id.manifest as { bin?: Record<string, string> }).bin).toBeTruthy();
 	});
 });

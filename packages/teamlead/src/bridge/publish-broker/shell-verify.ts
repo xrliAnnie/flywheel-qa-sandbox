@@ -144,7 +144,7 @@ export interface ShellTarballIdentity {
 	name: string;
 	version: string;
 	/** the FULL parsed package.json — the registry publish document must carry
-	 * it (bin/engines/etc.), or `npx @flywheel/onboard` cannot resolve the
+	 * it (bin/engines/etc.), or `npx @flywheel-ai/onboard` cannot resolve the
 	 * executable (Codex code R1 HIGH). */
 	manifest: Record<string, unknown>;
 }
@@ -240,7 +240,7 @@ export function verifyShellTarball(
 			private?: boolean;
 			publishConfig?: { access?: string };
 		};
-		if (pkg.name !== "@flywheel/onboard") {
+		if (pkg.name !== "@flywheel-ai/onboard") {
 			throw new Error(`unexpected package name ${pkg.name ?? "(none)"}`);
 		}
 		if (

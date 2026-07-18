@@ -65,7 +65,7 @@ function makeBroker(opts: Partial<PublishBrokerOptions> = {}) {
 					releaseId: req.releaseId,
 					token,
 				});
-				return { name: "@flywheel/onboard", version: "0.1.0" };
+				return { name: "@flywheel-ai/onboard", version: "0.1.0" };
 			},
 		},
 		audit: (e) => audit.push(e),

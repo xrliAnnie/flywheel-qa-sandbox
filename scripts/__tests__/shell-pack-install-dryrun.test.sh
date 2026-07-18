@@ -63,7 +63,7 @@ fi
 # the installed bin must EXECUTE — with an empty runtime + no TTY it must
 # fail HONESTLY (non-zero, real message), never with a broken-package error
 BIN_OUT="$(env -i HOME="$SANDBOX/h" PATH="$PATH" FLYWHEEL_STATE_DIR="$SANDBOX/h/.flywheel" \
-  node "$PREFIX/node_modules/@flywheel/onboard/bin/flywheel-onboard.js" </dev/null 2>&1)"
+  node "$PREFIX/node_modules/@flywheel-ai/onboard/bin/flywheel-onboard.js" </dev/null 2>&1)"
 BIN_RC=$?
 if [ "$BIN_RC" -ne 0 ] && [ -n "$BIN_OUT" ] && ! grep -q "Cannot find module" <<<"$BIN_OUT"; then
   pass "P3b installed bin executes (honest failure without key/endpoint, rc=$BIN_RC)"
@@ -72,9 +72,16 @@ else
 fi
 
 # ── P4 · npm publish --dry-run: whitelist only, zero registry contact ───────
+# FLY-1323: the package now carries a `prepublishOnly` hook (the gate a bare
+# `npm publish` would otherwise skip entirely). That hook DELIBERATELY consults
+# the real registry and refuses the .invalid placeholder, so a publish can no
+# longer be a purely offline no-op — that is the point of the gate, not a
+# regression. P4 inspects the packed FILE SET, so it runs the dry-run with
+# --ignore-scripts to keep testing exactly what it was written to test; the hook
+# itself is covered by P4d below and by the publish-gate suite (G6a/G6b).
 NPMRC="$SANDBOX/npmrc"
 printf 'registry=http://127.0.0.1:1/\n//127.0.0.1:1/:_authToken=dry-run-placeholder\n' > "$NPMRC"
-DRY_OUT="$(cd "$SHELL_DIR" && npm publish --dry-run --userconfig "$NPMRC" 2>&1)"
+DRY_OUT="$(cd "$SHELL_DIR" && npm publish --dry-run --ignore-scripts --userconfig "$NPMRC" 2>&1)"
 DRY_RC=$?
 if [ "$DRY_RC" -eq 0 ]; then
   pass "P4a npm publish --dry-run succeeds offline (port 1 registry never contacted)"
@@ -94,6 +101,19 @@ if grep -qi "integrity\|shasum" <<<"$DRY_OUT"; then
   pass "P4c dry-run computed the artifact integrity locally"
 else
   fail "P4c no integrity line in dry-run output"
+fi
+
+# ── P4d · FLY-1323 · a BARE publish (no --ignore-scripts) is gated ───────────
+# P4a above deliberately opts out of the hook to inspect the file set. This
+# asserts the other half: without that opt-out the placeholder tree is REFUSED,
+# so the founder-direct path cannot publish a shell pointing at .invalid even if
+# nobody remembers to run the preflight by hand.
+BARE_OUT="$(cd "$SHELL_DIR" && npm publish --dry-run --userconfig "$NPMRC" 2>&1)" && BARE_RC=0 || BARE_RC=$?
+if [ "$BARE_RC" -ne 0 ] && grep -q "placeholder" <<<"$BARE_OUT" \
+   && ! grep -q "Publishing to" <<<"$BARE_OUT"; then
+  pass "P4d bare npm publish is gated by prepublishOnly (placeholder refused, never reaches publish)"
+else
+  fail "P4d bare publish was NOT gated (rc=$BARE_RC): $(tail -4 <<<"$BARE_OUT")"
 fi
 
 # ── P5 · placeholder endpoint still blocks a REAL staging ───────────────────

@@ -6,7 +6,9 @@
 #   G2 zero prompts/persona/copy build-artifacts (the plaintext IP lives in the
 #      payload, never the public shell)
 #   G3 zero private-repo URL (xrliAnnie/) anywhere in the packed content
-#   G4 package.json is private:true (PR2 does NOT publish — publishing is PR4)
+#   G4 publish FORM (PR4): private lock REMOVED + scoped public access (the
+#      earlier private:true lock is gone; publishing stays founder-gated at the
+#      preflight/runbook level, not by a private flag)
 set -uo pipefail
 
 PASSED=0; FAILED=0
@@ -100,7 +102,7 @@ fi
 #    founder-local 2FA action per the runbook) ────────────────────────────────
 if [ "$(jq -r '.private // "absent"' "$PKG_DIR/package.json")" = "absent" ] \
    && [ "$(jq -r '.publishConfig.access' "$PKG_DIR/package.json")" = "public" ] \
-   && [ "$(jq -r '.name' "$PKG_DIR/package.json")" = "@flywheel/onboard" ]; then
+   && [ "$(jq -r '.name' "$PKG_DIR/package.json")" = "@flywheel-ai/onboard" ]; then
   pass "G4 publish form: scoped public package, private lock removed (PR4)"
 else
   fail "G4 publish form wrong: private=$(jq -r '.private' "$PKG_DIR/package.json") access=$(jq -r '.publishConfig.access' "$PKG_DIR/package.json")"
@@ -128,6 +130,80 @@ if [ -f "$PREFLIGHT" ]; then
   fi
 else
   fail "G5 shell-publish-preflight.sh missing"
+fi
+
+# ── G6 · FLY-1323 · a bare `npm publish` must run the gate by itself ─────────
+# The founder-direct first publish (FLY-1323) has no broker to re-run the
+# authoritative content gate, and `npm publish` runs NOTHING on its own. Without
+# a prepublishOnly hook the ONLY protection is a human remembering to run the
+# preflight. Make it structural.
+# Codex R4#4: G6a trusted jq's output without checking its exit; a failed jq
+# printing nothing would read as "no hook". Require exit 0 first.
+# Codex R5#4 then R6#4: substring/glob checks were both gameable — `echo
+# shell-publish-preflight` (R5) and `bash -c 'true' shell-publish-preflight.sh
+# --founder-local` (R6, matches the glob `bash *…--founder-local` yet runs
+# `bash -c 'true'`, never the gate). This repo owns exactly ONE lifecycle command,
+# so pin the EXACT canonical hook string — no lookalike can equal it. The
+# behavioral proof that this exact string actually runs the gate lives in
+# shell-pack-install-dryrun.test.sh P4d (bare publish IS gated). Two known
+# lookalikes are asserted unequal below so the equality's discrimination is explicit.
+EXPECTED_HOOK='bash ../../scripts/release/shell-publish-preflight.sh --founder-local'
+HOOK="$(jq -r '.scripts.prepublishOnly // ""' "$PKG_DIR/package.json")"; HOOK_RC=$?
+if [ "$HOOK_RC" -eq 0 ] && [ "$HOOK" = "$EXPECTED_HOOK" ] \
+   && [ "$EXPECTED_HOOK" != "echo shell-publish-preflight" ] \
+   && [ "$EXPECTED_HOOK" != "bash -c 'true' shell-publish-preflight.sh --founder-local" ]; then
+  pass "G6a prepublishOnly is EXACTLY the canonical preflight invocation (no substring/glob/-c lookalike can pass)"
+else
+  fail "G6a hook is not the exact canonical invocation (jq rc=$HOOK_RC): got '$HOOK', want '$EXPECTED_HOOK'"
+fi
+
+# G6b · npm pack must NOT fire prepublishOnly. shell-prepare.mjs packs the exact
+# tarball, and the preflight itself packs while checking content — if pack fired
+# the hook it would recurse forever.
+# Codex R4#4: this captured pack output but ignored its exit status — a FAILED
+# pack (which prints no "shell-publish-preflight") was reported as PASS. Require
+# exit 0, so a broken pack fails this test instead of masquerading as "no recursion".
+PACK_OUT="$(cd "$PKG_DIR" && npm pack --dry-run 2>&1)"; PACK_RC=$?
+if [ "$PACK_RC" -eq 0 ] && ! grep -q "shell-publish-preflight" <<<"$PACK_OUT"; then
+  pass "G6b npm pack succeeds and does not fire prepublishOnly (no recursion into the gate)"
+else
+  fail "G6b npm pack failed (rc=$PACK_RC) or fired the publish hook — recursion risk: $PACK_OUT"
+fi
+
+# ── G7 · FLY-1323 (Codex R4#4) · the endpoint gate FAILS CLOSED when config.mjs
+#    is missing. G5 only ever exercises the present placeholder file, so reverting
+#    the tri-state guard to a bare `if grep -q` (grep exits 2 on a missing file,
+#    the `if` reads false, and the script announces "not the placeholder" and
+#    passes) left G5 green. This copies the CURRENT preflight into a tree where
+#    lib/config.mjs is ABSENT and asserts it refuses with the guard's unique
+#    diagnostic — so a regression to the fail-open form turns THIS test red.
+G7SB="$SANDBOX/g7"; mkdir -p "$G7SB/scripts/release" "$G7SB/packages/onboard-shell/lib"
+cp "$PREFLIGHT" "$G7SB/scripts/release/shell-publish-preflight.sh"
+cp "$PKG_DIR/package.json" "$G7SB/packages/onboard-shell/package.json"
+# lib/ exists but config.mjs deliberately absent → the endpoint gate must refuse
+G7_OUT="$(bash "$G7SB/scripts/release/shell-publish-preflight.sh" --check-endpoint-only 2>&1)"; G7_RC=$?
+if [ "$G7_RC" -ne 0 ] && grep -q "A missing file is not a passing check" <<<"$G7_OUT"; then
+  pass "G7 endpoint gate fails CLOSED when config.mjs is missing (a missing file is not a passing check)"
+else
+  fail "G7 missing config.mjs did not fail closed (rc=$G7_RC): $G7_OUT"
+fi
+
+# ── G8 · FLY-1323 (Codex R5#1) · a hostile `dirname` on PATH cannot redirect the
+#    tree the preflight validates. The old form nested an UNCHECKED external
+#    `dirname` inside ROOT's resolution; a `dirname` that printed another valid
+#    tree and exited non-zero would send the gate to inspect the wrong package.
+#    The current form uses Bash parameter expansion (a builtin). Proof: with a
+#    hostile `dirname` shim on PATH, the preflight must still resolve THIS repo and
+#    die on the placeholder endpoint — not on "config missing" from a wrong tree.
+G8SHIM="$SANDBOX/g8bin"; mkdir -p "$G8SHIM"
+printf '#!/bin/bash\necho "/tmp/fly1323-WRONG-TREE"; exit 73\n' > "$G8SHIM/dirname"
+chmod +x "$G8SHIM/dirname"
+G8_OUT="$(PATH="$G8SHIM:$PATH" bash "$PREFLIGHT" --check-endpoint-only 2>&1)"; G8_RC=$?
+if [ "$G8_RC" -ne 0 ] && grep -q "still the .invalid placeholder" <<<"$G8_OUT" \
+   && ! grep -q "A missing file is not a passing check" <<<"$G8_OUT"; then
+  pass "G8 hostile dirname on PATH cannot redirect the validated tree (builtin resolution, not external dirname)"
+else
+  fail "G8 preflight tree was redirectable by a hostile dirname (rc=$G8_RC): $G8_OUT"
 fi
 
 echo ""

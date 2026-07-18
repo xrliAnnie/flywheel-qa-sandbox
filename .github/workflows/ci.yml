@@ -195,7 +195,7 @@ jobs:
       - name: Test — FLY-1062 payload real-install smoke
         run: bash scripts/__tests__/package-onboard-smoke.test.sh
 
-      # FLY-1062 PR2: public onboard-shell (@flywheel/onboard). Hermetic — a
+      # FLY-1062 PR2: public onboard-shell (@flywheel-ai/onboard). Hermetic — a
       # stub gated endpoint on loopback + a fixture zero-dep payload tarball +
       # REAL npm install. Covers the full customer install chain, failure
       # paths (zero half-baked), key rotation + update seam, the key-leak
@@ -325,6 +325,18 @@ jobs:
 
       - name: Release pipeline (beta line + two-stage promote + withdraw)
         run: bash scripts/__tests__/payload-release-pipeline.test.sh
+
+      # FLY-1323 (Codex R7#4): the two preflight matrices were standalone and ran
+      # NOWHERE in CI, so their O1-O7 / registry fail-closed guards could regress
+      # while required checks stayed green. Wired here. NOTE: both de-placeholder the
+      # checked-in packages/onboard-shell/lib/config.mjs (atomic temp+mv, trap-restored)
+      # — keep them SEQUENTIAL (do NOT move either into a parallel matrix that also
+      # reads config.mjs) until they are refactored onto a fully sandboxed tree.
+      - name: Preflight registry-pin matrix (scoped-registry fail-closed)
+        run: bash scripts/__tests__/shell-preflight-registry.test.sh
+
+      - name: Preflight OIDC toolchain-floor matrix (exit-status + version-grammar guards)
+        run: bash scripts/__tests__/oidc-toolchain-floor.test.sh
 
       - name: Release workflow structure lint (founder-gate contract)
         run: bash scripts/__tests__/release-workflows-structure.test.sh

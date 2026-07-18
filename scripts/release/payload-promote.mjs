@@ -12,7 +12,7 @@
 //       uploads, readback-verifies → prepared.
 //
 //   commit   (FOUNDER GATE; FW_CUSTOMER_RELEASE_TOKEN — founder custody, §3)
-//     node payload-promote.mjs commit --release-id <id>
+//     node payload-promote.mjs commit --release-id <id> --expected-sha256 <64hex>   (REQUIRED)
 //     • ZERO BUILD: re-verifies the already-prepared artifact's sha via
 //       streamed readback, then ONE CAS: release entry (full lineage) +
 //       customer-release pointer + op→committed. What the founder approved is
@@ -48,6 +48,69 @@ const log = (m) => console.log(`[payload-promote] ${m}`);
 function argValue(name, fallback) {
 	const i = process.argv.indexOf(`--${name}`);
 	return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
+}
+
+// FLY-1323: argValue() only reads the flags a caller thinks to ask for, so an
+// unknown argument used to be silently DROPPED. That is worse than rejecting
+// it: a `--sha256` typo'd for `--expected-sha256` reads like an approval
+// binding while binding nothing. Every mode declares its flags; anything else
+// is fail-closed.
+//
+// This consumes the WHOLE argv as recognized flag/value pairs and refuses any
+// token it did not consume. Every flag here is value-taking (there are no
+// booleans), so a known flag always eats exactly two tokens. Three spellings
+// are each refused for the same reason — they all read as ABSENT downstream:
+//   --flag=value   argValue() matches only an exact `--flag` item, so
+//                  `--expected-sha256=<hex>` would pass a name check and then
+//                  read back as absent (Codex design R2);
+//   positional/-x  a bare token or short option was skipped by an earlier
+//                  `continue`, so it looked accepted and did nothing (R3);
+//   dangling flag  `--expected-sha256` with nothing after it falls back to ""
+//                  and reports as simply not given (R3).
+// One accepted syntax, no second parser to drift.
+function assertArgvFullyRecognized(allowed) {
+	const argv = process.argv.slice(3);
+	const known = () => allowed.map((a) => `--${a}`).join(" ");
+	const seen = new Set();
+
+	for (let i = 0; i < argv.length; i++) {
+		const arg = argv[i];
+
+		if (!arg.startsWith("--")) {
+			die(
+				`unrecognized argument '${arg}' (known: ${known()}). ` +
+					`Refusing rather than ignoring it — an argument that looks like a control but does nothing is worse than no control.`,
+			);
+		}
+		if (arg.includes("=")) {
+			die(
+				`--flag=value is not supported (got ${arg}). Use the space-separated form: ${arg.split("=")[0]} <value>. ` +
+					`Refusing rather than silently reading it as absent.`,
+			);
+		}
+		const name = arg.slice(2);
+		if (!allowed.includes(name)) {
+			die(
+				`unknown flag --${name} (known: ${known()}). ` +
+					`Refusing rather than ignoring it — a flag that looks like a control but does nothing is worse than no control.`,
+			);
+		}
+		// argValue() resolves via indexOf → the FIRST occurrence wins and every
+		// later one is silently dropped. `--expected-sha256 <good> --expected-sha256
+		// <evil>` must never be ambiguous about which artifact was approved.
+		if (seen.has(name))
+			die(`--${name} given more than once — refusing an ambiguous value`);
+		seen.add(name);
+
+		// A dangling flag must not read as absent: argValue() would fall back to
+		// "" and the caller would report the flag as simply not given.
+		if (i + 1 >= argv.length) {
+			die(
+				`--${name} requires a value but none followed it — refusing to read a dangling flag as absent`,
+			);
+		}
+		i++; // consume the value token
+	}
 }
 
 function clientFor(envName) {
@@ -115,6 +178,7 @@ export function proveEquivalence(betaTarball, cleanTarball, workDir) {
 
 // ── prepare ──────────────────────────────────────────────────────────────────
 async function cmdPrepare() {
+	assertArgvFullyRecognized(["release-id", "beta", "repo-root"]);
 	const client = clientFor("FW_BETA_PUBLISH_TOKEN");
 	const releaseId = argValue("release-id", "");
 	const betaVer = argValue("beta", "");
@@ -277,15 +341,37 @@ async function cmdPrepare() {
 // ═════════════════════════════════════════════════════════════════════════════
 
 async function cmdCommit() {
+	assertArgvFullyRecognized(["release-id", "expected-sha256"]);
 	const client = clientFor("FW_CUSTOMER_RELEASE_TOKEN");
 	const releaseId = argValue("release-id", "");
 	if (!releaseId) die("commit: --release-id required");
+	// FLY-1323: binds THIS invocation to the exact tuple the founder approved.
+	// REQUIRED, not optional — an unbound direct commit is precisely the hole the
+	// founder-direct first publish opens (the broker binds its approval to a
+	// sha256 structurally, via PublishReleaseArgs.sha256). Nothing in the repo
+	// needs the unbound form: the broker does not call this CLI, it calls
+	// bridge/publish-broker/release-commit.ts. So an optional flag would only
+	// preserve a footgun.
+	const expectedSha = argValue("expected-sha256", "");
+	if (!expectedSha)
+		die(
+			"commit: --expected-sha256 <64hex> required — the customer pointer only ever moves to an artifact someone explicitly approved by hash",
+		);
+	if (!/^[0-9a-f]{64}$/.test(expectedSha))
+		die(
+			`commit: --expected-sha256 must be a 64-char lowercase hex sha256 (got ${expectedSha})`,
+		);
 
 	const { manifest } = await client.readManifest();
 	if (!manifest) die("no manifest");
 	const op = manifest.releaseOps[releaseId];
 	if (!op || op.kind !== "release")
 		die(`commit: no release candidate ${releaseId}`);
+	if (expectedSha && op.sha256 !== expectedSha)
+		die(
+			`commit: --expected-sha256 ${expectedSha} does not match candidate ${releaseId} (${op.sha256}) — ` +
+				`refusing fail-closed. The approval binds a specific artifact; this is not it.`,
+		);
 	if (op.state === "committed") {
 		log(`releaseId ${releaseId} already committed — idempotent success`);
 		return;
@@ -305,9 +391,43 @@ async function cmdCommit() {
 	const bytes = Buffer.from(await head.arrayBuffer());
 	const size = bytes.length;
 
+	// QA ff38290f F1 (defense in depth — NOT a live HIGH; severity corrected in R4,
+	// confirmed by Codex): the binding above was checked on the snapshot read at
+	// readManifest(), but casUpdate re-reads the manifest on EVERY attempt — so the
+	// tuple that actually moves the pointer (`cur`) was never compared to what the
+	// founder approved. QA demonstrated a swap via a STUB endpoint; the REAL endpoint
+	// (packages/payload-endpoint/src/transitions.mjs) makes a prepared op's tuple
+	// write-once with no transition back to `reserved`, so the swap cannot land in
+	// production — see test P7a. This guard still matters: the CLI's approval contract
+	// must not silently depend on a server-side invariant (if the endpoint ever
+	// relaxed write-once, an unguarded CLI would move the pointer to an unapproved
+	// artifact). And the success log printed the snapshot-A version while the
+	// snapshot-B version was written — so the operator could not see a divergence
+	// from the output.
+	//
+	// Re-check inside the mutate, where `cur` is the tuple being written. casUpdate's
+	// own contract says "mutate may also THROW to fail closed", and payload-release.mjs
+	// already fails closed this way on a mismatched tuple. Moving the customer pointer
+	// is the highest-consequence write in the flow and was the one call site not doing
+	// it.
+	let committedVer = null;
 	await client.casUpdate((m) => {
 		const cur = m.releaseOps[releaseId];
-		if (cur.state === "committed") return false;
+		// The binding is re-checked FIRST, unconditionally, against the tuple this
+		// attempt actually observes — before any early return can skip it. A
+		// concurrent commit of a DIFFERENT artifact must fail closed, not be
+		// reported as idempotent success.
+		if (cur.sha256 !== expectedSha)
+			throw new Error(
+				`commit: candidate ${releaseId} changed under us — approved sha256 ${expectedSha}, ` +
+					`manifest now has ${cur.sha256} (version ${cur.ver}). Refusing fail-closed: the customer ` +
+					`pointer only ever moves to the artifact that was explicitly approved by hash.`,
+			);
+		if (cur.state === "committed") {
+			// Someone else committed the artifact we approved — genuinely idempotent.
+			committedVer = cur.ver;
+			return false;
+		}
 		if (cur.state !== "prepared")
 			throw new Error(`cannot commit from ${cur.state}`);
 		m.versions[cur.ver] = {
@@ -324,15 +444,23 @@ async function cmdCommit() {
 			quarantinedAt: null,
 		};
 		m.channels["customer-release"].latest = cur.ver;
+		committedVer = cur.ver;
 		cur.state = "committed";
 		return true;
 	}, "commit-release");
+	// Report what was ACTUALLY written, not what we read before the write. The old
+	// log printed op.ver (snapshot A) while the mutate wrote cur.ver (snapshot B):
+	// in QA's repro the CLI said "COMMITTED 1.0.0" while the pointer went to 6.6.6.
+	// The guard above now makes that divergence impossible, but a success line must
+	// still be evidence of the write itself rather than of a stale read — otherwise
+	// the next person to break the guard gets a reassuring lie instead of a symptom.
 	log(
-		`COMMITTED: customer-release.latest = ${op.ver} (releaseId ${releaseId})`,
+		`COMMITTED: customer-release.latest = ${committedVer} (releaseId ${releaseId})`,
 	);
 }
 
 async function cmdWithdraw() {
+	assertArgvFullyRecognized(["withdraw", "fallback"]);
 	const client = clientFor("FW_CUSTOMER_RELEASE_TOKEN");
 	const ver = argValue("withdraw", "");
 	const fallback = argValue("fallback", "");
