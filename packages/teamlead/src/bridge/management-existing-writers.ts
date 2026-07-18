@@ -9,11 +9,14 @@ import {
 	type FlywheelConfig,
 	getModelRegistryEntry,
 	type RunnerDefaultsChange,
+	readEnvFileSource,
 	resolveAllFlags,
 } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
+import { buildDagFlagPanel } from "./dag-flag-panel.js";
 import { computeEnvSha } from "./env-file-writer.js";
+import { formatFlagDivergence } from "./feature-flag-render.js";
 import {
 	applyFlagToggle,
 	type FlagToggleDeps,
@@ -312,14 +315,16 @@ function buildFlagView(
 	const global = flagManagedValue({
 		view,
 		current:
-			view.scope === "bridge_global" ? (view.effective ?? null) : view.default,
+			view.scope === "bridge_global"
+				? (view.displayEffective ?? null)
+				: view.default,
 		targetId: buildTargetId("flag", [view.name, "global"]),
 		revision,
 		scopeMismatch:
 			view.scope === "project"
 				? "project-scoped flag has no global override"
 				: undefined,
-		error: view.error,
+		error: view.error ?? formatFlagDivergence(view),
 	});
 	const effectiveByProject = new Map(
 		(view.effectiveByProject ?? []).map((row) => [row.projectName, row]),
@@ -360,15 +365,15 @@ export function createManagementFlagProvider(
 		read: () => {
 			const revision = input.revision();
 			const names = input.projectNames().sort((a, b) => a.localeCompare(b));
+			const views = input.views();
 			return {
 				revision,
 				hint: "flywheel-config/feature-flags",
 				fragment: {
-					flags: input
-						.views()
-						.map((view) =>
-							buildFlagView(view, revision, names, input.projectRevision),
-						),
+					flags: views.map((view) =>
+						buildFlagView(view, revision, names, input.projectRevision),
+					),
+					dagPanel: buildDagFlagPanel(views),
 				},
 			};
 		},
@@ -728,6 +733,7 @@ function flagViews(deps: ExistingManagementWriterDeps): FlagView[] {
 		deps.flagViews?.() ??
 		resolveAllFlags({
 			env: deps.env,
+			envFile: readEnvFileSource(deps.envPath, deps.readEnvFile),
 			projectConfigs: new Map(deps.projectConfigs()),
 		})
 	);
@@ -824,7 +830,22 @@ function createFlagWriter(
 			if (!name || !spec?.envVar || !isDirectToggleable(spec)) {
 				return { status: "rejected", reason: "flag is not direct-toggleable" };
 			}
-			const rawFrom = (deps.env ?? process.env)[spec.envVar] ?? null;
+			// Re-capture the reviewed authorities as one baseline after preflight.
+			// If either source changed in the await gap, reject instead of adopting
+			// the new bytes/value as an unreviewed apply baseline. applyFlagToggle
+			// rechecks both again under its file lock, closing the remaining gap.
+			const authorityEnv = deps.env ?? process.env;
+			const authorityFile = deps.readEnvFile(deps.envPath);
+			if (
+				managementFlagRevision(authorityFile, authorityEnv) !==
+				change.sourceRevision
+			) {
+				return {
+					status: "rejected",
+					reason: ".env or live flag value changed since review",
+				};
+			}
+			const rawFrom = authorityEnv[spec.envVar] ?? null;
 			const desired = change.newValue as boolean;
 			const rawTo =
 				spec.polarity === "default_on"
@@ -846,7 +867,7 @@ function createFlagWriter(
 					name,
 					rawFrom,
 					rawTo,
-					fileSha: computeEnvSha(deps.readEnvFile(deps.envPath)),
+					fileSha: computeEnvSha(authorityFile),
 				},
 			);
 			return result.ok

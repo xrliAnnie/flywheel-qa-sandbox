@@ -52,12 +52,16 @@ describe("feature-flag registry invariants", () => {
 		}
 	});
 
-	it("F1 safety gate: direct toggles require ALL read sites call_time + directToggleProof", () => {
+	it("F1 safety gate: direct toggles require ALL read sites hot + directToggleProof", () => {
 		for (const f of FEATURE_FLAGS) {
 			if (f.toggleable !== "direct") continue;
 			expect(
-				f.readSites.every((s) => s.timing === "call_time"),
-				`${f.name} is direct but has a non-call_time read site`,
+				f.readSites.every((s) =>
+					(["call_time", "dotenv_live"] as const).includes(
+						s.timing as "call_time" | "dotenv_live",
+					),
+				),
+				`${f.name} is direct but has a cold read site`,
 			).toBe(true);
 			expect(
 				f.directToggleProof,
@@ -337,18 +341,63 @@ describe("feature-flag registry invariants", () => {
 		]);
 	});
 
-	it("registers workflow template dispatch as a default-off governance gate", () => {
-		const flag = FEATURE_FLAGS.find(
-			(candidate) => candidate.name === "workflow_template_dispatch",
-		);
-		expect(flag).toMatchObject({
-			category: "governance_gate",
-			source: "env",
-			scope: "bridge_global",
-			envVar: "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH",
-			polarity: "opt_in",
-			default: false,
-			toggleable: "readonly",
-		});
+	it("FLY-1344 enrolls the five DAG controls with exact hot read-site timings", () => {
+		const expected = {
+			workflow_template_dispatch: [
+				["packages/teamlead/src/workflow-template-dispatch.ts", "call_time"],
+			],
+			workflow_generalized_templates: [
+				["packages/teamlead/src/workflow-template.ts", "call_time"],
+			],
+			workflow_claims_write: [
+				["packages/teamlead/src/workflow-claims.ts", "call_time"],
+				["packages/teamlead/src/bridge/workflow-shadow-writer.ts", "call_time"],
+				["packages/teamlead/src/bridge/plugin.ts", "call_time"],
+			],
+			workflow_claims_read: [
+				["packages/teamlead/src/workflow-claims.ts", "call_time"],
+				["packages/flywheel-comm/src/ship-eligibility.ts", "call_time"],
+				["packages/flywheel-comm/src/ship-eligibility.ts", "dotenv_live"],
+				[
+					"packages/flywheel-comm/src/commands/verify-approval.ts",
+					"dotenv_live",
+				],
+			],
+			workflow_force_legacy: [
+				["packages/flywheel-comm/src/ship-eligibility.ts", "call_time"],
+				["packages/flywheel-comm/src/ship-eligibility.ts", "dotenv_live"],
+			],
+		} as const;
+		for (const [name, readSites] of Object.entries(expected)) {
+			const flag = FEATURE_FLAGS.find((candidate) => candidate.name === name);
+			expect(flag).toMatchObject({
+				source: "env",
+				scope: "bridge_global",
+				polarity: "opt_in",
+				default: false,
+				toggleable: "direct",
+			});
+			expect(flag?.category).toBe(
+				name === "workflow_force_legacy" ? "kill_switch" : "feature",
+			);
+			expect(flag?.readSites.map((site) => [site.file, site.timing])).toEqual(
+				readSites,
+			);
+		}
+	});
+
+	it("FLY-1344 leaves true authorization surfaces governance-readonly", () => {
+		for (const name of [
+			"founder_consent_decision_mode",
+			"founder_attribution_gate",
+			"comm_bypass_bridge",
+			"lead_lease_bypass",
+			"founder_ux_gate",
+		]) {
+			expect(FEATURE_FLAGS.find((flag) => flag.name === name)).toMatchObject({
+				category: "governance_gate",
+				toggleable: "readonly",
+			});
+		}
 	});
 });

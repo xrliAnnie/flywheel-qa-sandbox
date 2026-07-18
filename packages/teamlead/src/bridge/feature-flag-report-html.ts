@@ -17,6 +17,11 @@
  */
 
 import type { FlagView } from "flywheel-config";
+import { buildDagFlagPanel } from "./dag-flag-panel.js";
+import {
+	DAG_FLAG_PANEL_CSS,
+	renderDagFlagPanelHtml,
+} from "./dag-flag-panel-render.js";
 import {
 	esc,
 	FEATURE_FLAG_CSS,
@@ -137,6 +142,10 @@ function copyPasteSurface(): string {
 		'  for (var i=0;i<boxes.length;i++){ boxes[i].addEventListener("change", rebuild); }',
 		'  var cfgSels=document.querySelectorAll("[data-cfg-group]");',
 		'  for (var i=0;i<cfgSels.length;i++){ cfgSels[i].addEventListener("change", rebuild); }',
+		'  var dagButtons=document.querySelectorAll("[data-dag-copy]");',
+		'  for (var i=0;i<dagButtons.length;i++){ dagButtons[i].addEventListener("click", function(){',
+		'    var command=this.getAttribute("data-dag-copy")||""; if(out){out.value=command;} if(count){count.textContent=command?"1":"0";}',
+		"  }); }",
 		'  var copyBtn=q("ffCopyBtn");',
 		"  if (copyBtn){",
 		'    copyBtn.addEventListener("click", function(){',
@@ -309,6 +318,7 @@ export function renderFlagReport(
 		? { leads: [], featureFlags: data }
 		: data;
 	const flags = snap.featureFlags ?? [];
+	const dagPanel = snap.dagPanel ?? buildDagFlagPanel(flags);
 	const interactive = opts.interactive === true;
 	const genLine = opts.generatedAt
 		? `<p class="sub">生成于 ${esc(opts.generatedAt)}</p>`
@@ -325,7 +335,7 @@ export function renderFlagReport(
 		'<meta charset="utf-8">',
 		'<meta name="viewport" content="width=device-width, initial-scale=1">',
 		"<title>Flywheel Feature Flags</title>",
-		`<style>${BASE_CSS}${FEATURE_FLAG_CSS}</style>`,
+		`<style>${BASE_CSS}${FEATURE_FLAG_CSS}${DAG_FLAG_PANEL_CSS}</style>`,
 		`</head><body${bodyAttrs}><div class="wrap">`,
 		'<div class="card">',
 		"<h1>Fleet 控制台</h1>",
@@ -335,6 +345,7 @@ export function renderFlagReport(
 		"</div>",
 		interactive ? leadConfigSection(snap.leads) : "",
 		interactive ? runnerCronSections(snap) : "",
+		renderDagFlagPanelHtml(dagPanel, interactive),
 		renderFeatureFlagsHtml(flags, interactive ? "phone" : "none"),
 		interactive ? copyPasteSurface() : "",
 		"</div></body></html>",

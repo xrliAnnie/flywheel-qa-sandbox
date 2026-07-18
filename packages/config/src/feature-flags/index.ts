@@ -1,3 +1,5 @@
+export type { DirectToggleMetadata } from "./direct-toggle.js";
+export { isDirectToggleMetadata } from "./direct-toggle.js";
 export type {
 	FeatureFlagSpec,
 	FlagCategory,

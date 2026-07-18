@@ -48,6 +48,13 @@ describe("management console HTML", () => {
 		expect(html).toContain("部分成功");
 	});
 
+	it("renders the shared DAG truth panel and fail-stop copy presets", () => {
+		expect(html).toContain("snapshot.dagPanel");
+		expect(html).toContain("DAG 控制 · 五杆三事实");
+		expect(html).toContain("data-dag-command");
+		expect(html).toContain("第二阶段需刷新确认 claims reader");
+	});
+
 	it("ships syntactically valid dependency-free browser JavaScript", () => {
 		const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
 		expect(scripts).toHaveLength(1);

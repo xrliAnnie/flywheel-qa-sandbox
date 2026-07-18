@@ -282,6 +282,69 @@ describe("existing management writer adapters", () => {
 		).toMatchObject({ writable: false });
 	});
 
+	it("management flag values use displayEffective and disable writes on source divergence", () => {
+		const flagProvider = createManagementFlagProvider({
+			views: () =>
+				resolveAllFlags({
+					env: { FLYWHEEL_WORKFLOW_FORCE_LEGACY: "1" },
+					envFile: {
+						status: "readable",
+						content: "FLYWHEEL_WORKFLOW_FORCE_LEGACY=0\n",
+					},
+					projectConfigs: configs(),
+				}),
+			revision: () => "registry:diverged",
+			projectNames: () => ["flywheel"],
+		});
+		const value = flagProvider
+			.read()
+			.fragment.flags?.find(
+				(flag) => flag.name === "workflow_force_legacy",
+			)?.global;
+		expect(value?.current).toBeNull();
+		expect(value?.writeCapability).toMatchObject({
+			writable: false,
+		});
+		expect(value?.writeCapability.reason).toContain("CLI 与 Bridge 见值不同");
+	});
+
+	it.each([
+		["staged_restart", ".env 已改,待重启生效"],
+		["split_brain", "CLI 与 Bridge 见值不同"],
+		["bridge_stale", ".env 已改,Bridge 未拾取"],
+		["source_unavailable", ".env 不可读,无法确认或操作"],
+	] as const)(
+		"localhost flag DTO explains %s with the observable sources and no write capability",
+		(divergence, message) => {
+			const base = resolveAllFlags({ env: {} }).find(
+				(flag) => flag.name === "workflow_force_legacy",
+			);
+			if (!base) throw new Error("missing workflow_force_legacy");
+			const flagProvider = createManagementFlagProvider({
+				views: () => [
+					{
+						...base,
+						bridgeEffective: true,
+						fileEffective:
+							divergence === "source_unavailable" ? undefined : false,
+						displayEffective: undefined,
+						divergence,
+					},
+				],
+				revision: () => `registry:${divergence}`,
+				projectNames: () => ["flywheel"],
+			});
+			const value = flagProvider.read().fragment.flags?.[0]?.global;
+			expect(value?.current).toBeNull();
+			expect(value?.writeCapability.writable).toBe(false);
+			expect(value?.writeCapability.reason).toContain(message);
+			expect(value?.writeCapability.reason).toContain("Bridge: ON");
+			if (divergence !== "source_unavailable") {
+				expect(value?.writeCapability.reason).toContain(".env: OFF");
+			}
+		},
+	);
+
 	it("direct flag delegates the safe env writer, refreshes live state, and rejects unsupported scopes", async () => {
 		const env: Record<string, string | undefined> = {};
 		let envFile = "KEEP=1\n";
@@ -331,6 +394,46 @@ describe("existing management writer adapters", () => {
 		]);
 		const globalOnlyTarget = await flag.resolve(globalOnlyOverride);
 		expect(globalOnlyTarget?.writeCapability.reason).toMatch(/global/i);
+	});
+
+	it("direct flag rejects an out-of-band .env edit that lands after apply revalidation", async () => {
+		const env: Record<string, string | undefined> = {};
+		const initial = "KEEP=1\n";
+		const edited = "KEEP=2\n";
+		let reads = 0;
+		let persisted = initial;
+		const { flag } = createExistingManagementWriters({
+			projects,
+			projectsRevision: () => PROJECTS_REVISION,
+			projectConfigs: configs,
+			readProjectConfig: () => CONFIG,
+			readEnvFile: () => {
+				reads += 1;
+				// Initial resolve and apply-time re-resolve both see the reviewed file.
+				// The next read models a concurrent edit after preflight returns.
+				if (reads >= 3) persisted = edited;
+				return persisted;
+			},
+			writeEnvFile: (_path, content) => {
+				persisted = content;
+			},
+			envPath: "/server/.flywheel/.env",
+			env,
+			flagViews: () => resolveAllFlags({ env, projectConfigs: configs() }),
+			flagLock: (fn) => fn(),
+			applyLeadCanonical: async () => ({ status: "applied" }),
+		});
+		const targetId = buildTargetId("flag", ["auto_qa_killswitch", "global"]);
+		const target = await flag.resolve(targetId);
+		const ready = await flag.preflight(target!, false, target!.sourceRevision);
+		if (!ready.ok) throw new Error(ready.reason);
+
+		expect(await flag.apply(ready.change)).toMatchObject({
+			status: "rejected",
+			reason: expect.stringMatching(/changed|stale/i),
+		});
+		expect(persisted).toBe(edited);
+		expect(env.FLYWHEEL_AUTO_QA).toBeUndefined();
 	});
 
 	it("ignores client-only authority fields because desired values are closed-shape", async () => {

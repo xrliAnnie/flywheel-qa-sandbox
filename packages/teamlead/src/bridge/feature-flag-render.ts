@@ -10,7 +10,7 @@
  * surface for the `direct`-toggleable flags only.
  */
 
-import type { FlagView } from "flywheel-config";
+import { type FlagView, isDirectToggleMetadata } from "flywheel-config";
 
 /** HTML-escape (attributes + text). */
 export function esc(s: string): string {
@@ -25,8 +25,15 @@ export function esc(s: string): string {
 /** 生效路径 label (how a change to this flag takes effect). */
 export function effectLabel(flag: FlagView): string {
 	if (flag.source === "project_config") return "新 run 生效";
+	if (
+		flag.readTimings.length > 0 &&
+		flag.readTimings.every(
+			(timing) => timing === "call_time" || timing === "dotenv_live",
+		)
+	) {
+		return "热生效";
+	}
 	if (flag.readTimings.includes("cli_invocation")) return "命令级";
-	if (flag.readTimings.every((t) => t === "call_time")) return "热生效";
 	return "需重启";
 }
 
@@ -104,20 +111,45 @@ export function categoryClass(cat: FlagView["category"]): string {
  * server re-checks on stage/apply — this is only which cards show a control.
  */
 export function isFlagViewDirectToggleable(flag: FlagView): boolean {
-	return (
-		flag.toggleable === "direct" &&
-		flag.scope === "bridge_global" &&
-		flag.source === "env" &&
-		!flag.dormant &&
-		flag.readTimings.length > 0 &&
-		flag.readTimings.every((t) => t === "call_time")
-	);
+	return isDirectToggleMetadata(flag);
 }
 
 function boolBadge(on: boolean): string {
 	return on
 		? '<span class="ff-badge ff-on">ON</span>'
 		: '<span class="ff-badge ff-off">OFF</span>';
+}
+
+function observedValue(
+	flag: FlagView,
+	value: boolean | string | undefined,
+): string {
+	if (flag.valueKind === "bool") return value === true ? "ON" : "OFF";
+	return String(value ?? "unknown");
+}
+
+/** Shared source-divergence explanation for both flag-console projections. */
+export function formatFlagDivergence(flag: FlagView): string | undefined {
+	if (!flag.divergence) return undefined;
+	const message = {
+		staged_restart: ".env 已改,待重启生效",
+		split_brain: "⚠ CLI 与 Bridge 见值不同",
+		bridge_stale: ".env 已改,Bridge 未拾取",
+		source_unavailable: ".env 不可读,无法确认或操作;Bridge 值仅供观测",
+	}[flag.divergence];
+	const bridge = `Bridge: ${observedValue(flag, flag.bridgeEffective ?? flag.effective)}`;
+	const file =
+		flag.divergence === "source_unavailable"
+			? ""
+			: ` · .env: ${observedValue(flag, flag.fileEffective)}`;
+	return `${message} · ${bridge}${file}`;
+}
+
+function renderDivergence(flag: FlagView): string {
+	const explanation = formatFlagDivergence(flag);
+	return explanation
+		? `<span class="ff-divergence"><span class="ff-badge ff-err">${esc(explanation)}</span></span>`
+		: "";
 }
 
 /** Render the current-state badge for a flag view (read-only). */
@@ -127,6 +159,7 @@ export function renderFlagState(flag: FlagView): string {
 	if (flag.error) {
 		return `<span class="ff-badge ff-err">⚠ ${esc(flag.error)}</span>`;
 	}
+	if (flag.divergence) return renderDivergence(flag);
 	if (flag.dormant) {
 		return '<span class="ff-badge ff-dim">validated-only (dormant)</span>';
 	}
@@ -150,8 +183,9 @@ export function renderFlagState(flag: FlagView): string {
 			.join(" ");
 	}
 	// bridge_global
-	if (flag.valueKind === "bool") return boolBadge(flag.effective === true);
-	return `<span class="ff-badge ff-val">${esc(String(flag.effective ?? ""))}</span>`;
+	const display = flag.displayEffective ?? flag.effective;
+	if (flag.valueKind === "bool") return boolBadge(display === true);
+	return `<span class="ff-badge ff-val">${esc(String(display ?? ""))}</span>`;
 }
 
 /** How the per-card interactive control is rendered (differs by surface). */
@@ -159,8 +193,10 @@ export type FlagControlMode = "none" | "console" | "phone";
 
 /** The in-card control for a direct-toggleable flag (console button / phone checkbox). */
 function renderFlagControl(flag: FlagView, mode: FlagControlMode): string {
-	if (mode === "none" || !isFlagViewDirectToggleable(flag)) return "";
-	const on = flag.effective === true;
+	if (mode === "none" || flag.divergence || !isFlagViewDirectToggleable(flag)) {
+		return "";
+	}
+	const on = (flag.displayEffective ?? flag.effective) === true;
 	const to = on ? "off" : "on";
 	if (mode === "console") {
 		return `<button type="button" class="ffc-btn" data-ff-apply data-ff-name="${esc(flag.name)}" data-ff-to="${to}">切到 ${on ? "OFF" : "ON"}</button>`;
@@ -237,6 +273,7 @@ export const FEATURE_FLAG_CSS = `
 .ff-gov{background:#f3e8fe;color:#8944ab}
 .ff-eff{background:#f5f5f7;color:#48484a}
 .ff-proj{display:inline-block;margin-right:8px}
+.ff-divergence{display:flex;flex-direction:column;align-items:flex-end;gap:3px}
 `;
 
 /**

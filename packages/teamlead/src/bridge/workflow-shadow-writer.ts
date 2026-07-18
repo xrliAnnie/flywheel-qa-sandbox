@@ -4,9 +4,10 @@
  *
  * OBSERVATION ONLY. The shadow ledger is NOT authoritative — every gate keeps
  * reading its legacy source (verify-approval / codex_review_record /
- * qa_required untouched); the read flip is sub-issue B. plugin.ts constructs
- * this writer solely when FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1 (the single switch
- * point); everywhere else the seam field is `undefined` ⇒ byte-compatible.
+ * qa_required untouched); the read flip is sub-issue B. plugin.ts always
+ * constructs the hot runtime facade; each start scope latches
+ * FLYWHEEL_WORKFLOW_CLAIMS_WRITE at its linearization point, while non-start
+ * hooks resolve the flag at use time. OFF remains a zero-write no-op.
  *
  * ── THE TRANSITION TABLE (the contract every hook site implements; drift =
  *    a review defect. Umbrella spec §2.1/§2.4b/§3.1b; FLY-1232 plan Step 4.) ──
@@ -136,6 +137,69 @@ export function createWorkflowShadowWriterFromEnv(
 	return isWorkflowClaimsWriteEnabled(env)
 		? new WorkflowShadowWriter({ store, probes })
 		: undefined;
+}
+
+/**
+ * FLY-1344: hot claims-write facade. The writer/capabilities are constructed
+ * once, while each start latches the current flag into an immutable seam.
+ * Non-start lifecycle hooks read the flag at their own use-time.
+ */
+export class WorkflowShadowRuntime implements WorkflowShadowHooks {
+	constructor(
+		private readonly env: Record<string, string | undefined>,
+		private readonly writer: WorkflowShadowWriter,
+	) {}
+
+	enabled(): boolean {
+		return isWorkflowClaimsWriteEnabled(this.env);
+	}
+
+	beginStartScope(): WorkflowShadowWriter | undefined {
+		return this.enabled() ? this.writer : undefined;
+	}
+
+	onWake(args: Parameters<WorkflowShadowWriter["onWake"]>[0]): void {
+		if (this.enabled()) this.writer.onWake(args);
+	}
+
+	onNodeComplete(
+		args: Parameters<WorkflowShadowWriter["onNodeComplete"]>[0],
+	): void {
+		if (this.enabled()) this.writer.onNodeComplete(args);
+	}
+
+	onQaPass(args: Parameters<WorkflowShadowWriter["onQaPass"]>[0]): void {
+		if (this.enabled()) this.writer.onQaPass(args);
+	}
+
+	onKickback(args: Parameters<WorkflowShadowWriter["onKickback"]>[0]): void {
+		if (this.enabled()) this.writer.onKickback(args);
+	}
+
+	currentAttempt(issueId: string): number {
+		return this.enabled() ? this.writer.currentAttempt(issueId) : 1;
+	}
+
+	onShipFinalized(
+		args: Parameters<WorkflowShadowWriter["onShipFinalized"]>[0],
+	): void {
+		if (this.enabled()) this.writer.onShipFinalized(args);
+	}
+
+	reconcileOnStartup(): void {
+		if (this.enabled()) this.writer.reconcileOnStartup();
+	}
+}
+
+export function createWorkflowShadowRuntimeFromEnv(
+	env: Record<string, string | undefined>,
+	store: StateStore,
+	probes?: WorkflowShadowEvidenceProbes,
+): WorkflowShadowRuntime {
+	return new WorkflowShadowRuntime(
+		env,
+		new WorkflowShadowWriter({ store, probes }),
+	);
 }
 
 export class WorkflowShadowWriter implements WorkflowShadowHooks {

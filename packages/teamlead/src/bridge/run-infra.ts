@@ -74,11 +74,12 @@ import {
 	type ProjectRuntime,
 	type ResumeComputer,
 	RunDispatcher,
+	type WorkflowClaimsAdmissionSeam,
 } from "./run-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import type { TerminalCommDbSync } from "./terminal-commdb-sync.js";
 import type { BridgeConfig } from "./types.js";
-import type { WorkflowShadowWriter } from "./workflow-shadow-writer.js";
+import type { WorkflowShadowRuntime } from "./workflow-shadow-writer.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 import { reconcileProjectWorktrees } from "./worktree-reconciler.js";
 
@@ -588,15 +589,74 @@ export interface RunInfraOptions {
 	 */
 	lifecycleLaunchGuard?: LifecycleLaunchGuard;
 	/**
-	 * FLY-1232 module ②: the lifecycle shadow writer — constructed by plugin.ts
-	 * ONLY when FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1. Threaded into (a) the
-	 * RunDispatcher (T1/T2/T7 pre-launch seam + flag-ON fresh launchCommitPath)
-	 * and (b) the DirectEventSink (T9 post-ship finalization hook). Absent →
-	 * both seams undefined = byte-compatible. NOTE (plan §0 red line): an
+	 * FLY-1232/1344 module ②: the hot lifecycle-shadow runtime, always constructed
+	 * by plugin.ts and threaded into the RunDispatcher (T1/T2/T7 pre-launch seam
+	 * + flag-ON fresh launchCommitPath). It latches OFF to undefined per start;
+	 * an absent injected seam remains byte-compatible for tests. NOTE (plan §0 red line): an
 	 * EXTERNALLY injected startDispatcher (startBridge option) bypasses this
 	 * assembly entirely and is deliberately NOT shadow-wrapped.
 	 */
-	workflowShadow?: WorkflowShadowWriter;
+	workflowShadow?: WorkflowShadowRuntime;
+}
+
+/** Production claims-admission capability assembled regardless of flag state. */
+export function createRunInfraWorkflowClaimsAdmission(
+	store: StateStore,
+): WorkflowClaimsAdmissionSeam {
+	return {
+		admit: (input) => {
+			const run = store.getActiveWorkflowRun(input.projectName, input.issueId);
+			if (!run) throw new Error("active workflow run not found");
+			const now = Date.now();
+			const admitted = store.admitWorkflowExecution({
+				runId: run.run_id,
+				nodeId: input.node,
+				executionId: input.executionId,
+				attempt: input.attempt,
+				family: "qa_verdict",
+				now: new Date(now).toISOString(),
+				expiresAt: new Date(now + 30 * 60_000).toISOString(),
+				absoluteDeadlineAt: new Date(now + 2 * 60 * 60_000).toISOString(),
+			});
+			if (!admitted.ok) throw new Error(admitted.reason);
+			return { credential: admitted.credential };
+		},
+	};
+}
+
+/**
+ * Single production constructor call for RunDispatcher. Keeping the positional
+ * wiring here makes the hot runtime + always-available admission capability
+ * directly testable without booting external adapters.
+ */
+export function createRunInfraDispatcher(input: {
+	store: StateStore;
+	projectRuntimes: Map<string, ProjectRuntime>;
+	cleanupHandles: Array<() => Promise<void>>;
+	runnerAdmission?: BridgeConfig["runnerAdmission"];
+	launchClaims?: LaunchClaimStore;
+	resumeComputer?: ResumeComputer;
+	lifecycleAdmission?: LifecycleAdmissionFn;
+	lifecycleLaunchGuard?: LifecycleLaunchGuard;
+	workflowShadow?: WorkflowShadowRuntime;
+	phaseRetryStartPointComputer?: PhaseRetryStartPointComputer;
+	/** Test-only subclass seam for suppressing external CommDB registration. */
+	dispatcherClass?: typeof RunDispatcher;
+}): RunDispatcher {
+	const Dispatcher = input.dispatcherClass ?? RunDispatcher;
+	return new Dispatcher(
+		input.projectRuntimes,
+		input.cleanupHandles,
+		input.runnerAdmission,
+		input.launchClaims,
+		undefined,
+		input.resumeComputer,
+		input.lifecycleAdmission,
+		input.lifecycleLaunchGuard,
+		input.workflowShadow,
+		createRunInfraWorkflowClaimsAdmission(input.store),
+		input.phaseRetryStartPointComputer,
+	);
 }
 
 export async function setupRunInfrastructure(
@@ -991,51 +1051,20 @@ export async function setupRunInfrastructure(
 		}
 	};
 
-	return new RunDispatcher(
+	return createRunInfraDispatcher({
+		store,
 		projectRuntimes,
 		cleanupHandles,
-		config.runnerAdmission,
+		runnerAdmission: config.runnerAdmission,
 		launchClaims,
-		undefined, // isCommitted — production uses the default file-existence check
 		resumeComputer, // FLY-795: live restart-resilient resume
-		runInfraOpts?.lifecycleAdmission, // FLY-1185: park admission chokepoint
-		runInfraOpts?.lifecycleLaunchGuard, // FLY-1185 R1#5: pre-launch recheck
-		runInfraOpts?.workflowShadow, // FLY-1232: T1/T2/T7 pre-launch seam (flag ON only)
-		// FLY-1244: admission exists only with the WRITE seam. The preceding
-		// shadow dispatch creates/locates the active run; failure here aborts the
-		// QA launch before the runner can start without a usable credential.
-		runInfraOpts?.workflowShadow
-			? {
-					admit: (input: {
-						projectName: string;
-						issueId: string;
-						executionId: string;
-						node: string;
-						attempt: number;
-					}) => {
-						const run = store.getActiveWorkflowRun(
-							input.projectName,
-							input.issueId,
-						);
-						if (!run) throw new Error("active workflow run not found");
-						const now = Date.now();
-						const admitted = store.admitWorkflowExecution({
-							runId: run.run_id,
-							nodeId: input.node,
-							executionId: input.executionId,
-							attempt: input.attempt,
-							family: "qa_verdict",
-							now: new Date(now).toISOString(),
-							expiresAt: new Date(now + 30 * 60_000).toISOString(),
-							absoluteDeadlineAt: new Date(now + 2 * 60 * 60_000).toISOString(),
-						});
-						if (!admitted.ok) throw new Error(admitted.reason);
-						return { credential: admitted.credential };
-					},
-				}
-			: undefined,
+		lifecycleAdmission: runInfraOpts?.lifecycleAdmission,
+		lifecycleLaunchGuard: runInfraOpts?.lifecycleLaunchGuard,
+		// FLY-1232/1344: hot facade; each start latches once. The helper also
+		// assembles the FLY-1244 admission capability regardless of flag state.
+		workflowShadow: runInfraOpts?.workflowShadow,
 		phaseRetryStartPointComputer, // FLY-1257: branch B tip before retry TURN/launch
-	);
+	});
 }
 
 // ── CIPHER helpers ──────────────────────────────────────────────────

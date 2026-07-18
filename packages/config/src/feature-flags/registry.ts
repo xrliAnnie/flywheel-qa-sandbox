@@ -31,6 +31,7 @@ export type FlagToggleability = "direct" | "conversational" | "readonly";
 /**
  * When the owning code reads the flag — the safety key for live toggling.
  * `call_time`: read from process.env / config each use → in-proc mutate is live.
+ * `dotenv_live`: a separate process reads the shared .env on every use → live.
  * `bridge_boot`: captured once when the Bridge process starts → needs restart.
  * `object_construction`: captured into a closure/const/route at build time → restart.
  * `cli_invocation`: read by a separate CLI process → not a Bridge live-toggle target.
@@ -38,6 +39,7 @@ export type FlagToggleability = "direct" | "conversational" | "readonly";
  */
 export type ReadTiming =
 	| "call_time"
+	| "dotenv_live"
 	| "bridge_boot"
 	| "object_construction"
 	| "cli_invocation"
@@ -567,13 +569,19 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			envSite(
 				"packages/flywheel-comm/src/ship-eligibility.ts",
-				"evaluateShipEligibility (resolveDefaultOnGate MERGE_APPROVAL_GATE_KEY)",
+				"resolveDefaultOnGate argsEnv-wins Bridge caller (MERGE_APPROVAL_GATE_KEY)",
 				"call_time",
 				"env-param",
 			),
+			envSite(
+				"packages/flywheel-comm/src/ship-eligibility.ts",
+				"resolveDefaultOnGate live dotenv CLI fallback (MERGE_APPROVAL_GATE_KEY)",
+				"dotenv_live",
+				"dynamic",
+			),
 		],
 		toggleable: "readonly",
-		note: "B 与 A（FLYWHEEL_QA_DONE_GATE）独立开关（R2 HIGH-3）；改后需重启 Bridge。",
+		note: "B 与 A（FLYWHEEL_QA_DONE_GATE）独立开关（R2 HIGH-3）；Bridge caller 与 CLI live-.env 均在下一次调用生效,分歧时可能 split-brain；授权面保持 readonly。",
 	},
 	{
 		// FLY-869 A: the QA-done ship gate kill-switch. Default-ON (决定②/④): a session
@@ -594,13 +602,19 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			envSite(
 				"packages/flywheel-comm/src/ship-eligibility.ts",
-				"evaluateQaShipGate (resolveDefaultOnGate QA_DONE_GATE_KEY)",
+				"resolveDefaultOnGate argsEnv-wins Bridge caller (QA_DONE_GATE_KEY)",
 				"call_time",
 				"env-param",
 			),
+			envSite(
+				"packages/flywheel-comm/src/ship-eligibility.ts",
+				"resolveDefaultOnGate live dotenv CLI fallback (QA_DONE_GATE_KEY)",
+				"dotenv_live",
+				"dynamic",
+			),
 		],
 		toggleable: "readonly",
-		note: "A 与 B（FLYWHEEL_MERGE_APPROVAL_GATE）独立开关（R2 HIGH-3）；改后需重启 Bridge。",
+		note: "A 与 B（FLYWHEEL_MERGE_APPROVAL_GATE）独立开关（R2 HIGH-3）；Bridge caller 与 CLI live-.env 均在下一次调用生效,分歧时可能 split-brain；授权面保持 readonly。",
 	},
 	{
 		// FLY-793: global hard kill-switch for the three-stage pipeline
@@ -2702,7 +2716,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 	{
 		name: "workflow_template_dispatch",
-		category: "governance_gate",
+		category: "feature",
 		source: "env",
 		scope: "bridge_global",
 		envVar: "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH",
@@ -2719,12 +2733,14 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"env-param",
 			),
 		],
-		toggleable: "readonly",
-		note: "Independent default-off governance gate. Roll back with workflow_force_legacy plus this flag off.",
+		toggleable: "direct",
+		directToggleProof:
+			"workflow-template-dispatch tests: next predicate call observes apply",
+		note: "FLY-1344 founder-controlled DAG lever (FLY-1307 lineage). Dispatch still requires claims WRITE + READ; force_legacy is a separate ship-reader fallback.",
 	},
 	{
 		name: "workflow_generalized_templates",
-		category: "governance_gate",
+		category: "feature",
 		source: "env",
 		scope: "bridge_global",
 		envVar: "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES",
@@ -2741,12 +2757,14 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"env-param",
 			),
 		],
-		toggleable: "readonly",
-		note: "Independent from claims WRITE/READ/FORCE_LEGACY; a v2 start requires generalized templates and claims WRITE together plus typed enrollment.",
+		toggleable: "direct",
+		directToggleProof:
+			"workflow-template tests: next generalized predicate call observes apply",
+		note: "FLY-1344 founder-controlled DAG v2 lever (FLY-1307/1281 lineage). A v2 start still requires template dispatch + claims WRITE + READ.",
 	},
 	{
 		name: "workflow_claims_write",
-		category: "governance_gate",
+		category: "feature",
 		source: "env",
 		scope: "bridge_global",
 		envVar: "FLYWHEEL_WORKFLOW_CLAIMS_WRITE",
@@ -2763,17 +2781,26 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"env-param",
 			),
 			envSite(
+				"packages/teamlead/src/bridge/workflow-shadow-writer.ts",
+				"WorkflowShadowRuntime.enabled / beginStartScope",
+				"call_time",
+				"env-param",
+			),
+			envSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge / createBridgeApp workflow wiring",
-				"bridge_boot",
+				"createBridgeApp reQa.enabled use-time gate",
+				"call_time",
+				"env-param",
 			),
 		],
-		toggleable: "readonly",
-		note: "Independent from claims READ and FORCE_LEGACY; production enable is governance-gated.",
+		toggleable: "direct",
+		directToggleProof:
+			"workflow-claims parser feeds StateStore/dispatch predicates at call time; workflow-shadow-wiring + workflow-decision-routes prove the next start/hook/reQA call observes apply",
+		note: "FLY-1344 founder-controlled DAG claims-write lever (FLY-1307/1232 lineage). Start entry latches ON/OFF; non-start hooks and reQA read at use-time.",
 	},
 	{
 		name: "workflow_claims_read",
-		category: "governance_gate",
+		category: "feature",
 		source: "env",
 		scope: "bridge_global",
 		envVar: "FLYWHEEL_WORKFLOW_CLAIMS_READ",
@@ -2791,13 +2818,27 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			),
 			envSite(
 				"packages/flywheel-comm/src/ship-eligibility.ts",
-				"evaluateShipEligibility",
-				"cli_invocation",
+				"resolveDefaultOffGate argsEnv-wins Bridge caller",
+				"call_time",
+				"env-param",
+			),
+			envSite(
+				"packages/flywheel-comm/src/ship-eligibility.ts",
+				"resolveDefaultOffGate live dotenv CLI fallback",
+				"dotenv_live",
+				"dynamic",
+			),
+			envSite(
+				"packages/flywheel-comm/src/commands/verify-approval.ts",
+				"verifyApprovalWithBridgeHead workflow dotenv read",
+				"dotenv_live",
 				"dynamic",
 			),
 		],
-		toggleable: "readonly",
-		note: "Independent from claims WRITE; explicit run enrollment is still required.",
+		toggleable: "direct",
+		directToggleProof:
+			"ship-eligibility + verify-approval tests: Bridge env and CLI dotenv readers observe one apply",
+		note: "FLY-1344 founder-controlled DAG claims-read lever (FLY-1307/1244 lineage). Bridge and CLI are both live authoritative consumers; explicit run enrollment remains required.",
 	},
 	{
 		name: "workflow_force_legacy",
@@ -2813,13 +2854,21 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			envSite(
 				"packages/flywheel-comm/src/ship-eligibility.ts",
-				"evaluateShipEligibility",
-				"cli_invocation",
+				"resolveDefaultOffGate argsEnv-wins Bridge caller",
+				"call_time",
+				"env-param",
+			),
+			envSite(
+				"packages/flywheel-comm/src/ship-eligibility.ts",
+				"resolveDefaultOffGate live dotenv CLI fallback",
+				"dotenv_live",
 				"dynamic",
 			),
 		],
-		toggleable: "readonly",
-		note: "Independent emergency fallback; resolved before any claims table access.",
+		toggleable: "direct",
+		directToggleProof:
+			"ship-eligibility tests: Bridge env and CLI dotenv readers observe one apply",
+		note: "FLY-1344 founder-controlled emergency ship-reader fallback (FLY-1307/1244 lineage); independent of template dispatch and resolved before claims table access.",
 	},
 	{
 		name: "delivery_ack",

@@ -72,6 +72,16 @@ export interface WorkflowShadowSeam {
 	}): void;
 }
 
+/**
+ * FLY-1344: the hot claims-write runtime. RunDispatcher.start() calls
+ * beginStartScope() at its linearization point (before the lifecycle await) and
+ * reuses the returned seam — or undefined when claims-write is latched OFF —
+ * throughout the async start, so a mid-flight flag flip never tears one dispatch.
+ */
+export interface WorkflowShadowRuntimeSeam {
+	beginStartScope(): WorkflowShadowSeam | undefined;
+}
+
 /** FLY-1244: fail-closed admission seam for durable three-stage QA spawns. */
 export interface WorkflowClaimsAdmissionSeam {
 	admit(args: {
@@ -1008,7 +1018,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		 * Undefined ⇒ zero shadow writes AND the fresh path keeps
 		 * launchCommitPath undefined (byte-compatible).
 		 */
-		private workflowShadow?: WorkflowShadowSeam,
+		private workflowShadow?: WorkflowShadowRuntimeSeam | WorkflowShadowSeam,
 		private workflowClaimsAdmission?: WorkflowClaimsAdmissionSeam,
 		/** FLY-1257 M3: retry branch-tip recovery seam (production: run-infra). */
 		phaseRetryStartPointComputer?: PhaseRetryStartPointComputer,
@@ -1109,6 +1119,14 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			req.generalizedExecution?.executionId ??
 			req.successorExecutionId ??
 			randomUUID();
+		// FLY-1344: the claims-write linearization point. Capture BEFORE the
+		// lifecycle await and reuse this immutable seam throughout the async start
+		// (a mid-flight OFF flip never tears a start that latched ON, and vice versa).
+		const workflowShadowScope = this.workflowShadow
+			? "beginStartScope" in this.workflowShadow
+				? this.workflowShadow.beginStartScope()
+				: this.workflowShadow
+			: undefined;
 
 		// FLY-1185 (R11#1): lifecycle admission at the single spawn chokepoint —
 		// every surface (HTTP start / phase handoff / auto-QA / rescue) flows
@@ -1161,14 +1179,14 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// spawns (T2) and replacement starts (T7); a fresh entry synthesizes the
 			// T1 default. The writer never throws into this flow (loud warn inside).
 			const shadowContext: WorkflowShadowContext | undefined =
-				this.workflowShadow && !req.generalizedExecution
+				workflowShadowScope && !req.generalizedExecution
 					? (req.shadowContext ?? {
 							node: role.replace(/[^a-zA-Z0-9-]/g, "").toLowerCase() || "main",
 							attempt: 1,
 						})
 					: undefined;
-			if (this.workflowShadow && shadowContext) {
-				this.workflowShadow.onSpawnDispatch({
+			if (workflowShadowScope && shadowContext) {
+				workflowShadowScope.onSpawnDispatch({
 					projectName: req.projectName,
 					issueId: req.issueId,
 					executionId,
@@ -1203,8 +1221,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// sets no marker" sentinel. NOTE: this makes a flag-ON fresh launch go
 			// through the commit-gate wrapper (same shape as retry) — declared in
 			// the plan's risk section; B11 real-machine QA covers it.
-			const shadowCommitDir =
-				req.generalizedExecution || this.workflowShadow
+			const shadowCommitDir = req.generalizedExecution
+				? launchCommitPath(executionId)
+				: workflowShadowScope
 					? launchCommitPath(executionId)
 					: undefined;
 			if (shadowCommitDir) {
@@ -1415,7 +1434,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 							// positive pre-commit failure (no marker, no non-pending row);
 							// a durable marker stops the row at launch_committed instead.
 							if (shadowContext) {
-								this.workflowShadow?.onDispatchFailed({
+								workflowShadowScope?.onDispatchFailed({
 									projectName: req.projectName,
 									issueId: req.issueId,
 									executionId,
@@ -1442,7 +1461,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					this.cleanupPreRegistration(executionId, req.projectName);
 					// FLY-1232: same evidence-checked outcome on the rejection path.
 					if (shadowContext) {
-						this.workflowShadow?.onDispatchFailed({
+						workflowShadowScope?.onDispatchFailed({
 							projectName: req.projectName,
 							issueId: req.issueId,
 							executionId,

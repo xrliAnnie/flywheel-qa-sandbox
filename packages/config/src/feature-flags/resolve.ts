@@ -14,6 +14,11 @@
  */
 
 import { resolveDecisionMode } from "../decision-mode.js";
+import {
+	type EnvFileSource,
+	readEnvFileValue,
+	readEnvValueFromContent,
+} from "../env-file.js";
 import type { FlywheelConfig } from "../types.js";
 import {
 	FEATURE_FLAGS,
@@ -29,6 +34,8 @@ import {
 export interface FlagResolveCtx {
 	/** Defaults to process.env — the Bridge-global env for env flags. */
 	env?: Record<string, string | undefined>;
+	/** Explicit shared .env snapshot. Omit for legacy Bridge-only resolution. */
+	envFile?: EnvFileSource;
 	/** project name → its loaded config (or a load error). Used for project flags. */
 	projectConfigs?: Map<string, { config?: FlywheelConfig; error?: string }>;
 }
@@ -60,6 +67,17 @@ export interface FlagView {
 	default: boolean | string;
 	/** scope === "bridge_global": the single effective value. */
 	effective?: boolean | string;
+	/** Bridge process.env value. `effective` remains its compatibility alias. */
+	bridgeEffective?: boolean | string;
+	/** Current shared .env value; absent when the file is unavailable. */
+	fileEffective?: boolean | string;
+	/** Safe display/control value; absent whenever sources disagree/degrade. */
+	displayEffective?: boolean | string;
+	divergence?:
+		| "staged_restart"
+		| "split_brain"
+		| "bridge_stale"
+		| "source_unavailable";
 	/** scope === "project": per-project effective values. */
 	effectiveByProject?: FlagEffectiveByProject[];
 	/** Validated by ConfigLoader but not loaded by runtime → no effective value. */
@@ -107,6 +125,77 @@ function resolveEnvEffective(
 	return spec.polarity === "default_on" ? raw !== "0" : raw === "1";
 }
 
+function divergenceFor(
+	spec: FeatureFlagSpec,
+): NonNullable<FlagView["divergence"]> {
+	const timings = uniqueTimings(spec);
+	if (timings.includes("dotenv_live")) return "split_brain";
+	if (
+		timings.includes("bridge_boot") ||
+		timings.includes("object_construction")
+	) {
+		return "staged_restart";
+	}
+	return "bridge_stale";
+}
+
+function withEnvSources(
+	base: FlagView,
+	spec: FeatureFlagSpec,
+	bridgeEffective: boolean | string,
+	ctx: FlagResolveCtx,
+): FlagView {
+	const common = {
+		...base,
+		effective: bridgeEffective,
+		bridgeEffective,
+		isDefault: bridgeEffective === spec.default,
+	};
+	// Backward-compatible callers that have not supplied the file source retain
+	// the historical single-source display behavior.
+	if (!ctx.envFile) {
+		return { ...common, displayEffective: bridgeEffective };
+	}
+	if (ctx.envFile.status === "unavailable") {
+		return { ...common, divergence: "source_unavailable" };
+	}
+	const fileValue = spec.envVar
+		? readEnvFileValue(ctx.envFile, spec.envVar)
+		: { status: "readable" as const, raw: undefined };
+	if (fileValue.status === "unavailable") {
+		return { ...common, divergence: "source_unavailable" };
+	}
+	const fileRaw = fileValue.raw;
+	let fileEffective: boolean | string;
+	try {
+		fileEffective =
+			spec.envVar === "FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE"
+				? resolveDecisionMode({
+						FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: fileRaw,
+						FLYWHEEL_FOUNDER_CONSENT_ENABLED: readEnvValueFromContent(
+							ctx.envFile.content,
+							"FLYWHEEL_FOUNDER_CONSENT_ENABLED",
+						),
+					})
+				: resolveEnvEffective(spec, {
+						...(spec.envVar ? { [spec.envVar]: fileRaw } : {}),
+					});
+	} catch {
+		return {
+			...common,
+			error: `invalid ${spec.envVar} in shared .env: ${fileRaw}`,
+		};
+	}
+	if (fileEffective === bridgeEffective) {
+		return { ...common, fileEffective, displayEffective: bridgeEffective };
+	}
+	return {
+		...common,
+		fileEffective,
+		divergence: divergenceFor(spec),
+	};
+}
+
 /** Effective value of a project_config flag on one loaded config. */
 function resolveConfigValue(
 	spec: FeatureFlagSpec,
@@ -147,7 +236,7 @@ export function resolveFlag(
 		if (spec.envVar === "FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE") {
 			try {
 				const effective = resolveDecisionMode(env);
-				return { ...base, effective, isDefault: effective === spec.default };
+				return withEnvSources(base, spec, effective, ctx);
 			} catch {
 				return {
 					...base,
@@ -175,7 +264,7 @@ export function resolveFlag(
 			};
 		}
 		const effective = resolveEnvEffective(spec, env);
-		return { ...base, effective, isDefault: effective === spec.default };
+		return withEnvSources(base, spec, effective, ctx);
 	}
 
 	// project scope. Dormant flags never report an effective value.

@@ -5,6 +5,7 @@ import { CommDB } from "flywheel-comm/db";
 import { describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import {
+	createWorkflowShadowRuntimeFromEnv,
 	createWorkflowShadowWriterFromEnv,
 	type WorkflowShadowEvidenceProbes,
 	WorkflowShadowWriter,
@@ -62,6 +63,28 @@ describe("createWorkflowShadowWriterFromEnv — the single default-off switch (B
 				store,
 			),
 		).toBeInstanceOf(WorkflowShadowWriter);
+	});
+});
+
+describe("WorkflowShadowRuntime — hot claims-write facade", () => {
+	it("is always constructed and latches one start scope from the current env value", async () => {
+		const store = await StateStore.create(":memory:");
+		const env: Record<string, string | undefined> = {};
+		const runtime = createWorkflowShadowRuntimeFromEnv(env, store);
+
+		expect(runtime.enabled()).toBe(false);
+		expect(runtime.beginStartScope()).toBeUndefined();
+
+		env.FLYWHEEL_WORKFLOW_CLAIMS_WRITE = "1";
+		const enabledScope = runtime.beginStartScope();
+		expect(runtime.enabled()).toBe(true);
+		expect(enabledScope).toBeDefined();
+
+		// The returned scope is latched. Flipping the global flag cannot tear an
+		// already-started dispatch in half.
+		env.FLYWHEEL_WORKFLOW_CLAIMS_WRITE = "0";
+		expect(runtime.enabled()).toBe(false);
+		expect(enabledScope).toBeDefined();
 	});
 });
 

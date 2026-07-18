@@ -26,6 +26,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
+import { readEnvValueFromContent } from "flywheel-config";
 import {
 	resolveStateDbPath,
 	type VerifyApprovalArgs,
@@ -38,21 +39,6 @@ const MERGE_APPROVAL_GATE_KEY = "FLYWHEEL_MERGE_APPROVAL_GATE";
 const QA_DONE_GATE_KEY = "FLYWHEEL_QA_DONE_GATE";
 const WORKFLOW_CLAIMS_READ_KEY = "FLYWHEEL_WORKFLOW_CLAIMS_READ";
 const WORKFLOW_FORCE_LEGACY_KEY = "FLYWHEEL_WORKFLOW_FORCE_LEGACY";
-
-/** Read the last uncommented `KEY=` value from a `.env` content string. */
-function readEnvValueFromContent(
-	content: string,
-	key: string,
-): string | undefined {
-	const re = new RegExp(`^\\s*(?:export\\s+)?${key}=(.*)$`);
-	let val: string | undefined;
-	for (const line of content.split("\n")) {
-		if (/^\s*#/.test(line)) continue;
-		const m = line.match(re);
-		if (m) val = m[1];
-	}
-	return val;
-}
 
 /**
  * Resolve a DEFAULT-ON gate flag with the FLY-827 live-`.env` semantics:

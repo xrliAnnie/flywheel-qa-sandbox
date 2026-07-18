@@ -15,7 +15,14 @@ export {
 export type { DecisionMode, DecisionModeEnv } from "./decision-mode.js";
 export { resolveDecisionMode } from "./decision-mode.js";
 export { isUiDesignFlavored, UI_DESIGN_LABELS } from "./designer-labels.js";
+export type { EnvFileSource, EnvFileValue } from "./env-file.js";
+export {
+	readEnvFileSource,
+	readEnvFileValue,
+	readEnvValueFromContent,
+} from "./env-file.js";
 export type {
+	DirectToggleMetadata,
 	FeatureFlagSpec,
 	FlagCategory,
 	FlagEffectiveByProject,
@@ -31,6 +38,7 @@ export type {
 } from "./feature-flags/index.js";
 export {
 	FEATURE_FLAGS,
+	isDirectToggleMetadata,
 	resolveAllFlags,
 	resolveFlag,
 } from "./feature-flags/index.js";

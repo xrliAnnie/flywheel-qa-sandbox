@@ -10,7 +10,11 @@ import {
 	type TurnBeltRow,
 } from "../phase-orchestrator.js";
 import { type ProjectRuntime, RunDispatcher } from "../run-dispatcher.js";
-import { WorkflowShadowWriter } from "../workflow-shadow-writer.js";
+import { createRunInfraDispatcher } from "../run-infra.js";
+import {
+	WorkflowShadowRuntime,
+	WorkflowShadowWriter,
+} from "../workflow-shadow-writer.js";
 
 /**
  * FLY-1232 module ② wiring — the T1/T2/T7 pre-launch seam inside
@@ -72,6 +76,184 @@ function makeRuntime(
 }
 
 describe("RunDispatcher.start() pre-launch seam (T1/T2/T7)", () => {
+	it.each([
+		{ initial: false, afterAdmission: true, expectShadow: false },
+		{ initial: true, afterAdmission: false, expectShadow: true },
+	])(
+		"latches claims-write at start entry: $initial → $afterAdmission",
+		async ({ initial, afterAdmission, expectShadow }) => {
+			let releaseAdmission!: () => void;
+			const admissionReached = new Promise<void>((resolve) => {
+				releaseAdmission = resolve;
+			});
+			let allowAdmission!: () => void;
+			const admissionWait = new Promise<void>((resolve) => {
+				allowAdmission = resolve;
+			});
+			const scope = {
+				onSpawnDispatch: vi.fn(),
+				onDispatchFailed: vi.fn(),
+			};
+			const state = { enabled: initial };
+			const runtime = {
+				beginStartScope: vi.fn(() => (state.enabled ? scope : undefined)),
+			};
+			const claimsAdmission = {
+				admit: vi.fn(() => ({ credential: "cred" })),
+			};
+			let ctxSeen: BlueprintContext | undefined;
+			const dispatcher = new TestDispatcher(
+				makeRuntime(async (ctx) => {
+					ctxSeen = ctx;
+					return { success: true, sessionId: "s1" };
+				}),
+				[],
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				async () => {
+					releaseAdmission();
+					await admissionWait;
+					return { admitted: true as const };
+				},
+				undefined,
+				runtime,
+				claimsAdmission,
+			);
+
+			const started = dispatcher.start({
+				issueId: ISSUE,
+				projectName: PROJECT,
+				sessionRole: "qa",
+				shareParentBranch: true,
+				shadowContext: { node: "qa", attempt: 1 },
+			});
+			await admissionReached;
+			state.enabled = afterAdmission;
+			allowAdmission();
+			await started;
+			await dispatcher.drain();
+
+			expect(runtime.beginStartScope).toHaveBeenCalledTimes(1);
+			expect(scope.onSpawnDispatch).toHaveBeenCalledTimes(expectShadow ? 1 : 0);
+			expect(claimsAdmission.admit).toHaveBeenCalledTimes(expectShadow ? 1 : 0);
+			expect(Boolean(ctxSeen?.launchCommitPath)).toBe(expectShadow);
+		},
+	);
+
+	it("uses the production run-infra admission seam across boot-OFF → ON → OFF", async () => {
+		const { store, writer } = await makeShadow();
+		const env: Record<string, string | undefined> = {
+			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "0",
+		};
+		const runtime = new WorkflowShadowRuntime(env, writer);
+		const contexts: BlueprintContext[] = [];
+		const dispatcher = createRunInfraDispatcher({
+			store,
+			projectRuntimes: makeRuntime(async (ctx) => {
+				contexts.push(ctx);
+				return { success: true, sessionId: `s-${contexts.length}` };
+			}),
+			cleanupHandles: [],
+			workflowShadow: runtime,
+			dispatcherClass: TestDispatcher,
+		});
+		const req = {
+			issueId: ISSUE,
+			projectName: PROJECT,
+			sessionRole: "qa",
+			shareParentBranch: true,
+			shadowContext: { node: "qa", attempt: 1 },
+		};
+
+		await dispatcher.start(req);
+		await dispatcher.drain();
+		env.FLYWHEEL_WORKFLOW_CLAIMS_WRITE = "1";
+		await dispatcher.start(req);
+		await dispatcher.drain();
+		env.FLYWHEEL_WORKFLOW_CLAIMS_WRITE = "0";
+		await dispatcher.start(req);
+		await dispatcher.drain();
+
+		expect(
+			contexts.map((ctx) => Boolean(ctx.workflowSubmissionCredential)),
+		).toEqual([false, true, false]);
+		expect(store.listWorkflowSideEffects("run-1")).toHaveLength(1);
+	});
+
+	it("keeps the entry-time ON scope through a delayed Blueprint failure after global OFF", async () => {
+		const { store, writer } = await makeShadow({ marker: false, row: false });
+		const env: Record<string, string | undefined> = {
+			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+		};
+		const runtime = new WorkflowShadowRuntime(env, writer);
+		let blueprintEntered!: () => void;
+		const entered = new Promise<void>((resolve) => {
+			blueprintEntered = resolve;
+		});
+		let rejectBlueprint!: () => void;
+		const rejection = new Promise<void>((resolve) => {
+			rejectBlueprint = resolve;
+		});
+		const dispatcher = new TestDispatcher(
+			makeRuntime(async () => {
+				blueprintEntered();
+				await rejection;
+				throw new Error("delayed spawn refused");
+			}),
+			[],
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			runtime,
+		);
+
+		await dispatcher.start({ issueId: ISSUE, projectName: PROJECT });
+		await entered;
+		env.FLYWHEEL_WORKFLOW_CLAIMS_WRITE = "0";
+		rejectBlueprint();
+		await dispatcher.drain();
+
+		const row = store.listWorkflowSideEffects("run-1")[0];
+		expect(row?.state).toBe("abandoned");
+		expect(row?.reason).toContain("delayed spawn refused");
+	});
+
+	it("preserves generalized launchCommitPath when the claims-write start scope is OFF", async () => {
+		let ctxSeen: BlueprintContext | undefined;
+		const dispatcher = new TestDispatcher(
+			makeRuntime(async (ctx) => {
+				ctxSeen = ctx;
+				return { success: true, sessionId: "s1" };
+			}),
+			[],
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{ beginStartScope: () => undefined },
+		);
+		await dispatcher.start({
+			issueId: ISSUE,
+			projectName: PROJECT,
+			generalizedExecution: {
+				executionId: "generalized-exec",
+				runId: "run-v2",
+				nodeId: "implement",
+				attempt: 1,
+				dispatch: { vendor: "codex" },
+			},
+		});
+		await dispatcher.drain();
+		expect(ctxSeen?.launchCommitPath).toContain("generalized-exec");
+	});
+
 	it("T1: writes the shadow dispatch BEFORE Blueprint.run and passes launchCommitPath on the fresh path (flag ON)", async () => {
 		const { store, writer } = await makeShadow();
 		let shadowRowsAtRun = -1;

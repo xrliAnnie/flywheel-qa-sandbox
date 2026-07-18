@@ -632,13 +632,18 @@ describe("in-flight re-QA recovery", () => {
 			if (!admitted.ok) throw new Error(admitted.reason);
 			return { executionId: "replacement-qa" };
 		});
+		const claimsWrite = { enabled: false };
 		const app = express();
 		app.use(express.json());
 		app.use(
 			"/api/workflow",
 			createWorkflowDecisionRouter({
 				store,
-				reQa: { tokens: new ConfirmTokenStore(), respawn },
+				reQa: {
+					enabled: () => claimsWrite.enabled,
+					tokens: new ConfirmTokenStore(),
+					respawn,
+				},
 			}),
 		);
 		const server = app.listen(0, "127.0.0.1");
@@ -646,12 +651,14 @@ describe("in-flight re-QA recovery", () => {
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("no port");
 		const origin = `http://127.0.0.1:${address.port}`;
-		const stage = async () => {
-			const response = await fetch(`${origin}/api/workflow/re-qa/stage`, {
+		const stageResponse = () =>
+			fetch(`${origin}/api/workflow/re-qa/stage`, {
 				method: "POST",
 				headers: { "content-type": "application/json", origin },
 				body: JSON.stringify({ execution_id: "legacy-qa" }),
 			});
+		const stage = async () => {
+			const response = await stageResponse();
 			expect(response.status).toBe(200);
 			return (await response.json()) as {
 				canonical: Record<string, unknown>;
@@ -665,6 +672,13 @@ describe("in-flight re-QA recovery", () => {
 				body: JSON.stringify(staged),
 			});
 		try {
+			const disabledStage = await stageResponse();
+			expect(disabledStage.status).toBe(503);
+			expect(await disabledStage.json()).toMatchObject({
+				ok: false,
+				reason: "claims_write_disabled",
+			});
+			claimsWrite.enabled = true;
 			const staged = await stage();
 			expect(staged.canonical).toMatchObject({
 				runId: "run-reqa",
@@ -672,6 +686,15 @@ describe("in-flight re-QA recovery", () => {
 				sourceAttempt: 1,
 				targetAttempt: 2,
 			});
+			claimsWrite.enabled = false;
+			const disabledApply = await apply(staged);
+			expect(disabledApply.status).toBe(503);
+			expect(await disabledApply.json()).toMatchObject({
+				ok: false,
+				reason: "claims_write_disabled",
+			});
+			expect(respawn).not.toHaveBeenCalled();
+			claimsWrite.enabled = true;
 			const first = await apply(staged);
 			expect(await first.json()).toMatchObject({
 				ok: true,

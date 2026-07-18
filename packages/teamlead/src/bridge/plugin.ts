@@ -40,6 +40,7 @@ import {
 import {
 	type CommBackend,
 	phaseMessageTag,
+	readEnvFileSource,
 	resolveAllFlags,
 	resolveCommBackend as resolveCommBackendShared,
 	resolveFounderTimezone,
@@ -121,6 +122,7 @@ import {
 	type Session,
 	StateStore,
 } from "../StateStore.js";
+import { isWorkflowClaimsWriteEnabled } from "../workflow-claims.js";
 import {
 	ensureDefaultWorkflowBindings,
 	importBundledWorkflowSeeds,
@@ -578,7 +580,7 @@ import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
 import { GitWorkflowDocsGit } from "./workflow-docs-git.js";
 import { WorkflowDocsMaterializer } from "./workflow-docs-materializer.js";
 import { WorkflowEngineDispatcher } from "./workflow-engine-dispatcher.js";
-import { createWorkflowShadowWriterFromEnv } from "./workflow-shadow-writer.js";
+import { createWorkflowShadowRuntimeFromEnv } from "./workflow-shadow-writer.js";
 import { createWorkflowTemplateRouter } from "./workflow-template-routes.js";
 import {
 	gitWorktreeClean,
@@ -1240,11 +1242,10 @@ export function createBridgeApp(
 			store,
 			materializedHeadAuthority: opts?.materializedHeadAuthority,
 			phaseOrchestrator: opts?.phaseOrchestrator,
-			...(process.env.FLYWHEEL_WORKFLOW_CLAIMS_WRITE === "1" &&
-			opts?.fleetConsole &&
-			opts.phaseOrchestrator
+			...(opts?.fleetConsole && opts.phaseOrchestrator
 				? {
 						reQa: {
+							enabled: () => isWorkflowClaimsWriteEnabled(process.env),
 							tokens: opts.fleetConsole.tokens,
 							respawn: async (canonical, prHeadSha) => {
 								const orchestrator = opts.phaseOrchestrator?.current;
@@ -3961,6 +3962,10 @@ export async function startBridge(
 			let managementProjects = managementProjectSource.projects();
 			let managementProjectsRevision = managementProjectSource.revision();
 			const managementEnvPath = join(homedir(), ".flywheel", ".env");
+			const managementEnvSource = () =>
+				readEnvFileSource(managementEnvPath, (path) =>
+					ffReadFileSync(path, "utf-8"),
+				);
 			const managementLaunchAgentsDir = join(
 				homedir(),
 				"Library",
@@ -4015,13 +4020,15 @@ export async function startBridge(
 							views: () =>
 								resolveAllFlags({
 									env: process.env,
+									envFile: managementEnvSource(),
 									projectConfigs: ffConfigCache.current(),
 								}),
-							revision: () =>
-								managementFlagRevision(
-									ffReadFileSync(managementEnvPath, "utf-8"),
-									process.env,
-								),
+							revision: () => {
+								const source = managementEnvSource();
+								return source.status === "readable"
+									? managementFlagRevision(source.content, process.env)
+									: `env-unavailable:${managementFlagRevision("", process.env)}`;
+							},
 							projectNames: () =>
 								managementProjects.map((project) => project.projectName),
 							projectRevision: (projectName) =>
@@ -4038,6 +4045,7 @@ export async function startBridge(
 					featureFlags: () =>
 						resolveAllFlags({
 							env: process.env,
+							envFile: managementEnvSource(),
 							projectConfigs: ffConfigCache.current(),
 						}),
 					// FLY-709 ② (b): per-project runner default model, derived from the
@@ -4096,6 +4104,7 @@ export async function startBridge(
 				flagViews: () =>
 					resolveAllFlags({
 						env: process.env,
+						envFile: managementEnvSource(),
 						projectConfigs: ffConfigCache.current(),
 					}),
 			});
@@ -4853,14 +4862,14 @@ export async function startBridge(
 				log: (message) => console.warn(message),
 			})
 		: undefined;
-	// FLY-1232 module ②: THE single default-off switch point for the lifecycle
-	// shadow writer. FLYWHEEL_WORKFLOW_CLAIMS_WRITE≠1 → undefined → every seam
-	// (dispatcher pre-launch, orchestrator hooks, post-ship T9) stays undefined
-	// = byte-compatible. Evidence probes are the DURABLE facts of the ②b truth
-	// table: the adapter's commit-marker file + a non-:pending CommDB row.
+	// FLY-1232/1344 module ②: always construct the hot lifecycle-shadow facade.
+	// Starts latch claims-write once before their first await; non-start hooks
+	// resolve it at use time. OFF remains a zero-write no-op. Evidence probes are
+	// the DURABLE facts of the ②b truth table: the adapter's commit-marker file
+	// + a non-:pending CommDB row.
 	// NOTE (plan §0 red line): an externally injected opts.startDispatcher
 	// below bypasses setupRunInfrastructure and is deliberately NOT wrapped.
-	const workflowShadowWriter = createWorkflowShadowWriterFromEnv(
+	const workflowShadowRuntime = createWorkflowShadowRuntimeFromEnv(
 		process.env,
 		store,
 		{
@@ -4890,15 +4899,17 @@ export async function startBridge(
 			},
 		},
 	);
-	if (workflowShadowWriter) {
+	if (workflowShadowRuntime.enabled()) {
 		console.log(
 			"[Bridge] FLY-1232: workflow shadow writer ENABLED (FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1) — observation-only dual write",
 		);
 		// Codex code R1 #5: the T9 hook is resolved centrally inside
 		// runPostShipFinalization so EVERY in-process claim contender
 		// (DirectEventSink / event-route / merge-ship-gate) fires it.
-		setWorkflowShadowFinalizationHook(workflowShadowWriter);
 	}
+	// Always install the hot facade. The hook itself checks claims-write at use
+	// time, so an OFF boot can become ON without reconstructing the Bridge.
+	setWorkflowShadowFinalizationHook(workflowShadowRuntime);
 
 	// FLY-1282 Part C: targeted terminal-archive enqueue buffer. Single
 	// boot-time switch capture — OFF (=0) means neither sink receives an
@@ -5012,9 +5023,9 @@ export async function startBridge(
 					// upsertSession writes bypass the applyTransition hook).
 					issueDisplayRefresh: issueDisplayRefreshHolder,
 					terminalCommDbSync,
-					// FLY-1232: dispatcher pre-launch seam + DirectEventSink T9 hook
-					// (undefined when the flag is OFF — byte-compatible).
-					workflowShadow: workflowShadowWriter,
+					// FLY-1232/1344: hot dispatcher pre-launch facade + DirectEventSink
+					// T9 hook. The runtime itself no-ops while claims-write is OFF.
+					workflowShadow: workflowShadowRuntime,
 				},
 			);
 			startDispatcher = dispatcher;
@@ -7536,9 +7547,9 @@ export async function startBridge(
 				startDispatcher: phaseStartDispatcher,
 				isEngineOwnedExecution: (executionId) =>
 					store.isWorkflowEngineOwnedExecution(executionId),
-				// FLY-1232: lifecycle shadow hooks (T3/T3b/T4/T5/T6) — undefined
-				// when FLYWHEEL_WORKFLOW_CLAIMS_WRITE is off (byte-compatible).
-				workflowShadow: workflowShadowWriter,
+				// FLY-1232/1344: hot lifecycle shadow hooks (T3/T3b/T4/T5/T6);
+				// each hook no-ops while claims-write is OFF.
+				workflowShadow: workflowShadowRuntime,
 				// FLY-859: the three-stage QA verdict machinery — thin store closures;
 				// the durable intent lives in session_params.three_stage_verdict via
 				// merge-style patchSessionParams (unrelated params survive).
@@ -8265,7 +8276,7 @@ export async function startBridge(
 					// rounds, verdict intents, finalization claims) reflect the
 					// replayed state. Never piggybacks the orchestrator's skip-heavy
 					// logic, never triggers production actions. no-op when flag OFF.
-					workflowShadowWriter?.reconcileOnStartup();
+					workflowShadowRuntime.reconcileOnStartup();
 				})
 				.catch((err) =>
 					console.warn(

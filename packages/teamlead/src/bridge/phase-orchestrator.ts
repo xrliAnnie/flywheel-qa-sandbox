@@ -261,8 +261,8 @@ export interface PhaseOrchestratorDeps {
 			issueIdentifier?: string;
 			issueTitle?: string;
 			phaseFixContext?: { round: number; qaSummary: string };
-			/** FLY-1232 module ②: semantic shadow context for the T2/T7 seam —
-			 * set ONLY when the workflowShadow dep is wired (never an ordinal). */
+			/** FLY-1232/1344 module ②: semantic shadow context for the T2/T7 seam —
+			 * set only when the hot runtime reports claims-write ON (never an ordinal). */
 			shadowContext?: WorkflowShadowContext;
 		}): Promise<{ executionId: string }>;
 	};
@@ -536,10 +536,10 @@ export interface PhaseOrchestratorDeps {
 		maxFixRounds?: number;
 	};
 	/**
-	 * FLY-1232 module ②: optional lifecycle shadow hooks (T3/T3b/T4/T5/T6 —
+	 * FLY-1232/1344 module ②: lifecycle shadow hooks (T3/T3b/T4/T5/T6 —
 	 * see the transition-table contract in workflow-shadow-writer.ts). Wired
-	 * by plugin.ts ONLY when FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1; undefined ⇒
-	 * zero shadow interaction (byte-compatible). Every hook is no-throw by
+	 * as a hot runtime in production; each use no-ops while claims-write is OFF.
+	 * An undefined test seam still means zero shadow interaction. Every hook is no-throw by
 	 * contract (the writer warns loudly instead) — the production pipeline
 	 * never depends on a shadow write succeeding.
 	 */

@@ -16,6 +16,7 @@
 import type { FlagView } from "flywheel-config";
 import type { LeadBackendId } from "../lead-backends/lead-backend.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
+import { buildDagFlagPanel, type DagFlagPanel } from "./dag-flag-panel.js";
 import {
 	type BackendOption,
 	computeLeadCapabilities,
@@ -125,6 +126,8 @@ export interface ConsoleSnapshot {
 	leads: ConsoleLeadView[];
 	/** FLY-709: every registered feature flag's current state (read-only view). */
 	featureFlags?: FlagView[];
+	/** FLY-1344: shared five-lever DAG truth/preset model. */
+	dagPanel?: DagFlagPanel;
 	/** FLY-728 seam: present only when a provider is wired. */
 	perIssueModels?: PerIssueModelView[];
 	/** FLY-709 ② (b): per-project runner default model (read-only). */
@@ -230,7 +233,10 @@ export function buildConsoleSnapshot(
 		}
 	}
 	const snapshot: ConsoleSnapshot = { leads };
-	if (extras?.featureFlags) snapshot.featureFlags = extras.featureFlags;
+	if (extras?.featureFlags) {
+		snapshot.featureFlags = extras.featureFlags;
+		snapshot.dagPanel = buildDagFlagPanel(extras.featureFlags);
+	}
 	// FLY-728 seam: only attach when a provider actually supplied rows.
 	if (extras?.perIssueModels && extras.perIssueModels.length > 0) {
 		snapshot.perIssueModels = extras.perIssueModels;

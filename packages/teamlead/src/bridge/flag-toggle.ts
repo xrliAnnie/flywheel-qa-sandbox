@@ -23,7 +23,11 @@
  * consistent) and live is unchanged — never "live changed but not persisted".
  */
 
-import { FEATURE_FLAGS, type FeatureFlagSpec } from "flywheel-config";
+import {
+	FEATURE_FLAGS,
+	type FeatureFlagSpec,
+	isDirectToggleMetadata,
+} from "flywheel-config";
 import {
 	applyEnvChange,
 	computeEnvSha,
@@ -68,15 +72,10 @@ export interface FlagToggleResult {
 
 /** Only flags read at call-time (live), non-governance, marked direct. */
 export function isDirectToggleable(spec: FeatureFlagSpec): boolean {
-	return (
-		spec.source === "env" &&
-		spec.scope === "bridge_global" &&
-		spec.valueKind === "bool" &&
-		spec.toggleable === "direct" &&
-		spec.category !== "governance_gate" &&
-		spec.readSites.length > 0 &&
-		spec.readSites.every((s) => s.timing === "call_time")
-	);
+	return isDirectToggleMetadata({
+		...spec,
+		readTimings: spec.readSites.map((site) => site.timing),
+	});
 }
 
 export function applyFlagToggle(

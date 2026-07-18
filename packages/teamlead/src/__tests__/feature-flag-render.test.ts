@@ -56,7 +56,42 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		const qaAuto = FLAGS.find((f) => f.name === "qa_auto");
 		if (!qaAuto) throw new Error("missing");
 		expect(effectLabel(qaAuto)).toBe("新 run 生效");
+		expect(
+			effectLabel({ ...autoQa, readTimings: ["call_time", "dotenv_live"] }),
+		).toBe("热生效");
 	});
+
+	it.each([
+		["staged_restart", ".env 已改,待重启生效"],
+		["split_brain", "CLI 与 Bridge 见值不同"],
+		["bridge_stale", ".env 已改,Bridge 未拾取"],
+		["source_unavailable", ".env 不可读,无法确认或操作"],
+	] as const)(
+		"renders %s explicitly with both observations and no directional control",
+		(divergence, message) => {
+			const flag = FLAGS.find(
+				(candidate) => candidate.name === "auto_qa_killswitch",
+			);
+			if (!flag) throw new Error("missing flag");
+			const html = renderFlagCard(
+				{
+					...flag,
+					bridgeEffective: true,
+					fileEffective:
+						divergence === "source_unavailable" ? undefined : false,
+					displayEffective: undefined,
+					divergence,
+				},
+				"phone",
+			);
+			expect(html).toContain(message);
+			expect(html).toContain("Bridge: ON");
+			if (divergence !== "source_unavailable") {
+				expect(html).toContain(".env: OFF");
+			}
+			expect(html).not.toContain("data-ff-toggle");
+		},
+	);
 
 	it("escapes untrusted-looking content", () => {
 		const html = renderFlagCard({
@@ -115,6 +150,9 @@ describe("renderFlagReport (phone, read-only)", () => {
 	it("includes all flags", () => {
 		expect(html).toContain("FLYWHEEL_AUTO_QA");
 		expect(html).toContain("doc_flow.enabled");
+		expect(html).toContain("DAG 控制");
+		expect(html).toContain("v1 dispatch");
+		expect(html).toContain("ship reader");
 	});
 });
 
@@ -136,6 +174,16 @@ describe("renderFlagReport interactive=true (phone copy-paste)", () => {
 	it("has a copy surface (textarea + copy button)", () => {
 		expect(html).toContain('id="ffCopyText"');
 		expect(html).toContain('id="ffCopyBtn"');
+	});
+
+	it("exposes state-aware fail-stop DAG presets through the same local copy surface", () => {
+		expect(html).toContain("开 DAG v2 · 第一阶段");
+		expect(html).toContain("data-dag-copy");
+		expect(html).toContain(" &amp;&amp; ");
+		expect(html).toContain("&amp;&amp; flywheel-comm feature-flags report");
+		expect(html).toContain("命令末尾自动重发本报告");
+		expect(html).toContain("完成后打开新链接");
+		expect(html).toContain("第二阶段需打开新报告确认 claims reader");
 	});
 
 	it("only lists direct-toggleable flags as controls", () => {

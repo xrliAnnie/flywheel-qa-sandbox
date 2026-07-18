@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FEATURE_FLAGS } from "flywheel-config";
+import { FEATURE_FLAGS, resolveFlag } from "flywheel-config";
 import { describe, expect, it, vi } from "vitest";
 import { computeEnvSha } from "../bridge/env-file-writer.js";
 import {
@@ -51,6 +51,40 @@ describe("isDirectToggleable", () => {
 });
 
 describe("applyFlagToggle", () => {
+	it("a successful apply heals a pre-existing live/file divergence", () => {
+		const spec = FEATURE_FLAGS.find(
+			(flag) => flag.name === "workflow_force_legacy",
+		)!;
+		let file = "FLYWHEEL_WORKFLOW_FORCE_LEGACY=0\n";
+		const d = deps({
+			env: { FLYWHEEL_WORKFLOW_FORCE_LEGACY: "1" },
+			readFile: () => file,
+			writeFile: vi.fn((_path: string, content: string) => {
+				file = content;
+			}),
+		});
+		const before = resolveFlag(spec, {
+			env: d.env,
+			envFile: { status: "readable", content: file },
+		});
+		expect(before.divergence).toBe("split_brain");
+
+		expect(
+			applyFlagToggle(d, {
+				name: spec.name,
+				rawFrom: "1",
+				rawTo: "0",
+				fileSha: computeEnvSha(file),
+			}),
+		).toMatchObject({ ok: true });
+		const after = resolveFlag(spec, {
+			env: d.env,
+			envFile: { status: "readable", content: file },
+		});
+		expect(after.divergence).toBeUndefined();
+		expect(after.displayEffective).toBe(false);
+	});
+
 	it("happy path: turns a direct flag off — persists then mutates process.env", () => {
 		const d = deps();
 		const r = applyFlagToggle(d, {

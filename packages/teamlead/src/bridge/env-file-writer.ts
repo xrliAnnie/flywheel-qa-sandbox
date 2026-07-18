@@ -31,6 +31,8 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
+export { readEnvValueFromContent as readEnvValue } from "flywheel-config";
+
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 // Safe unquoted shell value: no spaces, quotes, $, backtick, newline, glob, etc.
 const SAFE_VALUE_RE = /^[A-Za-z0-9_.:/@=+,-]*$/;
@@ -46,22 +48,6 @@ export interface EnvChangeResult {
 /** sha256 of the raw file content (the baseline the apply route re-verifies). */
 export function computeEnvSha(content: string): string {
 	return createHash("sha256").update(content).digest("hex");
-}
-
-/**
- * Read the effective raw value the shell would set for `key` (last uncommented
- * `KEY=` / `export KEY=` assignment wins). Returns undefined if absent.
- */
-export function readEnvValue(content: string, key: string): string | undefined {
-	if (!KEY_RE.test(key)) return undefined;
-	const re = new RegExp(`^\\s*(?:export\\s+)?${key}=(.*)$`);
-	let val: string | undefined;
-	for (const line of content.split("\n")) {
-		if (/^\s*#/.test(line)) continue;
-		const m = line.match(re);
-		if (m) val = m[1];
-	}
-	return val;
 }
 
 /**

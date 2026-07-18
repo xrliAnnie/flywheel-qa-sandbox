@@ -131,9 +131,9 @@ export function markEvidenceGapCompletion(
  * (DirectEventSink, event-route, merge-ship-gate) that race the atomic claim
  * with independently-built deps — if a contender that did not thread
  * `deps.workflowShadow` wins, T9 must still run. plugin.ts sets this once at
- * the single switch point (flag ON only); `deps.workflowShadow` takes
- * precedence when present (test seam). Claim-based startup repair remains the
- * durable backstop either way.
+ * the hot runtime holder once; the hook itself checks claims-write at use
+ * time. `deps.workflowShadow` takes precedence when present (test seam).
+ * Claim-based startup repair remains the durable backstop either way.
  */
 const workflowShadowFinalizationHolder: {
 	current?: {

@@ -2,7 +2,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveAllFlags } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildDagFlagPanel } from "../bridge/dag-flag-panel.js";
 import type { CanonicalRequest } from "../bridge/fleet-admin.js";
 import { FleetConsole } from "../bridge/fleet-console.js";
 import { ManagementChangeCoordinator } from "../bridge/management-change-coordinator.js";
@@ -92,6 +94,10 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 		writeFileSync(projectsJsonPath, PROJECTS_JSON);
 		const stub = join(dir, "stub-fleet.sh");
 		writeFileSync(stub, "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+		const dagFlags = resolveAllFlags({
+			env: {},
+			envFile: { status: "readable", content: "" },
+		});
 		console_ = new FleetConsole({
 			projectsJsonPath,
 			txnDir: join(dir, "fleet-txns"),
@@ -100,6 +106,7 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 			logDir: join(dir, "fleet-logs"),
 			liveProjects: () => testProjects,
 			legacyBackendOf: () => undefined,
+			featureFlags: () => dagFlags,
 			managementSnapshotProviders: () => [
 				{
 					id: "topology",
@@ -116,6 +123,17 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 							),
 							projectsRevision: "file:test-projects",
 						}),
+					}),
+				},
+				{
+					id: "flags",
+					sourceKind: "flag_registry",
+					read: () => ({
+						revision: "registry:test-flags",
+						fragment: {
+							flags: [],
+							dagPanel: buildDagFlagPanel(dagFlags),
+						},
 					}),
 				},
 			],
@@ -213,6 +231,7 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 		const body = (await res.json()) as {
 			schemaVersion: number;
 			projects: Array<{ leads: Array<Record<string, unknown>> }>;
+			dagPanel?: { shipReader: string };
 		};
 		expect(body.schemaVersion).toBe(1);
 		expect(
@@ -225,6 +244,20 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 		const raw = JSON.stringify(body);
 		expect(raw).not.toContain("super-secret-bot-token");
 		expect(raw).not.toContain("botToken");
+		expect(body.dagPanel?.shipReader).toBe("blocked_fail_closed");
+	});
+
+	it("GET /api/fleet/flag-report.html?interactive=1 exposes the shared DAG panel and safe presets", async () => {
+		const res = await fetch(
+			`${baseUrl}/api/fleet/flag-report.html?interactive=1`,
+		);
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		expect(html).toContain("DAG 控制");
+		expect(html).toContain("v1 dispatch");
+		expect(html).toContain("data-dag-copy");
+		expect(html).toContain("workflow_force_legacy --to on");
+		expect(html).toContain(" &amp;&amp; ");
 	});
 
 	it("POST /api/fleet/stage rejects cross-origin (anti-CSRF)", async () => {

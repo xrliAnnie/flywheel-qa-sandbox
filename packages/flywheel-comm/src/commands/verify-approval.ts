@@ -46,7 +46,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { crossFamilyReviewSatisfied } from "flywheel-config";
+import {
+	crossFamilyReviewSatisfied,
+	readEnvValueFromContent,
+} from "flywheel-config";
 import { CommDB } from "../db.js";
 import {
 	isTrustedApprovalAttribution,
@@ -222,25 +225,6 @@ export function resolveStateDbPath(
 }
 
 const CODEX_HARD_GATE_KEY = "FLYWHEEL_CODEX_HARD_GATE";
-
-/**
- * Read the last uncommented `KEY=` value from a `.env` content string (mirrors
- * teamlead/env-file-writer `readEnvValue` — kept local to avoid a cross-package
- * dependency). Returns undefined if the key is absent.
- */
-function readEnvValueFromContent(
-	content: string,
-	key: string,
-): string | undefined {
-	const re = new RegExp(`^\\s*(?:export\\s+)?${key}=(.*)$`);
-	let val: string | undefined;
-	for (const line of content.split("\n")) {
-		if (/^\s*#/.test(line)) continue;
-		const m = line.match(re);
-		if (m) val = m[1];
-	}
-	return val;
-}
 
 /**
  * FLY-827 (Codex R2 HIGH-1 + R3 HIGH-1): resolve whether the Codex hard gate is

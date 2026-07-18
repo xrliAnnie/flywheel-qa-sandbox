@@ -134,10 +134,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	) => Promise<{ ok: boolean; reason?: string }>;
 
 	/**
-	 * FLY-1232 module ② (T9): optional lifecycle shadow hook, set by run-infra
-	 * ONLY when FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1. Threaded into this sink's
-	 * runPostShipFinalization deps (the in-process ship path); external-merge
-	 * finalization paths rely on the claim-based startup repair instead.
+	 * FLY-1232 module ② (T9): optional lifecycle shadow hook. Run-infra wires the
+	 * hot WorkflowShadowRuntime unconditionally; the runtime reads
+	 * FLYWHEEL_WORKFLOW_CLAIMS_WRITE at use time and no-ops while OFF. Threaded
+	 * into this sink's runPostShipFinalization deps (the in-process ship path);
+	 * external-merge finalization paths rely on claim-based startup repair.
 	 * Absent → byte-compatible. Never throws (writer contract).
 	 */
 	public workflowShadow?: {

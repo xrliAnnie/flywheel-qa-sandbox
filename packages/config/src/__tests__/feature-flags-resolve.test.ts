@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { FeatureFlagSpec } from "../feature-flags/registry.js";
 import { FEATURE_FLAGS } from "../feature-flags/registry.js";
 import { resolveAllFlags, resolveFlag } from "../feature-flags/resolve.js";
 import type { FlywheelConfig } from "../types.js";
@@ -111,6 +112,98 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 		expect(valid.effective).toBe("120000");
 		expect(valid.isDefault).toBe(false);
 	});
+
+	it.each([
+		[
+			"legacy alias",
+			{ FLYWHEEL_FOUNDER_CONSENT_ENABLED: "true" },
+			"FLYWHEEL_FOUNDER_CONSENT_ENABLED=true\n",
+		],
+		[
+			"canonical whitespace",
+			{ FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce" },
+			"FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE=  enforce  \n",
+		],
+	] as const)(
+		"DECISION_MODE dual-source reuses the real parser for %s",
+		(_label, env, content) => {
+			const view = resolveFlag(spec("founder_consent_decision_mode"), {
+				env,
+				envFile: { status: "readable", content },
+			});
+			expect(view.bridgeEffective).toBe("enforce");
+			expect(view.fileEffective).toBe("enforce");
+			expect(view.displayEffective).toBe("enforce");
+			expect(view.divergence).toBeUndefined();
+		},
+	);
+
+	it("dual-source: readable agreement exposes one display value and preserves effective as the Bridge alias", () => {
+		const view = resolveFlag(spec("auto_qa_killswitch"), {
+			env: { FLYWHEEL_AUTO_QA: "0" },
+			envFile: { status: "readable", content: "FLYWHEEL_AUTO_QA=0\n" },
+		});
+		expect(view.bridgeEffective).toBe(false);
+		expect(view.fileEffective).toBe(false);
+		expect(view.displayEffective).toBe(false);
+		expect(view.effective).toBe(false);
+		expect(view.divergence).toBeUndefined();
+	});
+
+	it("dual-source: a readable file with the key absent resolves the deterministic default", () => {
+		const view = resolveFlag(spec("auto_qa_killswitch"), {
+			env: {},
+			envFile: { status: "readable", content: "OTHER=1\n" },
+		});
+		expect(view.bridgeEffective).toBe(true);
+		expect(view.fileEffective).toBe(true);
+		expect(view.displayEffective).toBe(true);
+		expect(view.divergence).toBeUndefined();
+	});
+
+	it("dual-source: unavailable is degraded instead of being mistaken for key absence", () => {
+		const view = resolveFlag(spec("auto_qa_killswitch"), {
+			env: {},
+			envFile: { status: "unavailable" },
+		});
+		expect(view.bridgeEffective).toBe(true);
+		expect(view.fileEffective).toBeUndefined();
+		expect(view.displayEffective).toBeUndefined();
+		expect(view.divergence).toBe("source_unavailable");
+	});
+
+	it.each([
+		["all call_time", spec("auto_qa_killswitch"), "bridge_stale"],
+		["boot-captured", spec("remote_reports"), "staged_restart"],
+		[
+			"mixed dotenv-live",
+			{
+				...spec("auto_qa_killswitch"),
+				readSites: [
+					...spec("auto_qa_killswitch").readSites,
+					{
+						file: "packages/flywheel-comm/src/ship-eligibility.ts",
+						symbol: "test live reader",
+						timing: "dotenv_live",
+						readKind: "dynamic",
+					},
+				],
+			} as FeatureFlagSpec,
+			"split_brain",
+		],
+	] as const)(
+		"dual-source divergence class: %s",
+		(_label, flagSpec, expected) => {
+			const envVar = flagSpec.envVar as string;
+			const view = resolveFlag(flagSpec, {
+				env: { [envVar]: "0" },
+				envFile: { status: "readable", content: `${envVar}=1\n` },
+			});
+			expect(view.bridgeEffective).not.toBe(view.fileEffective);
+			expect(view.displayEffective).toBeUndefined();
+			expect(view.divergence).toBe(expected);
+		},
+	);
 });
 
 describe("resolveFlag — project scope", () => {
