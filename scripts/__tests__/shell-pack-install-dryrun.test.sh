@@ -103,25 +103,47 @@ else
   fail "P4c no integrity line in dry-run output"
 fi
 
+# ── P4d/P5 fixture · a CONTROLLED placeholder tree (FLY-1323 era fix) ────────
+# Both gates below used to assume the LIVE tree still carries the .invalid
+# placeholder — activation put the real endpoint into the tree, which flipped
+# P5 red and made P4d vacuous (its grep "placeholder" substring-matched the
+# SUCCESS text "not the placeholder" while publish failed on the fake registry
+# instead — Codex #640 R1 HIGH). Era-independent form: prove each GATE against
+# a sandbox tree whose config is FORCED to the placeholder, and match the
+# gate's EXACT refusal string, never a substring both outcomes contain.
+PHTREE="$SANDBOX/placeholder-tree"
+mkdir -p "$PHTREE/scripts/release" "$PHTREE/packages"
+cp "$ROOT/scripts/release/shell-publish-preflight.sh" "$PHTREE/scripts/release/"
+cp "$PREPARE" "$PHTREE/scripts/release/shell-prepare.mjs"
+cp -R "$SHELL_DIR" "$PHTREE/packages/onboard-shell"
+node -e '
+  const fs = require("node:fs");
+  const p = process.argv[1];
+  let s = fs.readFileSync(p, "utf8");
+  s = s.replace(/DEFAULT_ENDPOINT =\s*"[^"]*"/, `DEFAULT_ENDPOINT = "https://onboard.flywheel.invalid"`);
+  if (!s.includes("flywheel.invalid")) { console.error("placeholder injection failed"); process.exit(1); }
+  fs.writeFileSync(p, s);
+' "$PHTREE/packages/onboard-shell/lib/config.mjs" || { fail "P4d/P5 fixture injection failed"; }
+
 # ── P4d · FLY-1323 · a BARE publish (no --ignore-scripts) is gated ───────────
 # P4a above deliberately opts out of the hook to inspect the file set. This
-# asserts the other half: without that opt-out the placeholder tree is REFUSED,
-# so the founder-direct path cannot publish a shell pointing at .invalid even if
-# nobody remembers to run the preflight by hand.
-BARE_OUT="$(cd "$SHELL_DIR" && npm publish --dry-run --userconfig "$NPMRC" 2>&1)" && BARE_RC=0 || BARE_RC=$?
-if [ "$BARE_RC" -ne 0 ] && grep -q "placeholder" <<<"$BARE_OUT" \
+# asserts the other half: without that opt-out a placeholder tree is REFUSED
+# by the prepublishOnly hook itself, so the founder-direct path cannot publish
+# a shell pointing at .invalid even if nobody runs the preflight by hand.
+BARE_OUT="$(cd "$PHTREE/packages/onboard-shell" && npm publish --dry-run --userconfig "$NPMRC" 2>&1)" && BARE_RC=0 || BARE_RC=$?
+if [ "$BARE_RC" -ne 0 ] && grep -q "still the .invalid placeholder" <<<"$BARE_OUT" \
    && ! grep -q "Publishing to" <<<"$BARE_OUT"; then
-  pass "P4d bare npm publish is gated by prepublishOnly (placeholder refused, never reaches publish)"
+  pass "P4d bare npm publish is gated by prepublishOnly (exact placeholder refusal, never reaches publish)"
 else
   fail "P4d bare publish was NOT gated (rc=$BARE_RC): $(tail -4 <<<"$BARE_OUT")"
 fi
 
-# ── P5 · placeholder endpoint still blocks a REAL staging ───────────────────
-if node "$PREPARE" --out "$SANDBOX/stage2" >/dev/null 2>"$SANDBOX/p5.err"; then
-  fail "P5 prepare must refuse while DEFAULT_ENDPOINT is the placeholder"
+# ── P5 · the placeholder GATE in shell-prepare still blocks staging ─────────
+if node "$PHTREE/scripts/release/shell-prepare.mjs" --out "$SANDBOX/stage2" >/dev/null 2>"$SANDBOX/p5.err"; then
+  fail "P5 prepare must refuse a placeholder endpoint"
 else
-  grep -q "placeholder" "$SANDBOX/p5.err" \
-    && pass "P5 prepare refuses the placeholder endpoint (real publish stays gated)" \
+  grep -q "DEFAULT_ENDPOINT is still the placeholder" "$SANDBOX/p5.err" \
+    && pass "P5 prepare refuses the placeholder endpoint (exact refusal string)" \
     || fail "P5 refused but with the wrong reason: $(cat "$SANDBOX/p5.err")"
 fi
 

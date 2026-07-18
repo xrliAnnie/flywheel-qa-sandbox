@@ -9,7 +9,8 @@ import path from "node:path";
 // an obviously-unreachable placeholder so an un-stubbed run fails loudly
 // rather than silently hitting something real. Tests inject a stub via
 // FLYWHEEL_ONBOARD_ENDPOINT.
-export const DEFAULT_ENDPOINT = "https://onboard.flywheel.invalid";
+export const DEFAULT_ENDPOINT =
+	"https://flywheel-onboard-endpoint.xrliannie-b.workers.dev";
 
 export function resolveConfig(env = process.env) {
 	const home = env.HOME || homedir();

@@ -192,18 +192,32 @@ fi
 #    tree the preflight validates. The old form nested an UNCHECKED external
 #    `dirname` inside ROOT's resolution; a `dirname` that printed another valid
 #    tree and exited non-zero would send the gate to inspect the wrong package.
-#    The current form uses Bash parameter expansion (a builtin). Proof: with a
-#    hostile `dirname` shim on PATH, the preflight must still resolve THIS repo and
-#    die on the placeholder endpoint — not on "config missing" from a wrong tree.
+#    The current form uses Bash parameter expansion (a builtin).
+#    Proof (era-independent — the original form keyed on "dies on the
+#    placeholder", which stopped being true the moment activation put the REAL
+#    endpoint into the tree): run the endpoint check WITHOUT the shim as the
+#    baseline, then WITH the hostile shim, and require identical rc + identical
+#    output. The shim points at a CONSTRUCTED, VALID alternate tree whose
+#    config carries the .invalid placeholder (Codex #640 R1 MED: a nonexistent
+#    wrong tree only proved the cd-failure path — a fallback-on-failed-cd
+#    implementation, or a wrong tree that happens to answer identically, would
+#    have slipped through). With this tree a SUCCESSFUL redirect must flip the
+#    output to the placeholder refusal — it cannot be byte-identical to the
+#    baseline; the missing-file refusal is asserted absent as well.
+G8_BASE_OUT="$(bash "$PREFLIGHT" --check-endpoint-only 2>&1)"; G8_BASE_RC=$?
+G8WRONG="$SANDBOX/g8-wrong-tree"
+mkdir -p "$G8WRONG/scripts/release" "$G8WRONG/packages/onboard-shell/lib"
+printf 'export const DEFAULT_ENDPOINT = "https://onboard.flywheel.invalid";\n' \
+  > "$G8WRONG/packages/onboard-shell/lib/config.mjs"
 G8SHIM="$SANDBOX/g8bin"; mkdir -p "$G8SHIM"
-printf '#!/bin/bash\necho "/tmp/fly1323-WRONG-TREE"; exit 73\n' > "$G8SHIM/dirname"
+printf '#!/bin/bash\necho "%s"; exit 73\n' "$G8WRONG/scripts/release" > "$G8SHIM/dirname"
 chmod +x "$G8SHIM/dirname"
 G8_OUT="$(PATH="$G8SHIM:$PATH" bash "$PREFLIGHT" --check-endpoint-only 2>&1)"; G8_RC=$?
-if [ "$G8_RC" -ne 0 ] && grep -q "still the .invalid placeholder" <<<"$G8_OUT" \
+if [ "$G8_RC" -eq "$G8_BASE_RC" ] && [ "$G8_OUT" = "$G8_BASE_OUT" ] \
    && ! grep -q "A missing file is not a passing check" <<<"$G8_OUT"; then
-  pass "G8 hostile dirname on PATH cannot redirect the validated tree (builtin resolution, not external dirname)"
+  pass "G8 hostile dirname on PATH cannot redirect the validated tree (shimmed run byte-identical to baseline)"
 else
-  fail "G8 preflight tree was redirectable by a hostile dirname (rc=$G8_RC): $G8_OUT"
+  fail "G8 preflight tree was redirectable by a hostile dirname (rc=$G8_RC vs base $G8_BASE_RC): $G8_OUT"
 fi
 
 echo ""

@@ -8,7 +8,7 @@
  * Lead never gets to answer, so every "leave it" case gets a test.
  */
 import { execFileSync } from "node:child_process";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
 	ZombieCandidateQuestion,
 	ZombieGateHygieneDeps,
